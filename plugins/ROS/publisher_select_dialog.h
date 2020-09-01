@@ -18,6 +18,13 @@ class PublisherSelectDialog : public QDialog
 private:
   Ui::PublisherSelect* _ui;
 
+private slots:
+void on_radioButtonWS_toggled(bool checked){
+    ui()->lineEditWebsocketUrl->setEnabled(checked);
+    ui()->checkBoxShowVideo->setEnabled(checked);
+};
+
+
 public:
   explicit PublisherSelectDialog(QWidget* parent = nullptr)
     : QDialog(parent), _ui(new Ui::PublisherSelect)
