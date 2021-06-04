@@ -1239,9 +1239,11 @@ bool MainWindow::loadDataFromFiles(QStringList filenames)
   {
     FileLoadInfo info;
     info.filename = filenames[i];
-    if (filenames.size() > 1)
+    if (true)//filenames.size() > 1)
     {
-      info.prefix = prefix_ch;
+      QFileInfo fi;
+      fi = filenames[i];
+      info.prefix = fi.fileName();
     }
 
     if (loadDataFromFile(info))
