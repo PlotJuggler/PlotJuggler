@@ -2,11 +2,10 @@
 cd %~dp0
 SET MINGW_PATH=C:/Qt/Tools/mingw730_64/bin
 SET CMAKE_PATH=C:/Qt/Tools/CMake_64/bin
-SET CMAKE_PREFIX_PATH=C:/Qt/5.12.10/mingw73_64
+SET CMAKE_PREFIX_PATH=C:/Qt/5.14.2/mingw73_64
 SET PATH=%MINGW_PATH%;%CMAKE_PATH%;%PATH%
 SET CMAKE_C_COMPILER=%MINGW_PATH%/gcc.exe
 SET CMAKE_CXX_COMPILER=%MINGW_PATH%/g++.exe
-
 CLS
 :MENU
 CLS
@@ -34,8 +33,8 @@ GOTO MENU
 :Selection1
 mkdir build
 cd build
-cmake -S ".." -G "MinGW Makefiles"
-make -j -l 8
+cmake -S ".." -DCMAKE_BUILD_TYPE=Release -G "MinGW Makefiles"
+cmake --build . --parallel 8
 PAUSE
 GOTO MENU
 
@@ -55,7 +54,7 @@ GOTO MENU
 :Quit
 CLS
 
-ECHO ==============THANKYOU===============
+ECHO =============THANK YOU===============
 ECHO -------------------------------------
 ECHO ======PRESS ANY KEY TO CONTINUE======
 

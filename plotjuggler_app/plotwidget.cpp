@@ -639,6 +639,10 @@ const PlotWidget::CurveInfo *PlotWidget::curveFromTitle(const QString &title) co
 
 void PlotWidget::dragEnterEvent(QDragEnterEvent* event)
 {
+  if (event->mimeData()->hasUrls())
+  {
+    event->ignore();
+  }
   const QMimeData* mimeData = event->mimeData();
   QStringList mimeFormats = mimeData->formats();
   _dragging.curves.clear();

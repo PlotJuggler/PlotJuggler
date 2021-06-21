@@ -90,6 +90,9 @@ public slots:
 
   void onPlaybackLoop();
 
+  void dragEnterEvent(QDragEnterEvent *event);
+  void dropEvent(QDropEvent *event);
+
 private:
   Ui::MainWindow* ui;
 

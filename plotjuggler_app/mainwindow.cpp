@@ -76,6 +76,7 @@ MainWindow::MainWindow(const QCommandLineParser& commandline_parser, QWidget* pa
   , _recent_data_files(new QMenu())
   ,_recent_layout_files(new QMenu())
 {
+  this->setAcceptDrops(true);
   QLocale::setDefault(QLocale::c());  // set as default
 
   _test_option = commandline_parser.isSet("test");
@@ -2330,6 +2331,55 @@ void MainWindow::onPlaybackLoop()
     plot->setTrackerPosition(_tracker_time);
     plot->replot();
   });
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent * event)
+{
+  QStringList fmt = event->mimeData()->formats();
+  if (event->mimeData()->hasUrls())
+  {
+    event->acceptProposedAction();
+  }
+}
+
+void MainWindow::dropEvent(QDropEvent * event)
+{
+  auto urls = event->mimeData()->urls();
+  QStringList fileNames;
+
+  std::set<QString> extensions;
+
+  for (auto& it : _data_loader)
+  {
+    DataLoaderPtr loader = it.second;
+    for (QString extension : loader->compatibleFileExtensions())
+    {
+      extensions.insert(extension.toLower());
+    }
+  }
+
+  foreach(auto url, urls) 
+  {    
+    QString fileName = url.toLocalFile();
+    QFileInfo fileInfo(fileName);
+    QString ext = fileInfo.completeSuffix();
+    if (extensions.find(ext) != extensions.end())
+    {
+      fileNames.push_front(fileName);
+    }
+    else
+    {
+      QMessageBox::warning(this, tr("Warning"), tr("No plugin was loaded to process a data file: ") + fileInfo.fileName());
+    }
+  }
+  if (fileNames.isEmpty())
+  {
+    return;
+  }
+  if (loadDataFromFiles(fileNames))
+  {
+    updateRecentDataMenu(fileNames);
+  }
 }
 
 void MainWindow::onCustomPlotCreated(CustomPlotPtr custom_plot)

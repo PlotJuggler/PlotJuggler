@@ -107,6 +107,8 @@ IF (NOT WIN32)
 else()
     set(CMAKE_WIN32_EXECUTABLE ON)
     set(GUI_TYPE WIN32)
+### Embedd Icon to Plotjuggler.exe
+    set(BACKWARD_ENABLE ${BACKWARD_ENABLE} ../../Plotjuggler.rc)
 ENDIF()
 
 find_package(ZMQ)
