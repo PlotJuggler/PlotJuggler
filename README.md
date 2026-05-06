@@ -1,3 +1,8 @@
+# ALERT: do NOT visit plotjuggler.com
+## That is probably a Malware / Phishing page impersonating us.
+We are taking urgent actions to brint it down.
+
+
 ![PlotJuggler](docs/plotjuggler3_banner.svg)
 
 [![windows](https://github.com/PlotJuggler/PlotJuggler/actions/workflows/windows.yaml/badge.svg)](https://github.com/PlotJuggler/PlotJuggler/actions/workflows/windows.yaml)
