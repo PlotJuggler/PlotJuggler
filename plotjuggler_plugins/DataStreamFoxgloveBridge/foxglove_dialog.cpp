@@ -8,10 +8,11 @@
 
 #include "ui_foxglove_client.h"
 
-namespace {
-  constexpr auto url_regex ="^wss?:\\/\\/([a-zA-Z0-9][-a-zA-Z0-9._]+)"
-                  "(:[0-9]{1,5})?"
-                  "(\\/.*)?$";
+namespace
+{
+constexpr auto url_regex = "^wss?:\\/\\/([a-zA-Z0-9][-a-zA-Z0-9._]+)"
+                           "(:[0-9]{1,5})?"
+                           "(\\/.*)?$";
 }
 
 FoxgloveDialog::FoxgloveDialog(const FoxgloveClientConfig& config)
@@ -20,9 +21,9 @@ FoxgloveDialog::FoxgloveDialog(const FoxgloveClientConfig& config)
   ui->setupUi(this);
   setWindowTitle("Foxglove Bridge");
 
-
   ui->lineEditURL->setText(config.url);
-  ui->lineEditURL->setValidator(new QRegularExpressionValidator(QRegularExpression(url_regex), this));
+  ui->lineEditURL->setValidator(
+      new QRegularExpressionValidator(QRegularExpression(url_regex), this));
 
   ui->spinBoxArraySize->setValue(config.max_array_size);
   if (config.clamp_large_arrays)

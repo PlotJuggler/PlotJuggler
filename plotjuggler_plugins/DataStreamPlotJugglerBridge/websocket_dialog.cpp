@@ -10,10 +10,11 @@
 
 #include "ui_websocket_client.h"
 
-namespace {
-  constexpr auto url_regex = "^wss?:\\/\\/([a-zA-Z0-9][-a-zA-Z0-9._]+)"
-                  "(:[0-9]{1,5})?"
-                  "(\\/.*)?$";
+namespace
+{
+constexpr auto url_regex = "^wss?:\\/\\/([a-zA-Z0-9][-a-zA-Z0-9._]+)"
+                           "(:[0-9]{1,5})?"
+                           "(\\/.*)?$";
 }
 
 WebsocketDialog::WebsocketDialog(const WebsocketClientConfig& config)
@@ -24,7 +25,7 @@ WebsocketDialog::WebsocketDialog(const WebsocketClientConfig& config)
 
   ui->lineEditURL->setText(config.url);
   ui->lineEditURL->setValidator(
-    new QRegularExpressionValidator(QRegularExpression(url_regex), this));
+      new QRegularExpressionValidator(QRegularExpression(url_regex), this));
 
   ui->spinBoxArraySize->setValue(config.max_array_size);
   if (config.clamp_large_arrays)
