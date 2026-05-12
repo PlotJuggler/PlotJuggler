@@ -237,6 +237,8 @@ private:
 
   void updateRecentDataMenu(QStringList new_filenames);
   void updateRecentLayoutMenu(QStringList new_filenames);
+  void alignAxesAcrossDockers(const QString& reason, bool replot_after_alignment);
+  void replotAllPlots(const QString& reason);
 
   void updatedDisplayTime();
 

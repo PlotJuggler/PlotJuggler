@@ -70,6 +70,7 @@ public:
   void zoomOut();
 
   void replot();
+  void invalidateAxisAlignment();
 
 public slots:
 
@@ -78,6 +79,17 @@ public slots:
   void savePlotsToFile();
 
 private:
+  struct AxisAlignmentCache
+  {
+    bool valid = false;
+    int plot_count = 0;
+    int left_width = 0;
+    int bottom_height = 0;
+    double left_extent = 0.0;
+    double bottom_extent = 0.0;
+  };
+
+  void updateAxisAlignmentCache(bool force_recompute);
   void restoreSplitter(QDomElement elem, DockWidget* widget);
 
   QRect plotRelativeFootprint(int index, QSize plot_size) const;
@@ -85,10 +97,12 @@ private:
   QString _name;
 
   PlotDataMapRef& _datamap;
+  AxisAlignmentCache _axis_alignment_cache;
 
 signals:
 
   void plotWidgetAdded(PlotWidget*);
+  void plotWidgetRemoved();
 
   void undoableChange();
 };

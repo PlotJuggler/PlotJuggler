@@ -12,7 +12,6 @@
 #include <QBoxLayout>
 #include <QMouseEvent>
 #include <QSplitter>
-#include <QDebug>
 #include <QInputDialog>
 #include <QLineEdit>
 #include "PlotJuggler/svg_util.h"
@@ -54,14 +53,19 @@ PlotDocker::PlotDocker(QString name, PlotDataMapRef& datamap, QWidget* parent)
       area->setAllowedAreas(ads::OuterDockAreas);
 
       this->plotWidgetAdded(widget->plotWidget());
+      connect(widget->plotWidget(), &PlotWidget::widgetResized, this,
+              &PlotDocker::invalidateAxisAlignment);
 
       connect(widget, &DockWidget::undoableChange, this, &PlotDocker::undoableChange);
     }
   };
 
   connect(this, &ads::CDockManager::dockWidgetRemoved, this, CreateFirstWidget);
+  connect(this, &ads::CDockManager::dockWidgetRemoved, this, &PlotDocker::invalidateAxisAlignment);
 
   connect(this, &ads::CDockManager::dockAreasAdded, this, &PlotDocker::undoableChange);
+  connect(this, &ads::CDockManager::dockAreasAdded, this, &PlotDocker::invalidateAxisAlignment);
+  connect(this, &PlotDocker::plotWidgetAdded, this, &PlotDocker::invalidateAxisAlignment);
 
   CreateFirstWidget();
 }
@@ -270,8 +274,76 @@ void PlotDocker::zoomOut()
   }
 }
 
+void PlotDocker::invalidateAxisAlignment()
+{
+  _axis_alignment_cache.valid = false;
+}
+
+void PlotDocker::updateAxisAlignmentCache(bool force_recompute)
+{
+  QSettings settings;
+  const bool align_axes = settings.value("Preferences::align_axes", true).toBool();
+  if (!align_axes)
+  {
+    _axis_alignment_cache = {};
+    _axis_alignment_cache.valid = true;
+    _axis_alignment_cache.plot_count = plotCount();
+    return;
+  }
+
+  bool needs_recompute = force_recompute || !_axis_alignment_cache.valid ||
+                         (_axis_alignment_cache.plot_count != plotCount());
+
+  if (!needs_recompute)
+  {
+    for (int index = 0; index < plotCount(); index++)
+    {
+      auto* plot = plotAt(index);
+      if (plot->leftAxisWidth() > _axis_alignment_cache.left_width ||
+          plot->bottomAxisHeight() > _axis_alignment_cache.bottom_height ||
+          plot->leftAxisExtent() > _axis_alignment_cache.left_extent ||
+          plot->bottomAxisExtent() > _axis_alignment_cache.bottom_extent)
+      {
+        needs_recompute = true;
+        break;
+      }
+    }
+  }
+
+  if (needs_recompute)
+  {
+    _axis_alignment_cache = {};
+    _axis_alignment_cache.valid = true;
+    _axis_alignment_cache.plot_count = plotCount();
+
+    for (int index = 0; index < plotCount(); index++)
+    {
+      auto* plot = plotAt(index);
+      _axis_alignment_cache.left_width =
+          std::max(_axis_alignment_cache.left_width, plot->leftAxisWidth());
+      _axis_alignment_cache.bottom_height =
+          std::max(_axis_alignment_cache.bottom_height, plot->bottomAxisHeight());
+      _axis_alignment_cache.left_extent =
+          std::max(_axis_alignment_cache.left_extent, plot->leftAxisExtent());
+      _axis_alignment_cache.bottom_extent =
+          std::max(_axis_alignment_cache.bottom_extent, plot->bottomAxisExtent());
+    }
+  }
+
+  for (int index = 0; index < plotCount(); index++)
+  {
+    auto* plot = plotAt(index);
+    plot->setLeftAxisMinimumWidth(_axis_alignment_cache.left_width);
+    plot->setBottomAxisMinimumHeight(_axis_alignment_cache.bottom_height);
+    plot->setLeftAxisMinimumExtent(_axis_alignment_cache.left_extent);
+    plot->setBottomAxisMinimumExtent(_axis_alignment_cache.bottom_extent);
+  }
+}
+
 void PlotDocker::replot()
 {
+  updateAxisAlignmentCache(false);
+
   for (int index = 0; index < plotCount(); index++)
   {
     plotAt(index)->replot();
@@ -383,6 +455,11 @@ DockWidget::DockWidget(PlotDataMapRef& datamap, QWidget* parent)
   QObject::connect(_toolbar->buttonFullscreen(), &QPushButton::clicked, FullscreenAction);
 
   QObject::connect(_toolbar->buttonClose(), &QPushButton::pressed, [this]() {
+    PlotDocker* parent_docker = static_cast<PlotDocker*>(dockManager());
+    if (parent_docker)
+    {
+      emit parent_docker->plotWidgetRemoved();
+    }
     dockAreaWidget()->closeArea();
     takeWidget();
     _plot_widget->deleteLater();
