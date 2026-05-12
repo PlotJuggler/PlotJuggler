@@ -51,7 +51,7 @@ private:
 
   QString _dragging_curve;
 
-  void autoFill(QString prefix);
+  void autoFill(QString prefix, QStringList suffix = { "x", "y", "z", "w" });
 
   PJ::PlotWidgetBase* _plot_widget = nullptr;
 
