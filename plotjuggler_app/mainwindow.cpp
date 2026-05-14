@@ -1331,6 +1331,9 @@ void MainWindow::deleteAllData()
   _undo_states.clear();
   _redo_states.clear();
 
+  //No data means no files loaded.
+  updateCurrentLoadedFilesLabel(QList<FileLoadInfo>());
+  
   bool stopped = false;
 
   for (int idx = 0; idx < ui->layoutPublishers->count(); idx++)
@@ -1428,7 +1431,7 @@ bool MainWindow::loadDataFromFiles(QStringList filenames, bool auto_prefix)
 
   std::unordered_set<std::string> previous_names = _mapped_plot_data.getAllNames();
 
-  QStringList loaded_filenames;
+  QList<FileLoadInfo> loaded_fileinfos{};
   _loaded_datafiles_previous.clear();
 
   for (int i = 0; i < filenames.size(); i++)
@@ -1442,7 +1445,7 @@ bool MainWindow::loadDataFromFiles(QStringList filenames, bool auto_prefix)
     auto added_names = loadDataFromFile(info, merge_data);
     if (!added_names.empty())
     {
-      loaded_filenames.push_back(filenames[i]);
+      loaded_fileinfos.push_back(info);
     }
     for (const auto& name : added_names)
     {
@@ -1477,17 +1480,25 @@ bool MainWindow::loadDataFromFiles(QStringList filenames, bool auto_prefix)
   }
 
   // special case when only the last file should be remembered
-  if (loaded_filenames.size() == 1 && data_replaced_entirely &&
+  if (loaded_fileinfos.size() == 1 && data_replaced_entirely &&
       _loaded_datafiles_history.size() > 1)
   {
     std::swap(_loaded_datafiles_history.back(), _loaded_datafiles_history.front());
     _loaded_datafiles_history.resize(1);
   }
 
-  ui->buttonReloadData->setEnabled(!loaded_filenames.empty());
+  ui->buttonReloadData->setEnabled(!loaded_fileinfos.empty());
 
-  if (loaded_filenames.size() > 0)
+  updateCurrentLoadedFilesLabel(loaded_fileinfos);
+
+
+  if (loaded_fileinfos.size() > 0)
   {
+    QStringList loaded_filenames;
+    for (const auto& info : loaded_fileinfos)
+    {
+      loaded_filenames.push_back(info.filename);
+    }
     updateRecentDataMenu(loaded_filenames);
     linkedZoomOut();
     return true;
@@ -1644,6 +1655,14 @@ std::unordered_set<std::string> MainWindow::loadDataFromFile(const FileLoadInfo&
 
   updateDataAndReplot(true);
   ui->timeSlider->setRealValue(ui->timeSlider->getMinimum());
+
+  if (!added_names.empty())
+  {
+    QList<FileLoadInfo> fileinfos;
+    fileinfos.push_back(info);
+
+    updateCurrentLoadedFilesLabel(fileinfos);
+  }
 
   return added_names;
 }
@@ -3712,6 +3731,53 @@ void MainWindow::on_actionColorMap_Editor_triggered()
 {
   ColorMapEditor dialog;
   dialog.exec();
+}
+
+void MainWindow::updateCurrentLoadedFilesLabel(const QList<FileLoadInfo>& files)
+{
+  QStringList abbreviated_file_paths{}; //WITH prefix if given
+  QStringList absolute_file_paths{};
+
+  for (const auto& file_loaded_info : files)
+  {
+    QString absolute_file_path;
+    QString abbreviated_name;
+ 
+    QFileInfo file_info = QFileInfo(file_loaded_info.filename);
+
+    if(file_loaded_info.prefix.isEmpty())
+    {
+      
+      abbreviated_name = file_info.fileName();
+      absolute_file_path = file_info.absoluteFilePath();
+    }
+    else
+    {
+      abbreviated_name = QString("%1: %2").arg(file_loaded_info.prefix).arg(file_info.fileName());
+      absolute_file_path = QString("%1: %2").arg(file_loaded_info.prefix).arg(file_info.absoluteFilePath());
+    }
+
+    abbreviated_file_paths.push_back(abbreviated_name);
+    absolute_file_paths.push_back(absolute_file_path);
+  }
+
+  if(files.empty())
+  {
+    ui->labelCurrentLoadedFiles->setText(tr("File: "));
+    ui->labelCurrentLoadedFiles->setToolTip("");
+    return;
+  }
+
+  if(files.size() == 1)
+  {
+    ui->labelCurrentLoadedFiles->setText(tr("File: %1").arg(abbreviated_file_paths.first()));
+    ui->labelCurrentLoadedFiles->setToolTip(absolute_file_paths.first());
+    return;
+  }
+
+  //Multiple files loaded. Don't try and show what could be a long list of files in the label, but show them in the tooltip instead.
+  ui->labelCurrentLoadedFiles->setText(tr("Files (%1): %2 ...").arg(files.size()).arg(abbreviated_file_paths.first()));
+  ui->labelCurrentLoadedFiles->setToolTip(absolute_file_paths.join('\n'));
 }
 
 void MainWindow::on_buttonReloadData_clicked()

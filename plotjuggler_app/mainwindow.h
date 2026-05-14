@@ -12,6 +12,7 @@
 #include <functional>
 
 #include <QCommandLineParser>
+#include <QFileInfo>
 #include <QElapsedTimer>
 #include <QMainWindow>
 #include <QSignalMapper>
@@ -327,6 +328,7 @@ private slots:
 private:
   QStringList readAllCurvesFromXML(QDomElement root_node);
   void loadAllPlugins(QStringList command_line_plugin_folders);
+  void updateCurrentLoadedFilesLabel(const QList<FileLoadInfo>& files);
 };
 
 class PopupMenu : public QMenu
