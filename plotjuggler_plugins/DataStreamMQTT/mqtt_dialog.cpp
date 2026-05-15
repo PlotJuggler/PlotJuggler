@@ -1,4 +1,5 @@
 #include "mqtt_dialog.h"
+#include <QCoreApplication>
 #include <QFileDialog>
 #include "PlotJuggler/svg_util.h"
 
@@ -141,6 +142,18 @@ void MQTT_Dialog::saveSettings()
 
 MQTT_Dialog::~MQTT_Dialog()
 {
+  // When the destructor runs from static teardown (e.g. __cxa_finalize_ranges
+  // after exit()), QtCore globals (QLocale, QSettings, QCoreApplication) are
+  // already destroyed. Any Qt operation here would dereference freed memory.
+  // Bail out and let the OS reclaim memory; the process is exiting anyway.
+  if (!QCoreApplication::instance())
+  {
+    return;
+  }
+
+  // The widgets in layoutOptions are borrowed from parser factories that own
+  // them. Detach them from this dialog before destruction so Qt's parent
+  // ownership does not delete factory-owned widgets.
   while (ui->layoutOptions->count() > 0)
   {
     auto item = ui->layoutOptions->takeAt(0);
