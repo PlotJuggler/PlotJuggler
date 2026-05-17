@@ -29,9 +29,20 @@ ULogParser::ULogParser(DataStream& datastream) : _file_start_time(0)
     ulog_message_header_s message_header;
     datastream.read((char*)&message_header, ULOG_MSG_HEADER_LEN);
 
+    if (!datastream)
+    {
+      break;
+    }
+
     _read_buffer.reserve(message_header.msg_size + 1);
     char* message = (char*)_read_buffer.data();
     datastream.read(message, message_header.msg_size);
+
+    if (!datastream)
+    {
+      break;
+    }
+
     message[message_header.msg_size] = '\0';
 
     switch (message_header.msg_type)
