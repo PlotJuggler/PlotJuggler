@@ -271,7 +271,25 @@ Range PlotWidgetBase::getVisualizationRangeY(Range range_X) const
     top = 1.0;
   }
 
-  double margin = (top - bottom) * 0.025;
+  double margin;
+  if (top - bottom > std::numeric_limits<double>::epsilon())
+  {
+    margin = (top - bottom) * 0.025;
+  }
+  else
+  {
+    // Constant series: top == bottom would collapse the Y axis to zero height
+    // and hide the curve. Give it a visible envelope proportional to the value,
+    // falling back to 1.0 when the value itself is ~0.
+    if (std::fabs(top) > std::numeric_limits<double>::epsilon())
+    {
+      margin = std::fabs(top) * 0.05;
+    }
+    else
+    {
+      margin = 1.0;
+    }
+  }
 
   top += margin;
   bottom -= margin;
