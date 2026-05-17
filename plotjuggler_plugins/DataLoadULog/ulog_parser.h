@@ -39,6 +39,11 @@ public:
 
     void read(char* dst, size_t len)
     {
+      if (len > _length - offset)
+      {
+        offset = _length;
+        return;
+      }
       memcpy(dst, &_data[offset], len);
       offset += len;
     }
