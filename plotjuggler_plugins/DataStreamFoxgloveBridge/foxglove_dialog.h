@@ -34,8 +34,7 @@ public:
   ~FoxgloveDialog();
 
   /// Current connection target entered by the user.
-  QString address() const;
-  int port(bool* ok) const;
+  QString url() const;
 
   /// Replace the visible channel list while preserving current selections when possible.
   void setChannels(const QMap<quint64, FoxgloveChannelInfo>& channels,

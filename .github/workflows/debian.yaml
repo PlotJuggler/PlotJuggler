@@ -1,6 +1,7 @@
 name: debian
 
 on:
+  workflow_dispatch:        # lets us trigger a .deb build from any branch via the Actions UI
   push:
     branches:
       - main

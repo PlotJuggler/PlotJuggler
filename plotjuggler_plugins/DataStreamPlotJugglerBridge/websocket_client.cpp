@@ -146,26 +146,17 @@ bool WebsocketClient::start(QStringList*)
     if (checked)
     {
       // Connect
-      bool ok = false;
-      int p = dialog.port(&ok);
-      if (!ok)
+      const QString url_str = _dialog->url();
+      const QUrl url(url_str);
+      if (!url.isValid())
       {
-        QMessageBox::warning(&dialog, "WebSocket Client", "Invalid Port", QMessageBox::Ok);
-        dialog.setConnected(false);
-        return;
-      }
-      const QString addr = dialog.address();
-      if (addr.isEmpty())
-      {
-        QMessageBox::warning(&dialog, "WebSocket Client", "Invalid Address", QMessageBox::Ok);
+        QMessageBox::warning(&dialog, "WebSocket Client", "Invalid URL", QMessageBox::Ok);
         dialog.setConnected(false);
         return;
       }
 
-      _url = QUrl(QString("ws://%1:%2").arg(addr).arg(p));
-
-      _config.address = addr;
-      _config.port = p;
+      _url = url;
+      _config.url = url_str;
       saveDefaultSettings();
 
       _socket.open(_url);

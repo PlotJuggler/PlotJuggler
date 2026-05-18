@@ -398,7 +398,6 @@ void MainWindow::onSequencesReady(const std::vector<SequenceInfo>& sequences)
 
     all_sequences_ = sequences;
     sequence_panel_->setLoading(false);
-    sequence_panel_->populateSequences(sequences);
     connect_button_->setEnabled(true);
     connect_button_->setText("Connect");
     refresh_button_->setEnabled(true);

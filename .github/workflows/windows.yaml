@@ -18,6 +18,9 @@ jobs:
 
   windows-build:
     runs-on: ${{ matrix.windows-version }}
+    permissions:
+      contents: write   # softprops/action-gh-release needs write to update releases on tag pushes
+      packages: write   # push/pull the Conan cache OCI artifact on ghcr.io
     strategy:
       fail-fast: false
       matrix:
@@ -25,6 +28,11 @@ jobs:
           - 'windows-latest'
     env:
       CXXFLAGS: /MP
+      # Python version used both at compile time (Python.h, python312.lib) AND
+      # bundled into the installer as the embeddable runtime. These two MUST
+      # match — otherwise the EXE will load a python3XX.dll whose ABI doesn't
+      # match the headers we built against.
+      PJ_PYTHON_EMBED_VERSION: '3.12.7'
 
     steps:
       - name: Sync repository
@@ -38,7 +46,99 @@ jobs:
       - name: Install Conan
         uses: conan-io/setup-conan@v1
         with:
-          cache_packages: true
+          # We back the cache via ghcr.io/oras instead of actions/cache (which
+          # has a 10 GB per-repo soft cap and 7-day eviction). ghcr.io public
+          # repos: unlimited storage and bandwidth; tags survive forever.
+          cache_packages: false
+
+      - name: Setup oras (OCI Registry As Storage)
+        # Primary install path. continue-on-error so a 5xx on the github.com
+        # release CDN doesn't kill CI — we have a fallback below, and worst
+        # case we degrade to "no cache this run" (build still completes).
+        id: setup_oras
+        uses: oras-project/setup-oras@v1
+        continue-on-error: true
+
+      - name: Setup oras (manual download fallback)
+        # Only fires if setup-oras failed. No truly-independent CDN exists
+        # for the oras binary on Windows runners, so we re-download from the
+        # same release URL but with longer exponential backoff (5 retries vs
+        # setup-oras's 2). Helps with brief 5xx blips that exceed the action's
+        # built-in retry budget.
+        id: setup_oras_fallback
+        if: steps.setup_oras.outcome == 'failure'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $version = "1.3.0"
+          $url = "https://github.com/oras-project/oras/releases/download/v$version/oras_${version}_windows_amd64.zip"
+          $zip = Join-Path $env:RUNNER_TEMP "oras.zip"
+          $installDir = Join-Path $env:RUNNER_TEMP "oras-bin"
+          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+
+          $attempts = 0
+          while ($attempts -lt 5) {
+            try {
+              Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+              break
+            } catch {
+              $attempts++
+              if ($attempts -ge 5) { throw }
+              $delay = [math]::Pow(2, $attempts) * 5
+              Write-Host "Download attempt $attempts failed: $_. Retry in ${delay}s..."
+              Start-Sleep -Seconds $delay
+            }
+          }
+          Expand-Archive -Path $zip -DestinationPath $installDir -Force
+          "$installDir" | Out-File -FilePath $env:GITHUB_PATH -Append
+          & "$installDir\oras.exe" version
+
+      - name: Compute Conan cache tag
+        id: conan_cache
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
+          $owner = "${{ github.repository_owner }}".ToLower()
+          $tag = "ghcr.io/$owner/plotjuggler-conan-cache:windows-msvc-$hash"
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Cache tag: $tag"
+
+      - name: Login to ghcr.io
+        # Required for both pull (private packages) and push. GITHUB_TOKEN is
+        # auto-provisioned and scoped to this repo's packages. Skip if neither
+        # oras install path succeeded — graceful degradation to no-cache build.
+        if: github.repository_owner == 'PlotJuggler' && (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
+        shell: pwsh
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $env:GHCR_TOKEN | oras login ghcr.io -u $env:GITHUB_ACTOR --password-stdin
+
+      - name: Restore Conan cache from ghcr.io
+        if: github.repository_owner == 'PlotJuggler' && (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.conan_cache.outputs.tag }}"
+          $pullDir = Join-Path $env:RUNNER_TEMP "conan-cache-pull"
+          New-Item -ItemType Directory -Force -Path $pullDir | Out-Null
+          Push-Location $pullDir
+          try {
+            oras pull $tag 2>&1 | Out-Host
+            $pulled = $LASTEXITCODE
+          } finally {
+            Pop-Location
+          }
+          $tarball = Join-Path $pullDir "conan-cache.tar.zst"
+          if ($pulled -eq 0 -and (Test-Path $tarball)) {
+            Write-Host "Cache HIT: extracting $tarball"
+            New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.conan2" | Out-Null
+            tar --zstd -xf $tarball -C $env:USERPROFILE
+            "CONAN_CACHE_HIT=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+          } else {
+            Write-Host "Cache MISS for $tag (cold start or first build of this conanfile)"
+          }
+          # Reset exit code so a missing tag doesn't fail the step
+          $global:LASTEXITCODE = 0
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
@@ -55,6 +155,34 @@ jobs:
         run: |
           conan install . -of build --build=missing -pr:b=default -s build_type=Release -s compiler.cppstd=17
 
+      - name: Save Conan cache to ghcr.io
+        # Only push from the canonical repo on real pushes (forks lack write
+        # access to ghcr.io packages). Skip on cache HIT — the tag content is
+        # already up to date, no point re-uploading the same bytes. Skip if
+        # neither oras install path succeeded (graceful degradation).
+        if: github.event_name == 'push' && github.repository == 'PlotJuggler/PlotJuggler' && env.CONAN_CACHE_HIT != '1' && (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.conan_cache.outputs.tag }}"
+          $tarball = Join-Path $env:RUNNER_TEMP "conan-cache.tar.zst"
+
+          # Trim build trees before packing so the uploaded artifact only
+          # contains the package binaries consumers actually need.
+          conan cache clean "*" --build --source --temp
+
+          Write-Host "Packing ~/.conan2 -> $tarball"
+          tar --zstd -cf $tarball -C $env:USERPROFILE .conan2
+
+          $size = (Get-Item $tarball).Length / 1MB
+          Write-Host ("Compressed cache size: {0:N1} MB" -f $size)
+
+          Push-Location $env:RUNNER_TEMP
+          try {
+            oras push $tag "conan-cache.tar.zst:application/vnd.oci.image.layer.v1.tar+zstd"
+          } finally {
+            Pop-Location
+          }
+
       - name: Build Plotjuggler
         shell: pwsh
         run: |
@@ -68,11 +196,107 @@ jobs:
           Copy-Item -Path build\bin\Release\*.* -Destination installer\io.plotjuggler.application\data -Recurse -Force
           cmd /c installer\windeploy_pj.bat
 
+      - name: Bundle embeddable Python
+        shell: pwsh
+        run: |
+          # Ship a self-contained Python next to plotjuggler.exe so the app
+          # works on any Windows host, regardless of whether (or which) Python
+          # the user has installed. This mirrors what the Linux AppImage does
+          # by bundling /usr/lib/python3.X. See:
+          #   https://docs.python.org/3/using/windows.html#the-embeddable-package
+          #
+          # The embeddable distribution is FLATTENED directly into the data
+          # dir (next to plotjuggler.exe), not into a python\ subfolder.
+          # Reason: when CPython initializes, it locates pythonXY._pth (which
+          # tells it where the stdlib zip lives) by looking next to the
+          # LOADED pythonXY.dll. plotjuggler.exe statically imports
+          # pythonXY.dll, so the OS loader resolves it from the EXE
+          # directory — meaning pythonXY._pth must also live there.
+          $pyVersion = "${{ env.PJ_PYTHON_EMBED_VERSION }}"
+          $pyXY = ($pyVersion -split '\.')[0..1] -join '.'        # "3.12"
+          $pyTag = $pyXY -replace '\.', ''                          # "312"
+          $url = "https://www.python.org/ftp/python/$pyVersion/python-$pyVersion-embed-amd64.zip"
+          $zip = Join-Path $env:RUNNER_TEMP "python-embed.zip"
+          $dataDir = "installer\io.plotjuggler.application\data"
+
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          Expand-Archive -Path $zip -DestinationPath $dataDir -Force
+
+          # python.exe is the standalone CLI launcher; we only need the
+          # embedded interpreter so drop it (saves ~5 MB).
+          Remove-Item (Join-Path $dataDir "python.exe") -ErrorAction Ignore
+          Remove-Item (Join-Path $dataDir "pythonw.exe") -ErrorAction Ignore
+
+          # python._pth's presence is what enables "isolated mode": Python
+          # ignores PYTHONHOME / PYTHONPATH / registry / user site-packages
+          # and only walks the paths listed in this file. Default is fine
+          # (it lists pythonXY.zip + ".") — ensure `import site` stays off.
+          $pthFile = Join-Path $dataDir "python$pyTag._pth"
+          if (Test-Path $pthFile) {
+            (Get-Content $pthFile) -replace '^\s*import site', '#import site' |
+              Set-Content $pthFile
+          } else {
+            Write-Error "python$pyTag._pth not found at $pthFile after extraction"
+            exit 1
+          }
+
+          # Sanity check: list what we shipped (Python files only)
+          Write-Host "Bundled Python contents in $dataDir :"
+          Get-ChildItem $dataDir |
+            Where-Object { $_.Name -match '^(python|vcruntime|_)|_pth$' } |
+            Format-Table Name, Length
+
+      - name: Bundle MSVC C++ runtime
+        shell: pwsh
+        run: |
+          # plotjuggler.exe and the plugin DLLs are built with MSVC and link
+          # against the Visual C++ runtime (MSVCP140.dll, VCRUNTIME140.dll,
+          # ...). windeployqt only bundles Qt DLLs; the embeddable Python ships
+          # only vcruntime140.dll (the C runtime), not the C++ side. Without
+          # MSVCP140.dll the app fails to start on any machine that doesn't
+          # already have the VC++ Redistributable installed.
+          #
+          # Microsoft's Redist folder ships the runtime DLLs in a
+          # freely-redistributable form. Copy the latest x64 set into the
+          # data dir so they sit next to plotjuggler.exe.
+          $dataDir = "installer\io.plotjuggler.application\data"
+          $vsRoot = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+              -latest -property installationPath
+          if (-not $vsRoot) {
+            Write-Error "Visual Studio installation not found via vswhere"
+            exit 1
+          }
+          $redistRoot = Join-Path $vsRoot "VC\Redist\MSVC"
+          # The layout under VC\Redist\MSVC varies between VS versions / runners
+          # (e.g. 14.42.34433\x64\Microsoft.VC143.CRT vs v143\<arch>\...). Walk
+          # the tree and pick the most recent x64 CRT folder rather than
+          # assuming a fixed structure.
+          $crtDir = Get-ChildItem -Path $redistRoot -Recurse -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -like 'Microsoft.VC*.CRT' -and $_.FullName -match '\\x64\\' } |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+          if (-not $crtDir) {
+            Write-Host "Layout under $redistRoot :"
+            Get-ChildItem $redistRoot -Recurse -Directory | Select-Object -First 30 FullName |
+              Format-Table -AutoSize
+            Write-Error "Could not locate Microsoft.VC*.CRT (x64) redist folder under $redistRoot"
+            exit 1
+          }
+          Write-Host "Copying MSVC runtime from $($crtDir.FullName)"
+          Copy-Item (Join-Path $crtDir.FullName "*.dll") -Destination $dataDir -Force
+          Get-ChildItem $dataDir -Filter "*.dll" | Where-Object {
+            $_.Name -match '^(msvcp|vcruntime|concrt)\d+'
+          } | Format-Table Name, Length
+
       - name: Create installer using QT Installation Framework
         shell: pwsh
         run: |
-          # Sanitize ref_name to replace / with - for valid Windows filename
+          # Sanitize ref_name to replace / with - for valid Windows filename.
+          # Also export to GITHUB_ENV so subsequent upload / release steps reuse
+          # the same name without independently re-sanitizing.
           $ref_name = "${{ github.ref_name }}" -replace '/', '-'
+          "SAFE_REF=$ref_name" | Out-File -FilePath $env:GITHUB_ENV -Append
           $installer_name = "PlotJuggler-$ref_name-Windows-x64.exe"
 
           # Find binarycreator executable
@@ -96,15 +320,15 @@ jobs:
 
       - name: Upload installer
         uses: actions/upload-artifact@v7
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         with:
-          name: PlotJuggler-${{ github.ref_name }}-Windows-x64.exe
-          path: PlotJuggler-${{ github.ref_name }}-Windows-x64.exe
+          name: PlotJuggler-${{ env.SAFE_REF }}-Windows-x64.exe
+          path: PlotJuggler-${{ env.SAFE_REF }}-Windows-x64.exe
 
       - name: Upload to Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
-          files: PlotJuggler-${{ github.ref_name }}-Windows-x64.exe
+          files: PlotJuggler-${{ env.SAFE_REF }}-Windows-x64.exe
           generate_release_notes: false
           fail_on_unmatched_files: false

@@ -10,8 +10,7 @@ class FoxgloveClientConfig
 {
 public:
   /// Persisted connection target used by the dialog and profile state.
-  QString address = "127.0.0.1";
-  int port = 8765;
+  QString url = "ws://127.0.0.1:8765";
   QStringList topics;
   unsigned max_array_size = 500;
   bool clamp_large_arrays = false;

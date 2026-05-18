@@ -29,10 +29,8 @@ public:
   explicit WebsocketDialog(const WebsocketClientConfig& config);
   ~WebsocketDialog();
 
-  // Address / port
-  QString address() const;
-
-  int port(bool* ok) const;
+  // Connection URL
+  QString url() const;
 
   // Topic list management
   void setTopics(const QJsonArray& topics, const QStringList& preselectNames);

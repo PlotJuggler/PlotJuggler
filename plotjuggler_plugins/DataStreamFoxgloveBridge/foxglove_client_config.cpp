@@ -7,8 +7,7 @@ void FoxgloveClientConfig::xmlSaveState(QDomDocument& doc, QDomElement& plugin_e
   QDomElement cfg = doc.createElement("foxglove_client");
   plugin_elem.appendChild(cfg);
 
-  cfg.setAttribute("address", address);
-  cfg.setAttribute("port", port);
+  cfg.setAttribute("url", url);
   cfg.setAttribute("max_array_size", max_array_size);
   cfg.setAttribute("clamp_large_arrays", int(clamp_large_arrays));
   cfg.setAttribute("use_timestamp", int(use_timestamp));
@@ -32,8 +31,7 @@ void FoxgloveClientConfig::xmlLoadState(const QDomElement& parent_element)
     return;
   }
 
-  address = cfg.attribute("address", "127.0.0.1");
-  port = cfg.attribute("port", "8765").toInt();
+  url = cfg.attribute("url", "ws://127.0.0.1:8765");
   max_array_size = cfg.attribute("max_array_size", "500").toUInt();
   clamp_large_arrays = bool(cfg.attribute("clamp_large_arrays", "0").toInt());
   use_timestamp = bool(cfg.attribute("use_timestamp", "0").toInt());
@@ -53,8 +51,7 @@ void FoxgloveClientConfig::xmlLoadState(const QDomElement& parent_element)
 
 void FoxgloveClientConfig::saveToSettings(QSettings& settings, const QString& group) const
 {
-  settings.setValue(group + "/address", address);
-  settings.setValue(group + "/port", port);
+  settings.setValue(group + "/url", url);
   settings.setValue(group + "/topics", topics);
   settings.setValue(group + "/max_array_size", max_array_size);
   settings.setValue(group + "/clamp_large_arrays", clamp_large_arrays);
@@ -63,8 +60,7 @@ void FoxgloveClientConfig::saveToSettings(QSettings& settings, const QString& gr
 
 void FoxgloveClientConfig::loadFromSettings(const QSettings& settings, const QString& group)
 {
-  address = settings.value(group + "/address", "127.0.0.1").toString();
-  port = settings.value(group + "/port", 8765).toInt();
+  url = settings.value(group + "/url", "ws://127.0.0.1:8765").toString();
   topics = settings.value(group + "/topics").toStringList();
   max_array_size = settings.value(group + "/max_array_size", 500).toUInt();
   clamp_large_arrays = settings.value(group + "/clamp_large_arrays", false).toBool();

@@ -154,26 +154,17 @@ bool FoxgloveBridgeClient::openDialogConnection()
     return false;
   }
 
-  bool ok = false;
-  const int port = _dialog->port(&ok);
-  if (!ok)
+  const QString url_str = _dialog->url();
+  const QUrl url(url_str);
+  if (!url.isValid())
   {
-    QMessageBox::warning(_dialog, "Foxglove Bridge", "Invalid port", QMessageBox::Ok);
+    QMessageBox::warning(_dialog, "Foxglove Bridge", "Invalid URL", QMessageBox::Ok);
     _dialog->setConnected(false);
     return false;
   }
 
-  const QString address = _dialog->address();
-  if (address.isEmpty())
-  {
-    QMessageBox::warning(_dialog, "Foxglove Bridge", "Invalid address", QMessageBox::Ok);
-    _dialog->setConnected(false);
-    return false;
-  }
-
-  _url = QUrl(QString("ws://%1:%2").arg(address).arg(port));
-  _config.address = address;
-  _config.port = port;
+  _url = url;
+  _config.url = url_str;
   saveDefaultSettings();
 
   _dialog->connectButton()->setText("Connecting...");

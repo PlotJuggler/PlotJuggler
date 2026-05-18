@@ -79,6 +79,17 @@ static void WriteSortedXml(QTextStream& out, const QDomNode& node, int indent = 
 {
   const QString pad(indent, ' ');
 
+  // A QDomDocument is not an element; walk its children (xml PI + root).
+  if (node.isDocument())
+  {
+    QDomNodeList children = node.childNodes();
+    for (int i = 0; i < children.length(); ++i)
+    {
+      WriteSortedXml(out, children.at(i), indent);
+    }
+    return;
+  }
+
   if (node.isProcessingInstruction())
   {
     auto pi = node.toProcessingInstruction();

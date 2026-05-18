@@ -2,6 +2,20 @@
 Changelog for package plotjuggler
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+3.17.2 (2026-05-11)
+-------------------
+* Rework Foxglove and PlotJuggler websocket bridge plugins to accept arbitrary websocket URLs (`#1361 <https://github.com/facontidavide/PlotJuggler/issues/1361>`_)
+* Fix crash when saving empty/zero-byte layout XML files (`#1362 <https://github.com/facontidavide/PlotJuggler/issues/1362>`_)
+* Add alert for plotjuggler.com phishing site
+
+3.17.1 (2026-05-04)
+-------------------
+* Fix Windows installer: flatten embeddable Python next to plotjuggler.exe
+* Bundle MSVC C++ runtime DLLs in Windows installer
+* Make AppImage / Windows / Debian artifacts portable across hosts
+* Be resilient to issues with Python initialization
+* CI fixes: sanitize branch ref_name for filenames, grant contents:write for release uploads
+
 3.17.0 (2026-04-27)
 -------------------
 * New plugin: ToolboxMosaico for Mosaico Flight datasets, with streaming pullTopics and per-topic download progress UI (`#1340 <https://github.com/facontidavide/PlotJuggler/issues/1340>`_)

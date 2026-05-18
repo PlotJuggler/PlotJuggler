@@ -1,6 +1,6 @@
 #include "foxglove_dialog.h"
 
-#include <QIntValidator>
+#include <QRegularExpressionValidator>
 #include <QScrollBar>
 #include <QSet>
 #include <QSettings>
@@ -8,16 +8,22 @@
 
 #include "ui_foxglove_client.h"
 
+namespace
+{
+constexpr auto url_regex = "^wss?:\\/\\/([a-zA-Z0-9][-a-zA-Z0-9._]+)"
+                           "(:[0-9]{1,5})?"
+                           "(\\/.*)?$";
+}
+
 FoxgloveDialog::FoxgloveDialog(const FoxgloveClientConfig& config)
   : QDialog(nullptr), ui(new Ui::FoxgloveDialog)
 {
   ui->setupUi(this);
   setWindowTitle("Foxglove Bridge");
 
-  ui->lineEditPort->setValidator(new QIntValidator(1, 65535, this));
-
-  ui->lineEditAddress->setText(config.address);
-  ui->lineEditPort->setText(QString::number(config.port));
+  ui->lineEditURL->setText(config.url);
+  ui->lineEditURL->setValidator(
+      new QRegularExpressionValidator(QRegularExpression(url_regex), this));
 
   ui->spinBoxArraySize->setValue(config.max_array_size);
   if (config.clamp_large_arrays)
@@ -52,14 +58,9 @@ FoxgloveDialog::~FoxgloveDialog()
   delete ui;
 }
 
-QString FoxgloveDialog::address() const
+QString FoxgloveDialog::url() const
 {
-  return ui->lineEditAddress->text().trimmed();
-}
-
-int FoxgloveDialog::port(bool* ok) const
-{
-  return ui->lineEditPort->text().toUShort(ok);
+  return ui->lineEditURL->text().trimmed();
 }
 
 void FoxgloveDialog::setChannels(const QMap<quint64, FoxgloveChannelInfo>& channels,
@@ -214,8 +215,7 @@ void FoxgloveDialog::setConnected(bool connected)
   ui->buttonConnect->setText(connected ? "Disconnect" : "Connect");
   ui->buttonConnect->blockSignals(false);
 
-  ui->lineEditAddress->setEnabled(!connected);
-  ui->lineEditPort->setEnabled(!connected);
+  ui->lineEditURL->setEnabled(!connected);
 }
 
 QDialogButtonBox* FoxgloveDialog::buttonBox() const

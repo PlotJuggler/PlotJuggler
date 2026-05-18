@@ -24,6 +24,9 @@
 #include <QSslConfiguration>
 #include <QSslSocket>
 #include <QStyleFactory>
+#include <QMessageBox>
+#include <QTimer>
+#include <QCheckBox>
 
 #include "PlotJuggler/transform_function.h"
 #include "transforms/binary_filter.h"
@@ -33,6 +36,9 @@
 #include "transforms/moving_average_filter.h"
 #include "transforms/moving_variance.h"
 #include "transforms/moving_rms.h"
+#ifdef PJ_HAS_PYTHON
+#include "transforms/python_custom_function.h"
+#endif
 #include "transforms/outlier_removal.h"
 #include "transforms/integral_transform.h"
 #include "transforms/absolute_transform.h"
@@ -95,7 +101,7 @@ QPixmap getFunnySplashscreen()
   srand(time(nullptr));
 
   auto getNum = []() {
-    const int last_image_num = 105;
+    const int last_image_num = 106;
     return rand() % (last_image_num);
   };
 
@@ -370,6 +376,19 @@ int main(int argc, char* argv[])
    * reject a message that brings a little of happiness into your day, spent analyzing
    * data. Please don't do it.
    */
+#ifdef PJ_HAS_PYTHON
+  // Probe the embedded Python interpreter BEFORE constructing MainWindow, so
+  // FunctionEditorWidget (built inside the MainWindow ctor) sees the correct
+  // PythonCustomFunction::isAvailable() state when it decides whether to
+  // enable / disable the Python radio buttons.
+  const bool python_ok = PythonCustomFunction::probeAvailable();
+  if (!python_ok)
+  {
+    qWarning() << "Embedded Python could not be initialized — Python custom "
+                  "functions will be disabled for this session.";
+  }
+#endif
+
   if (!parser.isSet(nosplash_option) &&
       !(parser.isSet(loadfile_option) || parser.isSet(layout_option)) &&
       !(settings.value("Preferences::no_splash", false).toBool()))
@@ -422,6 +441,39 @@ int main(int argc, char* argv[])
   }
 
   window->show();
+
+#ifdef PJ_HAS_PYTHON
+  if (!python_ok)
+  {
+    // Show a one-time, dismissible warning after the main window is up so the
+    // user immediately knows Python custom functions won't work on this host.
+    const QString suppress_key = "PythonUnavailable.suppressWarning";
+    if (!QSettings().value(suppress_key, false).toBool())
+    {
+      QTimer::singleShot(0, window, [window, suppress_key]() {
+        QMessageBox box(window);
+        box.setIcon(QMessageBox::Warning);
+        box.setWindowTitle(QObject::tr("Python disabled"));
+        box.setText(QObject::tr("PlotJuggler could not initialize the embedded "
+                                "Python interpreter."));
+        box.setInformativeText(
+            QObject::tr("Python custom functions are disabled for this session. Lua custom "
+                        "functions remain available.\n\n"
+                        "This usually means the Python standard library expected by this "
+                        "build is not present on the host system (common when running an "
+                        "AppImage on a distro with a different Python version)."));
+        QCheckBox* dont_show = new QCheckBox(QObject::tr("Don't show this again"), &box);
+        box.setCheckBox(dont_show);
+        box.setStandardButtons(QMessageBox::Ok);
+        box.exec();
+        if (dont_show->isChecked())
+        {
+          QSettings().setValue(suppress_key, true);
+        }
+      });
+    }
+  }
+#endif
 
   if (parser.isSet(start_streamer))
   {

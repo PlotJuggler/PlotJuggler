@@ -1,6 +1,7 @@
 name: ubuntu
 
 on:
+  workflow_dispatch:        # lets us trigger an AppImage build from any branch via the Actions UI
   push:
     branches:
       - main
@@ -18,6 +19,8 @@ jobs:
 
   ubuntu-build:
     runs-on: ${{ matrix.ubuntu-distro }}
+    permissions:
+      contents: write   # softprops/action-gh-release needs write to update releases on tag pushes
     strategy:
       fail-fast: false
       matrix:
@@ -70,30 +73,32 @@ jobs:
 
       - name: Build AppImage
         working-directory: ${{ github.workspace }}
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        env:
+          ARCH: ${{ matrix.arch }}
+          BUILD_DIR: ${{ github.workspace }}/build
+          SKIP_BUILD: "1"
         run: |
-            wget https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${{ matrix.arch }}.AppImage
-            wget https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-${{ matrix.arch }}.AppImage
-            chmod +x linuxdeploy*.AppImage
-            mkdir -p AppDir/usr/bin
-            cp -v build/bin/* AppDir/usr/bin
-            ./linuxdeploy-${{ matrix.arch }}.AppImage --appdir=AppDir \
-              -d ./io.plotjuggler.PlotJuggler.desktop \
-              -i ./plotjuggler.png \
-              --plugin qt --output appimage
-            mv PlotJuggler-${{ matrix.arch }}.AppImage PlotJuggler-${{ github.ref_name }}-${{ matrix.arch }}.AppImage
+            # Reuses the build tree from the previous step and bundles the
+            # matching Python stdlib + apprun-hook so the AppImage runs on
+            # hosts whose system Python differs from the builder's.
+            bash appimage/build_appimage.sh
+            # ref_name contains '/' on feature branches; replace with '-' so it's a valid filename
+            SAFE_REF="${GITHUB_REF_NAME//\//-}"
+            mv PlotJuggler-${{ matrix.arch }}.AppImage "PlotJuggler-${SAFE_REF}-${{ matrix.arch }}.AppImage"
+            echo "SAFE_REF=$SAFE_REF" >> "$GITHUB_ENV"
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v7
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         with:
-          name: PlotJuggler-${{ github.ref_name }}-${{ matrix.arch }}.AppImage
-          path: PlotJuggler-${{ github.ref_name }}-${{ matrix.arch }}.AppImage
+          name: PlotJuggler-${{ env.SAFE_REF }}-${{ matrix.arch }}.AppImage
+          path: PlotJuggler-${{ env.SAFE_REF }}-${{ matrix.arch }}.AppImage
 
       - name: Upload to Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
-          files: PlotJuggler-${{ github.ref_name }}-${{ matrix.arch }}.AppImage
+          files: PlotJuggler-${{ env.SAFE_REF }}-${{ matrix.arch }}.AppImage
           generate_release_notes: true
           fail_on_unmatched_files: false

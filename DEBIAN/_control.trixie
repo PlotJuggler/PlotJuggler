@@ -3,7 +3,7 @@ Version: 0.0
 Architecture: amd64
 Essential: no
 Priority: optional
-Depends:  libqt5svg5, libqt5websockets5, libqt5serialport5, libqt5opengl5, libqt5x11extras5, libzmq5, libmosquitto1, ca-certificates, zsync, libqt5concurrent5t64, libqt5core5t64, libqt5dbus5t64, libqt5gui5t64, libqt5network5t64, libqt5printsupport5t64, libqt5sql5t64, libqt5test5t64, libqt5widgets5t64, libqt5xml5t64
+Depends:  libqt5svg5, libqt5websockets5, libqt5serialport5, libqt5opengl5, libqt5x11extras5, libzmq5, libmosquitto1, ca-certificates, zsync, libqt5concurrent5t64, libqt5core5t64, libqt5dbus5t64, libqt5gui5t64, libqt5network5t64, libqt5printsupport5t64, libqt5sql5t64, libqt5test5t64, libqt5widgets5t64, libqt5xml5t64, libpython3.13
 Maintainer: Davide Faconti <davide.faconti@gmail.com>
 Homepage: https://github.com/PlotJuggler/PlotJuggler
 Description: PlotJuggler is a tool to visualize time series that is fast, powerful and intuitive.

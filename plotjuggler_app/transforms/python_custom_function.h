@@ -39,6 +39,16 @@ public:
 
   bool xmlLoadState(const QDomElement& parent_element) override;
 
+  // Best-effort probe at app startup. Returns true if the embedded Python
+  // interpreter initialized successfully; false if it is unavailable (in which
+  // case any subsequent attempt to construct PythonCustomFunction will throw
+  // a clean std::runtime_error rather than crashing the process).
+  static bool probeAvailable();
+
+  // True if a previous initialization attempt failed and Python is disabled
+  // for the remainder of the process. Cheap; does not initialize anything.
+  static bool isAvailable();
+
 private:
   // Initializes the embedded Python interpreter once per process.
   static void ensurePythonInitialized();

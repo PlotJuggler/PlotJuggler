@@ -27,6 +27,13 @@ jobs:
         with:
           required-ros-distributions: humble
 
+      # ROS Python packages are installed outside the default sys.path on some
+      # hosted runner image revisions. Expose them explicitly before CMake runs.
+      - name: Fix Python path for ROS packages
+        run: |
+          PYVER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+          echo "PYTHONPATH=/opt/ros/humble/lib/python${PYVER}/site-packages:/usr/lib/python3/dist-packages:${PYTHONPATH}" >> "$GITHUB_ENV"
+
       # Run ROS CI
       - uses: ros-tooling/action-ros-ci@v0.4
         with:

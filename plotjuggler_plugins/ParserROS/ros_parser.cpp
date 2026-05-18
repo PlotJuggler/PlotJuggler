@@ -106,14 +106,16 @@ ParserROS::ParserROS(const std::string& topic_name, const std::string& type_name
 
 bool ParserROS::parseMessage(const PJ::MessageRef serialized_msg, double& timestamp)
 {
+  const auto serialized_span = Span<const uint8_t>(serialized_msg.data(), serialized_msg.size());
+
   if (_customized_parser)
   {
-    _deserializer->init(Span<const uint8_t>(serialized_msg.data(), serialized_msg.size()));
+    _deserializer->init(serialized_span);
     _customized_parser(_topic_name, timestamp);
     return true;
   }
 
-  _parser.deserialize(serialized_msg, &_flat_msg, _deserializer.get());
+  _parser.deserialize(serialized_span, &_flat_msg, _deserializer.get());
 
   if (_has_header && this->useEmbeddedTimestamp())
   {

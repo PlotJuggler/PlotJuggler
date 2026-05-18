@@ -200,6 +200,18 @@ void SequencePanel::updateHeader()
 
 void SequencePanel::populateSequences(const std::vector<SequenceInfo>& sequences)
 {
+  // Snapshot the user's selection by name — setRowCount(0) below removes all
+  // rows from the model and the QItemSelectionModel drops the now-invalid
+  // index. Restored after rebuild if the same name still exists.
+  QString prev_selected;
+  if (const int cur_row = table_->currentRow(); cur_row >= 0)
+  {
+    if (auto* item = table_->item(cur_row, kColName))
+    {
+      prev_selected = item->text();
+    }
+  }
+
   sequence_list_populated_ = true;
   all_sequences_ = sequences;
   total_count_ = static_cast<int>(sequences.size());
@@ -227,6 +239,14 @@ void SequencePanel::populateSequences(const std::vector<SequenceInfo>& sequences
 
   table_->setSortingEnabled(true);
   applyFilter();
+
+  if (!prev_selected.isEmpty())
+  {
+    if (const int row = findRowByName(prev_selected); row >= 0)
+    {
+      table_->setCurrentCell(row, kColName);
+    }
+  }
 }
 
 void SequencePanel::updateSequence(const SequenceInfo& sequence)

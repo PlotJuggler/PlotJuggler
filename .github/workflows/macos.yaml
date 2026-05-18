@@ -18,6 +18,9 @@ jobs:
 
   macos-build:
     runs-on: ${{ matrix.config.os }}
+    permissions:
+      contents: write   # softprops/action-gh-release needs write to update releases on tag pushes
+      packages: write   # push/pull the Conan cache OCI artifact on ghcr.io
     strategy:
       fail-fast: false
       matrix:
@@ -29,6 +32,11 @@ jobs:
       - name: Sync repository
         uses: actions/checkout@v6
 
+      - name: Compute filename-safe ref
+        # ref_name contains '/' on feature branches (e.g. fix/foo) which is
+        # not a valid character in DMG / artifact filenames. Replace with '-'.
+        run: echo "SAFE_REF=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_ENV"
+
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
@@ -37,11 +45,91 @@ jobs:
       - name: Install Conan
         uses: conan-io/setup-conan@v1
         with:
-          cache_packages: true
+          # We back the cache via ghcr.io/oras instead of actions/cache (which
+          # has a 10 GB per-repo soft cap and 7-day eviction). ghcr.io public
+          # repos: unlimited storage and bandwidth; tags survive forever.
+          cache_packages: false
+
+      - name: Install oras (via brew)
+        # Brew bottles are hosted on ghcr.io/homebrew, independent of the
+        # github.com release CDN that flakes setup-oras with 502s. Marked
+        # continue-on-error so a brew hiccup degrades to "no cache this run"
+        # instead of failing CI — the build still completes (cache MISS path).
+        id: setup_oras
+        continue-on-error: true
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+        run: |
+          brew install oras
+          oras version
+
+      - name: Compute Conan cache tag
+        id: conan_cache
+        run: |
+          hash=$(sha256sum conanfile.txt | cut -c1-16)
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          tag="ghcr.io/${owner}/plotjuggler-conan-cache:macos-${{ matrix.config.arch }}-${hash}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Cache tag: ${tag}"
+
+      - name: Login to ghcr.io
+        # Required for both pull (private packages) and push. GITHUB_TOKEN is
+        # auto-provisioned and scoped to this repo's packages.
+        if: github.repository_owner == 'PlotJuggler' && steps.setup_oras.outcome == 'success'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GHCR_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Restore Conan cache from ghcr.io
+        if: github.repository_owner == 'PlotJuggler' && steps.setup_oras.outcome == 'success'
+        run: |
+          tag="${{ steps.conan_cache.outputs.tag }}"
+          pull_dir="${RUNNER_TEMP}/conan-cache-pull"
+          mkdir -p "${pull_dir}"
+          cd "${pull_dir}"
+          set +e
+          oras pull "${tag}"
+          rc=$?
+          set -e
+          tarball="${pull_dir}/conan-cache.tar.zst"
+          if [ "${rc}" -eq 0 ] && [ -f "${tarball}" ]; then
+            echo "Cache HIT: extracting ${tarball}"
+            mkdir -p "${HOME}/.conan2"
+            tar --zstd -xf "${tarball}" -C "${HOME}"
+            echo "CONAN_CACHE_HIT=1" >> "$GITHUB_ENV"
+          else
+            echo "Cache MISS for ${tag} (cold start or first build of this conanfile)"
+          fi
 
       - name: Conan install
         run: |
           conan install . -of build --build=missing -pr:b=default -s build_type=Release -s compiler.cppstd=17
+
+      - name: Save Conan cache to ghcr.io
+        # Only push from the canonical repo on real pushes (forks lack write
+        # access to ghcr.io packages). Skip on cache HIT — the tag content is
+        # already up to date, no point re-uploading the same bytes. Skip if
+        # oras install failed (graceful degradation — build proceeds without
+        # populating the cache rather than failing CI).
+        if: github.event_name == 'push' && github.repository == 'PlotJuggler/PlotJuggler' && env.CONAN_CACHE_HIT != '1' && steps.setup_oras.outcome == 'success'
+        run: |
+          tag="${{ steps.conan_cache.outputs.tag }}"
+          tarball="${RUNNER_TEMP}/conan-cache.tar.zst"
+
+          # Trim build trees before packing so the uploaded artifact only
+          # contains the package binaries consumers actually need.
+          conan cache clean "*" --build --source --temp
+
+          echo "Packing ~/.conan2 -> ${tarball}"
+          tar --zstd -cf "${tarball}" -C "${HOME}" .conan2
+
+          size_mb=$(du -m "${tarball}" | cut -f1)
+          echo "Compressed cache size: ${size_mb} MB"
+
+          cd "${RUNNER_TEMP}"
+          oras push "${tag}" "conan-cache.tar.zst:application/vnd.oci.image.layer.v1.tar+zstd"
 
       - name: Install and cache Homebrew tools
         uses: tecolicom/actions-use-homebrew-tools@v1
@@ -136,7 +224,7 @@ jobs:
       - name: Create DMG
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         run: |
-          DMG_NAME="PlotJuggler-${{ github.ref_name }}-macOS-${{ matrix.config.arch }}.dmg"
+          DMG_NAME="PlotJuggler-${{ env.SAFE_REF }}-macOS-${{ matrix.config.arch }}.dmg"
 
           create-dmg \
             --volname "PlotJuggler" \
@@ -162,7 +250,7 @@ jobs:
         env:
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         run: |
-          DMG_NAME="PlotJuggler-${{ github.ref_name }}-macOS-${{ matrix.config.arch }}.dmg"
+          DMG_NAME="PlotJuggler-${{ env.SAFE_REF }}-macOS-${{ matrix.config.arch }}.dmg"
           /usr/bin/codesign --force --sign "$MACOS_SIGNING_IDENTITY" --timestamp "$DMG_NAME"
           /usr/bin/codesign --verify --verbose=2 "$DMG_NAME"
 
@@ -173,7 +261,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
-          DMG_NAME="PlotJuggler-${{ github.ref_name }}-macOS-${{ matrix.config.arch }}.dmg"
+          DMG_NAME="PlotJuggler-${{ env.SAFE_REF }}-macOS-${{ matrix.config.arch }}.dmg"
 
           # Submit for notarization with S3 acceleration and timeout
           xcrun notarytool submit "$DMG_NAME" \
@@ -191,13 +279,13 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
-          name: PlotJuggler-${{ github.ref_name }}-macOS-${{ matrix.config.arch }}.dmg
-          path: PlotJuggler-${{ github.ref_name }}-macOS-${{ matrix.config.arch }}.dmg
+          name: PlotJuggler-${{ env.SAFE_REF }}-macOS-${{ matrix.config.arch }}.dmg
+          path: PlotJuggler-${{ env.SAFE_REF }}-macOS-${{ matrix.config.arch }}.dmg
 
       - name: Upload to Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
-          files: PlotJuggler-${{ github.ref_name }}-macOS-${{ matrix.config.arch }}.dmg
+          files: PlotJuggler-${{ env.SAFE_REF }}-macOS-${{ matrix.config.arch }}.dmg
           generate_release_notes: false
           fail_on_unmatched_files: false

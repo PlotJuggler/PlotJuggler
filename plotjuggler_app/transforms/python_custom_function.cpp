@@ -3,8 +3,13 @@
 #include <QTextStream>
 #include <QCoreApplication>
 #include <QString>
+#include <QDebug>
+
+#include <atomic>
 
 static std::once_flag g_py_once;
+static std::atomic<bool> g_py_unavailable{ false };
+static std::string g_py_unavailable_reason;
 
 PythonCustomFunction::PythonCustomFunction(SnippetData snippet) : CustomFunction(snippet)
 {
@@ -57,13 +62,99 @@ PythonCustomFunction::~PythonCustomFunction()
 }
 
 // Initialize the embedded Python runtime only once per process.
+//
+// Uses the PEP 587 PyConfig API so a broken Python install (missing stdlib,
+// ABI mismatch on portable bundles like AppImage, etc.) returns a recoverable
+// PyStatus instead of calling Py_FatalError() and aborting the process.
+// On failure we set g_py_unavailable so subsequent calls throw a clean
+// std::runtime_error that the UI already handles via QMessageBox::warning.
 void PythonCustomFunction::ensurePythonInitialized()
 {
   std::call_once(g_py_once, []() {
-    Py_Initialize();
-    PyEval_InitThreads();
+    if (Py_IsInitialized())
+    {
+      return;
+    }
+
+    PyConfig config;
+    PyConfig_InitPythonConfig(&config);
+    // Don't let CPython install signal handlers or parse argv.
+    config.install_signal_handlers = 0;
+    config.parse_argv = 0;
+    config.isolated = 0;
+
+    // On Windows, the installer ships the python.org "embeddable Python"
+    // distribution flattened next to plotjuggler.exe (pythonXY.dll,
+    // pythonXY.zip, pythonXY._pth, …). The presence of pythonXY._pth puts
+    // CPython into isolated _pth mode, which derives sys.path entirely from
+    // that file relative to the loaded DLL — overriding PYTHONHOME, the
+    // registry, and any PyConfig.home we might set. So we deliberately
+    // don't touch PyConfig.home here.
+
+    PyStatus status = Py_InitializeFromConfig(&config);
+    PyConfig_Clear(&config);
+
+    if (PyStatus_Exception(status))
+    {
+      // Write the reason BEFORE the release-store on the flag so any thread
+      // that observes the flag set is guaranteed (via acquire/release) to see
+      // the published string. Reversing this order would race.
+      g_py_unavailable_reason =
+          status.err_msg ? status.err_msg : "Python interpreter failed to initialize";
+      g_py_unavailable.store(true, std::memory_order_release);
+      qWarning() << "Embedded Python disabled:" << QString::fromStdString(g_py_unavailable_reason);
+      // Do NOT call Py_ExitStatusException — that aborts. Just leave Python down.
+      return;
+    }
+
+    // Verify the bundled stdlib actually loads. PyConfig_InitPythonConfig
+    // succeeding only proves the interpreter object is up; if lib-dynload
+    // .so files (or the equivalent .pyd on Windows) link against host
+    // libraries that don't exist on the target machine, `import` itself
+    // will still fail. Probing `import math` here forces the failure now
+    // rather than at first user-snippet execution.
+    {
+      PyObject* m = PyImport_ImportModule("math");
+      if (!m)
+      {
+        PyErr_Clear();
+        g_py_unavailable_reason = "embedded Python stdlib is incomplete (cannot import 'math')";
+        g_py_unavailable.store(true, std::memory_order_release);
+        qWarning() << "Embedded Python disabled:"
+                   << QString::fromStdString(g_py_unavailable_reason);
+        return;
+      }
+      Py_DECREF(m);
+    }
+
     PyEval_SaveThread();
   });
+
+  if (g_py_unavailable.load(std::memory_order_acquire))
+  {
+    throw std::runtime_error(
+        "Python support is unavailable in this build: " + g_py_unavailable_reason +
+        ". Use Lua for custom functions, or run a build of "
+        "PlotJuggler that ships a working Python runtime.");
+  }
+}
+
+bool PythonCustomFunction::probeAvailable()
+{
+  try
+  {
+    ensurePythonInitialized();
+    return true;
+  }
+  catch (const std::exception&)
+  {
+    return false;
+  }
+}
+
+bool PythonCustomFunction::isAvailable()
+{
+  return !g_py_unavailable.load(std::memory_order_acquire);
 }
 
 // Convert the current Python exception into a readable traceback string.

@@ -10,8 +10,8 @@
 #include "fetch_worker.h"
 
 #include <QDebug>
+#include <QElapsedTimer>
 #include <QStringList>
-#include <QThread>
 #include <chrono>
 #include <exception>
 #include <memory>
@@ -19,19 +19,6 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
-
-namespace
-{
-// Wall-clock milliseconds since `start` — used to bracket SDK calls so we
-// can correlate plugin-observed latency with the SDK-level per-RPC spans
-// logged from mosaico_client.cpp.
-inline qint64 elapsedMs(std::chrono::steady_clock::time_point start)
-{
-  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
-                                                               start)
-      .count();
-}
-}  // namespace
 
 FetchWorker::FetchWorker(QObject* parent) : QObject(parent)
 {
@@ -74,15 +61,15 @@ void FetchWorker::fetchSequences()
       emit errorOccurred("Not connected");
       return;
     }
-    qDebug() << "[Mosaico fetch] listSequences: start";
-    const auto t0 = std::chrono::steady_clock::now();
+    QElapsedTimer timer;
+    timer.start();
     auto result = client_->listSequences(
         [this](const std::vector<SequenceInfo>& sequences) { emit sequenceListStarted(sequences); },
         [this](const SequenceInfo& sequence, int64_t completed, int64_t total) {
           emit sequenceInfoReady(sequence, static_cast<qint64>(completed),
                                  static_cast<qint64>(total));
         });
-    const auto ms = elapsedMs(t0);
+    const qint64 ms = timer.elapsed();
     if (!result.ok())
     {
       qWarning() << "[Mosaico fetch] listSequences: FAILED after" << ms << "ms —"
@@ -90,8 +77,6 @@ void FetchWorker::fetchSequences()
       emit errorOccurred(QString::fromStdString(result.status().ToString()));
       return;
     }
-    qDebug() << "[Mosaico fetch] listSequences: OK in" << ms << "ms,"
-             << static_cast<int>(result->size()) << "sequences";
     emit sequencesReady(*result);
   }
   catch (const std::exception& e)
@@ -113,16 +98,14 @@ void FetchWorker::fetchTopics(const QString& sequence_name)
       emit errorOccurred("Not connected");
       return;
     }
-    qDebug() << "[Mosaico fetch] listTopics" << sequence_name << ": start";
-    const auto t0 = std::chrono::steady_clock::now();
+    QElapsedTimer timer;
+    timer.start();
     auto result = client_->listTopics(sequence_name.toStdString());
-    const auto ms = elapsedMs(t0);
+    const qint64 ms = timer.elapsed();
     if (!result.ok())
     {
       if (result.status().IsNotImplemented())
       {
-        qDebug() << "[Mosaico fetch] listTopics" << sequence_name << ": NotImplemented after" << ms
-                 << "ms (server doesn't support it)";
         emit topicsReady(QStringList{}, std::vector<TopicInfo>{});
       }
       else
@@ -133,8 +116,6 @@ void FetchWorker::fetchTopics(const QString& sequence_name)
       }
       return;
     }
-    qDebug() << "[Mosaico fetch] listTopics" << sequence_name << ": OK in" << ms << "ms,"
-             << static_cast<int>(result->size()) << "topics";
     QStringList names;
     for (const auto& info : *result)
     {
@@ -162,20 +143,11 @@ void FetchWorker::fetchTopicMetadata(const QString& sequence_name, const QString
       // partial info from listTopics; nothing useful to surface here.
       return;
     }
-    qDebug() << "[Mosaico fetch] getTopicMetadata" << sequence_name << "/" << topic_name
-             << ": start";
-    const auto t0 = std::chrono::steady_clock::now();
     auto result = client_->getTopicMetadata(sequence_name.toStdString(), topic_name.toStdString());
-    const auto ms = elapsedMs(t0);
     if (!result.ok())
     {
-      qDebug() << "[Mosaico fetch] getTopicMetadata" << sequence_name << "/" << topic_name
-               << ": FAILED after" << ms << "ms —"
-               << QString::fromStdString(result.status().ToString());
       return;
     }
-    qDebug() << "[Mosaico fetch] getTopicMetadata" << sequence_name << "/" << topic_name
-             << ": OK in" << ms << "ms";
     emit topicMetadataReady(sequence_name, topic_name, *result);
   }
   catch (...)
@@ -291,19 +263,12 @@ void FetchWorker::fetchDataMulti(const QString& sequence_name, const QStringList
       emit topicStreamFinished(sequence_name, topic_q);
     };
 
-    qDebug().noquote() << QString("[Mosaico fetch] pullTopics %1: dispatching %2 topics "
-                                  "(worker_thread=%3), range=[%4, %5], topics=[%6]")
-                              .arg(sequence_name)
-                              .arg(topic_names.size())
-                              .arg(reinterpret_cast<quintptr>(QThread::currentThreadId()))
-                              .arg(start_ns)
-                              .arg(end_ns)
-                              .arg(topic_names.join(", "));
-    const auto t0 = std::chrono::steady_clock::now();
+    QElapsedTimer timer;
+    timer.start();
     auto status = client_->pullTopics(sequence_name.toStdString(), topics_std, range, on_done,
                                       progress, &cancel_flag_, batch_cb, schema_cb,
                                       /*retain_batches=*/false);
-    const auto ms = elapsedMs(t0);
+    const qint64 ms = timer.elapsed();
     if (!status.ok())
     {
       // Dispatch-level failure (bad args, etc.) — pullTopics did NOT invoke
