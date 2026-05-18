@@ -425,6 +425,7 @@ void CurveTreeView::treeVisitor(std::function<void(QTreeWidgetItem*)> visitor)
 
 void CurveTreeView::keyPressEvent(QKeyEvent* event)
 {
+  //Standary copy, just path
   if (event->matches(QKeySequence::Copy))
   {
     auto selected = selectedItems();
@@ -432,6 +433,40 @@ void CurveTreeView::keyPressEvent(QKeyEvent* event)
     {
       QClipboard* clipboard = QApplication::clipboard();
       clipboard->setText(selected.front()->data(0, Name).toString());
+    }
+  }
+
+  //Alternate copy - Copy each name and value of selected to clipoard. Useful for debugging, or copying a lat/lon, quaternion, or some other vector for example.
+  const auto key = event->key();
+  if(event->modifiers().testFlag(Qt::AltModifier) && key == Qt::Key_C )
+  {
+    auto selected = selectedItems();
+    if (selected.size() > 0)
+    {
+      QStringList name_value_list;
+      for (auto* item : selected)
+      {
+        QString name = item->data(0, Name).toString();
+        QVariant raw_value = item->data(1, RawValue);
+
+        Q_ASSERT_X(raw_value.isValid(), __FUNCTION__, "Empty QVariant in RawValue role. Check CurveListPanel::refreshValues().");
+
+        QString string_raw_value;
+        if (raw_value.type() == QVariant::Double)                                                                                                                                               
+        {               
+          string_raw_value = QString::number(raw_value.toDouble(), 'g', 17);
+        }
+        else
+        {
+          string_raw_value = raw_value.toString();
+        }
+   
+        name_value_list.append(name + ": " + string_raw_value);  
+      }
+
+      QString clipboardText = name_value_list.join('\n');
+      QClipboard* clipboard = QApplication::clipboard();
+      clipboard->setText(clipboardText);
     }
   }
 }
