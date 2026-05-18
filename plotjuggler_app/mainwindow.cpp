@@ -1064,7 +1064,9 @@ QDomDocument MainWindow::xmlSaveState() const
   return doc;
 }
 
-void MainWindow::checkAllCurvesFromLayout(const QDomElement& root)
+// Collect all curve names from a layout XML (numeric, XY endpoints, string).
+// Shared by checkAllCurvesFromLayout() and loadLayoutFromFile().
+static std::set<std::string> collectCurvesFromLayoutXML(const QDomElement& root)
 {
   std::set<std::string> curves;
 
@@ -1078,8 +1080,7 @@ void MainWindow::checkAllCurvesFromLayout(const QDomElement& root)
            pl = pl.nextSiblingElement("plot"))
       {
         QDomElement tran_elem = pl.firstChildElement("transform");
-        std::string trans = tran_elem.attribute("value").toStdString();
-        bool is_XY_plot = (trans == "XYPlot");
+        const bool is_XY_plot = (tran_elem.attribute("value") == "XYPlot");
 
         for (QDomElement cv = pl.firstChildElement("curve"); !cv.isNull();
              cv = cv.nextSiblingElement("curve"))
@@ -1097,16 +1098,20 @@ void MainWindow::checkAllCurvesFromLayout(const QDomElement& root)
       }
     }
   }
+  curves.erase(std::string());
+  return curves;
+}
+
+void MainWindow::checkAllCurvesFromLayout(const QDomElement& root)
+{
+  auto curves = collectCurvesFromLayoutXML(root);
 
   std::vector<std::string> missing_curves;
 
   for (auto& curve_name : curves)
   {
-    if (_mapped_plot_data.numeric.count(curve_name) == 0)
-    {
-      missing_curves.push_back(curve_name);
-    }
-    if (_mapped_plot_data.strings.count(curve_name) == 0)
+    if (_mapped_plot_data.numeric.count(curve_name) == 0 &&
+        _mapped_plot_data.strings.count(curve_name) == 0)
     {
       missing_curves.push_back(curve_name);
     }
@@ -2173,6 +2178,33 @@ bool MainWindow::loadLayoutFromFile(QString filename, bool load_datafiles)
     }
   }
 
+  // Create placeholders for layout curves not yet in _mapped_plot_data,
+  // so they appear in the Timeseries list before live data arrives.
+  {
+    auto layout_curves = collectCurvesFromLayoutXML(root);
+
+    bool any_added = false;
+    for (const auto& curve_name : layout_curves)
+    {
+      // Skip curves already known as data or as a transform/custom function.
+      if (_mapped_plot_data.numeric.count(curve_name) > 0 ||
+          _mapped_plot_data.strings.count(curve_name) > 0 ||
+          _transform_functions.count(curve_name) > 0)
+      {
+        continue;
+      }
+      _mapped_plot_data.addNumeric(curve_name);
+      if (_curvelist_widget->addCurve(curve_name))
+      {
+        any_added = true;
+      }
+    }
+    if (any_added)
+    {
+      _curvelist_widget->refreshColumns();
+    }
+  }
+
   QDomElement previous_streamer = root.firstChildElement("previouslyLoaded_Streamer");
   if (!previous_streamer.isNull())
   {
@@ -2191,18 +2223,6 @@ bool MainWindow::loadLayoutFromFile(QString filename, bool load_datafiles)
     {
       if (dataStreamers().count(streamer_name) != 0)
       {
-        auto allCurves = readAllCurvesFromXML(root);
-
-        // create placeholders, if necessary
-        for (auto curve_name : allCurves)
-        {
-          std::string curve_str = curve_name.toStdString();
-          if (_mapped_plot_data.numeric.count(curve_str) == 0)
-          {
-            _mapped_plot_data.addNumeric(curve_str);
-          }
-        }
-
         startStreamingPlugin(streamer_name);
       }
       else
