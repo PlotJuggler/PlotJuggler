@@ -1,13 +1,13 @@
-name: Release AppImage
+name: Release PlotJuggler
 
-# Builds the portable Linux AppImage and, on a version tag, attaches it to the
-# GitHub Release. Modeled on PlotJuggler 3's ubuntu.yaml release job, adapted to
+# Builds the portable Linux AppImage and Windows Portable version, and on a version tag,
+# attaches them to the GitHub Release. Modeled on PlotJuggler 3's ubuntu.yaml release job, adapted to
 # PJ4's heavier setup (Qt from aqt into ./.qt, deps from Conan) — so it reuses
 # the same Qt/Conan/ccache caching that linux-ci.yml relies on.
 #
 # Triggers:
-#   - push of a `v*` tag  -> build + publish the AppImage to that tag's Release
-#   - workflow_dispatch   -> build an AppImage from any branch (artifact only, no
+#   - push of a `v*` tag  -> build + publish the AppImage & ZIP to that tag's Release
+#   - workflow_dispatch   -> build artifacts from any branch (artifact only, no
 #                            Release upload) for smoke-testing the packaging
 on:
   workflow_dispatch:
@@ -107,5 +107,123 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: ${{ env.APPIMAGE }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Use HTTPS for github.com submodules
+        shell: bash
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: conan-io/setup-conan@v1
+        with:
+          cache_packages: false
+
+      - name: Compute Conan cache tag
+        id: conan_cache
+        shell: pwsh
+        run: |
+          $cacheVersion = "v4"
+          $fileHash = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
+          $hash = "$cacheVersion-$fileHash"
+          "hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Restore Conan cache from GitHub Actions cache
+        id: conan-gha-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.conan2
+          key: conan-windows-msvc-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
+          restore-keys: |
+            conan-windows-msvc-relwithdebinfo-v4-
+
+      - name: Cache Qt
+        id: qt-cache
+        uses: actions/cache@v5
+        with:
+          path: .qt
+          key: qt-6.11.1-windows-msvc2022_64
+
+      - name: Install Qt 6.11.1 via aqt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          pip install "git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b"
+          attempt=0
+          until aqt install-qt windows desktop 6.11.1 win64_msvc2022_64 --outputdir ./.qt; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge 5 ]; then echo "aqt failed after ${attempt} attempts" >&2; exit 1; fi
+            echo "aqt attempt ${attempt} failed (transient mirror?); retrying in $((attempt * 15))s..."
+            sleep $((attempt * 15))
+          done
+
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build
+        shell: bash
+        run: |
+          QT_DIR="$(pwd)/.qt/6.11.1/msvc2022_64"
+          if [[ ! -d "$QT_DIR" ]]; then
+            echo "::error::Qt 6.11.1 not found at $QT_DIR"
+            exit 1
+          fi
+
+          conan profile detect --force
+          conan install . --output-folder=build --build=missing \
+            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+            -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \
+            -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config"
+
+          cmake -S . -B build -G "Ninja Multi-Config" \
+            -DCMAKE_TOOLCHAIN_FILE="build/conan_toolchain.cmake" \
+            -DCMAKE_PREFIX_PATH="$QT_DIR" \
+            -DCMAKE_POLICY_DEFAULT_CMP0141=NEW \
+            -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
+
+          cmake --build build --config RelWithDebInfo --parallel
+
+      - name: Trim Conan cache before saving
+        if: always() && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: conan cache clean "*" --build --source --temp; $global:LASTEXITCODE = 0
+
+      - name: Save Conan cache to GitHub Actions cache
+        if: always() && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.conan2
+          key: conan-windows-msvc-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
+
+      - name: Package Release
+        shell: pwsh
+        run: |
+          powershell -File scripts/package_windows.ps1 -BuildDir build -QtDir .qt/6.11.1/msvc2022_64 -OutputDir dist/PlotJuggler
+          ref="${{ github.ref_name }}"
+          # Replace slash in git branch/tag names for filenames
+          safe="${ref//\//-}"
+          Compress-Archive -Path dist/PlotJuggler -DestinationPath "dist/PlotJuggler-Windows-${safe}.zip"
+          echo "ZIP_PATH=dist/PlotJuggler-Windows-${safe}.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload Windows Portable Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PlotJuggler-Windows-${{ github.ref_name }}
+          path: ${{ env.ZIP_PATH }}
+          if-no-files-found: error
+
+      - name: Attach Windows Portable to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ env.ZIP_PATH }}
           generate_release_notes: true
           fail_on_unmatched_files: true
