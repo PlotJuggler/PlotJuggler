@@ -201,6 +201,7 @@ target_link_libraries(plotjuggler_qwt
     Qt5::Widgets
     Qt5::Concurrent
     Qt5::Svg
+    Qt5::Xml
     )
 
 target_compile_definitions(plotjuggler_qwt PUBLIC QWT_MOC_INCLUDE)
@@ -217,4 +218,3 @@ install(
      ARCHIVE DESTINATION lib
      RUNTIME DESTINATION bin
      INCLUDES DESTINATION include )
-
