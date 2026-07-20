@@ -1720,3 +1720,230 @@ TEST(WidgetBindingTableDelta, UpdateCellsRewritesSortKeyNotJustText) {
   EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"r1a", "r0a"})) << "100 must now sort before 200";
   EXPECT_EQ(columnTexts(tw, 1), (std::vector<std::string>{"100", "200"}));
 }
+
+// --- Tree-like header: name-column fill without sacrificing draggability -----
+
+namespace {
+
+// Builds a shown picker-style table (headers via widget data, so
+// installTreeLikeHeader runs) inside a fixed-width window.
+QTableWidget* makePickerTable(QWidget* root) {
+  auto* layout = new QVBoxLayout(root);
+  layout->setContentsMargins(0, 0, 0, 0);
+  auto* tw = new QTableWidget(root);
+  tw->setObjectName("tbl");
+  layout->addWidget(tw);
+
+  PJ::WidgetData wd;
+  wd.setTableHeaders("tbl", {"Channel name", "Schema", "Msg Count"});
+  wd.setTableRows(
+      "tbl",
+      std::vector<std::vector<PJ::TableItem>>{{"/imu", "sensor_msgs/Imu", "10"}, {"/tf", "tf2_msgs/TFMessage", "3"}});
+  PJ::applyWidgetData(root, PJ::WidgetDataView(wd.toJson()));
+  return tw;
+}
+
+// QTableView re-protects QAbstractItemView's public sizeHintForColumn.
+int columnContentHint(const QTableWidget* tw, int col) {
+  return static_cast<const QAbstractItemView*>(tw)->sizeHintForColumn(col);
+}
+
+int fillTarget(const QTableWidget* tw, int fill_col) {
+  int others = 0;
+  for (int i = 0; i < tw->columnCount(); ++i) {
+    if (i != fill_col) {
+      others += tw->horizontalHeader()->sectionSize(i);
+    }
+  }
+  return tw->viewport()->width() - others;
+}
+
+}  // namespace
+
+// The name column must be Interactive (Qt refuses to drag an auto-sized
+// section's divider) while still absorbing the leftover viewport width.
+TEST(WidgetBindingTreeLikeHeader, NameColumnIsDraggableAndFillsViewport) {
+  qapp();
+  QWidget root;
+  auto* tw = makePickerTable(&root);
+  root.resize(600, 300);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+  QTest::qWait(50);  // let the deferred layout (scrollbar appearance) resize the viewport
+
+  auto* header = tw->horizontalHeader();
+  EXPECT_EQ(header->sectionResizeMode(0), QHeaderView::Interactive);
+  EXPECT_EQ(header->sectionSize(0), fillTarget(tw, 0)) << "name column must absorb the leftover viewport width";
+}
+
+// Resizing a data column gives-and-takes from the name column.
+TEST(WidgetBindingTreeLikeHeader, DataColumnResizeRefitsNameColumn) {
+  qapp();
+  QWidget root;
+  auto* tw = makePickerTable(&root);
+  root.resize(600, 300);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+
+  auto* header = tw->horizontalHeader();
+  header->resizeSection(1, 150);
+  EXPECT_EQ(header->sectionSize(1), 150);
+  EXPECT_EQ(header->sectionSize(0), fillTarget(tw, 0)) << "name column must re-absorb after a data-column resize";
+}
+
+// Once the user resizes the name column itself, their width wins: no more
+// auto-refit on data-column drags or viewport growth.
+TEST(WidgetBindingTreeLikeHeader, UserResizeOfNameColumnStopsTheFill) {
+  qapp();
+  QWidget root;
+  auto* tw = makePickerTable(&root);
+  root.resize(600, 300);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+
+  // A user drag is a section resize while the left button is down ON the
+  // header; programmatic/layout resizes (no header press) must NOT stop the
+  // fill. The resize itself is driven programmatically between a real press
+  // and release so the test does not depend on QTest's drag synthesis.
+  auto* header = tw->horizontalHeader();
+  const int y = header->height() / 2;
+  QTest::mousePress(header->viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(5, y));
+  const int user_width = fillTarget(tw, 0) - 100;
+  header->resizeSection(0, user_width);
+  QTest::mouseRelease(header->viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(5, y));
+
+  header->resizeSection(1, 150);
+  EXPECT_EQ(header->sectionSize(0), user_width) << "user-chosen width must survive data-column resizes";
+
+  root.resize(760, 300);
+  QTest::qWait(50);
+  EXPECT_EQ(header->sectionSize(0), user_width) << "user-chosen width must survive viewport growth";
+}
+
+// With a Fixed radio column leading the table, the fill redirects to the first
+// draggable column instead of fighting the radio's pinned width.
+TEST(WidgetBindingTreeLikeHeader, RadioColumnRedirectsFillToFirstDataColumn) {
+  qapp();
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  layout->setContentsMargins(0, 0, 0, 0);
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  layout->addWidget(tw);
+
+  PJ::WidgetData wd;
+  wd.setTableHeaders("tbl", {"", "Name", "Count"});
+  wd.setTableRows("tbl", std::vector<std::vector<PJ::TableItem>>{{"", "/imu", "10"}, {"", "/tf", "3"}});
+  wd.setTableRadioColumn("tbl", 0, 0);
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  root.resize(600, 300);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+  QTest::qWait(50);  // let the deferred layout (scrollbar appearance) resize the viewport
+
+  auto* header = tw->horizontalHeader();
+  EXPECT_EQ(header->sectionResizeMode(0), QHeaderView::Fixed);
+  EXPECT_EQ(header->sectionSize(0), 36) << "radio column keeps its pinned width";
+  EXPECT_EQ(header->sectionSize(1), fillTarget(tw, 1)) << "fill must target the first draggable column";
+}
+
+// Data columns default to their content width (Qt's double-click auto-fit
+// formula) once rows arrive, so cell text is never clipped out of the box.
+TEST(WidgetBindingTreeLikeHeader, DataColumnsDefaultToContentWidth) {
+  qapp();
+  QWidget root;
+  auto* tw = makePickerTable(&root);
+  root.resize(600, 300);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+  QTest::qWait(50);  // one-shot content sizing is queued behind the row delivery
+
+  auto* header = tw->horizontalHeader();
+  const int schema_content = std::max(columnContentHint(tw, 1), header->sectionSizeHint(1));
+  EXPECT_EQ(header->sectionSize(1), schema_content) << "schema column must fit its widest entry";
+  EXPECT_GE(header->sectionSize(1), columnContentHint(tw, 1)) << "schema text must not be clipped";
+}
+
+// When the viewport is too narrow for everything, the name column floors at its
+// own content width — the table grows a horizontal scrollbar instead of
+// clipping the names.
+TEST(WidgetBindingTreeLikeHeader, NameColumnFloorsAtContentWidthWhenNarrow) {
+  qapp();
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  layout->setContentsMargins(0, 0, 0, 0);
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  layout->addWidget(tw);
+
+  PJ::WidgetData wd;
+  wd.setTableHeaders("tbl", {"Channel name", "Schema", "Msg Count"});
+  wd.setTableRows(
+      "tbl", std::vector<std::vector<PJ::TableItem>>{
+                 {"/really/long/namespace/imu_with_a_long_name", "sensor_msgs/Imu", "10"},
+                 {"/tf", "tf2_msgs/TFMessage", "3"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  root.resize(260, 300);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+  QTest::qWait(50);
+
+  auto* header = tw->horizontalHeader();
+  const int name_content = std::max(columnContentHint(tw, 0), header->sectionSizeHint(0));
+  ASSERT_GT(name_content, fillTarget(tw, 0)) << "precondition: the window must be too narrow for the name column";
+  EXPECT_EQ(header->sectionSize(0), name_content) << "name column must floor at its content width, not clip";
+}
+
+// Content widths follow the data: a rows re-delivery with longer entries
+// re-fits the affected data columns.
+TEST(WidgetBindingTreeLikeHeader, DataColumnsRefitWhenRowsChange) {
+  qapp();
+  QWidget root;
+  auto* tw = makePickerTable(&root);
+  root.resize(700, 300);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+  QTest::qWait(50);
+  const int before = tw->horizontalHeader()->sectionSize(1);
+
+  PJ::WidgetData wd;
+  wd.setTableRows(
+      "tbl",
+      std::vector<std::vector<PJ::TableItem>>{
+          {"/camera", "sensor_msgs/CompressedImageWithAVeryLongTypeName", "77"}, {"/tf", "tf2_msgs/TFMessage", "3"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  QTest::qWait(50);
+
+  auto* header = tw->horizontalHeader();
+  const int schema_content = std::max(columnContentHint(tw, 1), header->sectionSizeHint(1));
+  EXPECT_GT(header->sectionSize(1), before) << "longer schema entries must widen the column";
+  EXPECT_EQ(header->sectionSize(1), schema_content);
+}
+
+// A data column the user dragged is user-owned: later rows re-deliveries must
+// not re-fit it.
+TEST(WidgetBindingTreeLikeHeader, UserResizedDataColumnSurvivesRowsChange) {
+  qapp();
+  QWidget root;
+  auto* tw = makePickerTable(&root);
+  root.resize(700, 300);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+  QTest::qWait(50);
+
+  auto* header = tw->horizontalHeader();
+  const int y = header->height() / 2;
+  QTest::mousePress(header->viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(5, y));
+  header->resizeSection(1, 55);
+  QTest::mouseRelease(header->viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(5, y));
+
+  PJ::WidgetData wd;
+  wd.setTableRows(
+      "tbl",
+      std::vector<std::vector<PJ::TableItem>>{
+          {"/camera", "sensor_msgs/CompressedImageWithAVeryLongTypeName", "77"}, {"/tf", "tf2_msgs/TFMessage", "3"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  QTest::qWait(50);
+
+  EXPECT_EQ(header->sectionSize(1), 55) << "content sizing must keep hands off a user-dragged column";
+}

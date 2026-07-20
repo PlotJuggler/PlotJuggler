@@ -11,6 +11,7 @@
 #include <qwt_plot_curve.h>
 #include <qwt_point_data.h>
 
+#include <QAbstractItemModel>
 #include <QBoxLayout>
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -20,6 +21,7 @@
 #include <QDateTimeEdit>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QEvent>
 #include <QFile>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -598,15 +600,17 @@ static void applyTableRadioColumn(
     radio->setChecked(r == checked_row);
   }
 
-  // Keep the radio column just wide enough for the button, and stretch the first
-  // non-radio column instead. installTreeLikeHeader stretches column 0 by default,
-  // which would over-widen the radio when it is the first column.
+  // Keep the radio column just wide enough for the button. Marking it Fixed both
+  // pins its width and redirects TreeLikeHeaderSizer (which fills the first
+  // non-Fixed column) to the first real data column, so the radio never
+  // over-widens when it sits first. The data columns stay Interactive so their
+  // dividers keep dragging.
   auto* header = tw->horizontalHeader();
   header->setSectionResizeMode(col, QHeaderView::Fixed);
   tw->setColumnWidth(col, 36);
   for (int c = 0; c < tw->columnCount(); ++c) {
     if (c != col) {
-      header->setSectionResizeMode(c, QHeaderView::Stretch);
+      header->setSectionResizeMode(c, QHeaderView::Interactive);
       break;
     }
   }
@@ -727,10 +731,220 @@ static bool tableMatchesHeaders(const QTableWidget* tw, const QStringList& heade
   return true;
 }
 
-// Size a topic/curve table the way it reads best: the first column stretches to
-// fill the viewport (no dead grey space to the right) while every other column is
-// a fixed, user-draggable width. WA_Hover lets the QSS `QHeaderView::section:hover`
-// divider tint fire; header weight is left to the app stylesheet (the global
+// Owns the tree-like header's default column sizing, with every section left
+// QHeaderView::Interactive so every divider drags (Stretch/ResizeToContents
+// sections are auto-sized and Qt refuses to drag their dividers):
+//
+// - The fill column — the first draggable one, normally 0 — absorbs the
+//   leftover viewport width, visually a Stretch section: it refits on viewport
+//   resizes and gives-and-takes on data-column drags.
+// - Data columns track their content width (the formula of Qt's divider
+//   double-click auto-fit) as rows arrive and change, so cell text is not
+//   clipped by default.
+// - The fill column refits no lower than its own content width: a too-narrow
+//   dialog grows a horizontal scrollbar instead of clipping.
+// - A column whose divider the user drags becomes user-owned: content sizing
+//   and refit stop touching it. Ownership is detected by a left press on the
+//   header itself — NOT by global mouse state, because a first-show layout
+//   pass can emit sectionResized while the button is down on an unrelated
+//   widget (e.g. the tab whose click just revealed this table). A column-count
+//   rebuild resets all ownership.
+//
+// Parented to the header, so it dies with the table.
+class TreeLikeHeaderSizer : public QObject {
+ public:
+  explicit TreeLikeHeaderSizer(QTableWidget* tw) : QObject(tw->horizontalHeader()), tw_(tw) {
+    auto* header = tw->horizontalHeader();
+    QObject::connect(header, &QHeaderView::sectionResized, this, [this](int logical, int, int) {
+      if (refitting_) {
+        return;
+      }
+      if (header_pressed_) {
+        user_columns_.insert(logical);
+        if (logical == fillColumn()) {
+          return;  // never refit against the user's own drag of the fill column
+        }
+      }
+      refit();
+    });
+    // A column-count rebuild recreates sections with default sizes and voids
+    // every per-column decision made so far.
+    QObject::connect(header, &QHeaderView::sectionCountChanged, this, [this](int, int) {
+      user_columns_.clear();
+      fill_floor_ = 0;
+      fill_floor_column_ = -1;
+      scheduleContentSize();
+      scheduleRefit();
+    });
+    header->viewport()->installEventFilter(this);  // press/release = user-drag detection
+    // Watch the table and both scrollbars, not just the viewport: when a
+    // scrollbar appears during show(), Qt resizes the still-hidden viewport and
+    // the pending resize event is never delivered, so a viewport-only filter
+    // misses the change.
+    tw->installEventFilter(this);
+    tw->viewport()->installEventFilter(this);
+    tw->verticalScrollBar()->installEventFilter(this);
+    tw->horizontalScrollBar()->installEventFilter(this);
+    // Content widths follow the rows. rowsInserted fires on setRowCount —
+    // before the items are filled in — so sizing runs queued, after the
+    // delivery settles. The constructor schedules once for rows that predate
+    // the sizer (a table whose rows were delivered before its headers).
+    auto* model = tw->model();
+    QObject::connect(model, &QAbstractItemModel::rowsInserted, this, [this]() { scheduleContentSize(); });
+    QObject::connect(model, &QAbstractItemModel::rowsRemoved, this, [this]() { scheduleContentSize(); });
+    QObject::connect(model, &QAbstractItemModel::modelReset, this, [this]() { scheduleContentSize(); });
+    // A same-row-count re-delivery updates items in place: no rows signals, only
+    // dataChanged (coalesced by the pending flag into one pass per loop turn).
+    QObject::connect(
+        model, &QAbstractItemModel::dataChanged, this,
+        [this](const QModelIndex&, const QModelIndex&, const QList<int>&) { scheduleContentSize(); });
+    scheduleContentSize();
+    refit();
+  }
+
+  bool eventFilter(QObject* watched, QEvent* event) override {
+    if (watched == tw_->horizontalHeader()->viewport()) {
+      if (event->type() == QEvent::MouseButtonPress && static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
+        header_pressed_ = true;
+      } else if (event->type() == QEvent::MouseButtonRelease) {
+        header_pressed_ = false;
+      }
+      return QObject::eventFilter(watched, event);
+    }
+    switch (event->type()) {
+      case QEvent::Resize:
+        if (watched == tw_->viewport()) {
+          // Synchronous: the viewport geometry is final inside its resize
+          // event, and a queued refit would paint one frame with a stale fill
+          // width (visible as lag while the user drags the dialog edge).
+          refit();
+        } else {
+          scheduleRefit();
+        }
+        break;
+      case QEvent::Show:
+      case QEvent::Hide:
+        scheduleRefit();
+        break;
+      default:
+        break;
+    }
+    return QObject::eventFilter(watched, event);
+  }
+
+ private:
+  // QTableView re-protects QAbstractItemView's public sizeHintForColumn, so the
+  // content width is read through the base class.
+  int contentHint(int column) const {
+    return static_cast<const QAbstractItemView*>(tw_)->sizeHintForColumn(column);
+  }
+
+  // Normally 0; when a Fixed section leads (e.g. applyTableRadioColumn's radio
+  // column), fill the first draggable column after it instead.
+  int fillColumn() const {
+    auto* header = tw_->horizontalHeader();
+    for (int i = 0; i < header->count(); ++i) {
+      if (header->sectionResizeMode(i) != QHeaderView::Fixed) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  void scheduleRefit() {
+    if (refit_pending_) {
+      return;
+    }
+    refit_pending_ = true;
+    QTimer::singleShot(0, this, [this]() {
+      refit_pending_ = false;
+      refit();
+    });
+  }
+
+  void scheduleContentSize() {
+    if (content_size_pending_) {
+      return;
+    }
+    content_size_pending_ = true;
+    QTimer::singleShot(0, this, [this]() {
+      content_size_pending_ = false;
+      contentSizeColumns();
+    });
+  }
+
+  // Fit every draggable, non-user-owned, non-fill column to the width Qt's own
+  // double-click auto-fit would give it (max of content and header label), so
+  // no cell text is clipped. Re-runs whenever the row set changes; columns the
+  // user has dragged are left alone. The fill column is not resized here — it
+  // gets a content floor so refit() stops shrinking it below its longest entry
+  // (a horizontal scrollbar appears instead).
+  void contentSizeColumns() {
+    auto* header = tw_->horizontalHeader();
+    if (tw_->rowCount() == 0 || header->count() == 0) {
+      return;
+    }
+    const int fill = fillColumn();
+    for (int i = 0; i < header->count(); ++i) {
+      if (i == fill || user_columns_.count(i) > 0 || header->sectionResizeMode(i) != QHeaderView::Interactive) {
+        continue;
+      }
+      const int content = std::max(contentHint(i), header->sectionSizeHint(i));
+      if (content > 0 && content != header->sectionSize(i)) {
+        refitting_ = true;
+        header->resizeSection(i, content);
+        refitting_ = false;
+      }
+    }
+    if (fill >= 0) {
+      fill_floor_ = std::max(contentHint(fill), header->sectionSizeHint(fill));
+      fill_floor_column_ = fill;
+    }
+    refit();
+  }
+
+  void refit() {
+    auto* header = tw_->horizontalHeader();
+    const int fill = fillColumn();
+    if (fill < 0 || user_columns_.count(fill) > 0) {
+      return;
+    }
+    // The fill column can change after sizing (a later delivery pinning a radio
+    // column Fixed); the floor belongs to the column, not the slot.
+    if (fill != fill_floor_column_ && tw_->rowCount() > 0) {
+      fill_floor_ = std::max(contentHint(fill), header->sectionSizeHint(fill));
+      fill_floor_column_ = fill;
+    }
+    int others = 0;
+    for (int i = 0; i < header->count(); ++i) {
+      if (i != fill) {
+        others += header->sectionSize(i);
+      }
+    }
+    const int floor_width = std::max(fill_floor_, header->minimumSectionSize());
+    const int target = std::max(tw_->viewport()->width() - others, floor_width);
+    if (target == header->sectionSize(fill)) {
+      return;
+    }
+    refitting_ = true;
+    header->resizeSection(fill, target);
+    refitting_ = false;
+  }
+
+  QTableWidget* tw_;
+  std::set<int> user_columns_;  ///< columns the user has dragged; sizing keeps hands off
+  bool refitting_ = false;
+  bool refit_pending_ = false;
+  bool content_size_pending_ = false;
+  bool header_pressed_ = false;  ///< left button currently down on the header viewport
+  int fill_floor_ = 0;           ///< content width of fill_floor_column_; 0 until computed
+  int fill_floor_column_ = -1;
+};
+
+// Size a topic/curve table the way it reads best: the first column fills the
+// viewport (no dead grey space to the right; emulated by TreeLikeHeaderSizer so it
+// stays draggable) while every other column is a user-draggable width. WA_Hover lets the QSS
+// `QHeaderView::section:hover` divider tint fire; header weight is left to the app stylesheet (the global
 // `QHeaderView::section { font-weight: normal }` rule), which reads consistently
 // with CurveTreeView — a widget-side setFont would be ignored while a stylesheet
 // is active anyway.
@@ -755,17 +969,17 @@ static void installTreeLikeHeader(QTableWidget* tw) {
   header->setAttribute(Qt::WA_Hover, true);
   header->viewport()->setAttribute(Qt::WA_Hover, true);
 
-  // The first (name) column stretches to fill the viewport: long names aren't
-  // clipped and no dead space trails the last column, with no dependence on the
-  // viewport already being laid out. The data columns are Interactive so their
-  // dividers DRAG to resize (Stretch / ResizeToContents are auto-sized and can't be
-  // dragged — the reason the separators looked dead); resizing a data column gives
-  // and takes from the stretched name column.
-  header->setSectionResizeMode(0, QHeaderView::Stretch);
+  // Every column is Interactive so every divider drags (Stretch/ResizeToContents
+  // sections are auto-sized and Qt makes their dividers dead). The name column's
+  // fill-the-viewport behavior is emulated by TreeLikeHeaderSizer instead of
+  // QHeaderView::Stretch precisely so it stays user-resizable; resizing a data
+  // column gives and takes from the name column until the user claims it.
+  header->setSectionResizeMode(0, QHeaderView::Interactive);
   for (int i = 1; i < header->count(); ++i) {
     header->setSectionResizeMode(i, QHeaderView::Interactive);
     header->resizeSection(i, 96);
   }
+  new TreeLikeHeaderSizer(tw);
 }
 
 // Write a delta-provided cell's text/value into (row, col): update in place if
@@ -1322,6 +1536,12 @@ static void applyToWidget(
     // its width mis-stretched (unlike Create, whose rows arrive by drop after wiring).
     // The click callback resolves the holder lazily, so clicks still emit once it lands.
     if (radio_col) {
+      // Radio tables need the tree-like sizing even when the plugin never sends
+      // table headers (.ui-predefined columns): the fill behavior lives in the
+      // sizer, and applyTableRadioColumn below relies on it to fill the first
+      // draggable column. Idempotent — a no-op when the headers branch above
+      // already installed it.
+      installTreeLikeHeader(tw);
       const int checked_plugin_row = view.tableRadioCheckedRow(name).value_or(-1);
       const int checked_view_row =
           checked_plugin_row >= 0 && static_cast<std::size_t>(checked_plugin_row) < plugin_to_view.size()
