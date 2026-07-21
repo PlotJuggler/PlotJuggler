@@ -463,19 +463,40 @@ void ParserROS::parseJointStateMsg(const std::string& prefix, double& timestamp)
   }
   //---------------------------
   std::string series_name;
-  for (size_t i = 0; i < std::min(name_size, pos_size); i++)
+  for (size_t i = 0; i < pos_size; i++)
   {
-    series_name = fmt::format("{}/{}/position", _topic, msg.name[i]);
+    if (i < name_size)
+    {
+      series_name = fmt::format("{}/{}/position", _topic, msg.name[i]);
+    }
+    else
+    {
+      series_name = fmt::format("{}/[{}]/position", _topic, i);
+    }
     getSeries(series_name).pushBack({ timestamp, msg.position[i] });
   }
-  for (size_t i = 0; i < std::min(name_size, vel_size); i++)
+  for (size_t i = 0; i < vel_size; i++)
   {
-    series_name = fmt::format("{}/{}/velocity", _topic, msg.name[i]);
+    if (i < name_size)
+    {
+      series_name = fmt::format("{}/{}/velocity", _topic, msg.name[i]);
+    }
+    else
+    {
+      series_name = fmt::format("{}/[{}]/velocity", _topic, i);
+    }
     getSeries(series_name).pushBack({ timestamp, msg.velocity[i] });
   }
-  for (size_t i = 0; i < std::min(name_size, eff_size); i++)
+  for (size_t i = 0; i < eff_size; i++)
   {
-    series_name = fmt::format("{}/{}/effort", _topic, msg.name[i]);
+    if (i < name_size)
+    {
+      series_name = fmt::format("{}/{}/effort", _topic, msg.name[i]);
+    }
+    else
+    {
+      series_name = fmt::format("{}/[{}]/effort", _topic, i);
+    }
     getSeries(series_name).pushBack({ timestamp, msg.effort[i] });
   }
 }
