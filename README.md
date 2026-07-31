@@ -1,6 +1,6 @@
 # ALERT: do NOT visit plotjuggler.com
 ## That is probably a Malware / Phishing page impersonating us.
-We are taking urgent actions to brint it down.
+We are taking urgent actions to bring it down.
 
 
 ![PlotJuggler](docs/plotjuggler3_banner.svg)
@@ -74,7 +74,7 @@ To learn how to use PlotJuggler, check the tutorials here:
 Some plugins can be found in a different repository. The individual README files
 *should* include all the information needed to compile and use the plugin.
 
-Please submit specific issues, Pull Requests and questions on the related Github repository:
+Please submit specific issues, Pull Requests and questions on the related GitHub repository:
 
 - [MQTT DataStreamer](https://github.com/PlotJuggler/plotjuggler-mqtt).
 - [Lab Streaming Layer DataStreamer](https://github.com/PlotJuggler/plotjuggler-lsl).
