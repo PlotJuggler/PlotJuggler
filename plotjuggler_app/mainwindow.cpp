@@ -228,6 +228,9 @@ MainWindow::MainWindow(const QCommandLineParser& commandline_parser, QWidget* pa
     }
   }
 
+  // Remember the startup title; loaded file names are appended to it later.
+  _base_window_title = windowTitle();
+
   QSettings settings;
 
   if (commandline_parser.isSet("buffer_size"))
@@ -1328,6 +1331,7 @@ void MainWindow::deleteAllData()
   _transform_functions.clear();
   _curvelist_widget->clear();
   _loaded_datafiles_history.clear();
+  updateWindowTitle();
   _undo_states.clear();
   _redo_states.clear();
 
@@ -1489,10 +1493,30 @@ bool MainWindow::loadDataFromFiles(QStringList filenames, bool auto_prefix)
   if (loaded_filenames.size() > 0)
   {
     updateRecentDataMenu(loaded_filenames);
+    updateWindowTitle();
     linkedZoomOut();
     return true;
   }
   return false;
+}
+
+void MainWindow::updateWindowTitle()
+{
+  if (_loaded_datafiles_history.empty())
+  {
+    setWindowTitle(_base_window_title);
+    return;
+  }
+
+  const QString first = QFileInfo(_loaded_datafiles_history.front().filename).fileName();
+  QString window_title = QString("%1 - %2").arg(_base_window_title, first);
+
+  const int others = static_cast<int>(_loaded_datafiles_history.size()) - 1;
+  if (others > 0)
+  {
+    window_title += QString(" (+%1)").arg(others);
+  }
+  setWindowTitle(window_title);
 }
 
 std::unordered_set<std::string> MainWindow::loadDataFromFile(const FileLoadInfo& info,
@@ -2172,6 +2196,7 @@ bool MainWindow::loadLayoutFromFile(QString filename, bool load_datafiles)
       datafile_elem = datafile_elem.nextSiblingElement("fileInfo");
     }
   }
+  updateWindowTitle();
 
   QDomElement previous_streamer = root.firstChildElement("previouslyLoaded_Streamer");
   if (!previous_streamer.isNull())
@@ -3723,6 +3748,7 @@ void MainWindow::on_buttonReloadData_clicked()
     loadDataFromFile(info, false);
   }
   ui->buttonReloadData->setEnabled(!_loaded_datafiles_previous.empty());
+  updateWindowTitle();
 }
 
 void MainWindow::on_buttonCloseStatus_clicked()
