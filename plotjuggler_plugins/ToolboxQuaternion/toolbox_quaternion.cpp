@@ -118,14 +118,22 @@ bool ToolboxQuaternion::eventFilter(QObject* obj, QEvent* ev)
     {
       autoFill(_dragging_curve.left(_dragging_curve.size() - 1));
     }
+
+    // Drag & drop for PX4 quaternions (order is WXYZ with entries labeled q.0X)
+    if ((obj == ui->lineEditX && _dragging_curve.endsWith(".01")) ||
+        (obj == ui->lineEditY && _dragging_curve.endsWith(".02")) ||
+        (obj == ui->lineEditZ && _dragging_curve.endsWith(".03")) ||
+        (obj == ui->lineEditW && _dragging_curve.endsWith(".00")))
+    {
+      autoFill(_dragging_curve.left(_dragging_curve.size() - 3), { ".01", ".02", ".03", ".00" });
+    }
   }
 
   return false;
 }
 
-void ToolboxQuaternion::autoFill(QString prefix)
+void ToolboxQuaternion::autoFill(QString prefix, QStringList suffix)
 {
-  QStringList suffix = { "x", "y", "z", "w" };
   std::array<QLineEdit*, 4> lineEdits = { ui->lineEditX, ui->lineEditY, ui->lineEditZ,
                                           ui->lineEditW };
   QStringList names;
