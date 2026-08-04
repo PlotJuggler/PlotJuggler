@@ -489,6 +489,64 @@ bool PlotWidgetBase::keepRatioXY() const
   return _keep_aspect_ratio;
 }
 
+int PlotWidgetBase::leftAxisWidth()
+{
+  auto* axis = qwtPlot()->axisWidget(QwtPlot::yLeft);
+  const int previous_minimum = axis->minimumWidth();
+  axis->setMinimumWidth(0);
+  qwtPlot()->updateAxes();
+  const int width = axis->sizeHint().width();
+  axis->setMinimumWidth(previous_minimum);
+  return width;
+}
+
+int PlotWidgetBase::bottomAxisHeight()
+{
+  auto* axis = qwtPlot()->axisWidget(QwtPlot::xBottom);
+  const int previous_minimum = axis->minimumHeight();
+  axis->setMinimumHeight(0);
+  qwtPlot()->updateAxes();
+  const int height = axis->sizeHint().height();
+  axis->setMinimumHeight(previous_minimum);
+  return height;
+}
+
+double PlotWidgetBase::leftAxisExtent() const
+{
+  auto* axis = qwtPlot()->axisWidget(QwtPlot::yLeft);
+  return axis->scaleDraw()->extent(axis->font());
+}
+
+double PlotWidgetBase::bottomAxisExtent() const
+{
+  auto* axis = qwtPlot()->axisWidget(QwtPlot::xBottom);
+  return axis->scaleDraw()->extent(axis->font());
+}
+
+void PlotWidgetBase::setLeftAxisMinimumWidth(int width)
+{
+  qwtPlot()->axisWidget(QwtPlot::yLeft)->setMinimumWidth(width);
+  qwtPlot()->updateAxes();
+}
+
+void PlotWidgetBase::setBottomAxisMinimumHeight(int height)
+{
+  qwtPlot()->axisWidget(QwtPlot::xBottom)->setMinimumHeight(height);
+  qwtPlot()->updateAxes();
+}
+
+void PlotWidgetBase::setLeftAxisMinimumExtent(double extent)
+{
+  qwtPlot()->axisWidget(QwtPlot::yLeft)->scaleDraw()->setMinimumExtent(extent);
+  qwtPlot()->updateAxes();
+}
+
+void PlotWidgetBase::setBottomAxisMinimumExtent(double extent)
+{
+  qwtPlot()->axisWidget(QwtPlot::xBottom)->scaleDraw()->setMinimumExtent(extent);
+  qwtPlot()->updateAxes();
+}
+
 void PlotWidgetBase::setKeepRatioXY(bool active)
 {
   _keep_aspect_ratio = active;
