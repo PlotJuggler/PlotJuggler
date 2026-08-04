@@ -45,7 +45,8 @@ enum CustomRoles
 {
   Name = Qt::UserRole,
   IsGroupName = Qt::UserRole + 1,
-  ToolTip = Qt::UserRole + 2
+  ToolTip = Qt::UserRole + 2,
+  RawValue = Qt::UserRole + 3
 };
 
 class CurvesView
