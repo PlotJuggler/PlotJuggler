@@ -20,58 +20,61 @@
           sha256 = "sha256-hGfoU6oK7vh39TRCBTYnlqEsvGLWCsLVRBXh3RDrmnY=";
         };
 
+        wasmer-release = {
+          x86_64-linux = {
+            archive = "wasmer-linux-amd64.tar.gz";
+            sha256 = "10a55885b11eb51b06bb24ff184facde8c2a83c252782a0c04e7a46926630d72";
+          };
+          aarch64-linux = {
+            archive = "wasmer-linux-aarch64.tar.gz";
+            sha256 = "21d6968d33defa4a31d878022d261667a8fa8abbfe96007d5f4f28564b7fa372";
+          };
+          x86_64-darwin = {
+            archive = "wasmer-darwin-amd64.tar.gz";
+            sha256 = "3a0f44a3aae570b0870d4573fa663c7f0c96a2f9550e38eb22c3be7c77658a1e";
+          };
+          aarch64-darwin = {
+            archive = "wasmer-darwin-arm64.tar.gz";
+            sha256 = "3eff017389fb838b0b5af607a4d392edc6039e76343984fcd24307aa027d67ee";
+          };
+        }.${system};
+
+        wasmer-archive = pkgs.fetchurl {
+          url = "https://github.com/wasmerio/wasmer/releases/download/v7.0.1/${wasmer-release.archive}";
+          inherit (wasmer-release) sha256;
+        };
+
         plotjuggler-pkg = pkgs.qt5.mkDerivation {
           pname = "plotjuggler";
-          version = "3.10.11";
+          version = "3.17.2";
 
           src = ./.;
           patches = [ ./nix/arrow.patch ];
 
           postPatch = ''
             substituteInPlace cmake/find_or_download_data_tamer.cmake \
-              --replace "URL" "SOURCE_DIR" \
-              --replace "https://github.com/PickNikRobotics/data_tamer/archive/refs/tags/1.0.3.zip" "${data-tamer-src}"
+              --replace-fail "URL" "SOURCE_DIR" \
+              --replace-fail "https://github.com/PickNikRobotics/data_tamer/archive/refs/tags/1.0.3.zip" "${data-tamer-src}"
+
+            substituteInPlace cmake/download_wasmer.cmake \
+              --replace-fail 'URL ''${WASMER_URL}' 'URL ${wasmer-archive}'
 
             rm cmake/find_or_download_fmt.cmake
-            rm cmake/find_or_download_fastcdr.cmake
-            rm cmake/find_or_download_zstd.cmake
 
             substituteInPlace CMakeLists.txt \
-              --replace "include(cmake/find_or_download_fmt.cmake)" "find_package(fmt REQUIRED)" \
-              --replace "find_or_download_fmt()" ""
+              --replace-fail "include(cmake/find_or_download_fmt.cmake)" "find_package(fmt REQUIRED)" \
+              --replace-fail "find_or_download_fmt()" ""
 
-            substituteInPlace CMakeLists.txt \
-              --replace "include(cmake/find_or_download_fastcdr.cmake)" "find_package(fastcdr REQUIRED)" \
-              --replace "find_or_download_fastcdr()" ""
-            find . -name "CMakeLists.txt" -exec sed -i 's/fastcdr::fastcdr/fastcdr/g' {} +
+            substituteInPlace \
+              cmake/find_or_download_lz4.cmake \
+              plotjuggler_plugins/DataLoadMCAP/CMakeLists.txt \
+              --replace-fail "LZ4::lz4_static" "LZ4::lz4_shared"
 
-            cat > plotjuggler_plugins/DataLoadMCAP/CMakeLists.txt << 'EOF'
-            cmake_minimum_required(VERSION 3.5)
-
-            if(mcap_vendor_FOUND)
-              set(CMAKE_AUTOUIC ON)
-              set(CMAKE_AUTORCC ON)
-              set(CMAKE_AUTOMOC ON)
-
-              project(DataLoadMCAP)
-
-              add_library(mcap INTERFACE)
-              find_package(zstd REQUIRED)
-              find_package(lz4 REQUIRED)
-
-              add_library(dataload_mcap MODULE dataload_mcap.cpp)
-
-            target_link_libraries(
-              dataload_mcap PUBLIC Qt5::Widgets Qt5::Xml Qt5::Concurrent plotjuggler_base mcap
-                                  zstd lz4)
-
-            if(WIN32 AND MSVC)
-              target_link_options(dataload_mcap PRIVATE /ignore:4217)
-            endif()
-
-            install(TARGETS dataload_mcap DESTINATION ''${PJ_PLUGIN_INSTALL_DIRECTORY})
-            endif()
-            EOF
+            substituteInPlace \
+              cmake/find_or_download_zstd.cmake \
+              plotjuggler_plugins/DataLoadMCAP/CMakeLists.txt \
+              plotjuggler_plugins/DataStreamPlotJugglerBridge/CMakeLists.txt \
+              --replace-fail "zstd::libzstd_static" "zstd::libzstd_shared"
           '';
 
           cmakeFlags = [
@@ -80,7 +83,7 @@
           ];
 
 
-          nativeBuildInputs = [ pkgs.cmake pkgs.qt5.wrapQtAppsHook ];
+          nativeBuildInputs = [ pkgs.cmake pkgs.pkg-config pkgs.qt5.wrapQtAppsHook ];
 
           buildInputs = [
             pkgs.qt5.full
@@ -92,7 +95,6 @@
             pkgs.lua
             pkgs.nlohmann_json
             pkgs.fmt
-            pkgs.fastcdr
             pkgs.lz4
             pkgs.zstd
             pkgs.mosquitto
@@ -103,8 +105,6 @@
             pkgs.xorg.xcbutilkeysyms
             pkgs.arrow-cpp
           ];
-          dontWrapQtApps = true;
-
           meta = with pkgs.lib; {
             description = "A tool to plot streaming data, fast and easy";
             homepage = "https://github.com/PlotJuggler/PlotJuggler";
@@ -137,7 +137,6 @@
             pkgs.lua
             pkgs.nlohmann_json
             pkgs.fmt
-            pkgs.fastcdr
             pkgs.lz4
             pkgs.zstd
             pkgs.mosquitto
