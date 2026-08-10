@@ -1,21 +1,29 @@
 name: Cache cleanup
 
-# Keeps the repo's shared ~10 GB Actions cache budget healthy. That budget is
-# pooled across ALL workflows and branches and is LRU-evicted (by last-accessed)
-# once full. PJ4 was sitting at ~10.7 GB — over budget — so every run silently
-# evicted something, and the victim was usually the *infrequently-accessed*
-# Windows sccache (Linux caches get touched on every Linux run, so they stay
-# "warm" in LRU terms). An evicted sccache means a cold ~50-95 min MSVC build
-# instead of a warm ~2-5 min one.
+# Keeps the repo's shared ~10 GB GitHub-hosted Actions cache budget healthy.
+# That budget is pooled across ALL workflows and branches and is LRU-evicted (by
+# last-accessed) once full, so stale duplicates can evict a cache some job still
+# needs warm.
+#
+# SCOPE — read before trusting this workflow with a storage bill:
+# it reclaims *GitHub's* cache store only, because the management API it drives
+# (/repos/{owner}/{repo}/actions/caches) is served by GitHub. Jobs on `depot-*`
+# runners have their actions/cache save+restore transparently redirected to
+# Depot Cache, whose entries are NOT visible to that API and are NOT deleted
+# here. Since almost every heavy job in this repo runs on Depot, the store this
+# workflow manages holds only the few GitHub-hosted jobs' caches (pre-commit and
+# the release smoke jobs) — tens of MB.
+#
+# Depot Cache is billed per GB-month and is governed by the retention policy in
+# the Depot organisation settings, plus the save gating in the workflows
+# themselves (compiler caches are written from push-to-main runs only; see
+# linux-ci.yml's "Save ccache"). Neither of those levers lives here.
 #
 # Two reclaim paths, neither of which touches the build pipelines:
-#   * pr-cache-cleanup  — when a PR closes, delete the caches scoped to its ref
-#     (a merged PR's ~1.68 GB Linux ccache + ~0.66 GB Windows sccache are dead
-#     weight the moment it merges).
+#   * pr-cache-cleanup  — when a PR closes, delete the caches scoped to its ref.
 #   * prune-stale-caches — remove late cache writes from already-closed PR refs,
 #     then keep only the newest cache per (ref, key-family) and drop the per-SHA
-#     rolling churn. e.g. ccache-linux-main had 3 entries / 5 GB where 1
-#     suffices, because restore-keys always restores the most recent.
+#     rolling churn, because restore-keys always restores the most recent.
 
 on:
   pull_request:
@@ -25,9 +33,9 @@ on:
     # hold 2-3 near-identical generations (~1-2 GB) between cron ticks.
     branches: [main]
   schedule:
-    # Every 6 h: bounds how much per-push churn accumulates between prunes.
-    # The job is seconds of ubuntu time (just API calls), so cost is negligible.
-    - cron: "0 */6 * * *"
+    # Daily. The GitHub-hosted store this prunes (see the scope note above) sees
+    # only a handful of small writes per day, so a tighter tick reclaims nothing.
+    - cron: "0 3 * * *"
   workflow_dispatch:
 
 permissions:

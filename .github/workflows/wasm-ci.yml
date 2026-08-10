@@ -127,7 +127,12 @@ jobs:
           .emsdk/emsdk activate "${PJ_EMSCRIPTEN_VERSION}"
 
       - name: Restore WebAssembly compiler cache
-        uses: actions/cache@v5
+        # restore/save split rather than actions/cache: the implicit post-job
+        # save fires on every run and the SHA-keyed entry is never an exact
+        # hit, so each run persisted a new blob of up to max_size (4 G below)
+        # into billed Depot Cache storage. See linux-ci.yml's "Save ccache".
+        id: ccache_restore
+        uses: actions/cache/restore@v5
         with:
           path: ~/.cache/ccache
           key: ccache-wasm-ci-${{ github.sha }}
@@ -208,6 +213,20 @@ jobs:
           cmake --build build-wasm-probe \
             --target pj_app pj_scene3d_wasm_capability_probe --parallel 4
           ccache --show-stats
+
+      - name: Save WebAssembly compiler cache
+        # Re-seed only when the restore found nothing at all. This workflow has
+        # no push trigger, so a push-only gate would let the cache decay to
+        # permanently cold; conversely saving every run persisted a fresh blob
+        # of up to 4 G into billed Depot Cache storage. Cold-only bounds it to
+        # roughly one blob per Depot retention period while staying
+        # self-healing: whichever run finds an empty cache repopulates it.
+        # always(): the browser suites below are irrelevant to object validity.
+        if: always() && steps.ccache_restore.outputs.cache-matched-key == ''
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-wasm-ci-${{ github.sha }}
 
       - name: Retained Scene3D capability probe (Chromium)
         shell: bash

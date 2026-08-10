@@ -226,9 +226,17 @@ jobs:
           key: conan-linux-gcc-relwithdebinfo-v2-${{ steps.conan_cache.outputs.hash }}
 
       - name: Save ccache
-        # always(): a failed build's objects are still valid. Saved on PR runs
-        # too — the entries live in Depot Cache storage, not the 10 GB quota.
-        if: always() && steps.ccache_restore.outputs.cache-hit != 'true'
+        # always(): a failed build's objects are still valid.
+        #
+        # push-to-main only. The key carries the SHA (cache keys are immutable),
+        # so every run that saves writes a *new* ~2 GB blob that nothing ever
+        # deletes — and Depot Cache is billed per GB-month, unlike GitHub's
+        # free-but-LRU-evicted 10 GB quota. Saving from PR runs at this repo's
+        # velocity wrote ~40 GB/day of never-reclaimed storage. PR runs still
+        # RESTORE (via the main-branch restore-keys below), and hash_dir=false
+        # + base_dir make a main-based restore hit across workspace paths, so
+        # the cost is a few minutes on repeat pushes to the same PR.
+        if: always() && github.event_name == 'push' && steps.ccache_restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ~/.cache/ccache
@@ -352,7 +360,12 @@ jobs:
         run: sudo sysctl -w vm.mmap_rnd_bits=28 || true
 
       - name: Configure ccache
-        uses: actions/cache@v5
+        # restore/save split rather than actions/cache: the implicit post-job
+        # save fires on every run, and a SHA-keyed entry is never an exact hit,
+        # so each run persisted a new ~1 GB blob into billed Depot Cache
+        # storage. See the build job's "Save ccache" for the full rationale.
+        id: ccache_restore
+        uses: actions/cache/restore@v5
         with:
           path: ~/.cache/ccache
           key: ccache-linux-tsan-${{ github.ref_name }}-${{ github.sha }}
@@ -368,6 +381,13 @@ jobs:
 
       - name: Build + run foundation tests under ThreadSanitizer
         run: ./build.sh --tsan
+
+      - name: Save ccache
+        if: always() && github.event_name == 'push' && steps.ccache_restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-linux-tsan-${{ github.ref_name }}-${{ github.sha }}
 
       - name: ccache stats
         if: success()

@@ -55,6 +55,13 @@ jobs:
     env:
       PIXI_CACHE_DIR: ${{ github.workspace }}/.pixi_cache
       CCACHE_DIR: ${{ github.workspace }}/.ccache
+      # Bound the Linux compiler cache. Read straight from the environment by
+      # ccache itself, so it applies without invoking the binary before the
+      # pixi env is solved. Unset, ccache defaults to 5 G — the largest single
+      # writer into per-GB-month billed Depot Cache storage. 2 G matches
+      # linux-ci.yml, which holds PJ4's whole warm object set.
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPRESS: "1"
 
     steps:
       - name: Use HTTPS for github.com submodules
@@ -169,7 +176,11 @@ jobs:
         run: pixi run build
 
       - name: Save compiler objects (Linux)
-        if: always() && runner.os == 'Linux' && steps.ccache_restore.outputs.cache-hit != 'true'
+        # push-to-main only: the key carries the SHA (cache keys are immutable),
+        # so every saving run wrote a new blob that nothing ever deletes, into
+        # per-GB-month billed Depot Cache storage. PR runs still restore via the
+        # prefix restore-keys above. See linux-ci.yml's "Save ccache".
+        if: always() && runner.os == 'Linux' && github.event_name == 'push' && steps.ccache_restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ${{ env.CCACHE_DIR }}

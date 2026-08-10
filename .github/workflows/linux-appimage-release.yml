@@ -322,9 +322,16 @@ jobs:
           key: conan-appimage-v2-${{ hashFiles('conanfile.txt', 'conan.lock') }}
 
       - name: Save ccache
-        # always(): keep the objects even when a late step fails. Skipped only
-        # on an exact-key hit (immutable keys make re-saving a no-op anyway).
-        if: always() && github.ref_type != 'tag' && steps.ccache-restore.outputs.cache-hit != 'true'
+        # always(): keep the objects even when a late step fails.
+        #
+        # Re-seed only when the restore found nothing at all. The key carries
+        # the SHA (cache keys are immutable), so saving whenever the exact key
+        # missed wrote a new ~2 GB blob per dispatch into per-GB-month billed
+        # Depot Cache storage. The restore-keys above fall back to CI's
+        # ccache-linux-build-main-, which every push to main refreshes, and
+        # hash_dir=false + base_dir make those objects valid here — so the warm
+        # path survives without this workflow keeping its own generation.
+        if: always() && github.ref_type != 'tag' && steps.ccache-restore.outputs.cache-matched-key == ''
         uses: actions/cache/save@v5
         with:
           path: ~/.cache/ccache
