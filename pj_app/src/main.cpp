@@ -545,9 +545,16 @@ int main(int argc, char* argv[]) {
   }
 
   // Anonymous daily-user ping (see docs/TELEMETRY.md): opt-out via Preferences
-  // (default on) and skipped for headless --screenshot runs. Deferred like the
-  // update check; all failures are silent.
-  if (!parser.isSet(screenshot_option) && QSettings().value(u"Preferences::send_anonymous_stats"_s, true).toBool()) {
+  // (default on) and skipped for headless --screenshot runs. Also skipped in
+  // automated environments: CI runners have ephemeral machine ids, so every
+  // run would be counted as a brand-new user (`CI` is set by GitHub Actions
+  // and virtually every CI system; PJ_DISABLE_TELEMETRY covers other
+  // automation, e.g. local docker/test harnesses). Deferred like the update
+  // check; all failures are silent.
+  const bool automated_environment =
+      qEnvironmentVariableIsSet("CI") || qEnvironmentVariableIsSet("PJ_DISABLE_TELEMETRY");
+  if (!parser.isSet(screenshot_option) && !automated_environment &&
+      QSettings().value(u"Preferences::send_anonymous_stats"_s, true).toBool()) {
     QTimer::singleShot(0, &window, [&window]() { window.sendTelemetryPing(QStringLiteral(PJ_INSTALLATION_STRING)); });
   }
 

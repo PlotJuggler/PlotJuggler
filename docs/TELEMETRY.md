@@ -25,6 +25,12 @@ document and that test together.
 Preferences → Appearance → **Anonymous usage statistics** (off = nothing is
 ever sent). Headless `--screenshot` runs never send the ping.
 
+The ping is also suppressed automatically when the `CI` environment variable
+is set (GitHub Actions and virtually every CI system export it) or when
+`PJ_DISABLE_TELEMETRY` is set (for non-CI automation such as docker builds or
+test harnesses). CI runners have ephemeral machine ids, so without this guard
+every automated launch would be counted as a new "user".
+
 ## Implementation
 
 `pj_runtime`'s `TelemetryPing` (payload + transport); wired in
