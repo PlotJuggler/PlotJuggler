@@ -217,5 +217,35 @@ TEST(ScenePipelineSourceTest, ConcurrentPushAndQuery) {
   EXPECT_GT(resolved.load(), 0);
 }
 
+TEST(ScenePipelineSourceTest, HostEntryDecoderConvertsRawStorePayload) {
+  ObjectStore store;
+  auto topic = registerTopic(store, "annot");
+  store.pushOwned(topic, 1000, makeMockBytes(1000, 0));
+
+  int entry_decode_calls = 0;
+  ScenePipelineSource source(
+      &store, topic,
+      [&entry_decode_calls](
+          ISceneDecoder& decoder, Timestamp ts, const sdk::PayloadView& payload) -> Expected<SceneFrame> {
+        ++entry_decode_calls;
+        EXPECT_EQ(ts, 1000);
+        EXPECT_FALSE(payload.bytes.empty());
+        sdk::ImageAnnotations annotations;
+        annotations.timestamp = ts;
+        annotations.points.resize(3);
+        const sdk::BuiltinObject object = annotations;
+        return decoder.decode(object);
+      },
+      std::make_unique<MockDecoder>());
+
+  source.setTimestamp(1000);
+  auto frame = source.takeFrame();
+
+  ASSERT_TRUE(frame.has_value());
+  ASSERT_EQ(frame->overlays.size(), 1U);
+  EXPECT_EQ(frame->overlays.front().annotations.front().points.size(), 3U);
+  EXPECT_EQ(entry_decode_calls, 1);
+}
+
 }  // namespace
 }  // namespace PJ

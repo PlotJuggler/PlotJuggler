@@ -3,10 +3,12 @@
 #include "pj_scene2d_widgets/layers/scene_decoder_layer.h"
 
 #include <memory>
+#include <string>
 #include <utility>
 
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_core/media_source.h"
+#include "pj_scene2d_core/parser_object.h"
 #include "pj_scene2d_core/scene_decoder.h"
 #include "pj_scene2d_core/scene_pipeline_source.h"
 
@@ -27,13 +29,35 @@ std::unique_ptr<MediaSource> SceneDecoderLayer::createMediaSource(const SceneLay
     return nullptr;
   }
   // Topics produced by a message parser (e.g. yolo_msgs/DetectionArray, markers)
-  // store the RAW source message under pure-lazy ingest; hand the parser to the
-  // source so it converts raw -> canonical before decoding. Topics whose loader
-  // writes canonical bytes directly have no parser and decode them as-is.
+  // store the RAW source message under pure-lazy ingest. Keep SessionManager's
+  // replaceable parser lease in this host-aware layer: pj_scene2d_core receives
+  // only a complete entry decoder and stays independent of runtime binding types.
+  // Topics whose loader writes canonical bytes directly have no parser and
+  // decode them as-is.
   if (auto* session = sessionManager(); session != nullptr) {
-    if (auto* parser = session->parserForObjectTopic(topicId()); parser != nullptr) {
+    if (session->parserBindingForObjectTopic(topicId())) {
+      const ObjectTopicId topic = topicId();
+      const sdk::BuiltinObjectType expected_type = objectType();
       return std::make_unique<ScenePipelineSource>(
-          store, topicId(), parser, session->parserMutexForObjectTopic(topicId()), std::move(decoder));
+          store, topic,
+          [session, topic, expected_type](
+              ISceneDecoder& scene_decoder, Timestamp timestamp,
+              const sdk::PayloadView& payload) -> Expected<SceneFrame> {
+            // Resolve per parse, not at attach: reload replaces this stable
+            // topic's parser slot. `binding` is declared before `record`, so it
+            // also outlives the parsed std::any and keeps the plugin DSO mapped
+            // through decode and ObjectRecord destruction.
+            const auto binding = session->parserBindingForObjectTopic(topic);
+            if (!binding) {
+              return unexpected(std::string("no parser registered for scene topic"));
+            }
+            auto record = parseObjectRecordAs(*binding.parser, binding.mutex, timestamp, payload, expected_type);
+            if (!record.has_value()) {
+              return unexpected(std::move(record.error().message));
+            }
+            return scene_decoder.decode(record->object);
+          },
+          std::move(decoder));
     }
   }
   return std::make_unique<ScenePipelineSource>(store, topicId(), std::move(decoder));

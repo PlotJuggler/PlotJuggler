@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <climits>
+#include <functional>
 #include <memory>
-#include <mutex>
 #include <optional>
 
 #include "pj_datastore/object_store.hpp"
@@ -14,8 +14,6 @@
 
 namespace PJ {
 
-class MessageParserPluginBase;
-
 /// MediaSource for vector-overlay topics (annotations, markers, etc.).
 ///
 /// Symmetric to ImagePipelineSource but produces SceneFrames in MediaFrame.overlays
@@ -24,7 +22,9 @@ class MessageParserPluginBase;
 /// are small (KBs) so on-the-fly decode is cheap.
 ///
 /// Ownership: `store` is NOT owned (must outlive this object). `decoder`
-/// is owned (moved in).
+/// is owned (moved in). An entry decoder, when supplied, is owned but typically
+/// closes over host state it does not own — whatever it captures must outlive
+/// this object too.
 class ScenePipelineSource : public MediaSource {
  public:
   /// Canonical-producer topics: the store holds bytes the decoder reads directly.
@@ -33,15 +33,25 @@ class ScenePipelineSource : public MediaSource {
   /// @param decoder  Format-specific decoder for this topic's schema (owned)
   ScenePipelineSource(ObjectStore* store, ObjectTopicId topic, std::unique_ptr<ISceneDecoder> decoder);
 
+  /// Host-supplied decoding of one raw ObjectStore entry. The callback receives
+  /// the format-specific scene decoder owned by this source, so the host can
+  /// resolve its current parser lease and keep it alive across both parseObject
+  /// and decode without leaking the host's binding type into this core.
+  using ObjectEntryDecoder =
+      std::function<Expected<SceneFrame>(ISceneDecoder& decoder, Timestamp timestamp, const sdk::PayloadView& payload)>;
+
   /// Parser-backed topics: the store holds the RAW source message (e.g.
   /// yolo_msgs/DetectionArray under pure-lazy ingest). The parser converts it to
-  /// the canonical builtin object, which is re-serialized into the wire form the
-  /// decoder expects — mirroring the 3D consumer pattern (see parse_locked.h).
-  /// @param parser        message parser for this topic (not owned; a SessionManager singleton)
-  /// @param parser_mutex  serialises parseObject across consumers of the shared parser
+  /// the canonical builtin object, which the decoder consumes directly —
+  /// mirroring the 3D consumer pattern (see parse_locked.h).
+  ///
+  /// Parser lookup and lifetime are deliberately a host concern: the core knows
+  /// only how to fetch an entry and invoke this decoder. The host callback must
+  /// resolve any replaceable parser lease per call and hold it until the parsed
+  /// ObjectRecord has been decoded and destroyed.
   ScenePipelineSource(
-      ObjectStore* store, ObjectTopicId topic, MessageParserPluginBase* parser,
-      std::shared_ptr<std::mutex> parser_mutex, std::unique_ptr<ISceneDecoder> decoder);
+      ObjectStore* store, ObjectTopicId topic, ObjectEntryDecoder entry_decoder,
+      std::unique_ptr<ISceneDecoder> decoder);
 
   void setTimestamp(int64_t ts_ns) override;
   std::optional<MediaFrame> takeFrame() override;
@@ -60,10 +70,9 @@ class ScenePipelineSource : public MediaSource {
   bool pending_clear_ = false;
   bool last_emitted_empty_ = true;
   int64_t last_ts_ = INT64_MIN;
-  // Non-null for parser-backed topics: parse RAW store bytes to a canonical
-  // object before decoding. Null for canonical-producer topics.
-  MessageParserPluginBase* parser_ = nullptr;
-  std::shared_ptr<std::mutex> parser_mutex_;
+  // Set for host-decoded topics (normally parser-backed raw messages). Empty for
+  // canonical-producer topics, whose store bytes the decoder reads directly.
+  ObjectEntryDecoder entry_decoder_;
 };
 
 }  // namespace PJ

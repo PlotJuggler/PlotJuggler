@@ -54,6 +54,17 @@ bool Scene2DLayer::attach(const SceneLayerContext& ctx) {
     emit warningChanged(true, tr("Layer source could not be created"));
     return false;
   }
+  dataset_replace_connection_ =
+      connect(session_, &SessionManager::datasetAboutToBeReplaced, this, [this](DatasetId dataset_id) {
+        if (store_ == nullptr || source_ == nullptr || store_->descriptor(topicId()).dataset_id != dataset_id) {
+          return;
+        }
+        // The signal is the transaction's pre-swap boundary. Arm the source now;
+        // MainWindow's post-load tracker broadcast will see the bumped render key
+        // and re-decode even when both cursor and active sample stamp are unchanged.
+        ++data_generation_;
+        source_->invalidate();
+      });
   emit warningChanged(false, {});
   onAfterAttach();
   return true;
@@ -61,6 +72,8 @@ bool Scene2DLayer::attach(const SceneLayerContext& ctx) {
 
 void Scene2DLayer::detach() {
   onBeforeDetach();
+  QObject::disconnect(dataset_replace_connection_);
+  dataset_replace_connection_ = {};
   source_.reset();
   store_ = nullptr;
   session_ = nullptr;
@@ -81,15 +94,21 @@ uint64_t Scene2DLayer::renderKey(PJ::Timepoint time) const {
   // 60 Hz ticks that land on the same image/video/depth frame coalesce into one
   // repaint; a new sample changes the key (and its async decode also repaints via
   // the frame-ready callback). Stamp, not index: eviction renumbers indices.
+  uint64_t sample_key = static_cast<uint64_t>(PJ::toRaw(time));
   if (store_ != nullptr) {
     if (const auto index = store_->indexAt(topicId(), PJ::toRaw(time)); index.has_value()) {
       if (const auto stamps = store_->entryTimestamps(topicId()); *index < stamps.size()) {
-        return static_cast<uint64_t>(stamps[*index]);
+        sample_key = static_cast<uint64_t>(stamps[*index]);
+      } else {
+        sample_key = PJ::kNoSampleRenderKey;
       }
+    } else {
+      sample_key = PJ::kNoSampleRenderKey;
     }
-    return PJ::kNoSampleRenderKey;  // no active sample at this time
   }
-  return static_cast<uint64_t>(PJ::toRaw(time));  // unattached: never skip
+  // Odd multiplication is injective modulo 2^64, so for an unchanged sample a
+  // replacement generation always produces a different render key.
+  return sample_key ^ (data_generation_ * 0x9e3779b97f4a7c15ULL);
 }
 
 void Scene2DLayer::setVisible(bool visible) {

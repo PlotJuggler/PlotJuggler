@@ -4,6 +4,7 @@
 
 #include <QDomDocument>
 #include <QDomElement>
+#include <QMetaObject>
 #include <QObject>
 #include <QString>
 #include <QWidget>
@@ -88,6 +89,11 @@ class Scene2DLayer : public ISceneLayer {
   ObjectStore* store_ = nullptr;
   std::unique_ptr<MediaSource> source_;
   std::optional<int64_t> last_tracker_time_ns_;
+  QMetaObject::Connection dataset_replace_connection_;
+  // replaceDataset keeps ObjectTopicId and often sample timestamps stable. Fold
+  // this generation into renderKey so the post-load tracker seed cannot coalesce
+  // away the forced re-decode of the replacement bytes/parser.
+  uint64_t data_generation_ = 0;
 };
 
 }  // namespace PJ

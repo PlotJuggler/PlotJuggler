@@ -12,6 +12,7 @@
 #include <QSet>
 #include <QWheelEvent>
 #include <QtGlobal>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -21,6 +22,8 @@
 
 #include "pj_base/builtin/image.hpp"
 #include "pj_base/builtin/image_codec.hpp"
+#include "pj_plugins/host/message_parser_handle.hpp"
+#include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #include "pj_scene2d_widgets/layers/depth_image_layer.h"
@@ -73,6 +76,44 @@ std::vector<uint8_t> makeImageBytes(
   img.encoding = encoding;
   img.data = PJ::Span<const uint8_t>(pixels.data(), pixels.size());
   return PJ::serializeImage(img);
+}
+
+std::atomic<int> g_first_annotation_parser_calls{0};
+std::atomic<int> g_second_annotation_parser_calls{0};
+std::weak_ptr<void> g_annotation_parser_keepalive;
+std::atomic<long> g_annotation_parser_keepalive_refs{0};
+
+class TaggedAnnotationParser final : public PJ::MessageParserPluginBase {
+ public:
+  TaggedAnnotationParser(std::atomic<int>* calls, uint32_t point_count) {
+    registerSchemaHandler(
+        "PJ.ImageAnnotations",
+        PJ::sdk::SchemaHandler{
+            .object_type = PJ::sdk::BuiltinObjectType::kImageAnnotations,
+            .parse_scalars = nullptr,
+            .parse_object = [calls, point_count](
+                                PJ::Timestamp ts, PJ::sdk::PayloadView) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+              calls->fetch_add(1, std::memory_order_relaxed);
+              g_annotation_parser_keepalive_refs.store(
+                  g_annotation_parser_keepalive.use_count(), std::memory_order_relaxed);
+              PJ::sdk::ImageAnnotations annotations;
+              annotations.timestamp = ts;
+              annotations.points.resize(point_count);
+              return PJ::sdk::ObjectRecord{.ts = ts, .object = annotations};
+            },
+        });
+  }
+};
+
+template <typename CreateFn>
+std::unique_ptr<PJ::MessageParserHandle> makeBoundAnnotationParser(CreateFn create_fn) {
+  static constexpr const char* kManifest =
+      R"({"id":"scene2d-rebind-parser","name":"Scene2D Rebind Parser","version":"1.0.0","encoding":["mock"]})";
+  auto handle =
+      std::make_unique<PJ::MessageParserHandle>(PJ::MessageParserPluginBase::vtableWithCreate(create_fn, kManifest));
+  EXPECT_TRUE(handle->valid());
+  EXPECT_TRUE(handle->bindSchema("PJ.ImageAnnotations", {}).has_value());
+  return handle;
 }
 
 // The layer family ("Depth" / "Image") the dock created for a topic.
@@ -532,6 +573,70 @@ TEST(Scene2DDockWidget, CompositeTracksVisibilityAndOrder) {
   EXPECT_EQ(dock.compositeLayerCountForTesting(), 2U);
   EXPECT_EQ(ids(dock.compositeTopicOrderForTesting()), (std::vector<uint32_t>{depth.id, image.id}));
   EXPECT_EQ(layerIds(dock.layers()), (std::vector<uint32_t>{depth.id, image.id}));
+}
+
+TEST(Scene2DDockWidget, DatasetReloadRebindsAnnotationParserAtAnUnchangedTrackerTime) {
+  g_first_annotation_parser_calls.store(0, std::memory_order_relaxed);
+  g_second_annotation_parser_calls.store(0, std::memory_order_relaxed);
+  g_annotation_parser_keepalive.reset();
+  g_annotation_parser_keepalive_refs.store(0, std::memory_order_relaxed);
+
+  PJ::SessionManager session;
+  const auto topic = registerTopic(session, 1, "/camera/annotations", R"({"builtin_object_type":"kImageAnnotations"})");
+  ASSERT_TRUE(session.objectStore().pushOwned(topic, 100, std::vector<uint8_t>{0x01}).has_value());
+  session.registerObjectTopicParser(topic, makeBoundAnnotationParser([]() noexcept -> void* {
+                                      return new TaggedAnnotationParser(&g_first_annotation_parser_calls, 1);
+                                    }));
+
+  PJ::Scene2DDockWidget dock;
+  dock.setSessionManager(&session);
+  ASSERT_TRUE(dock.addTopic(topic, PJ::sdk::BuiltinObjectType::kImageAnnotations, u"annotations"_s));
+  dock.onTrackerTime(100.0 / 1'000'000'000.0);
+  ASSERT_GT(g_first_annotation_parser_calls.load(std::memory_order_relaxed), 0);
+
+  // Keep the old parser mapped so a stale-pointer regression is deterministic:
+  // it increments the first counter instead of becoming an allocator-dependent
+  // use-after-free crash.
+  const auto stale_guard = session.parserKeepaliveForObjectTopic(topic);
+  ASSERT_NE(stale_guard, nullptr);
+  const int first_calls_before_reload = g_first_annotation_parser_calls.load(std::memory_order_relaxed);
+
+  PJ::DataEngine staged_engine;
+  auto staged_dataset =
+      staged_engine.createDataset(PJ::DatasetDescriptor{.source_name = "replacement", .time_domain_id = 0}, 2);
+  ASSERT_TRUE(staged_dataset.has_value());
+  PJ::ObjectStore staged_store;
+  auto staged_topic = staged_store.registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *staged_dataset,
+          .topic_name = "/camera/annotations",
+          .metadata_json = R"({"builtin_object_type":"kImageAnnotations"})",
+      });
+  ASSERT_TRUE(staged_topic.has_value());
+  ASSERT_TRUE(staged_store.pushOwned(*staged_topic, 100, std::vector<uint8_t>{0x02}).has_value());
+
+  std::vector<std::pair<PJ::ObjectTopicId, std::unique_ptr<PJ::MessageParserHandle>>> staged_parsers;
+  staged_parsers.emplace_back(*staged_topic, makeBoundAnnotationParser([]() noexcept -> void* {
+    return new TaggedAnnotationParser(&g_second_annotation_parser_calls, 2);
+  }));
+  session.replaceDataset(staged_engine, staged_store, *staged_dataset, /*primary_id=*/1, std::move(staged_parsers));
+  {
+    const auto replacement_binding = session.parserBindingForObjectTopic(topic);
+    ASSERT_TRUE(replacement_binding);
+    g_annotation_parser_keepalive = replacement_binding.keepalive;
+  }
+
+  // The cursor and active sample timestamp are deliberately unchanged. The
+  // dataset replacement hook must invalidate both the source's timestamp dedup
+  // and the dock's render fingerprint before this production tracker seed.
+  dock.onTrackerTime(100.0 / 1'000'000'000.0);
+
+  EXPECT_EQ(g_first_annotation_parser_calls.load(std::memory_order_relaxed), first_calls_before_reload)
+      << "the retained layer decoded through the replaced parser";
+  EXPECT_GT(g_second_annotation_parser_calls.load(std::memory_order_relaxed), 0)
+      << "the retained layer did not resolve the replacement parser";
+  EXPECT_GE(g_annotation_parser_keepalive_refs.load(std::memory_order_relaxed), 2)
+      << "the replacement parser binding was not held across parseObject";
 }
 
 TEST(Scene2DDockWidget, XmlRoundTripRestoresLayerOrderAndVisibility) {

@@ -6,8 +6,6 @@
 #include <cstdio>
 #include <utility>
 
-#include "pj_plugins/sdk/message_parser_plugin_base.hpp"
-
 namespace PJ {
 
 ScenePipelineSource::ScenePipelineSource(
@@ -15,13 +13,8 @@ ScenePipelineSource::ScenePipelineSource(
     : store_(store), topic_(topic), decoder_(std::move(decoder)) {}
 
 ScenePipelineSource::ScenePipelineSource(
-    ObjectStore* store, ObjectTopicId topic, MessageParserPluginBase* parser, std::shared_ptr<std::mutex> parser_mutex,
-    std::unique_ptr<ISceneDecoder> decoder)
-    : store_(store),
-      topic_(topic),
-      decoder_(std::move(decoder)),
-      parser_(parser),
-      parser_mutex_(std::move(parser_mutex)) {}
+    ObjectStore* store, ObjectTopicId topic, ObjectEntryDecoder entry_decoder, std::unique_ptr<ISceneDecoder> decoder)
+    : store_(store), topic_(topic), decoder_(std::move(decoder)), entry_decoder_(std::move(entry_decoder)) {}
 
 void ScenePipelineSource::setTimestamp(int64_t ts_ns) {
   if (ts_ns == last_ts_) {
@@ -58,29 +51,10 @@ void ScenePipelineSource::setTimestamp(int64_t ts_ns) {
     }
   };
 
-  if (parser_ != nullptr) {
-    // Parser-backed topic: the store holds the RAW source message. Run the parser
-    // to get the canonical object and decode that object directly — no serialize/
-    // deserialize round-trip (the 3D consumer decodes the object the same way).
-    // Hold the shared parser mutex for the parseObject call only (mirrors
-    // ImagePipelineSource::decodeAt): MessageParser plugins keep stateful scratch
-    // and aren't thread-safe across consumers of the same singleton.
-    auto invoke_parser = [&] {
-      if (parser_mutex_) {
-        std::lock_guard<std::mutex> lock(*parser_mutex_);
-        return parser_->parseObject(entry->timestamp, entry->payload);
-      }
-      return parser_->parseObject(entry->timestamp, entry->payload);
-    };
-    auto record = invoke_parser();
-    if (!record.has_value()) {
-      fprintf(
-          stderr, "[ScenePipelineSource] parseObject failed at ts=%lld: %s\n", static_cast<long long>(ts_ns),
-          record.error().c_str());
-      pending_scene_.reset();
-      return;
-    }
-    apply(decoder_->decode(record->object));
+  if (entry_decoder_) {
+    // The host owns parser lookup, locking and lifetime. Keeping that policy out
+    // of this core avoids a second copy of SessionManager's binding abstraction.
+    apply(entry_decoder_(*decoder_, entry->timestamp, entry->payload));
   } else {
     // Canonical-producer topic: the store holds canonical bytes; decode as-is.
     apply(decoder_->decode(entry->payload.bytes.data(), entry->payload.bytes.size()));
