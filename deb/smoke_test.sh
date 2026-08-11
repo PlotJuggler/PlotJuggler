@@ -15,6 +15,10 @@
 set -e
 export DEBIAN_FRONTEND=noninteractive
 
+# This automation deliberately launches the real GUI. Suppress its anonymous
+# launch ping even when the caller does not forward CI into the container.
+export PJ_DISABLE_TELEMETRY=1
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT HUP INT TERM
 

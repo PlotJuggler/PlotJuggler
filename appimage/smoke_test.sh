@@ -17,6 +17,10 @@
 #   sh appimage/smoke_test.sh <path/to/PlotJuggler-*.AppImage>
 set -e
 
+# This automation deliberately launches the real GUI. Suppress its anonymous
+# launch ping even when the caller does not forward CI into the container.
+export PJ_DISABLE_TELEMETRY=1
+
 APPIMAGE_PATH="${1:?usage: smoke_test.sh <path/to/PlotJuggler-*.AppImage>}"
 
 WORK="$(mktemp -d)"
