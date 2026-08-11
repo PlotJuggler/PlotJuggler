@@ -695,7 +695,7 @@ if(PJ_BUILD_TESTS)
     target_link_libraries(pj_app_loader_testlib PUBLIC
         pj_runtime
         pj_widgets
-        pj_scene3d_widgets
+        $<$<TARGET_EXISTS:pj_scene3d_widgets>:pj_scene3d_widgets>
         pj_dialog_engine_qt
         Qt6::Widgets
         GTest::gtest

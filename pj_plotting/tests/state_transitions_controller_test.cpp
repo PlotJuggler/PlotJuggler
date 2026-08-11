@@ -5,6 +5,7 @@
 
 #include <QApplication>
 #include <QSignalSpy>
+#include <QElapsedTimer>
 #include <QTest>
 #include <memory>
 #include <string_view>
@@ -133,9 +134,23 @@ class StateTransitionsControllerTest : public ::testing::Test {
     }
   }
 
-  /// Let the coalescing refresh's trailing edge (~100 ms window) fire.
+  /// Let the coalescing refresh's trailing edge (~100 ms window) fire. A bare
+  /// 150 ms budget leaves 50 ms of headroom, which a loaded CI host overruns —
+  /// it surfaces as a half-refreshed row rather than as a timeout.
   static void waitForCoalescedRefresh() {
-    QTest::qWait(150);
+    QTest::qWait(1000);
+  }
+
+  /// Same trailing edge, but returns as soon as `ready` observes the refreshed
+  /// state. Prefer this wherever the expected result is known: it is faster than
+  /// the fixed wait and independent of how heavily the host is loaded.
+  template <typename Predicate>
+  static void waitForCoalescedRefresh(Predicate ready) {
+    QElapsedTimer timer;
+    timer.start();
+    while (!ready() && timer.elapsed() < 5000) {
+      QTest::qWait(10);
+    }
   }
 
   void appendStateAndCommit(std::initializer_list<std::pair<Timestamp, const char*>> samples) {
@@ -264,7 +279,7 @@ TEST_F(StateTransitionsControllerTest, IngestRefreshesAffectedRow) {
   appendStateAndCommit({{8, "ERROR"}});
   // commitChunks emits samplesIngested synchronously; the refresh coalesces to
   // the trigger's trailing edge (~100 ms window).
-  waitForCoalescedRefresh();
+  waitForCoalescedRefresh([this] { return view_->rowForTest(0).segments.size() == 3U; });
   const StateRow row = view_->rowForTest(0);
   ASSERT_EQ(row.segments.size(), 3U);
   EXPECT_EQ(row.segments[2].value, u"ERROR"_s);
@@ -339,7 +354,7 @@ TEST_F(StateTransitionsControllerTest, ReplaceRetypeToFloatDropsRow) {
   // Retyped to a float: no longer a discrete field, so the row leaves the
   // strip — the same policy as a vanished topic.
   replaceStateTopicWithType(PrimitiveType::kFloat64);
-  waitForCoalescedRefresh();
+  waitForCoalescedRefresh([this] { return controller_->rowCount() == 0; });
   EXPECT_EQ(controller_->rowCount(), 0);
   EXPECT_EQ(view_->rowCountForTest(), 0);
   EXPECT_GE(changed.count(), 1);
@@ -366,7 +381,10 @@ TEST_F(StateTransitionsControllerTest, CatalogRemovalPrunesRows) {
 TEST_F(StateTransitionsControllerTest, RangeGrowthExtendsTrailingSegment) {
   ASSERT_TRUE(controller_->addSeries(string_key_));
   playback_.setRange(DisplayRange{.min = DisplaySeconds{0.0}, .max = DisplaySeconds{50.0}});
-  waitForCoalescedRefresh();
+  waitForCoalescedRefresh([this] {
+    const StateRow row = view_->rowForTest(0);
+    return !row.segments.empty() && row.segments.back().t_end_ns == 50 * kNs;
+  });
   EXPECT_EQ(view_->rowForTest(0).segments.back().t_end_ns, 50 * kNs);
 }
 

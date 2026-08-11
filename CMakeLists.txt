@@ -81,6 +81,20 @@ endif()
 set(PJ_BUILD_TESTS ${_PJ_BUILD_TESTS_DEFAULT} CACHE BOOL "Build foundation (SDK + pj_datastore) tests")
 unset(_PJ_BUILD_TESTS_DEFAULT)
 option(PJ_BUILD_DEMOS "Build the pj_scene3D standalone dev demos" ON)
+# The widget family needs an OpenGL 4.5 core profile: withCoreGlFunctions() throws
+# when it cannot resolve, and scene_hdr_fbo, gl/gpu_profiler and
+# passes/pointcloud_aabb_reducer all depend on it. Apple caps OpenGL at 4.1, so the
+# module cannot run on macOS regardless of whether it compiles. Off on APPLE until a
+# 4.1 or Metal backend exists; pj_scene3d_core is Qt/GL-free and still builds, and
+# consumers guard the widget target with TARGET_EXISTS.
+if(APPLE)
+    set(_PJ_BUILD_SCENE3D_WIDGETS_DEFAULT OFF)
+else()
+    set(_PJ_BUILD_SCENE3D_WIDGETS_DEFAULT ON)
+endif()
+option(PJ_BUILD_SCENE3D_WIDGETS "Build the pj_scene3D OpenGL widget family"
+       ${_PJ_BUILD_SCENE3D_WIDGETS_DEFAULT})
+unset(_PJ_BUILD_SCENE3D_WIDGETS_DEFAULT)
 set(PJ_BUILD_PARQUET_IMPORT_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(PJ_BUILD_PORTED_PLUGINS OFF CACHE BOOL "" FORCE)
 
@@ -103,7 +117,12 @@ else()
     # wasm32 makes size_t 32-bit and surfaces the SDK's explicitly tracked
     # uint64_t ABI conversions. Keep the warnings visible, but do not turn the
     # cross-compile bring-up into an unrelated warning-cleanup project.
-    if(NOT EMSCRIPTEN)
+    #
+    # Apple clang runs ahead of the compilers Linux and Windows CI pin, so it
+    # diagnoses constructs they accept (e.g. -Wunneeded-internal-declaration on a
+    # self-recursive static helper). Same rule as wasm: warnings stay visible but
+    # do not gate the build. Re-enable once a macOS job pins a tracked toolchain.
+    if(NOT EMSCRIPTEN AND NOT APPLE)
         list(APPEND PJ_WARNING_FLAGS -Werror)
     endif()
 endif()
@@ -212,7 +231,9 @@ if(PJ_BUILD_TOOLS)
 endif()
 if(NOT EMSCRIPTEN OR PJ_WASM_WITH_SCENE3D)
     add_subdirectory(pj_scene3D/core)
-    add_subdirectory(pj_scene3D/widgets)
+    if(PJ_BUILD_SCENE3D_WIDGETS)
+        add_subdirectory(pj_scene3D/widgets)
+    endif()
 endif()
 if(EMSCRIPTEN AND PJ_WASM_SCENE3D_CAPABILITY_PROBE)
     # W12 is a retained measurement executable, not part of the product and not
@@ -225,7 +246,8 @@ endif()
 if(TARGET pj_scene3d_widgets)
     add_compile_definitions(PJ_WITH_SCENE3D)
 endif()
-if(PJ_BUILD_DEMOS AND NOT EMSCRIPTEN)
+# The demos link pj_scene3d_widgets, so they build only where that target exists.
+if(PJ_BUILD_DEMOS AND NOT EMSCRIPTEN AND TARGET pj_scene3d_widgets)
     add_subdirectory(pj_scene3D/demos)
 endif()
 add_subdirectory(pj_dialog_host)

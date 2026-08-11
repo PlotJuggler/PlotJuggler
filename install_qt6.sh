@@ -8,7 +8,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/versions.env"
 
-QT_DIR="${SCRIPT_DIR}/.qt/${PJ_QT_VERSION}/gcc_64"
+# aqt names the host, the architecture, and the directory it unpacks into
+# differently per platform, and none of the three is derivable from the others.
+case "$(uname -s)" in
+  Linux)  QT_HOST=linux; QT_ARCH=linux_gcc_64; QT_KIT=gcc_64 ;;
+  Darwin) QT_HOST=mac;   QT_ARCH=clang_64;     QT_KIT=macos ;;
+  *)      echo "Unsupported host $(uname -s); install Qt ${PJ_QT_VERSION} manually" >&2; exit 1 ;;
+esac
+
+QT_DIR="${SCRIPT_DIR}/.qt/${PJ_QT_VERSION}/${QT_KIT}"
 
 if [[ -d "$QT_DIR" ]]; then
   echo "Qt ${PJ_QT_VERSION} already installed at ${QT_DIR}"
@@ -29,7 +37,7 @@ echo "Installing Qt ${PJ_QT_VERSION} via aqtinstall..."
 # metadata checksum ("Failed to download checksum ... Failed to locate XML data
 # for Qt version"). It's transient — a retry usually lands on a healthy mirror.
 attempt=0
-until aqt install-qt linux desktop "$PJ_QT_VERSION" linux_gcc_64 --outputdir "${SCRIPT_DIR}/.qt"; do
+until aqt install-qt "$QT_HOST" desktop "$PJ_QT_VERSION" "$QT_ARCH" --outputdir "${SCRIPT_DIR}/.qt"; do
   attempt=$((attempt + 1))
   if [[ "$attempt" -ge 5 ]]; then
     echo "aqt failed after ${attempt} attempts" >&2

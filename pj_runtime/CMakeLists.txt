@@ -418,7 +418,10 @@ if(PJ_BUILD_TESTS)
     target_compile_definitions(mock_data_source_pinning_v2_plugin PRIVATE PIN_MOCK_VERSION="2.0.0")
     target_link_libraries(mock_data_source_pinning_v2_plugin PRIVATE pj_base)
 
-    if(NOT WIN32)
+    # -z is an ELF linker option; Mach-O has no equivalent spelling and Apple's ld
+    # rejects it. dyld already declines to unload most images on dlclose(), so the
+    # residency this mock models is the platform default on macOS.
+    if(NOT WIN32 AND NOT APPLE)
       target_link_options(mock_data_source_pinning_plugin PRIVATE -Wl,-z,nodelete)
       target_link_options(mock_data_source_pinning_v2_plugin PRIVATE -Wl,-z,nodelete)
     endif()

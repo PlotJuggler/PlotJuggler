@@ -3,7 +3,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/versions.env"
 
-QT_DIR="${SCRIPT_DIR}/.qt/${PJ_QT_VERSION}/gcc_64"
+# Kit directory and CPU count are both spelled per-platform; install_qt6.sh lays
+# the kit down under the same name.
+case "$(uname -s)" in
+  Darwin) QT_KIT=macos;  NPROC="$(sysctl -n hw.ncpu)" ;;
+  *)      QT_KIT=gcc_64; NPROC="$(nproc)" ;;
+esac
+
+QT_DIR="${SCRIPT_DIR}/.qt/${PJ_QT_VERSION}/${QT_KIT}"
 
 # `./build.sh --tsan` builds + runs the Qt-free foundation concurrency tests under
 # ThreadSanitizer in a separate build-tsan/ tree (the default build/ is untouched).
@@ -85,7 +92,7 @@ if [[ "$TSAN" == "1" ]]; then
     -DPJ4_BUILD_APP=OFF \
     "${CMAKE_CCACHE_ARGS[@]+"${CMAKE_CCACHE_ARGS[@]}"}" "${PJ_FLAG_ARGS[@]+"${PJ_FLAG_ARGS[@]}"}"
 
-  cmake --build "$BUILD_DIR" --target "${TSAN_TESTS[@]}" -j "$(nproc)"
+  cmake --build "$BUILD_DIR" --target "${TSAN_TESTS[@]}" -j "${NPROC}"
 
   # Run under ctest so the per-test CMake TIMEOUT catches a deadlock regression,
   # and so TSan's non-zero exit (it dies on the first report under halt_on_error)
@@ -122,4 +129,4 @@ cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" \
 # path is gitignored; the relative target survives a worktree move.
 ln -sf "build/compile_commands.json" "$SCRIPT_DIR/compile_commands.json"
 
-cmake --build "$BUILD_DIR" -j "$(nproc)"
+cmake --build "$BUILD_DIR" -j "${NPROC}"

@@ -1,0 +1,176 @@
+name: macOS CI
+
+on:
+  # main-4.x is listed as well as main: PJ4 development happens there today, and a
+  # trigger list without it never fires on the branch actually being worked on.
+  pull_request:
+    branches: [main, main-4.x, development]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main, main-4.x, development]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    if: github.event.pull_request.draft == false
+    # macos-15 is arm64 (Apple silicon); the x86_64 runner images are retired.
+    # This is the only job that covers the APPLE branches in the CMake — without
+    # it the platform guards rot silently.
+    runs-on: macos-15
+    # Higher than the Linux ceiling: ConanCenter publishes no macOS/armv8 binaries
+    # for this closure, so a cold cache compiles every dependency (ffmpeg, cpython,
+    # assimp) from source — measured at 33 min end to end, of which Conan is 16.
+    # A warm run is ~6 min (Conan restores in about a second).
+    timeout-minutes: 90
+    permissions:
+      contents: read
+
+    steps:
+      - name: Use HTTPS for github.com submodules
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Read versions
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./versions.env
+          echo "PJ_APP_VERSION=${PJ_APP_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_QT_VERSION=${PJ_QT_VERSION}" >> "${GITHUB_ENV}"
+          echo "app_version=${PJ_APP_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "qt_version=${PJ_QT_VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - uses: conan-io/setup-conan@v1
+        with:
+          cache_packages: false
+
+      - name: Compute Conan cache hash
+        id: conan_cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          hash=$(find . \( -name conanfile.txt -o -name conan.lock \) -not -path './build/*' -not -path './.git/*' \
+                  -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256 | cut -c1-16)
+          echo "hash=${hash}" >> "${GITHUB_OUTPUT}"
+
+      - name: Restore Conan cache
+        # Unlike the Depot-backed Linux job this uses GitHub's shared cache quota,
+        # so the closure is trimmed before saving (below) to stay inside it.
+        id: conan-gha-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.conan2
+          key: conan-macos-appleclang-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
+          restore-keys: |
+            conan-macos-appleclang-relwithdebinfo-
+
+      - name: Cache Qt
+        id: qt-cache
+        uses: actions/cache@v5
+        with:
+          path: .qt
+          key: qt-${{ steps.versions.outputs.qt_version }}-macos-clang_64
+
+      - name: Install Qt via aqt
+        # install_qt6.sh selects the mac/clang_64 kit from uname; it no-ops when
+        # the cache above already restored .qt.
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: ./install_qt6.sh
+
+      - name: Install build tooling
+        run: brew install ccache
+
+      - name: Configure ccache
+        id: ccache_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/Library/Caches/ccache
+          key: ccache-macos-build-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-macos-build-${{ github.ref_name }}-
+            ccache-macos-build-main-
+
+      - name: Set ccache limits
+        # Mirrors the Linux job: 2G holds the whole warm object set, and hashing by
+        # content rather than mtime/path keeps entries reusable across runs.
+        run: |
+          ccache --set-config=max_size=2G
+          ccache --set-config=compression=true
+          ccache --set-config=compiler_check=content
+          ccache --set-config=hash_dir=false
+          ccache --set-config=base_dir="${GITHUB_WORKSPACE}"
+          ccache -z
+
+      - name: Conan install
+        id: conan_install
+        shell: bash
+        run: |
+          set -euo pipefail
+          conan profile detect --force
+          conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
+          conan install . --output-folder=build --build=missing -r=conancenter \
+            --lockfile=conan.lock --lockfile-partial \
+            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+            2>&1 | tee "$conan_log"
+          if grep -q "Building from source" "$conan_log"; then
+            echo "::notice::Conan built missing macOS binaries; the cache save below persists them."
+          fi
+
+      - name: Build
+        # Same entry point as the Linux job. pj_scene3D's widget family is off by
+        # default here (PJ_BUILD_SCENE3D_WIDGETS): it needs a GL 4.5 core profile,
+        # which Apple's 4.1-capped stack cannot provide.
+        run: ./build.sh --skip-conan-install
+
+      - name: Trim Conan cache before saving
+        if: always() && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: conan cache clean "*" --build --source --temp || true
+
+      - name: Save Conan cache
+        if: always() && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.conan2
+          key: ${{ steps.conan-gha-cache.outputs.cache-primary-key }}
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: ~/Library/Caches/ccache
+          key: ${{ steps.ccache_restore.outputs.cache-primary-key }}
+
+      - name: ccache stats
+        if: success()
+        run: ccache -s
+
+      - name: Test
+        # macOS has no xvfb, and the runner's WindowServer session does not reliably
+        # activate or focus windows — widget suites that depend on it (dialog_engine,
+        # SliderStates) fail or crash intermittently against the native plugin. The
+        # offscreen platform plugin is the deterministic equivalent of the Linux
+        # xvfb pass, so the bulk of the suite runs under it.
+        #
+        # RasterTextGlTest is the exception: it needs a real GL context, which
+        # offscreen cannot provide, so it runs against the native plugin. Between the
+        # two passes every test is covered — neither pass skips anything outright.
+        #
+        # TMPDIR is canonicalised because macOS hands out /var/folders/... while
+        # /var itself is a symlink to /private/var. Suites that compare a path the
+        # product resolved against one built from QTemporaryDir would otherwise
+        # compare /private/var/... with /var/..., and the removal journal would
+        # treat every temp target as the symlinked path it deliberately refuses.
+        run: |
+          export TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+          QT_QPA_PLATFORM=offscreen \
+            ctest --test-dir build --output-on-failure --timeout 120 -E '^RasterTextGlTest$'
+          ctest --test-dir build --output-on-failure --timeout 120 -R '^RasterTextGlTest$'
