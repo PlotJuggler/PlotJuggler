@@ -56,6 +56,47 @@ TEST(ResidentPayloadPoolTest, AdmitServesAndAccountsBytes) {
   EXPECT_EQ(stats.resident_hits, 1U);
 }
 
+// The reservation exists so a few huge payloads cannot evict a numerous tiny
+// topic. MEASURED motivation: 598 point clouds filled a 256 MB budget and
+// evicted 19,817 of 29,360 admissions, so a third of the GUI's TF reads missed
+// the pool and paid a file re-read + chunk decompress each.
+TEST(ResidentPayloadPoolTest, LargePayloadsCannotEvictTheSmallClass) {
+  // 8 MiB pool -> 1 MiB reserved for payloads <= 64 KiB.
+  ResidentPayloadPool pool(8 * 1024 * 1024);
+
+  // A numerous small topic, comfortably inside the reservation.
+  std::vector<std::shared_ptr<PJ::ResidentSlot>> small;
+  small.reserve(64);
+  for (int i = 0; i < 64; ++i) {
+    small.push_back(pool.admit(makePayload(1024, static_cast<uint8_t>(i))));
+    ASSERT_NE(small.back(), nullptr);
+  }
+
+  // Now churn far more than the whole budget through the large class.
+  for (int i = 0; i < 32; ++i) {
+    ASSERT_NE(pool.admit(makePayload(1024 * 1024, 0xAA)), nullptr);
+  }
+
+  // Every small payload must still be resident: large admissions may only evict
+  // other large ones.
+  for (std::size_t i = 0; i < small.size(); ++i) {
+    EXPECT_TRUE(small[i]->load().has_value()) << "small payload " << i << " was evicted by large churn";
+  }
+}
+
+// A payload bigger than the small class's entire capacity is NOT small: calling
+// it small would make each admission evict the whole class and still not fit.
+TEST(ResidentPayloadPoolTest, PayloadTooBigForTheReservationIsTreatedAsLarge) {
+  ResidentPayloadPool pool(250);  // reservation is 31 bytes
+  auto a = pool.admit(makePayload(100, 1));
+  auto b = pool.admit(makePayload(100, 2));
+  ASSERT_NE(a, nullptr);
+  ASSERT_NE(b, nullptr);
+  // Both live in the large class, so both fit under 250 - 31.
+  EXPECT_TRUE(a->load().has_value());
+  EXPECT_TRUE(b->load().has_value());
+}
+
 TEST(ResidentPayloadPoolTest, FifoEvictionByAdmissionOrder) {
   ResidentPayloadPool pool(250);
   auto first = pool.admit(makePayload(100, 1));
