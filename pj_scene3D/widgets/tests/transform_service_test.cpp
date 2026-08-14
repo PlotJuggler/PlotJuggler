@@ -371,6 +371,44 @@ TEST(TransformService, OutOfOrderEdgeIsIngestedAtItsOwnTime) {
   EXPECT_EQ(frames, (std::vector<std::string>{"f0", "f1", "f2", "f3"}));
 }
 
+// Captures Qt log output for its scope so tests can assert on the loss
+// warnings — the only observable surface of fetch-failure reporting. Swallows
+// the captured messages (tests stay quiet); restores the prior handler on exit.
+class ScopedMessageCapture {
+ public:
+  ScopedMessageCapture() {
+    instance_ = this;
+    previous_ = qInstallMessageHandler(&ScopedMessageCapture::handler);
+  }
+  ~ScopedMessageCapture() {
+    qInstallMessageHandler(previous_);
+    instance_ = nullptr;
+  }
+  ScopedMessageCapture(const ScopedMessageCapture&) = delete;
+  ScopedMessageCapture& operator=(const ScopedMessageCapture&) = delete;
+
+  [[nodiscard]] int countContaining(const char* needle) const {
+    int count = 0;
+    for (const auto& message : messages_) {
+      if (message.contains(QLatin1String(needle))) {
+        ++count;
+      }
+    }
+    return count;
+  }
+
+ private:
+  static void handler(QtMsgType /*type*/, const QMessageLogContext& /*context*/, const QString& message) {
+    if (instance_ != nullptr) {
+      instance_->messages_.push_back(message);
+    }
+  }
+  static ScopedMessageCapture* instance_;
+  QList<QString> messages_;
+  QtMessageHandler previous_ = nullptr;
+};
+ScopedMessageCapture* ScopedMessageCapture::instance_ = nullptr;
+
 // A lazy entry whose re-read FAILS (fetch returns nullopt: file truncated,
 // replaced, or corrupt) is counted and skipped — its edges are permanently
 // lost — while every healthy neighbour still ingests. The cursor advances past
@@ -397,6 +435,7 @@ TEST(TransformService, FailedLazyFetchIsSkippedAndNotRetried) {
       topic, makeBoundHandle(kTfSchema, []() noexcept -> void* { return new CountingTfParser(nullptr, nullptr); }));
 
   TransformService service(session);
+  ScopedMessageCapture capture;
   service.ingestFrameTransformsForDataset(/*dataset_id=*/1);
 
   auto buffer = service.transformBuffer(/*dataset_id=*/1);
@@ -404,11 +443,54 @@ TEST(TransformService, FailedLazyFetchIsSkippedAndNotRetried) {
   EXPECT_TRUE(resolves(*buffer, "f0", "f1", 100));
   EXPECT_TRUE(resolves(*buffer, "f0", "f2", 300)) << "an edge after the failed entry must still ingest";
   EXPECT_EQ(fetch_calls, 1);
+  // Pins the REPORTING, not just the skip: exactly one loss warning fired.
+  EXPECT_EQ(capture.countContaining("LOST"), 1);
 
   // The drain cursor advanced past the failed entry: a later ingest neither
-  // re-fetches nor re-ingests anything.
+  // re-fetches, re-ingests, nor re-warns.
   EXPECT_FALSE(service.ingestNewTransforms(/*dataset_id=*/1));
   EXPECT_EQ(fetch_calls, 1) << "a permanently failed fetch must not be retried by the drain";
+  EXPECT_EQ(capture.countContaining("LOST"), 1) << "the loss must be reported exactly once";
+}
+
+// A FAILED newest entry must not block classification: the probe walks back to
+// an older resolvable entry, the topic classifies, healthy edges ingest, and
+// the failed entry is fetched once by the probe and once by the drain — never
+// again on later ingests (no per-tick retry storm).
+TEST(TransformService, FailedNewestEntryDoesNotBlockClassification) {
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const auto topic = registerTopic(store, /*dataset_id=*/1, "/tf");
+
+  int fetch_calls = 0;
+  ASSERT_TRUE(store.pushOwned(topic, 100, edgePayload(/*parent=*/0, /*child=*/1)).has_value());
+  ASSERT_TRUE(store
+                  .pushLazy(
+                      topic, 200,
+                      [&fetch_calls]() -> std::optional<PJ::sdk::PayloadView> {
+                        ++fetch_calls;
+                        return std::nullopt;  // permanently unresolvable NEWEST entry
+                      })
+                  .has_value());
+
+  session.registerObjectTopicParser(
+      topic, makeBoundHandle(kTfSchema, []() noexcept -> void* { return new CountingTfParser(nullptr, nullptr); }));
+
+  TransformService service(session);
+  ScopedMessageCapture capture;
+  service.ingestFrameTransformsForDataset(/*dataset_id=*/1);
+
+  auto buffer = service.transformBuffer(/*dataset_id=*/1);
+  ASSERT_NE(buffer, nullptr);
+  EXPECT_TRUE(resolves(*buffer, "f0", "f1", 100)) << "a failed newest entry must not block classification";
+  EXPECT_EQ(capture.countContaining("LOST"), 1);
+  const int calls_after_first = fetch_calls;
+
+  // Classified and drained: later ingests must not re-probe or re-fetch the
+  // failed entry, and must not re-warn.
+  EXPECT_FALSE(service.ingestNewTransforms(/*dataset_id=*/1));
+  EXPECT_EQ(fetch_calls, calls_after_first) << "no per-tick retry of the failed entry";
+  EXPECT_EQ(capture.countContaining("LOST"), 1);
 }
 
 // -----------------------------------------------------------------------------

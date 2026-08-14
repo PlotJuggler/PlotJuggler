@@ -1673,17 +1673,24 @@ class PluginFetchCtx {
   PluginFetchCtx(PluginFetchCtx&&) = delete;
   PluginFetchCtx& operator=(PluginFetchCtx&&) = delete;
 
-  // nullopt = the plugin reported failure (or handed back no buffer): the
-  // LazyCallback contract's fetch-failed signal. An engaged empty vector is a
-  // payload the plugin legitimately produced with zero bytes.
+  // nullopt = the plugin reported failure (or promised bytes it did not hand
+  // over): the LazyCallback contract's fetch-failed signal. An engaged empty
+  // vector is a payload the plugin legitimately produced with zero bytes —
+  // ok with size 0 (data null or not; an empty container's data() may be null).
   [[nodiscard]] std::optional<std::vector<uint8_t>> invoke() const {
     if (fetch_fn_ == nullptr) {
       return std::nullopt;
     }
     const uint8_t* data = nullptr;
     uint64_t size = 0;  // matches PJ_lazy_fetch_fn_t out_size (uint64_t*)
-    if (!fetch_fn_(ctx_, &data, &size) || data == nullptr) {
+    if (!fetch_fn_(ctx_, &data, &size)) {
       return std::nullopt;
+    }
+    if (data == nullptr && size > 0) {
+      return std::nullopt;
+    }
+    if (size == 0) {
+      return std::vector<uint8_t>{};
     }
     return std::vector<uint8_t>(data, data + size);
   }

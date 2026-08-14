@@ -482,6 +482,7 @@ bool SceneEntitiesLayer::applyWindow(int64_t lo_ns, int64_t hi_ns) {
   pruneSnapshotCacheBelow(store.firstSequentialUID(topic_id_));
 
   bool applied = false;
+  std::size_t failed_fetches = 0;
   // rangeByTime is the out-of-order-safe fold source: a decode-free, ascending,
   // eviction-safe snapshot of (lo, hi]. An arrival-order UID walk would skip a late
   // (older-ts, newest-UID) batch that sits at a high UID but an in-window timestamp;
@@ -497,6 +498,12 @@ bool SceneEntitiesLayer::applyWindow(int64_t lo_ns, int64_t hi_ns) {
       continue;
     }
     auto entry = store.at(topic_id_, ref.uid);
+    if (entry.has_value() && entry->fetch_failed) {
+      // Permanent loss: the incremental fold marks this window applied, so
+      // forward playback never re-reads it. Count and report, don't retry.
+      ++failed_fetches;
+      continue;
+    }
     if (!entry.has_value() || entry->payload.bytes.empty()) {
       continue;  // evicted between the snapshot and the resolve
     }
@@ -516,6 +523,11 @@ bool SceneEntitiesLayer::applyWindow(int64_t lo_ns, int64_t hi_ns) {
       cacheSnapshot(ref.uid, std::make_shared<PJ::sdk::SceneEntities>(std::move(*snapshot)), entry->timestamp);
       applied = true;
     }
+  }
+  if (failed_fetches != 0) {
+    qCWarning(lcSceneEntitiesLayer) << failed_fetches
+                                    << "marker batch(es) LOST: lazy re-read failed (source file truncated,"
+                                    << "replaced, or corrupt)";
   }
   return applied;
 }

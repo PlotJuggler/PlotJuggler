@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -87,7 +88,9 @@ struct McapLoader {
           continue;
         }
 
-        store.pushLazy(topic_id, ts, [local_reader, local_topic, ts]() -> PJ::sdk::PayloadView {
+        // optional return: nullopt models a genuine re-read FAILURE (message no
+        // longer findable), matching the production LazyCallback contract.
+        store.pushLazy(topic_id, ts, [local_reader, local_topic, ts]() -> std::optional<PJ::sdk::PayloadView> {
           mcap::ReadMessageOptions read_opts;
           read_opts.startTime = static_cast<mcap::Timestamp>(ts);
           read_opts.endTime = read_opts.startTime + 1;
@@ -97,7 +100,7 @@ struct McapLoader {
             const auto* d = reinterpret_cast<const uint8_t*>(vit->message.data);
             return PJ::sdk::makePayloadView(std::vector<uint8_t>(d, d + vit->message.dataSize));
           }
-          return {};
+          return std::nullopt;  // message not found: a re-read failure, not an empty payload
         });
         ++message_count;
       }

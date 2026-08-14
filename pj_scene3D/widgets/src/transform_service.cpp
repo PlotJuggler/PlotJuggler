@@ -273,7 +273,20 @@ bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
         // Parser-backed topic: the parser (not the metadata) determines the type,
         // so probe its newest entry's decoded type exactly once. Probing the
         // newest (not index 0) stays valid after streaming evicts the front.
-        auto probe = object_store.at(topic_id, count - 1);
+        // A fetch_failed newest entry is PERMANENTLY unresolvable — retrying it
+        // every tick would re-run a failing re-read forever and block the topic
+        // from ever classifying (starving healthy older edges) — so walk back a
+        // few entries to find one that resolves instead.
+        std::optional<PJ::ResolvedObjectEntry> probe;
+        constexpr std::size_t kMaxProbeWalkback = 8;
+        for (std::size_t back = 0; back < std::min(count, kMaxProbeWalkback); ++back) {
+          auto candidate = object_store.at(topic_id, count - 1 - back);
+          if (candidate.has_value() && candidate->fetch_failed) {
+            continue;  // permanent failure: never re-probe this entry
+          }
+          probe = std::move(candidate);
+          break;
+        }
         if (!probe.has_value() || probe->payload.bytes.empty()) {
           continue;  // can't classify yet; retry next tick
         }

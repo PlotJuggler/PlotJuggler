@@ -285,8 +285,15 @@ void OccupancyGridLayer::renderAt(int64_t time_ns) {
     const PJ::ObjectTopicId id = *updates_topic_;
     const auto window = store.rangeByTime(id, lo, hi);
     out.reserve(window.size());
+    std::size_t failed_fetches = 0;
     for (const auto& ref : window) {
       auto entry = store.at(id, ref.uid);
+      if (entry.has_value() && entry->fetch_failed) {
+        // Permanent loss: the retroactive cursor advances past this window, so
+        // forward playback never re-reads it. Count and report, don't retry.
+        ++failed_fetches;
+        continue;
+      }
       if (!entry.has_value() || entry->payload.bytes.empty()) {
         continue;  // evicted between the snapshot and the resolve, or empty payload
       }
@@ -299,6 +306,10 @@ void OccupancyGridLayer::renderAt(int64_t time_ns) {
         continue;
       }
       out.push_back(*update);
+    }
+    if (failed_fetches != 0) {
+      qCWarning(lcOccGrid) << failed_fetches
+                           << "grid update(s) LOST: lazy re-read failed (source file truncated, replaced, or corrupt)";
     }
     return out;
   };

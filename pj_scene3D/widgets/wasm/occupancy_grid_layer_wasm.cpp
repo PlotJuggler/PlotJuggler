@@ -302,6 +302,11 @@ bool WasmOccupancyGridLayer::reconstructAt(PJ::Timepoint time) {
     output.reserve(window.size());
     for (const auto& reference : window) {
       const auto entry = store.at(id, reference.uid);
+      if (entry.has_value() && entry->fetch_failed) {
+        // Permanent loss (re-read failed); surface via the skip channel, don't retry.
+        note_skipped_update(entry->timestamp, tr("Occupancy update lost: source re-read failed"));
+        continue;
+      }
       if (!entry.has_value() || entry->payload.bytes.empty()) {
         continue;
       }

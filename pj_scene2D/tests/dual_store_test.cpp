@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -109,7 +110,9 @@ DualStoreResult loadPotato(ObjectStore& obj_store, DataEngine& engine) {
       auto topic_id = img_it->second;
       const auto& local_reader = shared_reader;
 
-      obj_store.pushLazy(topic_id, ts, [local_reader, chan, ts]() -> PJ::sdk::PayloadView {
+      // optional return: nullopt models a genuine re-read FAILURE, matching the
+      // production LazyCallback contract.
+      obj_store.pushLazy(topic_id, ts, [local_reader, chan, ts]() -> std::optional<PJ::sdk::PayloadView> {
         mcap::ReadMessageOptions read_opts;
         read_opts.startTime = static_cast<mcap::Timestamp>(ts);
         read_opts.endTime = read_opts.startTime + 1;
@@ -120,7 +123,7 @@ DualStoreResult loadPotato(ObjectStore& obj_store, DataEngine& engine) {
             return PJ::sdk::makePayloadView(std::vector<uint8_t>(d, d + vit->message.dataSize));
           }
         }
-        return {};
+        return std::nullopt;  // message not found: a re-read failure, not an empty payload
       });
 
       // Find the topic name to update count

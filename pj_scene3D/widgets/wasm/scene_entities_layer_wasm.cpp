@@ -917,6 +917,11 @@ bool WasmSceneEntitiesLayer::applyModelWindow(std::int64_t lo_ns, std::int64_t h
       continue;
     }
     const auto entry = store.at(topic_id_, reference.uid);
+    if (entry.has_value() && entry->fetch_failed) {
+      // Permanent loss (re-read failed); surface via the model warning, don't retry.
+      model_state_warning_ = tr("A SceneEntities model snapshot was lost: source re-read failed");
+      continue;
+    }
     if (!entry.has_value() || entry->payload.bytes.empty()) {
       continue;
     }

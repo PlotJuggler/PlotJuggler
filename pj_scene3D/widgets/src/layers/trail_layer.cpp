@@ -535,6 +535,10 @@ TrailPolyline TrailLayer::buildPoseTrailNow() {
 std::optional<PoseTrailSample> TrailLayer::decodePoseSample(
     const PJ::SessionManager::ParserBinding& binding, PJ::SequentialUID uid, std::size_t& decode_failures) const {
   const auto entry = ctx_.session->objectStore().at(source_.topic, uid);
+  if (entry.has_value() && entry->fetch_failed) {
+    ++decode_failures;  // lazy re-read failed: fold into the row's aggregate, don't retry
+    return std::nullopt;
+  }
   if (!entry.has_value() || entry->payload.bytes.empty()) {
     return std::nullopt;
   }

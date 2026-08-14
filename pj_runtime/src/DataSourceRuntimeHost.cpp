@@ -133,7 +133,11 @@ QString errorMessage(const PJ_error_t& err) {
 // pushMessage glue reports ok=true for a plugin-side fetch that produced an
 // empty view (it only reports false on an exception), so "no bytes" is how a
 // file-source cold-path failure actually arrives across the C ABI — and no
-// builtin object decodes from zero bytes anyway.
+// builtin object decodes from zero bytes anyway. The cost of that bias is a
+// possible false LOST attribution for a payload that is legitimately zero
+// bytes (e.g. an empty FrameTransforms set serializes to 0 bytes); removing
+// the ambiguity needs a real failure signal in the SDK pushMessage glue,
+// which is an SDK change (tracked follow-up).
 PJ::LazyCallback makeLazyFetchClosure(
     std::shared_ptr<FetcherOwner> owner, std::shared_ptr<std::mutex> fetch_mutex,
     std::shared_ptr<const LazyFetchTopicContext> context, int64_t timestamp_ns) {
