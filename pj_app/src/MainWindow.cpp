@@ -3733,18 +3733,17 @@ void MainWindow::updateTimeTrackerIcon() {
   if (button_time_tracker_ == nullptr) {
     return;
   }
-  // TODO: 3 PNG variants are light-theme only (PJ3 ships no dark equivalents).
-  // Dark-theme users see the light icon; replace with tinted SVGs if/when
-  // someone designs them.
+  // setIconPath (not setIcon): the SvgButton re-tints the glyph on theme
+  // switches, so the state swap keeps working in both themes.
   switch (tracker_info_) {
     case CurveTracker::kLineOnly:
-      button_time_tracker_->setIcon(QIcon(u":/style_light/line_tracker.png"_s));
+      button_time_tracker_->setIconPath(u":/resources/svg/line_tracker.svg"_s);
       break;
     case CurveTracker::kValue:
-      button_time_tracker_->setIcon(QIcon(u":/style_light/line_tracker_1.png"_s));
+      button_time_tracker_->setIconPath(u":/resources/svg/line_tracker_1.svg"_s);
       break;
     case CurveTracker::kValueName:
-      button_time_tracker_->setIcon(QIcon(u":/style_light/line_tracker_a.png"_s));
+      button_time_tracker_->setIconPath(u":/resources/svg/line_tracker_a.svg"_s);
       break;
   }
 }
@@ -7985,16 +7984,9 @@ void MainWindow::buildGlobalToolbar() {
   button_link_ = add_button("buttonLink", ":/resources/svg/link.svg", "Link X axis");
   button_zoom_out_ = add_button("buttonZoomOut", ":/resources/svg/zoom_max.svg", "Zoom Out All");
   button_grid_ = add_button("buttonActivateGrid", ":/resources/svg/grid.svg", "Show/Hide the grid");
-  // buttonTimeTracker cycles through 3 pre-rendered PNG icons by state, so it
-  // skips the theme-tinted LoadSvg path baked into add_button. Built inline.
-  button_time_tracker_ = new QToolButton(ui_->globalToolbarWidget);
-  button_time_tracker_->setObjectName(u"buttonTimeTracker"_s);
-  button_time_tracker_->setFocusPolicy(Qt::NoFocus);
-  button_time_tracker_->setAutoRaise(true);
-  button_time_tracker_->setFixedSize(24, 24);
-  button_time_tracker_->setIconSize(QSize(20, 20));
-  button_time_tracker_->setToolTip(tr("Cycle TimeTracker display: line only / line + value / line + value + name"));
-  outer->addWidget(button_time_tracker_);
+  button_time_tracker_ = add_button(
+      "buttonTimeTracker", ":/resources/svg/line_tracker.svg",
+      "Cycle TimeTracker display: line only / line + value / line + value + name");
   updateTimeTrackerIcon();
   connect(button_time_tracker_, &QToolButton::clicked, this, &MainWindow::onTimeTrackerButtonClicked);
 

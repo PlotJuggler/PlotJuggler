@@ -62,9 +62,6 @@
     <file alias="builtin_filters.luau">filters/builtin_filters.luau</file>
   </qresource>
   <qresource prefix="/style_light">
-    <file alias="line_tracker.png">style_light/line_tracker.png</file>
-    <file alias="line_tracker_1.png">style_light/line_tracker_1.png</file>
-    <file alias="line_tracker_a.png">style_light/line_tracker_a.png</file>
   </qresource>
   <qresource prefix="/resources/svg">
     <file alias="Fx.svg">svg/Fx.svg</file>
@@ -171,6 +168,9 @@
     <file alias="legend.svg">svg/legend.svg</file>
     <file alias="light_mode_light.svg">svg/light_mode_light.svg</file>
     <file alias="line_axis.svg">svg/line_axis.svg</file>
+    <file alias="line_tracker.svg">svg/line_tracker.svg</file>
+    <file alias="line_tracker_1.svg">svg/line_tracker_1.svg</file>
+    <file alias="line_tracker_a.svg">svg/line_tracker_a.svg</file>
     <file alias="line_width_1_0.svg">svg/line_width_1_0.svg</file>
     <file alias="line_width_1_5.svg">svg/line_width_1_5.svg</file>
     <file alias="line_width_2_0.svg">svg/line_width_2_0.svg</file>

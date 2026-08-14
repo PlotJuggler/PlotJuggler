@@ -1486,7 +1486,7 @@ class MainWindow : public QMainWindow {
   // Global-column "Chart" icons — built in buildGlobalToolbar(), so
   // stored as member pointers (no ui_-> accessor).
   QToolButton* button_link_ = nullptr;
-  QToolButton* button_time_tracker_ = nullptr;
+  SvgButton* button_time_tracker_ = nullptr;
   QToolButton* button_show_point_ = nullptr;
   QToolButton* button_grid_ = nullptr;
   QToolButton* button_zoom_out_ = nullptr;
