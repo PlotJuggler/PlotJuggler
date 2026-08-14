@@ -20,7 +20,10 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
+#include "pj_base/buffer_anchor.hpp"
+#include "pj_datastore/object_store.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
@@ -67,6 +70,24 @@ std::unique_ptr<PJ::MessageParserHandle> makeBoundHandle(
   EXPECT_TRUE(handle->valid());
   EXPECT_TRUE(handle->bindSchema(schema, {}).has_value());
   return handle;
+}
+
+// Push one LAZY entry whose fetcher re-produces `payload` on every resolve and
+// bumps *counter — the scaffolding of the resolve-before-memo regressions: a
+// test renders twice and asserts the count did not grow. Pair it with an
+// out-of-order push (which resets the store's warm latestAt cache), or a
+// redundant resolve hides behind that cache and the test proves nothing.
+inline void pushLazyCounting(
+    PJ::ObjectStore& store, PJ::ObjectTopicId topic, PJ::Timestamp timestamp, std::vector<uint8_t> payload,
+    std::shared_ptr<int> counter) {
+  ASSERT_TRUE(store
+                  .pushLazy(
+                      topic, timestamp,
+                      [payload = std::move(payload), counter = std::move(counter)]() -> PJ::sdk::PayloadView {
+                        ++*counter;
+                        return PJ::sdk::makePayloadView(payload);
+                      })
+                  .has_value());
 }
 
 // Register one ObjectStore topic (dataset_id default 1) and return its id. EXPECT

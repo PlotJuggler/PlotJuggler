@@ -83,12 +83,17 @@ std::vector<int8_t> refReplay(
 
 // --- Providers over in-memory timelines. ---
 
+// BaseSample::identity is the base's position in the timeline vector (+1, so 0
+// stays "none") — a unique per-entry token, standing in for the production
+// SequentialUID. Equal-ts bases: the LAST one wins (>=), matching the store's
+// indexAtOrBefore pick over duplicate timestamps.
 OccupancyGridReconstructor::BaseProvider baseProviderFor(const std::vector<sdk::OccupancyGrid>& bases) {
-  return [&bases](Timestamp t) -> std::optional<sdk::OccupancyGrid> {
-    std::optional<sdk::OccupancyGrid> best;
-    for (const auto& b : bases) {
-      if (b.timestamp_ns <= t && (!best || b.timestamp_ns > best->timestamp_ns)) {
-        best = b;
+  return [&bases](Timestamp t) -> std::optional<OccupancyGridReconstructor::BaseSample> {
+    std::optional<OccupancyGridReconstructor::BaseSample> best;
+    for (size_t i = 0; i < bases.size(); ++i) {
+      const auto& b = bases[i];
+      if (b.timestamp_ns <= t && (!best || b.timestamp_ns >= best->grid.timestamp_ns)) {
+        best = OccupancyGridReconstructor::BaseSample{b, static_cast<uint64_t>(i) + 1};
       }
     }
     return best;
@@ -150,6 +155,25 @@ TEST(OccupancyGridReconstructorTest, BaseOnlyNoUpdates) {
   EXPECT_EQ(g.cells, refReplay(tl.bases.front(), tl.updates, 2000));
   // First call with a base in effect → a full (re)build, not incremental.
   EXPECT_EQ(update.kind, GridUpdate::Kind::kFull);
+}
+
+// A replacement base at the SAME timestamp — a NEW timeline entry (fresh
+// identity), possible because the store permits duplicate stamps — must start a
+// new epoch. Keyed on the decoded timestamp alone it would be invisible and the
+// forward path would keep the old keyframe's cells.
+TEST(OccupancyGridReconstructorTest, SameTimestampReplacementBaseResetsEpoch) {
+  std::vector<sdk::OccupancyGrid> bases;
+  bases.push_back(makeBase(1000, 4, 4, std::vector<uint8_t>(16, 10)));
+  const std::vector<sdk::OccupancyGridUpdate> no_updates;
+  const auto up = updatesProviderFor(no_updates);
+  OccupancyGridReconstructor r;
+  ASSERT_EQ(r.reconstructAt(1500, baseProviderFor(bases), up).grid.cells[0], static_cast<int8_t>(10));
+
+  bases.push_back(makeBase(1000, 4, 4, std::vector<uint8_t>(16, 33)));  // same stamp, new entry
+  const GridUpdate update = r.reconstructAt(1500, baseProviderFor(bases), up);
+  EXPECT_EQ(update.kind, GridUpdate::Kind::kFull) << "replacement base must rebuild, not increment";
+  EXPECT_EQ(update.grid.cells[0], static_cast<int8_t>(33))
+      << "same-timestamp replacement keyframe did not reset the epoch";
 }
 
 TEST(OccupancyGridReconstructorTest, NoBaseYieldsEmpty) {

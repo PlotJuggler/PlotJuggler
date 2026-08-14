@@ -21,21 +21,26 @@
 
 #include <QApplication>
 #include <QList>
+#include <QObject>
 #include <QString>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <string_view>
 #include <vector>
 
 #include "mock_parser_support.h"  // pumpUntil
 #include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/builtin/point_cloud.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
+#include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/transform_service.h"
 using namespace Qt::StringLiterals;
 
@@ -51,6 +56,94 @@ PJ::ObjectTopicId registerTfTopic(PJ::ObjectStore& store, PJ::DatasetId dataset_
   EXPECT_TRUE(topic_id.has_value());
   EXPECT_TRUE(store.pushOwned(*topic_id, 100, std::vector<uint8_t>{0x00}).has_value());
   return *topic_id;
+}
+
+using pj::scene3d::test::CountingObjectParser;
+using pj::scene3d::test::makeBoundHandle;
+
+constexpr std::string_view kCloudSchema = "mock/point_cloud";
+std::atomic<int> g_cloud_parser_calls{0};
+
+// A single float32-xyz point over a static buffer (no anchor needed).
+PJ::Expected<PJ::sdk::ObjectRecord> emitTinyCloud(PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) {
+  static const float k_point[3] = {1.0f, 2.0f, 3.0f};
+  PJ::sdk::PointCloud cloud;
+  cloud.timestamp_ns = ts;
+  cloud.frame_id = "lidar";
+  cloud.width = 1;
+  cloud.height = 1;
+  cloud.point_step = 12;
+  cloud.row_step = 12;
+  cloud.fields = {
+      PJ::sdk::PointField{"x", 0, PJ::sdk::PointField::Datatype::kFloat32, 1},
+      PJ::sdk::PointField{"y", 4, PJ::sdk::PointField::Datatype::kFloat32, 1},
+      PJ::sdk::PointField{"z", 8, PJ::sdk::PointField::Datatype::kFloat32, 1}};
+  cloud.data = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(k_point), sizeof(k_point));
+  return PJ::sdk::ObjectRecord{.ts = ts, .object = cloud};
+}
+
+// Captures the layer pointers the base hands over on registration —
+// syncViewLayers is the one (protected) seam of a headless, view-less dock that
+// sees the concrete layers, since the public layers() returns metadata only.
+class ProbeDock : public PJ::Scene3DDockWidget {
+ public:
+  std::vector<PJ::ISceneLayer*> synced_layers;
+
+ protected:
+  void syncViewLayers(const std::vector<PJ::ISceneLayer*>& ordered_layers) override {
+    synced_layers = ordered_layers;
+    PJ::Scene3DDockWidget::syncViewLayers(ordered_layers);
+  }
+};
+
+// End-to-end repaint-gate regression, driven through SceneDockWidget::onTrackerTime:
+// a same-stamp, same-size replacement cloud (new SequentialUID — the store permits
+// duplicate timestamps) must reopen the per-tick gate and reach the layer. With a
+// stamp-keyed renderKey the combined key never changed, the tick was swallowed at
+// the gate, and renderAt's UID memo never saw the new entry. The headless harness
+// cannot run the GL paint that drains the deferred decode, so renderAtForTest()
+// stands in for paintGL after each delivered tick.
+TEST(Scene3DDockStreaming, SameStampReplacementCloudPassesRepaintGate) {
+  g_cloud_parser_calls.store(0);
+  PJ::SessionManager session;
+  pj::scene3d::TransformService transform_service(session);
+  PJ::ObjectStore& store = session.objectStore();
+
+  PJ::ObjectTopicDescriptor desc;
+  desc.dataset_id = 1;
+  desc.topic_name = "/cloud";
+  const auto topic_id = store.registerTopic(desc);
+  ASSERT_TRUE(topic_id.has_value());
+  ASSERT_TRUE(store.pushOwned(*topic_id, 100, std::vector<uint8_t>{0x01}).has_value());
+  session.registerObjectTopicParser(*topic_id, makeBoundHandle(kCloudSchema, []() noexcept -> void* {
+    return new CountingObjectParser(
+        kCloudSchema, PJ::sdk::BuiltinObjectType::kPointCloud, &g_cloud_parser_calls, &emitTinyCloud);
+  }));
+
+  ProbeDock dock;
+  dock.setSessionManager(&session);
+  dock.setTransformService(&transform_service);
+  ASSERT_TRUE(dock.addTopic(*topic_id, PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud"_s));
+  ASSERT_EQ(dock.synced_layers.size(), 1u);
+  auto* layer = dynamic_cast<pj::scene3d::PointCloudLayer*>(dock.synced_layers.front());
+  ASSERT_NE(layer, nullptr);
+
+  dock.onTrackerTime(0.0);      // clamps to the lone sample; the first tick always paints
+  layer->renderAtForTest(100);  // stand-in for the gated paintGL
+  const int parses_after_first = g_cloud_parser_calls.load();
+  ASSERT_GE(parses_after_first, 1);
+
+  // Same stamp, same byte size — only the SequentialUID differs.
+  ASSERT_TRUE(store.pushOwned(*topic_id, 100, std::vector<uint8_t>{0x02}).has_value());
+
+  int repaint_requests = 0;
+  const auto connection =
+      QObject::connect(layer, &PJ::ISceneLayer::repaintRequested, [&repaint_requests] { ++repaint_requests; });
+  dock.onTrackerTime(0.0);
+  QObject::disconnect(connection);
+  EXPECT_GT(repaint_requests, 0) << "repaint gate swallowed the same-stamp replacement cloud";
+  layer->renderAtForTest(100);
+  EXPECT_GT(g_cloud_parser_calls.load(), parses_after_first) << "replacement cloud was never decoded";
 }
 
 TEST(Scene3DDockStreaming, RevalidateWithoutSessionKeepsNeverPopulatedDock) {

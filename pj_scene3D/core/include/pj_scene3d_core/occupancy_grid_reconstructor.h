@@ -80,8 +80,17 @@ struct GridUpdate {
 /// a cache bug can never corrupt the result.
 class OccupancyGridReconstructor {
  public:
+  /// One base keyframe plus the never-reused identity of the timeline entry it
+  /// was decoded from (the ObjectStore SequentialUID value in production; any
+  /// unique token in tests). The epoch check keys on `identity`, NOT the grid's
+  /// decoded timestamp: the store permits duplicate timestamps, so a
+  /// same-timestamp replacement keyframe must still start a new epoch.
+  struct BaseSample {
+    PJ::sdk::OccupancyGrid grid;
+    uint64_t identity = 0;
+  };
   /// Latest full grid with `ts <= t`, or nullopt if none exists yet.
-  using BaseProvider = std::function<std::optional<PJ::sdk::OccupancyGrid>(PJ::Timestamp t)>;
+  using BaseProvider = std::function<std::optional<BaseSample>(PJ::Timestamp t)>;
   /// Updates with `lo < ts <= hi`, returned in ascending ts order.
   using UpdatesProvider = std::function<std::vector<PJ::sdk::OccupancyGridUpdate>(PJ::Timestamp lo, PJ::Timestamp hi)>;
 
@@ -153,6 +162,7 @@ class OccupancyGridReconstructor {
   std::vector<int8_t> base_cells_;  // pristine keyframe, retained for backward replay
   PJ::Timestamp last_t_ = 0;
   bool have_epoch_ = false;
+  uint64_t epoch_identity_ = 0;      // BaseSample::identity of the current epoch's keyframe
   std::vector<Snapshot> snapshots_;  // ascending ts (pushSnapshot inserts sorted), excludes the base keyframe
   std::size_t updates_since_snapshot_ = 0;
   std::vector<CellRect> dirty_rects_;  // changed rects of the last reconstructAt()

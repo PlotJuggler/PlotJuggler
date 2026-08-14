@@ -7,9 +7,7 @@
 #include <QPointer>
 #include <QString>
 #include <QStringList>
-#include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -18,6 +16,7 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/compressed_point_cloud.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
+#include "pj_datastore/object_store.hpp"  // ObjectStore::TimeRangeEntry (SampleId)
 #include "pj_scene3d_widgets/passes/pointcloud_render_pass.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 
@@ -152,7 +151,7 @@ class PointCloudLayer : public Scene3DLayer {
   // Store stamp of the sample currently held by the render pass; nullopt when
   // nothing is pushed (the default SampleId sentinel).
   [[nodiscard]] std::optional<int64_t> lastPushedStampForTest() const {
-    return last_pushed_id_ == SampleId{} ? std::nullopt : std::optional<int64_t>{last_pushed_id_.stamp};
+    return last_pushed_id_ == SampleId{} ? std::nullopt : std::optional<int64_t>{last_pushed_id_.timestamp};
   }
   // True while an async compressed decode is in flight (or its finished event
   // is still queued) — lets tests pump the loop until the result landed.
@@ -184,17 +183,12 @@ class PointCloudLayer : public Scene3DLayer {
   void autoRangeComputed(float min_value, float max_value);
 
  private:
-  // Identity of an ObjectStore sample, computable WITHOUT parsing the payload:
-  // (store timestamp, stored payload byte size). The size disambiguates a
-  // same-timestamp payload swap (the store allows duplicate stamps); a swap that
-  // also keeps the byte count is the accepted blind spot WITHIN one dataset
-  // generation (reloads reset all sample-id state — onDatasetAboutToBeReplaced).
-  // The default {INT64_MIN, 0} is the "none" sentinel — no real sample equals it.
-  struct SampleId {
-    int64_t stamp = std::numeric_limits<int64_t>::min();
-    std::size_t size = 0;
-    bool operator==(const SampleId&) const = default;
-  };
+  // Identity of an ObjectStore sample, computable WITHOUT resolving the payload:
+  // the entry's SequentialUID (never reused, so it cannot collide across
+  // duplicate stamps, same-size payload swaps, or dataset reloads) plus its
+  // store timestamp, carried along for display/tests. Exactly what
+  // latestEntryIdAt() returns; value-initialized {} is the "none" sentinel.
+  using SampleId = PJ::ObjectStore::TimeRangeEntry;
   struct DecodeResult {
     SampleId id;
     std::shared_ptr<PJ::sdk::PointCloud> cloud;  // null on decode failure
@@ -214,6 +208,13 @@ class PointCloudLayer : public Scene3DLayer {
   // time_ns. Skips all work when the pass already holds exactly that
   // sample with the current color field (the common tracker tick).
   void renderAt(int64_t time_ns);
+  // Consults the sample-identity memos for `id`, recording it as wanted_.
+  // Returns true when no payload resolve is needed: the sample is already
+  // pushed under the current color settings, was re-pushed from the decoded
+  // cache, or is a known-failed decode. Shared by renderAt's metadata-first
+  // gate and its post-resolve re-check (a streaming insert can change which
+  // entry is latest between the two store queries).
+  bool servedFromMemos(SampleId id);
   // Re-decode at the current playhead (or the first sample before any tracker
   // tick) after a color-field or auto-range change, so the renderer reflects
   // the new state without waiting for the next tracker tick.
@@ -271,8 +272,9 @@ class PointCloudLayer : public Scene3DLayer {
 
   // Invoked by SessionManager::datasetAboutToBeReplaced (any dataset; filtered to
   // this layer's). A reload keeps the ObjectTopicId stable while swapping the
-  // store bytes, so every identity keyed on (timestamp, byte size) — decode
-  // cache, failure memo, pushed sample — must reset or it can alias new content.
+  // store bytes; every sample-identity memo — decode cache, failure memo, pushed
+  // sample, wanted_/in-flight — resets so pre-reload content is dropped and the
+  // new bytes re-render.
   void onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id);
 
   PJ::ObjectTopicId topic_id_;

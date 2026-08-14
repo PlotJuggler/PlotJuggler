@@ -244,16 +244,35 @@ void OccupancyGridLayer::renderAt(int64_t time_ns) {
     }
   }
 
-  // base_at(t): the latest full grid with ts <= t, decoded to sdk::OccupancyGrid.
+  // base_at(t): the latest full grid with ts <= t, decoded to sdk::OccupancyGrid
+  // and paired with its entry UID (the reconstructor's epoch identity — a
+  // same-timestamp replacement keyframe must still start a new epoch).
   // Memoized on the entry's SequentialUID: the common case is the same keyframe
   // tick after tick, and re-parsing deep-copies the full cell payload each time.
-  auto base_at = [this, &store, &binding](PJ::Timestamp t) -> std::optional<PJ::sdk::OccupancyGrid> {
+  // The memo is consulted metadata-first (latestEntryIdAt, a pure binary search):
+  // resolving via latestAt before the identity check would re-fetch an evicted
+  // pool seed (file read + whole-chunk decompress on the GUI thread) only to
+  // discard the bytes on a match.
+  using BaseSample = OccupancyGridReconstructor::BaseSample;
+  // Memoized-base predicate shared by the metadata-first gate and the
+  // post-resolve re-check (a racing insert can change the pick in between).
+  const auto memoized_base = [this](PJ::SequentialUID uid) {
+    return base_cache_.has_value() && uid == base_cache_uid_;
+  };
+  auto base_at = [this, &store, &binding, &memoized_base](PJ::Timestamp t) -> std::optional<BaseSample> {
+    const auto entry_id = store.latestEntryIdAt(topic_id_, t);
+    if (!entry_id.has_value()) {
+      return std::nullopt;
+    }
+    if (memoized_base(entry_id->uid)) {
+      return BaseSample{*base_cache_, base_cache_uid_.value};  // no resolve, no re-parse
+    }
     auto entry = store.latestAt(topic_id_, t);
     if (!entry.has_value() || entry->payload.bytes.empty()) {
       return std::nullopt;
     }
-    if (base_cache_.has_value() && entry->sequential_uid == base_cache_uid_) {
-      return base_cache_;  // same store entry → reuse the parsed grid
+    if (memoized_base(entry->sequential_uid)) {
+      return BaseSample{*base_cache_, base_cache_uid_.value};
     }
     auto obj = parseLocked(binding, entry->timestamp, entry->payload);
     if (!obj.has_value()) {
@@ -265,7 +284,7 @@ void OccupancyGridLayer::renderAt(int64_t time_ns) {
     }
     base_cache_uid_ = entry->sequential_uid;
     base_cache_ = *grid;  // copy carries the anchor → bytes stay alive past the call
-    return base_cache_;
+    return BaseSample{*base_cache_, base_cache_uid_.value};
   };
 
   // updates_in(lo, hi): the OccupancyGridUpdate patches with lo < ts <= hi, in

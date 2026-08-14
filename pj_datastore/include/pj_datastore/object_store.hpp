@@ -220,9 +220,25 @@ class ObjectStore {
   SequentialUID maxUidAtOrBefore(ObjectTopicId id, Timestamp t) const;
 
   // One entry's stable identity plus its store timestamp, as returned by
-  // rangeByTime(). Decode-free — resolve the payload later via at(uid). Owned by
-  // OrderedEntries (which produces rangeByTime); aliased here for the public API.
+  // rangeByTime() and latestEntryIdAt(). Decode-free — resolve the payload later
+  // via at(uid). Owned by OrderedEntries; aliased here for the public API.
   using TimeRangeEntry = OrderedEntries::TimeRangeEntry;
+
+  // Identity of the entry latestAt(id, timestamp) would resolve — its
+  // {sequential_uid, timestamp} — WITHOUT resolving the payload. Metadata-only
+  // (shared locks + binary search); never invokes a lazy fetch, so a sampling
+  // consumer can compare it against a memoized sample identity before paying
+  // latestAt()'s resolve (a cold refetch once a pool seed is evicted). Not the
+  // same as maxUidAtOrBefore(): under out-of-order inserts the latest-by-time
+  // entry's UID can differ from the max arrival UID at-or-before t. nullopt when
+  // no entry exists at or before `timestamp`.
+  //
+  // NOT atomic with a later resolve: between this call and a subsequent
+  // latestAt()/at(), a concurrent insert or eviction can change which entry is
+  // latest at `timestamp`. A consumer that skips work when this identity matches
+  // a memo MUST re-check the resolved entry's sequential_uid after the resolve,
+  // or it may act on a different entry than the one it gated on.
+  std::optional<TimeRangeEntry> latestEntryIdAt(ObjectTopicId id, Timestamp timestamp) const;
 
   // Snapshot of the entries with lo < timestamp <= hi, as (uid, timestamp) pairs
   // in ASCENDING timestamp order. This is the correct primitive for a time-window

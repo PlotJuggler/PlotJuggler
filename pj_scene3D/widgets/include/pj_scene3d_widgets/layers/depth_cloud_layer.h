@@ -7,7 +7,6 @@
 #include <QStringList>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -15,6 +14,7 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/depth_image.hpp"
 #include "pj_base/builtin/image.hpp"
+#include "pj_datastore/object_store.hpp"  // ObjectStore::TimeRangeEntry (SampleId)
 #include "pj_scene3d_core/depth_backproject.h"
 #include "pj_scene3d_widgets/passes/pointcloud_render_pass.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
@@ -97,7 +97,7 @@ class DepthCloudLayer : public Scene3DLayer {
     renderAt(time_ns);
   }
   [[nodiscard]] std::optional<int64_t> lastPushedStampForTest() const {
-    return last_pushed_id_ == SampleId{} ? std::nullopt : std::optional<int64_t>{last_pushed_id_.stamp};
+    return last_pushed_id_ == SampleId{} ? std::nullopt : std::optional<int64_t>{last_pushed_id_.timestamp};
   }
   [[nodiscard]] std::size_t lastPointCountForTest() const {
     return last_point_count_;
@@ -108,16 +108,17 @@ class DepthCloudLayer : public Scene3DLayer {
 #endif
 
  private:
-  struct SampleId {
-    int64_t stamp = std::numeric_limits<int64_t>::min();
-    std::size_t size = 0;
-    bool operator==(const SampleId&) const = default;
-  };
+  // Sample identity computable WITHOUT resolving the payload: the entry's
+  // SequentialUID (never reused, so no aliasing across duplicate stamps or
+  // reloads) plus its store timestamp for display/tests. Exactly what
+  // latestEntryIdAt() returns; value-initialized {} is the "none" sentinel.
+  using SampleId = PJ::ObjectStore::TimeRangeEntry;
 
   // Resolved-intrinsics memo: skips re-parsing every CameraInfo on every depth
   // frame (calibration is latched/constant). A cache hit requires `frame_id` to
   // match the current image AND the supplying CameraInfo topic to still yield
-  // `camera_sample` at the playhead — a cheap latestAt() identity check, no parse.
+  // `camera_sample` at the playhead — a metadata-only latestEntryIdAt() identity
+  // check, no parse and no payload resolve.
   // Reset on detach and whenever no camera resolves; see resolveIntrinsics().
   struct IntrinsicsCache {
     std::string frame_id;
@@ -144,6 +145,14 @@ class DepthCloudLayer : public Scene3DLayer {
   // with multiple cameras and no match it returns an invalid result rather than
   // risk the wrong camera. Invalid also when no CameraInfo yields usable focals.
   DepthIntrinsics resolveIntrinsics(const std::string& frame_id, int64_t time_ns);
+
+  // True when the memoized intrinsics (if any) still describe the CameraInfo
+  // sample at the playhead — metadata-only, no parse and no payload resolve.
+  // False when the camera topic has a new sample: the unchanged depth image must
+  // then re-project under the new calibration, so renderAt's same-depth-sample
+  // skip is gated on this too. No memoized intrinsics counts as current (nothing
+  // can go stale; the resolve path scans and warns as usual).
+  [[nodiscard]] bool intrinsicsCurrentAt(int64_t time_ns) const;
 
   PJ::ObjectTopicId topic_id_;
   QString display_name_;

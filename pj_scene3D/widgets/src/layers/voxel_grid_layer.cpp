@@ -213,20 +213,30 @@ void VoxelGridLayer::renderAt(int64_t time_ns) {
     return;
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
-  auto entry = store.latestAt(topic_id_, time_ns);
+  // Fast path, checked metadata-first (latestEntryIdAt — no payload resolve, so
+  // an unchanged grid never pays a cold refetch of an evicted pool seed): the
+  // same grid + same field setting is already on the GPU. No parse, no pack, no
+  // upload — the scrub/replay contract (zero per-voxel CPU work). Shared by the
+  // gate and the post-resolve re-check (a racing insert can change the pick).
+  const auto already_uploaded = [this](PJ::SequentialUID uid) {
+    return uid == uploaded_uid_ && active_field_name_ == uploaded_field_setting_;
+  };
+  const auto entry_id = store.latestEntryIdAt(topic_id_, time_ns);
+  if (entry_id.has_value() && already_uploaded(entry_id->uid)) {
+    return;
+  }
+  auto entry = entry_id.has_value() ? store.latestAt(topic_id_, time_ns) : std::nullopt;
   if (!entry.has_value() || entry->payload.bytes.empty()) {
     // No sample at/before this time (scrubbed before the first sample, or a gap).
     // Clear the pass AND invalidate the upload memo: otherwise scrubbing back onto
-    // the same store entry would hit the fast-path below, skip the re-upload, and
+    // the same store entry would hit the fast-path above, skip the re-upload, and
     // leave the (now-cleared) pass empty — the grid would silently never return.
     pass_.clearGrid();
     uploaded_uid_ = {};
     uploaded_field_setting_ = "\x01";
     return;
   }
-  // Fast path: the same grid + same field setting is already on the GPU. No parse,
-  // no pack, no upload — the scrub/replay contract (zero per-voxel CPU work).
-  if (entry->sequential_uid == uploaded_uid_ && active_field_name_ == uploaded_field_setting_) {
+  if (already_uploaded(entry->sequential_uid)) {
     return;
   }
 

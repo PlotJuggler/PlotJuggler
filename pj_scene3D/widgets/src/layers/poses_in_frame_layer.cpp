@@ -201,7 +201,18 @@ void PosesInFrameLayer::renderAt(int64_t time_ns) {
     return;
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
-  auto entry = store.latestAt(topic_id_, time_ns);
+  // Scrub coalescing, checked metadata-first (latestEntryIdAt — no payload
+  // resolve, so an unchanged entry never pays a cold refetch of an evicted pool
+  // seed): the same store entry under the same style is already staged. Shared by
+  // the gate and the post-resolve re-check (a racing insert can change the pick).
+  const auto already_staged = [this](PJ::SequentialUID uid) {
+    return uid == staged_uid_ && style_revision_ == staged_revision_;
+  };
+  const auto entry_id = store.latestEntryIdAt(topic_id_, time_ns);
+  if (entry_id.has_value() && already_staged(entry_id->uid)) {
+    return;
+  }
+  auto entry = entry_id.has_value() ? store.latestAt(topic_id_, time_ns) : std::nullopt;
   if (!entry.has_value() || entry->payload.bytes.empty()) {
     // No sample at/before this time -> show nothing.
     if (!instances_.empty()) {
@@ -211,8 +222,7 @@ void PosesInFrameLayer::renderAt(int64_t time_ns) {
     staged_uid_ = {};
     return;
   }
-  // Scrub coalescing: the same store entry under the same style is already staged.
-  if (entry->sequential_uid == staged_uid_ && style_revision_ == staged_revision_) {
+  if (already_staged(entry->sequential_uid)) {
     return;
   }
   // Per-use binding fetch (never cached) — a reload re-registers the parser slot.

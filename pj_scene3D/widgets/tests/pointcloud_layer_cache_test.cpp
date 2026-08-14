@@ -3,9 +3,9 @@
 //
 // PointCloudLayer sample-identity cache tests:
 //  - a dataset reload (SessionManager::replaceDataset) swaps the store bytes
-//    under a stable ObjectTopicId, so every (timestamp, byte size) keyed cache
-//    (decoded cloud, failure memo, pushed sample) must reset — otherwise a
-//    colliding key serves stale content or permanently refuses a valid sample;
+//    under a stable ObjectTopicId, so every sample-identity cache (decoded
+//    cloud, failure memo, pushed sample) must reset — the new bytes must be
+//    decoded, never served from pre-reload state;
 //  - timestamp 0 is a valid stamp (sim-time datasets), not a "no data" sentinel:
 //    attach() must render a first sample at t=0 and refreshNow() must not no-op;
 //  - on a mixed raw/compressed topic, a stale in-flight compressed decode must
@@ -53,6 +53,7 @@ std::atomic<int> g_primary_parser_calls{0};
 std::atomic<int> g_staged_parser_calls{0};
 std::atomic<int> g_zero_stamp_parser_calls{0};
 std::atomic<int> g_mixed_parser_calls{0};
+std::atomic<int> g_metadata_gate_parser_calls{0};
 
 // Minimal dual-mode emit. The raw cloud is a single float32 xyz point over a
 // static buffer (no anchor needed); at/after the threshold a CompressedPointCloud
@@ -93,7 +94,7 @@ PJ::ObjectTopicId registerCloudTopic(PJ::ObjectStore& store, PJ::DatasetId datas
   return *topic_id;
 }
 
-// L.18: a reload that lands a same-(timestamp, byte size) sample under the stable
+// L.18: a reload that lands a same-timestamp, same-size sample under the stable
 // topic id must not be served from the pre-reload caches.
 TEST(PointCloudLayerReload, DatasetReplaceClearsSampleIdentityCaches) {
   g_primary_parser_calls.store(0);
@@ -120,8 +121,8 @@ TEST(PointCloudLayerReload, DatasetReplaceClearsSampleIdentityCaches) {
   layer.renderAtForTest(100);
   EXPECT_EQ(g_primary_parser_calls.load(), calls_after_attach);
 
-  // In-place reload: same topic name, same stamp, same byte SIZE — the
-  // (timestamp, size) identity collides with the already-pushed sample.
+  // In-place reload: same topic name, same stamp, same byte SIZE — the maximal
+  // lookalike of the already-pushed sample (only its SequentialUID differs).
   PJ::DataEngine staged_engine;
   PJ::ObjectStore staged_store;
   const PJ::ObjectTopicId staged_topic = registerCloudTopic(staged_store, /*dataset_id=*/2);
@@ -168,6 +169,33 @@ TEST(PointCloudLayerRenderKey, TracksActiveSampleStamp) {
   const uint64_t k_250 = layer.renderKey(PJ::fromRaw(250));  // sample @200 active → repaint
   EXPECT_EQ(k_150, k_180) << "same active sample must give a stable key";
   EXPECT_NE(k_150, k_250) << "a new active sample must change the key";
+}
+
+// A same-stamp, same-size replacement entry (the store permits duplicate
+// timestamps; indexAtOrBefore picks the last pushed) is a DIFFERENT sample and
+// must CHANGE the key — a stamp-keyed renderKey left the dock's repaint gate
+// closed, so the replacement never even reached renderAt's UID memo.
+TEST(PointCloudLayerRenderKey, SameStampReplacementChangesKey) {
+  g_primary_parser_calls.store(0);
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const PJ::ObjectTopicId topic_id = registerCloudTopic(store, /*dataset_id=*/1);
+  ASSERT_TRUE(store.pushOwned(topic_id, 100, std::vector<uint8_t>{0x01}).has_value());
+  session.registerObjectTopicParser(topic_id, makeBoundHandle(kSchema, []() noexcept -> void* {
+                                      return new CountingObjectParser(
+                                          kSchema, PJ::sdk::BuiltinObjectType::kPointCloud, &g_primary_parser_calls,
+                                          &emitMixedCloud);
+                                    }));
+
+  pj::scene3d::Scene3DLayerContext ctx;  // no tf_buffer: renderKey reduces to the sample identity
+  ctx.session = &session;
+  pj::scene3d::PointCloudLayer layer(topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  const uint64_t k_before = layer.renderKey(PJ::fromRaw(150));
+  ASSERT_TRUE(store.pushOwned(topic_id, 100, std::vector<uint8_t>{0x02}).has_value());  // same stamp + size
+  const uint64_t k_after = layer.renderKey(PJ::fromRaw(150));
+  EXPECT_NE(k_before, k_after) << "same-stamp replacement entry did not change the render key";
 }
 
 // The renderKey transform-fold branch — untested by TracksActiveSampleStamp, which
@@ -283,6 +311,47 @@ TEST(PointCloudLayerMixedMode, StaleCompressedDecodeDoesNotClobberNewerSample) {
       << "compressed decode never completed";
   EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100})
       << "stale compressed decode result clobbered the newer sample";
+}
+
+// Resolve-before-memo regression: when the active sample is unchanged, renderAt
+// must skip on metadata alone WITHOUT resolving payload bytes — a resolve is a
+// cold refetch (file read + whole-chunk decompress on the GUI thread) once the
+// ResidentPayloadPool has evicted the entry's seed. The store's warm latestAt
+// cache would mask a redundant resolve, so it is deliberately reset between
+// renders via an out-of-order push — exactly the streaming condition that made
+// the redundant resolve go cold in production.
+TEST(PointCloudLayerMetadataGate, UnchangedSampleDoesNotResolvePayload) {
+  g_metadata_gate_parser_calls.store(0);
+
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const PJ::ObjectTopicId topic_id = registerCloudTopic(store, /*dataset_id=*/1);
+  auto fetch_count = std::make_shared<int>(0);
+  pushLazyCounting(store, topic_id, 100, std::vector<uint8_t>{0x01}, fetch_count);
+  session.registerObjectTopicParser(topic_id, makeBoundHandle(kSchema, []() noexcept -> void* {
+                                      return new CountingObjectParser(
+                                          kSchema, PJ::sdk::BuiltinObjectType::kPointCloud,
+                                          &g_metadata_gate_parser_calls, &emitMixedCloud);
+                                    }));
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session;
+  pj::scene3d::PointCloudLayer layer(topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
+  ASSERT_TRUE(layer.attach(ctx));  // bootstrap + first render resolve the sample
+  ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
+  const int fetches_after_attach = *fetch_count;
+  const int parses_after_attach = g_metadata_gate_parser_calls.load();
+  ASSERT_GT(fetches_after_attach, 0);
+
+  // Bust the warm latestAt cache (an out-of-order insert resets it): any resolve
+  // issued by the next render now HAS to re-invoke the lazy fetcher.
+  auto old_fetch_count = std::make_shared<int>(0);
+  pushLazyCounting(store, topic_id, 50, std::vector<uint8_t>{0x02}, old_fetch_count);
+
+  layer.renderAtForTest(100);  // same active sample -> metadata-only skip
+  EXPECT_EQ(*fetch_count, fetches_after_attach) << "unchanged sample resolved payload bytes on a later tick";
+  EXPECT_EQ(g_metadata_gate_parser_calls.load(), parses_after_attach);
+  EXPECT_EQ(*old_fetch_count, 0) << "the out-of-order older sample must not be resolved at all";
 }
 
 }  // namespace

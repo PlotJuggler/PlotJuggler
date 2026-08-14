@@ -170,6 +170,47 @@ PJ::sdk::SceneEntity makeUrlEntity(std::string id, PJ::Timestamp timestamp, std:
 
 }  // namespace
 
+// Resolve-before-memo regression: an unchanged active batch must skip on
+// metadata alone WITHOUT resolving payload bytes — a resolve is a cold refetch
+// (file read + whole-chunk decompress on the GUI thread) once the
+// ResidentPayloadPool has evicted the entry's seed. The store's warm latestAt
+// cache would mask a redundant resolve, so it is reset via an out-of-order push
+// stamped ABOVE the playhead (below it, the model path's retroactive-ingest
+// guard would legitimately rebuild and re-resolve).
+TEST(SceneEntitiesLayerModelTest, UnchangedActiveBatchDoesNotResolvePayload) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  auto fetch_count = std::make_shared<int>(0);
+  pushLazyCounting(
+      session.objectStore(), topic_id, 10, PJ::serializeSceneEntities(batchWithEntities({makeEntity("car", 10)})),
+      fetch_count);
+  pushSceneEntities(session, topic_id, 100, batchWithEntities({makeEntity("truck", 100)}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  layer.setTrackerTime(PJ::fromRaw(20));  // active batch: the ts=10 entry
+  ASSERT_EQ(layer.currentEntities().size(), 1u);
+  const int fetches_after_first_render = *fetch_count;
+  const int parses_after_first_render = g_parse_count.load();
+  ASSERT_GT(fetches_after_first_render, 0);
+
+  // Bust the warm latestAt cache: ts=50 is out-of-order relative to ts=100 (so
+  // the insert resets the cache) but stays ABOVE the playhead, so neither the
+  // render gate nor the model fold has any reason to touch it.
+  auto future_fetch_count = std::make_shared<int>(0);
+  pushLazyCounting(
+      session.objectStore(), topic_id, 50, PJ::serializeSceneEntities(batchWithEntities({makeEntity("bike", 50)})),
+      future_fetch_count);
+
+  layer.setTrackerTime(PJ::fromRaw(21));  // same active batch -> metadata-only skip
+  EXPECT_EQ(*fetch_count, fetches_after_first_render) << "unchanged batch resolved payload bytes on a later tick";
+  EXPECT_EQ(g_parse_count.load(), parses_after_first_render);
+  EXPECT_EQ(*future_fetch_count, 0) << "the not-yet-reached batch must not be resolved at all";
+}
+
 TEST(SceneEntitiesLayerModelTest, AccumulatesSnapshotsAndReplacesMatchingEntityId) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);

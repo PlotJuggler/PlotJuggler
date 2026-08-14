@@ -195,7 +195,7 @@ GridUpdate OccupancyGridReconstructor::reconstructAt(
     PJ::Timestamp t, const BaseProvider& base_at, const UpdatesProvider& updates_in) {
   dirty_rects_.clear();
 
-  const std::optional<PJ::sdk::OccupancyGrid> base = base_at(t);
+  const std::optional<BaseSample> base = base_at(t);
   if (!base) {
     // No base grid at or before t — nothing to display.
     invalidate();
@@ -205,7 +205,7 @@ GridUpdate OccupancyGridReconstructor::reconstructAt(
   // Wire dims are untrusted (the canonical codec performs no width*height vs
   // payload cross-check): cap the cell count BEFORE resetToBase() allocates
   // from it, so a corrupt file cannot trigger a multi-GB / throwing assign.
-  if (static_cast<uint64_t>(base->width) * base->height > kMaxGridCells) {
+  if (static_cast<uint64_t>(base->grid.width) * base->grid.height > kMaxGridCells) {
     invalidate();
     return GridUpdate{grid_, GridUpdate::Kind::kEmpty, {}};
   }
@@ -216,9 +216,12 @@ GridUpdate OccupancyGridReconstructor::reconstructAt(
   // barriers in pointcloud_codecs.cpp). Reset so one corrupt sample cannot
   // poison subsequent frames either.
   try {
-    if (!have_epoch_ || base->timestamp_ns != grid_.base_timestamp_ns) {
-      // New epoch: a different (or first) base keyframe is now in effect.
-      resetToBase(*base);
+    if (!have_epoch_ || base->identity != epoch_identity_) {
+      // New epoch: a different (or first) base keyframe entry is now in effect.
+      // Keyed on the entry identity, not the decoded timestamp — a replacement
+      // keyframe at the SAME timestamp must still reset (see BaseSample).
+      resetToBase(base->grid);
+      epoch_identity_ = base->identity;
       applyRange(updates_in, grid_.base_timestamp_ns, t, /*allow_snapshots=*/true);
       last_t_ = t;
       return GridUpdate{grid_, GridUpdate::Kind::kFull, dirty_rects_};

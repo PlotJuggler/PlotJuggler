@@ -16,6 +16,7 @@
 #include <QImage>
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -228,6 +229,87 @@ TEST(DepthCloudLayer, BackProjectsBarePngCompressedDepth) {
   EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
   EXPECT_EQ(layer.lastPointCountForTest(), 4U);
   EXPECT_EQ(layer.sourceFrameForTest(), u"cam"_s);
+}
+
+// Resolve-before-memo regression: when the sample on the GPU is unchanged,
+// renderAt must skip on metadata alone WITHOUT resolving payload bytes — a
+// resolve is a cold refetch (file read + whole-chunk decompress on the GUI
+// thread) once the ResidentPayloadPool has evicted the entry's seed. The store's
+// warm latestAt cache would mask a redundant resolve, so it is deliberately
+// reset between renders via an out-of-order push.
+TEST(DepthCloudLayer, UnchangedSampleDoesNotResolvePayload) {
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+
+  const PJ::ObjectTopicId depth = registerTypedTopic(store, "/cam/depth/image", "kImage");
+  const PJ::ObjectTopicId info = registerTypedTopic(store, "/cam/depth/camera_info", "kCameraInfo");
+  ASSERT_TRUE(store.pushOwned(info, 50, std::vector<uint8_t>{0x02}).has_value());
+  auto fetch_count = std::make_shared<int>(0);
+  pushLazyCounting(store, depth, 100, std::vector<uint8_t>{0x01}, fetch_count);
+
+  session.registerObjectTopicParser(depth, makeBoundHandle(kDepthSchema, []() noexcept -> void* {
+                                      return new CountingObjectParser(
+                                          kDepthSchema, PJ::sdk::BuiltinObjectType::kImage, nullptr, &emitDepthImage);
+                                    }));
+  session.registerObjectTopicParser(
+      info, makeBoundHandle(kInfoSchema, []() noexcept -> void* {
+        return new CountingObjectParser(kInfoSchema, PJ::sdk::BuiltinObjectType::kCameraInfo, nullptr, &emitCameraInfo);
+      }));
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session;
+  pj::scene3d::DepthCloudLayer layer(depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
+  ASSERT_TRUE(layer.attach(ctx));  // renders the first frame (t=100)
+  ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
+  const int fetches_after_attach = *fetch_count;
+  ASSERT_GT(fetches_after_attach, 0);
+
+  // Bust the warm latestAt cache (an out-of-order insert resets it): any resolve
+  // issued by the next render now HAS to re-invoke the lazy fetcher.
+  auto old_fetch_count = std::make_shared<int>(0);
+  pushLazyCounting(store, depth, 60, std::vector<uint8_t>{0x01}, old_fetch_count);
+
+  layer.renderAtForTest(100);  // same sample already on the GPU -> metadata-only skip
+  EXPECT_EQ(*fetch_count, fetches_after_attach) << "unchanged sample resolved payload bytes on a later tick";
+  EXPECT_EQ(*old_fetch_count, 0) << "the out-of-order older sample must not be resolved at all";
+}
+
+// A CameraInfo-only update — a new sample on the camera topic while the depth
+// sample is unchanged — must re-resolve intrinsics and re-project. The
+// depth-sample memo alone must not swallow the tick, or the view keeps stale
+// calibration until the next depth frame.
+TEST(DepthCloudLayer, CameraInfoOnlyUpdateReprojects) {
+  g_camera_info_parse_count = 0;
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+
+  const PJ::ObjectTopicId depth = registerTypedTopic(store, "/cam/depth/image", "kImage");
+  const PJ::ObjectTopicId info = registerTypedTopic(store, "/cam/depth/camera_info", "kCameraInfo");
+  ASSERT_TRUE(store.pushOwned(info, 50, std::vector<uint8_t>{0x02}).has_value());
+  ASSERT_TRUE(store.pushOwned(depth, 100, std::vector<uint8_t>{0x01}).has_value());
+
+  session.registerObjectTopicParser(depth, makeBoundHandle(kDepthSchema, []() noexcept -> void* {
+                                      return new CountingObjectParser(
+                                          kDepthSchema, PJ::sdk::BuiltinObjectType::kImage, nullptr, &emitDepthImage);
+                                    }));
+  session.registerObjectTopicParser(info, makeBoundHandle(kInfoSchema, []() noexcept -> void* {
+                                      return new CountingObjectParser(
+                                          kInfoSchema, PJ::sdk::BuiltinObjectType::kCameraInfo,
+                                          &g_camera_info_parse_count, &emitCameraInfo);
+                                    }));
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session;
+  pj::scene3d::DepthCloudLayer layer(depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
+  ASSERT_TRUE(layer.attach(ctx));  // renders t=100 with intrinsics from info@50
+  ASSERT_EQ(layer.lastPointCountForTest(), 4U);
+  ASSERT_EQ(g_camera_info_parse_count.load(), 1);
+
+  // CameraInfo-only update at/before the playhead: a new camera-topic entry.
+  ASSERT_TRUE(store.pushOwned(info, 60, std::vector<uint8_t>{0x02}).has_value());
+  layer.renderAtForTest(100);  // depth sample unchanged
+  EXPECT_EQ(g_camera_info_parse_count.load(), 2) << "new CameraInfo was not re-resolved (stale calibration)";
+  EXPECT_EQ(layer.lastPointCountForTest(), 4U) << "re-projection did not run";
 }
 
 TEST(DepthCloudLayer, CachesIntrinsicsAcrossFramesNotReparsedPerFrame) {

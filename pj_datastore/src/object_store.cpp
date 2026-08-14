@@ -314,6 +314,23 @@ SequentialUID ObjectStore::maxUidAtOrBefore(ObjectTopicId id, Timestamp t) const
   return series->ordered.maxUidAtOrBefore(t);
 }
 
+std::optional<ObjectStore::TimeRangeEntry> ObjectStore::latestEntryIdAt(ObjectTopicId id, Timestamp timestamp) const {
+  std::shared_lock store_lock(store_mutex_);
+  const auto* series = findSeries(id);
+  if (series == nullptr) {
+    return std::nullopt;
+  }
+  // latestAt()'s locked prefix without the snapshot/resolve: the same
+  // indexAtOrBefore pick, read as pure metadata.
+  std::shared_lock lock(series->mutex);
+  const auto idx = series->ordered.indexAtOrBefore(timestamp);
+  if (!idx.has_value()) {
+    return std::nullopt;
+  }
+  const ObjectEntry& entry = series->ordered.entryAt(*idx);
+  return TimeRangeEntry{entry.sequential_uid, entry.timestamp};
+}
+
 std::vector<ObjectStore::TimeRangeEntry> ObjectStore::rangeByTime(ObjectTopicId id, Timestamp lo, Timestamp hi) const {
   if (hi <= lo) {
     return {};  // empty window (also rejects a reversed lo/hi), before taking any lock

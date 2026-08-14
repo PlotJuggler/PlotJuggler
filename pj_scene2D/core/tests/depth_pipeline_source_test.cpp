@@ -5,16 +5,19 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "pj_base/buffer_anchor.hpp"
 #include "pj_base/builtin/image.hpp"
 #include "pj_base/builtin/image_codec.hpp"
 
@@ -137,6 +140,86 @@ TEST(DepthPipelineSourceTest, EmitsRawDepthFloatsWithParams) {
   EXPECT_FLOAT_EQ(layer_frame->depth.far_m, 3.0f);
   EXPECT_FALSE(layer_frame->depth.invert);
   EXPECT_EQ(layer_frame->depth.colormap, 0u);  // kTurbo
+}
+
+// Resolve-before-memo regression: a request landing on the already-delivered
+// entry must dedup on metadata alone WITHOUT resolving payload bytes — a resolve
+// is a cold refetch (file read + whole-chunk decompress) once the
+// ResidentPayloadPool has evicted the entry's seed. The store's warm latestAt
+// cache would mask a redundant resolve, so it is deliberately reset between
+// requests via an out-of-order push.
+TEST(DepthPipelineSourceTest, UnchangedEntryDoesNotResolvePayload) {
+  ObjectStore store;
+  auto topic = registerDepthTopic(store);
+  ASSERT_NE(topic.id, 0u);
+
+  const auto bytes = serializeDepth(1, 1, "16UC1", makeU16Le({1000}));
+  auto fetch_count = std::make_shared<std::atomic<int>>(0);  // resolved on the worker thread
+  ASSERT_TRUE(store
+                  .pushLazy(
+                      topic, 1'000,
+                      [bytes, fetch_count]() -> sdk::PayloadView {
+                        ++*fetch_count;
+                        return sdk::makePayloadView(bytes);
+                      })
+                  .has_value());
+
+  DepthPipelineSource source(&store, topic);
+  FrameSync sync;
+  sync.install(source);
+
+  auto frame = pumpFrameAt(source, sync, 1'000);
+  ASSERT_TRUE(frame.has_value());
+  const int fetches_after_first = fetch_count->load();
+  ASSERT_GT(fetches_after_first, 0);
+
+  // Bust the warm latestAt cache (an out-of-order insert resets it): any resolve
+  // issued by the next request now HAS to re-invoke the lazy fetcher.
+  auto old_fetch_count = std::make_shared<std::atomic<int>>(0);
+  ASSERT_TRUE(store
+                  .pushLazy(
+                      topic, 500,
+                      [bytes, old_fetch_count]() -> sdk::PayloadView {
+                        ++*old_fetch_count;
+                        return sdk::makePayloadView(bytes);
+                      })
+                  .has_value());
+
+  // New query time, same active entry: the dedup must fire on metadata alone —
+  // no frame emitted, no payload resolve. The negative wait doubles as the
+  // worker-drain barrier for the counter asserts below.
+  source.setTimestamp(1'001);
+  EXPECT_FALSE(sync.waitReady(std::chrono::milliseconds(300))) << "unchanged entry re-decoded a frame";
+  EXPECT_EQ(fetch_count->load(), fetches_after_first) << "unchanged entry resolved payload bytes";
+  EXPECT_EQ(old_fetch_count->load(), 0) << "the out-of-order older entry must not be resolved at all";
+}
+
+// The dedup is keyed on the entry UID, not its timestamp: a same-stamp
+// replacement entry (the store permits duplicate timestamps; latestAt picks the
+// last pushed) is NEW content and must decode into a fresh frame. The second
+// request uses a shifted ts that maps to the same entry, because the worker
+// itself dedups equal request timestamps before decodeAt runs.
+TEST(DepthPipelineSourceTest, SameStampReplacementDecodesAgain) {
+  ObjectStore store;
+  auto topic = registerDepthTopic(store);
+  ASSERT_NE(topic.id, 0u);
+  ASSERT_TRUE(store.pushOwned(topic, 1'000, serializeDepth(1, 1, "16UC1", makeU16Le({1000}))).has_value());
+
+  DepthPipelineSource source(&store, topic);
+  FrameSync sync;
+  sync.install(source);
+  auto first = pumpFrameAt(source, sync, 1'000);
+  ASSERT_TRUE(first.has_value());
+
+  // Same stamp, same byte size — only the SequentialUID differs.
+  ASSERT_TRUE(store.pushOwned(topic, 1'000, serializeDepth(1, 1, "16UC1", makeU16Le({2000}))).has_value());
+  auto second = pumpFrameAt(source, sync, 1'001);
+  ASSERT_TRUE(second.has_value()) << "same-stamp replacement entry was deduped as unchanged";
+  const DecodedFrame* frame = onlyPixelLayerFrame(*second);
+  ASSERT_NE(frame, nullptr);
+  ASSERT_NE(frame->pixels, nullptr);
+  const auto* depths = reinterpret_cast<const float*>(frame->pixels->data());
+  EXPECT_FLOAT_EQ(depths[0], 2.0f) << "replacement content did not reach the decoded frame";
 }
 
 TEST(DepthPipelineSourceTest, Emits32FC1FloatsPassthrough) {

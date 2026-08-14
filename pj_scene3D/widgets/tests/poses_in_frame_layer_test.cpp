@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstdint>
 #include <glm/glm.hpp>
+#include <memory>
 #include <string_view>
 #include <vector>
 
@@ -78,6 +79,37 @@ class PosesInFrameLayerTest : public ::testing::Test {
   PJ::SessionManager session_;
   PJ::ObjectTopicId topic_;
 };
+
+// Resolve-before-memo regression: an unchanged staged sample must skip on
+// metadata alone WITHOUT resolving payload bytes — a resolve is a cold refetch
+// (file read + whole-chunk decompress on the GUI thread) once the
+// ResidentPayloadPool has evicted the entry's seed. The store's warm latestAt
+// cache would mask a redundant resolve, so it is deliberately reset between
+// renders via an out-of-order push.
+TEST_F(PosesInFrameLayerTest, UnchangedSampleDoesNotResolvePayload) {
+  auto fetch_count = std::make_shared<int>(0);
+  pushLazyCounting(session_.objectStore(), topic_, 100, std::vector<uint8_t>{2}, fetch_count);
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session_;
+  pj::scene3d::PosesInFrameLayer layer(topic_, u"poses"_s);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  layer.renderAtForTest(100);
+  ASSERT_EQ(layer.instancesForTest().size(), 6U);  // 2 poses * 3 arms
+  const int fetches_after_first_render = *fetch_count;
+  const int parses_after_first_render = g_parser_calls.load();
+  ASSERT_GT(fetches_after_first_render, 0);
+
+  // Bust the warm latestAt cache (an out-of-order insert resets it): any resolve
+  // issued by the next render now HAS to re-invoke the lazy fetcher.
+  auto old_fetch_count = std::make_shared<int>(0);
+  pushLazyCounting(session_.objectStore(), topic_, 50, std::vector<uint8_t>{1}, old_fetch_count);
+
+  layer.renderAtForTest(101);  // same staged sample, same style -> metadata-only skip
+  EXPECT_EQ(*fetch_count, fetches_after_first_render) << "unchanged sample resolved payload bytes on a later tick";
+  EXPECT_EQ(g_parser_calls.load(), parses_after_first_render);
+  EXPECT_EQ(*old_fetch_count, 0) << "the out-of-order older sample must not be resolved at all";
+}
 
 TEST_F(PosesInFrameLayerTest, DecodesPosesIntoThreeArmsEachAtTrackerTime) {
   pushPoses(100, 3);

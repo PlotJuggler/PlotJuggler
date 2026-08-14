@@ -236,14 +236,14 @@ bool WasmOccupancyGridLayer::reconstructAt(PJ::Timepoint time) {
 
   QString rejection;
   QString update_warning;
-  auto base_at = [this, &store, &base_binding,
-                  &rejection](PJ::Timestamp stamp) -> std::optional<PJ::sdk::OccupancyGrid> {
+  using BaseSample = OccupancyGridReconstructor::BaseSample;
+  auto base_at = [this, &store, &base_binding, &rejection](PJ::Timestamp stamp) -> std::optional<BaseSample> {
     const auto entry = store.latestAt(topic_id_, stamp);
     if (!entry.has_value() || entry->payload.bytes.empty()) {
       return std::nullopt;
     }
     if (base_cache_.has_value() && entry->sequential_uid == base_cache_uid_) {
-      return base_cache_;
+      return BaseSample{*base_cache_, base_cache_uid_.value};
     }
     if (!browserOccupancyPayloadFits(static_cast<std::uint64_t>(entry->payload.bytes.size()))) {
       rejection = tr("Occupancy-grid payload is %1 MiB; the browser limit is %2 MiB")
@@ -279,7 +279,7 @@ bool WasmOccupancyGridLayer::reconstructAt(PJ::Timepoint time) {
     }
     base_cache_uid_ = entry->sequential_uid;
     base_cache_ = *decoded;
-    return base_cache_;
+    return BaseSample{*base_cache_, base_cache_uid_.value};
   };
 
   std::uint64_t update_window_bytes = 0;

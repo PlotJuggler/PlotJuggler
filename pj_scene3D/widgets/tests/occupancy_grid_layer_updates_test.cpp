@@ -107,10 +107,12 @@ struct RefGrid {
 
 // displayed(t) = latest base with ts <= t, plus every update in (base_ts, t]
 // applied in ascending-ts order (insertion order within equal-ts runs).
+// Equal-ts bases: the LAST pushed wins (>=), matching the store's
+// indexAtOrBefore pick — the store permits duplicate timestamps.
 std::optional<RefGrid> refReplay(const std::vector<RefBase>& bases, std::vector<RefUpdate> updates, int64_t t) {
   const RefBase* base = nullptr;
   for (const auto& candidate : bases) {
-    if (candidate.ts <= t && (base == nullptr || candidate.ts > base->ts)) {
+    if (candidate.ts <= t && (base == nullptr || candidate.ts >= base->ts)) {
       base = &candidate;
     }
   }
@@ -166,6 +168,15 @@ class OccupancyGridLayerUpdatesTest : public ::testing::Test {
     std::vector<uint8_t> payload{static_cast<uint8_t>(width), static_cast<uint8_t>(height)};
     payload.insert(payload.end(), static_cast<std::size_t>(width) * height, fill);
     ASSERT_TRUE(store().pushOwned(base_topic_, ts, std::move(payload)).has_value());
+    ref_bases_.push_back(RefBase{ts, width, height, fill});
+  }
+
+  // pushBase via a LAZY counting fetcher (pushLazyCounting), so a test can assert
+  // whether a render actually resolved payload bytes (not just whether it re-parsed).
+  void pushLazyBase(int64_t ts, uint32_t width, uint32_t height, uint8_t fill, std::shared_ptr<int> counter) {
+    std::vector<uint8_t> payload{static_cast<uint8_t>(width), static_cast<uint8_t>(height)};
+    payload.insert(payload.end(), static_cast<std::size_t>(width) * height, fill);
+    pushLazyCounting(store(), base_topic_, ts, std::move(payload), std::move(counter));
     ref_bases_.push_back(RefBase{ts, width, height, fill});
   }
 
@@ -373,6 +384,59 @@ TEST_F(OccupancyGridLayerUpdatesTest, UnchangedBaseKeyframeIsNotReparsed) {
   pushBase(300, 4, 4, 10);
   renderAndExpectRef(layer, 300);
   EXPECT_EQ(g_base_parser_calls.load(), base_parses_after_first_render + 1);
+}
+
+// Resolve-before-memo regression: while the active base keyframe is unchanged,
+// renderAt must not even RESOLVE its payload bytes — a resolve is a cold refetch
+// (file read + whole-chunk decompress on the GUI thread) once the
+// ResidentPayloadPool has evicted the entry's seed. The store's warm latestAt
+// cache would mask a redundant resolve, so it is deliberately reset between
+// renders via an out-of-order push — exactly the streaming condition that made
+// the redundant resolve go cold in production.
+TEST_F(OccupancyGridLayerUpdatesTest, UnchangedBaseKeyframeDoesNotResolvePayload) {
+  auto fetch_count = std::make_shared<int>(0);
+  pushLazyBase(100, 4, 4, 0, fetch_count);
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session_;
+  pj::scene3d::OccupancyGridLayer layer(base_topic_, u"map"_s);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  renderAndExpectRef(layer, 120);  // first renderAt resolves + parses + memoizes
+  const int fetches_after_first_render = *fetch_count;
+  const int parses_after_first_render = g_base_parser_calls.load();
+  ASSERT_GT(fetches_after_first_render, 0);
+
+  // Bust the warm latestAt cache (an out-of-order insert resets it): any resolve
+  // issued by the next render now HAS to re-invoke the lazy fetcher.
+  auto old_fetch_count = std::make_shared<int>(0);
+  pushLazyBase(50, 4, 4, 7, old_fetch_count);
+
+  renderAndExpectRef(layer, 121);  // same active keyframe -> metadata-only skip
+  EXPECT_EQ(*fetch_count, fetches_after_first_render)
+      << "unchanged base keyframe resolved payload bytes on a later tick";
+  EXPECT_EQ(g_base_parser_calls.load(), parses_after_first_render);
+  EXPECT_EQ(*old_fetch_count, 0) << "the out-of-order older keyframe must not be resolved at all";
+}
+
+// A replacement base keyframe at the SAME timestamp as the displayed one (the
+// store permits duplicate stamps; indexAtOrBefore picks the last pushed) is a
+// DIFFERENT store entry and must start a new epoch. The reconstructor keys the
+// epoch on the base entry's identity, not its decoded timestamp — keyed on the
+// timestamp alone, the forward path would keep showing the old keyframe's cells.
+TEST_F(OccupancyGridLayerUpdatesTest, SameTimestampReplacementBaseStartsNewEpoch) {
+  pushBase(100, 4, 4, 10);
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session_;
+  pj::scene3d::OccupancyGridLayer layer(base_topic_, u"map"_s);
+  ASSERT_TRUE(layer.attach(ctx));
+  renderAndExpectRef(layer, 100);
+  ASSERT_EQ(layer.reconstructedGridForTest().cells[0], static_cast<int8_t>(10));
+
+  pushBase(100, 4, 4, 33);  // same stamp, new entry, different cells
+  renderAndExpectRef(layer, 100);
+  EXPECT_EQ(layer.reconstructedGridForTest().cells[0], static_cast<int8_t>(33))
+      << "same-timestamp replacement keyframe did not reset the epoch";
 }
 
 }  // namespace

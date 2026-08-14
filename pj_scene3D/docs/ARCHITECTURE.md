@@ -859,7 +859,9 @@ colored by depth. Sibling of the 2D depth view — same data, different geometry
   Rerun's camera hierarchy). An exact match wins; with none, `resolveIntrinsics`
   falls back to a lone `CameraInfo` only when unambiguous, else refuses rather
   than pair the wrong camera. The result is memoized by `(frame_id, CameraInfo
-  SampleId)` and revalidated parse-free via `latestAt`.
+  SampleId)` and revalidated metadata-only via `latestEntryIdAt` (no parse and
+  no payload resolve); a new CameraInfo sample re-projects the current depth
+  image even when the depth sample itself is unchanged.
 - **Back-projection.** The math is the Qt-free core `depth_backproject.{h,cpp}`
   (`depthToPoints`); a single pass yields positions, the per-point depth scalar,
   the world AABB, and the colormap range together (via the optional

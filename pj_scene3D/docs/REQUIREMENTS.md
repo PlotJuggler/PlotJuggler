@@ -92,7 +92,7 @@ layer, no separate widget.
   linked PRIVATE to `pj_scene3d_core` — mirrors `pj_scene2d_core` decoding JPEG/PNG.
 - **Off the UI thread:** decode is CPU-heavy (Draco ≈100 ms for ~1M points), so it runs on the Qt
   thread pool (`QtConcurrent` + `QFutureWatcher`) with latest-wins coalescing; the decoded cloud is
-  cached per sample — identity is (store timestamp, payload byte size) — so repaints and color-field
+  cached per sample — identity is the store entry's never-reused SequentialUID — so repaints and color-field
   changes don't re-decode, and a tracker tick that resolves to the already-pushed sample skips the
   re-conversion/upload entirely. One failed sample is memoized at a time: revisiting it clears the
   view (matching the raw path's malformed-cloud behavior) and restores its warning without another

@@ -395,15 +395,24 @@ void SceneEntitiesLayer::renderAt(int64_t time_ns) {
     return;
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
+  // Skip re-parsing + re-decoding when the active batch hasn't changed (scrubbing
+  // within one message's time window). SequentialUID is stable across ObjectStore
+  // front eviction, unlike a current deque index; checked metadata-first
+  // (latestEntryIdAt) so an unchanged batch never resolves payload bytes — a
+  // resolve can be a cold refetch once a pool seed is evicted. Viewer color
+  // overrides apply at render time (setOverrides), not here, so they are
+  // unaffected by this guard. Shared by the gate and the post-resolve re-check
+  // (a racing insert can change the pick in between).
+  const auto already_active = [this](PJ::SequentialUID uid) { return uid == last_marker_uid_; };
+  const auto entry_id = store.latestEntryIdAt(topic_id_, time_ns);
+  if (!entry_id.has_value() || already_active(entry_id->uid)) {
+    return;
+  }
   auto resolved = store.latestAt(topic_id_, time_ns);
   if (!resolved.has_value() || resolved->payload.bytes.empty()) {
     return;
   }
-  // Skip re-parsing + re-decoding when the active batch hasn't changed (scrubbing
-  // within one message's time window). SequentialUID is stable across ObjectStore
-  // front eviction, unlike a current deque index. Viewer color overrides apply at
-  // render time (setOverrides), not here, so they are unaffected by this guard.
-  if (last_marker_uid_ == resolved->sequential_uid) {
+  if (already_active(resolved->sequential_uid)) {
     return;
   }
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);

@@ -414,6 +414,14 @@ std::optional<PJ::sdk::DepthImage> DepthCloudLayer::toDepthView(const Image& ima
   return std::nullopt;  // non-depth encoding
 }
 
+bool DepthCloudLayer::intrinsicsCurrentAt(int64_t time_ns) const {
+  if (!intrinsics_cache_.has_value() || ctx_.session == nullptr) {
+    return true;  // nothing memoized -> nothing can be stale
+  }
+  const auto entry_id = ctx_.session->objectStore().latestEntryIdAt(intrinsics_cache_->camera_topic, time_ns);
+  return entry_id.has_value() && *entry_id == intrinsics_cache_->camera_sample;
+}
+
 DepthIntrinsics DepthCloudLayer::resolveIntrinsics(const std::string& frame_id, int64_t time_ns) {
   if (ctx_.session == nullptr) {
     return {};
@@ -422,14 +430,11 @@ DepthIntrinsics DepthCloudLayer::resolveIntrinsics(const std::string& frame_id, 
 
   // Fast path: intrinsics for this frame_id are memoized and the CameraInfo that
   // supplied them is unchanged at the playhead (same sample identity, verified
-  // without a parse). Calibration is latched/constant, so this skips re-scanning
-  // every topic and re-parsing every CameraInfo on each depth frame.
-  if (intrinsics_cache_.has_value() && intrinsics_cache_->frame_id == frame_id) {
-    const auto resolved = store.latestAt(intrinsics_cache_->camera_topic, time_ns);
-    if (resolved.has_value() &&
-        SampleId{resolved->timestamp, resolved->payload.bytes.size()} == intrinsics_cache_->camera_sample) {
-      return intrinsics_cache_->intr;
-    }
+  // metadata-only — no parse and no payload resolve). Calibration is latched/
+  // constant, so this skips re-scanning every topic and re-parsing every
+  // CameraInfo on each depth frame.
+  if (intrinsics_cache_.has_value() && intrinsics_cache_->frame_id == frame_id && intrinsicsCurrentAt(time_ns)) {
+    return intrinsics_cache_->intr;
   }
 
   const PJ::DatasetId dataset_id = store.descriptor(topic_id_).dataset_id;
@@ -471,7 +476,7 @@ DepthIntrinsics DepthCloudLayer::resolveIntrinsics(const std::string& frame_id, 
     if (!intr.valid()) {
       continue;
     }
-    const SampleId sample{resolved->timestamp, resolved->payload.bytes.size()};
+    const SampleId sample{resolved->sequential_uid, resolved->timestamp};
     if (!frame_id.empty() && ci->frame_id == frame_id) {
       intrinsics_cache_ = IntrinsicsCache{frame_id, id, sample, intr};  // exact match -> memoize
       return intr;
@@ -504,13 +509,28 @@ void DepthCloudLayer::renderAt(int64_t time_ns) {
     return;
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
+  // Sample-memo predicate shared by the metadata-first gate and the post-resolve
+  // re-check: the depth sample is already on the GPU AND its memoized intrinsics
+  // still match the CameraInfo sample at the playhead. The second condition keeps
+  // a CameraInfo-only update (new calibration, unchanged depth image) from being
+  // swallowed by the depth memo — the same points must re-project under the new K.
+  const auto already_current = [this, time_ns](const SampleId& id) {
+    return id == last_pushed_id_ && intrinsicsCurrentAt(time_ns);
+  };
+  // Metadata-first gate: identify the entry latestAt() would resolve and skip
+  // before touching payload bytes — resolving first would re-fetch an evicted
+  // pool seed only to discard it when nothing changed.
+  const auto entry_id = store.latestEntryIdAt(topic_id_, time_ns);
+  if (!entry_id.has_value() || already_current(*entry_id)) {
+    return;
+  }
   auto resolved = store.latestAt(topic_id_, time_ns);
   if (!resolved.has_value() || resolved->payload.bytes.empty()) {
     return;
   }
-  const SampleId id{resolved->timestamp, resolved->payload.bytes.size()};
-  if (id == last_pushed_id_) {
-    return;  // same sample already on the GPU
+  const SampleId id{resolved->sequential_uid, resolved->timestamp};
+  if (already_current(id)) {
+    return;  // a racing insert changed the pick back onto the already-current state
   }
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
   if (!binding) {

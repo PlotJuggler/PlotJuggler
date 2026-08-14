@@ -87,7 +87,7 @@ class DepthPipelineSource : public MediaSource {
 
   /// Worker-thread entry: resolve + decode the store entry nearest `ts_ns` into a
   /// raw depth frame. Returns nullopt for no data, an unchanged entry (dedup), or
-  /// an undecodable payload. Touches store_/parser_/last_entry_ts_ — worker-only.
+  /// an undecodable payload. Touches store_/parser_/last_entry_uid_ — worker-only.
   [[nodiscard]] std::optional<DecodedFrame> decodeAt(int64_t ts_ns);
   [[nodiscard]] std::optional<DecodedFrame> decodeDepthImage(const sdk::DepthImage& depth, int64_t pts) const;
 
@@ -107,7 +107,11 @@ class DepthPipelineSource : public MediaSource {
   float far_m_ = 4.0f;
   float opacity_ = 1.0f;
 
-  int64_t last_entry_ts_ = INT64_MIN;  ///< dedup of the last decoded entry — worker-thread only
+  /// Dedup of the last decoded entry — worker-thread only. Keyed on the entry's
+  /// SequentialUID, not its timestamp: the store permits duplicate stamps, so a
+  /// same-stamp replacement entry must still decode. Invalid UID = "none"
+  /// (force_redecode resets to it).
+  SequentialUID last_entry_uid_;
 
   // Snapshot of the last decoded RAW depth frame (float32 metres), kept so the
   // main-thread autoRange() can compute percentiles without re-decoding. Written

@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -382,6 +383,85 @@ TEST(ObjectStoreTest, LatestAtCacheReleasesEvictedEntry) {
 
   store.evictBefore(id, 150);  // evicts @100 — the cached entry
   EXPECT_TRUE(probe.expired()) << "evicting the cached entry must release its warm copy";
+}
+
+// =========================================================================
+// latestEntryIdAt (metadata-only identity of the active latest sample)
+// =========================================================================
+
+// latestEntryIdAt names exactly the entry latestAt would resolve, without ever
+// invoking the lazy fetcher — the identity a sampling layer compares against
+// its memo BEFORE paying latestAt's resolve.
+TEST(ObjectStoreTest, LatestEntryIdAtMatchesLatestAtWithoutResolving) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  int fetch_count = 0;
+  auto fetcher = [&fetch_count]() -> sdk::PayloadView {
+    ++fetch_count;
+    return sdk::makePayloadView(makePayload(8));
+  };
+  store.pushLazy(id, 100, fetcher);
+  store.pushLazy(id, 200, fetcher);
+
+  const auto exact = store.latestEntryIdAt(id, 200);
+  const auto between = store.latestEntryIdAt(id, 150);
+  const auto after = store.latestEntryIdAt(id, 999);
+  ASSERT_TRUE(exact.has_value());
+  ASSERT_TRUE(between.has_value());
+  ASSERT_TRUE(after.has_value());
+  EXPECT_EQ(exact->timestamp, 200);
+  EXPECT_EQ(between->timestamp, 100);
+  EXPECT_EQ(after->timestamp, 200);
+  EXPECT_EQ(fetch_count, 0) << "latestEntryIdAt must never invoke a lazy fetch";
+
+  const auto resolved = store.latestAt(id, 150);
+  ASSERT_TRUE(resolved.has_value());
+  EXPECT_EQ(resolved->sequential_uid, between->uid) << "identity must name the entry latestAt resolves";
+  EXPECT_EQ(fetch_count, 1);
+}
+
+// Under an out-of-order insert the latest-BY-TIME entry's UID differs from the
+// max arrival UID at-or-before t (maxUidAtOrBefore): the identity must follow
+// indexAtOrBefore's pick, never the arrival high-water.
+TEST(ObjectStoreTest, LatestEntryIdAtFollowsLatestByTimeUnderOutOfOrderInsert) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  int fetch_count = 0;
+  auto fetcher = [&fetch_count]() -> sdk::PayloadView {
+    ++fetch_count;
+    return sdk::makePayloadView(makePayload(8));
+  };
+  store.pushLazy(id, 100, fetcher);
+  store.pushLazy(id, 300, fetcher);
+  store.pushLazy(id, 200, fetcher);  // out-of-order: oldest-but-one ts, newest UID
+
+  // Decode-free ground truth for each entry's UID.
+  const auto window = store.rangeByTime(id, std::numeric_limits<Timestamp>::min(), 400);
+  ASSERT_EQ(window.size(), 3u);
+  const auto uid_at_200 = window[1].uid;
+  const auto uid_at_300 = window[2].uid;
+  ASSERT_LT(uid_at_300, uid_at_200) << "precondition: the out-of-order entry must carry the newest UID";
+
+  const auto mid = store.latestEntryIdAt(id, 250);
+  ASSERT_TRUE(mid.has_value());
+  EXPECT_EQ(mid->timestamp, 200);
+  EXPECT_EQ(mid->uid, uid_at_200);
+
+  const auto top = store.latestEntryIdAt(id, 400);
+  ASSERT_TRUE(top.has_value());
+  EXPECT_EQ(top->timestamp, 300);
+  EXPECT_EQ(top->uid, uid_at_300);
+  EXPECT_NE(top->uid, store.maxUidAtOrBefore(id, 400)) << "identity must not be the arrival high-water UID";
+  EXPECT_EQ(fetch_count, 0) << "latestEntryIdAt must never invoke a lazy fetch";
+}
+
+TEST(ObjectStoreTest, LatestEntryIdAtEmptyCases) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  EXPECT_FALSE(store.latestEntryIdAt(id, 100).has_value()) << "empty topic";
+  EXPECT_FALSE(store.latestEntryIdAt(ObjectTopicId{999}, 100).has_value()) << "unknown topic";
+  store.pushOwned(id, 100, makePayload(4));
+  EXPECT_FALSE(store.latestEntryIdAt(id, 50).has_value()) << "before the first entry";
 }
 
 // =========================================================================

@@ -443,24 +443,19 @@ void PointCloudLayer::setTrackerTime(PJ::Timepoint time) {
 }
 
 uint64_t PointCloudLayer::renderKey(PJ::Timepoint time) const {
-  // Active cloud sample at `time` keyed by its STAMP, not its bytes: indexAt() +
-  // entryTimestamps() is a pure binary search that never resolves a PayloadView, so
-  // the per-tick gate never touches the cold-chunk decompression path (the decode
-  // happens once, later, in renderAt() when we actually repaint). The stamp (not the
-  // index) is the key because retention eviction renumbers indices. Sequential
-  // locks (index first, then the timestamps view) — never nested — match the
-  // ImagePipelineSource read pattern.
+  // Active cloud sample at `time` keyed by its SequentialUID via latestEntryIdAt(),
+  // a pure binary search that never resolves a PayloadView — the per-tick gate must
+  // not touch the cold-chunk decompression path (the decode happens once, later, in
+  // renderAt() when we actually repaint). The UID, not the stamp: the store permits
+  // duplicate timestamps, so a same-stamp replacement entry must still reopen the
+  // dock's repaint gate (or renderAt's own UID memo would never get the chance to
+  // see it); unlike a deque index it also survives retention eviction.
   uint64_t key = 0x9e3779b97f4a7c15ULL;
   if (ctx_.session != nullptr) {
     PJ::ObjectStore& store = ctx_.session->objectStore();
-    bool keyed = false;
-    if (const auto index = store.indexAt(topic_id_, PJ::toRaw(time)); index.has_value()) {
-      if (const auto stamps = store.entryTimestamps(topic_id_); *index < stamps.size()) {
-        key ^= static_cast<uint64_t>(stamps[*index]);
-        keyed = true;
-      }
-    }
-    if (!keyed) {
+    if (const auto entry_id = store.latestEntryIdAt(topic_id_, PJ::toRaw(time)); entry_id.has_value()) {
+      key ^= entry_id->uid.value;
+    } else {
       key ^= PJ::kNoSampleRenderKey;  // no active sample at this time
     }
   }
@@ -1080,7 +1075,7 @@ bool PointCloudLayer::bootstrap() {
   // decode, but the field list needs one. Decode the first sample asynchronously so
   // attach never blocks the UI — fields populate when the result lands.
   if (const auto* cpc = std::any_cast<CompressedPointCloud>(&obj->object)) {
-    requestDecode(*cpc, SampleId{first->timestamp, first->payload.bytes.size()});
+    requestDecode(*cpc, SampleId{first->sequential_uid, first->timestamp});
     return true;
   }
 
@@ -1322,36 +1317,54 @@ void PointCloudLayer::onGpuAabb(std::optional<AABB> box) {
   emit repaintRequested();  // re-fits the camera via Scene3DDockWidget::updateSceneBounds
 }
 
-void PointCloudLayer::renderAt(int64_t time_ns) {
-  if (ctx_.session == nullptr) {
-    return;
-  }
-  PJ::ObjectStore& store = ctx_.session->objectStore();
-  auto resolved = store.latestAt(topic_id_, time_ns);
-  if (!resolved.has_value() || resolved->payload.bytes.empty()) {
-    return;
-  }
-  const SampleId id{resolved->timestamp, resolved->payload.bytes.size()};
-  // This sample is now the one the tracker wants — set it on EVERY path (also the
-  // raw push and the early-skip below), so a stale in-flight compressed decode of
-  // another sample is classified stale in onDecodeFinished instead of overwriting
-  // a newer cloud on a mixed-mode topic.
+bool PointCloudLayer::servedFromMemos(SampleId id) {
+  // This sample is now the one the tracker wants — record it on EVERY outcome
+  // (skip, cache push, failure memo, and the resolve path that follows), so a
+  // stale in-flight compressed decode of another sample is classified stale in
+  // onDecodeFinished instead of overwriting a newer cloud on a mixed-mode topic.
   wanted_ = id;
   // The tracker ticks at ~60 Hz but a topic publishes far slower, so the common case
   // is "same sample, same color field" — skip the whole parse/convert/upload then.
   // range_dirty_ only matters when auto-range will actually recompute in pushCloud.
   if (id == last_pushed_id_ && color_field_ == last_pushed_color_field_ &&
       (color_type_ == PointcloudRenderPass::ColorType::kRgb) == last_pushed_rgb_ && !(auto_range_ && range_dirty_)) {
-    return;
+    return true;
   }
   // Compressed sample already decoded? Re-convert from cache so repaints /
   // color-field changes don't re-run the codec (or even the wrapper parse).
   if (decoded_cache_ && decoded_cache_id_ == id) {
     pushCloud(*decoded_cache_, id);
+    return true;
+  }
+  // Known-undecodable sample; the memo holds until a reload swaps the bytes.
+  return id == failed_id_;
+}
+
+void PointCloudLayer::renderAt(int64_t time_ns) {
+  if (ctx_.session == nullptr) {
     return;
   }
-  if (id == failed_id_) {
-    return;  // known-undecodable sample; the memo holds until a reload swaps the bytes
+  PJ::ObjectStore& store = ctx_.session->objectStore();
+  // Metadata-first gate: identify the entry latestAt() would resolve (a pure
+  // binary search) and consult the sample memos BEFORE touching payload bytes.
+  // Resolving first would re-fetch an evicted pool seed (file read + whole-chunk
+  // decompress on the GUI thread) only to discard the bytes on an identity match.
+  const auto entry_id = store.latestEntryIdAt(topic_id_, time_ns);
+  if (!entry_id.has_value()) {
+    return;
+  }
+  if (servedFromMemos(*entry_id)) {
+    return;
+  }
+  auto resolved = store.latestAt(topic_id_, time_ns);
+  if (!resolved.has_value() || resolved->payload.bytes.empty()) {
+    return;
+  }
+  const SampleId id{resolved->sequential_uid, resolved->timestamp};
+  // A streaming insert between the two store queries can change the pick —
+  // re-consult the memos for the entry actually resolved.
+  if (id.uid != entry_id->uid && servedFromMemos(id)) {
+    return;
   }
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
   auto obj = resolveObject(binding, object_type_, resolved->timestamp, resolved->payload);
@@ -1443,9 +1456,9 @@ void PointCloudLayer::onDecodeFinished() {
   const DecodeResult result = decode_watcher_->result();
   inflight_ = {};
   // A dataset reload while this sample decoded means the result holds pre-reload
-  // content whose (timestamp, size) key may alias the new bytes: neither the
-  // cache nor the failure memo may keep it (wanted_ was reset too, so it can
-  // never paint). Still fall through to the pending drain below.
+  // content under a UID that no longer names a live entry: neither the cache nor
+  // the failure memo may keep it (wanted_ was reset too, so it can never paint).
+  // Still fall through to the pending drain below.
   const bool drop_result = drop_inflight_result_;
   drop_inflight_result_ = false;
   // Render this result only if it's still the sample the tracker wants. If the user
@@ -1505,9 +1518,11 @@ void PointCloudLayer::onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id) {
   if (ctx_.session == nullptr || ctx_.session->objectStore().descriptor(topic_id_).dataset_id != dataset_id) {
     return;
   }
-  // replaceDataset keeps the ObjectTopicId stable while swapping the bytes, so a
-  // (timestamp, byte size) key can alias new content: the decode cache could serve
-  // stale points and failed_id_ would permanently refuse a now-valid sample.
+  // replaceDataset keeps the ObjectTopicId stable while swapping the bytes. The
+  // new entries carry fresh SequentialUIDs, so a stale id can never alias them —
+  // but the pre-reload caches must still drop their content (memory held by the
+  // decode cache, an in-flight decode that must not be painted or memoized) and
+  // wanted_ must reset so only post-reload requests are honored.
   decoded_cache_.reset();
   decoded_cache_id_ = {};
   failed_id_ = {};

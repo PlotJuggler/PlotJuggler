@@ -148,7 +148,7 @@ void DepthPipelineSource::startWorker() {
         // invalidate() asked for a fresh decode even at an unchanged entry: clear
         // the dedup so decodeAt() doesn't early-return on the same frame.
         if (req.force_redecode) {
-          last_entry_ts_ = INT64_MIN;
+          last_entry_uid_ = {};
         }
         auto result = decodeAt(req.target_ns);
         if (result.has_value() && !result->isNull()) {
@@ -202,14 +202,28 @@ std::optional<DecodedFrame> DepthPipelineSource::decodeAt(int64_t ts_ns) {
   if (store_ == nullptr) {
     return std::nullopt;
   }
+  // Dedup metadata-first (latestEntryIdAt is a pure binary search): an unchanged
+  // entry must not resolve payload bytes, which can be a cold refetch (file read
+  // + chunk decompress) once the ResidentPayloadPool has evicted its seed. Keyed
+  // on the entry UID, not its timestamp — the store permits duplicate stamps, so
+  // a same-stamp replacement entry must still decode. Shared by the gate and the
+  // post-resolve re-check (a racing insert can change the pick in between).
+  const auto already_delivered = [this](SequentialUID uid) { return uid == last_entry_uid_; };
+  const auto entry_id = store_->latestEntryIdAt(topic_, ts_ns);
+  if (!entry_id.has_value()) {
+    return std::nullopt;
+  }
+  if (already_delivered(entry_id->uid)) {
+    return std::nullopt;  // same entry already delivered (force_redecode resets the dedup)
+  }
   auto entry = store_->latestAt(topic_, ts_ns);
   if (!entry.has_value() || entry->payload.anchor == nullptr || entry->payload.bytes.empty()) {
     return std::nullopt;
   }
-  if (entry->timestamp == last_entry_ts_) {
-    return std::nullopt;  // same entry already delivered (force_redecode resets the dedup)
+  if (already_delivered(entry->sequential_uid)) {
+    return std::nullopt;
   }
-  last_entry_ts_ = entry->timestamp;
+  last_entry_uid_ = entry->sequential_uid;
 
   // Depth arrives as a canonical sdk::Image with a depth encoding (there is no
   // kDepthImage producer); resolve it (via the parser or a pj_image_v1 blob), then

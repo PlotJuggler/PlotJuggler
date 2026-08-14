@@ -88,9 +88,13 @@ class OrderedEntries {
  public:
   /// One entry's stable identity plus its store timestamp, as returned by
   /// rangeByTime(). Decode-free — resolve the payload later via ObjectStore::at(uid).
+  /// Also the sample-identity memo type of the scene sampling layers (aliased as
+  /// their SampleId): memberwise equality is sound because a uid names exactly one
+  /// entry, and the value-initialized {invalid uid, 0} is their "none" sentinel.
   struct TimeRangeEntry {
     SequentialUID uid;
-    Timestamp timestamp;
+    Timestamp timestamp = 0;
+    bool operator==(const TimeRangeEntry&) const = default;
   };
 
   /// Which branch push() took, so the caller can invalidate the warm cache only

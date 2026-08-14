@@ -94,6 +94,42 @@ TEST(VoxelGridLayer, RescrubToSameGridDoesNoReparse) {
   EXPECT_EQ(g_parser_calls.load(), after_first) << "re-scrub to a cached grid must not re-parse";
 }
 
+// Resolve-before-memo regression: a re-scrub to the SAME grid must skip on
+// metadata alone WITHOUT resolving payload bytes — a resolve is a cold refetch
+// (file read + whole-chunk decompress on the GUI thread) once the
+// ResidentPayloadPool has evicted the entry's seed. The store's warm latestAt
+// cache would mask a redundant resolve, so it is deliberately reset between
+// renders via an out-of-order push.
+TEST(VoxelGridLayer, RescrubToSameGridDoesNotResolvePayload) {
+  g_parser_calls.store(0);
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const auto topic_id = registerObjectTopic(session, "/voxels");
+  auto fetch_count = std::make_shared<int>(0);
+  pushLazyCounting(store, topic_id, 100, std::vector<uint8_t>{0x01}, fetch_count);
+  registerVoxelParser(session, topic_id);
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session;
+  pj::scene3d::VoxelGridLayer layer(topic_id, u"voxels"_s);
+  ASSERT_TRUE(layer.attach(ctx));
+  layer.renderAtForTest(100);
+  EXPECT_TRUE(layer.hasGridForTest());
+  const int fetches_after_first_render = *fetch_count;
+  const int parses_after_first_render = g_parser_calls.load();
+  ASSERT_GT(fetches_after_first_render, 0);
+
+  // Bust the warm latestAt cache (an out-of-order insert resets it): any resolve
+  // issued by the next render now HAS to re-invoke the lazy fetcher.
+  auto old_fetch_count = std::make_shared<int>(0);
+  pushLazyCounting(store, topic_id, 50, std::vector<uint8_t>{0x01}, old_fetch_count);
+
+  layer.renderAtForTest(101);  // same active grid, same field -> metadata-only skip
+  EXPECT_EQ(*fetch_count, fetches_after_first_render) << "unchanged grid resolved payload bytes on a later tick";
+  EXPECT_EQ(g_parser_calls.load(), parses_after_first_render);
+  EXPECT_EQ(*old_fetch_count, 0) << "the out-of-order older grid must not be resolved at all";
+}
+
 // Regression (triple-review critical): scrubbing to before the first sample
 // clears the pass; scrubbing back onto the SAME store entry must re-stage the grid.
 // The bug was that renderAt's no-sample branch cleared the pass but left

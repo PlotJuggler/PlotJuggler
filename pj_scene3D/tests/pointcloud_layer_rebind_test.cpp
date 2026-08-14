@@ -106,9 +106,9 @@ TEST(PointCloudLayerRebind, ReloadSwapsParserWithoutTouchingStaleOne) {
   }));
 
   // Force a re-decode at the same time: a swap re-registers the parser slot but
-  // does NOT change the store bytes here, so without a reset the (timestamp, size)
-  // identity matches last_pushed_id_ and renderAt would early-skip. Move the
-  // tracker to a fresh time first so the skip guard can't mask the rebind.
+  // does NOT change the store bytes here, so the already-pushed sample identity
+  // would make renderAt early-skip. Move the tracker to a fresh sample first so
+  // the skip guard can't mask the rebind.
   ASSERT_TRUE(store.pushOwned(*topic_id, 200, std::vector<uint8_t>{0x02}).has_value());
   const int stale_calls_before = g_first_parser_calls.load();
   layer.setTrackerTime(PJ::fromRaw(200));

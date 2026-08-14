@@ -200,6 +200,14 @@ topic/generation).
 
 `indexAt(id, timestamp)` returns the index that `latestAt()` would resolve.
 
+`latestEntryIdAt(id, timestamp)` returns the `{sequential_uid, timestamp}` identity
+of the entry `latestAt()` would resolve, without resolving its payload (metadata
+only — never invokes a lazy fetch). Sampling consumers compare it against a
+memoized sample identity *before* calling `latestAt()`, so an unchanged sample
+never pays a cold refetch after its pool seed is evicted. It is not atomic with a
+later resolve — a concurrent insert/eviction can change the pick in between — so a
+skip-if-match consumer must re-check the resolved entry's `sequential_uid`.
+
 `firstSequentialUID(id)` returns the smallest retained UID (O(log n) via the
 `uid_order` side index — the front of UID order, which after an out-of-order
 insert need not be `entries.front()`). `drainNewSince(id, cursor)` returns every
