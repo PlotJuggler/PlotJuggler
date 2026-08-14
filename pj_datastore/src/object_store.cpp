@@ -935,7 +935,11 @@ ResolvedObjectEntry ObjectStore::resolveEntry(const ObjectEntry& entry, bool* se
     // Forward the closure's PayloadView verbatim. The anchor stays opaque (no
     // cast), so producers can back it with arrow::Buffer, mmap, or a C-ABI anchor.
     if (lazy->fetch) {
-      resolved.payload = lazy->fetch();
+      if (auto fetched = lazy->fetch(); fetched.has_value()) {
+        resolved.payload = std::move(*fetched);
+      } else {
+        resolved.fetch_failed = true;  // source could not re-produce the bytes
+      }
     }
   }
 

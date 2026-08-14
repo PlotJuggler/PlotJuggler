@@ -41,6 +41,11 @@ struct IngestStats {
   std::size_t dropped_reparent = 0;   // child claimed by two parents
   std::size_t dropped_self_loop = 0;  // child == parent
   std::size_t dropped_invalid = 0;    // empty name / non-unit rotation / non-finite translation
+  // Entries whose lazy re-read FAILED (source file truncated, replaced, or
+  // corrupt). Their edges are permanently lost: the drain cursor advances past
+  // them (a corrupt region cannot be re-read into existence), so the loss must
+  // be reported, not silently skipped.
+  std::size_t failed_fetch = 0;
 };
 
 // Decode one object entry already known to belong to a FrameTransforms topic and
@@ -296,6 +301,10 @@ bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
     // before it resolves), so nothing is ingested twice or skipped.
     TfCursor& cursor = cursor_it->second;
     for (const auto& entry : object_store.drainNewSince(topic_id, cursor.last_ingested)) {
+      if (entry.fetch_failed) {
+        ++stats.failed_fetch;
+        continue;
+      }
       if (entry.payload.bytes.empty()) {
         continue;
       }
@@ -307,6 +316,11 @@ bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
     qCWarning(lcTransformService) << "ingestNewerThanCursor" << dataset_id << ": dropped" << stats.dropped_reparent
                                   << "reparent-conflict," << stats.dropped_self_loop << "self-loop, and"
                                   << stats.dropped_invalid << "invalid edge(s)";
+  }
+  if (stats.failed_fetch != 0) {
+    qCWarning(lcTransformService) << "ingestNewerThanCursor" << dataset_id << ":" << stats.failed_fetch
+                                  << "transform message(s) LOST: lazy re-read failed (source file truncated,"
+                                  << "replaced, or corrupt)";
   }
   return stats.ingested != 0;
 }

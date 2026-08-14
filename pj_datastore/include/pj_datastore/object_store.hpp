@@ -88,6 +88,13 @@ struct ResolvedObjectEntry {
   // Consumers read `payload.bytes`; retain `payload.anchor` to keep the bytes
   // alive past the resolve call. resolveEntry never casts the anchor.
   sdk::PayloadView payload;
+  // True when this entry's lazy fetch FAILED (payload left empty): the source
+  // could not re-produce the bytes (file truncated, replaced, or corrupt).
+  // Distinct from a legitimately empty payload. Cursor-style consumers use this
+  // to count and report data loss instead of silently skipping the entry; the
+  // loss is permanent (re-reading a corrupt region cannot succeed), so cursors
+  // still advance past the entry.
+  bool fetch_failed = false;
 };
 
 struct RetentionBudget {

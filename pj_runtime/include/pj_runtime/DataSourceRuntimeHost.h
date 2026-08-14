@@ -28,6 +28,7 @@ class DatastoreParserWriteHost;
 class ExtensionCatalogService;
 class MessageParserHandle;
 class ServiceRegistryBuilder;
+struct LazyFetchTopicContext;
 
 // Implements the host side of the v4 DataSource SDK for one ingest pass.
 //
@@ -277,6 +278,10 @@ class DataSourceRuntimeHost {
     Signature signature;
     sdk::BuiltinObjectType object_kind = sdk::BuiltinObjectType::kNone;
     std::optional<ObjectTopicId> object_topic_id;
+    // Per-binding constants for lazy-fetch failure logs, shared by every lazy
+    // closure this binding mints (one per object message) instead of copied
+    // into each. Created on first use in cbPushMessage [worker thread].
+    std::shared_ptr<const LazyFetchTopicContext> lazy_fetch_context;
 
     ParserBinding();
     ParserBinding(

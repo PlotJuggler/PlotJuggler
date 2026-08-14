@@ -1673,14 +1673,17 @@ class PluginFetchCtx {
   PluginFetchCtx(PluginFetchCtx&&) = delete;
   PluginFetchCtx& operator=(PluginFetchCtx&&) = delete;
 
-  [[nodiscard]] std::vector<uint8_t> invoke() const {
+  // nullopt = the plugin reported failure (or handed back no buffer): the
+  // LazyCallback contract's fetch-failed signal. An engaged empty vector is a
+  // payload the plugin legitimately produced with zero bytes.
+  [[nodiscard]] std::optional<std::vector<uint8_t>> invoke() const {
     if (fetch_fn_ == nullptr) {
-      return {};
+      return std::nullopt;
     }
     const uint8_t* data = nullptr;
     uint64_t size = 0;  // matches PJ_lazy_fetch_fn_t out_size (uint64_t*)
     if (!fetch_fn_(ctx_, &data, &size) || data == nullptr) {
-      return {};
+      return std::nullopt;
     }
     return std::vector<uint8_t>(data, data + size);
   }
@@ -1775,7 +1778,13 @@ bool sourceObjectPushLazy(
     // anchor is a shared_ptr<const vector<uint8_t>>, per the pushLazy contract.
     // Target pointer comes from the atomic swap layer (so writes follow the
     // current target store, not a captured-at-construction one).
-    auto closure = [holder]() -> sdk::PayloadView { return sdk::makePayloadView(holder->invoke()); };
+    auto closure = [holder]() -> std::optional<sdk::PayloadView> {
+      auto bytes = holder->invoke();
+      if (!bytes.has_value()) {
+        return std::nullopt;  // plugin fetch failed -> entry resolves as fetch_failed
+      }
+      return sdk::makePayloadView(std::move(*bytes));
+    };
     auto result = target->pushLazy(ObjectTopicId{topic.id}, timestamp_ns, std::move(closure));
     if (!result) {
       impl->setError(result.error());
@@ -2032,7 +2041,13 @@ bool parserObjectPushLazy(
   auto* target = impl->target.load(std::memory_order_acquire);
   try {
     auto holder = std::make_shared<PluginFetchCtx>(fetch_fn, fetch_ctx, fetch_ctx_destroy);
-    auto closure = [holder]() -> sdk::PayloadView { return sdk::makePayloadView(holder->invoke()); };
+    auto closure = [holder]() -> std::optional<sdk::PayloadView> {
+      auto bytes = holder->invoke();
+      if (!bytes.has_value()) {
+        return std::nullopt;  // plugin fetch failed -> entry resolves as fetch_failed
+      }
+      return sdk::makePayloadView(std::move(*bytes));
+    };
     auto result = target->pushLazy(impl->bound_topic, timestamp_ns, std::move(closure));
     if (!result) {
       impl->setError(result.error());

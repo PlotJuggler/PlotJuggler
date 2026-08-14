@@ -33,7 +33,10 @@ struct ObjectTopicDescriptor {
 // Eager payload: store-owned bytes, counted against the retention budget.
 using SharedBuffer = std::shared_ptr<const std::vector<uint8_t>>;
 // Lazy payload: idempotent fetcher returning a view + ownership anchor.
-using LazyCallback = std::function<sdk::PayloadView()>;
+// nullopt = the fetch FAILED (source unreadable/truncated/corrupt), surfaced to
+// consumers as ResolvedObjectEntry::fetch_failed; an engaged view with zero
+// bytes is a legitimately empty payload.
+using LazyCallback = std::function<std::optional<sdk::PayloadView>()>;
 
 struct ObjectEntry {
   Timestamp timestamp;

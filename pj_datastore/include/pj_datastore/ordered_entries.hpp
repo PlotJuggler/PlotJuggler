@@ -34,7 +34,12 @@ using SharedBuffer = std::shared_ptr<const std::vector<uint8_t>>;
 
 /// Lazy payload: idempotent, thread-safe fetcher returning bytes + anchor.
 /// Invoked on every read; bytes are not counted against the retention budget.
-using LazyCallback = std::function<sdk::PayloadView()>;
+/// nullopt means the fetch FAILED — the source could not re-produce the bytes
+/// (unreadable / truncated / corrupt). Distinct from an engaged view with zero
+/// bytes, which is a payload that is legitimately empty. resolveEntry surfaces
+/// failure as ResolvedObjectEntry::fetch_failed so consumers can report data
+/// loss instead of silently skipping the entry.
+using LazyCallback = std::function<std::optional<sdk::PayloadView>()>;
 
 class ResidentSlot;  // pj_datastore/resident_payload_pool.hpp
 

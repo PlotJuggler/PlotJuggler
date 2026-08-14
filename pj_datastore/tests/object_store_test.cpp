@@ -290,25 +290,77 @@ TEST(ObjectStoreTest, LatestAtRefetchesOnSampleChange) {
 }
 
 // A failed/empty resolve must NOT be cached, so a transient failure is retried
-// on the next read rather than latched. (latestAt still returns an entry whose
-// payload is empty — emptiness, not nullopt, is the failure signal here.)
+// on the next read rather than latched. (An engaged-but-empty PayloadView is a
+// legitimately empty payload — success — while nullopt is a fetch failure; both
+// leave the payload empty and neither may be memoized.)
 TEST(ObjectStoreTest, LatestAtDoesNotCacheEmptyResolve) {
   ObjectStore store;
   auto id = registerTestTopic(store);
   int fetch_count = 0;
   store.pushLazy(id, 100, [&fetch_count]() -> sdk::PayloadView {
     ++fetch_count;
-    return {};  // resolve failure: empty payload
+    return {};  // legitimately empty payload (engaged, zero bytes)
   });
 
   auto r1 = store.latestAt(id, 150);
   ASSERT_TRUE(r1.has_value());
   EXPECT_TRUE(r1->payload.bytes.empty());
+  EXPECT_FALSE(r1->fetch_failed) << "an engaged empty view is success, not failure";
   EXPECT_EQ(fetch_count, 1);
 
   auto r2 = store.latestAt(id, 150);
   ASSERT_TRUE(r2.has_value());
   EXPECT_EQ(fetch_count, 2) << "an empty resolve must not be memoized (retry next read)";
+}
+
+// A fetcher that returns nullopt reports FAILURE: the source could not
+// re-produce the bytes. The entry still resolves (metadata intact) but carries
+// fetch_failed, so consumers can count and report the loss instead of
+// conflating it with a legitimately empty payload. Failures are never
+// memoized: a later read invokes the fetcher again.
+TEST(ObjectStoreTest, FailedLazyFetchIsFlaggedAndNotMemoized) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  int fetch_count = 0;
+  store.pushLazy(id, 100, [&fetch_count]() -> std::optional<sdk::PayloadView> {
+    ++fetch_count;
+    return std::nullopt;  // fetch failure: no usable bytes
+  });
+
+  auto r1 = store.latestAt(id, 150);
+  ASSERT_TRUE(r1.has_value());
+  EXPECT_TRUE(r1->fetch_failed);
+  EXPECT_TRUE(r1->payload.bytes.empty());
+  EXPECT_EQ(fetch_count, 1);
+
+  auto r2 = store.at(id, r1->sequential_uid);
+  ASSERT_TRUE(r2.has_value());
+  EXPECT_TRUE(r2->fetch_failed);
+  EXPECT_EQ(fetch_count, 2) << "a failed fetch must not be memoized";
+}
+
+// drainNewSince forwards fetch_failed to cursor consumers: the failed entry
+// appears in the drained batch (present, empty payload, flagged) and the
+// cursor advances past it — the loss is permanent, so it must be REPORTED by
+// the consumer, never revisited. Healthy neighbours are unaffected.
+TEST(ObjectStoreTest, DrainNewSinceForwardsFetchFailure) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  store.pushLazy(id, 100, []() -> sdk::PayloadView { return sdk::makePayloadView(makePayload(8, 0x01)); });
+  store.pushLazy(id, 200, []() -> std::optional<sdk::PayloadView> { return std::nullopt; });
+  store.pushLazy(id, 300, []() -> sdk::PayloadView { return sdk::makePayloadView(makePayload(8, 0x03)); });
+
+  SequentialUID cursor;
+  auto drained = store.drainNewSince(id, cursor);
+  ASSERT_EQ(drained.size(), 3u);
+  EXPECT_FALSE(drained[0].fetch_failed);
+  EXPECT_TRUE(drained[1].fetch_failed);
+  EXPECT_TRUE(drained[1].payload.bytes.empty());
+  EXPECT_FALSE(drained[2].fetch_failed);
+  EXPECT_EQ(drained[2].payload.bytes[0], 0x03);
+
+  // Cursor advanced past the failed entry: nothing is re-delivered.
+  EXPECT_TRUE(store.drainNewSince(id, cursor).empty());
 }
 
 // The warm cache keeps the most-recent entry resident across reads, but drops it

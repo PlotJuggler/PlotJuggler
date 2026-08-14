@@ -41,6 +41,18 @@ sdk::BufferAnchor wrapPayloadAnchor(const PJ_payload_anchor_t& anchor, std::shar
 
 }  // namespace detail
 
+// Per-binding constants for the lazy-fetch failure logs. Shared (via one
+// shared_ptr per binding, created on first use) by every lazy closure that
+// binding mints — a load creates one closure per object message, so
+// per-message copies of these strings would be pure waste. Namespace-scope to
+// match the forward declaration in DataSourceRuntimeHost.h.
+struct LazyFetchTopicContext {
+  DatasetId dataset_id = 0;
+  ObjectTopicId object_topic_id{};
+  std::string source_id;
+  std::string topic_name;
+};
+
 namespace {
 Q_LOGGING_CATEGORY(lcIngest, "pj.runtime.ingest")
 
@@ -109,26 +121,27 @@ QString errorMessage(const PJ_error_t& err) {
   return QString::fromUtf8(err.message);
 }
 
-struct LazyFetchContext {
-  DatasetId dataset_id = 0;
-  ObjectTopicId object_topic_id{};
-  std::string source_id;
-  std::string topic_name;
-  int64_t timestamp_ns = 0;
-};
-
 // Deferred lazy closure: re-invokes the fetcher on every read, wrapping each
 // invocation's anchor in a per-call shared_ptr so a returned PayloadView can
 // outlive the call without holding the fetcher. Keeps object bytes
 // non-resident — used by kPureLazy, and by kLazyObjectsEagerScalars once the
 // ingest-time scalar parse is done with them.
-std::function<sdk::PayloadView()> makeLazyFetchClosure(
-    std::shared_ptr<FetcherOwner> owner, std::shared_ptr<std::mutex> fetch_mutex, LazyFetchContext context) {
+//
+// Returns nullopt when the source cannot re-produce usable bytes, so the
+// ObjectStore flags the entry fetch_failed instead of conflating failure with
+// a legitimately empty payload. A zero-byte result IS a failure here: the SDK's
+// pushMessage glue reports ok=true for a plugin-side fetch that produced an
+// empty view (it only reports false on an exception), so "no bytes" is how a
+// file-source cold-path failure actually arrives across the C ABI — and no
+// builtin object decodes from zero bytes anyway.
+PJ::LazyCallback makeLazyFetchClosure(
+    std::shared_ptr<FetcherOwner> owner, std::shared_ptr<std::mutex> fetch_mutex,
+    std::shared_ptr<const LazyFetchTopicContext> context, int64_t timestamp_ns) {
   // The DSO keepalive lives inside `owner` (FetcherOwner), so it is the single
   // source of truth here too — reach it via owner->library_keepalive when
   // wrapping each fetched anchor, rather than a parallel capture.
-  return [owner = std::move(owner), fetch_mutex = std::move(fetch_mutex),
-          context = std::move(context)]() -> sdk::PayloadView {
+  return [owner = std::move(owner), fetch_mutex = std::move(fetch_mutex), context = std::move(context),
+          timestamp_ns]() -> std::optional<sdk::PayloadView> {
     PJ_payload_t payload{};
     PJ_error_t err{};
     bool ok = false;
@@ -141,32 +154,33 @@ std::function<sdk::PayloadView()> makeLazyFetchClosure(
       }
     }
     if (!ok) {
-      qCWarning(lcIngest) << "[lazy-fetch] failed source=" << QString::fromStdString(context.source_id)
-                          << "dataset=" << context.dataset_id << "topic=" << QString::fromStdString(context.topic_name)
-                          << "object_topic_id=" << context.object_topic_id.id << "timestamp_ns=" << context.timestamp_ns
+      qCWarning(lcIngest) << "[lazy-fetch] failed source=" << QString::fromStdString(context->source_id)
+                          << "dataset=" << context->dataset_id
+                          << "topic=" << QString::fromStdString(context->topic_name)
+                          << "object_topic_id=" << context->object_topic_id.id << "timestamp_ns=" << timestamp_ns
                           << "error=" << errorMessage(err);
-      return {};
+      return std::nullopt;
     }
     if (payload.data == nullptr && payload.size > 0) {
       qCWarning(lcIngest) << "[lazy-fetch] null data with nonzero size source="
-                          << QString::fromStdString(context.source_id) << "dataset=" << context.dataset_id
-                          << "topic=" << QString::fromStdString(context.topic_name)
-                          << "object_topic_id=" << context.object_topic_id.id << "timestamp_ns=" << context.timestamp_ns
+                          << QString::fromStdString(context->source_id) << "dataset=" << context->dataset_id
+                          << "topic=" << QString::fromStdString(context->topic_name)
+                          << "object_topic_id=" << context->object_topic_id.id << "timestamp_ns=" << timestamp_ns
                           << "payload_size=" << payload.size;
       if (payload.anchor.release != nullptr) {
         payload.anchor.release(payload.anchor.ctx);
       }
-      return {};
+      return std::nullopt;
     }
     if (payload.size == 0) {
-      qCWarning(lcIngest) << "[lazy-fetch] empty payload source=" << QString::fromStdString(context.source_id)
-                          << "dataset=" << context.dataset_id << "topic=" << QString::fromStdString(context.topic_name)
-                          << "object_topic_id=" << context.object_topic_id.id
-                          << "timestamp_ns=" << context.timestamp_ns;
+      qCWarning(lcIngest) << "[lazy-fetch] empty payload source=" << QString::fromStdString(context->source_id)
+                          << "dataset=" << context->dataset_id
+                          << "topic=" << QString::fromStdString(context->topic_name)
+                          << "object_topic_id=" << context->object_topic_id.id << "timestamp_ns=" << timestamp_ns;
       if (payload.anchor.release != nullptr) {
         payload.anchor.release(payload.anchor.ctx);
       }
-      return {};
+      return std::nullopt;
     }
     auto anchor = detail::wrapPayloadAnchor(payload.anchor, owner->library_keepalive);
     if (anchor == nullptr) {
@@ -728,19 +742,26 @@ bool DataSourceRuntimeHost::cbPushMessage(
                             ? self->policy_resolver_.resolve(self->source_id_, binding.topic_name, binding.object_kind)
                             : sdk::ObjectIngestPolicy::kEager;
 
+    // Get-or-create the binding's shared lazy-fetch log context — one
+    // allocation per binding, not one per message. [worker thread, same single
+    // caller as the rest of cbPushMessage; parser_bindings_ is unsynchronized.]
+    auto lazy_context = [self, &binding]() -> std::shared_ptr<const LazyFetchTopicContext> {
+      if (binding.lazy_fetch_context == nullptr) {
+        binding.lazy_fetch_context = std::make_shared<const LazyFetchTopicContext>(LazyFetchTopicContext{
+            .dataset_id = self->dataset_id_,
+            .object_topic_id = *binding.object_topic_id,
+            .source_id = self->source_id_,
+            .topic_name = binding.topic_name,
+        });
+      }
+      return binding.lazy_fetch_context;
+    };
+
     auto push_lazy_object = [&]() -> bool {
       if (!is_object_topic) {
         return true;
       }
-      auto closure = makeLazyFetchClosure(
-          fetcher_owner, self->lazy_fetch_mutex_,
-          LazyFetchContext{
-              .dataset_id = self->dataset_id_,
-              .object_topic_id = *binding.object_topic_id,
-              .source_id = self->source_id_,
-              .topic_name = binding.topic_name,
-              .timestamp_ns = timestamp_ns,
-          });
+      auto closure = makeLazyFetchClosure(fetcher_owner, self->lazy_fetch_mutex_, lazy_context(), timestamp_ns);
       if (auto status =
               self->object_store_target_.load()->pushLazy(*binding.object_topic_id, timestamp_ns, std::move(closure));
           !status) {
@@ -797,15 +818,7 @@ bool DataSourceRuntimeHost::cbPushMessage(
         // seed needs its own copy.
         seed = sdk::makePayloadView(std::vector<uint8_t>(payload.data, payload.data + payload.size));
       }
-      auto fallback = makeLazyFetchClosure(
-          fetcher_owner, self->lazy_fetch_mutex_,
-          LazyFetchContext{
-              .dataset_id = self->dataset_id_,
-              .object_topic_id = *binding.object_topic_id,
-              .source_id = self->source_id_,
-              .topic_name = binding.topic_name,
-              .timestamp_ns = timestamp_ns,
-          });
+      auto fallback = makeLazyFetchClosure(fetcher_owner, self->lazy_fetch_mutex_, lazy_context(), timestamp_ns);
       if (auto status = self->object_store_target_.load()->pushLazyWithSeed(
               *binding.object_topic_id, timestamp_ns, std::move(seed), std::move(fallback));
           !status) {

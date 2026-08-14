@@ -371,6 +371,46 @@ TEST(TransformService, OutOfOrderEdgeIsIngestedAtItsOwnTime) {
   EXPECT_EQ(frames, (std::vector<std::string>{"f0", "f1", "f2", "f3"}));
 }
 
+// A lazy entry whose re-read FAILS (fetch returns nullopt: file truncated,
+// replaced, or corrupt) is counted and skipped — its edges are permanently
+// lost — while every healthy neighbour still ingests. The cursor advances past
+// the failure: a later ingest must NOT retry it (re-reading a corrupt region
+// cannot succeed).
+TEST(TransformService, FailedLazyFetchIsSkippedAndNotRetried) {
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const auto topic = registerTopic(store, /*dataset_id=*/1, "/tf");
+
+  int fetch_calls = 0;
+  ASSERT_TRUE(store.pushOwned(topic, 100, edgePayload(/*parent=*/0, /*child=*/1)).has_value());
+  ASSERT_TRUE(store
+                  .pushLazy(
+                      topic, 200,
+                      [&fetch_calls]() -> std::optional<PJ::sdk::PayloadView> {
+                        ++fetch_calls;
+                        return std::nullopt;  // source cannot re-produce the bytes
+                      })
+                  .has_value());
+  ASSERT_TRUE(store.pushOwned(topic, 300, edgePayload(/*parent=*/0, /*child=*/2)).has_value());
+
+  session.registerObjectTopicParser(
+      topic, makeBoundHandle(kTfSchema, []() noexcept -> void* { return new CountingTfParser(nullptr, nullptr); }));
+
+  TransformService service(session);
+  service.ingestFrameTransformsForDataset(/*dataset_id=*/1);
+
+  auto buffer = service.transformBuffer(/*dataset_id=*/1);
+  ASSERT_NE(buffer, nullptr);
+  EXPECT_TRUE(resolves(*buffer, "f0", "f1", 100));
+  EXPECT_TRUE(resolves(*buffer, "f0", "f2", 300)) << "an edge after the failed entry must still ingest";
+  EXPECT_EQ(fetch_calls, 1);
+
+  // The drain cursor advanced past the failed entry: a later ingest neither
+  // re-fetches nor re-ingests anything.
+  EXPECT_FALSE(service.ingestNewTransforms(/*dataset_id=*/1));
+  EXPECT_EQ(fetch_calls, 1) << "a permanently failed fetch must not be retried by the drain";
+}
+
 // -----------------------------------------------------------------------------
 // (b) Equivalence: N one-at-a-time incremental ingests == one bulk ingest.
 // -----------------------------------------------------------------------------
