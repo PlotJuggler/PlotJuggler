@@ -6,6 +6,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <type_traits>
 #include <utility>
 #include <variant>
 
@@ -102,6 +103,42 @@ void TopicStorage::clearChunks() noexcept {
   invalidateChunkAggregate();
   // A full replace/reload retains no data, so it must carry no stale floor.
   retention_floor_ = kNoRetentionFloor;
+}
+
+TopicStorage::DetachedState TopicStorage::detachChunks() {
+  DetachedState detached;
+  // Every allocating copy happens FIRST: if one throws, the chunks are still owned by this
+  // storage and nothing is lost. Only once the snapshot is complete does the deque move out.
+  detached.column_descriptors = column_descriptors_;
+  detached.array_expansion_counts = array_expansion_counts_;
+  detached.retention_floor = retention_floor_;
+  detached.schema_id = descriptor_.schema_id;
+  detached.max_observed_array_length = max_observed_array_length_;
+  detached.truncated_sample_count = truncated_sample_count_;
+
+  detached.chunks = std::move(sealed_chunks_);
+  // A moved-from deque is valid but unspecified: normalize through clearChunks(), which also
+  // drops the stale aggregate and the retention floor exactly like a plain clear would.
+  clearChunks();
+  return detached;
+}
+
+void TopicStorage::restoreChunks(DetachedState&& detached) noexcept {
+  // noexcept holds because every member below is move-assigned (no allocation) — the
+  // asserts pin that for the container members, whose move-assign is only conditionally
+  // noexcept.
+  static_assert(std::is_nothrow_move_assignable_v<std::deque<TopicChunk>>);
+  static_assert(std::is_nothrow_move_assignable_v<std::vector<ColumnDescriptor>>);
+  static_assert(std::is_nothrow_move_assignable_v<std::unordered_map<std::string, uint32_t>>);
+
+  sealed_chunks_ = std::move(detached.chunks);
+  invalidateChunkAggregate();
+  column_descriptors_ = std::move(detached.column_descriptors);
+  retention_floor_ = detached.retention_floor;
+  descriptor_.schema_id = detached.schema_id;
+  max_observed_array_length_ = detached.max_observed_array_length;
+  truncated_sample_count_ = detached.truncated_sample_count;
+  array_expansion_counts_ = std::move(detached.array_expansion_counts);
 }
 
 void TopicStorage::ensureChunkAggregate() const noexcept {

@@ -83,6 +83,36 @@ class TopicStorage {
   /// Unconditionally remove all retained sealed chunks.
   void clearChunks() noexcept;
 
+  /// State pulled out of a TopicStorage by detachChunks(): the chunk deque plus every
+  /// mutable field clearChunks() leaves untouched (column layout, active schema id,
+  /// array-expansion ratchets), so restoreChunks() can put a prior state back byte-for-byte
+  /// even if a writer mutated those fields in between.
+  struct DetachedState {
+    std::deque<TopicChunk> chunks;
+    std::vector<ColumnDescriptor> column_descriptors;
+    Timestamp retention_floor = kNoRetentionFloor;  // NOT 0 -- see kNoRetentionFloor
+    SchemaId schema_id = 0;                         // descriptor().schema_id, mutable via updateSchema()
+    uint32_t max_observed_array_length = 0;
+    uint32_t truncated_sample_count = 0;
+    std::unordered_map<std::string, uint32_t> array_expansion_counts;
+  };
+
+  /// Move every retained chunk out (O(1), like clearChunks()) and snapshot the mutable
+  /// metadata clearChunks() itself leaves alone, so a caller can later undo whatever a
+  /// failed write did via restoreChunks(). Leaves this storage exactly as clearChunks()
+  /// would.
+  /// Strong guarantee, hence NOT noexcept: every allocating copy runs before the chunk
+  /// deque is moved out, so a throw leaves this storage untouched and loses no data.
+  [[nodiscard]] DetachedState detachChunks();
+
+  /// Inverse of detachChunks(): move `detached`'s chunks and metadata back into this
+  /// storage, overwriting whatever is currently retained (typically the empty state
+  /// detachChunks() left, plus any partial data a failed write produced afterward).
+  /// Consumes `detached`. Takes an rvalue REFERENCE rather than a value so that not even
+  /// the argument binding can allocate: every step is a move-assignment, making the whole
+  /// call non-throwing and therefore safe from a rollback path or a destructor.
+  void restoreChunks(DetachedState&& detached) noexcept;
+
   /// Access retained sealed chunks in commit order.
   /// CAVEAT: a chunk straddling the retention floor still physically holds rows
   /// with timestamp < retentionFloor(). Those rows are logically evicted; callers

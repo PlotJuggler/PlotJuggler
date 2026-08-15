@@ -380,5 +380,96 @@ TEST(TopicStorageTest, RetentionFloorTwoStraddlingChunksOutOfOrder) {
   EXPECT_EQ(storage.metadata().time_range_min, 3000);
 }
 
+// ===========================================================================
+// Test 15: detachChunks() empties the storage exactly like clearChunks()
+// ===========================================================================
+
+TEST(TopicStorageTest, DetachChunksLeavesStorageEmptyLikeClear) {
+  TopicDescriptor desc;
+  desc.name = "detach_empty_topic";
+  desc.schema_id = 1;
+
+  TopicStorage storage(/*topic_id=*/16, std::move(desc));
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(16, 1000, 5000, 41)).has_value());
+  storage.evictBefore(3000);
+  ASSERT_EQ(storage.retentionFloor(), 3000);
+
+  TopicStorage::DetachedState detached = storage.detachChunks();
+
+  // Same observable state a clearChunks() would leave: no rows anywhere, no stale floor.
+  EXPECT_TRUE(storage.empty());
+  EXPECT_TRUE(storage.sealedChunks().empty());
+  EXPECT_EQ(storage.retentionFloor(), kNoRetentionFloor);
+  EXPECT_EQ(storage.timeMin(), 0);
+  EXPECT_EQ(storage.timeMax(), 0);
+  EXPECT_EQ(storage.metadata().total_row_count, 0U);
+  // The rows moved OUT, they were not dropped.
+  EXPECT_EQ(detached.chunks.size(), 1U);
+}
+
+// ===========================================================================
+// Test 16: restoreChunks() puts back every field detachChunks() captured
+// ===========================================================================
+
+TEST(TopicStorageTest, DetachRestoreRoundTripsChunksAndMutableMetadata) {
+  TopicDescriptor desc;
+  desc.name = "detach_restore_topic";
+  desc.schema_id = 1;
+  desc.dataset_id = 3;
+
+  TopicStorage storage(/*topic_id=*/17, std::move(desc));
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(17, 1000, 1900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(17, 2000, 5000, 31)).has_value());
+  storage.setColumnDescriptors({{0, PrimitiveType::kFloat32, "value"}});
+  storage.evictBefore(2500);  // drops the first chunk, floors the straddling second one
+  storage.updateMaxObservedArrayLength(7);
+  storage.incrementTruncatedSampleCount();
+  storage.incrementTruncatedSampleCount();
+  storage.setArrayExpansionCount("points", 5);
+
+  const std::size_t chunk_count = storage.sealedChunks().size();
+  const Timestamp t_min = storage.timeMin();
+  const Timestamp t_max = storage.timeMax();
+  const uint64_t row_count = storage.metadata().total_row_count;
+  ASSERT_EQ(chunk_count, 1U);
+
+  TopicStorage::DetachedState detached = storage.detachChunks();
+
+  // Mutate every restorable field, including the ones clearChunks() leaves alone — a failed
+  // write may have rewritten the column layout, the ratchets, or even the active schema id.
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(17, 9000, 9900, 4)).has_value());
+  storage.setColumnDescriptors({{0, PrimitiveType::kInt64, "other"}, {1, PrimitiveType::kInt64, "extra"}});
+  storage.evictBefore(9500);
+  storage.updateSchema(42);
+  storage.updateMaxObservedArrayLength(99);
+  storage.incrementTruncatedSampleCount();
+  storage.setArrayExpansionCount("points", 12);
+  storage.setArrayExpansionCount("added_later", 3);
+
+  storage.restoreChunks(std::move(detached));
+
+  EXPECT_EQ(storage.sealedChunks().size(), chunk_count);
+  EXPECT_EQ(storage.timeMin(), t_min);
+  EXPECT_EQ(storage.timeMax(), t_max);
+  EXPECT_EQ(storage.metadata().total_row_count, row_count);
+  EXPECT_EQ(storage.metadata().time_range_min, t_min);
+  EXPECT_EQ(storage.retentionFloor(), 2500);
+  EXPECT_EQ(storage.descriptor().schema_id, 1U);  // the updateSchema(42) is undone too
+  EXPECT_EQ(storage.metadata().current_schema, 1U);
+  ASSERT_EQ(storage.columnDescriptors().size(), 1U);
+  EXPECT_EQ(storage.columnDescriptors()[0].field_path, "value");
+  EXPECT_EQ(storage.maxObservedArrayLength(), 7U);  // ratchet restored DOWN from 99
+  EXPECT_EQ(storage.truncatedSampleCount(), 2U);
+  EXPECT_EQ(storage.arrayExpansionCount("points"), 5U);
+  EXPECT_EQ(storage.arrayExpansionCount("added_later"), 0U);  // entries added after the detach are gone
+
+  // The restored rows are readable, not just counted.
+  const TopicChunk& restored = storage.sealedChunks().front();
+  EXPECT_EQ(restored.stats.t_min, 2000);
+  EXPECT_EQ(restored.stats.t_max, 5000);
+  EXPECT_EQ(restored.readNumericAsDouble(0, 0), 0.0);
+  EXPECT_EQ(restored.readNumericAsDouble(0, 30), 30.0);
+}
+
 }  // namespace
 }  // namespace PJ

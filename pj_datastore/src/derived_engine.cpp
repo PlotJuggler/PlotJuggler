@@ -15,6 +15,7 @@
 #include <queue>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -271,6 +272,14 @@ struct DerivedNode {
   std::vector<PJ::TopicId> all_input_topic_ids;  // unified input list for all types
   std::vector<PJ::TopicId> output_topic_ids;     // 1 for SISO, M for MIMO
   bool dirty = true;
+  // Set whenever the watermarks below stop describing the output topics' contents — a
+  // recompute resets them and then fails, so the output is rolled back to a state the
+  // watermarks no longer match. The incremental path APPENDS, so running it against reset
+  // watermarks would replay history on top of the rolled-back rows and double them; the
+  // scheduler therefore routes a flagged node through the full detach-replay recompute,
+  // which rewrites the output wholesale and is duplication-safe by construction. Cleared
+  // only by a successful recompute.
+  bool needs_full_recompute = false;
   PJ::ChunkId last_processed_chunk_id = 0;                                 // SISO: chunk watermark
   PJ::Timestamp mimo_last_ts = std::numeric_limits<PJ::Timestamp>::min();  // MIMO: timestamp watermark
   // Regression detection (out-of-order ingest): a not-yet-processed input
@@ -866,10 +875,9 @@ static PJ::Status runSisoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& en
   // A sticky op failure (e.g. a Luau runtime error) makes calculate() return false for every
   // sample. Surface it as a Status error AND drop the staged rows: a batch that ends in failure
   // is an untrustworthy truncation. `writer` is function-local, so simply not flushing it
-  // discards the staged rows cleanly (no rollback API needed). On a post-reset replay the old
-  // output was already cleared by recomputeBatch, so the output is left empty rather than
-  // stale-partial — both correct. Advance the watermark so a sticky-failed node is not re-run
-  // every commit.
+  // discards the staged rows cleanly (no rollback API needed). On a post-reset replay the
+  // caller (recomputeNodeSelfOnly) puts the pre-replay output back on this error. Advance the
+  // watermark so a sticky-failed node is not re-run every commit.
   if (node.siso_op && node.siso_op->failed()) {
     node.last_processed_chunk_id = max_seen;
     return PJ::unexpected(node.siso_op->error());
@@ -1183,9 +1191,11 @@ PJ::Status DerivedEngine::scheduleActiveLocked(const std::unordered_set<PJ::Node
     }
 
     PJ::Status s = PJ::okStatus();
-    if (nodeInputRegressed(engine_, node)) {
-      // Late (out-of-order) input behind the node's watermark: reset + full
-      // replay over the now time-merged input instead of incremental work.
+    if (node.needs_full_recompute || nodeInputRegressed(engine_, node)) {
+      // Either a previous recompute rolled this node's output back while resetting its
+      // watermarks (the incremental path would replay history ON TOP of those rows), or
+      // late out-of-order input landed behind the watermark (which would break the
+      // transform's ascending-timestamp contract). Both call for a reset + full replay.
       s = recomputeBatchLocked(node_id);  // already holding engine_.lockEngine()
     } else if (!node.is_mimo) {
       s = runSisoIncremental(*impl_, engine_, node);
@@ -1193,8 +1203,11 @@ PJ::Status DerivedEngine::scheduleActiveLocked(const std::unordered_set<PJ::Node
       s = runMimoIncremental(*impl_, engine_, node);
     }
 
-    node.dirty = false;  // processed even on failure, so a sticky-failed node does
-                         // not re-run (and block healthy nodes) every commit
+    // Processed even on failure, so a sticky-failed node does not re-run (and block
+    // healthy nodes) every commit; new input re-dirties it through onSourceCommitted. A
+    // failed recompute's rollback stays durable regardless: needs_full_recompute (not
+    // dirty) is what keeps such a node off the appending incremental path.
+    node.dirty = false;
     if (!s.has_value()) {
       // Surface the failure via the returned Status, but keep running the other
       // nodes. The failed node's downstream is left as-is (its input is bad).
@@ -1223,16 +1236,83 @@ PJ::Status DerivedEngine::scheduleActiveLocked(const std::unordered_set<PJ::Node
 // recompute_batch
 // ---------------------------------------------------------------------------
 
-// Clear ONE node's output, reset its op + watermarks, and fully replay its input. The
+namespace {
+
+// Holds output chunks pulled aside for the duration of a replay and puts them back on ANY
+// exit — an error Status, or an exception thrown out of a transform's reset()/calculate() or
+// out of an allocation inside the replay — unless dismiss() declares the replay successful.
+// Without the destructor, unwinding would destroy the detached chunks while their
+// TopicStorage still sits empty, losing the data for good.
+class DetachedOutputGuard {
+ public:
+  /// `capacity` is the number of storages that may be adopted; reserving up front keeps the
+  /// adopt() loop from re-growing the vector once per output topic.
+  explicit DetachedOutputGuard(std::size_t capacity) {
+    detached_.reserve(capacity);
+  }
+  DetachedOutputGuard(const DetachedOutputGuard&) = delete;
+  DetachedOutputGuard& operator=(const DetachedOutputGuard&) = delete;
+
+  ~DetachedOutputGuard() {
+    for (auto& [storage, state] : detached_) {
+      storage->restoreChunks(std::move(state));
+    }
+  }
+
+  /// Pull `storage`'s chunks aside, keeping ownership traceable at every step: the slot is
+  /// allocated BEFORE the detach, so the two throwing operations (growing the vector, and
+  /// detachChunks' snapshot copies) both happen while `storage` still owns its chunks. Only
+  /// the non-throwing move-assign below hands them over.
+  void adopt(TopicStorage& storage) {
+    static_assert(
+        std::is_nothrow_move_assignable_v<TopicStorage::DetachedState>,
+        "a throwing move would strand detached chunks between the storage and the guard");
+    detached_.emplace_back(&storage, TopicStorage::DetachedState{});
+    try {
+      detached_.back().second = storage.detachChunks();
+    } catch (...) {
+      // detachChunks' strong guarantee left `storage` owning its chunks; keeping the
+      // placeholder would make the destructor restore an EMPTY state over them.
+      detached_.pop_back();
+      throw;
+    }
+  }
+
+  /// Give up ownership of the prior data: the replay produced a valid replacement, so the
+  /// detached chunks are dropped here instead of being restored by the destructor.
+  void dismiss() noexcept {
+    detached_.clear();
+  }
+
+ private:
+  std::vector<std::pair<TopicStorage*, TopicStorage::DetachedState>> detached_;
+};
+
+}  // namespace
+
+// Recompute ONE node's output, reset its op + watermarks, and fully replay its input. The
 // per-node primitive behind recomputeBatch's self+downstream cascade — does NOT touch
-// downstream nodes. clearChunks (not retireTopic) keeps every TopicStorage alive so cached
-// reader pointers stay valid.
+// downstream nodes. detachChunks (not clearChunks/retireTopic) keeps every TopicStorage
+// alive so cached reader pointers stay valid.
+//
+// Failure guarantee: every output topic is left EXACTLY as it was before the call, whether
+// the replay reports an error Status (a hard writer error, or a sticky-failing processor —
+// e.g. a broken Luau filter) or throws. Output that was correct going into this call must
+// survive it: the prior chunks are detached aside before the replay and restored by
+// DetachedOutputGuard on any early exit, instead of being cleared up front and left empty.
+// A successful replay discards the detached data and keeps the freshly-computed output.
+//
+// A non-successful exit also leaves the node dirty and flagged needs_full_recompute, because
+// the watermarks were reset while the output was rolled back to the pre-call rows: only
+// another full replay can reconcile the two (see DerivedNode::needs_full_recompute).
 static PJ::Status recomputeNodeSelfOnly(DerivedEngineImpl& impl, DataEngine& engine, DerivedNode& node) {
-  // 1. Clear all output chunks unconditionally.
+  // 1. Detach each output topic's current chunks aside instead of clearing them, so any
+  //    early exit below can undo the replay.
+  DetachedOutputGuard detached_outputs(node.output_topic_ids.size());
   for (PJ::TopicId out_tid : node.output_topic_ids) {
     TopicStorage* storage = engine.getTopicStorage(out_tid);
     if (storage) {
-      storage->clearChunks();
+      detached_outputs.adopt(*storage);
     }
   }
 
@@ -1247,7 +1327,12 @@ static PJ::Status recomputeNodeSelfOnly(DerivedEngineImpl& impl, DataEngine& eng
     }
   }
 
-  // 3. Reset processed watermarks (chunk ids and timestamps)
+  // 3. Reset processed watermarks (chunk ids and timestamps). Flag the node BEFORE the
+  //    replay: from here on the watermarks describe a replay that has not landed yet, so
+  //    every exit except the successful one at the bottom must keep the node on the full
+  //    recompute path — including an exception, which skips the tail of this function.
+  node.dirty = true;
+  node.needs_full_recompute = true;
   node.last_processed_chunk_id = 0;
   node.siso_last_ts = std::numeric_limits<PJ::Timestamp>::min();
   if (node.is_mimo) {
@@ -1264,9 +1349,11 @@ static PJ::Status recomputeNodeSelfOnly(DerivedEngineImpl& impl, DataEngine& eng
   }
 
   if (!s.has_value()) {
-    return s;
+    return s;  // ~DetachedOutputGuard restores the pre-call output
   }
+  detached_outputs.dismiss();
   node.dirty = false;
+  node.needs_full_recompute = false;
   return PJ::okStatus();
 }
 
@@ -1487,6 +1574,9 @@ PJ::Status DerivedEngine::restoreInputBindingState(PJ::NodeId node_id, const Inp
     binding_node.siso_input_kind = state.kinds.front();
   }
   binding_node.dirty = true;
+  // The rewound watermarks below no longer match the (untouched) output topics, so the node
+  // must replay in full rather than append a second copy of its history on the next pass.
+  binding_node.needs_full_recompute = true;
   binding_node.last_processed_chunk_id = 0;
   binding_node.siso_last_ts = std::numeric_limits<PJ::Timestamp>::min();
   binding_node.mimo_last_ts = std::numeric_limits<PJ::Timestamp>::min();

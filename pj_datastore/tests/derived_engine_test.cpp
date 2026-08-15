@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <vector>
 
 #include "pj_base/dataset.hpp"
@@ -697,7 +698,7 @@ TEST(DerivedEngineTest, RecomputeBatch_ClearsAndRegenerates) {
   auto before = collectValues(engine, derived.outputTopics(node)[0]);
   ASSERT_FALSE(before.empty());
 
-  // recompute_batch clears output and replays from scratch
+  // recompute_batch replays from scratch and produces the same result
   ASSERT_TRUE(derived.recomputeBatch(node).has_value());
 
   auto after = collectValues(engine, derived.outputTopics(node)[0]);
@@ -705,6 +706,120 @@ TEST(DerivedEngineTest, RecomputeBatch_ClearsAndRegenerates) {
   for (std::size_t i = 0; i < before.size(); ++i) {
     EXPECT_NEAR(before[i], after[i], 1e-9);
   }
+}
+
+// A successful recompute REPLACES the output rather than appending to it: growing the input
+// and recomputing must yield exactly the new row count, not old-plus-new.
+TEST(DerivedEngineTest, RecomputeBatch_SuccessReplacesOutputRatherThanAppending) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
+  PJ::NodeId node = *derived.addSisoTransform(src, "id", ds, std::make_unique<IdentityTransform>());
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  const PJ::TopicId out_tid = derived.outputTopics(node)[0];
+  ASSERT_EQ(collectValues(engine, out_tid).size(), 5u);
+
+  appendLinearRows(engine, src, 1.0, 2, /*start_i=*/5);
+  ASSERT_TRUE(derived.recomputeBatch(node).has_value());
+
+  // 7 values (0..6), never 12 (5 stale + 7 fresh) — the detached prior output must be
+  // discarded on success, not merged back in alongside the freshly-replayed rows.
+  EXPECT_EQ(collectValues(engine, out_tid), (std::vector<double>{0, 1, 2, 3, 4, 5, 6}));
+}
+
+// The rollback-fidelity bug this guards: a sticky-failing processor (one that keeps failing
+// regardless of input, e.g. a broken Luau filter) must not empty out output that was correct
+// going into the failed recompute. recomputeBatch's contract is that a failed replay leaves a
+// node's output exactly as it was before the call.
+TEST(DerivedEngineTest, RecomputeBatch_StickyFailureRestoresPriorOutputValues) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
+  PJ::NodeId node = *derived.addSisoTransform(src, "sticky", ds, std::make_unique<FailAfterNTransform>(5));
+  ASSERT_TRUE(derived.scheduleAll().has_value());  // exactly 5 rows: the op is not yet sticky-failed
+
+  const PJ::TopicId out_tid = derived.outputTopics(node)[0];
+  const std::vector<double> before = collectValues(engine, out_tid);
+  ASSERT_EQ(before, (std::vector<double>{0, 1, 2, 3, 4}));
+
+  // Grow the input past the op's success threshold, then recompute directly: reset() rearms
+  // the sticky op, the full replay reproduces rows 0..4 and fails on row 5.
+  appendLinearRows(engine, src, 1.0, 2, /*start_i=*/5);
+  EXPECT_FALSE(derived.recomputeBatch(node).has_value());
+
+  // The failed replay must not commit a truncated prefix (pre-existing contract) AND must not
+  // have emptied the prior output either (the bug under test): the exact pre-call values survive.
+  EXPECT_EQ(collectValues(engine, out_tid), before);
+}
+
+// Identity pass-through that THROWS once it has emitted `throw_after` rows — models a
+// transform (a script binding, an allocation) that raises instead of reporting the failure
+// through failed(). disarm() makes it a plain identity again.
+class ThrowAfterNTransform : public ISISOTransform {
+ public:
+  explicit ThrowAfterNTransform(int throw_after) : throw_after_(throw_after) {}
+
+  void reset() override {
+    seen_ = 0;
+  }
+
+  void disarm() {
+    throw_after_ = -1;
+  }
+
+  bool calculate(PJ::Timestamp time, const VarValue& input, PJ::Timestamp& out_time, VarValue& out_value) override {
+    if (throw_after_ >= 0 && seen_ >= throw_after_) {
+      throw std::runtime_error("ThrowAfterNTransform: boom");
+    }
+    ++seen_;
+    out_time = time;
+    out_value = std::get<double>(input);
+    return true;
+  }
+
+ private:
+  int throw_after_;
+  int seen_ = 0;
+};
+
+// The failure guarantee must hold for an EXCEPTION out of calculate(), not just for an error
+// Status: the detached output is owned by a guard whose destructor runs while unwinding.
+// Without it the prior chunks die with the stack frame and the topic stays empty forever.
+TEST(DerivedEngineTest, RecomputeBatch_ThrowingTransformRestoresPriorOutputAndReplaysOnce) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
+  auto owned_op = std::make_unique<ThrowAfterNTransform>(5);
+  ThrowAfterNTransform* op = owned_op.get();
+  PJ::NodeId node = *derived.addSisoTransform(src, "throwing", ds, std::move(owned_op));
+  ASSERT_TRUE(derived.scheduleAll().has_value());  // 5 rows: the 6th call is the one that throws
+
+  const PJ::TopicId out_tid = derived.outputTopics(node)[0];
+  const std::vector<double> before = collectValues(engine, out_tid);
+  ASSERT_EQ(before, (std::vector<double>{0, 1, 2, 3, 4}));
+
+  // Grow the input past the throw threshold and replay: row 5 throws mid-replay.
+  appendLinearRows(engine, src, 1.0, 2, /*start_i=*/5);
+  EXPECT_THROW(
+      {
+        auto ignored = derived.recomputeBatch(node);
+        (void)ignored;
+      },
+      std::runtime_error);
+  EXPECT_EQ(collectValues(engine, out_tid), before);
+
+  // The throw left the node's watermarks rewound while its output was rolled back, so the
+  // next pass must REPLACE the output, not append a second copy of the replayed history.
+  op->disarm();
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  EXPECT_EQ(collectValues(engine, out_tid), (std::vector<double>{0, 1, 2, 3, 4, 5, 6}));
 }
 
 TEST(DerivedEngineTest, RecomputeBatch_MultipleRootsRecomputesDiamondOnceInTopologicalOrder) {
@@ -974,6 +1089,80 @@ class DiffMimoTransform : public IMIMOTransform {
     return true;
   }
 };
+
+// A MIMO sum whose failure latch SURVIVES reset(), like a filter whose script stopped
+// compiling: every run reports the failure before consuming any input. heal() clears it.
+class LatchedFailureSumMimoTransform : public IMIMOTransform {
+ public:
+  std::vector<StorageKind> outputKinds(PJ::Span<const StorageKind> /*input_kinds*/) const override {
+    return {StorageKind::kFloat64};
+  }
+
+  bool calculate(
+      PJ::Timestamp time, PJ::Span<const VarValue> inputs, PJ::Timestamp& out_time,
+      std::vector<VarValue>& output) override {
+    out_time = time;
+    double sum = 0.0;
+    for (const auto& value : inputs) {
+      sum += std::get<double>(value);
+    }
+    output[0] = sum;
+    return !failed_;
+  }
+
+  [[nodiscard]] bool failed() const override {
+    return failed_;
+  }
+
+  [[nodiscard]] const std::string& error() const override {
+    static const std::string kErr = "LatchedFailureSumMimoTransform: broken";
+    return kErr;
+  }
+
+  void fail() {
+    failed_ = true;
+  }
+
+  void heal() {
+    failed_ = false;
+  }
+
+ private:
+  bool failed_ = false;
+};
+
+// A recompute rewinds the node's watermarks before replaying, so a replay that fails and
+// rolls the output back leaves watermarks that no longer describe the retained rows. The
+// incremental path APPENDS, so an ordinary scheduling pass afterwards would replay the whole
+// history on top of the rolled-back rows and double them. Such a node must stay on the full
+// (output-replacing) recompute path until a replay finally succeeds.
+TEST(DerivedEngineTest, FailedRecomputeRollback_LaterSchedulePassReplacesOutputInsteadOfAppending) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+
+  PJ::TopicId src = make_three_column_topic(engine, ds, 5);
+  auto owned_op = std::make_unique<LatchedFailureSumMimoTransform>();
+  LatchedFailureSumMimoTransform* op = owned_op.get();
+  PJ::NodeId node = *derived.addMimoTransform({src, src}, {"sum"}, ds, std::move(owned_op), {0, 1});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  const PJ::TopicId out_tid = derived.outputTopics(node)[0];
+  const std::vector<double> before = collectValues(engine, out_tid);
+  ASSERT_EQ(before, (std::vector<double>{100, 102, 104, 106, 108}));
+
+  // The op breaks (its latch survives reset()) and a recompute is attempted: it fails before
+  // consuming any input, so the rollback restores the good rows over rewound watermarks.
+  op->fail();
+  EXPECT_FALSE(derived.recomputeBatch(node).has_value());
+  EXPECT_EQ(collectValues(engine, out_tid), before);
+
+  // The op recovers and an ordinary scheduling pass runs it: five rows, never ten.
+  op->heal();
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  EXPECT_EQ(collectValues(engine, out_tid), before);
+}
 
 TEST(MimoTransformTest, InputBindingState_MimoResolveAndRestore) {
   DataEngine engine;

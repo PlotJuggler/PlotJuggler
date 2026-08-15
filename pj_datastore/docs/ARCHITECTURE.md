@@ -143,7 +143,7 @@ Encoding selection in `TopicChunkBuilder::seal()`:
 - `onSourceCommitted(changed_topics)` — marks directly dependent nodes dirty.
 - `scheduleAll()` — processes all dirty nodes in topological order (incremental path).
 - `scheduleActive(active_nodes)` — processes only specified nodes and their transitive upstream dependencies.
-- `recomputeBatch(node_id)` — clears output topics, resets the transform, and replays the node plus its downstream graph.
+- `recomputeBatch(node_id)` — resets the transform and replays the node plus its downstream graph. Per node, the current output is detached aside (not cleared) before replay; a successful replay discards the detached data, while any other exit — an error Status *or* an exception out of the transform — restores it from an RAII guard. A failed recompute (including a sticky-failing processor) therefore never leaves a node's output emptier than it was going in.
 - `recomputeBatch(root_node_ids)` — performs one topological replay over the union of several roots' downstream graphs, so a converging node runs once against one generation of its inputs.
 - `inputBindingState()` / `resolvedInputBindingState()` / `restoreInputBindingState()` — capture, validate against the current input schemas, and restore input-column metadata for a host-managed reload transaction without reminting node or output topic ids.
 - `replaceSisoTransform()` / `replaceMimoTransform()` — exchange only a node's operator while preserving topology and topic ids. They transactionally replay the downstream graph and restore the old operator and graph on failure.
@@ -156,7 +156,9 @@ Encoding selection in `TopicChunkBuilder::seal()`:
 
 Incremental scheduling: each node tracks a `last_processed_chunk_id` watermark. `scheduleAll()` iterates only chunks with id > watermark, reads each row, calls `calculate()`, writes output via `beginRow`/`set`/`finishRow`, then flushes and commits.
 
-Out-of-order input: transforms have a strict ascending-timestamp contract, so before running a node the scheduler checks whether any not-yet-processed input chunk lands at or before the node's timestamp watermarks (`siso_last_ts` for SISO; `mimo_last_chunk_id` + `mimo_last_ts` for MIMO). Such late input triggers `recomputeBatch` — reset transform state, clear outputs, fully replay over the time-merged input (the SISO replay feeds rows through the `RangeCursor` heap merge) — instead of incremental work.
+Rolled-back nodes never go incremental: a recompute rewinds the watermarks before replaying, so a replay that fails (and rolls the output back) leaves watermarks that no longer describe the retained rows. Because the incremental path APPENDS, running it then would replay history on top of the restored rows and double them. Such a node carries `needs_full_recompute` until a replay succeeds, and both scheduling passes route it through the full detach-replay recompute, which rewrites the output wholesale. `restoreInputBindingState()` sets the same flag for the same reason (it rewinds watermarks without touching the output). Note the flag is *not* what schedules the node — a processed node is always left non-dirty, failure included, so a permanently failing processor still runs only when new input re-dirties it.
+
+Out-of-order input: transforms have a strict ascending-timestamp contract, so before running a node the scheduler checks whether any not-yet-processed input chunk lands at or before the node's timestamp watermarks (`siso_last_ts` for SISO; `mimo_last_chunk_id` + `mimo_last_ts` for MIMO). Such late input triggers `recomputeBatch` — reset transform state, detach outputs aside, fully replay over the time-merged input (the SISO replay feeds rows through the `RangeCursor` heap merge), restoring the detached output on failure — instead of incremental work.
 
 ### Color Map Layer
 
