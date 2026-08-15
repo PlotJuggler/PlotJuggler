@@ -11,6 +11,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,7 @@
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/DataSourceRuntimeHost.h"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/ObjectIngestTap.h"
 using namespace Qt::StringLiterals;
 
 #ifndef PJ_RUNTIME_HOST_OBJECT_PARSER_PATH
@@ -47,7 +49,7 @@ class DataSourceRuntimeHostObjectIngestTest : public ::testing::Test {
     host_ = std::make_unique<PJ::DataSourceRuntimeHost>(
         engine_, catalog_, dataset_id_, source_handle_, object_store_, "runtime_host_test_source",
         /*parser_registrar=*/nullptr, /*secondary_object_store=*/nullptr, /*secondary_data_engine=*/nullptr,
-        /*library_keepalive=*/nullptr);
+        /*library_keepalive=*/nullptr, ingest_taps_);
     EXPECT_TRUE(host_->registerServices(registry_builder_).has_value());
   }
 
@@ -97,6 +99,7 @@ class DataSourceRuntimeHostObjectIngestTest : public ::testing::Test {
   PJ::ObjectStore object_store_;
   PJ::DatasetId dataset_id_{0};
   PJ_data_source_handle_t source_handle_{};
+  std::shared_ptr<PJ::ObjectIngestTapRegistry> ingest_taps_ = std::make_shared<PJ::ObjectIngestTapRegistry>();
   std::unique_ptr<PJ::DataSourceRuntimeHost> host_;
   PJ::ServiceRegistryBuilder registry_builder_;
 };
@@ -178,8 +181,10 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, LazyObjectsEagerScalarsSeedServesP
   ASSERT_TRUE(binding_or.has_value()) << binding_or.error();
 
   const std::vector<uint8_t> payload{0x10, 0x20, 0x30, 0x40};
+  const uint64_t admitted_before = pool->stats().admitted;
   auto fetch_calls = pushPayload(*binding_or, 123, payload);
   EXPECT_EQ(fetch_calls->load(), 1);
+  EXPECT_EQ(pool->stats().admitted - admitted_before, 1U);
 
   host_->flushAll();
   auto object_topic = object_store_.findTopic(dataset_id_, "/camera/image");
@@ -196,6 +201,92 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, LazyObjectsEagerScalarsSeedServesP
   ASSERT_TRUE(after_eviction.has_value());
   EXPECT_EQ(std::vector<uint8_t>(after_eviction->payload.bytes.begin(), after_eviction->payload.bytes.end()), payload);
   EXPECT_EQ(fetch_calls->load(), 2) << "an evicted seed degrades to the re-fetch fallback";
+}
+
+TEST_F(DataSourceRuntimeHostObjectIngestTest, TappedLazyObjectIsUnseededAndStillParsesScalars) {
+  auto pool = std::make_shared<PJ::ResidentPayloadPool>(64ULL * 1024 * 1024);
+  object_store_.setResidentPayloadPool(pool);
+  host_->policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kLazyObjectsEagerScalars);
+
+  int tap_calls = 0;
+  PJ::ObjectTopicId tapped_topic{};
+  std::vector<uint8_t> tapped_bytes;
+  auto lease = ingest_taps_->claimExclusive(
+      PJ::sdk::BuiltinObjectType::kImage,
+      [&](PJ::ObjectTopicId topic, PJ::DatasetId dataset, PJ::Timestamp stamp, PJ::sdk::PayloadView bytes) {
+        ++tap_calls;
+        tapped_topic = topic;
+        EXPECT_EQ(dataset, dataset_id_);
+        EXPECT_EQ(stamp, 123);
+        tapped_bytes.assign(bytes.bytes.begin(), bytes.bytes.end());
+      });
+  ASSERT_TRUE(lease.has_value()) << lease.error();
+
+  auto binding = bindTopic("/camera/tapped_image", "mock/image");
+  ASSERT_TRUE(binding.has_value()) << binding.error();
+  const std::vector<uint8_t> payload{0x10, 0x20, 0x30, 0x40};
+  const uint64_t admitted_before = pool->stats().admitted;
+  auto fetch_calls = pushPayload(*binding, 123, payload);
+
+  EXPECT_EQ(tap_calls, 1);
+  EXPECT_EQ(tapped_bytes, payload);
+  EXPECT_EQ(pool->stats().admitted - admitted_before, 0U) << "tapped file entries must not retain pool seeds";
+  host_->flushAll();
+  EXPECT_EQ(totalRowCount(), 1U) << "the scalar parse must still commit";
+
+  auto object_topic = object_store_.findTopic(dataset_id_, "/camera/tapped_image");
+  ASSERT_TRUE(object_topic.has_value());
+  EXPECT_EQ(tapped_topic.id, object_topic->id);
+  auto entry = object_store_.latestAt(*object_topic, 123);
+  ASSERT_TRUE(entry.has_value());
+  EXPECT_EQ(std::vector<uint8_t>(entry->payload.bytes.begin(), entry->payload.bytes.end()), payload);
+  EXPECT_EQ(fetch_calls->load(), 2) << "the unseeded catalog closure must re-read on first resolve";
+}
+
+TEST_F(DataSourceRuntimeHostObjectIngestTest, TappedEagerObjectKeepsCapturedPayload) {
+  host_->policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kEager);
+  int tap_calls = 0;
+  auto lease = ingest_taps_->claimExclusive(
+      PJ::sdk::BuiltinObjectType::kImage,
+      [&](PJ::ObjectTopicId, PJ::DatasetId, PJ::Timestamp, PJ::sdk::PayloadView) { ++tap_calls; });
+  ASSERT_TRUE(lease.has_value()) << lease.error();
+
+  auto binding = bindTopic("/camera/stream_image", "mock/image");
+  ASSERT_TRUE(binding.has_value()) << binding.error();
+  const std::vector<uint8_t> payload{0xA0, 0xB0, 0xC0};
+  auto fetch_calls = pushPayload(*binding, 456, payload);
+  EXPECT_EQ(tap_calls, 1);
+
+  auto object_topic = object_store_.findTopic(dataset_id_, "/camera/stream_image");
+  ASSERT_TRUE(object_topic.has_value());
+  auto entry = object_store_.latestAt(*object_topic, 456);
+  ASSERT_TRUE(entry.has_value());
+  EXPECT_EQ(std::vector<uint8_t>(entry->payload.bytes.begin(), entry->payload.bytes.end()), payload);
+  EXPECT_EQ(fetch_calls->load(), 1) << "streaming must resolve from its captured payload, not a dead fetcher";
+}
+
+TEST_F(DataSourceRuntimeHostObjectIngestTest, ThrowingTapIsContainedAndEntryStillLands) {
+  host_->policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kEager);
+  auto lease = ingest_taps_->claimExclusive(
+      PJ::sdk::BuiltinObjectType::kImage,
+      [](PJ::ObjectTopicId, PJ::DatasetId, PJ::Timestamp, PJ::sdk::PayloadView) { throw std::runtime_error("boom"); });
+  ASSERT_TRUE(lease.has_value()) << lease.error();
+
+  auto binding = bindTopic("/camera/throwing_tap", "mock/image");
+  ASSERT_TRUE(binding.has_value()) << binding.error();
+  const std::vector<uint8_t> payload{0xDE, 0xAD, 0xBE, 0xEF};
+  auto fetch_calls = pushPayload(*binding, 789, payload);
+
+  EXPECT_EQ(host_->ingestTapFailures(), 1U);
+  host_->flushAll();
+  EXPECT_EQ(totalRowCount(), 1U);
+  auto object_topic = object_store_.findTopic(dataset_id_, "/camera/throwing_tap");
+  ASSERT_TRUE(object_topic.has_value());
+  EXPECT_EQ(object_store_.entryCount(*object_topic), 1U);
+  auto entry = object_store_.latestAt(*object_topic, 789);
+  ASSERT_TRUE(entry.has_value());
+  EXPECT_EQ(std::vector<uint8_t>(entry->payload.bytes.begin(), entry->payload.bytes.end()), payload);
+  EXPECT_EQ(fetch_calls->load(), 1);
 }
 
 TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessagePureLazyDefersFetchAndDoesNotCommitScalars) {

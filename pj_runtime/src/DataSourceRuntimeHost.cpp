@@ -8,6 +8,7 @@
 #include <QLoggingCategory>
 #include <QString>
 #include <algorithm>
+#include <exception>
 #include <functional>
 #include <mutex>
 #include <utility>
@@ -19,6 +20,7 @@
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/ObjectIngestTap.h"
 #include "pj_runtime/ServiceRegistration.h"
 #include "pj_runtime/detail/payload_anchor.h"
 using namespace Qt::StringLiterals;
@@ -259,7 +261,8 @@ const PJ_data_source_runtime_host_vtable_t DataSourceRuntimeHost::kVtable = {
 DataSourceRuntimeHost::DataSourceRuntimeHost(
     DataEngine& engine, ExtensionCatalogService& catalog, DatasetId dataset_id, PJ_data_source_handle_t source_handle,
     ObjectStore& object_store, std::string source_id, ObjectTopicParserRegistrar parser_registrar,
-    ObjectStore* secondary_object_store, DataEngine* secondary_data_engine, std::shared_ptr<void> library_keepalive)
+    ObjectStore* secondary_object_store, DataEngine* secondary_data_engine, std::shared_ptr<void> library_keepalive,
+    std::shared_ptr<ObjectIngestTapRegistry> ingest_taps)
     : engine_(engine),
       catalog_(catalog),
       object_store_(object_store),
@@ -271,7 +274,8 @@ DataSourceRuntimeHost::DataSourceRuntimeHost(
       source_write_host_(engine, source_handle),
       source_object_write_host_(object_store, dataset_id),
       lazy_fetch_mutex_(std::make_shared<std::mutex>()),
-      library_keepalive_(std::move(library_keepalive)) {
+      library_keepalive_(std::move(library_keepalive)),
+      ingest_taps_(std::move(ingest_taps)) {
   // Wire the source-level write host with the secondary engine for the
   // streaming pause/resume two-engine lockstep. Without this, a plugin that
   // caches TopicHandle/FieldHandle on start() (e.g. data_stream_dummy) sees
@@ -806,13 +810,33 @@ bool DataSourceRuntimeHost::cbPushMessage(
     if (!is_object_topic) {
       return true;
     }
-    // kLazyObjectsEagerScalars: the bytes in hand — already paid for by the
-    // scalar parse's hot-path fetch — seed the store's ResidentPayloadPool
-    // (zero copy when anchored), so live-edge pulls read them with no re-fetch.
-    // The re-fetch closure kPureLazy uses rides along as the permanent
-    // fallback once the pool's byte budget evicts the seed; with no pool
-    // configured the entry is that plain closure from the start.
+    const bool tapped = self->ingest_taps_ != nullptr && [&]() {
+      try {
+        return self->ingest_taps_->invoke(
+            binding.object_kind, *binding.object_topic_id, self->dataset_id_, timestamp_ns,
+            sdk::PayloadView{Span<const uint8_t>{payload.data, static_cast<size_t>(payload.size)}, payload_anchor});
+      } catch (const std::exception& error) {
+        self->ingest_tap_failures_.fetch_add(1);
+        qCWarning(lcIngest) << "object ingest tap threw:" << error.what();
+      } catch (...) {
+        self->ingest_tap_failures_.fetch_add(1);
+        qCWarning(lcIngest) << "object ingest tap threw an unknown exception";
+      }
+      return true;
+    }();
+    // File-backed tapped objects are decoded before storage and keep only their
+    // re-readable catalog closure. Untapped objects retain the ingest-time seed
+    // so live-edge consumers do not re-fetch bytes already in hand.
     if (policy == sdk::ObjectIngestPolicy::kLazyObjectsEagerScalars) {
+      auto fallback = makeLazyFetchClosure(fetcher_owner, self->lazy_fetch_mutex_, lazy_context(), timestamp_ns);
+      if (tapped) {
+        if (auto status = self->object_store_target_.load()->pushLazy(
+                *binding.object_topic_id, timestamp_ns, std::move(fallback));
+            !status) {
+          return self->fail(out_error, ("ObjectStore.pushLazy failed: " + status.error()).c_str());
+        }
+        return true;
+      }
       sdk::PayloadView seed;
       if (payload_anchor != nullptr) {
         seed = sdk::PayloadView{
@@ -822,7 +846,6 @@ bool DataSourceRuntimeHost::cbPushMessage(
         // seed needs its own copy.
         seed = sdk::makePayloadView(std::vector<uint8_t>(payload.data, payload.data + payload.size));
       }
-      auto fallback = makeLazyFetchClosure(fetcher_owner, self->lazy_fetch_mutex_, lazy_context(), timestamp_ns);
       if (auto status = self->object_store_target_.load()->pushLazyWithSeed(
               *binding.object_topic_id, timestamp_ns, std::move(seed), std::move(fallback));
           !status) {
@@ -830,8 +853,8 @@ bool DataSourceRuntimeHost::cbPushMessage(
       }
       return true;
     }
-    // kEager: the entry stays resident — the closure inherits the anchor
-    // (zero copy), so store reads replay this exact PayloadView, no re-fetch.
+    // Streaming has no durable source to re-read. Its kEager entries therefore
+    // keep the captured payload even when a tap also consumed it synchronously.
     if (auto status = self->object_store_target_.load()->pushLazy(
             *binding.object_topic_id, timestamp_ns, makeCapturedPayloadClosure(payload, std::move(payload_anchor)));
         !status) {

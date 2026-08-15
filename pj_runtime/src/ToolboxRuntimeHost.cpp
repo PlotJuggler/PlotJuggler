@@ -272,7 +272,7 @@ bool ToolboxRuntimeHost::onCreateParserIngest(
           // DataSource plugin; its render parsers come from the catalog, which
           // owns their .so lifetime and outlives every ingest context.
           /*secondary_object_store=*/nullptr, /*secondary_data_engine=*/nullptr,
-          /*library_keepalive=*/std::shared_ptr<void>{});
+          /*library_keepalive=*/std::shared_ptr<void>{}, self->parser_ingest_deps_.ingest_taps);
       it = self->parser_ingests_.emplace(data_source_id, std::move(host)).first;
 
       // Progress hooks: the plugin's progress_start/update/finish calls on the

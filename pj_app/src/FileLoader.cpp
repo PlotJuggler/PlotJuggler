@@ -1333,7 +1333,8 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   // ownership; the object's address does not change).
   auto ingest_session_ptr = std::make_unique<DataSourceRuntimeHost>(
       engine, extensions_, dataset_id, source_handle, session_.objectStore(), source_id,
-      std::move(object_parser_registrar), nullptr, nullptr, combineKeepalive(handle.libraryOwner(), input.lease));
+      std::move(object_parser_registrar), nullptr, nullptr, combineKeepalive(handle.libraryOwner(), input.lease),
+      session_.ingestTapsShared());
   DataSourceRuntimeHost& ingest_session = *ingest_session_ptr;
   DataSourceRuntimeHost::MessageBoxHandler message_box_handler;
   if (dialog_parent != nullptr) {
@@ -1589,6 +1590,11 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     ctx_->file_total = request.file_total;
 
     if (replacing) {
+#ifdef PJ_WITH_SCENE3D
+      if (transform_service_ != nullptr) {
+        transform_service_->beginReplacingLoad(existing_primary_id);
+      }
+#endif
       // Transactional in-place refill: DETACH (move aside, not free) the existing
       // dataset's prior data, keeping its topics registered so the refill's
       // ensureTopic rebinds each by name into the same ids. Constructed as the LAST
@@ -1734,7 +1740,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
           [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
             session_.registerObjectTopicParser(id, std::move(parser));
           },
-          nullptr, nullptr, combineKeepalive(iter_handle.libraryOwner(), input.lease));
+          nullptr, nullptr, combineKeepalive(iter_handle.libraryOwner(), input.lease), session_.ingestTapsShared());
       if (message_box_handler) {
         iter_ingest.setMessageBoxHandler(message_box_handler);
       }
@@ -1926,21 +1932,12 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
 
   catalog_.rebuildFromDatastore();  // reload: same keys ⇒ no spurious itemsRemoved
 
-  // Per pj_scene3D REQUIREMENTS §9: TF buffer is per-dataset, populated eagerly
-  // at load time. A single-instance reload changed its data in place, so
-  // invalidate before re-ingesting (ingest is idempotent per dataset and would
-  // otherwise skip). No service wired (non-3D builds) -> skipped.
+  // Publish tap-fed fanout buffers after their worker imports finish. When no
+  // tap is active, ingestNewTransforms drains the corresponding store entries.
 #ifdef PJ_WITH_SCENE3D
   if (transform_service_ != nullptr) {
-    if (fanouts.size() == 1) {
-      if (replacing) {
-        transform_service_->invalidateDataset(dataset_id);
-      }
-      transform_service_->ingestFrameTransformsForDataset(dataset_id);
-    } else {
-      for (const DatasetId loaded_id : fanout_loaded_ids) {
-        transform_service_->ingestFrameTransformsForDataset(loaded_id);
-      }
+    for (const DatasetId loaded_id : fanout_loaded_ids) {
+      transform_service_->publishTransforms(loaded_id);
     }
   }
 #endif
@@ -2235,12 +2232,11 @@ void FileLoader::publishIngestProgress(DatasetId dataset_id, int current, int ma
   // directly while the worker may mutate it.
   const auto ids = session_.dataEngine().listTopics(dataset_id);
   session_.notifyIngest(QVector<TopicId>(ids.begin(), ids.end()), /*live=*/false);
-  // Fold the FrameTransforms loaded so far into the TF buffer incrementally
-  // (cursor-based — each call ingests only what is new). Otherwise TF is
-  // ingested in one pass at completion and 3D scenes stay empty until then.
+  // Publish the worker-fed TF revision so a progressive scene refreshes. When
+  // no tap is active, the same call drains the new store entries first.
 #ifdef PJ_WITH_SCENE3D
   if (transform_service_ != nullptr) {
-    transform_service_->ingestFrameTransformsForDataset(dataset_id);
+    transform_service_->publishTransforms(dataset_id);
   }
 #endif
   emit ingestProgress(current, maximum);
@@ -2272,18 +2268,15 @@ void FileLoader::failReplacingLoad(DatasetId dataset_id, const QString& path, co
 }
 
 void FileLoader::refreshAfterReplacingRollback(DatasetId dataset_id) {
-  // The RefillGuard already restored the scalar + object data and re-notified plot
-  // adapters; reflect the restored topic set in the catalog tree and rebuild the
-  // per-dataset TF buffer from the restored objects (mirrors finishLoadOnGui's
-  // replacing-path TF handling, but on the rolled-back data).
+  // The RefillGuard restored the scalar + object data. The prior TF generation
+  // stayed active throughout, so rollback only discards the private generation.
   catalog_.rebuildFromDatastore();
 #ifndef PJ_WITH_SCENE3D
   Q_UNUSED(dataset_id)
 #endif
 #ifdef PJ_WITH_SCENE3D
   if (transform_service_ != nullptr) {
-    transform_service_->invalidateDataset(dataset_id);
-    transform_service_->ingestFrameTransformsForDataset(dataset_id);
+    transform_service_->abortReplacingLoad(dataset_id);
   }
 #endif
 }
@@ -2327,15 +2320,15 @@ void FileLoader::finishLoadOnGui(bool fully_loaded) {
   }
   catalog_.rebuildFromDatastore();
 
-  // Per pj_scene3D REQUIREMENTS §9: TF buffer is per-dataset, populated at load
-  // time. A reload changed its data in place, so invalidate before re-ingesting
-  // (ingest is idempotent per dataset and would otherwise skip).
+  // Publish a completed replacement generation atomically. A fresh load already
+  // populated its active buffer on the worker and needs only the ready signal.
 #ifdef PJ_WITH_SCENE3D
   if (transform_service_ != nullptr) {
     if (replacing) {
-      transform_service_->invalidateDataset(dataset_id);
+      transform_service_->commitReplacingLoad(dataset_id);
+    } else {
+      transform_service_->publishTransforms(dataset_id);
     }
-    transform_service_->ingestFrameTransformsForDataset(dataset_id);
   }
 #endif
 

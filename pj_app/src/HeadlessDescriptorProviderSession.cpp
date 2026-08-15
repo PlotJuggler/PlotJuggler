@@ -96,11 +96,12 @@ Expected<HeadlessDescriptorProviderSession::Ptr> HeadlessDescriptorProviderSessi
   };
   callbacks.on_ingest_finished = [self](DatasetId dataset) { self->session_.endIngest(dataset); };
 
-  // Parser-ingest deps: identical to the interactive path (queued-marshal
-  // wiring shared with MainWindow — see ToolboxHostWiring.h).
+  // Parser-ingest deps: identical to the interactive path, including parser
+  // registration before the first pushed message (see ToolboxHostWiring.h).
   ToolboxRuntimeHost::ParserIngestDeps ingest_deps;
   ingest_deps.catalog = &extensions;
-  ingest_deps.register_object_parser = makeQueuedObjectParserRegistrar(self, session_manager);
+  ingest_deps.ingest_taps = session_manager.ingestTapsShared();
+  ingest_deps.register_object_parser = makeObjectParserRegistrar(session_manager);
 
   session->host_ = std::make_unique<ToolboxRuntimeHost>(
       session_manager.dataEngine(), session_manager.objectStore(), *session->settings_, std::move(callbacks),

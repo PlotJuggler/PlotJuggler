@@ -739,9 +739,19 @@ void Scene3DDockWidget::reconnectLiveSamples(SessionManager* session) {
 }
 
 void Scene3DDockWidget::onDatasetTransformsReady(DatasetId dataset_id) {
-  if (transform_service_ == nullptr || tf_buffer_ == nullptr || dataset_id != dataset_id_ || view_ == nullptr ||
-      transform_service_->transformBuffer(dataset_id) != tf_buffer_) {
+  if (transform_service_ == nullptr || tf_buffer_ == nullptr || dataset_id != dataset_id_ || view_ == nullptr) {
     return;
+  }
+  const std::shared_ptr<pj::scene3d::TransformBuffer> ready_buffer = transform_service_->transformBuffer(dataset_id);
+  if (tf_buffer_ != ready_buffer) {
+    tf_buffer_ = ready_buffer;
+    tf_buffer_is_local_ = false;
+    view_->setTransformBuffer(tf_buffer_);
+    for (const SceneLayerInfo& info : layers()) {
+      if (auto* robot = dynamic_cast<pj::scene3d::WasmRobotModelLayer*>(layerFor(info.topic_id))) {
+        robot->setTransformBuffer(tf_buffer_);
+      }
+    }
   }
   view_->refreshAvailableFrames();
   onTrackerTime(last_tracker_display_);

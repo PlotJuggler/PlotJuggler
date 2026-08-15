@@ -23,6 +23,7 @@
 #include "pj_datastore/resident_payload_pool.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_runtime/CurveColorRegistry.h"
+#include "pj_runtime/ObjectIngestTap.h"
 #include "pj_runtime/Time.h"
 
 namespace PJ {
@@ -78,6 +79,16 @@ class SessionManager : public QObject {
   }
   [[nodiscard]] ObjectStore& objectStore() noexcept {
     return object_store_;
+  }
+
+  /// Session-wide object ingest taps shared by every runtime host.
+  [[nodiscard]] ObjectIngestTapRegistry& ingestTaps() noexcept {
+    return *ingest_taps_;
+  }
+
+  /// Shared ownership for runtime hosts that may outlive their construction scope.
+  [[nodiscard]] std::shared_ptr<ObjectIngestTapRegistry> ingestTapsShared() const noexcept {
+    return ingest_taps_;
   }
   // Plot markers (findings) live in the ObjectStore as serialized PlotMarkers
   // object topics (one set per (dataset, topic), republished wholesale by the
@@ -574,6 +585,7 @@ class SessionManager : public QObject {
 
   DataEngine data_engine_;
   ObjectStore object_store_;
+  std::shared_ptr<ObjectIngestTapRegistry> ingest_taps_;
   std::shared_ptr<ResidentPayloadPool> resident_payload_pool_;
   CurveColorRegistry curve_color_registry_;
   // "Use time offset" frame state. Neutral default (off); the app shell drives

@@ -222,16 +222,19 @@ The TF buffer is the central runtime data structure that makes scrub-replay work
 - **PJ4-native** at the type level: not coupled to ROS message types. DataSource plugins
   decode wire formats into canonical `FrameTransforms` objects and publish them to the
   `ObjectStore`; `TransformService` consumes those objects.
-- **Filled via the ObjectStore**, not by direct plugin push. `TransformService` probes every
-  object topic via `SessionManager::parserBindingForObjectTopic()`, classifies TF topics at
-  most once, and ingests entries using a per-topic timestamp cursor (`TfCursor`) that guards
-  against double-ingest. Two ingest paths share the same cursor logic:
-  - **Bulk (file load):** `ingestFrameTransformsForDataset()` sweeps the whole topic history
-    in one call on a worker thread; emits `datasetTransformsReady` when done.
-  - **Incremental (live streaming):** `ingestNewTransforms()` is called on each
-    `SessionManager::samplesIngested` signal; it ingests only entries newer than the cursor
-    and returns `true` if the buffer changed. `Scene3DDockWidget::driveVisibleLayersToLiveEdge()`
-    then advances the visible layers to the new live edge.
+- **Filled at the ObjectStore ingest seam.** `TransformService::activateIngestTap()` claims the
+  session's `FrameTransforms` consumer before runtime hosts start. Each source push resolves
+  the topic's current parser binding, decodes synchronously on the pushing worker, and writes
+  the thread-safe dataset buffer before the raw entry is registered in the `ObjectStore`.
+  File-backed TF entries remain unseeded lazy catalog closures; streaming retains its captured
+  payload because it has no durable source to re-read.
+- **Transactional replacement.** An in-place reload writes TF to a private generation. Commit
+  swaps that generation into the active dataset slot and notifies docks; abort drops it while
+  the prior active buffer remains usable.
+- **Explicit rebuild.** `ingestFrameTransformsForDataset()` remains the full ObjectStore drain
+  for dataset merge and for services that did not activate the tap. The live
+  `ingestNewTransforms()` path is a no-op while the tap is active; live-edge layer driving still
+  keys off `TransformBuffer::revision()` and ObjectStore time ranges.
 
 ### Behavioral contract
 

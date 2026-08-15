@@ -14,6 +14,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <memory>
+#include <vector>
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/frame_transforms.hpp"
@@ -53,13 +54,12 @@ struct IngestStats {
 // self-loop / invalid frame data) is a recoverable data error in a real bag:
 // count it and keep going rather than aborting.
 void ingestEntry(
-    const PJ::ResolvedObjectEntry& entry, const PJ::SessionManager::ParserBinding& parser_binding,
-    TransformBuffer& tf_buffer, IngestStats& stats) {
+    PJ::Timestamp store_ts, const PJ::sdk::PayloadView& payload, PJ::Timestamp payload_stamp_shift,
+    const PJ::SessionManager::ParserBinding& parser_binding, TransformBuffer& tf_buffer, IngestStats& stats) {
   // The topic is already classified as FrameTransforms. resolveObject() decodes
   // it via the MessageParser when one is bound, or via the canonical codec when
   // not (a data-source/toolbox that pushed serialized canonical transforms).
-  auto obj =
-      resolveObject(parser_binding, PJ::sdk::BuiltinObjectType::kFrameTransforms, entry.timestamp, entry.payload);
+  auto obj = resolveObject(parser_binding, PJ::sdk::BuiltinObjectType::kFrameTransforms, store_ts, payload);
   if (!obj.has_value()) {
     return;
   }
@@ -73,7 +73,7 @@ void ingestEntry(
     // never rewrites. A time-shifted dataset merge records the slide in
     // payload_stamp_shift; add it so a merged source's frames land on the anchor's
     // clock (it is 0 for unmerged data, so the common path is unchanged).
-    st.stamp = TimePoint{std::chrono::nanoseconds(t.timestamp + entry.payload_stamp_shift)};
+    st.stamp = TimePoint{std::chrono::nanoseconds(t.timestamp + payload_stamp_shift)};
     st.parent_frame = t.parent_frame_id;
     st.child_frame = t.child_frame_id;
     st.transform.t = glm::dvec3{t.translation.x, t.translation.y, t.translation.z};
@@ -98,26 +98,83 @@ void ingestEntry(
     }
   }
 }
+
+void warnDroppedEdges(const char* source, PJ::DatasetId dataset_id, const IngestStats& stats) {
+  if (stats.dropped_reparent == 0 && stats.dropped_self_loop == 0 && stats.dropped_invalid == 0) {
+    return;
+  }
+  qCWarning(lcTransformService) << source << dataset_id << ": dropped" << stats.dropped_reparent << "reparent-conflict,"
+                                << stats.dropped_self_loop << "self-loop, and" << stats.dropped_invalid
+                                << "invalid edge(s)";
+}
 }  // namespace
 
 TransformService::TransformService(PJ::SessionManager& session, QObject* parent) : QObject(parent), session_(session) {}
 
 TransformService::~TransformService() = default;
 
-std::shared_ptr<TransformBuffer> TransformService::transformBuffer(PJ::DatasetId dataset_id) {
-  auto it = transform_buffers_.find(dataset_id);
-  if (it != transform_buffers_.end()) {
-    return it->second;
+void TransformService::activateIngestTap() {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (tap_active_) {
+    return;
   }
+  auto claimed = session_.ingestTaps().claimExclusive(
+      PJ::sdk::BuiltinObjectType::kFrameTransforms,
+      [this](PJ::ObjectTopicId topic_id, PJ::DatasetId dataset_id, PJ::Timestamp store_ts, PJ::sdk::PayloadView bytes) {
+        ingestTappedObject(topic_id, dataset_id, store_ts, std::move(bytes));
+      });
+  if (!claimed.has_value()) {
+    qCWarning(lcTransformService) << "activateIngestTap:" << QString::fromStdString(claimed.error());
+    return;
+  }
+  tap_lease_.emplace(std::move(*claimed));
+  tap_active_ = true;
+}
+
+std::shared_ptr<TransformBuffer> TransformService::ensureActiveLocked(BufferSlot& slot) {
+  if (slot.active == nullptr) {
+    slot.active = std::make_shared<TransformBuffer>(slot.cache_window);
+  }
+  return slot.active;
+}
+
+std::shared_ptr<TransformBuffer> TransformService::transformBuffer(PJ::DatasetId dataset_id) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  std::lock_guard lock(tap_mutex_);
+  BufferSlot& slot = transform_buffers_[dataset_id];
   // Default to keeping the full history: ingestFrameTransformsForDataset()
   // bulk-loads the entire dataset's TF up front, so a rolling cache window would
   // trim every dynamic edge to its last samples and make objects in dynamic
   // frames (e.g. a local costmap in `odom`) resolve only near the end of the
   // timeline. Live-streaming datasets override this with setLiveCacheWindow() to
   // bound memory in step with the ObjectStore retention budget.
-  auto buf = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
-  transform_buffers_[dataset_id] = buf;
-  return buf;
+  return ensureActiveLocked(slot);
+}
+
+std::shared_ptr<TransformBuffer> TransformService::transformBufferForTap(PJ::DatasetId dataset_id) {
+  std::lock_guard lock(tap_mutex_);
+  BufferSlot& slot = transform_buffers_[dataset_id];
+  const std::shared_ptr<TransformBuffer> active = ensureActiveLocked(slot);
+  return slot.staging != nullptr ? slot.staging : active;
+}
+
+void TransformService::resetDrainState(PJ::DatasetId dataset_id) {
+  PJ::ObjectStore& object_store = session_.objectStore();
+  for (const auto& topic_id : object_store.listTopics(dataset_id)) {
+    tf_cursors_.erase(topic_id.id);
+    non_tf_topics_.erase(topic_id.id);
+  }
+  std::erase_if(tf_cursors_, [&object_store](const auto& entry) {
+    return object_store.descriptor(PJ::ObjectTopicId{entry.first}).topic_name.empty();
+  });
+  std::erase_if(non_tf_topics_, [&object_store](uint32_t key) {
+    return object_store.descriptor(PJ::ObjectTopicId{key}).topic_name.empty();
+  });
+}
+
+void TransformService::rebuildFromStore(PJ::DatasetId dataset_id) {
+  invalidateDataset(dataset_id);
+  ingestFrameTransformsForDataset(dataset_id);
 }
 
 void TransformService::invalidateDataset(PJ::DatasetId dataset_id) {
@@ -125,47 +182,115 @@ void TransformService::invalidateDataset(PJ::DatasetId dataset_id) {
   // Drop the in-session remembered fixed frame for this dataset; the persisted
   // QSettings copy (if any) is the cross-restart memory and stays put.
   remembered_fixed_frames_.erase(dataset_id);
-  PJ::ObjectStore& object_store = session_.objectStore();
-  // Cursor-model equivalent of forgetting the old transforms_populated_ flag:
-  // drop the per-topic ingest cursors (and not-a-TF classifications) for this
-  // dataset's topics so the next ingest re-reads their TF history from scratch
-  // into the cleared buffer.
-  for (const auto& topic_id : object_store.listTopics(dataset_id)) {
-    tf_cursors_.erase(topic_id.id);
-    non_tf_topics_.erase(topic_id.id);
+  resetDrainState(dataset_id);
+  std::shared_ptr<TransformBuffer> active;
+  {
+    std::lock_guard lock(tap_mutex_);
+    if (auto it = transform_buffers_.find(dataset_id); it != transform_buffers_.end()) {
+      active = it->second.active;
+      it->second.staging.reset();
+      it->second.replacement_in_progress = false;
+    }
   }
-  // listTopics only resolves topics the dataset still has, so the loop above
-  // misses keys for topics this reload/eviction already removed (on the reload
-  // path replaceDataset drops removed_topics before we run; on the tombstone
-  // path the caller must invalidate BEFORE eviction). Sweep the maps and erase
-  // any key whose store descriptor is now empty so dead cursors do not leak
-  // across reloads.
-  std::erase_if(tf_cursors_, [&object_store](const auto& entry) {
-    return object_store.descriptor(PJ::ObjectTopicId{entry.first}).topic_name.empty();
-  });
-  std::erase_if(non_tf_topics_, [&object_store](uint32_t key) {
-    return object_store.descriptor(PJ::ObjectTopicId{key}).topic_name.empty();
-  });
-  if (auto it = transform_buffers_.find(dataset_id); it != transform_buffers_.end()) {
+  if (active != nullptr) {
     // Clear in place: 3D docks hold this buffer by shared_ptr, so swapping the
     // map entry would leave them rendering the stale orphan forever.
-    it->second->clear();
+    active->clear();
   }
 }
 
 void TransformService::setLiveCacheWindow(PJ::DatasetId dataset_id, std::chrono::nanoseconds window) {
   Q_ASSERT(QThread::currentThread() == thread());
-  transformBuffer(dataset_id)->setCacheWindow(window);
+  std::shared_ptr<TransformBuffer> active;
+  std::shared_ptr<TransformBuffer> staging;
+  {
+    std::lock_guard lock(tap_mutex_);
+    BufferSlot& slot = transform_buffers_[dataset_id];
+    slot.cache_window = window;
+    active = ensureActiveLocked(slot);
+    staging = slot.staging;
+  }
+  active->setCacheWindow(window);
+  if (staging != nullptr) {
+    staging->setCacheWindow(window);
+  }
 }
 
 void TransformService::invalidateAll() {
+  Q_ASSERT(QThread::currentThread() == thread());
   tf_cursors_.clear();
   non_tf_topics_.clear();
   remembered_fixed_frames_.clear();
-  for (auto& [dataset_id, buffer] : transform_buffers_) {
-    (void)dataset_id;
+  std::vector<std::shared_ptr<TransformBuffer>> buffers;
+  {
+    std::lock_guard lock(tap_mutex_);
+    buffers.reserve(transform_buffers_.size() * 2);
+    for (auto& [dataset_id, slot] : transform_buffers_) {
+      (void)dataset_id;
+      if (slot.active != nullptr) {
+        buffers.push_back(slot.active);
+      }
+      if (slot.staging != nullptr) {
+        buffers.push_back(slot.staging);
+        slot.staging.reset();
+      }
+      slot.replacement_in_progress = false;
+    }
+  }
+  for (const auto& buffer : buffers) {
     buffer->clear();
   }
+}
+
+void TransformService::beginReplacingLoad(PJ::DatasetId dataset_id) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  std::lock_guard lock(tap_mutex_);
+  BufferSlot& slot = transform_buffers_[dataset_id];
+  slot.replacement_in_progress = true;
+  if (!tap_active_) {
+    return;
+  }
+  (void)ensureActiveLocked(slot);
+  slot.staging = std::make_shared<TransformBuffer>(slot.cache_window);
+}
+
+void TransformService::commitReplacingLoad(PJ::DatasetId dataset_id) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (!tap_active_) {
+    {
+      std::lock_guard lock(tap_mutex_);
+      transform_buffers_[dataset_id].replacement_in_progress = false;
+    }
+    rebuildFromStore(dataset_id);
+    return;
+  }
+  {
+    std::lock_guard lock(tap_mutex_);
+    BufferSlot& slot = transform_buffers_[dataset_id];
+    if (slot.staging != nullptr) {
+      slot.active = std::move(slot.staging);
+    }
+    slot.replacement_in_progress = false;
+  }
+  resetDrainState(dataset_id);
+  emit datasetTransformsReady(dataset_id);
+}
+
+void TransformService::abortReplacingLoad(PJ::DatasetId dataset_id) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  {
+    std::lock_guard lock(tap_mutex_);
+    const auto it = transform_buffers_.find(dataset_id);
+    if (it == transform_buffers_.end() || !it->second.replacement_in_progress) {
+      return;
+    }
+    it->second.replacement_in_progress = false;
+    if (tap_active_) {
+      it->second.staging.reset();
+      return;
+    }
+  }
+  rebuildFromStore(dataset_id);
 }
 
 QString TransformService::datasetSourceKey(PJ::DatasetId dataset_id) const {
@@ -223,6 +348,12 @@ QString TransformService::rememberedFixedFrame(PJ::DatasetId dataset_id) {
 
 void TransformService::ingestFrameTransformsForDataset(PJ::DatasetId dataset_id) {
   Q_ASSERT(QThread::currentThread() == thread());
+  if (tap_active_) {
+    // Explicit rebuilds (currently dataset merge) discard tap state and
+    // cold-drain the durable store closures.
+    resetDrainState(dataset_id);
+    transformBuffer(dataset_id)->clear();
+  }
   // Bulk path: every cursor starts at the invalid (begin-of-history) UID, so
   // this ingests the whole history in one pass (file load); ingestNewerThanCursor
   // creates the buffer. datasetTransformsReady tells 3D docks the tree is ready.
@@ -230,8 +361,30 @@ void TransformService::ingestFrameTransformsForDataset(PJ::DatasetId dataset_id)
   emit datasetTransformsReady(dataset_id);
 }
 
+void TransformService::publishTransforms(PJ::DatasetId dataset_id) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  (void)ingestNewTransforms(dataset_id);
+  emit datasetTransformsReady(dataset_id);
+}
+
 bool TransformService::ingestNewTransforms(PJ::DatasetId dataset_id) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (tap_active_) {
+    return false;
+  }
   return ingestNewerThanCursor(dataset_id);
+}
+
+void TransformService::ingestTappedObject(
+    PJ::ObjectTopicId topic_id, PJ::DatasetId dataset_id, PJ::Timestamp store_ts, PJ::sdk::PayloadView bytes) {
+  const auto parser_binding = session_.parserBindingForObjectTopic(topic_id);
+  const std::shared_ptr<TransformBuffer> buffer = transformBufferForTap(dataset_id);
+  IngestStats stats;
+  if (!bytes.bytes.empty()) {
+    (void)ingestEntry(store_ts, bytes, /*payload_stamp_shift=*/0, parser_binding, *buffer, stats);
+  }
+
+  warnDroppedEdges("ingest tap", dataset_id, stats);
 }
 
 bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
@@ -321,15 +474,11 @@ bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
       if (entry.payload.bytes.empty()) {
         continue;
       }
-      ingestEntry(entry, parser_binding, *tf_buffer, stats);
+      ingestEntry(entry.timestamp, entry.payload, entry.payload_stamp_shift, parser_binding, *tf_buffer, stats);
     }
   }
 
-  if (stats.dropped_reparent != 0 || stats.dropped_self_loop != 0 || stats.dropped_invalid != 0) {
-    qCWarning(lcTransformService) << "ingestNewerThanCursor" << dataset_id << ": dropped" << stats.dropped_reparent
-                                  << "reparent-conflict," << stats.dropped_self_loop << "self-loop, and"
-                                  << stats.dropped_invalid << "invalid edge(s)";
-  }
+  warnDroppedEdges("ingestNewerThanCursor", dataset_id, stats);
   if (stats.failed_fetch != 0) {
     qCWarning(lcTransformService) << "ingestNewerThanCursor" << dataset_id << ":" << stats.failed_fetch
                                   << "transform message(s) LOST: lazy re-read failed (source file truncated,"

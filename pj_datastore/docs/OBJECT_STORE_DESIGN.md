@@ -130,6 +130,10 @@ contribute to `memoryUsage()` because the store retains the callable, not the
 fetched bytes. The callable runs on every `at()` read; `latestAt()` repeats of the
 same sample are served from a warm cache without re-invoking it (see Read Paths).
 
+Kinds with a registered synchronous ingest tap use this unseeded form for
+file-backed entries: their durable row is catalog metadata plus a re-readable
+closure, while the tap consumes the transport bytes during the push.
+
 `pushLazyWithSeed(id, timestamp, seed, fetch)` is `pushLazy` plus an ingest-time
 seed: the pushing host already holds the payload bytes (its policy fetched them
 synchronously inside the producer's push — the "hot path"), so instead of

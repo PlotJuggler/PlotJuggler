@@ -25,6 +25,7 @@ class DataEngine;
 class DataSourceRuntimeHost;
 class ExtensionCatalogService;
 class MessageParserHandle;
+class ObjectIngestTapRegistry;
 class ObjectStore;
 class ServiceRegistryBuilder;
 
@@ -84,6 +85,7 @@ class ToolboxRuntimeHost {
   // that load no parser plugins keep working unchanged.
   struct ParserIngestDeps {
     ExtensionCatalogService* catalog = nullptr;
+    std::shared_ptr<ObjectIngestTapRegistry> ingest_taps;
     // Receives the render-time parser instance for every object topic a
     // parser binding registers — same contract as FileLoader's registrar
     // (forward to SessionManager::registerObjectTopicParser). May be invoked

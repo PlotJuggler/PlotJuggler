@@ -27,6 +27,7 @@ class DataEngine;
 class DatastoreParserWriteHost;
 class ExtensionCatalogService;
 class MessageParserHandle;
+class ObjectIngestTapRegistry;
 class ServiceRegistryBuilder;
 struct LazyFetchTopicContext;
 
@@ -74,7 +75,8 @@ class DataSourceRuntimeHost {
   DataSourceRuntimeHost(
       DataEngine& engine, ExtensionCatalogService& catalog, DatasetId dataset_id, PJ_data_source_handle_t source_handle,
       ObjectStore& object_store, std::string source_id, ObjectTopicParserRegistrar parser_registrar,
-      ObjectStore* secondary_object_store, DataEngine* secondary_data_engine, std::shared_ptr<void> library_keepalive);
+      ObjectStore* secondary_object_store, DataEngine* secondary_data_engine, std::shared_ptr<void> library_keepalive,
+      std::shared_ptr<ObjectIngestTapRegistry> ingest_taps = nullptr);
 
   ~DataSourceRuntimeHost();
 
@@ -178,6 +180,12 @@ class DataSourceRuntimeHost {
 
   [[nodiscard]] const sdk::ObjectIngestPolicyResolver& policyResolver() const noexcept {
     return policy_resolver_;
+  }
+
+  /// Number of tap callbacks that threw. The host contains these exceptions so
+  /// scalar parsing and ObjectStore registration still complete.
+  [[nodiscard]] uint64_t ingestTapFailures() const noexcept {
+    return ingest_tap_failures_.load();
   }
 
   // Apply a (time_window, max_memory) budget to every bound object topic, on the
@@ -336,6 +344,10 @@ class DataSourceRuntimeHost {
   // release fn is plugin code, so a cached ResolvedObjectEntry outliving the
   // extension catalog would otherwise call a dangling pointer on teardown.
   std::shared_ptr<void> library_keepalive_;
+  // Shared session registry. Its callbacks run synchronously while
+  // cbPushMessage still owns the payload anchor.
+  std::shared_ptr<ObjectIngestTapRegistry> ingest_taps_;
+  std::atomic<uint64_t> ingest_tap_failures_{0};
 
   MessageBoxHandler message_box_handler_;
   std::string last_error_;

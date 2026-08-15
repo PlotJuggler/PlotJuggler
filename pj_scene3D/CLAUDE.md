@@ -60,8 +60,10 @@ XML persistence), and live-streaming data path — lives in
 This module **never decodes wire formats**. DataSource / MessageParser plugins
 (e.g. `parser_ros`, see pj-official-plugins#122) decode ROS / CDR messages into
 canonical `pj_base/builtin` objects — `PointCloud`, `FrameTransforms`,
-`OccupancyGrid`, `OccupancyGridUpdate`, … — and publish them to the `ObjectStore`.
-`pj_scene3D` *consumes* those canonical objects and renders them. The core
+`OccupancyGrid`, `OccupancyGridUpdate`, … — while the host registers their
+transport bytes in the `ObjectStore`. `FrameTransforms` is consumed synchronously
+through the application-activated ingest tap; other scene objects resolve their
+durable entries on demand. The core
 therefore stays "canonical-objects-in, render-structs-out", with **no `nanocdr` /
 CDR dependency**.
 

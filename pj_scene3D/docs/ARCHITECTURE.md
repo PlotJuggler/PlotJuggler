@@ -995,28 +995,26 @@ volumetric data.
 
 ## Streaming / live-data path
 
-TF, pointclouds, and markers ingest live as well as from a file.
-`TransformService::ingestFrameTransformsForDataset` reads every *new*
-`FrameTransforms` message in the dataset into the core `TransformBuffer`
-(cursor-based, so repeated calls only fold in what arrived since the last one)
-and emits `datasetTransformsReady`. During a **progressive file load** the loader
-calls it on every flush, so the buffer fills as the file streams in; the dock
-connects `datasetTransformsReady` (in `setTransformService`) and re-renders at the
-current playhead via `onTrackerTime`, so a restored 3D scene populates *as the file
-loads* instead of only at completion. A non-progressive or already-finished load
-runs the same call once at the end. Streaming has no loader to drive that call, so
-the dock wires its own incremental path off `samplesIngested`:
+TF, pointclouds, and markers ingest live as well as from a file. The application
+activates `TransformService`'s session-wide `FrameTransforms` ingest tap before
+constructing any runtime host. After scalar parsing, the source host invokes that
+tap synchronously with the payload view it already owns. The callback resolves the
+topic's current `SessionManager` parser binding, decodes under `parseLocked`, folds
+validated edges into the dataset's thread-safe `TransformBuffer`, and returns before
+the source payload anchor can expire. This is the normal file and streaming TF path.
+
+Progressive file-load flushes emit `datasetTransformsReady` so docks re-read frame
+hierarchies at the current playhead; the flush does not decode TF. Streaming keeps
+the existing `samplesIngested` connection:
 
 - `Scene3DDockWidget::setSessionManager` shadows the base to also call
   `reconnectLiveSamples`, which connects `SessionManager::samplesIngested`
   (fired on the UI thread after each retention trim, `live == true` only while
   following a live stream; file load emits `live == false` and is served by the
-  loader-driven `ingestFrameTransformsForDataset` + `datasetTransformsReady` path
-  above instead).
-- On each live tick, `TransformService::ingestNewTransforms` advances a
-  per-topic store cursor and folds only the new `FrameTransforms` into the
-  buffer — cheap, and a no-op when nothing new arrived. Without it the TF buffer
-  stays empty and every sensor frame is orphaned (red).
+  loader-driven `datasetTransformsReady` publication described above).
+- On each live tick, `TransformService::ingestNewTransforms` is a no-op while the
+  tap is active. `recomputeOrphanStates(force=false)` observes the buffer revision
+  written by the worker.
 - `driveVisibleLayersToLiveEdge` then queries each visible layer's `timeRange()`
   for the newest timestamp now in the `ObjectStore` and drives `setTrackerTime`
   on every visible layer (consulting the *layer's* range, not the store's per
@@ -1025,13 +1023,22 @@ the dock wires its own incremental path off `samplesIngested`:
   would stall while only the TF buffer advanced.
 
 `TransformService` is a `widgets/`-level wrapper over the Qt/GL-free core
-`TransformBuffer`. It owns no parser handle: each ingest resolves the topic's
-binding through `SessionManager::parserBindingForObjectTopic` and decodes under
-`parseLocked` (parse-locked per use — never a cached binding). Streaming uses a
-finite `TransformBuffer` cache window (default 10 s) so a growing live stream
-trims old samples and stays memory-bounded; the file path constructs the
-buffer with eviction disabled, since the whole recording is retained (fed in
-incrementally during a progressive load, or in one pass for a finished load).
+`TransformBuffer`. It owns no parser handle: each tap or rebuild resolves the
+topic's binding through `SessionManager::parserBindingForObjectTopic` and decodes
+under `parseLocked` (per use, never cached). Streaming uses a finite cache window
+(default 10 s); file buffers keep the full history.
+
+An in-place file reload calls `beginReplacingLoad` before its worker starts, so
+tap writes route to a private staging buffer while docks retain the active one.
+`commitReplacingLoad` atomically swaps the staging pointer into the active slot,
+then emits `datasetTransformsReady`; docks rebind their view and TF-backed layers.
+`abortReplacingLoad` drops staging, so rollback performs no ObjectStore reads.
+
+`ingestFrameTransformsForDataset` remains an explicit full-store rebuild. Dataset
+merge invalidates the affected buffers and calls it for the anchor because merged
+entries carry `payload_stamp_shift`, which only the durable store entry records.
+This cold closure drain is reserved for explicit rebuilds; per-flush and
+streaming paths never call it while the tap is active.
 
 ### Object decode: parser-decoded vs canonical blob
 

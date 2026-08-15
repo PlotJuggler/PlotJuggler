@@ -9,9 +9,6 @@
 // behavior in both, so the pieces that would otherwise be verbatim copies
 // live here.
 
-#include <QMetaObject>
-#include <QObject>
-#include <Qt>
 #include <functional>
 #include <memory>
 #include <string>
@@ -52,20 +49,14 @@ inline void emitDiagnosticTo(
   sink(diagnostic);
 }
 
-// ToolboxRuntimeHost::ParserIngestDeps::register_object_parser wiring: the
-// registrar may fire on a toolbox worker thread mid-download, so marshal the
-// registration to `context`'s (GUI) thread — same discipline as the host's
-// own callbacks; the queued registration always lands before the
-// later-queued notify_data_changed catalog rebuild. shared_ptr wrapper:
-// std::function requires copyable. `context` guards delivery (a queued call
-// dies with it) and `session` must be valid whenever `context` still is.
-[[nodiscard]] inline std::function<void(ObjectTopicId, std::unique_ptr<MessageParserHandle>)>
-makeQueuedObjectParserRegistrar(QObject* context, SessionManager& session) {
-  return [context, &session](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
-    auto shared = std::make_shared<std::unique_ptr<MessageParserHandle>>(std::move(parser));
-    QMetaObject::invokeMethod(
-        context, [&session, id, shared]() { session.registerObjectTopicParser(id, std::move(*shared)); },
-        Qt::AutoConnection);
+// ToolboxRuntimeHost::ParserIngestDeps::register_object_parser wiring. The
+// SessionManager registry is worker-safe, and registration must complete before
+// cbEnsureParserBinding returns so a synchronous ingest tap can resolve it on
+// the first push.
+[[nodiscard]] inline std::function<void(ObjectTopicId, std::unique_ptr<MessageParserHandle>)> makeObjectParserRegistrar(
+    SessionManager& session) {
+  return [&session](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
+    session.registerObjectTopicParser(id, std::move(parser));
   };
 }
 

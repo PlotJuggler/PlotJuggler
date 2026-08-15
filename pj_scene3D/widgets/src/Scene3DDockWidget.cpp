@@ -390,19 +390,9 @@ void Scene3DDockWidget::setTransformService(pj::scene3d::TransformService* servi
   if (view_ != nullptr && tf_buffer_ != nullptr) {
     view_->setTransformBuffer(tf_buffer_);
   }
-  // A dataset's TF buffer can be filled AFTER this dock already bound (and read)
-  // it empty. Two paths drive this: (1) a progressive file load folds
-  // FrameTransforms in incrementally and emits datasetTransformsReady per flush;
-  // (2) the cloud toolbox ingests /tf in on_data_changed, post-download (the
-  // file-open path instead ingests eagerly at load time, FileLoader.cpp, so the
-  // buffer is already full when a view first binds it). The fill is in place (the
-  // dock keeps the same shared_ptr), but the view caches its frame list + the
-  // orphan/fixed-frame state at bind time and re-reads only on
-  // setTransformBuffer/setTrackerTime — and setTransformBuffer no-ops on an
-  // unchanged pointer. So subscribe (one lifecycle-managed connection, reset at
-  // the top of this function) and re-read on a late fill. Ingest runs on the GUI
-  // thread (the parser-ingest registrar is GUI-marshalled), so this is a direct,
-  // thread-safe call.
+  // Progressive publication can fill the current pointer, while replacement
+  // commit publishes a new generation pointer. The ready signal handles both:
+  // refresh cached frame/orphan state or rebind before refreshing.
   if (transform_service_ != nullptr) {
     tf_ready_conn_ = connect(
         transform_service_, &pj::scene3d::TransformService::datasetTransformsReady, this,
@@ -411,26 +401,19 @@ void Scene3DDockWidget::setTransformService(pj::scene3d::TransformService* servi
 }
 
 void Scene3DDockWidget::onDatasetTransformsReady(DatasetId dataset_id) {
-  // Only react when this dock is showing that dataset's TF. The dock binds a
-  // single per-dataset buffer (prepareTransformBufferForTopic); compare object
-  // identity against the service's buffer for the ready dataset. It exists by
-  // now — ingest just populated it — so transformBuffer() does not spuriously
-  // create one, and a non-matching dataset is correctly ignored. Before any
-  // layer binds tf_buffer_ is null and we early-return (nothing to draw yet); the
-  // dock self-heals on the next signal once a layer resolves.
-  if (view_ == nullptr || transform_service_ == nullptr || tf_buffer_ == nullptr) {
+  // Only the dataset bound by prepareTransformBufferForTopic may replace this
+  // dock's buffer. Before any layer binds there is nothing to refresh.
+  if (view_ == nullptr || transform_service_ == nullptr || tf_buffer_ == nullptr || dataset_id != dataset_id_) {
     return;
   }
-  if (tf_buffer_ != transform_service_->transformBuffer(dataset_id)) {
-    return;
+  const std::shared_ptr<pj::scene3d::TransformBuffer> ready_buffer = transform_service_->transformBuffer(dataset_id);
+  if (tf_buffer_ != ready_buffer) {
+    tf_buffer_ = ready_buffer;
+    view_->setTransformBuffer(tf_buffer_);
+    pushTransformBufferToTrailLayers();
   }
-  // Re-read the now-full buffer. setTransformBuffer would early-return on the
-  // unchanged shared_ptr, so refresh the view's frame hierarchy directly: that
-  // re-enumerates the WHOLE buffer (not just frames resolvable at the playhead)
-  // and emits framesChanged -> onAvailableFrames, which (on a non-empty set)
-  // re-picks the fixed frame and recomputes orphan states, clearing the red layer
-  // name. Recompute orphans here too in case the frame SET is unchanged (e.g. a
-  // re-ingest of identical TF) but layer membership changed since the last poll.
+  // Re-enumerate the whole hierarchy, including a progressive in-place update
+  // where setTransformBuffer correctly no-ops on the unchanged pointer.
   view_->refreshAvailableFrames();
   recomputeOrphanStates();
   // A progressive file load folds TF in while the tracker is paused, so the
@@ -439,8 +422,6 @@ void Scene3DDockWidget::onDatasetTransformsReady(DatasetId dataset_id) {
   // end.
   onTrackerTime(last_tracker_display_);
   view_->update();
-  qCInfo(lcScene3DDock) << "onDatasetTransformsReady" << dataset_id << ": re-read late-filled TF buffer,"
-                        << available_frames_.size() << "frame(s) now available";
 }
 
 void Scene3DDockWidget::setSessionManager(SessionManager* session) {

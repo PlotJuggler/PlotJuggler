@@ -7,11 +7,14 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
 #include "pj_base/types.hpp"
 #include "pj_datastore/sequential_uid.hpp"
+#include "pj_runtime/ObjectIngestTap.h"
 
 namespace PJ {
 class SessionManager;
@@ -26,19 +29,16 @@ class TransformBuffer;
 // This deliberately lives in the 3D widget family rather than in
 // pj_runtime: SessionManager (the shared, domain-neutral runtime) must not
 // depend on 3D-specific types like TransformBuffer. The service reaches the
-// data it needs through SessionManager's neutral surface only
-// (objectStore() + parserBindingForObjectTopic()).
+// data it needs through SessionManager's neutral surface only: ingestTaps(),
+// objectStore(), and parserBindingForObjectTopic().
 //
-// One TransformBuffer per dataset is created lazily and shared by every 3D
-// dock attached to that dataset, so dropping a second pointcloud is instant
-// (no re-walk of every TF entry). Per pj_scene3D REQUIREMENTS §9.
+// One active TransformBuffer per dataset is shared by every attached 3D dock;
+// an in-place reload may also own one private staging generation. Per
+// pj_scene3D REQUIREMENTS §9.
 //
-// THREADING: every method must run on the GUI thread (the QObject's own
-// thread). The internal cursor / classification containers are unsynchronized,
-// and the streaming samplesIngested slot already drives ingestNewTransforms on
-// every tick from the GUI thread — so there is no safe worker-thread entry point.
-// The individual ObjectStore / TransformBuffer reads are themselves
-// thread-safe, but the service's bookkeeping around them is not.
+// THREADING: public methods run on the GUI thread. The registered ingest-tap
+// callback is the sole worker-thread entry point; its buffer routing uses a
+// private mutex, while TransformBuffer provides its own reader/writer lock.
 class TransformService : public QObject {
   Q_OBJECT
  public:
@@ -48,22 +48,27 @@ class TransformService : public QObject {
   TransformService(const TransformService&) = delete;
   TransformService& operator=(const TransformService&) = delete;
 
+  /// Claims the FrameTransforms ingest tap. Call once during application wiring,
+  /// after construction and before any runtime host is created.
+  void activateIngestTap();
+
   // Returns the dataset's TransformBuffer, lazily creating it on first access.
   // The buffer is thread-safe for concurrent ingest writes + render reads.
   [[nodiscard]] std::shared_ptr<TransformBuffer> transformBuffer(PJ::DatasetId dataset_id);
 
-  // Bulk path: ingests a dataset's full TF history into its TransformBuffer at
-  // file load. Probes every object topic via parseObject to detect
-  // FrameTransforms schemas, then runs the shared UID cursor ingest with every
-  // cursor at its invalid (begin-of-history) start, so one pass covers the whole
-  // history. The per-topic cursors guard against double-ingest, so a redundant
-  // call ingests nothing new — but it still re-emits datasetTransformsReady (it
-  // is NOT a silent no-op). Emits datasetTransformsReady when done.
+  // Explicit ObjectStore rebuild used after a destructive dataset merge. With
+  // the tap active it clears the active buffer and cursor state, then cold-drains
+  // the whole history so payload_stamp_shift is applied. With no active tap it
+  // uses the incremental UID cursor path. Always emits datasetTransformsReady.
   //
   // Threading: GUI-thread only, like every TransformService method (see the
   // class comment). Synchronous; blocks the calling thread for the whole TF
   // history.
   void ingestFrameTransformsForDataset(PJ::DatasetId dataset_id);
+
+  /// Drains any store entries the tap did not feed (no-op with the tap active),
+  /// then signals docks.
+  void publishTransforms(PJ::DatasetId dataset_id);
 
   // Bound the dataset's TransformBuffer to a rolling cache window so a
   // live-streaming session does not retain every TF sample forever. Trims
@@ -78,13 +83,24 @@ class TransformService : public QObject {
   // per-topic ingest cursors and non-TF classifications, and empties the existing
   // TransformBuffer IN PLACE (3D docks share that buffer by pointer, so they see
   // the reset rather than holding a stale orphan). Call when the dataset's object
-  // topics no longer hold the data the buffer was built from: an in-place dataset
-  // replace (same-file reload) or the dataset's removal/eviction.
+  // topics no longer hold the data the buffer was built from: dataset removal,
+  // eviction, or the explicit merge rebuild.
   void invalidateDataset(PJ::DatasetId dataset_id);
 
   // invalidateDataset() over every known dataset — the clear-all counterpart,
   // paired with SessionManager::clearAllObjects() at the shell's wipe sites.
   void invalidateAll();
+
+  /// Starts an in-place reload generation without disturbing the active buffer.
+  /// A repeated begin discards the unfinished staging generation and starts fresh.
+  void beginReplacingLoad(PJ::DatasetId dataset_id);
+
+  /// Publishes the completed reload generation atomically and notifies docks.
+  void commitReplacingLoad(PJ::DatasetId dataset_id);
+
+  /// Discards a failed tap generation without touching the prior active buffer.
+  /// An inactive-tap service rebuilds from the restored ObjectStore history.
+  void abortReplacingLoad(PJ::DatasetId dataset_id);
 
   // Remember `frame` as the fixed frame the user manually chose for `dataset_id`,
   // so a NEWLY-created 3D dock bound to the same TransformBuffer defaults to it
@@ -108,10 +124,9 @@ class TransformService : public QObject {
   // GUI-thread only.
   [[nodiscard]] QString rememberedFixedFrame(PJ::DatasetId dataset_id);
 
-  // Incremental, UID-keyed ingest of TF entries that arrived since the last call
-  // for this dataset. Cheap no-op when nothing is new (the common streaming
-  // tick). Safe to call repeatedly; never double-ingests an entry (a per-topic
-  // SequentialUID cursor guards it). GUI-thread only.
+  // Incremental, UID-keyed ObjectStore ingest for a service with no active tap.
+  // With the tap active this returns false immediately because the pushing worker
+  // already updated the buffer. GUI-thread only.
   //
   // The bool reports whether THIS call applied any transforms — NOT a reliable
   // "something changed" signal for repaint gating: the per-topic cursor is
@@ -122,16 +137,30 @@ class TransformService : public QObject {
   bool ingestNewTransforms(PJ::DatasetId dataset_id);
 
  signals:
-  // Emitted after ingestFrameTransformsForDataset finishes populating a
-  // dataset's TransformBuffer, so 3D docks can render once TF is ready.
+  // Emitted after a progressive publication, completed load generation, or
+  // explicit rebuild so docks refresh or rebind the dataset buffer.
   void datasetTransformsReady(PJ::DatasetId dataset_id);
 
  private:
-  // Shared core: for every TF topic in the dataset, drain the entries that arrived
-  // since the per-topic cursor (ObjectStore::drainNewSince) and ingest each. Both
-  // the bulk file path and the incremental streaming path go through here.
-  // GUI-thread only. Returns true if any transform was applied.
+  // For every TF topic, drain entries since the per-topic UID cursor and ingest
+  // them. GUI-thread only. Returns true if any transform was applied.
   bool ingestNewerThanCursor(PJ::DatasetId dataset_id);
+
+  // Worker-thread callback registered by activateIngestTap. Parser bindings are
+  // resolved per call, and no payload bytes survive its return.
+  void ingestTappedObject(
+      PJ::ObjectTopicId topic_id, PJ::DatasetId dataset_id, PJ::Timestamp store_ts, PJ::sdk::PayloadView bytes);
+
+  // Returns the active or staging target for the worker tap, creating a
+  // kKeepAll active buffer on first use. Thread-safe internal counterpart of
+  // the GUI-affine transformBuffer().
+  [[nodiscard]] std::shared_ptr<TransformBuffer> transformBufferForTap(PJ::DatasetId dataset_id);
+
+  // Drops only the drain cursor/classification state for one dataset.
+  void resetDrainState(PJ::DatasetId dataset_id);
+
+  // Restores the active buffer from durable ObjectStore entries.
+  void rebuildFromStore(PJ::DatasetId dataset_id);
 
   // The cross-restart QSettings key for `dataset_id`: its SessionManager source
   // path joined with its DataEngine source_name (name alone for a pathless
@@ -154,8 +183,21 @@ class TransformService : public QObject {
     PJ::SequentialUID last_ingested;
   };
 
+  struct BufferSlot {
+    std::shared_ptr<TransformBuffer> active;
+    std::shared_ptr<TransformBuffer> staging;
+    std::chrono::nanoseconds cache_window = std::chrono::nanoseconds::max();
+    bool replacement_in_progress = false;
+  };
+
+  // Returns the active buffer, creating it from the slot policy. Caller holds
+  // tap_mutex_.
+  [[nodiscard]] std::shared_ptr<TransformBuffer> ensureActiveLocked(BufferSlot& slot);
+
   PJ::SessionManager& session_;
-  std::unordered_map<PJ::DatasetId, std::shared_ptr<TransformBuffer>> transform_buffers_;
+  mutable std::mutex tap_mutex_;
+  // Active/staging routing and cache-window policy shared with the worker tap.
+  std::unordered_map<PJ::DatasetId, BufferSlot> transform_buffers_;
   // Per-topic ingest cursors (keyed by ObjectTopicId::id). A topic present here
   // is a known FrameTransforms topic. Topics proven NOT to be TF go into
   // non_tf_topics_ so they are classified (parsed) at most once instead of every
@@ -169,6 +211,8 @@ class TransformService : public QObject {
   // entry while the persisted QSettings copy survives (that is the cross-restart
   // memory). See rememberFixedFrame / rememberedFixedFrame.
   std::unordered_map<PJ::DatasetId, QString> remembered_fixed_frames_;
+  std::optional<PJ::ObjectIngestTapRegistry::TapLease> tap_lease_;
+  bool tap_active_ = false;
 };
 
 }  // namespace pj::scene3d

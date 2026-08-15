@@ -67,7 +67,8 @@ QString SessionManager::normalizedSourcePath(const QString& path) {
 // against the app's overall footprint.
 constexpr size_t kResidentPayloadPoolBytes = 256ULL * 1024 * 1024;
 
-SessionManager::SessionManager(QObject* parent) : QObject(parent) {
+SessionManager::SessionManager(QObject* parent)
+    : QObject(parent), ingest_taps_(std::make_shared<ObjectIngestTapRegistry>()) {
   // Bounded resident window for ingest-seeded object payloads: live-edge object
   // pulls during/after a file load read the bytes the ingest already fetched,
   // instead of re-fetching (for MCAP: re-decompressing a chunk) from the source.

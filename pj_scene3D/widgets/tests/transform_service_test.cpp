@@ -35,9 +35,11 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "pj_base/builtin/builtin_object.hpp"
@@ -146,6 +148,46 @@ class CountingTfParser : public PJ::MessageParserPluginBase {
   }
 };
 
+class MalformedTfParser : public PJ::MessageParserPluginBase {
+ public:
+  MalformedTfParser() {
+    registerSchemaHandler(
+        kTfSchema,
+        PJ::sdk::SchemaHandler{
+            .object_type = PJ::sdk::BuiltinObjectType::kFrameTransforms,
+            .parse_scalars = {},
+            .parse_object = [](PJ::Timestamp ts, PJ::sdk::PayloadView) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+              auto validEdge = [ts](std::string parent, std::string child) {
+                PJ::sdk::FrameTransform edge;
+                edge.timestamp = ts;
+                edge.parent_frame_id = std::move(parent);
+                edge.child_frame_id = std::move(child);
+                edge.translation = {1.0, 2.0, 3.0};
+                edge.rotation = {0.0, 0.0, 0.0, 1.0};
+                return edge;
+              };
+
+              PJ::sdk::FrameTransforms transforms;
+              transforms.transforms.push_back(validEdge("f0", "f1"));
+              transforms.transforms.push_back(validEdge("f0", "f2"));
+              transforms.transforms.push_back(validEdge("f3", "f2"));  // reparent conflict
+              transforms.transforms.push_back(validEdge("f4", "f4"));  // self-loop
+              auto invalid_rotation = validEdge("f0", "f5");
+              invalid_rotation.rotation.x = 0.0;
+              invalid_rotation.rotation.y = 0.0;
+              invalid_rotation.rotation.z = 0.0;
+              invalid_rotation.rotation.w = 0.0;
+              transforms.transforms.push_back(std::move(invalid_rotation));
+              auto invalid_translation = validEdge("f0", "f6");
+              invalid_translation.translation.x = std::numeric_limits<double>::infinity();
+              transforms.transforms.push_back(std::move(invalid_translation));
+              transforms.transforms.push_back(validEdge("f0", ""));
+              return PJ::sdk::ObjectRecord{.ts = ts, .object = std::move(transforms)};
+            },
+        });
+  }
+};
+
 // Non-TF parser: always emits a 1x1 OccupancyGrid and bumps `counter` per call,
 // so a test can prove the classification probe never re-decodes a non-TF topic.
 class CountingGridParser : public PJ::MessageParserPluginBase {
@@ -198,6 +240,26 @@ PJ::ObjectTopicId registerTopic(PJ::ObjectStore& store, PJ::DatasetId dataset_id
   const auto topic_id = store.registerTopic(desc);
   EXPECT_TRUE(topic_id.has_value());
   return *topic_id;
+}
+
+PJ::ObjectTopicId registerMockTfTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, const std::string& name) {
+  const PJ::ObjectTopicId topic = registerTopic(session.objectStore(), dataset_id, name);
+  session.registerObjectTopicParser(
+      topic, makeBoundHandle(kTfSchema, []() noexcept -> void* { return new CountingTfParser(nullptr, nullptr); }));
+  return topic;
+}
+
+void invokeTfTap(
+    PJ::SessionManager& session, PJ::ObjectTopicId topic, PJ::DatasetId dataset_id, PJ::Timestamp stamp,
+    const std::vector<uint8_t>& payload) {
+  ASSERT_TRUE(session.ingestTaps().invoke(
+      PJ::sdk::BuiltinObjectType::kFrameTransforms, topic, dataset_id, stamp, PJ::sdk::makePayloadView(payload)));
+}
+
+std::vector<std::string> sortedFrames(const TransformBuffer& buffer) {
+  std::vector<std::string> frames = buffer.getAllFrames();
+  std::sort(frames.begin(), frames.end());
+  return frames;
 }
 
 // True iff a lookup at `stamp` for child<-its-known-parent succeeds. Looks up the
@@ -371,6 +433,60 @@ TEST(TransformService, OutOfOrderEdgeIsIngestedAtItsOwnTime) {
   EXPECT_EQ(frames, (std::vector<std::string>{"f0", "f1", "f2", "f3"}));
 }
 
+TEST(TransformService, TapVsDrainEquivalence) {
+  PJ::SessionManager drain_session;
+  PJ::ObjectStore& drain_store = drain_session.objectStore();
+  const auto drain_topic = registerMockTfTopic(drain_session, /*dataset_id=*/1, "/tf");
+
+  PJ::SessionManager tap_session;
+  const auto tap_topic = registerMockTfTopic(tap_session, /*dataset_id=*/1, "/tf");
+
+  struct Message {
+    PJ::Timestamp stamp;
+    std::vector<uint8_t> payload;
+  };
+  std::vector<Message> messages;
+  messages.push_back({100, edgePayload(/*parent=*/0, /*child=*/1)});
+  std::vector<uint8_t> multi_edge;
+  appendEdge(multi_edge, /*parent=*/0, /*child=*/2, /*offset=*/0);
+  appendEdge(multi_edge, /*parent=*/2, /*child=*/4, /*offset=*/0);
+  messages.push_back({300, std::move(multi_edge)});
+  messages.push_back({200, edgePayload(/*parent=*/0, /*child=*/3)});  // late, out of order
+
+  TransformService drain_service(drain_session);
+  TransformService tap_service(tap_session);
+  tap_service.activateIngestTap();
+  ASSERT_TRUE(tap_session.ingestTaps().claimed(PJ::sdk::BuiltinObjectType::kFrameTransforms));
+
+  for (const Message& message : messages) {
+    ASSERT_TRUE(drain_store.pushOwned(drain_topic, message.stamp, message.payload).has_value());
+    ASSERT_TRUE(tap_session.ingestTaps().invoke(
+        PJ::sdk::BuiltinObjectType::kFrameTransforms, tap_topic, /*dataset_id=*/1, message.stamp,
+        PJ::sdk::makePayloadView(message.payload)));
+  }
+  drain_service.ingestFrameTransformsForDataset(/*dataset_id=*/1);
+
+  const auto drain_buffer = drain_service.transformBuffer(/*dataset_id=*/1);
+  const auto tap_buffer = tap_service.transformBuffer(/*dataset_id=*/1);
+  EXPECT_EQ(sortedFrames(*drain_buffer), sortedFrames(*tap_buffer));
+
+  const std::vector<std::pair<std::string, std::string>> pairs = {{"f0", "f1"}, {"f0", "f3"}, {"f0", "f4"}};
+  for (const Message& message : messages) {
+    for (const auto& [target, source] : pairs) {
+      const TimePoint stamp{std::chrono::nanoseconds(message.stamp)};
+      const auto drained = drain_buffer->tryLookupTransform(target, source, stamp);
+      const auto tapped = tap_buffer->tryLookupTransform(target, source, stamp);
+      ASSERT_EQ(drained.has_value(), tapped.has_value()) << target << "<-" << source << " at " << message.stamp;
+      if (drained.has_value()) {
+        EXPECT_EQ(drained->t, tapped->t);
+        EXPECT_EQ(drained->q, tapped->q);
+      } else {
+        EXPECT_EQ(drained.error(), tapped.error());
+      }
+    }
+  }
+}
+
 // Captures Qt log output for its scope so tests can assert on the loss
 // warnings — the only observable surface of fetch-failure reporting. Swallows
 // the captured messages (tests stay quiet); restores the prior handler on exit.
@@ -408,6 +524,378 @@ class ScopedMessageCapture {
   QtMessageHandler previous_ = nullptr;
 };
 ScopedMessageCapture* ScopedMessageCapture::instance_ = nullptr;
+
+TEST(TransformService, BareServiceIncrementalIngestRemainsActive) {
+  PJ::SessionManager session;
+  const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf");
+  ASSERT_TRUE(session.objectStore().pushOwned(topic, 100, edgePayload(/*parent=*/0, /*child=*/1)).has_value());
+
+  TransformService service(session);
+  EXPECT_TRUE(service.ingestNewTransforms(/*dataset_id=*/1));
+  EXPECT_TRUE(resolves(*service.transformBuffer(1), "f0", "f1", 100));
+}
+
+TEST(TransformService, ActiveTapMakesIncrementalDrainAZeroResolveNoOp) {
+  PJ::SessionManager session;
+  const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf");
+  int fetch_calls = 0;
+  const std::vector<uint8_t> payload = edgePayload(/*parent=*/0, /*child=*/1);
+  ASSERT_TRUE(session.objectStore()
+                  .pushLazy(
+                      topic, 100,
+                      [&]() -> std::optional<PJ::sdk::PayloadView> {
+                        ++fetch_calls;
+                        return PJ::sdk::makePayloadView(payload);
+                      })
+                  .has_value());
+
+  TransformService service(session);
+  service.activateIngestTap();
+  EXPECT_FALSE(service.ingestNewTransforms(/*dataset_id=*/1));
+  EXPECT_FALSE(service.ingestNewTransforms(/*dataset_id=*/1));
+  EXPECT_EQ(fetch_calls, 0) << "an active tap must not advance or resolve the ObjectStore cursor";
+
+  service.ingestFrameTransformsForDataset(/*dataset_id=*/1);
+  EXPECT_EQ(fetch_calls, 2) << "the explicit rebuild must classify and ingest the entry skipped by per-tick ingest";
+  EXPECT_TRUE(resolves(*service.transformBuffer(1), "f0", "f1", 100));
+}
+
+TEST(TransformService, ExplicitRebuildWithTapActiveMatchesTapBuiltBuffer) {
+  PJ::SessionManager session;
+  const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf");
+  const std::vector<uint8_t> payload = edgePayload(/*parent=*/0, /*child=*/1);
+  int fetch_calls = 0;
+  ASSERT_TRUE(session.objectStore()
+                  .pushLazy(
+                      topic, 100,
+                      [&]() -> std::optional<PJ::sdk::PayloadView> {
+                        ++fetch_calls;
+                        return PJ::sdk::makePayloadView(payload);
+                      })
+                  .has_value());
+
+  TransformService service(session);
+  service.activateIngestTap();
+  invokeTfTap(session, topic, /*dataset_id=*/1, 100, payload);
+  const auto buffer = service.transformBuffer(1);
+  const auto before = buffer->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(100)});
+  ASSERT_TRUE(before.has_value());
+  const std::vector<std::string> frames_before = sortedFrames(*buffer);
+
+  service.ingestFrameTransformsForDataset(/*dataset_id=*/1);
+
+  EXPECT_EQ(fetch_calls, 2);
+  EXPECT_EQ(service.transformBuffer(1), buffer) << "explicit rebuilds preserve the active shared buffer identity";
+  EXPECT_EQ(sortedFrames(*buffer), frames_before);
+  const auto after = buffer->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(100)});
+  ASSERT_TRUE(after.has_value());
+  EXPECT_EQ(after->t, before->t);
+  EXPECT_EQ(after->q, before->q);
+}
+
+TEST(TransformService, TapAndDrainAccountForMalformedEdgesIdentically) {
+  PJ::SessionManager drain_session;
+  const auto drain_topic = registerTopic(drain_session.objectStore(), /*dataset_id=*/1, "/tf");
+  drain_session.registerObjectTopicParser(
+      drain_topic, makeBoundHandle(kTfSchema, []() noexcept -> void* { return new MalformedTfParser(); }));
+  ASSERT_TRUE(drain_session.objectStore().pushOwned(drain_topic, 100, std::vector<uint8_t>{1}).has_value());
+
+  PJ::SessionManager tap_session;
+  const auto tap_topic = registerTopic(tap_session.objectStore(), /*dataset_id=*/1, "/tf");
+  tap_session.registerObjectTopicParser(
+      tap_topic, makeBoundHandle(kTfSchema, []() noexcept -> void* { return new MalformedTfParser(); }));
+
+  TransformService drain_service(drain_session);
+  TransformService tap_service(tap_session);
+  tap_service.activateIngestTap();
+  ScopedMessageCapture capture;
+  drain_service.ingestFrameTransformsForDataset(/*dataset_id=*/1);
+  invokeTfTap(tap_session, tap_topic, /*dataset_id=*/1, 100, std::vector<uint8_t>{1});
+
+  EXPECT_EQ(capture.countContaining("1 reparent-conflict, 1 self-loop, and 3 invalid edge(s)"), 2)
+      << "the drain and tap must report the same edge-fold outcomes";
+  const auto drain_buffer = drain_service.transformBuffer(1);
+  const auto tap_buffer = tap_service.transformBuffer(1);
+  EXPECT_EQ(sortedFrames(*drain_buffer), (std::vector<std::string>{"f0", "f1", "f2"}));
+  EXPECT_EQ(sortedFrames(*tap_buffer), sortedFrames(*drain_buffer));
+  EXPECT_TRUE(resolves(*drain_buffer, "f0", "f1", 100));
+  EXPECT_TRUE(resolves(*drain_buffer, "f0", "f2", 100));
+  EXPECT_TRUE(resolves(*tap_buffer, "f0", "f1", 100));
+  EXPECT_TRUE(resolves(*tap_buffer, "f0", "f2", 100));
+}
+
+TEST(TransformService, TapOutOfOrderEdgeLandsAtItsOwnStamp) {
+  PJ::SessionManager session;
+  const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf");
+  TransformService service(session);
+  service.activateIngestTap();
+
+  invokeTfTap(session, topic, 1, 100, edgePayload(/*parent=*/0, /*child=*/1));
+  invokeTfTap(session, topic, 1, 300, edgePayload(/*parent=*/0, /*child=*/2));
+  invokeTfTap(session, topic, 1, 200, edgePayload(/*parent=*/0, /*child=*/3));
+
+  const auto buffer = service.transformBuffer(1);
+  EXPECT_TRUE(resolves(*buffer, "f0", "f1", 100));
+  EXPECT_TRUE(resolves(*buffer, "f0", "f3", 200));
+  EXPECT_TRUE(resolves(*buffer, "f0", "f2", 300));
+  EXPECT_EQ(sortedFrames(*buffer), (std::vector<std::string>{"f0", "f1", "f2", "f3"}));
+}
+
+TEST(TransformService, ConcurrentTapProducersKeepDatasetsIsolated) {
+  PJ::SessionManager session;
+  const auto topic_a = registerMockTfTopic(session, /*dataset_id=*/1, "/tf_a");
+  const auto topic_b = registerMockTfTopic(session, /*dataset_id=*/2, "/tf_b");
+  TransformService service(session);
+  service.activateIngestTap();
+
+  std::thread producer_a([&]() {
+    for (PJ::Timestamp stamp = 1; stamp <= 200; ++stamp) {
+      invokeTfTap(session, topic_a, 1, stamp, edgePayload(/*parent=*/0, /*child=*/1));
+    }
+  });
+  std::thread producer_b([&]() {
+    for (PJ::Timestamp stamp = 1; stamp <= 200; ++stamp) {
+      invokeTfTap(session, topic_b, 2, stamp, edgePayload(/*parent=*/10, /*child=*/11));
+    }
+  });
+  producer_a.join();
+  producer_b.join();
+
+  const auto buffer_a = service.transformBuffer(1);
+  const auto buffer_b = service.transformBuffer(2);
+  EXPECT_EQ(sortedFrames(*buffer_a), (std::vector<std::string>{"f0", "f1"}));
+  EXPECT_EQ(sortedFrames(*buffer_b), (std::vector<std::string>{"f10", "f11"}));
+  EXPECT_FALSE(resolves(*buffer_a, "f10", "f11", 200));
+  EXPECT_FALSE(resolves(*buffer_b, "f0", "f1", 200));
+}
+
+TEST(TransformService, CommitReplacingLoadPublishesOnlyStagingGeneration) {
+  PJ::SessionManager session;
+  const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf");
+  TransformService service(session);
+  service.activateIngestTap();
+  invokeTfTap(session, topic, 1, 100, edgePayload(/*parent=*/0, /*child=*/1));
+  const auto old_buffer = service.transformBuffer(1);
+  int ready_count = 0;
+  QObject::connect(
+      &service, &TransformService::datasetTransformsReady, [&ready_count](PJ::DatasetId) { ++ready_count; });
+
+  service.beginReplacingLoad(1);
+  invokeTfTap(session, topic, 1, 200, edgePayload(/*parent=*/0, /*child=*/2));
+  EXPECT_FALSE(resolves(*old_buffer, "f0", "f2", 200));
+  service.commitReplacingLoad(1);
+
+  const auto committed = service.transformBuffer(1);
+  EXPECT_NE(committed, old_buffer);
+  EXPECT_EQ(ready_count, 1);
+  EXPECT_FALSE(resolves(*committed, "f0", "f1", 100));
+  EXPECT_TRUE(resolves(*committed, "f0", "f2", 200));
+}
+
+TEST(TransformService, AbortReplacingLoadPreservesTapBufferAndRebuildsInactiveBuffer) {
+  {
+    PJ::SessionManager session;
+    const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf");
+    TransformService service(session);
+    service.activateIngestTap();
+    invokeTfTap(session, topic, 1, 100, edgePayload(/*parent=*/0, /*child=*/1));
+    const auto active = service.transformBuffer(1);
+    const auto before = active->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(100)});
+    ASSERT_TRUE(before.has_value());
+
+    service.beginReplacingLoad(1);
+    invokeTfTap(session, topic, 1, 200, edgePayload(/*parent=*/0, /*child=*/2));
+    service.abortReplacingLoad(1);
+
+    EXPECT_EQ(service.transformBuffer(1), active);
+    const auto after = active->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(100)});
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(after->t, before->t);
+    EXPECT_EQ(after->q, before->q);
+    EXPECT_FALSE(resolves(*active, "f0", "f2", 200));
+  }
+
+  {
+    PJ::SessionManager session;
+    const auto dataset = session.dataEngine().createDataset(
+        PJ::DatasetDescriptor{.source_name = "inactive_reload", .time_domain_id = 0});
+    ASSERT_TRUE(dataset.has_value()) << dataset.error();
+    const auto topic = registerMockTfTopic(session, *dataset, "/tf");
+    ASSERT_TRUE(session.objectStore().pushOwned(topic, 100, edgePayload(/*parent=*/0, /*child=*/1)).has_value());
+    TransformService service(session);
+    service.ingestFrameTransformsForDataset(*dataset);
+    const auto active = service.transformBuffer(*dataset);
+    ASSERT_TRUE(resolves(*active, "f0", "f1", 100));
+
+    service.beginReplacingLoad(*dataset);
+    {
+      auto refill = session.beginRefill(*dataset);
+      ASSERT_TRUE(session.objectStore().pushOwned(topic, 200, edgePayload(/*parent=*/0, /*child=*/2)).has_value());
+      EXPECT_TRUE(service.ingestNewTransforms(*dataset));
+      EXPECT_TRUE(resolves(*active, "f0", "f2", 200)) << "the old buffer must first contain aborted generation data";
+    }
+    service.abortReplacingLoad(*dataset);
+
+    EXPECT_EQ(service.transformBuffer(*dataset), active);
+    EXPECT_TRUE(resolves(*active, "f0", "f1", 100));
+    EXPECT_FALSE(resolves(*active, "f0", "f2", 200))
+        << "inactive rollback must rebuild from the restored store, removing aborted edges";
+  }
+}
+
+TEST(TransformService, TapRoutingChangesOnlyAtGenerationBoundaries) {
+  PJ::SessionManager session;
+  const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf");
+  TransformService service(session);
+  service.activateIngestTap();
+
+  invokeTfTap(session, topic, 1, 100, edgePayload(/*parent=*/0, /*child=*/1));
+  const auto original = service.transformBuffer(1);
+  service.beginReplacingLoad(1);
+  invokeTfTap(session, topic, 1, 200, edgePayload(/*parent=*/0, /*child=*/2));
+  EXPECT_TRUE(resolves(*original, "f0", "f1", 100));
+  EXPECT_FALSE(resolves(*original, "f0", "f2", 200));
+
+  service.commitReplacingLoad(1);
+  const auto replacement = service.transformBuffer(1);
+  invokeTfTap(session, topic, 1, 300, edgePayload(/*parent=*/0, /*child=*/3));
+  EXPECT_FALSE(resolves(*replacement, "f0", "f1", 100));
+  EXPECT_TRUE(resolves(*replacement, "f0", "f2", 200));
+  EXPECT_TRUE(resolves(*replacement, "f0", "f3", 300));
+  EXPECT_FALSE(resolves(*original, "f0", "f3", 300));
+}
+
+TEST(TransformService, RepeatedBeginReplacesUnfinishedStagingGeneration) {
+  PJ::SessionManager session;
+  const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf");
+  TransformService service(session);
+  service.activateIngestTap();
+
+  service.beginReplacingLoad(1);
+  invokeTfTap(session, topic, 1, 100, edgePayload(/*parent=*/0, /*child=*/1));
+  service.beginReplacingLoad(1);
+  invokeTfTap(session, topic, 1, 200, edgePayload(/*parent=*/0, /*child=*/2));
+  service.commitReplacingLoad(1);
+
+  const auto active = service.transformBuffer(1);
+  EXPECT_FALSE(resolves(*active, "f0", "f1", 100));
+  EXPECT_TRUE(resolves(*active, "f0", "f2", 200));
+}
+
+TEST(TransformService, AbortWithoutBeginIsNoOp) {
+  {
+    PJ::SessionManager session;
+    const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf");
+    TransformService service(session);
+    service.activateIngestTap();
+    invokeTfTap(session, topic, 1, 100, edgePayload(/*parent=*/0, /*child=*/1));
+    const auto active = service.transformBuffer(1);
+    const uint64_t revision_before = active->revision();
+
+    service.abortReplacingLoad(1);
+
+    EXPECT_EQ(service.transformBuffer(1), active);
+    EXPECT_EQ(active->revision(), revision_before);
+    EXPECT_TRUE(resolves(*active, "f0", "f1", 100));
+  }
+
+  {
+    PJ::SessionManager session;
+    const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf");
+    ASSERT_TRUE(session.objectStore().pushOwned(topic, 100, edgePayload(/*parent=*/0, /*child=*/1)).has_value());
+    TransformService service(session);
+    service.ingestFrameTransformsForDataset(1);
+    const auto active = service.transformBuffer(1);
+    const uint64_t revision_before = active->revision();
+
+    service.abortReplacingLoad(1);
+
+    EXPECT_EQ(service.transformBuffer(1), active);
+    EXPECT_EQ(active->revision(), revision_before);
+    EXPECT_TRUE(resolves(*active, "f0", "f1", 100));
+  }
+}
+
+TEST(TransformService, ConcurrentTapWriterAndBufferReaderStayCoherent) {
+  PJ::SessionManager session;
+  const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf");
+  TransformService service(session);
+  service.activateIngestTap();
+  const auto buffer = service.transformBuffer(1);
+  std::atomic<bool> finished{false};
+  std::atomic<bool> incoherent{false};
+
+  std::thread producer([&]() {
+    for (PJ::Timestamp stamp = 1; stamp <= 5000; ++stamp) {
+      invokeTfTap(session, topic, 1, stamp, edgePayload(/*parent=*/0, /*child=*/1));
+    }
+    finished.store(true);
+  });
+  std::thread reader([&]() {
+    while (!finished.load()) {
+      const std::vector<std::string> frames = sortedFrames(*buffer);
+      if (!frames.empty() && frames != std::vector<std::string>{"f0", "f1"}) {
+        incoherent.store(true);
+      }
+      (void)buffer->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(2500)});
+    }
+  });
+  producer.join();
+  reader.join();
+
+  EXPECT_FALSE(incoherent.load());
+  EXPECT_EQ(sortedFrames(*buffer), (std::vector<std::string>{"f0", "f1"}));
+  EXPECT_TRUE(resolves(*buffer, "f0", "f1", 5000));
+}
+
+TEST(TransformService, WorkerTapCanOverlapGuiExplicitRebuild) {
+  PJ::SessionManager session;
+  const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf");
+  std::atomic<bool> fetch_entered{false};
+  std::atomic<bool> tap_finished{false};
+  ASSERT_TRUE(session.objectStore()
+                  .pushLazy(
+                      topic, 200,
+                      [&]() -> std::optional<PJ::sdk::PayloadView> {
+                        fetch_entered.store(true);
+                        while (!tap_finished.load()) {
+                          std::this_thread::yield();
+                        }
+                        return PJ::sdk::makePayloadView(edgePayload(/*parent=*/0, /*child=*/2));
+                      })
+                  .has_value());
+  TransformService service(session);
+  service.activateIngestTap();
+  const auto buffer = service.transformBuffer(1);
+  std::thread worker([&]() {
+    while (!fetch_entered.load()) {
+      std::this_thread::yield();
+    }
+    invokeTfTap(session, topic, 1, 100, edgePayload(/*parent=*/0, /*child=*/1));
+    tap_finished.store(true);
+  });
+
+  service.ingestFrameTransformsForDataset(1);
+  worker.join();
+
+  EXPECT_TRUE(resolves(*buffer, "f0", "f1", 100));
+  EXPECT_TRUE(resolves(*buffer, "f0", "f2", 200));
+}
+
+TEST(TransformService, ExplicitRebuildRejectsWorkerThreadInDebug) {
+#if (!defined(QT_NO_DEBUG) || defined(QT_FORCE_ASSERTS)) && GTEST_HAS_DEATH_TEST
+  PJ::SessionManager session;
+  TransformService service(session);
+  EXPECT_DEATH(
+      {
+        std::thread worker([&]() { service.ingestFrameTransformsForDataset(1); });
+        worker.join();
+      },
+      "QThread::currentThread");
+#else
+  GTEST_SKIP() << "Q_ASSERT thread-affinity checks are compiled out in this build";
+#endif
+}
 
 // A lazy entry whose re-read FAILS (fetch returns nullopt: file truncated,
 // replaced, or corrupt) is counted and skipped — its edges are permanently

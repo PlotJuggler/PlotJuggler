@@ -400,8 +400,7 @@ class FileLoader : public QObject {
 
   // GUI-thread body of one throttled ingest flush, shared by the single-instance
   // and fan-out progress ticks (each keeps its own staleness guard): publish the
-  // newly committed rows to plots/playback, fold new FrameTransforms so 3D
-  // scenes track the load live, and advance the progress strip.
+  // newly committed rows and worker-fed TF revision, then advance progress.
   void publishIngestProgress(DatasetId dataset_id, int current, int maximum);
 
   // One scheduled loadFinished payload awaiting event-loop delivery, or a
@@ -450,10 +449,8 @@ class FileLoader : public QObject {
   // rebuild, TF ingest, fileLoaded). fully_loaded=false (a user keep-stop)
   // commits identically but skips the loadCommitting seam.
   void finishLoadOnGui(bool fully_loaded);
-  // GUI: after a replacing reload's RefillGuard has rolled the dataset back to its
-  // pre-reload data (start-fail / discard / shutdown), reflect the restored data in
-  // the catalog and rebuild the per-dataset TF buffer. The guard restores the data +
-  // re-notifies adapters; this refreshes the catalog tree + scene TF on top.
+  // GUI: after a replacing reload's RefillGuard rolls back, rebuild the catalog
+  // and discard the private TF generation; the active buffer was never replaced.
   /// Failure exit for a replacing reload: roll the refill back (guard dtor),
   /// refresh the catalog/UI to the restored state, and emit fileLoadFailed.
   void failReplacingLoad(DatasetId dataset_id, const QString& path, const QString& reason);

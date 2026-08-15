@@ -15,6 +15,7 @@ add_library(pj_runtime STATIC
     src/DataSourceRuntimeHost.cpp
     src/MarkerService.cpp
     src/MarkersRuntimeHost.cpp
+    src/ObjectIngestTap.cpp
     src/DiagnosticHistory.cpp
     src/ExtensionCatalogService.cpp
     src/HttpGet.cpp
@@ -40,6 +41,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/IDataWidget.h
     include/pj_runtime/MarkerService.h
     include/pj_runtime/MarkersRuntimeHost.h
+    include/pj_runtime/ObjectIngestTap.h
     include/pj_runtime/PlaybackEngine.h
     include/pj_runtime/QSettingsBackend.h
     include/pj_runtime/ServiceRegistration.h
@@ -84,6 +86,16 @@ target_link_libraries(pj_runtime PUBLIC
 )
 
 if(PJ_BUILD_TESTS)
+    add_executable(object_ingest_tap_test
+        tests/object_ingest_tap_test.cpp
+    )
+    target_compile_options(object_ingest_tap_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(object_ingest_tap_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_test(NAME ObjectIngestTapTest COMMAND object_ingest_tap_test)
+
     add_executable(time_test
         tests/time_test.cpp
     )

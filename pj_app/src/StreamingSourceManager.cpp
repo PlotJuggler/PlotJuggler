@@ -361,7 +361,8 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
       [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
         session_manager_.registerObjectTopicParser(id, std::move(parser));
       },
-      secondary_object_store_.get(), secondary_data_engine_.get(), std::move(library_keepalive));
+      secondary_object_store_.get(), secondary_data_engine_.get(), std::move(library_keepalive),
+      session_manager_.ingestTapsShared());
   // Streaming has no persistent file to re-read: a lazy policy's re-fetch
   // closure would re-invoke each message's fetcher on every pull, so keep
   // object bytes resident (kEager) instead of the resolver's lazy default.

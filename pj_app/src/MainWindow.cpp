@@ -504,6 +504,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // domain-neutral; it reads only SessionManager's neutral surface.
 #ifdef PJ_WITH_SCENE3D
   transform_service_ = std::make_unique<pj::scene3d::TransformService>(session_->sessionManager());
+  transform_service_->activateIngestTap();
 #endif
   // Pull saved icon metrics before setupUi so the literals we feed into
   // build*Toolbar() pick up the correct values on first paint. Widgets
@@ -8905,26 +8906,11 @@ void MainWindow::launchToolbox(
     for (const DatasetId id : ingested_datasets) {
       session_->sessionManager().refreshDatasetTimeReference(id);
     }
-    // Bridge ingested kFrameTransforms object topics into the 3D scene's TF
-    // buffers — the SAME step the file loader does. Without it a toolbox/cloud
-    // dataset registers its /tf object topic in the
-    // ObjectStore but the per-dataset TransformBuffer stays empty, so the 3D
-    // frame dropdown is blank and pointclouds (which resolve through TF) never
-    // render. Runs AFTER the catalog rebuild so the object topics + their
-    // render parsers are registered; ingest is idempotent (invalidate first so
-    // a re-fetch of the same dataset re-ingests the new transforms).
+    // Publish worker-fed toolbox TF after the catalog exposes its object topics.
 #ifdef PJ_WITH_SCENE3D
     if (transform_service_ != nullptr) {
       for (const DatasetId id : ingested_datasets) {
-        // A still-growing import folds incrementally (cursor-based) — the
-        // invalidate + full re-ingest would re-decode the whole accumulated TF
-        // history on every per-topic notify (quadratic over the import). The
-        // terminal release-time report runs after on_ingest_finished ended the
-        // ingest in the SessionManager, so the full pass still happens once.
-        if (!session_->sessionManager().ingestActive(id)) {
-          transform_service_->invalidateDataset(id);
-        }
-        transform_service_->ingestFrameTransformsForDataset(id);
+        transform_service_->publishTransforms(id);
       }
     }
 #else
@@ -9014,7 +9000,7 @@ void MainWindow::launchToolbox(
     session_->sessionManager().updateIngest(dataset, current, total);
 #ifdef PJ_WITH_SCENE3D
     if (transform_service_ != nullptr) {
-      transform_service_->ingestFrameTransformsForDataset(dataset);
+      transform_service_->publishTransforms(dataset);
     }
 #endif
     if (file_loader_->isBusy() || !session_->sessionManager().hasActiveIngests()) {
@@ -9046,12 +9032,12 @@ void MainWindow::launchToolbox(
     releaseIngestStripOwner(dataset);
   };
 
-  // Parser-ingest deps: the plugin catalog for ensureParserBinding lookups and
-  // the SessionManager registrar for render-time object parsers (queued-marshal
-  // wiring shared with the headless path — see ToolboxHostWiring.h).
+  // Parser-ingest deps: catalog lookup plus synchronous worker-safe parser
+  // registration shared with the headless path (see ToolboxHostWiring.h).
   ToolboxRuntimeHost::ParserIngestDeps ingest_deps;
   ingest_deps.catalog = &session_->extensionCatalog();
-  ingest_deps.register_object_parser = makeQueuedObjectParserRegistrar(this, session_->sessionManager());
+  ingest_deps.ingest_taps = session_->sessionManager().ingestTapsShared();
+  ingest_deps.register_object_parser = makeObjectParserRegistrar(session_->sessionManager());
 
   session->host = std::make_unique<ToolboxRuntimeHost>(
       session_->sessionManager().dataEngine(), session_->sessionManager().objectStore(), *session->settings,
