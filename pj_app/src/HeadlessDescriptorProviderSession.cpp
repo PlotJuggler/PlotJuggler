@@ -88,13 +88,28 @@ Expected<HeadlessDescriptorProviderSession::Ptr> HeadlessDescriptorProviderSessi
   // Ingest lifecycle: the SessionManager bookkeeping only (the #470 hoist).
   // MainWindow's versions add strip-widget presentation and FileLoader
   // arbitration on top; a headless session has no strip.
-  callbacks.on_ingest_started = [self](DatasetId dataset, std::string label, uint64_t total) {
-    self->session_.beginIngest(dataset, QString::fromStdString(label), total);
+  // A headless session has no UI to stop anything from, so the plugin's own
+  // cancellable declaration is deliberately ignored here.
+  callbacks.on_ingest_started = [self](DatasetId dataset, std::string label, uint64_t total, bool /*cancellable*/) {
+    const IngestToken token =
+        self->session_.beginIngest(dataset, QString::fromStdString(label), total, /*cancellable=*/false, {});
+    self->ingest_tokens_[dataset] = token;
   };
   callbacks.on_ingest_progress = [self](DatasetId dataset, uint64_t current, uint64_t total) {
-    self->session_.updateIngest(dataset, current, total);
+    const auto token_it = self->ingest_tokens_.find(dataset);
+    if (token_it != self->ingest_tokens_.end()) {
+      self->session_.updateIngest(token_it->second, current, total);
+    }
   };
-  callbacks.on_ingest_finished = [self](DatasetId dataset) { self->session_.endIngest(dataset); };
+  callbacks.on_ingest_finished = [self](DatasetId dataset) {
+    const auto token_it = self->ingest_tokens_.find(dataset);
+    if (token_it != self->ingest_tokens_.end()) {
+      // A headless session's producer reports no outcome, so kUnknown is the
+      // truthful terminal — claiming kCompleted would assert success nobody saw.
+      self->session_.endIngest(token_it->second, IngestOutcome::kUnknown);
+      self->ingest_tokens_.erase(token_it);
+    }
+  };
 
   // Parser-ingest deps: identical to the interactive path, including parser
   // registration before the first pushed message (see ToolboxHostWiring.h).

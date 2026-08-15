@@ -9,11 +9,13 @@
 #include <map>
 #include <memory>
 #include <string_view>
+#include <unordered_map>
 
 #include "pj_base/diagnostic_sink.hpp"
 #include "pj_base/expected.hpp"
 #include "pj_base/sdk/descriptor_import.hpp"
 #include "pj_base/types.hpp"
+#include "pj_runtime/SessionManager.h"
 
 namespace PJ {
 
@@ -23,7 +25,6 @@ class ExtensionCatalogService;
 class FileLoader;
 class QSettingsBackend;
 class ServiceRegistryBuilder;
-class SessionManager;
 class SourcePromotionHost;
 class ToolboxHandle;
 class ToolboxRuntimeHost;
@@ -196,6 +197,7 @@ class HeadlessDescriptorProviderSession : public QObject {
   // teardown).
   JobId next_job_id_ = 0;
   std::map<JobId, JoinableJob> jobs_;
+  std::unordered_map<DatasetId, IngestToken> ingest_tokens_;
 };
 
 }  // namespace PJ

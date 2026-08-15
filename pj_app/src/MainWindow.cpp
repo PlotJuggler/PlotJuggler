@@ -93,6 +93,8 @@
 #include "DatasetMergeActions.h"
 #include "DebugUi.h"
 #include "FileLoader.h"
+#include "IngestProgressController.h"
+#include "IngestProgressWiring.h"
 #ifdef PJ_TARGET_WASM
 #include "FanoutConfig.h"
 #include "FileSelectionService.h"
@@ -495,6 +497,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
               session_->catalogModel(), session_->topicDemandTracker(),
               session_->sessionManager().dataProcessorService(), *pending_binder_,
               session_->sessionManager().dataEngine())),
+      ingest_progress_controller_(std::make_unique<IngestProgressController>(this)),
       theme_(std::make_unique<Theme>()) {
 #ifdef PJ_TARGET_WASM
   browser_layout_runtime_ = std::make_unique<BrowserLayoutRuntime>();
@@ -832,6 +835,15 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   ui_->curveListPanel->setCatalog(&session_->catalogModel());
   ui_->curveListPanel->setTopicDemandTracker(&session_->topicDemandTracker());
   ui_->curveListPanel->setTopicDemandController(topic_demand_controller_.get());
+
+  // Wire the progressive ingest controller to the SessionManager and curve list
+  // panel through the one shared seam (IngestProgressWiring).
+  // The row's two affordances ARE the choice (✕ keeps, bin discards), so the
+  // wiring routes a click straight to requestCancel. The keep/discard prompt
+  // survives only on the title-bar strip path, whose single stop button cannot
+  // express it.
+  wireIngestProgress(
+      session_->sessionManager(), session_->catalogModel(), *ingest_progress_controller_, *ui_->curveListPanel, this);
 
   // Marker generators read their inputs through these two catalog-backed callbacks.
   // They are SESSION state, not panel state: a generator can also arrive from a saved
@@ -1699,7 +1711,18 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   title_bar_->setCenterWidget(ingest_progress_);
   ingest_show_timer_ = new QTimer(this);
   ingest_show_timer_->setSingleShot(true);
-  connect(ingest_show_timer_, &QTimer::timeout, this, [this]() { ingest_progress_->setActive(true); });
+  // Per-dataset progress now lives on the curve-tree rows (IngestProgressController),
+  // so the title-bar strip stays silent. Everything behind it — the displayed-owner
+  // arbitration, the stop dialog, the counter/label plumbing — is retained and still
+  // fed by its producers; flip this to true to bring the strip back.
+  // static: the lambda below reads it with no capture-default, which clang
+  // rejects for an automatic constexpr (odr-use) even though GCC accepts it.
+  static constexpr bool kShowTitleBarIngestStrip = false;
+  connect(ingest_show_timer_, &QTimer::timeout, this, [this]() {
+    if constexpr (kShowTitleBarIngestStrip) {
+      ingest_progress_->setActive(true);
+    }
+  });
   ingest_hide_timer_ = new QTimer(this);
   ingest_hide_timer_->setSingleShot(true);
   ingest_hide_timer_->setInterval(kIngestStripHideLingerMs);
@@ -6034,7 +6057,8 @@ void MainWindow::installLayoutBatchObservers() {
   // double handling is idempotent.
   SessionManager& manager = session_->sessionManager();
   layout_batch_ingest_conns_.push_back(connect(
-      &manager, &SessionManager::ingestBegan, this, [this](DatasetId dataset, const QString& label, quint64 /*total*/) {
+      &manager, &SessionManager::ingestBegan, this, [this](IngestToken token, const QString& label, quint64 /*total*/) {
+        const DatasetId dataset = token.dataset_id;
         const bool is_batch = layoutImportBatchActive() && layout_import_batch_->activeImportDataset() == dataset;
         if (is_batch) {
           layout_batch_strip_dataset_ = dataset;
@@ -6054,7 +6078,8 @@ void MainWindow::installLayoutBatchObservers() {
         ingest_show_timer_->start(kIngestStripShowDelayMs);
       }));
   layout_batch_ingest_conns_.push_back(connect(
-      &manager, &SessionManager::ingestProgressed, this, [this](DatasetId dataset, quint64 current, quint64 total) {
+      &manager, &SessionManager::ingestProgressed, this, [this](IngestToken token, quint64 current, quint64 total) {
+        const DatasetId dataset = token.dataset_id;
         if (file_loader_->isBusy() || !session_->sessionManager().hasActiveIngests()) {
           return;
         }
@@ -6067,12 +6092,14 @@ void MainWindow::installLayoutBatchObservers() {
         }
         setIngestStripProgress(current, total);
       }));
-  layout_batch_ingest_conns_.push_back(connect(&manager, &SessionManager::ingestEnded, this, [this](DatasetId dataset) {
-    if (dataset == layout_batch_strip_dataset_) {
-      layout_batch_strip_dataset_ = 0;
-    }
-    releaseIngestStripOwner(dataset);
-  }));
+  layout_batch_ingest_conns_.push_back(
+      connect(&manager, &SessionManager::ingestEnded, this, [this](IngestToken token, IngestOutcome /*outcome*/) {
+        const DatasetId dataset = token.dataset_id;
+        if (dataset == layout_batch_strip_dataset_) {
+          layout_batch_strip_dataset_ = 0;
+        }
+        releaseIngestStripOwner(dataset);
+      }));
 }
 
 void MainWindow::teardownLayoutBatchObservation() {
@@ -8964,20 +8991,39 @@ void MainWindow::launchToolbox(
   // PanelSession they reference, so a strong capture would leak the session;
   // an expired owner (panel closed mid-import) simply drops the tick.
   const std::weak_ptr<void> session_weak = session;
-  callbacks.on_ingest_started = [this, session_weak](DatasetId dataset, std::string label, uint64_t total) {
+  callbacks.on_ingest_started = [this, session_weak](
+                                    DatasetId dataset, std::string label, uint64_t total, bool cancellable) {
     const auto owner = session_weak.lock();
     if (owner == nullptr) {
       return;
     }
     const QString import_label = QString::fromStdString(label);
+    // The plugin declares whether its import can be stopped, and the row's stop
+    // affordance follows that declaration. Registered as kStopOnly because
+    // requestStopActiveIngests is cooperative with no host-side rollback: the
+    // import always keeps what arrived, so the discard affordance is presented
+    // as unavailable rather than silently downgraded into a keep.
+    // The outcome is always kUnknown since the plugin C-ABI reports no outcome.
+    const std::weak_ptr<void> stop_owner = session_weak;
+    const auto token = session_->sessionManager().beginIngest(
+        dataset, import_label, total, cancellable,
+        [this, dataset, stop_owner](bool) {
+          if (stop_owner.lock() == nullptr) {
+            return;  // the panel that owned this import is gone
+          }
+          const auto import_it = toolbox_active_imports_.constFind(dataset);
+          if (import_it != toolbox_active_imports_.constEnd() && import_it->host != nullptr) {
+            import_it->host->requestStopActiveIngests();
+          }
+        },
+        IngestStop::kStopOnly);
+
     // Lifecycle state (which datasets are importing, label/total) is the
     // session's; recorded even when FileLoader owns the strip so
     // started/finished stay paired and the import can re-adopt the strip later.
-    session_->sessionManager().beginIngest(dataset, import_label, total);
-    // Presentation-side stop routing: which live host to cancel for this
-    // dataset (weak owner guards a closed panel).
+    // Store the token per dataset for progress and termination.
     toolbox_active_imports_.insert(
-        dataset, ToolboxIngestRef{owner, std::static_pointer_cast<PanelSession>(owner)->host.get()});
+        dataset, ToolboxIngestRef{token, owner, std::static_pointer_cast<PanelSession>(owner)->host.get()});
     toolbox_ingest_label_ = import_label;
     toolbox_ingest_dataset_ = dataset;
     // The panel that just started importing must stop covering the chart area:
@@ -8991,18 +9037,35 @@ void MainWindow::launchToolbox(
     adoptToolboxIngestStrip();
   };
   callbacks.on_ingest_progress = [this](DatasetId dataset, uint64_t current, uint64_t total) {
-    // Toolbox analog of FileLoader::publishIngestProgress — the host flushed
-    // pending rows before this fired. updateIngest publishes them to
+    // Toolbox analog of FileLoader::publishIngestProgress — the host
+    // flushed pending rows before this fired. updateIngest publishes them to
     // plots/playback through notifyIngest (the catalog tree grows via
-    // samplesIngested -> rebuildIfChanged) and records progress; new
-    // FrameTransforms fold incrementally below. The full catalog rebuild +
-    // playback focus stay on notify_data_changed.
-    session_->sessionManager().updateIngest(dataset, current, total);
+    // samplesIngested -> rebuildIfChanged) and records progress; the worker-fed
+    // TF revision is published below. The full catalog rebuild + playback focus
+    // stay on notify_data_changed.
+
+    // Publish first, and for the dataset the host named — not for whatever the
+    // imports map happens to hold. A miss here is a bookkeeping gap (ordering, a
+    // panel closed mid-import), never evidence that the rows the host just
+    // flushed are not real; returning early on it dropped both the data publish
+    // and the scene's TF refresh for a dataset that was genuinely importing.
+    const auto active_import_it = toolbox_active_imports_.find(dataset);
+    if (active_import_it != toolbox_active_imports_.end()) {
+      session_->sessionManager().updateIngest(active_import_it->token, current, total);
+    } else {
+      const auto ids = session_->sessionManager().dataEngine().listTopics(dataset);
+      session_->sessionManager().notifyIngest(QVector<TopicId>(ids.begin(), ids.end()), /*live=*/false);
+    }
 #ifdef PJ_WITH_SCENE3D
     if (transform_service_ != nullptr) {
       transform_service_->publishTransforms(dataset);
     }
 #endif
+    // Only the strip presentation below needs a tracked import: it is keyed by
+    // the token this dataset never registered.
+    if (active_import_it == toolbox_active_imports_.end()) {
+      return;
+    }
     if (file_loader_->isBusy() || !session_->sessionManager().hasActiveIngests()) {
       return;
     }
@@ -9016,9 +9079,12 @@ void MainWindow::launchToolbox(
     setIngestStripProgress(current, total);
   };
   callbacks.on_ingest_finished = [this](DatasetId dataset) {
-    // Lifecycle first (so a notify_data_changed fired during teardown already
-    // sees the dataset as no-longer-growing), then drop the stop-routing ref.
-    session_->sessionManager().endIngest(dataset);
+    // Look up the token for this dataset and end with kUnknown outcome
+    // (the plugin C-ABI reports no outcome).
+    auto active_import_it = toolbox_active_imports_.find(dataset);
+    if (active_import_it != toolbox_active_imports_.end()) {
+      session_->sessionManager().endIngest(active_import_it->token, IngestOutcome::kUnknown);
+    }
     toolbox_active_imports_.remove(dataset);
     if (toolbox_ingest_dataset_ == dataset) {
       // The last-started identity is gone; survivor picks fall back to the

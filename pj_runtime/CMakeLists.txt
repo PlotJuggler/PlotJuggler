@@ -242,6 +242,18 @@ if(PJ_BUILD_TESTS)
     )
     add_test(NAME SessionManagerTest COMMAND session_manager_test)
 
+    add_executable(session_manager_ingest_test
+        tests/session_manager_ingest_test.cpp
+    )
+    # Qt6::Test supplies QSignalSpy for signal verification tests.
+    find_package(Qt6 REQUIRED COMPONENTS Test)
+    target_link_libraries(session_manager_ingest_test PRIVATE
+        pj_runtime
+        Qt6::Test
+        GTest::gtest_main
+    )
+    add_test(NAME SessionManagerIngestTest COMMAND session_manager_ingest_test)
+
     add_executable(catalog_model_test
         tests/catalog_model_test.cpp
     )

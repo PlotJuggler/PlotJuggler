@@ -635,7 +635,8 @@ TEST_F(MainWindowLayoutImportE2ETest, ColdImportPromotesWithLiveProgressiveWitne
   };
   QObject::connect(
       &sessionManager(), &PJ::SessionManager::ingestProgressed, &scope,
-      [&](PJ::DatasetId dataset_id, quint64 /*current*/, quint64 /*total*/) {
+      [&](PJ::IngestToken token, quint64 /*current*/, quint64 /*total*/) {
+        const PJ::DatasetId dataset_id = token.dataset_id;
         auto* batch = Peer::batch(window());
         if (batch == nullptr || !batch->activeImportDataset().has_value() ||
             *batch->activeImportDataset() != dataset_id) {

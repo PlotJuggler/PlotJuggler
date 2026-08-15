@@ -400,6 +400,9 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   });
   connect(tree_view_, &CurveTreeView::dragPayloadKeysSkipped, this, &CurveListPanel::onDragPayloadKeysSkipped);
 
+  // Forward the tree's cancel request to the controller (MainWindow).
+  connect(tree_view_, &CurveTreeView::cancelRequested, this, &CurveListPanel::cancelRequested);
+
   // 10 Hz throttle for the value column (see refreshValues). The timeout is the
   // trailing edge: if a tracker update arrived during the window, fill once more
   // and re-arm so a continuous playback stream settles into a steady 10 Hz.
@@ -1031,6 +1034,18 @@ std::vector<QString> CurveListPanel::selectedCurveNamesForDrag() const {
   std::sort(names.begin(), names.end());
   names.erase(std::unique(names.begin(), names.end()), names.end());
   return names;
+}
+
+void CurveListPanel::setDatasetProgress(const QHash<quint64, CurveTreeView::DatasetProgress>& by_row_key) {
+  if (tree_view_ != nullptr) {
+    tree_view_->setDatasetProgress(by_row_key);
+  }
+}
+
+void CurveListPanel::setDatasetRowKey(const QString& dataset_tree_path, quint64 row_key) {
+  if (tree_view_ != nullptr) {
+    tree_view_->setDatasetRowKey(dataset_tree_path, row_key);
+  }
 }
 
 }  // namespace PJ

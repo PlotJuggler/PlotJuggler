@@ -35,6 +35,7 @@
 #include "pj_base/types.hpp"
 #include "pj_plotting/CurveTracker.h"
 #include "pj_runtime/CurveDescriptor.h"  // openFilterEditor takes std::vector<CurveDescriptor> by value
+#include "pj_runtime/SessionManager.h"
 #include "pj_widgets/ChromeMetrics.h"
 #include "pj_widgets/VisualizationKind.h"
 
@@ -67,6 +68,7 @@ class CurveEditor;
 class DiagnosticHistory;
 class DockWidget;
 class FileLoader;
+class IngestProgressController;
 class IDataWidget;
 class LayoutImportBatch;
 class MarketplaceWindow;
@@ -1180,6 +1182,9 @@ class MainWindow : public QMainWindow {
   // references (see TopicDemandTracker). Declared after pending_binder_, which
   // it forwards placeholder scalar drops to.
   std::unique_ptr<TopicDemandController> topic_demand_controller_;
+  // Bridges progressive ingest signals from SessionManager to CurveTreeView
+  // via CurveListPanel. Maintains linger/flash timers and ghost-row lifetime.
+  std::unique_ptr<IngestProgressController> ingest_progress_controller_;
   // Owns the per-dataset 3D TF buffers + load-time ingest. Lives here in the
   // shell (not pj_runtime) so the runtime stays domain-neutral. Declared after
   // session_ so it is destroyed first (it holds a reference into session_).
@@ -1250,6 +1255,7 @@ class MainWindow : public QMainWindow {
   // last-STARTED interactive import — the identity a fresh strip adopt (or a
   // re-adopt once the file queue drains) shows; cleared when that import ends.
   struct ToolboxIngestRef {
+    IngestToken token;
     std::weak_ptr<void> owner;
     PJ::ToolboxRuntimeHost* host = nullptr;
   };

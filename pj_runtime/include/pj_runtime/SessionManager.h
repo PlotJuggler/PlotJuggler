@@ -6,6 +6,7 @@
 #include <QString>
 #include <QVector>
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -54,6 +55,42 @@ struct SourceRecord {
   QString provider_id;
   QString source_identity;
   QString descriptor_json;
+};
+
+/// Unique identifier for an ingest session. 0 = invalid/stale.
+using IngestId = quint64;
+
+/// Token identifying a specific ingest operation on a dataset. Minted at
+/// beginIngest and used to route all subsequent updates, cancellations, and
+/// terminations. A new beginIngest on the same dataset invalidates the prior
+/// token (any calls with the old token become silent no-ops). This prevents
+/// late terminations from an old run from erasing a new run's entry.
+struct IngestToken {
+  IngestId id = 0;           // Monotonically increasing, 0 = invalid/stale
+  DatasetId dataset_id = 0;  // The dataset this ingest targets
+};
+
+/// Outcome of a completed ingest operation.
+enum class IngestOutcome {
+  kCompleted,  // Successfully finished
+  kCancelled,  // Cancelled by requestCancel
+  kFailed,     // Error occurred during ingest
+  kUnknown,    // Unknown outcome (SDK plugins without outcome callback)
+};
+
+/// Signature for a handler invoked when requestCancel succeeds. The producer
+/// supplies how to stop itself. keep_partial mirrors the file path's keep/discard
+/// choice; producers that cannot honour it ignore it.
+using IngestCancelFn = std::function<void(bool keep_partial)>;
+
+/// What a producer is able to do when its ingest is stopped. Some producers can
+/// only stop: the toolbox ingest ABI has no host-side rollback, so a stop there
+/// always keeps what arrived. Declaring that up front lets the UI present the
+/// discard affordance as unavailable instead of offering an action the producer
+/// would silently turn into a keep.
+enum class IngestStop {
+  kKeepOrDiscard,  ///< keep_partial is honoured either way
+  kStopOnly,       ///< stopping always keeps; a discard request must be refused
 };
 
 // Owns the datastore for the current app session. v1 scalar commit calls are
@@ -288,42 +325,73 @@ class SessionManager : public QObject {
   // presentation (strip widgets, FileLoader arbitration, stop routing to the
   // importing hosts) stays in the app layer. GUI-thread only — the
   // ToolboxRuntimeHost marshals its callbacks there. ---
-  struct ActiveIngest {
-    QString label;
-    quint64 current = 0;
-    quint64 total = 0;  // 0 = size unknown (indeterminate progress)
-  };
 
-  /// Marks `dataset_id` as actively importing and emits ingestBegan. A repeated
-  /// begin for the same dataset restarts its entry (fresh label/total).
-  void beginIngest(DatasetId dataset_id, QString label, quint64 total);
+  /// Start a progressive import of a dataset. Returns a token routing future
+  /// updates/cancellations to this specific ingest. The token is unique per begin;
+  /// a subsequent begin on the same dataset invalidates the prior token (late calls
+  /// with the old token silently no-op). The superseded ingest's entry is erased
+  /// from the active set immediately: the token becomes stale at this moment even
+  /// if an old end/update call arrives later, preventing a replaced load from being
+  /// reported as active alongside the new one. Triggers one structural catalog
+  /// publication so object-only datasets materialize a row immediately.
+  ///
+  /// GUI-thread only. cancellable gates whether requestCancel can succeed for this
+  /// ingest; producers that cannot be cancelled pass false, suppressing the UI
+  /// cancel affordance. on_cancel is invoked only if requestCancel succeeds on this
+  /// token. `stop` declares whether this producer can honour a discard at all —
+  /// a kStopOnly ingest refuses requestCancel(keep_partial=false) outright rather
+  /// than quietly downgrading it to a keep.
+  [[nodiscard]] IngestToken beginIngest(
+      DatasetId dataset_id, QString label, quint64 total, bool cancellable, IngestCancelFn on_cancel,
+      IngestStop stop = IngestStop::kKeepOrDiscard);
 
-  /// Progress tick. First publishes the dataset's committed topics through
-  /// notifyIngest — the SAME non-live data-publication seam every ingest path
-  /// uses (the host flushed pending rows before firing progress), so plots,
-  /// playback, and the catalog observe the new rows. Then records
-  /// current/total and emits ingestProgressed for a tracked import. The
-  /// publication runs even for an untracked dataset so a begin/progress
-  /// ordering slip can never drop flushed data; only the lifecycle signal is
-  /// gated on membership.
-  void updateIngest(DatasetId dataset_id, quint64 current, quint64 total);
+  /// Record progress on an ingest. Stale tokens (superseded by a newer begin on the
+  /// same dataset) are silently ignored. Publishes the dataset's flushed topics via
+  /// notifyIngest (so data appears before the progress number announcing it).
+  void updateIngest(IngestToken token, quint64 current, quint64 total);
 
-  /// Ends the import: erases the entry and emits ingestEnded. Silent no-op for
-  /// a dataset that is not actively importing (begin/finished pairing is the
-  /// host's contract; a double end must not double-signal).
-  void endIngest(DatasetId dataset_id);
+  /// End an ingest and report its outcome. Stale tokens are silently ignored. Erases
+  /// the entry and emits ingestEnded with the outcome. If requestCancel was
+  /// previously called on this token, the reported outcome is kCancelled regardless
+  /// of the outcome passed here.
+  void endIngest(IngestToken token, IngestOutcome outcome);
+
+  /// Request cancellation of an ingest. Returns true if a handler was invoked (the
+  /// ingest is still live and cancellable), false otherwise (unknown/stale token, or
+  /// ingest already ended). If true, the handler is invoked synchronously with
+  /// keep_partial; the ingest's terminal outcome will report kCancelled even if the
+  /// producer reports a different outcome (the cancellation intent wins).
+  bool requestCancel(IngestToken token, bool keep_partial);
 
   [[nodiscard]] bool hasActiveIngests() const noexcept {
     return !active_ingests_.empty();
   }
-  [[nodiscard]] bool ingestActive(DatasetId dataset_id) const {
-    return active_ingests_.count(dataset_id) != 0;
-  }
-  /// Live view of every active import, keyed by dataset. Invalidated by
-  /// begin/endIngest — copy out anything that crosses an event-loop boundary.
-  [[nodiscard]] const std::unordered_map<DatasetId, ActiveIngest>& activeIngests() const noexcept {
-    return active_ingests_;
-  }
+
+  /// One live ingest as seen by a display/arbitration consumer: what it is
+  /// called, how far along it is, and whether it can be stopped. Deliberately
+  /// omits the cancel handler — reach cancellation through requestCancel(token)
+  /// so intent is recorded and the terminal outcome reports kCancelled.
+  struct ActiveIngest {
+    IngestToken token;
+    QString label;
+    quint64 current = 0;
+    quint64 total = 0;  // 0 = size unknown (indeterminate progress)
+    bool cancellable = false;
+    bool discardable = true;  // false = stopping this producer always keeps
+  };
+
+  /// Live ingests keyed by dataset. At most one entry per dataset: a new begin
+  /// on a dataset supersedes its previous token, and the superseded ingest stops
+  /// being live at that moment.
+  ///
+  /// Returned BY VALUE — a snapshot rebuilt per call, because the internal store
+  /// is keyed by IngestId, not by dataset. It does NOT track later begin/end
+  /// calls, so re-query rather than holding it across an event-loop turn.
+  [[nodiscard]] std::unordered_map<DatasetId, ActiveIngest> activeIngests() const;
+
+  /// Whether `dataset_id` has a live ingest right now. Cheaper than scanning
+  /// activeIngests() when only membership matters.
+  [[nodiscard]] bool ingestActive(DatasetId dataset_id) const;
 
   // In-place reload swap: replace `primary_id`'s scalar + object data with the
   // data staged under `staged_id` in `staged_engine`/`staged_store`, keeping the
@@ -522,13 +590,19 @@ class SessionManager : public QObject {
   // samples. Connect with qOverload<PJ::DatasetId>(...).
   void displayOffsetChanged(PJ::DatasetId dataset_id);
 
-  // Progressive bulk-import lifecycle (begin/update/endIngest). `total` == 0
-  // means the size is unknown (indeterminate). All GUI-thread; ingestProgressed
-  // fires AFTER the tick's samplesIngested publication, so an observer sees the
-  // data before the progress number that announced it.
-  void ingestBegan(PJ::DatasetId dataset_id, QString label, quint64 total);
-  void ingestProgressed(PJ::DatasetId dataset_id, quint64 current, quint64 total);
-  void ingestEnded(PJ::DatasetId dataset_id);
+  // Progressive bulk-import lifecycle: ingestBegan/Progressed/Ended carry the token.
+  // The terminal signal also carries the outcome. Fires on GUI thread. ingestProgressed
+  // fires AFTER the tick's samplesIngested publication, so an observer sees the data
+  // before the progress number that announced it.
+  void ingestBegan(PJ::IngestToken token, QString label, quint64 total, bool cancellable, bool discardable);
+  /// The user's stop was ACCEPTED and the producer has been asked to stop.
+  /// Emitted before the producer's handler runs, so the UI can acknowledge the
+  /// click immediately instead of waiting out a cooperative stop that may take
+  /// anywhere from milliseconds to seconds. `keep_partial` is what was asked
+  /// for. The terminal still arrives later as ingestEnded.
+  void ingestStopping(PJ::IngestToken token, bool keep_partial);
+  void ingestProgressed(PJ::IngestToken token, quint64 current, quint64 total);
+  void ingestEnded(PJ::IngestToken token, PJ::IngestOutcome outcome);
 
  private:
   // RefillGuard drives the transactional reload through this class's public
@@ -582,6 +656,30 @@ class SessionManager : public QObject {
   // enough). Does NOT lock itself — so locking accessors never recurse into the
   // mutex, and the returned pointer stays valid only while that lock is held.
   [[nodiscard]] const ObjectParserSlot* findValidParserSlotLocked(ObjectTopicId id) const;
+
+  struct ActiveIngestEntry {
+    // The live token id for this dataset. A call carrying any other id names a
+    // superseded run and is ignored (see liveEntry).
+    IngestId id = 0;
+    QString label;
+    quint64 current = 0;
+    quint64 total = 0;  // 0 = size unknown (indeterminate progress)
+    bool cancellable = false;
+    bool discardable = true;
+    bool cancel_requested = false;
+    // Wall-clock ms when the user asked to stop, or 0. Only for the
+    // pj.runtime.ingest.cancel diagnostic: a cooperative stop is only observed
+    // by the producer at its next chunk boundary, so the gap between this and
+    // the terminal IS the delay the user feels after clicking.
+    qint64 cancel_requested_ms = 0;
+    IngestCancelFn on_cancel;
+  };
+
+  // The dataset's live ingest, or null when `token` names none: an id that is
+  // not the dataset's current one belongs to a superseded run, and a token of 0
+  // names nothing at all. THE staleness rule — updateIngest, endIngest and
+  // requestCancel all ask here rather than re-deriving it.
+  [[nodiscard]] ActiveIngestEntry* liveEntry(IngestToken token);
 
   DataEngine data_engine_;
   ObjectStore object_store_;
@@ -641,10 +739,15 @@ class SessionManager : public QObject {
   // on removeDataset, invalidated for every contributor of a successful
   // destructive merge (the anchor included).
   std::unordered_map<DatasetId, SourceRecord> dataset_source_records_;
-  // Datasets currently receiving a progressive toolbox import
-  // (beginIngest -> endIngest). Lifecycle state only; presentation and
-  // stop-routing live in the app layer.
-  std::unordered_map<DatasetId, ActiveIngest> active_ingests_;
+  // Datasets currently receiving a progressive import, at most one each: a
+  // dataset IS the identity of its live ingest, and the entry carries the token
+  // id that owns it. Lifecycle: inserted by beginIngest (id minted monotonic),
+  // erased by endIngest or by the next beginIngest on the same dataset, which
+  // supersedes it. Keying by dataset is what makes a late call from a
+  // superseded run a lookup miss rather than a stale entry to trip over.
+  std::unordered_map<DatasetId, ActiveIngestEntry> active_ingests_;
+  // Monotonically increasing ingest id source (never 0).
+  IngestId next_ingest_id_ = 1;
   std::vector<LoadedSource> loaded_sources_;
 };
 
@@ -703,3 +806,8 @@ class RefillGuard {
 };
 
 }  // namespace PJ
+
+// The ingest signals carry these by value. Registration is what lets them cross
+// a queued connection and be read back out of a QVariant (QSignalSpy does both).
+Q_DECLARE_METATYPE(PJ::IngestToken)
+Q_DECLARE_METATYPE(PJ::IngestOutcome)

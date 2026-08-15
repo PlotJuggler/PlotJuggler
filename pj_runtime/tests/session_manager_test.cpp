@@ -1463,45 +1463,51 @@ TEST(SessionManagerIngestTest, BeginUpdateEndTracksActiveSetAndEmits) {
   int progressed = 0;
   int ended = 0;
   QObject::connect(
-      &session, &PJ::SessionManager::ingestBegan, &session, [&](PJ::DatasetId id, const QString& label, quint64 total) {
+      &session, &PJ::SessionManager::ingestBegan, &session,
+      [&](PJ::IngestToken token, const QString& label, quint64 total) {
         ++began;
-        EXPECT_EQ(id, 7U);
+        EXPECT_EQ(token.dataset_id, 7U);
+        EXPECT_NE(token.id, 0U);
         EXPECT_EQ(label, u"Cloud import"_s);
         EXPECT_EQ(total, 100U);
       });
   QObject::connect(
-      &session, &PJ::SessionManager::ingestProgressed, &session, [&](PJ::DatasetId id, quint64 current, quint64 total) {
+      &session, &PJ::SessionManager::ingestProgressed, &session,
+      [&](PJ::IngestToken token, quint64 current, quint64 total) {
         ++progressed;
-        EXPECT_EQ(id, 7U);
+        EXPECT_EQ(token.dataset_id, 7U);
         EXPECT_EQ(current, 50U);
         EXPECT_EQ(total, 200U);
       });
-  QObject::connect(&session, &PJ::SessionManager::ingestEnded, &session, [&](PJ::DatasetId id) {
-    ++ended;
-    EXPECT_EQ(id, 7U);
-  });
+  QObject::connect(
+      &session, &PJ::SessionManager::ingestEnded, &session, [&](PJ::IngestToken token, PJ::IngestOutcome outcome) {
+        ++ended;
+        EXPECT_EQ(token.dataset_id, 7U);
+        EXPECT_EQ(outcome, PJ::IngestOutcome::kCompleted);
+      });
 
-  session.beginIngest(7, u"Cloud import"_s, 100);
+  const PJ::IngestToken token = session.beginIngest(7, u"Cloud import"_s, 100, /*cancellable=*/false, nullptr);
   EXPECT_EQ(began, 1);
   EXPECT_TRUE(session.hasActiveIngests());
   EXPECT_TRUE(session.ingestActive(7));
   EXPECT_FALSE(session.ingestActive(8));
   ASSERT_EQ(session.activeIngests().size(), 1U);
-  const auto& entry = session.activeIngests().at(7);
+  const auto entry = session.activeIngests().at(7);
   EXPECT_EQ(entry.label, u"Cloud import"_s);
   EXPECT_EQ(entry.current, 0U);
   EXPECT_EQ(entry.total, 100U);
+  EXPECT_EQ(entry.token.id, token.id);
 
-  session.updateIngest(7, 50, 200);  // total may be refined mid-flight
+  session.updateIngest(token, 50, 200);  // total may be refined mid-flight
   EXPECT_EQ(progressed, 1);
   EXPECT_EQ(session.activeIngests().at(7).current, 50U);
   EXPECT_EQ(session.activeIngests().at(7).total, 200U);
 
-  session.endIngest(7);
+  session.endIngest(token, PJ::IngestOutcome::kCompleted);
   EXPECT_EQ(ended, 1);
   EXPECT_FALSE(session.hasActiveIngests());
   EXPECT_FALSE(session.ingestActive(7));
-  session.endIngest(7);  // idempotent: an unknown/already-ended dataset is silent
+  session.endIngest(token, PJ::IngestOutcome::kCompleted);  // idempotent: an already-ended token is silent
   EXPECT_EQ(ended, 1);
 }
 
@@ -1521,8 +1527,8 @@ TEST(SessionManagerIngestTest, UpdateIngestPublishesDatasetTopicsViaNotifyIngest
         EXPECT_EQ(std::vector<PJ::TopicId>(ids.begin(), ids.end()), expected_topics);
       });
 
-  session.beginIngest(*dataset, u"import"_s, 0);
-  session.updateIngest(*dataset, 1, 2);
+  const PJ::IngestToken token = session.beginIngest(*dataset, u"import"_s, 0, /*cancellable=*/false, nullptr);
+  session.updateIngest(token, 1, 2);
   EXPECT_EQ(publications, 1) << "updateIngest must publish the dataset's topics through notifyIngest";
 }
 
@@ -1537,13 +1543,14 @@ TEST(SessionManagerIngestTest, UpdateIngestForUntrackedDatasetStillPublishesButS
   QObject::connect(&session, &PJ::SessionManager::samplesIngested, &session, [&](const QVector<PJ::TopicId>&, bool) {
     ++publications;
   });
-  QObject::connect(&session, &PJ::SessionManager::ingestProgressed, &session, [&](PJ::DatasetId, quint64, quint64) {
+  QObject::connect(&session, &PJ::SessionManager::ingestProgressed, &session, [&](PJ::IngestToken, quint64, quint64) {
     ++progressed;
   });
 
-  // No beginIngest: the data publication must still happen (a lifecycle ordering
-  // slip must never drop flushed rows), but no lifecycle signal fires.
-  session.updateIngest(*dataset, 1, 2);
+  // No beginIngest, so the token names an ingest the session never tracked: the
+  // data publication must STILL happen (a lifecycle ordering slip must never
+  // drop flushed rows), but no lifecycle signal fires.
+  session.updateIngest(PJ::IngestToken{.id = 999, .dataset_id = *dataset}, 1, 2);
   EXPECT_EQ(publications, 1);
   EXPECT_EQ(progressed, 0);
   EXPECT_FALSE(session.hasActiveIngests());

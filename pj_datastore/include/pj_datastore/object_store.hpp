@@ -206,9 +206,11 @@ class ObjectStore {
   // to the last one seen. This is the only arrival-order read primitive — for a
   // consumer that must ingest each new entry exactly once into an order-independent
   // sink (e.g. the TF buffer), catching late/out-of-order arrivals a time window
-  // would miss. Eviction-safe: an entry dropped before it resolves is skipped but
-  // still advances `cursor`, so it is never revisited. For "state at time t" use
-  // rangeByTime()/latestAt() — never a UID as a time bound.
+  // would miss. Eviction-safe: the batch is snapshotted under ONE brief pass of the
+  // locks, so retention cannot drop an entry out from under the walk; the payloads
+  // are then resolved with NO lock held, so a slow lazy fetch stalls neither this
+  // series' writers nor readers of unrelated topics.
+  // For "state at time t" use rangeByTime()/latestAt() — never a UID as a time bound.
   std::vector<ResolvedObjectEntry> drainNewSince(ObjectTopicId id, SequentialUID& cursor) const;
 
   // The largest sequential_uid among entries with timestamp <= t, or the invalid

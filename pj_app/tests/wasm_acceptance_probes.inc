@@ -8,6 +8,7 @@
 
 #include <functional>
 
+#include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
 
 namespace {
@@ -356,8 +357,37 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_ingest_controls() {
     const auto center = [main_window](QWidget* widget) {
       return main_window->mapFromGlobal(widget->mapToGlobal(widget->rect().center()));
     };
+    // The per-dataset row affordances are where a stop is expressed: ✕ keeps
+    // what arrived, the bin discards it, and the CHOICE is the click — there is
+    // no follow-up dialog. Reported through the view's own hit-test, so this
+    // can only ever name a point a click would honour.
+    for (auto* tree : main_window->findChildren<PJ::CurveTreeView*>()) {
+      if (!tree->isVisibleTo(main_window)) {
+        continue;
+      }
+      const PJ::CurveTreeView::StopButtonPoints points = tree->activeStopButtonPoints();
+      const auto to_window = [main_window, tree](const QPoint& viewport_point) {
+        return main_window->mapFromGlobal(tree->viewport()->mapToGlobal(viewport_point));
+      };
+      if (points.keep.x() >= 0) {
+        keep_center = to_window(points.keep);
+        stop_center = keep_center;  // the row IS the stop affordance
+      }
+      if (points.discard.x() >= 0) {
+        remove_center = to_window(points.discard);
+        if (stop_center.x() < 0) {
+          stop_center = remove_center;
+        }
+      }
+      if (stop_center.x() >= 0) {
+        break;
+      }
+    }
+    // The title-bar strip is retained but suppressed (kShowTitleBarIngestStrip);
+    // still reported when something shows it, so this probe keeps describing
+    // whatever stop affordance is actually on screen.
     auto* stop = main_window->findChild<QToolButton*>(u"ingestPrimaryButton"_s);
-    if (stop != nullptr && stop->isVisibleTo(main_window)) {
+    if (stop_center.x() < 0 && stop != nullptr && stop->isVisibleTo(main_window)) {
       stop_center = center(stop);
     }
     auto* decision = qobject_cast<PJ::MessageBox*>(QApplication::activeModalWidget());

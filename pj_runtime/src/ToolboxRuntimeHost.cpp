@@ -293,7 +293,7 @@ bool ToolboxRuntimeHost::onCreateParserIngest(
       }
       auto progress = progress_slot;
       const auto hook_ds = static_cast<DatasetId>(data_source_id);
-      raw->on_progress_start = [self, hook_ds, progress](std::string_view label, uint64_t total, bool /*cancellable*/) {
+      raw->on_progress_start = [self, hook_ds, progress](std::string_view label, uint64_t total, bool cancellable) {
         try {
           progress->total.store(total);
           // Re-arm: bump the generation and go active in ONE atomic word, so
@@ -307,9 +307,9 @@ bool ToolboxRuntimeHost::onCreateParserIngest(
           } while (!progress->state.compare_exchange_weak(prev, armed, std::memory_order_acq_rel));
           QMetaObject::invokeMethod(
               &self->marshaller_,
-              [self, hook_ds, label = std::string(label), total]() {
+              [self, hook_ds, label = std::string(label), total, cancellable]() {
                 if (self->callbacks_.on_ingest_started) {
-                  self->callbacks_.on_ingest_started(hook_ds, label, total);
+                  self->callbacks_.on_ingest_started(hook_ds, label, total, cancellable);
                 }
               },
               Qt::AutoConnection);

@@ -452,7 +452,7 @@ TEST_F(ToolboxRuntimeHostTest, ProgressHooksFlushWritesAndDriveIngestCallbacks) 
   uint32_t source_id = 0;  // assigned after createDataSource; read at callback time
 
   PJ::ToolboxRuntimeHost::Callbacks callbacks;
-  callbacks.on_ingest_started = [&started](PJ::DatasetId dataset, std::string label, uint64_t total) {
+  callbacks.on_ingest_started = [&started](PJ::DatasetId dataset, std::string label, uint64_t total, bool) {
     started.push_back({dataset, std::move(label), total});
   };
   callbacks.on_ingest_progress = [&, this](PJ::DatasetId dataset, uint64_t current, uint64_t total) {
@@ -646,7 +646,7 @@ TEST_F(ToolboxRuntimeHostTest, ProgressCallbacksArePairedAndMarshalled) {
   std::atomic<int> finished_calls{0};
   std::thread::id callback_thread;
   PJ::ToolboxRuntimeHost::Callbacks callbacks;
-  callbacks.on_ingest_started = [&](PJ::DatasetId, std::string, uint64_t) {
+  callbacks.on_ingest_started = [&](PJ::DatasetId, std::string, uint64_t, bool) {
     callback_thread = std::this_thread::get_id();
     ++started_calls;
   };
@@ -741,7 +741,7 @@ TEST_F(ToolboxRuntimeHostTest, TeardownWithActiveProgressFiresFinished) {
   std::atomic<int> started_calls{0};
   std::atomic<int> finished_calls{0};
   PJ::ToolboxRuntimeHost::Callbacks callbacks;
-  callbacks.on_ingest_started = [&](PJ::DatasetId, std::string, uint64_t) { ++started_calls; };
+  callbacks.on_ingest_started = [&](PJ::DatasetId, std::string, uint64_t, bool) { ++started_calls; };
   callbacks.on_ingest_finished = [&](PJ::DatasetId) { ++finished_calls; };
   StartedIngest ingest;
   ASSERT_NO_FATAL_FAILURE(startHermeticIngest(std::move(callbacks), ingest));
@@ -764,7 +764,7 @@ TEST_F(ToolboxRuntimeHostTest, RearmedImportSwallowsSupersededQueuedFinish) {
   std::atomic<int> started_calls{0};
   std::atomic<int> finished_calls{0};
   PJ::ToolboxRuntimeHost::Callbacks callbacks;
-  callbacks.on_ingest_started = [&](PJ::DatasetId, std::string, uint64_t) { ++started_calls; };
+  callbacks.on_ingest_started = [&](PJ::DatasetId, std::string, uint64_t, bool) { ++started_calls; };
   callbacks.on_ingest_finished = [&](PJ::DatasetId) { ++finished_calls; };
   StartedIngest ingest;
   ASSERT_NO_FATAL_FAILURE(startHermeticIngest(std::move(callbacks), ingest));
@@ -798,7 +798,7 @@ TEST_F(ToolboxRuntimeHostTest, RecreatedContextStaysTrackedAfterPriorTerminalDel
   std::atomic<int> started_calls{0};
   std::atomic<int> finished_calls{0};
   PJ::ToolboxRuntimeHost::Callbacks callbacks;
-  callbacks.on_ingest_started = [&](PJ::DatasetId, std::string, uint64_t) { ++started_calls; };
+  callbacks.on_ingest_started = [&](PJ::DatasetId, std::string, uint64_t, bool) { ++started_calls; };
   callbacks.on_ingest_finished = [&](PJ::DatasetId) { ++finished_calls; };
   StartedIngest ingest;
   ASSERT_NO_FATAL_FAILURE(startHermeticIngest(std::move(callbacks), ingest));
@@ -840,7 +840,7 @@ TEST_F(ToolboxRuntimeHostTest, StaleQueuedFinishCannotStealNewerSequencesTermina
   std::vector<std::string> order;  // host-thread callback order
   int keyed_active = 0;            // dataset-keyed mock: begin -> restart entry, finish -> erase
   PJ::ToolboxRuntimeHost::Callbacks callbacks;
-  callbacks.on_ingest_started = [&](PJ::DatasetId, std::string, uint64_t) {
+  callbacks.on_ingest_started = [&](PJ::DatasetId, std::string, uint64_t, bool) {
     order.emplace_back("begin");
     keyed_active = 1;
   };
@@ -891,7 +891,7 @@ TEST_F(ToolboxRuntimeHostTest, GuiThreadReleaseFinishCannotOvertakeQueuedBegin) 
   std::vector<std::string> order;
   int keyed_active = 0;  // dataset-keyed mock: begin -> restart entry, finish -> erase
   PJ::ToolboxRuntimeHost::Callbacks callbacks;
-  callbacks.on_ingest_started = [&](PJ::DatasetId, std::string, uint64_t) {
+  callbacks.on_ingest_started = [&](PJ::DatasetId, std::string, uint64_t, bool) {
     order.emplace_back("begin");
     keyed_active = 1;
   };
@@ -923,7 +923,7 @@ TEST_F(ToolboxRuntimeHostTest, GuiThreadReleaseTwoArmVariantKeepsBeginBeforeFini
   std::vector<std::string> order;
   int keyed_active = 0;
   PJ::ToolboxRuntimeHost::Callbacks callbacks;
-  callbacks.on_ingest_started = [&](PJ::DatasetId, std::string, uint64_t) {
+  callbacks.on_ingest_started = [&](PJ::DatasetId, std::string, uint64_t, bool) {
     order.emplace_back("begin");
     keyed_active = 1;
   };

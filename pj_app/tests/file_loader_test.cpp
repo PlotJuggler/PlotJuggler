@@ -272,9 +272,21 @@ class FanoutProbeSource final : public PJ::DataSourcePluginBase {
       return PJ::unexpected(std::move(reason));
     };
 
+    // "nostart" never announces a start: the plugin ABI's progress_start and
+    // progress_update are independent slots and the host synthesizes no start,
+    // so this is a real producer shape the host must survive.
     const std::string title = "fanout-probe:" + suffix_;
-    if (auto status = runtimeHost().progressStart(title, 3, true); !status) {
-      return fail(status.error());
+    if (suffix_ != "nostart") {
+      if (auto status = runtimeHost().progressStart(title, 3, true); !status) {
+        return fail(status.error());
+      }
+    }
+
+    // Deterministic terminal-path seam: unlike the mock source's fail_start
+    // option, this failure happens after progressStart, so FileLoader has
+    // already minted an ingest token that must be ended with kFailed.
+    if (suffix_ == "fail") {
+      return fail("configured failure after progress start");
     }
 
     auto topic = writeHost().ensureTopic("fanout_probe/value");
@@ -305,7 +317,8 @@ class FanoutProbeSource final : public PJ::DataSourcePluginBase {
     }
 
     for (uint64_t index = 1; index <= 3; ++index) {
-      if (suffix_ == "progressive" && !waitForFanoutProbeProgressStep(static_cast<int>(index))) {
+      if ((suffix_ == "progressive" || suffix_ == "nostart") &&
+          !waitForFanoutProbeProgressStep(static_cast<int>(index))) {
         return fail("timed out waiting for the progressive flush rendezvous");
       }
       if (auto status = append(index); !status) {
@@ -418,6 +431,92 @@ const PJ_data_source_vtable_t* rejectingPresetVtable() {
       R"({"id":"rejecting-preset-source","name":"Rejecting Preset Source","version":"1.0.0",)"
       R"("file_extensions":[".cfgreject"]})");
 }
+
+// Records SessionManager's token-scoped ingest lifecycle. FileLoader's
+// progress callbacks cross from a worker to the GUI thread, so the session
+// signals are the authoritative surface for pairing begin/update/end.
+struct IngestLifecycleRecorder {
+  struct Began {
+    PJ::IngestToken token;
+    QString label;
+    quint64 total;
+    bool cancellable;
+  };
+
+  struct Progressed {
+    PJ::IngestToken token;
+    quint64 current;
+    quint64 total;
+  };
+
+  struct Ended {
+    PJ::IngestToken token;
+    PJ::IngestOutcome outcome;
+  };
+
+  explicit IngestLifecycleRecorder(PJ::SessionManager& session) : session_(session) {
+    connections_.push_back(
+        QObject::connect(
+            &session_, &PJ::SessionManager::ingestBegan, &session_,
+            [this](PJ::IngestToken token, const QString& label, quint64 total) {
+              bool cancellable = false;
+              const auto active = session_.activeIngests();
+              if (const auto it = active.find(token.dataset_id);
+                  it != active.end() && it->second.token.id == token.id) {
+                cancellable = it->second.cancellable;
+              }
+              began.push_back(Began{token, label, total, cancellable});
+            }));
+    connections_.push_back(
+        QObject::connect(
+            &session_, &PJ::SessionManager::ingestProgressed, &session_,
+            [this](PJ::IngestToken token, quint64 current, quint64 total) {
+              progressed.push_back(Progressed{token, current, total});
+            }));
+    connections_.push_back(
+        QObject::connect(
+            &session_, &PJ::SessionManager::ingestEnded, &session_,
+            [this](PJ::IngestToken token, PJ::IngestOutcome outcome) { ended.push_back(Ended{token, outcome}); }));
+  }
+
+  ~IngestLifecycleRecorder() {
+    for (const QMetaObject::Connection& connection : connections_) {
+      QObject::disconnect(connection);
+    }
+  }
+
+  IngestLifecycleRecorder(const IngestLifecycleRecorder&) = delete;
+  IngestLifecycleRecorder& operator=(const IngestLifecycleRecorder&) = delete;
+
+  [[nodiscard]] const Ended* endFor(PJ::IngestToken token) const {
+    const auto it = std::find_if(ended.begin(), ended.end(), [token](const Ended& event) {
+      return event.token.id == token.id && event.token.dataset_id == token.dataset_id;
+    });
+    return it == ended.end() ? nullptr : &*it;
+  }
+
+  [[nodiscard]] const Began* beginForLabel(const QString& label) const {
+    const auto it =
+        std::find_if(began.begin(), began.end(), [&label](const Began& event) { return event.label == label; });
+    return it == began.end() ? nullptr : &*it;
+  }
+
+  [[nodiscard]] std::size_t beginCountForDataset(PJ::DatasetId dataset_id) const {
+    return static_cast<std::size_t>(std::count_if(
+        began.begin(), began.end(), [dataset_id](const Began& event) { return event.token.dataset_id == dataset_id; }));
+  }
+
+  [[nodiscard]] std::size_t endCountForDataset(PJ::DatasetId dataset_id) const {
+    return static_cast<std::size_t>(std::count_if(
+        ended.begin(), ended.end(), [dataset_id](const Ended& event) { return event.token.dataset_id == dataset_id; }));
+  }
+
+  PJ::SessionManager& session_;
+  std::vector<Began> began;
+  std::vector<Progressed> progressed;
+  std::vector<Ended> ended;
+  std::vector<QMetaObject::Connection> connections_;
+};
 
 class FileLoaderTest : public ::testing::Test {
  protected:
@@ -1092,6 +1191,7 @@ TEST_F(FileLoaderTest, FanoutRemoveAllStopsAtCancelledEntryAndDropsCompletedEntr
   const QString path = makeMockFile(u"cancel.fanoutprobe"_s);
   const PJ::LoadHints hints = fanoutProbeHints(
       uR"({"__pj_fanout":["{\"display_suffix\":\"complete\"}","{\"display_suffix\":\"cancel\"}","{\"display_suffix\":\"must-not-start\"}"]})"_s);
+  IngestLifecycleRecorder ingest_lifecycle(session());
 
   bool cancel_sent = false;
   const auto cancel_connection = QObject::connect(
@@ -1121,6 +1221,24 @@ TEST_F(FileLoaderTest, FanoutRemoveAllStopsAtCancelledEntryAndDropsCompletedEntr
   EXPECT_EQ(datasetNamed("cancel/complete"), 0u);
   EXPECT_EQ(datasetNamed("cancel/cancel"), 0u);
   EXPECT_EQ(datasetNamed("cancel/must-not-start"), 0u);
+
+  ASSERT_EQ(ingest_lifecycle.began.size(), 2u);
+  ASSERT_EQ(ingest_lifecycle.ended.size(), 2u) << "every begun fanout entry must end exactly once";
+  const auto* completed_begin = ingest_lifecycle.beginForLabel(u"fanout-probe:complete"_s);
+  const auto* cancelled_begin = ingest_lifecycle.beginForLabel(u"fanout-probe:cancel"_s);
+  ASSERT_NE(completed_begin, nullptr);
+  ASSERT_NE(cancelled_begin, nullptr);
+  const auto* completed_end = ingest_lifecycle.endFor(completed_begin->token);
+  const auto* cancelled_end = ingest_lifecycle.endFor(cancelled_begin->token);
+  ASSERT_NE(completed_end, nullptr);
+  ASSERT_NE(cancelled_end, nullptr);
+  EXPECT_EQ(completed_end->outcome, PJ::IngestOutcome::kCompleted);
+  EXPECT_EQ(cancelled_end->outcome, PJ::IngestOutcome::kCancelled);
+  EXPECT_EQ(ingest_lifecycle.beginCountForDataset(completed_begin->token.dataset_id), 1u);
+  EXPECT_EQ(ingest_lifecycle.endCountForDataset(completed_begin->token.dataset_id), 1u);
+  EXPECT_EQ(ingest_lifecycle.beginCountForDataset(cancelled_begin->token.dataset_id), 1u);
+  EXPECT_EQ(ingest_lifecycle.endCountForDataset(cancelled_begin->token.dataset_id), 1u);
+  EXPECT_FALSE(session().hasActiveIngests());
 }
 
 TEST_F(FileLoaderTest, FanoutStopAndKeepStopsAtCancelledEntryAndKeepsPartialEntry) {
@@ -1128,6 +1246,7 @@ TEST_F(FileLoaderTest, FanoutStopAndKeepStopsAtCancelledEntryAndKeepsPartialEntr
   const QString path = makeMockFile(u"keep.fanoutprobe"_s);
   const PJ::LoadHints hints = fanoutProbeHints(
       uR"({"__pj_fanout":["{\"display_suffix\":\"complete\"}","{\"display_suffix\":\"cancel\"}","{\"display_suffix\":\"must-not-start\"}"]})"_s);
+  IngestLifecycleRecorder ingest_lifecycle(session());
 
   bool cancel_sent = false;
   const auto cancel_connection = QObject::connect(
@@ -1159,6 +1278,50 @@ TEST_F(FileLoaderTest, FanoutStopAndKeepStopsAtCancelledEntryAndKeepsPartialEntr
   EXPECT_EQ(singleTopicRowCount(complete), 3);
   EXPECT_EQ(singleTopicRowCount(partial), 1);
   EXPECT_EQ(datasetNamed("keep/must-not-start"), 0u);
+
+  ASSERT_EQ(ingest_lifecycle.began.size(), 2u);
+  ASSERT_EQ(ingest_lifecycle.ended.size(), 2u) << "every begun fanout entry must end exactly once";
+  const auto* completed_begin = ingest_lifecycle.beginForLabel(u"fanout-probe:complete"_s);
+  const auto* cancelled_begin = ingest_lifecycle.beginForLabel(u"fanout-probe:cancel"_s);
+  ASSERT_NE(completed_begin, nullptr);
+  ASSERT_NE(cancelled_begin, nullptr);
+  const auto* completed_end = ingest_lifecycle.endFor(completed_begin->token);
+  const auto* cancelled_end = ingest_lifecycle.endFor(cancelled_begin->token);
+  ASSERT_NE(completed_end, nullptr);
+  ASSERT_NE(cancelled_end, nullptr);
+  EXPECT_EQ(completed_end->outcome, PJ::IngestOutcome::kCompleted);
+  EXPECT_EQ(cancelled_end->outcome, PJ::IngestOutcome::kCancelled);
+  EXPECT_EQ(ingest_lifecycle.beginCountForDataset(complete), 1u);
+  EXPECT_EQ(ingest_lifecycle.endCountForDataset(complete), 1u);
+  EXPECT_EQ(ingest_lifecycle.beginCountForDataset(partial), 1u);
+  EXPECT_EQ(ingest_lifecycle.endCountForDataset(partial), 1u);
+  EXPECT_FALSE(session().hasActiveIngests());
+}
+
+TEST_F(FileLoaderTest, FanoutFailureEndsOnlyTheFailedEntryWithFailedOutcome) {
+  ASSERT_TRUE(installFanoutProbe());
+  const QString path = makeMockFile(u"failure.fanoutprobe"_s);
+  const PJ::LoadHints hints = fanoutProbeHints(
+      uR"({"__pj_fanout":["{\"display_suffix\":\"before\"}","{\"display_suffix\":\"fail\"}","{\"display_suffix\":\"after\"}"]})"_s);
+  IngestLifecycleRecorder ingest_lifecycle(session());
+
+  ASSERT_TRUE(loadAndWait(path, hints)) << "successful siblings keep a partially successful fanout load";
+
+  ASSERT_EQ(ingest_lifecycle.began.size(), 3u);
+  ASSERT_EQ(ingest_lifecycle.ended.size(), 3u) << "every begun fanout entry must end exactly once";
+  for (const auto& [label, outcome] : std::vector<std::pair<QString, PJ::IngestOutcome>>{
+           {u"fanout-probe:before"_s, PJ::IngestOutcome::kCompleted},
+           {u"fanout-probe:fail"_s, PJ::IngestOutcome::kFailed},
+           {u"fanout-probe:after"_s, PJ::IngestOutcome::kCompleted}}) {
+    const auto* began = ingest_lifecycle.beginForLabel(label);
+    ASSERT_NE(began, nullptr) << label.toStdString();
+    const auto* ended = ingest_lifecycle.endFor(began->token);
+    ASSERT_NE(ended, nullptr) << label.toStdString();
+    EXPECT_EQ(ended->outcome, outcome) << label.toStdString();
+    EXPECT_EQ(ingest_lifecycle.beginCountForDataset(began->token.dataset_id), 1u);
+    EXPECT_EQ(ingest_lifecycle.endCountForDataset(began->token.dataset_id), 1u);
+  }
+  EXPECT_FALSE(session().hasActiveIngests());
 }
 
 TEST_F(FileLoaderTest, FanoutControlLifecycleStaysOnSdkMainThread) {
@@ -1176,10 +1339,47 @@ TEST_F(FileLoaderTest, FanoutControlLifecycleStaysOnSdkMainThread) {
                                 << joinFanoutProbeCalls(off_main);
 }
 
+// A producer may tick without ever announcing a start (the plugin ABI's
+// progress_start and progress_update are independent slots). There is then no
+// ingest lifecycle to report, but the rows it committed are already visible to
+// readers, so the publish must happen anyway: dropping data because a lifecycle
+// call never arrived is the one thing this path must not do.
+TEST_F(FileLoaderTest, ProgressTickWithoutABeginStillPublishesTheDatasetRows) {
+  ASSERT_TRUE(installFanoutProbe());
+  const QString path = makeMockFile(u"nostart.fanoutprobe"_s);
+  const PJ::LoadHints hints = fanoutProbeHints(uR"({"display_suffix":"nostart"})"_s);
+  IngestLifecycleRecorder ingest_lifecycle(session());
+
+  int notifications = 0;
+  const auto ingest_connection = QObject::connect(
+      &session(), &PJ::SessionManager::samplesIngested, loader_.get(),
+      [&notifications](const QVector<PJ::TopicId>& ids, bool live) {
+        if (!live && !ids.isEmpty()) {
+          ++notifications;
+        }
+      });
+  // Space the records past the 50 ms flush throttle so the ticks really reach
+  // the GUI, the same way the progressive test paces its flushes.
+  QTimer::singleShot(100, []() { releaseFanoutProbeProgressStep(1); });
+  QTimer::singleShot(200, []() { releaseFanoutProbeProgressStep(2); });
+  QTimer::singleShot(300, []() { releaseFanoutProbeProgressStep(3); });
+
+  const bool loaded = loadAndWait(path, hints);
+  QObject::disconnect(ingest_connection);
+
+  ASSERT_TRUE(loaded);
+  EXPECT_TRUE(ingest_lifecycle.began.empty()) << "the producer never started an ingest";
+  EXPECT_GT(notifications, 0) << "a tick without a begin must still publish the dataset's committed rows";
+  const PJ::DatasetId dataset_id = datasetNamed("nostart.fanoutprobe");
+  ASSERT_NE(dataset_id, 0u);
+  EXPECT_EQ(singleTopicRowCount(dataset_id), 3);
+}
+
 TEST_F(FileLoaderTest, ProgressiveFlushNotifiesStableTopicAndRefreshesRangeEachTime) {
   ASSERT_TRUE(installFanoutProbe());
   const QString path = makeMockFile(u"progressive.fanoutprobe"_s);
   const PJ::LoadHints hints = fanoutProbeHints(uR"({"display_suffix":"progressive"})"_s);
+  IngestLifecycleRecorder ingest_lifecycle(session());
 
   int notification_count = 0;
   std::vector<int> progress_steps;
@@ -1235,6 +1435,29 @@ TEST_F(FileLoaderTest, ProgressiveFlushNotifiesStableTopicAndRefreshesRangeEachT
   EXPECT_DOUBLE_EQ(playback_max_at_step[0], 100.0e-9);
   EXPECT_DOUBLE_EQ(playback_max_at_step[1], 200.0e-9);
   EXPECT_DOUBLE_EQ(playback_max_at_step[2], 300.0e-9);
+
+  ASSERT_EQ(ingest_lifecycle.began.size(), 1u);
+  const IngestLifecycleRecorder::Began& began = ingest_lifecycle.began.front();
+  EXPECT_NE(began.token.id, 0u);
+  EXPECT_NE(began.token.dataset_id, 0u);
+  EXPECT_EQ(began.label, u"fanout-probe:progressive"_s);
+  EXPECT_EQ(began.total, 3u);
+  EXPECT_TRUE(began.cancellable) << "FileLoader must preserve the plugin's cancellable flag";
+  ASSERT_EQ(ingest_lifecycle.progressed.size(), 3u);
+  for (std::size_t index = 0; index < ingest_lifecycle.progressed.size(); ++index) {
+    const IngestLifecycleRecorder::Progressed& progress = ingest_lifecycle.progressed[index];
+    EXPECT_EQ(progress.token.id, began.token.id);
+    EXPECT_EQ(progress.token.dataset_id, began.token.dataset_id);
+    EXPECT_EQ(progress.current, index + 1);
+    EXPECT_EQ(progress.total, 3u);
+  }
+  ASSERT_EQ(ingest_lifecycle.ended.size(), 1u);
+  const auto* ended = ingest_lifecycle.endFor(began.token);
+  ASSERT_NE(ended, nullptr);
+  EXPECT_EQ(ended->outcome, PJ::IngestOutcome::kCompleted);
+  EXPECT_EQ(ingest_lifecycle.beginCountForDataset(began.token.dataset_id), 1u);
+  EXPECT_EQ(ingest_lifecycle.endCountForDataset(began.token.dataset_id), 1u);
+  EXPECT_FALSE(session().hasActiveIngests());
 }
 
 TEST_F(FileLoaderTest, FailedFirstLoadErasesAbandonedLiveDatasetBeforePreferReuseReload) {
@@ -1646,6 +1869,7 @@ void pumpUntilIdle(PJ::FileLoader& loader) {
 
 TEST_F(FileLoaderTest, TicketedLoadReportsLoadedExactlyOnce) {
   LoadFinishedRecorder recorder(*loader_);
+  IngestLifecycleRecorder ingest_lifecycle(session());
   int legacy_loaded = 0;
   QObject::connect(
       loader_.get(), &PJ::FileLoader::fileLoaded, loader_.get(),
@@ -1666,6 +1890,21 @@ TEST_F(FileLoaderTest, TicketedLoadReportsLoadedExactlyOnce) {
   EXPECT_EQ(recorder.events[0].produced, QVector<PJ::DatasetId>{dataset_id});
   EXPECT_EQ(legacy_loaded, 1) << "legacy fileLoaded stays untouched";
   EXPECT_EQ(loader_->currentLoadTicket(), 0u) << "idle again after the drain";
+
+  ASSERT_EQ(ingest_lifecycle.began.size(), 1u);
+  const IngestLifecycleRecorder::Began& began = ingest_lifecycle.began.front();
+  EXPECT_NE(began.token.id, 0u);
+  EXPECT_EQ(began.token.dataset_id, dataset_id);
+  EXPECT_EQ(began.label, u"Importing"_s);
+  EXPECT_EQ(began.total, 3u);
+  EXPECT_TRUE(began.cancellable);
+  ASSERT_EQ(ingest_lifecycle.ended.size(), 1u);
+  const auto* ended = ingest_lifecycle.endFor(began.token);
+  ASSERT_NE(ended, nullptr);
+  EXPECT_EQ(ended->outcome, PJ::IngestOutcome::kCompleted);
+  EXPECT_EQ(ingest_lifecycle.beginCountForDataset(dataset_id), 1u);
+  EXPECT_EQ(ingest_lifecycle.endCountForDataset(dataset_id), 1u);
+  EXPECT_FALSE(session().hasActiveIngests());
 }
 
 TEST_F(FileLoaderTest, TicketedLoadRejectionReturnsZeroWithoutLoadFinished) {
@@ -1717,6 +1956,32 @@ TEST_F(FileLoaderTest, TicketedWorkerStartFailureReportsFailedExactlyOnce) {
   EXPECT_EQ(recorder.events[0].dataset_id, 0u) << "a failed load leaves no dataset behind";
 }
 
+TEST_F(FileLoaderTest, SingleInstanceFailureAfterBeginEndsIngestAsFailed) {
+  ASSERT_TRUE(installFanoutProbe());
+  const QString path = makeMockFile(u"single_fail.fanoutprobe"_s);
+  LoadFinishedRecorder load_recorder(*loader_);
+  IngestLifecycleRecorder ingest_lifecycle(session());
+
+  const quint64 ticket = loader_->loadFileTicketed(
+      PJ::LoadInput::fromNativePath(path), nullptr, fanoutProbeHints(uR"({"display_suffix":"fail"})"_s));
+  ASSERT_NE(ticket, 0u);
+  pumpUntilIdle(*loader_);
+
+  ASSERT_EQ(load_recorder.events.size(), 1u);
+  EXPECT_EQ(load_recorder.events.front().outcome, PJ::LoadOutcome::kFailed);
+  ASSERT_EQ(ingest_lifecycle.began.size(), 1u);
+  ASSERT_EQ(ingest_lifecycle.ended.size(), 1u);
+  const IngestLifecycleRecorder::Began& began = ingest_lifecycle.began.front();
+  EXPECT_EQ(began.label, u"fanout-probe:fail"_s);
+  EXPECT_TRUE(began.cancellable);
+  const auto* ended = ingest_lifecycle.endFor(began.token);
+  ASSERT_NE(ended, nullptr);
+  EXPECT_EQ(ended->outcome, PJ::IngestOutcome::kFailed);
+  EXPECT_EQ(ingest_lifecycle.beginCountForDataset(began.token.dataset_id), 1u);
+  EXPECT_EQ(ingest_lifecycle.endCountForDataset(began.token.dataset_id), 1u);
+  EXPECT_FALSE(session().hasActiveIngests());
+}
+
 TEST_F(FileLoaderTest, CancelQueuedTicketResolvesCancelledWithoutStarting) {
   const QString a = makeMockFile(u"ticket_qa.mock"_s);
   const QString b = makeMockFile(u"ticket_qb.mock"_s);
@@ -1750,21 +2015,83 @@ TEST_F(FileLoaderTest, CancelQueuedTicketResolvesCancelledWithoutStarting) {
   EXPECT_EQ(datasetNamed("ticket_qb.mock"), 0u) << "the cancelled queued request must never load";
 }
 
+// Discard means "as if this load had never run", so what it leaves behind is
+// whatever was there BEFORE it: on a REPLACING reload that is the pre-reload
+// data, restored in place. (A first-load discard has nothing prior and deletes
+// the dataset — CancelActiveTicketDiscardReportsCancelledExactlyOnce.)
+TEST_F(FileLoaderTest, ReplacingReloadDiscardRestoresPriorData) {
+  ASSERT_TRUE(installFanoutProbe());
+  const QString path = makeMockFile(u"reload_discard.fanoutprobe"_s);
+  LoadFinishedRecorder recorder(*loader_);
+
+  // First load: a plain entry that runs to completion, so the dataset exists.
+  // The "cancel" entry cannot serve here — it reports a failed start whether or
+  // not the rendezvous cancels, so it never commits a dataset to reload.
+  ASSERT_TRUE(loadAndWait(path, fanoutProbeHints(uR"({"display_suffix":"initial"})"_s)));
+  const PJ::DatasetId dataset_id = datasetNamed("reload_discard.fanoutprobe");
+  ASSERT_NE(dataset_id, 0u) << "the first load must have committed a dataset";
+  ASSERT_EQ(session().createReader().listDatasets().size(), 1u);
+  ASSERT_EQ(singleTopicRowCount(dataset_id), 3) << "the first load must have committed its rows";
+  const std::size_t catalog_items_before = catalog().items().size();
+  ASSERT_GT(catalog_items_before, 0u);
+
+  // Reload the same file (replaces in place) and discard mid-flight. The probe's
+  // cancel entry appends one row before parking, so a failure to roll back shows
+  // up as a row count of 1 rather than the restored 3.
+  bool cancel_sent = false;
+  const auto cancel_connection = QObject::connect(
+      &session(), &PJ::SessionManager::ingestBegan, loader_.get(),
+      [this, &cancel_sent](PJ::IngestToken token, const QString& label, quint64) {
+        if (label != u"fanout-probe:cancel"_s || cancel_sent) {
+          return;
+        }
+        cancel_sent = true;
+        EXPECT_TRUE(session().requestCancel(token, /*keep_partial=*/false));
+        releaseFanoutProbeCancelEntry();
+      });
+  const quint64 reload_ticket = loader_->loadFileTicketed(
+      PJ::LoadInput::fromNativePath(path), nullptr, fanoutProbeHints(uR"({"display_suffix":"cancel"})"_s));
+  ASSERT_NE(reload_ticket, 0u);
+  pumpUntilIdle(*loader_);
+  QObject::disconnect(cancel_connection);
+  ASSERT_TRUE(cancel_sent) << "the reload never reached its cancellation rendezvous";
+
+  // The dataset survives with exactly its pre-reload contents, and none of the
+  // abandoned reload's partial rows.
+  EXPECT_EQ(datasetNamed("reload_discard.fanoutprobe"), dataset_id) << "the dataset must survive with its id";
+  EXPECT_TRUE(engineHasDataset(dataset_id));
+  EXPECT_EQ(session().createReader().listDatasets().size(), 1u) << "the discard must not mint a second dataset";
+  EXPECT_EQ(singleTopicRowCount(dataset_id), 3) << "the pre-reload rows must be restored, not the partial refill";
+  EXPECT_EQ(catalog().items().size(), catalog_items_before) << "the catalog row must survive the discard";
+  EXPECT_FALSE(session().hasActiveIngests());
+  EXPECT_FALSE(loader_->isBusy());
+
+  // Exactly one terminal for the reload, reported as cancelled.
+  ASSERT_EQ(recorder.countForTicket(reload_ticket), 1u);
+  const auto reload_event = std::find_if(
+      recorder.events.begin(), recorder.events.end(),
+      [reload_ticket](const auto& event) { return event.ticket == reload_ticket; });
+  ASSERT_NE(reload_event, recorder.events.end());
+  EXPECT_EQ(reload_event->outcome, PJ::LoadOutcome::kCancelled);
+}
+
 TEST_F(FileLoaderTest, CancelActiveTicketDiscardReportsCancelledExactlyOnce) {
   ASSERT_TRUE(installFanoutProbe());
   const QString path = makeMockFile(u"ticket_cancel.fanoutprobe"_s);
   LoadFinishedRecorder recorder(*loader_);
+  IngestLifecycleRecorder ingest_lifecycle(session());
 
   quint64 ticket = 0;
   bool cancel_sent = false;
   const auto cancel_connection = QObject::connect(
-      loader_.get(), &PJ::FileLoader::ingestStarted, loader_.get(),
-      [this, &ticket, &cancel_sent](const QString&, int, int, bool) {
-        if (cancel_sent) {
+      &session(), &PJ::SessionManager::ingestBegan, loader_.get(),
+      [this, &cancel_sent](PJ::IngestToken token, const QString& label, quint64) {
+        if (label != u"fanout-probe:cancel"_s || cancel_sent) {
           return;
         }
         cancel_sent = true;
-        EXPECT_TRUE(loader_->cancelLoad(ticket, /*keep_partial=*/false));
+        EXPECT_TRUE(session().requestCancel(token, /*keep_partial=*/false))
+            << "the FileLoader beginIngest cancel handler must route to cancelCurrent";
         releaseFanoutProbeCancelEntry();
       });
 
@@ -1785,12 +2112,24 @@ TEST_F(FileLoaderTest, CancelActiveTicketDiscardReportsCancelledExactlyOnce) {
   EXPECT_TRUE(recorder.events[0].produced.isEmpty());
   EXPECT_EQ(datasetNamed("ticket_cancel.fanoutprobe"), 0u) << "discard must drop the partial dataset";
   EXPECT_FALSE(loader_->cancelLoad(ticket)) << "cancelling an already-terminal ticket is a no-op";
+
+  ASSERT_EQ(ingest_lifecycle.began.size(), 1u);
+  const IngestLifecycleRecorder::Began& began = ingest_lifecycle.began.front();
+  EXPECT_TRUE(began.cancellable);
+  ASSERT_EQ(ingest_lifecycle.ended.size(), 1u);
+  const auto* ended = ingest_lifecycle.endFor(began.token);
+  ASSERT_NE(ended, nullptr);
+  EXPECT_EQ(ended->outcome, PJ::IngestOutcome::kCancelled);
+  EXPECT_EQ(ingest_lifecycle.beginCountForDataset(began.token.dataset_id), 1u);
+  EXPECT_EQ(ingest_lifecycle.endCountForDataset(began.token.dataset_id), 1u);
+  EXPECT_FALSE(session().hasActiveIngests());
 }
 
 TEST_F(FileLoaderTest, CancelActiveTicketKeepPartialReportsCancelledWithKeptDataset) {
   ASSERT_TRUE(installFanoutProbe());
   const QString path = makeMockFile(u"ticket_keep.fanoutprobe"_s);
   LoadFinishedRecorder recorder(*loader_);
+  IngestLifecycleRecorder ingest_lifecycle(session());
   int legacy_loaded = 0;
   QObject::connect(
       loader_.get(), &PJ::FileLoader::fileLoaded, loader_.get(),
@@ -1803,13 +2142,14 @@ TEST_F(FileLoaderTest, CancelActiveTicketKeepPartialReportsCancelledWithKeptData
   quint64 ticket = 0;
   bool cancel_sent = false;
   const auto cancel_connection = QObject::connect(
-      loader_.get(), &PJ::FileLoader::ingestStarted, loader_.get(),
-      [this, &ticket, &cancel_sent](const QString&, int, int, bool) {
-        if (cancel_sent) {
+      &session(), &PJ::SessionManager::ingestBegan, loader_.get(),
+      [this, &cancel_sent](PJ::IngestToken token, const QString& label, quint64) {
+        if (label != u"fanout-probe:cancel"_s || cancel_sent) {
           return;
         }
         cancel_sent = true;
-        EXPECT_TRUE(loader_->cancelLoad(ticket, /*keep_partial=*/true));
+        EXPECT_TRUE(session().requestCancel(token, /*keep_partial=*/true))
+            << "the FileLoader beginIngest cancel handler must preserve keep_partial";
         releaseFanoutProbeCancelEntry();
       });
 
@@ -1829,6 +2169,18 @@ TEST_F(FileLoaderTest, CancelActiveTicketKeepPartialReportsCancelledWithKeptData
   EXPECT_EQ(singleTopicRowCount(kept), 1) << "the partial row parsed before the stop is kept";
   EXPECT_EQ(legacy_loaded, 1) << "keep-partial still finalizes through the legacy fileLoaded";
   EXPECT_EQ(committing, 0) << "the pre-catalog commit seam fires only for fully-loaded requests";
+
+  ASSERT_EQ(ingest_lifecycle.began.size(), 1u);
+  const IngestLifecycleRecorder::Began& began = ingest_lifecycle.began.front();
+  EXPECT_TRUE(began.cancellable);
+  EXPECT_EQ(began.token.dataset_id, kept);
+  ASSERT_EQ(ingest_lifecycle.ended.size(), 1u);
+  const auto* ended = ingest_lifecycle.endFor(began.token);
+  ASSERT_NE(ended, nullptr);
+  EXPECT_EQ(ended->outcome, PJ::IngestOutcome::kCancelled);
+  EXPECT_EQ(ingest_lifecycle.beginCountForDataset(kept), 1u);
+  EXPECT_EQ(ingest_lifecycle.endCountForDataset(kept), 1u);
+  EXPECT_FALSE(session().hasActiveIngests());
 }
 
 TEST_F(FileLoaderTest, CancelUnknownTicketIsANoOp) {
@@ -2251,6 +2603,7 @@ TEST_F(FileLoaderTest, FailedReplaceKeepsSourceRecord) {
 TEST_F(FileLoaderTest, FanoutLoadReportsAllProducedDatasets) {
   const QString path = makeMockFile(u"ticket_fan.mock"_s);
   LoadFinishedRecorder recorder(*loader_);
+  IngestLifecycleRecorder ingest_lifecycle(session());
   const PJ::LoadHints hints =
       loadHints(uR"({"__pj_fanout":["{\"display_suffix\":\"left\"}","{\"display_suffix\":\"right\"}"]})"_s);
 
@@ -2269,6 +2622,23 @@ TEST_F(FileLoaderTest, FanoutLoadReportsAllProducedDatasets) {
   EXPECT_EQ(recorder.events[0].dataset_id, recorder.events[0].produced.front());
   EXPECT_TRUE(recorder.events[0].produced.contains(left));
   EXPECT_TRUE(recorder.events[0].produced.contains(right));
+
+  ASSERT_EQ(ingest_lifecycle.began.size(), 2u);
+  ASSERT_EQ(ingest_lifecycle.ended.size(), 2u) << "one begin/end pair is required per fanout dataset";
+  for (const PJ::DatasetId dataset_id : {left, right}) {
+    EXPECT_EQ(ingest_lifecycle.beginCountForDataset(dataset_id), 1u);
+    EXPECT_EQ(ingest_lifecycle.endCountForDataset(dataset_id), 1u);
+    const auto began = std::find_if(
+        ingest_lifecycle.began.begin(), ingest_lifecycle.began.end(),
+        [dataset_id](const auto& event) { return event.token.dataset_id == dataset_id; });
+    ASSERT_NE(began, ingest_lifecycle.began.end());
+    EXPECT_NE(began->token.id, 0u);
+    EXPECT_TRUE(began->cancellable);
+    const auto* ended = ingest_lifecycle.endFor(began->token);
+    ASSERT_NE(ended, nullptr);
+    EXPECT_EQ(ended->outcome, PJ::IngestOutcome::kCompleted);
+  }
+  EXPECT_FALSE(session().hasActiveIngests());
 }
 
 // The pre-catalog commit seam: loadCommitting fires synchronously while a

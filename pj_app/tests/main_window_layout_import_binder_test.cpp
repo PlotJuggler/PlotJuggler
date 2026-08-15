@@ -29,6 +29,7 @@
 #include <QDomElement>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
@@ -140,6 +141,7 @@ class MainWindowLayoutImportBinderTest : public ::testing::Test {
   void SetUp() override {
     diagnostic_ids_.clear();
     pj_fake_import::g_log.clear();
+    ingest_tokens_.clear();
   }
 
   void TearDown() override {
@@ -169,6 +171,26 @@ class MainWindowLayoutImportBinderTest : public ::testing::Test {
   [[nodiscard]] static PJ::SessionManager& sessionManager() {
     return appSession().sessionManager();
   }
+
+  // The ingest API is addressed by IngestToken, but every scenario below is
+  // written in terms of the dataset the batch announced. These remember the
+  // token minted for each dataset so the tests keep reading as "this dataset
+  // progressed", exactly as the production callbacks do via their own per-
+  // dataset token maps. Cleared per test by the fixture's SetUp.
+  static PJ::IngestToken beginIngestFor(PJ::DatasetId dataset, const QString& label, quint64 total) {
+    const PJ::IngestToken token = sessionManager().beginIngest(dataset, label, total, /*cancellable=*/false, {});
+    ingest_tokens_[dataset] = token;
+    return token;
+  }
+  static void updateIngestFor(PJ::DatasetId dataset, quint64 current, quint64 total) {
+    sessionManager().updateIngest(ingest_tokens_.value(dataset), current, total);
+  }
+  static void endIngestFor(PJ::DatasetId dataset) {
+    sessionManager().endIngest(ingest_tokens_.value(dataset), PJ::IngestOutcome::kUnknown);
+    ingest_tokens_.remove(dataset);
+  }
+
+  static inline QHash<PJ::DatasetId, PJ::IngestToken> ingest_tokens_;
 
   // Missing-source materialize layout whose import job announces its dataset
   // and then PARKS on the resume gate; loads it kAutomated and waits for the
@@ -271,17 +293,17 @@ TEST_F(MainWindowLayoutImportBinderTest, BatchIngestDisplaysOnStripAndObserversA
   EXPECT_EQ(Peer::stripOwnerKind(window()), StripOwnerKind::kNone) << "no ingest began yet";
   EXPECT_FALSE(Peer::stripEngaged(window()));
 
-  sessionManager().beginIngest(dataset, QStringLiteral("Fetching a.mcap"), 100);
+  beginIngestFor(dataset, QStringLiteral("Fetching a.mcap"), 100);
   EXPECT_EQ(Peer::stripOwnerKind(window()), StripOwnerKind::kLayoutBatch);
   EXPECT_EQ(Peer::stripOwnerDataset(window()), dataset);
   EXPECT_TRUE(Peer::stripEngaged(window()));
   EXPECT_EQ(Peer::stripTitle(window()), QStringLiteral("Fetching a.mcap"));
 
-  sessionManager().updateIngest(dataset, 50, 100);
+  updateIngestFor(dataset, 50, 100);
   EXPECT_EQ(Peer::stripProgressMaximum(window()), kProgressResolution);
   EXPECT_EQ(Peer::stripProgressValue(window()), kProgressResolution / 2);
 
-  sessionManager().endIngest(dataset);
+  endIngestFor(dataset);
   EXPECT_EQ(Peer::stripOwnerKind(window()), StripOwnerKind::kNone) << "no survivor -> ownership cleared";
   EXPECT_EQ(Peer::batchObserverCount(window()), 3) << "the batch itself is still running";
   ASSERT_TRUE(pumpUntil([]() { return !Peer::stripEngaged(window()); })) << "the strip must linger-hide";
@@ -329,12 +351,12 @@ TEST_F(MainWindowLayoutImportBinderTest, StripStopRoutesToActiveJobKeepPartialAn
   }));
   const PJ::DatasetId dataset = Peer::batch(window())->activeImportDataset().value();
 
-  sessionManager().beginIngest(dataset, QStringLiteral("batch-b"), 0);
+  beginIngestFor(dataset, QStringLiteral("batch-b"), 0);
   ASSERT_EQ(Peer::stripOwnerKind(window()), StripOwnerKind::kLayoutBatch);
 
   ASSERT_TRUE(Peer::clickStripStop(window()));
   // The ingest teardown that follows a cancelled job in production.
-  sessionManager().endIngest(dataset);
+  endIngestFor(dataset);
   ASSERT_TRUE(pumpUntil([]() { return !Peer::progressiveInFlight(window()); }));
   flushQueuedEvents();
 
@@ -360,20 +382,20 @@ TEST_F(MainWindowLayoutImportBinderTest, StripStopRoutesToActiveJobKeepPartialAn
 TEST_F(MainWindowLayoutImportBinderTest, InteractiveIngestOutranksBatchAndStripSwitchesToSurvivor) {
   const PJ::DatasetId batch_dataset = startParkedBatchJob(QStringLiteral("d"));
   ASSERT_NE(batch_dataset, 0u);
-  sessionManager().beginIngest(batch_dataset, QStringLiteral("batch-d"), 0);
+  beginIngestFor(batch_dataset, QStringLiteral("batch-d"), 0);
   ASSERT_EQ(Peer::stripOwnerKind(window()), StripOwnerKind::kLayoutBatch);
 
   const PJ::DatasetId interactive = pj_test::createDataset(appSession(), "inter-d");
   ASSERT_NE(interactive, 0u);
   ASSERT_NE(pj_test::addScalarTopic(appSession(), interactive, "/inter-d"), 0u);
-  sessionManager().beginIngest(interactive, QStringLiteral("inter-d"), 100);
+  beginIngestFor(interactive, QStringLiteral("inter-d"), 100);
   EXPECT_EQ(Peer::stripOwnerKind(window()), StripOwnerKind::kInteractiveToolbox);
   EXPECT_EQ(Peer::stripOwnerDataset(window()), interactive);
   EXPECT_EQ(Peer::stripTitle(window()), QStringLiteral("inter-d"));
 
   // The batch may never displace a displayed interactive ingest (a repeated
   // begin restarts its entry — the arbitration must still refuse it).
-  sessionManager().beginIngest(batch_dataset, QStringLiteral("batch-d"), 0);
+  beginIngestFor(batch_dataset, QStringLiteral("batch-d"), 0);
   EXPECT_EQ(Peer::stripOwnerKind(window()), StripOwnerKind::kInteractiveToolbox);
   EXPECT_EQ(Peer::stripOwnerDataset(window()), interactive);
 
@@ -386,18 +408,18 @@ TEST_F(MainWindowLayoutImportBinderTest, InteractiveIngestOutranksBatchAndStripS
   EXPECT_EQ(diagnostic_ids_.count(QStringLiteral("layout-import-cancelled")), 0);
 
   // Displayed progress belongs to the displayed owner.
-  sessionManager().updateIngest(interactive, 30, 100);
+  updateIngestFor(interactive, 30, 100);
   EXPECT_EQ(Peer::stripProgressMaximum(window()), kProgressResolution);
   EXPECT_EQ(Peer::stripProgressValue(window()), 300);
 
   // The displayed ingest ends -> the strip switches to the surviving batch
   // ingest with ITS label (never stale text).
-  sessionManager().endIngest(interactive);
+  endIngestFor(interactive);
   EXPECT_EQ(Peer::stripOwnerKind(window()), StripOwnerKind::kLayoutBatch);
   EXPECT_EQ(Peer::stripOwnerDataset(window()), batch_dataset);
   EXPECT_EQ(Peer::stripTitle(window()), QStringLiteral("batch-d"));
 
-  sessionManager().endIngest(batch_dataset);
+  endIngestFor(batch_dataset);
   EXPECT_EQ(Peer::stripOwnerKind(window()), StripOwnerKind::kNone);
   settleRestore();
   EXPECT_EQ(Peer::batchObserverCount(window()), 0);
@@ -417,12 +439,12 @@ TEST_F(MainWindowLayoutImportBinderTest, SupersedeMidIngestClearsObserversAndRes
   const PJ::DatasetId interactive = pj_test::createDataset(appSession(), "inter-f");
   ASSERT_NE(interactive, 0u);
   ASSERT_NE(pj_test::addScalarTopic(appSession(), interactive, "/inter-f"), 0u);
-  sessionManager().beginIngest(interactive, QStringLiteral("inter-f"), 50);
+  beginIngestFor(interactive, QStringLiteral("inter-f"), 50);
   EXPECT_EQ(Peer::stripOwnerKind(window()), StripOwnerKind::kNone);
 
   const PJ::DatasetId batch_dataset = startParkedBatchJob(QStringLiteral("f"));
   ASSERT_NE(batch_dataset, 0u);
-  sessionManager().beginIngest(batch_dataset, QStringLiteral("batch-f"), 0);
+  beginIngestFor(batch_dataset, QStringLiteral("batch-f"), 0);
   ASSERT_EQ(Peer::stripOwnerKind(window()), StripOwnerKind::kLayoutBatch);
   ASSERT_EQ(Peer::batchObserverCount(window()), 3);
 
@@ -443,11 +465,11 @@ TEST_F(MainWindowLayoutImportBinderTest, SupersedeMidIngestClearsObserversAndRes
 
   // The dead batch's lifecycle entry ends late (its producer's teardown in
   // production): it must not disturb the reselected owner.
-  sessionManager().endIngest(batch_dataset);
+  endIngestFor(batch_dataset);
   EXPECT_EQ(Peer::stripOwnerKind(window()), StripOwnerKind::kInteractiveToolbox);
   EXPECT_EQ(Peer::stripOwnerDataset(window()), interactive);
 
-  sessionManager().endIngest(interactive);
+  endIngestFor(interactive);
 }
 
 // (e) D9: a headless batch job never traverses the panel-fold path, and the
@@ -479,18 +501,18 @@ TEST_F(MainWindowLayoutImportBinderTest, HeadlessBatchJobNeverFoldsPanelsNorDisp
   const PJ::DatasetId interactive = pj_test::createDataset(appSession(), "inter-e");
   ASSERT_NE(interactive, 0u);
   ASSERT_NE(pj_test::addScalarTopic(appSession(), interactive, "/inter-e"), 0u);
-  sessionManager().beginIngest(interactive, QStringLiteral("inter-e"), 0);
+  beginIngestFor(interactive, QStringLiteral("inter-e"), 0);
 
   const PJ::DatasetId batch_dataset = startParkedBatchJob(QStringLiteral("e"));
   ASSERT_NE(batch_dataset, 0u);
   EXPECT_FALSE(fold_called) << "a batch job start must not fold any panel";
   EXPECT_TRUE(Peer::takeoverPanelPresent(window()));
 
-  sessionManager().beginIngest(batch_dataset, QStringLiteral("batch-e"), 0);
-  sessionManager().updateIngest(batch_dataset, 1, 2);
+  beginIngestFor(batch_dataset, QStringLiteral("batch-e"), 0);
+  updateIngestFor(batch_dataset, 1, 2);
   EXPECT_FALSE(fold_called) << "a headless batch ingest must never traverse the panel-fold path (D9)";
 
-  sessionManager().endIngest(batch_dataset);
+  endIngestFor(batch_dataset);
   settleRestore();
 
   // The drain's restore (kRetainAndDiagnose) retained the busy pinned panel
@@ -503,7 +525,7 @@ TEST_F(MainWindowLayoutImportBinderTest, HeadlessBatchJobNeverFoldsPanelsNorDisp
   EXPECT_FALSE(fold_called);
   EXPECT_TRUE(sessionManager().ingestActive(interactive)) << "the interactive ingest must ride through untouched";
 
-  sessionManager().endIngest(interactive);
+  endIngestFor(interactive);
 }
 
 // (g) THE HEADLINE PIN (D6): a retained curve intent binds WHILE the import
@@ -565,10 +587,11 @@ TEST_F(MainWindowLayoutImportBinderTest, OnDatasetCorrelationPrecedesFirstIngest
   QObject guard;  // scope-bound connection: auto-torn even on an ASSERT abort
   QObject::connect(
       &sessionManager(), &PJ::SessionManager::ingestBegan, &guard,
-      [probe](PJ::DatasetId dataset, const QString& /*label*/, quint64 /*total*/) {
+      [probe](PJ::IngestToken token, const QString& /*label*/, quint64 /*total*/) {
         if (probe->seen) {
           return;
         }
+        const PJ::DatasetId dataset = token.dataset_id;
         probe->seen = true;
         auto* batch = Peer::batch(window());
         probe->correlated =
@@ -659,15 +682,15 @@ TEST_F(MainWindowLayoutImportBinderTest, OutOfBandRowsBindPendingCurveMidImport)
 
   const PJ::DatasetId dataset = pj_test::createDataset(appSession(), "oob-data");
   ASSERT_NE(dataset, 0u);
-  sessionManager().beginIngest(dataset, QStringLiteral("oob"), 2);
+  beginIngestFor(dataset, QStringLiteral("oob"), 2);
   ASSERT_NE(pj_test::addScalarTopic(appSession(), dataset, "/curve-oob"), 0u);  // rebuild -> itemsAdded
-  sessionManager().updateIngest(dataset, 1, 2);
+  updateIngestFor(dataset, 1, 2);
 
   EXPECT_EQ(Peer::totalCurveCount(window()), 1) << "the intent must bind mid-import, not only at drain";
   EXPECT_TRUE(Peer::progressiveInFlight(window()));
   EXPECT_TRUE(Peer::binderEmpty(window()));
 
-  sessionManager().endIngest(dataset);
+  endIngestFor(dataset);
   settleRestore();
   EXPECT_EQ(Peer::totalCurveCount(window()), 1);
   EXPECT_EQ(Peer::batch(window()), nullptr);

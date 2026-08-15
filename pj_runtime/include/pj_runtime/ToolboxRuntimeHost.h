@@ -75,7 +75,11 @@ class ToolboxRuntimeHost {
     // just became reader-visible" — a handler can publish incrementally
     // (plots/playback/TF) without any gating of its own. The heavyweight
     // catalog rebuild stays on on_data_changed.
-    std::function<void(DatasetId dataset, std::string label, uint64_t total)> on_ingest_started;
+    // `cancellable` is the PLUGIN's own declaration, forwarded verbatim. The
+    // shell needs it to decide whether the row offers a stop affordance at
+    // all; note that stopping this path always keeps (requestStopActiveIngests
+    // has no rollback), so a shell should register the ingest as stop-only.
+    std::function<void(DatasetId dataset, std::string label, uint64_t total, bool cancellable)> on_ingest_started;
     std::function<void(DatasetId dataset, uint64_t current, uint64_t total)> on_ingest_progress;
     std::function<void(DatasetId dataset)> on_ingest_finished;
   };

@@ -4,10 +4,13 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QHelpEvent>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QScrollBar>
+#include <QTimer>
 #include <QTreeWidgetItem>
+#include <QVariant>
 #include <QtGlobal>
 #include <memory>
 #include <string>
@@ -16,13 +19,77 @@
 #include "pj_widgets/CurveTreeView.h"
 using namespace Qt::StringLiterals;
 
+namespace PJ {
+
+class CurveTreeViewTestPeer {
+ public:
+  // The ✕ (stop and keep). The bin's rect is discardButtonRect below.
+  static QRect cancelButtonRect(const CurveTreeView& view, const QTreeWidgetItem* item) {
+    return rowGeometry(view, item).keep_button_rect;
+  }
+
+  // The bin (stop and discard), inboard of the ✕.
+  static QRect discardButtonRect(const CurveTreeView& view, const QTreeWidgetItem* item) {
+    return rowGeometry(view, item).discard_button_rect;
+  }
+
+  // The tooltip the view answers a QEvent::ToolTip at `viewport_pos` with.
+  // Empty means the position offers none and the event falls through.
+  static QString stopButtonTooltip(const CurveTreeView& view, const QPoint& viewport_pos) {
+    return view.stopButtonTooltip(viewport_pos);
+  }
+
+  // Through the view's own widening + geometry, so a test can never measure
+  // from a rect the widget does not use.
+  static CurveTreeView::ProgressGeometry rowGeometry(const CurveTreeView& view, const QTreeWidgetItem* item) {
+    return view.progressGeometry(view.fullWidthRowRect(view.visualItemRect(item)));
+  }
+
+  static bool suppressNextRelease(const CurveTreeView& view) {
+    return view.suppress_next_release_;
+  }
+
+  // Which stop affordance the view currently believes is hovered. 0 = none,
+  // 1 = the ✕, 2 = the bin.
+  static int hoveredStopButton(const CurveTreeView& view) {
+    if (!view.hovered_stop_row_.isValid()) {
+      return 0;
+    }
+    switch (view.hovered_stop_button_) {
+      case CurveTreeView::StopButton::kNone:
+        return 0;
+      case CurveTreeView::StopButton::kKeep:
+        return 1;
+      case CurveTreeView::StopButton::kDiscard:
+        return 2;
+    }
+    return 0;
+  }
+
+  static Qt::MouseButton dragButton(const CurveTreeView& view) {
+    return view.drag_button_;
+  }
+
+  static bool dragPayloadIsEmpty(const CurveTreeView& view) {
+    return view.drag_curve_names_.empty() && view.drag_catalog_keys_.isEmpty();
+  }
+};
+
+}  // namespace PJ
+
 namespace {
+
+// Keep these in lockstep with CurveTreeView.cpp. The roles stay private because
+// only the view's painting and interaction internals consume them in production.
+constexpr int kDatasetProgressRoleForTest = Qt::UserRole + 13;
+constexpr int kDatasetGhostRoleForTest = Qt::UserRole + 14;
 
 class TestCurveTreeView : public PJ::CurveTreeView {
  public:
   using PJ::CurveTreeView::mouseMoveEvent;
   using PJ::CurveTreeView::mousePressEvent;
   using PJ::CurveTreeView::mouseReleaseEvent;
+  using PJ::CurveTreeView::viewportEvent;
 };
 
 std::vector<std::string> toStdStrings(const std::vector<QString>& names) {
@@ -64,13 +131,44 @@ QTreeWidgetItem* findChild(QTreeWidgetItem* parent, const QString& name) {
   return nullptr;
 }
 
-// Left-button gesture events dispatched straight to the protected handlers;
-// `pos` is in viewport coordinates (visualItemRect space).
-void sendMousePress(TestCurveTreeView& view, const QPoint& pos) {
+QTreeWidgetItem* findTopLevel(PJ::CurveTreeView& view, const QString& name) {
+  for (int i = 0; i < view.topLevelItemCount(); ++i) {
+    if (view.topLevelItem(i)->text(0) == name) {
+      return view.topLevelItem(i);
+    }
+  }
+  return nullptr;
+}
+
+void expectDatasetProgress(const QTreeWidgetItem* item, const PJ::CurveTreeView::DatasetProgress& expected) {
+  ASSERT_NE(item, nullptr);
+  const QVariant data = item->data(0, kDatasetProgressRoleForTest);
+  ASSERT_TRUE(data.isValid());
+  const auto actual = data.value<PJ::CurveTreeView::DatasetProgress>();
+  EXPECT_EQ(actual.display_name, expected.display_name);
+  EXPECT_DOUBLE_EQ(actual.fraction, expected.fraction);
+  EXPECT_EQ(actual.indeterminate, expected.indeterminate);
+  EXPECT_EQ(actual.cancellable, expected.cancellable);
+  EXPECT_EQ(actual.state, expected.state);
+  EXPECT_EQ(actual.flash_on, expected.flash_on);
+}
+
+QHash<quint64, PJ::CurveTreeView::DatasetProgress> progressSet(
+    quint64 row_key, const PJ::CurveTreeView::DatasetProgress& progress) {
+  QHash<quint64, PJ::CurveTreeView::DatasetProgress> result;
+  result.insert(row_key, progress);
+  return result;
+}
+
+// Gesture events dispatched straight to the protected handlers; `pos` is in
+// viewport coordinates (visualItemRect space).
+bool sendMousePress(TestCurveTreeView& view, const QPoint& pos, Qt::MouseButton button = Qt::LeftButton) {
   const QPointF local(pos);
   const QPointF global(view.viewport()->mapToGlobal(pos));
-  QMouseEvent event(QEvent::MouseButtonPress, local, local, global, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+  QMouseEvent event(QEvent::MouseButtonPress, local, local, global, button, button, Qt::NoModifier);
+  event.ignore();
   view.mousePressEvent(&event);
+  return event.isAccepted();
 }
 
 void sendMouseMove(TestCurveTreeView& view, const QPoint& pos) {
@@ -80,11 +178,28 @@ void sendMouseMove(TestCurveTreeView& view, const QPoint& pos) {
   view.mouseMoveEvent(&event);
 }
 
-void sendMouseRelease(TestCurveTreeView& view, const QPoint& pos) {
+void sendMouseRelease(TestCurveTreeView& view, const QPoint& pos, Qt::MouseButton button = Qt::LeftButton) {
   const QPointF local(pos);
   const QPointF global(view.viewport()->mapToGlobal(pos));
-  QMouseEvent event(QEvent::MouseButtonRelease, local, local, global, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+  QMouseEvent event(QEvent::MouseButtonRelease, local, local, global, button, Qt::NoButton, Qt::NoModifier);
   view.mouseReleaseEvent(&event);
+}
+
+QPoint cancelButtonPosition(const TestCurveTreeView& view, const QTreeWidgetItem* item) {
+  return PJ::CurveTreeViewTestPeer::cancelButtonRect(view, item).center();
+}
+
+QPoint discardButtonPosition(const TestCurveTreeView& view, const QTreeWidgetItem* item) {
+  return PJ::CurveTreeViewTestPeer::discardButtonRect(view, item).center();
+}
+
+// A buttonless move — hover tracking must work without a button held, which the
+// existing sendMouseMove (LeftButton down, for drag tests) does not exercise.
+void sendHoverMove(TestCurveTreeView& view, const QPoint& pos) {
+  const QPointF local(pos);
+  const QPointF global(view.viewport()->mapToGlobal(pos));
+  QMouseEvent event(QEvent::MouseMove, local, local, global, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+  view.mouseMoveEvent(&event);
 }
 
 // The not-draggable object-topic row (an undisplayable type, host policy) shared
@@ -1036,6 +1151,681 @@ TEST(CurveTreeViewTest, ForcedTopicMarksLandOnTheTopicNodeAndSurviveRebuild) {
   view.setForcedTopicPaths({});
   EXPECT_FALSE(view.isTopicPathForced(imu_path));
   EXPECT_FALSE(view.isTopicPathForced(pc_path));
+}
+
+TEST(CurveTreeViewTest, DatasetProgressSurvivesClearCurvesAndReAdd) {
+  PJ::CurveTreeView view;
+  const PJ::CurveTreeView::CurvePath path{
+      .key = u"drive/imu/x"_s,
+      .dataset = u"drive.mcap"_s,
+      .topic = u"/imu/data"_s,
+      .field = u"acceleration.x"_s,
+  };
+  constexpr quint64 kRowKey = 41;
+  view.setDatasetRowKey(PJ::CurveTreeView::treePathFromCurvePath(path), kRowKey);
+  const auto add_all = [&view, &path]() { view.addCatalogItems({path}); };
+  add_all();
+
+  const PJ::CurveTreeView::DatasetProgress expected{
+      .display_name = u"drive.mcap"_s,
+      .fraction = 0.375,
+      .cancellable = true,
+      .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+      .flash_on = false,
+  };
+  view.setDatasetProgress(progressSet(kRowKey, expected));
+
+  ASSERT_EQ(view.topLevelItemCount(), 1);
+  expectDatasetProgress(view.topLevelItem(0), expected);
+
+  // Retained progress becomes a ghost while the tree is empty, then moves back
+  // to the real dataset row after the rebuild. Matching names must not make the
+  // insertion reuse (and later delete) the ghost.
+  view.clearCurves();
+  ASSERT_EQ(view.topLevelItemCount(), 1);
+  EXPECT_TRUE(view.topLevelItem(0)->data(0, kDatasetGhostRoleForTest).toBool());
+  expectDatasetProgress(view.topLevelItem(0), expected);
+
+  add_all();
+  ASSERT_EQ(view.topLevelItemCount(), 1);
+  QTreeWidgetItem* dataset = view.topLevelItem(0);
+  EXPECT_FALSE(dataset->data(0, kDatasetGhostRoleForTest).toBool());
+  EXPECT_FALSE(PJ::CurveTreeView::catalogKeysUnder(dataset).isEmpty());
+  expectDatasetProgress(dataset, expected);
+}
+
+TEST(CurveTreeViewTest, EmptyDatasetProgressClearsAllProgress) {
+  PJ::CurveTreeView view;
+  const PJ::CurveTreeView::CurvePath path{
+      .key = u"robot/imu/x"_s,
+      .dataset = u"robot"_s,
+      .topic = u"imu"_s,
+      .field = u"x"_s,
+  };
+  constexpr quint64 kRowKey = 42;
+  view.setDatasetRowKey(PJ::CurveTreeView::treePathFromCurvePath(path), kRowKey);
+  view.addCatalogItem(path);
+  view.setDatasetProgress(progressSet(
+      kRowKey, PJ::CurveTreeView::DatasetProgress{
+                   .display_name = u"robot"_s,
+                   .fraction = 0.5,
+               }));
+
+  ASSERT_EQ(view.topLevelItemCount(), 1);
+  QTreeWidgetItem* dataset = view.topLevelItem(0);
+  ASSERT_TRUE(dataset->data(0, kDatasetProgressRoleForTest).isValid());
+
+  view.setDatasetProgress({});
+
+  EXPECT_EQ(view.topLevelItemCount(), 1);
+  EXPECT_FALSE(dataset->data(0, kDatasetProgressRoleForTest).isValid());
+}
+
+TEST(CurveTreeViewTest, DatasetProgressNeverMarksScalarLeaves) {
+  PJ::CurveTreeView view;
+  const PJ::CurveTreeView::CurvePath path{
+      .key = u"robot/imu/x"_s,
+      .dataset = u"robot"_s,
+      .topic = u"imu"_s,
+      .field = u"x"_s,
+  };
+  constexpr quint64 kRowKey = 43;
+  view.setDatasetRowKey(PJ::CurveTreeView::treePathFromCurvePath(path), kRowKey);
+  view.setDatasetProgress(progressSet(
+      kRowKey, PJ::CurveTreeView::DatasetProgress{
+                   .display_name = u"robot"_s,
+                   .indeterminate = true,
+               }));
+  view.addCatalogItem(path);
+
+  ASSERT_EQ(view.topLevelItemCount(), 1);
+  QTreeWidgetItem* dataset = view.topLevelItem(0);
+  QTreeWidgetItem* topic = findChild(dataset, u"imu"_s);
+  ASSERT_NE(topic, nullptr);
+  QTreeWidgetItem* leaf = findChild(topic, u"x"_s);
+  ASSERT_NE(leaf, nullptr);
+
+  EXPECT_TRUE(dataset->data(0, kDatasetProgressRoleForTest).isValid());
+  EXPECT_FALSE(topic->data(0, kDatasetProgressRoleForTest).isValid());
+  EXPECT_FALSE(leaf->data(0, kDatasetProgressRoleForTest).isValid());
+}
+
+TEST(CurveTreeViewTest, DatasetProgressCreatesAndRemovesGhost) {
+  PJ::CurveTreeView view;
+  constexpr quint64 kRowKey = 44;
+  view.setDatasetRowKey(u"missing/topic/value"_s, kRowKey);
+  const PJ::CurveTreeView::DatasetProgress expected{
+      .display_name = u"Missing dataset"_s,
+      .fraction = 1.0,
+      .state = PJ::CurveTreeView::DatasetProgress::State::kFailed,
+      .flash_on = false,
+  };
+
+  view.setDatasetProgress(progressSet(kRowKey, expected));
+
+  ASSERT_EQ(view.topLevelItemCount(), 1);
+  QTreeWidgetItem* ghost = view.topLevelItem(0);
+  EXPECT_EQ(ghost->text(0), expected.display_name);
+  EXPECT_EQ(ghost->childCount(), 0);
+  EXPECT_TRUE(ghost->data(0, kDatasetGhostRoleForTest).toBool());
+  EXPECT_FALSE(ghost->flags().testFlag(Qt::ItemIsSelectable));
+  EXPECT_FALSE(ghost->flags().testFlag(Qt::ItemIsDragEnabled));
+  EXPECT_TRUE(PJ::CurveTreeView::catalogKeyOf(ghost).isEmpty());
+  expectDatasetProgress(ghost, expected);
+
+  view.setDatasetProgress({});
+
+  EXPECT_EQ(view.topLevelItemCount(), 0);
+}
+
+// The two affordances must be distinguishable by position alone: the row IS the
+// keep-or-discard choice, so a host that got the wrong flag would silently
+// discard data the user asked to keep.
+TEST(CurveTreeViewTest, KeepAndDiscardAffordancesReportOppositeKeepPartial) {
+  TestCurveTreeView view;
+  view.resize(360, 180);
+  view.addCurves({u"loading"_s});
+  constexpr quint64 kRowKey = 77;
+  view.setDatasetRowKey(u"loading"_s, kRowKey);
+  view.setDatasetProgress(progressSet(
+      kRowKey, PJ::CurveTreeView::DatasetProgress{
+                   .display_name = u"loading"_s,
+                   .fraction = 0.4,
+                   .cancellable = true,
+                   .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+                   .flash_on = false,
+               }));
+  view.show();
+  QApplication::processEvents();
+
+  QTreeWidgetItem* loading = findTopLevel(view, u"loading"_s);
+  ASSERT_NE(loading, nullptr);
+
+  std::vector<std::pair<quint64, bool>> requests;
+  QObject::connect(&view, &PJ::CurveTreeView::cancelRequested, &view, [&requests](quint64 row_key, bool keep_partial) {
+    requests.emplace_back(row_key, keep_partial);
+  });
+
+  // The two rects must not overlap, or a click could not name one of them.
+  const QRect keep_rect = PJ::CurveTreeViewTestPeer::cancelButtonRect(view, loading);
+  const QRect discard_rect = PJ::CurveTreeViewTestPeer::discardButtonRect(view, loading);
+  ASSERT_FALSE(keep_rect.isEmpty());
+  ASSERT_FALSE(discard_rect.isEmpty());
+  EXPECT_FALSE(keep_rect.intersects(discard_rect));
+  // Both must sit inside the row: a glyph taller than the row spills over its
+  // neighbours and cannot be hit reliably.
+  const QRect row_rect = view.visualItemRect(loading);
+  EXPECT_LE(keep_rect.height(), row_rect.height());
+  EXPECT_LE(discard_rect.height(), row_rect.height());
+
+  const QPoint keep_pos = cancelButtonPosition(view, loading);
+  ASSERT_TRUE(view.viewport()->rect().contains(keep_pos));
+  EXPECT_TRUE(sendMousePress(view, keep_pos));
+
+  const QPoint discard_pos = discardButtonPosition(view, loading);
+  ASSERT_TRUE(view.viewport()->rect().contains(discard_pos));
+  EXPECT_TRUE(sendMousePress(view, discard_pos));
+
+  ASSERT_EQ(requests.size(), 2u);
+  EXPECT_EQ(requests[0], std::make_pair(kRowKey, true));   // ✕ keeps
+  EXPECT_EQ(requests[1], std::make_pair(kRowKey, false));  // bin discards
+}
+
+// Hover must be driven by pointer movement, not sampled from the global cursor
+// when the row happens to repaint for another reason — that made the highlight
+// wait for the next progress tick, which reads as lag, and never arrive at all
+// on a stalled row.
+TEST(CurveTreeViewTest, StopButtonHoverTracksPointerMovement) {
+  TestCurveTreeView view;
+  view.resize(360, 180);
+  view.addCurves({u"loading"_s});
+  constexpr quint64 kRowKey = 63;
+  view.setDatasetRowKey(u"loading"_s, kRowKey);
+  view.setDatasetProgress(progressSet(
+      kRowKey, PJ::CurveTreeView::DatasetProgress{
+                   .display_name = u"loading"_s,
+                   .fraction = 0.4,
+                   .cancellable = true,
+                   .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+                   .flash_on = false,
+               }));
+  view.show();
+  QApplication::processEvents();
+
+  QTreeWidgetItem* loading = findTopLevel(view, u"loading"_s);
+  ASSERT_NE(loading, nullptr);
+  EXPECT_EQ(PJ::CurveTreeViewTestPeer::hoveredStopButton(view), 0);
+
+  sendHoverMove(view, cancelButtonPosition(view, loading));
+  EXPECT_EQ(PJ::CurveTreeViewTestPeer::hoveredStopButton(view), 1);
+
+  sendHoverMove(view, discardButtonPosition(view, loading));
+  EXPECT_EQ(PJ::CurveTreeViewTestPeer::hoveredStopButton(view), 2);
+
+  // Off the affordances entirely: the highlight must not stick.
+  sendHoverMove(view, QPoint(4, view.visualItemRect(loading).center().y()));
+  EXPECT_EQ(PJ::CurveTreeViewTestPeer::hoveredStopButton(view), 0);
+}
+
+// A stop is acknowledged the moment it is accepted, not when the producer
+// finishes — a cooperative stop can take seconds. The row must then be inert:
+// clicking again would ask a second time for something already in flight.
+TEST(CurveTreeViewTest, StoppingRowIsInertForBothAffordances) {
+  TestCurveTreeView view;
+  view.resize(360, 180);
+  view.addCurves({u"stopping"_s});
+  constexpr quint64 kRowKey = 97;
+  view.setDatasetRowKey(u"stopping"_s, kRowKey);
+  view.setDatasetProgress(progressSet(
+      kRowKey, PJ::CurveTreeView::DatasetProgress{
+                   .display_name = u"stopping"_s,
+                   .fraction = 0.27,
+                   .cancellable = true,
+                   .state = PJ::CurveTreeView::DatasetProgress::State::kStopping,
+                   .flash_on = false,
+               }));
+  view.show();
+  QApplication::processEvents();
+
+  QTreeWidgetItem* row = findTopLevel(view, u"stopping"_s);
+  ASSERT_NE(row, nullptr);
+
+  int requests = 0;
+  QObject::connect(&view, &PJ::CurveTreeView::cancelRequested, &view, [&requests](quint64, bool) { ++requests; });
+
+  // Both cells stay in place, so the cluster does not change shape mid-stop.
+  EXPECT_FALSE(PJ::CurveTreeViewTestPeer::cancelButtonRect(view, row).isEmpty());
+  EXPECT_FALSE(PJ::CurveTreeViewTestPeer::discardButtonRect(view, row).isEmpty());
+
+  sendHoverMove(view, cancelButtonPosition(view, row));
+  EXPECT_EQ(PJ::CurveTreeViewTestPeer::hoveredStopButton(view), 0);
+  sendMousePress(view, cancelButtonPosition(view, row));
+  sendMousePress(view, discardButtonPosition(view, row));
+  EXPECT_EQ(requests, 0);
+}
+
+// The indeterminate band is phased from when the animation STARTED, so a load
+// always opens with the band entering from the left. Phasing it off absolute
+// wall-clock time instead made the sweep begin wherever the clock happened to
+// land — a fresh load could show the band already near the right edge.
+TEST(CurveTreeViewTest, MarqueeBandEntersFromTheLeftAtStart) {
+  const QRect track(0, 0, 400, 20);
+  constexpr qint64 kPeriod = 1200;
+
+  // At the very start the band is only just entering: flush to the left edge and
+  // barely visible, never already mid-track.
+  const QRect at_start = PJ::CurveTreeView::marqueeBandRect(track, 0, kPeriod);
+  EXPECT_EQ(at_start.left(), track.left()) << "the sweep must begin AT the left edge, not mid-track";
+  EXPECT_LE(at_start.width(), 2) << "the band must enter, not appear already grown";
+
+  // Shortly after, it has entered from the left and is anchored there.
+  const QRect early = PJ::CurveTreeView::marqueeBandRect(track, kPeriod / 10, kPeriod);
+  ASSERT_FALSE(early.isEmpty());
+  EXPECT_EQ(early.left(), track.left()) << "the entering band must be flush to the left edge";
+  EXPECT_LT(early.width(), track.width() / 2);
+
+  // Mid-cycle it sits mid-track, and later it is further right: a real sweep.
+  const QRect middle = PJ::CurveTreeView::marqueeBandRect(track, kPeriod / 2, kPeriod);
+  const QRect late = PJ::CurveTreeView::marqueeBandRect(track, (kPeriod * 4) / 5, kPeriod);
+  ASSERT_FALSE(middle.isEmpty());
+  ASSERT_FALSE(late.isEmpty());
+  EXPECT_GT(middle.left(), track.left());
+  EXPECT_GT(late.left(), middle.left());
+
+  // The cycle repeats: one full period later is the same position again.
+  EXPECT_EQ(PJ::CurveTreeView::marqueeBandRect(track, kPeriod / 2 + kPeriod, kPeriod), middle);
+
+  // It never escapes the track.
+  for (qint64 t = 0; t < kPeriod; t += 37) {
+    const QRect band = PJ::CurveTreeView::marqueeBandRect(track, t, kPeriod);
+    EXPECT_TRUE(band.isEmpty() || track.contains(band)) << "band escaped the track at t=" << t;
+  }
+}
+
+// A producer that can stop but not discard (the toolbox ingest ABI has no
+// rollback) still gets the bin DRAWN — losing a cell mid-load reads as a glitch
+// — but it must be inert, or the click would promise a discard the producer
+// would silently turn into a keep.
+TEST(CurveTreeViewTest, NonDiscardableRowKeepsTheBinButIgnoresIt) {
+  TestCurveTreeView view;
+  view.resize(360, 180);
+  view.addCurves({u"stoponly"_s});
+  constexpr quint64 kRowKey = 84;
+  view.setDatasetRowKey(u"stoponly"_s, kRowKey);
+  view.setDatasetProgress(progressSet(
+      kRowKey, PJ::CurveTreeView::DatasetProgress{
+                   .display_name = u"stoponly"_s,
+                   .fraction = 0.3,
+                   .cancellable = true,
+                   .discardable = false,
+                   .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+                   .flash_on = false,
+               }));
+  view.show();
+  QApplication::processEvents();
+
+  QTreeWidgetItem* row = findTopLevel(view, u"stoponly"_s);
+  ASSERT_NE(row, nullptr);
+
+  std::vector<std::pair<quint64, bool>> requests;
+  QObject::connect(&view, &PJ::CurveTreeView::cancelRequested, &view, [&requests](quint64 row_key, bool keep_partial) {
+    requests.emplace_back(row_key, keep_partial);
+  });
+
+  // The bin still occupies its cell, so the cluster keeps its shape.
+  EXPECT_FALSE(PJ::CurveTreeViewTestPeer::discardButtonRect(view, row).isEmpty());
+
+  // ...but neither hover nor click reaches it.
+  sendHoverMove(view, discardButtonPosition(view, row));
+  EXPECT_EQ(PJ::CurveTreeViewTestPeer::hoveredStopButton(view), 0);
+  sendMousePress(view, discardButtonPosition(view, row));
+  EXPECT_TRUE(requests.empty());
+
+  // Stopping-and-keeping is still offered, which is the whole point.
+  sendMousePress(view, cancelButtonPosition(view, row));
+  ASSERT_EQ(requests.size(), 1u);
+  EXPECT_EQ(requests[0], std::make_pair(kRowKey, true));
+}
+
+// The affordances stay painted through the terminal linger so the cluster does
+// not lose two of its three cells as the row retires — but they are inert
+// there: the ingest has already ended, so a click must not reach the host.
+TEST(CurveTreeViewTest, TerminalRowAffordancesAreInert) {
+  TestCurveTreeView view;
+  view.resize(360, 180);
+  view.addCurves({u"done"_s});
+  constexpr quint64 kRowKey = 91;
+  view.setDatasetRowKey(u"done"_s, kRowKey);
+  view.setDatasetProgress(progressSet(
+      kRowKey, PJ::CurveTreeView::DatasetProgress{
+                   .display_name = u"done"_s,
+                   .fraction = 1.0,
+                   .cancellable = true,
+                   .state = PJ::CurveTreeView::DatasetProgress::State::kCompleted,
+                   .flash_on = false,
+               }));
+  view.show();
+  QApplication::processEvents();
+
+  QTreeWidgetItem* done = findTopLevel(view, u"done"_s);
+  ASSERT_NE(done, nullptr);
+
+  int requests = 0;
+  QObject::connect(&view, &PJ::CurveTreeView::cancelRequested, &view, [&requests](quint64, bool) { ++requests; });
+
+  // The rects still exist (they are geometry, not state) — that is what keeps
+  // the cluster stable — but pressing them emits nothing.
+  EXPECT_FALSE(PJ::CurveTreeViewTestPeer::cancelButtonRect(view, done).isEmpty());
+  EXPECT_FALSE(PJ::CurveTreeViewTestPeer::discardButtonRect(view, done).isEmpty());
+  sendMousePress(view, cancelButtonPosition(view, done));
+  sendMousePress(view, discardButtonPosition(view, done));
+  EXPECT_EQ(requests, 0);
+}
+
+// The ✕ and the bin are painted glyphs with no label, so nothing tells the user
+// which one keeps the partial data and which one throws it away until they
+// hover. The tooltips resolve through the same hit-test as the click, so a
+// tooltip can never describe a glyph other than the one that would be pressed.
+TEST(CurveTreeViewTest, StopAffordanceTooltipsDistinguishKeepFromDiscard) {
+  TestCurveTreeView view;
+  view.resize(360, 180);
+  view.addCurves({u"loading"_s});
+  constexpr quint64 kRowKey = 101;
+  view.setDatasetRowKey(u"loading"_s, kRowKey);
+  view.setDatasetProgress(progressSet(
+      kRowKey, PJ::CurveTreeView::DatasetProgress{
+                   .display_name = u"loading"_s,
+                   .fraction = 0.4,
+                   .cancellable = true,
+                   .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+                   .flash_on = false,
+               }));
+  view.show();
+  QApplication::processEvents();
+
+  QTreeWidgetItem* loading = findTopLevel(view, u"loading"_s);
+  ASSERT_NE(loading, nullptr);
+
+  EXPECT_EQ(
+      PJ::CurveTreeViewTestPeer::stopButtonTooltip(view, cancelButtonPosition(view, loading)),
+      u"Stop loading and keep the data received so far"_s);
+  EXPECT_EQ(
+      PJ::CurveTreeViewTestPeer::stopButtonTooltip(view, discardButtonPosition(view, loading)),
+      u"Stop loading and discard the partial data"_s);
+
+  // The cluster's tooltips must not leak across the rest of the row: the name
+  // is not an affordance, and a row-wide "stop loading" tooltip would be a lie
+  // about where to click.
+  const QRect row_rect = view.visualItemRect(loading);
+  const QPoint name_pos(row_rect.left() + 4, row_rect.center().y());
+  EXPECT_TRUE(PJ::CurveTreeViewTestPeer::stopButtonTooltip(view, name_pos).isEmpty());
+}
+
+// A producer that can stop but cannot roll back paints the bin greyed. That is
+// the affordance that most needs a tooltip: it still looks like a choice, so it
+// has to say why it is not one.
+TEST(CurveTreeViewTest, InertBinTooltipExplainsThatTheSourceCannotDiscard) {
+  TestCurveTreeView view;
+  view.resize(360, 180);
+  view.addCurves({u"stoponly"_s});
+  constexpr quint64 kRowKey = 102;
+  view.setDatasetRowKey(u"stoponly"_s, kRowKey);
+  view.setDatasetProgress(progressSet(
+      kRowKey, PJ::CurveTreeView::DatasetProgress{
+                   .display_name = u"stoponly"_s,
+                   .fraction = 0.3,
+                   .cancellable = true,
+                   .discardable = false,
+                   .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+                   .flash_on = false,
+               }));
+  view.show();
+  QApplication::processEvents();
+
+  QTreeWidgetItem* row = findTopLevel(view, u"stoponly"_s);
+  ASSERT_NE(row, nullptr);
+
+  EXPECT_EQ(
+      PJ::CurveTreeViewTestPeer::stopButtonTooltip(view, discardButtonPosition(view, row)),
+      u"This source can stop but cannot discard partial data"_s);
+  // Stopping-and-keeping is still on offer, and still says so.
+  EXPECT_EQ(
+      PJ::CurveTreeViewTestPeer::stopButtonTooltip(view, cancelButtonPosition(view, row)),
+      u"Stop loading and keep the data received so far"_s);
+}
+
+// Both glyphs stay painted through the terminal linger so the cluster keeps its
+// shape as the row retires. They answer to nothing there, so they must not
+// offer a stop that can no longer happen either.
+TEST(CurveTreeViewTest, FinishedRowStopAffordancesOfferNoTooltip) {
+  TestCurveTreeView view;
+  view.resize(360, 180);
+  view.addCurves({u"done"_s});
+  constexpr quint64 kRowKey = 103;
+  view.setDatasetRowKey(u"done"_s, kRowKey);
+  view.setDatasetProgress(progressSet(
+      kRowKey, PJ::CurveTreeView::DatasetProgress{
+                   .display_name = u"done"_s,
+                   .fraction = 1.0,
+                   .cancellable = true,
+                   .state = PJ::CurveTreeView::DatasetProgress::State::kCompleted,
+                   .flash_on = false,
+               }));
+  view.show();
+  QApplication::processEvents();
+
+  QTreeWidgetItem* done = findTopLevel(view, u"done"_s);
+  ASSERT_NE(done, nullptr);
+
+  // The rects still exist — that is what keeps the cluster stable — so this is
+  // a real hit on each glyph, not a miss that trivially returns nothing.
+  ASSERT_FALSE(PJ::CurveTreeViewTestPeer::cancelButtonRect(view, done).isEmpty());
+  ASSERT_FALSE(PJ::CurveTreeViewTestPeer::discardButtonRect(view, done).isEmpty());
+  EXPECT_TRUE(PJ::CurveTreeViewTestPeer::stopButtonTooltip(view, cancelButtonPosition(view, done)).isEmpty());
+  EXPECT_TRUE(PJ::CurveTreeViewTestPeer::stopButtonTooltip(view, discardButtonPosition(view, done)).isEmpty());
+
+  // The event is still consumed: the pointer is over a glyph, so a tooltip left
+  // showing from the live phase is hidden rather than replaced by the row's own.
+  const QPoint keep_pos = cancelButtonPosition(view, done);
+  QHelpEvent over_inert_glyph(QEvent::ToolTip, keep_pos, view.viewport()->mapToGlobal(keep_pos));
+  EXPECT_TRUE(view.viewportEvent(&over_inert_glyph));
+}
+
+// In production the tooltip is only ever reached through QEvent::ToolTip, so
+// drive a real one: over a glyph the view answers it, and everywhere else it
+// falls through to the normal per-item tooltip path.
+TEST(CurveTreeViewTest, ToolTipEventOverAStopAffordanceIsAnsweredByTheView) {
+  TestCurveTreeView view;
+  view.resize(360, 180);
+  view.addCurves({u"loading"_s});
+  constexpr quint64 kRowKey = 104;
+  view.setDatasetRowKey(u"loading"_s, kRowKey);
+  view.setDatasetProgress(progressSet(
+      kRowKey, PJ::CurveTreeView::DatasetProgress{
+                   .display_name = u"loading"_s,
+                   .fraction = 0.5,
+                   .cancellable = true,
+                   .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+                   .flash_on = false,
+               }));
+  view.show();
+  QApplication::processEvents();
+
+  QTreeWidgetItem* loading = findTopLevel(view, u"loading"_s);
+  ASSERT_NE(loading, nullptr);
+
+  const QPoint keep_pos = cancelButtonPosition(view, loading);
+  QHelpEvent over_glyph(QEvent::ToolTip, keep_pos, view.viewport()->mapToGlobal(keep_pos));
+  EXPECT_TRUE(view.viewportEvent(&over_glyph)) << "the ✕ must answer its own tooltip event";
+
+  const QRect row_rect = view.visualItemRect(loading);
+  const QPoint name_pos(row_rect.left() + 4, row_rect.center().y());
+  QHelpEvent over_name(QEvent::ToolTip, name_pos, view.viewport()->mapToGlobal(name_pos));
+  EXPECT_FALSE(view.viewportEvent(&over_name)) << "outside the cluster the row keeps its own tooltip handling";
+}
+
+TEST(CurveTreeViewTest, LeftPressOnCancellableLoadingRowRequestsCancelWithoutSelecting) {
+  TestCurveTreeView view;
+  view.resize(360, 180);
+  view.addCurves({u"loading"_s, u"selected"_s});
+  constexpr quint64 kRowKey = 51;
+  view.setDatasetRowKey(u"loading"_s, kRowKey);
+  view.setDatasetProgress(progressSet(
+      kRowKey, PJ::CurveTreeView::DatasetProgress{
+                   .display_name = u"loading"_s,
+                   .fraction = 0.4,
+                   .cancellable = true,
+                   .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+                   .flash_on = false,
+               }));
+  view.show();
+  QApplication::processEvents();
+
+  QTreeWidgetItem* loading = findTopLevel(view, u"loading"_s);
+  QTreeWidgetItem* selected = findTopLevel(view, u"selected"_s);
+  ASSERT_NE(loading, nullptr);
+  ASSERT_NE(selected, nullptr);
+  selected->setSelected(true);
+
+  std::vector<quint64> requested_keys;
+  QObject::connect(&view, &PJ::CurveTreeView::cancelRequested, &view, [&requested_keys](quint64 row_key, bool) {
+    requested_keys.push_back(row_key);
+  });
+
+  const QPoint cancel_pos = cancelButtonPosition(view, loading);
+  ASSERT_TRUE(view.viewport()->rect().contains(cancel_pos));
+  EXPECT_TRUE(sendMousePress(view, cancel_pos));
+
+  EXPECT_EQ(requested_keys, (std::vector<quint64>{kRowKey}));
+  EXPECT_FALSE(loading->isSelected());
+  EXPECT_TRUE(selected->isSelected());
+  EXPECT_FALSE(PJ::CurveTreeViewTestPeer::suppressNextRelease(view));
+  EXPECT_EQ(PJ::CurveTreeViewTestPeer::dragButton(view), Qt::NoButton);
+  EXPECT_TRUE(PJ::CurveTreeViewTestPeer::dragPayloadIsEmpty(view));
+
+  sendMouseRelease(view, cancel_pos);
+  EXPECT_EQ(requested_keys, (std::vector<quint64>{kRowKey}));
+  EXPECT_FALSE(loading->isSelected());
+  EXPECT_TRUE(selected->isSelected());
+}
+
+TEST(CurveTreeViewTest, RightPressOnCancellableLoadingRowDoesNotRequestCancel) {
+  TestCurveTreeView view;
+  view.resize(360, 180);
+  view.addCurve(u"loading"_s);
+  constexpr quint64 kRowKey = 52;
+  view.setDatasetRowKey(u"loading"_s, kRowKey);
+  view.setDatasetProgress(progressSet(
+      kRowKey, PJ::CurveTreeView::DatasetProgress{
+                   .display_name = u"loading"_s,
+                   .indeterminate = true,
+                   .cancellable = true,
+                   .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+                   .flash_on = false,
+               }));
+  view.show();
+  QApplication::processEvents();
+
+  QTreeWidgetItem* loading = findTopLevel(view, u"loading"_s);
+  ASSERT_NE(loading, nullptr);
+  std::vector<quint64> requested_keys;
+  QObject::connect(&view, &PJ::CurveTreeView::cancelRequested, &view, [&requested_keys](quint64 row_key, bool) {
+    requested_keys.push_back(row_key);
+  });
+
+  const QPoint cancel_pos = cancelButtonPosition(view, loading);
+  sendMousePress(view, cancel_pos, Qt::RightButton);
+  EXPECT_TRUE(requested_keys.empty());
+  sendMouseRelease(view, cancel_pos, Qt::RightButton);
+}
+
+TEST(CurveTreeViewTest, PressOnNonCancellableLoadingRowDoesNotRequestCancel) {
+  TestCurveTreeView view;
+  view.resize(360, 180);
+  view.addCurve(u"loading"_s);
+  constexpr quint64 kRowKey = 53;
+  view.setDatasetRowKey(u"loading"_s, kRowKey);
+  view.setDatasetProgress(progressSet(
+      kRowKey, PJ::CurveTreeView::DatasetProgress{
+                   .display_name = u"loading"_s,
+                   .fraction = 0.4,
+                   .cancellable = false,
+                   .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+                   .flash_on = false,
+               }));
+  view.show();
+  QApplication::processEvents();
+
+  QTreeWidgetItem* loading = findTopLevel(view, u"loading"_s);
+  ASSERT_NE(loading, nullptr);
+  std::vector<quint64> requested_keys;
+  QObject::connect(&view, &PJ::CurveTreeView::cancelRequested, &view, [&requested_keys](quint64 row_key, bool) {
+    requested_keys.push_back(row_key);
+  });
+
+  const QPoint cancel_pos = cancelButtonPosition(view, loading);
+  sendMousePress(view, cancel_pos);
+  EXPECT_TRUE(requested_keys.empty());
+  sendMouseRelease(view, cancel_pos);
+}
+
+TEST(CurveTreeViewTest, AnimationTimerRunsOnlyForRowsThatNeedAnimation) {
+  PJ::CurveTreeView view;
+  view.addCurves({u"first"_s, u"second"_s});
+  constexpr quint64 kFirstRowKey = 54;
+  constexpr quint64 kSecondRowKey = 55;
+  view.setDatasetRowKey(u"first"_s, kFirstRowKey);
+  view.setDatasetRowKey(u"second"_s, kSecondRowKey);
+
+  QTimer* animation_timer = view.findChild<QTimer*>(u"datasetProgressAnimationTimer"_s);
+  ASSERT_NE(animation_timer, nullptr);
+  EXPECT_EQ(animation_timer->parent(), &view);
+  EXPECT_EQ(animation_timer->interval(), 33);
+  EXPECT_FALSE(animation_timer->isActive());
+
+  QHash<quint64, PJ::CurveTreeView::DatasetProgress> progress_by_key;
+  progress_by_key.insert(
+      kFirstRowKey, PJ::CurveTreeView::DatasetProgress{
+                        .display_name = u"first"_s,
+                        .fraction = 0.25,
+                        .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+                    });
+  progress_by_key.insert(
+      kSecondRowKey, PJ::CurveTreeView::DatasetProgress{
+                         .display_name = u"second"_s,
+                         .fraction = 0.75,
+                         .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+                     });
+  view.setDatasetProgress(progress_by_key);
+  EXPECT_FALSE(animation_timer->isActive());
+
+  progress_by_key[kSecondRowKey].indeterminate = true;
+  view.setDatasetProgress(progress_by_key);
+  EXPECT_TRUE(animation_timer->isActive());
+
+  progress_by_key[kSecondRowKey].indeterminate = false;
+  progress_by_key[kSecondRowKey].fraction = 0.9;
+  view.setDatasetProgress(progress_by_key);
+  EXPECT_FALSE(animation_timer->isActive());
+}
+
+TEST(CurveTreeViewTest, AnimationTimerTracksFailedFlashPhase) {
+  PJ::CurveTreeView view;
+  constexpr quint64 kRowKey = 56;
+  PJ::CurveTreeView::DatasetProgress failed{
+      .display_name = u"failed"_s,
+      .state = PJ::CurveTreeView::DatasetProgress::State::kFailed,
+      .flash_on = true,
+  };
+  QTimer* animation_timer = view.findChild<QTimer*>(u"datasetProgressAnimationTimer"_s);
+  ASSERT_NE(animation_timer, nullptr);
+
+  view.setDatasetProgress(progressSet(kRowKey, failed));
+  EXPECT_TRUE(animation_timer->isActive());
+
+  failed.flash_on = false;
+  view.setDatasetProgress(progressSet(kRowKey, failed));
+  EXPECT_FALSE(animation_timer->isActive());
 }
 
 TEST(CurveTreeViewTest, TypeFilterClassifiesByTopicAndGovernsWholeSubtree) {

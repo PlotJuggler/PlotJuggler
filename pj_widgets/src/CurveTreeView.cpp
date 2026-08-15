@@ -5,6 +5,7 @@
 
 #include <QApplication>
 #include <QDataStream>
+#include <QDateTime>
 #include <QDrag>
 #ifdef PJ_TARGET_WASM
 #include <QDragEnterEvent>
@@ -13,13 +14,17 @@
 #endif
 #include <QFontDatabase>
 #include <QHeaderView>
+#include <QHelpEvent>
 #include <QIcon>
 #ifdef PJ_TARGET_WASM
 #include <QKeyEvent>
 #endif
+#include <QItemSelectionModel>
+#include <QLoggingCategory>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterStateGuard>
 #include <QPalette>
 #ifdef PJ_TARGET_WASM
 #include <QScopeGuard>
@@ -30,6 +35,8 @@
 #include <QStyle>
 #include <QStyledItemDelegate>
 #include <QTimer>
+#include <QToolTip>
+#include <QVariant>
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -42,6 +49,13 @@
 using namespace Qt::StringLiterals;
 
 namespace PJ {
+
+// One full left-to-right sweep of the indeterminate band.
+static constexpr qint64 kMarqueePeriodMs = 1200;
+
+// Off by default; pairs with pj.runtime.ingest.cancel to time a stop from
+// the click to the producer's terminal.
+Q_LOGGING_CATEGORY(lcCurveTreeCancel, "pj.widgets.curvetree.cancel", QtWarningMsg)
 
 namespace {
 constexpr int kNameColumn = 0;
@@ -77,6 +91,14 @@ constexpr int kEmptyMessageRole = Qt::UserRole + 11;
 // (CurvePath::draggable=false) — see applyObjectTopicSelectability. Read by the
 // drag-payload collector and the not-draggable-notice arming in mousePressEvent.
 constexpr int kNotDraggableRole = Qt::UserRole + 12;
+// Stores CurveTreeView::DatasetProgress on dataset rows and managed ghosts.
+constexpr int kDatasetProgressRole = Qt::UserRole + 13;
+// Marks top-level progress-only rows created when their dataset is absent.
+constexpr int kDatasetGhostRole = Qt::UserRole + 14;
+// Stores the opaque key needed to route a row-local cancel request. Keeping it
+// beside the progress payload also makes loading ghosts unambiguous.
+constexpr int kDatasetRowKeyRole = Qt::UserRole + 15;
+constexpr int kAnimationIntervalMs = 1000 / 30;
 
 QStringList splitPath(const QString& name) {
   return name.split('/', Qt::SkipEmptyParts);
@@ -139,6 +161,12 @@ class CurveTreeItemDelegate : public QStyledItemDelegate {
   void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
     QStyleOptionViewItem opt(option);
     initStyleOption(&opt, index);
+    // Never draw the per-CELL focus decoration (the grey pill around the
+    // current item's text). It renders on top of — and independently of — the
+    // row selection, so a right-clicked row keeps a floating grey outline after
+    // its selection is gone. Selection is the only per-row highlight here;
+    // keyboard focus stays on the widget, it just is not drawn per cell.
+    opt.state &= ~QStyle::State_HasFocus;
 
     // Placeholder/unsubscribed flags live on the Name column's item data (see
     // addCatalogItem); fetch via the row's Name-column sibling so every column
@@ -270,6 +298,16 @@ void refreshTopicIcons(QTreeWidgetItem* item, const QString& theme) {
 }  // namespace
 
 CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
+  animation_timer_ = new QTimer(this);
+  animation_timer_->setObjectName(u"datasetProgressAnimationTimer"_s);
+  animation_timer_->setInterval(kAnimationIntervalMs);
+  animation_timer_->setTimerType(Qt::PreciseTimer);
+  connect(animation_timer_, &QTimer::timeout, this, &CurveTreeView::updateAnimatingRows);
+
+  // Buttonless moves must reach mouseMoveEvent, or the row stop affordances
+  // could only track hover while a button was held.
+  viewport()->setMouseTracking(true);
+
   setColumnCount(2);
   setHeaderLabels({tr("Name"), tr("Value")});
   setItemDelegate(new CurveTreeItemDelegate(this));
@@ -416,23 +454,40 @@ QTreeWidgetItem* CurveTreeView::ensureGroup(const QString& path) {
   return ensureGroupSegments(splitPath(path));
 }
 
-void CurveTreeView::addCurve(const QString& name) {
-  addCurve(name, SortMode::kImmediate);
+void CurveTreeView::mutateStructure(const std::function<void()>& mutate) {
+  // Ghosts are rebuilt from the retained progress set at the end; dropping them
+  // first stops the mutation from matching a stale ghost as a real row. The row
+  // cache goes with them: a structural change is exactly what can move a row out
+  // from under its key.
+  removeDatasetGhostItems();
+  progress_row_cache_.clear();
+  mutate();
+  // Every retained decoration, re-applied once and in ONE place. Which of them
+  // survive a structural change must not depend on which overload the caller
+  // reached for — forced marks used to come back only via addCatalogItems.
   reapplyFilter();
+  expandPendingGroups();
+  applyForcedTopicMarks();
+  applyDatasetProgress();
+}
+
+void CurveTreeView::addCurve(const QString& name) {
+  mutateStructure([&]() { addCurve(name, SortMode::kImmediate); });
 }
 
 void CurveTreeView::addCurves(const std::vector<QString>& names) {
   if (names.empty()) {
     return;
   }
-  const bool updates_were_enabled = updatesEnabled();
-  setUpdatesEnabled(false);
-  for (const QString& name : names) {
-    addCurve(name, SortMode::kDeferred);
-  }
-  sortTree();
-  setUpdatesEnabled(updates_were_enabled);
-  reapplyFilter();
+  mutateStructure([&]() {
+    const bool updates_were_enabled = updatesEnabled();
+    setUpdatesEnabled(false);
+    for (const QString& name : names) {
+      addCurve(name, SortMode::kDeferred);
+    }
+    sortTree();
+    setUpdatesEnabled(updates_were_enabled);
+  });
 }
 
 void CurveTreeView::addCurve(const QString& name, SortMode sort_mode) {
@@ -468,40 +523,38 @@ QString CurveTreeView::treePathFromCurvePath(const CurvePath& path) {
 }
 
 void CurveTreeView::addCurve(const CurvePath& path) {
-  addCatalogItem(
-      CurvePath{
-          .key = path.key,
-          .dataset = path.dataset,
-          .topic = path.topic,
-          .field = path.field,
-          .selectable = true,
-          .is_image_topic = false,
-          .is_3d_object_topic = false,
-      },
-      SortMode::kImmediate);
-  reapplyFilter();
+  mutateStructure([&]() {
+    addCatalogItem(
+        CurvePath{
+            .key = path.key,
+            .dataset = path.dataset,
+            .topic = path.topic,
+            .field = path.field,
+            .selectable = true,
+            .is_image_topic = false,
+            .is_3d_object_topic = false,
+        },
+        SortMode::kImmediate);
+  });
 }
 
 void CurveTreeView::addCatalogItem(const CurvePath& path) {
-  addCatalogItem(path, SortMode::kImmediate);
-  reapplyFilter();
-  expandPendingGroups();
+  mutateStructure([&]() { addCatalogItem(path, SortMode::kImmediate); });
 }
 
 void CurveTreeView::addCatalogItems(const std::vector<CurvePath>& paths) {
   if (paths.empty()) {
     return;
   }
-  const bool updates_were_enabled = updatesEnabled();
-  setUpdatesEnabled(false);
-  for (const CurvePath& path : paths) {
-    addCatalogItem(path, SortMode::kDeferred);
-  }
-  sortTree();
-  setUpdatesEnabled(updates_were_enabled);
-  reapplyFilter();
-  expandPendingGroups();
-  applyForcedTopicMarks();
+  mutateStructure([&]() {
+    const bool updates_were_enabled = updatesEnabled();
+    setUpdatesEnabled(false);
+    for (const CurvePath& path : paths) {
+      addCatalogItem(path, SortMode::kDeferred);
+    }
+    sortTree();
+    setUpdatesEnabled(updates_were_enabled);
+  });
 }
 
 void CurveTreeView::addCatalogItem(const CurvePath& path, SortMode sort_mode) {
@@ -582,7 +635,7 @@ void CurveTreeView::setViewMode(ViewMode mode) {
 }
 
 void CurveTreeView::clearCurves() {
-  clear();
+  mutateStructure([this]() { clear(); });
 }
 
 namespace {
@@ -774,6 +827,791 @@ void CurveTreeView::expandPendingGroups() {
 void CurveTreeView::setForcedTopicPaths(const QSet<QString>& topic_paths) {
   forced_topic_paths_ = topic_paths;
   applyForcedTopicMarks();
+}
+
+namespace {
+// Same row keys, whatever the values: which rows carry progress is what decides
+// whether the tree's structure has to change at all.
+bool sameRowKeys(
+    const QHash<quint64, CurveTreeView::DatasetProgress>& lhs,
+    const QHash<quint64, CurveTreeView::DatasetProgress>& rhs) {
+  if (lhs.size() != rhs.size()) {
+    return false;
+  }
+  for (auto it = lhs.cbegin(); it != lhs.cend(); ++it) {
+    if (!rhs.contains(it.key())) {
+      return false;
+    }
+  }
+  return true;
+}
+}  // namespace
+
+void CurveTreeView::setDatasetProgress(const QHash<quint64, DatasetProgress>& by_row_key) {
+  for (auto it = by_row_key.cbegin(); it != by_row_key.cend(); ++it) {
+    qCInfo(lcCurveTreeCancel).nospace() << "[view] SET row_key=" << it.key()
+                                        << " state=" << static_cast<int>(it.value().state)
+                                        << " fraction=" << it.value().fraction << " indet=" << it.value().indeterminate;
+  }
+  if (by_row_key.isEmpty()) {
+    qCInfo(lcCurveTreeCancel) << "[view] SET (empty)";
+  }
+
+  // A fraction-only tick (the common case: ~20 Hz during a load) must not tear
+  // the tree down and rebuild it. Only a change in WHICH rows carry progress can
+  // add or retire a ghost, and only that can change the sort order.
+  const bool membership_changed = !sameRowKeys(dataset_progress_, by_row_key);
+  dataset_progress_ = by_row_key;
+  if (membership_changed) {
+    applyDatasetProgress();
+  } else {
+    refreshDatasetProgressValues();
+  }
+}
+
+void CurveTreeView::setDatasetRowKey(const QString& dataset_tree_path, quint64 row_key) {
+  qCInfo(lcCurveTreeCancel).nospace() << "[view] MAP path=\"" << dataset_tree_path << "\" -> row_key=" << row_key;
+  dataset_tree_path_to_row_key_.insert(dataset_tree_path, row_key);
+  applyDatasetProgress();
+}
+
+QTreeWidgetItem* CurveTreeView::findDatasetNode(const QString& dataset_tree_path) {
+  if (dataset_tree_path.isEmpty()) {
+    return nullptr;
+  }
+
+  const auto subtree_contains_path = [&dataset_tree_path](QTreeWidgetItem* root) {
+    std::function<bool(QTreeWidgetItem*)> contains = [&](QTreeWidgetItem* item) {
+      if (item->data(kNameColumn, kSearchRole).toString() == dataset_tree_path) {
+        return true;
+      }
+      for (int i = 0; i < item->childCount(); ++i) {
+        if (contains(item->child(i))) {
+          return true;
+        }
+      }
+      return false;
+    };
+    return contains(root);
+  };
+
+  for (int i = 0; i < topLevelItemCount(); ++i) {
+    QTreeWidgetItem* dataset_node = topLevelItem(i);
+    if (dataset_node->data(kNameColumn, kDatasetGhostRole).toBool()) {
+      continue;
+    }
+    // Group-only dataset rows do not carry kSearchRole, so a dataset-only path
+    // also matches their displayed name. Full catalog paths resolve through a
+    // descendant and still return this top-level ancestor.
+    if (dataset_node->text(kNameColumn) == dataset_tree_path || subtree_contains_path(dataset_node)) {
+      return dataset_node;
+    }
+  }
+  return nullptr;
+}
+
+void CurveTreeView::removeDatasetGhostItems() {
+  // Scan instead of dereferencing the registry: inherited QTreeWidget::clear()
+  // may have deleted its raw pointers without going through clearCurves().
+  for (int i = topLevelItemCount() - 1; i >= 0; --i) {
+    if (topLevelItem(i)->data(kNameColumn, kDatasetGhostRole).toBool()) {
+      delete takeTopLevelItem(i);
+    }
+  }
+  ghost_items_.clear();
+}
+
+void CurveTreeView::deselectProgressRow(QTreeWidgetItem* row, DatasetProgress::State state) {
+  // A LOADING row must not stay selected: the selection highlight spans the
+  // name column and drowns the translucent bar wash, so the highlight's own
+  // right edge (~2/3 of the row) reads as a stuck progress bar — during the
+  // load AND after it, since the selection outlives the decoration. The
+  // reload gesture itself is what selected the row; drop it.
+  if ((state != DatasetProgress::State::kLoading && state != DatasetProgress::State::kStopping) ||
+      selectionModel() == nullptr) {
+    return;
+  }
+  const QModelIndex node_index = indexFromItem(row);
+  if (selectionModel()->isSelected(node_index)) {
+    selectionModel()->select(node_index, QItemSelectionModel::Deselect | QItemSelectionModel::Rows);
+  }
+  if (selectionModel()->currentIndex() == node_index) {
+    selectionModel()->clearCurrentIndex();
+  }
+}
+
+void CurveTreeView::refreshAnimationTimer() {
+  bool has_animating_row = false;
+  for (int i = 0; i < topLevelItemCount(); ++i) {
+    if (rowNeedsAnimation(topLevelItem(i))) {
+      has_animating_row = true;
+      break;
+    }
+  }
+  if (has_animating_row) {
+    if (!animation_timer_->isActive()) {
+      animation_epoch_ms_ = QDateTime::currentMSecsSinceEpoch();
+      animation_timer_->start();
+    }
+  } else {
+    animation_timer_->stop();
+  }
+}
+
+void CurveTreeView::refreshDatasetProgressValues() {
+  // Fast path for a fraction-only tick: the row set is unchanged and so is the
+  // tree, so every key still resolves through the cache filled by the last full
+  // apply. A miss means something moved without going through mutateStructure —
+  // fall back rather than guess.
+  for (auto it = dataset_progress_.cbegin(); it != dataset_progress_.cend(); ++it) {
+    QTreeWidgetItem* row = progress_row_cache_.value(it.key(), nullptr);
+    if (row == nullptr) {
+      applyDatasetProgress();
+      return;
+    }
+    row->setData(kNameColumn, kDatasetProgressRole, QVariant::fromValue(it.value()));
+    deselectProgressRow(row, it.value().state);
+    updateProgressRowRegion(row);
+  }
+  refreshAnimationTimer();
+}
+
+void CurveTreeView::applyDatasetProgress() {
+  removeDatasetGhostItems();
+  progress_row_cache_.clear();
+
+  // Every row whose decoration changed this pass, repainted full-width at the
+  // end — see updateProgressRowRegion for why the implicit invalidation is not
+  // enough.
+  std::vector<QTreeWidgetItem*> touched_rows;
+
+  // Full-set replace: clear stale data from every surviving real row before
+  // applying the current hash. This also makes an empty hash a complete clear.
+  // TOP-LEVEL ONLY: progress lives on dataset rows, and findDatasetNode never
+  // returns anything deeper (pinned by DatasetProgressNeverMarksScalarLeaves),
+  // so recursing the whole tree only paid to visit every curve leaf.
+  for (int i = 0; i < topLevelItemCount(); ++i) {
+    QTreeWidgetItem* row = topLevelItem(i);
+    const bool had_progress = row->data(kNameColumn, kDatasetProgressRole).isValid();
+    if (had_progress) {
+      row->setData(kNameColumn, kDatasetProgressRole, QVariant());
+      touched_rows.push_back(row);  // its decoration must be erased, not left behind
+    }
+    if (row->data(kNameColumn, kDatasetRowKeyRole).isValid()) {
+      row->setData(kNameColumn, kDatasetRowKeyRole, QVariant());
+    }
+  }
+
+  bool created_ghost = false;
+  for (auto progress_it = dataset_progress_.cbegin(); progress_it != dataset_progress_.cend(); ++progress_it) {
+    const quint64 row_key = progress_it.key();
+    QTreeWidgetItem* dataset_node = nullptr;
+    for (auto path_it = dataset_tree_path_to_row_key_.cbegin(); path_it != dataset_tree_path_to_row_key_.cend();
+         ++path_it) {
+      if (path_it.value() == row_key) {
+        dataset_node = findDatasetNode(path_it.key());
+        if (dataset_node != nullptr) {
+          break;
+        }
+      }
+    }
+
+    qCInfo(lcCurveTreeCancel).nospace() << "[view] APPLY row_key=" << row_key
+                                        << (dataset_node != nullptr ? " -> REAL node" : " -> NO node (ghost)")
+                                        << " item=" << static_cast<const void*>(dataset_node)
+                                        << " top0=" << static_cast<const void*>(topLevelItem(0))
+                                        << " visRect=" << (dataset_node ? visualItemRect(dataset_node).y() : -1);
+    if (dataset_node != nullptr) {
+      dataset_node->setData(kNameColumn, kDatasetProgressRole, QVariant::fromValue(progress_it.value()));
+      dataset_node->setData(kNameColumn, kDatasetRowKeyRole, QVariant::fromValue(row_key));
+      deselectProgressRow(dataset_node, progress_it.value().state);
+      progress_row_cache_.insert(row_key, dataset_node);
+      touched_rows.push_back(dataset_node);
+      continue;
+    }
+
+    auto* ghost = new CurveTreeItem(invisibleRootItem());
+    setItemName(ghost, progress_it.value().display_name);
+    ghost->setFlags(Qt::ItemIsEnabled);
+    ghost->setData(kNameColumn, kDatasetProgressRole, QVariant::fromValue(progress_it.value()));
+    ghost->setData(kNameColumn, kDatasetRowKeyRole, QVariant::fromValue(row_key));
+    ghost->setData(kNameColumn, kDatasetGhostRole, true);
+    ghost_items_.insert(row_key, ghost);
+    progress_row_cache_.insert(row_key, ghost);
+    touched_rows.push_back(ghost);
+    created_ghost = true;
+  }
+
+  if (created_ghost) {
+    sortTree();
+  }
+
+  // After any sort, so the row rects resolved here are the final ones.
+  for (QTreeWidgetItem* row : touched_rows) {
+    updateProgressRowRegion(row);
+  }
+
+  refreshAnimationTimer();
+}
+
+bool CurveTreeView::rowNeedsAnimation(QTreeWidgetItem* item) const {
+  if (item == nullptr) {
+    return false;
+  }
+  const QVariant progress_data = item->data(kNameColumn, kDatasetProgressRole);
+  if (!progress_data.isValid()) {
+    return false;
+  }
+  const DatasetProgress progress = progress_data.value<DatasetProgress>();
+  const bool indeterminate_loading = progress.state == DatasetProgress::State::kLoading && progress.indeterminate;
+  const bool flashing = progress.state == DatasetProgress::State::kFailed && progress.flash_on;
+  return indeterminate_loading || flashing;
+}
+
+namespace {
+// Process-wide dev toggle; see CurveTreeView::setGeometryDebugEnabled.
+bool g_geometry_debug_enabled = false;
+
+// Outline a rect with a labelled dashed border. Labels are drawn INSIDE the
+// rect's top-left so they cannot be confused with a neighbouring rect's.
+void outlineRect(QPainter* painter, const QRect& rect, const QColor& color, const QString& label) {
+  if (rect.isEmpty()) {
+    return;
+  }
+  QPen pen(color);
+  pen.setStyle(Qt::DashLine);
+  pen.setWidth(1);
+  painter->setPen(pen);
+  painter->setBrush(Qt::NoBrush);
+  // adjusted(): a QRect's right/bottom edge is inclusive, so drawing it raw
+  // paints one pixel outside the region it describes.
+  painter->drawRect(rect.adjusted(0, 0, -1, -1));
+  if (!label.isEmpty()) {
+    QFont font = painter->font();
+    font.setPointSize(7);
+    painter->setFont(font);
+    painter->drawText(rect.adjusted(2, 1, -1, -1), Qt::AlignLeft | Qt::AlignTop, label);
+  }
+}
+}  // namespace
+
+void CurveTreeView::setGeometryDebugEnabled(bool enabled) {
+  g_geometry_debug_enabled = enabled;
+}
+
+bool CurveTreeView::geometryDebugEnabled() {
+  return g_geometry_debug_enabled;
+}
+
+void CurveTreeView::paintGeometryDebug(
+    QPainter* painter, const QRect& row_rect, const QModelIndex& index, const ProgressGeometry* geom) const {
+  const QPainterStateGuard guard(painter);
+  painter->setRenderHint(QPainter::Antialiasing, false);
+
+  outlineRect(painter, row_rect, QColor(0, 200, 255), QStringLiteral("row"));
+
+  // Per-column cell rects: where the VIEW thinks each column lives, which is
+  // what the row-spanning progress decoration has to coexist with.
+  if (index.isValid() && index.model() != nullptr) {
+    for (int column = 0; column < index.model()->columnCount(); ++column) {
+      const QRect cell = visualRect(index.sibling(index.row(), column));
+      outlineRect(painter, cell, QColor(120, 120, 120), QStringLiteral("c%1").arg(column));
+    }
+  }
+
+  if (geom != nullptr) {
+    outlineRect(painter, geom->fill_rect, QColor(0, 220, 0), QStringLiteral("fill"));
+    outlineRect(painter, geom->text_rect, QColor(255, 180, 0), QStringLiteral("text"));
+    outlineRect(painter, geom->discard_button_rect, QColor(255, 0, 255), QString());
+    outlineRect(painter, geom->keep_button_rect, QColor(255, 0, 0), QString());
+  }
+}
+
+const CurveTreeView::ProgressPalette& CurveTreeView::progressPalette() const {
+  const bool is_light = palette().window().color().lightness() >= 128;
+  if (progress_palette_.valid && progress_palette_.light == is_light) {
+    return progress_palette_;
+  }
+  // Every token the row decoration paints with, resolved in one pass. Each
+  // theme lookup builds a QString key, hashes it and may reparse CSS, and
+  // drawRow wants eight of them PER ROW PER FRAME once a marquee or flash runs
+  // the animation timer; the theme itself changes about never.
+  const auto fw_theme = theme::themeFor(is_light);
+  progress_palette_.light = is_light;
+  progress_palette_.indicator = theme::interaction(theme::Variant::Accent, theme::State::CheckedPressed, fw_theme);
+  progress_palette_.backdrop = theme::surface(theme::Surface::DataBackdrop, fw_theme);
+  progress_palette_.selection_fill = theme::selectionFill(theme::Selection::Item, fw_theme);
+  progress_palette_.loading_backdrop = theme::interaction(theme::Variant::Accent, theme::State::Nominal, fw_theme);
+  progress_palette_.failed_bar = theme::interaction(theme::Variant::Highlight, theme::State::Nominal, fw_theme);
+  progress_palette_.text = theme::onProgress(fw_theme);
+  progress_palette_.hover_layer = theme::overlay(theme::Overlay::Hover, fw_theme);
+  progress_palette_.icon_ink = theme::iconInk(fw_theme);
+  progress_palette_.icon_ink_disabled = theme::iconInkDisabled(fw_theme);
+  progress_palette_.valid = true;
+  return progress_palette_;
+}
+
+void CurveTreeView::changeEvent(QEvent* event) {
+  // A palette/style/theme switch is the only thing that moves the resolved
+  // tokens, and the bin glyph is rasterized in one of them.
+  if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange ||
+      event->type() == QEvent::ThemeChange) {
+    progress_palette_.valid = false;
+    discard_icons_.clear();
+  }
+  QTreeWidget::changeEvent(event);
+}
+
+QRect CurveTreeView::fullWidthRowRect(const QRect& row_rect) const {
+  // A row rect from visualItemRect / option.rect covers only the name column,
+  // but the progress decoration spans the whole row. Paint, hit-test and
+  // invalidation all widen it HERE so they cannot disagree: the right edge is
+  // rect().right() (the last painted pixel), never width(), which would place
+  // the right-aligned cluster one pixel off from the hit-test.
+  const QRect viewport_rect = viewport()->rect();
+  QRect full = row_rect;
+  full.setLeft(viewport_rect.left());
+  full.setRight(viewport_rect.right());
+  return full;
+}
+
+CurveTreeView::StopButtonHit CurveTreeView::stopButtonAt(const QPoint& viewport_pos) const {
+  QTreeWidgetItem* item = itemAt(viewport_pos);
+  if (item == nullptr) {
+    return {};
+  }
+  const QVariant progress_data = item->data(kNameColumn, kDatasetProgressRole);
+  if (!progress_data.isValid()) {
+    return {};
+  }
+  const DatasetProgress progress = progress_data.value<DatasetProgress>();
+  // A row that was never stoppable paints no cluster at all, so there is
+  // nothing to hit — not even an inert glyph.
+  if (!progress.cancellable) {
+    return {};
+  }
+  const ProgressGeometry geom = progressGeometry(fullWidthRowRect(visualItemRect(item)));
+
+  // Mirrors drawRow's enablement exactly: only a live load acts, and the bin
+  // additionally needs a producer that can roll back.
+  const bool live = progress.state == DatasetProgress::State::kLoading;
+  if (geom.keep_button_rect.contains(viewport_pos)) {
+    return {.item = item, .button = StopButton::kKeep, .progress = progress, .actionable = live};
+  }
+  if (geom.discard_button_rect.contains(viewport_pos)) {
+    return {
+        .item = item, .button = StopButton::kDiscard, .progress = progress, .actionable = live && progress.discardable};
+  }
+  return {};
+}
+
+CurveTreeView::StopButtonPoints CurveTreeView::activeStopButtonPoints() const {
+  for (int i = 0; i < topLevelItemCount(); ++i) {
+    const QRect row_rect = visualItemRect(topLevelItem(i));
+    if (row_rect.isEmpty()) {
+      continue;  // scrolled out or collapsed: nothing clickable on screen
+    }
+    const ProgressGeometry geom = progressGeometry(fullWidthRowRect(row_rect));
+    // Report a centre only where the hit-test really resolves to that glyph AND
+    // would act on it, so the reported point and the click path cannot diverge.
+    StopButtonPoints points;
+    if (const StopButtonHit hit = stopButtonAt(geom.keep_button_rect.center());
+        hit.actionable && hit.button == StopButton::kKeep) {
+      points.keep = geom.keep_button_rect.center();
+    }
+    if (const StopButtonHit hit = stopButtonAt(geom.discard_button_rect.center());
+        hit.actionable && hit.button == StopButton::kDiscard) {
+      points.discard = geom.discard_button_rect.center();
+    }
+    if (points.keep.x() >= 0 || points.discard.x() >= 0) {
+      return points;
+    }
+  }
+  return {};
+}
+
+QString CurveTreeView::stopButtonTooltip(const QPoint& viewport_pos) const {
+  const StopButtonHit hit = stopButtonAt(viewport_pos);
+  if (hit.button == StopButton::kNone) {
+    return {};
+  }
+  // The glyphs stay painted through the terminal linger, but that load is over:
+  // nothing left to stop, and nothing worth explaining about a row that is
+  // about to retire.
+  if (hit.progress.state != DatasetProgress::State::kLoading) {
+    return {};
+  }
+  if (hit.button == StopButton::kKeep) {
+    return tr("Stop loading and keep the data received so far");
+  }
+  // A greyed bin is the affordance that most needs a tooltip: it looks like a
+  // choice and answers to nothing, so say why rather than leaving the user
+  // clicking it.
+  return hit.actionable ? tr("Stop loading and discard the partial data")
+                        : tr("This source can stop but cannot discard partial data");
+}
+
+bool CurveTreeView::viewportEvent(QEvent* event) {
+  if (event->type() == QEvent::ToolTip) {
+    auto* help_event = static_cast<QHelpEvent*>(event);
+    if (stopButtonAt(help_event->pos()).button != StopButton::kNone) {
+      // Over a painted glyph the affordance answers for itself — or, when it is
+      // inert, for nothing. Either way the row's own tooltip must not stand in
+      // for it, so this branch always consumes the event.
+      const QString tooltip = stopButtonTooltip(help_event->pos());
+      if (tooltip.isEmpty()) {
+        QToolTip::hideText();
+      } else {
+        QToolTip::showText(help_event->globalPos(), tooltip, viewport());
+      }
+      event->accept();
+      return true;
+    }
+  }
+  return QTreeWidget::viewportEvent(event);
+}
+
+void CurveTreeView::refreshStopButtonHover(const QPoint& viewport_pos) {
+  // Only an actionable glyph lights up: a disabled one offers no click, so
+  // highlighting it would promise one.
+  const StopButtonHit hit = stopButtonAt(viewport_pos);
+  QTreeWidgetItem* const hovered_item = hit.actionable ? hit.item : nullptr;
+  const StopButton button = hit.actionable ? hit.button : StopButton::kNone;
+
+  const QPersistentModelIndex hovered_index = hovered_item != nullptr
+                                                  ? QPersistentModelIndex(indexFromItem(hovered_item, kNameColumn))
+                                                  : QPersistentModelIndex();
+  if (hovered_index == hovered_stop_row_ && button == hovered_stop_button_) {
+    return;  // no transition: nothing to repaint
+  }
+
+  QTreeWidgetItem* previous = hovered_stop_row_.isValid() ? itemFromIndex(hovered_stop_row_) : nullptr;
+  hovered_stop_row_ = hovered_index;
+  hovered_stop_button_ = button;
+  if (previous != nullptr && previous != hovered_item) {
+    updateProgressRowRegion(previous);
+  }
+  updateProgressRowRegion(hovered_item);
+}
+
+void CurveTreeView::leaveEvent(QEvent* event) {
+  refreshStopButtonHover(QPoint(-1, -1));
+  QTreeWidget::leaveEvent(event);
+}
+
+const QPixmap& CurveTreeView::discardIcon(int size, const QColor& ink) const {
+  // Keyed by size AND ink: a frame that paints one live bin beside one greyed
+  // bin needs both tints at once, and a single slot re-rasterized the SVG twice
+  // per frame as the two rows took turns evicting each other.
+  const quint64 key = (static_cast<quint64>(static_cast<quint32>(size)) << 32U) | ink.rgba();
+  if (const auto cached = discard_icons_.constFind(key); cached != discard_icons_.cend()) {
+    return *cached;
+  }
+  // The stylesheet-driven recolor only knows light/dark ink, so tint the
+  // rasterized glyph directly: SourceIn keeps the glyph's alpha and replaces
+  // its color, which is what lets the bin track the ✕ through the enabled and
+  // disabled inks.
+  QPixmap icon = renderSvgPixmap(u":/resources/svg/trash.svg"_s, u"light"_s, QSize(size, size), devicePixelRatioF());
+  if (!icon.isNull()) {
+    QPainter tint(&icon);
+    tint.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    tint.fillRect(icon.rect(), ink);
+  }
+  return *discard_icons_.insert(key, std::move(icon));
+}
+
+void CurveTreeView::updateProgressRowRegion(QTreeWidgetItem* item) {
+  if (item == nullptr) {
+    return;
+  }
+  const QRect item_rect = visualItemRect(item);
+  if (item_rect.isEmpty()) {
+    return;  // scrolled out or collapsed: nothing on screen to invalidate
+  }
+  const QRect visible_row_rect = fullWidthRowRect(item_rect).intersected(viewport()->rect());
+  if (!visible_row_rect.isEmpty()) {
+    viewport()->update(visible_row_rect);
+  }
+}
+
+void CurveTreeView::updateAnimatingRows() {
+  bool has_animating_row = false;
+  for (int i = 0; i < topLevelItemCount(); ++i) {
+    QTreeWidgetItem* item = topLevelItem(i);
+    if (!rowNeedsAnimation(item)) {
+      continue;
+    }
+    has_animating_row = true;
+    updateProgressRowRegion(item);
+  }
+  if (!has_animating_row) {
+    animation_timer_->stop();
+  }
+}
+
+QRect CurveTreeView::marqueeBandRect(const QRect& fill_rect, qint64 elapsed_ms, qint64 period_ms) {
+  if (period_ms <= 0 || fill_rect.isEmpty()) {
+    return {};
+  }
+  // A quarter-width band that enters from the left, crosses, and exits right.
+  const int total_width = fill_rect.width();
+  const int band_width = total_width / 4;
+  const double phase = static_cast<double>(elapsed_ms % period_ms) / static_cast<double>(period_ms);
+  // Starts one band-width OFF the left edge so elapsed 0 shows nothing yet and
+  // the band slides in, rather than appearing mid-track.
+  const int band_pos = static_cast<int>(phase * (total_width + band_width)) - band_width;
+  QRect band = fill_rect;
+  band.setLeft(fill_rect.left() + band_pos);
+  band.setRight(band.left() + band_width);
+  return band.intersected(fill_rect);
+}
+
+CurveTreeView::ProgressGeometry CurveTreeView::progressGeometry(const QRect& row_rect) const {
+  // Layout: [progress bar, FULL row width ..................................]
+  //         [ .......................... | text | bin | ✕ ]  <- drawn over it
+  //
+  // The bar spans the whole row and the right-edge cluster is composited on top
+  // of it, so the bar reads as one continuous track rather than stopping short
+  // to make room. The cluster's three cells are contiguous — no gaps — and run
+  // flush to the row's right edge.
+  constexpr int kCancelButtonSize = 24;
+  constexpr int kCancelButtonMinSize = 10;
+  constexpr int kTextAreaWidth = 50;
+
+  ProgressGeometry geom;
+  geom.fill_rect = row_rect;
+
+  // Stop affordances: two squares flush against the row's right edge and its
+  // full height, so they read as part of the row rather than as controls
+  // floating inside it. Rightmost is the ✕ (stop and keep) — the safe one, and
+  // the outer edge is the easiest target; the destructive bin sits inboard.
+  const int button_size = std::clamp(row_rect.height(), kCancelButtonMinSize, kCancelButtonSize);
+  const int button_top = row_rect.top() + ((row_rect.height() - button_size) / 2);
+  // +1: right() is inclusive, so a rect of width `button_size` ending flush on
+  // it starts at right() - button_size + 1.
+  const int keep_left = row_rect.right() - button_size + 1;
+  geom.keep_button_rect = QRect(keep_left, button_top, button_size, button_size);
+  const int discard_left = keep_left - button_size;
+  geom.discard_button_rect = QRect(discard_left, button_top, button_size, button_size);
+  // Butts directly against the bin, so the caption and the glyphs read as one
+  // cluster instead of a number floating away from its controls.
+  geom.text_rect = QRect(discard_left - kTextAreaWidth, row_rect.top(), kTextAreaWidth, row_rect.height());
+
+  return geom;
+}
+
+void CurveTreeView::drawRow(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const {
+  QTreeWidgetItem* item = itemFromIndex(index);
+  if (item == nullptr) {
+    QTreeWidget::drawRow(painter, option, index);
+    return;
+  }
+
+  const QVariant progress_data = item->data(kNameColumn, kDatasetProgressRole);
+  if (!progress_data.isValid()) {
+    QTreeWidget::drawRow(painter, option, index);
+    if (g_geometry_debug_enabled) {
+      paintGeometryDebug(painter, fullWidthRowRect(option.rect), index, nullptr);
+    }
+    return;
+  }
+
+  const DatasetProgress progress = progress_data.value<DatasetProgress>();
+  const QRect row_rect = fullWidthRowRect(option.rect);
+
+  const ProgressPalette& tokens = progressPalette();
+
+  const ProgressGeometry geom = progressGeometry(row_rect);
+  // The bar is the Accent family's checked tone, one step up the same ramp as the
+  // loading row's backdrop below, so bar and backdrop are two rungs of one ramp
+  // rather than two unrelated blues.
+  // A DARK rung of the accent ramp. The lighter Checked tone (#99CCFF) sits one
+  // step from selection_fill (#C2DCFF), so on a selected row the bar and the
+  // row's own background were the same colour and the fill was invisible.
+  const QColor indicator_color = tokens.indicator;
+  // Backdrop behind the bar, in precedence order:
+  //  - selected: the selection fill, which outranks any load state;
+  //  - still loading: the Accent family's nominal tone — its lowest rung — so an
+  //    in-flight row is legible as one at a glance even where the bar has not
+  //    reached yet, and the unfilled track reads as the same hue as the bar;
+  //  - otherwise (a terminal row seeing out its linger): the tree's own surface,
+  //    so it sits flush with its neighbours.
+  // NOT the progress track tone, which is darker than the tree surface in the
+  // dark theme and banded the whole row a different shade.
+  // Ask the selection model, not option.state: QTreeView::drawRow derives the
+  // row's selected state internally and the option handed to this override does
+  // NOT carry State_Selected. Reading the flag here reports "not selected" while
+  // the base pass still paints the selection fill over the whole row.
+  const bool row_selected = (option.state & QStyle::State_Selected) != 0 ||
+                            (selectionModel() != nullptr && selectionModel()->isSelected(index));
+  const bool row_loading =
+      progress.state == DatasetProgress::State::kLoading || progress.state == DatasetProgress::State::kStopping;
+  // While loading, the progress readout owns the row: a selection fill spans the
+  // FULL width in the same blue family as the bar, so a selected row at 0% reads
+  // as a finished one. Selection is transient information here and returns the
+  // moment the load ends; the bar is the reason the row is decorated at all.
+  QColor row_background = tokens.backdrop;
+  if (row_selected && !row_loading) {
+    row_background = tokens.selection_fill;
+  } else if (row_loading) {
+    // The unfilled TRACK: the Accent family's nominal rung, the lowest of the
+    // same ramp the bar sits high on. The bar reads against it because it is a
+    // far darker rung (checked-pressed), not because the track is a foreign hue.
+    row_background = tokens.loading_backdrop;
+  }
+
+  // The bar as one (rect, color) pair, resolved once. Both paint passes below
+  // consume it, so the band under the right-edge cluster cannot disagree with
+  // the bar under the name.
+  QRect bar_rect;
+  QColor bar_color = indicator_color;
+  switch (progress.state) {
+    case DatasetProgress::State::kCompleted:
+      bar_rect = geom.fill_rect;
+      break;
+    case DatasetProgress::State::kCancelled:
+      bar_rect = geom.fill_rect;
+      bar_color.setAlpha(128);
+      break;
+    case DatasetProgress::State::kFailed:
+      bar_rect = geom.fill_rect;
+      // A failure reads through the Highlight family, never the red status ink:
+      // red is not this framework's failure signal. The flash carries the
+      // alarm; the hue only has to stand apart from the normal indicator.
+      bar_color = tokens.failed_bar;
+      if (!progress.flash_on) {
+        bar_color.setAlpha(100);
+      }
+      break;
+    case DatasetProgress::State::kLoading:
+    case DatasetProgress::State::kStopping:
+      if (progress.indeterminate) {
+        const qint64 elapsed_ms =
+            animation_timer_->isActive() ? QDateTime::currentMSecsSinceEpoch() - animation_epoch_ms_ : 0;
+        bar_rect = marqueeBandRect(geom.fill_rect, elapsed_ms, kMarqueePeriodMs);
+      } else {
+        bar_rect = geom.fill_rect;
+        bar_rect.setWidth(static_cast<int>(geom.fill_rect.width() * progress.fraction));
+      }
+      break;
+  }
+
+  // Over a selection highlight the bar goes translucent so the highlight still
+  // reads through it; one color for every pass, so the band under the cluster
+  // cannot end up more saturated than the bar under the name.
+  QColor bar_paint_color = bar_color;
+  if (row_selected) {
+    bar_paint_color.setAlpha(static_cast<int>(255 * 0.45));
+  }
+
+  // Row background then indicator, clipped to `region`.
+  const auto paint_bar = [&](const QRect& region) {
+    painter->fillRect(region, row_background);
+    const QRect visible_bar = bar_rect.intersected(region);
+    if (!visible_bar.isEmpty()) {
+      painter->fillRect(visible_bar, bar_paint_color);
+    }
+  };
+
+  paint_bar(row_rect);
+
+  // Call base class to paint expander, icon, text
+  QTreeWidget::drawRow(painter, option, index);
+
+  // The base pass repaints the selection highlight over our fill, so re-apply
+  // the bar on top of it (background untouched — that would erase the name).
+  // Re-assert the bar over the base pass's selection fill. It MUST stay
+  // translucent: this pass runs after the row's text was drawn, so an opaque
+  // fill would paint over the dataset name.
+  if (row_selected) {
+    painter->fillRect(bar_rect, bar_paint_color);
+  }
+
+  // Re-assert the bar under the right-edge cluster, AFTER the base pass. The
+  // base pass paints the value column and the column separator over our first
+  // fill, so without this the cluster's glyphs would sit on top of foreign
+  // content. Repainting the band makes the cluster opaque: whatever the view
+  // drew there is hidden, separator included.
+  const QRect cluster_rect = geom.text_rect.united(geom.discard_button_rect).united(geom.keep_button_rect);
+  paint_bar(cluster_rect);
+
+  // Paint right-edge cluster: percentage text and cancel button
+  const QFont font = this->font();
+  const QColor text_color = tokens.text;
+
+  painter->setFont(font);
+  painter->setPen(text_color);
+
+  // The caption is ONLY ever a percentage — never a word. Prose in a data row
+  // reads as tree content rather than chrome; the bar's color and the flash
+  // carry the outcome. A terminal state therefore shows the percentage it
+  // reached, not what happened to it.
+  //
+  // An indeterminate row shows nothing at all: it has no fraction to report.
+  QString text;
+  if (progress.state == DatasetProgress::State::kCompleted) {
+    text = u"100%"_s;  // pinned, so a 0.999 fraction cannot render "99%" on success
+  } else if (!progress.indeterminate) {
+    text = QStringLiteral("%1%").arg(static_cast<int>(progress.fraction * 100));
+  }
+
+  if (!text.isEmpty()) {
+    // Right-aligned so the caption sits against the bin rather than centred in
+    // its cell with a gap on the icon side.
+    painter->drawText(geom.text_rect, Qt::AlignRight | Qt::AlignVCenter, text);
+  }
+
+  // Stop affordances: ✕ stops and keeps what arrived, the bin stops and
+  // discards it. Both are offered on the row so the choice is made by WHICH one
+  // is clicked — the host never has to ask afterwards.
+  //
+  // They stay PAINTED through the terminal linger, greyed to the disabled ink
+  // and inert, rather than disappearing: the row is about to retire, and having
+  // the cluster lose two of its three cells for that last second reads as a
+  // glitch. Only a live load accepts a click (see mousePressEvent).
+  if (progress.cancellable) {
+    const bool actionable = progress.state == DatasetProgress::State::kLoading;
+    // Read the TRACKED hover, not QCursor: sampling the global cursor here made
+    // the highlight depend on when the row happened to repaint.
+    const bool row_hovered = hovered_stop_row_.isValid() && itemFromIndex(hovered_stop_row_) == item;
+
+    // Both glyphs carry the framework's nominal icon ink — the same ink every
+    // other icon in the app uses — dropping to the disabled ink once the load
+    // has ended. Hover is the framework's translucent state layer behind the
+    // glyph, NOT a recolor: a colored glyph here would read as a status, and
+    // the row's state is already told by the bar.
+    const QColor hover_layer = tokens.hover_layer;
+    const QColor glyph_ink = actionable ? tokens.icon_ink : tokens.icon_ink_disabled;
+
+    if (actionable && row_hovered && hovered_stop_button_ == StopButton::kKeep) {
+      painter->fillRect(geom.keep_button_rect, hover_layer);
+    }
+    painter->setPen(QPen(glyph_ink, 2));
+    painter->setRenderHint(QPainter::Antialiasing);
+    const int inset = std::max(2, geom.keep_button_rect.height() / 4);
+    const QRect inner = geom.keep_button_rect.adjusted(inset, inset, -inset, -inset);
+    painter->drawLine(inner.topLeft(), inner.bottomRight());
+    painter->drawLine(inner.topRight(), inner.bottomLeft());
+
+    // A producer that cannot discard still gets the bin drawn, greyed: dropping
+    // the cell mid-load reads as a glitch, and a live-looking bin that silently
+    // kept the data would be worse than either.
+    const bool discard_actionable = actionable && progress.discardable;
+    const QColor bin_ink = discard_actionable ? glyph_ink : tokens.icon_ink_disabled;
+    const QPixmap& bin = discardIcon(geom.discard_button_rect.height(), bin_ink);
+    if (!bin.isNull()) {
+      if (discard_actionable && row_hovered && hovered_stop_button_ == StopButton::kDiscard) {
+        painter->fillRect(geom.discard_button_rect, hover_layer);
+      }
+      const QPainterStateGuard icon_guard(painter);
+      painter->setRenderHint(QPainter::SmoothPixmapTransform);
+      painter->drawPixmap(geom.discard_button_rect, bin);
+    }
+  }
+
+  if (g_geometry_debug_enabled) {
+    paintGeometryDebug(painter, row_rect, index, &geom);
+  }
 }
 
 void CurveTreeView::applyForcedTopicMarks() {
@@ -1170,8 +2008,24 @@ void CurveTreeView::mousePressEvent(QMouseEvent* event) {
   suppress_next_release_ = false;
   drag_button_ = Qt::NoButton;
   not_draggable_reason_.reset();
+  QTreeWidgetItem* const item = itemAt(event->pos());
+  if (event->button() == Qt::LeftButton) {
+    if (item != nullptr) {
+      const QVariant row_key_data = item->data(kNameColumn, kDatasetRowKeyRole);
+      // Only an actionable glyph reaches the host: a greyed bin is inert (the
+      // producer cannot discard), so a click there must do nothing rather than
+      // fall back to keeping.
+      if (const StopButtonHit hit = stopButtonAt(event->pos()); hit.actionable && row_key_data.isValid()) {
+        const bool keep = hit.button == StopButton::kKeep;
+        const quint64 row_key = row_key_data.toULongLong();
+        event->accept();
+        qCInfo(lcCurveTreeCancel) << "stop affordance clicked: row" << row_key << "keep_partial" << keep;
+        emit cancelRequested(row_key, /*keep_partial=*/keep);
+        return;
+      }
+    }
+  }
   if (event->button() == Qt::LeftButton || event->button() == Qt::RightButton) {
-    QTreeWidgetItem* item = itemAt(event->pos());
     // Only draggable rows (curve leaves / object topics) initiate a drag or the
     // drag-the-whole-selection gesture. Non-draggable rows — notably the selectable
     // dataset groups — fall straight through to the base handler, so plain/Ctrl/Shift
@@ -1213,6 +2067,7 @@ void CurveTreeView::mousePressEvent(QMouseEvent* event) {
 }
 
 void CurveTreeView::mouseMoveEvent(QMouseEvent* event) {
+  refreshStopButtonHover(event->position().toPoint());
 #ifdef PJ_TARGET_WASM
   if (in_wasm_drop_) {
     event->accept();

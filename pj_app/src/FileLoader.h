@@ -15,9 +15,11 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 
 #include "LoadInput.h"
 #include "pj_base/types.hpp"
+#include "pj_runtime/SessionManager.h"
 
 QT_BEGIN_NAMESPACE
 class QWidget;
@@ -39,7 +41,6 @@ class CatalogModel;
 class BrowserFileStore;
 class DataSourceRuntimeHost;
 class ExtensionCatalogService;
-class SessionManager;
 
 // Worker↔GUI rendezvous for the synchronous plugin message-box ABI (defined in
 // FileLoader.cpp). Heap-shared so the queued GUI lambda and a blocked worker
@@ -202,8 +203,10 @@ class FileLoader : public QObject {
   LoadRequestId loadFileTicketed(LoadInput input, QWidget* dialog_parent = nullptr, const LoadHints& hints = {});
 
   // Cancel the in-progress worker load. keep_partial=true keeps the rows parsed
-  // so far (Primary/"Cancel"); false discards the dataset being filled
-  // (Secondary/"Discard"). No-op when no worker load is running.
+  // so far (Primary/"Cancel"); false discards them (Secondary/"Discard"),
+  // leaving whatever preceded this load: a first load's dataset is deleted, a
+  // replacing reload rolls back to its pre-reload data. No-op when no worker
+  // load is running.
   void cancelCurrent(bool keep_partial);
 
   // Generation-guarded cancel: no-op unless `generation` equals the load
@@ -400,8 +403,12 @@ class FileLoader : public QObject {
 
   // GUI-thread body of one throttled ingest flush, shared by the single-instance
   // and fan-out progress ticks (each keeps its own staleness guard): publish the
-  // newly committed rows and worker-fed TF revision, then advance progress.
-  void publishIngestProgress(DatasetId dataset_id, int current, int maximum);
+  // newly committed rows (through SessionManager's ingest token when the
+  // producer started one, directly otherwise), publish the worker-fed TF
+  // revision so 3D scenes track the load live, and advance the progress strip.
+  // `dataset_id` is the load's own, never `token.dataset_id`: a producer that
+  // ticks without a begin carries no dataset in its token.
+  void publishIngestProgress(DatasetId dataset_id, IngestToken token, uint64_t current, uint64_t total);
 
   // One scheduled loadFinished payload awaiting event-loop delivery, or a
   // synchronous flush at shutdown/destruction: delivery-or-flush, never loss.
@@ -439,7 +446,7 @@ class FileLoader : public QObject {
   // recursively replacing the currently executing coroutine frame.
   void finishPrologue();
   // WORKER thread body: runs ctx_->handle.start(), driving throttled
-  // flushPending()+queued notifyIngest() from on_progress_update.
+  // flushPending()+queued token-routed ingest updates from on_progress_update.
   void runIngestOnWorker(std::uint64_t generation);
   // GUI (queued from the worker): join the worker, finalize or discard, then
   // startNext().
@@ -484,6 +491,9 @@ class FileLoader : public QObject {
   // (else nullptr). The host is a coroutine-frame local, so cancelCurrent /
   // joinForShutdown reach its requestStop() through this. GUI-thread only.
   DataSourceRuntimeHost* active_fanout_ingest_ = nullptr;
+  // One active SessionManager ingest token per fan-out dataset. Entries are
+  // removed as their iterations terminalize; shutdown cancels any survivor.
+  std::unordered_map<DatasetId, IngestToken> fanout_ingest_tokens_;
   // GUI-thread pointer to the synchronous-ABI plugin question currently open.
   // Shutdown rejects it before joining a worker that may be waiting for it.
   // Heap-shared because the WA_DeleteOnClose dialog (a child of the main

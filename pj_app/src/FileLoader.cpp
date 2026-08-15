@@ -4,6 +4,7 @@
 #include "FileLoader.h"
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QFontDatabase>
@@ -898,6 +899,7 @@ struct FileLoader::LoadContext {
   int file_total = 1;
   DataSourceHandle handle;
   std::unique_ptr<DataSourceRuntimeHost> ingest;
+  IngestToken ingest_token{};
   // Worker-owned: started on the GUI before the thread runs, then only the
   // worker touches it (elapsed/restart) to pace flush+notify.
   QElapsedTimer flush_clock;
@@ -1611,18 +1613,28 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     // the atomic cancel flag, and marshal every GUI access via invokeMethod.
     const std::uint64_t generation = load_generation_;
     DataSourceRuntimeHost& host = *ctx_->ingest;
-    host.on_progress_start = [this, generation](std::string_view label, uint64_t total, bool /*cancellable*/) {
+    host.on_progress_start = [this, generation](std::string_view label, uint64_t total, bool cancellable) {
       ctx_->progress_total = total;
       const QString title = QString::fromUtf8(label.data(), static_cast<int>(label.size()));
       const bool determinate = total > 0;
+      const DatasetId ingest_dataset = ctx_->dataset_id;
       const int file_index = ctx_->file_index;
       const int file_total = ctx_->file_total;
       QMetaObject::invokeMethod(
           this,
-          [this, generation, title, determinate, file_index, file_total]() {
-            if (generation != load_generation_) {
+          [this, generation, title, total, cancellable, determinate, ingest_dataset, file_index, file_total]() {
+            if (generation != load_generation_ || ctx_ == nullptr || ctx_->dataset_id != ingest_dataset) {
               return;
             }
+            auto cancel_handler = [this, generation](bool keep_partial) {
+              this->cancelCurrent(generation, keep_partial);
+            };
+            const IngestToken token =
+                session_.beginIngest(ingest_dataset, title, total, cancellable, std::move(cancel_handler));
+            qCInfo(lcFileLoader) << "[ingest] begin" << title << "total=" << total
+                                 << (total == 0 ? "(INDETERMINATE - marquee, no percentage)" : "(determinate)")
+                                 << "cancellable=" << cancellable;
+            ctx_->ingest_token = token;
             emit ingestStarted(title, file_index, file_total, determinate);
           },
           Qt::QueuedConnection);
@@ -1637,17 +1649,16 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       ctx_->ingest->flushPending();  // worker-side: seal+commit -> rows visible
       ctx_->flush_clock.restart();
       const DatasetId notify_dataset = ctx_->dataset_id;
-      const int cur = static_cast<int>(current);
-      const int max = static_cast<int>(ctx_->progress_total);
+      const uint64_t max = ctx_->progress_total;
       QMetaObject::invokeMethod(
           this,
-          [this, generation, notify_dataset, cur, max]() {
+          [this, generation, notify_dataset, current, max]() {
             // A queued tick can survive shutdown and the loader can then be
             // reused. Reject it unless it still belongs to this exact context.
             if (generation != load_generation_ || ctx_ == nullptr || ctx_->dataset_id != notify_dataset) {
               return;
             }
-            publishIngestProgress(notify_dataset, cur, max);
+            publishIngestProgress(notify_dataset, ctx_->ingest_token, current, max);
           },
           Qt::QueuedConnection);
       return true;
@@ -1773,16 +1784,24 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       uint64_t progress_total = 0;
       QElapsedTimer flush_clock;
       flush_clock.start();
-      iter_ingest.on_progress_start = [this, fanout_generation, &progress_total, idx, fanout_count = fanouts.size()](
-                                          std::string_view label, uint64_t total, bool /*cancellable*/) {
+      iter_ingest.on_progress_start = [this, fanout_generation, &progress_total, iter_dataset_id, idx,
+                                       fanout_count = fanouts.size()](
+                                          std::string_view label, uint64_t total, bool cancellable) {
         progress_total = total;
         const QString title = QString::fromUtf8(label.data(), static_cast<int>(label.size()));
         QMetaObject::invokeMethod(
             this,
-            [this, fanout_generation, title, idx, fanout_count, determinate = total > 0]() {
+            [this, fanout_generation, iter_dataset_id, title, total, cancellable, idx, fanout_count,
+             determinate = total > 0]() {
               if (fanout_generation != load_generation_) {
                 return;
               }
+              auto cancel_handler = [this, fanout_generation](bool keep_partial) {
+                this->cancelCurrent(fanout_generation, keep_partial);
+              };
+              const IngestToken token =
+                  session_.beginIngest(iter_dataset_id, title, total, cancellable, std::move(cancel_handler));
+              fanout_ingest_tokens_[iter_dataset_id] = token;
               emit ingestStarted(title, static_cast<int>(idx + 1), static_cast<int>(fanout_count), determinate);
             },
             Qt::QueuedConnection);
@@ -1798,15 +1817,18 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
         }
         iter_ingest.flushPending();
         flush_clock.restart();
-        const int cur = static_cast<int>(current);
-        const int max = static_cast<int>(progress_total);
+        const uint64_t max = progress_total;
         QMetaObject::invokeMethod(
             this,
-            [this, fanout_generation, iter_dataset_id, cur, max]() {
+            [this, fanout_generation, iter_dataset_id, current, max]() {
               if (fanout_generation != load_generation_) {
                 return;
               }
-              publishIngestProgress(iter_dataset_id, cur, max);
+              // A fanout entry that never announced a start has no token, but it
+              // does have a dataset, and its committed rows must still publish.
+              const auto token_it = fanout_ingest_tokens_.find(iter_dataset_id);
+              const IngestToken token = token_it != fanout_ingest_tokens_.end() ? token_it->second : IngestToken{};
+              publishIngestProgress(iter_dataset_id, token, current, max);
             },
             Qt::QueuedConnection);
         return true;
@@ -1854,6 +1876,18 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       } else {
         iter_ingest.flushAll();
         fanout_loaded_ids.push_back(iter_dataset_id);
+      }
+
+      const IngestOutcome ingest_outcome =
+          outcome == EntryOutcome::kCompleted
+              ? IngestOutcome::kCompleted
+              : (outcome == EntryOutcome::kFailed ? IngestOutcome::kFailed : IngestOutcome::kCancelled);
+      if (const auto token_it = fanout_ingest_tokens_.find(iter_dataset_id); token_it != fanout_ingest_tokens_.end()) {
+        const IngestToken token = token_it->second;
+        // Erase first so an ingestEnded observer that re-enters shutdown cannot
+        // terminalize this token a second time.
+        fanout_ingest_tokens_.erase(token_it);
+        session_.endIngest(token, ingest_outcome);
       }
 
       switch (outcome) {
@@ -2136,32 +2170,50 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
   const QString path = ctx_->path;
   const QString source_name = ctx_->source_name;
   const quint64 ticket = ctx_->ticket;
+  const IngestToken ingest_token = ctx_->ingest_token;
+  // Transfer terminal ownership out of LoadContext before any legacy signal
+  // can re-enter joinForShutdown. Exactly one path below reports the outcome;
+  // shutdown owns the token only while it remains stored in the context.
+  ctx_->ingest_token = {};
+  IngestOutcome ingest_outcome = IngestOutcome::kCompleted;
   // Terminal classification for the ticket. A user stop (either mode) reports
   // kCancelled even where the wind-down otherwise ends in fileLoaded (keep) or
   // fileLoadFailed (discard, or a stop the plugin surfaced as a failed start).
   // Each arm terminalizes the ticket the moment its outcome is decided —
   // BEFORE its legacy-emitting wind-down runs — so a re-entrant shutdown from
   // a legacy slot cannot resolve the request a second time.
+  // Ingest-token exits mirror every worker terminal: discard -> kCancelled;
+  // start failure -> kFailed; derived replay failure -> kFailed (or
+  // kCancelled after keep-stop); ordinary completion -> kCompleted; and both
+  // keep/discard user stops -> kCancelled. joinForShutdown handles the sole
+  // bypass of this method.
 
   if (cancel == 2) {  // Discard
+    ingest_outcome = IngestOutcome::kCancelled;
     emitLoadFinished(ticket, LoadOutcome::kCancelled, path, 0);
-    qCWarning(lcFileLoader) << "[FileLoader] import discarded by user; partial data dropped";
+    // Discard means "as if this load had never run". What that leaves behind
+    // depends on what was there BEFORE it: nothing on a first load, the prior
+    // data on a reload.
     if (!replacing) {
-      // Real-delete the abandoned first-load shell: evict its objects, drop catalog
-      // items WITHOUT a tombstone, invalidate any TF it ingested before the
-      // discard, and erase the engine's scalar storage, so a later prefer_reuse
-      // layout replay mints a fresh dataset instead of reattaching to an empty
-      // one. The eviction MUST stay on this !replacing arm — on the replacing
-      // path it would wipe the objects the guard is about to restore.
+      qCWarning(lcFileLoader) << "[FileLoader] import discarded by user; the new dataset is removed";
+      // Real-delete the abandoned shell: evict its objects, drop catalog items
+      // WITHOUT a tombstone, invalidate any TF it ingested, and erase the
+      // engine's scalar storage, so a later prefer_reuse layout replay mints a
+      // fresh dataset instead of reattaching to an empty one.
       removeCreatedDataset(dataset_id);
       ctx_.reset();
       emit fileLoadFailed(path, tr("Import discarded"));
     } else {
-      // Roll back to the pre-reload data (guard dtor reattaches scalar + object data,
-      // retires/removes topics the failed refill added, evicts their parsers).
+      qCWarning(lcFileLoader) << "[FileLoader] import discarded by user; the dataset keeps its pre-reload data";
+      // Roll back to the pre-reload data: the guard dtor reattaches the scalar +
+      // object data and retires the topics the abandoned refill added, and
+      // abortReplacingLoad drops the TF generation the worker was staging into.
+      // Deleting the dataset instead would punish a reload for being a reload —
+      // the user discarded THIS load, not the data they already had.
       failReplacingLoad(dataset_id, path, tr("Import discarded"));
     }
   } else if (!ctx_->start_ok && cancel == 0) {  // start() failed (and not a user stop)
+    ingest_outcome = IngestOutcome::kFailed;
     emitLoadFinished(ticket, LoadOutcome::kFailed, path, 0);
     const QString reason = tr("Plugin '%1': start failed: %2").arg(source_name, ctx_->start_error);
     qCWarning(lcFileLoader).noquote() << reason;
@@ -2188,6 +2240,7 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
       // Derived outputs were detached with the raw dataset. Replay them before
       // pruning, while failure can still restore the complete prior snapshot.
       if (const Status replayed = ctx_->refill_guard->recomputeProcessors(); !replayed.has_value()) {
+        ingest_outcome = cancel == 0 ? IngestOutcome::kFailed : IngestOutcome::kCancelled;
         // Error terminal — except under a user keep-stop, whose ticket keeps
         // reporting kCancelled (the user DID stop it; the replay error only
         // decided that nothing could be kept).
@@ -2213,6 +2266,7 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
       }
     }
     if (refill_ok) {
+      ingest_outcome = cancel == 1 ? IngestOutcome::kCancelled : IngestOutcome::kCompleted;
       emitLoadFinished(
           ticket, cancel == 1 ? LoadOutcome::kCancelled : LoadOutcome::kLoaded, path, dataset_id, {dataset_id});
       // emits loadCommitting (unless keep-stopped) + fileLoaded; resets ctx_
@@ -2220,18 +2274,31 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
     }
   }
 
+  if (ingest_token.id != 0) {
+    session_.endIngest(ingest_token, ingest_outcome);
+  }
   cancel_mode_.store(0);
   active_load_ = false;
   startNext();
 }
 
-void FileLoader::publishIngestProgress(DatasetId dataset_id, int current, int maximum) {
-  // Every flush may append samples without adding a topic. Notify on every
-  // committed batch so plots and the playback range grow progressively.
-  // listTopics() takes the engine lock; do not inspect DatasetInfo::topic_ids
-  // directly while the worker may mutate it.
-  const auto ids = session_.dataEngine().listTopics(dataset_id);
-  session_.notifyIngest(QVector<TopicId>(ids.begin(), ids.end()), /*live=*/false);
+void FileLoader::publishIngestProgress(DatasetId dataset_id, IngestToken token, uint64_t current, uint64_t total) {
+  // The DATASET comes from the load context, never from the token: the plugin
+  // C ABI forwards progress_start and progress_update as independent slots and
+  // the host synthesizes no start, so a producer can tick without ever
+  // beginning an ingest. Its token is then 0/0 while the load still has a real
+  // dataset whose rows are already reader-visible.
+  if (token.id != 0) {
+    // updateIngest publishes every committed batch before it announces the
+    // progress number, so plots and the playback range grow progressively even
+    // when a flush appended samples without adding a topic.
+    session_.updateIngest(token, current, total);
+  } else {
+    // No lifecycle to report, but the data must never be held hostage to one:
+    // publish the same way updateIngest would.
+    const auto ids = session_.dataEngine().listTopics(dataset_id);
+    session_.notifyIngest(QVector<TopicId>(ids.begin(), ids.end()), /*live=*/false);
+  }
   // Publish the worker-fed TF revision so a progressive scene refreshes. When
   // no tap is active, the same call drains the new store entries first.
 #ifdef PJ_WITH_SCENE3D
@@ -2239,7 +2306,7 @@ void FileLoader::publishIngestProgress(DatasetId dataset_id, int current, int ma
     transform_service_->publishTransforms(dataset_id);
   }
 #endif
-  emit ingestProgress(current, maximum);
+  emit ingestProgress(static_cast<int>(current), static_cast<int>(total));
 }
 
 void FileLoader::removeCreatedDataset(DatasetId dataset_id, bool evict_objects, bool remove_from_catalog) {
@@ -2571,6 +2638,24 @@ void FileLoader::joinForShutdown() {
   if (worker_) {
     worker_->wait();
     worker_.reset();
+  }
+  // onWorkerFinished / the fan-out continuation will not run after this
+  // shutdown invalidated their generation and joined the worker. Close every
+  // token they would otherwise have terminalized. Detach the tokens from
+  // loader state first so an ingestEnded observer that re-enters shutdown sees
+  // nothing left to end a second time.
+  std::vector<IngestToken> shutdown_ingest_tokens;
+  if (ctx_ != nullptr && ctx_->ingest_token.id != 0) {
+    shutdown_ingest_tokens.push_back(ctx_->ingest_token);
+    ctx_->ingest_token = {};
+  }
+  shutdown_ingest_tokens.reserve(shutdown_ingest_tokens.size() + fanout_ingest_tokens_.size());
+  for (const auto& entry : fanout_ingest_tokens_) {
+    shutdown_ingest_tokens.push_back(entry.second);
+  }
+  fanout_ingest_tokens_.clear();
+  for (const IngestToken token : shutdown_ingest_tokens) {
+    session_.endIngest(token, IngestOutcome::kCancelled);
   }
   // A fanout worker captures locals in this coroutine frame, so cancel it only
   // after the worker has joined. Destroying a prologue suspended on its plugin

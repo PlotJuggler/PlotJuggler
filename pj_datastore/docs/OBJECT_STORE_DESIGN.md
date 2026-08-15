@@ -400,3 +400,20 @@ cursor correct under out-of-order ingest is pinned by, in `object_store_test.cpp
 `UidWalkAfterAppendingFlushVisitsAllEntriesInOrder`; in `object_merge_test.cpp`:
 `UidWalkAfterMergeVisitsEveryEntryAscending`; and in `clear_dataset_test.cpp`:
 `ReattachPreservesUidCursorAfterOutOfOrder`.
+
+### Drain lock discipline
+
+`drainNewSince` snapshots the unconsumed entries under a **single** acquisition
+of `store_mutex_` (shared) + the series mutex (shared), then resolves payloads
+with **no lock held** — a lazy resolve may re-read and decompress from a file
+and must stall neither the series' writer nor, via the store-wide mutex, every
+other topic. The cursor advances only as each snapshotted entry is resolved, so
+a drain never reports past what it returns.
+
+Waiting for the series lock is acceptable here because no drain runs on a
+latency-critical thread: FrameTransforms are decoded by the worker-side ingest
+tap (see `pj_scene3D`), and the remaining drains are cold rebuilds. A writer's
+exclusive hold does have a real worst case — `OrderedEntries::push`'s
+out-of-order branch is O(n) under the exclusive series lock (~1.1 ms/push at
+200k entries) — so a future GUI-thread consumer would need a non-blocking
+variant rather than this one.

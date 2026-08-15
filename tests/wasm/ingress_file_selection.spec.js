@@ -60,10 +60,12 @@ async function ingestControlGeometry(page, consoleMessages, required) {
   throw new Error(`ingest ${required} control did not become visible`);
 }
 
+// Stops the in-flight import from the loading row's own affordances. The two
+// glyphs ARE the choice — ✕ ('keep') keeps what arrived, the bin ('remove')
+// discards it — so this is one click and no confirmation dialog: the host acts
+// on which glyph was hit rather than asking afterwards.
 async function stopIngest(page, screen, consoleMessages, action) {
-  let controls = await ingestControlGeometry(page, consoleMessages, 'stop');
-  await page.mouse.click(screen.x + controls.stop.x, screen.y + controls.stop.y);
-  controls = await ingestControlGeometry(page, consoleMessages, action);
+  const controls = await ingestControlGeometry(page, consoleMessages, action);
   await page.mouse.click(screen.x + controls[action].x, screen.y + controls[action].y);
 }
 
@@ -353,7 +355,7 @@ test('official CSV plugin can discard a partial import and load again', async ({
   await stopIngest(page, screen, consoleMessages, 'remove');
 
   await expect.poll(
-    () => consoleMessages.some(message => message.includes('import discarded by user; partial data dropped')),
+    () => consoleMessages.some(message => message.includes('import discarded by user; the new dataset is removed')),
     { timeout: 30000 },
   ).toBe(true);
   expect(consoleMessages.some(message => message.includes('PJ_FILE_LOAD_OK'))).toBe(false);

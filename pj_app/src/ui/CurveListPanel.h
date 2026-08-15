@@ -16,6 +16,9 @@
 
 #include "pj_base/types.hpp"
 #include "pj_widgets/ChromeMetrics.h"
+// Not a forward declaration: the progress-forwarding signatures below name the
+// nested CurveTreeView::DatasetProgress, which needs the complete type.
+#include "pj_widgets/CurveTreeView.h"
 
 class QAction;
 class QPushButton;
@@ -85,7 +88,21 @@ class CurveListPanel : public QWidget {
   // around the toggle calls so QSettings stays untouched.
   void restoreListState(const QDomElement& element);
 
+  /// Forward progressive ingest progress state to the underlying tree view.
+  /// Called by IngestProgressController whenever the progress set changes.
+  void setDatasetProgress(const QHash<quint64, CurveTreeView::DatasetProgress>& by_row_key);
+
+  /// Map a dataset's tree path to its opaque row key used in progress updates.
+  /// Called by IngestProgressController when a dataset row is first created.
+  void setDatasetRowKey(const QString& dataset_tree_path, quint64 row_key);
+
  signals:
+  /// Emitted when the user stops a loading, cancellable dataset row from the
+  /// row itself. `keep_partial` says which affordance was used: the ✕ keeps
+  /// what arrived, the bin discards it. MainWindow routes this to
+  /// SessionManager::requestCancel with that choice.
+  void cancelRequested(quint64 row_key, bool keep_partial);
+
   void createCustomSeriesRequested();
   void deleteCustomSeriesRequested(QString name);
   // Edit the selected custom series (pencil button): `name` is its display name.

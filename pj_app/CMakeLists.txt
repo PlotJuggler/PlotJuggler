@@ -52,6 +52,10 @@ add_library(pj_app_shell OBJECT
     src/LayoutXml.h
     src/LayoutImportBatch.cpp
     src/LayoutImportBatch.h
+    src/IngestProgressController.cpp
+    src/IngestProgressController.h
+    src/IngestProgressWiring.cpp
+    src/IngestProgressWiring.h
     src/MainWindow.cpp
     src/MainWindow.h
     src/MainWindow.ui
@@ -811,4 +815,24 @@ if(PJ_BUILD_TESTS)
         target_compile_options(source_timeline_controller_test PRIVATE ${PJ_WARNING_FLAGS})
     endif()
     add_test(NAME SourceTimelineControllerTest COMMAND source_timeline_controller_test)
+
+    # The controller is compiled straight into the test rather than linked from
+    # pj_app_shell: it needs only pj_runtime + pj_widgets, so this keeps the test
+    # standalone (and AUTOMOC below generates its staticMetaObject).
+    add_executable(ingest_progress_controller_test
+        tests/ingest_progress_controller_test.cpp
+        src/IngestProgressController.cpp
+    )
+    set_target_properties(ingest_progress_controller_test PROPERTIES AUTOMOC ON)
+    target_include_directories(ingest_progress_controller_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(ingest_progress_controller_test PRIVATE
+        pj_runtime
+        pj_widgets
+        Qt6::Widgets
+        GTest::gtest
+    )
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(ingest_progress_controller_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME IngestProgressControllerTest COMMAND ingest_progress_controller_test)
 endif()

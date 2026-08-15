@@ -20,6 +20,7 @@
 #include <functional>
 
 #include "Theme.h"
+#include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
@@ -260,7 +261,16 @@ void DebugUi::toggleOverlay() {
   // recover with static_cast. PesticideOverlay has no Q_OBJECT (it
   // doesn't need signals/slots) so qobject_cast wouldn't work anyway.
   auto* pesticide = static_cast<PesticideOverlay*>(overlay_);
-  pesticide->setEnabled(!pesticide->isEnabled());
+  const bool enabled = !pesticide->isEnabled();
+  pesticide->setEnabled(enabled);
+
+  // Tree ROWS are model items, not child widgets, so the pesticide walk cannot
+  // see them at all. The views draw their own row/cell/decoration outlines on
+  // the same toggle, so one shortcut covers both.
+  CurveTreeView::setGeometryDebugEnabled(enabled);
+  for (CurveTreeView* tree : host_->findChildren<CurveTreeView*>()) {
+    tree->viewport()->update();
+  }
 }
 
 void DebugUi::toggleQssLayer() {

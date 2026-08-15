@@ -4,6 +4,7 @@
 #include "pj_datastore/object_store.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -93,15 +94,18 @@ Status ObjectStore::pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector
     return unexpected("unknown topic");
   }
 
-  std::unique_lock lock(series->mutex);
+  // Build the entry BEFORE taking the series write lock: the make_shared control-block
+  // allocation is the costliest step on this path and needs nothing the lock protects,
+  // and a GUI reader draining this same series waits out every nanosecond spent here.
+  // The UID mint stays INSIDE the lock — OrderedEntries::push requires the pushed UID
+  // to be the series max, which two pushers minting outside could interleave and break.
   const size_t payload_size = payload.size();
-
-  auto shared_data = std::make_shared<const std::vector<uint8_t>>(std::move(payload));
-
   ObjectEntry entry;
   entry.timestamp = timestamp;
+  entry.payload = std::make_shared<const std::vector<uint8_t>>(std::move(payload));
+
+  std::unique_lock lock(series->mutex);
   entry.sequential_uid = SequentialUID::getNext();
-  entry.payload = std::move(shared_data);
   const auto push_order = series->ordered.push(std::move(entry));
   series->memory_bytes += payload_size;
 
@@ -137,11 +141,14 @@ Status ObjectStore::pushLazyEntry(ObjectTopicId id, Timestamp timestamp, ObjectE
     return unexpected("unknown topic");
   }
 
-  std::unique_lock lock(series->mutex);
+  // Assemble outside the write lock (same reason as pushOwned); only the UID mint,
+  // which must stay adjacent to push(), needs the lock.
   ObjectEntry entry;
   entry.timestamp = timestamp;
-  entry.sequential_uid = SequentialUID::getNext();
   entry.payload = std::move(payload);
+
+  std::unique_lock lock(series->mutex);
+  entry.sequential_uid = SequentialUID::getNext();
   const auto push_order = series->ordered.push(std::move(entry));
 
   if (push_order == OrderedEntries::PushOrder::kOutOfOrderInsert) {
@@ -194,6 +201,16 @@ std::optional<ResolvedObjectEntry> ObjectStore::latestAt(ObjectTopicId id, Times
     snapshot = entry;
   }
 
+  // Drop store_mutex_ too, not just the series lock: the resolve below can re-read
+  // and decompress a file, and store_mutex_ is the store-WIDE lock — holding it
+  // shared across that stalls every exclusive acquirer (registerTopic / flushTo /
+  // clearDataset), which in turn blocks readers of unrelated topics once it gets in.
+  // It also keeps a fetch callback that re-enters the store off a recursive shared
+  // acquisition, which some std::shared_mutex implementations deadlock on.
+  // The snapshot owns every capture the resolve needs, so nothing here depends on
+  // `series` staying alive.
+  store_lock.unlock();
+
   bool served_from_resident = false;
   ResolvedObjectEntry resolved = resolveEntry(snapshot, &served_from_resident);
   // Don't memoize a failed/empty resolve — let the next read retry instead of
@@ -202,8 +219,14 @@ std::optional<ResolvedObjectEntry> ObjectStore::latestAt(ObjectTopicId id, Times
   // ResidentPayloadPool's byte budget. (Once the slot is evicted the fallback
   // resolve lands here and is cached like any lazy entry.)
   if (!resolved.payload.bytes.empty() && !served_from_resident) {
-    std::lock_guard cache_guard(series->cache_mutex);
-    series->cached_latest = resolved;
+    // Re-find rather than reuse `series`: the pointer was only valid under the lock
+    // we just dropped, and the topic may have been removed meanwhile (then there is
+    // simply nothing to warm).
+    store_lock.lock();
+    if (const auto* cached_series = findSeries(id); cached_series != nullptr) {
+      std::lock_guard cache_guard(cached_series->cache_mutex);
+      cached_series->cached_latest = resolved;
+    }
   }
   return resolved;
 }
@@ -226,6 +249,7 @@ std::optional<ResolvedObjectEntry> ObjectStore::at(ObjectTopicId id, size_t inde
     }
     snapshot = *entry;
   }
+  store_lock.unlock();  // never resolve under store_mutex_ — see latestAt
   return resolveEntry(snapshot);
 }
 
@@ -249,6 +273,7 @@ std::optional<ResolvedObjectEntry> ObjectStore::at(ObjectTopicId id, SequentialU
     }
     snapshot = *entry;
   }
+  store_lock.unlock();  // never resolve under store_mutex_ — see latestAt
   return resolveEntry(snapshot);
 }
 
@@ -275,31 +300,36 @@ SequentialUID ObjectStore::firstSequentialUID(ObjectTopicId id) const {
 }
 
 std::vector<ResolvedObjectEntry> ObjectStore::drainNewSince(ObjectTopicId id, SequentialUID& cursor) const {
-  // Collect the UIDs of unconsumed arrivals under one brief shared lock, then resolve
-  // each afterwards via at() — each resolve takes its own short per-entry lock rather
-  // than one lock held across the whole batch (matching the old per-step re-resolve).
-  // An entry evicted between the walk and the resolve is simply skipped, but its UID
-  // still advances the cursor so it is never revisited.
-  std::vector<SequentialUID> uids;
+  // Phase 1 — copy the unconsumed arrivals out under ONE pass of the two locks.
+  // The copy is cheap (the payload variant copies as a refcount bump / closure
+  // copy) and it is what lets phase 2 run lock-free.
+  std::vector<ObjectEntry> batch;
   {
-    std::shared_lock store_lock(store_mutex_);
+    const std::shared_lock<std::shared_mutex> store_lock(store_mutex_);
     const auto* series = findSeries(id);
     if (series == nullptr) {
-      return {};
+      return {};  // unknown topic: an empty batch
     }
-    std::shared_lock lock(series->mutex);
+    const std::shared_lock<std::shared_mutex> lock(series->mutex);
+    batch.reserve(series->ordered.size());
     for (SequentialUID uid = series->ordered.nextUidAfter(cursor); uid.valid();
          uid = series->ordered.nextUidAfter(uid)) {
-      uids.push_back(uid);
+      const ObjectEntry* entry = series->ordered.atUid(uid);
+      if (entry == nullptr) {
+        break;  // unreachable while the lock is held; bail rather than spin on a bad index
+      }
+      batch.push_back(*entry);
     }
   }
+
+  // Phase 2 — resolve with NO lock held: a lazy fetch may re-read and decompress
+  // from a file, which must stall neither this series' writers nor, via
+  // store_mutex_, every other topic. Each snapshot owns everything it needs.
   std::vector<ResolvedObjectEntry> out;
-  out.reserve(uids.size());
-  for (const SequentialUID uid : uids) {
-    cursor = uid;
-    if (auto entry = at(id, uid); entry.has_value()) {
-      out.push_back(std::move(*entry));
-    }
+  out.reserve(batch.size());
+  for (const ObjectEntry& entry : batch) {
+    cursor = entry.sequential_uid;
+    out.push_back(resolveEntry(entry));
   }
   return out;
 }

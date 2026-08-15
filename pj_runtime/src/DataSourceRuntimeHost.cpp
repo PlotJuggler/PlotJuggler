@@ -57,6 +57,9 @@ struct LazyFetchTopicContext {
 
 namespace {
 Q_LOGGING_CATEGORY(lcIngest, "pj.runtime.ingest")
+// Off by default; enable with QT_LOGGING_RULES="pj.runtime.ingest.bind=true"
+// to trace how each topic's parser binding was resolved.
+Q_LOGGING_CATEGORY(lcIngestBind, "pj.runtime.ingest.bind", QtWarningMsg)
 
 std::vector<uint8_t> copyPayloadBytes(const PJ_payload_t& payload) {
   std::vector<uint8_t> bytes;
@@ -489,9 +492,9 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
     // every field in the catalog.
     if (auto existing = self->findReusableBinding(topic_name, signature); existing.has_value()) {
       *out = PJ_parser_binding_handle_t{*existing};
-      qCInfo(lcIngest) << "[parser-bind] reuse topic="
-                       << QString::fromUtf8(topic_name.data(), static_cast<int>(topic_name.size()))
-                       << "binding=" << *existing;
+      qCInfo(lcIngestBind) << "[parser-bind] reuse topic="
+                           << QString::fromUtf8(topic_name.data(), static_cast<int>(topic_name.size()))
+                           << "binding=" << *existing;
       return true;
     }
 
@@ -613,15 +616,14 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
     std::unique_ptr<DatastoreParserObjectWriteHost> object_write_host;
     if (object_kind == sdk::BuiltinObjectType::kNone) {
       // The parser declined to classify this topic as a builtin object — it
-      // will only produce scalar columns. Surface this once per binding so
-      // the operator knows why an image-shaped topic might not be showing in
-      // the catalog as an ObjectTopic. Plugins that legitimately do not
-      // produce objects (string topics, etc.) just generate one info line.
-      qCInfo(lcIngest) << "[parser-bind] classifySchema=kNone topic="
-                       << QString::fromUtf8(topic_name.data(), static_cast<int>(topic_name.size()))
-                       << "type=" << QString::fromUtf8(type_name.data(), static_cast<int>(type_name.size()))
-                       << "encoding=" << QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size()))
-                       << "— scalar-only ingest";
+      // will only produce scalar columns. Traced once per binding so an
+      // operator chasing why an image-shaped topic is not showing in the
+      // catalog as an ObjectTopic can see the classification verdict.
+      qCInfo(lcIngestBind) << "[parser-bind] classifySchema=kNone topic="
+                           << QString::fromUtf8(topic_name.data(), static_cast<int>(topic_name.size()))
+                           << "type=" << QString::fromUtf8(type_name.data(), static_cast<int>(type_name.size()))
+                           << "encoding=" << QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size()))
+                           << "— scalar-only ingest";
     } else {
       if (auto existing = self->object_store_.findTopic(self->dataset_id_, topic_name); existing.has_value()) {
         // KNOWN LIMITATION: a topic retyped to a DIFFERENT builtin object type
@@ -716,10 +718,10 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
                     });
 
     *out = PJ_parser_binding_handle_t{binding_id};
-    qCInfo(lcIngest) << "[parser-bind] encoding="
-                     << QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size()))
-                     << "topic=" << QString::fromUtf8(topic_name.data(), static_cast<int>(topic_name.size()))
-                     << "object_kind=" << static_cast<int>(object_kind);
+    qCInfo(lcIngestBind) << "[parser-bind] encoding="
+                         << QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size()))
+                         << "topic=" << QString::fromUtf8(topic_name.data(), static_cast<int>(topic_name.size()))
+                         << "object_kind=" << static_cast<int>(object_kind);
     return true;
   } catch (...) {
     return self->fail(out_error, "exception while binding parser");

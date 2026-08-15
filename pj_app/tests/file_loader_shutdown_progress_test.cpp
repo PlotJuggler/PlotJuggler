@@ -10,18 +10,24 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QEvent>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QTimer>
 #include <QtGlobal>
 #include <memory>
+#include <optional>
+#include <utility>
+#include <vector>
 
 #include "FileLoader.h"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/SessionManager.h"
 
 using namespace Qt::StringLiterals;
 
@@ -80,6 +86,28 @@ TEST(FileLoaderShutdownProgressChild, DispatchesQueuedProgressAfterJoin) {
   auto app_session = std::make_unique<PJ::AppSession>(extensions_dir.path());
   ASSERT_FALSE(app_session->extensionCatalog().findSourcesForExtension(u".progressshutdown"_s).empty());
   PJ::FileLoader loader(app_session->sessionManager(), app_session->extensionCatalog(), app_session->catalogModel());
+  PJ::SessionManager& session = app_session->sessionManager();
+
+  std::optional<PJ::IngestToken> began_token;
+  std::vector<std::pair<PJ::IngestToken, PJ::IngestOutcome>> ended;
+  int progressed = 0;
+  bool began_cancellable = false;
+  QEventLoop wait_for_begin;
+  QObject::connect(
+      &session, &PJ::SessionManager::ingestBegan, &loader, [&](PJ::IngestToken token, const QString&, quint64) {
+        began_token = token;
+        const auto active = session.activeIngests();
+        if (const auto it = active.find(token.dataset_id); it != active.end() && it->second.token.id == token.id) {
+          began_cancellable = it->second.cancellable;
+        }
+        wait_for_begin.quit();
+      });
+  QObject::connect(&session, &PJ::SessionManager::ingestProgressed, &loader, [&](PJ::IngestToken, quint64, quint64) {
+    ++progressed;
+  });
+  QObject::connect(
+      &session, &PJ::SessionManager::ingestEnded, &loader,
+      [&](PJ::IngestToken token, PJ::IngestOutcome outcome) { ended.emplace_back(token, outcome); });
 
   const QString input_path = data_dir.filePath(u"queued.progressshutdown"_s);
   QFile input(input_path);
@@ -92,6 +120,18 @@ TEST(FileLoaderShutdownProgressChild, DispatchesQueuedProgressAfterJoin) {
   hints.dialog_policy = PJ::DialogPolicy::kPreferPreset;
   ASSERT_TRUE(loader.loadFile(input_path, nullptr, hints));
 
+  // Drain only far enough to install the token. The probe sleeps for 100 ms
+  // between progressStart and progressUpdate, so the later update remains a
+  // queued straggler for the shutdown regression below.
+  if (!began_token.has_value()) {
+    QTimer::singleShot(5000, &wait_for_begin, &QEventLoop::quit);
+    wait_for_begin.exec();
+  }
+  ASSERT_TRUE(began_token.has_value()) << "FileLoader never began the token-scoped ingest";
+  EXPECT_NE(began_token->id, 0u);
+  EXPECT_NE(began_token->dataset_id, 0u);
+  EXPECT_TRUE(began_cancellable);
+
   ASSERT_TRUE(waitForProbeMarker(probe_path, QByteArrayLiteral("progress_callback_returned")))
       << "plugin never returned from progressUpdate; no queued callback was proven";
 
@@ -102,12 +142,20 @@ TEST(FileLoaderShutdownProgressChild, DispatchesQueuedProgressAfterJoin) {
   ASSERT_TRUE(readProbe(probe_path).contains(QByteArrayLiteral("stop_observed")))
       << "join did not exercise the running-worker shutdown path";
   ASSERT_FALSE(loader.isBusy());
+  ASSERT_EQ(ended.size(), 1u) << "shutdown must end every token that began";
+  EXPECT_EQ(ended.front().first.id, began_token->id);
+  EXPECT_EQ(ended.front().first.dataset_id, began_token->dataset_id);
+  EXPECT_EQ(ended.front().second, PJ::IngestOutcome::kCancelled);
+  EXPECT_FALSE(session.hasActiveIngests());
+  EXPECT_EQ(progressed, 0) << "the queued progress tick must still be pending at shutdown";
 
   // Deliver the straggler tick. Without the generation/ctx_ guard in the
   // queued lambda this would dereference the context joinForShutdown reset —
   // the child process crashing here is exactly what the parent test asserts
   // does not happen.
   QCoreApplication::sendPostedEvents(&loader, QEvent::MetaCall);
+  EXPECT_EQ(progressed, 0) << "a post-shutdown tick must not update the ended ingest token";
+  EXPECT_EQ(ended.size(), 1u) << "the stale tick must not synthesize another terminal";
 }
 
 TEST(FileLoaderShutdownProgressRegression, QueuedProgressAfterJoinMustNotAccessDestroyedContext) {

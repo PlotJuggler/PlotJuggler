@@ -3,12 +3,16 @@
 
 #include "pj_runtime/SessionManager.h"
 
+#include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QLoggingCategory>
+#include <QMetaType>
 #include <QString>
 #include <QThread>
+#include <QTimer>
 #include <algorithm>
 #include <cstdint>
 #include <limits>
@@ -30,6 +34,12 @@ namespace PJ {
 
 namespace {
 Q_LOGGING_CATEGORY(lcSession, "pj.runtime.session")
+// Off by default; enable with QT_LOGGING_RULES="pj.runtime.ingest.cancel=true"
+// to time a stop from click to terminal.
+Q_LOGGING_CATEGORY(lcCancel, "pj.runtime.ingest.cancel", QtWarningMsg)
+
+// How long a producer may take to honour a stop before we say so.
+constexpr int kStopWatchdogMs = 2000;
 
 // Topic names of the `changed` topics — passed to MarkerService::recomputeForChangedInputs
 // so only generators whose input series key ("topic/field") starts with a changed topic
@@ -69,6 +79,12 @@ constexpr size_t kResidentPayloadPoolBytes = 256ULL * 1024 * 1024;
 
 SessionManager::SessionManager(QObject* parent)
     : QObject(parent), ingest_taps_(std::make_shared<ObjectIngestTapRegistry>()) {
+  // Register types for queued signal connections.
+  static const auto dummy_ingest_token = qRegisterMetaType<PJ::IngestToken>("PJ::IngestToken");
+  static const auto dummy_ingest_outcome = qRegisterMetaType<PJ::IngestOutcome>("PJ::IngestOutcome");
+  (void)dummy_ingest_token;
+  (void)dummy_ingest_outcome;
+
   // Bounded resident window for ingest-seeded object payloads: live-edge object
   // pulls during/after a file load read the bytes the ingest already fetched,
   // instead of re-fetching (for MCAP: re-decompressing a chunk) from the source.
@@ -509,33 +525,174 @@ void SessionManager::notifyIngest(QVector<TopicId> ids, bool live) {
   emit samplesIngested(std::move(ids), live);
 }
 
-void SessionManager::beginIngest(DatasetId dataset_id, QString label, quint64 total) {
-  active_ingests_.insert_or_assign(dataset_id, ActiveIngest{label, /*current=*/0, total});
-  emit ingestBegan(dataset_id, std::move(label), total);
+SessionManager::ActiveIngestEntry* SessionManager::liveEntry(IngestToken token) {
+  if (token.id == 0) {
+    return nullptr;
+  }
+  const auto it = active_ingests_.find(token.dataset_id);
+  if (it == active_ingests_.end() || it->second.id != token.id) {
+    return nullptr;
+  }
+  return &it->second;
 }
 
-void SessionManager::updateIngest(DatasetId dataset_id, quint64 current, quint64 total) {
+IngestToken SessionManager::beginIngest(
+    DatasetId dataset_id, QString label, quint64 total, bool cancellable, IngestCancelFn on_cancel, IngestStop stop) {
+  // Mint a new monotonic id (never 0, which is reserved for invalid/stale).
+  const IngestId new_id = next_ingest_id_++;
+  const IngestToken token{new_id, dataset_id};
+
+  // A restart supersedes whatever this dataset was already running. Report that
+  // as a real terminal instead of dropping the entry silently: kCancelled is
+  // exactly what happened to it, and every observer already knows how to retire
+  // a cancelled ingest. Without it each observer would have to re-derive the
+  // supersede rule from the next ingestBegan — and anything it had bound to the
+  // old token (a strip owner, a row) would leak until it did.
+  //
+  // Erase BEFORE emitting: an observer that reads back the session during its
+  // terminal must see the dataset between ingests, not a corpse.
+  if (const auto superseded = active_ingests_.find(dataset_id); superseded != active_ingests_.end()) {
+    const IngestToken superseded_token{superseded->second.id, dataset_id};
+    active_ingests_.erase(superseded);
+    emit ingestEnded(superseded_token, IngestOutcome::kCancelled);
+  }
+
+  active_ingests_.insert_or_assign(
+      dataset_id, ActiveIngestEntry{
+                      new_id, std::move(label), /*current=*/0, total, cancellable,
+                      /*discardable=*/stop == IngestStop::kKeepOrDiscard,
+                      /*cancel_requested=*/false, /*cancel_requested_ms=*/0, std::move(on_cancel)});
+
+  // Deliberately no data publication here: begin announces a lifecycle, it does
+  // not commit rows. Publishing would make the catalog rebuild before the
+  // loader's own commit seam, and a dataset with no row yet is served by the
+  // controller's ghost row until its first flush lands.
+  const ActiveIngestEntry& entry = active_ingests_.at(dataset_id);
+  emit ingestBegan(token, entry.label, total, entry.cancellable, entry.discardable);
+  return token;
+}
+
+void SessionManager::updateIngest(IngestToken token, quint64 current, quint64 total) {
   // Publish the tick's flushed rows through the one non-live data-publication
   // seam every ingest path shares (plots/playback/catalog listen on
   // samplesIngested; notifyIngest suppresses the empty-non-live case itself).
-  // This runs even for an untracked dataset so a begin/progress ordering slip
-  // never drops data; only the lifecycle signal below is membership-gated.
-  const auto ids = data_engine_.listTopics(dataset_id);
-  notifyIngest(QVector<TopicId>(ids.begin(), ids.end()), /*live=*/false);
+  // Deliberately AHEAD of EVERY gate below: data must never be dropped because
+  // a lifecycle call arrived out of order, the token was superseded mid-flush,
+  // or no beginIngest ever ran. Only the lifecycle SIGNAL is gated. A token
+  // naming no dataset has nothing to publish for, which is the sole exception.
+  if (token.dataset_id != 0) {
+    const auto ids = data_engine_.listTopics(token.dataset_id);
+    notifyIngest(QVector<TopicId>(ids.begin(), ids.end()), /*live=*/false);
+  }
 
-  const auto it = active_ingests_.find(dataset_id);
-  if (it == active_ingests_.end()) {
+  ActiveIngestEntry* entry = liveEntry(token);
+  if (entry == nullptr) {
     return;
   }
-  it->second.current = current;
-  it->second.total = total;
-  emit ingestProgressed(dataset_id, current, total);
+  entry->current = current;
+  entry->total = total;
+  // Reported unconditionally, including after a stop was requested: this signal
+  // states what the producer did, and it really did deliver these rows. Whether
+  // a stopping row should keep animating is a presentation policy, and it lives
+  // with the presentation (IngestProgressController).
+  emit ingestProgressed(token, current, total);
 }
 
-void SessionManager::endIngest(DatasetId dataset_id) {
-  if (active_ingests_.erase(dataset_id) != 0) {
-    emit ingestEnded(dataset_id);
+void SessionManager::endIngest(IngestToken token, IngestOutcome outcome) {
+  ActiveIngestEntry* entry = liveEntry(token);
+  if (entry == nullptr) {
+    return;  // stale (superseded by a newer begin) or already terminal
   }
+
+  // If cancellation was requested on this token, report kCancelled regardless
+  // of the outcome the producer supplies.
+  if (entry->cancel_requested) {
+    outcome = IngestOutcome::kCancelled;
+  }
+
+  if (entry->cancel_requested_ms != 0) {
+    qCInfo(lcCancel) << "ingest" << token.id << "terminated"
+                     << (QDateTime::currentMSecsSinceEpoch() - entry->cancel_requested_ms)
+                     << "ms after the stop was requested; outcome" << static_cast<int>(outcome);
+  }
+
+  active_ingests_.erase(token.dataset_id);
+  emit ingestEnded(token, outcome);
+}
+
+bool SessionManager::requestCancel(IngestToken token, bool keep_partial) {
+  ActiveIngestEntry* entry = liveEntry(token);
+  if (entry == nullptr) {
+    return false;  // stale, unknown, or already terminal
+  }
+
+  if (!entry->cancellable) {
+    return false;
+  }
+
+  // A producer that cannot roll back must not be handed a discard: silently
+  // downgrading it to a keep is exactly the lie the UI greys the bin to avoid.
+  if (!keep_partial && !entry->discardable) {
+    return false;
+  }
+
+  // Record cancellation intent so the terminal outcome reports kCancelled.
+  entry->cancel_requested = true;
+  entry->cancel_requested_ms = QDateTime::currentMSecsSinceEpoch();
+  qCInfo(lcCancel) << "requestCancel accepted: ingest" << token.id << "dataset" << token.dataset_id << "keep_partial"
+                   << keep_partial;
+
+  // Announce BEFORE running the producer's handler: the acknowledgement must not
+  // be hostage to how long the producer takes to notice, and every stop is
+  // cooperative to some degree.
+  emit ingestStopping(token, keep_partial);
+
+  // A producer that never terminates would leave the row stopping forever with
+  // no clue why; say so once rather than leaving it to be discovered by eye.
+  QTimer::singleShot(kStopWatchdogMs, this, [this, token]() {
+    const ActiveIngestEntry* still_live = liveEntry(token);
+    if (still_live != nullptr && still_live->cancel_requested) {
+      qCWarning(lcCancel) << "ingest" << token.id << "has not terminated" << kStopWatchdogMs
+                          << "ms after the stop was requested; the producer is not responding";
+    }
+  });
+
+  // Invoke the producer's cancel handler through a LOCAL COPY, never through the
+  // map slot. Stopping a load normally means reporting its terminal, and
+  // endIngest erases this very entry — which would destroy the std::function
+  // mid-call and leave the rest of the handler running on a freed closure. The
+  // copy keeps it alive until it returns.
+  if (const IngestCancelFn on_cancel = entry->on_cancel; on_cancel) {
+    QElapsedTimer handler_timer;
+    handler_timer.start();
+    on_cancel(keep_partial);
+    // The handler is only expected to REQUEST a stop; a large number here means
+    // the producer did teardown work on the GUI thread and blocked the UI.
+    qCInfo(lcCancel) << "producer cancel handler returned after" << handler_timer.elapsed() << "ms";
+  }
+
+  return true;
+}
+
+std::unordered_map<DatasetId, SessionManager::ActiveIngest> SessionManager::activeIngests() const {
+  std::unordered_map<DatasetId, ActiveIngest> by_dataset;
+  by_dataset.reserve(active_ingests_.size());
+  for (const auto& [dataset_id, entry] : active_ingests_) {
+    by_dataset.emplace(
+        dataset_id, ActiveIngest{
+                        .token = IngestToken{.id = entry.id, .dataset_id = dataset_id},
+                        .label = entry.label,
+                        .current = entry.current,
+                        .total = entry.total,
+                        .cancellable = entry.cancellable,
+                        .discardable = entry.discardable,
+                    });
+  }
+  return by_dataset;
+}
+
+bool SessionManager::ingestActive(DatasetId dataset_id) const {
+  return active_ingests_.count(dataset_id) != 0;
 }
 
 void SessionManager::notifyDatasetAboutToBeReplaced(DatasetId dataset_id) {
