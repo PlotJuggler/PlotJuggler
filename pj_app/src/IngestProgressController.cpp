@@ -39,12 +39,9 @@ IngestProgressController::~IngestProgressController() {
 }
 
 std::optional<IngestToken> IngestProgressController::tokenForRowKey(quint64 row_key) const {
-  for (auto it = ingests_.cbegin(); it != ingests_.cend(); ++it) {
-    if (it->row_key == row_key) {
-      return it->token;
-    }
-  }
-  return std::nullopt;
+  // The row key IS the ingest id, so this is a lookup rather than a scan.
+  const auto it = ingests_.constFind(static_cast<IngestId>(row_key));
+  return it != ingests_.cend() ? std::optional<IngestToken>(it->token) : std::nullopt;
 }
 
 void IngestProgressController::setSessionManager(SessionManager* session) {
@@ -90,7 +87,6 @@ void IngestProgressController::onIngestBegan(
   // Create entry for this ingest
   IngestEntry entry;
   entry.token = token;
-  entry.row_key = mintRowKey();
   entry.resolved_tree_path.clear();  // Initially unresolved
   entry.state.display_name = label;
   entry.state.indeterminate = (total == 0);
@@ -100,7 +96,7 @@ void IngestProgressController::onIngestBegan(
   entry.state.cancellable = cancellable;
   entry.state.discardable = discardable;
 
-  qCInfo(lcIngestUi) << "[ctl] BEGAN token=" << token.id << "row_key=" << entry.row_key << "total=" << total
+  qCInfo(lcIngestUi) << "[ctl] BEGAN token=" << token.id << "total=" << total
                      << "indeterminate=" << entry.state.indeterminate;
   ingests_[token.id] = std::move(entry);
 
@@ -142,8 +138,8 @@ void IngestProgressController::onIngestProgressed(PJ::IngestToken token, quint64
   }
   entry.state.indeterminate = (total == 0);
   entry.state.fraction = (total > 0) ? std::min(1.0, static_cast<double>(current) / static_cast<double>(total)) : 0.0;
-  qCInfo(lcIngestUi) << "[ctl] PROGRESS token=" << token.id << "row_key=" << entry.row_key << "cur=" << current
-                     << "total=" << total << "fraction=" << entry.state.fraction;
+  qCInfo(lcIngestUi) << "[ctl] PROGRESS token=" << token.id << "cur=" << current << "total=" << total
+                     << "fraction=" << entry.state.fraction;
 
   updateAndEmit();
 }
@@ -187,8 +183,8 @@ void IngestProgressController::onIngestEnded(PJ::IngestToken token, PJ::IngestOu
   if (entry.resolved_tree_path.isEmpty()) {
     tryResolveDatasetPath(entry);
   }
-  qCInfo(lcIngestUi) << "[ctl] ENDED token=" << token.id << "row_key=" << entry.row_key
-                     << "outcome=" << static_cast<int>(outcome) << "fraction_at_end=" << entry.state.fraction;
+  qCInfo(lcIngestUi) << "[ctl] ENDED token=" << token.id << "outcome=" << static_cast<int>(outcome)
+                     << "fraction_at_end=" << entry.state.fraction;
 
   // Map outcome to state
   switch (outcome) {
@@ -267,14 +263,10 @@ void IngestProgressController::onLingerOrFlashTimerTimeout() {
   }
 }
 
-quint64 IngestProgressController::mintRowKey() {
-  return next_row_key_++;
-}
-
 void IngestProgressController::updateAndEmit() {
   QHash<quint64, CurveTreeView::DatasetProgress> result;
   for (const auto& entry : ingests_) {
-    result[entry.row_key] = entry.state;
+    result[entry.token.id] = entry.state;
   }
   emit progressUpdated(result);
 }
@@ -306,7 +298,7 @@ void IngestProgressController::tryResolveDatasetPath(IngestEntry& entry) {
   // Emit rowKeyChanged only if the path actually changed
   if (resolved_path != entry.resolved_tree_path) {
     entry.resolved_tree_path = resolved_path;
-    emit rowKeyChanged(resolved_path, entry.row_key);
+    emit rowKeyChanged(resolved_path, entry.token.id);
   }
 }
 

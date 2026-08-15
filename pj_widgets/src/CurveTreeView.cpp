@@ -464,11 +464,11 @@ void CurveTreeView::mutateStructure(const std::function<void()>& mutate) {
   mutate();
   // Every retained decoration, re-applied once and in ONE place. Which of them
   // survive a structural change must not depend on which overload the caller
-  // reached for — forced marks used to come back only via addCatalogItems.
-  reapplyFilter();
+  // reached for — forced marks used to come back only via addCatalogItems. The
+  // filter is re-applied by rebuildProgressDecorations' tail (see its contract).
   expandPendingGroups();
   applyForcedTopicMarks();
-  applyDatasetProgress();
+  rebuildProgressDecorations();
 }
 
 void CurveTreeView::addCurve(const QString& name) {
@@ -830,16 +830,19 @@ void CurveTreeView::setForcedTopicPaths(const QSet<QString>& topic_paths) {
 }
 
 namespace {
-// Same row keys, whatever the values: which rows carry progress is what decides
-// whether the tree's structure has to change at all.
-bool sameRowKeys(
+// Same rows AND same row identities: which rows carry progress decides whether a
+// ghost has to be built or retired, and the display NAME decides what a ghost is
+// called and therefore where it sorts. Anything else in the payload (fraction,
+// state, flash) is a value the fast path can stamp in place.
+bool sameRowIdentities(
     const QHash<quint64, CurveTreeView::DatasetProgress>& lhs,
     const QHash<quint64, CurveTreeView::DatasetProgress>& rhs) {
   if (lhs.size() != rhs.size()) {
     return false;
   }
   for (auto it = lhs.cbegin(); it != lhs.cend(); ++it) {
-    if (!rhs.contains(it.key())) {
+    const auto other = rhs.constFind(it.key());
+    if (other == rhs.cend() || other->display_name != it.value().display_name) {
       return false;
     }
   }
@@ -858,12 +861,27 @@ void CurveTreeView::setDatasetProgress(const QHash<quint64, DatasetProgress>& by
   }
 
   // A fraction-only tick (the common case: ~20 Hz during a load) must not tear
-  // the tree down and rebuild it. Only a change in WHICH rows carry progress can
-  // add or retire a ghost, and only that can change the sort order.
-  const bool membership_changed = !sameRowKeys(dataset_progress_, by_row_key);
+  // the tree down and rebuild it. Only a change in the row IDENTITIES — which
+  // rows carry progress, and what each is called — can add, retire, rename or
+  // re-sort a ghost; that goes through the full pass, which already does all
+  // four. A name resolution happens once per ingest, so paying a full pass for
+  // it costs nothing per tick.
+  const bool membership_changed = !sameRowIdentities(dataset_progress_, by_row_key);
+  if (membership_changed) {
+    // Retire the mappings whose key just left. A mapping exists to file a LIVE
+    // row under its tree path, so it outlives its purpose the moment its key
+    // does — and a surviving one both grows the map for the session's lifetime
+    // and lets a recycled path resolve to a dead key. Only a key that WAS
+    // published and is now gone prunes: a mapping legitimately arrives before
+    // its key is ever published (the controller resolves the dataset's path
+    // first, then emits the progress set).
+    row_key_to_tree_path_.removeIf([this, &by_row_key](const auto& mapping) {
+      return dataset_progress_.contains(mapping.key()) && !by_row_key.contains(mapping.key());
+    });
+  }
   dataset_progress_ = by_row_key;
   if (membership_changed) {
-    applyDatasetProgress();
+    rebuildProgressDecorations();
   } else {
     refreshDatasetProgressValues();
   }
@@ -871,8 +889,14 @@ void CurveTreeView::setDatasetProgress(const QHash<quint64, DatasetProgress>& by
 
 void CurveTreeView::setDatasetRowKey(const QString& dataset_tree_path, quint64 row_key) {
   qCInfo(lcCurveTreeCancel).nospace() << "[view] MAP path=\"" << dataset_tree_path << "\" -> row_key=" << row_key;
-  dataset_tree_path_to_row_key_.insert(dataset_tree_path, row_key);
-  applyDatasetProgress();
+  // The last registration owns the path: a key that was filed under it loses the
+  // real row and falls back to a ghost. This is the reload window — a new
+  // ingest's key resolves to the dataset a finishing one still decorates — and a
+  // row cannot carry two decorations, nor route its stop click to two ingests.
+  row_key_to_tree_path_.removeIf(
+      [&dataset_tree_path](const auto& mapping) { return mapping.value() == dataset_tree_path; });
+  row_key_to_tree_path_.insert(row_key, dataset_tree_path);
+  rebuildProgressDecorations();
 }
 
 QTreeWidgetItem* CurveTreeView::findDatasetNode(const QString& dataset_tree_path) {
@@ -959,14 +983,16 @@ void CurveTreeView::refreshAnimationTimer() {
 }
 
 void CurveTreeView::refreshDatasetProgressValues() {
-  // Fast path for a fraction-only tick: the row set is unchanged and so is the
-  // tree, so every key still resolves through the cache filled by the last full
-  // apply. A miss means something moved without going through mutateStructure —
+  // Fast path for a fraction-only tick: the rows and their names are unchanged
+  // and so is the tree, so every key still resolves through the cache filled by
+  // the last full apply, and no row can have moved. A miss — including an index
+  // invalidated by a removal this class never saw — means the row moved or died;
   // fall back rather than guess.
   for (auto it = dataset_progress_.cbegin(); it != dataset_progress_.cend(); ++it) {
-    QTreeWidgetItem* row = progress_row_cache_.value(it.key(), nullptr);
+    const QPersistentModelIndex cached_index = progress_row_cache_.value(it.key());
+    QTreeWidgetItem* row = cached_index.isValid() ? itemFromIndex(cached_index) : nullptr;
     if (row == nullptr) {
-      applyDatasetProgress();
+      rebuildProgressDecorations();
       return;
     }
     row->setData(kNameColumn, kDatasetProgressRole, QVariant::fromValue(it.value()));
@@ -976,7 +1002,7 @@ void CurveTreeView::refreshDatasetProgressValues() {
   refreshAnimationTimer();
 }
 
-void CurveTreeView::applyDatasetProgress() {
+void CurveTreeView::rebuildProgressDecorations() {
   removeDatasetGhostItems();
   progress_row_cache_.clear();
 
@@ -1006,14 +1032,8 @@ void CurveTreeView::applyDatasetProgress() {
   for (auto progress_it = dataset_progress_.cbegin(); progress_it != dataset_progress_.cend(); ++progress_it) {
     const quint64 row_key = progress_it.key();
     QTreeWidgetItem* dataset_node = nullptr;
-    for (auto path_it = dataset_tree_path_to_row_key_.cbegin(); path_it != dataset_tree_path_to_row_key_.cend();
-         ++path_it) {
-      if (path_it.value() == row_key) {
-        dataset_node = findDatasetNode(path_it.key());
-        if (dataset_node != nullptr) {
-          break;
-        }
-      }
+    if (const auto path_it = row_key_to_tree_path_.constFind(row_key); path_it != row_key_to_tree_path_.cend()) {
+      dataset_node = findDatasetNode(path_it.value());
     }
 
     qCInfo(lcCurveTreeCancel).nospace() << "[view] APPLY row_key=" << row_key
@@ -1025,7 +1045,7 @@ void CurveTreeView::applyDatasetProgress() {
       dataset_node->setData(kNameColumn, kDatasetProgressRole, QVariant::fromValue(progress_it.value()));
       dataset_node->setData(kNameColumn, kDatasetRowKeyRole, QVariant::fromValue(row_key));
       deselectProgressRow(dataset_node, progress_it.value().state);
-      progress_row_cache_.insert(row_key, dataset_node);
+      progress_row_cache_.insert(row_key, QPersistentModelIndex(indexFromItem(dataset_node, kNameColumn)));
       touched_rows.push_back(dataset_node);
       continue;
     }
@@ -1037,7 +1057,7 @@ void CurveTreeView::applyDatasetProgress() {
     ghost->setData(kNameColumn, kDatasetRowKeyRole, QVariant::fromValue(row_key));
     ghost->setData(kNameColumn, kDatasetGhostRole, true);
     ghost_items_.insert(row_key, ghost);
-    progress_row_cache_.insert(row_key, ghost);
+    progress_row_cache_.insert(row_key, QPersistentModelIndex(indexFromItem(ghost, kNameColumn)));
     touched_rows.push_back(ghost);
     created_ghost = true;
   }
@@ -1046,7 +1066,13 @@ void CurveTreeView::applyDatasetProgress() {
     sortTree();
   }
 
-  // After any sort, so the row rects resolved here are the final ones.
+  // Last, because the filter exempts rows that carry progress and the ghosts
+  // above only exist now: a row that just gained (or lost) its decoration has to
+  // be re-tested before the rects below are read. This is also the ONE filter
+  // re-application after a structural change — mutateStructure ends here.
+  reapplyFilter();
+
+  // After any sort or hide, so the row rects resolved here are the final ones.
   for (QTreeWidgetItem* row : touched_rows) {
     updateProgressRowRegion(row);
   }
@@ -1719,7 +1745,13 @@ void CurveTreeView::refilterTree() {
     const bool text_match = std::all_of(tokens.begin(), tokens.end(), [&](const QString& token) {
       return haystack.contains(token, Qt::CaseInsensitive);
     });
-    const bool visible = any_child_visible || (text_match && type_ok);
+    // A row showing load progress is never filtered away. It is the feedback for
+    // work happening right now — and it carries the stop affordances, so hiding
+    // it would take away the only way to stop that load. Ghost rows (a dataset
+    // with no catalog row yet) match no filter at all and would always vanish.
+    // The exemption is inherently transient: it lasts as long as the decoration.
+    const bool shows_progress = item->data(kNameColumn, kDatasetProgressRole).isValid();
+    const bool visible = shows_progress || any_child_visible || (text_match && type_ok);
     item->setHidden(!visible);
     return visible;
   };

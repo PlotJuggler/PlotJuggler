@@ -1633,7 +1633,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 
   connect(
       file_loader_.get(), &FileLoader::sourceReplacementAboutToCommit, this,
-      [this](const QString& path, DatasetId replaced_id) {
+      [this](quint64 ticket, const QString& path, DatasetId replaced_id) {
         if (progressive_layout_in_flight_) {
           return;
         }
@@ -1641,8 +1641,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         // dataset" load points it at a different file) so the post-load rebind
         // maps its charts onto the replacement datasets.
         const QString incoming = QFileInfo(path).absoluteFilePath();
-        pending_source_replacement_ =
-            PendingSourceReplacement{.workspace = capturePortableWorkspace(replaced_id, incoming), .path = incoming};
+        pending_source_replacement_ = PendingSourceReplacement{
+            .workspace = capturePortableWorkspace(replaced_id, incoming), .path = incoming, .ticket = ticket};
       });
   connect(file_loader_.get(), &FileLoader::fileLoaded, this, &MainWindow::onFileLoaded);
   // A reload disables the Reload button until completion (reloadSource); only
@@ -1650,6 +1650,26 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(file_loader_.get(), &FileLoader::fileLoadFailed, this, [this](const QString&, const QString&) {
     ui_->leftPanel->setReloadEnabled(session_->sessionManager().lastLoadedSource().has_value());
   });
+  // Disarm a replacement snapshot whose load did not commit. Bound to
+  // loadFinished, not the legacy signals: it is the one terminal every accepted
+  // request reaches, including the exits fileLoadFailed stays silent on (a
+  // rejected config dialog, a queued cancel, shutdown). The snapshot describes
+  // the datasets that are still loaded — the load rolled back — so leaving it
+  // armed would let a LATER successful load of the same path rebind the
+  // workspace onto an obsolete picture of it. Ticket equality, NOT a path
+  // match: loadFinished is queued, so a stale same-path terminal from another
+  // load (a cancelled queued duplicate, a failed predecessor) could otherwise
+  // disarm a live load's capture and silently skip its workspace rebind.
+  connect(
+      file_loader_.get(), &FileLoader::loadFinished, this,
+      [this](quint64 ticket, LoadOutcome outcome, const QString&, DatasetId, const QVector<DatasetId>&) {
+        if (outcome == LoadOutcome::kLoaded || !pending_source_replacement_.has_value()) {
+          return;
+        }
+        if (pending_source_replacement_->ticket == ticket) {
+          pending_source_replacement_.reset();
+        }
+      });
   // Track successful loads for the recent-files popup.
   connect(
       file_loader_.get(), &FileLoader::fileLoaded, this,
@@ -8999,10 +9019,10 @@ void MainWindow::launchToolbox(
     }
     const QString import_label = QString::fromStdString(label);
     // The plugin declares whether its import can be stopped, and the row's stop
-    // affordance follows that declaration. Registered as kStopOnly because
-    // requestStopActiveIngests is cooperative with no host-side rollback: the
-    // import always keeps what arrived, so the discard affordance is presented
-    // as unavailable rather than silently downgraded into a keep.
+    // affordance follows that declaration. Registered as kStopOnly because the
+    // stop is cooperative with no host-side rollback: the import always keeps
+    // what arrived, so the discard affordance is presented as unavailable
+    // rather than silently downgraded into a keep.
     // The outcome is always kUnknown since the plugin C-ABI reports no outcome.
     const std::weak_ptr<void> stop_owner = session_weak;
     const auto token = session_->sessionManager().beginIngest(
@@ -9013,7 +9033,11 @@ void MainWindow::launchToolbox(
           }
           const auto import_it = toolbox_active_imports_.constFind(dataset);
           if (import_it != toolbox_active_imports_.constEnd() && import_it->host != nullptr) {
-            import_it->host->requestStopActiveIngests();
+            // ONLY this dataset's context. One panel commonly imports several
+            // datasets through the same host, and stopping the host's whole
+            // ingest set ended every sibling too — each reported kUnknown from
+            // a row its user never touched.
+            import_it->host->requestStopIngestForDataset(dataset);
           }
         },
         IngestStop::kStopOnly);
@@ -9049,9 +9073,15 @@ void MainWindow::launchToolbox(
     // panel closed mid-import), never evidence that the rows the host just
     // flushed are not real; returning early on it dropped both the data publish
     // and the scene's TF refresh for a dataset that was genuinely importing.
-    const auto active_import_it = toolbox_active_imports_.find(dataset);
-    if (active_import_it != toolbox_active_imports_.end()) {
-      session_->sessionManager().updateIngest(active_import_it->token, current, total);
+    // By VALUE, never a held iterator: both publishes below emit synchronously
+    // into arbitrary observers, and one of them starting or finishing an import
+    // rehashes toolbox_active_imports_ under us.
+    const auto tracked_import = toolbox_active_imports_.constFind(dataset);
+    const std::optional<IngestToken> tracked_token = tracked_import != toolbox_active_imports_.constEnd()
+                                                         ? std::optional<IngestToken>(tracked_import->token)
+                                                         : std::nullopt;
+    if (tracked_token.has_value()) {
+      session_->sessionManager().updateIngest(*tracked_token, current, total);
     } else {
       const auto ids = session_->sessionManager().dataEngine().listTopics(dataset);
       session_->sessionManager().notifyIngest(QVector<TopicId>(ids.begin(), ids.end()), /*live=*/false);
@@ -9061,9 +9091,9 @@ void MainWindow::launchToolbox(
       transform_service_->publishTransforms(dataset);
     }
 #endif
-    // Only the strip presentation below needs a tracked import: it is keyed by
-    // the token this dataset never registered.
-    if (active_import_it == toolbox_active_imports_.end()) {
+    // Only the strip presentation below needs a tracked import, and it must be
+    // re-checked: the publishes above may have retired this one.
+    if (!tracked_token.has_value() || !toolbox_active_imports_.contains(dataset)) {
       return;
     }
     if (file_loader_->isBusy() || !session_->sessionManager().hasActiveIngests()) {

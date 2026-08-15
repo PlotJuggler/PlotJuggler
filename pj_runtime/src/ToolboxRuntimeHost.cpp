@@ -154,6 +154,16 @@ void ToolboxRuntimeHost::requestStopActiveIngests() {
   }
 }
 
+bool ToolboxRuntimeHost::requestStopIngestForDataset(DatasetId dataset_id) {
+  std::lock_guard lock(parser_ingest_mu_);
+  const auto it = parser_ingests_.find(static_cast<uint32_t>(dataset_id));
+  if (it == parser_ingests_.end()) {
+    return false;  // no live context for this dataset
+  }
+  it->second->requestStop();  // flag-only, same thread-safety as above
+  return true;
+}
+
 Status ToolboxRuntimeHost::registerServices(ServiceRegistryBuilder& registry) {
   if (auto status = registerRequiredService<sdk::ToolboxHostService>(registry, write_host_.raw()); !status) {
     return status;

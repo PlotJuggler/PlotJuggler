@@ -73,6 +73,13 @@ class CurveTreeViewTestPeer {
   static bool dragPayloadIsEmpty(const CurveTreeView& view) {
     return view.drag_curve_names_.empty() && view.drag_catalog_keys_.isEmpty();
   }
+
+  // How many row keys are still filed under a tree path. Observed because the
+  // map is otherwise invisible, and a mapping that outlives its key would
+  // accumulate for the whole session.
+  static int datasetPathMappingCount(const CurveTreeView& view) {
+    return static_cast<int>(view.row_key_to_tree_path_.size());
+  }
 };
 
 }  // namespace PJ
@@ -83,6 +90,7 @@ namespace {
 // only the view's painting and interaction internals consume them in production.
 constexpr int kDatasetProgressRoleForTest = Qt::UserRole + 13;
 constexpr int kDatasetGhostRoleForTest = Qt::UserRole + 14;
+constexpr int kDatasetRowKeyRoleForTest = Qt::UserRole + 15;
 
 class TestCurveTreeView : public PJ::CurveTreeView {
  public:
@@ -1276,6 +1284,250 @@ TEST(CurveTreeViewTest, DatasetProgressCreatesAndRemovesGhost) {
   view.setDatasetProgress({});
 
   EXPECT_EQ(view.topLevelItemCount(), 0);
+}
+
+// A row showing load progress must survive the filter. It reports work in
+// flight and carries the only affordances that can stop it, so filtering it away
+// takes the stop button with it. A ghost matches no filter text at all.
+TEST(CurveTreeViewTest, ProgressRowsSurviveAFilterThatMatchesNothing) {
+  PJ::CurveTreeView view;
+  view.addCurves({u"veh/imu/x"_s});
+  constexpr quint64 kGhostKey = 71;
+  constexpr quint64 kRealKey = 72;
+  view.setDatasetRowKey(u"veh"_s, kRealKey);
+
+  QHash<quint64, PJ::CurveTreeView::DatasetProgress> progress;
+  progress[kRealKey] = PJ::CurveTreeView::DatasetProgress{
+      .display_name = u"veh"_s,
+      .fraction = 0.5,
+      .cancellable = true,
+      .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+      .flash_on = false,
+  };
+  progress[kGhostKey] = PJ::CurveTreeView::DatasetProgress{
+      .display_name = u"Importing MCAP"_s,
+      .fraction = 0.25,
+      .cancellable = true,
+      .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+      .flash_on = false,
+  };
+  view.setDatasetProgress(progress);
+
+  view.applyFilter(u"zzz-matches-nothing"_s);
+
+  QTreeWidgetItem* real_row = findTopLevel(view, u"veh"_s);
+  QTreeWidgetItem* ghost_row = findTopLevel(view, u"Importing MCAP"_s);
+  ASSERT_NE(real_row, nullptr);
+  ASSERT_NE(ghost_row, nullptr);
+  EXPECT_FALSE(real_row->isHidden()) << "a loading dataset row must not be filtered away";
+  EXPECT_FALSE(ghost_row->isHidden()) << "a ghost row matches no text and would always vanish";
+
+  // The exemption lasts exactly as long as the decoration does.
+  view.setDatasetProgress({});
+  QTreeWidgetItem* after = findTopLevel(view, u"veh"_s);
+  ASSERT_NE(after, nullptr);
+  EXPECT_TRUE(after->isHidden()) << "once the progress is gone the filter applies normally";
+}
+
+// A ghost's label is its display name, and that name changes under a stable row
+// key when the row adopts its dataset's name. The fraction-only fast path must
+// repaint the text AND re-sort, or the row keeps the producer's title — in the
+// position that title sorted to — until the row set happens to change.
+TEST(CurveTreeViewTest, GhostLabelAndOrderFollowItsDisplayNameOnAFractionOnlyTick) {
+  PJ::CurveTreeView view;
+  constexpr quint64 kRenamedKey = 73;
+  constexpr quint64 kSiblingKey = 74;
+  PJ::CurveTreeView::DatasetProgress renamed{
+      .display_name = u"b-importing"_s,
+      .fraction = 0.1,
+      .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+      .flash_on = false,
+  };
+  PJ::CurveTreeView::DatasetProgress sibling = renamed;
+  sibling.display_name = u"c-importing"_s;
+
+  QHash<quint64, PJ::CurveTreeView::DatasetProgress> progress;
+  progress[kRenamedKey] = renamed;
+  progress[kSiblingKey] = sibling;
+  view.setDatasetProgress(progress);
+  ASSERT_EQ(topLevelNames(view), (std::vector<std::string>{"b-importing", "c-importing"}));
+
+  // Same key set: this is the fast path, not a rebuild.
+  renamed.display_name = u"d-recording.mcap"_s;
+  renamed.fraction = 0.6;
+  progress[kRenamedKey] = renamed;
+  view.setDatasetProgress(progress);
+
+  EXPECT_EQ(topLevelNames(view), (std::vector<std::string>{"c-importing", "d-recording.mcap"}))
+      << "the ghost kept a stale label or a stale sort position";
+}
+
+// progress_row_cache_ holds raw item pointers. QTreeWidget::clear() is inherited,
+// non-virtual and public, so any caller can delete those items without the view
+// hearing about it — and the next same-membership tick is the pass that trusts
+// the cache without re-resolving.
+TEST(CurveTreeViewTest, InheritedClearCannotLeaveTheProgressCacheDangling) {
+  PJ::CurveTreeView view;
+  view.addCurves({u"veh/imu/x"_s});
+  constexpr quint64 kRowKey = 75;
+  view.setDatasetRowKey(u"veh"_s, kRowKey);
+  PJ::CurveTreeView::DatasetProgress progress{
+      .display_name = u"veh"_s,
+      .fraction = 0.3,
+      .cancellable = true,
+      .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+      .flash_on = false,
+  };
+  view.setDatasetProgress(progressSet(kRowKey, progress));
+  ASSERT_NE(findTopLevel(view, u"veh"_s), nullptr);
+
+  static_cast<QTreeWidget&>(view).clear();  // deletes the very row the cache points at
+
+  progress.fraction = 0.9;  // unchanged membership: the fast path
+  view.setDatasetProgress(progressSet(kRowKey, progress));
+
+  QTreeWidgetItem* row = findTopLevel(view, u"veh"_s);
+  ASSERT_NE(row, nullptr) << "the cleared row must come back as a ghost";
+  EXPECT_TRUE(row->data(0, kDatasetGhostRoleForTest).toBool());
+  expectDatasetProgress(row, progress);
+}
+
+// The path->key map is only useful while its key names a live ingest. Pruning it
+// on retirement is what keeps it from growing for the whole session — but a
+// mapping registered ahead of its key's first publication must survive, because
+// that ordering is the normal one (the path resolves, then progress is emitted).
+TEST(CurveTreeViewTest, RetiredRowKeysDropTheirTreePathMappings) {
+  PJ::CurveTreeView view;
+  view.addCurves({u"veh/imu/x"_s});
+  constexpr quint64 kFirstKey = 81;
+  constexpr quint64 kSecondKey = 82;
+  constexpr quint64 kUnpublishedKey = 83;
+  const PJ::CurveTreeView::DatasetProgress progress{
+      .display_name = u"veh"_s,
+      .fraction = 0.5,
+      .cancellable = true,
+      .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+      .flash_on = false,
+  };
+
+  view.setDatasetRowKey(u"veh"_s, kFirstKey);
+  view.setDatasetProgress(progressSet(kFirstKey, progress));
+  ASSERT_EQ(PJ::CurveTreeViewTestPeer::datasetPathMappingCount(view), 1);
+
+  view.setDatasetProgress({});  // the load ended
+  EXPECT_EQ(PJ::CurveTreeViewTestPeer::datasetPathMappingCount(view), 0) << "a retired key kept its path mapping";
+
+  // A reload of the same dataset files a fresh key under the same path, and a
+  // mapping for a key nobody has published yet must not be pruned by someone
+  // else's membership change.
+  view.setDatasetRowKey(u"veh"_s, kSecondKey);
+  view.setDatasetRowKey(u"other"_s, kUnpublishedKey);
+  view.setDatasetProgress(progressSet(kSecondKey, progress));
+  EXPECT_EQ(PJ::CurveTreeViewTestPeer::datasetPathMappingCount(view), 2)
+      << "a mapping whose key has not been published yet must survive someone else's membership change";
+}
+
+// A key has ONE live path. A dataset's tree path changes under a stable key (a
+// sibling's removal relabels "foo (2)" back to "foo" and cascades), and the full
+// pass resolves a key through whichever of its mapped paths it meets first in an
+// unordered hash — so a path left behind can decorate another dataset's row and
+// hand that row's stop click to this ingest.
+TEST(CurveTreeViewTest, RemappingARowKeyRetiresItsPreviousPath) {
+  TestCurveTreeView view;
+  view.resize(360, 180);
+  view.addCurves({u"alpha/imu/x"_s, u"beta/imu/x"_s});
+  constexpr quint64 kRowKey = 91;
+  const PJ::CurveTreeView::DatasetProgress progress{
+      .display_name = u"beta"_s,
+      .fraction = 0.5,
+      .cancellable = true,
+      .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+      .flash_on = false,
+  };
+
+  view.setDatasetRowKey(u"alpha"_s, kRowKey);
+  view.setDatasetProgress(progressSet(kRowKey, progress));
+  ASSERT_NE(findTopLevel(view, u"alpha"_s), nullptr);
+
+  view.setDatasetRowKey(u"beta"_s, kRowKey);  // the row this key names moved
+  view.show();
+  QApplication::processEvents();
+
+  EXPECT_EQ(PJ::CurveTreeViewTestPeer::datasetPathMappingCount(view), 1) << "the key kept its retired path";
+
+  QTreeWidgetItem* alpha = findTopLevel(view, u"alpha"_s);
+  QTreeWidgetItem* beta = findTopLevel(view, u"beta"_s);
+  ASSERT_NE(alpha, nullptr);
+  ASSERT_NE(beta, nullptr);
+  EXPECT_FALSE(alpha->data(0, kDatasetProgressRoleForTest).isValid()) << "the decoration stayed on the retired path";
+  EXPECT_FALSE(alpha->data(0, kDatasetRowKeyRoleForTest).isValid());
+  EXPECT_TRUE(beta->data(0, kDatasetProgressRoleForTest).isValid());
+  EXPECT_EQ(beta->data(0, kDatasetRowKeyRoleForTest).value<quint64>(), kRowKey);
+
+  // The click follows the decoration: the stop on the row this key now names
+  // reports that key, and the row it left behind offers nothing to click.
+  std::vector<std::pair<quint64, bool>> requests;
+  QObject::connect(&view, &PJ::CurveTreeView::cancelRequested, &view, [&requests](quint64 row_key, bool keep_partial) {
+    requests.emplace_back(row_key, keep_partial);
+  });
+  const QPoint stop_pos = cancelButtonPosition(view, beta);
+  ASSERT_TRUE(view.viewport()->rect().contains(stop_pos));
+  EXPECT_TRUE(sendMousePress(view, stop_pos));
+  ASSERT_EQ(requests.size(), 1u);
+  EXPECT_EQ(requests[0], std::make_pair(kRowKey, true));
+
+  // The same gesture on the row the key left behind stops nothing: that row
+  // carries no progress, so the position holds no affordance at all.
+  const QPoint retired_pos = cancelButtonPosition(view, alpha);
+  ASSERT_TRUE(view.viewport()->rect().contains(retired_pos));
+  sendMousePress(view, retired_pos);
+  EXPECT_EQ(requests.size(), 1u) << "a stop click landed on a row that shows no load";
+}
+
+// Two live keys can name one dataset path: a reload's ingest resolves to the
+// dataset while the finished one is still lingering on it. A row carries ONE
+// decoration and routes its stop to ONE ingest, so the LAST key registered for a
+// path owns the real row and the key it displaces falls back to a ghost —
+// deterministic, where sharing the row would leave the winner to hash order.
+TEST(CurveTreeViewTest, TheLatestKeyForAPathOwnsTheRowAndDisplacesTheOlderToAGhost) {
+  PJ::CurveTreeView view;
+  view.addCurves({u"foo/imu/x"_s});
+  constexpr quint64 kFinishingKey = 95;
+  constexpr quint64 kReloadKey = 96;
+
+  QHash<quint64, PJ::CurveTreeView::DatasetProgress> progress;
+  progress[kFinishingKey] = PJ::CurveTreeView::DatasetProgress{
+      .display_name = u"foo (finishing)"_s,
+      .fraction = 1.0,
+      .state = PJ::CurveTreeView::DatasetProgress::State::kCompleted,
+      .flash_on = false,
+  };
+  view.setDatasetRowKey(u"foo"_s, kFinishingKey);
+  view.setDatasetProgress(progress);
+  ASSERT_EQ(findTopLevel(view, u"foo"_s)->data(0, kDatasetRowKeyRoleForTest).value<quint64>(), kFinishingKey);
+
+  // The reload's ingest resolves to the same dataset row.
+  progress[kReloadKey] = PJ::CurveTreeView::DatasetProgress{
+      .display_name = u"foo"_s,
+      .fraction = 0.2,
+      .cancellable = true,
+      .state = PJ::CurveTreeView::DatasetProgress::State::kLoading,
+      .flash_on = false,
+  };
+  view.setDatasetRowKey(u"foo"_s, kReloadKey);
+  view.setDatasetProgress(progress);
+
+  QTreeWidgetItem* real_row = findTopLevel(view, u"foo"_s);
+  ASSERT_NE(real_row, nullptr);
+  EXPECT_FALSE(real_row->data(0, kDatasetGhostRoleForTest).toBool());
+  EXPECT_EQ(real_row->data(0, kDatasetRowKeyRoleForTest).value<quint64>(), kReloadKey)
+      << "the newcomer must own the row, and its stop click with it";
+
+  QTreeWidgetItem* ghost = findTopLevel(view, u"foo (finishing)"_s);
+  ASSERT_NE(ghost, nullptr) << "the displaced key must keep a row of its own";
+  EXPECT_TRUE(ghost->data(0, kDatasetGhostRoleForTest).toBool());
+  EXPECT_EQ(ghost->data(0, kDatasetRowKeyRoleForTest).value<quint64>(), kFinishingKey);
+  EXPECT_EQ(PJ::CurveTreeViewTestPeer::datasetPathMappingCount(view), 1) << "a path names exactly one live key";
 }
 
 // The two affordances must be distinguishable by position alone: the row IS the

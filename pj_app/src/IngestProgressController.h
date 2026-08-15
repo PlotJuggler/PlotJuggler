@@ -21,8 +21,9 @@ namespace PJ {
 /// animations according to the outcome.
 ///
 /// Key responsibilities:
-/// - Maps each IngestId to a stable opaque quint64 row key (immutable per
-///   ingest lifetime)
+/// - Keys each row by its IngestId: the token id IS the opaque row key the view
+///   reports clicks against, so a click resolves back to its ingest by lookup
+///   and the two identities can never drift apart
 /// - Subscribes to ingestBegan/ingestProgressed/ingestEnded and maintains a
 ///   QHash<IngestId, DatasetProgress>
 /// - Implements state transitions: kLoading → terminal → linger → removed
@@ -114,17 +115,12 @@ class IngestProgressController : public QObject {
 
  private:
   struct IngestEntry {
-    IngestToken token;
-    quint64 row_key = 0;
+    IngestToken token;           // token.id doubles as the view-facing row key
     QString resolved_tree_path;  // Last emitted tree path; empty if unresolved
     CurveTreeView::DatasetProgress state;
     QTimer* linger_or_flash_timer = nullptr;
     int flash_phase = 0;  // 0-5: 3 on/off cycles; 6+ = done flashing
   };
-
-  /// Generates a stable opaque row key for a new ingest (monotonically
-  /// increasing).
-  quint64 mintRowKey();
 
   /// Records or updates an ingest entry and emits progressUpdated. Should be
   /// called whenever state changes.
@@ -150,7 +146,6 @@ class IngestProgressController : public QObject {
 
   SessionManager* session_ = nullptr;
   QHash<IngestId, IngestEntry> ingests_;
-  quint64 next_row_key_ = 1;
   std::function<QTimer*()> timer_factory_;
   DatasetPathResolver dataset_path_resolver_;
 };

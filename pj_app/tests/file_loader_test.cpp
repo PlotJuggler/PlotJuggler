@@ -160,10 +160,17 @@ void releaseFanoutProbeCancelEntry() {
   state.release_cv.notify_all();
 }
 
+// CONSUME-ONCE: the release is taken by the entry that observes it, so a fan-out
+// with several "cancel" entries parks at each one instead of running the rest
+// past a latch a previous entry already opened.
 bool waitForFanoutProbeCancelRelease() {
   FanoutProbeState& state = fanoutProbeState();
   std::unique_lock lock(state.mutex);
-  return state.release_cv.wait_for(lock, std::chrono::seconds(5), [&state]() { return state.release_cancel_entry; });
+  if (!state.release_cv.wait_for(lock, std::chrono::seconds(5), [&state]() { return state.release_cancel_entry; })) {
+    return false;
+  }
+  state.release_cancel_entry = false;
+  return true;
 }
 
 void releaseFanoutProbeProgressStep(int step) {
@@ -432,6 +439,175 @@ const PJ_data_source_vtable_t* rejectingPresetVtable() {
       R"("file_extensions":[".cfgreject"]})");
 }
 
+// In-process DataSource whose CONTENT comes from its config, and which can park
+// the worker once it has written (and flushed) that content. Telling a
+// transactional rollback from a commit needs both: a replacement that differs
+// from what it replaced — identical rows read the same either way — and a
+// shutdown that lands while the replacement is genuinely mid-flight.
+struct ReloadProbeState {
+  std::mutex mutex;
+  bool parked = false;
+};
+
+ReloadProbeState& reloadProbeState() {
+  static ReloadProbeState state;
+  return state;
+}
+
+void resetReloadProbe() {
+  ReloadProbeState& state = reloadProbeState();
+  const std::lock_guard lock(state.mutex);
+  state.parked = false;
+}
+
+// True once the probe has written its rows and is waiting for a stop request.
+bool reloadProbeParked() {
+  ReloadProbeState& state = reloadProbeState();
+  const std::lock_guard lock(state.mutex);
+  return state.parked;
+}
+
+class ReloadProbeSource final : public PJ::DataSourcePluginBase {
+ public:
+  uint64_t capabilities() const override {
+    return PJ::kCapabilityFiniteImport | PJ::kCapabilityDirectIngest;
+  }
+
+  std::string saveConfig() const override {
+    return config_;
+  }
+
+  PJ::Status loadConfig(std::string_view config_json) override {
+    config_.assign(config_json);
+    const QJsonObject object =
+        QJsonDocument::fromJson(QByteArray(config_json.data(), static_cast<qsizetype>(config_json.size()))).object();
+    first_value_ = object.value(u"first_value"_s).toDouble(10.0);
+    rows_ = object.value(u"rows"_s).toInt(3);
+    park_ = object.value(u"park"_s).toBool(false);
+    return PJ::okStatus();
+  }
+
+  PJ::Status start() override {
+    state_ = PJ::DataSourceState::kStarting;
+    runtimeHost().notifyState(state_);
+
+    const auto fail = [this](std::string reason) -> PJ::Status {
+      runtimeHost().progressFinish();
+      state_ = PJ::DataSourceState::kFailed;
+      runtimeHost().notifyState(state_);
+      return PJ::unexpected(std::move(reason));
+    };
+
+    if (auto status = runtimeHost().progressStart("reload-probe", static_cast<uint64_t>(rows_), true); !status) {
+      return fail(status.error());
+    }
+    auto topic = writeHost().ensureTopic("reload_probe/value");
+    if (!topic) {
+      return fail(topic.error());
+    }
+
+    for (int index = 1; index <= rows_; ++index) {
+      auto status = writeHost().appendRecord(
+          *topic, PJ::Timestamp{static_cast<int64_t>(index) * 100},
+          {{.name = "value", .value = first_value_ + static_cast<double>(index)}});
+      if (!status) {
+        return fail(status.error());
+      }
+      if (park_ && index == rows_) {
+        // FileLoader throttles worker-side flushes (50 ms). Sleep past it so the
+        // progressUpdate below really commits these rows into the live engine —
+        // the partial replacement the shutdown then has to undo.
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+      }
+      if (!runtimeHost().progressUpdate(static_cast<uint64_t>(index))) {
+        return fail("cancelled via progress");
+      }
+    }
+
+    if (park_) {
+      {
+        ReloadProbeState& state = reloadProbeState();
+        const std::lock_guard lock(state.mutex);
+        state.parked = true;
+      }
+      // Hold the worker on the real running-worker path: joinForShutdown's
+      // requestStop() is what releases it.
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+      while (!runtimeHost().isStopRequested() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      if (!runtimeHost().isStopRequested()) {
+        return fail("timed out waiting for the shutdown stop request");
+      }
+      return fail("stopped while parked");
+    }
+
+    runtimeHost().progressFinish();
+    state_ = PJ::DataSourceState::kStopped;
+    runtimeHost().notifyState(state_);
+    runtimeHost().requestStop(PJ::DataSourceState::kStopped, "import complete");
+    return PJ::okStatus();
+  }
+
+  void stop() override {
+    state_ = PJ::DataSourceState::kStopped;
+  }
+
+  PJ::DataSourceState currentState() const override {
+    return state_;
+  }
+
+ private:
+  std::string config_ = "{}";
+  double first_value_ = 10.0;
+  int rows_ = 3;
+  bool park_ = false;
+  PJ::DataSourceState state_ = PJ::DataSourceState::kIdle;
+};
+
+const PJ_data_source_vtable_t* reloadProbeVtable() {
+  return staticSourceVtable<ReloadProbeSource>(
+      R"({"id":"reload-probe-source","name":"Reload Probe Source","version":"1.0.0",)"
+      R"("file_extensions":[".reloadprobe"]})");
+}
+
+// Records every loadFinished emission so tests can assert exactly-once and the
+// terminal payload (outcome / effective path / dataset ids) per ticket.
+struct LoadFinishedRecorder {
+  struct Event {
+    quint64 ticket;
+    PJ::LoadOutcome outcome;
+    QString path;
+    PJ::DatasetId dataset_id;
+    QVector<PJ::DatasetId> produced;
+  };
+
+  explicit LoadFinishedRecorder(PJ::FileLoader& loader) {
+    connection = QObject::connect(
+        &loader, &PJ::FileLoader::loadFinished, &loader,
+        [this](
+            quint64 ticket, PJ::LoadOutcome outcome, const QString& path, PJ::DatasetId dataset_id,
+            const QVector<PJ::DatasetId>& produced) {
+          events.push_back(
+              Event{
+                  .ticket = ticket, .outcome = outcome, .path = path, .dataset_id = dataset_id, .produced = produced});
+        });
+  }
+  ~LoadFinishedRecorder() {
+    QObject::disconnect(connection);
+  }
+  LoadFinishedRecorder(const LoadFinishedRecorder&) = delete;
+  LoadFinishedRecorder& operator=(const LoadFinishedRecorder&) = delete;
+
+  [[nodiscard]] std::size_t countForTicket(quint64 ticket) const {
+    return static_cast<std::size_t>(
+        std::count_if(events.begin(), events.end(), [ticket](const Event& e) { return e.ticket == ticket; }));
+  }
+
+  std::vector<Event> events;
+  QMetaObject::Connection connection;
+};
+
 // Records SessionManager's token-scoped ingest lifecycle. FileLoader's
 // progress callbacks cross from a worker to the GUI thread, so the session
 // signals are the authoritative surface for pairing begin/update/end.
@@ -566,6 +742,20 @@ class FileLoaderTest : public ::testing::Test {
     return hints;
   }
 
+  [[nodiscard]] bool installReloadProbe() {
+    resetReloadProbe();
+    return app_session_->extensionCatalog().pluginCatalog().registerStaticDataSource(reloadProbeVtable());
+  }
+
+  [[nodiscard]] PJ::LoadHints reloadProbeHints(const QString& config) {
+    PJ::LoadHints hints;
+    hints.expected_plugin_id = u"Reload Probe Source"_s;
+    hints.preset_config_json = config;
+    hints.dialog_policy = PJ::DialogPolicy::kPreferPreset;
+    hints.require_expected_plugin = true;
+    return hints;
+  }
+
   [[nodiscard]] QString makeMockFile(const QString& name) {
     return pj_app_test::makeMockFile(data_dir_, name);
   }
@@ -615,6 +805,29 @@ class FileLoaderTest : public ::testing::Test {
       }
     }
     return {};
+  }
+
+  // The values of the dataset's single topic, in time order. Empty when the
+  // dataset does not have exactly one topic. Row COUNT alone cannot tell one
+  // load's data from another's; the values can.
+  [[nodiscard]] std::vector<double> singleTopicValues(PJ::DatasetId dataset_id) {
+    const PJ::DataReader reader = session().createReader();
+    const auto topics = reader.listTopics(dataset_id);
+    if (topics.size() != 1u) {
+      return {};
+    }
+    const auto series = reader.series(topics.front(), 0);
+    if (!series.has_value()) {
+      return {};
+    }
+    std::vector<double> values;
+    values.reserve(series->size());
+    for (std::size_t index = 0; index < series->size(); ++index) {
+      if (const auto sample = series->sampleAt(index); sample.has_value()) {
+        values.push_back(sample->value);
+      }
+    }
+    return values;
   }
 
   // Row count of the dataset's single topic, or -1 when the topic set is not
@@ -1186,6 +1399,267 @@ TEST_F(FileLoaderTest, FanoutReloadErasesOldDatasetBeforePreferReuseReload) {
   EXPECT_EQ(singleTopicRowCount(reloaded), 3) << "fresh prefer_reuse load must ingest rows";
 }
 
+// A replacing fan-out tombstones the dataset it is replacing and real-deletes
+// it only once the replacement has committed. Discarding the load means nothing
+// replaced it, so the tombstone must be rolled back — the user keeps the data
+// they already had. (The delete used to run above these exits, which erased it
+// permanently.)
+TEST_F(FileLoaderTest, DiscardedReplacingFanoutRestoresTheDatasetItWasReplacing) {
+  ASSERT_TRUE(installFanoutProbe());
+  const QString path = makeMockFile(u"replaced.fanoutprobe"_s);
+  ASSERT_TRUE(loadAndWait(path, fanoutProbeHints(u"{}"_s)));
+  const PJ::DatasetId original = datasetNamed("replaced.fanoutprobe");
+  ASSERT_NE(original, 0u);
+  ASSERT_EQ(singleTopicRowCount(original), 3);
+  const std::size_t catalog_items_before = catalog().items().size();
+  ASSERT_GT(catalog_items_before, 0u);
+
+  // Reload the same path as a fan-out (which replaces in place) and discard the
+  // whole load at its second entry.
+  const PJ::LoadHints hints =
+      fanoutProbeHints(uR"({"__pj_fanout":["{\"display_suffix\":\"complete\"}","{\"display_suffix\":\"cancel\"}"]})"_s);
+  bool cancel_sent = false;
+  const auto cancel_connection = QObject::connect(
+      loader_.get(), &PJ::FileLoader::ingestStarted, loader_.get(),
+      [this, &cancel_sent](const QString& title, int, int, bool) {
+        if (title != u"fanout-probe:cancel"_s || cancel_sent) {
+          return;
+        }
+        cancel_sent = true;
+        loader_->cancelCurrent(/*keep_partial=*/false);
+        releaseFanoutProbeCancelEntry();
+      });
+  (void)loadAndWait(path, hints);
+  QObject::disconnect(cancel_connection);
+  ASSERT_TRUE(cancel_sent);
+
+  EXPECT_TRUE(engineHasDataset(original)) << "a discarded replacement must not erase what it was replacing";
+  EXPECT_EQ(datasetNamed("replaced.fanoutprobe"), original) << "the original dataset keeps its id";
+  EXPECT_EQ(singleTopicRowCount(original), 3) << "and its rows";
+  EXPECT_EQ(catalog().items().size(), catalog_items_before) << "its curves come back with it";
+  EXPECT_EQ(datasetNamed("replaced/complete"), 0u) << "the discarded fan-out leaves nothing of its own";
+  EXPECT_EQ(datasetNamed("replaced/cancel"), 0u);
+}
+
+// Same contract on the other dataset-less exit: every fan-out entry failing is
+// not a licence to delete the dataset the load was replacing.
+TEST_F(FileLoaderTest, AllFailedReplacingFanoutRestoresTheDatasetItWasReplacing) {
+  ASSERT_TRUE(installFanoutProbe());
+  const QString path = makeMockFile(u"allfail.fanoutprobe"_s);
+  ASSERT_TRUE(loadAndWait(path, fanoutProbeHints(u"{}"_s)));
+  const PJ::DatasetId original = datasetNamed("allfail.fanoutprobe");
+  ASSERT_NE(original, 0u);
+  ASSERT_EQ(singleTopicRowCount(original), 3);
+  const std::size_t catalog_items_before = catalog().items().size();
+
+  const PJ::LoadHints hints =
+      fanoutProbeHints(uR"({"__pj_fanout":["{\"display_suffix\":\"fail\"}","{\"display_suffix\":\"fail\"}"]})"_s);
+  EXPECT_FALSE(loadAndWait(path, hints)) << "every entry failed, so the load failed";
+
+  EXPECT_TRUE(engineHasDataset(original)) << "an all-failed replacement must not erase what it was replacing";
+  EXPECT_EQ(datasetNamed("allfail.fanoutprobe"), original);
+  EXPECT_EQ(singleTopicRowCount(original), 3);
+  EXPECT_EQ(catalog().items().size(), catalog_items_before);
+}
+
+// An observer of a fan-out entry's terminal is allowed to shut the loader down —
+// closing the window while an import runs is exactly that. joinForShutdown
+// resets begin_load_task_, which DESTROYS the coroutine frame the fan-out loop
+// is running in, so the terminal must not be emitted from inside that frame: the
+// loop would return into freed storage. Delivering it through the event loop is
+// what makes this survivable, and the loader has to stay usable afterwards.
+TEST_F(FileLoaderTest, ShutdownFromInsideAFanoutTerminalLeavesTheLoaderUsable) {
+  ASSERT_TRUE(installFanoutProbe());
+  const QString path = makeMockFile(u"terminalshutdown.fanoutprobe"_s);
+  const PJ::LoadHints hints = fanoutProbeHints(
+      uR"({"__pj_fanout":["{\"display_suffix\":\"first\"}","{\"display_suffix\":\"second\"}",)"
+      uR"("{\"display_suffix\":\"third\"}"]})"_s);
+
+  int shutdowns = 0;
+  const auto shutdown_connection = QObject::connect(
+      &session(), &PJ::SessionManager::ingestEnded, loader_.get(),
+      [this, &shutdowns](PJ::IngestToken, PJ::IngestOutcome) {
+        if (shutdowns == 0) {
+          ++shutdowns;
+          loader_->joinForShutdown();
+        }
+      });
+  ASSERT_TRUE(loader_->loadFile(path, nullptr, hints));
+  ASSERT_TRUE(pj_app_test::pumpUntil([this, &shutdowns]() { return shutdowns > 0 && !loader_->isBusy(); }))
+      << "no fan-out entry ever reported a terminal";
+  QObject::disconnect(shutdown_connection);
+
+  EXPECT_EQ(shutdowns, 1);
+  EXPECT_FALSE(loader_->isBusy());
+  EXPECT_FALSE(session().hasActiveIngests()) << "shutdown must close every token the fan-out began";
+
+  // A fresh load after that shutdown still completes.
+  EXPECT_TRUE(loadAndWait(path, fanoutProbeHints(u"{}"_s)));
+  EXPECT_NE(datasetNamed("terminalshutdown.fanoutprobe"), 0u);
+}
+
+// Discarding EVERY row of a fan-out leaves precisely what a "Remove All" leaves:
+// nothing. A row discard is neither a failure nor a load-wide stop, so this case
+// used to reach the success tail — real-deleting the dataset the load was
+// replacing (the tombstone exists to protect exactly that) and then announcing a
+// successful load that produced no dataset at all.
+TEST_F(FileLoaderTest, FanoutWithEveryRowDiscardedIsCancelledAndKeepsTheReplacedDataset) {
+  ASSERT_TRUE(installFanoutProbe());
+  const QString path = makeMockFile(u"rowdiscard.fanoutprobe"_s);
+  ASSERT_TRUE(loadAndWait(path, fanoutProbeHints(u"{}"_s)));
+  const PJ::DatasetId original = datasetNamed("rowdiscard.fanoutprobe");
+  ASSERT_NE(original, 0u);
+  ASSERT_EQ(singleTopicRowCount(original), 3);
+  const std::size_t catalog_items_before = catalog().items().size();
+
+  // Reload the same path as a fan-out (which replaces in place) and discard both
+  // entries through their own rows.
+  const PJ::LoadHints hints =
+      fanoutProbeHints(uR"({"__pj_fanout":["{\"display_suffix\":\"cancel\"}","{\"display_suffix\":\"cancel\"}"]})"_s);
+  LoadFinishedRecorder recorder(*loader_);
+  // The replacement announcement carries the arming load's ticket: the shell
+  // disarms its workspace capture by ticket equality, so a stale same-path
+  // terminal from another load can never kill a live load's capture.
+  quint64 arm_ticket = 0;
+  const auto arm_connection = QObject::connect(
+      loader_.get(), &PJ::FileLoader::sourceReplacementAboutToCommit, loader_.get(),
+      [&arm_ticket](quint64 ticket, const QString&, PJ::DatasetId) { arm_ticket = ticket; });
+  int cancels_sent = 0;
+  const auto cancel_connection = QObject::connect(
+      &session(), &PJ::SessionManager::ingestBegan, loader_.get(),
+      [this, &cancels_sent](PJ::IngestToken token, const QString& label, quint64) {
+        if (label != u"fanout-probe:cancel"_s) {
+          return;
+        }
+        ++cancels_sent;
+        EXPECT_TRUE(session().requestCancel(token, /*keep_partial=*/false));
+        releaseFanoutProbeCancelEntry();
+      });
+
+  EXPECT_FALSE(loadAndWait(path, hints)) << "a fan-out that kept nothing is not a successful load";
+  QObject::disconnect(cancel_connection);
+  QObject::disconnect(arm_connection);
+  pj_app_test::flushQueuedEvents(2);
+
+  ASSERT_EQ(cancels_sent, 2) << "both fanout entries must reach their cancellation rendezvous";
+  EXPECT_TRUE(engineHasDataset(original)) << "discarding every row must not erase what the load was replacing";
+  EXPECT_EQ(datasetNamed("rowdiscard.fanoutprobe"), original) << "the original dataset keeps its id";
+  EXPECT_EQ(singleTopicRowCount(original), 3) << "and its rows";
+  EXPECT_EQ(catalog().items().size(), catalog_items_before) << "its curves come back with it";
+  EXPECT_EQ(datasetNamed("rowdiscard/cancel"), 0u) << "no discarded entry survives";
+
+  ASSERT_FALSE(recorder.events.empty());
+  EXPECT_EQ(recorder.events.back().outcome, PJ::LoadOutcome::kCancelled)
+      << "a load that produced no dataset must not report success";
+  EXPECT_TRUE(recorder.events.back().produced.isEmpty());
+  EXPECT_NE(arm_ticket, 0u) << "the replacing fan-out must announce its capture";
+  EXPECT_EQ(recorder.events.back().ticket, arm_ticket)
+      << "the announcement carries the SAME ticket the load's terminal reports";
+}
+
+// A fan-out row's bin discards THAT ENTRY and nothing else: the sibling that
+// already loaded keeps its data, and the entries after it still run. The row is
+// the unit the user aimed at, and it names one dataset.
+TEST_F(FileLoaderTest, FanoutRowDiscardDropsOnlyThatEntryAndKeepsSiblings) {
+  ASSERT_TRUE(installFanoutProbe());
+  const QString path = makeMockFile(u"rowstop.fanoutprobe"_s);
+  const PJ::LoadHints hints = fanoutProbeHints(
+      uR"({"__pj_fanout":["{\"display_suffix\":\"first\"}","{\"display_suffix\":\"cancel\"}","{\"display_suffix\":\"third\"}"]})"_s);
+  IngestLifecycleRecorder ingest_lifecycle(session());
+
+  // The production route for a row click: the view resolves its row key to this
+  // token and asks the session, exactly as wireIngestProgress does.
+  bool cancel_sent = false;
+  const auto cancel_connection = QObject::connect(
+      &session(), &PJ::SessionManager::ingestBegan, loader_.get(),
+      [this, &cancel_sent](PJ::IngestToken token, const QString& label, quint64) {
+        if (label != u"fanout-probe:cancel"_s || cancel_sent) {
+          return;
+        }
+        cancel_sent = true;
+        EXPECT_TRUE(session().requestCancel(token, /*keep_partial=*/false));
+        releaseFanoutProbeCancelEntry();
+      });
+
+  (void)loadAndWait(path, hints);
+  QObject::disconnect(cancel_connection);
+  // The fan-out delivers each entry's ingest terminal through the event loop
+  // (it runs inside the load coroutine, whose frame a re-entrant observer may
+  // destroy), so drain it before asserting on ingest lifecycle state.
+  pj_app_test::flushQueuedEvents(2);
+
+  ASSERT_TRUE(cancel_sent) << "the second fanout entry never reached its cancellation rendezvous";
+  EXPECT_FALSE(loader_->isBusy());
+  const std::vector<std::string> expected_starts{"first", "cancel", "third"};
+  EXPECT_EQ(fanoutProbeStartedSuffixes(), expected_starts)
+      << "a row stop must not end the fan-out: the entry after it still runs";
+
+  const PJ::DatasetId first = datasetNamed("rowstop/first");
+  const PJ::DatasetId third = datasetNamed("rowstop/third");
+  ASSERT_NE(first, 0u) << "the sibling that completed before the stop must survive";
+  ASSERT_NE(third, 0u) << "the entry after the stopped one must still load";
+  EXPECT_EQ(singleTopicRowCount(first), 3);
+  EXPECT_EQ(singleTopicRowCount(third), 3);
+  EXPECT_EQ(datasetNamed("rowstop/cancel"), 0u) << "only the discarded row's dataset is dropped";
+  EXPECT_EQ(session().createReader().listDatasets().size(), 2u);
+
+  ASSERT_EQ(ingest_lifecycle.began.size(), 3u);
+  ASSERT_EQ(ingest_lifecycle.ended.size(), 3u) << "every begun fanout entry must end exactly once";
+  const auto* cancelled_begin = ingest_lifecycle.beginForLabel(u"fanout-probe:cancel"_s);
+  const auto* third_begin = ingest_lifecycle.beginForLabel(u"fanout-probe:third"_s);
+  ASSERT_NE(cancelled_begin, nullptr);
+  ASSERT_NE(third_begin, nullptr);
+  const auto* cancelled_end = ingest_lifecycle.endFor(cancelled_begin->token);
+  const auto* third_end = ingest_lifecycle.endFor(third_begin->token);
+  ASSERT_NE(cancelled_end, nullptr);
+  ASSERT_NE(third_end, nullptr);
+  EXPECT_EQ(cancelled_end->outcome, PJ::IngestOutcome::kCancelled);
+  EXPECT_EQ(third_end->outcome, PJ::IngestOutcome::kCompleted)
+      << "a sibling must not inherit the stopped row's outcome";
+  EXPECT_FALSE(session().hasActiveIngests());
+}
+
+// The ✕ arm of the same scope: the stopped row keeps what it received, and the
+// fan-out carries on.
+TEST_F(FileLoaderTest, FanoutRowKeepRetainsThatEntryAndContinues) {
+  ASSERT_TRUE(installFanoutProbe());
+  const QString path = makeMockFile(u"rowkeep.fanoutprobe"_s);
+  const PJ::LoadHints hints = fanoutProbeHints(
+      uR"({"__pj_fanout":["{\"display_suffix\":\"first\"}","{\"display_suffix\":\"cancel\"}","{\"display_suffix\":\"third\"}"]})"_s);
+  IngestLifecycleRecorder ingest_lifecycle(session());
+
+  bool cancel_sent = false;
+  const auto cancel_connection = QObject::connect(
+      &session(), &PJ::SessionManager::ingestBegan, loader_.get(),
+      [this, &cancel_sent](PJ::IngestToken token, const QString& label, quint64) {
+        if (label != u"fanout-probe:cancel"_s || cancel_sent) {
+          return;
+        }
+        cancel_sent = true;
+        EXPECT_TRUE(session().requestCancel(token, /*keep_partial=*/true));
+        releaseFanoutProbeCancelEntry();
+      });
+
+  (void)loadAndWait(path, hints);
+  QObject::disconnect(cancel_connection);
+  pj_app_test::flushQueuedEvents(2);
+
+  ASSERT_TRUE(cancel_sent) << "the second fanout entry never reached its cancellation rendezvous";
+  const std::vector<std::string> expected_starts{"first", "cancel", "third"};
+  EXPECT_EQ(fanoutProbeStartedSuffixes(), expected_starts);
+
+  const PJ::DatasetId partial = datasetNamed("rowkeep/cancel");
+  ASSERT_NE(partial, 0u);
+  EXPECT_EQ(singleTopicRowCount(partial), 1) << "the stopped row keeps exactly what arrived";
+  EXPECT_EQ(singleTopicRowCount(datasetNamed("rowkeep/first")), 3);
+  EXPECT_EQ(singleTopicRowCount(datasetNamed("rowkeep/third")), 3);
+  EXPECT_EQ(session().createReader().listDatasets().size(), 3u);
+  EXPECT_FALSE(session().hasActiveIngests());
+}
+
+// WHOLE-LOAD scope (the title-bar strip's stop, cancelCurrent): it ends the
+// fan-out at the entry in flight and drops everything the load produced. The
+// per-row affordance is scoped differently — see the FanoutRow* tests below.
 TEST_F(FileLoaderTest, FanoutRemoveAllStopsAtCancelledEntryAndDropsCompletedEntries) {
   ASSERT_TRUE(installFanoutProbe());
   const QString path = makeMockFile(u"cancel.fanoutprobe"_s);
@@ -1210,6 +1684,7 @@ TEST_F(FileLoaderTest, FanoutRemoveAllStopsAtCancelledEntryAndDropsCompletedEntr
   // coupling it to that separate signal-policy decision.
   (void)loadAndWait(path, hints);
   QObject::disconnect(cancel_connection);
+  pj_app_test::flushQueuedEvents(2);
 
   ASSERT_TRUE(cancel_sent) << "the second fanout entry never reached its cancellation rendezvous";
   EXPECT_FALSE(loader_->isBusy());
@@ -1241,6 +1716,8 @@ TEST_F(FileLoaderTest, FanoutRemoveAllStopsAtCancelledEntryAndDropsCompletedEntr
   EXPECT_FALSE(session().hasActiveIngests());
 }
 
+// WHOLE-LOAD scope, keep arm: the fan-out still ends early, but the entries it
+// already produced (and the partial one) are kept.
 TEST_F(FileLoaderTest, FanoutStopAndKeepStopsAtCancelledEntryAndKeepsPartialEntry) {
   ASSERT_TRUE(installFanoutProbe());
   const QString path = makeMockFile(u"keep.fanoutprobe"_s);
@@ -1262,6 +1739,7 @@ TEST_F(FileLoaderTest, FanoutStopAndKeepStopsAtCancelledEntryAndKeepsPartialEntr
 
   (void)loadAndWait(path, hints);
   QObject::disconnect(cancel_connection);
+  pj_app_test::flushQueuedEvents(2);
 
   ASSERT_TRUE(cancel_sent) << "the second fanout entry never reached its cancellation rendezvous";
   EXPECT_FALSE(loader_->isBusy());
@@ -1306,6 +1784,7 @@ TEST_F(FileLoaderTest, FanoutFailureEndsOnlyTheFailedEntryWithFailedOutcome) {
   IngestLifecycleRecorder ingest_lifecycle(session());
 
   ASSERT_TRUE(loadAndWait(path, hints)) << "successful siblings keep a partially successful fanout load";
+  pj_app_test::flushQueuedEvents(2);
 
   ASSERT_EQ(ingest_lifecycle.began.size(), 3u);
   ASSERT_EQ(ingest_lifecycle.ended.size(), 3u) << "every begun fanout entry must end exactly once";
@@ -1780,24 +2259,41 @@ TEST_F(FileLoaderTest, ReplacingReloadStartFailureRestoresPriorData) {
 
 // Tearing the loader down mid REPLACING-reload discards the in-flight reload and
 // rolls back to the prior data (joinForShutdown captures was_replacing before
-// ctx_.reset(), whose guard dtor performs the rollback). Robust to timing: holds
-// whether the worker had not started, was mid-flight, or had just completed.
-TEST_F(FileLoaderTest, JoinForShutdownDuringReplacingReloadRestoresPriorData) {
-  ASSERT_TRUE(load());  // sensors.mock, 3 rows
-  const PJ::DatasetId id = datasetNamed("sensors.mock");
+// ctx_.reset(), whose guard dtor performs the rollback).
+//
+// The reload deliberately writes DIFFERENT rows than the load it replaces, and
+// parks after flushing them: the shutdown therefore lands with partial
+// replacement data committed in the engine, and a defect that COMMITTED that
+// data instead of rolling it back changes the values the dataset ends up with.
+// With identical content on both sides the two outcomes are indistinguishable.
+TEST_F(FileLoaderTest, JoinForShutdownDuringReplacingReloadRestoresThePriorContentNotTheReplacement) {
+  ASSERT_TRUE(installReloadProbe());
+  const QString path = makeMockFile(u"reloaded.reloadprobe"_s);
+  ASSERT_TRUE(loadAndWait(path, reloadProbeHints(uR"({"first_value":10,"rows":3})"_s)));
+  const PJ::DatasetId id = datasetNamed("reloaded.reloadprobe");
   ASSERT_NE(id, 0u);
-  ASSERT_EQ(singleTopicRowCount(id), 3);
+  const std::vector<double> original_values{11.0, 12.0, 13.0};
+  ASSERT_EQ(singleTopicValues(id), original_values);
+  const std::size_t catalog_items_before = catalog().items().size();
 
-  EXPECT_TRUE(loader_->loadFile(mock_path_, nullptr, skipDialogHints()));  // start the replacing reload
-  loader_->joinForShutdown();                                              // shut down before it finalizes
+  // Replacing reload of the same path, parked once its own (different) rows are
+  // in the engine.
+  ASSERT_TRUE(loader_->loadFile(path, nullptr, reloadProbeHints(uR"({"first_value":700,"rows":2,"park":true})"_s)));
+  ASSERT_TRUE(pj_app_test::pumpUntil([]() { return reloadProbeParked(); }))
+      << "the replacing reload never reached its rendezvous";
+
+  loader_->joinForShutdown();  // shut down before it finalizes
 
   EXPECT_FALSE(loader_->isBusy());
-  EXPECT_EQ(datasetNamed("sensors.mock"), id) << "DatasetId stable across shutdown-mid-reload";
-  EXPECT_EQ(singleTopicRowCount(id), 3) << "prior data restored after the shutdown rollback (not empty)";
+  EXPECT_EQ(datasetNamed("reloaded.reloadprobe"), id) << "DatasetId stable across shutdown-mid-reload";
+  EXPECT_EQ(singleTopicValues(id), original_values)
+      << "the shutdown must roll the reload back to the prior content, not commit the partial replacement";
+  EXPECT_EQ(catalog().items().size(), catalog_items_before) << "the curve tree comes back with the data";
 
-  // The loader recovers: a fresh load after shutdown still completes.
-  EXPECT_TRUE(load());
-  EXPECT_NE(datasetNamed("sensors.mock"), 0u);
+  // The loader recovers: a fresh load after shutdown still completes, and it is
+  // the one that finally replaces the content.
+  EXPECT_TRUE(loadAndWait(path, reloadProbeHints(uR"({"first_value":50,"rows":1})"_s)));
+  EXPECT_EQ(singleTopicValues(datasetNamed("reloaded.reloadprobe")), (std::vector<double>{51.0}));
 }
 
 // ---------------------------------------------------------------------------
@@ -1808,43 +2304,6 @@ TEST_F(FileLoaderTest, JoinForShutdownDuringReplacingReloadRestoresPriorData) {
 // ---------------------------------------------------------------------------
 
 namespace {
-
-// Records every loadFinished emission so tests can assert exactly-once and the
-// terminal payload (outcome / effective path / dataset ids) per ticket.
-struct LoadFinishedRecorder {
-  struct Event {
-    quint64 ticket;
-    PJ::LoadOutcome outcome;
-    QString path;
-    PJ::DatasetId dataset_id;
-    QVector<PJ::DatasetId> produced;
-  };
-
-  explicit LoadFinishedRecorder(PJ::FileLoader& loader) {
-    connection = QObject::connect(
-        &loader, &PJ::FileLoader::loadFinished, &loader,
-        [this](
-            quint64 ticket, PJ::LoadOutcome outcome, const QString& path, PJ::DatasetId dataset_id,
-            const QVector<PJ::DatasetId>& produced) {
-          events.push_back(
-              Event{
-                  .ticket = ticket, .outcome = outcome, .path = path, .dataset_id = dataset_id, .produced = produced});
-        });
-  }
-  ~LoadFinishedRecorder() {
-    QObject::disconnect(connection);
-  }
-  LoadFinishedRecorder(const LoadFinishedRecorder&) = delete;
-  LoadFinishedRecorder& operator=(const LoadFinishedRecorder&) = delete;
-
-  [[nodiscard]] std::size_t countForTicket(quint64 ticket) const {
-    return static_cast<std::size_t>(
-        std::count_if(events.begin(), events.end(), [ticket](const Event& e) { return e.ticket == ticket; }));
-  }
-
-  std::vector<Event> events;
-  QMetaObject::Connection connection;
-};
 
 // Deliver queued loadFinished terminals: two zero-timer loop passes, because a
 // terminal may itself be scheduled from another queued event (a worker's

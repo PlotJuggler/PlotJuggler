@@ -303,8 +303,11 @@ class FileLoader : public QObject {
   /// path-qualified workspace state — stamping the retiring dataset with `path`,
   /// which on a dataset "Replace" load is a DIFFERENT file than it was loaded
   /// from — before the old catalog item is hidden, then rebinds it after
-  /// fileLoaded exposes the reminted datasets.
-  void sourceReplacementAboutToCommit(const QString& path, DatasetId dataset_id);
+  /// fileLoaded exposes the reminted datasets. `ticket` is the arming load's
+  /// LoadRequestId: the shell keys the captured state to it so only THIS load's
+  /// terminal can disarm the capture — a path match alone would let a stale
+  /// same-path terminal from another (queued/cancelled) load kill a live one's.
+  void sourceReplacementAboutToCommit(quint64 ticket, const QString& path, DatasetId dataset_id);
 
   // `plugin_id` is the selected plugin's DISPLAY name (the historical value);
   // `plugin_manifest_id` is its stable embedded-manifest id — the durable
@@ -434,6 +437,16 @@ class FileLoader : public QObject {
   // Emit every pending terminal NOW, in FIFO order — the shutdown/destruction
   // exception to queued delivery.
   void flushPendingTerminals();
+  // End a fan-out entry's ingest on the next event-loop turn instead of here.
+  //
+  // The fan-out loop runs INSIDE the beginLoad coroutine, and an ingestEnded
+  // observer is allowed to react by calling joinForShutdown() — which resets
+  // begin_load_task_ and so destroys the frame the loop is executing in. Ending
+  // the ingest from a queued call keeps that re-entrancy off the coroutine's
+  // stack. The caller must drop its own record of the token FIRST: shutdown
+  // terminalizes whatever tokens it still finds (see joinForShutdown), and a
+  // token that is both queued here and still recorded would end twice.
+  void postIngestTerminal(IngestToken token, IngestOutcome outcome);
 
   // GUI: dequeue and begin the next load if idle. Emits queueDrained when the
   // queue empties with neither a suspended prologue nor a worker.
@@ -549,6 +562,10 @@ class FileLoader : public QObject {
   std::deque<PendingTerminal> pending_terminals_;
   // Cancellation request for the current worker load: 0=none, 1=keep, 2=discard.
   // Written by cancelCurrent/joinForShutdown (GUI), read by the worker.
+  // WHOLE-LOAD scope: it stops the fan-out entry in flight AND every entry
+  // after it. The title-bar strip and shutdown are its only writers. A fan-out
+  // ROW's stop uses the same encoding but a slot owned by that entry's loop
+  // iteration, so it can only ever stop the entry the user aimed at.
   std::atomic<int> cancel_mode_{0};
   // Minimum wall-clock between worker-side flush+notify cycles (test seam).
   int flush_throttle_ms_ = 50;

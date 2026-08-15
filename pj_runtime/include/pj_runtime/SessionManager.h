@@ -341,6 +341,14 @@ class SessionManager : public QObject {
   /// token. `stop` declares whether this producer can honour a discard at all —
   /// a kStopOnly ingest refuses requestCancel(keep_partial=false) outright rather
   /// than quietly downgrading it to a keep.
+  ///
+  /// The supersede terminal above is emitted synchronously, so an observer may
+  /// begin yet another ingest on this dataset from inside it. That successor
+  /// supersedes THIS call's entry before it has announced itself, and the
+  /// `ingestBegan` for the returned token is then suppressed — a began must never
+  /// arrive after the began of the token that replaced it. The returned token is
+  /// stale in that case: every later call carrying it no-ops, exactly as for any
+  /// superseded token.
   [[nodiscard]] IngestToken beginIngest(
       DatasetId dataset_id, QString label, quint64 total, bool cancellable, IngestCancelFn on_cancel,
       IngestStop stop = IngestStop::kKeepOrDiscard);
@@ -356,11 +364,18 @@ class SessionManager : public QObject {
   /// of the outcome passed here.
   void endIngest(IngestToken token, IngestOutcome outcome);
 
-  /// Request cancellation of an ingest. Returns true if a handler was invoked (the
-  /// ingest is still live and cancellable), false otherwise (unknown/stale token, or
-  /// ingest already ended). If true, the handler is invoked synchronously with
-  /// keep_partial; the ingest's terminal outcome will report kCancelled even if the
-  /// producer reports a different outcome (the cancellation intent wins).
+  /// Request cancellation of an ingest. Returns true if the ingest is stopping,
+  /// false when the request was refused (unknown/stale token, already ended, not
+  /// cancellable, or a discard asked of a kStopOnly producer). On the first
+  /// accepted request the handler is invoked synchronously with keep_partial and
+  /// the ingest's terminal reports kCancelled whatever the producer passes (the
+  /// cancellation intent wins).
+  ///
+  /// FIRST INTENT WINS: a request on an ingest that is ALREADY stopping returns
+  /// true without re-announcing the stop or re-running the handler — including
+  /// one made from inside ingestStopping, which would otherwise recurse. A second
+  /// click with the opposite keep_partial therefore cannot override the choice
+  /// the producer is already acting on.
   bool requestCancel(IngestToken token, bool keep_partial);
 
   [[nodiscard]] bool hasActiveIngests() const noexcept {

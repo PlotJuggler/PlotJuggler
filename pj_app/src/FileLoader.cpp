@@ -1542,14 +1542,16 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     }
   });
 
-  // Fan-out entry outcomes, declared here so the shared epilogue below the
-  // branch can route a user-discarded or fully-failed fan-out away from the
-  // success tail. The single-instance arm never touches them.
-  std::size_t completed = 0;
-  std::size_t failed = 0;
-  bool discarded = false;  // The stop was "Remove All" (mode 2): drop even completed entries.
-  bool stopped = false;    // A user stop (either mode) ended the fan-out loop early.
+  // Fan-out results, declared here so the shared epilogue below the branch can
+  // route the three dataset-less shapes — every row discarded, every entry
+  // failed, the whole load stopped — away from the success tail. The
+  // single-instance arm never touches them. What survived IS fanout_loaded_ids
+  // and what went wrong IS failed_labels; no parallel counters restate them.
   QStringList failed_labels;
+  // The whole-load stop that ended the fan-out early, in cancel_mode_'s encoding
+  // (0 none, 1 keep, 2 discard). Only the title-bar strip and shutdown write
+  // that scope, and it is set exactly where the loop breaks on it.
+  int whole_load_stop = 0;
 
   if (fanouts.size() == 1) {
     // --- Single-instance load: run the read loop on a worker thread, filling
@@ -1679,7 +1681,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     // the fanout create fresh datasets on the live engine. The handle bound to existing_primary_id above is never
     // start()ed here (fanout mints its own per-entry handles), so the dataset takes no data before its removal.
     if (replacing) {
-      emit sourceReplacementAboutToCommit(source_identity, existing_primary_id);
+      emit sourceReplacementAboutToCommit(ticket, source_identity, existing_primary_id);
     }
     if (replacing && catalog_.removeDataset(existing_primary_id)) {
       tombstoned_for_replace.push_back(existing_primary_id);
@@ -1688,9 +1690,10 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     // pj_datastore has no removeDataset, but an empty dataset has no committed topics so
     // CatalogModel::rebuildFromDatastore skips it (no phantom entry). Each fanout entry mints its own handle +
     // dataset + ingest_session. Continue-on-error per the user-confirmed policy: a bad entry does not lose the others.
-    // Outcomes per fanout entry. Kept keeps the entry's partial flush
-    // ("Cancel" — stop here but keep what was already parsed); Discarded
-    // throws it away. Both stop the outer loop.
+    // Outcome of ONE fanout entry. Kept keeps the entry's partial flush
+    // ("Cancel" — stop here but keep what was already parsed); Discarded throws
+    // it away. Whether the loop continues is a separate question, answered by
+    // the SCOPE of the stop (whole_load_stop), not by these.
     enum class EntryOutcome { kCompleted, kFailed, kKept, kDiscarded };
 
     const QString basename = QFileInfo(display_name).completeBaseName();
@@ -1717,7 +1720,6 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       if (!iter_td.has_value()) {
         qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
                                 << "]: createTimeDomain failed:" << QString::fromStdString(iter_td.error());
-        ++failed;
         failed_labels << iter_display;
         continue;
       }
@@ -1726,7 +1728,6 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       if (!iter_dataset_or.has_value()) {
         qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
                                 << "]: createDataset failed:" << QString::fromStdString(iter_dataset_or.error());
-        ++failed;
         failed_labels << iter_display;
         continue;
       }
@@ -1741,7 +1742,6 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       DataSourceHandle iter_handle(source_vtable, source_library_owner);
       if (!iter_handle.valid()) {
         qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx << "]: createHandle failed";
-        ++failed;
         failed_labels << iter_display;
         continue;
       }
@@ -1761,7 +1761,6 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       if (auto status = iter_ingest.registerServices(iter_registry); !status) {
         qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
                                 << "]: service registration failed:" << QString::fromStdString(status.error());
-        ++failed;
         failed_labels << iter_display;
         continue;
       }
@@ -1769,14 +1768,12 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       if (auto status = iter_handle.bind(iter_registry.view()); !status) {
         qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
                                 << "]: bind failed:" << QString::fromStdString(status.error());
-        ++failed;
         failed_labels << iter_display;
         continue;
       }
       if (auto status = iter_handle.loadConfig(cfg_i); !status) {
         qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
                                 << "]: loadConfig failed:" << QString::fromStdString(status.error());
-        ++failed;
         failed_labels << iter_display;
         continue;
       }
@@ -1784,20 +1781,36 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       uint64_t progress_total = 0;
       QElapsedTimer flush_clock;
       flush_clock.start();
-      iter_ingest.on_progress_start = [this, fanout_generation, &progress_total, iter_dataset_id, idx,
+      // THIS entry's row stop: 0 none, 1 keep, 2 discard. One slot per entry, so
+      // a click that lands after its entry retired — the terminal is delivered
+      // through the event loop, and the session still accepts a cancel queued
+      // ahead of it — writes into a slot nobody reads again. Shared ownership
+      // because the row's cancel handler outlives this iteration (it lives in
+      // the session's ingest entry until the terminal).
+      const auto entry_stop = std::make_shared<std::atomic<int>>(0);
+      iter_ingest.on_progress_start = [this, fanout_generation, &progress_total, iter_dataset_id, idx, entry_stop,
                                        fanout_count = fanouts.size()](
                                           std::string_view label, uint64_t total, bool cancellable) {
         progress_total = total;
         const QString title = QString::fromUtf8(label.data(), static_cast<int>(label.size()));
         QMetaObject::invokeMethod(
             this,
-            [this, fanout_generation, iter_dataset_id, title, total, cancellable, idx, fanout_count,
+            [this, fanout_generation, iter_dataset_id, title, total, cancellable, idx, fanout_count, entry_stop,
              determinate = total > 0]() {
               if (fanout_generation != load_generation_) {
                 return;
               }
-              auto cancel_handler = [this, fanout_generation](bool keep_partial) {
-                this->cancelCurrent(fanout_generation, keep_partial);
+              // A fan-out row stops ITS OWN entry: the siblings that already
+              // loaded keep their data and the entries after it still run.
+              // Whole-load stops stay with the title-bar strip and shutdown,
+              // which latch cancel_mode_ instead.
+              auto cancel_handler = [this, fanout_generation, iter_dataset_id, entry_stop](bool keep_partial) {
+                if (fanout_generation != load_generation_) {
+                  return;  // a stale row from a load that already moved on
+                }
+                qCInfo(lcFileLoader) << "[FileLoader] fanout: row stop on dataset" << iter_dataset_id << "keep_partial"
+                                     << keep_partial;
+                entry_stop->store(keep_partial ? 1 : 2);
               };
               const IngestToken token =
                   session_.beginIngest(iter_dataset_id, title, total, cancellable, std::move(cancel_handler));
@@ -1807,8 +1820,10 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
             Qt::QueuedConnection);
       };
       iter_ingest.on_progress_update = [this, fanout_generation, &iter_ingest, &flush_clock, &progress_total,
-                                        iter_dataset_id](uint64_t current) -> bool {
-        if (cancel_mode_.load() != 0) {
+                                        iter_dataset_id, entry_stop](uint64_t current) -> bool {
+        // Either scope stops THIS entry; they differ only in what happens after
+        // it (see the epilogue's cancel_action).
+        if (cancel_mode_.load() != 0 || entry_stop->load() != 0) {
           iter_ingest.requestStop();
           return false;
         }
@@ -1861,7 +1876,12 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       // importers commonly report a rejected progress update as start failure.
       // Treating that as a recoverable plugin error would incorrectly continue
       // into the next fanout entry.
-      const int cancel_action = cancel_mode_.load();
+      // Whole-load scope wins: a strip/shutdown stop ends the fan-out, while a
+      // row's stop is consumed here and the loop moves to the next entry.
+      const int whole_load_action = cancel_mode_.load();
+      const int entry_action = entry_stop->exchange(0);
+      const int cancel_action = whole_load_action != 0 ? whole_load_action : entry_action;
+      const bool stops_whole_load = whole_load_action != 0;
       EntryOutcome outcome = EntryOutcome::kCompleted;
       if (cancel_action == 2) {
         outcome = EntryOutcome::kDiscarded;
@@ -1887,34 +1907,28 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
         // Erase first so an ingestEnded observer that re-enters shutdown cannot
         // terminalize this token a second time.
         fanout_ingest_tokens_.erase(token_it);
-        session_.endIngest(token, ingest_outcome);
+        postIngestTerminal(token, ingest_outcome);
       }
 
-      switch (outcome) {
-        case EntryOutcome::kCompleted:
-          ++completed;
-          break;
-        case EntryOutcome::kFailed:
-          ++failed;
-          failed_labels << iter_display;
-          break;
-        case EntryOutcome::kKept:
-          ++completed;
-          stopped = true;
-          break;
-        case EntryOutcome::kDiscarded:
-          stopped = true;
-          discarded = true;
-          break;
+      if (outcome == EntryOutcome::kFailed) {
+        failed_labels << iter_display;
       }
-      if (stopped) {
-        qCInfo(lcFileLoader) << "[FileLoader] fanout: user stopped with cancellation mode" << cancel_action
-                             << "at entry" << (idx + 1) << "of" << fanouts.size();
+      if (cancel_action != 0) {
+        qCInfo(lcFileLoader) << "[FileLoader] fanout: stop with cancellation mode" << cancel_action << "at entry"
+                             << (idx + 1) << "of" << fanouts.size()
+                             << (stops_whole_load ? "(whole load)" : "(this row only)");
+      }
+      if (stops_whole_load) {
+        // A row discard drops only its own entry — which the cleanup loop below
+        // already does, since it never joined fanout_loaded_ids. A WHOLE-load
+        // stop is the one that ends the fan-out and, when it discards, drops
+        // even the entries that already completed.
+        whole_load_stop = whole_load_action;
         break;
       }
     }
-    qCInfo(lcFileLoader) << "[FileLoader] fanout complete:" << completed << "ok," << failed << "failed"
-                         << (failed > 0 ? failed_labels : QStringList{});
+    qCInfo(lcFileLoader) << "[FileLoader] fanout complete:" << fanout_loaded_ids.size() << "ok," << failed_labels.size()
+                         << "failed" << failed_labels;
     cancel_mode_.store(0);
 
     // "Remove All" (discard) drops the WHOLE fanout load, not just the in-flight
@@ -1925,7 +1939,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     // source-path / time-reference loops skip them. "Stop and Keep" (mode 1)
     // keeps them, so this arm is discard-only. TF is invalidated in the same
     // loop, so nothing extra is needed here.
-    if (discarded) {
+    if (whole_load_stop == 2) {
       fanout_loaded_ids.clear();
     }
 
@@ -1948,21 +1962,35 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     }
   }
 
-  // Past the last rollback point: the load committed in place (no staging swap).
-  // Free the ObjectStore topics, derived TF state, AND scalar engine storage of any
-  // datasets the fanout-reload fallback tombstoned. A fanout reload can't refill one
-  // dataset into N, so the old dataset is replaced by fresh ones and must be ERASED
-  // from the engine — not left as a shell a prefer_reuse layout replay could reattach
-  // to (#249's real-delete, fanout face). Deferred to here (not the tombstone site)
-  // because a mid-load failure rolls the tombstones back.
-  for (const DatasetId tombstoned_id : tombstoned_for_replace) {
-    // Already tombstoned above (catalog_.removeDataset(existing_primary_id));
-    // skip the redundant catalog call here.
-    removeCreatedDataset(tombstoned_id, /*evict_objects=*/true, /*remove_from_catalog=*/false);
+  // The fan-out produced nothing to keep. Leave the tombstones ALONE and take
+  // the rollback exits below: the scope guard restores the dataset this load
+  // was replacing, which is the whole point of tombstoning it instead of
+  // deleting it up front. Real-deleting before these checks would erase the
+  // user's existing dataset permanently on a discard or an all-failed fan-out —
+  // the two cases where nothing replaced it.
+  // What survived is the whole question: the load-wide discard, every entry
+  // failing and every row being thrown away one at a time all leave this list
+  // empty, and none of them may commit. (extractFanout never yields an empty
+  // list — every rejection falls back to a single-instance config — so an empty
+  // list here always means entries ran and none of them kept anything.)
+  const bool nothing_to_commit = fanout_loaded_ids.empty();
+  if (!nothing_to_commit) {
+    // Past the last rollback point: the load committed in place (no staging swap).
+    // Free the ObjectStore topics, derived TF state, AND scalar engine storage of any
+    // datasets the fanout-reload fallback tombstoned. A fanout reload can't refill one
+    // dataset into N, so the old dataset is replaced by fresh ones and must be ERASED
+    // from the engine — not left as a shell a prefer_reuse layout replay could reattach
+    // to (#249's real-delete, fanout face). Deferred to here (not the tombstone site)
+    // because a mid-load failure rolls the tombstones back.
+    for (const DatasetId tombstoned_id : tombstoned_for_replace) {
+      // Already tombstoned above (catalog_.removeDataset(existing_primary_id));
+      // skip the redundant catalog call here.
+      removeCreatedDataset(tombstoned_id, /*evict_objects=*/true, /*remove_from_catalog=*/false);
+    }
+    tombstoned_for_replace.clear();
+    rollback_armed = false;
+    fanout_committed = true;
   }
-  tombstoned_for_replace.clear();
-  rollback_armed = false;
-  fanout_committed = true;
 
   catalog_.rebuildFromDatastore();  // reload: same keys ⇒ no spurious itemsRemoved
 
@@ -2012,20 +2040,26 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     }
   }
 
-  if (discarded) {
-    // "Remove All": every dataset of this load was just deleted above. Surface
-    // it as a discarded load, mirroring the single-instance discard — recording
-    // it (recents, loadedSources, layout data-source entries) or logging a
-    // success would resurrect a source the user explicitly removed.
-    emitLoadFinished(ticket, LoadOutcome::kCancelled, source_identity, 0);
-    emit fileLoadFailed(source_identity, tr("Import discarded"));
-    co_return;
-  }
-  if (completed == 0 && failed > 0) {
-    // Every fan-out entry failed: report the aggregate as a failure instead of
-    // announcing a dataset-less success.
-    const QString reason =
-        tr("All %1 entries of '%2' failed to load:\n%3").arg(failed).arg(display_name, failed_labels.join(u"\n"_s));
+  if (nothing_to_commit) {
+    // A replacing fan-out restores the dataset it was replacing on the way out
+    // (rollback guard, still armed): a load that kept nothing must not destroy
+    // the data the user already had.
+    rollback_tombstones();
+    if (whole_load_stop == 2 || failed_labels.isEmpty()) {
+      // "Remove All", or every row discarded by hand: nothing went wrong, the
+      // user threw this load away. Surface it as a discarded load, mirroring the
+      // single-instance discard — recording it (recents, loadedSources, layout
+      // data-source entries) or logging a success would resurrect a source the
+      // user explicitly removed.
+      emitLoadFinished(ticket, LoadOutcome::kCancelled, source_identity, 0);
+      emit fileLoadFailed(source_identity, tr("Import discarded"));
+      co_return;
+    }
+    // Entries failed and nothing survived them: report the aggregate as a
+    // failure instead of announcing a dataset-less success.
+    const QString reason = tr("All %1 entries of '%2' failed to load:\n%3")
+                               .arg(failed_labels.size())
+                               .arg(display_name, failed_labels.join(u"\n"_s));
     emitLoadFinished(ticket, LoadOutcome::kFailed, source_identity, 0);
     reportLoadWarning(dialog_parent, reason);
     emit fileLoadFailed(source_identity, reason);
@@ -2039,7 +2073,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   // treat as this source's principal dataset.
   const DatasetId fanout_primary_id = fanout_loaded_ids.empty() ? 0 : fanout_loaded_ids.front();
   emitLoadFinished(
-      ticket, stopped ? LoadOutcome::kCancelled : LoadOutcome::kLoaded, source_identity, fanout_primary_id,
+      ticket, whole_load_stop != 0 ? LoadOutcome::kCancelled : LoadOutcome::kLoaded, source_identity, fanout_primary_id,
       QVector<DatasetId>(fanout_loaded_ids.begin(), fanout_loaded_ids.end()));
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
   logSuccessfulLoad(engine, catalog_, source_identity, source_name, fanout_loaded_ids);
@@ -2577,6 +2611,11 @@ void FileLoader::deliverPendingTerminal() {
   const PendingTerminal terminal = std::move(pending_terminals_.front());
   pending_terminals_.pop_front();
   emit loadFinished(terminal.ticket, terminal.outcome, terminal.effective_path, terminal.dataset_id, terminal.produced);
+}
+
+void FileLoader::postIngestTerminal(IngestToken token, IngestOutcome outcome) {
+  QMetaObject::invokeMethod(
+      this, [this, token, outcome]() { session_.endIngest(token, outcome); }, Qt::QueuedConnection);
 }
 
 void FileLoader::flushPendingTerminals() {

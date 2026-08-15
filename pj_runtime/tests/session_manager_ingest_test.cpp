@@ -4,6 +4,8 @@
 #include <gtest/gtest.h>
 
 #include <QSignalSpy>
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "pj_datastore/engine.hpp"
@@ -215,6 +217,227 @@ TEST_F(SessionManagerIngestCancelTest, ProgressKeepsBeingReportedAfterAStopIsReq
   ASSERT_EQ(progress_spy.count(), 1) << "a stop request must not silence the producer's real progress";
   EXPECT_EQ(progress_spy[0][1].toULongLong(), 60);
   EXPECT_EQ(manager_.activeIngests().at(dataset_id).current, 60U) << "the recorded state must track it too";
+}
+
+// requestCancel emits ingestStopping synchronously, and an observer is entitled
+// to terminalize the ingest from inside it (the row's stop is exactly the moment
+// a producer that stops instantly reports its end). That erases the map element
+// the call was holding, so everything after the emit must already have what it
+// needs — including the producer's cancel handler.
+TEST_F(SessionManagerIngestCancelTest, CancelSurvivesAnObserverEndingTheIngestDuringStopping) {
+  const DatasetId dataset_id = makeDataset();
+  bool handler_ran = false;
+  const IngestToken token = manager_.beginIngest(
+      dataset_id, "label", 100, /*cancellable=*/true, [&handler_ran](bool) { handler_ran = true; });
+
+  int ended = 0;
+  QObject::connect(&manager_, &SessionManager::ingestStopping, &manager_, [&](IngestToken stopping, bool) {
+    manager_.endIngest(stopping, IngestOutcome::kCompleted);  // re-entrant terminal
+  });
+  QObject::connect(&manager_, &SessionManager::ingestEnded, &manager_, [&](IngestToken, IngestOutcome) { ++ended; });
+
+  EXPECT_TRUE(manager_.requestCancel(token, /*keep_partial=*/true));
+  EXPECT_EQ(ended, 1) << "the observer's terminal must land exactly once";
+  EXPECT_TRUE(handler_ran) << "the producer's handler must still run after the entry is gone";
+  EXPECT_FALSE(manager_.hasActiveIngests());
+}
+
+// Same signal, the other re-entrant move: an observer restarts the dataset.
+// The restart supersedes the entry mid-call, so the tail must not touch it.
+TEST_F(SessionManagerIngestCancelTest, CancelSurvivesAnObserverRestartingTheIngestDuringStopping) {
+  const DatasetId dataset_id = makeDataset();
+  const IngestToken token = manager_.beginIngest(dataset_id, "first", 100, /*cancellable=*/true, [](bool) {});
+
+  bool restarted = false;
+  QObject::connect(&manager_, &SessionManager::ingestStopping, &manager_, [&](IngestToken, bool) {
+    if (!restarted) {
+      restarted = true;
+      (void)manager_.beginIngest(dataset_id, "second", 100, /*cancellable=*/true, [](bool) {});
+    }
+  });
+
+  EXPECT_TRUE(manager_.requestCancel(token, /*keep_partial=*/true));
+  ASSERT_TRUE(restarted);
+  EXPECT_TRUE(manager_.hasActiveIngests()) << "the restart's ingest must survive the cancel it interrupted";
+  EXPECT_EQ(manager_.activeIngests().at(dataset_id).label, QStringLiteral("second"));
+}
+
+// The supersede terminal is emitted synchronously from beginIngest. An observer
+// reading the session back during it must see this dataset's lifecycle as
+// continuous — the replacement already installed — not as a gap.
+TEST_F(SessionManagerIngestCancelTest, SupersededTerminalObserverSeesTheReplacementAlreadyLive) {
+  const DatasetId dataset_id = makeDataset();
+  const IngestToken first = manager_.beginIngest(dataset_id, "first", 100, /*cancellable=*/false, {});
+
+  bool observed_active = false;
+  QString observed_label;
+  IngestToken observed_token{};
+  QObject::connect(&manager_, &SessionManager::ingestEnded, &manager_, [&](IngestToken ended, IngestOutcome) {
+    observed_token = ended;
+    observed_active = manager_.ingestActive(dataset_id);
+    const auto live = manager_.activeIngests();
+    observed_label = live.count(dataset_id) != 0 ? live.at(dataset_id).label : QString();
+  });
+
+  const IngestToken second = manager_.beginIngest(dataset_id, "second", 100, /*cancellable=*/false, {});
+
+  EXPECT_EQ(observed_token.id, first.id) << "the terminal names the run that was superseded";
+  EXPECT_TRUE(observed_active) << "the dataset must never look idle between the two runs";
+  EXPECT_EQ(observed_label, QStringLiteral("second"));
+  // The stale token still resolves to nothing, so late traffic on it no-ops.
+  manager_.updateIngest(first, 10, 100);
+  EXPECT_EQ(manager_.activeIngests().at(dataset_id).current, 0U);
+  EXPECT_EQ(manager_.activeIngests().at(dataset_id).token.id, second.id);
+}
+
+// The supersede terminal is synchronous, so an observer can begin a THIRD ingest
+// on the dataset from inside it. That successor supersedes the entry the outer
+// call installed but had not announced yet — and announcing it afterwards would
+// put a began AFTER the began of the token that replaced it. Every observer keyed
+// by dataset would then bind its row to a token that is already dead.
+TEST_F(SessionManagerIngestCancelTest, SupersededBeginSuppressesItsOwnStaleBegan) {
+  const DatasetId dataset_id = makeDataset();
+
+  std::vector<std::string> events;
+  QObject::connect(&manager_, &SessionManager::ingestBegan, &manager_, [&events](IngestToken token, const QString&) {
+    events.push_back("began:" + std::to_string(token.id));
+  });
+  QObject::connect(&manager_, &SessionManager::ingestEnded, &manager_, [&events](IngestToken token, IngestOutcome) {
+    events.push_back("ended:" + std::to_string(token.id));
+  });
+
+  const IngestToken first = manager_.beginIngest(dataset_id, "first", 100, /*cancellable=*/false, {});
+
+  // The observer of first's terminal restarts the dataset, superseding the run
+  // that is emitting that very terminal.
+  IngestToken third{};
+  bool restarted = false;
+  QObject::connect(&manager_, &SessionManager::ingestEnded, &manager_, [&](IngestToken, IngestOutcome) {
+    if (!restarted) {
+      restarted = true;
+      third = manager_.beginIngest(dataset_id, "third", 100, /*cancellable=*/false, {});
+    }
+  });
+
+  const IngestToken second = manager_.beginIngest(dataset_id, "second", 100, /*cancellable=*/false, {});
+  ASSERT_TRUE(restarted);
+
+  const std::vector<std::string> expected{
+      "began:" + std::to_string(first.id), "ended:" + std::to_string(first.id), "ended:" + std::to_string(second.id),
+      "began:" + std::to_string(third.id)};
+  EXPECT_EQ(events, expected) << "a superseded run must not announce itself after its successor did";
+  EXPECT_EQ(manager_.activeIngests().at(dataset_id).token.id, third.id);
+  // The suppressed token is stale like any other: late traffic on it no-ops.
+  manager_.endIngest(second, IngestOutcome::kCompleted);
+  EXPECT_EQ(events.size(), expected.size());
+}
+
+// A kStopOnly producer (the toolbox ingest ABI, which has no host-side rollback)
+// can stop but cannot throw away what arrived. The refusal is the whole point of
+// the declaration: silently downgrading a discard to a keep would leave the user
+// with data they asked to be rid of, and it must not even count as a stop — the
+// producer keeps running and its own outcome still stands.
+TEST_F(SessionManagerIngestCancelTest, StopOnlyIngestRefusesADiscardAndKeepsRunning) {
+  const DatasetId dataset_id = makeDataset();
+  QSignalSpy began_spy(&manager_, &SessionManager::ingestBegan);
+  QSignalSpy stopping_spy(&manager_, &SessionManager::ingestStopping);
+  QSignalSpy end_spy(&manager_, &SessionManager::ingestEnded);
+
+  bool handler_ran = false;
+  const IngestToken token = manager_.beginIngest(
+      dataset_id, "label", 100, /*cancellable=*/true, [&handler_ran](bool) { handler_ran = true; },
+      IngestStop::kStopOnly);
+
+  ASSERT_EQ(began_spy.count(), 1);
+  EXPECT_FALSE(began_spy[0][4].toBool()) << "the row must be told the bin is unavailable";
+  EXPECT_FALSE(manager_.activeIngests().at(dataset_id).discardable);
+
+  EXPECT_FALSE(manager_.requestCancel(token, /*keep_partial=*/false)) << "a discard must be refused outright";
+  EXPECT_FALSE(handler_ran) << "the producer must not be asked to stop by a refused request";
+  EXPECT_EQ(stopping_spy.count(), 0) << "a refused request must not acknowledge a stop";
+  EXPECT_TRUE(manager_.ingestActive(dataset_id));
+
+  // No cancellation intent was recorded, so the producer's own outcome stands.
+  manager_.endIngest(token, IngestOutcome::kCompleted);
+  ASSERT_EQ(end_spy.count(), 1);
+  EXPECT_EQ(end_spy[0][1].value<IngestOutcome>(), IngestOutcome::kCompleted);
+}
+
+// The other half of the contract: kStopOnly still STOPS. Only the discard is
+// refused, so the ✕ works exactly as it does on any other cancellable row.
+TEST_F(SessionManagerIngestCancelTest, StopOnlyIngestAcceptsAKeep) {
+  const DatasetId dataset_id = makeDataset();
+  QSignalSpy stopping_spy(&manager_, &SessionManager::ingestStopping);
+  QSignalSpy end_spy(&manager_, &SessionManager::ingestEnded);
+
+  std::optional<bool> handler_keep_partial;
+  const IngestToken token = manager_.beginIngest(
+      dataset_id, "label", 100, /*cancellable=*/true,
+      [&handler_keep_partial](bool keep_partial) { handler_keep_partial = keep_partial; }, IngestStop::kStopOnly);
+
+  EXPECT_TRUE(manager_.requestCancel(token, /*keep_partial=*/true));
+  ASSERT_TRUE(handler_keep_partial.has_value());
+  EXPECT_TRUE(*handler_keep_partial);
+  ASSERT_EQ(stopping_spy.count(), 1);
+  EXPECT_TRUE(stopping_spy[0][1].toBool());
+
+  manager_.endIngest(token, IngestOutcome::kCompleted);
+  ASSERT_EQ(end_spy.count(), 1);
+  EXPECT_EQ(end_spy[0][1].value<IngestOutcome>(), IngestOutcome::kCancelled) << "cancellation intent wins the terminal";
+}
+
+// A non-cancellable ingest has no stop at all, so kStopOnly's "keep is fine"
+// half must not be read as permission to stop it.
+TEST_F(SessionManagerIngestCancelTest, NonCancellableStopOnlyIngestRefusesEvenAKeep) {
+  const DatasetId dataset_id = makeDataset();
+  const IngestToken token =
+      manager_.beginIngest(dataset_id, "label", 100, /*cancellable=*/false, {}, IngestStop::kStopOnly);
+
+  EXPECT_FALSE(manager_.requestCancel(token, /*keep_partial=*/true));
+  EXPECT_FALSE(manager_.requestCancel(token, /*keep_partial=*/false));
+  EXPECT_TRUE(manager_.ingestActive(dataset_id));
+}
+
+// ingestStopping is emitted synchronously and an observer may react by asking to
+// stop again (a second click, a coordinator forwarding the stop). Without the
+// already-requested gate that request recurses through the emit, re-announcing
+// the stop and re-running the producer's handler on every turn.
+TEST_F(SessionManagerIngestCancelTest, ReentrantStopRequestDoesNotRecurseOrReannounce) {
+  const DatasetId dataset_id = makeDataset();
+  int handler_calls = 0;
+  const IngestToken token =
+      manager_.beginIngest(dataset_id, "label", 100, /*cancellable=*/true, [&handler_calls](bool) { ++handler_calls; });
+
+  int stopping_events = 0;
+  QObject::connect(&manager_, &SessionManager::ingestStopping, &manager_, [&](IngestToken stopping, bool) {
+    ++stopping_events;
+    if (stopping_events < 5) {  // bounded: an ungated re-entry would run away
+      (void)manager_.requestCancel(stopping, /*keep_partial=*/true);
+    }
+  });
+
+  EXPECT_TRUE(manager_.requestCancel(token, /*keep_partial=*/true));
+  EXPECT_EQ(stopping_events, 1) << "a re-entrant stop request must not re-announce the stop";
+  EXPECT_EQ(handler_calls, 1) << "the producer must be asked to stop exactly once";
+}
+
+// The second click cannot overrule the first. A stop already being acted on is
+// reported as accepted, but nothing about it is re-run: the producer would
+// otherwise receive a keep_partial contradicting the one it is already honouring.
+TEST_F(SessionManagerIngestCancelTest, SecondStopRequestCannotFlipTheRecordedChoice) {
+  const DatasetId dataset_id = makeDataset();
+  std::vector<bool> handler_keep_partial;
+  const IngestToken token = manager_.beginIngest(
+      dataset_id, "label", 100, /*cancellable=*/true,
+      [&handler_keep_partial](bool keep_partial) { handler_keep_partial.push_back(keep_partial); });
+  QSignalSpy stopping_spy(&manager_, &SessionManager::ingestStopping);
+
+  ASSERT_TRUE(manager_.requestCancel(token, /*keep_partial=*/true));
+  EXPECT_TRUE(manager_.requestCancel(token, /*keep_partial=*/false)) << "the stop already accepted still stands";
+
+  ASSERT_EQ(handler_keep_partial.size(), 1u) << "the producer must not be handed a second, contradicting choice";
+  EXPECT_TRUE(handler_keep_partial.front());
+  EXPECT_EQ(stopping_spy.count(), 1);
 }
 
 TEST_F(SessionManagerIngestCancelTest, MonotonicTokenIds) {

@@ -311,6 +311,50 @@ TEST_F(IngestProgressControllerTest, CancelledRetiresImmediatelyWithoutLinger) {
   EXPECT_EQ(timers_.size(), 0) << "no linger timer may be armed for a cancellation";
 }
 
+// The session announces a superseded run's terminal synchronously, and an
+// observer may restart the dataset from inside it. What must survive here is
+// exactly the run that is actually live: a began arriving after its successor's
+// retires the live row (same dataset) and leaves an orphan nothing will retire.
+TEST_F(IngestProgressControllerTest, ReentrantRestartLeavesOnlyTheSurvivingRow) {
+  (void)session_->beginIngest(DatasetId(1), "first", 100, false, [](bool) {});
+
+  IngestToken third{};
+  bool restarted = false;
+  QObject::connect(session_.get(), &SessionManager::ingestEnded, session_.get(), [&](IngestToken, IngestOutcome) {
+    if (!restarted) {
+      restarted = true;
+      third = session_->beginIngest(DatasetId(1), "third", 100, false, [](bool) {});
+    }
+  });
+
+  const IngestToken second = session_->beginIngest(DatasetId(1), "second", 100, false, [](bool) {});
+  ASSERT_TRUE(restarted);
+
+  ASSERT_EQ(last_progress_.size(), 1) << "one dataset, one row";
+  EXPECT_TRUE(last_progress_.contains(third.id)) << "the live run lost its row";
+  EXPECT_FALSE(last_progress_.contains(second.id)) << "an orphan row for a run that is already over";
+  EXPECT_EQ(last_progress_[third.id].display_name, QStringLiteral("third"));
+}
+
+// A kStopOnly producer's row must SAY it cannot discard: the view greys the bin
+// from this flag, and the alternative — an enabled bin whose click the runtime
+// then refuses — offers the user an action that silently does nothing.
+TEST_F(IngestProgressControllerTest, StopOnlyIngestPaintsALiveStopAndAnInertDiscard) {
+  auto token = session_->beginIngest(DatasetId(1), "Importing", 100, true, [](bool) {}, IngestStop::kStopOnly);
+  const auto row_key = last_progress_.begin().key();
+  EXPECT_TRUE(last_progress_[row_key].cancellable) << "the row must still offer a stop";
+  EXPECT_FALSE(last_progress_[row_key].discardable) << "the bin must be presented as unavailable";
+
+  // The refused click leaves the row exactly as it was: no stop was accepted,
+  // so acknowledging one would be a lie about a load that is still running.
+  EXPECT_FALSE(session_->requestCancel(token, /*keep_partial=*/false));
+  EXPECT_EQ(last_progress_[row_key].state, CurveTreeView::DatasetProgress::State::kLoading);
+
+  // The ✕ works: kStopOnly restricts the choice, not the stop itself.
+  EXPECT_TRUE(session_->requestCancel(token, /*keep_partial=*/true));
+  EXPECT_EQ(last_progress_[row_key].state, CurveTreeView::DatasetProgress::State::kStopping);
+}
+
 // The row is named after the DATASET, not the producer's progress title, and
 // keeps that name once adopted — a discard deletes the dataset while the row is
 // still on screen, and a row that renames itself mid-flight reads as a

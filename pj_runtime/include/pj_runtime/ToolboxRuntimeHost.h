@@ -141,6 +141,14 @@ class ToolboxRuntimeHost {
   // host-side rollback, so there is no keep/discard choice on this path.
   void requestStopActiveIngests();
 
+  /// Cooperative stop for ONE dataset's ingest context, leaving every other
+  /// context this host owns running. A toolbox panel commonly imports several
+  /// datasets at once, and a stop expressed on one dataset's row must not end
+  /// its siblings. Returns false when this host has no live context for
+  /// `dataset_id` (already released, or never created). Keep-partial semantics,
+  /// as requestStopActiveIngests: the ABI has no host-side rollback.
+  bool requestStopIngestForDataset(DatasetId dataset_id);
+
   // Minimum wall-clock between the flush+on_ingest_progress ticks driven by a
   // plugin's progress_update calls (test seam; production default 50 ms).
   // Plain int read by the ingest thread: call only BEFORE any ingest begins.

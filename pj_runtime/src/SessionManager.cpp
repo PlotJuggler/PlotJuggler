@@ -541,6 +541,7 @@ IngestToken SessionManager::beginIngest(
   // Mint a new monotonic id (never 0, which is reserved for invalid/stale).
   const IngestId new_id = next_ingest_id_++;
   const IngestToken token{new_id, dataset_id};
+  const bool discardable = stop == IngestStop::kKeepOrDiscard;
 
   // A restart supersedes whatever this dataset was already running. Report that
   // as a real terminal instead of dropping the entry silently: kCancelled is
@@ -548,27 +549,45 @@ IngestToken SessionManager::beginIngest(
   // a cancelled ingest. Without it each observer would have to re-derive the
   // supersede rule from the next ingestBegan — and anything it had bound to the
   // old token (a strip owner, a row) would leak until it did.
-  //
-  // Erase BEFORE emitting: an observer that reads back the session during its
-  // terminal must see the dataset between ingests, not a corpse.
+  IngestToken superseded_token{};
   if (const auto superseded = active_ingests_.find(dataset_id); superseded != active_ingests_.end()) {
-    const IngestToken superseded_token{superseded->second.id, dataset_id};
-    active_ingests_.erase(superseded);
+    superseded_token = IngestToken{superseded->second.id, dataset_id};
+  }
+
+  // Install the replacement FIRST, then report the terminal. The emit below is
+  // synchronous and re-entrant: an observer that calls back in (activeIngests,
+  // ingestActive, even another beginIngest) must find this dataset's lifecycle
+  // continuous rather than momentarily absent. The superseded token is already
+  // stale by then — liveEntry matches on the id — so a late update/end/cancel
+  // carrying it still no-ops.
+  active_ingests_.insert_or_assign(
+      dataset_id, ActiveIngestEntry{
+                      new_id, label, /*current=*/0, total, cancellable, discardable,
+                      /*cancel_requested=*/false, /*cancel_requested_ms=*/0, std::move(on_cancel)});
+  if (superseded_token.id != 0) {
     emit ingestEnded(superseded_token, IngestOutcome::kCancelled);
   }
 
-  active_ingests_.insert_or_assign(
-      dataset_id, ActiveIngestEntry{
-                      new_id, std::move(label), /*current=*/0, total, cancellable,
-                      /*discardable=*/stop == IngestStop::kKeepOrDiscard,
-                      /*cancel_requested=*/false, /*cancel_requested_ms=*/0, std::move(on_cancel)});
+  // The terminal above is synchronous and re-entrant: an observer may have begun
+  // ANOTHER ingest on this dataset from inside it — which superseded the entry
+  // installed above and already reported ITS terminal. Announcing this began now
+  // would arrive after the successor's, and every observer keyed by dataset would
+  // bind its row to a token that is already dead — so this token faces the same
+  // staleness oracle as every other call. Suppressing is consistent rather than
+  // lossy: a token whose
+  // began never went out has no observer state to retire, and the nested call
+  // already reported the whole (empty) lifecycle it did have.
+  if (liveEntry(token) == nullptr) {
+    qCInfo(lcCancel) << "ingest" << new_id << "on dataset" << dataset_id
+                     << "was superseded from inside its own supersede terminal; its began is suppressed";
+    return token;
+  }
 
   // Deliberately no data publication here: begin announces a lifecycle, it does
   // not commit rows. Publishing would make the catalog rebuild before the
   // loader's own commit seam, and a dataset with no row yet is served by the
   // controller's ghost row until its first flush lands.
-  const ActiveIngestEntry& entry = active_ingests_.at(dataset_id);
-  emit ingestBegan(token, entry.label, total, entry.cancellable, entry.discardable);
+  emit ingestBegan(token, label, total, cancellable, discardable);
   return token;
 }
 
@@ -636,11 +655,30 @@ bool SessionManager::requestCancel(IngestToken token, bool keep_partial) {
     return false;
   }
 
+  // FIRST INTENT WINS, the same doctrine the terminal follows. Without this gate
+  // an ingestStopping observer that stops the ingest again recurses through the
+  // synchronous emit below, and a second click with the opposite keep_partial
+  // would re-run the producer's handler with a choice contradicting the one it
+  // already acted on. Report the acceptance that already stands.
+  if (entry->cancel_requested) {
+    qCInfo(lcCancel) << "requestCancel ignored: ingest" << token.id << "is already stopping";
+    return true;
+  }
+
   // Record cancellation intent so the terminal outcome reports kCancelled.
   entry->cancel_requested = true;
   entry->cancel_requested_ms = QDateTime::currentMSecsSinceEpoch();
   qCInfo(lcCancel) << "requestCancel accepted: ingest" << token.id << "dataset" << token.dataset_id << "keep_partial"
                    << keep_partial;
+
+  // Snapshot what the rest of this call needs BEFORE the emit below. That emit
+  // is synchronous, and an observer is allowed to terminalize (endIngest) or
+  // restart (beginIngest) this dataset from inside it — either erases the map
+  // element `entry` points at, and everything after would be reading freed
+  // memory. The copy also keeps the producer's handler alive across its own
+  // call, which normally ends the ingest and destroys the stored std::function.
+  const IngestCancelFn on_cancel = entry->on_cancel;
+  entry = nullptr;  // anything past the emit must go through liveEntry() again
 
   // Announce BEFORE running the producer's handler: the acknowledgement must not
   // be hostage to how long the producer takes to notice, and every stop is
@@ -657,12 +695,7 @@ bool SessionManager::requestCancel(IngestToken token, bool keep_partial) {
     }
   });
 
-  // Invoke the producer's cancel handler through a LOCAL COPY, never through the
-  // map slot. Stopping a load normally means reporting its terminal, and
-  // endIngest erases this very entry — which would destroy the std::function
-  // mid-call and leave the rest of the handler running on a freed closure. The
-  // copy keeps it alive until it returns.
-  if (const IngestCancelFn on_cancel = entry->on_cancel; on_cancel) {
+  if (on_cancel) {
     QElapsedTimer handler_timer;
     handler_timer.start();
     on_cancel(keep_partial);

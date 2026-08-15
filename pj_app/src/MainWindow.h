@@ -654,6 +654,10 @@ class MainWindow : public QMainWindow {
   struct PendingSourceReplacement {
     CapturedWorkspace workspace;
     QString path;
+    // The arming load's LoadRequestId. The disarm compares tickets, not paths:
+    // loadFinished is queued, so a stale same-path terminal from another load
+    // could otherwise kill a live load's capture.
+    quint64 ticket = 0;
   };
 
   struct TimelineChromeState {

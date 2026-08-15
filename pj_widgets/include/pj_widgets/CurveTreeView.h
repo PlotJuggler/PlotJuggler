@@ -194,12 +194,24 @@ class CurveTreeView : public QTreeWidget {
   // empty hash clears every progress mark. Entries with no mapped node become
   // top-level progress-only ghost rows: they use DatasetProgress::display_name,
   // carry no catalog key, and are neither selectable nor draggable.
+  //
+  // A decorated row is also exempt from the active filter for as long as it
+  // carries progress — see applyFilter.
   void setDatasetProgress(const QHash<quint64, DatasetProgress>& by_row_key);
   // Associates a normalized catalog tree path (dataset/topic/field, with topic
   // and field '.' separators normalized to '/') with the opaque row key used by
   // setDatasetProgress(). Call this before adding the corresponding dataset so
-  // its first inserted row can replace any ghost immediately. A dataset may be
-  // associated with multiple paths when it appears in multiple views.
+  // its first inserted row can replace any ghost immediately.
+  //
+  // The mapping is one-to-one in BOTH directions, and the last registration
+  // wins. A key names one path because a dataset's path changes under a stable
+  // key (a sibling's removal relabels "foo (2)" back to "foo"), and a leftover
+  // path would let the key decorate — and take the stop click of — another
+  // dataset's row. A path names one key because a row carries ONE decoration and
+  // ONE click target: when a reload's ingest resolves to the path a finishing
+  // one still holds, the newcomer takes the real row and the key it displaces
+  // falls back to a ghost, rather than the two sharing a row and leaving the
+  // winner to hash order.
   void setDatasetRowKey(const QString& dataset_tree_path, quint64 row_key);
   // Full-set replace of the topics whose streaming is user-forced, each named
   // by its topic tree-path (dataset/topic, '.'→'/' — see treePathFromCurvePath
@@ -219,6 +231,12 @@ class CurveTreeView : public QTreeWidget {
   // in both the hierarchical and show-topics views. A promotion to a single
   // unnamed field (no sub-path) reveals nothing to expand and is a no-op.
   void requestExpansionWhenPromoted(const QString& tree_path);
+  // Hides every row that does not match `filter` (space-separated tokens, all of
+  // which must appear, case-insensitive), ANDed with the kind filter below. A
+  // row showing load progress is exempt: it reports work happening right now and
+  // carries the affordances that stop it, so filtering it away would take the
+  // stop button with it — and a ghost row matches no text at all. The exemption
+  // lasts exactly as long as the decoration does.
   void applyFilter(const QString& filter);
   // Restrict which topic KINDS the tree shows, ANDed with the text filter.
   // Classification is per TOPIC and governs the topic's whole subtree: a Scene2D
@@ -425,14 +443,22 @@ class CurveTreeView : public QTreeWidget {
   QTreeWidgetItem* findTopicNode(const QString& topic_path);
   // Re-stamps kForcedRole from forced_topic_paths_ (clear-all then set).
   void applyForcedTopicMarks();
-  // Re-stamps retained dataset progress on dataset nodes and recreates ghosts
-  // for entries whose mapped tree paths are absent. The FULL pass: use it only
-  // when which rows carry progress (or the tree itself) changed.
-  void applyDatasetProgress();
-  // Fraction-only counterpart: re-stamps the values of an UNCHANGED row set
-  // through progress_row_cache_, touching only those rows. No ghost teardown and
-  // no re-sort, which a ~20 Hz load tick must not pay for. Falls back to the
-  // full pass on a cache miss.
+  // The FULL progress pass, in four steps that callers depend on as one
+  // contract: STAMP the retained progress onto the dataset rows that resolve,
+  // BUILD a ghost for every entry whose tree path has no row (sorting them into
+  // place, since a ghost's label is its sort key), RE-APPLY the filter (a row
+  // that just gained or lost its decoration also gains or loses the filter
+  // exemption — and mutateStructure relies on this as its one post-mutation
+  // refilter), then REPAINT every row it touched.
+  //
+  // Use it whenever the row identities or the tree itself changed;
+  // refreshDatasetProgressValues is the per-tick counterpart.
+  void rebuildProgressDecorations();
+  // Fraction-only counterpart: re-stamps the VALUES of rows whose identities (the
+  // key set and each row's display name) are unchanged, through
+  // progress_row_cache_ and touching only those rows. No ghost teardown, no
+  // re-label and no re-sort, which a ~20 Hz load tick must not pay for. Falls
+  // back to the full pass on a cache miss.
   void refreshDatasetProgressValues();
   // Drops a row's selection while it shows live progress; shared by both passes.
   void deselectProgressRow(QTreeWidgetItem* row, DatasetProgress::State state);
@@ -575,8 +601,12 @@ class CurveTreeView : public QTreeWidget {
   QSet<QString> forced_topic_paths_;
   // Full progress set retained across clearCurves() + re-add rebuilds.
   QHash<quint64, DatasetProgress> dataset_progress_;
-  // Catalog tree paths associated with the opaque dataset row keys.
-  QHash<QString, quint64> dataset_tree_path_to_row_key_;
+  // The catalog tree path each live row key is filed under — the direction every
+  // lookup runs, and the direction that makes "one path per key" structural. A
+  // mapping is pruned when its key leaves the progress set: it exists to file a
+  // LIVE row, so keeping retired keys would grow the map for the session's
+  // lifetime and let a recycled path resolve to a dead key.
+  QHash<quint64, QString> row_key_to_tree_path_;
   // Managed top-level ghost items, keyed by row key for safe replacement and
   // removal on every progress re-apply.
   QHash<quint64, QTreeWidgetItem*> ghost_items_;
@@ -601,8 +631,12 @@ class CurveTreeView : public QTreeWidget {
   // row_key -> the row currently carrying its decoration (a real dataset row or
   // a ghost), filled by the full apply pass so a fraction-only tick needs no
   // lookup at all. Dropped by every structural change (mutateStructure) and by
-  // the full pass itself, which are the only things that can move a row.
-  QHash<quint64, QTreeWidgetItem*> progress_row_cache_;
+  // the full pass itself. PERSISTENT indexes, not item pointers: the inherited,
+  // non-virtual clear() / takeTopLevelItem() delete rows without passing through
+  // this class, and a raw pointer would survive that as a dangling non-null the
+  // next same-membership tick would happily dereference. An invalidated index is
+  // a cache miss, which falls back to the full pass.
+  QHash<quint64, QPersistentModelIndex> progress_row_cache_;
   // The row and affordance currently under the pointer. Persistent so a catalog
   // rebuild cannot leave it dangling.
   QPersistentModelIndex hovered_stop_row_;
