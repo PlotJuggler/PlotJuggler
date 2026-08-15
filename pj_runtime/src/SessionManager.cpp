@@ -721,6 +721,10 @@ RefillGuard::RefillGuard(SessionManager& session, DatasetId dataset_id) : sessio
     }
   }
   prior_object_topic_ids_ = session.objectStore().listTopics(dataset_id);
+  // The refill re-binds same-named topics into these SAME ids, so it also lands its
+  // parsers in their slots. Hold the prior bindings (shared ownership) so a rollback
+  // can put back the parser that wrote the bytes it restores.
+  object_parser_snapshot_ = session.snapshotObjectTopicParsers(prior_object_topic_ids_);
 
   // (1) Adapters drop cached TopicChunk* before any deque is moved (same ordering
   //     as replaceDataset).
@@ -739,6 +743,7 @@ RefillGuard::RefillGuard(RefillGuard&& other) noexcept
       scalar_snapshot_(std::move(other.scalar_snapshot_)),
       object_snapshot_(std::move(other.object_snapshot_)),
       prior_object_topic_ids_(std::move(other.prior_object_topic_ids_)),
+      object_parser_snapshot_(std::move(other.object_parser_snapshot_)),
       replaced_source_topic_ids_(std::move(other.replaced_source_topic_ids_)),
       processor_output_topic_ids_(std::move(other.processor_output_topic_ids_)),
       committed_(other.committed_) {
@@ -756,6 +761,7 @@ RefillGuard& RefillGuard::operator=(RefillGuard&& other) noexcept {
     scalar_snapshot_ = std::move(other.scalar_snapshot_);
     object_snapshot_ = std::move(other.object_snapshot_);
     prior_object_topic_ids_ = std::move(other.prior_object_topic_ids_);
+    object_parser_snapshot_ = std::move(other.object_parser_snapshot_);
     replaced_source_topic_ids_ = std::move(other.replaced_source_topic_ids_);
     processor_output_topic_ids_ = std::move(other.processor_output_topic_ids_);
     committed_ = other.committed_;
@@ -776,6 +782,8 @@ void RefillGuard::commit() {
   scalar_snapshot_ = {};  // free the held-aside prior data; the refilled data is kept
   object_snapshot_ = {};
   prior_object_topic_ids_.clear();
+  // Releases the prior parsers: the refill's bindings are the live ones now.
+  object_parser_snapshot_.clear();
   replaced_source_topic_ids_.clear();
   processor_output_topic_ids_.clear();
   // The refill rewrote the dataset's content from a NEW source, so whatever
@@ -890,14 +898,31 @@ void RefillGuard::rollback() {
   }
   // (d) Object: move the prior entries back into the stable ids.
   session_->objectStore().reattachDataset(dataset_id_, std::move(object_snapshot_));
-  // (e) A failed tentative replay may have reset stateful operator internals.
+  // (e) Object: put back the parser each stable id was bound to. The refill may have
+  //     registered a different schema's parser in the very same slot, and the bytes
+  //     just restored in (d) are only decodable by the one that wrote them. Restore is
+  //     limited to ids this dataset still owns: a topic destructively removed while the
+  //     guard was active (clearAllObjects / eviction) must not have its parser
+  //     resurrected — ObjectStore::clear() even resets id allocation, so an unrelated
+  //     future topic could reuse the raw id and silently inherit the stale parser.
+  {
+    std::unordered_set<uint32_t> surviving_ids;
+    for (const ObjectTopicId id : session_->objectStore().listTopics(dataset_id_)) {
+      surviving_ids.insert(id.id);
+    }
+    std::erase_if(object_parser_snapshot_, [&surviving_ids](const SessionManager::ObjectParserSnapshotEntry& entry) {
+      return surviving_ids.find(entry.topic_id) == surviving_ids.end();
+    });
+  }
+  session_->restoreObjectTopicParsers(std::move(object_parser_snapshot_));
+  // (f) A failed tentative replay may have reset stateful operator internals.
   // Replaying over the byte-for-byte restored raw snapshot repairs that state.
   if (auto replayed = session_->dataProcessorService().rebindAndRecomputeForReplacedSources(replaced_source_topic_ids_);
       !replayed.has_value()) {
     qCWarning(lcSession).noquote() << "RefillGuard rollback processor replay failed:"
                                    << QString::fromStdString(replayed.error());
   }
-  // (f) UI: reflect the restored topic set (non-live).
+  // (g) UI: reflect the restored topic set (non-live).
   const std::vector<TopicId> current = session_->dataEngine().listTopics(dataset_id_);
   session_->notifyIngest(QVector<TopicId>(current.begin(), current.end()), /*live=*/false);
 }
@@ -1111,6 +1136,47 @@ void SessionManager::registerObjectTopicParser(ObjectTopicId id, std::unique_ptr
     slot = std::move(fresh);
   }
   // replaced_slot destructs here, after the lock is released.
+}
+
+std::vector<SessionManager::ObjectParserSnapshotEntry> SessionManager::snapshotObjectTopicParsers(
+    const std::vector<ObjectTopicId>& topic_ids) const {
+  std::vector<ObjectParserSnapshotEntry> snapshot;
+  snapshot.reserve(topic_ids.size());
+  std::shared_lock lock(object_parsers_mutex_);
+  for (const ObjectTopicId topic_id : topic_ids) {
+    ObjectParserSnapshotEntry entry;
+    entry.topic_id = topic_id.id;
+    // Copy the slot verbatim — INCLUDING an invalid handle, so a later restore
+    // reproduces the registration as it was rather than curating it.
+    if (const auto it = object_topic_parsers_.find(topic_id.id); it != object_topic_parsers_.end()) {
+      entry.slot = it->second;
+    }
+    snapshot.push_back(std::move(entry));
+  }
+  return snapshot;
+}
+
+void SessionManager::restoreObjectTopicParsers(std::vector<ObjectParserSnapshotEntry> snapshot) {
+  // Slots the restore displaces are moved out under the lock and destroyed after
+  // it releases: a slot dtor runs MessageParserHandle teardown (potentially
+  // dlclose), which must never run while holding object_parsers_mutex_.
+  std::vector<ObjectParserSlot> displaced;
+  displaced.reserve(snapshot.size());
+  {
+    std::unique_lock lock(object_parsers_mutex_);
+    for (ObjectParserSnapshotEntry& entry : snapshot) {
+      if (const auto it = object_topic_parsers_.find(entry.topic_id); it != object_topic_parsers_.end()) {
+        displaced.push_back(std::move(it->second));
+        object_topic_parsers_.erase(it);
+      }
+      // The snapshot's own mutex comes back with the handle, so a consumer still
+      // holding a binding from before keeps serializing against the same parser.
+      if (entry.slot.handle != nullptr) {
+        object_topic_parsers_.emplace(entry.topic_id, std::move(entry.slot));
+      }
+    }
+  }
+  // displaced destructs here, after the lock is released.
 }
 
 const SessionManager::ObjectParserSlot* SessionManager::findValidParserSlotLocked(ObjectTopicId id) const {

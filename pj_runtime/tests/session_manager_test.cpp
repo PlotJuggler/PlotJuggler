@@ -10,15 +10,22 @@
 #include <QString>
 #include <QTemporaryDir>
 #include <algorithm>
+#include <any>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
+#include "pj_base/buffer_anchor.hpp"
+#include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/builtin/log.hpp"
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_datastore/data_processor.hpp"
 #include "pj_datastore/topic_storage.hpp"
@@ -919,6 +926,115 @@ TEST(SessionManagerSignalTest, LiveNotifyEmitsEvenWithoutScalarTopicIds) {
   EXPECT_TRUE(saw_live);
 }
 
+// --- Scaffolding for the refill parser-slot cases ---------------------------
+// A replacing reload deliberately re-binds same-named topics into the SAME
+// ObjectTopicId, so the replacement's parser lands in the prior parser's slot.
+// These helpers make "which parser is bound" observable: each parser stamps its
+// own tag onto every object it decodes, so a test can assert that restored BYTES
+// are read back by the parser that wrote them — not merely that some parser is
+// registered.
+
+constexpr std::string_view kTaggedSchema = "tagged";
+
+class TaggedObjectParser : public PJ::MessageParserPluginBase {
+ public:
+  explicit TaggedObjectParser(std::string tag) {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kLog;
+    handler.parse_object = [tag = std::move(tag)](
+                               PJ::Timestamp ts, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      PJ::sdk::Log decoded;
+      decoded.timestamp_ns = ts;
+      decoded.name = tag;  // the decoding parser's identity, readable by the test
+      decoded.message.assign(reinterpret_cast<const char*>(payload.bytes.data()), payload.bytes.size());
+      return PJ::sdk::ObjectRecord{ts, PJ::sdk::BuiltinObject{decoded}};
+    };
+    registerSchemaHandler(kTaggedSchema, std::move(handler));
+  }
+};
+
+// vtableWithCreate caches one `static` vtable per CreateFn instantiation, so the
+// A and B factories MUST use distinct captureless lambdas — a shared one would
+// latch a single create function (and thus a single tag) for both handles.
+std::unique_ptr<PJ::MessageParserHandle> makeTaggedHandleA() {
+  static constexpr const char* kManifest =
+      R"({"id":"tagged-parser-a","name":"Tagged Parser A","version":"1.0.0","encoding":["mock"]})";
+  auto handle = std::make_unique<PJ::MessageParserHandle>(PJ::MessageParserPluginBase::vtableWithCreate(
+      []() noexcept -> void* { return new TaggedObjectParser("A"); }, kManifest));
+  EXPECT_TRUE(handle->valid());
+  EXPECT_TRUE(handle->bindSchema(kTaggedSchema, {}).has_value());
+  return handle;
+}
+
+std::unique_ptr<PJ::MessageParserHandle> makeTaggedHandleB() {
+  static constexpr const char* kManifest =
+      R"({"id":"tagged-parser-b","name":"Tagged Parser B","version":"1.0.0","encoding":["mock"]})";
+  auto handle = std::make_unique<PJ::MessageParserHandle>(PJ::MessageParserPluginBase::vtableWithCreate(
+      []() noexcept -> void* { return new TaggedObjectParser("B"); }, kManifest));
+  EXPECT_TRUE(handle->valid());
+  EXPECT_TRUE(handle->bindSchema(kTaggedSchema, {}).has_value());
+  return handle;
+}
+
+// Decode entry `index` of `topic` through whatever parser is CURRENTLY bound to
+// it, exactly as a lazy reader would (per-use binding, parse under its mutex).
+// Returns the decoding parser's tag and the bytes it saw; an empty tag means no
+// parser is bound or the decode failed.
+struct DecodedTag {
+  std::string tag;
+  std::string bytes;
+};
+
+DecodedTag decodeThroughBoundParser(PJ::SessionManager& session, PJ::ObjectTopicId topic, size_t index) {
+  const PJ::SessionManager::ParserBinding binding = session.parserBindingForObjectTopic(topic);
+  const auto entry = session.objectStore().at(topic, index);
+  if (!binding || !entry.has_value()) {
+    return {};
+  }
+  std::lock_guard<std::mutex> lock(*binding.mutex);
+  auto decoded = binding.parser->parseObject(entry->timestamp, entry->payload);
+  if (!decoded.has_value()) {
+    return {};
+  }
+  const auto* log = std::any_cast<PJ::sdk::Log>(&decoded->object);
+  return log != nullptr ? DecodedTag{log->name, log->message} : DecodedTag{};
+}
+
+// The parser instance a topic is bound to right now, as an identity (not merely
+// "some parser exists"): the binding's keepalive IS the registered handle.
+const void* boundParserHandle(PJ::SessionManager& session, PJ::ObjectTopicId topic) {
+  return session.parserBindingForObjectTopic(topic).keepalive.get();
+}
+
+// A dataset with one object topic carrying `payload`, served by parser A.
+struct TaggedObjectFixture {
+  PJ::DatasetId dataset = 0;
+  PJ::ObjectTopicId topic;
+  const PJ::MessageParserHandle* parser_a = nullptr;
+};
+
+TaggedObjectFixture makeTaggedObjectDataset(PJ::SessionManager& session, std::vector<uint8_t> payload) {
+  TaggedObjectFixture fixture;
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "reload.mcap"});
+  EXPECT_TRUE(dataset.has_value()) << dataset.error();
+  if (!dataset.has_value()) {
+    return fixture;
+  }
+  fixture.dataset = *dataset;
+  auto topic = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{.dataset_id = fixture.dataset, .topic_name = "/cam", .metadata_json = "{}"});
+  EXPECT_TRUE(topic.has_value()) << topic.error();
+  if (!topic.has_value()) {
+    return fixture;
+  }
+  fixture.topic = *topic;
+  EXPECT_TRUE(session.objectStore().pushOwned(fixture.topic, 250, std::move(payload)).has_value());
+  auto handle_a = makeTaggedHandleA();
+  fixture.parser_a = handle_a.get();
+  session.registerObjectTopicParser(fixture.topic, std::move(handle_a));
+  return fixture;
+}
+
 // --- beginRefill / RefillGuard: in-place transactional reload prep ---
 // (Migrated from the former SessionManagerClearRefillTest, which covered the deleted
 // clearDatasetForRefill. The "writes back into the same topic id" case it also had is
@@ -986,6 +1102,125 @@ TEST(SessionManagerRefillGuardTest, RollbackRestoresPriorScalarAndObjectData) {
   EXPECT_EQ(session.objectStore().entryCount(*object_topic), 1u) << "object data restored";
   EXPECT_EQ(session.dataEngine().listTopics(*ds), scalar_topics_before) << "scalar ids stable";
   EXPECT_EQ(session.objectStore().listTopics(*ds), object_topics_before) << "object ids stable";
+}
+
+// Restoring the bytes is only half of "as if the reload never happened": the
+// replacement registers ITS parser under the same stable ObjectTopicId, so a
+// rollback that leaves that parser bound serves prior-era bytes through the
+// replacement's schema (misdecoded images, rejected clouds).
+TEST(SessionManagerRefillGuardTest, RollbackRestoresPriorObjectParserBinding) {
+  PJ::SessionManager session;
+  const TaggedObjectFixture fixture = makeTaggedObjectDataset(session, {'a', 'b', 'c'});
+  ASSERT_EQ(decodeThroughBoundParser(session, fixture.topic, 0).tag, "A");
+  // A consumer that bound before the reload; its mutex must stay THE serialization
+  // point for parser A after rollback (a restore with a fresh mutex would let old
+  // and new bindings enter the same non-thread-safe parser concurrently).
+  const PJ::SessionManager::ParserBinding binding_before = session.parserBindingForObjectTopic(fixture.topic);
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(fixture.dataset);
+    // The replacement brings a different schema's parser for the same topic name,
+    // which the refill re-binds into the SAME id.
+    session.registerObjectTopicParser(fixture.topic, makeTaggedHandleB());
+    ASSERT_TRUE(session.objectStore().pushOwned(fixture.topic, 900, std::vector<uint8_t>{'x', 'y'}).has_value());
+    ASSERT_EQ(decodeThroughBoundParser(session, fixture.topic, 0).tag, "B");
+    // Guard destroyed uncommitted: the refill failed, so it rolls back here.
+  }
+
+  EXPECT_EQ(boundParserHandle(session, fixture.topic), static_cast<const void*>(fixture.parser_a))
+      << "the ACTIVE binding must be parser A again, the instance that wrote the restored bytes";
+  const DecodedTag restored = decodeThroughBoundParser(session, fixture.topic, 0);
+  EXPECT_EQ(restored.tag, "A") << "restored payloads must decode through the parser that wrote them";
+  EXPECT_EQ(restored.bytes, "abc");
+  const PJ::SessionManager::ParserBinding binding_after = session.parserBindingForObjectTopic(fixture.topic);
+  EXPECT_EQ(binding_after.mutex.get(), binding_before.mutex.get())
+      << "restore must bring back the ORIGINAL parse mutex, not a fresh one";
+}
+
+// The discard route FileLoader actually takes: the guard lives in a
+// std::optional and is reset, so the snapshot must survive the move into it.
+TEST(SessionManagerRefillGuardTest, DiscardedRefillRestoresPriorObjectParserBinding) {
+  PJ::SessionManager session;
+  const TaggedObjectFixture fixture = makeTaggedObjectDataset(session, {'a', 'b', 'c'});
+
+  std::optional<PJ::RefillGuard> guard = session.beginRefill(fixture.dataset);
+  session.registerObjectTopicParser(fixture.topic, makeTaggedHandleB());
+  ASSERT_TRUE(session.objectStore().pushOwned(fixture.topic, 900, std::vector<uint8_t>{'x', 'y'}).has_value());
+  guard.reset();  // user discarded the reload
+
+  EXPECT_EQ(boundParserHandle(session, fixture.topic), static_cast<const void*>(fixture.parser_a));
+  const DecodedTag restored = decodeThroughBoundParser(session, fixture.topic, 0);
+  EXPECT_EQ(restored.tag, "A");
+  EXPECT_EQ(restored.bytes, "abc") << "the moved guard must carry the object snapshot, not just the parser snapshot";
+}
+
+// The success path is the mirror image: a committed refill keeps ITS parser, so
+// the snapshot must not be reinstalled (and must be released) at commit.
+TEST(SessionManagerRefillGuardTest, CommitKeepsRefilledObjectParserBinding) {
+  PJ::SessionManager session;
+  const TaggedObjectFixture fixture = makeTaggedObjectDataset(session, {'a', 'b', 'c'});
+  const void* parser_b = nullptr;
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(fixture.dataset);
+    auto handle_b = makeTaggedHandleB();
+    parser_b = handle_b.get();
+    session.registerObjectTopicParser(fixture.topic, std::move(handle_b));
+    ASSERT_TRUE(session.objectStore().pushOwned(fixture.topic, 900, std::vector<uint8_t>{'x', 'y'}).has_value());
+    guard.commit();
+  }
+
+  EXPECT_EQ(boundParserHandle(session, fixture.topic), parser_b) << "commit keeps the replacement's binding";
+  const DecodedTag refilled = decodeThroughBoundParser(session, fixture.topic, 0);
+  EXPECT_EQ(refilled.tag, "B");
+  EXPECT_EQ(refilled.bytes, "xy");
+}
+
+// "Prior state" includes the ABSENCE of a parser: a topic served by a builtin
+// codec must not come back bound to the replacement's plugin parser.
+TEST(SessionManagerRefillGuardTest, RollbackErasesAParserTheRefillAddedToAnUnboundPriorTopic) {
+  PJ::SessionManager session;
+  auto ds = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "reload.mcap"});
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  auto topic = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{.dataset_id = *ds, .topic_name = "/cam", .metadata_json = "{}"});
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  ASSERT_TRUE(session.objectStore().pushOwned(*topic, 250, std::vector<uint8_t>{'a'}).has_value());
+  ASSERT_EQ(boundParserHandle(session, *topic), nullptr) << "prior state: no parser bound";
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(*ds);
+    session.registerObjectTopicParser(*topic, makeTaggedHandleB());
+    ASSERT_NE(boundParserHandle(session, *topic), nullptr);
+  }
+
+  EXPECT_EQ(boundParserHandle(session, *topic), nullptr);
+}
+
+// A topic destructively removed while the guard is active (e.g. "Remove all
+// Datasets" mid-reload) must NOT get its parser resurrected by the rollback:
+// ObjectStore::clear() resets id allocation, so a later unrelated topic can
+// reuse the raw id — and would silently inherit the stale parser.
+TEST(SessionManagerRefillGuardTest, RollbackSkipsParserRestoreForTopicsRemovedDuringRefill) {
+  PJ::SessionManager session;
+  const TaggedObjectFixture fixture = makeTaggedObjectDataset(session, {'a', 'b', 'c'});
+  ASSERT_NE(boundParserHandle(session, fixture.topic), nullptr);
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(fixture.dataset);
+    session.clearAllObjects();  // destructive removal while the reload is in flight
+    // Guard destroyed uncommitted: the refill failed, so it rolls back here.
+  }
+
+  EXPECT_EQ(boundParserHandle(session, fixture.topic), nullptr)
+      << "no parser may be restored for a topic whose series is gone";
+
+  // The store's id allocation restarted, so a fresh registration reuses the raw id.
+  auto reused = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{.dataset_id = fixture.dataset, .topic_name = "/other", .metadata_json = "{}"});
+  ASSERT_TRUE(reused.has_value()) << reused.error();
+  ASSERT_EQ(reused->id, fixture.topic.id) << "premise: the raw id is reused";
+  EXPECT_EQ(boundParserHandle(session, *reused), nullptr) << "the reused id must not inherit the stale parser";
 }
 
 TEST(SessionManagerRefillGuardTest, CommitKeepsRefilledDataAndFreesSnapshot) {

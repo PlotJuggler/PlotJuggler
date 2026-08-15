@@ -411,7 +411,8 @@ class SessionManager : public QObject {
   // bound plot adapters stay valid and the refill writes back into the same ids. The
   // returned RAII guard has already, on the GUI thread with NO event loop:
   //   1) emit datasetAboutToBeReplaced(dataset_id)  // adapters drop cached TopicChunk*
-  //   2) DETACHED (moved aside, NOT freed) the scalar chunks + object entries
+  //   2) DETACHED (moved aside, NOT freed) the scalar chunks + object entries, and
+  //      taken shared ownership of each prior object topic's parser slot
   //   3) notifyIngest(<dataset's topic ids>, live=false)  // UI shows it empty
   // Step 1 BEFORE 2 is the invariant that prevents a use-after-free on cached chunk
   // pointers (same ordering as replaceDataset); a dataset with no topics skips the
@@ -657,6 +658,30 @@ class SessionManager : public QObject {
   // mutex, and the returned pointer stays valid only while that lock is held.
   [[nodiscard]] const ObjectParserSlot* findValidParserSlotLocked(ObjectTopicId id) const;
 
+  // One object topic's parser registration as it stood at snapshot time. An
+  // EMPTY `slot` records "no parser was registered for this id", which restoring
+  // reproduces as an erase — otherwise a rollback would leave a binding the
+  // restored bytes were never written under.
+  struct ObjectParserSnapshotEntry {
+    uint32_t topic_id = 0;
+    ObjectParserSlot slot;
+  };
+
+  // Shared-ownership copy of the parser slots currently registered for
+  // `topic_ids`, one entry per id in order. Copying the slot's shared_ptrs is
+  // what makes the snapshot restorable: it keeps the parser instance AND its
+  // plugin DSO mapped even after the map entry is replaced, so nothing can be
+  // torn down out from under a pending restore. Takes object_parsers_mutex_
+  // shared.
+  [[nodiscard]] std::vector<ObjectParserSnapshotEntry> snapshotObjectTopicParsers(
+      const std::vector<ObjectTopicId>& topic_ids) const;
+
+  // Reinstall a snapshotObjectTopicParsers() result, discarding whatever was
+  // registered for those ids since. Slots displaced by the restore are destroyed
+  // AFTER the lock releases — a slot dtor can run plugin teardown (dlclose),
+  // which must never happen under object_parsers_mutex_.
+  void restoreObjectTopicParsers(std::vector<ObjectParserSnapshotEntry> snapshot);
+
   struct ActiveIngestEntry {
     // The live token id for this dataset. A call carrying any other id names a
     // superseded run and is ignored (see liveEntry).
@@ -756,9 +781,16 @@ class SessionManager : public QObject {
 /// into a side snapshot instead of freeing it, leaving every TopicId/ObjectTopicId
 /// registered + empty so a progressive refill writes back into the same ids. Default
 /// outcome is ROLLBACK: a guard destroyed without commit()
-/// restores the exact prior scalar + object data, retires/removes topics the failed
-/// refill added, evicts parsers for ADDED object topics, and re-notifies the UI.
+/// restores the exact prior scalar + object data AND the parser each prior object
+/// topic was bound to (only for topics the dataset still owns — a topic destructively
+/// removed mid-refill stays unbound, since its raw id may already be reused), retires/
+/// removes topics the failed refill added, evicts parsers for ADDED object topics, and
+/// re-notifies the UI.
 /// commit() keeps the refilled data (frees the snapshot; the dtor then no-ops).
+///
+/// Restoring the parser bindings is not cosmetic: reusing the stable ObjectTopicId
+/// means a replacement load's parser lands in the SAME slot, so without this a
+/// rolled-back topic would serve prior-era bytes through the replacement's schema.
 ///
 /// GUI-thread only; runs NO event loop between construction and commit/rollback.
 /// Move-only (held in std::optional<RefillGuard> by FileLoader's LoadContext). Does
@@ -800,6 +832,10 @@ class RefillGuard {
   DataEngine::DatasetChunkSnapshot scalar_snapshot_;
   ObjectStore::ObjectDatasetSnapshot object_snapshot_;
   std::vector<ObjectTopicId> prior_object_topic_ids_;
+  // Shared ownership of the parser each prior object topic was bound to, so a
+  // replacement that re-registers the stable id cannot destroy the parser this
+  // transaction may still have to reinstate. Dropped on commit().
+  std::vector<SessionManager::ObjectParserSnapshotEntry> object_parser_snapshot_;
   std::vector<TopicId> replaced_source_topic_ids_;
   std::unordered_set<TopicId> processor_output_topic_ids_;
   bool committed_ = false;
