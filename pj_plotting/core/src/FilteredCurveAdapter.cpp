@@ -88,6 +88,13 @@ void FilteredCurveAdapter::onDataCleared() {
   cached_bounding_rect_ = invalidRect();
 }
 
+void FilteredCurveAdapter::onDisplayOffsetChanged() {
+  // Base first: it drops the cached offset that ensureFiltered() converts
+  // through; then the baked display-X points must be rebuilt.
+  DatastoreCurveAdapter::onDisplayOffsetChanged();
+  invalidate();
+}
+
 void FilteredCurveAdapter::invalidate() {
   filtered_dirty_ = true;
 }

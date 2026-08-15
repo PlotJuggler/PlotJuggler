@@ -251,7 +251,9 @@ Expected<SeriesReader> DataReader::series(TopicId topic_id, std::size_t column_i
     return PJ::unexpected(fmt::format("Column {} in topic {} is not a numeric series", column_index, topic_id));
   }
 
-  return SeriesReader(storage->sealedChunks(), column_index, storage->retentionFloor(), std::move(lock));
+  SeriesReader series(storage->sealedChunks(), column_index, storage->retentionFloor(), std::move(lock));
+  series.setSeriesGeneration(storage->seriesGeneration());
+  return series;
 }
 
 }  // namespace PJ

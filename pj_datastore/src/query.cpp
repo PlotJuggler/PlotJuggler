@@ -402,14 +402,112 @@ std::optional<std::size_t> SeriesReader::indexAtOrAfterTime(Timestamp t) const {
   return std::nullopt;
 }
 
+namespace {
+
+// Latest sample with ts <= t (ts < t when strict), across ALL chunks. Chunk
+// time ranges may overlap after out-of-order ingest, so every chunk is
+// inspected; rows are time-sorted within a chunk, so each chunk contributes
+// via one binary search plus a short backward walk over null/evicted rows.
+std::optional<SeriesSample> bestSampleBefore(
+    const std::deque<TopicChunk>& chunks, std::size_t column_index, Timestamp retention_floor, Timestamp t,
+    bool strict) {
+  std::optional<SeriesSample> best;
+  for (const TopicChunk& chunk : chunks) {
+    if (chunk.stats.row_count == 0 || column_index >= chunk.columns.size() || chunk.stats.t_max < retention_floor) {
+      continue;
+    }
+    if (strict ? chunk.stats.t_min >= t : chunk.stats.t_min > t) {
+      continue;
+    }
+    // First row past the cut; candidates are the rows before it, newest first.
+    std::size_t lo = 0;
+    std::size_t hi = chunk.stats.row_count;
+    while (lo < hi) {
+      const std::size_t mid = lo + (hi - lo) / 2;
+      const Timestamp ts = chunk.readTimestamp(mid);
+      if (strict ? ts < t : ts <= t) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    for (std::size_t row = lo; row-- > 0;) {
+      const Timestamp ts = chunk.readTimestamp(row);
+      if (ts < retention_floor) {
+        break;  // rows below are older still: all logically evicted
+      }
+      if (best.has_value() && ts <= best->timestamp) {
+        break;  // rows below can only be older; this chunk cannot improve
+      }
+      if (!readSeriesValue(chunk, column_index, row).has_value()) {
+        continue;  // null row: not part of the series, try the next-older one
+      }
+      best = makeSeriesSample(chunk, column_index, row);
+      break;
+    }
+  }
+  return best;
+}
+
+// First sample with ts >= t (ts > t when strict), across ALL chunks; the
+// mirror of bestSampleBefore.
+std::optional<SeriesSample> bestSampleAfter(
+    const std::deque<TopicChunk>& chunks, std::size_t column_index, Timestamp retention_floor, Timestamp t,
+    bool strict) {
+  std::optional<SeriesSample> best;
+  for (const TopicChunk& chunk : chunks) {
+    if (chunk.stats.row_count == 0 || column_index >= chunk.columns.size() || chunk.stats.t_max < retention_floor) {
+      continue;
+    }
+    if (strict ? chunk.stats.t_max <= t : chunk.stats.t_max < t) {
+      continue;
+    }
+    // First row at/past the cut; candidates run forward from it, oldest first.
+    std::size_t lo = 0;
+    std::size_t hi = chunk.stats.row_count;
+    while (lo < hi) {
+      const std::size_t mid = lo + (hi - lo) / 2;
+      const Timestamp ts = chunk.readTimestamp(mid);
+      if (strict ? ts <= t : ts < t) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    for (std::size_t row = lo; row < chunk.stats.row_count; ++row) {
+      const Timestamp ts = chunk.readTimestamp(row);
+      if (ts < retention_floor) {
+        continue;  // logically evicted: keep looking at newer rows
+      }
+      if (best.has_value() && ts >= best->timestamp) {
+        break;  // rows above can only be newer; this chunk cannot improve
+      }
+      if (!readSeriesValue(chunk, column_index, row).has_value()) {
+        continue;  // null row: try the next-newer one
+      }
+      best = makeSeriesSample(chunk, column_index, row);
+      break;
+    }
+  }
+  return best;
+}
+
+}  // namespace
+
 std::optional<SeriesSample> SeriesReader::sampleAtOrBeforeTime(Timestamp t) const {
-  const auto index = indexAtOrBeforeTime(t);
-  return index.has_value() ? sampleAt(*index) : std::nullopt;
+  return bestSampleBefore(*chunks_, column_index_, retention_floor_, t, /*strict=*/false);
 }
 
 std::optional<SeriesSample> SeriesReader::sampleAtOrAfterTime(Timestamp t) const {
-  const auto index = indexAtOrAfterTime(t);
-  return index.has_value() ? sampleAt(*index) : std::nullopt;
+  return bestSampleAfter(*chunks_, column_index_, retention_floor_, t, /*strict=*/false);
+}
+
+std::optional<SeriesSample> SeriesReader::sampleBeforeTime(Timestamp t) const {
+  return bestSampleBefore(*chunks_, column_index_, retention_floor_, t, /*strict=*/true);
+}
+
+std::optional<SeriesSample> SeriesReader::sampleAfterTime(Timestamp t) const {
+  return bestSampleAfter(*chunks_, column_index_, retention_floor_, t, /*strict=*/true);
 }
 
 SeriesCursor SeriesReader::samples(Range<Timestamp> time_range) const {

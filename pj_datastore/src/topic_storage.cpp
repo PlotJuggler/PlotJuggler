@@ -62,6 +62,13 @@ PJ::Status TopicStorage::appendSealedChunk(TopicChunk chunk) {
     chunk.stats.encoded_byte_size = encodedChunkByteSize(chunk);
   }
 
+  // Only a strictly in-order append (every new row after every existing
+  // sample) leaves the series generation unchanged — incremental consumers
+  // absorb those; any overlap forces their caches to rebuild.
+  if (!sealed_chunks_.empty() && chunk.stats.t_min <= timeMax()) {
+    ++series_generation_;
+  }
+
   // The append fast path folds the new chunk into the cached aggregate in
   // O(1); extrema only widen, so no rescan is ever needed here.
   if (chunk_agg_valid_) {
@@ -101,6 +108,7 @@ void TopicStorage::evictBefore(Timestamp t_keep_min) {
 void TopicStorage::clearChunks() noexcept {
   sealed_chunks_.clear();
   invalidateChunkAggregate();
+  ++series_generation_;
   // A full replace/reload retains no data, so it must carry no stale floor.
   retention_floor_ = kNoRetentionFloor;
 }
@@ -133,6 +141,7 @@ void TopicStorage::restoreChunks(DetachedState&& detached) noexcept {
 
   sealed_chunks_ = std::move(detached.chunks);
   invalidateChunkAggregate();
+  ++series_generation_;
   column_descriptors_ = std::move(detached.column_descriptors);
   retention_floor_ = detached.retention_floor;
   descriptor_.schema_id = detached.schema_id;

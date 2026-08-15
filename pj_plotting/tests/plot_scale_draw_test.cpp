@@ -8,6 +8,7 @@
 #include <QApplication>
 #include <QLocale>
 
+#include "pj_plotting/PlotCurve.h"
 #include "pj_plotting/PlotScaleDraw.h"
 #include "pj_plotting/PlotWidgetBase.h"
 
@@ -81,17 +82,20 @@ TEST_F(PlotScaleDrawTest, InstalledOnAllPlotAxes) {
   }
 }
 
-// "Lines and Dots" renders as plain Lines plus an explicit per-sample symbol
-// (stock Qwt has no such style); toggling back to Lines must drop the symbol.
-TEST_F(PlotScaleDrawTest, LinesAndDotsMapsToLinesPlusSymbol) {
+// "Lines and Dots" renders as plain Lines plus PlotCurve's batched dots pass
+// (stock Qwt has no such style; per-sample symbols are pathological on the GL
+// paint engine); toggling back to Lines must disable the pass.
+TEST_F(PlotScaleDrawTest, LinesAndDotsMapsToLinesPlusBatchedDots) {
   TestPlot plot;
-  QwtPlotCurve curve;
+  PJ::PlotCurve curve(QStringLiteral("curve"));
   plot.applyStyleToCurve(&curve, PJ::PlotWidgetBase::kLinesAndDots);
   EXPECT_EQ(curve.style(), QwtPlotCurve::Lines);
-  EXPECT_NE(curve.symbol(), nullptr);
+  EXPECT_EQ(curve.symbol(), nullptr);
+  EXPECT_GT(curve.dotWidth(), 0.0);
   plot.applyStyleToCurve(&curve, PJ::PlotWidgetBase::kLines);
   EXPECT_EQ(curve.style(), QwtPlotCurve::Lines);
   EXPECT_EQ(curve.symbol(), nullptr);
+  EXPECT_EQ(curve.dotWidth(), 0.0);
 }
 
 }  // namespace

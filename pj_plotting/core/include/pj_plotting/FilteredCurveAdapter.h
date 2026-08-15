@@ -62,6 +62,10 @@ class FilteredCurveAdapter : public DatastoreCurveAdapter {
   void onTopicCommitted() override;
   void onDataCleared() override;
 
+  // filtered_ bakes display X into its points, so an offset move must
+  // invalidate it (the base class only refreshes its raw-timestamp caches).
+  void onDisplayOffsetChanged() override;
+
   /// Mark the filtered cache stale because the FILTER changed (e.g. the user edited
   /// a parameter), even though no new samples arrived. Distinct from
   /// `onTopicCommitted()` only in intent; both defer the recompute to the next read.

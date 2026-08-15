@@ -14,6 +14,7 @@ add_library(pj_plotting STATIC
     src/DockToolbar.cpp
     src/DockToolbar.ui
     src/DockWidget.cpp
+    src/PlotCurve.cpp
     src/PlotDocker.cpp
     src/PlotFocusOverlay.cpp
     src/PlotLegend.cpp
@@ -33,6 +34,7 @@ add_library(pj_plotting STATIC
     src/XYCurveDialog.cpp
     src/XYCurveDialog.ui
     include/pj_plotting/CurveEditor.h
+    include/pj_plotting/PlotCurve.h
     include/pj_plotting/XYCurveDialog.h
     include/pj_plotting/FilterEditorPanel.h
     include/pj_plotting/ParameterForm.h

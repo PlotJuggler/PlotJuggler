@@ -158,6 +158,16 @@ class TopicStorage {
   /// sealedChunks() caveat.
   [[nodiscard]] Timestamp retentionFloor() const noexcept;
 
+  /// Monotonic generation of the series content visible to readers, EXCLUDING
+  /// the two mutations an incremental consumer can absorb on its own: a
+  /// strictly in-order append (every new row after every existing sample) and
+  /// a retention prefix eviction (visible through retentionFloor() instead).
+  /// Everything else — out-of-order/overlapping appends, clear, restore —
+  /// bumps it, telling sample caches keyed on it to rebuild.
+  [[nodiscard]] uint64_t seriesGeneration() const noexcept {
+    return series_generation_;
+  }
+
   /// Update descriptor schema id for future writes.
   void updateSchema(SchemaId new_schema);
 
@@ -218,6 +228,7 @@ class TopicStorage {
   std::vector<ColumnDescriptor> column_descriptors_;  // for schema_id==0 topics
   uint32_t max_observed_array_length_ = 0;
   uint32_t truncated_sample_count_ = 0;
+  uint64_t series_generation_ = 0;  // see seriesGeneration()
   // Logical retention floor (absolute ns). evictBefore() raises this to the
   // requested cutoff; read accessors clamp to it so rows below it stay invisible
   // even while their straddling chunk remains physically retained (lazy GC).

@@ -106,11 +106,16 @@ TEST_F(DatastoreCurveAdapterTest, DefaultAllRowsWorksBeforeRectOfInterest) {
 TEST_F(DatastoreCurveAdapterTest, RectOfInterestNarrowsAndAddsBoundaryGuards) {
   adapter_->setRectOfInterest(QRectF(QPointF(3.0, -1.0), QPointF(4.0, 1.0)));
 
-  ASSERT_EQ(adapter_->size(), 2U);
+  // One off-screen guard per side, even when a sample sits exactly on the
+  // window edge — the segment leaving the viewport toward the next sample
+  // must still be drawn (Qwt clips it at the boundary).
+  ASSERT_EQ(adapter_->size(), 3U);
   EXPECT_DOUBLE_EQ(adapter_->sample(0).x(), 2.0);
   EXPECT_DOUBLE_EQ(adapter_->sample(0).y(), 14.0);
   EXPECT_DOUBLE_EQ(adapter_->sample(1).x(), 4.0);
   EXPECT_DOUBLE_EQ(adapter_->sample(1).y(), 16.0);
+  EXPECT_DOUBLE_EQ(adapter_->sample(2).x(), 5.0);
+  EXPECT_DOUBLE_EQ(adapter_->sample(2).y(), 17.0);
 }
 
 TEST_F(DatastoreCurveAdapterTest, SampleLookupWorksAcrossChunksAndNonSequentialAccess) {
@@ -214,6 +219,56 @@ TEST_F(DatastoreCurveAdapterTest, CrossChunkBoundaryGuardsIncludeAdjacentChunks)
   EXPECT_DOUBLE_EQ(adapter_->sample(0).y(), 13.0);
   EXPECT_DOUBLE_EQ(adapter_->sample(1).x(), 2.0);  // row 4 from chunk[1] (first row)
   EXPECT_DOUBLE_EQ(adapter_->sample(1).y(), 14.0);
+}
+
+TEST_F(DatastoreCurveAdapterTest, InOrderAbsorbNeverDuplicatesTheBoundarySample) {
+  // Build a window whose newest cached sample sits EXACTLY at the built-range
+  // edge (no data exists beyond it), then deliver commit notifications. The
+  // in-order absorb path must not re-read the boundary sample (an inverted
+  // cursor range would be silently swapped and replay it), and a later
+  // in-order append must land exactly once.
+  adapter_->setRectOfInterest(QRectF(QPointF(5.0, -1.0), QPointF(6.0, 1.0)));
+  const std::size_t initial = adapter_->size();
+
+  adapter_->onTopicCommitted();  // notifications with no new data
+  adapter_->onTopicCommitted();
+  EXPECT_EQ(adapter_->size(), initial);
+
+  appendMoreRows(10, 11);        // one strictly in-order sample (raw 10 s)
+  adapter_->onTopicCommitted();  // absorbed into the cache, beyond the slice
+  adapter_->onTopicCommitted();
+  EXPECT_EQ(adapter_->size(), initial);
+
+  // Slide the window over the absorbed region while STAYING inside the built
+  // range (raw 8.5..9.0 vs built end 9), so this is served by re-narrowing the
+  // absorbed cache — duplicates hidden by the previous slice surface here as
+  // extra points; a range escaping the build would rebuild and mask them.
+  adapter_->setRectOfInterest(QRectF(QPointF(6.5, -1.0), QPointF(7.0, 1.0)));
+  ASSERT_EQ(adapter_->size(), 3U);
+  EXPECT_DOUBLE_EQ(adapter_->sample(0).x(), 6.0);
+  EXPECT_DOUBLE_EQ(adapter_->sample(0).y(), 18.0);
+  EXPECT_DOUBLE_EQ(adapter_->sample(1).x(), 7.0);
+  EXPECT_DOUBLE_EQ(adapter_->sample(1).y(), 19.0);
+  EXPECT_DOUBLE_EQ(adapter_->sample(2).x(), 8.0);
+  EXPECT_DOUBLE_EQ(adapter_->sample(2).y(), 20.0);
+}
+
+TEST_F(DatastoreCurveAdapterTest, BoundaryGuardsSurviveOutOfOrderChunks) {
+  // A late commit stores a chunk that lies entirely BEFORE the first chunk in
+  // time (out-of-order ingest keeps chunks in commit order). A window in the
+  // gap must still find its left guard inside that late chunk — a
+  // chronological-chunk assumption stops at the first stored chunk and drops it.
+  appendMoreRows(-5, -2);  // raw -5..-3 sec → display -7..-5
+  adapter_->onTopicCommitted();
+
+  // Window strictly inside the gap between display -5 (i=-3) and -2 (i=0).
+  adapter_->setRectOfInterest(QRectF(QPointF(-4.5, -1.0), QPointF(-3.5, 1.0)));
+
+  ASSERT_EQ(adapter_->size(), 2U);
+  EXPECT_DOUBLE_EQ(adapter_->sample(0).x(), -5.0);  // left guard from the late chunk
+  EXPECT_DOUBLE_EQ(adapter_->sample(0).y(), 7.0);
+  EXPECT_DOUBLE_EQ(adapter_->sample(1).x(), -2.0);  // right guard from the first chunk
+  EXPECT_DOUBLE_EQ(adapter_->sample(1).y(), 10.0);
 }
 
 TEST_F(DatastoreCurveAdapterTest, SampleFromTimeReturnsLatestAtPoint) {

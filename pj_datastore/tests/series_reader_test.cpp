@@ -3,8 +3,10 @@
 
 #include <gtest/gtest.h>
 
+#include <initializer_list>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "pj_base/type_tree.hpp"
@@ -210,6 +212,72 @@ TEST_F(SeriesReaderTest, SeriesCreationValidatesTopicColumnAndType) {
   EXPECT_FALSE(reader.series(topic_id_ + 9999U, 0).has_value());
   EXPECT_FALSE(reader.series(topic_id_, 99).has_value());
   EXPECT_FALSE(reader.series(topic_id_, 2).has_value());
+}
+
+// Out-of-order ingest stores chunks whose time ranges are non-chronological or
+// overlapping; the time-based sample queries must inspect every chunk instead
+// of assuming commit order == time order.
+TEST(SeriesReaderOverlapTest, TimeSampleQueriesMergeAcrossOutOfOrderChunks) {
+  DataEngine engine;
+  auto dataset_or = engine.createDataset(DatasetDescriptor{.source_name = "overlap"});
+  ASSERT_TRUE(dataset_or.has_value());
+
+  DataWriter writer = engine.createWriter();
+  auto schema_or = writer.registerSchema("row", makeStruct("row", {makePrimitive("v", PrimitiveType::kFloat64)}));
+  ASSERT_TRUE(schema_or.has_value());
+  TopicDescriptor descriptor;
+  descriptor.name = "/topic";
+  descriptor.schema_id = *schema_or;
+  auto topic_or = writer.registerTopic(*dataset_or, descriptor);
+  ASSERT_TRUE(topic_or.has_value());
+  const TopicId topic_id = *topic_or;
+
+  const auto write_rows = [&](std::initializer_list<std::pair<Timestamp, double>> rows) {
+    for (const auto& [ts, value] : rows) {
+      ASSERT_TRUE(writer.beginRow(topic_id, ts).has_value());
+      writer.set(topic_id, 0, value);
+      ASSERT_TRUE(writer.finishRow(topic_id).has_value());
+    }
+    ASSERT_FALSE(engine.commitChunks(writer.flushAll()).empty());
+  };
+  write_rows({{100, 1.0}, {150, 2.0}, {200, 3.0}});  // chunk A
+  write_rows({{50, 4.0}, {75, 5.0}});                // chunk B: late, entirely BEFORE A
+  write_rows({{120, 6.0}, {180, 7.0}});              // chunk C: late, interleaves A
+
+  DataReader reader = engine.createReader();
+  auto series_or = reader.series(topic_id, 0);
+  ASSERT_TRUE(series_or.has_value());
+  const SeriesReader& series = *series_or;
+
+  // Around t=80 only chunk B has earlier samples; a chronological-chunk
+  // assumption stops at A (t_min=100 > 80) and misses them.
+  const auto before_gap = series.sampleAtOrBeforeTime(80);
+  ASSERT_TRUE(before_gap.has_value());
+  EXPECT_EQ(before_gap->timestamp, 75);
+  EXPECT_DOUBLE_EQ(before_gap->value, 5.0);
+
+  // Inside A's range the best neighbors can come from the interleaved chunk C.
+  const auto before_mid = series.sampleAtOrBeforeTime(130);
+  ASSERT_TRUE(before_mid.has_value());
+  EXPECT_EQ(before_mid->timestamp, 120);
+  const auto after_mid = series.sampleAtOrAfterTime(121);
+  ASSERT_TRUE(after_mid.has_value());
+  EXPECT_EQ(after_mid->timestamp, 150);
+
+  // Strict variants exclude the boundary sample itself.
+  const auto strict_before = series.sampleBeforeTime(100);
+  ASSERT_TRUE(strict_before.has_value());
+  EXPECT_EQ(strict_before->timestamp, 75);
+  const auto strict_after = series.sampleAfterTime(120);
+  ASSERT_TRUE(strict_after.has_value());
+  EXPECT_EQ(strict_after->timestamp, 150);
+  const auto strict_before_120 = series.sampleBeforeTime(120);
+  ASSERT_TRUE(strict_before_120.has_value());
+  EXPECT_EQ(strict_before_120->timestamp, 100);
+
+  // Extremes: nothing strictly before the earliest / after the latest sample.
+  EXPECT_FALSE(series.sampleBeforeTime(50).has_value());
+  EXPECT_FALSE(series.sampleAfterTime(200).has_value());
 }
 
 }  // namespace

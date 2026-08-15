@@ -291,7 +291,8 @@ std::vector<TopicId> DataEngine::commitChunksLocked(
     if (storage != nullptr) {
       auto status = storage->appendSealedChunk(std::move(chunk));
       if (!status.has_value()) {
-        continue;  // chunk rejected (e.g. out-of-order); do not mark topic as changed
+        continue;  // append failed; do not mark topic as changed (out-of-order
+                   // chunks are NOT failures: appendSealedChunk accepts overlap)
       }
       // A topic that receives real data is no longer "absent": un-retire it so a
       // recomputed filter output (retired by a reload's replaceDatasetFrom) reappears in
@@ -544,6 +545,11 @@ void DataEngine::adoptChunksFrom(TopicStorage& dst, TopicStorage& src) {
     dst.sealed_chunks_.push_back(std::move(chunk));
   }
   dst.invalidateChunkAggregate();
+  // Both sides changed content outside appendSealedChunk's in-order test (the
+  // flushTo boundary even permits an equal timestamp), so incremental sample
+  // caches on either storage must rebuild.
+  ++src.series_generation_;
+  ++dst.series_generation_;
 }
 
 Expected<DatasetReplaceResult> DataEngine::replaceDatasetFrom(

@@ -1164,10 +1164,13 @@ void PlotWidget::onChangeCurveColor(const QString& curve_name, QColor new_color)
   CurveInfo* info = curveFromTitle(curve_name);
   if (info != nullptr && info->curve != nullptr) {
     info->curve->setPen(new_color, info->curve->pen().widthF());
-    // The Lines-and-Dots symbol snapshots its color at creation; recolor it
-    // too or the dots keep the old hue.
+    // A curve symbol (the WASM Lines-and-Dots path) snapshots its color at
+    // creation; recolor it too or the dots keep the old hue. The replacement
+    // keeps the original's cache policy rather than resetting to AutoCache.
     if (const QwtSymbol* symbol = info->curve->symbol(); symbol != nullptr) {
-      info->curve->setSymbol(new QwtSymbol(symbol->style(), new_color, QPen(new_color), symbol->size()));
+      auto* recolored = new QwtSymbol(symbol->style(), new_color, QPen(new_color), symbol->size());
+      recolored->setCachePolicy(symbol->cachePolicy());
+      info->curve->setSymbol(recolored);
     }
     // Remember the override so the curve keeps this color when re-dragged into
     // another plot (issue #68). Keyed by source_name, the same key addCurve uses.

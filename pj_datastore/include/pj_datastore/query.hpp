@@ -231,14 +231,39 @@ class SeriesReader {
   /// Return the virtual series index of the first sample at or after `t`.
   [[nodiscard]] std::optional<std::size_t> indexAtOrAfterTime(PJ::Timestamp t) const;
 
-  /// Return the latest sample at or before `t`.
+  /// Return the latest sample at or before `t`. Merge-aware: correct even when
+  /// chunk time ranges overlap after out-of-order ingest (unlike the
+  /// virtual-index lookups above, which assume chronological chunks).
   [[nodiscard]] std::optional<SeriesSample> sampleAtOrBeforeTime(PJ::Timestamp t) const;
 
-  /// Return the first sample at or after `t`.
+  /// Return the first sample at or after `t`. Merge-aware (see above).
   [[nodiscard]] std::optional<SeriesSample> sampleAtOrAfterTime(PJ::Timestamp t) const;
+
+  /// Return the latest sample strictly before `t`. Merge-aware (see above).
+  [[nodiscard]] std::optional<SeriesSample> sampleBeforeTime(PJ::Timestamp t) const;
+
+  /// Return the first sample strictly after `t`. Merge-aware (see above).
+  [[nodiscard]] std::optional<SeriesSample> sampleAfterTime(PJ::Timestamp t) const;
 
   /// Iterate samples in an inclusive time range.
   [[nodiscard]] SeriesCursor samples(PJ::Range<PJ::Timestamp> time_range) const;
+
+  /// Retention floor this reader applies (kNoRetentionFloor = none).
+  [[nodiscard]] PJ::Timestamp retentionFloor() const noexcept {
+    return retention_floor_;
+  }
+
+  /// Topic series-content generation at snapshot time (populated by
+  /// DataReader::series; 0 for the lock-free constructor). A consumer whose
+  /// cache was built under an equal generation may absorb the delta as
+  /// strictly in-order appends plus a retention-floor rise — see
+  /// TopicStorage::seriesGeneration().
+  [[nodiscard]] uint64_t seriesGeneration() const noexcept {
+    return series_generation_;
+  }
+  void setSeriesGeneration(uint64_t generation) noexcept {
+    series_generation_ = generation;
+  }
 
   /// Return bounds over the entire series.
   [[nodiscard]] std::optional<SeriesBounds> bounds() const;
@@ -253,6 +278,7 @@ class SeriesReader {
   // floor). kNoRetentionFloor = no floor. Set by DataReader::series() from the
   // topic's floor.
   PJ::Timestamp retention_floor_ = kNoRetentionFloor;
+  uint64_t series_generation_ = 0;  // see seriesGeneration()
   // Engine lock held for this reader's lifetime when built via DataReader (empty
   // for the lock-free constructor). A SeriesCursor from samples() borrows chunks_
   // and relies on this reader (and this lock) outliving it.

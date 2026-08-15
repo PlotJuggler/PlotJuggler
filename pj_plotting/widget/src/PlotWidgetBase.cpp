@@ -10,6 +10,8 @@
 #include <qwt_plot_grid.h>
 #include <qwt_plot_layout.h>
 #include <qwt_plot_marker.h>
+
+#include "pj_plotting/PlotCurve.h"
 #ifndef PJ_TARGET_WASM
 #include <qwt_plot_opengl_canvas.h>
 #else
@@ -314,7 +316,7 @@ PlotWidgetBase::CurveInfo* PlotWidgetBase::addCurve(
     return nullptr;
   }
 
-  auto* curve = new QwtPlotCurve(display_name.isEmpty() ? name : display_name);
+  auto* curve = new PlotCurve(display_name.isEmpty() ? name : display_name);
   curve->setPaintAttribute(QwtPlotCurve::ClipPolygons, true);
   curve->setPaintAttribute(QwtPlotCurve::FilterPointsAggressive, true);
   curve->setData(series);
@@ -666,9 +668,13 @@ void PlotWidgetBase::setStyle(QwtPlotCurve* curve, CurveStyle style) {
 }
 
 void PlotWidgetBase::applyStyleToCurve(QwtPlotCurve* curve, CurveStyle style) {
-  // kLinesAndDots draws plain Lines plus an explicit symbol: dots drawn by the
-  // curve pen itself are not visible at the pen widths we use (1.4-4.2 px), so
-  // each sample gets a small filled circle instead. Cleared for other styles.
+  // kLinesAndDots draws plain Lines plus dots at each sample. On desktop the
+  // dots are PlotCurve's batched drawDots pass; on WASM PlotRhiCanvas builds
+  // its dot geometry from an explicit symbol instead (it never paints
+  // per-point through QPainter, so the symbol path is harmless there).
+  if (auto* plot_curve = dynamic_cast<PlotCurve*>(curve); plot_curve != nullptr) {
+    plot_curve->setDotWidth(0.0);
+  }
   switch (style) {
     case kLines:
       curve->setStyle(QwtPlotCurve::Lines);
@@ -676,9 +682,16 @@ void PlotWidgetBase::applyStyleToCurve(QwtPlotCurve* curve, CurveStyle style) {
       break;
     case kLinesAndDots: {
       curve->setStyle(QwtPlotCurve::Lines);
+#ifdef PJ_TARGET_WASM
       const QColor color = curve->pen().color();
       const int dot_size = static_cast<int>(std::round(dotWidthValue(lineWidth())));
       curve->setSymbol(new QwtSymbol(QwtSymbol::Ellipse, color, QPen(color), QSize(dot_size, dot_size)));
+#else
+      if (auto* plot_curve = dynamic_cast<PlotCurve*>(curve); plot_curve != nullptr) {
+        plot_curve->setDotWidth(dotWidthValue(lineWidth()));
+      }
+      curve->setSymbol(nullptr);
+#endif
       break;
     }
     case kDots:

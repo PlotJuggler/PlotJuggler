@@ -3,4 +3,5 @@ add_subdirectory(widget)
 
 if(PJ_BUILD_TESTS)
     add_subdirectory(tests)
+    add_subdirectory(benchmarks)
 endif()

@@ -157,8 +157,10 @@ CMake glue — the default build `FetchContent`s the official 6.3.0 release tarb
 prebuilt `qwt` via `-DPJ_SYSTEM_QWT=ON`. Never patch Qwt sources — PJ-specific
 behavior that PJ3 carried as in-tree Qwt patches lives in the app instead: axis
 tick-label formatting in `pj_plotting`'s `PlotScaleDraw` (twin in
-`pj_dialog_host`'s chart preview), and the "Lines and Dots" curve style as
-`Lines` + explicit symbol in `PlotWidgetBase`. See `3rdparty/qwt/README.PJ4.md`.
+`pj_dialog_host`'s chart preview), and the "Lines and Dots" curve style in
+`pj_plotting`'s `PlotCurve` (Lines + one batched, pixel-weeded `drawDots` pass;
+WASM keeps an explicit symbol for `PlotRhiCanvas` geometry instead). See
+`3rdparty/qwt/README.PJ4.md`.
 
 Other PJ3-style vendorables (`QCodeEditor`, `sol2`, `color_widgets`, `date`) will be vendored on the same pattern as we pull in the modules that need them — decide per-case when each module lands.
 

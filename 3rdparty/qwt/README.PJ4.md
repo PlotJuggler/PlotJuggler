@@ -27,8 +27,9 @@ PJ trees carried as in-tree Qwt patches lives in the application:
 - Axis tick-label formatting (`QwtAbstractScaleDraw::label` override):
   `pj_plotting/widget/.../PlotScaleDraw.{h,cpp}` (and a local twin in
   `pj_dialog_host/src/chart_preview_widget.cpp`).
-- The "Lines and Dots" curve style: plain `QwtPlotCurve::Lines` plus an
-  explicit `QwtSymbol`, mapped in `PlotWidgetBase`.
+- The "Lines and Dots" curve style: `pj_plotting`'s `PlotCurve` draws
+  `QwtPlotCurve::Lines` plus one batched, pixel-weeded `drawDots` pass
+  (on WASM, an explicit `QwtSymbol` that `PlotRhiCanvas` renders as geometry).
 
 To upgrade Qwt: bump the URL + SHA-256 in `CMakeLists.txt`, re-check the
 source list against upstream's `src/src.pri`, and align the conda-forge
