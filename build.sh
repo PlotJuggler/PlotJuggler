@@ -5,6 +5,17 @@ source "${SCRIPT_DIR}/versions.env"
 
 QT_DIR="${SCRIPT_DIR}/.qt/${PJ_QT_VERSION}/gcc_64"
 
+usage() {
+  printf '%s\n' \
+    "Usage: ./build.sh [OPTIONS]" \
+    "" \
+    "Options:" \
+    "  --tsan               Build and run concurrency tests with ThreadSanitizer" \
+    "  --skip-test          Build without the test suite" \
+    "  --skip-conan-install Reuse the existing Conan toolchain" \
+    "  --help               Show this help message"
+}
+
 # `./build.sh --tsan` builds + runs the Qt-free foundation concurrency tests under
 # ThreadSanitizer in a separate build-tsan/ tree (the default build/ is untouched).
 # It guards the datastore worker-thread race regressions; the Linux CI `tsan` job
@@ -12,14 +23,22 @@ QT_DIR="${SCRIPT_DIR}/.qt/${PJ_QT_VERSION}/gcc_64"
 # RelWithDebInfo configure, so the Conan dependency closure is reused as-is (no
 # Debug rebuild) and only our own sources are instrumented.
 TSAN=0
+SKIP_TEST=0
 SKIP_CONAN_INSTALL=0
 for arg in "$@"; do
   case "$arg" in
     --tsan) TSAN=1 ;;
+    --skip-test) SKIP_TEST=1 ;;
     --skip-conan-install) SKIP_CONAN_INSTALL=1 ;;
-    *) echo "unknown argument: $arg (supported: --tsan, --skip-conan-install)" >&2; exit 2 ;;
+    --help) usage; exit 0 ;;
+    *) echo "unknown argument: $arg" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+if [[ "$TSAN" == "1" && "$SKIP_TEST" == "1" ]]; then
+  echo "--tsan and --skip-test cannot be used together" >&2
+  exit 2
+fi
 
 if [[ ! -d "$QT_DIR" ]]; then
   echo "Qt ${PJ_QT_VERSION} not found at ${QT_DIR}."
@@ -37,7 +56,11 @@ fi
 # PJ_BUILD_RASTER_HELPER goes the other way: the Linux release turns the
 # standalone GPLv2 helper ON so appimage/build_appimage.sh can stage it.
 PJ_FLAG_ARGS=()
-[[ -n "${PJ_BUILD_TESTS:-}" ]] && PJ_FLAG_ARGS+=("-DPJ_BUILD_TESTS=${PJ_BUILD_TESTS}")
+if [[ "$SKIP_TEST" == "1" ]]; then
+  PJ_FLAG_ARGS+=("-DPJ_BUILD_TESTS=OFF")
+elif [[ -n "${PJ_BUILD_TESTS:-}" ]]; then
+  PJ_FLAG_ARGS+=("-DPJ_BUILD_TESTS=${PJ_BUILD_TESTS}")
+fi
 [[ -n "${PJ_BUILD_DEMOS:-}" ]] && PJ_FLAG_ARGS+=("-DPJ_BUILD_DEMOS=${PJ_BUILD_DEMOS}")
 [[ -n "${PJ_BUILD_RASTER_HELPER:-}" ]] && PJ_FLAG_ARGS+=("-DPJ_BUILD_RASTER_HELPER=${PJ_BUILD_RASTER_HELPER}")
 
