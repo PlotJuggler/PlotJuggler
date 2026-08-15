@@ -157,6 +157,14 @@ class ObjectStore {
   // next id is auto-assigned.
   Expected<ObjectTopicId> registerTopic(const ObjectTopicDescriptor& descriptor, ObjectTopicId requested_id = {});
 
+  /// Atomic find-or-register for the refill contract: an existing topic with
+  /// the same (dataset, name) AND byte-identical metadata_json is reused (its
+  /// id — and every curve bound to it — survives a replace-refill); a
+  /// same-name topic with DIFFERENT metadata is rejected loudly, preserving
+  /// the collision alarm registerTopic gives. One lock: two racing callers
+  /// converge on one topic instead of the loser erroring.
+  Expected<ObjectTopicId> findOrRegisterTopic(const ObjectTopicDescriptor& descriptor);
+
   // Resolve a topic id by (dataset_id, topic_name) without registering. Returns
   // nullopt if no topic with that key exists. Used by hosts that need to bind a
   // parser-side write surface to a topic the source already registered.

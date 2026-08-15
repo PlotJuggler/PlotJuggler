@@ -44,11 +44,47 @@ TEST(PluginDataHostObjectTest, RegisterTopicReturnsUsableHandle) {
   EXPECT_EQ(desc.dataset_id, kDatasetId);
 }
 
-TEST(PluginDataHostObjectTest, RegisterTopicRejectsDuplicateName) {
+TEST(PluginDataHostObjectTest, RegisterTopicReusesSameNameWithMatchingMetadata) {
+  // The refill contract: re-registration with identical metadata reuses the
+  // topic (same id, entries untouched) so a replace-refill's replay lands in
+  // the topic the eager ingest created.
   Fixture f;
-  ASSERT_TRUE(f.host.registerTopic("markers", "{}").has_value());
-  auto again = f.host.registerTopic("markers", "{}");
-  EXPECT_FALSE(again.has_value());
+  const auto first = f.host.registerTopic("markers", R"({"media_class":"scene"})");
+  ASSERT_TRUE(first.has_value()) << first.error();
+  const std::vector<uint8_t> payload = {1, 2, 3};
+  ASSERT_TRUE(f.host.pushOwned(*first, 1000, payload).has_value());
+
+  const auto again = f.host.registerTopic("markers", R"({"media_class":"scene"})");
+  ASSERT_TRUE(again.has_value()) << again.error();
+  EXPECT_EQ(again->id, first->id);
+
+  const auto topics = f.store.listTopics(kDatasetId);
+  ASSERT_EQ(topics.size(), 1U);
+  EXPECT_EQ(f.store.entryCount(ObjectTopicId{first->id}), 1U);
+}
+
+TEST(PluginDataHostObjectTest, RegisterTopicRejectsSameNameWithDifferentMetadata) {
+  // A same-name registration with DIFFERENT metadata is a genuine collision
+  // (two producers on one name), not a refill — it must stay a loud failure.
+  Fixture f;
+  ASSERT_TRUE(f.host.registerTopic("markers", R"({"media_class":"scene"})").has_value());
+  const auto conflicting = f.host.registerTopic("markers", R"({"media_class":"other"})");
+  EXPECT_FALSE(conflicting.has_value());
+}
+
+TEST(PluginDataHostObjectTest, RegisterTopicReuseIsScopedToTheDataset) {
+  // The reuse key is (dataset, name, metadata): the same name on another
+  // dataset is an independent topic, never a cross-dataset match.
+  ObjectStore store;
+  DatastoreSourceObjectWriteHost host_a{store, DatasetId{1}};
+  DatastoreSourceObjectWriteHost host_b{store, DatasetId{2}};
+  SourceObjectWriteHostView view_a{host_a.raw()};
+  SourceObjectWriteHostView view_b{host_b.raw()};
+  const auto topic_a = view_a.registerTopic("markers", "{}");
+  const auto topic_b = view_b.registerTopic("markers", "{}");
+  ASSERT_TRUE(topic_a.has_value()) << topic_a.error();
+  ASSERT_TRUE(topic_b.has_value()) << topic_b.error();
+  EXPECT_NE(topic_a->id, topic_b->id);
 }
 
 TEST(PluginDataHostObjectTest, PushOwnedStoresBytes) {

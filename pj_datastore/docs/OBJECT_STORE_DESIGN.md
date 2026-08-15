@@ -362,7 +362,7 @@ Plugin access to `ObjectStore` is provided by three optional v4 services:
 
 | Service | Host implementation | Purpose |
 |---|---|---|
-| `pj.source_object_write.v1` | `DatastoreSourceObjectWriteHost` | DataSource plugins register object topics and push owned or lazy entries. |
+| `pj.source_object_write.v1` | `DatastoreSourceObjectWriteHost` | DataSource plugins register object topics and push owned or lazy entries. Re-registering an existing (dataset, name) with identical metadata reuses the topic (the replace-refill contract — the id and its bound curves survive); different metadata still fails. |
 | `pj.parser_object_write.v1` | `DatastoreParserObjectWriteHost` | MessageParser plugins push entries to a host-bound object topic. |
 | `pj.toolbox_object_read.v1` | `DatastoreToolboxObjectReadHost` | Toolbox plugins look up topics and read entries as owning byte handles. |
 

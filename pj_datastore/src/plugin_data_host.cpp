@@ -1715,7 +1715,10 @@ bool sourceObjectRegisterTopic(
     desc.dataset_id = impl->dataset_id;
     desc.topic_name = std::string(toStringView(topic_name));
     desc.metadata_json = std::string(toStringView(metadata_json));
-    auto result = target->registerTopic(desc);
+    // Find-or-register: a replace-refill re-registers the topics the eager
+    // ingest created; same-metadata reuse keeps the ObjectTopicId (and every
+    // curve bound to it) alive, while a metadata mismatch still fails loudly.
+    auto result = target->findOrRegisterTopic(desc);
     if (!result) {
       impl->setError(result.error());
       propagateError(out_error, impl->last_error.c_str());

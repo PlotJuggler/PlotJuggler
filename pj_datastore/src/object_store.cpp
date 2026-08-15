@@ -45,6 +45,25 @@ Expected<ObjectTopicId> ObjectStore::registerTopic(
   return id;
 }
 
+Expected<ObjectTopicId> ObjectStore::findOrRegisterTopic(const ObjectTopicDescriptor& descriptor) {
+  std::unique_lock lock(store_mutex_);
+  for (const auto& [tid, series] : topics_) {
+    if (series->descriptor.topic_name == descriptor.topic_name &&
+        series->descriptor.dataset_id == descriptor.dataset_id) {
+      if (series->descriptor.metadata_json != descriptor.metadata_json) {
+        return unexpected("topic already registered with different metadata: " + descriptor.topic_name);
+      }
+      return tid;
+    }
+  }
+  ObjectTopicId id{next_id_++};
+  auto series = std::make_unique<ObjectSeries>();
+  series->descriptor = descriptor;
+  topics_.emplace_back(id, std::move(series));
+  series_index_.emplace(id.id, topics_.back().second.get());
+  return id;
+}
+
 std::optional<ObjectTopicId> ObjectStore::findTopic(DatasetId dataset_id, std::string_view topic_name) const {
   std::shared_lock lock(store_mutex_);
   for (const auto& [tid, series] : topics_) {
