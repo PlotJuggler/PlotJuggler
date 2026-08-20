@@ -230,47 +230,55 @@ void DataStreamZMQ::receiveLoop()
 {
   while (_running)
   {
-    zmq::message_t recv_msg;
-    zmq::recv_result_t result = _zmq_socket.recv(recv_msg);
+    zmq::message_t topic_payload_msg;
+    zmq::recv_result_t result = _zmq_socket.recv(topic_payload_msg);
 
     // If we did not receive anything, continue
-    if (recv_msg.size() <= 0)
+    if (topic_payload_msg.size() <= 0)
     {
       continue;
     }
 
     // If there are more parts, then it is the topic
     std::string topic = "";
-    if (recv_msg.more())
+    if (topic_payload_msg.more())
     {
-      topic = std::string(reinterpret_cast<const char*>(recv_msg.data()), recv_msg.size());
+      topic = std::string(reinterpret_cast<const char*>(topic_payload_msg.data()), topic_payload_msg.size());
 
       // Then it is the payload
-      recv_msg.rebuild();
-      result = _zmq_socket.recv(recv_msg);
+      topic_payload_msg.rebuild();
+      result = _zmq_socket.recv(topic_payload_msg);
 
       // If we did not receive anything, continue
-      if (recv_msg.size() <= 0)
+      if (topic_payload_msg.size() <= 0)
       {
         continue;
       }
     }
 
-    PJ::MessageRef msg{ PJ::MessageRef(reinterpret_cast<uint8_t*>(recv_msg.data()),
-                                       recv_msg.size()) };
+    PJ::MessageRef msg{ PJ::MessageRef(reinterpret_cast<uint8_t*>(topic_payload_msg.data()),
+                                       topic_payload_msg.size()) };
 
     // If there are more parts, then it is the timestamp
     double timestamp = 0.0;
-    if (recv_msg.more())
+    if (topic_payload_msg.more())
     {
-      recv_msg.rebuild();
-      result = _zmq_socket.recv(recv_msg);
+      // Create new message_t object to avoid rebuilding topic_payload_msg
+      zmq::message_t timestamp_extra_msg;
+      result = _zmq_socket.recv(timestamp_extra_msg);
 
-      if (recv_msg.size() > 0)
+      if (timestamp_extra_msg.size() > 0)
       {
         // The timestamp is the seconds since the epoch as a string
         timestamp =
-            std::stod(std::string(reinterpret_cast<const char*>(recv_msg.data()), recv_msg.size()));
+            std::stod(std::string(reinterpret_cast<const char*>(timestamp_extra_msg.data()), timestamp_extra_msg.size()));
+      }
+      
+      // Extinguish remaining parts (if any)
+      while (timestamp_extra_msg.more())
+      {
+        timestamp_extra_msg.rebuild();
+        result = _zmq_socket.recv(timestamp_extra_msg);
       }
     }
     else
@@ -297,13 +305,6 @@ void DataStreamZMQ::receiveLoop()
       {
         emit this->dataReceived();
       }
-    }
-
-    // Extinguish remaining parts (if any)
-    while (recv_msg.more())
-    {
-      recv_msg.rebuild();
-      result = _zmq_socket.recv(recv_msg);
     }
   }
 }
