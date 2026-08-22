@@ -6,6 +6,10 @@
 #include <QWidget>
 #include <QSettings>
 #include <QMainWindow>
+#include <QProgressDialog>
+#include <QCoreApplication>
+
+#include <memory>
 
 #include "ulog_parser.h"
 #include "ulog_parameters_dialog.h"
@@ -48,36 +52,43 @@ bool DataLoadULog::readDataFromFile(FileLoadInfo* fileload_info, PlotDataMapRef&
   ULogParser::DataStream datastream(reinterpret_cast<char*>(mapped),
                                     static_cast<size_t>(file_size));
 
-  ULogParser parser(datastream);
+  // Modal progress dialog shown while the (potentially large) file is parsed.
+  QProgressDialog progress_dialog(tr("Loading ULog file..."), tr("Cancel"), 0, 100,
+                                  _main_win);
+  progress_dialog.setWindowTitle(tr("Importing ULog"));
+  progress_dialog.setWindowModality(Qt::WindowModal);
+  progress_dialog.setMinimumDuration(500);  // don't flash the dialog for small files
+  progress_dialog.setAutoReset(false);
+  progress_dialog.setValue(0);
 
-  const auto& timeseries_map = parser.getTimeseriesMap();
-  auto min_msg_time = std::numeric_limits<double>::max();
-  for (const auto& it : timeseries_map)
+  auto progress_cb = [&progress_dialog](size_t offset, size_t total) -> bool {
+    progress_dialog.setValue(static_cast<int>(offset * 100 / total));
+    QCoreApplication::processEvents();
+    return !progress_dialog.wasCanceled();
+  };
+
+  std::unique_ptr<ULogParser> parser;
+  try
   {
-    const std::string& sucsctiption_name = it.first;
-    const ULogParser::Timeseries& timeseries = it.second;
-    auto group = plot_data.getOrCreateGroup(sucsctiption_name);
-
-    for (const auto& data : timeseries.data)
-    {
-      std::string series_name = sucsctiption_name + data.first;
-
-      auto series = plot_data.addNumeric(series_name, group);
-
-      for (size_t i = 0; i < data.second.size(); i++)
-      {
-        assert(i < timeseries.timestamps.size());
-        const uint64_t timestamp = timeseries.timestamps[i].value_or(static_cast<uint64_t>(i));
-        double msg_time = static_cast<double>(timestamp) * 0.000001;
-        min_msg_time = std::min(min_msg_time, msg_time);
-        PlotData::Point point(msg_time, data.second[i]);
-        series->second.pushBack(point);
-      }
-    }
+    // Direct-output mode: parsed points are pushed straight into plot_data,
+    // which is roughly twice as fast as the intermediate-buffer path.
+    parser.reset(new ULogParser(datastream, plot_data, progress_cb));
   }
+  catch (const std::runtime_error&)
+  {
+    progress_dialog.close();
+    if (progress_dialog.wasCanceled())
+    {
+      return false;  // user cancelled: abort the import silently
+    }
+    throw;
+  }
+  progress_dialog.close();
+
+  const double min_msg_time = parser->getMinMessageTime();
 
   // store parameters as a timeseries with a single point
-  for (const auto& param : parser.getParameters())
+  for (const auto& param : parser->getParameters())
   {
     auto series = plot_data.addNumeric("_parameters/" + param.name);
     double value = (param.val_type == ULogParser::FLOAT) ? double(param.value.val_real) :
@@ -85,7 +96,7 @@ bool DataLoadULog::readDataFromFile(FileLoadInfo* fileload_info, PlotDataMapRef&
     series->second.pushBack({ min_msg_time, value });
   }
 
-  ULogParametersDialog* dialog = new ULogParametersDialog(parser, _main_win);
+  ULogParametersDialog* dialog = new ULogParametersDialog(*parser, _main_win);
   dialog->setWindowTitle(QString("ULog file %1").arg(filename));
   dialog->setAttribute(Qt::WA_DeleteOnClose);
   dialog->restoreSettings();
