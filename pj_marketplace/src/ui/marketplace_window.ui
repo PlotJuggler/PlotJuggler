@@ -77,7 +77,7 @@
      <item>
       <widget class="QPushButton" name="update_all_btn_">
        <property name="text"><string>Update All</string></property>
-       <property name="toolTip"><string>Install all extensions shown in the current view</string></property>
+       <property name="toolTip"><string>Update every installed extension that has a newer version available</string></property>
        <!-- fixedWidth(90) set in C++ -->
       </widget>
      </item>
