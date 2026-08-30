@@ -92,14 +92,14 @@ forwarded verbatim if the user supplies one.
 
 ## Retro payload (`--retro-wad <path>`)
 
-`thirdparty/retro/` inside the bundle holds an **independent, separately
+`3rdparty/retro/` inside the bundle holds an **independent, separately
 licensed** program that PlotJuggler launches as a child process and links none
 of: the GPLv2 `pj-raster-helper` (built from the vendored `doomgeneric`), its
 game data as `base.wad`, and the license texts that must travel with them
 (`COPYING`, `SOURCE-OFFER.txt`, `SHAREWARE-LICENSE.txt`, `README.md`). Only the
 in-app trigger is hidden — the licenses are not.
 
-It sits next to the app binary (`usr/bin/thirdparty/retro/`) because that is
+It sits next to the app binary (`usr/bin/3rdparty/retro/`) because that is
 where `MainWindow::openEmbeddedConsole` looks (`applicationDirPath()`), which
 also means `deb/build_deb.sh` — which copies `usr/bin` wholesale — inherits it.
 

@@ -39,7 +39,7 @@ jammy container the release build runs in.
 
 ```
 /opt/plotjuggler4/bin/          plotjuggler4, qt.conf
-/opt/plotjuggler4/bin/thirdparty/retro/
+/opt/plotjuggler4/bin/3rdparty/retro/
                                 separately-licensed retro payload, when the
                                 AppDir was built with --retro-wad
 /opt/plotjuggler4/lib/          Qt 6, Conan closure, CPython stdlib,

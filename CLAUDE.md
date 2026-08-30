@@ -21,8 +21,7 @@ Top-level layout (monorepo, per plan §0 and §5):
 
 ```
 PJ4/
-├── 3rdparty/                # vendored CMake dependencies only
-├── thirdparty/              # GPLv2/shareware compliance payload for the standalone raster_helper (distinct from 3rdparty/)
+├── 3rdparty/                # vendored CMake deps + GPLv2/shareware compliance payload for the standalone raster_helper
 ├── plotjuggler_sdk/         # git submodule — Level 0 plugin SDK (pj_base / pj_plugins)
 ├── pj_datastore/            # Level 0 columnar store + ObjectStore + DerivedEngine (moved out of the submodule)
 ├── pj_scene_common/         # backend-agnostic layered scene dock framework, shared by the scene widget families
@@ -58,8 +57,7 @@ When adding files, use the owning module rather than creating new top-level fold
 - `pj_scripting/`: Luau filter engine for Data Processors — self-describing `.luau` filter classes behind a language-agnostic `ScriptEngine` seam (Python out-of-process is a future drop-in). It layers Luau onto the `PJ::proc::DataProcessor` base owned by `pj_datastore`. Do not place scripting code under `pj_app` or widget modules unless it is strictly UI/editor code.
 - `pj_scene3D/`: 3D scene widget family (robotics viz): TF, pointclouds, occupancy grids, URDF/mesh, markers. Independent 3D logic in `core/`, OpenGL widgets in `widgets/`, tests in `tests/`, standalone dev demos in `demos/` (built whenever the `pj_scene3d_widgets` target exists, i.e. on a default build). Do not add 3D rendering code elsewhere.
 - `resources/`: shared app resources registered in `resources.qrc`; module-local test/demo assets should live with that module.
-- `3rdparty/`: vendored source dependencies added via CMake `add_subdirectory`. Conan/system dependencies do not belong here.
-- `thirdparty/`: GPLv2/shareware license + source-offer compliance artifacts (`thirdparty/retro/`) shipped alongside the separately-licensed `pj-raster-helper`; distinct from `3rdparty/` (CMake-vendored sources). The root `CMakeLists.txt` installs these next to the helper binary.
+- `3rdparty/`: vendored source dependencies added via CMake `add_subdirectory`, plus `3rdparty/retro/` — the GPLv2/shareware license + source-offer compliance artifacts shipped alongside the separately-licensed `pj-raster-helper` (the root `CMakeLists.txt` installs these next to the helper binary). Conan/system dependencies do not belong here.
 - Top-level `raster_helper/` (the standalone GPL-2.0 `pj-raster-helper` executable that links vendored doomgeneric — PlotJuggler links none of it) and `raster_ipc/` (its header-only, Qt-free MPL-2.0 IPC contract, consumed by `pj_widgets`) are intentional non-`pj_` helper folders, not PJ modules, and are exempt from the no-new-top-level-folders rule.
 - Packaging recipes live in one flat folder per artifact format, also exempt from that rule: `appimage/` (AppImage), `deb/` (Debian/Ubuntu package), `installer/` (Windows installer). They contain no compiled code — each holds the scripts, templates and metadata that repackage an already-built tree. A `.deb` recipe belongs in `deb/`, deliberately **not** `debian/`, which by convention marks a debhelper source package this repo is not.
 
@@ -149,7 +147,7 @@ Explicitly vendored (do not take from Conan or system packages):
 
 - **Qt-Advanced-Docking-System** — docking framework used by `pj_app`.
 - **nanocdr** — vendored via `add_subdirectory`.
-- **doomgeneric** — a vendored C engine whose sources are globbed directly into the `pj-raster-helper` target (not `add_subdirectory`'d). It and `raster_helper` form an optional, GPL-isolated standalone executable that PlotJuggler never links. **Off by default**: the `pj-raster-helper` target is built only with `-DPJ_BUILD_RASTER_HELPER=ON` (and only when the vendored source is checked out), so an ordinary dev or CI build never compiles the doomgeneric engine. The one exception is the Linux release (`linux-appimage-release.yml`), which turns it on — via `PJ_BUILD_RASTER_HELPER=ON ./build.sh` — and stages the helper with `appimage/build_appimage.sh --retro-wad`, so the AppImage and the `.deb` ship it under `thirdparty/retro/` next to the app binary.
+- **doomgeneric** — a vendored C engine whose sources are globbed directly into the `pj-raster-helper` target (not `add_subdirectory`'d). It and `raster_helper` form an optional, GPL-isolated standalone executable that PlotJuggler never links. **Off by default**: the `pj-raster-helper` target is built only with `-DPJ_BUILD_RASTER_HELPER=ON` (and only when the vendored source is checked out), so an ordinary dev or CI build never compiles the doomgeneric engine. The one exception is the Linux release (`linux-appimage-release.yml`), which turns it on — via `PJ_BUILD_RASTER_HELPER=ON ./build.sh` — and stages the helper with `appimage/build_appimage.sh --retro-wad`, so the AppImage and the `.deb` ship it under `3rdparty/retro/` next to the app binary.
 
 **Qwt is external, not vendored** (special case): `3rdparty/qwt/` holds only the
 CMake glue — the default build `FetchContent`s the official 6.3.0 release tarball

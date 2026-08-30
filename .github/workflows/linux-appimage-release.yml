@@ -222,7 +222,7 @@ jobs:
       - name: Stage the retro payload's game data
         # The shareware WAD the pj-raster-helper renders is not in this repo.
         # Ubuntu multiverse's doom-wad-shareware carries id Software's freely
-        # redistributable DOOM1.WAD (see thirdparty/retro/SHAREWARE-LICENSE.txt);
+        # redistributable DOOM1.WAD (see 3rdparty/retro/SHAREWARE-LICENSE.txt);
         # the container already has multiverse enabled, it just has no apt
         # lists. The sha256 is pinned so a repackaged or mirror-swapped WAD
         # fails the release instead of silently changing what ships — jammy's
@@ -297,7 +297,7 @@ jobs:
           trap 'rm -rf "${workdir}"' EXIT
           cp "${APPIMAGE}" "${workdir}/app.AppImage"
           ( cd "${workdir}" && ./app.AppImage --appimage-extract >/dev/null )
-          retro="${workdir}/squashfs-root/usr/bin/thirdparty/retro"
+          retro="${workdir}/squashfs-root/usr/bin/3rdparty/retro"
           # The three license texts are a condition of shipping the other two
           # files at all, so their absence fails the release like a missing binary.
           for f in pj-raster-helper base.wad COPYING SOURCE-OFFER.txt SHAREWARE-LICENSE.txt README.md; do

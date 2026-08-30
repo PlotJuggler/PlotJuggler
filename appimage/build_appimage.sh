@@ -38,7 +38,7 @@
 #
 # --retro-wad <path> bundles the standalone GPLv2 pj-raster-helper (build it
 # with `PJ_BUILD_RASTER_HELPER=ON ./build.sh`) together with <path> as its game
-# data and the license texts from thirdparty/retro/. Omit it and no retro
+# data and the license texts from 3rdparty/retro/. Omit it and no retro
 # payload ships.
 set -euo pipefail
 
@@ -319,7 +319,7 @@ fi
 #     with them. PlotJuggler links none of it — the helper is launched as a
 #     child process, so it ships as plain files under the app binary's own
 #     directory, which is where MainWindow::openEmbeddedConsole looks
-#     (applicationDirPath()/thirdparty/retro/). Landing it under usr/bin also
+#     (applicationDirPath()/3rdparty/retro/). Landing it under usr/bin also
 #     means deb/build_deb.sh, which copies usr/bin wholesale, inherits it.
 #
 #     Staged AFTER linuxdeploy for the same reason plugins are: the helper's
@@ -331,17 +331,17 @@ if [[ -n "${RETRO_WAD}" ]]; then
   [[ -x "${RETRO_HELPER}" ]] || { echo "ERROR: ${RETRO_HELPER} missing — rebuild with PJ_BUILD_RASTER_HELPER=ON ./build.sh"; exit 1; }
   [[ -f "${RETRO_WAD}" ]]    || { echo "ERROR: --retro-wad '${RETRO_WAD}' is not a file"; exit 1; }
 
-  RETRO_DIR="${APPDIR}/usr/bin/thirdparty/retro"
+  RETRO_DIR="${APPDIR}/usr/bin/3rdparty/retro"
   mkdir -p "${RETRO_DIR}"
   install -m 0755 "${RETRO_HELPER}" "${RETRO_DIR}/pj-raster-helper"
   install -m 0644 "${RETRO_WAD}" "${RETRO_DIR}/base.wad"
   # GPLv2 section 3 (written offer) and the shareware terms are conditions of
   # shipping these two files at all. Only the trigger is hidden; the licenses
-  # are not — see thirdparty/retro/README.md.
-  install -m 0644 "${ROOT}/thirdparty/retro/COPYING" \
-                  "${ROOT}/thirdparty/retro/SOURCE-OFFER.txt" \
-                  "${ROOT}/thirdparty/retro/SHAREWARE-LICENSE.txt" \
-                  "${ROOT}/thirdparty/retro/README.md" \
+  # are not — see 3rdparty/retro/README.md.
+  install -m 0644 "${ROOT}/3rdparty/retro/COPYING" \
+                  "${ROOT}/3rdparty/retro/SOURCE-OFFER.txt" \
+                  "${ROOT}/3rdparty/retro/SHAREWARE-LICENSE.txt" \
+                  "${ROOT}/3rdparty/retro/README.md" \
                   "${RETRO_DIR}/"
   # The build-tree binary points at this host's Qt and Conan trees. Repoint it
   # at the deployed closure so it resolves Qt on its own; the launcher's
@@ -357,7 +357,7 @@ if [[ -n "${RETRO_WAD}" ]]; then
   if command -v strip >/dev/null; then
     strip "${RETRO_DIR}/pj-raster-helper"
   fi
-  echo "Retro: staged pj-raster-helper + $(basename "${RETRO_WAD}") -> usr/bin/thirdparty/retro"
+  echo "Retro: staged pj-raster-helper + $(basename "${RETRO_WAD}") -> usr/bin/3rdparty/retro"
 fi
 
 if [[ -n "${COMMIT_HASH}" ]]; then

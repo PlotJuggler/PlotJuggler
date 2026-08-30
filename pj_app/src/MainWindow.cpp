@@ -8811,7 +8811,7 @@ void MainWindow::openEmbeddedConsole() {
     return;
   }
   connect(view, &RasterStreamView::sessionEnded, this, [this]() { restoreCentralArea(); });
-  const QString dir = QCoreApplication::applicationDirPath() + u"/thirdparty/retro/"_s;
+  const QString dir = QCoreApplication::applicationDirPath() + u"/3rdparty/retro/"_s;
   QString helper = QStandardPaths::findExecutable(u"pj-raster-helper"_s, {dir});
   if (helper.isEmpty()) {
     helper = dir + u"pj-raster-helper"_s;

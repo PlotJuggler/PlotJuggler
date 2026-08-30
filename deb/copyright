@@ -45,7 +45,7 @@ Bundled plugins under /opt/plotjuggler4/lib/plotjuggler/plugins are published
 separately by the PlotJuggler project and carry their own license metadata in
 each plugin's manifest.json.
 
-Retro render helper (/opt/plotjuggler4/bin/thirdparty/retro)
+Retro render helper (/opt/plotjuggler4/bin/3rdparty/retro)
 -----------------------------------------------------------
 
 pj-raster-helper is an independent executable that PlotJuggler launches as a

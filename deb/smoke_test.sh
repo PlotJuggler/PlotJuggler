@@ -62,7 +62,7 @@ echo "OK: every shipped ELF resolves"
 # it with none set. The gate above skips it (neither a *.so* nor
 # bin/plotjuggler4). Absent from a package built without --retro-wad, hence the
 # presence test rather than a hard requirement; release CI asserts it shipped.
-RETRO=/opt/plotjuggler4/bin/thirdparty/retro
+RETRO=/opt/plotjuggler4/bin/3rdparty/retro
 if [ -d "${RETRO}" ]; then
   echo "--- retro payload ---"
   for f in pj-raster-helper base.wad COPYING SOURCE-OFFER.txt SHAREWARE-LICENSE.txt README.md; do

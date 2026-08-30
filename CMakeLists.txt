@@ -261,14 +261,14 @@ if(PJ_BUILD_RASTER_HELPER)
 endif()
 
 if(TARGET pj-raster-helper)
-    install(TARGETS pj-raster-helper RUNTIME DESTINATION thirdparty/retro)
+    install(TARGETS pj-raster-helper RUNTIME DESTINATION 3rdparty/retro)
     # GPLv2 / shareware compliance: the helper binary must ship with its license
     # text, the written offer for its corresponding source, and the WAD's
     # shareware terms. These travel next to the binary in the installed bundle.
     install(FILES
-        "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/retro/COPYING"
-        "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/retro/SOURCE-OFFER.txt"
-        "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/retro/SHAREWARE-LICENSE.txt"
-        "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/retro/README.md"
-        DESTINATION thirdparty/retro)
+        "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/retro/COPYING"
+        "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/retro/SOURCE-OFFER.txt"
+        "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/retro/SHAREWARE-LICENSE.txt"
+        "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/retro/README.md"
+        DESTINATION 3rdparty/retro)
 endif()
