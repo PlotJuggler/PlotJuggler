@@ -28,19 +28,19 @@ A full PJ4 build driven by `pixi run build` works, with:
 | conanfile.txt | conda-forge | note |
 |---|---|---|
 | (install_qt6.sh 6.11.1) | `qt6-main 6.11.1` | exact version; all needed components (Svg, SvgWidgets, OpenGLWidgets, UiTools, Concurrent, Test, GuiPrivate headers) |
-| fmt/12.1.0 | `fmt 12.2` | compiled lib instead of header-only — same `fmt::fmt` target |
+| fmt/12.2.0 | `fmt 12.2` | compiled lib instead of header-only — same `fmt::fmt` target |
 | tsl-robin-map/1.4.0 | `tsl_robin_map 1.4.0` | underscore package name; installs the standard `tsl-robin-map` CMake config |
-| gtest/1.17.0 | `gtest 1.17.0` | |
-| glm/1.0.1 | `glm 1.0.1` | |
+| gtest/1.18.0 | `gtest 1.17.0` | |
+| glm/1.0.3 | `glm 1.0.1` | |
 | benchmark/1.9.5 | `benchmark 1.9.5` | |
 | nlohmann_json/3.12.0 | `nlohmann_json 3.12.0` | |
 | cpython/3.12.7 + pybind11/2.13.6 | `python 3.12` + `pybind11 2.13.6` | see "cpython::embed" below |
 | zstd, fast_float, libpng, libjpeg-turbo | same names (lz4 is `lz4-c`) | libjpeg-turbo target naming differs, see fixes |
 | libarchive/3.8.7 (static) | `libarchive 3.8.8` (shared) | conda has no static build; fine at build time, adds a runtime .so |
-| ffmpeg/8.1 (custom LGPL build) | local `ffmpeg 8.1` `pj_lgpl_lean_*` (`recipes/ffmpeg`) | same trimmed decode-only configure line as Conan. Interim pin was conda-forge `ffmpeg =*=lgpl_*` — license-clean but feature-complete, and the default solve picks `gpl_*` |
+| ffmpeg/9.0.1 (custom LGPL build) | local `ffmpeg 9.0.1` `pj_lgpl_lean_*` (`recipes/ffmpeg`) | same trimmed decode-only configure line as Conan. Interim pin was conda-forge `ffmpeg =*=lgpl_*` — license-clean but feature-complete, and the default solve picks `gpl_*` |
 | backward-cpp/1.6 (+elfutils) | `backward-cpp 1.6` + `elfutils` | `dw` backend resolves in-env, same as Conan |
-| draco/1.5.6 | `draco 1.5.7` | the 1.5.6 pin existed only because Conan *source-builds* assimp against draco; prebuilt conda packages don't share that graph constraint |
-| assimp/5.4.3 (4 importers) | `assimp 6.0.5` (all importers) | **major version bump + full importer set** — see risks |
+| draco/1.5.7 | `draco 1.5.7` | Conan pins the exact version its source-built assimp requires; prebuilt conda packages don't share that graph constraint |
+| assimp/6.0.5 (4 importers) | `assimp 6.0.5` (all importers) | same major on both paths; conda ships the full importer set — see risks |
 | OpenGL headers (system) | `libgl-devel`, `libopengl-devel`, `libegl-devel` | replaces the system mesa dev packages |
 | (system libva/libdrm for VAAPI) | pulled in transitively by conda ffmpeg | no more `apt-get install libva-dev libdrm-dev` |
 
@@ -114,10 +114,10 @@ Conan source build":
   runtime `.so` to ship. Its conda build string says `gpl_*`: bsdtar/bsdcpio
   CLI tools are GPL, but **the library itself is BSD** — linking `libarchive.so`
   from an MPL app is fine.
-- **assimp 6.0.5 vs 5.4.3**: builds cleanly against our usage, but it's a major
-  version ahead with all importers enabled (bigger lib, wider parse surface on
-  untrusted mesh files). If that matters we'd pin/patch a leaner build on our
-  own channel.
+- **assimp importer set**: both paths are on assimp 6.0.5, but conda-forge ships
+  it with all importers enabled (bigger lib, wider parse surface on untrusted
+  mesh files) where Conan builds only the four PJ4 uses. If that matters we'd
+  pin/patch a leaner build on our own channel.
 - **Embedded Python is shared** (`libpython3.12.so`) instead of Conan's static
   libpython: `pj_app` now needs the env (or bundled lib) at runtime.
   `PJ_PYTHON_HOME` bakes to the pixi env prefix, which is correct for dev;

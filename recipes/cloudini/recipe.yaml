@@ -7,7 +7,7 @@ schema_version: 1
 # consumers, matching the Conan package's dependency graph.
 
 context:
-  version: "1.2.2"
+  version: "1.2.3"
 
 package:
   name: cloudini
@@ -15,7 +15,7 @@ package:
 
 source:
   url: https://github.com/facontidavide/cloudini/archive/refs/tags/${{ version }}.tar.gz
-  sha256: fd71f0dce1bc23ff12e82f26666861df8fdc5a250f4d8440851bd45f10e5eb6a
+  sha256: 414e55a63eae2ffa169da16e24c69723c96d4d9d13cc020c175763f14c029209
 
 build:
   number: 0

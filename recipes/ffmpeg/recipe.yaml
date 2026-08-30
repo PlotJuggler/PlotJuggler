@@ -25,7 +25,7 @@ schema_version: 1
 #      (VAAPI / D3D11VA) is compiled in for h264/hevc/av1.
 
 context:
-  version: "8.1"
+  version: "9.0.1"
 
 package:
   name: ffmpeg
@@ -33,7 +33,7 @@ package:
 
 source:
   url: https://ffmpeg.org/releases/ffmpeg-${{ version }}.tar.xz
-  sha256: b072aed6871998cce9b36e7774033105ca29e33632be5b6347f3206898e0756a
+  sha256: cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635
 
 build:
   number: 0

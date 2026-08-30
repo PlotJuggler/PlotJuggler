@@ -80,7 +80,7 @@ A `CompressedPointCloud` canonical object carries `{timestamp, frame_id, format,
 through the **same** `PointCloudLayer` and `convertCanonical()` path as a raw cloud — one dual-mode
 layer, no separate widget.
 
-- **Formats:** `cloudini` (header-embedded schema; via `cloudini/1.2.2`) and `draco`
+- **Formats:** `cloudini` (header-embedded schema; via `cloudini/1.2.3`) and `draco`
   (`draco/1.5.7` — pinned to 1.5.7 to match the native dependency graph;
   see `conanfile.txt`). Plain `zstd_point_cloud_transport` is **out of scope** — its blob is
   not self-describing (it relies on layout fields the canonical object does not carry).

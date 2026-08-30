@@ -87,7 +87,7 @@ libegl-devel = "*"
 # always resolve `ffmpeg` from conda-forge), and the pj_lgpl_lean* build
 # string matches no upstream variant, so a misconfigured solve fails loudly
 # instead of silently shipping a conda-forge build.
-ffmpeg = { version = "8.*", build = "pj_lgpl_lean*", channel = "./local-channel" }
+ffmpeg = { version = "9.*", build = "pj_lgpl_lean*", channel = "./local-channel" }
 
 # Windows is a required shipped target and conda-forge's win-64 ffmpeg has NO
 # lgpl build (GPL only) — so win-64 uses the same local LGPL-lean package as
@@ -95,7 +95,7 @@ ffmpeg = { version = "8.*", build = "pj_lgpl_lean*", channel = "./local-channel"
 # leg builds it into local-channel/ before solving (same bootstrap as the gap
 # packages).
 [target.win-64.dependencies]
-ffmpeg = { version = "8.*", build = "pj_lgpl_lean*", channel = "./local-channel" }
+ffmpeg = { version = "9.*", build = "pj_lgpl_lean*", channel = "./local-channel" }
 sccache = "0.16.*"               # MSVC cache + native GHA backend (see activation.env below)
 
 [tasks]

@@ -2,10 +2,10 @@
 # Active deps for the current PJ4 build (PJ_BUILD_PORTED_PLUGINS=OFF,
 # PJ_BUILD_TESTS=ON). Add a line here when a new module starts consuming a
 # library — keep this list to what is actually compiled.
-fmt/12.1.0
+fmt/12.2.0
 tsl-robin-map/1.4.0
-gtest/1.17.0
-glm/1.0.1
+gtest/1.18.0
+glm/1.0.3
 benchmark/1.9.5
 nanoarrow/0.7.0
 nlohmann_json/3.12.0
@@ -23,11 +23,11 @@ cpython/3.12.7
 pybind11/2.13.6
 mcap/2.1.1
 zstd/1.5.5
-fast_float/8.1.0
+fast_float/8.2.10
 libarchive/3.8.7
-libjpeg-turbo/3.1.4.1
+libjpeg-turbo/3.2.0
 libpng/1.6.58
-ffmpeg/8.1
+ffmpeg/9.0.1
 # Crash handler for pj_app: prints a symbolized stack trace (with source
 # file:line) to stderr on SIGSEGV/SIGABRT/etc. The default options select the
 # `dw` stack-details backend, which pulls elfutils transitively from Conan — so
@@ -36,13 +36,12 @@ ffmpeg/8.1
 backward-cpp/1.6
 # pj_scene3D decodes compressed point clouds (Draco + Cloudini canonical objects).
 # cloudini transitively pulls lz4 + zstd; draco point-cloud compression is on by default.
-# Pinned at 1.5.7 to match the current assimp/5.4.3 recipe (Conan Center bumped the
-# draco requirement in July 2026 for the upstream C++23 patch — google/draco#980).
-# Keep in lock-step with whatever assimp/5.4.3 declares in its current recipe.
+# Pinned at 1.5.7 to match what the assimp/6.0.5 ConanCenter recipe requires; keep
+# in lock-step with whatever assimp declares, or the two conflict in the graph.
 draco/1.5.7
-cloudini/1.2.2
+cloudini/1.2.3
 # pj_scene3D mesh loader: STL / Collada(DAE) / OBJ / glTF importers only.
-assimp/5.4.3
+assimp/6.0.5
 
 [options]
 fmt/*:header_only=True
@@ -142,7 +141,7 @@ ffmpeg/*:disable_all_protocols=True
 ffmpeg/*:enable_protocols=file
 # assimp — enable ONLY the importers pj_scene3D needs (STL, Collada/DAE, OBJ,
 # glTF); disable the long tail of importers and all exporters. Static lib.
-# Option names verified via `conan inspect` of the assimp/5.4.3 ConanCenter
+# Option names verified via `conan inspect` of the assimp/6.0.5 ConanCenter
 # recipe (a wrong name is silently ignored by Conan).
 assimp/*:shared=False
 assimp/*:with_stl=True
