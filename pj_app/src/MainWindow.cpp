@@ -3429,12 +3429,25 @@ QString MainWindow::registryUrlSetting() const {
 }
 
 void MainWindow::setRegistryUrlSetting(const QString& url) {
-  QSettings settings;
-  if (url.isEmpty()) {
-    settings.remove(QLatin1String(kRegistryUrlSettingsKey));
-  } else {
-    settings.setValue(QLatin1String(kRegistryUrlSettingsKey), url);
+  {
+    // Scoped so the write is flushed before effectiveRegistryUrl() reads it back
+    // through its own QSettings below.
+    QSettings settings;
+    if (url.isEmpty()) {
+      settings.remove(QLatin1String(kRegistryUrlSettingsKey));
+    } else {
+      settings.setValue(QLatin1String(kRegistryUrlSettingsKey), url);
+    }
   }
+#ifndef PJ_TARGET_WASM
+  // A marketplace panel the user left open captured the URL when it was built
+  // and would keep serving the previous registry until closed and reopened.
+  // This method is the single owner of the settings key, so pushing the new
+  // value from here reaches that panel whichever caller changed the setting.
+  if (!marketplace_panel_.isNull()) {
+    marketplace_panel_->setRegistryUrl(effectiveRegistryUrl());
+  }
+#endif
 }
 
 QString MainWindow::defaultRegistryUrl() {

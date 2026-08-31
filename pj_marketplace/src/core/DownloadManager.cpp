@@ -11,8 +11,10 @@
 #include <QFutureWatcher>
 #include <QNetworkRequest>
 #include <QtConcurrent>
+#include <algorithm>
 
 #include "pj_base/expected.hpp"
+#include "pj_marketplace/archive_limits.hpp"
 #include "pj_marketplace/download_manager.hpp"
 using namespace Qt::StringLiterals;
 
@@ -23,7 +25,14 @@ namespace PJ {
 // ---------------------------------------------------------------------------
 
 PJ::Expected<void, QString> DownloadManager::extractFromMemory(
-    const QByteArray& data, const QString& destination_dir, const std::atomic<bool>& cancel_requested) const {
+    const QByteArray& data, const QString& destination_dir, const std::atomic<bool>& cancel_requested,
+    const ArchiveLimits& limits) const {
+  ArchiveBudget budget;
+
+  if (static_cast<uint64_t>(data.size()) > limits.maximum_compressed_bytes) {
+    return PJ::unexpected(u"Archive is larger than the %1-byte limit"_s.arg(limits.maximum_compressed_bytes));
+  }
+
   QDir dest_dir(destination_dir);
   if (!dest_dir.exists() && !dest_dir.mkpath(u"."_s)) {
     return PJ::unexpected(u"Could not create destination directory: %1"_s.arg(destination_dir));
@@ -53,6 +62,13 @@ PJ::Expected<void, QString> DownloadManager::extractFromMemory(
     }
 
     const QString entry_name = QString::fromUtf8(archive_entry_pathname(entry));
+
+    // Refuse the path's shape before it reaches the filesystem, so a name that is
+    // harmless here and unusable on Windows fails on both.
+    if (const auto refusal = admitEntryPath(entry_name.toStdString(), limits.maximum_path_segments)) {
+      return PJ::unexpected(u"%1: %2"_s.arg(QString::fromStdString(*refusal), entry_name));
+    }
+
     const QString target_path = dest_dir.filePath(entry_name);
 
     // Guard against path-traversal attacks (e.g. entries containing "../")
@@ -60,10 +76,55 @@ PJ::Expected<void, QString> DownloadManager::extractFromMemory(
       return PJ::unexpected(u"Unsafe path detected in ZIP entry: %1"_s.arg(entry_name));
     }
 
-    if (archive_entry_filetype(entry) == AE_IFDIR) {
+    // Deduced, not spelled: archive_entry_filetype() returns __LA_MODE_T, which is
+    // mode_t only where POSIX provides it — unsigned short on Windows, and int from
+    // libarchive 4.0 on.
+    const auto entry_type = archive_entry_filetype(entry);
+    const ArchiveEntryKind entry_kind = entry_type == AE_IFDIR   ? ArchiveEntryKind::kDirectory
+                                        : entry_type == AE_IFREG ? ArchiveEntryKind::kRegularFile
+                                                                 : ArchiveEntryKind::kOther;
+    if (const auto refusal = admitEntryKind(entry_kind)) {
+      return PJ::unexpected(u"%1: %2"_s.arg(QString::fromStdString(*refusal), entry_name));
+    }
+
+    // An entry does not always declare its size. A ZIP written without seeking
+    // defers the sizes to a descriptor after the payload, and when the archive's
+    // central directory is out of reach of the reader that would supply them, the
+    // size stays unset — libarchive then reports zero. Reading that as "declares
+    // nothing" would refuse a valid archive at its first data block, so the two
+    // cases are handled apart: a declared size is charged before the file is
+    // opened, an undeclared one is bounded while the bytes arrive.
+    const bool size_declared = archive_entry_size_is_set(entry) != 0;
+    const uint64_t declared_bytes = (size_declared && entry_kind == ArchiveEntryKind::kRegularFile)
+                                        ? static_cast<uint64_t>(std::max<la_int64_t>(archive_entry_size(entry), 0))
+                                        : 0U;
+
+    // Always called, declared or not: it is what counts the entry against the
+    // entry-count cap. Undeclared entries charge zero here and settle up at EOF.
+    if (const auto refusal = admitEntry(limits, budget, declared_bytes)) {
+      return PJ::unexpected(u"%1 (at \"%2\")"_s.arg(QString::fromStdString(*refusal), entry_name));
+    }
+
+    if (entry_kind == ArchiveEntryKind::kDirectory) {
       dest_dir.mkpath(entry_name);
       continue;
     }
+
+    // Declared, the entry is held to its own declaration. Undeclared, it is held
+    // to whatever the budgets still allow, which is the same ceiling the up-front
+    // charge would have applied.
+    //
+    // Computed before the file is opened, because opening truncates: a ceiling of
+    // zero has to refuse the entry while whatever is at that path is still
+    // untouched. The remaining total is subtracted defensively — the budget never
+    // exceeds the cap, but an unsigned wrap here would raise the ceiling instead
+    // of lowering it, and a limit that fails open is worse than one that refuses
+    // too much.
+    const uint64_t remaining_total = limits.maximum_total_expanded_bytes > budget.total_expanded_bytes
+                                         ? limits.maximum_total_expanded_bytes - budget.total_expanded_bytes
+                                         : 0U;
+    const uint64_t write_cap =
+        size_declared ? declared_bytes : std::min(limits.maximum_entry_expanded_bytes, remaining_total);
 
     // Ensure the parent directory exists before writing
     QFileInfo fi(target_path);
@@ -77,6 +138,7 @@ PJ::Expected<void, QString> DownloadManager::extractFromMemory(
     const void* buf;
     size_t size;
     la_int64_t offset;
+    uint64_t written_bytes = 0;
     for (;;) {
       // Cancel checkpoint per block so a single huge entry cannot pin cancel
       // response time to the whole entry's write duration.
@@ -92,9 +154,26 @@ PJ::Expected<void, QString> DownloadManager::extractFromMemory(
         return PJ::unexpected(
             u"Error reading ZIP entry '%1': %2"_s.arg(entry_name, QString::fromUtf8(archive_error_string(a.get()))));
       }
+      // Anything past the ceiling is bytes nobody accounted for — the shape a
+      // decompression bomb takes when its header lies, or an undeclared entry that
+      // outgrows what is left of the budget. Stop at the first block that crosses it.
+      if (size > write_cap - written_bytes) {
+        out_file.close();
+        return PJ::unexpected(
+            size_declared
+                ? u"ZIP entry '%1' holds more bytes than it declares"_s.arg(entry_name)
+                : u"ZIP entry '%1' does not declare its size and expands past the remaining budget"_s.arg(entry_name));
+      }
       out_file.write(static_cast<const char*>(buf), static_cast<qint64>(size));
+      written_bytes += size;
     }
     out_file.close();
+
+    // Settle an undeclared entry against the budget now that its real size is
+    // known. Capped above, so this cannot push the total past the limit.
+    if (!size_declared) {
+      budget.total_expanded_bytes += written_bytes;
+    }
   }
 
   if (r != ARCHIVE_EOF) {
@@ -252,7 +331,7 @@ void DownloadManager::onReplyFinished(QNetworkReply* reply) {
       return u"Cancelled"_s;
     }
     emit phaseChanged(id, WorkPhase::Extracting);
-    if (auto extract_result = extractFromMemory(data, destination, *cancel_flag); !extract_result) {
+    if (auto extract_result = extractFromMemory(data, destination, *cancel_flag, archive_limits_); !extract_result) {
       return extract_result.error();
     }
     return {};  // success

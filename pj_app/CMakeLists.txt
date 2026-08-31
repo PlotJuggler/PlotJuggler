@@ -226,6 +226,24 @@ target_link_libraries(pj_app PRIVATE
     pj_app_shell
     $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:Backward::Backward>)
 
+# The admission helper is resolved at runtime as a sibling of the executable
+# (PluginCheckRunner::locateHelper -> applicationDirPath), which is what an
+# install layout gives for free: both land in bin/. A build tree does not — each
+# target writes into its own module directory — so mirror the helper next to the
+# app after linking. Without this the runner falls back to a bare name and only
+# finds the helper if it happens to be on PATH.
+#
+# Driven from here rather than by overriding the helper's output directory: this
+# keeps the dependency pointing from the consumer to the tool, and leaves the
+# standalone marketplace build (where no app target exists) untouched.
+if(TARGET pj-plugin-check)
+    add_dependencies(pj_app pj-plugin-check)
+    add_custom_command(TARGET pj_app POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:pj-plugin-check> $<TARGET_FILE_DIR:pj_app>
+        COMMENT "Placing pj-plugin-check next to the application binary")
+endif()
+
 # App version: single source of truth is versions.env, stamped by the root
 # CMakeLists into generated/pj_version.h (PJ_VERSION_STRING). main.cpp — the only
 # user — includes that header directly, so no per-target compile definition is

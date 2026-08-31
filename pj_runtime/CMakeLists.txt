@@ -452,10 +452,30 @@ if(PJ_BUILD_TESTS)
     target_compile_options(mock_data_source_incompatible_plugin PRIVATE ${PJ_WARNING_FLAGS})
     target_link_libraries(mock_data_source_incompatible_plugin PRIVATE pj_base)
 
+    add_library(mock_data_source_compatible_floor_plugin SHARED tests/mock_data_source_compatible_floor_plugin.cpp)
+    target_compile_features(mock_data_source_compatible_floor_plugin PRIVATE cxx_std_20)
+    target_compile_options(mock_data_source_compatible_floor_plugin PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(mock_data_source_compatible_floor_plugin PRIVATE pj_base)
+
     add_library(mock_data_source_incompatible_low_plugin SHARED tests/mock_data_source_incompatible_low_plugin.cpp)
     target_compile_features(mock_data_source_incompatible_low_plugin PRIVATE cxx_std_20)
     target_compile_options(mock_data_source_incompatible_low_plugin PRIVATE ${PJ_WARNING_FLAGS})
     target_link_libraries(mock_data_source_incompatible_low_plugin PRIVATE pj_base)
+
+    add_library(mock_data_source_malformed_floor_plugin SHARED tests/mock_data_source_malformed_floor_plugin.cpp)
+    target_compile_features(mock_data_source_malformed_floor_plugin PRIVATE cxx_std_20)
+    target_compile_options(mock_data_source_malformed_floor_plugin PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(mock_data_source_malformed_floor_plugin PRIVATE pj_base)
+
+    add_library(mock_data_source_malformed_version_plugin SHARED tests/mock_data_source_malformed_version_plugin.cpp)
+    target_compile_features(mock_data_source_malformed_version_plugin PRIVATE cxx_std_20)
+    target_compile_options(mock_data_source_malformed_version_plugin PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(mock_data_source_malformed_version_plugin PRIVATE pj_base)
+
+    add_library(mock_data_source_newer_sdk_plugin SHARED tests/mock_data_source_newer_sdk_plugin.cpp)
+    target_compile_features(mock_data_source_newer_sdk_plugin PRIVATE cxx_std_20)
+    target_compile_options(mock_data_source_newer_sdk_plugin PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(mock_data_source_newer_sdk_plugin PRIVATE pj_base)
 
     add_executable(plugin_runtime_catalog_test tests/plugin_runtime_catalog_test.cpp)
     target_compile_definitions(plugin_runtime_catalog_test PRIVATE
@@ -463,6 +483,9 @@ if(PJ_BUILD_TESTS)
         PJ_MOCK_DATA_SOURCE_V2_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_v2_plugin>"
         PJ_MOCK_DATA_SOURCE_INCOMPATIBLE_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_incompatible_plugin>"
         PJ_MOCK_DATA_SOURCE_INCOMPATIBLE_LOW_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_incompatible_low_plugin>"
+        PJ_MOCK_DATA_SOURCE_MALFORMED_FLOOR_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_malformed_floor_plugin>"
+        PJ_MOCK_DATA_SOURCE_MALFORMED_VERSION_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_malformed_version_plugin>"
+        PJ_MOCK_DATA_SOURCE_NEWER_SDK_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_newer_sdk_plugin>"
         PJ_MOCK_TOOLBOX_PLUGIN_PATH="$<TARGET_FILE:mock_toolbox_plugin>"
     )
     target_compile_options(plugin_runtime_catalog_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -473,6 +496,8 @@ if(PJ_BUILD_TESTS)
     add_dependencies(plugin_runtime_catalog_test
         mock_data_source_plugin mock_data_source_v2_plugin
         mock_data_source_incompatible_plugin mock_data_source_incompatible_low_plugin
+        mock_data_source_malformed_floor_plugin mock_data_source_malformed_version_plugin
+        mock_data_source_newer_sdk_plugin
         mock_toolbox_plugin)
     add_test(NAME plugin_runtime_catalog_test COMMAND plugin_runtime_catalog_test)
 

@@ -13,6 +13,7 @@
 #include <functional>
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include "pj_base/diagnostic_sink.hpp"
 #include "pj_marketplace/download_manager.hpp"
@@ -20,9 +21,10 @@
 #include "pj_marketplace/installed_extension.hpp"
 #include "pj_marketplace/platform_utils.hpp"
 
-class QLockFile;
-
 namespace PJ {
+
+class ArtifactStore;
+class StoreSession;
 
 // One user-visible diagnostic emitted by marketplace lifecycle operations.
 struct ExtensionDiagnostic {
@@ -81,6 +83,14 @@ class ExtensionManager : public QObject {
   };
   HostCompatibility hostCompatibility(const Extension& ext) const;
 
+  // Same gate for an extension known from its embedded manifest — a sideload or
+  // an extracted registry payload. Applies ABI major, min_sdk_required, and
+  // min_plotjuggler_version together. The registry platform half has no manifest
+  // counterpart; a foreign binary fails discovery before producing this record.
+  // Local ZIP admission, registry post-extraction validation, staged promotion,
+  // bundled seeding, and runtime loading all delegate to the same evaluator.
+  HostCompatibility hostCompatibility(const InstalledExtension& installed) const;
+
   // Asked when a local archive carries an id that is already installed: return true
   // to replace it, false to abort. Invoked on the GUI thread from the handler that
   // runs once extraction finishes, so an implementation may block on a modal dialog
@@ -123,6 +133,10 @@ class ExtensionManager : public QObject {
   // source of truth here. Consequently there is also no checksum to verify — a
   // local file has no provenance, and the integrity gate is the manifest scan
   // (the DSO must load and describe itself coherently), not a digest.
+  //
+  // The embedded ABI, min_sdk_required, and min_plotjuggler_version are enforced
+  // before anything is written; only the platform half of the registry gate is
+  // absent (see the InstalledExtension overload of hostCompatibility).
   //
   // The archive must hold exactly one top-level directory containing the plugin.
   // On success the directory lands in extensionsDir() keyed by the discovered id —
@@ -324,10 +338,38 @@ class ExtensionManager : public QObject {
   // should disable those actions rather than let them fail one by one.
   bool hasStoreWriteAccess() const;
 
+  // One plugin directory per managed extension for the runtime to scan: the
+  // content-addressed store object when the store backs the id and its object is
+  // resident AND its bytes still verify against the recorded content manifest,
+  // otherwise the classic extensions/<id>/ directory. Enumerated from the managed
+  // dir on disk (so a freshly-seeded bundled plugin is included), one entry per id,
+  // so a managed plugin is discovered exactly once (no classic double-scan). This
+  // is the managed marketplace tier of the scan hierarchy; authoritative folders
+  // stay separate.
+  //
+  // Not const: a resident object whose bytes no longer match its digest (a
+  // half-written commit, disk corruption) is skipped in favour of the local copy
+  // and a diagnostic is reported, so the runtime never loads a corrupt object.
+  std::vector<QString> managedPluginDirs();
+
+  // Forget the store object recorded for `id`, so managedPluginDirs falls back to
+  // extensions/<id>/ and reconcileStore collects the orphan. A writer that changes
+  // extensions/<id>/ outside the adopt path — the bundled seed — must call this:
+  // its new bytes are not in the store, so a stale mapping would otherwise keep the
+  // runtime loading the old object instead of the freshly-written directory.
+  void dropStoreMapping(const QString& id);
+
 #ifdef PJ_MARKETPLACE_TESTING
   // Test hook for forcing direct or staged install paths.
   void testDoInstall(const Extension& ext, bool staging, bool allow_existing = false) {
     doInstall(ext, staging, allow_existing);
+  }
+
+  // Test hook: re-scan disk then reconcile the store, i.e. the startup sequence a
+  // restart would run after an uninstall drained the extension directory.
+  void testReconcileFromDisk() {
+    refreshInstalledFromDisk();
+    reconcileStore();
   }
 
 #endif
@@ -353,6 +395,13 @@ class ExtensionManager : public QObject {
   // Emitted when an update is staged and will be active after a restart. A fresh
   // install promotes immediately and emits installFinished instead.
   void installPendingRestart(const QString& id);
+
+  // Emitted when a sideloaded archive turned out to hold exactly what is already
+  // installed, so nothing was replaced, staged, or written. A terminal outcome of
+  // its own, emitted INSTEAD of installFinished: the operation succeeded, but
+  // reporting it as an install would have consumers announce and react to a change
+  // that did not happen. Nothing on disk moved, so no catalog reload is warranted.
+  void installUnchanged(const QString& id);
 
   // Emitted when uninstall completes.
   void uninstallFinished(const QString& id, bool success);
@@ -452,6 +501,30 @@ class ExtensionManager : public QObject {
   void registerInstalledExtension(
       const QString& id, const QString& dst, InstalledExtension record, bool preserve_disabled_state = false);
 
+  // Best-effort: adopt an installed extension's on-disk tree into the
+  // content-addressed store, so extensions.artifacts/<hash>/ holds an immutable
+  // copy of its bytes, and record its digest in loaded_digests_ (and the
+  // persisted profile) so the runtime can load it from the store. Never fails an
+  // install — a store that is absent, read-only, or rejects the tree just leaves
+  // the object un-updated and drops the id from the profile, so the runtime falls
+  // back to extensions/<id>/.
+  void shadowAdoptIntoStore(const QString& id, const QString& dir);
+
+  // Rewrite loaded.json under the store's profiles root from loaded_digests_.
+  // No-op without a writable store session. Best-effort: a failed write only
+  // costs the runtime its store shortcut for ids installed this session, which
+  // then load from extensions/<id>/.
+  void persistLoadedProfile();
+
+  // Bring the store in step with what is actually installed: drop profile entries
+  // whose extensions/<id>/ is gone (an uninstall drained at startup), then delete
+  // every store object no surviving entry references. Runs in initComponents,
+  // BEFORE the runtime maps any object, so removing an object is safe. Skips the
+  // sweep when the profile is empty while installs exist — that mismatch signals a
+  // profile that failed to load, and an empty root set would erase the whole store.
+  // No-op without a writable store session.
+  void reconcileStore();
+
   // Backs up (or removes) any directory under extensions_dir_ — other than
   // `keep_dir` — whose embedded plugin id equals `id`, so the promoted "<id>"
   // directory is that extension's sole install: a prior copy stored under a
@@ -474,14 +547,36 @@ class ExtensionManager : public QObject {
   // the instance holding the lock.
   void sweepTransactionRoots(const QString& parent);
 
-  // Held for this object's lifetime while this instance is the store's writer;
-  // null in a read-only session. Its presence IS the write permission.
-  std::unique_ptr<QLockFile> store_lock_;
+  // The store session opened at construction. Always present after initComponents;
+  // whether it holds the single-writer lease is what hasStoreWriteAccess() reports.
+  // Released last (see ~ExtensionManager) because it owns the lease. artifact_store_
+  // holds a reference into it, so this must outlive that.
+  std::unique_ptr<StoreSession> store_session_;
   // Why the lease is not held, classified once at acquisition: contention with a
   // live instance reads very differently to the user than a lock file that cannot
   // be created at all, and only the acquisition attempt can tell them apart.
   // Empty exactly when store_lock_ is held.
   QString store_lock_refusal_;
+
+  // Content-addressed home of what gets installed. Best-effort: every successful
+  // install also lands its bytes as an immutable object under
+  // extensions.artifacts/<hash>/, so the store is populated in step with the
+  // extensions dir. The runtime prefers these objects as its load path (see
+  // managedPluginDirs), falling back to extensions/<id>/, and reconcileStore
+  // collects the ones no install references any more. Null when the store could
+  // not be opened (no lease, I/O), in which case installs proceed and the runtime
+  // just scans extensions/<id>/ exactly as before.
+  std::unique_ptr<ArtifactStore> artifact_store_;
+
+  // Current id -> store-object digest for every installed extension, mirroring
+  // the persisted loaded.json profile under the store's profiles root. Seeded
+  // from that file at construction (so a launch with no install still knows what
+  // to load from the store), updated on every adopt, and the source both of
+  // managedPluginDirs() (the load path) and of reconcileStore()'s GC root set. An
+  // entry exists only while the store holds an object matching the current
+  // install: a failed adopt removes it, so the runtime never loads a stale version
+  // from the store when the newest install could not be mirrored.
+  QMap<QString, QString> loaded_digests_;
 
   DownloadManager* downloader_ = nullptr;
   // True only for the downloader initComponents() created, which is the only one

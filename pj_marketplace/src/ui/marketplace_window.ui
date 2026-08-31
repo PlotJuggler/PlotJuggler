@@ -16,8 +16,8 @@
         Category toggles are additive: with all four checked (default) every registry
         category is visible; with all four unchecked the table is empty. The user-facing
         button labels differ from the registry "category" values, which live in
-        applyFilters(). filter_compatible_ / filter_installed_ are hidden for now — the
-        compatibility gate keeps running on filter_compatible_'s default-checked state. -->
+        applyFilters(). filter_installed_ is hidden for now and unchecked, so it filters
+        nothing; platform exclusion happens upstream in the registry list, not here. -->
    <item>
     <layout class="QHBoxLayout" name="toolbar_layout">
      <property name="spacing"><number>6</number></property>
@@ -50,13 +50,6 @@
       </widget>
      </item>
      <item>
-      <widget class="PJ::CheckButton" name="filter_compatible_">
-       <property name="visible"><bool>false</bool></property>
-       <property name="text"><string>Compatible only</string></property>
-       <property name="toolTip"><string>Show only plugins compatible with this PlotJuggler build (installed ones stay visible)</string></property>
-      </widget>
-     </item>
-     <item>
       <widget class="PJ::CheckButton" name="filter_installed_">
        <property name="visible"><bool>false</bool></property>
        <property name="text"><string>Installed only</string></property>
@@ -71,7 +64,7 @@
      <item>
       <widget class="QPushButton" name="install_local_btn_">
        <property name="text"><string>Install local...</string></property>
-       <property name="toolTip"><string>Install a plugin from a local ZIP. The archive is not from the registry, so its origin cannot be verified — only that it holds a loadable plugin. Replacing an already-installed extension takes effect on the next restart.</string></property>
+       <property name="toolTip"><string>Install a plugin from a local ZIP. The archive is not from the registry, so its origin cannot be verified — only that it holds a loadable plugin. Replacing an already-installed extension takes effect on the next restart, unless the archive holds exactly what is already installed, which changes nothing.</string></property>
       </widget>
      </item>
      <item>

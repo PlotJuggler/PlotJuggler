@@ -2,6 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QDateTime>
 #include <QMap>
 #include <QUrl>
 
@@ -53,6 +54,14 @@ class MarketplaceWindow : public Dialog {
   // Refreshes installed state and repaints — the embedded equivalent of what
   // showEvent() does for the modal path. Call after embedding contentWidget().
   void activateEmbedded();
+
+  // Points the window at a different registry and re-fetches it immediately.
+  // The URL is captured once at construction and read nowhere else, so a panel
+  // the user leaves open keeps serving the registry it opened with until the
+  // host pushes the new one here. Registry-URL policy stays with the host (the
+  // Preferences setting); this window never second-guesses it. A no-op when the
+  // URL is unchanged, so an unrelated Preferences edit costs nothing.
+  void setRegistryUrl(const QUrl& registry_url);
 
  signals:
   // Emitted when the user clicks the settings (gear) button. The host (MainWindow)
@@ -191,6 +200,15 @@ class MarketplaceWindow : public Dialog {
   // end, not one per staged item.
   void maybeShowRestartRequiredDialog();
 
+  // Pops a MessageBox explaining that the registry could not be loaded, so only
+  // already-installed extensions are shown and no discovery or updates are
+  // available until it loads correctly. The wording states only the consequence
+  // (it fires for both a parse error and a network failure); the concrete cause
+  // goes in the Details line from last_registry_error_. The red status line alone
+  // is easy to miss. Guarded by registry_error_dialog_open_ so a burst of failed
+  // refreshes shows it once, not stacked.
+  void showInvalidRegistryDialog();
+
   // Once all install activity has settled (nothing active or queued), if any
   // items failed during this run, replace the last item's success status with a
   // summary ("Finished with N failures — see Diagnostics") so a mid-batch failure is
@@ -264,9 +282,21 @@ class MarketplaceWindow : public Dialog {
   // event loop, so a completion arriving inside it must not open a second
   // dialog on top; the count it accumulates is surfaced right after.
   bool restart_dialog_open_ = false;
+  // True while the invalid-registry MessageBox is up (its exec() spins a nested
+  // event loop), so a burst of failed refreshes shows it once, not stacked.
+  bool registry_error_dialog_open_ = false;
+  // The concrete reason from the last RegistryManager::fetchError (a parse error
+  // such as which entry is malformed, or a network error such as "Connection
+  // refused"), shown as the Details line of the registry-load-error dialog.
+  QString last_registry_error_;
   bool installations_changed_ = false;
   bool status_error_sticky_ = false;
   bool initial_snapshot_provided_ = false;
+  // When this panel started. Diagnostics outlive it — they belong to the
+  // ExtensionManager — so the Details button counts only the ones recorded since,
+  // and a panel reopened after an install failure does not advertise it again.
+  // The dialog behind the button still lists the full history.
+  QDateTime opened_at_;
   // Last user-chosen sort state on one of the sortable columns (Name, Category,
   // Installed, Marketplace) — the header intercepts clicks on Description and
   // reverts to this. Default: Category ascending, which via CategoryItem's

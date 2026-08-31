@@ -14,6 +14,7 @@
 #include <memory>
 
 #include "pj_base/expected.hpp"
+#include "pj_marketplace/archive_limits.hpp"
 
 namespace PJ {
 
@@ -42,6 +43,15 @@ class DownloadManager : public QObject {
   /// Starts the full pipeline: download url, verify expected_checksum, extract to destination_dir.
   /// Returns a unique ID to track this operation.
   int fetch(const QUrl& url, const QString& expected_checksum, const QString& destination_dir);
+
+  /// Replaces the archive budgets applied while unpacking (see archive_limits.hpp).
+  ///
+  /// Production leaves the defaults alone; a test lowers them so a breach can be
+  /// driven with a few kilobytes instead of a 256 MiB fixture. Takes effect on the
+  /// next extraction, so it must be set before fetch().
+  void setArchiveLimits(const ArchiveLimits& limits) {
+    archive_limits_ = limits;
+  }
 
   /// Cancels an in-progress operation. During the checksum/extract phase this
   /// requests early exit from the worker; the consumer rolls back the
@@ -85,8 +95,10 @@ class DownloadManager : public QObject {
   QString calculateSha256(const QByteArray& data) const;
   bool verifyChecksum(const QByteArray& data, const QString& expected_checksum) const;
   PJ::Expected<void, QString> extractFromMemory(
-      const QByteArray& data, const QString& destination_dir, const std::atomic<bool>& cancel_requested) const;
+      const QByteArray& data, const QString& destination_dir, const std::atomic<bool>& cancel_requested,
+      const ArchiveLimits& limits) const;
 
+  ArchiveLimits archive_limits_;
   QNetworkAccessManager* network_;
   QMap<int, QNetworkReply*> active_replies_;
   QMap<int, Operation> operations_;

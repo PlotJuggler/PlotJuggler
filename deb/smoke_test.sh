@@ -75,6 +75,26 @@ if [ -d "${RETRO}" ]; then
   echo "OK: helper, data and licenses present; helper resolves standalone"
 fi
 
+# The plugin-admission helper is unconditional: the marketplace runs a candidate
+# plugin's first dlopen inside it, and ExtensionManager fails closed when it
+# cannot be started, so a package shipping without it rejects every marketplace
+# install. It must be next to the app binary, which is where PluginCheckRunner
+# looks. Like the retro helper it runs as a child process, so check that it
+# resolves on its own rather than through the wrapper's LD_LIBRARY_PATH.
+echo "--- plugin-admission helper ---"
+PLUGIN_CHECK=/opt/plotjuggler4/bin/pj-plugin-check
+test -x "${PLUGIN_CHECK}" || { echo "FAIL: ${PLUGIN_CHECK} missing or not executable"; exit 1; }
+if ldd "${PLUGIN_CHECK}" | grep "not found"; then
+  echo "FAIL: pj-plugin-check does not resolve without LD_LIBRARY_PATH"
+  exit 1
+fi
+# Exit 2 is the documented usage code, so this proves the binary actually runs.
+# Collected through || so the non-zero exit does not trip set -e.
+usage_rc=0
+"${PLUGIN_CHECK}" >/dev/null 2>&1 || usage_rc=$?
+test "${usage_rc}" -eq 2 || { echo "FAIL: pj-plugin-check exited ${usage_rc}, expected the usage code 2"; exit 1; }
+echo "OK: pj-plugin-check present, resolves standalone and runs"
+
 # Display-free by design: main() short-circuits this before any QApplication
 # exists, so it also proves the wrapper's PYTHONHOME reaches the bundled stdlib.
 echo "--- selftest-python ---"

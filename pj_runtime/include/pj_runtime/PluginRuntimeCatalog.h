@@ -111,25 +111,24 @@ class PluginRuntimeCatalog {
   // de-duplicated by manifest id: a statically registered plugin
   // (registerStatic*) outranks every folder tier — even an authoritative one,
   // so --plugin-dir cannot override a compiled-in plugin; otherwise the
-  // highest-priority *authoritative* entry wins outright (ignoring version and
-  // compatibility of every other copy); among managed entries the winner is
-  // chosen by compatibility first (see setHostVersion), then by higher version,
-  // then by directory priority. Losers are skipped with an info diagnostic.
+  // highest-priority *authoritative* entry claims the id outright (ignoring
+  // version and compatibility of every other copy); among managed entries the
+  // winner is chosen by compatibility first (see setHostVersion), then by higher
+  // version, then by directory priority. Compatibility is a hard load gate after
+  // selection. Thus an incompatible authoritative copy shadows managed fallbacks
+  // but is itself rejected — preserving strict developer override semantics.
   // Empty entries are ignored.
   void setPluginDirs(std::vector<PluginDirEntry> plugin_dirs);
 
   // Replaces the optional diagnostic sink.
   void setDiagnosticSink(DiagnosticSink sink);
 
-  // Sets the host ("PlotJuggler") version used to gauge plugin compatibility
-  // against each plugin's manifest `min_plotjuggler_version`. Used only to break
-  // ties between duplicate ids: a compatible build is preferred over an
-  // incompatible one (min > host) regardless of version. It never excludes a
-  // plugin — a lone incompatible plugin still loads (with no warning), and if
-  // every candidate for an id is incompatible the highest version still wins.
-  // Empty (the default) disables the check entirely: every plugin is treated as
-  // compatible, so incompatible builds load silently — set a host version to make
-  // the compatibility tie-break take effect.
+  // Sets the host ("PlotJuggler") version used by the unified hard compatibility
+  // gate. That gate validates ABI, the SDK contract floor, and the manifest's
+  // `min_plotjuggler_version`; a compatible managed duplicate is preferred and an
+  // incompatible final winner is never loaded. Empty is valid only for hosts that
+  // load no plugin declaring an application floor: such a declaration then fails
+  // closed because the host version cannot be established.
   //
   // Call before the first scanDirectory()/reload(): the value is read on the
   // scan thread and this class is not thread-safe, so it must not change

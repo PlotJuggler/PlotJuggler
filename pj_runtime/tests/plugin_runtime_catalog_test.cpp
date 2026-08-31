@@ -16,7 +16,6 @@
 #include "mock_toolbox_vtable.h"
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/toolbox_protocol.h"
-#include "pj_marketplace/version_compare.hpp"
 #include "pj_plugins/dialog_protocol.h"
 #include "pj_plugins/host/plugin_catalog.hpp"
 #include "pj_runtime/PluginRuntimeCatalog.h"
@@ -73,6 +72,7 @@ const PJ_dialog_vtable_t kStaticDialogVtable = {
     .save_config = staticDialogSave,
     .load_config = staticDialogLoad,
     .manifest_json = R"({"id":"static-dialog","name":"Static Dialog","version":"1.0.0"})",
+    .set_host_info = nullptr,
 };
 
 class PluginCatalogTest : public ::testing::Test {
@@ -204,9 +204,9 @@ TEST_F(PluginCatalogTest, RuntimeCatalogPrefersCompatibleOverHigherIncompatibleV
       << "winner " << winner << " should be the compatible v2 in " << dir_b;
 }
 
-TEST_F(PluginCatalogTest, RuntimeCatalogLoadsLoneIncompatiblePlugin) {
-  // A single incompatible plugin (needs PlotJuggler 5.0.0) still loads on a 4.0.0
-  // host: min_plotjuggler_version only breaks ties, it never excludes.
+TEST_F(PluginCatalogTest, RuntimeCatalogRejectsLoneIncompatiblePlugin) {
+  // Compatibility is an admission gate, not only a duplicate tie-break. A lone
+  // plugin requiring a newer host must remain unloaded.
   std::filesystem::copy_file(PJ_MOCK_DATA_SOURCE_INCOMPATIBLE_PLUGIN_PATH, dir_ / pluginFileName("ds"));
 
   PluginRuntimeCatalog catalog;
@@ -214,8 +214,45 @@ TEST_F(PluginCatalogTest, RuntimeCatalogLoadsLoneIncompatiblePlugin) {
   catalog.setPluginDir(dir_);
   catalog.scanDirectory();
 
-  ASSERT_EQ(catalog.dataSources().size(), 1U);
-  EXPECT_EQ(catalog.dataSources()[0].version, "3.0.0");
+  EXPECT_TRUE(catalog.dataSources().empty());
+}
+
+TEST_F(PluginCatalogTest, RuntimeCatalogRejectsMalformedApplicationFloor) {
+  std::filesystem::copy_file(PJ_MOCK_DATA_SOURCE_MALFORMED_FLOOR_PLUGIN_PATH, dir_ / pluginFileName("ds"));
+
+  PluginRuntimeCatalog catalog;
+  catalog.setHostVersion("4.0.0");
+  catalog.setPluginDir(dir_);
+  catalog.scanDirectory();
+
+  EXPECT_TRUE(catalog.dataSources().empty());
+}
+
+TEST_F(PluginCatalogTest, RuntimeCatalogRejectsMalformedPluginVersion) {
+  std::filesystem::copy_file(PJ_MOCK_DATA_SOURCE_MALFORMED_VERSION_PLUGIN_PATH, dir_ / pluginFileName("ds"));
+
+  std::vector<Diagnostic> diagnostics;
+  PluginRuntimeCatalog catalog({}, [&](const Diagnostic& diagnostic) { diagnostics.push_back(diagnostic); });
+  catalog.setHostVersion("4.0.0");
+  catalog.setPluginDir(dir_);
+  catalog.scanDirectory();
+
+  EXPECT_TRUE(catalog.dataSources().empty());
+  EXPECT_TRUE(std::ranges::any_of(diagnostics, [](const Diagnostic& diagnostic) {
+    return diagnostic.level == DiagnosticLevel::kError &&
+           diagnostic.message.find("Invalid plugin version") != std::string::npos;
+  }));
+}
+
+TEST_F(PluginCatalogTest, RuntimeCatalogRejectsNewerSdkRequirement) {
+  std::filesystem::copy_file(PJ_MOCK_DATA_SOURCE_NEWER_SDK_PLUGIN_PATH, dir_ / pluginFileName("ds"));
+
+  PluginRuntimeCatalog catalog;
+  catalog.setHostVersion("4.0.0");
+  catalog.setPluginDir(dir_);
+  catalog.scanDirectory();
+
+  EXPECT_TRUE(catalog.dataSources().empty());
 }
 
 TEST_F(PluginCatalogTest, RuntimeCatalogPrefersTheOnlyCompatibleAmongMixedCandidates) {
@@ -267,9 +304,10 @@ TEST_F(PluginCatalogTest, RuntimeCatalogAuthoritativeFolderOverridesHigherVersio
   EXPECT_TRUE(std::filesystem::equivalent(winner.parent_path(), dir_a));
 }
 
-TEST_F(PluginCatalogTest, RuntimeCatalogAuthoritativeFolderWinsEvenWhenIncompatible) {
-  // The authoritative copy wins even if it is incompatible (min 5.0.0 > host 4.0.0)
-  // and the managed alternative is compatible: an explicit choice overrides compat.
+TEST_F(PluginCatalogTest, RuntimeCatalogIncompatibleAuthoritativeCopyShadowsManagedFallback) {
+  // --plugin-dir remains a strict override: its id shadows the managed copy.
+  // Compatibility is still a safety gate, so an incompatible override yields no
+  // loaded plugin rather than silently falling back to a different build.
   const std::filesystem::path dir_a = dir_ / "a";  // authoritative, incompatible v3.0.0
   const std::filesystem::path dir_b = dir_ / "b";  // managed, compatible v2.0.0
   std::filesystem::create_directories(dir_a);
@@ -282,10 +320,7 @@ TEST_F(PluginCatalogTest, RuntimeCatalogAuthoritativeFolderWinsEvenWhenIncompati
   catalog.setPluginDirs({{dir_a, true}, {dir_b}});
   catalog.scanDirectory();
 
-  ASSERT_EQ(catalog.dataSources().size(), 1U);
-  EXPECT_EQ(catalog.dataSources()[0].version, "3.0.0");
-  const std::filesystem::path winner(catalog.dataSources()[0].path);
-  EXPECT_TRUE(std::filesystem::equivalent(winner.parent_path(), dir_a));
+  EXPECT_TRUE(catalog.dataSources().empty());
 }
 
 TEST_F(PluginCatalogTest, RuntimeCatalogAuthoritativeFolderMayBeASymlink) {
@@ -488,6 +523,21 @@ TEST_F(PluginCatalogTest, RuntimeCatalogStaticRegistrationRejectsMistypedManifes
   EXPECT_FALSE(catalog.registerStaticDataSource(&vt));
   EXPECT_TRUE(catalog.dataSources().empty());
   EXPECT_FALSE(messages.empty());
+}
+
+TEST_F(PluginCatalogTest, RuntimeCatalogStaticRegistrationRejectsNewerSdkRequirement) {
+  static const PJ_data_source_vtable_t vt = pj_mock::makeMockDataSourceVtable(
+      R"({"id":"future-static","name":"Future Static","version":"1.0.0","min_sdk_required":"99.0.0"})");
+
+  std::vector<std::string> messages;
+  PluginRuntimeCatalog catalog({}, [&](const Diagnostic& d) { messages.push_back(d.message); });
+  catalog.setHostVersion("4.0.0");
+
+  EXPECT_FALSE(catalog.registerStaticDataSource(&vt));
+  EXPECT_TRUE(catalog.dataSources().empty());
+  EXPECT_TRUE(std::ranges::any_of(messages, [](const std::string& message) {
+    return message.find("SDK") != std::string::npos && message.find("99.0.0") != std::string::npos;
+  }));
 }
 
 TEST_F(PluginCatalogTest, RuntimeCatalogStaticRegistrationRejectsNullCreate) {
@@ -720,42 +770,6 @@ TEST_F(PluginCatalogTest, RuntimeCatalogReloadHonoursNewlyDisabledId) {
   catalog.setDisabledIds({"mock-data-source"});
   EXPECT_TRUE(catalog.reload()) << "reload must report a change when a winner drops out";
   EXPECT_TRUE(catalog.dataSources().empty());
-}
-
-// ─── compareSemver (pj_marketplace/version_compare.hpp — the shared version
-//     ordering used by the catalog dedup, the seed, and the marketplace) ──────────
-
-TEST(CompareSemver, OrdersByNumericComponents) {
-  EXPECT_LT(compareSemver("4.0.2", "4.1.0"), 0);
-  EXPECT_GT(compareSemver("5.0.0", "4.9.9"), 0);
-  EXPECT_EQ(compareSemver("4.1.0", "4.1.0"), 0);
-}
-
-TEST(CompareSemver, TreatsMissingTrailingComponentsAsZero) {
-  EXPECT_EQ(compareSemver("4.1", "4.1.0"), 0);
-  EXPECT_EQ(compareSemver("4", "4.0.0"), 0);
-  EXPECT_LT(compareSemver("4.0", "4.0.1"), 0);
-}
-
-TEST(CompareSemver, IgnoresLeadingZerosAndSuffixes) {
-  EXPECT_EQ(compareSemver("4.01.0", "4.1.0"), 0);
-  EXPECT_EQ(compareSemver("1.0.0-rc2", "1.0.0"), 0);  // pre-release suffix ignored
-  EXPECT_LT(compareSemver("1.0.0", "2.0.0-beta"), 0);
-}
-
-TEST(CompareSemver, IgnoresDottedPreReleaseSuffix) {
-  // The suffix is ignored in full even when it contains dots: the compare must not walk
-  // past the '-' and read the suffix's own numeric parts (regression for a version that
-  // stepped to the next '.' instead of stopping at the pre-release separator).
-  EXPECT_EQ(compareSemver("1.0.0-rc.2", "1.0.0-rc.3"), 0);
-  EXPECT_EQ(compareSemver("1.0-rc.2", "1.0.0"), 0);
-  EXPECT_LT(compareSemver("1.0.0-rc.9", "1.0.1"), 0);
-}
-
-TEST(CompareSemver, DoesNotOverflowOnHugeComponents) {
-  EXPECT_GT(compareSemver("999999999999999999999.0.0", "4.0.0"), 0);
-  EXPECT_LT(compareSemver("4.0.0", "1000000000000000000000.0.0"), 0);
-  EXPECT_EQ(compareSemver("100000000000000000000.0", "100000000000000000000.0"), 0);
 }
 
 }  // namespace

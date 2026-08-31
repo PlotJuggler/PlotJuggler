@@ -9,7 +9,6 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QList>
-#include <QLockFile>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
@@ -17,14 +16,23 @@
 #include <QStorageInfo>
 #include <QStringList>
 #include <QUuid>
+#include <algorithm>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <utility>
 
+#include "internal/utf8_path.hpp"
+#include "pj_marketplace/artifact_store.hpp"
+#include "pj_marketplace/content_manifest.hpp"
 #include "pj_marketplace/download_manager.hpp"
 #include "pj_marketplace/extension_manager.hpp"
+#include "pj_marketplace/generation_digest.hpp"
+#include "pj_marketplace/loaded_profile.hpp"
 #include "pj_marketplace/platform_utils.hpp"
+#include "pj_marketplace/plugin_check_runner.hpp"
+#include "pj_marketplace/plugin_compatibility.hpp"
+#include "pj_marketplace/store_session.hpp"
 #include "pj_marketplace/version_compare.hpp"
 #include "pj_plugins/host/plugin_catalog.hpp"
 using namespace Qt::StringLiterals;
@@ -53,6 +61,20 @@ QString pendingRoot(const QString& pending_dir, const QString& id) {
   return QDir(pending_dir).absoluteFilePath(id);
 }
 
+// Identity of an extension tree: the hash of every file it holds, paths included.
+//
+// Empty when the tree cannot be characterised — it is missing, or it holds
+// something the walk refuses such as a symlink. Callers must therefore treat an
+// empty result as "not comparable" and never as a match, or two unreadable trees
+// would be taken for the same tree.
+std::string contentDigestOf(const QString& directory) {
+  const auto files = inspectContentManifest(marketplace_internal::pathFromUtf8(directory.toUtf8().toStdString()));
+  if (!files) {
+    return {};
+  }
+  return aggregateContentManifestDigest(*files);
+}
+
 // Path of the single-writer lock guarding `extensions_dir`.
 //
 // A hidden SIBLING of the managed dir, never a file inside it: everything under
@@ -61,43 +83,12 @@ QString pendingRoot(const QString& pending_dir, const QString& id) {
 // stores (a --plugin-dir run, a test's temp dir) never contend while two names for
 // the SAME store always do: the lock identifies the store, not the application and
 // not the path spelling.
-QString storeLockPath(const QString& extensions_dir) {
-  const QFileInfo store(PlatformUtils::canonicalStoreRoot(extensions_dir));
-  return QDir(store.absolutePath()).absoluteFilePath(u"."_s + store.fileName() + u".lock"_s);
-}
-
 // True when both paths sit on the same mounted filesystem, so a rename between
 // them is an atomic move rather than an EXDEV failure.
 bool sameFilesystem(const QString& first, const QString& second) {
   const QStorageInfo first_volume(first);
   const QStorageInfo second_volume(second);
   return first_volume.isValid() && second_volume.isValid() && first_volume.device() == second_volume.device();
-}
-
-// Why the writer lease could not be taken, in the user's terms.
-//
-// QLockFile reports contention and filesystem failure through the same tryLock()
-// false, and they call for opposite actions: one means another PlotJuggler is
-// running, the other means this config dir cannot hold a lock file at all. Telling
-// the second user to close another instance sends them after a process that does
-// not exist.
-//
-// Neither case offers "try again": nothing reacquires the lease mid-session, so
-// the honest advice for contention is to restart once the other instance is closed.
-QString storeLockRefusal(const QLockFile& lock, const QString& lock_path) {
-  switch (lock.error()) {
-    case QLockFile::PermissionError:
-      return u"Cannot create the extensions lock file \"%1\": permission denied. Extensions cannot be installed, "
-             u"updated or removed until that is fixed."_s.arg(lock_path);
-    case QLockFile::LockFailedError:
-      return u"Another PlotJuggler instance is managing extensions. Close it and restart PlotJuggler to manage "
-             u"extensions here."_s;
-    case QLockFile::NoError:
-    case QLockFile::UnknownError:
-      break;
-  }
-  return u"Cannot create the extensions lock file \"%1\". Extensions cannot be installed, updated or removed this "
-         u"session."_s.arg(lock_path);
 }
 
 struct DirectoryDiscovery {
@@ -501,6 +492,30 @@ DirectoryDiscovery discoverExtensionDirectory(const QString& ext_root) {
   }
 
   const PluginDescriptor& first = scan->plugins.front();
+  std::string effective_min_plotjuggler_version;
+  std::string effective_min_sdk_required;
+  const auto retainHighestFloor = [](std::string_view declared, std::string& effective) {
+    if (declared.empty()) {
+      return;
+    }
+    if (effective.empty()) {
+      effective = declared;
+      return;
+    }
+
+    const auto candidate = SemVer::parse(declared);
+    const auto incumbent = SemVer::parse(effective);
+    // A malformed floor must survive discovery so the installed extension
+    // remains visible/manageable and the shared compatibility gate can reject
+    // it. Once one malformed claim exists, no valid sibling claim can make the
+    // extension appear compatible.
+    if (!candidate) {
+      effective = declared;
+    } else if (incumbent && candidate->compare(*incumbent) == std::strong_ordering::greater) {
+      effective = declared;
+    }
+  };
+
   for (const PluginDescriptor& descriptor : scan->plugins) {
     if (descriptor.id != first.id) {
       result.error = u"multiple embedded plugin ids in one extension directory: \"%1\" and \"%2\""_s.arg(
@@ -512,6 +527,8 @@ DirectoryDiscovery discoverExtensionDirectory(const QString& ext_root) {
           QString::fromStdString(first.id));
       return result;
     }
+    retainHighestFloor(descriptor.min_plotjuggler_version, effective_min_plotjuggler_version);
+    retainHighestFloor(descriptor.min_sdk_required, effective_min_sdk_required);
   }
 
   result.found_plugin = true;
@@ -523,6 +540,91 @@ DirectoryDiscovery discoverExtensionDirectory(const QString& ext_root) {
   result.record.name = first.name.empty() ? result.record.id : QString::fromStdString(first.name);
   result.record.description = QString::fromStdString(first.description);
   result.record.category = QString::fromStdString(first.category);
+  result.record.abi_major = first.abi_major;
+  result.record.min_sdk_required = QString::fromStdString(effective_min_sdk_required);
+  result.record.min_plotjuggler_version = QString::fromStdString(effective_min_plotjuggler_version);
+  return result;
+}
+
+// Same contract as discoverExtensionDirectory, but the DSOs are opened by a
+// throwaway child process instead of this one. Used for admission — the first
+// look at bytes that just arrived from a registry download or a local archive —
+// where a plugin that aborts in a static initializer would otherwise take the
+// application down, and where opening the payload at its staging path poisons the
+// later provenance check for its final path.
+//
+// Deliberately not used for directories already admitted: those are inspected
+// in-process, as before.
+DirectoryDiscovery discoverExtensionDirectoryOutOfProcess(const QString& ext_root) {
+  DirectoryDiscovery result;
+  const PluginCheckResult check = PluginCheckRunner{}.run(ext_root);
+
+  for (const PluginCheckDiagnostic& diag : check.diagnostics) {
+    qWarning(
+        "ExtensionManager: plugin discovery diagnostic for '%s': %s", qPrintable(diag.path), qPrintable(diag.message));
+  }
+
+  if (!check.ok) {
+    // A helper that never produced a verdict (spawn failure, crash, timeout) is
+    // reported as-is: the payload is unproven, not proven bad.
+    result.error = check.parent_error.isEmpty() ? u"plugin admission helper failed"_s : check.parent_error;
+    return result;
+  }
+
+  if (check.plugins.isEmpty()) {
+    result.error =
+        check.diagnostics.isEmpty() ? u"no valid plugin DSO found"_s : check.diagnostics.constFirst().message;
+    return result;
+  }
+
+  const PluginCheckDescriptor& first = check.plugins.constFirst();
+  QString effective_min_plotjuggler_version;
+  QString effective_min_sdk_required;
+  const auto retainHighestFloor = [](const QString& declared, QString& effective) {
+    if (declared.isEmpty()) {
+      return;
+    }
+    if (effective.isEmpty()) {
+      effective = declared;
+      return;
+    }
+    const auto candidate = SemVer::parse(declared.toStdString());
+    const auto incumbent = SemVer::parse(effective.toStdString());
+    // Mirrors the in-process rule: a malformed floor wins so the extension stays
+    // visible and the shared compatibility gate is the one that rejects it.
+    if (!candidate) {
+      effective = declared;
+    } else if (incumbent && candidate->compare(*incumbent) == std::strong_ordering::greater) {
+      effective = declared;
+    }
+  };
+
+  for (const PluginCheckDescriptor& descriptor : check.plugins) {
+    if (descriptor.id != first.id) {
+      result.error =
+          u"multiple embedded plugin ids in one extension directory: \"%1\" and \"%2\""_s.arg(first.id, descriptor.id);
+      return result;
+    }
+    if (descriptor.version != first.version) {
+      result.error = u"multiple embedded plugin versions in one extension directory for \"%1\""_s.arg(first.id);
+      return result;
+    }
+    retainHighestFloor(descriptor.min_plotjuggler_version, effective_min_plotjuggler_version);
+    retainHighestFloor(descriptor.min_sdk_required, effective_min_sdk_required);
+  }
+
+  result.found_plugin = true;
+  result.record.id = first.id;
+  result.record.version = first.version;
+  result.record.install_date = QFileInfo(ext_root).lastModified();
+  result.record.path = ext_root;
+  result.record.enabled = true;
+  result.record.name = first.name.isEmpty() ? first.id : first.name;
+  result.record.description = first.description;
+  result.record.category = first.category;
+  result.record.abi_major = first.abi_major;
+  result.record.min_sdk_required = effective_min_sdk_required;
+  result.record.min_plotjuggler_version = effective_min_plotjuggler_version;
   return result;
 }
 
@@ -623,13 +725,14 @@ ExtensionManager::ExtensionManager(
 }
 
 ExtensionManager::~ExtensionManager() {
-  // The whole point of this body is ORDER: store_lock_ is released last, once
-  // nothing can write into the store any more. An extract worker unpacks into a
-  // transaction directory inside the store's staging area, so a lock released
-  // while one is running would let the next process take the store and start its
-  // own cleanup and promotion against a tree this process is still writing.
+  // The whole point of this body is ORDER: the store session (which holds the
+  // writer lease) is released last, once nothing can write into the store any
+  // more. An extract worker unpacks into a transaction directory inside the
+  // store's staging area, so a lease released while one is running would let the
+  // next process take the store and start its own cleanup and promotion against a
+  // tree this process is still writing.
   //
-  // Member destruction alone cannot give that order: store_lock_ dies before
+  // Member destruction alone cannot give that order: the session dies before
   // ~QObject deletes the child downloader whose destructor drains the workers.
 
   // Signal wiring first: the completion handlers capture `this` and touch members,
@@ -661,11 +764,14 @@ ExtensionManager::~ExtensionManager() {
     downloader_ = nullptr;
   }
 
-  store_lock_.reset();
+  // The store holds a reference into the session, so it must go first; the session
+  // — and with it the lease — is released last.
+  artifact_store_.reset();
+  store_session_.reset();
 }
 
 bool ExtensionManager::hasStoreWriteAccess() const {
-  return store_lock_ != nullptr;
+  return store_session_ != nullptr && store_session_->hasStoreWriteAccess();
 }
 
 QString ExtensionManager::storeWriteRefusal() const {
@@ -673,23 +779,28 @@ QString ExtensionManager::storeWriteRefusal() const {
 }
 
 void ExtensionManager::acquireStoreLock() {
-  const QString lock_path = storeLockPath(extensions_dir_);
-  auto lock = std::make_unique<QLockFile>(lock_path);
-  // Liveness of the owning PID is the ONLY staleness signal we accept: the age
-  // fallback would let a second instance declare a slow writer (a large download)
-  // dead and steal the store from under it. A crashed writer is still reclaimed,
-  // because its PID is gone.
-  //
-  // That is what makes the startup cleanup safe. It deletes any ".pj_install_*"
-  // transaction directory it finds, with no way to tell whose it is, and every
-  // live writer holds this lock — so the only transactions a drain can meet are
-  // this process's own or those of a process that no longer runs.
-  lock->setStaleLockTime(0);
-  if (!lock->tryLock(kStoreLockTimeoutMs)) {
-    // Classified once, here: this is the only place that can distinguish a live
-    // competitor from a config dir that cannot hold a lock file. Every later
-    // refusal quotes the verdict rather than guessing at one.
-    store_lock_refusal_ = storeLockRefusal(*lock, lock_path);
+  // One session owns the store's single-writer lease and everything derived from
+  // it — the same lease the content-addressed store commits under, the same PID
+  // liveness that makes the startup cleanup safe (a drain only ever meets this
+  // process's transactions or a dead one's). Opening always yields a session;
+  // contention or a lock-file failure yields a read-only one whose refusal the
+  // user is told about once, here.
+  // Turn a lease refusal into the user's terms. Contention and a filesystem
+  // failure both leave the session read-only but call for opposite actions: one
+  // means another PlotJuggler is running (restart once it closes), the other means
+  // this config dir cannot hold a lock file at all — and telling that user to
+  // close another instance sends them after a process that does not exist.
+  const auto refusalText = [](const StoreRejection* refusal) -> QString {
+    if (refusal != nullptr && refusal->code == StoreRejectionCode::kWriterLeaseUnavailable) {
+      return u"Another PlotJuggler instance is managing extensions. Close it and restart PlotJuggler to manage "
+             u"extensions here."_s;
+    }
+    return u"Cannot create the extensions lock file. Extensions cannot be installed, updated or removed this "
+           u"session."_s;
+  };
+  auto session = StoreSession::open(extensions_dir_);
+  if (!session) {
+    store_lock_refusal_ = refusalText(&session.error());
     reportDiagnostic(
         {},
         u"%1 This session can browse installed extensions but cannot install, update or remove them."_s.arg(
@@ -697,7 +808,16 @@ void ExtensionManager::acquireStoreLock() {
         false);
     return;
   }
-  store_lock_ = std::move(lock);
+  store_session_ = std::make_unique<StoreSession>(std::move(*session));
+  if (!store_session_->hasStoreWriteAccess()) {
+    store_lock_refusal_ = refusalText(store_session_->writeRefusal());
+    reportDiagnostic(
+        {},
+        u"%1 This session can browse installed extensions but cannot install, update or remove them."_s.arg(
+            store_lock_refusal_),
+        false);
+    return;
+  }
   store_lock_refusal_.clear();
 }
 
@@ -725,6 +845,18 @@ void ExtensionManager::initComponents() {
   // Before any cleanup: whether this instance owns the store decides whether the
   // drains below may delete anything at all.
   acquireStoreLock();
+  // The content-addressed shadow store rides on the same session as the writer
+  // lease acquired above, so there is exactly one lock on the store. Its objects
+  // live under extensions.artifacts/, a sibling of extensions_dir_, so nothing
+  // here scans them; a read-only session still constructs it, and its writes just
+  // no-op through hasStoreWriteAccess().
+  if (store_session_ != nullptr) {
+    artifact_store_ = std::make_unique<ArtifactStore>(*store_session_);
+    // Recover which store object backs each id from the prior session, so a
+    // launch that installs nothing still hands the runtime its store load path.
+    // applyPendingInstalls (below) re-adopts every staged update on top of this.
+    loaded_digests_ = readLoadedProfile(store_session_->layout().profilesRoot());
+  }
   // Drain restart-deferred work, THEN snapshot installed state. The order is
   // load-bearing because of a glibc dlopen quirk: once an extension's .so has
   // been opened in this process, dlopen keeps returning that first-loaded image
@@ -738,6 +870,9 @@ void ExtensionManager::initComponents() {
   applyPendingUninstalls();
   applyPendingInstalls();
   refreshInstalledFromDisk();
+  // With the installed set now settled, drop store objects that no surviving
+  // install references. Runs here, before the runtime maps any object.
+  reconcileStore();
 }
 
 // ---------------------------------------------------------------------------
@@ -766,16 +901,38 @@ ExtensionManager::HostCompatibility ExtensionManager::hostCompatibility(const Ex
   if (!ext.platforms.isEmpty() && !ext.platforms.contains(platform)) {
     return {false, tr("Not available for this platform (%1)").arg(platform)};
   }
-  // Version: the host must be at least the declared minimum. The host version is
-  // QCoreApplication::applicationVersion() — the single source the app sets once
-  // at startup; there is no second/fallback path. An empty minimum imposes no
-  // floor.
-  const QString host = QCoreApplication::applicationVersion();
-  if (!ext.min_plotjuggler_version.isEmpty() &&
-      compareSemver(host.toStdString(), ext.min_plotjuggler_version.toStdString()) < 0) {
-    return {false, tr("Requires PlotJuggler %1 or newer (this build is %2)").arg(ext.min_plotjuggler_version, host)};
-  }
-  return {true, {}};
+  const std::string version = ext.version.toStdString();
+  const std::string minimum_sdk = ext.min_sdk_required.toStdString();
+  const std::string minimum = ext.min_plotjuggler_version.toStdString();
+  const std::string host_version = QCoreApplication::applicationVersion().toStdString();
+  const PluginCompatibilityResult result = evaluatePluginCompatibility(
+      {
+          .version = version,
+          .abi_major = 0,
+          .min_sdk_required = minimum_sdk,
+          .min_plotjuggler_version = minimum,
+      },
+      currentPluginHostCompatibility(host_version));
+  return {result.ok, QString::fromStdString(result.reason)};
+}
+
+ExtensionManager::HostCompatibility ExtensionManager::hostCompatibility(const InstalledExtension& installed) const {
+  // There is no registry platform map for a sideload. ABI, SDK contract, and
+  // application release claims all come from the embedded descriptor and are
+  // evaluated by the same primitive the runtime loader and seed use.
+  const std::string version = installed.version.toStdString();
+  const std::string minimum_sdk = installed.min_sdk_required.toStdString();
+  const std::string minimum_application = installed.min_plotjuggler_version.toStdString();
+  const std::string host_version = QCoreApplication::applicationVersion().toStdString();
+  const PluginCompatibilityResult result = evaluatePluginCompatibility(
+      {
+          .version = version,
+          .abi_major = installed.abi_major,
+          .min_sdk_required = minimum_sdk,
+          .min_plotjuggler_version = minimum_application,
+      },
+      currentPluginHostCompatibility(host_version));
+  return {result.ok, QString::fromStdString(result.reason)};
 }
 
 void ExtensionManager::dropReplaceConfirmation() {
@@ -915,7 +1072,7 @@ void ExtensionManager::installFromLocalZip(const QString& zip_path) {
 
     // The manifest read here is the whole validation: it dlopens the DSO at its
     // transaction path and reports the id/version it declares about itself.
-    const DirectoryDiscovery discovered = discoverExtensionDirectory(root);
+    const DirectoryDiscovery discovered = discoverExtensionDirectoryOutOfProcess(root);
     if (!discovered.found_plugin) {
       fail({}, QString("Not a valid plugin package: %1").arg(discovered.error));
       return;
@@ -942,6 +1099,59 @@ void ExtensionManager::installFromLocalZip(const QString& zip_path) {
       fail(ext_id, QString("Uninstall of \"%1\" is staged; restart to apply it before installing again").arg(ext_id));
       return;
     }
+
+    // Apply the complete embedded ABI/SDK/application compatibility gate. It
+    // must precede BOTH branches below —
+    // the fresh install and the staged replacement — so an incompatible archive
+    // never reaches the extensions dir and never prompts for a replacement it
+    // would then refuse to run.
+    if (const HostCompatibility compat = hostCompatibility(discovered.record); !compat.ok) {
+      fail(ext_id, compat.reason);
+      return;
+    }
+
+    // A rebuild that produced the very same bytes has nothing to install, so it is
+    // answered here rather than travelling the replacement path: no question to the
+    // user, no staged copy, and no restart to promote a payload identical to the one
+    // already running. Placed after the compatibility gate so an archive that would
+    // be refused is still refused, whatever it contains.
+    //
+    // Both sides are hashed now instead of trusting a digest recorded at install
+    // time: an installed tree edited underneath us then compares different and takes
+    // the ordinary path, repairing itself. An unreadable tree yields an empty digest,
+    // which must never count as a match.
+    //
+    // Skipped while an install is staged for this id, because the stage — not the
+    // live directory — is what the next launch promotes. Matching against the live
+    // bytes there would drop the archive while leaving a different payload queued.
+    //
+    // The comparison targets the copy the scan RESOLVED to, never simply whatever
+    // occupies extensions/<id>. Two directories may embed one id, and the scan
+    // deliberately keeps the highest version, which can live under any name; the
+    // loser is bytes on disk that nothing loads. Comparing against it would discard
+    // an archive that does change which plugin runs, and would strand the duplicate,
+    // since promoting is what sweeps it.
+    const QString install_dst = extRoot(extensions_dir_, ext_id);
+    const auto installed_record = installed_.constFind(ext_id);
+    const QString resolved_install =
+        installed_record != installed_.constEnd() ? QFileInfo(installed_record->path).canonicalFilePath() : QString();
+    // An empty canonical path means the directory is gone or unreadable, and must
+    // not compare equal to anything — including another empty one.
+    const bool dst_holds_the_live_copy =
+        !resolved_install.isEmpty() && resolved_install == QFileInfo(install_dst).canonicalFilePath();
+    if (dst_holds_the_live_copy && !hasPendingInstall(ext_id)) {
+      const std::string installed_digest = contentDigestOf(install_dst);
+      if (!installed_digest.empty() && installed_digest == contentDigestOf(root)) {
+        removeTransactionRoot(transaction_root);
+        pending_extract_dir_.clear();
+        // Paired with the outcome below so a listening UI sees a well-formed
+        // operation rather than a completion for something it never saw begin.
+        emit installStarted(ext_id);
+        emit installUnchanged(ext_id);
+        return;
+      }
+    }
+
     if (isInstalled(ext_id)) {
       switch (askReplaceConfirmation(ext_id, discovered.record.version)) {
         case ReplaceDecision::kNoConfirmation:
@@ -1021,6 +1231,11 @@ void ExtensionManager::installFromLocalZip(const QString& zip_path) {
                       .arg(
                           final_check.found_plugin ? QString("embedded id changed to \"%1\"").arg(final_check.record.id)
                                                    : final_check.error));
+      return;
+    }
+    if (const HostCompatibility compat = hostCompatibility(final_check.record); !compat.ok) {
+      QDir(dst).removeRecursively();
+      fail(ext_id, QString("Post-install validation failed: %1").arg(compat.reason));
       return;
     }
 
@@ -1178,10 +1393,14 @@ void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_
         }
 
         const QString root = candidateRoot(transaction_root, ext.id);
-        const DirectoryDiscovery discovered = discoverExtensionDirectory(root);
+        const DirectoryDiscovery discovered = discoverExtensionDirectoryOutOfProcess(root);
         const QString validation_error = validateRegistryIntent(discovered, ext.id, ext.version);
         if (!validation_error.isEmpty()) {
           fail_after_extraction(validation_error);
+          return;
+        }
+        if (const HostCompatibility compat = hostCompatibility(discovered.record); !compat.ok) {
+          fail_after_extraction(compat.reason);
           return;
         }
 
@@ -1231,6 +1450,11 @@ void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_
         if (!final_error.isEmpty()) {
           QDir(dst).removeRecursively();
           fail_after_extraction(QString("Post-promotion validation failed: %1").arg(final_error));
+          return;
+        }
+        if (const HostCompatibility compat = hostCompatibility(final_check.record); !compat.ok) {
+          QDir(dst).removeRecursively();
+          fail_after_extraction(QString("Post-promotion validation failed: %1").arg(compat.reason));
           return;
         }
 
@@ -1297,7 +1521,8 @@ void ExtensionManager::uninstall(const QString& extension_id) {
   // "downgrade to bundled"): allow the uninstall here, and the seed restores the
   // bundled version on the next launch. This is the backend guard mirroring the UI.
   if (isBundled(extension_id)) {
-    if (compareSemver(installedVersion(extension_id).toStdString(), bundledVersion(extension_id).toStdString()) <= 0) {
+    if (comparePluginVersions(
+            installedVersion(extension_id).toStdString(), bundledVersion(extension_id).toStdString()) <= 0) {
       emitUninstallFailure(
           extension_id,
           QString("Extension \"%1\" ships with the application and cannot be uninstalled").arg(extension_id));
@@ -1377,7 +1602,8 @@ void ExtensionManager::downgradeToBundled(const QString& extension_id) {
         extension_id, QString("Extension \"%1\" does not ship with the application").arg(extension_id));
     return;
   }
-  if (compareSemver(installedVersion(extension_id).toStdString(), bundledVersion(extension_id).toStdString()) <= 0) {
+  if (comparePluginVersions(installedVersion(extension_id).toStdString(), bundledVersion(extension_id).toStdString()) <=
+      0) {
     emitUninstallFailure(extension_id, QString("Extension \"%1\" is already at its bundled version").arg(extension_id));
     return;
   }
@@ -1567,13 +1793,6 @@ void ExtensionManager::applyPendingInstalls() {
       continue;
     }
 
-    const DirectoryDiscovery discovered = discoverExtensionDirectory(staged_dir);
-    const QString validation_error = validateRegistryIntent(discovered, intent.id, intent.version);
-    if (!validation_error.isEmpty()) {
-      fail_staged_install(intent.id, validation_error);
-      continue;
-    }
-
     const QString dst = extRoot(extensions_dir_, intent.id);
 
     // Back up the existing install before the staged version takes its place:
@@ -1584,7 +1803,7 @@ void ExtensionManager::applyPendingInstalls() {
       // Name the backup WITHOUT opening the old directory. dlopening dst here to
       // read its version would pin its old image in the process (dlopen caches by
       // path name and plugin DSOs are effectively NODELETE via unique symbols),
-      // so the post-promotion re-scan of dst would keep reading the old version.
+      // so a later in-process scan of dst would keep reading the old version.
       // A UUID keeps the backup unique; the embedded manifest inside still records
       // the version for anyone inspecting the backup.
       QDir().mkpath(PlatformUtils::backupDir());
@@ -1618,6 +1837,39 @@ void ExtensionManager::applyPendingInstalls() {
         pending_backup_path_.clear();
       }
       emitInstallFailure(intent.id, message);
+      continue;
+    }
+
+    // Validate the promoted payload in a throwaway child process. An in-process
+    // scan here is unreliable: plugin DSOs export STB_GNU_UNIQUE symbols and are
+    // effectively NODELETE, so if this id was already dlopened in this process the
+    // re-scan resolves pj_plugin_abi_version and the embedded manifest to the copy
+    // already mapped and reports its identity instead of the bytes now on disk —
+    // silently admitting a staged payload that lies about its id, or rejecting a
+    // legitimate update. The helper reads the real bytes every time and leaves the
+    // parent's image table untouched, so the restored backup below reads cleanly.
+    const DirectoryDiscovery discovered = discoverExtensionDirectoryOutOfProcess(dst);
+    if (const QString validation_error = validateRegistryIntent(discovered, intent.id, intent.version);
+        !validation_error.isEmpty()) {
+      // Undo the promotion: drop the rejected payload and put the previous install
+      // back. The out-of-process check did not map dst into this process, so the
+      // restored copy reads cleanly; re-registration is left to the
+      // refreshInstalledFromDisk() that runs after this drain.
+      QDir(dst).removeRecursively();
+      if (!pending_backup_path_.isEmpty() && QDir().rename(pending_backup_path_, dst)) {
+        pending_backup_path_.clear();
+      }
+      emitInstallFailure(intent.id, validation_error);
+      continue;
+    }
+    if (const HostCompatibility compat = hostCompatibility(discovered.record); !compat.ok) {
+      // Same undo pattern as validation failure above: drop the rejected payload
+      // and restore the previous install.
+      QDir(dst).removeRecursively();
+      if (!pending_backup_path_.isEmpty() && QDir().rename(pending_backup_path_, dst)) {
+        pending_backup_path_.clear();
+      }
+      emitInstallFailure(intent.id, compat.reason);
       continue;
     }
 
@@ -1841,7 +2093,7 @@ bool ExtensionManager::hasNewerInstalledVersion(const Extension& ext) const {
     return false;
   }
 
-  return compareSemver(installedVersion(ext.id).toStdString(), ext.version.toStdString()) > 0;
+  return comparePluginVersions(installedVersion(ext.id).toStdString(), ext.version.toStdString()) > 0;
 }
 
 bool ExtensionManager::hasUpdate(const Extension& ext) const {
@@ -1849,7 +2101,7 @@ bool ExtensionManager::hasUpdate(const Extension& ext) const {
     return false;
   }
 
-  return compareSemver(ext.version.toStdString(), installedVersion(ext.id).toStdString()) > 0;
+  return comparePluginVersions(ext.version.toStdString(), installedVersion(ext.id).toStdString()) > 0;
 }
 
 QMap<QString, InstalledExtension> ExtensionManager::installedExtensions() const {
@@ -1925,6 +2177,9 @@ void ExtensionManager::registerInstalledExtension(
     const QString& id, const QString& dst, InstalledExtension record, bool preserve_disabled_state) {
   record.path = dst;
   record.install_date = QFileInfo(dst).lastModified();
+  // Mirror the just-promoted bytes into the content-addressed shadow. Best-effort,
+  // and after the visible install is final, so it never gates the user's result.
+  shadowAdoptIntoStore(id, dst);
 
   if (preserve_disabled_state) {
     // A staged update/replace keeps the user's enable/disable choice: promoting
@@ -1941,6 +2196,122 @@ void ExtensionManager::registerInstalledExtension(
   record.enabled = true;
   installed_[id] = record;
   setEnabled(id, true);
+}
+
+void ExtensionManager::shadowAdoptIntoStore(const QString& id, const QString& dir) {
+  if (artifact_store_ == nullptr || !artifact_store_->hasStoreWriteAccess()) {
+    return;
+  }
+  // adoptDirectory hashes the tree and writes it write-once: identical bytes that
+  // are already resident are a no-op, so a reinstall of the same payload adds
+  // nothing. A rejected tree (a symlink, a quota, an I/O fault) leaves the visible
+  // install untouched — it is what actually loads.
+  const auto adopted = artifact_store_->adoptDirectory(dir);
+  if (!adopted) {
+    // Drop any prior mapping for this id: its store object no longer matches the
+    // freshly installed bytes, so the runtime must fall back to extensions/<id>/
+    // rather than load a stale version from the store.
+    reportDiagnostic(
+        id,
+        QString("Content-addressed shadow skipped for \"%1\": %2")
+            .arg(id, QString::fromStdString(adopted.error().message)),
+        false);
+    if (loaded_digests_.remove(id) > 0) {
+      persistLoadedProfile();
+    }
+    return;
+  }
+  loaded_digests_[id] = QString::fromStdString(adopted->artifact_digest);
+  persistLoadedProfile();
+}
+
+void ExtensionManager::persistLoadedProfile() {
+  if (store_session_ == nullptr || !store_session_->hasStoreWriteAccess()) {
+    return;
+  }
+  if (!writeLoadedProfile(store_session_->layout().profilesRoot(), loaded_digests_)) {
+    reportDiagnostic({}, u"Could not persist the content-addressed load profile"_s, false);
+  }
+}
+
+void ExtensionManager::dropStoreMapping(const QString& id) {
+  if (loaded_digests_.remove(id) > 0) {
+    persistLoadedProfile();
+  }
+}
+
+std::vector<QString> ExtensionManager::managedPluginDirs() {
+  std::vector<QString> dirs;
+  // Enumerate the managed dir from disk rather than the cached installed set: the
+  // bundled seed writes extensions/<id>/ AFTER that snapshot is taken, so a cached
+  // view would miss freshly-seeded plugins. The subdirectory name is the id.
+  for (const QFileInfo& entry : QDir(extensions_dir_).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+    // Prefer the immutable store object when it backs this id and its bytes still
+    // verify against the recorded content manifest; fall back to the classic
+    // directory when the store does not (yet) hold it, was rejected, has been
+    // collected, or — the integrity guard — when the resident object no longer
+    // matches its digest.
+    if (artifact_store_ != nullptr) {
+      const auto digest_it = loaded_digests_.constFind(entry.fileName());
+      if (digest_it != loaded_digests_.constEnd()) {
+        if (const auto digest = GenerationDigest::parse(digest_it.value().toStdString())) {
+          const QString object_dir = artifact_store_->artifactRootFor(*digest);
+          // Rehash the resident bytes against the object's manifest: an existence
+          // check alone would happily load an object corrupted after commit.
+          if (artifact_store_->verifyArtifact(*digest)) {
+            dirs.push_back(object_dir);
+            continue;
+          }
+          if (QDir(object_dir).exists()) {
+            // Present but its bytes no longer match its digest (a half-written
+            // commit, disk corruption). Never load it: fall back to extensions/<id>/
+            // and surface why, since the store copy stays unusable until reinstall.
+            reportDiagnostic(
+                entry.fileName(),
+                QStringLiteral(
+                    "Content-addressed object for \"%1\" failed its integrity check; "
+                    "loading the local copy instead. Reinstall to regenerate it.")
+                    .arg(entry.fileName()),
+                true);
+          }
+        }
+      }
+    }
+    dirs.push_back(entry.absoluteFilePath());
+  }
+  return dirs;
+}
+
+void ExtensionManager::reconcileStore() {
+  if (artifact_store_ == nullptr || !artifact_store_->hasStoreWriteAccess()) {
+    return;
+  }
+  // Drop profile entries whose extensions/<id>/ is gone: an uninstall drained at
+  // startup leaves the mapping naming an install that no longer exists.
+  bool profile_changed = false;
+  for (const QString& id : loaded_digests_.keys()) {
+    if (!QDir(extRoot(extensions_dir_, id)).exists()) {
+      loaded_digests_.remove(id);
+      profile_changed = true;
+    }
+  }
+  if (profile_changed) {
+    persistLoadedProfile();
+  }
+  // Guard the sweep: an empty profile alongside live installs means the profile
+  // failed to load, and sweeping against an empty root set would erase the whole
+  // store. A genuinely empty install set (nothing installed) sweeps normally.
+  if (loaded_digests_.isEmpty() && !installed_.isEmpty()) {
+    return;
+  }
+  std::vector<GenerationDigest> live;
+  live.reserve(loaded_digests_.size());
+  for (const QString& digest_text : loaded_digests_) {
+    if (const auto digest = GenerationDigest::parse(digest_text.toStdString())) {
+      live.push_back(*digest);
+    }
+  }
+  artifact_store_->collectUnreferenced(live);
 }
 
 void ExtensionManager::sweepTransactionRoots(const QString& parent) {
@@ -2002,7 +2373,8 @@ void ExtensionManager::refreshInstalledFromDisk() {
       // a differently-named prior copy). Keep the HIGHEST version rather than
       // whichever the directory scan happened to hit first, so the resolution is
       // deterministic and an update never loses to a stale lower-version copy.
-      if (compareSemver(item.record.version.toStdString(), discovered[item.record.id].version.toStdString()) <= 0) {
+      if (comparePluginVersions(item.record.version.toStdString(), discovered[item.record.id].version.toStdString()) <=
+          0) {
         qWarning(
             "ExtensionManager: duplicate embedded id '%s' in '%s'; keeping higher version already found",
             qPrintable(item.record.id), qPrintable(root));

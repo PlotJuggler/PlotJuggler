@@ -252,6 +252,7 @@ The four plugin families are:
       "category": "data_streamer",
       "tags": ["ros2", "streaming", "middleware", "robotics"],
       "version": "1.2.3",
+      "min_sdk_required": "0.21.0",
       "min_plotjuggler_version": "4.0.0",
       "plugins": [
         {
@@ -606,7 +607,11 @@ This means a plugin compiled today will continue to work when PlotJuggler migrat
 
 The commitment to plugin developers:
 
-- The registry declares `min_plotjuggler_version` for each extension
+- Registry versions, `min_sdk_required`, and `min_plotjuggler_version` are strict
+  SemVer. A semantic `(id, version)` release slot is immutable and appears once,
+  with every platform artifact in that record. After extraction the host
+  independently enforces the embedded plugin version, ABI, SDK floor, and
+  application floor through the same gate used immediately before runtime loading
 - If the SDK changes incompatibly, PlotJuggler provides an internal adapter
 - **Existing plugins are never broken by PlotJuggler updates**
 - Stability target: Qt 6.11 now, migrating to Qt 6.12 LTS (5-year support) on release

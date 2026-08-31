@@ -48,7 +48,6 @@
 #include "pj_widgets/Scrollbar.h"
 #include "pj_widgets/Search.h"
 #include "pj_widgets/ToggleSwitch.h"
-#include "ui_extension_detail_dialog.h"
 #include "ui_marketplace_window.h"
 using namespace Qt::StringLiterals;
 
@@ -94,19 +93,19 @@ class CategoryItem : public QTableWidgetItem {
 
 // Sort item for the two version columns (Installed / Marketplace). Plain
 // QTableWidgetItem sorts its display text lexicographically, which orders
-// "10.0.0" before "9.0.0"; compareSemver gives the numeric ordering the columns
-// need. The em-dash placeholder for a not-installed row (empty semver) sorts
-// below every real version.
+// "10.0.0" before "9.0.0"; comparePluginVersions gives the package ordering
+// the columns need. The em-dash placeholder for a not-installed row sorts below
+// every valid version.
 class VersionItem : public QTableWidgetItem {
  public:
   using QTableWidgetItem::QTableWidgetItem;
   [[nodiscard]] bool operator<(const QTableWidgetItem& other) const override {
-    return compareSemver(semver(text()), semver(other.text())) < 0;
+    return comparePluginVersions(semver(text()), semver(other.text())) < 0;
   }
 
  private:
-  // Maps the em-dash placeholder to an empty string, which compareSemver treats
-  // as numeric zero — so uncategorized/not-installed rows land at the bottom.
+  // Maps the em-dash placeholder to an empty invalid string; valid versions
+  // outrank invalid recovery/display data.
   static std::string semver(const QString& display) {
     return display == u"—"_s ? std::string{} : display.toStdString();
   }
@@ -167,11 +166,26 @@ bool installedStatesEqual(const QMap<QString, InstalledExtension>& lhs, const QM
     }
     const InstalledExtension& a = it.value();
     const InstalledExtension& b = rhs_it.value();
-    if (a.id != b.id || a.version != b.version || a.enabled != b.enabled) {
+    if (a.id != b.id || a.version != b.version || a.enabled != b.enabled || a.abi_major != b.abi_major ||
+        a.min_sdk_required != b.min_sdk_required || a.min_plotjuggler_version != b.min_plotjuggler_version) {
       return false;
     }
   }
   return true;
+}
+
+ExtensionManager::HostCompatibility displayedCompatibility(
+    const ExtensionManager& manager, const QList<Extension>& registry_extensions, const Extension& extension) {
+  const bool registry_owned = std::ranges::any_of(
+      registry_extensions, [&](const Extension& candidate) { return candidate.id == extension.id; });
+  if (!registry_owned) {
+    const auto installed = manager.installedExtensions();
+    const auto record = installed.constFind(extension.id);
+    if (record != installed.cend()) {
+      return manager.hostCompatibility(*record);
+    }
+  }
+  return manager.hostCompatibility(extension);
 }
 
 }  // namespace
@@ -207,6 +221,7 @@ MarketplaceWindow::MarketplaceWindow(
 }
 
 void MarketplaceWindow::finishConstruction(const QMap<QString, InstalledExtension>* installed) {
+  opened_at_ = QDateTime::currentDateTimeUtc();
   setupUi();
   setupSignals();
   if (installed != nullptr) {
@@ -271,12 +286,9 @@ void MarketplaceWindow::setupUi() {
   // (#scroll_area_ rule binds it to ${dark_background}).
 
   connect(ui_->search_edit_, &Search::textChanged, this, &MarketplaceWindow::onSearchChanged);
-  // "Compatible" hides host-incompatible plugins and is ON by default (R2). Set
-  // it before wiring signals so this initial state emits no toggled/filter pass.
-  ui_->filter_compatible_->setChecked(true);
   for (CheckButton* toggle :
-       {ui_->filter_compatible_, ui_->filter_installed_, ui_->filter_data_loader_, ui_->filter_data_streamer_,
-        ui_->filter_parser_, ui_->filter_toolbox_}) {
+       {ui_->filter_installed_, ui_->filter_data_loader_, ui_->filter_data_streamer_, ui_->filter_parser_,
+        ui_->filter_toolbox_}) {
     connect(toggle, &CheckButton::toggled, this, &MarketplaceWindow::onFilterToggled);
   }
   connect(ui_->settings_btn_, &QPushButton::clicked, this, &MarketplaceWindow::pluginPreferencesRequested);
@@ -408,6 +420,7 @@ void MarketplaceWindow::setupSignals() {
   connect(registry_mgr_, &RegistryManager::fetchFinished, this, [this](bool success) {
     if (!success) {
       setStatus("Failed to load registry", true);
+      showInvalidRegistryDialog();
       return;
     }
     // A successful refresh is a strong "things are working" signal; let it
@@ -442,6 +455,27 @@ void MarketplaceWindow::setupSignals() {
     maybeShowBatchSummary();
   });
 
+  connect(ext_mgr_, &ExtensionManager::installUnchanged, this, [this](const QString& id) {
+    // A terminal outcome like installFinished, so the same bookkeeping closes the
+    // operation — except installations_changed_, which stays as it was: nothing
+    // reached the extensions dir, so there is nothing for the host to reload.
+    if (id == active_install_id_) {
+      active_install_id_.clear();
+    }
+    ui_->progress_bar_->setVisible(false);
+    local_install_path_.clear();
+    status_error_sticky_ = false;
+    refreshAfterInstalledChange();
+    const QString version = ext_mgr_->installedVersion(id);
+    setStatus(
+        version.isEmpty()
+            ? QString("%1 is already installed — the archive is identical, nothing changed").arg(id)
+            : QString("%1 v%2 is already installed — the archive is identical, nothing changed").arg(id, version));
+    processInstallQueue();
+    maybeShowRestartRequiredDialog();
+    maybeShowBatchSummary();
+  });
+
   connect(ext_mgr_, &ExtensionManager::uninstallPendingRestart, this, [this](const QString& id) {
     ui_->progress_bar_->setVisible(false);
     status_error_sticky_ = false;
@@ -461,6 +495,9 @@ void MarketplaceWindow::setupSignals() {
   });
 
   connect(registry_mgr_, &RegistryManager::fetchError, this, [this](const QString& error) {
+    // Keep the concrete reason so the invalid-registry dialog (raised from
+    // fetchFinished(false), which carries no message) can show which entry failed.
+    last_registry_error_ = error;
     setStatus("Registry error: " + error, true);
   });
 
@@ -617,7 +654,7 @@ void MarketplaceWindow::rebuildTable(bool preserve_scroll) {
 
     const bool is_installed = installed.contains(ext.id);
     const bool has_update = ext_mgr_->hasUpdate(ext);
-    const auto compat = ext_mgr_->hostCompatibility(ext);
+    const auto compat = displayedCompatibility(*ext_mgr_, registry_extensions_, ext);
 
     // Name, with the full description as tooltip. Plain QTableWidgetItem — the
     // Name column sorts by case-insensitive text.
@@ -790,7 +827,7 @@ void MarketplaceWindow::updateDetailFooter() {
   // text and keep the standard body ink on top. When the plugin is ALSO outdated
   // (an installed version with a newer — but incompatible — registry version), the
   // notice states both facts: the update exists but is blocked, and why (R6).
-  if (const auto compat = ext_mgr_->hostCompatibility(*ext); !compat.ok) {
+  if (const auto compat = displayedCompatibility(*ext_mgr_, registry_extensions_, *ext); !compat.ok) {
     QColor tint = theme::interaction(theme::Variant::Emphasis, theme::State::Nominal, theme::appTheme());
     tint.setAlphaF(0.30);
     const QString message =
@@ -841,7 +878,7 @@ void MarketplaceWindow::updateDetailFooter() {
   if (!ext->changelog.isEmpty()) {
     QStringList versions = ext->changelog.keys();
     std::sort(versions.begin(), versions.end(), [](const QString& a, const QString& b) {
-      return compareSemver(a.toStdString(), b.toStdString()) > 0;
+      return comparePluginVersions(a.toStdString(), b.toStdString()) > 0;
     });
     html += u"<p style='margin:0 0 2px 0;'><b>Changelog</b></p><ul style='margin:0 0 0 -20px;'>"_s;
     for (const QString& version : versions) {
@@ -921,7 +958,7 @@ void MarketplaceWindow::updateDetailFooter() {
   if (is_installed && !installing && !needs_restart) {
     const QString bundled_version = ext_mgr_->bundledVersion(ext_id);
     const int installed_vs_bundled =
-        is_bundled ? compareSemver(installed_version.toStdString(), bundled_version.toStdString()) : 0;
+        is_bundled ? comparePluginVersions(installed_version.toStdString(), bundled_version.toStdString()) : 0;
     if (is_bundled && installed_vs_bundled <= 0) {
       // Core plugin at its bundled version: shown but locked.
       auto* uninstall = new QPushButton(tr("Uninstall"));
@@ -986,7 +1023,13 @@ bool MarketplaceWindow::rebuildExtensionList() {
     local.name = record.name;
     local.description = record.description;
     local.category = record.category;
-    local.version = record.version;
+    // Use installedVersion(), not record.version: the scan snapshot can be stale
+    // when the seed refreshed a bundled plugin to a newer version than the scan
+    // saw (installedVersion() reports what the seed wrote). Reading record.version
+    // here makes hasNewerInstalledVersion() compare the seeded version against the
+    // stale one and render a bogus "Local newer" badge plus an outdated version.
+    local.version = ext_mgr_->installedVersion(record.id);
+    local.min_plotjuggler_version = record.min_plotjuggler_version;
     extensions_.append(local);
   }
 
@@ -1007,6 +1050,7 @@ bool MarketplaceWindow::rebuildExtensionList() {
     staged.description = record.description;
     staged.category = record.category;
     staged.version = record.version;
+    staged.min_plotjuggler_version = record.min_plotjuggler_version;
     extensions_.append(staged);
   }
 
@@ -1053,10 +1097,6 @@ void MarketplaceWindow::applyFilters() {
     active_categories << u"toolbox"_s;
   }
   const bool installed_only = ui_->filter_installed_->isChecked();
-  // R2: hide plugins incompatible with this host (on by default). R2a: never hide
-  // one that's already installed — even incompatible/outdated/disabled — so the
-  // user can always see and manage what they have.
-  const bool compatible_only = ui_->filter_compatible_->isChecked();
 
   // The categories the four toggles can represent. A plugin whose category is
   // one of these obeys its toggle; a plugin whose category falls outside this
@@ -1078,9 +1118,11 @@ void MarketplaceWindow::applyFilters() {
     if (installed_only && !ext_mgr_->isInstalled(ext.id)) {
       continue;
     }
-    if (compatible_only && !ext_mgr_->hostCompatibility(ext).ok && !ext_mgr_->isInstalled(ext.id)) {
-      continue;
-    }
+    // Version incompatibility does NOT hide a row: the entry stays listed with its
+    // reason, and the install action is disabled with that reason on hover. Platform
+    // is a separate axis and is already excluded upstream — the registry list comes
+    // from compatibleExtensions(currentPlatform()), and rows synthesized for installed
+    // extensions carry no platforms map, so nothing here can be foreign-platform.
     if (!search.isEmpty()) {
       bool match = ext.name.toLower().contains(search) || ext.description.toLower().contains(search);
       if (!match) {
@@ -1178,7 +1220,14 @@ void MarketplaceWindow::showLatestDiagnostic() {
 }
 
 void MarketplaceWindow::updateDiagnosticsButton() {
-  const int count = ext_mgr_->diagnostics().size();
+  // Only what happened since this panel opened. The manager keeps diagnostics for
+  // the life of the application, so counting all of them made a reopened panel
+  // announce failures the user had already dealt with — the same staleness
+  // showLatestDiagnostic() guards against for the status line.
+  const QList<ExtensionDiagnostic> diagnostics = ext_mgr_->diagnostics();
+  const int count = static_cast<int>(std::count_if(
+      diagnostics.cbegin(), diagnostics.cend(),
+      [this](const ExtensionDiagnostic& diagnostic) { return diagnostic.timestamp >= opened_at_; }));
   ui_->diagnostics_btn_->setVisible(count > 0);
   ui_->diagnostics_btn_->setText(count > 1 ? QString("Details (%1)").arg(count) : "Details");
 }
@@ -1243,7 +1292,9 @@ QString MarketplaceWindow::installedStatusText(const QString& id, bool from_file
   // only reaches on the fresh-install branch — the one that writes straight to the
   // extensions dir and is picked up by the host's catalog reload, exactly like a
   // fresh registry install. Replacing an installed id is staged instead and
-  // reports through installPendingRestart, which owns the restart wording.
+  // reports through installPendingRestart, which owns the restart wording; an
+  // archive identical to the installed tree installs nothing and reports through
+  // installUnchanged, which owns its own wording for the same reason.
   if (from_file) {
     const QString version = ext_mgr_->installedVersion(id);
     return version.isEmpty() ? QString("Installed %1 from file").arg(id)
@@ -1266,6 +1317,12 @@ void MarketplaceWindow::activateEmbedded() {
   if (ext_mgr_ == nullptr) {
     return;
   }
+  // Re-stamped here rather than only at construction: the host keeps this
+  // controller alive across a close, so reopening the panel runs through here
+  // and not through the constructor. Stamped before the refresh below, whose
+  // own diagnostics belong to this activation.
+  opened_at_ = QDateTime::currentDateTimeUtc();
+
   bool state_changed = false;
   if (initial_snapshot_provided_) {
     initial_snapshot_provided_ = false;
@@ -1288,6 +1345,18 @@ void MarketplaceWindow::activateEmbedded() {
   }
   updateDiagnosticsButton();
   showLatestDiagnostic();
+}
+
+void MarketplaceWindow::setRegistryUrl(const QUrl& registry_url) {
+  if (registry_url == registry_url_) {
+    return;
+  }
+  registry_url_ = registry_url;
+  // Pointing at another registry is a user action, so clear a sticky error from
+  // the previous one — otherwise setStatus() would swallow this fetch's own
+  // progress and the list would appear to change under a stale failure message.
+  clearStickyStatus();
+  registry_mgr_->fetchRegistry(registry_url_);
 }
 
 void MarketplaceWindow::onActionButtonClicked(const QString& ext_id) {
@@ -1450,6 +1519,27 @@ void MarketplaceWindow::maybeShowRestartRequiredDialog() {
   restart_dialog_open_ = false;
   // Anything that staged inside the modal's nested event loop shows now.
   maybeShowRestartRequiredDialog();
+}
+
+void MarketplaceWindow::showInvalidRegistryDialog() {
+  if (registry_error_dialog_open_) {
+    return;
+  }
+  // Parent to the visible host, like maybeShowRestartRequiredDialog(): this
+  // window is a hidden controller whose content is embedded elsewhere.
+  QWidget* host = content_widget_ != nullptr ? content_widget_->window() : this;
+  const QString detail = last_registry_error_.isEmpty() ? QString() : tr("\n\nDetails: %1").arg(last_registry_error_);
+  registry_error_dialog_open_ = true;
+  // Generic consequence-only wording: the paragraph never claims a specific cause
+  // (it fires on a parse error AND on a network failure), so the concrete reason
+  // lives in the Details line instead. This stays correct for any future failure
+  // kind without needing a new message per cause.
+  MessageBox::information(
+      host, tr("Could not load marketplace registry"),
+      tr("The marketplace registry could not be loaded. Only the extensions already installed on this "
+         "machine are shown; new extensions and updates are unavailable until it loads correctly.") +
+          detail);
+  registry_error_dialog_open_ = false;
 }
 
 void MarketplaceWindow::maybeShowBatchSummary() {

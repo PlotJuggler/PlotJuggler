@@ -180,6 +180,7 @@ struct Extension {
     QString category;        // "data_loader" | "data_streamer" | "parser" | "toolbox" | "bundle"
     QStringList tags;
     QString version;
+    QString min_sdk_required;
     QString min_plotjuggler_version;
 
     QList<ExtensionPlugin> plugins;
@@ -196,6 +197,15 @@ struct InstalledExtension {
     QDateTime install_date;
     QString path;
     bool enabled;
+
+    // Read from the embedded manifest, so a plugin the registry does not list can
+    // still be rendered as a row and gated on every host contract it declares.
+    QString name;
+    QString description;
+    QString category;
+    uint32_t abi_major;
+    QString min_sdk_required;
+    QString min_plotjuggler_version;
 };
 ```
 
@@ -203,11 +213,26 @@ struct InstalledExtension {
 
 | Component | Responsibility | Dependencies |
 |-----------|---------------|--------------|
-| **RegistryManager** | Fetch JSON, parse (no cache today — see REQUIREMENTS F-11) | QNetworkAccessManager |
+| **RegistryManager** | Fetch and parse JSON (no cache today — see REQUIREMENTS F-11), then invoke the headless resolver | QNetworkAccessManager, PlatformUtils, RegistryResolver |
+| **RegistryResolver** | Validate registry SemVer/invariants and select one platform/host-appropriate release per id | Qt Core value types, SDK SemVer |
 | **ExtensionManager** | Install, uninstall, update, staged promotion, ring-buffer diagnostics, optional `PJ::DiagnosticSink` fan-out | DownloadManager, PlatformUtils, plugin catalog |
 | **DownloadManager** | HTTP GET with progress, SHA256 verification, ZIP extraction | QNetworkAccessManager, QCryptographicHash, libarchive |
 | **PlatformUtils** | Detect OS, get paths | Qt platform macros |
 | **QtDiagnosticBridge** | Exposes a `PJ::DiagnosticSink` via `sink()` and re-emits each received `PJ::Diagnostic` as a thread-safe queued Qt signal `diagnosticReported(int level, QString source, QString id, QString message)` (queued delivery guarded by `QPointer`). Lets a host hand a Qt-free sink to non-GUI components (e.g. `ExtensionManager`, which takes a `DiagnosticSink` ctor param) and connect the signal to its UI. | Qt signals/slots |
+
+#### Registry ingestion and headless candidate resolution
+
+`RegistryManager` parses every record before making a host-specific choice. The
+pure `resolveRegistryCandidates()` function then validates every extension
+version, SDK floor, and application floor with SDK `PJ::SemVer` and returns one
+row per id. It selects the highest compatible release for the current platform;
+if none is compatible, the highest release for that platform remains visible as
+blocked; if the platform has no artifact, the highest release overall remains
+available to non-filtering consumers. A registry that repeats the same semantic
+`(id, version)` slot is rejected, including versions that differ only in build
+metadata. All platform artifacts for one release belong in one immutable record.
+Parsing therefore never destructively discards a candidate before eligibility is
+known, and the resolver can be tested without network, filesystem, QObject, or UI.
 
 #### ExtensionManager — Constructor Design
 
@@ -268,6 +293,12 @@ the transaction directory before promotion, then **re-validated at the final
 location** after the rename — this catches DSOs that depend on rpath/relative
 paths that hold in the staging area but break in `extensions/`. On failure
 the transaction directory is removed and no partial state survives.
+
+A sideloaded archive gets one extra gate between the compatibility check and the
+replacement question: if the extracted tree hashes identically to the installed
+one, the operation finishes there. Nothing is asked, staged, or promoted, because
+the bytes being offered are the bytes already running — see
+[§4.7](#47-identical-payload-short-circuit).
 
 ![Installation Flow](diagrams/installation-flow.png)
 
@@ -407,7 +438,7 @@ path. The split of responsibilities:
   bundled → refresh (staged copy in an `extensions.seed_stage/` **sibling** of
   the extensions dir — outside the scanned tree — then a rename swap, so a
   failed refresh keeps the working copy); installed same-or-newer → untouched.
-  Comparison is version-only (`PJ::compareSemver` from
+  Comparison is version-only (`PJ::comparePluginVersions` from
   `pj_marketplace/version_compare.hpp` — the same rule the uninstall lock,
   downgrade, and update badges use), never content; in the steady state a
   size+mtime signature match against the bundled DSO (copies are stamped with
@@ -563,6 +594,40 @@ other record. Externalization is idempotent: a marker whose delete keeps failing
 is not re-filed while a live `cleanup` record already targets its directory, so
 the journal does not grow a record per launch.
 
+### 4.7 Identical-payload short-circuit
+
+Rebuilding a plugin and sideloading it again is routine, and most of those
+rebuilds change nothing. Replacing a live extension is the expensive, risky part
+of an install — it stages a copy and defers promotion to the next launch, because
+the running session may hold the DSO open. Doing that to install the bytes
+already on disk is pure cost, so `installFromLocalZip()` refuses to.
+
+**Identity.** `inspectContentManifest()` walks the tree and returns every file as
+a relative path plus the SHA-256 of its contents;
+`aggregateContentManifestDigest()` folds that sorted list into one digest. Paths
+take part in the identity, so moving a file is a change. Archive timestamps and
+compression do not, so the same sources repackaged twice still match. The walk
+refuses anything it cannot characterise — a symlink describes a target outside
+the tree that can move underneath it — and reports the tree as unreadable rather
+than guessing.
+
+**When it fires.** After the compatibility gate, so an archive that would be
+refused is still refused whatever it holds, and before the replacement question,
+so no dialog is raised for a non-replacement. Both trees are hashed at that
+moment rather than trusting a value recorded at install time: an installed tree
+edited underneath us then compares different and takes the ordinary path,
+repairing itself. An unreadable tree yields an empty digest, which never counts
+as a match — two unreadable trees must not pass for the same tree.
+
+It stays out of the way when an install is already staged for that id: the stage,
+not the live directory, is what the next launch promotes, so matching against the
+live bytes there would drop the archive while leaving a different payload queued.
+
+**What it does not do.** The digest is computed over the *extracted* tree, so the
+download and the extraction still happen. What is saved is the promotion, not the
+wait. The registry path is untouched — `install()` already refuses an installed
+id and `update()` implies a different version.
+
 ---
 
 ## 5. Directory Structure
@@ -658,7 +723,10 @@ Binary compatibility (ABI) is the biggest technical challenge:
 
 ### 6.3 Compatibility Policy
 
-- The registry declares `min_plotjuggler_version` for each extension
+- The registry may declare both `min_plotjuggler_version` and `min_sdk_required`; embedded plugin manifests carry the same floors, while discovery supplies the ABI major.
+- One headless admission evaluator, backed by the SDK's strict `PJ::SemVer`, is shared by registry/local-ZIP admission, pending-install promotion, bundled-seed rescue, static registration, and runtime DSO loading. Plugin versions and floors fail closed when malformed. A multi-DSO extension retains the highest valid floor; invalid metadata keeps the complete extension unloadable without removing its installed marketplace row.
+- Registry metadata is only a pre-screen: after extraction the embedded ABI, SDK floor, and application floor are rechecked before promotion, and staged work is rechecked again at restart. `platforms` remains registry-only; a foreign binary fails DSO discovery before the embedded gate.
+- Compatibility is a hard runtime gate. `--plugin-dir` and Preferences folders retain strict shadow priority: an incompatible authoritative copy suppresses a managed same-id fallback but is itself not loaded, making developer override failures explicit instead of silently testing another build.
 - If SDK changes incompatibly, PlotJuggler provides internal adapter
 - **Existing plugins are never broken by PlotJuggler updates**
 - Stability target: current Qt baseline 6.11 (6.12 LTS target); see REQUIREMENTS.md NF-02.

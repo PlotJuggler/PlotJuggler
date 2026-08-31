@@ -273,6 +273,7 @@ When the marketplace runs **inside** a host application (e.g. PlotJuggler), the 
 | Problem | Cause | Solution |
 |---------|-------|----------|
 | "Extension not loading" | Incompatible version | Check `min_plotjuggler_version` |
+| "Requires PlotJuggler X or newer" | The package declares a minimum host version this build does not meet. Raised for a local ZIP as well, from the manifest embedded in its plugin | Update PlotJuggler, or obtain a build of the extension made for this version |
 | "Download failed" | Network issue | Check internet, try again |
 | "Checksum mismatch" | Corrupted download | Try again, report if persistent |
 | "Cannot update (Windows)" | DLL in use | Restart PlotJuggler |

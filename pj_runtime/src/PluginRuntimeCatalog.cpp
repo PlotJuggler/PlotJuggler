@@ -14,6 +14,7 @@
 
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/toolbox_protocol.h"
+#include "pj_marketplace/plugin_compatibility.hpp"
 #include "pj_marketplace/version_compare.hpp"
 
 namespace PJ {
@@ -26,6 +27,17 @@ constexpr std::string_view kStaticPathPrefix = "static://";
 
 bool isStaticPath(const std::string& path) {
   return path.starts_with(kStaticPathPrefix);
+}
+
+PluginCompatibilityResult descriptorCompatibility(const PluginDescriptor& descriptor, std::string_view host_version) {
+  return evaluatePluginCompatibility(
+      {
+          .version = descriptor.version,
+          .abi_major = descriptor.abi_major,
+          .min_sdk_required = descriptor.min_sdk_required,
+          .min_plotjuggler_version = descriptor.min_plotjuggler_version,
+      },
+      currentPluginHostCompatibility(host_version));
 }
 
 std::string canonicalPath(const std::filesystem::path& path) {
@@ -135,14 +147,12 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
   //      version; among equally compatible candidates the higher version wins; a tie
   //      keeps the higher-priority folder.
   //
-  // Compatibility only breaks ties between managed candidates — it never excludes a
-  // plugin (a lone incompatible plugin still loads; if every managed candidate is
-  // incompatible the highest version wins). min_plotjuggler_version is an advisory
-  // floor, not a hard gate (the ABI gate runs earlier in scanPluginDsos). An empty
-  // host_version_ disables the compatibility check entirely.
-  const auto compatible = [this](const PluginDescriptor& d) {
-    return host_version_.empty() || d.min_plotjuggler_version.empty() ||
-           compareSemver(d.min_plotjuggler_version, host_version_) <= 0;
+  // Compatibility helps managed duplicate selection and is also a hard final
+  // load gate below. Authoritative directories still claim/shadow an id before
+  // that gate: an incompatible --plugin-dir build must not silently fall back
+  // to a marketplace copy the developer did not ask to test.
+  const auto compatibility = [this](const PluginDescriptor& descriptor) {
+    return descriptorCompatibility(descriptor, host_version_);
   };
 
   std::vector<PluginDescriptor> winners;
@@ -215,14 +225,16 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
         continue;
       }
       // (2) Both managed: compatibility, then version, then folder priority.
-      const bool cand_ok = compatible(descriptor);
-      const bool inc_ok = compatible(incumbent);
-      const bool replace = (cand_ok != inc_ok) ? cand_ok : compareSemver(descriptor.version, incumbent.version) > 0;
+      const PluginCompatibilityResult candidate_compatibility = compatibility(descriptor);
+      const PluginCompatibilityResult incumbent_compatibility = compatibility(incumbent);
+      const bool cand_ok = candidate_compatibility.ok;
+      const bool inc_ok = incumbent_compatibility.ok;
+      const bool replace =
+          (cand_ok != inc_ok) ? cand_ok : comparePluginVersions(descriptor.version, incumbent.version) > 0;
       if (replace) {
-        const std::string reason = (cand_ok && !inc_ok)
-                                       ? " supersedes incompatible v" + incumbent.version +
-                                             " (needs PlotJuggler >= " + incumbent.min_plotjuggler_version + ")"
-                                       : " supersedes v" + incumbent.version;
+        const std::string reason = (cand_ok && !inc_ok) ? " supersedes incompatible v" + incumbent.version + " (" +
+                                                              incumbent_compatibility.reason + ")"
+                                                        : " supersedes v" + incumbent.version;
         report(
             DiagnosticLevel::kInfo, descriptor.id,
             descriptor.dso_path.string() + ": plugin id \"" + descriptor.id + "\" v" + descriptor.version + reason +
@@ -230,16 +242,29 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
         incumbent = descriptor;
       } else {
         const std::string reason =
-            (!cand_ok && inc_ok)
-                ? "ignoring incompatible plugin id \"" + descriptor.id + "\" v" + descriptor.version +
-                      " (needs PlotJuggler >= " + descriptor.min_plotjuggler_version + "; compatible v" +
-                      incumbent.version + " already loaded from " + incumbent_path + ")"
-                : "ignoring duplicate plugin id \"" + descriptor.id + "\" v" + descriptor.version + " (v" +
-                      incumbent.version + " already loaded from " + incumbent_path + ")";
+            (!cand_ok && inc_ok) ? "ignoring incompatible plugin id \"" + descriptor.id + "\" v" + descriptor.version +
+                                       " (" + candidate_compatibility.reason + "; compatible v" + incumbent.version +
+                                       " already loaded from " + incumbent_path + ")"
+                                 : "ignoring duplicate plugin id \"" + descriptor.id + "\" v" + descriptor.version +
+                                       " (v" + incumbent.version + " already loaded from " + incumbent_path + ")";
         report(DiagnosticLevel::kInfo, descriptor.id, descriptor.dso_path.string() + ": " + reason);
       }
     }
   }
+
+  // Selection never turns incompatibility into permission. This also rejects a
+  // lone bad candidate and an authoritative winner while preserving the latter's
+  // strict shadow over managed fallbacks.
+  std::erase_if(winners, [this, &compatibility](const PluginDescriptor& descriptor) {
+    const PluginCompatibilityResult result = compatibility(descriptor);
+    if (result.ok) {
+      return false;
+    }
+    report(
+        DiagnosticLevel::kError, descriptor.id,
+        descriptor.dso_path.string() + ": incompatible plugin \"" + descriptor.id + "\": " + result.reason);
+    return true;
+  });
 
   // Drop user-disabled extensions: installed on disk but deliberately not loaded.
   if (!disabled_ids_.empty()) {
@@ -342,10 +367,11 @@ namespace {
 // DSO-to-static replacement transactional: a rejected candidate leaves the
 // incumbent DSO loaded. `report` bridges to the catalog's private diagnostic
 // sink.
-template <typename RuntimeT, typename LoadFn, typename ReportFn, typename ClaimFn, typename FillFn>
+template <
+    typename RuntimeT, typename LoadFn, typename ReportFn, typename CompatibilityFn, typename ClaimFn, typename FillFn>
 bool registerStaticPlugin(
     const auto* vtable, std::vector<RuntimeT>& out, PluginFamily family, const ReportFn& report,
-    const ClaimFn& claim_id, const FillFn& fill, const LoadFn& load) {
+    const CompatibilityFn& compatibility, const ClaimFn& claim_id, const FillFn& fill, const LoadFn& load) {
   const std::string family_name{toString(family)};
   auto result = load(vtable);
   if (!result) {
@@ -361,6 +387,12 @@ bool registerStaticPlugin(
       vtable->manifest_json != nullptr ? std::string_view{vtable->manifest_json} : std::string_view{});
   if (!descriptor) {
     report(DiagnosticLevel::kError, std::string{}, "static " + family_name + ": " + descriptor.error());
+    return false;
+  }
+  if (const PluginCompatibilityResult compatible = compatibility(*descriptor); !compatible.ok) {
+    report(
+        DiagnosticLevel::kError, descriptor->id,
+        "static " + family_name + " \"" + descriptor->id + "\": " + compatible.reason);
     return false;
   }
   RuntimeT loaded;
@@ -390,6 +422,7 @@ bool PluginRuntimeCatalog::registerStaticDataSource(
   return registerStaticPlugin(
       vtable, data_sources_, PluginFamily::kDataSource,
       [this](DiagnosticLevel level, const std::string& id, std::string msg) { report(level, id, std::move(msg)); },
+      [this](const PluginDescriptor& descriptor) { return descriptorCompatibility(descriptor, host_version_); },
       [this](const std::string& id) { return claimStaticId(id, "DataSource"); },
       [this](RuntimeDataSourcePlugin& loaded, const PluginDescriptor& descriptor) {
         const auto capabilities = probeCapabilities(loaded.library);
@@ -428,6 +461,7 @@ bool PluginRuntimeCatalog::registerStaticMessageParser(
   return registerStaticPlugin(
       vtable, message_parsers_, PluginFamily::kMessageParser,
       [this](DiagnosticLevel level, const std::string& id, std::string msg) { report(level, id, std::move(msg)); },
+      [this](const PluginDescriptor& descriptor) { return descriptorCompatibility(descriptor, host_version_); },
       [this](const std::string& id) { return claimStaticId(id, "MessageParser"); },
       [](RuntimeMessageParserPlugin& loaded, const PluginDescriptor& descriptor) {
         loaded.encodings = descriptor.encoding;
@@ -443,6 +477,7 @@ bool PluginRuntimeCatalog::registerStaticToolbox(
   return registerStaticPlugin(
       vtable, toolbox_plugins_, PluginFamily::kToolbox,
       [this](DiagnosticLevel level, const std::string& id, std::string msg) { report(level, id, std::move(msg)); },
+      [this](const PluginDescriptor& descriptor) { return descriptorCompatibility(descriptor, host_version_); },
       [this](const std::string& id) { return claimStaticId(id, "Toolbox"); },
       [this](RuntimeToolboxPlugin& loaded, const PluginDescriptor& /*descriptor*/) {
         const auto capabilities = probeCapabilities(loaded.library);

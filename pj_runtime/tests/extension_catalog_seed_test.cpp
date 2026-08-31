@@ -21,6 +21,8 @@
 #include "pj_base/plugin_data_api.h"
 #include "pj_marketplace/download_manager.hpp"
 #include "pj_marketplace/extension_manager.hpp"
+#include "pj_marketplace/loaded_profile.hpp"
+#include "pj_marketplace/platform_utils.hpp"
 #include "pj_plugins/host/plugin_catalog.hpp"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "plugin_test_utils.h"
@@ -97,6 +99,53 @@ TEST_F(ExtensionCatalogSeedTest, FirstLaunchSeedsBundledIntoMarketplaceDir) {
   // (uninstall lock + downgrade-to-bundled).
   EXPECT_TRUE(service->extensionManager().isBundled(QString::fromUtf8(kMockId)));
   EXPECT_EQ(service->extensionManager().bundledVersion(QString::fromUtf8(kMockId)), "1.0.0");
+}
+
+// Regression: a plugin whose directory appears in the managed dir AFTER the
+// service is built — an install done while running — must load on reload()
+// without a restart. The managed scan tier is one directory per installed
+// extension and is rebuilt on every reload, so a mid-session install is picked
+// up; a snapshot frozen at construction would miss it.
+TEST_F(ExtensionCatalogSeedTest, ReloadPicksUpAPluginInstalledAfterConstruction) {
+  const auto service = makeDefaultModeService();
+  ASSERT_EQ(findMock(*service), nullptr) << "nothing installed yet";
+
+  // Simulate an install landing in the managed dir after construction.
+  placePlugin(seededDir(), PJ_MOCK_DATA_SOURCE_PLUGIN_PATH, pluginFileName("ds"));
+  ASSERT_EQ(findMock(*service), nullptr) << "an unscanned on-disk plugin is not loaded until reload";
+
+  service->reload();
+
+  const LoadedDataSource* mock = findMock(*service);
+  ASSERT_NE(mock, nullptr) << "reload must pick up a plugin installed since construction";
+  EXPECT_EQ(mock->version, "1.0.0");
+}
+
+// Regression: a bundled refresh writes extensions/<id>/ outside the adopt path, so
+// a store object recorded for that id by an earlier registry install goes stale.
+// The seed must drop the mapping, or the runtime keeps loading the old store
+// version instead of the freshly-seeded bundled bytes.
+TEST_F(ExtensionCatalogSeedTest, BundledRefreshDropsStaleStoreMapping) {
+  const QString store_root = PlatformUtils::canonicalStoreRoot(marketplace_.path());
+  const QString profiles_root = store_root + ".profiles";
+
+  // Installed v1 in the managed dir, a newer v2 bundled to refresh it.
+  placePlugin(seededDir(), PJ_MOCK_DATA_SOURCE_PLUGIN_PATH, pluginFileName("old_v1"));
+  placePlugin(bundled_.path(), PJ_MOCK_DATA_SOURCE_V2_PLUGIN_PATH, pluginFileName("ds"));
+
+  // A stale store object + profile mapping, as an earlier adopt of the v1 install
+  // would have left. Without the fix managedPluginDirs would prefer this v1 object.
+  const QString digest_hex = QStringLiteral("a").repeated(64);
+  placePlugin(store_root + ".artifacts/" + digest_hex, PJ_MOCK_DATA_SOURCE_PLUGIN_PATH, pluginFileName("ds"));
+  ASSERT_TRUE(writeLoadedProfile(profiles_root, {{QString::fromUtf8(kMockId), "sha256:" + digest_hex}}));
+
+  const auto service = makeDefaultModeService();
+
+  const LoadedDataSource* mock = findMock(*service);
+  ASSERT_NE(mock, nullptr);
+  EXPECT_EQ(mock->version, "2.0.0") << "the refreshed bundled version must load, not the stale store object";
+  EXPECT_FALSE(readLoadedProfile(profiles_root).contains(QString::fromUtf8(kMockId)))
+      << "the seed must drop the stale store mapping";
 }
 
 TEST_F(ExtensionCatalogSeedTest, RefreshesSeededCopyWhenBundledIsNewer) {
@@ -346,13 +395,14 @@ TEST_F(ExtensionCatalogSeedTest, SeedRunsOnceTheStoreLeaseIsFree) {
 // DSO that declares incompatible metadata, which requires an SDK-side test
 // asset; the follow-up lands separately.
 
-PluginDescriptor makeDescriptor(uint32_t abi_major, std::string min_pj) {
+PluginDescriptor makeDescriptor(uint32_t abi_major, std::string min_pj, std::string min_sdk = {}) {
   PluginDescriptor d;
   d.id = "any-id";
   d.name = "Any";
   d.version = "1.0.0";
   d.abi_major = abi_major;
   d.min_plotjuggler_version = std::move(min_pj);
+  d.min_sdk_required = std::move(min_sdk);
   return d;
 }
 
@@ -387,6 +437,28 @@ TEST(ExtensionCatalogCompatTest, HostAtOrAboveMinIsCompatible) {
   const auto d = makeDescriptor(PJ_ABI_VERSION, "3.0.0");
   EXPECT_TRUE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d, "3.999.0"));
   EXPECT_TRUE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d, "3.0.0"));
+}
+
+TEST(ExtensionCatalogCompatTest, UsesStrictSemverPrereleasePrecedence) {
+  const auto d = makeDescriptor(PJ_ABI_VERSION, "5.0.0");
+  EXPECT_FALSE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d, "5.0.0-rc.1"));
+  EXPECT_TRUE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d, "5.0.0"));
+}
+
+TEST(ExtensionCatalogCompatTest, MalformedApplicationFloorIsIncompatible) {
+  const auto d = makeDescriptor(PJ_ABI_VERSION, "4.1");
+  EXPECT_FALSE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d, "5.0.0"));
+  const QString reason = ExtensionCatalogService::descriptorIncompatReason(d, "5.0.0");
+  EXPECT_TRUE(reason.contains("invalid", Qt::CaseInsensitive)) << reason.toStdString();
+  EXPECT_TRUE(reason.contains("4.1")) << reason.toStdString();
+}
+
+TEST(ExtensionCatalogCompatTest, NewerSdkRequirementIsIncompatible) {
+  const auto d = makeDescriptor(PJ_ABI_VERSION, "", "99.0.0");
+  EXPECT_FALSE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d, "5.0.0"));
+  const QString reason = ExtensionCatalogService::descriptorIncompatReason(d, "5.0.0");
+  EXPECT_TRUE(reason.contains("SDK", Qt::CaseInsensitive)) << reason.toStdString();
+  EXPECT_TRUE(reason.contains("99.0.0")) << reason.toStdString();
 }
 
 }  // namespace

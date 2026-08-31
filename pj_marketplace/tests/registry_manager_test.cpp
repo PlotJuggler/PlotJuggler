@@ -16,6 +16,9 @@
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QHostAddress>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSignalSpy>
 #include <QString>
 #include <QTcpServer>
@@ -84,6 +87,7 @@ static const QByteArray kFullRegistryJson = R"({
       "repository": "https://github.com/example/csv-loader",
       "icon_url": "https://example.com/icon.png",
       "category": "data_loader",
+      "min_sdk_required": "0.21.0",
       "min_plotjuggler_version": "3.8.0",
       "tags": ["csv", "tsv", "file"],
       "platforms": {
@@ -227,6 +231,7 @@ TEST_F(RegistryManagerTest, ParsesOptionalStringFields) {
   EXPECT_EQ(ext.repository, "https://github.com/example/csv-loader");
   EXPECT_EQ(ext.icon_url, "https://example.com/icon.png");
   EXPECT_EQ(ext.category, "data_loader");
+  EXPECT_EQ(ext.min_sdk_required, "0.21.0");
   EXPECT_EQ(ext.min_plotjuggler_version, "3.8.0");
 }
 
@@ -473,6 +478,75 @@ TEST_F(RegistryManagerTest, EmitsFetchErrorOnMissingRequiredFieldVersion) {
   EXPECT_GE(spy_error.count(), 1);
 }
 
+TEST_F(RegistryManagerTest, RejectsEmptyRequiredString) {
+  for (const QString field : {"id", "name"}) {
+    RegistryManager mgr;
+    QSignalSpy spy_error(&mgr, &RegistryManager::fetchError);
+    QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
+
+    QJsonObject extension{{"id", "plugin"}, {"name", "Plugin"}, {"version", "1.0.0"}};
+    extension[field] = "";
+    server_->setResponseBody(QJsonDocument(QJsonObject{{"extensions", QJsonArray{extension}}}).toJson());
+    mgr.fetchRegistry(server_->url());
+
+    ASSERT_TRUE(spy_finished.wait(3000));
+    EXPECT_FALSE(spy_finished.first().at(0).toBool()) << field.toStdString();
+    ASSERT_EQ(spy_error.count(), 1) << field.toStdString();
+    EXPECT_TRUE(spy_error.first().at(0).toString().contains(field));
+    EXPECT_TRUE(mgr.extensions().isEmpty());
+  }
+}
+
+TEST_F(RegistryManagerTest, RejectsMalformedRegistryVersion) {
+  RegistryManager mgr;
+  QSignalSpy spy_error(&mgr, &RegistryManager::fetchError);
+  QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
+
+  server_->setResponseBody(R"({"extensions":[{"id":"bad","name":"Bad","version":"4.1"}]})");
+  mgr.fetchRegistry(server_->url());
+
+  ASSERT_TRUE(spy_finished.wait(3000));
+  EXPECT_FALSE(spy_finished.first().at(0).toBool());
+  ASSERT_EQ(spy_error.count(), 1);
+  EXPECT_TRUE(spy_error.first().at(0).toString().contains("invalid", Qt::CaseInsensitive));
+  EXPECT_TRUE(spy_error.first().at(0).toString().contains("4.1"));
+  EXPECT_TRUE(mgr.extensions().isEmpty());
+}
+
+TEST_F(RegistryManagerTest, RejectsMalformedRegistrySdkFloor) {
+  RegistryManager mgr;
+  QSignalSpy spy_error(&mgr, &RegistryManager::fetchError);
+  QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
+
+  server_->setResponseBody(R"({"extensions":[{"id":"bad","name":"Bad","version":"1.0.0","min_sdk_required":"0.21"}]})");
+  mgr.fetchRegistry(server_->url());
+
+  ASSERT_TRUE(spy_finished.wait(3000));
+  EXPECT_FALSE(spy_finished.first().at(0).toBool());
+  ASSERT_EQ(spy_error.count(), 1);
+  EXPECT_TRUE(spy_error.first().at(0).toString().contains("SDK", Qt::CaseInsensitive));
+  EXPECT_TRUE(spy_error.first().at(0).toString().contains("0.21"));
+  EXPECT_TRUE(mgr.extensions().isEmpty());
+}
+
+TEST_F(RegistryManagerTest, RejectsWrongTypeCompatibilityFloor) {
+  for (const QString field : {"min_sdk_required", "min_plotjuggler_version"}) {
+    RegistryManager mgr;
+    QSignalSpy spy_error(&mgr, &RegistryManager::fetchError);
+    QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
+
+    server_->setResponseBody(
+        QString(R"({"extensions":[{"id":"bad","name":"Bad","version":"1.0.0","%1":21}]})").arg(field).toUtf8());
+    mgr.fetchRegistry(server_->url());
+
+    ASSERT_TRUE(spy_finished.wait(3000));
+    EXPECT_FALSE(spy_finished.first().at(0).toBool()) << field.toStdString();
+    ASSERT_EQ(spy_error.count(), 1) << field.toStdString();
+    EXPECT_TRUE(spy_error.first().at(0).toString().contains(field)) << spy_error.first().at(0).toString().toStdString();
+    EXPECT_TRUE(mgr.extensions().isEmpty());
+  }
+}
+
 // [4] extensions() is empty after a parse error, even if a previous fetch succeeded
 TEST_F(RegistryManagerTest, ExtensionsEmptyAfterParseError) {
   RegistryManager mgr;
@@ -518,6 +592,160 @@ TEST_F(RegistryManagerTest, DeduplicatesByIdKeepingHighestVersion) {
   EXPECT_EQ(dup.version, "1.10.0");
   EXPECT_EQ(dup.description, "new");
   EXPECT_EQ(exts.at(1).id, "other");
+}
+
+// The duplicate-id collapse is destructive, so eligibility has to be decided
+// BEFORE it: platform filtering (compatibleExtensions) runs on the already
+// collapsed list, so a higher-versioned entry built for another platform would
+// otherwise discard the only artifact this host can install, for good.
+TEST_F(RegistryManagerTest, PlatformEligibilityPrecedesVersionOrdering) {
+  RegistryManager mgr;
+  mgr.setEligibility("linux-x86_64", "4.0.0");
+  QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
+
+  server_->setResponseBody(R"({"extensions":[
+    {"id":"dup","name":"Dup","version":"1.0.0",
+     "platforms":{"linux-x86_64":{"url":"u-linux","checksum":"sha256:1"}}},
+    {"id":"dup","name":"Dup","version":"2.0.0",
+     "platforms":{"windows-x86_64":{"url":"u-win","checksum":"sha256:2"}}}
+  ]})");
+  mgr.fetchRegistry(server_->url());
+  ASSERT_TRUE(spy_finished.wait(3000));
+
+  const QList<Extension> exts = mgr.extensions();
+  ASSERT_EQ(exts.size(), 1);
+  EXPECT_EQ(exts.at(0).version, "1.0.0") << "a windows-only 2.0.0 must not displace the installable linux 1.0.0";
+  EXPECT_EQ(mgr.compatibleExtensions("linux-x86_64").size(), 1)
+      << "the surviving entry must still be the one this platform can install";
+}
+
+// Among platform-eligible duplicates the winner is the highest version the
+// running host can actually accept — a newer build that demands a newer
+// PlotJuggler must not hide an installable older one.
+TEST_F(RegistryManagerTest, HighestHostCompatibleVersionWinsWhenOneExists) {
+  RegistryManager mgr;
+  mgr.setEligibility("linux-x86_64", "4.0.0");
+  QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
+
+  server_->setResponseBody(R"({"extensions":[
+    {"id":"dup","name":"Dup","version":"3.0.0","min_plotjuggler_version":"5.0.0",
+     "platforms":{"linux-x86_64":{"url":"u3","checksum":"sha256:3"}}},
+    {"id":"dup","name":"Dup","version":"2.0.0","min_plotjuggler_version":"4.0.0",
+     "platforms":{"linux-x86_64":{"url":"u2","checksum":"sha256:2"}}},
+    {"id":"dup","name":"Dup","version":"1.0.0",
+     "platforms":{"linux-x86_64":{"url":"u1","checksum":"sha256:1"}}}
+  ]})");
+  mgr.fetchRegistry(server_->url());
+  ASSERT_TRUE(spy_finished.wait(3000));
+
+  const QList<Extension> exts = mgr.extensions();
+  ASSERT_EQ(exts.size(), 1);
+  EXPECT_EQ(exts.at(0).version, "2.0.0") << "3.0.0 needs PlotJuggler 5.0.0, so the highest installable one must win";
+}
+
+// When no candidate is host-compatible the highest one is kept rather than
+// dropped, so the marketplace can still show the row and flag it as
+// incompatible (an entry that vanishes from the list is unexplainable to the
+// user; a flagged one is not).
+TEST_F(RegistryManagerTest, KeepsHighestVersionWhenNoCandidateIsHostCompatible) {
+  RegistryManager mgr;
+  mgr.setEligibility("linux-x86_64", "4.0.0");
+  QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
+
+  server_->setResponseBody(R"({"extensions":[
+    {"id":"dup","name":"Dup","version":"2.0.0","min_plotjuggler_version":"5.0.0",
+     "platforms":{"linux-x86_64":{"url":"u2","checksum":"sha256:2"}}},
+    {"id":"dup","name":"Dup","version":"3.0.0","min_plotjuggler_version":"6.0.0",
+     "platforms":{"linux-x86_64":{"url":"u3","checksum":"sha256:3"}}}
+  ]})");
+  mgr.fetchRegistry(server_->url());
+  ASSERT_TRUE(spy_finished.wait(3000));
+
+  const QList<Extension> exts = mgr.extensions();
+  ASSERT_EQ(exts.size(), 1);
+  EXPECT_EQ(exts.at(0).version, "3.0.0");
+}
+
+// A pre-release must lose the duplicate-id race against its own release, which
+// is only true once the shared comparator implements SemVer precedence.
+TEST_F(RegistryManagerTest, DeduplicationPrefersReleaseOverPreRelease) {
+  RegistryManager mgr;
+  mgr.setEligibility("linux-x86_64", "4.0.0");
+  QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
+
+  server_->setResponseBody(R"({"extensions":[
+    {"id":"dup","name":"Dup","version":"2.0.0-rc.1",
+     "platforms":{"linux-x86_64":{"url":"u-rc","checksum":"sha256:1"}}},
+    {"id":"dup","name":"Dup","version":"2.0.0",
+     "platforms":{"linux-x86_64":{"url":"u-final","checksum":"sha256:2"}}}
+  ]})");
+  mgr.fetchRegistry(server_->url());
+  ASSERT_TRUE(spy_finished.wait(3000));
+
+  const QList<Extension> exts = mgr.extensions();
+  ASSERT_EQ(exts.size(), 1);
+  EXPECT_EQ(exts.at(0).version, "2.0.0");
+  EXPECT_EQ(exts.at(0).platforms["linux-x86_64"].url, "u-final");
+}
+
+TEST_F(RegistryManagerTest, RejectsReusedSemanticVersionSlot) {
+  RegistryManager mgr;
+  mgr.setEligibility("linux-x86_64", "4.0.0");
+  QSignalSpy spy_error(&mgr, &RegistryManager::fetchError);
+  QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
+
+  server_->setResponseBody(R"({"extensions":[
+    {"id":"dup","name":"Dup","version":"1.0.0+linux",
+     "platforms":{"linux-x86_64":{"url":"u1","checksum":"sha256:1"}}},
+    {"id":"dup","name":"Dup","version":"1.0.0+replacement",
+     "platforms":{"linux-x86_64":{"url":"u2","checksum":"sha256:2"}}}
+  ]})");
+  mgr.fetchRegistry(server_->url());
+
+  ASSERT_TRUE(spy_finished.wait(3000));
+  EXPECT_FALSE(spy_finished.first().at(0).toBool());
+  ASSERT_EQ(spy_error.count(), 1);
+  EXPECT_TRUE(spy_error.first().at(0).toString().contains("reuses", Qt::CaseInsensitive));
+  EXPECT_TRUE(spy_error.first().at(0).toString().contains("1.0.0"));
+  EXPECT_TRUE(mgr.extensions().isEmpty());
+}
+
+TEST_F(RegistryManagerTest, SdkCompatibilityPrecedesVersionOrdering) {
+  RegistryManager mgr;
+  mgr.setEligibility("linux-x86_64", "4.0.0");
+  QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
+
+  server_->setResponseBody(R"({"extensions":[
+    {"id":"dup","name":"Dup","version":"3.0.0","min_sdk_required":"99.0.0",
+     "platforms":{"linux-x86_64":{"url":"u3","checksum":"sha256:3"}}},
+    {"id":"dup","name":"Dup","version":"2.0.0","min_sdk_required":"0.21.0",
+     "platforms":{"linux-x86_64":{"url":"u2","checksum":"sha256:2"}}}
+  ]})");
+  mgr.fetchRegistry(server_->url());
+
+  ASSERT_TRUE(spy_finished.wait(3000));
+  const QList<Extension> exts = mgr.extensions();
+  ASSERT_EQ(exts.size(), 1);
+  EXPECT_EQ(exts.at(0).version, "2.0.0");
+}
+
+TEST_F(RegistryManagerTest, NoPlatformCandidateFallsBackToHighestVersionOverall) {
+  RegistryManager mgr;
+  mgr.setEligibility("linux-x86_64", "4.0.0");
+  QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
+
+  server_->setResponseBody(R"({"extensions":[
+    {"id":"dup","name":"Dup","version":"2.0.0",
+     "platforms":{"windows-x86_64":{"url":"u2","checksum":"sha256:2"}}},
+    {"id":"dup","name":"Dup","version":"3.0.0","min_plotjuggler_version":"99.0.0",
+     "platforms":{"macos-arm64":{"url":"u3","checksum":"sha256:3"}}}
+  ]})");
+  mgr.fetchRegistry(server_->url());
+
+  ASSERT_TRUE(spy_finished.wait(3000));
+  const QList<Extension> exts = mgr.extensions();
+  ASSERT_EQ(exts.size(), 1);
+  EXPECT_EQ(exts.at(0).version, "3.0.0");
 }
 
 }  // namespace

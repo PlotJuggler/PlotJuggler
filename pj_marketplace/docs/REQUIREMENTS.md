@@ -138,6 +138,7 @@ elsewhere in the host application:
 | F-12 | Backup previous version on updates | Old version saved before overwriting |
 | F-13 | Automatic rollback if plugin fails | Deferred; backups may exist, but automatic restore is not implemented |
 | F-14 | Deferred update: apply on restart | Updates are downloaded and staged, then applied only after restart; a fresh install activates immediately |
+| F-31 | Recognise a local archive that changes nothing | A sideloaded ZIP whose extracted tree hashes identically to the installed one is reported as done without a confirmation, a staged copy, or a restart. Identity is the SHA-256 of every file plus its relative path, so a rebuild that only re-dates the archive still matches and one changed byte does not |
 | F-16 | Cancel download in progress | User can abort a download |
 | F-17 | Update All | Single action to update all extensions with available updates |
 | F-18 | Confirmation dialogs | User confirms before install/uninstall/update actions |
@@ -353,7 +354,8 @@ combined behavior:
 |----------|-------------------|
 | Extension requires newer PlotJuggler | Show warning, prevent install |
 | Downgrade requested | Reject with a diagnostic; keep the local install unchanged |
-| Same version reinstall | Ask confirmation, then reinstall |
+| Same version reinstall, different payload | Ask confirmation, then reinstall |
+| Same version reinstall, byte-identical payload | Report success without touching the installed directory: nothing is asked, staged, or restarted. Decided on the content digest of both trees, not on the declared version |
 
 ### 8.4 Update Staging & Restart
 
@@ -459,6 +461,7 @@ The minimum viable product is successful if:
       "category": "data_loader|data_streamer|parser|toolbox|bundle",
       "tags": ["tag1", "tag2"],
       "version": "semver",
+      "min_sdk_required": "semver",
       "min_plotjuggler_version": "semver",
       "plugins": [
         {
@@ -495,9 +498,32 @@ Fields read from the embedded plugin manifest:
 |-------|--------|
 | `id` | Embedded plugin manifest key `"id"` |
 | `version` | Embedded plugin manifest key `"version"` |
+| `name` | Embedded plugin manifest key `"name"`, falling back to `id` |
+| `description` | Embedded plugin manifest key `"description"` |
+| `category` | Embedded plugin manifest key `"category"` |
+| `abi_major` | ABI major reported by SDK DSO discovery; zero means an older/unknown descriptor |
+| `min_sdk_required` | Embedded plugin manifest key `"min_sdk_required"`; empty means undeclared. Hard SDK-contract gate |
+| `min_plotjuggler_version` | Embedded plugin manifest key `"min_plotjuggler_version"`; empty means no declared floor. Gates a local-ZIP sideload the way the registry field gates a registry install |
 | `install_date` | Last-modified timestamp of the extension root directory |
 | `path` | The scanned subdirectory itself |
 | `enabled` | Always `true` by default (no persistence yet) |
+
+A directory holding several plugin DSOs is installed and gated as one extension, so
+they must agree on `id` and `version`. The plugin version and each non-empty
+SDK/application floor are strict SemVer; the extension adopts the highest component
+floor. Malformed metadata rejects new admission but does not erase an already-installed
+extension from the manager: that row remains visible and uninstallable while runtime
+loading rejects it.
+The host may normalize the single `v`/`V` tag prefix accepted by the PJ4 build, but
+plugin declarations themselves remain strict SemVer.
+
+Registry compatibility fields are an early filter, not authority over the extracted
+code. Before initial promotion, before staged promotion after restart, during bundled
+seed rescue, and immediately before runtime registration, the same headless evaluator
+checks embedded plugin version, ABI major, `min_sdk_required`, and
+`min_plotjuggler_version`. An
+authoritative `--plugin-dir` copy retains strict id shadowing, but a copy that fails
+this gate is not loaded and does not fall back silently to the managed store.
 
 ### 11.3 Registry Extension Schema
 
@@ -505,6 +531,7 @@ Fields read from the embedded plugin manifest:
 {
   "id": "extension-id",
   "version": "semver",
+  "min_sdk_required": "semver",
   "min_plotjuggler_version": "semver",
   "plugins": [
     {

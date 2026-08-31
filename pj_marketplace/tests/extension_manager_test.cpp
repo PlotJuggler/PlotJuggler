@@ -50,6 +50,7 @@
 
 #include "pj_marketplace/download_manager.hpp"
 #include "pj_marketplace/extension.hpp"
+#include "pj_marketplace/loaded_profile.hpp"
 #include "pj_marketplace/platform_utils.hpp"
 using namespace Qt::StringLiterals;
 
@@ -184,6 +185,12 @@ QString pluginPathForId(const QString& ext_id, const QString& version = "1.0.0")
   if (ext_id == "mock-data-source" && version == "2.0.0") {
     return QStringLiteral(PJ_MOCK_DATA_SOURCE_V2_PLUGIN_PATH);
   }
+  // The 3.0.0 build of this id is the fixture whose embedded manifest declares
+  // min_plotjuggler_version "5.0.0" — the host-version floor the compatibility
+  // tests need. No other fixture declares one.
+  if (ext_id == "mock-data-source" && version == "3.0.0") {
+    return QStringLiteral(PJ_MOCK_INCOMPATIBLE_PLUGIN_PATH);
+  }
   if (ext_id == "mock-data-source") {
     return QStringLiteral(PJ_MOCK_DATA_SOURCE_PLUGIN_PATH);
   }
@@ -198,6 +205,15 @@ QString pluginPathForId(const QString& ext_id, const QString& version = "1.0.0")
   }
   if (ext_id == "missing-id-source") {
     return QStringLiteral(PJ_MISSING_ID_PLUGIN_PATH);
+  }
+  if (ext_id == "malformed-floor") {
+    return QStringLiteral(PJ_MOCK_MALFORMED_FLOOR_PLUGIN_PATH);
+  }
+  if (ext_id == "malformed-version") {
+    return QStringLiteral(PJ_MOCK_MALFORMED_VERSION_PLUGIN_PATH);
+  }
+  if (ext_id == "newer-sdk") {
+    return QStringLiteral(PJ_MOCK_NEWER_SDK_PLUGIN_PATH);
   }
   return {};
 }
@@ -481,6 +497,42 @@ TEST_F(ExtensionManagerTest, InstallCreatesExtensionDirectory) {
   ASSERT_TRUE(spy.first().at(1).toBool());
 
   EXPECT_TRUE(QDir(ext_dir_.path() + "/mock-file-source").exists());
+}
+
+// The load-side of the content-addressed store: a successful install records its
+// content digest in the persisted profile and hands the runtime the immutable
+// store object as its managed load path. When the install later goes away, the
+// startup reconcile prunes the profile and collects the now-orphan object.
+TEST_F(ExtensionManagerTest, InstallRecordsStoreObjectForRuntimeLoad) {
+  server_.setBody(dummyPluginZip("mock-file-source"));
+  const Extension ext = makeExtension("mock-file-source", "1.0.0", server_.url());
+
+  QSignalSpy spy(mgr_, &ExtensionManager::installFinished);
+  mgr_->install(ext);
+  ASSERT_TRUE(waitForSignal(spy));
+  ASSERT_TRUE(spy.first().at(1).toBool());
+
+  // The persisted profile maps the id to a non-empty content digest.
+  const QMap<QString, QString> profile = readLoadedProfile(mgr_->extensionsDir() + ".profiles");
+  ASSERT_TRUE(profile.contains("mock-file-source"));
+  EXPECT_FALSE(profile.value("mock-file-source").isEmpty());
+
+  // The runtime is handed exactly one managed dir: the store object, which exists
+  // under the artifacts sibling of the extensions dir, not in extensions/<id>/.
+  const std::vector<QString> managed = mgr_->managedPluginDirs();
+  ASSERT_EQ(managed.size(), 1u);
+  const QString object_dir = managed.front();
+  EXPECT_TRUE(QDir(object_dir).exists());
+  EXPECT_TRUE(object_dir.contains(QLatin1StringView(".artifacts")));
+
+  // Remove extensions/<id>/ (what an uninstall's startup drain does) and run the
+  // reconcile a restart would run: the profile entry is pruned, the orphan store
+  // object is collected, and the runtime is handed nothing for it.
+  ASSERT_TRUE(QDir(mgr_->extensionsDir() + "/mock-file-source").removeRecursively());
+  mgr_->testReconcileFromDisk();
+  EXPECT_FALSE(QDir(object_dir).exists());
+  EXPECT_FALSE(readLoadedProfile(mgr_->extensionsDir() + ".profiles").contains("mock-file-source"));
+  EXPECT_TRUE(mgr_->managedPluginDirs().empty());
 }
 
 // installProgress signals are forwarded during the download phase.
@@ -1514,6 +1566,30 @@ TEST_F(ExtensionManagerTest, ApplyPendingInstallsPromotesStagedExtension) {
   EXPECT_FALSE(QDir(staged_dir).exists());
 }
 
+// A staged payload is untrusted until the restart that promotes it: the host or
+// SDK may have changed, and the stage may have been tampered with. Promotion
+// must therefore repeat the complete embedded compatibility gate before moving
+// the current install aside.
+TEST_F(ExtensionManagerTest, ApplyPendingInstallsRejectsIncompatibleEmbeddedRequirements) {
+  const ScopedApplicationVersion host{"4.0.0"};
+  const QString staged_dir = pending_dir_.path() + "/newer-sdk";
+  ASSERT_TRUE(copyFixturePlugin(staged_dir, "newer-sdk"));
+  ASSERT_TRUE(writePendingIntentForTest(staged_dir, "newer-sdk"));
+
+  QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
+  QSignalSpy spy_error(mgr_, &ExtensionManager::installError);
+  mgr_->applyPendingInstalls();
+
+  ASSERT_EQ(spy_finished.count(), 1);
+  EXPECT_FALSE(spy_finished.first().at(1).toBool());
+  ASSERT_EQ(spy_error.count(), 1);
+  EXPECT_TRUE(spy_error.first().at(1).toString().contains("SDK", Qt::CaseInsensitive));
+  EXPECT_TRUE(spy_error.first().at(1).toString().contains("99.0.0"));
+  EXPECT_FALSE(QDir(staged_dir).exists());
+  EXPECT_FALSE(QDir(ext_dir_.path() + "/newer-sdk").exists());
+  EXPECT_FALSE(mgr_->isInstalled("newer-sdk"));
+}
+
 // Constructing the manager (the "one restart") must reflect a staged update over
 // an existing install as installed in a SINGLE pass: initComponents() promotes
 // staged work first and only then snapshots disk, so the first in-process open
@@ -1820,6 +1896,10 @@ TEST_F(ExtensionManagerTest, ApplyPendingInstallsKeepsExistingInstallWhenStagedU
   ASSERT_EQ(spy_install.count(), 1);
   EXPECT_FALSE(spy_install.first().at(1).toBool());
   ASSERT_EQ(spy_error.count(), 1);
+  // Production always pairs applyPendingInstalls() with a disk refresh (they run
+  // back to back in ExtensionCatalogService's initComponents); the refresh is what
+  // re-registers the previous install that the rejected update restored on disk.
+  mgr_->refreshInstalledFromDisk();
   EXPECT_TRUE(mgr_->isInstalled("mock-data-source"));
   EXPECT_TRUE(QDir(ext_dir_.path() + "/mock-data-source").exists());
   EXPECT_FALSE(QDir(staged_dir).exists());
@@ -2183,11 +2263,17 @@ TEST_F(ExtensionManagerTest, InstallFromLocalZipRejectsAlreadyInstalled) {
   ASSERT_TRUE(waitForInstallOutcome(first_finished, first_pending));
   ASSERT_TRUE(mgr_->isInstalled("mock-data-source"));
 
+  // A genuinely different payload, because only that is a replacement: re-offering
+  // the very bytes already installed is answered as a no-op long before this policy
+  // is consulted.
+  const QString newer = writeZipFile(src, dummyPluginZip("mock-data-source", "2.0.0"), "v2.zip");
+  ASSERT_FALSE(newer.isEmpty());
+
   QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
   QSignalSpy spy_pending(mgr_, &ExtensionManager::installPendingRestart);
   QSignalSpy spy_error(mgr_, &ExtensionManager::installError);
 
-  mgr_->installFromLocalZip(zip);
+  mgr_->installFromLocalZip(newer);
 
   ASSERT_TRUE(waitForInstallOutcome(spy_finished, spy_pending));
   ASSERT_EQ(spy_error.count(), 1);
@@ -2292,11 +2378,126 @@ TEST_F(ExtensionManagerTest, InstallFromLocalZipStagesConfirmedReplacement) {
   EXPECT_TRUE(mgr_->hasPendingInstall("mock-data-source"));
 }
 
+// A rebuild that changed nothing is not an install: the bytes being asked for are
+// the bytes already on disk. Nothing is staged, no restart is demanded, and the
+// replacement question is never put, because there is no replacement to make.
+TEST_F(ExtensionManagerTest, InstallFromLocalZipSkipsAnArchiveIdenticalToTheInstalledTree) {
+  QTemporaryDir src;
+  ASSERT_TRUE(src.isValid());
+  const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source"));
+  ASSERT_FALSE(zip.isEmpty());
+
+  // Installed from that same archive, so the tree on disk holds exactly the bytes
+  // the second install carries. Seeding the fixture straight onto disk would leave
+  // that equality resting on the zip builder and the fixture happening to agree.
+  QSignalSpy spy_first(mgr_, &ExtensionManager::installFinished);
+  mgr_->installFromLocalZip(zip);
+  ASSERT_TRUE(waitForSignal(spy_first));
+  ASSERT_TRUE(spy_first.first().at(1).toBool());
+
+  bool asked = false;
+  QObject confirmation_owner;
+  mgr_->setReplaceConfirmation(&confirmation_owner, [&asked](const QString&, const QString&, const QString&) {
+    asked = true;
+    return true;
+  });
+
+  QSignalSpy spy_unchanged(mgr_, &ExtensionManager::installUnchanged);
+  QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
+  QSignalSpy spy_pending(mgr_, &ExtensionManager::installPendingRestart);
+  QSignalSpy spy_error(mgr_, &ExtensionManager::installError);
+
+  mgr_->installFromLocalZip(zip);
+
+  // Its own terminal outcome, not an install: reporting this as installFinished
+  // would have the UI announce an installation that never happened.
+  ASSERT_TRUE(waitForSignal(spy_unchanged));
+  EXPECT_EQ(spy_unchanged.first().at(0).toString(), "mock-data-source");
+  EXPECT_EQ(spy_error.count(), 0);
+  EXPECT_EQ(spy_finished.count(), 0);
+  // The whole point of the case: no stage, so the extension stays usable and the
+  // user is not sent through a restart for a payload that did not move.
+  EXPECT_EQ(spy_pending.count(), 0);
+  EXPECT_FALSE(mgr_->hasPendingInstall("mock-data-source"));
+  EXPECT_FALSE(asked) << "an identical payload has no replacement to confirm";
+  EXPECT_TRUE(mgr_->isInstalled("mock-data-source"));
+}
+
+// Two directories can embed the same id, and the scan deliberately resolves that
+// to the HIGHEST version — which need not live in the directory named for the id.
+// The archive must then be compared against the copy that actually won, not
+// against whatever sits at extensions/<id>: matching the loser would drop an
+// archive that really does change which plugin runs, and would leave the
+// duplicate in place, since promoting is what sweeps it.
+TEST_F(ExtensionManagerTest, InstallFromLocalZipDoesNotSkipWhenAnotherDirectoryHoldsTheWinningCopy) {
+  QTemporaryDir src;
+  ASSERT_TRUE(src.isValid());
+  // extensions/mock-data-source holds 1.0.0 — the archive's twin, and the loser.
+  ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/mock-data-source", "mock-data-source", "1.0.0"));
+  // extensions/mock-ds-shadow holds 2.0.0 of the same embedded id — the winner.
+  ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/mock-ds-shadow", "mock-data-source", "2.0.0"));
+
+  const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source", "1.0.0"));
+  ASSERT_FALSE(zip.isEmpty());
+
+  QObject confirmation_owner;
+  mgr_->setReplaceConfirmation(
+      &confirmation_owner, [](const QString&, const QString&, const QString&) { return true; });
+
+  QSignalSpy spy_unchanged(mgr_, &ExtensionManager::installUnchanged);
+  QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
+  QSignalSpy spy_pending(mgr_, &ExtensionManager::installPendingRestart);
+
+  mgr_->installFromLocalZip(zip);
+
+  ASSERT_TRUE(waitForInstallOutcome(spy_finished, spy_pending));
+  EXPECT_EQ(spy_unchanged.count(), 0) << "the archive does not match the copy that is actually installed";
+  EXPECT_EQ(spy_pending.count(), 1);
+}
+
+// Guards the other direction: the skip keys on the content, not on the version
+// string. An archive declaring the same version but carrying one extra file is a
+// different payload and has to travel the ordinary staged-replacement path.
+TEST_F(ExtensionManagerTest, InstallFromLocalZipStagesAnArchiveThatOnlyDiffersByAnExtraFile) {
+  QTemporaryDir src;
+  ASSERT_TRUE(src.isValid());
+  const QString first = writeZipFile(src, dummyPluginZip("mock-data-source"), "first.zip");
+  ASSERT_FALSE(first.isEmpty());
+
+  QSignalSpy spy_first(mgr_, &ExtensionManager::installFinished);
+  mgr_->installFromLocalZip(first);
+  ASSERT_TRUE(waitForSignal(spy_first));
+  ASSERT_TRUE(spy_first.first().at(1).toBool());
+
+  const QByteArray padded = buildZip({
+      {"mock-data-source/" + pluginFileName(), readAll(pluginPathForId("mock-data-source"))},
+      {u"mock-data-source/CHANGELOG.md"_s, "one more file than the installed tree has"},
+  });
+  const QString second = writeZipFile(src, padded, "second.zip");
+  ASSERT_FALSE(second.isEmpty());
+
+  QObject confirmation_owner;
+  mgr_->setReplaceConfirmation(
+      &confirmation_owner, [](const QString&, const QString&, const QString&) { return true; });
+
+  QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
+  QSignalSpy spy_pending(mgr_, &ExtensionManager::installPendingRestart);
+
+  mgr_->installFromLocalZip(second);
+
+  ASSERT_TRUE(waitForInstallOutcome(spy_finished, spy_pending));
+  EXPECT_EQ(spy_pending.count(), 1);
+  EXPECT_EQ(spy_finished.count(), 0);
+}
+
 // A declined confirmation leaves everything exactly as it was.
 TEST_F(ExtensionManagerTest, InstallFromLocalZipHonoursDeclinedReplacement) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
-  const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source"));
+  // A version the seeded tree does not hold, so the archive really would replace
+  // something: an archive carrying the installed bytes is settled as a no-op before
+  // the confirmation this case is about is ever reached.
+  const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source", "2.0.0"));
   ASSERT_FALSE(zip.isEmpty());
   ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/mock-data-source", "mock-data-source"));
 
@@ -2329,7 +2530,10 @@ TEST_F(ExtensionManagerTest, InstallFromLocalZipHonoursDeclinedReplacement) {
 TEST_F(ExtensionManagerTest, ReplaceConfirmationSurvivesOwnerDestruction) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
-  const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source"));
+  // A version the seeded tree does not hold, so the archive really would replace
+  // something: an archive carrying the installed bytes is settled as a no-op before
+  // the confirmation this case is about is ever reached.
+  const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source", "2.0.0"));
   ASSERT_FALSE(zip.isEmpty());
   ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/mock-data-source", "mock-data-source"));
 
@@ -2380,7 +2584,10 @@ TEST_F(ExtensionManagerTest, ReplaceConfirmationSurvivesOwnerDestruction) {
 TEST_F(ExtensionManagerTest, ClearReplaceConfirmationOnlyRemovesOwnCallback) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
-  const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source"));
+  // A version the seeded tree does not hold, so the archive really would replace
+  // something: an archive carrying the installed bytes is settled as a no-op before
+  // the confirmation this case is about is ever reached.
+  const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source", "2.0.0"));
   ASSERT_FALSE(zip.isEmpty());
   ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/mock-data-source", "mock-data-source"));
 
@@ -2422,7 +2629,10 @@ TEST_F(ExtensionManagerTest, ClearReplaceConfirmationOnlyRemovesOwnCallback) {
 TEST_F(ExtensionManagerTest, ReentrantReregistrationDiscardsDisplacedOwnersAnswer) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
-  const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source"));
+  // A version the seeded tree does not hold, so the archive really would replace
+  // something: an archive carrying the installed bytes is settled as a no-op before
+  // the confirmation this case is about is ever reached.
+  const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source", "2.0.0"));
   ASSERT_FALSE(zip.isEmpty());
   ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/mock-data-source", "mock-data-source"));
 
@@ -2510,6 +2720,359 @@ TEST_F(ExtensionManagerTest, StagedLocalReplacementIsPromotedOnNextLaunch) {
   EXPECT_FALSE(local_mgr.hasPendingInstall("mock-data-source")) << "the stage must be consumed by promotion";
 
   cleanBackups("mock-data-source");
+}
+
+// A sideload gets the same host-version gate as a registry install: the embedded
+// manifest declares min_plotjuggler_version, so a ZIP demanding a newer host must
+// be refused instead of silently landing an extension that cannot run.
+TEST_F(ExtensionManagerTest, LocalZipInstallRejectsAnIncompatibleMinPlotjugglerVersion) {
+  const ScopedApplicationVersion host{"4.0.0"};
+
+  QTemporaryDir src;
+  ASSERT_TRUE(src.isValid());
+  const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source", "3.0.0"));
+  ASSERT_FALSE(zip.isEmpty());
+
+  // The refusal must read exactly like the registry one for the same floor, so
+  // the expected text is taken from the registry gate rather than duplicated.
+  Extension registry_equivalent = makeExtension("mock-data-source", "3.0.0", server_.url());
+  registry_equivalent.min_plotjuggler_version = "5.0.0";
+  const QString expected_reason = mgr_->hostCompatibility(registry_equivalent).reason;
+  ASSERT_FALSE(expected_reason.isEmpty());
+
+  QSignalSpy spy_started(mgr_, &ExtensionManager::installStarted);
+  QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
+  QSignalSpy spy_pending(mgr_, &ExtensionManager::installPendingRestart);
+  QSignalSpy spy_error(mgr_, &ExtensionManager::installError);
+
+  mgr_->installFromLocalZip(zip);
+
+  ASSERT_TRUE(waitForInstallOutcome(spy_finished, spy_pending));
+  ASSERT_EQ(spy_error.count(), 1);
+  EXPECT_EQ(spy_error.first().at(0).toString(), "mock-data-source");
+  EXPECT_EQ(spy_error.first().at(1).toString(), expected_reason)
+      << "a local refusal must use the same wording as a registry refusal";
+  ASSERT_EQ(spy_finished.count(), 1);
+  EXPECT_FALSE(spy_finished.first().at(1).toBool());
+  EXPECT_EQ(spy_pending.count(), 0) << "an incompatible sideload must not be staged either";
+  EXPECT_EQ(spy_started.count(), 0) << "installStarted must not fire for a refused sideload";
+
+  EXPECT_FALSE(mgr_->isInstalled("mock-data-source"));
+  EXPECT_TRUE(mgr_->installedExtensions().isEmpty());
+  EXPECT_TRUE(directoryHasNoChildren(ext_dir_.path()))
+      << "the transaction directory and its payload must be cleaned up on refusal";
+}
+
+// The complement: the same fixture installs normally once the host satisfies the
+// floor it declares, so the gate rejects on the version rule alone and not on the
+// mere presence of a declared minimum.
+TEST_F(ExtensionManagerTest, LocalZipInstallAcceptsACompatibleMinPlotjugglerVersion) {
+  const ScopedApplicationVersion host{"5.0.0"};
+
+  QTemporaryDir src;
+  ASSERT_TRUE(src.isValid());
+  const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source", "3.0.0"));
+  ASSERT_FALSE(zip.isEmpty());
+
+  QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
+  QSignalSpy spy_pending(mgr_, &ExtensionManager::installPendingRestart);
+  QSignalSpy spy_error(mgr_, &ExtensionManager::installError);
+
+  mgr_->installFromLocalZip(zip);
+
+  ASSERT_TRUE(waitForInstallOutcome(spy_finished, spy_pending));
+  for (const auto& reported : spy_error) {
+    qWarning("installFromLocalZip error: %s", qPrintable(reported.at(1).toString()));
+  }
+  ASSERT_EQ(spy_error.count(), 0);
+  ASSERT_EQ(spy_finished.count(), 1);
+  EXPECT_TRUE(spy_finished.first().at(1).toBool());
+  EXPECT_TRUE(mgr_->isInstalled("mock-data-source"));
+  EXPECT_EQ(mgr_->installedExtensions()["mock-data-source"].version, "3.0.0");
+}
+
+// SDK 0.21 makes min_sdk_required a hard contract. A local archive has no
+// registry record to pre-screen, so its embedded descriptor must carry this
+// gate all the way into the same admission decision as the application floor.
+TEST_F(ExtensionManagerTest, LocalZipInstallRejectsANewerSdkRequirement) {
+  const ScopedApplicationVersion host{"4.0.0"};
+
+  QTemporaryDir src;
+  ASSERT_TRUE(src.isValid());
+  const QString zip = writeZipFile(src, dummyPluginZip("newer-sdk"));
+  ASSERT_FALSE(zip.isEmpty());
+
+  QSignalSpy spy_started(mgr_, &ExtensionManager::installStarted);
+  QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
+  QSignalSpy spy_pending(mgr_, &ExtensionManager::installPendingRestart);
+  QSignalSpy spy_error(mgr_, &ExtensionManager::installError);
+
+  mgr_->installFromLocalZip(zip);
+
+  ASSERT_TRUE(waitForInstallOutcome(spy_finished, spy_pending));
+  ASSERT_EQ(spy_error.count(), 1);
+  EXPECT_TRUE(spy_error.first().at(1).toString().contains("SDK", Qt::CaseInsensitive));
+  EXPECT_TRUE(spy_error.first().at(1).toString().contains("99.0.0"));
+  EXPECT_EQ(spy_started.count(), 0);
+  EXPECT_EQ(spy_pending.count(), 0);
+  EXPECT_FALSE(mgr_->isInstalled("newer-sdk"));
+  EXPECT_TRUE(directoryHasNoChildren(ext_dir_.path()));
+}
+
+TEST_F(ExtensionManagerTest, LocalZipInstallRejectsMalformedPluginVersion) {
+  const ScopedApplicationVersion host{"4.0.0"};
+
+  QTemporaryDir src;
+  ASSERT_TRUE(src.isValid());
+  const QString zip = writeZipFile(src, dummyPluginZip("malformed-version", "4.1"));
+  ASSERT_FALSE(zip.isEmpty());
+
+  QSignalSpy spy_started(mgr_, &ExtensionManager::installStarted);
+  QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
+  QSignalSpy spy_pending(mgr_, &ExtensionManager::installPendingRestart);
+  QSignalSpy spy_error(mgr_, &ExtensionManager::installError);
+
+  mgr_->installFromLocalZip(zip);
+
+  ASSERT_TRUE(waitForInstallOutcome(spy_finished, spy_pending));
+  ASSERT_EQ(spy_error.count(), 1);
+  EXPECT_TRUE(spy_error.first().at(1).toString().contains("Invalid plugin version"));
+  EXPECT_TRUE(spy_error.first().at(1).toString().contains("4.1"));
+  EXPECT_EQ(spy_started.count(), 0);
+  EXPECT_EQ(spy_pending.count(), 0);
+  EXPECT_FALSE(mgr_->isInstalled("malformed-version"));
+  EXPECT_TRUE(directoryHasNoChildren(ext_dir_.path()));
+}
+
+// Registry metadata is an early filter, not permission to trust the payload.
+// The extracted DSO may declare a stricter floor, and that embedded requirement
+// must be enforced before the transaction is promoted into the managed store.
+TEST_F(ExtensionManagerTest, RegistryInstallRejectsAnIncompatibleEmbeddedFloor) {
+  const ScopedApplicationVersion host{"4.0.0"};
+  server_.setBody(dummyPluginZip("mock-data-source", "3.0.0"));
+
+  Extension ext = makeExtension("mock-data-source", "3.0.0", server_.url());
+  ext.min_plotjuggler_version.clear();
+
+  QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
+  QSignalSpy spy_error(mgr_, &ExtensionManager::installError);
+  mgr_->install(ext);
+
+  ASSERT_TRUE(spy_finished.wait(5000));
+  ASSERT_EQ(spy_error.count(), 1);
+  EXPECT_TRUE(spy_error.first().at(1).toString().contains("PlotJuggler 5.0.0"));
+  EXPECT_FALSE(mgr_->isInstalled("mock-data-source"));
+  EXPECT_TRUE(directoryHasNoChildren(ext_dir_.path()));
+}
+
+// The registry cannot sanitize a malformed embedded claim by omitting (or
+// disagreeing with) its own floor. Embedded metadata remains independently
+// authoritative for compatibility admission.
+TEST_F(ExtensionManagerTest, RegistryInstallRejectsAMalformedEmbeddedFloor) {
+  const ScopedApplicationVersion host{"5.0.0"};
+  server_.setBody(dummyPluginZip("malformed-floor"));
+
+  Extension ext = makeExtension("malformed-floor", "1.0.0", server_.url());
+  ext.min_plotjuggler_version.clear();
+
+  QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
+  QSignalSpy spy_error(mgr_, &ExtensionManager::installError);
+  mgr_->install(ext);
+
+  ASSERT_TRUE(spy_finished.wait(5000));
+  ASSERT_EQ(spy_error.count(), 1);
+  EXPECT_TRUE(spy_error.first().at(1).toString().contains("invalid", Qt::CaseInsensitive));
+  EXPECT_TRUE(spy_error.first().at(1).toString().contains("4.1"));
+  EXPECT_FALSE(mgr_->isInstalled("malformed-floor"));
+  EXPECT_TRUE(directoryHasNoChildren(ext_dir_.path()));
+}
+
+// The gate can only exist because the scan carries the declared floor out of the
+// embedded manifest; an extension that declares none must report an empty one, so
+// "no declaration" stays distinguishable from "declares 0".
+TEST_F(ExtensionManagerTest, DiscoverExtensionDirectoryCarriesMinPlotjugglerVersion) {
+  ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/needs-newer-host", "mock-data-source", "3.0.0"));
+  ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/no-floor", "mock-file-source"));
+
+  mgr_->refreshInstalledFromDisk();
+  const QMap<QString, InstalledExtension> installed = mgr_->installedExtensions();
+
+  ASSERT_TRUE(installed.contains("mock-data-source"));
+  EXPECT_EQ(installed["mock-data-source"].min_plotjuggler_version, "5.0.0");
+  ASSERT_TRUE(installed.contains("mock-file-source"));
+  EXPECT_TRUE(installed["mock-file-source"].min_plotjuggler_version.isEmpty())
+      << "a manifest without a floor must leave the field empty, not synthesise one";
+}
+
+// min_plotjuggler_version is a compatibility requirement, so an extension with
+// several DSOs must satisfy the strictest valid component floor. Requiring exact
+// strings would reject a sound package whose modules legitimately use different
+// parts of the SDK.
+TEST_F(ExtensionManagerTest, DiscoverExtensionDirectoryUsesHighestMinPlotjugglerVersionAcrossDsos) {
+  const QString extension_dir = ext_dir_.path() + "/multi-dso";
+  ASSERT_TRUE(QDir().mkpath(extension_dir));
+  const QString suffix = QString::fromStdString(PlatformUtils::pluginExtension());
+  ASSERT_TRUE(
+      QFile::copy(
+          QStringLiteral(PJ_MOCK_COMPATIBLE_FLOOR_PLUGIN_PATH),
+          QDir(extension_dir).absoluteFilePath("floor-4" + suffix)));
+  ASSERT_TRUE(
+      QFile::copy(
+          QStringLiteral(PJ_MOCK_INCOMPATIBLE_PLUGIN_PATH), QDir(extension_dir).absoluteFilePath("floor-5" + suffix)));
+
+  mgr_->refreshInstalledFromDisk();
+  const QMap<QString, InstalledExtension> installed = mgr_->installedExtensions();
+
+  ASSERT_TRUE(installed.contains("mock-data-source"))
+      << "different valid component floors must not invalidate the complete extension";
+  EXPECT_EQ(installed["mock-data-source"].version, "3.0.0");
+  EXPECT_EQ(installed["mock-data-source"].min_plotjuggler_version, "5.0.0")
+      << "the extension must retain the strictest component requirement";
+}
+
+// Compatibility metadata is untrusted input. The tolerant numeric comparator treats
+// a non-numeric string like zero, so the gate itself must reject malformed floors
+// rather than silently accepting them on every real host version.
+TEST_F(ExtensionManagerTest, HostCompatibilityRejectsMalformedMinPlotjugglerVersion) {
+  for (const QString malformed : {"future", "1.0", "01.0.0", "1.0.0-01", "1.0.0+"}) {
+    InstalledExtension installed;
+    installed.id = "malformed-floor";
+    installed.min_plotjuggler_version = malformed;
+
+    const ExtensionManager::HostCompatibility result = mgr_->hostCompatibility(installed);
+
+    EXPECT_FALSE(result.ok) << malformed.toStdString();
+    EXPECT_TRUE(result.reason.contains("invalid", Qt::CaseInsensitive)) << result.reason.toStdString();
+    EXPECT_TRUE(result.reason.contains(malformed)) << result.reason.toStdString();
+  }
+}
+
+// Invalid compatibility metadata makes the payload unloadable, not invisible.
+// An already-present extension must retain a marketplace row and an uninstall
+// path so the user can recover without manually deleting files.
+TEST_F(ExtensionManagerTest, MalformedInstalledFloorRemainsVisibleAndManageable) {
+  const ScopedApplicationVersion host{"4.0.0"};
+  ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/malformed-floor", "malformed-floor"));
+
+  mgr_->refreshInstalledFromDisk();
+  const QMap<QString, InstalledExtension> installed = mgr_->installedExtensions();
+  ASSERT_TRUE(installed.contains("malformed-floor"));
+  EXPECT_EQ(installed["malformed-floor"].min_plotjuggler_version, "4.1");
+  EXPECT_FALSE(mgr_->hostCompatibility(installed["malformed-floor"]).ok);
+
+  QSignalSpy spy_pending(mgr_, &ExtensionManager::uninstallPendingRestart);
+  mgr_->uninstall("malformed-floor");
+
+  ASSERT_EQ(spy_pending.count(), 1);
+  EXPECT_FALSE(mgr_->isInstalled("malformed-floor"));
+  EXPECT_TRUE(mgr_->hasPendingUninstall("malformed-floor"));
+}
+
+TEST_F(ExtensionManagerTest, MalformedInstalledVersionRemainsVisibleAndManageable) {
+  const ScopedApplicationVersion host{"4.0.0"};
+  ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/malformed-version", "malformed-version", "4.1"));
+
+  mgr_->refreshInstalledFromDisk();
+  const QMap<QString, InstalledExtension> installed = mgr_->installedExtensions();
+  ASSERT_TRUE(installed.contains("malformed-version"));
+  EXPECT_EQ(installed["malformed-version"].version, "4.1");
+  const auto compatibility = mgr_->hostCompatibility(installed["malformed-version"]);
+  EXPECT_FALSE(compatibility.ok);
+  EXPECT_TRUE(compatibility.reason.contains("Invalid plugin version"));
+
+  QSignalSpy spy_pending(mgr_, &ExtensionManager::uninstallPendingRestart);
+  mgr_->uninstall("malformed-version");
+
+  ASSERT_EQ(spy_pending.count(), 1);
+  EXPECT_FALSE(mgr_->isInstalled("malformed-version"));
+  EXPECT_TRUE(mgr_->hasPendingUninstall("malformed-version"));
+}
+
+// A minimum is a real SemVer value, not only a dotted numeric prefix. In
+// particular, a release outranks its pre-release and numeric pre-release
+// identifiers compare numerically rather than lexicographically.
+TEST_F(ExtensionManagerTest, HostCompatibilityUsesSemverPrereleasePrecedence) {
+  InstalledExtension installed;
+  installed.id = "prerelease-floor";
+
+  {
+    const ScopedApplicationVersion host{"5.0.0-rc.1"};
+    installed.min_plotjuggler_version = "5.0.0";
+    EXPECT_FALSE(mgr_->hostCompatibility(installed).ok);
+  }
+  {
+    const ScopedApplicationVersion host{"5.0.0"};
+    installed.min_plotjuggler_version = "5.0.0-rc.10";
+    EXPECT_TRUE(mgr_->hostCompatibility(installed).ok);
+  }
+  {
+    const ScopedApplicationVersion host{"5.0.0-beta.2"};
+    installed.min_plotjuggler_version = "5.0.0-beta.11";
+    EXPECT_FALSE(mgr_->hostCompatibility(installed).ok);
+  }
+  {
+    const ScopedApplicationVersion host{"5.0.0+host-build"};
+    installed.min_plotjuggler_version = "5.0.0+publisher-build";
+    EXPECT_TRUE(mgr_->hostCompatibility(installed).ok);
+  }
+}
+
+// The build accepts release tags with one leading v/V and stamps the original
+// PJ_VERSION into applicationVersion(). That packaging spelling is host-only:
+// plugin metadata remains strict SemVer and must not adopt the prefix.
+TEST_F(ExtensionManagerTest, HostCompatibilityNormalizesOnlyTheConfiguredHostTagPrefix) {
+  InstalledExtension installed;
+  installed.id = "tag-prefixed-host";
+  installed.min_plotjuggler_version = "5.0.0";
+
+  {
+    const ScopedApplicationVersion host{"v5.0.0"};
+    EXPECT_TRUE(mgr_->hostCompatibility(installed).ok);
+  }
+  {
+    const ScopedApplicationVersion host{"V5.0.0-rc.1"};
+    EXPECT_FALSE(mgr_->hostCompatibility(installed).ok);
+  }
+  {
+    const ScopedApplicationVersion host{"5.0.0"};
+    installed.min_plotjuggler_version = "v5.0.0";
+    EXPECT_FALSE(mgr_->hostCompatibility(installed).ok);
+  }
+}
+
+// The compatibility gate must precede replacement policy. A host that cannot run
+// the incoming bytes should neither ask the user for consent nor leave staged state
+// that would displace the known-compatible installation on restart.
+TEST_F(ExtensionManagerTest, IncompatibleLocalZipReplacementIsRejectedBeforeConfirmation) {
+  const ScopedApplicationVersion host{"4.0.0"};
+  ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/mock-data-source", "mock-data-source", "1.0.0"));
+
+  QTemporaryDir src;
+  ASSERT_TRUE(src.isValid());
+  const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source", "3.0.0"));
+  ASSERT_FALSE(zip.isEmpty());
+
+  QObject confirmation_owner;
+  bool confirmation_invoked = false;
+  mgr_->setReplaceConfirmation(
+      &confirmation_owner, [&confirmation_invoked](const QString&, const QString&, const QString&) {
+        confirmation_invoked = true;
+        return true;
+      });
+
+  QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
+  QSignalSpy spy_pending(mgr_, &ExtensionManager::installPendingRestart);
+  QSignalSpy spy_error(mgr_, &ExtensionManager::installError);
+
+  mgr_->installFromLocalZip(zip);
+
+  ASSERT_TRUE(waitForInstallOutcome(spy_finished, spy_pending));
+  EXPECT_FALSE(confirmation_invoked);
+  ASSERT_EQ(spy_error.count(), 1);
+  EXPECT_TRUE(spy_error.first().at(1).toString().contains("Requires PlotJuggler 5.0.0"));
+  EXPECT_EQ(spy_pending.count(), 0);
+  EXPECT_FALSE(mgr_->hasPendingInstall("mock-data-source"));
+  EXPECT_EQ(mgr_->installedExtensions()["mock-data-source"].version, "1.0.0");
 }
 
 // A path that is not a readable file fails before any transaction directory is

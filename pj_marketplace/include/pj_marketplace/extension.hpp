@@ -39,6 +39,7 @@ struct Extension {
   QStringList tags;
 
   QString version;
+  QString min_sdk_required;
   QString min_plotjuggler_version;
 
   QList<ExtensionPlugin> plugins;

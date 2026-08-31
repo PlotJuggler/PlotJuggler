@@ -47,6 +47,11 @@ class RegistryManager : public QObject {
   // (id is empty) when not found.
   Extension findById(const QString& id) const;
 
+  // Overrides the platform key and application version used by the headless
+  // candidate resolver. The SDK version remains the running SDK's own value.
+  // Production wires nothing; this is the test seam. Takes effect on the next parse.
+  void setEligibility(const QString& platform, const QString& host_version);
+
  signals:
   void fetchStarted();
   void fetchFinished(bool success);
@@ -60,6 +65,9 @@ class RegistryManager : public QObject {
   QNetworkAccessManager* network_;
   QNetworkReply* pending_reply_ = nullptr;  // Non-owning; owned by network_
   QList<Extension> extensions_;
+  QString platform_;      // Artifact key this build can install; "" ranks every entry alike
+  QString sdk_version_;   // SDK contract version used by the headless resolver
+  QString host_version_;  // App version the min_plotjuggler_version floor is judged against
 };
 
 }  // namespace PJ

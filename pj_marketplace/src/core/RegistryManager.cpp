@@ -1,18 +1,31 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include <QHash>
+#include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkRequest>
+#include <string>
 
+#include "pj_base/sdk/version.hpp"
+#include "pj_marketplace/platform_utils.hpp"
 #include "pj_marketplace/registry_manager.hpp"
-#include "pj_marketplace/version_compare.hpp"
+#include "pj_marketplace/registry_resolver.hpp"
 
 namespace PJ {
 
-RegistryManager::RegistryManager(QObject* parent) : QObject(parent), network_(new QNetworkAccessManager(this)) {}
+RegistryManager::RegistryManager(QObject* parent)
+    : QObject(parent),
+      network_(new QNetworkAccessManager(this)),
+      platform_(PlatformUtils::currentPlatform()),
+      sdk_version_(QString::fromStdString(std::string(sdkVersion()))),
+      host_version_(QCoreApplication::applicationVersion()) {}
+
+void RegistryManager::setEligibility(const QString& platform, const QString& host_version) {
+  platform_ = platform;
+  host_version_ = host_version;
+}
 
 void RegistryManager::fetchRegistry(const QUrl& url) {
   // Cancel any in-flight request before starting a new one.
@@ -88,8 +101,18 @@ Extension RegistryManager::findById(const QString& id) const {
 bool RegistryManager::parseJson(const QByteArray& data) {
   // Reads a required string field; emits fetchError() and returns nullopt if missing.
   auto required_string = [this](const QJsonObject& obj, const QString& key) -> std::optional<QString> {
-    if (!obj.contains(key) || !obj[key].isString()) {
-      emit fetchError(QString("Registry parse error: missing required field \"%1\"").arg(key));
+    if (!obj.contains(key) || !obj[key].isString() || obj[key].toString().isEmpty()) {
+      emit fetchError(QString("Registry parse error: missing or empty required string field \"%1\"").arg(key));
+      return std::nullopt;
+    }
+    return obj[key].toString();
+  };
+  auto optional_string = [this](const QJsonObject& obj, const QString& key) -> std::optional<QString> {
+    if (!obj.contains(key)) {
+      return QString{};
+    }
+    if (!obj[key].isString()) {
+      emit fetchError(QString("Registry parse error: field \"%1\" must be a string").arg(key));
       return std::nullopt;
     }
     return obj[key].toString();
@@ -116,10 +139,6 @@ bool RegistryManager::parseJson(const QByteArray& data) {
   }
 
   QList<Extension> parsed;
-  // Maps an already-seen id to its slot in `parsed`, so a duplicate id in the
-  // registry collapses to a single row instead of a phantom second one. The
-  // higher version wins — a repeated id keeps the newest artifact.
-  QHash<QString, int> index_by_id;
 
   for (const QJsonValue& value : root["extensions"].toArray()) {
     if (!value.isObject()) {
@@ -152,7 +171,13 @@ bool RegistryManager::parseJson(const QByteArray& data) {
     ext.license = obj["license"].toString();
     ext.icon_url = obj["icon_url"].toString();
     ext.category = obj["category"].toString();
-    ext.min_plotjuggler_version = obj["min_plotjuggler_version"].toString();
+    const auto minimum_sdk = optional_string(obj, "min_sdk_required");
+    const auto minimum_application = optional_string(obj, "min_plotjuggler_version");
+    if (!minimum_sdk || !minimum_application) {
+      return false;
+    }
+    ext.min_sdk_required = *minimum_sdk;
+    ext.min_plotjuggler_version = *minimum_application;
 
     for (const QJsonValue& tag : obj["tags"].toArray()) {
       ext.tags.append(tag.toString());
@@ -177,18 +202,15 @@ bool RegistryManager::parseJson(const QByteArray& data) {
       ext.changelog.insert(it.key(), it.value().toString());
     }
 
-    // Deduplicate by id: keep only the highest-versioned entry for a given id
-    // so a duplicate never produces a second, unreachable table row.
-    const auto existing = index_by_id.constFind(ext.id);
-    if (existing == index_by_id.cend()) {
-      index_by_id.insert(ext.id, static_cast<int>(parsed.size()));
-      parsed.append(ext);
-    } else if (compareSemver(ext.version.toStdString(), parsed[*existing].version.toStdString()) > 0) {
-      parsed[*existing] = ext;
-    }
+    parsed.append(std::move(ext));
   }
 
-  extensions_ = std::move(parsed);
+  auto resolved = resolveRegistryCandidates(parsed, {platform_, sdk_version_, host_version_});
+  if (!resolved) {
+    emit fetchError(QString("Registry resolution error: %1").arg(resolved.error()));
+    return false;
+  }
+  extensions_ = std::move(*resolved);
   return true;
 }
 

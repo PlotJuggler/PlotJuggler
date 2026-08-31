@@ -24,6 +24,7 @@
 #include "pj_marketplace/version_compare.hpp"
 #endif
 #include "pj_base/plugin_data_api.h"
+#include "pj_marketplace/plugin_compatibility.hpp"
 #include "pj_plugins/host/plugin_catalog.hpp"
 using namespace Qt::StringLiterals;
 
@@ -149,7 +150,7 @@ bool sameDsoSignature(const std::filesystem::path& installed_dso, const std::fil
 // half-written copy) — both mean "reseed".
 //
 // Returns the full descriptor rather than just the version, because the seed's
-// compat check needs abi_major and min_plotjuggler_version too — a stale
+// compat check needs abi_major, min_sdk_required, and min_plotjuggler_version — a stale
 // installed copy that would be rejected at load time gets replaced with the
 // bundled build, which is compatible by construction.
 std::optional<PluginDescriptor> installedPluginDescriptor(const std::filesystem::path& dir, const std::string& id) {
@@ -231,9 +232,8 @@ ExtensionCatalogService::ExtensionCatalogService(
   (void)pending_dir;
 #endif
   plugin_catalog_ = std::make_unique<PluginRuntimeCatalog>(std::filesystem::path{}, sink_, "ExtensionCatalogService");
-  // Gauge each plugin's min_plotjuggler_version against the version the app
-  // advertises. Only breaks ties between duplicate plugin ids (see
-  // PluginRuntimeCatalog::setHostVersion).
+  // Supply the application dimension of the unified ABI/SDK/application hard
+  // compatibility gate before static registration and DSO discovery.
   plugin_catalog_->setHostVersion(QCoreApplication::applicationVersion().toStdString());
   if (!plugin_catalog_->registerStaticPlugins(static_plugins)) {
     qCWarning(lcCatalog) << "One or more statically linked plugins failed to register";
@@ -312,7 +312,20 @@ std::vector<PluginDirEntry> ExtensionCatalogService::buildScanHierarchy(bool ext
   for (const QString& folder : customPluginFolders()) {
     add_if_exists(folder, true);
   }
+#ifndef PJ_TARGET_WASM
+  // The managed marketplace tier is one directory per installed extension, each
+  // resolved to its content-addressed store object when the store backs it and to
+  // extensions/<id>/ otherwise. Scanning per id (rather than the extensions dir
+  // wholesale plus a separate store tier) discovers each managed plugin exactly
+  // once — no duplicate-id churn — and loads it from the immutable object when
+  // available. managedPluginDirs() returns only dirs that exist, so they skip the
+  // add_if_exists existence gate.
+  for (const QString& plugin_dir : extension_manager_->managedPluginDirs()) {
+    dirs.push_back({std::filesystem::path(plugin_dir.toStdString()), false});
+  }
+#else
   add_if_exists(marketplace_dir_, false);
+#endif
   return dirs;
 }
 
@@ -431,15 +444,15 @@ void ExtensionCatalogService::seedBundledPlugins() {
     // equal version never refreshes — ship a change by bumping the version).
     //
     // Exception to "never downgrade": an installed copy above the bundled
-    // version that the current host would reject at load time (ABI drift or
-    // min_plotjuggler_version too high). Leaving it in place gives the user a
+    // version that the current host would reject at load time (ABI/SDK drift,
+    // a malformed floor, or min_plotjuggler_version too high). Leaving it in place gives the user a
     // dead "installed" that never loads and no bundled fallback (the bundled
     // dir is never scanned as a load path). Rescue by refreshing to the bundled
     // build — compatible by construction, since it ships with this host.
     const std::optional<PluginDescriptor> installed = installedPluginDescriptor(dst, descriptor.id);
     bool rescue_incompat = false;
     QString rescue_reason;
-    if (installed && compareSemver(descriptor.version, installed->version) <= 0) {
+    if (installed && comparePluginVersions(descriptor.version, installed->version) <= 0) {
       const QString host = QCoreApplication::applicationVersion();
       const QString installed_reason = ExtensionCatalogService::descriptorIncompatReason(*installed, host);
       if (installed_reason.isEmpty()) {
@@ -505,6 +518,13 @@ void ExtensionCatalogService::seedBundledPlugins() {
 
     seeded_versions.insert(id, QString::fromStdString(descriptor.version));
 
+    // The seed just wrote extensions/<id>/ outside the adopt path, so any store
+    // object recorded for this id no longer matches these bytes. Drop the mapping:
+    // the runtime loads the freshly-seeded directory and reconcileStore collects
+    // the orphan. Without this, a bundled refresh over an earlier adopted install
+    // would keep loading the stale store version.
+    extension_manager_->dropStoreMapping(id);
+
     if (installed) {
       if (rescue_incompat) {
         const QString message = u"Restored bundled plugin \"%1\" %2 — installed %3 was incompatible: %4"_s.arg(
@@ -549,12 +569,32 @@ void ExtensionCatalogService::reload() {
 #ifdef PJ_TARGET_WASM
   return;
 #else
+  // Re-read the disabled list before rescanning: it is a snapshot, and installing
+  // an extension whose id lingered there from an earlier uninstall clears the
+  // QSettings entry (ExtensionManager re-enables a fresh install). Without this
+  // refresh the stale snapshot keeps skipping the id, so the plugin stays unloaded
+  // until the next launch rebuilds the snapshot.
+  std::unordered_set<std::string> disabled_ids;
+  for (const QString& id : ExtensionManager::disabledExtensionIds()) {
+    disabled_ids.insert(id.toStdString());
+  }
+
+  // Rebuild the scan hierarchy before rescanning: the managed tier is one
+  // directory per installed extension (buildScanHierarchy -> managedPluginDirs),
+  // so a plugin installed since the last scan — its extensions/<id>/ now on disk
+  // and its store object freshly adopted — is only picked up if the hierarchy is
+  // recomputed here. A wholesale directory scan saw new installs for free; a
+  // per-id snapshot taken at construction does not.
+  std::vector<PluginDirEntry> scan_dirs = buildScanHierarchy(!default_mode_);
+
   bool changed = false;
   {
     // Exclusive: reload() clears/reallocates the catalog's parser vector. Any
     // poll thread resolving a parser through the shared-lock accessors is
     // fenced out for the duration.
     const std::unique_lock lock(catalog_mutex_);
+    plugin_catalog_->setPluginDirs(std::move(scan_dirs));
+    plugin_catalog_->setDisabledIds(std::move(disabled_ids));
     changed = plugin_catalog_->reload();
   }
   if (changed) {
@@ -640,21 +680,16 @@ void ExtensionCatalogService::reportDiagnostic(DiagnosticLevel level, const QStr
 
 QString ExtensionCatalogService::descriptorIncompatReason(
     const PluginDescriptor& descriptor, const QString& host_version) {
-#ifdef PJ_TARGET_WASM
-  (void)descriptor;
-  (void)host_version;
-  return {};
-#else
-  if (descriptor.abi_major != 0 && descriptor.abi_major != PJ_ABI_VERSION) {
-    return u"plugin ABI %1 does not match host ABI %2"_s.arg(descriptor.abi_major).arg(PJ_ABI_VERSION);
-  }
-  if (!descriptor.min_plotjuggler_version.empty() &&
-      compareSemver(host_version.toStdString(), descriptor.min_plotjuggler_version) < 0) {
-    return u"requires PlotJuggler %1 or newer, this build is %2"_s.arg(
-        QString::fromStdString(descriptor.min_plotjuggler_version), host_version);
-  }
-  return {};
-#endif
+  const std::string reported_host = host_version.toStdString();
+  const PluginCompatibilityResult result = evaluatePluginCompatibility(
+      {
+          .version = descriptor.version,
+          .abi_major = descriptor.abi_major,
+          .min_sdk_required = descriptor.min_sdk_required,
+          .min_plotjuggler_version = descriptor.min_plotjuggler_version,
+      },
+      currentPluginHostCompatibility(reported_host));
+  return QString::fromStdString(result.reason);
 }
 
 }  // namespace PJ

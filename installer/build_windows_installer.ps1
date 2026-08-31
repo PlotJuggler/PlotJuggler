@@ -215,6 +215,20 @@ $stagedExe = Join-Path $stageBin "PlotJuggler4.exe"
 Copy-Item $appExe.FullName $stagedExe
 Info "staged bin\PlotJuggler4.exe"
 
+# The marketplace runs the first dlopen of a downloaded plugin inside
+# pj-plugin-check rather than in the application process. ExtensionManager fails
+# closed when the helper cannot be started, so an installer that omits it rejects
+# every marketplace install. The helper must sit in the same directory as the
+# application: the SDK opens plugin DLLs with LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+# which resolves their dependent DLLs against the loading executable's directory.
+# It links no Qt, so windeployqt is not run over it.
+$helperExe = Join-Path $appExe.Directory.FullName "pj-plugin-check.exe"
+if (-not (Test-Path $helperExe)) {
+  Die "pj-plugin-check.exe not found next to '$($appExe.FullName)'. Build the pj-plugin-check target first; without it the packaged app rejects every marketplace install."
+}
+Copy-Item $helperExe (Join-Path $stageBin "pj-plugin-check.exe")
+Info "staged bin\pj-plugin-check.exe"
+
 # --- download published plugins from pj-plugin-registry ---------------------------
 # Plugin release ZIPs are the same marketplace artifacts the Linux AppImage bundles.
 # They carry the plugin DLL + embedded-manifest sidecar and statically link their

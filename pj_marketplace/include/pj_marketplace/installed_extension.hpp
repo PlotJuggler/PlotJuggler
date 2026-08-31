@@ -4,6 +4,7 @@
 
 #include <QDateTime>
 #include <QString>
+#include <cstdint>
 
 namespace PJ {
 
@@ -28,6 +29,20 @@ struct InstalledExtension {
   /// what the filter row matches against. A plugin declaring anything else simply
   /// matches no category facet.
   QString category;
+  /// ABI major read from the DSO protocol. Zero means an older descriptor did
+  /// not expose it, in which case the loader's ABI-symbol check remains the
+  /// authoritative gate.
+  uint32_t abi_major = 0;
+  /// Manifest `min_sdk_required`: the oldest SDK contract whose API the plugin
+  /// requires. Empty means undeclared. Unlike the application release floor,
+  /// this is a hard host-side load gate defined by the SDK.
+  QString min_sdk_required;
+  /// Manifest `min_plotjuggler_version`: the oldest host build this plugin declares
+  /// it can run on. Empty means the manifest declared none, which imposes no floor —
+  /// so empty and "0" are NOT interchangeable. Mirrors Extension::min_plotjuggler_version,
+  /// but sourced from the DSO rather than the registry, which is what lets a sideload
+  /// be gated on the same rule as a registry install (see ExtensionManager::hostCompatibility).
+  QString min_plotjuggler_version;
 };
 
 }  // namespace PJ

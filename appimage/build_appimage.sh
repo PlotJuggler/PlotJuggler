@@ -283,6 +283,24 @@ case "${PLUGINS_MODE}" in
 esac
 
 # ---------------------------------------------------------------------------
+# 5a-bis. Plugin-admission helper.
+#     The marketplace runs the first dlopen of a downloaded plugin inside
+#     pj-plugin-check instead of the application process. ExtensionManager fails
+#     closed when the helper cannot be started, so a bundle without it rejects
+#     every marketplace install. It has to sit next to the app binary, which is
+#     where PluginCheckRunner looks (applicationDirPath()).
+#
+#     Staged after linuxdeploy on purpose: the AppDir is packaged verbatim from
+#     here on. That is safe because the helper links no Qt — only libstdc++,
+#     libgcc_s, libm and libc, all already in the closure linuxdeploy resolved
+#     for the app.
+# ---------------------------------------------------------------------------
+PLUGIN_CHECK="${BUILD}/pj_app/pj-plugin-check"
+[[ -x "${PLUGIN_CHECK}" ]] || { echo "ERROR: ${PLUGIN_CHECK} missing — build the pj-plugin-check target; without it the bundle rejects every marketplace install"; exit 1; }
+install -m 0755 "${PLUGIN_CHECK}" "${APPDIR}/usr/bin/pj-plugin-check"
+echo "Plugin-admission helper: bundled pj-plugin-check"
+
+# ---------------------------------------------------------------------------
 # 5b. Bundle the embedded CPython stdlib for the Python Data Processor backend.
 #     The app bakes PYTHONHOME to the BUILD host's Conan cpython path
 #     (PJ_PYTHON_HOME), which does not exist on any other machine, so CPython
