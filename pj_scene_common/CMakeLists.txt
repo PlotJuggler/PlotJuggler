@@ -30,7 +30,7 @@ target_link_libraries(pj_scene_common PUBLIC
   Qt6::Xml
   pj_runtime
   pj_datastore
-  pj_base
+  plotjuggler_sdk::base
 )
 
 if(PJ_BUILD_TESTS)

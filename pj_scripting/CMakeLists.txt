@@ -6,24 +6,23 @@
 #    marker analysis) AND pj_scripting (the SISO DataProcessor/DerivedEngine
 #    adapter) AND the tests.
 #  - STANDALONE (Conan, `conan create`): builds ONLY pj_scripting_core against the
-#    Conan plotjuggler_sdk (pj_base) + Luau + kissfft, and installs it. The SDK-only
+#    Conan plotjuggler_sdk::base + Luau + kissfft, and installs it. The SDK-only
 #    headless runner and the GUI plugin link this same engine, so a rule runs
 #    identically GUI <-> headless.
 #
 # Qt-free. core: pj_base + Luau (+ kissfft) — NOT pj_datastore. MPL-2.0.
 # ---------------------------------------------------------------------------
 
-if(NOT TARGET pj_base)
+if(NOT TARGET plotjuggler_sdk::base)
   # Standalone Conan build of pj_scripting_core only.
   cmake_minimum_required(VERSION 3.20)
   project(pj_scripting_core CXX)
   find_package(plotjuggler_sdk CONFIG REQUIRED)
-  set(_PJS_BASE plotjuggler_sdk::base)
   set(_PJS_STANDALONE TRUE)
 else()
-  set(_PJS_BASE pj_base)
   set(_PJS_STANDALONE FALSE)
 endif()
+set(_PJS_BASE plotjuggler_sdk::base)
 
 find_package(Luau REQUIRED)
 find_package(nlohmann_json REQUIRED)

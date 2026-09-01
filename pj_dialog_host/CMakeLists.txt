@@ -48,7 +48,7 @@ target_include_directories(pj_dialog_engine_qt PUBLIC
 
 target_link_libraries(pj_dialog_engine_qt
     PUBLIC
-        pj_dialog_host
+        plotjuggler_sdk::plugin_host
         pj_widgets
         plotjuggler_qwt   # backs ChartPreviewWidget (replaced Qt6::Charts)
         Qt6::Widgets
@@ -63,13 +63,13 @@ if(PJ_BUILD_TESTS)
     find_package(Qt6 REQUIRED COMPONENTS Test)
     add_executable(dialog_engine_test
         tests/dialog_engine_test.cpp
-        ${CMAKE_SOURCE_DIR}/plotjuggler_sdk/pj_plugins/dialog_protocol/examples/mock_dialog.cpp
+        ${plotjuggler_sdk_SOURCE_DIR}/pj_plugins/dialog_protocol/examples/mock_dialog.cpp
     )
     target_compile_options(dialog_engine_test PRIVATE ${PJ_WARNING_FLAGS})
     target_link_libraries(dialog_engine_test
         PRIVATE
             pj_dialog_engine_qt
-            pj_dialog_sdk
+            plotjuggler_sdk::plugin_sdk
             GTest::gtest
             Qt6::Test
     )
@@ -87,7 +87,7 @@ if(PJ_BUILD_TESTS)
     target_link_libraries(panel_engine_test
         PRIVATE
             pj_dialog_engine_qt
-            pj_dialog_sdk
+            plotjuggler_sdk::plugin_sdk
             pj_plotting
             pj_runtime
             GTest::gtest
@@ -106,7 +106,7 @@ if(PJ_BUILD_TESTS)
     target_link_libraries(widget_binding_test
         PRIVATE
             pj_dialog_engine_qt
-            pj_dialog_sdk
+            plotjuggler_sdk::plugin_sdk
             GTest::gtest
             GTest::gtest_main
             Qt6::Test

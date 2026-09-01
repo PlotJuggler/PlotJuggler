@@ -64,15 +64,11 @@ fi
 [[ -n "${PJ_BUILD_DEMOS:-}" ]] && PJ_FLAG_ARGS+=("-DPJ_BUILD_DEMOS=${PJ_BUILD_DEMOS}")
 [[ -n "${PJ_BUILD_RASTER_HELPER:-}" ]] && PJ_FLAG_ARGS+=("-DPJ_BUILD_RASTER_HELPER=${PJ_BUILD_RASTER_HELPER}")
 
-# CI can opt into PlotJuggler's authenticated Artifactory remote while local
-# builds and untrusted pull requests remain reproducible against ConanCenter.
-# Keep the remotes explicit so unrelated developer remotes can never shadow the
-# stock recipes. Artifactory is a binary/recipe cache; ConanCenter remains the
-# fallback for anything that has not been mirrored yet.
-CONAN_REMOTE_ARGS=(-r conancenter)
-if [[ "${PJ_USE_JFROG:-false}" == "true" ]]; then
-  CONAN_REMOTE_ARGS=(-r plotjuggler-conan -r conancenter)
-fi
+# plotjuggler_sdk is served only by PlotJuggler's Artifactory remote (anonymous
+# read); ConanCenter supplies everything else. Keep the remotes explicit so
+# unrelated developer remotes can never shadow the stock recipes.
+"${SCRIPT_DIR}/scripts/configure_conan_remote.sh"
+CONAN_REMOTE_ARGS=(-r plotjuggler-conan -r conancenter)
 
 # Committed lockfile pins every recipe revision so local and CI builds resolve
 # the exact graph JFrog holds binaries for (rebuilds happen only when the lock

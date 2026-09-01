@@ -87,8 +87,10 @@ RUN bash /opt/install_qt6.sh
 #    so the run-time conan install is an offline cache hit. Only the requires file
 #    is needed to resolve.
 COPY conanfile.txt /opt/conan-ctx/conanfile.txt
+COPY scripts/configure_conan_remote.sh /opt/configure_conan_remote.sh
 RUN conan profile detect --force \
- && conan install /opt/conan-ctx \
+ && bash /opt/configure_conan_remote.sh \
+ && conan install /opt/conan-ctx -r plotjuggler-conan -r conancenter \
         --output-folder=/tmp/conan-warm --build=missing \
         -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
  && rm -rf /tmp/conan-warm \

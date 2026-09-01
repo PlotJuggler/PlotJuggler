@@ -147,7 +147,7 @@ if(PJ_ASSERT_THROWS)
 endif()
 target_link_libraries(pj_datastore
   PUBLIC
-    pj_base
+    plotjuggler_sdk::base
   PRIVATE
     tsl::robin_map
     $<BUILD_INTERFACE:pj_internal_fmt>
@@ -212,7 +212,7 @@ if(PJ_BUILD_TESTS)
   # the plugin SDK for message_parser_plugin_base.hpp and builtin object types.
   add_executable(plugin_parser_object_write_test tests/plugin_parser_object_write_test.cpp)
   target_link_libraries(plugin_parser_object_write_test PRIVATE
-    pj_datastore pj_plugin_sdk GTest::gtest_main
+    pj_datastore plotjuggler_sdk::plugin_sdk GTest::gtest_main
   )
   add_test(NAME plugin_parser_object_write_test COMMAND plugin_parser_object_write_test)
 

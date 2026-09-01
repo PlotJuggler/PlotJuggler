@@ -226,6 +226,7 @@ jobs:
         shell: bash
         run: |
           conan profile detect --force
+          scripts/configure_conan_remote.sh
           # Tell Conan to generate a Ninja-compatible toolchain. Without this
           # override Conan auto-picks "Visual Studio 17 2022" and stamps the
           # toolchain with CMAKE_GENERATOR_PLATFORM=x64 + CMAKE_GENERATOR_TOOLSET=v143.
@@ -240,7 +241,7 @@ jobs:
           # release /MD runtime). Both overrides are scoped to cpython only and
           # Windows-CI-only; Linux links CPython statically.
           conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
-          conan install . --output-folder=build --build=missing -r=conancenter \
+          conan install . --output-folder=build --build=missing -r=plotjuggler-conan -r=conancenter \
             --lockfile=conan.lock --lockfile-partial \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
             -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \

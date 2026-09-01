@@ -17,7 +17,7 @@ target_include_directories(pj_plotting_core PUBLIC
 )
 
 target_link_libraries(pj_plotting_core PUBLIC
-    pj_base
+    plotjuggler_sdk::base
     pj_runtime
     pj_datastore
     plotjuggler_qwt

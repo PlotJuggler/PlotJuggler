@@ -209,7 +209,7 @@ jobs:
       # scope ctest to the core modules, which structurally never create a GL
       # context (no Qt6::Widgets/OpenGL link) — this cannot hang and covers the
       # computational heart of PJ4: the columnar store, runtime services, the
-      # Luau/Python scripting engine, the SDK, and the scene *core* logic (tf,
+      # Luau/Python scripting engine, and the scene *core* logic (tf,
       # pointcloud/occupancy/voxel codecs, media decode). The GUI/GL tests are
       # verified locally (with a GPU), by the Conan Linux CI, and by the pixi
       # win-64 leg. The local `pixi run test` still runs the full suite. See
@@ -220,7 +220,6 @@ jobs:
         run: |
           fail=0
           for m in pj_datastore pj_runtime pj_scripting \
-                   plotjuggler_sdk/pj_base plotjuggler_sdk/pj_plugins \
                    pj_scene3D/core pj_scene2D/core pj_scene_common; do
             echo "::group::ctest ${m}"
             pixi run ctest --test-dir "build-pixi/${m}" --output-on-failure --timeout 120 || fail=1

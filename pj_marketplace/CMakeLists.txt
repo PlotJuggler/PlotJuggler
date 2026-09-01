@@ -123,30 +123,12 @@ target_link_libraries(pj_marketplace_ui PUBLIC
 # does not link so its packaging closure stays Qt-free and headless.
 find_package(nlohmann_json REQUIRED)
 
-# pj_base provides expected.hpp (header-only for our usage).
-# When built as part of plotjuggler_sdk the targets already exist;
-# in standalone mode we synthesize a pj_plugin_catalog target so downstream
-# consumers always link a single, non-duplicated symbol set regardless of build mode.
+# Standalone configure (this directory as the CMake root) resolves the SDK
+# itself; in the PJ4 tree the root CMakeLists.txt already did.
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  set(PJ_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../plotjuggler_sdk")
-  if(NOT TARGET pj_plugin_catalog)
-    add_library(pj_plugin_catalog STATIC
-      ${PJ_SDK_DIR}/pj_plugins/src/plugin_catalog.cpp
-    )
-    target_include_directories(pj_plugin_catalog PUBLIC
-      ${PJ_SDK_DIR}/pj_base/include
-      ${PJ_SDK_DIR}/pj_plugins/include
-      ${PJ_SDK_DIR}/pj_plugins/dialog_protocol/include
-    )
-    target_link_libraries(pj_plugin_catalog PUBLIC
-      nlohmann_json::nlohmann_json
-      ${CMAKE_DL_LIBS}
-    )
-  endif()
-  target_link_libraries(pj_marketplace PUBLIC pj_plugin_catalog)
-else()
-  target_link_libraries(pj_marketplace PUBLIC pj_base pj_plugin_catalog)
+  find_package(plotjuggler_sdk CONFIG REQUIRED)
 endif()
+target_link_libraries(pj_marketplace PUBLIC plotjuggler_sdk::plugin_host)
 
 target_compile_options(pj_marketplace PRIVATE ${PJ_WARNING_FLAGS})
 
@@ -184,7 +166,7 @@ add_executable(pj-plugin-check
   helper/main.cpp
 )
 target_link_libraries(pj-plugin-check PRIVATE
-  pj_plugin_catalog
+  plotjuggler_sdk::plugin_host
   nlohmann_json::nlohmann_json
 )
 target_compile_options(pj-plugin-check PRIVATE ${PJ_WARNING_FLAGS})

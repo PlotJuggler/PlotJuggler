@@ -138,7 +138,7 @@ if(EMSCRIPTEN)
             target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_ENABLE_MCAP_PROBE_PARSER)
         endif()
         target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_ENABLE_INGRESS_PROBE)
-        target_link_libraries(pj_app_shell PUBLIC pj_dialog_sdk)
+        target_link_libraries(pj_app_shell PUBLIC plotjuggler_sdk::plugin_sdk)
     endif()
 endif()
 
@@ -658,7 +658,7 @@ if(PJ_BUILD_TESTS)
     # a SHARED lib linking only pj_base.
     add_library(msgbox_mock_source_plugin SHARED tests/msgbox_mock_source.cpp)
     target_compile_features(msgbox_mock_source_plugin PRIVATE cxx_std_20)
-    target_link_libraries(msgbox_mock_source_plugin PRIVATE pj_base)
+    target_link_libraries(msgbox_mock_source_plugin PRIVATE plotjuggler_sdk::base)
     if(DEFINED PJ_WARNING_FLAGS)
         target_compile_options(msgbox_mock_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
     endif()
@@ -667,7 +667,7 @@ if(PJ_BUILD_TESTS)
     # progress metacall queued while FileLoader joins its worker for shutdown.
     add_library(progress_shutdown_source_plugin SHARED tests/progress_shutdown_source.cpp)
     target_compile_features(progress_shutdown_source_plugin PRIVATE cxx_std_20)
-    target_link_libraries(progress_shutdown_source_plugin PRIVATE pj_base)
+    target_link_libraries(progress_shutdown_source_plugin PRIVATE plotjuggler_sdk::base)
     if(DEFINED PJ_WARNING_FLAGS)
         target_compile_options(progress_shutdown_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
     endif()
@@ -675,10 +675,10 @@ if(PJ_BUILD_TESTS)
     # Test-only DataSource plugin with an embedded config dialog (kCapabilityHasDialog).
     # Drives FileLoader's shutdown-while-suspended-at-the-plugin-dialog path so the
     # reject-before-destroy ordering (the UAF guard) can be asserted deterministically.
-    # Links pj_dialog_sdk for the DialogPluginTyped/WidgetData symbols.
+    # Links plugin_sdk for the DialogPluginTyped/WidgetData symbols.
     add_library(dialog_probe_source_plugin SHARED tests/dialog_probe_source.cpp)
     target_compile_features(dialog_probe_source_plugin PRIVATE cxx_std_20)
-    target_link_libraries(dialog_probe_source_plugin PRIVATE pj_base pj_dialog_sdk)
+    target_link_libraries(dialog_probe_source_plugin PRIVATE plotjuggler_sdk::plugin_sdk)
     if(DEFINED PJ_WARNING_FLAGS)
         target_compile_options(dialog_probe_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
     endif()

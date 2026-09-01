@@ -2,7 +2,7 @@
 # Create a PJ4 feature worktree under .worktrees/, wired for fast builds:
 #   - branch off origin/main (override with --base) per the repo convention;
 #   - .qt symlinked by ABSOLUTE path to the primary checkout's Qt install
-#     (a relative symlink would resolve to the worktree's own empty submodule);
+#     (a relative symlink would resolve inside the worktree, where it is absent);
 #   - submodules initialized by borrowing objects from the primary checkout
 #     (local + offline, with a GitHub fallback for commits it lacks).
 # Set up only by default (seconds); pass --build to compile too.
@@ -60,7 +60,7 @@ if git -C "$MAIN_REPO" show-ref --verify --quiet "refs/heads/$BRANCH"; then
   echo "worktree-new: branch '$BRANCH' already exists" >&2; exit 1
 fi
 
-QT_SRC="$MAIN_REPO/plotjuggler_sdk/.qt"
+QT_SRC="$(readlink -f "$MAIN_REPO/.qt")"
 [[ -d "$QT_SRC/${PJ_QT_VERSION}/gcc_64" ]] ||
   echo "worktree-new: WARNING: $QT_SRC/${PJ_QT_VERSION}/gcc_64 missing — run ./install_qt6.sh in the primary checkout" >&2
 

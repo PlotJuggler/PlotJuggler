@@ -37,7 +37,7 @@ on:
       - 'pj_scene3D/**'
       - 'pj_scene_common/**'
       - 'pj_runtime/**'
-      - 'plotjuggler_sdk'
+      - 'conanfile.txt'
 
 concurrency:
   group: wasm-ci-${{ github.ref }}

@@ -1,7 +1,8 @@
 # Build context is the repo root, but the Dockerfile only COPYs install_qt6.sh
-# and conanfile.txt. Exclude everything else so the context tarball stays tiny
+# conanfile.txt and the Conan remote helper. Exclude everything else so the context tarball stays tiny
 # (no ~1GB .qt, no build/, no .git, no submodules).
 *
 !install_qt6.sh
 !conanfile.txt
+!scripts/configure_conan_remote.sh
 !versions.env

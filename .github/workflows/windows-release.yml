@@ -244,12 +244,13 @@ jobs:
         shell: bash
         run: |
           conan profile detect --force
+          scripts/configure_conan_remote.sh
           # cpython shared: its Conan recipe disables the static MSVC build (>=3.10),
           # so the embedded interpreter must link shared (Release CRT, matching the
           # RelWithDebInfo /MD graph). Ninja Multi-Config so sccache's compiler
           # launcher is honoured (VS/MSBuild ignores it).
           conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
-          conan install . --output-folder=build --build=missing -r=conancenter \
+          conan install . --output-folder=build --build=missing -r=plotjuggler-conan -r=conancenter \
             --lockfile=conan.lock --lockfile-partial \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
             -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \

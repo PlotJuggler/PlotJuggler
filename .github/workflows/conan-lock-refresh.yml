@@ -1,7 +1,8 @@
 name: Conan lock refresh
 
 # Regenerates the committed conan.lock (both platform legs) against current
-# ConanCenter recipe revisions and opens a PR when it changed. The lockfile is
+# ConanCenter (and, for plotjuggler_sdk, JFrog) recipe revisions and opens a PR
+# when it changed. The lockfile is
 # why CI builds are rare: every job resolves the exact pinned graph the cached
 # snapshots hold binaries for, so upstream revision drift can never force
 # from-source rebuilds mid-PR. Drift is instead absorbed here, deliberately,
@@ -45,10 +46,11 @@ jobs:
         run: |
           set -euo pipefail
           conan profile detect --force
-          conan lock create . --update \
+          scripts/configure_conan_remote.sh
+          conan lock create . --update -r plotjuggler-conan -r conancenter \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
             --lockfile-out=conan.lock
-          conan lock create . --update \
+          conan lock create . --update -r plotjuggler-conan -r conancenter \
             -s:h os=Windows -s:h arch=x86_64 \
             -s:h compiler=msvc -s:h compiler.version=194 -s:h compiler.runtime=dynamic \
             -s:h build_type=RelWithDebInfo -s:h compiler.cppstd=20 \

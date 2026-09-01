@@ -69,7 +69,7 @@ if(MSVC)
   target_compile_options(pj_scene2d_core PRIVATE /wd4611)
 endif()
 target_link_libraries(pj_scene2d_core
-  PUBLIC pj_base pj_datastore pj_plugin_sdk
+  PUBLIC plotjuggler_sdk::base pj_datastore plotjuggler_sdk::plugin_sdk
   PRIVATE libjpeg-turbo::libjpeg-turbo PNG::PNG pj_internal_fmt
 )
 
@@ -149,7 +149,7 @@ if(PJ_BUILD_TESTS)
       ../tests/cdr_detection2d_to_image_annotation.cpp
       ../tests/cdr_yolo_to_image_annotation.cpp
       ../tests/marker_palette.cpp
-    LIBS pj_scene2d_core pj_base GTest::gtest_main nanocdr pj_internal_fmt
+    LIBS pj_scene2d_core plotjuggler_sdk::base GTest::gtest_main nanocdr pj_internal_fmt
   )
   target_compile_features(cdr_to_image_annotation_test PRIVATE cxx_std_20)
 
@@ -237,7 +237,7 @@ if(PJ_BUILD_TESTS)
     pj_scene2d_add_core_test(streaming_video_consumer_unwrap_test
       SOURCES ../tests/streaming_video_consumer_unwrap_test.cpp
       LIBS
-        pj_scene2d_core pj_base pj_datastore
+        pj_scene2d_core plotjuggler_sdk::base pj_datastore
         ${PJ_SCENE2D_FFMPEG_TARGETS}
         GTest::gtest_main
       RUN_IN_SOURCE_DIR

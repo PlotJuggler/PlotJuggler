@@ -38,7 +38,7 @@ if(EMSCRIPTEN)
     ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS}
   )
   target_link_libraries(pj_scene3d_core
-    PUBLIC glm::glm pj_base nlohmann_json::nlohmann_json
+    PUBLIC glm::glm plotjuggler_sdk::base nlohmann_json::nlohmann_json
   )
   if(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS)
     if(NOT TARGET draco::draco OR NOT TARGET cloudini::cloudini)
@@ -82,7 +82,7 @@ target_compile_options(pj_scene3d_core PRIVATE
   ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS}
 )
 target_link_libraries(pj_scene3d_core
-  PUBLIC glm::glm pj_base nlohmann_json::nlohmann_json
+  PUBLIC glm::glm plotjuggler_sdk::base nlohmann_json::nlohmann_json
   PRIVATE draco::draco cloudini::cloudini
 )
 

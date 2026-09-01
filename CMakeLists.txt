@@ -65,11 +65,11 @@ if(EMSCRIPTEN)
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjWasmDependencies.cmake)
 endif()
 
-# Foundation build options. PJ_BUILD_TESTS feeds both the plotjuggler_sdk SDK
-# submodule and the pj_datastore module. The rest stay off for the PJ4 app
-# build: the SDK's ported-plugins collection, and pj_datastore's parquet
-# example (PJ_BUILD_PARQUET_IMPORT_EXAMPLE is now a pj_datastore option, pinned
-# off here before that subdirectory is added).
+# Foundation build options. PJ_BUILD_TESTS feeds every PJ4 module (and the SDK
+# when it is built in-tree). The rest stay off for the PJ4 app build: the
+# SDK's ported-plugins collection, and pj_datastore's parquet example
+# (PJ_BUILD_PARQUET_IMPORT_EXAMPLE is a pj_datastore option, pinned off here
+# before that subdirectory is added).
 # Default ON (local and CI builds need the suite); release/packaging
 # pipelines pass -DPJ_BUILD_TESTS=OFF — they never run ctest, and the 271
 # per-fixture static test binaries are ~17 GB of an otherwise ~5 GB tree.
@@ -132,15 +132,44 @@ endif()
 find_package(fmt REQUIRED)
 
 # ---------------------------------------------------------------------------
-# Foundation (Level 0): the plotjuggler_sdk SDK submodule (pj_base + pj_plugins)
-# plus pj_datastore, the columnar storage engine. pj_datastore used to live in
-# the plotjuggler_sdk submodule; it now lives in the
-# app repo (plugins reach it only through the pj_base C ABI, never by linking
-# it). pj_datastore MUST be added AFTER the submodule so the pj_base /
-# pj_internal_fmt targets it links already exist.
+# Foundation (Level 0): the plotjuggler_sdk SDK (pj_base + pj_plugins), consumed
+# as the `plotjuggler_sdk/<version>` Conan package pinned in conanfile.txt
+# (recipe + binaries on the PlotJuggler JFrog remote). Build paths that do not
+# run Conan (Qt for WebAssembly, pixi) fetch the same release tag from GitHub
+# and build it in-tree; both expose plotjuggler_sdk::base / ::plugin_sdk /
+# ::plugin_host. pj_datastore (the columnar store) lives in this repo: plugins
+# reach it only through the pj_base C ABI, never by linking it.
 # ---------------------------------------------------------------------------
 
-add_subdirectory(plotjuggler_sdk)
+file(STRINGS conanfile.txt _pj_sdk_require REGEX "^plotjuggler_sdk/")
+string(REGEX REPLACE "^plotjuggler_sdk/([0-9.]+).*" "\\1" PJ_SDK_VERSION "${_pj_sdk_require}")
+set(_pj_sdk_url https://github.com/PlotJuggler/plotjuggler_sdk/archive/refs/tags/v${PJ_SDK_VERSION}.tar.gz)
+include(FetchContent)
+find_package(plotjuggler_sdk CONFIG QUIET)
+if(NOT plotjuggler_sdk_FOUND)
+    message(STATUS "plotjuggler_sdk Conan package not found: building v${PJ_SDK_VERSION} sources from GitHub")
+    FetchContent_Declare(plotjuggler_sdk URL ${_pj_sdk_url} DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_MakeAvailable(plotjuggler_sdk)
+elseif(PJ_BUILD_TESTS)
+    # Sources only (SOURCE_SUBDIR has no CMakeLists.txt, so nothing is added to
+    # the build): the host tests compile the SDK's example plugins from
+    # ${plotjuggler_sdk_SOURCE_DIR}, which the Conan package does not ship.
+    # Offline / local SDK checkout: -DFETCHCONTENT_SOURCE_DIR_PLOTJUGGLER_SDK=<dir>.
+    FetchContent_Declare(plotjuggler_sdk URL ${_pj_sdk_url} SOURCE_SUBDIR pj_plugins/examples
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_MakeAvailable(plotjuggler_sdk)
+endif()
+# Header-only fmt for modules that format internally. The in-tree SDK build
+# defines the same target; the Conan package keeps fmt private.
+if(NOT TARGET pj_internal_fmt)
+    add_library(pj_internal_fmt INTERFACE)
+    target_compile_definitions(pj_internal_fmt INTERFACE FMT_HEADER_ONLY=1)
+    if(TARGET fmt::fmt-header-only)
+        target_link_libraries(pj_internal_fmt INTERFACE fmt::fmt-header-only)
+    else()
+        target_link_libraries(pj_internal_fmt INTERFACE fmt::fmt)
+    endif()
+endif()
 if(EMSCRIPTEN)
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjWasmPluginCommon.cmake)
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjWasmCsv.cmake)

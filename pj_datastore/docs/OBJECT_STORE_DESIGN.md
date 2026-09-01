@@ -366,11 +366,10 @@ Plugin access to `ObjectStore` is provided by three optional v4 services:
 | `pj.parser_object_write.v1` | `DatastoreParserObjectWriteHost` | MessageParser plugins push entries to a host-bound object topic. |
 | `pj.toolbox_object_read.v1` | `DatastoreToolboxObjectReadHost` | Toolbox plugins look up topics and read entries as owning byte handles. |
 
-The raw ABI lives in `plotjuggler_sdk/pj_base/include/pj_base/plugin_data_api.h`;
-the C++ SDK views live in
-`plotjuggler_sdk/pj_base/include/pj_base/sdk/plugin_data_api.hpp` (from the
-`plotjuggler_sdk` submodule; the in-code `#include` paths are
-`pj_base/plugin_data_api.h` and `pj_base/sdk/plugin_data_api.hpp`).
+The raw ABI lives in `pj_base/include/pj_base/plugin_data_api.h` of the
+`plotjuggler_sdk` package; the C++ SDK views live next to it in
+`pj_base/include/pj_base/sdk/plugin_data_api.hpp` (the in-code `#include` paths
+are `pj_base/plugin_data_api.h` and `pj_base/sdk/plugin_data_api.hpp`).
 
 The toolbox read ABI allocates one owning handle per successful read. The handle
 keeps bytes alive until the plugin releases it, even if the store evicts or

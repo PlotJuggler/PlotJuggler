@@ -190,8 +190,9 @@ jobs:
         run: |
           set -euo pipefail
           conan profile detect --force
+          scripts/configure_conan_remote.sh
           conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
-          conan install . --output-folder=build --build=missing -r=conancenter \
+          conan install . --output-folder=build --build=missing -r=plotjuggler-conan -r=conancenter \
             --lockfile=conan.lock --lockfile-partial \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
             2>&1 | tee "$conan_log"

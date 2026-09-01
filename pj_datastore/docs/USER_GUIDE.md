@@ -8,7 +8,7 @@ Plugins interact with the datastore through host-provided views — never throug
 - **ParserWriteHostView** — for MessageParser plugins (decoders)
 - **ToolboxHostView** — for Toolbox plugins (read + write + catalog)
 
-All are defined in `pj_base/sdk/plugin_data_api.hpp` (the `pj_base` headers come from the `plotjuggler_sdk` submodule).
+All are defined in `pj_base/sdk/plugin_data_api.hpp` (the `pj_base` headers come from the `plotjuggler_sdk` Conan package).
 
 ---
 

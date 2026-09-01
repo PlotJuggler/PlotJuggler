@@ -10,7 +10,7 @@ This is a greenfield app repo. It is not a refactor of PJ3. Code is cherry-picke
 
 PJ4 is **MPL-2.0** (see [`LICENSE`](./LICENSE)); every source file carries an
 `// SPDX-License-Identifier: MPL-2.0` header. New source files must include that
-header. The `plotjuggler_sdk` submodule is a separate repo with its own license
+header. The `plotjuggler_sdk` Conan package is a separate repo with its own license
 (Apache-2.0 for `pj_base`/`pj_plugins`) — do not relicense it from here.
 
 ## Architecture
@@ -22,8 +22,7 @@ Top-level layout (monorepo, per plan §0 and §5):
 ```
 PJ4/
 ├── 3rdparty/                # vendored CMake deps + GPLv2/shareware compliance payload for the standalone raster_helper
-├── plotjuggler_sdk/         # git submodule — Level 0 plugin SDK (pj_base / pj_plugins)
-├── pj_datastore/            # Level 0 columnar store + ObjectStore + DerivedEngine (moved out of the submodule)
+├── pj_datastore/            # Level 0 columnar store + ObjectStore + DerivedEngine
 ├── pj_scene_common/         # backend-agnostic layered scene dock framework, shared by the scene widget families
 ├── pj_scene2D/              # 2D scene widget family: core logic, Qt widgets, tools, tests
 ├── pj_scene3D/              # 3D scene widget family: TF, pointclouds, occupancy grids, URDF/mesh, markers; HDR/SSAO/EDL pipeline + OpenGL widgets, demos
@@ -44,8 +43,8 @@ The widget families (`pj_plotting`, `pj_scene2D/widgets` via the `pj_scene2d_wid
 
 When adding files, use the owning module rather than creating new top-level folders. If the requested location does not match these boundaries, ask before proceeding and suggest the closest fit.
 
-- `plotjuggler_sdk/`: read-only submodule — the plugin **SDK** (`pj_base`, `pj_plugins`). Canonical object schemas (`Image`, `DepthImage`, `ImageAnnotations`, `PointCloud`, `FrameTransforms`) and their codecs live under `pj_base/builtin/`. Change `plotjuggler_sdk` only when explicitly working in that submodule.
-- `pj_datastore/`: Level 0 columnar storage engine — `DataEngine` + `ObjectStore` + `DerivedEngine` + the host-side C-ABI write bridges. Also owns the **data-processor execution substrate** (`PJ::proc::DataProcessor` base + `ProcessorSisoAdapter`, which runs a processor as a `DerivedEngine` node — formerly the standalone `pj_proc` module, co-located here with the `ISISOTransform` interface it adapts to; the base stays Qt-free and Luau-free, so `pj_scripting` layers Luau on top). App-internal (plugins never link it; they reach storage through the `pj_base` C ABI). Was previously inside the `plotjuggler_sdk` submodule. Pure C++20, no Qt; depends only on `pj_base`. Logic in `src/`, public headers in `include/pj_datastore/`, tests in `tests/`, docs in `docs/`. Licensed MPL-2.0.
+- `plotjuggler_sdk` (external, not in this tree): the plugin **SDK** (`pj_base`, `pj_plugins`), consumed as the `plotjuggler_sdk/<version>` Conan package pinned in `conanfile.txt` and linked as `plotjuggler_sdk::base` / `::plugin_sdk` / `::plugin_host`. Canonical object schemas (`Image`, `DepthImage`, `ImageAnnotations`, `PointCloud`, `FrameTransforms`) and their codecs live under its `pj_base/builtin/`. SDK changes happen in the [plotjuggler_sdk repo](https://github.com/PlotJuggler/plotjuggler_sdk), then a release + pin bump here.
+- `pj_datastore/`: Level 0 columnar storage engine — `DataEngine` + `ObjectStore` + `DerivedEngine` + the host-side C-ABI write bridges. Also owns the **data-processor execution substrate** (`PJ::proc::DataProcessor` base + `ProcessorSisoAdapter`, which runs a processor as a `DerivedEngine` node — formerly the standalone `pj_proc` module, co-located here with the `ISISOTransform` interface it adapts to; the base stays Qt-free and Luau-free, so `pj_scripting` layers Luau on top). App-internal (plugins never link it; they reach storage through the `pj_base` C ABI). Pure C++20, no Qt; depends only on `pj_base`. Logic in `src/`, public headers in `include/pj_datastore/`, tests in `tests/`, docs in `docs/`. Licensed MPL-2.0.
 - `pj_runtime/`: app runtime services and contracts: session/data lifecycle, catalog, playback, extension catalog, future workspace/transform/toolbox services. No concrete widgets and no `Qt6::Widgets` link.
 - `pj_app/`: executable shell only: `MainWindow`, menus/toolbars/status bar, app dialogs, and wiring between runtime services and concrete widgets. Do not put reusable controls or business logic here.
 - `pj_widgets/`: reusable Qt widgets and UI helpers that could be used by another Qt app. Depends only on Qt and the C++ standard library; no dependencies on `pj_runtime`, `pj_app`, or other PJ modules. Includes the reusable `Timeline` control (`Timeline.{h,cpp}`) — the multi-track Source Timeline that edits per-source `display_offset`: a Qt-free `TimelineScene` math class plus a runtime-agnostic `Timeline` QWidget, both plain-typed; the `SourceTimelineController` that binds it to `pj_runtime` lives in `pj_app`.
@@ -104,7 +103,7 @@ Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`.
 | `pj_scene3D` | [pj_scene3D/CLAUDE.md](./pj_scene3D/CLAUDE.md) | [docs/](./pj_scene3D/docs/) — REQUIREMENTS, [ARCHITECTURE](./pj_scene3D/docs/ARCHITECTURE.md) (rendering pipeline, cameras, URDF/mesh) |
 | `pj_datastore` | [pj_datastore/CLAUDE.md](./pj_datastore/CLAUDE.md) | [docs/](./pj_datastore/docs/) — REQUIREMENTS, ARCHITECTURE, USER_GUIDE, OBJECT_STORE_DESIGN |
 | `pj_scripting` | [pj_scripting/CLAUDE.md](./pj_scripting/CLAUDE.md) | [docs/](./pj_scripting/docs/) — FILTER_CLASS |
-| `plotjuggler_sdk/` (submodule) | [plotjuggler_sdk/CLAUDE.md](./plotjuggler_sdk/CLAUDE.md) | submodule owns its own `docs/` tree |
+| `plotjuggler_sdk` (Conan package) | [github.com/PlotJuggler/plotjuggler_sdk](https://github.com/PlotJuggler/plotjuggler_sdk) | the SDK repo owns its own `CLAUDE.md` + `docs/` tree |
 
 ### Freshness discipline
 
@@ -112,13 +111,13 @@ Before any commit that changes behavior, public APIs, ABI structs, module owners
 
 ## Key sources
 
-### `plotjuggler_sdk/` (submodule) — the plugin SDK, consumed as-is
+### `plotjuggler_sdk` (Conan package) — the plugin SDK, consumed as-is
 
-`pj_base` (vocabulary types + canonical object schemas/codecs under `pj_base/builtin/`) and `pj_plugins` (extension ABI + runtime). What they are: see Placement rules; the full story lives in the submodule's own `CLAUDE.md`. Changes happen in that repo, not here.
+`pj_base` (vocabulary types + canonical object schemas/codecs under `pj_base/builtin/`) and `pj_plugins` (extension ABI + runtime). What they are: see Placement rules; the full story lives in the SDK repo's own `CLAUDE.md`. Changes happen in that repo, not here. The recipe and prebuilt binaries live on PlotJuggler's JFrog Conan remote (anonymous read; `scripts/configure_conan_remote.sh` registers it, `build.sh` and CI call it). Build paths without Conan (WebAssembly, pixi) fall back to fetching the pinned release tag from GitHub and building the SDK in-tree (see the root `CMakeLists.txt`). To move to a new SDK: bump the pin in `conanfile.txt`, then `conan lock add --requires=plotjuggler_sdk/<v>#<rrev>` on `conan.lock`.
 
 ### `pj_datastore/` — build ordering
 
-What it is: see Placement rules. Build-specific: `add_subdirectory(pj_datastore)` runs in the root `CMakeLists.txt` immediately after the submodule (so the `pj_base` / `pj_internal_fmt` targets it links already exist); its Conan deps (`nanoarrow`, `tsl-robin-map`, `benchmark`) live in the root `conanfile.txt`.
+What it is: see Placement rules. Build-specific: `add_subdirectory(pj_datastore)` runs in the root `CMakeLists.txt` immediately after the SDK is resolved (so the `plotjuggler_sdk::base` / `pj_internal_fmt` targets it links already exist); its Conan deps (`nanoarrow`, `tsl-robin-map`, `benchmark`) live in the root `conanfile.txt`.
 
 ### `~/ws_plotjuggler/PlotJuggler/` (PJ3 reference — read-only)
 
@@ -242,7 +241,7 @@ Re-running `./build.sh` after code changes does incremental builds. `ccache` is 
 
 After a rebuild meant to pick up a C++ change, confirm the file actually recompiled (grep the build log for `Building .../<file>.cpp.o`, or check the `.o` mtime) before claiming the fix is live — RCC/QSS rebuilds can mask a stalled C++ recompile, so an edit looks like it had "no effect" when it was never compiled. Never chain `pkill … ; ./build.sh`: the chained build exits 144 and skips recompiling. Kill the running app in its own command, then run `./build.sh` standalone.
 
-Submodule: `git submodule update --init --recursive` on first clone.
+Submodules (`3rdparty/`): `git submodule update --init --recursive` on first clone.
 
 Worktrees: use the **`./worktree-new.sh`** / **`./worktree-rm.sh`** helpers at the
 repo root rather than hand-rolling `git worktree`:
@@ -253,10 +252,8 @@ repo root rather than hand-rolling `git worktree`:
 ```
 
 They handle the two things the manual path keeps getting wrong: the ~1GB Qt
-install lives only in the primary checkout (under `plotjuggler_sdk/.qt`, surfaced
-at the repo root as `.qt`), so a fresh worktree needs a `.qt` symlink to it by
-**absolute** path (a relative copy of the root symlink resolves to the worktree's
-own empty submodule); and the submodules are initialized by borrowing the primary
+install lives only in the primary checkout (`.qt/`), so a fresh worktree needs a
+`.qt` symlink to it by **absolute** path; and the `3rdparty/` submodules are initialized by borrowing the primary
 checkout's objects (`--reference`, local + offline) instead of re-cloning from
 GitHub. Set-up-only by default (seconds); pass `--build` to compile. The scripts
 resolve the primary checkout themselves, so they work from any worktree.

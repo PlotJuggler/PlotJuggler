@@ -184,13 +184,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 WORK_ROOT="${APP_SRC:-${REPO_ROOT}}"   # the PJ4 tree that gets built (mounted at /work); defaults to this repo
-SDK_APP_MOUNT=()
 PLUGIN_SDK_ARGS=()
 if [[ -n "${SDK_SRC}" ]]; then
-  SDK_APP_MOUNT=(-v "${SDK_SRC}:/work/plotjuggler_sdk:ro")
   PLUGIN_SDK_ARGS=(-v "${SDK_SRC}:/custom-sdk:ro" -e PJ_CUSTOM_SDK=/custom-sdk)
   if [[ -z "${PLUGIN_SRC}" ]]; then
-    echo "WARNING: --sdk-dir set but no plugin source repo was provided; only the APP will use the custom SDK (bundled/registry plugins keep their own SDK)." >&2
+    echo "WARNING: --sdk-dir set but no plugin source repo was provided; it only affects plugins built from source (the app resolves the SDK pinned in conanfile.txt)." >&2
   fi
 fi
 
@@ -324,7 +322,6 @@ echo "==> Building AppImage in container (no --privileged; FUSE-less linuxdeploy
 run_cmd=(docker run --rm
   -v "${WORK_ROOT}:/work" -w /work
   "${PLUGINS_MOUNT[@]}"
-  "${SDK_APP_MOUNT[@]}"
   -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)"
   -e PJ_VERSION="${PJ_VERSION:-}"
   "${IMAGE_TAG}"

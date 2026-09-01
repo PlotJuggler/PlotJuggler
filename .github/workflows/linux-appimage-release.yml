@@ -204,7 +204,8 @@ jobs:
         run: |
           set -euo pipefail
           conan profile detect --force
-          conan install . --output-folder=build --build=missing -r=conancenter \
+          scripts/configure_conan_remote.sh
+          conan install . --output-folder=build --build=missing -r=plotjuggler-conan -r=conancenter \
             --lockfile=conan.lock --lockfile-partial \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20
 

@@ -1,6 +1,3 @@
-[submodule "plotjuggler_sdk"]
-	path = plotjuggler_sdk
-	url = https://github.com/PlotJuggler/plotjuggler_sdk.git
 [submodule "3rdparty/Qt-Advanced-Docking"]
 	path = 3rdparty/Qt-Advanced-Docking
 	url = https://github.com/PlotJuggler/Qt-Advanced-Docking-System.git

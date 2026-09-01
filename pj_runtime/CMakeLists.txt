@@ -73,11 +73,7 @@ target_link_libraries(pj_runtime PUBLIC
     Qt6::Xml
     pj_datastore
     $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:pj_marketplace>
-    pj_data_source_host
-    pj_message_parser_host
-    pj_toolbox_host
-    pj_plugin_catalog
-    pj_base
+    plotjuggler_sdk::plugin_host
     nlohmann_json::nlohmann_json
   PRIVATE
     tsl::robin_map
@@ -336,7 +332,7 @@ if(PJ_BUILD_TESTS)
     target_compile_features(runtime_host_object_parser_plugin PRIVATE cxx_std_20)
     target_compile_options(runtime_host_object_parser_plugin PRIVATE ${PJ_WARNING_FLAGS})
     target_link_libraries(runtime_host_object_parser_plugin PRIVATE
-        pj_plugin_sdk
+        plotjuggler_sdk::plugin_sdk
     )
 
     # The parser-ingest tests in toolbox_runtime_host_test load the same stub
@@ -376,7 +372,7 @@ if(PJ_BUILD_TESTS)
     target_compile_features(streaming_caching_parser_plugin PRIVATE cxx_std_20)
     target_compile_options(streaming_caching_parser_plugin PRIVATE ${PJ_WARNING_FLAGS})
     target_link_libraries(streaming_caching_parser_plugin PRIVATE
-        pj_plugin_sdk
+        plotjuggler_sdk::plugin_sdk
     )
 
     add_executable(data_source_runtime_host_stream_swap_test
@@ -416,14 +412,32 @@ if(PJ_BUILD_TESTS)
     # (which lists target names) picks it up under ./build.sh --tsan.
     add_test(NAME extension_catalog_service_thread_safety_test COMMAND extension_catalog_service_thread_safety_test)
 
+    # SDK example/test plugins the host tests dlopen, built from the SDK's
+    # fetched sources (an in-tree SDK build defines these targets itself).
+    if(NOT TARGET mock_data_source_plugin)
+      set(_sdk_plugins ${plotjuggler_sdk_SOURCE_DIR}/pj_plugins)
+      foreach(mock IN ITEMS
+          mock_data_source=examples/mock_data_source.cpp
+          mock_file_source=examples/mock_file_source.cpp
+          mock_toolbox=examples/mock_toolbox.cpp
+          missing_id_data_source=tests/missing_id_data_source_plugin.cpp)
+        string(REPLACE "=" ";" mock "${mock}")
+        list(GET mock 0 name)
+        list(GET mock 1 source)
+        add_library(${name}_plugin SHARED ${_sdk_plugins}/${source})
+        target_compile_features(${name}_plugin PRIVATE cxx_std_20)
+        target_compile_options(${name}_plugin PRIVATE ${PJ_WARNING_FLAGS})
+        target_link_libraries(${name}_plugin PRIVATE plotjuggler_sdk::base)
+      endforeach()
+    endif()
+
     # PluginRuntimeCatalog — duplicate-resolution policy (version/compat/authoritative)
     # relocated from the SDK into the host. These mocks moved with the tests from the
-    # SDK; mock_data_source_plugin (v1) is the SDK example fixture, reused from the
-    # SDK subdir.
+    # SDK; mock_data_source_plugin (v1) is the SDK example fixture above.
     add_library(mock_data_source_v2_plugin SHARED tests/mock_data_source_v2_plugin.cpp)
     target_compile_features(mock_data_source_v2_plugin PRIVATE cxx_std_20)
     target_compile_options(mock_data_source_v2_plugin PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(mock_data_source_v2_plugin PRIVATE pj_base)
+    target_link_libraries(mock_data_source_v2_plugin PRIVATE plotjuggler_sdk::base)
 
     # v1/v2 builds of a mock whose image stays resident after dlclose. Two
     # mechanisms: -z nodelete (DF_1_NODELETE, compiler-independent) and a bound
@@ -434,13 +448,13 @@ if(PJ_BUILD_TESTS)
     target_compile_features(mock_data_source_pinning_plugin PRIVATE cxx_std_20)
     target_compile_options(mock_data_source_pinning_plugin PRIVATE ${PJ_WARNING_FLAGS})
     target_compile_definitions(mock_data_source_pinning_plugin PRIVATE PIN_MOCK_VERSION="1.0.0")
-    target_link_libraries(mock_data_source_pinning_plugin PRIVATE pj_base)
+    target_link_libraries(mock_data_source_pinning_plugin PRIVATE plotjuggler_sdk::base)
 
     add_library(mock_data_source_pinning_v2_plugin SHARED tests/mock_data_source_pinning_plugin.cpp)
     target_compile_features(mock_data_source_pinning_v2_plugin PRIVATE cxx_std_20)
     target_compile_options(mock_data_source_pinning_v2_plugin PRIVATE ${PJ_WARNING_FLAGS})
     target_compile_definitions(mock_data_source_pinning_v2_plugin PRIVATE PIN_MOCK_VERSION="2.0.0")
-    target_link_libraries(mock_data_source_pinning_v2_plugin PRIVATE pj_base)
+    target_link_libraries(mock_data_source_pinning_v2_plugin PRIVATE plotjuggler_sdk::base)
 
     if(NOT WIN32)
       target_link_options(mock_data_source_pinning_plugin PRIVATE -Wl,-z,nodelete)
@@ -450,32 +464,32 @@ if(PJ_BUILD_TESTS)
     add_library(mock_data_source_incompatible_plugin SHARED tests/mock_data_source_incompatible_plugin.cpp)
     target_compile_features(mock_data_source_incompatible_plugin PRIVATE cxx_std_20)
     target_compile_options(mock_data_source_incompatible_plugin PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(mock_data_source_incompatible_plugin PRIVATE pj_base)
+    target_link_libraries(mock_data_source_incompatible_plugin PRIVATE plotjuggler_sdk::base)
 
     add_library(mock_data_source_compatible_floor_plugin SHARED tests/mock_data_source_compatible_floor_plugin.cpp)
     target_compile_features(mock_data_source_compatible_floor_plugin PRIVATE cxx_std_20)
     target_compile_options(mock_data_source_compatible_floor_plugin PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(mock_data_source_compatible_floor_plugin PRIVATE pj_base)
+    target_link_libraries(mock_data_source_compatible_floor_plugin PRIVATE plotjuggler_sdk::base)
 
     add_library(mock_data_source_incompatible_low_plugin SHARED tests/mock_data_source_incompatible_low_plugin.cpp)
     target_compile_features(mock_data_source_incompatible_low_plugin PRIVATE cxx_std_20)
     target_compile_options(mock_data_source_incompatible_low_plugin PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(mock_data_source_incompatible_low_plugin PRIVATE pj_base)
+    target_link_libraries(mock_data_source_incompatible_low_plugin PRIVATE plotjuggler_sdk::base)
 
     add_library(mock_data_source_malformed_floor_plugin SHARED tests/mock_data_source_malformed_floor_plugin.cpp)
     target_compile_features(mock_data_source_malformed_floor_plugin PRIVATE cxx_std_20)
     target_compile_options(mock_data_source_malformed_floor_plugin PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(mock_data_source_malformed_floor_plugin PRIVATE pj_base)
+    target_link_libraries(mock_data_source_malformed_floor_plugin PRIVATE plotjuggler_sdk::base)
 
     add_library(mock_data_source_malformed_version_plugin SHARED tests/mock_data_source_malformed_version_plugin.cpp)
     target_compile_features(mock_data_source_malformed_version_plugin PRIVATE cxx_std_20)
     target_compile_options(mock_data_source_malformed_version_plugin PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(mock_data_source_malformed_version_plugin PRIVATE pj_base)
+    target_link_libraries(mock_data_source_malformed_version_plugin PRIVATE plotjuggler_sdk::base)
 
     add_library(mock_data_source_newer_sdk_plugin SHARED tests/mock_data_source_newer_sdk_plugin.cpp)
     target_compile_features(mock_data_source_newer_sdk_plugin PRIVATE cxx_std_20)
     target_compile_options(mock_data_source_newer_sdk_plugin PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(mock_data_source_newer_sdk_plugin PRIVATE pj_base)
+    target_link_libraries(mock_data_source_newer_sdk_plugin PRIVATE plotjuggler_sdk::base)
 
     add_executable(plugin_runtime_catalog_test tests/plugin_runtime_catalog_test.cpp)
     target_compile_definitions(plugin_runtime_catalog_test PRIVATE
