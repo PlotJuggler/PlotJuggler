@@ -3,7 +3,9 @@
 
 #include "pj_widgets/ToastManager.h"
 
+#include <QEvent>
 #include <QLayout>
+#include <QRegion>
 
 #include "pj_widgets/ToastNotification.h"
 
@@ -12,7 +14,6 @@ namespace PJ {
 ToastManager::ToastManager(QWidget* parent_widget) : QObject(parent_widget), parent_widget_(parent_widget) {
   container_ = new QWidget(parent_widget_);
   container_->setObjectName("toastManagerContainer");
-  container_->setAttribute(Qt::WA_TransparentForMouseEvents, false);
   container_->setAttribute(Qt::WA_TranslucentBackground);
   container_->hide();
 }
@@ -22,17 +23,35 @@ ToastManager::~ToastManager() = default;
 void ToastManager::showToast(const QString& message, const QPixmap& icon, int timeout_ms) {
   auto* toast = new ToastNotification(message, icon, timeout_ms, container_);
   toast->setMaximumWidth(max_width_);
+  toast->installEventFilter(this);
 
   toasts_.append(toast);
   connect(toast, &ToastNotification::closed, this, &ToastManager::onToastClosed);
 
   updatePosition();
+  // Lay out (and mask) before showing: the container must never be visible
+  // with a stale input region, or it would swallow clicks it should let
+  // through to the host.
+  repositionToasts();
 
   container_->show();
   container_->raise();
 
-  repositionToasts();
   toast->showAnimated();
+}
+
+bool ToastManager::eventFilter(QObject* watched, QEvent* event) {
+  switch (event->type()) {
+    case QEvent::Move:
+    case QEvent::Resize:
+    case QEvent::Show:
+    case QEvent::Hide:
+      updateInputRegion();
+      break;
+    default:
+      break;
+  }
+  return QObject::eventFilter(watched, event);
 }
 
 void ToastManager::updatePosition() {
@@ -97,6 +116,24 @@ void ToastManager::repositionToasts() {
 
     current_y -= spacing_;
   }
+
+  updateInputRegion();
+}
+
+void ToastManager::updateInputRegion() {
+  // Constrain hit-testing (and painting) to the toasts themselves so the
+  // full-height overlay never blocks interaction with the host widgets beneath
+  // it. An empty QRegion CLEARS the mask (full-rect input again) rather than
+  // masking everything out — and the empty case does run on every last-toast
+  // close, via the QEvent::Hide the container's hide() delivers to the closing
+  // toast. That is safe only because the container is hidden at that point and
+  // showToast() re-masks (through repositionToasts()) before every show();
+  // keep that ordering if you add another path that shows the container.
+  QRegion region;
+  for (const ToastNotification* toast : toasts_) {
+    region += toast->geometry();
+  }
+  container_->setMask(region);
 }
 
 }  // namespace PJ
