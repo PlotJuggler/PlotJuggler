@@ -25,6 +25,7 @@ class ExtensionCatalogService;
 class FileLoader;
 class QSettingsBackend;
 class ServiceRegistryBuilder;
+class SourceCaptureService;
 class SourcePromotionHost;
 class ToolboxHandle;
 class ToolboxRuntimeHost;
@@ -102,9 +103,13 @@ class HeadlessDescriptorProviderSession : public QObject {
   // precise reason on any of the four creation failures (see class
   // doc-comment) — the partially-built session is destroyed on that path,
   // so no plugin handle leaks.
+  // `capture_service` (nullable, desktop only) arms this binding's delegated
+  // ingests for M3 source capture — identical wiring to the interactive path
+  // (ToolboxHostWiring.h wireSourceCapture).
   [[nodiscard]] static Expected<Ptr> create(
       SessionManager& session_manager, ExtensionCatalogService& extensions, FileLoader& loader, CatalogModel& catalog,
-      const QString& provider_manifest_id, DiagnosticSink diagnostics = {});
+      const QString& provider_manifest_id, DiagnosticSink diagnostics = {},
+      SourceCaptureService* capture_service = nullptr);
 
   ~HeadlessDescriptorProviderSession() override;
 

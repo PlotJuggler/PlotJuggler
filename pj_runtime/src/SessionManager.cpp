@@ -154,6 +154,12 @@ void SessionManager::detachSourceRecord(DatasetId dataset_id) {
   dataset_source_records_.erase(dataset_id);
 }
 
+void SessionManager::pinDatasetResource(DatasetId dataset_id, std::shared_ptr<void> resource) {
+  if (resource != nullptr) {
+    dataset_resources_[dataset_id].push_back(std::move(resource));
+  }
+}
+
 DatasetIdentityResolution SessionManager::resolveDatasetIdentity(
     DatasetId saved_id, const QString& saved_source, const QString& saved_path) const {
   return resolveDatasetIdentity(saved_id, saved_source, saved_path, SourceRecord{});
@@ -1077,8 +1083,10 @@ std::optional<DatasetMergeReport> SessionManager::mergeDatasets(
   // here; the caller owns the post-merge catalog/source bookkeeping. Records
   // are the only provenance this class owns end-to-end.)
   dataset_source_records_.erase(anchor);
+  dataset_resources_.erase(anchor);
   for (const auto& source : sources) {
     dataset_source_records_.erase(source.dataset_id);
+    dataset_resources_.erase(source.dataset_id);
   }
 
   // (3) Fold the object topics the same way, EXCEPT marker sets: those are
@@ -1287,6 +1295,7 @@ void SessionManager::removeDataset(DatasetId dataset_id) {
   // must never resolve a future identity query (the record tier skips ids the
   // engine no longer knows, but a reminted id could collide).
   dataset_source_records_.erase(dataset_id);
+  dataset_resources_.erase(dataset_id);
   // A generator bound to this dataset outlives its data otherwise: the object topics
   // go with the dataset, but the recipe keeps naming the dead id, so the next
   // recompute resolves nothing and re-registers a phantom marker topic under it.

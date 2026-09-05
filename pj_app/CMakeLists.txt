@@ -794,23 +794,28 @@ if(PJ_BUILD_TESTS)
     # sequential job chaining, cancel/rollback. Driven against a
     # descriptor-scripted fake provider toolbox (registerStaticToolbox) plus
     # the real FileLoader + mock_file_source_plugin for stock cache-hit loads.
-    add_executable(layout_import_batch_test
-        tests/layout_import_batch_test.cpp
-        src/LayoutImportBatch.cpp
-        src/LayoutImportBatch.h
-    )
-    set_target_properties(layout_import_batch_test PROPERTIES AUTOMOC ON)
-    target_compile_definitions(layout_import_batch_test PRIVATE
-        PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>"
-    )
-    # $<TARGET_FILE:...> in a compile definition does not create a build-order
-    # dependency; the plugin must exist when the test runs.
-    add_dependencies(layout_import_batch_test mock_file_source_plugin)
-    target_link_libraries(layout_import_batch_test PRIVATE pj_app_loader_testlib)
-    if(DEFINED PJ_WARNING_FLAGS)
-        target_compile_options(layout_import_batch_test PRIVATE ${PJ_WARNING_FLAGS})
+    # Desktop-only: the fixture stands up the M3 source cache
+    # (SourceCacheStore/SourceCaptureService refuse to compile in the
+    # browser), same gate as pj_runtime's capture tests.
+    if(NOT EMSCRIPTEN)
+        add_executable(layout_import_batch_test
+            tests/layout_import_batch_test.cpp
+            src/LayoutImportBatch.cpp
+            src/LayoutImportBatch.h
+        )
+        set_target_properties(layout_import_batch_test PROPERTIES AUTOMOC ON)
+        target_compile_definitions(layout_import_batch_test PRIVATE
+            PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>"
+        )
+        # $<TARGET_FILE:...> in a compile definition does not create a build-order
+        # dependency; the plugin must exist when the test runs.
+        add_dependencies(layout_import_batch_test mock_file_source_plugin)
+        target_link_libraries(layout_import_batch_test PRIVATE pj_app_loader_testlib)
+        if(DEFINED PJ_WARNING_FLAGS)
+            target_compile_options(layout_import_batch_test PRIVATE ${PJ_WARNING_FLAGS})
+        endif()
+        add_test(NAME LayoutImportBatchTest COMMAND layout_import_batch_test)
     endif()
-    add_test(NAME LayoutImportBatchTest COMMAND layout_import_batch_test)
 
     # Binds the Source Timeline widget to the runtime; the regression test pins that
     # the bars track data growth (samplesIngested), not just new catalog topics.

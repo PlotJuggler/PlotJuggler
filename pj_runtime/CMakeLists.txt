@@ -506,6 +506,23 @@ if(PJ_BUILD_TESTS)
         )
         add_dependencies(source_capture_service_test runtime_host_object_parser_plugin)
         add_test(NAME SourceCaptureServiceTest COMMAND source_capture_service_test)
+
+        # M3 owner wiring: ToolboxRuntimeHost's parser-ingest lifecycle
+        # (create/release/discard/teardown) driving SourceCaptureService.
+        add_executable(toolbox_capture_wiring_test
+            tests/toolbox_capture_wiring_test.cpp
+        )
+        target_compile_definitions(toolbox_capture_wiring_test PRIVATE
+            PJ_RUNTIME_HOST_OBJECT_PARSER_PATH="$<TARGET_FILE:runtime_host_object_parser_plugin>"
+        )
+        target_compile_options(toolbox_capture_wiring_test PRIVATE ${PJ_WARNING_FLAGS})
+        target_link_libraries(toolbox_capture_wiring_test PRIVATE
+            pj_runtime
+            Qt6::Core
+            GTest::gtest_main
+        )
+        add_dependencies(toolbox_capture_wiring_test runtime_host_object_parser_plugin)
+        add_test(NAME ToolboxCaptureWiringTest COMMAND toolbox_capture_wiring_test)
     endif()
 
     # Streaming pause/resume two-engine lockstep, exercised at the

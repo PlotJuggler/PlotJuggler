@@ -21,8 +21,64 @@
 #include "pj_runtime/DataSourceRuntimeHost.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/ServiceRegistration.h"
+#ifndef __EMSCRIPTEN__
+#include "pj_runtime/SourceCaptureService.h"
+#endif
 
 namespace PJ {
+
+// Holds the armed capture of one parser-ingest context. Empty on wasm, where
+// SourceCaptureService does not exist and captures_ simply stays empty.
+struct ToolboxRuntimeHost::CaptureSlot {
+#ifndef __EMSCRIPTEN__
+  std::unique_ptr<SourceCaptureService::Capture> capture;
+#endif
+};
+
+void ToolboxRuntimeHost::abortCapture(std::unique_ptr<CaptureSlot> slot) {
+  // ~Capture unhooks the host, wakes any blocked producer and aborts the
+  // cache transaction — the whole discard/teardown semantic.
+  slot.reset();
+}
+
+void ToolboxRuntimeHost::finalizeCapture(
+    uint32_t data_source_id, std::unique_ptr<CaptureSlot> slot, DataSourceRuntimeHost& host) {
+#ifdef __EMSCRIPTEN__
+  static_cast<void>(data_source_id);
+  static_cast<void>(slot);
+  static_cast<void>(host);
+#else
+  if (slot == nullptr || slot->capture == nullptr || parser_ingest_deps_.capture_service == nullptr) {
+    return;
+  }
+  SourceCaptureService& service = *parser_ingest_deps_.capture_service;
+  // A host-side stop is a cancellation the capture may not have observed
+  // (the hook only wakes producers); release itself is the commit.
+  const bool cancelled = host.stopRequested();
+  auto result = service.finalize(std::move(slot->capture), /*transaction_committed=*/true, cancelled);
+  if (result.published) {
+    // Budget enforcement rides the publish, on this (plugin worker) thread —
+    // never the GUI thread, and the store never evicts pinned artifacts.
+    static_cast<void>(service.store().cleanup());
+  }
+  // Record-worthiness is independent of publication: an attached descriptor
+  // with a clean COMPLETED terminal can re-obtain the dataset even when the
+  // capture itself was refused (e.g. pure-lazy holes).
+  const auto descriptor = host.sourceRecordDescriptor();
+  const auto completion = host.ingestCompletion();
+  const bool record_worthy = descriptor.has_value() && completion.has_value() &&
+                             completion->outcome == sdk::IngestOutcome::kCompleted &&
+                             host.captureVetoReason().empty() && !cancelled;
+  if (record_worthy && parser_ingest_deps_.on_capture_finalized) {
+    const std::string& provider = parser_ingest_deps_.capture_provider_id;
+    parser_ingest_deps_.on_capture_finalized(
+        static_cast<DatasetId>(data_source_id), provider, *descriptor, sourceCacheIdentityDigest(provider, *descriptor),
+        result.published, result.reason, result.artifact.has_value() ? result.artifact->path : std::filesystem::path{});
+  }
+  // result.artifact's pin drops here: the ingested dataset is eager and does
+  // not read the artifact, so nothing needs it kept beyond the publish.
+#endif
+}
 
 ToolboxRuntimeHost::ToolboxRuntimeHost(
     DataEngine& engine, ObjectStore& object_store, sdk::SettingsBackend& settings, Callbacks callbacks)
@@ -51,11 +107,19 @@ ToolboxRuntimeHost::~ToolboxRuntimeHost() {
   // Mirror the release path: take the contexts out under the lock, run plugin
   // parser destructors and engine flushes outside it.
   std::unordered_map<uint32_t, std::unique_ptr<DataSourceRuntimeHost>> contexts;
+  std::unordered_map<uint32_t, std::unique_ptr<CaptureSlot>> captures;
   std::unordered_map<uint32_t, std::shared_ptr<IngestProgress>> progress;
   {
     std::lock_guard lock(parser_ingest_mu_);
     contexts.swap(parser_ingests_);
+    captures.swap(captures_);
     progress.swap(ingest_progress_);
+  }
+  // A capture must never outlive its host: abort every unreleased capture
+  // FIRST (their host is still alive in `contexts`), and never publish from a
+  // teardown — an unreleased ingest never committed.
+  for (auto& [id, slot] : captures) {
+    abortCapture(std::move(slot));
   }
   // Close any import the plugin never finished AND deliver any terminal that
   // was queued but not yet pumped: the shell's started/finished callbacks must
@@ -284,7 +348,33 @@ bool ToolboxRuntimeHost::onCreateParserIngest(
           // owns their .so lifetime and outlives every ingest context.
           /*secondary_object_store=*/nullptr, /*secondary_data_engine=*/nullptr,
           /*library_keepalive=*/std::shared_ptr<void>{}, self->parser_ingest_deps_.ingest_taps);
+
+      // Arm the M3 source capture BEFORE publishing the context into the maps,
+      // so a throw anywhere in between leaves neither map with a half-built
+      // entry (the slot and the host die with their locals). Binding at
+      // creation keys the capture to THIS host generation: a re-created
+      // context arms a fresh capture, and the old one was finalized/aborted
+      // with its own context, so stale evidence can never publish under a
+      // replacement.
+      std::unique_ptr<CaptureSlot> capture_slot;
+#ifndef __EMSCRIPTEN__
+      if (self->parser_ingest_deps_.capture_service != nullptr &&
+          !self->parser_ingest_deps_.capture_provider_id.empty()) {
+        capture_slot = std::make_unique<CaptureSlot>();
+        capture_slot->capture =
+            self->parser_ingest_deps_.capture_service->arm(*host, self->parser_ingest_deps_.capture_provider_id);
+      }
+#endif
       it = self->parser_ingests_.emplace(data_source_id, std::move(host)).first;
+      if (capture_slot != nullptr) {
+        try {
+          self->captures_[data_source_id] = std::move(capture_slot);
+        } catch (...) {
+          // Keep the two maps consistent: an unarmed context must not linger.
+          self->parser_ingests_.erase(data_source_id);
+          throw;
+        }
+      }
 
       // Progress hooks: the plugin's progress_start/update/finish calls on the
       // fat pointer drive the shell's progressive-import surface. They run on
@@ -385,6 +475,7 @@ bool ToolboxRuntimeHost::onReleaseParserIngest(void* ctx, uint32_t data_source_i
   }
   try {
     std::unique_ptr<DataSourceRuntimeHost> victim;
+    std::unique_ptr<CaptureSlot> capture;
     std::shared_ptr<IngestProgress> progress;
     uint64_t claimed_word = 0;
     {
@@ -395,6 +486,10 @@ bool ToolboxRuntimeHost::onReleaseParserIngest(void* ctx, uint32_t data_source_i
       }
       victim = std::move(it->second);
       self->parser_ingests_.erase(it);
+      if (auto cap_it = self->captures_.find(data_source_id); cap_it != self->captures_.end()) {
+        capture = std::move(cap_it->second);
+        self->captures_.erase(cap_it);
+      }
       // COPY, don't erase: the entry must outlive this release so a finished
       // metacall queued below that teardown then purges is still visible to
       // the destructor's sweep (see IngestProgress::Phase). Entries are
@@ -413,6 +508,10 @@ bool ToolboxRuntimeHost::onReleaseParserIngest(void* ctx, uint32_t data_source_i
     // Seal rows BEFORE destruction so the next notify_data_changed/catalog
     // rebuild sees everything the parsers wrote.
     victim->flushAll();
+    // Release IS the commit: evaluate the capture's publication gate on this
+    // thread (the plugin's own release call — its pushes have quiesced) while
+    // the context is still alive.
+    self->finalizeCapture(data_source_id, std::move(capture), *victim);
     victim.reset();
     {
       // A released context marks a COMPLETED bulk import: report it on the
@@ -451,6 +550,7 @@ bool ToolboxRuntimeHost::onDiscardParserIngest(void* ctx, uint32_t data_source_i
   }
   try {
     std::unique_ptr<DataSourceRuntimeHost> victim;
+    std::unique_ptr<CaptureSlot> capture;
     std::shared_ptr<IngestProgress> progress;
     uint64_t claimed_word = 0;
     {
@@ -461,6 +561,10 @@ bool ToolboxRuntimeHost::onDiscardParserIngest(void* ctx, uint32_t data_source_i
       }
       victim = std::move(it->second);
       self->parser_ingests_.erase(it);
+      if (auto cap_it = self->captures_.find(data_source_id); cap_it != self->captures_.end()) {
+        capture = std::move(cap_it->second);
+        self->captures_.erase(cap_it);
+      }
       if (auto pit = self->ingest_progress_.find(data_source_id); pit != self->ingest_progress_.end()) {
         progress = pit->second;
         claimed_word = claimIngestFinish(*progress);
@@ -471,7 +575,10 @@ bool ToolboxRuntimeHost::onDiscardParserIngest(void* ctx, uint32_t data_source_i
       pending.erase(std::remove(pending.begin(), pending.end(), static_cast<DatasetId>(data_source_id)), pending.end());
     }
     // The whole point of discard: NO flushAll — pending rows die with the
-    // writers, and no completed-import marker is queued for the shell.
+    // writers, and no completed-import marker is queued for the shell. The
+    // capture aborts the same way (before its host dies): a discarded ingest
+    // never publishes, whatever the plugin reported.
+    abortCapture(std::move(capture));
     victim.reset();
     if (progress != nullptr && claimed_word != 0) {
       self->postIngestFinished(static_cast<DatasetId>(data_source_id), progress, claimed_word);

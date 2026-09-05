@@ -36,6 +36,9 @@
 #include "Theme.h"
 #include "pj_runtime/HttpGet.h"
 #include "pj_runtime/RecordingService.h"
+#ifndef __EMSCRIPTEN__
+#include "pj_runtime/SourceCacheStore.h"
+#endif
 #include "pj_widgets/DualOptionsWidget.h"
 #include "pj_widgets/FileDialog.h"
 #include "pj_widgets/FrameworkTokens.h"
@@ -354,6 +357,35 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       RecordingService::saveSettings(settings);
       emit recordingSettingsChanged();
     });
+
+#ifndef __EMSCRIPTEN__
+    // Source-cache section of the same page (M3). Same defaults handling as
+    // the recordings folder; the note on the page says these apply at the
+    // next launch (armed captures hold the store they were opened against).
+    const SourceCacheStore::Settings cache_stored = SourceCacheStore::loadSettings();
+    ui_->lineEditSourceCacheDir->setText(cache_stored.directory);
+    const QString cache_default = QString::fromStdU16String(SourceCacheStore::defaultRoot().u16string());
+    ui_->lineEditSourceCacheDir->setToolTip(
+        tr("Leave empty to use the default folder: %1").arg(QDir::toNativeSeparators(cache_default)));
+    ui_->scrubberSourceCacheBudgetGB->setValue(cache_stored.budget_gb);
+    ui_->buttonSourceCacheDirBrowse->setIconPath(u":/resources/svg/folder_open.svg"_s);
+    ui_->buttonSourceCacheDirBrowse->setExtent(26, 24);
+    ui_->buttonSourceCacheDirBrowse->setToolTip(tr("Choose the source cache folder…"));
+    connect(ui_->buttonSourceCacheDirBrowse, &QToolButton::clicked, this, [this, cache_default]() {
+      const QString field = ui_->lineEditSourceCacheDir->text().trimmed();
+      const QString dir = PJ::FileDialog::getExistingDirectory(
+          this, tr("Choose the source cache folder"), field.isEmpty() ? cache_default : field);
+      if (!dir.isEmpty()) {
+        ui_->lineEditSourceCacheDir->setText(dir);
+      }
+    });
+    connect(this, &QDialog::accepted, this, [this]() {
+      SourceCacheStore::Settings settings;
+      settings.directory = ui_->lineEditSourceCacheDir->text().trimmed();
+      settings.budget_gb = ui_->scrubberSourceCacheBudgetGB->value();
+      SourceCacheStore::saveSettings(settings);
+    });
+#endif
   }
 
   // Reset-to-defaults button. Snaps each scrubber back to the

@@ -37,7 +37,7 @@ HeadlessDescriptorProviderSession::HeadlessDescriptorProviderSession(
 
 Expected<HeadlessDescriptorProviderSession::Ptr> HeadlessDescriptorProviderSession::create(
     SessionManager& session_manager, ExtensionCatalogService& extensions, FileLoader& loader, CatalogModel& catalog,
-    const QString& provider_manifest_id, DiagnosticSink diagnostics) {
+    const QString& provider_manifest_id, DiagnosticSink diagnostics, SourceCaptureService* capture_service) {
   // 1. Find the provider toolbox by STABLE MANIFEST ID (RuntimeToolboxPlugin::id).
   const std::string wanted = provider_manifest_id.toStdString();
   const auto& toolboxes = extensions.toolboxes();
@@ -117,6 +117,9 @@ Expected<HeadlessDescriptorProviderSession::Ptr> HeadlessDescriptorProviderSessi
   ingest_deps.catalog = &extensions;
   ingest_deps.ingest_taps = session_manager.ingestTapsShared();
   ingest_deps.register_object_parser = makeObjectParserRegistrar(session_manager);
+  // M3: capture this binding's delegated downloads into the source cache
+  // (identical to the interactive path; no-op when capture_service is null).
+  wireSourceCapture(ingest_deps, capture_service, wanted, session_manager);
 
   session->host_ = std::make_unique<ToolboxRuntimeHost>(
       session_manager.dataEngine(), session_manager.objectStore(), *session->settings_, std::move(callbacks),

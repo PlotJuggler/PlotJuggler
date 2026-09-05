@@ -17,18 +17,23 @@
 #include "ToolboxHostWiring.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+#ifndef __EMSCRIPTEN__
+#include "pj_runtime/SourceCaptureService.h"
+#endif
 using namespace Qt::StringLiterals;
 
 namespace PJ {
 
 LayoutImportBatch::LayoutImportBatch(
     SessionManager& session_manager, ExtensionCatalogService& extensions, FileLoader& loader, CatalogModel& catalog,
-    bool interactive, std::uint64_t max_transfer_bytes, Hooks hooks, QObject* parent)
+    SourceCaptureService* capture_service, bool interactive, std::uint64_t max_transfer_bytes, Hooks hooks,
+    QObject* parent)
     : QObject(parent),
       session_manager_(session_manager),
       extensions_(extensions),
       loader_(loader),
       catalog_(catalog),
+      capture_service_(capture_service),
       interactive_(interactive),
       max_transfer_bytes_(max_transfer_bytes),
       hooks_(std::move(hooks)) {}
@@ -65,7 +70,7 @@ HeadlessDescriptorProviderSession* LayoutImportBatch::sessionFor(const QString& 
     return nullptr;
   }
   auto created = HeadlessDescriptorProviderSession::create(
-      session_manager_, extensions_, loader_, catalog_, provider_id, hooks_.diagnostics);
+      session_manager_, extensions_, loader_, catalog_, provider_id, hooks_.diagnostics, capture_service_);
   if (!created.has_value()) {
     failed_providers_.insert(provider_id, QString::fromStdString(created.error()));
     return nullptr;
@@ -92,11 +97,13 @@ const LayoutImportBatch::LoadedCandidate* LayoutImportBatch::findAlreadyLoaded(
   for (const LoadedCandidate& candidate : loaded_candidates_) {
     if (candidate.has_record) {
       // Exact provenance is the verdict for record-carrying datasets:
-      // provider, the provider's durable identity from THIS query, and the
-      // descriptor bytes. Never fall back to path identity for these — the
-      // cache slot may have been reused for different content.
+      // provider + the FULL descriptor bytes. Identity is only a fast-path
+      // key and is deliberately NOT required to agree — records minted under
+      // the provider-identity scheme and the host digest scheme name the same
+      // source when their descriptor bytes match byte-for-byte. Never fall
+      // back to path identity for these — the cache slot may have been
+      // reused for different content.
       if (candidate.record.provider_id == planned.ref.materialize_provider &&
-          candidate.record.source_identity == planned.query_identity &&
           candidate.record.descriptor_json == planned.ref.materialize_descriptor_json) {
         return &candidate;
       }
@@ -192,6 +199,58 @@ void LayoutImportBatch::planSource(
     return;
   }
 
+  // Step 2a (M3): the HOST source cache, BEFORE any provider contact. A hit
+  // is a stock load of the pinned artifact — no network, no trust prompt, and
+  // the provider plugin need not be installed. resolve() already verified the
+  // artifact strictly against its embedded pj.capture manifest (and
+  // quarantined it otherwise), so a hit here is load-ready.
+#ifndef __EMSCRIPTEN__
+  if (capture_service_ != nullptr) {
+    const std::string provider_utf8 = ref.materialize_provider.toStdString();
+    const std::string_view descriptor_view(
+        planned.descriptor_utf8.constData(), static_cast<std::size_t>(planned.descriptor_utf8.size()));
+    std::string miss;
+    if (auto resolved = capture_service_->resolve(provider_utf8, descriptor_view, &miss)) {
+      // The digest is the record identity every host path shares (attach on
+      // capture, this hit's loadCommitting attach, already-loaded matching).
+      planned.query_identity = QString::fromStdString(sourceCacheIdentityDigest(provider_utf8, descriptor_view));
+      planned.effective_path = QString::fromStdU16String(resolved->artifact.path.u16string());
+      planned.host_cache_hit = true;
+      planned.host_cache_pin = std::make_shared<SourceCacheStore::Pinned>(std::move(resolved->artifact));
+      registerRewrite(ref, planned.effective_path, fileinfo_remap, qualifier_remap);
+      const QFileInfo effective_info(planned.effective_path);
+      if (const LoadedCandidate* match =
+              findAlreadyLoaded(planned, pathIdentityKey(planned.effective_path, effective_info))) {
+        if (match->has_record && !match->source_path.isEmpty() && match->source_path != planned.effective_path) {
+          // Same live-path override as the provider flow: the document must
+          // describe the session that is already loaded.
+          planned.effective_path = match->source_path;
+          registerRewrite(ref, planned.effective_path, fileinfo_remap, qualifier_remap);
+        }
+        planned.host_cache_hit = false;
+        planned.host_cache_pin.reset();  // the loaded dataset holds its own pin (or none)
+        setResult(index, SourceOutcome::kResolvedAlreadyLoaded);
+        return;
+      }
+      planned.plan = Plan::kHit;
+      return;
+    }
+  }
+#endif
+
+  planViaProvider(index, &fileinfo_remap, &qualifier_remap);
+}
+
+void LayoutImportBatch::planViaProvider(
+    std::size_t index, QHash<QString, QString>* fileinfo_remap, QHash<QString, QString>* qualifier_remap) {
+  PlannedSource& planned = planned_[index];
+  const layout_xml::DataSourceRef& ref = planned.ref;
+  const auto record_rewrite = [&](const QString& target) {
+    if (fileinfo_remap != nullptr && qualifier_remap != nullptr) {
+      registerRewrite(ref, target, *fileinfo_remap, *qualifier_remap);
+    }
+  };
+
   // Step 2: the provider query (strictly bounded, main-thread).
   HeadlessDescriptorProviderSession* session = sessionFor(ref.materialize_provider);
   if (session == nullptr) {
@@ -236,7 +295,7 @@ void LayoutImportBatch::planSource(
   // session the restore will actually produce. Applied by the two remap
   // passes at the end of prepare(); fallback sources are absent, so their
   // elements stay untouched.
-  registerRewrite(ref, planned.effective_path, fileinfo_remap, qualifier_remap);
+  record_rewrite(planned.effective_path);
 
   // Trust gate input. kRefused fails the source outright — even a local
   // cache hit: the provider actively rejected this descriptor (fail-closed).
@@ -269,7 +328,7 @@ void LayoutImportBatch::planSource(
       // the live path (record-matched candidates only; a record-less match
       // was found BY the effective path, so the two are already equal).
       planned.effective_path = match->source_path;
-      registerRewrite(ref, planned.effective_path, fileinfo_remap, qualifier_remap);
+      record_rewrite(planned.effective_path);
     }
     setResult(index, SourceOutcome::kResolvedAlreadyLoaded);
     return;
@@ -315,6 +374,10 @@ void LayoutImportBatch::planSource(
 void LayoutImportBatch::prepare(QDomDocument& doc, const QList<layout_xml::DataSourceRef>& sources) {
   Q_ASSERT(state_ == State::kIdle);
   state_ = State::kPrepared;
+  // QDom handles are explicitly shared: this copy addresses the caller's
+  // document, letting the post-quarantine fallback re-run the same remap
+  // passes prepare() applies below (handleHostCacheLoadFailure).
+  doc_ = doc;
 
   // One candidate per LIVE dataset, up front: its path identity key (one
   // canonicalization per dataset, not two per comparison) plus a copy of its
@@ -436,22 +499,7 @@ LayoutImportBatch::StartResult LayoutImportBatch::start() {
   for (std::size_t index = 0; index < planned_.size(); ++index) {
     PlannedSource& planned = planned_[index];
     if (planned.plan == Plan::kHit) {
-      // §6.4 fallback hits mirror today's replay hints exactly (the saved
-      // preset already names the saved path); provider-resolved hits ask the
-      // loader to rewrite the preset's filepath to the effective path.
-      const bool rewrite = planned.provider_fallback ? planned.ref.rewrite_plugin_filepath : true;
-      const quint64 ticket = loader_.loadFileTicketed(
-          LoadInput::fromNativePath(planned.effective_path), nullptr,
-          layoutReplayHints(planned.ref, /*prefer_reuse=*/true, rewrite));
-      if (ticket == 0) {
-        planned.plan = Plan::kDone;
-        setResult(index, SourceOutcome::kFailed, tr("the loader rejected the file"));
-        emitDiagnostic(
-            DiagnosticLevel::kWarning, "layout-import-load-rejected",
-            tr("The loader rejected layout source '%1'.").arg(planned.effective_path));
-        continue;
-      }
-      pending_tickets_.insert(ticket, index);
+      startHitLoad(index);
     } else if (planned.plan == Plan::kMiss) {
       job_queue_.push_back(index);
     }
@@ -473,6 +521,104 @@ LayoutImportBatch::StartResult LayoutImportBatch::start() {
   // emission — the batch still reports kRunning, and finished() follows.
   maybeFinish();
   return StartResult::kRunning;
+}
+
+void LayoutImportBatch::startHitLoad(std::size_t index) {
+  PlannedSource& planned = planned_[index];
+  // §6.4 fallback hits mirror today's replay hints exactly (the saved
+  // preset already names the saved path); provider-resolved hits ask the
+  // loader to rewrite the preset's filepath to the effective path.
+  // Host-cache hits get their OWN hints: a capture artifact is always a
+  // standard MCAP, so the layout's original plugin identity/preset (which
+  // may name a non-MCAP provider format) must not be required — a hint
+  // mismatch would reject and then quarantine a perfectly valid artifact.
+  // The loader picks the MCAP source by extension, dialog-free.
+  LoadHints hints;
+  if (planned.host_cache_hit) {
+    hints.dialog_policy = DialogPolicy::kNever;
+    hints.prefer_reuse = true;
+  } else {
+    const bool rewrite = planned.provider_fallback ? planned.ref.rewrite_plugin_filepath : true;
+    hints = layoutReplayHints(planned.ref, /*prefer_reuse=*/true, rewrite);
+  }
+  const quint64 ticket = loader_.loadFileTicketed(LoadInput::fromNativePath(planned.effective_path), nullptr, hints);
+  if (ticket == 0) {
+    if (planned.host_cache_hit) {
+      // The cached artifact is unloadable in this session: heal + provider.
+      handleHostCacheLoadFailure(index);
+      return;
+    }
+    planned.plan = Plan::kDone;
+    setResult(index, SourceOutcome::kFailed, tr("the loader rejected the file"));
+    emitDiagnostic(
+        DiagnosticLevel::kWarning, "layout-import-load-rejected",
+        tr("The loader rejected layout source '%1'.").arg(planned.effective_path));
+    return;
+  }
+  pending_tickets_.insert(ticket, index);
+}
+
+void LayoutImportBatch::handleHostCacheLoadFailure(std::size_t index) {
+  PlannedSource& planned = planned_[index];
+  planned.plan = Plan::kDone;
+  planned.host_cache_hit = false;
+  planned.host_cache_pin.reset();  // release our pin so the quarantine can act
+  // A batch that is no longer running must not re-plan: a job queued here
+  // would never start (startNextJob refuses outside kRunning) and the batch
+  // would hang short of maybeFinish's drained condition. It must not touch
+  // the cache either — the load "failure" is a casualty of the cancel, not
+  // evidence against the artifact.
+  if (state_ != State::kRunning) {
+    setResult(index, SourceOutcome::kCancelled);
+    return;
+  }
+  const QString stale_path = planned.effective_path;
+#ifndef __EMSCRIPTEN__
+  const std::string provider_utf8 = planned.ref.materialize_provider.toStdString();
+  const std::string_view descriptor_view(
+      planned.descriptor_utf8.constData(), static_cast<std::size_t>(planned.descriptor_utf8.size()));
+  std::string refusal;
+  const bool healed = capture_service_ != nullptr && capture_service_->store().quarantine(
+                                                         sourceCacheIdentity(provider_utf8, descriptor_view), &refusal);
+  emitDiagnostic(
+      DiagnosticLevel::kWarning, "layout-import-cache-load-failed",
+      tr("Cached copy of layout source '%1' failed to load%2; falling back to the provider.")
+          .arg(planned.effective_path, healed ? tr(" and was removed") : QString{}));
+#endif
+  // Fall back to the live provider for this ONE source.
+  planViaProvider(index, nullptr, nullptr);
+  // Corrective document rewrite: prepare() pointed the fileInfo filename and
+  // every *_dataset_path qualifier at the (now quarantined) cache path, and
+  // the path binding tier would otherwise never resolve against the fallback
+  // load. QDom documents are explicitly shared, so doc_ IS the caller's
+  // document; the remap uses the same two passes prepare() applied — a
+  // qualifier holds exactly the stale cache path, nothing else.
+  if (!doc_.isNull() && planned.effective_path != stale_path) {
+    const auto remap = [&stale_path, &planned](const QString& value) {
+      return value == stale_path ? planned.effective_path : value;
+    };
+    layout_xml::remapFileInfoFilenames(doc_, remap);
+    layout_xml::remapDatasetSourcePaths(doc_, remap);
+  }
+  if (planned.plan == Plan::kHit) {
+    startHitLoad(index);
+  } else if (planned.plan == Plan::kMiss) {
+    if (planned.needs_confirmation) {
+      // The consolidated trust prompt has already run for this batch; a new
+      // network touch cannot be confirmed now (D5) — fail, never prompt late.
+      planned.plan = Plan::kDone;
+      planned.needs_confirmation = false;
+      setResult(index, SourceOutcome::kFailed, tr("untrusted import origin"));
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "layout-import-untrusted",
+          tr("Layout source '%1' requires confirmation of an untrusted origin, which cannot be asked after the "
+             "batch started. Connect to this server once in the provider toolbox to trust it.")
+              .arg(planned.effective_path));
+    } else {
+      job_queue_.push_back(index);
+      startNextJob();
+    }
+  }
 }
 
 void LayoutImportBatch::startNextJob() {
@@ -591,6 +737,12 @@ void LayoutImportBatch::onLoadCommitting(quint64 ticket, const QVector<DatasetId
                         .source_identity = planned.query_identity,
                         .descriptor_json = planned.ref.materialize_descriptor_json,
                     });
+    if (planned.host_cache_pin != nullptr) {
+      // The dataset now reads the cache artifact: it owns a read pin for its
+      // lifetime (released by removeDataset/merge), so eviction and
+      // quarantine cannot pull the file out from under it.
+      session_manager_.pinDatasetResource(dataset_id, planned.host_cache_pin);
+    }
   }
 }
 
@@ -606,12 +758,31 @@ void LayoutImportBatch::onLoadFinished(quint64 ticket, LoadOutcome outcome, cons
   }
   switch (outcome) {
     case LoadOutcome::kLoaded:
+      // Host-cache hits: the produced datasets took their pin copies at
+      // loadCommitting; the batch's own copy may now go.
+      planned_[index].host_cache_pin.reset();
       setResult(index, SourceOutcome::kResolvedCacheHit);
       break;
     case LoadOutcome::kCancelled:
+      // A keep-partial stop skipped loadCommitting, so any KEPT datasets never
+      // took their pin there — hand it over here, or a surviving dataset with
+      // lazy payloads would lose its backing artifact to cleanup/quarantine.
+      // (A rolled-back batch removes these datasets, which releases the pins.)
+      if (planned_[index].host_cache_pin != nullptr) {
+        for (const DatasetId produced_id : produced) {
+          session_manager_.pinDatasetResource(produced_id, planned_[index].host_cache_pin);
+        }
+      }
+      planned_[index].host_cache_pin.reset();
       setResult(index, SourceOutcome::kCancelled);
       break;
     case LoadOutcome::kFailed:
+      if (planned_[index].host_cache_hit) {
+        // Strict rejection: a cached artifact whose stock load fails is never
+        // a hit — quarantine it and fall back to the live provider.
+        handleHostCacheLoadFailure(index);
+        break;
+      }
       setResult(index, SourceOutcome::kFailed, tr("the stock load failed"));
       emitDiagnostic(
           DiagnosticLevel::kWarning, "layout-import-load-failed",

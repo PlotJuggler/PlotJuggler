@@ -115,8 +115,25 @@ plugin ──────────────► DataSourceRuntimeHost ─�
   `discard_parser_ingest` on `ToolboxRuntimeHost`). Publication requires the full gate — an explicit COMPLETED
   terminal with declared-topic coverage (zero-message topics only under the empty-topic attestation flag),
   a committed transaction, no cancellation, no latched callback failures, no pure-lazy skips, and a clean
-  recorder close. Remaining for M3: layout record + cache-first restore wiring + Preferences (PR 3), and the
-  provider-side attachment/completion in Mosaico (PR 4).
+  recorder close.
+- **Owner wiring (as built):** `ToolboxRuntimeHost`'s parser-ingest lifecycle drives the capture service —
+  every context created with a configured `capture_service` + provider manifest id
+  (`ParserIngestDeps`) is armed at creation, RELEASE is the commit (the publication gate runs on the
+  release caller's thread, followed by the store's budget cleanup), DISCARD and host teardown abort the
+  capture, and a host-side stop refuses publication. A record-worthy release (attached descriptor + clean
+  COMPLETED terminal, whether or not the capture published) reports through
+  `ParserIngestDeps::on_capture_finalized` (carrying the published artifact path); the shell attaches the
+  dataset's `SourceRecord` from it and, when published, registers the artifact as the dataset's saveable
+  backing file (source path + loadedSources entry) so the layout-save walk emits a `<fileInfo>` +
+  `<materialize>` for the download (`ToolboxHostWiring.h` `wireSourceCapture`).
+- **Cache-first restore (as built):** `LayoutImportBatch` consults `SourceCaptureService::resolve()` BEFORE
+  any provider contact; a hit loads the pinned artifact through the stock ticketed loader (no network, no
+  trust prompt, and the provider plugin need not be installed), the produced datasets hold the artifact's
+  read pin for their lifetime (`SessionManager::pinDatasetResource`, released on removeDataset/merge), and
+  a hit whose stock load fails is quarantined and re-planned through the live provider. Preferences expose
+  the cache folder + budget on the Recording page (`SourceCacheStore::loadSettings`/`saveSettings`; applied
+  at the next launch). Remaining for M3: the #275 harvest half in the Mosaico provider
+  (trust/credentials/presentation).
 
 ## 4. Decisions and accepted trade-offs
 

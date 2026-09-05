@@ -200,6 +200,14 @@ class SessionManager : public QObject {
 
   void detachSourceRecord(DatasetId dataset_id);
 
+  /// Ties an opaque resource to `dataset_id`'s lifetime — released when the
+  /// dataset is removed or consumed by a destructive merge (the same lifecycle
+  /// as its SourceRecord). The M3 source cache uses it to hold a read pin on
+  /// the artifact a cache-hit dataset was loaded from, so the artifact cannot
+  /// be evicted while the dataset reads it. GUI-thread only; several resources
+  /// may accumulate on one dataset.
+  void pinDatasetResource(DatasetId dataset_id, std::shared_ptr<void> resource);
+
   /// The physical-path normalization every stored source path goes through
   /// (setDatasetSourcePath, recordLoadedSource): canonicalFilePath when the
   /// file exists (resolving symlink/relative aliases), cleaned absolute path
@@ -779,6 +787,10 @@ class SessionManager : public QObject {
   // on removeDataset, invalidated for every contributor of a successful
   // destructive merge (the anchor included).
   std::unordered_map<DatasetId, SourceRecord> dataset_source_records_;
+  // Opaque dataset-lifetime resources (pinDatasetResource) — released on
+  // removeDataset and for every contributor of a destructive merge, exactly
+  // like the records above.
+  std::unordered_map<DatasetId, std::vector<std::shared_ptr<void>>> dataset_resources_;
   // Datasets currently receiving a progressive import, at most one each: a
   // dataset IS the identity of its live ingest, and the entry carries the token
   // id that owns it. Lifecycle: inserted by beginIngest (id minted monotonic),

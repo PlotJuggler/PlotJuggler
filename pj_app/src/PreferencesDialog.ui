@@ -820,7 +820,76 @@
            </property>
           </widget>
          </item>
-         <item row="3" column="0" colspan="2">
+         <item row="3" column="0">
+          <widget class="QLabel" name="labelSourceCacheDir">
+           <property name="text">
+            <string>Source cache folder:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="1">
+          <layout class="QHBoxLayout" name="sourceCacheDirRow">
+           <property name="spacing">
+            <number>2</number>
+           </property>
+           <item>
+            <widget class="QLineEdit" name="lineEditSourceCacheDir">
+             <property name="placeholderText">
+              <string>default: app data folder / source_cache</string>
+             </property>
+             <property name="clearButtonEnabled">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="PJ::SvgButton" name="buttonSourceCacheDirBrowse"/>
+           </item>
+          </layout>
+         </item>
+         <item row="4" column="0">
+          <widget class="QLabel" name="labelSourceCacheBudget">
+           <property name="toolTip">
+            <string>Disk space the source cache may occupy. Oldest artifacts are removed first when the budget is exceeded; artifacts a loaded dataset still reads are never removed.</string>
+           </property>
+           <property name="text">
+            <string>Source cache budget (GB):</string>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="1">
+          <widget class="PJ::IntScrubber" name="scrubberSourceCacheBudgetGB" native="true">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+             <horstretch>0</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
+           <property name="toolTip">
+            <string>Disk space the source cache may occupy. Oldest artifacts are removed first when the budget is exceeded; artifacts a loaded dataset still reads are never removed.</string>
+           </property>
+           <property name="minimum">
+            <number>1</number>
+           </property>
+           <property name="maximum">
+            <number>1000</number>
+           </property>
+           <property name="value">
+            <number>10</number>
+           </property>
+          </widget>
+         </item>
+         <item row="5" column="0" colspan="2">
+          <widget class="QLabel" name="labelSourceCacheNote">
+           <property name="text">
+            <string>The source cache keeps a local copy of each cloud download so a saved layout can restore it instantly and offline. It is disposable: entries are re-downloaded when missing. Changes to the folder and budget take effect the next time PlotJuggler starts.</string>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item row="6" column="0" colspan="2">
           <spacer name="recordingBottomSpacer">
            <property name="orientation">
             <enum>Qt::Orientation::Vertical</enum>

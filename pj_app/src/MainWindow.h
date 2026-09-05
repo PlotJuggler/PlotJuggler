@@ -79,6 +79,8 @@ class PlotWidget;
 class PreferencesDialog;
 class StateTransitionsDockWidget;
 class PendingDisplayBinder;
+class SourceCacheStore;
+class SourceCaptureService;
 class QtDiagnosticBridge;
 class SceneDockWidget;
 class StreamingSourceManager;
@@ -1229,6 +1231,15 @@ class MainWindow : public QMainWindow {
   // recording explicitly, before any widget or host is gone. Always created,
   // even where isSupported() is false: only the UI affordances go away there.
   std::unique_ptr<RecordingService> recording_service_;
+#ifndef __EMSCRIPTEN__
+  // M3 transparent source cache (desktop only), constructed ONCE at startup
+  // from Preferences (SourceCacheStore::loadSettings) — a changed cache
+  // folder/budget takes effect on the next launch, because armed captures
+  // hold the store they were opened against. store first: the service holds a
+  // reference into it.
+  std::unique_ptr<SourceCacheStore> source_cache_store_;
+  std::unique_ptr<SourceCaptureService> source_capture_service_;
+#endif
   // Wall clock behind the "m:ss | N.N MB" status label; restarted on every start().
   QElapsedTimer recording_elapsed_;
   // ~30 Hz rate cap for the tracker-time fan-out. Every per-cursor-move driver

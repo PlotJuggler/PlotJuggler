@@ -161,6 +161,10 @@
 #include "pj_runtime/QSettingsBackend.h"
 #include "pj_runtime/RecordingService.h"
 #include "pj_runtime/SessionManager.h"
+#ifndef __EMSCRIPTEN__
+#include "pj_runtime/SourceCacheStore.h"
+#include "pj_runtime/SourceCaptureService.h"
+#endif
 #include "pj_runtime/TelemetryPing.h"
 #include "pj_runtime/Time.h"
 #include "pj_runtime/ToolboxRuntimeHost.h"
@@ -1297,6 +1301,14 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   ui_->leftPanel->setRecordingSupported(RecordingService::isSupported());
   recording_service_ = std::make_unique<RecordingService>(this);
   recording_service_->setSettings(RecordingService::loadSettings());
+
+#ifndef __EMSCRIPTEN__
+  // M3 transparent source cache: built once from Preferences (see the member
+  // doc for why settings changes apply at the next launch). Wired into every
+  // toolbox binding (interactive + headless) and into layout restore.
+  source_cache_store_ = SourceCacheStore::fromSettings(SourceCacheStore::loadSettings());
+  source_capture_service_ = std::make_unique<SourceCaptureService>(*source_cache_store_);
+#endif
   connect(ui_->leftPanel, &LeftPanel::streamingRecordToggled, this, &MainWindow::onRecordToggled);
   connect(recording_service_.get(), &RecordingService::started, this, &MainWindow::onRecordingStarted);
   connect(recording_service_.get(), &RecordingService::stopped, this, &MainWindow::onRecordingStopped);
@@ -6440,9 +6452,14 @@ std::unique_ptr<LayoutImportBatch> MainWindow::makeLayoutImportBatch(bool intera
   // + the per-job max_transfer_bytes enforcement channel); the configurable
   // cap is future preferences work.
   constexpr std::uint64_t kLayoutImportMaxTransferBytes = 0;
+#ifdef __EMSCRIPTEN__
+  SourceCaptureService* capture_service = nullptr;  // no on-disk cache in the browser
+#else
+  SourceCaptureService* capture_service = source_capture_service_.get();
+#endif
   return std::make_unique<LayoutImportBatch>(
-      session_->sessionManager(), session_->extensionCatalog(), *file_loader_, session_->catalogModel(), interactive,
-      kLayoutImportMaxTransferBytes, std::move(hooks));
+      session_->sessionManager(), session_->extensionCatalog(), *file_loader_, session_->catalogModel(),
+      capture_service, interactive, kLayoutImportMaxTransferBytes, std::move(hooks));
 }
 
 void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source) {
@@ -9295,6 +9312,12 @@ void MainWindow::launchToolbox(
   ingest_deps.catalog = &session_->extensionCatalog();
   ingest_deps.ingest_taps = session_->sessionManager().ingestTapsShared();
   ingest_deps.register_object_parser = makeObjectParserRegistrar(session_->sessionManager());
+#ifndef __EMSCRIPTEN__
+  // M3: capture this binding's delegated downloads into the source cache and
+  // attach the SourceRecord layout save persists (plugin_id is the catalog's
+  // stable toolbox id — the unspoofable provider identity).
+  wireSourceCapture(ingest_deps, source_capture_service_.get(), plugin_id.toStdString(), session_->sessionManager());
+#endif
 
   session->host = std::make_unique<ToolboxRuntimeHost>(
       session_->sessionManager().dataEngine(), session_->sessionManager().objectStore(), *session->settings,

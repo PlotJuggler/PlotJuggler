@@ -3,8 +3,10 @@
 
 #include "pj_runtime/SourceCacheStore.h"
 
+#include <QSettings>
 #include <QStandardPaths>
 #include <QString>
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <fstream>
@@ -96,6 +98,38 @@ std::filesystem::path SourceCacheStore::defaultRoot() {
     base_path = std::filesystem::temp_directory_path() / "plotjuggler";
   }
   return base_path / "source_cache";
+}
+
+namespace {
+constexpr auto kCacheDirectoryKey = "Preferences::source_cache_directory";
+constexpr auto kCacheBudgetKey = "Preferences::source_cache_budget_gb";
+// Preferences scrubber range; a hand-edited .ini cannot arm a petabyte cache.
+constexpr int kMinBudgetGb = 1;
+constexpr int kMaxBudgetGb = 1000;
+}  // namespace
+
+SourceCacheStore::Settings SourceCacheStore::loadSettings() {
+  QSettings settings;
+  Settings loaded;
+  loaded.directory = settings.value(QString::fromLatin1(kCacheDirectoryKey)).toString();
+  loaded.budget_gb = std::clamp(
+      settings.value(QString::fromLatin1(kCacheBudgetKey), loaded.budget_gb).toInt(), kMinBudgetGb, kMaxBudgetGb);
+  return loaded;
+}
+
+void SourceCacheStore::saveSettings(const Settings& settings) {
+  QSettings store;
+  store.setValue(QString::fromLatin1(kCacheDirectoryKey), settings.directory);
+  store.setValue(QString::fromLatin1(kCacheBudgetKey), settings.budget_gb);
+}
+
+std::unique_ptr<SourceCacheStore> SourceCacheStore::fromSettings(const Settings& settings) {
+  const std::filesystem::path root = settings.directory.trimmed().isEmpty()
+                                         ? defaultRoot()
+                                         : std::filesystem::path(settings.directory.toStdU16String());
+  const auto budget =
+      static_cast<std::uintmax_t>(std::clamp(settings.budget_gb, kMinBudgetGb, kMaxBudgetGb)) * 1'000'000'000ull;
+  return std::make_unique<SourceCacheStore>(root, budget);
 }
 
 std::filesystem::path SourceCacheStore::pathFor(std::string_view identity) const {

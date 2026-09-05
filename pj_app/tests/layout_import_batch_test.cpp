@@ -22,19 +22,30 @@
 #include <QStringList>
 #include <QTemporaryDir>
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "FileLoader.h"
 #include "LayoutImportBatch.h"
 #include "LayoutXml.h"
+#include "ToolboxHostWiring.h"
+#include "dataset_test_helpers.h"
 #include "pj_base/diagnostic_sink.hpp"
+#include "pj_base/sdk/data_source_patterns.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/McapRecordingWriter.h"
+#include "pj_runtime/PluginRuntimeCatalog.h"
+#include "pj_runtime/RecordingFormat.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/SourceCacheStore.h"
+#include "pj_runtime/SourceCaptureService.h"
 #include "support/fake_import_provider.h"
 #include "support/loader_test_support.h"
 using namespace Qt::StringLiterals;
@@ -52,6 +63,57 @@ using pj_app_test::pumpUntil;
 constexpr const char* kMockPluginName = "Mock File Source";
 constexpr const char* kMockManifestId = "mock-file-source";
 
+// A statically registered file source claiming ".mcap", so a host-cache
+// artifact can be loaded through the real FileLoader in-process (the real
+// MCAP loader is an external plugin). Content-agnostic: writes one record.
+constexpr const char* kStaticMcapPluginName = "Static MCAP Source";
+constexpr const char* kStaticMcapManifestId = "static-mcap-source";
+
+// Test knob: a true makes every StaticMcapSource import fail, modelling a
+// cached artifact the stock loader cannot ingest (the quarantine trigger).
+std::atomic<bool> g_static_mcap_fail{false};
+
+class StaticMcapSource : public PJ::FileSourceBase {
+ public:
+  uint64_t extraCapabilities() const override {
+    return PJ::kCapabilityDirectIngest;
+  }
+  std::string saveConfig() const override {
+    return config_;
+  }
+  PJ::Status loadConfig(std::string_view config_json) override {
+    config_ = std::string(config_json);
+    return PJ::okStatus();
+  }
+  PJ::Status importData() override {
+    if (g_static_mcap_fail.load()) {
+      return PJ::unexpected("static mcap source instructed to fail");
+    }
+    auto topic = writeHost().ensureTopic("cache/data");
+    if (!topic) {
+      return PJ::unexpected(topic.error());
+    }
+    return writeHost().appendRecord(*topic, PJ::Timestamp{100}, {{.name = "value", .value = 1.0}});
+  }
+
+ private:
+  std::string config_ = "{}";
+};
+
+[[nodiscard]] const PJ_data_source_vtable_t* staticMcapVtable() {
+  static const PJ_data_source_vtable_t* vt = PJ::DataSourcePluginBase::vtableWithCreate(
+      []() noexcept -> void* {
+        try {
+          return new StaticMcapSource();
+        } catch (...) {
+          return nullptr;
+        }
+      },
+      R"({"id":"static-mcap-source","name":"Static MCAP Source","version":"1.0.0",)"
+      R"("file_extensions":[".mcap"]})");
+  return vt;
+}
+
 // ---------------------------------------------------------------------------
 // Layout-document builder
 // ---------------------------------------------------------------------------
@@ -61,6 +123,10 @@ struct SourceSpec {
   QString descriptor;  // empty = plain source (no <materialize>)
   QString provider = QString::fromUtf8(kProviderId);
   QString identity = u"id-1"_s;  // <materialize identity>
+  // The <plugin> the stock loader replays with (host-cache-hit tests point it
+  // at the static ".mcap" source below).
+  QString plugin_name = QString::fromUtf8(kMockPluginName);
+  QString plugin_manifest = QString::fromUtf8(kMockManifestId);
 };
 
 [[nodiscard]] QDomDocument makeLayoutDoc(const QList<SourceSpec>& specs) {
@@ -75,8 +141,8 @@ struct SourceSpec {
     QDomElement file_info = doc.createElement(u"fileInfo"_s);
     file_info.setAttribute(u"filename"_s, spec.filename);
     QDomElement plugin = doc.createElement(u"plugin"_s);
-    plugin.setAttribute(u"ID"_s, QString::fromUtf8(kMockPluginName));
-    plugin.setAttribute(u"manifest_id"_s, QString::fromUtf8(kMockManifestId));
+    plugin.setAttribute(u"ID"_s, spec.plugin_name);
+    plugin.setAttribute(u"manifest_id"_s, spec.plugin_manifest);
     PJ::layout_xml::appendJsonAsCdata(doc, plugin, u"{}"_s);
     file_info.appendChild(plugin);
     if (!spec.descriptor.isEmpty()) {
@@ -130,6 +196,16 @@ class LayoutImportBatchTest : public ::testing::Test {
     app_session_ = std::make_unique<PJ::AppSession>(extensions_dir_.path());
     ASSERT_FALSE(app_session_->extensionCatalog().findSourcesForExtension(u".mock"_s).empty());
     ASSERT_TRUE(app_session_->extensionCatalog().pluginCatalog().registerStaticToolbox(&kFakeVtable));
+    PJ::StaticPluginSet static_plugins;
+    static_plugins.data_sources.emplace_back(staticMcapVtable());
+    ASSERT_TRUE(app_session_->extensionCatalog().pluginCatalog().registerStaticPlugins(static_plugins));
+    ASSERT_FALSE(app_session_->extensionCatalog().findSourcesForExtension(u".mcap"_s).empty());
+
+    // The M3 host cache every batch of this fixture consults (empty unless a
+    // test publishes into it, so the pre-existing scenarios are unaffected).
+    ASSERT_TRUE(cache_dir_.isValid());
+    cache_store_ = std::make_unique<PJ::SourceCacheStore>(std::filesystem::path(cache_dir_.path().toStdU16String()));
+    capture_service_ = std::make_unique<PJ::SourceCaptureService>(*cache_store_);
 
     loader_ = std::make_unique<PJ::FileLoader>(
         app_session_->sessionManager(), app_session_->extensionCatalog(), app_session_->catalogModel());
@@ -147,6 +223,7 @@ class LayoutImportBatchTest : public ::testing::Test {
     g_log.clear();
     g_instance = nullptr;
     g_next_dataset_id.store(101);
+    g_static_mcap_fail.store(false);
   }
 
   void TearDown() override {
@@ -185,7 +262,7 @@ class LayoutImportBatchTest : public ::testing::Test {
     hooks.diagnostics = [this](const PJ::Diagnostic& diagnostic) { diagnostics_.push_back(diagnostic); };
     batch_ = std::make_unique<PJ::LayoutImportBatch>(
         app_session_->sessionManager(), app_session_->extensionCatalog(), *loader_, app_session_->catalogModel(),
-        interactive, max_transfer_bytes, std::move(hooks));
+        capture_service_.get(), interactive, max_transfer_bytes, std::move(hooks));
     finished_count_ = 0;
     QObject::connect(batch_.get(), &PJ::LayoutImportBatch::finished, batch_.get(), [this]() { ++finished_count_; });
     return *batch_;
@@ -230,9 +307,45 @@ class LayoutImportBatchTest : public ::testing::Test {
         loaded.begin(), loaded.end(), [&path](const auto& src) { return PJ::layout_xml::isSamePath(src.path, path); });
   }
 
+  // Publishes a manifest-valid single-message capture artifact for
+  // (provider, descriptor) into the host cache, releasing the publish pin.
+  void publishArtifact(const QString& provider, const QString& descriptor) {
+    const std::string identity = PJ::sourceCacheIdentity(provider.toStdString(), descriptor.toStdString());
+    auto txn = cache_store_->beginPublish(identity);
+    ASSERT_TRUE(txn.has_value());
+    PJ::McapRecordingWriter writer;
+    ASSERT_TRUE(writer.open(txn->partialPath(), PJ::RecordingInfo{}).has_value());
+    auto channel = writer.addChannel(
+        PJ::RecordedBinding{.topic = "/imu", .encoding = "raw", .type_name = "t", .schema_bytes = {}});
+    ASSERT_TRUE(channel.has_value());
+    const uint8_t payload[] = {1, 2, 3};
+    ASSERT_TRUE(writer.write(*channel, 100, {payload, 3}).has_value());
+    PJ::RecordingSummary summary;
+    QJsonObject topics;
+    topics.insert(u"/imu"_s, 1);
+    const QJsonObject body{
+        {u"version"_s, static_cast<int>(PJ::kCaptureManifestVersion)},
+        {u"provider_id"_s, provider},
+        {u"identity"_s, QString::fromStdString(identity)},
+        {u"attests_empty_topics"_s, false},
+        {u"requested_topic_messages"_s, topics},
+        {u"total_messages"_s, 1},
+    };
+    summary.extra_metadata.emplace_back(
+        std::string(PJ::kCaptureMetadataName), QJsonDocument(body).toJson(QJsonDocument::Compact).toStdString());
+    ASSERT_TRUE(writer.close(summary).has_value());
+    auto pinned = cache_store_->publish(identity, std::move(*txn));
+    ASSERT_TRUE(pinned.has_value());
+    published_artifact_path_ = QString::fromStdU16String(pinned->path.u16string());
+  }
+
   QTemporaryDir extensions_dir_;
   QTemporaryDir data_dir_;
+  QTemporaryDir cache_dir_;
   std::unique_ptr<PJ::AppSession> app_session_;
+  std::unique_ptr<PJ::SourceCacheStore> cache_store_;
+  std::unique_ptr<PJ::SourceCaptureService> capture_service_;
+  QString published_artifact_path_;
   std::unique_ptr<PJ::FileLoader> loader_;
   std::unique_ptr<PJ::LayoutImportBatch> batch_;
 
@@ -930,6 +1043,128 @@ TEST_F(LayoutImportBatchTest, QualifierRemapMatchesSerializedAndResolvedSavedPat
   ASSERT_TRUE(runToFinish(batch));
   ASSERT_EQ(batch.result().sources.size(), 1);
   EXPECT_EQ(batch.result().sources[0].outcome, Outcome::kResolvedCacheHit);
+}
+
+// ---------------------------------------------------------------------------
+// M3 host-cache-first restore.
+// ---------------------------------------------------------------------------
+
+// A published capture artifact restores through the STOCK loader alone: no
+// provider is consulted (the provider here does not even exist), the record
+// is attached for the next layout save, and the produced dataset holds a
+// read pin on the artifact until it is removed. The layout deliberately
+// names the MOCK plugin — an artifact is always a standard MCAP, so the
+// host-cache hit must build its own extension-driven hints instead of
+// requiring the layout's original (mismatched) plugin identity.
+TEST_F(LayoutImportBatchTest, HostCacheHitRestoresWithoutProviderAndPinsTheArtifact) {
+  const QString provider = u"absent.cloud.provider"_s;
+  const QString descriptor = uR"({"kind":"k","request":{},"v":1})"_s;
+  publishArtifact(provider, descriptor);
+
+  QDomDocument doc = makeLayoutDoc({SourceSpec{u"/saved/cached.mcap"_s, descriptor, provider, u"any-identity"_s}});
+  PJ::LayoutImportBatch& batch = prepareBatch(doc, /*interactive=*/false);
+
+  // The document now describes the artifact the restore will load.
+  EXPECT_EQ(fileInfoFilenames(doc), (QStringList{published_artifact_path_}));
+  EXPECT_EQ(batch.pendingSourceLines(), (QStringList{published_artifact_path_}));
+  // No provider was needed, so no provider-unavailable degrade fired.
+  EXPECT_EQ(diagnosticCount("layout-import-provider-unavailable"), 0);
+
+  ASSERT_TRUE(runToFinish(batch));
+  ASSERT_EQ(batch.result().sources.size(), 1);
+  EXPECT_EQ(batch.result().sources[0].outcome, Outcome::kResolvedCacheHit)
+      << batch.result().sources[0].message.toStdString();
+  // The mismatched plugin naming neither failed the load nor destroyed the
+  // artifact (the F5 regression: hint mismatch must not trigger quarantine).
+  EXPECT_TRUE(QFileInfo::exists(published_artifact_path_));
+
+  const PJ::DatasetId dataset = datasetForPath(published_artifact_path_);
+  ASSERT_NE(dataset, 0u);
+  const PJ::SourceRecord* record = app_session_->sessionManager().sourceRecord(dataset);
+  ASSERT_NE(record, nullptr);
+  EXPECT_EQ(record->provider_id, provider);
+  EXPECT_EQ(record->descriptor_json, descriptor);
+  EXPECT_EQ(
+      record->source_identity,
+      QString::fromStdString(PJ::sourceCacheIdentityDigest(provider.toStdString(), descriptor.toStdString())));
+
+  // The dataset's pin blocks quarantine/eviction; removing the dataset
+  // releases it.
+  const std::string identity = PJ::sourceCacheIdentity(provider.toStdString(), descriptor.toStdString());
+  std::string reason;
+  EXPECT_FALSE(cache_store_->quarantine(identity, &reason)) << "pinned artifact must not be evictable: " << reason;
+  app_session_->sessionManager().removeDataset(dataset);
+  EXPECT_TRUE(cache_store_->quarantine(identity, &reason)) << reason;
+}
+
+// A cached artifact whose stock load genuinely fails is quarantined and the
+// source falls back to the live provider import, so a stale cache never
+// blocks a restore — and the corrective document rewrite repoints the
+// fileInfo filename + path qualifiers from the quarantined cache path at the
+// provider's effective path, so path-tier binding works after the fallback.
+TEST_F(LayoutImportBatchTest, FailedHostCacheLoadQuarantinesAndFallsBackToProvider) {
+  const QString miss_target = data_dir_.filePath(u"missing.mock"_s);
+  const QString descriptor = makeDescriptor(u"s1"_s, u"trusted"_s, miss_target);
+  const QString provider = QString::fromUtf8(kProviderId);
+  publishArtifact(provider, descriptor);
+  g_static_mcap_fail.store(true);  // the artifact load fails inside the plugin
+
+  QDomDocument doc = makeLayoutDoc({SourceSpec{u"/saved/cached.mcap"_s, descriptor, provider}});
+  PJ::LayoutImportBatch& batch = prepareBatch(doc, /*interactive=*/false);
+  // prepare() pointed the document at the cache artifact.
+  EXPECT_EQ(fileInfoFilenames(doc), (QStringList{published_artifact_path_}));
+  ASSERT_TRUE(runToFinish(batch));
+
+  ASSERT_EQ(batch.result().sources.size(), 1);
+  EXPECT_EQ(batch.result().sources[0].outcome, Outcome::kResolvedImported)
+      << batch.result().sources[0].message.toStdString();
+  EXPECT_EQ(diagnosticCount("layout-import-cache-load-failed"), 1);
+  // The artifact was quarantined: the next resolve is an absent miss.
+  std::string miss;
+  EXPECT_FALSE(capture_service_->resolve(provider.toStdString(), descriptor.toStdString(), &miss).has_value());
+  EXPECT_FALSE(QFileInfo::exists(published_artifact_path_));
+  // Corrective rewrite: the document no longer references the quarantined
+  // path — filename and qualifiers now name the provider's effective path.
+  EXPECT_EQ(fileInfoFilenames(doc), (QStringList{miss_target}));
+  EXPECT_EQ(curveDatasetPaths(doc), (QStringList{miss_target}));
+}
+
+// The REAL wireSourceCapture handler, driven from a worker thread the way a
+// toolbox release does: it must attach the SourceRecord AND register the
+// published artifact as the dataset's saveable backing file (source path +
+// loadedSources entry) — the inputs the layout-save walk serializes into a
+// <fileInfo> + <materialize>, i.e. what makes a captured download survive a
+// layout save (F1).
+TEST_F(LayoutImportBatchTest, WireSourceCaptureRegistersPublishedDownloadForLayoutSave) {
+  const PJ::DatasetId dataset = pj_test::createDataset(*app_session_, "cloud-download");
+  ASSERT_NE(dataset, 0u);
+  const QString artifact = makeMockFile(u"captured.mcap"_s);  // a real file: paths are normalized on store
+
+  PJ::ToolboxRuntimeHost::ParserIngestDeps deps;
+  PJ::wireSourceCapture(deps, capture_service_.get(), "cloud.provider", app_session_->sessionManager());
+  ASSERT_EQ(deps.capture_service, capture_service_.get());
+  ASSERT_EQ(deps.capture_provider_id, "cloud.provider");
+  ASSERT_TRUE(deps.on_capture_finalized);
+
+  const std::string descriptor = R"({"kind":"k","request":{},"v":1})";
+  std::thread release_thread([&]() {
+    deps.on_capture_finalized(
+        dataset, "cloud.provider", descriptor, "sha256/128:feed", /*published=*/true, /*refusal_reason=*/"",
+        std::filesystem::path(artifact.toStdU16String()));
+  });
+  release_thread.join();
+  ASSERT_TRUE(pumpUntil([&]() { return app_session_->sessionManager().sourceRecord(dataset) != nullptr; }));
+
+  const PJ::SourceRecord* record = app_session_->sessionManager().sourceRecord(dataset);
+  ASSERT_NE(record, nullptr);
+  EXPECT_EQ(record->provider_id, u"cloud.provider"_s);
+  EXPECT_EQ(record->source_identity, u"sha256/128:feed"_s);
+  EXPECT_EQ(record->descriptor_json, QString::fromStdString(descriptor));
+  EXPECT_TRUE(PJ::layout_xml::isSamePath(app_session_->sessionManager().datasetSourcePath(dataset), artifact));
+  const auto& loaded = app_session_->sessionManager().loadedSources();
+  EXPECT_TRUE(std::any_of(loaded.begin(), loaded.end(), [&artifact](const auto& src) {
+    return PJ::layout_xml::isSamePath(src.path, artifact);
+  }));
 }
 
 }  // namespace

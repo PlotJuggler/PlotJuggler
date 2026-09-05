@@ -6,8 +6,10 @@
 #error "SourceCacheStore is desktop-only (no persistent disk in the browser)"
 #endif
 
+#include <QString>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -74,6 +76,22 @@ class SourceCacheStore {
   /// `<AppLocalDataLocation>/source_cache` — the cache's own folder, distinct
   /// from the recordings folder (C6).
   [[nodiscard]] static std::filesystem::path defaultRoot();
+
+  /// The user-facing configuration (Preferences), mirroring
+  /// RecordingService::Settings. The owner constructs the store from it ONCE
+  /// at startup — a changed folder/budget takes effect on the next launch,
+  /// because live captures hold the store they were armed against.
+  struct Settings {
+    QString directory;   ///< empty = defaultRoot()
+    int budget_gb = 10;  ///< decimal GB, clamped on load to 1..1000
+  };
+  /// QSettings keys: Preferences::source_cache_directory,
+  /// Preferences::source_cache_budget_gb (clamped on load).
+  [[nodiscard]] static Settings loadSettings();
+  static void saveSettings(const Settings& settings);
+  /// A store built from `settings` (empty directory = defaultRoot()).
+  /// unique_ptr because the store is not movable (the SDK cache is not).
+  [[nodiscard]] static std::unique_ptr<SourceCacheStore> fromSettings(const Settings& settings);
 
   /// The artifact path `identity` would occupy; empty for an empty identity.
   /// Takes no position on existence.

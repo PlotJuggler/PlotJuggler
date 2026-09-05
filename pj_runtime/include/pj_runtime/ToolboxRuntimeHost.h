@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -28,6 +29,7 @@ class MessageParserHandle;
 class ObjectIngestTapRegistry;
 class ObjectStore;
 class ServiceRegistryBuilder;
+class SourceCaptureService;
 
 // Host-side runner for a Toolbox plugin — the toolbox sibling of
 // DataSourceRuntimeHost. Owns the host implementations of the services a
@@ -95,6 +97,31 @@ class ToolboxRuntimeHost {
     // (forward to SessionManager::registerObjectTopicParser). May be invoked
     // from a toolbox worker thread.
     std::function<void(ObjectTopicId, std::unique_ptr<MessageParserHandle>)> register_object_parser;
+
+    // M3 source capture (desktop only; a null service disables it). When set —
+    // together with the bound plugin's stable manifest id, which the capture
+    // uses as the UNSPOOFABLE provider identity — every parser-ingest context
+    // is armed for capture at creation and finalized by its own lifecycle:
+    // release evaluates the publication gate (commit), discard and host
+    // teardown abort the capture, and a host-side stop refuses publication.
+    // A capture never outlives its context, so a re-created context for the
+    // same dataset starts a fresh capture generation.
+    SourceCaptureService* capture_service = nullptr;
+    std::string capture_provider_id;
+    // Fired on the RELEASE caller's thread (a plugin worker) after the capture
+    // decision, and only when the released ingest is record-worthy: a source
+    // record was attached, the terminal was COMPLETED, no veto and no host
+    // stop. `source_identity` is sourceCacheIdentityDigest(provider,
+    // descriptor); `published` reports the cache decision (`refusal_reason`
+    // says why not) and `artifact_path` names the published artifact (native
+    // encoding; empty when publication was refused) so the shell can register
+    // it as the dataset's saveable backing file. The callback owns
+    // marshalling to the GUI thread.
+    std::function<void(
+        DatasetId dataset, const std::string& provider_id, const std::string& descriptor_json,
+        const std::string& source_identity, bool published, const std::string& refusal_reason,
+        const std::filesystem::path& artifact_path)>
+        on_capture_finalized;
   };
 
   // The 4-arg overload (no parser-ingest deps) delegates to the 5-arg one —
@@ -189,6 +216,18 @@ class ToolboxRuntimeHost {
   // loads use — catalog lookup, classifySchema, ObjectStore registration,
   // render-parser registrar — on a toolbox-created dataset.
   std::unordered_map<uint32_t, std::unique_ptr<DataSourceRuntimeHost>> parser_ingests_;
+  // One armed source capture per live parser-ingest context (see
+  // ParserIngestDeps::capture_service). Same key and lock as parser_ingests_;
+  // a slot never outlives its context (captures are torn down first on every
+  // path, including the destructor's sweep). Opaque here so this header stays
+  // buildable where SourceCaptureService is not (wasm).
+  struct CaptureSlot;
+  std::unordered_map<uint32_t, std::unique_ptr<CaptureSlot>> captures_;
+  // Release-path halves of the capture lifecycle, defined in the cpp:
+  // finalizeCapture commits (release), abortCapture discards. Both run on the
+  // caller's thread with `host` still alive and its producers quiesced.
+  void finalizeCapture(uint32_t data_source_id, std::unique_ptr<CaptureSlot> slot, DataSourceRuntimeHost& host);
+  static void abortCapture(std::unique_ptr<CaptureSlot> slot);
   // Progress bookkeeping shared with the hooks installed on a context's
   // DataSourceRuntimeHost. `total` backs on_ingest_progress; `last_flush` is
   // touched only on the plugin's ingest thread (single progress caller per

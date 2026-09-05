@@ -3,6 +3,8 @@
 
 #include "pj_runtime/SourceCaptureService.h"
 
+#include <QByteArrayView>
+#include <QCryptographicHash>
 #include <limits>
 #include <mcap/reader.hpp>
 #include <mutex>
@@ -32,6 +34,16 @@ std::string sourceCacheIdentity(std::string_view provider_id, std::string_view d
   identity += '|';
   identity += descriptor_json;
   return identity;
+}
+
+std::string sourceCacheIdentityDigest(std::string_view provider_id, std::string_view descriptor_json) {
+  const std::string identity = sourceCacheIdentity(provider_id, descriptor_json);
+  const QByteArray digest =
+      QCryptographicHash::hash(
+          QByteArrayView(identity.data(), static_cast<qsizetype>(identity.size())), QCryptographicHash::Sha256)
+          .toHex()
+          .left(32);
+  return "sha256/128:" + std::string(digest.constData(), static_cast<std::size_t>(digest.size()));
 }
 
 namespace {

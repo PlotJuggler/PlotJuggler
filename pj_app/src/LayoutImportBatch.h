@@ -33,6 +33,7 @@ namespace PJ {
 class CatalogModel;
 class ExtensionCatalogService;
 class SessionManager;
+class SourceCaptureService;
 
 // Owner of ONE layout-restore import transaction (spec §6.2): for every
 // <fileInfo> that carries a <materialize> record, it runs the
@@ -121,9 +122,15 @@ class LayoutImportBatch : public QObject {
   // ceiling): a miss whose estimated_bytes exceeds it needs interactive
   // confirmation, or fails outright when non-interactive; the value is also
   // passed to every import job as its enforcement channel.
+  // `capture_service` (nullable; desktop only) enables the M3 cache-first
+  // restore: prepare() consults the host source cache BEFORE any provider
+  // contact, a hit loads the pinned artifact through the stock loader with no
+  // network, no trust prompt and no provider plugin required, and an artifact
+  // whose load fails is quarantined and re-planned through the provider.
   LayoutImportBatch(
       SessionManager& session_manager, ExtensionCatalogService& extensions, FileLoader& loader, CatalogModel& catalog,
-      bool interactive, std::uint64_t max_transfer_bytes, Hooks hooks, QObject* parent = nullptr);
+      SourceCaptureService* capture_service, bool interactive, std::uint64_t max_transfer_bytes, Hooks hooks,
+      QObject* parent = nullptr);
   ~LayoutImportBatch() override;
 
   LayoutImportBatch(const LayoutImportBatch&) = delete;
@@ -224,6 +231,14 @@ class LayoutImportBatch : public QObject {
     // §6.4 stock degrade (provider absent / invalid descriptor / failed
     // query): classify against the saved path with the layout's own hints.
     bool provider_fallback = false;
+    // M3 host-cache hit: effective_path is the pinned cache artifact, loaded
+    // with no provider contact. The pin (a SourceCacheStore::Pinned behind an
+    // opaque pointer, so this header builds where that type does not) keeps
+    // the artifact un-evictable until the produced datasets take their own
+    // copy at loadCommitting; a failed load quarantines and re-plans through
+    // the provider (handleHostCacheLoadFailure).
+    bool host_cache_hit = false;
+    std::shared_ptr<void> host_cache_pin;
   };
 
   // One entry per LIVE dataset, captured at prepare(): the identity key of
@@ -247,9 +262,26 @@ class LayoutImportBatch : public QObject {
   HeadlessDescriptorProviderSession* sessionFor(const QString& provider_id);
   // §6.2 steps 1-3 (+ trust/limit gating) for planned_[index], recording the
   // document rewrites in the two remap accumulators for the post-loop passes.
+  // Consults the host source cache (capture_service_) BEFORE the provider.
   void planSource(
       const layout_xml::DataSourceRef& ref, std::size_t index, QHash<QString, QString>& fileinfo_remap,
       QHash<QString, QString>& qualifier_remap);
+  // The provider half of planSource (§6.2 steps 2-7: query, rewrite, trust,
+  // classify). Null remap maps skip the document rewrite — the post-quarantine
+  // re-plan runs after prepare() consumed the document, so its rewrites can no
+  // longer land (binding then degrades to the record/topic tiers).
+  void planViaProvider(
+      std::size_t index, QHash<QString, QString>* fileinfo_remap, QHash<QString, QString>* qualifier_remap);
+  // Launches the stock ticketed load of a Plan::kHit source (start(), and the
+  // post-quarantine re-plan). On a rejected ticket: host-cache hits route to
+  // handleHostCacheLoadFailure, everything else fails the source.
+  void startHitLoad(std::size_t index);
+  // A host-cache artifact failed to load: release the pin, quarantine the
+  // artifact (the service's resolve rules) and fall back to the live provider
+  // by re-planning this ONE source through planViaProvider. A re-plan that
+  // needs the interactive trust confirmation fails instead — the batch's one
+  // consolidated prompt has already passed.
+  void handleHostCacheLoadFailure(std::size_t index);
   // Records the steps-4/5 document rewrite for `ref` -> `target`. The
   // fileInfo filename remaps by its SERIALIZED value; the *_dataset_path
   // qualifiers may hold ANY of three forms of the saved path — the
@@ -302,6 +334,7 @@ class LayoutImportBatch : public QObject {
   ExtensionCatalogService& extensions_;
   FileLoader& loader_;
   CatalogModel& catalog_;
+  SourceCaptureService* const capture_service_;  ///< nullable: no host cache
   const bool interactive_;
   const std::uint64_t max_transfer_bytes_;
   Hooks hooks_;
@@ -309,6 +342,10 @@ class LayoutImportBatch : public QObject {
   State state_ = State::kIdle;
   std::vector<PlannedSource> planned_;
   BatchResult result_;
+  // Shared handle onto the caller's layout document (set by prepare) so the
+  // post-quarantine provider fallback can apply its corrective path remap
+  // through the same mechanism as prepare()'s two passes.
+  QDomDocument doc_;
 
   std::vector<LoadedCandidate> loaded_candidates_;
 

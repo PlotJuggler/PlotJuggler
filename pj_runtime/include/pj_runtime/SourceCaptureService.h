@@ -30,6 +30,12 @@ class DataSourceRuntimeHost;
 /// re-serializing the same request must emit identical descriptor bytes.
 [[nodiscard]] std::string sourceCacheIdentity(std::string_view provider_id, std::string_view descriptor_json);
 
+/// Short digest of sourceCacheIdentity() ("sha256/128:" + 32 hex chars) — the
+/// value a dataset-level SourceRecord / layout <materialize identity> carries
+/// for a host-captured source. A FAST-PATH key only: consumers must confirm
+/// the full descriptor bytes before trusting a match.
+[[nodiscard]] std::string sourceCacheIdentityDigest(std::string_view provider_id, std::string_view descriptor_json);
+
 /// The versioned completion manifest a published artifact carries inside its
 /// MCAP (`pj.capture` metadata): everything a later restore needs to validate
 /// the artifact against a layout's source record without a provider call.
