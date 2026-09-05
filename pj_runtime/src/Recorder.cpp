@@ -52,6 +52,7 @@ class Recorder::BudgetReservation {
     }
     std::lock_guard lock(recorder_.mu_);
     recorder_.queued_bytes_ -= cost_;
+    recorder_.space_cv_.notify_all();
   }
 
   /// The item is in the queue: the writer refunds the charge when it drains it.
@@ -222,14 +223,24 @@ TapVerdict Recorder::enqueueMessage(
   const uint64_t queued_size = queuedCost(bytes.size());
   uint32_t logical_channel = 0;
   {
-    std::lock_guard lock(mu_);
+    std::unique_lock lock(mu_);
     if (state_ != State::kRunning) {
       return TapVerdict::kStopRecording;  // never started, or stopped/truncated under us
+    }
+    if (options_.overflow_policy == RecorderOptions::OverflowPolicy::kBlock) {
+      space_cv_.wait(lock, [this, queued_size] {
+        return state_ != State::kRunning || queued_bytes_ == 0 ||
+               (queued_size <= options_.queue_budget_bytes &&
+                queued_bytes_ <= options_.queue_budget_bytes - queued_size);
+      });
+      if (state_ != State::kRunning) {
+        return TapVerdict::kStopRecording;
+      }
     }
     // The channel opens before the message is weighed, so a binding whose
     // every message is too big still names its topic in the file.
     logical_channel = channelFor(binding_id, binding);
-    if (!makeRoomFor(queued_size)) {
+    if (options_.overflow_policy == RecorderOptions::OverflowPolicy::kDropLargest && !makeRoomFor(queued_size)) {
       ++dropped_messages_;
       // The recording lost a message, not its tap: dropping IS the policy
       // working, so the source keeps feeding the ones that follow.
@@ -283,6 +294,7 @@ void Recorder::truncate(std::string_view reason, const char* detail) noexcept {
     }
   }
   items_cv_.notify_all();
+  space_cv_.notify_all();
 }
 
 void Recorder::writerLoop() noexcept {
@@ -322,6 +334,7 @@ void Recorder::drainQueue() {
       }
       queue_.pop_front();
     }
+    space_cv_.notify_all();
 
     if (auto* add = std::get_if<std::unique_ptr<ChannelAdd>>(&*item)) {
       auto channel = sink_->addChannel((*add)->binding);
@@ -348,7 +361,21 @@ void Recorder::drainQueue() {
   }
 }
 
+void Recorder::requestStop() {
+  {
+    std::lock_guard lock(mu_);
+    if (state_ != State::kRunning) {
+      return;
+    }
+    state_ = State::kStopping;
+    drain_and_exit_ = true;
+  }
+  items_cv_.notify_all();
+  space_cv_.notify_all();
+}
+
 RecordingSummary Recorder::stop(std::string terminal_cause) {
+  requestStop();
   {
     std::unique_lock lock(mu_);
     if (state_ == State::kIdle) {
@@ -362,12 +389,7 @@ RecordingSummary Recorder::stop(std::string terminal_cause) {
       return summary_;
     }
     stop_entered_ = true;
-    if (state_ == State::kRunning) {
-      state_ = State::kStopping;  // a recording that already truncated keeps that terminal state
-    }
-    drain_and_exit_ = true;
   }
-  items_cv_.notify_all();
   if (writer_.joinable()) {
     writer_.join();
   }

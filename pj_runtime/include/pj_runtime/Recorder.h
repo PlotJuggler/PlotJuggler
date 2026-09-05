@@ -27,24 +27,30 @@
 namespace PJ {
 
 struct RecorderOptions {
+  enum class OverflowPolicy { kDropLargest, kBlock };
+
   std::filesystem::path path;
-  /// Queued bytes the recorder holds before it starts dropping: each message's
+  /// Queued bytes the recorder holds before overflow handling: each message's
   /// payload plus the item carrying it. Not an RSS cap — channel-add strings and
-  /// allocator overhead go uncounted. A message whose own cost exceeds the whole
-  /// budget can never fit, so it is never recorded.
+  /// allocator overhead and the writer's in-flight message go uncounted.
+  /// kBlock admits one oversized message when no other message is queued or
+  /// being copied; a large frame must not deadlock or disappear from a capture.
   uint64_t queue_budget_bytes = 64ull << 20;
   RecordingInfo info;
+  OverflowPolicy overflow_policy = OverflowPolicy::kDropLargest;
 };
 
 /// One recording: producers (source push threads, through the taps handed out
 /// by tapFor) enqueue channel-adds and messages; ONE writer thread drains them
-/// into the sink in order. A producer NEVER waits for the writer: when a
+/// into the sink in order. The default live-stream policy never waits: when a
 /// message does not fit the byte budget, the largest of {queued messages,
 /// incoming message} is discarded until it does. So a sink that cannot keep up
 /// costs fidelity, never ingest speed, and never ends the recording — the user
 /// decides when it stops. Drops are counted (RecordingStats::dropped_messages)
 /// and leave holes, never reorderings: whatever survives still drains FIFO, so
 /// each channel keeps its log-time order.
+/// Download captures opt into kBlock: producers wait for queue space instead
+/// of dropping. requestStop(), stop(), and sink failures wake those waiters.
 ///
 /// Every piece of shared state sits under the one mutex, mu_, which is never
 /// held across a sink call, the payload copy or the writer join; the sink is
@@ -94,6 +100,13 @@ class Recorder : public std::enable_shared_from_this<Recorder> {
   /// — calls become no-ops returning kStopRecording. Throws std::bad_weak_ptr
   /// if this Recorder is not owned by a std::shared_ptr.
   [[nodiscard]] std::shared_ptr<RecordTap> tapFor();
+
+  /// Stops admission and wakes blocked producers without waiting for disk I/O.
+  /// On cancellation, call before joining a download's producer thread; merely
+  /// detaching its tap cannot wake a call already in progress. stop() must still
+  /// drain and close the sink. A stopped recorder alone proves no source coverage:
+  /// cache publication also requires successful, uncancelled source completion.
+  void requestStop();
 
   /// Drains what is queued, closes the sink, joins the writer, and returns the
   /// final summary. Required after a truncation too — that is what closes the
@@ -222,8 +235,9 @@ class Recorder : public std::enable_shared_from_this<Recorder> {
   /// marked writer-thread only.
   mutable std::mutex mu_;
   /// The writer waits here for items or drain_and_exit_; a stop() that raced
-  /// the first one waits here for summary_published_. Nothing waits for space.
+  /// the first one waits here for summary_published_.
   std::condition_variable items_cv_;
+  std::condition_variable space_cv_;  ///< kBlock producers wait for refunds or the end of admission
   Queue queue_;
   SizeIndex size_index_;       ///< queued messages only, since adds are never evicted
   uint64_t queued_bytes_ = 0;  ///< queuedCost() of every queued message plus outstanding reservations

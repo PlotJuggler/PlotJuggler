@@ -25,6 +25,7 @@
 // No MCAP_IMPLEMENTATION here: pj_runtime carries the single implementation TU.
 #include <mcap/reader.hpp>
 
+#include "pj_runtime/McapRecordingWriter.h"
 #include "pj_runtime/RecordingFormat.h"
 #include "pj_runtime/RecordingService.h"
 #include "recording_test_utils.h"
@@ -179,6 +180,40 @@ class RecordingPipelineTest : public PJ::test::RuntimeHostFixture {
   PJ::test::IsolatedQtSettings settings_{u"PlotJugglerRecordingPipelineTest"_s, u"RecordingPipelineTest"_s};
   QTemporaryDir recordings_dir_;
 };
+
+TEST_F(RecordingPipelineTest, LosslessCaptureRoundTripsMessagesLargerThanItsQueueBudget) {
+  const QString path = recordings_dir_.filePath(u"download.mcap"_s);
+  PJ::RecorderOptions options;
+  options.path = std::filesystem::path(path.toStdU16String());
+  options.queue_budget_bytes = 1;
+  options.overflow_policy = PJ::RecorderOptions::OverflowPolicy::kBlock;
+  options.info.source_plugin_id = kPluginId;
+  auto recorder = std::make_shared<PJ::Recorder>(std::make_unique<PJ::McapRecordingWriter>(), options);
+  ASSERT_TRUE(recorder->start());
+  host->setRecordTap(recorder->tapFor());
+  const auto binding = bindTopic("/download");
+  constexpr uint64_t kMessages = 100;
+  for (uint64_t sequence = 0; sequence < kMessages; ++sequence) {
+    push(binding, static_cast<PJ::Timestamp>(sequence), std::vector<uint8_t>(512, static_cast<uint8_t>(sequence)));
+  }
+  host->setRecordTap(nullptr);
+  const auto summary = recorder->stop(std::string(PJ::kTerminalCauseSourceEnded));
+  EXPECT_FALSE(summary.truncated);
+  EXPECT_FALSE(summary.file_incomplete);
+  EXPECT_EQ(summary.messages, kMessages);
+  EXPECT_EQ(summary.dropped_messages, 0u);
+  EXPECT_EQ(host->recordTapSkippedLazy(), 0u);
+
+  const auto recorded = readAll(path);
+  ASSERT_EQ(recorded.messages.size(), kMessages);
+  for (uint64_t sequence = 0; sequence < kMessages; ++sequence) {
+    const auto& message = recorded.messages[sequence];
+    EXPECT_EQ(message.topic, "/download");
+    EXPECT_EQ(message.log_time, sequence);
+    EXPECT_EQ(message.bytes, std::vector<uint8_t>(512, static_cast<uint8_t>(sequence)));
+  }
+  EXPECT_EQ(objectEntryCount("/download"), kMessages);
+}
 
 // The "press Record mid-stream" path: /before was subscribed and pushing long
 // before the recording started, /during appears while it runs.

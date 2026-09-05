@@ -65,7 +65,7 @@ plugin ──────────────► DataSourceRuntimeHost ─�
 | Component | Module | Role |
 |---|---|---|
 | `RecordTap` | `pj_runtime` | One callback on the push path. Non-owning views, call-lifetime. A relaxed atomic makes the no-tap case free. |
-| `Recorder` | `pj_runtime` | Per-source queue + writer thread. Overflow policy is a mode: drop-largest for live streams (§3.3); block for captures (planned, §3.4). |
+| `Recorder` | `pj_runtime` | Per-source queue + writer thread. Overflow policy is a mode: drop-largest for live streams (§3.3); opt-in blocking for captures (§3.4). |
 | `McapRecordingWriter` | `pj_runtime` | Checked file sink (exclusive create, errno latched, fsync before close), schema dedup, per-channel sequences, `pj.recording` metadata at open and close. |
 | `RecordingService` | `pj_runtime` | One Record press = N recorders, one file per source in one batch folder; transactional start, synchronous stop, one result per press. |
 | `SourceCacheStore` (planned) | `pj_runtime` | Cache root, index (identity → path, size, hash, last hit), cross-process lock, LRU eviction that skips pinned artifacts. |
@@ -96,6 +96,12 @@ plugin ──────────────► DataSourceRuntimeHost ─�
   installed. A **miss** is today's trust-gated import, silently captured.
 - Captures are **lossless**: the push thread blocks at budget instead of dropping. A download is the one case
   where a little speed is worth a guaranteed artifact.
+  `RecorderOptions::OverflowPolicy::kBlock` supplies this queue behavior. It admits one oversized message
+  only when no other message is queued or being copied; the writer's in-flight message is outside the queue
+  budget. Cancellation calls `requestStop()` before joining producers, then `stop()` drains and finalizes.
+  Sink failures also release waiting producers. The capture service must still verify successful transport,
+  full topic coverage, no cancellation or lazy skips, and a clean recorder summary before cache publication;
+  a structurally valid MCAP footer alone does not establish completion.
 - Validation on a hit is cheap (present, size matches, footer intact); a loader failure evicts the entry and falls
   back to a download once. The **index is authoritative**; the artifact stays a plain recording.
 - Eviction pins are host-internal (an artifact is never evicted while a dataset reads it). No lease ids cross the

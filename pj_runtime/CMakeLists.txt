@@ -133,6 +133,7 @@ if(PJ_BUILD_TESTS)
         GTest::gtest_main
     )
     add_test(NAME recorder_test COMMAND recorder_test)
+    set_tests_properties(recorder_test PROPERTIES TIMEOUT 60)
 
     if(NOT EMSCRIPTEN)
         add_executable(mcap_recording_writer_test

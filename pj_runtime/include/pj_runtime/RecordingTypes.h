@@ -47,8 +47,8 @@ struct RecordingSummary {
   bool file_incomplete = false;
   uint64_t messages = 0;
   uint64_t payload_bytes = 0;  ///< message payloads written, NOT the file size
-  /// Messages the queue's byte budget forced out, the largest losing first, so
-  /// a message bigger than the whole budget is never recorded. Distinct from
+  /// Messages the live-stream policy forced out, the largest losing first.
+  /// Blocking captures never drop for budget pressure. Distinct from
   /// the skipped count a recording's owner reports: skipped never reached the
   /// recorder, dropped was evicted once it had. Each drop is a hole in its
   /// channel, never a reordering.

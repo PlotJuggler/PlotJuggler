@@ -102,7 +102,9 @@ none, and a second recording over the same live source opens its own channels.
 
 `parser_bindings_` is unsynchronized by design (one push thread per source), which is exactly why the tap is
 called there — no GUI-thread walk of that map. The tap must not introduce a second thread on that path: it
-enqueues (or drops, see §5) and returns, never waiting for the writer. Taps **co-own** the recorder (`shared_ptr`, handed out by `Recorder::tapFor`), so a push thread
+enqueues (or drops, see §5) and returns without waiting for a live recording. Explicit download captures may
+wait for queue space instead. Their owner calls `requestStop()` before joining a cancelled producer; detaching
+a tap alone does not unblock an in-flight call. Taps **co-own** the recorder (`shared_ptr`, handed out by `Recorder::tapFor`), so a push thread
 already inside `onMessage` can never meet a destroyed recorder; the host holds only the tap, drops it on
 `kStopRecording` or on a throw, and releases it outside its own lock so a last-reference `~Recorder` never
 joins the writer thread with push threads queued behind it.
@@ -112,7 +114,7 @@ joins the writer thread with push threads queued behind it.
 One recorder per recorded source (D5); a capture of N sources runs N of them, independently. Owns:
 
 - a **bounded queue** of `{channel_id, log_time, bytes}` (byte-budgeted, default 64 MiB) fed by the tap from
-  N push threads, which sheds its largest messages rather than blocking one when it is full (§5);
+  N push threads, with drop-largest as the live default (§5) and opt-in `kBlock` for lossless downloads;
 - one **writer thread** draining into `McapRecordingWriter` (chunked, zstd, chunk index written per chunk);
 - the channel table: `binding_id → mcap channel id`, opened by a binding's first message — both for
   a late subscription and for a binding that predates the recording, since neither is distinguishable from the
@@ -123,6 +125,12 @@ Lifecycle: `start()` → `Running` → `stop(terminal_cause)` (drain, write summ
 writes, so the file itself says whether the user ended it (`stopped`), its source went away (`source_ended`),
 a failure cut the data short (`truncated`, which always overrides the requested cause) or the app quit
 (`shutdown`).
+
+`requestStop()` ends admission and wakes blocked producers without waiting on the sink. `stop()` remains
+mandatory to drain and close. Blocking mode admits a message larger than its budget when the queue and copy
+reservations are empty, then holds subsequent producers until capacity returns; one in-flight sink write is
+outside this queue budget. Only successful source completion plus zero drops/skips and a clean final summary
+permits future cache publication. Blocking mode does not itself implement the capture service or prove coverage.
 
 ### 4.3 `McapRecordingWriter` (pj_runtime)
 

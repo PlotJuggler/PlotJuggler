@@ -13,6 +13,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <future>
 #include <latch>
 #include <memory>
 #include <mutex>
@@ -848,6 +849,143 @@ TEST(Recorder, MessagesDiscardedAfterAWriteErrorAreNeitherWrittenNorDropped) {
   std::lock_guard lock(sink->mu);
   EXPECT_EQ(sink->writes_entered, 1);
   EXPECT_TRUE(sink->written.empty());
+}
+
+TEST(Recorder, BlockingModeWaitsForSpaceAndPreservesOversizedMessages) {
+  auto owned = std::make_unique<FakeSink>();
+  FakeSink* sink = owned.get();
+  auto opts = options(5000);
+  opts.overflow_policy = PJ::RecorderOptions::OverflowPolicy::kBlock;
+  auto recorder = std::make_shared<PJ::Recorder>(std::move(owned), opts);
+  auto tap = startWithParkedWriter(recorder, sink, bytesOf("primer"));
+  const auto queued = payloadOf(4000, 0x11);
+  const auto oversized = payloadOf(9000, 0x22);
+  EXPECT_EQ(push(tap, 1, "/a", 2, queued), PJ::TapVerdict::kContinue);
+
+  std::promise<void> entered;
+  auto producer = std::async(std::launch::async, [&] {
+    entered.set_value();
+    return push(tap, 1, "/a", 3, oversized);
+  });
+  entered.get_future().wait();
+  // A bounded negative check: the writer is parked, so no capacity can appear.
+  EXPECT_EQ(producer.wait_for(50ms), std::future_status::timeout);
+  sink->release();
+  EXPECT_EQ(producer.wait_for(kHandshakeTimeout), std::future_status::ready);
+  EXPECT_EQ(producer.get(), PJ::TapVerdict::kContinue);
+
+  const auto summary = recorder->stop();
+  EXPECT_FALSE(summary.truncated);
+  EXPECT_EQ(summary.messages, 3u);
+  EXPECT_EQ(summary.payload_bytes, 6u + queued.size() + oversized.size());
+  EXPECT_EQ(summary.dropped_messages, 0u);
+  ASSERT_EQ(sink->written.size(), 3u);
+  EXPECT_EQ(sink->written[1].bytes, queued);
+  EXPECT_EQ(sink->written[2].bytes, oversized);
+  EXPECT_EQ(sink->written[2].ts, 3);
+}
+
+TEST(Recorder, StoppingReleasesBlockedProducersBeforeDiskFinishes) {
+  for (const bool finalize_immediately : {false, true}) {
+    SCOPED_TRACE(finalize_immediately);
+    auto owned = std::make_unique<FakeSink>();
+    FakeSink* sink = owned.get();
+    auto opts = options(5000);
+    opts.overflow_policy = PJ::RecorderOptions::OverflowPolicy::kBlock;
+    auto recorder = std::make_shared<PJ::Recorder>(std::move(owned), opts);
+    auto tap = startWithParkedWriter(recorder, sink, bytesOf("primer"));
+    const auto payload = payloadOf(4000, 0x11);
+    EXPECT_EQ(push(tap, 1, "/a", 2, payload), PJ::TapVerdict::kContinue);
+    std::promise<void> entered;
+    auto producer = std::async(std::launch::async, [&] {
+      entered.set_value();
+      return push(tap, 1, "/a", 3, payload);
+    });
+    entered.get_future().wait();
+    EXPECT_EQ(producer.wait_for(50ms), std::future_status::timeout);
+
+    std::future<PJ::RecordingSummary> stopping;
+    if (finalize_immediately) {
+      stopping = std::async(std::launch::async, [&] { return recorder->stop("cancelled"); });
+    } else {
+      recorder->requestStop();
+      recorder->requestStop();  // request and finalization are both idempotent
+    }
+    // The producer must leave while the sink remains parked, allowing its owner
+    // to join it. Finalization still waits for the actual write to return.
+    EXPECT_EQ(producer.wait_for(kHandshakeTimeout), std::future_status::ready);
+    sink->release();
+    EXPECT_EQ(producer.get(), PJ::TapVerdict::kStopRecording);
+    const auto summary = finalize_immediately ? stopping.get() : recorder->stop("cancelled");
+    EXPECT_FALSE(summary.truncated);
+    EXPECT_EQ(summary.terminal_cause, "cancelled");
+    EXPECT_EQ(summary.messages, 2u);
+    EXPECT_EQ(summary.dropped_messages, 0u);
+    EXPECT_EQ(sink->close_calls, 1);
+  }
+}
+
+TEST(Recorder, SinkFailureReleasesBlockedProducersAndRejectsTheCapture) {
+  auto owned = std::make_unique<FakeSink>();
+  FakeSink* sink = owned.get();
+  auto opts = options(5000);
+  opts.overflow_policy = PJ::RecorderOptions::OverflowPolicy::kBlock;
+  auto recorder = std::make_shared<PJ::Recorder>(std::move(owned), opts);
+  auto tap = startWithParkedWriter(recorder, sink, bytesOf("primer"));
+  const auto payload = payloadOf(4000, 0x11);
+  EXPECT_EQ(push(tap, 1, "/a", 2, payload), PJ::TapVerdict::kContinue);
+  std::promise<void> entered;
+  auto producer = std::async(std::launch::async, [&] {
+    entered.set_value();
+    return push(tap, 1, "/a", 3, payload);
+  });
+  entered.get_future().wait();
+  EXPECT_EQ(producer.wait_for(50ms), std::future_status::timeout);
+  sink->failWritesWith("disk full");
+  sink->release();
+  EXPECT_EQ(producer.wait_for(kHandshakeTimeout), std::future_status::ready);
+  EXPECT_EQ(producer.get(), PJ::TapVerdict::kStopRecording);
+  const auto summary = recorder->stop();
+  EXPECT_TRUE(summary.truncated);
+  EXPECT_EQ(summary.truncated_reason, "disk full");
+  EXPECT_EQ(summary.messages, 0u);
+  EXPECT_EQ(summary.dropped_messages, 0u);
+}
+
+TEST(Recorder, ConcurrentBlockingProducersPreserveEveryMessageAndChannelOrder) {
+  // A zero budget still admits one message at a time, including its framing.
+  auto opts = options(0);
+  opts.overflow_policy = PJ::RecorderOptions::OverflowPolicy::kBlock;
+  auto owned = std::make_unique<FakeSink>();
+  FakeSink* sink = owned.get();
+  auto recorder = std::make_shared<PJ::Recorder>(std::move(owned), opts);
+  ASSERT_TRUE(recorder->start());
+  constexpr int kProducers = 4;
+  constexpr int kMessages = 250;
+  ScopedThreads producers;
+  for (uint32_t index = 0; index < kProducers; ++index) {
+    producers.threads.emplace_back([recorder, index] {
+      auto tap = recorder->tapFor();
+      const auto payload = payloadOf(300, static_cast<uint8_t>(index));
+      const auto topic = "/topic" + std::to_string(index);
+      for (int sequence = 0; sequence < kMessages; ++sequence) {
+        EXPECT_EQ(push(tap, index, topic, sequence, payload), PJ::TapVerdict::kContinue);
+      }
+    });
+  }
+  producers.join();
+  const auto summary = recorder->stop();
+  EXPECT_FALSE(summary.truncated);
+  EXPECT_EQ(summary.messages, kProducers * kMessages);
+  EXPECT_EQ(summary.payload_bytes, 300u * kProducers * kMessages);
+  EXPECT_EQ(summary.dropped_messages, 0u);
+  ASSERT_EQ(sink->channels.size(), kProducers);
+  std::vector<int64_t> next_timestamp(kProducers, 0);
+  for (const auto& message : sink->written) {
+    ASSERT_GE(message.channel, 1u);
+    ASSERT_LE(message.channel, kProducers);
+    EXPECT_EQ(message.ts, next_timestamp[message.channel - 1]++);
+  }
 }
 
 }  // namespace

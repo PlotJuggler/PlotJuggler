@@ -21,8 +21,9 @@ struct RecordedBindingView {
 
 /// Observer of one source's delegated ingest, invoked INLINE on that source's
 /// push thread by DataSourceRuntimeHost. It must not parse, must not touch
-/// datastore state, and must not wait on anything: an implementation takes a
-/// copy or drops the message. Messages of one source arrive in order; different
+/// datastore state, or block a live stream. A download owner may explicitly
+/// select lossless backpressure; it must release blocked calls before joining
+/// its producer (Recorder::requestStop). Messages of one source arrive in order; different
 /// sources call from different threads concurrently.
 class RecordTap {
  public:
