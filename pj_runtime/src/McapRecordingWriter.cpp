@@ -382,6 +382,15 @@ Status McapRecordingWriter::close(const RecordingSummary& summary) {
   mcap::Status written;
   try {
     written = impl_->writer.write(recordingMetadata(impl_->info, &summary));
+    for (const auto& [name, json] : summary.extra_metadata) {
+      if (!written.ok()) {
+        break;
+      }
+      mcap::Metadata extra;
+      extra.name = name;
+      extra.metadata = {{"json", json}};
+      written = impl_->writer.write(extra);
+    }
     impl_->writer.close();
   } catch (...) {
     // The footer is lost either way; what matters is that ~McapWriter finds
@@ -396,6 +405,25 @@ Status McapRecordingWriter::close(const RecordingSummary& summary) {
   }
   if (!impl_->sink.error().empty()) {
     return unexpected("recording finalize failed: " + impl_->sink.error());
+  }
+  return okStatus();
+}
+
+Status forEachMcapMetadata(
+    mcap::McapReader& reader, std::string_view name, const std::function<void(const mcap::Metadata&)>& on_record) {
+  for (const auto& [record_name, index] : reader.metadataIndexes()) {
+    if (std::string_view(record_name) != name) {
+      continue;
+    }
+    mcap::Record record{};
+    if (!mcap::McapReader::ReadRecord(*reader.dataSource(), index.offset, &record).ok()) {
+      return unexpected(std::string("unreadable metadata record: ") + std::string(name));
+    }
+    mcap::Metadata metadata;
+    if (!mcap::McapReader::ParseMetadata(record, &metadata).ok()) {
+      return unexpected(std::string("unparseable metadata record: ") + std::string(name));
+    }
+    on_record(metadata);
   }
   return okStatus();
 }

@@ -162,6 +162,11 @@ class ToolboxRuntimeHost {
   static bool onCreateParserIngest(
       void* ctx, uint32_t data_source_id, PJ_data_source_runtime_host_t* out_host, PJ_error_t* out_error) noexcept;
   static bool onReleaseParserIngest(void* ctx, uint32_t data_source_id, PJ_error_t* out_error) noexcept;
+  // The rollback twin of release (SDK 0.30 discard_parser_ingest): destroy the
+  // context WITHOUT flushing its writers and report no completed-import marker,
+  // so a vetoed download leaves neither rows nor a focus event behind. Dataset
+  // rollback itself stays with the owning ingest transaction. Idempotent.
+  static bool onDiscardParserIngest(void* ctx, uint32_t data_source_id, PJ_error_t* out_error) noexcept;
 
   DatastoreToolboxHost write_host_;
   DatastoreToolboxObjectReadHost read_host_;

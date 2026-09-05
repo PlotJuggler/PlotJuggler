@@ -4,11 +4,24 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 
 #include "pj_runtime/RecordingSink.h"
 
+namespace mcap {
+class McapReader;
+struct Metadata;
+}  // namespace mcap
+
 namespace PJ {
+
+/// Scan an open reader (summary already read) for every metadata record named
+/// `name`, invoking `on_record` per match in file order. Returns an error only
+/// for an unreadable/unparseable record — zero matches is a successful no-op.
+/// The one shared implementation of the index→ReadRecord→ParseMetadata walk.
+Status forEachMcapMetadata(
+    mcap::McapReader& reader, std::string_view name, const std::function<void(const mcap::Metadata&)>& on_record);
 
 /// RecordingSink over mcap::McapWriter. One MCAP channel per binding, one
 /// schema per distinct (type_name, encoding, schema_bytes); 1 MiB zstd chunks.

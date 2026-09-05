@@ -86,7 +86,7 @@ plugin ──────────────► DataSourceRuntimeHost ─�
   rebuilds the index).
 - The file at Stop **is the product**: the live source keeps running; the recording is opened like any MCAP.
 
-### 3.4 Source cache (planned)
+### 3.4 Source cache
 
 - **Host-driven and transparent.** The provider states once, at download start, "this dataset is request X"
   (`attach_source_record(dataset, identity, descriptor_json)` — the single SDK addition). The host does the rest:
@@ -108,6 +108,15 @@ plugin ──────────────► DataSourceRuntimeHost ─�
   ABI, so no artifact lifetime can depend on a plugin DSO staying loaded.
 - The cache has its **own folder and budget**, separate from the recordings folder: recordings are user files and
   are never evicted; the cache is disposable.
+- **As built:** `SourceCacheStore` (storage: leases, pin-then-validate, publish, quarantine, budget) +
+  `SourceCaptureService` (capture: the counting tap over a lossless recorder, the publication gate, the
+  `pj.capture` completion manifest embedded in the artifact, and cache-first `resolve()`), gated by the SDK 0.30
+  completion contract (`attach_source_record` + `complete_ingest` implemented on `DataSourceRuntimeHost`;
+  `discard_parser_ingest` on `ToolboxRuntimeHost`). Publication requires the full gate — an explicit COMPLETED
+  terminal with declared-topic coverage (zero-message topics only under the empty-topic attestation flag),
+  a committed transaction, no cancellation, no latched callback failures, no pure-lazy skips, and a clean
+  recorder close. Remaining for M3: layout record + cache-first restore wiring + Preferences (PR 3), and the
+  provider-side attachment/completion in Mosaico (PR 4).
 
 ## 4. Decisions and accepted trade-offs
 

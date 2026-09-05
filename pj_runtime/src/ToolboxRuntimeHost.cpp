@@ -39,9 +39,10 @@ ToolboxRuntimeHost::ToolboxRuntimeHost(
       object_store_(object_store),
       parser_ingest_deps_(std::move(parser_ingest)),
       runtime_vtable_{
-          PJ_TOOLBOX_PLUGIN_PROTOCOL_VERSION,        sizeof(PJ_toolbox_runtime_host_vtable_t),
-          &ToolboxRuntimeHost::onReportMessage,      &ToolboxRuntimeHost::onNotifyDataChanged,
-          &ToolboxRuntimeHost::onCreateParserIngest, &ToolboxRuntimeHost::onReleaseParserIngest,
+          PJ_TOOLBOX_PLUGIN_PROTOCOL_VERSION,         sizeof(PJ_toolbox_runtime_host_vtable_t),
+          &ToolboxRuntimeHost::onReportMessage,       &ToolboxRuntimeHost::onNotifyDataChanged,
+          &ToolboxRuntimeHost::onCreateParserIngest,  &ToolboxRuntimeHost::onReleaseParserIngest,
+          &ToolboxRuntimeHost::onDiscardParserIngest,
       },
       runtime_{this, &runtime_vtable_} {}
 
@@ -440,6 +441,46 @@ bool ToolboxRuntimeHost::onReleaseParserIngest(void* ctx, uint32_t data_source_i
     return parserIngestFail(out_error, e.what());
   } catch (...) {
     return parserIngestFail(out_error, "unknown exception in release_parser_ingest");
+  }
+}
+
+bool ToolboxRuntimeHost::onDiscardParserIngest(void* ctx, uint32_t data_source_id, PJ_error_t* out_error) noexcept {
+  auto* self = static_cast<ToolboxRuntimeHost*>(ctx);
+  if (self == nullptr) {
+    return parserIngestFail(out_error, "invalid arguments");
+  }
+  try {
+    std::unique_ptr<DataSourceRuntimeHost> victim;
+    std::shared_ptr<IngestProgress> progress;
+    uint64_t claimed_word = 0;
+    {
+      std::lock_guard lock(self->parser_ingest_mu_);
+      auto it = self->parser_ingests_.find(data_source_id);
+      if (it == self->parser_ingests_.end()) {
+        return true;  // idempotent
+      }
+      victim = std::move(it->second);
+      self->parser_ingests_.erase(it);
+      if (auto pit = self->ingest_progress_.find(data_source_id); pit != self->ingest_progress_.end()) {
+        progress = pit->second;
+        claimed_word = claimIngestFinish(*progress);
+      }
+      // Also retract the create-time marker: a discarded dataset must not be
+      // reported as a completed bulk import on the next notify.
+      auto& pending = self->pending_ingest_datasets_;
+      pending.erase(std::remove(pending.begin(), pending.end(), static_cast<DatasetId>(data_source_id)), pending.end());
+    }
+    // The whole point of discard: NO flushAll — pending rows die with the
+    // writers, and no completed-import marker is queued for the shell.
+    victim.reset();
+    if (progress != nullptr && claimed_word != 0) {
+      self->postIngestFinished(static_cast<DatasetId>(data_source_id), progress, claimed_word);
+    }
+    return true;
+  } catch (const std::exception& e) {
+    return parserIngestFail(out_error, e.what());
+  } catch (...) {
+    return parserIngestFail(out_error, "unknown exception in discard_parser_ingest");
   }
 }
 

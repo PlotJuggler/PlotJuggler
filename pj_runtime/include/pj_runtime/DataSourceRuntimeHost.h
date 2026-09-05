@@ -17,6 +17,7 @@
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/dataset.hpp"
 #include "pj_base/expected.hpp"
+#include "pj_base/sdk/ingest_completion.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/plugin_data_host.hpp"
 #include "pj_plugins/sdk/object_ingest_policy.hpp"
@@ -121,8 +122,67 @@ class DataSourceRuntimeHost {
   // encoding and may never change what ingest does.
   void setRecordTap(std::shared_ptr<RecordTap> tap);
 
+  // Detaches `tap` unless a newer one was installed meanwhile — the
+  // conditional clear an owner uses so it never removes someone else's tap
+  // (the slot is shared by the session recorder and the capture service).
+  void dropRecordTap(const std::shared_ptr<RecordTap>& tap);
+
   /// Messages a tap could not see because their payload was fetched lazily off the push thread.
   [[nodiscard]] uint64_t recordTapSkippedLazy() const noexcept;
+
+  // ---- Source-capture surface (SDK 0.30 completion contract) ----
+  // This host instance IS the ingest generation: attach/completion state binds
+  // to it and dies with it, so a stale terminal can never bless a replacement
+  // ingest on the same dataset id. All three accessors are meaningful once
+  // ingest has stopped (the stream thread wrote them; read after joining).
+
+  /// The canonical request descriptor the source attached (attach_source_record):
+  /// stored verbatim, last attachment before the first push wins. nullopt when
+  /// the source never attached — such an ingest is simply not cacheable.
+  [[nodiscard]] std::optional<std::string> sourceRecordDescriptor() const;
+
+  /// The terminal the source reported through complete_ingest, already
+  /// validated and copied (fail-closed shapes never land here). nullopt when
+  /// no terminal arrived — which also means not cacheable.
+  [[nodiscard]] std::optional<sdk::IngestCompletionRecord> ingestCompletion() const;
+
+  /// Why this ingest can never publish a capture (empty = no veto): a
+  /// malformed or conflicting completion, an attach after ingest began or
+  /// after sealing. Vetoes are permanent for this context.
+  [[nodiscard]] std::string captureVetoReason() const;
+
+  /// Callback failures fail() recorded (rejected pushes, parser bind errors,
+  /// failed payload fetches). The plugin may have recovered and ingest may
+  /// have succeeded — but the recorded bytes then disagree with the ingested
+  /// dataset, so a capture gate requires zero.
+  [[nodiscard]] uint64_t ingestCallbackFailures() const noexcept {
+    return ingest_callback_failures_.load(std::memory_order_relaxed);
+  }
+
+  /// Messages whose bytes were offered to the record tap (eager pushes with a
+  /// successful fetch), counted whether or not a tap was installed. A capture
+  /// gate compares its own ledger against this, so a tap that was dropped
+  /// mid-stream (a throw, kStopRecording) surfaces as a count mismatch
+  /// instead of a silent hole.
+  [[nodiscard]] uint64_t tapEligibleMessages() const noexcept {
+    return tap_eligible_messages_.load(std::memory_order_relaxed);
+  }
+
+  /// Hook fired on the stream thread, outside the capture lock, after a
+  /// source record was accepted and stored (attach_source_record):
+  /// (descriptor bytes, replaced an earlier attachment). The capture service
+  /// uses it to open its cache transaction the moment the identity is known.
+  /// Setter and invocation are internally synchronized (snapshot-then-call,
+  /// like the record tap), so any thread may set or clear it; a call already
+  /// snapshotted may still run after clearing — the hook's own captures must
+  /// keep whatever they touch alive (capture by weak_ptr, not raw pointer).
+  void setSourceRecordAttachedHook(std::function<void(std::string_view descriptor, bool replaced)> hook);
+
+  /// Hook fired by BOTH requestStop overloads, any thread, after the flag is
+  /// set: the seam a capture owner uses to wake producers blocked on a
+  /// lossless recorder queue BEFORE anything joins them (#629's ordering).
+  /// Same synchronization and lifetime rules as setSourceRecordAttachedHook.
+  void setStopRequestedHook(std::function<void()> hook);
 
   // Registers SourceWriteHostService + DataSourceRuntimeHostService into the
   // builder used to bind the DataSource plugin. Both are required by the
@@ -273,6 +333,8 @@ class DataSourceRuntimeHost {
   static const char* cbListAvailableEncodings(void* ctx) noexcept;
   static bool cbNotifyAvailableTopics(
       void* ctx, const PJ_available_topic_t* topics, uint64_t count, PJ_error_t* out_error) noexcept;
+  static bool cbAttachSourceRecord(void* ctx, PJ_string_view_t descriptor_json, PJ_error_t* out_error) noexcept;
+  static bool cbCompleteIngest(void* ctx, const PJ_ingest_completion_t* completion, PJ_error_t* out_error) noexcept;
 
   // A-priori classification for one advertised topic: binds the schema against a
   // throwaway parser instance for `topic.parser_encoding` and calls classifySchema
@@ -293,6 +355,11 @@ class DataSourceRuntimeHost {
   // The plugin decides whether the failure is fatal; a terminal one reaches
   // stopFailure() through requestStop(reason), never through here.
   bool fail(PJ_error_t* out_error, const char* message) noexcept;
+
+  // fail() without the ingest-failure latch: a refused ATTACHMENT only means
+  // "no caching" and must not poison the capture gate — the provider can
+  // correct it and re-attach before the first push.
+  bool rejectAttachment(PJ_error_t* out_error, const std::string& message) noexcept;
 
   // One parser binding owned by the host. Destruction order is load-bearing:
   // the parser may flush pending writes through `write_host` when destroyed,
@@ -421,8 +488,7 @@ class DataSourceRuntimeHost {
   [[nodiscard]] bool hasRecordTap() const noexcept {
     return record_tap_active_.load(std::memory_order_relaxed);
   }
-  // Detaches `tap` unless a newer one was installed meanwhile.
-  void dropRecordTap(const std::shared_ptr<RecordTap>& tap);
+
   // Hands the tap one message plus a view of its binding; a tap that throws or
   // returns kStopRecording is detached here.
   void recordMessage(
@@ -447,6 +513,27 @@ class DataSourceRuntimeHost {
   // function return.
   std::string available_encodings_cache_;
   bool flushed_ = false;
+
+  // ---- capture state (see the public accessors). One mutex: these are
+  // control-plane calls (once per download), never the per-message path.
+  // ingest_begun_ is the attach-ordering fact ("a push happened"), written
+  // relaxed on the push path and only ever read under capture_mu_.
+  mutable std::mutex capture_mu_;
+  std::optional<std::string> source_record_;
+  std::optional<sdk::IngestCompletionRecord> completion_;
+  std::string capture_veto_;
+  std::atomic<bool> ingest_begun_{false};
+  /// Relaxed mirror of "completion_ has a value" for the push path (same
+  /// stream thread per the ABI contract; the atomic keeps a misbehaving
+  /// multi-threaded plugin defined rather than racy).
+  std::atomic<bool> ingest_sealed_{false};
+  std::atomic<uint64_t> ingest_callback_failures_{0};
+  std::atomic<uint64_t> tap_eligible_messages_{0};
+  /// Guards ONLY the two hook slots below; every invocation runs on a copy
+  /// taken under it, never inside it.
+  mutable std::mutex hooks_mu_;
+  std::function<void(std::string_view, bool)> on_source_record_attached_;
+  std::function<void()> on_stop_requested_;
 };
 
 }  // namespace PJ

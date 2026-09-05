@@ -112,6 +112,8 @@ if(NOT EMSCRIPTEN)
     target_sources(pj_runtime PRIVATE
         src/McapRecordingWriter.cpp
         include/pj_runtime/McapRecordingWriter.h
+        src/SourceCaptureService.cpp
+        include/pj_runtime/SourceCaptureService.h
     )
 endif()
 
@@ -486,6 +488,24 @@ if(PJ_BUILD_TESTS)
         )
         add_dependencies(recording_pipeline_test runtime_host_object_parser_plugin)
         add_test(NAME RecordingPipelineTest COMMAND recording_pipeline_test)
+
+        # M3 source capture: the completion-contract gate + cache publish +
+        # cache-first resolve, over the same real host/parser fixture.
+        add_executable(source_capture_service_test
+            tests/source_capture_service_test.cpp
+        )
+        target_compile_definitions(source_capture_service_test PRIVATE
+            PJ_RUNTIME_HOST_OBJECT_PARSER_PATH="$<TARGET_FILE:runtime_host_object_parser_plugin>"
+        )
+        target_compile_options(source_capture_service_test PRIVATE ${PJ_WARNING_FLAGS})
+        target_link_libraries(source_capture_service_test PRIVATE
+            pj_runtime
+            mcap::mcap
+            Qt6::Core
+            GTest::gtest_main
+        )
+        add_dependencies(source_capture_service_test runtime_host_object_parser_plugin)
+        add_test(NAME SourceCaptureServiceTest COMMAND source_capture_service_test)
     endif()
 
     # Streaming pause/resume two-engine lockstep, exercised at the

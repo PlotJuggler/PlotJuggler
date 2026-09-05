@@ -374,6 +374,17 @@ void Recorder::requestStop() {
   space_cv_.notify_all();
 }
 
+void Recorder::setExtraMetadata(std::string name, std::string json) {
+  std::lock_guard lock(mu_);
+  for (auto& [existing_name, body] : extra_metadata_) {
+    if (existing_name == name) {
+      body = std::move(json);
+      return;
+    }
+  }
+  extra_metadata_.emplace_back(std::move(name), std::move(json));
+}
+
 RecordingSummary Recorder::stop(std::string terminal_cause) {
   requestStop();
   {
@@ -408,6 +419,7 @@ RecordingSummary Recorder::stop(std::string terminal_cause) {
     summary.dropped_messages = dropped_messages_;
     summary.truncated = state_ == State::kTruncated;
     summary.truncated_reason = truncated_reason_;
+    summary.extra_metadata = extra_metadata_;
   }
   if (summary.truncated) {
     // A recording that lost data ended for that reason, whatever the caller

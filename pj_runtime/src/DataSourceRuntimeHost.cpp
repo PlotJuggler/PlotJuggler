@@ -11,9 +11,11 @@
 #include <exception>
 #include <functional>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <utility>
 #include <vector>
 
+#include "pj_base/sdk/descriptor_import/source_descriptor.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_datastore/engine.hpp"
@@ -255,6 +257,8 @@ const PJ_data_source_runtime_host_vtable_t DataSourceRuntimeHost::kVtable = {
     .list_available_encodings = &DataSourceRuntimeHost::cbListAvailableEncodings,
     .push_message = &DataSourceRuntimeHost::cbPushMessage,
     .notify_available_topics = &DataSourceRuntimeHost::cbNotifyAvailableTopics,
+    .attach_source_record = &DataSourceRuntimeHost::cbAttachSourceRecord,
+    .complete_ingest = &DataSourceRuntimeHost::cbCompleteIngest,
 };
 
 // ---------------------------------------------------------------------------
@@ -340,10 +344,26 @@ void DataSourceRuntimeHost::requestStop(std::string_view reason) {
     }
   }
   stop_requested_.store(true);
+  std::function<void()> stop_hook;
+  {
+    std::lock_guard<std::mutex> lock(hooks_mu_);
+    stop_hook = on_stop_requested_;
+  }
+  if (stop_hook) {
+    stop_hook();
+  }
 }
 
 void DataSourceRuntimeHost::requestStop() {
   stop_requested_.store(true);
+  std::function<void()> stop_hook;
+  {
+    std::lock_guard<std::mutex> lock(hooks_mu_);
+    stop_hook = on_stop_requested_;
+  }
+  if (stop_hook) {
+    stop_hook();
+  }
 }
 
 std::string DataSourceRuntimeHost::stopFailure() const {
@@ -406,7 +426,24 @@ void DataSourceRuntimeHost::setDataEngineTarget(DataEngine* target) {
   }
 }
 
+void DataSourceRuntimeHost::setSourceRecordAttachedHook(std::function<void(std::string_view, bool)> hook) {
+  std::lock_guard<std::mutex> lock(hooks_mu_);
+  on_source_record_attached_ = std::move(hook);
+}
+
+void DataSourceRuntimeHost::setStopRequestedHook(std::function<void()> hook) {
+  std::lock_guard<std::mutex> lock(hooks_mu_);
+  on_stop_requested_ = std::move(hook);
+}
+
+bool DataSourceRuntimeHost::rejectAttachment(PJ_error_t* out_error, const std::string& message) noexcept {
+  last_error_ = message;
+  sdk::fillError(out_error, 1, "pj.runtime.ingest", last_error_);
+  return false;
+}
+
 bool DataSourceRuntimeHost::fail(PJ_error_t* out_error, const char* message) noexcept {
+  ingest_callback_failures_.fetch_add(1, std::memory_order_relaxed);
   last_error_ = message;
   sdk::fillError(out_error, 1, "pj.runtime.ingest", last_error_);
   return false;
@@ -825,8 +862,12 @@ bool DataSourceRuntimeHost::cbPushMessage(
     PJ_error_t* out_error) noexcept {
   auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
   auto fetcher_owner = std::make_shared<FetcherOwner>(fetch_message_data, self->library_keepalive_);
+  self->ingest_begun_.store(true, std::memory_order_relaxed);
 
   try {
+    if (self->ingest_sealed_.load(std::memory_order_relaxed)) {
+      return self->fail(out_error, "push after ingest completion: the context is sealed");
+    }
     auto it = self->parser_bindings_.find(handle.id);
     if (it == self->parser_bindings_.end()) {
       return self->fail(out_error, "invalid parser binding handle");
@@ -890,6 +931,9 @@ bool DataSourceRuntimeHost::cbPushMessage(
       fetched = fetcher_owner->fetcher.fetchMessageData(fetcher_owner->fetcher.ctx, &payload, out_error);
     }
     if (!fetched) {
+      // The fetcher populated out_error itself; still latch the failure —
+      // a capture whose bytes were never produced must not publish.
+      self->ingest_callback_failures_.fetch_add(1, std::memory_order_relaxed);
       return false;
     }
 
@@ -903,6 +947,7 @@ bool DataSourceRuntimeHost::cbPushMessage(
       return self->fail(out_error, "message data fetcher returned null data");
     }
 
+    self->tap_eligible_messages_.fetch_add(1, std::memory_order_relaxed);
     // The session recorder sees the plugin's raw bytes, before any decoding.
     // The binding travels with the message, so a recording started mid-stream
     // gets a channel for every topic that keeps producing — including ones
@@ -1089,6 +1134,185 @@ bool DataSourceRuntimeHost::cbNotifyAvailableTopics(
     // Advertising is best-effort informational traffic — never fail the plugin's
     // poll loop over it.
     return true;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Source-capture surface (attach_source_record / complete_ingest)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+#ifndef __EMSCRIPTEN__
+/// The host-generic source-record envelope: `kind` (the provider's request
+/// kind), `v` (its schema version) and `request` (the provider-specific body,
+/// opaque to the host but structurally bounded) define the request identity;
+/// `label` is display-only. Any other top-level field is refused — the
+/// "fully account for" contract of attach_source_record. Semantics inside
+/// `request` stay with the provider.
+const sdk::descriptor_import::SourceDescriptorPolicy& sourceRecordEnvelope() {
+  static const sdk::descriptor_import::SourceDescriptorPolicy policy{
+      .identity_fields = {"kind", "request", "v"},
+      .presentation_fields = {"label"},
+      .identity = {},  // unused: cache identity is byte-exact over the verbatim descriptor
+  };
+  return policy;
+}
+
+/// Credential material never belongs in a request descriptor — a cached
+/// artifact and a layout would persist it. Depth-recursive key denylist as
+/// defense in depth on top of the envelope.
+bool containsCredentialKey(const nlohmann::json& node, std::string* which) {
+  static constexpr std::string_view kDenied[] = {
+      "api_key", "apikey", "token", "password", "secret", "credentials", "authorization", "cert_path",
+  };
+  if (node.is_object()) {
+    for (const auto& [key, value] : node.items()) {
+      for (const auto denied : kDenied) {
+        if (key == denied) {
+          *which = key;
+          return true;
+        }
+      }
+      if (containsCredentialKey(value, which)) {
+        return true;
+      }
+    }
+  } else if (node.is_array()) {
+    for (const auto& value : node) {
+      if (containsCredentialKey(value, which)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+#endif  // !__EMSCRIPTEN__
+
+}  // namespace
+
+std::optional<std::string> DataSourceRuntimeHost::sourceRecordDescriptor() const {
+  std::lock_guard<std::mutex> lock(capture_mu_);
+  return source_record_;
+}
+
+std::optional<sdk::IngestCompletionRecord> DataSourceRuntimeHost::ingestCompletion() const {
+  std::lock_guard<std::mutex> lock(capture_mu_);
+  return completion_;
+}
+
+std::string DataSourceRuntimeHost::captureVetoReason() const {
+  std::lock_guard<std::mutex> lock(capture_mu_);
+  return capture_veto_;
+}
+
+bool DataSourceRuntimeHost::cbAttachSourceRecord(
+    void* ctx, PJ_string_view_t descriptor_json, PJ_error_t* out_error) noexcept {
+  auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
+#ifdef __EMSCRIPTEN__
+  // The browser build has no capture service (and no descriptor_import
+  // support library): refuse without latching, same as any refused record.
+  (void)descriptor_json;
+  return self->rejectAttachment(out_error, "source capture is not available in this build");
+#else
+  try {
+    if (descriptor_json.data == nullptr || descriptor_json.size == 0) {
+      return self->rejectAttachment(out_error, "source record descriptor is empty");
+    }
+    const std::string_view bytes(descriptor_json.data, descriptor_json.size);
+    // Validation failures REFUSE without latching or vetoing: a refused
+    // record only means no caching, and the provider may correct and
+    // re-attach before the first push.
+    auto parsed = sdk::descriptor_import::parseSourceDescriptor(bytes, sourceRecordEnvelope());
+    if (!parsed) {
+      return self->rejectAttachment(out_error, "source record refused: " + parsed.error());
+    }
+    if (!parsed->contains("kind") || !(*parsed)["kind"].is_string() ||
+        (*parsed)["kind"].get_ref<const std::string&>().empty()) {
+      return self->rejectAttachment(out_error, "source record needs a non-empty string 'kind'");
+    }
+    if (!parsed->contains("v") || !(*parsed)["v"].is_number_unsigned()) {
+      return self->rejectAttachment(out_error, "source record needs an unsigned integer 'v'");
+    }
+    if (!parsed->contains("request") || !(*parsed)["request"].is_object()) {
+      return self->rejectAttachment(out_error, "source record needs an object 'request'");
+    }
+    if (std::string credential; containsCredentialKey(*parsed, &credential)) {
+      return self->rejectAttachment(out_error, "source record carries credential-shaped key: " + credential);
+    }
+
+    bool replaced = false;
+    {
+      std::lock_guard<std::mutex> lock(self->capture_mu_);
+      if (self->completion_.has_value()) {
+        self->capture_veto_ = "source record attached after ingest completion";
+        return self->fail(out_error, "attach after completion: the context is sealed");
+      }
+      if (self->ingest_begun_.load(std::memory_order_relaxed)) {
+        if (self->source_record_ == bytes) {
+          return true;  // byte-identical repeat is idempotent, even late
+        }
+        self->capture_veto_ = "source record attached after ingest began";
+        return self->fail(out_error, "attach after the first push is an error");
+      }
+      replaced = self->source_record_.has_value() && *self->source_record_ != bytes;
+      if (self->source_record_ == bytes) {
+        return true;  // idempotent
+      }
+      self->source_record_ = std::string(bytes);  // last attachment before ingest wins
+    }
+    // Outside the lock: user code (the capture service opening its cache
+    // transaction) must never run under capture_mu_.
+    std::function<void(std::string_view, bool)> attached_hook;
+    {
+      std::lock_guard<std::mutex> lock(self->hooks_mu_);
+      attached_hook = self->on_source_record_attached_;
+    }
+    if (attached_hook) {
+      attached_hook(bytes, replaced);
+    }
+    return true;
+  } catch (const std::exception& e) {
+    return self->fail(out_error, e.what());
+  } catch (...) {
+    return self->fail(out_error, "unknown error in attach_source_record");
+  }
+#endif  // __EMSCRIPTEN__
+}
+
+bool DataSourceRuntimeHost::cbCompleteIngest(
+    void* ctx, const PJ_ingest_completion_t* completion, PJ_error_t* out_error) noexcept {
+  auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
+  try {
+    auto copied = sdk::copyIngestCompletion(completion);
+    std::lock_guard<std::mutex> lock(self->capture_mu_);
+    if (!copied) {
+      // Malformed evidence permanently vetoes caching for this context; the
+      // ingest itself is unaffected.
+      self->capture_veto_ = "malformed ingest completion: " + copied.error();
+      return self->fail(out_error, self->capture_veto_.c_str());
+    }
+    if (self->completion_.has_value()) {
+      auto sorted = [](std::vector<std::string> topics) {
+        std::sort(topics.begin(), topics.end());
+        return topics;
+      };
+      const bool identical = self->completion_->outcome == copied->outcome &&
+                             self->completion_->flags == copied->flags &&
+                             sorted(self->completion_->requested_topics) == sorted(copied->requested_topics);
+      if (identical) {
+        return true;  // idempotent repeat before release
+      }
+      self->capture_veto_ = "conflicting ingest terminals reported";
+      return self->fail(out_error, self->capture_veto_.c_str());
+    }
+    self->completion_ = std::move(*copied);
+    self->ingest_sealed_.store(true, std::memory_order_relaxed);
+    return true;
+  } catch (const std::exception& e) {
+    return self->fail(out_error, e.what());
+  } catch (...) {
+    return self->fail(out_error, "unknown error in complete_ingest");
   }
 }
 

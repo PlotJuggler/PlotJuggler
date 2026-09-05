@@ -27,4 +27,13 @@ inline constexpr std::string_view kTerminalCauseShutdown = "shutdown";
 /// Written as the `version` field of every `pj.recording` record.
 inline constexpr uint32_t kRecordingFormatVersion = 1;
 
+/// File-level metadata record holding a source capture's completion manifest
+/// (SourceCaptureService): one JSON document under the record's "json" key
+/// (unlike pj.recording, which uses one key per field — a manifest is a
+/// versioned structured document, not a flat fact list). Present only in
+/// cache artifacts — an ordinary Record-button recording has no completion
+/// to attest.
+inline constexpr std::string_view kCaptureMetadataName = "pj.capture";
+inline constexpr uint32_t kCaptureManifestVersion = 1;
+
 }  // namespace PJ

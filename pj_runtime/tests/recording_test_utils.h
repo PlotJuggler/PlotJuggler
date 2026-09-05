@@ -21,6 +21,7 @@
 // No MCAP_IMPLEMENTATION here: pj_runtime carries the single implementation TU.
 #include <mcap/reader.hpp>
 
+#include "pj_runtime/McapRecordingWriter.h"
 #include "pj_runtime/RecordingFormat.h"
 
 namespace PJ::test {
@@ -30,22 +31,9 @@ namespace PJ::test {
 /// record was never finalized. Requires a summary already read off `reader`.
 inline std::vector<mcap::KeyValueMap> recordingRecords(mcap::McapReader& reader) {
   std::vector<mcap::KeyValueMap> records;
-  for (const auto& [name, index] : reader.metadataIndexes()) {
-    if (std::string_view(name) != kRecordingMetadataName) {
-      continue;
-    }
-    mcap::Record record;
-    if (!mcap::McapReader::ReadRecord(*reader.dataSource(), index.offset, &record).ok()) {
-      ADD_FAILURE() << "unreadable metadata record at offset " << index.offset;
-      continue;
-    }
-    mcap::Metadata metadata;
-    if (!mcap::McapReader::ParseMetadata(record, &metadata).ok()) {
-      ADD_FAILURE() << "unparseable metadata record at offset " << index.offset;
-      continue;
-    }
-    records.push_back(std::move(metadata.metadata));
-  }
+  auto scanned = forEachMcapMetadata(
+      reader, kRecordingMetadataName, [&](const mcap::Metadata& metadata) { records.push_back(metadata.metadata); });
+  EXPECT_TRUE(scanned.has_value()) << (scanned ? "" : scanned.error());
   return records;
 }
 

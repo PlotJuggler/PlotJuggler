@@ -93,6 +93,11 @@ class Recorder : public std::enable_shared_from_this<Recorder> {
   /// recording is left.
   [[nodiscard]] Status start();
 
+  /// Queue a file-level metadata record {name, JSON body} for the sink to
+  /// write on close (RecordingSummary::extra_metadata). Call BEFORE stop();
+  /// last write per name wins. Any thread.
+  void setExtraMetadata(std::string name, std::string json);
+
   /// A tap for this recording's one source. The tap is a thin adapter: it
   /// co-owns the recorder and forwards each message, and the binding→channel
   /// table lives in the recorder (binding ids are per host, and a recorder
@@ -255,7 +260,9 @@ class Recorder : public std::enable_shared_from_this<Recorder> {
   std::unordered_map<uint32_t, uint32_t> channels_;       ///< the source's binding id → logical channel
   std::unordered_map<uint32_t, uint16_t> sink_channels_;  ///< writer thread only: logical → sink id
   RecordingSummary summary_;                              ///< published by stop() or finalizeWithoutWriter()
-  std::thread writer_;                                    ///< created by start(), joined by the first stop()
+  std::vector<std::pair<std::string, std::string>>
+      extra_metadata_;  ///< queued by setExtraMetadata(), copied into summary_ at stop()
+  std::thread writer_;  ///< created by start(), joined by the first stop()
 };
 
 }  // namespace PJ

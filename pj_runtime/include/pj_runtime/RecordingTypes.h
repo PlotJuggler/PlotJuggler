@@ -4,6 +4,8 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace PJ {
 
@@ -53,6 +55,12 @@ struct RecordingSummary {
   /// recorder, dropped was evicted once it had. Each drop is a hole in its
   /// channel, never a reordering.
   uint64_t dropped_messages = 0;
+  /// Additional file-level metadata records the sink writes alongside
+  /// `pj.recording` on close: {record name, JSON body}. The recorder passes
+  /// them through untouched (setExtraMetadata) — how a capture owner embeds
+  /// its completion manifest inside the artifact without the recorder or the
+  /// sink learning capture semantics.
+  std::vector<std::pair<std::string, std::string>> extra_metadata;
 };
 
 /// Live counters for the status label.
