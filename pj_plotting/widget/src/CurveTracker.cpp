@@ -227,7 +227,10 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
       }
     }
 
-    const QColor background_color = theme::overlay(theme::Overlay::Hud, fw_theme);
+    // Canvas colour with alpha: a white veil on the light theme, a dark one on dark,
+    // so the WindowText/curve-colour ink above always reads against it.
+    QColor background_color = plot_->canvasBackground().color();
+    background_color.setAlpha(200);
     marker_text.setBackgroundBrush(background_color);
     marker_text.setBorderPen(QPen(Qt::NoPen));
     marker_text.setText(marker_html);

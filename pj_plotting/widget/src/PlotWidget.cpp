@@ -633,12 +633,12 @@ void PlotWidget::showPointValues(QPoint paint_point) {
 
   if (updated) {
     show_point_marker_->setValue(marker_point);
-    const auto fw_theme = theme::themeFor(QGuiApplication::palette().color(QPalette::Window).lightness() >= 128);
 
     QwtText label;
     label.setText(text);
     label.setBorderPen(QPen(Qt::NoPen));
-    const QColor background = theme::overlay(theme::Overlay::Hud, fw_theme);
+    QColor background = qwtPlot()->canvasBackground().color();
+    background.setAlpha(200);
     label.setBackgroundBrush(background);
     QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     font.setPointSize(9);
