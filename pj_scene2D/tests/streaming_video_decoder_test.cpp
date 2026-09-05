@@ -42,7 +42,8 @@ class StreamingVideoDecoderTest : public ::testing::Test {
  protected:
   void SetUp() override {
     if (!std::filesystem::exists(kTestVideo)) {
-      GTEST_SKIP() << "test_480p.mp4 not found";
+      GTEST_SKIP() << "UNTRACKED FIXTURE test_480p.mp4 — not in the repository, so this suite does NOT run on a clean "
+                      "clone. Generate it per pj_scene2D/testdata/README.md.";
     }
     all_packets_ = test::extractAnnexBPackets(kTestVideo);
     ASSERT_GT(all_packets_.size(), 30u) << "need at least 30 packets";
@@ -700,7 +701,8 @@ const std::string kBframeVideo = "pj_scene2D/testdata/test_1080p_bframes.mp4";
 
 TEST(StreamingVideoDecoderBframeTest, PushWithDtsAndDecode) {
   if (!std::filesystem::exists(kBframeVideo)) {
-    GTEST_SKIP() << "test_1080p_bframes.mp4 not found";
+    GTEST_SKIP() << "UNTRACKED FIXTURE test_1080p_bframes.mp4 — not in the repository, so this suite does NOT run on a "
+                    "clean clone. Generate it per pj_scene2D/testdata/README.md.";
   }
   auto packets = test::extractAnnexBPackets(kBframeVideo);
   ASSERT_GT(packets.size(), 10u);
@@ -746,7 +748,8 @@ TEST(StreamingVideoDecoderBframeTest, PushWithDtsAndDecode) {
 
 TEST(StreamingVideoDecoderBframeTest, LiveStreamWithDts) {
   if (!std::filesystem::exists(kBframeVideo)) {
-    GTEST_SKIP() << "test_1080p_bframes.mp4 not found";
+    GTEST_SKIP() << "UNTRACKED FIXTURE test_1080p_bframes.mp4 — not in the repository, so this suite does NOT run on a "
+                    "clean clone. Generate it per pj_scene2D/testdata/README.md.";
   }
   auto packets = test::extractAnnexBPackets(kBframeVideo);
   ASSERT_GT(packets.size(), 30u);
@@ -773,7 +776,8 @@ TEST(StreamingVideoDecoderBframeTest, LiveStreamWithDts) {
 
 TEST(StreamingVideoDecoderBframeTest, BenchmarkLiveDecodeBframes) {
   if (!std::filesystem::exists(kBframeVideo)) {
-    GTEST_SKIP() << "test_1080p_bframes.mp4 not found";
+    GTEST_SKIP() << "UNTRACKED FIXTURE test_1080p_bframes.mp4 — not in the repository, so this suite does NOT run on a "
+                    "clean clone. Generate it per pj_scene2D/testdata/README.md.";
   }
   auto packets = test::extractAnnexBPackets(kBframeVideo);
   ASSERT_GT(packets.size(), 30u);
@@ -833,7 +837,8 @@ TEST(StreamingVideoDecoderBframeTest, SimulateDemoDualTimer) {
   // Exactly simulates the demo: push at 30Hz, display polls at 60Hz.
   // Measures pushes until first displayed frame.
   if (!std::filesystem::exists(kBframeVideo)) {
-    GTEST_SKIP() << "test_1080p_bframes.mp4 not found";
+    GTEST_SKIP() << "UNTRACKED FIXTURE test_1080p_bframes.mp4 — not in the repository, so this suite does NOT run on a "
+                    "clean clone. Generate it per pj_scene2D/testdata/README.md.";
   }
   auto packets = test::extractAnnexBPackets(kBframeVideo);
   ASSERT_GT(packets.size(), 100u);

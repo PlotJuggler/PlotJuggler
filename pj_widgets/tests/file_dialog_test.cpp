@@ -5,7 +5,9 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QDir>
 #include <QFileDialog>
+#include <QTemporaryDir>
 #include <QTimer>
 
 #include "pj_widgets/FileDialog.h"
@@ -20,10 +22,13 @@ class FileDialogTest : public ::testing::Test {};
 // back to the caller, which is the whole reason the overload exists.
 TEST_F(FileDialogTest, GetSaveFileNameWithOptionsReportsCheckboxState) {
   PJ::FileDialog::ExtraOption opt{u"Save Data Source"_s, /*default_checked=*/true};
+  QTemporaryDir temp;
+  ASSERT_TRUE(temp.isValid());
+  const QString save_path = QDir(temp.path()).filePath(u"_pj4_filedialog_test.pjl4"_s);
 
   // Fire after the modal dialog is up; find the checkbox by its label and
   // toggle it off, then accept by hitting the Save button.
-  QTimer::singleShot(0, [] {
+  QTimer::singleShot(0, [save_path] {
     QWidget* active = QApplication::activeModalWidget();
     ASSERT_NE(active, nullptr);
     auto* checkbox = active->findChild<QCheckBox*>();
@@ -32,12 +37,12 @@ TEST_F(FileDialogTest, GetSaveFileNameWithOptionsReportsCheckboxState) {
     checkbox->setChecked(false);
     auto* file_dialog = active->findChild<QFileDialog*>();
     ASSERT_NE(file_dialog, nullptr);
-    file_dialog->selectFile(u"/tmp/_pj4_filedialog_test.pjl4"_s);
+    file_dialog->selectFile(save_path);
     QMetaObject::invokeMethod(file_dialog, "accept", Qt::QueuedConnection);
   });
 
   const auto result = PJ::FileDialog::getSaveFileNameWithOptions(
-      /*parent=*/nullptr, u"Save"_s, u"/tmp"_s, u"PJ4 Layout (*.pjl4)"_s, u"pjl4"_s, {opt});
+      /*parent=*/nullptr, u"Save"_s, temp.path(), u"PJ4 Layout (*.pjl4)"_s, u"pjl4"_s, {opt});
 
   EXPECT_FALSE(result.path.isEmpty());
   ASSERT_EQ(result.option_states.size(), 1u);
@@ -46,6 +51,8 @@ TEST_F(FileDialogTest, GetSaveFileNameWithOptionsReportsCheckboxState) {
 
 TEST_F(FileDialogTest, GetSaveFileNameWithOptionsCancelReturnsEmpty) {
   PJ::FileDialog::ExtraOption opt{u"Save Data Source"_s, true};
+  QTemporaryDir temp;
+  ASSERT_TRUE(temp.isValid());
   QTimer::singleShot(0, [] {
     QWidget* active = QApplication::activeModalWidget();
     ASSERT_NE(active, nullptr);
@@ -55,7 +62,7 @@ TEST_F(FileDialogTest, GetSaveFileNameWithOptionsCancelReturnsEmpty) {
   });
 
   const auto result = PJ::FileDialog::getSaveFileNameWithOptions(
-      nullptr, u"Save"_s, u"/tmp"_s, u"PJ4 Layout (*.pjl4)"_s, u"pjl4"_s, {opt});
+      nullptr, u"Save"_s, temp.path(), u"PJ4 Layout (*.pjl4)"_s, u"pjl4"_s, {opt});
 
   EXPECT_TRUE(result.path.isEmpty());
   ASSERT_EQ(result.option_states.size(), 1u);

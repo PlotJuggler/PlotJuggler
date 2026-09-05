@@ -30,7 +30,8 @@
 # runs on hosts whose glibc is >= the build host's. Kept for local iteration.
 #
 # Usage:
-#   build_release_appimage.sh [--pj4 <PJ4 root>] [--out <file.AppImage>]
+#   build_release_appimage.sh [--pj4 <PJ4 root>] [--plugins-dir <dir>]
+#                             [--sdk-dir <dir>] [--out <file.AppImage>]
 #                             [--host-build] [--fresh]
 #                             [--skip-ros2] [--skip-app] [--skip-plugins]
 #                             [--ros2-distros "humble iron jazzy rolling"]
@@ -54,6 +55,8 @@ set -euo pipefail
 
 # ---- locate repos ----------------------------------------------------------
 PJ4_ROOT=""
+PLUGINS_REPO=""
+SDK_LOCAL=""
 OUT=""
 SKIP_APP=0; SKIP_PLUGINS=0; SKIP_ROS2=0
 ROS2_DISTROS="humble iron jazzy rolling"
@@ -63,6 +66,8 @@ FRESH=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --pj4)          PJ4_ROOT="${2:?}"; shift 2 ;;
+    --plugins-dir)  PLUGINS_REPO="${2:?}"; shift 2 ;;
+    --sdk-dir)      SDK_LOCAL="${2:?}"; shift 2 ;;
     --out)          OUT="${2:?}"; shift 2 ;;
     --host-build)   USE_DOCKER=0; shift ;;
     --fresh)        FRESH=1; shift ;;
@@ -83,7 +88,24 @@ if [[ -z "${PJ4_ROOT}" ]]; then
     PJ4_ROOT="$(pwd)"
   fi
 fi
-PLUGINS_REPO="${PJ4_ROOT}/plotjuggler_sdk/pj_ported_plugins"
+# The plugins and the SDK are SIBLING repositories, not nested checkouts. Take
+# each from its flag, then its environment variable, then a sibling of PJ4_ROOT.
+: "${PLUGINS_REPO:=${PJ_PLUGINS_DIR:-}}"
+: "${SDK_LOCAL:=${PJ_SDK_DIR:-}}"
+[[ -n "${PLUGINS_REPO}" ]] || PLUGINS_REPO="$(cd "${PJ4_ROOT}/.." && pwd)/pj-official-plugins"
+[[ -n "${SDK_LOCAL}"    ]] || SDK_LOCAL="$(cd "${PJ4_ROOT}/.." && pwd)/plotjuggler_sdk"
+
+for d in "${PLUGINS_REPO}:--plugins-dir (or PJ_PLUGINS_DIR)" \
+         "${SDK_LOCAL}:--sdk-dir (or PJ_SDK_DIR)"; do
+  path="${d%%:*}"; flag="${d#*:}"
+  [[ -d "${path}" ]] || {
+    echo "ERROR: not a directory: ${path}" >&2
+    echo "       pass ${flag}; the plugins and SDK repos are siblings of PJ4, not nested in it." >&2
+    exit 1
+  }
+done
+PLUGINS_REPO="$(cd "${PLUGINS_REPO}" && pwd)"
+SDK_LOCAL="$(cd "${SDK_LOCAL}" && pwd)"
 ROS2_DIR="${PLUGINS_REPO}/data_stream_ros2"
 
 for p in "${PJ4_ROOT}/build.sh" "${PLUGINS_REPO}/build.sh" \
@@ -108,12 +130,10 @@ if [[ -z "${PJ_VERSION:-}" ]]; then
   echo "==> AppImage version stamp: ${PJ_VERSION}"
 fi
 
-# Local SDK for the ros2 `run-local.sh --core` mount. The path is bind-mounted
-# as /core inside every distro container and `conan export /core` runs on it, so
-# it must point at the SDK sub-repo whose `conanfile.py` declares `name =
-# "plotjuggler_sdk"` — the `pj_ported_plugins/conanfile.py` at PLUGINS_REPO is
-# an unpublished aggregate root with no `name` and would fail `conan export`.
-SDK_LOCAL="${PJ4_ROOT}/plotjuggler_sdk"
+# SDK_LOCAL (resolved above) is the ros2 `run-local.sh --core` mount: bind-mounted
+# as /core in every distro container, with `conan export /core` run on it. It must
+# therefore be the SDK repo whose `conanfile.py` declares `name = "plotjuggler_sdk"`
+# — the plugins repo root is an aggregate with no `name` and would fail `conan export`.
 
 # The release MUST-set, by built .so basename. Keep in lockstep with
 # BUNDLE_IDS in appimage/build_appimage.sh (the registry-mode equivalent).

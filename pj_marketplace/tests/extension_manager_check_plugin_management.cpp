@@ -11,11 +11,13 @@
 
 #include <gtest/gtest.h>
 
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QDeadlineTimer>
 #include <QDir>
 #include <QEventLoop>
 #include <QSignalSpy>
+#include <QString>
 #include <QUrl>
 
 #include "pj_marketplace/download_manager.hpp"
@@ -47,8 +49,13 @@ TEST(ExtensionManagerIntegrationTest, InstallCanBusParserUsingRegistry) {
   QSignalSpy registry_finished(&registry, &RegistryManager::fetchFinished);
   QSignalSpy registry_error(&registry, &RegistryManager::fetchError);
 
-  registry.fetchRegistry(
-      QUrl("https://raw.githubusercontent.com/Intelligent-Behavior-Robots/pj-plugin-registry/main/registry.json"));
+  // Defaults to the official registry; PJ_TEST_REGISTRY_URL points this manual
+  // integration test at a local file:// copy or a staging registry instead.
+  const QByteArray registry_override = qgetenv("PJ_TEST_REGISTRY_URL");
+  registry.fetchRegistry(QUrl(
+      registry_override.isEmpty()
+          ? QStringLiteral("https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/main/registry.json")
+          : QString::fromUtf8(registry_override)));
 
   ASSERT_TRUE(waitForSignal(registry_finished, 5000)) << "RegistryManager did not finish parsing";
   ASSERT_TRUE(registry_finished.first().at(0).toBool())

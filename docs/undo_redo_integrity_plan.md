@@ -23,20 +23,22 @@ jump in time that presents as "timeline alignment broke after undo".
 
 ### The two prior branches
 
-- **Branch A** (`fix/undo-redo-multi-dataset`, single commit, green): minimal
+- **Branch A** (single commit, green; never published — kept only as the
+  description below): minimal
   fix — a dataset-label hint on each saved curve, preferred at resolve time
   with a first-match fallback. Correct for the reported case, but the hint is
   the *deduplicated catalog display label* ("name (2)"), which is
   load-order-dependent for same-basename files. **Never merges**; its
   mechanism is superseded by PR 1 below, and its regression test
   (`multi_dataset_rebind_test.cpp`) is carried forward.
-- **Branch B** (`fix/undo-redo-state-integrity`, ~13k lines / 105 files):
+- **Branch B** (~13k lines / 105 files; never published — kept only as the
+  description below):
   a broad state-integrity rework with largely correct designs and strong test
   suites, but delivered uncompilable (two missing includes) with one of its
   own new tests red. It is treated as a **design donor**: nothing is imported
-  on trust; every line is re-verified in the slice that adopts it. A snapshot
-  commit on its worktree preserves it as a stable extraction reference; the
-  branch itself never merges.
+  on trust; every line is re-verified in the slice that adopts it. Neither
+  branch was pushed, so there is no ref to extract from: treat both entries as a
+  design record, and re-derive any code they describe.
 
 ### Goals
 
@@ -242,10 +244,10 @@ ADR in this document.
 | 4 | Processor & engine transactionality | 1.4k | 1 (parallel with 2–3) |
 | 5 | Scene dock persistence & undo | 3.5k | 1, 3 |
 
-Donor extraction: whole-file `git checkout <donor> -- <path>` where a theme
-owns the file; the four hot files (`MainWindow.cpp/.h`, `PlotWidget.cpp`,
-`LayoutXml.*`, `SessionManager.*`) are split at hunk level, hand-ported per
-theme.
+The donor branches were never published, so there is nothing to `git checkout`
+from. Each theme re-derives its slice from the design notes above; the four hot
+files (`MainWindow.cpp/.h`, `PlotWidget.cpp`, `LayoutXml.*`, `SessionManager.*`)
+are worked per theme rather than moved wholesale.
 
 ### PR 1 — Dataset identity foundation
 
@@ -359,9 +361,7 @@ and should share a shape and a lightweight test pattern.
 
 ## 7. Execution mechanics
 
-- The donor worktree carries a snapshot commit (reference only, never merges).
-  Branch A's worktree is removed after PR 1 lands
-  (`./worktree-rm.sh undo-redo-multi-dataset`).
+- Neither donor branch survives as a ref; this document is the only record.
 - Each PR: fresh worktree off `origin/main` via `./worktree-new.sh` once its
   dependencies merge. Every slice must build green and pass its tests before
   review — donor code is a design source, not trusted code.

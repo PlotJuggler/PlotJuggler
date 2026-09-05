@@ -143,7 +143,7 @@ TEST(MessageBoxTest, ButtonSpacingIsConstantAcrossDialogs) {
   three.setTitle(u"Load Layout"_s);
   three.setText(QStringLiteral(
       "This layout was saved with 1 data source(s):\n"
-      "  /home/davide/ws_plotjuggler/DATA/example-024-quadruped-ds.mcap\n\n"
+      "  testdata/layout-source.mcap\n\n"
       "Reload them, or apply the layout to the currently loaded data?"));
   three.addButton(u"Reload original"_s, PJ::MessageBox::kPrimaryRole);
   three.addButton(u"Use current data"_s, PJ::MessageBox::kNeutralRole);
@@ -156,7 +156,7 @@ TEST(MessageBoxTest, ButtonSpacingIsConstantAcrossDialogs) {
   }
 
   PJ::MessageBox two;
-  two.setText(u"Are you sure you want to remove 'example-024-quadruped-ds.mcap' and its data?"_s);
+  two.setText(u"Are you sure you want to remove 'layout-source.mcap' and its data?"_s);
   two.addButton(u"Remove"_s, PJ::MessageBox::kDestructiveRole);
   two.addButton(u"Cancel"_s, PJ::MessageBox::kCancelRole);
   realize(two);

@@ -192,7 +192,16 @@ TEST(DiagnosticDumpTest, PumpBeforeAttachLosesEarlyDiagnostics) {
 }
 
 TEST(DiagnosticDumpTest, WriteReportsFailureOnAnUnwritablePath) {
-  PJ::DiagnosticDump dump(QStringLiteral("/nonexistent-dir-for-sure/diag.json"));
+  // A regular file cannot be a parent directory, so <temp>/blocker/diag.json is
+  // guaranteed unwritable on every platform — no assumption about host paths.
+  QTemporaryDir temp;
+  ASSERT_TRUE(temp.isValid());
+  const QString blocker = QDir(temp.path()).filePath(QStringLiteral("blocker"));
+  {
+    QFile f(blocker);
+    ASSERT_TRUE(f.open(QIODevice::WriteOnly));
+  }
+  PJ::DiagnosticDump dump(QDir(blocker).filePath(QStringLiteral("diag.json")));
   dump.record(
       static_cast<int>(PJ::DiagnosticLevel::kInfo), QStringLiteral("Test"), QStringLiteral("id"),
       QStringLiteral("msg"));

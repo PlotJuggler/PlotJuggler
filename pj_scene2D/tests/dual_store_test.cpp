@@ -27,7 +27,8 @@ class DualStoreTest : public ::testing::Test {
  protected:
   void SetUp() override {
     if (!std::filesystem::exists(kPotatoPath)) {
-      GTEST_SKIP() << "potato.mcap not found";
+      GTEST_SKIP() << "UNTRACKED FIXTURE potato.mcap — not in the repository, so this suite does NOT run on a clean "
+                      "clone. Generate it per pj_scene2D/testdata/README.md.";
     }
   }
 };

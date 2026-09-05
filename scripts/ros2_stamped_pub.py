@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.10
+#!/usr/bin/env python3
 """
 Publisher ROS2 con mensajes stamped para probar embedded timestamp.
 
@@ -16,16 +16,13 @@ Usa std_msgs/msg/Header que tiene solo stamp + frame_id.
 Para un campo numérico usa geometry_msgs/msg/PointStamped (x,y,z).
 
 Run:
-  python3.10 scripts/ros2_stamped_pub.py
+  python3 scripts/ros2_stamped_pub.py
 """
-import sys
-sys.path = [
-    "/tmp/numpy310",                                           # numpy 1.26.4 para Python 3.10
-    "/opt/ros/humble/local/lib/python3.10/dist-packages",
-    "/opt/ros/humble/lib/python3.10/site-packages",
-    "/usr/lib/python3.10",
-    "/usr/lib/python3.10/lib-dynload",
-]
+# Run under the ROS 2 environment for the sourced distro, e.g.
+#   source /opt/ros/$ROS_DISTRO/setup.bash
+#   python3 -m venv --system-site-packages .venv && . .venv/bin/activate
+#   pip install "numpy>=1.26,<2"
+# rclpy and its dependencies are resolved from that environment.
 
 import math
 import rclpy

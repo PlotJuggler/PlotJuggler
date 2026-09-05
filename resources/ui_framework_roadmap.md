@@ -63,5 +63,6 @@ the values decision above, migration adopts the framework values (visual shift).
 
 ---
 
-_Detailed cited analysis: the four agent reports + `SYNTHESIS.md` in the review
-scratchpad (not committed)._
+_The detailed analysis behind these values was produced in an uncommitted
+review scratchpad and is not reproducible from this repository. The decisions it
+supports are recorded in full above; treat this document as the record._

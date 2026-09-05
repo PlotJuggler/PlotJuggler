@@ -29,7 +29,9 @@ class McapImageIntegration : public ::testing::Test {
  protected:
   void SetUp() override {
     if (!testDataExists()) {
-      GTEST_SKIP() << "test_images.mcap not found at " << kTestImagesPath;
+      GTEST_SKIP() << "UNTRACKED FIXTURE test_images.mcap (expected at " << kTestImagesPath
+                   << ") — not in the repository, so this suite does NOT run on a clean clone. Generate it per "
+                      "pj_scene2D/testdata/README.md.";
     }
   }
 };

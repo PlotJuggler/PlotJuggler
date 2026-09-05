@@ -816,7 +816,7 @@ TEST(WidgetComboBoxAdapter, LeavesPromotedComboBoxStyled) {
   EXPECT_NE(qobject_cast<PJ::ComboBoxGradientDelegate*>(combo->itemDelegate()), nullptr);
 }
 
-// Full-width tabs contract (dexory_cloud_panel.ui "filterTabs"): a tab bar only
+// Full-width tabs contract (a document-mode "filterTabs" tab bar): a tab bar only
 // gets the whole pane width in documentMode, and Qt's setDocumentMode(true)
 // resets QTabBar::expanding to false during the .ui load — so the QTabWidget
 // binding must re-assert expanding on apply or document-mode tabs silently

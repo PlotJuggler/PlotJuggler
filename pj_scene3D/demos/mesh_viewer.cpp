@@ -17,6 +17,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDir>
 #include <QDomDocument>
 #include <QFile>
 #include <QFileDialog>
@@ -731,7 +732,7 @@ int main(int argc, char** argv) {
       // view (coverage drives fragment cost) before trusting the numbers.
       const QImage img = view->grabFramebuffer();
       if (!img.isNull()) {
-        const QString path = u"/tmp/bench_first_frame.png"_s;
+        const QString path = QDir(QDir::tempPath()).filePath(u"bench_first_frame.png"_s);
         img.save(path);
         std::printf("[mesh_viewer] framing preview: %s (%dx%d)\n", qPrintable(path), img.width(), img.height());
       }

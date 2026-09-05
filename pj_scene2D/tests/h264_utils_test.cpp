@@ -20,7 +20,8 @@ class H264UtilsTest : public ::testing::Test {
  protected:
   void SetUp() override {
     if (!std::filesystem::exists(kTestVideo)) {
-      GTEST_SKIP() << "test_480p.mp4 not found";
+      GTEST_SKIP() << "UNTRACKED FIXTURE test_480p.mp4 — not in the repository, so this suite does NOT run on a clean "
+                      "clone. Generate it per pj_scene2D/testdata/README.md.";
     }
     packets_ = test::extractAnnexBPackets(kTestVideo);
     ASSERT_GT(packets_.size(), 10u) << "need at least 10 packets for meaningful tests";

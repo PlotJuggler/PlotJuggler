@@ -119,9 +119,9 @@ Before any commit that changes behavior, public APIs, ABI structs, module owners
 
 What it is: see Placement rules. Build-specific: `add_subdirectory(pj_datastore)` runs in the root `CMakeLists.txt` immediately after the SDK is resolved (so the `plotjuggler_sdk::base` / `pj_internal_fmt` targets it links already exist); its Conan deps (`nanoarrow`, `tsl-robin-map`, `benchmark`) live in the root `conanfile.txt`.
 
-### `~/ws_plotjuggler/PlotJuggler/` (PJ3 reference — read-only)
+### The PJ3 reference tree (read-only)
 
-PlotJuggler 3 source tree. This is **the primary source for cherry-picked code**. Expect heavy reference, particularly for:
+PlotJuggler 3 source tree — [github.com/facontidavide/PlotJuggler](https://github.com/facontidavide/PlotJuggler). Point `PJ3_SOURCE_DIR` at a local checkout of it; there is no default location. This is **the primary source for cherry-picked code**. Expect heavy reference, particularly for:
 
 - `plotjuggler_app/` — `PlotWidgetBase`, `PlotWidget`, `PlotDocker`, `TabbedPlotWidget`, zoomers, `AxisTimeOffset`, tracker, drag-drop, per-curve display transform UI, Lua engine
 - `plotjuggler_base/` — shared base types (cross-check against `pj_base`)
@@ -323,7 +323,7 @@ Don't just assert a change works and hand it back ("I don't see any difference" 
 
 ### Porting policy from PJ3
 
-- **Default: port, don't rewrite.** For every UI element, widget, or helper we need, check `~/ws_plotjuggler/PlotJuggler/` first. If PJ3 has something that works, port it. Greenfield rewrites need a real reason.
+- **Default: port, don't rewrite.** For every UI element, widget, or helper we need, check the PJ3 tree at `${PJ3_SOURCE_DIR}` first. If PJ3 has something that works, port it. Greenfield rewrites need a real reason.
 - **Style changes are expected; widget names are not.** When porting, adapt file/class names and member conventions to plotjuggler_sdk style (`PascalCase.{h,cpp}`, `PJ::` namespace, `trailing_underscore_` members, Google C++ / 2-space / 120-col). But **preserve the `objectName` of widgets inside `.ui` files verbatim** (e.g. `buttonLoadDatafile`, `frameFile`, `checkBoxAddPrefix`, `displayTime`, `playbackLoop`, `streamingSpinBox`) so existing layout files, stylesheet selectors, and user muscle memory keep working — unless I explicitly ask you to rename one.
 - **Rebind data paths.** PJ3 wiring into `PlotDataMapRef` / `TransformsMap` becomes wiring into `pj_runtime` services (`CatalogModel`, `SessionManager`, `PlaybackEngine`, `TransformRegistry`). That's the one systematic rewrite.
 - **Proactively surface improvement opportunities.** If you see a chance to improve separation of concerns, reusability, testability, or remove duplication while you're porting — flag it and **ask for approval before changing**. Don't silently refactor, and don't silently skip obvious wins. The bar is: "is there a cleaner shape that we'd regret not taking?" If yes, ask.

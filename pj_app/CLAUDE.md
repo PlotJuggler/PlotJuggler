@@ -48,14 +48,13 @@ rewrite-then-classify layout load path (`MainWindow` + `LayoutXml`), and the
 growing-import binder (`MainWindow` over `SessionManager`'s ingest signals).
 
 The feature spans three repos, so its as-built reference lives outside this one:
-**`~/ws_plotjuggler/mcap_server/docs/layout-import-architecture.md`** (repo
-`pj-mcap-server`, a sibling checkout) — cross-repo component map, runtime flows,
+**`docs/layout-import-architecture.md`** in the `pj-mcap-server` repository — cross-repo component map, runtime flows,
 and the invariant list I-1…I-16. **Read it before changing any of the components
 above**: several invariants are host-side (delivery order, teardown orders,
 strict in-place promotion, strip displayed-owner arbitration) and are not
 derivable from PJ4 alone. The operations guide — what a shared layout embeds,
 the trust bootstrap, cache purge, the headless flow and its diagnostic ids — is
-`docs/layout-sharing-runbook.md` in that same repo.
+`docs/layout-sharing-runbook.md` in that same repository.
 
 ## Per-dataset load progress (curve tree)
 

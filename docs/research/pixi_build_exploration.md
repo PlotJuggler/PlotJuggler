@@ -304,7 +304,7 @@ What pixi buys:
 - **One-command bootstrap** — `pixi run build` on a fresh machine installs
   compiler, CMake, Ninja, Qt 6.11.1, and every library. No `install_qt6.sh`,
   no `apt-get install libva-dev libdrm-dev`, no Conan profile quirks (the
-  asensus-remote / gdbm C23 class of breakage disappears).
+  private-remote / gdbm C23 class of breakage disappears).
 - **Minutes instead of ~an hour of cold Conan source builds** (ffmpeg+cpython
   +assimp dominate `--build=missing` time); no more poisoned-Conan-cache CI
   failures.

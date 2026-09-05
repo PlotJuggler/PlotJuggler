@@ -7,7 +7,7 @@ defaults to off and does not enable `PJ_WASM_WITH_SCENE3D`.
 Using the pinned Qt/Emscripten environment:
 
 ```bash
-source /home/davide/emsdk/emsdk_env.sh
+source "${EMSDK}/emsdk_env.sh"   # EMSDK points at your Emscripten SDK checkout
 cmake -S . -B build-wasm -DPJ_WASM_SCENE3D_CAPABILITY_PROBE=ON
 cmake --build build-wasm --target pj_scene3d_wasm_capability_probe -j4
 emrun --no-browser --serve-after-exit --port 6931 \
@@ -30,10 +30,11 @@ voxel renderer's capability dependency; the right half retains the
 fragment-stage sample from an RGBA16F target.
 
 The six `.qsb` files contain GLSL ES 300 payloads generated with the host Qt
-6.11 `qsb`:
+`qsb` from the pinned Qt in `versions.env`. Set `QSB` to that binary — CMake
+resolves the same tool as `$<TARGET_FILE:Qt6::qsb>`:
 
 ```bash
-/home/davide/Qt/6.11.0/gcc_64/bin/qsb --glsl "300 es" \
+"${QSB}" --glsl "300 es" \
   -o shaders/point.vert.qsb shaders/point.vert
 ```
 
