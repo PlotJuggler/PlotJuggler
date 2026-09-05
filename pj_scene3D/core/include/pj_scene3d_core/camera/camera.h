@@ -20,6 +20,7 @@ struct AABB {
   glm::vec3 min{0.0f};
   glm::vec3 max{0.0f};
   bool valid{false};
+  friend bool operator==(const AABB&, const AABB&) = default;
 };
 
 // Grow `box` to include point `p`. Initializes `box` to the degenerate box at `p`
@@ -234,9 +235,8 @@ class ICamera {
   [[nodiscard]] virtual glm::mat4 projMatrix(float aspect) const = 0;
   [[nodiscard]] virtual glm::vec3 position() const = 0;
 
-  // Latest scene extent (union of entity worldBounds()), used for adaptive
-  // near/far and framing. An invalid AABB means "unknown" → working-distance
-  // fallback.
+  // Latest fixed-frame scene extent, used for adaptive near/far and framing. An
+  // invalid AABB means "unknown" → working-distance fallback.
   virtual void setSceneBounds(const AABB& bounds) = 0;
 
   // Shift the camera's anchor (look-at target / eye) by a world-space delta,

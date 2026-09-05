@@ -193,6 +193,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/passes/pointcloud_aabb_reducer.cpp
   src/passes/occupancy_grid_render_pass.cpp
   src/passes/voxel_grid_render_pass.cpp
+  src/passes/grid_map_render_pass.cpp
   src/passes/marker_render_pass.cpp
   src/passes/poses_render_pass.cpp
   src/passes/mesh_render_pass.cpp
@@ -210,6 +211,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/layers/scene_entities_layer.cpp
   src/layers/robot_model_layer.cpp
   src/layers/voxel_grid_layer.cpp
+  src/layers/grid_map_layer.cpp
   src/urdf_parser.cpp
   src/urdf_package_resolver.cpp
   src/mesh_loader.cpp
@@ -232,9 +234,11 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   include/pj_scene3d_widgets/layers/scene_entities_layer.h
   include/pj_scene3d_widgets/layers/robot_model_layer.h
   include/pj_scene3d_widgets/layers/voxel_grid_layer.h
+  include/pj_scene3d_widgets/layers/grid_map_layer.h
   include/pj_scene3d_widgets/cube_mesh.h
   include/pj_scene3d_widgets/passes/occupancy_grid_render_pass.h
   include/pj_scene3d_widgets/passes/voxel_grid_render_pass.h
+  include/pj_scene3d_widgets/passes/grid_map_render_pass.h
   include/pj_scene3d_widgets/passes/marker_render_pass.h
   include/pj_scene3d_widgets/passes/poses_render_pass.h
   include/pj_scene3d_widgets/passes/trail_render_pass.h
@@ -427,6 +431,22 @@ if(PJ_BUILD_TESTS)
   target_compile_options(voxel_grid_layer_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME voxel_grid_layer_test COMMAND voxel_grid_layer_test)
 
+  # GridMapLayer behaviour: parser AND canonical-codec routes, field auto-pick vs
+  # requested-with-fallback, staged upload only on sample/selector change, NaN
+  # excluded from the auto range, renderKey without a payload resolve, source-frame
+  # bounds, XML round-trip, dataset replace / detach reset.
+  add_executable(grid_map_layer_test
+    tests/grid_map_layer_test.cpp
+  )
+  target_link_libraries(grid_map_layer_test PRIVATE
+    pj_scene3d_widgets
+    pj_widgets
+    GTest::gtest
+  )
+  target_compile_definitions(grid_map_layer_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
+  target_compile_options(grid_map_layer_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME grid_map_layer_test COMMAND grid_map_layer_test)
+
   # Settings-panel row pitch: every layer's createConfigWidget() must use the
   # same vertical spacing (Space::Snug) as the built-in Grid / Transforms grids
   # in Scene3DConfigPanel, so the panel doesn't visibly loosen when a different
@@ -458,6 +478,19 @@ if(PJ_BUILD_TESTS)
   )
   target_compile_options(voxel_grid_render_pass_gl_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME voxel_grid_render_pass_gl_test COMMAND voxel_grid_render_pass_gl_test)
+
+  # Real-GL evidence for the procedural heightfield: a flat grid rasterizes
+  # fragments; a NaN corner drops exactly the triangles touching it. Skips below
+  # GL 4.5; CI runs it under xvfb + llvmpipe.
+  add_executable(grid_map_render_pass_gl_test
+    tests/grid_map_render_pass_gl_test.cpp
+  )
+  target_link_libraries(grid_map_render_pass_gl_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_options(grid_map_render_pass_gl_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME grid_map_render_pass_gl_test COMMAND grid_map_render_pass_gl_test)
 
   # Real-GL evidence that the cube shape picks its 3 visible faces PER INSTANCE (two
   # mirrored cubes must cover equal area) and still shades each face separately.

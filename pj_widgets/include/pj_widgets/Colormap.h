@@ -23,6 +23,10 @@ enum class Colormap : uint8_t {
 /// Number of colormaps (= rows in the LUT texture). Keep in sync with the enum.
 inline constexpr int kColormapCount = 4;
 
+/// Untranslated display name ("Turbo", "Viridis", ...), a `tr()`-ready literal for
+/// the colormap selectors so every view lists the same names in the enum order.
+[[nodiscard]] const char* colormapName(Colormap colormap) noexcept;
+
 /// Default LUT width (samples of t per colormap row). 256 8-bit entries is the
 /// resolution the GPU LUT texture is built and uploaded at.
 inline constexpr int kColormapLutWidth = 256;

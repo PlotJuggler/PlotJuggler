@@ -37,6 +37,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/layers/depth_cloud_layer.h"
+#include "pj_scene3d_widgets/layers/grid_map_layer.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/layers/poses_in_frame_layer.h"
@@ -46,6 +47,7 @@
 #include "pj_scene3d_widgets/layers/voxel_grid_layer.h"
 #include "pj_scene3d_widgets/object_topic_metadata.h"
 #include "pj_scene3d_widgets/parse_locked.h"
+#include "pj_scene3d_widgets/render_pass.h"
 #include "pj_scene3d_widgets/scene_state_xml.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene3d_widgets/transform_service.h"
@@ -62,6 +64,7 @@ Q_LOGGING_CATEGORY(lcScene3DDock, "pj.scene3d.dock")
 
 using pj::scene3d::DepthCloudLayer;
 using pj::scene3d::FrameRow;
+using pj::scene3d::GridMapLayer;
 using pj::scene3d::OccupancyGridLayer;
 using pj::scene3d::PointCloudLayer;
 using pj::scene3d::PosesInFrameLayer;
@@ -311,6 +314,15 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
         wireScene3DLayer(layer.get());
         return layer;
       });
+  layerFactory().registerType(
+      sdk::BuiltinObjectType::kGridMap,
+      [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
+          -> std::unique_ptr<ISceneLayer> {
+        prepareTransformBufferForTopic(topic_id);
+        auto layer = std::make_unique<GridMapLayer>(topic_id, display_name, this);
+        wireScene3DLayer(layer.get());
+        return layer;
+      });
 
   frame_overlay_combo_ = new ComboBox(this);
   frame_overlay_combo_->setFocusPolicy(Qt::ClickFocus);
@@ -554,6 +566,7 @@ bool Scene3DDockWidget::handlesObjectType(sdk::BuiltinObjectType object_type) {
          object_type == sdk::BuiltinObjectType::kRobotDescription ||
          object_type == sdk::BuiltinObjectType::kSceneEntities ||
          object_type == sdk::BuiltinObjectType::kPosesInFrame || object_type == sdk::BuiltinObjectType::kVoxelGrid ||
+         object_type == sdk::BuiltinObjectType::kGridMap ||
          // kImage is accepted only for DEPTH-encoded images; addTopic() peeks the
          // first sample's encoding and rejects color images (which share kImage).
          object_type == sdk::BuiltinObjectType::kImage;
@@ -868,12 +881,22 @@ void Scene3DDockWidget::updateSceneBounds() {
     return;
   }
   pj::scene3d::AABB scene;
+  static const pj::scene3d::TransformBuffer k_empty_buffer;
+  const pj::scene3d::TransformBuffer& tf = tf_buffer_ != nullptr ? *tf_buffer_ : k_empty_buffer;
+  const pj::scene3d::FrameContext frame_ctx{tf, view_->fixedFrame(), PJ::fromRaw(lastTrackerNs().value_or(0))};
   for (Scene3DLayer* layer : view_->layers()) {
     if (layer == nullptr) {
       continue;
     }
     if (const auto bounds = layer->worldBounds(); bounds.has_value()) {
-      scene = pj::scene3d::unionAABB(scene, *bounds);
+      std::string source_frame = layer->sourceFrame().toStdString();
+      if (source_frame.empty()) {
+        source_frame = view_->fixedFrame();  // matches DepthCloud's unframed-image fallback
+      }
+      if (const auto fixed_from_source = frame_ctx.lookup(source_frame); fixed_from_source.has_value()) {
+        scene = pj::scene3d::unionAABB(
+            scene, pj::scene3d::transformedAABB(glm::mat4(fixed_from_source->matrix()), *bounds));
+      }
     }
   }
   view_->setSceneBounds(scene);

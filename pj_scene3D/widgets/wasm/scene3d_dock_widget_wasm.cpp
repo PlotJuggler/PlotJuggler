@@ -119,6 +119,7 @@ bool isKnownFutureScene3dLayer(sdk::BuiltinObjectType type) {
     case sdk::BuiltinObjectType::kSceneEntities:
     case sdk::BuiltinObjectType::kPosesInFrame:
     case sdk::BuiltinObjectType::kVoxelGrid:
+    case sdk::BuiltinObjectType::kGridMap:
     case sdk::BuiltinObjectType::kImage:
       return true;
     default:

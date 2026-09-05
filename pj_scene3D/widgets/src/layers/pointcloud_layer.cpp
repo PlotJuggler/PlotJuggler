@@ -19,7 +19,6 @@
 #include <QtConcurrent>
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 #include <glm/glm.hpp>
 #include <limits>
 #include <memory>
@@ -34,6 +33,7 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/camera/camera.h"  // AABB, expandAABB
+#include "pj_scene3d_core/grid_map_view.h"  // FiniteRange, finiteRange
 #include "pj_scene3d_core/pointcloud.h"
 #include "pj_scene3d_core/pointcloud_codecs.h"
 #include "pj_scene3d_core/pointcloud_convert.h"  // convertCanonical, ConvertedPointCloud
@@ -69,16 +69,8 @@ std::pair<float, float> clampScalarRange(float lo, float hi) {
 }
 
 std::pair<float, float> computeScalarRange(const std::vector<float>& scalar) {
-  float lo = std::numeric_limits<float>::max();
-  float hi = std::numeric_limits<float>::lowest();
-  for (float v : scalar) {
-    if (!std::isfinite(v)) {
-      continue;
-    }
-    lo = std::min(lo, v);
-    hi = std::max(hi, v);
-  }
-  return clampScalarRange(lo, hi);
+  const FiniteRange range = finiteRange(scalar);
+  return range.valid ? clampScalarRange(range.lo, range.hi) : std::pair<float, float>{0.0f, 1.0f};
 }
 
 // Fixed-frame spatial colour axis for a colour-field name: x->0, y->1, z->2, else
@@ -102,15 +94,6 @@ int spatialAxisIndex(const std::string& field) {
 bool gpuAabbAligned(const AttribLayout& layout) {
   constexpr uint32_t kAlign = PointcloudAabbReducer::kRequiredAlignmentBytes;
   return layout.stride % kAlign == 0 && layout.xyz_offset % kAlign == 0;
-}
-
-// Exact equality of optional AABBs — suppresses repaints when an async GPU
-// reduction returns the extent the layer already holds (a stable streaming cloud).
-bool aabbEqual(const std::optional<AABB>& a, const std::optional<AABB>& b) {
-  if (a.has_value() != b.has_value()) {
-    return false;
-  }
-  return !a.has_value() || (a->min == b->min && a->max == b->max);
 }
 
 QString defaultColorField(const QStringList& available) {
@@ -464,14 +447,7 @@ uint64_t PointCloudLayer::renderKey(PJ::Timepoint time) const {
   // the matrix also captures colour-by-axis recolouring, a pure function of it.
   if (ctx_.tf_buffer != nullptr && !source_frame_.empty()) {
     if (const auto tf = ctx_.tf_buffer->tryLookupTransform(fixed_frame_.toStdString(), source_frame_, time); tf) {
-      const glm::mat4 m = glm::mat4(tf->matrix());
-      for (int col = 0; col < 4; ++col) {
-        for (int row = 0; row < 4; ++row) {
-          uint32_t bits = 0;
-          std::memcpy(&bits, &m[col][row], sizeof(bits));
-          key = (key ^ bits) * 0x100000001b3ULL;
-        }
-      }
+      key = foldTransformIntoKey(key, glm::mat4(tf->matrix()));
     }
   }
   return key;
@@ -1305,7 +1281,7 @@ void PointCloudLayer::onGpuAabb(std::optional<AABB> box) {
   // The async GPU reduction completed (called from the pass's render(), GL thread). An invalid
   // box means the cloud had no finite points -> no bounds, same as the CPU scan.
   const std::optional<AABB> new_bounds = (box && box->valid) ? box : std::nullopt;
-  if (aabbEqual(new_bounds, world_bounds_)) {
+  if (new_bounds == world_bounds_) {
     return;  // unchanged extent (stable streaming cloud) — no spurious repaint
   }
   setWorldBounds(new_bounds);

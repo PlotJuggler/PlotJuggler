@@ -52,6 +52,40 @@ void Texture::upload(uint32_t width, uint32_t height, const uint8_t* data) {
   });
 }
 
+void Texture::upload(
+    GLenum internal_format, GLenum format, GLenum type, uint32_t width, uint32_t height, const void* data) {
+  if (width == 0U || height == 0U) {
+    return;
+  }
+  withGlFunctions([this, internal_format, format, type, width, height, data](auto& functions) {
+    if (id_ == 0U) {
+      functions.glGenTextures(1, &id_);
+      owning_context_ = QOpenGLContext::currentContext();
+    }
+    functions.glBindTexture(GL_TEXTURE_2D, id_);
+    functions.glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    functions.glTexImage2D(
+        GL_TEXTURE_2D, 0, static_cast<GLint>(internal_format), static_cast<GLsizei>(width),
+        static_cast<GLsizei>(height), 0, format, type, data);
+    functions.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    functions.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    functions.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    functions.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  });
+}
+
+void Texture::overwrite(GLenum format, GLenum type, uint32_t width, uint32_t height, const void* data) {
+  if (id_ == 0U) {
+    return;
+  }
+  withGlFunctions([this, format, type, width, height, data](auto& functions) {
+    functions.glBindTexture(GL_TEXTURE_2D, id_);
+    functions.glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    functions.glTexSubImage2D(
+        GL_TEXTURE_2D, 0, 0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height), format, type, data);
+  });
+}
+
 void Texture::uploadSub(int32_t x, int32_t y, uint32_t width, uint32_t height, const uint8_t* data) {
   if (id_ == 0U) {
     return;  // not allocated yet — caller must upload() first

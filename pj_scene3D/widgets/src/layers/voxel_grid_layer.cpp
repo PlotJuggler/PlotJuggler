@@ -486,10 +486,9 @@ QWidget* VoxelGridLayer::createConfigWidget(QWidget* parent) {
   });
 
   auto* colormap_combo = new PJ::ComboBox(container);
-  colormap_combo->addItem(tr("Turbo"), static_cast<int>(PJ::Colormap::kTurbo));
-  colormap_combo->addItem(tr("Viridis"), static_cast<int>(PJ::Colormap::kViridis));
-  colormap_combo->addItem(tr("Plasma"), static_cast<int>(PJ::Colormap::kPlasma));
-  colormap_combo->addItem(tr("Grayscale"), static_cast<int>(PJ::Colormap::kGrayscale));
+  for (int idx = 0; idx < PJ::kColormapCount; ++idx) {
+    colormap_combo->addItem(tr(PJ::colormapName(static_cast<PJ::Colormap>(idx))), idx);
+  }
   colormap_combo->setCurrentIndex(static_cast<int>(colormap_));
   form->addRow(tr("Colors:"), colormap_combo);
   QObject::connect(colormap_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {

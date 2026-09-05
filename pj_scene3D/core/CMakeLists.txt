@@ -73,6 +73,7 @@ add_library(pj_scene3d_core STATIC
   src/tf/tf_connections.cpp
   src/trail_sampling.cpp
   src/version.cpp
+  src/grid_map_view.cpp
   src/voxel_grid_view.cpp
   src/voxel_grid_value.cpp
 )
@@ -117,6 +118,7 @@ if(PJ_BUILD_TESTS)
     ../tests/tf_connections_test.cpp
     ../tests/trail_sampling_test.cpp
     ../tests/robot_model_bridges_test.cpp
+    ../tests/grid_map_view_test.cpp
     ../tests/voxel_grid_view_test.cpp
     ../tests/voxel_grid_value_test.cpp
     ../tests/voxel_grid_budget_test.cpp

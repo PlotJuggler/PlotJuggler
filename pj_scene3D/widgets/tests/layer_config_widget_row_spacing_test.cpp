@@ -17,6 +17,7 @@
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_scene3d_widgets/layers/depth_cloud_layer.h"
+#include "pj_scene3d_widgets/layers/grid_map_layer.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/layers/poses_in_frame_layer.h"
@@ -78,6 +79,14 @@ TEST(LayerConfigWidgetRowSpacing, RobotModel) {
 
 TEST(LayerConfigWidgetRowSpacing, VoxelGrid) {
   pj::scene3d::VoxelGridLayer layer(topic(5), u"voxels"_s);
+  std::unique_ptr<QWidget> widget(layer.createConfigWidget(nullptr));
+  QFormLayout* form = topForm(widget.get());
+  ASSERT_NE(form, nullptr);
+  EXPECT_EQ(form->verticalSpacing(), snugPx());
+}
+
+TEST(LayerConfigWidgetRowSpacing, GridMap) {
+  pj::scene3d::GridMapLayer layer(topic(8), u"grid"_s);
   std::unique_ptr<QWidget> widget(layer.createConfigWidget(nullptr));
   QFormLayout* form = topForm(widget.get());
   ASSERT_NE(form, nullptr);

@@ -42,7 +42,7 @@ PJ4's 3D visualization module — the sibling family to `pj_scene2D`, focused on
 **Full v1 target:**
 - Rigid bodies (TF + URDF meshes). *(implemented)*
 - Occupancy grids / costmaps (`nav_msgs/OccupancyGrid` + incremental `OccupancyGridUpdate`, with stateful time-travel reconstruction). *(implemented — `OccupancyGridLayer`)*
-- Gridmaps in the `grid_map_msgs/GridMap` elevation-map sense (textured/height planes in a source frame) remain **future work** — distinct from the occupancy grids above.
+- Grid maps (`grid_map_msgs/GridMap`, `foxglove.Grid` → canonical `GridMap`, SDK ≥ 0.26.0), drawn as a lit, colormapped heightfield surface: one scalar field displaces the plane (or "None" for a flat plane), another colors it through the shared colormap with an auto or manual range; NaN cells are holes. Geometry is procedural (`gl_VertexID`, no vertex or index buffer), so a new sample costs two R32F texture uploads. Desktop OpenGL only; the browser backend lists the type as known but unavailable. *(implemented — `GridMapLayer`)*
 - Pointclouds (`sensor_msgs/PointCloud2` and equivalents). *(implemented)*
 - Compressed pointclouds (`foxglove_msgs/CompressedPointCloud` + `point_cloud_interfaces/CompressedPointCloud2`), formats **Draco** and **Cloudini** — decoded into a `PointCloud` and rendered identically (see §3a). *(implemented)*
 - 3D markers / visualization primitives (arrows, boxes, spheres, cylinders, line strips, text). *(implemented — `SceneEntitiesLayer`)*

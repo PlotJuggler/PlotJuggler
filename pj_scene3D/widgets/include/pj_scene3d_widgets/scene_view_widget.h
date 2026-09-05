@@ -145,9 +145,14 @@ class SceneViewWidget : public QOpenGLWidget {
     return camera_model_;
   }
   void resetCamera();
-  // Latest scene extent (union of entity worldBounds()); forwarded to the active
-  // camera for adaptive near/far and framing.
+  // Latest fixed-frame scene extent; forwarded to the active camera for adaptive
+  // near/far and framing.
   void setSceneBounds(const AABB& bounds);
+#ifdef PJ_SCENE3D_TEST_HOOKS
+  [[nodiscard]] const AABB& sceneBoundsForTest() const {
+    return scene_bounds_;
+  }
+#endif
 
   // Re-poll the TransformBuffer for the current frame set; emits
   // framesChanged if the set differs from the previous poll.

@@ -9,6 +9,8 @@
 #include <QStringList>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
+#include <glm/glm.hpp>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -27,6 +29,20 @@ namespace pj::scene3d {
 class TransformBuffer;
 struct ViewParams;
 struct FrameContext;
+
+// Fold a transform's 16 float bit patterns into a renderKey (FNV-1a style). The
+// TF is a zero-order hold, so keys only change when the pose actually moves —
+// what lets a 60 Hz playhead coalesce repaints down to the TF update rate.
+[[nodiscard]] inline uint64_t foldTransformIntoKey(uint64_t key, const glm::mat4& transform) {
+  for (int col = 0; col < 4; ++col) {
+    for (int row = 0; row < 4; ++row) {
+      uint32_t bits = 0;
+      std::memcpy(&bits, &transform[col][row], sizeof(bits));
+      key = (key ^ bits) * 0x100000001b3ULL;
+    }
+  }
+  return key;
+}
 
 // Widget-global services every 3D layer needs at attach time. Scene3DDockWidget
 // always passes this concrete context to Scene3DLayer instances; concrete layers
@@ -87,11 +103,11 @@ class Scene3DLayer : public PJ::ISceneLayer {
   // layer re-initializes lazily on the next paintGL.
   virtual void releaseGL() = 0;
 
-  // World-space (source-frame) extent of this layer's geometry, or nullopt when
+  // Source-frame extent of this layer's geometry, or nullopt when
   // the layer reports no bounds (no data decoded yet, or a bounds-less layer
-  // kind). The dock unions these across layers to drive camera framing and
-  // adaptive near/far. NON-pure so existing layer kinds need no change; concrete
-  // kinds with geometry (point clouds, occupancy grids) override it.
+  // kind). The dock transforms each box into the current fixed frame before
+  // unioning them for camera framing and adaptive near/far. NON-pure so existing
+  // layer kinds need no change; concrete kinds with geometry override it.
   [[nodiscard]] virtual std::optional<AABB> worldBounds() const {
     return std::nullopt;
   }

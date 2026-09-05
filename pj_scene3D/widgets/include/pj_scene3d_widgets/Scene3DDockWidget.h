@@ -291,9 +291,9 @@ class Scene3DDockWidget : public SceneDockWidget {
   void refreshFrameOverlayCombo();
   void onOverlayFramePicked(int index);
   void layoutFrameOverlayCombo();
-  // Union worldBounds() over the current view entities and push the result to the
-  // camera (drives adaptive near/far + framing). Cheap; called on layer changes
-  // and on tracker-time changes (cloud/grid geometry moves over time).
+  // Transform each layer's source-frame worldBounds() into the current fixed frame,
+  // union them, and push the result to the camera (adaptive near/far + framing).
+  // Cheap; called on layer changes and tracker-time changes.
   void updateSceneBounds();
   // Re-evaluate each layer's frame-resolvability and emit layerWarningChanged on
   // flips. force=false (the hot live-ingest path only) early-returns when neither

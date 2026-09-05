@@ -158,4 +158,18 @@ vec3 sampleColormap(int id, float t) {
 )";
 }
 
+const char* colormapName(Colormap colormap) noexcept {
+  switch (colormap) {
+    case Colormap::kTurbo:
+      return "Turbo";
+    case Colormap::kViridis:
+      return "Viridis";
+    case Colormap::kPlasma:
+      return "Plasma";
+    case Colormap::kGrayscale:
+      return "Grayscale";
+  }
+  return "Turbo";
+}
+
 }  // namespace PJ

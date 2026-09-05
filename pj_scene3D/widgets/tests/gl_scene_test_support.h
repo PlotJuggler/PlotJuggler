@@ -24,6 +24,14 @@ inline bool haveGl(const SceneViewWidget& view) {
   return view.context() != nullptr && view.context()->isValid();
 }
 
+// (major, minor) parsed from a glGetString(GL_VERSION) string. Desktop GL_VERSION
+// begins "MAJOR.MINOR…" (e.g. "4.5 (Core Profile) Mesa…"); null or unparsable
+// (e.g. OpenGL ES) yields (0, 0), which callers treat as "too old".
+inline std::pair<int, int> parseGlVersion(const char* version) {
+  const QStringList parts = QString::fromLatin1(version).section(QLatin1Char(' '), 0, 0).split(QLatin1Char('.'));
+  return {parts.value(0).toInt(), parts.value(1).toInt()};
+}
+
 // (major, minor) of the live GL context as the DRIVER reports it via
 // glGetString(GL_VERSION) — NOT the requested QSurfaceFormat, which can survive
 // into context()->format() even when the driver granted an older context. Returns
@@ -43,9 +51,7 @@ inline std::pair<int, int> liveGlVersion(const SceneViewWidget& view) {
   }
   const auto* version = reinterpret_cast<const char*>(ctx->functions()->glGetString(GL_VERSION));
   ctx->doneCurrent();
-  // Desktop GL_VERSION begins "MAJOR.MINOR…" (e.g. "4.5 (Core Profile) Mesa…").
-  const QStringList parts = QString::fromLatin1(version).section(QLatin1Char(' '), 0, 0).split(QLatin1Char('.'));
-  return {parts.value(0).toInt(), parts.value(1).toInt()};
+  return parseGlVersion(version);
 }
 
 }  // namespace pj::scene3d::test

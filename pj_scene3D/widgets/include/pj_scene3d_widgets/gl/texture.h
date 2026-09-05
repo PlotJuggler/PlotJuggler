@@ -29,6 +29,15 @@ class Texture {
 
   // (Re)allocate as a width x height R8 texture and upload width*height bytes.
   void upload(uint32_t width, uint32_t height, const uint8_t* data);
+  // (Re)allocate as width x height with `internal_format` and upload the full
+  // image from `data` (row-major, tightly packed: GL_UNPACK_ALIGNMENT = 1), the
+  // 2D twin of Texture3D::upload. Sets GL_NEAREST min/mag and CLAMP_TO_EDGE.
+  // `data` may be null to allocate uninitialized.
+  void upload(GLenum internal_format, GLenum format, GLenum type, uint32_t width, uint32_t height, const void* data);
+  // Re-fill the whole image in place (glTexSubImage2D, no re-allocation) of a
+  // texture created by that upload() at the SAME width x height; `format`/`type`
+  // describe `data`. Like uploadSub(), silently no-ops when never uploaded.
+  void overwrite(GLenum format, GLenum type, uint32_t width, uint32_t height, const void* data);
   // Patch a sub-rectangle. The texture must already be upload()ed at the
   // matching full dimensions; this SILENTLY NO-OPS if upload() never ran (the
   // one operation in the wrapper family that drops work rather than lazily

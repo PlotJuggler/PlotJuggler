@@ -421,14 +421,7 @@ uint64_t SceneViewWidget::tfRenderKey(PJ::Timepoint time) const {
   for (const std::string& frame : tf_render_key_frames_) {
     uint64_t h = std::hash<std::string>{}(frame);
     if (const auto xf = tf_->tryLookupTransform(fixed_frame_, frame, time); xf.has_value()) {
-      const glm::mat4 m = glm::mat4(xf->matrix());
-      for (int col = 0; col < 4; ++col) {
-        for (int row = 0; row < 4; ++row) {
-          uint32_t bits = 0;
-          std::memcpy(&bits, &m[col][row], sizeof(bits));
-          h = (h ^ bits) * 0x100000001b3ULL;
-        }
-      }
+      h = foldTransformIntoKey(h, glm::mat4(xf->matrix()));
     } else {
       h ^= 0xD15C0FFEEULL;  // frame present in the forest but unresolved at this time
     }

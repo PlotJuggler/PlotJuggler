@@ -400,13 +400,14 @@ testable (`camera_near_far_test`, `camera_zoom_to_cursor_test`,
   (file ingest), decoupled from the time-gated repaint path, so the full tree is
   listed as soon as it loads.
 - **Scene bounds.** `Scene3DLayer::worldBounds()` returns an optional source-frame
-  `AABB`; `PointCloudLayer`, `OccupancyGridLayer`, `DepthCloudLayer`, and
-  `VoxelGridLayer` override it. `RobotModelLayer` deliberately does **not** (it is
-  bounds-less by design — a robot is posed by the live TF tree the camera already
+  `AABB`; `PointCloudLayer`, `OccupancyGridLayer`, `DepthCloudLayer`,
+  `VoxelGridLayer`, and `GridMapLayer` override it. `RobotModelLayer` remains
+  bounds-less by design: a robot is posed by the live TF tree the camera already
   frames through the other store-backed layers, so adding its links would pull the
-  camera around as joints move). `Scene3DDockWidget::updateSceneBounds` unions
-  **every** layer's box (`unionAABB` over all layers that report one — there is no
-  per-layer visibility filter) and pushes the result to
+  camera around as joints move. `Scene3DDockWidget::updateSceneBounds` resolves
+  each box into the current fixed frame at the tracker time, unions **every**
+  resolved box (`unionAABB` over all layers that report one — there is no per-layer
+  visibility filter), and pushes the result to
   `SceneViewWidget::setSceneBounds` → the active camera, feeding the adaptive
   near/far above. No reporting layer → invalid AABB → working-distance fallback.
   (Note: because `RobotModelLayer` reports no bounds, the scene AABB excludes the
@@ -913,6 +914,62 @@ volumetric data.
 - **Follow-up.** A GPU compute-shader compaction path (`glDrawElementsIndirect` over
   only the accepted voxels, GL ≥ 4.3) is a documented follow-up for very large dense
   grids; not built.
+
+## Grid-map layer (`GridMapLayer`)
+
+Renders an `sdk::GridMap` (SDK ≥ 0.26.0) — a 2D grid of per-cell channels, the
+canonical form of `grid_map_msgs/GridMap` and `foxglove.Grid` — as a lit,
+colormapped **heightfield** surface, the way Foxglove's linear-interpolation
+Grid mode does. Desktop OpenGL only (`isKnownFutureScene3dLayer` lists the type in
+the browser backend so deferred layouts survive).
+
+- **Procedural geometry.** `GridMapRenderPass` draws `6 * (cols-1) * (rows-1)`
+  vertices with `glDrawArrays` and no VBO or index buffer: the vertex shader derives
+  quad, triangle and corner from `gl_VertexID`, `texelFetch`es the corner's
+  elevation from an R32F texture and places the vertex at the cell centre. A new
+  sample therefore costs two texture uploads (elevation + color channel, both
+  de-interleaved on the CPU by the Qt-free `core/grid_map_view.{h,cpp}`) and nothing
+  per vertex. Elevation "None" skips the texture and draws a flat plane.
+- **Holes stay holes.** Every vertex fetches all three corners of its triangle and
+  emits a `flat` validity; the fragment shader discards the whole triangle when any
+  corner is non-finite, so a NaN cell punches out exactly the triangles touching
+  it. Validity uses `abs(e) < 3e38` rather than `isnan()` so it does not depend on
+  a driver preserving NaN through `texelFetch` semantics.
+- **Normals** are central differences of the elevation texture scaled by cell size,
+  with a one-sided fallback at borders or beside a NaN neighbour and an up-normal
+  when neither neighbour is finite — a hole never tilts a valid triangle.
+- **Shading** is a Lambert key light (world-space `ViewParams::shading.key_light_dir`)
+  plus a camera-locked fill, scaled by the view's `ambient/direct/fill` knobs,
+  two-sided via `gl_FrontFacing`. Not the mesh GGX/IBL path; no shadow cast or
+  receive.
+- **Color** is `LUT(clamp((v - lo) / (hi - lo)))` through the shared `PJ::Colormap`
+  GLSL; `lo/hi` are the finite min/max of the color channel (auto) or the manual
+  range. A degenerate range (`hi == lo`, or no finite sample) paints the LUT
+  midpoint; a NaN color value on a valid triangle maps to the LUT low end.
+- **Placement** is `TF(fixed <- frame_id at the CURRENT tracker time) * origin`,
+  resolved per frame through `FrameContext::lookup()` as the occupancy pass does.
+  `worldBounds()` is a source-frame box (the local extent times the origin pose, z
+  from the finite elevation range) — never the fixed-frame transform.
+- **Lifecycle** follows `PointCloudLayer`: the topic attaches with a parser OR the
+  canonical `PJ.GridMap` codec (`resolve_object.cpp`); `renderKey()` is the sample
+  UID from `latestEntryIdAt` plus the fixed<-source transform and never resolves
+  bytes; the canonical object is cached per UID so a selector change re-packs
+  without re-transcoding. On the parser route the cached object's anchor was
+  allocated inside the plugin DSO (the grid_map transcoder owns its own buffer,
+  unlike the zero-copy point-cloud views), so the layer holds the binding
+  keepalive next to the cache, declared so the grid dies first — otherwise the
+  extension catalog can unmap the DSO before the dock is destroyed and the
+  cached grid's destructor faults at shutdown; `validateGridMap()` runs before extraction and a failure
+  (or a grid past `kMaxRenderableGridMapCells`) surfaces a layer-row status warning.
+  Dataset replace and detach reset the memo, bounds and warnings.
+- **Config.** Elevation field (with "None"), color field, colormap, auto / manual
+  range (manual seeded from the last auto range), lighting toggle, opacity —
+  persisted as `elevation_field, color_field, colormap, auto_range, range_lo,
+  range_hi, lighting, opacity`. The persisted names are REQUESTS: a missing field
+  falls back (with a warning) but the request is kept so it is honoured again when
+  the field reappears.
+- **Not built:** shadows, wireframe overlay, nearest-neighbour cuboid mode,
+  RGBA-from-fields color, the browser renderer.
 
 ## Repaint coalescing & autoplay
 

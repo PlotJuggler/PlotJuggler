@@ -41,6 +41,22 @@ inline bool parseFiniteFloat(
   return ok && std::isfinite(value) && value >= minimum && value <= maximum;
 }
 
+inline bool parseFiniteDouble(
+    const QDomElement& element, const char* attribute, double fallback, double minimum, double maximum, double& value) {
+  bool ok = true;
+  value = element.hasAttribute(QLatin1String(attribute)) ? element.attribute(QLatin1String(attribute)).toDouble(&ok)
+                                                         : fallback;
+  return ok && std::isfinite(value) && value >= minimum && value <= maximum;
+}
+
+inline bool parseBoundedInt(
+    const QDomElement& element, const char* attribute, int fallback, int minimum, int maximum, int& value) {
+  bool ok = true;
+  value = element.hasAttribute(QLatin1String(attribute)) ? element.attribute(QLatin1String(attribute)).toInt(&ok)
+                                                         : fallback;
+  return ok && value >= minimum && value <= maximum;
+}
+
 inline bool parseTrueFalse(const QDomElement& element, const char* attribute, bool fallback, bool& value) {
   if (!element.hasAttribute(QLatin1String(attribute))) {
     value = fallback;

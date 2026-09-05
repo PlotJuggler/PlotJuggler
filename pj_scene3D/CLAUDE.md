@@ -10,8 +10,10 @@ pose topic's first-pose — trajectory over the whole time range as a
 split-colored screen-space ribbon. A TF trail is a standalone layer; a pose
 trail is instead OWNED by its `PosesInFrameLayer` (a "Trail" toggle in that
 layer's settings, no Topics row of its own) — see ARCHITECTURE.md →
-"Trail layer")); `PosesInFrame` array-as-path rendering and laserscans remain
-future work. Sibling widget family to `pj_scene2D`.
+"Trail layer"), and grid maps (`GridMapLayer`: an `sdk::GridMap` drawn as a lit,
+colormapped heightfield from procedural `gl_VertexID` geometry — see
+ARCHITECTURE.md → "Grid-map layer")); `PosesInFrame` array-as-path rendering and
+laserscans remain future work. Sibling widget family to `pj_scene2D`.
 
 `VoxelGridLayer` consumes `sdk::VoxelGrid` (SDK ≥ 0.10.0): a dense 3D lattice
 whose per-voxel value is generic via `fields` (occupancy/cost/ESDF/semantic, or a

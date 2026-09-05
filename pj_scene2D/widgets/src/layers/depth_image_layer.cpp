@@ -24,7 +24,8 @@ using namespace Qt::StringLiterals;
 namespace PJ {
 
 namespace {
-QString colormapName(Colormap colormap) {
+// Persisted lowercase token (layout XML), distinct from the display name PJ::colormapName().
+QString colormapToken(Colormap colormap) {
   switch (colormap) {
     case Colormap::kTurbo:
       return u"turbo"_s;
@@ -212,7 +213,7 @@ void DepthImageLayer::applyTo(DepthPipelineSource& source) const {
 }
 
 void DepthImageLayer::saveOptions(QDomElement& element) const {
-  element.setAttribute(u"colormap"_s, colormapName(colormap_));
+  element.setAttribute(u"colormap"_s, colormapToken(colormap_));
   element.setAttribute(u"invert"_s, invert_ ? u"true"_s : u"false"_s);
   element.setAttribute(u"near_m"_s, QString::number(near_m_, 'g', 9));
   element.setAttribute(u"far_m"_s, QString::number(far_m_, 'g', 9));
@@ -220,7 +221,7 @@ void DepthImageLayer::saveOptions(QDomElement& element) const {
 }
 
 bool DepthImageLayer::loadOptions(const QDomElement& element) {
-  const Colormap restored_colormap = parseColormap(element.attribute(u"colormap"_s, colormapName(colormap_)));
+  const Colormap restored_colormap = parseColormap(element.attribute(u"colormap"_s, colormapToken(colormap_)));
   const QString invert_text = element.attribute(u"invert"_s, invert_ ? u"true"_s : u"false"_s);
   if (invert_text != u"true"_s && invert_text != u"false"_s) {
     return false;
