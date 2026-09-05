@@ -45,6 +45,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/ExtensionCatalogService.h
     include/pj_runtime/HttpGet.h
     include/pj_runtime/PluginRuntimeCatalog.h
+    include/pj_runtime/SourceCacheStore.h
     include/pj_runtime/IDataWidget.h
     include/pj_runtime/MarkerService.h
     include/pj_runtime/MarkersRuntimeHost.h
@@ -74,6 +75,11 @@ target_include_directories(pj_runtime PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 
+if(NOT EMSCRIPTEN)
+    # The source cache is desktop-only (no persistent disk in the browser).
+    target_sources(pj_runtime PRIVATE src/SourceCacheStore.cpp)
+endif()
+
 if(EMSCRIPTEN)
     # DiagnosticHistory uses the lightweight QtDiagnosticBridge type. The wasm
     # app compiles that bridge directly while the rest of marketplace is absent.
@@ -89,6 +95,9 @@ target_link_libraries(pj_runtime PUBLIC
     plotjuggler_sdk::plugin_host
     nlohmann_json::nlohmann_json
   PRIVATE
+    # Source-cache mechanics (per-identity locks, lease-then-validate lookup,
+    # atomic publish, LRU cleanup) come from the SDK; SourceCacheStore wraps them.
+    $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:plotjuggler_sdk::descriptor_import_support>
     tsl::robin_map
     pj_internal_fmt
     $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:mcap::mcap>
@@ -107,6 +116,16 @@ if(NOT EMSCRIPTEN)
 endif()
 
 if(PJ_BUILD_TESTS)
+    add_executable(source_cache_store_test
+        tests/source_cache_store_test.cpp
+    )
+    target_compile_options(source_cache_store_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(source_cache_store_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_test(NAME SourceCacheStoreTest COMMAND source_cache_store_test)
+
     add_executable(object_ingest_tap_test
         tests/object_ingest_tap_test.cpp
     )
