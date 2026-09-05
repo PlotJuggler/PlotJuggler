@@ -142,6 +142,15 @@ const TypeTreeNode* DataReader::getTypeTree(TopicId topic_id) const {
   return engine_.typeRegistry().lookup(schema_id);
 }
 
+std::optional<std::string> DataReader::getSchemaName(TopicId topic_id) const {
+  auto lock = engine_.lockEngine();
+  const TopicStorage* storage = engine_.getTopicStorage(topic_id);
+  if (storage == nullptr) {
+    return std::nullopt;
+  }
+  return engine_.typeRegistry().schemaName(storage->descriptor().schema_id);
+}
+
 std::optional<TopicMetadata> DataReader::getMetadata(TopicId topic_id) const {
   auto lock = engine_.lockEngine();
   const TopicStorage* storage = engine_.getTopicStorage(topic_id);

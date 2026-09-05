@@ -1293,6 +1293,16 @@ bool CurveTreeView::viewportEvent(QEvent* event) {
       event->accept();
       return true;
     }
+    const QTreeWidgetItem* item = itemAt(help_event->pos());
+    const bool name_column = columnAt(help_event->pos().x()) == kNameColumn;
+    if (tooltip_provider_ && item != nullptr && name_column && item->toolTip(kNameColumn).isEmpty()) {
+      const QString text = tooltip_provider_(catalogKeyForItem(item), treePathOfItem(item));
+      if (!text.isEmpty()) {
+        QToolTip::showText(help_event->globalPos(), text, viewport());
+        event->accept();
+        return true;
+      }
+    }
   }
   return QTreeWidget::viewportEvent(event);
 }
@@ -1966,6 +1976,22 @@ void CurveTreeView::scheduleValueRefresh() {
 void CurveTreeView::resizeEvent(QResizeEvent* event) {
   QTreeWidget::resizeEvent(event);
   scheduleValueRefresh();  // a taller viewport exposes more rows to fill
+}
+
+void CurveTreeView::setTooltipProvider(TooltipProvider provider) {
+  tooltip_provider_ = std::move(provider);
+}
+
+QString CurveTreeView::treePathOfItem(const QTreeWidgetItem* item) {
+  QStringList segments;
+  for (; item != nullptr; item = item->parent()) {
+    // The dataset (top-level) label is used verbatim, as treePathFromCurvePath
+    // does; a Show-Topics topic node keeps its raw name ("/camera/image", "a.b"),
+    // so every lower segment is normalized the same way that function does.
+    const QString text = item->text(kNameColumn);
+    segments = (item->parent() == nullptr ? QStringList{text} : splitPath(normalizedPathSegment(text))) + segments;
+  }
+  return segments.join('/');
 }
 
 void CurveTreeView::setDragSelectionProvider(DragSelectionProvider provider) {

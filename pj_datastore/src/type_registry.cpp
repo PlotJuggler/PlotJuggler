@@ -115,6 +115,15 @@ std::optional<PJ::SchemaId> TypeRegistry::findByName(std::string_view name) cons
   return it->second;
 }
 
+std::optional<std::string> TypeRegistry::schemaName(PJ::SchemaId id) const {
+  for (const auto& [name, schema_id] : impl_->name_to_id) {
+    if (schema_id == id) {
+      return name;
+    }
+  }
+  return std::nullopt;
+}
+
 PJ::Status TypeRegistry::evolveSchema(PJ::SchemaId id, std::shared_ptr<PJ::TypeTreeNode> updated_tree) {
   auto it = impl_->schemas.find(id);
   if (it == impl_->schemas.end()) {

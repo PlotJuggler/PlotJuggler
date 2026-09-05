@@ -34,6 +34,14 @@ std::shared_ptr<TypeTreeNode> makePoint3dSchema() {
                  });
 }
 
+TEST(TypeRegistryTest, SchemaNameIsTheInverseOfFindByName) {
+  TypeRegistry registry;
+  auto id = registry.registerSchema("Point", makePointSchema());
+  ASSERT_TRUE(id.has_value());
+  EXPECT_EQ(registry.schemaName(*id), std::optional<std::string>("Point"));
+  EXPECT_FALSE(registry.schemaName(*id + 1).has_value());
+}
+
 // 1. Register a schema, lookup by ID: returns correct tree
 TEST(TypeRegistryTest, RegisterAndLookupById) {
   TypeRegistry registry;

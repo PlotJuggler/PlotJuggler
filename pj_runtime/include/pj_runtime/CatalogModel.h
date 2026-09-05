@@ -182,6 +182,19 @@ struct AdvertisedTopic {
   sdk::BuiltinObjectType classification = sdk::BuiltinObjectType::kNone;
 };
 
+// Storage facts behind one topic, read at hover time for the curve-tree
+// tooltip. `schema_name` is the registered schema for a scalar topic (e.g.
+// "sensor_msgs/msg/Imu", empty when the topic has none) or the builtin object
+// type for an object topic. `count` is the physical row count (scalar) or the
+// entry count (object); `live` marks a dataset with an ingest in flight, where
+// the count is a moving number.
+struct TopicStats {
+  QString topic_name;
+  QString schema_name;
+  quint64 count = 0;
+  bool live = false;
+};
+
 // Qt-side facade over the catalog of topics/curves known to the current
 // session. Populated as data sources load; GUI views (CurveListPanel,
 // catalog trees in widget families) subscribe to the add/remove signals.
@@ -230,6 +243,12 @@ class CatalogModel : public QObject {
   // string field, or no sample exists at or before that time. The string sibling
   // of scalarValueAt; backs the "Value" column for string fields.
   [[nodiscard]] std::optional<QString> stringValueAt(const QString& key, double display_seconds) const;
+
+  // Storage facts for the topic behind `key` (a scalar field's owning topic or
+  // an object topic). nullopt for an unknown key, an advertised placeholder (no
+  // storage yet), or no session. Reads under the engine/store locks; hover-rate
+  // only.
+  [[nodiscard]] std::optional<TopicStats> topicStats(const QString& key) const;
 
   std::vector<CurveDescriptor> curves() const;
   // The descriptor for `key` when its field satisfies `capability`; nullopt

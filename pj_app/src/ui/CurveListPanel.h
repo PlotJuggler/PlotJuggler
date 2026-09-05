@@ -200,6 +200,10 @@ class CurveListPanel : public QWidget {
   // Reads each visible scalar leaf at last_tracker_time_ and writes the formatted
   // value. The unthrottled body behind refreshValues().
   void fillValuesNow();
+  // Hover text for a Datasets-tree row (see CurveTreeView::setTooltipProvider):
+  // field path / type / sample count for a scalar leaf, type / message count for
+  // a topic, topic count for a dataset. Empty for folders that are not a topic.
+  [[nodiscard]] QString rowTooltip(const QString& catalog_key, const QString& tree_path) const;
 
   Ui::CurveListPanel* ui_;
   CatalogModel* catalog_ = nullptr;

@@ -1916,6 +1916,59 @@ TEST(CurveTreeViewTest, ToolTipEventOverAStopAffordanceIsAnsweredByTheView) {
   EXPECT_FALSE(view.viewportEvent(&over_name)) << "outside the cluster the row keeps its own tooltip handling";
 }
 
+// The hover provider sees the row's key for a leaf and its rebuilt tree path
+// for a keyless group; a row with a static tooltip is left to Qt.
+TEST(CurveTreeViewTest, ToolTipProviderIsAskedForKeylessGroupsAndLeaves) {
+  TestCurveTreeView view;
+  view.resize(360, 240);
+  view.setViewMode(PJ::CurveTreeView::ViewMode::kShowTopics);
+  view.addCatalogItems({
+      {.key = u"k1"_s, .dataset = u"drive.mcap"_s, .topic = u"/imu/data"_s, .field = u"x"_s},
+      {.key = u"k2"_s,
+       .dataset = u"drive.mcap"_s,
+       .topic = u"/cam"_s,
+       .field = {},
+       .selectable = false,
+       .draggable = true,
+       .tooltip = u"static"_s},
+  });
+  view.expandAll();
+  view.show();
+  QApplication::processEvents();
+
+  std::vector<std::pair<QString, QString>> calls;
+  view.setTooltipProvider([&](const QString& key, const QString& tree_path) {
+    calls.emplace_back(key, tree_path);
+    return u"tip"_s;
+  });
+  const auto hover = [&](QTreeWidgetItem* item) {
+    const QRect rect = view.visualItemRect(item);
+    const QPoint pos(rect.left() + 4, rect.center().y());
+    QHelpEvent event(QEvent::ToolTip, pos, view.viewport()->mapToGlobal(pos));
+    return view.viewportEvent(&event);
+  };
+
+  QTreeWidgetItem* dataset = findTopLevel(view, u"drive.mcap"_s);
+  ASSERT_NE(dataset, nullptr);
+  QTreeWidgetItem* topic = nullptr;
+  QTreeWidgetItem* cam = nullptr;
+  for (int i = 0; i < dataset->childCount(); ++i) {
+    (dataset->child(i)->text(0) == u"/imu/data"_s ? topic : cam) = dataset->child(i);
+  }
+  ASSERT_NE(topic, nullptr);
+  ASSERT_NE(cam, nullptr);
+  ASSERT_EQ(topic->childCount(), 1);
+
+  EXPECT_TRUE(hover(dataset));
+  EXPECT_TRUE(hover(topic));
+  EXPECT_TRUE(hover(topic->child(0)));
+  hover(cam);  // Qt shows the static tooltip itself; the provider must not be asked
+  ASSERT_EQ(calls.size(), 3U);
+  EXPECT_EQ(calls[0], std::make_pair(QString{}, u"drive.mcap"_s));
+  EXPECT_EQ(calls[1], std::make_pair(QString{}, u"drive.mcap/imu/data"_s));
+  EXPECT_EQ(calls[2], std::make_pair(u"k1"_s, u"drive.mcap/imu/data/x"_s));
+}
+
 TEST(CurveTreeViewTest, LeftPressOnCancellableLoadingRowRequestsCancelWithoutSelecting) {
   TestCurveTreeView view;
   view.resize(360, 180);

@@ -306,6 +306,16 @@ class CurveTreeView : public QTreeWidget {
 
   void setDragSelectionProvider(DragSelectionProvider provider);
 
+  // Answers a hover over the Name column of any row that carries no static
+  // tooltip (CurvePath::tooltip wins). Called at tooltip time, never stored on
+  // the item, so live counts stay current. `catalog_key` is the row's key
+  // (leaf / object topic; empty for a group row); `tree_path` is the row's
+  // normalized dataset/topic[/field] path, the same string
+  // treePathFromCurvePath() yields, so a group row can be matched back to its
+  // dataset or topic. Return empty for no tooltip.
+  using TooltipProvider = std::function<QString(const QString& catalog_key, const QString& tree_path)>;
+  void setTooltipProvider(TooltipProvider provider);
+
  signals:
   // Emitted when the user stops a loading, cancellable dataset row from the
   // row itself. `keep_partial` distinguishes the two affordances: the ✕ stops
@@ -460,6 +470,9 @@ class CurveTreeView : public QTreeWidget {
   // re-label and no re-sort, which a ~20 Hz load tick must not pay for. Falls
   // back to the full pass on a cache miss.
   void refreshDatasetProgressValues();
+  // The row's normalized tree path rebuilt from its ancestry (group rows carry
+  // no kSearchRole); equals treePathFromCurvePath() for the row's CurvePath.
+  [[nodiscard]] static QString treePathOfItem(const QTreeWidgetItem* item);
   // Drops a row's selection while it shows live progress; shared by both passes.
   void deselectProgressRow(QTreeWidgetItem* row, DatasetProgress::State state);
   // Starts or stops the marquee/flash timer from whether any row still animates.
@@ -586,6 +599,7 @@ class CurveTreeView : public QTreeWidget {
   // See setEmptyFilterMessage. Empty string disables the overlay.
   QString empty_filter_message_;
   DragSelectionProvider drag_selection_provider_;
+  TooltipProvider tooltip_provider_;
   // Owned by the header; borrowed here to rebalance after the Value column is
   // shown or hidden, which the policy cannot observe on its own.
   HeaderResizePolicy* header_policy_ = nullptr;

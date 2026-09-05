@@ -14,6 +14,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QLineF>
+#include <QLocale>
 #include <QMargins>
 #include <QMenu>
 #include <QPainter>
@@ -130,6 +131,46 @@ QString undisplayableObjectTooltip(sdk::BuiltinObjectType type) {
     default:
       return QObject::tr("No view can display this topic type.");
   }
+}
+
+// Schema-style spelling of a scalar column's declared primitive, for the tooltip.
+QString primitiveTypeName(PrimitiveType type) {
+  switch (type) {
+    case PrimitiveType::kFloat32:
+      return u"float32"_s;
+    case PrimitiveType::kFloat64:
+      return u"float64"_s;
+    case PrimitiveType::kInt8:
+      return u"int8"_s;
+    case PrimitiveType::kInt16:
+      return u"int16"_s;
+    case PrimitiveType::kInt32:
+      return u"int32"_s;
+    case PrimitiveType::kInt64:
+      return u"int64"_s;
+    case PrimitiveType::kUint8:
+      return u"uint8"_s;
+    case PrimitiveType::kUint16:
+      return u"uint16"_s;
+    case PrimitiveType::kUint32:
+      return u"uint32"_s;
+    case PrimitiveType::kUint64:
+      return u"uint64"_s;
+    case PrimitiveType::kBool:
+      return u"bool"_s;
+    case PrimitiveType::kString:
+      return u"string"_s;
+    case PrimitiveType::kUnspecified:
+      break;
+  }
+  return {};
+}
+
+// "~1,234" while the dataset is still ingesting: the physical row count is a
+// moving number there and may include rows below the streaming retention floor.
+QString formatCount(const TopicStats& stats) {
+  const QString digits = QLocale().toString(static_cast<qulonglong>(stats.count));
+  return stats.live ? u"~"_s + digits : digits;
 }
 
 CurveTreeView::CurvePath treePathFromCatalogItem(
@@ -388,6 +429,9 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   tree_view_->setContextMenuPolicy(Qt::CustomContextMenu);
   connect(tree_view_, &QWidget::customContextMenuRequested, this, &CurveListPanel::onTreeContextMenu);
 
+  tree_view_->setTooltipProvider(
+      [this](const QString& catalog_key, const QString& tree_path) { return rowTooltip(catalog_key, tree_path); });
+
   // Double-click on a scalar placeholder leaf → bounded field preview + one-shot
   // auto-expand. The handler no-ops until setTopicDemandController wires it.
   connect(tree_view_, &CurveTreeView::placeholderPeekRequested, this, &CurveListPanel::onPlaceholderPeekRequested);
@@ -423,6 +467,73 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
 
 CurveListPanel::~CurveListPanel() {
   delete ui_;
+}
+
+QString CurveListPanel::rowTooltip(const QString& catalog_key, const QString& tree_path) const {
+  if (catalog_ == nullptr) {
+    return {};
+  }
+  // Rich text: semi-bold labels, names HTML-escaped (a topic can contain '<').
+  QStringList lines;
+  const auto describe_topic = [&](const CatalogItem& item) {
+    if (isAdvertisedTopic(item)) {
+      lines << tr("Not subscribed. Drop it into a view to start streaming.");
+      return;
+    }
+    const std::optional<TopicStats> stats = catalog_->topicStats(item.key);
+    if (!stats.has_value()) {
+      return;
+    }
+    lines << item.topic_name.toHtmlEscaped();
+    if (!stats->schema_name.isEmpty()) {
+      lines << tr("<span style=\"font-weight:600\">Type:</span> %1").arg(stats->schema_name.toHtmlEscaped());
+    }
+    lines << tr("<span style=\"font-weight:600\">Messages:</span> %1").arg(formatCount(*stats));
+  };
+
+  if (!catalog_key.isEmpty()) {
+    const std::optional<CatalogItem> item = catalog_->itemDescriptor(catalog_key);
+    if (!item.has_value()) {
+      return {};
+    }
+    if (const ScalarFieldPayload* scalar = asScalarField(*item)) {
+      const std::optional<TopicStats> stats = catalog_->topicStats(item->key);
+      if (!stats.has_value()) {
+        return {};
+      }
+      lines << scalar->field_path.toHtmlEscaped();
+      const QString type_name = primitiveTypeName(scalar->logical_type);
+      if (!type_name.isEmpty()) {
+        lines << tr("<span style=\"font-weight:600\">Type:</span> %1").arg(type_name);
+      }
+      lines << tr("<span style=\"font-weight:600\">Samples:</span> %1").arg(formatCount(*stats));
+    } else {
+      describe_topic(*item);
+    }
+    return lines.join(u"<br>"_s);
+  }
+
+  // A keyless group row: the dataset itself, a scalar topic's node, or a plain
+  // struct folder. Resolve by tree path; a folder that is neither stays silent.
+  // ponytail: O(catalog) scan per hover; index by tree path if it ever shows.
+  const std::vector<CatalogItem> items = catalog_->items();
+  QSet<QString> dataset_topics;
+  for (const CatalogItem& item : items) {
+    const CurveTreeView::CurvePath topic_path{
+        .key = {}, .dataset = item.dataset_name, .topic = item.topic_name, .field = {}};
+    const QString topic_tree_path = CurveTreeView::treePathFromCurvePath(topic_path);
+    if (topic_tree_path == tree_path) {
+      describe_topic(item);
+      return lines.join(u"<br>"_s);
+    }
+    if (item.dataset_name == tree_path) {
+      dataset_topics.insert(item.topic_name);
+    }
+  }
+  if (!dataset_topics.isEmpty()) {
+    lines << tr("<span style=\"font-weight:600\">Topics:</span> %1").arg(dataset_topics.size());
+  }
+  return lines.join(u"<br>"_s);
 }
 
 void CurveListPanel::setCatalog(CatalogModel* catalog) {

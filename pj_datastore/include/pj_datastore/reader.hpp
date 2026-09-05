@@ -37,6 +37,10 @@ class DataReader {
   /// Return topic metadata if topic exists.
   [[nodiscard]] std::optional<TopicMetadata> getMetadata(PJ::TopicId topic_id) const;
 
+  /// Registered schema name of a topic (e.g. "sensor_msgs/msg/Imu"); nullopt when
+  /// the topic is unknown or was created without a named schema (schema_id 0).
+  [[nodiscard]] std::optional<std::string> getSchemaName(PJ::TopicId topic_id) const;
+
   /// Create range cursor over [t_min, t_max].
   [[nodiscard]] PJ::Expected<RangeCursor> rangeQuery(const QueryRange& range) const;
 

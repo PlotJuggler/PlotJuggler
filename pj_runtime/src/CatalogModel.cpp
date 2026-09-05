@@ -354,6 +354,35 @@ std::optional<double> CatalogModel::scalarValueAt(const QString& key, double dis
   return **value_or;
 }
 
+std::optional<TopicStats> CatalogModel::topicStats(const QString& key) const {
+  if (impl_->session == nullptr) {
+    return std::nullopt;
+  }
+  const auto it = impl_->items.find(key);
+  if (it == impl_->items.end()) {
+    return std::nullopt;
+  }
+  const CatalogItem& item = it->second;
+  TopicStats stats{.topic_name = item.topic_name, .live = impl_->session->ingestActive(item.dataset_id)};
+  if (const ScalarFieldPayload* scalar = asScalarField(item)) {
+    const DataReader reader(impl_->session->dataEngine());
+    const auto metadata = reader.getMetadata(scalar->topic_id);
+    if (!metadata.has_value()) {
+      return std::nullopt;
+    }
+    stats.count = metadata->total_row_count;
+    stats.schema_name = QString::fromStdString(reader.getSchemaName(scalar->topic_id).value_or(""));
+    return stats;
+  }
+  if (const ObjectTopicPayload* object = asObjectTopic(item)) {
+    stats.count = impl_->session->objectStore().entryCount(object->object_topic_id);
+    // sdk::name() spells the enum ("kImage"); drop the k prefix for display.
+    stats.schema_name = QString::fromUtf8(sdk::name(object->object_type)).mid(1);
+    return stats;
+  }
+  return std::nullopt;  // advertised placeholder: no storage behind it
+}
+
 bool CatalogModel::isScalarKey(const QString& key) const {
   const auto it = impl_->items.find(key);
   if (it == impl_->items.end()) {

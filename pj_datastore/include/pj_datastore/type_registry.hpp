@@ -42,6 +42,10 @@ class TypeRegistry {
   // Lookup by name — returns nullopt if not found
   [[nodiscard]] std::optional<PJ::SchemaId> findByName(std::string_view name) const;
 
+  // Registered name for `id` (the inverse of findByName) — nullopt if not found.
+  // Linear in the number of schemas; meant for UI/diagnostic lookups, not hot paths.
+  [[nodiscard]] std::optional<std::string> schemaName(PJ::SchemaId id) const;
+
   // Schema evolution: add fields to existing schema (additive only).
   // Fails if: ID not found, existing fields changed type, fields removed.
   [[nodiscard]] PJ::Status evolveSchema(PJ::SchemaId id, std::shared_ptr<PJ::TypeTreeNode> updated_tree);
