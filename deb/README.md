@@ -49,7 +49,7 @@ jammy container the release build runs in.
 /opt/plotjuggler4/share/doc/    licenses of the bundled libraries
 /usr/bin/plotjuggler4           launcher (deb/plotjuggler4.wrapper.in)
 /usr/share/applications/        desktop entry
-/usr/share/icons/hicolor/…      icon
+/usr/share/icons/hicolor/…      icons (256px PNG + scalable SVG)
 ```
 
 `bin` and `lib` stay siblings because the app resolves its bundled-plugin seed

@@ -8,6 +8,7 @@
 #include <QFont>
 #include <QFontDatabase>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QImage>
 #include <QPixmap>
 #include <QScreen>
@@ -253,6 +254,12 @@ int main(int argc, char* argv[]) {
   // box and compared against the latest GitHub release.
   QCoreApplication::setApplicationVersion(QStringLiteral(PJ_VERSION_STRING));
   QApplication::setApplicationDisplayName(u"PlotJuggler 4"_s);
+  // The window icon covers X11 / Windows decorations and task bars. Wayland
+  // compositors ignore it and resolve the dock icon through the app_id →
+  // <app_id>.desktop lookup instead, so the app_id must equal the basename of
+  // the desktop file the .deb / AppImage install (appimage/plotjuggler4.desktop).
+  QGuiApplication::setWindowIcon(QIcon(u":/resources/plotjuggler.svg"_s));
+  QGuiApplication::setDesktopFileName(u"plotjuggler4"_s);
 
 #ifdef PJ_TARGET_WASM
   // Install the deny-by-default browser persistence boundary before the first

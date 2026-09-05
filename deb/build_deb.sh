@@ -130,6 +130,7 @@ PREFIX_DIR="${STAGE}${PREFIX}"
 mkdir -p "${PREFIX_DIR}" "${STAGE}/usr/bin" \
          "${STAGE}/usr/share/applications" \
          "${STAGE}/usr/share/icons/hicolor/256x256/apps" \
+         "${STAGE}/usr/share/icons/hicolor/scalable/apps" \
          "${STAGE}/usr/share/doc/${PACKAGE}" \
          "${STAGE}/DEBIAN"
 
@@ -156,11 +157,13 @@ if [[ -d "${APPDIR}/usr/share/doc" ]]; then
   cp -a "${APPDIR}/usr/share/doc" "${PREFIX_DIR}/share/doc"
 fi
 
-# Only these two cross into the system tree — nothing else owns them.
+# Only these three cross into the system tree — nothing else owns them.
 cp -a "${APPDIR}/usr/share/applications/plotjuggler4.desktop" \
       "${STAGE}/usr/share/applications/"
 cp -a "${APPDIR}/usr/share/icons/hicolor/256x256/apps/plotjuggler4.png" \
       "${STAGE}/usr/share/icons/hicolor/256x256/apps/"
+cp -a "${APPDIR}/usr/share/icons/hicolor/scalable/apps/plotjuggler4.svg" \
+      "${STAGE}/usr/share/icons/hicolor/scalable/apps/"
 
 # cp -a preserved the AppDir's modes, which carry the build host's umask (a
 # dev checkout easily yields 0775 dirs). A root-owned install must not be

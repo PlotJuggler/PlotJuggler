@@ -231,6 +231,13 @@ Run the app:
 
 `run.sh` unsets `QT_IM_MODULE` before launching. Otherwise the IBus platform input context can get loaded from a system / older Qt install and crash under the pinned Qt runtime.
 
+A dev build shows a generic gear in the GNOME/Wayland dock because no
+`plotjuggler4.desktop` is installed (Wayland resolves the icon through the
+app_id → desktop file → icon-theme chain, never through the window icon).
+`scripts/install_desktop_entry.sh` registers a user-local entry pointing at
+this checkout's `run.sh` (`--uninstall` to remove); packaged builds need
+nothing, the `.deb` and integrated AppImages ship the entry themselves.
+
 Run the tests (`enable_testing()` is wired at the top level, so `ctest` covers every module):
 
 ```bash

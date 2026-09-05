@@ -8,3 +8,7 @@ Comment=Visualize timeseries like a pro
 Terminal=false
 Categories=Development;Science;Utility;
 Keywords=plot;timeseries;ros;mcap;telemetry;
+# Wayland compositors match a window to its launcher by app_id (set in main.cpp).
+# Integration tools (AppImageLauncher, Gear Lever) rename this file, so the
+# basename no longer matches; this key keeps the match.
+StartupWMClass=plotjuggler4

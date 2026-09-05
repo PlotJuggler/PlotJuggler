@@ -276,6 +276,12 @@ cd "${SCRIPT_DIR}"
   --custom-apprun "${SCRIPT_DIR}/AppRun.sh" \
   --plugin qt
 
+# Scalable icon next to the 256px raster, so HiDPI docks and app grids render
+# the logo crisp instead of upscaling the PNG. Named after the desktop file's
+# Icon= key like the PNG.
+install -Dm644 "${ROOT}/resources/svg/plotjuggler.svg" \
+  "${APPDIR}/usr/share/icons/hicolor/scalable/apps/plotjuggler4.svg"
+
 case "${PLUGINS_MODE}" in
   local)    collect_plugins_local ;;
   registry) collect_plugins_registry ;;
