@@ -468,7 +468,7 @@ DepthIntrinsics DepthCloudLayer::resolveIntrinsics(const std::string& frame_id, 
     if (!obj.has_value()) {
       continue;
     }
-    const auto* ci = std::any_cast<CameraInfo>(&obj->object);
+    const auto* ci = obj->object.get<CameraInfo>();
     if (ci == nullptr) {
       continue;
     }
@@ -541,7 +541,7 @@ void DepthCloudLayer::renderAt(int64_t time_ns) {
     qCWarning(lcDepthCloudLayer) << "renderAt parseObject failed:" << QString::fromStdString(obj.error());
     return;
   }
-  const auto* image = std::any_cast<Image>(&obj->object);
+  const auto* image = obj->object.get<Image>();
   if (image == nullptr) {
     return;
   }

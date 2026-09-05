@@ -405,34 +405,34 @@ void probeObjectDecoding(SessionManager& session, ObjectStore& object_store, Dat
 
     const PJ::sdk::BuiltinObjectType type = PJ::sdk::typeOf(record->object);
     QString details;
-    if (const auto* tf = std::any_cast<PJ::sdk::FrameTransforms>(&record->object); tf != nullptr) {
+    if (const auto* tf = record->object.get<PJ::sdk::FrameTransforms>(); tf != nullptr) {
       details = u"transforms=%1"_s.arg(tf->transforms.size());
       if (!tf->transforms.empty()) {
         details += u" parent=%1 child=%2"_s.arg(
             QString::fromStdString(tf->transforms.front().parent_frame_id),
             QString::fromStdString(tf->transforms.front().child_frame_id));
       }
-    } else if (const auto* grid = std::any_cast<PJ::sdk::OccupancyGrid>(&record->object); grid != nullptr) {
+    } else if (const auto* grid = record->object.get<PJ::sdk::OccupancyGrid>(); grid != nullptr) {
       details = u"width=%1 height=%2 cells=%3 frame=%4 resolution=%5"_s.arg(grid->width)
                     .arg(grid->height)
                     .arg(grid->data.size())
                     .arg(QString::fromStdString(grid->frame_id))
                     .arg(grid->resolution, 0, 'g', 17);
-    } else if (const auto* cloud = std::any_cast<PJ::sdk::PointCloud>(&record->object); cloud != nullptr) {
+    } else if (const auto* cloud = record->object.get<PJ::sdk::PointCloud>(); cloud != nullptr) {
       details = u"width=%1 height=%2 fields=%3 bytes=%4 frame=%5"_s.arg(cloud->width)
                     .arg(cloud->height)
                     .arg(cloud->fields.size())
                     .arg(cloud->data.size())
                     .arg(QString::fromStdString(cloud->frame_id));
-    } else if (const auto* poses = std::any_cast<PJ::sdk::PosesInFrame>(&record->object); poses != nullptr) {
+    } else if (const auto* poses = record->object.get<PJ::sdk::PosesInFrame>(); poses != nullptr) {
       details = u"poses=%1 frame=%2"_s.arg(poses->poses.size()).arg(QString::fromStdString(poses->frame_id));
-    } else if (const auto* image = std::any_cast<PJ::sdk::Image>(&record->object); image != nullptr) {
+    } else if (const auto* image = record->object.get<PJ::sdk::Image>(); image != nullptr) {
       details = u"width=%1 height=%2 encoding=%3 bytes=%4 frame=%5"_s.arg(image->width)
                     .arg(image->height)
                     .arg(QString::fromStdString(image->encoding))
                     .arg(image->data.size())
                     .arg(QString::fromStdString(image->frame_id));
-    } else if (const auto* camera = std::any_cast<PJ::sdk::CameraInfo>(&record->object); camera != nullptr) {
+    } else if (const auto* camera = record->object.get<PJ::sdk::CameraInfo>(); camera != nullptr) {
       details = u"width=%1 height=%2 frame=%3 fx=%4 fy=%5"_s.arg(camera->width)
                     .arg(camera->height)
                     .arg(QString::fromStdString(camera->frame_id))

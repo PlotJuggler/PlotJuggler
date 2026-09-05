@@ -152,7 +152,7 @@ bool firstSampleIsDepthEncoded(PJ::SessionManager& session, ObjectTopicId topic_
   }
   auto object = pj::scene3d::resolveObject(
       session.parserBindingForObjectTopic(topic_id), sdk::BuiltinObjectType::kImage, first->timestamp, first->payload);
-  const auto* image = object.has_value() ? std::any_cast<sdk::Image>(&object->object) : nullptr;
+  const auto* image = object.has_value() ? object->object.get<sdk::Image>() : nullptr;
   return image != nullptr && pj::scene3d::WasmDepthCloudLayer::isDepthEncoding(image->encoding);
 }
 

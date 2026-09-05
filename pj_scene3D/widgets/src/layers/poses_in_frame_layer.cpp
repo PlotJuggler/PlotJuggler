@@ -188,7 +188,7 @@ bool PosesInFrameLayer::bootstrap() {
     qCWarning(lcPoses) << "bootstrap: parseObject failed:" << QString::fromStdString(obj.error());
     return false;
   }
-  const auto* msg = std::any_cast<PJ::sdk::PosesInFrame>(&obj->object);
+  const auto* msg = obj->object.get<PJ::sdk::PosesInFrame>();
   if (msg == nullptr) {
     return false;
   }
@@ -231,7 +231,7 @@ void PosesInFrameLayer::renderAt(int64_t time_ns) {
   if (!obj.has_value()) {
     return;
   }
-  const auto* msg = std::any_cast<PJ::sdk::PosesInFrame>(&obj->object);
+  const auto* msg = obj->object.get<PJ::sdk::PosesInFrame>();
   if (msg == nullptr) {
     return;
   }

@@ -49,7 +49,7 @@ class MockDecoder final : public ISceneDecoder {
   // Object route (parser-backed topics): take the canonical ImageAnnotations as-is.
   Expected<SceneFrame> decode(const sdk::BuiltinObject& object) override {
     calls.fetch_add(1, std::memory_order_relaxed);
-    const auto* ia = std::any_cast<sdk::ImageAnnotations>(&object);
+    const auto* ia = object.get<sdk::ImageAnnotations>();
     if (ia == nullptr) {
       return unexpected(std::string("mock decoder: object is not ImageAnnotations"));
     }

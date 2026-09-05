@@ -170,7 +170,7 @@ bool VoxelGridLayer::bootstrap() {
     qCWarning(lcVoxel) << "bootstrap: parseObject failed:" << QString::fromStdString(obj.error());
     return false;
   }
-  const auto* grid = std::any_cast<PJ::sdk::VoxelGrid>(&obj->object);
+  const auto* grid = obj->object.get<PJ::sdk::VoxelGrid>();
   if (grid == nullptr) {
     return false;
   }
@@ -250,7 +250,7 @@ void VoxelGridLayer::renderAt(int64_t time_ns) {
       qCWarning(lcVoxel) << "renderAt: parseObject failed:" << QString::fromStdString(obj.error());
       return;
     }
-    const auto* parsed = std::any_cast<PJ::sdk::VoxelGrid>(&obj->object);
+    const auto* parsed = obj->object.get<PJ::sdk::VoxelGrid>();
     if (parsed == nullptr) {
       return;
     }

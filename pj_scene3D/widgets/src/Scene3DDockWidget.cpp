@@ -226,7 +226,7 @@ std::optional<ValidatedSceneState> validateSceneState(const QDomElement& element
   if (!obj.has_value()) {
     return false;
   }
-  const auto* image = std::any_cast<PJ::sdk::Image>(&obj->object);
+  const auto* image = obj->object.get<PJ::sdk::Image>();
   return image != nullptr && pj::scene3d::isDepthEncoding(image->encoding);
 }
 

@@ -520,7 +520,7 @@ bool WasmSceneEntitiesLayer::decodeAt(PJ::Timepoint time) {
       setDataWarning(tr("SceneEntities could not be decoded: %1").arg(QString::fromStdString(object.error())));
       return true;
     }
-    auto* decoded = std::any_cast<PJ::sdk::SceneEntities>(&object->object);
+    auto* decoded = object->object.get<PJ::sdk::SceneEntities>();
     if (decoded == nullptr) {
       active_sample_ = sample;
       clearGeometry();
@@ -938,7 +938,7 @@ bool WasmSceneEntitiesLayer::applyModelWindow(std::int64_t lo_ns, std::int64_t h
           tr("SceneEntities model history could not be decoded: %1").arg(QString::fromStdString(object.error()));
       continue;
     }
-    auto* decoded = std::any_cast<PJ::sdk::SceneEntities>(&object->object);
+    auto* decoded = object->object.get<PJ::sdk::SceneEntities>();
     if (decoded == nullptr) {
       model_state_warning_ = tr("Object parser returned the wrong type for SceneEntities model history");
       continue;

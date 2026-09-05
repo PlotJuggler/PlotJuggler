@@ -63,7 +63,7 @@ TEST(ResolveObject, DecodesCanonicalPointCloudWithoutParser) {
   const PJ::SessionManager::ParserBinding empty;  // parser == nullptr -> canonical path
   auto rec = pj::scene3d::resolveObject(empty, BT::kPointCloud, 1234, payloadOf(blob));
   ASSERT_TRUE(rec.has_value()) << rec.error();
-  const auto* out = std::any_cast<PJ::sdk::PointCloud>(&rec->object);
+  const auto* out = rec->object.get<PJ::sdk::PointCloud>();
   ASSERT_NE(out, nullptr);
   EXPECT_EQ(out->frame_id, "lidar");
   EXPECT_EQ(out->width, 1u);
@@ -82,7 +82,7 @@ TEST(ResolveObject, DecodesCanonicalFrameTransformsWithoutParser) {
   const PJ::SessionManager::ParserBinding empty;
   auto rec = pj::scene3d::resolveObject(empty, BT::kFrameTransforms, 5, payloadOf(blob));
   ASSERT_TRUE(rec.has_value()) << rec.error();
-  const auto* out = std::any_cast<PJ::sdk::FrameTransforms>(&rec->object);
+  const auto* out = rec->object.get<PJ::sdk::FrameTransforms>();
   ASSERT_NE(out, nullptr);
   ASSERT_EQ(out->transforms.size(), 1u);
   EXPECT_EQ(out->transforms[0].parent_frame_id, "odom");
@@ -102,7 +102,7 @@ TEST(ResolveObject, DecodesCanonicalPosesInFrameWithoutParser) {
   const PJ::SessionManager::ParserBinding empty;
   auto rec = pj::scene3d::resolveObject(empty, BT::kPosesInFrame, 77, payloadOf(blob));
   ASSERT_TRUE(rec.has_value()) << rec.error();
-  const auto* out = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  const auto* out = rec->object.get<PJ::sdk::PosesInFrame>();
   ASSERT_NE(out, nullptr);
   EXPECT_EQ(out->frame_id, "map");
   ASSERT_EQ(out->poses.size(), 1u);

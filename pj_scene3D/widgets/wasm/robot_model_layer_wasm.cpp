@@ -459,7 +459,7 @@ bool WasmRobotModelLayer::tryLoadTopicDescription() {
     setWarning(status_text_);
     return false;
   }
-  const auto* description = std::any_cast<PJ::sdk::RobotDescription>(&object->object);
+  const auto* description = object->object.get<PJ::sdk::RobotDescription>();
   if (description == nullptr) {
     setStatus(tr("Parse error: parser did not return RobotDescription"));
     setWarning(status_text_);

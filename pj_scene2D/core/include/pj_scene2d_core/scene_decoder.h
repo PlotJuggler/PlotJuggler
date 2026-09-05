@@ -60,7 +60,7 @@ class ImageAnnotationsSceneDecoder final : public ISceneDecoder {
   }
 
   Expected<SceneFrame> decode(const sdk::BuiltinObject& object) override {
-    const auto* annotations = std::any_cast<sdk::ImageAnnotations>(&object);
+    const auto* annotations = object.get<sdk::ImageAnnotations>();
     if (annotations == nullptr) {
       return unexpected(std::string("ImageAnnotationsSceneDecoder: object is not ImageAnnotations"));
     }

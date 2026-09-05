@@ -225,7 +225,7 @@ bool GridMapLayer::bootstrap() {
     qCWarning(lcGridMap) << "bootstrap: decode failed:" << QString::fromStdString(obj.error());
     return false;
   }
-  const auto* grid = std::any_cast<PJ::sdk::GridMap>(&obj->object);
+  const auto* grid = obj->object.get<PJ::sdk::GridMap>();
   if (grid == nullptr) {
     return false;
   }
@@ -331,7 +331,7 @@ void GridMapLayer::renderAt(int64_t time_ns) {
       bail(tr("Grid map decode failed: %1").arg(QString::fromStdString(obj.error())));
       return;
     }
-    auto* parsed = std::any_cast<PJ::sdk::GridMap>(&obj->object);
+    auto* parsed = obj->object.get<PJ::sdk::GridMap>();
     if (parsed == nullptr) {
       bail(tr("Grid map decode returned an object of another type"));
       return;

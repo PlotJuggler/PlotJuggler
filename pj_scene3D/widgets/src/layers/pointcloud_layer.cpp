@@ -1050,12 +1050,12 @@ bool PointCloudLayer::bootstrap() {
   // Compressed topic (Draco / Cloudini): the wrapper gives frame_id without a
   // decode, but the field list needs one. Decode the first sample asynchronously so
   // attach never blocks the UI — fields populate when the result lands.
-  if (const auto* cpc = std::any_cast<CompressedPointCloud>(&obj->object)) {
+  if (const auto* cpc = obj->object.get<CompressedPointCloud>()) {
     requestDecode(*cpc, SampleId{first->sequential_uid, first->timestamp});
     return true;
   }
 
-  const auto* sdk_cloud = std::any_cast<PointCloud>(&obj->object);
+  const auto* sdk_cloud = obj->object.get<PointCloud>();
   if (sdk_cloud == nullptr) {
     return false;
   }
@@ -1351,12 +1351,12 @@ void PointCloudLayer::renderAt(int64_t time_ns) {
 
   // The mode is derived per-sample rather than latched at bootstrap, so a topic
   // whose first sample arrives only after attach (failed bootstrap) still renders.
-  if (const auto* cpc = std::any_cast<CompressedPointCloud>(&obj->object)) {
+  if (const auto* cpc = obj->object.get<CompressedPointCloud>()) {
     requestDecode(*cpc, id);  // off the UI thread; pushes when ready
     return;
   }
 
-  const auto* sdk_cloud = std::any_cast<PointCloud>(&obj->object);
+  const auto* sdk_cloud = obj->object.get<PointCloud>();
   if (sdk_cloud == nullptr) {
     return;
   }

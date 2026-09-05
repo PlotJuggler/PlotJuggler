@@ -44,7 +44,7 @@ class StreamingVideoSource : public MediaSource {
   /// PJ.VideoFrame / Foxglove CompressedVideo message. The decoder installs a
   /// NAL extractor that, on each entry, locks `parser_mutex` (MessageParser
   /// plugins are not thread-safe — fastcdr et al. keep stateful scratch), calls
-  /// `parser->parseObject`, any_casts the result to sdk::VideoFrame, and returns
+  /// `parser->parseObject`, downcasts the result to sdk::VideoFrame, and returns
   /// the contained `data` span. The span aliases the entry's buffer (kept alive
   /// by the resolved entry across extract+decode) — no copy of the H.264 blob.
   /// @param store         ObjectStore containing video entries (not owned)

@@ -63,7 +63,7 @@ void ingestEntry(
   if (!obj.has_value()) {
     return;
   }
-  const auto* ft = std::any_cast<PJ::sdk::FrameTransforms>(&obj->object);
+  const auto* ft = obj->object.get<PJ::sdk::FrameTransforms>();
   if (ft == nullptr) {
     return;
   }

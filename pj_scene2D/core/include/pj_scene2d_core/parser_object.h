@@ -36,17 +36,17 @@ struct ParserObjectError {
 template <typename TObject>
 struct ParsedObject {
   explicit ParsedObject(sdk::ObjectRecord record_in) : record(std::move(record_in)) {
-    value = std::any_cast<TObject>(&record.object);
+    value = record.object.get<TObject>();
   }
 
   ParsedObject(ParsedObject&& other) noexcept : record(std::move(other.record)) {
-    value = std::any_cast<TObject>(&record.object);
+    value = record.object.get<TObject>();
   }
 
   ParsedObject& operator=(ParsedObject&& other) noexcept {
     if (this != &other) {
       record = std::move(other.record);
-      value = std::any_cast<TObject>(&record.object);
+      value = record.object.get<TObject>();
     }
     return *this;
   }
@@ -72,7 +72,7 @@ template <typename TObject>
     return unexpected(
         ParserObjectError{
             ParserObjectErrorKind::kAnyCastFailed,
-            "any_cast<" + std::string(type_name) + "> failed (parser contract violation)",
+            "object cast to " + std::string(type_name) + " failed (parser contract violation)",
             expected_type,
         });
   }

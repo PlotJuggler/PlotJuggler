@@ -198,7 +198,7 @@ bool WasmPosesInFrameLayer::bootstrap() {
   if (!object.has_value()) {
     return false;
   }
-  const auto* poses = std::any_cast<PJ::sdk::PosesInFrame>(&object->object);
+  const auto* poses = object->object.get<PJ::sdk::PosesInFrame>();
   if (poses == nullptr) {
     return false;
   }
@@ -241,7 +241,7 @@ bool WasmPosesInFrameLayer::decodeAt(PJ::Timepoint time) {
     staged_style_revision_ = style_revision_;
     return true;
   }
-  const auto* poses = std::any_cast<PJ::sdk::PosesInFrame>(&object->object);
+  const auto* poses = object->object.get<PJ::sdk::PosesInFrame>();
   if (poses == nullptr) {
     setWarning(tr("This browser layer accepts PosesInFrame samples only"));
     clearGeometry();

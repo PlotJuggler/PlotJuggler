@@ -550,7 +550,7 @@ std::optional<PoseTrailSample> TrailLayer::decodePoseSample(
     ++decode_failures;
     return std::nullopt;
   }
-  const auto* message = std::any_cast<PJ::sdk::PosesInFrame>(&object->object);
+  const auto* message = object->object.get<PJ::sdk::PosesInFrame>();
   if (message == nullptr || message->poses.empty()) {
     return std::nullopt;
   }

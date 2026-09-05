@@ -229,7 +229,7 @@ bool WasmVoxelGridLayer::bootstrap() {
   if (!object.has_value()) {
     return false;
   }
-  const auto* grid = std::any_cast<PJ::sdk::VoxelGrid>(&object->object);
+  const auto* grid = object->object.get<PJ::sdk::VoxelGrid>();
   if (grid == nullptr) {
     return false;
   }
@@ -276,7 +276,7 @@ bool WasmVoxelGridLayer::decodeAt(PJ::Timepoint time) {
     staged_field_setting_ = active_field_name_;
     return true;
   }
-  const auto* grid = std::any_cast<PJ::sdk::VoxelGrid>(&object->object);
+  const auto* grid = object->object.get<PJ::sdk::VoxelGrid>();
   if (grid == nullptr) {
     setDataWarning(tr("This browser layer accepts VoxelGrid samples only"));
     clearVolume();

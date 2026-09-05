@@ -173,7 +173,7 @@ bool OccupancyGridLayer::bootstrap() {
     qCWarning(lcOccGrid) << "bootstrap: parseObject failed:" << QString::fromStdString(obj.error());
     return false;
   }
-  const auto* grid = std::any_cast<PJ::sdk::OccupancyGrid>(&obj->object);
+  const auto* grid = obj->object.get<PJ::sdk::OccupancyGrid>();
   if (grid == nullptr) {
     return false;
   }
@@ -278,7 +278,7 @@ void OccupancyGridLayer::renderAt(int64_t time_ns) {
     if (!obj.has_value()) {
       return std::nullopt;
     }
-    const auto* grid = std::any_cast<PJ::sdk::OccupancyGrid>(&obj->object);
+    const auto* grid = obj->object.get<PJ::sdk::OccupancyGrid>();
     if (grid == nullptr) {
       return std::nullopt;
     }
@@ -320,7 +320,7 @@ void OccupancyGridLayer::renderAt(int64_t time_ns) {
       if (!obj.has_value()) {
         continue;
       }
-      const auto* update = std::any_cast<PJ::sdk::OccupancyGridUpdate>(&obj->object);
+      const auto* update = obj->object.get<PJ::sdk::OccupancyGridUpdate>();
       if (update == nullptr) {
         continue;
       }

@@ -1120,7 +1120,7 @@ bool RobotModelLayer::tryLoadTopicDescription() {
     setStatus(tr("Parse error: %1").arg(QString::fromStdString(obj.error())));
     return false;
   }
-  const auto* desc = std::any_cast<PJ::sdk::RobotDescription>(&obj->object);
+  const auto* desc = obj->object.get<PJ::sdk::RobotDescription>();
   if (desc == nullptr) {
     setStatus(tr("Parse error: parser did not return RobotDescription"));
     return false;

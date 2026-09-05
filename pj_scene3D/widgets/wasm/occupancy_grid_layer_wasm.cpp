@@ -198,7 +198,7 @@ bool WasmOccupancyGridLayer::bootstrap() {
   if (!object.has_value()) {
     return false;
   }
-  const auto* grid = std::any_cast<PJ::sdk::OccupancyGrid>(&object->object);
+  const auto* grid = object->object.get<PJ::sdk::OccupancyGrid>();
   if (grid == nullptr) {
     return false;
   }
@@ -258,7 +258,7 @@ bool WasmOccupancyGridLayer::reconstructAt(PJ::Timepoint time) {
       rejection = tr("Occupancy grid could not be decoded: %1").arg(QString::fromStdString(object.error()));
       return std::nullopt;
     }
-    const auto* decoded = std::any_cast<PJ::sdk::OccupancyGrid>(&object->object);
+    const auto* decoded = object->object.get<PJ::sdk::OccupancyGrid>();
     if (decoded == nullptr) {
       rejection = tr("This browser layer accepts OccupancyGrid base samples only");
       return std::nullopt;
@@ -323,7 +323,7 @@ bool WasmOccupancyGridLayer::reconstructAt(PJ::Timepoint time) {
                                   .arg(QString::fromStdString(object.error())));
         continue;
       }
-      const auto* update = std::any_cast<PJ::sdk::OccupancyGridUpdate>(&object->object);
+      const auto* update = object->object.get<PJ::sdk::OccupancyGridUpdate>();
       if (update == nullptr) {
         note_skipped_update(entry->timestamp, tr("A paired update sample was not OccupancyGridUpdate and was skipped"));
         continue;

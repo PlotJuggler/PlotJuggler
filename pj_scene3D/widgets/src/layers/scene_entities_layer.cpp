@@ -375,7 +375,7 @@ bool SceneEntitiesLayer::bootstrap() {
     qCWarning(lcSceneEntitiesLayer) << "bootstrap parseObject failed:" << QString::fromStdString(obj.error());
     return false;
   }
-  const auto* batch = std::any_cast<PJ::sdk::SceneEntities>(&obj->object);
+  const auto* batch = obj->object.get<PJ::sdk::SceneEntities>();
   if (batch == nullptr) {
     return false;
   }
@@ -424,7 +424,7 @@ void SceneEntitiesLayer::renderAt(int64_t time_ns) {
     qCWarning(lcSceneEntitiesLayer) << "renderAt parseObject failed:" << QString::fromStdString(obj.error());
     return;
   }
-  auto* batch = std::any_cast<PJ::sdk::SceneEntities>(&obj->object);
+  auto* batch = obj->object.get<PJ::sdk::SceneEntities>();
   if (batch == nullptr) {
     return;
   }
@@ -525,7 +525,7 @@ bool SceneEntitiesLayer::applyWindow(int64_t lo_ns, int64_t hi_ns) {
       qCWarning(lcSceneEntitiesLayer) << "applyWindow parseObject failed:" << QString::fromStdString(obj.error());
       continue;
     }
-    auto* snapshot = std::any_cast<PJ::sdk::SceneEntities>(&obj->object);
+    auto* snapshot = obj->object.get<PJ::sdk::SceneEntities>();
     if (snapshot != nullptr) {
       applySnapshot(*snapshot, entry->timestamp);
       // Moved, not copied: the ObjectRecord is discarded at the end of this step.

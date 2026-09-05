@@ -83,7 +83,7 @@ std::unordered_map<std::string, sdk::CameraInfo> collectCameraInfoByFrameId(
     if (!record.has_value() || sdk::typeOf(record->object) != sdk::BuiltinObjectType::kCameraInfo) {
       continue;
     }
-    const auto* ci = std::any_cast<sdk::CameraInfo>(&record->object);
+    const auto* ci = record->object.get<sdk::CameraInfo>();
     if (ci != nullptr && !ci->frame_id.empty()) {
       by_frame.insert_or_assign(ci->frame_id, *ci);
     }

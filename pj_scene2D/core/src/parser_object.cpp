@@ -15,7 +15,7 @@ Expected<sdk::ObjectRecord, ParserObjectError> parseObjectRecordAs(
     sdk::PayloadView payload, sdk::BuiltinObjectType expected_type) {
   // MessageParser plugins aren't thread-safe (fastcdr et al. keep stateful
   // scratch). Consumers sharing a parser singleton must share the same mutex and
-  // hold it only across parseObject; any_cast/decode work happens after unlock.
+  // hold it only across parseObject; downcast/decode work happens after unlock.
   auto invoke_parser = [&] {
     if (parser_mutex) {
       std::lock_guard<std::mutex> lock(*parser_mutex);

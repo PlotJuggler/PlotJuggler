@@ -6,7 +6,7 @@ fmt/12.2.0
 # The plugin SDK (pj_base + pj_plugins): recipe and binaries live on the
 # PlotJuggler JFrog remote (scripts/configure_conan_remote.sh), not ConanCenter.
 # CMakeLists.txt reads this exact pin for the non-Conan (wasm / pixi) source fallback.
-plotjuggler_sdk/0.26.0
+plotjuggler_sdk/0.29.0
 tsl-robin-map/1.4.0
 gtest/1.18.0
 glm/1.0.3

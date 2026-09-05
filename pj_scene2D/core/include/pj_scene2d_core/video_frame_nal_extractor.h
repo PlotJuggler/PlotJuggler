@@ -14,7 +14,7 @@ class MessageParserPluginBase;
 /// Build a NAL extractor that unwraps each ObjectStore entry's canonical
 /// PJ.VideoFrame / Foxglove CompressedVideo message — it calls
 /// `parser->parseObject` (serialized by `parser_mutex`, since MessageParser
-/// plugins are not thread-safe), any_casts the result to sdk::VideoFrame, and
+/// plugins are not thread-safe), downcasts the result to sdk::VideoFrame, and
 /// returns the contained Annex-B `data` span (zero-copy; the span aliases the
 /// entry buffer, kept alive across extract+decode).
 ///

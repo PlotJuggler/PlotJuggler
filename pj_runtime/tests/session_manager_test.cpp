@@ -996,7 +996,7 @@ DecodedTag decodeThroughBoundParser(PJ::SessionManager& session, PJ::ObjectTopic
   if (!decoded.has_value()) {
     return {};
   }
-  const auto* log = std::any_cast<PJ::sdk::Log>(&decoded->object);
+  const auto* log = decoded->object.get<PJ::sdk::Log>();
   return log != nullptr ? DecodedTag{log->name, log->message} : DecodedTag{};
 }
 

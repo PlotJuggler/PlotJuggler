@@ -353,7 +353,7 @@ TEST(SceneEntities2DDecoderTest, ObjectRouteMatchesByteRoute) {
 }
 
 TEST(SceneEntities2DDecoderTest, ObjectRouteRejectsWrongType) {
-  // The object route any_casts: a BuiltinObject of the wrong kind must error,
+  // The object route downcasts: a BuiltinObject of the wrong kind must error,
   // not silently drop (this is what surfaces a parser contract violation).
   SceneEntities2DDecoder decoder;
   const sdk::BuiltinObject not_entities = sdk::ImageAnnotations{};

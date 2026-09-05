@@ -90,7 +90,9 @@ PJ::sdk::GridMap makeGrid(PJ::Timestamp ts) {
 
 PJ::Expected<PJ::sdk::ObjectRecord> emitGrid(PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) {
   if (g_emit_wrong_type.load()) {
-    return PJ::sdk::ObjectRecord{.ts = ts, .object = std::string("not a grid map")};
+    // A wrong-kind builtin: the tagged holder only admits builtin types, so
+    // "wrong type" now means another builtin rather than an arbitrary any.
+    return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::Image{}};
   }
   PJ::sdk::GridMap grid = makeGrid(ts);
   if (g_emit_oversized.load()) {

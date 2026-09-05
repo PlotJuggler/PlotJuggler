@@ -306,7 +306,7 @@ bool WasmDepthCloudLayer::bootstrap() {
   auto object = resolveObject(
       session_->parserBindingForObjectTopic(topic_id_), PJ::sdk::BuiltinObjectType::kImage, first->timestamp,
       first->payload);
-  const auto* image = object.has_value() ? std::any_cast<PJ::sdk::Image>(&object->object) : nullptr;
+  const auto* image = object.has_value() ? object->object.get<PJ::sdk::Image>() : nullptr;
   if (image == nullptr || !isDepthEncoding(image->encoding)) {
     return false;
   }
@@ -336,7 +336,7 @@ bool WasmDepthCloudLayer::decodeAt(PJ::Timepoint time) {
     setWarning(tr("Depth image could not be decoded: %1").arg(QString::fromStdString(object.error())));
     return true;
   }
-  const auto* image = std::any_cast<PJ::sdk::Image>(&object->object);
+  const auto* image = object->object.get<PJ::sdk::Image>();
   if (image == nullptr || !isDepthEncoding(image->encoding)) {
     active_sample_ = sample;
     clearGeometry();
@@ -413,7 +413,7 @@ DepthIntrinsics WasmDepthCloudLayer::resolveIntrinsics(const std::string& frame_
     auto object = resolveObject(
         session_->parserBindingForObjectTopic(candidate), PJ::sdk::BuiltinObjectType::kCameraInfo, resolved->timestamp,
         resolved->payload);
-    const auto* camera = object.has_value() ? std::any_cast<PJ::sdk::CameraInfo>(&object->object) : nullptr;
+    const auto* camera = object.has_value() ? object->object.get<PJ::sdk::CameraInfo>() : nullptr;
     if (camera == nullptr) {
       continue;
     }

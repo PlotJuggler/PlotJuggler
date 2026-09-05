@@ -262,7 +262,7 @@ Expected<SceneFrame> SceneEntities2DDecoder::decode(const uint8_t* data, size_t 
 }
 
 Expected<SceneFrame> SceneEntities2DDecoder::decode(const sdk::BuiltinObject& object) {
-  const auto* entities = std::any_cast<sdk::SceneEntities>(&object);
+  const auto* entities = object.get<sdk::SceneEntities>();
   if (entities == nullptr) {
     return unexpected(std::string("SceneEntities2DDecoder: object is not SceneEntities"));
   }

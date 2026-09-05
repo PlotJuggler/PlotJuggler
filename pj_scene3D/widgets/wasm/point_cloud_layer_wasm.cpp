@@ -249,14 +249,14 @@ bool WasmPointCloudLayer::bootstrap() {
   if (!object.has_value()) {
     return false;
   }
-  const auto* cloud = std::any_cast<PJ::sdk::PointCloud>(&object->object);
+  const auto* cloud = object->object.get<PJ::sdk::PointCloud>();
   if (cloud != nullptr) {
     updateSourceFrame(cloud->frame_id);
     populateColorFields(*cloud);
     return true;
   }
 #if defined(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS)
-  if (const auto* compressed = std::any_cast<PJ::sdk::CompressedPointCloud>(&object->object)) {
+  if (const auto* compressed = object->object.get<PJ::sdk::CompressedPointCloud>()) {
     updateSourceFrame(compressed->frame_id);
     return true;
   }
@@ -310,7 +310,7 @@ bool WasmPointCloudLayer::decodeAt(PJ::Timepoint time) {
   }
 
 #if defined(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS)
-  if (const auto* compressed = std::any_cast<PJ::sdk::CompressedPointCloud>(&object->object)) {
+  if (const auto* compressed = object->object.get<PJ::sdk::CompressedPointCloud>()) {
     updateSourceFrame(compressed->frame_id);
     if (!browserPointPayloadFits(static_cast<std::uint64_t>(compressed->data.size()))) {
       failed_warning_ =
@@ -328,7 +328,7 @@ bool WasmPointCloudLayer::decodeAt(PJ::Timepoint time) {
   }
 #endif
 
-  const auto* cloud = std::any_cast<PJ::sdk::PointCloud>(&object->object);
+  const auto* cloud = object->object.get<PJ::sdk::PointCloud>();
   if (cloud == nullptr) {
     setWarning(tr("Point-cloud sample has an unexpected canonical type"));
     clearGeometry();
