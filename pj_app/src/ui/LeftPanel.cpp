@@ -75,6 +75,8 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
   // QAction flows through the themed ::item:disabled rule and renders reliably.
   auto* recent_menu = new QMenu(this);
   recent_menu->setObjectName(u"PJMenu"_s);
+  // Entries show only the file name; the hover tooltip carries the full path.
+  recent_menu->setToolTipsVisible(true);
   connect(recent_menu, &QMenu::aboutToShow, this, [this, recent_menu]() {
     recent_menu->clear();
 #ifdef PJ_TARGET_WASM
@@ -100,8 +102,20 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
     QAction* clear = recent_menu->addAction(tr("Clear recent layouts"));
     connect(clear, &QAction::triggered, this, &LeftPanel::clearRecentLayoutsRequested);
 #else
-    const QStringList layouts = QSettings().value(kRecentLayoutsKey).toStringList();
-    const QStringList files = QSettings().value(kRecentFilesKey).toStringList();
+    // Drop entries whose file no longer exists, and persist the pruned list so
+    // they do not come back next time.
+    auto load_existing = [](const char* key) {
+      QSettings settings;
+      QStringList paths = settings.value(key).toStringList();
+      const qsizetype before = paths.size();
+      paths.removeIf([](const QString& path) { return !QFileInfo::exists(path); });
+      if (paths.size() != before) {
+        settings.setValue(key, paths);
+      }
+      return paths;
+    };
+    const QStringList layouts = load_existing(kRecentLayoutsKey);
+    const QStringList files = load_existing(kRecentFilesKey);
     if (layouts.isEmpty() && files.isEmpty()) {
       QAction* placeholder = recent_menu->addAction(tr("(no recent files or layouts)"));
       placeholder->setEnabled(false);
