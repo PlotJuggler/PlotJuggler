@@ -58,8 +58,9 @@ class WasmPointRenderable {
 };
 
 // Persisted XML spelling of a colormap and its inverse, shared by every
-// point-colored layer so the layout grammar has exactly one mapping.
-[[nodiscard]] inline QString colormapName(PJ::Colormap colormap) {
+// point-colored layer so the layout grammar has exactly one mapping. Distinct
+// from PJ::colormapName(), the untranslated display label.
+[[nodiscard]] inline QString colormapToken(PJ::Colormap colormap) {
   switch (colormap) {
     case PJ::Colormap::kTurbo:
       return QStringLiteral("turbo");
@@ -76,7 +77,7 @@ class WasmPointRenderable {
 [[nodiscard]] inline std::optional<PJ::Colormap> parseColormap(const QString& text) {
   for (const PJ::Colormap value :
        {PJ::Colormap::kTurbo, PJ::Colormap::kViridis, PJ::Colormap::kPlasma, PJ::Colormap::kGrayscale}) {
-    if (text == colormapName(value)) {
+    if (text == colormapToken(value)) {
       return value;
     }
   }

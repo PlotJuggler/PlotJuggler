@@ -839,7 +839,7 @@ QWidget* WasmPointCloudLayer::createConfigWidget(QWidget* parent) {
   colormap->setObjectName(u"wasmPointCloudColormap"_s);
   for (const PJ::Colormap value :
        {PJ::Colormap::kTurbo, PJ::Colormap::kViridis, PJ::Colormap::kPlasma, PJ::Colormap::kGrayscale}) {
-    colormap->addItem(colormapName(value), static_cast<int>(value));
+    colormap->addItem(colormapToken(value), static_cast<int>(value));
   }
   colormap->setCurrentIndex(static_cast<int>(colormap_));
   form->addRow(tr("Colormap:"), colormap);
@@ -976,7 +976,7 @@ QDomElement WasmPointCloudLayer::xmlSaveState(QDomDocument& document) const {
   element.setAttribute(u"color_choice_explicit"_s, color_choice_explicit_ ? u"true"_s : u"false"_s);
   element.setAttribute(u"color_field"_s, QString::fromStdString(color_field_));
   element.setAttribute(u"solid_color"_s, solid_color_.name(QColor::HexRgb));
-  element.setAttribute(u"colormap"_s, colormapName(colormap_));
+  element.setAttribute(u"colormap"_s, colormapToken(colormap_));
   element.setAttribute(u"auto_range"_s, auto_range_ ? u"true"_s : u"false"_s);
   element.setAttribute(u"invert_lut"_s, invert_lut_ ? u"true"_s : u"false"_s);
   element.setAttribute(u"outside_range_opacity"_s, QString::number(outside_range_opacity_, 'g', 6));

@@ -656,7 +656,7 @@ bool WasmDepthCloudLayer::validateXml(const QDomElement& element) {
 
 QDomElement WasmDepthCloudLayer::xmlSaveState(QDomDocument& document) const {
   QDomElement element = document.createElement(u"depthcloud"_s);
-  element.setAttribute(u"colormap"_s, colormapName(colormap_));
+  element.setAttribute(u"colormap"_s, colormapToken(colormap_));
   element.setAttribute(u"point_size_px"_s, QString::number(static_cast<double>(point_size_px_), 'g', 6));
   element.setAttribute(u"min_depth"_s, QString::number(static_cast<double>(min_depth_m_), 'g', 6));
   element.setAttribute(u"max_depth"_s, QString::number(static_cast<double>(max_depth_m_), 'g', 6));
@@ -690,7 +690,7 @@ QWidget* WasmDepthCloudLayer::createConfigWidget(QWidget* parent) {
   colormap->setObjectName(u"wasmDepthCloudColormap"_s);
   for (const PJ::Colormap value :
        {PJ::Colormap::kTurbo, PJ::Colormap::kViridis, PJ::Colormap::kPlasma, PJ::Colormap::kGrayscale}) {
-    colormap->addItem(colormapName(value), static_cast<int>(value));
+    colormap->addItem(colormapToken(value), static_cast<int>(value));
   }
   colormap->setCurrentIndex(static_cast<int>(colormap_));
   form->addRow(tr("Colormap:"), colormap);

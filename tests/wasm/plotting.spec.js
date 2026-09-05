@@ -315,8 +315,10 @@ test('QRhi WebGL canvas renders an imported scalar curve', async ({ page }) => {
   ).toContain('first_curve=plot/temp');
   const frameMessage = consoleMessages.find(message => message.includes('PJ_WASM_PLOT_FRAME_OK')) || '';
   expect(frameMessage).toContain('curves=1');
-  expect(frameMessage).toContain('samples=2');
-  expect(frameMessage).toContain('endpoints=0,10..1,20');
+  // The default 0..1 s view serves both on-screen samples plus the off-screen
+  // right guard at t=2, so the whole three-row fixture reaches the canvas.
+  expect(frameMessage).toContain('samples=3');
+  expect(frameMessage).toContain('endpoints=0,10..2,30');
   const curveVertices = frameMessage.match(/curve_vertices=(\d+)/);
   expect(curveVertices).not.toBeNull();
   expect(Number(curveVertices[1])).toBeGreaterThan(0);
