@@ -48,8 +48,8 @@ reaches a 3D dock by being dropped onto an existing one (`addTopic`'s encoding
 gate absorbs depth, refuses color) or via the 3D family switch on an empty dock.
 A one-click "Open in 3D view" curve-list action is a planned convenience.
 
-The detailed set of requirements and goals lives in `pj_scene3D/docs/REQUIREMENTS.md`.
-You MUST read this file at the beginning of every section and after compacting.
+The detailed set of requirements and goals lives in `pj_scene3D/docs/REQUIREMENTS.md`;
+read it before changing this module's scope or behavior.
 The as-built design — rendering pipeline (HDR/tonemap/SSAO/EDL), URDF/mesh
 subsystem, `package://` asset resolution, scene-controls bindings, camera
 system (four pluggable models, adaptive near/far, zoom-to-cursor, Position-only
@@ -60,7 +60,7 @@ XML persistence), and live-streaming data path — lives in
 ## Decoding boundary (important)
 
 This module **never decodes wire formats**. DataSource / MessageParser plugins
-(e.g. `parser_ros`, see pj-official-plugins#122) decode ROS / CDR messages into
+(e.g. `parser_ros` in pj-official-plugins) decode ROS / CDR messages into
 canonical `pj_base/builtin` objects — `PointCloud`, `FrameTransforms`,
 `OccupancyGrid`, `OccupancyGridUpdate`, … — while the host registers their
 transport bytes in the `ObjectStore`. `FrameTransforms` is consumed synchronously
