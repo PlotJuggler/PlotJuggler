@@ -20,6 +20,7 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/plugin_data_host.hpp"
 #include "pj_plugins/sdk/object_ingest_policy.hpp"
+#include "pj_runtime/RecordTap.h"
 
 namespace PJ {
 
@@ -101,6 +102,28 @@ class DataSourceRuntimeHost {
     message_box_handler_ = std::move(handler);
   }
 
+  // Session recorder hook. The tap is invoked INLINE on the push thread for
+  // every pushed message's raw bytes, BEFORE the parser runs — exactly what the
+  // plugin handed us, never decoded — and each call carries a view of that
+  // message's binding, so the tap learns bindings from the messages themselves.
+  // That is what lets a recording started mid-stream capture topics the plugin
+  // subscribed to long before.
+  // Any thread may set or clear it; the host takes a shared_ptr snapshot per
+  // call, so a tap being replaced can still finish an in-flight call. A tap
+  // returning kStopRecording (or throwing) is dropped by the host itself.
+  // Pure-lazy object pushes fetch no bytes on the push thread, so they are
+  // counted rather than recorded: a source that keeps a type pure-lazy (file
+  // loads do, for markers, annotations and video) records a hole, and
+  // recordTapSkippedLazy() is how the owner detects it.
+  // Deliberately NOT ObjectIngestTapRegistry: that one is routing — its return
+  // value decides pushLazy vs pushLazyWithSeed — and is object-only, exclusive
+  // and keyed by object type, whereas this observes every message of every
+  // encoding and may never change what ingest does.
+  void setRecordTap(std::shared_ptr<RecordTap> tap);
+
+  /// Messages a tap could not see because their payload was fetched lazily off the push thread.
+  [[nodiscard]] uint64_t recordTapSkippedLazy() const noexcept;
+
   // Registers SourceWriteHostService + DataSourceRuntimeHostService into the
   // builder used to bind the DataSource plugin. Both are required by the
   // DataSource ABI, so a rejection fails the Status; the object-write service is
@@ -126,15 +149,17 @@ class DataSourceRuntimeHost {
   // work-in-progress visible to readers; flushAll() remains the terminal call.
   void flushPending();
 
-  // Stop signalling for the plugin's cooperative-cancellation callbacks. The
-  // reason is also recorded as the last error. Call this only from the SAME thread
-  // that runs ingest — the last_error_ write is unsynchronized against fail().
+  // Stop signalling for the plugin's cooperative-cancellation callbacks, for a
+  // FAILURE that ends ingest: `reason` becomes stopFailure(). The first failure
+  // wins — a later one (the poll error that follows a plugin's own
+  // request_stop(FAILED), say) is a consequence, not the cause. Any thread: the
+  // reason has its own lock and never touches last_error_, so it cannot race
+  // the stream thread's fail().
   void requestStop(std::string_view reason);
 
-  // Flag-only cooperative stop: sets the stop flag WITHOUT recording a reason, so it
-  // touches only the atomic and cannot race the worker's fail()/last_error_ write.
-  // Use this when signalling stop from a different thread than the ingest worker
-  // (e.g. the GUI cancelling/joining a worker-thread file load).
+  // Flag-only cooperative stop for an ORDERLY end (the GUI cancelling or joining
+  // a worker, a plugin reporting end of stream): sets the flag and records no
+  // reason, so stopFailure() stays empty. Any thread.
   void requestStop();
 
   // Whether progress/stop callbacks should report a pending cancellation.
@@ -169,10 +194,19 @@ class DataSourceRuntimeHost {
   // above. Set before calling the plugin's start().
   std::function<void(std::vector<AdvertisedTopicInfo> topics)> on_available_topics;
 
-  // Most recent error message captured by any callback. Empty if none.
-  const std::string& lastError() const noexcept {
-    return last_error_;
-  }
+  // Why ingest ended, when it ended in failure: the reason handed to
+  // requestStop(reason) — a poll error, or the plugin's own request_stop with
+  // a FAILED terminal state. Empty after an orderly end, whatever fail()
+  // recorded meanwhile: a callback failure the plugin recovered from is a
+  // diagnostic, not the stream's verdict, and must not mark a recording of
+  // this source lossy. Any thread; meaningful once ingest has stopped.
+  [[nodiscard]] std::string stopFailure() const;
+
+  // Diagnostic: stopFailure() when set, else the most recent callback failure
+  // (a rejected push, a parser bind that threw) — which the plugin may have
+  // recovered from. Read only after ingest has stopped; last_error_ is written
+  // unsynchronised on the stream thread.
+  [[nodiscard]] std::string lastError() const;
 
   [[nodiscard]] sdk::ObjectIngestPolicyResolver& policyResolver() noexcept {
     return policy_resolver_;
@@ -256,6 +290,8 @@ class DataSourceRuntimeHost {
 
   // Centralised failure path used by every callback that signals an error.
   // Stores `message` into last_error_ and fills `out_error` for the plugin.
+  // The plugin decides whether the failure is fatal; a terminal one reaches
+  // stopFailure() through requestStop(reason), never through here.
   bool fail(PJ_error_t* out_error, const char* message) noexcept;
 
   // One parser binding owned by the host. Destruction order is load-bearing:
@@ -349,8 +385,60 @@ class DataSourceRuntimeHost {
   std::shared_ptr<ObjectIngestTapRegistry> ingest_taps_;
   std::atomic<uint64_t> ingest_tap_failures_{0};
 
+  // Guards only the shared_ptr slot, never a tap call and never a tap
+  // destruction: every call runs on a snapshot taken outside the lock, and a
+  // replaced tap is released after the lock, because dropping the last
+  // reference to a Recorder joins its writer thread.
+  mutable std::mutex record_tap_mu_;
+  std::shared_ptr<RecordTap> record_tap_;
+  // Mirrors "record_tap_ != nullptr", written under record_tap_mu_ and read
+  // without it (relaxed), so the push path pays nothing while nothing is
+  // recording. It is a hint, allowed to be stale in both directions, and each
+  // direction is benign:
+  //   - stale false, just after setRecordTap(tap): a message pushed inside the
+  //     store's propagation window is neither recorded nor counted. That is
+  //     indistinguishable from pressing Record a moment later, so the first
+  //     recorded message is delayed by at most that window and nothing is
+  //     misreported.
+  //   - stale true, just after setRecordTap(nullptr) or dropRecordTap: one
+  //     push pays a mutex round-trip to find no tap, and one pure-lazy push
+  //     may still bump record_tap_skipped_lazy_. The counter is therefore ±1
+  //     at attach/detach boundaries — an owner wanting an exact per-capture
+  //     figure reads it BEFORE detaching.
+  // The authoritative read is recordTapSnapshot(), under the lock; nothing
+  // ever acts on this flag alone. Relaxed suffices because only eventual
+  // visibility is needed and the push loop crosses a C-ABI call per message,
+  // so the load cannot be hoisted.
+  std::atomic<bool> record_tap_active_{false};
+  std::atomic<uint64_t> record_tap_skipped_lazy_{0};
+
+  // The installed tap, so the call runs on a reference that stays alive even if
+  // setRecordTap lands meanwhile.
+  [[nodiscard]] std::shared_ptr<RecordTap> recordTapSnapshot() const;
+  // Lock-free idle check for the push path: false means no tap is installed, so
+  // the caller skips the mutex entirely. A true is a hint, not a lock, and still
+  // needs recordTapSnapshot().
+  [[nodiscard]] bool hasRecordTap() const noexcept {
+    return record_tap_active_.load(std::memory_order_relaxed);
+  }
+  // Detaches `tap` unless a newer one was installed meanwhile.
+  void dropRecordTap(const std::shared_ptr<RecordTap>& tap);
+  // Hands the tap one message plus a view of its binding; a tap that throws or
+  // returns kStopRecording is detached here.
+  void recordMessage(
+      const std::shared_ptr<RecordTap>& tap, uint32_t binding_id, const ParserBinding& binding, int64_t timestamp_ns,
+      const uint8_t* data, uint64_t size);
+
   MessageBoxHandler message_box_handler_;
+  // Rolling diagnostic from fail(): stream thread only, unsynchronised, so the
+  // GUI reads it only after joining the worker. Never a verdict on ingest.
   std::string last_error_;
+  // The failure that ended ingest, if one did. Its own lock because
+  // request_stop is [thread-safe] in the ABI — a plugin may raise it from any
+  // thread — and the lock is off the push path: taken only by
+  // requestStop(reason) and by the owner's post-join reads.
+  mutable std::mutex stop_failure_mu_;
+  std::string stop_failure_;
   std::atomic<bool> stop_requested_{false};
   uint32_t next_binding_id_ = 1;
   std::unordered_map<uint32_t, ParserBinding> parser_bindings_;

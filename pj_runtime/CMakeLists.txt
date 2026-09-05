@@ -1,6 +1,11 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Network Xml)
 find_package(nlohmann_json REQUIRED)
 find_package(tsl-robin-map REQUIRED)
+# Only the recording SINK is platform-bound: PjWasmDependencies provides no
+# mcap package, and a browser has no recordings folder to write into.
+if(NOT EMSCRIPTEN)
+    find_package(mcap REQUIRED)  # session recorder: MCAP writer (header-only; Conan supplies lz4/zstd)
+endif()
 if(PJ_BUILD_TESTS)
     find_package(GTest REQUIRED)
 endif()
@@ -22,6 +27,8 @@ add_library(pj_runtime STATIC
     src/PluginRuntimeCatalog.cpp
     src/PlaybackEngine.cpp
     src/QSettingsBackend.cpp
+    src/Recorder.cpp
+    src/RecordingService.cpp
     src/ServiceRegistration.cpp
     src/SessionManager.cpp
     src/TelemetryPing.cpp
@@ -44,6 +51,12 @@ add_library(pj_runtime STATIC
     include/pj_runtime/ObjectIngestTap.h
     include/pj_runtime/PlaybackEngine.h
     include/pj_runtime/QSettingsBackend.h
+    include/pj_runtime/RecordTap.h
+    include/pj_runtime/Recorder.h
+    include/pj_runtime/RecordingFormat.h
+    include/pj_runtime/RecordingService.h
+    include/pj_runtime/RecordingSink.h
+    include/pj_runtime/RecordingTypes.h
     include/pj_runtime/ServiceRegistration.h
     include/pj_runtime/SessionManager.h
     include/pj_runtime/TelemetryPing.h
@@ -78,8 +91,20 @@ target_link_libraries(pj_runtime PUBLIC
   PRIVATE
     tsl::robin_map
     pj_internal_fmt
+    $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:mcap::mcap>
     pj_scripting  # DataProcessorService routes by-id applyFilter through the Luau FilterCatalogue
 )
+
+# Only the MCAP sink is platform-bound (it links mcap and writes to a real
+# filesystem). RecordingService and the recording interfaces are built
+# everywhere; where no sink is compiled in, RecordingService::isSupported()
+# reports false and the shell drops its Record affordances at runtime.
+if(NOT EMSCRIPTEN)
+    target_sources(pj_runtime PRIVATE
+        src/McapRecordingWriter.cpp
+        include/pj_runtime/McapRecordingWriter.h
+    )
+endif()
 
 if(PJ_BUILD_TESTS)
     add_executable(object_ingest_tap_test
@@ -91,6 +116,53 @@ if(PJ_BUILD_TESTS)
         GTest::gtest_main
     )
     add_test(NAME ObjectIngestTapTest COMMAND object_ingest_tap_test)
+
+    # The Recorder is format-agnostic (it drives a fake RecordingSink) and links
+    # no Qt, so the test compiles Recorder.cpp on its own against the SDK rather
+    # than linking pj_runtime: it needs no mcap, builds for wasm, and runs in
+    # the TSan job (build.sh TSAN_TESTS), which must compile no Qt code. The
+    # ctest name equals the target name because that job filters on it.
+    add_executable(recorder_test
+        tests/recorder_test.cpp
+        src/Recorder.cpp
+    )
+    target_compile_options(recorder_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_include_directories(recorder_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(recorder_test PRIVATE
+        plotjuggler_sdk::base
+        GTest::gtest_main
+    )
+    add_test(NAME recorder_test COMMAND recorder_test)
+
+    if(NOT EMSCRIPTEN)
+        add_executable(mcap_recording_writer_test
+            tests/mcap_recording_writer_test.cpp
+        )
+        target_compile_options(mcap_recording_writer_test PRIVATE ${PJ_WARNING_FLAGS})
+        target_link_libraries(mcap_recording_writer_test PRIVATE
+            pj_runtime
+            mcap::mcap
+            Qt6::Core
+            GTest::gtest_main
+        )
+        add_test(NAME McapRecordingWriterTest COMMAND mcap_recording_writer_test)
+
+        # Qt6::Test supplies QSignalSpy; mcap::mcap only for reading back what
+        # the service recorded.
+        find_package(Qt6 REQUIRED COMPONENTS Test)
+        add_executable(recording_service_test
+            tests/recording_service_test.cpp
+        )
+        target_compile_options(recording_service_test PRIVATE ${PJ_WARNING_FLAGS})
+        target_link_libraries(recording_service_test PRIVATE
+            pj_runtime
+            mcap::mcap
+            Qt6::Core
+            Qt6::Test
+            GTest::gtest_main
+        )
+        add_test(NAME RecordingServiceTest COMMAND recording_service_test)
+    endif()
 
     add_executable(time_test
         tests/time_test.cpp
@@ -356,6 +428,45 @@ if(PJ_BUILD_TESTS)
     )
     add_dependencies(data_source_runtime_host_object_ingest_test runtime_host_object_parser_plugin)
     add_test(NAME DataSourceRuntimeHostObjectIngestTest COMMAND data_source_runtime_host_object_ingest_test)
+
+    add_executable(data_source_runtime_host_record_tap_test
+        tests/data_source_runtime_host_record_tap_test.cpp
+    )
+    target_compile_definitions(data_source_runtime_host_record_tap_test PRIVATE
+        PJ_RUNTIME_HOST_OBJECT_PARSER_PATH="$<TARGET_FILE:runtime_host_object_parser_plugin>"
+    )
+    target_compile_options(data_source_runtime_host_record_tap_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(data_source_runtime_host_record_tap_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_dependencies(data_source_runtime_host_record_tap_test runtime_host_object_parser_plugin)
+    add_test(NAME DataSourceRuntimeHostRecordTapTest COMMAND data_source_runtime_host_record_tap_test)
+
+    # The whole recording pipeline end to end: the same host + real parser
+    # plugin the record-tap test builds on, driven through RecordingService
+    # into an MCAP file that is then read back. Desktop-only (mcap + the
+    # writer), and wired here rather than in the mcap test block above because
+    # add_dependencies needs the parser plugin target to already exist.
+    if(NOT EMSCRIPTEN)
+        find_package(Qt6 REQUIRED COMPONENTS Test)  # QSignalSpy
+        add_executable(recording_pipeline_test
+            tests/recording_pipeline_test.cpp
+        )
+        target_compile_definitions(recording_pipeline_test PRIVATE
+            PJ_RUNTIME_HOST_OBJECT_PARSER_PATH="$<TARGET_FILE:runtime_host_object_parser_plugin>"
+        )
+        target_compile_options(recording_pipeline_test PRIVATE ${PJ_WARNING_FLAGS})
+        target_link_libraries(recording_pipeline_test PRIVATE
+            pj_runtime
+            mcap::mcap
+            Qt6::Core
+            Qt6::Test
+            GTest::gtest_main
+        )
+        add_dependencies(recording_pipeline_test runtime_host_object_parser_plugin)
+        add_test(NAME RecordingPipelineTest COMMAND recording_pipeline_test)
+    endif()
 
     # Streaming pause/resume two-engine lockstep, exercised at the
     # DataSourceRuntimeHost integration layer — the runtime-level companion to

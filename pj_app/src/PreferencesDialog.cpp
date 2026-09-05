@@ -35,6 +35,7 @@
 #include "Splashscreen.h"
 #include "Theme.h"
 #include "pj_runtime/HttpGet.h"
+#include "pj_runtime/RecordingService.h"
 #include "pj_widgets/DualOptionsWidget.h"
 #include "pj_widgets/FileDialog.h"
 #include "pj_widgets/FrameworkTokens.h"
@@ -120,17 +121,21 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // switches pagesStack to the matching index. The trailing stretch in
   // navLayout (added in .ui) pushes the rows to the top.
   auto* nav_layout = qobject_cast<QVBoxLayout*>(ui_->navContainer->layout());
-  const std::array<std::pair<QString, int>, 5> nav_entries{{
-      {tr("Appearance"), 0},
-      {tr("Plotting"), 1},
-      {tr("Scene 2D"), 2},
-      {tr("Scene 3D"), 3},
-      {tr("Plugins"), 4},
-  }};
-  nav_rows_.reserve(nav_entries.size());
-  for (const auto& [label, index] : nav_entries) {
+  std::vector<QString> nav_names{
+      tr("Appearance"), tr("Plotting"), tr("Scene 2D"), tr("Scene 3D"), tr("Plugins"),
+  };
+  if (RecordingService::isSupported()) {
+    nav_names.push_back(tr("Recording"));
+  } else {
+    // No sink to record into, so no nav row; hiding the page also keeps it out
+    // of the stack's size hint.
+    ui_->pageRecording->hide();
+  }
+  nav_rows_.reserve(nav_names.size());
+  for (const QString& label : nav_names) {
+    const int index = static_cast<int>(nav_rows_.size());  // rows follow pagesStack order
     auto* row = new PreferencesNavRow(label, ui_->navContainer);
-    nav_layout->insertWidget(static_cast<int>(nav_rows_.size()), row);
+    nav_layout->insertWidget(index, row);
     nav_rows_.push_back(row);
     connect(row, &PreferencesNavRow::clicked, this, [this, row, index]() {
       for (auto* other : nav_rows_) {
@@ -141,7 +146,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   }
   if (!nav_rows_.empty()) {
     nav_rows_.front()->setSelected(true);
-    ui_->pagesStack->setCurrentIndex(0);
+    ui_->pagesStack->setCurrentIndex(kAppearancePage);
   }
 
   // Developer-only chrome-metric scrubbers (icon/layout sizing) ship hidden;
@@ -309,6 +314,45 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     connect(ui_->buttonRemovePluginFolder, &QToolButton::clicked, this, [this, paint_missing]() {
       qDeleteAll(ui_->listCustomPluginFolders->selectedItems());
       paint_missing(ui_->listCustomPluginFolders);
+    });
+  }
+
+  // Recording page. Wired only where the page is reachable, so an unreachable
+  // page's .ui defaults can never be committed over the stored settings.
+  if (RecordingService::isSupported()) {
+    const RecordingService::Settings stored = RecordingService::loadSettings();
+    ui_->lineEditRecordingDir->setText(stored.directory);
+    // Left empty, recordings land in the default folder: name it so the user can
+    // find the files without having to pick a folder first.
+    ui_->lineEditRecordingDir->setToolTip(tr("Leave empty to use the default folder: %1")
+                                              .arg(QDir::toNativeSeparators(RecordingService::defaultDirectory())));
+    ui_->scrubberRecordingQueueMiB->setValue(stored.queue_budget_mib);
+
+    // SvgButton re-tints itself on a theme change — no manual retint wiring.
+    ui_->buttonRecordingDirBrowse->setIconPath(u":/resources/svg/folder_open.svg"_s);
+    ui_->buttonRecordingDirBrowse->setExtent(26, 24);
+    ui_->buttonRecordingDirBrowse->setToolTip(tr("Choose the recordings folder…"));
+    connect(ui_->buttonRecordingDirBrowse, &QToolButton::clicked, this, [this]() {
+      // An empty field means the default folder, so start the picker there
+      // rather than in the process working directory.
+      const QString field = ui_->lineEditRecordingDir->text().trimmed();
+      const QString dir = PJ::FileDialog::getExistingDirectory(
+          this, tr("Choose the recordings folder"), field.isEmpty() ? RecordingService::defaultDirectory() : field);
+      if (!dir.isEmpty()) {
+        ui_->lineEditRecordingDir->setText(dir);
+      }
+    });
+
+    // No rejected handler: neither of these is applied live, so Cancel never
+    // reaches the QSettings write below.
+    connect(this, &QDialog::accepted, this, [this]() {
+      RecordingService::Settings settings;
+      // Trimmed, so a stray space cannot turn the empty "default folder" value
+      // into a relative path.
+      settings.directory = ui_->lineEditRecordingDir->text().trimmed();
+      settings.queue_budget_mib = ui_->scrubberRecordingQueueMiB->value();
+      RecordingService::saveSettings(settings);
+      emit recordingSettingsChanged();
     });
   }
 

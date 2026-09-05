@@ -776,6 +776,31 @@ The following default rules should be implemented:
 
 These rules must live in app-core, not inside the plot widget.
 
+### 10.5 Session recording (raw capture)
+
+Live data is bounded by memory retention and dies with the session. The host records the **raw messages** of
+streaming sources — at the delegated-ingest seam (`ensureParserBinding` + `pushMessage`), never decoded samples —
+into standard MCAP files whose channels keep the original encodings and schemas. Replay is the ordinary MCAP
+loader plus the installed parsers. Rules fixed by the design (see
+[`docs/session_recorder_design.md`](./docs/session_recorder_design.md)):
+
+- raw only: sources that write decoded samples directly are not recordable until they expose messages
+- subscribed topics only (demand-driven subscriptions define what a recording contains)
+- overflow drops, never blocks: `pushMessage` never waits for the recorder; when a source's byte-budgeted write
+  queue is full the largest queued message is dropped (or the incoming one, when nothing queued is bigger) and
+  the recording carries on with holes; only a sink error truncates it (file kept, marked truncated), and the
+  live view is unaffected either way
+- global Record/Stop over all active streams by default; per-source recording optional
+- one file per source: each press creates an auto-named batch folder in a user-configurable recordings folder,
+  holding one MCAP per recorded source; files are never evicted
+- parser policy (timestamp field, array limits) lives in the layout, not in the file: a recording carries
+  decoding facts and provenance only, so replay needs no loader change
+- the file at Stop is the product: the live source stays live and the recording opens like any MCAP; the live
+  source is never switched onto its recording
+
+The same recorder core later backs the **source cache** for bounded connector downloads (identity, host-owned
+source-lifetime leases, budget), replacing per-plugin capture/format/loader code.
+
 ## 11. Extension Host Design
 
 ### 11.1 Extension catalog
@@ -800,6 +825,7 @@ The data source runtime must support:
 - pause/resume where supported
 - config save/load
 - parser binding for delegated ingest
+- an ingest tap so the host can record delegated-ingest messages (§10.5)
 - diagnostics routing
 
 ### 11.3 Parser sessions
@@ -1017,6 +1043,28 @@ Deliver:
 Acceptance:
 
 - app is viable as the primary replacement for 3.x
+
+### Phase 8: session recording and source cache (parity-plus)
+
+Deliver, in order (design: `docs/session_recorder_design.md`):
+
+- M1 stream recording (implemented 2026-08-31, PR #616): record tap in `pj_runtime`, recorder + MCAP writer
+  (one file per source in a batch folder), Record/Stop in the streaming strip, Preferences — no SDK change and
+  no loader change (replay is the stock `data_load_mcap`); the MCAP sink is desktop-only (no mcap package in
+  the wasm graph), the rest builds everywhere
+- (M2 promote-at-stop — switching the live source onto its recording — was dropped 2026-09-01, D7; the
+  numbering is kept)
+- M3 source cache on the same core: attach/complete/adopt SDK ABI, identity via the SDK descriptor policy,
+  host-owned source-lifetime leases, cache budget in Preferences; connector providers shrink to descriptor +
+  trust + credentials + download
+- M4a `parser_arrow` (pj-official-plugins, nanoarrow-based `arrow-ipc` MessageParser) — independent of #275, in progress since 2026-08-31
+- M4b Mosaico transport/parser split; plugin-side capture, artifact format and loader retire (after the #275 decision)
+
+Acceptance:
+
+- a recorded ROS 2 / Foxglove session reopens from its file with the same plots
+- a layout referencing a cloud download restores from the host cache or re-downloads headlessly, with no
+  plugin-side cache code
 
 ## 15. Testing Strategy
 

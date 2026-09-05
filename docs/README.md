@@ -33,6 +33,8 @@ Examples of what belongs here:
 | `was_pending_followup_plan.md` | Plan (draft) | Follow-up to the state-integrity epic: unified was-pending semantics for scene restore queues — serialize binding state instead of origin so exact-restore correctness is structural rather than shell-maintained. |
 | `research/dataset_format_comparison.md` | Reference | Cross-cutting comparison of MCAP, RLDS, LeRobot, Zarr. Informs pj_scene2D and any future dataset-format work. |
 | `research/rerun_notes.md` | Reference | Analysis of Rerun's 2D architecture; comparison input for pj_scene2D and (potentially) pj_scene3D. |
+| `RECORDING_AND_CACHING.md` | Reference | **Recording and caching, the durable spec.** Intent, goals, architecture, accepted trade-offs and rejected alternatives (plugin-side caching, provider-driven cache ABI, parser config in the file, promote-at-stop) for the session recorder and the source cache. Read this first; `session_recorder_design.md` is the working design behind it. |
+| `session_recorder_design.md` | Design (M1 implemented, `feat/session-recorder-m1`) | Host-side raw recording of delegated-ingest messages into MCAP: stream Record/Stop first (M1), then the connector source cache on the same core and the Mosaico transport/parser split. Records the 2026-08-31 decisions (raw only, subscribed topics, bounded backpressure, global+per-source, auto-named folder). |
 
 ## Where to find module docs
 

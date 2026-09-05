@@ -264,7 +264,9 @@ resolve the primary checkout themselves, so they work from any worktree.
 
 ## v1 scope (per plan §0)
 
-Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/redo, derived-series editor (incl. Lua via `pj_scripting`), reactive scripts (via Toolbox + `onTimeChanged`), multi-tab workspace, marketplace install UI, all toolboxes.
+Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/redo, derived-series editor (incl. Lua via `pj_scripting`), reactive scripts (via Toolbox + `onTimeChanged`), multi-tab workspace, marketplace install UI, all toolboxes, session recording of streaming sources to MCAP.
+
+Session recording is a **runtime capability**, not a build flag: `RecordingService::isSupported()` says whether this build has a sink to record into, and every Record affordance follows it. Only the sink is platform-bound — the MCAP file writer is compiled on desktop only, while `Recorder`/`RecordingService` build everywhere (a browser sink is a later milestone, see the design doc). Each Record press creates one batch folder in the Preferences → Recording folder, `pj_<UTC timestamp>/`, holding ONE MCAP file per recorded source, named after that source and written straight into its final name; every file of one press shares a `capture_id`. A recording without a summary section is one that was not stopped cleanly, and it still opens (readers scan it linearly, `mcap recover` rebuilds its index). The write-queue budget is per source, so recording N sources may hold N times it in flight. See [`docs/session_recorder_design.md`](./docs/session_recorder_design.md).
 
 The 3D widget family ships as `pj_scene3D` (built and wired into `pj_app` via `Scene3DDockWidget`): TF, pointclouds, occupancy grids, axis/grid render passes, SceneEntities/markers, pluggable camera models, URDF/mesh robot models, the HDR/tonemap/SSAO/EDL rendering pipeline, live/streaming TF+object ingest (`TransformService` + `driveVisibleLayersToLiveEdge`), and per-use parser bindings (`parse_locked.h`) — see `pj_scene3D/docs/ARCHITECTURE.md` for the as-built design, `docs/REQUIREMENTS.md` + plan §5.5 for scope.
 

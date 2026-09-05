@@ -217,6 +217,8 @@
     <file alias="radio_unchecked_light.svg">svg/radio_unchecked_light.svg</file>
     <file alias="ratio.svg">svg/ratio.svg</file>
     <file alias="recenter.svg">svg/recenter.svg</file>
+    <file alias="record.svg">svg/record.svg</file>
+    <file alias="record_active.svg">svg/record_active.svg</file>
     <file alias="red_circle.svg">svg/red_circle.svg</file>
     <file alias="reference_line.svg">svg/reference_line.svg</file>
     <file alias="refresh.svg">svg/refresh.svg</file>

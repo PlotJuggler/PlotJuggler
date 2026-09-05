@@ -34,7 +34,8 @@
 #include "pj_base/time.hpp"  // PJ::Timepoint — the frame-invariant absolute instant the reference line stores
 #include "pj_base/types.hpp"
 #include "pj_plotting/CurveTracker.h"
-#include "pj_runtime/CurveDescriptor.h"  // openFilterEditor takes std::vector<CurveDescriptor> by value
+#include "pj_runtime/CurveDescriptor.h"   // openFilterEditor takes std::vector<CurveDescriptor> by value
+#include "pj_runtime/RecordingService.h"  // CaptureResult / SourceRecordingStart — recording slot parameters
 #include "pj_runtime/SessionManager.h"
 #include "pj_widgets/ChromeMetrics.h"
 #include "pj_widgets/VisualizationKind.h"
@@ -75,6 +76,7 @@ class MarketplaceWindow;
 class PanelEngine;
 class PlotDocker;
 class PlotWidget;
+class PreferencesDialog;
 class StateTransitionsDockWidget;
 class PendingDisplayBinder;
 class QtDiagnosticBridge;
@@ -509,7 +511,31 @@ class MainWindow : public QMainWindow {
   // Restores the next layout snapshot after undo.
   void onRedo();
 
+  // Record button toggled in the streaming strip: records every live streaming
+  // source into one batch folder, one file each, or ends the running capture. A
+  // start that cannot proceed unchecks the button and explains itself in a
+  // toast, so the button never lies about the state.
+  void onRecordToggled(bool record);
+
+  // The capture opened: every file exists and every tap is attached.
+  void onRecordingStarted(
+      const QString& capture_id, const QString& directory, const QVector<SourceRecordingStart>& sources);
+
+  // Terminal report of one capture. The toast names one file when there is one,
+  // the folder when every source is clean, and the failing sources otherwise;
+  // the per-source detail always goes to the log.
+  void onRecordingStopped(const CaptureResult& capture);
+
+  // 500 ms progress tick: refreshes the elapsed/size label and, once the byte
+  // budget has had to drop messages, says how many.
+  void onRecordingProgress(quint64 messages, quint64 payload_bytes, quint64 dropped);
+
  private:
+  // Re-reads the recording settings the Preferences Recording page persists, so
+  // the next recording uses them without an app restart. Called on every
+  // Preferences dialog this window opens.
+  void bindRecordingPreferences(PreferencesDialog& dialog);
+
   // Reloads a recorded source through its plugin + config (dialog skipped when
   // both are known). Shared by the global Reload button and the per-dataset
   // context-menu reload.
@@ -1197,6 +1223,14 @@ class MainWindow : public QMainWindow {
 #endif
   std::unique_ptr<FileLoader> file_loader_;
   std::unique_ptr<StreamingSourceManager> streaming_manager_;
+  // Declared AFTER streaming_manager_ on purpose: members die in reverse order,
+  // so the runtime hosts holding this service's taps outlive it. Finalization
+  // does not rely on that ordering — closeEvent and ~MainWindow both stop() the
+  // recording explicitly, before any widget or host is gone. Always created,
+  // even where isSupported() is false: only the UI affordances go away there.
+  std::unique_ptr<RecordingService> recording_service_;
+  // Wall clock behind the "m:ss | N.N MB" status label; restarted on every start().
+  QElapsedTimer recording_elapsed_;
   // ~30 Hz rate cap for the tracker-time fan-out. Every per-cursor-move driver
   // (playback ticks, scrubbing, seeks) routes through one coalescer so the
   // expensive per-widget work (plot replot, scene decode/composite, value column)

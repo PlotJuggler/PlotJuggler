@@ -4,12 +4,14 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <functional>
 #include <memory>
 #include <unordered_map>
 #include <vector>
 
 #include "pj_base/types.hpp"
+#include "pj_runtime/RecordingService.h"
 #include "pj_widgets/ChromeMetrics.h"
 
 QT_BEGIN_NAMESPACE
@@ -27,6 +29,14 @@ class ExtensionCatalogService;
 class ObjectStore;
 class SessionManager;
 class TopicDemandTracker;
+
+/// What the live sessions offer a recording: the ones the recorder can tap,
+/// plus the display names of those it cannot (D1), so the caller can say what
+/// will be missing instead of silently recording less than the user sees.
+struct RecordingTargets {
+  std::vector<RecordingTarget> targets;
+  QStringList excluded;
+};
 
 // Drives the streaming-source path: pick a stream plugin from the catalog,
 // build a per-session ingest host (mirrors FileLoader's flow), run the
@@ -69,6 +79,17 @@ class StreamingSourceManager : public QObject {
   // Stop-and-join every live session, preserving streamStopped emissions per
   // dataset. Used by remove-all paths before erasing the whole datastore.
   void stopAllAndWait(const QString& reason);
+
+  // The live streaming sessions as recordable targets for RecordingService.
+  // GUI thread only. Each target is keyed by its DatasetId — the identity the
+  // recording addresses it by — and its lambdas look the session up by that id
+  // at call time, so a session that ended mid-recording reports a failed attach
+  // rather than a dangling host. source_id is the plugin display name and
+  // nothing more: names may repeat, and the service gives each file its own
+  // name. Sources without delegated ingest go into `excluded` instead of
+  // `targets`. Not const: it drops the previous recording's ended-session
+  // counters.
+  [[nodiscard]] RecordingTargets recordingTargets();
 
   // Point `host`'s write targets at the primary or the secondary tail buffer
   // according to the current pause state. Single source of truth for the
@@ -114,8 +135,12 @@ class StreamingSourceManager : public QObject {
   void retentionWindowChanged(DatasetId dataset_id, qint64 window_ns);
 
   // Emitted on the UI thread after a worker has exited and the session has
-  // been torn down. `reason` carries the cooperative-stop message ("user
-  // stop", "plugin poll error: ...", etc.).
+  // been torn down. `reason` is the FAILURE that ended the stream ("plugin
+  // poll error: ...", or the plugin's own request_stop(FAILED) reason), empty
+  // for an orderly end — user-requested, or the plugin's request_stop(STOPPED)
+  // at end of stream. Consumers treat a non-empty reason as a problem (a
+  // recording marks the source non-clean), so it never carries a diagnostic
+  // the plugin recovered from.
   void streamStopped(DatasetId dataset_id, QString reason);
 
   // Emitted on the UI thread for setup-time failures that happen before a
@@ -142,16 +167,16 @@ class StreamingSourceManager : public QObject {
  private:
   struct StreamingSession;
 
+  // Keeps a dying session's pure-lazy counter reachable, so a recording that
+  // outlives it can still count the holes it left. Call immediately before
+  // erasing the session.
+  void rememberSkippedLazy(const StreamingSession& session);
+
   // Bootstraps one new session: resolves the plugin by display name, creates
   // handle/dataset/ingest, runs the dialog flow, calls start(), spawns the
   // worker. Emits streamStarted() on success, streamError() and tears down
   // on any failure path.
   void startSession(const QString& plugin_id);
-
-  // Requests cooperative stop on every live session. Worker threads observe
-  // the atomic on their next iteration and exit; final teardown happens in
-  // onWorkerFinished().
-  void requestStopAll(const QString& reason);
 
   // Pushes `active_topics` through the "pj.topic_subscription.v1" extension
   // (DataSourceHandle::setActiveTopics), gated on kCapabilityPerTopicPause —
@@ -220,6 +245,10 @@ class StreamingSourceManager : public QObject {
   // stable pointer to the session struct across map mutations on the UI
   // thread.
   std::unordered_map<DatasetId, std::unique_ptr<StreamingSession>> sessions_;
+  // Final pure-lazy counter of each session that has ended. Cleared when the
+  // next recording's targets are built, the one point at which the previous
+  // values stop mattering.
+  std::unordered_map<DatasetId, uint64_t> ended_skipped_lazy_;
 };
 
 }  // namespace PJ

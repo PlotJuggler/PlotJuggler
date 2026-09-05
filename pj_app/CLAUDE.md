@@ -37,6 +37,32 @@ Per root CLAUDE.md: **prefer `.ui` files** over programmatic widget construction
 
 `pj_app` has no `docs/` folder by design — the shell's intent is "wire the services to the widgets," and the wiring is best read directly from `MainWindow.cpp` and `main.cpp`.
 
+## Session recording
+
+Nothing here is gated at build time: the `RecordingService` member, its connections and the shutdown `stop()`
+calls are unconditional, and the capability is a runtime query. The streaming strip's `buttonStreamingRecord` and
+`labelStreamingRecordStatus` stay hidden until `LeftPanel::setRecordingSupported(...)`, which only `MainWindow`
+calls and only with `RecordingService::isSupported()`; the Preferences Recording nav row and page wiring are added
+on the same query (the page itself always exists in the `.ui`, and a nav row's position IS its page index).
+`StreamingSourceManager::recordingTargets()` is the D1 eligibility seam: it hands back only sessions whose
+plugin advertises delegated ingest (a direct writer has no raw bytes at the seam) plus the display names it
+excluded, for the shell to say what will be missing. Each target is keyed by its `DatasetId` — the identity the
+service addresses that source by afterwards — and its `attach` reports `false` when the session ended before the
+tap could be installed, which fails (and rolls back) the whole capture. Display names are display names: they
+may repeat, because every source writes its own file and `RecordingService` names those files.
+
+One Record press records every eligible source into one batch folder, one file each, so a stream that ends
+mid-capture must NOT stop the capture: the `streamStopped` handler forwards
+`RecordingService::onSourceEnded(dataset_id, reason)`, which finalizes that one file and leaves the rest
+recording. The batch ends with its last live source, or when the user presses Stop.
+
+`MainWindow::onRecordingStopped` reports a whole capture rather than a file: the path when a single source
+recorded, the folder when several did and every outcome is `clean`, and otherwise the problem count plus up to
+two failing sources with their reasons (naming `mcap recover` when a file could not be finalized). It appends
+the capture's dropped count when the write queues had to shed messages, since a complete-looking file with holes
+says nothing about them itself. Per-source detail goes to the log, never into the toast — a toast listing one
+line per file stops being readable at three sources.
+
 ## Canonical layout import (cloud sessions)
 
 A `.pj4.xml` layout can embed a durable source descriptor, so opening it

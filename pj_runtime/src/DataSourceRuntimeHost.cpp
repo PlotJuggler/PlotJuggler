@@ -333,12 +333,29 @@ void DataSourceRuntimeHost::flushPending() {
   }
 }
 void DataSourceRuntimeHost::requestStop(std::string_view reason) {
-  last_error_.assign(reason.data(), reason.size());
+  {
+    std::lock_guard lock(stop_failure_mu_);
+    if (stop_failure_.empty()) {
+      stop_failure_.assign(reason.data(), reason.size());
+    }
+  }
   stop_requested_.store(true);
 }
 
 void DataSourceRuntimeHost::requestStop() {
   stop_requested_.store(true);
+}
+
+std::string DataSourceRuntimeHost::stopFailure() const {
+  std::lock_guard lock(stop_failure_mu_);
+  return stop_failure_;
+}
+
+std::string DataSourceRuntimeHost::lastError() const {
+  if (auto failure = stopFailure(); !failure.empty()) {
+    return failure;
+  }
+  return last_error_;
 }
 
 void DataSourceRuntimeHost::setObjectRetentionBudget(int64_t time_window_ns, size_t max_memory_bytes) {
@@ -448,10 +465,27 @@ bool DataSourceRuntimeHost::cbIsStopRequested(void* ctx) noexcept {
 
 void DataSourceRuntimeHost::cbNotifyState(void* /*ctx*/, PJ_data_source_state_t /*state*/) noexcept {}
 
+// [thread-safe] in the ABI: a plugin may raise this from its own network
+// thread while its poll thread is inside fail(), so only the two requestStop
+// overloads are touched here — the flag is atomic and the failure reason has
+// its own lock — and last_error_ never is.
 void DataSourceRuntimeHost::cbRequestStop(
-    void* ctx, PJ_data_source_state_t /*terminal*/, PJ_string_view_t reason) noexcept {
+    void* ctx, PJ_data_source_state_t terminal, PJ_string_view_t reason) noexcept {
   auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
-  self->requestStop(std::string_view(reason.data, reason.size));
+  const std::string_view text(reason.data, reason.size);
+  // STOPPED is the plugin's orderly end (end of file, a peer that closed
+  // cleanly): its reason is narrative for the log, not a verdict, and must not
+  // become an error that marks a recording of this source lossy. Any other
+  // terminal state is a failure and its reason is the stream's verdict.
+  if (terminal == PJ_DATA_SOURCE_STATE_STOPPED) {
+    qCInfo(lcIngest) << "source requested an orderly stop:"
+                     << QString::fromUtf8(text.data(), static_cast<int>(text.size()));
+    self->requestStop();
+    return;
+  }
+  qCWarning(lcIngest) << "source requested a stop after a failure:"
+                      << QString::fromUtf8(text.data(), static_cast<int>(text.size()));
+  self->requestStop(text);
 }
 
 std::optional<uint32_t> DataSourceRuntimeHost::findReusableBinding(
@@ -462,6 +496,64 @@ std::optional<uint32_t> DataSourceRuntimeHost::findReusableBinding(
     }
   }
   return std::nullopt;
+}
+
+void DataSourceRuntimeHost::setRecordTap(std::shared_ptr<RecordTap> tap) {
+  std::shared_ptr<RecordTap> released;
+  {
+    std::lock_guard lock(record_tap_mu_);
+    released = std::exchange(record_tap_, std::move(tap));
+    record_tap_active_.store(record_tap_ != nullptr, std::memory_order_relaxed);
+  }
+  // `released` dies here, outside the lock: dropping the last reference to a
+  // Recorder joins its writer thread, and push threads must never queue behind
+  // that mutex while it does.
+}
+
+uint64_t DataSourceRuntimeHost::recordTapSkippedLazy() const noexcept {
+  return record_tap_skipped_lazy_.load();
+}
+
+std::shared_ptr<RecordTap> DataSourceRuntimeHost::recordTapSnapshot() const {
+  std::lock_guard lock(record_tap_mu_);
+  return record_tap_;
+}
+
+void DataSourceRuntimeHost::dropRecordTap(const std::shared_ptr<RecordTap>& tap) {
+  std::shared_ptr<RecordTap> released;
+  {
+    std::lock_guard lock(record_tap_mu_);
+    if (record_tap_ == tap) {
+      released = std::exchange(record_tap_, nullptr);
+      record_tap_active_.store(false, std::memory_order_relaxed);
+    }
+  }
+  // Released outside the lock, for the reason setRecordTap documents.
+}
+
+void DataSourceRuntimeHost::recordMessage(
+    const std::shared_ptr<RecordTap>& tap, uint32_t binding_id, const ParserBinding& binding, int64_t timestamp_ns,
+    const uint8_t* data, uint64_t size) {
+  // Only the signature is the host's to report: the tap stamps the source
+  // identity, which is the recording's view of this source.
+  const RecordedBindingView view{
+      .topic = binding.topic_name,
+      .encoding = binding.signature.encoding,
+      .type_name = binding.signature.type_name,
+      .schema_bytes = binding.signature.schema_bytes,
+  };
+  // Pre-set to the throw verdict: an exception falls through to the drop.
+  TapVerdict verdict = TapVerdict::kStopRecording;
+  try {
+    verdict = tap->onMessage(binding_id, view, timestamp_ns, Span<const uint8_t>(data, static_cast<size_t>(size)));
+  } catch (const std::exception& error) {
+    qCWarning(lcIngest) << "record tap threw in onMessage; recording detached:" << error.what();
+  } catch (...) {
+    qCWarning(lcIngest) << "record tap threw an unknown exception in onMessage; recording detached";
+  }
+  if (verdict == TapVerdict::kStopRecording) {
+    dropRecordTap(tap);
+  }
 }
 
 bool DataSourceRuntimeHost::cbEnsureParserBinding(
@@ -781,6 +873,11 @@ bool DataSourceRuntimeHost::cbPushMessage(
     };
 
     if (policy == sdk::ObjectIngestPolicy::kPureLazy) {
+      // No bytes are fetched on this thread, so there is nothing to record;
+      // count the gap instead of silently dropping it.
+      if (self->hasRecordTap()) {
+        self->record_tap_skipped_lazy_.fetch_add(1);
+      }
       return push_lazy_object();
     }
 
@@ -805,6 +902,17 @@ bool DataSourceRuntimeHost::cbPushMessage(
     if (payload.data == nullptr && payload.size > 0) {
       return self->fail(out_error, "message data fetcher returned null data");
     }
+
+    // The session recorder sees the plugin's raw bytes, before any decoding.
+    // The binding travels with the message, so a recording started mid-stream
+    // gets a channel for every topic that keeps producing — including ones
+    // subscribed long before it started.
+    if (self->hasRecordTap()) {
+      if (const auto tap = self->recordTapSnapshot(); tap != nullptr) {
+        self->recordMessage(tap, handle.id, binding, timestamp_ns, payload.data, payload.size);
+      }
+    }
+
     if (auto status = binding.parser->parse(timestamp_ns, Span<const uint8_t>(payload.data, payload.size)); !status) {
       return self->fail(out_error, status.error().c_str());
     }

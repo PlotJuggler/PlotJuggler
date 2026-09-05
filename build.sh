@@ -80,7 +80,7 @@ fi
 
 # Foundation concurrency tests exercised under ThreadSanitizer. Keep in sync with
 # the `tsan` job in .github/workflows/linux-ci.yml.
-TSAN_TESTS=(engine_thread_safety_test engine_concurrency_test)
+TSAN_TESTS=(engine_thread_safety_test engine_concurrency_test recorder_test)
 
 if [[ "$TSAN" == "1" ]]; then
   BUILD_DIR="${SCRIPT_DIR}/build-tsan"

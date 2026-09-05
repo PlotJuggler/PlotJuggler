@@ -7,8 +7,10 @@
 #include <QComboBox>
 #include <QDomDocument>
 #include <QDomElement>
+#include <QEvent>
 #include <QFileInfo>
 #include <QFont>
+#include <QFontMetrics>
 #include <QLabel>
 #include <QLayout>
 #include <QLayoutItem>
@@ -217,6 +219,15 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
   connect(ui_->buttonStreamingPause, &QPushButton::toggled, this, &LeftPanel::streamingPauseToggled);
   connect(
       ui_->buttonStreamingPause, &QPushButton::toggled, this, [this](bool) { applyPauseButtonState(currentTheme()); });
+  // Record/Stop for the session recording (all active streams).
+  connect(ui_->buttonStreamingRecord, &QPushButton::toggled, this, &LeftPanel::streamingRecordToggled);
+  connect(ui_->buttonStreamingRecord, &QPushButton::toggled, this, [this](bool) {
+    applyRecordButtonState(currentTheme());
+  });
+  // The status label is elided against its actual width, which is only known
+  // after layout; watch it so the text is re-elided whenever that width moves.
+  ui_->labelStreamingRecordStatus->installEventFilter(this);
+  applyRecordingStatusMinimumWidth();
   // Persist the user's choice so it is restored next session. The signal only
   // fires on genuine user selection — setStreamingSources() blocks it while
   // repopulating — so this never re-saves a programmatic restore.
@@ -308,6 +319,75 @@ void LeftPanel::applyPauseButtonState(QString theme) {
   ui_->buttonStreamingPause->setToolTip(paused ? tr("Resume streaming") : tr("Pause streaming"));
 }
 
+void LeftPanel::applyRecordButtonState(const QString& theme) {
+  const bool recording = ui_->buttonStreamingRecord->isChecked();
+  // The active glyph carries its own red fill, which the theme recolor leaves
+  // alone: recording is the one state that must read the same in both themes.
+  ui_->buttonStreamingRecord->setIcon(
+      loadSvg(recording ? ":/resources/svg/record_active.svg" : ":/resources/svg/record.svg", theme));
+  ui_->buttonStreamingRecord->setToolTip(
+      recording ? tr("Stop recording")
+                : tr("Record the subscribed topics of every active stream, one MCAP file per stream"));
+}
+
+void LeftPanel::setRecordingSupported(bool supported) {
+  ui_->buttonStreamingRecord->setVisible(supported);
+  if (!supported) {
+    ui_->labelStreamingRecordStatus->hide();
+  }
+}
+
+void LeftPanel::setRecordingActive(bool active) {
+  const QSignalBlocker blocker(ui_->buttonStreamingRecord);  // reflecting state must not re-trigger start/stop
+  ui_->buttonStreamingRecord->setChecked(active);
+  ui_->labelStreamingRecordStatus->setVisible(active);
+  if (!active) {
+    recording_status_text_.clear();
+    ui_->labelStreamingRecordStatus->clear();
+  }
+  applyRecordButtonState(currentTheme());
+}
+
+void LeftPanel::setRecordingStatusText(const QString& text) {
+  recording_status_text_ = text;
+  ui_->labelStreamingRecordStatus->setToolTip(text);
+  elideRecordingStatus();
+}
+
+void LeftPanel::elideRecordingStatus() {
+  // The label's horizontal size policy is Ignored so a longer text never
+  // resizes the row; elide against the width the layout actually gave it.
+  QLabel* label = ui_->labelStreamingRecordStatus;
+  const int available = label->contentsRect().width();
+  label->setText(QFontMetrics(label->font()).elidedText(recording_status_text_, Qt::ElideRight, available));
+}
+
+void LeftPanel::applyRecordingStatusMinimumWidth() {
+  QLabel* label = ui_->labelStreamingRecordStatus;
+  const QMargins margins = label->contentsMargins();
+  label->setMinimumWidth(
+      QFontMetrics(label->font()).horizontalAdvance(QStringLiteral("00:00 | 000.0 kB")) + margins.left() +
+      margins.right());
+}
+
+bool LeftPanel::eventFilter(QObject* watched, QEvent* event) {
+  if (watched == ui_->labelStreamingRecordStatus) {
+    switch (event->type()) {
+      case QEvent::Resize:
+        elideRecordingStatus();
+        break;
+      case QEvent::FontChange:
+      case QEvent::StyleChange:
+        applyRecordingStatusMinimumWidth();
+        elideRecordingStatus();
+        break;
+      default:
+        break;
+    }
+  }
+  return QWidget::eventFilter(watched, event);
+}
+
 QDomElement LeftPanel::saveSourcesState(QDomDocument& doc) const {
   QDomElement element = doc.createElement(u"left_panel_state"_s);
 
@@ -382,6 +462,7 @@ void LeftPanel::applyIcons(QString theme) {
   ui_->buttonStreamingOptions->setIcon(loadSvg(":/resources/svg/add.svg", theme));
   ui_->buttonCloudOpen->setIcon(loadSvg(":/resources/svg/add.svg", theme));
   applyPauseButtonState(theme);
+  applyRecordButtonState(theme);
 
   const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
   const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;

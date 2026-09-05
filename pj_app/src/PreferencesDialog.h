@@ -27,13 +27,22 @@ class PreferencesDialog : public Dialog {
   explicit PreferencesDialog(Theme& theme, QWidget* parent = nullptr);
   ~PreferencesDialog() override;
 
-  // Stack index of the "Plugins" nav page (see the nav_entries table in the .cpp).
+  // Stack indices a caller names to land the user on a section instead of
+  // writing a literal. Nav rows are built in pagesStack order, so a row's
+  // position IS its page index, and the optional Recording page comes last.
+  static constexpr int kAppearancePage = 0;
   static constexpr int kPluginsPage = 4;
 
   // Opens the dialog on the given nav page (stack index), updating both the
   // visible page and the nav-row highlight. Call before exec() to land the user
   // straight on a specific section (e.g. kPluginsPage from the marketplace).
   void showPage(int index);
+
+ signals:
+  // The recording folder and write-queue budget were just written to
+  // QSettings on OK. The host re-reads them from here, so the next recording
+  // picks them up without a restart; a running one keeps its options.
+  void recordingSettingsChanged();
 
  private:
   // Validates the registry-URL field when editing finishes: syntax first, then

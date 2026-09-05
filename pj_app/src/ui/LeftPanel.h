@@ -10,6 +10,8 @@
 #include "pj_runtime/PluginRuntimeCatalog.h"
 #include "pj_widgets/ChromeMetrics.h"
 
+class QEvent;
+
 namespace Ui {
 class LeftPanel;
 }
@@ -43,6 +45,10 @@ class LeftPanel : public QWidget {
   // ingesting but the viewport no longer follows the live edge — mirrors PJ3
   // semantics. Wired into StreamingSourceManager::onPauseToggled.
   void streamingPauseToggled(bool paused);
+  // Record/Stop for the session recording (all active streams). The button is
+  // checkable, but the panel never decides the state: MainWindow drives
+  // RecordingService and reflects the outcome through setRecordingActive().
+  void streamingRecordToggled(bool record);
   void streamingSourceChanged(QString source);
   // Buffer length (seconds) for the streaming source. Persisted to
   // QSettings; emitted when the user adjusts the inline scrubber.
@@ -64,6 +70,19 @@ class LeftPanel : public QWidget {
   void setReloadEnabled(bool enabled);
   void setRecentEnabled(bool enabled);
 
+  // Shows or hides the Record button and its status label. The panel starts
+  // hidden and the host opts in (RecordingService::isSupported()), so a build
+  // with no recording sink never offers a control that cannot do anything.
+  void setRecordingSupported(bool supported);
+
+  // Reflects RecordingService state: checked, red icon and a visible status
+  // label while recording.
+  void setRecordingActive(bool active);
+  // Shows `text` in the status label, elided to the label's current width with
+  // the full string as the tooltip. Re-elided automatically when the label is
+  // resized or its font changes.
+  void setRecordingStatusText(const QString& text);
+
   // Builds <left_panel_state sources_tab="..." streaming_source="..."
   // streaming_buffer="..."/>. Caller appends to the layout document.
   // visibility is NOT included here — MainWindow handles it via chrome_state.
@@ -82,14 +101,29 @@ class LeftPanel : public QWidget {
   // "cloud". Safe to call repeatedly (e.g. on catalogChanged).
   void populateCloudToolboxes(const std::vector<RuntimeToolboxPlugin>& toolboxes);
 
+ protected:
+  // Re-elides the recording status on the label's resize and font changes.
+  bool eventFilter(QObject* watched, QEvent* event) override;
+
  private:
   void applyIcons(QString theme);
   // Swaps the pause/resume icon and tooltip to match the button's checked
   // state. Called from applyIcons() and on every toggled() emission so the
   // glyph tracks both theme changes and user clicks.
   void applyPauseButtonState(QString theme);
+  // Record icon and tooltip for the current checked state. Called from
+  // applyIcons() and on every toggled() emission.
+  void applyRecordButtonState(const QString& theme);
+  // Elides recording_status_text_ to the label's current width.
+  void elideRecordingStatus();
+  // Reserves room for a typical status ("00:00 | 000.0 kB") in the label's
+  // current font so an ordinary recording is readable even in a squeezed panel;
+  // only the dropped-count suffix may still elide there.
+  void applyRecordingStatusMinimumWidth();
 
   Ui::LeftPanel* ui_;
+  // Full, un-elided recording status; the label shows an elided view of it.
+  QString recording_status_text_;
   // Chrome metrics from MainWindow::chromeMetricsChanged.
   ChromeMetrics chrome_metrics_;
 };

@@ -24,6 +24,7 @@
 #include <QIcon>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLocale>
 #include <QLoggingCategory>
 #include <QMenu>
 #include <QMenuBar>
@@ -158,6 +159,7 @@
 #include "pj_runtime/MarkersRuntimeHost.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/QSettingsBackend.h"
+#include "pj_runtime/RecordingService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/TelemetryPing.h"
 #include "pj_runtime/Time.h"
@@ -1289,6 +1291,17 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       ui_->leftPanel, &LeftPanel::streamingPauseToggled, streaming_manager_.get(),
       &StreamingSourceManager::onPauseToggled);
 
+  // Recording is a runtime capability: the service is wired unconditionally so
+  // every recording path below reads the same on every platform, and only the
+  // Record affordances follow isSupported().
+  ui_->leftPanel->setRecordingSupported(RecordingService::isSupported());
+  recording_service_ = std::make_unique<RecordingService>(this);
+  recording_service_->setSettings(RecordingService::loadSettings());
+  connect(ui_->leftPanel, &LeftPanel::streamingRecordToggled, this, &MainWindow::onRecordToggled);
+  connect(recording_service_.get(), &RecordingService::started, this, &MainWindow::onRecordingStarted);
+  connect(recording_service_.get(), &RecordingService::stopped, this, &MainWindow::onRecordingStopped);
+  connect(recording_service_.get(), &RecordingService::progress, this, &MainWindow::onRecordingProgress);
+
   const auto refresh_streaming_seek_lock = [this]() {
     if (session_ == nullptr) {
       return;
@@ -1347,13 +1360,20 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       });
   connect(
       streaming_manager_.get(), &StreamingSourceManager::streamStopped, this,
-      [this, refresh_streaming_seek_lock](DatasetId id, const QString&) {
+      [this, refresh_streaming_seek_lock](DatasetId id, const QString& reason) {
         if (active_streaming_dataset_id_ == id) {
           active_streaming_dataset_id_ = 0;
           session_->setActiveStreamingDataset(0);
           streaming_playback_seeded_ = false;
           session_->playbackEngine().setHoldAtRangeMax(false);
           refresh_streaming_seek_lock();
+        }
+        // That source's file is finalized on its own; the rest of the capture
+        // keeps recording, and the batch ends with its last live source. Taps
+        // are attached at start() only, so a stream started later is never
+        // recorded.
+        if (recording_service_ != nullptr && recording_service_->isRecording()) {
+          recording_service_->onSourceEnded(static_cast<quint64>(id), reason);
         }
       });
   connect(
@@ -2153,6 +2173,12 @@ void MainWindow::onPlaceholderTopicDropped(
 }
 
 MainWindow::~MainWindow() {
+  // FIRST, before `delete ui_` below: stop() emits stopped(), whose slot
+  // touches the left panel. A quit that never ran closeEvent (--screenshot,
+  // --exit-after-layout) would otherwise reach that slot with the widgets gone.
+  if (recording_service_ != nullptr) {
+    recording_service_->stop();
+  }
   // Dtor-without-closeEvent path (same precedent as closeAllPinnedToolboxTabs
   // below): a still-running batch's host teardown fires on_ingest_finished ->
   // endIngest -> the still-connected observer, so the D1 teardown must run
@@ -2699,6 +2725,7 @@ void MainWindow::onOpenMarketplace() {
     QTimer::singleShot(0, this, [this]() {
       PreferencesDialog prefs(*theme_, this);
       prefs.setChromeMetrics(chrome_metrics_);
+      bindRecordingPreferences(prefs);
       prefs.showPage(PreferencesDialog::kPluginsPage);
       prefs.exec();
     });
@@ -3233,7 +3260,14 @@ void MainWindow::onMergeDatasetsRequested(const QList<DatasetId>& dataset_ids) {
 void MainWindow::onShowPreferencesDialog() {
   PreferencesDialog dlg(*theme_, this);
   dlg.setChromeMetrics(chrome_metrics_);
+  bindRecordingPreferences(dlg);
   dlg.exec();
+}
+
+void MainWindow::bindRecordingPreferences(PreferencesDialog& dialog) {
+  connect(&dialog, &PreferencesDialog::recordingSettingsChanged, this, [this]() {
+    recording_service_->setSettings(RecordingService::loadSettings());
+  });
 }
 
 void MainWindow::onShowAboutDialog() {
@@ -3982,6 +4016,114 @@ void MainWindow::refreshStreamingCombo() {
   ui_->leftPanel->setStreamingSources(names);
 }
 
+void MainWindow::onRecordToggled(bool record) {
+  if (!record) {
+    recording_service_->stop();
+    return;
+  }
+  auto recordable = streaming_manager_->recordingTargets();
+  if (recordable.targets.empty()) {
+    ui_->leftPanel->setRecordingActive(false);
+    showToast(
+        recordable.excluded.isEmpty()
+            ? tr("Nothing to record: start a streaming source first.")
+            : tr("Nothing to record: %n active source(s) write decoded samples directly, which cannot be recorded.",
+                 nullptr, static_cast<int>(recordable.excluded.size())));
+    return;
+  }
+  // The app version goes into each file's pj.recording metadata. Take it from
+  // the QCoreApplication property main.cpp seeded from pj_version.h, so
+  // versions.env stays the single source of truth.
+  const auto directory =
+      recording_service_->start(std::move(recordable.targets), QCoreApplication::applicationVersion().toStdString());
+  if (!directory) {
+    ui_->leftPanel->setRecordingActive(false);
+    showToast(tr("Recording could not start: %1").arg(QString::fromStdString(directory.error())));
+    return;
+  }
+  if (!recordable.excluded.isEmpty()) {
+    // Say it up front: finding out on replay that the file is missing these
+    // sources is far worse than a toast now.
+    showToast(tr("%n source(s) write decoded samples directly and are not recorded: %1", nullptr,
+                 static_cast<int>(recordable.excluded.size()))
+                  .arg(recordable.excluded.join(u", "_s)));
+  }
+}
+
+void MainWindow::onRecordingStarted(
+    const QString& capture_id, const QString& directory, const QVector<SourceRecordingStart>& sources) {
+  recording_elapsed_.start();
+  ui_->leftPanel->setRecordingActive(true);
+  ui_->leftPanel->setRecordingStatusText(tr("0:00 | %1").arg(QLocale().formattedDataSize(0)));
+  qCInfo(lcMain) << "recording capture" << capture_id << "into" << directory;
+  for (const SourceRecordingStart& source : sources) {
+    qCInfo(lcMain) << "  recording" << source.source << "to" << source.path;
+  }
+}
+
+void MainWindow::onRecordingStopped(const CaptureResult& capture) {
+  ui_->leftPanel->setRecordingActive(false);
+  // Per-source detail belongs in the log: a toast that listed one line per file
+  // would be unreadable the moment a session has more than a couple of sources.
+  for (const SourceRecordingResult& source : capture.sources) {
+    if (source.outcome == RecordingOutcome::kClean) {
+      qCInfo(lcMain) << "recorded" << source.source << "to" << source.path << source.messages << "messages";
+    } else {
+      qCWarning(lcMain) << "recorded" << source.source << "to" << source.path
+                        << "with problems:" << outcomeName(source.outcome) << source.reason;
+    }
+  }
+
+  const int problem_count = capture.lossy_count + capture.truncated_count + capture.incomplete_count;
+  QString message;
+  if (problem_count == 0) {
+    message = capture.sources.size() == 1
+                  ? tr("Recording saved to %1").arg(capture.sources.front().path)
+                  : tr("%n recording(s) saved to %1", nullptr, static_cast<int>(capture.sources.size()))
+                        .arg(capture.directory);
+  } else {
+    // At most two names: enough to know which source to look at, short enough
+    // to stay a toast. The log carries the rest.
+    QStringList failing;
+    for (const SourceRecordingResult& source : capture.sources) {
+      if (source.outcome == RecordingOutcome::kClean || failing.size() >= 2) {
+        continue;
+      }
+      failing << tr("%1 (%2)").arg(source.source, source.reason);
+    }
+    message = tr("%n of %1 recording(s) had problems: %2", nullptr, problem_count)
+                  .arg(capture.sources.size())
+                  .arg(failing.join(u", "_s));
+  }
+  if (capture.incomplete_count > 0) {
+    message += tr(" An unfinalized file still opens; run 'mcap recover' to rebuild its index.");
+  }
+  if (capture.total_dropped > 0) {
+    // A complete file with holes says nothing about them itself, so say it here.
+    const auto capped = static_cast<int>(std::min<quint64>(capture.total_dropped, std::numeric_limits<int>::max()));
+    message += tr(" (%n message(s) dropped: the disk could not keep up)", nullptr, capped);
+  }
+  if (capture.total_skipped > 0) {
+    const auto capped = static_cast<int>(std::min<quint64>(capture.total_skipped, std::numeric_limits<int>::max()));
+    message += tr(" (%n message(s) could not be recorded)", nullptr, capped);
+  }
+  showToast(message);
+}
+
+void MainWindow::onRecordingProgress(quint64 /*messages*/, quint64 payload_bytes, quint64 dropped) {
+  const qint64 seconds = recording_elapsed_.elapsed() / 1000;
+  QString text = tr("%1:%2 | %3")
+                     .arg(seconds / 60)
+                     .arg(seconds % 60, 2, 10, QLatin1Char('0'))
+                     .arg(QLocale().formattedDataSize(static_cast<qint64>(payload_bytes)));
+  // The sink is not keeping up and the budget is shedding the biggest messages.
+  // The recording carries on with holes, so show the count while it grows.
+  if (dropped > 0) {
+    text += tr(" | %1 dropped").arg(dropped);
+  }
+  ui_->leftPanel->setRecordingStatusText(text);
+}
+
 void MainWindow::wireExistingPlots() {
   forEachDocker([this](PlotDocker* docker) { onPlotTabAdded(docker); });
 }
@@ -4182,6 +4324,12 @@ void MainWindow::closeEvent(QCloseEvent* event) {
   // lets the download wind down during the remaining shutdown instead of the
   // join blocking on a full fetch.
   stopAllToolboxImports();
+  // Finalize before anything tears the streaming sources down: stop() detaches
+  // the taps from live runtime hosts, and a normal quit would otherwise leave
+  // the recording without its summary section.
+  if (recording_service_ != nullptr) {
+    recording_service_->stop();
+  }
 #ifdef PJ_TARGET_WASM
   // Closing the last Qt window in a browser hides the canvas, but Emscripten may
   // keep the live runtime instead of unwinding main() immediately. Do not rely

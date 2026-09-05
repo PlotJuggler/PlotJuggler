@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -75,9 +76,14 @@ const LoadedDataSource* resolveStreamSource(const ExtensionCatalogService& exten
 // Per-session state. Held by unique_ptr in the manager's map so the worker
 // thread can hold a stable pointer to it across map mutations.
 struct StreamingSourceManager::StreamingSession {
-  std::string plugin_id;
+  std::string plugin_id;    ///< display name, as shown in the streaming combo
+  std::string manifest_id;  ///< the plugin's stable manifest id, for provenance
   DatasetId dataset_id = 0;
   DataSourceHandle handle;
+  /// handle.capabilities(), read once after start(): a plugin call, and the
+  /// ABI gives no way for the mask to change once the source runs, so every
+  /// later gate (per-topic pause, recordability) reads this instead.
+  uint64_t capabilities = 0;
   std::unique_ptr<DataSourceRuntimeHost> runtime_host;
   std::unique_ptr<QThread> worker;
 
@@ -106,7 +112,7 @@ StreamingSourceManager::~StreamingSourceManager() {
   // onWorkerFinished here because the UI event loop won't run again.
   for (auto& [dataset_id, sess] : sessions_) {
     if (sess->runtime_host != nullptr) {
-      sess->runtime_host->requestStop("manager shutdown");
+      sess->runtime_host->requestStop();  // flag-only: the workers are still running
     }
   }
   for (auto& [dataset_id, sess] : sessions_) {
@@ -136,17 +142,25 @@ bool StreamingSourceManager::stopDatasetAndWait(DatasetId dataset_id, const QStr
 
   StreamingSession* sess = it->second.get();
   if (sess->runtime_host != nullptr) {
-    sess->runtime_host->requestStop(reason.toStdString());
+    // Flag-only: a requested stop is orderly, not a failure, so it records no
+    // reason — `reason` belongs to the log.
+    qCInfo(lcStream) << "stopping stream" << dataset_id << ":" << reason;
+    sess->runtime_host->requestStop();
   }
   if (sess->worker != nullptr) {
     sess->worker->wait();
   }
 
-  QString stopped_reason = reason;
-  if (sess->runtime_host != nullptr && !sess->runtime_host->lastError().empty()) {
-    stopped_reason = QString::fromStdString(sess->runtime_host->lastError());
+  // streamStopped carries only the FAILURE that ended the stream, if the
+  // worker hit one before this stop landed. A requested stop is orderly, so
+  // the signal's reason stays empty and a recording of this source stays clean
+  // (RecordingService marks any non-empty reason non-clean).
+  QString stopped_reason;
+  if (sess->runtime_host != nullptr) {
+    stopped_reason = QString::fromStdString(sess->runtime_host->stopFailure());
   }
 
+  rememberSkippedLazy(*sess);
   sessions_.erase(it);
   for (const ObjectTopicId topic_id : secondary_object_store_->listTopics(dataset_id)) {
     secondary_object_store_->removeTopic(topic_id);
@@ -174,6 +188,56 @@ void StreamingSourceManager::stopAllAndWait(const QString& reason) {
   for (const DatasetId dataset_id : dataset_ids) {
     stopDatasetAndWait(dataset_id, reason);
   }
+}
+
+void StreamingSourceManager::rememberSkippedLazy(const StreamingSession& session) {
+  if (session.runtime_host != nullptr) {
+    ended_skipped_lazy_[session.dataset_id] = session.runtime_host->recordTapSkippedLazy();
+  }
+}
+
+RecordingTargets StreamingSourceManager::recordingTargets() {
+  // Whatever ended before this recording belongs to the previous one.
+  ended_skipped_lazy_.clear();
+
+  RecordingTargets result;
+  result.targets.reserve(sessions_.size());
+  for (const auto& [dataset_id, session] : sessions_) {
+    // D1: the recorder taps the delegated-ingest seam. A source that writes
+    // decoded samples straight into the datastore never passes through it, so a
+    // tap on it would produce an empty, channel-less file.
+    if ((session->capabilities & kCapabilityDelegatedIngest) == 0) {
+      result.excluded << QString::fromStdString(session->plugin_id);
+      continue;
+    }
+    result.targets.push_back(
+        RecordingTarget{
+            // The dataset id IS the identity a recording addresses this source
+            // by, so the display name stays a display name.
+            .target_key = static_cast<uint64_t>(dataset_id),
+            .source_id = session->plugin_id,
+            .plugin_id = session->manifest_id,
+            .attach =
+                [this, dataset_id](std::shared_ptr<RecordTap> tap) {
+                  auto found = sessions_.find(dataset_id);
+                  if (found == sessions_.end()) {
+                    return false;  // the session ended between the press and the attach
+                  }
+                  found->second->runtime_host->setRecordTap(std::move(tap));
+                  return true;
+                },
+            .skipped_lazy = [this, dataset_id]() -> uint64_t {
+              if (const auto found = sessions_.find(dataset_id); found != sessions_.end()) {
+                return found->second->runtime_host->recordTapSkippedLazy();
+              }
+              // The session ended mid-recording: report the counter as it stood
+              // when its host died, so the holes it left still reach the user.
+              const auto ended = ended_skipped_lazy_.find(dataset_id);
+              return ended != ended_skipped_lazy_.end() ? ended->second : 0;
+            },
+        });
+  }
+  return result;
 }
 
 void StreamingSourceManager::onSourceChanged(const QString& plugin_id) {
@@ -355,6 +419,7 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
   auto library_keepalive = handle.libraryOwner();
   auto session = std::make_unique<StreamingSession>(std::move(handle));
   session->plugin_id = source.name;
+  session->manifest_id = source.id;
   session->dataset_id = dataset_id;
   session->runtime_host = std::make_unique<DataSourceRuntimeHost>(
       engine, extensions_, dataset_id, source_handle, session_manager_.objectStore(), source.name,
@@ -486,10 +551,11 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
     return;
   }
 
+  session->capabilities = session->handle.capabilities();
   // Record the capability for the UI (CurveListPanel dims a topic as
   // "unsubscribed" only for a dataset that actually supports the pause — a
   // non-demand source sends everything regardless of display state).
-  catalog_.setPerTopicPauseCapable(dataset_id, (session->handle.capabilities() & kCapabilityPerTopicPause) != 0);
+  catalog_.setPerTopicPauseCapable(dataset_id, (session->capabilities & kCapabilityPerTopicPause) != 0);
 
   // Push the current (usually empty — nothing is displayed yet) active-topic set
   // once, right after start(), so a demand-capable source is explicitly told to
@@ -606,12 +672,16 @@ void StreamingSourceManager::onWorkerFinished(DatasetId dataset_id) {
     return;
   }
   StreamingSession* sess = it->second.get();
-  const QString reason = QString::fromStdString(sess->runtime_host->lastError());
-
   if (sess->worker != nullptr) {
     sess->worker->wait();
   }
+  // Empty for an orderly end — the plugin's own end-of-stream included — and
+  // the failure that ended the stream otherwise; a callback failure the plugin
+  // recovered from stays in the log and out of the signal. Read past the join,
+  // after every writer of it has stopped.
+  const QString reason = QString::fromStdString(sess->runtime_host->stopFailure());
 
+  rememberSkippedLazy(*sess);
   sessions_.erase(it);
   catalog_.setPerTopicPauseCapable(dataset_id, false);  // before clearDataset — see requestStop
   topic_demand_tracker_.clearDataset(dataset_id);
@@ -619,14 +689,8 @@ void StreamingSourceManager::onWorkerFinished(DatasetId dataset_id) {
   emit streamStopped(dataset_id, reason);
 }
 
-void StreamingSourceManager::requestStopAll(const QString& reason) {
-  for (auto& [dataset_id, sess] : sessions_) {
-    sess->runtime_host->requestStop(reason.toStdString());
-  }
-}
-
 void StreamingSourceManager::pushActiveTopics(StreamingSession& session, const std::vector<QString>& active_topics) {
-  if ((session.handle.capabilities() & kCapabilityPerTopicPause) == 0) {
+  if ((session.capabilities & kCapabilityPerTopicPause) == 0) {
     return;  // source doesn't support per-topic pause — behave exactly as before
   }
   std::vector<std::string> owned;

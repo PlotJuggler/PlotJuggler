@@ -164,12 +164,6 @@
            <layout class="QHBoxLayout" name="streamBufferRow">
             <property name="spacing"><number>4</number></property>
             <item>
-             <spacer name="streamBufferLeadingSpacer">
-              <property name="orientation"><enum>Qt::Horizontal</enum></property>
-              <property name="sizeHint" stdset="0"><size><width>0</width><height>0</height></size></property>
-             </spacer>
-            </item>
-            <item>
              <widget class="QPushButton" name="buttonStreamingPause">
               <property name="minimumSize"><size><width>24</width><height>24</height></size></property>
               <property name="maximumSize"><size><width>24</width><height>24</height></size></property>
@@ -179,6 +173,46 @@
               <property name="flat"><bool>true</bool></property>
               <property name="toolTip"><string>Pause streaming</string></property>
              </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="buttonStreamingRecord">
+              <property name="minimumSize"><size><width>24</width><height>24</height></size></property>
+              <property name="maximumSize"><size><width>24</width><height>24</height></size></property>
+              <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+              <property name="text"><string/></property>
+              <property name="checkable"><bool>true</bool></property>
+              <property name="flat"><bool>true</bool></property>
+              <property name="visible"><bool>false</bool></property>
+              <property name="toolTip"><string>Record the subscribed topics of every active stream to an MCAP file</string></property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="labelStreamingRecordStatus">
+              <!-- Ignored horizontally so a changing text never resizes the
+                   row; horstretch 1 hands it the row's free space ahead of the
+                   leading spacer, and the text is elided only when the panel is
+                   genuinely too narrow (see LeftPanel::elideRecordingStatus).
+                   The minimum width is set from font metrics in code. -->
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                <horstretch>1</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
+              <property name="visible"><bool>false</bool></property>
+              <property name="toolTip"><string>Recording: elapsed time, bytes written, and how many messages were dropped because the disk could not keep up</string></property>
+              <property name="text"><string/></property>
+             </widget>
+            </item>
+            <item>
+             <!-- Pause and Record stay left-aligned whether or not the status
+                  label is shown: the label (horstretch 1) takes the free space
+                  while visible, this spacer takes it while the label is hidden,
+                  so the buttons never jump. -->
+             <spacer name="streamBufferSpacer">
+              <property name="orientation"><enum>Qt::Horizontal</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>0</height></size></property>
+             </spacer>
             </item>
             <item>
              <widget class="PJ::IntScrubber" name="streamingSpinBox">
