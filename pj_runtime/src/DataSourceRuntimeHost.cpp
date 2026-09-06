@@ -23,6 +23,7 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/ObjectIngestTap.h"
 #include "pj_runtime/ServiceRegistration.h"
+#include "pj_runtime/SessionManager.h"
 #include "pj_runtime/detail/payload_anchor.h"
 using namespace Qt::StringLiterals;
 
@@ -258,6 +259,7 @@ const PJ_data_source_runtime_host_vtable_t DataSourceRuntimeHost::kVtable = {
     .notify_available_topics = &DataSourceRuntimeHost::cbNotifyAvailableTopics,
     .attach_source_record = &DataSourceRuntimeHost::cbAttachSourceRecord,
     .complete_ingest = &DataSourceRuntimeHost::cbCompleteIngest,
+    .set_dataset_metadata = &DataSourceRuntimeHost::cbSetDatasetMetadata,
 };
 
 // ---------------------------------------------------------------------------
@@ -1167,9 +1169,32 @@ std::optional<std::string> DataSourceRuntimeHost::stagedLoaderMetadata() const {
   std::lock_guard<std::mutex> lock(capture_mu_);
   return loader_metadata_;
 }
-// TODO(sdk-0.32): bind set_dataset_metadata vtable slot here — a cb that
-// validates via SessionManager::validateDatasetMetadata and forwards to
-// stageLoaderMetadata.
+// Descriptive loader metadata (set_dataset_metadata, SDK 0.32): validate the
+// document against the session bounds, then stage it on this ingest context —
+// publication to the dataset happens at the owning load's commit seam. A
+// rejection returns false + reason and never affects ingestion or capture.
+bool DataSourceRuntimeHost::cbSetDatasetMetadata(
+    void* ctx, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept {
+  auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
+  try {
+    // ABI guard first: a null pointer with a nonzero size is a malformed call
+    // (toStringView would carry the size over substitute storage).
+    if (metadata_json.data == nullptr && metadata_json.size != 0) {
+      return self->fail(out_error, "dataset metadata: null data with nonzero size");
+    }
+    const std::string_view bytes(metadata_json.data == nullptr ? "" : metadata_json.data, metadata_json.size);
+    const QString document = QString::fromUtf8(bytes.data(), static_cast<qsizetype>(bytes.size()));
+    if (auto valid = SessionManager::validateDatasetMetadata(document); !valid) {
+      return self->fail(out_error, valid.error().c_str());
+    }
+    self->stageLoaderMetadata(document.toStdString());
+    return true;
+  } catch (const std::exception& e) {
+    return self->fail(out_error, e.what());
+  } catch (...) {
+    return self->fail(out_error, "unknown error in set_dataset_metadata");
+  }
+}
 
 bool DataSourceRuntimeHost::cbAttachSourceRecord(
     void* ctx, PJ_string_view_t descriptor_json, PJ_error_t* out_error) noexcept {

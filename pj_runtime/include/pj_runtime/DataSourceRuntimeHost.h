@@ -347,6 +347,7 @@ class DataSourceRuntimeHost {
       void* ctx, const PJ_available_topic_t* topics, uint64_t count, PJ_error_t* out_error) noexcept;
   static bool cbAttachSourceRecord(void* ctx, PJ_string_view_t descriptor_json, PJ_error_t* out_error) noexcept;
   static bool cbCompleteIngest(void* ctx, const PJ_ingest_completion_t* completion, PJ_error_t* out_error) noexcept;
+  static bool cbSetDatasetMetadata(void* ctx, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept;
 
   // A-priori classification for one advertised topic: the object route's
   // claimed type via ExtensionCatalogService::classifyParserObjectRoute (no
