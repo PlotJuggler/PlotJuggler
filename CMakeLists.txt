@@ -152,8 +152,10 @@ if(NOT plotjuggler_sdk_FOUND)
     FetchContent_MakeAvailable(plotjuggler_sdk)
 elseif(PJ_BUILD_TESTS)
     # Sources only (SOURCE_SUBDIR has no CMakeLists.txt, so nothing is added to
-    # the build): the host tests compile the SDK's example plugins from
-    # ${plotjuggler_sdk_SOURCE_DIR}, which the Conan package does not ship.
+    # the build). Survives solely for pj_dialog_host's mock_dialog.cpp, the one
+    # fixture the Conan package still does not ship — the data-source/toolbox
+    # mocks now come from pj_add_sdk_test_fixture(). Drop this block once the
+    # SDK packages mock_dialog.cpp too.
     # Offline / local SDK checkout: -DFETCHCONTENT_SOURCE_DIR_PLOTJUGGLER_SDK=<dir>.
     FetchContent_Declare(plotjuggler_sdk URL ${_pj_sdk_url} SOURCE_SUBDIR pj_plugins/examples
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE)

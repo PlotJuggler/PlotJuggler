@@ -99,7 +99,7 @@ target_link_libraries(pj_runtime PUBLIC
   PRIVATE
     # Source-cache mechanics (per-identity locks, lease-then-validate lookup,
     # atomic publish, LRU cleanup) come from the SDK; SourceCacheStore wraps them.
-    $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:plotjuggler_sdk::descriptor_import_support>
+    $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:plotjuggler_sdk::source>
     tsl::robin_map
     pj_internal_fmt
     $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:mcap::mcap>
@@ -599,22 +599,15 @@ if(PJ_BUILD_TESTS)
     # (which lists target names) picks it up under ./build.sh --tsan.
     add_test(NAME extension_catalog_service_thread_safety_test COMMAND extension_catalog_service_thread_safety_test)
 
-    # SDK example/test plugins the host tests dlopen, built from the SDK's
-    # fetched sources (an in-tree SDK build defines these targets itself).
+    # SDK example/test plugins the host tests dlopen. The SDK packages the
+    # sources and builds them through pj_add_sdk_test_fixture(); the aliases
+    # keep the <name>_plugin spelling every consumer here and in
+    # pj_marketplace / pj_app already uses. An in-tree SDK build defines the
+    # real targets itself, so the guard stays.
     if(NOT TARGET mock_data_source_plugin)
-      set(_sdk_plugins ${plotjuggler_sdk_SOURCE_DIR}/pj_plugins)
-      foreach(mock IN ITEMS
-          mock_data_source=examples/mock_data_source.cpp
-          mock_file_source=examples/mock_file_source.cpp
-          mock_toolbox=examples/mock_toolbox.cpp
-          missing_id_data_source=tests/missing_id_data_source_plugin.cpp)
-        string(REPLACE "=" ";" mock "${mock}")
-        list(GET mock 0 name)
-        list(GET mock 1 source)
-        add_library(${name}_plugin SHARED ${_sdk_plugins}/${source})
-        target_compile_features(${name}_plugin PRIVATE cxx_std_20)
-        target_compile_options(${name}_plugin PRIVATE ${PJ_WARNING_FLAGS})
-        target_link_libraries(${name}_plugin PRIVATE plotjuggler_sdk::base)
+      foreach(name IN ITEMS mock_data_source mock_file_source mock_toolbox missing_id_data_source)
+        pj_add_sdk_test_fixture(${name} fixture_target)
+        add_library(${name}_plugin ALIAS ${fixture_target})
       endforeach()
     endif()
 

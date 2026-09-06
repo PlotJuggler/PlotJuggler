@@ -455,5 +455,5 @@ capability bit on a live plugin handle, which no unit fixture can cheaply build.
 leases, budget). It is held (D8). What survives into M3/M4: the typed `SourceDescriptor` and its vectors, the
 trust allowlist, the credential origin guard, the provider job on `ProviderJob`, presentation. What retires:
 `ArtifactCapture`, `arrow_cache_artifact`, `artifact_replay`, `data_load_mosaico_cache`, the lease registry
-and settlement gate, the plugin-side cache policy. The SDK 0.24 `descriptor_import_support` component stays:
+and settlement gate, the plugin-side cache policy. The SDK's `pj_source` component stays:
 the host reuses `RequestArtifactCache` for M3, and providers keep `Origin`/`SourceDescriptorPolicy`/`ProviderJob`.

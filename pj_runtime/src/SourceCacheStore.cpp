@@ -17,7 +17,7 @@
 namespace PJ {
 namespace {
 
-namespace di = sdk::descriptor_import;
+namespace di = sdk::source;
 
 // "\x89MCAP0\r\n" — present at both ends of every well-formed MCAP file.
 constexpr std::array<char, 8> kMcapMagic = {'\x89', 'M', 'C', 'A', 'P', '0', '\r', '\n'};

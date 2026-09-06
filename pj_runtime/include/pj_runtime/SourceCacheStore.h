@@ -15,7 +15,7 @@
 #include <string_view>
 
 #include "pj_base/expected.hpp"
-#include "pj_base/sdk/descriptor_import/request_cache.hpp"
+#include "pj_base/sdk/source/request_cache.hpp"
 
 namespace PJ {
 
@@ -51,10 +51,10 @@ namespace PJ {
 /// worker thread, never on the GUI thread and never inside a lookup path.
 class SourceCacheStore {
  public:
-  using ReadLease = sdk::descriptor_import::ReadLease;
-  using WriteTransaction = sdk::descriptor_import::RequestArtifactCache::WriteTransaction;
-  using CacheError = sdk::descriptor_import::CacheError;
-  using CleanupResult = sdk::descriptor_import::CleanupResult;
+  using ReadLease = sdk::source::ReadLease;
+  using WriteTransaction = sdk::source::RequestArtifactCache::WriteTransaction;
+  using CacheError = sdk::source::CacheError;
+  using CleanupResult = sdk::source::CleanupResult;
 
   /// A cache hit: a validated artifact path plus the pin that keeps it
   /// un-evictable. Hold the pin for the DATASET's lifetime (never a UI
@@ -153,7 +153,7 @@ class SourceCacheStore {
   [[nodiscard]] const std::filesystem::path& root() const noexcept;
 
  private:
-  sdk::descriptor_import::RequestArtifactCache cache_;
+  sdk::source::RequestArtifactCache cache_;
   std::uintmax_t budget_bytes_ = kDefaultBudgetBytes;
 };
 

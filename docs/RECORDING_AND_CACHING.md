@@ -214,4 +214,4 @@ plugin ──────────────► DataSourceRuntimeHost ─�
 - Working design, decision history (D1–D9), milestones: [`session_recorder_design.md`](./session_recorder_design.md).
 - Code: `pj_runtime/include/pj_runtime/{RecordTap,Recorder,McapRecordingWriter,RecordingService}.h`, shell wiring
   in `pj_app/src/MainWindow.cpp` and `pj_app/src/StreamingSourceManager.cpp`.
-- Request identity and descriptor types: SDK `pj_plugins/sdk/descriptor_import/`.
+- Request identity and descriptor types: SDK `pj_base/sdk/source/`.

@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -322,12 +323,42 @@ TEST_F(SourceCaptureServiceTest, MissingAttachmentRefuses) {
   EXPECT_NE(result.reason.find("no source record"), std::string::npos);
 }
 
+// A malformed C-ABI call — null data pointer, nonzero size — must be refused by
+// the empty-descriptor guard. Nothing may build a string_view over that size.
+TEST_F(SourceCaptureServiceTest, RawAbiNullDescriptorWithNonZeroSizeRefuses) {
+  const PJ_service_registry_t services = registry.view();
+  const char* const name = sdk::DataSourceRuntimeHostService::kName;
+  PJ_service_t service{};
+  PJ_error_t lookup_error{};
+  ASSERT_TRUE(services.vtable->get_service(
+      services.ctx, PJ_string_view_t{name, std::strlen(name)}, sdk::DataSourceRuntimeHostService::kMinVersion, &service,
+      &lookup_error))
+      << lookup_error.message;
+  const auto* vtable = static_cast<const PJ_data_source_runtime_host_vtable_t*>(service.vtable);
+  ASSERT_NE(vtable->attach_source_record, nullptr);
+
+  PJ_error_t error{};
+  EXPECT_FALSE(vtable->attach_source_record(service.ctx, PJ_string_view_t{nullptr, 1}, &error));
+  EXPECT_STREQ(error.message, "source record descriptor is empty");
+  EXPECT_FALSE(host->sourceRecordDescriptor().has_value());
+  EXPECT_EQ(host->ingestCallbackFailures(), 0u);
+}
+
 TEST_F(SourceCaptureServiceTest, EnvelopeRefusesUnknownAndCredentialFields) {
   auto capture = service_->arm(*host, kProvider);
   // Unknown top-level field: refused (allowlist), NOT latched, NOT vetoed.
   EXPECT_FALSE(attach(R"({"kind":"k","request":{},"v":1,"extra":1})").has_value());
   // Credential-shaped key at depth: refused.
   EXPECT_FALSE(attach(R"({"kind":"k","request":{"api_key":"x"},"v":1})").has_value());
+  // 'label' is allowlisted but still typed: a non-string one is refused.
+  EXPECT_FALSE(attach(R"({"kind":"k","request":{},"v":1,"label":7})").has_value());
+  // Precedence, pinned: the SDK denies credential keys during traversal, so a
+  // record that is BOTH credential-carrying and mistyped reports the credential.
+  // Either way it is refused; this asserts which message wins so an SDK
+  // precedence change lands here as a test diff instead of a surprise.
+  const auto both_wrong = attach(R"({"kind":"","request":{"api_key":"x"},"v":1})");
+  ASSERT_FALSE(both_wrong.has_value());
+  EXPECT_EQ(both_wrong.error(), "pj.runtime.ingest: source record carries credential-shaped key: api_key");
   EXPECT_EQ(host->ingestCallbackFailures(), 0u);
   EXPECT_TRUE(host->captureVetoReason().empty());
   // A corrected attach before the first push still arms and publishes.

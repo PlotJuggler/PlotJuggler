@@ -11,13 +11,12 @@
 #include <exception>
 #include <functional>
 #include <mutex>
-#include <nlohmann/json.hpp>
 #include <utility>
 #include <vector>
 
-#include "pj_base/sdk/descriptor_import/source_descriptor.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_traits.hpp"
+#include "pj_base/sdk/source/record_envelope.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
@@ -1144,56 +1143,6 @@ bool DataSourceRuntimeHost::cbNotifyAvailableTopics(
 // Source-capture surface (attach_source_record / complete_ingest)
 // ---------------------------------------------------------------------------
 
-namespace {
-
-#ifndef __EMSCRIPTEN__
-/// The host-generic source-record envelope: `kind` (the provider's request
-/// kind), `v` (its schema version) and `request` (the provider-specific body,
-/// opaque to the host but structurally bounded) define the request identity;
-/// `label` is display-only. Any other top-level field is refused — the
-/// "fully account for" contract of attach_source_record. Semantics inside
-/// `request` stay with the provider.
-const sdk::descriptor_import::SourceDescriptorPolicy& sourceRecordEnvelope() {
-  static const sdk::descriptor_import::SourceDescriptorPolicy policy{
-      .identity_fields = {"kind", "request", "v"},
-      .presentation_fields = {"label"},
-      .identity = {},  // unused: cache identity is byte-exact over the verbatim descriptor
-  };
-  return policy;
-}
-
-/// Credential material never belongs in a request descriptor — a cached
-/// artifact and a layout would persist it. Depth-recursive key denylist as
-/// defense in depth on top of the envelope.
-bool containsCredentialKey(const nlohmann::json& node, std::string* which) {
-  static constexpr std::string_view kDenied[] = {
-      "api_key", "apikey", "token", "password", "secret", "credentials", "authorization", "cert_path",
-  };
-  if (node.is_object()) {
-    for (const auto& [key, value] : node.items()) {
-      for (const auto denied : kDenied) {
-        if (key == denied) {
-          *which = key;
-          return true;
-        }
-      }
-      if (containsCredentialKey(value, which)) {
-        return true;
-      }
-    }
-  } else if (node.is_array()) {
-    for (const auto& value : node) {
-      if (containsCredentialKey(value, which)) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-#endif  // !__EMSCRIPTEN__
-
-}  // namespace
-
 std::optional<std::string> DataSourceRuntimeHost::sourceRecordDescriptor() const {
   std::lock_guard<std::mutex> lock(capture_mu_);
   return source_record_;
@@ -1213,12 +1162,15 @@ bool DataSourceRuntimeHost::cbAttachSourceRecord(
     void* ctx, PJ_string_view_t descriptor_json, PJ_error_t* out_error) noexcept {
   auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
 #ifdef __EMSCRIPTEN__
-  // The browser build has no capture service (and no descriptor_import
-  // support library): refuse without latching, same as any refused record.
+  // The browser build has no capture service (and no pj_source support
+  // library): refuse without latching, same as any refused record.
   (void)descriptor_json;
   return self->rejectAttachment(out_error, "source capture is not available in this build");
 #else
   try {
+    // The ABI guard comes first: a null pointer with a nonzero size is a
+    // malformed call, and toStringView() would preserve that size over
+    // substitute storage — a view running off the end of it.
     if (descriptor_json.data == nullptr || descriptor_json.size == 0) {
       return self->rejectAttachment(out_error, "source record descriptor is empty");
     }
@@ -1226,22 +1178,8 @@ bool DataSourceRuntimeHost::cbAttachSourceRecord(
     // Validation failures REFUSE without latching or vetoing: a refused
     // record only means no caching, and the provider may correct and
     // re-attach before the first push.
-    auto parsed = sdk::descriptor_import::parseSourceDescriptor(bytes, sourceRecordEnvelope());
-    if (!parsed) {
-      return self->rejectAttachment(out_error, "source record refused: " + parsed.error());
-    }
-    if (!parsed->contains("kind") || !(*parsed)["kind"].is_string() ||
-        (*parsed)["kind"].get_ref<const std::string&>().empty()) {
-      return self->rejectAttachment(out_error, "source record needs a non-empty string 'kind'");
-    }
-    if (!parsed->contains("v") || !(*parsed)["v"].is_number_unsigned()) {
-      return self->rejectAttachment(out_error, "source record needs an unsigned integer 'v'");
-    }
-    if (!parsed->contains("request") || !(*parsed)["request"].is_object()) {
-      return self->rejectAttachment(out_error, "source record needs an object 'request'");
-    }
-    if (std::string credential; containsCredentialKey(*parsed, &credential)) {
-      return self->rejectAttachment(out_error, "source record carries credential-shaped key: " + credential);
+    if (auto parsed = sdk::source::parseSourceRecordEnvelope(bytes); !parsed) {
+      return self->rejectAttachment(out_error, parsed.error());
     }
 
     bool replaced = false;
