@@ -304,10 +304,8 @@ TEST_F(PluginCatalogTest, RuntimeCatalogAuthoritativeFolderOverridesHigherVersio
   EXPECT_TRUE(std::filesystem::equivalent(winner.parent_path(), dir_a));
 }
 
-TEST_F(PluginCatalogTest, RuntimeCatalogIncompatibleAuthoritativeCopyShadowsManagedFallback) {
-  // --plugin-dir remains a strict override: its id shadows the managed copy.
-  // Compatibility is still a safety gate, so an incompatible override yields no
-  // loaded plugin rather than silently falling back to a different build.
+TEST_F(PluginCatalogTest, RuntimeCatalogIncompatibleAuthoritativeCopyFallsBackToManaged) {
+  // An incompatible --plugin-dir copy never claims its id: the managed copy loads.
   const std::filesystem::path dir_a = dir_ / "a";  // authoritative, incompatible v3.0.0
   const std::filesystem::path dir_b = dir_ / "b";  // managed, compatible v2.0.0
   std::filesystem::create_directories(dir_a);
@@ -320,7 +318,8 @@ TEST_F(PluginCatalogTest, RuntimeCatalogIncompatibleAuthoritativeCopyShadowsMana
   catalog.setPluginDirs({{dir_a, true}, {dir_b}});
   catalog.scanDirectory();
 
-  EXPECT_TRUE(catalog.dataSources().empty());
+  ASSERT_EQ(catalog.dataSources().size(), 1U);
+  EXPECT_EQ(catalog.dataSources()[0].version, "2.0.0");
 }
 
 TEST_F(PluginCatalogTest, RuntimeCatalogAuthoritativeFolderMayBeASymlink) {

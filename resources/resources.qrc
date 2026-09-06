@@ -7,6 +7,7 @@
     <file alias="plotjuggler.svg">plotjuggler.svg</file>
     <!-- "Success kid" meme icon shown in the "new release available" toast. -->
     <file alias="success_kid.png">success_kid.png</file>
+    <file alias="crying_cat.png">crying_cat.png</file>
     <!-- Bundled UI font (SIL OFL 1.1). Loaded at startup via
          QFontDatabase::addApplicationFont and set as the application font, so
          typography is controlled and consistent across machines instead of

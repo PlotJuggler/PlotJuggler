@@ -738,6 +738,19 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   diagnostic_history_ = new DiagnosticHistory(this);
   diagnostic_history_->connectBridge(diagnostic_bridge_);
   title_bar_->setDiagnosticHistory(diagnostic_history_);
+  // The bell is easy to miss: a plugin that failed to load (or was rejected as
+  // incompatible) also gets one toast per session. Queued delivery means this
+  // still catches the startup scan that already ran in the AppSession ctor.
+  connect(
+      diagnostic_bridge_, &QtDiagnosticBridge::diagnosticReported, this,
+      [this](int level, const QString& source, const QString&, const QString&) {
+        if (plugin_failure_toast_shown_ || level != static_cast<int>(DiagnosticLevel::kError) ||
+            source != "ExtensionCatalogService"_L1) {
+          return;
+        }
+        plugin_failure_toast_shown_ = true;
+        showToast(tr("Some of the plugins failed to load."), QPixmap(u":/resources/crying_cat.png"_s));
+      });
 
   ui_->tabbedPlotWidget->setDataServices(&session_->sessionManager(), &session_->catalogModel());
 #if defined(PJ_WITH_SCENE2D) || defined(PJ_WITH_SCENE3D)

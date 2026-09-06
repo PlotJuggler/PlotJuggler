@@ -1275,6 +1275,7 @@ class MainWindow : public QMainWindow {
   // so a later drop can't re-snap a paused, scrubbed-back cursor. While true,
   // live ingest tracks the live edge until the user pauses.
   bool streaming_playback_seeded_ = false;
+  bool plugin_failure_toast_shown_ = false;
   std::unique_ptr<Theme> theme_;
   TitleBar* title_bar_ = nullptr;
   // Non-modal load progress strip parked in the title bar's center region (owned

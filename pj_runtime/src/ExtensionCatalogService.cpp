@@ -243,9 +243,9 @@ ExtensionCatalogService::ExtensionCatalogService(
   }
 
   // Scan the ordered folder hierarchy (--plugin-dir override first, then custom
-  // folders, then the marketplace dir; the catalog de-duplicates by plugin id —
-  // authoritative entries override, then compatibility, then version, then
-  // folder priority).
+  // folders, then the marketplace dir; the catalog rejects incompatible copies
+  // first, then de-duplicates by plugin id — authoritative entries override,
+  // then version, then folder priority).
   std::vector<PluginDirEntry> scan_dirs;
 #ifndef PJ_TARGET_WASM
   scan_dirs = buildScanHierarchy(!default_mode_);

@@ -137,20 +137,15 @@ void PluginRuntimeCatalog::setDisabledIds(std::unordered_set<std::string> disabl
 std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins() const {
   // Winner selection when the same plugin id appears in more than one folder:
   //
+  //   0. An incompatible copy (see setHostVersion) is rejected on sight and never
+  //      claims its id, whatever folder it sits in — so an incompatible --plugin-dir
+  //      build falls back to the marketplace copy (reported as an error + a note).
   //   1. Authoritative entries (custom folders + --plugin-dir; see PluginDirEntry)
   //      are a HARD override. Once an id is claimed by an
   //      authoritative folder, the highest-priority authoritative copy wins outright
-  //      — ignoring the version and compatibility of any lower-priority folder.
-  //   2. Among the remaining (managed) folders — marketplace + bundled — the winner
-  //      is by compatibility, then version, then folder priority: a compatible build
-  //      beats an incompatible one (min_plotjuggler_version > host_version_) at any
-  //      version; among equally compatible candidates the higher version wins; a tie
-  //      keeps the higher-priority folder.
-  //
-  // Compatibility helps managed duplicate selection and is also a hard final
-  // load gate below. Authoritative directories still claim/shadow an id before
-  // that gate: an incompatible --plugin-dir build must not silently fall back
-  // to a marketplace copy the developer did not ask to test.
+  //      — ignoring the version of any lower-priority folder.
+  //   2. Among the remaining (managed) folders — marketplace + bundled — the higher
+  //      version wins; a tie keeps the higher-priority folder.
   const auto compatibility = [this](const PluginDescriptor& descriptor) {
     return descriptorCompatibility(descriptor, host_version_);
   };
@@ -158,6 +153,7 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
   std::vector<PluginDescriptor> winners;
   std::unordered_map<std::string, size_t> winner_index;  // id -> position in `winners`
   std::unordered_set<std::string> authoritative_win;     // ids whose current winner is authoritative (locked)
+  std::unordered_set<std::string> rejected_ids;          // ids with an incompatible copy seen so far
   std::unordered_set<std::string> scanned_dirs;          // canonical paths already scanned (dedup the list itself)
   for (const PluginDirEntry& entry : plugin_dirs_) {
     const std::filesystem::path& dir = entry.dir;
@@ -188,8 +184,23 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
                 "\" (statically registered plugin takes precedence)");
         continue;
       }
+      const PluginCompatibilityResult candidate_compatibility = compatibility(descriptor);
+      if (!candidate_compatibility.ok) {
+        report(
+            DiagnosticLevel::kError, descriptor.id,
+            descriptor.dso_path.string() + ": incompatible plugin \"" + descriptor.id +
+                "\": " + candidate_compatibility.reason);
+        rejected_ids.insert(descriptor.id);
+        continue;
+      }
       const auto it = winner_index.find(descriptor.id);
       if (it == winner_index.end()) {
+        if (rejected_ids.count(descriptor.id) != 0) {
+          report(
+              DiagnosticLevel::kWarning, descriptor.id,
+              descriptor.dso_path.string() + ": falling back to plugin id \"" + descriptor.id + "\" v" +
+                  descriptor.version + " (an incompatible copy was rejected)");
+        }
         winner_index.emplace(descriptor.id, winners.size());
         winners.push_back(descriptor);
         if (dir_authoritative) {
@@ -214,7 +225,7 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
         continue;
       }
       // (1) An authoritative candidate overrides a managed incumbent, regardless of
-      //     version or compatibility.
+      //     version.
       if (dir_authoritative) {
         report(
             DiagnosticLevel::kInfo, descriptor.id,
@@ -224,47 +235,21 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
         authoritative_win.insert(descriptor.id);
         continue;
       }
-      // (2) Both managed: compatibility, then version, then folder priority.
-      const PluginCompatibilityResult candidate_compatibility = compatibility(descriptor);
-      const PluginCompatibilityResult incumbent_compatibility = compatibility(incumbent);
-      const bool cand_ok = candidate_compatibility.ok;
-      const bool inc_ok = incumbent_compatibility.ok;
-      const bool replace =
-          (cand_ok != inc_ok) ? cand_ok : comparePluginVersions(descriptor.version, incumbent.version) > 0;
-      if (replace) {
-        const std::string reason = (cand_ok && !inc_ok) ? " supersedes incompatible v" + incumbent.version + " (" +
-                                                              incumbent_compatibility.reason + ")"
-                                                        : " supersedes v" + incumbent.version;
+      // (2) Both managed: version, then folder priority.
+      if (comparePluginVersions(descriptor.version, incumbent.version) > 0) {
         report(
             DiagnosticLevel::kInfo, descriptor.id,
-            descriptor.dso_path.string() + ": plugin id \"" + descriptor.id + "\" v" + descriptor.version + reason +
-                " from " + incumbent_path);
+            descriptor.dso_path.string() + ": plugin id \"" + descriptor.id + "\" v" + descriptor.version +
+                " supersedes v" + incumbent.version + " from " + incumbent_path);
         incumbent = descriptor;
       } else {
-        const std::string reason =
-            (!cand_ok && inc_ok) ? "ignoring incompatible plugin id \"" + descriptor.id + "\" v" + descriptor.version +
-                                       " (" + candidate_compatibility.reason + "; compatible v" + incumbent.version +
-                                       " already loaded from " + incumbent_path + ")"
-                                 : "ignoring duplicate plugin id \"" + descriptor.id + "\" v" + descriptor.version +
-                                       " (v" + incumbent.version + " already loaded from " + incumbent_path + ")";
-        report(DiagnosticLevel::kInfo, descriptor.id, descriptor.dso_path.string() + ": " + reason);
+        report(
+            DiagnosticLevel::kInfo, descriptor.id,
+            descriptor.dso_path.string() + ": ignoring duplicate plugin id \"" + descriptor.id + "\" v" +
+                descriptor.version + " (v" + incumbent.version + " already loaded from " + incumbent_path + ")");
       }
     }
   }
-
-  // Selection never turns incompatibility into permission. This also rejects a
-  // lone bad candidate and an authoritative winner while preserving the latter's
-  // strict shadow over managed fallbacks.
-  std::erase_if(winners, [this, &compatibility](const PluginDescriptor& descriptor) {
-    const PluginCompatibilityResult result = compatibility(descriptor);
-    if (result.ok) {
-      return false;
-    }
-    report(
-        DiagnosticLevel::kError, descriptor.id,
-        descriptor.dso_path.string() + ": incompatible plugin \"" + descriptor.id + "\": " + result.reason);
-    return true;
-  });
 
   // Drop user-disabled extensions: installed on disk but deliberately not loaded.
   if (!disabled_ids_.empty()) {

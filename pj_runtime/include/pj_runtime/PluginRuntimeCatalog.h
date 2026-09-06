@@ -115,13 +115,11 @@ class PluginRuntimeCatalog {
   // de-duplicated by manifest id: a statically registered plugin
   // (registerStatic*) outranks every folder tier — even an authoritative one,
   // so --plugin-dir cannot override a compiled-in plugin; otherwise the
-  // highest-priority *authoritative* entry claims the id outright (ignoring
-  // version and compatibility of every other copy); among managed entries the
-  // winner is chosen by compatibility first (see setHostVersion), then by higher
-  // version, then by directory priority. Compatibility is a hard load gate after
-  // selection. Thus an incompatible authoritative copy shadows managed fallbacks
-  // but is itself rejected — preserving strict developer override semantics.
-  // Empty entries are ignored.
+  // highest-priority *authoritative* entry claims the id outright (ignoring the
+  // version of every other copy); among managed entries the higher version wins,
+  // then directory priority. An incompatible copy (see setHostVersion) is
+  // rejected before any of this and never claims its id, so an incompatible
+  // --plugin-dir build falls back to the managed copy. Empty entries are ignored.
   void setPluginDirs(std::vector<PluginDirEntry> plugin_dirs);
 
   // Replaces the optional diagnostic sink.

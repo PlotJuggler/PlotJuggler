@@ -91,8 +91,6 @@ void ToastManager::repositionToasts() {
 
   const int container_width = container_->width();
   const int container_height = container_->height();
-  const int toast_width = max_width_;
-  const int x = container_width - toast_width - margin_right_;
 
   // Newest toast (last in the list) sits at the bottom; stack upward from there.
   int current_y = container_height - margin_bottom_;
@@ -100,18 +98,20 @@ void ToastManager::repositionToasts() {
   for (int i = toasts_.size() - 1; i >= 0; --i) {
     ToastNotification* toast = toasts_[i];
 
-    toast->setFixedWidth(toast_width);
-    toast->layout()->activate();  // Recompute height for the fixed width.
-
+    // Size from the hint, not setFixedWidth(): the stylesheet's min/max-width
+    // re-applies on polish and wins over C++ constraints, so a short message
+    // yields a narrower toast that must still hug the right margin.
+    toast->layout()->activate();
+    const int toast_width = qMin(toast->sizeHint().width(), max_width_);
     int toast_height = toast->heightForWidth(toast_width);
     if (toast_height < 0) {
       toast_height = toast->sizeHint().height();
     }
     toast_height = qMax(toast_height, toast->minimumHeight());
-    toast->setFixedHeight(toast_height);
+    toast->resize(toast_width, toast_height);
 
     current_y -= toast_height;
-    toast->updateTargetPosition(QPoint(x, current_y));
+    toast->updateTargetPosition(QPoint(container_width - toast_width - margin_right_, current_y));
     toast->show();
 
     current_y -= spacing_;
