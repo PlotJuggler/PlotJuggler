@@ -57,6 +57,16 @@ struct SourceRecord {
   QString descriptor_json;
 };
 
+/// Loader-supplied descriptive metadata about a dataset's loaded artifact
+/// (facts a loader read out of the file), attributed to the emitting plugin.
+/// Distinct from SourceRecord: metadata DESCRIBES what was loaded; the record
+/// controls how the host can re-obtain it. The host renders it generically and
+/// never interprets individual keys.
+struct DatasetMetadata {
+  QString plugin_id;
+  QString json;  ///< Validated JSON object document, stored verbatim.
+};
+
 /// Unique identifier for an ingest session. 0 = invalid/stale.
 using IngestId = quint64;
 
@@ -207,6 +217,27 @@ class SessionManager : public QObject {
   /// be evicted while the dataset reads it. GUI-thread only; several resources
   /// may accumulate on one dataset.
   void pinDatasetResource(DatasetId dataset_id, std::shared_ptr<void> resource);
+
+  /// Stores the loader-metadata document for `dataset_id`, replacing any prior
+  /// one. Same GUI-thread-only contract and lifecycle as the source-path and
+  /// source-record registries it parallels: erased by removeDataset, invalidated
+  /// for EVERY contributor of a destructive merge (anchor included), cleared by
+  /// a committed in-place refill (the next load's document, if any, replaces
+  /// it). An empty or `{}` document clears. On refusal (see
+  /// validateDatasetMetadata) the previous document is kept and the reason is
+  /// returned — rejection must never affect the ingest that carried it.
+  Status setDatasetMetadata(DatasetId dataset_id, const QString& json, QString plugin_id);
+
+  /// The metadata document for `dataset_id`, or nullptr when none. Invalidated
+  /// by the next set/clear/removeDataset/merge — copy it out, never retain.
+  [[nodiscard]] const DatasetMetadata* datasetMetadata(DatasetId dataset_id) const;
+
+  void clearDatasetMetadata(DatasetId dataset_id);
+
+  /// Acceptance bounds for a metadata document: a JSON object, at most 1 MiB
+  /// serialized, nesting depth at most 32, at most 16384 values in total.
+  /// Rejects (with the reason) rather than truncating.
+  [[nodiscard]] static Status validateDatasetMetadata(const QString& json);
 
   /// The physical-path normalization every stored source path goes through
   /// (setDatasetSourcePath, recordLoadedSource): canonicalFilePath when the
@@ -787,6 +818,9 @@ class SessionManager : public QObject {
   // on removeDataset, invalidated for every contributor of a successful
   // destructive merge (the anchor included).
   std::unordered_map<DatasetId, SourceRecord> dataset_source_records_;
+  // Loader-metadata documents (setDatasetMetadata) — third sibling registry,
+  // same lifecycle as the two above.
+  std::unordered_map<DatasetId, DatasetMetadata> dataset_metadata_;
   // Opaque dataset-lifetime resources (pinDatasetResource) — released on
   // removeDataset and for every contributor of a destructive merge, exactly
   // like the records above.

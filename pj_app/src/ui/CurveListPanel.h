@@ -126,6 +126,9 @@ class CurveListPanel : public QWidget {
   // The user chose "Replace" on a single file-backed dataset: pick a different
   // file and transactionally replace this dataset's data with it.
   void replaceDatasetRequested(DatasetId dataset_id);
+  // The user chose "Info" on a single dataset: MainWindow shows the dataset-info
+  // dialog (name, backing file, provenance from its SourceRecord if any).
+  void datasetInfoRequested(DatasetId dataset_id);
   // Asks the shell to show a transient toast. Carries the panel's not-draggable
   // feedback: why a pull on an undisplayable topic started no drag, or which
   // topics a multi-selection drag left out.

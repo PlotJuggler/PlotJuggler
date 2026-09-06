@@ -1532,6 +1532,9 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   // live dataset).
   std::vector<DatasetId> fanout_loaded_ids;
   std::vector<DatasetId> fanout_created_ids;
+  // Loader-metadata documents staged by each entry's host, captured before the
+  // per-iteration host dies; published at the commit seam with the source paths.
+  std::unordered_map<DatasetId, QString> fanout_loader_metadata;
   bool fanout_committed = false;
   const auto rollback_fanout_on_cancel = qScopeGuard([&]() {
     if (fanout_committed) {
@@ -1883,11 +1886,17 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       const int cancel_action = whole_load_action != 0 ? whole_load_action : entry_action;
       const bool stops_whole_load = whole_load_action != 0;
       EntryOutcome outcome = EntryOutcome::kCompleted;
+      const auto capture_loader_metadata = [&]() {
+        if (auto staged = iter_ingest.stagedLoaderMetadata(); staged.has_value()) {
+          fanout_loader_metadata.emplace(iter_dataset_id, QString::fromStdString(*staged));
+        }
+      };
       if (cancel_action == 2) {
         outcome = EntryOutcome::kDiscarded;
       } else if (cancel_action == 1) {
         iter_ingest.flushAll();
         fanout_loaded_ids.push_back(iter_dataset_id);
+        capture_loader_metadata();
         outcome = EntryOutcome::kKept;
       } else if (!start_status) {
         qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
@@ -1896,6 +1905,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       } else {
         iter_ingest.flushAll();
         fanout_loaded_ids.push_back(iter_dataset_id);
+        capture_loader_metadata();
       }
 
       const IngestOutcome ingest_outcome =
@@ -2019,11 +2029,28 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   // loop above gates reuse on this). Single-instance: `dataset_id` is the stable
   // id (existing on reload, else the fresh one). Fanout: each dataset that took
   // data.
+  // Publishes one entry's staged loader-metadata document; a rejected document
+  // is logged and never affects the committed load.
+  const auto publish_loader_metadata =
+      [this, &source_manifest_id](DatasetId loaded_id, const QString& json) {
+        if (auto status = session_.setDatasetMetadata(loaded_id, json, source_manifest_id); !status) {
+          qCWarning(lcFileLoader).noquote()
+              << tr("Loader metadata rejected: %1").arg(QString::fromStdString(status.error()));
+        }
+      };
   if (fanouts.size() == 1) {
     session_.setDatasetSourcePath(dataset_id, source_identity);
+    if (ctx_ != nullptr && ctx_->ingest != nullptr) {
+      if (auto staged = ctx_->ingest->stagedLoaderMetadata(); staged.has_value()) {
+        publish_loader_metadata(dataset_id, QString::fromStdString(*staged));
+      }
+    }
   } else {
     for (const DatasetId loaded_id : fanout_loaded_ids) {
       session_.setDatasetSourcePath(loaded_id, source_identity);
+      if (const auto staged_it = fanout_loader_metadata.find(loaded_id); staged_it != fanout_loader_metadata.end()) {
+        publish_loader_metadata(loaded_id, staged_it->second);
+      }
     }
   }
 
@@ -2403,6 +2430,20 @@ void FileLoader::finishLoadOnGui(bool fully_loaded) {
     captured_config.clear();
   }
   session_.setDatasetSourcePath(dataset_id, ctx_->path);
+  // Publish the loader-metadata document staged during this (now committed)
+  // load — successful and kept-partial commits alike; a discarded load never
+  // reaches this seam. RefillGuard::commit cleared the prior document on a
+  // replacing load, so no staged document means the dataset ends with none.
+  if (ctx_->ingest != nullptr) {
+    if (auto staged = ctx_->ingest->stagedLoaderMetadata(); staged.has_value()) {
+      if (auto status =
+              session_.setDatasetMetadata(dataset_id, QString::fromStdString(*staged), ctx_->source_manifest_id);
+          !status) {
+        qCWarning(lcFileLoader).noquote()
+            << tr("Loader metadata rejected: %1").arg(QString::fromStdString(status.error()));
+      }
+    }
+  }
   const QString path = ctx_->path;
   const QString source_name = ctx_->source_name;
   const QString source_manifest_id = ctx_->source_manifest_id;

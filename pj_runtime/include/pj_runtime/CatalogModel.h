@@ -300,6 +300,10 @@ class CatalogModel : public QObject {
   // The normalized full source path registered for `dataset_id`, or empty when
   // there is no session or the dataset has no file-backed path.
   [[nodiscard]] QString datasetSourcePath(DatasetId dataset_id) const;
+  // Owned snapshot of the loader-metadata document for `dataset_id`
+  // (SessionManager::datasetMetadata), or nullopt when none / no session.
+  // Read-only facade — the catalog stores nothing.
+  [[nodiscard]] std::optional<DatasetMetadata> datasetMetadata(DatasetId dataset_id) const;
 
   // Resolves a stable topic+field path to the matching scalar field within a
   // specific dataset. Lets a layout rebind across similar datasets where the

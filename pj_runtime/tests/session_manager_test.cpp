@@ -1791,4 +1791,83 @@ TEST(SessionManagerIngestTest, UpdateIngestForUntrackedDatasetStillPublishesButS
   EXPECT_FALSE(session.hasActiveIngests());
 }
 
+TEST(SessionManagerMetadataTest, SetReplaceAndClear) {
+  PJ::SessionManager session;
+  const PJ::DatasetId dataset = 7;
+
+  EXPECT_EQ(session.datasetMetadata(dataset), nullptr);
+  ASSERT_TRUE(session.setDatasetMetadata(dataset, uR"({"messages": 12})"_s, u"loader_a"_s).has_value());
+  const PJ::DatasetMetadata* stored = session.datasetMetadata(dataset);
+  ASSERT_NE(stored, nullptr);
+  EXPECT_EQ(stored->plugin_id, u"loader_a"_s);
+  EXPECT_TRUE(stored->json.contains(u"messages"_s));
+
+  // Replace-whole-document, then clear via the two spellings of "nothing".
+  ASSERT_TRUE(session.setDatasetMetadata(dataset, uR"({"messages": 13})"_s, u"loader_b"_s).has_value());
+  EXPECT_EQ(session.datasetMetadata(dataset)->plugin_id, u"loader_b"_s);
+  ASSERT_TRUE(session.setDatasetMetadata(dataset, u"{}"_s, u"loader_b"_s).has_value());
+  EXPECT_EQ(session.datasetMetadata(dataset), nullptr);
+  ASSERT_TRUE(session.setDatasetMetadata(dataset, uR"({"again": 1})"_s, u"loader_b"_s).has_value());
+  ASSERT_TRUE(session.setDatasetMetadata(dataset, QString{}, u"loader_b"_s).has_value());
+  EXPECT_EQ(session.datasetMetadata(dataset), nullptr);
+}
+
+TEST(SessionManagerMetadataTest, RejectsOutOfBoundsDocumentsAndKeepsPrevious) {
+  PJ::SessionManager session;
+  const PJ::DatasetId dataset = 7;
+  ASSERT_TRUE(session.setDatasetMetadata(dataset, uR"({"keep": true})"_s, u"loader"_s).has_value());
+
+  EXPECT_FALSE(session.setDatasetMetadata(dataset, u"not json"_s, u"loader"_s).has_value());
+  EXPECT_FALSE(session.setDatasetMetadata(dataset, u"[1, 2]"_s, u"loader"_s).has_value());
+
+  QString deep = u"1"_s;
+  for (int level = 0; level < 33; ++level) {
+    deep = uR"({"n": %1})"_s.arg(deep);
+  }
+  EXPECT_FALSE(session.setDatasetMetadata(dataset, deep, u"loader"_s).has_value());
+
+  QStringList many;
+  for (int index = 0; index < 16400; ++index) {
+    many << QString::number(index);
+  }
+  const QString wide = uR"({"values": [%1]})"_s.arg(many.join(u","_s));
+  EXPECT_FALSE(session.setDatasetMetadata(dataset, wide, u"loader"_s).has_value());
+
+  const QString huge = uR"({"blob": "%1"})"_s.arg(QString(1024 * 1024, u'x'));
+  EXPECT_FALSE(session.setDatasetMetadata(dataset, huge, u"loader"_s).has_value());
+
+  // Every rejection kept the previous document.
+  ASSERT_NE(session.datasetMetadata(dataset), nullptr);
+  EXPECT_TRUE(session.datasetMetadata(dataset)->json.contains(u"keep"_s));
+}
+
+TEST(SessionManagerMetadataTest, RemoveDatasetErasesMetadata) {
+  PJ::SessionManager session;
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "meta.mcap"});
+  ASSERT_TRUE(dataset.has_value());
+  ASSERT_TRUE(session.setDatasetMetadata(*dataset, uR"({"a": 1})"_s, u"loader"_s).has_value());
+  session.removeDataset(*dataset);
+  EXPECT_EQ(session.datasetMetadata(*dataset), nullptr);
+}
+
+TEST(SessionManagerMetadataTest, RefillCommitClearsMetadataRollbackKeepsIt) {
+  PJ::SessionManager session;
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "refill.mcap"});
+  ASSERT_TRUE(dataset.has_value());
+  ASSERT_TRUE(session.setDatasetMetadata(*dataset, uR"({"old": true})"_s, u"loader"_s).has_value());
+
+  {
+    PJ::RefillGuard rollback_guard = session.beginRefill(*dataset);
+    // Guard destroyed uncommitted: the reload failed/discarded — the prior
+    // content came back, and its metadata must still describe it.
+  }
+  EXPECT_NE(session.datasetMetadata(*dataset), nullptr);
+
+  PJ::RefillGuard commit_guard = session.beginRefill(*dataset);
+  commit_guard.commit();
+  // Committed refill: new content, stale document cleared (the new load's
+  // document, if any, is published at its own commit seam).
+  EXPECT_EQ(session.datasetMetadata(*dataset), nullptr);
+}
+
 }  // namespace

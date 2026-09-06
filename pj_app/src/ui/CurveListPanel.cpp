@@ -518,6 +518,7 @@ QString CurveListPanel::rowTooltip(const QString& catalog_key, const QString& tr
   // ponytail: O(catalog) scan per hover; index by tree path if it ever shows.
   const std::vector<CatalogItem> items = catalog_->items();
   QSet<QString> dataset_topics;
+  DatasetId tooltip_dataset_id = 0;
   for (const CatalogItem& item : items) {
     const CurveTreeView::CurvePath topic_path{
         .key = {}, .dataset = item.dataset_name, .topic = item.topic_name, .field = {}};
@@ -528,10 +529,18 @@ QString CurveListPanel::rowTooltip(const QString& catalog_key, const QString& tr
     }
     if (item.dataset_name == tree_path) {
       dataset_topics.insert(item.topic_name);
+      tooltip_dataset_id = item.dataset_id;
     }
   }
   if (!dataset_topics.isEmpty()) {
     lines << tr("<span style=\"font-weight:600\">Topics:</span> %1").arg(dataset_topics.size());
+    // Bounded provenance summary: attribution only — the full document lives in
+    // the Info dialog. Metadata text is untrusted; everything shown is escaped.
+    if (const auto metadata = catalog_->datasetMetadata(tooltip_dataset_id); metadata.has_value()) {
+      lines
+          << tr("<span style=\"font-weight:600\">Loader metadata:</span> %1").arg(metadata->plugin_id.toHtmlEscaped());
+    }
+    lines << tr("Right-click for Info…");
   }
   return lines.join(u"<br>"_s);
 }
@@ -853,6 +862,7 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
   // selection, so the labels drop the noun.
   const bool single_file_backed = dataset_ids.size() == 1 && source_path_resolver_ != nullptr &&
                                   !source_path_resolver_(dataset_ids.front()).isEmpty();
+  QPushButton* info_button = add_item(u":/resources/svg/diag_info.svg"_s, tr("Info"), false, dataset_ids.size() == 1);
   QPushButton* merge_button = add_item(u":/resources/svg/merge.svg"_s, tr("Merge"), false, dataset_ids.size() >= 2);
   QPushButton* reload_button = add_item(u":/resources/svg/replay.svg"_s, tr("Reload"), false, single_file_backed);
   QPushButton* replace_button =
@@ -862,10 +872,15 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
 
   // QWidgetAction buttons don't dismiss the menu on click — close it ourselves and
   // record the choice (exec blocks, so capturing by reference is safe).
+  bool do_info = false;
   bool do_merge = false;
   bool do_reload = false;
   bool do_replace = false;
   bool do_remove = false;
+  connect(info_button, &QPushButton::clicked, &menu, [&]() {
+    do_info = true;
+    menu.close();
+  });
   connect(merge_button, &QPushButton::clicked, &menu, [&]() {
     do_merge = true;
     menu.close();
@@ -884,7 +899,9 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
   });
 
   menu.exec(tree_view_->viewport()->mapToGlobal(pos));
-  if (do_merge) {
+  if (do_info) {
+    emit datasetInfoRequested(dataset_ids.front());
+  } else if (do_merge) {
     emit mergeDatasetsRequested(dataset_ids);
   } else if (do_reload) {
     emit reloadDatasetRequested(dataset_ids.front());

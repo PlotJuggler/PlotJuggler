@@ -151,6 +151,18 @@ class DataSourceRuntimeHost {
   /// after sealing. Vetoes are permanent for this context.
   [[nodiscard]] std::string captureVetoReason() const;
 
+  /// Stages the loader-metadata document for this ingest (replace-whole-
+  /// document; callable any time during import, samples included — unlike
+  /// attach_source_record there is no seal-order rule, the last document
+  /// wins). Thread-safe. The host publishes it into SessionManager at the
+  /// dataset's commit seam; bounds are enforced there, and a rejected
+  /// document never affects the ingest. Today driven host-side; the SDK
+  /// set_dataset_metadata vtable slot will feed it.
+  void stageLoaderMetadata(std::string json);
+
+  /// The staged document, or nullopt when the source staged none.
+  [[nodiscard]] std::optional<std::string> stagedLoaderMetadata() const;
+
   /// Callback failures fail() recorded (rejected pushes, parser bind errors,
   /// failed payload fetches). The plugin may have recovered and ingest may
   /// have succeeded — but the recorded bytes then disagree with the ingested
@@ -523,6 +535,7 @@ class DataSourceRuntimeHost {
   // relaxed on the push path and only ever read under capture_mu_.
   mutable std::mutex capture_mu_;
   std::optional<std::string> source_record_;
+  std::optional<std::string> loader_metadata_;
   std::optional<sdk::IngestCompletionRecord> completion_;
   std::string capture_veto_;
   std::atomic<bool> ingest_begun_{false};

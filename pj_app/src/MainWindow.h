@@ -319,6 +319,10 @@ class MainWindow : public QMainWindow {
   // the dataset's data with it (FileLoader::replaceFromDialog).
   void onReplaceDatasetRequested(DatasetId dataset_id);
 
+  // Curve tree "Info": show the dataset-info dialog (display name, backing
+  // file, and provenance from the dataset's SourceRecord when it has one).
+  void onDatasetInfoRequested(DatasetId dataset_id);
+
   // Updates playback bounds after a data file has populated datastore and
   // object-store topics.
   void onFileLoaded(

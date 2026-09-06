@@ -569,6 +569,14 @@ QString CatalogModel::datasetSourcePath(DatasetId dataset_id) const {
   return impl_->session != nullptr ? impl_->session->datasetSourcePath(dataset_id) : QString{};
 }
 
+std::optional<DatasetMetadata> CatalogModel::datasetMetadata(DatasetId dataset_id) const {
+  if (impl_->session == nullptr) {
+    return std::nullopt;
+  }
+  const DatasetMetadata* metadata = impl_->session->datasetMetadata(dataset_id);
+  return metadata != nullptr ? std::optional<DatasetMetadata>(*metadata) : std::nullopt;
+}
+
 std::optional<CurveDescriptor> CatalogModel::descriptorForPath(
     DatasetId dataset_id, const QString& topic, const QString& field, SeriesCapability capability) const {
   for (const auto& [key, item] : impl_->items) {

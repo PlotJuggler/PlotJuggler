@@ -197,6 +197,7 @@
 #include "scene_object_classification.h"
 #include "ui/AboutDialog.h"
 #include "ui/CurveListPanel.h"
+#include "ui/DatasetInfoDialog.h"
 #include "ui/DiagnosticsDetailDialog.h"
 #include "ui/LeftPanel.h"
 #ifdef PJ_WITH_SCENE2D
@@ -1498,6 +1499,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       [this](DatasetId dataset_id) { return file_loader_->sourcePathForDataset(dataset_id); });
   connect(ui_->curveListPanel, &CurveListPanel::reloadDatasetRequested, this, &MainWindow::onReloadDatasetRequested);
   connect(ui_->curveListPanel, &CurveListPanel::replaceDatasetRequested, this, &MainWindow::onReplaceDatasetRequested);
+  connect(ui_->curveListPanel, &CurveListPanel::datasetInfoRequested, this, &MainWindow::onDatasetInfoRequested);
   connect(ui_->leftPanel, &LeftPanel::loadDataRequested, this, &MainWindow::onLoadDataRequested);
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
   // Qt Widgets live in one browser canvas, so automation has no DOM element to
@@ -2857,6 +2859,21 @@ void MainWindow::onReloadDatasetRequested(DatasetId dataset_id) {
 
 void MainWindow::onReplaceDatasetRequested(DatasetId dataset_id) {
   file_loader_->replaceFromDialog(dataset_id, this);
+}
+
+void MainWindow::onDatasetInfoRequested(DatasetId dataset_id) {
+  QString name;
+  for (const auto& [id, dataset_name] : session_->catalogModel().datasets()) {
+    if (id == dataset_id) {
+      name = dataset_name;
+      break;
+    }
+  }
+  const SessionManager& manager = session_->sessionManager();
+  auto* dialog = new DatasetInfoDialog(
+      name, manager.datasetSourcePath(dataset_id), manager.sourceRecord(dataset_id),
+      manager.datasetMetadata(dataset_id), this);
+  dialog->show();
 }
 
 QSet<QString> MainWindow::captureHistoryDataUniverse() const {

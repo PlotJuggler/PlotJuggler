@@ -1158,6 +1158,19 @@ std::string DataSourceRuntimeHost::captureVetoReason() const {
   return capture_veto_;
 }
 
+void DataSourceRuntimeHost::stageLoaderMetadata(std::string json) {
+  std::lock_guard<std::mutex> lock(capture_mu_);
+  loader_metadata_ = std::move(json);
+}
+
+std::optional<std::string> DataSourceRuntimeHost::stagedLoaderMetadata() const {
+  std::lock_guard<std::mutex> lock(capture_mu_);
+  return loader_metadata_;
+}
+// TODO(sdk-0.32): bind set_dataset_metadata vtable slot here — a cb that
+// validates via SessionManager::validateDatasetMetadata and forwards to
+// stageLoaderMetadata.
+
 bool DataSourceRuntimeHost::cbAttachSourceRecord(
     void* ctx, PJ_string_view_t descriptor_json, PJ_error_t* out_error) noexcept {
   auto* self = static_cast<DataSourceRuntimeHost*>(ctx);

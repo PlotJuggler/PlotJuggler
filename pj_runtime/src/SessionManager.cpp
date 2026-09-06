@@ -8,6 +8,10 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QLoggingCategory>
 #include <QMetaType>
 #include <QString>
@@ -152,6 +156,71 @@ const SourceRecord* SessionManager::sourceRecord(DatasetId dataset_id) const {
 
 void SessionManager::detachSourceRecord(DatasetId dataset_id) {
   dataset_source_records_.erase(dataset_id);
+}
+
+Status SessionManager::validateDatasetMetadata(const QString& json) {
+  constexpr qsizetype kMaxBytes = 1024 * 1024;
+  constexpr int kMaxDepth = 32;
+  constexpr int kMaxNodes = 16384;
+  const QByteArray bytes = json.toUtf8();
+  if (bytes.size() > kMaxBytes) {
+    return PJ::unexpected("metadata document exceeds 1 MiB");
+  }
+  QJsonParseError parse_error{};
+  const QJsonDocument document = QJsonDocument::fromJson(bytes, &parse_error);
+  if (parse_error.error != QJsonParseError::NoError) {
+    return PJ::unexpected("metadata is not valid JSON: " + parse_error.errorString().toStdString());
+  }
+  if (!document.isObject()) {
+    return PJ::unexpected("metadata document must be a JSON object");
+  }
+  int nodes = 0;
+  // Iterative walk: a hostile depth-32 document must not become stack depth.
+  std::vector<std::pair<QJsonValue, int>> pending;
+  pending.emplace_back(document.object(), 1);
+  while (!pending.empty()) {
+    const auto [value, depth] = pending.back();
+    pending.pop_back();
+    if (depth > kMaxDepth) {
+      return PJ::unexpected("metadata nesting exceeds depth 32");
+    }
+    if (++nodes > kMaxNodes) {
+      return PJ::unexpected("metadata exceeds 16384 values");
+    }
+    if (value.isObject()) {
+      const QJsonObject object = value.toObject();
+      for (auto it = object.begin(); it != object.end(); ++it) {
+        pending.emplace_back(it.value(), depth + 1);
+      }
+    } else if (value.isArray()) {
+      for (const QJsonValue& element : value.toArray()) {
+        pending.emplace_back(element, depth + 1);
+      }
+    }
+  }
+  return PJ::okStatus();
+}
+
+Status SessionManager::setDatasetMetadata(DatasetId dataset_id, const QString& json, QString plugin_id) {
+  const QString trimmed = json.trimmed();
+  if (trimmed.isEmpty() || trimmed == u"{}"_s) {
+    dataset_metadata_.erase(dataset_id);
+    return PJ::okStatus();
+  }
+  if (auto status = validateDatasetMetadata(json); !status) {
+    return status;
+  }
+  dataset_metadata_.insert_or_assign(dataset_id, DatasetMetadata{std::move(plugin_id), json});
+  return PJ::okStatus();
+}
+
+const DatasetMetadata* SessionManager::datasetMetadata(DatasetId dataset_id) const {
+  const auto it = dataset_metadata_.find(dataset_id);
+  return it != dataset_metadata_.end() ? &it->second : nullptr;
+}
+
+void SessionManager::clearDatasetMetadata(DatasetId dataset_id) {
+  dataset_metadata_.erase(dataset_id);
 }
 
 void SessionManager::pinDatasetResource(DatasetId dataset_id, std::shared_ptr<void> resource) {
@@ -832,6 +901,9 @@ void RefillGuard::commit() {
   // path); a rollback never reaches commit and keeps the record.
   if (session_ != nullptr) {
     session_->detachSourceRecord(dataset_id_);
+    // Loader metadata described the OLD content just as the record did; the
+    // new load's document (if any) is published at its own commit seam.
+    session_->clearDatasetMetadata(dataset_id_);
   }
 }
 
@@ -1083,9 +1155,11 @@ std::optional<DatasetMergeReport> SessionManager::mergeDatasets(
   // here; the caller owns the post-merge catalog/source bookkeeping. Records
   // are the only provenance this class owns end-to-end.)
   dataset_source_records_.erase(anchor);
+  dataset_metadata_.erase(anchor);
   dataset_resources_.erase(anchor);
   for (const auto& source : sources) {
     dataset_source_records_.erase(source.dataset_id);
+    dataset_metadata_.erase(source.dataset_id);
     dataset_resources_.erase(source.dataset_id);
   }
 
@@ -1295,6 +1369,7 @@ void SessionManager::removeDataset(DatasetId dataset_id) {
   // must never resolve a future identity query (the record tier skips ids the
   // engine no longer knows, but a reminted id could collide).
   dataset_source_records_.erase(dataset_id);
+  dataset_metadata_.erase(dataset_id);
   dataset_resources_.erase(dataset_id);
   // A generator bound to this dataset outlives its data otherwise: the object topics
   // go with the dataset, but the recipe keeps naming the dead id, so the next

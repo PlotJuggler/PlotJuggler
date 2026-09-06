@@ -563,9 +563,16 @@ TEST(AppSessionMergeTest, CollapsesSelectionIntoMergedAnchor) {
   const PJ::DatasetId a = makeShiftedDataset(session, "A", 0, "/s", {0, 1'000'000'000LL});
   const PJ::DatasetId b = makeShiftedDataset(session, "B", 3'000'000'000LL, "/s", {5'000'000'000LL, 6'000'000'000LL});
   session.catalogModel().rebuildFromDatastore();
+  // Loader metadata on both contributors: the destructive merge must invalidate
+  // every contributor's document, the anchor's included — no single artifact
+  // describes the merged result.
+  ASSERT_TRUE(session.sessionManager().setDatasetMetadata(a, uR"({"from": "a"})"_s, u"loader"_s).has_value());
+  ASSERT_TRUE(session.sessionManager().setDatasetMetadata(b, uR"({"from": "b"})"_s, u"loader"_s).has_value());
 
   session.mergeDatasets({a, b});
   session.catalogModel().rebuildFromDatastore();
+  EXPECT_EQ(session.sessionManager().datasetMetadata(a), nullptr);
+  EXPECT_EQ(session.sessionManager().datasetMetadata(b), nullptr);
 
   // Only the merged anchor remains, relabelled, spanning the arranged union.
   const auto datasets = session.catalogModel().datasets();

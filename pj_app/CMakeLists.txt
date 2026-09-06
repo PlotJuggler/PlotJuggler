@@ -91,6 +91,9 @@ add_library(pj_app_shell OBJECT
     src/ui/DiagnosticsPopup.cpp
     src/ui/DiagnosticsPopup.h
     src/ui/DiagnosticsPopup.ui
+    src/ui/DatasetInfoDialog.cpp
+    src/ui/DatasetInfoDialog.h
+    src/ui/DatasetInfoDialog.ui
     src/ui/DiagnosticsDetailDialog.cpp
     src/ui/DiagnosticsDetailDialog.h
     src/ui/DiagnosticsDetailDialog.ui
@@ -388,6 +391,11 @@ if(PJ_BUILD_TESTS)
     # ...) must be drag-inert with a "why" tooltip; displayable ones keep
     # dragging.
     add_pj_app_gui_test(curve_list_panel_test CurveListPanelTest tests/curve_list_panel_test.cpp)
+
+    # Dataset "Info" dialog: name/file rows plus a domain-neutral provenance
+    # tree from the SourceRecord (descriptor JSON as generic key/value nodes,
+    # 64-bit timestamps printed exactly); no record -> no provenance section.
+    add_pj_app_gui_test(dataset_info_dialog_test DatasetInfoDialogTest tests/dataset_info_dialog_test.cpp)
 
     # Source-bound layout seam: one replayable file that fans out into several
     # datasets must persist/restore each independent timeline track.
