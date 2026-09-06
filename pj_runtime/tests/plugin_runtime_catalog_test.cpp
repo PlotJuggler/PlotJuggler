@@ -694,6 +694,10 @@ TEST_F(PluginCatalogTest, RuntimeCatalogStaticMessageParserRegistersWithEncoding
   ASSERT_EQ(catalog.messageParsers().size(), 1U);
   EXPECT_EQ(catalog.messageParsers()[0].id, "static-parser");
   EXPECT_EQ(catalog.messageParsers()[0].encodings, (std::vector<std::string>{"ros2", "cdr"}));
+  EXPECT_TRUE(catalog.messageParsers()[0].statically_registered);
+  EXPECT_FALSE(catalog.messageParsers()[0].from_authoritative_dir);
+  EXPECT_EQ(catalog.findParserById("static-parser"), &catalog.messageParsers()[0]);
+  EXPECT_EQ(catalog.findParserById("missing"), nullptr);
 }
 
 TEST_F(PluginCatalogTest, RegisterStaticPluginsContinuesPastFailedEntryAndKeepsSuccesses) {

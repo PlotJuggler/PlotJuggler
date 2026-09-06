@@ -9,6 +9,7 @@
 // profile.
 
 #include <QTemporaryDir>
+#include <utility>
 
 #include "pj_runtime/ExtensionCatalogService.h"
 
@@ -19,6 +20,11 @@ struct HermeticCatalog {
       : service(
             ExtensionCatalogService::Paths{install_dir, sandbox.path(), sandbox.path() + "/no_bundled"},
             DiagnosticSink{}, nullptr) {}
+
+  explicit HermeticCatalog(StaticPluginSet static_plugins, DiagnosticSink sink = {})
+      : service(
+            ExtensionCatalogService::Paths{QString(), sandbox.path(), sandbox.path() + "/no_bundled"}, std::move(sink),
+            std::move(static_plugins), nullptr) {}
 
   QTemporaryDir sandbox;  ///< marketplace root; the bundled path under it does not exist, so seeding is a no-op
   ExtensionCatalogService service;

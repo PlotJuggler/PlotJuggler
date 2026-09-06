@@ -9,7 +9,7 @@
 // reload() clears/reallocates the underlying parser vector, so an unsynchronized
 // reader holding a raw catalog pointer would dangle (use-after-free). The fix
 // guards that vector with a shared_mutex: reload() takes the exclusive lock;
-// createParserHandleForEncoding()/parserEncodings() take a shared lock and never
+// resolveParserRoutes()/parserEncodings() take a shared lock and never
 // leak a raw catalog pointer past it (correctness rests on that mutual
 // exclusion, verifiable by inspection).
 //
@@ -47,10 +47,11 @@ TEST(ExtensionCatalogServiceThreadSafety, ConcurrentReloadAndParserResolutionSta
   for (int i = 0; i < 4; ++i) {
     readers.emplace_back([&catalog, &stop]() {
       while (!stop.load(std::memory_order_relaxed)) {
-        // Both cross-thread-safe accessors: one resolves+instantiates a parser
-        // under the shared lock, the other snapshots the encoding set.
-        auto handle = catalog.createParserHandleForEncoding(u"json"_s);
-        (void)handle.valid();
+        // Both cross-thread-safe accessors: one resolves+instantiates parsers
+        // under the routing + shared catalog locks, the other snapshots the
+        // encoding set.
+        const auto selection = catalog.resolveParserRoutes("json", "any/Type", {}, {});
+        (void)selection.scalar.has_value();
         const auto encodings = catalog.parserEncodings();
         (void)encodings.size();
       }

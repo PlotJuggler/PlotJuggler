@@ -601,12 +601,15 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
     const std::string_view encoding(request->parser_encoding.data, request->parser_encoding.size);
     const std::string_view topic_name(request->topic_name.data, request->topic_name.size);
     const std::string_view type_name(request->type_name.data, request->type_name.size);
-    const QString encoding_str = QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size()));
 
     std::string parser_config;
     if (request->parser_config_json.size > 0) {
       parser_config.assign(request->parser_config_json.data, request->parser_config_json.size);
     }
+    // The reuse identity deliberately ignores catalog reloads: an identical
+    // re-request revives the existing binding (and its lazy object decoder)
+    // so history is never re-decoded by a replacement provider. Re-resolving
+    // after reload needs per-entry decoder generation pinning first.
     ParserBinding::Signature signature{
         std::string(encoding), std::string(type_name),
         request->schema.size > 0
@@ -627,14 +630,22 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
       return true;
     }
 
-    // Resolve + instantiate the parser atomically under the catalog's shared
-    // lock (this runs on the plugin poll thread; the GUI thread may reload the
-    // catalog). The returned handle owns its DSO keepalive, so it stays valid
-    // past the lock and past a later reload().
-    auto parser = std::make_unique<MessageParserHandle>(self->catalog_.createParserHandleForEncoding(encoding_str));
-    if (!parser->valid()) {
-      return self->fail(out_error, ("no parser found for encoding '" + std::string(encoding) + "'").c_str());
+    // Per-route parser selection: the scalar winner takes this binding, the
+    // object winner (if any) decides the topic's object identity and becomes its
+    // lazy decoder. Both arrive prepared (bindSchema + loadConfig applied) and
+    // own their DSO keepalive, so they stay valid past a later catalog reload().
+    // This runs on the plugin poll thread; selection is serialized against a
+    // GUI-thread reload inside the catalog service.
+    const Span<const uint8_t> schema_span(request->schema.data, request->schema.size);
+    ParserRouteSelection selection =
+        self->catalog_.resolveParserRoutes(encoding, type_name, schema_span, parser_config);
+    if (!selection.scalar.has_value()) {
+      // No encoding/type prefix: the plugin names the channel when it
+      // re-reports this through its own 224-byte PJ_error_t message, and the
+      // routing service already logged the full text.
+      return self->fail(out_error, selection.scalar_failure.c_str());
     }
+    auto parser = std::make_unique<MessageParserHandle>(std::move(selection.scalar->parser));
 
     // Reuse the dataset's existing same-named scalar topic before minting a new
     // one — the transactional-refill contract (SessionManager::beginRefill keeps
@@ -728,19 +739,8 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
       return self->fail(out_error, ("failed to register the parser write host: " + status.error()).c_str());
     }
 
-    const Span<const uint8_t> schema_span(request->schema.data, request->schema.size);
-    if (auto status = parser->bindSchema(type_name, schema_span); !status) {
-      return self->fail(
-          out_error, ("failed to bind schema for " + std::string(type_name) + ": " + status.error()).c_str());
-    }
-
-    if (!parser_config.empty()) {
-      if (auto status = parser->loadConfig(parser_config); !status) {
-        return self->fail(out_error, ("failed to load parser config: " + status.error()).c_str());
-      }
-    }
-
-    const sdk::BuiltinObjectType object_kind = parser->classifySchema(type_name, schema_span);
+    const sdk::BuiltinObjectType object_kind =
+        selection.object.has_value() ? selection.object->object_type : sdk::BuiltinObjectType::kNone;
     std::optional<ObjectTopicId> object_topic_id;
     std::unique_ptr<DatastoreParserObjectWriteHost> object_write_host;
     if (object_kind == sdk::BuiltinObjectType::kNone) {
@@ -754,13 +754,23 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
                            << "encoding=" << QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size()))
                            << "— scalar-only ingest";
     } else {
+      const std::string& object_provider_id = selection.object->provider_id;
       if (auto existing = self->object_store_.findTopic(self->dataset_id_, topic_name); existing.has_value()) {
-        // KNOWN LIMITATION: a topic retyped to a DIFFERENT builtin object type
-        // mid-session reuses this id and its original metadata_json, so the new
-        // payloads keep routing as the old type until the stream restarts.
-        // Acceptable for now — a mid-session builtin-type change is not a flow
-        // any supported source produces.
-        object_topic_id = existing;
+        const auto previous_provider = self->object_topic_decoder_providers_.find(existing->id);
+        if (previous_provider != self->object_topic_decoder_providers_.end() &&
+            previous_provider->second != object_provider_id) {
+          qCWarning(lcIngest).noquote() << "[parser-bind] refusing object decoder replacement for topic"
+                                        << QString::fromUtf8(topic_name.data(), static_cast<int>(topic_name.size()))
+                                        << "old provider" << QString::fromStdString(previous_provider->second)
+                                        << "new provider" << QString::fromStdString(object_provider_id)
+                                        << "— binding remains scalar-only";
+          // Fail closed for this binding: retain the existing topic and decoder,
+          // but do not enqueue or directly write objects through the replacement.
+        } else {
+          // KNOWN LIMITATION: a same-provider retype to a DIFFERENT builtin
+          // object type reuses the original metadata_json until stream restart.
+          object_topic_id = existing;
+        }
       } else {
         const std::string metadata_json = fmt::format(R"({{"builtin_object_type":"{}"}})", sdk::name(object_kind));
         const ObjectTopicDescriptor descriptor{
@@ -790,45 +800,45 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
           }
         }
       }
-      object_write_host = std::make_unique<DatastoreParserObjectWriteHost>(self->object_store_, object_topic_id->id);
-      // Same mid-pause rule as the scalar host above: a binding minted while
-      // paused must push into the active (secondary) store, not the frozen
-      // primary. When live, object_store_target_ is the primary (a no-op).
-      object_write_host->setTarget(self->object_store_target_.load());
-      // Required at THIS point despite being an optional service in general: the
-      // host only reaches here after committing this topic to object ingest (the
-      // object topic is registered and mirrored). Merely warning would let the
-      // parser bind with no object sink and drop every object payload silently.
-      if (auto status =
-              registerRequiredService<sdk::ParserObjectWriteHostService>(*registry_builder, object_write_host->raw());
-          !status) {
-        return self->fail(
-            out_error,
-            ("failed to register the parser object write host for '" + std::string(topic_name) + "': " + status.error())
-                .c_str());
-      }
-
-      if (self->object_topic_parser_registrar_) {
-        auto object_parser = std::make_unique<MessageParserHandle>(self->catalog_.createParserHandleForEncoding(
-            QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size()))));
-        if (!object_parser->valid()) {
-          return self->fail(
-              out_error, ("failed to create object parser instance for '" + std::string(encoding) + "'").c_str());
-        }
-        if (auto status = object_parser->bindSchema(type_name, schema_span); !status) {
-          return self->fail(
-              out_error,
-              ("failed to bind object parser schema for " + std::string(type_name) + ": " + status.error()).c_str());
-        }
-        if (!parser_config.empty()) {
-          if (auto status = object_parser->loadConfig(parser_config); !status) {
-            return self->fail(out_error, ("failed to load object parser config: " + status.error()).c_str());
+      if (object_topic_id.has_value()) {
+        self->object_topic_decoder_providers_.try_emplace(object_topic_id->id, object_provider_id);
+        // When the scalar and object routes selected DIFFERENT providers, the
+        // scalar parser must not write objects — the topic's object content
+        // belongs to the object winner. Live entries still flow through the lazy
+        // push in cbPushMessage and decode via the registrar instance below.
+        if (object_provider_id == selection.scalar->provider_id) {
+          object_write_host =
+              std::make_unique<DatastoreParserObjectWriteHost>(self->object_store_, object_topic_id->id);
+          // Same mid-pause rule as the scalar host above: a binding minted while
+          // paused must push into the active (secondary) store, not the frozen
+          // primary. When live, object_store_target_ is the primary (a no-op).
+          object_write_host->setTarget(self->object_store_target_.load());
+          // Required at THIS point despite being an optional service in general: the
+          // host only reaches here after committing this topic to object ingest (the
+          // object topic is registered and mirrored). Merely warning would let the
+          // parser bind with no object sink and drop every object payload silently.
+          if (auto status = registerRequiredService<sdk::ParserObjectWriteHostService>(
+                  *registry_builder, object_write_host->raw());
+              !status) {
+            return self->fail(
+                out_error, ("failed to register the parser object write host for '" + std::string(topic_name) +
+                            "': " + status.error())
+                               .c_str());
           }
         }
-        self->object_topic_parser_registrar_(*object_topic_id, std::move(object_parser));
+
+        if (self->object_topic_parser_registrar_) {
+          // The registrar keeps one decoder slot per object topic; the provider
+          // guard above keeps another provider from replacing it. A replacement
+          // build with the same provider id still needs per-entry pinning.
+          self->object_topic_parser_registrar_(
+              *object_topic_id, std::make_unique<MessageParserHandle>(std::move(selection.object->parser)));
+        }
       }
     }
 
+    // A bind(registry) failure is terminal: the resolver is not re-entered for
+    // the next candidate.
     if (auto status = parser->bind(registry_builder->view()); !status) {
       return self->fail(out_error, ("failed to bind parser services: " + status.error()).c_str());
     }
@@ -1072,25 +1082,18 @@ const char* DataSourceRuntimeHost::cbListAvailableEncodings(void* ctx) noexcept 
 }
 
 // Runs on the plugin's poll/stream thread — deliberately the SAME thread and
-// catalog/parser access pattern cbEnsureParserBinding has always used
-// (findParserByEncoding + createHandle + bindSchema during live ingest), so
-// advertise-time classification introduces no cross-thread access that binding
-// didn't already perform.
+// catalog/parser access pattern cbEnsureParserBinding has always used.
 sdk::BuiltinObjectType DataSourceRuntimeHost::classifyAvailableTopic(const PJ_available_topic_t& topic) const noexcept {
   const std::string_view encoding(topic.parser_encoding.data, topic.parser_encoding.size);
   const std::string_view type_name(topic.type_name.data, topic.type_name.size);
   const Span<const uint8_t> schema_span(topic.schema.data, topic.schema.size);
   try {
-    // Resolve + instantiate under the catalog's shared lock (poll thread vs a
-    // GUI-thread reload()); the handle owns its DSO keepalive, so bindSchema /
-    // classifySchema below run safely after the lock is released.
-    MessageParserHandle parser =
-        catalog_.createParserHandleForEncoding(QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size())));
-    if (parser.valid() && parser.bindSchema(type_name, schema_span)) {
-      const sdk::BuiltinObjectType classification = parser.classifySchema(type_name, schema_span);
-      if (classification != sdk::BuiltinObjectType::kNone) {
-        return classification;
-      }
+    // The advertised type is an object exactly when some provider holds the
+    // OBJECT route for it — the same resolution bind time performs, so the
+    // probe work is shared through the resolver cache. No config exists here.
+    if (const auto object_type = catalog_.classifyParserObjectRoute(encoding, type_name, schema_span);
+        object_type.has_value()) {
+      return *object_type;
     }
   } catch (...) {
     // Fall through to the name-matching fallback below.

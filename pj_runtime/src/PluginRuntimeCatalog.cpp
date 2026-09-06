@@ -277,6 +277,13 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
     });
   }
 
+  authoritative_plugin_paths_.clear();
+  for (const PluginDescriptor& descriptor : winners) {
+    if (authoritative_win.contains(descriptor.id)) {
+      authoritative_plugin_paths_.insert(canonicalPath(descriptor.dso_path));
+    }
+  }
+
   return winners;
 }
 
@@ -465,6 +472,7 @@ bool PluginRuntimeCatalog::registerStaticMessageParser(
       [this](const std::string& id) { return claimStaticId(id, "MessageParser"); },
       [](RuntimeMessageParserPlugin& loaded, const PluginDescriptor& descriptor) {
         loaded.encodings = descriptor.encoding;
+        loaded.statically_registered = true;
         return true;
       },
       [dialog_vtable](const PJ_message_parser_vtable_t* parser_vtable) {
@@ -604,6 +612,7 @@ bool PluginRuntimeCatalog::loadAndRegisterMessageParser(const PluginDescriptor& 
   loaded.name = descriptor.name;
   loaded.version = descriptor.version;
   loaded.encodings.insert(loaded.encodings.end(), descriptor.encoding.begin(), descriptor.encoding.end());
+  loaded.from_authoritative_dir = authoritative_plugin_paths_.contains(loaded.path);
 
   report(DiagnosticLevel::kInfo, loaded.id, "Loaded MessageParser " + loaded.name + " from " + loaded.path);
   message_parsers_.push_back(std::move(loaded));
@@ -773,6 +782,12 @@ const RuntimeMessageParserPlugin* PluginRuntimeCatalog::findParserByEncoding(std
     }
   }
   return nullptr;
+}
+
+const RuntimeMessageParserPlugin* PluginRuntimeCatalog::findParserById(std::string_view id) const {
+  const auto it = std::find_if(
+      message_parsers_.begin(), message_parsers_.end(), [&](const auto& parser) { return parser.id == id; });
+  return it == message_parsers_.end() ? nullptr : &*it;
 }
 
 std::string PluginRuntimeCatalog::buildFileFilter() const {

@@ -336,10 +336,9 @@ class DataSourceRuntimeHost {
   static bool cbAttachSourceRecord(void* ctx, PJ_string_view_t descriptor_json, PJ_error_t* out_error) noexcept;
   static bool cbCompleteIngest(void* ctx, const PJ_ingest_completion_t* completion, PJ_error_t* out_error) noexcept;
 
-  // A-priori classification for one advertised topic: binds the schema against a
-  // throwaway parser instance for `topic.parser_encoding` and calls classifySchema
-  // (no bind(registry) — classification needs no write-host service; cbEnsureParserBinding
-  // already proves the ABI accepts bindSchema/classifySchema before bind()). Falls back to
+  // A-priori classification for one advertised topic: the object route's
+  // claimed type via ExtensionCatalogService::classifyParserObjectRoute (no
+  // bind(registry) — classification needs no write-host service). Falls back to
   // matching `type_name` against the FrameTransforms/CameraInfo infra schemas when no parser
   // is registered for the encoding, or the parser's classify_schema returns kNone (e.g. an
   // older parser .so, or a genuinely unclassified type). Never throws.
@@ -508,6 +507,10 @@ class DataSourceRuntimeHost {
   std::atomic<bool> stop_requested_{false};
   uint32_t next_binding_id_ = 1;
   std::unordered_map<uint32_t, ParserBinding> parser_bindings_;
+  // First decoder provider registered for each object topic. A later retype
+  // selecting another provider is kept scalar-only so old lazy entries are
+  // never re-decoded by a replacement implementation.
+  std::unordered_map<uint64_t, std::string> object_topic_decoder_providers_;
   // Backing for cbListAvailableEncodings — the protocol contract is that the
   // returned pointer is valid until the next call, so the buffer outlives the
   // function return.

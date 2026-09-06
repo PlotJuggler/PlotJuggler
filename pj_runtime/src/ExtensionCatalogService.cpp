@@ -17,6 +17,7 @@
 #include <system_error>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 #ifndef PJ_TARGET_WASM
 #include "pj_marketplace/extension_manager.hpp"
@@ -188,7 +189,9 @@ ExtensionCatalogService::ExtensionCatalogService(
 
 ExtensionCatalogService::ExtensionCatalogService(
     Paths paths, DiagnosticSink sink, StaticPluginSet static_plugins, QObject* parent)
-    : QObject(parent), sink_(std::move(sink)) {
+    : QObject(parent),
+      sink_(std::move(sink)),
+      routing_([this](std::string_view provider_id) { return createParserHandleForProviderId(provider_id); }, sink_) {
   default_mode_ = paths.install_dir.isEmpty();
   const bool default_marketplace = paths.marketplace_dir.isEmpty();
   marketplace_dir_ = default_marketplace ? defaultExtensionsDir() : std::move(paths.marketplace_dir);
@@ -264,6 +267,10 @@ ExtensionCatalogService::ExtensionCatalogService(
   qCInfo(lcCatalog) << "Scanning" << static_cast<int>(scan_dir_count) << "plugin folder(s); install dir"
                     << extensions_dir_;
   plugin_catalog_->scanDirectory();
+
+  const std::scoped_lock routing_lock(routing_mutex_);
+  const std::unique_lock catalog_lock(catalog_mutex_);
+  rebuildParserClaims();
 }
 
 QStringList ExtensionCatalogService::customPluginFolders() const {
@@ -331,6 +338,34 @@ std::vector<PluginDirEntry> ExtensionCatalogService::buildScanHierarchy(bool ext
 
 #ifndef PJ_TARGET_WASM
 void ExtensionCatalogService::seedBundledPlugins() {
+  // Scanning the shipped set is read-only and must happen even when another
+  // process owns the marketplace writer lease: parser provenance still needs
+  // the authoritative shipped artifact map for this process's catalog scan.
+  std::optional<PluginScanResult> scan;
+  QMap<QString, QString> bundled_versions;
+  if (QDir(bundled_dir_).exists()) {
+    auto scanned = scanPluginDsos(std::filesystem::path(bundled_dir_.toStdString()));
+    if (!scanned) {
+      reportDiagnostic(
+          DiagnosticLevel::kWarning,
+          u"Could not scan bundled plugins at \"%1\": %2"_s.arg(bundled_dir_, QString::fromStdString(scanned.error())));
+      return;
+    }
+    scan = std::move(*scanned);
+    for (const PluginDescriptor& descriptor : scan->plugins) {
+      if (descriptor.id.empty()) {
+        continue;
+      }
+      bundled_versions.insert(QString::fromStdString(descriptor.id), QString::fromStdString(descriptor.version));
+      std::error_code canonical_ec;
+      std::filesystem::path shipped_dso = std::filesystem::weakly_canonical(descriptor.dso_path, canonical_ec);
+      if (canonical_ec) {
+        shipped_dso = descriptor.dso_path.lexically_normal();
+      }
+      bundled_plugin_versions_[descriptor.id] = BundledPluginInfo{descriptor.version, std::move(shipped_dso)};
+    }
+  }
+
   // The seed is a writer into the managed dir that does not go through the
   // ExtensionManager mutating API: it clears the shared seed-stage tree and renames
   // payloads straight in. So it needs the same permission every other mutation
@@ -339,9 +374,8 @@ void ExtensionCatalogService::seedBundledPlugins() {
   //
   // Skipping costs this session the bundled refresh only: the plugins already in
   // the managed dir still load, and the instance that owns the store has either
-  // done the seed or will. It also leaves bundled_versions_ unset, so nothing is
-  // marked core here — harmless, because every action that gates on core (uninstall,
-  // downgrade) is refused by the lease anyway.
+  // done the seed or will. Core marketplace mutations are refused by the lease
+  // anyway, while the read-only shipped-artifact map above remains available.
   if (!extension_manager_->hasStoreWriteAccess()) {
     const QString message =
         u"Another PlotJuggler instance is managing extensions: bundled plugins were not refreshed this session."_s;
@@ -365,16 +399,8 @@ void ExtensionCatalogService::seedBundledPlugins() {
   std::error_code ec;
   std::filesystem::remove_all(stage_root, ec);
 
-  if (!QDir(bundled_dir_).exists()) {
+  if (!scan.has_value()) {
     return;  // dev build tree, or an install with no bundled plugins — nothing to seed
-  }
-
-  const auto scan = scanPluginDsos(std::filesystem::path(bundled_dir_.toStdString()));
-  if (!scan) {
-    reportDiagnostic(
-        DiagnosticLevel::kWarning,
-        u"Could not scan bundled plugins at \"%1\": %2"_s.arg(bundled_dir_, QString::fromStdString(scan.error())));
-    return;
   }
 
   if (!QDir().mkpath(marketplace_dir_)) {
@@ -397,8 +423,6 @@ void ExtensionCatalogService::seedBundledPlugins() {
     return;
   }
 
-  // Every bundled id -> version, whether or not it gets copied this run.
-  QMap<QString, QString> bundled_versions;
   // Only the ids whose payload this run actually promoted, mapped to the version
   // now on disk. The marketplace cannot re-read them: reading an installed
   // version above opens its DSO, and glibc serves every later dlopen of that path
@@ -414,8 +438,6 @@ void ExtensionCatalogService::seedBundledPlugins() {
     if (id.isEmpty()) {
       continue;
     }
-    bundled_versions.insert(id, QString::fromStdString(descriptor.version));
-
     // The payload is the top-level entry under the bundled dir that contains the
     // DSO — a per-id subdirectory (e.g. csv-loader/, or ros2-topic-subscriber/
     // with its dist/<distro>/ inners) or, for a flat layout, the .so file itself.
@@ -589,30 +611,22 @@ void ExtensionCatalogService::reload() {
 
   bool changed = false;
   {
-    // Exclusive: reload() clears/reallocates the catalog's parser vector. Any
-    // poll thread resolving a parser through the shared-lock accessors is
-    // fenced out for the duration.
+    // routing_mutex_ first (see its declaration), then exclusive: reload()
+    // clears/reallocates the catalog's parser vector. Any poll thread resolving
+    // a parser through the shared-lock accessors is fenced out for the duration.
+    const std::scoped_lock routing_lock(routing_mutex_);
     const std::unique_lock lock(catalog_mutex_);
     plugin_catalog_->setPluginDirs(std::move(scan_dirs));
     plugin_catalog_->setDisabledIds(std::move(disabled_ids));
     changed = plugin_catalog_->reload();
+    if (changed) {
+      rebuildParserClaims();
+    }
   }
   if (changed) {
     emit catalogChanged();
   }
 #endif
-}
-
-MessageParserHandle ExtensionCatalogService::createParserHandleForEncoding(QStringView encoding) const {
-  const std::shared_lock lock(catalog_mutex_);
-  const LoadedMessageParser* parser = plugin_catalog_->findParserByEncoding(encoding.toString().toStdString());
-  if (parser == nullptr) {
-    return MessageParserHandle{static_cast<const PJ_message_parser_vtable_t*>(nullptr)};
-  }
-  // createHandle() copies the library's DSO keepalive into the returned handle,
-  // so the handle stays valid after the lock is released even if a later
-  // reload() drops this catalog entry.
-  return parser->library.createHandle();
 }
 
 std::vector<std::string> ExtensionCatalogService::parserEncodings() const {
@@ -626,6 +640,59 @@ std::vector<std::string> ExtensionCatalogService::parserEncodings() const {
   std::sort(encodings.begin(), encodings.end());
   encodings.erase(std::unique(encodings.begin(), encodings.end()), encodings.end());
   return encodings;
+}
+
+MessageParserHandle ExtensionCatalogService::createParserHandleForProviderId(std::string_view provider_id) const {
+  const LoadedMessageParser* parser = plugin_catalog_->findParserById(provider_id);
+  return parser != nullptr ? parser->library.createHandle()
+                           : MessageParserHandle{static_cast<const PJ_message_parser_vtable_t*>(nullptr)};
+}
+
+ParserClaimProvenance ExtensionCatalogService::provenanceForParser(const LoadedMessageParser& parser) const {
+  if (parser.statically_registered) {
+    return ParserClaimProvenance::kBundled;
+  }
+  if (parser.from_authoritative_dir) {
+    return ParserClaimProvenance::kFolderDrop;
+  }
+  // Bundled tier requires the loaded artifact to BE the shipped build (id,
+  // version, and DSO signature). Artifact-controlled ids and versions alone
+  // cannot forge the top trust tier. Authenticated receipts are the full answer.
+  const auto bundled = bundled_plugin_versions_.find(parser.id);
+  if (bundled != bundled_plugin_versions_.end() && bundled->second.version == parser.version &&
+      sameDsoSignature(parser.path, bundled->second.dso_path)) {
+    return ParserClaimProvenance::kBundled;
+  }
+  return ParserClaimProvenance::kMarketplace;
+}
+
+void ExtensionCatalogService::rebuildParserClaims() {
+  std::vector<ParserProviderInfo> snapshot;
+  snapshot.reserve(plugin_catalog_->messageParsers().size());
+  for (const auto& parser : plugin_catalog_->messageParsers()) {
+    snapshot.push_back(
+        ParserProviderInfo{
+            .id = parser.id,
+            .encodings = parser.encodings,
+            .provenance = provenanceForParser(parser),
+        });
+  }
+  routing_.rebuild(std::move(snapshot));
+}
+
+ParserRouteSelection ExtensionCatalogService::resolveParserRoutes(
+    std::string_view encoding, std::string_view type_name, Span<const uint8_t> schema,
+    std::string_view parser_config_json) const {
+  const std::scoped_lock routing_lock(routing_mutex_);
+  const std::shared_lock catalog_lock(catalog_mutex_);
+  return routing_.resolveParserRoutes(encoding, type_name, schema, parser_config_json);
+}
+
+std::optional<sdk::BuiltinObjectType> ExtensionCatalogService::classifyParserObjectRoute(
+    std::string_view encoding, std::string_view type_name, Span<const uint8_t> schema) const {
+  const std::scoped_lock routing_lock(routing_mutex_);
+  const std::shared_lock catalog_lock(catalog_mutex_);
+  return routing_.classifyParserObjectRoute(encoding, type_name, schema);
 }
 
 const std::vector<LoadedDataSource>& ExtensionCatalogService::dataSources() const {

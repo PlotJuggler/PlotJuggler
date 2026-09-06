@@ -5,14 +5,20 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "pj_base/diagnostic_sink.hpp"
 #include "pj_plugins/host/message_parser_library.hpp"
+#include "pj_runtime/ParserRoutingService.h"
 #include "pj_runtime/PluginRuntimeCatalog.h"
 
 namespace PJ {
@@ -94,8 +100,9 @@ class ExtensionCatalogService : public QObject {
   // Direct access to the loaded plugin catalog (reference valid for the
   // service's lifetime). Tests use it to register in-process plugins without
   // standing up DSO scanning. Do NOT register plugins through it after
-  // streaming has started: unlike reload(), a raw registration takes no
-  // catalog lock, and poll threads walk the parser set concurrently —
+  // construction: unlike reload(), a raw registration takes no catalog lock,
+  // does not rebuild the parser-claims snapshot (route selection will not see
+  // the plugin), and poll threads walk the parser set concurrently —
   // application-composed static plugins belong in the constructor set.
   PluginRuntimeCatalog& pluginCatalog() {
     return *plugin_catalog_;
@@ -131,22 +138,40 @@ class ExtensionCatalogService : public QObject {
   // catalog vector, valid only until the next reload(). GUI-THREAD ONLY — a
   // concurrent reload() (which reallocates the vector) would dangle it. Off-GUI
   // callers (a streaming source's poll thread) must use
-  // createParserHandleForEncoding()/parserEncodings() instead, which resolve
-  // under the catalog lock and never leak a raw catalog pointer.
+  // resolveParserRoutes()/parserEncodings() instead, which resolve under the
+  // catalog lock and never leak a raw catalog pointer.
   const LoadedMessageParser* findParserByEncoding(QStringView encoding) const;
-
-  // [thread-safe] Resolve a parser by encoding and create an instance of it,
-  // atomically under a shared catalog lock. The returned MessageParserHandle
-  // carries its own DSO keepalive, so it stays valid even if a later reload()
-  // drops the catalog entry. An invalid handle (`!valid()`) means no parser
-  // handles that encoding. This is the ONLY safe way for a non-GUI thread to
-  // obtain a parser while reload() may run on the GUI thread.
-  [[nodiscard]] MessageParserHandle createParserHandleForEncoding(QStringView encoding) const;
 
   // [thread-safe] The set of encodings the loaded parsers accept, returned by
   // value (a snapshot copy) so a caller never holds a reference into the
   // catalog vector across a reload(). Sorted, de-duplicated.
   [[nodiscard]] std::vector<std::string> parserEncodings() const;
+
+  // [thread-safe] Per-route parser selection for one topic.
+  //
+  // For encodings in the SDK claim registry this resolves the scalar and object
+  // routes independently through the host claim catalog: every loaded parser
+  // plugin holds the universal wildcard scalar claim for its registered
+  // encodings; exact per-type claims are discovered lazily on first sight of a
+  // (provider, encoding, type, schema, config) via pj.parser_route_claims.v1 (or legacy
+  // classify_schema when the extension is absent — object route only).
+  // Candidates are probed in policy order (exact > wildcard, then provenance
+  // tier, then priority) with the topic's parser config. Encodings outside the
+  // registry select the first provider registered for the encoding for both
+  // routes (`route_dispatch == false`). Either way each winner is an instance
+  // no other binding shares, with bindSchema + loadConfig already applied.
+  //
+  // Runs on the poll/stream thread; probe decisions and opaque classification
+  // records are cached across topics and invalidated on catalog rebuild.
+  [[nodiscard]] ParserRouteSelection resolveParserRoutes(
+      std::string_view encoding, std::string_view type_name, Span<const uint8_t> schema,
+      std::string_view parser_config_json) const;
+
+  // [thread-safe] Advertise-time object classification: the object route's
+  // claimed type, or nullopt when no provider claims it. Never instantiates a
+  // winner for registry encodings.
+  [[nodiscard]] std::optional<sdk::BuiltinObjectType> classifyParserObjectRoute(
+      std::string_view encoding, std::string_view type_name, Span<const uint8_t> schema) const;
 
   // Builds a QFileDialog-compatible filter string from all file-import sources.
   QString buildFileFilter() const;
@@ -219,6 +244,27 @@ class ExtensionCatalogService : public QObject {
   // plugin-load errors.
   [[nodiscard]] std::vector<PluginDirEntry> buildScanHierarchy(bool extensions_dir_is_explicit) const;
 
+  // Rebuilds the parser claim catalog from the loaded plugin set: one wildcard
+  // scalar claim per parser plugin per registered encoding (plugins whose
+  // encodings are all outside the SDK registry get no claims and stay on the
+  // legacy selection path). Advances the provider generation and clears every
+  // cached probe decision and discovery memo. Called after the initial scan and
+  // inside the exclusive section of every reload() that changed the plugin
+  // set, so no resolution can run against a catalog the claims do not describe.
+  // Caller holds routing_mutex_ and catalog_mutex_ (exclusive).
+  void rebuildParserClaims();
+
+  // Host-derived trust tier for one loaded parser (spec §4): statically linked
+  // or seeded-bundled → kBundled; loaded from a user-explicit (authoritative)
+  // folder → kFolderDrop; otherwise the managed marketplace dir → kMarketplace.
+  [[nodiscard]] ParserClaimProvenance provenanceForParser(const LoadedMessageParser& parser) const;
+
+  // Resolve a parser plugin by manifest id and create an instance. Invalid
+  // handle when the id is not loaded. Caller holds catalog_mutex_: this is the
+  // routing service's create-handle callback and runs inside a resolution that
+  // already holds the shared lock.
+  [[nodiscard]] MessageParserHandle createParserHandleForProviderId(std::string_view provider_id) const;
+
   // Syncs the bundled (share) plugins into the default marketplace dir — the
   // only path by which bundled plugins become loadable. Runs in EVERY mode
   // (--plugin-dir sessions included; the override dir is never a seed source or
@@ -263,6 +309,30 @@ class ExtensionCatalogService : public QObject {
   // readers (findParserByEncoding, dataSources, buildFileFilter, …) do not
   // lock — they cannot race reload(), which is also GUI-thread-only.
   mutable std::shared_mutex catalog_mutex_;
+
+  // ----- SDK 0.22 route-aware parser selection -----
+  struct BundledPluginInfo {
+    std::string version;
+    std::filesystem::path dso_path;
+  };
+  // Id → shipped version and DSO path from the bundled (share) dir, captured
+  // by seedBundledPlugins() before the first scan. Provenance input: only a
+  // loaded artifact whose id, version, and DSO signature match the shipped copy earns the
+  // bundled tier — an id alone is artifact-controlled and would let any
+  // manifest forge the highest trust tier. (Authenticated install receipts are
+  // the full answer and arrive with the marketplace-receipts follow-up.)
+  std::unordered_map<std::string, BundledPluginInfo> bundled_plugin_versions_;
+
+  // Serializes every use of routing_ (externally synchronized). Lock order is
+  // routing_mutex_ -> catalog_mutex_: resolve/classify take routing_mutex_ then
+  // catalog_mutex_ shared for the whole call; reload() takes routing_mutex_
+  // before its exclusive catalog section and rebuilds the claims inside it. The
+  // routing mutex is outermost so queued route resolutions never hold the
+  // catalog shared lock while a GUI reload waits for the exclusive one (pthread
+  // rwlocks let new readers overtake a waiting writer). std::mutex gives no
+  // FIFO guarantee, so this bounds the readers, not the wait itself.
+  mutable std::mutex routing_mutex_;
+  ParserRoutingService routing_;
 };
 
 }  // namespace PJ

@@ -26,6 +26,7 @@ add_library(pj_runtime STATIC
     src/HttpGet.cpp
     src/PluginRuntimeCatalog.cpp
     src/PlaybackEngine.cpp
+    src/ParserRoutingService.cpp
     src/QSettingsBackend.cpp
     src/Recorder.cpp
     src/RecordingService.cpp
@@ -51,6 +52,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/MarkersRuntimeHost.h
     include/pj_runtime/ObjectIngestTap.h
     include/pj_runtime/PlaybackEngine.h
+    include/pj_runtime/ParserRoutingService.h
     include/pj_runtime/QSettingsBackend.h
     include/pj_runtime/RecordTap.h
     include/pj_runtime/Recorder.h
@@ -571,6 +573,19 @@ if(PJ_BUILD_TESTS)
         GTest::gtest_main
     )
     add_test(NAME DataSourceRuntimeHostAdvertiseTest COMMAND data_source_runtime_host_advertise_test)
+
+    # Route-aware parser selection (SDK 0.22): claim admission, lazy exact-claim
+    # discovery, per-route winners, divergent-winner bindings, and the legacy
+    # fallback for encodings outside the SDK claim registry.
+    add_executable(extension_catalog_parser_routes_test
+        tests/extension_catalog_parser_routes_test.cpp
+    )
+    target_compile_options(extension_catalog_parser_routes_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(extension_catalog_parser_routes_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_test(NAME ExtensionCatalogParserRoutesTest COMMAND extension_catalog_parser_routes_test)
 
     add_executable(extension_catalog_service_thread_safety_test
         tests/extension_catalog_service_thread_safety_test.cpp

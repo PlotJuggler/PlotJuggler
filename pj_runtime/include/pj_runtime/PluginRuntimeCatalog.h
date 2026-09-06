@@ -47,6 +47,10 @@ struct RuntimeMessageParserPlugin {
   std::string id;
   std::string version;
   std::vector<std::string> encodings;
+  // Load-time provenance inputs. They are recorded by the catalog tier that
+  // selected the plugin rather than re-derived from artifact path strings.
+  bool from_authoritative_dir = false;
+  bool statically_registered = false;
   std::filesystem::file_time_type loaded_mtime;
 };
 
@@ -208,6 +212,9 @@ class PluginRuntimeCatalog {
   // Finds a MessageParser by encoding name.
   [[nodiscard]] const RuntimeMessageParserPlugin* findParserByEncoding(std::string_view encoding) const;
 
+  // Finds a MessageParser by manifest provider id.
+  [[nodiscard]] const RuntimeMessageParserPlugin* findParserById(std::string_view id) const;
+
   // Builds a QFileDialog-compatible filter string.
   [[nodiscard]] std::string buildFileFilter() const;
 
@@ -260,6 +267,10 @@ class PluginRuntimeCatalog {
   std::string diagnostic_source_;
   std::string host_version_;                      ///< host version for compatibility ties; "" disables the check
   std::unordered_set<std::string> disabled_ids_;  ///< winners with these ids are not loaded
+  // Canonical paths of authoritative winners from the most recent scan. The
+  // collector records the tier while it still has the PluginDirEntry context;
+  // family loaders consume it when constructing Runtime* metadata.
+  mutable std::unordered_set<std::string> authoritative_plugin_paths_;
   std::vector<RuntimeDataSourcePlugin> data_sources_;
   std::vector<RuntimeMessageParserPlugin> message_parsers_;
   std::vector<RuntimeToolboxPlugin> toolbox_plugins_;
