@@ -4838,6 +4838,9 @@ void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity
   // Set when the user chose "Reload original": the data loads (possibly async on
   // a worker), so the layout apply below must wait for the load queue to drain.
   bool reload_requested = false;
+  // One line per data source this load could NOT bring back ("path: why").
+  // Shown in the no-data dialog below, so the reason never hides in the bell.
+  QStringList source_failures;
   if (binding != "generic"_L1 && !replays.empty()) {
     // Fork the classification ONCE: materialize-bearing sources are
     // batch-owned (§6.2 — the batch rewrites `doc` and classifies them
@@ -4856,6 +4859,11 @@ void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity
     if (plain_refs.size() != replays.size()) {
       batch = makeLayoutImportBatch(interactive);
       batch->prepare(doc, replays);
+      for (const LayoutImportBatch::SourceResult& result : batch->result().sources) {
+        if (result.outcome == LayoutImportBatch::SourceOutcome::kFailed) {
+          source_failures.push_back(u"%1: %2"_s.arg(result.effective_path, result.message));
+        }
+      }
     }
 #else
     const QList<layout_xml::DataSourceRef>& plain_refs = replays;
@@ -4882,6 +4890,7 @@ void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity
             DiagnosticLevel::kWarning, "Layout", "data-source-missing",
             tr("Layout's data source '%1' does not exist on disk; applying to current data.")
                 .arg(replay.resolved_path));
+        source_failures.push_back(u"%1: %2"_s.arg(replay.resolved_path, tr("does not exist on disk")));
         continue;
       }
       pending.push_back(replay);
@@ -4989,6 +4998,15 @@ void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity
   // loads keep kPrompt unchanged.
   if (restoreHasPendingAsyncWork(reload_requested)) {
     beginProgressiveLayoutRestore(doc, path, restore_policy);
+    return;
+  }
+  if (!source_failures.empty() && session_->catalogModel().datasets().empty()) {
+    // Nothing to apply to AND we know why: the dialog names every source.
+    reportLayoutRestoreIssue(
+        restore_policy, "layout-apply-no-data",
+        tr("No data is loaded, and the layout's data sources could not be restored:\n\n%1")
+            .arg(source_failures.join(u"\n\n"_s)));
+    emit layoutRestoreSettled(false);
     return;
   }
   applyRestoredLayout(doc, path, restore_policy);
@@ -6139,7 +6157,7 @@ bool MainWindow::finalizeUnresolvedRestoreState(MissingCurvePolicy policy) {
                 .arg(shown.join(u", "_s)));
         retain_unresolved_intents = true;
       } else {
-        switch (promptMissingCurves(shown)) {
+        switch (promptMissingCurves(shown, layoutImportFailureLines())) {
           case MissingCurveChoice::kRemove:
             // Remaining curves were never bound (nothing to strip from live
             // widgets); blocking scene pends are dropped so they cannot poison
@@ -7924,7 +7942,20 @@ void MainWindow::restoreChromeState(const QDomElement& element) {
   }
 }
 
-MainWindow::MissingCurveChoice MainWindow::promptMissingCurves(const QStringList& names) {
+QStringList MainWindow::layoutImportFailureLines() const {
+  QStringList lines;
+  if (layout_import_batch_ != nullptr) {
+    for (const LayoutImportBatch::SourceResult& result : layout_import_batch_->result().sources) {
+      if (result.outcome == LayoutImportBatch::SourceOutcome::kFailed) {
+        lines.push_back(u"%1: %2"_s.arg(result.effective_path, result.message));
+      }
+    }
+  }
+  return lines;
+}
+
+MainWindow::MissingCurveChoice MainWindow::promptMissingCurves(
+    const QStringList& names, const QStringList& import_failures) {
   static constexpr int kMaxShown = 10;
   const int name_count = static_cast<int>(names.size());
   QString body = tr("The layout references %n curve(s) not present in the current data:", "", name_count);
@@ -7935,6 +7966,14 @@ MainWindow::MissingCurveChoice MainWindow::promptMissingCurves(const QStringList
   }
   if (name_count > kMaxShown) {
     body += tr("  … and %n more\n", "", name_count - kMaxShown);
+  }
+  if (!import_failures.isEmpty()) {
+    body += u"\n"_s;
+    body += tr("The layout's data sources could not be restored:");
+    body += u"\n\n"_s;
+    for (const QString& line : import_failures) {
+      body += u"  "_s + line + u"\n"_s;
+    }
   }
   body += u"\n"_s;
   body += tr("Choose how to handle them:");

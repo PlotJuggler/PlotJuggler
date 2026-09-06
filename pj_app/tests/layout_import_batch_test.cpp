@@ -909,6 +909,30 @@ TEST_F(LayoutImportBatchTest, MaterializedTrueWithMissingFileFailsAsProviderBug)
   EXPECT_TRUE(g_log.snapshot().empty()) << "no import job may start on an inconsistent cache verdict";
 }
 
+// A thin (M3) provider answers the query with no local path: the host owns
+// materialization, so the source is a MISS whose effective path is the host
+// cache slot for its identity — never a "no local path" fallback to the
+// (deleted) saved path.
+TEST_F(LayoutImportBatchTest, ThinProviderWithoutLocalPathIsAMissAtTheHostCacheSlot) {
+  const QString provider = QString::fromUtf8(kProviderId);
+  const QString descriptor = makeDescriptor(u"thin"_s, u"trusted"_s, /*path=*/QString{});
+  const QString slot_path = QString::fromStdU16String(
+      cache_store_->pathFor(PJ::sourceCacheIdentity(provider.toStdString(), descriptor.toStdString())).u16string());
+  ASSERT_FALSE(slot_path.isEmpty());
+
+  QDomDocument doc = makeLayoutDoc({SourceSpec{u"/saved/deleted-cache.mcap"_s, descriptor, provider}});
+  PJ::LayoutImportBatch& batch = prepareBatch(doc, /*interactive=*/false);
+  EXPECT_EQ(diagnosticCount("layout-import-query-failed"), 0);
+  EXPECT_EQ(batch.pendingSourceLines(), (QStringList{slot_path}));
+  EXPECT_EQ(fileInfoFilenames(doc), (QStringList{slot_path}));
+
+  ASSERT_TRUE(runToFinish(batch));
+  EXPECT_EQ(g_log.snapshot(), (std::vector<std::string>{"thin"}));
+  ASSERT_EQ(batch.result().sources.size(), 1);
+  EXPECT_EQ(batch.result().sources[0].outcome, Outcome::kResolvedImported)
+      << batch.result().sources[0].message.toStdString();
+}
+
 TEST_F(LayoutImportBatchTest, PathMatchWithMismatchedSourceRecordIsNotAlreadyLoaded) {
   // The cache slot was reused: a live dataset AT the effective path whose
   // SourceRecord names DIFFERENT provenance must not classify already-loaded.

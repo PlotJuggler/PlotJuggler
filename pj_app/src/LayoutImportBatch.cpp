@@ -125,7 +125,7 @@ bool LayoutImportBatch::pathAlreadyLoaded(const QString& effective_key) const {
          });
 }
 
-void LayoutImportBatch::classifyFallback(std::size_t index) {
+void LayoutImportBatch::classifyFallback(std::size_t index, const QString& reason) {
   // §6.4 stock degrade: no provider answer, so the SAVED path is the only
   // hint. If it exists the stock load proceeds (the strongest degraded
   // mode); a missing file is today's data-source-missing outcome.
@@ -141,11 +141,11 @@ void LayoutImportBatch::classifyFallback(std::size_t index) {
     planned.plan = Plan::kHit;
     return;
   }
-  setResult(index, SourceOutcome::kFailed, tr("data source does not exist on disk"));
+  setResult(index, SourceOutcome::kFailed, tr("%1; the data source does not exist on disk").arg(reason));
   emitDiagnostic(
       DiagnosticLevel::kWarning, "layout-import-source-missing",
-      tr("Layout's data source '%1' does not exist on disk and no provider could re-obtain it.")
-          .arg(planned.effective_path));
+      tr("Layout's data source '%1' does not exist on disk and no provider could re-obtain it (%2).")
+          .arg(planned.effective_path, reason));
 }
 
 void LayoutImportBatch::failOrConfirm(
@@ -195,7 +195,7 @@ void LayoutImportBatch::planSource(
         DiagnosticLevel::kWarning, "layout-import-descriptor-invalid",
         tr("Layout source '%1' carries an invalid <materialize> record; falling back to the saved path.")
             .arg(ref.resolved_path));
-    classifyFallback(index);
+    classifyFallback(index, tr("invalid <materialize> record"));
     return;
   }
 
@@ -271,17 +271,18 @@ void LayoutImportBatch::planViaProvider(
   // Step 2: the provider query (strictly bounded, main-thread).
   HeadlessDescriptorProviderSession* session = sessionFor(ref.materialize_provider);
   if (session == nullptr) {
+    const QString reason = tr("provider '%1' is unavailable: %2")
+                               .arg(ref.materialize_provider, failed_providers_.value(ref.materialize_provider));
     emitDiagnostic(
         DiagnosticLevel::kWarning, "layout-import-provider-unavailable",
-        tr("Provider '%1' for layout source '%2' is unavailable (%3); falling back to the saved path.")
-            .arg(ref.materialize_provider, ref.resolved_path, failed_providers_.value(ref.materialize_provider)));
-    classifyFallback(index);
+        tr("Layout source '%1': %2; falling back to the saved path.").arg(ref.resolved_path, reason));
+    classifyFallback(index, reason);
     return;
   }
   const auto query = session->queryDescriptor(
       std::string_view(planned.descriptor_utf8.constData(), static_cast<std::size_t>(planned.descriptor_utf8.size())));
   // A successful answer without a source identity is malformed (§6.3:
-  // identity and local path are ALWAYS returned) — provenance keys the
+  // identity is ALWAYS returned) — provenance keys the
   // rewrite and the record matching, so the source cannot be classified
   // safely. Fail closed, never degrade.
   if (query.has_value() && query->source_identity.empty()) {
@@ -292,20 +293,35 @@ void LayoutImportBatch::planViaProvider(
             .arg(ref.materialize_provider, ref.resolved_path));
     return;
   }
-  if (!query.has_value() || query->local_path_utf8.empty()) {
+  QString effective_path = query.has_value() ? QString::fromStdString(query->local_path_utf8) : QString{};
+#ifndef __EMSCRIPTEN__
+  if (effective_path.isEmpty() && query.has_value() && capture_service_ != nullptr) {
+    // A thin (M3) provider names no path: the HOST owns materialization, so
+    // the import lands in the host cache slot for this identity.
+    effective_path = QString::fromStdU16String(
+        capture_service_->store()
+            .pathFor(sourceCacheIdentity(
+                ref.materialize_provider.toStdString(),
+                std::string_view(
+                    planned.descriptor_utf8.constData(), static_cast<std::size_t>(planned.descriptor_utf8.size()))))
+            .u16string());
+  }
+#endif
+  if (effective_path.isEmpty()) {
+    const QString reason = tr("provider '%1' could not resolve it: %2")
+                               .arg(
+                                   ref.materialize_provider,
+                                   query.has_value() ? tr("no local path") : QString::fromStdString(query.error()));
     emitDiagnostic(
         DiagnosticLevel::kWarning, "layout-import-query-failed",
-        tr("Provider '%1' could not resolve layout source '%2' (%3); falling back to the saved path.")
-            .arg(
-                ref.materialize_provider, ref.resolved_path,
-                query.has_value() ? tr("no local path") : QString::fromStdString(query.error())));
-    classifyFallback(index);
+        tr("Layout source '%1': %2; falling back to the saved path.").arg(ref.resolved_path, reason));
+    classifyFallback(index, reason);
     return;
   }
 
   // Step 3: the effective local path (hit: cached; miss: the path
   // materialize will produce).
-  planned.effective_path = QString::fromStdString(query->local_path_utf8);
+  planned.effective_path = effective_path;
   planned.estimated_bytes = query->estimated_bytes;
 
   // Steps 4+5: record the document rewrites — the document must describe the

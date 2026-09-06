@@ -903,7 +903,13 @@ class MainWindow : public QMainWindow {
 
   // Modal prompt mirroring PJ3's missing-curve dialog. `names` is shown to
   // the user (truncated past ~10 entries). Returns the user's pick.
-  [[nodiscard]] MissingCurveChoice promptMissingCurves(const QStringList& names);
+  // `import_failures`: one "path: why" line per layout data source the
+  // import could not bring back — shown so the user learns WHY the curves
+  // are missing, not just that they are.
+  [[nodiscard]] MissingCurveChoice promptMissingCurves(
+      const QStringList& names, const QStringList& import_failures = {});
+  // The active batch's failed sources as "path: why" lines (empty without a batch).
+  [[nodiscard]] QStringList layoutImportFailureLines() const;
 
   // Builds <previouslyLoaded_Datafiles> from SessionManager's record, using
   // a path relative to `layout_dir` when the source lives at or beneath it,

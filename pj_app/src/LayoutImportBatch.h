@@ -301,7 +301,9 @@ class LayoutImportBatch : public QObject {
   void failOrConfirm(
       std::size_t index, const char* id, const QString& result_message, const QString& diagnostic_message);
   // §6.4: classify planned_[index] against its SAVED path for the stock loader.
-  void classifyFallback(std::size_t index);
+  // `reason` = why the provider path was abandoned; it survives into the
+  // failure result so a caller's dialog can show the whole story.
+  void classifyFallback(std::size_t index, const QString& reason);
   // The comparable identity of one source path: literal for opaque browser
   // uploads, canonical filesystem identity otherwise (empty = unresolvable,
   // never a valid key) — isSamePath semantics folded into one
