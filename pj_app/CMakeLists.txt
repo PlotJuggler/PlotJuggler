@@ -432,6 +432,8 @@ if(PJ_BUILD_TESTS)
         tests/main_window_layout_import_alive_test.cpp)
     add_pj_app_gui_test(main_window_layout_import_policy_test MainWindowLayoutImportPolicyTest
         tests/main_window_layout_import_policy_test.cpp)
+    add_pj_app_gui_test(main_window_layout_apply_reason_test MainWindowLayoutApplyReasonTest
+        tests/main_window_layout_apply_reason_test.cpp)
     add_pj_app_gui_test(main_window_layout_import_cancel_test MainWindowLayoutImportCancelTest
         tests/main_window_layout_import_cancel_test.cpp)
     #   lifecycle — Codex r1 F2/F3/F4/F6: explicit progressive policy on a

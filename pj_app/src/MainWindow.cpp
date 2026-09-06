@@ -744,13 +744,19 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // still catches the startup scan that already ran in the AppSession ctor.
   connect(
       diagnostic_bridge_, &QtDiagnosticBridge::diagnosticReported, this,
-      [this](int level, const QString& source, const QString&, const QString&) {
+      [this](int level, const QString& source, const QString& id, const QString&) {
         if (plugin_failure_toast_shown_ || level != static_cast<int>(DiagnosticLevel::kError) ||
             source != "ExtensionCatalogService"_L1) {
           return;
         }
         plugin_failure_toast_shown_ = true;
-        showToast(tr("Some of the plugins failed to load."), QPixmap(u":/resources/crying_cat.png"_s));
+        // The id is the plugin's manifest id; the full loader error is too
+        // long for a toast and stays in the notifications.
+        showToast(
+            (id.isEmpty() ? tr("A plugin failed to load.")
+                          : tr("Plugin '%1' failed to load.").arg(id.toHtmlEscaped())) +
+                u"<br>"_s + tr("Details are in the notifications."),
+            QPixmap(u":/resources/crying_cat.png"_s));
       });
 
   ui_->tabbedPlotWidget->setDataServices(&session_->sessionManager(), &session_->catalogModel());
@@ -1386,6 +1392,17 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         engine.setCurrentTime(engine.rangeMax());
         engine.play();
         refresh_streaming_seek_lock();
+      });
+  // A failed Start (or a stream dying mid-run) is a user-visible event: the
+  // dialog carries the plugin's own reason; the bell keeps the record.
+  connect(streaming_manager_.get(), &StreamingSourceManager::setupError, this, [this](const QString& message) {
+    emitDiagnostic(DiagnosticLevel::kError, "Streaming", "stream-setup-failed", message);
+    MessageBox::warning(this, tr("Start Streaming"), tr("The stream could not be started:\n\n%1").arg(message));
+  });
+  connect(
+      streaming_manager_.get(), &StreamingSourceManager::streamError, this, [this](DatasetId, const QString& message) {
+        emitDiagnostic(DiagnosticLevel::kError, "Streaming", "stream-failed", message);
+        MessageBox::warning(this, tr("Streaming"), tr("The stream failed:\n\n%1").arg(message));
       });
   connect(
       streaming_manager_.get(), &StreamingSourceManager::streamStopped, this,
@@ -4052,6 +4069,9 @@ DiagnosticSink MainWindow::diagnosticSink() const {
 }
 
 void MainWindow::emitDiagnostic(DiagnosticLevel level, const char* source, const char* id, const QString& message) {
+  if (layout_issue_capture_ != nullptr && source != nullptr && qstrcmp(source, "Layout") == 0) {
+    layout_issue_capture_->push_back(message);
+  }
   Diagnostic d;
   d.level = level;
   d.source = (source != nullptr) ? source : "";
@@ -5809,7 +5829,11 @@ void MainWindow::applyRestoredLayout(QDomDocument doc, const QString& path, Miss
   // path shared with undo/redo (kPrompt: a curve no loaded dataset can provide raises the
   // missing-curve prompt). Filters are recreated BEFORE the curve rebind so each derived
   // output topic is in the catalog. Panel/chrome restores below stay layout-only.
-  switch (restoreWorkspaceState(doc, policy)) {
+  QStringList issues;
+  layout_issue_capture_ = &issues;
+  const RestoreResult restore_result = restoreWorkspaceState(doc, policy);
+  layout_issue_capture_ = nullptr;
+  switch (restore_result) {
     case RestoreResult::kCancelled:
       emit layoutRestoreSettled(false);
       return;  // user aborted at the missing-curve prompt
@@ -5822,7 +5846,8 @@ void MainWindow::applyRestoredLayout(QDomDocument doc, const QString& path, Miss
       // we can offer.
       reportLayoutRestoreIssue(
           policy, "layout-apply-failed",
-          tr("Layout was parsed but could not be applied. If a data source was reloaded, it is still loaded."));
+          tr("Layout was parsed but could not be applied. If a data source was reloaded, it is still loaded.") +
+              (issues.isEmpty() ? QString{} : u"\n\n"_s + issues.join(u"\n\n"_s)));
       emit layoutRestoreSettled(false);
       return;
     case RestoreResult::kApplied:
@@ -7256,6 +7281,13 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
   // 2. Rebind every curve's stable topic+field to a concrete catalog key.
   const QList<layout_xml::SeriesPath> unresolved = rebindCurvesToLoadedDatasets(doc);
   if (policy == MissingCurvePolicy::kExact && !unresolved.isEmpty()) {
+    QStringList names;
+    for (const layout_xml::SeriesPath& sp : unresolved) {
+      names.push_back(sp.display());
+    }
+    emitDiagnostic(
+        DiagnosticLevel::kWarning, "Layout", "layout-curves-unbound",
+        tr("%n curve(s) have no matching data: %1", nullptr, static_cast<int>(names.size())).arg(names.join(u", "_s)));
     return RestoreResult::kFailed;
   }
   if (policy == MissingCurvePolicy::kPrompt && !unresolved.isEmpty()) {
@@ -7297,6 +7329,9 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
   // Plot reconstruction, the timeline, and scene docks are independent restore
   // participants of this bool-and-rollback transaction.
   if (timeline_state != nullptr && (timeline_plan == nullptr || !applyTimelineState(*timeline_state, *timeline_plan))) {
+    emitDiagnostic(
+        DiagnosticLevel::kWarning, "Layout", "layout-timeline-failed",
+        tr("The saved per-source time offsets could not be applied."));
     return RestoreResult::kFailed;
   }
   rebuildPendingDisplayBindings(doc);
@@ -7307,6 +7342,10 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
   // failed transaction rather than silently committing a partial scene.
   const SceneRestoreVerdict scenes = settleSceneRestores();
   if (scenes.failed || (policy == MissingCurvePolicy::kExact && !scenes.blocking_topics.isEmpty())) {
+    emitDiagnostic(
+        DiagnosticLevel::kWarning, "Layout", "layout-scene-failed",
+        scenes.failed ? tr("A 2D/3D scene could not restore its layers (the element is named in the log).")
+                      : tr("Scene layers have no matching data: %1").arg(scenes.blocking_topics.join(u", "_s)));
     return RestoreResult::kFailed;
   }
   if (policy == MissingCurvePolicy::kPrompt && !scenes.blocking_topics.isEmpty()) {
@@ -8036,7 +8075,8 @@ QDomDocument MainWindow::xmlSaveState() const {
 bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
   const QDomElement root = state_document.documentElement();
   if (root.isNull() || root.tagName() != "root"_L1) {
-    qCWarning(lcMain) << "No <root> element found at the top-level of the XML document";
+    emitDiagnostic(
+        DiagnosticLevel::kWarning, "Layout", "layout-xml-invalid", tr("No <root> element at the top of the layout."));
     return false;
   }
 
@@ -8052,12 +8092,16 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
     }
   }
   if (main_tabbed_widget.isNull()) {
-    qCWarning(lcMain) << "No <tabbed_widget> element found in XML document";
+    emitDiagnostic(
+        DiagnosticLevel::kWarning, "Layout", "layout-xml-invalid", tr("No <tabbed_widget> element in the layout."));
     return false;
   }
 
   const bool loaded = ui_->tabbedPlotWidget->xmlLoadState(main_tabbed_widget);
   if (!loaded) {
+    emitDiagnostic(
+        DiagnosticLevel::kWarning, "Layout", "layout-plots-invalid",
+        tr("The plot tabs could not be reconstructed from the layout."));
     return false;
   }
   wireExistingPlots();
@@ -9087,6 +9131,7 @@ void MainWindow::launchToolbox(
       diagnostic_history_->record(DiagnosticLevel::kError, source, u"toolbox"_s, detail);
     }
     qWarning("MainWindow::launchToolbox: %s", qPrintable(detail));
+    MessageBox::warning(this, tr("Toolbox"), detail);  // a click that did nothing needs an answer on screen
   };
 
   // 0. One live instance per toolbox id: launching an already-pinned toolbox

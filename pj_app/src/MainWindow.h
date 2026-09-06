@@ -1286,6 +1286,9 @@ class MainWindow : public QMainWindow {
   // live ingest tracks the live edge until the user pauses.
   bool streaming_playback_seeded_ = false;
   bool plugin_failure_toast_shown_ = false;
+  // While non-null, every "Layout" diagnostic is also appended here, so a
+  // failed restore can tell the user WHY instead of pointing at the bell.
+  QStringList* layout_issue_capture_ = nullptr;
   std::unique_ptr<Theme> theme_;
   TitleBar* title_bar_ = nullptr;
   // Non-modal load progress strip parked in the title bar's center region (owned
