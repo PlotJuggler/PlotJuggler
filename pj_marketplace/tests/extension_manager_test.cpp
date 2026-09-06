@@ -1876,22 +1876,32 @@ TEST_F(ExtensionManagerTest, ApplyPendingInstallsRejectsEmbeddedIdMismatch) {
 }
 
 TEST_F(ExtensionManagerTest, ApplyPendingInstallsKeepsExistingInstallWhenStagedUpdateFailsValidation) {
+  // Promotion backs the live install up into backupDir() with a directory rename,
+  // so ext/pending must share its filesystem (the fixture's /tmp dirs need not).
+  cleanBackups("mock-data-source");
+  QTemporaryDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
+  ASSERT_TRUE(local_ext_dir.isValid());
+  QTemporaryDir local_pending_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_pending_XXXXXX"));
+  ASSERT_TRUE(local_pending_dir.isValid());
+  DownloadManager local_dl;
+  ExtensionManager local_mgr(&local_dl, local_ext_dir.path(), local_pending_dir.path());
+
   server_.setBody(dummyPluginZip("mock-data-source"));
   const Extension ext = makeExtension("mock-data-source", "1.0.0", server_.url());
 
-  QSignalSpy spy_install(mgr_, &ExtensionManager::installFinished);
-  mgr_->install(ext);
+  QSignalSpy spy_install(&local_mgr, &ExtensionManager::installFinished);
+  local_mgr.install(ext);
   ASSERT_TRUE(waitForSignal(spy_install));
   ASSERT_TRUE(spy_install.first().at(1).toBool());
-  ASSERT_TRUE(QDir(ext_dir_.path() + "/mock-data-source").exists());
+  ASSERT_TRUE(QDir(local_ext_dir.path() + "/mock-data-source").exists());
 
-  const QString staged_dir = pending_dir_.path() + "/mock-data-source";
+  const QString staged_dir = local_pending_dir.path() + "/mock-data-source";
   ASSERT_TRUE(copyFixturePlugin(staged_dir, "mock-file-source"));
   ASSERT_TRUE(writePendingIntentForTest(staged_dir, "mock-data-source"));
 
   spy_install.clear();
-  QSignalSpy spy_error(mgr_, &ExtensionManager::installError);
-  mgr_->applyPendingInstalls();
+  QSignalSpy spy_error(&local_mgr, &ExtensionManager::installError);
+  local_mgr.applyPendingInstalls();
 
   ASSERT_EQ(spy_install.count(), 1);
   EXPECT_FALSE(spy_install.first().at(1).toBool());
@@ -1899,10 +1909,11 @@ TEST_F(ExtensionManagerTest, ApplyPendingInstallsKeepsExistingInstallWhenStagedU
   // Production always pairs applyPendingInstalls() with a disk refresh (they run
   // back to back in ExtensionCatalogService's initComponents); the refresh is what
   // re-registers the previous install that the rejected update restored on disk.
-  mgr_->refreshInstalledFromDisk();
-  EXPECT_TRUE(mgr_->isInstalled("mock-data-source"));
-  EXPECT_TRUE(QDir(ext_dir_.path() + "/mock-data-source").exists());
+  local_mgr.refreshInstalledFromDisk();
+  EXPECT_TRUE(local_mgr.isInstalled("mock-data-source"));
+  EXPECT_TRUE(QDir(local_ext_dir.path() + "/mock-data-source").exists());
   EXPECT_FALSE(QDir(staged_dir).exists());
+  cleanBackups("mock-data-source");
 }
 
 TEST_F(ExtensionManagerTest, ApplyPendingInstallsRejectsBrokenDso) {

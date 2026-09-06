@@ -241,8 +241,11 @@ nothing, the `.deb` and integrated AppImages ship the entry themselves.
 Run the tests (`enable_testing()` is wired at the top level, so `ctest` covers every module):
 
 ```bash
-ctest --test-dir build --output-on-failure
+./test.sh            # ctest with QT_QPA_PLATFORM=offscreen; extra args go to ctest, e.g. -j8 -R Toast
 ```
+
+`test.sh` forces the `offscreen` platform because dozens of widget tests create
+a `QApplication` without one and would otherwise pop windows on the desktop.
 
 Re-running `./build.sh` after code changes does incremental builds. `ccache` is picked up automatically if installed.
 

@@ -56,6 +56,7 @@
     <file alias="memes/meme_34.jpg">memes/meme_34.jpg</file>
     <file alias="memes/meme_35.jpg">memes/meme_35.jpg</file>
     <file alias="memes/meme_36.jpg">memes/meme_36.jpg</file>
+    <file alias="memes/meme_37.jpg">memes/meme_37.jpg</file>
   </qresource>
   <qresource prefix="/filters">
     <!-- The 12 built-in data filters as one self-describing Luau resource (M3).
