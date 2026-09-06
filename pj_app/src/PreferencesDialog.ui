@@ -879,17 +879,40 @@
            </property>
           </widget>
          </item>
-         <item row="5" column="0" colspan="2">
+         <item row="5" column="0">
+          <widget class="QLabel" name="labelSourceCacheCapture">
+           <property name="toolTip">
+            <string>When on, each cloud download is also saved into the source cache so a saved layout can restore it offline. Applies immediately; turning it off never removes existing cached copies, and they keep restoring.</string>
+           </property>
+           <property name="text">
+            <string>Capture downloads for offline restore:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="5" column="1">
+          <widget class="PJ::ToggleSwitch" name="sourceCacheCaptureToggle" native="true">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+             <horstretch>0</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
+           <property name="toolTip">
+            <string>When on, each cloud download is also saved into the source cache so a saved layout can restore it offline. Applies immediately; turning it off never removes existing cached copies, and they keep restoring.</string>
+           </property>
+          </widget>
+         </item>
+         <item row="6" column="0" colspan="2">
           <widget class="QLabel" name="labelSourceCacheNote">
            <property name="text">
-            <string>The source cache keeps a local copy of each cloud download so a saved layout can restore it instantly and offline. It is disposable: entries are re-downloaded when missing. Changes to the folder and budget take effect the next time PlotJuggler starts.</string>
+            <string>The source cache keeps a local copy of each cloud download so a saved layout can restore it instantly and offline. It is disposable: entries are re-downloaded when missing. Changes to the folder and budget take effect the next time PlotJuggler starts; the capture toggle applies immediately.</string>
            </property>
            <property name="wordWrap">
             <bool>true</bool>
            </property>
           </widget>
          </item>
-         <item row="6" column="0" colspan="2">
+         <item row="7" column="0" colspan="2">
           <spacer name="recordingBottomSpacer">
            <property name="orientation">
             <enum>Qt::Orientation::Vertical</enum>

@@ -122,9 +122,13 @@ if(PJ_BUILD_TESTS)
         tests/source_cache_store_test.cpp
     )
     target_compile_options(source_cache_store_test PRIVATE ${PJ_WARNING_FLAGS})
+    # mcap::mcap: recording_test_utils.h (the IsolatedQtSettings sandbox the
+    # settings tests use) includes mcap/reader.hpp, which pj_runtime keeps
+    # PRIVATE.
     target_link_libraries(source_cache_store_test PRIVATE
         pj_runtime
         GTest::gtest_main
+        mcap::mcap
     )
     add_test(NAME SourceCacheStoreTest COMMAND source_cache_store_test)
 

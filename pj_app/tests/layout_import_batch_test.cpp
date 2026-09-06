@@ -25,6 +25,7 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -52,6 +53,9 @@ using namespace Qt::StringLiterals;
 
 #ifndef PJ_MOCK_FILE_SOURCE_PLUGIN_PATH
 #error "PJ_MOCK_FILE_SOURCE_PLUGIN_PATH must be defined"
+#endif
+#ifndef PJ_RUNTIME_HOST_OBJECT_PARSER_PATH
+#error "PJ_RUNTIME_HOST_OBJECT_PARSER_PATH must be defined"
 #endif
 
 namespace {
@@ -192,9 +196,15 @@ class LayoutImportBatchTest : public ::testing::Test {
     const QString plugin_src = QString::fromUtf8(PJ_MOCK_FILE_SOURCE_PLUGIN_PATH);
     const QString plugin_dst = extensions_dir_.filePath(QFileInfo(plugin_src).fileName());
     ASSERT_TRUE(QFile::copy(plugin_src, plugin_dst)) << "could not stage " << plugin_src.toStdString();
+    // The parser the capture-mode fake provider pushes through, so a wired
+    // capture records real bytes and publishes a real cache artifact.
+    const QString parser_src = QString::fromUtf8(PJ_RUNTIME_HOST_OBJECT_PARSER_PATH);
+    const QString parser_dst = extensions_dir_.filePath(QFileInfo(parser_src).fileName());
+    ASSERT_TRUE(QFile::copy(parser_src, parser_dst)) << "could not stage " << parser_src.toStdString();
 
     app_session_ = std::make_unique<PJ::AppSession>(extensions_dir_.path());
     ASSERT_FALSE(app_session_->extensionCatalog().findSourcesForExtension(u".mock"_s).empty());
+    ASSERT_NE(app_session_->extensionCatalog().findParserByEncoding(u"runtime_host_object"_s), nullptr);
     ASSERT_TRUE(app_session_->extensionCatalog().pluginCatalog().registerStaticToolbox(&kFakeVtable));
     PJ::StaticPluginSet static_plugins;
     static_plugins.data_sources.emplace_back(staticMcapVtable());
@@ -1165,6 +1175,128 @@ TEST_F(LayoutImportBatchTest, WireSourceCaptureRegistersPublishedDownloadForLayo
   EXPECT_TRUE(std::any_of(loaded.begin(), loaded.end(), [&artifact](const auto& src) {
     return PJ::layout_xml::isSamePath(src.path, artifact);
   }));
+}
+
+// T7 (acceptance rows 7/9): re-download REPAIRS the cache, then restores
+// offline. Run 1: the seeded artifact's stock load fails -> quarantine ->
+// provider fallback, whose capture-mode import publishes a REAL replacement
+// artifact through the wired capture pipeline (HeadlessDescriptorProviderSession
+// runs the same wireSourceCapture as MainWindow). Run 2: the same layout is
+// already loaded (record match) — no duplicate dataset. Run 3 (dataset
+// removed): the repaired artifact restores through the stock loader alone,
+// with no new provider job.
+TEST_F(LayoutImportBatchTest, QuarantinedHitIsRepublishedByTheProviderThenRestoresOffline) {
+  const QString provider = QString::fromUtf8(kProviderId);
+  // The script rides inside "request" so the descriptor keeps the host's
+  // attach envelope (kind/request/v only) and the capture can arm on it.
+  const QString descriptor = u"{\"kind\":\"capture-test\",\"request\":%1,\"v\":1}"_s.arg(
+      makeDescriptor(u"s1"_s, u"trusted"_s, data_dir_.filePath(u"unused.mock"_s), 0, u"capture"_s));
+  publishArtifact(provider, descriptor);
+  g_static_mcap_fail.store(true);  // run 1's hit load fails inside the plugin
+
+  // --- Run 1: hit fails -> quarantine -> capture-mode provider fallback. ---
+  {
+    QDomDocument doc = makeLayoutDoc({SourceSpec{u"/saved/cached.mcap"_s, descriptor, provider}});
+    PJ::LayoutImportBatch& batch = prepareBatch(doc, /*interactive=*/false);
+    ASSERT_TRUE(runToFinish(batch));
+    ASSERT_EQ(batch.result().sources.size(), 1);
+    EXPECT_EQ(batch.result().sources[0].outcome, Outcome::kResolvedImported)
+        << batch.result().sources[0].message.toStdString();
+    EXPECT_EQ(diagnosticCount("layout-import-cache-load-failed"), 1);
+    EXPECT_EQ(g_log.snapshot(), (std::vector<std::string>{"s1"}));
+  }
+  batch_.reset();
+
+  // The capture wiring republished a REAL artifact (same identity, so the
+  // same slot the quarantined seed occupied) and, on the GUI thread, attached
+  // the produced dataset's provenance + backing file. The manifest proves the
+  // bytes are the REPUBLISHED capture, not the seed: the capture-mode fake
+  // records "/s1", the seed declared "/imu".
+  QString repaired_path;
+  ASSERT_TRUE(pumpUntil([&]() {
+    std::string miss;
+    auto resolved = capture_service_->resolve(provider.toStdString(), descriptor.toStdString(), &miss);
+    if (resolved.has_value()) {
+      repaired_path = QString::fromStdU16String(resolved->artifact.path.u16string());
+      EXPECT_TRUE(resolved->manifest.requested_topic_messages.contains("/s1"));
+    }
+    return resolved.has_value();
+  })) << "the provider fallback must republish the request into the cache";
+  ASSERT_EQ(app_session_->catalogModel().datasets().size(), 1u);
+  const PJ::DatasetId imported = app_session_->catalogModel().datasets().front().first;
+  ASSERT_TRUE(
+      pj_app_test::pumpUntil([&]() { return app_session_->sessionManager().sourceRecord(imported) != nullptr; }));
+  const PJ::SourceRecord* record = app_session_->sessionManager().sourceRecord(imported);
+  ASSERT_NE(record, nullptr);
+  EXPECT_EQ(record->provider_id, provider);
+  EXPECT_EQ(record->descriptor_json, descriptor) << "provenance must be preserved byte-exact on the fallback dataset";
+  EXPECT_TRUE(PJ::layout_xml::isSamePath(app_session_->sessionManager().datasetSourcePath(imported), repaired_path))
+      << "the published artifact must become the dataset's saveable backing file";
+
+  // --- Run 2: same layout, dataset live -> already loaded, no duplicate. ---
+  {
+    QDomDocument doc = makeLayoutDoc({SourceSpec{u"/saved/cached.mcap"_s, descriptor, provider}});
+    PJ::LayoutImportBatch& batch = prepareBatch(doc, /*interactive=*/false);
+    EXPECT_EQ(batch.start(), StartResult::kNoAsyncWork);
+    ASSERT_EQ(batch.result().sources.size(), 1);
+    EXPECT_EQ(batch.result().sources[0].outcome, Outcome::kResolvedAlreadyLoaded);
+  }
+  batch_.reset();
+  EXPECT_EQ(app_session_->catalogModel().datasets().size(), 1u) << "a re-run must not duplicate the dataset";
+  EXPECT_EQ(g_log.snapshot(), (std::vector<std::string>{"s1"}));
+
+  // --- Run 3: dataset removed -> the repaired artifact restores OFFLINE. ---
+  app_session_->sessionManager().removeDataset(imported);
+  app_session_->catalogModel().rebuildFromDatastore();
+  g_static_mcap_fail.store(false);
+  {
+    QDomDocument doc = makeLayoutDoc({SourceSpec{u"/saved/cached.mcap"_s, descriptor, provider}});
+    PJ::LayoutImportBatch& batch = prepareBatch(doc, /*interactive=*/false);
+    EXPECT_EQ(fileInfoFilenames(doc), (QStringList{repaired_path}));
+    ASSERT_TRUE(runToFinish(batch));
+    ASSERT_EQ(batch.result().sources.size(), 1);
+    EXPECT_EQ(batch.result().sources[0].outcome, Outcome::kResolvedCacheHit)
+        << batch.result().sources[0].message.toStdString();
+  }
+  EXPECT_TRUE(sourceLoaded(repaired_path));
+  EXPECT_EQ(app_session_->catalogModel().datasets().size(), 1u);
+  EXPECT_EQ(g_log.snapshot(), (std::vector<std::string>{"s1"})) << "the offline restore must not start an import job";
+}
+
+// T11 (P2): a CONTENDED cache miss (another instance mid-publish for the same
+// identity) fails that ONE source with the user-actionable diagnostic and
+// never contacts the provider — no retry loop, no duplicate download. An
+// ordinary absent miss in the same batch keeps today's provider fallback.
+TEST_F(LayoutImportBatchTest, ContendedCacheMissFailsWithoutContactingTheProvider) {
+  const QString provider = QString::fromUtf8(kProviderId);
+  const QString contended_descriptor = uR"({"kind":"contended","request":{},"v":1})"_s;
+  publishArtifact(provider, contended_descriptor);
+  // A second store handle holds the identity's exclusive lock and has a fresh
+  // partial in flight, exactly as another process mid-publish would.
+  PJ::SourceCacheStore other(std::filesystem::path(cache_dir_.path().toStdU16String()));
+  auto contention =
+      other.beginPublish(PJ::sourceCacheIdentity(provider.toStdString(), contended_descriptor.toStdString()));
+  ASSERT_TRUE(contention.has_value());
+  std::ofstream(contention->partialPath(), std::ios::binary) << "in-flight bytes";
+
+  const QString absent_descriptor = makeDescriptor(u"s2"_s, u"trusted"_s, data_dir_.filePath(u"missing.mock"_s));
+  QDomDocument doc = makeLayoutDoc({
+      SourceSpec{u"/saved/contended.mcap"_s, contended_descriptor, provider},
+      SourceSpec{u"/saved/absent.mock"_s, absent_descriptor, provider},
+  });
+  PJ::LayoutImportBatch& batch = prepareBatch(doc, /*interactive=*/false);
+  ASSERT_TRUE(runToFinish(batch));
+  contention->abort();
+
+  ASSERT_EQ(batch.result().sources.size(), 2);
+  EXPECT_EQ(batch.result().sources[0].outcome, Outcome::kFailed);
+  EXPECT_TRUE(batch.result().sources[0].message.contains(u"another PlotJuggler instance"_s))
+      << batch.result().sources[0].message.toStdString();
+  EXPECT_GE(diagnosticCount("layout-import-cache-contended"), 1);
+  EXPECT_EQ(batch.result().sources[1].outcome, Outcome::kResolvedImported)
+      << "an absent miss must keep the provider fallback";
+  EXPECT_EQ(g_log.snapshot(), (std::vector<std::string>{"s2"}))
+      << "the contended source must never start an import job";
 }
 
 }  // namespace

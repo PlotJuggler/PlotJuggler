@@ -84,9 +84,15 @@ class SourceCacheStore {
   struct Settings {
     QString directory;   ///< empty = defaultRoot()
     int budget_gb = 10;  ///< decimal GB, clamped on load to 1..1000
+    /// Gates ARMING new captures only, and (unlike folder/budget) applies
+    /// immediately: the owner mirrors it into
+    /// SourceCaptureService::setCaptureEnabled on every Preferences apply.
+    /// Existing cache hits keep resolving while off.
+    bool capture_enabled = true;
   };
   /// QSettings keys: Preferences::source_cache_directory,
-  /// Preferences::source_cache_budget_gb (clamped on load).
+  /// Preferences::source_cache_budget_gb (clamped on load),
+  /// Preferences::source_cache_capture_enabled.
   [[nodiscard]] static Settings loadSettings();
   static void saveSettings(const Settings& settings);
   /// A store built from `settings` (empty directory = defaultRoot()).
@@ -97,13 +103,26 @@ class SourceCacheStore {
   /// Takes no position on existence.
   [[nodiscard]] std::filesystem::path pathFor(std::string_view identity) const;
 
+  /// Why a lookup missed. kContended = filesystem EVIDENCE of an active
+  /// publisher for this identity (a fresh partial file next to the artifact
+  /// slot), so the bytes may exist moments later — callers must not start a
+  /// duplicate download. kAbsent = everything else (no artifact, validator
+  /// rejection, a held lock WITHOUT a fresh partial, empty identity), where
+  /// a fresh download is the right fallback. The freshness window (about a
+  /// minute of partial mtime) is the accepted limitation: a crashed writer's
+  /// stale partial never becomes permanent false contention, at the cost of
+  /// a stalled-but-alive download classifying kAbsent.
+  enum class MissKind { kAbsent, kContended };
+
   /// Pin-then-validate: the pin is taken BEFORE the artifact is checked, so
   /// an evictor cannot remove the file between the check and the use. A
   /// contended identity (someone is publishing or quarantining it right now)
-  /// is a MISS with a retry hint in `miss_reason`, never an error and never
-  /// an unpinned hit. A validator rejection reports why and leaves the file
-  /// in place (the next publish renames over it).
-  [[nodiscard]] std::optional<Pinned> lookup(std::string_view identity, std::string* miss_reason = nullptr);
+  /// is a MISS with a retry hint in `miss_reason` — and MissKind::kContended
+  /// in `miss_kind` when a fresh partial evidences the publisher — never an
+  /// error and never an unpinned hit. A validator rejection reports why and
+  /// leaves the file in place (the next publish renames over it).
+  [[nodiscard]] std::optional<Pinned> lookup(
+      std::string_view identity, std::string* miss_reason = nullptr, MissKind* miss_kind = nullptr);
 
   /// Begin materializing `identity`: write the artifact to the transaction's
   /// partialPath(), CLOSE it, then hand the transaction to publish() with the

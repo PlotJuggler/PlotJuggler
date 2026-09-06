@@ -346,8 +346,11 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       }
     });
 
-    // No rejected handler: neither of these is applied live, so Cancel never
-    // reaches the QSettings write below.
+    // No rejected handler: none of the recording-page values is applied live
+    // from this dialog, so Cancel never reaches the QSettings writes below.
+    // ONE accepted handler for the whole page: the cache settings must be
+    // saved BEFORE recordingSettingsChanged fires, because MainWindow's
+    // handler re-reads them to apply the capture toggle immediately.
     connect(this, &QDialog::accepted, this, [this]() {
       RecordingService::Settings settings;
       // Trimmed, so a stray space cannot turn the empty "default folder" value
@@ -355,19 +358,28 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       settings.directory = ui_->lineEditRecordingDir->text().trimmed();
       settings.queue_budget_mib = ui_->scrubberRecordingQueueMiB->value();
       RecordingService::saveSettings(settings);
+#ifndef __EMSCRIPTEN__
+      SourceCacheStore::Settings cache_settings;
+      cache_settings.directory = ui_->lineEditSourceCacheDir->text().trimmed();
+      cache_settings.budget_gb = ui_->scrubberSourceCacheBudgetGB->value();
+      cache_settings.capture_enabled = ui_->sourceCacheCaptureToggle->isChecked();
+      SourceCacheStore::saveSettings(cache_settings);
+#endif
       emit recordingSettingsChanged();
     });
 
 #ifndef __EMSCRIPTEN__
     // Source-cache section of the same page (M3). Same defaults handling as
-    // the recordings folder; the note on the page says these apply at the
-    // next launch (armed captures hold the store they were opened against).
+    // the recordings folder; the note on the page says folder and budget
+    // apply at the next launch (armed captures hold the store they were
+    // opened against), while the capture toggle applies immediately.
     const SourceCacheStore::Settings cache_stored = SourceCacheStore::loadSettings();
     ui_->lineEditSourceCacheDir->setText(cache_stored.directory);
     const QString cache_default = QString::fromStdU16String(SourceCacheStore::defaultRoot().u16string());
     ui_->lineEditSourceCacheDir->setToolTip(
         tr("Leave empty to use the default folder: %1").arg(QDir::toNativeSeparators(cache_default)));
     ui_->scrubberSourceCacheBudgetGB->setValue(cache_stored.budget_gb);
+    ui_->sourceCacheCaptureToggle->setChecked(cache_stored.capture_enabled, /*animate=*/false);
     ui_->buttonSourceCacheDirBrowse->setIconPath(u":/resources/svg/folder_open.svg"_s);
     ui_->buttonSourceCacheDirBrowse->setExtent(26, 24);
     ui_->buttonSourceCacheDirBrowse->setToolTip(tr("Choose the source cache folder…"));
@@ -378,12 +390,6 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       if (!dir.isEmpty()) {
         ui_->lineEditSourceCacheDir->setText(dir);
       }
-    });
-    connect(this, &QDialog::accepted, this, [this]() {
-      SourceCacheStore::Settings settings;
-      settings.directory = ui_->lineEditSourceCacheDir->text().trimmed();
-      settings.budget_gb = ui_->scrubberSourceCacheBudgetGB->value();
-      SourceCacheStore::saveSettings(settings);
     });
 #endif
   }

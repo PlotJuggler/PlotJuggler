@@ -8,6 +8,7 @@
 #include <QString>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <string>
@@ -84,6 +85,42 @@ std::string hostIdentity(const di::RequestArtifactCache& cache, std::string_view
   return cache.spec().identity.identityFor(provider_identity);
 }
 
+// A miss is CONTENDED only on filesystem EVIDENCE of an active publisher: a
+// fresh "<artifact>.partial.<pid>" file (created the moment a capture's
+// recorder opens it). The SDK's "(retry)" lease hint cannot classify — a
+// FIRST publication misses as "no artifact" before the lease is even tried,
+// and the hint also decorates plain lock-file open errors (a read-only lock
+// file would read as contended forever). Freshness bounds a crashed writer:
+// the SDK's cleanup reaps orphan partials only after orphan_partial_age, so
+// without the window a stale partial would be permanent false contention.
+// ponytail: a stalled-but-alive download whose partial mtime exceeds the
+// window classifies kAbsent (the safe provider-fallback behavior); probe the
+// identity lock instead if that ever bites.
+constexpr auto kPartialFreshnessWindow = std::chrono::minutes(1);
+
+bool hasFreshPartial(const std::filesystem::path& artifact) {
+  if (artifact.empty()) {
+    return false;
+  }
+  std::error_code ec;
+  std::filesystem::directory_iterator dir(artifact.parent_path(), ec);
+  if (ec) {
+    return false;
+  }
+  const std::string prefix = artifact.filename().string() + ".partial.";
+  const auto now = std::filesystem::file_time_type::clock::now();
+  for (const auto& entry : dir) {
+    if (entry.path().filename().string().rfind(prefix, 0) != 0) {
+      continue;
+    }
+    const auto mtime = std::filesystem::last_write_time(entry.path(), ec);
+    if (!ec && now - mtime < kPartialFreshnessWindow) {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 SourceCacheStore::SourceCacheStore(std::filesystem::path root, std::uintmax_t budget_bytes)
@@ -103,6 +140,7 @@ std::filesystem::path SourceCacheStore::defaultRoot() {
 namespace {
 constexpr auto kCacheDirectoryKey = "Preferences::source_cache_directory";
 constexpr auto kCacheBudgetKey = "Preferences::source_cache_budget_gb";
+constexpr auto kCacheCaptureEnabledKey = "Preferences::source_cache_capture_enabled";
 // Preferences scrubber range; a hand-edited .ini cannot arm a petabyte cache.
 constexpr int kMinBudgetGb = 1;
 constexpr int kMaxBudgetGb = 1000;
@@ -114,6 +152,8 @@ SourceCacheStore::Settings SourceCacheStore::loadSettings() {
   loaded.directory = settings.value(QString::fromLatin1(kCacheDirectoryKey)).toString();
   loaded.budget_gb = std::clamp(
       settings.value(QString::fromLatin1(kCacheBudgetKey), loaded.budget_gb).toInt(), kMinBudgetGb, kMaxBudgetGb);
+  loaded.capture_enabled =
+      settings.value(QString::fromLatin1(kCacheCaptureEnabledKey), loaded.capture_enabled).toBool();
   return loaded;
 }
 
@@ -121,6 +161,7 @@ void SourceCacheStore::saveSettings(const Settings& settings) {
   QSettings store;
   store.setValue(QString::fromLatin1(kCacheDirectoryKey), settings.directory);
   store.setValue(QString::fromLatin1(kCacheBudgetKey), settings.budget_gb);
+  store.setValue(QString::fromLatin1(kCacheCaptureEnabledKey), settings.capture_enabled);
 }
 
 std::unique_ptr<SourceCacheStore> SourceCacheStore::fromSettings(const Settings& settings) {
@@ -137,7 +178,11 @@ std::filesystem::path SourceCacheStore::pathFor(std::string_view identity) const
   return host_id.empty() ? std::filesystem::path{} : cache_.pathFor(host_id);
 }
 
-std::optional<SourceCacheStore::Pinned> SourceCacheStore::lookup(std::string_view identity, std::string* miss_reason) {
+std::optional<SourceCacheStore::Pinned> SourceCacheStore::lookup(
+    std::string_view identity, std::string* miss_reason, MissKind* miss_kind) {
+  if (miss_kind != nullptr) {
+    *miss_kind = MissKind::kAbsent;
+  }
   const std::string host_id = hostIdentity(cache_, identity);
   if (host_id.empty()) {
     if (miss_reason) {
@@ -145,8 +190,15 @@ std::optional<SourceCacheStore::Pinned> SourceCacheStore::lookup(std::string_vie
     }
     return std::nullopt;
   }
-  auto hit = cache_.lookup(host_id, miss_reason);
+  std::string reason;
+  auto hit = cache_.lookup(host_id, &reason);
   if (!hit) {
+    if (miss_kind != nullptr && hasFreshPartial(cache_.pathFor(host_id))) {
+      *miss_kind = MissKind::kContended;
+    }
+    if (miss_reason != nullptr) {
+      *miss_reason = std::move(reason);
+    }
     return std::nullopt;
   }
   return Pinned{std::move(hit->path), std::move(hit->lease)};

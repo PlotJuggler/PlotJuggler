@@ -222,6 +222,49 @@ TEST_F(ToolboxCaptureWiringTest, RecreatedContextIsAFreshCaptureGeneration) {
   EXPECT_TRUE(finalized_.front().published) << finalized_.front().refusal_reason;
 }
 
+// T10 (P1): the Preferences capture toggle gates ARMING only, evaluated at
+// context CREATION, and applies immediately — a context created while off
+// stays unarmed even when the toggle turns on before its attachment; a
+// context created while on publishes even when the toggle turns off
+// mid-flight; existing hits keep resolving while off.
+TEST_F(ToolboxCaptureWiringTest, CaptureToggleGatesArmingOnlyAndAppliesImmediately) {
+  constexpr const char* kDescOff = R"({"kind":"toggle-off","request":{},"v":1})";
+  constexpr const char* kDescOn = R"({"kind":"toggle-on","request":{},"v":1})";
+  const auto resolves = [this](const char* descriptor) {
+    std::string miss;
+    return service_->resolve(kProvider, descriptor, &miss).has_value();
+  };
+  const std::string_view requested[] = {std::string_view{"/imu"}};
+
+  // Created while OFF: never arms — re-enabling BEFORE the attachment is
+  // too late for this context, the gate is evaluated at creation.
+  service_->setCaptureEnabled(false);
+  auto [off_dataset, off_ingest] = openIngest("download-off");
+  service_->setCaptureEnabled(true);
+  ASSERT_TRUE(off_ingest.attachSourceRecord(kDescOff).has_value());
+  push(off_ingest, bindTopic(off_ingest, "/imu"), 100, {1, 2, 3});
+  ASSERT_TRUE(off_ingest.completeIngest(sdk::IngestOutcome::kCompleted, {requested, 1}).has_value());
+  ASSERT_TRUE(runtime_->releaseParserIngest(off_dataset).has_value());
+  EXPECT_FALSE(resolves(kDescOff)) << "a context created while capture is off must not publish";
+  EXPECT_TRUE(finalized_.empty()) << "an unarmed context must report no capture event";
+
+  // Created while ON: disabling MID-FLIGHT does not abort it — the armed
+  // capture finishes and publishes normally (arming-only semantics).
+  auto [on_dataset, on_ingest] = openIngest("download-on");
+  ASSERT_TRUE(on_ingest.attachSourceRecord(kDescOn).has_value());
+  push(on_ingest, bindTopic(on_ingest, "/imu"), 200, {4, 5});
+  service_->setCaptureEnabled(false);
+  ASSERT_TRUE(on_ingest.completeIngest(sdk::IngestOutcome::kCompleted, {requested, 1}).has_value());
+  ASSERT_TRUE(runtime_->releaseParserIngest(on_dataset).has_value());
+  EXPECT_TRUE(resolves(kDescOn)) << "an in-flight armed capture must finish normally after the flip";
+  ASSERT_EQ(finalized_.size(), 1u);
+  EXPECT_TRUE(finalized_.front().published) << finalized_.front().refusal_reason;
+
+  // Disabling never breaks restore: the published hit still resolves.
+  EXPECT_FALSE(service_->captureEnabled());
+  EXPECT_TRUE(resolves(kDescOn));
+}
+
 TEST_F(ToolboxCaptureWiringTest, TeardownAbortsAnUnreleasedCapture) {
   const uint32_t dataset_id = runCleanIngest("download", "/imu");
   static_cast<void>(dataset_id);

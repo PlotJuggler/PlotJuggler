@@ -17,6 +17,7 @@
 #include "pj_runtime/McapRecordingWriter.h"
 #include "pj_runtime/Recorder.h"
 #include "pj_runtime/RecordingFormat.h"
+#include "pj_runtime/RecordingSink.h"
 
 namespace PJ {
 
@@ -121,6 +122,7 @@ struct SourceCaptureService::Capture::Impl {
   DataSourceRuntimeHost* host = nullptr;  ///< the bound generation; must outlive this capture
   std::string provider_id;
   uint64_t queue_budget_bytes = 0;
+  SourceCaptureService::SinkFactory sink_factory;  ///< null = McapRecordingWriter
 
   std::mutex mu;
   std::string identity;                                   ///< set on the arming attach
@@ -161,7 +163,14 @@ struct SourceCaptureService::Capture::Impl {
     options.info.source_display_name = provider_id;
     options.info.source_plugin_id = provider_id;
     options.info.capture_ordinal = 1;
-    auto candidate = std::make_shared<Recorder>(std::make_unique<McapRecordingWriter>(), options);
+    std::unique_ptr<RecordingSink> sink =
+        sink_factory ? sink_factory() : std::unique_ptr<RecordingSink>(std::make_unique<McapRecordingWriter>());
+    if (sink == nullptr) {
+      arming_error = "the capture sink factory returned no sink";
+      transaction->abort();
+      return;
+    }
+    auto candidate = std::make_shared<Recorder>(std::move(sink), options);
     if (auto started = candidate->start(); !started) {
       arming_error = "cannot start the capture recorder: " + started.error();
       transaction->abort();
@@ -229,7 +238,8 @@ SourceCaptureService::Capture::~Capture() {
   impl_->disarmLocked();
 }
 
-SourceCaptureService::SourceCaptureService(SourceCacheStore& store) : store_(store) {}
+SourceCaptureService::SourceCaptureService(SourceCacheStore& store, SinkFactory sink_factory)
+    : store_(store), sink_factory_(std::move(sink_factory)) {}
 
 std::unique_ptr<SourceCaptureService::Capture> SourceCaptureService::arm(
     DataSourceRuntimeHost& host, std::string provider_id, uint64_t queue_budget_bytes) {
@@ -239,6 +249,7 @@ std::unique_ptr<SourceCaptureService::Capture> SourceCaptureService::arm(
   impl->host = &host;
   impl->provider_id = std::move(provider_id);
   impl->queue_budget_bytes = queue_budget_bytes;
+  impl->sink_factory = sink_factory_;
   // weak_ptr: a hook call snapshotted just before unhooking may still run
   // after the Capture is gone — it must find nothing, not freed memory.
   std::weak_ptr<Capture::Impl> weak = capture->impl_;
@@ -381,13 +392,19 @@ SourceCaptureService::FinalizeResult SourceCaptureService::finalize(
 }
 
 std::optional<SourceCaptureService::Resolved> SourceCaptureService::resolve(
-    std::string_view provider_id, std::string_view descriptor_json, std::string* miss_reason) {
+    std::string_view provider_id, std::string_view descriptor_json, std::string* miss_reason,
+    SourceCacheStore::MissKind* miss_kind) {
+  if (miss_kind != nullptr) {
+    *miss_kind = SourceCacheStore::MissKind::kAbsent;
+  }
   const std::string identity = sourceCacheIdentity(provider_id, descriptor_json);
-  auto pinned = store_.lookup(identity, miss_reason);
+  auto pinned = store_.lookup(identity, miss_reason, miss_kind);
   if (!pinned) {
     return std::nullopt;
   }
 
+  // Every quarantine below is a verification failure of OUR pinned artifact —
+  // an absent-style miss (provider fallback is the heal), never contended.
   auto quarantine = [&](const std::string& why) {
     pinned.reset();  // release our pin before quarantining
     std::string refusal;
@@ -411,40 +428,47 @@ std::optional<SourceCaptureService::Resolved> SourceCaptureService::resolve(
 
   // Strict completeness: the file's own statistics must agree with the
   // manifest, channel by channel — a partially recovered or tampered
-  // artifact must never become a transparent hit.
+  // artifact must never become a transparent hit. The verdict is computed in
+  // the reader's own scope and quarantine runs strictly AFTER it: the open
+  // McapReader handle would block the quarantine rename on Windows (a
+  // sharing violation Linux does not surface).
+  std::string mismatch;
   {
     mcap::McapReader reader;
     if (const auto opened = reader.open(pinned->path.string()); !opened.ok()) {
-      return quarantine("artifact unreadable: " + opened.message);
-    }
-    if (const auto summary = reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan); !summary.ok()) {
-      return quarantine("artifact summary unreadable: " + summary.message);
-    }
-    const auto statistics = reader.statistics();
-    if (!statistics.has_value()) {
-      return quarantine("artifact carries no statistics");
-    }
-    const auto channels = reader.channels();  // by value: the reader's map is not stable across calls
-    std::map<std::string, uint64_t> file_counts;
-    for (const auto& [channel_id, channel] : channels) {
-      const auto count_it = statistics->channelMessageCounts.find(channel_id);
-      const uint64_t count = count_it == statistics->channelMessageCounts.end() ? 0 : count_it->second;
-      file_counts[channel->topic] += count;
-    }
-    uint64_t file_total = 0;
-    for (const auto& [topic, count] : file_counts) {
-      const auto declared = manifest->requested_topic_messages.find(topic);
-      if (declared == manifest->requested_topic_messages.end()) {
-        return quarantine("artifact channel outside the manifest: " + topic);
+      mismatch = "artifact unreadable: " + opened.message;
+    } else if (const auto summary = reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan); !summary.ok()) {
+      mismatch = "artifact summary unreadable: " + summary.message;
+    } else if (const auto statistics = reader.statistics(); !statistics.has_value()) {
+      mismatch = "artifact carries no statistics";
+    } else {
+      const auto channels = reader.channels();  // by value: the reader's map is not stable across calls
+      std::map<std::string, uint64_t> file_counts;
+      for (const auto& [channel_id, channel] : channels) {
+        const auto count_it = statistics->channelMessageCounts.find(channel_id);
+        const uint64_t count = count_it == statistics->channelMessageCounts.end() ? 0 : count_it->second;
+        file_counts[channel->topic] += count;
       }
-      if (declared->second != count) {
-        return quarantine("artifact message count disagrees with the manifest for: " + topic);
+      uint64_t file_total = 0;
+      for (const auto& [topic, count] : file_counts) {
+        const auto declared = manifest->requested_topic_messages.find(topic);
+        if (declared == manifest->requested_topic_messages.end()) {
+          mismatch = "artifact channel outside the manifest: " + topic;
+          break;
+        }
+        if (declared->second != count) {
+          mismatch = "artifact message count disagrees with the manifest for: " + topic;
+          break;
+        }
+        file_total += count;
       }
-      file_total += count;
+      if (mismatch.empty() && file_total != manifest->total_messages) {
+        mismatch = "artifact total disagrees with the manifest";
+      }
     }
-    if (file_total != manifest->total_messages) {
-      return quarantine("artifact total disagrees with the manifest");
-    }
+  }
+  if (!mismatch.empty()) {
+    return quarantine(mismatch);
   }
   return Resolved{.artifact = std::move(*pinned), .manifest = std::move(*manifest)};
 }

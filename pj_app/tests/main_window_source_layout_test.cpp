@@ -240,6 +240,62 @@ TEST(MainWindowSourceLayoutTest, PrimaryDatasetSourceRecordEmitsMaterializeChild
   EXPECT_EQ(cloud_ref->plugin_manifest_id, QStringLiteral("mcap-loader"));
 }
 
+// T9 (M3, acceptance row 9): re-save after a cache hit. A host-cache restore
+// leaves exactly this session state behind (LayoutImportBatch's loadCommitting
+// + the shell's source registration): dataset source path = the cache
+// artifact, a plugin-less loadedSources entry, and a SourceRecord whose
+// identity is the host digest. The save walk must re-emit <fileInfo> +
+// <materialize> with the descriptor bytes VERBATIM, so the next restore keys
+// the same cache slot.
+TEST(MainWindowSourceLayoutTest, CacheHitSessionStateResavesMaterializeWithByteExactDescriptor) {
+  QTemporaryDir extensions_dir;
+  QTemporaryDir project_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  ASSERT_TRUE(project_dir.isValid());
+  const QString artifact_path = project_dir.filePath(QStringLiteral("source_cache/deadbeef.mcap"));
+  ASSERT_TRUE(QDir().mkpath(QFileInfo(artifact_path).absolutePath()));
+  QFile artifact(artifact_path);
+  ASSERT_TRUE(artifact.open(QIODevice::WriteOnly));
+  artifact.close();
+
+  PJ::MainWindow window(extensions_dir.path());
+  PJ::AppSession& app = PJ::MainWindowSourceLayoutTestPeer::session(window);
+  PJ::SessionManager& session = app.sessionManager();
+  const PJ::DatasetId dataset = addDataset(app, "cloud-download", "/imu");
+  ASSERT_NE(dataset, 0U);
+  app.catalogModel().rebuildFromDatastore();
+  session.setDatasetSourcePath(dataset, artifact_path);
+  session.recordLoadedSource(artifact_path, QString{});  // the wireSourceCapture form: no plugin identity
+  // Odd spacing and unicode on purpose: the bytes are the cross-repo identity
+  // contract and must survive the save walk untouched.
+  const QString descriptor = QStringLiteral("{\"kind\":\"k\",  \"request\":{\"path\":\"caf\\u00e9\"},\n\"v\":1}");
+  session.attachSourceRecord(
+      dataset, PJ::SourceRecord{
+                   .provider_id = QStringLiteral("mcap-cloud"),
+                   .source_identity = QStringLiteral("sha256/128:0123456789abcdef0123456789abcdef"),
+                   .descriptor_json = descriptor,
+               });
+
+  QDomDocument doc;
+  QDomElement root = doc.createElement(QStringLiteral("root"));
+  root.setAttribute(QStringLiteral("pj4_version"), QStringLiteral("4"));
+  doc.appendChild(root);
+  const QDir layout_dir(project_dir.path());
+  QDomElement wrapper = PJ::MainWindowSourceLayoutTestPeer::appendSources(window, doc, layout_dir);
+  ASSERT_FALSE(wrapper.isNull()) << "a plugin-less cache-hit source must still be saved";
+  root.appendChild(wrapper);
+
+  // Round-trip through the real XML pipeline: serialize, reparse, extract.
+  QDomDocument reparsed;
+  ASSERT_TRUE(reparsed.setContent(doc.toByteArray(2)));
+  const QList<PJ::layout_xml::DataSourceRef> refs = PJ::layout_xml::extractDataSource(reparsed, layout_dir);
+  ASSERT_EQ(refs.size(), 1);
+  EXPECT_TRUE(refs.front().resolved_path.endsWith(QStringLiteral("deadbeef.mcap")));
+  EXPECT_EQ(refs.front().materialize_provider, QStringLiteral("mcap-cloud"));
+  EXPECT_EQ(refs.front().materialize_identity, QStringLiteral("sha256/128:0123456789abcdef0123456789abcdef"));
+  EXPECT_EQ(refs.front().materialize_descriptor_json, descriptor) << "descriptor bytes must round-trip byte-exact";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {

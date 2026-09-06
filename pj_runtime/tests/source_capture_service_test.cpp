@@ -8,13 +8,23 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <condition_variable>
 #include <filesystem>
+#include <fstream>
+#include <future>
+#include <iterator>
+#include <memory>
+#include <mutex>
+#include <nlohmann/json.hpp>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "pj_runtime/McapRecordingWriter.h"
 #include "pj_runtime/RecordingFormat.h"
+#include "pj_runtime/RecordingSink.h"
 #include "pj_runtime/SourceCaptureService.h"
 #include "runtime_host_test_fixture.h"
 
@@ -25,6 +35,86 @@ namespace {
 
 constexpr const char* kProvider = "test.provider";
 constexpr const char* kDescriptor = R"({"kind":"capture-test-request","request":{},"v":1})";
+
+using namespace std::chrono_literals;
+constexpr auto kHandshakeTimeout = 10s;  // recorder_test's handshake guard
+
+/// Injectable capture sink (a subset of recorder_test's FakeSink): write()
+/// can park until release(), close() can fail on command. Lets the blocked-
+/// cancellation and close-failure tests drive the capture through arm()/
+/// finalize() with no real file involved.
+struct FakeCaptureSink final : RecordingSink {
+  std::mutex mu;
+  std::condition_variable cv;
+  int writes_entered = 0;
+  bool block_writes = false;
+  bool released = false;
+  bool close_called = false;
+  std::string fail_close_with;
+
+  Status open(const std::filesystem::path&, const RecordingInfo&) override {
+    return okStatus();
+  }
+  Expected<uint16_t> addChannel(const RecordedBinding&) override {
+    return static_cast<uint16_t>(1);
+  }
+  Status write(uint16_t, int64_t, Span<const uint8_t>) override {
+    std::unique_lock lock(mu);
+    ++writes_entered;
+    cv.notify_all();
+    cv.wait(lock, [this] { return !block_writes || released; });
+    return okStatus();
+  }
+  Status close(const RecordingSummary&) override {
+    std::lock_guard lock(mu);
+    close_called = true;
+    if (!fail_close_with.empty()) {
+      return PJ::unexpected(fail_close_with);
+    }
+    return okStatus();
+  }
+  void release() {
+    {
+      std::lock_guard lock(mu);
+      released = true;
+    }
+    cv.notify_all();
+  }
+  [[nodiscard]] bool waitForWritesEntered(int count) {
+    std::unique_lock lock(mu);
+    return cv.wait_until(
+        lock, std::chrono::system_clock::now() + kHandshakeTimeout, [this, count] { return writes_entered >= count; });
+  }
+};
+
+[[nodiscard]] std::vector<char> fileBytes(const fs::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+/// Sink factory over a SHARED FakeCaptureSink: the recorder owns a forwarding
+/// shim, the test keeps its handle to park/fail the sink.
+[[nodiscard]] SourceCaptureService::SinkFactory shimFactory(std::shared_ptr<FakeCaptureSink> sink) {
+  return [sink]() -> std::unique_ptr<RecordingSink> {
+    struct Shim final : RecordingSink {
+      std::shared_ptr<FakeCaptureSink> inner;
+      explicit Shim(std::shared_ptr<FakeCaptureSink> sink_ptr) : inner(std::move(sink_ptr)) {}
+      Status open(const std::filesystem::path& path, const RecordingInfo& info) override {
+        return inner->open(path, info);
+      }
+      Expected<uint16_t> addChannel(const RecordedBinding& binding) override {
+        return inner->addChannel(binding);
+      }
+      Status write(uint16_t channel, int64_t ts, Span<const uint8_t> bytes) override {
+        return inner->write(channel, ts, bytes);
+      }
+      Status close(const RecordingSummary& summary) override {
+        return inner->close(summary);
+      }
+    };
+    return std::make_unique<Shim>(sink);
+  };
+}
 
 class SourceCaptureServiceTest : public RuntimeHostFixture {
  protected:
@@ -64,6 +154,11 @@ class SourceCaptureServiceTest : public RuntimeHostFixture {
   [[nodiscard]] SourceCaptureService::FinalizeResult finalize(
       std::unique_ptr<SourceCaptureService::Capture> capture, bool committed = true, bool cancelled = false) {
     return service_->finalize(std::move(capture), committed, cancelled);
+  }
+
+  /// Rebuild the service around an injected sink factory (P3's test seam).
+  void remakeService(SourceCaptureService::SinkFactory factory) {
+    service_.emplace(*store_, std::move(factory));
   }
 
   fs::path cache_root_;
@@ -302,6 +397,208 @@ TEST_F(SourceCaptureServiceTest, ArtifactWithoutManifestIsQuarantinedOnResolve) 
   EXPECT_NE(miss.find("quarantined"), std::string::npos);
   // The heal removed it: the next resolve is a plain absent miss.
   EXPECT_FALSE(service_->resolve(kProvider, kDescriptor, &miss).has_value());
+  EXPECT_FALSE(fs::exists(artifact_path));
+}
+
+// T1 (acceptance row 4): a published artifact is immutable — store cleanup and
+// repeated resolve round-trips must not change a single byte.
+TEST_F(SourceCaptureServiceTest, PublishedArtifactBytesAreImmutableAcrossCleanupAndResolves) {
+  auto capture = armAndAttach();
+  const auto imu = bindTopic("/imu");
+  push(imu, 100, {1, 2, 3});
+  push(imu, 200, {4, 5, 6});
+  ASSERT_TRUE(complete(sdk::IngestOutcome::kCompleted, {"/imu"}));
+  auto result = finalize(std::move(capture));
+  ASSERT_TRUE(result.published) << result.reason;
+  const fs::path artifact_path = result.artifact->path;
+  result.artifact.reset();  // release the publish pin
+
+  const std::vector<char> original = fileBytes(artifact_path);
+  ASSERT_FALSE(original.empty());
+
+  static_cast<void>(store_->cleanup());
+  for (int round = 0; round < 3; ++round) {
+    std::string miss;
+    auto resolved = service_->resolve(kProvider, kDescriptor, &miss);
+    ASSERT_TRUE(resolved.has_value()) << miss;
+    EXPECT_EQ(resolved->artifact.path, artifact_path);
+  }
+  EXPECT_EQ(fileBytes(artifact_path), original) << "cleanup/resolve must never rewrite a published artifact";
+}
+
+// T2 (acceptance row 5): a producer blocked on the lossless capture queue is
+// released by BOTH cancellation paths — the host's stop request and the
+// service's cancel() — strictly BEFORE disk finalization, and nothing ever
+// publishes. One TEST_F per path: each needs a fresh host generation.
+class SourceCaptureServiceBlockedTest : public SourceCaptureServiceTest {
+ protected:
+  void runBlockedCancellation(bool via_host_stop) {
+    auto sink = std::make_shared<FakeCaptureSink>();
+    sink->block_writes = true;
+    remakeService(shimFactory(sink));
+
+    // A tiny queue: the first push parks inside the sink, the second fills the
+    // budget, the third blocks the producer.
+    auto capture = service_->arm(*host, kProvider, /*queue_budget_bytes=*/5000);
+    // A fatal assertion below must not leave the writer parked — the capture's
+    // and the producer future's destructors would hang on it. Released on
+    // every exit path (release() is idempotent); destroyed before `capture`.
+    const auto release_on_exit = std::unique_ptr<FakeCaptureSink, void (*)(FakeCaptureSink*)>(
+        sink.get(), [](FakeCaptureSink* parked) { parked->release(); });
+    ASSERT_TRUE(attach().has_value());
+    const auto imu = bindTopic("/imu");
+    push(imu, 100, std::vector<uint8_t>(64, 0x01));
+    ASSERT_TRUE(sink->waitForWritesEntered(1)) << "the writer must be parked inside write()";
+    push(imu, 200, std::vector<uint8_t>(4000, 0x02));
+
+    auto runtime_view = runtime();  // resolved on the main thread; the view is thread-safe to use
+    std::promise<void> entered;
+    auto producer = std::async(std::launch::async, [&, runtime_view] {
+      entered.set_value();
+      return runtime_view.pushMessage(
+          imu, Timestamp{300}, []() -> std::vector<uint8_t> { return std::vector<uint8_t>(9000, 0x03); });
+    });
+    entered.get_future().wait();
+    EXPECT_EQ(producer.wait_for(50ms), std::future_status::timeout) << "the oversized push must block at budget";
+
+    if (via_host_stop) {
+      host->requestStop();  // fires the capture's stop-requested hook
+    } else {
+      SourceCaptureService::cancel(*capture);
+    }
+    // The producer must return while the sink is STILL parked — unblocking
+    // must never wait for disk. Non-fatal on purpose: past this point every
+    // check must still reach the release below.
+    EXPECT_EQ(producer.wait_for(kHandshakeTimeout), std::future_status::ready);
+    sink->release();
+    static_cast<void>(producer.get());
+
+    ASSERT_TRUE(complete(sdk::IngestOutcome::kCompleted, {"/imu"}));
+    auto result = finalize(std::move(capture), /*committed=*/true, /*cancelled=*/true);
+    EXPECT_FALSE(result.published);
+    std::string miss;
+    EXPECT_FALSE(service_->resolve(kProvider, kDescriptor, &miss).has_value()) << "nothing may publish";
+  }
+};
+
+TEST_F(SourceCaptureServiceBlockedTest, ServiceCancelReleasesBlockedProducerBeforeDiskFinalization) {
+  runBlockedCancellation(/*via_host_stop=*/false);
+}
+
+TEST_F(SourceCaptureServiceBlockedTest, HostStopReleasesBlockedProducerBeforeDiskFinalization) {
+  runBlockedCancellation(/*via_host_stop=*/true);
+}
+
+// F3: a non-null sink factory returning nullptr is an arming failure surfaced
+// at finalize, never a crash inside Recorder::start.
+TEST_F(SourceCaptureServiceTest, NullSinkFromFactoryIsAnArmingFailureNotACrash) {
+  remakeService([]() -> std::unique_ptr<RecordingSink> { return nullptr; });
+  auto capture = armAndAttach();
+  push(bindTopic("/imu"), 100, {1});
+  ASSERT_TRUE(complete(sdk::IngestOutcome::kCompleted, {"/imu"}));
+  auto result = finalize(std::move(capture));
+  EXPECT_FALSE(result.published);
+  EXPECT_NE(result.reason.find("never armed"), std::string::npos) << result.reason;
+  EXPECT_NE(result.reason.find("no sink"), std::string::npos) << result.reason;
+  std::string miss;
+  EXPECT_FALSE(service_->resolve(kProvider, kDescriptor, &miss).has_value());
+  // The aborted transaction left no partial behind.
+  for (const auto& entry : fs::directory_iterator(cache_root_)) {
+    EXPECT_TRUE(entry.path().string().find(".partial") == std::string::npos) << entry.path();
+  }
+}
+
+// T3 (acceptance row 6): a pure-lazy push bypasses the tap, so the capture has
+// a hole — publication must refuse even on a clean COMPLETED terminal.
+TEST_F(SourceCaptureServiceTest, PureLazySkipRefusesPublication) {
+  auto capture = armAndAttach();
+  const auto imu = bindTopic("/imu");
+  push(imu, 100, {1});
+  host->policyResolver().setDefault(sdk::ObjectIngestPolicy::kPureLazy);
+  push(imu, 200, {2});  // fetch deferred: never reaches the tap
+  ASSERT_EQ(host->recordTapSkippedLazy(), 1u);
+  ASSERT_TRUE(complete(sdk::IngestOutcome::kCompleted, {"/imu"}));
+  auto result = finalize(std::move(capture));
+  EXPECT_FALSE(result.published);
+  EXPECT_NE(result.reason.find("pure-lazy"), std::string::npos) << result.reason;
+  std::string miss;
+  EXPECT_FALSE(service_->resolve(kProvider, kDescriptor, &miss).has_value());
+}
+
+// T4 (acceptance row 6): a sink whose close() fails leaves the file
+// unfinalized — publication must refuse and no artifact may exist.
+TEST_F(SourceCaptureServiceTest, SinkCloseFailureRefusesPublication) {
+  auto sink = std::make_shared<FakeCaptureSink>();
+  sink->fail_close_with = "disk full at close";
+  remakeService(shimFactory(sink));
+
+  auto capture = armAndAttach();
+  push(bindTopic("/imu"), 100, {1});
+  ASSERT_TRUE(complete(sdk::IngestOutcome::kCompleted, {"/imu"}));
+  auto result = finalize(std::move(capture));
+  EXPECT_FALSE(result.published);
+  // A close failure surfaces as a truncation carrying the sink's own message.
+  EXPECT_NE(result.reason.find("disk full at close"), std::string::npos) << result.reason;
+  EXPECT_TRUE(sink->close_called);
+  std::string miss;
+  EXPECT_FALSE(service_->resolve(kProvider, kDescriptor, &miss).has_value());
+}
+
+// T5 (acceptance row 6): first topic delivered, second failed mid-download —
+// the FAILED terminal refuses publication, and the reason is the terminal
+// verdict, distinct from the empty-topic attestation case.
+TEST_F(SourceCaptureServiceTest, SuccessThenFetchFailureRefusesOnTheFailedTerminal) {
+  auto capture = armAndAttach();
+  push(bindTopic("/imu"), 100, {1, 2});
+  // "/camera" never delivered; the source reports its own fetch failure.
+  ASSERT_TRUE(complete(sdk::IngestOutcome::kFailed, {"/imu", "/camera"}));
+  auto result = finalize(std::move(capture));
+  EXPECT_FALSE(result.published);
+  EXPECT_NE(result.reason.find("not COMPLETED"), std::string::npos) << result.reason;
+  EXPECT_EQ(result.reason.find("attested"), std::string::npos)
+      << "a failed terminal must not be reported as the empty-attestation case";
+  std::string miss;
+  EXPECT_FALSE(service_->resolve(kProvider, kDescriptor, &miss).has_value());
+}
+
+// T6 (acceptance row 7): an artifact whose per-topic counts disagree with its
+// embedded pj.capture manifest — MCAP magic and footer fully intact — must be
+// quarantined by resolve()'s strict-completeness check, never served as a hit.
+TEST_F(SourceCaptureServiceTest, BodyManifestCountMismatchIsQuarantinedOnResolve) {
+  const std::string identity = sourceCacheIdentity(kProvider, kDescriptor);
+  auto txn = store_->beginPublish(identity);
+  ASSERT_TRUE(txn.has_value());
+  {
+    // ONE recorded message, but a manifest claiming TWO: a structurally valid
+    // MCAP whose body disagrees with its own completion manifest.
+    McapRecordingWriter writer;
+    ASSERT_TRUE(writer.open(txn->partialPath(), RecordingInfo{}).has_value());
+    auto channel =
+        writer.addChannel(RecordedBinding{.topic = "/imu", .encoding = "raw", .type_name = "t", .schema_bytes = {}});
+    ASSERT_TRUE(channel.has_value());
+    const uint8_t payload[] = {1, 2, 3};
+    ASSERT_TRUE(writer.write(*channel, 100, {payload, 3}).has_value());
+    const nlohmann::json manifest{
+        {"version", kCaptureManifestVersion},
+        {"provider_id", kProvider},
+        {"identity", identity},  // JSON-escaped: the identity embeds the descriptor's quotes
+        {"attests_empty_topics", false},
+        {"requested_topic_messages", {{"/imu", 2}}},
+        {"total_messages", 2},
+    };
+    RecordingSummary summary;
+    summary.extra_metadata.emplace_back(std::string(kCaptureMetadataName), manifest.dump());
+    ASSERT_TRUE(writer.close(summary).has_value());
+  }
+  auto published = store_->publish(identity, std::move(*txn));
+  ASSERT_TRUE(published.has_value());
+  const fs::path artifact_path = published->path;
+  published->pin.release();
+
+  std::string miss;
+  EXPECT_FALSE(service_->resolve(kProvider, kDescriptor, &miss).has_value());
+  EXPECT_NE(miss.find("disagrees with the manifest"), std::string::npos) << miss;
+  EXPECT_NE(miss.find("quarantined"), std::string::npos) << miss;
   EXPECT_FALSE(fs::exists(artifact_path));
 }
 

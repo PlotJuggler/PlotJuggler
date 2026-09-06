@@ -358,8 +358,12 @@ bool ToolboxRuntimeHost::onCreateParserIngest(
       // replacement.
       std::unique_ptr<CaptureSlot> capture_slot;
 #ifndef __EMSCRIPTEN__
+      // captureEnabled() is the Preferences toggle: it gates arming only,
+      // applies immediately to the NEXT context, and never touches a capture
+      // already in flight.
       if (self->parser_ingest_deps_.capture_service != nullptr &&
-          !self->parser_ingest_deps_.capture_provider_id.empty()) {
+          !self->parser_ingest_deps_.capture_provider_id.empty() &&
+          self->parser_ingest_deps_.capture_service->captureEnabled()) {
         capture_slot = std::make_unique<CaptureSlot>();
         capture_slot->capture =
             self->parser_ingest_deps_.capture_service->arm(*host, self->parser_ingest_deps_.capture_provider_id);

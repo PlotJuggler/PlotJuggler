@@ -10,7 +10,9 @@
 
 #include <gtest/gtest.h>
 
+#include <QSettings>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -19,6 +21,8 @@
 #include <thread>
 
 #include "pj_runtime/SourceCacheStore.h"
+#include "recording_test_utils.h"
+using namespace Qt::StringLiterals;
 
 namespace fs = std::filesystem;
 using PJ::SourceCacheStore;
@@ -141,7 +145,8 @@ TEST_F(SourceCacheStoreTest, CorruptFooterIsAMissAndTheFileIsKept) {
 }
 
 // Harvest rule 2: a contended identity is a MISS with a retry hint — never an
-// error, never an unpinned hit.
+// error, never an unpinned hit. MissKind classifies on EVIDENCE of an active
+// publisher (a fresh partial), not on the hint.
 TEST_F(SourceCacheStoreTest, ContendedLookupIsAMissWithARetryHint) {
   SourceCacheStore store(root_);
   const std::string identity = "id-contended";
@@ -149,14 +154,87 @@ TEST_F(SourceCacheStoreTest, ContendedLookupIsAMissWithARetryHint) {
 
   auto txn = store.beginPublish(identity);  // exclusive lock held
   ASSERT_TRUE(txn.has_value());
+  std::ofstream(txn->partialPath(), std::ios::binary) << "in-flight bytes";  // the active publisher's evidence
 
   SourceCacheStore other(root_);
   std::string reason;
-  EXPECT_FALSE(other.lookup(identity, &reason).has_value());
+  SourceCacheStore::MissKind kind = SourceCacheStore::MissKind::kAbsent;
+  EXPECT_FALSE(other.lookup(identity, &reason, &kind).has_value());
   EXPECT_NE(reason.find("retry"), std::string::npos) << reason;
+  EXPECT_EQ(kind, SourceCacheStore::MissKind::kContended) << "a mid-publish identity must report a CONTENDED miss";
   txn->abort();
 
   EXPECT_TRUE(other.lookup(identity).has_value()) << "released lock makes the next lookup a hit";
+
+  // Every other miss is kAbsent: the provider fallback is the right answer.
+  EXPECT_FALSE(other.lookup("id-not-there", &reason, &kind).has_value());
+  EXPECT_EQ(kind, SourceCacheStore::MissKind::kAbsent);
+}
+
+// F1: contention during a FIRST publication — no artifact exists yet, so the
+// SDK reports a plain "no artifact" miss without any retry hint. The fresh
+// partial is the evidence that must classify it kContended.
+TEST_F(SourceCacheStoreTest, FirstPublicationContentionIsDetectedByItsFreshPartial) {
+  SourceCacheStore store(root_);
+  const std::string identity = "id-first-publish";
+  auto txn = store.beginPublish(identity);
+  ASSERT_TRUE(txn.has_value());
+  std::ofstream(txn->partialPath(), std::ios::binary) << "first download in flight";
+
+  SourceCacheStore other(root_);
+  std::string reason;
+  SourceCacheStore::MissKind kind = SourceCacheStore::MissKind::kAbsent;
+  EXPECT_FALSE(other.lookup(identity, &reason, &kind).has_value());
+  EXPECT_EQ(kind, SourceCacheStore::MissKind::kContended)
+      << "a fresh partial with no artifact yet IS an active first publication";
+  txn->abort();
+}
+
+// F2: a held/unopenable lock WITHOUT a fresh partial is NOT contention — the
+// SDK decorates every shared-lock failure with the retry hint (a read-only
+// lock file included), and refusing there would tell the user to wait
+// forever. kAbsent keeps the safe provider fallback.
+TEST_F(SourceCacheStoreTest, LockFailureWithoutAPartialIsAnAbsentMiss) {
+  SourceCacheStore store(root_);
+  const std::string identity = "id-locked-no-partial";
+  publishArtifact(store, identity);
+
+  auto txn = store.beginPublish(identity);  // lock held, but no partial written
+  ASSERT_TRUE(txn.has_value());
+  SourceCacheStore other(root_);
+  std::string reason;
+  SourceCacheStore::MissKind kind = SourceCacheStore::MissKind::kContended;
+  EXPECT_FALSE(other.lookup(identity, &reason, &kind).has_value());
+  EXPECT_NE(reason.find("retry"), std::string::npos) << reason;
+  EXPECT_EQ(kind, SourceCacheStore::MissKind::kAbsent) << "a retry hint alone must not classify as contended";
+  txn->abort();
+
+  // The unreadable-lock-file variant (no publisher running at all).
+  fs::path lock = store.pathFor(identity);
+  lock += ".lock";
+  ASSERT_TRUE(fs::exists(lock));
+  fs::permissions(lock, fs::perms::none);
+  EXPECT_FALSE(other.lookup(identity, &reason, &kind).has_value());
+  EXPECT_EQ(kind, SourceCacheStore::MissKind::kAbsent) << reason;
+  fs::permissions(lock, fs::perms::owner_read | fs::perms::owner_write);
+}
+
+// F1/F2: a crashed writer's STALE partial (mtime beyond the freshness
+// window) must not become permanent false contention.
+TEST_F(SourceCacheStoreTest, StalePartialDoesNotClassifyAsContended) {
+  SourceCacheStore store(root_);
+  const std::string identity = "id-stale-partial";
+  auto txn = store.beginPublish(identity);
+  ASSERT_TRUE(txn.has_value());
+  std::ofstream(txn->partialPath(), std::ios::binary) << "crashed writer's leftovers";
+  fs::last_write_time(txn->partialPath(), fs::file_time_type::clock::now() - std::chrono::minutes(5));
+
+  SourceCacheStore other(root_);
+  std::string reason;
+  SourceCacheStore::MissKind kind = SourceCacheStore::MissKind::kContended;
+  EXPECT_FALSE(other.lookup(identity, &reason, &kind).has_value());
+  EXPECT_EQ(kind, SourceCacheStore::MissKind::kAbsent) << "an old partial is a crash leftover, not contention";
+  txn->abort();
 }
 
 // Harvest rule 1: a pinned artifact survives eviction even when it is the
@@ -255,6 +333,50 @@ TEST_F(SourceCacheStoreTest, HostileIdentityStaysInsideTheRoot) {
   const fs::path path = store.pathFor("../../etc/passwd");
   ASSERT_FALSE(path.empty());
   EXPECT_EQ(path.parent_path(), root_);
+}
+
+// T8 (acceptance row 9): the Preferences settings — capture_enabled included —
+// round-trip through QSettings, and hand-edited values are clamped on load.
+class SourceCacheStoreSettingsTest : public ::testing::Test {
+ protected:
+  PJ::test::IsolatedQtSettings settings_{u"PlotJugglerSourceCacheStoreTest"_s, u"SourceCacheStoreTest"_s};
+};
+
+TEST_F(SourceCacheStoreSettingsTest, SettingsRoundTripThroughQSettings) {
+  SourceCacheStore::Settings settings;
+  settings.directory = u"/tmp/some-cache"_s;
+  settings.budget_gb = 42;
+  settings.capture_enabled = false;
+  SourceCacheStore::saveSettings(settings);
+
+  const auto loaded = SourceCacheStore::loadSettings();
+  EXPECT_EQ(loaded.directory, settings.directory);
+  EXPECT_EQ(loaded.budget_gb, 42);
+  EXPECT_FALSE(loaded.capture_enabled);
+
+  QSettings raw;
+  EXPECT_EQ(raw.value(u"Preferences::source_cache_directory"_s).toString(), settings.directory);
+  EXPECT_EQ(raw.value(u"Preferences::source_cache_budget_gb"_s).toInt(), 42);
+  EXPECT_FALSE(raw.value(u"Preferences::source_cache_capture_enabled"_s).toBool());
+}
+
+TEST_F(SourceCacheStoreSettingsTest, LoadedSettingsAreClampedAndDefaultToCaptureOn) {
+  {
+    QSettings raw;
+    raw.setValue(u"Preferences::source_cache_budget_gb"_s, 1'000'000);
+  }
+  EXPECT_EQ(SourceCacheStore::loadSettings().budget_gb, 1000);
+  {
+    QSettings raw;
+    raw.setValue(u"Preferences::source_cache_budget_gb"_s, 0);
+  }
+  EXPECT_EQ(SourceCacheStore::loadSettings().budget_gb, 1);
+  // An absent capture key means "capture on" (the shipped default).
+  {
+    QSettings raw;
+    raw.remove(u"Preferences::source_cache_capture_enabled"_s);
+  }
+  EXPECT_TRUE(SourceCacheStore::loadSettings().capture_enabled);
 }
 
 }  // namespace

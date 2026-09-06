@@ -66,6 +66,7 @@
 #include <vector>
 
 #include "pj_base/descriptor_import_protocol.h"
+#include "pj_base/sdk/data_source_host_views.hpp"
 #include "pj_base/sdk/descriptor_import.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_registry.hpp"
@@ -232,7 +233,13 @@ struct FakeProviderInstance {
 
 [[nodiscard]] inline QJsonObject parseDescriptor(PJ_string_view_t descriptor_json) {
   const QByteArray bytes(descriptor_json.data, static_cast<qsizetype>(descriptor_json.size));
-  return QJsonDocument::fromJson(bytes).object();
+  QJsonObject scripted = QJsonDocument::fromJson(bytes).object();
+  // Capture-eligible descriptors must keep the host's attach envelope (only
+  // kind/request/v at top level), so their script rides inside "request".
+  if (!scripted.contains(QStringLiteral("name")) && scripted.value(QStringLiteral("request")).isObject()) {
+    scripted = scripted.value(QStringLiteral("request")).toObject();
+  }
+  return scripted;
 }
 
 [[nodiscard]] inline QString makeDescriptor(
@@ -408,6 +415,76 @@ inline void progressiveWorker(
   on_terminal(callback_ctx, outcome, sv("done"));
 }
 
+// ---------------------------------------------------------------------------
+// The M3 "capture" mode: a delegated download in the exact shape the source
+// capture publication gate requires — descriptor attached BEFORE the first
+// push, raw bytes through a REAL parser binding (encoding
+// "runtime_host_object": the suite stages that parser plugin), an explicit
+// COMPLETED terminal, then the ingest release (the capture commit point).
+// A host wired with SourceCaptureService therefore publishes a real cache
+// artifact for the request.
+// ---------------------------------------------------------------------------
+
+struct CaptureScript {
+  PJ::sdk::ToolboxHostView toolbox;
+  PJ::ToolboxRuntimeHostView runtime;
+  std::string name;        // dataset name
+  std::string topic;       // the one recorded (and declared) topic
+  std::string descriptor;  // verbatim request bytes — attached as the source record
+};
+
+inline void captureWorker(
+    FakeJob* job, const CaptureScript& script, ImportDatasetFn on_dataset, ImportTerminalFn on_terminal,
+    void* callback_ctx) {
+  job->start_gate.acquire();
+  if (job->cancelled.load()) {
+    on_terminal(callback_ctx, PJ_DESCRIPTOR_IMPORT_CANCELLED, sv("cancelled"));
+    return;
+  }
+  if (!script.toolbox.valid() || !script.runtime.valid()) {
+    on_terminal(callback_ctx, PJ_DESCRIPTOR_IMPORT_FAILED, sv("capture fake: host services were not bound"));
+    return;
+  }
+  const auto source = script.toolbox.createDataSource(script.name);
+  if (!source.has_value()) {
+    on_terminal(callback_ctx, PJ_DESCRIPTOR_IMPORT_FAILED, sv("capture fake: createDataSource failed"));
+    return;
+  }
+  if (on_dataset != nullptr) {
+    on_dataset(callback_ctx, PJ_data_source_handle_t{source->id});
+  }
+  const auto ingest = script.runtime.createDatasetIngest(source->id);
+  if (!ingest.has_value()) {
+    on_terminal(callback_ctx, PJ_DESCRIPTOR_IMPORT_FAILED, sv("capture fake: createDatasetIngest failed"));
+    return;
+  }
+  bool ok = ingest->attachSourceRecord(script.descriptor).has_value();
+  if (ok) {
+    const auto binding = ingest->ensureParserBinding(
+        PJ::ParserBindingRequest{
+            .topic_name = script.topic,
+            .parser_encoding = "runtime_host_object",
+            .type_name = "mock/image",
+            .schema = PJ::Span<const uint8_t>{},
+            .parser_config_json = R"({"k":1})",
+        });
+    ok = binding.has_value() &&
+         ingest->pushMessage(*binding, PJ::Timestamp{100}, []() -> std::vector<uint8_t> { return {1, 2, 3}; })
+             .has_value();
+    if (ok) {
+      const std::string_view requested[] = {std::string_view(script.topic)};
+      ok = ingest->completeIngest(PJ::sdk::IngestOutcome::kCompleted, {requested, 1}).has_value();
+    }
+  }
+  // The release IS the capture commit: a wired host evaluates the publication
+  // gate here, on this worker thread, before the terminal is reported.
+  static_cast<void>(script.runtime.releaseDatasetIngest(source->id));
+  script.runtime.notifyDataChanged();
+  on_terminal(
+      callback_ctx, ok ? PJ_DESCRIPTOR_IMPORT_SUCCEEDED_EAGER_ONLY : PJ_DESCRIPTOR_IMPORT_FAILED,
+      sv(ok ? "done" : "capture fake: delegated ingest failed"));
+}
+
 inline bool fakeStartImport(
     void* plugin_ctx, const PJ_descriptor_import_start_request_v1_t* request,
     const PJ_descriptor_import_callbacks_v1_t* callbacks, void* callback_ctx, PJ_joinable_job_t* out_job,
@@ -438,6 +515,25 @@ inline bool fakeStartImport(
   {
     const std::lock_guard<std::mutex> lock(self->job_mu);
     self->last_job = job;
+  }
+  if (mode == QStringLiteral("capture")) {
+    CaptureScript script;
+    script.toolbox = self->toolbox_host;
+    script.runtime = self->runtime_host;
+    script.name = name;
+    script.topic = scripted.value(QStringLiteral("topic"))
+                       .toString(QStringLiteral("/") + QString::fromStdString(name))
+                       .toStdString();
+    script.descriptor.assign(request->descriptor_json.data, request->descriptor_json.size);
+    job->worker = std::thread([job, script = std::move(script), on_dataset, on_terminal, callback_ctx] {
+      captureWorker(job, script, on_dataset, on_terminal, callback_ctx);
+    });
+    QTimer::singleShot(0, [self]() {
+      if (g_instance == self) {
+        self->releaseStart();
+      }
+    });
+    return true;
   }
   if (mode == QStringLiteral("progressive") || mode == QStringLiteral("progressive-promoted")) {
     // The D6 real-surface job: everything it needs travels by value.

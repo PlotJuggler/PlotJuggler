@@ -1304,10 +1304,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 
 #ifndef __EMSCRIPTEN__
   // M3 transparent source cache: built once from Preferences (see the member
-  // doc for why settings changes apply at the next launch). Wired into every
-  // toolbox binding (interactive + headless) and into layout restore.
-  source_cache_store_ = SourceCacheStore::fromSettings(SourceCacheStore::loadSettings());
+  // doc for why folder/budget changes apply at the next launch; the capture
+  // toggle instead applies live, see bindRecordingPreferences). Wired into
+  // every toolbox binding (interactive + headless) and into layout restore.
+  const SourceCacheStore::Settings cache_settings = SourceCacheStore::loadSettings();
+  source_cache_store_ = SourceCacheStore::fromSettings(cache_settings);
   source_capture_service_ = std::make_unique<SourceCaptureService>(*source_cache_store_);
+  source_capture_service_->setCaptureEnabled(cache_settings.capture_enabled);
 #endif
   connect(ui_->leftPanel, &LeftPanel::streamingRecordToggled, this, &MainWindow::onRecordToggled);
   connect(recording_service_.get(), &RecordingService::started, this, &MainWindow::onRecordingStarted);
@@ -3279,6 +3282,13 @@ void MainWindow::onShowPreferencesDialog() {
 void MainWindow::bindRecordingPreferences(PreferencesDialog& dialog) {
   connect(&dialog, &PreferencesDialog::recordingSettingsChanged, this, [this]() {
     recording_service_->setSettings(RecordingService::loadSettings());
+#ifndef __EMSCRIPTEN__
+    // The capture toggle applies immediately (it gates arming only);
+    // folder/budget still wait for the next launch.
+    if (source_capture_service_ != nullptr) {
+      source_capture_service_->setCaptureEnabled(SourceCacheStore::loadSettings().capture_enabled);
+    }
+#endif
   });
 }
 

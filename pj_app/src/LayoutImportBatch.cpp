@@ -210,7 +210,8 @@ void LayoutImportBatch::planSource(
     const std::string_view descriptor_view(
         planned.descriptor_utf8.constData(), static_cast<std::size_t>(planned.descriptor_utf8.size()));
     std::string miss;
-    if (auto resolved = capture_service_->resolve(provider_utf8, descriptor_view, &miss)) {
+    SourceCacheStore::MissKind miss_kind = SourceCacheStore::MissKind::kAbsent;
+    if (auto resolved = capture_service_->resolve(provider_utf8, descriptor_view, &miss, &miss_kind)) {
       // The digest is the record identity every host path shares (attach on
       // capture, this hit's loadCommitting attach, already-loaded matching).
       planned.query_identity = QString::fromStdString(sourceCacheIdentityDigest(provider_utf8, descriptor_view));
@@ -233,6 +234,22 @@ void LayoutImportBatch::planSource(
         return;
       }
       planned.plan = Plan::kHit;
+      return;
+    }
+    if (miss_kind == SourceCacheStore::MissKind::kContended) {
+      // Another instance is mid-publish for this exact request. Falling
+      // through to the provider would start a duplicate download of bytes
+      // that are about to exist locally, so fail this ONE source instead
+      // (deliberate design decision: no retry loop, no duplicate download).
+      setResult(
+          index, SourceOutcome::kFailed,
+          tr("another PlotJuggler instance is currently downloading this request; wait for it to finish and load "
+             "the layout again"));
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "layout-import-cache-contended",
+          tr("Layout source '%1': another PlotJuggler instance is currently downloading this request; wait for it "
+             "to finish and load the layout again.")
+              .arg(ref.resolved_path));
       return;
     }
   }

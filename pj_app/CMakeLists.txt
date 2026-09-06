@@ -806,10 +806,14 @@ if(PJ_BUILD_TESTS)
         set_target_properties(layout_import_batch_test PROPERTIES AUTOMOC ON)
         target_compile_definitions(layout_import_batch_test PRIVATE
             PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>"
+            # The capture-mode fake provider pushes through this real parser
+            # plugin (staged into the fixture's extensions dir), so a wired
+            # capture publishes an actual cache artifact.
+            PJ_RUNTIME_HOST_OBJECT_PARSER_PATH="$<TARGET_FILE:runtime_host_object_parser_plugin>"
         )
         # $<TARGET_FILE:...> in a compile definition does not create a build-order
-        # dependency; the plugin must exist when the test runs.
-        add_dependencies(layout_import_batch_test mock_file_source_plugin)
+        # dependency; the plugins must exist when the test runs.
+        add_dependencies(layout_import_batch_test mock_file_source_plugin runtime_host_object_parser_plugin)
         target_link_libraries(layout_import_batch_test PRIVATE pj_app_loader_testlib)
         if(DEFINED PJ_WARNING_FLAGS)
             target_compile_options(layout_import_batch_test PRIVATE ${PJ_WARNING_FLAGS})

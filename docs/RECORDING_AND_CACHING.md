@@ -130,10 +130,22 @@ plugin ──────────────► DataSourceRuntimeHost ─�
   any provider contact; a hit loads the pinned artifact through the stock ticketed loader (no network, no
   trust prompt, and the provider plugin need not be installed), the produced datasets hold the artifact's
   read pin for their lifetime (`SessionManager::pinDatasetResource`, released on removeDataset/merge), and
-  a hit whose stock load fails is quarantined and re-planned through the live provider. Preferences expose
+  a hit whose stock load fails is quarantined and re-planned through the live provider. A CONTENDED miss
+  (`SourceCacheStore::MissKind::kContended`, surfaced through `SourceCaptureService::resolve`) is classified
+  on filesystem EVIDENCE of an active publisher — a fresh partial file for the identity (mtime within about a
+  minute), which also detects contention on a FIRST publication where no artifact exists yet; a held lock or
+  the SDK's retry hint alone never classifies as contended (an unreadable lock file must not tell the user to
+  wait forever). Accepted limitation: a stalled-but-alive download whose partial goes quiet past the window
+  classifies as absent and falls back to the provider — the safe pre-existing behavior. A contended miss
+  FAILS that one source with a user-actionable diagnostic
+  ("another PlotJuggler instance is currently downloading this request") — deliberately no retry loop and no
+  duplicate download; ordinary absent misses keep the provider fallback. Preferences expose
   the cache folder + budget on the Recording page (`SourceCacheStore::loadSettings`/`saveSettings`; applied
-  at the next launch). Remaining for M3: the #275 harvest half in the Mosaico provider
-  (trust/credentials/presentation).
+  at the next launch) plus the "Capture downloads for offline restore" toggle
+  (`Settings::capture_enabled` → `SourceCaptureService::setCaptureEnabled`), which gates ARMING only and
+  applies immediately: while off, newly created parser-ingest contexts do not arm a capture, in-flight armed
+  captures finish normally, and existing cache hits keep resolving. Remaining for M3: the #275 harvest half
+  in the Mosaico provider (trust/credentials/presentation).
 
 ## 4. Decisions and accepted trade-offs
 
@@ -148,7 +160,8 @@ plugin ──────────────► DataSourceRuntimeHost ─�
 | **Parser policy in the layout, not in the file (D9).** | A recording opened directly uses the loader dialog's (remembered) settings; the layout persists the choice. |
 | **Provenance minimal; index authoritative.** | Losing the cache index costs a re-download, not data. |
 | **Host-driven cache, one plugin call.** | Providers cannot customize what is cached; the toggle is the only user control. |
-| **Capture all imports by default.** | Disk churn from one-off explorations, bounded by budget and LRU. |
+| **Capture all imports by default.** | Disk churn from one-off explorations, bounded by budget, LRU and the Preferences capture toggle (arming-only, immediate). |
+| **Contended miss fails, never re-downloads.** | Two instances restoring the same layout concurrently: the second fails that source with "wait and reload" instead of downloading the same bytes twice or spinning on a retry loop. |
 | **Cheap hit validation, heal on failure.** | A same-size corrupt file reaches the loader before being evicted. |
 | **Recordings never evicted; cache LRU-evicted.** | Two folders and two budgets to explain. |
 

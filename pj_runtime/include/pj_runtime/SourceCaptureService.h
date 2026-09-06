@@ -6,8 +6,10 @@
 #error "SourceCaptureService is desktop-only (it records into the on-disk source cache)"
 #endif
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -20,6 +22,7 @@
 namespace PJ {
 
 class DataSourceRuntimeHost;
+class RecordingSink;
 
 /// The one derivation of a source-cache identity (RECORDING_AND_CACHING.md
 /// §3.4): versioned and length-framed over the UNSPOOFABLE provider id (from
@@ -72,7 +75,25 @@ struct CaptureManifest {
 /// run only after the source's producers have quiesced.
 class SourceCaptureService {
  public:
-  explicit SourceCaptureService(SourceCacheStore& store);
+  /// Sink the capture recorder writes through. A null factory (the default)
+  /// creates the real McapRecordingWriter; tests inject sinks that block or
+  /// fail on command (the RecordingService::setSinkFactoryForTest pattern).
+  /// Called on the source's stream thread, at arming.
+  using SinkFactory = std::function<std::unique_ptr<RecordingSink>()>;
+
+  explicit SourceCaptureService(SourceCacheStore& store, SinkFactory sink_factory = {});
+
+  /// The Preferences "Capture downloads for offline restore" gate: gates
+  /// ARMING only and applies immediately (the owner sets it on every
+  /// Preferences apply). ToolboxRuntimeHost consults it before arming a
+  /// fresh parser-ingest context; resolve(), existing cache hits and
+  /// in-flight armed captures are unaffected.
+  [[nodiscard]] bool captureEnabled() const noexcept {
+    return capture_enabled_.load(std::memory_order_relaxed);
+  }
+  void setCaptureEnabled(bool enabled) noexcept {
+    capture_enabled_.store(enabled, std::memory_order_relaxed);
+  }
 
   /// One armed capture. Move-only; hand it back to finalize() (publishes or
   /// discards). Destruction without finalize unhooks the host, wakes any
@@ -142,8 +163,12 @@ class SourceCaptureService {
   /// first; a refusal because another reader holds a pin is reported as the
   /// store's reason). The caller loads the artifact through the stock MCAP
   /// loader; a LOAD failure afterwards is the caller's cue to quarantine.
+  /// `miss_kind` distinguishes a CONTENDED miss (another instance mid-publish
+  /// for this identity — the caller must fail rather than start a duplicate
+  /// download) from an ordinary absent one (provider fallback is correct).
   [[nodiscard]] std::optional<Resolved> resolve(
-      std::string_view provider_id, std::string_view descriptor_json, std::string* miss_reason = nullptr);
+      std::string_view provider_id, std::string_view descriptor_json, std::string* miss_reason = nullptr,
+      SourceCacheStore::MissKind* miss_kind = nullptr);
 
   /// Read and validate the `pj.capture` manifest (exactly one record; exact
   /// version; typed, bounded fields; per-topic counts summing to the total).
@@ -156,6 +181,8 @@ class SourceCaptureService {
 
  private:
   SourceCacheStore& store_;
+  SinkFactory sink_factory_;  ///< null = the real McapRecordingWriter
+  std::atomic<bool> capture_enabled_{true};
 };
 
 }  // namespace PJ
