@@ -753,6 +753,9 @@
          </property>
          <item row="0" column="0">
           <widget class="QLabel" name="labelRecordingDir">
+           <property name="toolTip">
+            <string>Every Record press creates one folder here holding one standard MCAP file per recorded source. Recordings capture the raw messages of the topics each stream is subscribed to; sources that write decoded samples directly (no message format) are not recorded.</string>
+           </property>
            <property name="text">
             <string>Recordings folder:</string>
            </property>
@@ -775,6 +778,9 @@
            </item>
            <item>
             <widget class="PJ::SvgButton" name="buttonRecordingDirBrowse"/>
+           </item>
+           <item>
+            <widget class="PJ::SvgButton" name="buttonRecordingDirOpen"/>
            </item>
           </layout>
          </item>
@@ -813,7 +819,7 @@
          <item row="2" column="0" colspan="2">
           <widget class="QLabel" name="labelRecordingNote">
            <property name="text">
-            <string>Recordings capture the raw messages of the topics each stream is subscribed to. Every Record press creates one folder holding one standard MCAP file per recorded source. Sources that write decoded samples directly (no message format) are not recorded. A stream is never held back by recording: if the disk cannot keep up, that source's recording drops its largest queued messages and keeps going.</string>
+            <string>One MCAP file per recorded source, per Record press. Recording never slows a stream down. Hover a setting for details.</string>
            </property>
            <property name="wordWrap">
             <bool>true</bool>
@@ -822,6 +828,9 @@
          </item>
          <item row="3" column="0">
           <widget class="QLabel" name="labelSourceCacheDir">
+           <property name="toolTip">
+            <string>Local copies of cloud downloads, so a saved layout can restore them instantly and offline. Disposable: a missing entry is simply re-downloaded. A new folder takes effect the next time PlotJuggler starts.</string>
+           </property>
            <property name="text">
             <string>Source cache folder:</string>
            </property>
@@ -845,12 +854,15 @@
            <item>
             <widget class="PJ::SvgButton" name="buttonSourceCacheDirBrowse"/>
            </item>
+           <item>
+            <widget class="PJ::SvgButton" name="buttonSourceCacheDirOpen"/>
+           </item>
           </layout>
          </item>
          <item row="4" column="0">
           <widget class="QLabel" name="labelSourceCacheBudget">
            <property name="toolTip">
-            <string>Disk space the source cache may occupy. Oldest artifacts are removed first when the budget is exceeded; artifacts a loaded dataset still reads are never removed.</string>
+            <string>Disk space the source cache may occupy. Oldest artifacts are removed first when the budget is exceeded; artifacts a loaded dataset still reads are never removed. A new budget takes effect the next time PlotJuggler starts.</string>
            </property>
            <property name="text">
             <string>Source cache budget (GB):</string>
@@ -905,7 +917,7 @@
          <item row="6" column="0" colspan="2">
           <widget class="QLabel" name="labelSourceCacheNote">
            <property name="text">
-            <string>The source cache keeps a local copy of each cloud download so a saved layout can restore it instantly and offline. It is disposable: entries are re-downloaded when missing. Changes to the folder and budget take effect the next time PlotJuggler starts; the capture toggle applies immediately.</string>
+            <string>Cloud downloads are cached locally so saved layouts restore offline. Folder and budget apply at the next start.</string>
            </property>
            <property name="wordWrap">
             <bool>true</bool>

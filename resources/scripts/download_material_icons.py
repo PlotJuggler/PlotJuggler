@@ -165,6 +165,7 @@ ICON_MAPPING: dict[str, tuple[str, dict[str, str]]] = {
     "numbers.svg":                         ("123",                        {}),
     "panel_left.svg":                      ("Dock To Left",               {"fill": "1"}),
     "panel_right.svg":                     ("Dock To Right",              {"fill": "1"}),
+    "open_in_new.svg":                     ("Open In New",                {}),
     "panel_bottom.svg":                    ("Dock To Bottom",             {"fill": "1"}),
     "panel_left_off.svg":                  ("Dock To Left",               {"fill": "0"}),
     "panel_right_off.svg":                 ("Dock To Right",              {"fill": "0"}),

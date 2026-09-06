@@ -192,6 +192,7 @@
     <file alias="pencil-edit.svg">svg/pencil-edit.svg</file>
     <file alias="move_view.svg">svg/move_view.svg</file>
     <file alias="numbers.svg">svg/numbers.svg</file>
+    <file alias="open_in_new.svg">svg/open_in_new.svg</file>
     <file alias="panel_bottom.svg">svg/panel_bottom.svg</file>
     <file alias="panel_bottom_off.svg">svg/panel_bottom_off.svg</file>
     <file alias="panel_left.svg">svg/panel_left.svg</file>

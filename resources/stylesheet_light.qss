@@ -2061,6 +2061,12 @@ QDialog QLabel#dialogTitleLabel {
     padding-left: ${space_snug}px;
 }
 
+/* Recording page: the two one-line section notes read as headings. */
+QLabel#labelRecordingNote,
+QLabel#labelSourceCacheNote {
+    font-weight: 600;
+}
+
 /* PreferencesDialog two-pane body --------------------------------------
    The section list (left) is the recessed titlebar tone; the settings
    pane (right) is the lighter dialog surface, so the active

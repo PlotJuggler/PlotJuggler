@@ -6,6 +6,7 @@
 #include <QAbstractItemModel>
 #include <QBrush>
 #include <QColor>
+#include <QDesktopServices>
 #include <QDir>
 #include <QFile>
 #include <QFormLayout>
@@ -76,6 +77,13 @@ QIcon loadIconInkIcon(const QString& resource_path, theme::Theme token_theme) {
   renderer.render(&painter);
   painter.end();
   return QIcon(QPixmap::fromImage(image));
+}
+
+// Open `dir` in the system file manager, creating it first so a folder that
+// nothing has written to yet still opens instead of failing silently.
+void openFolder(const QString& dir) {
+  QDir().mkpath(dir);
+  QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
 }
 
 }  // namespace
@@ -346,6 +354,16 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       }
     });
 
+    // Open the folder in the system file manager. The default folder may not
+    // exist before the first recording, so create it rather than fail silently.
+    ui_->buttonRecordingDirOpen->setIconPath(u":/resources/svg/open_in_new.svg"_s);
+    ui_->buttonRecordingDirOpen->setExtent(26, 24);
+    ui_->buttonRecordingDirOpen->setToolTip(tr("Open the recordings folder"));
+    connect(ui_->buttonRecordingDirOpen, &QToolButton::clicked, this, [this]() {
+      const QString field = ui_->lineEditRecordingDir->text().trimmed();
+      openFolder(field.isEmpty() ? RecordingService::defaultDirectory() : field);
+    });
+
     // No rejected handler: none of the recording-page values is applied live
     // from this dialog, so Cancel never reaches the QSettings writes below.
     // ONE accepted handler for the whole page: the cache settings must be
@@ -390,6 +408,13 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       if (!dir.isEmpty()) {
         ui_->lineEditSourceCacheDir->setText(dir);
       }
+    });
+    ui_->buttonSourceCacheDirOpen->setIconPath(u":/resources/svg/open_in_new.svg"_s);
+    ui_->buttonSourceCacheDirOpen->setExtent(26, 24);
+    ui_->buttonSourceCacheDirOpen->setToolTip(tr("Open the source cache folder"));
+    connect(ui_->buttonSourceCacheDirOpen, &QToolButton::clicked, this, [this, cache_default]() {
+      const QString field = ui_->lineEditSourceCacheDir->text().trimmed();
+      openFolder(field.isEmpty() ? cache_default : field);
     });
 #endif
   }
