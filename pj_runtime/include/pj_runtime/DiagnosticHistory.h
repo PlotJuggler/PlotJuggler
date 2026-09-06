@@ -21,6 +21,8 @@ struct DiagnosticRecord {
   QString id;
   QString message;
   QDateTime timestamp;
+
+  bool operator==(const DiagnosticRecord&) const = default;
 };
 
 // Rolling buffer of recent diagnostics. Single source of truth for the

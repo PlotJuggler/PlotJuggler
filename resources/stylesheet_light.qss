@@ -2136,67 +2136,6 @@ QPushButton#buttonClose:pressed {
     background: ${destructive_nominal};
 }
 
-/* DiagnosticsPopup ------------------------------------------------ */
-
-QFrame#DiagnosticsPopup {
-    background: ${backdrop};
-    background-color: ${backdrop};
-    color: ${text};
-    border: 1px solid ${separation};
-    border-radius: ${radius_square};
-}
-
-/* When the cursor is over the drag handle or a resize drag is in
-   progress, the popup's own bottom border swaps to purple. Painting
-   the line on the popup (rather than on the inner #dragHandle) lets
-   it meet the side borders at the corners without the inset that
-   rootLayout's side margins would otherwise impose. The "dragActive"
-   dynamic property is toggled in DiagnosticsPopup::setDragActive(). */
-QFrame#DiagnosticsPopup[dragActive="true"] {
-    border-bottom: 1px solid ${separation};
-}
-
-QFrame#DiagnosticsCard {
-    background-color: transparent;
-    border: none;
-    border-radius: ${radius_square};
-}
-
-QFrame#DiagnosticsCard:hover {
-    background-color: ${accent_checked};
-}
-
-QFrame#DiagnosticsCard QLabel#cardTimestamp {
-    color: ${text};
-}
-
-QToolButton#cardCopyButton {
-    border: none;
-    background: transparent;
-    padding: ${space_none}px;
-}
-
-QToolButton#cardCopyButton:hover {
-    background: ${accent_checked};
-    border-radius: ${radius_input}px;
-}
-
-QLabel#DiagnosticsEmptyState {
-    color: ${on_backdrop_disabled};
-}
-
-/* Drag-to-resize handle — purely a transparent hit zone. The visible
-   bottom line is the popup's own border, which is recoloured via the
-   parent's [dragActive] property (toggled from the C++ event filter
-   on this handle). */
-QFrame#dragHandle {
-    background: transparent;
-    border: none;
-    margin: ${space_none}px;
-    min-height: 4px;
-    max-height: 4px;
-}
-
 /* ---------- Marketplace cards + status accents ----------
    Card surface, hover, and the per-state action buttons (Install /
    Update / "Local newer" / "Needs Restart" / Installed). Replaces

@@ -198,7 +198,7 @@
 #include "ui/AboutDialog.h"
 #include "ui/CurveListPanel.h"
 #include "ui/DatasetInfoDialog.h"
-#include "ui/DiagnosticsDetailDialog.h"
+#include "ui/DiagnosticsDialog.h"
 #include "ui/LeftPanel.h"
 #ifdef PJ_WITH_SCENE2D
 #include "ui/Scene2DConfigPanel.h"
@@ -660,10 +660,16 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // The TitleBar owns the QMenuBar's popup menus; we just push actions
   // into them.
   title_bar_ = new TitleBar(this);
-  connect(title_bar_, &TitleBar::diagnosticActivated, this, [this](const DiagnosticRecord& r) {
-    auto* dlg = new DiagnosticsDetailDialog(r, this);
-    dlg->setChromeMetrics(chrome_metrics_);
-    dlg->show();
+  connect(title_bar_, &TitleBar::notificationsClicked, this, [this]() {
+    if (diagnostics_dialog_ == nullptr) {
+      diagnostics_dialog_ = new DiagnosticsDialog(diagnostic_history_, this);
+      diagnostics_dialog_->setChromeMetrics(chrome_metrics_);
+      connect(this, &MainWindow::chromeMetricsChanged, diagnostics_dialog_, &Dialog::setChromeMetrics);
+    }
+    diagnostics_dialog_->show();
+    diagnostics_dialog_->raise();
+    diagnostics_dialog_->activateWindow();
+    title_bar_->setUnseenError(false);
   });
 
   // File menu: layout persistence + marketplace + preferences + quit.
@@ -738,7 +744,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // observed by the title-bar bell + popup.
   diagnostic_history_ = new DiagnosticHistory(this);
   diagnostic_history_->connectBridge(diagnostic_bridge_);
-  title_bar_->setDiagnosticHistory(diagnostic_history_);
+  // An error counts as seen once the diagnostics dialog is (or gets) opened.
+  connect(diagnostic_history_, &DiagnosticHistory::recorded, this, [this](const DiagnosticRecord& record) {
+    const bool dialog_open = diagnostics_dialog_ != nullptr && diagnostics_dialog_->isVisible();
+    if (record.level == DiagnosticLevel::kError && !dialog_open) {
+      title_bar_->setUnseenError(true);
+    }
+  });
   // The bell is easy to miss: a plugin that failed to load (or was rejected as
   // incompatible) also gets one toast per session. Queued delivery means this
   // still catches the startup scan that already ran in the AppSession ctor.

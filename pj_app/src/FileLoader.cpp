@@ -492,7 +492,7 @@ QString pluginConfigKey(const std::string& plugin_id) {
 // A long plugin message (e.g. a per-row list of thousands of skipped CSV
 // lines) would stretch a plain QMessageBox label past the screen and push
 // the action buttons out of reach. Render it in an app-styled PJ::Dialog
-// (same chrome as DiagnosticsDetailDialog): themed icon + summary on top, the
+// (same chrome as DiagnosticsDialog): themed icon + summary on top, the
 // error text in a read-only monospace scroll view that manages its own space,
 // and role-styled buttons at the bottom. The scroll view bounds the dialog,
 // so it never grows past the screen no matter how many lines the plugin sends.

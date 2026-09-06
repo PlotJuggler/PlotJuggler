@@ -67,6 +67,7 @@ class AppSession;
 struct CatalogItem;
 class CurveEditor;
 class DiagnosticHistory;
+class DiagnosticsDialog;
 class DockWidget;
 class FileLoader;
 class IngestProgressController;
@@ -1199,6 +1200,8 @@ class MainWindow : public QMainWindow {
   Ui::MainWindow* ui_;
   QtDiagnosticBridge* diagnostic_bridge_ = nullptr;
   DiagnosticHistory* diagnostic_history_ = nullptr;
+  // Bell dialog, created on first click and reused (modeless).
+  DiagnosticsDialog* diagnostics_dialog_ = nullptr;
   ToastManager* toast_manager_ = nullptr;
   UpdateChecker* update_checker_ = nullptr;
   TelemetryPing* telemetry_ping_ = nullptr;

@@ -5,20 +5,16 @@
 #include <QString>
 #include <QWidget>
 
-#include "pj_runtime/DiagnosticHistory.h"
 #include "pj_widgets/ChromeMetrics.h"
 
 class QMenu;
 class QMouseEvent;
-class QTimer;
 
 namespace Ui {
 class TitleBar;
 }
 
 namespace PJ {
-
-class DiagnosticsPopup;
 
 // Custom title bar for a frameless QMainWindow. Hosts the app icon and
 // a traditional QMenuBar (File / Toolbox / Help) on the left, and the
@@ -54,10 +50,10 @@ class TitleBar : public QWidget {
   // centerContainer is transparent for mouse events.
   void setCenterWidget(QWidget* widget);
 
-  // Wire the title-bar bell + diagnostics popup to a DiagnosticHistory.
-  // The history is the single source of truth for diagnostics; the bell
-  // label tracks the latest record and the popup observes the buffer.
-  void setDiagnosticHistory(DiagnosticHistory* history);
+  // Paint the bell in the theme's status-error colour while errors have
+  // been recorded that the user has not yet opened the diagnostics view
+  // for; plain glyph otherwise. The owner decides what "seen" means.
+  void setUnseenError(bool unseen);
 
   // Shows/hides the magenta "Update" affordance sitting left of the bell.
   // count > 0 reveals the button and sets its tooltip to the pluralized
@@ -65,13 +61,8 @@ class TitleBar : public QWidget {
   void setExtensionUpdateCount(int count);
 
  signals:
-  // Forwarded from buttonNotifications. Kept for callers that still want
-  // the raw click event in addition to the built-in popup behaviour.
+  // Bell click. The owner (MainWindow) opens the DiagnosticsDialog.
   void notificationsClicked();
-
-  // Emitted when the user clicks a card in the diagnostics popup. The
-  // owner (MainWindow) opens a frameless detail dialog in response.
-  void diagnosticActivated(const DiagnosticRecord& item);
 
   // Emitted when the user clicks the "Update" button. The owner
   // (MainWindow) opens the Marketplace and hides the button in response.
@@ -93,7 +84,6 @@ class TitleBar : public QWidget {
   void changeEvent(QEvent* event) override;
 
  private slots:
-  void onDiagnosticRecorded(const DiagnosticRecord& r);
 
  private:
   void applyIcons(const QString& theme);
@@ -108,17 +98,8 @@ class TitleBar : public QWidget {
   QMenu* file_menu_ = nullptr;
   QMenu* toolbox_menu_ = nullptr;
   QMenu* help_menu_ = nullptr;
-  DiagnosticsPopup* diagnostics_popup_ = nullptr;
-  DiagnosticHistory* diagnostic_history_ = nullptr;
-  // Single-shot timer that flips the bell icon back to its default
-  // glyph 5 s after the most recent diagnostic. Restarted on each new
-  // record, so a flurry of logs keeps the active icon visible until
-  // the stream pauses.
-  QTimer* bell_idle_timer_ = nullptr;
-  // True while the bell is showing the "Notifications Active" icon
-  // (timer running). Stored so applyIcons() can pick the right SVG on
-  // theme change without consulting the timer.
-  bool bell_active_ = false;
+  // Stored so applyIcons() re-tints the bell on a theme change.
+  bool unseen_error_ = false;
 
   // Chrome metrics broadcast from MainWindow::chromeMetricsChanged.
   ChromeMetrics chrome_metrics_;

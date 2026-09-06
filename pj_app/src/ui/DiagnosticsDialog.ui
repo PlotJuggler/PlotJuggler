@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>DiagnosticsDialog</class>
+ <widget class="QWidget" name="DiagnosticsDialogContent">
+  <layout class="QVBoxLayout" name="bodyLayout">
+   <property name="leftMargin"><number>16</number></property>
+   <property name="topMargin"><number>12</number></property>
+   <property name="rightMargin"><number>16</number></property>
+   <property name="bottomMargin"><number>16</number></property>
+   <property name="spacing"><number>8</number></property>
+   <item>
+    <layout class="QHBoxLayout" name="filterRow">
+     <property name="spacing"><number>12</number></property>
+     <item>
+      <widget class="PJ::CheckButton" name="toggleInfo">
+       <property name="text"><string>Info</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="PJ::CheckButton" name="toggleWarning">
+       <property name="text"><string>Warning</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="PJ::CheckButton" name="toggleError">
+       <property name="text"><string>Error</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="PJ::ComboBox" name="comboSource">
+       <property name="minimumWidth"><number>160</number></property>
+       <property name="toolTip"><string>Show only diagnostics from one source</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="PJ::Search" name="searchBox">
+       <property name="placeholder"><string>Filter messages...</string></property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed"><horstretch>1</horstretch><verstretch>0</verstretch></sizepolicy>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="buttonClear">
+       <property name="text"><string>Clear</string></property>
+       <property name="toolTip"><string>Discard all recorded diagnostics</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QSplitter" name="splitter">
+     <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+     <property name="childrenCollapsible"><bool>false</bool></property>
+     <widget class="QTableWidget" name="table">
+      <property name="selectionMode"><enum>QAbstractItemView::SelectionMode::SingleSelection</enum></property>
+      <property name="selectionBehavior"><enum>QAbstractItemView::SelectionBehavior::SelectRows</enum></property>
+      <property name="editTriggers"><set>QAbstractItemView::EditTrigger::NoEditTriggers</set></property>
+      <property name="showGrid"><bool>false</bool></property>
+      <property name="wordWrap"><bool>false</bool></property>
+      <property name="sortingEnabled"><bool>true</bool></property>
+      <attribute name="verticalHeaderVisible"><bool>false</bool></attribute>
+      <attribute name="horizontalHeaderHighlightSections"><bool>false</bool></attribute>
+      <column><property name="text"><string>Time</string></property></column>
+      <column><property name="text"><string>Severity</string></property></column>
+      <column><property name="text"><string>Source</string></property></column>
+      <column><property name="text"><string>Message</string></property></column>
+     </widget>
+     <widget class="QWidget" name="paneRow">
+      <layout class="QHBoxLayout" name="paneLayout">
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>4</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
+       <item>
+        <widget class="QPlainTextEdit" name="messagePane">
+         <property name="readOnly"><bool>true</bool></property>
+         <property name="frameShape"><enum>QFrame::Shape::NoFrame</enum></property>
+         <property name="placeholderText"><string>Select a row to read the full message</string></property>
+        </widget>
+       </item>
+       <item alignment="Qt::AlignmentFlag::AlignTop">
+        <widget class="QPushButton" name="buttonCopy">
+         <property name="text"><string>Copy</string></property>
+         <property name="toolTip"><string>Copy the selected message to the clipboard</string></property>
+         <property name="iconSize"><size><width>16</width><height>16</height></size></property>
+         <property name="enabled"><bool>false</bool></property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>PJ::CheckButton</class>
+   <extends>QAbstractButton</extends>
+   <header>pj_widgets/CheckButton.h</header>
+  </customwidget>
+  <customwidget>
+   <class>PJ::ComboBox</class>
+   <extends>QComboBox</extends>
+   <header>pj_widgets/ComboBox.h</header>
+  </customwidget>
+  <customwidget>
+   <class>PJ::Search</class>
+   <extends>QWidget</extends>
+   <header>pj_widgets/Search.h</header>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>

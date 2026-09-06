@@ -85,18 +85,12 @@ add_library(pj_app_shell OBJECT
     src/ui/LeftPanel.cpp
     src/ui/LeftPanel.h
     src/ui/LeftPanel.ui
-    src/ui/DiagnosticsCard.cpp
-    src/ui/DiagnosticsCard.h
-    src/ui/DiagnosticsCard.ui
-    src/ui/DiagnosticsPopup.cpp
-    src/ui/DiagnosticsPopup.h
-    src/ui/DiagnosticsPopup.ui
     src/ui/DatasetInfoDialog.cpp
     src/ui/DatasetInfoDialog.h
     src/ui/DatasetInfoDialog.ui
-    src/ui/DiagnosticsDetailDialog.cpp
-    src/ui/DiagnosticsDetailDialog.h
-    src/ui/DiagnosticsDetailDialog.ui
+    src/ui/DiagnosticsDialog.cpp
+    src/ui/DiagnosticsDialog.h
+    src/ui/DiagnosticsDialog.ui
     src/ui/AboutDialog.cpp
     src/ui/AboutDialog.h
     src/ui/AboutDialog.ui
@@ -380,6 +374,10 @@ if(PJ_BUILD_TESTS)
     endfunction()
 
     add_pj_app_gui_test(slider_states_test SliderStates tests/slider_states_test.cpp)
+
+    # Bell dialog: severity / source / text filters, live rebuild on record,
+    # cap eviction and Clear, driven straight through a DiagnosticHistory.
+    add_pj_app_gui_test(diagnostics_dialog_test DiagnosticsDialogTest tests/diagnostics_dialog_test.cpp)
 
     # MR !261 depth guard: a source added while streaming is paused must write
     # into the secondary tail buffer, not the frozen primary. Exercises the

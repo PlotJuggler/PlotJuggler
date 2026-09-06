@@ -990,8 +990,8 @@ void DateRangePicker::updateOverlayStyle() {
     return;
   }
   // Drive the overlay popup from the theme tokens so it matches the active QSS
-  // theme. Same precedent as the app's QFrame#DiagnosticsPopup (background =
-  // dark_background, 1px solid border_default), with square corners. palette()
+  // theme (background = dark_background, 1px solid border_default), with
+  // square corners. palette()
   // can't be used here: the app pins QPalette at Fusion defaults regardless of
   // theme, so it would resolve to Fusion light-grey on both.
   const PickerTokens tok = pickerTokens();

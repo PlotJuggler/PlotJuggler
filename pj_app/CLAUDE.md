@@ -7,7 +7,7 @@ The executable shell. Owns `MainWindow`, the application menus/toolbars/status b
 ## What belongs here
 
 - `MainWindow` and its `.ui` file.
-- App-level dialogs (`PreferencesDialog`, `DiagnosticsDetailDialog`, etc.) and their navigation rows.
+- App-level dialogs (`PreferencesDialog`, `DiagnosticsDialog`, etc.) and their navigation rows.
 - The shell's left panel, curve list, file loader, theme manager, title bar.
 - Glue code that constructs an `AppSession`, then wires it to docked widgets.
 - Browser-only host integration (`BrowserFileStore`, `FileSelectionService`,
@@ -30,7 +30,7 @@ Per root CLAUDE.md: **prefer `.ui` files** over programmatic widget construction
 ## Layout
 
 - `src/` — top-level shell sources and root `.ui` files (`MainWindow.ui`, `PreferencesDialog.ui`, `TitleBar.ui`).
-- `src/ui/` — embedded shell sub-widgets: left-panel widgets (`CurveListPanel`, `LeftPanel`, `DiagnosticsCard`, `DiagnosticsPopup`, `DiagnosticsDetailDialog`), the bottom timeline strip (`TimelineWidget`), and the right-sidepanel scene config panels (`Scene2DConfigPanel`, `Scene3DConfigPanel`).
+- `src/ui/` — embedded shell sub-widgets: left-panel widgets (`CurveListPanel`, `LeftPanel`), the bell's `DiagnosticsDialog`, the bottom timeline strip (`TimelineWidget`), and the right-sidepanel scene config panels (`Scene2DConfigPanel`, `Scene3DConfigPanel`).
 - `tests/wasm_acceptance_probes.inc` — acceptance-build-only observation and
   input bridge, included behind `PJ_WASM_ENABLE_INGRESS_PROBE`; it is never part
   of desktop or production WASM behavior.

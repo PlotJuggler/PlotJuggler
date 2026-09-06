@@ -9,13 +9,13 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMouseEvent>
-#include <QTimer>
+#include <QPainter>
 #include <QToolButton>
 #include <QWindow>
 #include <vector>
 
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/SvgUtil.h"
-#include "ui/DiagnosticsPopup.h"
 #include "ui_TitleBar.h"
 using namespace Qt::StringLiterals;
 
@@ -61,27 +61,8 @@ TitleBar::TitleBar(QWidget* parent) : QWidget(parent), ui_(new Ui::TitleBar) {
     menu->setObjectName(u"PJMenu"_s);
     ui_->menuBar->addMenu(menu);
   }
-  diagnostics_popup_ = new DiagnosticsPopup(this);
-  diagnostics_popup_->setObjectName(u"DiagnosticsPopup"_s);
-  connect(diagnostics_popup_, &DiagnosticsPopup::diagnosticActivated, this, &TitleBar::diagnosticActivated);
-
-  // Bell flash: 5-s single-shot timer flips the icon back to its
-  // default glyph after the most recent diagnostic. Restarted on each
-  // new record (see onDiagnosticRecorded) so a flurry of logs keeps the
-  // active icon visible until the stream pauses.
-  bell_idle_timer_ = new QTimer(this);
-  bell_idle_timer_->setSingleShot(true);
-  bell_idle_timer_->setInterval(5000);
-  connect(bell_idle_timer_, &QTimer::timeout, this, [this]() {
-    bell_active_ = false;
-    ui_->buttonNotifications->setIcon(loadSvg(":/resources/svg/alarm-bell.svg", currentTheme()));
-  });
-
   applyIcons(currentTheme());
-  connect(ui_->buttonNotifications, &QToolButton::clicked, this, [this]() {
-    diagnostics_popup_->showAt(ui_->buttonNotifications);
-    emit notificationsClicked();
-  });
+  connect(ui_->buttonNotifications, &QToolButton::clicked, this, &TitleBar::notificationsClicked);
   connect(ui_->buttonExtensionUpdate, &QToolButton::clicked, this, &TitleBar::extensionUpdateRequested);
   connect(ui_->buttonMinimize, &QToolButton::clicked, this, [this]() {
     if (auto* w = window()) {
@@ -151,18 +132,6 @@ void TitleBar::setCenterWidget(QWidget* widget) {
   }
 }
 
-void TitleBar::setDiagnosticHistory(DiagnosticHistory* history) {
-  if (diagnostic_history_ != nullptr) {
-    disconnect(diagnostic_history_, nullptr, this, nullptr);
-  }
-  diagnostic_history_ = history;
-  diagnostics_popup_->setHistory(history);
-  if (diagnostic_history_ == nullptr) {
-    return;
-  }
-  connect(diagnostic_history_, &DiagnosticHistory::recorded, this, &TitleBar::onDiagnosticRecorded);
-}
-
 void TitleBar::setExtensionUpdateCount(int count) {
   if (count <= 0) {
     ui_->buttonExtensionUpdate->hide();
@@ -172,13 +141,12 @@ void TitleBar::setExtensionUpdateCount(int count) {
   ui_->buttonExtensionUpdate->show();
 }
 
-void TitleBar::onDiagnosticRecorded(const DiagnosticRecord& /*r*/) {
-  // Flip to the "Notifications Active" icon for 5 s. Restarting the
-  // timer on each new record means a steady stream of logs keeps the
-  // active glyph showing until the stream pauses for a full interval.
-  bell_active_ = true;
-  ui_->buttonNotifications->setIcon(loadSvg(":/resources/svg/alarm-bell-active.svg", currentTheme()));
-  bell_idle_timer_->start();
+void TitleBar::setUnseenError(bool unseen) {
+  if (unseen_error_ == unseen) {
+    return;
+  }
+  unseen_error_ = unseen;
+  applyIcons(currentTheme());
 }
 
 void TitleBar::onStylesheetChanged(QString theme) {
@@ -301,8 +269,19 @@ bool TitleBar::isOnMoveHandle(const QPoint& pos) const {
 
 void TitleBar::applyIcons(const QString& theme) {
   ui_->appIcon->setIcon(loadSvg(":/resources/svg/plotjuggler.svg", theme));
-  ui_->buttonNotifications->setIcon(
-      loadSvg(bell_active_ ? ":/resources/svg/alarm-bell-active.svg" : ":/resources/svg/alarm-bell.svg", theme));
+  if (unseen_error_) {
+    // SourceIn keeps the glyph's alpha and swaps its ink for the status-error
+    // hue, which the token table already resolves per theme.
+    QPixmap bell = loadSvg(":/resources/svg/alarm-bell-active.svg", theme);
+    QPainter tint(&bell);
+    tint.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    tint.fillRect(bell.rect(), theme::status(theme::Status::Error, theme::themeFor(isLightTheme(theme))));
+    ui_->buttonNotifications->setIcon(bell);
+    ui_->buttonNotifications->setToolTip(tr("New errors"));
+  } else {
+    ui_->buttonNotifications->setIcon(loadSvg(":/resources/svg/alarm-bell.svg", theme));
+    ui_->buttonNotifications->setToolTip(tr("Diagnostics"));
+  }
   ui_->buttonMinimize->setIcon(loadSvg(":/resources/svg/minimize.svg", theme));
   ui_->buttonMaximize->setIcon(loadSvg(":/resources/svg/maximize.svg", theme));
   ui_->buttonClose->setIcon(loadSvg(":/resources/svg/close_windows_light.svg", theme));
