@@ -22,6 +22,16 @@ public:
     _strict_truncation_check = enable;
   }
 
+  void setUseLegacyCdrAlignment(bool enable) override
+  {
+    // Only applies to NanoCDR deserializer (OMGIDL/ROS2)
+    auto* cdr_deser = dynamic_cast<RosMsgParser::NanoCDR_Deserializer*>(_deserializer.get());
+    if (cdr_deser)
+    {
+      cdr_deser->setAlignFromMessageStart(enable);
+    }
+  }
+
 protected:
   RosMsgParser::Parser _parser;
   std::unique_ptr<RosMsgParser::Deserializer> _deserializer;

@@ -126,6 +126,18 @@ DialogMCAP::DialogMCAP(const std::unordered_map<int, mcap::ChannelPtr>& channels
   auto sort_count = params.sorted_column % columns_count;
   ui->tableWidget->sortByColumn(sort_count, sort_order);
 
+  // Load legacy CDR alignment setting
+  bool use_legacy_cdr = false;
+  if (default_parameters)
+  {
+    use_legacy_cdr = default_parameters->use_legacy_cdr_alignment;
+  }
+  else
+  {
+    use_legacy_cdr = settings.value("use_legacy_cdr", false).toBool();
+  }
+  ui->checkBoxUseLegacyCdr->setChecked(use_legacy_cdr);
+
   // Connect topic filter QLineEdit to filtering logic
   connect(ui->lineEditFilter, &QLineEdit::textChanged, this,
           &DialogMCAP::on_lineEditFilter_textChanged);
@@ -143,6 +155,7 @@ mcap::LoadParams DialogMCAP::getParams() const
   params.clamp_large_arrays = ui->radioClamp->isChecked();
   params.use_timestamp = ui->checkBoxUseTimestamp->isChecked();
   params.use_mcap_log_time = ui->radioLogTime->isChecked();
+  params.use_legacy_cdr_alignment = ui->checkBoxUseLegacyCdr->isChecked();
 
   QItemSelectionModel* select = ui->tableWidget->selectionModel();
   QStringList selected_topics;
@@ -177,6 +190,7 @@ void DialogMCAP::accept()
   settings.setValue(prefix + "max_array", max_array);
   settings.setValue(prefix + "use_timestamp", use_timestamp);
   settings.setValue(prefix + "use_mcap_log_time", use_mcap_log_time);
+  settings.setValue(prefix + "use_legacy_cdr", ui->checkBoxUseLegacyCdr->isChecked());
   settings.setValue(prefix + "sorted_column", sort_column);
 
   QItemSelectionModel* select = ui->tableWidget->selectionModel();

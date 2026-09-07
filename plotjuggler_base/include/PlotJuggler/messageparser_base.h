@@ -115,6 +115,12 @@ public:
     _use_embedded_timestamp = enable;
   }
 
+  // Configure CDR alignment for OMGIDL parsers (default no-op for other parsers)
+  virtual void setUseLegacyCdrAlignment(bool /*enable*/)
+  {
+    // Default implementation: no-op (only OMGIDL/ROS2 parsers support this)
+  }
+
 protected:
   PlotDataMapRef& _plot_data;
   std::string _topic_name;

@@ -42,9 +42,15 @@ if(BUILD_TESTING)
   find_package(GTest QUIET)
   if(GTest_FOUND)
     enable_testing()
+
     add_executable(test_ros_field tests/test_ros_field.cpp)
     target_link_libraries(test_ros_field PRIVATE rosx_introspection GTest::gtest_main)
+
+    add_executable(test_cdr_alignment tests/test_cdr_alignment.cpp)
+    target_link_libraries(test_cdr_alignment PRIVATE rosx_introspection GTest::gtest_main)
+
     include(GoogleTest)
     gtest_discover_tests(test_ros_field)
+    gtest_discover_tests(test_cdr_alignment)
   endif()
 endif()

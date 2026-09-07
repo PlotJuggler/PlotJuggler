@@ -292,6 +292,7 @@ bool DataLoadMCAP::xmlSaveState(QDomDocument& doc, QDomElement& parent_element) 
   elem.setAttribute("use_mcap_log_time", int(params.use_mcap_log_time));
   elem.setAttribute("clamp_large_arrays", int(params.clamp_large_arrays));
   elem.setAttribute("max_array_size", params.max_array_size);
+  elem.setAttribute("use_legacy_cdr_alignment", int(params.use_legacy_cdr_alignment));
   elem.setAttribute("selected_topics", params.selected_topics.join(';'));
 
   parent_element.appendChild(elem);
@@ -311,6 +312,7 @@ bool DataLoadMCAP::xmlLoadState(const QDomElement& parent_element)
   params.use_mcap_log_time = bool(elem.attribute("use_mcap_log_time").toInt());
   params.clamp_large_arrays = bool(elem.attribute("clamp_large_arrays").toInt());
   params.max_array_size = elem.attribute("max_array_size").toInt();
+  params.use_legacy_cdr_alignment = bool(elem.attribute("use_legacy_cdr_alignment").toInt());
   params.selected_topics = elem.attribute("selected_topics").split(';');
   _dialog_parameters = params;
   return true;
@@ -562,6 +564,15 @@ bool DataLoadMCAP::readDataFromFile(FileLoadInfo* info, PlotDataMapRef& plot_dat
     {
       auto& parser_factory = it->second;
       auto parser = parser_factory->createParser(topic_name, schema->name, definition, plot_data);
+
+      // Configure legacy CDR alignment for OMGIDL parsers if requested
+      if (_dialog_parameters->use_legacy_cdr_alignment)
+      {
+        if (channel_encoding == "omgidl" || schema_encoding == "omgidl")
+        {
+          parser->setUseLegacyCdrAlignment(true);
+        }
+      }
 
       parsers_by_channel.insert({ channel_ptr->id, parser });
     }
