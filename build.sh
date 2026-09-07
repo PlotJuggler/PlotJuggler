@@ -64,7 +64,7 @@ fi
 
 if [[ ! -d "$QT_DIR" ]]; then
   echo "Qt ${PJ_QT_VERSION} not found at ${QT_DIR}."
-  echo "Install it with: ./install_qt6.sh"
+  echo "Install it with: ./scripts/install_qt6.sh"
   exit 1
 fi
 
@@ -76,7 +76,7 @@ fi
 # Release/packaging pipelines export these to skip building the test suite
 # and the scene3D dev demos (neither ships, and no release flow runs ctest).
 # PJ_BUILD_RASTER_HELPER goes the other way: the Linux release turns the
-# standalone GPLv2 helper ON so appimage/build_appimage.sh can stage it.
+# standalone GPLv2 helper ON so packaging/appimage/build_appimage.sh can stage it.
 PJ_FLAG_ARGS=()
 if [[ "$SKIP_TEST" == "1" ]]; then
   PJ_FLAG_ARGS+=("-DPJ_BUILD_TESTS=OFF")

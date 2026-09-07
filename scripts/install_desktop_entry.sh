@@ -37,7 +37,7 @@ TMP="$(mktemp -d)"; trap 'rm -rf "${TMP}"' EXIT
 # xdg-desktop-menu insists the file name carries a vendor prefix unless
 # --novendor is given, and it copies the file, so a temp copy with the final
 # name is all it needs. The Exec is absolute: the entry must work from anywhere.
-sed -e "s|^Exec=.*|Exec=${ROOT}/run.sh|" "${ROOT}/appimage/${NAME}.desktop" > "${TMP}/${NAME}.desktop"
+sed -e "s|^Exec=.*|Exec=${ROOT}/run.sh|" "${ROOT}/packaging/appimage/${NAME}.desktop" > "${TMP}/${NAME}.desktop"
 
 xdg-desktop-menu install --novendor --mode user "${TMP}/${NAME}.desktop"
 xdg-icon-resource install --novendor --mode user --size 256 "${ICON_PNG}" "${NAME}"

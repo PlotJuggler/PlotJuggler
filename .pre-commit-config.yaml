@@ -30,12 +30,12 @@ repos:
     hooks:
       - id: check-forbidden-patterns
         name: Check for forbidden patterns (std::getenv, etc.)
-        entry: .pre-commit-scripts/check-forbidden-patterns.py
+        entry: scripts/pre-commit/check-forbidden-patterns.py
         language: python
         types_or: [c++, c]
       - id: check-canonical-chrome
         name: Enforce canonical dialog chrome (no raw QDialog/QMessageBox/QFileDialog)
-        entry: .pre-commit-scripts/check-canonical-chrome.py
+        entry: scripts/pre-commit/check-canonical-chrome.py
         language: python
         types_or: [c++, c]
 

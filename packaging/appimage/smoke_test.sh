@@ -8,13 +8,13 @@
 # somewhere bare instead.
 #
 # It assumes the runtime libraries the payload needs are already present:
-# release CI runs it in the same container right after deb/smoke_test.sh,
+# release CI runs it in the same container right after packaging/deb/smoke_test.sh,
 # whose `apt install` resolved the .deb's Depends — which doubles as proof
 # that the set declared there covers the payload both artifacts share. For a
 # standalone run, install those packages (see `Depends:` in the .deb, or
-# SONAME_PKG in deb/build_deb.sh) plus xvfb first.
+# SONAME_PKG in packaging/deb/build_deb.sh) plus xvfb first.
 #
-#   sh appimage/smoke_test.sh <path/to/PlotJuggler-*.AppImage>
+#   sh packaging/appimage/smoke_test.sh <path/to/PlotJuggler-*.AppImage>
 set -e
 
 # This automation deliberately launches the real GUI. Suppress its anonymous

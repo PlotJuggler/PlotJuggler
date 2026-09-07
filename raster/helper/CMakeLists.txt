@@ -13,7 +13,7 @@ add_executable(pj-raster-helper
     raster_helper_main.cpp
     ${DG_SRCS}
 )
-target_include_directories(pj-raster-helper PRIVATE ${DG_DIR} ${CMAKE_SOURCE_DIR}/raster_ipc)
+target_include_directories(pj-raster-helper PRIVATE ${DG_DIR} ${CMAKE_SOURCE_DIR}/raster/ipc)
 target_link_libraries(pj-raster-helper PRIVATE Qt6::Core Qt6::Network)
 # doomgeneric is old C; silence its warnings and don't apply PJ's -Werror.
 set_source_files_properties(${DG_SRCS} PROPERTIES COMPILE_FLAGS "-w")

@@ -8,18 +8,18 @@
 # the bulk of the env setup here.
 #
 # Prerequisites (run these first, they are NOT done here):
-#   ./install_qt6.sh      # Qt into ./.qt/<ver>/gcc_64
+#   ./scripts/install_qt6.sh      # Qt into ./.qt/<ver>/gcc_64
 #   ./build.sh            # builds build/pj_app/plotjuggler4 + Conan env
 #
 # Plugins are NOT part of this repo — they are built and published separately by
 # pj-official-plugins (per-extension marketplace zips) and indexed by the
 # pj-plugin-registry. There are two ways to bundle them (and a no-plugin default):
 #
-#   appimage/build_appimage.sh                       # app-only AppImage
-#   appimage/build_appimage.sh --plugins-dir <path>  # LOCAL: copy a folder you
+#   packaging/appimage/build_appimage.sh                       # app-only AppImage
+#   packaging/appimage/build_appimage.sh --plugins-dir <path>  # LOCAL: copy a folder you
 #                                                    #   curated, verbatim, into
 #                                                    #   usr/lib/plotjuggler/plugins
-#   appimage/build_appimage.sh --plugins-registry [url]
+#   packaging/appimage/build_appimage.sh --plugins-registry [url]
 #                                                    # REGISTRY: download the
 #                                                    #   curated set (BUNDLE_IDS)
 #                                                    #   from the plugin registry,
@@ -43,7 +43,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 source "${ROOT}/versions.env"
 
 ARCH="${PJ_APPIMAGE_ARCH}"
@@ -71,7 +71,7 @@ REGISTRY_URL="https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/r
 # Curated set of registry extension ids bundled by --plugins-registry. The
 # registry lists every official extension; this is the subset that ships in the
 # AppImage. Keep in lockstep with $PluginIds in
-# installer/build_windows_installer.ps1 (same set, plus the Linux-only
+# packaging/installer/build_windows_installer.ps1 (same set, plus the Linux-only
 # ros2-topic-subscriber). Excluded by request: toolbox-colormap,
 # toolbox-reactive-scripts-editor.
 BUNDLE_IDS=(
@@ -112,8 +112,8 @@ while [[ $# -gt 0 ]]; do
     --plugins-dir)
       PLUGINS_MODE="local"
       # Canonicalize to an absolute path against the invocation CWD *now*: step 1
-      # below cd's into SCRIPT_DIR (appimage/) before collect_plugins_local reads
-      # this, so a relative value would otherwise resolve against appimage/ rather
+      # below cd's into SCRIPT_DIR (packaging/appimage/) before collect_plugins_local reads
+      # this, so a relative value would otherwise resolve against packaging/appimage/ rather
       # than where the user ran the command, and silently miss.
       PLUGINS_LOCAL_DIR="$(realpath -m -- "${2:?--plugins-dir needs a path}")"; shift 2 ;;
     --plugins-registry)
@@ -125,7 +125,7 @@ while [[ $# -gt 0 ]]; do
       COMMIT_HASH="${2:?--commit-hash needs a value}"; shift 2 ;;
     --retro-wad)
       # Canonicalized now for the same reason --plugins-dir is: step 1 cd's into
-      # appimage/ before this value is read.
+      # packaging/appimage/ before this value is read.
       RETRO_WAD="$(realpath -m -- "${2:?--retro-wad needs a path}")"; shift 2 ;;
     -h | --help)
       usage; exit 0 ;;
@@ -137,7 +137,7 @@ done
 # ---------------------------------------------------------------------------
 # 0. Sanity checks
 # ---------------------------------------------------------------------------
-[[ -d "${QT_DIR}" ]]                    || { echo "Qt not found at ${QT_DIR}. Run ./install_qt6.sh"; exit 1; }
+[[ -d "${QT_DIR}" ]]                    || { echo "Qt not found at ${QT_DIR}. Run ./scripts/install_qt6.sh"; exit 1; }
 [[ -x "${BUILD}/pj_app/plotjuggler4" ]] || { echo "plotjuggler4 not built. Run ./build.sh"; exit 1; }
 [[ -f "${BUILD}/conanrun.sh" ]]         || { echo "build/conanrun.sh missing. Run ./build.sh"; exit 1; }
 command -v wget >/dev/null              || { echo "wget required"; exit 1; }
@@ -344,14 +344,14 @@ fi
 #     child process, so it ships as plain files under the app binary's own
 #     directory, which is where MainWindow::openEmbeddedConsole looks
 #     (applicationDirPath()/3rdparty/retro/). Landing it under usr/bin also
-#     means deb/build_deb.sh, which copies usr/bin wholesale, inherits it.
+#     means packaging/deb/build_deb.sh, which copies usr/bin wholesale, inherits it.
 #
 #     Staged AFTER linuxdeploy for the same reason plugins are: the helper's
 #     entire dependency closure (Qt Core + Network) is already deployed for the
 #     app, so there is nothing for linuxdeploy to add by walking it again.
 # ---------------------------------------------------------------------------
 if [[ -n "${RETRO_WAD}" ]]; then
-  RETRO_HELPER="${BUILD}/raster_helper/pj-raster-helper"
+  RETRO_HELPER="${BUILD}/raster/helper/pj-raster-helper"
   [[ -x "${RETRO_HELPER}" ]] || { echo "ERROR: ${RETRO_HELPER} missing — rebuild with PJ_BUILD_RASTER_HELPER=ON ./build.sh"; exit 1; }
   [[ -f "${RETRO_WAD}" ]]    || { echo "ERROR: --retro-wad '${RETRO_WAD}' is not a file"; exit 1; }
 

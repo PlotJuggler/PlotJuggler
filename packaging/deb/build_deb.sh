@@ -3,13 +3,13 @@
 # Build a Debian/Ubuntu package (.deb) for PlotJuggler 4.
 #
 # This does NOT compile anything. It repackages the AppDir that
-# appimage/build_appimage.sh already produced (build/AppDir): a complete,
+# packaging/appimage/build_appimage.sh already produced (build/AppDir): a complete,
 # relocatable tree carrying the app, Qt 6, the Conan closure, the embedded
 # CPython stdlib and the bundled plugins. Run that first:
 #
 #   ./build.sh
-#   appimage/build_appimage.sh --plugins-registry
-#   deb/build_deb.sh
+#   packaging/appimage/build_appimage.sh --plugins-registry
+#   packaging/deb/build_deb.sh
 #
 # The package is a BUNDLED ("vendor") .deb in the Chrome / VS Code mould —
 # everything under /opt/plotjuggler4 plus a wrapper in /usr/bin. A distro-native
@@ -25,7 +25,7 @@
 #                         release CI to ship a binary stamped
 #                         PJ_INSTALLATION=deb rather than the AppImage-stamped
 #                         one. Requires patchelf and strip.
-#   --output-dir <dir>    Where to write the .deb (default: deb/)
+#   --output-dir <dir>    Where to write the .deb (default: packaging/deb/)
 #   --commit-hash <hash>  Mark a non-tag build: version becomes <ver>~<hash>,
 #                         which sorts BELOW the plain version.
 set -euo pipefail
@@ -36,7 +36,7 @@ set -euo pipefail
 umask 022
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 source "${ROOT}/versions.env"
 
 APPDIR="${ROOT}/build/AppDir"
@@ -67,7 +67,7 @@ done
 # ---------------------------------------------------------------------------
 # 0. Sanity checks
 # ---------------------------------------------------------------------------
-[[ -d "${APPDIR}" ]]                     || { echo "ERROR: AppDir not found at ${APPDIR}. Run appimage/build_appimage.sh first." >&2; exit 1; }
+[[ -d "${APPDIR}" ]]                     || { echo "ERROR: AppDir not found at ${APPDIR}. Run packaging/appimage/build_appimage.sh first." >&2; exit 1; }
 [[ -x "${APPDIR}/usr/bin/plotjuggler4" ]] || { echo "ERROR: ${APPDIR}/usr/bin/plotjuggler4 missing — is this a finished AppDir?" >&2; exit 1; }
 command -v dpkg-deb >/dev/null           || { echo "ERROR: dpkg-deb required (apt install dpkg)" >&2; exit 1; }
 

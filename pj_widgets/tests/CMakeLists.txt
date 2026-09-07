@@ -86,7 +86,7 @@ find_package(Qt6 REQUIRED COMPONENTS Test)
 
 # Protocol peer for the stream-view test: publishes one frame, no engine.
 add_executable(raster_stub_helper raster_stub_helper.cpp)
-target_include_directories(raster_stub_helper PRIVATE ${CMAKE_SOURCE_DIR}/raster_ipc)
+target_include_directories(raster_stub_helper PRIVATE ${CMAKE_SOURCE_DIR}/raster/ipc)
 target_link_libraries(raster_stub_helper PRIVATE Qt6::Core Qt6::Network)
 set_target_properties(raster_stub_helper PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 

@@ -122,10 +122,10 @@ jobs:
           key: qt-${{ steps.versions.outputs.qt_version }}-linux-gcc_64
 
       - name: Install Qt via aqt
-        # Delegates to the repo-root install script, which reads versions.env.
+        # Delegates to scripts/install_qt6.sh, which reads versions.env.
         # It installs into ./.qt and no-ops if present.
         if: steps.qt-cache.outputs.cache-hit != 'true'
-        run: ./install_qt6.sh
+        run: ./scripts/install_qt6.sh
 
       - name: Install Qt 6 + FFmpeg VAAPI system dependencies
         run: |
@@ -338,7 +338,7 @@ jobs:
 
       - name: Install Qt via aqt
         if: steps.qt-cache.outputs.cache-hit != 'true'
-        run: ./install_qt6.sh
+        run: ./scripts/install_qt6.sh
 
       - name: Install Qt 6 + FFmpeg VAAPI system dependencies
         # Same set as the `build` job: configure still runs find_package(Qt6) for

@@ -4,7 +4,7 @@ This folder is for **cross-cutting documentation only** — material that doesn'
 
 > **Qt toolchain:** PJ4 builds against the Qt version pinned in
 > [`../versions.env`](../versions.env) (currently **Qt 6.11.1**). Install it with
-> the repo-root [`../install_qt6.sh`](../install_qt6.sh). See
+> [`../scripts/install_qt6.sh`](../scripts/install_qt6.sh). See
 > [`QT_NOTES.md`](./QT_NOTES.md) for what changed since 6.8.
 
 Examples of what belongs here:
@@ -14,18 +14,21 @@ Examples of what belongs here:
 - Architecture decision records (ADRs) for choices that affect multiple modules.
 - **Research notes** that informed multiple modules' designs — under `research/`.
 - Work-in-progress design specs for modules that don't yet have their own `docs/`.
+- Retired plans retained for historical context — under `archive/`.
 
 ## What does NOT belong here
 
 - **Module-local intent docs** (REQUIREMENTS, ARCHITECTURE, USER_MANUAL, …) — those live in `<module>/docs/`.
   Examples in this repo: `pj_scene2D/docs/`, `pj_marketplace/docs/`.
-- **Plan documents that are repo-wide** — `PJ4_PLAN.md` lives at the repo root.
 - **Agent-management state** (`.remember/`, `.claude/`, `.agents/`) — those are not human-readable docs.
 
 ## Current contents
 
 | Path | Status | Notes |
 |---|---|---|
+| [Packaging guides](../packaging/README.md) | Guide | AppImage and Docker builds, Debian packages, and Windows installers. |
+| `archive/PJ4_PLAN.md` | Retired | Original master plan; current architecture lives in root and module `CLAUDE.md` / `docs/`. Ongoing recording and cache work lives in the documents below. |
+| `research/mosaico_canonical_objects.md` | Reference | Mosaico canonical-object ingestion, decoding, and rendering across the datastore and scene modules. |
 | `QT_NOTES.md` | Reference | **Qt 6.11.1 baseline.** Features new since 6.8 (likely past most models' training cutoff), deprecations, and build/platform floors. Read before using an unfamiliar Qt API or reaching for a 6.8-era workaround. |
 | `TELEMETRY.md` | Reference | The anonymous launch ping: exact field list (the privacy contract, enforced by `telemetry_ping_test`), opt-out, and where it's implemented. Update together with any payload change. |
 | `WASM_DEPLOYMENT.md` | Reference | Build, deterministic packaging, cross-origin isolation, compression negotiation, MIME, and cache requirements for the threaded browser application. |

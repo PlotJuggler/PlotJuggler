@@ -15,13 +15,13 @@ header. The `plotjuggler_sdk` Conan package is a separate repo with its own lice
 
 ## Architecture
 
-Full implementation plan: [`PJ4_PLAN.md`](./PJ4_PLAN.md). That document is the source of truth for module boundaries, delivery phases, and architectural decisions — read it before proposing structural changes.
+Current module boundaries and dependency rules are documented below; each module's `CLAUDE.md` and `docs/` describe its implementation. The original [master plan](./docs/archive/PJ4_PLAN.md) is retired and retained only as historical context. Ongoing recording and source-cache work is tracked in [RECORDING_AND_CACHING.md](./docs/RECORDING_AND_CACHING.md) and [session_recorder_design.md](./docs/session_recorder_design.md).
 
-Top-level layout (monorepo, per plan §0 and §5):
+Top-level layout:
 
 ```
 PJ4/
-├── 3rdparty/                # vendored CMake deps + GPLv2/shareware compliance payload for the standalone raster_helper
+├── 3rdparty/                # vendored CMake deps + GPLv2/shareware compliance payload for the standalone raster helper
 ├── pj_datastore/            # Level 0 columnar store + ObjectStore + DerivedEngine
 ├── pj_scene_common/         # backend-agnostic layered scene dock framework, shared by the scene widget families
 ├── pj_scene2D/              # 2D scene widget family: core logic, Qt widgets, tools, tests
@@ -34,7 +34,10 @@ PJ4/
 ├── pj_plotting/             # Qwt plotting widget family: core adapters, Qt widgets, tests
 ├── pj_app/                  # main window shell
 ├── resources/               # SVG icons (ported from PJ3) + resources.qrc
-└── PJ4_PLAN.md
+├── raster/                  # helper/ executable + ipc/ header-only wire contract
+├── scripts/                 # setup, worktrees, pre-commit hooks, and development utilities
+├── packaging/               # AppImage, Debian package, and Windows installer
+└── docs/                    # cross-cutting guides, research, and archived plans
 ```
 
 The widget families (`pj_plotting`, `pj_scene2D/widgets` via the `pj_scene2d_widgets` target, and `pj_scene3D/widgets` via the `pj_scene3d_widgets` target) never depend on each other. Shared reusable Qt controls/helpers live in `pj_widgets` (including the reusable `Timeline` control — the per-source `display_offset` editor); shared runtime state flows through the `IDataWidget` contract exposed by `pj_runtime`.
@@ -57,12 +60,13 @@ When adding files, use the owning module rather than creating new top-level fold
 - `pj_scene3D/`: 3D scene widget family (robotics viz): TF, pointclouds, occupancy grids, URDF/mesh, markers. Independent 3D logic in `core/`, OpenGL widgets in `widgets/`, tests in `tests/`, standalone dev demos in `demos/` (built whenever the `pj_scene3d_widgets` target exists, i.e. on a default build). Do not add 3D rendering code elsewhere.
 - `resources/`: shared app resources registered in `resources.qrc`; module-local test/demo assets should live with that module.
 - `3rdparty/`: vendored source dependencies added via CMake `add_subdirectory`, plus `3rdparty/retro/` — the GPLv2/shareware license + source-offer compliance artifacts shipped alongside the separately-licensed `pj-raster-helper` (the root `CMakeLists.txt` installs these next to the helper binary). Conan/system dependencies do not belong here.
-- Top-level `raster_helper/` (the standalone GPL-2.0 `pj-raster-helper` executable that links vendored doomgeneric — PlotJuggler links none of it) and `raster_ipc/` (its header-only, Qt-free MPL-2.0 IPC contract, consumed by `pj_widgets`) are intentional non-`pj_` helper folders, not PJ modules, and are exempt from the no-new-top-level-folders rule.
-- Packaging recipes live in one flat folder per artifact format, also exempt from that rule: `appimage/` (AppImage), `deb/` (Debian/Ubuntu package), `installer/` (Windows installer). They contain no compiled code — each holds the scripts, templates and metadata that repackage an already-built tree. A `.deb` recipe belongs in `deb/`, deliberately **not** `debian/`, which by convention marks a debhelper source package this repo is not.
+- `raster/`: `helper/` is the standalone GPL-2.0 `pj-raster-helper` executable that links vendored doomgeneric; `ipc/` is its header-only, Qt-free MPL-2.0 wire contract, also consumed by `pj_widgets`. PlotJuggler consumes only the contract; it never links the helper or engine.
+- `scripts/`: setup and maintenance utilities, including `pre-commit/` hooks. Keep the everyday `build.sh`, `run.sh`, and `test.sh` entry points at the root.
+- `packaging/`: scripts, templates, and metadata that repackage an already-built tree: `appimage/` (AppImage), `deb/` (Debian/Ubuntu package), and `installer/` (Windows installer). See the [packaging guides](./packaging/README.md). Packaging utilities stay with their format; general development utilities live in `scripts/`.
 
 ## Documentation
 
-Each PJ4 module owns its intent docs. An agent landing in the repo reads root `CLAUDE.md` → `PJ4_PLAN.md` → per-module `CLAUDE.md` → per-module `docs/` → code. If any link in that chain is missing or stale, treat it as a documentation bug, not a code bug.
+Each PJ4 module owns its intent docs. An agent landing in the repo reads root `CLAUDE.md` → per-module `CLAUDE.md` → per-module `docs/` → code. If any link in that chain is missing or stale, treat it as a documentation bug, not a code bug.
 
 ### Code doc-comments
 
@@ -98,11 +102,11 @@ Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`.
 | `pj_plotting` | [pj_plotting/CLAUDE.md](./pj_plotting/CLAUDE.md) | — |
 | `pj_dialog_host` | [pj_dialog_host/CLAUDE.md](./pj_dialog_host/CLAUDE.md) | — |
 | `pj_scene_common` | [pj_scene_common/CLAUDE.md](./pj_scene_common/CLAUDE.md) | — |
-| `pj_scene2D` | [pj_scene2D/CLAUDE.md](./pj_scene2D/CLAUDE.md) | [docs/](./pj_scene2D/docs/) — REQUIREMENTS, ARCHITECTURE, TECHNICAL_NOTES |
-| `pj_marketplace` | [pj_marketplace/CLAUDE.md](./pj_marketplace/CLAUDE.md) | [docs/](./pj_marketplace/docs/) — REQUIREMENTS, ARCHITECTURE, USER_MANUAL, marketplace-spec |
-| `pj_scene3D` | [pj_scene3D/CLAUDE.md](./pj_scene3D/CLAUDE.md) | [docs/](./pj_scene3D/docs/) — REQUIREMENTS, [ARCHITECTURE](./pj_scene3D/docs/ARCHITECTURE.md) (rendering pipeline, cameras, URDF/mesh) |
-| `pj_datastore` | [pj_datastore/CLAUDE.md](./pj_datastore/CLAUDE.md) | [docs/](./pj_datastore/docs/) — REQUIREMENTS, ARCHITECTURE, USER_GUIDE, OBJECT_STORE_DESIGN |
-| `pj_scripting` | [pj_scripting/CLAUDE.md](./pj_scripting/CLAUDE.md) | [docs/](./pj_scripting/docs/) — FILTER_CLASS |
+| `pj_scene2D` | [pj_scene2D/CLAUDE.md](./pj_scene2D/CLAUDE.md) | [docs/](./pj_scene2D/docs) — REQUIREMENTS, ARCHITECTURE, TECHNICAL_NOTES |
+| `pj_marketplace` | [pj_marketplace/CLAUDE.md](./pj_marketplace/CLAUDE.md) | [docs/](./pj_marketplace/docs) — REQUIREMENTS, ARCHITECTURE, USER_MANUAL, marketplace-spec |
+| `pj_scene3D` | [pj_scene3D/CLAUDE.md](./pj_scene3D/CLAUDE.md) | [docs/](./pj_scene3D/docs) — REQUIREMENTS, [ARCHITECTURE](./pj_scene3D/docs/ARCHITECTURE.md) (rendering pipeline, cameras, URDF/mesh) |
+| `pj_datastore` | [pj_datastore/CLAUDE.md](./pj_datastore/CLAUDE.md) | [docs/](./pj_datastore/docs) — REQUIREMENTS, ARCHITECTURE, USER_GUIDE, OBJECT_STORE_DESIGN |
+| `pj_scripting` | [pj_scripting/CLAUDE.md](./pj_scripting/CLAUDE.md) | [docs/](./pj_scripting/docs) — FILTER_CLASS |
 | `plotjuggler_sdk` (Conan package) | [github.com/PlotJuggler/plotjuggler_sdk](https://github.com/PlotJuggler/plotjuggler_sdk) | the SDK repo owns its own `CLAUDE.md` + `docs/` tree |
 
 ### Freshness discipline
@@ -129,11 +133,11 @@ PlotJuggler 3 source tree — [github.com/facontidavide/PlotJuggler](https://git
 
 Treat the PJ3 tree as read-only. Do not modify it from this repo.
 
-The "wholesale lift" strategy for plot widgets (plan §5.3, §8) means porting files largely intact, then rebinding data reads (`PlotDataMapRef` → `DatastoreCurveAdapter` against `pj_datastore::DataReader`). Do not rebuild plot widgets from scratch.
+The "wholesale lift" strategy for plot widgets (see `pj_plotting/CLAUDE.md`) means porting files largely intact, then rebinding data reads (`PlotDataMapRef` → `DatastoreCurveAdapter` against `pj_datastore::DataReader`). Do not rebuild plot widgets from scratch.
 
 ## Build
 
-- **Qt 6.11.1** (required; pinned by [`versions.env`](./versions.env)). Install via [`./install_qt6.sh`](./install_qt6.sh). See [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) for what changed since 6.8 (new APIs past most training cutoffs, deprecations, build floors).
+- **Qt 6.11.1** (required; pinned by [`versions.env`](./versions.env)). Install via [`./scripts/install_qt6.sh`](./scripts/install_qt6.sh). See [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) for what changed since 6.8 (new APIs past most training cutoffs, deprecations, build floors).
 - **CMake + Conan**. CMake is the build driver; Conan provides external non-vendored dependencies.
 - **C++20**.
 - **Linux and Windows are both required shipped targets**; macOS is not yet. Keep the code portable — no Linux-only APIs or POSIX-specific paths in module code; gate anything platform-specific behind the usual CMake / `#ifdef` guards. Licensing note for Windows: conda-forge ships no LGPL FFmpeg for win-64, so pixi-based Windows artifacts must use the local `recipes/ffmpeg` package (the Conan path builds its own LGPL-trimmed FFmpeg on all platforms). Windows runtime packaging (windeployqt + bundling the FFmpeg/Qt DLLs `pj_app` needs) is in scope: the Conan `windows-ci.yml` resolves DLLs via `PATH` at test time, which is not a shippable layout.
@@ -146,7 +150,7 @@ Explicitly vendored (do not take from Conan or system packages):
 
 - **Qt-Advanced-Docking-System** — docking framework used by `pj_app`.
 - **nanocdr** — vendored via `add_subdirectory`.
-- **doomgeneric** — a vendored C engine whose sources are globbed directly into the `pj-raster-helper` target (not `add_subdirectory`'d). It and `raster_helper` form an optional, GPL-isolated standalone executable that PlotJuggler never links. **Off by default**: the `pj-raster-helper` target is built only with `-DPJ_BUILD_RASTER_HELPER=ON` (and only when the vendored source is checked out), so an ordinary dev or CI build never compiles the doomgeneric engine. The one exception is the Linux release (`linux-appimage-release.yml`), which turns it on — via `PJ_BUILD_RASTER_HELPER=ON ./build.sh` — and stages the helper with `appimage/build_appimage.sh --retro-wad`, so the AppImage and the `.deb` ship it under `3rdparty/retro/` next to the app binary.
+- **doomgeneric** — a vendored C engine whose sources are globbed directly into the `pj-raster-helper` target (not `add_subdirectory`'d). It and `raster/helper` form an optional, GPL-isolated standalone executable that PlotJuggler never links. **Off by default**: the `pj-raster-helper` target is built only with `-DPJ_BUILD_RASTER_HELPER=ON` (and only when the vendored source is checked out), so an ordinary dev or CI build never compiles the doomgeneric engine. The one exception is the Linux release (`linux-appimage-release.yml`), which turns it on — via `PJ_BUILD_RASTER_HELPER=ON ./build.sh` — and stages the helper with `packaging/appimage/build_appimage.sh --retro-wad`, so the AppImage and the `.deb` ship it under `3rdparty/retro/` next to the app binary.
 
 **Qwt is external, not vendored** (special case): `3rdparty/qwt/` holds only the
 CMake glue — the default build `FetchContent`s the official 6.3.0 release tarball
@@ -172,11 +176,11 @@ Conan, so rich traces need no system `-dev` packages.
 One-time setup (installs the Qt version from `versions.env` into `./.qt/`, ~1GB):
 
 ```bash
-./install_qt6.sh
+./scripts/install_qt6.sh
 ```
 
 `versions.env` is the **single source of truth** for the PJ4 app version, Qt
-version, and AppImage arch. `install_qt6.sh`, `build.sh`, `run.sh`, Docker, CMake,
+version, and AppImage arch. `scripts/install_qt6.sh`, `build.sh`, `run.sh`, Docker, CMake,
 and CI all consume it. To upgrade Qt, update `PJ_QT_VERSION` there; Windows CI
 still installs Qt inline because the Linux installer uses the `gcc_64` build.
 
@@ -218,7 +222,7 @@ Build (configures Conan, runs CMake, builds):
 
 That script:
 
-1. Checks for `.qt/<PJ_QT_VERSION>/gcc_64/` and tells you to run `./install_qt6.sh` if missing.
+1. Checks for `.qt/<PJ_QT_VERSION>/gcc_64/` and tells you to run `./scripts/install_qt6.sh` if missing.
 2. Runs `conan install ... --output-folder=build --build=missing -s compiler.cppstd=20` (reads `conanfile.txt`).
 3. Configures CMake with `CMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake` and `CMAKE_PREFIX_PATH=./.qt/<PJ_QT_VERSION>/gcc_64`.
 4. Builds with `cmake --build build -j$(nproc)`.
@@ -260,12 +264,12 @@ After a rebuild meant to pick up a C++ change, confirm the file actually recompi
 
 Submodules (`3rdparty/`): `git submodule update --init --recursive` on first clone.
 
-Worktrees: use the **`./worktree-new.sh`** / **`./worktree-rm.sh`** helpers at the
-repo root rather than hand-rolling `git worktree`:
+Worktrees: use the **`./scripts/worktree-new.sh`** / **`./scripts/worktree-rm.sh`** helpers in
+`scripts/` rather than hand-rolling `git worktree`:
 
 ```bash
-./worktree-new.sh fix/foo            # .worktrees/foo, branched off origin/main
-./worktree-rm.sh  foo                # after the PR merges (deletes the branch too)
+./scripts/worktree-new.sh fix/foo            # .worktrees/foo, branched off origin/main
+./scripts/worktree-rm.sh  foo                # after the PR merges (deletes the branch too)
 ```
 
 They handle the two things the manual path keeps getting wrong: the ~1GB Qt
@@ -279,13 +283,13 @@ resolve the primary checkout themselves, so they work from any worktree.
 
 - **Prefer `.ui` files over programmatic widget construction.** Widgets, layouts, menus, toolbars, dialogs — build them in Qt Designer (`.ui`) and load via `uic`. Use `AUTOUIC` in the module's `CMakeLists.txt`. Drop to hand-written `QWidget` subclasses only when the construction is genuinely dynamic (e.g. widgets created at runtime from plugin metadata) or when I explicitly ask for it.
 
-## v1 scope (per plan §0)
+## v1 scope
 
 Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/redo, derived-series editor (incl. Lua via `pj_scripting`), reactive scripts (via Toolbox + `onTimeChanged`), multi-tab workspace, marketplace install UI, all toolboxes, session recording of streaming sources to MCAP.
 
 Session recording is a **runtime capability**, not a build flag: `RecordingService::isSupported()` says whether this build has a sink to record into, and every Record affordance follows it. Only the sink is platform-bound — the MCAP file writer is compiled on desktop only, while `Recorder`/`RecordingService` build everywhere (a browser sink is a later milestone, see the design doc). Each Record press creates one batch folder in the Preferences → Recording folder, `pj_<UTC timestamp>/`, holding ONE MCAP file per recorded source, named after that source and written straight into its final name; every file of one press shares a `capture_id`. A recording without a summary section is one that was not stopped cleanly, and it still opens (readers scan it linearly, `mcap recover` rebuilds its index). The write-queue budget is per source, so recording N sources may hold N times it in flight. See [`docs/session_recorder_design.md`](./docs/session_recorder_design.md).
 
-The 3D widget family ships as `pj_scene3D` (built and wired into `pj_app` via `Scene3DDockWidget`): TF, pointclouds, occupancy grids, axis/grid render passes, SceneEntities/markers, pluggable camera models, URDF/mesh robot models, the HDR/tonemap/SSAO/EDL rendering pipeline, live/streaming TF+object ingest (`TransformService` + `driveVisibleLayersToLiveEdge`), and per-use parser bindings (`parse_locked.h`) — see `pj_scene3D/docs/ARCHITECTURE.md` for the as-built design, `docs/REQUIREMENTS.md` + plan §5.5 for scope.
+The 3D widget family ships as `pj_scene3D` (built and wired into `pj_app` via `Scene3DDockWidget`): TF, pointclouds, occupancy grids, axis/grid render passes, SceneEntities/markers, pluggable camera models, URDF/mesh robot models, the HDR/tonemap/SSAO/EDL rendering pipeline, live/streaming TF+object ingest (`TransformService` + `driveVisibleLayersToLiveEdge`), and per-use parser bindings (`parse_locked.h`) — see `pj_scene3D/docs/ARCHITECTURE.md` for the as-built design, `pj_scene3D/docs/REQUIREMENTS.md` for scope.
 
 For WebAssembly, Scene3D is a compile-time platform split behind those same
 public widget names. Desktop remains the full `QOpenGLWidget`/OpenGL layer graph;
@@ -313,8 +317,8 @@ object-bound samples, not just a multi-sample TF buffer.
 
 ## Workflow notes
 
-- Architectural questions → consult `PJ4_PLAN.md` first; escalate if the plan is silent or contradictory.
-- New modules must respect the dependency rules in plan §5.
+- Architectural questions → consult the placement rules above and the owning module's `CLAUDE.md` / `docs/`.
+- New modules must respect the dependency rules above.
 - Keep host code (`pj_app`, `pj_runtime`, `conanfile.txt`) **domain-neutral**: no plugin-specific terms (dataset-domain names, "episode") or hardcoded per-plugin policy. Mechanisms/protocols stay generic; the plugin supplies the domain meaning. A genuinely general capability motivated by one plugin is fine (e.g. a standard codec); a plugin-specific reference or branch in the host is not.
 - Delegating to Codex: invoke it **harness-tracked with a watchdog** (`codex exec` inside a backgrounded, timeout-bounded `Bash`) — the companion job model sends no completion notification and Codex can hang silently. Judge liveness by job-log mtime, not the "running" status; on timeout, cancel and take over the build/test yourself. Codex output is usually high quality when it does finish — act on its findings.
 

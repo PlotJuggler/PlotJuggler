@@ -3,21 +3,21 @@
 #
 # Verify the PlotJuggler 4 AppImage runs on a clean Ubuntu 22.04 (no Qt, no build
 # tools, no app deps) using only the libraries the AppImage bundles plus the
-# universal X11/GL runtime libs in appimage/Dockerfile.run. The host X server is
+# universal X11/GL runtime libs in packaging/appimage/Dockerfile.run. The host X server is
 # shared via xhost so the GUI appears on your screen.
 #
 # Usage:
-#   appimage/run_in_docker.sh [APP_ARGS...]   # launch the bundled GUI (args go to the app)
-#   PJ_APPIMAGE=<path> appimage/run_in_docker.sh ...   # run a specific AppImage
-#   REBUILD_IMAGE=1 appimage/run_in_docker.sh ...      # force-rebuild the runner image
-#   appimage/run_in_docker.sh -h | --help     # show this help and exit
+#   packaging/appimage/run_in_docker.sh [APP_ARGS...]   # launch the bundled GUI (args go to the app)
+#   PJ_APPIMAGE=<path> packaging/appimage/run_in_docker.sh ...   # run a specific AppImage
+#   REBUILD_IMAGE=1 packaging/appimage/run_in_docker.sh ...      # force-rebuild the runner image
+#   packaging/appimage/run_in_docker.sh -h | --help     # show this help and exit
 #
 # All arguments are forwarded verbatim to the AppImage. Requires an X server on the
 # host ($DISPLAY) and the `xhost` tool.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 source "${REPO_ROOT}/versions.env"
 IMAGE_TAG="pj4-appimage-runner:jammy"
 
@@ -28,10 +28,10 @@ X11/GL libs — no Qt, build tools, or app deps) with the host X server shared v
 xhost, so the GUI appears on your display.
 
 Usage:
-  appimage/run_in_docker.sh [APP_ARGS...]            # launch the GUI (args go to the app)
-  PJ_APPIMAGE=<path> appimage/run_in_docker.sh ...   # run a specific AppImage
-  REBUILD_IMAGE=1 appimage/run_in_docker.sh ...      # force-rebuild the runner image
-  appimage/run_in_docker.sh -h | --help              # show this help and exit
+  packaging/appimage/run_in_docker.sh [APP_ARGS...]            # launch the GUI (args go to the app)
+  PJ_APPIMAGE=<path> packaging/appimage/run_in_docker.sh ...   # run a specific AppImage
+  REBUILD_IMAGE=1 packaging/appimage/run_in_docker.sh ...      # force-rebuild the runner image
+  packaging/appimage/run_in_docker.sh -h | --help              # show this help and exit
 
 Requires an X server on the host ($DISPLAY) and the `xhost` tool.
 EOF
@@ -48,7 +48,7 @@ if [[ -z "${APPIMAGE}" ]]; then
   APPIMAGE="$(ls -t "${SCRIPT_DIR}"/PlotJuggler-*-"${PJ_APPIMAGE_ARCH}".AppImage 2>/dev/null | head -1 || true)"
 fi
 [[ -n "${APPIMAGE}" && -f "${APPIMAGE}" ]] || {
-  echo "ERROR: no AppImage found. Build one first: appimage/build_in_docker.sh"; exit 1; }
+  echo "ERROR: no AppImage found. Build one first: packaging/appimage/build_in_docker.sh"; exit 1; }
 APPIMAGE="$(cd "$(dirname "${APPIMAGE}")" && pwd)/$(basename "${APPIMAGE}")"  # absolute
 
 command -v docker >/dev/null || { echo "docker required"; exit 1; }

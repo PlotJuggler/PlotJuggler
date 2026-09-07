@@ -107,8 +107,8 @@ elsewhere in the host application:
   not a marketplace concern. The marketplace's job ends at "installed on
   disk"; whether the host chooses to load that DSO at startup is decided by
   the host's plugin loader and config.
-- **Runtime hot-reload of plugin instances.** Out of scope per PJ4_PLAN
-  non-goals.
+- **Runtime hot-reload of plugin instances.** Out of scope per the
+  [application non-goals](../../CLAUDE.md#non-goals-explicitly-deferred).
 
 ---
 

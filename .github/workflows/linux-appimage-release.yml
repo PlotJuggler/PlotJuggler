@@ -15,7 +15,7 @@ name: Release Linux packages
 #     closure (seeded by linux-ci), with ConanCenter source builds as fallback;
 #     Qt / ccache use actions/cache too.
 #   * Plugins (including the multi-distro ros2-topic-subscriber bundle) are
-#     resolved by appimage/build_appimage.sh --plugins-registry: every curated
+#     resolved by packaging/appimage/build_appimage.sh --plugins-registry: every curated
 #     id (BUNDLE_IDS) must resolve, download, and pass its checksum or the
 #     release fails — nothing is compiled locally or skipped best-effort.
 #   * The retro payload (the standalone GPLv2 pj-raster-helper, its shareware
@@ -125,7 +125,7 @@ jobs:
 
       - name: Install Qt via aqt
         if: steps.qt-cache.outputs.cache-hit != 'true'
-        run: ./install_qt6.sh
+        run: ./scripts/install_qt6.sh
 
       - name: Restore Conan cache
         id: conan-cache
@@ -209,15 +209,15 @@ jobs:
             --lockfile=conan.lock --lockfile-partial \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20
 
-      - name: Link pinned linuxdeploy/appimagetool into appimage/
-        # build_appimage.sh uses a pre-existing appimage/<tool>.AppImage instead
+      - name: Link pinned linuxdeploy/appimagetool into packaging/appimage/
+        # build_appimage.sh uses a pre-existing packaging/appimage/<tool>.AppImage instead
         # of downloading 'continuous' — so the image-pinned bytes are what runs.
         shell: bash
         run: |
           set -euo pipefail
           for tool in linuxdeploy linuxdeploy-plugin-qt appimagetool; do
             ln -sfn "/opt/linuxdeploy/${tool}-${PJ_APPIMAGE_ARCH}.AppImage" \
-                    "appimage/${tool}-${PJ_APPIMAGE_ARCH}.AppImage"
+                    "packaging/appimage/${tool}-${PJ_APPIMAGE_ARCH}.AppImage"
           done
 
       - name: Stage the retro payload's game data
@@ -261,14 +261,14 @@ jobs:
           # installer's -CleanReleaseName; dispatch builds need the hash so
           # otherwise-identical-looking artifacts stay distinguishable.
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
-            bash appimage/build_appimage.sh --plugins-registry --retro-wad "${PJ_RETRO_WAD}"
+            bash packaging/appimage/build_appimage.sh --plugins-registry --retro-wad "${PJ_RETRO_WAD}"
           else
-            bash appimage/build_appimage.sh --plugins-registry --retro-wad "${PJ_RETRO_WAD}" \
+            bash packaging/appimage/build_appimage.sh --plugins-registry --retro-wad "${PJ_RETRO_WAD}" \
                                             --commit-hash "${GITHUB_SHA:0:8}"
           fi
-          appimage_path="$(ls -1 appimage/PlotJuggler-*.AppImage | head -n 1)"
+          appimage_path="$(ls -1 packaging/appimage/PlotJuggler-*.AppImage | head -n 1)"
           if [[ -z "$appimage_path" ]]; then
-            echo "::error::AppImage not produced under appimage/" >&2
+            echo "::error::AppImage not produced under packaging/appimage/" >&2
             exit 1
           fi
           echo "APPIMAGE=$appimage_path" >> "$GITHUB_ENV"
@@ -421,14 +421,14 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
-            bash deb/build_deb.sh --binary build/pj_app/plotjuggler4
+            bash packaging/deb/build_deb.sh --binary build/pj_app/plotjuggler4
           else
-            bash deb/build_deb.sh --binary build/pj_app/plotjuggler4 \
+            bash packaging/deb/build_deb.sh --binary build/pj_app/plotjuggler4 \
                                   --commit-hash "${GITHUB_SHA:0:8}"
           fi
-          deb_path="$(ls -1 deb/plotjuggler4_*.deb | head -n 1)"
+          deb_path="$(ls -1 packaging/deb/plotjuggler4_*.deb | head -n 1)"
           if [[ -z "$deb_path" ]]; then
-            echo "::error::no .deb produced under deb/" >&2
+            echo "::error::no .deb produced under packaging/deb/" >&2
             exit 1
           fi
           echo "DEB=$deb_path" >> "$GITHUB_ENV"
@@ -446,7 +446,7 @@ jobs:
     # in the same container. `apt install` succeeding only proves the declared
     # Depends resolve; a too-new glibc or libstdc++ version symbol is burned
     # into the ELF and no package name expresses it, so only executing the
-    # binaries catches that. deb/smoke_test.sh proves the linkable closure
+    # binaries catches that. packaging/deb/smoke_test.sh proves the linkable closure
     # with an ldd gate run BEFORE Xvfb is installed (Xvfb's own X11 libraries
     # would otherwise mask a missing GUI dependency); the GUI phases cover the
     # dlopen'd remainder. One container per image, deliberately: the AppImage
@@ -488,10 +488,9 @@ jobs:
           docker run --rm \
             -v "${PWD}/pkg:/pkg:ro" \
             -v "${PWD}/appimg:/appimg:ro" \
-            -v "${PWD}/deb:/deb:ro" \
-            -v "${PWD}/appimage:/appimage:ro" \
+            -v "${PWD}/packaging:/packaging:ro" \
             "${{ matrix.image }}" \
-            sh -c 'set -e; sh /deb/smoke_test.sh; sh /appimage/smoke_test.sh /appimg/*.AppImage'
+            sh -c 'set -e; sh /packaging/deb/smoke_test.sh; sh /packaging/appimage/smoke_test.sh /appimg/*.AppImage'
 
   deb-release:
     # Gated on smoke: unlike the AppImage, the .deb is only attached to the

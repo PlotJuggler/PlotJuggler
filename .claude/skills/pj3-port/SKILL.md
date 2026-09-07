@@ -7,7 +7,7 @@ description: Use when porting any widget, dialog, panel, transform, or helper fr
 
 ## Overview
 
-PJ4's core strategy is the **wholesale lift** (PJ4_PLAN.md §5.3, §8): port PJ3 files largely intact, then rebind only the data reads. The recorded failure mode is rewriting from scratch, "improving" while porting, or renaming things users depend on. **Port, don't rewrite. Rebind, don't redesign.**
+PJ4's core strategy is the **wholesale lift** (see `pj_plotting/CLAUDE.md`): port PJ3 files largely intact, then rebind only the data reads. The recorded failure mode is rewriting from scratch, "improving" while porting, or renaming things users depend on. **Port, don't rewrite. Rebind, don't redesign.**
 
 PJ3 lives at `~/ws_plotjuggler/PlotJuggler/` — **read-only, never modify it from PJ4.**
 
@@ -26,7 +26,7 @@ grep -ril "<feature keyword>" ~/ws_plotjuggler/PlotJuggler/plotjuggler_app/ \
 
 If PJ3 has it → port it. If PJ3 genuinely doesn't → say so explicitly and get agreement before greenfielding.
 
-**2. Worktree first.** `./worktree-new.sh <branch>` off `origin/main` before any edit (see the `worktree` skill).
+**2. Worktree first.** `./scripts/worktree-new.sh <branch>` off `origin/main` before any edit (see the `worktree` skill).
 
 **3. Decide placement** with root CLAUDE.md placement rules. Quick map: plot-family code → `pj_plotting`; reusable-by-any-Qt-app control → `pj_widgets`; app dialog / wiring → `pj_app`; service/state logic → `pj_runtime`. When the fit is ambiguous, ask — don't invent a location.
 

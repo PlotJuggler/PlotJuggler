@@ -1,7 +1,7 @@
 name: AppImage builder image
 
 # Builds and publishes the THIN AppImage CI builder image (the `ci-base` target
-# of appimage/Dockerfile.build) to GHCR. linux-appimage-release.yml runs its
+# of packaging/appimage/Dockerfile.build) to GHCR. linux-appimage-release.yml runs its
 # build job inside this image to keep the glibc 2.35 floor after hosted
 # ubuntu-22.04 runners retire (actions/runner-images#14254). The fat local
 # builder target is NOT built here — build_in_docker.sh builds it on demand.
@@ -10,7 +10,7 @@ on:
   push:
     branches: [main]
     paths:
-      - appimage/Dockerfile.build
+      - packaging/appimage/Dockerfile.build
       - .github/workflows/appimage-builder-image.yml
   workflow_dispatch:
 
@@ -51,7 +51,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker build -f appimage/Dockerfile.build --target ci-base \
+          docker build -f packaging/appimage/Dockerfile.build --target ci-base \
             --build-arg PJ_APPIMAGE_ARCH="${PJ_APPIMAGE_ARCH}" \
             -t "${IMAGE}:${GITHUB_SHA}" -t "${IMAGE}:latest" .
 

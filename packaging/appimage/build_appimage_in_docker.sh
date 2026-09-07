@@ -6,11 +6,11 @@
 # independent of whatever the host machine runs. See Dockerfile for why.
 #
 # Usage:
-#   appimage/build_appimage_in_docker.sh                     # app-only AppImage
-#   appimage/build_appimage_in_docker.sh --plugins-registry  # bundle official plugins
-#   appimage/build_appimage_in_docker.sh --plugins-dir DIR   # bundle a local folder
+#   packaging/appimage/build_appimage_in_docker.sh                     # app-only AppImage
+#   packaging/appimage/build_appimage_in_docker.sh --plugins-registry  # bundle official plugins
+#   packaging/appimage/build_appimage_in_docker.sh --plugins-dir DIR   # bundle a local folder
 #
-# Arguments are forwarded to appimage/build_appimage.sh. A --plugins-dir path may
+# Arguments are forwarded to packaging/appimage/build_appimage.sh. A --plugins-dir path may
 # be relative — it is resolved here against your current directory (and must live
 # inside the repo tree, since only the repo is mounted into the container).
 #
@@ -19,7 +19,7 @@
 # demos (neither ships in the AppImage) are never compiled.
 #
 # The container reuses the host's ./.qt (Qt's official binaries are portable
-# across glibc baselines) and appimage/ (cached linuxdeploy tool downloads,
+# across glibc baselines) and packaging/appimage/ (cached linuxdeploy tool downloads,
 # final .AppImage output), but builds into its own build-appimage-docker/ tree
 # rather than ./build/, so container-toolchain objects never mix with the
 # host's own dev build. Conan/ccache caches persist across runs in their own
@@ -28,7 +28,7 @@
 # repeat builds are incremental.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 IMAGE="pj4-appimage-builder:ubuntu22.04"
 CONTAINER_BUILD_DIR="${ROOT}/build-appimage-docker"
 CONAN_CACHE_DIR="${ROOT}/.conan2-appimage-docker"
@@ -37,7 +37,7 @@ CCACHE_DIR="${ROOT}/.ccache-appimage-docker"
 mkdir -p "${CONTAINER_BUILD_DIR}" "${CONAN_CACHE_DIR}" "${CCACHE_DIR}"
 
 # Validate/rewrite a --plugins-dir argument on the host BEFORE the (long) build,
-# and canonicalize it to an absolute path. build_appimage.sh cd's into appimage/
+# and canonicalize it to an absolute path. build_appimage.sh cd's into packaging/appimage/
 # before it consumes this path, so a relative value must be resolved here against
 # the host CWD (where the user ran this). Only ${ROOT} is bind-mounted into the
 # container, so a folder outside the repo tree is rejected up front — it would be
@@ -73,4 +73,4 @@ docker run --rm \
   -e PJ_BUILD_TESTS=OFF \
   -e PJ_BUILD_DEMOS=OFF \
   "${IMAGE}" \
-  bash -c 'conan profile detect --force && ./install_qt6.sh && ./build.sh && ./appimage/build_appimage.sh "$@"' bash "${ARGS[@]+"${ARGS[@]}"}"
+  bash -c 'conan profile detect --force && ./scripts/install_qt6.sh && ./build.sh && ./packaging/appimage/build_appimage.sh "$@"' bash "${ARGS[@]+"${ARGS[@]}"}"

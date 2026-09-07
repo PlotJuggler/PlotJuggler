@@ -15,7 +15,7 @@ There is **no portable-zip path** — the deployment target is this installer.
 ## Layout
 
 ```
-installer/
+packaging/installer/
 ├── config.xml                                     # installer identity — version tokenised as __PJ_VERSION__
 ├── build_windows_installer.ps1                    # staging + binarycreator orchestrator (run on Windows)
 └── packages/
@@ -68,7 +68,7 @@ modules there too.
   `python3XX.dll` — the local default is static on MSVC and the installer
   would then fail to find the runtime.
 - **Qt 6.11.1 msvc2022_64** — for `windeployqt.exe`. Auto-detected under `.qt`
-  (the `install_qt6.sh` / aqt layout); otherwise pass `-QtDir`.
+  (the `scripts/install_qt6.sh` / aqt layout); otherwise pass `-QtDir`.
 - **Qt Installer Framework tools** — for `binarycreator.exe`. Install via the Qt
   Maintenance Tool, or `aqt install-tool --outputdir .qt windows desktop tools_ifw`.
   Auto-detected next to `-QtDir` (aqt `.qt\Tools`) and under `C:\Qt\Tools`.
@@ -108,7 +108,7 @@ From the repo root, after a Windows build of the app — a plain run downloads t
 curated published plugins and produces the full installer:
 
 ```powershell
-.\installer\build_windows_installer.ps1
+.\packaging\installer\build_windows_installer.ps1
 ```
 
 `-QtDir` / `-IfwDir` are auto-detected (`.qt` first, then `C:\Qt`); pass them only

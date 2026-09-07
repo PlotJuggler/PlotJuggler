@@ -1,7 +1,7 @@
 # Qt version notes (for AI agents and humans)
 
 **PJ4 builds against the Qt version pinned in [`../versions.env`](../versions.env)
-(currently 6.11.1).** Install it with [`../install_qt6.sh`](../install_qt6.sh).
+(currently 6.11.1).** Install it with [`../scripts/install_qt6.sh`](../scripts/install_qt6.sh).
 
 > **Read this if your training data predates ~2025.** Qt 6.9, 6.10 and 6.11
 > shipped *after* the knowledge cutoff of most current models. If you "know" PJ4
@@ -145,6 +145,6 @@ FFmpeg). scene3D's photorealism is hand-written OpenGL, *not* Qt Quick 3D.
 ## See also
 
 - [`../versions.env`](../versions.env) — pins the Qt version consumed by CMake, scripts, Docker, and CI.
-- [`../install_qt6.sh`](../install_qt6.sh) — installs the pinned Linux Qt build.
+- [`../scripts/install_qt6.sh`](../scripts/install_qt6.sh) — installs the pinned Linux Qt build.
 - `pj_scene2D/docs/TECHNICAL_NOTES.md` — `QRhiWidget` lifecycle + video-rendering
   specifics (the APIs there became public/usable in 6.8 and remain so on 6.11).

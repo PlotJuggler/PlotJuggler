@@ -38,7 +38,7 @@ This module is the canonical example of the **wholesale lift** strategy:
 
 ## Known historical gotchas
 
-See repo memory and PJ4_PLAN.md §5.3 / §8 for the full list. Two that matter most:
+Keep these porting and rendering constraints in mind:
 
 - **OpenGL canvas**: PJ3 had a `Preferences::use_opengl` QSettings gate; the early PJ4 port dropped it, causing software-raster rendering at 72% CPU. Restored. Do not re-drop without measuring.
 - **Native window inside ADS**: do **not** propose making `QwtPlotOpenGLCanvas` a `WA_NativeWindow` inside Qt-Advanced-Docking — the native-flag conflict breaks layout.

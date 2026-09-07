@@ -21,7 +21,7 @@ The complete corresponding source code for the "pj-raster-helper" binary:
     which the binary was built:
 
         https://github.com/PlotJuggler/PJ4
-        (raster_helper/ and raster_ipc/RasterIpcProtocol.h)
+        (raster/helper/ and raster/ipc/RasterIpcProtocol.h)
 
   - The rendering engine is the doomgeneric project, included as a git submodule
     at 3rdparty/doomgeneric and pinned to commit

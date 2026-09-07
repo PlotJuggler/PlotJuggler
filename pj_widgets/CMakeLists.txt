@@ -104,7 +104,7 @@ set_target_properties(pj_widgets PROPERTIES
 
 target_include_directories(pj_widgets PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/raster_ipc>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/raster/ipc>
 )
 
 target_link_libraries(pj_widgets PUBLIC

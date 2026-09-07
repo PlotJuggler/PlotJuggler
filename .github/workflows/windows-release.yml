@@ -318,7 +318,7 @@ jobs:
         # builds keep the date + main-commit stamp to stay distinguishable.
         shell: pwsh
         run: |
-          .\installer\build_windows_installer.ps1 `
+          .\packaging\installer\build_windows_installer.ps1 `
             -QtDir ".qt\$env:PJ_QT_VERSION\msvc2022_64" `
             -PluginRegistryUrl "https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/refs/heads/development/registry.json" `
             -Version $env:PJ_VERSION `

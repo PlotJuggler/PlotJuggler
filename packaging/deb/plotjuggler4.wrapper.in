@@ -7,7 +7,7 @@
 # Everything the app needs lives under that prefix; only this wrapper, the
 # desktop file and the icon are installed into the system tree.
 #
-# Generated from deb/plotjuggler4.wrapper.in by deb/build_deb.sh.
+# Generated from packaging/deb/plotjuggler4.wrapper.in by packaging/deb/build_deb.sh.
 set -e
 
 PJ_PREFIX="@PJ_PREFIX@"

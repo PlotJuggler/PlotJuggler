@@ -1,5 +1,12 @@
 # PlotJuggler 4.x Master Plan
 
+> **Retired 2026-09-07.** Historical planning context, not the current architecture
+> or delivery tracker. Use the [root module index](../../CLAUDE.md#module-documentation-index)
+> and each module's `CLAUDE.md` / `docs/` for current guidance. Remaining recording
+> and source-cache work is tracked in [RECORDING_AND_CACHING.md](../RECORDING_AND_CACHING.md)
+> and [session_recorder_design.md](../session_recorder_design.md).
+> Code paths in the original text are relative to the repository root.
+
 ## 0. Revisions (2026-04)
 
 This section captures the architectural decisions that supersede portions of this document. The body below remains as planning context; where it conflicts with this section, this section wins.
@@ -782,7 +789,7 @@ Live data is bounded by memory retention and dies with the session. The host rec
 streaming sources — at the delegated-ingest seam (`ensureParserBinding` + `pushMessage`), never decoded samples —
 into standard MCAP files whose channels keep the original encodings and schemas. Replay is the ordinary MCAP
 loader plus the installed parsers. Rules fixed by the design (see
-[`docs/session_recorder_design.md`](./docs/session_recorder_design.md)):
+[`docs/session_recorder_design.md`](../session_recorder_design.md)):
 
 - raw only: sources that write decoded samples directly are not recordable until they expose messages
 - subscribed topics only (demand-driven subscriptions define what a recording contains)

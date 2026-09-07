@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Remove a PJ4 feature worktree created by ./worktree-new.sh and delete its
+# Remove a PJ4 feature worktree created by ./scripts/worktree-new.sh and delete its
 # branch. Refuses if the worktree has uncommitted TRACKED changes (so the
 # force-remove below can't eat unpushed source); --force overrides that. The
 # remove is always forced at the git level because the worktree carries
@@ -8,9 +8,9 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: ./worktree-rm.sh <dir> [--keep-branch] [--force]
+Usage: ./scripts/worktree-rm.sh <dir> [--keep-branch] [--force]
 
-  <dir>          worktree dir under .worktrees/ (the name worktree-new.sh used)
+  <dir>          worktree dir under .worktrees/ (the name scripts/worktree-new.sh used)
   --keep-branch  remove the worktree but keep its local branch
   --force        skip the uncommitted-tracked-changes guard
   -h, --help     show this help

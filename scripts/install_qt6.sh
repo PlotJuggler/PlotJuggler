@@ -5,7 +5,7 @@
 # PJ_QT_VERSION there when changing the Qt toolchain pin. See docs/QT_NOTES.md
 # for the rationale behind the current pin and what changed since 6.8.
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${SCRIPT_DIR}/versions.env"
 
 QT_DIR="${SCRIPT_DIR}/.qt/${PJ_QT_VERSION}/gcc_64"

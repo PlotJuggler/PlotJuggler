@@ -52,7 +52,7 @@ pj-raster-helper is an independent executable that PlotJuggler launches as a
 child process and links no part of. It is licensed under the GNU General Public
 License, version 2 (/usr/share/common-licenses/GPL-2), whose full text also
 ships next to the binary as COPYING. Its complete corresponding source —
-raster_helper/ in the PlotJuggler 4 repository plus the doomgeneric submodule
+raster/helper/ in the PlotJuggler 4 repository plus the doomgeneric submodule
 pinned there — is covered by the written offer in SOURCE-OFFER.txt, shipped in
 the same directory.
 

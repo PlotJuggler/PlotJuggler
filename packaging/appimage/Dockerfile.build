@@ -13,7 +13,7 @@
 #     .github/workflows/appimage-builder-image.yml.
 #
 #   * default final stage: FULLY-BAKED local builder for
-#     appimage/build_in_docker.sh — Qt (versions.env) and the prebuilt Conan
+#     packaging/appimage/build_in_docker.sh — Qt (versions.env) and the prebuilt Conan
 #     dep closure live in image layers so a container run fetches NOTHING (the
 #     one exception is --plugins-registry, which downloads published plugin zips).
 #
@@ -42,7 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 2) Python tooling: aqt (Qt installer) + conan. Installing aqt up front means
-#    install_qt6.sh finds it (command -v aqt) and SKIPS its own bare `pip install`.
+#    scripts/install_qt6.sh finds it (command -v aqt) and SKIPS its own bare `pip install`.
 RUN python3 -m pip install --no-cache-dir 'aqtinstall>=3.3' 'conan>=2,<3'
 
 ARG PJ_APPIMAGE_ARCH
@@ -51,7 +51,7 @@ ENV PJ_APPIMAGE_ARCH=$PJ_APPIMAGE_ARCH
 
 # 3) Bake PINNED linuxdeploy + its Qt plugin + appimagetool. All three publish
 #    mainly rolling 'continuous' tags, so the PIN = freezing the exact bytes into
-#    this layer (build_appimage.sh uses a pre-existing appimage/<name>.AppImage
+#    this layer (build_appimage.sh uses a pre-existing packaging/appimage/<name>.AppImage
 #    instead of downloading). SHA256SUMS records provenance. The optional build
 #    args, when non-empty, assert the bytes and FAIL the build on mismatch;
 #    default empty = record-only.
@@ -74,14 +74,14 @@ RUN mkdir -p /opt/linuxdeploy && cd /opt/linuxdeploy \
 # ---------------------------------------------------------------------------
 FROM ci-base
 
-# 4) Bake Qt via the repo's install_qt6.sh using versions.env. Running it from
+# 4) Bake Qt via the repo's scripts/install_qt6.sh using versions.env. Running it from
 #    /opt lands Qt under /opt/.qt/ — a stable path outside the eventual /work bind mount.
 ARG PJ_QT_VERSION
 RUN test -n "$PJ_QT_VERSION"
 ENV PJ_QT_VERSION=$PJ_QT_VERSION
 COPY versions.env /opt/versions.env
-COPY install_qt6.sh /opt/install_qt6.sh
-RUN bash /opt/install_qt6.sh
+COPY scripts/install_qt6.sh /opt/scripts/install_qt6.sh
+RUN bash /opt/scripts/install_qt6.sh
 
 # 5) Warm the Conan cache into /root/.conan2 with the SAME settings build.sh uses,
 #    so the run-time conan install is an offline cache hit. Only the requires file
@@ -111,17 +111,17 @@ git config --global --add safe.directory '*' || true
 
 for tool in linuxdeploy linuxdeploy-plugin-qt appimagetool; do
   ln -sfn /opt/linuxdeploy/${tool}-${PJ_APPIMAGE_ARCH}.AppImage \
-          /work/appimage/${tool}-${PJ_APPIMAGE_ARCH}.AppImage
+          /work/packaging/appimage/${tool}-${PJ_APPIMAGE_ARCH}.AppImage
 done
 
 cleanup() {
   local tool f
   for tool in linuxdeploy linuxdeploy-plugin-qt appimagetool; do
-    rm -f /work/appimage/${tool}-${PJ_APPIMAGE_ARCH}.AppImage || true
+    rm -f /work/packaging/appimage/${tool}-${PJ_APPIMAGE_ARCH}.AppImage || true
   done
   chown -R "${HOST_UID}:${HOST_GID}" /work/build 2>/dev/null || true
   shopt -s nullglob
-  for f in /work/appimage/PlotJuggler-*-${PJ_APPIMAGE_ARCH}.AppImage; do
+  for f in /work/packaging/appimage/PlotJuggler-*-${PJ_APPIMAGE_ARCH}.AppImage; do
     chown "${HOST_UID}:${HOST_GID}" "$f" 2>/dev/null || true
   done
   shopt -u nullglob
@@ -151,7 +151,7 @@ fi
 export APPIMAGE_EXTRACT_AND_RUN=1
 
 bash /work/build.sh
-bash /work/appimage/build_appimage.sh "$@"
+bash /work/packaging/appimage/build_appimage.sh "$@"
 PJEOF
 RUN chmod +x /usr/local/bin/pj4-build-entry.sh
 

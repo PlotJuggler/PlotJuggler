@@ -155,7 +155,7 @@ set_target_properties(pj_app_shell PROPERTIES
 target_include_directories(pj_app_shell PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}/generated
-    ${CMAKE_SOURCE_DIR}/raster_ipc
+    ${CMAKE_SOURCE_DIR}/raster/ipc
 )
 
 target_link_libraries(pj_app_shell PUBLIC
@@ -647,7 +647,7 @@ if(PJ_BUILD_TESTS)
     add_test(NAME KeySequenceWatcher COMMAND key_sequence_watcher_test)
 
     add_executable(raster_ipc_protocol_test tests/raster_ipc_protocol_test.cpp)
-    target_include_directories(raster_ipc_protocol_test PRIVATE ${CMAKE_SOURCE_DIR}/raster_ipc)
+    target_include_directories(raster_ipc_protocol_test PRIVATE ${CMAKE_SOURCE_DIR}/raster/ipc)
     target_link_libraries(raster_ipc_protocol_test PRIVATE GTest::gtest_main)
     if(DEFINED PJ_WARNING_FLAGS)
         target_compile_options(raster_ipc_protocol_test PRIVATE ${PJ_WARNING_FLAGS})

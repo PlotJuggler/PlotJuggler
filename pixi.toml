@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 #
 # EXPLORATORY pixi environment for building PJ4 with conda-forge dependencies
-# instead of Conan (+ the manual install_qt6.sh Qt install).
+# instead of Conan (+ the manual scripts/install_qt6.sh Qt install).
 #
 # Status: exploration — see docs/research/pixi_build_exploration.md for
 # findings. The Conan path (`./build.sh`) remains the canonical build.
@@ -35,7 +35,7 @@ cxx-compiler = "*"
 pkg-config = "*"
 ccache = "*"
 
-# --- Qt (replaces install_qt6.sh; PJ4 pins 6.11.1 in CMakeLists) ------------
+# --- Qt (replaces scripts/install_qt6.sh; PJ4 pins 6.11.1 in CMakeLists) ------------
 qt6-main = "6.11.1.*"
 
 # --- direct library deps (mirror conanfile.txt) ------------------------------

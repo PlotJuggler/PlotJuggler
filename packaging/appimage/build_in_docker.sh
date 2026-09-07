@@ -6,29 +6,29 @@
 # The builder image (tagged with the Qt/arch pins from versions.env) bakes Qt,
 # the entire Conan dependency closure, and a pinned linuxdeploy into its layers, so running the
 # container fetches nothing — except, with --plugins-registry, the published plugin
-# zips. Mirrors PJ3's appimage/build_in_docker.sh, adapted to PJ4:
+# zips. Adapts PJ3's AppImage Docker build to PJ4:
 #   * no --privileged (linuxdeploy runs extracted via APPIMAGE_EXTRACT_AND_RUN);
 #   * Qt + Conan are baked, not installed from system packages each run.
 #
 # Usage:
-#   appimage/build_in_docker.sh                                # app-only AppImage
-#   appimage/build_in_docker.sh --plugins-registry             # bundle the official set
-#   appimage/build_in_docker.sh --app-dir <path>               # build a different PJ4 app checkout
-#   appimage/build_in_docker.sh --sdk-dir <path>               # trial a local plotjuggler_sdk checkout
-#   appimage/build_in_docker.sh --plugins-dir <path>           # bundle plugins (see below)
-#   appimage/build_in_docker.sh --app-dir <app> --sdk-dir <sdk> --plugins-dir <plugins>
-#   appimage/build_in_docker.sh --fresh ...                    # ignore caches; rebuild plugin deps from scratch
-#   PJ_INCLUDE_PLUGINS="<basenames…>" appimage/build_in_docker.sh --plugins-dir <src>
+#   packaging/appimage/build_in_docker.sh                                # app-only AppImage
+#   packaging/appimage/build_in_docker.sh --plugins-registry             # bundle the official set
+#   packaging/appimage/build_in_docker.sh --app-dir <path>               # build a different PJ4 app checkout
+#   packaging/appimage/build_in_docker.sh --sdk-dir <path>               # trial a local plotjuggler_sdk checkout
+#   packaging/appimage/build_in_docker.sh --plugins-dir <path>           # bundle plugins (see below)
+#   packaging/appimage/build_in_docker.sh --app-dir <app> --sdk-dir <sdk> --plugins-dir <plugins>
+#   packaging/appimage/build_in_docker.sh --fresh ...                    # ignore caches; rebuild plugin deps from scratch
+#   PJ_INCLUDE_PLUGINS="<basenames…>" packaging/appimage/build_in_docker.sh --plugins-dir <src>
 #     # (source-repo path only) after the in-container compile, keep only the
 #     # whitespace-separated top-level entries in /out (e.g. curated .so basenames
 #     # plus "ros2-topic-subscriber") — anything else is dropped BEFORE the package
 #     # step, so build_appimage.sh emits an AppImage carrying only the requested
 #     # curated set. Missing entries fail the build. Unset/empty ships everything.
-#   REBUILD_IMAGE=1 appimage/build_in_docker.sh ...            # force-rebuild the builder image
+#   REBUILD_IMAGE=1 packaging/appimage/build_in_docker.sh ...            # force-rebuild the builder image
 #
 # --app-dir <path> builds a different PJ4 app checkout: the app checkout's own
-# build.sh and appimage/ scripts run, and the AppImage lands under
-# <app-dir>/appimage/. The builder image still comes from THIS repo; it bakes Qt
+# build.sh and packaging/appimage/ scripts run, and the AppImage lands under
+# <app-dir>/packaging/appimage/. The builder image still comes from THIS repo; it bakes Qt
 # from THIS repo's versions.env, so an --app-dir checkout that pins a different
 # Qt in its own versions.env needs REBUILD_IMAGE=1 (or a matching versions.env)
 # or the in-container build will not find Qt. The container reuses
@@ -64,15 +64,16 @@
 # --fresh to delete them and force a from-scratch plugin build (the base builder
 # image is unaffected; use REBUILD_IMAGE=1 to rebuild that).
 #
-# Verify the result on a clean Ubuntu with: appimage/run_in_docker.sh
-# Output: appimage/PlotJuggler-<version>-<arch>.AppImage (owned by the host user).
+# Verify the result on a clean Ubuntu with: packaging/appimage/run_in_docker.sh
+# Output: packaging/appimage/PlotJuggler-<version>-<arch>.AppImage (owned by the host user).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 source "${REPO_ROOT}/versions.env"
 
-IMAGE_TAG="pj4-appimage-builder:jammy-qt${PJ_QT_VERSION}-${PJ_APPIMAGE_ARCH}"
+# v2 uses the packaging/appimage paths in the baked entrypoint.
+IMAGE_TAG="pj4-appimage-builder:jammy-qt${PJ_QT_VERSION}-${PJ_APPIMAGE_ARCH}-v2"
 # Persistent caches for the in-container plugin compile (source-repo path). Named
 # Docker volumes so the glibc-2.35 Conan packages + ccache survive across runs;
 # kept separate from the host ~/.conan2 (which is built against a newer glibc).
@@ -85,21 +86,21 @@ usage() {
 Build the PlotJuggler 4 AppImage inside a fully-baked Ubuntu 22.04 container.
 
 Usage:
-  appimage/build_in_docker.sh                      # app-only AppImage
-  appimage/build_in_docker.sh --plugins-registry   # bundle the official set
-  appimage/build_in_docker.sh --app-dir <path>     # build a different PJ4 app
+  packaging/appimage/build_in_docker.sh                      # app-only AppImage
+  packaging/appimage/build_in_docker.sh --plugins-registry   # bundle the official set
+  packaging/appimage/build_in_docker.sh --app-dir <path>     # build a different PJ4 app
                                                    # checkout; the app's own
-                                                   # build.sh + appimage/
+                                                   # build.sh + packaging/appimage/
                                                    # scripts run, and the
                                                    # AppImage lands under
-                                                   # <app-dir>/appimage/.
-  appimage/build_in_docker.sh --sdk-dir <path>     # build the app AND (when
+                                                   # <app-dir>/packaging/appimage/.
+  packaging/appimage/build_in_docker.sh --sdk-dir <path>     # build the app AND (when
                                                    # --plugins-dir is a source
                                                    # repo) the plugins against a
                                                    # LOCAL plotjuggler_sdk
                                                    # checkout, to trial custom
                                                    # SDK changes.
-  appimage/build_in_docker.sh --plugins-dir <path> # bundle plugins:
+  packaging/appimage/build_in_docker.sh --plugins-dir <path> # bundle plugins:
                                                    #   <path> = a pj-official-plugins
                                                    #   SOURCE repo  -> compiled IN the
                                                    #   container (correct glibc; single
@@ -109,9 +110,9 @@ Usage:
                                                    #   then bundled;
                                                    #   OR a dir of prebuilt
                                                    #   self-contained plugins -> copied.
-  appimage/build_in_docker.sh --app-dir <app> --sdk-dir <sdk> --plugins-dir <plugins>
-  REBUILD_IMAGE=1 appimage/build_in_docker.sh ...  # force-rebuild the builder image
-  appimage/build_in_docker.sh --fresh ...          # ignore caches; rebuild plugin deps from scratch
+  packaging/appimage/build_in_docker.sh --app-dir <app> --sdk-dir <sdk> --plugins-dir <plugins>
+  REBUILD_IMAGE=1 packaging/appimage/build_in_docker.sh ...  # force-rebuild the builder image
+  packaging/appimage/build_in_docker.sh --fresh ...          # ignore caches; rebuild plugin deps from scratch
 
 --app-dir builds a different PJ4 app checkout, but the builder image still bakes
 Qt from THIS repo's versions.env. If the --app-dir checkout pins a different Qt
@@ -124,15 +125,15 @@ persist in named Docker volumes by default (first build slow, then cached);
 --fresh removes them for a clean from-scratch build. With --sdk-dir and source-repo
 plugins, the custom SDK is conan create'd into the PERSISTENT plugin Conan cache
 volume; a later run WITHOUT --sdk-dir keeps using it until you pass --fresh to return
-to the pinned SDK. Every other argument passes through to appimage/build_appimage.sh.
-Output: appimage/PlotJuggler-<version>-<arch>.AppImage, using versions.env plus any PJ_VERSION override.
+to the pinned SDK. Every other argument passes through to packaging/appimage/build_appimage.sh.
+Output: packaging/appimage/PlotJuggler-<version>-<arch>.AppImage, using versions.env plus any PJ_VERSION override.
 EOF
 }
 
 # Parse args. --plugins-dir <path> may point ANYWHERE on the host. If it is a
 # plugin SOURCE repo it is compiled inside the builder (glibc-matched); if it is a
 # dir of prebuilt plugins it is bind-mounted and copied. Everything else passes
-# through to appimage/build_appimage.sh unchanged.
+# through to packaging/appimage/build_appimage.sh unchanged.
 FWD_ARGS=()
 PLUGINS_MOUNT=()
 PLUGIN_SRC=""     # set when --plugins-dir points at a plugin source repo to build
@@ -150,8 +151,8 @@ while [[ $# -gt 0 ]]; do
       app_dir="$2"
       [[ -d "${app_dir}" ]] || { echo "ERROR: --app-dir '${app_dir}' is not a directory" >&2; exit 1; }
       app_dir="$(cd "${app_dir}" && pwd)"
-      [[ -f "${app_dir}/build.sh" && -d "${app_dir}/pj_app" && -f "${app_dir}/appimage/build_appimage.sh" ]] || {
-        echo "ERROR: --app-dir '${app_dir}' does not look like a PJ4 checkout (needs build.sh, pj_app/, appimage/build_appimage.sh)" >&2
+      [[ -f "${app_dir}/build.sh" && -d "${app_dir}/pj_app" && -f "${app_dir}/packaging/appimage/build_appimage.sh" ]] || {
+        echo "ERROR: --app-dir '${app_dir}' does not look like a PJ4 checkout (needs build.sh, pj_app/, packaging/appimage/build_appimage.sh)" >&2
         exit 1
       }
       APP_SRC="${app_dir}"
@@ -313,7 +314,7 @@ if [[ -n "${PLUGIN_SRC}" ]]; then
       fi
       chown -R "${HOST_UID}:${HOST_GID}" /out
     '
-  # Absolute container path: build_appimage.sh cd's into appimage/ before reading
+  # Absolute container path: build_appimage.sh cd's into packaging/appimage/ before reading
   # this, so a relative path would resolve against the wrong directory.
   FWD_ARGS+=(--plugins-dir /work/build/plugins-built)
 fi
@@ -334,4 +335,4 @@ echo ""
 # --app-dir (PJ_VERSION, if set, still overrides). Subshell so sourcing it doesn't
 # clobber the image-tag vars read from this repo above.
 ( source "${WORK_ROOT}/versions.env" 2>/dev/null || true
-  echo "==> Done: ${WORK_ROOT}/appimage/PlotJuggler-${PJ_VERSION:-${PJ_APP_VERSION}}-${PJ_APPIMAGE_ARCH}.AppImage" )
+  echo "==> Done: ${WORK_ROOT}/packaging/appimage/PlotJuggler-${PJ_VERSION:-${PJ_APP_VERSION}}-${PJ_APPIMAGE_ARCH}.AppImage" )

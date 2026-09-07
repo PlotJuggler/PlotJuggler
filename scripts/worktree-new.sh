@@ -6,12 +6,12 @@
 #   - submodules initialized by borrowing objects from the primary checkout
 #     (local + offline, with a GitHub fallback for commits it lacks).
 # Set up only by default (seconds); pass --build to compile too.
-# Tear down with ./worktree-rm.sh once the PR is merged.
+# Tear down with ./scripts/worktree-rm.sh once the PR is merged.
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: ./worktree-new.sh <branch> [dir] [--base <ref>] [--build]
+Usage: ./scripts/worktree-new.sh <branch> [dir] [--base <ref>] [--build]
 
   <branch>      new branch, created on the worktree (e.g. fix/foo)
   [dir]         dir under .worktrees/ (default: branch basename, so
@@ -62,7 +62,7 @@ fi
 
 QT_SRC="$(readlink -f "$MAIN_REPO/.qt")"
 [[ -d "$QT_SRC/${PJ_QT_VERSION}/gcc_64" ]] ||
-  echo "worktree-new: WARNING: $QT_SRC/${PJ_QT_VERSION}/gcc_64 missing — run ./install_qt6.sh in the primary checkout" >&2
+  echo "worktree-new: WARNING: $QT_SRC/${PJ_QT_VERSION}/gcc_64 missing — run ./scripts/install_qt6.sh in the primary checkout" >&2
 
 echo "worktree-new: fetching origin..."
 git -C "$MAIN_REPO" fetch origin --quiet
@@ -94,4 +94,4 @@ fi
 echo
 echo "worktree-new: ready -> $WT"
 echo "  build:  cd $WT && ./build.sh"
-echo "  remove: ./worktree-rm.sh $DIR   (after the PR merges)"
+echo "  remove: ./scripts/worktree-rm.sh $DIR   (after the PR merges)"

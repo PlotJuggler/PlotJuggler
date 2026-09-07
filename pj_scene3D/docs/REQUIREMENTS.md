@@ -5,9 +5,9 @@
 | Status | Shipped (v1 feature-complete: TF, pointclouds, occupancy grids, dense voxel grids, depth-image back-projection, markers, pose arrays, URDF/mesh, HDR/SSAO/EDL, live streaming) |
 | Date | 2026-05-17 (rev. 2026-07-16) |
 | Scope | What, not how |
-| Supersedes | `PJ4_PLAN.md` §5.5 (refinement) |
+| Supersedes | [Archived master plan](../../docs/archive/PJ4_PLAN.md) §5.5 |
 
-This document is the source of truth for the *intent* of `pj_scene3D`. It deliberately avoids design-level prescriptions (API signatures, class layouts, CMake details, file structures). Those belong in a subsequent design document. When this document conflicts with `PJ4_PLAN.md` §5.5, this document wins.
+This document is the source of truth for the *intent* of `pj_scene3D`. It deliberately avoids design-level prescriptions (API signatures, class layouts, CMake details, file structures). Those belong in a subsequent design document. The original master plan is retired; this document defines the current scope.
 
 > **Current architecture (supersedes the Phase-1 framing below).** The module
 > ships integrated into `pj_app` (not as a standalone demo), and it **does not
@@ -71,7 +71,7 @@ implementation and dependency graph unchanged. Paths, laser scans, and the
 Image+Pinhole view remain future work and must not be inferred from parser
 availability alone.
 
-Image+Pinhole (camera frustum + textured near-plane) from the original `PJ4_PLAN.md` §5.5 list is dropped from v1.
+Image+Pinhole (camera frustum + textured near-plane) from the archived master plan’s §5.5 list is dropped from v1.
 
 ### 3a. Compressed point clouds (Draco / Cloudini)
 
@@ -182,7 +182,7 @@ A **newly-created** widget does not blindly default to the `map`/`world`/`odom`/
 | Right-drag | Axis-based zoom (RViz parity) |
 | Toolbar reset | Restore default view |
 
-**Coordinate convention**: ROS Z-up (per `PJ4_PLAN.md` §5.5).
+**Coordinate convention**: ROS Z-up.
 
 **Implemented**: Orbit, XYOrbit, TopDownOrtho, and Fly (WASD / FPS) — all four selectable via the scene-controls combo. Zoom-to-cursor and Home control are also implemented. **Position-only "follow a frame"** composes with every model via the `ICamera::followShift(world_delta)` seam (Orbit/TopDown shift the focal, Fly the eye, XYOrbit XY-only to stay ground-locked); `SceneViewWidget::applyFollow` drives it per tracker tick using the delta of the followed origin so user orbit/zoom is preserved and enabling causes no jump.
 

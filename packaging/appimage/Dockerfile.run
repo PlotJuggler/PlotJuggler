@@ -8,7 +8,7 @@
 # NO Qt, NO build toolchain, NO Conan, NO FFmpeg/app deps here: if the AppImage
 # runs against just these base libs, it is genuinely self-contained.
 #
-# Used by appimage/run_in_docker.sh, which forwards the host X server (xhost +
+# Used by packaging/appimage/run_in_docker.sh, which forwards the host X server (xhost +
 # $DISPLAY + /tmp/.X11-unix) and runs the mounted AppImage with
 # --appimage-extract-and-run (no FUSE, no --privileged).
 FROM ubuntu:22.04

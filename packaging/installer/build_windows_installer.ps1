@@ -5,7 +5,7 @@
 .DESCRIPTION
   Stages the already-built pj_app.exe plus its runtime dependencies into a
   scratch packages tree, then runs binarycreator to produce one self-contained
-  .exe. The source packages directory (installer/packages/) is NOT mutated by
+  .exe. The source packages directory (packaging/installer/packages/) is NOT mutated by
   this script — everything is staged under $env:TEMP so a build never dirties
   the working tree.
 
@@ -117,8 +117,8 @@ function Info($m)  { Write-Host "[installer] $m" -ForegroundColor Cyan }
 function Warn($m)  { Write-Host "[installer] WARNING: $m" -ForegroundColor Yellow }
 function Die($m)   { Write-Host "[installer] ERROR: $m" -ForegroundColor Red; exit 1 }
 
-$installerRoot = Split-Path -Parent $MyInvocation.MyCommand.Path      # ...\installer
-$repoRoot      = Split-Path -Parent $installerRoot
+$installerRoot = Split-Path -Parent $MyInvocation.MyCommand.Path      # ...\packaging\installer
+$repoRoot      = Split-Path -Parent (Split-Path -Parent $installerRoot)
 $pkgSrc        = Join-Path $installerRoot "packages\io.plotjuggler.application"
 $configXmlSrc  = Join-Path $installerRoot "config.xml"
 $packageXmlSrc = Join-Path $pkgSrc        "meta\package.xml"
@@ -159,7 +159,7 @@ function Resolve-Exe([string]$name, [string]$hintDir) {
 }
 
 # Default -QtDir to the aqt layout inside the repo (.qt) when present, so a machine
-# that installed Qt via install_qt6.sh / aqt needs no -QtDir.
+# that installed Qt via scripts/install_qt6.sh / aqt needs no -QtDir.
 if (-not $QtDir) {
   $qtGuess = Join-Path $repoRoot ".qt\6.11.1\msvc2022_64"
   if (Test-Path (Join-Path $qtGuess "bin\windeployqt.exe")) { $QtDir = $qtGuess; Info "auto-detected Qt: $QtDir" }

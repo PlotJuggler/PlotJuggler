@@ -175,7 +175,7 @@ jobs:
           fi
 
       - name: Install Qt via aqt
-        # Inline (not install_qt6.sh): that script is Linux-only (gcc_64); this
+        # Inline (not scripts/install_qt6.sh): that script is Linux-only (gcc_64); this
         # job needs the win64_msvc2022_64 build. The version comes from versions.env.
         if: steps.qt-sdk-verify.outputs.valid != 'true'
         shell: bash

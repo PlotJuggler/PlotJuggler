@@ -362,7 +362,7 @@ and should share a shape and a lightweight test pattern.
 ## 7. Execution mechanics
 
 - Neither donor branch survives as a ref; this document is the only record.
-- Each PR: fresh worktree off `origin/main` via `./worktree-new.sh` once its
+- Each PR: fresh worktree off `origin/main` via `./scripts/worktree-new.sh` once its
   dependencies merge. Every slice must build green and pass its tests before
   review — donor code is a design source, not trusted code.
 

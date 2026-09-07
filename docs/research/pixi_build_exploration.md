@@ -14,7 +14,7 @@ A full PJ4 build driven by `pixi run build` works, with:
 
 - **all but 4 dependencies** taken prebuilt from conda-forge — including
   **Qt 6.11.1 exactly** (`qt6-main`), which also replaces the manual ~1GB
-  `install_qt6.sh` step. One command bootstraps the entire toolchain
+  `scripts/install_qt6.sh` step. One command bootstraps the entire toolchain
   (compiler included).
 - the 4 gaps (**luau, mcap C++, cloudini, nanoarrow C**) packaged as local
   `rattler-build` recipes under `recipes/`, built into `local-channel/`. In a
@@ -27,7 +27,7 @@ A full PJ4 build driven by `pixi run build` works, with:
 
 | conanfile.txt | conda-forge | note |
 |---|---|---|
-| (install_qt6.sh 6.11.1) | `qt6-main 6.11.1` | exact version; all needed components (Svg, SvgWidgets, OpenGLWidgets, UiTools, Concurrent, Test, GuiPrivate headers) |
+| (scripts/install_qt6.sh 6.11.1) | `qt6-main 6.11.1` | exact version; all needed components (Svg, SvgWidgets, OpenGLWidgets, UiTools, Concurrent, Test, GuiPrivate headers) |
 | fmt/12.2.0 | `fmt 12.2` | compiled lib instead of header-only — same `fmt::fmt` target |
 | tsl-robin-map/1.4.0 | `tsl_robin_map 1.4.0` | underscore package name; installs the standard `tsl-robin-map` CMake config |
 | gtest/1.18.0 | `gtest 1.17.0` | |
@@ -302,7 +302,7 @@ A matrix job (`ubuntu-22.04` + `windows-latest`):
 What pixi buys:
 
 - **One-command bootstrap** — `pixi run build` on a fresh machine installs
-  compiler, CMake, Ninja, Qt 6.11.1, and every library. No `install_qt6.sh`,
+  compiler, CMake, Ninja, Qt 6.11.1, and every library. No `scripts/install_qt6.sh`,
   no `apt-get install libva-dev libdrm-dev`, no Conan profile quirks (the
   private-remote / gdbm C23 class of breakage disappears).
 - **Minutes instead of ~an hour of cold Conan source builds** (ffmpeg+cpython

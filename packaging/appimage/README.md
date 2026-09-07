@@ -6,30 +6,30 @@ The default app version, Qt version, and AppImage arch come from repo-root
 `versions.env`; release builds may override `PJ_VERSION` with the tag.
 
 The `build/AppDir` this produces is also the payload of the Debian package — see
-[`deb/README.md`](../deb/README.md). Anything added to the AppDir ships in both
+[`packaging/deb/README.md`](../deb/README.md). Anything added to the AppDir ships in both
 artifacts, so check that side too when changing what gets bundled.
 
 `smoke_test.sh` runs the finished AppImage on a machine that did not build it
 (`--selftest-python` + a GUI startup under Xvfb) — release CI runs it in the
-same clean containers as `deb/smoke_test.sh`, right after it, so the runtime
+same clean containers as `packaging/deb/smoke_test.sh`, right after it, so the runtime
 libraries come from the `.deb`'s `Depends`. See the header comment for
 standalone use.
 
 ## Build
 
 ```bash
-./install_qt6.sh        # once: Qt into ./.qt
+./scripts/install_qt6.sh        # once: Qt into ./.qt
 ./build.sh              # builds build/pj_app/plotjuggler4 + Conan runtime env
 
-appimage/build_appimage.sh                       # app-only AppImage
-appimage/build_appimage.sh --plugins-dir <path>  # bundle a local plugin folder
-appimage/build_appimage.sh --plugins-registry    # bundle the official set (CI default)
-appimage/build_appimage.sh --commit-hash <hash>  # append .<hash> to the filename
-appimage/build_appimage.sh --retro-wad <path>    # bundle the retro payload (CI default)
+packaging/appimage/build_appimage.sh                       # app-only AppImage
+packaging/appimage/build_appimage.sh --plugins-dir <path>  # bundle a local plugin folder
+packaging/appimage/build_appimage.sh --plugins-registry    # bundle the official set (CI default)
+packaging/appimage/build_appimage.sh --commit-hash <hash>  # append .<hash> to the filename
+packaging/appimage/build_appimage.sh --retro-wad <path>    # bundle the retro payload (CI default)
 ```
 
-Output lands at `appimage/PlotJuggler-<version>-<arch>.AppImage`, or
-`appimage/PlotJuggler-<version>-<arch>.<hash>.AppImage` with `--commit-hash`
+Output lands at `packaging/appimage/PlotJuggler-<version>-<arch>.AppImage`, or
+`packaging/appimage/PlotJuggler-<version>-<arch>.<hash>.AppImage` with `--commit-hash`
 (release CI's workflow_dispatch/non-tag builds, so otherwise-identical-looking
 dev artifacts stay distinguishable — matches the Windows installer's default
 naming; tag builds omit it).
@@ -101,13 +101,13 @@ in-app trigger is hidden — the licenses are not.
 
 It sits next to the app binary (`usr/bin/3rdparty/retro/`) because that is
 where `MainWindow::openEmbeddedConsole` looks (`applicationDirPath()`), which
-also means `deb/build_deb.sh` — which copies `usr/bin` wholesale — inherits it.
+also means `packaging/deb/build_deb.sh` — which copies `usr/bin` wholesale — inherits it.
 
 Two independent opt-ins, and the WAD is not in this repo:
 
 ```bash
 PJ_BUILD_RASTER_HELPER=ON ./build.sh              # compile the helper
-appimage/build_appimage.sh --retro-wad /usr/share/games/doom/doom1.wad
+packaging/appimage/build_appimage.sh --retro-wad /usr/share/games/doom/doom1.wad
 ```
 
 Release CI installs Ubuntu multiverse's `doom-wad-shareware` for that file,
@@ -116,7 +116,7 @@ and no retro payload ships.
 
 ## Build & verify in Docker
 
-`appimage/build_in_docker.sh` builds the AppImage in the fully-baked builder
+`packaging/appimage/build_in_docker.sh` builds the AppImage in the fully-baked builder
 image (`Dockerfile.build`). Plugins:
 
 - `--plugins-registry` — bundle the official set from the plugin registry.
@@ -130,13 +130,13 @@ image (`Dockerfile.build`). Plugins:
   is included without a second standalone build. Any host path works — it is
   bind-mounted for you, no manual staging.
 
-`appimage/run_in_docker.sh [--help]` verifies the built AppImage on a clean
+`packaging/appimage/run_in_docker.sh [--help]` verifies the built AppImage on a clean
 `ubuntu:22.04` runtime image (`Dockerfile.run`) with only base X/GL libraries;
 the GUI is forwarded to the host display via `xhost`.
 
-`appimage/build_appimage_in_docker.sh` is a lighter alternative for local
+`packaging/appimage/build_appimage_in_docker.sh` is a lighter alternative for local
 packaging: it builds a plain `ubuntu:22.04` image (`docker/Dockerfile`), then
-runs `install_qt6.sh` (reusing the host `./.qt`), `build.sh`, and
+runs `scripts/install_qt6.sh` (reusing the host `./.qt`), `build.sh`, and
 `build_appimage.sh` inside it — matching the release glibc/libstdc++ baseline
 regardless of the host distro. Being a packaging build, it configures with
 `PJ_BUILD_TESTS=OFF` / `PJ_BUILD_DEMOS=OFF` (neither the test suite nor the

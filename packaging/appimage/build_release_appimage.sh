@@ -8,7 +8,7 @@
 #   * ros2 multi-distro  -> data_stream_ros2/docker/run-local.sh --bundle
 #                           (distro-agnostic proxy in Ubuntu 22.04 + one .so per
 #                           supported ROS 2 distro, each in its own Docker image)
-#   * app + non-ros2     -> DEFAULT: appimage/build_in_docker.sh (Ubuntu 22.04 /
+#   * app + non-ros2     -> DEFAULT: packaging/appimage/build_in_docker.sh (Ubuntu 22.04 /
 #     plugins + package    glibc 2.35), which compiles both the app and the
 #                          aggregate plugin set inside the builder and picks up
 #                          the ros2 bundle produced by the step above. This
@@ -18,7 +18,7 @@
 #                          17 (matching --host-build).
 #                          With --host-build: ./build.sh + pj_ported_plugins/
 #                          build.sh on the host, curated 17-plugin filter, then
-#                          appimage/build_appimage.sh --plugins-dir.
+#                          packaging/appimage/build_appimage.sh --plugins-dir.
 #
 # DEFAULT = docker (portable). The AppImage inherits the container's glibc 2.35
 # floor and runs on any distro with glibc >= 2.35 (Ubuntu 22.04 and newer, and
@@ -60,7 +60,7 @@ SDK_LOCAL=""
 OUT=""
 SKIP_APP=0; SKIP_PLUGINS=0; SKIP_ROS2=0
 ROS2_DISTROS="humble iron jazzy rolling"
-USE_DOCKER=1     # default: glibc-matched via appimage/build_in_docker.sh
+USE_DOCKER=1     # default: glibc-matched via packaging/appimage/build_in_docker.sh
 FRESH=0
 
 while [[ $# -gt 0 ]]; do
@@ -80,10 +80,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Default PJ4 root = two levels up if this script lives in appimage/, else cwd.
+# Default PJ4 root = two parent directories above packaging/appimage/, else cwd.
 if [[ -z "${PJ4_ROOT}" ]]; then
-  if [[ -f "$(dirname "$0")/../build.sh" ]]; then
-    PJ4_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+  if [[ -f "$(dirname "$0")/../../build.sh" ]]; then
+    PJ4_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
   else
     PJ4_ROOT="$(pwd)"
   fi
@@ -109,8 +109,8 @@ SDK_LOCAL="$(cd "${SDK_LOCAL}" && pwd)"
 ROS2_DIR="${PLUGINS_REPO}/data_stream_ros2"
 
 for p in "${PJ4_ROOT}/build.sh" "${PLUGINS_REPO}/build.sh" \
-         "${ROS2_DIR}/docker/run-local.sh" "${PJ4_ROOT}/appimage/build_appimage.sh" \
-         "${PJ4_ROOT}/appimage/build_in_docker.sh"; do
+         "${ROS2_DIR}/docker/run-local.sh" "${PJ4_ROOT}/packaging/appimage/build_appimage.sh" \
+         "${PJ4_ROOT}/packaging/appimage/build_in_docker.sh"; do
   [[ -f "$p" ]] || { echo "ERROR: expected script not found: $p" >&2; exit 1; }
 done
 
@@ -136,7 +136,7 @@ fi
 # — the plugins repo root is an aggregate with no `name` and would fail `conan export`.
 
 # The release MUST-set, by built .so basename. Keep in lockstep with
-# BUNDLE_IDS in appimage/build_appimage.sh (the registry-mode equivalent).
+# BUNDLE_IDS in packaging/appimage/build_appimage.sh (the registry-mode equivalent).
 # Anything the aggregate build produces that is NOT in this list (mqtt, zmq,
 # udp, lerobot, fft, colormap, reactive_script, ...) is deliberately left out
 # of the released bundle in BOTH modes (docker mode filters the packaged
@@ -191,7 +191,7 @@ if [[ "${USE_DOCKER}" == 1 ]]; then
   # filters /out INSIDE the container BEFORE build_appimage.sh runs. That way the
   # packaged AppImage carries only the curated entries directly — no post-build
   # extract + repack step.
-  docker_cmd=( "${PJ4_ROOT}/appimage/build_in_docker.sh" --plugins-dir "${PLUGINS_REPO}" )
+  docker_cmd=( "${PJ4_ROOT}/packaging/appimage/build_in_docker.sh" --plugins-dir "${PLUGINS_REPO}" )
   [[ "${FRESH}" == 1 ]] && docker_cmd+=( --fresh )
   PJ_INCLUDE_PLUGINS="${RELEASE_FLAT_SOS[*]} ${MOSAICO_SO} ${ROS2_EXTENSION_DIR}" \
     "${docker_cmd[@]}"
@@ -246,10 +246,10 @@ else
 
   log "Packaging AppImage"
   ( cd "${PJ4_ROOT}" && APPIMAGE_EXTRACT_AND_RUN=1 \
-      ./appimage/build_appimage.sh --plugins-dir "${STAGING}" )
+      ./packaging/appimage/build_appimage.sh --plugins-dir "${STAGING}" )
 fi
 
-BUILT="$(ls -t "${PJ4_ROOT}/appimage/"PlotJuggler-*-x86_64.AppImage 2>/dev/null | head -1)"
+BUILT="$(ls -t "${PJ4_ROOT}/packaging/appimage/"PlotJuggler-*-x86_64.AppImage 2>/dev/null | head -1)"
 if [[ -n "${OUT}" && -n "${BUILT}" ]]; then cp "${BUILT}" "${OUT}"; BUILT="${OUT}"; fi
 log "Done: ${BUILT}"
 if [[ "${USE_DOCKER}" == 1 ]]; then

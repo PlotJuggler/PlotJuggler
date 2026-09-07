@@ -34,7 +34,7 @@ Test the script manually before running via pre-commit:
 
 ```bash
 # Test on a specific file
-.pre-commit-scripts/check-forbidden-patterns.py path/to/file.cpp
+scripts/pre-commit/check-forbidden-patterns.py path/to/file.cpp
 
 # Exit code 0 = no violations, 1 = violations found
 ```

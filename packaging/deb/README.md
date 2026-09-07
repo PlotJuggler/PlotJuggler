@@ -1,15 +1,15 @@
 # PlotJuggler 4 — Debian/Ubuntu packaging
 
 Builds `plotjuggler4_<version>_amd64.deb` by repackaging the AppDir that
-[`appimage/build_appimage.sh`](../appimage/README.md) already produced. Nothing
+[`packaging/appimage/build_appimage.sh`](../appimage/README.md) already produced. Nothing
 is compiled here.
 
 ## Build
 
 ```bash
 ./build.sh                                        # build the app
-appimage/build_appimage.sh --plugins-registry     # populate build/AppDir
-deb/build_deb.sh                                  # -> deb/plotjuggler4_<ver>_amd64.deb
+packaging/appimage/build_appimage.sh --plugins-registry     # populate build/AppDir
+packaging/deb/build_deb.sh                                  # -> packaging/deb/plotjuggler4_<ver>_amd64.deb
 ```
 
 Useful flags:
@@ -47,7 +47,7 @@ jammy container the release build runs in.
 /opt/plotjuggler4/plugins/      Qt platform + imageformat plugins
 /opt/plotjuggler4/translations/ Qt translations
 /opt/plotjuggler4/share/doc/    licenses of the bundled libraries
-/usr/bin/plotjuggler4           launcher (deb/plotjuggler4.wrapper.in)
+/usr/bin/plotjuggler4           launcher (packaging/deb/plotjuggler4.wrapper.in)
 /usr/share/applications/        desktop entry
 /usr/share/icons/hicolor/…      icons (256px PNG + scalable SVG)
 ```
@@ -127,7 +127,7 @@ covers `dlopen`'d libraries that `ldd` cannot see.
 
 Release CI runs it on `ubuntu:22.04` and `ubuntu:24.04`, and the `.deb` is
 attached to a GitHub Release only after it passes. The same container then
-re-runs the runtime checks against the AppImage (`appimage/smoke_test.sh`),
+re-runs the runtime checks against the AppImage (`packaging/appimage/smoke_test.sh`),
 using the libraries this package's `Depends` pulled in.
 
 ## Supported distros
