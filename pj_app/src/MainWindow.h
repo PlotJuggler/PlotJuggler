@@ -123,6 +123,7 @@ class MainWindow : public QMainWindow {
   friend class MainWindowPanelGeometryTestPeer;
   friend class MainWindowLayoutImportTestPeer;
   friend class MainWindowMarkerGeneratorTestPeer;
+  friend class MainWindowCustomSeriesTestPeer;
   friend class ToolboxPanelFoldTestPeer;
 
  public:
@@ -975,6 +976,18 @@ class MainWindow : public QMainWindow {
   // (first match in load order, mirroring rebindCurvesToLoadedDatasets), so a
   // multi-file layout restores each filter against its own source.
   [[nodiscard]] bool restoreDataProcessors(const QDomElement& root);
+
+  // Re-derives the Custom Series list from the live transform recipes and hands
+  // the whole set to the panel.
+  //
+  // The panel cannot maintain that list on its own: only DataProcessorService
+  // knows which catalog topics are transform outputs. Call this from any path that
+  // changes the recipe set WITHOUT retiring the outputs' catalog items — a plugin
+  // creating or withdrawing a transform, and a layout restore, which rebuilds the
+  // graph with no plugin announcing it. A path that does retire them needs nothing:
+  // the panel prunes on CatalogModel::itemsRemoved. Call it AFTER the catalog
+  // rebuild, or the new outputs have no keys yet.
+  void syncCustomSeriesPanel();
 
   // Size the bottom panel from the Source Timeline strip's open/closed state:
   // when OPEN, pin a minimum height so the strip can't be dragged to a clipped

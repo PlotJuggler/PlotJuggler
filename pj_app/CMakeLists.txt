@@ -410,6 +410,12 @@ if(PJ_BUILD_TESTS)
     add_pj_app_gui_test(main_window_marker_generator_restore_test MainWindowMarkerGeneratorRestoreTest
         tests/main_window_marker_generator_restore_test.cpp)
 
+    # The Custom Series list is derived from DataProcessorService, not accumulated
+    # from plugin announcements — the paths that announce nothing are a layout
+    # restore and a withdrawal through the data-processors ABI.
+    add_pj_app_gui_test(main_window_custom_series_test MainWindowCustomSeriesTest
+        tests/main_window_custom_series_test.cpp)
+
     # Viewport re-frame after a layout's timeline offsets settle: sync leg (FIX 1)
     # and the progressive-drain pending-timeline seam (FIX 2).
     add_pj_app_gui_test(main_window_viewport_reframe_test MainWindowViewportReframeTest

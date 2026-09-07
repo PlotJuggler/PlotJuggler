@@ -991,6 +991,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(ui_->curveListPanel, &CurveListPanel::deleteCustomSeriesRequested, this, [this](const QString& catalog_key) {
     const std::optional<CurveDescriptor> output = session_->catalogModel().curveDescriptor(catalog_key);
     if (!output.has_value()) {
+      // The row outlived its catalog item, so there is nothing to delete and the
+      // row itself is what needs clearing — refusing here is what would make it
+      // unremovable.
+      syncCustomSeriesPanel();
       return;
     }
     if (!confirmAndRemoveDependentTransforms({output->topic_id})) {
@@ -1007,10 +1011,12 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       }
     }
     if (!removed) {
+      syncCustomSeriesPanel();
       return;
     }
+    // The rebuild retires the output topic, so itemsRemoved fires synchronously and
+    // the panel drops the row on its own.
     session_->catalogModel().rebuildFromDatastore();
-    ui_->curveListPanel->removeCustomCurve(catalog_key);
   });
   connect(ui_->curveListPanel, &CurveListPanel::clearAllCurvesRequested, this, [this]() {
     if (streaming_manager_ != nullptr && streaming_manager_->hasActiveSession()) {
@@ -6974,7 +6980,37 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root) {
     }
   }
   session_->catalogModel().rebuildFromDatastore();
+  // A null <data_processors> reaches here with every clearAll* done and nothing
+  // replayed, so this empties the panel — which is what the teardown pass of a
+  // progressive restore wants.
+  syncCustomSeriesPanel();
   return restored_all;
+}
+
+void MainWindow::syncCustomSeriesPanel() {
+  if (session_ == nullptr) {
+    return;
+  }
+  // One pass over the catalog, then O(1) per output. First key wins for a
+  // repeated topic name, matching how a plotted curve resolves one.
+  QHash<QString, QString> key_by_topic;
+  for (const auto& item : session_->catalogModel().items()) {
+    if (!key_by_topic.contains(item.topic_name)) {
+      key_by_topic.insert(item.topic_name, item.key);
+    }
+  }
+  QStringList keys;
+  // Deliberately unfiltered by owner: a restored transform's plugin may not be
+  // loaded at all, which is exactly why the layout carries the script by value.
+  for (const auto& recipe : session_->sessionManager().dataProcessorService().transformRecipes()) {
+    for (const auto& output_name : recipe.outputs) {
+      if (const auto found = key_by_topic.constFind(QString::fromStdString(output_name));
+          found != key_by_topic.constEnd()) {
+        keys.push_back(found.value());
+      }
+    }
+  }
+  ui_->curveListPanel->setCustomCurves(keys);
 }
 
 void MainWindow::recordRecentLayout(const QString& path) {
@@ -9287,27 +9323,19 @@ void MainWindow::launchToolbox(
     }
     // A toolbox write may have added/removed markers; repaint plot overlays.
     session_->sessionManager().notifyMarkersChanged();
-    // Surface this plugin's transform outputs in the Custom Series panel (flat,
-    // not in the main data tree).
-    auto& dps = session_->sessionManager().dataProcessorService();
-    for (const auto& recipe : dps.transformRecipes()) {
-      if (recipe.owner_plugin != plugin_id_std) {
-        continue;
-      }
-      for (const auto& output_name : recipe.outputs) {
-        const QString out = QString::fromStdString(output_name);
-        for (const auto& item : session_->catalogModel().items()) {
-          if (item.topic_name == out) {
-            ui_->curveListPanel->addCustomCurve(item.key, out);
-            break;
-          }
-        }
-      }
-    }
+    // A toolbox write may also have created or withdrawn transforms; re-derive the
+    // Custom Series list (flat, not in the main data tree) from what the service
+    // holds now. Deriving rather than announcing is what makes a withdrawal drop
+    // its row: an announce-only pass has nothing to say about a recipe that is
+    // gone.
+    syncCustomSeriesPanel();
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
+    auto& dps = session_->sessionManager().dataProcessorService();
     qInfo(
         "PJ_WASM_TOOLBOX_TRANSFORM_READY plugin=%s recipes=%llu", plugin_id_std.c_str(),
         static_cast<unsigned long long>(dps.transformRecipes().size()));
+#else
+    Q_UNUSED(plugin_id_std);
 #endif
   };
   callbacks.on_message = [this, source](PJ_toolbox_message_level_t level, std::string message) {

@@ -233,8 +233,8 @@ void rebuildTree(
   QScrollBar* scroll_bar = tree_view->verticalScrollBar();
   const int scroll = scroll_bar != nullptr ? scroll_bar->value() : 0;
   tree_view->clearCurves();
-  // Note: custom_view is NOT cleared here — custom series are managed separately
-  // via addCustomCurve/removeCustomCurve in MainWindow.
+  // Note: custom_view is NOT cleared here — the derived-series rows are owned by
+  // setCustomCurves/refillCustomView.
   if (catalog == nullptr) {
     return;
   }
@@ -957,8 +957,8 @@ void CurveListPanel::showTopicContextMenu(QTreeWidgetItem* clicked, const QPoint
 }
 
 void CurveListPanel::onCatalogItemsAdded(const std::vector<CatalogItem>& items) {
-  // Custom-series keys are added flat via addCustomCurve from MainWindow; keep
-  // them out of the main tree.
+  // Custom-series keys are filed flat in their own view; keep them out of the
+  // main tree.
   std::vector<CatalogItem> tree_items;
   for (const auto& item : items) {
     if (!custom_keys_.contains(item.key)) {
@@ -970,33 +970,52 @@ void CurveListPanel::onCatalogItemsAdded(const std::vector<CatalogItem>& items) 
   refreshValues(last_tracker_time_);
 }
 
-void CurveListPanel::addCustomCurve(const QString& catalog_key, const QString& display_name) {
+void CurveListPanel::setCustomCurves(const QStringList& catalog_keys) {
+  const QSet<QString> wanted(catalog_keys.begin(), catalog_keys.end());
+  if (wanted == custom_keys_) {
+    return;  // the derived set is re-published on every data change; most carry no change
+  }
+  custom_keys_ = wanted;
+  refillCustomView();
+  // custom_keys_ is also the main tree's exclusion set, so the tree has to be
+  // rebuilt against the new set or a series would show in both lists — or in
+  // neither.
+  rebuildTree(tree_view_, catalog_, tracker_, custom_keys_);
+}
+
+QStringList CurveListPanel::customSeriesNames() const {
+  QStringList names;
+  if (catalog_ == nullptr) {
+    return names;
+  }
+  for (const QString& key : custom_keys_) {
+    if (const std::optional<CatalogItem> item = catalog_->itemDescriptor(key); item.has_value()) {
+      names.push_back(item->topic_name);
+    }
+  }
+  names.sort();
+  return names;
+}
+
+void CurveListPanel::refillCustomView() {
   if (custom_view_ == nullptr) {
     return;
   }
-  // Idempotent BY NAME: a plugin toolbox re-announces ALL its transforms on every
-  // data change. A plain Create re-announces the same key (skip it). A Modify mints
-  // a NEW output topic id → new key for the SAME name; drop the stale entry first so
-  // we replace it in place instead of appending a duplicate row.
-  const auto existing = custom_name_to_key_.constFind(display_name);
-  if (existing != custom_name_to_key_.constEnd()) {
-    if (existing.value() == catalog_key) {
-      return;  // same series, same key — nothing to do
+  const QStringList expanded = custom_view_->expandedGroupPaths();
+  std::vector<CurveTreeView::CurvePath> paths;
+  if (catalog_ != nullptr) {
+    for (const auto& item : catalog_->items()) {
+      if (custom_keys_.contains(item.key)) {
+        CurveTreeView::CurvePath path;
+        path.key = item.key;
+        path.dataset = item.topic_name;
+        paths.push_back(path);
+      }
     }
-    removeCustomCurve(existing.value());  // stale key from a prior version — remove it
   }
-  if (custom_keys_.contains(catalog_key)) {
-    return;
-  }
-  custom_keys_.insert(catalog_key);
-  custom_name_to_key_.insert(display_name, catalog_key);
-  CurveTreeView::CurvePath path;
-  path.key = catalog_key;
-  path.dataset = display_name;
-  path.topic = QString{};
-  path.field = QString{};
-  custom_view_->addCatalogItem(path);
-  rebuildTree(tree_view_, catalog_, tracker_, custom_keys_);
+  custom_view_->clearCurves();
+  custom_view_->addCatalogItems(paths);
+  custom_view_->restoreExpandedGroupPaths(expanded);
 }
 
 void CurveListPanel::removeCustomCurve(const QString& catalog_key) {
@@ -1004,29 +1023,21 @@ void CurveListPanel::removeCustomCurve(const QString& catalog_key) {
     return;
   }
   custom_keys_.remove(catalog_key);
-  custom_name_to_key_.removeIf([&](const auto& it) { return it.value() == catalog_key; });
-  custom_view_->clearCurves();
-  if (catalog_ != nullptr) {
-    for (const auto& item : catalog_->items()) {
-      if (custom_keys_.contains(item.key)) {
-        CurveTreeView::CurvePath path;
-        path.key = item.key;
-        path.dataset = item.topic_name;
-        custom_view_->addCatalogItem(path);
-      }
-    }
-  }
+  refillCustomView();
 }
 
-void CurveListPanel::removeCustomCurveByName(const QString& display_name) {
-  const auto it = custom_name_to_key_.constFind(display_name);
-  if (it == custom_name_to_key_.constEnd()) {
-    return;
+void CurveListPanel::onCatalogItemsRemoved(const QStringList& keys) {
+  // A custom row whose catalog item is gone has nothing behind it, and the delete
+  // action cannot clear it: that path removes the row only after successfully
+  // removing the underlying transform, which no longer exists. Drop it here, where
+  // the vanished keys are known.
+  bool custom_changed = false;
+  for (const QString& key : keys) {
+    custom_changed = custom_keys_.remove(key) || custom_changed;
   }
-  removeCustomCurve(it.value());  // also erases the name->key entry
-}
-
-void CurveListPanel::onCatalogItemsRemoved(const QStringList& /*keys*/) {
+  if (custom_changed) {
+    refillCustomView();
+  }
   // One rebuild per batch (a dataset / multi-key trash is a single itemsRemoved).
   // TODO: incremental CurveTreeView::removeCurve(name); linear rebuild wipes
   // scroll/expansion/selection.
@@ -1035,6 +1046,10 @@ void CurveListPanel::onCatalogItemsRemoved(const QStringList& /*keys*/) {
 
 void CurveListPanel::onCatalogCleared() {
   tree_view_->clearCurves();
+  custom_keys_.clear();
+  if (custom_view_ != nullptr) {
+    custom_view_->clearCurves();
+  }
 }
 
 void CurveListPanel::onStylesheetChanged(QString theme) {

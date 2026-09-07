@@ -68,15 +68,26 @@ class CurveListPanel : public QWidget {
 
   void refreshValues(double tracker_time);
 
-  /// Add a curve to the Custom Series panel. `catalog_key` is the drag key;
-  /// `display_name` is what the user sees (the topic/alias name).
-  void addCustomCurve(const QString& catalog_key, const QString& display_name);
+  /// Replace the whole set of catalog keys routed to Custom Series.
+  ///
+  /// The panel holds no independent source of truth for which series are
+  /// derived, so the caller is authoritative: MainWindow derives the set from
+  /// DataProcessorService. Replacing wholesale — rather than adding and removing
+  /// row by row — is what keeps the panel correct on the paths that change the
+  /// processor graph without announcing each row (layout restore, a plugin
+  /// withdrawing its transform through pj.data_processors.v1).
+  ///
+  /// A key with no catalog item is simply not shown, so a row can never outlive
+  /// the series behind it.
+  void setCustomCurves(const QStringList& catalog_keys);
+
+  /// Names currently listed in Custom Series, sorted. The row set is not
+  /// otherwise observable from outside; assert on this rather than on the tree's
+  /// contents, which the section's filter text also shapes.
+  [[nodiscard]] QStringList customSeriesNames() const;
+
   /// Remove a curve from the Custom Series panel by its catalog key.
   void removeCustomCurve(const QString& name);
-  /// Remove a custom series by its DISPLAY name (the transform output name).
-  /// Robust against catalog-key churn — mirrors PJ3's removeCurve(name) used when
-  /// a source delete cascades to its derived series.
-  void removeCustomCurveByName(const QString& display_name);
 
   // Builds <curve_list_state show_topics="..." show_values="..."
   // datasets_filter="..." custom_filter="..."/> — filter text plus
@@ -195,6 +206,10 @@ class CurveListPanel : public QWidget {
   // were left out of the drag.
   void onDragPayloadKeysSkipped(const QStringList& catalog_keys);
   void applyIcons(QString theme);
+  // Repaints the Custom Series view from custom_keys_ ∩ the catalog, preserving
+  // expanded groups. Keys with no catalog item are dropped from the view by
+  // omission, so this doubles as the cleanup for a row left without one.
+  void refillCustomView();
   std::vector<QString> selectedCurveNamesForDrag() const;
 
   // True when there is a catalog and at least one tree's Value column is shown —
@@ -218,9 +233,6 @@ class CurveListPanel : public QWidget {
   // Catalog keys routed to the Custom Series panel (plugin-created transforms).
   // Excluded from the main tree so a custom series never appears in both.
   QSet<QString> custom_keys_;
-  // Display name -> catalog key, so a custom series can be removed by name even if
-  // its catalog key has churned (used by the source-delete cascade).
-  QHash<QString, QString> custom_name_to_key_;
   // QPushButtons hosted inside QWidgetAction items in the section
   // dropdown menus. Kept as members so applyIcons() can retint their
   // leading icons on theme switch.
