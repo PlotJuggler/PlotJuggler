@@ -52,6 +52,7 @@ PluginCheckDescriptor descriptorFromJson(const QJsonObject& obj) {
   d.abi_major = static_cast<quint32>(obj.value("abi_major").toInt());
   d.min_sdk_required = obj.value("min_sdk_required").toString();
   d.min_plotjuggler_version = obj.value("min_plotjuggler_version").toString();
+  d.suggested_sdk_version = obj.value("suggested_sdk_version").toString();
   d.dso_path = obj.value("dso_path").toString();
   return d;
 }

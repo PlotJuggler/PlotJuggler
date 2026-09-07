@@ -44,6 +44,8 @@
 #include <string>
 #include <utility>
 
+#include "pj_marketplace/plugin_compatibility.hpp"
+
 #ifndef Q_OS_WIN
 #include <unistd.h>  // geteuid: root ignores the directory permissions some tests rely on
 #endif
@@ -186,8 +188,8 @@ QString pluginPathForId(const QString& ext_id, const QString& version = "1.0.0")
     return QStringLiteral(PJ_MOCK_DATA_SOURCE_V2_PLUGIN_PATH);
   }
   // The 3.0.0 build of this id is the fixture whose embedded manifest declares
-  // min_plotjuggler_version "5.0.0" — the host-version floor the compatibility
-  // tests need. No other fixture declares one.
+  // min_sdk_required "99.0.0" — the SDK floor the compatibility tests need.
+  // No other fixture declares an above-host one.
   if (ext_id == "mock-data-source" && version == "3.0.0") {
     return QStringLiteral(PJ_MOCK_INCOMPATIBLE_PLUGIN_PATH);
   }
@@ -668,7 +670,7 @@ TEST_F(ExtensionManagerTest, InstallRejectsUnsupportedPlatform) {
 
 TEST_F(ExtensionManagerTest, HostCompatibilityAcceptsCurrentPlatformWithNoMinVersion) {
   Extension ext = makeExtension("plugin-x", "1.0.0", server_.url());
-  ext.min_plotjuggler_version = "";  // advisory soft floor absent
+  ext.min_sdk_required = "";  // floor absent
 
   const auto compat = mgr_->hostCompatibility(ext);
   EXPECT_TRUE(compat.ok);
@@ -706,26 +708,55 @@ TEST_F(ExtensionManagerTest, HostCompatibilityAcceptsEmptyPlatformsAsLocallyDecl
   EXPECT_TRUE(compat.reason.isEmpty());
 }
 
-TEST_F(ExtensionManagerTest, HostCompatibilityRejectsHostBelowDeclaredMinimum) {
-  const ScopedApplicationVersion host{"3.9.0"};
+TEST_F(ExtensionManagerTest, HostCompatibilityRejectsHostBelowDeclaredSdkMinimum) {
   Extension ext = makeExtension("plugin-x", "1.0.0", server_.url());
-  ext.min_plotjuggler_version = "4.0.0";
+  ext.min_sdk_required = "99.0.0";
 
   const auto compat = mgr_->hostCompatibility(ext);
   EXPECT_FALSE(compat.ok);
-  EXPECT_TRUE(compat.reason.contains("4.0.0"))
+  EXPECT_TRUE(compat.reason.contains("99.0.0"))
       << "reason must surface the required minimum: " << compat.reason.toStdString();
 }
 
-TEST_F(ExtensionManagerTest, HostCompatibilityAcceptsHostAtOrAboveDeclaredMinimum) {
-  const ScopedApplicationVersion host{"4.0.0"};
+TEST_F(ExtensionManagerTest, HostCompatibilityAcceptsHostAtOrAboveDeclaredSdkMinimum) {
   Extension ext = makeExtension("plugin-x", "1.0.0", server_.url());
-  ext.min_plotjuggler_version = "4.0.0";
-
-  EXPECT_TRUE(mgr_->hostCompatibility(ext).ok) << "host equal to min must be accepted";
-
-  const ScopedApplicationVersion host_newer{"4.5.1"};
+  ext.min_sdk_required = "0.1.0";
   EXPECT_TRUE(mgr_->hostCompatibility(ext).ok) << "host above min must be accepted";
+}
+
+TEST_F(ExtensionManagerTest, DeprecatedApplicationFloorNeverGates) {
+  // min_plotjuggler_version is decoded for back-compat but no longer gates.
+  Extension ext = makeExtension("plugin-x", "1.0.0", server_.url());
+  ext.min_plotjuggler_version = "999.0.0";
+  EXPECT_TRUE(mgr_->hostCompatibility(ext).ok);
+  ext.min_plotjuggler_version = "not-a-version";
+  EXPECT_TRUE(mgr_->hostCompatibility(ext).ok);
+}
+
+// The reduced-features note is display-only and must never affect the gate:
+// a compatible plugin with a full-feature floor above this build's SDK stays
+// ok=true and carries the note; an absent or unparseable claim yields nothing.
+TEST_F(ExtensionManagerTest, FeatureCompletenessNoteIsInformationalOnly) {
+  EXPECT_TRUE(evaluateFeatureCompleteness("").empty());
+  EXPECT_TRUE(evaluateFeatureCompleteness("not-a-version").empty());
+  EXPECT_TRUE(evaluateFeatureCompleteness("0.1.0").empty()) << "at/below the host SDK: full features";
+  const std::string note = evaluateFeatureCompleteness("99.0.0");
+  EXPECT_TRUE(note.find("99.0.0") != std::string::npos) << note;
+
+  Extension ext = makeExtension("plugin-x", "1.0.0", server_.url());
+  ext.suggested_sdk_version = "99.0.0";
+  const auto compat = mgr_->hostCompatibility(ext);
+  EXPECT_TRUE(compat.ok) << "the note must not gate";
+  EXPECT_TRUE(compat.reason.isEmpty());
+  EXPECT_TRUE(compat.completeness_note.contains("99.0.0")) << compat.completeness_note.toStdString();
+
+  InstalledExtension installed;
+  installed.id = "plugin-x";
+  installed.version = "1.0.0";
+  installed.suggested_sdk_version = "99.0.0";
+  const auto installed_compat = mgr_->hostCompatibility(installed);
+  EXPECT_TRUE(installed_compat.ok);
+  EXPECT_TRUE(installed_compat.completeness_note.contains("99.0.0"));
 }
 
 // R1: install() must refuse an extension whose declared minimum host is newer
@@ -733,10 +764,9 @@ TEST_F(ExtensionManagerTest, HostCompatibilityAcceptsHostAtOrAboveDeclaredMinimu
 // must fire — callers that await installFinished would otherwise hang, and
 // callers subscribed to installError would miss the failure entirely if only
 // one of the two were emitted.
-TEST_F(ExtensionManagerTest, InstallRefusesWhenHostBelowMinPlotjugglerVersion) {
-  const ScopedApplicationVersion host{"3.9.0"};
+TEST_F(ExtensionManagerTest, InstallRefusesWhenHostBelowMinSdkRequired) {
   Extension ext = makeExtension("plugin-x", "1.0.0", server_.url());
-  ext.min_plotjuggler_version = "4.0.0";
+  ext.min_sdk_required = "99.0.0";
 
   QSignalSpy started(mgr_, &ExtensionManager::installStarted);
   QSignalSpy error(mgr_, &ExtensionManager::installError);
@@ -747,7 +777,7 @@ TEST_F(ExtensionManagerTest, InstallRefusesWhenHostBelowMinPlotjugglerVersion) {
   EXPECT_EQ(started.count(), 0) << "installStarted must not fire when the host is below the plugin's minimum";
   ASSERT_EQ(error.count(), 1);
   EXPECT_EQ(error.first().at(0).toString(), "plugin-x");
-  EXPECT_TRUE(error.first().at(1).toString().contains("4.0.0"));
+  EXPECT_TRUE(error.first().at(1).toString().contains("99.0.0"));
   ASSERT_EQ(finished.count(), 1) << "installFinished must fire so callers awaiting it do not hang";
   EXPECT_EQ(finished.first().at(0).toString(), "plugin-x");
   EXPECT_FALSE(finished.first().at(1).toBool());
@@ -2733,12 +2763,10 @@ TEST_F(ExtensionManagerTest, StagedLocalReplacementIsPromotedOnNextLaunch) {
   cleanBackups("mock-data-source");
 }
 
-// A sideload gets the same host-version gate as a registry install: the embedded
-// manifest declares min_plotjuggler_version, so a ZIP demanding a newer host must
-// be refused instead of silently landing an extension that cannot run.
-TEST_F(ExtensionManagerTest, LocalZipInstallRejectsAnIncompatibleMinPlotjugglerVersion) {
-  const ScopedApplicationVersion host{"4.0.0"};
-
+// A sideload gets the same gate as a registry install: the embedded manifest
+// declares min_sdk_required, so a ZIP demanding a newer SDK must be refused
+// instead of silently landing an extension that cannot run.
+TEST_F(ExtensionManagerTest, LocalZipInstallRejectsAnIncompatibleMinSdkRequired) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
   const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source", "3.0.0"));
@@ -2747,7 +2775,7 @@ TEST_F(ExtensionManagerTest, LocalZipInstallRejectsAnIncompatibleMinPlotjugglerV
   // The refusal must read exactly like the registry one for the same floor, so
   // the expected text is taken from the registry gate rather than duplicated.
   Extension registry_equivalent = makeExtension("mock-data-source", "3.0.0", server_.url());
-  registry_equivalent.min_plotjuggler_version = "5.0.0";
+  registry_equivalent.min_sdk_required = "99.0.0";
   const QString expected_reason = mgr_->hostCompatibility(registry_equivalent).reason;
   ASSERT_FALSE(expected_reason.isEmpty());
 
@@ -2774,15 +2802,15 @@ TEST_F(ExtensionManagerTest, LocalZipInstallRejectsAnIncompatibleMinPlotjugglerV
       << "the transaction directory and its payload must be cleaned up on refusal";
 }
 
-// The complement: the same fixture installs normally once the host satisfies the
-// floor it declares, so the gate rejects on the version rule alone and not on the
-// mere presence of a declared minimum.
-TEST_F(ExtensionManagerTest, LocalZipInstallAcceptsACompatibleMinPlotjugglerVersion) {
-  const ScopedApplicationVersion host{"5.0.0"};
-
+// The complement: a fixture whose declared SDK floor this host satisfies
+// installs normally, so the gate rejects on the version rule alone and not on
+// the mere presence of a declared minimum.
+TEST_F(ExtensionManagerTest, LocalZipInstallAcceptsACompatibleMinSdkRequired) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
-  const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source", "3.0.0"));
+  const QByteArray plugin = readAll(QStringLiteral(PJ_MOCK_COMPATIBLE_FLOOR_PLUGIN_PATH));
+  ASSERT_FALSE(plugin.isEmpty());
+  const QString zip = writeZipFile(src, buildZip({{"mock-data-source/" + pluginFileName(), plugin}}));
   ASSERT_FALSE(zip.isEmpty());
 
   QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
@@ -2859,11 +2887,10 @@ TEST_F(ExtensionManagerTest, LocalZipInstallRejectsMalformedPluginVersion) {
 // The extracted DSO may declare a stricter floor, and that embedded requirement
 // must be enforced before the transaction is promoted into the managed store.
 TEST_F(ExtensionManagerTest, RegistryInstallRejectsAnIncompatibleEmbeddedFloor) {
-  const ScopedApplicationVersion host{"4.0.0"};
   server_.setBody(dummyPluginZip("mock-data-source", "3.0.0"));
 
   Extension ext = makeExtension("mock-data-source", "3.0.0", server_.url());
-  ext.min_plotjuggler_version.clear();
+  ext.min_sdk_required.clear();
 
   QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
   QSignalSpy spy_error(mgr_, &ExtensionManager::installError);
@@ -2871,20 +2898,20 @@ TEST_F(ExtensionManagerTest, RegistryInstallRejectsAnIncompatibleEmbeddedFloor) 
 
   ASSERT_TRUE(spy_finished.wait(5000));
   ASSERT_EQ(spy_error.count(), 1);
-  EXPECT_TRUE(spy_error.first().at(1).toString().contains("PlotJuggler 5.0.0"));
+  EXPECT_TRUE(spy_error.first().at(1).toString().contains("SDK 99.0.0"));
   EXPECT_FALSE(mgr_->isInstalled("mock-data-source"));
   EXPECT_TRUE(directoryHasNoChildren(ext_dir_.path()));
 }
 
 // The registry cannot sanitize a malformed embedded claim by omitting (or
-// disagreeing with) its own floor. Embedded metadata remains independently
-// authoritative for compatibility admission.
+// disagreeing with) its own floor. A malformed min_sdk_required is rejected at
+// the SDK scan itself (the decoder validates the format), so the payload never
+// becomes an installed extension.
 TEST_F(ExtensionManagerTest, RegistryInstallRejectsAMalformedEmbeddedFloor) {
-  const ScopedApplicationVersion host{"5.0.0"};
   server_.setBody(dummyPluginZip("malformed-floor"));
 
   Extension ext = makeExtension("malformed-floor", "1.0.0", server_.url());
-  ext.min_plotjuggler_version.clear();
+  ext.min_sdk_required.clear();
 
   QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
   QSignalSpy spy_error(mgr_, &ExtensionManager::installError);
@@ -2892,8 +2919,6 @@ TEST_F(ExtensionManagerTest, RegistryInstallRejectsAMalformedEmbeddedFloor) {
 
   ASSERT_TRUE(spy_finished.wait(5000));
   ASSERT_EQ(spy_error.count(), 1);
-  EXPECT_TRUE(spy_error.first().at(1).toString().contains("invalid", Qt::CaseInsensitive));
-  EXPECT_TRUE(spy_error.first().at(1).toString().contains("4.1"));
   EXPECT_FALSE(mgr_->isInstalled("malformed-floor"));
   EXPECT_TRUE(directoryHasNoChildren(ext_dir_.path()));
 }
@@ -2901,7 +2926,7 @@ TEST_F(ExtensionManagerTest, RegistryInstallRejectsAMalformedEmbeddedFloor) {
 // The gate can only exist because the scan carries the declared floor out of the
 // embedded manifest; an extension that declares none must report an empty one, so
 // "no declaration" stays distinguishable from "declares 0".
-TEST_F(ExtensionManagerTest, DiscoverExtensionDirectoryCarriesMinPlotjugglerVersion) {
+TEST_F(ExtensionManagerTest, DiscoverExtensionDirectoryCarriesMinSdkRequired) {
   ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/needs-newer-host", "mock-data-source", "3.0.0"));
   ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/no-floor", "mock-file-source"));
 
@@ -2909,17 +2934,17 @@ TEST_F(ExtensionManagerTest, DiscoverExtensionDirectoryCarriesMinPlotjugglerVers
   const QMap<QString, InstalledExtension> installed = mgr_->installedExtensions();
 
   ASSERT_TRUE(installed.contains("mock-data-source"));
-  EXPECT_EQ(installed["mock-data-source"].min_plotjuggler_version, "5.0.0");
+  EXPECT_EQ(installed["mock-data-source"].min_sdk_required, "99.0.0");
   ASSERT_TRUE(installed.contains("mock-file-source"));
-  EXPECT_TRUE(installed["mock-file-source"].min_plotjuggler_version.isEmpty())
+  EXPECT_TRUE(installed["mock-file-source"].min_sdk_required.isEmpty())
       << "a manifest without a floor must leave the field empty, not synthesise one";
 }
 
-// min_plotjuggler_version is a compatibility requirement, so an extension with
+// min_sdk_required is a compatibility requirement, so an extension with
 // several DSOs must satisfy the strictest valid component floor. Requiring exact
 // strings would reject a sound package whose modules legitimately use different
 // parts of the SDK.
-TEST_F(ExtensionManagerTest, DiscoverExtensionDirectoryUsesHighestMinPlotjugglerVersionAcrossDsos) {
+TEST_F(ExtensionManagerTest, DiscoverExtensionDirectoryUsesHighestMinSdkRequiredAcrossDsos) {
   const QString extension_dir = ext_dir_.path() + "/multi-dso";
   ASSERT_TRUE(QDir().mkpath(extension_dir));
   const QString suffix = QString::fromStdString(PlatformUtils::pluginExtension());
@@ -2937,18 +2962,18 @@ TEST_F(ExtensionManagerTest, DiscoverExtensionDirectoryUsesHighestMinPlotjuggler
   ASSERT_TRUE(installed.contains("mock-data-source"))
       << "different valid component floors must not invalidate the complete extension";
   EXPECT_EQ(installed["mock-data-source"].version, "3.0.0");
-  EXPECT_EQ(installed["mock-data-source"].min_plotjuggler_version, "5.0.0")
+  EXPECT_EQ(installed["mock-data-source"].min_sdk_required, "99.0.0")
       << "the extension must retain the strictest component requirement";
 }
 
 // Compatibility metadata is untrusted input. The tolerant numeric comparator treats
 // a non-numeric string like zero, so the gate itself must reject malformed floors
 // rather than silently accepting them on every real host version.
-TEST_F(ExtensionManagerTest, HostCompatibilityRejectsMalformedMinPlotjugglerVersion) {
+TEST_F(ExtensionManagerTest, HostCompatibilityRejectsMalformedMinSdkRequired) {
   for (const QString malformed : {"future", "1.0", "01.0.0", "1.0.0-01", "1.0.0+"}) {
     InstalledExtension installed;
     installed.id = "malformed-floor";
-    installed.min_plotjuggler_version = malformed;
+    installed.min_sdk_required = malformed;
 
     const ExtensionManager::HostCompatibility result = mgr_->hostCompatibility(installed);
 
@@ -2958,29 +2983,7 @@ TEST_F(ExtensionManagerTest, HostCompatibilityRejectsMalformedMinPlotjugglerVers
   }
 }
 
-// Invalid compatibility metadata makes the payload unloadable, not invisible.
-// An already-present extension must retain a marketplace row and an uninstall
-// path so the user can recover without manually deleting files.
-TEST_F(ExtensionManagerTest, MalformedInstalledFloorRemainsVisibleAndManageable) {
-  const ScopedApplicationVersion host{"4.0.0"};
-  ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/malformed-floor", "malformed-floor"));
-
-  mgr_->refreshInstalledFromDisk();
-  const QMap<QString, InstalledExtension> installed = mgr_->installedExtensions();
-  ASSERT_TRUE(installed.contains("malformed-floor"));
-  EXPECT_EQ(installed["malformed-floor"].min_plotjuggler_version, "4.1");
-  EXPECT_FALSE(mgr_->hostCompatibility(installed["malformed-floor"]).ok);
-
-  QSignalSpy spy_pending(mgr_, &ExtensionManager::uninstallPendingRestart);
-  mgr_->uninstall("malformed-floor");
-
-  ASSERT_EQ(spy_pending.count(), 1);
-  EXPECT_FALSE(mgr_->isInstalled("malformed-floor"));
-  EXPECT_TRUE(mgr_->hasPendingUninstall("malformed-floor"));
-}
-
 TEST_F(ExtensionManagerTest, MalformedInstalledVersionRemainsVisibleAndManageable) {
-  const ScopedApplicationVersion host{"4.0.0"};
   ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/malformed-version", "malformed-version", "4.1"));
 
   mgr_->refreshInstalledFromDisk();
@@ -3001,61 +3004,27 @@ TEST_F(ExtensionManagerTest, MalformedInstalledVersionRemainsVisibleAndManageabl
 
 // A minimum is a real SemVer value, not only a dotted numeric prefix. In
 // particular, a release outranks its pre-release and numeric pre-release
-// identifiers compare numerically rather than lexicographically.
-TEST_F(ExtensionManagerTest, HostCompatibilityUsesSemverPrereleasePrecedence) {
-  InstalledExtension installed;
-  installed.id = "prerelease-floor";
-
-  {
-    const ScopedApplicationVersion host{"5.0.0-rc.1"};
-    installed.min_plotjuggler_version = "5.0.0";
-    EXPECT_FALSE(mgr_->hostCompatibility(installed).ok);
-  }
-  {
-    const ScopedApplicationVersion host{"5.0.0"};
-    installed.min_plotjuggler_version = "5.0.0-rc.10";
-    EXPECT_TRUE(mgr_->hostCompatibility(installed).ok);
-  }
-  {
-    const ScopedApplicationVersion host{"5.0.0-beta.2"};
-    installed.min_plotjuggler_version = "5.0.0-beta.11";
-    EXPECT_FALSE(mgr_->hostCompatibility(installed).ok);
-  }
-  {
-    const ScopedApplicationVersion host{"5.0.0+host-build"};
-    installed.min_plotjuggler_version = "5.0.0+publisher-build";
-    EXPECT_TRUE(mgr_->hostCompatibility(installed).ok);
-  }
-}
-
-// The build accepts release tags with one leading v/V and stamps the original
-// PJ_VERSION into applicationVersion(). That packaging spelling is host-only:
-// plugin metadata remains strict SemVer and must not adopt the prefix.
-TEST_F(ExtensionManagerTest, HostCompatibilityNormalizesOnlyTheConfiguredHostTagPrefix) {
-  InstalledExtension installed;
-  installed.id = "tag-prefixed-host";
-  installed.min_plotjuggler_version = "5.0.0";
-
-  {
-    const ScopedApplicationVersion host{"v5.0.0"};
-    EXPECT_TRUE(mgr_->hostCompatibility(installed).ok);
-  }
-  {
-    const ScopedApplicationVersion host{"V5.0.0-rc.1"};
-    EXPECT_FALSE(mgr_->hostCompatibility(installed).ok);
-  }
-  {
-    const ScopedApplicationVersion host{"5.0.0"};
-    installed.min_plotjuggler_version = "v5.0.0";
-    EXPECT_FALSE(mgr_->hostCompatibility(installed).ok);
-  }
+// identifiers compare numerically rather than lexicographically. Driven
+// through the pure primitive so the host SDK version is injectable.
+TEST_F(ExtensionManagerTest, CompatibilityUsesSemverPrereleasePrecedence) {
+  const auto floor_ok = [](std::string_view floor, std::string_view host_sdk) {
+    return evaluatePluginCompatibility(
+               {.version = "1.0.0", .abi_major = 0, .min_sdk_required = floor},
+               {.abi_major = PJ_ABI_VERSION, .sdk_version = host_sdk})
+        .ok;
+  };
+  EXPECT_FALSE(floor_ok("5.0.0", "5.0.0-rc.1"));
+  EXPECT_TRUE(floor_ok("5.0.0-rc.10", "5.0.0"));
+  EXPECT_FALSE(floor_ok("5.0.0-beta.11", "5.0.0-beta.2"));
+  EXPECT_TRUE(floor_ok("5.0.0+publisher-build", "5.0.0+host-build"));
+  // Plugin metadata remains strict SemVer: a v-prefixed floor is invalid.
+  EXPECT_FALSE(floor_ok("v5.0.0", "5.0.0"));
 }
 
 // The compatibility gate must precede replacement policy. A host that cannot run
 // the incoming bytes should neither ask the user for consent nor leave staged state
 // that would displace the known-compatible installation on restart.
 TEST_F(ExtensionManagerTest, IncompatibleLocalZipReplacementIsRejectedBeforeConfirmation) {
-  const ScopedApplicationVersion host{"4.0.0"};
   ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/mock-data-source", "mock-data-source", "1.0.0"));
 
   QTemporaryDir src;
@@ -3080,7 +3049,7 @@ TEST_F(ExtensionManagerTest, IncompatibleLocalZipReplacementIsRejectedBeforeConf
   ASSERT_TRUE(waitForInstallOutcome(spy_finished, spy_pending));
   EXPECT_FALSE(confirmation_invoked);
   ASSERT_EQ(spy_error.count(), 1);
-  EXPECT_TRUE(spy_error.first().at(1).toString().contains("Requires PlotJuggler 5.0.0"));
+  EXPECT_TRUE(spy_error.first().at(1).toString().contains("Requires PlotJuggler SDK 99.0.0"));
   EXPECT_EQ(spy_pending.count(), 0);
   EXPECT_FALSE(mgr_->hasPendingInstall("mock-data-source"));
   EXPECT_EQ(mgr_->installedExtensions()["mock-data-source"].version, "1.0.0");

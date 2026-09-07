@@ -117,7 +117,7 @@ class PluginRuntimeCatalog {
   // so --plugin-dir cannot override a compiled-in plugin; otherwise the
   // highest-priority *authoritative* entry claims the id outright (ignoring the
   // version of every other copy); among managed entries the higher version wins,
-  // then directory priority. An incompatible copy (see setHostVersion) is
+  // then directory priority. An incompatible copy (ABI or SDK floor) is
   // rejected before any of this and never claims its id, so an incompatible
   // --plugin-dir build falls back to the managed copy. Empty entries are ignored.
   void setPluginDirs(std::vector<PluginDirEntry> plugin_dirs);
@@ -125,21 +125,9 @@ class PluginRuntimeCatalog {
   // Replaces the optional diagnostic sink.
   void setDiagnosticSink(DiagnosticSink sink);
 
-  // Sets the host ("PlotJuggler") version used by the unified hard compatibility
-  // gate. That gate validates ABI, the SDK contract floor, and the manifest's
-  // `min_plotjuggler_version`; a compatible managed duplicate is preferred and an
-  // incompatible final winner is never loaded. Empty is valid only for hosts that
-  // load no plugin declaring an application floor: such a declaration then fails
-  // closed because the host version cannot be established.
-  //
-  // Call before the first scanDirectory()/reload(): the value is read on the
-  // scan thread and this class is not thread-safe, so it must not change
-  // concurrently with a scan.
-  void setHostVersion(std::string host_version);
-
   // Ids of extensions the user disabled (installed but not loaded): a matching
   // winner is skipped at load time with an info diagnostic. Read on the scan
-  // thread like setHostVersion, so set it before the first scanDirectory()/reload().
+  // thread, so set it before the first scanDirectory()/reload().
   void setDisabledIds(std::unordered_set<std::string> disabled_ids);
 
   // Rebuilds the DSO-backed plugin set from the scan folders. Statically
@@ -223,7 +211,7 @@ class PluginRuntimeCatalog {
   // Scans every entry in plugin_dirs_ (in priority order) and returns the
   // loadable descriptors de-duplicated by manifest id, choosing each id's winner
   // by static-registration tier, then authoritative tier, then compatibility,
-  // then version, then directory priority (see setPluginDirs / setHostVersion).
+  // then version, then directory priority (see setPluginDirs).
   // Reports scan diagnostics and one info diagnostic per skipped duplicate.
   [[nodiscard]] std::vector<PluginDescriptor> collectDeduplicatedPlugins() const;
 
@@ -263,7 +251,6 @@ class PluginRuntimeCatalog {
   std::vector<PluginDirEntry> plugin_dirs_;
   DiagnosticSink sink_;
   std::string diagnostic_source_;
-  std::string host_version_;                      ///< host version for compatibility ties; "" disables the check
   std::unordered_set<std::string> disabled_ids_;  ///< winners with these ids are not loaded
   // Canonical paths of authoritative winners from the most recent scan. The
   // collector records the tier while it still has the PluginDirEntry context;

@@ -212,17 +212,14 @@ class ExtensionCatalogService : public QObject {
   // so seed diagnostics and marketplace UI say the same thing.
   //
   // Static + descriptor-taking so the seed can call it without an
-  // ExtensionCatalogService instance and tests can drive it with any host
-  // version, not only QCoreApplication::applicationVersion().
-  [[nodiscard]] static QString descriptorIncompatReason(
-      const PluginDescriptor& descriptor, const QString& host_version);
+  // ExtensionCatalogService instance.
+  [[nodiscard]] static QString descriptorIncompatReason(const PluginDescriptor& descriptor);
 
   // Convenience predicate — a descriptor is compatible when its incompat
-  // reason is empty. Delegates to descriptorIncompatReason so a future third
-  // gate cannot drift between the two paths.
-  [[nodiscard]] static bool descriptorIsCompatibleWithHost(
-      const PluginDescriptor& descriptor, const QString& host_version) {
-    return descriptorIncompatReason(descriptor, host_version).isEmpty();
+  // reason is empty. Delegates to descriptorIncompatReason so a future gate
+  // cannot drift between the two paths.
+  [[nodiscard]] static bool descriptorIsCompatibleWithHost(const PluginDescriptor& descriptor) {
+    return descriptorIncompatReason(descriptor).isEmpty();
   }
 
  signals:

@@ -136,7 +136,6 @@ int validatePlugins(const QString& plugin_dir, const QStringList& expected_specs
 #else
   catalog.setPluginDir(std::filesystem::path(plugin_dir.toStdString()));
 #endif
-  catalog.setHostVersion(QCoreApplication::applicationVersion().toStdString());
   catalog.scanDirectory();
 
   std::map<std::string, std::string> loaded;

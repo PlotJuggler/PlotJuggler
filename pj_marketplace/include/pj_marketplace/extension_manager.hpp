@@ -80,6 +80,10 @@ class ExtensionManager : public QObject {
   struct HostCompatibility {
     bool ok = true;
     QString reason;
+    /// Non-empty when the plugin is compatible but declares a full-feature
+    /// floor (suggested_sdk_version) newer than this build's SDK. Display
+    /// only — never part of the ok/reason gate.
+    QString completeness_note;
   };
   HostCompatibility hostCompatibility(const Extension& ext) const;
 

@@ -32,6 +32,7 @@ struct PluginCheckDescriptor {
   quint32 abi_major = 0;
   QString min_sdk_required;
   QString min_plotjuggler_version;
+  QString suggested_sdk_version;
   QString dso_path;
 };
 

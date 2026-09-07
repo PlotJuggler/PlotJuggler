@@ -600,7 +600,7 @@ TEST_F(RegistryManagerTest, DeduplicatesByIdKeepingHighestVersion) {
 // otherwise discard the only artifact this host can install, for good.
 TEST_F(RegistryManagerTest, PlatformEligibilityPrecedesVersionOrdering) {
   RegistryManager mgr;
-  mgr.setEligibility("linux-x86_64", "4.0.0");
+  mgr.setEligibility("linux-x86_64");
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
 
   server_->setResponseBody(R"({"extensions":[
@@ -621,16 +621,16 @@ TEST_F(RegistryManagerTest, PlatformEligibilityPrecedesVersionOrdering) {
 
 // Among platform-eligible duplicates the winner is the highest version the
 // running host can actually accept — a newer build that demands a newer
-// PlotJuggler must not hide an installable older one.
+// SDK must not hide an installable older one.
 TEST_F(RegistryManagerTest, HighestHostCompatibleVersionWinsWhenOneExists) {
   RegistryManager mgr;
-  mgr.setEligibility("linux-x86_64", "4.0.0");
+  mgr.setEligibility("linux-x86_64");
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
 
   server_->setResponseBody(R"({"extensions":[
-    {"id":"dup","name":"Dup","version":"3.0.0","min_plotjuggler_version":"5.0.0",
+    {"id":"dup","name":"Dup","version":"3.0.0","min_sdk_required":"99.0.0",
      "platforms":{"linux-x86_64":{"url":"u3","checksum":"sha256:3"}}},
-    {"id":"dup","name":"Dup","version":"2.0.0","min_plotjuggler_version":"4.0.0",
+    {"id":"dup","name":"Dup","version":"2.0.0","min_sdk_required":"0.1.0",
      "platforms":{"linux-x86_64":{"url":"u2","checksum":"sha256:2"}}},
     {"id":"dup","name":"Dup","version":"1.0.0",
      "platforms":{"linux-x86_64":{"url":"u1","checksum":"sha256:1"}}}
@@ -640,7 +640,7 @@ TEST_F(RegistryManagerTest, HighestHostCompatibleVersionWinsWhenOneExists) {
 
   const QList<Extension> exts = mgr.extensions();
   ASSERT_EQ(exts.size(), 1);
-  EXPECT_EQ(exts.at(0).version, "2.0.0") << "3.0.0 needs PlotJuggler 5.0.0, so the highest installable one must win";
+  EXPECT_EQ(exts.at(0).version, "2.0.0") << "3.0.0 needs SDK 99.0.0, so the highest installable one must win";
 }
 
 // When no candidate is host-compatible the highest one is kept rather than
@@ -649,13 +649,13 @@ TEST_F(RegistryManagerTest, HighestHostCompatibleVersionWinsWhenOneExists) {
 // user; a flagged one is not).
 TEST_F(RegistryManagerTest, KeepsHighestVersionWhenNoCandidateIsHostCompatible) {
   RegistryManager mgr;
-  mgr.setEligibility("linux-x86_64", "4.0.0");
+  mgr.setEligibility("linux-x86_64");
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
 
   server_->setResponseBody(R"({"extensions":[
-    {"id":"dup","name":"Dup","version":"2.0.0","min_plotjuggler_version":"5.0.0",
+    {"id":"dup","name":"Dup","version":"2.0.0","min_sdk_required":"99.0.0",
      "platforms":{"linux-x86_64":{"url":"u2","checksum":"sha256:2"}}},
-    {"id":"dup","name":"Dup","version":"3.0.0","min_plotjuggler_version":"6.0.0",
+    {"id":"dup","name":"Dup","version":"3.0.0","min_sdk_required":"98.0.0",
      "platforms":{"linux-x86_64":{"url":"u3","checksum":"sha256:3"}}}
   ]})");
   mgr.fetchRegistry(server_->url());
@@ -670,7 +670,7 @@ TEST_F(RegistryManagerTest, KeepsHighestVersionWhenNoCandidateIsHostCompatible) 
 // is only true once the shared comparator implements SemVer precedence.
 TEST_F(RegistryManagerTest, DeduplicationPrefersReleaseOverPreRelease) {
   RegistryManager mgr;
-  mgr.setEligibility("linux-x86_64", "4.0.0");
+  mgr.setEligibility("linux-x86_64");
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
 
   server_->setResponseBody(R"({"extensions":[
@@ -690,7 +690,7 @@ TEST_F(RegistryManagerTest, DeduplicationPrefersReleaseOverPreRelease) {
 
 TEST_F(RegistryManagerTest, RejectsReusedSemanticVersionSlot) {
   RegistryManager mgr;
-  mgr.setEligibility("linux-x86_64", "4.0.0");
+  mgr.setEligibility("linux-x86_64");
   QSignalSpy spy_error(&mgr, &RegistryManager::fetchError);
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
 
@@ -712,7 +712,7 @@ TEST_F(RegistryManagerTest, RejectsReusedSemanticVersionSlot) {
 
 TEST_F(RegistryManagerTest, SdkCompatibilityPrecedesVersionOrdering) {
   RegistryManager mgr;
-  mgr.setEligibility("linux-x86_64", "4.0.0");
+  mgr.setEligibility("linux-x86_64");
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
 
   server_->setResponseBody(R"({"extensions":[
@@ -731,13 +731,13 @@ TEST_F(RegistryManagerTest, SdkCompatibilityPrecedesVersionOrdering) {
 
 TEST_F(RegistryManagerTest, NoPlatformCandidateFallsBackToHighestVersionOverall) {
   RegistryManager mgr;
-  mgr.setEligibility("linux-x86_64", "4.0.0");
+  mgr.setEligibility("linux-x86_64");
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
 
   server_->setResponseBody(R"({"extensions":[
     {"id":"dup","name":"Dup","version":"2.0.0",
      "platforms":{"windows-x86_64":{"url":"u2","checksum":"sha256:2"}}},
-    {"id":"dup","name":"Dup","version":"3.0.0","min_plotjuggler_version":"99.0.0",
+    {"id":"dup","name":"Dup","version":"3.0.0","min_sdk_required":"99.0.0",
      "platforms":{"macos-arm64":{"url":"u3","checksum":"sha256:3"}}}
   ]})");
   mgr.fetchRegistry(server_->url());

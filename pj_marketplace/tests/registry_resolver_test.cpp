@@ -10,27 +10,25 @@
 namespace PJ {
 namespace {
 
-Extension candidate(
-    QString id, QString version, QString platform = "linux-x86_64", QString app_floor = {}, QString sdk_floor = {}) {
+Extension candidate(QString id, QString version, QString platform = "linux-x86_64", QString sdk_floor = {}) {
   Extension extension;
   extension.name = id;
   extension.id = std::move(id);
   extension.version = std::move(version);
   extension.min_sdk_required = std::move(sdk_floor);
-  extension.min_plotjuggler_version = std::move(app_floor);
   if (!platform.isEmpty()) {
     extension.platforms.insert(std::move(platform), {"https://example.invalid/plugin.zip", "sha256:test"});
   }
   return extension;
 }
 
-const RegistryResolutionContext kHost{"linux-x86_64", "0.21.0", "4.0.0"};
+const RegistryResolutionContext kHost{"linux-x86_64", "0.21.0"};
 
 TEST(RegistryResolver, SelectsHighestCompatibleReleaseForPlatform) {
   const QList<Extension> candidates = {
-      candidate("plugin", "4.0.0", "linux-x86_64", "5.0.0"),
-      candidate("plugin", "3.0.0", "linux-x86_64", {}, "99.0.0"),
-      candidate("plugin", "2.0.0", "linux-x86_64", "4.0.0", "0.21.0"),
+      candidate("plugin", "4.0.0", "linux-x86_64", "99.0.0"),
+      candidate("plugin", "3.0.0", "linux-x86_64", "99.0.0"),
+      candidate("plugin", "2.0.0", "linux-x86_64", "0.21.0"),
       candidate("plugin", "9.0.0", "windows-x86_64"),
   };
 
@@ -43,8 +41,8 @@ TEST(RegistryResolver, SelectsHighestCompatibleReleaseForPlatform) {
 
 TEST(RegistryResolver, KeepsHighestPlatformReleaseWhenAllAreIncompatible) {
   const QList<Extension> candidates = {
-      candidate("plugin", "2.0.0", "linux-x86_64", "5.0.0"),
-      candidate("plugin", "3.0.0", "linux-x86_64", "6.0.0"),
+      candidate("plugin", "2.0.0", "linux-x86_64", "99.0.0"),
+      candidate("plugin", "3.0.0", "linux-x86_64", "98.0.0"),
   };
 
   const auto resolved = resolveRegistryCandidates(candidates, kHost);

@@ -14,14 +14,15 @@
 namespace PJ {
 
 // The admission claims carried by one plugin descriptor. Version is required
-// for real descriptors and must be strict SemVer. A zero ABI and empty floors
-// mean "not declared" so older manifests remain admissible until the protocol
-// loader performs its own ABI-symbol validation.
+// for real descriptors and must be strict SemVer. A zero ABI and an empty
+// floor mean "not declared" so older manifests remain admissible until the
+// protocol loader performs its own ABI-symbol validation. The manifest's
+// min_plotjuggler_version is deprecated and no longer gates: abi_major is the
+// generation gate, and app-level feature gaps degrade rather than block.
 struct PluginCompatibilityRequirements {
   std::string_view version;
   uint32_t abi_major = 0;
   std::string_view min_sdk_required;
-  std::string_view min_plotjuggler_version;
 };
 
 // The host contract against which admission, seeding, and runtime loading all
@@ -30,7 +31,6 @@ struct PluginCompatibilityRequirements {
 struct PluginHostCompatibility {
   uint32_t abi_major = PJ_ABI_VERSION;
   std::string_view sdk_version = sdkVersion();
-  std::string_view plotjuggler_version;
 };
 
 struct PluginCompatibilityResult {
@@ -39,9 +39,7 @@ struct PluginCompatibilityResult {
 };
 
 // Evaluate every admission dimension in fail-closed order. Plugin values are
-// strict SemVer 2.0.0. The application build is allowed one leading v/V
-// because PJ4 accepts release tags in that form and strips the prefix when it
-// configures project(VERSION); plugin manifests receive no such normalization.
+// strict SemVer 2.0.0.
 [[nodiscard]] inline PluginCompatibilityResult evaluatePluginCompatibility(
     const PluginCompatibilityRequirements& requirements, const PluginHostCompatibility& host) {
   if (!requirements.version.empty()) {
@@ -77,40 +75,35 @@ struct PluginCompatibilityResult {
     }
   }
 
-  if (!requirements.min_plotjuggler_version.empty()) {
-    const auto minimum = SemVer::parse(requirements.min_plotjuggler_version);
-    if (!minimum) {
-      return {
-          false,
-          "Invalid minimum PlotJuggler version \"" + std::string(requirements.min_plotjuggler_version) + "\"",
-      };
-    }
-
-    std::string_view reported_host = host.plotjuggler_version;
-    if (!reported_host.empty() && (reported_host.front() == 'v' || reported_host.front() == 'V')) {
-      reported_host.remove_prefix(1);
-    }
-    const auto current = SemVer::parse(reported_host);
-    if (!current) {
-      return {
-          false,
-          "This build reports an invalid PlotJuggler version \"" + std::string(host.plotjuggler_version) + "\"",
-      };
-    }
-    if (current->compare(*minimum) == std::strong_ordering::less) {
-      return {
-          false,
-          "Requires PlotJuggler " + std::string(requirements.min_plotjuggler_version) + " or newer (this build is " +
-              std::string(host.plotjuggler_version) + ")",
-      };
-    }
-  }
-
   return {};
 }
 
-[[nodiscard]] inline PluginHostCompatibility currentPluginHostCompatibility(std::string_view plotjuggler_version) {
-  return {PJ_ABI_VERSION, sdkVersion(), plotjuggler_version};
+// Feature-completeness note, deliberately SEPARATE from the binary gate above:
+// it must never affect ok/reason — install enforcement and admission are
+// fail-closed on that result, while this is display-only. `suggested` is the
+// manifest's suggested_sdk_version (the full-feature floor). Returns the
+// human-readable note when the host's SDK is older than the claim, empty when
+// full-featured, absent, or unparseable (fail-open: a bad claim never blocks
+// and never warns).
+[[nodiscard]] inline std::string evaluateFeatureCompleteness(
+    std::string_view suggested, std::string_view host_sdk = sdkVersion()) {
+  if (suggested.empty()) {
+    return {};
+  }
+  const auto wanted = SemVer::parse(suggested);
+  const auto current = SemVer::parse(host_sdk);
+  if (!wanted || !current) {
+    return {};
+  }
+  if (current->compare(*wanted) == std::strong_ordering::less) {
+    return "Works on this version with reduced features; full features need a newer PlotJuggler (SDK " +
+           std::string(suggested) + " or newer, this build uses " + std::string(host_sdk) + ")";
+  }
+  return {};
+}
+
+[[nodiscard]] inline PluginHostCompatibility currentPluginHostCompatibility() {
+  return {PJ_ABI_VERSION, sdkVersion()};
 }
 
 }  // namespace PJ

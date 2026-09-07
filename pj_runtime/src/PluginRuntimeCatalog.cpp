@@ -29,15 +29,14 @@ bool isStaticPath(const std::string& path) {
   return path.starts_with(kStaticPathPrefix);
 }
 
-PluginCompatibilityResult descriptorCompatibility(const PluginDescriptor& descriptor, std::string_view host_version) {
+PluginCompatibilityResult descriptorCompatibility(const PluginDescriptor& descriptor) {
   return evaluatePluginCompatibility(
       {
           .version = descriptor.version,
           .abi_major = descriptor.abi_major,
           .min_sdk_required = descriptor.min_sdk_required,
-          .min_plotjuggler_version = descriptor.min_plotjuggler_version,
       },
-      currentPluginHostCompatibility(host_version));
+      currentPluginHostCompatibility());
 }
 
 std::string canonicalPath(const std::filesystem::path& path) {
@@ -126,10 +125,6 @@ void PluginRuntimeCatalog::setDiagnosticSink(DiagnosticSink sink) {
   sink_ = std::move(sink);
 }
 
-void PluginRuntimeCatalog::setHostVersion(std::string host_version) {
-  host_version_ = std::move(host_version);
-}
-
 void PluginRuntimeCatalog::setDisabledIds(std::unordered_set<std::string> disabled_ids) {
   disabled_ids_ = std::move(disabled_ids);
 }
@@ -137,7 +132,7 @@ void PluginRuntimeCatalog::setDisabledIds(std::unordered_set<std::string> disabl
 std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins() const {
   // Winner selection when the same plugin id appears in more than one folder:
   //
-  //   0. An incompatible copy (see setHostVersion) is rejected on sight and never
+  //   0. An incompatible copy (ABI or SDK floor) is rejected on sight and never
   //      claims its id, whatever folder it sits in — so an incompatible --plugin-dir
   //      build falls back to the marketplace copy (reported as an error + a note).
   //   1. Authoritative entries (custom folders + --plugin-dir; see PluginDirEntry)
@@ -146,9 +141,7 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
   //      — ignoring the version of any lower-priority folder.
   //   2. Among the remaining (managed) folders — marketplace + bundled — the higher
   //      version wins; a tie keeps the higher-priority folder.
-  const auto compatibility = [this](const PluginDescriptor& descriptor) {
-    return descriptorCompatibility(descriptor, host_version_);
-  };
+  const auto compatibility = [this](const PluginDescriptor& descriptor) { return descriptorCompatibility(descriptor); };
 
   std::vector<PluginDescriptor> winners;
   std::unordered_map<std::string, size_t> winner_index;  // id -> position in `winners`
@@ -414,7 +407,7 @@ bool PluginRuntimeCatalog::registerStaticDataSource(
   return registerStaticPlugin(
       vtable, data_sources_, PluginFamily::kDataSource,
       [this](DiagnosticLevel level, const std::string& id, std::string msg) { report(level, id, std::move(msg)); },
-      [this](const PluginDescriptor& descriptor) { return descriptorCompatibility(descriptor, host_version_); },
+      [](const PluginDescriptor& descriptor) { return descriptorCompatibility(descriptor); },
       [this](const std::string& id) { return claimStaticId(id, "DataSource"); },
       [this](RuntimeDataSourcePlugin& loaded, const PluginDescriptor& descriptor) {
         const auto capabilities = probeCapabilities(loaded.library);
@@ -453,7 +446,7 @@ bool PluginRuntimeCatalog::registerStaticMessageParser(
   return registerStaticPlugin(
       vtable, message_parsers_, PluginFamily::kMessageParser,
       [this](DiagnosticLevel level, const std::string& id, std::string msg) { report(level, id, std::move(msg)); },
-      [this](const PluginDescriptor& descriptor) { return descriptorCompatibility(descriptor, host_version_); },
+      [](const PluginDescriptor& descriptor) { return descriptorCompatibility(descriptor); },
       [this](const std::string& id) { return claimStaticId(id, "MessageParser"); },
       [](RuntimeMessageParserPlugin& loaded, const PluginDescriptor& descriptor) {
         loaded.encodings = descriptor.encoding;
@@ -470,7 +463,7 @@ bool PluginRuntimeCatalog::registerStaticToolbox(
   return registerStaticPlugin(
       vtable, toolbox_plugins_, PluginFamily::kToolbox,
       [this](DiagnosticLevel level, const std::string& id, std::string msg) { report(level, id, std::move(msg)); },
-      [this](const PluginDescriptor& descriptor) { return descriptorCompatibility(descriptor, host_version_); },
+      [](const PluginDescriptor& descriptor) { return descriptorCompatibility(descriptor); },
       [this](const std::string& id) { return claimStaticId(id, "Toolbox"); },
       [this](RuntimeToolboxPlugin& loaded, const PluginDescriptor& /*descriptor*/) {
         const auto capabilities = probeCapabilities(loaded.library);
@@ -514,6 +507,14 @@ bool PluginRuntimeCatalog::registerStaticPlugins(const StaticPluginSet& plugins)
 }
 
 bool PluginRuntimeCatalog::loadAndRegister(const PluginDescriptor& descriptor) {
+  // Reduced-features visibility: a plugin whose full-feature floor exceeds
+  // this build's SDK still loads (the gate above passed) but some optional
+  // features stay inactive — say so once, at admission.
+  // TODO(sdk-0.33): read descriptor.suggested_sdk_version once the pin moves.
+  const std::string_view suggested_sdk_version;
+  if (const std::string note = evaluateFeatureCompleteness(suggested_sdk_version); !note.empty()) {
+    report(DiagnosticLevel::kInfo, descriptor.id, descriptor.dso_path.string() + ": " + note);
+  }
   switch (descriptor.family) {
     case PluginFamily::kDataSource:
       return loadAndRegisterDataSource(descriptor);

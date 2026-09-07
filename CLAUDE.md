@@ -249,6 +249,13 @@ a `QApplication` without one and would otherwise pop windows on the desktop.
 
 Re-running `./build.sh` after code changes does incremental builds. `ccache` is picked up automatically if installed.
 
+**Local-SDK development mode**: `./build.sh --sdk-local[=PATH]` builds
+`plotjuggler_sdk` from a local working tree (default: the `../plotjuggler_sdk`
+sibling checkout) instead of the pinned Conan package, so testing an unreleased
+SDK change needs no release — editing an SDK header and re-running `./build.sh`
+is one incremental rebuild. Dev-only: not reproducible, refused in CI, and
+never a way to merge; merged code always builds from a released pin.
+
 After a rebuild meant to pick up a C++ change, confirm the file actually recompiled (grep the build log for `Building .../<file>.cpp.o`, or check the `.o` mtime) before claiming the fix is live — RCC/QSS rebuilds can mask a stalled C++ recompile, so an edit looks like it had "no effect" when it was never compiled. Never chain `pkill … ; ./build.sh`: the chained build exits 144 and skips recompiling. Kill the running app in its own command, then run `./build.sh` standalone.
 
 Submodules (`3rdparty/`): `git submodule update --init --recursive` on first clone.

@@ -13,6 +13,9 @@ usage() {
     "  --tsan               Build and run concurrency tests with ThreadSanitizer" \
     "  --skip-test          Build without the test suite" \
     "  --skip-conan-install Reuse the existing Conan toolchain" \
+    "  --sdk-local[=PATH]   Build plotjuggler_sdk from a local tree instead of the" \
+    "                       Conan package (default PATH: ../plotjuggler_sdk sibling)." \
+    "                       Dev-only: not reproducible, refused in CI." \
     "  --help               Show this help message"
 }
 
@@ -25,15 +28,34 @@ usage() {
 TSAN=0
 SKIP_TEST=0
 SKIP_CONAN_INSTALL=0
+SDK_LOCAL_DIR=""
 for arg in "$@"; do
   case "$arg" in
     --tsan) TSAN=1 ;;
     --skip-test) SKIP_TEST=1 ;;
     --skip-conan-install) SKIP_CONAN_INSTALL=1 ;;
+    --sdk-local) SDK_LOCAL_DIR="${SCRIPT_DIR}/../plotjuggler_sdk"
+                 [[ -d "$SDK_LOCAL_DIR" ]] || SDK_LOCAL_DIR="${HOME}/ws_plotjuggler/plotjuggler_sdk" ;;
+    --sdk-local=*) SDK_LOCAL_DIR="${arg#--sdk-local=}" ;;
     --help) usage; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+if [[ -n "$SDK_LOCAL_DIR" ]]; then
+  if [[ -n "${CI:-}" ]]; then
+    echo "--sdk-local is a local development mode; refusing to run in CI" >&2
+    exit 2
+  fi
+  if [[ ! -f "$SDK_LOCAL_DIR/pj_base/CMakeLists.txt" ]]; then
+    echo "--sdk-local: no plotjuggler_sdk tree at $SDK_LOCAL_DIR" >&2
+    exit 2
+  fi
+  echo "=================================================================="
+  echo " plotjuggler_sdk from LOCAL TREE: $SDK_LOCAL_DIR"
+  echo " NOT reproducible — do not use for release artifacts"
+  echo "=================================================================="
+fi
 
 if [[ "$TSAN" == "1" && "$SKIP_TEST" == "1" ]]; then
   echo "--tsan and --skip-test cannot be used together" >&2
@@ -134,6 +156,7 @@ cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" \
   -DCMAKE_PREFIX_PATH="${QT_DIR}" \
   -DPJ_VERSION="${PJ_VERSION:-${PJ_APP_VERSION}}" \
   -DPJ_INSTALLATION="${PJ_INSTALLATION:-source}" \
+  -DPJ_SDK_LOCAL_DIR="${SDK_LOCAL_DIR}" \
   "${CMAKE_CCACHE_ARGS[@]+"${CMAKE_CCACHE_ARGS[@]}"}" "${PJ_FLAG_ARGS[@]+"${PJ_FLAG_ARGS[@]}"}"
 
 # Surface the compile DB (CMAKE_EXPORT_COMPILE_COMMANDS writes it under build/) at

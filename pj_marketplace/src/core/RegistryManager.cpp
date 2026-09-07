@@ -19,12 +19,10 @@ RegistryManager::RegistryManager(QObject* parent)
     : QObject(parent),
       network_(new QNetworkAccessManager(this)),
       platform_(PlatformUtils::currentPlatform()),
-      sdk_version_(QString::fromStdString(std::string(sdkVersion()))),
-      host_version_(QCoreApplication::applicationVersion()) {}
+      sdk_version_(QString::fromStdString(std::string(sdkVersion()))) {}
 
-void RegistryManager::setEligibility(const QString& platform, const QString& host_version) {
+void RegistryManager::setEligibility(const QString& platform) {
   platform_ = platform;
-  host_version_ = host_version;
 }
 
 void RegistryManager::fetchRegistry(const QUrl& url) {
@@ -173,11 +171,13 @@ bool RegistryManager::parseJson(const QByteArray& data) {
     ext.category = obj["category"].toString();
     const auto minimum_sdk = optional_string(obj, "min_sdk_required");
     const auto minimum_application = optional_string(obj, "min_plotjuggler_version");
-    if (!minimum_sdk || !minimum_application) {
+    const auto suggested_sdk = optional_string(obj, "suggested_sdk_version");
+    if (!minimum_sdk || !minimum_application || !suggested_sdk) {
       return false;
     }
     ext.min_sdk_required = *minimum_sdk;
     ext.min_plotjuggler_version = *minimum_application;
+    ext.suggested_sdk_version = *suggested_sdk;
 
     for (const QJsonValue& tag : obj["tags"].toArray()) {
       ext.tags.append(tag.toString());
@@ -205,7 +205,7 @@ bool RegistryManager::parseJson(const QByteArray& data) {
     parsed.append(std::move(ext));
   }
 
-  auto resolved = resolveRegistryCandidates(parsed, {platform_, sdk_version_, host_version_});
+  auto resolved = resolveRegistryCandidates(parsed, {platform_, sdk_version_});
   if (!resolved) {
     emit fetchError(QString("Registry resolution error: %1").arg(resolved.error()));
     return false;

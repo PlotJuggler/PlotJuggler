@@ -37,12 +37,14 @@ struct InstalledExtension {
   /// requires. Empty means undeclared. Unlike the application release floor,
   /// this is a hard host-side load gate defined by the SDK.
   QString min_sdk_required;
-  /// Manifest `min_plotjuggler_version`: the oldest host build this plugin declares
-  /// it can run on. Empty means the manifest declared none, which imposes no floor —
-  /// so empty and "0" are NOT interchangeable. Mirrors Extension::min_plotjuggler_version,
-  /// but sourced from the DSO rather than the registry, which is what lets a sideload
-  /// be gated on the same rule as a registry install (see ExtensionManager::hostCompatibility).
+  /// Manifest `min_plotjuggler_version`. Deprecated: read for back-compat,
+  /// never gates (abi_major is the generation gate; app-level feature gaps
+  /// degrade rather than block).
   QString min_plotjuggler_version;
+  /// Manifest `suggested_sdk_version`: the full-feature floor. Informational —
+  /// drives the reduced-features note, never an admission criterion. Empty
+  /// means full features at min_sdk_required.
+  QString suggested_sdk_version;
 };
 
 }  // namespace PJ

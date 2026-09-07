@@ -16,7 +16,6 @@ namespace PJ {
 struct RegistryResolutionContext {
   QString platform;
   QString sdk_version;
-  QString plotjuggler_version;
 };
 
 // Validate every registry version/floor and select one candidate per id:

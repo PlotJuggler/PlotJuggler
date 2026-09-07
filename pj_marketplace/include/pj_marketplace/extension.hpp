@@ -40,7 +40,12 @@ struct Extension {
 
   QString version;
   QString min_sdk_required;
-  QString min_plotjuggler_version;
+  QString min_plotjuggler_version;  ///< Deprecated; read for back-compat, never gates.
+  /// Full-feature floor: the SDK release at which every capability this
+  /// plugin uses is available. Informational only (drives the reduced-features
+  /// note) — never an admission or install criterion. Empty = full features at
+  /// min_sdk_required.
+  QString suggested_sdk_version;
 
   QList<ExtensionPlugin> plugins;
   QMap<QString, Platform> platforms;  ///< Keyed by "linux-x86_64", "windows-x86_64", etc.

@@ -181,19 +181,18 @@ TEST_F(PluginCatalogTest, RuntimeCatalogKeepsHigherPriorityWhenNewerVersionIsHig
 }
 
 TEST_F(PluginCatalogTest, RuntimeCatalogPrefersCompatibleOverHigherIncompatibleVersion) {
-  // Higher-priority folder ships an incompatible v3.0.0 (needs PlotJuggler 5.0.0);
-  // lower-priority folder ships a compatible v2.0.0. With a 4.0.0 host, the
+  // Higher-priority folder ships an incompatible v3.0.0 (needs SDK 99.0.0);
+  // lower-priority folder ships a compatible v2.0.0. The
   // compatible build wins even though it is both lower version and lower priority.
   const std::filesystem::path dir_a = dir_ / "a";
   const std::filesystem::path dir_b = dir_ / "b";
   std::filesystem::create_directories(dir_a);
   std::filesystem::create_directories(dir_b);
   std::filesystem::copy_file(
-      PJ_MOCK_DATA_SOURCE_INCOMPATIBLE_PLUGIN_PATH, dir_a / pluginFileName("ds"));               // v3, min 5.0.0
+      PJ_MOCK_DATA_SOURCE_INCOMPATIBLE_PLUGIN_PATH, dir_a / pluginFileName("ds"));               // v3, min SDK 99
   std::filesystem::copy_file(PJ_MOCK_DATA_SOURCE_V2_PLUGIN_PATH, dir_b / pluginFileName("ds"));  // v2, no min
 
   PluginRuntimeCatalog catalog;
-  catalog.setHostVersion("4.0.0");
   catalog.setPluginDirs({{dir_a}, {dir_b}});
   catalog.scanDirectory();
 
@@ -210,7 +209,6 @@ TEST_F(PluginCatalogTest, RuntimeCatalogRejectsLoneIncompatiblePlugin) {
   std::filesystem::copy_file(PJ_MOCK_DATA_SOURCE_INCOMPATIBLE_PLUGIN_PATH, dir_ / pluginFileName("ds"));
 
   PluginRuntimeCatalog catalog;
-  catalog.setHostVersion("4.0.0");
   catalog.setPluginDir(dir_);
   catalog.scanDirectory();
 
@@ -221,7 +219,6 @@ TEST_F(PluginCatalogTest, RuntimeCatalogRejectsMalformedApplicationFloor) {
   std::filesystem::copy_file(PJ_MOCK_DATA_SOURCE_MALFORMED_FLOOR_PLUGIN_PATH, dir_ / pluginFileName("ds"));
 
   PluginRuntimeCatalog catalog;
-  catalog.setHostVersion("4.0.0");
   catalog.setPluginDir(dir_);
   catalog.scanDirectory();
 
@@ -233,7 +230,6 @@ TEST_F(PluginCatalogTest, RuntimeCatalogRejectsMalformedPluginVersion) {
 
   std::vector<Diagnostic> diagnostics;
   PluginRuntimeCatalog catalog({}, [&](const Diagnostic& diagnostic) { diagnostics.push_back(diagnostic); });
-  catalog.setHostVersion("4.0.0");
   catalog.setPluginDir(dir_);
   catalog.scanDirectory();
 
@@ -248,7 +244,6 @@ TEST_F(PluginCatalogTest, RuntimeCatalogRejectsNewerSdkRequirement) {
   std::filesystem::copy_file(PJ_MOCK_DATA_SOURCE_NEWER_SDK_PLUGIN_PATH, dir_ / pluginFileName("ds"));
 
   PluginRuntimeCatalog catalog;
-  catalog.setHostVersion("4.0.0");
   catalog.setPluginDir(dir_);
   catalog.scanDirectory();
 
@@ -256,9 +251,9 @@ TEST_F(PluginCatalogTest, RuntimeCatalogRejectsNewerSdkRequirement) {
 }
 
 TEST_F(PluginCatalogTest, RuntimeCatalogPrefersTheOnlyCompatibleAmongMixedCandidates) {
-  // Three folders, same id, mixed compatibility: incompatible v3.0.0 (min 5.0.0) in
+  // Three folders, same id, mixed compatibility: incompatible v3.0.0 (min SDK 99) in
   // the highest-priority folder, compatible v2.0.0 in the middle, incompatible v1.5.0
-  // (min 5.0.0) in the lowest. With a 4.0.0 host the compatible v2.0.0 wins — it is
+  // (min SDK 99) in the lowest. The compatible v2.0.0 wins — it is
   // neither the highest version nor the highest-priority folder.
   const std::filesystem::path dir_a = dir_ / "a";
   const std::filesystem::path dir_b = dir_ / "b";
@@ -272,7 +267,6 @@ TEST_F(PluginCatalogTest, RuntimeCatalogPrefersTheOnlyCompatibleAmongMixedCandid
       PJ_MOCK_DATA_SOURCE_INCOMPATIBLE_LOW_PLUGIN_PATH, dir_c / pluginFileName("ds"));  // v1.5, min 5
 
   PluginRuntimeCatalog catalog;
-  catalog.setHostVersion("4.0.0");
   catalog.setPluginDirs({{dir_a}, {dir_b}, {dir_c}});
   catalog.scanDirectory();
 
@@ -314,7 +308,6 @@ TEST_F(PluginCatalogTest, RuntimeCatalogIncompatibleAuthoritativeCopyFallsBackTo
   std::filesystem::copy_file(PJ_MOCK_DATA_SOURCE_V2_PLUGIN_PATH, dir_b / pluginFileName("ds"));            // v2, compat
 
   PluginRuntimeCatalog catalog;
-  catalog.setHostVersion("4.0.0");
   catalog.setPluginDirs({{dir_a, true}, {dir_b}});
   catalog.scanDirectory();
 
@@ -530,7 +523,6 @@ TEST_F(PluginCatalogTest, RuntimeCatalogStaticRegistrationRejectsNewerSdkRequire
 
   std::vector<std::string> messages;
   PluginRuntimeCatalog catalog({}, [&](const Diagnostic& d) { messages.push_back(d.message); });
-  catalog.setHostVersion("4.0.0");
 
   EXPECT_FALSE(catalog.registerStaticDataSource(&vt));
   EXPECT_TRUE(catalog.dataSources().empty());

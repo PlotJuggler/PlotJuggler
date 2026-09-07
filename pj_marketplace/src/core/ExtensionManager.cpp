@@ -529,6 +529,7 @@ DirectoryDiscovery discoverExtensionDirectory(const QString& ext_root) {
     }
     retainHighestFloor(descriptor.min_plotjuggler_version, effective_min_plotjuggler_version);
     retainHighestFloor(descriptor.min_sdk_required, effective_min_sdk_required);
+    // TODO(sdk-0.33): aggregate descriptor.suggested_sdk_version once the pin moves.
   }
 
   result.found_plugin = true;
@@ -580,6 +581,7 @@ DirectoryDiscovery discoverExtensionDirectoryOutOfProcess(const QString& ext_roo
   const PluginCheckDescriptor& first = check.plugins.constFirst();
   QString effective_min_plotjuggler_version;
   QString effective_min_sdk_required;
+  QString effective_suggested_sdk_version;
   const auto retainHighestFloor = [](const QString& declared, QString& effective) {
     if (declared.isEmpty()) {
       return;
@@ -611,6 +613,7 @@ DirectoryDiscovery discoverExtensionDirectoryOutOfProcess(const QString& ext_roo
     }
     retainHighestFloor(descriptor.min_plotjuggler_version, effective_min_plotjuggler_version);
     retainHighestFloor(descriptor.min_sdk_required, effective_min_sdk_required);
+    retainHighestFloor(descriptor.suggested_sdk_version, effective_suggested_sdk_version);
   }
 
   result.found_plugin = true;
@@ -625,6 +628,7 @@ DirectoryDiscovery discoverExtensionDirectoryOutOfProcess(const QString& ext_roo
   result.record.abi_major = first.abi_major;
   result.record.min_sdk_required = effective_min_sdk_required;
   result.record.min_plotjuggler_version = effective_min_plotjuggler_version;
+  result.record.suggested_sdk_version = effective_suggested_sdk_version;
   return result;
 }
 
@@ -899,21 +903,22 @@ ExtensionManager::HostCompatibility ExtensionManager::hostCompatibility(const Ex
   // registry entries with declared platforms.
   const QString platform = PlatformUtils::currentPlatform();
   if (!ext.platforms.isEmpty() && !ext.platforms.contains(platform)) {
-    return {false, tr("Not available for this platform (%1)").arg(platform)};
+    return {false, tr("Not available for this platform (%1)").arg(platform), {}};
   }
   const std::string version = ext.version.toStdString();
   const std::string minimum_sdk = ext.min_sdk_required.toStdString();
-  const std::string minimum = ext.min_plotjuggler_version.toStdString();
-  const std::string host_version = QCoreApplication::applicationVersion().toStdString();
   const PluginCompatibilityResult result = evaluatePluginCompatibility(
       {
           .version = version,
           .abi_major = 0,
           .min_sdk_required = minimum_sdk,
-          .min_plotjuggler_version = minimum,
       },
-      currentPluginHostCompatibility(host_version));
-  return {result.ok, QString::fromStdString(result.reason)};
+      currentPluginHostCompatibility());
+  return {
+      result.ok,
+      QString::fromStdString(result.reason),
+      QString::fromStdString(evaluateFeatureCompleteness(ext.suggested_sdk_version.toStdString())),
+  };
 }
 
 ExtensionManager::HostCompatibility ExtensionManager::hostCompatibility(const InstalledExtension& installed) const {
@@ -922,17 +927,18 @@ ExtensionManager::HostCompatibility ExtensionManager::hostCompatibility(const In
   // evaluated by the same primitive the runtime loader and seed use.
   const std::string version = installed.version.toStdString();
   const std::string minimum_sdk = installed.min_sdk_required.toStdString();
-  const std::string minimum_application = installed.min_plotjuggler_version.toStdString();
-  const std::string host_version = QCoreApplication::applicationVersion().toStdString();
   const PluginCompatibilityResult result = evaluatePluginCompatibility(
       {
           .version = version,
           .abi_major = installed.abi_major,
           .min_sdk_required = minimum_sdk,
-          .min_plotjuggler_version = minimum_application,
       },
-      currentPluginHostCompatibility(host_version));
-  return {result.ok, QString::fromStdString(result.reason)};
+      currentPluginHostCompatibility());
+  return {
+      result.ok,
+      QString::fromStdString(result.reason),
+      QString::fromStdString(evaluateFeatureCompleteness(installed.suggested_sdk_version.toStdString())),
+  };
 }
 
 void ExtensionManager::dropReplaceConfirmation() {

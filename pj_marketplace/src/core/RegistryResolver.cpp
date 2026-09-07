@@ -26,29 +26,22 @@ QString invalidCandidateReason(const Extension& extension) {
     }
     return {};
   };
-  if (const QString error = validate_floor(extension.min_sdk_required, "minimum SDK version"); !error.isEmpty()) {
-    return error;
-  }
-  return validate_floor(extension.min_plotjuggler_version, "minimum PlotJuggler version");
+  return validate_floor(extension.min_sdk_required, "minimum SDK version");
 }
 
 bool hostCompatible(const Extension& extension, const RegistryResolutionContext& context) {
   const std::string version = extension.version.toStdString();
   const std::string minimum_sdk = extension.min_sdk_required.toStdString();
-  const std::string minimum_application = extension.min_plotjuggler_version.toStdString();
   const std::string sdk_version = context.sdk_version.toStdString();
-  const std::string application_version = context.plotjuggler_version.toStdString();
   return evaluatePluginCompatibility(
              {
                  .version = version,
                  .abi_major = 0,
                  .min_sdk_required = minimum_sdk,
-                 .min_plotjuggler_version = minimum_application,
              },
              {
                  .abi_major = PJ_ABI_VERSION,
                  .sdk_version = sdk_version,
-                 .plotjuggler_version = application_version,
              })
       .ok;
 }

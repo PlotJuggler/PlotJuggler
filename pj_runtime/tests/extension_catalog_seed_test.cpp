@@ -395,70 +395,60 @@ TEST_F(ExtensionCatalogSeedTest, SeedRunsOnceTheStoreLeaseIsFree) {
 // DSO that declares incompatible metadata, which requires an SDK-side test
 // asset; the follow-up lands separately.
 
-PluginDescriptor makeDescriptor(uint32_t abi_major, std::string min_pj, std::string min_sdk = {}) {
+PluginDescriptor makeDescriptor(uint32_t abi_major, std::string min_sdk = {}) {
   PluginDescriptor d;
   d.id = "any-id";
   d.name = "Any";
   d.version = "1.0.0";
   d.abi_major = abi_major;
-  d.min_plotjuggler_version = std::move(min_pj);
   d.min_sdk_required = std::move(min_sdk);
   return d;
 }
 
 TEST(ExtensionCatalogCompatTest, MatchingAbiAndEmptyMinIsCompatible) {
-  const auto d = makeDescriptor(PJ_ABI_VERSION, "");
-  EXPECT_TRUE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d, "3.999.0"));
-  EXPECT_TRUE(ExtensionCatalogService::descriptorIncompatReason(d, "3.999.0").isEmpty());
+  const auto d = makeDescriptor(PJ_ABI_VERSION);
+  EXPECT_TRUE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d));
+  EXPECT_TRUE(ExtensionCatalogService::descriptorIncompatReason(d).isEmpty());
 }
 
 TEST(ExtensionCatalogCompatTest, ZeroAbiIsAssumedCompatible) {
   // A manifest predating the abi_major field decodes as 0 — the seed defers to
   // the load path's own abi symbol check instead of falsely marking it incompat.
-  const auto d = makeDescriptor(0, "");
-  EXPECT_TRUE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d, "3.999.0"));
+  const auto d = makeDescriptor(0);
+  EXPECT_TRUE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d));
 }
 
 TEST(ExtensionCatalogCompatTest, MismatchedAbiIsIncompatible) {
-  const auto d = makeDescriptor(PJ_ABI_VERSION + 1, "");
-  EXPECT_FALSE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d, "3.999.0"));
-  const QString reason = ExtensionCatalogService::descriptorIncompatReason(d, "3.999.0");
+  const auto d = makeDescriptor(PJ_ABI_VERSION + 1);
+  EXPECT_FALSE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d));
+  const QString reason = ExtensionCatalogService::descriptorIncompatReason(d);
   EXPECT_TRUE(reason.contains("ABI")) << reason.toStdString();
 }
 
-TEST(ExtensionCatalogCompatTest, HostBelowMinIsIncompatible) {
-  const auto d = makeDescriptor(PJ_ABI_VERSION, "999.0.0");
-  EXPECT_FALSE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d, "3.999.0"));
-  const QString reason = ExtensionCatalogService::descriptorIncompatReason(d, "3.999.0");
-  EXPECT_TRUE(reason.contains("999.0.0")) << reason.toStdString();
-}
-
-TEST(ExtensionCatalogCompatTest, HostAtOrAboveMinIsCompatible) {
-  const auto d = makeDescriptor(PJ_ABI_VERSION, "3.0.0");
-  EXPECT_TRUE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d, "3.999.0"));
-  EXPECT_TRUE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d, "3.0.0"));
-}
-
-TEST(ExtensionCatalogCompatTest, UsesStrictSemverPrereleasePrecedence) {
-  const auto d = makeDescriptor(PJ_ABI_VERSION, "5.0.0");
-  EXPECT_FALSE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d, "5.0.0-rc.1"));
-  EXPECT_TRUE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d, "5.0.0"));
-}
-
-TEST(ExtensionCatalogCompatTest, MalformedApplicationFloorIsIncompatible) {
-  const auto d = makeDescriptor(PJ_ABI_VERSION, "4.1");
-  EXPECT_FALSE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d, "5.0.0"));
-  const QString reason = ExtensionCatalogService::descriptorIncompatReason(d, "5.0.0");
-  EXPECT_TRUE(reason.contains("invalid", Qt::CaseInsensitive)) << reason.toStdString();
-  EXPECT_TRUE(reason.contains("4.1")) << reason.toStdString();
+TEST(ExtensionCatalogCompatTest, DeprecatedApplicationFloorNeverGates) {
+  // min_plotjuggler_version is decoded for back-compat but no longer gates:
+  // abi_major is the generation gate and app-level feature gaps degrade.
+  auto d = makeDescriptor(PJ_ABI_VERSION);
+  d.min_plotjuggler_version = "999.0.0";
+  EXPECT_TRUE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d));
+  d.min_plotjuggler_version = "not-a-version";
+  EXPECT_TRUE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d));
 }
 
 TEST(ExtensionCatalogCompatTest, NewerSdkRequirementIsIncompatible) {
-  const auto d = makeDescriptor(PJ_ABI_VERSION, "", "99.0.0");
-  EXPECT_FALSE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d, "5.0.0"));
-  const QString reason = ExtensionCatalogService::descriptorIncompatReason(d, "5.0.0");
+  const auto d = makeDescriptor(PJ_ABI_VERSION, "99.0.0");
+  EXPECT_FALSE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d));
+  const QString reason = ExtensionCatalogService::descriptorIncompatReason(d);
   EXPECT_TRUE(reason.contains("SDK", Qt::CaseInsensitive)) << reason.toStdString();
   EXPECT_TRUE(reason.contains("99.0.0")) << reason.toStdString();
+}
+
+TEST(ExtensionCatalogCompatTest, MalformedSdkFloorIsIncompatible) {
+  const auto d = makeDescriptor(PJ_ABI_VERSION, "4.1");
+  EXPECT_FALSE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d));
+  const QString reason = ExtensionCatalogService::descriptorIncompatReason(d);
+  EXPECT_TRUE(reason.contains("invalid", Qt::CaseInsensitive)) << reason.toStdString();
+  EXPECT_TRUE(reason.contains("4.1")) << reason.toStdString();
 }
 
 }  // namespace

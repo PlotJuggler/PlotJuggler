@@ -167,7 +167,8 @@ bool installedStatesEqual(const QMap<QString, InstalledExtension>& lhs, const QM
     const InstalledExtension& a = it.value();
     const InstalledExtension& b = rhs_it.value();
     if (a.id != b.id || a.version != b.version || a.enabled != b.enabled || a.abi_major != b.abi_major ||
-        a.min_sdk_required != b.min_sdk_required || a.min_plotjuggler_version != b.min_plotjuggler_version) {
+        a.min_sdk_required != b.min_sdk_required || a.min_plotjuggler_version != b.min_plotjuggler_version ||
+        a.suggested_sdk_version != b.suggested_sdk_version) {
       return false;
     }
   }
@@ -693,6 +694,14 @@ void MarketplaceWindow::rebuildTable(bool preserve_scroll) {
       market_item->setData(kHighlightColorRole, update_fill);
       market_item->setToolTip(tr("Update available: v%1").arg(ext.version));
     }
+    // Reduced-features note (compatible, but the full-feature floor exceeds
+    // this build's SDK): tooltip only — an info fact, below the amber tier,
+    // not worth a tint of its own.
+    if (compat.ok && !compat.completeness_note.isEmpty()) {
+      const QString existing = market_item->toolTip();
+      market_item->setToolTip(
+          existing.isEmpty() ? compat.completeness_note : existing + u"\n"_s + compat.completeness_note);
+    }
     table->setItem(row, kColMarketplaceVersion, market_item);
 
     // Description: full text, wraps within the stretched column. No tooltip —
@@ -841,6 +850,10 @@ void MarketplaceWindow::updateDetailFooter() {
             .arg(tint.blue())
             .arg(tint.alphaF())
             .arg(message);
+  } else if (!compat.completeness_note.isEmpty()) {
+    // Info tier, deliberately quieter than the amber block above: the plugin
+    // runs here, it just has optional features waiting on a newer build.
+    html += u"<p style='margin:0 0 6px 0; padding:3px 6px;'>ℹ %1</p>"_s.arg(esc(compat.completeness_note));
   }
 
   // Metadata line (publisher/author • category • license • requires PJ •

@@ -237,7 +237,6 @@ ExtensionCatalogService::ExtensionCatalogService(
   plugin_catalog_ = std::make_unique<PluginRuntimeCatalog>(std::filesystem::path{}, sink_, "ExtensionCatalogService");
   // Supply the application dimension of the unified ABI/SDK/application hard
   // compatibility gate before static registration and DSO discovery.
-  plugin_catalog_->setHostVersion(QCoreApplication::applicationVersion().toStdString());
   if (!plugin_catalog_->registerStaticPlugins(static_plugins)) {
     qCWarning(lcCatalog) << "One or more statically linked plugins failed to register";
   }
@@ -467,7 +466,7 @@ void ExtensionCatalogService::seedBundledPlugins() {
     //
     // Exception to "never downgrade": an installed copy above the bundled
     // version that the current host would reject at load time (ABI/SDK drift,
-    // a malformed floor, or min_plotjuggler_version too high). Leaving it in place gives the user a
+    // a malformed floor, or min_sdk_required too high). Leaving it in place gives the user a
     // dead "installed" that never loads and no bundled fallback (the bundled
     // dir is never scanned as a load path). Rescue by refreshing to the bundled
     // build — compatible by construction, since it ships with this host.
@@ -475,8 +474,7 @@ void ExtensionCatalogService::seedBundledPlugins() {
     bool rescue_incompat = false;
     QString rescue_reason;
     if (installed && comparePluginVersions(descriptor.version, installed->version) <= 0) {
-      const QString host = QCoreApplication::applicationVersion();
-      const QString installed_reason = ExtensionCatalogService::descriptorIncompatReason(*installed, host);
+      const QString installed_reason = ExtensionCatalogService::descriptorIncompatReason(*installed);
       if (installed_reason.isEmpty()) {
         continue;  // Installed is compatible — user's marketplace update wins.
       }
@@ -485,7 +483,7 @@ void ExtensionCatalogService::seedBundledPlugins() {
       // stale share dir could ship a mismatched bundled; overwriting a broken
       // installed with an equally-broken bundled destroys the user's
       // marketplace history for no gain.
-      const QString bundled_reason = ExtensionCatalogService::descriptorIncompatReason(descriptor, host);
+      const QString bundled_reason = ExtensionCatalogService::descriptorIncompatReason(descriptor);
       if (!bundled_reason.isEmpty()) {
         reportDiagnostic(
             DiagnosticLevel::kError,
@@ -745,17 +743,14 @@ void ExtensionCatalogService::reportDiagnostic(DiagnosticLevel level, const QStr
       });
 }
 
-QString ExtensionCatalogService::descriptorIncompatReason(
-    const PluginDescriptor& descriptor, const QString& host_version) {
-  const std::string reported_host = host_version.toStdString();
+QString ExtensionCatalogService::descriptorIncompatReason(const PluginDescriptor& descriptor) {
   const PluginCompatibilityResult result = evaluatePluginCompatibility(
       {
           .version = descriptor.version,
           .abi_major = descriptor.abi_major,
           .min_sdk_required = descriptor.min_sdk_required,
-          .min_plotjuggler_version = descriptor.min_plotjuggler_version,
       },
-      currentPluginHostCompatibility(reported_host));
+      currentPluginHostCompatibility());
   return QString::fromStdString(result.reason);
 }
 
