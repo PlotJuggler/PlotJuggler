@@ -58,8 +58,7 @@ nlohmann::json descriptorToJson(const PJ::PluginDescriptor& descriptor) {
   j["abi_major"] = descriptor.abi_major;
   j["min_sdk_required"] = descriptor.min_sdk_required;
   j["min_plotjuggler_version"] = descriptor.min_plotjuggler_version;
-  // TODO(sdk-0.33): read descriptor.suggested_sdk_version once the pin moves.
-  j["suggested_sdk_version"] = "";
+  j["suggested_sdk_version"] = descriptor.suggested_sdk_version;
   j["dso_path"] = descriptor.dso_path.string();
   return j;
 }

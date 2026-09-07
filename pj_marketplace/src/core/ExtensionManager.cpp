@@ -494,6 +494,7 @@ DirectoryDiscovery discoverExtensionDirectory(const QString& ext_root) {
   const PluginDescriptor& first = scan->plugins.front();
   std::string effective_min_plotjuggler_version;
   std::string effective_min_sdk_required;
+  std::string effective_suggested_sdk_version;
   const auto retainHighestFloor = [](std::string_view declared, std::string& effective) {
     if (declared.empty()) {
       return;
@@ -529,7 +530,7 @@ DirectoryDiscovery discoverExtensionDirectory(const QString& ext_root) {
     }
     retainHighestFloor(descriptor.min_plotjuggler_version, effective_min_plotjuggler_version);
     retainHighestFloor(descriptor.min_sdk_required, effective_min_sdk_required);
-    // TODO(sdk-0.33): aggregate descriptor.suggested_sdk_version once the pin moves.
+    retainHighestFloor(descriptor.suggested_sdk_version, effective_suggested_sdk_version);
   }
 
   result.found_plugin = true;
@@ -543,6 +544,7 @@ DirectoryDiscovery discoverExtensionDirectory(const QString& ext_root) {
   result.record.category = QString::fromStdString(first.category);
   result.record.abi_major = first.abi_major;
   result.record.min_sdk_required = QString::fromStdString(effective_min_sdk_required);
+  result.record.suggested_sdk_version = QString::fromStdString(effective_suggested_sdk_version);
   result.record.min_plotjuggler_version = QString::fromStdString(effective_min_plotjuggler_version);
   return result;
 }

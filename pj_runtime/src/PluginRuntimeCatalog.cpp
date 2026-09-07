@@ -510,9 +510,7 @@ bool PluginRuntimeCatalog::loadAndRegister(const PluginDescriptor& descriptor) {
   // Reduced-features visibility: a plugin whose full-feature floor exceeds
   // this build's SDK still loads (the gate above passed) but some optional
   // features stay inactive — say so once, at admission.
-  // TODO(sdk-0.33): read descriptor.suggested_sdk_version once the pin moves.
-  const std::string_view suggested_sdk_version;
-  if (const std::string note = evaluateFeatureCompleteness(suggested_sdk_version); !note.empty()) {
+  if (const std::string note = evaluateFeatureCompleteness(descriptor.suggested_sdk_version); !note.empty()) {
     report(DiagnosticLevel::kInfo, descriptor.id, descriptor.dso_path.string() + ": " + note);
   }
   switch (descriptor.family) {
