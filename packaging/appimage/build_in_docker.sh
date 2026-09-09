@@ -18,6 +18,7 @@
 #   packaging/appimage/build_in_docker.sh --plugins-dir <path>           # bundle plugins (see below)
 #   packaging/appimage/build_in_docker.sh --app-dir <app> --sdk-dir <sdk> --plugins-dir <plugins>
 #   packaging/appimage/build_in_docker.sh --fresh ...                    # ignore caches; rebuild plugin deps from scratch
+#   packaging/appimage/build_in_docker.sh --with-tests ...               # also compile tests + demos (dev/CI trees only; ~10x larger)
 #   PJ_INCLUDE_PLUGINS="<basenames…>" packaging/appimage/build_in_docker.sh --plugins-dir <src>
 #     # (source-repo path only) after the in-container compile, keep only the
 #     # whitespace-separated top-level entries in /out (e.g. curated .so basenames
@@ -113,6 +114,7 @@ Usage:
   packaging/appimage/build_in_docker.sh --app-dir <app> --sdk-dir <sdk> --plugins-dir <plugins>
   REBUILD_IMAGE=1 packaging/appimage/build_in_docker.sh ...  # force-rebuild the builder image
   packaging/appimage/build_in_docker.sh --fresh ...          # ignore caches; rebuild plugin deps from scratch
+  packaging/appimage/build_in_docker.sh --with-tests ...     # also compile the test suite + demos (dev/CI trees only; ~10x larger)
 
 --app-dir builds a different PJ4 app checkout, but the builder image still bakes
 Qt from THIS repo's versions.env. If the --app-dir checkout pins a different Qt
@@ -138,6 +140,7 @@ FWD_ARGS=()
 PLUGINS_MOUNT=()
 PLUGIN_SRC=""     # set when --plugins-dir points at a plugin source repo to build
 FRESH=0           # --fresh: wipe the persistent plugin-build caches before building
+WITH_TESTS=0      # --with-tests: compile the full development tree
 SDK_SRC=""        # optional local plotjuggler_sdk checkout for app + source plugins
 APP_SRC=""        # optional PJ4 app checkout to mount at /work instead of this repo
 while [[ $# -gt 0 ]]; do
@@ -146,6 +149,8 @@ while [[ $# -gt 0 ]]; do
       usage; exit 0 ;;
     --fresh)
       FRESH=1; shift ;;
+    --with-tests)
+      WITH_TESTS=1; shift ;;
     --app-dir)
       [[ $# -ge 2 && -n "${2:-}" ]] || { echo "ERROR: --app-dir needs a path" >&2; exit 1; }
       app_dir="$2"
@@ -320,11 +325,19 @@ if [[ -n "${PLUGIN_SRC}" ]]; then
 fi
 
 echo "==> Building AppImage in container (no --privileged; FUSE-less linuxdeploy)"
+if [[ "${WITH_TESTS}" == "1" ]]; then
+  build_env=(-e PJ_BUILD_TESTS=ON -e PJ_BUILD_DEMOS=ON -e PJ_BUILD_WIDGET_DEMOS=ON -e PJ_BUILD_TARGET=all)
+  build_env+=(-e PJ_DEBUG_INFO="${PJ_DEBUG_INFO:-split}" -e PJ_COMPRESS_DEBUG="${PJ_COMPRESS_DEBUG:-ON}")
+else
+  build_env=(-e PJ_BUILD_TESTS=OFF -e PJ_BUILD_DEMOS=OFF -e PJ_BUILD_WIDGET_DEMOS=OFF -e PJ_BUILD_TARGET=pj_app)
+  build_env+=(-e PJ_DEBUG_INFO="${PJ_DEBUG_INFO:-none}" -e PJ_COMPRESS_DEBUG="${PJ_COMPRESS_DEBUG:-}")
+fi
 run_cmd=(docker run --rm
   -v "${WORK_ROOT}:/work" -w /work
   "${PLUGINS_MOUNT[@]}"
   -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)"
   -e PJ_VERSION="${PJ_VERSION:-}"
+  "${build_env[@]}"
   "${IMAGE_TAG}"
   "${FWD_ARGS[@]}")
 "${run_cmd[@]}"

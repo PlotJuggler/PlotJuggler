@@ -1236,16 +1236,22 @@ TEST(SceneEntitiesLayerModelTest, CrossBatchDeleteAllErasesOlderBatchEntities) {
   EXPECT_TRUE(layer.currentEntities().empty()) << "kAll deletion in a subsequent batch did not erase earlier entities";
 }
 
-// Custom main: QFutureWatcher/UrlFetcher tests need an event loop, and the
+// The shared main supplies the event loop for QFutureWatcher/UrlFetcher, and the
 // QCoreApplication must die BEFORE exit handlers run — QtNetwork (loaded by the
 // layer's UrlFetcher) registers global cleanup that a function-local-static app
 // would outlive, crashing at exit (pj_marketplace's download_manager_test pattern).
-int main(int argc, char** argv) {
-  QCoreApplication app(argc, argv);
-  // The layer's UrlFetcher builds a QNetworkDiskCache; point it at a throwaway dir
-  // (auto-removed at exit) so these tests never write into the real ~/.local/share.
-  static QTemporaryDir model_cache_dir;
-  qputenv("PJ_MODEL_CACHE_DIR", (model_cache_dir.path() + u"/models"_s).toUtf8());
-  testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}
+namespace {
+
+class SceneEntitiesModelEnvironment : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    // The layer's UrlFetcher builds a QNetworkDiskCache; point it at a throwaway dir
+    // (auto-removed at exit) so these tests never write into the real ~/.local/share.
+    static QTemporaryDir model_cache_dir;
+    qputenv("PJ_MODEL_CACHE_DIR", (model_cache_dir.path() + u"/models"_s).toUtf8());
+  }
+};
+
+static auto* const kEnv = ::testing::AddGlobalTestEnvironment(new SceneEntitiesModelEnvironment);
+
+}  // namespace

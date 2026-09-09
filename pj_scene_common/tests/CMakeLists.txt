@@ -1,22 +1,11 @@
 if(PJ_BUILD_TESTS)
-  find_package(GTest REQUIRED)
+    find_package(GTest REQUIRED)
 
-  add_executable(scene_common_test
-    scene_common_test.cpp
-  )
+    # WARNINGS: 1 merged test carried PJ_WARNING_FLAGS before
+    pj_add_test_runner(pj_scene_common_tests MAIN gui WARNINGS
+        SOURCES scene_common_test.cpp
+        LIBS pj_scene_common
+    )
 
-  set_target_properties(scene_common_test PROPERTIES
-    AUTOMOC ON
-  )
-
-  target_compile_options(scene_common_test PRIVATE
-    ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS}
-  )
-
-  target_link_libraries(scene_common_test PRIVATE
-    pj_scene_common
-    GTest::gtest
-  )
-
-  add_test(NAME scene_common_test COMMAND scene_common_test)
+    set_target_properties(pj_scene_common_tests PROPERTIES AUTOMOC ON)
 endif()

@@ -165,7 +165,6 @@ if(PJ_BUILD_TESTS)
     tests/buffer_test.cpp
     tests/column_buffer_test.cpp
     tests/encoding_test.cpp
-    tests/chunk_test.cpp
     tests/topic_storage_test.cpp
     tests/query_test.cpp
     tests/series_reader_test.cpp
@@ -188,13 +187,38 @@ if(PJ_BUILD_TESTS)
     tests/sample_test.cpp
     tests/data_processor_test.cpp
     tests/processor_siso_adapter_test.cpp
-    tests/engine_concurrency_test.cpp
-    tests/engine_thread_safety_test.cpp
     # tests/plugin_host_read_test.cpp  # disabled until Phase 1b lands
     #   (exercises v3 toolbox read path; rewrite for read_series_arrow)
+
+    # plugin_parser_object_write_test uses MessageParserPluginBase, so it needs
+    # the plugin SDK for message_parser_plugin_base.hpp and builtin object types.
+    tests/plugin_parser_object_write_test.cpp
+
+    # Arrow import test (needs nanoarrow explicitly for building test IPC data)
+    tests/arrow_import_test.cpp
+
+    # v4 Arrow C Data Interface round-trip test (Phase 1b).
+    tests/arrow_stream_round_trip_test.cpp
   )
 
-  foreach(test_src ${PJ_DATASTORE_TESTS})
+  # Share the dependency closure while ctest still runs each case in its own process.
+  # no WARNINGS: 29 of 29 merged tests never compiled with -Werror
+  pj_add_test_runner(pj_datastore_tests
+    MAIN core
+    SOURCES ${PJ_DATASTORE_TESTS}
+    LIBS
+      pj_datastore plotjuggler_sdk::plugin_sdk
+      ${PJ_NANOARROW_TARGET} ${PJ_NANOARROW_IPC_TARGET}
+  )
+
+  # Death tests need a separate executable; the concurrency target names are
+  # also the entry points used by build.sh and CI for ThreadSanitizer runs.
+  set(PJ_DATASTORE_SEPARATE_TESTS
+    tests/chunk_test.cpp
+    tests/engine_concurrency_test.cpp
+    tests/engine_thread_safety_test.cpp
+  )
+  foreach(test_src ${PJ_DATASTORE_SEPARATE_TESTS})
     get_filename_component(test_name ${test_src} NAME_WE)
     add_executable(${test_name} ${test_src})
     target_link_libraries(${test_name} PRIVATE pj_datastore GTest::gtest_main)
@@ -207,31 +231,6 @@ if(PJ_BUILD_TESTS)
   # the per-test floor; CI also passes a global --timeout.
   set_tests_properties(engine_concurrency_test engine_thread_safety_test
     PROPERTIES TIMEOUT 90)
-
-  # plugin_parser_object_write_test uses MessageParserPluginBase, so it needs
-  # the plugin SDK for message_parser_plugin_base.hpp and builtin object types.
-  add_executable(plugin_parser_object_write_test tests/plugin_parser_object_write_test.cpp)
-  target_link_libraries(plugin_parser_object_write_test PRIVATE
-    pj_datastore plotjuggler_sdk::plugin_sdk GTest::gtest_main
-  )
-  add_test(NAME plugin_parser_object_write_test COMMAND plugin_parser_object_write_test)
-
-  # Arrow import test (needs nanoarrow explicitly for building test IPC data)
-  add_executable(arrow_import_test tests/arrow_import_test.cpp)
-  target_link_libraries(arrow_import_test PRIVATE
-    pj_datastore
-    ${PJ_NANOARROW_TARGET}
-    ${PJ_NANOARROW_IPC_TARGET}
-    GTest::gtest_main)
-  add_test(NAME arrow_import_test COMMAND arrow_import_test)
-
-  # v4 Arrow C Data Interface round-trip test (Phase 1b).
-  add_executable(arrow_stream_round_trip_test tests/arrow_stream_round_trip_test.cpp)
-  target_link_libraries(arrow_stream_round_trip_test PRIVATE
-    pj_datastore
-    ${PJ_NANOARROW_TARGET}
-    GTest::gtest_main)
-  add_test(NAME arrow_stream_round_trip_test COMMAND arrow_stream_round_trip_test)
 
   # Plugin host write test — DISABLED for v4 ABI migration.
   # Exercises v3 appendArrowIpc/readSeries; rewrite in Phase 1b when the

@@ -154,7 +154,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ~/.cache/ccache
-          key: ccache-linux-build-${{ github.ref_name }}-${{ github.sha }}
+          key: ccache-linux-build-${{ github.ref_name }}-${{ github.sha }}-dwarf-split-v1
           # The final two are safe migration paths: both identify regular
           # builds explicitly by ref and cannot match ccache-linux-tsan-*.
           restore-keys: |
@@ -205,7 +205,7 @@ jobs:
         # resolve the graph twice. Tests compile here too: with warm compiler
         # caches they cost ~1 min, and this job is the only CI environment
         # that can run the GUI/GL widget suites (xvfb + Mesa llvmpipe).
-        run: ./build.sh --skip-conan-install
+        run: PJ_DEBUG_INFO=split PJ_COMPRESS_DEBUG=ON ./build.sh --skip-conan-install
 
       - name: Trim Conan cache before saving
         # Drop build/source/temp trees so only the package binaries consumers
@@ -241,7 +241,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ~/.cache/ccache
-          key: ccache-linux-build-${{ github.ref_name }}-${{ github.sha }}
+          key: ccache-linux-build-${{ github.ref_name }}-${{ github.sha }}-dwarf-split-v1
 
       - name: ccache stats
         if: success()

@@ -18,20 +18,6 @@ namespace PJ {
 namespace {
 
 // One QApplication for the whole test binary; QWidget construction requires it.
-struct QtEnvironment : ::testing::Environment {
-  void SetUp() override {
-    static int argc = 0;
-    app_ = new QApplication(argc, nullptr);
-  }
-  void TearDown() override {
-    delete app_;
-    app_ = nullptr;
-  }
-  QApplication* app_ = nullptr;
-};
-
-const auto* kEnv = ::testing::AddGlobalTestEnvironment(new QtEnvironment);
-
 TEST(Timeline, BuildsBarPerTrack) {
   Timeline widget;
   widget.setTracks({

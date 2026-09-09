@@ -207,20 +207,18 @@ if(EMSCRIPTEN)
         src/main.cpp
         ${CMAKE_SOURCE_DIR}/resources/resources.qrc)
 else()
-    add_executable(pj_app
-        src/main.cpp
-        ${CMAKE_SOURCE_DIR}/resources/resources.qrc)
+    add_executable(pj_app src/main.cpp)
 endif()
 set_target_properties(pj_app PROPERTIES
     # The CMake target id stays `pj_app` (internal module name), but the installed
     # binary is `plotjuggler4` — the user-facing command and what packaging ships
     # (e.g. /usr/bin/plotjuggler4). Keeps the source module rename a separate concern.
     OUTPUT_NAME plotjuggler4
-    AUTORCC ON
 )
 target_include_directories(pj_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(pj_app PRIVATE
     pj_app_shell
+    $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:pj_resources>
     $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:Backward::Backward>)
 
 # The admission helper is resolved at runtime as a sibling of the executable
@@ -266,7 +264,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE AND NOT WIN32 AND NOT
 endif()
 
 if(EMSCRIPTEN)
-    set_target_properties(pj_app PROPERTIES QT_WASM_INITIAL_MEMORY "256MB")
+    set_target_properties(pj_app PROPERTIES
+        AUTORCC ON
+        QT_WASM_INITIAL_MEMORY "256MB")
     target_compile_options(pj_app PRIVATE -fexceptions)
     target_link_options(pj_app PRIVATE -fexceptions -sALLOW_MEMORY_GROWTH=1)
 endif()
@@ -278,54 +278,58 @@ endif()
 if(PJ_BUILD_TESTS)
     find_package(GTest REQUIRED)
 
-    add_executable(browser_file_store_test
-        tests/browser_file_store_test.cpp
-        src/BrowserFileStore.cpp
-        src/BrowserFileStore.h
-        src/LoadInput.h)
-    target_include_directories(browser_file_store_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(browser_file_store_test PRIVATE Qt6::Core GTest::gtest_main)
-    if(DEFINED PJ_WARNING_FLAGS)
-        target_compile_options(browser_file_store_test PRIVATE ${PJ_WARNING_FLAGS})
-    endif()
-    add_test(NAME BrowserFileStoreTest COMMAND browser_file_store_test)
-
-    add_executable(browser_persistence_test
-        tests/browser_persistence_test.cpp
-        src/BrowserPersistence.cpp
-        src/BrowserPersistence.h)
-    target_include_directories(browser_persistence_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(browser_persistence_test PRIVATE Qt6::Core Qt6::Xml GTest::gtest_main)
-    target_compile_options(browser_persistence_test PRIVATE ${PJ_WARNING_FLAGS})
-    add_test(NAME BrowserPersistenceTest COMMAND browser_persistence_test)
-
-    add_executable(file_selection_service_test
-        tests/file_selection_service_test.cpp
-        src/BrowserFileStore.cpp
-        src/FileSelectionService.cpp
-        src/FileSelectionService.h)
-    target_include_directories(file_selection_service_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(file_selection_service_test PRIVATE Qt6::Widgets GTest::gtest_main)
-    if(DEFINED PJ_WARNING_FLAGS)
-        target_compile_options(file_selection_service_test PRIVATE ${PJ_WARNING_FLAGS})
-    endif()
-    add_test(NAME FileSelectionServiceTest COMMAND file_selection_service_test)
+    # Qt-only helpers compile their implementation once without the shell's
+    # dependency closure. Discovery keeps a fresh QApplication per test case.
+    # no WARNINGS: 1 of 9 merged tests never compiled with -Werror
+    pj_add_test_runner(pj_app_unit_tests
+        MAIN gui
+        SOURCES
+            tests/browser_file_store_test.cpp
+            tests/browser_persistence_test.cpp
+            tests/file_selection_service_test.cpp
+            tests/fanout_config_test.cpp
+            tests/layout_xml_test.cpp
+            tests/key_sequence_matcher_test.cpp
+            tests/key_sequence_watcher_test.cpp
+            tests/raster_ipc_protocol_test.cpp
+            tests/raster_key_map_test.cpp
+            src/BrowserFileStore.cpp
+            src/BrowserFileStore.h
+            src/LoadInput.h
+            src/BrowserPersistence.cpp
+            src/BrowserPersistence.h
+            src/FileSelectionService.cpp
+            src/FileSelectionService.h
+            # Pure config-parsing logic (no GUI), compiled standalone so it's
+            # linkable without pj_app_shell. FanoutConfig.cpp is also part of pj_app.
+            src/FanoutConfig.cpp
+            # LayoutXml is a self-contained DOM helper module (no Qt::Widgets,
+            # no MainWindow), so compile it directly into this test runner.
+            src/LayoutXml.cpp
+            src/LayoutXml.h
+            src/KeySequence.cpp
+            src/RasterKeyMap.cpp
+        LIBS Qt6::Widgets Qt6::Xml
+    )
+    set_target_properties(pj_app_unit_tests PROPERTIES AUTOMOC ON)
+    target_include_directories(pj_app_unit_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/raster/ipc
+    )
 
     # Guards the meme splash pool against its two silent failure modes: a meme
     # present in resources/memes/ but absent from resources.qrc is invisible at
     # runtime (rcc has no globbing), and an oversized meme must be bounded on
-    # both axes, not just width. Compiles resources.qrc so the test inspects the
+    # both axes, not just width. Links pj_resources so the test inspects the
     # real shipped pool, and is handed the source directory to compare against.
     add_executable(splash_meme_pool_test
         tests/splash_meme_pool_test.cpp
         src/Splashscreen.cpp
-        src/Splashscreen.h
-        ${CMAKE_SOURCE_DIR}/resources/resources.qrc)
-    set_target_properties(splash_meme_pool_test PROPERTIES AUTORCC ON)
+        src/Splashscreen.h)
     target_include_directories(splash_meme_pool_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(splash_meme_pool_test PRIVATE
         PJ_MEMES_SOURCE_DIR="${CMAKE_SOURCE_DIR}/resources/memes")
-    target_link_libraries(splash_meme_pool_test PRIVATE pj_widgets Qt6::Widgets Qt6::Svg GTest::gtest)
+    target_link_libraries(splash_meme_pool_test PRIVATE pj_widgets pj_resources Qt6::Widgets Qt6::Svg GTest::gtest)
     if(DEFINED PJ_WARNING_FLAGS)
         target_compile_options(splash_meme_pool_test PRIVATE ${PJ_WARNING_FLAGS})
     endif()
@@ -352,102 +356,105 @@ if(PJ_BUILD_TESTS)
         endif()
     endif()
 
-    # A GUI test binary that drives the real MainWindow through a friend peer: it
-    # links the whole shell (pj_app_shell) and compiles resources.qrc (AUTORCC) so
-    # the window's icons resolve. One MainWindow per binary — its dtor leaks
-    # process state — hence one target (and one add_test) per scenario file.
-    #   target   the executable + CTest command name
-    #   test     the human-readable CTest NAME
-    #   source   the test's .cpp under tests/
-    function(add_pj_app_gui_test target test source)
-        add_executable(${target}
-            ${source}
-            ${CMAKE_SOURCE_DIR}/resources/resources.qrc
-        )
-        set_target_properties(${target} PROPERTIES AUTORCC ON)
-        target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-        target_link_libraries(${target} PRIVATE pj_app_shell GTest::gtest)
-        if(DEFINED PJ_WARNING_FLAGS)
-            target_compile_options(${target} PRIVATE ${PJ_WARNING_FLAGS})
-        endif()
-        add_test(NAME ${test} COMMAND ${target})
-    endfunction()
-
-    add_pj_app_gui_test(slider_states_test SliderStates tests/slider_states_test.cpp)
+    # GUI cases link the real shell and pj_resources so the window's icons
+    # resolve. MainWindow teardown leaks process-global state, so discovery
+    # runs each case in its own process while sharing one linked executable.
+    set(PJ_APP_GUI_TEST_SOURCES
+        tests/slider_states_test.cpp)
 
     # Bell dialog: severity / source / text filters, live rebuild on record,
     # cap eviction and Clear, driven straight through a DiagnosticHistory.
-    add_pj_app_gui_test(diagnostics_dialog_test DiagnosticsDialogTest tests/diagnostics_dialog_test.cpp)
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/diagnostics_dialog_test.cpp)
 
     # MR !261 depth guard: a source added while streaming is paused must write
     # into the secondary tail buffer, not the frozen primary. Exercises the
     # extracted pause-target seam (applyWriteTargetsForCurrentPauseState) headlessly.
-    add_pj_app_gui_test(streaming_pause_target_test StreamingPauseTargetTest
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/streaming_pause_target_test.cpp)
 
     # Curve-list drag policy: an object topic no view can display (CameraInfo,
     # ...) must be drag-inert with a "why" tooltip; displayable ones keep
     # dragging.
-    add_pj_app_gui_test(curve_list_panel_test CurveListPanelTest tests/curve_list_panel_test.cpp)
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/curve_list_panel_test.cpp)
 
     # Dataset "Info" dialog: name/file rows plus a domain-neutral provenance
     # tree from the SourceRecord (descriptor JSON as generic key/value nodes,
     # 64-bit timestamps printed exactly); no record -> no provenance section.
-    add_pj_app_gui_test(dataset_info_dialog_test DatasetInfoDialogTest tests/dataset_info_dialog_test.cpp)
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/dataset_info_dialog_test.cpp)
 
     # Source-bound layout seam: one replayable file that fans out into several
     # datasets must persist/restore each independent timeline track.
-    add_pj_app_gui_test(main_window_source_layout_test MainWindowSourceLayoutTest
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_source_layout_test.cpp)
 
     # Fan-out timeline matcher: when a saved same-named fan-out shape no longer
     # matches the loaded one, no offset may bind (FIX 4).
-    add_pj_app_gui_test(main_window_fanout_ambiguous_test MainWindowFanoutAmbiguousTest
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_fanout_ambiguous_test.cpp)
 
     # A layout's marker generators are replayed — and their scripts run — on a
     # session where no toolbox panel was ever opened.
-    add_pj_app_gui_test(main_window_marker_generator_restore_test MainWindowMarkerGeneratorRestoreTest
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_marker_generator_restore_test.cpp)
 
     # The Custom Series list is derived from DataProcessorService, not accumulated
     # from plugin announcements — the paths that announce nothing are a layout
     # restore and a withdrawal through the data-processors ABI.
-    add_pj_app_gui_test(main_window_custom_series_test MainWindowCustomSeriesTest
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_custom_series_test.cpp)
 
     # Viewport re-frame after a layout's timeline offsets settle: sync leg (FIX 1)
     # and the progressive-drain pending-timeline seam (FIX 2).
-    add_pj_app_gui_test(main_window_viewport_reframe_test MainWindowViewportReframeTest
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_viewport_reframe_test.cpp)
 
-    # Transactional workspace history. One MainWindow is shared by all cases in
-    # this binary; the shell leaks process-global widget state across instances.
-    add_pj_app_gui_test(main_window_history_test MainWindowHistoryTest
+    # Transactional workspace history uses one MainWindow per ctest process;
+    # the shell leaks process-global widget state across instances.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_history_test.cpp)
 
-    # Layout-import batch restore (T6), one scenario per binary:
+    # Layout-import batch restore (T6), with isolated ctest processes:
     #   alive  — a materialize MISS import keeps the restore alive across the
     #            catalog-empty guard; curves bind at the batch-gated drain.
     #   policy — D5: a non-interactive restore opens zero dialogs; unresolved
     #            intents are retained + diagnosed, never cleared.
     #   cancel — cancel mid-import rolls back to the pre-layout workspace.
-    add_pj_app_gui_test(main_window_layout_import_alive_test MainWindowLayoutImportAliveTest
-        tests/main_window_layout_import_alive_test.cpp)
-    add_pj_app_gui_test(main_window_layout_import_policy_test MainWindowLayoutImportPolicyTest
+    # Keep the alive/cancel/lifecycle scenarios standalone to preserve their
+    # import lifetime, rollback, and supersession boundaries.
+    add_executable(main_window_layout_import_alive_test tests/main_window_layout_import_alive_test.cpp)
+    target_include_directories(main_window_layout_import_alive_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(main_window_layout_import_alive_test PRIVATE pj_app_shell pj_resources GTest::gtest)
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(main_window_layout_import_alive_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME MainWindowLayoutImportAliveTest COMMAND main_window_layout_import_alive_test)
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_layout_import_policy_test.cpp)
-    add_pj_app_gui_test(main_window_layout_apply_reason_test MainWindowLayoutApplyReasonTest
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_layout_apply_reason_test.cpp)
-    add_pj_app_gui_test(main_window_layout_import_cancel_test MainWindowLayoutImportCancelTest
-        tests/main_window_layout_import_cancel_test.cpp)
+    add_executable(main_window_layout_import_cancel_test tests/main_window_layout_import_cancel_test.cpp)
+    target_include_directories(main_window_layout_import_cancel_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(main_window_layout_import_cancel_test PRIVATE pj_app_shell pj_resources GTest::gtest)
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(main_window_layout_import_cancel_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME MainWindowLayoutImportCancelTest COMMAND main_window_layout_import_cancel_test)
     #   lifecycle — Codex r1 F2/F3/F4/F6: explicit progressive policy on a
     #              mixed automated restore, apply-failure diagnostics, full
     #              supersession by a sync-path load, and automated plain-source
     #              failure dialog suppression (with the interactive pin).
     #              Stages the mock source plugin so plain replays load/fail
     #              for real.
-    add_pj_app_gui_test(main_window_layout_import_lifecycle_test MainWindowLayoutImportLifecycleTest
-        tests/main_window_layout_import_lifecycle_test.cpp)
+    add_executable(main_window_layout_import_lifecycle_test tests/main_window_layout_import_lifecycle_test.cpp)
+    target_include_directories(main_window_layout_import_lifecycle_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(main_window_layout_import_lifecycle_test PRIVATE pj_app_shell pj_resources GTest::gtest)
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(main_window_layout_import_lifecycle_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME MainWindowLayoutImportLifecycleTest COMMAND main_window_layout_import_lifecycle_test)
     target_compile_definitions(main_window_layout_import_lifecycle_test PRIVATE
         PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>"
     )
@@ -459,8 +466,14 @@ if(PJ_BUILD_TESTS)
     #            drain), and the D6 real-surface legs — mid-import curve
     #            binding, on_dataset/ingestBegan ordering, and the real
     #            promotion transaction (mock source plugin staged for it).
-    add_pj_app_gui_test(main_window_layout_import_binder_test MainWindowLayoutImportBinderTest
-        tests/main_window_layout_import_binder_test.cpp)
+    # This suite's plugin-path definition must not propagate to other sources.
+    add_executable(main_window_layout_import_binder_test tests/main_window_layout_import_binder_test.cpp)
+    target_include_directories(main_window_layout_import_binder_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(main_window_layout_import_binder_test PRIVATE pj_app_shell pj_resources GTest::gtest)
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(main_window_layout_import_binder_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME MainWindowLayoutImportBinderTest COMMAND main_window_layout_import_binder_test)
     target_compile_definitions(main_window_layout_import_binder_test PRIVATE
         PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>"
     )
@@ -469,7 +482,7 @@ if(PJ_BUILD_TESTS)
     #   settle — stage-5 E5: layoutRestoreSettled fires exactly once per load
     #            terminal (open-failure false + dump composition, plain sync
     #            true, batch true only at batch finish — never mid-import).
-    add_pj_app_gui_test(main_window_layout_settle_test MainWindowLayoutSettleTest
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_layout_settle_test.cpp)
     #   e2e    — stage-5 E1(a): the LIVE cross-repo gui-test — real MainWindow,
     #            REAL plugin DSOs (mcap-cloud + mcap-loader + ros-parser) from
@@ -478,192 +491,53 @@ if(PJ_BUILD_TESTS)
     #            cleanly (all five scenarios) when that env is absent; the
     #            e2e-layout-import.sh harness provides it and treats SKIP as
     #            failure (smoke's pattern).
-    add_pj_app_gui_test(main_window_layout_import_e2e_test MainWindowLayoutImportE2ETest
-        tests/main_window_layout_import_e2e_test.cpp)
+    # The private HOME/XDG sandbox must exist before QApplication construction.
+    add_executable(main_window_layout_import_e2e_test tests/main_window_layout_import_e2e_test.cpp)
+    target_include_directories(main_window_layout_import_e2e_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(main_window_layout_import_e2e_test PRIVATE pj_app_shell pj_resources GTest::gtest)
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(main_window_layout_import_e2e_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME MainWindowLayoutImportE2ETest COMMAND main_window_layout_import_e2e_test)
     #   exit   — LayoutExitWatch (the --exit-after-layout exit-code decision):
     #            load-failed/success/timeout mapping, decide-once latching,
     #            and the parked-batch teardown staying crash-free.
-    add_pj_app_gui_test(main_window_layout_exit_test MainWindowLayoutExitTest
-        tests/main_window_layout_exit_test.cpp)
+    add_executable(main_window_layout_exit_test tests/main_window_layout_exit_test.cpp)
+    target_include_directories(main_window_layout_exit_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(main_window_layout_exit_test PRIVATE pj_app_shell pj_resources GTest::gtest)
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(main_window_layout_exit_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME MainWindowLayoutExitTest COMMAND main_window_layout_exit_test)
 
     # --dump-diagnostics collector (stage-5 E2): full-run accumulation from the
     # queued bridge (incl. pre-attach records), the stable five-field JSON
     # shape, and no truncation at the DiagnosticHistory ring cap. No MainWindow
-    # is constructed; the target links the shell for DiagnosticDump + the
-    # bridge and supplies its own QCoreApplication main.
-    add_pj_app_gui_test(diagnostic_dump_test DiagnosticDumpTest tests/diagnostic_dump_test.cpp)
+    # is constructed; the runner links the shell for DiagnosticDump + the
+    # bridge and supplies the Qt event loop.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/diagnostic_dump_test.cpp)
 
     # The left column's width belongs to the user: neither a window resize nor a
     # chart-area takeover may move the separator they dragged.
-    add_pj_app_gui_test(main_window_panel_geometry_test MainWindowPanelGeometryTest
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_panel_geometry_test.cpp)
 
     # A toolbox panel with a download in flight folds into a background tab
     # instead of being destroyed: the banner X, the folded tab's own close, the
     # auto-fold on import start, layout-save exclusion, and completion-close
     # suppression.
-    add_pj_app_gui_test(toolbox_panel_fold_test ToolboxPanelFoldTest
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/toolbox_panel_fold_test.cpp)
 
-    # Pure config-parsing logic (no GUI), compiled standalone so it's linkable
-    # from a plain gtest binary. FanoutConfig.cpp is also part of pj_app itself.
-    add_executable(fanout_config_test
-        tests/fanout_config_test.cpp
-        src/FanoutConfig.cpp
-    )
-    target_include_directories(fanout_config_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(fanout_config_test PRIVATE
-        Qt6::Core
-        GTest::gtest_main
-    )
-    add_test(NAME FanoutConfig COMMAND fanout_config_test)
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/pending_display_binder_test.cpp)
 
-    # LayoutXml is a self-contained DOM helper module (no Qt::Widgets, no
-    # MainWindow) so we compile the source directly into the test target
-    # instead of linking against the pj_app executable.
-    add_executable(layout_xml_test
-        tests/layout_xml_test.cpp
-        src/LayoutXml.cpp
-        src/LayoutXml.h
-    )
-    target_include_directories(layout_xml_test PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_link_libraries(layout_xml_test PRIVATE
-        Qt6::Core
-        Qt6::Xml
-        GTest::gtest_main
-    )
-    if(DEFINED PJ_WARNING_FLAGS)
-        target_compile_options(layout_xml_test PRIVATE ${PJ_WARNING_FLAGS})
-    endif()
-    add_test(NAME LayoutXmlTest COMMAND layout_xml_test)
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/multi_dataset_rebind_test.cpp)
 
-    add_executable(pending_display_binder_test
-        tests/pending_display_binder_test.cpp
-        tests/dataset_test_helpers.h
-        src/PendingDisplayBinder.cpp
-        src/PendingDisplayBinder.h
-        src/LayoutXml.cpp
-        src/LayoutXml.h
-    )
-    target_include_directories(pending_display_binder_test PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_link_libraries(pending_display_binder_test PRIVATE
-        pj_runtime
-        pj_plotting
-        pj_scene_common
-        Qt6::Widgets
-        Qt6::Xml
-        GTest::gtest
-    )
-    if(DEFINED PJ_WARNING_FLAGS)
-        target_compile_options(pending_display_binder_test PRIVATE ${PJ_WARNING_FLAGS})
-    endif()
-    add_test(NAME PendingDisplayBinderTest COMMAND pending_display_binder_test)
-
-    add_executable(multi_dataset_rebind_test
-        tests/multi_dataset_rebind_test.cpp
-        tests/dataset_test_helpers.h
-        src/PendingDisplayBinder.cpp
-        src/PendingDisplayBinder.h
-        src/LayoutXml.cpp
-        src/LayoutXml.h
-    )
-    target_include_directories(multi_dataset_rebind_test PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_link_libraries(multi_dataset_rebind_test PRIVATE
-        pj_runtime
-        pj_plotting
-        pj_scene_common
-        Qt6::Widgets
-        Qt6::Xml
-        GTest::gtest
-    )
-    if(DEFINED PJ_WARNING_FLAGS)
-        target_compile_options(multi_dataset_rebind_test PRIVATE ${PJ_WARNING_FLAGS})
-    endif()
-    add_test(NAME MultiDatasetRebindTest COMMAND multi_dataset_rebind_test)
-
-    add_executable(topic_demand_controller_test
-        tests/topic_demand_controller_test.cpp
-        src/PendingDisplayBinder.cpp
-        src/PendingDisplayBinder.h
-        src/TopicDemandController.cpp
-        src/TopicDemandController.h
-        src/LayoutXml.cpp
-        src/LayoutXml.h
-    )
-    set_target_properties(topic_demand_controller_test PROPERTIES AUTOMOC ON)
-    target_include_directories(topic_demand_controller_test PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_link_libraries(topic_demand_controller_test PRIVATE
-        pj_runtime
-        pj_plotting
-        pj_scene_common
-        pj_scripting
-        Qt6::Widgets
-        Qt6::Xml
-        GTest::gtest
-    )
-    if(DEFINED PJ_WARNING_FLAGS)
-        target_compile_options(topic_demand_controller_test PRIVATE ${PJ_WARNING_FLAGS})
-    endif()
-    add_test(NAME TopicDemandControllerTest COMMAND topic_demand_controller_test)
-
-    add_executable(key_sequence_matcher_test
-        tests/key_sequence_matcher_test.cpp
-        src/KeySequence.cpp
-    )
-    set_target_properties(key_sequence_matcher_test PROPERTIES AUTOMOC ON)
-    target_include_directories(key_sequence_matcher_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(key_sequence_matcher_test PRIVATE
-        Qt6::Core
-        Qt6::Gui
-        GTest::gtest_main
-    )
-    if(DEFINED PJ_WARNING_FLAGS)
-        target_compile_options(key_sequence_matcher_test PRIVATE ${PJ_WARNING_FLAGS})
-    endif()
-    add_test(NAME KeySequenceMatcher COMMAND key_sequence_matcher_test)
-
-    add_executable(key_sequence_watcher_test
-        tests/key_sequence_watcher_test.cpp
-        src/KeySequence.cpp
-    )
-    set_target_properties(key_sequence_watcher_test PROPERTIES AUTOMOC ON)
-    target_include_directories(key_sequence_watcher_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(key_sequence_watcher_test PRIVATE
-        Qt6::Core
-        Qt6::Gui
-        GTest::gtest
-    )
-    if(DEFINED PJ_WARNING_FLAGS)
-        target_compile_options(key_sequence_watcher_test PRIVATE ${PJ_WARNING_FLAGS})
-    endif()
-    add_test(NAME KeySequenceWatcher COMMAND key_sequence_watcher_test)
-
-    add_executable(raster_ipc_protocol_test tests/raster_ipc_protocol_test.cpp)
-    target_include_directories(raster_ipc_protocol_test PRIVATE ${CMAKE_SOURCE_DIR}/raster/ipc)
-    target_link_libraries(raster_ipc_protocol_test PRIVATE GTest::gtest_main)
-    if(DEFINED PJ_WARNING_FLAGS)
-        target_compile_options(raster_ipc_protocol_test PRIVATE ${PJ_WARNING_FLAGS})
-    endif()
-    add_test(NAME RasterIpcProtocol COMMAND raster_ipc_protocol_test)
-
-    add_executable(raster_key_map_test
-        tests/raster_key_map_test.cpp
-        src/RasterKeyMap.cpp
-    )
-    target_include_directories(raster_key_map_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(raster_key_map_test PRIVATE Qt6::Core GTest::gtest_main)
-    if(DEFINED PJ_WARNING_FLAGS)
-        target_compile_options(raster_key_map_test PRIVATE ${PJ_WARNING_FLAGS})
-    endif()
-    add_test(NAME RasterKeyMap COMMAND raster_key_map_test)
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/topic_demand_controller_test.cpp)
 
     # Test-only DataSource plugin that calls the runtime host's message box from
     # the import worker thread (guards the cross-thread-QMessageBox regression;
@@ -703,7 +577,8 @@ if(PJ_BUILD_TESTS)
     # and reused by all three binaries (FileLoader has no MainWindow dependency
     # by design — see setFilePicker). The one-binary-per-suite pattern stays;
     # per-suite compile definitions (mock-plugin paths) live on each
-    # executable. The header-side twin is tests/support/loader_test_support.h.
+    # executable. Their plugin-path definitions differ, so they cannot share
+    # a runner. The header-side twin is tests/support/loader_test_support.h.
     add_library(pj_app_loader_testlib OBJECT
         src/SourcePromotionHost.cpp
         src/SourcePromotionHost.h
@@ -837,43 +712,19 @@ if(PJ_BUILD_TESTS)
 
     # Binds the Source Timeline widget to the runtime; the regression test pins that
     # the bars track data growth (samplesIngested), not just new catalog topics.
-    add_executable(source_timeline_controller_test
-        tests/source_timeline_controller_test.cpp
-        src/SourceTimelineController.cpp
-        src/SourceTimelineController.h
-        src/DatasetMergeActions.cpp
-        src/DatasetMergeActions.h
-    )
-    set_target_properties(source_timeline_controller_test PROPERTIES AUTOMOC ON)
-    target_include_directories(source_timeline_controller_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(source_timeline_controller_test PRIVATE
-        pj_runtime
-        pj_widgets
-        Qt6::Widgets
-        GTest::gtest_main
-    )
-    if(DEFINED PJ_WARNING_FLAGS)
-        target_compile_options(source_timeline_controller_test PRIVATE ${PJ_WARNING_FLAGS})
-    endif()
-    add_test(NAME SourceTimelineControllerTest COMMAND source_timeline_controller_test)
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/source_timeline_controller_test.cpp)
 
-    # The controller is compiled straight into the test rather than linked from
-    # pj_app_shell: it needs only pj_runtime + pj_widgets, so this keeps the test
-    # standalone (and AUTOMOC below generates its staticMetaObject).
-    add_executable(ingest_progress_controller_test
-        tests/ingest_progress_controller_test.cpp
-        src/IngestProgressController.cpp
+    # Reuse the shell's controller objects and meta-objects for timer and
+    # progress-row tests, alongside the other runtime-backed GUI cases.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/ingest_progress_controller_test.cpp)
+
+    # WARNINGS: all 22 merged tests carried PJ_WARNING_FLAGS before
+    pj_add_test_runner(pj_app_gui_tests
+        MAIN gui WARNINGS
+        SOURCES ${PJ_APP_GUI_TEST_SOURCES} tests/support/gui_test_env.cpp
+        LIBS pj_app_shell pj_resources
     )
-    set_target_properties(ingest_progress_controller_test PROPERTIES AUTOMOC ON)
-    target_include_directories(ingest_progress_controller_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(ingest_progress_controller_test PRIVATE
-        pj_runtime
-        pj_widgets
-        Qt6::Widgets
-        GTest::gtest
-    )
-    if(DEFINED PJ_WARNING_FLAGS)
-        target_compile_options(ingest_progress_controller_test PRIVATE ${PJ_WARNING_FLAGS})
-    endif()
-    add_test(NAME IngestProgressControllerTest COMMAND ingest_progress_controller_test)
+    set_target_properties(pj_app_gui_tests PROPERTIES AUTOMOC ON)
 endif()

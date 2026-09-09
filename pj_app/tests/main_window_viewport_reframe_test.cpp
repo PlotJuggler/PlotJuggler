@@ -227,13 +227,3 @@ TEST(MainWindowViewportReframeTest, TimelineOffsetReframesPlotOnSyncAndDrainLegs
   EXPECT_NEAR(after.left(), kT0Sec + 5.0, 5e-2) << "the viewport must re-frame to the offset-shifted absolute window";
   EXPECT_NEAR(after.right() - after.left(), 1.0, 5e-2) << "the window width (1 s) is preserved";
 }
-
-int main(int argc, char** argv) {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-    qputenv("QT_QPA_PLATFORM", "offscreen");
-  }
-  QStandardPaths::setTestModeEnabled(true);
-  QApplication app(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

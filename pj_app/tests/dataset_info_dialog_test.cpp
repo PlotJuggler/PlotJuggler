@@ -14,28 +14,25 @@
 #include <QTreeWidgetItem>
 
 #include "pj_runtime/SessionManager.h"
+#include "support/gui_test_env.h"
 #include "ui/DatasetInfoDialog.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
+namespace {
 
-// One QApplication for the whole binary; QWidget construction requires it. The
-// organization name sandboxes any QSettings reads away from real preferences.
+// The organization name sandboxes QSettings reads away from real preferences;
+// only this suite may select that settings scope.
 struct QtEnvironment : ::testing::Environment {
   void SetUp() override {
-    static int argc = 0;
+    if (!pj_app_test::isTestSuiteSelected("DatasetInfoDialog")) {
+      return;
+    }
     QCoreApplication::setOrganizationName(u"PJ4DatasetInfoDialogTest"_s);
     QCoreApplication::setApplicationName(u"PJ4DatasetInfoDialogTest"_s);
-    app_ = new QApplication(argc, nullptr);
   }
-  void TearDown() override {
-    delete app_;
-    app_ = nullptr;
-  }
-  QApplication* app_ = nullptr;
 };
-
-namespace {
+static auto* const kEnv = ::testing::AddGlobalTestEnvironment(new QtEnvironment);
 
 QTreeWidgetItem* childNamed(const QTreeWidgetItem* parent, const QString& name) {
   for (int i = 0; i < parent->childCount(); ++i) {
@@ -113,9 +110,3 @@ TEST(DatasetInfoDialog, RendersProvenanceAsGenericTree) {
 
 }  // namespace
 }  // namespace PJ
-
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new PJ::QtEnvironment);
-  return RUN_ALL_TESTS();
-}

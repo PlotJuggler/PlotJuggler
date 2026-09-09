@@ -254,9 +254,3 @@ TEST(TrailLayerTest, EmptyTrailRevivesWhenTfDataArrives) {
 
 }  // namespace
 }  // namespace pj::scene3d
-
-int main(int argc, char** argv) {
-  QCoreApplication app(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

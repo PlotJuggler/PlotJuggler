@@ -140,9 +140,3 @@ TEST(SectionHeaderBandTest, DockedChildrenFollowAChromeMetricsChange) {
       band.layout()->contentsMargins(),
       QMargins(0, metrics.layout_padding, metrics.layout_padding, metrics.layout_padding));
 }
-
-int main(int argc, char** argv) {
-  QApplication app(argc, argv);  // QWidget construction needs a GUI app
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

@@ -5,10 +5,16 @@ Level-0 foundation library — a **top-level PJ4 module** (app-internal, not par
 ## Layout
 - `include/pj_datastore/` — public headers (engine/writer/reader/query/chunk, `object_store` (+ its internal `ordered_entries` value type, + `resident_payload_pool` — the byte-bounded FIFO window behind `pushLazyWithSeed`), `derived_engine` + `builtin_transforms`, `plugin_data_host`, `colormap_registry`, `arrow_import`, low-level buffer/column_buffer/encoding/topic_storage/type_registry, plus the data-processor substrate `data_processor`/`sample`/`processor_siso_adapter`/`processor_detail` — namespace `PJ::proc`).
 - `src/` — implementations, one `.cpp` per header.
-- `tests/` — one GTest binary per layer (see `CMakeLists.txt` for the live set; several v3-ABI tests are commented out pending Phase 1b).
+- `tests/` — GTest suites grouped by layer (see `CMakeLists.txt` for the live set; several v3-ABI tests are commented out pending Phase 1b).
 - `benchmarks/` — `read_benchmark`, `ingest_benchmark`.
 - `examples/` — `parquet_import` (gated by `PJ_BUILD_PARQUET_IMPORT_EXAMPLE`).
 - `docs/` — see table below.
+
+Tests are grouped into the `pj_datastore_tests` gtest runner, registered with
+`gtest_discover_tests`: ctest names are `<runner>.<Suite>.<Case>`, with one process
+per case. `chunk_test` stays separate for death tests; `engine_concurrency_test`
+and `engine_thread_safety_test` keep their separate executable names for the
+ThreadSanitizer entry points in `build.sh` and CI, with their 90-second timeouts.
 
 ## Gotchas
 - **`readNumericAsDouble()` does not null-check** — returns 0.0 at nulls. Use `isNull()` first, or batch via `readColumnAsDoubles()` which writes NaN at nulls. See `docs/USER_GUIDE.md §5`.

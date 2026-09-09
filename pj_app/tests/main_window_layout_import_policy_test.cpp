@@ -115,5 +115,3 @@ TEST(MainWindowLayoutImportPolicyTest, NonInteractiveRestoreRetainsIntentsAndDia
 }
 
 }  // namespace
-
-PJ_MAIN_WINDOW_TEST_MAIN

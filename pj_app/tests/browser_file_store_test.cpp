@@ -16,16 +16,10 @@
 namespace PJ {
 namespace {
 
-// stageAsync() drives itself with QTimer::singleShot(0), so the tests need a
-// running Qt event loop. gtest owns main(), so stand up a process-wide
-// QCoreApplication once (argc/argv storage must outlive it).
-int g_argc = 1;
-char g_arg0[] = "browser_file_store_test";
-char* g_argv[] = {g_arg0, nullptr};
-
+// stageAsync() drives itself with QTimer::singleShot(0), so the tests need
+// the runner's application and its event dispatcher throughout each stage.
 QCoreApplication& testApp() {
-  static QCoreApplication app(g_argc, g_argv);
-  return app;
+  return *QCoreApplication::instance();
 }
 
 // Pump the event loop until `done` becomes true or the deadline elapses.

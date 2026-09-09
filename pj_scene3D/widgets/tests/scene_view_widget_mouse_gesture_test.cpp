@@ -54,9 +54,3 @@ TEST(SceneViewWidgetMouseGesture, LostReleaseSelfHealsOnNextMove) {
   EXPECT_EQ(presentation_changes, 1)
       << "the interrupted gesture must still commit exactly once, like a normal release would";
 }
-
-int main(int argc, char** argv) {
-  QApplication app(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

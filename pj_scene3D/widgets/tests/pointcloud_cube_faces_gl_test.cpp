@@ -238,14 +238,3 @@ TEST_F(PointcloudCubeFacesGlTest, EachCubeShowsThreeDistinctlyLitFaces) {
 }
 
 }  // namespace
-
-int main(int argc, char** argv) {
-  QSurfaceFormat fmt;
-  fmt.setVersion(4, 5);
-  fmt.setProfile(QSurfaceFormat::CoreProfile);
-  fmt.setDepthBufferSize(24);
-  QSurfaceFormat::setDefaultFormat(fmt);
-  QGuiApplication app(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

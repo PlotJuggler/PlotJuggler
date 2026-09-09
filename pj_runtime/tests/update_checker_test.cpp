@@ -5,8 +5,8 @@
 // the "emit exactly one of updateAvailable/upToDate/checkFailed" contract, the
 // name-fallback, the 404/parse/missing-tag failure routing, and the
 // abort-on-supersede behavior are verified without touching real GitHub.
-// setCurrentVersion() makes the comparison deterministic (the test binary has
-// no PJ_VERSION_STRING, so applicationVersion() would otherwise be empty).
+// setCurrentVersion() makes the comparison deterministic without depending on
+// the runner's applicationVersion() or a PJ_VERSION_STRING definition.
 
 #include <gtest/gtest.h>
 
@@ -190,9 +190,15 @@ TEST(UpdateCheckerTest, DefaultUrlTargetsPublicRepo) {
   EXPECT_EQ(url.find("/PlotJuggler/PJ4/"), std::string::npos) << url;
 }
 
-int main(int argc, char** argv) {
-  QCoreApplication app(argc, argv);
-  qRegisterMetaType<PJ::ReleaseInfo>();  // so QSignalSpy can capture updateAvailable's arg
-  testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}
+namespace {
+
+class UpdateCheckerEnvironment final : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    qRegisterMetaType<PJ::ReleaseInfo>();  // so QSignalSpy can capture updateAvailable's arg
+  }
+};
+
+static auto* const kEnv = ::testing::AddGlobalTestEnvironment(new UpdateCheckerEnvironment);
+
+}  // namespace

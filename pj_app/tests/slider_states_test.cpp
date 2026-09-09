@@ -19,24 +19,22 @@
 
 #include "Theme.h"
 #include "pj_widgets/RealSlider.h"
+#include "support/gui_test_env.h"
 
 namespace PJ {
 namespace {
 
-// One QApplication for the whole test binary; QWidget construction requires it.
+// Sliders need a Theme that outlives their stylesheet-driven renders.
 struct QtEnvironment : ::testing::Environment {
   void SetUp() override {
-    static int argc = 0;
-    app_ = new QApplication(argc, nullptr);
-    theme_ = new Theme;
+    if (pj_app_test::isTestSuiteSelected("SliderStates")) {
+      theme_ = new Theme;
+    }
   }
   void TearDown() override {
     delete theme_;
     theme_ = nullptr;
-    delete app_;
-    app_ = nullptr;
   }
-  QApplication* app_ = nullptr;
   Theme* theme_ = nullptr;
 };
 
@@ -54,7 +52,7 @@ void applyTheme(const QString& name) {
 // one can silently collapse in the other.
 constexpr std::array<const char*, 2> kThemes = {"dark", "light"};
 
-const auto* kEnv = ::testing::AddGlobalTestEnvironment(environment = new QtEnvironment);
+static auto* const kEnv = ::testing::AddGlobalTestEnvironment(environment = new QtEnvironment);
 
 constexpr int kSliderLength = 400;
 // The playback chrome row the timeSlider is designed to fill.
@@ -191,10 +189,3 @@ TEST(SliderStates, PlainVerticalSliderAnswersHoverAndGrab) {
 
 }  // namespace
 }  // namespace PJ
-
-// pj_app GUI tests link GTest::gtest (not gtest_main) so each binary owns its
-// entry point; the QApplication itself is created by the global environment.
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

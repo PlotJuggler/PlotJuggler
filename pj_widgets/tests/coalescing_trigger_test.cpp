@@ -94,9 +94,3 @@ TEST(CoalescingTrigger, ReentrantRequestFromActionCoalescesInsteadOfRecursing) {
   // The coalesced re-entrant request fires exactly once on the trailing edge.
   EXPECT_EQ(calls, 2);
 }
-
-int main(int argc, char** argv) {
-  QCoreApplication app(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

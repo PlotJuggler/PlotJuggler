@@ -2,13 +2,13 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Shared scaffolding for the MainWindow layout-import GUI test binaries
+// Shared scaffolding for the MainWindow layout-import GUI tests
 // (alive / policy / cancel / lifecycle / binder): the friend test peer, the
 // source-bound layout-file builder, the diagnostic recorder, and the common
 // main() macro. The descriptor-scripted fake provider itself is the shared
-// tests/support/fake_import_provider.h. One MainWindow per binary (its dtor
-// leaks process state), so each scenario lives in its own target; only the
-// verbatim scaffolding lives here.
+// tests/support/fake_import_provider.h. MainWindow teardown leaks process
+// state, so runner cases use separate ctest processes; lifecycle scenarios
+// retain standalone executables and use the main() macro below.
 
 #include <gtest/gtest.h>
 

@@ -214,14 +214,19 @@ TEST(Scene3DDockFixedFrame, ExplicitRestoreDoesNotRewriteRememberedFrame) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-  QApplication app(argc, argv);
-  QCoreApplication::setOrganizationName(u"PlotJugglerTest"_s);
-  QCoreApplication::setApplicationName(u"scene3d_dock_fixed_frame_test"_s);
-  // Redirect QSettings to a throwaway test location so recording never touches the
-  // developer's real PlotJuggler config.
-  QStandardPaths::setTestModeEnabled(true);
-  QSettings().clear();
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}
+namespace {
+
+class FixedFrameEnvironment : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    QCoreApplication::setApplicationName(u"scene3d_dock_fixed_frame_test"_s);
+    // Redirect QSettings to a throwaway test location so recording never touches the
+    // developer's real PlotJuggler config.
+    QStandardPaths::setTestModeEnabled(true);
+    QSettings().clear();
+  }
+};
+
+static auto* const kEnv = ::testing::AddGlobalTestEnvironment(new FixedFrameEnvironment);
+
+}  // namespace

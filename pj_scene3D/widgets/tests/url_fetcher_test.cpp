@@ -313,15 +313,21 @@ TEST(UrlFetcherTest, SizeCappedResponseDoesNotPoisonCache) {
   EXPECT_EQ(connections, 2) << "second fetch must re-hit the network, not a poisoned partial cache entry";
 }
 
-// Custom main: the QCoreApplication must die BEFORE exit handlers run — QtNetwork
+// The shared main's QCoreApplication must die BEFORE exit handlers run — QtNetwork
 // registers global cleanup that a function-local-static app would outlive,
 // crashing at exit (same pattern as pj_marketplace's download_manager_test).
 // Point the model cache at a throwaway dir (auto-removed at exit) so UrlFetcher's
 // QNetworkDiskCache never touches the developer's real ~/.local/share.
-int main(int argc, char** argv) {
-  QCoreApplication app(argc, argv);
-  static QTemporaryDir model_cache_dir;
-  qputenv("PJ_MODEL_CACHE_DIR", (model_cache_dir.path() + u"/models"_s).toUtf8());
-  testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}
+namespace {
+
+class UrlFetcherEnvironment : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    static QTemporaryDir model_cache_dir;
+    qputenv("PJ_MODEL_CACHE_DIR", (model_cache_dir.path() + u"/models"_s).toUtf8());
+  }
+};
+
+static auto* const kEnv = ::testing::AddGlobalTestEnvironment(new UrlFetcherEnvironment);
+
+}  // namespace

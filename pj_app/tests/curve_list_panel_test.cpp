@@ -22,28 +22,25 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_widgets/CurveTreeView.h"
+#include "support/gui_test_env.h"
 #include "ui/CurveListPanel.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
 namespace {
 
-// One QApplication for the whole binary; QWidget construction requires it. The
-// organization name sandboxes the panel's QSettings reads away from the user's
-// real preferences.
+// The organization name sandboxes the panel's QSettings reads away from the
+// user's real preferences; only this suite may select that settings scope.
 struct QtEnvironment : ::testing::Environment {
   void SetUp() override {
-    static int argc = 0;
+    if (!pj_app_test::isTestSuiteSelected("CurveListPanelTest")) {
+      return;
+    }
     QCoreApplication::setOrganizationName(u"PJ4CurveListPanelTest"_s);
     QCoreApplication::setApplicationName(u"PJ4CurveListPanelTest"_s);
-    app_ = new QApplication(argc, nullptr);
   }
-  void TearDown() override {
-    delete app_;
-    app_ = nullptr;
-  }
-  QApplication* app_ = nullptr;
 };
+static auto* const kEnv = ::testing::AddGlobalTestEnvironment(new QtEnvironment);
 
 // Depth-first search for the row resolving to `catalog_key`, independent of the
 // tree's view mode (hierarchical vs show-topics lay the same topic out under
@@ -183,9 +180,3 @@ TEST(CurveListPanelTest, UndisplayableObjectTopicRowIsDragInertWithTooltip) {
 
 }  // namespace
 }  // namespace PJ
-
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new PJ::QtEnvironment);
-  return RUN_ALL_TESTS();
-}

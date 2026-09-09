@@ -23,13 +23,12 @@ if(TARGET pj_scene3d_widgets)
   # pipeline without loading an MCAP. Reaches the private widgets/src headers
   # (urdf_package_resolver.h) the same way the module tests do.
   # resources.qrc gives the demo the same themed SVG icons the app registers
-  # (AUTORCC embeds + auto-registers them for an executable target).
-  set(CMAKE_AUTORCC ON)
-  add_executable(scene3d_mesh_viewer mesh_viewer.cpp ${CMAKE_SOURCE_DIR}/resources/resources.qrc)
+  # (pj_resources embeds + auto-registers them through its object files).
+  add_executable(scene3d_mesh_viewer mesh_viewer.cpp)
   target_compile_features(scene3d_mesh_viewer PRIVATE cxx_std_20)
   target_compile_options(scene3d_mesh_viewer PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   target_include_directories(scene3d_mesh_viewer PRIVATE ../widgets/src)
-  target_link_libraries(scene3d_mesh_viewer PRIVATE pj_scene3d_widgets Qt6::Xml)
+  target_link_libraries(scene3d_mesh_viewer PRIVATE pj_scene3d_widgets pj_resources Qt6::Xml)
 
   # Self-verifying GPU-vs-CPU AABB-reduction benchmark (offscreen GL, no window).
   # Prints GL_RENDERER + timings and exits non-zero if the GPU result disagrees

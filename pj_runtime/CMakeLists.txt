@@ -120,29 +120,83 @@ if(NOT EMSCRIPTEN)
 endif()
 
 if(PJ_BUILD_TESTS)
-    add_executable(source_cache_store_test
-        tests/source_cache_store_test.cpp
-    )
-    target_compile_options(source_cache_store_test PRIVATE ${PJ_WARNING_FLAGS})
-    # mcap::mcap: recording_test_utils.h (the IsolatedQtSettings sandbox the
-    # settings tests use) includes mcap/reader.hpp, which pj_runtime keeps
-    # PRIVATE.
-    target_link_libraries(source_cache_store_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-        mcap::mcap
-    )
-    add_test(NAME SourceCacheStoreTest COMMAND source_cache_store_test)
+    find_package(Qt6 REQUIRED COMPONENTS Test)
 
-    add_executable(object_ingest_tap_test
+    # Discovery gives every case its own process while the static runtime
+    # dependency closure is linked only once.
+    set(PJ_RUNTIME_TEST_SOURCES
+        tests/source_cache_store_test.cpp
         tests/object_ingest_tap_test.cpp
+        tests/time_test.cpp
+        # M1: re-prove the streaming gate through a Luau LuaSisoTransform
+        tests/data_processor_service_test.cpp
+        # links the shared marker engine (runMarkerScript) the service drives
+        tests/marker_service_test.cpp
+        # links the shared marker engine the service drives
+        tests/markers_runtime_host_test.cpp
+        tests/data_processors_kind_router_test.cpp
+        # M4.2: plugin-created transforms compile a Luau script via the catalogue
+        tests/data_processor_service_transform_test.cpp
+        # M4.2: the bridge compiles a Luau transform script through the service
+        tests/data_processors_runtime_host_test.cpp
+        # Pure header-only version math (UpdateVersion.h) — no networking, no lib.
+        tests/update_version_test.cpp
+        # Drives UpdateChecker's reply state machine against a local QTcpServer.
+        # Qt6::Test supplies QSignalSpy; Qt6::Network comes transitively via pj_runtime.
+        tests/update_checker_test.cpp
+        # Drives TelemetryPing's POST + reply handling against a local capturing
+        # QTcpServer — enforces the payload privacy contract on the wire (the
+        # allowed-key set + salted-hash user id), no real network.
+        tests/telemetry_ping_test.cpp
+        tests/app_session_test.cpp
+        tests/playback_engine_test.cpp
+        # Qt6::Test supplies QSignalSpy for the displayOffsetChanged emission test.
+        tests/session_manager_test.cpp
+        # Qt6::Test supplies QSignalSpy for signal verification tests.
+        tests/session_manager_ingest_test.cpp
+        # Qt6::Test supplies QSignalSpy for the advertised-topics idempotence test.
+        tests/catalog_model_test.cpp
+        # Qt6::Test supplies QSignalSpy for the activeTopicsChanged emission tests.
+        tests/topic_demand_tracker_test.cpp
+        tests/payload_anchor_test.cpp
+        tests/curve_color_registry_test.cpp
+        tests/qsettings_backend_test.cpp
+        tests/toolbox_runtime_host_test.cpp
+        # Env-gated integration test against the REAL parser_ros plugin (SKIPs
+        # unless PJ_REAL_ROS_PARSER_DIR points at the built parser_ros .so dir).
+        tests/toolbox_parser_ingest_real_ros_test.cpp
+        tests/data_source_runtime_host_object_ingest_test.cpp
+        tests/data_source_runtime_host_record_tap_test.cpp
+        tests/data_source_runtime_host_stream_swap_test.cpp
+        # M5: notify_available_topics threading + a-priori classification fallback.
+        tests/data_source_runtime_host_advertise_test.cpp
+        # Route-aware parser selection (SDK 0.22): claim admission, lazy exact-claim
+        # discovery, per-route winners, divergent-winner bindings, and the legacy
+        # fallback for encodings outside the SDK claim registry.
+        tests/extension_catalog_parser_routes_test.cpp
+        tests/plugin_runtime_catalog_test.cpp
+        # Bundled-plugin seeding (share -> marketplace sync) + scan-tier precedence.
+        tests/extension_catalog_seed_test.cpp
     )
-    target_compile_options(object_ingest_tap_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(object_ingest_tap_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-    )
-    add_test(NAME ObjectIngestTapTest COMMAND object_ingest_tap_test)
+
+    if(NOT EMSCRIPTEN)
+        list(APPEND PJ_RUNTIME_TEST_SOURCES
+            tests/mcap_recording_writer_test.cpp
+            # Qt6::Test supplies QSignalSpy; mcap::mcap only for reading back what
+            # the service recorded.
+            tests/recording_service_test.cpp
+            # The whole recording pipeline end to end: the same host + real parser
+            # plugin the record-tap test builds on, driven through RecordingService
+            # into an MCAP file that is then read back. Desktop-only (mcap + the writer).
+            tests/recording_pipeline_test.cpp
+            # M3 source capture: the completion-contract gate + cache publish +
+            # cache-first resolve, over the same real host/parser fixture.
+            tests/source_capture_service_test.cpp
+            # M3 owner wiring: ToolboxRuntimeHost's parser-ingest lifecycle
+            # (create/release/discard/teardown) driving SourceCaptureService.
+            tests/toolbox_capture_wiring_test.cpp
+        )
+    endif()
 
     # The Recorder is format-agnostic (it drives a fake RecordingSink) and links
     # no Qt, so the test compiles Recorder.cpp on its own against the SDK rather
@@ -162,270 +216,6 @@ if(PJ_BUILD_TESTS)
     add_test(NAME recorder_test COMMAND recorder_test)
     set_tests_properties(recorder_test PROPERTIES TIMEOUT 60)
 
-    if(NOT EMSCRIPTEN)
-        add_executable(mcap_recording_writer_test
-            tests/mcap_recording_writer_test.cpp
-        )
-        target_compile_options(mcap_recording_writer_test PRIVATE ${PJ_WARNING_FLAGS})
-        target_link_libraries(mcap_recording_writer_test PRIVATE
-            pj_runtime
-            mcap::mcap
-            Qt6::Core
-            GTest::gtest_main
-        )
-        add_test(NAME McapRecordingWriterTest COMMAND mcap_recording_writer_test)
-
-        # Qt6::Test supplies QSignalSpy; mcap::mcap only for reading back what
-        # the service recorded.
-        find_package(Qt6 REQUIRED COMPONENTS Test)
-        add_executable(recording_service_test
-            tests/recording_service_test.cpp
-        )
-        target_compile_options(recording_service_test PRIVATE ${PJ_WARNING_FLAGS})
-        target_link_libraries(recording_service_test PRIVATE
-            pj_runtime
-            mcap::mcap
-            Qt6::Core
-            Qt6::Test
-            GTest::gtest_main
-        )
-        add_test(NAME RecordingServiceTest COMMAND recording_service_test)
-    endif()
-
-    add_executable(time_test
-        tests/time_test.cpp
-    )
-    target_compile_options(time_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(time_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-    )
-    add_test(NAME TimeTest COMMAND time_test)
-
-    add_executable(data_processor_service_test
-        tests/data_processor_service_test.cpp
-    )
-    target_compile_options(data_processor_service_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(data_processor_service_test PRIVATE
-        pj_runtime
-        pj_scripting  # M1: re-prove the streaming gate through a Luau LuaSisoTransform
-        GTest::gtest_main
-    )
-    add_test(NAME DataProcessorServiceTest COMMAND data_processor_service_test)
-
-    add_executable(marker_service_test
-        tests/marker_service_test.cpp
-    )
-    target_compile_options(marker_service_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(marker_service_test PRIVATE
-        pj_runtime
-        pj_scripting  # links the shared marker engine (runMarkerScript) the service drives
-        GTest::gtest_main
-    )
-    add_test(NAME MarkerServiceTest COMMAND marker_service_test)
-
-    add_executable(markers_runtime_host_test
-        tests/markers_runtime_host_test.cpp
-    )
-    target_compile_options(markers_runtime_host_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(markers_runtime_host_test PRIVATE
-        pj_runtime
-        pj_scripting  # links the shared marker engine the service drives
-        GTest::gtest_main
-    )
-    add_test(NAME MarkersRuntimeHostTest COMMAND markers_runtime_host_test)
-
-    add_executable(data_processors_kind_router_test
-        tests/data_processors_kind_router_test.cpp
-    )
-    target_compile_options(data_processors_kind_router_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(data_processors_kind_router_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-    )
-    add_test(NAME DataProcessorsKindRouterTest COMMAND data_processors_kind_router_test)
-
-    add_executable(data_processor_service_transform_test
-        tests/data_processor_service_transform_test.cpp
-    )
-    target_compile_options(data_processor_service_transform_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(data_processor_service_transform_test PRIVATE
-        pj_runtime
-        pj_scripting  # M4.2: plugin-created transforms compile a Luau script via the catalogue
-        GTest::gtest_main
-    )
-    add_test(NAME DataProcessorTransformTest COMMAND data_processor_service_transform_test)
-
-    add_executable(data_processors_runtime_host_test
-        tests/data_processors_runtime_host_test.cpp
-    )
-    target_compile_options(data_processors_runtime_host_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(data_processors_runtime_host_test PRIVATE
-        pj_runtime
-        pj_scripting  # M4.2: the bridge compiles a Luau transform script through the service
-        GTest::gtest_main
-    )
-    add_test(NAME DataProcessorsRuntimeHostTest COMMAND data_processors_runtime_host_test)
-
-    # Pure header-only version math (UpdateVersion.h) — no networking, no lib.
-    add_executable(update_version_test
-        tests/update_version_test.cpp
-    )
-    target_compile_options(update_version_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(update_version_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-    )
-    add_test(NAME UpdateVersionTest COMMAND update_version_test)
-
-    # Drives UpdateChecker's reply state machine against a local QTcpServer.
-    # Qt6::Test supplies QSignalSpy; Qt6::Network comes transitively via pj_runtime.
-    find_package(Qt6 REQUIRED COMPONENTS Test)
-    add_executable(update_checker_test
-        tests/update_checker_test.cpp
-    )
-    set_target_properties(update_checker_test PROPERTIES AUTOMOC ON)
-    target_compile_options(update_checker_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(update_checker_test PRIVATE
-        pj_runtime
-        Qt6::Test
-        GTest::gtest
-    )
-    add_test(NAME UpdateCheckerTest COMMAND update_checker_test)
-
-    # Drives TelemetryPing's POST + reply handling against a local capturing
-    # QTcpServer — enforces the payload privacy contract on the wire (the
-    # allowed-key set + salted-hash user id), no real network.
-    add_executable(telemetry_ping_test
-        tests/telemetry_ping_test.cpp
-    )
-    set_target_properties(telemetry_ping_test PROPERTIES AUTOMOC ON)
-    target_compile_options(telemetry_ping_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(telemetry_ping_test PRIVATE
-        pj_runtime
-        Qt6::Test
-        GTest::gtest
-    )
-    add_test(NAME TelemetryPingTest COMMAND telemetry_ping_test)
-
-    add_executable(app_session_test
-        tests/app_session_test.cpp
-    )
-    target_link_libraries(app_session_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-    )
-    add_test(NAME AppSessionTest COMMAND app_session_test)
-
-    add_executable(playback_engine_test
-        tests/playback_engine_test.cpp
-    )
-    target_link_libraries(playback_engine_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-    )
-    add_test(NAME PlaybackEngineTest COMMAND playback_engine_test)
-
-    add_executable(session_manager_test
-        tests/session_manager_test.cpp
-    )
-    # Qt6::Test supplies QSignalSpy for the displayOffsetChanged emission test.
-    find_package(Qt6 REQUIRED COMPONENTS Test)
-    target_link_libraries(session_manager_test PRIVATE
-        pj_runtime
-        Qt6::Test
-        GTest::gtest_main
-    )
-    add_test(NAME SessionManagerTest COMMAND session_manager_test)
-
-    add_executable(session_manager_ingest_test
-        tests/session_manager_ingest_test.cpp
-    )
-    # Qt6::Test supplies QSignalSpy for signal verification tests.
-    find_package(Qt6 REQUIRED COMPONENTS Test)
-    target_link_libraries(session_manager_ingest_test PRIVATE
-        pj_runtime
-        Qt6::Test
-        GTest::gtest_main
-    )
-    add_test(NAME SessionManagerIngestTest COMMAND session_manager_ingest_test)
-
-    add_executable(catalog_model_test
-        tests/catalog_model_test.cpp
-    )
-    target_compile_options(catalog_model_test PRIVATE ${PJ_WARNING_FLAGS})
-    # Qt6::Test supplies QSignalSpy for the advertised-topics idempotence test.
-    target_link_libraries(catalog_model_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-        Qt6::Test
-    )
-    add_test(NAME CatalogModelTest COMMAND catalog_model_test)
-
-    add_executable(topic_demand_tracker_test
-        tests/topic_demand_tracker_test.cpp
-    )
-    target_compile_options(topic_demand_tracker_test PRIVATE ${PJ_WARNING_FLAGS})
-    # Qt6::Test supplies QSignalSpy for the activeTopicsChanged emission tests.
-    target_link_libraries(topic_demand_tracker_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-        Qt6::Test
-    )
-    add_test(NAME TopicDemandTrackerTest COMMAND topic_demand_tracker_test)
-
-    add_executable(payload_anchor_test
-        tests/payload_anchor_test.cpp
-    )
-    target_compile_options(payload_anchor_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(payload_anchor_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-    )
-    add_test(NAME PayloadAnchorTest COMMAND payload_anchor_test)
-
-    add_executable(curve_color_registry_test
-        tests/curve_color_registry_test.cpp
-    )
-    target_compile_options(curve_color_registry_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(curve_color_registry_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-    )
-    add_test(NAME CurveColorRegistryTest COMMAND curve_color_registry_test)
-
-    add_executable(qsettings_backend_test
-        tests/qsettings_backend_test.cpp
-    )
-    target_compile_options(qsettings_backend_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(qsettings_backend_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-    )
-    add_test(NAME QSettingsBackendTest COMMAND qsettings_backend_test)
-
-    add_executable(toolbox_runtime_host_test
-        tests/toolbox_runtime_host_test.cpp
-    )
-    target_compile_options(toolbox_runtime_host_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(toolbox_runtime_host_test PRIVATE
-        pj_runtime
-        GTest::gtest
-    )
-    add_test(NAME ToolboxRuntimeHostTest COMMAND toolbox_runtime_host_test)
-
-    # Env-gated integration test against the REAL parser_ros plugin (SKIPs
-    # unless PJ_REAL_ROS_PARSER_DIR points at the built parser_ros .so dir).
-    add_executable(toolbox_parser_ingest_real_ros_test
-        tests/toolbox_parser_ingest_real_ros_test.cpp
-    )
-    target_compile_options(toolbox_parser_ingest_real_ros_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(toolbox_parser_ingest_real_ros_test PRIVATE
-        pj_runtime
-        GTest::gtest
-    )
-    add_test(NAME ToolboxParserIngestRealRosTest COMMAND toolbox_parser_ingest_real_ros_test)
-
     add_library(runtime_host_object_parser_plugin SHARED
         tests/runtime_host_object_parser_plugin.cpp
     )
@@ -434,102 +224,6 @@ if(PJ_BUILD_TESTS)
     target_link_libraries(runtime_host_object_parser_plugin PRIVATE
         plotjuggler_sdk::plugin_sdk
     )
-
-    # The parser-ingest tests in toolbox_runtime_host_test load the same stub
-    # parser plugin the DataSource ingest test uses (defined just above, hence
-    # the wiring lives here rather than next to the test target).
-    target_compile_definitions(toolbox_runtime_host_test PRIVATE
-        PJ_RUNTIME_HOST_OBJECT_PARSER_PATH="$<TARGET_FILE:runtime_host_object_parser_plugin>"
-    )
-    add_dependencies(toolbox_runtime_host_test runtime_host_object_parser_plugin)
-
-    add_executable(data_source_runtime_host_object_ingest_test
-        tests/data_source_runtime_host_object_ingest_test.cpp
-    )
-    target_compile_definitions(data_source_runtime_host_object_ingest_test PRIVATE
-        PJ_RUNTIME_HOST_OBJECT_PARSER_PATH="$<TARGET_FILE:runtime_host_object_parser_plugin>"
-    )
-    target_compile_options(data_source_runtime_host_object_ingest_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(data_source_runtime_host_object_ingest_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-    )
-    add_dependencies(data_source_runtime_host_object_ingest_test runtime_host_object_parser_plugin)
-    add_test(NAME DataSourceRuntimeHostObjectIngestTest COMMAND data_source_runtime_host_object_ingest_test)
-
-    add_executable(data_source_runtime_host_record_tap_test
-        tests/data_source_runtime_host_record_tap_test.cpp
-    )
-    target_compile_definitions(data_source_runtime_host_record_tap_test PRIVATE
-        PJ_RUNTIME_HOST_OBJECT_PARSER_PATH="$<TARGET_FILE:runtime_host_object_parser_plugin>"
-    )
-    target_compile_options(data_source_runtime_host_record_tap_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(data_source_runtime_host_record_tap_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-    )
-    add_dependencies(data_source_runtime_host_record_tap_test runtime_host_object_parser_plugin)
-    add_test(NAME DataSourceRuntimeHostRecordTapTest COMMAND data_source_runtime_host_record_tap_test)
-
-    # The whole recording pipeline end to end: the same host + real parser
-    # plugin the record-tap test builds on, driven through RecordingService
-    # into an MCAP file that is then read back. Desktop-only (mcap + the
-    # writer), and wired here rather than in the mcap test block above because
-    # add_dependencies needs the parser plugin target to already exist.
-    if(NOT EMSCRIPTEN)
-        find_package(Qt6 REQUIRED COMPONENTS Test)  # QSignalSpy
-        add_executable(recording_pipeline_test
-            tests/recording_pipeline_test.cpp
-        )
-        target_compile_definitions(recording_pipeline_test PRIVATE
-            PJ_RUNTIME_HOST_OBJECT_PARSER_PATH="$<TARGET_FILE:runtime_host_object_parser_plugin>"
-        )
-        target_compile_options(recording_pipeline_test PRIVATE ${PJ_WARNING_FLAGS})
-        target_link_libraries(recording_pipeline_test PRIVATE
-            pj_runtime
-            mcap::mcap
-            Qt6::Core
-            Qt6::Test
-            GTest::gtest_main
-        )
-        add_dependencies(recording_pipeline_test runtime_host_object_parser_plugin)
-        add_test(NAME RecordingPipelineTest COMMAND recording_pipeline_test)
-
-        # M3 source capture: the completion-contract gate + cache publish +
-        # cache-first resolve, over the same real host/parser fixture.
-        add_executable(source_capture_service_test
-            tests/source_capture_service_test.cpp
-        )
-        target_compile_definitions(source_capture_service_test PRIVATE
-            PJ_RUNTIME_HOST_OBJECT_PARSER_PATH="$<TARGET_FILE:runtime_host_object_parser_plugin>"
-        )
-        target_compile_options(source_capture_service_test PRIVATE ${PJ_WARNING_FLAGS})
-        target_link_libraries(source_capture_service_test PRIVATE
-            pj_runtime
-            mcap::mcap
-            Qt6::Core
-            GTest::gtest_main
-        )
-        add_dependencies(source_capture_service_test runtime_host_object_parser_plugin)
-        add_test(NAME SourceCaptureServiceTest COMMAND source_capture_service_test)
-
-        # M3 owner wiring: ToolboxRuntimeHost's parser-ingest lifecycle
-        # (create/release/discard/teardown) driving SourceCaptureService.
-        add_executable(toolbox_capture_wiring_test
-            tests/toolbox_capture_wiring_test.cpp
-        )
-        target_compile_definitions(toolbox_capture_wiring_test PRIVATE
-            PJ_RUNTIME_HOST_OBJECT_PARSER_PATH="$<TARGET_FILE:runtime_host_object_parser_plugin>"
-        )
-        target_compile_options(toolbox_capture_wiring_test PRIVATE ${PJ_WARNING_FLAGS})
-        target_link_libraries(toolbox_capture_wiring_test PRIVATE
-            pj_runtime
-            Qt6::Core
-            GTest::gtest_main
-        )
-        add_dependencies(toolbox_capture_wiring_test runtime_host_object_parser_plugin)
-        add_test(NAME ToolboxCaptureWiringTest COMMAND toolbox_capture_wiring_test)
-    endif()
 
     # Streaming pause/resume two-engine lockstep, exercised at the
     # DataSourceRuntimeHost integration layer — the runtime-level companion to
@@ -548,44 +242,6 @@ if(PJ_BUILD_TESTS)
     target_link_libraries(streaming_caching_parser_plugin PRIVATE
         plotjuggler_sdk::plugin_sdk
     )
-
-    add_executable(data_source_runtime_host_stream_swap_test
-        tests/data_source_runtime_host_stream_swap_test.cpp
-    )
-    target_compile_definitions(data_source_runtime_host_stream_swap_test PRIVATE
-        PJ_STREAMING_CACHING_PARSER_PATH="$<TARGET_FILE:streaming_caching_parser_plugin>"
-    )
-    target_compile_options(data_source_runtime_host_stream_swap_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(data_source_runtime_host_stream_swap_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-    )
-    add_dependencies(data_source_runtime_host_stream_swap_test streaming_caching_parser_plugin)
-    add_test(NAME DataSourceRuntimeHostStreamSwapTest COMMAND data_source_runtime_host_stream_swap_test)
-
-    # M5: notify_available_topics threading + a-priori classification fallback.
-    add_executable(data_source_runtime_host_advertise_test
-        tests/data_source_runtime_host_advertise_test.cpp
-    )
-    target_compile_options(data_source_runtime_host_advertise_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(data_source_runtime_host_advertise_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-    )
-    add_test(NAME DataSourceRuntimeHostAdvertiseTest COMMAND data_source_runtime_host_advertise_test)
-
-    # Route-aware parser selection (SDK 0.22): claim admission, lazy exact-claim
-    # discovery, per-route winners, divergent-winner bindings, and the legacy
-    # fallback for encodings outside the SDK claim registry.
-    add_executable(extension_catalog_parser_routes_test
-        tests/extension_catalog_parser_routes_test.cpp
-    )
-    target_compile_options(extension_catalog_parser_routes_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(extension_catalog_parser_routes_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-    )
-    add_test(NAME ExtensionCatalogParserRoutesTest COMMAND extension_catalog_parser_routes_test)
 
     add_executable(extension_catalog_service_thread_safety_test
         tests/extension_catalog_service_thread_safety_test.cpp
@@ -671,41 +327,38 @@ if(PJ_BUILD_TESTS)
     target_compile_options(mock_data_source_newer_sdk_plugin PRIVATE ${PJ_WARNING_FLAGS})
     target_link_libraries(mock_data_source_newer_sdk_plugin PRIVATE plotjuggler_sdk::base)
 
-    add_executable(plugin_runtime_catalog_test tests/plugin_runtime_catalog_test.cpp)
-    target_compile_definitions(plugin_runtime_catalog_test PRIVATE
-        PJ_MOCK_DATA_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_plugin>"
-        PJ_MOCK_DATA_SOURCE_V2_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_v2_plugin>"
-        PJ_MOCK_DATA_SOURCE_INCOMPATIBLE_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_incompatible_plugin>"
-        PJ_MOCK_DATA_SOURCE_INCOMPATIBLE_LOW_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_incompatible_low_plugin>"
-        PJ_MOCK_DATA_SOURCE_MALFORMED_FLOOR_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_malformed_floor_plugin>"
-        PJ_MOCK_DATA_SOURCE_MALFORMED_VERSION_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_malformed_version_plugin>"
-        PJ_MOCK_DATA_SOURCE_NEWER_SDK_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_newer_sdk_plugin>"
-        PJ_MOCK_TOOLBOX_PLUGIN_PATH="$<TARGET_FILE:mock_toolbox_plugin>"
+    # The parser-ingest tests in toolbox_runtime_host_test load the same stub
+    # parser plugin the DataSource ingest test uses. Shared path definitions
+    # keep every consumer pointed at the same fixture image.
+    # no WARNINGS: 4 of 35 merged tests never compiled with -Werror
+    pj_add_test_runner(pj_runtime_tests MAIN core
+        SOURCES ${PJ_RUNTIME_TEST_SOURCES}
+        LIBS
+            pj_runtime
+            pj_scripting
+            # mcap::mcap: recording_test_utils.h (the IsolatedQtSettings sandbox the
+            # settings tests use) includes mcap/reader.hpp, which pj_runtime keeps
+            # PRIVATE.
+            mcap::mcap
+            Qt6::Test
+        DEFINES
+            PJ_RUNTIME_HOST_OBJECT_PARSER_PATH="$<TARGET_FILE:runtime_host_object_parser_plugin>"
+            PJ_STREAMING_CACHING_PARSER_PATH="$<TARGET_FILE:streaming_caching_parser_plugin>"
+            PJ_MOCK_DATA_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_plugin>"
+            PJ_MOCK_DATA_SOURCE_V2_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_v2_plugin>"
+            PJ_MOCK_DATA_SOURCE_INCOMPATIBLE_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_incompatible_plugin>"
+            PJ_MOCK_DATA_SOURCE_INCOMPATIBLE_LOW_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_incompatible_low_plugin>"
+            PJ_MOCK_DATA_SOURCE_MALFORMED_FLOOR_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_malformed_floor_plugin>"
+            PJ_MOCK_DATA_SOURCE_MALFORMED_VERSION_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_malformed_version_plugin>"
+            PJ_MOCK_DATA_SOURCE_NEWER_SDK_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_newer_sdk_plugin>"
+            PJ_MOCK_TOOLBOX_PLUGIN_PATH="$<TARGET_FILE:mock_toolbox_plugin>"
     )
-    target_compile_options(plugin_runtime_catalog_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(plugin_runtime_catalog_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-    )
-    add_dependencies(plugin_runtime_catalog_test
+    set_target_properties(pj_runtime_tests PROPERTIES AUTOMOC ON)
+    add_dependencies(pj_runtime_tests
+        runtime_host_object_parser_plugin streaming_caching_parser_plugin
         mock_data_source_plugin mock_data_source_v2_plugin
         mock_data_source_incompatible_plugin mock_data_source_incompatible_low_plugin
         mock_data_source_malformed_floor_plugin mock_data_source_malformed_version_plugin
-        mock_data_source_newer_sdk_plugin
-        mock_toolbox_plugin)
-    add_test(NAME plugin_runtime_catalog_test COMMAND plugin_runtime_catalog_test)
-
-    # Bundled-plugin seeding (share -> marketplace sync) + scan-tier precedence.
-    add_executable(extension_catalog_seed_test tests/extension_catalog_seed_test.cpp)
-    target_compile_definitions(extension_catalog_seed_test PRIVATE
-        PJ_MOCK_DATA_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_plugin>"
-        PJ_MOCK_DATA_SOURCE_V2_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_v2_plugin>"
+        mock_data_source_newer_sdk_plugin mock_toolbox_plugin
     )
-    target_compile_options(extension_catalog_seed_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(extension_catalog_seed_test PRIVATE
-        pj_runtime
-        GTest::gtest_main
-    )
-    add_dependencies(extension_catalog_seed_test mock_data_source_plugin mock_data_source_v2_plugin)
-    add_test(NAME extension_catalog_seed_test COMMAND extension_catalog_seed_test)
 endif()

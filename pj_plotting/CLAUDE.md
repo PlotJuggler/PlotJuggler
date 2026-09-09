@@ -18,7 +18,24 @@ pj_plotting  ──►  pj_plotting_core  ──►  pj_datastore + pj_base
 |---|---|---|
 | `core/` | `DatastoreCurveAdapter`, `FilteredCurveAdapter`, `PointSeriesXY`, `StateSeriesAdapter`, `PlotXml.h` | Bridges PJ3-style `QwtSeriesData<QPointF>` consumers to `pj_datastore::DataReader`. `StateSeriesAdapter` is the discrete-series counterpart: a full-rebuild RLE reader (`rangeQuery` + per-type label formatting — `readString` copied out inside the cursor, integers in decimal via the exact int64/uint64 reads, bool via `readBool` as "true"/"false"; equal-timestamp last-write-wins, null = gap, trailing run open) feeding the State Transitions strip. `FilteredCurveAdapter` is a lazy `DatastoreCurveAdapter` subclass that serves the output of a `proc::DataProcessor` (the Filter Editor before/after preview, refreshed on the streaming commit path). `PlotXml.h` is the shared plot-XML vocabulary (`x_basis` range markers, the `pending_intent` keep-alive predicate) consumed by both this module and the app-side layout passes. No Qt Widgets. |
 | `widget/` | `PlotWidgetBase`, `PlotWidget`, `PlotDocker`, `TabbedPlotWidget`, `PlotZoomer`, `PlotPanner`, `PlotMagnifier`, `CurveTracker`, `PlotLegend`, `PlotFocusOverlay`, `PlotScaleDraw`, `DockWidget`, `DockToolbar`, `CurveEditor`, `FilterEditorPanel`, `ParameterForm`, `StateTransitionsController`, `StateTransitionsDockWidget`, `PlotRhiCanvas` | The Qt/Qwt widgets, ported from PJ3's `plotjuggler_app/`. On WebAssembly (`PJ_TARGET_WASM`) `widget/` also owns `PlotRhiCanvas` — a QRhi/WebGL scalar canvas that renders the visible Qwt curve/grid/marker items as bounded triangle geometry; `PlotWidgetBase` picks it in place of `QwtPlotOpenGLCanvas` (Qwt still owns axes/data/interaction). The WASM `PlotPanner` snapshots that canvas through `grabFramebuffer()` for its transient drag image because `QWidget::grab()` cannot capture QRhi content. Desktop stays on the Qwt OpenGL canvas and Qwt's native panner grab path. |
-| `tests/` | gtest binaries | Adapter and dock-placeholder tests. |
+| `tests/` | gtest runners and standalone GL regressions | Core adapters, plotting widgets, docking, filters, and rendering tests. |
+
+## Tests and benchmarks
+
+`PJ_BUILD_TESTS` enables `pj_plotting_core_tests` (shared `QCoreApplication` main)
+and `pj_plotting_widget_tests` (shared offscreen-capable `QApplication` main, with
+`pj_resources`). `gtest_discover_tests` registers each case with its runner name
+as a prefix and launches each case in its own process. The transaction and legend
+diagnostics suites use file-local environments that apply their custom setup only
+when those suites are selected.
+
+`plot_canvas_context_recreation_gl_test` and `raster_text_gl_test` stay separate:
+their custom `QApplication` startup forces the OpenGL canvas and preserves the
+platform choice needed for real GL coverage. Their ctest names remain
+`PlotCanvasContextRecreationGlTest` and `RasterTextGlTest`.
+
+`adapter_streaming_benchmark` is built with `PJ_BUILD_DEMOS`, independently of
+`PJ_BUILD_TESTS`.
 
 ## Port strategy (per root CLAUDE.md "Porting policy")
 

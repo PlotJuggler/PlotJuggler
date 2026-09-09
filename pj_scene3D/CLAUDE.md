@@ -205,16 +205,49 @@ full mechanism.
 
 Before any commit, build and run the module's tests and check that they all pass.
 The **authoritative set of test targets is the CMake registry, not this file**:
-`pj_scene3D/core/CMakeLists.txt` and `pj_scene3D/widgets/CMakeLists.txt` each
-register their `*_test` targets (~44 in total, GL-backed ones included). Run them
-from the build directory with `ctest` (e.g. `ctest --test-dir build
---output-on-failure`) rather than from a hand-maintained list here — the previous
-inline enumeration silently drifted as tests were added (it had fallen to 39 of the
-~44, missing e.g. `mesh_render_pass_test`, `transform_service_test`,
-`pointcloud_layer_rgb_test`, `scene3d_dock_streaming_test`/`_persistence_test`, and
-the GL-context tests).
+`pj_scene3D/core/CMakeLists.txt` and `pj_scene3D/widgets/CMakeLists.txt` use
+`pj_add_test_runner` from `cmake/PjTests.cmake`. GoogleTest discovery registers
+each case with a `<runner>.<Suite>.<Case>` name and runs it in its own process.
+The runners are:
 
-GL-backed tests (names ending `_gl_test`, plus the context-recreation tests)
+- `pj_scene3d_core_tests`: geometry, transforms, and canonical-object decoding;
+  uses the shared `QCoreApplication` main.
+- `pj_scene3d_widget_tests`: tests with `PJ_SCENE3D_TEST_HOOKS`, using the shared
+  `QApplication` main. The context-recreation cases request their own offscreen
+  GL surface format.
+- `pj_scene3d_gl_tests`: raw offscreen GL passes, using the shared GL 4.5
+  `QGuiApplication` main.
+- `pj_scene3d_widget_plain_tests`: widget and logic tests without test hooks;
+  links `pj_resources` for theme-dependent config-widget checks.
+- `pj_scene3d_widget_fixture_tests`: tests sharing `PJ_SCENE3D_FIXTURES_DIR`,
+  without test hooks. Links Qt Network for the local-server fixtures.
+
+Hooked and plain sources stay in different runners because the test-hook macro
+changes public library class definitions. File-local GoogleTest environments
+prepare the Cloudini blob, preserve the fixed-frame settings application name,
+and redirect the model caches to temporary directories. The shared mains keep
+the application on the stack so it dies before Qt Network's exit handlers.
+
+These tests keep their own executables and `add_test` registrations:
+
+- `transform_service_test`: its debug thread-affinity death test forks and aborts
+  in the child process.
+- `hud_overlay_gl_test`, `tf_connections_gl_test`, `shadow_persistence_gl_test`:
+  need the default GL format before constructing a `QApplication` to host a
+  `SceneViewWidget`; the shared GL main constructs a `QGuiApplication`. The HUD
+  and TF tests also preserve their deterministic white application palettes.
+- `robot_model_layer_test`: uniquely combines the fixture-path definition and
+  test hooks.
+- `wasm_shader_constants_test`: uniquely defines `PJ_WASM_SHADER_DIR`.
+
+Run the module in the builder image with `ctest --test-dir build
+--output-on-failure -R
+'^(pj_scene3d_.*|transform_service_test|hud_overlay_gl_test|tf_connections_gl_test|shadow_persistence_gl_test|robot_model_layer_test|wasm_shader_constants_test)$'`.
+Filter just the discovered runners with `-R '^pj_scene3d_'`, or run the complete
+CMake registry with `ctest --test-dir build --output-on-failure`.
+The three demos and three benchmarks remain executables gated by `PJ_BUILD_DEMOS`.
+
+GL-backed cases (the GL runner, retained GL widget tests, and context-recreation cases)
 require a real GL ≥ 4.5 context (llvmpipe under `xvfb` on CI) and **self-skip below
 GL 4.5** — Windows software GL is only GL 3.0 / GLSL 1.30, so a `#version 450`
 shader test cannot run there.

@@ -37,6 +37,47 @@ Per root CLAUDE.md: **prefer `.ui` files** over programmatic widget construction
 
 `pj_app` has no `docs/` folder by design — the shell's intent is "wire the services to the widgets," and the wiring is best read directly from `MainWindow.cpp` and `main.cpp`.
 
+## Tests
+
+`pj_app_gui_tests` links `pj_app_shell` and `pj_resources` for GUI scenarios and
+runtime-backed controller/binder tests. `pj_app_unit_tests` compiles the Qt-only
+helpers directly. Both use `pj_add_test_runner` with the shared GUI main;
+`gtest_discover_tests` registers each case under its runner's name and launches
+it in a fresh process with a 120-second timeout. Run them through ctest to keep
+MainWindow's process-global widget state isolated between cases.
+
+`tests/support/gui_test_env.cpp` registers the shell runner's OpenGL-disable
+environment once. File-local environments preserve custom settings identities
+and slider theme ownership; they check the selected suite before changing
+process-wide state. The shared main owns the only QApplication.
+
+These tests retain their standalone executable and ctest entry:
+
+- `main_window_layout_exit_test`: the last case leaves an import parked for
+  destructor-time shutdown, so suite ordering and teardown are part of the test.
+- `main_window_layout_import_lifecycle_test`: ordered import supersession,
+  cancellation and rollback scenarios, with its own mock-plugin definition.
+- `main_window_layout_import_alive_test`: preserves the import lifetime through
+  the catalog-empty guard and completion drain.
+- `main_window_layout_import_cancel_test`: preserves mid-import cancellation
+  and restoration of the prior workspace.
+- `main_window_layout_import_binder_test`: its mock-plugin path definition is
+  specific to this suite.
+- `main_window_layout_import_e2e_test`: installs a private HOME/XDG sandbox
+  before QApplication and uses the live cross-repository E2E harness.
+- `file_loader_test`: four plugin-path definitions plus child-process shutdown
+  and teardown probes in `file_loader_shutdown_progress_test.cpp`.
+- `source_promotion_host_test`: only the mock file-source plugin path is defined.
+- `headless_descriptor_provider_session_test`: uses a static fake provider and
+  no plugin-path definitions; also covers provider quiescence on teardown.
+- `layout_import_batch_test`: desktop-only, with both mock file-source and
+  runtime host object-parser plugin paths.
+- `splash_meme_pool_test` (`SplashMemePoolTest`): compiles `Splashscreen.cpp`
+  standalone with `PJ_MEMES_SOURCE_DIR` and the shipped resources.
+
+`ExportedSymbolsGuard` remains a script test, enabled when the platform and
+`nm` support inspecting the executable's exported symbols.
+
 ## Session recording
 
 Nothing here is gated at build time: the `RecordingService` member, its connections and the shutdown `stop()`

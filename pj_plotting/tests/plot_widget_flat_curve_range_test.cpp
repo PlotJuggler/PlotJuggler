@@ -72,12 +72,3 @@ TEST(PlotWidgetFlatCurveRange, ConstantCurveGetsPaddedYRange) {
   EXPECT_NEAR(rect.bottom(), kFlatValue - 0.1, 1e-6);
   EXPECT_NEAR(rect.top() - rect.bottom(), 0.2, 1e-6) << "flat curve must not collapse to zero height";
 }
-
-int main(int argc, char** argv) {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-    qputenv("QT_QPA_PLATFORM", "offscreen");
-  }
-  testing::InitGoogleTest(&argc, argv);
-  QApplication app(argc, argv);
-  return RUN_ALL_TESTS();
-}

@@ -10,13 +10,32 @@ usage() {
     "Usage: ./build.sh [OPTIONS]" \
     "" \
     "Options:" \
+    "  --minimal            App closure only, no debug info: same as" \
+    "                       --no-tests --no-demos --target pj_app --debug-info none" \
+    "  --no-tests           Build without the test suite (also turns off the widget" \
+    "                       demos and the standalone marketplace app, which follow it)" \
+    "  --no-demos           Skip the scene3D demos and benchmarks" \
+    "  --no-widget-demos    Skip the pj_widgets demo apps" \
+    "  --no-marketplace-app Skip the standalone marketplace executable" \
+    "  --target NAME        CMake target to build (default: all; pj_app = app + plugin checker)" \
+    "  --debug-info LEVEL   none|lines|full|split (Linux default: split; see cmake/PjDebugInfo.cmake)" \
+    "  --no-compress-debug  Keep DWARF uncompressed (default on Linux: zlib-compressed)" \
     "  --tsan               Build and run concurrency tests with ThreadSanitizer" \
-    "  --skip-test          Build without the test suite" \
     "  --skip-conan-install Reuse the existing Conan toolchain" \
     "  --sdk-local[=PATH]   Build plotjuggler_sdk from a local tree instead of the" \
     "                       Conan package (default PATH: ../plotjuggler_sdk sibling)." \
     "                       Dev-only: not reproducible, refused in CI." \
-    "  --help               Show this help message"
+    "  --help               Show this help message" \
+    "" \
+    "Examples:" \
+    "  ./build.sh                    full dev tree: tests + demos, split DWARF" \
+    "  ./build.sh --minimal          what the packaging build compiles, on the host" \
+    "  ./build.sh --no-tests --debug-info full" \
+    "" \
+    "The same settings are accepted as PJ_BUILD_TESTS, PJ_BUILD_DEMOS," \
+    "PJ_BUILD_WIDGET_DEMOS, PJ_BUILD_MARKETPLACE_APP, PJ_BUILD_TARGET, PJ_DEBUG_INFO" \
+    "and PJ_COMPRESS_DEBUG environment variables (how CI and the container wrapper" \
+    "drive this script); an option always wins over the variable."
 }
 
 # `./build.sh --tsan` builds + runs the Qt-free foundation concurrency tests under
@@ -29,21 +48,56 @@ TSAN=0
 SKIP_TEST=0
 SKIP_CONAN_INSTALL=0
 SDK_LOCAL_DIR=""
-for arg in "$@"; do
-  case "$arg" in
+# Options set the same PJ_* variables the environment can provide, so the
+# option always wins and everything below reads one source.
+# Values are validated where they are assigned, for both `--opt VALUE` and
+# `--opt=VALUE`, so a bad value is rejected even when a later option (e.g.
+# --minimal) would overwrite it. Repeated valid options: the last one wins.
+bad_value() { echo "$1" >&2; usage >&2; exit 2; }
+set_target() {
+  [[ -n "$1" && "$1" != -* ]] || bad_value "--target needs a target name"
+  PJ_BUILD_TARGET="$1"
+}
+set_debug_info() {
+  [[ "$1" =~ ^(none|lines|full|split)$ ]] || bad_value "--debug-info must be none, lines, full or split (got '$1')"
+  PJ_DEBUG_INFO="$1"
+}
+set_sdk_local() {
+  [[ -n "$1" ]] || bad_value "--sdk-local= needs a path"
+  SDK_LOCAL_DIR="$1"
+}
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     --tsan) TSAN=1 ;;
-    --skip-test) SKIP_TEST=1 ;;
+    --no-tests | --skip-test) SKIP_TEST=1 ;;
+    --no-demos) PJ_BUILD_DEMOS=OFF ;;
+    --no-widget-demos) PJ_BUILD_WIDGET_DEMOS=OFF ;;
+    --no-marketplace-app) PJ_BUILD_MARKETPLACE_APP=OFF ;;
+    --target) set_target "${2:-}"; shift ;;
+    --target=*) set_target "${1#--target=}" ;;
+    --debug-info) set_debug_info "${2:-}"; shift ;;
+    --debug-info=*) set_debug_info "${1#--debug-info=}" ;;
+    --no-compress-debug) PJ_COMPRESS_DEBUG=OFF ;;
+    --minimal) SKIP_TEST=1; PJ_BUILD_DEMOS=OFF; PJ_BUILD_TARGET=pj_app; PJ_DEBUG_INFO=none ;;
     --skip-conan-install) SKIP_CONAN_INSTALL=1 ;;
     --sdk-local) SDK_LOCAL_DIR="${SCRIPT_DIR}/../plotjuggler_sdk"
                  [[ -d "$SDK_LOCAL_DIR" ]] || SDK_LOCAL_DIR="${HOME}/ws_plotjuggler/plotjuggler_sdk" ;;
-    --sdk-local=*) SDK_LOCAL_DIR="${arg#--sdk-local=}" ;;
-    --help) usage; exit 0 ;;
-    *) echo "unknown argument: $arg" >&2; usage >&2; exit 2 ;;
+    --sdk-local=*) set_sdk_local "${1#--sdk-local=}" ;;
+    -h | --help) usage; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
+  shift
 done
+# The environment may also carry a level (CI, the container wrapper); validate
+# it the same way an option is.
+if [[ -n "${PJ_DEBUG_INFO:-}" ]]; then
+  set_debug_info "${PJ_DEBUG_INFO}"
+fi
 
 if [[ -n "$SDK_LOCAL_DIR" ]]; then
-  if [[ -n "${CI:-}" ]]; then
+  # Existence, not content: the root CMakeLists refuses PJ_SDK_LOCAL_DIR under
+  # `if(DEFINED ENV{CI})`, so an exported empty CI must fail here, early, too.
+  if [[ -n "${CI+x}" ]]; then
     echo "--sdk-local is a local development mode; refusing to run in CI" >&2
     exit 2
   fi
@@ -57,9 +111,18 @@ if [[ -n "$SDK_LOCAL_DIR" ]]; then
   echo "=================================================================="
 fi
 
-if [[ "$TSAN" == "1" && "$SKIP_TEST" == "1" ]]; then
-  echo "--tsan and --skip-test cannot be used together" >&2
-  exit 2
+if [[ "$TSAN" == "1" ]]; then
+  # TSan builds a fixed set of concurrency tests, so it needs the test suite
+  # configured ON and does not take a target selection (from the option or the
+  # environment); refuse both up front instead of failing after Conan.
+  if [[ "$SKIP_TEST" == "1" ]] || { [[ -n "${PJ_BUILD_TESTS:-}" && ! "${PJ_BUILD_TESTS^^}" =~ ^(ON|1|TRUE|YES|Y)$ ]]; }; then
+    echo "--tsan needs the test suite: it cannot be combined with --no-tests/--minimal or PJ_BUILD_TESTS=OFF" >&2
+    exit 2
+  fi
+  if [[ -n "${PJ_BUILD_TARGET:-}" && "${PJ_BUILD_TARGET}" != all ]]; then
+    echo "--tsan builds its fixed concurrency-test set; --target/PJ_BUILD_TARGET is not supported with it" >&2
+    exit 2
+  fi
 fi
 
 if [[ ! -d "$QT_DIR" ]]; then
@@ -73,18 +136,43 @@ if command -v ccache &>/dev/null; then
   CMAKE_CCACHE_ARGS+=("-DCMAKE_C_COMPILER_LAUNCHER=ccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")
 fi
 
-# Release/packaging pipelines export these to skip building the test suite
-# and the scene3D dev demos (neither ships, and no release flow runs ctest).
-# PJ_BUILD_RASTER_HELPER goes the other way: the Linux release turns the
+# The PJ_* variables below come from the options parsed above or, for CI and
+# the container wrapper, from the environment. Release/packaging pipelines skip
+# the test suite and the scene3D demos (neither ships, and no release flow runs
+# ctest). PJ_BUILD_RASTER_HELPER goes the other way: the Linux release turns the
 # standalone GPLv2 helper ON so packaging/appimage/build_appimage.sh can stage it.
 PJ_FLAG_ARGS=()
+# Every selection is passed explicitly on every run. CMake's option() keeps
+# the cached value, so an unset -D would let a build/ configured once with
+# tests ON keep its widget demos and marketplace app after --no-tests, and a
+# tree configured with --minimal keep tests OFF after a plain ./build.sh.
 if [[ "$SKIP_TEST" == "1" ]]; then
-  PJ_FLAG_ARGS+=("-DPJ_BUILD_TESTS=OFF")
-elif [[ -n "${PJ_BUILD_TESTS:-}" ]]; then
-  PJ_FLAG_ARGS+=("-DPJ_BUILD_TESTS=${PJ_BUILD_TESTS}")
+  PJ_BUILD_TESTS=OFF
+  # Documented as following --no-tests; an explicit --no-widget-demos or
+  # --no-marketplace-app can only turn them off, never back on.
+  PJ_BUILD_WIDGET_DEMOS=OFF
+  PJ_BUILD_MARKETPLACE_APP=OFF
 fi
-[[ -n "${PJ_BUILD_DEMOS:-}" ]] && PJ_FLAG_ARGS+=("-DPJ_BUILD_DEMOS=${PJ_BUILD_DEMOS}")
+PJ_BUILD_TESTS="${PJ_BUILD_TESTS:-ON}"
+PJ_BUILD_DEMOS="${PJ_BUILD_DEMOS:-ON}"
+PJ_BUILD_WIDGET_DEMOS="${PJ_BUILD_WIDGET_DEMOS:-${PJ_BUILD_TESTS}}"
+PJ_BUILD_MARKETPLACE_APP="${PJ_BUILD_MARKETPLACE_APP:-${PJ_BUILD_TESTS}}"
+PJ_FLAG_ARGS+=(
+  "-DPJ_BUILD_TESTS=${PJ_BUILD_TESTS}"
+  "-DPJ_BUILD_DEMOS=${PJ_BUILD_DEMOS}"
+  "-DPJ_BUILD_WIDGET_DEMOS=${PJ_BUILD_WIDGET_DEMOS}"
+  "-DPJ_BUILD_MARKETPLACE_APP=${PJ_BUILD_MARKETPLACE_APP}"
+)
 [[ -n "${PJ_BUILD_RASTER_HELPER:-}" ]] && PJ_FLAG_ARGS+=("-DPJ_BUILD_RASTER_HELPER=${PJ_BUILD_RASTER_HELPER}")
+
+# PJ_DEBUG_INFO/PJ_COMPRESS_DEBUG keep Linux dev trees debuggable without
+# duplicating DWARF; see cmake/PjDebugInfo.cmake for the policy.
+if [[ "$(uname -s)" == Linux ]]; then
+  : "${PJ_DEBUG_INFO:=split}"
+  : "${PJ_COMPRESS_DEBUG:=ON}"
+fi
+[[ -n "${PJ_DEBUG_INFO:-}" ]] && PJ_FLAG_ARGS+=("-DPJ_DEBUG_INFO=${PJ_DEBUG_INFO}")
+[[ -n "${PJ_COMPRESS_DEBUG:-}" ]] && PJ_FLAG_ARGS+=("-DPJ_COMPRESS_DEBUG=${PJ_COMPRESS_DEBUG}")
 
 # plotjuggler_sdk is served only by PlotJuggler's Artifactory remote (anonymous
 # read); ConanCenter supplies everything else. Keep the remotes explicit so
@@ -124,7 +212,9 @@ if [[ "$TSAN" == "1" ]]; then
     -DCMAKE_PREFIX_PATH="${QT_DIR}" \
     -DPJ_ENABLE_TSAN=ON \
     -DPJ4_BUILD_APP=OFF \
-    "${CMAKE_CCACHE_ARGS[@]+"${CMAKE_CCACHE_ARGS[@]}"}" "${PJ_FLAG_ARGS[@]+"${PJ_FLAG_ARGS[@]}"}"
+    -DPJ_SDK_LOCAL_DIR="${SDK_LOCAL_DIR}" \
+    "${CMAKE_CCACHE_ARGS[@]+"${CMAKE_CCACHE_ARGS[@]}"}" "${PJ_FLAG_ARGS[@]+"${PJ_FLAG_ARGS[@]}"}" \
+    -DPJ_BUILD_TESTS=ON
 
   cmake --build "$BUILD_DIR" --target "${TSAN_TESTS[@]}" -j "$(nproc)"
 
@@ -143,6 +233,9 @@ BUILD_DIR="${SCRIPT_DIR}/build"
 # may have unrelated private remotes that host forked recipes under a user
 # channel; those must never shadow PJ4's intended dependency graph.
 if [[ "$SKIP_CONAN_INSTALL" == "0" ]]; then
+  # Dependencies stay RelWithDebInfo because Release luau built from source is
+  # not PIC and fails to link into PIE executables. Revisit when the Conan
+  # remote ships Release binaries.
   conan install "$SCRIPT_DIR" --output-folder="$BUILD_DIR" --build=missing "${CONAN_LOCKFILE_ARGS[@]}" \
     -s build_type=RelWithDebInfo -s compiler.cppstd=20 "${CONAN_REMOTE_ARGS[@]}"
 elif [[ ! -f "$BUILD_DIR/conan_toolchain.cmake" ]]; then
@@ -164,4 +257,6 @@ cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" \
 # path is gitignored; the relative target survives a worktree move.
 ln -sf "build/compile_commands.json" "$SCRIPT_DIR/compile_commands.json"
 
-cmake --build "$BUILD_DIR" -j "$(nproc)"
+# PJ_BUILD_TARGET: packaging builds set it to pj_app so only the shipped closure
+# (app + pj-plugin-check, which pj_app depends on) is linked; `all` is the dev default.
+cmake --build "$BUILD_DIR" --target "${PJ_BUILD_TARGET:-all}" -j "$(nproc)"

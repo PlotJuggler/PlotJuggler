@@ -3,7 +3,6 @@
 
 #include <gtest/gtest.h>
 
-#include <QApplication>
 #include <QDomDocument>
 #include <QSignalSpy>
 #include <memory>
@@ -24,20 +23,6 @@ namespace PJ {
 namespace {
 
 constexpr Timestamp kNs = 1'000'000'000;
-
-struct QtEnvironment : ::testing::Environment {
-  void SetUp() override {
-    static int argc = 0;
-    app_ = new QApplication(argc, nullptr);
-  }
-  void TearDown() override {
-    delete app_;
-    app_ = nullptr;
-  }
-  QApplication* app_ = nullptr;
-};
-
-const auto* const kEnv = ::testing::AddGlobalTestEnvironment(new QtEnvironment);
 
 class StateTransitionsDockWidgetTest : public ::testing::Test {
  protected:

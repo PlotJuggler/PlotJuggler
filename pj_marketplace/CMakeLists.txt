@@ -136,23 +136,25 @@ target_compile_options(pj_marketplace PRIVATE ${PJ_WARNING_FLAGS})
 # pj_marketplace — main executable
 # ---------------------------------------------------------------------------
 
-add_executable(pj_marketplace_app
-  main.cpp
-)
-set_target_properties(pj_marketplace_app PROPERTIES
-  AUTOMOC ON
-  AUTORCC ON
-  AUTOUIC ON
-  AUTOUIC_SEARCH_PATHS ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
-)
+option(PJ_BUILD_MARKETPLACE_APP "Build the standalone marketplace executable" ${PJ_BUILD_TESTS})
+if(PJ_BUILD_MARKETPLACE_APP)
+    add_executable(pj_marketplace_app
+        main.cpp
+    )
+    set_target_properties(pj_marketplace_app PROPERTIES
+        AUTOMOC ON
+        AUTORCC ON
+        AUTOUIC ON
+        AUTOUIC_SEARCH_PATHS ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+    )
 
+    target_link_libraries(pj_marketplace_app PRIVATE
+        pj_marketplace
+        pj_marketplace_ui
+    )
 
-target_link_libraries(pj_marketplace_app PRIVATE
-  pj_marketplace
-  pj_marketplace_ui
-)
-
-target_compile_options(pj_marketplace_app PRIVATE ${PJ_WARNING_FLAGS})
+    target_compile_options(pj_marketplace_app PRIVATE ${PJ_WARNING_FLAGS})
+endif()
 
 # ---------------------------------------------------------------------------
 # pj-plugin-check — Qt-free admission helper
@@ -176,16 +178,29 @@ target_compile_options(pj-plugin-check PRIVATE ${PJ_WARNING_FLAGS})
 # ---------------------------------------------------------------------------
 
 if(PJ_BUILD_TESTS)
+    # Standalone builds do not pass through PJ4's root test-helper include.
+    if(NOT COMMAND pj_add_test_runner)
+        include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/PjTests.cmake")
+    endif()
 
-# download_manager_test has its own main() to initialise QCoreApplication
-add_executable(download_manager_test tests/download_manager_test.cpp)
-target_link_libraries(download_manager_test PRIVATE pj_marketplace GTest::gtest Qt6::Test LibArchive::LibArchive)
-target_compile_options(download_manager_test PRIVATE ${PJ_WARNING_FLAGS})
-set_target_properties(download_manager_test PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests
-)
-add_test(NAME download_manager_test COMMAND download_manager_test)
+    # content_manifest_test — the pure identity functions. No Qt, no network: they
+    # take a directory and return a digest, so they are exercised directly instead of
+    # through the install pipeline.
+    # artifact_store_test — the content-addressed store primitives. Builds its ZIP
+    # fixtures with libarchive directly, so it links it in addition to the library.
+    # WARNINGS: all 6 merged tests carried PJ_WARNING_FLAGS before
+    pj_add_test_runner(pj_marketplace_tests MAIN gui WARNINGS
+        SOURCES
+            tests/download_manager_test.cpp
+            tests/content_manifest_test.cpp
+            tests/artifact_store_test.cpp
+            tests/registry_manager_test.cpp
+            tests/registry_resolver_test.cpp
+            tests/version_compare_test.cpp
+        LIBS pj_marketplace Qt6::Network Qt6::Test LibArchive::LibArchive
+    )
 
+    # Helper exit-status checks retain their independent process-lifecycle target.
 # plugin_check_runner_test — exercises the real pj-plugin-check helper in a
 # child process. Its path is injected at compile time so the runner-under-test
 # uses the freshly-built binary, not a system-installed one.
@@ -201,59 +216,8 @@ set_target_properties(plugin_check_runner_test PROPERTIES
 )
 add_test(NAME plugin_check_runner_test COMMAND plugin_check_runner_test)
 
-# content_manifest_test — the pure identity functions. No Qt, no network: they
-# take a directory and return a digest, so they are exercised directly instead of
-# through the install pipeline.
-add_executable(content_manifest_test tests/content_manifest_test.cpp)
-target_link_libraries(content_manifest_test PRIVATE pj_marketplace GTest::gtest GTest::gtest_main)
-target_compile_options(content_manifest_test PRIVATE ${PJ_WARNING_FLAGS})
-set_target_properties(content_manifest_test PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests
-)
-add_test(NAME content_manifest_test COMMAND content_manifest_test)
-
-# artifact_store_test — the content-addressed store primitives. Builds its ZIP
-# fixtures with libarchive directly, so it links it in addition to the library.
-add_executable(artifact_store_test tests/artifact_store_test.cpp)
-target_link_libraries(artifact_store_test PRIVATE pj_marketplace GTest::gtest GTest::gtest_main LibArchive::LibArchive)
-target_compile_options(artifact_store_test PRIVATE ${PJ_WARNING_FLAGS})
-set_target_properties(artifact_store_test PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests
-)
-add_test(NAME artifact_store_test COMMAND artifact_store_test)
-
-add_executable(registry_manager_test
-  tests/registry_manager_test.cpp
-)
-
-target_link_libraries(registry_manager_test PRIVATE
-  pj_marketplace
-  Qt6::Network
-  Qt6::Test
-  GTest::gtest
-)
-set_target_properties(registry_manager_test PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests
-)
-target_compile_options(registry_manager_test PRIVATE ${PJ_WARNING_FLAGS})
-add_test(NAME registry_manager_test COMMAND registry_manager_test)
-
-add_executable(registry_resolver_test tests/registry_resolver_test.cpp)
-target_link_libraries(registry_resolver_test PRIVATE pj_marketplace GTest::gtest_main)
-target_compile_options(registry_resolver_test PRIVATE ${PJ_WARNING_FLAGS})
-set_target_properties(registry_resolver_test PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests
-)
-add_test(NAME registry_resolver_test COMMAND registry_resolver_test)
-
-add_executable(version_compare_test tests/version_compare_test.cpp)
-target_link_libraries(version_compare_test PRIVATE pj_marketplace GTest::gtest_main)
-target_compile_options(version_compare_test PRIVATE ${PJ_WARNING_FLAGS})
-set_target_properties(version_compare_test PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests
-)
-add_test(NAME version_compare_test COMMAND version_compare_test)
-
+# The extension-manager suite re-executes its binary in lock-holder mode before
+# GoogleTest starts; its custom entry point and fixture guard must stay together.
 if(TARGET mock_data_source_plugin AND TARGET mock_file_source_plugin
    AND TARGET mock_data_source_v2_plugin AND TARGET missing_id_data_source_plugin
    AND TARGET mock_data_source_pinning_plugin AND TARGET mock_data_source_pinning_v2_plugin

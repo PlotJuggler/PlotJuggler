@@ -253,12 +253,3 @@ TEST(MultiDatasetRebind, UnqualifiedCurveStaysUnresolvedWhenTopicIsAmbiguous) {
   const QDomElement rebound = firstCurve(doc);
   EXPECT_TRUE(rebound.attribute(u"name"_s).isEmpty());
 }
-
-int main(int argc, char** argv) {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-    qputenv("QT_QPA_PLATFORM", "offscreen");
-  }
-  testing::InitGoogleTest(&argc, argv);
-  QApplication app(argc, argv);
-  return RUN_ALL_TESTS();
-}

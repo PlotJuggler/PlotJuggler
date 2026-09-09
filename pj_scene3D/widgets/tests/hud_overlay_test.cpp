@@ -100,9 +100,3 @@ TEST(HudOverlay, EmptyInputYieldsNullImage) {
   EXPECT_TRUE(renderHudPanel({}, hudFont(), 1.0, kPad, kAlpha, kTextColor).isNull());
   EXPECT_TRUE(renderHudPanel({QString(), QString()}, hudFont(), 1.0, kPad, kAlpha, kTextColor).isNull());
 }
-
-int main(int argc, char** argv) {
-  QApplication app(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

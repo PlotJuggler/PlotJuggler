@@ -168,12 +168,3 @@ TEST(MessageBoxTest, ButtonSpacingIsConstantAcrossDialogs) {
 }
 
 }  // namespace
-
-int main(int argc, char** argv) {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-    qputenv("QT_QPA_PLATFORM", "offscreen");  // don't override a platform set by CI
-  }
-  QApplication app(argc, argv);  // QWidget + fontMetrics need a GUI app
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

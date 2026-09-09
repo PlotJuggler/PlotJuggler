@@ -9,6 +9,14 @@ keyframe indexing, compositing) and `pj_scene2d_widgets` (Qt — the
 top of `pj_scene_common`). pj_scene2D is a read-only consumer of
 `pj_datastore::ObjectStore`; it never writes to storage.
 
+Core tests are grouped into the `pj_scene2d_core_tests` and
+`pj_scene2d_core_source_dir_tests` gtest runners, registered with
+`gtest_discover_tests`: ctest names are `<runner>.<Suite>.<Case>`, with one process
+per case. The source-directory runner uses the repository root for video fixtures.
+`mcap_integration_test` and `dual_store_test` stay separate because both define
+`MCAP_IMPLEMENTATION`; `ffmpeg_decoder_test` stays separate to preserve its ctest
+`LSAN_OPTIONS` environment.
+
 **Depth images** arrive as `sdk::Image` with a depth `encoding` (16UC1 / 32FC1 /
 compressedDepth) — there is no `kDepthImage` producer. `Scene2DDockWidget` peeks a
 `kImage` topic's first sample and routes depth-encoded images to the colormap

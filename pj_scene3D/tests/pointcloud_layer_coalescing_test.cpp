@@ -91,7 +91,7 @@ std::shared_ptr<std::vector<uint8_t>> encodeValidCloudini() {
   return out;
 }
 
-// Pre-encoded blobs shared by all parser instances. Set once in main() before any
+// Pre-encoded blobs shared by all parser instances. Set up once before any
 // test runs; the parser's create function is non-capturing (a plain fn ptr for
 // vtableWithCreate), so it reaches these through file scope.
 std::shared_ptr<std::vector<uint8_t>> g_valid_blob;
@@ -254,9 +254,15 @@ TEST(PointCloudLayerCoalescing, FailedSampleIsMemoizedAndNotRedecoded) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-  QCoreApplication app(argc, argv);
-  g_valid_blob = encodeValidCloudini();
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}
+namespace {
+
+class PointcloudCoalescingEnvironment : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    g_valid_blob = encodeValidCloudini();
+  }
+};
+
+static auto* const kEnv = ::testing::AddGlobalTestEnvironment(new PointcloudCoalescingEnvironment);
+
+}  // namespace

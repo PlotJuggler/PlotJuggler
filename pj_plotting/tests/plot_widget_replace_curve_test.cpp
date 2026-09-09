@@ -121,12 +121,3 @@ TEST(PlotWidgetReplaceCurve, NoOpWhenOutputMissing) {
   ASSERT_EQ(plot.curveList().size(), 1U);
   EXPECT_EQ(plot.curveList().front().source_name, src_key);
 }
-
-int main(int argc, char** argv) {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-    qputenv("QT_QPA_PLATFORM", "offscreen");
-  }
-  testing::InitGoogleTest(&argc, argv);
-  QApplication app(argc, argv);
-  return RUN_ALL_TESTS();
-}

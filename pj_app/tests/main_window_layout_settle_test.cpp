@@ -11,8 +11,8 @@
 //     strictly after the batch finished and every restore waiter cleared —
 //     never mid-import.
 //
-// One MainWindow per binary; the scenarios share it binder-test style. The
-// scenarios run in declaration order (failure first on the empty catalog).
+// Each ctest case constructs its own MainWindow, so settlement observations
+// cannot inherit process-global widget state from another scenario.
 
 #include <gtest/gtest.h>
 
@@ -199,5 +199,3 @@ TEST_F(MainWindowLayoutSettleTest, BatchLayoutSettlesTrueOnlyAtBatchFinish) {
 }
 
 }  // namespace
-
-PJ_MAIN_WINDOW_TEST_MAIN

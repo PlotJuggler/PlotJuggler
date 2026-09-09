@@ -70,6 +70,8 @@ Per root CLAUDE.md: **prefer `.ui` files**. `AUTOUIC` is on. Search path is `src
 
 ## Tests
 
-`tests/` holds a focused gtest binary per widget whose behavior is non-trivial (e.g. `curve_tree_view_test.cpp`, `messagebox_test.cpp`, `progress_bar_test.cpp`, `credentials_editor_test.cpp`, `layer_list_view_test.cpp`, `colormap_test.cpp`, `scrubber_base_test.cpp`, `file_dialog_test.cpp`, the raster IPC pair). Keep adding one per non-trivial widget.
+`tests/` holds a focused gtest source per widget whose behavior is non-trivial (e.g. `curve_tree_view_test.cpp`, `messagebox_test.cpp`, `progress_bar_test.cpp`, `credentials_editor_test.cpp`, `layer_list_view_test.cpp`, `colormap_test.cpp`, `scrubber_base_test.cpp`, `file_dialog_test.cpp`, the raster IPC pair). Add ordinary cases to the `pj_widgets_tests` runner in `tests/CMakeLists.txt`, using the shared `MAIN gui` QApplication setup instead of defining a `main()` or creating another application in a test environment. The runner links `pj_widgets`, `pj_resources`, and `Qt6::Test`; `pj_add_test_runner` discovers each case with the `pj_widgets_tests.` prefix and runs it in its own process with a 120-second timeout.
+
+`raster_stream_view_test` stays a separate executable and ctest entry (`RasterStreamView`) because it checks the external helper process's lifetime and uses its own `PJ_STUB_HELPER_PATH` definition. `raster_stub_helper` remains its protocol peer; the target-file path removes any need for sibling-file lookup or a fixed runtime output directory. No test in this module requires a real GL context (`RasterTextGlTest` belongs to `pj_plotting`).
 
 `pj_widgets` has no `docs/` folder — each widget's intent fits in its header doc-comment.

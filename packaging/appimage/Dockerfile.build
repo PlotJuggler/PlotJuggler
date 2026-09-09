@@ -86,6 +86,8 @@ RUN bash /opt/scripts/install_qt6.sh
 # 5) Warm the Conan cache into /root/.conan2 with the SAME settings build.sh uses,
 #    so the run-time conan install is an offline cache hit. Only the requires file
 #    is needed to resolve.
+#    Dependency DWARF would otherwise be linked into every PJ4 executable;
+#    PJ4's own debug info is governed by cmake/PjDebugInfo.cmake.
 COPY conanfile.txt /opt/conan-ctx/conanfile.txt
 COPY scripts/configure_conan_remote.sh /opt/configure_conan_remote.sh
 RUN conan profile detect --force \
@@ -93,6 +95,7 @@ RUN conan profile detect --force \
  && conan install /opt/conan-ctx -r plotjuggler-conan -r conancenter \
         --output-folder=/tmp/conan-warm --build=missing \
         -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+ && find /root/.conan2/p -type f -name '*.a' -exec strip --strip-debug {} + \
  && rm -rf /tmp/conan-warm \
  && conan cache clean "*" --build --source --temp || true
 
@@ -120,6 +123,13 @@ cleanup() {
     rm -f /work/packaging/appimage/${tool}-${PJ_APPIMAGE_ARCH}.AppImage || true
   done
   chown -R "${HOST_UID}:${HOST_GID}" /work/build 2>/dev/null || true
+  # Conan's CMakeToolchain generator writes CMakeUserPresets.json at the checkout
+  # root and build.sh links compile_commands.json there; left root-owned they
+  # make the next HOST `conan install` in the same checkout fail with EACCES.
+  # -h: chown the symlink itself, never follow it.
+  for f in /work/CMakeUserPresets.json /work/compile_commands.json; do
+    chown -h "${HOST_UID}:${HOST_GID}" "$f" 2>/dev/null || true
+  done
   shopt -s nullglob
   for f in /work/packaging/appimage/PlotJuggler-*-${PJ_APPIMAGE_ARCH}.AppImage; do
     chown "${HOST_UID}:${HOST_GID}" "$f" 2>/dev/null || true
@@ -150,6 +160,7 @@ fi
 
 export APPIMAGE_EXTRACT_AND_RUN=1
 
+# PJ_BUILD_TESTS/PJ_BUILD_DEMOS/PJ_BUILD_WIDGET_DEMOS/PJ_BUILD_TARGET arrive from build_in_docker.sh (default: shipped closure only).
 bash /work/build.sh
 bash /work/packaging/appimage/build_appimage.sh "$@"
 PJEOF

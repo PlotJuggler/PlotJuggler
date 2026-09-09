@@ -319,12 +319,3 @@ TEST(PlotWidgetCanvas, FlushTopWhenNotAlignedToScales) {
   plot.setCanvasAlignedToScales(false);
   EXPECT_EQ(canvas_top(), 0);  // flush: canvas reaches the widget top
 }
-
-int main(int argc, char** argv) {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-    qputenv("QT_QPA_PLATFORM", "offscreen");
-  }
-  testing::InitGoogleTest(&argc, argv);
-  QApplication app(argc, argv);
-  return RUN_ALL_TESTS();
-}

@@ -27,6 +27,7 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/TopicDemandTracker.h"
+#include "support/gui_test_env.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -34,22 +35,18 @@ namespace {
 
 using sdk::SourceWriteHostView;
 
-// One QApplication for the whole binary; AppSession/CatalogModel construction
-// wants a QCoreApplication. Org/app names sandbox QSettings reads (the manager
-// reads its retention window) away from the user's real preferences.
+// Org/app names sandbox QSettings reads (the manager reads its retention
+// window) away from the user's real preferences, without affecting other suites.
 struct QtEnvironment : ::testing::Environment {
   void SetUp() override {
-    static int argc = 0;
+    if (!pj_app_test::isTestSuiteSelected("StreamingPauseTargetTest")) {
+      return;
+    }
     QCoreApplication::setOrganizationName(u"PJ4StreamingPauseTargetTest"_s);
     QCoreApplication::setApplicationName(u"PJ4StreamingPauseTargetTest"_s);
-    app_ = new QApplication(argc, nullptr);
   }
-  void TearDown() override {
-    delete app_;
-    app_ = nullptr;
-  }
-  QApplication* app_ = nullptr;
 };
+static auto* const kEnv = ::testing::AddGlobalTestEnvironment(new QtEnvironment);
 
 // Committed rows for `topic_id` on `engine`.
 [[nodiscard]] uint64_t rowCount(DataEngine& engine, TopicId topic_id) {
@@ -112,9 +109,3 @@ TEST(StreamingPauseTargetTest, SessionCreatedWhilePausedWritesToSecondary) {
 }
 
 }  // namespace PJ
-
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new PJ::QtEnvironment);
-  return RUN_ALL_TESTS();
-}

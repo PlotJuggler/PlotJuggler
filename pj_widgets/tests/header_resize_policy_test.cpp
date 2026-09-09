@@ -7,26 +7,12 @@
 #include <QFontMetrics>
 #include <QHeaderView>
 #include <QTableWidget>
+#include <algorithm>
 
 #include "pj_widgets/HeaderResizePolicy.h"
 
 namespace PJ {
 namespace {
-
-// One QApplication for the whole test binary; QWidget construction requires it.
-struct QtEnvironment : ::testing::Environment {
-  void SetUp() override {
-    static int argc = 0;
-    app_ = new QApplication(argc, nullptr);
-  }
-  void TearDown() override {
-    delete app_;
-    app_ = nullptr;
-  }
-  QApplication* app_ = nullptr;
-};
-
-const auto* kEnv = ::testing::AddGlobalTestEnvironment(new QtEnvironment);
 
 constexpr int kTableWidth = 600;
 constexpr int kTableHeight = 200;
@@ -86,12 +72,20 @@ TEST(HeaderResizePolicy, SeedingWidthsDoesNotStarveLaterColumns) {
   // read back as a user drag, so each seed steals from the next column and the
   // rightmost ones end up under their labels.
   Fixture f({"Channel name", "Schema", "Encoding", "Msg Count"});
+  // Seed above every label floor: the floor depends on the platform plugin's
+  // font (offscreen on Windows renders these labels wider than 96 px), and this
+  // test is about seeds not stealing from neighbours, not about the floor rule.
+  int seed = kSeedWidth;
   for (int i = 1; i < f.header->count(); ++i) {
-    f.policy->setSectionWidth(i, kSeedWidth);
+    const QString label = f.table.horizontalHeaderItem(i)->text();
+    seed = std::max(seed, expectedFloor(f.header, label));
+  }
+  for (int i = 1; i < f.header->count(); ++i) {
+    f.policy->setSectionWidth(i, seed);
   }
 
   for (int i = 1; i < f.header->count(); ++i) {
-    EXPECT_EQ(f.header->sectionSize(i), kSeedWidth) << "column " << i << " did not keep the width it was seeded with";
+    EXPECT_EQ(f.header->sectionSize(i), seed) << "column " << i << " did not keep the width it was seeded with";
   }
 }
 

@@ -218,17 +218,19 @@ endif()
 
 if(PJ_BUILD_TESTS)
   # --- Luau filter engine (Approach A) ---
-  add_executable(luau_engine_test tests/luau_engine_test.cpp)
-  target_link_libraries(luau_engine_test PRIVATE pj_scripting GTest::gtest_main)
-  add_test(NAME luau_engine_test COMMAND luau_engine_test)
-
-  add_executable(python_engine_test tests/python_engine_test.cpp)
-  target_link_libraries(python_engine_test PRIVATE pj_scripting GTest::gtest_main)
-  add_test(NAME python_engine_test COMMAND python_engine_test)
-
-  add_executable(lua_siso_transform_test tests/lua_siso_transform_test.cpp)
-  target_link_libraries(lua_siso_transform_test PRIVATE pj_scripting GTest::gtest_main)
-  add_test(NAME lua_siso_transform_test COMMAND lua_siso_transform_test)
+  # no WARNINGS: 6 of 6 merged tests never compiled with -Werror
+  pj_add_test_runner(pj_scripting_tests
+    MAIN core
+    SOURCES
+      tests/luau_engine_test.cpp
+      tests/python_engine_test.cpp
+      tests/lua_siso_transform_test.cpp
+      tests/lua_time_precision_test.cpp
+      # --- M2: sandbox + watchdog ---
+      tests/luau_sandbox_test.cpp
+      tests/luau_watchdog_test.cpp
+    LIBS pj_scripting
+    PREFIX "pj_scripting.")
 
   # --- Phase 1: whole-series marker engine (parity spike) ---
   # Links ONLY pj_scripting_core (no pj_datastore) — proves the marker engine is
@@ -236,19 +238,6 @@ if(PJ_BUILD_TESTS)
   add_executable(marker_engine_test tests/marker_engine_test.cpp)
   target_link_libraries(marker_engine_test PRIVATE pj_scripting_core GTest::gtest_main)
   add_test(NAME marker_engine_test COMMAND marker_engine_test)
-
-  add_executable(lua_time_precision_test tests/lua_time_precision_test.cpp)
-  target_link_libraries(lua_time_precision_test PRIVATE pj_scripting GTest::gtest_main)
-  add_test(NAME lua_time_precision_test COMMAND lua_time_precision_test)
-
-  # --- M2: sandbox + watchdog ---
-  add_executable(luau_sandbox_test tests/luau_sandbox_test.cpp)
-  target_link_libraries(luau_sandbox_test PRIVATE pj_scripting GTest::gtest_main)
-  add_test(NAME luau_sandbox_test COMMAND luau_sandbox_test)
-
-  add_executable(luau_watchdog_test tests/luau_watchdog_test.cpp)
-  target_link_libraries(luau_watchdog_test PRIVATE pj_scripting GTest::gtest_main)
-  add_test(NAME luau_watchdog_test COMMAND luau_watchdog_test)
 
   # --- M9: golden behavioral coverage relocated from the retired C++ builtin specs ---
   add_executable(builtin_golden_test tests/builtin_golden_test.cpp)

@@ -39,9 +39,3 @@ TEST(StyleInputHeight, PinsInputsToKInputHeightForAnyFont) {
 }
 
 }  // namespace
-
-int main(int argc, char** argv) {
-  QApplication app(argc, argv);  // a QStyle needs a QApplication
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

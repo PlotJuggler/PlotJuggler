@@ -242,7 +242,7 @@ app_id → desktop file → icon-theme chain, never through the window icon).
 this checkout's `run.sh` (`--uninstall` to remove); packaged builds need
 nothing, the `.deb` and integrated AppImages ship the entry themselves.
 
-Run the tests (`enable_testing()` is wired at the top level, so `ctest` covers every module):
+Run the tests (`enable_testing()` is wired at the top level, so `ctest` covers every module; per-module runners use ctest names `<runner>.<Suite>.<Case>`):
 
 ```bash
 ./test.sh            # ctest with QT_QPA_PLATFORM=offscreen; extra args go to ctest, e.g. -j8 -R Toast
@@ -250,6 +250,35 @@ Run the tests (`enable_testing()` is wired at the top level, so `ctest` covers e
 
 `test.sh` forces the `offscreen` platform because dozens of widget tests create
 a `QApplication` without one and would otherwise pop windows on the desktop.
+
+**Build tree size:** `./build.sh --minimal` builds what the packaging pipeline
+compiles (app closure only, no tests, demos or debug info); `--no-tests`,
+`--no-demos`, `--target NAME`, `--debug-info LEVEL` and `--no-compress-debug`
+select the pieces individually (`./build.sh --help`). Under the hood, for Linux
+RelWithDebInfo builds, `PJ_DEBUG_INFO=none|lines|full|split`
+selects no debug info, minimal line/backtrace info, full DWARF, or DWARF in `.dwo`
+sidecars; `PJ_COMPRESS_DEBUG=ON|OFF` controls zlib compression (see
+[`cmake/PjDebugInfo.cmake`](./cmake/PjDebugInfo.cmake)). `build.sh` defaults to
+`split` and `ON` on Linux when unset; the `build.sh` options above, or the same
+names as environment variables (how CI and the container wrapper drive it),
+override either knob.
+[`packaging/appimage/build_in_docker.sh`](./packaging/appimage/build_in_docker.sh)
+defaults to `PJ_DEBUG_INFO=none`, and the AppImage ships without DWARF. Conan
+static dependency archives in the builder image are stripped of DWARF. A fresh
+packaging tree is **~0.95 GB**, containing only the app closure (**5 executables**).
+
+Pass `--with-tests` to the container wrapper to build the full suite and demos
+required for a ctest tree. Per-module gtest runners are registered with
+`gtest_discover_tests` in [`cmake/PjTests.cmake`](./cmake/PjTests.cmake), keeping
+one process per case; filter a module with `ctest -R '^pj_runtime_tests\.' --test-dir build`
+inside the builder image. For the tests-on tree size, see workspace findings
+`2026-09-08-build-size-reduction-results.md`.
+
+Linux builds with GNU/Clang compilers use thin archives to reference object files
+without copying them, and `resources.qrc` is compiled once as `pj_resources`.
+[`scripts/build_tree_size.sh`](./scripts/build_tree_size.sh) `<build-dir>` reports
+bytes by artifact class in decimal GB. See the
+[AppImage build guide](./packaging/appimage/README.md#build--verify-in-docker) for container usage.
 
 Re-running `./build.sh` after code changes does incremental builds. `ccache` is picked up automatically if installed.
 

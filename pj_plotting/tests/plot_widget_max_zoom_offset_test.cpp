@@ -109,12 +109,3 @@ TEST(PlotWidgetMaxZoomOffset, MaxZoomRectTracksPerDatasetOffsetChange) {
   EXPECT_NEAR(fixture.plot.maxZoomRect().right(), 200.0 + 1.0, 1e-6)
       << "max zoom-out extent must grow to include the moved curve";
 }
-
-int main(int argc, char** argv) {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-    qputenv("QT_QPA_PLATFORM", "offscreen");
-  }
-  testing::InitGoogleTest(&argc, argv);
-  QApplication app(argc, argv);
-  return RUN_ALL_TESTS();
-}

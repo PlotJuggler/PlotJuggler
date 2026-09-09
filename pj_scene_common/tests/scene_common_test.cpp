@@ -3,7 +3,6 @@
 
 #include <gtest/gtest.h>
 
-#include <QApplication>
 #include <QDomDocument>
 #include <QString>
 #include <QWidget>
@@ -1114,13 +1113,4 @@ TEST(LayerParamsTest, ApplyRejectsEmptyAndMalformedXmlLeavingTargetUntouched) {
   EXPECT_FALSE(PJ::applyLayerParams(target, QString()));
   EXPECT_FALSE(PJ::applyLayerParams(target, u"<broken"_s));
   EXPECT_EQ(target.payload(), u"keep"_s);
-}
-
-int main(int argc, char** argv) {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-    qputenv("QT_QPA_PLATFORM", "offscreen");
-  }
-  testing::InitGoogleTest(&argc, argv);
-  QApplication app(argc, argv);
-  return RUN_ALL_TESTS();
 }

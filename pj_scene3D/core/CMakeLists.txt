@@ -123,21 +123,14 @@ if(PJ_BUILD_TESTS)
     ../tests/voxel_grid_value_test.cpp
     ../tests/voxel_grid_budget_test.cpp
   )
-  foreach(test_src ${PJ_SCENE3D_CORE_TESTS})
-    get_filename_component(test_name ${test_src} NAME_WE)
-    add_executable(${test_name} ${test_src})
-    target_link_libraries(${test_name} PRIVATE pj_scene3d_core GTest::gtest_main)
-    target_compile_options(${test_name} PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
-    add_test(NAME ${test_name} COMMAND ${test_name})
-  endforeach()
-
   # pointcloud_codecs_test drives the Draco + Cloudini *encoders* directly to build
   # fixtures, so it links them explicitly (pj_scene3d_core links them PRIVATE).
-  add_executable(pointcloud_codecs_test ../tests/pointcloud_codecs_test.cpp)
-  target_link_libraries(pointcloud_codecs_test PRIVATE
-    pj_scene3d_core draco::draco cloudini::cloudini GTest::gtest_main)
-  target_compile_options(pointcloud_codecs_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
-  add_test(NAME pointcloud_codecs_test COMMAND pointcloud_codecs_test)
+  # WARNINGS: all 34 merged tests carried PJ_WARNING_FLAGS before
+  pj_add_test_runner(pj_scene3d_core_tests
+    MAIN core WARNINGS
+    SOURCES ${PJ_SCENE3D_CORE_TESTS} ../tests/pointcloud_codecs_test.cpp
+    LIBS pj_scene3d_core draco::draco cloudini::cloudini glm::glm
+  )
 
   # Reproducibility helper for the checked browser MCAP. EXCLUDE_FROM_ALL keeps
   # the native application and ordinary test build unchanged; W19a invokes this

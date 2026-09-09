@@ -26,6 +26,7 @@ Examples of what belongs here:
 
 | Path | Status | Notes |
 |---|---|---|
+| [Build and test guide](../CLAUDE.md#build) | Guide | Debug-info defaults, runner-prefixed ctest names, and build-tree size measurements. |
 | [Packaging guides](../packaging/README.md) | Guide | AppImage and Docker builds, Debian packages, and Windows installers. |
 | `archive/PJ4_PLAN.md` | Retired | Original master plan; current architecture lives in root and module `CLAUDE.md` / `docs/`. Ongoing recording and cache work lives in the documents below. |
 | `research/mosaico_canonical_objects.md` | Reference | Mosaico canonical-object ingestion, decoding, and rendering across the datastore and scene modules. |

@@ -35,6 +35,7 @@
 #include "pj_runtime/Time.h"
 #include "pj_widgets/Timeline.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
+#include "support/gui_test_env.h"
 
 using namespace Qt::StringLiterals;
 
@@ -757,16 +758,21 @@ TEST_F(MainWindowHistoryFixture, SourceTimelineUndoRedoIsExactTransactionalAndNo
 
 }  // namespace
 
-int main(int argc, char** argv) {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-    qputenv("QT_QPA_PLATFORM", "offscreen");
+namespace {
+
+// Preserve this suite's settings scope without changing other runner cases.
+class SettingsEnvironment : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    if (!pj_app_test::isTestSuiteSelected("MainWindowHistoryFixture")) {
+      return;
+    }
+    QCoreApplication::setOrganizationName(u"PlotJugglerTest"_s);
+    QCoreApplication::setApplicationName(u"main_window_history_test"_s);
+    QSettings().clear();
   }
-  QStandardPaths::setTestModeEnabled(true);
-  ::testing::InitGoogleTest(&argc, argv);
-  QApplication app(argc, argv);
-  QCoreApplication::setOrganizationName(u"PlotJugglerTest"_s);
-  QCoreApplication::setApplicationName(u"main_window_history_test"_s);
-  QSettings().clear();
-  PJ::PlotWidgetBase::setOpenGlDisabledOverride(true);
-  return RUN_ALL_TESTS();
-}
+};
+
+static auto* const kEnv = ::testing::AddGlobalTestEnvironment(new SettingsEnvironment);
+
+}  // namespace

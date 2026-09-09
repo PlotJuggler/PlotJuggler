@@ -58,5 +58,3 @@ TEST(MainWindowLayoutApplyReasonTest, ApplyFailureReportCarriesTheCapturedReason
 }
 
 }  // namespace
-
-PJ_MAIN_WINDOW_TEST_MAIN

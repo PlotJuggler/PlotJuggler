@@ -246,12 +246,3 @@ TEST(InstallRasterTextEngines, ReplacesStockEnginesExactlyOnce) {
   EXPECT_NE(dynamic_cast<const PJ::RasterTextEngine*>(QwtText::textEngine(QwtText::RichText)), nullptr);
   EXPECT_FALSE(PJ::installRasterTextEngines()) << "second install must be a no-op";
 }
-
-int main(int argc, char** argv) {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-    qputenv("QT_QPA_PLATFORM", "offscreen");
-  }
-  testing::InitGoogleTest(&argc, argv);
-  QApplication app(argc, argv);
-  return RUN_ALL_TESTS();
-}

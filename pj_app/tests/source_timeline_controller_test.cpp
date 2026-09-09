@@ -18,20 +18,6 @@
 namespace PJ {
 namespace {
 
-// One QApplication for the whole binary; QWidget construction requires it.
-struct QtEnvironment : ::testing::Environment {
-  void SetUp() override {
-    static int argc = 0;
-    app_ = new QApplication(argc, nullptr);
-  }
-  void TearDown() override {
-    delete app_;
-    app_ = nullptr;
-  }
-  QApplication* app_ = nullptr;
-};
-const auto* kEnv = ::testing::AddGlobalTestEnvironment(new QtEnvironment);
-
 // Regression: the timeline bar extent (and thus the needle's clamp) must match the
 // authoritative PlaybackEngine range, which is recomputed comprehensively over both
 // scalar AND lazily-ingested object topics. Catalog itemsAdded fires only when a

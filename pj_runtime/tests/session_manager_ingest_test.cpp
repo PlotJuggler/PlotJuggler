@@ -465,9 +465,3 @@ TEST_F(SessionManagerIngestCancelTest, InvalidTokensIgnored) {
 }
 
 }  // namespace PJ::test
-
-// Qt needs a main function for tests.
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

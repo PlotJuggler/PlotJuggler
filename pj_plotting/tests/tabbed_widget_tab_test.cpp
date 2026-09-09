@@ -237,12 +237,3 @@ TEST(TabbedWidgetTab, PreCloseThatClosesTheTabItselfDoesNotTearDownTwice) {
 }
 
 }  // namespace
-
-int main(int argc, char** argv) {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-    qputenv("QT_QPA_PLATFORM", "offscreen");
-  }
-  testing::InitGoogleTest(&argc, argv);
-  QApplication app(argc, argv);
-  return RUN_ALL_TESTS();
-}

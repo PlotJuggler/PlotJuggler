@@ -750,13 +750,3 @@ TEST_F(RegistryManagerTest, NoPlatformCandidateFallsBackToHighestVersionOverall)
 
 }  // namespace
 }  // namespace PJ
-
-// ---------------------------------------------------------------------------
-// main — QCoreApplication is required for the QNetworkAccessManager event loop
-// ---------------------------------------------------------------------------
-
-int main(int argc, char** argv) {
-  QCoreApplication app(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

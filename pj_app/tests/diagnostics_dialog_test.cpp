@@ -17,17 +17,6 @@ using namespace Qt::StringLiterals;
 
 namespace PJ {
 
-struct QtEnvironment : ::testing::Environment {
-  void SetUp() override {
-    static int argc = 0;
-    app_ = new QApplication(argc, nullptr);
-  }
-  void TearDown() override {
-    delete app_;
-  }
-  QApplication* app_ = nullptr;
-};
-
 namespace {
 
 TEST(DiagnosticsDialogTest, FiltersLiveUpdatesAndClear) {
@@ -87,9 +76,3 @@ TEST(DiagnosticsDialogTest, FiltersLiveUpdatesAndClear) {
 
 }  // namespace
 }  // namespace PJ
-
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new PJ::QtEnvironment);
-  return RUN_ALL_TESTS();
-}

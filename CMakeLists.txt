@@ -70,9 +70,9 @@ endif()
 # SDK's ported-plugins collection, and pj_datastore's parquet example
 # (PJ_BUILD_PARQUET_IMPORT_EXAMPLE is a pj_datastore option, pinned off here
 # before that subdirectory is added).
-# Default ON (local and CI builds need the suite); release/packaging
-# pipelines pass -DPJ_BUILD_TESTS=OFF — they never run ctest, and the 271
-# per-fixture static test binaries are ~17 GB of an otherwise ~5 GB tree.
+# Desktop dev/CI builds default to tests ON; packaging pipelines (build_in_docker.sh,
+# release CI) pass PJ_BUILD_TESTS=OFF; see cmake/PjDebugInfo.cmake and
+# cmake/PjTests.cmake for debug-info policy and per-module runners.
 if(EMSCRIPTEN)
     set(_PJ_BUILD_TESTS_DEFAULT OFF)
 else()
@@ -87,6 +87,7 @@ set(PJ_BUILD_PORTED_PLUGINS OFF CACHE BOOL "" FORCE)
 if(PJ_BUILD_TESTS)
     enable_testing()
     find_package(GTest REQUIRED)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjTests.cmake)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -113,6 +114,8 @@ endif()
 if(NOT MSVC)
     add_compile_options(-fno-omit-frame-pointer)
 endif()
+
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjDebugInfo.cmake)
 
 # ---------------------------------------------------------------------------
 # Qt
@@ -199,6 +202,9 @@ if(EMSCRIPTEN)
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjWasmProtobuf.cmake)
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjWasmTransformEditor.cmake)
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjWasmDummyStream.cmake)
+endif()
+if(NOT EMSCRIPTEN)
+    add_subdirectory(resources)
 endif()
 # pj_datastore: columnar store + DerivedEngine + the data-processor execution
 # substrate (DataProcessor base + ProcessorSisoAdapter, formerly pj_proc).

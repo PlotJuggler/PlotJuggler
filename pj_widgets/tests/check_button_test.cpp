@@ -59,9 +59,3 @@ TEST(CheckButtonTest, SizeHintGrowsWithText) {
 }
 
 }  // namespace
-
-int main(int argc, char** argv) {
-  QApplication app(argc, argv);  // QWidget construction + fontMetrics need a GUI app
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

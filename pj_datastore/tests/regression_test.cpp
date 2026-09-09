@@ -5,7 +5,7 @@
 //
 // Each test FAILS against the current (buggy) code and PASSES once the
 // corresponding fix is applied. Build from the PJ4 repo root (./build.sh), then:
-//   ctest --test-dir build -R regression_test
+//   ctest --test-dir build -R 'pj_datastore_tests\.RegressionTest\.'
 // Bug #2 needs ASAN: a Debug build configured with -DPJ_ENABLE_SANITIZERS=ON.
 
 #include <gtest/gtest.h>

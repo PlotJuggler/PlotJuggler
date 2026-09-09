@@ -30,6 +30,25 @@ using namespace Qt::StringLiterals;
 
 namespace {
 
+// Only these suites disable GL; other runner cases must retain their canvas behavior.
+class PlotStateTransactionEnvironment : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    const auto* unit_test = ::testing::UnitTest::GetInstance();
+    for (int i = 0; i < unit_test->total_test_suite_count(); ++i) {
+      const auto* suite = unit_test->GetTestSuite(i);
+      const std::string_view name = suite->name();
+      if (suite->should_run() &&
+          (name == "PlotGestureSnapshot" || name == "PlotDockerXmlValidation" || name == "PlotDockerUndo")) {
+        PJ::PlotWidgetBase::setOpenGlDisabledOverride(true);
+        return;
+      }
+    }
+  }
+};
+
+static auto* const kEnv = ::testing::AddGlobalTestEnvironment(new PlotStateTransactionEnvironment);
+
 constexpr PJ::Timestamp kSecondNs = 1'000'000'000;
 
 PJ::TopicId addScalarTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, std::string_view topic_name) {
@@ -345,14 +364,4 @@ TEST(PlotDockerUndo, SplitterMovesPublishOutsideRestoreAndStaySuppressedDuringRe
           restored_splitter, "splitterMoved", Qt::DirectConnection, Q_ARG(int, 300), Q_ARG(int, 1)));
   pumpPastGestureDebounce();
   EXPECT_EQ(undo_count, 1);
-}
-
-int main(int argc, char** argv) {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-    qputenv("QT_QPA_PLATFORM", "offscreen");
-  }
-  testing::InitGoogleTest(&argc, argv);
-  QApplication app(argc, argv);
-  PJ::PlotWidgetBase::setOpenGlDisabledOverride(true);
-  return RUN_ALL_TESTS();
 }

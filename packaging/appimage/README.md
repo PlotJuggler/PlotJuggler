@@ -117,7 +117,40 @@ and no retro payload ships.
 ## Build & verify in Docker
 
 `packaging/appimage/build_in_docker.sh` builds the AppImage in the fully-baked builder
-image (`Dockerfile.build`). Plugins:
+image (`Dockerfile.build`). It defaults to `PJ_BUILD_TESTS=OFF PJ_BUILD_DEMOS=OFF
+PJ_BUILD_WIDGET_DEMOS=OFF` and `PJ_BUILD_TARGET=pj_app` (`--target pj_app`), so only
+the shipped app and its dependencies, including `pj-plugin-check`, are built.
+A fresh packaging tree is **~0.95 GB** and contains only the app closure
+(**5 executables**). Packaging defaults to `PJ_DEBUG_INFO=none`; the AppImage
+ships without DWARF.
+
+The image ships Conan static dependency archives with debug info stripped; use
+`REBUILD_IMAGE=1` to refresh the baked cache.
+
+Pass `--with-tests` for a dev/CI tree: it sets `PJ_BUILD_TESTS=ON PJ_BUILD_DEMOS=ON
+PJ_BUILD_WIDGET_DEMOS=ON` and `PJ_BUILD_TARGET=all`, building the full test suite
+and demos for a later `ctest` run inside the builder image. It compiles the tests
+but does not run them. Per-module gtest runners use `gtest_discover_tests` to
+register ctest names `<runner>.<Suite>.<Case>`, with one process per case;
+`ctest -R '^pj_runtime_tests\.' --test-dir build` filters the runtime module.
+For the tests-on tree size, see workspace findings
+`2026-09-08-build-size-reduction-results.md`.
+
+`--with-tests` defaults to `PJ_DEBUG_INFO=split` and `PJ_COMPRESS_DEBUG=ON`, matching
+the Linux developer defaults in `build.sh`. Both environment knobs are overridable:
+`PJ_DEBUG_INFO=none|lines|full|split` selects no debug info, minimal line/backtrace
+info, full DWARF, or DWARF in `.dwo` sidecars kept in the build tree;
+`PJ_COMPRESS_DEBUG=ON|OFF` controls zlib compression. The policy lives in
+[`cmake/PjDebugInfo.cmake`](../../cmake/PjDebugInfo.cmake).
+
+Linux builds with GNU/Clang compilers use thin archives to avoid copying object
+files, and `resources.qrc` is compiled once as `pj_resources`.
+[`scripts/build_tree_size.sh`](../../scripts/build_tree_size.sh) `<build-dir>`
+reports bytes by artifact class in decimal GB. Use a fresh build tree when
+measuring the smaller default; disabling targets does not remove artifacts from
+an existing tree.
+
+Plugins:
 
 - `--plugins-registry` — bundle the official set from the plugin registry.
 - `--plugins-dir <dir>` — `<dir>` may be a **pj-official-plugins source repo**

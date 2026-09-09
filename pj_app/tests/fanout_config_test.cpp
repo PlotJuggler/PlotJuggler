@@ -163,7 +163,7 @@ TEST(RewriteReplayFilepaths, PreservesMalformedNestedFanoutString) {
 }
 
 TEST(RewriteReplayFilepaths, EmptyOrMalformedOuterConfigBecomesMinimalObject) {
-  for (const std::string input : {std::string{}, std::string{"not json"}}) {
+  for (const std::string& input : {std::string{}, std::string{"not json"}}) {
     const QJsonObject rewritten =
         QJsonDocument::fromJson(QByteArray::fromStdString(rewriteReplayFilepaths(input, u"fresh.csv"_s))).object();
     EXPECT_EQ(rewritten.size(), 1);

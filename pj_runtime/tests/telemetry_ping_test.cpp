@@ -58,7 +58,7 @@ TEST(TelemetryPingTest, PostsOnlyDocumentedKeys) {
   EXPECT_EQ(payload.value(u"installation"_s).toString(), u"test-channel"_s);
   EXPECT_FALSE(payload.value(u"os"_s).toString().isEmpty());
   EXPECT_FALSE(payload.value(u"arch"_s).toString().isEmpty());
-  EXPECT_EQ(payload.value(u"version"_s).toString(), u"9.9.9"_s);  // set in main() below
+  EXPECT_EQ(payload.value(u"version"_s).toString(), u"9.9.9"_s);  // set by the test environment below
 }
 
 TEST(TelemetryPingTest, UserIdIsStableSaltedSha256Hex) {
@@ -98,11 +98,17 @@ TEST(TelemetryPingTest, DefaultEndpointIsProductionUrl) {
 
 // QSettings (the fallback-id path) and applicationVersion() need an app
 // identity; use a test-scoped one so the real PlotJuggler4.conf is untouched.
-int main(int argc, char** argv) {
-  QCoreApplication app(argc, argv);
-  QCoreApplication::setOrganizationName(u"PlotJugglerTest"_s);
-  QCoreApplication::setApplicationName(u"telemetry_ping_test"_s);
-  QCoreApplication::setApplicationVersion(u"9.9.9"_s);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}
+namespace {
+
+class TelemetryPingEnvironment final : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    QCoreApplication::setOrganizationName(u"PlotJugglerTest"_s);
+    QCoreApplication::setApplicationName(u"telemetry_ping_test"_s);
+    QCoreApplication::setApplicationVersion(u"9.9.9"_s);
+  }
+};
+
+static auto* const kEnv = ::testing::AddGlobalTestEnvironment(new TelemetryPingEnvironment);
+
+}  // namespace

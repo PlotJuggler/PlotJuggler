@@ -83,12 +83,3 @@ TEST(DockFullscreenTest, MaximizingALeafCollapsesTheEmptiedSiblingBranch) {
   EXPECT_FALSE(dock2->isClosed());
   EXPECT_EQ(visibleEmptySplitters(docker), 0) << "exit fullscreen left the tree dirty";
 }
-
-int main(int argc, char** argv) {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-    qputenv("QT_QPA_PLATFORM", "offscreen");
-  }
-  testing::InitGoogleTest(&argc, argv);
-  QApplication app(argc, argv);
-  return RUN_ALL_TESTS();
-}

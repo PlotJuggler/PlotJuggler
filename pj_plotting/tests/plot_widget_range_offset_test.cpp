@@ -351,12 +351,3 @@ TEST(PlotWidgetRangeOffset, XyPlotWritesValueBasisAndIgnoresOffset) {
   EXPECT_NEAR(range.attribute(u"left"_s).toDouble(), 2.0, 1e-6);
   EXPECT_NEAR(range.attribute(u"right"_s).toDouble(), 8.0, 1e-6);
 }
-
-int main(int argc, char** argv) {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-    qputenv("QT_QPA_PLATFORM", "offscreen");
-  }
-  testing::InitGoogleTest(&argc, argv);
-  QApplication app(argc, argv);
-  return RUN_ALL_TESTS();
-}

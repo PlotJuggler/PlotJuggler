@@ -12,22 +12,9 @@
 
 namespace PJ {
 
-// One QCoreApplication for the whole binary. The controller's linger/flash
-// timers are the subject of these tests and QTimer::start() is a no-op without
-// an event dispatcher on the calling thread, so isActive() would report false
-// for a timer the controller did arm. Nothing here builds a widget, so the
-// core application (no display needed) is enough.
-struct QtEnvironment : ::testing::Environment {
-  void SetUp() override {
-    static int argc = 0;
-    app_ = new QCoreApplication(argc, nullptr);
-  }
-  void TearDown() override {
-    delete app_;
-    app_ = nullptr;
-  }
-  QCoreApplication* app_ = nullptr;
-};
+// The runner supplies an event dispatcher for the controller's linger/flash
+// timers. Without it, QTimer::start() is a no-op and isActive() would report
+// false for a timer the controller did arm.
 
 // QTimer::timeout is declared with a QPrivateSignal, so no caller outside
 // QTimer can emit it. Invoking it by name goes through the meta-object —
@@ -470,9 +457,3 @@ TEST_F(IngestProgressControllerTest, GhostRowCreatedAndReaped) {
 }
 
 }  // namespace PJ
-
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new PJ::QtEnvironment);
-  return RUN_ALL_TESTS();
-}

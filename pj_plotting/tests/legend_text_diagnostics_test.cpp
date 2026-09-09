@@ -27,6 +27,27 @@ using namespace Qt::StringLiterals;
 
 namespace {
 
+// Keep opt-in diagnostics and raster settings local to the selected legend suite.
+class LegendTextDiagnosticsEnvironment : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    const auto* unit_test = ::testing::UnitTest::GetInstance();
+    for (int i = 0; i < unit_test->total_test_suite_count(); ++i) {
+      const auto* suite = unit_test->GetTestSuite(i);
+      if (suite->should_run() && std::string_view(suite->name()) == "LegendTextDiagnostics") {
+        // Must be set before the first legend paint: PlotLegend reads it once (static).
+        qputenv("PJ_PLOT_TEXT_DEBUG", "1");
+        // Force the raster canvas so the test needs no GL context; QwtPlotRenderer
+        // draws via QPainter regardless, exercising the same drawLegendData path.
+        QSettings().setValue(u"Preferences::use_opengl"_s, false);
+        return;
+      }
+    }
+  }
+};
+
+static auto* const kEnv = ::testing::AddGlobalTestEnvironment(new LegendTextDiagnosticsEnvironment);
+
 QStringList g_messages;
 
 void captureHandler(QtMsgType /*type*/, const QMessageLogContext& /*ctx*/, const QString& msg) {
@@ -99,18 +120,4 @@ TEST(LegendTextDiagnostics, FiresOnLegendPaint) {
     }
   }
   EXPECT_TRUE(legend_logged) << "No legend diagnostic emitted; captured " << g_messages.size() << " messages";
-}
-
-int main(int argc, char** argv) {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-    qputenv("QT_QPA_PLATFORM", "offscreen");
-  }
-  // Must be set before the first legend paint: PlotLegend reads it once (static).
-  qputenv("PJ_PLOT_TEXT_DEBUG", "1");
-  // Force the raster canvas so the test needs no GL context; QwtPlotRenderer
-  // draws via QPainter regardless, exercising the same drawLegendData path.
-  QSettings().setValue(u"Preferences::use_opengl"_s, false);
-  testing::InitGoogleTest(&argc, argv);
-  QApplication app(argc, argv);
-  return RUN_ALL_TESTS();
 }

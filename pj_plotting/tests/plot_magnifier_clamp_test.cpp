@@ -208,12 +208,3 @@ TEST(PlotMagnifierClamp, BoundsCannotUndercutFloor) {
   EXPECT_GT(last_rect.right() - last_rect.left(), 1.9e-9)
       << "a tight bound must not shave the clamped window below the 2 ns floor";
 }
-
-int main(int argc, char** argv) {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-    qputenv("QT_QPA_PLATFORM", "offscreen");
-  }
-  testing::InitGoogleTest(&argc, argv);
-  QApplication app(argc, argv);
-  return RUN_ALL_TESTS();
-}

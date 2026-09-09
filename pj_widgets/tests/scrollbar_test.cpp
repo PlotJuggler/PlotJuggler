@@ -104,24 +104,7 @@ TEST(ScrollbarDrag, NonZeroStartValueOffsets) {
 // Widget tests — require QApplication.
 // ---------------------------------------------------------------------------
 
-namespace {
-
 // One QApplication for the whole binary; QWidget construction requires it.
-struct QtEnvironment : ::testing::Environment {
-  void SetUp() override {
-    static int argc = 0;
-    app_ = new QApplication(argc, nullptr);
-  }
-  void TearDown() override {
-    delete app_;
-    app_ = nullptr;
-  }
-  QApplication* app_ = nullptr;
-};
-
-const auto* kQtEnv = ::testing::AddGlobalTestEnvironment(new QtEnvironment);
-
-}  // namespace
 
 // ---------------------------------------------------------------------------
 // Config tests — auto-hide + fade duration.
