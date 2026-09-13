@@ -68,6 +68,11 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   void setName(const QString& name);
   [[nodiscard]] QString stateId() const;
   void setStateId(QString id);
+  // Materializes this dock's plot if it doesn't have one yet (a freshly
+  // created dock holds an empty placeholder). Returns the existing plot
+  // unchanged if already populated. The canonical way to turn a placeholder
+  // into a live plot; used by every drop path that lands a curve on it.
+  PlotWidget* ensurePlotWidget();
 
   // IDataWidget
   QWidget* widget() override {
@@ -131,7 +136,6 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
  private:
   bool eventFilter(QObject* watched, QEvent* event) override;
   DockWidget* splitInto(ads::DockWidgetArea area, PlotWidget* plot);
-  PlotWidget* ensurePlotWidget();
   // A discrete-only curve drop (no plottable key) on an empty tile materializes
   // the state-transitions strip via the factory and seeds it through
   // IDataWidget::tryAcceptSeriesKeys.

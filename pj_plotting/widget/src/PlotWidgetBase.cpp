@@ -727,6 +727,10 @@ void PlotWidgetBase::setOpenGlDisabledOverride(bool disabled) {
   g_opengl_disabled_override = disabled;
 }
 
+QWidget* PlotWidgetBase::canvasWidget() const {
+  return plot_ != nullptr ? plot_->canvas() : nullptr;
+}
+
 QwtPlot* PlotWidgetBase::qwtPlot() {
   return plot_;
 }

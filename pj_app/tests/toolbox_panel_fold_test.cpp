@@ -8,19 +8,28 @@
 // standing up a live parser-ingest context (which needs a real parser plugin).
 
 #include <gtest/gtest.h>
+#include <pj_widgets/Dialog.h>
 
 #include <QAbstractButton>
 #include <QApplication>
+#include <QBoxLayout>
+#include <QByteArray>
 #include <QDomDocument>
+#include <QLabel>
 #include <QPointer>
+#include <QPushButton>
 #include <QSettings>
+#include <QSplitter>
 #include <QStandardPaths>
 #include <QString>
 #include <QTemporaryDir>
+#include <QTest>
 #include <QToolButton>
+#include <QVBoxLayout>
 #include <QWidget>
 #include <functional>
 #include <memory>
+#include <pj_plugins/host_qt/widget_binding.hpp>
 #include <string>
 #include <utility>
 #include <vector>
@@ -43,15 +52,29 @@ class ToolboxPanelFoldTestPeer {
   struct Wrapped {
     QWidget* container = nullptr;
     std::function<void()> enter_pinned_chrome;
+    std::function<void()> enter_docked_chrome;
   };
 
+  // Positional hooks, packed into MainWindow::ToolboxChromeHooks for the call.
   static Wrapped wrapToolboxPanel(
-      MainWindow& window, QWidget* content, const QString& title, const std::function<void()>& on_close,
-      const std::function<void()>& on_migrate, std::function<bool()> has_work_in_flight,
-      const std::function<void()>& on_fold_busy = {}) {
-    const MainWindow::WrappedToolboxPanel wrapped =
-        window.wrapToolboxPanel(content, title, on_close, on_migrate, std::move(has_work_in_flight), on_fold_busy);
-    return {.container = wrapped.container, .enter_pinned_chrome = wrapped.enter_pinned_chrome};
+      MainWindow& window, QWidget* content, const QString& title, std::function<void()> on_close,
+      std::function<void()> on_migrate, std::function<void()> on_float = {},
+      std::function<bool()> has_work_in_flight = {}, std::function<void()> on_fold_busy = {},
+      const QString& persist_key = {}, std::function<void()> on_dock = {}) {
+    const MainWindow::WrappedToolboxPanel wrapped = window.wrapToolboxPanel(
+        content, title,
+        MainWindow::ToolboxChromeHooks{
+            .on_close = std::move(on_close),
+            .on_migrate = std::move(on_migrate),
+            .on_float = std::move(on_float),
+            .on_dock = std::move(on_dock),
+            .on_fold_busy = std::move(on_fold_busy),
+            .has_work_in_flight = std::move(has_work_in_flight)},
+        persist_key);
+    return {
+        .container = wrapped.container,
+        .enter_pinned_chrome = wrapped.enter_pinned_chrome,
+        .enter_docked_chrome = wrapped.enter_docked_chrome};
   }
 
   // `interactive` maps to the two policies that reach commitRestoredLayout in
@@ -68,6 +91,20 @@ class ToolboxPanelFoldTestPeer {
 
   static QWidget* releaseCentralPanel(MainWindow& window) {
     return window.releaseCentralPanel();
+  }
+
+  static QWidget* releaseToolboxPanel(MainWindow& window, const QString& id, QWidget* container, QString& title) {
+    return window.releaseToolboxPanel(id, container, title);
+  }
+
+  static bool dockToolboxPanel(
+      MainWindow& window, QWidget* container, const void* owner, std::function<void(bool)> fold,
+      std::function<bool()> busy, const std::function<void()>& chrome) {
+    return window.dockToolboxPanel(container, nullptr, owner, std::move(fold), std::move(busy), chrome);
+  }
+
+  static QWidget* currentPanel(const MainWindow& window) {
+    return window.current_panel_;
   }
 
   static void dismissTakeoverPanel(MainWindow& window) {
@@ -109,6 +146,32 @@ class ToolboxPanelFoldTestPeer {
     window.closeAllPinnedToolboxTabs();
   }
 
+  // Registers a floating-toolbox entry directly (the production insert lives
+  // inside launchToolbox's migrate_to_float, which needs a live plugin
+  // session); `floating_window` stands in for the floating PJ::Dialog and is
+  // deleted by closeAllFloatingToolboxWindows.
+  static void insertFloatingToolbox(
+      MainWindow& window, const QString& plugin_id, QWidget* floating_window, std::function<QString()> save_config,
+      ToolboxRuntimeHost* host, const QString& label) {
+    window.floating_toolboxes_.insert(
+        plugin_id, MainWindow::FloatingToolbox{
+                       .window = floating_window,
+                       .container = floating_window,
+                       .engine = nullptr,
+                       .save_config = std::move(save_config),
+                       .host = host,
+                       .label = label,
+                       .on_close = {}});
+  }
+
+  [[nodiscard]] static bool isFloating(const MainWindow& window, const QString& plugin_id) {
+    return window.floating_toolboxes_.contains(plugin_id);
+  }
+
+  static void closeAllFloatingToolboxWindows(MainWindow& window) {
+    window.closeAllFloatingToolboxWindows();
+  }
+
   static void setSeams(
       MainWindow& window, std::function<bool(QString)> confirm, std::function<bool(ToolboxRuntimeHost*)> busy,
       std::function<void(ToolboxRuntimeHost*)> stop) {
@@ -121,6 +184,22 @@ class ToolboxPanelFoldTestPeer {
 }  // namespace PJ
 
 namespace {
+
+// A `QSplitter::saveState()` blob for a two-pane horizontal splitter with the
+// given pane widths and a 1-px handle — the exact shape makeSideDrawerSplitter
+// builds — so a test can plant a persisted width without going through a real
+// drag. Sized so the scratch splitter's total width matches `first + second +
+// 1` (the handle), which is what a caller must also give the real splitter
+// for restoreState to reproduce these sizes verbatim rather than rescaling.
+QByteArray twoPaneSplitterStateBlob(int first, int second) {
+  QSplitter scratch(Qt::Horizontal);
+  scratch.setHandleWidth(1);
+  scratch.addWidget(new QWidget(&scratch));
+  scratch.addWidget(new QWidget(&scratch));
+  scratch.resize(first + second + scratch.handleWidth(), 400);
+  scratch.setSizes({first, second});
+  return scratch.saveState();
+}
 
 // One MainWindow per binary: the shell leaks process-global widget state across
 // instances, so every case shares this one and cleans up after itself.
@@ -153,6 +232,7 @@ class ToolboxPanelFoldTest : public ::testing::Test {
   void TearDown() override {
     // Forced, so a still-"busy" panel cannot veto the cleanup.
     PJ::ToolboxPanelFoldTestPeer::closeAllPinnedToolboxTabs(mainWindow());
+    PJ::ToolboxPanelFoldTestPeer::closeAllFloatingToolboxWindows(mainWindow());
     if (QWidget* released = PJ::ToolboxPanelFoldTestPeer::releaseCentralPanel(mainWindow()); released != nullptr) {
       delete released;
     }
@@ -186,6 +266,27 @@ class ToolboxPanelFoldTest : public ::testing::Test {
     return *tabs;
   }
 
+  struct DrawerContent {
+    QWidget* content = nullptr;
+    QWidget* drawer = nullptr;
+  };
+
+  // A content root with one tagged pjToolboxSideDrawer child — the shape
+  // every drawer-splitter test starts from. `minimum_width` <= 0 leaves the
+  // drawer's minimum at Qt's default (the hoist test, which never resizes).
+  [[nodiscard]] static DrawerContent makeDrawerContent(int minimum_width = 0) {
+    auto* content = new QWidget;
+    auto* content_layout = new QVBoxLayout(content);
+    auto* drawer = new QWidget(content);
+    drawer->setObjectName(u"conversationsDrawer"_s);
+    drawer->setProperty("pjToolboxSideDrawer", true);
+    if (minimum_width > 0) {
+      drawer->setMinimumWidth(minimum_width);
+    }
+    content_layout->addWidget(drawer);
+    return {.content = content, .drawer = drawer};
+  }
+
   // Wraps a dummy panel in the real toolbox banner, recording which of the two
   // dispositions the chrome picked.
   void wrapPanel() {
@@ -197,13 +298,32 @@ class ToolboxPanelFoldTest : public ::testing::Test {
           migrated_ = true;
           foldIntoTab(/*transient=*/false);
         },
+        /*on_float=*/[this]() { floated_ = true; },
         /*has_work_in_flight=*/[this]() { return work_in_flight_; },
         /*on_fold_busy=*/
         [this]() {
           busy_folded_ = true;
           foldIntoTab(/*transient=*/true);
-        });
+        },
+        /*persist_key=*/{},
+        /*on_dock=*/[this]() { dockPanel(); });
     container_ = wrapped_.container;
+  }
+
+  void dockPanel() {
+    QString title;
+    QWidget* released =
+        PJ::ToolboxPanelFoldTestPeer::releaseToolboxPanel(mainWindow(), pluginId(), panelContainer(), title);
+    ASSERT_EQ(released, panelContainer());
+    ASSERT_TRUE(
+        PJ::ToolboxPanelFoldTestPeer::dockToolboxPanel(
+            mainWindow(), released, ownerToken(),
+            [this](bool transient) {
+              wrapped_.enter_pinned_chrome();
+              migrated_ = true;
+              foldIntoTab(transient);
+            },
+            [this]() { return work_in_flight_; }, wrapped_.enter_docked_chrome));
   }
 
   [[nodiscard]] QToolButton* bannerCloseButton() const {
@@ -270,6 +390,14 @@ class ToolboxPanelFoldTest : public ::testing::Test {
     return busy_folded_;
   }
 
+  [[nodiscard]] bool floated() const {
+    return floated_;
+  }
+
+  void enterPinnedChrome() {
+    wrapped_.enter_pinned_chrome();
+  }
+
   [[nodiscard]] bool confirmShown() const {
     return confirm_shown_;
   }
@@ -319,6 +447,7 @@ class ToolboxPanelFoldTest : public ::testing::Test {
   bool closed_ = false;
   bool migrated_ = false;
   bool busy_folded_ = false;
+  bool floated_ = false;
   std::vector<PJ::ToolboxRuntimeHost*> stopped_hosts_;
 };
 
@@ -516,6 +645,461 @@ TEST_F(ToolboxPanelFoldTest, InteractiveRestoreConfirmedReplacesBusyPinnedPanels
   EXPECT_TRUE(confirmShown());
   EXPECT_TRUE(engineClosed());
   EXPECT_EQ(stoppedHosts(), std::vector<PJ::ToolboxRuntimeHost*>{ownHost()});
+}
+
+// The float button is takeover chrome with an offer behind it: with no
+// on_float handler (the marketplace panel, whose migrate path has no plugin
+// engine) it is not shown at all.
+TEST_F(ToolboxPanelFoldTest, FloatButtonHiddenWithoutFloatHandler) {
+  const auto wrapped = PJ::ToolboxPanelFoldTestPeer::wrapToolboxPanel(
+      mainWindow(), new QWidget, u"No Float"_s, /*on_close=*/{}, /*on_migrate=*/{}, /*on_float=*/{});
+
+  auto* float_button = wrapped.container->findChild<QAbstractButton*>(u"buttonMigrateFloat"_s);
+  ASSERT_NE(float_button, nullptr);
+  EXPECT_TRUE(float_button->isHidden());
+  delete wrapped.container;
+}
+
+// A widget tagged pjToolboxSideDrawer leaves the content for a splitter pane
+// beside the banner+content body — outer's only child is that splitter — and
+// the content root records it as hoisted so the binding still finds it.
+TEST_F(ToolboxPanelFoldTest, TaggedSideDrawerIsHoistedBesideTheBanner) {
+  const auto [content, drawer] = makeDrawerContent();
+
+  const auto wrapped = PJ::ToolboxPanelFoldTestPeer::wrapToolboxPanel(
+      mainWindow(), content, u"Drawer"_s, /*on_close=*/{}, /*on_migrate=*/{}, /*on_float=*/{});
+
+  auto* outer = qobject_cast<QBoxLayout*>(wrapped.container->layout());
+  ASSERT_NE(outer, nullptr);
+  ASSERT_EQ(outer->count(), 1) << "the splitter is outer's sole child when a drawer is in play";
+  auto* splitter = qobject_cast<QSplitter*>(outer->itemAt(0)->widget());
+  ASSERT_NE(splitter, nullptr);
+  EXPECT_FALSE(splitter->childrenCollapsible());
+  ASSERT_EQ(splitter->count(), 2);
+  EXPECT_EQ(splitter->widget(0), drawer) << "the drawer leads the splitter";
+  EXPECT_FALSE(drawer->isAncestorOf(wrapped.container->findChild<QWidget*>(u"toolboxBanner"_s)));
+  EXPECT_FALSE(content->isAncestorOf(drawer)) << "it is no longer under the content root";
+
+  const QVariantList hoisted = content->property(PJ::kHoistedWidgetsProperty).toList();
+  ASSERT_EQ(hoisted.size(), 1);
+  EXPECT_EQ(hoisted.front().value<QObject*>(), drawer) << "the binding's by-name lookups reach it through this";
+  delete wrapped.container;
+}
+
+// childrenCollapsible(false) plus the drawer's own (plugin-authored) minimum
+// stop a drag from shrinking it away, with no minimum hardcoded in the host.
+TEST_F(ToolboxPanelFoldTest, SideDrawerCannotBeDraggedBelowItsMinimumWidth) {
+  const auto [content, drawer] = makeDrawerContent(80);
+
+  const auto wrapped = PJ::ToolboxPanelFoldTestPeer::wrapToolboxPanel(
+      mainWindow(), content, u"Drawer"_s, /*on_close=*/{}, /*on_migrate=*/{}, /*on_float=*/{});
+  auto* outer = qobject_cast<QBoxLayout*>(wrapped.container->layout());
+  ASSERT_NE(outer, nullptr);
+  wrapped.container->resize(500, 400);
+  outer->activate();
+
+  auto* splitter = qobject_cast<QSplitter*>(outer->itemAt(0)->widget());
+  ASSERT_NE(splitter, nullptr);
+  splitter->setSizes({0, 500});  // attempt to drag the drawer away entirely
+  EXPECT_GE(splitter->sizes().front(), 80) << "Qt must clamp to the drawer's own minimumWidth";
+  delete wrapped.container;
+}
+
+// A saved width is restored once the splitter reaches the total width the
+// blob was captured at, but only when the blob still parses and matches the
+// splitter's pane count — a stale/mismatched one (an old plugin build, a
+// hand-edited settings file) is silently ignored and the splitter keeps its
+// natural split instead.
+TEST_F(ToolboxPanelFoldTest, SavedDrawerWidthIsRestoredWhenItFits) {
+  const QString key = u"ToolboxDrawerWidth/%1"_s.arg(pluginId());
+  QSettings().setValue(key, twoPaneSplitterStateBlob(150, 449));  // 150 + 449 + 1px handle = 600
+
+  const auto [content, drawer] = makeDrawerContent(80);
+
+  const auto wrapped = PJ::ToolboxPanelFoldTestPeer::wrapToolboxPanel(
+      mainWindow(), content, u"Drawer"_s, /*on_close=*/{}, /*on_migrate=*/{}, /*on_float=*/{},
+      /*has_work_in_flight=*/{}, /*on_fold_busy=*/{}, /*persist_key=*/pluginId());
+  auto* outer = qobject_cast<QBoxLayout*>(wrapped.container->layout());
+  ASSERT_NE(outer, nullptr);
+  // restoreState() runs at construction, before the container has a real
+  // size — show it so it reaches the 600px width the blob was captured at,
+  // the same way it will in production once presentPanel() (or a
+  // floating/pinned tab) puts it on screen.
+  wrapped.container->resize(600, 400);
+  wrapped.container->show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(wrapped.container));
+
+  auto* splitter = qobject_cast<QSplitter*>(outer->itemAt(0)->widget());
+  ASSERT_NE(splitter, nullptr);
+  EXPECT_EQ(splitter->sizes().front(), 150);
+  delete wrapped.container;
+  QSettings().remove(key);
+}
+
+// The other half of the round trip, and the one that was silently broken: a
+// width the user drags has to reach QSettings. It is saved from
+// QSplitter::splitterMoved -- an earlier version persisted from a
+// QEvent::Destroy filter installed on the splitter itself, which never fires
+// reliably for the object being destroyed, so every resize was lost on exit.
+TEST_F(ToolboxPanelFoldTest, DraggingTheDrawerPersistsItsWidth) {
+  const QString key = u"ToolboxDrawerWidth/%1"_s.arg(pluginId());
+  QSettings().remove(key);
+
+  const auto [content, drawer] = makeDrawerContent(80);
+
+  const auto wrapped = PJ::ToolboxPanelFoldTestPeer::wrapToolboxPanel(
+      mainWindow(), content, u"Drawer"_s, /*on_close=*/{}, /*on_migrate=*/{}, /*on_float=*/{},
+      /*has_work_in_flight=*/{}, /*on_fold_busy=*/{}, /*persist_key=*/pluginId());
+  auto* outer = qobject_cast<QBoxLayout*>(wrapped.container->layout());
+  ASSERT_NE(outer, nullptr);
+  wrapped.container->resize(600, 400);
+  wrapped.container->show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(wrapped.container));
+
+  auto* splitter = qobject_cast<QSplitter*>(outer->itemAt(0)->widget());
+  ASSERT_NE(splitter, nullptr);
+  EXPECT_FALSE(QSettings().contains(key)) << "nothing is written until the user actually moves the handle";
+
+  // What a drag ends with: new sizes, then the signal the splitter emits. The
+  // write is debounced (splitterMoved fires per mouse-move), so the value only
+  // lands once the handle has come to rest.
+  splitter->setSizes({220, 380});
+  emit splitter->splitterMoved(220, 1);
+  EXPECT_FALSE(QSettings().contains(key)) << "an in-flight drag must not write on every step";
+  QTRY_VERIFY(QSettings().contains(key));
+  EXPECT_FALSE(QSettings().value(key).toByteArray().isEmpty()) << "a real QSplitter::saveState() blob, not a bare int";
+
+  delete wrapped.container;
+  QSettings().remove(key);
+}
+
+TEST_F(ToolboxPanelFoldTest, AbsurdSavedDrawerWidthIsIgnored) {
+  const QString key = u"ToolboxDrawerWidth/%1"_s.arg(pluginId());
+  QSettings().setValue(
+      key, QByteArrayLiteral("not a splitter state blob"));  // corrupt/mismatched, restoreState rejects it
+
+  const auto [content, drawer] = makeDrawerContent(80);
+
+  const auto wrapped = PJ::ToolboxPanelFoldTestPeer::wrapToolboxPanel(
+      mainWindow(), content, u"Drawer"_s, /*on_close=*/{}, /*on_migrate=*/{}, /*on_float=*/{},
+      /*has_work_in_flight=*/{}, /*on_fold_busy=*/{}, /*persist_key=*/pluginId());
+  auto* outer = qobject_cast<QBoxLayout*>(wrapped.container->layout());
+  ASSERT_NE(outer, nullptr);
+  wrapped.container->resize(600, 400);
+  wrapped.container->show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(wrapped.container));
+
+  auto* splitter = qobject_cast<QSplitter*>(outer->itemAt(0)->widget());
+  ASSERT_NE(splitter, nullptr);
+  EXPECT_LT(splitter->sizes().front(), 600) << "a corrupt blob must not crash or be applied";
+  delete wrapped.container;
+  QSettings().remove(key);
+}
+
+// The gap the review flagged: the tab presentation persists a width under
+// ToolboxDrawerWidth/<key>; PJ::Dialog::setSideWidget — the floating
+// presentation's mechanism — must open at that same width when given the
+// same key, since both dock through makeSideDrawerSplitter.
+TEST_F(ToolboxPanelFoldTest, TabSavedWidthCarriesToFloatingPresentation) {
+  const QString key = u"ToolboxDrawerWidth/%1"_s.arg(pluginId());
+  QSettings().remove(key);
+
+  // Tab presentation: drag the drawer to a width and let the debounced save land.
+  const auto [tab_content, tab_drawer] = makeDrawerContent(80);
+  const auto wrapped = PJ::ToolboxPanelFoldTestPeer::wrapToolboxPanel(
+      mainWindow(), tab_content, u"Drawer"_s, /*on_close=*/{}, /*on_migrate=*/{}, /*on_float=*/{},
+      /*has_work_in_flight=*/{}, /*on_fold_busy=*/{}, /*persist_key=*/pluginId());
+  auto* tab_outer = qobject_cast<QBoxLayout*>(wrapped.container->layout());
+  ASSERT_NE(tab_outer, nullptr);
+  wrapped.container->resize(600, 400);
+  wrapped.container->show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(wrapped.container));
+  auto* tab_splitter = qobject_cast<QSplitter*>(tab_outer->itemAt(0)->widget());
+  ASSERT_NE(tab_splitter, nullptr);
+  tab_splitter->setSizes({220, 380});
+  emit tab_splitter->splitterMoved(220, 1);
+  QTRY_VERIFY(QSettings().contains(key));
+  delete wrapped.container;
+
+  // Floating presentation: a fresh Dialog docking a drawer under the SAME key
+  // (rootLayout's 1px margins on each side put its splitter at the same 600px
+  // width the tab used, so restoreState reproduces the size verbatim).
+  PJ::Dialog dialog;
+  auto* float_drawer = new QWidget;
+  float_drawer->setMinimumWidth(80);
+  dialog.setSideWidget(float_drawer, key);
+  dialog.resize(602, 400);
+  dialog.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&dialog));
+
+  auto* float_splitter = dialog.findChild<QSplitter*>();
+  ASSERT_NE(float_splitter, nullptr);
+  EXPECT_EQ(float_splitter->sizes().front(), 220);
+
+  QSettings().remove(key);
+}
+
+// PJ::Dialog::setSideWidget's own round trip — the mechanism the toolbox
+// tab<->floating-window migration relies on (Dialog.cpp mirrors
+// wrapToolboxPanel's splitter). Docking then undocking hands the drawer back
+// alive and intact, and dialogBody is restored straight into rootLayout
+// cleanly, exactly as if setSideWidget had never been called.
+TEST_F(ToolboxPanelFoldTest, DialogSideWidgetRoundTripRestoresOriginalLayout) {
+  PJ::Dialog dialog;
+  auto* content_child = new QLabel(u"content"_s, dialog.contentWidget());
+  dialog.contentLayout()->addWidget(content_child);
+
+  auto* drawer = new QWidget;
+  drawer->setObjectName(u"drawer"_s);
+  dialog.setSideWidget(drawer);
+  EXPECT_EQ(dialog.sideWidget(), drawer);
+  EXPECT_TRUE(dialog.isAncestorOf(drawer)) << "reparented under the dialog's own splitter";
+
+  dialog.setSideWidget(nullptr);
+  EXPECT_EQ(dialog.sideWidget(), nullptr);
+  EXPECT_EQ(drawer->parentWidget(), nullptr) << "handed back intact, not deleted";
+  // dialogBody went back into rootLayout cleanly — the content is still live.
+  EXPECT_TRUE(dialog.isAncestorOf(content_child));
+  EXPECT_EQ(content_child->text(), u"content"_s);
+
+  delete drawer;
+}
+
+// A chrome action with chromeActionSlot="leading" gets its banner proxy BEFORE
+// the title, and the title centres itself; without the slot the proxy stays
+// after the title as before.
+TEST_F(ToolboxPanelFoldTest, LeadingChromeActionProxyPrecedesTheTitle) {
+  auto* content = new QWidget;
+  auto* content_layout = new QVBoxLayout(content);
+  auto* menu = new QPushButton(content);
+  menu->setObjectName(u"menuButton"_s);
+  menu->setProperty("pjToolboxChromeAction", true);
+  menu->setProperty("chromeActionSlot", u"leading"_s);
+  content_layout->addWidget(menu);
+  auto* help = new QPushButton(content);
+  help->setObjectName(u"helpButton"_s);
+  help->setProperty("pjToolboxChromeAction", true);
+  content_layout->addWidget(help);
+
+  const auto wrapped = PJ::ToolboxPanelFoldTestPeer::wrapToolboxPanel(
+      mainWindow(), content, u"Leading"_s, /*on_close=*/{}, /*on_migrate=*/{}, /*on_float=*/{});
+
+  auto* banner = wrapped.container->findChild<QWidget*>(u"toolboxBanner"_s);
+  ASSERT_NE(banner, nullptr);
+  auto* row = qobject_cast<QBoxLayout*>(banner->layout());
+  ASSERT_NE(row, nullptr);
+  auto* title = banner->findChild<QLabel*>(u"toolboxBannerTitle"_s);
+  ASSERT_NE(title, nullptr);
+  const int title_at = row->indexOf(title);
+  ASSERT_GT(title_at, 0);
+  EXPECT_NE(row->itemAt(0)->widget(), nullptr) << "a proxy button leads the row";
+  EXPECT_EQ(row->itemAt(0)->widget()->toolTip(), menu->toolTip());
+  EXPECT_EQ(title->alignment() & Qt::AlignHCenter, Qt::AlignHCenter);
+  EXPECT_TRUE(menu->isHidden()) << "the original stays in the content, hidden";
+  EXPECT_TRUE(help->isHidden());
+  // Two proxies in total, one on each side of the title.
+  int before = 0;
+  int after = 0;
+  for (int i = 0; i < row->count(); ++i) {
+    auto* w = qobject_cast<QAbstractButton*>(row->itemAt(i)->widget());
+    if (w == nullptr || w->objectName().startsWith(u"buttonMigrate"_s) || w->objectName() == u"buttonClose"_s) {
+      continue;
+    }
+    (i < title_at ? before : after) += 1;
+  }
+  EXPECT_EQ(before, 1);
+  EXPECT_EQ(after, 1);
+  delete wrapped.container;
+}
+
+// Clicking float runs the handler and hides the whole banner — the floating
+// window's own title bar is the one header. Docking back as a tab
+// (enter_pinned_chrome) re-shows the banner in pinned chrome.
+TEST_F(ToolboxPanelFoldTest, FloatButtonHidesBannerAndPinnedChromeRestoresIt) {
+  wrapPanel();
+  ASSERT_TRUE(PJ::ToolboxPanelFoldTestPeer::presentPanel(mainWindow(), panelContainer()));
+
+  auto* banner = panelContainer()->findChild<QWidget*>(u"toolboxBanner"_s);
+  ASSERT_NE(banner, nullptr);
+  auto* float_button = panelContainer()->findChild<QAbstractButton*>(u"buttonMigrateFloat"_s);
+  ASSERT_NE(float_button, nullptr);
+  EXPECT_FALSE(float_button->isHidden());
+  float_button->click();
+
+  EXPECT_TRUE(floated());
+  EXPECT_TRUE(banner->isHidden());
+
+  enterPinnedChrome();
+  EXPECT_FALSE(banner->isHidden());
+  EXPECT_FALSE(float_button->isHidden());
+  auto* migrate = panelContainer()->findChild<QAbstractButton*>(u"buttonMigrateTab"_s);
+  ASSERT_NE(migrate, nullptr);
+  EXPECT_TRUE(migrate->isHidden());
+  EXPECT_FALSE(bannerCloseButton()->isHidden());
+}
+
+TEST_F(ToolboxPanelFoldTest, HeaderDestinationsFollowDockedAndTabbedPresentation) {
+  pinPanel();
+  auto* dock = panelContainer()->findChild<QAbstractButton*>(u"buttonMigrateDock"_s);
+  auto* tab = panelContainer()->findChild<QAbstractButton*>(u"buttonMigrateTab"_s);
+  auto* floating = panelContainer()->findChild<QAbstractButton*>(u"buttonMigrateFloat"_s);
+  ASSERT_NE(dock, nullptr);
+  ASSERT_NE(tab, nullptr);
+  ASSERT_NE(floating, nullptr);
+  EXPECT_FALSE(dock->isHidden());
+  EXPECT_TRUE(tab->isHidden());
+  EXPECT_FALSE(floating->isHidden());
+  EXPECT_FALSE(bannerCloseButton()->isHidden());
+
+  QPointer<QWidget> live = panelContainer();
+  dock->click();
+  EXPECT_FALSE(PJ::ToolboxPanelFoldTestPeer::isPinned(mainWindow(), pluginId()));
+  EXPECT_EQ(PJ::ToolboxPanelFoldTestPeer::currentPanel(mainWindow()), live.data());
+  EXPECT_TRUE(dock->isHidden());
+  EXPECT_FALSE(tab->isHidden());
+  EXPECT_FALSE(floating->isHidden());
+  EXPECT_FALSE(bannerCloseButton()->isHidden());
+  EXPECT_FALSE(closed());
+
+  tab->click();
+  EXPECT_TRUE(PJ::ToolboxPanelFoldTestPeer::isPinned(mainWindow(), pluginId()));
+  EXPECT_EQ(panelContainer(), live.data());
+  EXPECT_FALSE(dock->isHidden());
+  EXPECT_TRUE(tab->isHidden());
+}
+
+TEST_F(ToolboxPanelFoldTest, DockingRestoresAutomaticFoldForTheSameLivePanel) {
+  pinPanel();
+  setWorkInFlight(true);
+  dockPanel();
+  QPointer<QWidget> live = panelContainer();
+  emitIngestStarted();
+  EXPECT_TRUE(migrated());
+  EXPECT_TRUE(PJ::ToolboxPanelFoldTestPeer::isPinned(mainWindow(), pluginId()));
+  EXPECT_EQ(panelContainer(), live.data());
+  EXPECT_FALSE(closed());
+  EXPECT_TRUE(stoppedHosts().empty());
+}
+
+TEST_F(ToolboxPanelFoldTest, DockingRestoresBusyCloseFoldInsteadOfCancelling) {
+  pinPanel();
+  setWorkInFlight(true);
+  dockPanel();
+  bannerCloseButton()->click();
+  EXPECT_TRUE(busyFolded());
+  EXPECT_TRUE(PJ::ToolboxPanelFoldTestPeer::isPinned(mainWindow(), pluginId()));
+  EXPECT_FALSE(confirmShown());
+  EXPECT_TRUE(stoppedHosts().empty());
+}
+
+TEST_F(ToolboxPanelFoldTest, PinnedHeaderCloseUsesTabBusyConfirmation) {
+  pinPanel();
+  setWorkInFlight(true);
+  setConfirmAnswer(false);
+  bannerCloseButton()->click();
+  EXPECT_TRUE(confirmShown());
+  EXPECT_FALSE(engineClosed());
+  EXPECT_FALSE(busyFolded());
+  setConfirmAnswer(true);
+  bannerCloseButton()->click();
+  EXPECT_TRUE(engineClosed());
+  EXPECT_EQ(stoppedHosts(), std::vector<PJ::ToolboxRuntimeHost*>{ownHost()});
+}
+
+TEST_F(ToolboxPanelFoldTest, ReleaseToolboxPreservesRenameAndDoesNotStealAnotherTakeover) {
+  pinPanel();
+  tabbedWidget().setWidgetTabName(panelContainer(), u"Renamed"_s);
+  auto* other = new QWidget;
+  ASSERT_TRUE(PJ::ToolboxPanelFoldTestPeer::presentPanel(mainWindow(), other));
+  QString title;
+  QWidget* released =
+      PJ::ToolboxPanelFoldTestPeer::releaseToolboxPanel(mainWindow(), pluginId(), panelContainer(), title);
+  EXPECT_EQ(released, panelContainer());
+  EXPECT_EQ(title, u"Renamed"_s);
+  EXPECT_EQ(PJ::ToolboxPanelFoldTestPeer::currentPanel(mainWindow()), other);
+  EXPECT_EQ(
+      PJ::ToolboxPanelFoldTestPeer::releaseToolboxPanel(mainWindow(), pluginId(), panelContainer(), title), nullptr);
+  EXPECT_EQ(PJ::ToolboxPanelFoldTestPeer::currentPanel(mainWindow()), other);
+  EXPECT_FALSE(closed());
+}
+
+TEST_F(ToolboxPanelFoldTest, DockingFoldsAnExistingBusyTakeoverBeforeReplacingIt) {
+  pinPanel();
+  auto* other = new QWidget;
+  ASSERT_TRUE(PJ::ToolboxPanelFoldTestPeer::presentPanel(mainWindow(), other));
+  bool folded = false;
+  PJ::ToolboxPanelFoldTestPeer::setTakeoverFold(
+      mainWindow(), other,
+      [&](bool transient) {
+        EXPECT_TRUE(transient);
+        QWidget* released = PJ::ToolboxPanelFoldTestPeer::releaseCentralPanel(mainWindow());
+        EXPECT_EQ(released, other);
+        PJ::ToolboxPanelFoldTestPeer::pinToolboxPanel(
+            mainWindow(), released, u"other"_s, u"Other"_s, {}, nullptr, true);
+        folded = true;
+      },
+      []() { return true; });
+  dockPanel();
+  EXPECT_TRUE(folded);
+  EXPECT_TRUE(PJ::ToolboxPanelFoldTestPeer::isPinned(mainWindow(), u"other"_s));
+  EXPECT_EQ(PJ::ToolboxPanelFoldTestPeer::currentPanel(mainWindow()), panelContainer());
+}
+
+TEST_F(ToolboxPanelFoldTest, PinnedChromeWithoutFloatingSupportKeepsFloatHidden) {
+  const auto wrapped =
+      PJ::ToolboxPanelFoldTestPeer::wrapToolboxPanel(mainWindow(), new QWidget, u"Panel"_s, []() {}, []() {});
+  wrapped.enter_pinned_chrome();
+  auto* float_button = wrapped.container->findChild<QAbstractButton*>(u"buttonMigrateFloat"_s);
+  ASSERT_NE(float_button, nullptr);
+  EXPECT_TRUE(float_button->isHidden());
+  delete wrapped.container;
+}
+
+// A floating toolbox is part of the workspace: layout save writes it as a
+// pinned tab (floating has no layout representation), so the layout restores
+// it as a tab.
+TEST_F(ToolboxPanelFoldTest, FloatingToolboxIsSavedAsPinnedTab) {
+  PJ::ToolboxPanelFoldTestPeer::insertFloatingToolbox(
+      mainWindow(), pluginId(), new QWidget, /*save_config=*/[]() { return u"{\"k\":1}"_s; }, ownHost(),
+      u"Floating Panel"_s);
+
+  EXPECT_TRUE(savedLayoutMentions(pluginId()));
+
+  PJ::ToolboxPanelFoldTestPeer::closeAllFloatingToolboxWindows(mainWindow());
+  EXPECT_FALSE(PJ::ToolboxPanelFoldTestPeer::isFloating(mainWindow(), pluginId()));
+  EXPECT_FALSE(savedLayoutMentions(pluginId()));
+}
+
+// The layout's pinned set replaces the live one, floating windows included —
+// they persist as tabs, so a layout without this toolbox restores to none of it.
+TEST_F(ToolboxPanelFoldTest, RestoreReplacesFloatingWindows) {
+  PJ::ToolboxPanelFoldTestPeer::insertFloatingToolbox(
+      mainWindow(), pluginId(), new QWidget, /*save_config=*/{}, ownHost(), u"Floating Panel"_s);
+
+  QDomDocument doc;
+  ASSERT_TRUE(
+      PJ::ToolboxPanelFoldTestPeer::restorePinnedToolboxes(
+          mainWindow(), doc.createElement(u"root"_s), /*interactive=*/true));
+
+  EXPECT_FALSE(PJ::ToolboxPanelFoldTestPeer::isFloating(mainWindow(), pluginId()));
+}
+
+// A busy floating panel joins the restore's one-question rule: declining the
+// cancel confirmation keeps the live set — floating window included — intact.
+TEST_F(ToolboxPanelFoldTest, RestoreDeclineKeepsBusyFloatingWindow) {
+  PJ::ToolboxPanelFoldTestPeer::insertFloatingToolbox(
+      mainWindow(), pluginId(), new QWidget, /*save_config=*/{}, ownHost(), u"Floating Panel"_s);
+  setWorkInFlight(true);
+  setConfirmAnswer(false);
+
+  QDomDocument doc;
+  EXPECT_FALSE(
+      PJ::ToolboxPanelFoldTestPeer::restorePinnedToolboxes(
+          mainWindow(), doc.createElement(u"root"_s), /*interactive=*/true));
+
+  EXPECT_TRUE(confirmShown());
+  EXPECT_TRUE(PJ::ToolboxPanelFoldTestPeer::isFloating(mainWindow(), pluginId()));
+  setWorkInFlight(false);
 }
 
 }  // namespace

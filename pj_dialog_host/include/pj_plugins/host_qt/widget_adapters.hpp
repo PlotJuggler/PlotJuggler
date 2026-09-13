@@ -15,15 +15,15 @@ namespace PJ {
 //   QRadioButton (exclusive group, 2+ buttons) -> DualOptionsWidget (segmented control)
 //   QCheckBox                                   -> ToggleSwitch (inline label on the left)
 //   QComboBox                                   -> PJ::ComboBox styling (gradient popup)
+//   QPlainTextEdit + pjMarkdown                 -> QTextBrowser (Markdown view)
 //
-// The originals stay in the widget tree (hidden) and remain the source of truth
-// for plugin WidgetData and the event callbacks wired by connectWidgetSignals;
-// the styled replacements just drive them. Adaptation is structural (depends on
-// the widget tree, built once at load), so the engines call adaptStyledWidgets
-// once after loading the .ui; widget_binding then keeps the replacements in sync
-// per applied widget via the seam below.
+// For interactive controls, the originals stay hidden and remain the source of
+// truth for WidgetData/events while the styled replacements drive them. The
+// read-only Markdown promotion replaces its original outright while preserving
+// the binding name. Adaptation is structural, so engines run it once after load.
 
-/// Adapt every adaptable control under `root` (radios, checkboxes, comboboxes).
+/// Adapt every adaptable control under `root` (radios, checkboxes, comboboxes,
+/// and opted-in Markdown edits).
 /// Call once after the .ui is loaded. Idempotent and safe to re-run.
 void adaptStyledWidgets(QWidget* root);
 
@@ -39,6 +39,12 @@ void forwardEmbeddedDialogClose(QWidget* content, QDialog* outer);
 void adaptRadioGroups(QWidget* root);
 void adaptCheckBoxes(QWidget* root);
 void adaptComboBoxes(QWidget* root);
+/// Promote child QPlainTextEdit widgets with dynamic bool property `pjMarkdown`
+/// to read-only QTextBrowser instances after .ui properties are available. The
+/// replacement keeps the authored object name and dynamic properties, so normal
+/// WidgetData plain_text binding addresses it. A QPlainTextEdit used as `root`
+/// itself is outside this structural adapter's child-in-layout contract.
+void adaptMarkdownEdits(QWidget* root);
 /// Give every QTableView under `root` that opts in (dynamic bool property
 /// "pjInteriorGrid", set in the plugin .ui) an interior-only cell grid: native
 /// showGrid is turned off and an item delegate draws only the dividers BETWEEN

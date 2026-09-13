@@ -7,12 +7,14 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QDialog>
 #include <QDialogButtonBox>
 #include <QEvent>
 #include <QEventLoop>
 #include <QFrame>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPointer>
 #include <QPushButton>
 #include <QScreen>
 #include <QSettings>
@@ -506,6 +508,151 @@ TEST_F(PanelEngineTest, CloseIsIdempotent) {
 
   engine.close();
   engine.close();  // Must not crash.
+
+  delete panel;
+}
+
+// Claim: the owner's close callback may stop and deleteLater the engine without duplicate teardown or late ticks.
+TEST_F(PanelEngineTest, OwnerCloseCallbackMayScheduleEngineDeletion) {
+  auto* engine = new PJ::PanelEngine(makeMockHandle(), {.tick_interval_ms = 10});
+  QPointer<PJ::PanelEngine> guard(engine);
+  QWidget* panel = engine->openPanel();
+  ASSERT_NE(panel, nullptr);
+  int closes = 0;
+  engine->onCloseRequested([&](const std::string&) {
+    ++closes;
+    engine->close();
+    engine->deleteLater();
+    return true;
+  });
+  mockPanelState().close_on_next_tick = true;
+  panel->show();
+  pumpEventLoop(50);
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  EXPECT_TRUE(guard.isNull());
+  EXPECT_EQ(closes, 1);
+  delete panel;
+}
+
+namespace {
+
+// A panel whose widget_data() is EMPTY whenever nothing changed (the documented
+// "no update" answer, and what real plugins do to avoid serializing a document
+// 20 times a second), and whose only non-empty payload is a sub-dialog request.
+// Two consecutive requests are therefore byte-identical, and the host's
+// skip-identical shortcut must not swallow the second one.
+constexpr char kSilentSettingsUi[] = R"(<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SilentSettings</class>
+ <widget class="QWidget" name="silentSettings">
+  <property name="windowTitle"><string>Silent settings</string></property>
+  <layout class="QVBoxLayout">
+   <item>
+    <widget class="QLineEdit" name="model"/>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
+)";
+
+class SilentWhenIdlePlugin final : public PJ::DialogPluginTyped {
+ public:
+  std::string manifest() const override {
+    return R"({"id":"silent-when-idle","name":"Silent when idle","version":"0.0.1"})";
+  }
+
+  std::string ui_content() const override {
+    return R"(<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SilentWhenIdle</class>
+ <widget class="QWidget" name="silentWhenIdle">
+  <layout class="QVBoxLayout">
+   <item>
+    <widget class="QPushButton" name="openSettings">
+     <property name="text"><string>Settings</string></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
+)";
+  }
+
+  std::string widget_data() override {
+    if (!open_settings_) {
+      return {};
+    }
+    open_settings_ = false;
+    PJ::WidgetData data;
+    data.requestSubDialog(kSilentSettingsUi);
+    return data.toJson();
+  }
+
+  bool onClicked(std::string_view widget_name) override {
+    if (widget_name != "openSettings") {
+      return false;
+    }
+    open_settings_ = true;
+    return true;
+  }
+
+ private:
+  bool open_settings_ = false;
+};
+
+PJ::DialogHandle makeSilentWhenIdleHandle() {
+  const auto* vtable = PJ::DialogPluginBase::vtableWithCreate([]() noexcept -> void* {
+    try {
+      return static_cast<PJ::DialogPluginBase*>(new SilentWhenIdlePlugin());
+    } catch (...) {
+      return nullptr;
+    }
+  });
+  return PJ::DialogHandle(vtable);
+}
+
+}  // namespace
+
+TEST_F(PanelEngineTest, SubDialogReopensAfterCancelWhenThePluginIsSilentInBetween) {
+  // Settings, Cancel, Settings: the second request carries the same bytes as
+  // the first (nothing changed in between, and the plugin answered "" on every
+  // poll since), so a host that dedups on raw equality never opens it again.
+  PJ::PanelEngineConfig config;
+  config.tick_interval_ms = 100000;  // drive everything through the click path
+  config.enable_diff = true;
+  PJ::PanelEngine engine(makeSilentWhenIdleHandle(), config);
+  QWidget* panel = engine.openPanel();
+  ASSERT_NE(panel, nullptr);
+  auto* button = panel->findChild<QPushButton*>("openSettings");
+  ASSERT_NE(button, nullptr);
+
+  int opened = 0;
+  auto click_then_cancel = [&] {
+    // Fires inside the sub-dialog's nested exec() when one opened — and
+    // harmlessly from the pump below when none did.
+    QTimer::singleShot(0, panel, [&] {
+      if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget())) {
+        ++opened;
+        modal->reject();
+      }
+    });
+    button->click();
+    pumpEventLoop(20);
+  };
+
+  click_then_cancel();
+  ASSERT_EQ(opened, 1);
+  click_then_cancel();
+  EXPECT_EQ(opened, 2) << "an identical one-shot request after a silent idle stretch was deduplicated away";
 
   delete panel;
 }

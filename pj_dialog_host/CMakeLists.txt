@@ -115,4 +115,22 @@ if(PJ_BUILD_TESTS)
     set_tests_properties(widget_binding_test PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
+
+    add_executable(combo_rules_test
+        tests/combo_rules_test.cpp
+    )
+    set_target_properties(combo_rules_test PROPERTIES AUTOMOC ON)
+    target_compile_options(combo_rules_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(combo_rules_test
+        PRIVATE
+            pj_dialog_engine_qt
+            plotjuggler_sdk::plugin_sdk
+            GTest::gtest
+            GTest::gtest_main
+            Qt6::Test
+    )
+    add_test(NAME combo_rules_test COMMAND combo_rules_test)
+    set_tests_properties(combo_rules_test PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
 endif()

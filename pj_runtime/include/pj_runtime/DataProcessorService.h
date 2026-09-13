@@ -15,6 +15,7 @@
 
 #include "pj_base/expected.hpp"
 #include "pj_base/types.hpp"
+#include "pj_runtime/HistoryScope.h"
 
 namespace PJ {
 
@@ -96,8 +97,11 @@ class DataProcessorService {
   /// persisted recipe; `node_id`/`output_topic_ids`/`dataset_id` are runtime state
   /// re-derived on (re)install.
   struct TransformRecipe {
-    std::string key;                     ///< "<plugin_id>/<id>" — the authoritative upsert key
-    std::string owner_plugin;            ///< stable manifest plugin id (NOT the DSO path)
+    std::string key;           ///< "<plugin_id>/<id>" — the authoritative upsert key
+    std::string owner_plugin;  ///< stable manifest plugin id (NOT the DSO path)
+    /// Persisted in layout files but outside undo/redo authority. A layout
+    /// replacement or explicit removal may still replace it.
+    bool history_exempt = false;
     std::string user_id;                 ///< per-plugin id (no prefix); also the script's class id
     std::vector<std::string> inputs;     ///< input topic names (v1: exactly 1)
     std::size_t input_column_index = 0;  ///< column within the input topic (default 0)
@@ -150,15 +154,37 @@ class DataProcessorService {
   /// processors leaf-first. An unknown node id is an error.
   Status removeFilter(NodeId node_id);
 
-  /// Remove EVERY live filter at once: for each recipe, drop its engine node AND
+  /// Remove every live filter: for each one, drop its engine node AND
   /// `retireTopic` its materialized output (so `CatalogModel::rebuildFromDatastore`
-  /// stops listing it — `removeNode` alone leaves a catalog zombie), then forget all
-  /// recipes. The reconcile primitive behind snapshot restore (undo/redo + layout
-  /// load): clear, then re-apply the snapshot's set, so a restored state can never
-  /// duplicate or leak a filter. The output `TopicStorage` is kept alive (only
-  /// retired), so any cached reader pointer sees an empty deque, not freed memory.
-  /// Idempotent; a no-op when no filters are registered.
+  /// stops listing it — `removeNode` alone leaves a catalog zombie), then forget
+  /// its recipe. The reconcile primitive behind snapshot restore (undo/redo +
+  /// layout load): clear, then re-apply the snapshot's set, so a restored state
+  /// can never duplicate or leak a filter. Removed leaf-first (a filter's own
+  /// dependents are cascaded via `removeFilter` before the filter itself). The
+  /// output `TopicStorage` is kept alive (only retired), so any cached reader
+  /// pointer sees an empty deque, not freed memory. Idempotent; a no-op when
+  /// nothing is live. A `FilterRecipe` carries no exemption bit, so there is no
+  /// predicate form — a filter is always in scope.
   void clearAllFilters();
+
+  /// Remove every live transform, leaf-first. `RestoreIntent::kHistory`
+  /// reconciles only the non-exempt transforms and leaves the `history_exempt`
+  /// ones untouched; `kReplace` removes all. `keep_keys` names further transforms
+  /// to leave live (a restore keeps those whose recipe the snapshot does not
+  /// change, so their output TopicIds — and every curve bound to them — survive).
+  /// A kept transform can still fall to the removal cascade of one of its inputs.
+  void clearTransforms(RestoreIntent intent, const std::unordered_set<std::string>& keep_keys = {});
+  /// Keys of the live transforms a restore leaves unchanged: those within the
+  /// intent's authority (every one under `kReplace`; the non-exempt ones under
+  /// `kHistory`) whose persisted recipe equals the `wanted` entry with the same
+  /// key. Compares exactly the fields a layout file carries — runtime node/topic
+  /// ids are irrelevant — so a binding-less legacy `wanted` entry never matches.
+  /// Feed the result to `clearTransforms` / `liveNonExemptNodeIds` as `keep_keys`.
+  [[nodiscard]] std::unordered_set<std::string> unchangedTransformKeys(
+      const std::vector<TransformRecipe>& wanted, RestoreIntent intent) const;
+  /// Whether any live transform is `history_exempt` (cheap gate for the
+  /// history-restore dependency preflight).
+  [[nodiscard]] bool hasHistoryExemptTransforms() const;
 
   /// The recipe behind a filter output topic, or nullptr if `output_topic_id` is
   /// not a known filter output. Lets the Filter Editor re-open on an existing
@@ -226,10 +252,14 @@ class DataProcessorService {
   /// `ephemeral` marks a preview node: it installs and runs identically, but is left
   /// out of `transformRecipes()` (never persisted). The caller is responsible for not
   /// surfacing its output in the catalog and for `removeTransform`-ing it when done.
+  ///
+  /// `history_exempt` marks the installed recipe immune to undo/redo (see
+  /// `TransformRecipe::history_exempt`); trailing so every existing positional call
+  /// site (which stops at `input_column_index`) keeps compiling unchanged.
   [[nodiscard]] Expected<TransformRecipe> upsertTransform(
       std::string_view plugin_id, std::string_view id, std::vector<std::string> inputs,
       std::vector<std::string> outputs, std::string_view script, std::string_view params_json, bool ephemeral = false,
-      std::size_t input_column_index = 0);
+      std::size_t input_column_index = 0, bool history_exempt = false);
 
   /// Validate a transform script WITHOUT installing anything: compile it with the
   /// backend for `language` ("luau" today; other values are rejected until their
@@ -251,6 +281,32 @@ class DataProcessorService {
   /// leaf-first order so no recipe remains attached to a retired topic.
   [[nodiscard]] Status removeProcessorsDependingOn(const std::vector<TopicId>& input_topics);
 
+  /// Every live processor node a history restore is about to remove: every filter
+  /// (never exempt) plus every transform whose `history_exempt` bit is unset and
+  /// whose key is not in `keep_keys` — the same exclusions `clearTransforms` takes,
+  /// so the preflight and the clear agree on one removal set. Feed the result to
+  /// `exemptDependentsOf` before clearing anything, so a history restore can reject
+  /// up front instead of cascading into an exempt dependent.
+  [[nodiscard]] std::vector<NodeId> liveNonExemptNodeIds(const std::unordered_set<std::string>& keep_keys = {}) const;
+
+  /// Materialized output topic names produced by `liveNonExemptNodeIds(keep_keys)`
+  /// (a grouped declaration `"t:a,b"` reports its single topic `"t"`). Marker
+  /// generators declare dependencies by series name rather than by datastore node
+  /// id, so a history restore uses this view to check their dependencies before
+  /// clearing any processor.
+  [[nodiscard]] std::vector<std::string> liveNonExemptOutputNames(
+      const std::unordered_set<std::string>& keep_keys = {}) const;
+
+  /// Output names of every history-exempt TRANSFORM transitively depending on any
+  /// of `nodes` (typically `liveNonExemptNodeIds(...)` — the set a history restore is
+  /// about to remove). Empty means removing `nodes` would strand nothing exempt.
+  /// Walks `forEachDependentProcessor` with `include_ephemeral_transforms=true`
+  /// from `nodes`' output topics, so the closure matches exactly what
+  /// `removeProcessorsDependingOn` would cascade into. Scoped to
+  /// filters/transforms (this service's own graph); a marker generator's
+  /// dependency on a removed transform output is not tracked here.
+  [[nodiscard]] std::vector<std::string> exemptDependentsOf(const std::vector<NodeId>& nodes) const;
+
   /// Remove a transform by its namespaced key, cascading through every exact
   /// downstream processor and retiring all affected outputs. Unknown key = error.
   Status removeTransform(std::string_view namespaced_key);
@@ -260,7 +316,8 @@ class DataProcessorService {
   /// survives unload (the bridge object dies, the node lives on).
   void clearTransformsForPlugin(std::string_view plugin_id);
 
-  /// Tear down every transform (session close / reconcile primitive for restore).
+  /// `clearTransforms(RestoreIntent::kReplace)` — tear down every
+  /// transform at once (session close / reconcile primitive for a full restore).
   void clearAllTransforms();
 
   /// Tear down every transform whose resolved output lives in `dataset_id`
@@ -271,8 +328,9 @@ class DataProcessorService {
   /// ABI `list` slot (scoped to the calling plugin).
   [[nodiscard]] std::vector<std::string> transformIdsForPlugin(std::string_view plugin_id) const;
 
-  /// A transform's recipe as `{"inputs":[…],"outputs":[…],"params":{…},"backend":…}`
-  /// for the ABI `config` slot (re-edit). `nullopt` if the key is unknown.
+  /// A transform's recipe as
+  /// `{"inputs":[…],"outputs":[…],"params":{…},"backend":…,"history_exempt":…}`
+  /// for the ABI `config` slot (re-edit/probe). `nullopt` if the key is unknown.
   [[nodiscard]] std::optional<std::string> transformRecipeJson(std::string_view namespaced_key) const;
 
   /// Snapshot of every live transform recipe (unspecified order) — for layout save.

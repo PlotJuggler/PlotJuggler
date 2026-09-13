@@ -12,6 +12,7 @@
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_runtime/HistoryScope.h"
 #include "pj_widgets/ChromeMetrics.h"
 
 QT_BEGIN_NAMESPACE
@@ -69,6 +70,13 @@ class TabbedPlotWidget : public QWidget {
   // setWidgetTabPreClose veto, then runs its on_close, removes the tab and
   // deletes the widget. No-op if absent.
   void closeWidgetTab(QWidget* content);
+  // Removes a widget tab without consulting its close veto or running teardown.
+  // Returns the hidden, parentless content with its original size policy; the
+  // caller takes ownership. Returns nullptr if content is not a widget tab.
+  [[nodiscard]] QWidget* takeWidgetTab(QWidget* content);
+  // Close a plot tab programmatically. Honours the same path as the tab's
+  // close button, including the last-serializable-tab rule.
+  void closeTab(PlotDocker* docker);
   // Gives a widget tab a veto over its own close: `pre_close` runs BEFORE any
   // teardown and returning false abandons the close entirely (nothing is run,
   // removed or deleted), which is how a pinned panel with work in flight asks
@@ -125,14 +133,12 @@ class TabbedPlotWidget : public QWidget {
     }
   }
 
-  // Serializes / restores the tab set. Widget tabs are excluded from BOTH
-  // directions: xmlSaveState skips them (undo snapshots and layout files
-  // share this serializer, so undo can never spawn or kill their content)
-  // and xmlLoadState preserves the live ones — only PlotDocker tabs are
-  // torn down and rebuilt, with the surviving widget tabs re-appended after
-  // them. Restoration emits no undoableChange.
-  [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc) const;
-  bool xmlLoadState(const QDomElement& tabbed_area);
+  // Serializes/restores plot pages while always preserving widget and ephemeral
+  // pages. Full scope includes history-exempt plot pages; history scope omits
+  // them and preserves their live objects during restore. Restoration emits no
+  // undoableChange.
+  [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc, SnapshotScope scope = SnapshotScope::kFull) const;
+  bool xmlLoadState(const QDomElement& tabbed_area, RestoreIntent intent = RestoreIntent::kReplace);
 
  public slots:
   void onStylesheetChanged(QString theme);
@@ -181,6 +187,10 @@ class TabbedPlotWidget : public QWidget {
   // and for docker pages) — the shared predicate behind the widget-tab API.
   TabEntry* findWidgetEntry(QWidget* content);
   [[nodiscard]] const TabEntry* findWidgetEntry(QWidget* content) const;
+  // Dockers an undo snapshot can reconstruct. Ephemeral and history-exempt
+  // pages are outside history, so closing the last ordinary page creates a
+  // fresh one even when either kind remains live.
+  [[nodiscard]] int historySerializableDockerCount() const;
   // The one close path for both tab kinds. With honor_veto, a widget tab's
   // pre_close runs first and can abandon the close; plot tabs have none.
   void closeTab(PlotTabFrame* frame, bool honor_veto);

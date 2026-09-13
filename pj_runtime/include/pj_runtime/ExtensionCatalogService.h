@@ -142,6 +142,10 @@ class ExtensionCatalogService : public QObject {
   // catalog lock and never leak a raw catalog pointer.
   const LoadedMessageParser* findParserByEncoding(QStringView encoding) const;
 
+  // The Toolbox plugin with manifest id `id`, or null when it is not loaded.
+  // Same lifetime and threading rules as findParserByEncoding.
+  const LoadedToolbox* findToolbox(QStringView id) const;
+
   // [thread-safe] The set of encodings the loaded parsers accept, returned by
   // value (a snapshot copy) so a caller never holds a reference into the
   // catalog vector across a reload(). Sorted, de-duplicated.

@@ -315,6 +315,21 @@ std::vector<CatalogItem> CatalogModel::items() const {
   return items;
 }
 
+DatasetId CatalogModel::datasetForTopic(const QString& topic_name) const {
+  DatasetId found = 0;
+  for (const auto& [key, item] : impl_->items) {
+    (void)key;
+    if (item.topic_name != topic_name) {
+      continue;
+    }
+    if (found != 0 && item.dataset_id != found) {
+      return 0;
+    }
+    found = item.dataset_id;
+  }
+  return found;
+}
+
 bool CatalogModel::isEmpty() const noexcept {
   return impl_->items.empty();
 }

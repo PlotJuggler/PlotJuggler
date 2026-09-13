@@ -136,6 +136,11 @@ class PlotWidgetBase : public QWidget {
   // does not bubble those events to ancestors).
   void installHoverFilter(QObject* filter);
 
+  // The Qwt canvas widget: the plot area proper, excluding axes and legend.
+  // Overlays that must stay inside the plotted region (the model-tab
+  // watermark) anchor to its geometry.
+  [[nodiscard]] QWidget* canvasWidget() const;
+
  public slots:
   void replot();
   virtual void removeAllCurves();

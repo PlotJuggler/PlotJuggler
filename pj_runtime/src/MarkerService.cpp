@@ -65,6 +65,14 @@ Status checkLanguage(std::string_view language) {
   return okStatus();
 }
 
+/// A marker series key identifies either a topic itself or a field below it.
+/// Requiring the slash boundary avoids treating similarly prefixed topics as
+/// the same input (for example, `imu` and `imu_raw`).
+bool seriesKeyBelongsToTopic(const std::string& key, const std::string& topic) {
+  return key == topic ||
+         (key.size() > topic.size() && key.compare(0, topic.size(), topic) == 0 && key[topic.size()] == '/');
+}
+
 }  // namespace
 
 MarkerService::MarkerService(ObjectStore& object_store, SeriesResolver resolver)
@@ -299,17 +307,51 @@ std::vector<std::string> MarkerService::recomputeForChangedInputs(
   return affected;
 }
 
-void MarkerService::clearAllGenerators() {
+std::vector<std::string> MarkerService::exemptDependentsOf(const std::vector<std::string>& removed_inputs) const {
+  std::vector<std::string> outputs;
+  for (const auto& [id, recipe] : recipes_) {
+    if (recipe.ephemeral || !recipe.history_exempt) {
+      continue;
+    }
+    const bool depends = std::any_of(recipe.inputs.begin(), recipe.inputs.end(), [&](const std::string& input) {
+      return std::any_of(removed_inputs.begin(), removed_inputs.end(), [&](const std::string& removed) {
+        return !removed.empty() && seriesKeyBelongsToTopic(input, removed);
+      });
+    });
+    if (!depends) {
+      continue;
+    }
+    if (recipe.outputs.empty()) {
+      outputs.push_back(id);
+    } else {
+      outputs.insert(outputs.end(), recipe.outputs.begin(), recipe.outputs.end());
+    }
+  }
+  std::sort(outputs.begin(), outputs.end());
+  outputs.erase(std::unique(outputs.begin(), outputs.end()), outputs.end());
+  return outputs;
+}
+
+bool MarkerService::hasHistoryExemptGenerators() const {
+  return std::any_of(recipes_.begin(), recipes_.end(), [](const auto& entry) { return entry.second.history_exempt; });
+}
+
+void MarkerService::clearGenerators(RestoreIntent intent) {
+  const bool keep_history_exempt = intent == RestoreIntent::kHistory;
   std::vector<std::string> ids;
   ids.reserve(recipes_.size());
-  for (const auto& entry : recipes_) {
-    if (!entry.second.ephemeral) {
-      ids.push_back(entry.first);
+  for (const auto& [id, recipe] : recipes_) {
+    if (!recipe.ephemeral && !(keep_history_exempt && recipe.history_exempt)) {
+      ids.push_back(id);
     }
   }
   for (const std::string& id : ids) {
     (void)removeGenerator(id);
   }
+}
+
+void MarkerService::clearAllGenerators() {
+  clearGenerators(RestoreIntent::kReplace);
 }
 
 std::vector<std::string> MarkerService::recomputeForDataset(DatasetId dataset) {

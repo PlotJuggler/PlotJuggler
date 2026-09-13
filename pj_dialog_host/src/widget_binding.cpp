@@ -15,6 +15,8 @@
 #include <qwt_plot_curve.h>
 #include <qwt_point_data.h>
 
+#include <QAbstractItemView>
+#include <QApplication>
 #include <QBoxLayout>
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -22,6 +24,8 @@
 #include <QDate>
 #include <QDateTime>
 #include <QDateTimeEdit>
+#include <QDesktopServices>
+#include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -31,11 +35,13 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHeaderView>
+#include <QHelpEvent>
 #include <QItemSelection>
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
@@ -54,11 +60,14 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QTextBrowser>
 #include <QTextCursor>
 #include <QTimeZone>
 #include <QTimer>
+#include <QToolTip>
 #include <QVBoxLayout>
 #include <QVariant>
+#include <QWidgetAction>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -79,10 +88,53 @@
 #include "chart_placeholder_overlay.hpp"
 #include "lua_syntax_highlighter.hpp"
 #include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/TailFollowOverlay.h"
 #include "python_syntax_highlighter.hpp"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
+
+// Widgets the host moved OUT of the panel tree into its own chrome (a side
+// drawer, say — see kHoistedWidgetsProperty). Every by-name lookup on a panel
+// root goes through these, so a hoisted widget keeps receiving its data and
+// keeps its rules exactly as if it still sat under the root.
+template <class TPtr>
+TPtr findNamedIn(QWidget* root, const QString& name) {
+  if (TPtr found = root->findChild<TPtr>(name); found != nullptr) {
+    return found;
+  }
+  for (const QVariant& entry : root->property(kHoistedWidgetsProperty).toList()) {
+    auto* hoisted = qobject_cast<QWidget*>(entry.value<QObject*>());
+    if (hoisted == nullptr) {
+      continue;
+    }
+    if (hoisted->objectName() == name) {
+      if (TPtr typed = qobject_cast<TPtr>(hoisted); typed != nullptr) {
+        return typed;
+      }
+    }
+    if (TPtr found = hoisted->findChild<TPtr>(name); found != nullptr) {
+      return found;
+    }
+  }
+  return nullptr;
+}
+
+template <class TPtr>
+QList<TPtr> findAllIn(QWidget* root) {
+  QList<TPtr> all = root->findChildren<TPtr>();
+  for (const QVariant& entry : root->property(kHoistedWidgetsProperty).toList()) {
+    auto* hoisted = qobject_cast<QWidget*>(entry.value<QObject*>());
+    if (hoisted == nullptr) {
+      continue;
+    }
+    if (TPtr typed = qobject_cast<TPtr>(hoisted); typed != nullptr) {
+      all.push_back(typed);
+    }
+    all.append(hoisted->findChildren<TPtr>());
+  }
+  return all;
+}
 
 QString resolveNamedIconPath(std::string_view icon_name) {
   if (icon_name == "link") {
@@ -106,6 +158,10 @@ QString resolveNamedIconPath(std::string_view icon_name) {
   }
   if (icon_name == "search") {
     return u":/resources/svg/search_light.svg"_s;
+  }
+  if (icon_name == "menu") {
+    // Hamburger: a panel's own drawer/side-list toggle.
+    return u":/resources/svg/menu.svg"_s;
   }
   if (icon_name == "add") {
     return u":/resources/svg/add.svg"_s;
@@ -474,6 +530,45 @@ namespace {
 // a table's column selection. The host hardcodes no widget name, so the
 // list-drives-table-columns pairing stays domain-neutral.
 constexpr const char* kColumnSelectorListProperty = "pjColumnSelectorList";
+// A QPlainTextEdit that is a transcript/log: opens on its newest lines,
+// follows them while the reader is at the end, and carries a "jump to the
+// latest" overlay while they are not (pj_widgets/TailFollowOverlay.h).
+constexpr const char* kFollowTailProperty = "pjFollowTail";
+// A QListWidget's row context menu, value "id=Label[;id2=Label 2...]" (the
+// same ';' clause separator the combo rules use). Not part of the dialog
+// protocol — the host only reports which id fired
+// (WidgetEventBuilder::itemContextAction); the action set itself is
+// host-rendered UI the plugin declares declaratively, like pj_enable_when.
+constexpr const char* kContextActionsProperty = "pj_context_actions";
+
+// One row context-menu entry: its id (reported back on choice) and label
+// (what the menu shows).
+struct ContextMenuAction {
+  QString id;
+  QString label;
+};
+
+// Parses kContextActionsProperty's value. Unlike the combo rules, a malformed
+// clause (no '=', empty id or label) is skipped rather than invalidating the
+// whole property — one broken entry just means one fewer menu item, not a
+// governed widget silently losing its enable/visible rule.
+std::vector<ContextMenuAction> parseContextActions(const QString& value) {
+  std::vector<ContextMenuAction> actions;
+  for (const QString& raw_clause : value.split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+    const QString clause = raw_clause.trimmed();
+    const qsizetype eq = clause.indexOf(QLatin1Char('='));
+    if (eq <= 0 || eq == clause.size() - 1) {
+      continue;
+    }
+    QString id = clause.left(eq).trimmed();
+    QString label = clause.mid(eq + 1).trimmed();
+    if (id.isEmpty() || label.isEmpty()) {
+      continue;
+    }
+    actions.push_back({std::move(id), std::move(label)});
+  }
+  return actions;
+}
 
 // Grey out an item while leaving it visible: a disabled item is neither enabled
 // nor selectable. Shared by the list and table disable paths.
@@ -542,12 +637,12 @@ void syncColumnSelectorTables(QWidget* root, const std::vector<std::string>& pay
   const auto in_payload = [&payload_names](const QString& widget_name) {
     return std::find(payload_names.begin(), payload_names.end(), widget_name.toStdString()) != payload_names.end();
   };
-  for (auto* tw : root->findChildren<QTableWidget*>()) {
+  for (auto* tw : findAllIn<QTableWidget*>(root)) {
     const QString list_name = tw->property(kColumnSelectorListProperty).toString();
     if (list_name.isEmpty() || (!in_payload(list_name) && !in_payload(tw->objectName()))) {
       continue;
     }
-    if (auto* list = root->findChild<QListWidget*>(list_name)) {
+    if (auto* list = findNamedIn<QListWidget*>(root, list_name)) {
       syncColumnSelectorTable(tw, list);
     }
   }
@@ -613,12 +708,22 @@ class ListRowDeleteDelegate : public QStyledItemDelegate {
       : QStyledItemDelegate(parent), on_delete_(std::move(on_delete)) {}
 
   void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
-    QStyledItemDelegate::paint(painter, option, index);
     if (!deletable() || !isLastColumn(index)) {
+      QStyledItemDelegate::paint(painter, option, index);
       return;
     }
+    // A row wider than the viewport (long text in a narrow list) would put the
+    // icon past the visible edge, where it cannot be seen or clicked. Anchor it
+    // to the visible edge instead, and elide the text so it stops short of it.
+    QStyleOptionViewItem opt = option;
+    initStyleOption(&opt, index);
+    opt.rect = rowRectInView(option);
+    opt.text = opt.fontMetrics.elidedText(opt.text, Qt::ElideRight, textBudget(option, index));
+    const QWidget* widget = option.widget;
+    QStyle* style = widget != nullptr ? widget->style() : QApplication::style();
+    style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
     const qreal dpr = painter->device() != nullptr ? painter->device()->devicePixelRatioF() : 1.0;
-    painter->drawPixmap(iconRect(option.rect), rowTrashPixmap(option.palette.color(QPalette::Text), kIconExtent, dpr));
+    painter->drawPixmap(iconRect(opt.rect), rowTrashPixmap(option.palette.color(QPalette::Text), kIconExtent, dpr));
   }
 
   QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override {
@@ -634,28 +739,80 @@ class ListRowDeleteDelegate : public QStyledItemDelegate {
 
   bool editorEvent(
       QEvent* event, QAbstractItemModel* model, const QStyleOptionViewItem& option, const QModelIndex& index) override {
-    if (deletable() && isLastColumn(index) && event->type() == QEvent::MouseButtonRelease) {
+    const QEvent::Type type = event->type();
+    const bool mouse_button =
+        type == QEvent::MouseButtonPress || type == QEvent::MouseButtonRelease || type == QEvent::MouseButtonDblClick;
+    if (deletable() && isLastColumn(index) && mouse_button) {
       const auto* me = static_cast<QMouseEvent*>(event);
-      if (me->button() == Qt::LeftButton && iconRect(option.rect).contains(me->pos())) {
-        // Report the delivered-order (plugin) index, not the view row: on a
-        // sorted list index.row() names a DIFFERENT underlying item, so the
-        // trash button would delete the wrong thing (double-click already
-        // translates the same way — see listItemPluginIndex).
-        const QVariant tag = index.data(kPluginRowRole);
-        on_delete_(tag.isValid() ? tag.toInt() : index.row());
-        return true;  // consume so it isn't also read as a selection change
+      if (me->button() == Qt::LeftButton && iconRect(rowRectInView(option)).contains(me->pos())) {
+        // The press is consumed too, not just the release: the view selects a
+        // row on press, and a plugin that reacts to selection (switching what
+        // the panel shows, hiding the list) can take the widget away before
+        // the release that was meant to delete ever arrives.
+        if (type == QEvent::MouseButtonRelease) {
+          // Report the delivered-order (plugin) index, not the view row: on a
+          // sorted list index.row() names a DIFFERENT underlying item, so the
+          // trash button would delete the wrong thing (double-click already
+          // translates the same way — see listItemPluginIndex).
+          const QVariant tag = index.data(kPluginRowRole);
+          on_delete_(tag.isValid() ? tag.toInt() : index.row());
+        }
+        return true;
       }
     }
     return QStyledItemDelegate::editorEvent(event, model, option, index);
   }
 
+  // Elided rows lose their tail to paint()'s budget above with no other way to
+  // read it back, so surface the full text as a tooltip whenever it doesn't
+  // fit that same budget; a row that already fits shows none (falling through
+  // to the base class, which has nothing to add — no Qt::ToolTipRole is ever
+  // set on these items).
+  bool helpEvent(
+      QHelpEvent* event, QAbstractItemView* view, const QStyleOptionViewItem& option,
+      const QModelIndex& index) override {
+    if (event == nullptr || event->type() != QEvent::ToolTip) {
+      return QStyledItemDelegate::helpEvent(event, view, option, index);
+    }
+    QStyleOptionViewItem opt = option;
+    initStyleOption(&opt, index);
+    if (opt.fontMetrics.horizontalAdvance(opt.text) > textBudget(option, index)) {
+      QToolTip::showText(event->globalPos(), opt.text, view);
+      return true;
+    }
+    return QStyledItemDelegate::helpEvent(event, view, option, index);
+  }
+
  private:
+  // The width paint() elides text into: the visible row minus the icon
+  // reservation when the trash icon is actually drawn on this (deletable,
+  // last) column, or the full visible row otherwise — a plain list elides
+  // through the style, with no icon to make room for. Shared with helpEvent
+  // so "does it fit" can never disagree between the paint and the tooltip.
+  [[nodiscard]] int textBudget(const QStyleOptionViewItem& option, const QModelIndex& index) const {
+    const int row_width = rowRectInView(option).width();
+    if (!deletable() || !isLastColumn(index)) {
+      return row_width;
+    }
+    return qMax(0, row_width - kIconExtent - (3 * kIconMargin));
+  }
+
   [[nodiscard]] bool deletable() const {
     const auto* view = qobject_cast<const QWidget*>(parent());
     return view != nullptr && view->property("pj_deletable").toBool();
   }
   [[nodiscard]] static bool isLastColumn(const QModelIndex& index) {
     return index.model() != nullptr && index.column() == index.model()->columnCount() - 1;
+  }
+  // The row's rect clipped to what the viewport actually shows. Both are in
+  // viewport coordinates, so this holds under horizontal scrolling too.
+  [[nodiscard]] static QRect rowRectInView(const QStyleOptionViewItem& option) {
+    QRect row = option.rect;
+    if (const auto* view = qobject_cast<const QAbstractItemView*>(option.widget);
+        view != nullptr && view->viewport() != nullptr) {
+      row.setRight(qMin(row.right(), view->viewport()->rect().right()));
+    }
+    return row;
   }
   [[nodiscard]] static QRect iconRect(const QRect& row) {
     return {
@@ -1115,6 +1272,182 @@ static bool applyTableDelta(QTableWidget* tw, const PJ::WidgetDataView::TableDel
   return true;
 }
 
+// The text last pushed into a pjFollowTail edit, kept so the next push can be
+// told apart as growth (a prefix match, O(n) memcmp) or a replacement without
+// re-serializing the document.
+constexpr const char* kFollowTailLastTextProperty = "_pj_follow_tail_text";
+constexpr const char* kMarkdownLastTextProperty = "_pj_markdown_text";
+constexpr const char* kMarkdownConfiguredProperty = "_pj_markdown_configured";
+
+// Attach a `TailFollowOverlay` to `view`'s viewport, unless one is already
+// there (idempotent — both text-transport paths call this on every apply).
+static void ensureTailFollowOverlay(QAbstractScrollArea* view) {
+  if (view->viewport()->findChild<QWidget*>(QStringLiteral("tailFollowOverlay"), Qt::FindDirectChildrenOnly) ==
+      nullptr) {
+    new TailFollowOverlay(view);
+  }
+}
+
+// pjFollowTail semantics for a QPlainTextEdit. A transcript grows at its end,
+// so growth is INSERTED there instead of re-set wholesale: the blocks already
+// laid out keep their layout and the viewport's top line does not move, which
+// is what keeps a scrolled-up reader in place. (setPlainText would re-lay the
+// whole document lazily — its scroll range reads low until the wrapped blocks
+// are measured, and a "was at the bottom?" check against that range lies.) A
+// reader at the end follows the new lines; a first population or a wholesale
+// replacement (another conversation swapped in) opens on the newest lines.
+static void applyFollowTailText(QPlainTextEdit* pte, const QString& new_text) {
+  const QString last = pte->property(kFollowTailLastTextProperty).toString();
+  QScrollBar* sb = pte->verticalScrollBar();
+  const bool grew = !last.isEmpty() && new_text.size() >= last.size() && new_text.startsWith(last);
+  if (grew) {
+    const bool at_end = sb->value() >= sb->maximum();
+    if (new_text.size() > last.size()) {
+      QTextCursor tail(pte->document());
+      tail.movePosition(QTextCursor::End);
+      tail.insertText(new_text.mid(last.size()));
+    }
+    if (at_end) {
+      // The cursor round trip only forces the true end to be laid out (so `maximum` is real);
+      // the cursor and any selection belong to the reader, and the scrollbar follows the tail.
+      const QTextCursor reader_cursor = pte->textCursor();
+      pte->moveCursor(QTextCursor::End);
+      pte->setTextCursor(reader_cursor);
+      sb->setValue(sb->maximum());
+    }
+  } else {
+    pte->setPlainText(new_text);
+    pte->moveCursor(QTextCursor::End);
+    sb->setValue(sb->maximum());
+  }
+  pte->setProperty(kFollowTailLastTextProperty, new_text);
+  ensureTailFollowOverlay(pte);
+}
+
+static bool isFenceLine(QStringView line) {
+  const QStringView trimmed = line.trimmed();
+  if (trimmed.size() < 3 || (trimmed.front() != u'`' && trimmed.front() != u'~')) {
+    return false;
+  }
+  for (const QChar ch : trimmed) {
+    if (ch != trimmed.front()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// True when a changed source is a rewrite of the live tail rather than another
+// conversation. Plugin renderers commonly keep terminal paragraph separators
+// and temporarily close an open code fence, so raw startsWith(last) is too
+// strict. Reaching into the final content block is enough evidence to preserve
+// the reader. With text-only transport, a replacement sharing that same prefix
+// is inherently indistinguishable and receives the conservative preserve-view
+// behavior too.
+static bool isMarkdownTailRewrite(const QString& last, const QString& next) {
+  if (last.isEmpty() || next.isEmpty()) {
+    return false;
+  }
+  qsizetype common = 0;
+  const qsizetype common_limit = std::min(last.size(), next.size());
+  while (common < common_limit && last[common] == next[common]) {
+    ++common;
+  }
+
+  qsizetype content_end = last.size();
+  while (content_end > 0 && last[content_end - 1].isSpace()) {
+    --content_end;
+  }
+  if (content_end > 0) {
+    const qsizetype final_line_start = last.lastIndexOf(u'\n', content_end - 1) + 1;
+    if (isFenceLine(QStringView(last).mid(final_line_start, content_end - final_line_start))) {
+      content_end = final_line_start;
+      while (content_end > 0 && last[content_end - 1].isSpace()) {
+        --content_end;
+      }
+    }
+  }
+
+  const qsizetype separator = content_end > 0 ? last.lastIndexOf(u"\n\n", content_end - 1) : -1;
+  const qsizetype final_block_start = separator < 0 ? 0 : separator + 2;
+  return common > final_block_start;
+}
+
+static void configureMarkdownBrowser(QTextBrowser* browser) {
+  if (browser->property(kMarkdownConfiguredProperty).toBool()) {
+    return;
+  }
+  browser->setProperty(kMarkdownConfiguredProperty, true);
+  browser->setReadOnly(true);
+  browser->setTextInteractionFlags(Qt::TextBrowserInteraction);
+  browser->setOpenLinks(false);
+  browser->setOpenExternalLinks(false);
+  browser->setAcceptDrops(false);
+  QObject::connect(browser, &QTextBrowser::anchorClicked, browser, [](const QUrl& url) {
+    const QString scheme = url.scheme();
+    if (url.isValid() &&
+        (scheme.compare(u"http", Qt::CaseInsensitive) == 0 || scheme.compare(u"https", Qt::CaseInsensitive) == 0)) {
+      QDesktopServices::openUrl(url);
+    }
+  });
+}
+
+static QTextDocument::MarkdownFeatures markdownFeatures() {
+  return QTextDocument::MarkdownFeatures(QTextDocument::MarkdownDialectGitHub) | QTextDocument::MarkdownNoHTML;
+}
+
+// Reparses `new_text` unless it is what the browser already shows. With
+// `follow_tail`, selection and scroll position survive the reparse and a
+// reader at the end stays at the end.
+static void applyMarkdownText(QTextBrowser* browser, const QString& new_text, bool follow_tail) {
+  configureMarkdownBrowser(browser);
+  const QVariant last_value = browser->property(kMarkdownLastTextProperty);
+  const QString last = last_value.toString();
+  if (last_value.isValid() && last == new_text) {
+    return;
+  }
+  if (!follow_tail) {
+    browser->document()->setMarkdown(new_text, markdownFeatures());
+    browser->setProperty(kMarkdownLastTextProperty, new_text);
+    return;
+  }
+
+  QScrollBar* sb = browser->verticalScrollBar();
+  const bool tail_rewrite = last_value.isValid() && isMarkdownTailRewrite(last, new_text);
+  const bool at_end = sb->value() >= sb->maximum();
+  const QTextCursor saved_cursor = browser->textCursor();
+  const int saved_anchor = saved_cursor.anchor();
+  const int saved_position = saved_cursor.position();
+  const QTextCursor top_cursor = browser->cursorForPosition(QPoint(0, 0));
+  const int top_position = top_cursor.position();
+  const int top_offset = browser->cursorRect(top_cursor).top();
+  const int old_scroll = sb->value();
+
+  browser->document()->setMarkdown(new_text, markdownFeatures());
+  browser->setProperty(kMarkdownLastTextProperty, new_text);
+
+  if (tail_rewrite) {
+    const int document_end = std::max(0, browser->document()->characterCount() - 1);
+    QTextCursor restored(browser->document());
+    restored.setPosition(std::clamp(saved_anchor, 0, document_end));
+    restored.setPosition(std::clamp(saved_position, 0, document_end), QTextCursor::KeepAnchor);
+    browser->setTextCursor(restored);
+    if (at_end) {
+      sb->setValue(sb->maximum());
+    } else {
+      QTextCursor restored_top(browser->document());
+      restored_top.setPosition(std::clamp(top_position, 0, document_end));
+      sb->setValue(std::clamp(old_scroll, 0, sb->maximum()));
+      sb->setValue(std::clamp(sb->value() + browser->cursorRect(restored_top).top() - top_offset, 0, sb->maximum()));
+    }
+  } else {
+    browser->moveCursor(QTextCursor::End);
+    sb->setValue(sb->maximum());
+  }
+
+  ensureTailFollowOverlay(browser);
+}
+
 static void applyToWidget(
     QWidget* w, std::string_view name, const PJ::WidgetDataView& view, PJ::AppSession* session = nullptr,
     PJ::CatalogModel* catalog = nullptr) {
@@ -1181,6 +1514,15 @@ static void applyToWidget(
     return;
   }
 
+  // --- QTextBrowser promoted from a pjMarkdown QPlainTextEdit ---
+  if (auto* browser = qobject_cast<QTextBrowser*>(w);
+      browser != nullptr && browser->property(kMarkdownProperty).toBool()) {
+    if (auto text = view.plainText(name)) {
+      applyMarkdownText(browser, QString::fromStdString(*text), browser->property(kFollowTailProperty).toBool());
+    }
+    return;
+  }
+
   // --- QPlainTextEdit ---
   if (auto* pte = qobject_cast<QPlainTextEdit*>(w)) {
     if (auto code = view.codeContent(name)) {
@@ -1232,7 +1574,24 @@ static void applyToWidget(
         pte->setTextCursor(tc);
       }
     } else if (auto pt = view.plainText(name)) {
-      pte->setPlainText(QString::fromStdString(*pt));
+      const QString new_text = QString::fromStdString(*pt);
+      if (pte->property(kFollowTailProperty).toBool()) {
+        applyFollowTailText(pte, new_text);
+      } else {
+        // Transcript/log semantics: setPlainText resets the viewport, which
+        // yanks a reader who was following the newest lines. On an UPDATE of
+        // an already-populated widget, stick to the bottom when the reader was
+        // at the end, else keep their place (clamped). First population keeps
+        // Qt's default (top), so document-style plain text opens at the start.
+        const bool had_content = !pte->document()->isEmpty();
+        QScrollBar* sb = pte->verticalScrollBar();
+        const bool at_bottom = sb->value() >= sb->maximum();
+        const int old_value = sb->value();
+        pte->setPlainText(new_text);
+        if (had_content) {
+          sb->setValue(at_bottom ? sb->maximum() : std::min(old_value, sb->maximum()));
+        }
+      }
     }
     if (auto v = view.readOnly(name)) {
       pte->setReadOnly(*v);
@@ -2116,13 +2475,19 @@ void applyWidgetData(
     QWidget* root, const PJ::WidgetDataView& view, PJ::AppSession* session, PJ::CatalogModel* catalog) {
   const std::vector<std::string> names = view.widgetNames();
   for (const auto& name : names) {
-    auto* w = root->findChild<QWidget*>(QString::fromStdString(name));
+    auto* w = findNamedIn<QWidget*>(root, QString::fromStdString(name));
     if (!w) {
       continue;
     }
     applyToWidget(w, name, view, session, catalog);
   }
   syncColumnSelectorTables(root, names);
+  // Re-assert "pj_enable_when"/"pj_visible_when" rules: applyToWidget wraps
+  // every apply in a QSignalBlocker, so a plugin-pushed combo index never
+  // fires the connected rule — and a plugin-pushed `enabled`/`visible` on a
+  // rule-governed widget would otherwise fight it. After every data apply,
+  // the rules win, deterministically.
+  refreshDeclarativeRules(root);
   // NOTE: styled-widget adaptation is NOT re-run here on every data tick. It is
   // structural (depends on the widget tree, built once at load), so the engines
   // call adaptStyledWidgets once after loading the .ui (see widget_adapters),
@@ -2144,7 +2509,7 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
   // ChartPreviewWidget instances are unnamed children of their parent QFrame.
   // Wire their viewChanged signals using the parent frame's objectName as the event widget name.
   // Must run after applyWidgetData() so charts that were created on first apply are found here.
-  for (auto* chart : root->findChildren<PJ::ChartPreviewWidget*>()) {
+  for (auto* chart : findAllIn<PJ::ChartPreviewWidget*>(root)) {
     auto* parent_frame = qobject_cast<QFrame*>(chart->parent());
     if (!parent_frame || parent_frame->objectName().isEmpty()) {
       continue;
@@ -2157,7 +2522,20 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
         });
   }
 
-  for (auto* w : root->findChildren<QWidget*>()) {
+  // Enter inside any text field triggers the panel's default button, matching
+  // native dialog behavior — panels are bare QWidgets, so Qt's own default-button
+  // auto-trigger (a QDialog feature) does not apply. Resolved once; click() is a
+  // no-op on a disabled button, so a busy/disabled default is ignored naturally,
+  // but it does fire on a hidden one, so visibility is checked at Return time.
+  QPushButton* default_button = nullptr;
+  for (auto* btn : findAllIn<QPushButton*>(root)) {
+    if (btn->isDefault()) {
+      default_button = btn;
+      break;
+    }
+  }
+
+  for (auto* w : findAllIn<QWidget*>(root)) {
     QString qname = w->objectName();
     if (qname.isEmpty() || isInternalWidgetName(qname)) {
       continue;
@@ -2168,6 +2546,17 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
       QObject::connect(le, &QLineEdit::textChanged, le, [callback, name](const QString& text) {
         callback(name, WidgetEventBuilder::textChanged(text.toStdString()));
       });
+      if (default_button != nullptr) {
+        // Enter-to-default for hosts WITHOUT native Return handling (docked
+        // panels in the QMainWindow). Inside a QDialog, Qt already clicks the
+        // default button when a line edit ignores Return — clicking here too
+        // would double-fire it — so this connection stands down there.
+        QObject::connect(le, &QLineEdit::returnPressed, default_button, [default_button]() {
+          if (default_button->isVisible() && qobject_cast<QDialog*>(default_button->window()) == nullptr) {
+            default_button->click();
+          }
+        });
+      }
       continue;
     }
     if (auto* pte = qobject_cast<QPlainTextEdit*>(w)) {
@@ -2259,6 +2648,51 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
       // is inert on ordinary lists.
       lw->setItemDelegate(new ListRowDeleteDelegate(
           lw, [callback, name](int row) { callback(name, WidgetEventBuilder::itemDeleteRequested(row)); }));
+      // Opt-in per-row context menu (kContextActionsProperty). An absent or
+      // empty property is today's behaviour: no menu, no policy change. Right-
+      // click never collides with the trash delegate above, which only
+      // consumes Qt::LeftButton.
+      if (auto actions = parseContextActions(lw->property(kContextActionsProperty).toString()); !actions.empty()) {
+        lw->setContextMenuPolicy(Qt::CustomContextMenu);
+        QObject::connect(
+            lw, &QListWidget::customContextMenuRequested, lw,
+            [callback, name, lw, actions = std::move(actions)](const QPoint& pos) {
+              QListWidgetItem* item = lw->itemAt(pos);
+              if (item == nullptr) {
+                return;  // no row under the cursor: no menu
+              }
+              // Standard rule: right-clicking a row outside the current
+              // selection targets just that row.
+              if (!item->isSelected()) {
+                lw->setCurrentItem(item);
+              }
+              // Flat QPushButtons in QWidgetActions — the house pattern for a
+              // PJMenu (CurveListPanel::onTreeContextMenu). QWidgetAction
+              // buttons don't dismiss the menu on click — close it ourselves
+              // and record the choice (exec blocks, so capturing by
+              // reference is safe).
+              QMenu menu(lw);
+              menu.setObjectName(u"PJMenu"_s);
+              QString chosen_id;
+              for (const auto& action : actions) {
+                auto* button = new QPushButton(action.label, &menu);
+                button->setFlat(true);
+                auto* widget_action = new QWidgetAction(&menu);
+                widget_action->setDefaultWidget(button);
+                menu.addAction(widget_action);
+                QObject::connect(button, &QPushButton::clicked, &menu, [&menu, &chosen_id, id = action.id]() {
+                  chosen_id = id;
+                  menu.close();
+                });
+              }
+              menu.exec(lw->viewport()->mapToGlobal(pos));
+              if (!chosen_id.isEmpty()) {
+                callback(
+                    name,
+                    WidgetEventBuilder::itemContextAction(listItemPluginIndex(lw, item), chosen_id.toStdString()));
+              }
+            });
+      }
       continue;
     }
     if (auto* tw = qobject_cast<QTableWidget*>(w)) {
@@ -2337,7 +2771,7 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
       // by header text), and all direct user selection on the table is disabled —
       // the list is the only driver.
       if (const QString list_name = tw->property(kColumnSelectorListProperty).toString(); !list_name.isEmpty()) {
-        if (auto* list = root->findChild<QListWidget*>(list_name)) {
+        if (auto* list = findNamedIn<QListWidget*>(root, list_name)) {
           tw->setSelectionBehavior(QAbstractItemView::SelectColumns);
           tw->setSelectionMode(QAbstractItemView::ExtendedSelection);
           tw->setFocusPolicy(Qt::NoFocus);
@@ -2427,12 +2861,139 @@ void installButtonShortcuts(QWidget* root, const PJ::WidgetDataView& view) {
     if (!sc) {
       continue;
     }
-    auto* btn = root->findChild<QPushButton*>(QString::fromStdString(name));
+    auto* btn = findNamedIn<QPushButton*>(root, QString::fromStdString(name));
     if (!btn) {
       continue;
     }
     auto* shortcut = new QShortcut(QKeySequence(QString::fromStdString(*sc)), root);
     QObject::connect(shortcut, &QShortcut::activated, btn, &QPushButton::click);
+  }
+}
+
+namespace {
+
+// Opt-in .ui dynamic properties: one or more "<comboObjectName>:<index>
+// [,<index>...]" clauses joined by ';'. A rule holds when EVERY clause's
+// combo sits on one of that clause's indices (AND across clauses); a single
+// clause is the common case.
+constexpr const char* kEnableWhenProperty = "pj_enable_when";
+constexpr const char* kVisibleWhenProperty = "pj_visible_when";
+
+// The rules installed under one root, resolved once: refreshDeclarativeRules
+// re-runs these closures instead of re-walking the tree and re-parsing every
+// rule string on each data tick. Parented to the root so it dies with it, and
+// found again by object name (no Q_OBJECT, so no findChildren by type). A
+// refresh from any ancestor root reaches it: engines install on the loaded
+// .ui root but refresh from the dialog that wraps it.
+constexpr const char* kInstalledRulesName = "_pj_installed_rules";
+class InstalledRules : public QObject {
+ public:
+  explicit InstalledRules(QWidget* root) : QObject(root) {
+    setObjectName(QLatin1StringView(kInstalledRulesName));
+  }
+  std::vector<std::function<void()>> reassert;
+};
+
+// One clause: the governing combo plus the indices on which it holds. The
+// combo is a QPointer because the rule outlives injected subtrees (a parser
+// dialog swapped for another protocol's) in the root's cache.
+struct ComboRule {
+  QPointer<QComboBox> combo;
+  QList<int> indices;
+};
+
+// Parses `property` off `w`. Any clause that fails (no colon, unknown combo,
+// no numeric index) invalidates the WHOLE rule — returns empty, leaving the
+// widget untouched, same as the single-rule parser this replaces.
+std::vector<ComboRule> parseComboRules(QWidget* root, const QWidget* w, const char* property) {
+  const QVariant rule = w->property(property);
+  if (!rule.isValid()) {
+    return {};
+  }
+  std::vector<ComboRule> rules;
+  for (const QString& raw_clause : rule.toString().split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+    const QString clause = raw_clause.trimmed();
+    const qsizetype colon = clause.indexOf(QLatin1Char(':'));
+    if (colon <= 0) {
+      return {};
+    }
+    auto* combo = findNamedIn<QComboBox*>(root, clause.left(colon).trimmed());
+    if (combo == nullptr) {
+      return {};
+    }
+    QList<int> indices;
+    for (const QString& tok : clause.mid(colon + 1).split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+      bool ok = false;
+      const int idx = tok.trimmed().toInt(&ok);
+      if (ok) {
+        indices.push_back(idx);
+      }
+    }
+    if (indices.isEmpty()) {
+      return {};
+    }
+    rules.push_back(ComboRule{combo, std::move(indices)});
+  }
+  return rules;
+}
+
+bool comboRulesHold(const std::vector<ComboRule>& rules) {
+  return std::all_of(rules.begin(), rules.end(), [](const ComboRule& rule) {
+    return !rule.combo.isNull() && rule.indices.contains(rule.combo->currentIndex());
+  });
+}
+
+// Shared walk for both the "pj_enable_when" and "pj_visible_when" rules:
+// `apply` is setEnabled for one, redirected setVisible for the other.
+void installComboRules(QWidget* root, InstalledRules& installed, const char* property, void (*apply)(QWidget*, bool)) {
+  // findAllIn yields descendants only; a rule authored on the loaded root counts too.
+  for (QWidget* w : QList<QWidget*>{root} + findAllIn<QWidget*>(root)) {
+    const auto rules = parseComboRules(root, w, property);
+    if (rules.empty()) {
+      continue;
+    }
+    // The target is a QPointer for the same reason the combos are: a cached
+    // rule whose widget was deleted with a replaced subtree must become a no-op.
+    const auto reassert = [target = QPointer<QWidget>(w), rules, apply]() {
+      if (!target.isNull()) {
+        apply(target.data(), comboRulesHold(rules));
+      }
+    };
+    // Any governing combo changing re-evaluates the WHOLE rule (all clauses),
+    // not just the one that moved.
+    for (const ComboRule& clause : rules) {
+      QObject::connect(clause.combo, &QComboBox::currentIndexChanged, w, [reassert](int) { reassert(); });
+    }
+    reassert();  // initial state through the same predicate every re-assert uses
+    installed.reassert.push_back(reassert);
+  }
+}
+
+void setEnabledFromRule(QWidget* w, bool holds) {
+  w->setEnabled(holds);
+}
+
+void setVisibleFromRule(QWidget* w, bool holds) {
+  // A swapped checkbox/radio hides its adapter replacement, not the hidden
+  // original — see redirectAdaptedVisibility. Un-adapted widgets just hide.
+  if (!redirectAdaptedVisibility(w, holds)) {
+    w->setVisible(holds);
+  }
+}
+
+}  // namespace
+
+void installDeclarativeRules(QWidget* root) {
+  auto* installed = new InstalledRules(root);
+  installComboRules(root, *installed, kEnableWhenProperty, setEnabledFromRule);
+  installComboRules(root, *installed, kVisibleWhenProperty, setVisibleFromRule);
+}
+
+void refreshDeclarativeRules(QWidget* root) {
+  for (QObject* child : root->findChildren<QObject*>(QLatin1StringView(kInstalledRulesName))) {
+    for (const auto& reassert : static_cast<InstalledRules*>(child)->reassert) {
+      reassert();
+    }
   }
 }
 

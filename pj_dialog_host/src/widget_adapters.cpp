@@ -12,6 +12,7 @@
 
 #include <QAbstractItemView>
 #include <QAbstractScrollArea>
+#include <QAbstractTextDocumentLayout>
 #include <QBoxLayout>
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -22,6 +23,7 @@
 #include <QLayout>
 #include <QPainter>
 #include <QPen>
+#include <QPlainTextEdit>
 #include <QPointer>
 #include <QRadioButton>
 #include <QSignalBlocker>
@@ -29,9 +31,12 @@
 #include <QStyleOptionViewItem>
 #include <QStyledItemDelegate>
 #include <QTableView>
+#include <QTextBrowser>
+#include <QTextObjectInterface>
 #include <QVariant>
 #include <algorithm>
 
+#include "pj_plugins/host_qt/widget_binding.hpp"
 #include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
@@ -42,6 +47,44 @@ namespace {
 constexpr const char* kDualOptionsWidgetProperty = "_pj_dual_options_widget";
 constexpr const char* kDualOptionsRadiosProperty = "_pj_dual_options_radios";
 constexpr const char* kDualOptionsDesiredVisibleProperty = "_pj_dual_options_desired_visible";
+
+// Markdown supplied by a plugin is self-contained display text. Prevent the
+// rich view from resolving image/file resources referenced by that text; links
+// are handled separately by widget_binding as explicit user actions.
+class MarkdownDocument final : public QTextDocument {
+ public:
+  using QTextDocument::QTextDocument;
+
+  QVariant loadResource(int /*type*/, const QUrl& /*name*/) override {
+    return QByteArray{};
+  }
+};
+
+// The stock image handler bypasses loadResource: when the document returns no
+// data it reads the file by name itself and caches the result in the document.
+// Replacing it lays out and paints nothing, so an image reference never opens a file.
+class BlockedImageHandler final : public QObject, public QTextObjectInterface {
+  Q_OBJECT
+  Q_INTERFACES(QTextObjectInterface)
+ public:
+  using QObject::QObject;
+
+  QSizeF intrinsicSize(QTextDocument* /*doc*/, int /*pos*/, const QTextFormat& /*format*/) override {
+    return {};
+  }
+  void drawObject(
+      QPainter* /*painter*/, const QRectF& /*rect*/, QTextDocument* /*doc*/, int /*pos*/,
+      const QTextFormat& /*format*/) override {}
+};
+
+class MarkdownTextBrowser final : public QTextBrowser {
+ public:
+  explicit MarkdownTextBrowser(QWidget* parent) : QTextBrowser(parent) {
+    auto* doc = new MarkdownDocument(this);
+    setDocument(doc);
+    doc->documentLayout()->registerHandler(QTextFormat::ImageObject, new BlockedImageHandler(doc));
+  }
+};
 
 static PJ::DualOptionsWidget* pairedDualOptionsWidget(const QWidget* widget) {
   QObject* obj = widget->property(kDualOptionsWidgetProperty).value<QObject*>();
@@ -684,10 +727,75 @@ void adaptGridTables(QWidget* root) {
   }
 }
 
+void adaptMarkdownEdits(QWidget* root) {
+  if (root == nullptr) {
+    return;
+  }
+  // Dynamic .ui properties are only available after QUiLoader has built the
+  // tree, which is why this promotion lives in the engines' post-load adapter
+  // pass rather than PjUiLoader::createWidget(). Only child edits in a layout
+  // can be replaced without changing the loaded root pointer.
+  const QList<QPlainTextEdit*> edits = root->findChildren<QPlainTextEdit*>();
+  for (QPlainTextEdit* edit : edits) {
+    if (!edit->property(kMarkdownProperty).toBool()) {
+      continue;
+    }
+    QWidget* parent = edit->parentWidget();
+    if (parent == nullptr || parent->layout() == nullptr) {
+      continue;
+    }
+
+    auto* browser = new MarkdownTextBrowser(parent);
+    browser->setObjectName(edit->objectName());
+    browser->setSizePolicy(edit->sizePolicy());
+    browser->setMinimumSize(edit->minimumSize());
+    browser->setMaximumSize(edit->maximumSize());
+    browser->setBaseSize(edit->baseSize());
+    browser->setFont(edit->font());
+    browser->setPalette(edit->palette());
+    browser->setStyleSheet(edit->styleSheet());
+    browser->setEnabled(edit->isEnabled());
+    browser->setVisible(!edit->isHidden());
+    browser->setFocusPolicy(edit->focusPolicy());
+    browser->setContextMenuPolicy(edit->contextMenuPolicy());
+    browser->setLayoutDirection(edit->layoutDirection());
+    browser->setToolTip(edit->toolTip());
+    browser->setStatusTip(edit->statusTip());
+    browser->setWhatsThis(edit->whatsThis());
+    browser->setAccessibleName(edit->accessibleName());
+    browser->setAccessibleDescription(edit->accessibleDescription());
+    browser->setHorizontalScrollBarPolicy(edit->horizontalScrollBarPolicy());
+    browser->setVerticalScrollBarPolicy(edit->verticalScrollBarPolicy());
+    browser->setFrameShape(edit->frameShape());
+    browser->setFrameShadow(edit->frameShadow());
+    browser->setLineWidth(edit->lineWidth());
+    browser->setMidLineWidth(edit->midLineWidth());
+    browser->setPlaceholderText(edit->placeholderText());
+    browser->setTabChangesFocus(edit->tabChangesFocus());
+    browser->setWordWrapMode(edit->wordWrapMode());
+    browser->setLineWrapMode(
+        edit->lineWrapMode() == QPlainTextEdit::NoWrap ? QTextEdit::NoWrap : QTextEdit::WidgetWidth);
+    browser->setTabStopDistance(edit->tabStopDistance());
+    browser->setPlainText(edit->toPlainText());
+
+    for (const QByteArray& property_name : edit->dynamicPropertyNames()) {
+      browser->setProperty(property_name.constData(), edit->property(property_name.constData()));
+    }
+
+    if (!replaceWidgetInLayout(parent, edit, browser)) {
+      delete browser;
+      continue;
+    }
+    edit->setObjectName({});
+    delete edit;
+  }
+}
+
 void adaptStyledWidgets(QWidget* root) {
   adaptRadioGroups(root);
   adaptCheckBoxes(root);
   adaptComboBoxes(root);
+  adaptMarkdownEdits(root);
   adaptScrollAreas(root);
   adaptGridTables(root);
 }
@@ -737,3 +845,5 @@ void forwardEmbeddedDialogClose(QWidget* content, QDialog* outer) {
 }
 
 }  // namespace PJ
+
+#include "widget_adapters.moc"

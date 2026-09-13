@@ -725,6 +725,13 @@ const LoadedMessageParser* ExtensionCatalogService::findParserByEncoding(QString
   return catalog.findParserByEncoding(encoding.toString().toStdString());
 }
 
+const LoadedToolbox* ExtensionCatalogService::findToolbox(QStringView id) const {
+  const auto& all = toolboxes();
+  const auto it = std::find_if(
+      all.begin(), all.end(), [id](const LoadedToolbox& toolbox) { return QString::fromStdString(toolbox.id) == id; });
+  return it == all.end() ? nullptr : &*it;
+}
+
 QString ExtensionCatalogService::buildFileFilter() const {
   return QString::fromStdString(plugin_catalog_->buildFileFilter());
 }

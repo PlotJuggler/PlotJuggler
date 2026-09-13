@@ -19,9 +19,13 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFontMetrics>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QHash>
 #include <QIcon>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLocale>
@@ -147,6 +151,7 @@
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_plugins/host/toolbox_handle.hpp"
 #include "pj_plugins/host_qt/panel_engine.hpp"
+#include "pj_plugins/host_qt/widget_binding.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
@@ -157,7 +162,9 @@
 #include "pj_runtime/IObjectViewer.h"
 #include "pj_runtime/MarkerService.h"
 #include "pj_runtime/MarkersRuntimeHost.h"
+#include "pj_runtime/PlaybackControlHost.h"
 #include "pj_runtime/PlaybackEngine.h"
+#include "pj_runtime/PlotTabsRuntimeHost.h"
 #include "pj_runtime/QSettingsBackend.h"
 #include "pj_runtime/RecordingService.h"
 #include "pj_runtime/SessionManager.h"
@@ -170,6 +177,7 @@
 #include "pj_runtime/ToolboxRuntimeHost.h"
 #include "pj_runtime/TopicDemandTracker.h"
 #include "pj_runtime/UpdateChecker.h"
+#include "pj_runtime/ViewportRuntimeHost.h"
 #ifdef PJ_WITH_SCENE2D
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
@@ -180,6 +188,7 @@
 #endif
 #include "pj_scene_common/scene_dock_widget.h"
 #include "pj_widgets/CoalescingTrigger.h"
+#include "pj_widgets/Dialog.h"
 #include "pj_widgets/FileDialog.h"
 #include "pj_widgets/FlowLayout.h"
 #include "pj_widgets/FrameworkTokens.h"
@@ -190,6 +199,7 @@
 #endif
 #include "pj_widgets/Scrollbar.h"
 #include "pj_widgets/SectionHeaderBand.h"
+#include "pj_widgets/SideDrawer.h"
 #include "pj_widgets/SvgButton.h"
 #include "pj_widgets/SvgUtil.h"
 #include "pj_widgets/Timeline.h"
@@ -221,6 +231,67 @@ namespace PJ {
 
 namespace {
 Q_LOGGING_CATEGORY(lcMain, "pj.app.main")
+
+// The `.ui` dynamic properties a toolbox panel uses to reach the host's chrome
+// (documented in pj_dialog_host/CLAUDE.md). A button tagged
+// pjToolboxChromeAction is hidden in the content and stood in for by a proxy in
+// the banner / floating title bar (chromeActionIcon = its SVG resource path,
+// chromeActionSlot = "leading" to sit before the title, else after it). A
+// widget tagged pjToolboxSideDrawer is hoisted out of the content into a
+// full-height column at the left of the whole chrome.
+constexpr const char* kToolboxChromeActionProperty = "pjToolboxChromeAction";
+constexpr const char* kToolboxChromeActionIconProperty = "chromeActionIcon";
+constexpr const char* kToolboxChromeActionSlotProperty = "chromeActionSlot";
+constexpr const char* kToolboxSideDrawerProperty = "pjToolboxSideDrawer";
+
+// The splitter wrapToolboxPanel put a hoisted side drawer in (outer's only
+// child), or null when the panel has no drawer.
+QSplitter* toolboxDrawerSplitter(QWidget* container) {
+  auto* outer = qobject_cast<QBoxLayout*>(container->layout());
+  if (outer == nullptr || outer->count() == 0) {
+    return nullptr;
+  }
+  return qobject_cast<QSplitter*>(outer->itemAt(0)->widget());
+}
+
+// QSettings key for a persisted drawer width, keyed per plugin (or manifest)
+// identity so different toolboxes don't fight over one saved width.
+QString toolboxDrawerWidthSettingsKey(const QString& persist_key) {
+  return persist_key.isEmpty() ? QString() : u"ToolboxDrawerWidth/%1"_s.arg(persist_key);
+}
+
+// Stands a chrome proxy in for a plugin button tagged pjToolboxChromeAction:
+// same icon (help.svg when the plugin names none), tooltip and cursor, clicks
+// forwarded to the original so its routing is untouched. The caller places it.
+SvgButton* makeChromeActionProxy(QAbstractButton* src, QWidget* parent) {
+  QString icon_path = src->property(kToolboxChromeActionIconProperty).toString();
+  if (icon_path.isEmpty()) {
+    icon_path = u":/resources/svg/help.svg"_s;
+  }
+  auto* proxy = new SvgButton(icon_path, SvgButton::Size::kDefault, parent);
+  proxy->setToolTip(src->toolTip());
+  proxy->setCursor(Qt::PointingHandCursor);
+  QObject::connect(proxy, &QAbstractButton::clicked, proxy, [src = QPointer<QAbstractButton>(src)]() {
+    if (!src.isNull()) {
+      src->click();
+    }
+  });
+  return proxy;
+}
+
+std::vector<QAbstractButton*> taggedChromeActions(QWidget* content) {
+  std::vector<QAbstractButton*> tagged;
+  for (auto* src : content->findChildren<QAbstractButton*>()) {
+    if (src != nullptr && src->property(kToolboxChromeActionProperty).toBool()) {
+      tagged.push_back(src);
+    }
+  }
+  return tagged;
+}
+
+bool isLeadingChromeAction(const QAbstractButton* src) {
+  return src->property(kToolboxChromeActionSlotProperty).toString() == u"leading"_s;
+}
 
 // Check the button with id `id` in an exclusive QButtonGroup as a passive UI
 // resync, with the group's signals blocked. The block is load-bearing: a passive
@@ -441,6 +512,7 @@ inline constexpr std::array<std::pair<const char*, double>, 4> kWidthButtonSpecs
   }
   return scalar;
 }
+
 }  // namespace
 
 #ifdef PJ_TARGET_WASM
@@ -1509,6 +1581,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   ui_->leftPanel->populateCloudToolboxes(session_->extensionCatalog().toolboxes());
   connect(&session_->extensionCatalog(), &ExtensionCatalogService::catalogChanged, this, [this]() {
     ui_->leftPanel->populateCloudToolboxes(session_->extensionCatalog().toolboxes());
+    refreshOwnedPlotTabAvailability();
   });
 
   file_loader_ = std::make_unique<FileLoader>(
@@ -2808,20 +2881,25 @@ void MainWindow::onOpenMarketplace() {
 
   const WrappedToolboxPanel wrapped = wrapToolboxPanel(
       content, tr("Marketplace"),
-      /*on_close=*/
-      [this, reload_if_changed]() {
-        reload_if_changed();
-        restoreCentralArea();
-      },
-      /*on_migrate=*/
-      [this, reload_if_changed]() {
-        QWidget* released = releaseCentralPanel();
-        if (released == nullptr) {
-          return;
-        }
-        ui_->tabbedPlotWidget->addWidgetTab(
-            tr("Marketplace"), released, [reload_if_changed]() { reload_if_changed(); });
-      });
+      ToolboxChromeHooks{
+          .on_close =
+              [this, reload_if_changed]() {
+                reload_if_changed();
+                restoreCentralArea();
+              },
+          .on_migrate =
+              [this, reload_if_changed]() {
+                QWidget* released = releaseCentralPanel();
+                if (released == nullptr) {
+                  return;
+                }
+                ui_->tabbedPlotWidget->addWidgetTab(
+                    tr("Marketplace"), released, [reload_if_changed]() { reload_if_changed(); });
+              },
+          .on_float = {},
+          .on_dock = {},
+          .on_fold_busy = {},
+          .has_work_in_flight = {}});
 
   // The container owns every widget the controller's ui_ points at, so the
   // controller must not outlive it. Closing and migrating are not the only exits:
@@ -3769,6 +3847,11 @@ void MainWindow::syncPanelPreviewDisplay() {
       apply_to_panel(toolbox.container);
     }
   }
+  for (const FloatingToolbox& toolbox : floating_toolboxes_) {
+    if (!toolbox.container.isNull()) {
+      apply_to_panel(toolbox.container);
+    }
+  }
 }
 
 namespace {
@@ -3976,11 +4059,7 @@ void MainWindow::onPlotZoomChanged(PlotWidget* modified, QRectF rect) {
     // X extent onto each peer while leaving its vertical range exactly as the user
     // left it. A purely-vertical gesture (wheel on the left axis, "Zoom Out
     // Vertically") therefore carries an unchanged X and resolves to a no-op here.
-    QRectF peer_rect = plot->currentBoundingRect();
-    peer_rect.setLeft(rect.left());
-    peer_rect.setRight(rect.right());
-    plot->setZoomRectangle(peer_rect, false);
-    plot->replot();
+    plot->setVisibleXRange(rect.left(), rect.right());
   });
   // The State Transitions strips share the plots' time axis (setVisibleRange
   // never echoes back, so no feedback loop).
@@ -3996,11 +4075,7 @@ void MainWindow::onStateTransitionsRangeChanged(StateTransitionsDockWidget* sour
     if (plot->isEmpty() || plot->isXYPlot() || !plot->isZoomLinkEnabled()) {
       return;
     }
-    QRectF peer_rect = plot->currentBoundingRect();
-    peer_rect.setLeft(t_min);
-    peer_rect.setRight(t_max);
-    plot->setZoomRectangle(peer_rect, false);
-    plot->replot();
+    plot->setVisibleXRange(t_min, t_max);
   });
   forEachStateStrip([source, t_min, t_max](StateTransitionsDockWidget* strip) {
     if (strip != source) {
@@ -4218,7 +4293,7 @@ void MainWindow::wireExistingPlots() {
   forEachDocker([this](PlotDocker* docker) { onPlotTabAdded(docker); });
 }
 
-void MainWindow::forEachDocker(const std::function<void(PlotDocker*)>& operation) {
+void MainWindow::forEachDocker(const std::function<void(PlotDocker*)>& operation) const {
   // Hoisted: dockerCount()/dockerAt() are linear scans since widget tabs
   // joined the tab vector; re-evaluating the count per iteration would make
   // this loop quadratic.
@@ -4332,6 +4407,268 @@ void MainWindow::syncWidgetsToCatalog() {
   onDockFocused(activeFocusedDock());
 }
 
+void MainWindow::forEachPlotOwnedBy(const QString& plugin_id, const std::function<void(PlotWidget*)>& operation) {
+  forEachDocker([&plugin_id, &operation](PlotDocker* docker) {
+    if (docker->ownerPlugin() != plugin_id) {
+      return;
+    }
+    const int plot_count = docker->plotCount();
+    for (int index = 0; index < plot_count; ++index) {
+      if (DockWidget* dock = docker->plotAt(index)) {
+        if (PlotWidget* plot = dock->plotWidget()) {
+          operation(plot);
+        }
+      }
+    }
+  });
+}
+
+Status MainWindow::zoomOwnedPlotsToTimeRange(const QString& plugin_id, double t0_s, double t1_s) {
+  // An explicit command deliberately ignores the Link-X toggle, and sets every
+  // plot itself, so there is no link feedback to propagate.
+  int owned = 0;
+  int zoomed = 0;
+  forEachPlotOwnedBy(plugin_id, [t0_s, t1_s, &owned, &zoomed](PlotWidget* plot) {
+    ++owned;
+    if (plot->isEmpty() || plot->isXYPlot()) {
+      return;
+    }
+    plot->setVisibleXRange(t0_s, t1_s);
+    ++zoomed;
+  });
+  if (zoomed != 0) {
+    return okStatus();
+  }
+  // Two distinct dead ends with two distinct remedies — open a tab, or put
+  // something in the one you have. Saying only "nothing to zoom" would leave a
+  // caller repeating whichever of the two it guessed.
+  return unexpected(
+      owned == 0 ? "this plugin owns no plot tab; create one before zooming"
+                 : "the tabs this plugin owns hold no time-series plot to zoom");
+}
+
+Status MainWindow::zoomOwnedPlotsOut(const QString& plugin_id) {
+  int owned = 0;
+  forEachPlotOwnedBy(plugin_id, [&owned](PlotWidget* plot) {
+    ++owned;
+    plot->zoomOut(false);
+  });
+  if (owned == 0) {
+    return unexpected("this plugin owns no plot tab; create one before zooming");
+  }
+  return okStatus();
+}
+
+namespace {
+// The host-namespaced form of a plugin's own tab name. It becomes the docker's
+// stateId, which is what stops two plugins choosing the same name from ever
+// addressing each other's tab.
+QString ownedTabKey(const QString& plugin_id, const QString& tab_id) {
+  return plugin_id + u"/"_s + tab_id;
+}
+}  // namespace
+
+PlotDocker* MainWindow::ownedPlotTab(const QString& plugin_id, const QString& tab_id) const {
+  // Ownership is only ever established in createOwnedPlotTab, which stamps
+  // both the namespaced stateId and the owner metadata; requiring both to
+  // agree is what keeps a user-made tab from ever answering to a plugin.
+  const QString key = ownedTabKey(plugin_id, tab_id);
+  PlotDocker* found = nullptr;
+  forEachDocker([&](PlotDocker* docker) {
+    if (found == nullptr && docker->stateId() == key && docker->ownerPlugin() == plugin_id) {
+      found = docker;
+    }
+  });
+  return found;
+}
+
+Status MainWindow::createOwnedPlotTab(const QString& plugin_id, const QString& tab_id, const QString& title) {
+  // Upsert: re-creating an id the plugin already used starts that tab over
+  // rather than accumulating duplicates it can no longer address.
+  if (PlotDocker* existing = ownedPlotTab(plugin_id, tab_id); existing != nullptr) {
+    if (auto status = clearOwnedPlotTab(plugin_id, tab_id); !status) {
+      return status;
+    }
+    existing->setName(title.isEmpty() ? existing->name() : title);
+    return okStatus();
+  }
+  PlotDocker* docker = ui_->tabbedPlotWidget->addTab(title);
+  if (docker == nullptr) {
+    return unexpected("the workspace refused a new tab");
+  }
+  docker->setStateId(ownedTabKey(plugin_id, tab_id));
+  docker->setHistoryExempt(true);
+  docker->setOwnerMetadata(plugin_id, tab_id);
+  docker->setOwnerBadge(toolboxBadge(plugin_id));
+  // Plugin composition has no history step: the tab is outside undo/redo even
+  // though it is durable in a full layout file.
+  return okStatus();
+}
+
+std::optional<double> MainWindow::displayTimeForSource(PJ_data_source_handle_t source, int64_t absolute_ns) const {
+  const auto seconds = session_->sessionManager().displayTimeForSource(source.id, absolute_ns);
+  return seconds.has_value() ? std::optional<double>(toAxisDouble(*seconds)) : std::nullopt;
+}
+
+QString MainWindow::toolboxBadge(const QString& plugin_id) const {
+  const LoadedToolbox* toolbox = session_->extensionCatalog().findToolbox(plugin_id);
+  if (toolbox == nullptr) {
+    return {};
+  }
+  return toolbox->name.empty() ? plugin_id : QString::fromStdString(toolbox->name);
+}
+
+void MainWindow::refreshOwnedPlotTabAvailability() {
+  forEachDocker([this](PlotDocker* docker) {
+    if (!docker->ownerPlugin().isEmpty()) {
+      docker->setOwnerBadge(toolboxBadge(docker->ownerPlugin()));
+    }
+  });
+}
+
+namespace {
+
+/// The ABI error for a tab id the calling plugin does not own (or that does not exist).
+Unexpected<std::string> noOwnedTabError(const QString& tab_id) {
+  return unexpected("no tab '" + tab_id.toStdString() + "' belonging to this plugin");
+}
+
+}  // namespace
+
+Status MainWindow::closeOwnedPlotTab(const QString& plugin_id, const QString& tab_id) {
+  PlotDocker* docker = ownedPlotTab(plugin_id, tab_id);
+  if (docker == nullptr) {
+    return noOwnedTabError(tab_id);
+  }
+  ui_->tabbedPlotWidget->closeTab(docker);
+  return okStatus();
+}
+
+Expected<std::vector<std::string>> MainWindow::listOwnedPlotTabs(const QString& plugin_id) const {
+  // Tab order, so the caller sees them the way the user does.
+  std::vector<std::string> ids;
+  forEachDocker([&](PlotDocker* docker) {
+    if (docker->ownerPlugin() == plugin_id) {
+      ids.push_back(docker->ownerTabId().toStdString());
+    }
+  });
+  return ids;
+}
+
+Expected<std::string> MainWindow::ownedPlotTabConfig(const QString& plugin_id, const QString& tab_id) const {
+  PlotDocker* docker = ownedPlotTab(plugin_id, tab_id);
+  if (docker == nullptr) {
+    return noOwnedTabError(tab_id);
+  }
+  QJsonArray curves;
+  const int plot_count = docker->plotCount();
+  for (int index = 0; index < plot_count; ++index) {
+    DockWidget* dock = docker->plotAt(index);
+    PlotWidget* plot = dock == nullptr ? nullptr : dock->plotWidget();
+    if (plot == nullptr) {
+      continue;
+    }
+    for (const auto& info : plot->curveList()) {
+      // Reported from the catalog entry the curve is actually bound to, so the
+      // dataset named here is the resolved one even when the caller left it
+      // blank — the point of a read-back is to answer "which run is this?".
+      const std::optional<CatalogItem> item = session_->catalogModel().itemDescriptor(info.source_name);
+      if (!item.has_value()) {
+        continue;
+      }
+      const ScalarFieldPayload* scalar = asScalarField(*item);
+      if (scalar == nullptr) {
+        continue;
+      }
+      QJsonObject curve;
+      curve.insert(u"topic"_s, item->topic_name);
+      curve.insert(u"field"_s, scalar->field_name);
+      curve.insert(u"dataset"_s, session_->catalogModel().datasetSourceName(item->dataset_id).value_or(QString()));
+      curves.append(curve);
+    }
+  }
+  QJsonObject root;
+  root.insert(u"title"_s, docker->name());
+  root.insert(u"curves"_s, curves);
+  return QJsonDocument(root).toJson(QJsonDocument::Compact).toStdString();
+}
+
+Status MainWindow::addCurveToOwnedPlotTab(
+    const QString& plugin_id, const QString& tab_id, const QString& topic, const QString& field,
+    const QString& dataset_source) {
+  PlotDocker* docker = ownedPlotTab(plugin_id, tab_id);
+  if (docker == nullptr) {
+    return noOwnedTabError(tab_id);
+  }
+  const std::optional<QString> key =
+      session_->catalogModel().resolveCurveKey(0, dataset_source, {}, topic, field, SeriesCapability::kPlottable);
+  if (!key.has_value()) {
+    // resolveCurveKey folds "no such series" and "several datasets have it"
+    // into one nullopt; the message names both remedies.
+    return unexpected(("no plottable series '" + topic + u"/"_s + field +
+                       "' is loaded, or it exists in several datasets (name one with dataset_source)")
+                          .toStdString());
+  }
+  DockWidget* dock = docker->plotAt(0);
+  PlotWidget* plot = dock == nullptr ? nullptr : dock->ensurePlotWidget();
+  if (plot == nullptr) {
+    return unexpected("the tab has no plot to draw in");
+  }
+  // A null return here means the title is taken, i.e. the curve is already
+  // drawn — which the service defines as success, not a failure to report.
+  plot->addCurve(*key);
+  plot->replot();
+  return okStatus();
+}
+
+Status MainWindow::removeCurveFromOwnedPlotTab(
+    const QString& plugin_id, const QString& tab_id, const QString& topic, const QString& field,
+    const QString& dataset_source) {
+  PlotDocker* docker = ownedPlotTab(plugin_id, tab_id);
+  if (docker == nullptr) {
+    return noOwnedTabError(tab_id);
+  }
+  const std::optional<QString> key =
+      session_->catalogModel().resolveCurveKey(0, dataset_source, {}, topic, field, SeriesCapability::kPlottable);
+  if (!key.has_value()) {
+    return unexpected(("no plottable series '" + topic + u"/"_s + field + "' is loaded").toStdString());
+  }
+  bool removed = false;
+  const int plot_count = docker->plotCount();
+  for (int index = 0; index < plot_count; ++index) {
+    DockWidget* dock = docker->plotAt(index);
+    PlotWidget* plot = dock == nullptr ? nullptr : dock->plotWidget();
+    if (plot == nullptr || plot->curveFromTitle(*key) == nullptr) {
+      continue;
+    }
+    plot->removeCurve(*key);
+    plot->replot();
+    removed = true;
+  }
+  if (!removed) {
+    // Deliberately an error: a path that was never drawn is a mistake worth
+    // seeing, not a no-op to swallow.
+    return unexpected(("'" + topic + u"/"_s + field + "' is not drawn in that tab").toStdString());
+  }
+  return okStatus();
+}
+
+Status MainWindow::clearOwnedPlotTab(const QString& plugin_id, const QString& tab_id) {
+  PlotDocker* docker = ownedPlotTab(plugin_id, tab_id);
+  if (docker == nullptr) {
+    return noOwnedTabError(tab_id);
+  }
+  const int plot_count = docker->plotCount();
+  for (int index = 0; index < plot_count; ++index) {
+    DockWidget* dock = docker->plotAt(index);
+    if (PlotWidget* plot = dock == nullptr ? nullptr : dock->plotWidget()) {
+      plot->removeAllCurves();
+      plot->replot();
+    }
+  }
+  return okStatus();
+}
+
 void MainWindow::linkedZoomOut() {
   if (!button_link_->isChecked()) {
     forEachPlot([](PlotWidget* plot) { plot->zoomOut(false); });
@@ -4403,6 +4740,12 @@ void MainWindow::closeEvent(QCloseEvent* event) {
   // its FileLoader tickets discarded) so no provider worker can call back
   // into the loader/session while they tear down.
   supersedeActiveRestore();
+  // Then the floating toolboxes: their PanelSession (plugin + host bridges)
+  // references session-owned services (PlaybackEngine, DataEngine, ...) that die
+  // with our members — but as QObject children the windows would be deleted only
+  // in ~QObject, after those members. Closing them now runs each panel's
+  // teardown while every referenced service is still alive.
+  closeAllFloatingToolboxWindows();
   // Stop and join any in-flight worker load (discard) and drain the queue BEFORE
   // the session/datastore tear down, so a worker can't write into a freed engine
   // or fire a queued completion at a half-destroyed window.
@@ -6641,7 +6984,7 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
   emitDiagnostic(DiagnosticLevel::kInfo, "Layout", "saved", tr("Saved layout: %1").arg(QFileInfo(path).fileName()));
 }
 
-QDomElement MainWindow::saveDataProcessors(QDomDocument& doc) const {
+QDomElement MainWindow::saveDataProcessors(QDomDocument& doc, SnapshotScope scope) const {
   QDomElement element = doc.createElement(u"data_processors"_s);
   for (const auto& recipe : session_->sessionManager().dataProcessorService().recipes()) {
     // Resolve the input column to a stable (topic, field) path so it rebinds on
@@ -6686,9 +7029,16 @@ QDomElement MainWindow::saveDataProcessors(QDomDocument& doc) const {
   // DataProcessorService::restoreTransform. Inputs/outputs are topic NAMES (the
   // engine resolves them on restore), so no (topic, field) rebinding is needed here.
   for (const auto& recipe : session_->sessionManager().dataProcessorService().transformRecipes()) {
+    // History snapshots omit entries the restore has no authority to replay.
+    if (scope == SnapshotScope::kHistory && recipe.history_exempt) {
+      continue;
+    }
     QDomElement transform = doc.createElement(u"transform"_s);
     transform.setAttribute(u"owner_plugin"_s, QString::fromStdString(recipe.owner_plugin));
     transform.setAttribute(u"id"_s, QString::fromStdString(recipe.user_id));
+    if (recipe.history_exempt) {
+      transform.setAttribute(u"history_exempt"_s, u"1"_s);
+    }
     transform.setAttribute(u"backend"_s, QString::fromStdString(recipe.backend));
     transform.setAttribute(u"api_version"_s, QString::fromStdString(recipe.api_version));
     if (!recipe.backend_version.empty()) {
@@ -6732,8 +7082,15 @@ QDomElement MainWindow::saveDataProcessors(QDomDocument& doc) const {
   // is stamped for cross-session rebind (mirrors the <processor> qualifiers); an
   // all_datasets generator has no single dataset, so it stamps none.
   for (const auto& recipe : session_->sessionManager().markerService().recipes()) {
+    // Marker generators use the same history scope as transforms.
+    if (scope == SnapshotScope::kHistory && recipe.history_exempt) {
+      continue;
+    }
     QDomElement gen = doc.createElement(u"generator"_s);
     gen.setAttribute(u"id"_s, QString::fromStdString(recipe.id));
+    if (recipe.history_exempt) {
+      gen.setAttribute(u"history_exempt"_s, u"1"_s);
+    }
     gen.setAttribute(u"language"_s, QString::fromStdString(recipe.language));
     gen.setAttribute(u"all_datasets"_s, recipe.all_datasets ? u"1"_s : u"0"_s);
     if (!recipe.all_datasets) {
@@ -6766,76 +7123,9 @@ QDomElement MainWindow::saveDataProcessors(QDomDocument& doc) const {
   return element;
 }
 
-bool MainWindow::restoreDataProcessors(const QDomElement& root) {
-  // Reconcile the live filter set to this snapshot: drop ALL current filters first,
-  // then recreate the snapshot's set. This makes restore idempotent for undo/redo (no
-  // duplicate or output-name-colliding filters) and correct for a layout load onto an
-  // existing session. A snapshot with NO <data_processors> still falls through to clear
-  // every filter; the rebuild at the end MUST run on both branches so the now-retired
-  // outputs leave the catalog.
-  auto& service = session_->sessionManager().dataProcessorService();
-  bool restored_all = true;
-  service.clearAllFilters();
-
-  const QDomElement element = root.firstChildElement(u"data_processors"_s);
-  // A null <data_processors> yields a null firstChildElement, so this loop runs zero
-  // times — the clear above is then the whole effect.
-  for (QDomElement processor = element.firstChildElement(u"processor"_s); !processor.isNull();
-       processor = processor.nextSiblingElement(u"processor"_s)) {
-    const QString input_topic = processor.attribute(u"input_topic"_s);
-    const QString input_field = processor.attribute(u"input_field"_s);
-    // Resolve the input through the same dataset-qualified path a plotted curve
-    // uses: the exact source dataset when its qualifiers still agree, a unique
-    // fallback otherwise, and never a same-topic sibling by load order.
-    const layout_xml::SeriesPath input_path{
-        input_topic, input_field, static_cast<DatasetId>(processor.attribute(u"input_dataset_id"_s).toUInt()),
-        processor.attribute(u"input_dataset_source"_s), processor.attribute(u"input_dataset_path"_s)};
-    std::optional<CurveDescriptor> input_desc;
-    if (const auto input_key = resolveSeriesPath(session_->catalogModel(), input_path); input_key.has_value()) {
-      input_desc = session_->catalogModel().curveDescriptor(*input_key);
-    }
-    if (!input_desc.has_value()) {
-      // The filter's source signal isn't in any loaded dataset -> the filter is
-      // dropped. Tell the user which one, mirroring the unknown/apply-failed cases
-      // below (otherwise a derived series silently vanishes on layout load).
-      emitDiagnostic(
-          DiagnosticLevel::kWarning, "Layout", "processor-input-missing",
-          tr("Layout filter on '%1/%2' has no matching data; skipping.").arg(input_topic, input_field));
-      restored_all = false;
-      continue;
-    }
-    const std::string id = processor.attribute(u"processor_id"_s).toStdString();
-    // Params are the <processor>'s OWN direct CDATA — directCdataText ignores the
-    // <source_fallback> child (QDomElement::text() would recurse and merge them).
-    const QString params = layout_xml::directCdataText(processor);
-    const QString source_fallback = processor.firstChildElement(u"source_fallback"_s).text();
-    // Resolve order: live catalogue → embedded source → transitional C++ builtin.
-    std::unique_ptr<proc::DataProcessor> built = service.makeRestoredProcessor(
-        id, params.isEmpty() ? std::string("{}") : params.toStdString(), source_fallback.toStdString());
-    if (!built) {
-      emitDiagnostic(
-          DiagnosticLevel::kWarning, "Layout", "processor-unknown",
-          tr("Layout filter '%1' is unknown to this PlotJuggler; skipping.").arg(QString::fromStdString(id)));
-      restored_all = false;
-      continue;
-    }
-    const auto applied = service.applyFilter(
-        input_desc->topic_id, input_desc->dataset_id, std::move(built),
-        processor.attribute(u"output_name"_s).toStdString(), input_desc->column_index);
-    if (!applied.has_value()) {
-      emitDiagnostic(
-          DiagnosticLevel::kWarning, "Layout", "processor-apply-failed",
-          tr("Could not restore filter: %1").arg(QString::fromStdString(applied.error())));
-      restored_all = false;
-    }
-  }
-
-  // Reconcile plugin transforms the same way (clear-all, then replay the snapshot's
-  // set) so restore is idempotent for undo/redo and a layout load can't duplicate a
-  // transform. Done AFTER filters so a transform whose input is a filter output can
-  // resolve it by name. The clear runs unconditionally: a snapshot with no
-  // <transform> children then simply leaves every transform torn down.
-  service.clearAllTransforms();
+std::vector<DataProcessorService::TransformRecipe> MainWindow::parseWantedTransforms(
+    const QDomElement& element, bool keep_exempt, bool* restored_all) {
+  std::vector<DataProcessorService::TransformRecipe> wanted_transforms;
   for (QDomElement transform = element.firstChildElement(u"transform"_s); !transform.isNull();
        transform = transform.nextSiblingElement(u"transform"_s)) {
     DataProcessorService::TransformRecipe recipe;
@@ -6843,6 +7133,13 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root) {
     recipe.owner_plugin = transform.attribute(u"owner_plugin"_s).toStdString();
     recipe.user_id = transform.attribute(u"id"_s).toStdString();
     recipe.key = DataProcessorService::makeTransformKey(recipe.owner_plugin, recipe.user_id);
+    recipe.history_exempt = transform.attribute(u"history_exempt"_s) == u"1"_s;
+    // Defensive: a kHistory document never carries an exempt entry by
+    // construction (saveDataProcessors omits them), but history still has no
+    // authority to replay one if it somehow did (e.g. a hand-edited snapshot).
+    if (keep_exempt && recipe.history_exempt) {
+      continue;
+    }
     recipe.backend = transform.attribute(u"backend"_s, u"luau"_s).toStdString();
     recipe.api_version = transform.attribute(u"api_version"_s, u"1"_s).toStdString();
     recipe.backend_version = transform.attribute(u"backend_version"_s).toStdString();
@@ -6909,7 +7206,148 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root) {
       emitDiagnostic(
           DiagnosticLevel::kWarning, "Layout", "transform-restore-failed",
           tr("Could not restore transform '%1': %2").arg(QString::fromStdString(recipe.key), transform_parse_error));
+      *restored_all = false;
+      continue;
+    }
+    wanted_transforms.push_back(std::move(recipe));
+  }
+  return wanted_transforms;
+}
+
+bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent intent, QString* out_reason) {
+  if (out_reason != nullptr) {
+    out_reason->clear();
+  }
+  auto& service = session_->sessionManager().dataProcessorService();
+  MarkerService& marker_service = session_->sessionManager().markerService();
+
+  // Parse the snapshot's transforms first and decide which live ones it leaves
+  // unchanged: those stay live with their output TopicIds, so curves bound to them
+  // (e.g. in a preserved history-exempt tab, which no history snapshot describes)
+  // survive an unrelated undo. The same set defines what the preflight below and
+  // the transform reconcile further down count as removed.
+  const QDomElement element = root.firstChildElement(u"data_processors"_s);
+  const bool keep_exempt = intent == RestoreIntent::kHistory;
+  bool restored_all = true;
+  std::vector<DataProcessorService::TransformRecipe> wanted_transforms =
+      parseWantedTransforms(element, keep_exempt, &restored_all);
+  const std::unordered_set<std::string> unchanged_keys = service.unchangedTransformKeys(wanted_transforms, intent);
+  std::unordered_set<std::string> live_exempt_keys;
+  for (const auto& live : service.transformRecipes()) {
+    if (keep_exempt && live.history_exempt) {
+      live_exempt_keys.insert(live.key);
+    }
+  }
+
+  // Reject before the first clear if what this restore removes — every filter
+  // plus each non-exempt transform the snapshot drops or changes — would strand an
+  // exempt transform or marker generator. The dependents walk is transitive, so an
+  // unchanged transform cascaded out by a filter clear is still discovered. Filter
+  // removal can cascade into transforms, so checking after filters are cleared
+  // would be too late.
+  if (intent == RestoreIntent::kHistory &&
+      (service.hasHistoryExemptTransforms() || marker_service.hasHistoryExemptGenerators())) {
+    const std::vector<NodeId> removable = service.liveNonExemptNodeIds(unchanged_keys);
+    std::vector<std::string> blocked = service.exemptDependentsOf(removable);
+    const std::vector<std::string> blocked_markers =
+        marker_service.exemptDependentsOf(service.liveNonExemptOutputNames(unchanged_keys));
+    blocked.insert(blocked.end(), blocked_markers.begin(), blocked_markers.end());
+    std::sort(blocked.begin(), blocked.end());
+    blocked.erase(std::unique(blocked.begin(), blocked.end()), blocked.end());
+    if (!blocked.empty()) {
+      QStringList names;
+      names.reserve(static_cast<int>(blocked.size()));
+      for (const std::string& name : blocked) {
+        names.push_back(QString::fromStdString(name));
+      }
+      const QString reason =
+          tr("Cannot undo: protected outputs would lose an input this step removes: %1").arg(names.join(u", "_s));
+      if (out_reason != nullptr) {
+        *out_reason = reason;
+      }
+      emitDiagnostic(DiagnosticLevel::kWarning, "Layout", "history-exempt-blocked", reason);
+      return false;
+    }
+  }
+
+  // Reconcile the live filter set to this snapshot: drop ALL current filters first,
+  // then recreate the snapshot's set. This makes restore idempotent for undo/redo (no
+  // duplicate or output-name-colliding filters) and correct for a layout load onto an
+  // existing session. A snapshot with NO <data_processors> still falls through to clear
+  // every filter; the rebuild at the end MUST run on both branches so the now-retired
+  // outputs leave the catalog. A FilterRecipe carries no exemption, so this clear is
+  // unconditional regardless of intent.
+  service.clearAllFilters();
+
+  // A null <data_processors> yields a null firstChildElement, so this loop runs zero
+  // times — the clear above is then the whole effect.
+  for (QDomElement processor = element.firstChildElement(u"processor"_s); !processor.isNull();
+       processor = processor.nextSiblingElement(u"processor"_s)) {
+    const QString input_topic = processor.attribute(u"input_topic"_s);
+    const QString input_field = processor.attribute(u"input_field"_s);
+    // Resolve the input through the same dataset-qualified path a plotted curve
+    // uses: the exact source dataset when its qualifiers still agree, a unique
+    // fallback otherwise, and never a same-topic sibling by load order.
+    const layout_xml::SeriesPath input_path{
+        input_topic, input_field, static_cast<DatasetId>(processor.attribute(u"input_dataset_id"_s).toUInt()),
+        processor.attribute(u"input_dataset_source"_s), processor.attribute(u"input_dataset_path"_s)};
+    std::optional<CurveDescriptor> input_desc;
+    if (const auto input_key = resolveSeriesPath(session_->catalogModel(), input_path); input_key.has_value()) {
+      input_desc = session_->catalogModel().curveDescriptor(*input_key);
+    }
+    if (!input_desc.has_value()) {
+      // The filter's source signal isn't in any loaded dataset -> the filter is
+      // dropped. Tell the user which one, mirroring the unknown/apply-failed cases
+      // below (otherwise a derived series silently vanishes on layout load).
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "Layout", "processor-input-missing",
+          tr("Layout filter on '%1/%2' has no matching data; skipping.").arg(input_topic, input_field));
       restored_all = false;
+      continue;
+    }
+    const std::string id = processor.attribute(u"processor_id"_s).toStdString();
+    // Params are the <processor>'s OWN direct CDATA — directCdataText ignores the
+    // <source_fallback> child (QDomElement::text() would recurse and merge them).
+    const QString params = layout_xml::directCdataText(processor);
+    const QString source_fallback = processor.firstChildElement(u"source_fallback"_s).text();
+    // Resolve order: live catalogue → embedded source → transitional C++ builtin.
+    std::unique_ptr<proc::DataProcessor> built = service.makeRestoredProcessor(
+        id, params.isEmpty() ? std::string("{}") : params.toStdString(), source_fallback.toStdString());
+    if (!built) {
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "Layout", "processor-unknown",
+          tr("Layout filter '%1' is unknown to this PlotJuggler; skipping.").arg(QString::fromStdString(id)));
+      restored_all = false;
+      continue;
+    }
+    const auto applied = service.applyFilter(
+        input_desc->topic_id, input_desc->dataset_id, std::move(built),
+        processor.attribute(u"output_name"_s).toStdString(), input_desc->column_index);
+    if (!applied.has_value()) {
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "Layout", "processor-apply-failed",
+          tr("Could not restore filter: %1").arg(QString::fromStdString(applied.error())));
+      restored_all = false;
+    }
+  }
+
+  // Remove only the live transforms the snapshot drops or changes and replay the
+  // rest. Done AFTER filters so a transform whose input is a filter output can
+  // resolve it by name (the filter clear cascades such a transform out, and the
+  // replay below reinstalls it). Replacement may drop every transform; history
+  // never touches the exempt ones, after the preflight above.
+  service.clearTransforms(intent, unchanged_keys);
+  std::unordered_set<std::string> still_live_keys;
+  for (const auto& live : service.transformRecipes()) {
+    still_live_keys.insert(live.key);
+  }
+  for (const auto& recipe : wanted_transforms) {
+    // History has no authority over a live exempt transform, even when the
+    // snapshot predates its exemption and carries the same key.
+    if (live_exempt_keys.count(recipe.key) != 0) {
+      continue;
+    }
+    if (unchanged_keys.count(recipe.key) != 0 && still_live_keys.count(recipe.key) != 0) {
       continue;
     }
     if (const auto restored = service.restoreTransform(recipe); !restored.has_value()) {
@@ -6921,15 +7359,30 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root) {
     }
   }
 
-  // Marker generators: clear-all + replay, same as transforms. Done after them so a
+  // Marker generators: clear + replay, same as transforms. Done after them so a
   // generator reading a transform/filter output resolves it by name. upsertGenerator
   // re-creates AND re-runs each in one call, so no separate recompute is needed.
-  MarkerService& marker_service = session_->sessionManager().markerService();
-  marker_service.clearAllGenerators();
+  // Replacement clears every generator; history clears only the non-exempt ones,
+  // after the dependency preflight above.
+  marker_service.clearGenerators(intent);
+  std::unordered_set<std::string> live_exempt_generators;
+  if (keep_exempt) {
+    for (const auto& live : marker_service.recipes()) {
+      if (live.history_exempt) {
+        live_exempt_generators.insert(live.id);
+      }
+    }
+  }
   for (QDomElement gen = element.firstChildElement(u"generator"_s); !gen.isNull();
        gen = gen.nextSiblingElement(u"generator"_s)) {
     MarkerService::GeneratorRecipe recipe;
     recipe.id = gen.attribute(u"id"_s).toStdString();
+    recipe.history_exempt = gen.attribute(u"history_exempt"_s) == u"1"_s;
+    // Mirrors the transform loop: history has no authority over an exempt
+    // generator, whether the document flags it or a live exempt one holds its id.
+    if (keep_exempt && (recipe.history_exempt || live_exempt_generators.count(recipe.id) != 0)) {
+      continue;
+    }
     recipe.kind = GeneratorKind::kMarkers;
     recipe.language = gen.attribute(u"language"_s, u"luau"_s).toStdString();
     recipe.all_datasets = gen.attribute(u"all_datasets"_s) == u"1"_s;
@@ -7187,8 +7640,12 @@ MainWindow::TimelineState MainWindow::captureTimelineState() const {
   return state;
 }
 
+MainWindow::CapturedWorkspace MainWindow::captureWorkspace(SnapshotScope scope) const {
+  return CapturedWorkspace{.xml = xmlSaveState(scope).toByteArray(2), .timeline = captureTimelineState()};
+}
+
 MainWindow::CapturedWorkspace MainWindow::captureWorkspace() const {
-  return CapturedWorkspace{.xml = xmlSaveState().toByteArray(2), .timeline = captureTimelineState()};
+  return captureWorkspace(SnapshotScope::kFull);
 }
 
 MainWindow::CapturedWorkspace MainWindow::capturePortableWorkspace(
@@ -7319,11 +7776,11 @@ bool MainWindow::applyTimelineState(const TimelineState& state, const TimelineRe
 
 MainWindow::RestoreResult MainWindow::applyWorkspace(
     QDomDocument& doc, MissingCurvePolicy policy, const TimelineState* timeline_state,
-    const TimelineResolutionPlan* timeline_plan) {
+    const TimelineResolutionPlan* timeline_plan, RestoreIntent intent, QString* out_reason) {
   const QDomElement root = doc.documentElement();
   // 1. Recreate the snapshot's filters first, so each derived output topic is in the
   //    catalog and its plotted (derived) curve resolves like any other curve.
-  if (!restoreDataProcessors(root)) {
+  if (!restoreDataProcessors(root, intent, out_reason)) {
     return RestoreResult::kFailed;
   }
   // 2. Rebind every curve's stable topic+field to a concrete catalog key.
@@ -7371,7 +7828,7 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
   // kSilentDrop compatibility restores leave unresolved curves for xmlLoadState
   // to discard. Undo/redo uses kExact.
   // 3. Apply plots + global toggles.
-  if (!xmlLoadState(doc)) {
+  if (!xmlLoadState(doc, intent)) {
     return RestoreResult::kFailed;
   }
   // Plot reconstruction, the timeline, and scene docks are independent restore
@@ -7409,7 +7866,19 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
         DiagnosticLevel::kWarning, "Layout", "scene_restore_pending",
         tr("%n scene layer(s) are not yet bound.", nullptr, static_cast<int>(scenes.blocking_topics.size())));
   }
-  forEachPlot([](PlotWidget* plot) { plot->applySavedViewportOrZoom(/*clear_after=*/true); });
+  // A history restore rebuilds only the non-exempt dockers; an exempt one was
+  // preserved live and has no saved viewport, so re-framing it would zoom it out.
+  forEachDocker([intent](PlotDocker* docker) {
+    if (intent == RestoreIntent::kHistory && docker->isHistoryExempt()) {
+      return;
+    }
+    for (int index = 0; index < docker->plotCount(); ++index) {
+      DockWidget* dock = docker->plotAt(index);
+      if (PlotWidget* plot = dock != nullptr ? dock->plotWidget() : nullptr) {
+        plot->applySavedViewportOrZoom(/*clear_after=*/true);
+      }
+    }
+  });
   // 4. Seed the just-recreated docks with the current playhead. currentTimeChanged
   // only fires on a CHANGE, so a freshly restored dock would sit at no-tracker-time
   // until the next scrub — scene docks then render blank (TF lookups / image decode
@@ -7428,7 +7897,8 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
 
 MainWindow::RestoreResult MainWindow::restoreWorkspaceStateImpl(
     QDomDocument& doc, MissingCurvePolicy policy, const TimelineState* timeline_state,
-    TimelineRestoreMode timeline_mode, const CapturedWorkspace* rollback_to) {
+    TimelineRestoreMode timeline_mode, const CapturedWorkspace* rollback_to, RestoreIntent intent,
+    QString* out_reason) {
   std::optional<TimelineResolutionPlan> timeline_plan;
   if (timeline_state != nullptr) {
     timeline_plan = validateTimelineState(*timeline_state, timeline_mode);
@@ -7438,10 +7908,20 @@ MainWindow::RestoreResult MainWindow::restoreWorkspaceStateImpl(
   }
 
   QScopedValueRollback applying_guard(applying_state_, true);
-  const CapturedWorkspace previous = rollback_to != nullptr ? *rollback_to : captureWorkspace();
-  const RestoreResult result =
-      applyWorkspace(doc, policy, timeline_state, timeline_plan.has_value() ? &*timeline_plan : nullptr);
+  const CapturedWorkspace previous =
+      rollback_to != nullptr
+          ? *rollback_to
+          : captureWorkspace(intent == RestoreIntent::kHistory ? SnapshotScope::kHistory : SnapshotScope::kFull);
+  QString internal_reason;
+  QString* reason = out_reason != nullptr ? out_reason : &internal_reason;
+  const RestoreResult result = applyWorkspace(
+      doc, policy, timeline_state, timeline_plan.has_value() ? &*timeline_plan : nullptr, intent, reason);
   if (result == RestoreResult::kApplied) {
+    return result;
+  }
+  // Dependency refusal is a preflight result: no participant changed state, so
+  // replaying the rollback would only repeat the same refusal and diagnostic.
+  if (!reason->isEmpty()) {
     return result;
   }
 
@@ -7450,26 +7930,31 @@ MainWindow::RestoreResult MainWindow::restoreWorkspaceStateImpl(
     const std::optional<TimelineResolutionPlan> previous_plan =
         validateTimelineState(previous.timeline, TimelineRestoreMode::kExact);
     if (previous_plan.has_value()) {
+      // The rollback replays the SAME intent as the failed transaction: a
+      // kHistory attempt that failed after clearing non-exempt processors must
+      // roll back under kHistory too, so the exempt set stays untouched and
+      // only the non-exempt ones are reconciled back to `previous`.
       static_cast<void>(
-          applyWorkspace(previous_doc, MissingCurvePolicy::kSilentDrop, &previous.timeline, &*previous_plan));
+          applyWorkspace(previous_doc, MissingCurvePolicy::kSilentDrop, &previous.timeline, &*previous_plan, intent));
     }
   }
   return result;
 }
 
 MainWindow::RestoreResult MainWindow::restoreWorkspaceState(
-    QDomDocument& doc, MissingCurvePolicy policy, const CapturedWorkspace* rollback_to) {
-  return restoreWorkspaceStateImpl(doc, policy, nullptr, TimelineRestoreMode::kExact, rollback_to);
+    QDomDocument& doc, MissingCurvePolicy policy, const CapturedWorkspace* rollback_to, RestoreIntent intent,
+    QString* out_reason) {
+  return restoreWorkspaceStateImpl(doc, policy, nullptr, TimelineRestoreMode::kExact, rollback_to, intent, out_reason);
 }
 
 MainWindow::RestoreResult MainWindow::restoreWorkspaceState(
     const CapturedWorkspace& target, MissingCurvePolicy policy, TimelineRestoreMode timeline_mode,
-    const CapturedWorkspace* rollback_to) {
+    const CapturedWorkspace* rollback_to, RestoreIntent intent, QString* out_reason) {
   QDomDocument doc;
   if (!doc.setContent(target.xml)) {
     return RestoreResult::kFailed;
   }
-  return restoreWorkspaceStateImpl(doc, policy, &target.timeline, timeline_mode, rollback_to);
+  return restoreWorkspaceStateImpl(doc, policy, &target.timeline, timeline_mode, rollback_to, intent, out_reason);
 }
 
 void MainWindow::onUndo() {
@@ -7491,12 +7976,17 @@ void MainWindow::onRedo() {
 }
 
 void MainWindow::restoreHistoryState(const CapturedWorkspace& target, bool undo) {
-  const CapturedWorkspace current_state = captureWorkspace();
-  const bool loaded =
-      restoreWorkspaceState(target, MissingCurvePolicy::kExact, TimelineRestoreMode::kExact, &current_state) ==
-      RestoreResult::kApplied;
+  // Capture the rollback at the same scope as the target so failure recovery
+  // also leaves every exempt processor and tab untouched.
+  const CapturedWorkspace current_state = captureWorkspace(SnapshotScope::kHistory);
+  QString reason;
+  const bool loaded = restoreWorkspaceState(
+                          target, MissingCurvePolicy::kExact, TimelineRestoreMode::kExact, &current_state,
+                          RestoreIntent::kHistory, &reason) == RestoreResult::kApplied;
   if (!loaded) {
-    statusBar()->showMessage(undo ? tr("Unable to restore undo state") : tr("Unable to restore redo state"), 3000);
+    statusBar()->showMessage(
+        !reason.isEmpty() ? reason : (undo ? tr("Unable to restore undo state") : tr("Unable to restore redo state")),
+        3000);
   } else if (undo) {
     redo_states_.push_back(current_state);
     undo_states_.pop_back();
@@ -8093,7 +8583,7 @@ MainWindow::MissingCurveChoice MainWindow::promptMissingCurves(
   return choice == kRemove ? MissingCurveChoice::kRemove : MissingCurveChoice::kCancel;
 }
 
-QDomDocument MainWindow::xmlSaveState() const {
+QDomDocument MainWindow::xmlSaveState(SnapshotScope scope) const {
   QDomDocument doc;
   doc.appendChild(doc.createProcessingInstruction(u"xml"_s, u"version='1.0' encoding='UTF-8'"_s));
 
@@ -8102,7 +8592,7 @@ QDomDocument MainWindow::xmlSaveState() const {
   root.setAttribute(u"pj4_version"_s, QString::number(kLayoutSchemaVersion));
   doc.appendChild(root);
 
-  root.appendChild(ui_->tabbedPlotWidget->xmlSaveState(doc));
+  root.appendChild(ui_->tabbedPlotWidget->xmlSaveState(doc, scope));
 
   // The global toolbar toggles (link X, show-point, legend, grid, dots, tracker
   // mode, 1:1 ratio, "Use time offset") are deliberately NOT serialized here.
@@ -8116,11 +8606,15 @@ QDomDocument MainWindow::xmlSaveState() const {
   // used by undo/redo (not just layout save). Without this, undoing across a filter's
   // creation drops its derived curve (its output topic is never recreated on restore).
   // saveLayoutToPath therefore no longer appends this separately.
-  root.appendChild(saveDataProcessors(doc));
+  root.appendChild(saveDataProcessors(doc, scope));
   return doc;
 }
 
-bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
+QDomDocument MainWindow::xmlSaveState() const {
+  return xmlSaveState(SnapshotScope::kFull);
+}
+
+bool MainWindow::xmlLoadState(const QDomDocument& state_document, RestoreIntent intent) {
   const QDomElement root = state_document.documentElement();
   if (root.isNull() || root.tagName() != "root"_L1) {
     emitDiagnostic(
@@ -8145,13 +8639,14 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
     return false;
   }
 
-  const bool loaded = ui_->tabbedPlotWidget->xmlLoadState(main_tabbed_widget);
+  const bool loaded = ui_->tabbedPlotWidget->xmlLoadState(main_tabbed_widget, intent);
   if (!loaded) {
     emitDiagnostic(
         DiagnosticLevel::kWarning, "Layout", "layout-plots-invalid",
         tr("The plot tabs could not be reconstructed from the layout."));
     return false;
   }
+  refreshOwnedPlotTabAvailability();
   wireExistingPlots();
 
   // The global toolbar toggles are no longer read from the layout/undo document
@@ -8167,7 +8662,7 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
 void MainWindow::pushInitialUndoState() {
   undo_states_.clear();
   redo_states_.clear();
-  undo_states_.push_back(captureWorkspace());
+  undo_states_.push_back(captureWorkspace(SnapshotScope::kHistory));
   history_data_universe_ = captureHistoryDataUniverse();
   undo_timer_.invalidate();
   updateUndoRedoActions();
@@ -8181,7 +8676,7 @@ void MainWindow::resetUndoHistory() {
 }
 
 void MainWindow::pushUndoState(bool force_new_state) {
-  const CapturedWorkspace state = captureWorkspace();
+  const CapturedWorkspace state = captureWorkspace(SnapshotScope::kHistory);
   if (!undo_states_.empty() && undo_states_.back() == state) {
     updateUndoRedoActions();
     return;
@@ -8213,7 +8708,7 @@ void MainWindow::hydrateCurrentUndoState(bool refresh_data_universe) {
   if (applying_state_ || progressive_layout_in_flight_ || undo_states_.empty()) {
     return;
   }
-  undo_states_.back() = captureWorkspace();
+  undo_states_.back() = captureWorkspace(SnapshotScope::kHistory);
   if (refresh_data_universe) {
     history_data_universe_ = captureHistoryDataUniverse();
   }
@@ -8834,12 +9329,27 @@ void MainWindow::applyActivePlotStyle(int style) {
 }
 
 MainWindow::WrappedToolboxPanel MainWindow::wrapToolboxPanel(
-    QWidget* content, const QString& title, const std::function<void()>& on_close,
-    const std::function<void()>& on_migrate, std::function<bool()> has_work_in_flight,
-    const std::function<void()>& on_fold_busy) {
+    QWidget* content, const QString& title, ToolboxChromeHooks hooks, const QString& persist_key) {
+  const std::function<void()>& on_close = hooks.on_close;
+  const std::function<void()>& on_migrate = hooks.on_migrate;
+  const std::function<void()>& on_float = hooks.on_float;
+  const std::function<void()>& on_dock = hooks.on_dock;
+  const std::function<void()>& on_fold_busy = hooks.on_fold_busy;
+  std::function<bool()>& has_work_in_flight = hooks.has_work_in_flight;
   auto* container = new QWidget;
   container->setObjectName(QStringLiteral("toolboxPanelContainer"));
-  auto* column = new QVBoxLayout(container);
+  // [side drawer][body: banner over content], the two panes of a splitter
+  // when a plugin declares a drawer (plain body otherwise) — the side column
+  // stands beside the banner rather than under it, so it reads as its own,
+  // independently resizable section of the panel from top to bottom.
+  auto* outer = new QHBoxLayout(container);
+  outer->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  outer->setSpacing(PJ::theme::space(theme::Space::None));
+  auto* body = new QWidget(container);
+  body->setObjectName(QStringLiteral("toolboxPanelBody"));
+  auto* column = new QVBoxLayout(body);
   column->setContentsMargins(
       PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
       PJ::theme::space(theme::Space::None));
@@ -8847,7 +9357,7 @@ MainWindow::WrappedToolboxPanel MainWindow::wrapToolboxPanel(
 
   // Banner header (Surface::Banner): title far-left, close far-right — mirrors
   // the PJ::Dialog title bar so a docked toolbox reads like every app dialog.
-  auto* banner = new QWidget(container);
+  auto* banner = new QWidget(body);
   banner->setObjectName(QStringLiteral("toolboxBanner"));
   auto* row = new QHBoxLayout(banner);
   // No left inset: the title leads via toolboxBannerTitle's own canonical
@@ -8862,50 +9372,83 @@ MainWindow::WrappedToolboxPanel MainWindow::wrapToolboxPanel(
   row->addWidget(title_label);
   row->addStretch(1);
 
-  // "Migrate to tab" pins the toolbox as a persistent central tab instead of
-  // the ephemeral chart-area takeover. Every toolbox gets it — the button is
-  // host chrome, so plugins need no awareness of the gesture. SvgButton
+  // "Move to a floating window" undocks the toolbox into its own top-level
+  // window; "Migrate to tab" pins it as a persistent central tab instead of
+  // the ephemeral chart-area takeover. Every toolbox gets both — the buttons
+  // are host chrome, so plugins need no awareness of either gesture. SvgButton
   // self-retints on theme change, no wiring needed.
+  auto* float_button = new SvgButton(u":/resources/svg/float_window.svg"_s, SvgButton::Size::kDefault, banner);
+  float_button->setObjectName(u"buttonMigrateFloat"_s);
+  float_button->setCursor(Qt::PointingHandCursor);
+  float_button->setToolTip(tr("Move to a floating window"));
+
   auto* migrate_button = new SvgButton(u":/resources/svg/tab_move.svg"_s, SvgButton::Size::kDefault, banner);
   migrate_button->setObjectName(u"buttonMigrateTab"_s);
   migrate_button->setCursor(Qt::PointingHandCursor);
   migrate_button->setToolTip(tr("Move to a tab"));
 
+  auto* dock_button = new SvgButton(u":/resources/svg/dock_window.svg"_s, SvgButton::Size::kDefault, banner);
+  dock_button->setObjectName(u"buttonMigrateDock"_s);
+  dock_button->setCursor(Qt::PointingHandCursor);
+  dock_button->setToolTip(tr("Move to docked panel"));
+  dock_button->hide();
+
   auto* close_button = new QToolButton(banner);
   close_button->setObjectName(QStringLiteral("buttonClose"));
 
+  row->addWidget(dock_button);
   row->addWidget(migrate_button);
+  row->addWidget(float_button);
 
   // A tagged plugin action stays in the content tree for its existing routing
   // while the host gives it a domain-neutral place in takeover chrome.
   std::vector<QPointer<SvgButton>> chrome_action_proxies;
-  for (auto* src : content->findChildren<QAbstractButton*>()) {
-    if (src == nullptr || !src->property("pjToolboxChromeAction").toBool()) {
-      continue;
-    }
-    QString icon_path = src->property("chromeActionIcon").toString();
-    if (icon_path.isEmpty()) {
-      icon_path = u":/resources/svg/help.svg"_s;
-    }
-    auto* proxy = new SvgButton(icon_path, SvgButton::Size::kDefault, banner);
-    proxy->setToolTip(src->toolTip());
-    proxy->setCursor(Qt::PointingHandCursor);
+  int leading_proxies = 0;
+  for (QAbstractButton* src : taggedChromeActions(content)) {
+    SvgButton* proxy = makeChromeActionProxy(src, banner);
     chrome_action_proxies.emplace_back(proxy);
-    row->insertWidget(row->indexOf(migrate_button), proxy);
-    connect(proxy, &QAbstractButton::clicked, this, [src = QPointer<QAbstractButton>(src)]() {
-      if (!src.isNull()) {
-        src->click();
-      }
-    });
+    if (isLeadingChromeAction(src)) {
+      row->insertWidget(leading_proxies, proxy);
+      ++leading_proxies;
+    } else {
+      row->insertWidget(row->indexOf(dock_button), proxy);
+    }
     src->hide();
+  }
+  if (leading_proxies > 0) {
+    // [leading…][stretch][title][stretch][trailing…]: with controls on both
+    // sides the title reads centred, the way a window title does.
+    row->insertStretch(row->indexOf(title_label), 1);
+    title_label->setAlignment(Qt::AlignCenter);
+  }
+
+  // A plugin's side drawer leaves the content tree for a splitter pane beside
+  // the banner (built below, once `body` exists). It keeps its objectName,
+  // its signal wiring and — through the hoisted-widgets property on the panel
+  // root — its by-name data binding, so the plugin drives it exactly as if it
+  // had never moved.
+  QPointer<QWidget> side_drawer;
+  for (auto* candidate : content->findChildren<QWidget*>()) {
+    if (candidate != nullptr && candidate->property(kToolboxSideDrawerProperty).toBool()) {
+      side_drawer = candidate;
+      break;
+    }
+  }
+  if (!side_drawer.isNull()) {
+    QVariantList hoisted = content->property(PJ::kHoistedWidgetsProperty).toList();
+    hoisted.push_back(QVariant::fromValue<QObject*>(side_drawer.data()));
+    content->setProperty(PJ::kHoistedWidgetsProperty, hoisted);
   }
 
   // Banner + buttons ride the canonical band height so a docked toolbox
   // reads at the same height as every section band and every chrome button,
   // and rescales with the icon size. Seed from the current metrics, then keep
   // in step via the chromeMetricsChanged broadcast.
-  const auto size_banner = [banner, migrate_button, close_button, chrome_action_proxies](const ChromeMetrics& metrics) {
+  const auto size_banner = [banner, float_button, migrate_button, dock_button, close_button,
+                            chrome_action_proxies](const ChromeMetrics& metrics) {
     banner->setFixedHeight(metrics.bandHeight());
+    dock_button->setExtent(metrics.bandHeight(), metrics.icon_size);
+    float_button->setExtent(metrics.bandHeight(), metrics.icon_size);
     migrate_button->setExtent(metrics.bandHeight(), metrics.icon_size);
     for (const auto& proxy : chrome_action_proxies) {
       if (!proxy.isNull()) {
@@ -8918,22 +9461,46 @@ MainWindow::WrappedToolboxPanel MainWindow::wrapToolboxPanel(
   size_banner(chrome_metrics_);
   connect(this, &MainWindow::chromeMetricsChanged, banner, size_banner);
 
-  // Pinning strips the takeover-only banner buttons — the tab frame provides
-  // name + close. Owned here because only this function knows which banner
-  // widgets are takeover chrome.
-  const auto enter_pinned_chrome = [migrate_button, close_button, chrome_action_proxies]() {
-    migrate_button->hide();
+  auto pinned = std::make_shared<bool>(false);
+  // One chrome for both tab presentations: pinned shows the dock affordance,
+  // docked shows the tab one. Also re-shows the banner a floating window hid.
+  const auto apply_chrome = [banner, float_button, migrate_button, dock_button, close_button, chrome_action_proxies,
+                             pinned, can_float = bool(on_float), can_dock = bool(on_dock)](bool pinned_presentation) {
+    *pinned = pinned_presentation;
+    banner->show();
+    dock_button->setVisible(pinned_presentation && can_dock);
+    migrate_button->setVisible(!pinned_presentation);
+    float_button->setVisible(can_float);
+    // The plugin's own chrome actions stay: they belong to the panel, not to
+    // the takeover presentation the tab frame replaces.
     for (const auto& proxy : chrome_action_proxies) {
       if (!proxy.isNull()) {
-        proxy->hide();
+        proxy->show();
       }
     }
-    close_button->hide();
+    close_button->show();
   };
+  const std::function<void()> enter_pinned_chrome = [apply_chrome]() { apply_chrome(true); };
+  const std::function<void()> enter_docked_chrome = [apply_chrome]() { apply_chrome(false); };
+  if (on_dock) {
+    connect(dock_button, &QToolButton::clicked, this, on_dock);
+  }
   connect(migrate_button, &QToolButton::clicked, this, [enter_pinned_chrome, on_migrate]() {
     enter_pinned_chrome();
     on_migrate();
   });
+  // Floating hides the whole banner: the floating window's own title bar is
+  // the one header (title + host-added move-to-tab action + ✕), so a second
+  // in-content header row would only duplicate it.
+  if (on_float) {
+    connect(float_button, &QToolButton::clicked, this, [banner, on_float]() {
+      banner->hide();
+      on_float();
+    });
+  } else {
+    // No floating presentation on offer (e.g. the marketplace panel).
+    float_button->hide();
+  }
 
   close_button->setAutoRaise(true);
   close_button->setFocusPolicy(Qt::NoFocus);
@@ -8952,7 +9519,12 @@ MainWindow::WrappedToolboxPanel MainWindow::wrapToolboxPanel(
   // the migrate button's user-pin path.
   connect(
       close_button, &QToolButton::clicked, this,
-      [on_close, on_migrate, on_fold_busy, enter_pinned_chrome, has_work_in_flight = std::move(has_work_in_flight)]() {
+      [this, container, pinned, on_close, on_migrate, on_fold_busy, enter_pinned_chrome,
+       has_work_in_flight = std::move(has_work_in_flight)]() {
+        if (*pinned) {
+          ui_->tabbedPlotWidget->closeWidgetTab(container);
+          return;
+        }
         if (has_work_in_flight && has_work_in_flight()) {
           enter_pinned_chrome();
           (on_fold_busy ? on_fold_busy : on_migrate)();
@@ -8964,7 +9536,18 @@ MainWindow::WrappedToolboxPanel MainWindow::wrapToolboxPanel(
 
   column->addWidget(banner);
   column->addWidget(content, /*stretch=*/1);
-  return {.container = container, .enter_pinned_chrome = enter_pinned_chrome};
+  if (side_drawer.isNull()) {
+    outer->addWidget(body, /*stretch=*/1);
+  } else {
+    // makeSideDrawerSplitter's handle makes the drawer draggable, and Qt
+    // honours the drawer's own (plugin-authored) minimumWidth as the drag
+    // floor — childrenCollapsible stops it going below that instead of
+    // vanishing under the handle. No minimum is hardcoded here.
+    QSplitter* splitter = makeSideDrawerSplitter(side_drawer, body, toolboxDrawerWidthSettingsKey(persist_key));
+    outer->addWidget(splitter, /*stretch=*/1);
+  }
+  return {
+      .container = container, .enter_pinned_chrome = enter_pinned_chrome, .enter_docked_chrome = enter_docked_chrome};
 }
 
 bool MainWindow::presentPanel(QWidget* panel) {
@@ -9212,6 +9795,28 @@ void MainWindow::launchToolbox(
     }
     pinned_toolboxes_.remove(plugin_id);
   }
+  // Same one-instance rule for a toolbox undocked into a floating window:
+  // relaunching it focuses the window. No dismissTakeoverPanel() here, unlike
+  // the pinned focus above: raising a top-level needs nothing uncovered, while
+  // focusing a tab needs the tab strip the takeover hides.
+  // showNormal(), not a bare raise(): raise() cannot bring back a hidden or
+  // minimized window, which would leave the toolbox looking unlaunchable.
+  if (auto floating_it = floating_toolboxes_.constFind(plugin_id); floating_it != floating_toolboxes_.constEnd()) {
+    if (QWidget* existing = floating_it->window.data(); existing != nullptr) {
+      if (target == ToolboxLaunchTarget::kTakeover && initial_config.isEmpty()) {
+        existing->showNormal();
+        existing->raise();
+        existing->activateWindow();
+        return;
+      }
+      // An in-place edit (non-empty initial_config) or a pinned-tab restore
+      // needs a fresh instance: close the window — done() runs the full
+      // teardown and erases the registry entry — and fall through to the
+      // normal build path (mirrors the pinned relaunch above).
+      existing->close();
+    }
+    floating_toolboxes_.remove(plugin_id);
+  }
   if (target == ToolboxLaunchTarget::kPinnedTab) {
     // Pinning directly (layout restore): the takeover surface must not
     // survive — it hides the tab strip the new tab lives in, and it may BE
@@ -9220,11 +9825,8 @@ void MainWindow::launchToolbox(
   }
 
   // 1. Find the toolbox in the catalog.
-  const auto& toolboxes = session_->extensionCatalog().toolboxes();
-  auto it = std::find_if(toolboxes.begin(), toolboxes.end(), [&plugin_id](const RuntimeToolboxPlugin& tb) {
-    return QString::fromStdString(tb.id) == plugin_id;
-  });
-  if (it == toolboxes.end()) {
+  const LoadedToolbox* toolbox = session_->extensionCatalog().findToolbox(plugin_id);
+  if (toolbox == nullptr) {
     report_error(plugin_id, tr("Cloud toolbox '%1' not found in catalog").arg(plugin_id));
     return;
   }
@@ -9250,6 +9852,9 @@ void MainWindow::launchToolbox(
     std::unique_ptr<DataProcessorsRuntimeHost> dp_host;
     std::unique_ptr<DataProcessorsKindRouter> dp_router;
     std::unique_ptr<SourcePromotionHost> promotion_host;
+    std::unique_ptr<PlaybackControlHost> playback_host;
+    std::unique_ptr<ViewportRuntimeHost> viewport_host;
+    std::unique_ptr<PlotTabsRuntimeHost> plot_tabs_host;
     std::shared_ptr<ToolboxHandle> handle;
 
     // Teardown order is load-bearing, so make it explicit here rather than relying
@@ -9281,6 +9886,15 @@ void MainWindow::launchToolbox(
       dp_router.reset();     // holds fat pointers into markers_host + dp_host, so goes before them
       markers_host.reset();  // bridge only; the generators live on in MarkerService
       dp_host.reset();
+      // Pure adapters over session-owned services (PlaybackEngine) and
+      // MainWindow-capturing lambdas — both outlive every PanelSession.
+      playback_host.reset();
+      viewport_host.reset();
+      // Dropping the bridge does not close the tabs it made: they are the
+      // user's to keep looking at after the panel goes, exactly as a derived
+      // series outlives the plugin that created it. Full layouts persist them;
+      // history restores leave the live tabs in place.
+      plot_tabs_host.reset();
       host.reset();
       settings.reset();
     }
@@ -9289,7 +9903,7 @@ void MainWindow::launchToolbox(
   session->settings = std::make_unique<QSettingsBackend>();
   session->builder = std::make_unique<ServiceRegistryBuilder>();
 
-  const QString source = it->name.empty() ? plugin_id : QString::fromStdString(it->name);
+  const QString source = toolbox->name.empty() ? plugin_id : QString::fromStdString(toolbox->name);
   ToolboxRuntimeHost::Callbacks callbacks;
   const std::string plugin_id_std = plugin_id.toStdString();
   callbacks.on_data_changed = [this, plugin_id_std](std::vector<DatasetId> ingested_datasets) {
@@ -9546,7 +10160,7 @@ void MainWindow::launchToolbox(
   // ingest produced. `host` outlives promotion_host (see ~PanelSession), so
   // the captured raw pointer stays valid for the predicate's whole life.
   session->promotion_host = std::make_unique<SourcePromotionHost>(
-      *file_loader_, session_->sessionManager(), QString::fromStdString(it->id),
+      *file_loader_, session_->sessionManager(), QString::fromStdString(toolbox->id),
       [host = session->host.get()](DatasetId dataset_id) { return host->hasIngestForDataset(dataset_id); });
   if (auto status = session->promotion_host->registerServices(*session->builder); !status) {
     report_error(
@@ -9555,8 +10169,81 @@ void MainWindow::launchToolbox(
     return;
   }
 
+  // Transport + viewport control ("pj.playback.v1" / "pj.viewport.v1"): generic
+  // mechanisms over the session's PlaybackEngine and the plot zoom funnel — the
+  // plugin supplies the intent. Both slots are [main-thread] per the ABI, and
+  // every plugin tool call already runs on the GUI thread, so the lambdas may
+  // touch session state and widgets directly.
+  session->playback_host = std::make_unique<PlaybackControlHost>(
+      session_->playbackEngine(),
+      [this](std::string_view topic, int64_t absolute_ns) -> std::optional<double> {
+        const DatasetId dataset_id = topic.empty()
+                                         ? representativeDatasetId()
+                                         : session_->catalogModel().datasetForTopic(
+                                               QString::fromUtf8(topic.data(), static_cast<qsizetype>(topic.size())));
+        return displayTimeForSource({static_cast<uint32_t>(dataset_id)}, absolute_ns);
+      },
+      [this](PJ_data_source_handle_t source_handle, int64_t absolute_ns) {
+        return displayTimeForSource(source_handle, absolute_ns);
+      });
+  if (auto status = session->playback_host->registerServices(*session->builder); !status) {
+    report_error(
+        source,
+        tr("Failed to publish the playback service for '%1': %2").arg(source, QString::fromStdString(status.error())));
+    return;
+  }
+
+  // Every lambda below captures `plugin_id`, and that capture IS the boundary:
+  // the plugin never names itself across the wire, so it can only ever reach
+  // the tabs it composed. The user's own tabs are not addressable from here.
+  session->viewport_host = std::make_unique<ViewportRuntimeHost>(ViewportRuntimeHost::Callbacks{
+      .zoom_to_time_range = [this, plugin_id](
+                                double t0_s, double t1_s) { return zoomOwnedPlotsToTimeRange(plugin_id, t0_s, t1_s); },
+      .zoom_reset = [this, plugin_id]() { return zoomOwnedPlotsOut(plugin_id); },
+  });
+  if (auto status = session->viewport_host->registerServices(*session->builder); !status) {
+    report_error(
+        source,
+        tr("Failed to publish the viewport service for '%1': %2").arg(source, QString::fromStdString(status.error())));
+    return;
+  }
+
+  session->plot_tabs_host = std::make_unique<PlotTabsRuntimeHost>(PlotTabsRuntimeHost::Callbacks{
+      .create_tab =
+          [this, plugin_id](std::string_view id, std::string_view title) {
+            return createOwnedPlotTab(plugin_id, QString::fromUtf8(id), QString::fromUtf8(title));
+          },
+      .close_tab = [this,
+                    plugin_id](std::string_view id) { return closeOwnedPlotTab(plugin_id, QString::fromUtf8(id)); },
+      .list_tab_ids = [this, plugin_id]() { return listOwnedPlotTabs(plugin_id); },
+      .tab_config = [this,
+                     plugin_id](std::string_view id) { return ownedPlotTabConfig(plugin_id, QString::fromUtf8(id)); },
+      .add_curve =
+          [this, plugin_id](
+              std::string_view id, std::string_view topic, std::string_view field, std::string_view dataset_source) {
+            return addCurveToOwnedPlotTab(
+                plugin_id, QString::fromUtf8(id), QString::fromUtf8(topic), QString::fromUtf8(field),
+                QString::fromUtf8(dataset_source));
+          },
+      .remove_curve =
+          [this, plugin_id](
+              std::string_view id, std::string_view topic, std::string_view field, std::string_view dataset_source) {
+            return removeCurveFromOwnedPlotTab(
+                plugin_id, QString::fromUtf8(id), QString::fromUtf8(topic), QString::fromUtf8(field),
+                QString::fromUtf8(dataset_source));
+          },
+      .clear_tab = [this,
+                    plugin_id](std::string_view id) { return clearOwnedPlotTab(plugin_id, QString::fromUtf8(id)); },
+  });
+  if (auto status = session->plot_tabs_host->registerServices(*session->builder); !status) {
+    report_error(
+        source,
+        tr("Failed to publish the plot-tab service for '%1': %2").arg(source, QString::fromStdString(status.error())));
+    return;
+  }
+
   // 3. Create the toolbox instance and bind it to the assembled services.
-  session->handle = std::make_shared<ToolboxHandle>(it->library.createHandle());
+  session->handle = std::make_shared<ToolboxHandle>(toolbox->library.createHandle());
   if (auto status = session->handle->bind(session->builder->view()); !status) {
     report_error(source, tr("Failed to bind toolbox '%1': %2").arg(source, QString::fromStdString(status.error())));
     return;
@@ -9648,34 +10335,191 @@ void MainWindow::launchToolbox(
     }
     return QString::fromStdString(config_json);
   };
-  // Lifting the live panel out of the takeover and into a tab: shared by the
-  // migrate button, the banner X while work is in flight, and the auto-fold on
-  // ingest start. `transient` distinguishes a fold the host chose from a pin the
-  // user asked for.
-  auto migrate_to_tab = [this, engine, plugin_id, source, save_config, host = session->host.get()](bool transient) {
-    QWidget* released = releaseCentralPanel();
-    if (released == nullptr) {
-      return;
-    }
-    pinToolboxPanel(released, plugin_id, source, engine, save_config, host, transient);
+  auto panel_title = std::make_shared<QString>(pin_tab_name.isEmpty() ? source : pin_tab_name);
+  auto container_guard = std::make_shared<QPointer<QWidget>>();
+  auto release_panel = [this, plugin_id, panel_title, container_guard]() {
+    return releaseToolboxPanel(plugin_id, container_guard->data(), *panel_title);
   };
-  // "This panel has work in flight" — the one predicate every teardown door
-  // consults. Domain-neutral: it asks the panel's own host whether it currently
-  // owns a live ingest context, not what the plugin is.
+  auto migrate_to_tab = [this, engine, plugin_id, save_config, release_panel, panel_title,
+                         host = session->host.get()](bool transient) {
+    if (QWidget* released = release_panel()) {
+      pinToolboxPanel(released, plugin_id, *panel_title, engine, save_config, host, transient);
+    }
+  };
+  // Undocking a takeover or tab into a free-floating window keeps the live
+  // panel available beside the charts. The wrapped container rides along
+  // with its banner hidden — the window's own title bar is the one header,
+  // carrying the move-to-tab action (the way back into the tab strip) next to
+  // its ✕. `pinned_chrome` is filled after wrapToolboxPanel returns below;
+  // the button can only fire once the panel is live, so the indirection is
+  // never observed empty.
+  auto pinned_chrome = std::make_shared<std::function<void()>>();
+  auto docked_chrome = std::make_shared<std::function<void()>>();
   std::function<bool()> has_work_in_flight = [session]() {
     return session->host != nullptr && session->host->hasActiveIngests();
   };
+  auto fold = [migrate_to_tab, pinned_chrome](bool transient) {
+    (*pinned_chrome)();
+    migrate_to_tab(transient);
+  };
+  auto migrate_to_dock = [this, engine, session, plugin_id, save_config, release_panel, panel_title, pinned_chrome,
+                          docked_chrome, fold, has_work_in_flight]() {
+    QWidget* released = release_panel();
+    if (released == nullptr) {
+      return;
+    }
+    if (!dockToolboxPanel(released, engine, session.get(), fold, has_work_in_flight, *docked_chrome)) {
+      // A missing chart slot must not strand a live session offscreen.
+      (*pinned_chrome)();
+      pinToolboxPanel(released, plugin_id, *panel_title, engine, save_config, session->host.get(), false);
+    }
+  };
+  auto migrate_to_float = [this, engine, session, plugin_id, save_config, migrate_to_tab, migrate_to_dock,
+                           pinned_chrome, release_panel, panel_title, host = session->host.get()]() {
+    QWidget* released = release_panel();
+    if (released == nullptr) {
+      return;
+    }
+    const QString title = *panel_title;
+    // A PJ::Dialog, not a bare QWidget or QDialog: the app QSS paints QWidget
+    // transparent (a top-level one renders black), and only the canonical dialog
+    // family paints the app's own themed, frameless chrome.
+    auto* window = new PJ::Dialog(this);
+    window->setDialogTitle(title);  // the chrome's own title bar
+    window->setWindowTitle(title);  // and the WM/taskbar entry
+    window->setChromeMetrics(chrome_metrics_);
+    // The panel goes into the chrome's content area, NOT onto the dialog itself:
+    // PJ::Dialog already owns the dialog's layout (title bar above, body below),
+    // so parenting a second layout to the window would fight it.
+    if (auto* content = window->contentLayout(); content != nullptr) {
+      content->setContentsMargins(0, 0, 0, 0);
+      content->addWidget(released);
+    }
+    // The panel's chrome pieces follow it into the window: its side drawer
+    // becomes the window's side column, and its tagged actions get proxies in
+    // the title bar (the banner, with its own proxies, is hidden while
+    // floating). Both go back when the panel returns to a tab.
+    if (QSplitter* splitter = toolboxDrawerSplitter(released); splitter != nullptr && splitter->count() > 0) {
+      QWidget* first = splitter->widget(0);
+      if (first != nullptr && first->property(kToolboxSideDrawerProperty).toBool()) {
+        // Same key the tab presentation's splitter uses, so a width set in
+        // one presentation is the width the other opens with.
+        window->setSideWidget(first, toolboxDrawerWidthSettingsKey(plugin_id));
+      }
+    }
+    for (QAbstractButton* src : taggedChromeActions(released)) {
+      window->addTitleBarAction(
+          makeChromeActionProxy(src, window),
+          isLeadingChromeAction(src) ? PJ::Dialog::TitleBarSlot::Leading : PJ::Dialog::TitleBarSlot::Trailing);
+    }
+    // releaseCentralPanel() hid the container EXPLICITLY, and a layout does not
+    // undo an explicit hide — without this the window opens with an empty body.
+    released->show();
+    // Enter inside the floating QDialog is handled by Qt's native default-button
+    // interception (the dialog-host's returnPressed wiring stands down inside
+    // QDialogs). Two adjustments make that native path work:
+    //  - strip autoDefault: it makes Enter click whichever button happens to
+    //    HOLD FOCUS — and Qt silently moves focus to the next button (e.g.
+    //    Cancel) when a focused button is disabled mid-turn, turning Enter into
+    //    an accidental cancel;
+    //  - re-assert the panel's declared default: the .ui declared it long
+    //    before this reparent gave the button a QDialog ancestor, so toggle it
+    //    for the dialog to pick it up.
+    for (auto* btn : window->findChildren<QPushButton*>()) {
+      btn->setAutoDefault(false);
+      if (btn->isDefault()) {
+        btn->setDefault(false);
+        btn->setDefault(true);
+      }
+    }
+    // Starting size only (user-resizable). A panel that declares a side
+    // drawer needs room for the drawer PLUS the content beside it, not just
+    // the content — e.g. a ~160px drawer floor next to a ~380px content
+    // minimum, plus margins — so 720 is the floor, comfortably over that sum.
+    // Prefer the window's own projected size (drawer included, via
+    // setSideWidget above) when it asks for more than that floor.
+    window->resize(qMax(720, window->sizeHint().width()), 620);
+    // Single teardown point. Every way the window can close funnels through
+    // QDialog::done() — the chrome's ✕ and Escape call reject(), and so does
+    // closeEvent, so a plugin-initiated close() lands here too — and done()
+    // emits finished() while the panel is still alive, so the engine is torn
+    // down before the deferred deletes run. Single-shot: a second close is a
+    // no-op, and re-docking disconnects it first so closing the emptied window
+    // then tears down nothing. Captures `session`, keeping the plugin alive
+    // until the window is gone: engine->close() stops the engine touching the
+    // borrowed dialog, then engine + window are deleteLater'd and the session
+    // drops when this closure is destroyed -> PanelSession's ordered dtor.
+    const QMetaObject::Connection on_close = connect(
+        window, &QDialog::finished, this,
+        [this, engine, session, plugin_id, window](int) {
+          floating_toolboxes_.remove(plugin_id);
+          engine->close();
+          engine->deleteLater();
+          window->deleteLater();
+          (void)session;
+        },
+        Qt::SingleShotConnection);
+    floating_toolboxes_.insert(
+        plugin_id, FloatingToolbox{
+                       .window = window,
+                       .container = released,
+                       .engine = engine,
+                       .save_config = save_config,
+                       .host = host,
+                       .label = title,
+                       .on_close = on_close});
+    // A plugin-initiated close (requestClose) routes through the same window
+    // close. (Re-pointed again by pinToolboxPanel should the window be
+    // re-docked as a tab.)
+    engine->onCloseRequested([window = QPointer<QWidget>(window)](const std::string& /*reason*/) {
+      if (!window.isNull()) {
+        window->close();
+      }
+      return true;
+    });
+    // The way back: a move-to-tab action in the window's own title bar, next
+    // to the ✕ — restore the banner in pinned chrome first, then run the same
+    // migrate flow the banner button uses.
+    auto* to_tab_button = new SvgButton(u":/resources/svg/tab_move.svg"_s, SvgButton::Size::kDefault, window);
+    to_tab_button->setObjectName(u"buttonFloatingMigrateTab"_s);
+    to_tab_button->setCursor(Qt::PointingHandCursor);
+    to_tab_button->setToolTip(tr("Move to a tab"));
+    window->addTitleBarAction(to_tab_button);
+    connect(to_tab_button, &QAbstractButton::clicked, this, [pinned_chrome, migrate_to_tab]() {
+      if (*pinned_chrome) {
+        (*pinned_chrome)();
+      }
+      migrate_to_tab(/*transient=*/false);
+    });
+    auto* to_dock_button = new SvgButton(u":/resources/svg/dock_window.svg"_s, SvgButton::Size::kDefault, window);
+    to_dock_button->setObjectName(u"buttonFloatingMigrateDock"_s);
+    to_dock_button->setCursor(Qt::PointingHandCursor);
+    to_dock_button->setToolTip(tr("Move to docked panel"));
+    window->addTitleBarAction(to_dock_button);
+    connect(to_dock_button, &QAbstractButton::clicked, this, migrate_to_dock);
+    window->show();
+    // Same deferred grid/style push the launch paths use: the panel's embedded
+    // PlotWidget is created on the first engine tick, after this returns.
+    QTimer::singleShot(250, this, [this]() { syncPanelPreviewDisplay(); });
+  };
   const WrappedToolboxPanel wrapped = wrapToolboxPanel(
       panel, source,
-      /*on_close=*/
-      [this, engine]() {
-        engine->close();
-        restoreCentralArea();
-        engine->deleteLater();
-      },
-      /*on_migrate=*/[migrate_to_tab]() { migrate_to_tab(/*transient=*/false); },
-      /*has_work_in_flight=*/has_work_in_flight,
-      /*on_fold_busy=*/[migrate_to_tab]() { migrate_to_tab(/*transient=*/true); });
+      ToolboxChromeHooks{
+          .on_close =
+              [this, engine]() {
+                engine->close();
+                restoreCentralArea();
+                engine->deleteLater();
+              },
+          .on_migrate = [migrate_to_tab]() { migrate_to_tab(/*transient=*/false); },
+          .on_float = migrate_to_float,
+          .on_dock = migrate_to_dock,
+          .on_fold_busy = [migrate_to_tab]() { migrate_to_tab(/*transient=*/true); },
+          .has_work_in_flight = has_work_in_flight},
+      /*persist_key=*/plugin_id);
+  *pinned_chrome = wrapped.enter_pinned_chrome;
+  *docked_chrome = wrapped.enter_docked_chrome;
+  *container_guard = wrapped.container;
 
   if (target == ToolboxLaunchTarget::kPinnedTab) {
     wrapped.enter_pinned_chrome();
@@ -9685,7 +10529,8 @@ void MainWindow::launchToolbox(
     QTimer::singleShot(250, this, [this]() { syncPanelPreviewDisplay(); });
     return;
   }
-  if (!presentPanel(wrapped.container)) {
+  if (!dockToolboxPanel(
+          wrapped.container, engine, session.get(), fold, has_work_in_flight, wrapped.enter_docked_chrome)) {
     report_error(source, tr("Cannot show '%1': another panel is already open").arg(source));
     // presentPanel did not parent the container on the reject path, and the engine
     // keeps only a non-owning QPointer to the inner panel, so delete the wrapper
@@ -9695,22 +10540,70 @@ void MainWindow::launchToolbox(
     engine->deleteLater();
     return;
   }
-  // presentPanel() succeeded; remember the engine so launching another toolbox
-  // (or any panel) tears this one down first instead of being refused.
-  current_panel_engine_ = engine;
-  // Key the fold on the launch session's address — the identity the ingest
-  // callbacks above report as their owner — so only this panel's own import
-  // folds it.
-  setTakeoverFold(
-      static_cast<const void*>(session.get()),
-      [migrate_to_tab, enter_pinned_chrome = wrapped.enter_pinned_chrome](bool transient) {
-        enter_pinned_chrome();
-        migrate_to_tab(transient);
-      },
-      has_work_in_flight);
   // Apply the app's grid/curve-style/width to the panel's embedded PlotWidget once
   // the panel engine has built it (deferred: the plot is created on the first tick).
   QTimer::singleShot(250, this, [this]() { syncPanelPreviewDisplay(); });
+}
+
+QWidget* MainWindow::releaseToolboxPanel(const QString& plugin_id, QWidget* container, QString& title) {
+  if (container == nullptr) {
+    return nullptr;
+  }
+  if (const auto pinned = pinned_toolboxes_.constFind(plugin_id); pinned != pinned_toolboxes_.constEnd()) {
+    if (pinned->container != container) {
+      return nullptr;
+    }
+    title = ui_->tabbedPlotWidget->widgetTabName(container);
+    QWidget* released = ui_->tabbedPlotWidget->takeWidgetTab(container);
+    if (released != nullptr) {
+      pinned_toolboxes_.remove(plugin_id);
+    }
+    return released;
+  }
+  if (const auto floating = floating_toolboxes_.constFind(plugin_id); floating != floating_toolboxes_.constEnd()) {
+    auto* window = static_cast<PJ::Dialog*>(floating->window.data());
+    if (window == nullptr || floating->container != container) {
+      return nullptr;
+    }
+    QWidget* side = window->sideWidget();
+    QSplitter* splitter = side != nullptr ? toolboxDrawerSplitter(container) : nullptr;
+    if (side != nullptr && splitter == nullptr) {
+      return nullptr;
+    }
+    title = floating->label;
+    disconnect(floating->on_close);
+    if (side != nullptr) {
+      window->setSideWidget(nullptr);
+      splitter->insertWidget(0, side);
+      splitter->setStretchFactor(0, 0);
+      splitter->setStretchFactor(1, 1);
+    }
+    floating_toolboxes_.remove(plugin_id);
+    container->setParent(nullptr);
+    window->close();
+    window->deleteLater();
+    return container;
+  }
+  return current_panel_ == container ? releaseCentralPanel() : nullptr;
+}
+
+bool MainWindow::dockToolboxPanel(
+    QWidget* container, PanelEngine* engine, const void* owner, std::function<void(bool)> fold,
+    std::function<bool()> has_work_in_flight, const std::function<void()>& enter_docked_chrome) {
+  if (!presentPanel(container)) {
+    return false;
+  }
+  enter_docked_chrome();
+  current_panel_engine_ = engine;
+  setTakeoverFold(owner, std::move(fold), std::move(has_work_in_flight));
+  if (engine != nullptr) {
+    engine->onCloseRequested([this, engine](const std::string& /*reason*/) {
+      restoreCentralArea();
+      engine->deleteLater();
+      return true;
+    });
+  }
+  return true;
 }
 
 void MainWindow::pinToolboxPanel(
@@ -9792,6 +10685,25 @@ bool MainWindow::onPinnedPanelCloseRequested(QWidget* container, const std::stri
 
 QDomElement MainWindow::savePinnedToolboxes(QDomDocument& doc) const {
   QDomElement root = doc.createElement(u"pinned_toolboxes"_s);
+  // The one <toolbox> emitter, shared by the pinned and floating passes below.
+  const auto append_toolbox =
+      [&doc, &root](const QString& plugin_id, const QString& tab_name, const std::function<QString()>& save_config) {
+        QDomElement element = doc.createElement(u"toolbox"_s);
+        element.setAttribute(u"plugin_id"_s, plugin_id);
+        if (!tab_name.isEmpty()) {
+          element.setAttribute(u"tab_name"_s, tab_name);
+        }
+        if (save_config) {
+          const QString config = save_config();
+          if (!config.isEmpty()) {
+            // CDATA (with ]]> splitting), matching every other plugin-JSON-in-
+            // layout site — a plain text node entity-escapes on each round trip.
+            layout_xml::appendJsonAsCdata(doc, element, config);
+          }
+        }
+        root.appendChild(element);
+      };
+
   // Deterministic order (QHash iteration is not) so identical workspaces
   // produce identical layout files.
   QStringList plugin_ids = pinned_toolboxes_.keys();
@@ -9807,23 +10719,22 @@ QDomElement MainWindow::savePinnedToolboxes(QDomDocument& doc) const {
     if (toolbox_it->transient) {
       continue;
     }
-    QDomElement element = doc.createElement(u"toolbox"_s);
-    element.setAttribute(u"plugin_id"_s, plugin_id);
     // The tab strip's label is the sole store of a user rename (same
-    // in-place rename plot tabs have), so capture it here.
-    const QString tab_name = ui_->tabbedPlotWidget->widgetTabName(toolbox_it->container);
-    if (!tab_name.isEmpty()) {
-      element.setAttribute(u"tab_name"_s, tab_name);
+    // in-place rename plot tabs have), so read it back here.
+    append_toolbox(plugin_id, ui_->tabbedPlotWidget->widgetTabName(toolbox_it->container), toolbox_it->save_config);
+  }
+  // A floating toolbox window is saved as a pinned tab: floating is a session
+  // gesture, not a persisted presentation, so the layout restores it as a tab
+  // (there is no floating representation in the layout format).
+  QStringList floating_ids = floating_toolboxes_.keys();
+  floating_ids.sort();
+  for (const QString& plugin_id : floating_ids) {
+    const auto toolbox_it = floating_toolboxes_.constFind(plugin_id);
+    if (toolbox_it == floating_toolboxes_.constEnd() || toolbox_it->window.isNull()) {
+      continue;
     }
-    if (toolbox_it->save_config) {
-      const QString config = toolbox_it->save_config();
-      if (!config.isEmpty()) {
-        // CDATA (with ]]> splitting), matching every other plugin-JSON-in-
-        // layout site — a plain text node entity-escapes on each round trip.
-        layout_xml::appendJsonAsCdata(doc, element, config);
-      }
-    }
-    root.appendChild(element);
+    // No tab strip to read a rename from — the launch label names the tab.
+    append_toolbox(plugin_id, toolbox_it->label, toolbox_it->save_config);
   }
   return root;
 }
@@ -9834,15 +10745,16 @@ bool MainWindow::restorePinnedToolboxes(const QDomElement& root, MissingCurvePol
   // (naming one busy panel) before taking any of them down; declining leaves the
   // live set — and the transfer — exactly as it was.
   QString busy_label;
-  bool any_busy = false;
-  for (const auto& toolbox : std::as_const(pinned_toolboxes_)) {
-    if (hostHasWorkInFlight(toolbox.host)) {
-      any_busy = true;
-      busy_label = toolbox.label;
-      break;
+  const auto first_busy = [this, &busy_label](const auto& registry) {
+    for (const auto& toolbox : registry) {
+      if (hostHasWorkInFlight(toolbox.host)) {
+        busy_label = toolbox.label;
+        return true;
+      }
     }
-  }
-  if (any_busy) {
+    return false;
+  };
+  if (first_busy(std::as_const(pinned_toolboxes_)) || first_busy(std::as_const(floating_toolboxes_))) {
     // D5's dialog-vs-diagnostic fork: a non-interactive restore (a batch
     // drain can land minutes after the layout open, mid-anything) must never
     // raise the confirmation modal. Its resolution is the same as a decline —
@@ -9857,16 +10769,22 @@ bool MainWindow::restorePinnedToolboxes(const QDomElement& root, MissingCurvePol
     if (!confirmCancelRunningJob(busy_label)) {
       return false;
     }
-    for (const auto& toolbox : std::as_const(pinned_toolboxes_)) {
-      if (hostHasWorkInFlight(toolbox.host)) {
-        stopHostWork(toolbox.host);
+    const auto stop_busy = [this](const auto& registry) {
+      for (const auto& toolbox : registry) {
+        if (hostHasWorkInFlight(toolbox.host)) {
+          stopHostWork(toolbox.host);
+        }
       }
-    }
+    };
+    stop_busy(std::as_const(pinned_toolboxes_));
+    stop_busy(std::as_const(floating_toolboxes_));
   }
 
   // The layout's pinned set REPLACES the live one — a layout saved without
-  // pinned toolboxes restores to none.
+  // pinned toolboxes restores to none. Floating windows are part of that live
+  // set (they persist as tabs), so they go down with it.
   closeAllPinnedToolboxTabs();
+  closeAllFloatingToolboxWindows();
   const QDomElement pinned = root.firstChildElement(u"pinned_toolboxes"_s);
   for (QDomElement element = pinned.firstChildElement(u"toolbox"_s); !element.isNull();
        element = element.nextSiblingElement(u"toolbox"_s)) {
@@ -9908,6 +10826,22 @@ void MainWindow::closeAllPinnedToolboxTabs() {
     delete container;
   }
   pinned_toolboxes_.clear();  // drop any stale entries whose widget died
+}
+
+void MainWindow::closeAllFloatingToolboxWindows() {
+  // Take the registry first: each close mutates it through the window's
+  // on_close, and a swept entry must not be re-entered.
+  for (const FloatingToolbox& toolbox : std::exchange(floating_toolboxes_, {})) {
+    QWidget* window = toolbox.window.data();
+    if (window != nullptr) {
+      // Runs the teardown closure (engine close + deferred deletes) while the
+      // panel and every service its session references are still alive.
+      window->close();
+    }
+    // Synchronous teardown, for the reasons closeAllPinnedToolboxTabs gives.
+    delete toolbox.engine.data();
+    delete window;
+  }
 }
 
 }  // namespace PJ

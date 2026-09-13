@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "data_processor_flags.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
@@ -64,6 +65,10 @@ bool DataProcessorsRuntimeHost::onCreate(
           "unknown data processor kind '" + std::string(sdk::toStringView(kind)) + "'");
       return false;
     }
+    if ((flags & ~kKnownFlags) != 0) {
+      sdk::fillError(out_error, kErrorRejected, kDomain, "pj.data_processors: reserved flag bits set");
+      return false;
+    }
     std::vector<std::string> input_names;
     input_names.reserve(input_count);
     for (uint64_t i = 0; i < input_count; ++i) {
@@ -75,9 +80,10 @@ bool DataProcessorsRuntimeHost::onCreate(
       output_names.emplace_back(sdk::toStringView(outputs[i]));
     }
     const bool ephemeral = (flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL) != 0;
+    const bool history_exempt = (flags & PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT) != 0;
     auto result = self->service_.upsertTransform(
         self->plugin_id_, sdk::toStringView(id), std::move(input_names), std::move(output_names),
-        sdk::toStringView(script), sdk::toStringView(params_json), ephemeral);
+        sdk::toStringView(script), sdk::toStringView(params_json), ephemeral, /*input_column_index=*/0, history_exempt);
     if (!result.has_value()) {
       sdk::fillError(out_error, kErrorRejected, kDomain, result.error());
       return false;

@@ -561,6 +561,59 @@ void PlotDocker::setStateId(QString id) {
   }
 }
 
+bool PlotDocker::isHistoryExempt() const {
+  return history_exempt_;
+}
+
+void PlotDocker::setHistoryExempt(bool history_exempt) {
+  history_exempt_ = history_exempt;
+}
+
+bool PlotDocker::isSerializable(SnapshotScope scope) const {
+  return !(scope == SnapshotScope::kHistory && history_exempt_);
+}
+
+QString PlotDocker::ownerPlugin() const {
+  return owner_plugin_;
+}
+
+QString PlotDocker::ownerTabId() const {
+  return owner_tab_id_;
+}
+
+void PlotDocker::setOwnerMetadata(QString plugin_id, QString tab_id) {
+  owner_plugin_ = std::move(plugin_id);
+  owner_tab_id_ = std::move(tab_id);
+  refreshOwnerWatermark();
+}
+
+bool PlotDocker::isOwnerPluginAvailable() const {
+  return !owner_badge_.isEmpty();
+}
+
+void PlotDocker::setOwnerBadge(QString badge) {
+  owner_badge_ = std::move(badge);
+  refreshOwnerWatermark();
+}
+
+void PlotDocker::refreshOwnerWatermark() {
+  if (focus_overlay_ == nullptr) {
+    return;
+  }
+  if (owner_plugin_.isEmpty()) {
+    focus_overlay_->setWatermarkText({});
+    setToolTip({});
+    return;
+  }
+  if (isOwnerPluginAvailable()) {
+    focus_overlay_->setWatermarkText(owner_badge_);
+    setToolTip({});
+    return;
+  }
+  focus_overlay_->setWatermarkText(tr("Plugin unavailable"));
+  setToolTip(tr("Plugin unavailable: %1").arg(owner_plugin_));
+}
+
 void PlotDocker::refocusAfterRemoval(DockWidget* removed) {
   DockWidget* target = nullptr;
   // Prefer the previously focused dock so the user lands back where they were.
@@ -616,6 +669,13 @@ QDomElement PlotDocker::xmlSaveState(QDomDocument& doc) const {
   QDomElement tab_element = doc.createElement(u"Tab"_s);
   tab_element.setAttribute(u"id"_s, state_id_);
   tab_element.setAttribute(u"containers"_s, dockContainers().count());
+  if (history_exempt_) {
+    tab_element.setAttribute(u"history_exempt"_s, u"1"_s);
+  }
+  if (!owner_plugin_.isEmpty()) {
+    tab_element.setAttribute(u"owner_plugin"_s, owner_plugin_);
+    tab_element.setAttribute(u"tab_id"_s, owner_tab_id_);
+  }
 
   for (ads::CDockContainerWidget* container : dockContainers()) {
     QDomElement container_element = doc.createElement(u"Container"_s);

@@ -7,11 +7,17 @@
 #include <DockContainerWidget.h>
 
 #include <QEvent>
+#include <QFont>
+#include <QFontMetrics>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPalette>
 #include <QRect>
+#include <algorithm>
+#include <cmath>
 
+#include "pj_plotting/DockWidget.h"
+#include "pj_plotting/PlotWidget.h"
 #include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
@@ -34,6 +40,56 @@ void paintFrame(QPainter& painter, const QRect& rect_in_container, const QColor&
   painter.setBrush(Qt::NoBrush);
   const int inset = kFrameGapPx + thickness / 2;
   painter.drawRect(rect_in_container.adjusted(inset, inset, -inset, -inset));
+}
+
+// The watermark's face: the theme's heading family, upright and bold, well
+// above body size — a plain engineering stamp, not a signature. Derived from
+// the token rather than a named family so it stays coherent with the app font
+// on every platform.
+QFont watermarkFont(theme::Theme token_theme) {
+  const theme::TypeSpec spec = theme::type(theme::TextRole::Heading, token_theme);
+  QFont wm_font(spec.family);
+  wm_font.setPixelSize(std::max(1, static_cast<int>(std::lround(spec.size * 1.8))));
+  wm_font.setWeight(QFont::Bold);
+  wm_font.setItalic(false);
+  wm_font.setLetterSpacing(QFont::PercentageSpacing, 104.0);
+  return wm_font;
+}
+
+// Paints `text` inside the bottom-right corner of `canvas_rect` (container
+// coords): plain translucent ink, no fill, so it reads as a watermark on the
+// plot itself and never covers an axis. No-op for empty text.
+// Style resolved once per paint, then stamped on every canvas.
+struct WatermarkStyle {
+  int margin = 0;
+  QColor ink;
+  QFont font;
+};
+
+WatermarkStyle watermarkStyle(theme::Theme token_theme) {
+  // Muted on-plot ink at ~37 % opacity: visible on both canvas themes, faint
+  // enough that gridlines and curves stay legible underneath it.
+  QColor ink = theme::onSurface(theme::Surface::DataBackdrop, theme::Emphasis::Muted, token_theme);
+  ink.setAlphaF(0.37);
+  return {
+      .margin = theme::space(theme::Space::Comfortable, token_theme), .ink = ink, .font = watermarkFont(token_theme)};
+}
+
+void paintWatermark(QPainter& painter, const QRect& canvas_rect, const QString& text, const WatermarkStyle& style) {
+  if (text.isEmpty() || !canvas_rect.isValid()) {
+    return;
+  }
+  const QRect text_rect = canvas_rect.adjusted(style.margin, style.margin, -style.margin, -style.margin);
+  if (!text_rect.isValid()) {
+    return;
+  }
+  painter.save();
+  painter.setRenderHint(QPainter::Antialiasing, true);
+  painter.setRenderHint(QPainter::TextAntialiasing, true);
+  painter.setPen(style.ink);
+  painter.setFont(style.font);
+  painter.drawText(text_rect, Qt::AlignRight | Qt::AlignBottom, text);
+  painter.restore();
 }
 }  // namespace
 
@@ -70,8 +126,37 @@ void PlotFocusOverlay::setHoveredArea(ads::CDockAreaWidget* area) {
   update();
 }
 
+void PlotFocusOverlay::setWatermarkText(const QString& text) {
+  if (watermark_ == text) {
+    return;
+  }
+  watermark_ = text;
+  update();
+}
+
 void PlotFocusOverlay::paintEvent(QPaintEvent* /*event*/) {
   QPainter painter(this);
+
+  const auto token_theme = theme::appTheme();
+  // One mark per plot canvas in the tab, so every view the model composed
+  // carries it, and it sits inside the plot area rather than over the axes.
+  if (!watermark_.isEmpty()) {
+    const WatermarkStyle style = watermarkStyle(token_theme);
+    for (int i = 0; i < container_->dockAreaCount(); ++i) {
+      ads::CDockAreaWidget* area = container_->dockArea(i);
+      if (area == nullptr || !area->isVisible()) {
+        continue;
+      }
+      auto* dock = qobject_cast<DockWidget*>(area->currentDockWidget());
+      PlotWidget* plot = dock != nullptr ? dock->plotWidget() : nullptr;
+      QWidget* canvas = plot != nullptr ? plot->canvasWidget() : nullptr;
+      if (canvas == nullptr) {
+        continue;
+      }
+      const QRect canvas_rect(canvas->mapTo(container_, QPoint(0, 0)), canvas->size());
+      paintWatermark(painter, canvas_rect, watermark_, style);
+    }
+  }
 
   auto rect_for = [this](ads::CDockAreaWidget* area) -> QRect {
     if (area == nullptr) {
@@ -85,7 +170,6 @@ void PlotFocusOverlay::paintEvent(QPaintEvent* /*event*/) {
   // Focus uses the accent CHECKED tone — the same colour as checked buttons —
   // so the active dock reads as "selected" in both themes without the harsher
   // focus-ring ink, and distinctly from a merely hovered one.
-  const auto token_theme = theme::appTheme();
   const QColor hover_color = theme::surface(PJ::theme::Surface::Separation, token_theme);
   const QColor focus_color = theme::interaction(theme::Variant::Accent, theme::State::Checked, token_theme);
   // Focus is drawn slightly thicker than hover so the active dock reads at a

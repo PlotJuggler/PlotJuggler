@@ -92,6 +92,10 @@ class PlotWidget : public PlotWidgetBase {
   bool revalidate();
 
   void setZoomRectangle(QRectF rect, bool emit_signal);
+  // Applies [x0, x1] as the visible X window, leaving Y exactly as it was, and
+  // replots. Never emits the zoom-changed signal: the linked-X paths that use
+  // it are already propagating a peer's change or an explicit command.
+  void setVisibleXRange(double x0, double x1);
   [[nodiscard]] bool isZoomLinkEnabled() const noexcept;
   void setTrackerEnabled(bool enabled);
   [[nodiscard]] bool trackerEnabled() const noexcept;

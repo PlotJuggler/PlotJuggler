@@ -178,5 +178,69 @@ TEST(DataProcessorsRuntimeHostTest, CreateErrorSurfacesAcrossAbi) {
   EXPECT_TRUE(fx.service.transformRecipes().empty());
 }
 
+// The ABI contract (plugin_data_api.h's `flags` paragraph) requires the host to
+// REJECT a reserved/unknown bit, not silently drop it — a stale bit is
+// indistinguishable, from the plugin's side, from the host applying it and the
+// effect just not taking. Bit 5 is unassigned by any PJ_DATA_PROCESSOR_FLAG_*.
+TEST(DataProcessorsRuntimeHostTest, ReservedFlagBitIsRejected) {
+  Fixture fx;
+  fx.seed("speed", {1.0});
+  DataProcessorsRuntimeHost bridge(fx.service, "pluginA");
+  sdk::DataProcessorsHostView view(bridge.raw());
+
+  const std::string_view inputs[] = {"speed"};
+  const std::string_view outputs[] = {"speed/out"};
+  const auto status = view.createTransform(
+      "negate", PJ::Span<const std::string_view>(inputs), PJ::Span<const std::string_view>(outputs), kNegate, "{}",
+      /*flags=*/1u << 5);
+
+  EXPECT_FALSE(status);
+  EXPECT_NE(status.error().find("reserved"), std::string::npos) << status.error();
+  EXPECT_TRUE(fx.service.transformRecipes().empty());
+}
+
+// EPHEMERAL combined with HISTORY_EXEMPT is a known combination and must be
+// accepted.
+TEST(DataProcessorsRuntimeHostTest, KnownFlagCombinationIsAccepted) {
+  Fixture fx;
+  fx.seed("speed", {1.0});
+  DataProcessorsRuntimeHost bridge(fx.service, "pluginA");
+  sdk::DataProcessorsHostView view(bridge.raw());
+
+  const std::string_view inputs[] = {"speed"};
+  const std::string_view outputs[] = {"speed/out"};
+  const uint32_t known_flags = PJ_DATA_PROCESSOR_FLAG_EPHEMERAL | PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT;
+  const auto status = view.createTransform(
+      "negate", PJ::Span<const std::string_view>(inputs), PJ::Span<const std::string_view>(outputs), kNegate, "{}",
+      known_flags);
+
+  EXPECT_TRUE(status) << status.error();
+}
+
+// The `config` slot echoes history_exempt so a plugin can PROBE whether its
+// exemption request took.
+TEST(DataProcessorsRuntimeHostTest, ConfigEchoesHistoryExemptBit) {
+  Fixture fx;
+  fx.seed("speed", {1.0});
+  DataProcessorsRuntimeHost bridge(fx.service, "pluginA");
+  sdk::DataProcessorsHostView view(bridge.raw());
+
+  const std::string_view inputs[] = {"speed"};
+  const std::string_view exempt_outputs[] = {"speed/exempt"};
+  const uint32_t history_exempt_flag = PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT;
+  ASSERT_TRUE(view.createTransform(
+      "negate", PJ::Span<const std::string_view>(inputs), PJ::Span<const std::string_view>(exempt_outputs), kNegate,
+      "{}", history_exempt_flag));
+  const auto exempt_recipe = view.recipeOf("negate");
+  ASSERT_TRUE(exempt_recipe) << exempt_recipe.error();
+  EXPECT_NE(exempt_recipe->find("\"history_exempt\":true"), std::string::npos) << *exempt_recipe;
+
+  ASSERT_TRUE(view.remove("negate"));
+  ASSERT_TRUE(createNegate(view, "negate", "speed", "speed/plain"));
+  const auto plain_recipe = view.recipeOf("negate");
+  ASSERT_TRUE(plain_recipe) << plain_recipe.error();
+  EXPECT_NE(plain_recipe->find("\"history_exempt\":false"), std::string::npos) << *plain_recipe;
+}
+
 }  // namespace
 }  // namespace PJ

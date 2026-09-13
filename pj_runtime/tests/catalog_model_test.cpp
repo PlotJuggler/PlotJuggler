@@ -35,6 +35,23 @@ PJ::TopicId addScalarTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id
   return handle_or->topic_id;
 }
 
+TEST(CatalogModelTest, TopicLookupRejectsDuplicateDatasets) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  const auto first = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  const auto second = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(second);
+  EXPECT_EQ(catalog.datasetForTopic(u"/speed"_s), 0u);
+  ASSERT_NE(addScalarTopic(session, *first, "/speed"), 0u);
+  EXPECT_EQ(catalog.datasetForTopic(u"/speed"_s), *first);
+  ASSERT_NE(addScalarTopic(session, *second, "/speed"), 0u);
+  EXPECT_EQ(catalog.datasetForTopic(u"/speed"_s), 0u);
+  catalog.removeDataset(*first, /*tombstone=*/false);
+  session.dataEngine().removeDataset(*first);
+  EXPECT_EQ(catalog.datasetForTopic(u"/speed"_s), *second);
+}
+
 TEST(CatalogModelTest, KeepsDuplicateDatasetTopicsVisibleUnderDatasetRoot) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);

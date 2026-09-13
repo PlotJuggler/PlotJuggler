@@ -365,6 +365,16 @@ int TabbedPlotWidget::dockerCount() const {
   return count;
 }
 
+int TabbedPlotWidget::historySerializableDockerCount() const {
+  int count = 0;
+  for (const TabEntry& entry : tabs_) {
+    if (entry.docker != nullptr && entry.docker->isSerializable(SnapshotScope::kHistory)) {
+      ++count;
+    }
+  }
+  return count;
+}
+
 PlotDocker* TabbedPlotWidget::dockerAt(int index) {
   if (index < 0) {
     return nullptr;
@@ -430,6 +440,36 @@ void TabbedPlotWidget::focusWidgetTab(QWidget* content) {
 
 void TabbedPlotWidget::closeWidgetTab(QWidget* content) {
   if (const TabEntry* entry = findWidgetEntry(content)) {
+    closeTab(entry->frame, /*honor_veto=*/true);
+  }
+}
+
+QWidget* TabbedPlotWidget::takeWidgetTab(QWidget* content) {
+  const TabEntry* entry = findWidgetEntry(content);
+  if (entry == nullptr) {
+    return nullptr;
+  }
+  PlotTabFrame* frame = entry->frame;
+  const QSizePolicy original_policy = entry->original_policy;
+  const auto it =
+      std::find_if(tabs_.begin(), tabs_.end(), [content](const TabEntry& tab) { return tab.widget == content; });
+  tabs_.erase(it);
+  stack_->removeWidget(content);
+  tabs_bar_layout_->removeWidget(frame);
+  frame->deleteLater();
+  content->hide();
+  content->setParent(nullptr);
+  content->setSizePolicy(original_policy);
+  updateSelectionStyle();
+  emit currentTabChanged(qobject_cast<PlotDocker*>(stack_->currentWidget()));
+  return content;
+}
+
+void TabbedPlotWidget::closeTab(PlotDocker* docker) {
+  if (docker == nullptr) {
+    return;
+  }
+  if (const TabEntry* entry = findEntry(static_cast<QWidget*>(docker))) {
     closeTab(entry->frame, /*honor_veto=*/true);
   }
 }
@@ -529,10 +569,10 @@ void TabbedPlotWidget::closeTab(PlotTabFrame* frame, bool honor_veto) {
       return;
     }
   }
-  // Closing the last PLOT tab spawns a fresh one first: the workspace must
-  // always serialize at least one <Tab> (xmlLoadState rejects an empty set),
-  // and pinned widget tabs don't count — they are skipped by xmlSaveState.
-  if (entry->docker != nullptr && dockerCount() == 1) {
+  // Keep one ordinary plot tab available for history snapshots. Widget and
+  // history-exempt pages cannot satisfy that invariant.
+  if (entry->docker != nullptr && entry->docker->isSerializable(SnapshotScope::kHistory) &&
+      historySerializableDockerCount() == 1) {
     onAddTabButtonPressed();
     entry = findEntry(frame);  // vector reallocated above
     if (entry == nullptr) {
@@ -721,21 +761,19 @@ void TabbedPlotWidget::onStylesheetChanged(QString theme) {
   }
 }
 
-QDomElement TabbedPlotWidget::xmlSaveState(QDomDocument& doc) const {
+QDomElement TabbedPlotWidget::xmlSaveState(QDomDocument& doc, SnapshotScope scope) const {
   QDomElement tabbed_area = doc.createElement(u"tabbed_widget"_s);
   tabbed_area.setAttribute(u"id"_s, state_id_);
   tabbed_area.setAttribute(u"name"_s, name_);
   tabbed_area.setAttribute(u"parent"_s, u"main_window"_s);
 
-  // Widget tabs are skipped, so currentTabIndex counts DOCKER tabs only —
-  // xmlLoadState re-appends preserved widget tabs after the rebuilt dockers,
-  // keeping the two sides of this index consistent. A current widget tab
-  // serializes as index 0 (restore lands on the first plot tab).
+  // currentTabIndex counts only pages written at this scope. A current page
+  // outside the scope restores selection to the first serialized plot tab.
   PlotDocker* current = qobject_cast<PlotDocker*>(stack_->currentWidget());
   int current_index = 0;
   int docker_index = 0;
   for (const TabEntry& entry : tabs_) {
-    if (entry.docker == nullptr) {
+    if (entry.docker == nullptr || !entry.docker->isSerializable(scope)) {
       continue;
     }
     QDomElement tab_element = entry.docker->xmlSaveState(doc);
@@ -752,7 +790,7 @@ QDomElement TabbedPlotWidget::xmlSaveState(QDomDocument& doc) const {
   return tabbed_area;
 }
 
-bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area) {
+bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area, RestoreIntent intent) {
   if (tabbed_area.isNull() || tabbed_area.tagName() != "tabbed_widget"_L1) {
     return false;
   }
@@ -762,9 +800,14 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area) {
     name_ = tabbed_area.attribute(u"name"_s);
   }
 
+  const SnapshotScope scope = intent == RestoreIntent::kHistory ? SnapshotScope::kHistory : SnapshotScope::kFull;
+
   QVector<QDomElement> target_tabs;
   for (QDomElement tab = tabbed_area.firstChildElement(u"Tab"_s); !tab.isNull();
        tab = tab.nextSiblingElement(u"Tab"_s)) {
+    if (intent == RestoreIntent::kHistory && tab.attribute(u"history_exempt"_s) == u"1"_s) {
+      continue;
+    }
     target_tabs.push_back(tab);
   }
   if (target_tabs.isEmpty()) {
@@ -773,16 +816,13 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area) {
 
   restoring_state_ = true;
 
-  // Tear down the docker tabs before rebuilding. Widget tabs are NOT part
-  // of the serialized state (see xmlSaveState), so the live ones survive
-  // every restore — undo/redo and layout loads rebuild the plot tabs around
-  // them. Their frames are lifted out here and re-appended after the
-  // rebuilt dockers so the docker-only currentTabIndex stays meaningful.
-  std::vector<TabEntry> preserved_widget_tabs;
+  // Lift pages outside this restore's authority out of the tab strip, rebuild
+  // the target plot pages, then reattach the preserved live objects.
+  std::vector<TabEntry> preserved_tabs;
   for (TabEntry& entry : tabs_) {
-    if (entry.docker == nullptr) {
+    if (entry.docker == nullptr || !entry.docker->isSerializable(scope)) {
       tabs_bar_layout_->removeWidget(entry.frame);
-      preserved_widget_tabs.push_back(std::move(entry));
+      preserved_tabs.push_back(std::move(entry));
       continue;
     }
     stack_->removeWidget(entry.docker);
@@ -796,8 +836,8 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area) {
   // Runs on EVERY exit below (success or failed docker load) so the
   // preserved tabs are never orphaned outside tabs_ (their stack pages were
   // never removed).
-  const auto reattach_widget_tabs = [this, &preserved_widget_tabs]() {
-    for (TabEntry& entry : preserved_widget_tabs) {
+  const auto reattach_preserved_tabs = [this, &preserved_tabs]() {
+    for (TabEntry& entry : preserved_tabs) {
       tabs_bar_layout_->insertWidget(static_cast<int>(tabs_.size()), entry.frame, 0, Qt::AlignVCenter);
       tabs_.push_back(std::move(entry));
     }
@@ -809,18 +849,21 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area) {
     PlotDocker* docker = addTab(tab_name);
     docker->setStateId(tab_element.attribute(u"id"_s));
     docker->setName(tab_name);
+    docker->setHistoryExempt(tab_element.attribute(u"history_exempt"_s) == u"1"_s);
+    docker->setOwnerMetadata(tab_element.attribute(u"owner_plugin"_s), tab_element.attribute(u"tab_id"_s));
     if (!docker->xmlLoadState(tab_element)) {
-      reattach_widget_tabs();
+      reattach_preserved_tabs();
       restoring_state_ = false;
       return false;
     }
   }
-  reattach_widget_tabs();
+  reattach_preserved_tabs();
 
   const int requested_index = tabbed_area.firstChildElement(u"currentTabIndex"_s).attribute(u"index"_s, u"0"_s).toInt();
-  // The saved index counts docker tabs only; after the rebuild those occupy
-  // the leading slots, so clamp against the restored-docker count (not
-  // dockerCount(), which also counts the re-appended widget tabs).
+  // The saved index counts rebuilt (serialized) docker tabs only; after the
+  // rebuild those occupy the leading slots, so clamp against target_tabs'
+  // count (not dockerCount(), which also counts the re-appended widget and
+  // history-exempt tabs).
   const int max_index = static_cast<int>(target_tabs.size()) - 1;
   const int current_index = std::clamp(requested_index, 0, std::max(0, max_index));
   if (PlotDocker* docker = dockerAt(current_index)) {

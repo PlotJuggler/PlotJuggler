@@ -135,6 +135,8 @@
     <file alias="extension.svg">svg/extension.svg</file>
     <file alias="file_open.svg">svg/file_open.svg</file>
     <file alias="filter_list.svg">svg/filter_list.svg</file>
+    <file alias="dock_window.svg">svg/dock_window.svg</file>
+    <file alias="float_window.svg">svg/float_window.svg</file>
     <file alias="folder.svg">svg/folder.svg</file>
     <file alias="folder_open.svg">svg/folder_open.svg</file>
     <file alias="format_paint.svg">svg/format_paint.svg</file>
@@ -179,6 +181,7 @@
     <file alias="line_width_3_0.svg">svg/line_width_3_0.svg</file>
     <file alias="link.svg">svg/link.svg</file>
     <file alias="list.svg">svg/list.svg</file>
+    <file alias="menu.svg">svg/menu.svg</file>
     <file alias="logout.svg">svg/logout.svg</file>
     <file alias="loop.svg">svg/loop.svg</file>
     <file alias="markers.svg">svg/markers.svg</file>

@@ -141,3 +141,38 @@ upload identities, plugin configuration, credentials, and source-bound layouts
 must never enter durable browser storage. If the active preference envelope is
 unreadable, this version leaves it intact rather than deleting data that a newer
 version may understand; it never imports rejected values into the session.
+
+## Plugin playback and owned views
+
+`MainWindow` wires `PlaybackControlHost`, `ViewportRuntimeHost`, and
+`PlotTabsRuntimeHost` into each toolbox binding. Playback is global. Viewport
+operations reach only the dockers whose `PlotDocker::ownerPlugin()` is the
+captured plugin ID. Tab `stateId()` is independent of its title and position;
+duplicate visible titles and renaming do not affect addressing. Owned tabs
+persist in full layouts with `owner_plugin`/`tab_id` metadata and remain live
+across history restores. Known gap: an owned tab's curve bound to a per-curve
+filter output does not survive an unrelated undo, because a history restore
+clears and replays every filter (transforms are reconciled by recipe and keep
+their output identity). The watermark is the owning toolbox's display name
+(`toolboxBadge`); a tab whose owner is not in the catalog says so instead.
+
+`displayTimeForSource` validates a live catalog source handle and uses its current
+`SessionManager::displayOffset`. Topic conversion first requires a unique
+`CatalogModel::datasetForTopic` match; empty topic selects the representative
+dataset. Prefer the SDK's `toDisplayTimeForSource` when topic names repeat. Its
+optional tail slot preserves existing callers. See the SDK's
+`pj_plugins/docs/toolbox-guide.md` for plugin examples and error handling.
+
+## Toolbox presentation
+
+Toolboxes keep three header controls in every presentation: docked panels offer
+move-to-tab, move-to-floating and close; tabs offer move-to-docked,
+move-to-floating and close; floating windows offer move-to-tab, move-to-docked
+and close. Generic panels hide destinations they do not support.
+
+Relocation moves the same live container without teardown. The plugin session,
+drawer, actions and renamed tab title survive. Returning to docked restores
+engine close routing and the takeover's busy-close/automatic-fold registration.
+Replacing another busy takeover folds that panel before showing the incoming
+one. If docking cannot claim the chart slot, the live panel remains available
+as a tab. Tab header close uses the tab's busy-job confirmation.

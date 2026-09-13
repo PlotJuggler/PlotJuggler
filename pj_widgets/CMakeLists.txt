@@ -33,9 +33,11 @@ add_library(pj_widgets STATIC
     src/RecentFilesMenu.cpp
     src/ScrubberBase.cpp
     src/SectionHeaderBand.cpp
+    src/SideDrawer.cpp
     src/StateTransitionsView.cpp
     src/SvgButton.cpp
     src/Scrollbar.cpp
+    src/TailFollowOverlay.cpp
     src/Timeline.cpp
     src/ToastManager.cpp
     src/ToastNotification.cpp
@@ -43,6 +45,7 @@ add_library(pj_widgets STATIC
     src/VisualizationPlaceholderWidget.cpp
     include/pj_widgets/CheckButton.h
     include/pj_widgets/ChromeMetrics.h
+    include/pj_widgets/SideDrawer.h
     include/pj_widgets/DualOptionsWidget.h
     include/pj_widgets/ColorPickerPopup.h
     include/pj_widgets/ColorPickerWidget.h
@@ -81,6 +84,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/SvgButton.h
     include/pj_widgets/SvgUtil.h
     include/pj_widgets/Scrollbar.h
+    include/pj_widgets/TailFollowOverlay.h
     include/pj_widgets/Timeline.h
     include/pj_widgets/ToastManager.h
     include/pj_widgets/ToastNotification.h

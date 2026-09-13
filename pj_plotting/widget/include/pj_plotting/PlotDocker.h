@@ -15,6 +15,7 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_runtime/HistoryScope.h"
 #include "pj_widgets/VisualizationKind.h"
 
 namespace PJ {
@@ -54,6 +55,24 @@ class PlotDocker : public ads::CDockManager {
   void setObjectWidgetFactory(ObjectWidgetFactory factory);
   [[nodiscard]] QString stateId() const;
   void setStateId(QString id);
+  /// A history-exempt tab persists in layout files but is omitted from undo and
+  /// redo snapshots. History restores preserve its live page unchanged.
+  [[nodiscard]] bool isHistoryExempt() const;
+  void setHistoryExempt(bool history_exempt);
+  /// Whether a snapshot at `scope` writes this tab: a history-exempt one only
+  /// in a full layout file.
+  [[nodiscard]] bool isSerializable(SnapshotScope scope) const;
+  /// Stable owner identity persisted with a plugin-composed tab. Setting a
+  /// non-empty owner marks the tab as composed by a plugin: a permanent corner
+  /// watermark the user reads as "this view is not mine".
+  [[nodiscard]] QString ownerPlugin() const;
+  [[nodiscard]] QString ownerTabId() const;
+  void setOwnerMetadata(QString plugin_id, QString tab_id);
+  /// The watermark text for the owner while it is loaded (the host passes the
+  /// plugin's display name); empty means the owner is not present in the
+  /// toolbox catalog, and the watermark says so instead.
+  [[nodiscard]] bool isOwnerPluginAvailable() const;
+  void setOwnerBadge(QString badge);
   [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc) const;
   bool xmlLoadState(const QDomElement& tab_element);
 
@@ -117,8 +136,13 @@ class PlotDocker : public ads::CDockManager {
   // first remaining dock (which, after ensureAtLeastOneWidget, may be a fresh
   // placeholder when the last real widget was closed).
   void refocusAfterRemoval(DockWidget* removed);
+  void refreshOwnerWatermark();
 
   QString state_id_;
+  bool history_exempt_ = false;
+  QString owner_badge_;
+  QString owner_plugin_;
+  QString owner_tab_id_;
   QString name_;
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;

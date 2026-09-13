@@ -2,7 +2,7 @@
 <ui version="4.0">
  <class>Dialog</class>
  <widget class="QDialog" name="Dialog">
-  <layout class="QVBoxLayout" name="rootLayout">
+  <layout class="QHBoxLayout" name="rootLayout">
    <!-- Reserves the 1px border the theme paints on PJ::Dialog: Qt does not inset a
         QDialog's layout for its stylesheet border, so children would cover it. -->
    <property name="leftMargin"><number>1</number></property>
@@ -10,6 +10,16 @@
    <property name="rightMargin"><number>1</number></property>
    <property name="bottomMargin"><number>1</number></property>
    <property name="spacing"><number>0</number></property>
+   <!-- A host may insert a full-height side column (Dialog::setSideWidget) before
+        dialogBody; the title bar and content stay stacked inside it. -->
+   <item>
+    <widget class="QWidget" name="dialogBody" native="true">
+     <layout class="QVBoxLayout" name="bodyLayout">
+      <property name="leftMargin"><number>0</number></property>
+      <property name="topMargin"><number>0</number></property>
+      <property name="rightMargin"><number>0</number></property>
+      <property name="bottomMargin"><number>0</number></property>
+      <property name="spacing"><number>0</number></property>
    <item>
     <widget class="QWidget" name="dialogTitleBar" native="true">
      <property name="minimumSize"><size><width>320</width><height>24</height></size></property>
@@ -53,6 +63,9 @@
       <property name="rightMargin"><number>0</number></property>
       <property name="bottomMargin"><number>0</number></property>
       <property name="spacing"><number>0</number></property>
+     </layout>
+    </widget>
+   </item>
      </layout>
     </widget>
    </item>

@@ -700,7 +700,11 @@ struct DialogEngine::AsyncRunner {
         applyWidgetData(parser_dialog_widget, view);
       }
 
-      // 7. Wire parser dialog signals (events go to parser handle)
+      // 7. Wire parser dialog signals (events go to parser handle) + the
+      //    declarative "pj_enable_when"/"pj_visible_when" rules (this widget is
+      //    injected after the one-time install on binding_root, so it needs its
+      //    own pass).
+      installDeclarativeRules(parser_dialog_widget);
       connectWidgetSignals(
           parser_dialog_widget,
           guardedCallback(callbacks_alive, [&](const std::string& name, const std::string& event_json) {
@@ -845,6 +849,11 @@ struct DialogEngine::AsyncRunner {
         QObject::connect(sub_bb, &QDialogButtonBox::rejected, sub_dialog, &QDialog::reject);
       }
 
+      // The modal loop below blocks the plugin from driving field states — honor
+      // the .ui's declarative "pj_enable_when"/"pj_visible_when" rules here, like
+      // PanelEngine does.
+      installDeclarativeRules(sub_dialog);
+
       active_sub_dialog = sub_dialog;
       // Chain any continuation to the dismissal (guarded: at frame teardown the
       // callbacks flag is cleared, so a late finished cannot re-enter a dead
@@ -869,7 +878,9 @@ struct DialogEngine::AsyncRunner {
       sub_dialog->show();
     };
 
-    // 5. Wire signals
+    // 5. Wire signals + the declarative "pj_enable_when"/"pj_visible_when"
+    //    combo->field rules.
+    installDeclarativeRules(binding_root);
     connectWidgetSignals(
         binding_root, guardedCallback(callbacks_alive, [&](const std::string& name, const std::string& event_json) {
           stats_.event_count++;

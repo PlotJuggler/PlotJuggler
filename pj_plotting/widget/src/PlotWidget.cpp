@@ -485,6 +485,14 @@ void PlotWidget::createCurveXYInteractiveAsync(
 }
 #endif
 
+void PlotWidget::setVisibleXRange(double x0, double x1) {
+  QRectF rect = currentBoundingRect();
+  rect.setLeft(x0);
+  rect.setRight(x1);
+  setZoomRectangle(rect, false);
+  replot();
+}
+
 void PlotWidget::setZoomRectangle(QRectF rect, bool emit_signal) {
   if (isXYPlot() && keepRatioXY()) {
     // Every programmatic "return to original zoom" funnels through here

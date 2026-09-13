@@ -368,6 +368,13 @@ DisplayOffset SessionManager::displayOffset(DatasetId dataset_id) const {
   return DisplayOffset{sourceDisplayOffset(dataset_id).value + Duration{globalTimeReference()}};
 }
 
+std::optional<DisplaySeconds> SessionManager::displayTimeForSource(DatasetId dataset_id, int64_t absolute_ns) const {
+  if (dataset_id == 0 || data_engine_.getDataset(dataset_id) == nullptr) {
+    return std::nullopt;
+  }
+  return rawToDisplaySeconds(absolute_ns, displayOffset(dataset_id));
+}
+
 Timestamp SessionManager::globalTimeReference() const {
   // Zero (absolute display) when the toggle is off. When on, the earliest raw
   // sample ever observed across ALL datasets, applied uniformly. Per-dataset

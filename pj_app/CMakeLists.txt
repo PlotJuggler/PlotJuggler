@@ -411,10 +411,20 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_viewport_reframe_test.cpp)
 
+    # SDK 0.28 owned views: tab ids stay stable across renames and reordering,
+    # and displayTimeForSource refuses a topic that two datasets both advertise.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_plugin_views_test.cpp)
+
     # Transactional workspace history uses one MainWindow per ctest process;
     # the shell leaks process-global widget state across instances.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_history_test.cpp)
+
+    # History-exempt transforms and generators round-trip through the layout
+    # file but remain live across undo/redo.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_history_exempt_test.cpp)
 
     # Layout-import batch restore (T6), with isolated ctest processes:
     #   alive  — a materialize MISS import keeps the restore alive across the
@@ -724,7 +734,9 @@ if(PJ_BUILD_TESTS)
     pj_add_test_runner(pj_app_gui_tests
         MAIN gui WARNINGS
         SOURCES ${PJ_APP_GUI_TEST_SOURCES} tests/support/gui_test_env.cpp
-        LIBS pj_app_shell pj_resources
+        # Qt6::Test: QTest::qWaitForWindowExposed, for the drawer-splitter cases in
+        # toolbox_panel_fold_test that need a real window-system resize event.
+        LIBS pj_app_shell pj_resources Qt6::Test
     )
     set_target_properties(pj_app_gui_tests PROPERTIES AUTOMOC ON)
 endif()

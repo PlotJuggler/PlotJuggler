@@ -358,6 +358,52 @@ TEST(MarkerServiceTest, RemovePersistentGeneratorTombstonesOutput) {
   EXPECT_EQ(entry->payload.bytes.size(), 0u);
 }
 
+// clearGenerators(RestoreIntent::kHistory) reconciles only the non-exempt persistent
+// generators a history restore has authority over, leaving a history_exempt one
+// (and any ephemeral preview) untouched — clearAllGenerators is the same
+// predicate always removing.
+TEST(MarkerServiceTest, PredicateClearRemovesOnlyNonExemptGenerators) {
+  PJ::ObjectStore store;
+  MarkerService service(store, rampResolver(4));
+
+  auto plain = markerRecipe("plug/plain", "plain_out", "createMarker(0.0)\n");
+  ASSERT_TRUE(service.upsertGenerator(plain).has_value());
+
+  auto exempt = markerRecipe("assistant/exempt", "exempt_out", "createMarker(0.0)\n");
+  exempt.history_exempt = true;
+  ASSERT_TRUE(service.upsertGenerator(exempt).has_value());
+
+  service.clearGenerators(PJ::RestoreIntent::kHistory);
+
+  const auto recipes = service.recipes();
+  ASSERT_EQ(recipes.size(), 1u);
+  EXPECT_EQ(recipes.front().id, "assistant/exempt");
+  EXPECT_TRUE(recipes.front().history_exempt);
+}
+
+TEST(MarkerServiceTest, FindsExemptGeneratorDependingOnRemovedProcessorOutput) {
+  PJ::ObjectStore store;
+  MarkerService service(store, [](PJ::DatasetId, const std::string&) {
+    MarkerService::ResolvedSeries series;
+    series.timestamps = {0.0};
+    series.values = {1.0};
+    return std::optional<MarkerService::ResolvedSeries>{std::move(series)};
+  });
+
+  auto plain = markerRecipe("user/plain", "plain_markers", "createMarker(0.0)\n");
+  plain.inputs = {"user_output/value"};
+  ASSERT_TRUE(service.upsertGenerator(plain).has_value());
+
+  auto exempt = markerRecipe("assistant/exempt", "assistant_markers", "createMarker(0.0)\n");
+  exempt.inputs = {"user_output/value"};
+  exempt.history_exempt = true;
+  ASSERT_TRUE(service.upsertGenerator(exempt).has_value());
+
+  EXPECT_EQ(service.exemptDependentsOf({"user_output"}), std::vector<std::string>{"assistant_markers"});
+  EXPECT_TRUE(service.exemptDependentsOf({"unrelated"}).empty());
+  EXPECT_TRUE(service.exemptDependentsOf({"user"}).empty());
+}
+
 // N1: markers merge set-aware — the anchor's set plus each source's set shifted
 // onto the anchor clock, republished as one blob, and the source topics dropped.
 // (This is what markers opt out of the generic ObjectStore fold to do.)

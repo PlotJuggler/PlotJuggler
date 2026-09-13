@@ -1871,3 +1871,20 @@ TEST(SessionManagerMetadataTest, RefillCommitClearsMetadataRollbackKeepsIt) {
 }
 
 }  // namespace
+
+TEST(SessionManagerTimeTest, DisplayTimeForSourceHonoursCurrentOffsetAndRejectsUnknownDataset) {
+  PJ::SessionManager session;
+  auto domain = session.dataEngine().createTimeDomain("shifted");
+  ASSERT_TRUE(domain.has_value());
+  auto dataset = session.dataEngine().createDataset(
+      PJ::DatasetDescriptor{.source_name = "shifted.mcap", .time_domain_id = *domain});
+  ASSERT_TRUE(dataset.has_value());
+
+  EXPECT_FALSE(session.displayTimeForSource(9999, 5'000'000'000LL).has_value());
+  EXPECT_FALSE(session.displayTimeForSource(0, 5'000'000'000LL).has_value());
+
+  session.dataEngine().setDisplayOffset(*domain, 2'000'000'000LL);
+  const auto display = session.displayTimeForSource(*dataset, 5'000'000'000LL);
+  ASSERT_TRUE(display.has_value());
+  EXPECT_DOUBLE_EQ(display->value, 3.0);
+}

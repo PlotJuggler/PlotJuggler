@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QPointer>
+#include <QString>
 #include <QWidget>
 
 namespace ads {
@@ -25,6 +26,11 @@ class PlotFocusOverlay final : public QWidget {
   void setFocusedArea(ads::CDockAreaWidget* area);
   void setHoveredArea(ads::CDockAreaWidget* area);
 
+  /// A permanent watermark painted inside the bottom-right corner of every
+  /// plot canvas in the container, empty for an unmarked tab. Drawn beneath the
+  /// focus and hover frames so it never covers them.
+  void setWatermarkText(const QString& text);
+
  protected:
   void paintEvent(QPaintEvent* event) override;
   bool eventFilter(QObject* watched, QEvent* event) override;
@@ -36,6 +42,7 @@ class PlotFocusOverlay final : public QWidget {
   ads::CDockContainerWidget* container_;
   QPointer<ads::CDockAreaWidget> focused_area_;
   QPointer<ads::CDockAreaWidget> hovered_area_;
+  QString watermark_;
 };
 
 }  // namespace PJ

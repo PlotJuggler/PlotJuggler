@@ -31,10 +31,13 @@
 #include "LoadInput.h"
 #include "pj_base/builtin/builtin_object.hpp"  // sdk::BuiltinObjectType — onPlaceholderTopicDropped's slot parameter
 #include "pj_base/diagnostic_sink.hpp"
-#include "pj_base/time.hpp"  // PJ::Timepoint — the frame-invariant absolute instant the reference line stores
+#include "pj_base/expected.hpp"  // PJ::Status — the plot-tab and viewport host services report through it
+#include "pj_base/time.hpp"      // PJ::Timepoint — the frame-invariant absolute instant the reference line stores
 #include "pj_base/types.hpp"
 #include "pj_plotting/CurveTracker.h"
-#include "pj_runtime/CurveDescriptor.h"   // openFilterEditor takes std::vector<CurveDescriptor> by value
+#include "pj_runtime/CurveDescriptor.h"       // openFilterEditor takes std::vector<CurveDescriptor> by value
+#include "pj_runtime/DataProcessorService.h"  // parseWantedTransforms returns TransformRecipes by value
+#include "pj_runtime/HistoryScope.h"
 #include "pj_runtime/RecordingService.h"  // CaptureResult / SourceRecordingStart — recording slot parameters
 #include "pj_runtime/SessionManager.h"
 #include "pj_widgets/ChromeMetrics.h"
@@ -88,6 +91,7 @@ class StreamingSourceManager;
 class IngestProgressWidget;
 class MessageBox;
 class ToolboxRuntimeHost;
+struct RuntimeToolboxPlugin;
 class SourceTimelineController;
 class TopicDemandController;
 class SvgButton;
@@ -119,10 +123,12 @@ class MainWindow : public QMainWindow {
   friend class MainWindowSourceLayoutTestPeer;
   friend class MainWindowFanoutAmbiguousTestPeer;
   friend class MainWindowViewportReframeTestPeer;
+  friend class MainWindowPluginViewsTestPeer;
   friend class MainWindowHistoryTestPeer;
   friend class MainWindowPanelGeometryTestPeer;
   friend class MainWindowLayoutImportTestPeer;
   friend class MainWindowMarkerGeneratorTestPeer;
+  friend class MainWindowHistoryExemptTestPeer;
   friend class MainWindowCustomSeriesTestPeer;
   friend class ToolboxPanelFoldTestPeer;
 
@@ -577,6 +583,46 @@ class MainWindow : public QMainWindow {
   // (their X axis is a curve value, not time, so the union is meaningless).
   void linkedZoomOut();
 
+  // Set the visible X window of every time plot `plugin_id` owns to
+  // [t0_s, t1_s] (display-axis seconds), keeping each plot's Y range. Backs
+  // pj.viewport.v1, whose scope is the caller's own tabs. Owning no tab and
+  // owning a tab with nothing to zoom are distinct errors: the caller's remedy
+  // differs, and a conflated message makes it retry identically forever.
+  Status zoomOwnedPlotsToTimeRange(const QString& plugin_id, double t0_s, double t1_s);
+
+  // Reset every plot `plugin_id` owns to fit its data. The scoped counterpart
+  // of the toolbar's linkedZoomOut, which stays the user's own control.
+  Status zoomOwnedPlotsOut(const QString& plugin_id);
+
+  // The shell half of pj.plot_tabs.v1. Every one of these is scoped to
+  // `plugin_id`: a tab it did not compose is indistinguishable from one that
+  // does not exist, so the service can neither reach nor reveal the user's own
+  // tabs. `tab_id` is the plugin's own name for the tab; the docker's stateId
+  // carries the host-namespaced form, which is what makes two plugins' ids
+  // unable to collide.
+  Status createOwnedPlotTab(const QString& plugin_id, const QString& tab_id, const QString& title);
+  Status closeOwnedPlotTab(const QString& plugin_id, const QString& tab_id);
+  [[nodiscard]] Expected<std::vector<std::string>> listOwnedPlotTabs(const QString& plugin_id) const;
+  // What the tab actually holds, as the JSON the ABI specifies — read back from
+  // the live plot, never echoed from what the caller asked for.
+  [[nodiscard]] Expected<std::string> ownedPlotTabConfig(const QString& plugin_id, const QString& tab_id) const;
+  void refreshOwnedPlotTabAvailability();
+  /// `SessionManager::displayTimeForSource` on the ABI's source handle, unwrapped to the axis double.
+  [[nodiscard]] std::optional<double> displayTimeForSource(PJ_data_source_handle_t source, int64_t absolute_ns) const;
+  // The watermark an owned plot tab carries for `plugin_id`: its display name
+  // while loaded, empty when it is not in the catalog.
+  [[nodiscard]] QString toolboxBadge(const QString& plugin_id) const;
+  Status addCurveToOwnedPlotTab(
+      const QString& plugin_id, const QString& tab_id, const QString& topic, const QString& field,
+      const QString& dataset_source);
+  Status removeCurveFromOwnedPlotTab(
+      const QString& plugin_id, const QString& tab_id, const QString& topic, const QString& field,
+      const QString& dataset_source);
+  Status clearOwnedPlotTab(const QString& plugin_id, const QString& tab_id);
+  // The docker `plugin_id` composed under `tab_id`, or null when it owns no
+  // such tab. The single ownership check every operation above goes through.
+  [[nodiscard]] PlotDocker* ownedPlotTab(const QString& plugin_id, const QString& tab_id) const;
+
   // Convenience: emit a diagnostic into the session's sink. Source/id
   // are stable string literals; message is a translated QString. The
   // sink fans out to QtDiagnosticBridge → DiagnosticHistory and from
@@ -590,7 +636,7 @@ class MainWindow : public QMainWindow {
   void wireExistingPlots();
 
   // Applies operation to each plot docker.
-  void forEachDocker(const std::function<void(PlotDocker*)>& operation);
+  void forEachDocker(const std::function<void(PlotDocker*)>& operation) const;
 
   // Applies operation to each dock widget.
   void forEachDock(const std::function<void(DockWidget*)>& operation);
@@ -616,6 +662,10 @@ class MainWindow : public QMainWindow {
 
   // Applies operation to each plot widget.
   void forEachPlot(const std::function<void(PlotWidget*)>& operation);
+  // forEachPlot narrowed to the tabs `plugin_id` composed through
+  // pj.plot_tabs.v1. This is where the boundary is actually enforced: a plugin
+  // drives the view only where the user can see it is driving.
+  void forEachPlotOwnedBy(const QString& plugin_id, const std::function<void(PlotWidget*)>& operation);
   // Every mounted State Transitions strip across all tabs.
   void forEachStateStrip(const std::function<void(StateTransitionsDockWidget*)>& operation);
 
@@ -675,6 +725,8 @@ class MainWindow : public QMainWindow {
 
     [[nodiscard]] bool operator==(const TimelineState&) const = default;
   };
+
+  using SnapshotScope = PJ::SnapshotScope;
 
   /// One atomic workspace snapshot. XML stays on the established schema while
   /// session-only timeline identity and chrome remain in memory.
@@ -861,6 +913,7 @@ class MainWindow : public QMainWindow {
     kCancelled,  ///< user cancelled at the missing-curve prompt (kPrompt only)
     kFailed,     ///< xmlLoadState rejected the document
   };
+  using RestoreIntent = PJ::RestoreIntent;
   // Restore a COMPLETE workspace snapshot (filters + curve rebinding + plots/toggles)
   // onto the live session — the single restore path shared by layout load and undo/redo,
   // so the two can never drift (that drift is what let undo silently drop filters).
@@ -868,15 +921,22 @@ class MainWindow : public QMainWindow {
   // is in the catalog), then rebind curve keys, then apply plots+toggles via
   // xmlLoadState. Snapshots carry stable topic/field paths, not per-load keys, so one
   // survives an intervening data reload. Callers run it under applying_state_ as needed.
+  // `out_reason`, when non-null, receives the one-sentence rejection reason from
+  // a `kHistory` intent's exempt-dependency check (see `restoreDataProcessors`);
+  // untouched on every other outcome.
   [[nodiscard]] RestoreResult restoreWorkspaceState(
-      QDomDocument& doc, MissingCurvePolicy policy, const CapturedWorkspace* rollback_to = nullptr);
+      QDomDocument& doc, MissingCurvePolicy policy, const CapturedWorkspace* rollback_to = nullptr,
+      RestoreIntent intent = RestoreIntent::kReplace, QString* out_reason = nullptr);
   [[nodiscard]] RestoreResult restoreWorkspaceState(
       const CapturedWorkspace& target, MissingCurvePolicy policy, TimelineRestoreMode timeline_mode,
-      const CapturedWorkspace* rollback_to = nullptr);
+      const CapturedWorkspace* rollback_to = nullptr, RestoreIntent intent = RestoreIntent::kReplace,
+      QString* out_reason = nullptr);
 
   /// Capture/apply helpers shared by history, rollback, progressive restore, and
   /// source replacement. Timeline validation resolves every id and overflow
   /// guard before the first offset is written.
+  [[nodiscard]] CapturedWorkspace captureWorkspace(SnapshotScope scope) const;
+  // `SnapshotScope::kFull` — the convenience overload every non-history capture uses.
   [[nodiscard]] CapturedWorkspace captureWorkspace() const;
   // `stamp_override_id`, when non-zero, stamps that dataset with
   // `stamp_override_path` instead of its tracked path — used while a
@@ -895,10 +955,11 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] bool applyTimelineState(const TimelineState& state, const TimelineResolutionPlan& plan);
   [[nodiscard]] RestoreResult applyWorkspace(
       QDomDocument& doc, MissingCurvePolicy policy, const TimelineState* timeline_state,
-      const TimelineResolutionPlan* timeline_plan);
+      const TimelineResolutionPlan* timeline_plan, RestoreIntent intent, QString* out_reason = nullptr);
   [[nodiscard]] RestoreResult restoreWorkspaceStateImpl(
       QDomDocument& doc, MissingCurvePolicy policy, const TimelineState* timeline_state,
-      TimelineRestoreMode timeline_mode, const CapturedWorkspace* rollback_to);
+      TimelineRestoreMode timeline_mode, const CapturedWorkspace* rollback_to,
+      RestoreIntent intent = RestoreIntent::kReplace, QString* out_reason = nullptr);
 
   // kPlaceholders was removed: the SessionManager API for registering
   // empty placeholder series doesn't exist yet, so the "Create empty
@@ -971,11 +1032,32 @@ class MainWindow : public QMainWindow {
   // name). Restore re-applies each filter onto the target dataset BEFORE curve-key
   // rebinding, so the materialized output topics are in the catalog and the
   // filtered curves resolve like any other curve, then replays the transforms.
-  [[nodiscard]] QDomElement saveDataProcessors(QDomDocument& doc) const;
+  // `scope == kFull` tags a history-exempt <transform>/<generator> with
+  // `history_exempt="1"` so it round-trips through a layout file; `kHistory`
+  // omits those entries outright (see `SnapshotScope`).
+  [[nodiscard]] QDomElement saveDataProcessors(QDomDocument& doc, SnapshotScope scope) const;
   // Resolves each saved filter's input against whichever loaded dataset holds it
   // (first match in load order, mirroring rebindCurvesToLoadedDatasets), so a
   // multi-file layout restores each filter against its own source.
-  [[nodiscard]] bool restoreDataProcessors(const QDomElement& root);
+  //
+  // A history restore first rejects outright — leaving everything untouched and
+  // naming the exempt output in `out_reason` — if removing
+  // this snapshot's non-exempt processors would strand an exempt dependent;
+  // otherwise it clears only the non-exempt filters/transforms/generators and
+  // defensively skips any document entry marked `history_exempt="1"`.
+  // `kReplace` clears and recreates the complete set. `out_reason`, when
+  // non-null, is cleared on entry and set only on the history rejection path.
+  [[nodiscard]] bool restoreDataProcessors(
+      const QDomElement& root, RestoreIntent intent = RestoreIntent::kReplace, QString* out_reason = nullptr);
+
+  // Parses every <transform> under `element` (a <data_processors> node) into the
+  // recipes the snapshot wants live, resolving persisted dataset identities against
+  // the current session. Skips entries flagged `history_exempt="1"` when
+  // `keep_exempt` (history has no authority to replay one); an entry that fails to
+  // parse is reported, dropped, and clears `*restored_all`. Query-only: nothing in
+  // the session mutates, so the result can drive a rejection preflight.
+  [[nodiscard]] std::vector<DataProcessorService::TransformRecipe> parseWantedTransforms(
+      const QDomElement& element, bool keep_exempt, bool* restored_all);
 
   // Re-derives the Custom Series list from the live transform recipes and hands
   // the whole set to the panel.
@@ -1003,11 +1085,13 @@ class MainWindow : public QMainWindow {
   // until the playback bar is laid out (post first show).
   void alignNameColumnToPlayback();
 
-  // Serializes the current app layout state.
+  // Serializes the current app layout state. `scope` governs both processors
+  // and plot tabs; the no-arg overload is the full layout-file form.
+  [[nodiscard]] QDomDocument xmlSaveState(SnapshotScope scope) const;
   [[nodiscard]] QDomDocument xmlSaveState() const;
 
   // Loads a previously serialized app layout state.
-  bool xmlLoadState(const QDomDocument& state_document);
+  bool xmlLoadState(const QDomDocument& state_document, RestoreIntent intent = RestoreIntent::kReplace);
 
   // Initializes the undo stack with the post-construction state.
   void pushInitialUndoState();
@@ -1125,31 +1209,41 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] bool hostHasWorkInFlight(ToolboxRuntimeHost* host) const;
   void stopHostWork(ToolboxRuntimeHost* host);
 
-  // wrapToolboxPanel's product: the framed container plus the transition
-  // that strips the takeover-only banner buttons (migrate + close) when the
-  // panel is pinned as a tab — the tab frame provides name + close, and
-  // only wrapToolboxPanel knows which banner widgets are takeover chrome.
+  // The same content and plugin connections survive all presentation changes.
   struct WrappedToolboxPanel {
     QWidget* container = nullptr;
     std::function<void()> enter_pinned_chrome;
+    std::function<void()> enter_docked_chrome;
   };
 
-  // Wraps a toolbox panel's `content` in the canonical Banner header (title on
-  // the far left; migrate-to-tab + close buttons on the far right;
-  // Surface::Banner). The migrate button strips the banner chrome and invokes
-  // `on_migrate`. The close button normally invokes `on_close`, but while
-  // `has_work_in_flight` reports work it folds the panel instead: tearing the
-  // panel down destroys the plugin instance, which is also its job's kill
-  // switch, so the X must never be a silent cancel. That busy-X fold runs
-  // `on_fold_busy` — a HOST-chosen fold (the caller pins it transient, kept
-  // out of layout save), distinct from the migrate button's user pin — and
-  // falls back to `on_migrate` when empty. An empty predicate means "never
-  // busy" — always `on_close`. The returned container is what presentPanel()
-  // swaps into the chart area.
+  // The callbacks a wrapped toolbox panel's chrome drives. Absent migration
+  // callbacks (on_migrate / on_float / on_dock) hide that destination's button.
+  struct ToolboxChromeHooks {
+    std::function<void()> on_close;
+    std::function<void()> on_migrate;
+    std::function<void()> on_float;
+    std::function<void()> on_dock;
+    std::function<void()> on_fold_busy;
+    std::function<bool()> has_work_in_flight;
+  };
+
+  // Wraps content in host chrome. Docked: tab/float/close; pinned: dock/float/close.
+  // Floating uses its own title bar. Busy docked close folds through
+  // hooks.on_fold_busy; pinned close delegates to the tab's vetoable close path.
+  // persist_key identifies the drawer width in QSettings (empty disables persistence).
   WrappedToolboxPanel wrapToolboxPanel(
-      QWidget* content, const QString& title, const std::function<void()>& on_close,
-      const std::function<void()>& on_migrate, std::function<bool()> has_work_in_flight = {},
-      const std::function<void()>& on_fold_busy = {});
+      QWidget* content, const QString& title, ToolboxChromeHooks hooks, const QString& persist_key = {});
+
+  // Detaches only this live toolbox, without close callbacks or cancellation.
+  // Updates title from the current tab/window and returns parentless content;
+  // absent or inconsistent ownership leaves the presentation intact.
+  QWidget* releaseToolboxPanel(const QString& plugin_id, QWidget* container, QString& title);
+
+  // Restores takeover ownership and busy-fold routing after a relocation.
+  // Failure leaves the caller responsible for the still-live container.
+  bool dockToolboxPanel(
+      QWidget* container, PanelEngine* engine, const void* owner, std::function<void(bool)> fold,
+      std::function<bool()> has_work_in_flight, const std::function<void()>& enter_docked_chrome);
 
   // Pins a wrapped toolbox panel (`container`, from wrapToolboxPanel, already
   // switched to pinned chrome) as a central widget tab: registers the pinned
@@ -1177,16 +1271,24 @@ class MainWindow : public QMainWindow {
   // snapshot; see TabbedPlotWidget::xmlSaveState). savePinnedToolboxes emits
   // <pinned_toolboxes><toolbox plugin_id="...">config-json</toolbox>...</>,
   // skipping transient folds — a background fold is not a workspace choice.
-  // restorePinnedToolboxes closes every live pinned tab, then relaunches
-  // from the element (missing plugins surface a diagnostic and are dropped);
-  // it returns false when a busy pinned panel kept the live set untouched:
-  // under kPrompt the user declined the cancel confirmation, under
-  // kRetainAndDiagnose (non-interactive restore — D5's no-dialog rule) the
-  // busy panels are retained unprompted and reported through the diagnostic
-  // sink.
+  // A floating toolbox window is saved as a pinned tab too: floating is a
+  // session gesture, not a persisted presentation, so the layout restores it
+  // as a tab. restorePinnedToolboxes closes every live pinned tab AND every
+  // floating toolbox window, then relaunches from the element (missing
+  // plugins surface a diagnostic and are dropped); it returns false when a
+  // busy panel kept the live set untouched: under kPrompt the user declined
+  // the cancel confirmation, under kRetainAndDiagnose (non-interactive
+  // restore — D5's no-dialog rule) the busy panels are retained unprompted
+  // and reported through the diagnostic sink.
   [[nodiscard]] QDomElement savePinnedToolboxes(QDomDocument& doc) const;
   bool restorePinnedToolboxes(const QDomElement& root, MissingCurvePolicy policy);
   void closeAllPinnedToolboxTabs();
+  // Closes every floating toolbox window and finishes each teardown
+  // synchronously (mirroring closeAllPinnedToolboxTabs): the engine and
+  // window must be gone before a relaunch of the same plugin binds a fresh
+  // instance, and before ~MainWindow destroys the services their sessions
+  // reference.
+  void closeAllFloatingToolboxWindows();
 
   // The single commit boundary of a layout open: runs what must happen only
   // once every abort/rollback path has returned — replacing the pinned
@@ -1541,6 +1643,28 @@ class MainWindow : public QMainWindow {
     bool transient = false;
   };
   QHash<QString, PinnedToolbox> pinned_toolboxes_;
+
+  // A toolbox undocked into its own top-level window via the banner's
+  // "move to a floating window" button. `window` is the floating dialog (its
+  // done() runs the teardown); `container` is the wrapped panel riding inside,
+  // reused as-is when the window's "Move to a tab" button re-docks it. Keyed
+  // by plugin id — one live instance per toolbox, across panel, tabs and
+  // floating windows alike. Floating is not persisted as such: layout save
+  // writes these entries as pinned tabs (hence save_config/label), and `host`
+  // answers the busy checks a layout replace must make. QPointers so a window
+  // torn down out-of-band reads back null.
+  struct FloatingToolbox {
+    QPointer<QWidget> window;
+    QPointer<QWidget> container;
+    QPointer<PanelEngine> engine;
+    std::function<QString()> save_config;
+    ToolboxRuntimeHost* host = nullptr;
+    QString label;
+    // The window's finished() -> teardown connection; re-docking disconnects it
+    // so closing the emptied window tears down nothing.
+    QMetaObject::Connection on_close;
+  };
+  QHash<QString, FloatingToolbox> floating_toolboxes_;
 
   // How the presented takeover folds itself into a pinned tab. `owner` is the
   // launch session's address — compared, never dereferenced — so an ingest

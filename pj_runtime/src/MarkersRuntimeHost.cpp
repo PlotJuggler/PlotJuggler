@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 #include <utility>
 
+#include "data_processor_flags.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"  // sdk::toStringView / toAbiString / fillError
 #include "pj_base/sdk/service_traits.hpp"   // sdk::DataProcessorsHostService
 #include "pj_plugins/host/service_registry_builder.hpp"
@@ -70,6 +71,10 @@ bool MarkersRuntimeHost::onCreate(
       sdk::fillError(out_error, 1, kDomain, "unknown generator kind '" + std::string(sdk::toStringView(kind)) + "'");
       return false;
     }
+    if ((flags & ~kKnownFlags) != 0) {
+      sdk::fillError(out_error, 1, kDomain, "pj.data_processors: reserved flag bits set");
+      return false;
+    }
     recipe.language = std::string(sdk::toStringView(language));
     recipe.inputs.reserve(input_count);
     for (uint64_t i = 0; i < input_count; ++i) {
@@ -85,6 +90,7 @@ bool MarkersRuntimeHost::onCreate(
     recipe.script = std::string(sdk::toStringView(script));  // binary-safe (may carry NULs)
     recipe.params_json = std::string(sdk::toStringView(params_json));
     recipe.ephemeral = (flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL) != 0;
+    recipe.history_exempt = (flags & PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT) != 0;
     // params_json scope: {"scope":"all"} publishes a global marker across EVERY
     // dataset; absent/other → the active dataset only (markers only).
     if (!recipe.params_json.empty()) {
@@ -174,6 +180,7 @@ bool MarkersRuntimeHost::onConfig(
       j["language"] = r.language;
       j["inputs"] = r.inputs;
       j["outputs"] = r.outputs;
+      j["history_exempt"] = r.history_exempt;
       nlohmann::json params =
           r.params_json.empty() ? nlohmann::json::object() : nlohmann::json::parse(r.params_json, nullptr, false);
       j["params"] = params.is_discarded() ? nlohmann::json::object() : params;

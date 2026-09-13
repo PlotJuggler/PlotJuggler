@@ -293,6 +293,11 @@ class SessionManager : public QObject {
   /// frame never disturbs the per-source alignment the Source Timeline owns.
   [[nodiscard]] DisplayOffset displayOffset(DatasetId dataset_id) const;
 
+  /// `absolute_ns` on the display axis under the dataset's current
+  /// `displayOffset`, or nullopt when `dataset_id` is not a loaded dataset (the
+  /// caller's handle is stale or invalid, so there is no mapping to give).
+  [[nodiscard]] std::optional<DisplaySeconds> displayTimeForSource(DatasetId dataset_id, int64_t absolute_ns) const;
+
   /// Per-source ALIGNMENT shift ONLY (the dataset's TimeDomain offset, read
   /// LIVE): exactly what the Source Timeline edits via setDisplayOffset (drag /
   /// align / reset) and what positions its bars. Excludes the global "Use time

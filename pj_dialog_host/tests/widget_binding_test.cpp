@@ -23,14 +23,25 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDateTimeEdit>
+#include <QDesktopServices>
+#include <QDialog>
 #include <QFrame>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QHelpEvent>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
+#include <QMenu>
+#include <QPlainTextEdit>
+#include <QPointer>
+#include <QPushButton>
 #include <QRadioButton>
 #include <QScrollArea>
+#include <QScrollBar>
+#include <QSignalSpy>
 #include <QSpacerItem>
 #include <QSpinBox>
 #include <QStyleOptionViewItem>
@@ -39,9 +50,17 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTemporaryDir>
 #include <QTest>
+#include <QTextBrowser>
+#include <QTextCursor>
+#include <QTextList>
+#include <QTextTable>
+#include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QWidgetAction>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/host/widget_data_view.hpp>
@@ -68,6 +87,18 @@ QApplication* qapp() {
 struct Event {
   std::string name;
   std::string json;
+};
+
+class UrlReceiver : public QObject {
+  Q_OBJECT
+
+ public slots:
+  void open(const QUrl& url) {
+    opened = url;
+  }
+
+ public:
+  QUrl opened;
 };
 
 // Wire connectWidgetSignals to a recorder so tests can assert what the plugin
@@ -229,6 +260,509 @@ TEST(WidgetBindingFieldValidity, RendersTooltipAndBorder) {
   good.setFieldValid("apiKey", true);
   PJ::applyWidgetData(&root, PJ::WidgetDataView(good.toJson()));
   EXPECT_TRUE(edit->styleSheet().isEmpty()) << "valid field should clear the cue";
+}
+
+// Claim: Return in a docked line edit invokes the declared default exactly once and respects disabled state.
+TEST(WidgetBindingDefaultButton, ReturnClicksEnabledDefaultOnceAndIgnoresDisabledDefault) {
+  qapp();
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* edit = new QLineEdit(&root);
+  edit->setObjectName("input");
+  auto* button = new QPushButton("Run", &root);
+  button->setObjectName("run");
+  button->setDefault(true);
+  layout->addWidget(edit);
+  layout->addWidget(button);
+  int clicks = 0;
+  PJ::connectWidgetSignals(&root, [&](const std::string& name, const std::string&) {
+    if (name == "run") {
+      ++clicks;
+    }
+  });
+  root.show();
+  edit->setFocus();
+  QTest::keyClick(edit, Qt::Key_Return);
+  EXPECT_EQ(clicks, 1);
+  button->setEnabled(false);
+  QTest::keyClick(edit, Qt::Key_Return);
+  EXPECT_EQ(clicks, 1);
+}
+
+// Claim: Return must not activate a default action hidden by a plugin or declarative visibility rule.
+TEST(WidgetBindingDefaultButton, ReturnDoesNotClickHiddenDefault) {
+  qapp();
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* edit = new QLineEdit(&root);
+  edit->setObjectName("input");
+  auto* button = new QPushButton("Run", &root);
+  button->setObjectName("run");
+  button->setDefault(true);
+  layout->addWidget(edit);
+  layout->addWidget(button);
+  int clicks = 0;
+  PJ::connectWidgetSignals(&root, [&](const std::string& name, const std::string&) {
+    if (name == "run") {
+      ++clicks;
+    }
+  });
+  root.show();
+  PJ::WidgetData data;
+  data.setVisible("run", false);
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(data.toJson()));
+  ASSERT_TRUE(button->isHidden());
+  edit->setFocus();
+  QTest::keyClick(edit, Qt::Key_Return);
+  EXPECT_EQ(clicks, 0) << "Return invoked an invisible plugin action";
+}
+
+// Claim: moving a bound panel into a QDialog leaves only Qt's native Return dispatch active.
+TEST(WidgetBindingDefaultButton, ReparentIntoDialogDoesNotDoubleClickDefault) {
+  qapp();
+  QDialog dialog;
+  auto* panel = new QWidget;
+  auto* layout = new QVBoxLayout(panel);
+  auto* edit = new QLineEdit(panel);
+  edit->setObjectName("input");
+  auto* button = new QPushButton("Run", panel);
+  button->setObjectName("run");
+  button->setDefault(true);
+  button->setAutoDefault(false);
+  layout->addWidget(edit);
+  layout->addWidget(button);
+  int clicks = 0;
+  PJ::connectWidgetSignals(panel, [&](const std::string& name, const std::string&) {
+    if (name == "run") {
+      ++clicks;
+    }
+  });
+  auto* dialog_layout = new QVBoxLayout(&dialog);
+  dialog_layout->addWidget(panel);
+  button->setDefault(false);
+  button->setDefault(true);
+  dialog.show();
+  edit->setFocus();
+  QTest::keyClick(edit, Qt::Key_Return);
+  EXPECT_EQ(clicks, 1);
+}
+
+// A presentation may move a plugin widget OUT of the panel tree (a side drawer
+// hoisted next to the title bar). The root's pjHoistedWidgets property is how
+// by-name data still reaches it — otherwise setVisible/setLabel on the moved
+// widget would silently do nothing.
+TEST(WidgetBindingHoisted, DataReachesAWidgetMovedOutOfTheRootTree) {
+  qapp();
+  QWidget window;
+  auto* root = new QWidget(&window);
+  auto* drawer = new QWidget(root);
+  drawer->setObjectName("drawer");
+  auto* label = new QLabel(drawer);
+  label->setObjectName("drawerTitle");
+
+  // Hoist: the drawer leaves the root's subtree for a sibling slot.
+  drawer->setParent(&window);
+  ASSERT_EQ(root->findChild<QWidget*>("drawer"), nullptr) << "precondition: the plain lookup no longer finds it";
+  root->setProperty(PJ::kHoistedWidgetsProperty, QVariantList{QVariant::fromValue<QObject*>(drawer)});
+
+  PJ::WidgetData data;
+  data.setVisible("drawer", false);
+  data.setLabel("drawerTitle", "Conversations");
+  PJ::applyWidgetData(root, PJ::WidgetDataView(data.toJson()));
+  EXPECT_TRUE(drawer->isHidden()) << "the hoisted widget itself";
+  EXPECT_EQ(label->text().toStdString(), "Conversations") << "and its children";
+}
+
+// --- pjFollowTail: transcripts open on, and follow, their newest lines -------
+
+namespace {
+
+QString numberedLines(int first, int last) {
+  QString out;
+  for (int i = first; i <= last; ++i) {
+    out += QStringLiteral("line %1\n").arg(i);
+  }
+  return out;
+}
+
+void pushPlainText(QWidget* root, const char* name, const QString& text) {
+  PJ::WidgetData data;
+  data.setPlainText(name, text.toStdString());
+  PJ::applyWidgetData(root, PJ::WidgetDataView(data.toJson()));
+}
+
+}  // namespace
+
+TEST(WidgetBindingFollowTail, TranscriptOpensOnItsNewestLinesAndAReplacementLandsThereToo) {
+  qapp();
+  QWidget root;
+  auto* transcript = new QPlainTextEdit(&root);
+  transcript->setObjectName("transcript");
+  transcript->setProperty("pjFollowTail", true);
+  transcript->setFixedSize(300, 80);  // a few lines tall, so 200 lines have to scroll
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+
+  pushPlainText(&root, "transcript", numberedLines(1, 200));
+  QScrollBar* bar = transcript->verticalScrollBar();
+  ASSERT_GT(bar->maximum(), 0);
+  EXPECT_EQ(bar->value(), bar->maximum()) << "first population opens at the end, not at line 1";
+
+  bar->setValue(0);                                             // the reader goes back to the start …
+  pushPlainText(&root, "transcript", numberedLines(500, 700));  // … and another conversation is swapped in
+  EXPECT_EQ(bar->value(), bar->maximum()) << "a replacement is a fresh transcript: newest lines again";
+}
+
+TEST(WidgetBindingFollowTail, GrowthKeepsAScrolledUpReaderInPlaceAndOffersTheWayBack) {
+  qapp();
+  QWidget root;
+  auto* transcript = new QPlainTextEdit(&root);
+  transcript->setObjectName("transcript");
+  transcript->setProperty("pjFollowTail", true);
+  transcript->setFixedSize(300, 80);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+
+  pushPlainText(&root, "transcript", numberedLines(1, 200));
+  QScrollBar* bar = transcript->verticalScrollBar();
+  auto* overlay = transcript->viewport()->findChild<QWidget*>("tailFollowOverlay");
+  ASSERT_NE(overlay, nullptr) << "the tagged transcript carries the jump-to-latest overlay";
+  EXPECT_TRUE(overlay->isHidden()) << "nothing newer to go to while at the end";
+
+  bar->setValue(10);
+  EXPECT_FALSE(overlay->isHidden()) << "scrolled away from the end: the way back is offered";
+  pushPlainText(&root, "transcript", numberedLines(1, 240));  // the transcript grows
+  EXPECT_EQ(bar->value(), 10) << "growth does not yank a reader who is reading further up";
+  // The app applies on a 20 Hz tick with the event loop running in between, and
+  // QPlainTextEdit adjusts its scroll range lazily: a second growth after that
+  // adjustment must still leave the reader where they were.
+  QTest::qWait(50);
+  pushPlainText(&root, "transcript", numberedLines(1, 280));
+  QTest::qWait(50);
+  EXPECT_EQ(bar->value(), 10) << "nor after the lazy scroll-range adjustment has run";
+
+  auto* button = overlay->findChild<QAbstractButton*>("tailFollowButton");
+  ASSERT_NE(button, nullptr);
+  button->click();
+  EXPECT_EQ(bar->value(), bar->maximum());
+  EXPECT_TRUE(overlay->isHidden());
+}
+
+// Regression [Codex #9]: growth while the reader sits at the end calls
+// moveCursor(End) unconditionally, collapsing a selection made near the tail.
+TEST(WidgetBindingFollowTail, GrowthAtTheEndKeepsTheReadersSelection) {
+  qapp();
+  QWidget root;
+  auto* transcript = new QPlainTextEdit(&root);
+  transcript->setObjectName("transcript");
+  transcript->setProperty("pjFollowTail", true);
+  transcript->setFixedSize(300, 80);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+
+  pushPlainText(&root, "transcript", numberedLines(1, 200));
+  QScrollBar* bar = transcript->verticalScrollBar();
+  ASSERT_EQ(bar->value(), bar->maximum());
+
+  QTextCursor selection = transcript->textCursor();
+  selection.movePosition(QTextCursor::End);
+  selection.movePosition(QTextCursor::Left, QTextCursor::KeepAnchor, 8);  // "line 200"
+  transcript->setTextCursor(selection);
+  ASSERT_TRUE(transcript->textCursor().hasSelection());
+  ASSERT_EQ(bar->value(), bar->maximum()) << "selecting the last line keeps the reader at the end";
+
+  pushPlainText(&root, "transcript", numberedLines(1, 240));
+  EXPECT_TRUE(transcript->textCursor().hasSelection()) << "growth collapsed the reader's selection";
+}
+
+// The case the short-line tests cannot see: with lines that WRAP, QPlainTextEdit
+// lays blocks out lazily, so right after a wholesale setPlainText its scroll
+// range reads low and "was the reader at the end?" comes out true for a reader
+// who was not — the next growth then yanked them to the bottom. Growth is
+// inserted, not re-set, precisely so this cannot happen.
+TEST(WidgetBindingFollowTail, WrappedLinesGrowingOverSeveralTicksKeepAScrolledUpReaderInPlace) {
+  qapp();
+  QWidget root;
+  auto* transcript = new QPlainTextEdit(&root);
+  transcript->setObjectName("transcript");
+  transcript->setProperty("pjFollowTail", true);
+  transcript->setFixedSize(300, 120);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+
+  const auto long_lines = [](int first, int last) {
+    QString out;
+    for (int i = first; i <= last; ++i) {
+      out += QStringLiteral("turn %1: ").arg(i) + QString(220, u'x') + u'\n';  // wraps several times at 300 px
+    }
+    return out;
+  };
+  pushPlainText(&root, "transcript", long_lines(1, 60));
+  QTest::qWait(50);
+  QScrollBar* bar = transcript->verticalScrollBar();
+  ASSERT_GT(bar->maximum(), 20);
+  bar->setValue(20);
+  const int top_block_before = transcript->cursorForPosition(QPoint(0, 0)).blockNumber();
+
+  for (int i = 61; i <= 66; ++i) {  // several growth ticks, event loop running in between
+    pushPlainText(&root, "transcript", long_lines(1, i));
+    QTest::qWait(30);
+  }
+  EXPECT_EQ(transcript->cursorForPosition(QPoint(0, 0)).blockNumber(), top_block_before)
+      << "the reader's top line must not move while the transcript grows below them";
+  EXPECT_LT(bar->value(), bar->maximum());
+}
+
+TEST(WidgetBindingFollowTail, UntaggedPlainTextStillOpensAtTheTop) {
+  qapp();
+  QWidget root;
+  auto* doc = new QPlainTextEdit(&root);
+  doc->setObjectName("doc");
+  doc->setFixedSize(300, 80);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+
+  pushPlainText(&root, "doc", numberedLines(1, 200));
+  EXPECT_EQ(doc->verticalScrollBar()->value(), 0) << "document-style text keeps Qt's default";
+}
+
+// --- pjMarkdown: post-load promotion and rich transcript binding ------------
+
+namespace {
+
+QTextBrowser* makeMarkdownTranscript(QWidget* root, const QString& name = u"transcript"_s) {
+  auto* layout = new QVBoxLayout(root);
+  auto* authored = new QPlainTextEdit(root);
+  authored->setObjectName(name);
+  authored->setProperty("pjMarkdown", true);
+  authored->setProperty("pjFollowTail", true);
+  authored->setFixedSize(420, 140);
+  layout->addWidget(authored);
+  PJ::adaptStyledWidgets(root);
+  return root->findChild<QTextBrowser*>(name);
+}
+
+QTextCursor findText(QTextDocument* document, const QString& text) {
+  QTextCursor cursor = document->find(text);
+  EXPECT_FALSE(cursor.isNull()) << text.toStdString();
+  return cursor;
+}
+
+}  // namespace
+
+TEST(WidgetBindingMarkdown, PromotesOnlyOptedInChildAndPreservesBindingProperties) {
+  qapp();
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* opted = new QPlainTextEdit(&root);
+  opted->setObjectName("richTranscript");
+  opted->setProperty("pjMarkdown", true);
+  opted->setProperty("pjFollowTail", true);
+  opted->setToolTip("rendered transcript");
+  opted->setPlainText("authored fallback");
+  layout->addWidget(opted);
+  QPointer<QPlainTextEdit> old_opted(opted);
+
+  auto* plain = new QPlainTextEdit(&root);
+  plain->setObjectName("plainDocument");
+  plain->setProperty("pjMarkdown", false);
+  layout->addWidget(plain);
+
+  PJ::adaptStyledWidgets(&root);
+
+  EXPECT_TRUE(old_opted.isNull());
+  auto* browser = root.findChild<QTextBrowser*>("richTranscript");
+  ASSERT_NE(browser, nullptr);
+  EXPECT_TRUE(browser->property("pjMarkdown").toBool());
+  EXPECT_TRUE(browser->property("pjFollowTail").toBool());
+  EXPECT_EQ(browser->toolTip(), u"rendered transcript"_s);
+  EXPECT_EQ(browser->toPlainText(), u"authored fallback"_s);
+  EXPECT_EQ(root.findChild<QPlainTextEdit*>("plainDocument"), plain)
+      << "an untagged QPlainTextEdit keeps its class and behavior";
+}
+
+TEST(WidgetBindingMarkdown, RendersGitHubMarkdownUnicodeAndBlocksEmbeddedResources) {
+  qapp();
+  QWidget root;
+  QTextBrowser* browser = makeMarkdownTranscript(&root);
+  ASSERT_NE(browser, nullptr);
+
+  const QString markdown =
+      u"**bold text**\n\n- first item\n- second item\n\n"
+      u"| Name | Value |\n| --- | ---: |\n| α | 42 |\n\n"
+      u"```cpp\nprintf(\"✓\");\n```\n\n"
+      u"<b>raw html</b> ![blocked](file:///etc/passwd)\n"_s;
+  pushPlainText(&root, "transcript", markdown);
+
+  QTextCursor bold = findText(browser->document(), u"bold text"_s);
+  EXPECT_GT(bold.charFormat().fontWeight(), QFont::Normal);
+  EXPECT_NE(findText(browser->document(), u"first item"_s).currentList(), nullptr);
+  EXPECT_NE(findText(browser->document(), u"Value"_s).currentTable(), nullptr);
+  QTextCursor code = findText(browser->document(), u"printf"_s);
+  EXPECT_EQ(code.blockFormat().property(QTextFormat::BlockCodeFence).toString(), u"`"_s);
+  EXPECT_EQ(code.blockFormat().property(QTextFormat::BlockCodeLanguage).toString(), u"cpp"_s);
+  EXPECT_TRUE(code.charFormat().fontFamilies().toStringList().contains(u"monospace"_s))
+      << "the Markdown importer requests the generic \"monospace\" family for a code fence "
+         "(fontFixedPitch() is not set); QFontInfo would instead report whatever face the host actually "
+         "resolved, which is environment-dependent";
+  EXPECT_TRUE(browser->toPlainText().contains(u"✓"_s));
+  EXPECT_TRUE(browser->toPlainText().contains(u"<b>raw html</b>"_s)) << "MarkdownNoHTML renders tags literally";
+  EXPECT_TRUE(browser->document()
+                  ->resource(QTextDocument::ImageResource, QUrl::fromLocalFile(u"/etc/passwd"_s))
+                  .toByteArray()
+                  .isEmpty());
+  EXPECT_FALSE(browser->openLinks());
+  EXPECT_FALSE(browser->openExternalLinks());
+  EXPECT_TRUE(browser->isReadOnly());
+  EXPECT_TRUE(browser->textInteractionFlags().testFlag(Qt::LinksAccessibleByMouse));
+  EXPECT_TRUE(browser->textInteractionFlags().testFlag(Qt::LinksAccessibleByKeyboard));
+}
+
+// Claim: Markdown blocks a real readable image, not merely an invalid or missing image path.
+TEST(WidgetBindingMarkdown, BlocksExistingLocalImageThatOrdinaryQtCanLoad) {
+  qapp();
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  QImage png(2, 2, QImage::Format_RGB32);
+  png.fill(Qt::red);
+  const QString path = dir.filePath(u"valid.png"_s);
+  ASSERT_TRUE(png.save(path));
+  const QUrl url = QUrl::fromLocalFile(path);
+  const QString control_path = dir.filePath(u"control.png"_s);
+  ASSERT_TRUE(png.save(control_path));
+  const auto contains_image = [](const QVariant& resource) {
+    return !resource.value<QImage>().isNull() || !resource.value<QPixmap>().isNull() ||
+           !QImage::fromData(resource.toByteArray()).isNull();
+  };
+  QTextDocument ordinary;
+  ASSERT_TRUE(contains_image(ordinary.resource(QTextDocument::ImageResource, QUrl::fromLocalFile(control_path))));
+  QWidget root;
+  auto* browser = makeMarkdownTranscript(&root);
+  ASSERT_NE(browser, nullptr);
+  pushPlainText(&root, "transcript", u"![blocked](%1)"_s.arg(url.toString()));
+  EXPECT_FALSE(contains_image(browser->document()->resource(QTextDocument::ImageResource, url)));
+}
+
+TEST(WidgetBindingMarkdown, ReparseCompletesStreamingMarkupAndIdenticalTextIsANoOp) {
+  qapp();
+  QWidget root;
+  QTextBrowser* browser = makeMarkdownTranscript(&root);
+  ASSERT_NE(browser, nullptr);
+
+  pushPlainText(&root, "transcript", u"**Assistant:**\n\nThis is **streaming\n\n"_s);
+  pushPlainText(&root, "transcript", u"**Assistant:**\n\nThis is **streaming**\n\n"_s);
+  QTextCursor completed = findText(browser->document(), u"streaming"_s);
+  EXPECT_GT(completed.charFormat().fontWeight(), QFont::Normal)
+      << "the full Markdown source must be reparsed when closing syntax arrives";
+
+  QSignalSpy changes(browser->document(), &QTextDocument::contentsChanged);
+  pushPlainText(&root, "transcript", u"**Assistant:**\n\nThis is **streaming**\n\n"_s);
+  EXPECT_EQ(changes.count(), 0) << "20 Hz identical payloads must not reset the rich document";
+}
+
+TEST(WidgetBindingMarkdown, PluginShapedTailRewritePreservesReaderAnchorAndSelection) {
+  qapp();
+  QWidget root;
+  QTextBrowser* browser = makeMarkdownTranscript(&root);
+  ASSERT_NE(browser, nullptr);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+
+  QString stable = u"**User:**\n\nShow a program.\n\n**Assistant:**\n\n"_s;
+  for (int i = 1; i <= 90; ++i) {
+    stable += QStringLiteral("context line %1 with enough text to keep the transcript tall\n\n").arg(i);
+  }
+  const QString partial = stable + u"```cpp\nvoid write() {\n\n  emit(\"par\n\n```\n\n"_s;
+  pushPlainText(&root, "transcript", partial);
+  QTest::qWait(30);
+
+  QTextCursor selected = findText(browser->document(), u"context line 20"_s);
+  browser->setTextCursor(selected);
+  browser->ensureCursorVisible();
+  QScrollBar* bar = browser->verticalScrollBar();
+  ASSERT_GT(bar->value(), 0);
+  ASSERT_LT(bar->value(), bar->maximum());
+  const int top_position = browser->cursorForPosition(QPoint(0, 0)).position();
+  const QString selected_text = browser->textCursor().selectedText();
+
+  const QString completed = stable + u"```cpp\nvoid write() {\n\n  emit(\"partial ✓\");\n\n```\n\n"_s;
+  pushPlainText(&root, "transcript", completed);
+  QTest::qWait(30);
+  EXPECT_EQ(browser->textCursor().selectedText(), selected_text);
+  EXPECT_EQ(browser->cursorForPosition(QPoint(0, 0)).position(), top_position)
+      << "a full reparse that moves the synthetic closing fence keeps the rendered top anchor";
+  EXPECT_LT(bar->value(), bar->maximum());
+}
+
+TEST(WidgetBindingMarkdown, StreamingFenceClosureMayShrinkSourceWithoutResettingReader) {
+  qapp();
+  QWidget root;
+  QTextBrowser* browser = makeMarkdownTranscript(&root);
+  ASSERT_NE(browser, nullptr);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+
+  QString prefix;
+  for (int i = 1; i <= 100; ++i) {
+    prefix += QStringLiteral("line %1\n\n").arg(i);
+  }
+  pushPlainText(&root, "transcript", prefix + u"```cpp\nx\n``\n```\n\n"_s);
+  QTextCursor selected = findText(browser->document(), u"line 25"_s);
+  browser->setTextCursor(selected);
+  browser->ensureCursorVisible();
+  const int top_position = browser->cursorForPosition(QPoint(0, 0)).position();
+  const QString selected_text = browser->textCursor().selectedText();
+
+  // The streamed third backtick completes the real fence, so the renderer's
+  // temporary close disappears and the complete source becomes shorter.
+  pushPlainText(&root, "transcript", prefix + u"```cpp\nx\n```\n\n"_s);
+  EXPECT_EQ(browser->textCursor().selectedText(), selected_text);
+  EXPECT_EQ(browser->cursorForPosition(QPoint(0, 0)).position(), top_position);
+}
+
+TEST(WidgetBindingMarkdown, ReplacementAndEmptyConversationOpenAtTheEnd) {
+  qapp();
+  QWidget root;
+  QTextBrowser* browser = makeMarkdownTranscript(&root);
+  ASSERT_NE(browser, nullptr);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+
+  pushPlainText(&root, "transcript", u"**Assistant:**\n\n"_s + numberedLines(1, 160));
+  ASSERT_GT(browser->verticalScrollBar()->maximum(), 0);
+  EXPECT_EQ(browser->verticalScrollBar()->value(), browser->verticalScrollBar()->maximum());
+
+  browser->verticalScrollBar()->setValue(0);
+  pushPlainText(&root, "transcript", u"**Different conversation:**\n\n"_s + numberedLines(500, 680));
+  EXPECT_EQ(browser->verticalScrollBar()->value(), browser->verticalScrollBar()->maximum());
+
+  pushPlainText(&root, "transcript", QString());
+  EXPECT_TRUE(browser->toPlainText().isEmpty());
+  EXPECT_EQ(browser->verticalScrollBar()->value(), browser->verticalScrollBar()->maximum());
+}
+
+TEST(WidgetBindingMarkdown, HttpLinkOpensOnlyThroughExplicitActivation) {
+  qapp();
+  QWidget root;
+  QTextBrowser* browser = makeMarkdownTranscript(&root);
+  ASSERT_NE(browser, nullptr);
+  pushPlainText(&root, "transcript", u"[documentation](https://example.invalid/help)"_s);
+
+  UrlReceiver http_receiver;
+  UrlReceiver file_receiver;
+  QDesktopServices::setUrlHandler(u"https"_s, &http_receiver, "open");
+  QDesktopServices::setUrlHandler(u"file"_s, &file_receiver, "open");
+
+  Q_EMIT browser->anchorClicked(QUrl(u"https://example.invalid/help"_s));
+  Q_EMIT browser->anchorClicked(QUrl(u"file:///etc/passwd"_s));
+
+  QDesktopServices::unsetUrlHandler(u"https"_s);
+  QDesktopServices::unsetUrlHandler(u"file"_s);
+
+  EXPECT_EQ(http_receiver.opened, QUrl(u"https://example.invalid/help"_s));
+  EXPECT_EQ(file_receiver.opened, QUrl()) << "the production handler only opens http/https, so a file: link must "
+                                             "never reach QDesktopServices";
+  EXPECT_TRUE(browser->source().isEmpty()) << "the browser never navigates itself";
 }
 
 // --- Editable QComboBox handling (generic; ported from gor/mosaico) ----------
@@ -1211,6 +1745,186 @@ TEST(WidgetBindingTableDelete, ThreeColumnTableUsesDeleteAffordanceOnlyInLastCol
   EXPECT_EQ(recorder()->back().json, PJ::WidgetEventBuilder::itemDeleteRequested(kTargetRow));
 }
 
+// --- Row tooltip on elision (ListRowDeleteDelegate::helpEvent) -------------
+//
+// Direct delegate invocation with a hand-built QStyleOptionViewItem, the same
+// technique ThreeColumnTableUsesDeleteAffordanceOnlyInLastColumn above uses
+// for sizeHint — helpEvent needs no live tooltip popup or event loop spin to
+// verify what it decides to answer.
+
+TEST(WidgetBindingListTooltip, ElidedRowReportsTooltipShortRowReportsNone) {
+  qapp();
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* lw = new QListWidget(&root);
+  lw->setObjectName("lst");
+  layout->addWidget(lw);
+
+  const std::string long_text = "a row label far too long to fit a narrow list without eliding";
+  PJ::WidgetData wd;
+  wd.setListItems("lst", {long_text, "short"});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  PJ::connectWidgetSignals(&root, [](const std::string&, const std::string&) {});
+
+  auto* delegate = lw->itemDelegate();
+  ASSERT_NE(delegate, nullptr);
+
+  QStyleOptionViewItem option;
+  option.state = QStyle::State_Enabled;
+  option.palette = lw->palette();
+  option.font = lw->font();
+  option.fontMetrics = QFontMetrics(option.font);
+  option.widget = lw;
+
+  // Not pj_deletable: the budget is the full row width, no icon reservation —
+  // "must work whether or not the list is pj_deletable".
+  option.rect = QRect(0, 0, 60, 20);  // far narrower than the long row's text
+  const QModelIndex wide_index = lw->model()->index(0, 0);
+  QHelpEvent wide_help(QEvent::ToolTip, QPoint(5, 5), QPoint(5, 5));
+  EXPECT_TRUE(delegate->helpEvent(&wide_help, lw, option, wide_index)) << "an elided row must answer its own tooltip";
+
+  option.rect = QRect(0, 0, 200, 20);  // comfortably fits "short"
+  const QModelIndex short_index = lw->model()->index(1, 0);
+  QHelpEvent short_help(QEvent::ToolTip, QPoint(5, 5), QPoint(5, 5));
+  EXPECT_FALSE(delegate->helpEvent(&short_help, lw, option, short_index)) << "a row that fits shows no tooltip";
+}
+
+// A pj_deletable list reserves the icon width from the SAME budget the trash
+// icon paints into — a row that would fit without the icon must still report
+// a tooltip once the reservation is counted.
+TEST(WidgetBindingListTooltip, DeletableListReservesIconWidthFromTheTooltipBudgetToo) {
+  qapp();
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* lw = new QListWidget(&root);
+  lw->setObjectName("lst");
+  layout->addWidget(lw);
+
+  PJ::WidgetData wd;
+  wd.setListItems("lst", {"just fits without the trash icon"});
+  wd.setListItemsDeletable("lst", true);
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  PJ::connectWidgetSignals(&root, [](const std::string&, const std::string&) {});
+
+  auto* delegate = lw->itemDelegate();
+  ASSERT_NE(delegate, nullptr);
+  const QModelIndex index = lw->model()->index(0, 0);
+
+  QStyleOptionViewItem option;
+  option.state = QStyle::State_Enabled;
+  option.palette = lw->palette();
+  option.font = lw->font();
+  option.fontMetrics = QFontMetrics(option.font);
+  option.widget = lw;
+  // Wide enough for the bare text, not for text + the icon's reserved width.
+  const int text_width = option.fontMetrics.horizontalAdvance(QString::fromUtf8("just fits without the trash icon"));
+  option.rect = QRect(0, 0, text_width + 4, 20);
+
+  QHelpEvent help(QEvent::ToolTip, QPoint(5, 5), QPoint(5, 5));
+  EXPECT_TRUE(delegate->helpEvent(&help, lw, option, index))
+      << "the icon reservation must be counted even though the bare text alone would fit";
+}
+
+// --- Row context menu (pj_context_actions) ---------------------------------
+
+TEST(WidgetBindingListContextMenu, AbsentPropertyLeavesTheDefaultContextMenuPolicy) {
+  qapp();
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* lw = new QListWidget(&root);
+  lw->setObjectName("lst");
+  layout->addWidget(lw);
+
+  PJ::WidgetData wd;
+  wd.setListItems("lst", {"a", "b"});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  PJ::connectWidgetSignals(&root, [](const std::string&, const std::string&) {});
+
+  EXPECT_NE(lw->contextMenuPolicy(), Qt::CustomContextMenu) << "today's behaviour: no menu, no policy change";
+}
+
+TEST(WidgetBindingListContextMenu, MalformedClauseIsSkippedRestBuildsAndFiresWithPluginIndex) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* lw = new QListWidget(&root);
+  lw->setObjectName("lst");
+  layout->addWidget(lw);
+
+  PJ::WidgetData wd;
+  // Delivered order [first, second]; sorted view order flips them, so a menu
+  // choice must report the DELIVERED index (0), not the view row (1).
+  wd.setListItems("lst", {"first", "second"});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  lw->setSortingEnabled(true);
+  // "broken" (no '=') is skipped; "rename"/"remove" still build, in order.
+  lw->setProperty("pj_context_actions", u"broken;rename=Rename;remove=Remove"_s);
+  PJ::connectWidgetSignals(
+      &root, [](const std::string& name, const std::string& json) { recorder()->push_back({name, json}); });
+  EXPECT_EQ(lw->contextMenuPolicy(), Qt::CustomContextMenu);
+
+  lw->sortItems(Qt::DescendingOrder);
+  ASSERT_EQ(lw->item(0)->text(), u"second"_s) << "view order now differs from delivered order";
+
+  root.resize(300, 200);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+  const QRect cell = lw->visualItemRect(lw->item(0));
+  ASSERT_FALSE(cell.isEmpty());
+
+  // QMenu::exec() blocks; open the popup, inspect it, and click its first
+  // entry once the nested event loop it starts begins pumping.
+  QTimer::singleShot(0, &root, [&]() {
+    auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+    ASSERT_NE(menu, nullptr);
+    EXPECT_EQ(menu->objectName(), u"PJMenu"_s);
+    const auto actions = menu->actions();
+    ASSERT_EQ(actions.size(), 2) << "the malformed clause must not block the well-formed ones";
+    const auto label_of = [](QAction* action) {
+      auto* widget_action = qobject_cast<QWidgetAction*>(action);
+      return widget_action != nullptr ? qobject_cast<QPushButton*>(widget_action->defaultWidget())->text() : QString();
+    };
+    EXPECT_EQ(label_of(actions[0]), u"Rename"_s);
+    EXPECT_EQ(label_of(actions[1]), u"Remove"_s);
+    qobject_cast<QPushButton*>(qobject_cast<QWidgetAction*>(actions[0])->defaultWidget())->click();
+  });
+  lw->customContextMenuRequested(cell.center());
+
+  ASSERT_FALSE(recorder()->empty());
+  EXPECT_EQ(recorder()->back().name, "lst");
+  // View row 0 is "second", delivered at index 1 — the event must carry that
+  // delivered index, not the view row the click actually landed on.
+  EXPECT_EQ(recorder()->back().json, PJ::WidgetEventBuilder::itemContextAction(1, "rename"))
+      << "must report the delivered-order index, not the sorted view row";
+}
+
+TEST(WidgetBindingListContextMenu, EmptyAreaShowsNoMenu) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* lw = new QListWidget(&root);
+  lw->setObjectName("lst");
+  layout->addWidget(lw);
+
+  PJ::WidgetData wd;
+  wd.setListItems("lst", {"only"});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  lw->setProperty("pj_context_actions", u"rename=Rename"_s);
+  PJ::connectWidgetSignals(
+      &root, [](const std::string& name, const std::string& json) { recorder()->push_back({name, json}); });
+
+  root.resize(300, 200);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+
+  // Below the single row: no item under the cursor, so no menu — and
+  // crucially exec() is never entered, or this call would hang the test.
+  lw->customContextMenuRequested(QPoint(10, 190));
+  EXPECT_TRUE(recorder()->empty());
+}
+
 TEST(WidgetBindingChartPlaceholder, EmptyTextHidesAndChangedTextRemeasuresSerieslessFrame) {
   qapp();
   QWidget root;
@@ -2054,3 +2768,5 @@ TEST(WidgetBindingTableDelta, UpdateCellsRewritesSortKeyNotJustText) {
   EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"r1a", "r0a"})) << "100 must now sort before 200";
   EXPECT_EQ(columnTexts(tw, 1), (std::vector<std::string>{"100", "200"}));
 }
+
+#include "widget_binding_test.moc"

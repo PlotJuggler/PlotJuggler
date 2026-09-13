@@ -3,18 +3,21 @@
 
 #include "pj_widgets/Dialog.h"
 
+#include <QAbstractButton>
 #include <QApplication>
 #include <QEvent>
 #include <QLayout>
 #include <QMouseEvent>
 #include <QShowEvent>
 #include <QSize>
+#include <QSplitter>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWindow>
 #include <algorithm>
 
 #include "pj_widgets/Scrollbar.h"
+#include "pj_widgets/SideDrawer.h"
 #include "pj_widgets/SvgUtil.h"
 #include "ui_Dialog.h"
 
@@ -42,6 +45,15 @@ Qt::CursorShape cursorForEdges(Qt::Edges edges) {
     default:
       return Qt::ArrowCursor;
   }
+}
+
+// One sizing rule for every title-bar button (the ✕ and host-added actions),
+// so the chrome row reads as one family.
+void sizeTitleBarButton(QAbstractButton* button, const ChromeMetrics& metrics) {
+  const int button_extent = metrics.icon_size + metrics.icon_padding;
+  button->setMinimumSize(button_extent, button_extent);
+  button->setMaximumSize(button_extent, button_extent);
+  button->setIconSize(QSize(metrics.icon_size, metrics.icon_size));
 }
 
 }  // namespace
@@ -73,20 +85,82 @@ Dialog::~Dialog() {
 }
 
 void Dialog::setChromeMetrics(const ChromeMetrics& metrics) {
+  chrome_metrics_ = metrics;
   const int bar_height = metrics.titleBarHeight();
   ui_->dialogTitleBar->setMinimumHeight(bar_height);
   ui_->dialogTitleBar->setMaximumHeight(bar_height);
-  // Close button + icon track the same button extent / icon size the main-window
-  // chrome buttons use, so the whole chrome reads identically.
-  const int button_extent = metrics.icon_size + metrics.icon_padding;
-  ui_->buttonClose->setMinimumSize(button_extent, button_extent);
-  ui_->buttonClose->setMaximumSize(button_extent, button_extent);
-  ui_->buttonClose->setIconSize(QSize(metrics.icon_size, metrics.icon_size));
+  // Buttons + icons track the same extent / icon size the main-window chrome
+  // buttons use, so the whole chrome reads identically.
+  sizeTitleBarButton(ui_->buttonClose, metrics);
+  for (const auto& action : title_bar_actions_) {
+    if (!action.isNull()) {
+      sizeTitleBarButton(action, metrics);
+    }
+  }
   if (auto* layout = ui_->titleBarLayout) {
     layout->setContentsMargins(
         metrics.layout_padding, metrics.layout_padding, metrics.layout_padding, metrics.layout_padding);
     layout->setSpacing(metrics.layout_spacing);
   }
+}
+
+void Dialog::addTitleBarAction(QAbstractButton* button, TitleBarSlot slot) {
+  if (button == nullptr) {
+    return;
+  }
+  button->setParent(ui_->dialogTitleBar);
+  if (slot == TitleBarSlot::Leading) {
+    if (leading_actions_ == 0) {
+      // [leading…][stretch][title][spacer][trailing…][✕]: the title sits
+      // between two expanding gaps, so it reads centred between the groups.
+      const int label_at = ui_->titleBarLayout->indexOf(ui_->dialogTitleLabel);
+      ui_->titleBarLayout->insertStretch(label_at + 1, 1);  // the .ui's own spacer after the title is fixed-size
+      ui_->titleBarLayout->insertStretch(label_at, 1);
+      ui_->dialogTitleLabel->setAlignment(Qt::AlignCenter);
+    }
+    // Leading actions keep insertion order, all ahead of the stretch.
+    ui_->titleBarLayout->insertWidget(leading_actions_, button);
+    ++leading_actions_;
+  } else {
+    ui_->titleBarLayout->insertWidget(ui_->titleBarLayout->indexOf(ui_->buttonClose), button);
+  }
+  sizeTitleBarButton(button, chrome_metrics_);
+  title_bar_actions_.push_back(button);
+}
+
+void Dialog::setSideWidget(QWidget* widget, const QString& settings_key) {
+  if (!side_widget_.isNull() && side_widget_ != widget) {
+    side_widget_->setParent(nullptr);  // hand the old widget back intact, not deleted
+  }
+  if (widget == nullptr) {
+    // Dismantle the splitter and hand dialogBody back to rootLayout directly
+    // — the exact layout a dialog that never called setSideWidget has, so a
+    // setSideWidget(w) / setSideWidget(nullptr) round trip (the toolbox
+    // tab<->floating-window migration) leaves no trace behind.
+    if (!side_splitter_.isNull()) {
+      ui_->dialogBody->setParent(nullptr);
+      ui_->rootLayout->insertWidget(0, ui_->dialogBody);
+      side_splitter_->deleteLater();
+      side_splitter_ = nullptr;
+    }
+    side_widget_ = nullptr;
+    return;
+  }
+  if (side_splitter_.isNull()) {
+    // First side widget: lift dialogBody into a splitter instead of the
+    // fixed hbox slot it started in, so the column becomes draggable.
+    side_splitter_ = makeSideDrawerSplitter(widget, ui_->dialogBody, settings_key);
+    ui_->rootLayout->insertWidget(0, side_splitter_);
+  } else {
+    side_splitter_->insertWidget(0, widget);
+  }
+  side_splitter_->setStretchFactor(0, 0);
+  side_splitter_->setStretchFactor(1, 1);
+  side_widget_ = widget;
+}
+
+QWidget* Dialog::sideWidget() const {
+  return side_widget_.data();
 }
 
 void Dialog::setDialogTitle(const QString& title) {

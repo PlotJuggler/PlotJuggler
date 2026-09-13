@@ -25,8 +25,10 @@ add_library(pj_runtime STATIC
     src/ExtensionCatalogService.cpp
     src/HttpGet.cpp
     src/PluginRuntimeCatalog.cpp
+    src/PlaybackControlHost.cpp
     src/PlaybackEngine.cpp
     src/ParserRoutingService.cpp
+    src/PlotTabsRuntimeHost.cpp
     src/QSettingsBackend.cpp
     src/Recorder.cpp
     src/RecordingService.cpp
@@ -36,11 +38,13 @@ add_library(pj_runtime STATIC
     src/ToolboxRuntimeHost.cpp
     src/TopicDemandTracker.cpp
     src/UpdateChecker.cpp
+    src/ViewportRuntimeHost.cpp
     include/pj_runtime/AppSession.h
     include/pj_runtime/CatalogModel.h
     include/pj_runtime/CurveColorRegistry.h
     include/pj_runtime/CurveDescriptor.h
     include/pj_runtime/DataProcessorService.h
+    include/pj_runtime/HistoryScope.h
     include/pj_runtime/DataSourceRuntimeHost.h
     include/pj_runtime/DiagnosticHistory.h
     include/pj_runtime/ExtensionCatalogService.h
@@ -51,8 +55,10 @@ add_library(pj_runtime STATIC
     include/pj_runtime/MarkerService.h
     include/pj_runtime/MarkersRuntimeHost.h
     include/pj_runtime/ObjectIngestTap.h
+    include/pj_runtime/PlaybackControlHost.h
     include/pj_runtime/PlaybackEngine.h
     include/pj_runtime/ParserRoutingService.h
+    include/pj_runtime/PlotTabsRuntimeHost.h
     include/pj_runtime/QSettingsBackend.h
     include/pj_runtime/RecordTap.h
     include/pj_runtime/Recorder.h
@@ -67,6 +73,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/TopicDemandTracker.h
     include/pj_runtime/UpdateChecker.h
     include/pj_runtime/UpdateVersion.h
+    include/pj_runtime/ViewportRuntimeHost.h
 )
 
 set_target_properties(pj_runtime PROPERTIES
@@ -177,6 +184,16 @@ if(PJ_BUILD_TESTS)
         tests/plugin_runtime_catalog_test.cpp
         # Bundled-plugin seeding (share -> marketplace sync) + scan-tier precedence.
         tests/extension_catalog_seed_test.cpp
+        # SDK 0.28: the runtime-side hosts a toolbox binding drives. Playback is
+        # global; viewport and plot-tab operations are scoped to the calling
+        # plugin's owned tabs.
+        tests/playback_control_host_test.cpp
+        tests/viewport_runtime_host_test.cpp
+        tests/plot_tabs_runtime_host_test.cpp
+        # D4: an ephemeral (history-exempt) transform must still be visible in the
+        # ABI catalog snapshot a plugin reads, and must vanish from it on remove.
+        # pj_scripting: the Luau transform compiles via the transient-catalogue fallback.
+        tests/data_processor_ephemeral_abi_visibility_test.cpp
     )
 
     if(NOT EMSCRIPTEN)

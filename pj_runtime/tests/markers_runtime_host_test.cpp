@@ -163,4 +163,46 @@ TEST(MarkersRuntimeHostTest, PreviewViaEphemeralFlagPublishesAndIsEphemeral) {
   EXPECT_FALSE(store.findTopic(kDataset, topics->front()).has_value());
 }
 
+// The ABI contract (plugin_data_api.h's `flags` paragraph) requires the host to
+// REJECT a reserved/unknown bit, not silently drop it. Bit 5 is unassigned by
+// any PJ_DATA_PROCESSOR_FLAG_*.
+TEST(MarkersRuntimeHostTest, ReservedFlagBitIsRejected) {
+  PJ::ObjectStore store;
+  MarkerService service(store, rampResolver());
+  MarkersRuntimeHost bridge(service, "anomaly", [](const std::vector<std::string>&) { return kDataset; });
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+
+  const std::string_view inputs[] = {"in"};
+  const PJ::Expected<std::vector<std::string>> created = view.createMarkers(
+      "gen1", PJ::Span<const std::string_view>(inputs), "in", "createMarker(0.0)\n", "{}", /*flags=*/1u << 5);
+
+  ASSERT_FALSE(created);
+  EXPECT_NE(created.error().find("reserved"), std::string::npos) << created.error();
+  EXPECT_TRUE(service.recipes().empty());
+}
+
+// The `config` slot echoes history_exempt so a plugin can PROBE whether its
+// exemption request took.
+TEST(MarkersRuntimeHostTest, ConfigEchoesHistoryExemptBit) {
+  PJ::ObjectStore store;
+  MarkerService service(store, rampResolver());
+  MarkersRuntimeHost bridge(service, "anomaly", [](const std::vector<std::string>&) { return kDataset; });
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+
+  const std::string_view inputs[] = {"in"};
+  const uint32_t history_exempt_flag = PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT;
+  ASSERT_TRUE(view.createMarkers(
+      "exempt", PJ::Span<const std::string_view>(inputs), "exempt_out", "createMarker(0.0)\n", "{}",
+      history_exempt_flag));
+  const PJ::Expected<std::string> exempt_recipe = view.recipeOf("exempt");
+  ASSERT_TRUE(exempt_recipe) << exempt_recipe.error();
+  EXPECT_NE(exempt_recipe->find("\"history_exempt\":true"), std::string::npos) << *exempt_recipe;
+
+  ASSERT_TRUE(
+      view.createMarkers("plain", PJ::Span<const std::string_view>(inputs), "plain_out", "createMarker(0.0)\n", "{}"));
+  const PJ::Expected<std::string> plain_recipe = view.recipeOf("plain");
+  ASSERT_TRUE(plain_recipe) << plain_recipe.error();
+  EXPECT_NE(plain_recipe->find("\"history_exempt\":false"), std::string::npos) << *plain_recipe;
+}
+
 }  // namespace

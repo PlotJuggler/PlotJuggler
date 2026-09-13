@@ -172,6 +172,60 @@ void DataProcessorService::clearAllFilters() {
   }
 }
 
+bool DataProcessorService::hasHistoryExemptTransforms() const {
+  return std::any_of(transform_recipes_.begin(), transform_recipes_.end(), [](const auto& entry) {
+    return entry.second.history_exempt;
+  });
+}
+
+void DataProcessorService::clearTransforms(RestoreIntent intent, const std::unordered_set<std::string>& keep_keys) {
+  const bool keep_history_exempt = intent == RestoreIntent::kHistory;
+  std::vector<std::string> keys;
+  keys.reserve(transform_recipes_.size());
+  for (const auto& [key, recipe] : transform_recipes_) {
+    if (!(keep_history_exempt && recipe.history_exempt) && keep_keys.count(key) == 0) {
+      keys.push_back(key);
+    }
+  }
+  for (const std::string& key : keys) {
+    const bool still_live = transform_recipes_.find(key) != transform_recipes_.end();
+    if (still_live) {
+      (void)removeTransform(key);
+    }
+  }
+}
+
+std::unordered_set<std::string> DataProcessorService::unchangedTransformKeys(
+    const std::vector<TransformRecipe>& wanted, RestoreIntent intent) const {
+  const auto same_binding = [](const TransformInputBinding& lhs, const TransformInputBinding& rhs) {
+    return lhs.dataset_id == rhs.dataset_id && lhs.dataset_source == rhs.dataset_source &&
+           lhs.topic_name == rhs.topic_name && lhs.field_path == rhs.field_path && lhs.column_index == rhs.column_index;
+  };
+  const auto same_persisted = [&same_binding](const TransformRecipe& live, const TransformRecipe& snapshot) {
+    return live.owner_plugin == snapshot.owner_plugin && live.user_id == snapshot.user_id &&
+           live.history_exempt == snapshot.history_exempt && live.inputs == snapshot.inputs &&
+           live.outputs == snapshot.outputs && live.script == snapshot.script &&
+           live.params_json == snapshot.params_json && live.backend == snapshot.backend &&
+           live.api_version == snapshot.api_version && live.backend_version == snapshot.backend_version &&
+           !snapshot.input_bindings.empty() &&
+           std::equal(
+               live.input_bindings.begin(), live.input_bindings.end(), snapshot.input_bindings.begin(),
+               snapshot.input_bindings.end(), same_binding);
+  };
+  std::unordered_set<std::string> unchanged;
+  for (const auto& [key, live] : transform_recipes_) {
+    if (live.ephemeral || (intent == RestoreIntent::kHistory && live.history_exempt)) {
+      continue;
+    }
+    const auto snapshot =
+        std::find_if(wanted.begin(), wanted.end(), [&key](const auto& candidate) { return candidate.key == key; });
+    if (snapshot != wanted.end() && same_persisted(live, *snapshot)) {
+      unchanged.insert(key);
+    }
+  }
+  return unchanged;
+}
+
 std::vector<TopicId> DataProcessorService::advanceOnCommit(const std::vector<TopicId>& changed_inputs) {
   // Run whenever there is ANY eager node — per-curve filters OR named transforms
   // (createTransform). Streaming a transform-only session still needs this path,
@@ -963,7 +1017,8 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
 
 Expected<DataProcessorService::TransformRecipe> DataProcessorService::upsertTransform(
     std::string_view plugin_id, std::string_view id, std::vector<std::string> inputs, std::vector<std::string> outputs,
-    std::string_view script, std::string_view params_json, bool ephemeral, std::size_t input_column_index) {
+    std::string_view script, std::string_view params_json, bool ephemeral, std::size_t input_column_index,
+    bool history_exempt) {
   TransformRecipe recipe;
   recipe.key = makeTransformKey(plugin_id, id);
   recipe.owner_plugin = std::string(plugin_id);
@@ -974,6 +1029,7 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::upsertTran
   recipe.params_json = std::string(params_json);
   recipe.ephemeral = ephemeral;
   recipe.input_column_index = input_column_index;
+  recipe.history_exempt = history_exempt;
   return installTransform(std::move(recipe));
 }
 
@@ -1055,6 +1111,76 @@ std::vector<TopicId> DataProcessorService::dependentProcessorOutputs(const std::
   return outputs;
 }
 
+std::vector<NodeId> DataProcessorService::liveNonExemptNodeIds(const std::unordered_set<std::string>& keep_keys) const {
+  std::vector<NodeId> nodes;
+  nodes.reserve(recipes_.size() + transform_recipes_.size());
+  for (const auto& [output_topic_id, recipe] : recipes_) {
+    (void)output_topic_id;
+    nodes.push_back(recipe.node_id);  // a FilterRecipe is never exempt
+  }
+  for (const auto& [key, recipe] : transform_recipes_) {
+    if (!recipe.history_exempt && keep_keys.count(key) == 0) {
+      nodes.push_back(recipe.node_id);
+    }
+  }
+  return nodes;
+}
+
+std::vector<std::string> DataProcessorService::liveNonExemptOutputNames(
+    const std::unordered_set<std::string>& keep_keys) const {
+  // Names come from the materialized topics, not the recipe declarations: a grouped
+  // output "rpy:a,b" materializes ONE topic named "rpy", which is what a marker
+  // generator's input key ("rpy/a") is matched against.
+  std::vector<std::string> outputs;
+  outputs.reserve(recipes_.size() + transform_recipes_.size());
+  const auto engine_lock = engine_.lockEngine();
+  const auto push_topic_name = [this, &outputs](TopicId topic_id) {
+    if (const TopicStorage* storage = engine_.getTopicStorage(topic_id); storage != nullptr) {
+      outputs.push_back(storage->descriptor().name);
+    }
+  };
+  for (const auto& [output_topic_id, recipe] : recipes_) {
+    (void)recipe;
+    push_topic_name(output_topic_id);
+  }
+  for (const auto& [key, recipe] : transform_recipes_) {
+    if (!recipe.history_exempt && keep_keys.count(key) == 0) {
+      std::for_each(recipe.output_topic_ids.begin(), recipe.output_topic_ids.end(), push_topic_name);
+    }
+  }
+  std::sort(outputs.begin(), outputs.end());
+  outputs.erase(std::unique(outputs.begin(), outputs.end()), outputs.end());
+  return outputs;
+}
+
+std::vector<std::string> DataProcessorService::exemptDependentsOf(const std::vector<NodeId>& nodes) const {
+  const std::unordered_set<NodeId> node_set(nodes.begin(), nodes.end());
+  std::unordered_set<TopicId> affected;
+  for (const auto& [output_topic_id, recipe] : recipes_) {
+    if (node_set.count(recipe.node_id) != 0) {
+      affected.insert(output_topic_id);
+    }
+  }
+  for (const auto& [key, recipe] : transform_recipes_) {
+    (void)key;
+    if (node_set.count(recipe.node_id) != 0) {
+      affected.insert(recipe.output_topic_ids.begin(), recipe.output_topic_ids.end());
+    }
+  }
+  std::vector<std::string> exempt_output_names;
+  forEachDependentProcessor(
+      affected, /*include_ephemeral_transforms=*/true, [](TopicId, const FilterRecipe&) {},
+      [&exempt_output_names](const std::string&, const TransformRecipe& recipe) {
+        if (recipe.history_exempt) {
+          exempt_output_names.insert(exempt_output_names.end(), recipe.outputs.begin(), recipe.outputs.end());
+        }
+      });
+  std::sort(exempt_output_names.begin(), exempt_output_names.end());
+  exempt_output_names.erase(
+      std::unique(exempt_output_names.begin(), exempt_output_names.end()), exempt_output_names.end());
+  return exempt_output_names;
+}
+
 Status DataProcessorService::removeProcessorsDependingOn(const std::vector<TopicId>& input_topics) {
   struct Dependent {
     enum class Kind { kFilter, kTransform } kind;
@@ -1099,15 +1225,7 @@ void DataProcessorService::clearTransformsForPlugin(std::string_view plugin_id) 
 }
 
 void DataProcessorService::clearAllTransforms() {
-  std::vector<std::string> keys;
-  keys.reserve(transform_recipes_.size());
-  for (const auto& [key, recipe] : transform_recipes_) {
-    (void)recipe;
-    keys.push_back(key);
-  }
-  for (const auto& key : keys) {
-    (void)removeTransform(key);
-  }
+  clearTransforms(RestoreIntent::kReplace);
 }
 
 void DataProcessorService::clearTransformsForDataset(DatasetId dataset_id) {
@@ -1143,6 +1261,7 @@ std::optional<std::string> DataProcessorService::transformRecipeJson(std::string
   doc["inputs"] = recipe.inputs;
   doc["outputs"] = recipe.outputs;
   doc["backend"] = recipe.backend;
+  doc["history_exempt"] = recipe.history_exempt;
   // params is structured; embed it as an object (fall back to {} on malformed input).
   nlohmann::json params = nlohmann::json::parse(recipe.params_json, nullptr, /*allow_exceptions=*/false);
   doc["params"] = params.is_discarded() ? nlohmann::json::object() : params;

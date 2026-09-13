@@ -14,6 +14,7 @@
 #include "pj_base/expected.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/merge_result.hpp"  // DatasetMergeSource
+#include "pj_runtime/HistoryScope.h"
 
 namespace PJ {
 
@@ -88,6 +89,9 @@ class MarkerService {
     std::string params_json;           ///< forwarded verbatim to the engine
     bool all_datasets = false;         ///< publish to EVERY dataset (markers only)
     bool ephemeral = false;            ///< preview: excluded from recipes(); dropped on remove
+    /// Persisted in layout files but outside undo/redo authority. A layout
+    /// replacement or explicit removal may still replace it.
+    bool history_exempt = false;
   };
 
   /// `object_store` and the data the `resolver` reads from must outlive this service.
@@ -160,9 +164,29 @@ class MarkerService {
   /// persistence. EPHEMERAL previews are excluded.
   [[nodiscard]] std::vector<GeneratorRecipe> recipes() const;
 
-  /// Remove every PERSISTENT generator (tombstoning its output); ephemeral previews
-  /// are left untouched. The clear half of the clear-all + replay a layout restore
-  /// runs (mirrors DataProcessorService::clearAllTransforms).
+  /// Output names of persistent history-exempt generators that read any series
+  /// rooted at one of `removed_inputs`. A generator input matches a removed topic
+  /// via `seriesKeyBelongsToTopic`: the input IS the topic, or a field path beneath
+  /// it at a slash boundary — deliberately stricter than `recomputeForChangedInputs`'s
+  /// raw prefix match (`in.rfind(prefix, 0) == 0`), which also matches a differently
+  /// named sibling topic (e.g. `imu_raw/x` for prefix `imu`). Only the slash-bounded
+  /// match is a real dependency, so over-matching here would reject a restore that
+  /// does not actually strand anything.
+  [[nodiscard]] std::vector<std::string> exemptDependentsOf(const std::vector<std::string>& removed_inputs) const;
+
+  /// Remove every PERSISTENT generator (tombstoning its output); ephemeral
+  /// previews are always left untouched. `RestoreIntent::kHistory` reconciles
+  /// only the non-exempt generators and leaves the `history_exempt` ones live;
+  /// `kReplace` removes all.
+  void clearGenerators(RestoreIntent intent);
+  /// Whether any live generator is `history_exempt` (cheap gate for the
+  /// history-restore dependency preflight).
+  [[nodiscard]] bool hasHistoryExemptGenerators() const;
+
+  /// `clearGenerators(RestoreIntent::kReplace)` — every PERSISTENT
+  /// generator at once; ephemeral previews are left untouched. The clear half of
+  /// the clear-all + replay a layout restore runs (mirrors
+  /// DataProcessorService::clearAllTransforms).
   void clearAllGenerators();
 
   /// Rebind every generator bound to one of the `consumed` datasets onto `anchor`.

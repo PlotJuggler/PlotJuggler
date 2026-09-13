@@ -156,6 +156,7 @@ struct PanelEngine::Impl {
     forwardEmbeddedDialogClose(loaded, dlg);
     dlg->setWindowModality(Qt::ApplicationModal);
     applyPanelData(loaded, full_view);
+    installDeclarativeRules(loaded);
     connectWidgetSignals(loaded, [this](const std::string& n, const std::string& j) { forwardEvent(n, j); });
     if (auto* button_box = loaded->findChild<QDialogButtonBox*>(QStringLiteral("buttonBox"))) {
       QObject::connect(button_box, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
@@ -211,6 +212,14 @@ struct PanelEngine::Impl {
     auto sub_dialog_ui = view.subDialogUi();
     auto sub_panel_ui = view.subPanelUi();
     const bool sub_panel_close = view.subPanelClose();
+
+    // One-shot commands are consumed by this call, so the skip-identical
+    // shortcut above must not be allowed to compare the NEXT payload against
+    // them: a plugin that answers "" while idle (the documented "no update")
+    // leaves prev_raw parked on this very request, and an identical request
+    // later (Settings, Cancel, Settings) would be thrown away as a repeat.
+    const bool consumed_one_shot = close_reason.has_value() || sub_dialog_ui.has_value() || sub_panel_ui.has_value() ||
+                                   sub_panel_close || new_data.contains("__request_accept");
 
     // Strip one-shot commands before diffing.
     new_data.erase("__request_close");
@@ -297,6 +306,25 @@ struct PanelEngine::Impl {
         // populated. Names that don't exist in the sub-dialog are simply
         // skipped, so the panel's own widget values don't leak in.
         applyPanelData(sub_dialog, view);
+        // Declarative per-combo field enabling/visibility ("pj_enable_when" /
+        // "pj_visible_when" in the .ui) — the nested modal loop below blocks the
+        // plugin from doing this itself.
+        installDeclarativeRules(sub_dialog);
+        // A visibility rule collapses form rows, so the dialog's natural size
+        // depends on which combo indices are current: size it now that the
+        // rules have run, and again (queued, after the rule handlers) whenever
+        // a combo inside it changes — otherwise the rows a rule hid leave a
+        // blank band behind, and the ones it revealed squeeze the rest.
+        sub_dialog->adjustSize();
+        // The chrome wrapping the dialog takes its geometry on show, after the
+        // line above ran; a queued pass, dispatched by exec()'s own loop once
+        // the dialog is up, sizes the shown window to the rows that survived.
+        QTimer::singleShot(0, sub_dialog, [sub_dialog]() { sub_dialog->adjustSize(); });
+        for (auto* combo : sub_dialog->findChildren<QComboBox*>()) {
+          QObject::connect(
+              combo, &QComboBox::currentIndexChanged, sub_dialog, [sub_dialog](int) { sub_dialog->adjustSize(); },
+              Qt::QueuedConnection);
+        }
         // exec() spins a nested modal event loop. Pause our tick timer for its
         // duration so a timer-driven applyAndDiff() can't re-enter on the same
         // Impl while the sub-dialog is open — a re-entrant tick could observe a
@@ -351,6 +379,9 @@ struct PanelEngine::Impl {
       }
     }
 
+    if (consumed_one_shot) {
+      prev_raw.clear();
+    }
     return close_reason;
   }
 };
@@ -405,7 +436,10 @@ QWidget* PanelEngine::openPanel() {
   impl_->applied_theme = currentTheme();
   loaded->installEventFilter(this);
 
-  // 3. Wire widget signals to forward events into the plugin.
+  // 3. Wire widget signals to forward events into the plugin, and honor the
+  //    declarative "pj_enable_when"/"pj_visible_when" combo->field rules from
+  //    the .ui.
+  installDeclarativeRules(loaded);
   connectWidgetSignals(loaded, [this](const std::string& name, const std::string& event_json) {
     if (impl_->closed) {
       return;

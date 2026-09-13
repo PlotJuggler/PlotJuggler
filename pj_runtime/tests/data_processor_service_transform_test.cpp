@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <limits>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "pj_base/dataset.hpp"
@@ -22,6 +23,7 @@
 #include "pj_datastore/topic_storage.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/MarkerService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scripting/filter_catalogue.h"
 #include "pj_scripting/script_engine.h"
@@ -679,6 +681,153 @@ TEST(DataProcessorTransformTest, RestoreRoundTripRebindsAndRuns) {
   const auto restored = fx.service.restoreTransform(snapshot);
   ASSERT_TRUE(restored.has_value()) << restored.error();
   EXPECT_EQ(readValues(fx.engine, restored->output_topic_ids.front()), (std::vector<double>{1.0, -2.0}));
+}
+
+// --- History exemption: clearTransforms(RestoreIntent) / exemptDependentsOf ---
+
+// A predicate clear over a chain (parent -> child, both non-exempt) removes
+// both, leaf-first (the child's node must not outlive the parent it reads),
+// exactly like clearAllTransforms; a sibling history_exempt transform is left
+// untouched regardless of the predicate ever visiting it.
+TEST(DataProcessorTransformTest, PredicateClearRemovesOnlyNonExemptLeafFirst) {
+  Fixture fx;
+  fx.seed("speed", {1.0});
+
+  const auto parent = fx.service.upsertTransform(
+      "pluginA", "negate", {"speed"}, {"mid"}, kNegate, "{}", /*ephemeral=*/false, /*input_column_index=*/0,
+      /*history_exempt=*/false);
+  ASSERT_TRUE(parent.has_value()) << parent.error();
+  const auto child = fx.service.upsertTransform(
+      "pluginB", "negate", {"mid"}, {"final"}, kNegate, "{}", /*ephemeral=*/false, /*input_column_index=*/0,
+      /*history_exempt=*/false);
+  ASSERT_TRUE(child.has_value()) << child.error();
+  const auto exempt_sibling = fx.service.upsertTransform(
+      "pluginC", "negate", {"speed"}, {"exempt_out"}, kNegate, "{}", /*ephemeral=*/false, /*input_column_index=*/0,
+      /*history_exempt=*/true);
+  ASSERT_TRUE(exempt_sibling.has_value()) << exempt_sibling.error();
+
+  fx.service.clearTransforms(PJ::RestoreIntent::kHistory);
+
+  EXPECT_TRUE(fx.service.transformIdsForPlugin("pluginA").empty());
+  EXPECT_TRUE(fx.service.transformIdsForPlugin("pluginB").empty());
+  ASSERT_EQ(fx.service.transformIdsForPlugin("pluginC").size(), 1u);
+  EXPECT_TRUE(fx.listed(exempt_sibling->output_topic_ids.front()));  // the exempt one survives, untouched
+}
+
+// unchangedTransformKeys names the live transforms a snapshot leaves as they
+// are: same key + identical persisted recipe (bindings included). A changed
+// script or a binding-less legacy entry is a change, so the key is not returned.
+TEST(DataProcessorTransformTest, UnchangedTransformKeysMatchOnlyIdenticalPersistedRecipes) {
+  Fixture fx;
+  fx.seed("speed", {1.0});
+  const auto live = fx.service.upsertTransform(
+      "pluginA", "negate", {"speed"}, {"neg"}, kNegate, "{}", /*ephemeral=*/false, /*input_column_index=*/0,
+      /*history_exempt=*/false);
+  ASSERT_TRUE(live.has_value()) << live.error();
+  const std::vector<PJ::DataProcessorService::TransformRecipe> recipes = fx.service.transformRecipes();
+  ASSERT_EQ(recipes.size(), 1u);
+  ASSERT_FALSE(recipes.front().input_bindings.empty());
+
+  std::vector<PJ::DataProcessorService::TransformRecipe> wanted = recipes;
+  EXPECT_EQ(
+      fx.service.unchangedTransformKeys(wanted, PJ::RestoreIntent::kHistory),
+      (std::unordered_set<std::string>{"pluginA/negate"}));
+  EXPECT_EQ(
+      fx.service.unchangedTransformKeys(wanted, PJ::RestoreIntent::kReplace),
+      (std::unordered_set<std::string>{"pluginA/negate"}));
+
+  wanted.front().script += "\n-- edited";
+  EXPECT_TRUE(fx.service.unchangedTransformKeys(wanted, PJ::RestoreIntent::kHistory).empty());
+
+  wanted = recipes;
+  wanted.front().input_bindings.clear();
+  EXPECT_TRUE(fx.service.unchangedTransformKeys(wanted, PJ::RestoreIntent::kHistory).empty());
+}
+
+// exemptDependentsOf finds a transitive exempt dependent through a NON-exempt
+// intermediate: exempt E reads U's output directly, but the same closure must
+// also catch it when a non-exempt transform sits between U and E.
+TEST(DataProcessorTransformTest, ExemptDependentsOfFindsTransitiveExemptDependent) {
+  Fixture fx;
+  fx.seed("speed", {1.0});
+
+  const auto u = fx.service.upsertTransform(
+      "user-u", "negate", {"speed"}, {"u_out"}, kNegate, "{}", /*ephemeral=*/false, /*input_column_index=*/0,
+      /*history_exempt=*/false);
+  ASSERT_TRUE(u.has_value()) << u.error();
+  const auto mid = fx.service.upsertTransform(
+      "user-mid", "negate", {"u_out"}, {"mid_out"}, kNegate, "{}", /*ephemeral=*/false,
+      /*input_column_index=*/0,
+      /*history_exempt=*/false);
+  ASSERT_TRUE(mid.has_value()) << mid.error();
+  const auto e = fx.service.upsertTransform(
+      "assistant-plugin", "negate", {"mid_out"}, {"e_out"}, kNegate, "{}", /*ephemeral=*/false,
+      /*input_column_index=*/0,
+      /*history_exempt=*/true);
+  ASSERT_TRUE(e.has_value()) << e.error();
+
+  const std::vector<NodeId> removable = fx.service.liveNonExemptNodeIds();
+  // U and mid are non-exempt (removable); E is exempt (excluded).
+  EXPECT_EQ(removable.size(), 2u);
+
+  const std::vector<std::string> blocked = fx.service.exemptDependentsOf(removable);
+  ASSERT_EQ(blocked.size(), 1u);
+  EXPECT_EQ(blocked.front(), "e_out");
+  EXPECT_EQ(fx.service.exemptDependentsOf({u->node_id}), std::vector<std::string>{"e_out"});
+}
+
+// No exempt dependent anywhere in the graph -> exemptDependentsOf reports empty,
+// so a history restore may proceed.
+TEST(DataProcessorTransformTest, ExemptDependentsOfEmptyWhenNoExemptDependent) {
+  Fixture fx;
+  fx.seed("speed", {1.0});
+
+  const auto a = fx.service.upsertTransform(
+      "pluginA", "negate", {"speed"}, {"a_out"}, kNegate, "{}", /*ephemeral=*/false, /*input_column_index=*/0,
+      /*history_exempt=*/false);
+  ASSERT_TRUE(a.has_value()) << a.error();
+  // An exempt transform that does NOT depend on `a` — unrelated input.
+  fx.seed("other", {1.0});
+  const auto exempt_unrelated = fx.service.upsertTransform(
+      "pluginB", "negate", {"other"}, {"b_out"}, kNegate, "{}", /*ephemeral=*/false, /*input_column_index=*/0,
+      /*history_exempt=*/true);
+  ASSERT_TRUE(exempt_unrelated.has_value()) << exempt_unrelated.error();
+
+  const std::vector<NodeId> removable = fx.service.liveNonExemptNodeIds();
+  EXPECT_EQ(removable.size(), 1u);
+  EXPECT_TRUE(fx.service.exemptDependentsOf(removable).empty());
+}
+
+// Regression [Codex #6]: liveNonExemptOutputNames() reports the grouped
+// DECLARATION "rpy:a,b", not the materialized topic "rpy", so an exempt marker
+// generator reading "rpy/a" is not found as a dependent and undo can strand it.
+TEST(DataProcessorTransformTest, StrandPreflightSeesGroupedTransformOutputTopic) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+
+  const auto grouped = fx.service.upsertTransform("pluginA", "split", {"speed"}, {"rpy:a,b"}, kSplit, "{}");
+  ASSERT_TRUE(grouped.has_value()) << grouped.error();
+
+  MarkerService& markers = fx.session.markerService();
+  markers.setResolver([](DatasetId, const std::string&) {
+    MarkerService::ResolvedSeries series;
+    series.timestamps = {0.0};
+    series.values = {1.0};
+    return std::optional<MarkerService::ResolvedSeries>{std::move(series)};
+  });
+  MarkerService::GeneratorRecipe exempt;
+  exempt.id = "assistant/exempt";
+  exempt.kind = GeneratorKind::kMarkers;
+  exempt.dataset_id = fx.ds;
+  exempt.inputs = {"rpy/a"};
+  exempt.outputs = {"exempt_markers"};
+  exempt.script = "createMarker(0.0)\n";
+  exempt.history_exempt = true;
+  ASSERT_TRUE(markers.upsertGenerator(exempt).has_value());
+
+  const std::vector<std::string> removed = fx.service.liveNonExemptOutputNames();
+  EXPECT_EQ(markers.exemptDependentsOf(removed), std::vector<std::string>{"exempt_markers"})
+      << "removable outputs reported as: " << (removed.empty() ? std::string("<none>") : removed.front());
 }
 
 }  // namespace
