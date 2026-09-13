@@ -14,6 +14,7 @@
 #include <QTemporaryDir>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "MainWindow.h"
 #include "dataset_test_helpers.h"
@@ -22,6 +23,7 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/MarkerService.h"
 #include "pj_runtime/SessionManager.h"
 
 using namespace Qt::StringLiterals;
@@ -144,6 +146,40 @@ TEST(MainWindowMarkerGeneratorRestoreTest, UnresolvableGeneratorDoesNotFailTheRe
 
   EXPECT_TRUE(PJ::MainWindowMarkerGeneratorTestPeer::restoreDataProcessors(window, doc.documentElement()));
   EXPECT_FALSE(publishedMarkers(app, dataset).has_value());
+}
+
+// The layout stamps the generator's dataset by numeric id AND source label. Ids are
+// minted by load order, so reopening the same files in another order hands the saved
+// id to a different source: the restore must rebind by label, not trust the id.
+TEST(MainWindowMarkerGeneratorRestoreTest, RestoresGeneratorBySourceWhenIdsSwap) {
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  PJ::MainWindow window(extensions_dir.path());
+  PJ::AppSession& app = PJ::MainWindowMarkerGeneratorTestPeer::session(window);
+
+  // Saved session: "a" then "b", generator on "b". Reopened session: "b" then "a",
+  // so "a" now owns the id the layout recorded for "b". Both carry the same series.
+  const PJ::DatasetId dataset_b = pj_test::createDataset(app, "b");
+  const PJ::DatasetId dataset_a = pj_test::createDataset(app, "a");
+  ASSERT_NE(dataset_b, 0U);
+  ASSERT_NE(dataset_a, 0U);
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset_b, kTopic), 0U);
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset_a, kTopic), 0U);
+
+  const QDomDocument doc = layoutWithGenerator(
+      dataset_a, u"b"_s,
+      uR"(
+        local s = series("sensor/value")
+        createMarker(s:at(0).t, s:at(0).v, {label="sample"})
+      )"_s);
+
+  EXPECT_TRUE(PJ::MainWindowMarkerGeneratorTestPeer::restoreDataProcessors(window, doc.documentElement()));
+
+  const std::vector<PJ::MarkerService::GeneratorRecipe> recipes = app.sessionManager().markerService().recipes();
+  ASSERT_EQ(recipes.size(), 1U);
+  EXPECT_EQ(recipes.front().dataset_id, dataset_b);
+  EXPECT_TRUE(publishedMarkers(app, dataset_b).has_value());
+  EXPECT_FALSE(publishedMarkers(app, dataset_a).has_value());
 }
 
 }  // namespace

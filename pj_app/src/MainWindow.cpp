@@ -7393,14 +7393,17 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent in
       if (ok && raw <= std::numeric_limits<DatasetId>::max()) {
         recipe.dataset_id = static_cast<DatasetId>(raw);
       }
+      const QString saved_source = gen.attribute(u"dataset_source"_s);
       const QString saved_path = gen.attribute(u"dataset_path"_s);
-      if (!saved_path.isEmpty()) {
-        const DatasetIdentityResolution resolved = session_->sessionManager().resolveDatasetIdentity(
-            recipe.dataset_id, gen.attribute(u"dataset_source"_s), saved_path);
+      // Ids are minted by load order, so a saved id is trusted only while its
+      // portable qualifiers (source label, path) still agree; a bare id stays as is.
+      if (!saved_source.isEmpty() || !saved_path.isEmpty()) {
+        const DatasetIdentityResolution resolved =
+            session_->sessionManager().resolveDatasetIdentity(recipe.dataset_id, saved_source, saved_path);
         if (resolved.id.has_value()) {
           recipe.dataset_id = *resolved.id;
         } else {
-          gen_parse_error = resolved.ambiguous ? tr("ambiguous dataset path") : tr("dataset path is not loaded");
+          gen_parse_error = resolved.ambiguous ? tr("ambiguous dataset identity") : tr("dataset is not loaded");
         }
       }
     }
