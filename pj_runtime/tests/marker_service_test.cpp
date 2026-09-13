@@ -442,4 +442,48 @@ TEST(MarkerServiceTest, MergeMarkerTopicsConcatenatesAndShifts) {
   EXPECT_FALSE(store.findTopic(2, PJ::sdk::markerObjectTopicName("in")).has_value());
 }
 
+// With declared (qualified) names, the script enumerates each series once under
+// the spelling it declared, and each name reads its own series — even when a
+// declared name equals another input's bare key ("s:x" is both).
+TEST(MarkerServiceTest, DeclaredNamesAreEnumeratedOnceEachAndReadTheirOwnSeries) {
+  PJ::ObjectStore store;
+  MarkerService service(
+      store, [](PJ::DatasetId, const std::string& key) -> std::optional<MarkerService::ResolvedSeries> {
+        if (key != "x" && key != "s:x") {
+          return std::nullopt;
+        }
+        MarkerService::ResolvedSeries s;
+        s.timestamps = {0.0};
+        s.values = {key == "x" ? 1.0 : 2.0};
+        return s;
+      });
+  auto recipe = markerRecipe("plug/gen", "out", R"(
+    local names = GetSeriesNames()
+    assert(#names == 2, "expected 2 names, got " .. #names)
+    table.sort(names)
+    assert(names[1] == "s:s:x", "names[1] is " .. names[1])
+    assert(names[2] == "s:x", "names[2] is " .. names[2])
+    assert(series("s:x"):at(0).v == 1, "series('s:x') is not x")
+    assert(series("s:s:x"):at(0).v == 2, "series('s:s:x') is not s:x")
+    createMarker(0.0)
+  )");
+  recipe.inputs = {"x", "s:x"};
+  recipe.declared_inputs = {"s:x", "s:s:x"};
+  const PJ::Expected<std::vector<std::string>> ok = service.upsertGenerator(recipe);
+  ASSERT_TRUE(ok.has_value()) << ok.error();
+}
+
+// `declared_inputs` is parallel to `inputs`; a mismatched length is refused at the
+// service boundary (the transform path guards its binding count the same way).
+TEST(MarkerServiceTest, UpsertRejectsADeclaredInputCountMismatch) {
+  PJ::ObjectStore store;
+  MarkerService service(store, rampResolver(3));
+  auto recipe = markerRecipe("plug/gen", "out", "createMarker(0.0)\n");
+  recipe.declared_inputs = {"in", "extra"};
+  const PJ::Expected<std::vector<std::string>> rejected = service.upsertGenerator(recipe);
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_NE(rejected.error().find("declared"), std::string::npos) << rejected.error();
+  EXPECT_TRUE(service.recipes().empty());
+}
+
 }  // namespace

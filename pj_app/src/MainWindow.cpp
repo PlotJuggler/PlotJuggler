@@ -157,6 +157,7 @@
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/DataProcessorsKindRouter.h"
 #include "pj_runtime/DataProcessorsRuntimeHost.h"
+#include "pj_runtime/DatasetQualifiedName.h"
 #include "pj_runtime/DiagnosticHistory.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/IObjectViewer.h"
@@ -494,25 +495,6 @@ inline constexpr std::array<std::pair<const char*, double>, 4> kWidthButtonSpecs
     {"globalWidth2_0", 2.0},
     {"globalWidth3_0", 3.0},
 }};
-
-// The scalar payload behind `item` when it is the plottable series a marker generator
-// names `key` (markerSeriesKey naming), else nullptr. Shared by the two readers of that
-// question — the generator's series resolver and the dataset it binds to — which must
-// agree: a generator bound to a dataset whose series the resolver cannot find runs
-// against no data.
-[[nodiscard]] const PJ::ScalarFieldPayload* markerSeriesField(const PJ::CatalogItem& item, const std::string& key) {
-  const PJ::ScalarFieldPayload* scalar = PJ::asScalarField(item);
-  if (scalar == nullptr || !PJ::isPlottablePrimitive(scalar->logical_type)) {
-    return nullptr;
-  }
-  const std::string topic = item.topic_name.toStdString();
-  if (PJ::sdk::markerSeriesKey(topic, scalar->field_path.toStdString()) != key &&
-      PJ::sdk::markerSeriesKey(topic, scalar->field_name.toStdString()) != key) {
-    return nullptr;
-  }
-  return scalar;
-}
-
 }  // namespace
 
 #ifdef PJ_TARGET_WASM
@@ -7100,9 +7082,12 @@ QDomElement MainWindow::saveDataProcessors(QDomDocument& doc, SnapshotScope scop
       }
       gen.setAttribute(u"dataset_path"_s, session_->sessionManager().datasetSourcePath(recipe.dataset_id));
     }
-    for (const auto& input_name : recipe.inputs) {
+    for (std::size_t index = 0; index < recipe.inputs.size(); ++index) {
       QDomElement in = doc.createElement(u"input"_s);
-      in.setAttribute(u"name"_s, QString::fromStdString(input_name));
+      in.setAttribute(u"name"_s, QString::fromStdString(recipe.inputs[index]));
+      if (index < recipe.declared_inputs.size()) {
+        in.setAttribute(u"declared"_s, QString::fromStdString(recipe.declared_inputs[index]));
+      }
       gen.appendChild(in);
     }
     for (const auto& output_name : recipe.outputs) {
@@ -7407,8 +7392,14 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent in
         }
       }
     }
+    bool any_declared = false;
     for (QDomElement in = gen.firstChildElement(u"input"_s); !in.isNull(); in = in.nextSiblingElement(u"input"_s)) {
       recipe.inputs.push_back(in.attribute(u"name"_s).toStdString());
+      recipe.declared_inputs.push_back(in.attribute(u"declared"_s, in.attribute(u"name"_s)).toStdString());
+      any_declared = any_declared || in.hasAttribute(u"declared"_s);
+    }
+    if (!any_declared) {
+      recipe.declared_inputs.clear();
     }
     for (QDomElement out = gen.firstChildElement(u"output"_s); !out.isNull();
          out = out.nextSiblingElement(u"output"_s)) {
@@ -10115,33 +10106,27 @@ void MainWindow::launchToolbox(
   // (the anomaly-detector path) instead of executing the script in-process. The service's
   // catalog-backed resolver/lister are installed once at construction, not here — see
   // the MainWindow constructor.
+  const auto source_name_of = [this](PJ::DatasetId id) -> std::optional<std::string> {
+    const std::optional<QString> src = session_->catalogModel().datasetSourceName(id);
+    return src.has_value() ? std::optional<std::string>(src->toStdString()) : std::nullopt;
+  };
   session->markers_host = std::make_unique<MarkersRuntimeHost>(
       session_->sessionManager().markerService(), plugin_id.toStdString(),
-      [this](const std::vector<std::string>& inputs) -> PJ::DatasetId {
-        // Bind the generator to the dataset that actually holds its input series,
-        // not just the first-loaded one (which stranded generators on the wrong
-        // dataset when several are open). Fall back to the first dataset when the
-        // inputs name no known series or are ambiguous across datasets.
-        for (const std::string& key : inputs) {
-          std::optional<PJ::DatasetId> found;
-          bool ambiguous = false;
-          for (const PJ::CatalogItem& item : session_->catalogModel().items()) {
-            if (markerSeriesField(item, key) == nullptr) {
-              continue;
-            }
-            if (found.has_value() && *found != item.dataset_id) {
-              ambiguous = true;
-              break;
-            }
-            found = item.dataset_id;
-          }
-          if (found.has_value() && !ambiguous) {
-            return *found;
-          }
+      [this, source_name_of](
+          std::vector<std::string>& inputs, std::vector<std::string>& outputs) -> PJ::Expected<PJ::DatasetId> {
+        // Bind the generator to the dataset its keys name (qualified keys pick it
+        // explicitly and are normalized to bare form); an unqualified input that
+        // exists in several datasets is refused with the qualified candidates —
+        // landing on the first-loaded dataset silently stranded generators on the
+        // wrong data. Policy lives in pj_runtime so it is testable and stays in
+        // step with the series resolver the MainWindow constructor installs.
+        std::vector<PJ::DatasetId> datasets;
+        for (const auto& [id, label] : session_->catalogModel().datasets()) {
+          datasets.push_back(id);
         }
-        const std::vector<std::pair<PJ::DatasetId, QString>> datasets = session_->catalogModel().datasets();
-        return datasets.empty() ? PJ::DatasetId{0} : datasets.front().first;
-      });
+        return PJ::resolveMarkerDataset(inputs, outputs, session_->catalogModel().items(), datasets, source_name_of);
+      },
+      source_name_of);
   session->dp_host = std::make_unique<DataProcessorsRuntimeHost>(
       session_->sessionManager().dataProcessorService(), plugin_id.toStdString());
   // ONE pj.data_processors.v1 registration, routed by kind: the registry rejects

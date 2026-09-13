@@ -15,6 +15,7 @@ add_library(pj_runtime STATIC
     src/CatalogModel.cpp
     src/CurveColorRegistry.cpp
     src/DataProcessorService.cpp
+    src/DatasetQualifiedName.cpp
     src/DataProcessorsKindRouter.cpp
     src/DataProcessorsRuntimeHost.cpp
     src/DataSourceRuntimeHost.cpp
@@ -142,6 +143,9 @@ if(PJ_BUILD_TESTS)
         # links the shared marker engine the service drives
         tests/markers_runtime_host_test.cpp
         tests/data_processors_kind_router_test.cpp
+        # Dataset-qualified input names ("dataset_source:topic/field") coming from a
+        # plugin: the parse, and the ambiguity a bare topic leaves behind.
+        tests/dataset_qualified_name_test.cpp
         # M4.2: plugin-created transforms compile a Luau script via the catalogue
         tests/data_processor_service_transform_test.cpp
         # M4.2: the bridge compiles a Luau transform script through the service

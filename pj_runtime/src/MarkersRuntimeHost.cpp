@@ -9,8 +9,9 @@
 #include <utility>
 
 #include "data_processor_flags.hpp"
-#include "pj_base/sdk/plugin_data_api.hpp"  // sdk::toStringView / toAbiString / fillError
-#include "pj_base/sdk/service_traits.hpp"   // sdk::DataProcessorsHostService
+#include "pj_base/sdk/dataset_qualified_name.hpp"  // sdk::qualifiedSeriesName / splitDatasetQualifier
+#include "pj_base/sdk/plugin_data_api.hpp"         // sdk::toStringView / toAbiString / fillError
+#include "pj_base/sdk/service_traits.hpp"          // sdk::DataProcessorsHostService
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/ServiceRegistration.h"
 
@@ -33,8 +34,13 @@ bool parseKind(std::string_view kind, GeneratorKind& out) {
 
 MarkersRuntimeHost::MarkersRuntimeHost(
     MarkerService& service, std::string plugin_id,
-    std::function<DatasetId(const std::vector<std::string>& inputs)> active_dataset)
-    : service_(service), plugin_id_(std::move(plugin_id)), active_dataset_(std::move(active_dataset)) {
+    std::function<Expected<DatasetId>(std::vector<std::string>& inputs, std::vector<std::string>& outputs)>
+        active_dataset,
+    std::function<std::optional<std::string>(DatasetId)> source_name_of)
+    : service_(service),
+      plugin_id_(std::move(plugin_id)),
+      active_dataset_(std::move(active_dataset)),
+      source_name_of_(std::move(source_name_of)) {
   vtable_ = PJ_data_processors_host_vtable_t{
       .protocol_version = 1,
       .struct_size = sizeof(PJ_data_processors_host_vtable_t),
@@ -49,6 +55,17 @@ MarkersRuntimeHost::MarkersRuntimeHost(
 
 Status MarkersRuntimeHost::registerServices(ServiceRegistryBuilder& registry) {
   return registerRequiredService<sdk::DataProcessorsHostService>(registry, data_processors_);
+}
+
+std::vector<std::string> MarkersRuntimeHost::loadedSourceNames() const {
+  std::vector<std::string> names;
+  if (!source_name_of_) {
+    return names;
+  }
+  for (const DatasetId dataset : service_.loadedDatasets()) {
+    names.push_back(source_name_of_(dataset).value_or(std::string{}));
+  }
+  return names;
 }
 
 std::string MarkersRuntimeHost::makeKey(std::string_view local_id) const {
@@ -80,9 +97,6 @@ bool MarkersRuntimeHost::onCreate(
     for (uint64_t i = 0; i < input_count; ++i) {
       recipe.inputs.emplace_back(sdk::toStringView(inputs[i]));
     }
-    // Pick the target dataset from the declared inputs (the wire carries no dataset),
-    // so a generator lands on the dataset that actually holds its series.
-    recipe.dataset_id = self->active_dataset_ ? self->active_dataset_(recipe.inputs) : DatasetId{0};
     recipe.outputs.reserve(output_count);
     for (uint64_t i = 0; i < output_count; ++i) {
       recipe.outputs.emplace_back(sdk::toStringView(outputs[i]));
@@ -92,11 +106,41 @@ bool MarkersRuntimeHost::onCreate(
     recipe.ephemeral = (flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL) != 0;
     recipe.history_exempt = (flags & PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT) != 0;
     // params_json scope: {"scope":"all"} publishes a global marker across EVERY
-    // dataset; absent/other → the active dataset only (markers only).
+    // dataset, each evaluated over its own series, so the keys are literal there;
+    // absent/other → one dataset (markers only).
     if (!recipe.params_json.empty()) {
       const nlohmann::json params = nlohmann::json::parse(recipe.params_json, nullptr, false);
       recipe.all_datasets =
           !params.is_discarded() && params.is_object() && params.value("scope", std::string{}) == "all";
+    }
+    // A qualifier that names a loaded source contradicts scope=all (it would become
+    // a key that resolves nowhere and a silently empty marker set); a colon whose
+    // prefix is no loaded source is just part of the key.
+    if (recipe.all_datasets) {
+      const std::vector<std::string> source_names = self->loadedSourceNames();
+      for (const std::string& input : recipe.inputs) {
+        if (sdk::splitDatasetQualifier(input, source_names).qualified) {
+          sdk::fillError(
+              out_error, 1, kDomain, "dataset qualifiers cannot be combined with scope=all: '" + input + "'");
+          return false;
+        }
+      }
+    }
+    // Pick the target dataset from the declared keys (the wire carries no dataset
+    // field; a key may carry the "dataset_source:topic/field" qualifier, which the
+    // callback consumes and strips). A resolution error fails the create — landing
+    // a generator on a dataset the caller did not name is worse than refusing.
+    if (!recipe.all_datasets && self->active_dataset_) {
+      const std::vector<std::string> declared = recipe.inputs;
+      Expected<DatasetId> dataset = self->active_dataset_(recipe.inputs, recipe.outputs);
+      if (!dataset.has_value()) {
+        sdk::fillError(out_error, 1, kDomain, dataset.error());
+        return false;
+      }
+      recipe.dataset_id = *dataset;
+      if (declared != recipe.inputs) {
+        recipe.declared_inputs = declared;
+      }
     }
     if (!recipe.all_datasets && recipe.dataset_id == 0) {
       sdk::fillError(out_error, 1, kDomain, "no active dataset to attach the generator to");
@@ -178,7 +222,29 @@ bool MarkersRuntimeHost::onConfig(
       nlohmann::json j;
       j["kind"] = "markers";
       j["language"] = r.language;
-      j["inputs"] = r.inputs;
+      // Echo each input as declared (the SDK promises a re-editable recipe), qualified
+      // with the bound dataset's source only once the bare name stopped resolving on
+      // its own AND the qualified form resolves back to that dataset — checked by the
+      // very resolver a resubmit would run. Neither round-tripping is the
+      // unrepresentable case: the declared spelling is kept.
+      const std::optional<std::string> source =
+          (r.all_datasets || !self->source_name_of_) ? std::nullopt : self->source_name_of_(r.dataset_id);
+      std::vector<std::string> inputs = r.declared_inputs.empty() ? r.inputs : r.declared_inputs;
+      if (source.has_value() && !source->empty() && self->active_dataset_) {
+        const auto resolves_to = [self](const std::string& name) -> std::optional<DatasetId> {
+          std::vector<std::string> probe{name};
+          std::vector<std::string> no_outputs;
+          const Expected<DatasetId> dataset = self->active_dataset_(probe, no_outputs);
+          return dataset.has_value() ? std::optional{*dataset} : std::nullopt;
+        };
+        for (std::size_t i = 0; i < inputs.size(); ++i) {
+          const std::string qualified = sdk::qualifiedSeriesName(*source, r.inputs[i]);
+          if (!resolves_to(r.inputs[i]).has_value() && resolves_to(qualified) == r.dataset_id) {
+            inputs[i] = qualified;
+          }
+        }
+      }
+      j["inputs"] = inputs;
       j["outputs"] = r.outputs;
       j["history_exempt"] = r.history_exempt;
       nlohmann::json params =

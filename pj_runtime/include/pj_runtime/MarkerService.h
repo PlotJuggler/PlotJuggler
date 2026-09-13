@@ -81,9 +81,16 @@ class MarkerService {
   struct GeneratorRecipe {
     std::string id;  ///< plugin-namespaced stable key (upsert key)
     GeneratorKind kind = GeneratorKind::kMarkers;
-    std::string language = "luau";     ///< script backend; only "luau" accepted today
-    DatasetId dataset_id = 0;          ///< dataset the output lives in (when !all_datasets)
-    std::vector<std::string> inputs;   ///< series keys the script reads
+    std::string language = "luau";  ///< script backend; only "luau" accepted today
+    DatasetId dataset_id = 0;       ///< dataset the output lives in (when !all_datasets)
+    /// Series keys the resolver reads, bare: a bound generator's dataset qualifier is
+    /// stripped by the host, and a scope=all generator's keys are literal (the host
+    /// refuses a qualifier there).
+    std::vector<std::string> inputs;
+    /// The names the plugin declared, parallel to `inputs` (same length, or empty when
+    /// no name changed): the script enumerates and reads each series under this
+    /// spelling, e.g. `series("src:key")`, and the bare key stays readable too.
+    std::vector<std::string> declared_inputs;
     std::vector<std::string> outputs;  ///< markers: [marker_topic]; may be empty for an ephemeral preview
     std::string script;                ///< rule source (binary-safe blob)
     std::string params_json;           ///< forwarded verbatim to the engine
@@ -104,6 +111,9 @@ class MarkerService {
   /// Set the dataset lister used by `all_datasets` generators (defaults to empty).
   void setDatasetLister(DatasetLister lister);
 
+  /// Every loaded dataset as the injected lister reports it (empty without one).
+  [[nodiscard]] std::vector<DatasetId> loadedDatasets() const;
+
   /// Compile-only validation for `kind`/`language` (drives the editor red/green dot):
   /// rejects a non-"luau" language, else compiles + module-loads the script WITHOUT
   /// running it (no inputs, no side effects). Runtime errors are NOT caught here.
@@ -113,7 +123,8 @@ class MarkerService {
   /// resolved physical output topic name(s) (the marker object topic). On a script
   /// error returns the message and leaves any prior output AND the prior recipe
   /// untouched (a bad upsert never destroys a working generator). `ephemeral`
-  /// recipes are excluded from `recipes()`.
+  /// recipes are excluded from `recipes()`. A `declared_inputs` list whose length
+  /// differs from `inputs` is rejected.
   [[nodiscard]] Expected<std::vector<std::string>> upsertGenerator(GeneratorRecipe recipe);
 
   /// Drop a generator by `id` (persistent or ephemeral). For an ephemeral preview the
@@ -231,11 +242,10 @@ class MarkerService {
   /// kind=markers: run the script and publish PlotMarkers to the object topic(s).
   [[nodiscard]] Expected<std::vector<std::string>> runMarkers(const GeneratorRecipe& recipe, DatasetId scope);
 
-  /// Run the marker script over `inputs` (in `dataset_id`) and publish its PlotMarkers
-  /// to `object_topic_name`. Shared by committed + preview marker paths.
+  /// Run the recipe's marker script over its inputs in `dataset_id` and publish its
+  /// PlotMarkers to `object_topic_name`. Shared by committed + preview marker paths.
   [[nodiscard]] Status runMarkersToObjectTopic(
-      DatasetId dataset_id, const std::vector<std::string>& inputs, const std::string& script,
-      const std::string& object_topic_name);
+      DatasetId dataset_id, const GeneratorRecipe& recipe, const std::string& object_topic_name);
 
   /// Find-or-register `object_topic_name` on `dataset_id` (capping retention at one
   /// snapshot — markers are republished whole, last-writer-wins at a sentinel

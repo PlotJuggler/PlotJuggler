@@ -375,8 +375,10 @@ class DataProcessorService {
   [[nodiscard]] Status removeFilterOnly(NodeId node_id);
   [[nodiscard]] Status removeTransformOnly(std::string_view namespaced_key);
   /// Resolve a topic NAME to (topic id, dataset id) by scanning the engine — there
-  /// is no name→id index. `nullopt` if no live topic has that name.
-  [[nodiscard]] std::optional<std::pair<TopicId, DatasetId>> resolveInputTopic(const std::string& name) const;
+  /// is no name→id index. `nullopt` if no live topic has that name, or several do
+  /// (`*ambiguous` is then set, to tell the two apart).
+  [[nodiscard]] std::optional<std::pair<TopicId, DatasetId>> resolveInputTopic(
+      const std::string& name, std::optional<DatasetId> only_dataset = std::nullopt, bool* ambiguous = nullptr) const;
   /// An input resolved to a specific leaf column of a topic.
   struct ResolvedInput {
     TopicId topic_id = 0;
@@ -385,8 +387,22 @@ class DataProcessorService {
   };
   /// Resolve an input NAME — either a whole topic ("pose/orientation" → column 0) or
   /// a topic-field path ("pose/orientation/x") — to (topic, dataset, leaf column).
-  /// `nullopt` if no live topic matches, or the field is not a leaf of that topic.
-  [[nodiscard]] std::optional<ResolvedInput> resolveInputField(const std::string& name) const;
+  /// `nullopt` if no live topic matches, or the field is not a leaf of that topic,
+  /// or several candidates match (`*ambiguous` is then set, to tell the two apart).
+  /// `only_dataset` restricts the scan to one dataset — the dataset-qualified
+  /// plugin input path resolves the qualifier first and then looks the bare
+  /// name up in there. Topic names are not guaranteed unique even inside one
+  /// dataset: a whole-topic name matching twice is ambiguous, and no shorter
+  /// "<topic>/<field>" reading is attempted for it.
+  [[nodiscard]] std::optional<ResolvedInput> resolveInputField(
+      const std::string& name, std::optional<DatasetId> only_dataset = std::nullopt, bool* ambiguous = nullptr) const;
+  /// Raw source name of a loaded dataset (the qualifier form), nullopt when unknown.
+  [[nodiscard]] std::optional<std::string> datasetSourceName(DatasetId dataset_id) const;
+  /// The input spelling the config read-back echoes for one bound input: bare, unless
+  /// the bare name is ambiguous across the loaded datasets AND "source:bare" resolves
+  /// back to the binding's dataset. A name for which neither spelling round-trips is
+  /// unrepresentable and echoes bare.
+  [[nodiscard]] std::string readBackInputName(const std::string& bare, const TransformInputBinding& binding) const;
   /// Resolve a saved binding's dataset through SessionManager's shared identity
   /// policy, then resolve its exact topic and semantic leaf.
   [[nodiscard]] Expected<ResolvedInput> resolveInputBinding(const TransformInputBinding& binding) const;

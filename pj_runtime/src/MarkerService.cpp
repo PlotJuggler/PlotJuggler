@@ -42,14 +42,27 @@ std::unordered_map<std::string, scripting::SeriesView> materializeInputs(
   return views;
 }
 
-scripting::SeriesProvider buildProvider(const std::unordered_map<std::string, scripting::SeriesView>& views) {
+/// `declared` (parallel to `bare`, or empty) is the spelling the script wrote each
+/// input against: a materialized series is enumerated once under it, and readable
+/// under it first — a declared name that equals another input's bare key must not
+/// silently read that other series — then under its bare key.
+scripting::SeriesProvider buildProvider(
+    const std::unordered_map<std::string, scripting::SeriesView>& views, const std::vector<std::string>& bare,
+    const std::vector<std::string>& declared) {
   scripting::SeriesProvider provider;
-  provider.names.reserve(views.size());
-  for (const auto& entry : views) {
-    provider.names.push_back(entry.first);
+  std::unordered_map<std::string, std::string> aliases;
+  for (std::size_t i = 0; i < bare.size(); ++i) {
+    const std::string& name = declared.empty() ? bare[i] : declared[i];
+    if (!views.contains(bare[i]) ||
+        std::find(provider.names.begin(), provider.names.end(), name) != provider.names.end()) {
+      continue;
+    }
+    provider.names.push_back(name);
+    aliases.emplace(name, bare[i]);
   }
-  provider.get = [&views](const std::string& name) -> const scripting::SeriesView* {
-    const auto it = views.find(name);
+  provider.get = [&views, aliases = std::move(aliases)](const std::string& name) -> const scripting::SeriesView* {
+    const auto alias = aliases.find(name);
+    const auto it = views.find(alias == aliases.end() ? name : alias->second);
     return it == views.end() ? nullptr : &it->second;
   };
   return provider;
@@ -86,6 +99,10 @@ void MarkerService::setDatasetLister(DatasetLister lister) {
   dataset_lister_ = std::move(lister);
 }
 
+std::vector<DatasetId> MarkerService::loadedDatasets() const {
+  return dataset_lister_ ? dataset_lister_() : std::vector<DatasetId>{};
+}
+
 Status MarkerService::validateScript(
     GeneratorKind /*kind*/, std::string_view language, const std::string& script) const {
   if (Status s = checkLanguage(language); !s.has_value()) {
@@ -101,13 +118,13 @@ Status MarkerService::validateScript(
 // ---- kind=markers ----------------------------------------------------------
 
 Status MarkerService::runMarkersToObjectTopic(
-    DatasetId dataset_id, const std::vector<std::string>& inputs, const std::string& script,
-    const std::string& object_topic_name) {
-  std::unordered_map<std::string, scripting::SeriesView> views = materializeInputs(resolver_, dataset_id, inputs);
-  scripting::SeriesProvider provider = buildProvider(views);
+    DatasetId dataset_id, const GeneratorRecipe& recipe, const std::string& object_topic_name) {
+  std::unordered_map<std::string, scripting::SeriesView> views =
+      materializeInputs(resolver_, dataset_id, recipe.inputs);
+  scripting::SeriesProvider provider = buildProvider(views, recipe.inputs, recipe.declared_inputs);
 
   std::string err;
-  std::vector<sdk::PlotMarker> markers = scripting::runMarkerScript(script, provider, &err);
+  std::vector<sdk::PlotMarker> markers = scripting::runMarkerScript(recipe.script, provider, &err);
   if (!err.empty()) {
     return unexpected(err);
   }
@@ -128,8 +145,7 @@ Expected<std::vector<std::string>> MarkerService::runMarkers(const GeneratorReci
   // one unresolvable dataset does not suppress the others' markers.
   Status result = okStatus();
   for (const DatasetId dataset_id : targetDatasets(recipe, scope)) {
-    if (Status s = runMarkersToObjectTopic(dataset_id, recipe.inputs, recipe.script, object_topic_name);
-        !s.has_value()) {
+    if (Status s = runMarkersToObjectTopic(dataset_id, recipe, object_topic_name); !s.has_value()) {
       result = s;
     }
   }
@@ -152,6 +168,9 @@ Expected<std::vector<std::string>> MarkerService::runAndPublish(const GeneratorR
 Expected<std::vector<std::string>> MarkerService::upsertGenerator(GeneratorRecipe recipe) {
   if (Status s = checkLanguage(recipe.language); !s.has_value()) {
     return unexpected(s.error());
+  }
+  if (!recipe.declared_inputs.empty() && recipe.declared_inputs.size() != recipe.inputs.size()) {
+    return unexpected("declared input count does not match input count");
   }
   if (recipe.kind == GeneratorKind::kMarkers) {
     // Auto-name an ephemeral preview if the caller left the output open; reject a
@@ -225,7 +244,7 @@ std::vector<DatasetId> MarkerService::targetDatasets(const GeneratorRecipe& reci
   if (scope != kAllDatasets) {
     return {scope};
   }
-  return dataset_lister_ ? dataset_lister_() : std::vector<DatasetId>{};
+  return loadedDatasets();
 }
 
 std::vector<MarkerService::PublishTarget> MarkerService::publishTargets(const GeneratorRecipe& recipe) const {

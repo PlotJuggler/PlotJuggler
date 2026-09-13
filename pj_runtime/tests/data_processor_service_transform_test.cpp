@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -68,6 +69,12 @@ return { id="split", name="Split",
 constexpr const char* kSplitBoom = R"LUAU(-- pj-script: luau
 return { id="split", name="Split",
   create = function(p) return { calculate = function(t, v) error("boom") end } end }
+)LUAU";
+
+// A 2-input MIMO class: returns a + b.
+constexpr const char* kSum = R"LUAU(-- pj-script: luau
+return { id="sum", name="Sum",
+  create = function(p) return { calculate = function(t, a, b) return a + b end } end }
 )LUAU";
 
 constexpr const char* kScale = R"LUAU(return { {
@@ -627,6 +634,189 @@ TEST(DataProcessorTransformTest, QualifiedRestoreUsesExactIdToDisambiguateDuplic
   ASSERT_TRUE(restored.has_value()) << restored.error();
   EXPECT_EQ(restored->input_topic_ids, (std::vector<TopicId>{second_input->topic_id}));
   EXPECT_EQ(readValues(fx.engine, restored->output_topic_ids.front()), (std::vector<double>{-9.0}));
+}
+
+// The plugin-facing side of the same disambiguation: a plugin cannot send a
+// TransformInputBinding through the ABI, but it can send the name in the form
+// the host itself prints — "dataset_source:topic/field".
+TEST(DataProcessorTransformTest, DatasetQualifiedUpsertPicksItsDataset) {
+  Fixture fx;
+  fx.seed("speed", {3.0});  // dataset source "s"
+  const DatasetId second = *fx.engine.createDataset(DatasetDescriptor{.source_name = "second", .time_domain_id = 0});
+  DataWriter writer = fx.engine.createWriter();
+  auto duplicate = writer.registerScalarSeries(second, "speed", NumericType::kFloat64);
+  writer.appendScalar(*duplicate, 0, 8.0);
+  fx.engine.commitChunks(writer.flushAll());
+
+  const auto rec = fx.service.upsertTransform("pluginA", "negate", {"second:speed"}, {"out"}, kNegate, "{}");
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  EXPECT_EQ(rec->input_topic_ids, (std::vector<TopicId>{duplicate->topic_id}));
+  EXPECT_EQ(readValues(fx.engine, rec->output_topic_ids.front()), (std::vector<double>{-8.0}));
+  // Canonical form: the stored name is bare; the dataset travels in the binding,
+  // exactly as it does for a restored recipe.
+  ASSERT_EQ(rec->inputs.size(), 1u);
+  EXPECT_EQ(rec->inputs.front(), "speed");
+  ASSERT_EQ(rec->input_bindings.size(), 1u);
+  EXPECT_EQ(rec->input_bindings.front().dataset_source, "second");
+}
+
+TEST(DataProcessorTransformTest, DatasetQualifiedUpsertWorksWithStreamStyleSourceNames) {
+  Fixture fx;
+  fx.seed("speed", {3.0});
+  const DatasetId second =
+      *fx.engine.createDataset(DatasetDescriptor{.source_name = "[stream] UDP Server", .time_domain_id = 0});
+  DataWriter writer = fx.engine.createWriter();
+  auto duplicate = writer.registerScalarSeries(second, "speed", NumericType::kFloat64);
+  writer.appendScalar(*duplicate, 0, 8.0);
+  fx.engine.commitChunks(writer.flushAll());
+
+  const auto rec =
+      fx.service.upsertTransform("pluginA", "negate", {"[stream] UDP Server:speed"}, {"out"}, kNegate, "{}");
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  EXPECT_EQ(rec->input_topic_ids, (std::vector<TopicId>{duplicate->topic_id}));
+}
+
+TEST(DataProcessorTransformTest, DatasetQualifiedUpsertRejectsADuplicatedSourceName) {
+  Fixture fx;
+  fx.seed("speed", {1.0});  // source "s"
+  const DatasetId second = *fx.engine.createDataset(DatasetDescriptor{.source_name = "s", .time_domain_id = 0});
+  DataWriter writer = fx.engine.createWriter();
+  auto duplicate = writer.registerScalarSeries(second, "speed", NumericType::kFloat64);
+  writer.appendScalar(*duplicate, 0, 9.0);
+  fx.engine.commitChunks(writer.flushAll());
+
+  const auto rec = fx.service.upsertTransform("pluginA", "negate", {"s:speed"}, {"out"}, kNegate, "{}");
+  ASSERT_FALSE(rec.has_value());
+  EXPECT_NE(rec.error().find("ambiguous"), std::string::npos) << rec.error();
+}
+
+// A ':' whose prefix is no loaded source stays part of the name; the error
+// hints at the near-miss instead of leaving the caller guessing.
+TEST(DataProcessorTransformTest, ColonNameThatMatchesNoSourceGetsTheQualifierHint) {
+  Fixture fx;
+  fx.seed("speed", {1.0});
+  const auto rec = fx.service.upsertTransform("pluginA", "negate", {"nope:speed"}, {"out"}, kNegate, "{}");
+  ASSERT_FALSE(rec.has_value());
+  EXPECT_NE(rec.error().find("dataset qualifier"), std::string::npos) << rec.error();
+}
+
+// Bug (PR #619 #4): qualified inputs naming two different datasets are resolved
+// independently and accepted; the SDK contract says they must agree on one.
+TEST(DataProcessorTransformTest, QualifiedInputsNamingTwoDatasetsAreRejected) {
+  Fixture fx;
+  fx.seed("speed", {3.0});  // source "s"
+  const DatasetId second = *fx.engine.createDataset(DatasetDescriptor{.source_name = "second", .time_domain_id = 0});
+  DataWriter writer = fx.engine.createWriter();
+  auto duplicate = writer.registerScalarSeries(second, "speed", NumericType::kFloat64);
+  writer.appendScalar(*duplicate, 0, 8.0);
+  fx.engine.commitChunks(writer.flushAll());
+
+  const auto rec = fx.service.upsertTransform("pluginA", "sum", {"s:speed", "second:speed"}, {"out"}, kSum, "{}");
+  ASSERT_FALSE(rec.has_value()) << "conflicting dataset qualifiers were accepted";
+  EXPECT_NE(rec.error().find("dataset"), std::string::npos) << rec.error();
+}
+
+// Bug (PR #619 #3): the config read-back a plugin re-edits from (transformRecipeJson,
+// behind data_processor_config) returns bare input names, so resubmitting it is
+// ambiguous once `speed` exists in two datasets.
+TEST(DataProcessorTransformTest, ConfigReadBackResubmitsUnambiguously) {
+  Fixture fx;
+  fx.seed("speed", {3.0});  // source "s"
+  const DatasetId second = *fx.engine.createDataset(DatasetDescriptor{.source_name = "second", .time_domain_id = 0});
+  DataWriter writer = fx.engine.createWriter();
+  auto duplicate = writer.registerScalarSeries(second, "speed", NumericType::kFloat64);
+  writer.appendScalar(*duplicate, 0, 8.0);
+  fx.engine.commitChunks(writer.flushAll());
+  ASSERT_TRUE(fx.service.upsertTransform("pluginA", "negate", {"second:speed"}, {"out"}, kNegate, "{}").has_value());
+
+  const std::optional<std::string> json = fx.service.transformRecipeJson("pluginA/negate");
+  ASSERT_TRUE(json.has_value());
+  const std::vector<std::string> inputs = nlohmann::json::parse(*json).at("inputs").get<std::vector<std::string>>();
+
+  EXPECT_EQ(inputs, (std::vector<std::string>{"second:speed"}));
+
+  const auto resubmitted = fx.service.upsertTransform("pluginB", "negate", inputs, {"out2"}, kNegate, "{}");
+  ASSERT_TRUE(resubmitted.has_value()) << resubmitted.error();
+  EXPECT_EQ(resubmitted->input_topic_ids, (std::vector<TopicId>{duplicate->topic_id}));
+}
+
+// One float64 series `name` in `dataset`, one sample; returns its topic id.
+TopicId addSeries(DataEngine& engine, DatasetId dataset, const char* name, double value) {
+  DataWriter writer = engine.createWriter();
+  auto handle = writer.registerScalarSeries(dataset, name, NumericType::kFloat64);
+  writer.appendScalar(*handle, 0, value);
+  engine.commitChunks(writer.flushAll());
+  return handle->topic_id;
+}
+
+std::vector<std::string> configInputs(const DataProcessorService& service, const char* key) {
+  const std::optional<std::string> json = service.transformRecipeJson(key);
+  EXPECT_TRUE(json.has_value());
+  return json.has_value() ? nlohmann::json::parse(*json).at("inputs").get<std::vector<std::string>>()
+                          : std::vector<std::string>{};
+}
+
+// Read-back qualifies an input only when its bare name is ambiguous: a unique
+// bare name echoes unchanged.
+TEST(DataProcessorTransformTest, ConfigReadBackKeepsAUniqueBareInputBare) {
+  Fixture fx;
+  fx.seed("speed", {3.0});
+  ASSERT_TRUE(fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"out"}, kNegate, "{}").has_value());
+  EXPECT_EQ(configInputs(fx.service, "pluginA/negate"), (std::vector<std::string>{"speed"}));
+}
+
+// Sources "a" and "a:b": an input bound to "a" as bare "b:x" cannot be spelled
+// "a:b:x" (the splitter would pick "a:b"), so read-back keeps the bare name even
+// once it turned ambiguous.
+TEST(DataProcessorTransformTest, ConfigReadBackKeepsBareWhenALongerSourcePrefixShadowsTheQualifier) {
+  Fixture fx;
+  const DatasetId a = *fx.engine.createDataset(DatasetDescriptor{.source_name = "a", .time_domain_id = 0});
+  const DatasetId ab = *fx.engine.createDataset(DatasetDescriptor{.source_name = "a:b", .time_domain_id = 0});
+  const TopicId bound = addSeries(fx.engine, a, "b:x", 1.0);
+  const auto rec = fx.service.upsertTransform("pluginA", "negate", {"b:x"}, {"out"}, kNegate, "{}");
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  ASSERT_EQ(rec->input_topic_ids, (std::vector<TopicId>{bound}));
+  (void)addSeries(fx.engine, ab, "b:x", 2.0);
+  EXPECT_EQ(configInputs(fx.service, "pluginA/negate"), (std::vector<std::string>{"b:x"}));
+}
+
+// A source loaded twice cannot be addressed by name: read-back must not emit
+// "s:speed", which the resolver rejects as ambiguous.
+TEST(DataProcessorTransformTest, ConfigReadBackKeepsBareWhenTheSourceIsLoadedTwice) {
+  Fixture fx;
+  fx.seed("speed", {3.0});  // source "s"
+  ASSERT_TRUE(fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"out"}, kNegate, "{}").has_value());
+  const DatasetId second = *fx.engine.createDataset(DatasetDescriptor{.source_name = "s", .time_domain_id = 0});
+  (void)addSeries(fx.engine, second, "speed", 8.0);
+  EXPECT_EQ(configInputs(fx.service, "pluginA/negate"), (std::vector<std::string>{"speed"}));
+}
+
+// A bare cross-dataset transform (x in a, y in b) is accepted; its read-back must
+// stay resubmittable instead of turning into two disagreeing qualifiers.
+TEST(DataProcessorTransformTest, CrossDatasetBareTransformRoundTripsThroughConfig) {
+  Fixture fx;
+  fx.seed("x", {3.0});  // source "s"
+  const DatasetId second = *fx.engine.createDataset(DatasetDescriptor{.source_name = "second", .time_domain_id = 0});
+  (void)addSeries(fx.engine, second, "y", 8.0);
+  const auto rec = fx.service.upsertTransform("pluginA", "sum", {"x", "y"}, {"out"}, kSum, "{}");
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const std::vector<std::string> inputs = configInputs(fx.service, "pluginA/sum");
+  const auto resubmitted = fx.service.upsertTransform("pluginB", "sum", inputs, {"out2"}, kSum, "{}");
+  ASSERT_TRUE(resubmitted.has_value()) << resubmitted.error();
+  EXPECT_EQ(resubmitted->input_topic_ids, rec->input_topic_ids);
+}
+
+// Two topics named alike inside ONE dataset: the qualified input is ambiguous
+// there, not "not found", and no shorter topic-prefix reading is attempted.
+TEST(DataProcessorTransformTest, DuplicateTopicNameInsideOneDatasetIsReportedAmbiguous) {
+  Fixture fx;
+  fx.seed("speed", {3.0});
+  const TopicId twin = addSeries(fx.engine, fx.ds, "speed", 4.0);
+  ASSERT_NE(twin, fx.input);
+  const auto rec = fx.service.upsertTransform("pluginA", "negate", {"s:speed"}, {"out"}, kNegate, "{}");
+  ASSERT_FALSE(rec.has_value());
+  EXPECT_NE(rec.error().find("ambiguous"), std::string::npos) << rec.error();
 }
 
 TEST(DataProcessorTransformTest, ClearForPluginRemovesOnlyThatPlugin) {
