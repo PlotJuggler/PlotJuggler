@@ -37,6 +37,10 @@ class MainWindowCustomSeriesTestPeer {
     return window.restoreDataProcessors(root);
   }
 
+  [[nodiscard]] static QDomElement saveDataProcessors(MainWindow& window, QDomDocument& doc) {
+    return window.saveDataProcessors(doc, SnapshotScope::kFull);
+  }
+
   // The production hook every recipe-set change goes through.
   static void syncCustomSeriesPanel(MainWindow& window) {
     window.syncCustomSeriesPanel();
@@ -160,6 +164,40 @@ TEST(MainWindowCustomSeriesTest, CatalogRemovalAlonePrunesTheRow) {
   fx.app().catalogModel().rebuildFromDatastore();
 
   EXPECT_TRUE(fx.panel->customSeriesNames().isEmpty());
+}
+
+// A transform chain (downstream reads upstream's output) must survive a full
+// save -> restore: restore resolves inputs by name, so a dependent replayed before
+// its producer fails with "input topic not found" and the chain is lost. The saved
+// order comes from an unordered map, so this pins the round trip regardless of it.
+TEST(MainWindowCustomSeriesTest, RestoreReplaysTransformChainInDependencyOrder) {
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  PJ::MainWindow window(extensions_dir.path());
+  PJ::AppSession& app = PJ::MainWindowCustomSeriesTestPeer::session(window);
+  PJ::DataProcessorService& service = app.sessionManager().dataProcessorService();
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "run.csv");
+  ASSERT_NE(dataset, 0U);
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset, kTopic), 0U);
+  ASSERT_TRUE(service.upsertTransform("pluginA", "negate", {kInputSeries}, {"chain/mid"}, kNegate, "{}").has_value());
+  ASSERT_TRUE(service.upsertTransform("pluginB", "negate", {"chain/mid"}, {"chain/out"}, kNegate, "{}").has_value());
+
+  QDomDocument saved;
+  QDomElement root = saved.createElement(u"root"_s);
+  saved.appendChild(root);
+  root.appendChild(PJ::MainWindowCustomSeriesTestPeer::saveDataProcessors(window, saved));
+  ASSERT_EQ(saved.elementsByTagName(u"transform"_s).size(), 2);
+  // Older layouts were written in map order: force the dependent first as well.
+  QDomDocument reversed = saved.cloneNode(true).toDocument();
+  QDomElement processors = reversed.documentElement().firstChildElement(u"data_processors"_s);
+  processors.appendChild(processors.firstChildElement(u"transform"_s));
+
+  for (const QDomDocument* doc : {&saved, &reversed}) {
+    service.clearAllTransforms();
+    ASSERT_TRUE(service.transformRecipes().empty());
+    EXPECT_TRUE(PJ::MainWindowCustomSeriesTestPeer::restoreDataProcessors(window, doc->documentElement()));
+    EXPECT_EQ(service.transformRecipes().size(), 2U);
+  }
 }
 
 // Clear All empties the catalog, which reports `cleared()` instead of a key list.

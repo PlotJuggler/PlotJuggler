@@ -495,6 +495,52 @@ inline constexpr std::array<std::pair<const char*, double>, 4> kWidthButtonSpecs
     {"globalWidth2_0", 2.0},
     {"globalWidth3_0", 3.0},
 }};
+
+/// Producers before dependents, document order otherwise: restore resolves
+/// transform inputs by name, so a dependent replayed before its producer fails.
+/// Used for both persisting and replaying, so a saved file is already ordered
+/// and an older unordered one still loads. A cycle (never installable) keeps its
+/// members in document order at the end.
+void orderTransformsByDependency(std::vector<PJ::DataProcessorService::TransformRecipe>& recipes) {
+  const auto produces = [](const PJ::DataProcessorService::TransformRecipe& recipe, const std::string& input) {
+    return std::any_of(recipe.outputs.begin(), recipe.outputs.end(), [&input](const std::string& output) {
+      const std::string topic = output.substr(0, output.find(':'));  // "rpy:a,b" materializes topic "rpy"
+      return input == topic || input.starts_with(topic + '/');
+    });
+  };
+  // ponytail: O(n^3) passes over a handful of transforms; Kahn's algorithm if layouts grow large.
+  std::vector<PJ::DataProcessorService::TransformRecipe> ordered;
+  ordered.reserve(recipes.size());
+  std::vector<bool> placed(recipes.size(), false);
+  for (bool progress = true; progress;) {
+    progress = false;
+    for (std::size_t index = 0; index < recipes.size(); ++index) {
+      if (placed[index]) {
+        continue;
+      }
+      const bool ready =
+          std::all_of(recipes[index].inputs.begin(), recipes[index].inputs.end(), [&](const std::string& input) {
+            for (std::size_t other = 0; other < recipes.size(); ++other) {
+              if (other != index && !placed[other] && produces(recipes[other], input)) {
+                return false;
+              }
+            }
+            return true;
+          });
+      if (ready) {
+        placed[index] = true;
+        ordered.push_back(std::move(recipes[index]));
+        progress = true;
+      }
+    }
+  }
+  for (std::size_t index = 0; index < recipes.size(); ++index) {
+    if (!placed[index]) {
+      ordered.push_back(std::move(recipes[index]));
+    }
+  }
+  recipes = std::move(ordered);
+}
 }  // namespace
 
 #ifdef PJ_TARGET_WASM
@@ -7010,7 +7056,10 @@ QDomElement MainWindow::saveDataProcessors(QDomDocument& doc, SnapshotScope scop
   // block as the per-curve filters above; restore re-installs them via
   // DataProcessorService::restoreTransform. Inputs/outputs are topic NAMES (the
   // engine resolves them on restore), so no (topic, field) rebinding is needed here.
-  for (const auto& recipe : session_->sessionManager().dataProcessorService().transformRecipes()) {
+  std::vector<DataProcessorService::TransformRecipe> transforms =
+      session_->sessionManager().dataProcessorService().transformRecipes();
+  orderTransformsByDependency(transforms);
+  for (const auto& recipe : transforms) {
     // History snapshots omit entries the restore has no authority to replay.
     if (scope == SnapshotScope::kHistory && recipe.history_exempt) {
       continue;
@@ -7196,6 +7245,7 @@ std::vector<DataProcessorService::TransformRecipe> MainWindow::parseWantedTransf
     }
     wanted_transforms.push_back(std::move(recipe));
   }
+  orderTransformsByDependency(wanted_transforms);  // older layouts were written unordered
   return wanted_transforms;
 }
 
