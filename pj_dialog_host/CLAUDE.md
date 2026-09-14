@@ -54,6 +54,10 @@ adopt one.
 | `pjToolboxSideDrawer` (bool) | one `QWidget` in a toolbox panel | `pj_app` hoists the widget out of the content into a full-height, draggable column at the LEFT of the whole panel chrome — beside the banner / floating title bar, not under it — in a `QSplitter` (handle in place of the old separator; resizable down to the drawer's own `.ui` minimum width, and persisted per plugin in `QSettings` as `ToolboxDrawerWidth/<plugin id>`). The plugin keeps driving it by name (`setVisible`, list items, …): the panel root records the hoisted widget in the `pjHoistedWidgets` property, and every by-name lookup in `widget_binding` searches those too. |
 | `pj_context_actions` (string) | `QListWidget` | `"id=Label[;id2=Label 2...]"` — a right-click on a row builds a context menu from the clauses, in order, and popping only over a row (nothing on empty space). Choosing an entry emits `WidgetEventBuilder::itemContextAction(index, id)` with the delivered-order row index (the same `kPluginRowRole` translation `onItemDoubleClicked`/`onItemDeleteRequested` use). A malformed clause (no `=`, empty id or label) is skipped; the rest of the menu still builds. The action set is host-rendered UI, not part of the dialog protocol — only the fired id crosses the ABI (`onItemContextAction` in the SDK). An absent or empty property is today's behaviour: no context-menu policy set. |
 
+The `pj_enable_when`/`pj_visible_when` closures are cached per loaded root in an
+`InstalledRules` QObject child (`widget_binding.cpp`, `Q_OBJECT`, found again by
+`findChildren<InstalledRules*>` from any ancestor root on every data apply).
+
 `pjHoistedWidgets` (`QVariantList` of `QObject*`, `kHoistedWidgetsProperty` in `widget_binding.hpp`) is host-internal: it is how a presentation that moved a plugin widget elsewhere in the window keeps the binding's `findNamedIn`/`findAllIn` lookups reaching it.
 
 When adding another such contract, hoist the name to a `constexpr const char* k…Property`

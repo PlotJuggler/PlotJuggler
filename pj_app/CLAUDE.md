@@ -174,14 +174,38 @@ optional tail slot preserves existing callers. See the SDK's
 
 ## Toolbox presentation
 
+`ToolboxPresenter` (`src/ToolboxPresenter.{h,cpp}`) is one live toolbox: the
+wrapped panel container (`MainWindow::wrapToolboxPanel`), its `PanelEngine`,
+the plugin session that keeps host services and plugin instance alive, and
+the presentation it currently has — takeover (chart area), tab, or floating
+`PJ::Dialog`. `MainWindow::toolboxes_` is the single registry, one presenter
+per plugin id across every presentation; `launchToolbox` builds the session
+(`buildToolboxPanelSession`, mirrored by `HeadlessDescriptorProviderSession`),
+wraps the panel, registers the presenter and calls `moveToDock`/`moveToTab`.
+`moveToDock`/`moveToTab`/`moveToFloating` release the container from wherever it
+is and attach it elsewhere; `teardown(kDeferred|kImmediate)` is the one exit,
+reached only through `MainWindow::teardownToolbox`, which extracts the registry
+entry FIRST so any callback landing mid-teardown finds nothing. Tab close,
+window `finished`, engine close requests and banner hooks all look the presenter
+up by id rather than capturing it. `~MainWindow` calls `teardownAllToolboxes()`
+(every presentation, synchronous) before the members die; a layout restore
+tears down the persisted set (tabs + floating, plus a takeover the layout
+names — any other takeover stays) synchronously before relaunching. The chart-area helpers shared by the banner and the floating
+title bar live in `src/ToolboxChrome.{h,cpp}`.
+
 Toolboxes keep three header controls in every presentation: docked panels offer
 move-to-tab, move-to-floating and close; tabs offer move-to-docked,
 move-to-floating and close; floating windows offer move-to-tab, move-to-docked
 and close. Generic panels hide destinations they do not support.
 
 Relocation moves the same live container without teardown. The plugin session,
-drawer, actions and renamed tab title survive. Returning to docked restores
-engine close routing and the takeover's busy-close/automatic-fold registration.
-Replacing another busy takeover folds that panel before showing the incoming
-one. If docking cannot claim the chart slot, the live panel remains available
-as a tab. Tab header close uses the tab's busy-job confirmation.
+drawer, actions and renamed tab title survive; `Spec::apply_chrome` re-shows
+the banner in the chrome of whichever presentation the container lands in.
+Nothing is registered per presentation: the busy-close fold, the automatic
+fold on ingest start and a dismissal's fold all resolve the takeover's presenter
+through the registry (`takeoverToolbox()`), and the banner's close button is
+`ToolboxPresenter::requestClose()` — tab close through the strip's busy-job
+confirmation, floating through the window, a busy takeover folds into a
+transient tab. Replacing another busy takeover folds that panel before showing
+the incoming one. If docking cannot claim the chart slot, the live panel
+remains available as a tab.

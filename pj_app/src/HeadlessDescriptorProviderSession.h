@@ -78,7 +78,7 @@ class ToolboxRuntimeHost;
 //       be alive);
 //   (3) releases the plugin handle (instance destroy, DSO unpin);
 //   (4) tears down builder, dp-host, runtime host, settings — the same
-//       relative order as MainWindow's ~PanelSession.
+//       relative order as MainWindow's ~ToolboxPanelSession.
 // Teardown consequence of the queued-only marshal: a queued-but-undelivered
 // terminal metacall is purged by ~QObject. That is legal ONLY because step
 // (1) already cancelled+joined those jobs, so the owner has concluded them
@@ -183,7 +183,7 @@ class HeadlessDescriptorProviderSession : public QObject {
   const QString source_name_;
   DiagnosticSink diagnostics_;
 
-  // Owner block mirroring MainWindow's PanelSession. The destructor makes
+  // Owner block mirroring MainWindow's ToolboxPanelSession. The destructor makes
   // the load-bearing teardown order EXPLICIT (jobs -> promotion_host_ ->
   // handle_ -> builder_ -> dp_host_ -> host_ -> settings_); the implicit
   // reverse-declaration destruction that follows only resets already-null

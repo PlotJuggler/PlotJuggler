@@ -34,6 +34,10 @@ add_library(pj_app_shell OBJECT
     src/HeadlessDescriptorProviderSession.cpp
     src/HeadlessDescriptorProviderSession.h
     src/ToolboxHostWiring.h
+    src/ToolboxChrome.cpp
+    src/ToolboxChrome.h
+    src/ToolboxPresenter.cpp
+    src/ToolboxPresenter.h
     src/PendingDisplayBinder.cpp
     src/PendingDisplayBinder.h
     src/TopicDemandController.cpp
@@ -61,6 +65,7 @@ add_library(pj_app_shell OBJECT
     src/MainWindow.cpp
     src/MainWindow.h
     src/MainWindow.ui
+    src/ToolboxBanner.ui
     src/scene_object_classification.cpp
     src/scene_object_classification.h
     src/WidgetTuner.cpp

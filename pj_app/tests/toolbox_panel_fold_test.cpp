@@ -20,23 +20,29 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QStandardPaths>
 #include <QString>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <pj_plugins/host_qt/widget_binding.hpp>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "MainWindow.h"
+#include "ToolboxPresenter.h"
 #include "pj_plotting/PlotWidgetBase.h"
 #include "pj_plotting/TabbedPlotWidget.h"
+#include "pj_runtime/AppSession.h"
 #include "support/gui_test_env.h"
 
 using namespace Qt::StringLiterals;
@@ -51,30 +57,31 @@ class ToolboxPanelFoldTestPeer {
   // Mirror of the private WrappedToolboxPanel, which only a friend can name.
   struct Wrapped {
     QWidget* container = nullptr;
-    std::function<void()> enter_pinned_chrome;
-    std::function<void()> enter_docked_chrome;
+    std::function<void(bool pinned)> apply_chrome;
   };
 
   // Positional hooks, packed into MainWindow::ToolboxChromeHooks for the call.
   static Wrapped wrapToolboxPanel(
       MainWindow& window, QWidget* content, const QString& title, std::function<void()> on_close,
-      std::function<void()> on_migrate, std::function<void()> on_float = {},
-      std::function<bool()> has_work_in_flight = {}, std::function<void()> on_fold_busy = {},
-      const QString& persist_key = {}, std::function<void()> on_dock = {}) {
-    const MainWindow::WrappedToolboxPanel wrapped = window.wrapToolboxPanel(
+      std::function<void()> on_migrate, std::function<void()> on_float = {}, const QString& persist_key = {},
+      std::function<void()> on_dock = {}) {
+    MainWindow::WrappedToolboxPanel wrapped = window.wrapToolboxPanel(
         content, title,
         MainWindow::ToolboxChromeHooks{
             .on_close = std::move(on_close),
             .on_migrate = std::move(on_migrate),
             .on_float = std::move(on_float),
-            .on_dock = std::move(on_dock),
-            .on_fold_busy = std::move(on_fold_busy),
-            .has_work_in_flight = std::move(has_work_in_flight)},
+            .on_dock = std::move(on_dock)},
         persist_key);
-    return {
-        .container = wrapped.container,
-        .enter_pinned_chrome = wrapped.enter_pinned_chrome,
-        .enter_docked_chrome = wrapped.enter_docked_chrome};
+    return {.container = wrapped.container, .apply_chrome = std::move(wrapped.apply_chrome)};
+  }
+
+  // The production chrome hooks: every gesture looks the presenter up by id.
+  static void withToolbox(MainWindow& window, const QString& plugin_id, void (ToolboxPresenter::*gesture)()) {
+    window.withToolbox(plugin_id, [gesture](ToolboxPresenter& live) { (live.*gesture)(); });
+  }
+  static void userPin(MainWindow& window, const QString& plugin_id) {
+    window.withToolbox(plugin_id, [](ToolboxPresenter& live) { live.moveToTab(/*transient=*/false); });
   }
 
   // `interactive` maps to the two policies that reach commitRestoredLayout in
@@ -93,14 +100,18 @@ class ToolboxPanelFoldTestPeer {
     return window.releaseCentralPanel();
   }
 
+  // Releases through the registered presenter; nullptr (presentation intact)
+  // when nothing is registered under `id` for this container.
   static QWidget* releaseToolboxPanel(MainWindow& window, const QString& id, QWidget* container, QString& title) {
-    return window.releaseToolboxPanel(id, container, title);
-  }
-
-  static bool dockToolboxPanel(
-      MainWindow& window, QWidget* container, const void* owner, std::function<void(bool)> fold,
-      std::function<bool()> busy, const std::function<void()>& chrome) {
-    return window.dockToolboxPanel(container, nullptr, owner, std::move(fold), std::move(busy), chrome);
+    ToolboxPresenter* presenter = window.findToolbox(id);
+    if (presenter == nullptr || presenter->container() != container) {
+      return nullptr;
+    }
+    QWidget* released = presenter->release();
+    if (released != nullptr) {
+      title = presenter->title();
+    }
+    return released;
   }
 
   static QWidget* currentPanel(const MainWindow& window) {
@@ -111,29 +122,99 @@ class ToolboxPanelFoldTestPeer {
     window.dismissTakeoverPanel();
   }
 
-  static void setTakeoverFold(
-      MainWindow& window, const void* owner, std::function<void(bool)> fold, std::function<bool()> has_work_in_flight) {
-    window.setTakeoverFold(owner, std::move(fold), std::move(has_work_in_flight));
+  // The production marketplace launch: a banner-wrapped panel with no
+  // presenter, whose close policy lives in its own chrome hooks.
+  static void openMarketplace(MainWindow& window) {
+    window.onOpenMarketplace();
+  }
+  [[nodiscard]] static QWidget* marketplaceContainer(const MainWindow& window) {
+    return window.marketplace_container_.data();
+  }
+
+  // The production launch entry, driven at its "one live instance" head; a
+  // plugin id absent from the catalog returns before any session is built.
+  static void launchToolbox(MainWindow& window, const QString& plugin_id) {
+    window.launchToolbox(plugin_id);
   }
 
   static void foldTakeoverPanelIfOwnedBy(MainWindow& window, const void* owner, bool transient) {
     window.foldTakeoverPanelIfOwnedBy(owner, transient);
   }
 
-  static void pinToolboxPanel(
-      MainWindow& window, QWidget* container, const QString& plugin_id, const QString& title,
-      std::function<QString()> save_config, ToolboxRuntimeHost* host, bool transient) {
-    window.pinToolboxPanel(container, plugin_id, title, /*engine=*/nullptr, std::move(save_config), host, transient);
+  // The identity an ingest started by this toolbox reports (null when none is
+  // registered).
+  [[nodiscard]] static const void* ownerOf(const MainWindow& window, const QString& plugin_id) {
+    const ToolboxPresenter* presenter = window.findToolbox(plugin_id);
+    return presenter != nullptr ? presenter->sessionOwner() : nullptr;
   }
 
-  /// Returns whether the engine may tear itself down (false = the host declined
-  /// and the panel must keep exchanging widget data).
+  // Registers an engine-less presenter (no session, no chrome hooks) for
+  // `container`: the bare shape every presentation case starts from.
+  static ToolboxPresenter& registerBare(
+      MainWindow& window, const QString& plugin_id, QWidget* container, const QString& title,
+      std::function<QString()> save_config, ToolboxRuntimeHost* host,
+      std::function<void(bool pinned)> apply_chrome = {}) {
+    return window.registerToolbox(
+        plugin_id, ToolboxPresenter::Spec{
+                       .container = container,
+                       .engine = nullptr,
+                       .session = {},
+                       .host = host,
+                       .title = title,
+                       .save_config = std::move(save_config),
+                       .apply_chrome = std::move(apply_chrome)});
+  }
+
+  // Pins through the presenter registered under `plugin_id`, registering a
+  // bare one for the container first if none exists yet.
+  static void moveToTab(
+      MainWindow& window, QWidget* container, const QString& plugin_id, const QString& title,
+      std::function<QString()> save_config, ToolboxRuntimeHost* host, bool transient) {
+    ToolboxPresenter* presenter = window.findToolbox(plugin_id);
+    if (presenter == nullptr) {
+      presenter = &registerBare(window, plugin_id, container, title, std::move(save_config), host);
+    }
+    presenter->moveToTab(transient);
+  }
+
+  /// The engine's close routing: returns whether the engine may tear itself
+  /// down (false = the host declined and the panel must keep exchanging widget
+  /// data).
   [[nodiscard]] static bool emitPinnedCloseRequest(MainWindow& window, QWidget* container, const std::string& reason) {
-    return window.onPinnedPanelCloseRequested(container, reason);
+    ToolboxPresenter* presenter = window.toolboxForContainer(container);
+    return presenter == nullptr || presenter->onEngineCloseRequested(reason);
+  }
+
+  // Docks through the presenter registered under `plugin_id` (registering a
+  // bare one for the container first if none exists yet).
+  [[nodiscard]] static bool dockThroughPresenter(
+      MainWindow& window, QWidget* container, const QString& plugin_id, const QString& title,
+      ToolboxRuntimeHost* host) {
+    ToolboxPresenter* presenter = window.findToolbox(plugin_id);
+    if (presenter == nullptr) {
+      presenter = &registerBare(window, plugin_id, container, title, []() { return u"{}"_s; }, host);
+    }
+    return presenter->moveToDock();
+  }
+
+  [[nodiscard]] static bool isTakeover(const MainWindow& window, const QString& plugin_id) {
+    const ToolboxPresenter* presenter = window.findToolbox(plugin_id);
+    return presenter != nullptr && presenter->presentation() == ToolboxPresenter::Presentation::kTakeover;
   }
 
   [[nodiscard]] static bool isPinned(const MainWindow& window, const QString& plugin_id) {
-    return window.pinned_toolboxes_.contains(plugin_id);
+    const ToolboxPresenter* presenter = window.findToolbox(plugin_id);
+    return presenter != nullptr && presenter->presentation() == ToolboxPresenter::Presentation::kTab;
+  }
+
+  // A host-chosen fold (excluded from layout save) rather than a user pin.
+  [[nodiscard]] static bool isTransient(const MainWindow& window, const QString& plugin_id) {
+    const ToolboxPresenter* presenter = window.findToolbox(plugin_id);
+    return presenter != nullptr && presenter->transient();
+  }
+
+  [[nodiscard]] static bool isLive(const MainWindow& window, const QString& plugin_id) {
+    return window.findToolbox(plugin_id) != nullptr;
   }
 
   [[nodiscard]] static QString savedPinnedToolboxesXml(const MainWindow& window) {
@@ -142,34 +223,31 @@ class ToolboxPanelFoldTestPeer {
     return doc.toString();
   }
 
-  static void closeAllPinnedToolboxTabs(MainWindow& window) {
-    window.closeAllPinnedToolboxTabs();
+  // Every live toolbox, synchronously (what TearDown sweeps).
+  static void teardownAllToolboxes(MainWindow& window) {
+    window.teardownAllToolboxes();
   }
 
-  // Registers a floating-toolbox entry directly (the production insert lives
-  // inside launchToolbox's migrate_to_float, which needs a live plugin
-  // session); `floating_window` stands in for the floating PJ::Dialog and is
-  // deleted by closeAllFloatingToolboxWindows.
+  // Registers a presenter already in the floating presentation (the production
+  // path needs a live plugin session to float); `floating_window` stands in
+  // for the floating PJ::Dialog and is deleted by the presenter's teardown.
   static void insertFloatingToolbox(
       MainWindow& window, const QString& plugin_id, QWidget* floating_window, std::function<QString()> save_config,
       ToolboxRuntimeHost* host, const QString& label) {
-    window.floating_toolboxes_.insert(
-        plugin_id, MainWindow::FloatingToolbox{
-                       .window = floating_window,
-                       .container = floating_window,
-                       .engine = nullptr,
-                       .save_config = std::move(save_config),
-                       .host = host,
-                       .label = label,
-                       .on_close = {}});
+    ToolboxPresenter& presenter = registerBare(window, plugin_id, floating_window, label, std::move(save_config), host);
+    presenter.presentation_ = ToolboxPresenter::Presentation::kFloating;
+    presenter.floating_window_ = floating_window;
   }
 
   [[nodiscard]] static bool isFloating(const MainWindow& window, const QString& plugin_id) {
-    return window.floating_toolboxes_.contains(plugin_id);
+    const ToolboxPresenter* presenter = window.findToolbox(plugin_id);
+    return presenter != nullptr && presenter->presentation() == ToolboxPresenter::Presentation::kFloating;
   }
 
-  static void closeAllFloatingToolboxWindows(MainWindow& window) {
-    window.closeAllFloatingToolboxWindows();
+  // The service a toolbox's plugin session writes into; its QObject identity
+  // is what a teardown-order probe watches.
+  [[nodiscard]] static SessionManager* sessionManager(const MainWindow& window) {
+    return &window.session_->sessionManager();
   }
 
   static void setSeams(
@@ -223,16 +301,21 @@ class ToolboxPanelFoldTest : public ::testing::Test {
         mainWindow(),
         [this](QString /*label*/) {
           confirm_shown_ = true;
+          if (during_confirm_) {
+            during_confirm_();
+          }
           return confirm_answer_;
         },
-        [this](PJ::ToolboxRuntimeHost* host) { return host == ownHost() && work_in_flight_; },
+        [this](PJ::ToolboxRuntimeHost* host) { return busy_hosts_.contains(host); },
         [this](PJ::ToolboxRuntimeHost* host) { stopped_hosts_.push_back(host); });
   }
 
   void TearDown() override {
+    if (window_ == nullptr) {
+      return;  // the case destroyed the window itself
+    }
     // Forced, so a still-"busy" panel cannot veto the cleanup.
-    PJ::ToolboxPanelFoldTestPeer::closeAllPinnedToolboxTabs(mainWindow());
-    PJ::ToolboxPanelFoldTestPeer::closeAllFloatingToolboxWindows(mainWindow());
+    PJ::ToolboxPanelFoldTestPeer::teardownAllToolboxes(mainWindow());
     if (QWidget* released = PJ::ToolboxPanelFoldTestPeer::releaseCentralPanel(mainWindow()); released != nullptr) {
       delete released;
     }
@@ -244,15 +327,20 @@ class ToolboxPanelFoldTest : public ::testing::Test {
     return *window_;
   }
 
-  // A distinct host identity. Both host interactions are injected, so this is
-  // never dereferenced — only compared.
+  // Destroys the shared window inside a case: the destructor IS the subject
+  // of the teardown-order cases. Each case runs in its own process, so no
+  // later case misses the window.
+  static void destroyMainWindow() {
+    window_.reset();
+  }
+
+  // Distinct host identities. Both host interactions are injected, so these
+  // are never dereferenced — only compared.
   [[nodiscard]] PJ::ToolboxRuntimeHost* ownHost() {
     return reinterpret_cast<PJ::ToolboxRuntimeHost*>(&own_host_token_);
   }
-
-  // The launch-session stand-in the fold is keyed on.
-  [[nodiscard]] const void* ownerToken() const {
-    return static_cast<const void*>(&owner_token_);
+  [[nodiscard]] PJ::ToolboxRuntimeHost* otherHost() {
+    return reinterpret_cast<PJ::ToolboxRuntimeHost*>(&other_host_token_);
   }
 
   // One id per case, so entries from earlier cases in this binary cannot alias.
@@ -287,43 +375,28 @@ class ToolboxPanelFoldTest : public ::testing::Test {
     return {.content = content, .drawer = drawer};
   }
 
-  // Wraps a dummy panel in the real toolbox banner, recording which of the two
-  // dispositions the chrome picked.
+  // Wraps a dummy panel in the real toolbox banner with launchToolbox's own
+  // chrome hooks, and registers the engine-less presenter they drive (host =
+  // ownHost(), so the seams decide its work-in-flight answer).
   void wrapPanel() {
-    wrapped_ = PJ::ToolboxPanelFoldTestPeer::wrapToolboxPanel(
+    using Peer = PJ::ToolboxPanelFoldTestPeer;
+    const QString id = pluginId();
+    wrapped_ = Peer::wrapToolboxPanel(
         mainWindow(), new QWidget, panelTitle(),
-        /*on_close=*/[this]() { closed_ = true; },
-        /*on_migrate=*/
-        [this]() {
-          migrated_ = true;
-          foldIntoTab(/*transient=*/false);
-        },
-        /*on_float=*/[this]() { floated_ = true; },
-        /*has_work_in_flight=*/[this]() { return work_in_flight_; },
-        /*on_fold_busy=*/
-        [this]() {
-          busy_folded_ = true;
-          foldIntoTab(/*transient=*/true);
-        },
+        /*on_close=*/[id]() { Peer::withToolbox(mainWindow(), id, &PJ::ToolboxPresenter::requestClose); },
+        /*on_migrate=*/[id]() { Peer::userPin(mainWindow(), id); },
+        /*on_float=*/[id]() { Peer::withToolbox(mainWindow(), id, &PJ::ToolboxPresenter::moveToFloating); },
         /*persist_key=*/{},
-        /*on_dock=*/[this]() { dockPanel(); });
+        /*on_dock=*/[id]() { Peer::withToolbox(mainWindow(), id, &PJ::ToolboxPresenter::moveToDockOrTab); });
     container_ = wrapped_.container;
+    Peer::registerBare(
+        mainWindow(), id, wrapped_.container, panelTitle(), saveConfig(), ownHost(), wrapped_.apply_chrome);
   }
 
   void dockPanel() {
-    QString title;
-    QWidget* released =
-        PJ::ToolboxPanelFoldTestPeer::releaseToolboxPanel(mainWindow(), pluginId(), panelContainer(), title);
-    ASSERT_EQ(released, panelContainer());
     ASSERT_TRUE(
-        PJ::ToolboxPanelFoldTestPeer::dockToolboxPanel(
-            mainWindow(), released, ownerToken(),
-            [this](bool transient) {
-              wrapped_.enter_pinned_chrome();
-              migrated_ = true;
-              foldIntoTab(transient);
-            },
-            [this]() { return work_in_flight_; }, wrapped_.enter_docked_chrome));
+        PJ::ToolboxPanelFoldTestPeer::dockThroughPresenter(
+            mainWindow(), panelContainer(), pluginId(), panelTitle(), ownHost()));
   }
 
   [[nodiscard]] QToolButton* bannerCloseButton() const {
@@ -337,28 +410,20 @@ class ToolboxPanelFoldTest : public ::testing::Test {
   // Pins the wrapped panel as a folded tab, the state rules 3-4 start from.
   void pinPanel() {
     wrapPanel();
-    wrapped_.enter_pinned_chrome();
-    PJ::ToolboxPanelFoldTestPeer::pinToolboxPanel(
+    PJ::ToolboxPanelFoldTestPeer::moveToTab(
         mainWindow(), wrapped_.container, pluginId(), panelTitle(), saveConfig(), ownHost(), /*transient=*/false);
   }
 
-  // Presents the wrapped panel as the chart-area takeover and registers the
-  // same fold closure launchToolbox does.
+  // Presents the wrapped panel as the chart-area takeover through its presenter.
   void presentAsTakeover() {
     wrapPanel();
-    ASSERT_TRUE(PJ::ToolboxPanelFoldTestPeer::presentPanel(mainWindow(), wrapped_.container));
-    PJ::ToolboxPanelFoldTestPeer::setTakeoverFold(
-        mainWindow(), ownerToken(),
-        [this](bool transient) {
-          wrapped_.enter_pinned_chrome();
-          migrated_ = true;
-          foldIntoTab(transient);
-        },
-        [this]() { return work_in_flight_; });
+    dockPanel();
   }
 
+  // What the toolbox's own ingest-start callback does.
   void emitIngestStarted() {
-    PJ::ToolboxPanelFoldTestPeer::foldTakeoverPanelIfOwnedBy(mainWindow(), ownerToken(), /*transient=*/true);
+    PJ::ToolboxPanelFoldTestPeer::foldTakeoverPanelIfOwnedBy(
+        mainWindow(), PJ::ToolboxPanelFoldTestPeer::ownerOf(mainWindow(), pluginId()), /*transient=*/true);
   }
 
   void dismissTakeover() {
@@ -371,31 +436,51 @@ class ToolboxPanelFoldTest : public ::testing::Test {
   }
 
   void setWorkInFlight(bool busy) {
-    work_in_flight_ = busy;
+    if (busy) {
+      busy_hosts_.insert(ownHost());
+    } else {
+      busy_hosts_.erase(ownHost());
+    }
+  }
+
+  void setOtherHostBusy() {
+    busy_hosts_.insert(otherHost());
   }
 
   void setConfirmAnswer(bool answer) {
     confirm_answer_ = answer;
   }
 
-  [[nodiscard]] bool closed() const {
-    return closed_;
+  // What the modal confirmation's event loop lets happen before it answers.
+  void setDuringConfirm(std::function<void()> during_confirm) {
+    during_confirm_ = std::move(during_confirm);
   }
 
-  [[nodiscard]] bool migrated() const {
-    return migrated_;
+  // Torn down: the registry entry (which owns the plugin session) is gone.
+  [[nodiscard]] static bool closed() {
+    return !PJ::ToolboxPanelFoldTestPeer::isLive(mainWindow(), pluginId());
   }
 
-  [[nodiscard]] bool busyFolded() const {
-    return busy_folded_;
+  // In a tab, whichever disposition put it there.
+  [[nodiscard]] static bool foldedIntoTab() {
+    return PJ::ToolboxPanelFoldTestPeer::isPinned(mainWindow(), pluginId());
   }
 
-  [[nodiscard]] bool floated() const {
-    return floated_;
+  // The user's pin (persisted) vs the host-chosen fold (transient).
+  [[nodiscard]] static bool userPinned() {
+    return foldedIntoTab() && !PJ::ToolboxPanelFoldTestPeer::isTransient(mainWindow(), pluginId());
+  }
+
+  [[nodiscard]] static bool busyFolded() {
+    return foldedIntoTab() && PJ::ToolboxPanelFoldTestPeer::isTransient(mainWindow(), pluginId());
+  }
+
+  [[nodiscard]] static bool floated() {
+    return PJ::ToolboxPanelFoldTestPeer::isFloating(mainWindow(), pluginId());
   }
 
   void enterPinnedChrome() {
-    wrapped_.enter_pinned_chrome();
+    wrapped_.apply_chrome(/*pinned=*/true);
   }
 
   [[nodiscard]] bool confirmShown() const {
@@ -421,15 +506,6 @@ class ToolboxPanelFoldTest : public ::testing::Test {
     return u"Test Panel"_s;
   }
 
-  void foldIntoTab(bool transient) {
-    QWidget* released = PJ::ToolboxPanelFoldTestPeer::releaseCentralPanel(mainWindow());
-    if (released == nullptr) {
-      return;
-    }
-    PJ::ToolboxPanelFoldTestPeer::pinToolboxPanel(
-        mainWindow(), released, pluginId(), panelTitle(), saveConfig(), ownHost(), transient);
-  }
-
   [[nodiscard]] static std::function<QString()> saveConfig() {
     return []() { return u"{}"_s; };
   }
@@ -438,16 +514,13 @@ class ToolboxPanelFoldTest : public ::testing::Test {
   inline static std::unique_ptr<PJ::MainWindow> window_;
 
   void* own_host_token_ = nullptr;
-  void* owner_token_ = nullptr;
+  void* other_host_token_ = nullptr;
   PJ::ToolboxPanelFoldTestPeer::Wrapped wrapped_;
   QPointer<QWidget> container_;
-  bool work_in_flight_ = false;
+  std::set<PJ::ToolboxRuntimeHost*> busy_hosts_;
   bool confirm_answer_ = true;
   bool confirm_shown_ = false;
-  bool closed_ = false;
-  bool migrated_ = false;
-  bool busy_folded_ = false;
-  bool floated_ = false;
+  std::function<void()> during_confirm_;
   std::vector<PJ::ToolboxRuntimeHost*> stopped_hosts_;
 };
 
@@ -463,7 +536,7 @@ TEST_F(ToolboxPanelFoldTest, BannerCloseFoldsWhileWorkInFlight) {
   // user-pin path: a user who pressed close chose a pin even less than an
   // auto-fold did.
   EXPECT_TRUE(busyFolded());
-  EXPECT_FALSE(migrated());
+  EXPECT_FALSE(userPinned());
   EXPECT_FALSE(closed());
 }
 
@@ -475,7 +548,7 @@ TEST_F(ToolboxPanelFoldTest, BannerCloseTearsDownWhenIdle) {
   bannerCloseButton()->click();
 
   EXPECT_TRUE(closed());
-  EXPECT_FALSE(migrated());
+  EXPECT_FALSE(foldedIntoTab());
 }
 
 // Rule 4 — declining leaves both the tab and the transfer exactly as they were.
@@ -522,7 +595,7 @@ TEST_F(ToolboxPanelFoldTest, IngestStartFoldsTheTakeoverPanel) {
 
   emitIngestStarted();
 
-  EXPECT_TRUE(migrated());
+  EXPECT_TRUE(foldedIntoTab());
   EXPECT_FALSE(closed());
 }
 
@@ -534,7 +607,7 @@ TEST_F(ToolboxPanelFoldTest, DismissTakeoverFoldsWhileWorkInFlight) {
 
   dismissTakeover();
 
-  EXPECT_TRUE(migrated());
+  EXPECT_TRUE(foldedIntoTab());
   EXPECT_FALSE(engineClosed());
 }
 
@@ -647,6 +720,27 @@ TEST_F(ToolboxPanelFoldTest, InteractiveRestoreConfirmedReplacesBusyPinnedPanels
   EXPECT_EQ(stoppedHosts(), std::vector<PJ::ToolboxRuntimeHost*>{ownHost()});
 }
 
+// The marketplace has no presenter: after "Move to a tab" its banner X must
+// still close the tab it now lives in, not the (empty) central area.
+TEST_F(ToolboxPanelFoldTest, MarketplaceTabBannerCloseClosesTheTab) {
+  using Peer = PJ::ToolboxPanelFoldTestPeer;
+  Peer::openMarketplace(mainWindow());
+  QPointer<QWidget> container = Peer::marketplaceContainer(mainWindow());
+  ASSERT_FALSE(container.isNull());
+  ASSERT_EQ(Peer::currentPanel(mainWindow()), container.data());
+
+  container->findChild<QToolButton*>(u"buttonMigrateTab"_s)->click();
+  ASSERT_EQ(Peer::currentPanel(mainWindow()), nullptr);
+  ASSERT_FALSE(tabbedWidget().widgetTabName(container).isEmpty());
+
+  container->findChild<QToolButton*>(u"buttonClose"_s)->click();
+
+  EXPECT_TRUE(container.isNull() || tabbedWidget().widgetTabName(container).isEmpty());
+  if (!container.isNull()) {
+    tabbedWidget().closeWidgetTabForced(container);
+  }
+}
+
 // The float button is takeover chrome with an offer behind it: with no
 // on_float handler (the marketplace panel, whose migrate path has no plugin
 // engine) it is not shown at all.
@@ -718,7 +812,7 @@ TEST_F(ToolboxPanelFoldTest, SavedDrawerWidthIsRestoredWhenItFits) {
 
   const auto wrapped = PJ::ToolboxPanelFoldTestPeer::wrapToolboxPanel(
       mainWindow(), content, u"Drawer"_s, /*on_close=*/{}, /*on_migrate=*/{}, /*on_float=*/{},
-      /*has_work_in_flight=*/{}, /*on_fold_busy=*/{}, /*persist_key=*/pluginId());
+      /*persist_key=*/pluginId());
   auto* outer = qobject_cast<QBoxLayout*>(wrapped.container->layout());
   ASSERT_NE(outer, nullptr);
   // restoreState() runs at construction, before the container has a real
@@ -749,7 +843,7 @@ TEST_F(ToolboxPanelFoldTest, DraggingTheDrawerPersistsItsWidth) {
 
   const auto wrapped = PJ::ToolboxPanelFoldTestPeer::wrapToolboxPanel(
       mainWindow(), content, u"Drawer"_s, /*on_close=*/{}, /*on_migrate=*/{}, /*on_float=*/{},
-      /*has_work_in_flight=*/{}, /*on_fold_busy=*/{}, /*persist_key=*/pluginId());
+      /*persist_key=*/pluginId());
   auto* outer = qobject_cast<QBoxLayout*>(wrapped.container->layout());
   ASSERT_NE(outer, nullptr);
   wrapped.container->resize(600, 400);
@@ -782,7 +876,7 @@ TEST_F(ToolboxPanelFoldTest, AbsurdSavedDrawerWidthIsIgnored) {
 
   const auto wrapped = PJ::ToolboxPanelFoldTestPeer::wrapToolboxPanel(
       mainWindow(), content, u"Drawer"_s, /*on_close=*/{}, /*on_migrate=*/{}, /*on_float=*/{},
-      /*has_work_in_flight=*/{}, /*on_fold_busy=*/{}, /*persist_key=*/pluginId());
+      /*persist_key=*/pluginId());
   auto* outer = qobject_cast<QBoxLayout*>(wrapped.container->layout());
   ASSERT_NE(outer, nullptr);
   wrapped.container->resize(600, 400);
@@ -808,7 +902,7 @@ TEST_F(ToolboxPanelFoldTest, TabSavedWidthCarriesToFloatingPresentation) {
   const auto [tab_content, tab_drawer] = makeDrawerContent(80);
   const auto wrapped = PJ::ToolboxPanelFoldTestPeer::wrapToolboxPanel(
       mainWindow(), tab_content, u"Drawer"_s, /*on_close=*/{}, /*on_migrate=*/{}, /*on_float=*/{},
-      /*has_work_in_flight=*/{}, /*on_fold_busy=*/{}, /*persist_key=*/pluginId());
+      /*persist_key=*/pluginId());
   auto* tab_outer = qobject_cast<QBoxLayout*>(wrapped.container->layout());
   ASSERT_NE(tab_outer, nullptr);
   wrapped.container->resize(600, 400);
@@ -913,8 +1007,7 @@ TEST_F(ToolboxPanelFoldTest, LeadingChromeActionProxyPrecedesTheTitle) {
 }
 
 // Clicking float runs the handler and hides the whole banner — the floating
-// window's own title bar is the one header. Docking back as a tab
-// (enter_pinned_chrome) re-shows the banner in pinned chrome.
+// window's own title bar is the one header. Pinned chrome re-shows the banner.
 TEST_F(ToolboxPanelFoldTest, FloatButtonHidesBannerAndPinnedChromeRestoresIt) {
   wrapPanel();
   ASSERT_TRUE(PJ::ToolboxPanelFoldTestPeer::presentPanel(mainWindow(), panelContainer()));
@@ -974,8 +1067,7 @@ TEST_F(ToolboxPanelFoldTest, DockingRestoresAutomaticFoldForTheSameLivePanel) {
   dockPanel();
   QPointer<QWidget> live = panelContainer();
   emitIngestStarted();
-  EXPECT_TRUE(migrated());
-  EXPECT_TRUE(PJ::ToolboxPanelFoldTestPeer::isPinned(mainWindow(), pluginId()));
+  EXPECT_TRUE(foldedIntoTab());
   EXPECT_EQ(panelContainer(), live.data());
   EXPECT_FALSE(closed());
   EXPECT_TRUE(stoppedHosts().empty());
@@ -1026,29 +1118,19 @@ TEST_F(ToolboxPanelFoldTest, ReleaseToolboxPreservesRenameAndDoesNotStealAnother
 TEST_F(ToolboxPanelFoldTest, DockingFoldsAnExistingBusyTakeoverBeforeReplacingIt) {
   pinPanel();
   auto* other = new QWidget;
-  ASSERT_TRUE(PJ::ToolboxPanelFoldTestPeer::presentPanel(mainWindow(), other));
-  bool folded = false;
-  PJ::ToolboxPanelFoldTestPeer::setTakeoverFold(
-      mainWindow(), other,
-      [&](bool transient) {
-        EXPECT_TRUE(transient);
-        QWidget* released = PJ::ToolboxPanelFoldTestPeer::releaseCentralPanel(mainWindow());
-        EXPECT_EQ(released, other);
-        PJ::ToolboxPanelFoldTestPeer::pinToolboxPanel(
-            mainWindow(), released, u"other"_s, u"Other"_s, {}, nullptr, true);
-        folded = true;
-      },
-      []() { return true; });
+  ASSERT_TRUE(
+      PJ::ToolboxPanelFoldTestPeer::dockThroughPresenter(mainWindow(), other, u"other"_s, u"Other"_s, otherHost()));
+  setOtherHostBusy();
   dockPanel();
-  EXPECT_TRUE(folded);
   EXPECT_TRUE(PJ::ToolboxPanelFoldTestPeer::isPinned(mainWindow(), u"other"_s));
+  EXPECT_TRUE(PJ::ToolboxPanelFoldTestPeer::isTransient(mainWindow(), u"other"_s)) << "a host-chosen fold";
   EXPECT_EQ(PJ::ToolboxPanelFoldTestPeer::currentPanel(mainWindow()), panelContainer());
 }
 
 TEST_F(ToolboxPanelFoldTest, PinnedChromeWithoutFloatingSupportKeepsFloatHidden) {
   const auto wrapped =
       PJ::ToolboxPanelFoldTestPeer::wrapToolboxPanel(mainWindow(), new QWidget, u"Panel"_s, []() {}, []() {});
-  wrapped.enter_pinned_chrome();
+  wrapped.apply_chrome(/*pinned=*/true);
   auto* float_button = wrapped.container->findChild<QAbstractButton*>(u"buttonMigrateFloat"_s);
   ASSERT_NE(float_button, nullptr);
   EXPECT_TRUE(float_button->isHidden());
@@ -1065,7 +1147,7 @@ TEST_F(ToolboxPanelFoldTest, FloatingToolboxIsSavedAsPinnedTab) {
 
   EXPECT_TRUE(savedLayoutMentions(pluginId()));
 
-  PJ::ToolboxPanelFoldTestPeer::closeAllFloatingToolboxWindows(mainWindow());
+  PJ::ToolboxPanelFoldTestPeer::teardownAllToolboxes(mainWindow());
   EXPECT_FALSE(PJ::ToolboxPanelFoldTestPeer::isFloating(mainWindow(), pluginId()));
   EXPECT_FALSE(savedLayoutMentions(pluginId()));
 }
@@ -1100,6 +1182,143 @@ TEST_F(ToolboxPanelFoldTest, RestoreDeclineKeepsBusyFloatingWindow) {
   EXPECT_TRUE(confirmShown());
   EXPECT_TRUE(PJ::ToolboxPanelFoldTestPeer::isFloating(mainWindow(), pluginId()));
   setWorkInFlight(false);
+}
+
+// The confirmation runs a modal event loop, during which a takeover the layout
+// does not name can receive its ingest-start callback and fold into a tab. The
+// replaced set is the live tab set at teardown time, so that fold joins it:
+// its job is stopped and its tab goes down with the rest.
+TEST_F(ToolboxPanelFoldTest, RestoreReplacesATakeoverThatFoldsDuringTheConfirmation) {
+  using Peer = PJ::ToolboxPanelFoldTestPeer;
+  pinPanel();
+  setWorkInFlight(true);
+  const QString other_id = pluginId() + u"_takeover"_s;
+  const auto other = Peer::wrapToolboxPanel(mainWindow(), new QWidget, u"Takeover"_s, {}, {});
+  ASSERT_TRUE(Peer::dockThroughPresenter(mainWindow(), other.container, other_id, u"Takeover"_s, otherHost()));
+  ASSERT_TRUE(Peer::isTakeover(mainWindow(), other_id));
+  setDuringConfirm([this, other_id]() {
+    setOtherHostBusy();
+    Peer::foldTakeoverPanelIfOwnedBy(mainWindow(), Peer::ownerOf(mainWindow(), other_id), /*transient=*/true);
+  });
+
+  QDomDocument doc;
+  EXPECT_TRUE(Peer::restorePinnedToolboxes(mainWindow(), doc.createElement(u"root"_s), /*interactive=*/true));
+
+  EXPECT_TRUE(confirmShown());
+  EXPECT_TRUE(closed());
+  EXPECT_FALSE(Peer::isLive(mainWindow(), other_id));
+  EXPECT_EQ(std::count(stoppedHosts().begin(), stoppedHosts().end(), ownHost()), 1);
+  EXPECT_EQ(std::count(stoppedHosts().begin(), stoppedHosts().end(), otherHost()), 1);
+  setWorkInFlight(false);
+}
+
+// D5 again, for a busy toolbox that sits in the chart-area takeover while the
+// layout being restored names it as a pinned tab (with a config, so the restore
+// must relaunch it): a non-interactive restore must retain it unprompted, not
+// fold it and then raise the tab's cancel confirmation on the relaunch.
+TEST_F(ToolboxPanelFoldTest, NonInteractiveRestoreKeepsBusyTakeoverNamedByTheLayoutUnprompted) {
+  wrapPanel();
+  ASSERT_TRUE(
+      PJ::ToolboxPanelFoldTestPeer::dockThroughPresenter(
+          mainWindow(), panelContainer(), pluginId(), u"Docked"_s, ownHost()));
+  ASSERT_TRUE(PJ::ToolboxPanelFoldTestPeer::isTakeover(mainWindow(), pluginId()));
+  setWorkInFlight(true);
+  setConfirmAnswer(false);
+
+  QDomDocument doc;
+  QDomElement root = doc.createElement(u"root"_s);
+  QDomElement pinned = doc.createElement(u"pinned_toolboxes"_s);
+  QDomElement toolbox = doc.createElement(u"toolbox"_s);
+  toolbox.setAttribute(u"plugin_id"_s, pluginId());
+  toolbox.appendChild(doc.createCDATASection(u"{\"k\":1}"_s));
+  pinned.appendChild(toolbox);
+  root.appendChild(pinned);
+  doc.appendChild(root);
+
+  const bool applied = PJ::ToolboxPanelFoldTestPeer::restorePinnedToolboxes(mainWindow(), root, /*interactive=*/false);
+
+  EXPECT_FALSE(applied);
+  EXPECT_FALSE(confirmShown());
+  EXPECT_TRUE(PJ::ToolboxPanelFoldTestPeer::isTakeover(mainWindow(), pluginId()));
+  EXPECT_TRUE(stoppedHosts().empty());
+  setWorkInFlight(false);
+}
+
+// Relaunching the toolbox that sits busy in the chart-area takeover must not
+// restart it (the teardown is its job's kill switch): the "one live instance"
+// head folds it into a transient tab and focuses that tab.
+TEST_F(ToolboxPanelFoldTest, RelaunchingABusyTakeoverFoldsItIntoATabAndFocusesIt) {
+  wrapPanel();
+  ASSERT_TRUE(
+      PJ::ToolboxPanelFoldTestPeer::dockThroughPresenter(
+          mainWindow(), panelContainer(), pluginId(), u"Docked"_s, ownHost()));
+  ASSERT_TRUE(PJ::ToolboxPanelFoldTestPeer::isTakeover(mainWindow(), pluginId()));
+  setWorkInFlight(true);
+  // A regression that tears the panel down instead reaches the catalog lookup,
+  // whose miss raises a modal: dismiss it so the failure is reported, not hung.
+  QObject modal_guard;
+  QTimer::singleShot(200, &modal_guard, []() {
+    if (QWidget* modal = QApplication::activeModalWidget()) {
+      modal->close();
+    }
+  });
+
+  PJ::ToolboxPanelFoldTestPeer::launchToolbox(mainWindow(), pluginId());
+
+  EXPECT_FALSE(PJ::ToolboxPanelFoldTestPeer::isTakeover(mainWindow(), pluginId()));
+  EXPECT_TRUE(PJ::ToolboxPanelFoldTestPeer::isPinned(mainWindow(), pluginId()));
+  EXPECT_FALSE(savedLayoutMentions(pluginId())) << "a host-chosen fold stays out of the layout";
+  auto* stack = tabbedWidget().findChild<QStackedWidget*>(QString(), Qt::FindDirectChildrenOnly);
+  ASSERT_NE(stack, nullptr);
+  EXPECT_EQ(stack->currentWidget(), panelContainer()) << "the relaunch focuses the folded tab";
+  EXPECT_TRUE(stoppedHosts().empty());
+  setWorkInFlight(false);
+}
+
+// A plugin-initiated close the user then declines (busy tab, "keep
+// downloading") must leave the engine running: returning true would let the
+// engine close itself under a tab that stays on screen.
+TEST_F(ToolboxPanelFoldTest, DeclinedPluginCloseRequestKeepsEngineRunning) {
+  pinPanel();
+  setWorkInFlight(true);
+  setConfirmAnswer(false);
+
+  EXPECT_FALSE(emitCloseRequest("user_back"));
+
+  EXPECT_TRUE(confirmShown());
+  EXPECT_FALSE(engineClosed());
+  EXPECT_TRUE(stoppedHosts().empty());
+  setWorkInFlight(false);
+}
+
+// A floating window is a QObject child of the MainWindow, so without an
+// explicit teardown it dies in ~QObject's child sweep — after the AppSession
+// (and the SessionManager its plugin session flushes into) is already gone.
+// The probe stands in for the PanelSession the window's close closure holds.
+TEST_F(ToolboxPanelFoldTest, DirectDestructionReleasesFloatingSessionWhileServicesAreAlive) {
+  struct Probe {
+    QPointer<PJ::SessionManager> services;
+    bool* services_alive_at_release;
+    ~Probe() {
+      *services_alive_at_release = !services.isNull();
+    }
+  };
+  static bool services_alive_at_release = false;
+  auto probe = std::make_shared<Probe>(Probe{
+      .services = PJ::ToolboxPanelFoldTestPeer::sessionManager(mainWindow()),
+      .services_alive_at_release = &services_alive_at_release});
+  auto* window = new QWidget(&mainWindow(), Qt::Window);
+  // The production window's finished() closure owns the session; the
+  // connection dies with the window, so the probe does too.
+  QObject::connect(window, &QObject::destroyed, window, [probe]() {});
+  PJ::ToolboxPanelFoldTestPeer::insertFloatingToolbox(
+      mainWindow(), pluginId(), window, /*save_config=*/[probe]() { return u"{}"_s; }, ownHost(), u"Floating Panel"_s);
+  probe.reset();
+
+  destroyMainWindow();
+
+  EXPECT_TRUE(services_alive_at_release)
+      << "the floating toolbox's session was released after the SessionManager it writes into";
 }
 
 }  // namespace

@@ -150,7 +150,7 @@ class MainWindowLayoutImportBinderTest : public ::testing::Test {
     // panel can veto it; the seam closures capture this fixture instance,
     // which outlives the reset below.
     panel_busy_ = false;
-    Peer::closeAllPinnedToolboxTabs(window());
+    Peer::teardownAllToolboxes(window());
     if (QWidget* released = Peer::releaseCentralPanel(window()); released != nullptr) {
       delete released;
     }
@@ -486,18 +486,15 @@ TEST_F(MainWindowLayoutImportBinderTest, HeadlessBatchJobNeverFoldsPanelsNorDisp
       [this](PJ::ToolboxRuntimeHost* host) { stopped_hosts_.push_back(host); });
 
   // A busy pinned panel (the :8950 restore guard's subject)...
-  Peer::pinToolboxPanel(
+  Peer::moveToTab(
       window(), new QWidget, QStringLiteral("binder-e-pinned"), QStringLiteral("Pinned"), pinnedHostToken());
   ASSERT_TRUE(Peer::isPinned(window(), QStringLiteral("binder-e-pinned")));
   panel_busy_ = true;
 
-  // ...plus a takeover panel with a live fold registration (the interactive
-  // ingest-start fold's only target) and a concurrent driven interactive
-  // ingest.
-  bool fold_called = false;
-  ASSERT_TRUE(Peer::presentPanel(window(), new QWidget));
-  Peer::setTakeoverFold(
-      window(), &fold_called, [&fold_called](bool /*transient*/) { fold_called = true; }, []() { return false; });
+  // ...plus a toolbox in the chart-area takeover (the interactive ingest-start
+  // fold's only target) and a concurrent driven interactive ingest.
+  const QString takeover_id = QStringLiteral("binder-e-takeover");
+  ASSERT_TRUE(Peer::dockBare(window(), new QWidget, takeover_id, QStringLiteral("Takeover"), nullptr));
   const PJ::DatasetId interactive = pj_test::createDataset(appSession(), "inter-e");
   ASSERT_NE(interactive, 0u);
   ASSERT_NE(pj_test::addScalarTopic(appSession(), interactive, "/inter-e"), 0u);
@@ -505,12 +502,13 @@ TEST_F(MainWindowLayoutImportBinderTest, HeadlessBatchJobNeverFoldsPanelsNorDisp
 
   const PJ::DatasetId batch_dataset = startParkedBatchJob(QStringLiteral("e"));
   ASSERT_NE(batch_dataset, 0u);
-  EXPECT_FALSE(fold_called) << "a batch job start must not fold any panel";
+  EXPECT_TRUE(Peer::isTakeover(window(), takeover_id)) << "a batch job start must not fold any panel";
   EXPECT_TRUE(Peer::takeoverPanelPresent(window()));
 
   beginIngestFor(batch_dataset, QStringLiteral("batch-e"), 0);
   updateIngestFor(batch_dataset, 1, 2);
-  EXPECT_FALSE(fold_called) << "a headless batch ingest must never traverse the panel-fold path (D9)";
+  EXPECT_TRUE(Peer::isTakeover(window(), takeover_id))
+      << "a headless batch ingest must never traverse the panel-fold path (D9)";
 
   endIngestFor(batch_dataset);
   settleRestore();
@@ -522,7 +520,7 @@ TEST_F(MainWindowLayoutImportBinderTest, HeadlessBatchJobNeverFoldsPanelsNorDisp
   EXPECT_TRUE(Peer::isPinned(window(), QStringLiteral("binder-e-pinned")));
   EXPECT_TRUE(stopped_hosts_.empty()) << "the batch drain must not stop the pinned panel's job";
   EXPECT_FALSE(confirm_shown_) << "a batch drain must never raise the cancel-confirmation modal";
-  EXPECT_FALSE(fold_called);
+  EXPECT_TRUE(Peer::isTakeover(window(), takeover_id));
   EXPECT_TRUE(sessionManager().ingestActive(interactive)) << "the interactive ingest must ride through untouched";
 
   endIngestFor(interactive);

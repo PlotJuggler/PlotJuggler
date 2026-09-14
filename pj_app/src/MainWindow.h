@@ -21,6 +21,7 @@
 #include <QUrl>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -29,6 +30,7 @@
 
 #include "LayoutXml.h"
 #include "LoadInput.h"
+#include "ToolboxPresenter.h"
 #include "pj_base/builtin/builtin_object.hpp"  // sdk::BuiltinObjectType — onPlaceholderTopicDropped's slot parameter
 #include "pj_base/diagnostic_sink.hpp"
 #include "pj_base/expected.hpp"  // PJ::Status — the plot-tab and viewport host services report through it
@@ -91,6 +93,7 @@ class StreamingSourceManager;
 class IngestProgressWidget;
 class MessageBox;
 class ToolboxRuntimeHost;
+struct ToolboxPanelSession;
 struct RuntimeToolboxPlugin;
 class PluginPlotTabsController;
 class SourceTimelineController;
@@ -132,6 +135,7 @@ class MainWindow : public QMainWindow {
   friend class MainWindowHistoryExemptTestPeer;
   friend class MainWindowCustomSeriesTestPeer;
   friend class ToolboxPanelFoldTestPeer;
+  friend class ToolboxPresenter;
 
  public:
   // Creates the main window using the default extension directory.
@@ -466,6 +470,9 @@ class MainWindow : public QMainWindow {
   // embedded in a plugin toolbox panel (e.g. the Transform Editor plugin), so the
   // app's right-side display buttons drive the plugin preview too.
   void syncPanelPreviewDisplay();
+  // Deferred syncPanelPreviewDisplay for a panel that was just shown: its
+  // embedded PlotWidget only exists after the engine's first tick.
+  void schedulePanelPreviewSync();
   // Push the current global grid / curve-style / curve-width onto an open Filter
   // Editor's preview plot so it matches the real plots. No-op unless the presented
   // panel is a FilterEditorPanel. Called on open and from the viz-toolbar handlers.
@@ -1164,25 +1171,17 @@ class MainWindow : public QMainWindow {
   void dismissTakeoverPanel();
 
   // Folds the chart-area takeover into a pinned background tab, but only when
-  // `owner` is the identity the takeover was registered with (setTakeoverFold)
+  // `owner` is the identity of the toolbox presenting it (its sessionOwner())
   // — an ingest belonging to some other panel must not move this one. `owner`
-  // is opaque: the launch's session object, compared by address only, never
-  // dereferenced. `transient` marks a fold the host chose rather than the user
-  // (excluded from layout save). No-op once the panel is already pinned, so a
-  // second import does not re-fold it.
+  // is opaque: compared by address only, never dereferenced. `transient` marks
+  // a fold the host chose rather than the user (excluded from layout save).
+  // No-op once the panel is already pinned, so a second import does not
+  // re-fold it.
   void foldTakeoverPanelIfOwnedBy(const void* owner, bool transient);
 
-  // True while the presented takeover reports work in flight. False for a
-  // takeover that declared no predicate (e.g. the Marketplace) and whenever no
-  // takeover is up.
-  [[nodiscard]] bool takeoverHasWorkInFlight() const;
-
-  // Records how the currently presented takeover folds itself into a tab, keyed
-  // by the opaque `owner` identity its ingest callbacks report. Call right after
-  // presentPanel() succeeds; releaseCentralPanel() drops the registration, so a
-  // stale fold can never move a panel that is no longer the takeover.
-  void setTakeoverFold(
-      const void* owner, std::function<void(bool transient)> fold, std::function<bool()> has_work_in_flight);
+  // The toolbox presenting the chart-area takeover; null when the takeover is
+  // up but not a toolbox (the marketplace, the filter editor) or absent.
+  [[nodiscard]] ToolboxPresenter* takeoverToolbox() const;
 
   // Asks whether to cancel a running job and close the surface it belongs to;
   // false keeps both. Runs a modal event loop, so callers must re-validate any
@@ -1197,62 +1196,58 @@ class MainWindow : public QMainWindow {
   void stopHostWork(ToolboxRuntimeHost* host);
 
   // The same content and plugin connections survive all presentation changes.
+  // `apply_chrome(pinned)` re-shows the banner in the chrome of a tab (dock +
+  // float + close) or of the docked takeover (tab + float + close).
   struct WrappedToolboxPanel {
     QWidget* container = nullptr;
-    std::function<void()> enter_pinned_chrome;
-    std::function<void()> enter_docked_chrome;
+    std::function<void(bool pinned)> apply_chrome;
   };
 
   // The callbacks a wrapped toolbox panel's chrome drives. Absent migration
-  // callbacks (on_migrate / on_float / on_dock) hide that destination's button.
+  // callbacks (on_migrate / on_float / on_dock) hide that destination's button;
+  // the banner's close button only ever calls on_close, so the close policy
+  // (busy fold, tab confirmation) is the caller's.
   struct ToolboxChromeHooks {
     std::function<void()> on_close;
     std::function<void()> on_migrate;
     std::function<void()> on_float;
     std::function<void()> on_dock;
-    std::function<void()> on_fold_busy;
-    std::function<bool()> has_work_in_flight;
   };
 
   // Wraps content in host chrome. Docked: tab/float/close; pinned: dock/float/close.
-  // Floating uses its own title bar. Busy docked close folds through
-  // hooks.on_fold_busy; pinned close delegates to the tab's vetoable close path.
+  // Floating uses its own title bar (the float button hides the banner).
   // persist_key identifies the drawer width in QSettings (empty disables persistence).
   WrappedToolboxPanel wrapToolboxPanel(
       QWidget* content, const QString& title, ToolboxChromeHooks hooks, const QString& persist_key = {});
 
-  // Detaches only this live toolbox, without close callbacks or cancellation.
-  // Updates title from the current tab/window and returns parentless content;
-  // absent or inconsistent ownership leaves the presentation intact.
-  QWidget* releaseToolboxPanel(const QString& plugin_id, QWidget* container, QString& title);
+  // Builds the host-service assembly + plugin handle a launched toolbox binds
+  // to (null after reporting the failure through `report_error`). Kept apart
+  // from launchToolbox so the presentation logic reads on its own; the block
+  // is mirrored by HeadlessDescriptorProviderSession::create.
+  std::shared_ptr<ToolboxPanelSession> buildToolboxPanelSession(
+      const RuntimeToolboxPlugin& toolbox, const QString& plugin_id, const QString& source,
+      const std::function<void(const QString&, const QString&)>& report_error);
 
-  // Restores takeover ownership and busy-fold routing after a relocation.
-  // Failure leaves the caller responsible for the still-live container.
-  bool dockToolboxPanel(
-      QWidget* container, PanelEngine* engine, const void* owner, std::function<void(bool)> fold,
-      std::function<bool()> has_work_in_flight, const std::function<void()>& enter_docked_chrome);
-
-  // Pins a wrapped toolbox panel (`container`, from wrapToolboxPanel, already
-  // switched to pinned chrome) as a central widget tab: registers the pinned
-  // entry, re-routes the engine's plugin-initiated requestClose to the
-  // tab-close path, gives the tab a work-in-flight confirmation before it can
-  // close, and adds + focuses the tab. `save_config` captures the toolbox
-  // handle's saveConfig (and, transitively, ownership of the plugin session)
-  // for layout save — which also keeps `host` alive for as long as the entry
-  // lives. `transient` marks a host-chosen fold rather than a user pin.
-  void pinToolboxPanel(
-      QWidget* container, const QString& plugin_id, const QString& title, PanelEngine* engine,
-      std::function<QString()> save_config, ToolboxRuntimeHost* host, bool transient);
-
-  // Routes a pinned panel's plugin-initiated close request. `reason` is the
-  // plugin's own string; "import_complete" is ignored because a folded panel is
-  // the user's surface once pinned and outlives its own batch (another job can
-  // be queued into it). Every other reason closes the tab.
-  //
-  // Returns whether PanelEngine may tear itself down: false for the ignored
-  // reason, so the kept-open tab keeps exchanging widget data instead of
-  // becoming an inert shell.
-  [[nodiscard]] bool onPinnedPanelCloseRequested(QWidget* container, const std::string& reason);
+  // The registry of live toolboxes, one presenter per plugin id whatever its
+  // presentation. registerToolbox requires the id to be absent; teardownToolbox
+  // extracts the entry FIRST, then runs the teardown, so a callback that lands
+  // mid-teardown finds no presenter instead of a half-dead one, and the
+  // session dies with the extracted presenter after the engine stopped.
+  [[nodiscard]] ToolboxPresenter* findToolbox(const QString& plugin_id) const;
+  // Runs `fn` on the presenter registered under `plugin_id`, or nothing: the
+  // by-id lookup every deferred callback does instead of capturing a presenter.
+  template <typename Fn>
+  void withToolbox(const QString& plugin_id, Fn&& fn) {
+    if (ToolboxPresenter* live = findToolbox(plugin_id)) {
+      fn(*live);
+    }
+  }
+  [[nodiscard]] ToolboxPresenter* toolboxForContainer(const QWidget* container) const;
+  ToolboxPresenter& registerToolbox(const QString& plugin_id, ToolboxPresenter::Spec spec);
+  void teardownToolbox(const QString& plugin_id, ToolboxPresenter::Teardown mode);
+  // Every live toolbox, every presentation, synchronously — the ~MainWindow
+  // path, run while the session, tab strip and services are all still alive.
+  void teardownAllToolboxes();
 
   // Layout persistence of pinned toolbox tabs (NOT part of the undo
   // snapshot; see TabbedPlotWidget::xmlSaveState). savePinnedToolboxes emits
@@ -1261,21 +1256,16 @@ class MainWindow : public QMainWindow {
   // A floating toolbox window is saved as a pinned tab too: floating is a
   // session gesture, not a persisted presentation, so the layout restores it
   // as a tab. restorePinnedToolboxes closes every live pinned tab AND every
-  // floating toolbox window, then relaunches from the element (missing
-  // plugins surface a diagnostic and are dropped); it returns false when a
-  // busy panel kept the live set untouched: under kPrompt the user declined
+  // floating toolbox window — and a chart-area takeover the layout names,
+  // which would otherwise be folded and re-confirmed on its relaunch — then
+  // relaunches from the element (missing plugins surface a diagnostic and are
+  // dropped); it returns false when a busy panel kept the live set untouched:
+  // under kPrompt the user declined
   // the cancel confirmation, under kRetainAndDiagnose (non-interactive
   // restore — D5's no-dialog rule) the busy panels are retained unprompted
   // and reported through the diagnostic sink.
   [[nodiscard]] QDomElement savePinnedToolboxes(QDomDocument& doc) const;
   bool restorePinnedToolboxes(const QDomElement& root, MissingCurvePolicy policy);
-  void closeAllPinnedToolboxTabs();
-  // Closes every floating toolbox window and finishes each teardown
-  // synchronously (mirroring closeAllPinnedToolboxTabs): the engine and
-  // window must be gone before a relaunch of the same plugin binds a fresh
-  // instance, and before ~MainWindow destroys the services their sessions
-  // reference.
-  void closeAllFloatingToolboxWindows();
 
   // The single commit boundary of a layout open: runs what must happen only
   // once every abort/rollback path has returned — replacing the pinned
@@ -1419,7 +1409,7 @@ class MainWindow : public QMainWindow {
   // keeps only what stop routing needs and mirrors that lifecycle: one entry
   // per import dataset between on_ingest_started and on_ingest_finished (host
   // teardown / release fire finished for anything the plugin left open, so
-  // pairing holds). `owner` weak-guards the PanelSession whose
+  // pairing holds). `owner` weak-guards the ToolboxPanelSession whose
   // ToolboxRuntimeHost runs the import — a closed panel can never be
   // stop-routed into freed memory; `host` is dereferenced only after the owner
   // check succeeds. `toolbox_ingest_label_`/`toolbox_ingest_dataset_` name the
@@ -1611,62 +1601,13 @@ class MainWindow : public QMainWindow {
   QPointer<MarketplaceWindow> marketplace_panel_;
   QPointer<QWidget> marketplace_container_;
 
-  // A toolbox pinned into the central tab strip via the banner's
-  // "migrate to tab" button. `container` is the tab content (banner +
-  // plugin panel); `save_config` reads the toolbox's saveConfig() JSON for
-  // layout save and — by capturing the launch's PanelSession — keeps the
-  // plugin session alive while pinned (the entry is erased on tab close,
-  // releasing it). Keyed by plugin id: one live instance per toolbox.
-  // `host` is the panel's own ToolboxRuntimeHost, so a cancellation targets THIS
-  // panel instead of every importing toolbox; it is kept alive by save_config's
-  // hold on the session, so it stays valid for the entry's whole life. `label`
-  // is the panel's display name, needed for a confirmation raised from the tab's
-  // own close (where the tab strip is not the thing being read). `transient`
-  // marks a fold the host performed to uncover the chart area rather than a pin
-  // the user asked for — excluded from layout save.
-  struct PinnedToolbox {
-    QPointer<QWidget> container;
-    QPointer<PanelEngine> engine;
-    std::function<QString()> save_config;
-    ToolboxRuntimeHost* host = nullptr;
-    QString label;
-    bool transient = false;
-  };
-  QHash<QString, PinnedToolbox> pinned_toolboxes_;
-
-  // A toolbox undocked into its own top-level window via the banner's
-  // "move to a floating window" button. `window` is the floating dialog (its
-  // done() runs the teardown); `container` is the wrapped panel riding inside,
-  // reused as-is when the window's "Move to a tab" button re-docks it. Keyed
-  // by plugin id — one live instance per toolbox, across panel, tabs and
-  // floating windows alike. Floating is not persisted as such: layout save
-  // writes these entries as pinned tabs (hence save_config/label), and `host`
-  // answers the busy checks a layout replace must make. QPointers so a window
-  // torn down out-of-band reads back null.
-  struct FloatingToolbox {
-    QPointer<QWidget> window;
-    QPointer<QWidget> container;
-    QPointer<PanelEngine> engine;
-    std::function<QString()> save_config;
-    ToolboxRuntimeHost* host = nullptr;
-    QString label;
-    // The window's finished() -> teardown connection; re-docking disconnects it
-    // so closing the emptied window tears down nothing.
-    QMetaObject::Connection on_close;
-  };
-  QHash<QString, FloatingToolbox> floating_toolboxes_;
-
-  // How the presented takeover folds itself into a pinned tab. `owner` is the
-  // launch session's address — compared, never dereferenced — so an ingest
-  // report can tell "this panel started importing" from "some other one did".
-  // Declared after session_ so its captured session references are released
-  // before the AppSession they write into.
-  struct TakeoverFold {
-    const void* owner = nullptr;
-    std::function<void(bool transient)> fold;
-    std::function<bool()> has_work_in_flight;
-  };
-  TakeoverFold takeover_fold_;
+  // Every live toolbox, keyed by plugin id (one instance per toolbox across
+  // takeover, tabs and floating windows alike). Each presenter owns its
+  // plugin session, so this is declared after session_: the entries are torn
+  // down in ~MainWindow and would in any case die before the AppSession they
+  // write into. unique_ptr: presenters are addressed by pointer from Qt
+  // callbacks and must not move.
+  std::map<QString, std::unique_ptr<ToolboxPresenter>> toolboxes_;
 
   // Test seams for the fold rules. `confirm_running_job_` answers
   // confirmCancelRunningJob without a modal; the other two stand in for a

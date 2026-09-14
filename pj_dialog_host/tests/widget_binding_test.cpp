@@ -1925,6 +1925,96 @@ TEST(WidgetBindingListContextMenu, EmptyAreaShowsNoMenu) {
   EXPECT_TRUE(recorder()->empty());
 }
 
+// A panel tick during the menu's nested loop can deliver a new listItems
+// payload, which rebuilds the list and deletes the row the menu was opened on.
+// Choosing an action afterwards must not fire for a row that no longer exists
+// (nor dereference the item that held it).
+TEST(WidgetBindingListContextMenu, RowReplacedWhileMenuIsOpenFiresNoAction) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* lw = new QListWidget(&root);
+  lw->setObjectName("lst");
+  layout->addWidget(lw);
+
+  PJ::WidgetData wd;
+  wd.setListItems("lst", {"first", "second"});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  lw->setProperty("pj_context_actions", u"rename=Rename"_s);
+  PJ::connectWidgetSignals(
+      &root, [](const std::string& name, const std::string& json) { recorder()->push_back({name, json}); });
+
+  root.resize(300, 200);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+  const QRect cell = lw->visualItemRect(lw->item(1));
+  ASSERT_FALSE(cell.isEmpty());
+
+  QTimer::singleShot(0, &root, [&]() {
+    auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+    ASSERT_NE(menu, nullptr);
+    // The tick: a shorter list replaces the rows under the open menu.
+    PJ::WidgetData replacement;
+    replacement.setListItems("lst", {"only"});
+    PJ::applyWidgetData(&root, PJ::WidgetDataView(replacement.toJson()));
+    ASSERT_EQ(lw->count(), 1);
+    qobject_cast<QPushButton*>(qobject_cast<QWidgetAction*>(menu->actions()[0])->defaultWidget())->click();
+  });
+  lw->customContextMenuRequested(cell.center());
+
+  // The right-click's own selection change is still reported; the action is not.
+  for (const Event& event : *recorder()) {
+    EXPECT_EQ(event.json.find("item_context_action"), std::string::npos)
+        << "fired " << event.json << " for a row that vanished under the menu";
+  }
+}
+
+// setCurrentItem() on the right-clicked row emits itemSelectionChanged
+// synchronously, and the plugin's reply to that event can replace the list
+// before the menu even opens — the row must be resolved through the model,
+// never through the item pointer the click handed over.
+TEST(WidgetBindingListContextMenu, RowReplacedBySelectionReplyFiresNoAction) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* lw = new QListWidget(&root);
+  lw->setObjectName("lst");
+  layout->addWidget(lw);
+
+  PJ::WidgetData wd;
+  wd.setListItems("lst", {"first", "second"});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  lw->setProperty("pj_context_actions", u"rename=Rename"_s);
+  PJ::connectWidgetSignals(
+      &root, [](const std::string& name, const std::string& json) { recorder()->push_back({name, json}); });
+  // The plugin's synchronous reply to the selection change: a shorter list.
+  QObject::connect(lw, &QListWidget::itemSelectionChanged, &root, [&]() {
+    PJ::WidgetData replacement;
+    replacement.setListItems("lst", {"only"});
+    PJ::applyWidgetData(&root, PJ::WidgetDataView(replacement.toJson()));
+  });
+
+  root.resize(300, 200);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+  const QRect cell = lw->visualItemRect(lw->item(1));
+  ASSERT_FALSE(cell.isEmpty());
+
+  QTimer::singleShot(0, &root, [&]() {
+    auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+    ASSERT_NE(menu, nullptr);
+    qobject_cast<QPushButton*>(qobject_cast<QWidgetAction*>(menu->actions()[0])->defaultWidget())->click();
+  });
+  lw->customContextMenuRequested(cell.center());
+
+  for (const Event& event : *recorder()) {
+    EXPECT_EQ(event.json.find("item_context_action"), std::string::npos)
+        << "fired " << event.json << " for a row the selection reply replaced";
+  }
+}
+
 TEST(WidgetBindingChartPlaceholder, EmptyTextHidesAndChangedTextRemeasuresSerieslessFrame) {
   qapp();
   QWidget root;

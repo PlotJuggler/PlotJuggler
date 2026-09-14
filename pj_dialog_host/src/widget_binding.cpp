@@ -44,6 +44,7 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPersistentModelIndex>
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPointer>
@@ -2661,10 +2662,20 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
               if (item == nullptr) {
                 return;  // no row under the cursor: no menu
               }
+              // The plugin's reply to the selection change below, or a panel
+              // tick during the menu's nested loop, can apply new listItems,
+              // which rebuilds the list and deletes `item`. A persistent index
+              // goes invalid instead of dangling, so the row is re-resolved
+              // through the model at every later step, never via the pointer.
+              const QPersistentModelIndex row_index = lw->indexFromItem(item);
               // Standard rule: right-clicking a row outside the current
               // selection targets just that row.
               if (!item->isSelected()) {
                 lw->setCurrentItem(item);
+              }
+              item = nullptr;
+              if (!row_index.isValid()) {
+                return;  // the selection reply replaced the list: no row to act on
               }
               // Flat QPushButtons in QWidgetActions — the house pattern for a
               // PJMenu (CurveListPanel::onTreeContextMenu). QWidgetAction
@@ -2686,10 +2697,10 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
                 });
               }
               menu.exec(lw->viewport()->mapToGlobal(pos));
-              if (!chosen_id.isEmpty()) {
+              QListWidgetItem* row = row_index.isValid() ? lw->itemFromIndex(row_index) : nullptr;
+              if (!chosen_id.isEmpty() && row != nullptr) {
                 callback(
-                    name,
-                    WidgetEventBuilder::itemContextAction(listItemPluginIndex(lw, item), chosen_id.toStdString()));
+                    name, WidgetEventBuilder::itemContextAction(listItemPluginIndex(lw, row), chosen_id.toStdString()));
               }
             });
       }
@@ -2882,15 +2893,12 @@ constexpr const char* kVisibleWhenProperty = "pj_visible_when";
 // The rules installed under one root, resolved once: refreshDeclarativeRules
 // re-runs these closures instead of re-walking the tree and re-parsing every
 // rule string on each data tick. Parented to the root so it dies with it, and
-// found again by object name (no Q_OBJECT, so no findChildren by type). A
-// refresh from any ancestor root reaches it: engines install on the loaded
-// .ui root but refresh from the dialog that wraps it.
-constexpr const char* kInstalledRulesName = "_pj_installed_rules";
+// found again by type. A refresh from any ancestor root reaches it: engines
+// install on the loaded .ui root but refresh from the dialog that wraps it.
 class InstalledRules : public QObject {
+  Q_OBJECT
  public:
-  explicit InstalledRules(QWidget* root) : QObject(root) {
-    setObjectName(QLatin1StringView(kInstalledRulesName));
-  }
+  explicit InstalledRules(QWidget* root) : QObject(root) {}
   std::vector<std::function<void()>> reassert;
 };
 
@@ -2990,11 +2998,13 @@ void installDeclarativeRules(QWidget* root) {
 }
 
 void refreshDeclarativeRules(QWidget* root) {
-  for (QObject* child : root->findChildren<QObject*>(QLatin1StringView(kInstalledRulesName))) {
-    for (const auto& reassert : static_cast<InstalledRules*>(child)->reassert) {
+  for (InstalledRules* installed : root->findChildren<InstalledRules*>()) {
+    for (const auto& reassert : installed->reassert) {
       reassert();
     }
   }
 }
 
 }  // namespace PJ
+
+#include "widget_binding.moc"

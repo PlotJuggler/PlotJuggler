@@ -175,9 +175,27 @@ class MainWindowLayoutImportTestPeer {
   [[nodiscard]] static bool presentPanel(MainWindow& window, QWidget* panel) {
     return window.presentPanel(panel);
   }
-  static void setTakeoverFold(
-      MainWindow& window, const void* owner, std::function<void(bool)> fold, std::function<bool()> busy) {
-    window.setTakeoverFold(owner, std::move(fold), std::move(busy));
+  // Presents `container` as the chart-area takeover through a bare presenter
+  // (the fold's only target).
+  [[nodiscard]] static bool dockBare(
+      MainWindow& window, QWidget* container, const QString& plugin_id, const QString& title,
+      ToolboxRuntimeHost* host) {
+    return window
+        .registerToolbox(
+            plugin_id,
+            ToolboxPresenter::Spec{
+                .container = container,
+                .engine = nullptr,
+                .session = {},
+                .host = host,
+                .title = title,
+                .save_config = []() { return QStringLiteral("{}"); },
+                .apply_chrome = {}})
+        .moveToDock();
+  }
+  [[nodiscard]] static bool isTakeover(const MainWindow& window, const QString& plugin_id) {
+    const ToolboxPresenter* presenter = window.findToolbox(plugin_id);
+    return presenter != nullptr && presenter->presentation() == ToolboxPresenter::Presentation::kTakeover;
   }
   [[nodiscard]] static bool takeoverPanelPresent(const MainWindow& window) {
     return window.current_panel_ != nullptr;
@@ -185,18 +203,28 @@ class MainWindowLayoutImportTestPeer {
   static QWidget* releaseCentralPanel(MainWindow& window) {
     return window.releaseCentralPanel();
   }
-  static void pinToolboxPanel(
+  static void moveToTab(
       MainWindow& window, QWidget* container, const QString& plugin_id, const QString& title,
       ToolboxRuntimeHost* host) {
-    window.pinToolboxPanel(
-        container, plugin_id, title, /*engine=*/nullptr, []() { return QStringLiteral("{}"); }, host,
-        /*transient=*/false);
+    window
+        .registerToolbox(
+            plugin_id,
+            ToolboxPresenter::Spec{
+                .container = container,
+                .engine = nullptr,
+                .session = {},
+                .host = host,
+                .title = title,
+                .save_config = []() { return QStringLiteral("{}"); },
+                .apply_chrome = {}})
+        .moveToTab(/*transient=*/false);
   }
   [[nodiscard]] static bool isPinned(const MainWindow& window, const QString& plugin_id) {
-    return window.pinned_toolboxes_.contains(plugin_id);
+    const ToolboxPresenter* presenter = window.findToolbox(plugin_id);
+    return presenter != nullptr && presenter->presentation() == ToolboxPresenter::Presentation::kTab;
   }
-  static void closeAllPinnedToolboxTabs(MainWindow& window) {
-    window.closeAllPinnedToolboxTabs();
+  static void teardownAllToolboxes(MainWindow& window) {
+    window.teardownAllToolboxes();
   }
   static void setHostSeams(
       MainWindow& window, std::function<bool(QString)> confirm, std::function<bool(ToolboxRuntimeHost*)> busy,

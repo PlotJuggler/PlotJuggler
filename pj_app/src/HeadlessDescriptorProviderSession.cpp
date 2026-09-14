@@ -180,7 +180,7 @@ HeadlessDescriptorProviderSession::~HeadlessDescriptorProviderSession() {
   // a promotion — so joining first can deadlock: joinAll waits on a terminal
   // that waits on a callback only shutdown() can deliver. shutdown()
   // (idempotent; phase 1 of the two-phase teardown, uniform with
-  // ~PanelSession — Codex r1 F5) closes the intake and fails every
+  // ~ToolboxPanelSession) closes the intake and fails every
   // accepted-but-unfinished promotion (ok=false), which reaches plugin
   // code — the instance/DSO is still alive here, exactly as its contract
   // demands.
@@ -204,7 +204,7 @@ HeadlessDescriptorProviderSession::~HeadlessDescriptorProviderSession() {
   handle_.reset();
   promotion_host_.reset();
   // (4) Service views into the hosts, then the hosts, then the backend —
-  // the same relative order as MainWindow's ~PanelSession.
+  // the same relative order as MainWindow's ~ToolboxPanelSession.
   builder_.reset();
   dp_host_.reset();
   host_.reset();
