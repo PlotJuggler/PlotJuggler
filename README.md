@@ -22,6 +22,7 @@ in a single application.
 
 ![Angular velocity signals plotted together, with the filter and plot arrangement menu open](docs/images/time-series.jpg)
 
+
 ## Multimodal data, synchronized in time
 
 Efficient data storage, GPU-accelerated rendering and on-demand media decoding
@@ -50,8 +51,6 @@ help keep large recordings responsive as you explore.
     </td>
   </tr>
 </table>
-
-![Three annotated camera views alongside top-down and perspective views of a LiDAR point cloud](docs/images/cameras-and-lidar.jpg)
 
 ## Work with the data you already have
 
