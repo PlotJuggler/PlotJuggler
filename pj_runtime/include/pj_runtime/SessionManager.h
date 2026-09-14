@@ -144,6 +144,10 @@ class SessionManager : public QObject {
   void notifyMarkersChanged() {
     emit markersChanged();
   }
+  // A dataset just became listed (the catalog published it): hand it every
+  // all-datasets marker set. Wired by CatalogModel; the commit recompute runs
+  // before the catalog rebuild, so it can never reach a new dataset itself.
+  void publishSharedMarkersToNewDatasets();
 
   // The session-wide budget for ingest-seeded object payload residency (see
   // ResidentPayloadPool). One pool for the whole session so every dataset's
@@ -634,7 +638,9 @@ class SessionManager : public QObject {
 
   // Emitted when the session's plot markers change (a producer republished or
   // cleared a marker object topic), so plot overlays re-read the ObjectStore and
-  // replot.
+  // replot. Carries no payload: an all_datasets generator republishes on every
+  // loaded dataset, so most emitters could only say "all" — listeners re-derive
+  // their rows via publishedMarkerScopes (MarkerTopics.h) instead.
   void markersChanged();
 
   // Emitted when the shared display offset changes (the "Use time offset" frame

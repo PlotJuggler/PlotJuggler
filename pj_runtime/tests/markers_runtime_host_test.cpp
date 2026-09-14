@@ -17,12 +17,14 @@
 #include <vector>
 
 #include "pj_base/builtin/plot_markers.hpp"
+#include "pj_base/builtin/plot_markers_codec.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/span.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/DatasetQualifiedName.h"
 #include "pj_runtime/MarkerService.h"
+#include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/MarkersRuntimeHost.h"
 
 namespace {
@@ -218,7 +220,8 @@ TEST(MarkersRuntimeHostTest, NoActiveDatasetRejected) {
   EXPECT_FALSE(view.createMarkers("g", PJ::Span<const std::string_view>(inputs), "in", "createMarker(0.0)\n", "{}"));
 }
 
-// params {"scope":"all"} publishes a global marker across every listed dataset.
+// params {"scope":"all"} publishes a global marker across every listed dataset, on
+// the ALL-DATASETS key — the "__global__" the plugin sent is normalized host-side.
 TEST(MarkersRuntimeHostTest, ScopeAllPublishesAcrossDatasets) {
   PJ::ObjectStore store;
   MarkerService service(store, rampResolver());
@@ -229,13 +232,57 @@ TEST(MarkersRuntimeHostTest, ScopeAllPublishesAcrossDatasets) {
   PJ::sdk::DataProcessorsHostView view(bridge.raw());
 
   const std::string_view inputs[] = {"in"};
-  ASSERT_TRUE(view.createMarkers(
+  const PJ::Expected<std::vector<std::string>> created = view.createMarkers(
       "g", PJ::Span<const std::string_view>(inputs), std::string(PJ::sdk::kGlobalMarkerTopic), "createMarker(0.0)\n",
-      R"({"scope":"all"})"));
+      R"({"scope":"all"})");
+  ASSERT_TRUE(created) << created.error();
+  EXPECT_EQ(created->front(), PJ::sdk::markerObjectTopicName(PJ::kAllDatasetsMarkerTopic));
 
-  const std::string topic = PJ::sdk::markerObjectTopicName(PJ::sdk::kGlobalMarkerTopic);
+  const std::string topic = PJ::sdk::markerObjectTopicName(PJ::kAllDatasetsMarkerTopic);
   EXPECT_TRUE(store.findTopic(1, topic).has_value());
   EXPECT_TRUE(store.findTopic(2, topic).has_value());
+}
+
+// The Anomaly Detector submits a Dataset-scope and a Global-scope rule with the SAME
+// output key ("__global__") and only the id and the scope hint to tell them apart. Both
+// must survive as separate generators and publish to separate topics: the collision this
+// guards against left one of the two rules silently unpublished.
+TEST(MarkersRuntimeHostTest, DatasetAndGlobalScopeRulesCoexistOverTheAbi) {
+  PJ::ObjectStore store;
+  MarkerService service(store, rampResolver());
+  service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
+  MarkersRuntimeHost bridge(
+      service, "anomaly",
+      [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+
+  const std::string_view inputs[] = {"in"};
+  const std::string output(PJ::sdk::kGlobalMarkerTopic);
+  ASSERT_TRUE(view.createMarkers(
+      "rule/__global__", PJ::Span<const std::string_view>(inputs), output, "createMarker(0.0)\n", "{}"));
+  ASSERT_TRUE(view.createMarkers(
+      "rule/__all__", PJ::Span<const std::string_view>(inputs), output, "createMarker(1.0)\n", R"({"scope":"all"})"));
+
+  EXPECT_EQ(service.recipes().size(), 2u);  // neither upsert replaced the other
+
+  const std::string dataset_topic = PJ::sdk::markerObjectTopicName(PJ::sdk::kGlobalMarkerTopic);
+  const std::string all_topic = PJ::sdk::markerObjectTopicName(PJ::kAllDatasetsMarkerTopic);
+  EXPECT_TRUE(store.findTopic(1, dataset_topic).has_value());
+  EXPECT_TRUE(store.findTopic(1, all_topic).has_value());
+  EXPECT_FALSE(store.findTopic(2, dataset_topic).has_value());  // bound to dataset 1 only
+  EXPECT_TRUE(store.findTopic(2, all_topic).has_value());
+
+  // Retiring the all-datasets rule leaves the dataset-scope one publishing.
+  ASSERT_TRUE(view.remove("rule/__all__"));
+  EXPECT_EQ(service.recipes().size(), 1u);
+  const std::optional<PJ::ObjectTopicId> kept = store.findTopic(1, dataset_topic);
+  ASSERT_TRUE(kept.has_value());
+  const std::optional<PJ::ResolvedObjectEntry> entry = store.latestAt(*kept, PJ::Timestamp{0});
+  ASSERT_TRUE(entry.has_value());
+  const PJ::Expected<PJ::sdk::PlotMarkers> decoded =
+      PJ::deserializePlotMarkers(entry->payload.bytes.data(), entry->payload.bytes.size());
+  ASSERT_TRUE(decoded) << decoded.error();
+  EXPECT_EQ(decoded->markers.size(), 1u);
 }
 
 // Preview is now create(EPHEMERAL) + remove: the host publishes ephemerally (returns
@@ -262,6 +309,60 @@ TEST(MarkersRuntimeHostTest, PreviewViaEphemeralFlagPublishesAndIsEphemeral) {
   EXPECT_FALSE(store.findTopic(kDataset, topics->front()).has_value());
 }
 
+// The Anomaly Detector submits its Dataset-scope id ("rule/__global__") on whatever
+// dataset is active when the user (re)runs it — the SAME plugin-local id, over and
+// over, on different datasets as the active one changes. This must produce one
+// binding PER dataset (one id, several bindings), not the second overwriting the
+// first, and the ABI surface (list/remove) must still see one plugin-local id.
+TEST(MarkersRuntimeHostTest, DatasetScopeRuleOnEachDatasetKeepsBoth) {
+  PJ::ObjectStore store;
+  MarkerService service(store, rampResolver());
+  PJ::DatasetId active = 1;
+  MarkersRuntimeHost bridge(
+      service, "anomaly",
+      [&active](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> {
+        return active;
+      });
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+
+  const std::string_view inputs[] = {"in"};
+  const std::string output(PJ::sdk::kGlobalMarkerTopic);
+  ASSERT_TRUE(view.createMarkers(
+      "rule/__global__", PJ::Span<const std::string_view>(inputs), output, "createMarker(0.0)\n", "{}"));
+
+  active = 2;
+  ASSERT_TRUE(view.createMarkers(
+      "rule/__global__", PJ::Span<const std::string_view>(inputs), output, "createMarker(1.0)\n", "{}"));
+
+  EXPECT_EQ(service.recipes().size(), 2u);
+
+  const std::string dataset_topic = PJ::sdk::markerObjectTopicName(PJ::sdk::kGlobalMarkerTopic);
+  const std::optional<PJ::ObjectTopicId> id1 = store.findTopic(1, dataset_topic);
+  const std::optional<PJ::ObjectTopicId> id2 = store.findTopic(2, dataset_topic);
+  ASSERT_TRUE(id1.has_value());
+  ASSERT_TRUE(id2.has_value());
+  const std::optional<PJ::ResolvedObjectEntry> entry1 = store.latestAt(*id1, PJ::Timestamp{0});
+  const std::optional<PJ::ResolvedObjectEntry> entry2 = store.latestAt(*id2, PJ::Timestamp{0});
+  ASSERT_TRUE(entry1.has_value());
+  ASSERT_TRUE(entry2.has_value());
+  const PJ::Expected<PJ::sdk::PlotMarkers> decoded1 =
+      PJ::deserializePlotMarkers(entry1->payload.bytes.data(), entry1->payload.bytes.size());
+  const PJ::Expected<PJ::sdk::PlotMarkers> decoded2 =
+      PJ::deserializePlotMarkers(entry2->payload.bytes.data(), entry2->payload.bytes.size());
+  ASSERT_TRUE(decoded1) << decoded1.error();
+  ASSERT_TRUE(decoded2) << decoded2.error();
+  EXPECT_EQ(decoded1->markers.size(), 1u) << "dataset 1's own marker survives";
+  EXPECT_EQ(decoded2->markers.size(), 1u) << "dataset 2 published its own";
+
+  const PJ::Expected<std::vector<std::string>> ids = view.list();
+  ASSERT_TRUE(ids) << ids.error();
+  ASSERT_EQ(ids->size(), 1u) << "one plugin-local id, not one row per binding";
+  EXPECT_EQ((*ids)[0], "rule/__global__");
+
+  EXPECT_TRUE(view.remove("rule/__global__"));
+  EXPECT_TRUE(service.recipes().empty());
+}
+
 // Bug (PR #619 #2a): onCreate resolves the dataset BEFORE reading {"scope":"all"},
 // so a global generator whose bare input lives in two datasets is refused as
 // ambiguous although scope=all evaluates every dataset separately.
@@ -277,7 +378,7 @@ TEST(MarkersRuntimeHostTest, ScopeAllWithBareInputInTwoDatasetsIsNotAmbiguous) {
       "g", PJ::Span<const std::string_view>(inputs), std::string(PJ::sdk::kGlobalMarkerTopic), "createMarker(0.0)\n",
       R"({"scope":"all"})");
   ASSERT_TRUE(created) << created.error();
-  const std::string topic = PJ::sdk::markerObjectTopicName(PJ::sdk::kGlobalMarkerTopic);
+  const std::string topic = PJ::sdk::markerObjectTopicName(PJ::kAllDatasetsMarkerTopic);
   EXPECT_TRUE(store.findTopic(1, topic).has_value());
   EXPECT_TRUE(store.findTopic(2, topic).has_value());
 }
@@ -295,7 +396,7 @@ TEST(MarkersRuntimeHostTest, ScopeAllWithZeroInputsSucceeds) {
       "g", PJ::Span<const std::string_view>{}, std::string(PJ::sdk::kGlobalMarkerTopic), "createMarker(0.0)\n",
       R"({"scope":"all"})");
   ASSERT_TRUE(created) << created.error();
-  const std::string topic = PJ::sdk::markerObjectTopicName(PJ::sdk::kGlobalMarkerTopic);
+  const std::string topic = PJ::sdk::markerObjectTopicName(PJ::kAllDatasetsMarkerTopic);
   EXPECT_TRUE(store.findTopic(1, topic).has_value());
   EXPECT_TRUE(store.findTopic(2, topic).has_value());
 }
@@ -417,9 +518,12 @@ TEST(MarkersRuntimeHostTest, ScopeAllRejectsARecognizedDatasetQualifier) {
 }
 
 // A colon name whose prefix is no loaded source stays a literal key under scope=all.
+// The literal key must exist on some dataset: a scope=all rule whose inputs resolve
+// nowhere is rejected by the service.
 TEST(MarkersRuntimeHostTest, ScopeAllKeepsAColonNameThatMatchesNoSource) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  MarkerService service(
+      store, [](PJ::DatasetId, const std::string& key) { return rampResolver()(1, key == "zz:in" ? "in" : key); });
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   MarkersRuntimeHost bridge(service, "anomaly", realResolverOverTwoDatasets(), sourceNameOf);
   PJ::sdk::DataProcessorsHostView view(bridge.raw());

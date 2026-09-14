@@ -191,9 +191,9 @@ bool MarkersRuntimeHost::onList(
   try {
     const std::string prefix = self->plugin_id_ + "/";
     self->list_storage_.clear();
-    for (const MarkerService::GeneratorRecipe& r : self->service_.recipes()) {
-      if (r.id.size() > prefix.size() && r.id.compare(0, prefix.size(), prefix) == 0) {
-        self->list_storage_.push_back(r.id.substr(prefix.size()));  // strip namespace → plugin-local id
+    for (const std::string& id : self->service_.generatorIds()) {
+      if (id.size() > prefix.size() && id.compare(0, prefix.size(), prefix) == 0) {
+        self->list_storage_.push_back(id.substr(prefix.size()));  // strip namespace → plugin-local id
       }
     }
     if (out_count != nullptr) {
@@ -214,22 +214,20 @@ bool MarkersRuntimeHost::onConfig(
     void* ctx, PJ_string_view_t id, PJ_string_view_t* out_recipe_json, PJ_error_t* out_error) noexcept {
   auto* self = static_cast<MarkersRuntimeHost*>(ctx);
   try {
-    const std::string key = self->makeKey(sdk::toStringView(id));
-    for (const MarkerService::GeneratorRecipe& r : self->service_.recipes()) {
-      if (r.id != key) {
-        continue;
-      }
+    const MarkerService::GeneratorRecipe* first = self->service_.firstBinding(self->makeKey(sdk::toStringView(id)));
+    if (first != nullptr && !first->ephemeral) {
+      const MarkerService::GeneratorRecipe& recipe = *first;
       nlohmann::json j;
       j["kind"] = "markers";
-      j["language"] = r.language;
+      j["language"] = recipe.language;
       // Echo each input as declared (the SDK promises a re-editable recipe), qualified
       // with the bound dataset's source only once the bare name stopped resolving on
       // its own AND the qualified form resolves back to that dataset — checked by the
       // very resolver a resubmit would run. Neither round-tripping is the
       // unrepresentable case: the declared spelling is kept.
       const std::optional<std::string> source =
-          (r.all_datasets || !self->source_name_of_) ? std::nullopt : self->source_name_of_(r.dataset_id);
-      std::vector<std::string> inputs = r.declared_inputs.empty() ? r.inputs : r.declared_inputs;
+          (recipe.all_datasets || !self->source_name_of_) ? std::nullopt : self->source_name_of_(recipe.dataset_id);
+      std::vector<std::string> inputs = recipe.declared_inputs.empty() ? recipe.inputs : recipe.declared_inputs;
       if (source.has_value() && !source->empty() && self->active_dataset_) {
         const auto resolves_to = [self](const std::string& name) -> std::optional<DatasetId> {
           std::vector<std::string> probe{name};
@@ -238,17 +236,17 @@ bool MarkersRuntimeHost::onConfig(
           return dataset.has_value() ? std::optional{*dataset} : std::nullopt;
         };
         for (std::size_t i = 0; i < inputs.size(); ++i) {
-          const std::string qualified = sdk::qualifiedSeriesName(*source, r.inputs[i]);
-          if (!resolves_to(r.inputs[i]).has_value() && resolves_to(qualified) == r.dataset_id) {
+          const std::string qualified = sdk::qualifiedSeriesName(*source, recipe.inputs[i]);
+          if (!resolves_to(recipe.inputs[i]).has_value() && resolves_to(qualified) == recipe.dataset_id) {
             inputs[i] = qualified;
           }
         }
       }
       j["inputs"] = inputs;
-      j["outputs"] = r.outputs;
-      j["history_exempt"] = r.history_exempt;
-      nlohmann::json params =
-          r.params_json.empty() ? nlohmann::json::object() : nlohmann::json::parse(r.params_json, nullptr, false);
+      j["outputs"] = recipe.outputs;
+      j["history_exempt"] = recipe.history_exempt;
+      nlohmann::json params = recipe.params_json.empty() ? nlohmann::json::object()
+                                                         : nlohmann::json::parse(recipe.params_json, nullptr, false);
       j["params"] = params.is_discarded() ? nlohmann::json::object() : params;
       self->config_storage_ = j.dump();
       if (out_recipe_json != nullptr) {

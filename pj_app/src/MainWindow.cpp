@@ -1019,13 +1019,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         return std::nullopt;
       });
   // For `all_datasets` (global-across-all) generators: list every loaded dataset.
-  session_->sessionManager().markerService().setDatasetLister([this]() -> std::vector<PJ::DatasetId> {
-    std::vector<PJ::DatasetId> ids;
-    for (const std::pair<PJ::DatasetId, QString>& ds : session_->catalogModel().datasets()) {
-      ids.push_back(ds.first);
-    }
-    return ids;
-  });
+  session_->sessionManager().markerService().setDatasetLister(
+      [this]() { return session_->catalogModel().datasetIds(); });
 
   // Keep data widgets coherent with catalog removals, whoever triggers them.
   // Each widget prunes its OWN pieces against the live catalog/store. One pass

@@ -1085,6 +1085,7 @@ QToolButton#curveVisibilityToggle,
 QToolButton#curveVisibilityToggle:hover,
 QToolButton#curveVisibilityToggle:pressed,
 QToolButton#curveVisibilityToggle:checked,
+QToolButton#markerScopeGlyph,
 QToolButton#curveMarkersToggle,
 QToolButton#curveMarkersToggle:hover,
 QToolButton#curveMarkersToggle:pressed,
@@ -1325,6 +1326,12 @@ QSlider::handle:vertical:disabled {
    away (via the bottom-panel toggle) takes the divider with it
    rather than leaving a stray border at the window's bottom edge. */
 QWidget#timelineStrip {
+    border-top: 1px solid ${separation};
+}
+
+/* 1-px separator above the CurveEditor's pinned marker-scope footer,
+   painted as the footer's top border so it disappears with the footer. */
+QWidget#markerScopesFooter {
     border-top: 1px solid ${separation};
 }
 

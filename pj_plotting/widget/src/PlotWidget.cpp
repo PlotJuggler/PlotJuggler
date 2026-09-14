@@ -26,6 +26,7 @@
 #include <QPen>
 #include <QScopedValueRollback>
 #include <QSettings>
+#include <QStringView>
 #include <QUuid>
 #include <QVector>
 #include <algorithm>
@@ -132,6 +133,38 @@ CurveColorRegistry* colorRegistryOf(SessionManager* session) {
   return session != nullptr ? &session->curveColorRegistry() : nullptr;
 }
 
+// The `<prefix>dataset_id/_source/_path` qualifier triple as saved (see
+// PlotWidget::stampDatasetIdentity); an absent attribute reads as 0 / empty.
+struct SavedDatasetIdentity {
+  DatasetId id = 0;
+  QString source;
+  QString path;
+};
+
+SavedDatasetIdentity readDatasetIdentity(const QDomElement& element, const QString& prefix = {}) {
+  return SavedDatasetIdentity{
+      .id = element.attribute(prefix + "dataset_id"_L1).toUInt(),
+      .source = element.attribute(prefix + "dataset_source"_L1),
+      .path = element.attribute(prefix + "dataset_path"_L1)};
+}
+
+QString markerScopeName(MarkerScope scope) {
+  return scope == MarkerScope::kDataset ? QString(plot_xml::kMarkerScopeDataset)
+                                        : QString(plot_xml::kMarkerScopeAllDatasets);
+}
+
+// An absent or unrecognized `name` maps to nullopt — the entry is ignored rather
+// than guessed at.
+std::optional<MarkerScope> markerScopeFromName(QStringView name) {
+  if (name == plot_xml::kMarkerScopeDataset) {
+    return MarkerScope::kDataset;
+  }
+  if (name == plot_xml::kMarkerScopeAllDatasets) {
+    return MarkerScope::kAllDatasets;
+  }
+  return std::nullopt;
+}
+
 }  // namespace
 
 PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* parent)
@@ -151,43 +184,11 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
 
   // Marker overlay: draws findings (regions / events / value bands / labels)
   // read from the session ObjectStore (serialized PlotMarkers object topics) for
-  // the series shown on this plot plus the dataset-global topic. Targets are
-  // recomputed from the current curves on each paint; repaint is driven by
-  // SessionManager::markersChanged.
+  // the series shown on this plot plus each dataset's Dataset/Global marker
+  // scopes. Targets are recomputed from the current curves on each paint;
+  // repaint is driven by SessionManager::markersChanged.
   markers_item_ = new PlotMarkersItem(session_);
-  markers_item_->setTargetsProvider([this]() {
-    std::vector<MarkerTarget> targets;
-    std::set<DatasetId> datasets;
-    for (const CurveInfo& info : curveList()) {
-      // A curve with markers toggled off (per-row eye-style toggle in
-      // CurveEditor) contributes neither its per-series nor its dataset's
-      // global marker set to this plot's overlay.
-      if (!info.show_markers) {
-        continue;
-      }
-      const auto* adapter = dynamic_cast<const DatastoreCurveAdapter*>(info.curve->data());
-      if (adapter == nullptr) {
-        continue;
-      }
-      const auto& src = adapter->source();
-      // Per-series marker topic key is the human path "topic_name/field_name" —
-      // the exact string a producer (e.g. the markers toolbox) receives when a
-      // series is dropped on it (resolved via catalog_key_resolver), so the two
-      // sides agree on the marker object-topic name.
-      targets.push_back(
-          MarkerTarget{
-              src.dataset_id, QString::fromStdString(
-                                  sdk::markerSeriesKey(src.topic_name.toStdString(), src.field_name.toStdString()))});
-      datasets.insert(src.dataset_id);
-    }
-    for (const DatasetId dataset : datasets) {
-      targets.push_back(
-          MarkerTarget{
-              dataset, QString::fromUtf8(
-                           sdk::kGlobalMarkerTopic.data(), static_cast<qsizetype>(sdk::kGlobalMarkerTopic.size()))});
-    }
-    return targets;
-  });
+  markers_item_->setTargetsProvider([this]() { return markerTargets(); });
   markers_item_->attach(qwtPlot());
 
   // Mouse-hover inspector. Shows a snap-to-curve dot + value tooltip wherever
@@ -216,6 +217,8 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
   connect(this, &PlotWidgetBase::curveListChanged, this, [this]() {
     updateMaximumZoomArea();
     autoZoomPlotVertically();
+    pruneHiddenMarkerScopes();
+    (void)refreshMarkerScopeRowSet();  // curveListChanged itself is the rebuild trigger
   });
   connect(this, &PlotWidgetBase::dragEnterSignal, this, &PlotWidget::onDragEnterEvent);
   connect(this, &PlotWidgetBase::dragLeaveSignal, this, &PlotWidget::onDragLeaveEvent);
@@ -751,22 +754,14 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
   // snapshot alike — the path is re-resolved against the current dataset(s) to
   // the concrete key (PJ::LayoutXml::rebindCurveKeys), so the saved form stays
   // valid across reloads and similar datasets.
-  const auto write_stable_path = [&](QDomElement& element, const QString& topic_attr, const QString& field_attr,
-                                     const QString& dataset_id_attr, const QString& dataset_source_attr,
-                                     const QString& key) {
+  const auto write_stable_path = [&](QDomElement& element, const QString& prefix, const QString& key) {
     if (catalog_ == nullptr) {
       return;
     }
     if (const auto descriptor = catalog_->curveDescriptor(key); descriptor.has_value()) {
-      element.setAttribute(topic_attr, descriptor->topic_name);
-      element.setAttribute(field_attr, descriptor->field_path);
-      // Exact-id + raw-source qualifiers so a same-topic sibling dataset is never
-      // interchanged on restore. The raw DatasetInfo::source_name is preferred
-      // over the deduped display label (dataset_name) because it is the portable
-      // identity a later-session reload compares against.
-      element.setAttribute(dataset_id_attr, QString::number(descriptor->dataset_id));
-      element.setAttribute(
-          dataset_source_attr, catalog_->datasetSourceName(descriptor->dataset_id).value_or(descriptor->dataset_name));
+      element.setAttribute(prefix + "topic"_L1, descriptor->topic_name);
+      element.setAttribute(prefix + "field"_L1, descriptor->field_path);
+      stampDatasetIdentity(element, descriptor->dataset_id, prefix);
     }
   };
 
@@ -781,17 +776,15 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
     if (auto* xy_series = dynamic_cast<PointSeriesXY*>(info.curve->data())) {
       // An XY curve's title is the user alias (not derivable from x/y), so persist it.
       curve_element.setAttribute(u"name"_s, info.source_name);
-      write_stable_path(
-          curve_element, u"x_topic"_s, u"x_field"_s, u"x_dataset_id"_s, u"x_dataset_source"_s,
-          xy_series->xSource().name);
-      write_stable_path(
-          curve_element, u"y_topic"_s, u"y_field"_s, u"y_dataset_id"_s, u"y_dataset_source"_s,
-          xy_series->ySource().name);
+      write_stable_path(curve_element, u"x_"_s, xy_series->xSource().name);
+      write_stable_path(curve_element, u"y_"_s, xy_series->ySource().name);
     } else {
-      write_stable_path(curve_element, u"topic"_s, u"field"_s, u"dataset_id"_s, u"dataset_source"_s, info.source_name);
+      write_stable_path(curve_element, {}, info.source_name);
     }
     plot_element.appendChild(curve_element);
   }
+
+  saveHiddenMarkerScopes(doc, plot_element);
 
   for (const QDomDocument& pending_doc : pending_curve_intents_) {
     const QDomElement pending = pending_doc.documentElement();
@@ -944,6 +937,8 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
        curve_element = curve_element.nextSiblingElement(u"curve"_s)) {
     applyCurveElement(curve_element);
   }
+
+  loadHiddenMarkerScopes(plot_element);
 
   // Stash the layout-saved viewport (raw, pre-offset-conversion) and frame to it via
   // the shared helper. During a progressive restore the catalog is still empty here,
@@ -1238,6 +1233,212 @@ void PlotWidget::setCurveShowMarkers(const QString& curve_name, bool show) {
   // so a replot is all that's needed to re-evaluate the overlay.
   replot();
   emit undoableChange();
+}
+
+void PlotWidget::setDatasetMarkerScopeVisible(DatasetId dataset_id, MarkerScope scope, bool visible) {
+  const MarkerScopeKey key{dataset_id, scope};
+  const bool currently_visible = !hidden_marker_scopes_.contains(key);
+  if (currently_visible == visible) {
+    return;
+  }
+  if (visible) {
+    hidden_marker_scopes_.erase(key);
+  } else {
+    hidden_marker_scopes_.insert(key);
+  }
+  // markers_item_'s targets are recomputed on each paint from
+  // hidden_marker_scopes_, so a replot is all that's needed to re-evaluate the
+  // overlay.
+  replot();
+  emit markerScopeVisibilityChanged(dataset_id, scope, visible);
+  if (!loading_state_) {
+    emit undoableChange();
+  }
+}
+
+std::vector<DatasetId> PlotWidget::curveDatasets() const {
+  std::set<DatasetId> datasets;
+  for (const CurveInfo& info : curveList()) {
+    if (info.curve == nullptr) {
+      continue;
+    }
+    if (const auto* adapter = dynamic_cast<const DatastoreCurveAdapter*>(info.curve->data())) {
+      datasets.insert(adapter->source().dataset_id);
+    }
+  }
+  return {datasets.begin(), datasets.end()};
+}
+
+QString PlotWidget::datasetDisplayName(DatasetId dataset_id) const {
+  for (const CurveInfo& info : curveList()) {
+    if (info.curve == nullptr) {
+      continue;
+    }
+    if (const auto* adapter = dynamic_cast<const DatastoreCurveAdapter*>(info.curve->data())) {
+      if (adapter->source().dataset_id == dataset_id) {
+        return adapter->source().dataset_name;
+      }
+    }
+  }
+  return tr("dataset %1").arg(dataset_id);
+}
+
+bool PlotWidget::datasetMarkerScopeVisible(DatasetId dataset_id, MarkerScope scope) const {
+  return !hidden_marker_scopes_.contains(MarkerScopeKey{dataset_id, scope});
+}
+
+void PlotWidget::saveHiddenMarkerScopes(QDomDocument& doc, QDomElement& plot_element) const {
+  // Only the HIDDEN (dataset, scope) pairs get a child — the common case (every
+  // scope visible) writes nothing, and an absent child means visible on load.
+  for (const DatasetId dataset_id : curveDatasets()) {
+    for (const MarkerScope scope : {MarkerScope::kDataset, MarkerScope::kAllDatasets}) {
+      if (!hidden_marker_scopes_.contains(MarkerScopeKey{dataset_id, scope})) {
+        continue;
+      }
+      QDomElement marker_scope_element = doc.createElement(u"marker_scope"_s);
+      stampDatasetIdentity(marker_scope_element, dataset_id);
+      marker_scope_element.setAttribute(plot_xml::kMarkerScopeAttribute, markerScopeName(scope));
+      marker_scope_element.setAttribute(u"visible"_s, u"false"_s);
+      plot_element.appendChild(marker_scope_element);
+    }
+  }
+  for (const PendingMarkerScope& pending : pending_marker_scopes_) {
+    QDomElement marker_scope_element = doc.createElement(u"marker_scope"_s);
+    marker_scope_element.setAttribute(u"dataset_id"_s, pending.id);
+    marker_scope_element.setAttribute(u"dataset_source"_s, pending.source);
+    if (!pending.path.isEmpty()) {
+      marker_scope_element.setAttribute(u"dataset_path"_s, pending.path);
+    }
+    marker_scope_element.setAttribute(plot_xml::kMarkerScopeAttribute, markerScopeName(pending.scope));
+    marker_scope_element.setAttribute(u"visible"_s, u"false"_s);
+    plot_element.appendChild(marker_scope_element);
+  }
+}
+
+void PlotWidget::loadHiddenMarkerScopes(const QDomElement& plot_element) {
+  // Identity is resolved the same way a curve's dataset_id/dataset_source is (a
+  // layout from another session may have reminted ids); ambiguous resolution
+  // defaults to visible (skip). An unloaded dataset (resolution.id is nullopt)
+  // is parked in pending_marker_scopes_ with its full saved identity, so the
+  // entry can follow a reminted id once the pending binder lands its curves.
+  // `scope` is required: an absent or unrecognized value leaves the entry out
+  // (visible) rather than guessing.
+  std::set<MarkerScopeKey> new_hidden_scopes;
+  pending_marker_scopes_.clear();
+  if (catalog_ != nullptr) {
+    for (QDomElement marker_scope_element = plot_element.firstChildElement(u"marker_scope"_s);
+         !marker_scope_element.isNull();
+         marker_scope_element = marker_scope_element.nextSiblingElement(u"marker_scope"_s)) {
+      if (marker_scope_element.attribute(u"visible"_s) != "false"_L1) {
+        continue;
+      }
+      const std::optional<MarkerScope> scope =
+          markerScopeFromName(marker_scope_element.attribute(plot_xml::kMarkerScopeAttribute));
+      if (!scope.has_value()) {
+        continue;
+      }
+      const SavedDatasetIdentity saved = readDatasetIdentity(marker_scope_element);
+      if (saved.id == 0) {
+        continue;
+      }
+      const auto resolution = catalog_->resolveDatasetIdentity(saved.id, saved.source, saved.path);
+      if (resolution.ambiguous) {
+        continue;
+      }
+      if (!resolution.id.has_value()) {
+        pending_marker_scopes_.push_back(PendingMarkerScope{saved.id, saved.source, saved.path, *scope});
+        continue;
+      }
+      new_hidden_scopes.insert(MarkerScopeKey{*resolution.id, *scope});
+    }
+  }
+  if (new_hidden_scopes != hidden_marker_scopes_) {
+    hidden_marker_scopes_ = std::move(new_hidden_scopes);
+    emit datasetMarkerScopesChanged();
+  }
+}
+
+void PlotWidget::resolvePendingMarkerScopes() {
+  if (catalog_ == nullptr || pending_marker_scopes_.empty()) {
+    return;
+  }
+  bool moved = false;
+  std::erase_if(pending_marker_scopes_, [&](const PendingMarkerScope& pending) {
+    const auto resolution = catalog_->resolveDatasetIdentity(pending.id, pending.source, pending.path);
+    if (!resolution.id.has_value()) {
+      return false;
+    }
+    moved = true;
+    hidden_marker_scopes_.insert(MarkerScopeKey{*resolution.id, pending.scope});
+    return true;
+  });
+  if (moved) {
+    emit datasetMarkerScopesChanged();
+  }
+}
+
+std::vector<MarkerTarget> PlotWidget::markerTargets() const {
+  std::vector<MarkerTarget> targets;
+  std::set<DatasetId> datasets;
+  for (const CurveInfo& info : curveList()) {
+    const auto* adapter =
+        info.curve != nullptr ? dynamic_cast<const DatastoreCurveAdapter*>(info.curve->data()) : nullptr;
+    if (adapter == nullptr) {
+      continue;
+    }
+    const auto& src = adapter->source();
+    // The dataset counts as present regardless of show_markers — that flag
+    // gates only this curve's own series target; each scope's target is gated
+    // solely by hidden_marker_scopes_ below.
+    datasets.insert(src.dataset_id);
+    if (!info.show_markers) {
+      continue;
+    }
+    // Per-series marker topic key is the human path "topic_name/field_name" —
+    // the exact string a producer (e.g. the markers toolbox) receives when a
+    // series is dropped on it (resolved via catalog_key_resolver), so the two
+    // sides agree on the marker object-topic name.
+    targets.push_back(
+        MarkerTarget{
+            src.dataset_id,
+            QString::fromStdString(sdk::markerSeriesKey(src.topic_name.toStdString(), src.field_name.toStdString()))});
+  }
+  for (const DatasetId dataset : datasets) {
+    for (const MarkerScope scope : {MarkerScope::kDataset, MarkerScope::kAllDatasets}) {
+      if (hidden_marker_scopes_.contains(MarkerScopeKey{dataset, scope})) {
+        continue;
+      }
+      const std::string_view topic = markerScopeTopic(scope);
+      targets.push_back(MarkerTarget{dataset, QString::fromUtf8(topic.data(), static_cast<qsizetype>(topic.size()))});
+    }
+  }
+  return targets;
+}
+
+void PlotWidget::pruneHiddenMarkerScopes() {
+  if (loading_state_ || !pending_curve_intents_.empty()) {
+    return;
+  }
+  const std::vector<DatasetId> live = curveDatasets();  // sorted; pending entries are left alone
+  std::erase_if(hidden_marker_scopes_, [&live](const MarkerScopeKey& key) {
+    return !std::ranges::binary_search(live, key.first);
+  });
+}
+
+bool PlotWidget::refreshMarkerScopeRowSet() {
+  std::vector<MarkerScopeKey> current;
+  if (session_ != nullptr) {
+    for (const DatasetId dataset_id : curveDatasets()) {
+      for (const MarkerScope scope : publishedMarkerScopes(session_->objectStore(), dataset_id)) {
+        current.emplace_back(dataset_id, scope);
+      }
+    }
+  }
+  if (current == marker_scope_rows_) {
+    return false;
+  }
+  marker_scope_rows_ = std::move(current);
+  return true;
 }
 
 void PlotWidget::removeAllCurves() {
@@ -1539,20 +1740,33 @@ bool PlotWidget::canPasteWidgetFromClipboard() const {
   return widget_clipboard::parse(doc, u"plot"_s);
 }
 
+void PlotWidget::stampDatasetIdentity(QDomElement& element, DatasetId dataset_id, const QString& prefix) const {
+  if (catalog_ == nullptr) {
+    return;
+  }
+  // Exact-id + raw-source qualifiers so a same-topic sibling dataset is never
+  // interchanged on restore. The raw DatasetInfo::source_name is preferred over
+  // the deduped display label because it is the portable identity a
+  // later-session reload compares against.
+  element.setAttribute(prefix + "dataset_id"_L1, QString::number(dataset_id));
+  element.setAttribute(
+      prefix + "dataset_source"_L1, catalog_->datasetSourceName(dataset_id).value_or(datasetDisplayName(dataset_id)));
+}
+
+void PlotWidget::stampDatasetPath(QDomElement& element, DatasetId dataset_id, const QString& prefix) const {
+  if (catalog_ == nullptr) {
+    return;
+  }
+  const QString path = catalog_->datasetSourcePath(dataset_id);
+  if (!path.isEmpty()) {
+    element.setAttribute(prefix + "dataset_path"_L1, path);
+  }
+}
+
 void PlotWidget::stampClipboardCurveKeys(QDomElement& plot_element) const {
   // Full-path qualifier so a clipboard paste in a later session can validate a
   // reminted id (see rebindClipboardCurveKeys). xmlSaveState already stamped
   // dataset_id + dataset_source; the path is the tiebreak for same-basename files.
-  const auto stamp_path = [this](QDomElement& curve, const QString& path_attr, DatasetId dataset_id) {
-    if (catalog_ == nullptr) {
-      return;
-    }
-    const QString path = catalog_->datasetSourcePath(dataset_id);
-    if (!path.isEmpty()) {
-      curve.setAttribute(path_attr, path);
-    }
-  };
-
   QDomElement curve_element = plot_element.firstChildElement(u"curve"_s);
   for (const CurveInfo& info : curveList()) {
     if (info.curve == nullptr || curve_element.isNull()) {
@@ -1562,14 +1776,19 @@ void PlotWidget::stampClipboardCurveKeys(QDomElement& plot_element) const {
     if (auto* xy_series = dynamic_cast<PointSeriesXY*>(info.curve->data())) {
       curve_element.setAttribute(u"curve_x"_s, xy_series->xSource().name);
       curve_element.setAttribute(u"curve_y"_s, xy_series->ySource().name);
-      stamp_path(curve_element, u"x_dataset_path"_s, xy_series->xSource().dataset_id);
-      stamp_path(curve_element, u"y_dataset_path"_s, xy_series->ySource().dataset_id);
+      stampDatasetPath(curve_element, xy_series->xSource().dataset_id, u"x_"_s);
+      stampDatasetPath(curve_element, xy_series->ySource().dataset_id, u"y_"_s);
     } else if (catalog_ != nullptr) {
       if (const auto descriptor = catalog_->curveDescriptor(info.source_name); descriptor.has_value()) {
-        stamp_path(curve_element, u"dataset_path"_s, descriptor->dataset_id);
+        stampDatasetPath(curve_element, descriptor->dataset_id);
       }
     }
     curve_element = curve_element.nextSiblingElement(u"curve"_s);
+  }
+  for (QDomElement marker_scope_element = plot_element.firstChildElement(u"marker_scope"_s);
+       !marker_scope_element.isNull();
+       marker_scope_element = marker_scope_element.nextSiblingElement(u"marker_scope"_s)) {
+    stampDatasetPath(marker_scope_element, readDatasetIdentity(marker_scope_element).id);
   }
 }
 
@@ -1587,18 +1806,13 @@ void PlotWidget::rebindClipboardCurveKeys(QDomElement& plot_element) const {
   //            different-dataset series;
   //   nullopt = unqualified legacy copy that stays ambiguous -> leave the copied key
   //             intact (today's behavior; xmlLoadState drops it if it no longer resolves).
-  const auto resolve = [this](
-                           const QDomElement& curve, const QString& topic_attr, const QString& field_attr,
-                           const QString& id_attr, const QString& source_attr,
-                           const QString& path_attr) -> std::optional<QString> {
-    const QString topic = curve.attribute(topic_attr);
-    const QString field = curve.attribute(field_attr);
+  const auto resolve = [this](const QDomElement& curve, const QString& prefix) -> std::optional<QString> {
+    const QString topic = curve.attribute(prefix + "topic"_L1);
+    const QString field = curve.attribute(prefix + "field"_L1);
     if (topic.isEmpty() || field.isEmpty()) {
       return std::nullopt;
     }
-    const DatasetId dataset_id = curve.attribute(id_attr).toUInt();
-    const QString dataset_source = curve.attribute(source_attr);
-    const QString dataset_path = curve.attribute(path_attr);
+    const auto [dataset_id, dataset_source, dataset_path] = readDatasetIdentity(curve, prefix);
     // Shared resolver (same three tiers as layout/undo restore, incl. the
     // full-path-fallback leg the local scan used to lack) — a resolved key comes
     // back concrete. A miss is nullopt, so map it to the 3-way apply below by
@@ -1629,10 +1843,8 @@ void PlotWidget::rebindClipboardCurveKeys(QDomElement& plot_element) const {
   for (QDomElement curve = plot_element.firstChildElement(u"curve"_s); !curve.isNull();
        curve = curve.nextSiblingElement(u"curve"_s)) {
     if (curve.hasAttribute(u"x_topic"_s)) {
-      const std::optional<QString> x_key =
-          resolve(curve, u"x_topic"_s, u"x_field"_s, u"x_dataset_id"_s, u"x_dataset_source"_s, u"x_dataset_path"_s);
-      const std::optional<QString> y_key =
-          resolve(curve, u"y_topic"_s, u"y_field"_s, u"y_dataset_id"_s, u"y_dataset_source"_s, u"y_dataset_path"_s);
+      const std::optional<QString> x_key = resolve(curve, u"x_"_s);
+      const std::optional<QString> y_key = resolve(curve, u"y_"_s);
       // An XY curve is undrawable unless BOTH axes resolve. If either axis was
       // qualified-but-failed, clear both keys so no stale half survives.
       if (x_key.has_value() && !x_key->isEmpty() && y_key.has_value() && !y_key->isEmpty()) {
@@ -1644,9 +1856,7 @@ void PlotWidget::rebindClipboardCurveKeys(QDomElement& plot_element) const {
       }
       continue;
     }
-    apply_key(
-        curve, u"name"_s,
-        resolve(curve, u"topic"_s, u"field"_s, u"dataset_id"_s, u"dataset_source"_s, u"dataset_path"_s));
+    apply_key(curve, u"name"_s, resolve(curve, {}));
   }
 }
 
@@ -1918,7 +2128,15 @@ void PlotWidget::reconnectDataSignals() {
 
   // Markers changed (a producer republished or cleared a marker object topic):
   // the overlay re-reads the ObjectStore on each paint, so a plain replot suffices.
-  markers_changed_connection_ = connect(session_, &SessionManager::markersChanged, this, [this]() { replot(); });
+  // The row-set signal fires only when a topic actually appeared or was retired,
+  // so a streaming producer re-publishing at up to 60 Hz doesn't rebuild the
+  // CurveEditor's rows on every tick.
+  markers_changed_connection_ = connect(session_, &SessionManager::markersChanged, this, [this]() {
+    if (refreshMarkerScopeRowSet()) {
+      emit datasetMarkerScopesChanged();
+    }
+    replot();
+  });
 
   samples_ingested_connection_ =
       connect(session_, &SessionManager::samplesIngested, this, [this](const QVector<TopicId>& ids, bool live) {

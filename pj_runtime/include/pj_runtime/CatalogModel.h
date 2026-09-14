@@ -265,6 +265,9 @@ class CatalogModel : public QObject {
   // Loaded datasets as (id, display name) pairs, ordered by load (dataset id
   // ascending). Derived from current catalog contents.
   [[nodiscard]] std::vector<std::pair<DatasetId, QString>> datasets() const;
+  // The ids alone, ascending — the cheap form for callers that only need
+  // membership (no names materialized).
+  [[nodiscard]] std::vector<DatasetId> datasetIds() const;
 
   // The datastore's unmodified DatasetInfo::source_name for `dataset_id`.
   // Unlike datasets(), this is neither a user-facing display-name override nor a

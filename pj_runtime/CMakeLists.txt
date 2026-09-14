@@ -20,6 +20,7 @@ add_library(pj_runtime STATIC
     src/DataProcessorsRuntimeHost.cpp
     src/DataSourceRuntimeHost.cpp
     src/MarkerService.cpp
+    src/MarkerTopics.cpp
     src/MarkersRuntimeHost.cpp
     src/ObjectIngestTap.cpp
     src/DiagnosticHistory.cpp

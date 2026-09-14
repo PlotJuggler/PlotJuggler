@@ -458,6 +458,9 @@ int PendingDisplayBinder::flush(const QSet<QString>& topics) {
   }
 
   for (PlotWidget* plot : touched) {
+    // A hidden marker scope saved against a dataset that was not loaded at
+    // restore time follows the (possibly reminted) dataset its curves just bound to.
+    plot->resolvePendingMarkerScopes();
     // Frame to the layout-saved window now that the dataset (hence its display offset)
     // exists: at restore xmlLoadState ran against an empty catalog (offset 0), so its
     // absolute->display conversion was wrong. applySavedViewportOrZoom re-applies the

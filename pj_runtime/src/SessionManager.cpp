@@ -107,6 +107,11 @@ SessionManager::SessionManager(QObject* parent)
   // late would silently run every restored rule against no data.
   marker_service_ = std::make_unique<MarkerService>(
       object_store_, [](DatasetId, const std::string&) { return std::optional<MarkerService::ResolvedSeries>{}; });
+  // An all-datasets set is kept in the display frame and shifted per dataset, so it
+  // lands at the same display instant everywhere; only the alignment shift matters
+  // (globalTimeReference is uniform and cancels out).
+  marker_service_->setDisplayOffsetResolver(
+      [this](DatasetId dataset_id) { return static_cast<Timestamp>(sourceDisplayOffset(dataset_id).value.count()); });
 
   // Install the bundled Luau filter catalogue so applied/restored filters resolve
   // to Luau classes. The resource is embedded in the app; it is absent only in a
@@ -562,6 +567,11 @@ void SessionManager::setDisplayOffset(DatasetId dataset_id, DisplayOffset offset
   }
   data_engine_.setDisplayOffset(dataset->time_domain.id, static_cast<Timestamp>(offset.value.count()));
   emit displayOffsetChanged(dataset_id);
+  // All-datasets marker sets follow the display frame: re-derive this dataset's part.
+  if (marker_service_ && marker_service_->hasGenerators() &&
+      !marker_service_->rebaseForDisplayOffset(dataset_id).empty()) {
+    notifyMarkersChanged();
+  }
 }
 
 std::vector<TopicId> SessionManager::commitChunks(std::vector<std::pair<TopicId, TopicChunk>> chunks) {
@@ -911,6 +921,12 @@ void RefillGuard::commit() {
     // Loader metadata described the OLD content just as the record did; the
     // new load's document (if any) is published at its own commit seam.
     session_->clearDatasetMetadata(dataset_id_);
+  }
+}
+
+void SessionManager::publishSharedMarkersToNewDatasets() {
+  if (marker_service_ && marker_service_->hasGenerators() && !marker_service_->reachNewDatasets().empty()) {
+    notifyMarkersChanged();
   }
 }
 
@@ -1381,8 +1397,8 @@ void SessionManager::removeDataset(DatasetId dataset_id) {
   // A generator bound to this dataset outlives its data otherwise: the object topics
   // go with the dataset, but the recipe keeps naming the dead id, so the next
   // recompute resolves nothing and re-registers a phantom marker topic under it.
-  if (marker_service_) {
-    marker_service_->clearGeneratorsForDataset(dataset_id);
+  if (marker_service_ && !marker_service_->clearGeneratorsForDataset(dataset_id).empty()) {
+    notifyMarkersChanged();
   }
   // The engine no longer holds this dataset; drop its pinned earliest-sample and
   // the memoized cross-dataset origin so globalTimeReference() re-scans the

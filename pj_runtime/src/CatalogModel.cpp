@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -299,6 +300,7 @@ CatalogModel::CatalogModel(SessionManager* session, QObject* parent)
     : QObject(parent), impl_(std::make_unique<Impl>(session)) {
   if (impl_->session != nullptr) {
     connect(impl_->session, &SessionManager::samplesIngested, this, &CatalogModel::rebuildIfChanged);
+    connect(this, &CatalogModel::itemsAdded, impl_->session, &SessionManager::publishSharedMarkersToNewDatasets);
   }
 }
 
@@ -500,6 +502,15 @@ std::vector<std::pair<DatasetId, QString>> CatalogModel::datasets() const {
   }
   std::sort(result.begin(), result.end(), [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
   return result;
+}
+
+std::vector<DatasetId> CatalogModel::datasetIds() const {
+  std::set<DatasetId> ids;
+  for (const auto& [key, item] : impl_->items) {
+    (void)key;
+    ids.insert(item.dataset_id);
+  }
+  return {ids.begin(), ids.end()};
 }
 
 std::optional<QString> CatalogModel::datasetSourceName(DatasetId dataset_id) const {

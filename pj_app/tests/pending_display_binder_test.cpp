@@ -391,6 +391,104 @@ TEST(PendingDisplayBinderTest, CollectsUnresolvedCurvesAndBindsThemWhenTopicArri
   EXPECT_EQ(plot.curveList().size(), 2U);
 }
 
+// Progressive restore: a hidden marker scope saved under a dataset id that is
+// reminted on reload must follow the dataset its pending curves bind to. DISABLED:
+// documents a known gap (the binder rebinds curves only; an unresolved scope keeps
+// its saved id) pending the retained-identity fix in PlotWidget/PendingDisplayBinder.
+TEST(PendingDisplayBinderTest, HiddenMarkerScopeFollowsTheRemintedDatasetOfItsPendingCurves) {
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  PJ::AppSession app_session(extensions_dir.path());
+
+  QDomDocument doc;
+  QDomElement plot_element = addPlot(doc, u"plot_ts"_s, u"TimeSeries"_s);
+  addTimeSeriesCurve(doc, plot_element, SeriesPath{u"/speed"_s, u"value"_s, 7, u"run.mcap"_s});
+  QDomElement hidden_scope = doc.createElement(u"marker_scope"_s);
+  hidden_scope.setAttribute(u"dataset_id"_s, u"7"_s);
+  hidden_scope.setAttribute(u"dataset_source"_s, u"run.mcap"_s);
+  hidden_scope.setAttribute(u"scope"_s, u"global"_s);
+  hidden_scope.setAttribute(u"visible"_s, u"false"_s);
+  plot_element.appendChild(hidden_scope);
+  rebindAgainstCatalog(doc, app_session.catalogModel());  // nothing loaded yet
+
+  PJ::PlotWidget plot(&app_session.sessionManager(), &app_session.catalogModel());
+  ASSERT_TRUE(plot.xmlLoadState(plot_element));
+  PJ::PendingDisplayBinder binder(app_session.catalogModel());
+  binder.collect(doc, indexByStateId(plot));
+  ASSERT_EQ(binder.size(), 1);
+
+  const PJ::DatasetId dataset_id = createDataset(app_session, "run.mcap");
+  ASSERT_NE(dataset_id, 0U);
+  ASSERT_NE(dataset_id, 7U) << "the reload minted a different id";
+  ASSERT_NE(addScalarTopic(app_session, dataset_id, "/speed"), 0U);
+  EXPECT_EQ(binder.flush(QSet<QString>{u"/speed"_s}), 1);
+  ASSERT_EQ(plot.curveList().size(), 1U);
+
+  EXPECT_FALSE(plot.datasetMarkerScopeVisible(dataset_id, PJ::MarkerScope::kAllDatasets))
+      << "the hidden scope followed the dataset its curve bound to";
+}
+
+// A snapshot taken while the dataset is still loading (undo/redo mid-restore)
+// must carry the unresolved <marker_scope> with its identity next to the
+// persistent curve intent, and a plot restored from that snapshot still hides
+// the scope once the curve binds.
+TEST(PendingDisplayBinderTest, PendingHiddenMarkerScopeSurvivesAnIntermediateSnapshot) {
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  PJ::AppSession app_session(extensions_dir.path());
+
+  QDomDocument doc;
+  QDomElement plot_element = addPlot(doc, u"plot_ts"_s, u"TimeSeries"_s);
+  addTimeSeriesCurve(doc, plot_element, SeriesPath{u"/speed"_s, u"value"_s, 7, u"run.mcap"_s});
+  plot_element.firstChildElement(u"curve"_s).setAttribute(u"pending_intent"_s, u"true"_s);
+  QDomElement hidden_scope = doc.createElement(u"marker_scope"_s);
+  hidden_scope.setAttribute(u"dataset_id"_s, u"7"_s);
+  hidden_scope.setAttribute(u"dataset_source"_s, u"run.mcap"_s);
+  hidden_scope.setAttribute(u"scope"_s, u"global"_s);
+  hidden_scope.setAttribute(u"visible"_s, u"false"_s);
+  plot_element.appendChild(hidden_scope);
+  rebindAgainstCatalog(doc, app_session.catalogModel());  // nothing loaded yet
+
+  PJ::PlotWidget plot(&app_session.sessionManager(), &app_session.catalogModel());
+  ASSERT_TRUE(plot.xmlLoadState(plot_element));
+  EXPECT_TRUE(plot.datasetMarkerScopeVisible(7, PJ::MarkerScope::kAllDatasets)) << "pending means visible";
+  PJ::PendingDisplayBinder first_binder(app_session.catalogModel());
+  first_binder.collect(doc, indexByStateId(plot));  // registers the pending curve intent, as a restore does
+  ASSERT_EQ(first_binder.size(), 1);
+
+  QDomDocument snapshot_doc;
+  const QDomElement snapshot = plot.xmlSaveState(snapshot_doc);
+  const QDomElement resaved_scope = snapshot.firstChildElement(u"marker_scope"_s);
+  ASSERT_FALSE(resaved_scope.isNull()) << "the pending scope was dropped from the intermediate snapshot";
+  EXPECT_EQ(resaved_scope.attribute(u"dataset_id"_s).toUInt(), 7U);
+  EXPECT_EQ(resaved_scope.attribute(u"dataset_source"_s), u"run.mcap"_s);
+  EXPECT_EQ(resaved_scope.attribute(u"scope"_s), u"global"_s);
+  EXPECT_EQ(resaved_scope.attribute(u"visible"_s), u"false"_s);
+  EXPECT_TRUE(resaved_scope.nextSiblingElement(u"marker_scope"_s).isNull());
+
+  QDomDocument restored_doc;
+  restored_doc.appendChild(restored_doc.importNode(snapshot, /*deep=*/true));
+  PJ::PlotWidget restored(&app_session.sessionManager(), &app_session.catalogModel());
+  ASSERT_TRUE(restored.xmlLoadState(restored_doc.documentElement()));
+  PJ::PendingDisplayBinder binder(app_session.catalogModel());
+  binder.collect(restored_doc, indexByStateId(restored));
+  ASSERT_EQ(binder.size(), 1);
+
+  const PJ::DatasetId dataset_id = createDataset(app_session, "run.mcap");
+  ASSERT_NE(dataset_id, 0U);
+  ASSERT_NE(dataset_id, 7U);
+  ASSERT_NE(addScalarTopic(app_session, dataset_id, "/speed"), 0U);
+  EXPECT_EQ(binder.flush(QSet<QString>{u"/speed"_s}), 1);
+  ASSERT_EQ(restored.curveList().size(), 1U);
+  EXPECT_FALSE(restored.datasetMarkerScopeVisible(dataset_id, PJ::MarkerScope::kAllDatasets));
+  // Resolved: no longer pending, so the final save carries it under the live id.
+  QDomDocument final_doc;
+  const QDomElement final_scope = restored.xmlSaveState(final_doc).firstChildElement(u"marker_scope"_s);
+  ASSERT_FALSE(final_scope.isNull());
+  EXPECT_EQ(final_scope.attribute(u"dataset_id"_s).toUInt(), dataset_id);
+  EXPECT_TRUE(final_scope.nextSiblingElement(u"marker_scope"_s).isNull());
+}
+
 TEST(PendingDisplayBinderTest, XyCurveWaitsForBothHalvesBeforeBinding) {
   QTemporaryDir extensions_dir;
   ASSERT_TRUE(extensions_dir.isValid());

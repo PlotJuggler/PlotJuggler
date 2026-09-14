@@ -24,14 +24,17 @@
 #include <QToolButton>
 #include <QWidgetAction>
 #include <algorithm>
+#include <functional>
+#include <utility>
+#include <vector>
 
 #include "pj_plotting/PlotWidget.h"
-#include "pj_plotting/PlotWidgetBase.h"
 #include "pj_plotting/StateTransitionsController.h"
 #include "pj_widgets/ColorPickerPopup.h"
 #include "pj_widgets/ElidingLabel.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/Search.h"
+#include "pj_widgets/SvgButton.h"
 #include "pj_widgets/SvgUtil.h"
 #include "ui_CurveEditor.h"
 using namespace Qt::StringLiterals;
@@ -64,6 +67,22 @@ constexpr auto kVisibilityOffPath = ":/resources/svg/visibility_off.svg";
 constexpr auto kMarkersOnPath = ":/resources/svg/markers.svg";
 constexpr auto kMarkersOffPath = ":/resources/svg/markers_off.svg";
 constexpr auto kTrashIconPath = ":/resources/svg/trash.svg";
+// Marker-scope row glyphs: Dataset = a single database (one dataset's own
+// markers); Global = a grid of tiles (every loaded dataset), so the two rows
+// read as different scopes at a glance, not just different labels.
+constexpr auto kDatasetScopeIconPath = ":/resources/svg/database.svg";
+constexpr auto kGlobalScopeIconPath = ":/resources/svg/grid_view.svg";
+// objectName of each footer row, so tests can find them.
+constexpr auto kMarkerScopeRowName = "markerScopeRow";
+// A footer row's (dataset, scope) key, so a visibility signal finds its row.
+constexpr auto kMarkerScopeDatasetProperty = "markerScopeDataset";
+constexpr auto kMarkerScopeScopeProperty = "markerScopeScope";
+// objectName of a footer row's scope glyph: the QSS rule keyed on it keeps the
+// glyph flat like the row toggles.
+constexpr auto kMarkerScopeGlyphName = "markerScopeGlyph";
+// The glyph is drawn this much smaller than the row so it reads as a marker,
+// not a button.
+constexpr int kMarkerScopeGlyphInset = 6;
 
 // Property keys tagged onto per-row QToolButtons so onStylesheetChanged
 // can find them via findChildren and re-tint without rebuilding rows.
@@ -106,17 +125,35 @@ class CurveColorButton : public QPushButton {
   QColor color_;
 };
 
+// Non-interactive glyph in the swatch slot of a marker-scope footer row: says
+// "this row is a scope's, not one curve's" where a curve row shows its color.
+// An SvgButton (self-retinting) made mouse-transparent, sized to the row.
+SvgButton* makeMarkerScopeGlyph(const char* icon_path, int row_height) {
+  auto* glyph = new SvgButton(QString::fromLatin1(icon_path));
+  glyph->setObjectName(QString::fromLatin1(kMarkerScopeGlyphName));
+  glyph->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+  glyph->setExtent(row_height, std::max(kMarkerScopeGlyphInset, row_height - kMarkerScopeGlyphInset));
+  return glyph;
+}
+
 // Custom row widget. Uses explicit geometry instead of a QHBoxLayout so
 // the markers + eye + trash icons pin to the right edge regardless of
 // available width — they never get pushed out, no jitter while resizing,
 // and the name takes the leftover middle (or hides). The swatch is
 // left-anchored, the buttons are right-anchored, the name fills (or
 // vanishes from) the gap between them.
+//
+// swatch/markers/eye/trash are each optional (null = absent from this row):
+// a curve row carries all four, a State Transitions strip row omits swatch
+// and markers, and a marker-scope footer row puts its scope glyph in the
+// swatch slot and omits eye and trash (glyph + name + markers). resizeEvent
+// anchors whichever of {trash, eye, markers} are present right-to-left,
+// skipping the absent ones.
 class CurveRowWidget : public QWidget {
  public:
   CurveRowWidget(
-      QPushButton* swatch, ElidingLabel* name, QToolButton* markers, QToolButton* eye, QToolButton* trash,
-      int row_height, QWidget* parent)
+      QWidget* swatch, ElidingLabel* name, QToolButton* markers, QToolButton* eye, QToolButton* trash, int row_height,
+      QWidget* parent)
       : QWidget(parent),
         swatch_(swatch),
         name_(name),
@@ -124,7 +161,6 @@ class CurveRowWidget : public QWidget {
         eye_(eye),
         trash_(trash),
         row_height_(row_height) {
-    // swatch and markers are absent on State Transitions strip rows.
     if (swatch_ != nullptr) {
       swatch_->setParent(this);
     }
@@ -132,8 +168,12 @@ class CurveRowWidget : public QWidget {
     if (markers_ != nullptr) {
       markers_->setParent(this);
     }
-    eye_->setParent(this);
-    trash_->setParent(this);
+    if (eye_ != nullptr) {
+      eye_->setParent(this);
+    }
+    if (trash_ != nullptr) {
+      trash_->setParent(this);
+    }
     setAttribute(Qt::WA_TransparentForMouseEvents, false);
   }
 
@@ -159,28 +199,30 @@ class CurveRowWidget : public QWidget {
 
     // Every inner widget is a square of side `h` (the row height), so
     // each one is 1:1 and flush with the top + bottom borders. The
-    // swatch anchors left (when the row has one), the action buttons anchor
-    // right (markers, eye, trash, left-to-right); both ends keep
-    // kRowEdgeInset off the panel border. The markers toggle is absent on
-    // strip rows.
+    // swatch anchors left (when the row has one); both ends keep
+    // kRowEdgeInset off the panel border.
     if (swatch_ != nullptr) {
       swatch_->setGeometry(kRowEdgeInset, 0, h, h);
     }
 
-    const int trash_x = total_w - h - kRowEdgeInset;
-    trash_->setGeometry(trash_x, 0, h, h);
-    const int eye_x = trash_x - kRowSpacing - h;
-    eye_->setGeometry(eye_x, 0, h, h);
-    const int markers_x = eye_x - kRowSpacing - h;
-    if (markers_ != nullptr) {
-      markers_->setGeometry(markers_x, 0, h, h);
+    // Right-anchor whichever of {trash, eye, markers} this row carries,
+    // left-to-right, skipping the absent ones (see the class comment for
+    // which rows omit which). name_right tracks the left edge of the
+    // leftmost placed button, or the panel edge if none are present.
+    int name_right = total_w - kRowEdgeInset;
+    for (QToolButton* button : {trash_, eye_, markers_}) {
+      if (button == nullptr) {
+        continue;
+      }
+      const int x = name_right - h;
+      button->setGeometry(x, 0, h, h);
+      name_right = x - kRowSpacing;
     }
 
     // Name lives between the swatch (when present) and the leftmost right-
-    // anchored button — the markers toggle when present, else the eye. If the
-    // gap is too small to be readable, hide it; the buttons stay put.
+    // anchored button. If the gap is too small to be readable, hide it; the
+    // buttons stay put.
     const int name_x = kRowEdgeInset + (swatch_ != nullptr ? h + kRowSpacing : 0);
-    const int name_right = (markers_ != nullptr ? markers_x : eye_x) - kRowSpacing;
     const int name_width = name_right - name_x;
     if (name_width < 1) {
       if (name_->isVisible()) {
@@ -195,7 +237,7 @@ class CurveRowWidget : public QWidget {
   }
 
  private:
-  QPushButton* swatch_;
+  QWidget* swatch_;
   ElidingLabel* name_;
   QToolButton* markers_;
   QToolButton* eye_;
@@ -313,6 +355,12 @@ void CurveEditor::setPlot(PlotWidget* plot) {
   if (curve_color_connection_) {
     QObject::disconnect(curve_color_connection_);
   }
+  if (marker_scopes_connection_) {
+    QObject::disconnect(marker_scopes_connection_);
+  }
+  if (marker_visibility_connection_) {
+    QObject::disconnect(marker_visibility_connection_);
+  }
   if (plot_destroyed_connection_) {
     QObject::disconnect(plot_destroyed_connection_);
   }
@@ -329,10 +377,14 @@ void CurveEditor::setPlot(PlotWidget* plot) {
   if (plot_ != nullptr) {
     curve_list_connection_ = connect(plot_, &PlotWidgetBase::curveListChanged, this, &CurveEditor::refresh);
     curve_color_connection_ = connect(plot_, &PlotWidget::curveColorChanged, this, &CurveEditor::onCurveColorChanged);
+    marker_scopes_connection_ = connect(plot_, &PlotWidget::datasetMarkerScopesChanged, this, &CurveEditor::refresh);
+    marker_visibility_connection_ =
+        connect(plot_, &PlotWidget::markerScopeVisibilityChanged, this, &CurveEditor::onMarkerScopeVisibilityChanged);
     plot_destroyed_connection_ = connect(plot_, &QObject::destroyed, this, [this]() {
       plot_ = nullptr;
       clearActivePicker();
       ui_->listWidget->clear();
+      clearMarkerScopeRows();
     });
   }
   refresh();
@@ -350,6 +402,8 @@ void CurveEditor::setStateTransitions(StateTransitionsController* controller) {
     if (plot_ != nullptr) {
       QObject::disconnect(curve_list_connection_);
       QObject::disconnect(curve_color_connection_);
+      QObject::disconnect(marker_scopes_connection_);
+      QObject::disconnect(marker_visibility_connection_);
       QObject::disconnect(plot_destroyed_connection_);
       plot_ = nullptr;
       clearActivePicker();
@@ -369,6 +423,7 @@ void CurveEditor::setStateTransitions(StateTransitionsController* controller) {
     ui_->listWidget->setDragDropMode(QAbstractItemView::NoDragDrop);
     if (plot_ == nullptr) {
       ui_->listWidget->clear();
+      clearMarkerScopeRows();
     }
   }
 }
@@ -377,6 +432,7 @@ void CurveEditor::refresh() {
   // Clear without firing selection-change handlers; we re-evaluate at the end.
   QSignalBlocker block_list(ui_->listWidget);
   ui_->listWidget->clear();
+  clearMarkerScopeRows();
   // Row swatches are about to be destroyed — invalidate any cached pointer.
   clearActivePicker();
 
@@ -401,6 +457,21 @@ void CurveEditor::refresh() {
         info.source_name, info.curve->title().text(), info.curve->pen().color(), info.curve->isVisible(),
         info.show_markers);
   }
+
+  // Up to two marker-scope rows per dataset (Dataset then Global), each only
+  // when its object topic exists on this plot, in the pinned footer under the
+  // list so they stay in reach however long the curve list scrolls. The label
+  // names the dataset only when this plot draws more than one.
+  const std::vector<MarkerScopeKey>& scope_rows = plot_->markerScopeRows();
+  const bool single_dataset = plot_->curveDatasets().size() == 1;
+  for (const auto& [dataset_id, scope] : scope_rows) {
+    const QString scope_name = scope == MarkerScope::kDataset ? tr("Dataset markers") : tr("Global markers");
+    const QString label =
+        single_dataset ? scope_name : tr("%1 — %2").arg(scope_name, plot_->datasetDisplayName(dataset_id));
+    appendMarkerScopeRow(dataset_id, scope, label, plot_->datasetMarkerScopeVisible(dataset_id, scope));
+  }
+  ui_->markerScopesFooter->setVisible(!scope_rows.empty());
+
   // Preserve the active filter across refreshes.
   applyFilter();
 }
@@ -423,43 +494,19 @@ void CurveEditor::appendRow(
     connect(swatch, &QPushButton::clicked, this, [this, curve_key, swatch]() { onSwatchClicked(curve_key, swatch); });
   }
 
-  // The per-row checkable icon toggles (curve visibility eye, marker visibility)
-  // are built identically — a flat ink glyph whose 2-state SVG swaps on toggle.
-  // The objectName drives the matching QSS rule that strips QToolButton's default
-  // hover / checked background. on_toggled receives (curve_key, checked).
-  auto make_toggle = [&](const QString& object_name, const char* property_key, const char* on_path,
-                         const char* off_path, bool checked, const QString& tooltip, auto&& on_toggled) {
-    auto* button = new QToolButton();
-    button->setObjectName(object_name);
-    button->setProperty(property_key, curve_key);
-    button->setCheckable(true);
-    button->setAutoRaise(true);
-    button->setFocusPolicy(Qt::NoFocus);
-    button->setIconSize(QSize(row_height_, row_height_));
-    button->setChecked(checked);
-    button->setIcon(loadSvg(checked ? on_path : off_path, current_theme_));
-    button->setToolTip(tooltip);
-    connect(
-        button, &QToolButton::toggled, this, [this, curve_key, button, on_path, off_path, on_toggled](bool is_checked) {
-          button->setIcon(loadSvg(is_checked ? on_path : off_path, current_theme_));
-          on_toggled(curve_key, is_checked);
-        });
-    return button;
-  };
-
   // Curve-visibility eye gates the curve itself; the markers toggle gates this
   // curve's contribution to the plot-markers overlay (CurveInfo::show_markers).
-  auto* visibility = make_toggle(
+  auto* visibility = makeToggleButton(
       u"curveVisibilityToggle"_s, kVisibilityButtonProperty, kVisibilityOnPath, kVisibilityOffPath, visible,
-      tr("Toggle curve visibility"), [this](const QString& key, bool checked) { onVisibilityToggled(key, checked); });
+      tr("Toggle curve visibility"), [this, curve_key](bool checked) { onVisibilityToggled(curve_key, checked); });
   // The markers toggle is meaningful only for real curves (plot_ bound); State
   // Transitions strip rows have no plot-markers overlay, so they omit it. The
   // eye still applies to strip rows via onVisibilityToggled.
   QToolButton* markers = nullptr;
   if (plot_ != nullptr) {
-    markers = make_toggle(
+    markers = makeToggleButton(
         u"curveMarkersToggle"_s, kMarkersButtonProperty, kMarkersOnPath, kMarkersOffPath, markers_visible,
-        tr("Toggle marker visibility"), [this](const QString& key, bool checked) { onMarkersToggled(key, checked); });
+        tr("Toggle marker visibility"), [this, curve_key](bool checked) { onMarkersToggled(curve_key, checked); });
   }
 
   auto* name_label = new ElidingLabel();
@@ -496,6 +543,103 @@ void CurveEditor::appendRow(
   ui_->listWidget->addItem(item);
   item->setSizeHint(QSize(0, row_height_));
   ui_->listWidget->setItemWidget(item, row_widget);
+}
+
+QToolButton* CurveEditor::makeToggleButton(
+    const QString& object_name, const char* property_key, const char* on_path, const char* off_path, bool checked,
+    const QString& tooltip, std::function<void(bool)> on_toggled) {
+  auto* button = new QToolButton();
+  button->setObjectName(object_name);
+  button->setProperty(property_key, true);
+  button->setCheckable(true);
+  button->setAutoRaise(true);
+  button->setFocusPolicy(Qt::NoFocus);
+  button->setIconSize(QSize(row_height_, row_height_));
+  button->setChecked(checked);
+  button->setIcon(loadSvg(checked ? on_path : off_path, current_theme_));
+  button->setToolTip(tooltip);
+  connect(
+      button, &QToolButton::toggled, this,
+      [this, button, on_path, off_path, on_toggled = std::move(on_toggled)](bool is_checked) {
+        button->setIcon(loadSvg(is_checked ? on_path : off_path, current_theme_));
+        on_toggled(is_checked);
+      });
+  return button;
+}
+
+void CurveEditor::appendMarkerScopeRow(DatasetId dataset_id, MarkerScope scope, const QString& label, bool visible) {
+  const bool is_dataset_scope = scope == MarkerScope::kDataset;
+
+  SvgButton* glyph = makeMarkerScopeGlyph(is_dataset_scope ? kDatasetScopeIconPath : kGlobalScopeIconPath, row_height_);
+  auto* name_label = new ElidingLabel();
+  name_label->setObjectName(u"curveNameLabel"_s);
+  name_label->setElideMode(Qt::ElideLeft);
+  name_label->setFullText(label);
+  name_label->setToolTip(label);
+  QFont name_font = name_label->font();
+  name_font.setBold(true);
+  name_label->setFont(name_font);
+
+  auto* markers = makeToggleButton(
+      u"curveMarkersToggle"_s, kMarkersButtonProperty, kMarkersOnPath, kMarkersOffPath, visible,
+      is_dataset_scope ? tr("Show or hide this dataset's markers on this plot")
+                       : tr("Show or hide this dataset's global markers on this plot"),
+      [this, dataset_id, scope](bool checked) {
+        if (plot_ != nullptr) {
+          plot_->setDatasetMarkerScopeVisible(dataset_id, scope, checked);
+        }
+      });
+
+  auto* row_widget = new CurveRowWidget(glyph, name_label, markers, nullptr, nullptr, row_height_, /*parent=*/nullptr);
+  row_widget->setObjectName(QString::fromLatin1(kMarkerScopeRowName));
+  row_widget->setProperty(kMarkerScopeDatasetProperty, dataset_id);
+  row_widget->setProperty(kMarkerScopeScopeProperty, static_cast<int>(scope));
+  row_widget->setFixedHeight(row_height_);
+  ui_->markerScopesLayout->addWidget(row_widget);
+}
+
+void CurveEditor::clearMarkerScopeRows() {
+  qDeleteAll(markerScopeRows());  // a deleted child leaves its layout by itself
+  ui_->markerScopesFooter->hide();
+}
+
+QList<QWidget*> CurveEditor::markerScopeRows() const {
+  QList<QWidget*> rows;
+  for (int i = 0; i < ui_->markerScopesLayout->count(); ++i) {
+    if (QWidget* row = ui_->markerScopesLayout->itemAt(i)->widget()) {
+      rows.push_back(row);
+    }
+  }
+  return rows;
+}
+
+void CurveEditor::onMarkerScopeVisibilityChanged(DatasetId dataset_id, MarkerScope scope, bool visible) {
+  if (plot_ == nullptr) {
+    return;
+  }
+  for (QWidget* row : markerScopeRows()) {
+    if (row->property(kMarkerScopeDatasetProperty).toUInt() != dataset_id ||
+        row->property(kMarkerScopeScopeProperty).toInt() != static_cast<int>(scope)) {
+      continue;
+    }
+    // setChecked re-enters setDatasetMarkerScopeVisible with the same value: a no-op.
+    if (auto* toggle = row->findChild<QToolButton*>(u"curveMarkersToggle"_s)) {
+      toggle->setChecked(visible);
+    }
+    return;
+  }
+  // No row for it yet — refresh() builds it with the right state.
+}
+
+void CurveEditor::forEachRow(const std::function<void(QWidget*)>& visit) const {
+  for (int i = 0; i < ui_->listWidget->count(); ++i) {
+    if (QWidget* row = ui_->listWidget->itemWidget(ui_->listWidget->item(i))) {
+      visit(row);
+    }
+  }
+  for (QWidget* row : markerScopeRows()) {
+    visit(row);
+  }
 }
 
 void CurveEditor::onSwatchClicked(const QString& curve_name, QPushButton* swatch) {
@@ -584,36 +728,37 @@ void CurveEditor::onChromeMetricsChanged(const ChromeMetrics& metrics) {
   // stored row height + the per-row button iconSize so the eye and
   // trash glyphs re-rasterise at the new extent).
   row_height_ = metrics.icon_size;
-  const QSize row_icon_size(row_height_, row_height_);
   for (int i = 0; i < ui_->listWidget->count(); ++i) {
-    QListWidgetItem* item = ui_->listWidget->item(i);
-    item->setSizeHint(QSize(0, row_height_));
-    QWidget* widget = ui_->listWidget->itemWidget(item);
-    if (widget == nullptr) {
-      continue;
-    }
-    // CurveRowWidget is the only widget type set as itemWidget here;
-    // static_cast is safe and skips the qobject_cast requirement for
-    // a Q_OBJECT on the file-local row class.
-    static_cast<CurveRowWidget*>(widget)->setRowHeight(row_height_);
-    for (auto* button : widget->findChildren<QToolButton*>()) {
-      button->setIconSize(row_icon_size);
-    }
+    ui_->listWidget->item(i)->setSizeHint(QSize(0, row_height_));
   }
+  // The +1 keeps the footer layout clear of its 1-px top border (QSS paints
+  // it, the layout doesn't inset for it).
+  ui_->markerScopesLayout->setSpacing(metrics.layout_spacing);
+  ui_->markerScopesLayout->setContentsMargins(0, 1 + metrics.layout_spacing, 0, 0);
+  for (QWidget* row : markerScopeRows()) {
+    row->setFixedHeight(row_height_);
+  }
+  const QSize row_icon_size(row_height_, row_height_);
+  forEachRow([&](QWidget* row) {
+    // Every row is a CurveRowWidget (file-local, no Q_OBJECT), so static_cast.
+    static_cast<CurveRowWidget*>(row)->setRowHeight(row_height_);
+    for (auto* button : row->findChildren<QToolButton*>()) {
+      if (auto* glyph = qobject_cast<SvgButton*>(button)) {
+        glyph->setExtent(row_height_, std::max(kMarkerScopeGlyphInset, row_height_ - kMarkerScopeGlyphInset));
+      } else {
+        button->setIconSize(row_icon_size);
+      }
+    }
+  });
 }
 
 void CurveEditor::onStylesheetChanged(QString theme) {
   current_theme_ = std::move(theme);
   // Header kebab icon (the Search glyph self-retints).
   ui_->buttonCurvesMenu->setIcon(loadSvg(":/resources/svg/more_vert.svg", current_theme_));
-  // Re-tint every row's visibility + trash toggles to the new theme ink.
-  // The buttons are owned by the row widgets stored as itemWidget on each
-  // QListWidgetItem; QObject::findChildren walks that subtree.
-  for (int i = 0; i < ui_->listWidget->count(); ++i) {
-    QWidget* row = ui_->listWidget->itemWidget(ui_->listWidget->item(i));
-    if (row == nullptr) {
-      continue;
-    }
+  // Re-tint every row's toggles to the new theme ink (a footer row's scope
+  // glyph is an SvgButton and retints itself).
+  forEachRow([this](QWidget* row) {
     for (auto* button : row->findChildren<QToolButton*>()) {
       if (button->property(kVisibilityButtonProperty).isValid()) {
         button->setIcon(loadSvg(button->isChecked() ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
@@ -623,7 +768,7 @@ void CurveEditor::onStylesheetChanged(QString theme) {
         button->setIcon(loadSvg(kTrashIconPath, current_theme_));
       }
     }
-  }
+  });
 }
 
 void CurveEditor::onFilterChanged(const QString& /*text*/) {

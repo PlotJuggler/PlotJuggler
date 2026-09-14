@@ -29,4 +29,11 @@ inline void markPendingIntent(QDomElement& curve) {
   curve.setAttribute(kPendingIntentAttribute, kPendingIntentTrue);
 }
 
+/// <marker_scope> attribute naming which of a dataset's marker sets the entry is
+/// about. Its value is the persisted vocabulary below, not the `MarkerScope` enum
+/// name, so the enum can be renamed without invalidating saved layouts.
+inline constexpr QLatin1StringView kMarkerScopeAttribute("scope");
+inline constexpr QLatin1StringView kMarkerScopeDataset("dataset");
+inline constexpr QLatin1StringView kMarkerScopeAllDatasets("global");
+
 }  // namespace PJ::plot_xml

@@ -24,9 +24,8 @@ struct MarkerTarget {
   QString topic;
 };
 
-// The reserved dataset-global marker topic name is sdk::kGlobalMarkerTopic
-// (pj_base/builtin/plot_markers.hpp) — the single source of truth shared with the
-// producer side; this module no longer keeps a shadow copy.
+// The reserved marker-scope topic names live in pj_runtime/MarkerTopics.h; this
+// module has no shadow copy of them.
 
 /// Custom QwtPlotItem that overlays plot markers (regions / events / value bands /
 /// labels), drawn on top of the curves. The marker set for each (dataset, topic)

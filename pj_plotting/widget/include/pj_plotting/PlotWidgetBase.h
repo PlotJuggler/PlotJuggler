@@ -42,10 +42,11 @@ class PlotWidgetBase : public QWidget {
     QString source_name;
     QwtPlotCurve* curve = nullptr;
     QwtPlotMarker* marker = nullptr;
-    // Whether this curve contributes plot markers to the overlay. When false,
-    // PlotMarkersItem skips both this series' per-topic marker set and its
-    // dataset's global marker set (the latter hides only once every curve of
-    // that dataset on the plot has markers off). Toggled per-row in CurveEditor.
+    // Whether this curve contributes its OWN per-series marker set to the
+    // overlay. Each dataset's Dataset/Global marker scopes are a separate
+    // concern, gated solely by PlotWidget::setDatasetMarkerScopeVisible (the
+    // CurveEditor's "Dataset markers" / "Global markers" pseudo-rows) — never
+    // by any curve's flag. Toggled per-row in CurveEditor.
     bool show_markers = true;
   };
 

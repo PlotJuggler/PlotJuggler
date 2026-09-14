@@ -81,6 +81,8 @@ class MarkersRuntimeHost {
   static bool onRemove(void* ctx, PJ_string_view_t id, PJ_error_t* out_error) noexcept;
   static bool onList(
       void* ctx, PJ_string_view_t* out_ids, uint64_t capacity, uint64_t* out_count, PJ_error_t* out_error) noexcept;
+  /// A plugin-local id may be bound to several datasets; this reports its
+  /// first-applied binding (`MarkerService::firstBinding`).
   static bool onConfig(
       void* ctx, PJ_string_view_t id, PJ_string_view_t* out_recipe_json, PJ_error_t* out_error) noexcept;
   static bool onValidate(

@@ -828,6 +828,42 @@ TEST(DatasetSourcePath, StampResolveAndPortableIdGuardCoverEveryIdentityShape) {
   EXPECT_EQ(transform_input.attribute(u"dataset_path"_s), expected);
 }
 
+// A hidden <marker_scope> carries the same dataset identity as the curves beside it
+// and must survive the same stamp / portable-id / generic-strip passes, or a reload
+// with exchanged dataset ids binds the hidden scope to the wrong dataset.
+TEST(DatasetSourcePath, MarkerScopeChildIsStampedAndStrippedLikeItsCurves) {
+  PlotDoc pd = makePlotDoc();
+  QDomElement ts = addTsCurve(pd, u"/imu"_s, u"x"_s);
+  ts.setAttribute(u"dataset_id"_s, u"7"_s);
+  QDomElement hidden = pd.doc.createElement(u"marker_scope"_s);
+  hidden.setAttribute(u"dataset_id"_s, u"7"_s);
+  hidden.setAttribute(u"dataset_source"_s, u"run.mcap"_s);
+  hidden.setAttribute(u"scope"_s, u"global"_s);
+  hidden.setAttribute(u"visible"_s, u"false"_s);
+  pd.plot.appendChild(hidden);
+  QDomElement unknown = pd.doc.createElement(u"marker_scope"_s);
+  unknown.setAttribute(u"dataset_id"_s, u"8"_s);
+  unknown.setAttribute(u"scope"_s, u"dataset"_s);
+  unknown.setAttribute(u"visible"_s, u"false"_s);
+  pd.plot.appendChild(unknown);
+
+  PJ::layout_xml::stampDatasetSourcePaths(
+      pd.doc, [](std::uint32_t id) { return id == 7 ? u"data/run.mcap"_s : QString{}; });
+  EXPECT_EQ(hidden.attribute(u"dataset_path"_s), u"data/run.mcap"_s) << "stamped like its curve";
+  EXPECT_FALSE(unknown.hasAttribute(u"dataset_path"_s));
+
+  PJ::layout_xml::removeUnvalidatedDatasetIds(pd.doc);
+  EXPECT_TRUE(hidden.hasAttribute(u"dataset_id"_s));
+  EXPECT_FALSE(unknown.hasAttribute(u"dataset_id"_s)) << "an unvalidated volatile id must not survive a file save";
+
+  PJ::layout_xml::removeDatasetQualifiersForGenericLayout(pd.doc);
+  EXPECT_FALSE(hidden.hasAttribute(u"dataset_id"_s));
+  EXPECT_FALSE(hidden.hasAttribute(u"dataset_source"_s));
+  EXPECT_FALSE(hidden.hasAttribute(u"dataset_path"_s));
+  EXPECT_EQ(hidden.attribute(u"scope"_s), u"global"_s);
+  EXPECT_EQ(hidden.attribute(u"visible"_s), u"false"_s);
+}
+
 TEST(DatasetSourcePath, RemapCoversAllFiveQualifierShapesWithoutTouchingOtherAttributes) {
   QDomDocument doc;
   QDomElement root = doc.createElement(u"root"_s);

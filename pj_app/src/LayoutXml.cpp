@@ -213,20 +213,30 @@ QString seriesPathDedupKey(const SeriesPath& path) {
          path.dataset_path + QLatin1Char('\x1f') + path.topic + QLatin1Char('\x1f') + path.field;
 }
 
-// Visits every <curve> that is a direct child of a <plot> element.
+// Visits every `tag` element that is a direct child of a <plot> element.
 template <typename Fn>
-void forEachPlotCurve(const QDomDocument& doc, Fn&& fn) {
+void forEachPlotChild(const QDomDocument& doc, const QString& tag, Fn&& fn) {
   const QDomNodeList plot_nodes = doc.elementsByTagName(u"plot"_s);
   for (int i = 0; i < plot_nodes.size(); ++i) {
     const QDomElement plot = plot_nodes.at(i).toElement();
     if (plot.isNull()) {
       continue;
     }
-    for (QDomElement curve = plot.firstChildElement(u"curve"_s); !curve.isNull();
-         curve = curve.nextSiblingElement(u"curve"_s)) {
-      fn(curve);
+    for (QDomElement child = plot.firstChildElement(tag); !child.isNull(); child = child.nextSiblingElement(tag)) {
+      fn(child);
     }
   }
+}
+
+template <typename Fn>
+void forEachPlotCurve(const QDomDocument& doc, Fn&& fn) {
+  forEachPlotChild(doc, u"curve"_s, std::forward<Fn>(fn));
+}
+
+// A hidden-marker-scope entry carries the same dataset identity as its curves.
+template <typename Fn>
+void forEachMarkerScope(const QDomDocument& doc, Fn&& fn) {
+  forEachPlotChild(doc, u"marker_scope"_s, std::forward<Fn>(fn));
 }
 
 }  // namespace
@@ -406,6 +416,7 @@ constexpr std::array<DatasetIdentityAttributes, 3> kCurveIdentityAttributes{{
 constexpr DatasetIdentityAttributes kProcessorInputIdentityAttributes{
     "input_dataset_id", "input_dataset_source", "input_dataset_path"};
 constexpr DatasetIdentityAttributes kTransformInputIdentityAttributes{"dataset_id", "dataset_source", "dataset_path"};
+constexpr DatasetIdentityAttributes kMarkerScopeIdentityAttributes{"dataset_id", "dataset_source", "dataset_path"};
 constexpr DatasetIdentityAttributes kSceneIdentityAttributes{"dataset_id", "dataset_source", "dataset_path"};
 constexpr DatasetIdentityAttributes kSourceIdentityAttributes{
     "source_dataset_id", "source_dataset_source", "source_dataset_path"};
@@ -473,6 +484,7 @@ void removeDatasetQualifiersForGenericLayout(QDomDocument& doc) {
       doc, [&strip_pair](QDomElement& processor) { strip_pair(processor, kProcessorInputIdentityAttributes); });
   forEachTransformInput(
       doc, [&strip_pair](QDomElement& input) { strip_pair(input, kTransformInputIdentityAttributes); });
+  forEachMarkerScope(doc, [&strip_pair](QDomElement scope) { strip_pair(scope, kMarkerScopeIdentityAttributes); });
   forEachElement(doc, [&strip_pair](QDomElement& element) {
     if (element.tagName() == "layer"_L1 || element.tagName() == "config_topic"_L1) {
       strip_pair(element, kSceneIdentityAttributes);
@@ -531,6 +543,8 @@ void stampDatasetSourcePaths(QDomDocument& doc, const DatasetPathLookup& lookup)
   });
   forEachTransformInput(
       doc, [&lookup](QDomElement& input) { stampIdentityPair(input, kTransformInputIdentityAttributes, lookup); });
+  forEachMarkerScope(
+      doc, [&lookup](QDomElement scope) { stampIdentityPair(scope, kMarkerScopeIdentityAttributes, lookup); });
 }
 
 void removeUnvalidatedDatasetIds(QDomDocument& doc) {
@@ -543,6 +557,8 @@ void removeUnvalidatedDatasetIds(QDomDocument& doc) {
       doc, [](QDomElement& processor) { stripUnvalidatedIdentityPair(processor, kProcessorInputIdentityAttributes); });
   forEachTransformInput(
       doc, [](QDomElement& input) { stripUnvalidatedIdentityPair(input, kTransformInputIdentityAttributes); });
+  forEachMarkerScope(
+      doc, [](QDomElement scope) { stripUnvalidatedIdentityPair(scope, kMarkerScopeIdentityAttributes); });
 }
 
 void resolveDatasetSourcePaths(QDomDocument& doc, const QDir& layout_dir) {

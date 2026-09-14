@@ -16,11 +16,14 @@
 #include <functional>
 #endif
 #include <optional>
+#include <set>
+#include <utility>
 #include <vector>
 
 #include "pj_plotting/CurveTracker.h"
 #include "pj_plotting/PlotWidgetBase.h"
 #include "pj_runtime/CurveDescriptor.h"
+#include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/Time.h"
 
 class QDragEnterEvent;
@@ -33,6 +36,11 @@ namespace PJ {
 class CatalogModel;
 class SessionManager;
 class PlotMarkersItem;
+struct MarkerTarget;  // pj_plotting/PlotMarkersItem.h
+
+// Identifies one dataset's marker scope — the CurveEditor pseudo-row unit and
+// the hidden-flag key.
+using MarkerScopeKey = std::pair<DatasetId, MarkerScope>;
 
 class PlotWidget : public PlotWidgetBase {
   Q_OBJECT
@@ -148,6 +156,29 @@ class PlotWidget : public PlotWidgetBase {
   // drops the stash (pass true on the final drain pass).
   void applySavedViewportOrZoom(bool clear_after = false);
 
+  // Datasets with >=1 DatastoreCurveAdapter curve on this plot (XY curves don't
+  // count — they have no single owning dataset). Sorted, deduped; the CurveEditor
+  // uses it to decide whether a marker-scope row's label needs the dataset name.
+  [[nodiscard]] std::vector<DatasetId> curveDatasets() const;
+  // The (dataset, scope) rows the CurveEditor's footer lists: every curveDatasets()
+  // entry (ascending) × the scopes publishedMarkerScopes reports for it.
+  // Refreshed on curveListChanged and markersChanged; datasetMarkerScopesChanged()
+  // announces a change.
+  [[nodiscard]] const std::vector<MarkerScopeKey>& markerScopeRows() const noexcept {
+    return marker_scope_rows_;
+  }
+  // dataset_name of the first curve on this plot backed by `dataset_id`, or a
+  // generic fallback if none is currently plotted.
+  [[nodiscard]] QString datasetDisplayName(DatasetId dataset_id) const;
+  // Whether `dataset_id`'s marker set for `scope` is currently drawn on this
+  // plot. Default true; independent of every curve's own show_markers flag and
+  // of the other scope's visibility.
+  [[nodiscard]] bool datasetMarkerScopeVisible(DatasetId dataset_id, MarkerScope scope) const;
+  // The (dataset, topic) targets PlotMarkersItem draws, recomputed from the
+  // current curves + the per-dataset per-scope visibility flags. Exposed as the
+  // test seam.
+  [[nodiscard]] std::vector<MarkerTarget> markerTargets() const;
+
  public slots:
   void zoomOut(bool emit_signal = true);
   void onZoomOutHorizontalTriggered(bool emit_signal = true);
@@ -161,6 +192,18 @@ class PlotWidget : public PlotWidgetBase {
   // Toggle whether this curve contributes plot markers to the overlay (see
   // CurveInfo::show_markers). Independent from setCurveVisible.
   void setCurveShowMarkers(const QString& curve_name, bool show);
+  // Shows/hides `dataset_id`'s marker set for `scope` on this plot (the
+  // CurveEditor's "Dataset markers" / "Global markers" pseudo-row toggle).
+  // Independent of every curve's own show_markers and of the other scope.
+  // No-op (no replot/undo) if the value doesn't change.
+  void setDatasetMarkerScopeVisible(DatasetId dataset_id, MarkerScope scope, bool visible);
+  // Re-resolves the hidden <marker_scope> entries whose dataset was not loaded
+  // at xmlLoadState time (kept as pending saved identities, visible meanwhile)
+  // and moves the ones that now name a live dataset into the hidden set —
+  // possibly under a reminted id. The pending binder calls it for each plot it
+  // bound a curve on, since a dataset's scopes only exist once its curves do.
+  // Ambiguous entries stay pending; emits datasetMarkerScopesChanged on a move.
+  void resolvePendingMarkerScopes();
   void removeAllCurves() override;
 
  signals:
@@ -172,6 +215,14 @@ class PlotWidget : public PlotWidgetBase {
   /// The serialized unresolved-curve set changed and binder registrations must
   /// be rebuilt from the plot's current XML state.
   void pendingCurveIntentsChanged();
+  // markerScopeRows() changed because a marker topic appeared or was retired
+  // (markersChanged), or a layout restore replaced the hidden flags wholesale.
+  // NOT emitted for a curve-list change: curveListChanged already reaches every
+  // listener that rebuilds rows, so emitting both would rebuild twice.
+  void datasetMarkerScopesChanged();
+  // One (dataset, scope) row's visibility flag flipped (a toggle, or undo/redo).
+  // Only that row's check state changes — no row set change.
+  void markerScopeVisibilityChanged(DatasetId dataset_id, MarkerScope scope, bool visible);
   void splitHorizontal();
   void splitVertical();
   void curveColorChanged(QString curve_name, QColor color);
@@ -219,7 +270,14 @@ class PlotWidget : public PlotWidgetBase {
   void canvasContextMenuTriggered(const QPoint& pos);
   // True when the clipboard contains a plot XML payload.
   [[nodiscard]] bool canPasteWidgetFromClipboard() const;
-  // Adds current opaque curve keys to copied XML for same-session paste.
+  // Writes the `<prefix>dataset_id` + `<prefix>dataset_source` qualifiers that
+  // identify `dataset_id` across reloads (<curve> uses "", "x_", "y_";
+  // <marker_scope> uses ""). Nothing is written without a catalog.
+  void stampDatasetIdentity(QDomElement& element, DatasetId dataset_id, const QString& prefix = {}) const;
+  // Adds the `<prefix>dataset_path` tiebreak (same-basename files) when the
+  // catalog knows a file path — clipboard-only, layouts stay path-free.
+  void stampDatasetPath(QDomElement& element, DatasetId dataset_id, const QString& prefix = {}) const;
+  // Adds current opaque curve keys + dataset paths to copied XML for same-session paste.
   void stampClipboardCurveKeys(QDomElement& plot_element) const;
   // Resolves copied stable topic/field paths to this session's curve keys.
   void rebindClipboardCurveKeys(QDomElement& plot_element) const;
@@ -251,6 +309,21 @@ class PlotWidget : public PlotWidgetBase {
   // matched. PointSeriesXY ignores display offset (plan §12) and is skipped. The
   // caller owns the post-action (re-fit vs replot-at-current-zoom).
   bool invalidateAdapterOffsets(std::optional<DatasetId> only = std::nullopt);
+  // Drops hidden-flag entries for datasets no longer in curveDatasets() (last
+  // curve of that dataset removed), so a later re-add starts every scope
+  // visible again. No-op during layout restore or while curves are still
+  // pending a bind (pruning here would drop the loaded flag before the dataset
+  // re-links). Runs on curveListChanged only, which already rebuilds the rows.
+  void pruneHiddenMarkerScopes();
+  // The <marker_scope visible="false"> children of <plot>: one per hidden
+  // (dataset, scope) pair, carrying the dataset identity like a curve does, plus
+  // the pending entries verbatim so a snapshot taken mid-restore keeps them.
+  void saveHiddenMarkerScopes(QDomDocument& doc, QDomElement& plot_element) const;
+  void loadHiddenMarkerScopes(const QDomElement& plot_element);
+  // Recomputes markerScopeRows(); true when it differs from the previous set.
+  // The caller decides whether to announce it — markersChanged fires on every
+  // streaming tick regardless of whether a topic actually appeared/disappeared.
+  [[nodiscard]] bool refreshMarkerScopeRowSet();
   [[nodiscard]] QStringList decodeCurveDrop(const QMimeData* mime_data, const QString& format) const;
   [[nodiscard]] bool allCurvesKnown(const QStringList& curves) const;
   // Time-series drop gate (curveslist/add_curve): a curve name is droppable when
@@ -327,6 +400,23 @@ class PlotWidget : public PlotWidgetBase {
   };
   std::optional<SavedViewport> saved_viewport_;
   std::vector<QDomDocument> pending_curve_intents_;
+
+  // Marker scopes hidden on this plot (absent = visible). Lives independently
+  // of markerScopeRows() so a layout can restore "hidden" before the producing
+  // rule has published the topic (see pruneHiddenMarkerScopes / xmlLoadState).
+  std::set<MarkerScopeKey> hidden_marker_scopes_;
+  // A hidden <marker_scope> whose dataset was not loaded when the layout was
+  // read: the saved identity, re-resolved by resolvePendingMarkerScopes() once
+  // the dataset (possibly reminted) exists. Pending means visible.
+  struct PendingMarkerScope {
+    DatasetId id = 0;
+    QString source;
+    QString path;
+    MarkerScope scope = MarkerScope::kDataset;
+  };
+  std::vector<PendingMarkerScope> pending_marker_scopes_;
+  // See markerScopeRows().
+  std::vector<MarkerScopeKey> marker_scope_rows_;
 
   QAction* action_split_horizontal_ = nullptr;
   QAction* action_split_vertical_ = nullptr;
