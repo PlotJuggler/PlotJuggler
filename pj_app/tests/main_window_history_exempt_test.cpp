@@ -17,7 +17,9 @@
 
 #include "LayoutXml.h"
 #include "MainWindow.h"
+#include "PluginPlotTabsController.h"
 #include "dataset_test_helpers.h"
+#include "pj_datastore/data_processor.hpp"
 #include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
@@ -61,15 +63,15 @@ class MainWindowHistoryExemptTestPeer {
 
   [[nodiscard]] static Status createOwnedTab(
       MainWindow& window, const QString& plugin_id, const QString& tab_id, const QString& title) {
-    return window.createOwnedPlotTab(plugin_id, tab_id, title);
+    return window.plugin_plot_tabs_->createTab(plugin_id, tab_id, title);
   }
 
   [[nodiscard]] static Status closeOwnedTab(MainWindow& window, const QString& plugin_id, const QString& tab_id) {
-    return window.closeOwnedPlotTab(plugin_id, tab_id);
+    return window.plugin_plot_tabs_->closeTab(plugin_id, tab_id);
   }
 
   [[nodiscard]] static PlotDocker* ownedTab(const MainWindow& window, const QString& plugin_id, const QString& tab_id) {
-    return window.ownedPlotTab(plugin_id, tab_id);
+    return window.plugin_plot_tabs_->ownedTab(plugin_id, tab_id);
   }
 
   static void resetHistory(MainWindow& window) {
@@ -112,6 +114,10 @@ class MainWindowHistoryExemptTestPeer {
       MainWindow& window, const CapturedWorkspace& target, MissingCurvePolicy policy, TimelineRestoreMode timeline_mode,
       const CapturedWorkspace* rollback_to, RestoreIntent intent, QString* out_reason = nullptr) {
     return window.restoreWorkspaceState(target, policy, timeline_mode, rollback_to, intent, out_reason);
+  }
+
+  [[nodiscard]] static bool restoreDataProcessors(MainWindow& window, const QDomElement& root, RestoreIntent intent) {
+    return window.restoreDataProcessors(root, intent);
   }
 
   [[nodiscard]] static RestoreResult restoreWorkspaceStateDoc(
@@ -917,8 +923,6 @@ TEST_F(MainWindowHistoryExemptFixture, UnrelatedUndoKeepsOwnedPlotCurveOfOrdinar
 }
 
 TEST_F(MainWindowHistoryExemptFixture, UnrelatedUndoKeepsOwnedPlotCurveOfOrdinaryFilterOutput) {
-  GTEST_SKIP() << "known gap: per-curve filters still clear+replay on a history restore, so an owned tab's curve "
-                  "bound to a filter output is pruned by an unrelated undo (follow-up: filter diff-reconcile)";
   auto& window = mainWindow();
   auto& app = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
   auto& service = PJ::MainWindowHistoryExemptTestPeer::processors(window);
@@ -946,6 +950,203 @@ TEST_F(MainWindowHistoryExemptFixture, UnrelatedUndoKeepsOwnedPlotCurveOfOrdinar
   ASSERT_EQ(PJ::MainWindowHistoryExemptTestPeer::ownedTab(window, u"assistant"_s, u"filter"_s), owned);
   EXPECT_EQ(PJ::MainWindowHistoryExemptTestPeer::redoSize(window), 1U);
   EXPECT_EQ(plot->curveList().size(), 1U) << "owned tab lost its curve when an unchanged filter was replayed";
+}
+
+// Repair pass: a filter reading a transform output is kept by the reconcile, but
+// the transform's script changed between snapshots, so the undo replaces the
+// transform and the removal cascades the filter out. The restore must re-apply
+// the filter on the transform's new output.
+TEST_F(MainWindowHistoryExemptFixture, UndoReappliesFilterCascadedOutByReplacedTransform) {
+  auto& window = mainWindow();
+  auto& app = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
+  auto& service = PJ::MainWindowHistoryExemptTestPeer::processors(window);
+  const auto dataset = pj_test::createDataset(app, "filter-on-replaced-transform", true);
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/x"), 0U);
+  const auto negate = service.upsertTransform("user", "negate", {"/x"}, {"U"}, kNegateScript, "{}");
+  ASSERT_TRUE(negate) << negate.error();
+  const auto filter = service.applyFilter(negate->output_topic_ids.front(), dataset, "absolute", "U_abs");
+  ASSERT_TRUE(filter) << filter.error();
+  app.catalogModel().rebuildFromDatastore();
+  PJ::MainWindowHistoryExemptTestPeer::resetHistory(window);  // S0: negate + U_abs
+  const auto times10 = service.upsertTransform("user", "negate", {"/x"}, {"U"}, kTimes10Script, "{}");
+  ASSERT_TRUE(times10) << times10.error();
+  PJ::MainWindowHistoryExemptTestPeer::pushUndoState(window, true);  // S1: times10 + U_abs
+
+  PJ::MainWindowHistoryExemptTestPeer::undo(window);
+
+  EXPECT_EQ(PJ::MainWindowHistoryExemptTestPeer::redoSize(window), 1U)
+      << window.statusBar()->currentMessage().toStdString();
+  const auto recipes = service.transformRecipes();
+  ASSERT_EQ(recipes.size(), 1U);
+  EXPECT_EQ(recipes.front().script, kNegateScript);
+  const auto filters = service.recipes();
+  ASSERT_EQ(filters.size(), 1U) << "the filter cascaded out with the replaced transform was not re-applied";
+  EXPECT_EQ(filters.front().output_name, "U_abs");
+  EXPECT_EQ(filters.front().input_topic_id, recipes.front().output_topic_ids.front())
+      << "the re-applied filter must read the transform's NEW output topic";
+  EXPECT_FALSE(catalogKeyForTopic(app.catalogModel(), u"U_abs"_s).isEmpty());
+}
+
+// Repair pass over a filter -> transform -> filter chain whose middle link is
+// replaced: the head filter is kept untouched, the tail filter is re-applied on
+// the replayed transform's new output, and the result is stable (a second undo
+// of an unrelated edit changes nothing).
+TEST_F(MainWindowHistoryExemptFixture, UndoRepairsFilterTransformFilterChain) {
+  auto& window = mainWindow();
+  auto& app = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
+  auto& service = PJ::MainWindowHistoryExemptTestPeer::processors(window);
+  const auto dataset = pj_test::createDataset(app, "chain-repair", true);
+  const auto input = pj_test::addScalarTopic(app, dataset, "/x");
+  ASSERT_NE(input, 0U);
+  const auto head = service.applyFilter(input, dataset, "absolute", "A");
+  ASSERT_TRUE(head) << head.error();
+  const auto middle = service.upsertTransform("user", "negate", {"A"}, {"B"}, kNegateScript, "{}");
+  ASSERT_TRUE(middle) << middle.error();
+  const auto tail = service.applyFilter(middle->output_topic_ids.front(), dataset, "absolute", "C");
+  ASSERT_TRUE(tail) << tail.error();
+  app.catalogModel().rebuildFromDatastore();
+  PJ::MainWindowHistoryExemptTestPeer::resetHistory(window);
+  ASSERT_TRUE(service.upsertTransform("user", "negate", {"A"}, {"B"}, kTimes10Script, "{}"));
+  PJ::MainWindowHistoryExemptTestPeer::pushUndoState(window, true);
+
+  PJ::MainWindowHistoryExemptTestPeer::undo(window);
+
+  ASSERT_EQ(PJ::MainWindowHistoryExemptTestPeer::redoSize(window), 1U)
+      << window.statusBar()->currentMessage().toStdString();
+  const auto recipes = service.transformRecipes();
+  ASSERT_EQ(recipes.size(), 1U);
+  EXPECT_EQ(recipes.front().script, kNegateScript);
+  auto filters = service.recipes();
+  ASSERT_EQ(filters.size(), 2U);
+  std::sort(filters.begin(), filters.end(), [](const auto& lhs, const auto& rhs) {
+    return lhs.output_name < rhs.output_name;
+  });
+  EXPECT_EQ(filters[0].output_topic_id, head->output_topic_id) << "the untouched head filter must keep its TopicId";
+  EXPECT_EQ(filters[1].output_name, "C");
+  EXPECT_EQ(filters[1].input_topic_id, recipes.front().output_topic_ids.front());
+  EXPECT_EQ(recipes.front().input_topic_ids.front(), head->output_topic_id);
+
+  // Idempotence: an unrelated undo over the repaired graph keeps every TopicId.
+  const auto tail_after_repair = filters[1].output_topic_id;
+  const auto middle_after_repair = recipes.front().output_topic_ids.front();
+  ASSERT_NE(ensureCurrentPlot(window), nullptr);
+  ensureCurrentPlot(window)->setStateId(u"chain-unrelated-edit"_s);
+  PJ::MainWindowHistoryExemptTestPeer::pushUndoState(window, true);
+  PJ::MainWindowHistoryExemptTestPeer::undo(window);
+  ASSERT_EQ(service.transformRecipes().size(), 1U);
+  EXPECT_EQ(service.transformRecipes().front().output_topic_ids.front(), middle_after_repair);
+  filters = service.recipes();
+  ASSERT_EQ(filters.size(), 2U);
+  for (const auto& recipe : filters) {
+    EXPECT_EQ(recipe.output_topic_id, recipe.output_name == "A" ? head->output_topic_id : tail_after_repair);
+  }
+}
+
+// A filter reading another filter, both replaced by the snapshot:
+// the downstream one must bind to the upstream's NEW output, not the TopicId
+// the snapshot's input resolved to before the upstream was cleared.
+TEST_F(MainWindowHistoryExemptFixture, UndoRebindsReplacedFilterChainToLiveInputs) {
+  auto& window = mainWindow();
+  auto& app = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
+  auto& service = PJ::MainWindowHistoryExemptTestPeer::processors(window);
+  const auto dataset = pj_test::createDataset(app, "filter-filter-replaced", true);
+  const auto input = pj_test::addScalarTopic(app, dataset, "/x");
+  ASSERT_NE(input, 0U);
+  const auto head = service.applyFilter(input, dataset, "absolute", "A");
+  ASSERT_TRUE(head) << head.error();
+  const auto tail = service.applyFilter(head->output_topic_id, dataset, "absolute", "B");
+  ASSERT_TRUE(tail) << tail.error();
+  app.catalogModel().rebuildFromDatastore();
+  PJ::MainWindowHistoryExemptTestPeer::resetHistory(window);  // S0: A=absolute, B=absolute
+  auto head_scale = service.makeRestoredProcessor("scale", "{}", "");
+  auto tail_scale = service.makeRestoredProcessor("scale", "{}", "");
+  ASSERT_TRUE(head_scale && tail_scale);
+  ASSERT_TRUE(service.updateFilter(head->node_id, std::move(head_scale)));
+  ASSERT_TRUE(service.updateFilter(tail->node_id, std::move(tail_scale)));
+  PJ::MainWindowHistoryExemptTestPeer::pushUndoState(window, true);  // S1: A=scale, B=scale
+
+  PJ::MainWindowHistoryExemptTestPeer::undo(window);
+
+  ASSERT_EQ(PJ::MainWindowHistoryExemptTestPeer::redoSize(window), 1U)
+      << window.statusBar()->currentMessage().toStdString();
+  auto filters = service.recipes();
+  ASSERT_EQ(filters.size(), 2U);
+  std::sort(filters.begin(), filters.end(), [](const auto& lhs, const auto& rhs) {
+    return lhs.output_name < rhs.output_name;
+  });
+  EXPECT_EQ(filters[0].processor_id, "absolute");
+  EXPECT_EQ(filters[1].processor_id, "absolute");
+  EXPECT_NE(filters[0].output_topic_id, head->output_topic_id) << "A was replaced, so it must carry a new TopicId";
+  EXPECT_EQ(filters[1].input_topic_id, filters[0].output_topic_id)
+      << "B must read the replaced A, not its retired topic";
+}
+
+// A replace-restore (layout load) of raw -> transform -> filter into
+// a session that holds only the raw data: the filter's input does not exist when
+// the snapshot is parsed, so it must be applied once the transform is live.
+TEST_F(MainWindowHistoryExemptFixture, ReplaceRestoreAppliesFilterOnTransformItRestores) {
+  auto& window = mainWindow();
+  auto& app = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
+  auto& service = PJ::MainWindowHistoryExemptTestPeer::processors(window);
+  const auto dataset = pj_test::createDataset(app, "layout-transform-then-filter", true);
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/x"), 0U);
+  const auto negate = service.upsertTransform("user", "negate", {"/x"}, {"U"}, kNegateScript, "{}");
+  ASSERT_TRUE(negate) << negate.error();
+  ASSERT_TRUE(service.applyFilter(negate->output_topic_ids.front(), dataset, "absolute", "U_abs"));
+  app.catalogModel().rebuildFromDatastore();
+  QDomDocument doc = PJ::MainWindowHistoryExemptTestPeer::xmlSaveState(
+      window, PJ::MainWindowHistoryExemptTestPeer::SnapshotScope::kFull);
+  service.clearAllFilters();
+  service.clearAllTransforms();
+  app.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(service.recipes().empty());
+
+  EXPECT_TRUE(
+      PJ::MainWindowHistoryExemptTestPeer::restoreDataProcessors(
+          window, doc.documentElement(), PJ::MainWindowHistoryExemptTestPeer::RestoreIntent::kReplace));
+
+  const auto recipes = service.transformRecipes();
+  ASSERT_EQ(recipes.size(), 1U);
+  const auto filters = service.recipes();
+  ASSERT_EQ(filters.size(), 1U) << "the filter on the restored transform was dropped";
+  EXPECT_EQ(filters.front().input_topic_id, recipes.front().output_topic_ids.front());
+}
+
+// T -> F1 -> F2 -> F3 with T replaced: every filter is cascaded out
+// and each round can only re-create the next link, so the repair must run until
+// no progress is possible rather than a fixed number of rounds.
+TEST_F(MainWindowHistoryExemptFixture, UndoRepairsThreeFilterTailBehindReplacedTransform) {
+  auto& window = mainWindow();
+  auto& app = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
+  auto& service = PJ::MainWindowHistoryExemptTestPeer::processors(window);
+  const auto dataset = pj_test::createDataset(app, "three-filter-tail", true);
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/x"), 0U);
+  const auto negate = service.upsertTransform("user", "negate", {"/x"}, {"U"}, kNegateScript, "{}");
+  ASSERT_TRUE(negate) << negate.error();
+  const auto first = service.applyFilter(negate->output_topic_ids.front(), dataset, "absolute", "F1");
+  ASSERT_TRUE(first) << first.error();
+  const auto second = service.applyFilter(first->output_topic_id, dataset, "absolute", "F2");
+  ASSERT_TRUE(second) << second.error();
+  ASSERT_TRUE(service.applyFilter(second->output_topic_id, dataset, "absolute", "F3"));
+  app.catalogModel().rebuildFromDatastore();
+  PJ::MainWindowHistoryExemptTestPeer::resetHistory(window);
+  ASSERT_TRUE(service.upsertTransform("user", "negate", {"/x"}, {"U"}, kTimes10Script, "{}"));
+  PJ::MainWindowHistoryExemptTestPeer::pushUndoState(window, true);
+
+  PJ::MainWindowHistoryExemptTestPeer::undo(window);
+
+  ASSERT_EQ(PJ::MainWindowHistoryExemptTestPeer::redoSize(window), 1U)
+      << window.statusBar()->currentMessage().toStdString();
+  const auto recipes = service.transformRecipes();
+  ASSERT_EQ(recipes.size(), 1U);
+  auto filters = service.recipes();
+  ASSERT_EQ(filters.size(), 3U) << "a three-filter tail was not fully repaired";
+  std::sort(filters.begin(), filters.end(), [](const auto& lhs, const auto& rhs) {
+    return lhs.output_name < rhs.output_name;
+  });
+  EXPECT_EQ(filters[0].input_topic_id, recipes.front().output_topic_ids.front());
+  EXPECT_EQ(filters[1].input_topic_id, filters[0].output_topic_id);
+  EXPECT_EQ(filters[2].input_topic_id, filters[1].output_topic_id);
 }
 
 // Claim: an exempt dependent must not block undo when its ordinary producer is unchanged.

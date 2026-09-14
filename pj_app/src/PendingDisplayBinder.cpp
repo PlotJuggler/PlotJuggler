@@ -40,6 +40,14 @@ std::optional<QString> resolveSeriesPath(const CatalogModel& catalog, const layo
   return catalog.resolveCurveKey(path.dataset_id, path.dataset_source, path.dataset_path, path.topic, path.field);
 }
 
+std::optional<CurveDescriptor> resolveSeriesDescriptor(
+    const CatalogModel& catalog, const layout_xml::SeriesPath& path) {
+  if (const std::optional<QString> key = resolveSeriesPath(catalog, path); key.has_value()) {
+    return catalog.curveDescriptor(*key);
+  }
+  return std::nullopt;
+}
+
 PendingDisplayBinder::PendingDisplayBinder(CatalogModel& catalog, TopicDemandTracker* tracker)
     : catalog_(catalog), tracker_(tracker) {}
 

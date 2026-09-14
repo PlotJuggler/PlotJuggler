@@ -4,9 +4,10 @@
 #include "pj_runtime/ViewportRuntimeHost.h"
 
 #include <cmath>
-#include <exception>
+#include <string_view>
 #include <utility>
 
+#include "RuntimeHostSlot.h"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
@@ -15,9 +16,11 @@
 namespace PJ {
 
 namespace {
-constexpr const char* kDomain = "viewport";
-constexpr int32_t kErrorRejected = PJ_ERROR_CODE_REJECTED;  // bad argument / nothing to zoom
-constexpr int32_t kErrorInternal = PJ_ERROR_CODE_INTERNAL;  // unexpected host-side exception at the boundary
+using host_slot::finish;
+using host_slot::guarded;
+using host_slot::reject;
+// Rejected: bad argument / nothing to zoom. Internal: an exception at the boundary.
+constexpr std::string_view kDomain{"viewport"};
 }  // namespace
 
 ViewportRuntimeHost::ViewportRuntimeHost(Callbacks callbacks)
@@ -35,49 +38,24 @@ Status ViewportRuntimeHost::registerServices(ServiceRegistryBuilder& registry) {
 }
 
 bool ViewportRuntimeHost::onZoomToTimeRange(void* ctx, double t0_s, double t1_s, PJ_error_t* out_error) noexcept {
-  auto* self = static_cast<ViewportRuntimeHost*>(ctx);
-  if (self == nullptr) {
-    return false;
-  }
-  try {
+  return guarded<ViewportRuntimeHost>(ctx, out_error, kDomain, [&](ViewportRuntimeHost& self) {
     if (!std::isfinite(t0_s) || !std::isfinite(t1_s) || t0_s >= t1_s) {
-      sdk::fillError(out_error, kErrorRejected, kDomain, "zoom range must be finite with t0 < t1");
-      return false;
+      return reject(out_error, kDomain, "zoom range must be finite with t0 < t1");
     }
-    if (!self->callbacks_.zoom_to_time_range) {
-      sdk::fillError(out_error, kErrorRejected, kDomain, "this host does not support zoom");
-      return false;
+    if (!self.callbacks_.zoom_to_time_range) {
+      return reject(out_error, kDomain, "this host does not support zoom");
     }
-    if (auto status = self->callbacks_.zoom_to_time_range(t0_s, t1_s); !status) {
-      sdk::fillError(out_error, kErrorRejected, kDomain, status.error());
-      return false;
-    }
-    return true;
-  } catch (const std::exception& e) {
-    sdk::fillError(out_error, kErrorInternal, kDomain, e.what());
-    return false;
-  }
+    return finish(out_error, kDomain, self.callbacks_.zoom_to_time_range(t0_s, t1_s));
+  });
 }
 
 bool ViewportRuntimeHost::onZoomReset(void* ctx, PJ_error_t* out_error) noexcept {
-  auto* self = static_cast<ViewportRuntimeHost*>(ctx);
-  if (self == nullptr) {
-    return false;
-  }
-  try {
-    if (!self->callbacks_.zoom_reset) {
-      sdk::fillError(out_error, kErrorRejected, kDomain, "this host does not support zoom");
-      return false;
+  return guarded<ViewportRuntimeHost>(ctx, out_error, kDomain, [&](ViewportRuntimeHost& self) {
+    if (!self.callbacks_.zoom_reset) {
+      return reject(out_error, kDomain, "this host does not support zoom");
     }
-    if (auto status = self->callbacks_.zoom_reset(); !status) {
-      sdk::fillError(out_error, kErrorRejected, kDomain, status.error());
-      return false;
-    }
-    return true;
-  } catch (const std::exception& e) {
-    sdk::fillError(out_error, kErrorInternal, kDomain, e.what());
-    return false;
-  }
+    return finish(out_error, kDomain, self.callbacks_.zoom_reset());
+  });
 }
 
 }  // namespace PJ

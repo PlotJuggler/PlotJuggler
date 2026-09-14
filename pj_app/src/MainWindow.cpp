@@ -23,9 +23,6 @@
 #include <QHBoxLayout>
 #include <QHash>
 #include <QIcon>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLocale>
@@ -67,6 +64,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -108,6 +106,7 @@
 #include "LayoutReplayHints.h"
 #include "LayoutXml.h"
 #include "PendingDisplayBinder.h"
+#include "PluginPlotTabsController.h"
 #include "PreferencesDialog.h"
 #include "RasterKeyMap.h"
 #include "SourcePromotionHost.h"
@@ -1600,11 +1599,14 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       &session_->extensionCatalog(), &ExtensionCatalogService::catalogChanged, this,
       &MainWindow::refreshStreamingCombo);
 
+  plugin_plot_tabs_ = std::make_unique<PluginPlotTabsController>(
+      *ui_->tabbedPlotWidget, session_->catalogModel(), session_->extensionCatalog());
+
   // Populate the Cloud page from the catalog now and on every catalog change.
   ui_->leftPanel->populateCloudToolboxes(session_->extensionCatalog().toolboxes());
   connect(&session_->extensionCatalog(), &ExtensionCatalogService::catalogChanged, this, [this]() {
     ui_->leftPanel->populateCloudToolboxes(session_->extensionCatalog().toolboxes());
-    refreshOwnedPlotTabAvailability();
+    plugin_plot_tabs_->refreshAvailability();
   });
 
   file_loader_ = std::make_unique<FileLoader>(
@@ -4313,19 +4315,7 @@ void MainWindow::onRecordingProgress(quint64 /*messages*/, quint64 payload_bytes
 }
 
 void MainWindow::wireExistingPlots() {
-  forEachDocker([this](PlotDocker* docker) { onPlotTabAdded(docker); });
-}
-
-void MainWindow::forEachDocker(const std::function<void(PlotDocker*)>& operation) const {
-  // Hoisted: dockerCount()/dockerAt() are linear scans since widget tabs
-  // joined the tab vector; re-evaluating the count per iteration would make
-  // this loop quadratic.
-  const int docker_count = ui_->tabbedPlotWidget->dockerCount();
-  for (int index = 0; index < docker_count; ++index) {
-    if (PlotDocker* docker = ui_->tabbedPlotWidget->dockerAt(index)) {
-      operation(docker);
-    }
-  }
+  ui_->tabbedPlotWidget->forEachDocker([this](PlotDocker* docker) { onPlotTabAdded(docker); });
 }
 
 void MainWindow::forEachStateStrip(const std::function<void(StateTransitionsDockWidget*)>& operation) {
@@ -4340,7 +4330,7 @@ void MainWindow::forEachStateStrip(const std::function<void(StateTransitionsDock
 }
 
 void MainWindow::forEachDock(const std::function<void(DockWidget*)>& operation) {
-  forEachDocker([&operation](PlotDocker* docker) {
+  ui_->tabbedPlotWidget->forEachDocker([&operation](PlotDocker* docker) {
     for (int index = 0; index < docker->plotCount(); ++index) {
       DockWidget* dock = docker->plotAt(index);
       if (dock != nullptr) {
@@ -4430,266 +4420,9 @@ void MainWindow::syncWidgetsToCatalog() {
   onDockFocused(activeFocusedDock());
 }
 
-void MainWindow::forEachPlotOwnedBy(const QString& plugin_id, const std::function<void(PlotWidget*)>& operation) {
-  forEachDocker([&plugin_id, &operation](PlotDocker* docker) {
-    if (docker->ownerPlugin() != plugin_id) {
-      return;
-    }
-    const int plot_count = docker->plotCount();
-    for (int index = 0; index < plot_count; ++index) {
-      if (DockWidget* dock = docker->plotAt(index)) {
-        if (PlotWidget* plot = dock->plotWidget()) {
-          operation(plot);
-        }
-      }
-    }
-  });
-}
-
-Status MainWindow::zoomOwnedPlotsToTimeRange(const QString& plugin_id, double t0_s, double t1_s) {
-  // An explicit command deliberately ignores the Link-X toggle, and sets every
-  // plot itself, so there is no link feedback to propagate.
-  int owned = 0;
-  int zoomed = 0;
-  forEachPlotOwnedBy(plugin_id, [t0_s, t1_s, &owned, &zoomed](PlotWidget* plot) {
-    ++owned;
-    if (plot->isEmpty() || plot->isXYPlot()) {
-      return;
-    }
-    plot->setVisibleXRange(t0_s, t1_s);
-    ++zoomed;
-  });
-  if (zoomed != 0) {
-    return okStatus();
-  }
-  // Two distinct dead ends with two distinct remedies — open a tab, or put
-  // something in the one you have. Saying only "nothing to zoom" would leave a
-  // caller repeating whichever of the two it guessed.
-  return unexpected(
-      owned == 0 ? "this plugin owns no plot tab; create one before zooming"
-                 : "the tabs this plugin owns hold no time-series plot to zoom");
-}
-
-Status MainWindow::zoomOwnedPlotsOut(const QString& plugin_id) {
-  int owned = 0;
-  forEachPlotOwnedBy(plugin_id, [&owned](PlotWidget* plot) {
-    ++owned;
-    plot->zoomOut(false);
-  });
-  if (owned == 0) {
-    return unexpected("this plugin owns no plot tab; create one before zooming");
-  }
-  return okStatus();
-}
-
-namespace {
-// The host-namespaced form of a plugin's own tab name. It becomes the docker's
-// stateId, which is what stops two plugins choosing the same name from ever
-// addressing each other's tab.
-QString ownedTabKey(const QString& plugin_id, const QString& tab_id) {
-  return plugin_id + u"/"_s + tab_id;
-}
-}  // namespace
-
-PlotDocker* MainWindow::ownedPlotTab(const QString& plugin_id, const QString& tab_id) const {
-  // Ownership is only ever established in createOwnedPlotTab, which stamps
-  // both the namespaced stateId and the owner metadata; requiring both to
-  // agree is what keeps a user-made tab from ever answering to a plugin.
-  const QString key = ownedTabKey(plugin_id, tab_id);
-  PlotDocker* found = nullptr;
-  forEachDocker([&](PlotDocker* docker) {
-    if (found == nullptr && docker->stateId() == key && docker->ownerPlugin() == plugin_id) {
-      found = docker;
-    }
-  });
-  return found;
-}
-
-Status MainWindow::createOwnedPlotTab(const QString& plugin_id, const QString& tab_id, const QString& title) {
-  // Upsert: re-creating an id the plugin already used starts that tab over
-  // rather than accumulating duplicates it can no longer address.
-  if (PlotDocker* existing = ownedPlotTab(plugin_id, tab_id); existing != nullptr) {
-    if (auto status = clearOwnedPlotTab(plugin_id, tab_id); !status) {
-      return status;
-    }
-    existing->setName(title.isEmpty() ? existing->name() : title);
-    return okStatus();
-  }
-  PlotDocker* docker = ui_->tabbedPlotWidget->addTab(title);
-  if (docker == nullptr) {
-    return unexpected("the workspace refused a new tab");
-  }
-  docker->setStateId(ownedTabKey(plugin_id, tab_id));
-  docker->setHistoryExempt(true);
-  docker->setOwnerMetadata(plugin_id, tab_id);
-  docker->setOwnerBadge(toolboxBadge(plugin_id));
-  // Plugin composition has no history step: the tab is outside undo/redo even
-  // though it is durable in a full layout file.
-  return okStatus();
-}
-
 std::optional<double> MainWindow::displayTimeForSource(PJ_data_source_handle_t source, int64_t absolute_ns) const {
   const auto seconds = session_->sessionManager().displayTimeForSource(source.id, absolute_ns);
   return seconds.has_value() ? std::optional<double>(toAxisDouble(*seconds)) : std::nullopt;
-}
-
-QString MainWindow::toolboxBadge(const QString& plugin_id) const {
-  const LoadedToolbox* toolbox = session_->extensionCatalog().findToolbox(plugin_id);
-  if (toolbox == nullptr) {
-    return {};
-  }
-  return toolbox->name.empty() ? plugin_id : QString::fromStdString(toolbox->name);
-}
-
-void MainWindow::refreshOwnedPlotTabAvailability() {
-  forEachDocker([this](PlotDocker* docker) {
-    if (!docker->ownerPlugin().isEmpty()) {
-      docker->setOwnerBadge(toolboxBadge(docker->ownerPlugin()));
-    }
-  });
-}
-
-namespace {
-
-/// The ABI error for a tab id the calling plugin does not own (or that does not exist).
-Unexpected<std::string> noOwnedTabError(const QString& tab_id) {
-  return unexpected("no tab '" + tab_id.toStdString() + "' belonging to this plugin");
-}
-
-}  // namespace
-
-Status MainWindow::closeOwnedPlotTab(const QString& plugin_id, const QString& tab_id) {
-  PlotDocker* docker = ownedPlotTab(plugin_id, tab_id);
-  if (docker == nullptr) {
-    return noOwnedTabError(tab_id);
-  }
-  ui_->tabbedPlotWidget->closeTab(docker);
-  return okStatus();
-}
-
-Expected<std::vector<std::string>> MainWindow::listOwnedPlotTabs(const QString& plugin_id) const {
-  // Tab order, so the caller sees them the way the user does.
-  std::vector<std::string> ids;
-  forEachDocker([&](PlotDocker* docker) {
-    if (docker->ownerPlugin() == plugin_id) {
-      ids.push_back(docker->ownerTabId().toStdString());
-    }
-  });
-  return ids;
-}
-
-Expected<std::string> MainWindow::ownedPlotTabConfig(const QString& plugin_id, const QString& tab_id) const {
-  PlotDocker* docker = ownedPlotTab(plugin_id, tab_id);
-  if (docker == nullptr) {
-    return noOwnedTabError(tab_id);
-  }
-  QJsonArray curves;
-  const int plot_count = docker->plotCount();
-  for (int index = 0; index < plot_count; ++index) {
-    DockWidget* dock = docker->plotAt(index);
-    PlotWidget* plot = dock == nullptr ? nullptr : dock->plotWidget();
-    if (plot == nullptr) {
-      continue;
-    }
-    for (const auto& info : plot->curveList()) {
-      // Reported from the catalog entry the curve is actually bound to, so the
-      // dataset named here is the resolved one even when the caller left it
-      // blank — the point of a read-back is to answer "which run is this?".
-      const std::optional<CatalogItem> item = session_->catalogModel().itemDescriptor(info.source_name);
-      if (!item.has_value()) {
-        continue;
-      }
-      const ScalarFieldPayload* scalar = asScalarField(*item);
-      if (scalar == nullptr) {
-        continue;
-      }
-      QJsonObject curve;
-      curve.insert(u"topic"_s, item->topic_name);
-      curve.insert(u"field"_s, scalar->field_name);
-      curve.insert(u"dataset"_s, session_->catalogModel().datasetSourceName(item->dataset_id).value_or(QString()));
-      curves.append(curve);
-    }
-  }
-  QJsonObject root;
-  root.insert(u"title"_s, docker->name());
-  root.insert(u"curves"_s, curves);
-  return QJsonDocument(root).toJson(QJsonDocument::Compact).toStdString();
-}
-
-Status MainWindow::addCurveToOwnedPlotTab(
-    const QString& plugin_id, const QString& tab_id, const QString& topic, const QString& field,
-    const QString& dataset_source) {
-  PlotDocker* docker = ownedPlotTab(plugin_id, tab_id);
-  if (docker == nullptr) {
-    return noOwnedTabError(tab_id);
-  }
-  const std::optional<QString> key =
-      session_->catalogModel().resolveCurveKey(0, dataset_source, {}, topic, field, SeriesCapability::kPlottable);
-  if (!key.has_value()) {
-    // resolveCurveKey folds "no such series" and "several datasets have it"
-    // into one nullopt; the message names both remedies.
-    return unexpected(("no plottable series '" + topic + u"/"_s + field +
-                       "' is loaded, or it exists in several datasets (name one with dataset_source)")
-                          .toStdString());
-  }
-  DockWidget* dock = docker->plotAt(0);
-  PlotWidget* plot = dock == nullptr ? nullptr : dock->ensurePlotWidget();
-  if (plot == nullptr) {
-    return unexpected("the tab has no plot to draw in");
-  }
-  // A null return here means the title is taken, i.e. the curve is already
-  // drawn — which the service defines as success, not a failure to report.
-  plot->addCurve(*key);
-  plot->replot();
-  return okStatus();
-}
-
-Status MainWindow::removeCurveFromOwnedPlotTab(
-    const QString& plugin_id, const QString& tab_id, const QString& topic, const QString& field,
-    const QString& dataset_source) {
-  PlotDocker* docker = ownedPlotTab(plugin_id, tab_id);
-  if (docker == nullptr) {
-    return noOwnedTabError(tab_id);
-  }
-  const std::optional<QString> key =
-      session_->catalogModel().resolveCurveKey(0, dataset_source, {}, topic, field, SeriesCapability::kPlottable);
-  if (!key.has_value()) {
-    return unexpected(("no plottable series '" + topic + u"/"_s + field + "' is loaded").toStdString());
-  }
-  bool removed = false;
-  const int plot_count = docker->plotCount();
-  for (int index = 0; index < plot_count; ++index) {
-    DockWidget* dock = docker->plotAt(index);
-    PlotWidget* plot = dock == nullptr ? nullptr : dock->plotWidget();
-    if (plot == nullptr || plot->curveFromTitle(*key) == nullptr) {
-      continue;
-    }
-    plot->removeCurve(*key);
-    plot->replot();
-    removed = true;
-  }
-  if (!removed) {
-    // Deliberately an error: a path that was never drawn is a mistake worth
-    // seeing, not a no-op to swallow.
-    return unexpected(("'" + topic + u"/"_s + field + "' is not drawn in that tab").toStdString());
-  }
-  return okStatus();
-}
-
-Status MainWindow::clearOwnedPlotTab(const QString& plugin_id, const QString& tab_id) {
-  PlotDocker* docker = ownedPlotTab(plugin_id, tab_id);
-  if (docker == nullptr) {
-    return noOwnedTabError(tab_id);
-  }
-  const int plot_count = docker->plotCount();
-  for (int index = 0; index < plot_count; ++index) {
-    DockWidget* dock = docker->plotAt(index);
-    if (PlotWidget* plot = dock == nullptr ? nullptr : dock->plotWidget()) {
-      plot->removeAllCurves();
-      plot->replot();
-    }
-  }
-  return okStatus();
 }
 
 void MainWindow::linkedZoomOut() {
@@ -4697,7 +4430,7 @@ void MainWindow::linkedZoomOut() {
     forEachPlot([](PlotWidget* plot) { plot->zoomOut(false); });
     return;
   }
-  forEachDocker([](PlotDocker* docker) {
+  ui_->tabbedPlotWidget->forEachDocker([](PlotDocker* docker) {
     auto plot_at = [docker](int index) -> PlotWidget* {
       DockWidget* dock = docker->plotAt(index);
       PlotWidget* plot = dock != nullptr ? dock->plotWidget() : nullptr;
@@ -7244,6 +6977,121 @@ std::vector<DataProcessorService::TransformRecipe> MainWindow::parseWantedTransf
   return wanted_transforms;
 }
 
+std::vector<MainWindow::WantedFilter> MainWindow::parseWantedFilters(const QDomElement& element) const {
+  std::vector<WantedFilter> wanted;
+  // A null <data_processors> yields a null firstChildElement, so this loop runs
+  // zero times and the snapshot wants no filter at all.
+  for (QDomElement processor = element.firstChildElement(u"processor"_s); !processor.isNull();
+       processor = processor.nextSiblingElement(u"processor"_s)) {
+    WantedFilter entry;
+    entry.input = layout_xml::SeriesPath{
+        processor.attribute(u"input_topic"_s), processor.attribute(u"input_field"_s),
+        static_cast<DatasetId>(processor.attribute(u"input_dataset_id"_s).toUInt()),
+        processor.attribute(u"input_dataset_source"_s), processor.attribute(u"input_dataset_path"_s)};
+    if (const std::optional<CurveDescriptor> input_desc =
+            resolveSeriesDescriptor(session_->catalogModel(), entry.input);
+        input_desc.has_value()) {
+      entry.persisted.input_topic_id = input_desc->topic_id;
+      entry.persisted.dataset_id = input_desc->dataset_id;
+      entry.persisted.input_column_index = input_desc->column_index;
+    }
+    entry.persisted.processor_id = processor.attribute(u"processor_id"_s).toStdString();
+    // Params are the <processor>'s OWN direct CDATA — directCdataText ignores the
+    // <source_fallback> child (QDomElement::text() would recurse and merge them).
+    const QString params = layout_xml::directCdataText(processor);
+    entry.persisted.params_json = params.isEmpty() ? std::string("{}") : params.toStdString();
+    entry.persisted.filter_source = processor.firstChildElement(u"source_fallback"_s).text().toStdString();
+    entry.persisted.output_name = processor.attribute(u"output_name"_s).toStdString();
+    wanted.push_back(std::move(entry));
+  }
+  return wanted;
+}
+
+bool MainWindow::repairDataProcessors(
+    std::vector<WantedFilter>& wanted_filters,
+    const std::vector<DataProcessorService::TransformRecipe>& wanted_transforms,
+    const std::unordered_set<std::string>& live_exempt_keys) {
+  auto& service = session_->sessionManager().dataProcessorService();
+  const auto is_live = [&service](const WantedFilter& wanted) {
+    return wanted.persisted.input_topic_id != 0 &&
+           service.isFilterLive(wanted.persisted.dataset_id, wanted.persisted.output_name);
+  };
+  // A failure is recorded per snapshot entry (its identity may not resolve yet)
+  // and reported once at the end: an entry whose input only a later round
+  // creates legitimately fails until then.
+  std::map<std::size_t, QString> filter_failures;
+  std::map<std::string, QString> transform_failures;
+  for (bool progress = true; progress;) {
+    progress = false;
+    if (std::any_of(
+            wanted_filters.begin(), wanted_filters.end(), [&](const auto& wanted) { return !is_live(wanted); })) {
+      session_->catalogModel().rebuildFromDatastore();
+    }
+    for (std::size_t index = 0; index < wanted_filters.size(); ++index) {
+      WantedFilter& wanted = wanted_filters[index];
+      if (is_live(wanted)) {
+        continue;
+      }
+      DataProcessorService::PersistedFilter& persisted = wanted.persisted;
+      const std::optional<CurveDescriptor> input_desc = resolveSeriesDescriptor(session_->catalogModel(), wanted.input);
+      if (!input_desc.has_value()) {
+        persisted.input_topic_id = 0;
+        filter_failures[index] =
+            tr("Layout filter on '%1/%2' has no matching data; skipping.").arg(wanted.input.topic, wanted.input.field);
+        continue;
+      }
+      persisted.input_topic_id = input_desc->topic_id;
+      persisted.dataset_id = input_desc->dataset_id;
+      persisted.input_column_index = input_desc->column_index;
+      if (service.isFilterLive(persisted.dataset_id, persisted.output_name)) {
+        filter_failures.erase(index);  // resolved onto a filter already live (kept, or a duplicate)
+        continue;
+      }
+      // Resolve order: live catalogue → embedded source → transitional C++ builtin.
+      std::unique_ptr<proc::DataProcessor> built =
+          service.makeRestoredProcessor(persisted.processor_id, persisted.params_json, persisted.filter_source);
+      if (!built) {
+        filter_failures[index] = tr("Layout filter '%1' is unknown to this PlotJuggler; skipping.")
+                                     .arg(QString::fromStdString(persisted.processor_id));
+        continue;
+      }
+      const auto applied = service.applyFilter(
+          persisted.input_topic_id, persisted.dataset_id, std::move(built), persisted.output_name,
+          persisted.input_column_index);
+      if (applied.has_value()) {
+        filter_failures.erase(index);
+        progress = true;
+      } else {
+        filter_failures[index] =
+            tr("Could not restore filter '%1': %2")
+                .arg(QString::fromStdString(persisted.output_name), QString::fromStdString(applied.error()));
+      }
+    }
+    for (const auto& recipe : wanted_transforms) {
+      if (live_exempt_keys.count(recipe.key) != 0 || service.isTransformLive(recipe.key)) {
+        continue;
+      }
+      if (const auto restored = service.restoreTransform(recipe); restored.has_value()) {
+        transform_failures.erase(recipe.key);
+        progress = true;
+      } else {
+        transform_failures[recipe.key] =
+            tr("Could not restore transform '%1': %2")
+                .arg(QString::fromStdString(recipe.key), QString::fromStdString(restored.error()));
+      }
+    }
+  }
+  const auto report = [this](const auto& failures, const char* diagnostic_id) {
+    for (const auto& [key, reason] : failures) {
+      emitDiagnostic(DiagnosticLevel::kWarning, "Layout", diagnostic_id, reason);
+    }
+    return failures.empty();
+  };
+  const bool filters_restored = report(filter_failures, "processor-restore-failed");
+  const bool transforms_restored = report(transform_failures, "transform-restore-failed");
+  return filters_restored && transforms_restored;
+}
+
 bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent intent, QString* out_reason) {
   if (out_reason != nullptr) {
     out_reason->clear();
@@ -7251,16 +7099,23 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent in
   auto& service = session_->sessionManager().dataProcessorService();
   MarkerService& marker_service = session_->sessionManager().markerService();
 
-  // Parse the snapshot's transforms first and decide which live ones it leaves
-  // unchanged: those stay live with their output TopicIds, so curves bound to them
-  // (e.g. in a preserved history-exempt tab, which no history snapshot describes)
-  // survive an unrelated undo. The same set defines what the preflight below and
-  // the transform reconcile further down count as removed.
+  // Parse the snapshot's filters and transforms first and decide which live ones
+  // it leaves unchanged: those stay live with their output TopicIds, so curves
+  // bound to them (e.g. in a preserved history-exempt tab, which no history
+  // snapshot describes) survive an unrelated undo. The same sets define what the
+  // preflight below and the clears further down count as removed.
   const QDomElement element = root.firstChildElement(u"data_processors"_s);
   const bool keep_exempt = intent == RestoreIntent::kHistory;
   bool restored_all = true;
+  std::vector<WantedFilter> wanted_filters = parseWantedFilters(element);
   std::vector<DataProcessorService::TransformRecipe> wanted_transforms =
       parseWantedTransforms(element, keep_exempt, &restored_all);
+  std::vector<DataProcessorService::PersistedFilter> persisted_filters;
+  persisted_filters.reserve(wanted_filters.size());
+  for (const WantedFilter& wanted : wanted_filters) {
+    persisted_filters.push_back(wanted.persisted);
+  }
+  const std::unordered_set<TopicId> unchanged_filters = service.unchangedFilterOutputs(persisted_filters);
   const std::unordered_set<std::string> unchanged_keys = service.unchangedTransformKeys(wanted_transforms, intent);
   std::unordered_set<std::string> live_exempt_keys;
   for (const auto& live : service.transformRecipes()) {
@@ -7269,18 +7124,17 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent in
     }
   }
 
-  // Reject before the first clear if what this restore removes — every filter
-  // plus each non-exempt transform the snapshot drops or changes — would strand an
-  // exempt transform or marker generator. The dependents walk is transitive, so an
-  // unchanged transform cascaded out by a filter clear is still discovered. Filter
-  // removal can cascade into transforms, so checking after filters are cleared
-  // would be too late.
+  // Reject before the first clear if what this restore removes — each filter and
+  // each non-exempt transform the snapshot drops or changes, plus everything the
+  // removal cascades into — would strand an exempt transform or marker generator.
+  // Removal cascades between filters and transforms, so checking after the first
+  // clear would be too late.
   if (intent == RestoreIntent::kHistory &&
       (service.hasHistoryExemptTransforms() || marker_service.hasHistoryExemptGenerators())) {
-    const std::vector<NodeId> removable = service.liveNonExemptNodeIds(unchanged_keys);
-    std::vector<std::string> blocked = service.exemptDependentsOf(removable);
-    const std::vector<std::string> blocked_markers =
-        marker_service.exemptDependentsOf(service.liveNonExemptOutputNames(unchanged_keys));
+    const DataProcessorService::HistoryRemovalImpact impact =
+        service.historyRemovalImpact(unchanged_keys, unchanged_filters);
+    std::vector<std::string> blocked = impact.exempt_transform_names;
+    const std::vector<std::string> blocked_markers = marker_service.exemptDependentsOf(impact.removed_output_names);
     blocked.insert(blocked.end(), blocked_markers.begin(), blocked_markers.end());
     std::sort(blocked.begin(), blocked.end());
     blocked.erase(std::unique(blocked.begin(), blocked.end()), blocked.end());
@@ -7300,94 +7154,16 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent in
     }
   }
 
-  // Reconcile the live filter set to this snapshot: drop ALL current filters first,
-  // then recreate the snapshot's set. This makes restore idempotent for undo/redo (no
-  // duplicate or output-name-colliding filters) and correct for a layout load onto an
-  // existing session. A snapshot with NO <data_processors> still falls through to clear
-  // every filter; the rebuild at the end MUST run on both branches so the now-retired
-  // outputs leave the catalog. A FilterRecipe carries no exemption, so this clear is
-  // unconditional regardless of intent.
-  service.clearAllFilters();
-
-  // A null <data_processors> yields a null firstChildElement, so this loop runs zero
-  // times — the clear above is then the whole effect.
-  for (QDomElement processor = element.firstChildElement(u"processor"_s); !processor.isNull();
-       processor = processor.nextSiblingElement(u"processor"_s)) {
-    const QString input_topic = processor.attribute(u"input_topic"_s);
-    const QString input_field = processor.attribute(u"input_field"_s);
-    // Resolve the input through the same dataset-qualified path a plotted curve
-    // uses: the exact source dataset when its qualifiers still agree, a unique
-    // fallback otherwise, and never a same-topic sibling by load order.
-    const layout_xml::SeriesPath input_path{
-        input_topic, input_field, static_cast<DatasetId>(processor.attribute(u"input_dataset_id"_s).toUInt()),
-        processor.attribute(u"input_dataset_source"_s), processor.attribute(u"input_dataset_path"_s)};
-    std::optional<CurveDescriptor> input_desc;
-    if (const auto input_key = resolveSeriesPath(session_->catalogModel(), input_path); input_key.has_value()) {
-      input_desc = session_->catalogModel().curveDescriptor(*input_key);
-    }
-    if (!input_desc.has_value()) {
-      // The filter's source signal isn't in any loaded dataset -> the filter is
-      // dropped. Tell the user which one, mirroring the unknown/apply-failed cases
-      // below (otherwise a derived series silently vanishes on layout load).
-      emitDiagnostic(
-          DiagnosticLevel::kWarning, "Layout", "processor-input-missing",
-          tr("Layout filter on '%1/%2' has no matching data; skipping.").arg(input_topic, input_field));
-      restored_all = false;
-      continue;
-    }
-    const std::string id = processor.attribute(u"processor_id"_s).toStdString();
-    // Params are the <processor>'s OWN direct CDATA — directCdataText ignores the
-    // <source_fallback> child (QDomElement::text() would recurse and merge them).
-    const QString params = layout_xml::directCdataText(processor);
-    const QString source_fallback = processor.firstChildElement(u"source_fallback"_s).text();
-    // Resolve order: live catalogue → embedded source → transitional C++ builtin.
-    std::unique_ptr<proc::DataProcessor> built = service.makeRestoredProcessor(
-        id, params.isEmpty() ? std::string("{}") : params.toStdString(), source_fallback.toStdString());
-    if (!built) {
-      emitDiagnostic(
-          DiagnosticLevel::kWarning, "Layout", "processor-unknown",
-          tr("Layout filter '%1' is unknown to this PlotJuggler; skipping.").arg(QString::fromStdString(id)));
-      restored_all = false;
-      continue;
-    }
-    const auto applied = service.applyFilter(
-        input_desc->topic_id, input_desc->dataset_id, std::move(built),
-        processor.attribute(u"output_name"_s).toStdString(), input_desc->column_index);
-    if (!applied.has_value()) {
-      emitDiagnostic(
-          DiagnosticLevel::kWarning, "Layout", "processor-apply-failed",
-          tr("Could not restore filter: %1").arg(QString::fromStdString(applied.error())));
-      restored_all = false;
-    }
-  }
-
-  // Remove only the live transforms the snapshot drops or changes and replay the
-  // rest. Done AFTER filters so a transform whose input is a filter output can
-  // resolve it by name (the filter clear cascades such a transform out, and the
-  // replay below reinstalls it). Replacement may drop every transform; history
-  // never touches the exempt ones, after the preflight above.
+  // Drop the filters and the transforms the snapshot lacks or changes; a kept
+  // entry reading a removed output falls with it and is re-created below. A
+  // snapshot with NO <data_processors> clears everything; the rebuild at the end
+  // MUST run on every path so the retired outputs leave the catalog. Replacement
+  // may drop every transform; history never touches the exempt ones, after the
+  // preflight above.
+  service.clearAllFilters(unchanged_filters);
   service.clearTransforms(intent, unchanged_keys);
-  std::unordered_set<std::string> still_live_keys;
-  for (const auto& live : service.transformRecipes()) {
-    still_live_keys.insert(live.key);
-  }
-  for (const auto& recipe : wanted_transforms) {
-    // History has no authority over a live exempt transform, even when the
-    // snapshot predates its exemption and carries the same key.
-    if (live_exempt_keys.count(recipe.key) != 0) {
-      continue;
-    }
-    if (unchanged_keys.count(recipe.key) != 0 && still_live_keys.count(recipe.key) != 0) {
-      continue;
-    }
-    if (const auto restored = service.restoreTransform(recipe); !restored.has_value()) {
-      emitDiagnostic(
-          DiagnosticLevel::kWarning, "Layout", "transform-restore-failed",
-          tr("Could not restore transform '%1': %2")
-              .arg(QString::fromStdString(recipe.key), QString::fromStdString(restored.error())));
-      restored_all = false;
-    }
-  }
+
+  restored_all = repairDataProcessors(wanted_filters, wanted_transforms, live_exempt_keys) && restored_all;
 
   // Marker generators: clear + replay, same as transforms. Done after them so a
   // generator reading a transform/filter output resolves it by name. upsertGenerator
@@ -7907,7 +7683,7 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
   }
   // A history restore rebuilds only the non-exempt dockers; an exempt one was
   // preserved live and has no saved viewport, so re-framing it would zoom it out.
-  forEachDocker([intent](PlotDocker* docker) {
+  ui_->tabbedPlotWidget->forEachDocker([intent](PlotDocker* docker) {
     if (intent == RestoreIntent::kHistory && docker->isHistoryExempt()) {
       return;
     }
@@ -8685,7 +8461,7 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document, RestoreIntent 
         tr("The plot tabs could not be reconstructed from the layout."));
     return false;
   }
-  refreshOwnedPlotTabAvailability();
+  plugin_plot_tabs_->refreshAvailability();
   wireExistingPlots();
 
   // The global toolbar toggles are no longer read from the layout/undo document
@@ -10226,14 +10002,9 @@ void MainWindow::launchToolbox(
     return;
   }
 
-  // Every lambda below captures `plugin_id`, and that capture IS the boundary:
-  // the plugin never names itself across the wire, so it can only ever reach
-  // the tabs it composed. The user's own tabs are not addressable from here.
-  session->viewport_host = std::make_unique<ViewportRuntimeHost>(ViewportRuntimeHost::Callbacks{
-      .zoom_to_time_range = [this, plugin_id](
-                                double t0_s, double t1_s) { return zoomOwnedPlotsToTimeRange(plugin_id, t0_s, t1_s); },
-      .zoom_reset = [this, plugin_id]() { return zoomOwnedPlotsOut(plugin_id); },
-  });
+  // Both bridges are scoped to `plugin_id` by the controller: the plugin can
+  // only ever reach the tabs it composed, never the user's own.
+  session->viewport_host = std::make_unique<ViewportRuntimeHost>(plugin_plot_tabs_->viewportCallbacks(plugin_id));
   if (auto status = session->viewport_host->registerServices(*session->builder); !status) {
     report_error(
         source,
@@ -10241,33 +10012,7 @@ void MainWindow::launchToolbox(
     return;
   }
 
-  session->plot_tabs_host = std::make_unique<PlotTabsRuntimeHost>(PlotTabsRuntimeHost::Callbacks{
-      .create_tab =
-          [this, plugin_id](std::string_view id, std::string_view title) {
-            return createOwnedPlotTab(plugin_id, QString::fromUtf8(id), QString::fromUtf8(title));
-          },
-      .close_tab = [this,
-                    plugin_id](std::string_view id) { return closeOwnedPlotTab(plugin_id, QString::fromUtf8(id)); },
-      .list_tab_ids = [this, plugin_id]() { return listOwnedPlotTabs(plugin_id); },
-      .tab_config = [this,
-                     plugin_id](std::string_view id) { return ownedPlotTabConfig(plugin_id, QString::fromUtf8(id)); },
-      .add_curve =
-          [this, plugin_id](
-              std::string_view id, std::string_view topic, std::string_view field, std::string_view dataset_source) {
-            return addCurveToOwnedPlotTab(
-                plugin_id, QString::fromUtf8(id), QString::fromUtf8(topic), QString::fromUtf8(field),
-                QString::fromUtf8(dataset_source));
-          },
-      .remove_curve =
-          [this, plugin_id](
-              std::string_view id, std::string_view topic, std::string_view field, std::string_view dataset_source) {
-            return removeCurveFromOwnedPlotTab(
-                plugin_id, QString::fromUtf8(id), QString::fromUtf8(topic), QString::fromUtf8(field),
-                QString::fromUtf8(dataset_source));
-          },
-      .clear_tab = [this,
-                    plugin_id](std::string_view id) { return clearOwnedPlotTab(plugin_id, QString::fromUtf8(id)); },
-  });
+  session->plot_tabs_host = std::make_unique<PlotTabsRuntimeHost>(plugin_plot_tabs_->plotTabsCallbacks(plugin_id));
   if (auto status = session->plot_tabs_host->registerServices(*session->builder); !status) {
     report_error(
         source,

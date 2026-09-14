@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "MainWindow.h"
+#include "PluginPlotTabsController.h"
 #include "dataset_test_helpers.h"
 #include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotDocker.h"
@@ -23,6 +24,10 @@ namespace PJ {
 /// Exercise the shell callbacks that enforce plugin identity and dataset liveness.
 class MainWindowPluginViewsTestPeer {
  public:
+  [[nodiscard]] static PluginPlotTabsController& pluginTabs(MainWindow& window) {
+    return *window.plugin_plot_tabs_;
+  }
+
   static void checkViewportIsolation(MainWindow& window) {
     auto& app = *window.session_;
     app.sessionManager().setUseTimeOffset(false);
@@ -32,10 +37,10 @@ class MainWindowPluginViewsTestPeer {
     ASSERT_TRUE(key);
     auto* tabs = window.findChild<TabbedPlotWidget*>();
     auto* user = tabs->addTab(u"User viewport"_s);
-    ASSERT_TRUE(window.createOwnedPlotTab(u"zoom-a"_s, u"view"_s, u"A"_s));
-    ASSERT_TRUE(window.createOwnedPlotTab(u"zoom-b"_s, u"view"_s, u"B"_s));
-    auto* a = window.ownedPlotTab(u"zoom-a"_s, u"view"_s);
-    auto* b = window.ownedPlotTab(u"zoom-b"_s, u"view"_s);
+    ASSERT_TRUE(pluginTabs(window).createTab(u"zoom-a"_s, u"view"_s, u"A"_s));
+    ASSERT_TRUE(pluginTabs(window).createTab(u"zoom-b"_s, u"view"_s, u"B"_s));
+    auto* a = pluginTabs(window).ownedTab(u"zoom-a"_s, u"view"_s);
+    auto* b = pluginTabs(window).ownedTab(u"zoom-b"_s, u"view"_s);
     const QRectF original(1.0, 8.0, 8.0, -10.0);
     for (auto* docker : {user, a, b}) {
       auto* dock = docker->plotAt(0);
@@ -49,10 +54,10 @@ class MainWindowPluginViewsTestPeer {
     const auto before = a_plot->currentBoundingRect();
     const auto user_before = user->plotAt(0)->plotWidget()->currentBoundingRect();
     const auto b_before = b->plotAt(0)->plotWidget()->currentBoundingRect();
-    ASSERT_TRUE(window.createOwnedPlotTab(u"zoom-a"_s, u"empty"_s, u"Empty"_s));
-    ASSERT_TRUE(window.createOwnedPlotTab(u"zoom-a"_s, u"xy"_s, u"XY"_s));
-    auto* empty = window.ownedPlotTab(u"zoom-a"_s, u"empty"_s)->plotAt(0)->ensurePlotWidget();
-    auto* xy = window.ownedPlotTab(u"zoom-a"_s, u"xy"_s)->plotAt(0)->ensurePlotWidget();
+    ASSERT_TRUE(pluginTabs(window).createTab(u"zoom-a"_s, u"empty"_s, u"Empty"_s));
+    ASSERT_TRUE(pluginTabs(window).createTab(u"zoom-a"_s, u"xy"_s, u"XY"_s));
+    auto* empty = pluginTabs(window).ownedTab(u"zoom-a"_s, u"empty"_s)->plotAt(0)->ensurePlotWidget();
+    auto* xy = pluginTabs(window).ownedTab(u"zoom-a"_s, u"xy"_s)->plotAt(0)->ensurePlotWidget();
     ASSERT_NE(empty, nullptr);
     ASSERT_NE(xy, nullptr);
     xy->setModeXY(true);
@@ -61,7 +66,7 @@ class MainWindowPluginViewsTestPeer {
     const auto empty_before = empty->currentBoundingRect();
     const auto xy_before = xy->currentBoundingRect();
 
-    ASSERT_TRUE(window.zoomOwnedPlotsToTimeRange(u"zoom-a"_s, 2.0, 4.0));
+    ASSERT_TRUE(pluginTabs(window).zoomToTimeRange(u"zoom-a"_s, 2.0, 4.0));
     const auto zoomed = a_plot->currentBoundingRect();
     EXPECT_DOUBLE_EQ(zoomed.left(), 2.0);
     EXPECT_DOUBLE_EQ(zoomed.right(), 4.0);
@@ -71,7 +76,7 @@ class MainWindowPluginViewsTestPeer {
     EXPECT_EQ(b->plotAt(0)->plotWidget()->currentBoundingRect(), b_before);
     EXPECT_EQ(empty->currentBoundingRect(), empty_before);
     EXPECT_EQ(xy->currentBoundingRect(), xy_before);
-    ASSERT_TRUE(window.zoomOwnedPlotsOut(u"zoom-a"_s));
+    ASSERT_TRUE(pluginTabs(window).zoomOut(u"zoom-a"_s));
     EXPECT_NE(a_plot->currentBoundingRect(), zoomed);
     EXPECT_EQ(user->plotAt(0)->plotWidget()->currentBoundingRect(), user_before);
     EXPECT_EQ(b->plotAt(0)->plotWidget()->currentBoundingRect(), b_before);
@@ -83,33 +88,30 @@ class MainWindowPluginViewsTestPeer {
     const auto second = pj_test::createDataset(app, "curve-b", true);
     ASSERT_NE(pj_test::addScalarTopic(app, first, "/shared"), 0U);
     ASSERT_NE(pj_test::addScalarTopic(app, second, "/shared"), 0U);
-    ASSERT_TRUE(window.createOwnedPlotTab(u"curve-owner"_s, u"view"_s, u"Original"_s));
-    auto* tab = window.ownedPlotTab(u"curve-owner"_s, u"view"_s);
-    ASSERT_FALSE(window.addCurveToOwnedPlotTab(u"curve-owner"_s, u"view"_s, u"/shared"_s, u"value"_s, {}));
-    ASSERT_TRUE(window.addCurveToOwnedPlotTab(u"curve-owner"_s, u"view"_s, u"/shared"_s, u"value"_s, u"curve-a"_s));
+    ASSERT_TRUE(pluginTabs(window).createTab(u"curve-owner"_s, u"view"_s, u"Original"_s));
+    auto* tab = pluginTabs(window).ownedTab(u"curve-owner"_s, u"view"_s);
+    ASSERT_FALSE(pluginTabs(window).addCurve(u"curve-owner"_s, u"view"_s, u"/shared"_s, u"value"_s, {}));
+    ASSERT_TRUE(pluginTabs(window).addCurve(u"curve-owner"_s, u"view"_s, u"/shared"_s, u"value"_s, u"curve-a"_s));
     auto* plot = tab->plotAt(0)->plotWidget();
     ASSERT_NE(plot, nullptr);
     ASSERT_EQ(plot->curveList().size(), 1U);
-    ASSERT_TRUE(window.addCurveToOwnedPlotTab(u"curve-owner"_s, u"view"_s, u"/shared"_s, u"value"_s, u"curve-a"_s));
+    ASSERT_TRUE(pluginTabs(window).addCurve(u"curve-owner"_s, u"view"_s, u"/shared"_s, u"value"_s, u"curve-a"_s));
     EXPECT_EQ(plot->curveList().size(), 1U);
-    EXPECT_FALSE(window.clearOwnedPlotTab(u"intruder"_s, tab->stateId()));
-    EXPECT_FALSE(
-        window.removeCurveFromOwnedPlotTab(u"intruder"_s, tab->stateId(), u"/shared"_s, u"value"_s, u"curve-a"_s));
-    EXPECT_FALSE(window.addCurveToOwnedPlotTab(u"intruder"_s, tab->stateId(), u"/shared"_s, u"value"_s, u"curve-b"_s));
-    EXPECT_FALSE(window.ownedPlotTabConfig(u"intruder"_s, tab->stateId()));
+    EXPECT_FALSE(pluginTabs(window).clearTab(u"intruder"_s, tab->stateId()));
+    EXPECT_FALSE(pluginTabs(window).removeCurve(u"intruder"_s, tab->stateId(), u"/shared"_s, u"value"_s, u"curve-a"_s));
+    EXPECT_FALSE(pluginTabs(window).addCurve(u"intruder"_s, tab->stateId(), u"/shared"_s, u"value"_s, u"curve-b"_s));
+    EXPECT_FALSE(pluginTabs(window).tabConfig(u"intruder"_s, tab->stateId()));
     EXPECT_EQ(plot->curveList().size(), 1U);
-    const auto config = window.ownedPlotTabConfig(u"curve-owner"_s, u"view"_s);
+    const auto config = pluginTabs(window).tabConfig(u"curve-owner"_s, u"view"_s);
     ASSERT_TRUE(config);
     EXPECT_NE(config->find("curve-a"), std::string::npos);
     EXPECT_EQ(config->find("curve-b"), std::string::npos);
-    ASSERT_TRUE(
-        window.removeCurveFromOwnedPlotTab(u"curve-owner"_s, u"view"_s, u"/shared"_s, u"value"_s, u"curve-a"_s));
+    ASSERT_TRUE(pluginTabs(window).removeCurve(u"curve-owner"_s, u"view"_s, u"/shared"_s, u"value"_s, u"curve-a"_s));
     EXPECT_TRUE(plot->isEmpty());
-    EXPECT_FALSE(
-        window.removeCurveFromOwnedPlotTab(u"curve-owner"_s, u"view"_s, u"/shared"_s, u"value"_s, u"curve-a"_s));
-    ASSERT_TRUE(window.addCurveToOwnedPlotTab(u"curve-owner"_s, u"view"_s, u"/shared"_s, u"value"_s, u"curve-b"_s));
-    ASSERT_TRUE(window.createOwnedPlotTab(u"curve-owner"_s, u"view"_s, u"Replacement"_s));
-    EXPECT_EQ(window.ownedPlotTab(u"curve-owner"_s, u"view"_s), tab);
+    EXPECT_FALSE(pluginTabs(window).removeCurve(u"curve-owner"_s, u"view"_s, u"/shared"_s, u"value"_s, u"curve-a"_s));
+    ASSERT_TRUE(pluginTabs(window).addCurve(u"curve-owner"_s, u"view"_s, u"/shared"_s, u"value"_s, u"curve-b"_s));
+    ASSERT_TRUE(pluginTabs(window).createTab(u"curve-owner"_s, u"view"_s, u"Replacement"_s));
+    EXPECT_EQ(pluginTabs(window).ownedTab(u"curve-owner"_s, u"view"_s), tab);
     EXPECT_EQ(tab->name(), u"Replacement"_s);
     EXPECT_TRUE(plot->isEmpty());
   }
@@ -122,12 +124,12 @@ class MainWindowPluginViewsTestPeer {
     PlotDocker* user_tab = tabs->addTab(u"Temperature"_s);
     const QString user_id = user_tab->stateId();
 
-    ASSERT_TRUE(window.createOwnedPlotTab(owner, u"run-a"_s, u"Temperature"_s));
-    ASSERT_TRUE(window.createOwnedPlotTab(owner, u"run-b"_s, u"Temperature"_s));
-    ASSERT_TRUE(window.createOwnedPlotTab(other, u"run-a"_s, u"Temperature"_s));
-    PlotDocker* first = window.ownedPlotTab(owner, u"run-a"_s);
-    PlotDocker* second = window.ownedPlotTab(owner, u"run-b"_s);
-    PlotDocker* foreign = window.ownedPlotTab(other, u"run-a"_s);
+    ASSERT_TRUE(pluginTabs(window).createTab(owner, u"run-a"_s, u"Temperature"_s));
+    ASSERT_TRUE(pluginTabs(window).createTab(owner, u"run-b"_s, u"Temperature"_s));
+    ASSERT_TRUE(pluginTabs(window).createTab(other, u"run-a"_s, u"Temperature"_s));
+    PlotDocker* first = pluginTabs(window).ownedTab(owner, u"run-a"_s);
+    PlotDocker* second = pluginTabs(window).ownedTab(owner, u"run-b"_s);
+    PlotDocker* foreign = pluginTabs(window).ownedTab(other, u"run-a"_s);
     ASSERT_NE(first, nullptr);
     ASSERT_NE(second, nullptr);
     ASSERT_NE(foreign, nullptr);
@@ -135,19 +137,19 @@ class MainWindowPluginViewsTestPeer {
     EXPECT_EQ(first->name(), second->name());
     const QString second_id = second->stateId();
     second->setName(u"Renamed"_s);
-    EXPECT_EQ(window.ownedPlotTab(owner, u"run-b"_s), second);
+    EXPECT_EQ(pluginTabs(window).ownedTab(owner, u"run-b"_s), second);
     EXPECT_EQ(second->stateId(), second_id);
 
-    EXPECT_FALSE(window.closeOwnedPlotTab(owner, user_id));
-    EXPECT_FALSE(window.closeOwnedPlotTab(owner, foreign->stateId()));
-    ASSERT_TRUE(window.closeOwnedPlotTab(owner, u"run-a"_s));
-    EXPECT_EQ(window.ownedPlotTab(owner, u"run-b"_s), second);
-    EXPECT_EQ(window.ownedPlotTab(other, u"run-a"_s), foreign);
+    EXPECT_FALSE(pluginTabs(window).closeTab(owner, user_id));
+    EXPECT_FALSE(pluginTabs(window).closeTab(owner, foreign->stateId()));
+    ASSERT_TRUE(pluginTabs(window).closeTab(owner, u"run-a"_s));
+    EXPECT_EQ(pluginTabs(window).ownedTab(owner, u"run-b"_s), second);
+    EXPECT_EQ(pluginTabs(window).ownedTab(other, u"run-a"_s), foreign);
     EXPECT_EQ(user_tab->stateId(), user_id);
-    const auto ids = window.listOwnedPlotTabs(owner);
+    const auto ids = pluginTabs(window).listTabIds(owner);
     ASSERT_TRUE(ids);
     EXPECT_EQ(*ids, (std::vector<std::string>{"run-b"}));
-    const auto config = window.ownedPlotTabConfig(owner, u"run-b"_s);
+    const auto config = pluginTabs(window).tabConfig(owner, u"run-b"_s);
     ASSERT_TRUE(config);
     EXPECT_NE(config->find("Renamed"), std::string::npos);
 
@@ -167,8 +169,8 @@ class MainWindowPluginViewsTestPeer {
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
     EXPECT_TRUE(before_restore.isNull());
 
-    second = window.ownedPlotTab(owner, u"run-b"_s);
-    foreign = window.ownedPlotTab(other, u"run-a"_s);
+    second = pluginTabs(window).ownedTab(owner, u"run-b"_s);
+    foreign = pluginTabs(window).ownedTab(other, u"run-a"_s);
     ASSERT_NE(second, nullptr);
     ASSERT_NE(foreign, nullptr);
     EXPECT_TRUE(second->isHistoryExempt());
@@ -181,8 +183,8 @@ class MainWindowPluginViewsTestPeer {
     EXPECT_EQ(second->plotAt(0)->plotWidget()->stateId(), u"persisted-owned-content"_s);
 
     PlotDocker* restored = second;
-    ASSERT_TRUE(window.createOwnedPlotTab(owner, u"run-b"_s, u"Updated"_s));
-    EXPECT_EQ(window.ownedPlotTab(owner, u"run-b"_s), restored);
+    ASSERT_TRUE(pluginTabs(window).createTab(owner, u"run-b"_s, u"Updated"_s));
+    EXPECT_EQ(pluginTabs(window).ownedTab(owner, u"run-b"_s), restored);
     EXPECT_EQ(restored->name(), u"Updated"_s);
 
     AppSession& app = *window.session_;

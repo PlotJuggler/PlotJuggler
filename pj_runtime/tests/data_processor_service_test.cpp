@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <limits>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "pj_base/dataset.hpp"
@@ -805,6 +807,196 @@ TEST(DataProcessorServiceTest, ReconcileRoundTripRecreatesFilterFromParams) {
   ASSERT_TRUE(reapplied.has_value());
   EXPECT_EQ(reapplied->output_name, out_name);
   EXPECT_EQ(readValues(engine, reapplied->output_topic_id), before);  // same series reproduced
+}
+
+// unchangedFilterOutputs names (by output TopicId) the live filters a snapshot
+// leaves as they are: same (dataset, output_name) + identical persisted fields
+// (resolved input, processor id, params, embedded source). Any difference means
+// "replace", so the id is not returned; clearAllFilters(keep) then leaves the
+// unchanged one live under its TopicId and removes the rest.
+TEST(DataProcessorServiceTest, UnchangedFilterOutputsMatchOnlyIdenticalPersistedFilters) {
+  DataEngine engine;
+  DataProcessorService service(engine);
+  service.setFilterCatalogue(catalogueFromSource(kScaleSrc));
+  const DatasetId ds = *engine.createDataset(DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
+  DataWriter writer = engine.createWriter();
+  auto hx = writer.registerScalarSeries(ds, "x", NumericType::kFloat64);
+  auto hy = writer.registerScalarSeries(ds, "y", NumericType::kFloat64);
+  writer.appendScalar(*hx, 0, 2.0);
+  writer.appendScalar(*hy, 0, 5.0);
+  engine.commitChunks(writer.flushAll());
+  auto scaled = service.makeRestoredProcessor("scale", R"({"value_scale":3.0})", "");
+  ASSERT_TRUE(scaled != nullptr);
+  const auto kept = service.applyFilter(hx->topic_id, ds, std::move(scaled), "x[Scale]");
+  ASSERT_TRUE(kept.has_value()) << kept.error();
+  const auto dropped = service.applyFilter(hy->topic_id, ds, "scale", "y[Scale]");
+  ASSERT_TRUE(dropped.has_value()) << dropped.error();
+  const auto* live = service.filterConfig(kept->output_topic_id);
+  ASSERT_NE(live, nullptr);
+
+  DataProcessorService::PersistedFilter same;
+  same.input_topic_id = live->input_topic_id;
+  same.dataset_id = live->dataset_id;
+  same.input_column_index = live->input_column_index;
+  same.processor_id = live->processor_id;
+  same.params_json = live->processor->saveParams();
+  same.filter_source = live->filter_source;
+  same.output_name = live->output_name;
+  EXPECT_EQ(service.unchangedFilterOutputs({same}), (std::unordered_set<TopicId>{kept->output_topic_id}));
+
+  DataProcessorService::PersistedFilter other_params = same;
+  other_params.params_json = R"({"value_scale":4.0})";
+  EXPECT_TRUE(service.unchangedFilterOutputs({other_params}).empty());
+  DataProcessorService::PersistedFilter other_input = same;
+  other_input.input_topic_id = hy->topic_id;
+  EXPECT_TRUE(service.unchangedFilterOutputs({other_input}).empty());
+  DataProcessorService::PersistedFilter other_column = same;
+  other_column.input_column_index = 1;
+  EXPECT_TRUE(service.unchangedFilterOutputs({other_column}).empty());
+  DataProcessorService::PersistedFilter other_processor = same;
+  other_processor.processor_id = "absolute";
+  EXPECT_TRUE(service.unchangedFilterOutputs({other_processor}).empty());
+  DataProcessorService::PersistedFilter renamed = same;
+  renamed.output_name = "x[Scaled]";
+  EXPECT_TRUE(service.unchangedFilterOutputs({renamed}).empty());
+  DataProcessorService::PersistedFilter other_dataset = same;
+  other_dataset.dataset_id = ds + 1;
+  EXPECT_TRUE(service.unchangedFilterOutputs({other_dataset}).empty());
+
+  // The keep set feeds both the removal view and the clear.
+  EXPECT_EQ(service.liveNonExemptNodeIds({}, {kept->output_topic_id}), std::vector<NodeId>{dropped->node_id});
+  EXPECT_EQ(service.liveNonExemptOutputNames({}, {kept->output_topic_id}), std::vector<std::string>{"y[Scale]"});
+  service.clearAllFilters({kept->output_topic_id});
+  ASSERT_EQ(service.recipes().size(), 1u);
+  EXPECT_EQ(service.recipes().front().output_topic_id, kept->output_topic_id);
+  EXPECT_EQ(service.filterConfig(dropped->output_topic_id), nullptr);
+  service.clearAllFilters();
+  EXPECT_TRUE(service.recipes().empty());
+}
+
+// Filter output names are unique per dataset, not globally: the
+// same name in two datasets is two filters, and a snapshot naming only one of
+// them keeps exactly that one.
+TEST(DataProcessorServiceTest, UnchangedFilterOutputsKeySameNameByDataset) {
+  DataEngine engine;
+  DataProcessorService service(engine);
+  service.setFilterCatalogue(catalogueFromSource(kScaleSrc));
+  const DatasetId ds_a = *engine.createDataset(DatasetDescriptor{.source_name = "a", .time_domain_id = 0});
+  const DatasetId ds_b = *engine.createDataset(DatasetDescriptor{.source_name = "b", .time_domain_id = 0});
+  DataWriter writer = engine.createWriter();
+  auto xa = writer.registerScalarSeries(ds_a, "x", NumericType::kFloat64);
+  auto xb = writer.registerScalarSeries(ds_b, "x", NumericType::kFloat64);
+  writer.appendScalar(*xa, 0, 2.0);
+  writer.appendScalar(*xb, 0, 5.0);
+  engine.commitChunks(writer.flushAll());
+  const auto in_a = service.applyFilter(xa->topic_id, ds_a, "scale", "filtered");
+  const auto in_b = service.applyFilter(xb->topic_id, ds_b, "scale", "filtered");
+  ASSERT_TRUE(in_a.has_value()) << in_a.error();
+  ASSERT_TRUE(in_b.has_value()) << in_b.error();
+
+  DataProcessorService::PersistedFilter wanted_a;
+  wanted_a.input_topic_id = xa->topic_id;
+  wanted_a.dataset_id = ds_a;
+  wanted_a.processor_id = "scale";
+  wanted_a.params_json = service.filterConfig(in_a->output_topic_id)->processor->saveParams();
+  wanted_a.filter_source = service.filterConfig(in_a->output_topic_id)->filter_source;
+  wanted_a.output_name = "filtered";
+  const std::unordered_set<TopicId> kept = service.unchangedFilterOutputs({wanted_a});
+  EXPECT_EQ(kept, (std::unordered_set<TopicId>{in_a->output_topic_id}));
+
+  service.clearAllFilters(kept);
+  ASSERT_EQ(service.recipes().size(), 1u);
+  EXPECT_EQ(service.recipes().front().output_topic_id, in_a->output_topic_id);
+}
+
+// A Windows checkout gives the bundled filter sources CRLF line endings, while
+// the snapshot copy of the same text went through the layout XML (CDATA), where
+// end-of-line normalization leaves "\n". Line endings are not identity: the live
+// filter stays "unchanged", or every Luau-sourced filter would replay on undo.
+TEST(DataProcessorServiceTest, UnchangedFilterOutputsIgnoreLineEndingDifferencesInSource) {
+  std::string crlf_source;
+  for (const char ch : std::string_view(kScaleSrc)) {
+    if (ch == '\n') {
+      crlf_source.push_back('\r');
+    }
+    crlf_source.push_back(ch);
+  }
+  DataEngine engine;
+  DataProcessorService service(engine);
+  service.setFilterCatalogue(catalogueFromSource(crlf_source.c_str()));
+  const DatasetId ds = *engine.createDataset(DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
+  DataWriter writer = engine.createWriter();
+  auto hx = writer.registerScalarSeries(ds, "x", NumericType::kFloat64);
+  writer.appendScalar(*hx, 0, 2.0);
+  engine.commitChunks(writer.flushAll());
+  const auto live = service.applyFilter(hx->topic_id, ds, "scale", "x[Scale]");
+  ASSERT_TRUE(live.has_value()) << live.error();
+  const auto* recipe = service.filterConfig(live->output_topic_id);
+  ASSERT_NE(recipe, nullptr);
+  ASSERT_EQ(recipe->filter_source, crlf_source);
+
+  DataProcessorService::PersistedFilter wanted;
+  wanted.input_topic_id = recipe->input_topic_id;
+  wanted.dataset_id = recipe->dataset_id;
+  wanted.input_column_index = recipe->input_column_index;
+  wanted.processor_id = recipe->processor_id;
+  wanted.params_json = recipe->processor->saveParams();
+  wanted.filter_source = kScaleSrc;
+  wanted.output_name = recipe->output_name;
+  EXPECT_EQ(service.unchangedFilterOutputs({wanted}), (std::unordered_set<TopicId>{live->output_topic_id}));
+}
+
+// Only the CRLF pair is a line-ending difference. A lone '\r' inside a Luau
+// long bracket is data the script can observe, so a persisted copy without it
+// describes a different filter and the live one must not count as unchanged.
+TEST(DataProcessorServiceTest, UnchangedFilterOutputsTreatStandaloneCarriageReturnAsData) {
+  const std::string live_source = std::string(kScaleSrc) + "--[[a\rb]]\n";
+  const std::string persisted_source = std::string(kScaleSrc) + "--[[ab]]\n";
+  DataEngine engine;
+  DataProcessorService service(engine);
+  service.setFilterCatalogue(catalogueFromSource(live_source.c_str()));
+  const DatasetId ds = *engine.createDataset(DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
+  DataWriter writer = engine.createWriter();
+  auto hx = writer.registerScalarSeries(ds, "x", NumericType::kFloat64);
+  writer.appendScalar(*hx, 0, 2.0);
+  engine.commitChunks(writer.flushAll());
+  const auto live = service.applyFilter(hx->topic_id, ds, "scale", "x[Scale]");
+  ASSERT_TRUE(live.has_value()) << live.error();
+  const auto* recipe = service.filterConfig(live->output_topic_id);
+  ASSERT_NE(recipe, nullptr);
+  ASSERT_EQ(recipe->filter_source, live_source);
+
+  DataProcessorService::PersistedFilter wanted;
+  wanted.input_topic_id = recipe->input_topic_id;
+  wanted.dataset_id = recipe->dataset_id;
+  wanted.input_column_index = recipe->input_column_index;
+  wanted.processor_id = recipe->processor_id;
+  wanted.params_json = recipe->processor->saveParams();
+  wanted.filter_source = persisted_source;
+  wanted.output_name = recipe->output_name;
+  EXPECT_TRUE(service.unchangedFilterOutputs({wanted}).empty());
+}
+
+// The names a history restore removes include the cascade: a kept
+// filter reading a removed one falls with it, so a marker generator reading the
+// kept filter's output must see that name in the removal view.
+TEST(DataProcessorServiceTest, LiveNonExemptOutputNamesIncludeCascadedDependents) {
+  DataEngine engine;
+  DataProcessorService service(engine);
+  service.setFilterCatalogue(catalogueFromSource(kScaleSrc));
+  const DatasetId ds = *engine.createDataset(DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
+  DataWriter writer = engine.createWriter();
+  auto hx = writer.registerScalarSeries(ds, "x", NumericType::kFloat64);
+  writer.appendScalar(*hx, 0, 2.0);
+  engine.commitChunks(writer.flushAll());
+  const auto head = service.applyFilter(hx->topic_id, ds, "scale", "head");
+  ASSERT_TRUE(head.has_value()) << head.error();
+  const auto tail = service.applyFilter(head->output_topic_id, ds, "scale", "tail");
+  ASSERT_TRUE(tail.has_value()) << tail.error();
+
+  EXPECT_EQ(service.liveNonExemptOutputNames({}, {tail->output_topic_id}), (std::vector<std::string>{"head", "tail"}));
+  EXPECT_EQ(service.liveNonExemptOutputNames({}, {head->output_topic_id}), (std::vector<std::string>{"tail"}));
+  EXPECT_TRUE(service.liveNonExemptOutputNames({}, {head->output_topic_id, tail->output_topic_id}).empty());
 }
 
 }  // namespace

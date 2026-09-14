@@ -391,6 +391,23 @@ int TabbedPlotWidget::tabCount() const {
   return static_cast<int>(tabs_.size());
 }
 
+void TabbedPlotWidget::forEachDocker(const std::function<void(PlotDocker*)>& operation) const {
+  for (const TabEntry& entry : tabs_) {
+    if (entry.docker != nullptr) {
+      operation(entry.docker);
+    }
+  }
+}
+
+PlotDocker* TabbedPlotWidget::findDocker(const std::function<bool(PlotDocker*)>& predicate) const {
+  for (const TabEntry& entry : tabs_) {
+    if (entry.docker != nullptr && predicate(entry.docker)) {
+      return entry.docker;
+    }
+  }
+  return nullptr;
+}
+
 PlotDocker* TabbedPlotWidget::addTab(QString tab_name) {
   if (tab_name.isEmpty()) {
     tab_name = QString("tab%1").arg(++tab_suffix_count_);

@@ -40,6 +40,8 @@ add_library(pj_app_shell OBJECT
     src/TopicDemandController.h
     src/StreamingSourceManager.cpp
     src/StreamingSourceManager.h
+    src/PluginPlotTabsController.cpp
+    src/PluginPlotTabsController.h
     src/SourceTimelineController.cpp
     src/SourceTimelineController.h
     src/DatasetMergeActions.cpp

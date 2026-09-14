@@ -102,6 +102,12 @@ class TabbedPlotWidget : public QWidget {
   [[nodiscard]] int dockerCount() const;
   PlotDocker* dockerAt(int index);
   [[nodiscard]] int tabCount() const;
+  // Visits every PlotDocker tab in tab order, in one pass over the tab vector
+  // (dockerCount()/dockerAt() are each a linear scan, so an index loop over
+  // them is quadratic). `operation` must not add or close tabs.
+  void forEachDocker(const std::function<void(PlotDocker*)>& operation) const;
+  // First PlotDocker tab satisfying `predicate`, or nullptr.
+  [[nodiscard]] PlotDocker* findDocker(const std::function<bool(PlotDocker*)>& predicate) const;
 
   // Panel-toggle buttons. Created here but relocated by the MainWindow
   // shell into the title bar (it reparents them after construction).

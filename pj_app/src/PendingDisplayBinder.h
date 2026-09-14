@@ -80,6 +80,13 @@ struct PendingDisplayEntry {
 // as before; see resolveCurveKey for the full resolution + ambiguity semantics.
 [[nodiscard]] std::optional<QString> resolveSeriesPath(const CatalogModel& catalog, const layout_xml::SeriesPath& path);
 
+// `resolveSeriesPath` followed by the catalog's descriptor for the resolved key:
+// the exact source dataset when the qualifiers still agree, a unique fallback
+// otherwise, never a same-topic sibling by load order. Empty when no loaded
+// dataset matches (a filter input, say, that only a later restore step creates).
+[[nodiscard]] std::optional<CurveDescriptor> resolveSeriesDescriptor(
+    const CatalogModel& catalog, const layout_xml::SeriesPath& path);
+
 // GUI-thread-only registry for display intents whose topics were not in the catalog
 // when they were staged: plot curves from a progressive layout restore (collect()) or
 // a placeholder drop on a plot (addPendingCurve()), plus demand references for

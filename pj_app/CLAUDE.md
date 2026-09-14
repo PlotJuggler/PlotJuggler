@@ -145,15 +145,24 @@ version may understand; it never imports rejected values into the session.
 ## Plugin playback and owned views
 
 `MainWindow` wires `PlaybackControlHost`, `ViewportRuntimeHost`, and
-`PlotTabsRuntimeHost` into each toolbox binding. Playback is global. Viewport
-operations reach only the dockers whose `PlotDocker::ownerPlugin()` is the
-captured plugin ID. Tab `stateId()` is independent of its title and position;
+`PlotTabsRuntimeHost` into each toolbox binding. Playback is global and stays in
+`MainWindow`. The owned-tab operations behind the other two live in
+`PluginPlotTabsController` (`src/PluginPlotTabsController.{h,cpp}`, over
+`TabbedPlotWidget` + `CatalogModel` + `ExtensionCatalogService`), which builds
+each plugin's `Callbacks` with the plugin id captured; `MainWindow` only
+constructs it and calls `refreshAvailability()` on catalog change and layout
+load. Viewport operations reach only the dockers whose
+`PlotDocker::ownerPlugin()` is the captured plugin ID. Tab `stateId()` is independent of its title and position;
 duplicate visible titles and renaming do not affect addressing. Owned tabs
 persist in full layouts with `owner_plugin`/`tab_id` metadata and remain live
-across history restores. Known gap: an owned tab's curve bound to a per-curve
-filter output does not survive an unrelated undo, because a history restore
-clears and replays every filter (transforms are reconciled by recipe and keep
-their output identity). The watermark is the owning toolbox's display name
+across history restores; so do their curves bound to a filter or transform
+output the snapshot leaves unchanged, because `restoreDataProcessors` reconciles
+both by persisted identity (filters by `output_name`, transforms by key) and
+keeps the unchanged ones live under their TopicIds. Everything else — changed
+entries, and kept ones cascaded out by a replaced input — is re-created by
+`repairDataProcessors` in rounds (filters with their inputs re-resolved through
+a rebuilt catalog, then transforms) until a round creates nothing; apply
+failures are reported once, after the last round. The watermark is the owning toolbox's display name
 (`toolboxBadge`); a tab whose owner is not in the catalog says so instead.
 
 `displayTimeForSource` validates a live catalog source handle and uses its current

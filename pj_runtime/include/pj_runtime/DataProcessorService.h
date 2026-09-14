@@ -77,6 +77,20 @@ class DataProcessorService {
     std::string filter_source;
   };
 
+  /// A filter as a layout snapshot describes it, with its input already resolved
+  /// against the live session — the persisted half of a `FilterRecipe`. Identity is
+  /// (`dataset_id`, `output_name`): output names are unique per dataset only. The
+  /// other fields decide whether the live filter under that identity is the same.
+  struct PersistedFilter {
+    TopicId input_topic_id = 0;
+    DatasetId dataset_id = 0;
+    std::size_t input_column_index = 0;
+    std::string processor_id;
+    std::string params_json;    ///< what the live processor's `saveParams()` must equal
+    std::string filter_source;  ///< embedded Luau module source, empty for native builtins
+    std::string output_name;
+  };
+
   /// Persisted identity of one transform input. The session dataset id is only
   /// a same-session hint; source, topic, and field carry the reload-stable
   /// identity, while the column remains a fallback for metadata-poor topics.
@@ -154,18 +168,32 @@ class DataProcessorService {
   /// processors leaf-first. An unknown node id is an error.
   Status removeFilter(NodeId node_id);
 
-  /// Remove every live filter: for each one, drop its engine node AND
-  /// `retireTopic` its materialized output (so `CatalogModel::rebuildFromDatastore`
-  /// stops listing it — `removeNode` alone leaves a catalog zombie), then forget
-  /// its recipe. The reconcile primitive behind snapshot restore (undo/redo +
-  /// layout load): clear, then re-apply the snapshot's set, so a restored state
-  /// can never duplicate or leak a filter. Removed leaf-first (a filter's own
-  /// dependents are cascaded via `removeFilter` before the filter itself). The
-  /// output `TopicStorage` is kept alive (only retired), so any cached reader
-  /// pointer sees an empty deque, not freed memory. Idempotent; a no-op when
-  /// nothing is live. A `FilterRecipe` carries no exemption bit, so there is no
-  /// predicate form — a filter is always in scope.
-  void clearAllFilters();
+  /// Remove every live filter except those whose output TopicId is in
+  /// `keep_outputs`: for each one, drop its engine node AND `retireTopic` its
+  /// materialized output (so `CatalogModel::rebuildFromDatastore` stops listing it
+  /// — `removeNode` alone leaves a catalog zombie), then forget its recipe. The
+  /// reconcile primitive behind snapshot restore (undo/redo + layout load): clear
+  /// what the snapshot drops or changes, then re-apply the rest, so a restored
+  /// state can never duplicate or leak a filter. Removed leaf-first (a filter's own
+  /// dependents are cascaded via `removeFilter` before the filter itself), so a
+  /// kept filter can still fall to the cascade of a removed input. The output
+  /// `TopicStorage` is kept alive (only retired), so any cached reader pointer sees
+  /// an empty deque, not freed memory. Idempotent; a no-op when nothing is live. A
+  /// `FilterRecipe` carries no exemption bit: history keeps a filter only by
+  /// `keep_outputs`, never by intent.
+  void clearAllFilters(const std::unordered_set<TopicId>& keep_outputs = {});
+  /// Output TopicIds of the live filters a restore leaves unchanged: those whose
+  /// (dataset, `output_name`) matches a `wanted` entry with the same resolved
+  /// input topic and column, processor id, `saveParams()` and embedded source.
+  /// Feed the result to `clearAllFilters` / `liveNonExemptNodeIds` as
+  /// `keep_outputs` so the kept filters survive with those TopicIds.
+  [[nodiscard]] std::unordered_set<TopicId> unchangedFilterOutputs(const std::vector<PersistedFilter>& wanted) const;
+  /// Whether a filter named `output_name` is live in `dataset_id` — the
+  /// (dataset, output name) identity `PersistedFilter` carries.
+  [[nodiscard]] bool isFilterLive(DatasetId dataset_id, std::string_view output_name) const;
+  /// Whether a persisted (non-ephemeral) transform with this namespaced key is
+  /// live — membership in what `transformRecipes()` lists, without the copy.
+  [[nodiscard]] bool isTransformLive(std::string_view namespaced_key) const;
 
   /// Remove every live transform, leaf-first. `RestoreIntent::kHistory`
   /// reconciles only the non-exempt transforms and leaves the `history_exempt`
@@ -281,30 +309,41 @@ class DataProcessorService {
   /// leaf-first order so no recipe remains attached to a retired topic.
   [[nodiscard]] Status removeProcessorsDependingOn(const std::vector<TopicId>& input_topics);
 
-  /// Every live processor node a history restore is about to remove: every filter
-  /// (never exempt) plus every transform whose `history_exempt` bit is unset and
-  /// whose key is not in `keep_keys` — the same exclusions `clearTransforms` takes,
-  /// so the preflight and the clear agree on one removal set. Feed the result to
-  /// `exemptDependentsOf` before clearing anything, so a history restore can reject
-  /// up front instead of cascading into an exempt dependent.
-  [[nodiscard]] std::vector<NodeId> liveNonExemptNodeIds(const std::unordered_set<std::string>& keep_keys = {}) const;
+  /// Every live processor node a history restore is about to remove: the filters
+  /// whose output TopicId is not in `keep_filter_outputs` plus the non-exempt
+  /// transforms whose key is not in `keep_keys`. Feed the result to
+  /// `exemptDependentsOf` before clearing anything, so a history restore can
+  /// reject up front instead of cascading into an exempt dependent.
+  [[nodiscard]] std::vector<NodeId> liveNonExemptNodeIds(
+      const std::unordered_set<std::string>& keep_keys = {},
+      const std::unordered_set<TopicId>& keep_filter_outputs = {}) const;
 
-  /// Materialized output topic names produced by `liveNonExemptNodeIds(keep_keys)`
-  /// (a grouped declaration `"t:a,b"` reports its single topic `"t"`). Marker
-  /// generators declare dependencies by series name rather than by datastore node
-  /// id, so a history restore uses this view to check their dependencies before
-  /// clearing any processor.
+  /// What a history restore with these keep sets would take down, computed in one
+  /// dependency walk from the removal set of `liveNonExemptNodeIds(...)`.
+  struct HistoryRemovalImpact {
+    /// Output names of every history-exempt transform the removal cascades into
+    /// (sorted, unique). Non-empty means the restore must be rejected.
+    std::vector<std::string> exempt_transform_names;
+    /// Materialized output topic names of every processor removed, directly or by
+    /// cascade (a kept filter or transform reading a removed output falls with it,
+    /// and is re-created under a new TopicId). A grouped declaration `"t:a,b"`
+    /// reports its single topic `"t"`. Marker generators declare dependencies by
+    /// series name, so this is the view their preflight matches against.
+    std::vector<std::string> removed_output_names;
+  };
+  [[nodiscard]] HistoryRemovalImpact historyRemovalImpact(
+      const std::unordered_set<std::string>& keep_keys, const std::unordered_set<TopicId>& keep_filter_outputs) const;
+
+  /// `historyRemovalImpact(...).removed_output_names`.
   [[nodiscard]] std::vector<std::string> liveNonExemptOutputNames(
-      const std::unordered_set<std::string>& keep_keys = {}) const;
+      const std::unordered_set<std::string>& keep_keys = {},
+      const std::unordered_set<TopicId>& keep_filter_outputs = {}) const;
 
   /// Output names of every history-exempt TRANSFORM transitively depending on any
-  /// of `nodes` (typically `liveNonExemptNodeIds(...)` — the set a history restore is
-  /// about to remove). Empty means removing `nodes` would strand nothing exempt.
-  /// Walks `forEachDependentProcessor` with `include_ephemeral_transforms=true`
-  /// from `nodes`' output topics, so the closure matches exactly what
-  /// `removeProcessorsDependingOn` would cascade into. Scoped to
-  /// filters/transforms (this service's own graph); a marker generator's
-  /// dependency on a removed transform output is not tracked here.
+  /// of `nodes`. Empty means removing `nodes` would strand nothing exempt. The
+  /// closure matches exactly what `removeProcessorsDependingOn` would cascade
+  /// into. Scoped to filters/transforms (this service's own graph); a marker
+  /// generator's dependency on a removed transform output is not tracked here.
   [[nodiscard]] std::vector<std::string> exemptDependentsOf(const std::vector<NodeId>& nodes) const;
 
   /// Remove a transform by its namespaced key, cascading through every exact
@@ -406,6 +445,23 @@ class DataProcessorService {
   /// Resolve a saved binding's dataset through SessionManager's shared identity
   /// policy, then resolve its exact topic and semantic leaf.
   [[nodiscard]] Expected<ResolvedInput> resolveInputBinding(const TransformInputBinding& binding) const;
+
+  /// The processors a clear or a history restore removes directly: the filters
+  /// outside `keep_filter_outputs` and the transforms outside `keep_keys` (minus
+  /// the `history_exempt` ones when `keep_history_exempt`). The clears and the
+  /// preflight queries all derive from this one set, so they cannot disagree.
+  struct RemovalSet {
+    std::vector<NodeId> filter_nodes;
+    std::vector<std::string> transform_keys;
+    std::unordered_set<TopicId> outputs;  ///< every output topic of the above
+  };
+  [[nodiscard]] RemovalSet removalSet(
+      const std::unordered_set<std::string>& keep_keys, const std::unordered_set<TopicId>& keep_filter_outputs,
+      bool keep_history_exempt) const;
+  /// Grows `affected` through every processor the removal of those topics
+  /// cascades into and returns the output names of the history-exempt
+  /// transforms among them (sorted, unique).
+  [[nodiscard]] std::vector<std::string> exemptTransformsDependingOn(std::unordered_set<TopicId>& affected) const;
 
   /// Fixpoint walk of every processor transitively depending on a topic in
   /// `affected` (which grows with each visited processor's outputs). Visits

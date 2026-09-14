@@ -92,6 +92,7 @@ class IngestProgressWidget;
 class MessageBox;
 class ToolboxRuntimeHost;
 struct RuntimeToolboxPlugin;
+class PluginPlotTabsController;
 class SourceTimelineController;
 class TopicDemandController;
 class SvgButton;
@@ -583,45 +584,8 @@ class MainWindow : public QMainWindow {
   // (their X axis is a curve value, not time, so the union is meaningless).
   void linkedZoomOut();
 
-  // Set the visible X window of every time plot `plugin_id` owns to
-  // [t0_s, t1_s] (display-axis seconds), keeping each plot's Y range. Backs
-  // pj.viewport.v1, whose scope is the caller's own tabs. Owning no tab and
-  // owning a tab with nothing to zoom are distinct errors: the caller's remedy
-  // differs, and a conflated message makes it retry identically forever.
-  Status zoomOwnedPlotsToTimeRange(const QString& plugin_id, double t0_s, double t1_s);
-
-  // Reset every plot `plugin_id` owns to fit its data. The scoped counterpart
-  // of the toolbar's linkedZoomOut, which stays the user's own control.
-  Status zoomOwnedPlotsOut(const QString& plugin_id);
-
-  // The shell half of pj.plot_tabs.v1. Every one of these is scoped to
-  // `plugin_id`: a tab it did not compose is indistinguishable from one that
-  // does not exist, so the service can neither reach nor reveal the user's own
-  // tabs. `tab_id` is the plugin's own name for the tab; the docker's stateId
-  // carries the host-namespaced form, which is what makes two plugins' ids
-  // unable to collide.
-  Status createOwnedPlotTab(const QString& plugin_id, const QString& tab_id, const QString& title);
-  Status closeOwnedPlotTab(const QString& plugin_id, const QString& tab_id);
-  [[nodiscard]] Expected<std::vector<std::string>> listOwnedPlotTabs(const QString& plugin_id) const;
-  // What the tab actually holds, as the JSON the ABI specifies — read back from
-  // the live plot, never echoed from what the caller asked for.
-  [[nodiscard]] Expected<std::string> ownedPlotTabConfig(const QString& plugin_id, const QString& tab_id) const;
-  void refreshOwnedPlotTabAvailability();
   /// `SessionManager::displayTimeForSource` on the ABI's source handle, unwrapped to the axis double.
   [[nodiscard]] std::optional<double> displayTimeForSource(PJ_data_source_handle_t source, int64_t absolute_ns) const;
-  // The watermark an owned plot tab carries for `plugin_id`: its display name
-  // while loaded, empty when it is not in the catalog.
-  [[nodiscard]] QString toolboxBadge(const QString& plugin_id) const;
-  Status addCurveToOwnedPlotTab(
-      const QString& plugin_id, const QString& tab_id, const QString& topic, const QString& field,
-      const QString& dataset_source);
-  Status removeCurveFromOwnedPlotTab(
-      const QString& plugin_id, const QString& tab_id, const QString& topic, const QString& field,
-      const QString& dataset_source);
-  Status clearOwnedPlotTab(const QString& plugin_id, const QString& tab_id);
-  // The docker `plugin_id` composed under `tab_id`, or null when it owns no
-  // such tab. The single ownership check every operation above goes through.
-  [[nodiscard]] PlotDocker* ownedPlotTab(const QString& plugin_id, const QString& tab_id) const;
 
   // Convenience: emit a diagnostic into the session's sink. Source/id
   // are stable string literals; message is a translated QString. The
@@ -634,9 +598,6 @@ class MainWindow : public QMainWindow {
 
   // Wires callbacks for plots already present after UI setup.
   void wireExistingPlots();
-
-  // Applies operation to each plot docker.
-  void forEachDocker(const std::function<void(PlotDocker*)>& operation) const;
 
   // Applies operation to each dock widget.
   void forEachDock(const std::function<void(DockWidget*)>& operation);
@@ -662,10 +623,6 @@ class MainWindow : public QMainWindow {
 
   // Applies operation to each plot widget.
   void forEachPlot(const std::function<void(PlotWidget*)>& operation);
-  // forEachPlot narrowed to the tabs `plugin_id` composed through
-  // pj.plot_tabs.v1. This is where the boundary is actually enforced: a plugin
-  // drives the view only where the user can see it is driving.
-  void forEachPlotOwnedBy(const QString& plugin_id, const std::function<void(PlotWidget*)>& operation);
   // Every mounted State Transitions strip across all tabs.
   void forEachStateStrip(const std::function<void(StateTransitionsDockWidget*)>& operation);
 
@@ -1059,6 +1016,36 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] std::vector<DataProcessorService::TransformRecipe> parseWantedTransforms(
       const QDomElement& element, bool keep_exempt, bool* restored_all);
 
+  // One <processor> entry of a snapshot: the input path as persisted plus the
+  // service-side description with that input resolved against the current
+  // catalog (input fields zero while it does not resolve). The path is kept
+  // because the restore re-resolves it each round: the input may be an output
+  // that only a later step of the same restore creates.
+  struct WantedFilter {
+    layout_xml::SeriesPath input;
+    DataProcessorService::PersistedFilter persisted;
+  };
+
+  // Parses every <processor> under `element` into the filters the snapshot wants
+  // live, resolving each input once so `unchangedFilterOutputs` can match live
+  // filters; an unresolved input is not an error yet. Query-only, like
+  // `parseWantedTransforms`.
+  [[nodiscard]] std::vector<WantedFilter> parseWantedFilters(const QDomElement& element) const;
+
+  // Re-creates every wanted filter and transform that is not live, in rounds:
+  // filters first, each input re-resolved through the catalog (rebuilt so an
+  // output the previous round minted resolves), then transforms, which resolve
+  // by name. A round can only create the entries whose inputs exist, so a chain
+  // of N alternating links takes up to N rounds; the loop stops as soon as a
+  // round creates nothing. History has no authority over a live exempt transform
+  // (`live_exempt_keys`), even when the snapshot carries its key. Each entry
+  // that is still not live at the end is reported once; returns whether every
+  // entry was restored.
+  [[nodiscard]] bool repairDataProcessors(
+      std::vector<WantedFilter>& wanted_filters,
+      const std::vector<DataProcessorService::TransformRecipe>& wanted_transforms,
+      const std::unordered_set<std::string>& live_exempt_keys);
+
   // Re-derives the Custom Series list from the live transform recipes and hands
   // the whole set to the panel.
   //
@@ -1342,6 +1329,9 @@ class MainWindow : public QMainWindow {
   // references (see TopicDemandTracker). Declared after pending_binder_, which
   // it forwards placeholder scalar drops to.
   std::unique_ptr<TopicDemandController> topic_demand_controller_;
+  // The plugin-composed plot tabs (pj.plot_tabs.v1 / pj.viewport.v1); builds the
+  // per-plugin bridge callbacks launchToolbox hands to the runtime hosts.
+  std::unique_ptr<PluginPlotTabsController> plugin_plot_tabs_;
   // Bridges progressive ingest signals from SessionManager to CurveTreeView
   // via CurveListPanel. Maintains linger/flash timers and ghost-row lifetime.
   std::unique_ptr<IngestProgressController> ingest_progress_controller_;

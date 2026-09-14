@@ -12,6 +12,7 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -931,6 +932,52 @@ TEST(DataProcessorTransformTest, UnchangedTransformKeysMatchOnlyIdenticalPersist
 
   wanted = recipes;
   wanted.front().input_bindings.clear();
+  EXPECT_TRUE(fx.service.unchangedTransformKeys(wanted, PJ::RestoreIntent::kHistory).empty());
+}
+
+// The script of a transform loaded from a file on Windows carries CRLF line
+// endings; its layout-snapshot copy carries LF after XML normalization. Line
+// endings are not identity, so the live transform still counts as unchanged.
+TEST(DataProcessorTransformTest, UnchangedTransformKeysIgnoreLineEndingDifferencesInScript) {
+  std::string crlf_script;
+  for (const char ch : std::string_view(kNegate)) {
+    if (ch == '\n') {
+      crlf_script.push_back('\r');
+    }
+    crlf_script.push_back(ch);
+  }
+  Fixture fx;
+  fx.seed("speed", {1.0});
+  const auto live = fx.service.upsertTransform(
+      "pluginA", "negate", {"speed"}, {"neg"}, crlf_script, "{}", /*ephemeral=*/false, /*input_column_index=*/0,
+      /*history_exempt=*/false);
+  ASSERT_TRUE(live.has_value()) << live.error();
+  std::vector<PJ::DataProcessorService::TransformRecipe> wanted = fx.service.transformRecipes();
+  ASSERT_EQ(wanted.size(), 1u);
+  ASSERT_EQ(wanted.front().script, crlf_script);
+
+  wanted.front().script = kNegate;
+  EXPECT_EQ(
+      fx.service.unchangedTransformKeys(wanted, PJ::RestoreIntent::kHistory),
+      (std::unordered_set<std::string>{"pluginA/negate"}));
+}
+
+// Only the CRLF pair is a line-ending difference. A lone '\r' inside a Luau
+// long bracket is data the script can observe, so a snapshot without it
+// describes a different transform and the live key must not be returned.
+TEST(DataProcessorTransformTest, UnchangedTransformKeysTreatStandaloneCarriageReturnAsData) {
+  const std::string live_script = std::string(kNegate) + "--[[a\rb]]\n";
+  Fixture fx;
+  fx.seed("speed", {1.0});
+  const auto live = fx.service.upsertTransform(
+      "pluginA", "negate", {"speed"}, {"neg"}, live_script, "{}", /*ephemeral=*/false, /*input_column_index=*/0,
+      /*history_exempt=*/false);
+  ASSERT_TRUE(live.has_value()) << live.error();
+  std::vector<PJ::DataProcessorService::TransformRecipe> wanted = fx.service.transformRecipes();
+  ASSERT_EQ(wanted.size(), 1u);
+  ASSERT_EQ(wanted.front().script, live_script);
+
+  wanted.front().script = std::string(kNegate) + "--[[ab]]\n";
   EXPECT_TRUE(fx.service.unchangedTransformKeys(wanted, PJ::RestoreIntent::kHistory).empty());
 }
 
