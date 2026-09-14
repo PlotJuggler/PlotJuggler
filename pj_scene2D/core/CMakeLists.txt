@@ -59,7 +59,7 @@ add_library(pj_scene2d_core STATIC ${PJ_SCENE2D_CORE_SOURCES})
 target_include_directories(pj_scene2d_core PUBLIC include)
 target_compile_features(pj_scene2d_core PUBLIC cxx_std_20)
 target_compile_options(pj_scene2d_core PRIVATE
-  ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS}
+  ${PJ_WARNING_FLAGS}
 )
 if(MSVC)
   # libpng uses setjmp/longjmp for error handling, which MSVC warns
@@ -94,7 +94,7 @@ if(PJ_BUILD_TESTS)
 
     add_executable(${test_name} ${PJ_SCENE2D_TEST_SOURCES})
     target_link_libraries(${test_name} PRIVATE ${PJ_SCENE2D_TEST_LIBS})
-    target_compile_options(${test_name} PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+    target_compile_options(${test_name} PRIVATE ${PJ_WARNING_FLAGS})
     if(MSVC AND PJ_SCENE2D_TEST_SUPPRESS_MSVC_SETJMP_WARNING)
       # Some test helpers call libpng's setjmp(png_jmpbuf(...)) with a
       # PngWriteCtx on the stack. Same C4611 rationale as the library

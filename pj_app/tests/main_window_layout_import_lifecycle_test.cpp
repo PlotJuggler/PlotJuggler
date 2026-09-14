@@ -173,8 +173,12 @@ TEST(MainWindowLayoutImportLifecycleTest, RestoreLifecycleHonorsPolicyAndSuperse
   EXPECT_FALSE(probe.saw_any) << "S1: a kAutomated mixed restore opened a dialog (policy inferred from batch survival)";
   EXPECT_FALSE(MainWindowLayoutImportTestPeer::binderEmpty(window))
       << "S1: the unresolved intent must be retained, not prompted away";
-  EXPECT_TRUE(diagnostic_ids.contains(QStringLiteral("layout-import-unresolved-curves")))
-      << "S1 ids seen: " << diagnostic_ids.join(QStringLiteral(", ")).toStdString();
+  // Diagnostics reach the recorder through a queued emit: it can still be in the
+  // event queue when the restore reports itself settled.
+  EXPECT_TRUE(pumpUntil([&diagnostic_ids]() {
+    return diagnostic_ids.contains(QStringLiteral("layout-import-unresolved-curves"));
+  })) << "S1 ids seen: "
+      << diagnostic_ids.join(QStringLiteral(", ")).toStdString();
 
   // ---- S2 (F6): progressive apply failure on a kAutomated restore.
   probe.reset();

@@ -229,8 +229,7 @@ bool SourcePromotionHost::onPromote(
         // destroyed mutex — unprotectable inside the class; safety rests on
         // import-job quiescence ordering (the panel session tears the
         // plugin's jobs down while this host is still alive).
-        QMetaObject::invokeMethod(
-            self, [self, promotion_id]() { self->processPromotion(promotion_id); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(self, &SourcePromotionHost::processPromotion, Qt::QueuedConnection, promotion_id);
       } catch (...) {
         // Never accepted after all: the sweep must not fire result_cb for it.
         self->pending_.erase(promotion_id);

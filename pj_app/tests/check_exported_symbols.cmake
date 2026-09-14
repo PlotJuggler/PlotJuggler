@@ -27,6 +27,12 @@ if(NOT DEFINED NM)
   set(NM "nm")
 endif()
 
+# An instrumented build exports parts of the sanitizer runtime interface from the
+# executable itself (e.g. __asan_option_detect_stack_use_after_return,
+# __ubsan_vptr_type_cache). They are not a static third-party library leaking,
+# and no uninstrumented build carries them, so they are only skipped there.
+set(_sanitizer_runtime_regex "^__(asan|lsan|ubsan|tsan|msan|sanitizer)_")
+
 execute_process(
   COMMAND "${NM}" -D --defined-only "${TARGET}"
   OUTPUT_VARIABLE _nm_output
@@ -43,7 +49,11 @@ set(_exported "")
 string(REPLACE "\n" ";" _nm_lines "${_nm_output}")
 foreach(_line IN LISTS _nm_lines)
   if(_line MATCHES "^[0-9a-fA-F]* +[A-Za-z] +([^ ]+)$")
-    list(APPEND _exported "${CMAKE_MATCH_1}")
+    set(_name "${CMAKE_MATCH_1}")
+    if(SANITIZERS_ACTIVE AND _name MATCHES "${_sanitizer_runtime_regex}")
+      continue()
+    endif()
+    list(APPEND _exported "${_name}")
   endif()
 endforeach()
 list(LENGTH _exported _exported_count)

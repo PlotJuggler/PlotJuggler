@@ -1,0 +1,135 @@
+# ThreadSanitizer suppressions.
+#
+# WHY THIS FILE EXISTS
+#
+# TSan decides two accesses are unsynchronised by tracking the happens-before
+# edges it observes. It sees edges from pthread primitives even inside
+# uninstrumented libraries, because those are interceptors — but it CANNOT see
+# ordering established by lock-free atomics compiled into a library it did not
+# instrument. Qt is consumed prebuilt here, and its future/result plumbing and
+# thread pool are built on exactly such atomics, so TSan reports races that the
+# code does not have.
+#
+# This is not a theoretical concern. On the first full run of the lane, 338 data
+# races were reported across the PJ4 suite and the racing frame resolved as:
+#
+#     214  libQt6Core          84  TSan's own allocator interceptor, inside
+#      28  libglib-2.0             Qt's QFuture/QtConcurrent machinery
+#       6  FFmpeg               6  PJ4's own instrumented code
+#
+# Six of 338 pointed at code we compile. A signal that weak is not a signal, so
+# the lane needed these suppressions to be worth reading at all.
+#
+# THE LIMITATION, STATED PLAINLY
+#
+# called_from_lib is a blunt instrument: it drops a report when the named
+# library appears in the stack, so a GENUINE race in PJ4 code reached through a
+# Qt callback or a queued slot is suppressed along with the noise. That is a
+# real loss of coverage, accepted because the alternative — 300+ reports nobody
+# reads — finds nothing at all.
+#
+# The only complete fix is an instrumented Qt, i.e. building Qt from source
+# under -fsanitize=thread. That is the same "instrumented dependency closure"
+# requirement that puts MemorySanitizer out of scope (see docs/SANITIZERS.md),
+# and it is not free: it would add a from-source Qt to every TSan run.
+#
+# Add an entry only with a report that justifies it, and say which library the
+# racing frame resolved to. A race in code we compile is the thing this lane
+# exists to find: name PJ4 code only for a hand-off through Qt, audited as the
+# section at the end of this file describes.
+
+# Qt: prebuilt and uninstrumented, every module of it.
+#
+# Each module is named in full, and that is forced by the tool rather than a
+# style choice. A called_from_lib pattern must resolve to exactly ONE loaded
+# library; a prefix like "libQt6" matches several and TSan treats that as fatal:
+#
+#   ThreadSanitizer: called_from_lib suppression 'libQt6' is matched against
+#   2 libraries: '...libQt6Svg.so.6' and '...libQt6Concurrent.so.6'
+#
+# The binary then exits 66, which breaks gtest_discover_tests and takes the
+# entire app stage down with it — a broad pattern here costs the whole suite,
+# not just a noisy report. The ".so" suffix keeps each entry unambiguous, since
+# it stops "libQt6Qml.so" from also matching "libQt6QmlCore.so.6".
+#
+# This is the set PJ4 and its tests actually load, taken from ldd rather than
+# from the 71 modules the Qt installation ships.
+called_from_lib:libQt6Core.so
+called_from_lib:libQt6Gui.so
+called_from_lib:libQt6Widgets.so
+called_from_lib:libQt6Concurrent.so
+called_from_lib:libQt6Network.so
+called_from_lib:libQt6DBus.so
+called_from_lib:libQt6OpenGL.so
+called_from_lib:libQt6OpenGLWidgets.so
+called_from_lib:libQt6PrintSupport.so
+called_from_lib:libQt6Svg.so
+called_from_lib:libQt6SvgWidgets.so
+called_from_lib:libQt6UiTools.so
+called_from_lib:libQt6Xml.so
+
+# GLib: system library reached through Qt's Unix event dispatcher.
+called_from_lib:libglib-2.0.so
+called_from_lib:libgobject-2.0.so
+
+# FFmpeg: prebuilt Conan package with its own worker threads.
+called_from_lib:libavutil.so
+called_from_lib:libavcodec.so
+called_from_lib:libavformat.so
+called_from_lib:libavfilter.so
+called_from_lib:libswscale.so
+called_from_lib:libswresample.so
+
+# Hand-offs through Qt's thread pool and event queue.
+#
+# QtConcurrent::run builds its task object (vptr, captured values) on the calling
+# thread and QThreadPool hands it to a worker. A queued call builds its event
+# (QMetaCallEvent, QCallableObject, copied arguments) on the posting thread and
+# the receiving thread unpacks it. Both hand-offs are ordered by a QMutex inside
+# libQt6Core, a futex TSan cannot see, so the first access on the other thread
+# is reported against the construction. The called_from_lib entries above do not
+# cover these: the racing frames are Qt header templates instantiated in our
+# binaries, and our own lambdas. An instrumented Qt would make every one of them
+# unnecessary.
+#
+# Each site was audited against its report (2026-09-14): values are captured by
+# copy, the object is used on one thread at a time, and results return through a
+# QFutureWatcher or a queued call on the GUI thread. A per-site entry names the Qt
+# wrapper instantiated for one lambda (StoredFunctionCall for a task,
+# QCallableObject for a queued call), so it matches only reports with a frame
+# running inside that task or queued call: a genuine race in that lambda's body
+# is hidden too, the rest of the submitting function is not. Re-audit a site when
+# its threading changes, and add a new site only with a report and the same audit.
+#
+# Top frame in the task object or the queued-call glue, whichever site built it.
+race_top:QtConcurrent::RunFunctionTaskBase
+race_top:qcoreevent.h
+race_top:qobjectdefs_impl.h
+# QtConcurrent tasks: the captured values, first read on the worker. The MeshLoader
+# entry covers load() and loadFromMemory(), reached from scene entities, robot
+# models and the loader itself.
+race:QtConcurrent::StoredFunctionCall<pj::scene3d::MeshLoader::load
+race:QtConcurrent::StoredFunctionCall<pj::scene3d::PointCloudLayer::startDecode
+race:QtConcurrent::StoredFunctionCall<pj::scene3d::TrailLayer::startRebuild
+race:QtConcurrent::StoredFunctionCall<PJ::DownloadManager::onReplyFinished
+# Queued lambdas posted from provider, ingest or plugin worker threads: their
+# captures, first read on the GUI thread.
+race:QtPrivate::QCallableObject<PJ::HeadlessDescriptorProviderSession::startImport
+race:QtPrivate::QCallableObject<PJ::FileLoader::beginLoad
+race:QtPrivate::QCallableObject<PJ::FileLoader::runIngestOnWorker
+race:QtPrivate::QCallableObject<PJ::ToolboxRuntimeHost::onCreateParserIngest
+race:QtPrivate::QCallableObject<PJ::ToolboxRuntimeHost::postIngestFinished
+race:QtPrivate::QCallableObject<PJ::ToolboxRuntimeHost::onNotifyDataChanged
+race:QtPrivate::QCallableObject<PJ::wireSourceCapture
+# The plugin message-box request, posted by the ingest worker, which then blocks
+# until the GUI thread answers it. The * spans "(anonymous namespace)::".
+race:QtPrivate::QCallableObject<PJ::*makePluginMessageBoxHandler
+# A finished-slot object the GUI thread ran, freed later by Qt's network thread.
+race:QtPrivate::QCallableObject<PJ::*attachFinished
+
+# Test plugin libraries are dlclosed between tests and reloaded at the same
+# address. TSan keeps the unloaded library's access history, so the next load's
+# one-time guarded init of the plugin vtable is reported against a worker of the
+# previous load that has already exited. The table is written once per load and
+# only read afterwards.
+race:PJ::DataSourcePluginBase::vtableWithCreate

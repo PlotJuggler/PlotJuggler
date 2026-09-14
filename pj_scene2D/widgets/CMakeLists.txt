@@ -122,7 +122,7 @@ endif()
 add_library(pj_scene2d_widgets STATIC ${PJ_SCENE2D_WIDGETS_SOURCES})
 target_include_directories(pj_scene2d_widgets PUBLIC include)
 target_compile_features(pj_scene2d_widgets PUBLIC cxx_std_20)
-target_compile_options(pj_scene2d_widgets PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+target_compile_options(pj_scene2d_widgets PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(pj_scene2d_widgets
   PUBLIC pj_scene_common pj_scene2d_core pj_runtime pj_widgets Qt6::Widgets Qt6::Gui Qt6::GuiPrivate
 )
@@ -142,7 +142,7 @@ if(PJ_BUILD_TESTS)
     pj_scene2d_widgets
     GTest::gtest
   )
-  target_compile_options(scene2d_dock_widget_dispatch_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  target_compile_options(scene2d_dock_widget_dispatch_test PRIVATE ${PJ_WARNING_FLAGS})
   add_test(NAME scene2d_dock_widget_dispatch_test COMMAND scene2d_dock_widget_dispatch_test)
 
   add_executable(pixel_inspector_test
@@ -152,7 +152,7 @@ if(PJ_BUILD_TESTS)
     pj_scene2d_widgets
     GTest::gtest_main
   )
-  target_compile_options(pixel_inspector_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  target_compile_options(pixel_inspector_test PRIVATE ${PJ_WARNING_FLAGS})
   add_test(NAME PixelInspector COMMAND pixel_inspector_test)
 
   add_executable(scene2d_dock_widget_test
@@ -162,6 +162,6 @@ if(PJ_BUILD_TESTS)
     pj_scene2d_widgets
     GTest::gtest
   )
-  target_compile_options(scene2d_dock_widget_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  target_compile_options(scene2d_dock_widget_test PRIVATE ${PJ_WARNING_FLAGS})
   add_test(NAME scene2d_dock_widget_test COMMAND scene2d_dock_widget_test)
 endif()

@@ -62,6 +62,11 @@ invisible to the plugin authors who are supposed to use it.
 
 ## Tests
 
-Four test executables: `tests/dialog_engine_test.cpp`, `tests/panel_engine_test.cpp` (with `tests/mock_panel_plugin.cpp`), `tests/widget_binding_test.cpp`, and `tests/combo_rules_test.cpp` (the `pj_enable_when`/`pj_visible_when` rule pair). Add tests when extending the protocol coverage.
+Two gtest runners on the shared gui test main (`pj_add_test_runner` in `cmake/PjTests.cmake`):
+
+- `pj_dialog_host_tests`: `tests/dialog_engine_test.cpp` (with the SDK's `mock_dialog.cpp`), `tests/widget_binding_test.cpp`, and `tests/combo_rules_test.cpp` (the `pj_enable_when`/`pj_visible_when` rule pair).
+- `pj_dialog_host_panel_tests`: `tests/panel_engine_test.cpp` with `tests/mock_panel_plugin.cpp`. It is a separate runner because both mocks define the plugin entry point `PJ_get_dialog_vtable`.
+
+Add tests to one of these runners when extending the protocol coverage; test files carry no `main()`.
 
 `pj_dialog_host` has no `docs/` folder — the protocol itself is documented in `plotjuggler_sdk/pj_plugins/docs/dialog-plugin-guide.md`; this host just realizes that protocol in Qt.

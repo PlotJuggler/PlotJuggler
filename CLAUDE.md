@@ -142,6 +142,12 @@ The "wholesale lift" strategy for plot widgets (see `pj_plotting/CLAUDE.md`) mea
 - **C++20**.
 - **Linux and Windows are both required shipped targets**; macOS is not yet. Keep the code portable — no Linux-only APIs or POSIX-specific paths in module code; gate anything platform-specific behind the usual CMake / `#ifdef` guards. Licensing note for Windows: conda-forge ships no LGPL FFmpeg for win-64, so pixi-based Windows artifacts must use the local `recipes/ffmpeg` package (the Conan path builds its own LGPL-trimmed FFmpeg on all platforms). Windows runtime packaging (windeployqt + bundling the FFmpeg/Qt DLLs `pj_app` needs) is in scope: the Conan `windows-ci.yml` resolves DLLs via `PATH` at test time, which is not a shippable layout.
 
+### Sanitizer lanes
+
+Use `./build.sh --sanitize none|asan|tsan|msan` and the matching
+`./test.sh --sanitize <lane>`. See [docs/SANITIZERS.md](./docs/SANITIZERS.md) for
+lane coverage, runtime defaults and suppression policy.
+
 ### Vendored third-party
 
 Mirror PJ3's `3rdparty/` convention. Vendored deps live at `./3rdparty/<name>/` and are added (most via `add_subdirectory`) from the top-level `CMakeLists.txt`.

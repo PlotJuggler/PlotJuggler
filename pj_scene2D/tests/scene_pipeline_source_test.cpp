@@ -184,6 +184,7 @@ TEST(ScenePipelineSourceTest, ConcurrentPushAndQuery) {
 
   constexpr int kPushCount = 200;
   std::atomic<size_t> indexed{0};
+  std::atomic<bool> indexing_done{false};
   std::thread indexer([&]() {
     for (int i = 0; i < kPushCount; ++i) {
       auto bytes = makeMockBytes(static_cast<int64_t>(i) * 100, 1);
@@ -194,21 +195,29 @@ TEST(ScenePipelineSourceTest, ConcurrentPushAndQuery) {
         indexed.fetch_add(1, std::memory_order_release);
       }
     }
+    indexing_done.store(true, std::memory_order_release);
   });
 
   ScenePipelineSource source(&store, topic, std::make_unique<MockDecoder>());
   std::atomic<int> resolved{0};
   std::thread reader([&]() {
-    for (int i = 0; i < kPushCount * 2; ++i) {
+    // The budget counts only queries made once entries exist: a reader that
+    // starts first could otherwise spend all of it yielding before the first push.
+    int queries = 0;
+    while (queries < kPushCount * 2) {
       size_t n = indexed.load(std::memory_order_acquire);
       if (n == 0) {
+        if (indexing_done.load(std::memory_order_acquire) && indexed.load(std::memory_order_acquire) == 0) {
+          break;  // every push failed; the expectation below reports it
+        }
         std::this_thread::yield();
         continue;
       }
-      source.setTimestamp(static_cast<Timestamp>(i % static_cast<int>(n)) * 100);
+      source.setTimestamp(static_cast<Timestamp>(queries % static_cast<int>(n)) * 100);
       if (source.takeFrame().has_value()) {
         resolved.fetch_add(1, std::memory_order_relaxed);
       }
+      ++queries;
     }
   });
 

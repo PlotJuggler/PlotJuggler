@@ -153,6 +153,8 @@ class ThrowingImageParser final : public PJ::MessageParserPluginBase {
 // at most one ready notification; back-to-back fires while no waiter is
 // listening collapse to a single pending ready (matches the single-slot
 // result_frame_ semantics of the source).
+// Declare it BEFORE the source it is installed on: the source's worker thread
+// calls into it until the source is destroyed.
 struct FrameSync {
   std::mutex mutex;
   std::condition_variable cv;
@@ -229,8 +231,8 @@ TEST(ImagePipelineSourceTest, DeduplicatesResolvedEntryTimestampBeforeResolvingL
   }));
 
   int decode_calls = 0;
-  PJ::ImagePipelineSource source(&store, *topic, makeCountingPipeline(decode_calls));
   FrameSync sync;
+  PJ::ImagePipelineSource source(&store, *topic, makeCountingPipeline(decode_calls));
   sync.install(source);
 
   source.setTimestamp(1'000);
@@ -264,8 +266,8 @@ TEST(ImagePipelineSourceTest, ParserDrivenPathConsumesCanonicalImage) {
 
   CanonicalRawParser parser(1, 1, "rgb8", 3);
   ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
-  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   FrameSync sync;
+  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   sync.install(source);
 
   source.setTimestamp(1'000);
@@ -317,8 +319,8 @@ TEST(ImagePipelineSourceTest, ParserDrivenCompressedDepthDecodesPngThenNormalize
 
   CanonicalRawParser parser(0, 0, "compressedDepth", 0, 0.0f, 1.0f, "depth");
   ASSERT_TRUE(parser.bindSchema("depth", PJ::Span<const uint8_t>{}));
-  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   FrameSync sync;
+  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   sync.install(source);
 
   source.setTimestamp(1'000);
@@ -355,8 +357,8 @@ TEST(ImagePipelineSourceTest, ParserDrivenCompressedDepthRepairsChunkStreamStart
 
   CanonicalRawParser parser(0, 0, "compressedDepth", 0, 0.0f, 1.0f, "depth");
   ASSERT_TRUE(parser.bindSchema("depth", PJ::Span<const uint8_t>{}));
-  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   FrameSync sync;
+  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   sync.install(source);
 
   source.setTimestamp(1'000);
@@ -390,8 +392,8 @@ TEST(ImagePipelineSourceTest, CoalescesBurstOfSetTimestampToSingleDecode) {
 
   CanonicalRawParser parser(1, 1, "rgb8", 3);
   ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
-  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   FrameSync sync;
+  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   sync.install(source);
 
   for (int i = 0; i < 100; ++i) {
@@ -453,10 +455,10 @@ TEST(ImagePipelineSourceTest, SharedParserMutexSerializesConcurrentSources) {
   ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
 
   auto parser_mutex = std::make_shared<std::mutex>();
-  PJ::ImagePipelineSource source_a(&store, *topic, &parser, parser_mutex, /*parser_keepalive=*/nullptr);
-  PJ::ImagePipelineSource source_b(&store, *topic, &parser, parser_mutex, /*parser_keepalive=*/nullptr);
   FrameSync sync_a;
   FrameSync sync_b;
+  PJ::ImagePipelineSource source_a(&store, *topic, &parser, parser_mutex, /*parser_keepalive=*/nullptr);
+  PJ::ImagePipelineSource source_b(&store, *topic, &parser, parser_mutex, /*parser_keepalive=*/nullptr);
   sync_a.install(source_a);
   sync_b.install(source_b);
 
@@ -495,8 +497,8 @@ TEST(ImagePipelineSourceTest, ParserDrivenRawRgb8WrappedInGrayscalePngDecodesToC
 
   CanonicalRawParser parser(2, 2, "rgb8", 6);
   ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
-  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   FrameSync sync;
+  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   sync.install(source);
 
   source.setTimestamp(1'000);
@@ -543,8 +545,8 @@ TEST(ImagePipelineSourceTest, ParserDrivenBayerRggb8WrappedInGrayscalePngDemosai
 
   CanonicalRawParser parser(kW, kH, "bayer_rggb8", kW);
   ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
-  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   FrameSync sync;
+  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   sync.install(source);
 
   source.setTimestamp(1'000);
@@ -587,8 +589,8 @@ TEST(ImagePipelineSourceTest, CanonicalCodecDecodesSerializedRawRgb8) {
   ASSERT_TRUE(topic.has_value());
   ASSERT_TRUE(store.pushOwned(*topic, 1'000, blob));
 
-  PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
   FrameSync sync;
+  PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
   sync.install(source);
 
   source.setTimestamp(1'000);
@@ -631,8 +633,8 @@ TEST(ImagePipelineSourceTest, CanonicalCodecDecodesSerializedPngWrappedRgb8) {
   ASSERT_TRUE(topic.has_value());
   ASSERT_TRUE(store.pushOwned(*topic, 1'000, blob));
 
-  PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
   FrameSync sync;
+  PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
   sync.install(source);
 
   source.setTimestamp(1'000);
@@ -659,9 +661,9 @@ TEST(ImagePipelineSourceTest, CpuFallbackRectifiesToNativeResolutionWithNoMap) {
   ASSERT_TRUE(topic.has_value());
   ASSERT_TRUE(store.pushOwned(*topic, 1'000, blob));
 
+  FrameSync sync;
   PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
   source.setCameraInfoMap({{"cam", makeRescaleCalibration("cam", 8, 6)}});
-  FrameSync sync;
   sync.install(source);
 
   source.setTimestamp(1'000);
@@ -686,10 +688,10 @@ TEST(ImagePipelineSourceTest, GpuModeKeepsRawFrameAndAttachesRectifyMap) {
   ASSERT_TRUE(topic.has_value());
   ASSERT_TRUE(store.pushOwned(*topic, 1'000, blob));
 
+  FrameSync sync;
   PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
   source.setCameraInfoMap({{"cam", makeRescaleCalibration("cam", 8, 6)}});
   source.setGpuRectificationAvailable(true);
-  FrameSync sync;
   sync.install(source);
 
   source.setTimestamp(1'000);
@@ -717,10 +719,10 @@ TEST(ImagePipelineSourceTest, RectifyDisabledPassesFrameThroughRawInCpuMode) {
   ASSERT_TRUE(topic.has_value());
   ASSERT_TRUE(store.pushOwned(*topic, 1'000, blob));
 
+  FrameSync sync;
   PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
   source.setCameraInfoMap({{"cam", makeRescaleCalibration("cam", 8, 6)}});
   source.setRectifyEnabled(false);
-  FrameSync sync;
   sync.install(source);
 
   source.setTimestamp(1'000);
@@ -745,11 +747,11 @@ TEST(ImagePipelineSourceTest, RectifyDisabledInGpuModeAttachesNoMap) {
   ASSERT_TRUE(topic.has_value());
   ASSERT_TRUE(store.pushOwned(*topic, 1'000, blob));
 
+  FrameSync sync;
   PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
   source.setCameraInfoMap({{"cam", makeRescaleCalibration("cam", 8, 6)}});
   source.setGpuRectificationAvailable(true);
   source.setRectifyEnabled(false);
-  FrameSync sync;
   sync.install(source);
 
   source.setTimestamp(1'000);
@@ -776,9 +778,9 @@ TEST(ImagePipelineSourceTest, RectifyReEnabledRedecodesAndRectifies) {
   ASSERT_TRUE(topic.has_value());
   ASSERT_TRUE(store.pushOwned(*topic, 1'000, blob));
 
+  FrameSync sync;
   PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
   source.setCameraInfoMap({{"cam", makeRescaleCalibration("cam", 8, 6)}});
-  FrameSync sync;
   sync.install(source);
 
   source.setTimestamp(1'000);

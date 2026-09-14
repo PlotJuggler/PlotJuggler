@@ -54,6 +54,11 @@ class HeaderDividerHighlight : public QObject {
   void showDivider(int section, bool pressed);
 
   QHeaderView* header_;
+  /// The header as a plain QObject*, recorded while it was alive. eventFilter()
+  /// checks it with qobject_cast before calling header_->viewport(): the viewport
+  /// is deleted while the header is already down to its QWidget base, and a
+  /// QHeaderView member call at that point is undefined behavior.
+  QObject* header_object_;
   /// Child of the header's viewport, so its x maps straight onto section
   /// viewport positions. Nulled on destruction (a viewport swap would take it
   /// with it), so it is only ever dereferenced while alive.

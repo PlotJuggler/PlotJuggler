@@ -130,6 +130,10 @@ TEST(RasterTextGl, LegendTextOnGlCanvasRoutesThroughRasterPath) {
   const QString key = keyForTopic(catalog, addScalarTopic(session, *dataset, "/imu/x"));
   ASSERT_FALSE(key.isEmpty());
 
+  // Declared before the plot so the plot is destroyed first, detaching itself
+  // from the window; every early GTEST_SKIP() return stays leak- and
+  // double-delete-free.
+  QWidget window;
   auto plot = std::make_unique<TestablePlotWidget>(&session, &catalog);
   ASSERT_NE(plot->addCurve(key), nullptr);
   plot->qwtPlot()->setAxisScale(QwtPlot::xBottom, 100.0, 300.0);
@@ -140,7 +144,6 @@ TEST(RasterTextGl, LegendTextOnGlCanvasRoutesThroughRasterPath) {
     GTEST_SKIP() << "plot is not using the OpenGL canvas (use_opengl off)";
   }
 
-  QWidget window;
   auto* layout = new QVBoxLayout(&window);
   layout->setContentsMargins(
       PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
@@ -166,8 +169,6 @@ TEST(RasterTextGl, LegendTextOnGlCanvasRoutesThroughRasterPath) {
   if (const QByteArray dump_path = qgetenv("PJ_SAVE_TEST_FRAME"); !dump_path.isEmpty()) {
     frame.save(QString::fromLocal8Bit(dump_path));
   }
-
-  plot->setParent(nullptr);  // detach before the window/layout is destroyed
 }
 
 int main(int argc, char** argv) {

@@ -303,7 +303,10 @@ void DownloadManager::onReplyFinished(QNetworkReply* reply) {
         }
       },
       Qt::QueuedConnection);
-  auto future = QtConcurrent::run([this, id, data, expected, destination, cancel_flag]() -> QString {
+  // Copied for the worker: setArchiveLimits writes the member from the GUI thread
+  // without a lock, so the worker must not read it after launch.
+  const ArchiveLimits limits = archive_limits_;
+  auto future = QtConcurrent::run([this, id, data, expected, destination, cancel_flag, limits]() -> QString {
     // Checksum is a single-shot ~30-100 ms hash even on ~100 MB artifacts, so
     // we do not thread the cancel flag through it. If the user cancels during
     // this window, the flag is caught at the boundary check below or inside
@@ -331,7 +334,7 @@ void DownloadManager::onReplyFinished(QNetworkReply* reply) {
       return u"Cancelled"_s;
     }
     emit phaseChanged(id, WorkPhase::Extracting);
-    if (auto extract_result = extractFromMemory(data, destination, *cancel_flag, archive_limits_); !extract_result) {
+    if (auto extract_result = extractFromMemory(data, destination, *cancel_flag, limits); !extract_result) {
       return extract_result.error();
     }
     return {};  // success

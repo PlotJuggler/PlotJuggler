@@ -214,6 +214,14 @@ TEST_F(SourceCacheStoreTest, LockFailureWithoutAPartialIsAnAbsentMiss) {
   lock += ".lock";
   ASSERT_TRUE(fs::exists(lock));
   fs::permissions(lock, fs::perms::none);
+#ifndef _WIN32
+  // Root (or CAP_DAC_OVERRIDE) opens files regardless of their permission bits,
+  // so this user cannot simulate an unreadable lock file at all.
+  if (std::ifstream(lock).is_open()) {
+    fs::permissions(lock, fs::perms::owner_read | fs::perms::owner_write);
+    GTEST_SKIP() << "permission bits are not enforced for this user; an unreadable lock file cannot be simulated";
+  }
+#endif
   EXPECT_FALSE(other.lookup(identity, &reason, &kind).has_value());
   EXPECT_EQ(kind, SourceCacheStore::MissKind::kAbsent) << reason;
   fs::permissions(lock, fs::perms::owner_read | fs::perms::owner_write);

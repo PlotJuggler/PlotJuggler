@@ -1,0 +1,46 @@
+# Conan requirements for the MemorySanitizer lane ONLY.
+#
+# Deliberately NOT the app's conanfile.txt. MSan needs every writer of memory in
+# the process instrumented, so the lane rebuilds its dependency closure from
+# source with Clang, an instrumented libc++ and -fsanitize=memory. Pointing it at
+# the app's 156-line requirement list would rebuild FFmpeg, CPython, libarchive,
+# Qt-adjacent media libraries and the rest under that toolchain — hours of work
+# to instrument code that the lane's four Qt-free targets never load. (The first
+# attempt did exactly that and died building bzip2.)
+#
+# This is the complete closure of pj_datastore and its tests:
+#   pj_datastore -> plotjuggler_sdk::base, tsl::robin_map, fmt (header-only),
+#                   nanoarrow (+ IPC)
+#   its runners  -> GoogleTest
+#
+# plotjuggler_sdk is absent on purpose: the lane sets PJ_SDK_FORCE_SOURCE=ON, so
+# CMake fetches and builds the pinned SDK sources in-tree, which is what makes the
+# SDK instrumented rather than linked in prebuilt and blind.
+#
+# Keep this in step with pj_datastore/CMakeLists.txt. If a datastore dependency
+# is added there and not here, configure fails loudly — which is the intended
+# failure mode, since the alternative is a silently under-instrumented lane.
+[requires]
+fmt/12.2.0
+tsl-robin-map/1.4.0
+gtest/1.18.0
+nanoarrow/0.7.0
+# Required by the in-tree SDK build (PJ_SDK_FORCE_SOURCE=ON), not by
+# pj_datastore itself: plotjuggler_sdk's CMakeLists calls find_package for
+# FastFloat and nlohmann_json. Both are header-only, so they cost nothing to
+# instrument — they compile into our translation units.
+fast_float/8.2.10
+nlohmann_json/3.12.0
+# Google Benchmark is deliberately ABSENT: pj_datastore skips it under
+# PJ_ENABLE_MSAN, because the lane builds no benchmark targets and
+# google-benchmark's regex-backend detection fails to configure against an
+# instrumented libc++. Arrow/Parquet are absent too — they sit behind
+# PJ_BUILD_PARQUET_IMPORT_EXAMPLE, which stays OFF.
+
+[options]
+fmt/*:header_only=True
+nanoarrow/*:with_ipc=True
+
+[generators]
+CMakeDeps
+CMakeToolchain

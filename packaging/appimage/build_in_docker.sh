@@ -19,6 +19,7 @@
 #   packaging/appimage/build_in_docker.sh --app-dir <app> --sdk-dir <sdk> --plugins-dir <plugins>
 #   packaging/appimage/build_in_docker.sh --fresh ...                    # ignore caches; rebuild plugin deps from scratch
 #   packaging/appimage/build_in_docker.sh --with-tests ...               # also compile tests + demos (dev/CI trees only; ~10x larger)
+#   packaging/appimage/build_in_docker.sh --sanitize asan ...            # instrumented AppImage with line information
 #   PJ_INCLUDE_PLUGINS="<basenames…>" packaging/appimage/build_in_docker.sh --plugins-dir <src>
 #     # (source-repo path only) after the in-container compile, keep only the
 #     # whitespace-separated top-level entries in /out (e.g. curated .so basenames
@@ -81,6 +82,38 @@ IMAGE_TAG="pj4-appimage-builder:jammy-qt${PJ_QT_VERSION}-${PJ_APPIMAGE_ARCH}-v2"
 # --fresh removes both.
 PLUGIN_CONAN_VOL="pj4-appimage-plugin-conan"
 PLUGIN_CCACHE_VOL="pj4-appimage-plugin-ccache"
+# MemorySanitizer needs two things no other lane does, both persisted so they are
+# paid for once: a libc++ built with -fsanitize=memory (the distro one is a normal
+# build and defeats the lane), and a Conan cache of its own. The cache MUST be
+# separate — sanitizer flags do not enter package_id, so a shared cache would let
+# an uninstrumented package be reused here, or an instrumented one leak out.
+MSAN_LIBCXX_VOL="pj4-msan-libcxx"
+MSAN_CONAN_VOL="pj4-msan-conan"
+# The Clang every instrumented lane compiles with, provisioned per run in both the
+# plugin and the app container from LLVM's apt repository. Ubuntu 22.04's newest,
+# clang-15, cannot compile C++20 lambda captures of structured bindings and its
+# shared TSan runtime crashes (see docs/SANITIZERS.md).
+PJ_SANITIZER_CLANG_VERSION="${PJ_SANITIZER_CLANG_VERSION:-22}"
+# Container-side installer spliced into both container scripts. Single-quoted so it
+# expands inside the container, where PJ_SANITIZER_CLANG_VERSION is forwarded.
+# libclang-rt-<v>-dev carries the sanitizer runtimes; clang-<v> alone does not.
+# llvm-<v> carries llvm-symbolizer: Clang's runtimes, unlike GCC's, cannot name a
+# frame without it on PATH, and every suppression matches frames by name.
+clang_provision='
+      if ! command -v "llvm-symbolizer-${PJ_SANITIZER_CLANG_VERSION}" >/dev/null 2>&1; then
+        echo "==> Provisioning Clang ${PJ_SANITIZER_CLANG_VERSION} from apt.llvm.org"
+        codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")"
+        wget -qO /etc/apt/trusted.gpg.d/apt.llvm.org.asc https://apt.llvm.org/llvm-snapshot.gpg.key \
+          && echo "deb http://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-${PJ_SANITIZER_CLANG_VERSION} main" \
+               > /etc/apt/sources.list.d/llvm-toolchain.list \
+          && apt-get update -qq >/dev/null 2>&1 \
+          && apt-get install -y --no-install-recommends \
+               "clang-${PJ_SANITIZER_CLANG_VERSION}" "libclang-rt-${PJ_SANITIZER_CLANG_VERSION}-dev" \
+               "llvm-${PJ_SANITIZER_CLANG_VERSION}" >/dev/null 2>&1 \
+          || { echo "error: could not install clang-${PJ_SANITIZER_CLANG_VERSION} from apt.llvm.org; instrumented lanes compile with it." >&2; exit 3; }
+      fi
+      ln -sfn "/usr/bin/llvm-symbolizer-${PJ_SANITIZER_CLANG_VERSION}" /usr/local/bin/llvm-symbolizer
+'
 
 usage() {
   cat <<'EOF'
@@ -115,6 +148,14 @@ Usage:
   REBUILD_IMAGE=1 packaging/appimage/build_in_docker.sh ...  # force-rebuild the builder image
   packaging/appimage/build_in_docker.sh --fresh ...          # ignore caches; rebuild plugin deps from scratch
   packaging/appimage/build_in_docker.sh --with-tests ...     # also compile the test suite + demos (dev/CI trees only; ~10x larger)
+  packaging/appimage/build_in_docker.sh --sanitize asan ...  # ASan/UBSan AppImage (default: none)
+
+--sanitize none|asan|tsan selects the build lane; PJ_SANITIZE is the environment
+equivalent, and the option wins. The tsan lane builds the app, the whole test
+suite, the SDK and the plugins, runs every test, and produces NO AppImage: an
+instrumented binary needs its runtime tuned before it starts, so shipping one
+would hand users an artifact that aborts on launch.
+ASan defaults PJ_DEBUG_INFO to lines; a caller-set value (even empty) wins.
 
 --app-dir builds a different PJ4 app checkout, but the builder image still bakes
 Qt from THIS repo's versions.env. If the --app-dir checkout pins a different Qt
@@ -129,7 +170,18 @@ plugins, the custom SDK is conan create'd into the PERSISTENT plugin Conan cache
 volume; a later run WITHOUT --sdk-dir keeps using it until you pass --fresh to return
 to the pinned SDK. Every other argument passes through to packaging/appimage/build_appimage.sh.
 Output: packaging/appimage/PlotJuggler-<version>-<arch>.AppImage, using versions.env plus any PJ_VERSION override.
+ASan output: packaging/appimage/PlotJuggler-<version>-asan-<arch>.AppImage.
 EOF
+}
+
+PJ_SANITIZE="${PJ_SANITIZE-none}"
+set_sanitize() {
+  case "$1" in
+    none|asan|tsan|msan) PJ_SANITIZE="$1" ;;
+    *)
+      echo "ERROR: --sanitize/PJ_SANITIZE must be none, asan, tsan or msan (got '$1')." >&2
+      exit 2 ;;
+  esac
 }
 
 # Parse args. --plugins-dir <path> may point ANYWHERE on the host. If it is a
@@ -151,6 +203,10 @@ while [[ $# -gt 0 ]]; do
       FRESH=1; shift ;;
     --with-tests)
       WITH_TESTS=1; shift ;;
+    --sanitize)
+      set_sanitize "${2:-}"; shift 2 ;;
+    --sanitize=*)
+      set_sanitize "${1#--sanitize=}"; shift ;;
     --app-dir)
       [[ $# -ge 2 && -n "${2:-}" ]] || { echo "ERROR: --app-dir needs a path" >&2; exit 1; }
       app_dir="$2"
@@ -188,6 +244,56 @@ while [[ $# -gt 0 ]]; do
       FWD_ARGS+=("$1"); shift ;;
   esac
 done
+set_sanitize "${PJ_SANITIZE}"
+
+# Physically separate plugin caches per lane. Conan's tools.build:* configuration
+# does NOT participate in package_id, so an instrumented plotjuggler_sdk carries the
+# same id as the Release one: a shared cache lets one lane serve the other's binaries
+# with no error and no warning, producing a silently half-instrumented AppImage.
+if [[ "${PJ_SANITIZE}" != none ]]; then
+  PLUGIN_CONAN_VOL="${PLUGIN_CONAN_VOL}-${PJ_SANITIZE}"
+  PLUGIN_CCACHE_VOL="${PLUGIN_CCACHE_VOL}-${PJ_SANITIZE}"
+fi
+# Lane-scoped plugin staging, matching the app's build/<lane> layout. Kept under
+# build/ so the container entrypoint's recursive chown still hands it back.
+PLUGIN_STAGE_REL="build/plugins-built"
+[[ "${PJ_SANITIZE}" == none ]] || PLUGIN_STAGE_REL="build/${PJ_SANITIZE}/plugins-built"
+
+# The ThreadSanitizer runtime must disable address-space randomisation to map its
+# shadow memory (see build.sh); the personality syscall that needs is denied by
+# Docker's default seccomp profile, which makes every TSan binary abort at start
+# with "unexpected memory mapping". Relaxed for this lane only — the packaging
+# lanes keep the default profile. Defined here because BOTH container runs, the
+# plugin build and the app build, need it before either is launched.
+seccomp_args=()
+if [[ "${PJ_SANITIZE}" == tsan || "${PJ_SANITIZE}" == msan ]]; then
+  seccomp_args=(--security-opt seccomp=unconfined)
+fi
+
+# In the TSan lane a failing stage means the sanitizer REPORTED something, which
+# is the lane's product rather than a build error. Aborting on the first one
+# would leave every later stage unexercised — the plugin tests reporting a race
+# would mean the app suite never runs, so the lane could never say anything about
+# PJ4. Stage failures are recorded here and re-raised once every stage has run.
+tsan_stage_rc=0
+
+# The wrapper always forwards PJ_DEBUG_INFO, so choose the lane's default here
+# rather than relying on build.sh. '-' (not ':-') preserves an explicitly empty
+# caller value as well as nonempty overrides, with or without --with-tests.
+if [[ "${PJ_SANITIZE}" == asan || "${PJ_SANITIZE}" == tsan ]]; then
+  # Both instrumented lanes are DIAGNOSTIC, so they need source locations. Without
+  # this the tsan lane fell through to the packaging default of "none" and compiled
+  # PJ4 and the SDK with -g0, so every race and double-lock report named a function
+  # and no file:line — the reports were real but not actionable.
+  DEBUG_INFO_DEFAULT="lines"
+elif [[ "${WITH_TESTS}" == "1" ]]; then
+  DEBUG_INFO_DEFAULT="split"
+else
+  DEBUG_INFO_DEFAULT="none"
+fi
+PJ_DEBUG_INFO="${PJ_DEBUG_INFO-${DEBUG_INFO_DEFAULT}}"
+SANITIZE_INFIX=""
+[[ "${PJ_SANITIZE}" == none ]] || SANITIZE_INFIX="-${PJ_SANITIZE}"
 
 WORK_ROOT="${APP_SRC:-${REPO_ROOT}}"   # the PJ4 tree that gets built (mounted at /work); defaults to this repo
 PLUGIN_SDK_ARGS=()
@@ -229,10 +335,14 @@ fi
 # full aggregate. Unset/empty preserves the current behaviour (everything the
 # aggregate build produced ships).
 if [[ -n "${PLUGIN_SRC}" ]]; then
-  built_bin="${WORK_ROOT}/build/plugins-built"
+  # Lane-scoped so an instrumented run can never pick up Release plugin binaries
+  # left by a previous build (and vice versa). Still under build/, which the
+  # container entrypoint chowns recursively.
+  built_bin="${WORK_ROOT}/${PLUGIN_STAGE_REL}"
   echo "==> Compiling plugins from ${PLUGIN_SRC} inside the builder (glibc-matched; first build is slow)"
   rm -rf "${built_bin}"; mkdir -p "${built_bin}"
   docker run --rm --entrypoint bash \
+    ${seccomp_args[@]+"${seccomp_args[@]}"} \
     -v "${PLUGIN_SRC}:/plugins-src:ro" \
     -v "${built_bin}:/out" \
     -v "${PLUGIN_CONAN_VOL}:/root/.conan2" \
@@ -240,6 +350,8 @@ if [[ -n "${PLUGIN_SRC}" ]]; then
     "${PLUGIN_SDK_ARGS[@]}" \
     -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
     -e PJ_INCLUDE_PLUGINS="${PJ_INCLUDE_PLUGINS:-}" \
+    -e PJ_SANITIZE="${PJ_SANITIZE}" \
+    -e PJ_SANITIZER_CLANG_VERSION="${PJ_SANITIZER_CLANG_VERSION}" \
     "${IMAGE_TAG}" -c '
       set -euo pipefail
       # Persisted caches: the Conan home (/root/.conan2) and ccache (/root/.ccache)
@@ -254,6 +366,21 @@ if [[ -n "${PLUGIN_SRC}" ]]; then
       export CCACHE_DIR=/root/.ccache
       [ -d /usr/lib/ccache ] && export PATH="/usr/lib/ccache:${PATH}"
       conan profile detect --force >/dev/null 2>&1 || true
+      # Instrumented lanes compile the plugins and the SDK with the same Clang as
+      # the app: code instrumented for one compiler sanitizer runtime cannot be
+      # loaded into a process running another. CC/CXX are exported only AFTER the
+      # profile detect above, so the Conan profile stays GCC and the cached
+      # dependency binaries keep their package ids; a Clang profile would rebuild
+      # Arrow, gRPC and protobuf from source.
+      case "${PJ_SANITIZE:-none}" in
+        asan|tsan)
+          '"${clang_provision}"'
+          # A compiler installed after ccache has no /usr/lib/ccache wrapper yet.
+          if command -v update-ccache-symlinks >/dev/null 2>&1; then update-ccache-symlinks; fi
+          export CC="clang-${PJ_SANITIZER_CLANG_VERSION}" CXX="clang++-${PJ_SANITIZER_CLANG_VERSION}"
+          echo "==> Plugins: compiling with ${CXX}"
+          ;;
+      esac
       git config --global --add safe.directory "*" || true
       # Copy the sources into the container (excluding the host build/ — which
       # holds host-glibc artifacts — and .git) so nothing host-side is mutated and
@@ -273,14 +400,41 @@ if [[ -n "${PLUGIN_SRC}" ]]; then
       elif [ -f /root/.conan2/.pj4-custom-sdk-seeded ]; then
         echo "WARNING: the plugin Conan cache still holds a custom plotjuggler_sdk from a previous --sdk-dir run; plugins will build against it, NOT the pinned SDK. Pass --fresh to reset." >&2
       fi
+      # The lane has to reach the plugins as well. An ASan app loading UNinstrumented
+      # plugins reports nothing at all for a plugin-side use-after-free, and the
+      # reverse aborts at startup with "ASan runtime does not come first". Refuse to
+      # build a half-instrumented bundle rather than ship one that looks healthy and
+      # is blind to the very defects this lane exists to find.
+      PLUGIN_BUILD_ARGS=""
+      PLUGIN_BUILD_SUBDIR="build"
+      if [ "${PJ_SANITIZE:-none}" != none ]; then
+        if ! grep -q -- "--${PJ_SANITIZE}" build.sh; then
+          echo "error: --sanitize ${PJ_SANITIZE} requires a plugins checkout whose build.sh understands --${PJ_SANITIZE}." >&2
+          echo "       This one does not, so the plugins would be built uninstrumented and the" >&2
+          echo "       instrumented build would silently miss every plugin-side error." >&2
+          exit 3
+        fi
+        PLUGIN_BUILD_ARGS="--${PJ_SANITIZE}"
+        PLUGIN_BUILD_SUBDIR="build/${PJ_SANITIZE}"
+        case "${PJ_SANITIZE}" in
+          asan) echo "==> Plugins: AddressSanitizer lane (instrumented SDK + plugin targets)" ;;
+          tsan) echo "==> Plugins: ThreadSanitizer lane (instrumented SDK + plugin targets, plugin tests run)" ;;
+        esac
+      fi
       scripts/ensure_core.sh   # build plotjuggler_sdk/<SDK_VERSION> at the container glibc
-      ./build.sh               # build all plugins incl. toolbox_mosaico (Arrow once with Flight)
-      cp -a /tmp/psrc/build/all/Release/bin/. /out/
+      # In a sanitizer lane ./build.sh also RUNS the plugin tests, so a reported
+      # race returns nonzero. Under `set -e` that skipped everything after it —
+      # including the standalone plugin below, which the aggregate deliberately
+      # excludes, leaving it entirely untested whenever any other plugin reported.
+      # Record the status and carry on; it is re-raised at the end of the stage.
+      plugin_rc=0
+      ./build.sh ${PLUGIN_BUILD_ARGS} || plugin_rc=$?   # all plugins incl. toolbox_mosaico (Arrow once with Flight)
+      cp -a /tmp/psrc/${PLUGIN_BUILD_SUBDIR}/all/Release/bin/. /out/ || plugin_rc=$?
       # toolbox_transform_editor is outside the aggregate add_subdirectory list,
       # so build it standalone.
       echo "==> Building toolbox_transform_editor standalone…"
-      ./build.sh toolbox_transform_editor
-      cp -a /tmp/psrc/build/toolbox_transform_editor/Release/bin/. /out/
+      ./build.sh ${PLUGIN_BUILD_ARGS} toolbox_transform_editor || plugin_rc=$?
+      cp -a /tmp/psrc/${PLUGIN_BUILD_SUBDIR}/toolbox_transform_editor/Release/bin/. /out/ || plugin_rc=$?
       # Fold in the ROS 2 multi-distro bundle when present (proxy + per-distro
       # inners under dist/<distro>/, each built per-distro in its own container).
       if [ -d /tmp/psrc/dist_ros2 ]; then
@@ -318,34 +472,120 @@ if [[ -n "${PLUGIN_SRC}" ]]; then
         done
       fi
       chown -R "${HOST_UID}:${HOST_GID}" /out
-    '
+      # Re-raise whatever the plugin builds/tests reported, now that every stage
+      # has run. Sanitizer findings must still fail the lane.
+      exit "${plugin_rc}"
+    ' || plugin_stage_rc=$?
+  if [[ "${plugin_stage_rc:-0}" -ne 0 ]]; then
+    if [[ "${PJ_SANITIZE}" == tsan ]]; then
+      echo "==> Plugins: ThreadSanitizer stage exited ${plugin_stage_rc}; continuing so the app lane still runs." >&2
+      tsan_stage_rc="${plugin_stage_rc}"
+    else
+      exit "${plugin_stage_rc}"
+    fi
+  fi
   # Absolute container path: build_appimage.sh cd's into packaging/appimage/ before reading
   # this, so a relative path would resolve against the wrong directory.
-  FWD_ARGS+=(--plugins-dir /work/build/plugins-built)
+  FWD_ARGS+=(--plugins-dir "/work/${PLUGIN_STAGE_REL}")
 fi
 
 echo "==> Building AppImage in container (no --privileged; FUSE-less linuxdeploy)"
-if [[ "${WITH_TESTS}" == "1" ]]; then
+if [[ "${PJ_SANITIZE}" == tsan || "${PJ_SANITIZE}" == msan ]]; then
+  # Both are test lanes, so they always build tests regardless of --with-tests.
+  # Demos stay off: they are interactive programs with no ctest entry, so
+  # instrumenting them costs build time and proves nothing. The msan lane
+  # overrides PJ_BUILD_TARGET itself (build.sh builds its four Qt-free targets
+  # by name), so `all` here is not what it ends up building.
+  build_env=(-e PJ_BUILD_TESTS=ON -e PJ_BUILD_DEMOS=OFF -e PJ_BUILD_WIDGET_DEMOS=OFF -e PJ_BUILD_TARGET=all)
+  build_env+=(-e PJ_COMPRESS_DEBUG="${PJ_COMPRESS_DEBUG:-ON}")
+elif [[ "${WITH_TESTS}" == "1" ]]; then
   build_env=(-e PJ_BUILD_TESTS=ON -e PJ_BUILD_DEMOS=ON -e PJ_BUILD_WIDGET_DEMOS=ON -e PJ_BUILD_TARGET=all)
-  build_env+=(-e PJ_DEBUG_INFO="${PJ_DEBUG_INFO:-split}" -e PJ_COMPRESS_DEBUG="${PJ_COMPRESS_DEBUG:-ON}")
+  build_env+=(-e PJ_COMPRESS_DEBUG="${PJ_COMPRESS_DEBUG:-ON}")
 else
   build_env=(-e PJ_BUILD_TESTS=OFF -e PJ_BUILD_DEMOS=OFF -e PJ_BUILD_WIDGET_DEMOS=OFF -e PJ_BUILD_TARGET=pj_app)
-  build_env+=(-e PJ_DEBUG_INFO="${PJ_DEBUG_INFO:-none}" -e PJ_COMPRESS_DEBUG="${PJ_COMPRESS_DEBUG:-}")
+  build_env+=(-e PJ_COMPRESS_DEBUG="${PJ_COMPRESS_DEBUG:-}")
+fi
+# Both build.sh and the unconditional build_appimage.sh entrypoint invocation
+# must receive the same lane so packaging consumes the selected nested tree.
+build_env+=(-e PJ_DEBUG_INFO="${PJ_DEBUG_INFO}" -e PJ_SANITIZE="${PJ_SANITIZE}")
+# PJ4 links Qt6::PrintSupport, so linuxdeploy-plugin-qt deploys Qt's cups
+# printsupport plugin and then resolves ITS dependencies. The builder image ships
+# no libcups, so that resolution fails with "Could not find dependency:
+# libcups.so.2" and the packaging step dies. Provision it per-run rather than in
+# Dockerfile.build: baking it would force every developer through a REBUILD_IMAGE
+# that re-bakes Qt and the entire Conan closure for one small runtime library.
+# Guarded by ldconfig, so it is a no-op once the library is present.
+msan_mounts=()
+sanitizer_bootstrap=''
+if [[ "${PJ_SANITIZE}" != none ]]; then
+  # Clang is provisioned per run rather than baked, for the same reason libcups
+  # is: baking it would force every developer through a REBUILD_IMAGE that
+  # re-bakes Qt and the whole Conan closure. Every instrumented lane compiles with
+  # it (build.sh names clang/clang++ explicitly). CC/CXX stay unexported outside
+  # msan, so Conan still builds any missing dependency with the profile's GCC.
+  sanitizer_bootstrap="${clang_provision}"'
+      ln -sfn "/usr/bin/clang-${PJ_SANITIZER_CLANG_VERSION}" /usr/local/bin/clang
+      ln -sfn "/usr/bin/clang++-${PJ_SANITIZER_CLANG_VERSION}" /usr/local/bin/clang++
+'
+fi
+if [[ "${PJ_SANITIZE}" == msan ]]; then
+  docker volume create "${MSAN_LIBCXX_VOL}" >/dev/null
+  docker volume create "${MSAN_CONAN_VOL}" >/dev/null
+  msan_mounts=(-v "${MSAN_LIBCXX_VOL}:/opt/msan-libcxx" -v "${MSAN_CONAN_VOL}:/root/.conan2-msan")
+  # The instrumented libc++ is built once into a volume and skipped thereafter.
+  sanitizer_bootstrap+='
+      export CC=clang CXX=clang++
+      bash /work/scripts/build_msan_libcxx.sh --prefix /opt/msan-libcxx || exit 3
+'
 fi
 run_cmd=(docker run --rm
   -v "${WORK_ROOT}:/work" -w /work
+  ${seccomp_args[@]+"${seccomp_args[@]}"}
+  ${msan_mounts[@]+"${msan_mounts[@]}"}
   "${PLUGINS_MOUNT[@]}"
   -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)"
   -e PJ_VERSION="${PJ_VERSION:-}"
+  -e PJ_SANITIZER_CLANG_VERSION="${PJ_SANITIZER_CLANG_VERSION}"
   "${build_env[@]}"
+  --entrypoint bash
   "${IMAGE_TAG}"
+  -c 'if ! ldconfig -p | grep -q "libcups\.so\.2"; then
+        echo "==> Provisioning libcups2 for linuxdeploy Qt printsupport"
+        apt-get update -qq >/dev/null 2>&1 \
+          && apt-get install -y --no-install-recommends libcups2 >/dev/null 2>&1 \
+          && ldconfig \
+          || echo "WARNING: could not install libcups2; Qt printsupport deployment may fail" >&2
+      fi
+      '"${sanitizer_bootstrap}"'
+      exec /usr/local/bin/pj4-build-entry.sh "$@"' _
   "${FWD_ARGS[@]}")
-"${run_cmd[@]}"
+app_stage_rc=0
+"${run_cmd[@]}" || app_stage_rc=$?
+if [[ "${app_stage_rc}" -ne 0 ]]; then
+  if [[ "${PJ_SANITIZE}" == tsan ]]; then
+    echo "==> App: ThreadSanitizer stage exited ${app_stage_rc}." >&2
+    tsan_stage_rc="${app_stage_rc}"
+  else
+    exit "${app_stage_rc}"
+  fi
+fi
 
 echo ""
+if [[ "${PJ_SANITIZE}" == tsan || "${PJ_SANITIZE}" == msan ]]; then
+  # No artifact to name: both are test lanes. Naming one anyway is worse than
+  # saying nothing — it reports a file that was never written. Re-raise the
+  # recorded status so a reported finding still fails the command, now that
+  # every stage has run.
+  if [[ "${tsan_stage_rc}" -ne 0 ]]; then
+    echo "==> ${PJ_SANITIZE} lane finished with findings; see the reports above."
+  else
+    echo "==> ${PJ_SANITIZE} lane finished clean; no AppImage is produced by a test lane."
+  fi
+  exit "${tsan_stage_rc}"
+fi
 # Report the real output name from the app tree's versions.env: build_appimage.sh
 # names the file from WORK_ROOT/versions.env, which differs from this repo under
 # --app-dir (PJ_VERSION, if set, still overrides). Subshell so sourcing it doesn't
 # clobber the image-tag vars read from this repo above.
 ( source "${WORK_ROOT}/versions.env" 2>/dev/null || true
-  echo "==> Done: ${WORK_ROOT}/packaging/appimage/PlotJuggler-${PJ_VERSION:-${PJ_APP_VERSION}}-${PJ_APPIMAGE_ARCH}.AppImage" )
+  echo "==> Done: ${WORK_ROOT}/packaging/appimage/PlotJuggler-${PJ_VERSION:-${PJ_APP_VERSION}}${SANITIZE_INFIX}-${PJ_APPIMAGE_ARCH}.AppImage" )

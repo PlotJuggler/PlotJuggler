@@ -76,7 +76,9 @@ class CheckedFileSink final : public mcap::IWritable {
     if (stream_ == nullptr) {
       errno = 0;  // no syscall failed here, so a stale errno would invent a cause
       latch("write after the recording file was closed");
-    } else if (error_.empty()) {
+    } else if (error_.empty() && size != 0) {
+      // Empty writes arrive with a null buffer, and fwrite declares its buffer
+      // nonnull even for a zero count.
       const size_t written = std::fwrite(data, 1, static_cast<size_t>(size), stream_);
       if (written != static_cast<size_t>(size)) {
         latch("filesystem write failed");

@@ -1,4 +1,7 @@
 build/
+# AppImage extraction scratch (including renamed artifacts).
+squashfs-root/
+
 .qt/
 .cache/
 compile_commands.json

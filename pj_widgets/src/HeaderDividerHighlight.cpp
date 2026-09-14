@@ -75,7 +75,8 @@ HeaderDividerHighlight* HeaderDividerHighlight::install(QHeaderView* header) {
   return new HeaderDividerHighlight(header);
 }
 
-HeaderDividerHighlight::HeaderDividerHighlight(QHeaderView* header) : QObject(header), header_(header) {
+HeaderDividerHighlight::HeaderDividerHighlight(QHeaderView* header)
+    : QObject(header), header_(header), header_object_(header) {
   overlay_ = new HeaderDividerLine(header_->viewport());
   connect(overlay_, &QObject::destroyed, this, [this]() { overlay_ = nullptr; });
 
@@ -141,7 +142,7 @@ void HeaderDividerHighlight::showDivider(int section, bool pressed) {
 }
 
 bool HeaderDividerHighlight::eventFilter(QObject* watched, QEvent* event) {
-  if (watched != header_->viewport()) {
+  if (qobject_cast<QHeaderView*>(header_object_) == nullptr || watched != header_->viewport()) {
     return QObject::eventFilter(watched, event);
   }
 

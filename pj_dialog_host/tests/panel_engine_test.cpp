@@ -36,24 +36,11 @@ extern "C" const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
 
 namespace {
 
-// QApplication must exist before any QWidget is built. Created once per
-// test executable and torn down at exit.
+// The runner's shared main (cmake/test_mains/pj_test_main_gui.cpp) owns the
+// QApplication and gives the process the non-empty organization/application
+// identity QSettings needs on Windows; this only returns the instance.
 QApplication* qapp() {
-  static int argc = 0;
-  static QApplication app(argc, nullptr);
-  // QSettings needs a non-empty organization/application identity to read and
-  // write reliably across platforms: with an empty identity Windows returns
-  // QSettings::AccessError, so writes are dropped and reads fall back to the
-  // default. ThemeChangeReappliesWidgetData toggles the theme through QSettings,
-  // so without this its toggle is a silent no-op on Windows (passes on Linux,
-  // which is file-backed and lenient). Give the test process a stable identity.
-  static const bool kIdentitySet = [] {
-    QCoreApplication::setOrganizationName(u"PlotJugglerTest"_s);
-    QCoreApplication::setApplicationName(u"panel_engine_test"_s);
-    return true;
-  }();
-  (void)kIdentitySet;
-  return &app;
+  return qobject_cast<QApplication*>(QCoreApplication::instance());
 }
 
 // Pump the event loop for `ms` milliseconds to let timers and queued

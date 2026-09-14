@@ -23,10 +23,10 @@
 
 namespace {
 
+// The runner's shared main (cmake/test_mains/pj_test_main_gui.cpp) owns the
+// QApplication; this only returns the instance.
 QApplication* qapp() {
-  static int argc = 0;
-  static QApplication app(argc, nullptr);
-  return &app;
+  return qobject_cast<QApplication*>(QCoreApplication::instance());
 }
 
 // Two combos (backendCombo: A, B; modeCombo: X, Y) and a QFormLayout row per

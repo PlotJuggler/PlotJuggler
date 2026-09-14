@@ -10,6 +10,13 @@
 # Prerequisites (run these first, they are NOT done here):
 #   ./scripts/install_qt6.sh      # Qt into ./.qt/<ver>/gcc_64
 #   ./build.sh            # builds build/pj_app/plotjuggler4 + Conan env
+#   PJ_SANITIZE=asan ./build.sh  # instrumented tree: build/asan
+#
+# PJ_SANITIZE=none|asan|tsan selects the same tree used by build.sh (default: none).
+# Export it for both commands when packaging an instrumented build. The tsan lane
+# is a test lane and produces no AppImage; this script exits 0 for it so the
+# builder entrypoint, which always calls packaging, completes the run.
+# PJ_PRINT_OUTPUT_NAME=1 prints the artifact name without staging or building.
 #
 # Plugins are NOT part of this repo — they are built and published separately by
 # pj-official-plugins (per-extension marketplace zips) and indexed by the
@@ -29,6 +36,7 @@
 # <version>-<arch>.<hash>.AppImage) — used by release CI on workflow_dispatch
 # (non-tag) builds, where <version> alone would collide across builds. Tag
 # builds omit it, matching the Windows installer's -CleanReleaseName.
+# ASan artifacts put the hash with the version: <version>.<hash>-asan-<arch>.
 #
 # Bundled plugins land at usr/lib/plotjuggler/plugins. The app never scans that
 # dir directly — at startup it seeds its contents into the writable per-user
@@ -51,6 +59,24 @@ QT_VERSION="${PJ_QT_VERSION}"
 PLATFORM="linux-${ARCH}"   # registry artifact key (registry.json platforms.<key>)
 
 BUILD="${ROOT}/build"
+PJ_SANITIZE="${PJ_SANITIZE-none}"
+SANITIZE_INFIX=""
+case "${PJ_SANITIZE}" in
+  none) ;;
+  asan) BUILD+="/asan"; SANITIZE_INFIX="-asan" ;;
+  msan|tsan)
+    # A ThreadSanitizer or MemorySanitizer tree is a test lane, not a shippable one: an instrumented
+    # binary needs its runtime environment tuned to even start, so packaging one
+    # as a release artifact would hand users something that aborts on launch.
+    # Exit 0 rather than 2 so the builder entrypoint, which always calls this
+    # script after build.sh, completes the lane instead of failing it. build.sh
+    # has already built and run the suite by this point.
+    echo "==> ${PJ_SANITIZE} lane: tests already built and run; no AppImage is produced."
+    exit 0 ;;
+  *)
+    echo "ERROR: PJ_SANITIZE must be none, asan or tsan (got '${PJ_SANITIZE}')." >&2
+    exit 2 ;;
+esac
 QT_DIR="${ROOT}/.qt/${QT_VERSION}/gcc_64"
 APPDIR="${BUILD}/AppDir"
 VERSION="${PJ_VERSION:-${PJ_APP_VERSION}}"
@@ -134,13 +160,67 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Keep -asan BEFORE the architecture: the baked container entrypoint chowns
+# PlotJuggler-*-${PJ_APPIMAGE_ARCH}.AppImage; a trailing -asan would miss that glob
+# and leave the artifact root-owned on the host. For ASan, keep the optional CI
+# hash with the version too; normal artifacts retain their existing hash naming.
+if [[ "${PJ_SANITIZE}" == asan ]]; then
+  OUTPUT_NAME="PlotJuggler-${VERSION}${COMMIT_HASH:+.${COMMIT_HASH}}${SANITIZE_INFIX}-${ARCH}.AppImage"
+else
+  OUTPUT_NAME="PlotJuggler-${VERSION}-${ARCH}${COMMIT_HASH:+.${COMMIT_HASH}}.AppImage"
+fi
+OUTPUT="${SCRIPT_DIR}/${OUTPUT_NAME}"
+if [[ "${PJ_PRINT_OUTPUT_NAME:-0}" == "1" ]]; then
+  printf '%s\n' "${OUTPUT_NAME}"
+  exit 0
+fi
+
 # ---------------------------------------------------------------------------
 # 0. Sanity checks
 # ---------------------------------------------------------------------------
 [[ -d "${QT_DIR}" ]]                    || { echo "Qt not found at ${QT_DIR}. Run ./scripts/install_qt6.sh"; exit 1; }
-[[ -x "${BUILD}/pj_app/plotjuggler4" ]] || { echo "plotjuggler4 not built. Run ./build.sh"; exit 1; }
-[[ -f "${BUILD}/conanrun.sh" ]]         || { echo "build/conanrun.sh missing. Run ./build.sh"; exit 1; }
+[[ -x "${BUILD}/pj_app/plotjuggler4" ]] || { echo "${BUILD}/pj_app/plotjuggler4 not built. Run PJ_SANITIZE=${PJ_SANITIZE} ./build.sh"; exit 1; }
+[[ -f "${BUILD}/conanrun.sh" ]]         || { echo "${BUILD}/conanrun.sh missing. Run PJ_SANITIZE=${PJ_SANITIZE} ./build.sh"; exit 1; }
 command -v wget >/dev/null              || { echo "wget required"; exit 1; }
+
+has_debug_lines() {
+  # Consume the full output so readelf cannot get SIGPIPE under pipefail.
+  LC_ALL=C readelf -SW "$1" | grep -E '[[:space:]]\.debug_line[[:space:]]' >/dev/null
+}
+
+SANITIZER_LIBRARY_ARGS=()
+if [[ "${PJ_SANITIZE}" == asan ]]; then
+  command -v readelf >/dev/null || { echo "ERROR: readelf required to verify sanitizer line information" >&2; exit 1; }
+  has_debug_lines "${BUILD}/pj_app/plotjuggler4" || {
+    echo "ERROR: instrumented executable lacks .debug_line; rebuild with PJ_SANITIZE=asan PJ_DEBUG_INFO=lines (or full) before packaging." >&2
+    exit 1
+  }
+  # The compiler that configured the tree decides which runtime the binaries need:
+  # Clang's single shared runtime (linked with -shared-libsan, see
+  # cmake/PjSanitizers.cmake, which also carries UBSan) or GCC's libasan +
+  # libubsan. Read it from the tree being packaged rather than assuming a lane
+  # default. Ask that compiler for the files; their versioned names vary.
+  san_cxx="$(sed -n 's/^CMAKE_CXX_COMPILER:[A-Z]*=//p' "${BUILD}/CMakeCache.txt")"
+  if [[ "$(basename "${san_cxx}")" == clang* ]]; then
+    runtime_resolver="${san_cxx}"
+    sanitizer_runtimes=("libclang_rt.asan-$(uname -m).so")
+  else
+    runtime_resolver=gcc
+    sanitizer_runtimes=(libasan.so libubsan.so)
+  fi
+  command -v "${runtime_resolver}" >/dev/null || {
+    echo "ERROR: ${runtime_resolver} required to locate sanitizer runtimes" >&2; exit 1;
+  }
+  for runtime in "${sanitizer_runtimes[@]}"; do
+    runtime_path="$("${runtime_resolver}" -print-file-name="${runtime}")" || {
+      echo "ERROR: ${runtime_resolver} could not resolve sanitizer runtime ${runtime}" >&2; exit 1;
+    }
+    [[ -f "${runtime_path}" ]] || {
+      echo "ERROR: sanitizer runtime ${runtime} resolved to '${runtime_path}', which is not a file" >&2; exit 1;
+    }
+    SANITIZER_LIBRARY_ARGS+=(--library "${runtime_path}")
+  done
+fi
 
 # ---------------------------------------------------------------------------
 # 1. linuxdeploy + its Qt plugin (themselves AppImages, fetched once)
@@ -162,6 +242,9 @@ chmod +x "${LD}" "${LDQT}" "${AT}"
 # ---------------------------------------------------------------------------
 rm -rf "${APPDIR}"
 mkdir -p "${APPDIR}/usr/bin" "${APPDIR}/${PJ_PLUGINS_REL}"
+if [[ "${PJ_SANITIZE}" == asan ]]; then
+  touch "${APPDIR}/usr/.pj-asan"
+fi
 # plotjuggler4 itself is installed by linuxdeploy via --executable below (it copies
 # the binary into usr/bin and deploys its Qt + Conan dependency closure).
 
@@ -268,13 +351,56 @@ export LD_LIBRARY_PATH="${QT_DIR}/lib:${LD_LIBRARY_PATH:-}"
 #    finished AppDir verbatim without re-scanning dependencies.
 # ---------------------------------------------------------------------------
 cd "${SCRIPT_DIR}"
+# linuxdeploy strips deployed executables and libraries by default. Preserve
+# their DWARF for sanitizer reports, then verify the baked tool honored it.
+if [[ "${PJ_SANITIZE}" == asan ]]; then
+  export NO_STRIP=1
+fi
 "./${LD}" \
   --appdir "${APPDIR}" \
   --executable "${BUILD}/pj_app/plotjuggler4" \
   --desktop-file "${SCRIPT_DIR}/plotjuggler4.desktop" \
   --icon-file "${ICON_PNG}" \
   --custom-apprun "${SCRIPT_DIR}/AppRun.sh" \
-  --plugin qt
+  --plugin qt \
+  "${SANITIZER_LIBRARY_ARGS[@]}"
+
+if [[ "${PJ_SANITIZE}" == asan ]]; then
+  deployed_app="${APPDIR}/usr/bin/plotjuggler4"
+  if ! has_debug_lines "${deployed_app}"; then
+    command -v patchelf >/dev/null || {
+      echo "ERROR: linuxdeploy stripped .debug_line despite NO_STRIP=1; patchelf is required to restore the executable while preserving its deployed RPATH" >&2
+      exit 1
+    }
+    deployed_rpath="$(patchelf --print-rpath "${deployed_app}")"
+    rpath_args=(--set-rpath "${deployed_rpath}")
+    # Preserve DT_RPATH versus DT_RUNPATH semantics as well as the path value.
+    if LC_ALL=C readelf -d "${deployed_app}" | grep -F '(RPATH)' >/dev/null; then
+      rpath_args+=(--force-rpath)
+    fi
+    install -m 0755 "${BUILD}/pj_app/plotjuggler4" "${deployed_app}"
+    patchelf "${rpath_args[@]}" "${deployed_app}"
+    echo "Sanitizers: linuxdeploy stripped .debug_line despite NO_STRIP=1; restored the unstripped build executable and reapplied the deployed RPATH/RUNPATH: ${deployed_rpath}"
+  fi
+  has_debug_lines "${deployed_app}" || {
+    echo "ERROR: deployed ${deployed_app} lacks .debug_line; refusing to package an instrumented AppImage without file/line information" >&2
+    exit 1
+  }
+  echo "Sanitizers: verified .debug_line in deployed usr/bin/plotjuggler4"
+
+  # linuxdeploy-plugin-qt deploys only the platform plugin the app actually used
+  # at deploy time, which is xcb. Running this artifact headlessly
+  # with no display — in CI and on a developer machine where starting an X server
+  # is not an option — so add Qt's offscreen platform plugin. Instrumented builds
+  # ONLY: the shipped release artifact is deliberately left byte-identical.
+  offscreen_src="${QT_DIR}/plugins/platforms/libqoffscreen.so"
+  if [[ -f "${offscreen_src}" ]]; then
+    install -Dm755 "${offscreen_src}" "${APPDIR}/usr/plugins/platforms/libqoffscreen.so"
+    echo "Sanitizers: bundled libqoffscreen.so so the artifact can run headless"
+  else
+    echo "WARNING: ${offscreen_src} not found; running this artifact will require a display" >&2
+  fi
+fi
 
 # Scalable icon next to the 256px raster, so HiDPI docks and app grids render
 # the logo crisp instead of upscaling the PNG. Named after the desktop file's
@@ -376,19 +502,14 @@ if [[ -n "${RETRO_WAD}" ]]; then
   else
     echo "WARNING: patchelf not found — pj-raster-helper keeps its build-tree RUNPATH" >&2
   fi
-  # linuxdeploy strips everything it deploys; match it rather than shipping
-  # debug info for a payload nobody debugs from a release build.
-  if command -v strip >/dev/null; then
+  # Match linuxdeploy's release stripping policy, but preserve instrumented
+  # payloads for sanitizer reports just like the main executable.
+  if [[ "${PJ_SANITIZE}" == none ]] && command -v strip >/dev/null; then
     strip "${RETRO_DIR}/pj-raster-helper"
   fi
   echo "Retro: staged pj-raster-helper + $(basename "${RETRO_WAD}") -> usr/bin/3rdparty/retro"
 fi
 
-if [[ -n "${COMMIT_HASH}" ]]; then
-  OUTPUT="${SCRIPT_DIR}/PlotJuggler-${VERSION}-${ARCH}.${COMMIT_HASH}.AppImage"
-else
-  OUTPUT="${SCRIPT_DIR}/PlotJuggler-${VERSION}-${ARCH}.AppImage"
-fi
 ARCH="${ARCH}" "./${AT}" "${APPDIR}" "${OUTPUT}"
 
 echo ""

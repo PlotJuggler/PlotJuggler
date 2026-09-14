@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MPL-2.0
+# Leak suppression policy: see README.md in this directory.
+
+# pj_scripting/src/python_engine.cpp ensureInterpreter() retains
+# py::scoped_interpreter and py::gil_scoped_release for the process lifetime.
+# CPython is never finalized because doing so during static destruction is
+# fragile; the released GIL lets every caller acquire it on its own thread.
+# Observed: direct leaks of 16 and 1 bytes allocated in ensureInterpreter.
+# ours-by-design: embedded interpreter guards, never finalized.
+leak:ensureInterpreter
+
+# Qt 6.11 QOpenGLWidget, when its context fails to create (the offscreen
+# platform has no OpenGL: "QOpenGLWidget: Failed to create context"), drops the
+# QOpenGLContext it allocated during the first resize. The context and its
+# private point at each other, so LSan reports only indirect leaks: 760 bytes
+# in 7 allocations, allocated from QOpenGLContext::QOpenGLContext under
+# QOpenGLWidget::resizeEvent, no PJ4 frame. Suppressing the private also clears
+# what it references. A QOpenGLWidget or QOpenGLContext that PJ4 itself leaks is
+# still reported, through its own direct-leak stack.
+# Observed: PlotWidgetCanvas.FlushTopWhenNotAlignedToScales,
+# PlotCanvasContextRecreationGlTest, RasterTextGlTest (all skip without GL).
+# third-party: Qt offscreen-platform context-failure path.
+leak:QOpenGLContext::QOpenGLContext

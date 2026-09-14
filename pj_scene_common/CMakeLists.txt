@@ -21,7 +21,7 @@ target_include_directories(pj_scene_common PUBLIC
 
 target_compile_features(pj_scene_common PUBLIC cxx_std_20)
 target_compile_options(pj_scene_common PRIVATE
-  ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS}
+  ${PJ_WARNING_FLAGS}
 )
 
 target_link_libraries(pj_scene_common PUBLIC

@@ -136,7 +136,7 @@ if(EMSCRIPTEN)
     PRIVATE src)
   target_compile_features(pj_scene3d_widgets PUBLIC cxx_std_20)
   target_compile_options(pj_scene3d_widgets PRIVATE
-    ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS} -fexceptions
+    ${PJ_WARNING_FLAGS} -fexceptions
   )
   target_link_libraries(pj_scene3d_widgets
     PUBLIC
@@ -263,7 +263,7 @@ target_include_directories(pj_scene3d_widgets
   PRIVATE src)
 target_compile_features(pj_scene3d_widgets PUBLIC cxx_std_20)
 target_compile_options(pj_scene3d_widgets PRIVATE
-  ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS}
+  ${PJ_WARNING_FLAGS}
 )
 target_link_libraries(pj_scene3d_widgets
   PUBLIC pj_scene3d_core pj_scene_common pj_runtime pj_widgets Qt6::Widgets Qt6::OpenGLWidgets Qt6::Xml OpenGL::GL
@@ -320,7 +320,7 @@ if(PJ_BUILD_TESTS)
     pj_scene3d_widgets
     GTest::gtest
   )
-  target_compile_options(transform_service_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  target_compile_options(transform_service_test PRIVATE ${PJ_WARNING_FLAGS})
   add_test(NAME transform_service_test COMMAND transform_service_test)
 
   # resolveObject() canonical fallback: with no MessageParser bound, decode a
@@ -438,7 +438,7 @@ if(PJ_BUILD_TESTS)
   target_compile_definitions(wasm_shader_constants_test PRIVATE
     PJ_WASM_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/wasm/shaders"
   )
-  target_compile_options(wasm_shader_constants_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  target_compile_options(wasm_shader_constants_test PRIVATE ${PJ_WARNING_FLAGS})
   add_test(NAME wasm_shader_constants_test COMMAND wasm_shader_constants_test)
 
   # Real-GL evidence that the sphere-imposter point size is constant under an
@@ -591,7 +591,7 @@ if(PJ_BUILD_TESTS)
   )
   # The overlay text/border colours now resolve from the framework palette
   # (pj_widgets FrameworkTokens), so the stylesheet resource must be compiled in.
-  target_compile_options(hud_overlay_gl_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  target_compile_options(hud_overlay_gl_test PRIVATE ${PJ_WARNING_FLAGS})
   add_test(NAME hud_overlay_gl_test COMMAND hud_overlay_gl_test)
 
   # Keep this executable separate: it needs the GL format before QApplication;
@@ -607,7 +607,7 @@ if(PJ_BUILD_TESTS)
     pj_scene3d_widgets
     GTest::gtest
   )
-  target_compile_options(tf_connections_gl_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  target_compile_options(tf_connections_gl_test PRIVATE ${PJ_WARNING_FLAGS})
   add_test(NAME tf_connections_gl_test COMMAND tf_connections_gl_test)
 
   # Real-GL test for the trail split-draw pass on a raw offscreen context (no
@@ -629,7 +629,7 @@ if(PJ_BUILD_TESTS)
     pj_scene3d_widgets
     GTest::gtest
   )
-  target_compile_options(shadow_persistence_gl_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  target_compile_options(shadow_persistence_gl_test PRIVATE ${PJ_WARNING_FLAGS})
   add_test(NAME shadow_persistence_gl_test COMMAND shadow_persistence_gl_test)
 
   # Keep the robot-model executable separate: it needs both the fixture-path
@@ -643,7 +643,7 @@ if(PJ_BUILD_TESTS)
     target_include_directories(${test_name} PRIVATE src)
     target_compile_definitions(${test_name} PRIVATE
       PJ_SCENE3D_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
-    target_compile_options(${test_name} PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+    target_compile_options(${test_name} PRIVATE ${PJ_WARNING_FLAGS})
     add_test(NAME ${test_name} COMMAND ${test_name})
   endforeach()
   # The robot-model test asserts the render() draw-cache invalidation set via the

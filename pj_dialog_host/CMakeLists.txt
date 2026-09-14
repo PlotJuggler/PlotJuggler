@@ -61,76 +61,25 @@ target_link_libraries(pj_dialog_engine_qt
 
 if(PJ_BUILD_TESTS)
     find_package(Qt6 REQUIRED COMPONENTS Test)
-    add_executable(dialog_engine_test
-        tests/dialog_engine_test.cpp
-        ${plotjuggler_sdk_SOURCE_DIR}/pj_plugins/dialog_protocol/examples/mock_dialog.cpp
+    # Two runners on the shared gui main rather than one executable per file.
+    # mock_dialog.cpp and mock_panel_plugin.cpp both define the plugin entry point
+    # PJ_get_dialog_vtable, and each engine test calls it expecting its own mock,
+    # so those two cannot share a binary.
+    pj_add_test_runner(pj_dialog_host_tests MAIN gui WARNINGS
+        SOURCES
+            tests/dialog_engine_test.cpp
+            ${plotjuggler_sdk_SOURCE_DIR}/pj_plugins/dialog_protocol/examples/mock_dialog.cpp
+            tests/widget_binding_test.cpp
+            tests/combo_rules_test.cpp
+        LIBS pj_dialog_engine_qt plotjuggler_sdk::plugin_sdk Qt6::Test
     )
-    target_compile_options(dialog_engine_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(dialog_engine_test
-        PRIVATE
-            pj_dialog_engine_qt
-            plotjuggler_sdk::plugin_sdk
-            GTest::gtest
-            Qt6::Test
-    )
-    add_test(NAME dialog_engine_test COMMAND dialog_engine_test)
-    set_tests_properties(dialog_engine_test PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-    )
+    set_target_properties(pj_dialog_host_tests PROPERTIES AUTOMOC ON)
 
-    add_executable(panel_engine_test
-        tests/panel_engine_test.cpp
-        tests/mock_panel_plugin.cpp
+    pj_add_test_runner(pj_dialog_host_panel_tests MAIN gui WARNINGS
+        SOURCES
+            tests/panel_engine_test.cpp
+            tests/mock_panel_plugin.cpp
+        LIBS pj_dialog_engine_qt plotjuggler_sdk::plugin_sdk pj_plotting pj_runtime
     )
-    set_target_properties(panel_engine_test PROPERTIES AUTOMOC ON)
-    target_compile_options(panel_engine_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(panel_engine_test
-        PRIVATE
-            pj_dialog_engine_qt
-            plotjuggler_sdk::plugin_sdk
-            pj_plotting
-            pj_runtime
-            GTest::gtest
-            GTest::gtest_main
-    )
-    add_test(NAME panel_engine_test COMMAND panel_engine_test)
-    set_tests_properties(panel_engine_test PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-    )
-
-    add_executable(widget_binding_test
-        tests/widget_binding_test.cpp
-    )
-    set_target_properties(widget_binding_test PROPERTIES AUTOMOC ON)
-    target_compile_options(widget_binding_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(widget_binding_test
-        PRIVATE
-            pj_dialog_engine_qt
-            plotjuggler_sdk::plugin_sdk
-            GTest::gtest
-            GTest::gtest_main
-            Qt6::Test
-    )
-    add_test(NAME widget_binding_test COMMAND widget_binding_test)
-    set_tests_properties(widget_binding_test PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-    )
-
-    add_executable(combo_rules_test
-        tests/combo_rules_test.cpp
-    )
-    set_target_properties(combo_rules_test PROPERTIES AUTOMOC ON)
-    target_compile_options(combo_rules_test PRIVATE ${PJ_WARNING_FLAGS})
-    target_link_libraries(combo_rules_test
-        PRIVATE
-            pj_dialog_engine_qt
-            plotjuggler_sdk::plugin_sdk
-            GTest::gtest
-            GTest::gtest_main
-            Qt6::Test
-    )
-    add_test(NAME combo_rules_test COMMAND combo_rules_test)
-    set_tests_properties(combo_rules_test PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-    )
+    set_target_properties(pj_dialog_host_panel_tests PROPERTIES AUTOMOC ON)
 endif()

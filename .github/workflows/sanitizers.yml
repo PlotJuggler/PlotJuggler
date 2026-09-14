@@ -1,0 +1,177 @@
+name: Sanitizers
+
+# Instrumented lanes are slow (the whole suite under TSan runs ~10x slower), so
+# they stay off the pull-request path: nightly on main, on every push to main,
+# and on demand. See docs/SANITIZERS.md and ./build.sh --sanitize.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sanitize:
+    name: ${{ matrix.lane }}
+    runs-on: depot-ubuntu-22.04-4
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # asan: ASan + UBSan over the full suite (build.sh, then test.sh owns the
+        #       runtime options and suppressions).
+        # tsan: the whole configured suite, filtered by cmake/sanitizers/tsan.supp.
+        # msan: only the Qt-free pj_datastore closure — MSan needs every writer
+        #       instrumented, so anything reaching prebuilt Qt is excluded for good.
+        lane: [asan, tsan, msan]
+    env:
+      PJ_SANITIZER_CLANG_VERSION: "22"
+
+    steps:
+      - name: Use HTTPS for github.com submodules
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Read versions
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./versions.env
+          echo "PJ_APP_VERSION=${PJ_APP_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_QT_VERSION=${PJ_QT_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_APPIMAGE_ARCH=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_ENV}"
+          echo "qt_version=${PJ_QT_VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - uses: conan-io/setup-conan@v1
+        with:
+          cache_packages: false
+
+      - name: Compute Conan cache hash
+        id: conan_cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Same key as linux-ci.yml's build job: the uninstrumented dependency
+          # closure is reused, only our own sources get instrumented.
+          hash=$(find . \( -name conanfile.txt -o -name conan.lock \) -not -path './build/*' -not -path './.git/*' \
+                  -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)
+          echo "hash=${hash}" >> "${GITHUB_OUTPUT}"
+
+      - name: Restore Conan cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.conan2
+          key: conan-linux-gcc-relwithdebinfo-v2-${{ steps.conan_cache.outputs.hash }}
+          restore-keys: |
+            conan-linux-gcc-relwithdebinfo-v2-
+
+      - name: Seed Conan source download cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_dir="${RUNNER_TEMP}/conan-source-cache"
+          mkdir -p "${cache_dir}/s"
+          find .github/conan/source-backup -maxdepth 1 -type f ! -name README.md \
+            -exec cp -f {} "${cache_dir}/s/" \;
+
+          conan_home="$(conan config home)"
+          conf="${conan_home}/global.conf"
+          mkdir -p "${conan_home}"
+          if [[ -f "$conf" ]]; then
+            grep -v '^core\.sources:download_cache=' "$conf" > "${conf}.tmp" || true
+            mv "${conf}.tmp" "$conf"
+          fi
+          echo "core.sources:download_cache=${cache_dir}" >> "$conf"
+
+      - name: Cache Qt
+        id: qt-cache
+        uses: actions/cache@v5
+        with:
+          path: .qt
+          key: qt-${{ steps.versions.outputs.qt_version }}-linux-gcc_64
+
+      - name: Install Qt via aqt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: ./scripts/install_qt6.sh
+
+      - name: Install system dependencies and Clang
+        # Same apt set as linux-ci.yml's build job, plus Clang from apt.llvm.org:
+        # every instrumented lane compiles with Clang (docs/SANITIZERS.md).
+        # llvm-symbolizer must be on PATH or no suppression can match a frame.
+        run: |
+          set -euo pipefail
+          codename="$(lsb_release -cs)"
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb http://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-${PJ_SANITIZER_CLANG_VERSION} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-toolchain.list
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+            libxcb-xkb1 libxkbcommon-x11-0 libfontconfig1 libdbus-1-3 \
+            libva-dev libdrm-dev ccache \
+            "clang-${PJ_SANITIZER_CLANG_VERSION}" "libclang-rt-${PJ_SANITIZER_CLANG_VERSION}-dev" \
+            "llvm-${PJ_SANITIZER_CLANG_VERSION}"
+          for tool in clang clang++ llvm-symbolizer; do
+            sudo ln -sfn "/usr/bin/${tool}-${PJ_SANITIZER_CLANG_VERSION}" "/usr/local/bin/${tool}"
+          done
+
+      - name: Lower ASLR entropy for sanitizers
+        # Sanitizer runtimes abort at startup ("unexpected memory mapping") when
+        # the kernel randomises mmap more widely than their fixed shadow ranges.
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      - name: Build an MSan-instrumented libc++
+        if: matrix.lane == 'msan'
+        # Must match the Clang above; an uninstrumented libc++ makes every std::
+        # read report as uninitialised. The script verifies its output.
+        run: |
+          sudo mkdir -p /opt/msan-libcxx
+          sudo chown "$USER" /opt/msan-libcxx
+          ./scripts/build_msan_libcxx.sh --prefix /opt/msan-libcxx
+
+      - name: Restore ccache
+        # Per-lane keys: instrumented objects must never seed another lane.
+        id: ccache_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-linux-${{ matrix.lane }}-${{ github.sha }}
+          restore-keys: |
+            ccache-linux-${{ matrix.lane }}-
+
+      - name: Set ccache limits
+        run: |
+          ccache --set-config=max_size=2G
+          ccache --set-config=compression=true
+          ccache -z
+
+      - name: Build
+        # tsan and msan run their tests from build.sh; asan tests via test.sh below.
+        run: ./build.sh --sanitize ${{ matrix.lane }}
+
+      - name: Test
+        if: matrix.lane == 'asan'
+        run: ./test.sh --sanitize asan --timeout 120
+
+      - name: Save ccache
+        if: always() && steps.ccache_restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-linux-${{ matrix.lane }}-${{ github.sha }}
+
+      - name: ccache stats
+        if: success()
+        run: ccache -s

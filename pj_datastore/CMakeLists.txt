@@ -18,7 +18,11 @@ option(
 )
 
 find_package(tsl-robin-map REQUIRED)
-if(PJ_BUILD_TESTS)
+# Google Benchmark is skipped in the MemorySanitizer lane. That lane builds four
+# named test executables and no benchmarks, so requiring the package would mean
+# instrumenting a library nothing in the lane links — and google-benchmark's own
+# regex-backend detection fails to configure against an instrumented libc++.
+if(PJ_BUILD_TESTS AND NOT PJ_ENABLE_MSAN)
   find_package(benchmark CONFIG REQUIRED)
 endif()
 
@@ -137,7 +141,7 @@ target_include_directories(pj_datastore PUBLIC
 )
 target_compile_features(pj_datastore PUBLIC cxx_std_20)
 target_compile_options(pj_datastore PRIVATE
-  ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS}
+  ${PJ_WARNING_FLAGS}
 )
 set_target_properties(pj_datastore PROPERTIES
   POSITION_INDEPENDENT_CODE ON
@@ -203,8 +207,10 @@ if(PJ_BUILD_TESTS)
 
   # Share the dependency closure while ctest still runs each case in its own process.
   # no WARNINGS: 29 of 29 merged tests never compiled with -Werror
+  # plain: not one of this module's test sources references Qt, and
+  # pj_datastore links none either. See cmake/PjTests.cmake.
   pj_add_test_runner(pj_datastore_tests
-    MAIN core
+    MAIN plain
     SOURCES ${PJ_DATASTORE_TESTS}
     LIBS
       pj_datastore plotjuggler_sdk::plugin_sdk
@@ -232,6 +238,47 @@ if(PJ_BUILD_TESTS)
   set_tests_properties(engine_concurrency_test engine_thread_safety_test
     PROPERTIES TIMEOUT 90)
 
+  # Inherit the module's sanitizer settings so losing instrumentation makes the self-tests fail.
+  if(PJ_ENABLE_SANITIZERS)
+    pj_add_test_runner(sanitizer_selftest
+      MAIN plain
+      SOURCES tests/sanitizer_selftest.cpp
+      LIBS pj_datastore
+    )
+  endif()
+
+  if(PJ_ENABLE_MSAN)
+    # Plain executable, no gtest: the point is the process exit status, and
+    # linking a test framework would add code paths between the fault and exit.
+    add_executable(sanitizer_msan_selftest tests/sanitizer_msan_selftest.cpp)
+    target_compile_features(sanitizer_msan_selftest PRIVATE cxx_std_20)
+    add_test(NAME sanitizer_msan_selftest COMMAND sanitizer_msan_selftest)
+    # PASS only on the MSan report itself. WILL_FAIL would also accept a loader
+    # error or a runtime startup abort that never reached the deliberate read,
+    # and a lane that cannot detect that read proves nothing about the 487
+    # tests that pass beside it.
+    set_tests_properties(sanitizer_msan_selftest PROPERTIES
+      PASS_REGULAR_EXPRESSION "MemorySanitizer: use-of-uninitialized-value"
+      ENVIRONMENT "MSAN_OPTIONS=halt_on_error=1:exitcode=77:abort_on_error=0"
+      TIMEOUT 30
+    )
+  endif()
+
+  if(PJ_ENABLE_TSAN)
+    find_package(Threads REQUIRED)
+    add_executable(sanitizer_race_selftest tests/sanitizer_race_selftest.cpp)
+    target_compile_features(sanitizer_race_selftest PRIVATE cxx_std_20)
+    target_link_libraries(sanitizer_race_selftest PRIVATE Threads::Threads)
+    add_test(NAME sanitizer_race_selftest COMMAND sanitizer_race_selftest)
+    # PASS only on the race report itself: a clean exit (uninstrumented) and a
+    # startup abort ("unexpected memory mapping") must both fail.
+    set_tests_properties(sanitizer_race_selftest PROPERTIES
+      PASS_REGULAR_EXPRESSION "ThreadSanitizer: data race"
+      ENVIRONMENT "TSAN_OPTIONS=halt_on_error=1:exitcode=66:abort_on_error=0"
+      TIMEOUT 30
+    )
+  endif()
+
   # Plugin host write test — DISABLED for v4 ABI migration.
   # Exercises v3 appendArrowIpc/readSeries; rewrite in Phase 1b when the
   # Arrow-stream write path and read_series_arrow are implemented.
@@ -247,11 +294,13 @@ if(PJ_BUILD_TESTS)
   # Benchmarks
   # ---------------------------------------------------------------------------
 
-  add_executable(read_benchmark benchmarks/read_benchmark.cpp)
-  target_link_libraries(read_benchmark PRIVATE pj_datastore benchmark::benchmark)
+  if(NOT PJ_ENABLE_MSAN)
+    add_executable(read_benchmark benchmarks/read_benchmark.cpp)
+    target_link_libraries(read_benchmark PRIVATE pj_datastore benchmark::benchmark)
 
-  add_executable(ingest_benchmark benchmarks/ingest_benchmark.cpp)
-  target_link_libraries(ingest_benchmark PRIVATE pj_datastore benchmark::benchmark)
+    add_executable(ingest_benchmark benchmarks/ingest_benchmark.cpp)
+    target_link_libraries(ingest_benchmark PRIVATE pj_datastore benchmark::benchmark)
+  endif()
 
   # Threaded contention probe for the reader-writer lock (plain main(), not the
   # google-benchmark micro-loop model — contention is duration-based). Threads

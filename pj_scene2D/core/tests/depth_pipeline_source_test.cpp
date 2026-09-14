@@ -70,6 +70,8 @@ const DecodedFrame* onlyPixelLayerFrame(const MediaFrame& frame) {
 // Bridges the source's worker-thread frame-ready callback to a condition variable
 // the test can block on (decoding is now off-thread). Install AFTER the set*()
 // calls and before the first setTimestamp().
+// Declare it BEFORE the source it is installed on: the source's worker thread
+// calls into it until the source is destroyed.
 struct FrameSync {
   std::mutex mutex;
   std::condition_variable cv;
@@ -109,11 +111,11 @@ TEST(DepthPipelineSourceTest, EmitsRawDepthFloatsWithParams) {
   const auto bytes = serializeDepth(4, 1, "16UC1", payload);
   ASSERT_TRUE(store.pushOwned(topic, 1'000, bytes).has_value());
 
+  FrameSync sync;
   DepthPipelineSource source(&store, topic);
   source.setRange(1.0f, 3.0f);
   source.setColormap(0);  // opaque id == pj_widgets Colormap::kTurbo
   source.setOpacity(0.4f);
-  FrameSync sync;
   sync.install(source);
 
   auto frame = pumpFrameAt(source, sync, 1'000);
@@ -164,8 +166,8 @@ TEST(DepthPipelineSourceTest, UnchangedEntryDoesNotResolvePayload) {
                       })
                   .has_value());
 
-  DepthPipelineSource source(&store, topic);
   FrameSync sync;
+  DepthPipelineSource source(&store, topic);
   sync.install(source);
 
   auto frame = pumpFrameAt(source, sync, 1'000);
@@ -205,8 +207,8 @@ TEST(DepthPipelineSourceTest, SameStampReplacementDecodesAgain) {
   ASSERT_NE(topic.id, 0u);
   ASSERT_TRUE(store.pushOwned(topic, 1'000, serializeDepth(1, 1, "16UC1", makeU16Le({1000}))).has_value());
 
-  DepthPipelineSource source(&store, topic);
   FrameSync sync;
+  DepthPipelineSource source(&store, topic);
   sync.install(source);
   auto first = pumpFrameAt(source, sync, 1'000);
   ASSERT_TRUE(first.has_value());
@@ -231,9 +233,9 @@ TEST(DepthPipelineSourceTest, Emits32FC1FloatsPassthrough) {
   const auto bytes = serializeDepth(2, 1, "32FC1", payload);
   ASSERT_TRUE(store.pushOwned(topic, 2'000, bytes).has_value());
 
+  FrameSync sync;
   DepthPipelineSource source(&store, topic);
   source.setRange(0.5f, 1.5f);
-  FrameSync sync;
   sync.install(source);
 
   auto frame = pumpFrameAt(source, sync, 2'000);
@@ -255,10 +257,10 @@ TEST(DepthPipelineSourceTest, DepthParamsCarryInvertAndColormap) {
   const auto bytes = serializeDepth(1, 1, "16UC1", makeU16Le({1000}));
   ASSERT_TRUE(store.pushOwned(topic, 7'000, bytes).has_value());
 
+  FrameSync sync;
   DepthPipelineSource source(&store, topic);
   source.setColormap(2);  // opaque id == pj_widgets Colormap::kPlasma
   source.setInvert(true);
-  FrameSync sync;
   sync.install(source);
 
   auto frame = pumpFrameAt(source, sync, 7'000);

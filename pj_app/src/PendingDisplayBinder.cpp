@@ -107,6 +107,7 @@ void PendingDisplayBinder::collect(const QDomDocument& doc, const QHash<QString,
          curve = curve.nextSiblingElement(u"curve"_s)) {
       PendingDisplayEntry entry;
       entry.plot = plot;
+      entry.target = plot;
       entry.persistent_intent = plot_xml::isPendingIntent(curve);
       entry.preserve_viewport_on_completion = plot->hasSavedViewport() || !plot->curveList().empty();
 
@@ -188,6 +189,7 @@ void PendingDisplayBinder::addPendingCurve(
   }
   PendingDisplayEntry entry;
   entry.plot = plot;
+  entry.target = plot;
   entry.path = qualified_path;
   entry.preferred_dataset = preferred_dataset;
   entry.persistent_intent = true;
@@ -234,6 +236,7 @@ void PendingDisplayBinder::addPendingSceneLayer(
   PendingDisplayEntry entry;
   entry.kind = PendingDisplayEntry::Kind::kSceneLayer;
   entry.scene_dock = dock;
+  entry.target = dock;
   entry.path = layout_xml::SeriesPath{topic_name, QString()};
   entry.preferred_dataset = preferred_dataset;
   refreshDemandRefs(entry);
@@ -248,14 +251,13 @@ void PendingDisplayBinder::watchTargetDestruction(QObject* target) {
   watched_targets_.insert(target);
   connect(target, &QObject::destroyed, this, [this](QObject* dead) {
     watched_targets_.remove(dead);
-    // Match the dying widget by raw pointer: for QWidget-derived targets the
-    // QPointer is still VALID inside destroyed() (it nulls only for the QObject
-    // dtor layer), so a targetIsNull() sweep would find nothing here. Entries
-    // already nulled by an earlier death are swept too.
+    // Match the dying widget by the raw pointer recorded at staging: for
+    // QWidget-derived targets the QPointer is still non-null inside destroyed()
+    // (it nulls only for the QObject dtor layer), so a targetIsNull() sweep would
+    // find nothing here. Entries already nulled by an earlier death are swept too.
     auto it = entries_.begin();
     while (it != entries_.end()) {
-      const bool owned_by_dead =
-          static_cast<QObject*>(it->plot.data()) == dead || static_cast<QObject*>(it->scene_dock.data()) == dead;
+      const bool owned_by_dead = it->target == dead;
       if (owned_by_dead || it->targetIsNull()) {
         releaseDemandRefs(*it);
         it = entries_.erase(it);

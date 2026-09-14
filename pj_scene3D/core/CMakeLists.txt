@@ -35,7 +35,7 @@ if(EMSCRIPTEN)
   target_include_directories(pj_scene3d_core PUBLIC include)
   target_compile_features(pj_scene3d_core PUBLIC cxx_std_20)
   target_compile_options(pj_scene3d_core PRIVATE
-    ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS}
+    ${PJ_WARNING_FLAGS}
   )
   target_link_libraries(pj_scene3d_core
     PUBLIC glm::glm plotjuggler_sdk::base nlohmann_json::nlohmann_json
@@ -80,7 +80,7 @@ add_library(pj_scene3d_core STATIC
 target_include_directories(pj_scene3d_core PUBLIC include)
 target_compile_features(pj_scene3d_core PUBLIC cxx_std_20)
 target_compile_options(pj_scene3d_core PRIVATE
-  ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS}
+  ${PJ_WARNING_FLAGS}
 )
 target_link_libraries(pj_scene3d_core
   PUBLIC glm::glm plotjuggler_sdk::base nlohmann_json::nlohmann_json
@@ -140,5 +140,5 @@ if(PJ_BUILD_TESTS)
   target_link_libraries(wasm_compressed_pointcloud_payload_generator PRIVATE
     draco::draco cloudini::cloudini)
   target_compile_options(wasm_compressed_pointcloud_payload_generator PRIVATE
-    ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+    ${PJ_WARNING_FLAGS})
 endif()

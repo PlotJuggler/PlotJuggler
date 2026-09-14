@@ -2197,13 +2197,3 @@ TEST_F(DialogEngineTest, TickHonorsRequestAccept) {
 
   EXPECT_EQ(engine.showDialog(), PJ::DialogResult::kAccepted);
 }
-
-// ==========================================================================
-// main with QApplication
-// ==========================================================================
-
-int main(int argc, char** argv) {
-  QApplication app(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

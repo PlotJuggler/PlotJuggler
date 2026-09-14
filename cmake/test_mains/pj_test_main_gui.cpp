@@ -15,6 +15,12 @@ int main(int argc, char** argv) {
   }
   QStandardPaths::setTestModeEnabled(true);
   ::testing::InitGoogleTest(&argc, argv);
+  // ctest discovery (--gtest_list_tests) only needs the case names: answer it
+  // before Qt starts, because a cold fontconfig cache can push QApplication
+  // construction past the 5 s discovery timeout on a fresh CI runner.
+  if (::testing::GTEST_FLAG(list_tests)) {
+    return RUN_ALL_TESTS();
+  }
   QApplication app(argc, argv);
   QCoreApplication::setOrganizationName(QStringLiteral("PlotJugglerTest"));
   QCoreApplication::setApplicationName(QFileInfo(QString::fromLocal8Bit(argv[0])).baseName());

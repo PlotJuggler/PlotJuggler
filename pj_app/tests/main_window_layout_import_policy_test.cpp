@@ -65,8 +65,12 @@ TEST(MainWindowLayoutImportPolicyTest, NonInteractiveRestoreRetainsIntentsAndDia
   // diagnostic (the kRetainAndDiagnose semantics on the batch drain path).
   EXPECT_FALSE(MainWindowLayoutImportTestPeer::binderEmpty(window))
       << "unresolved intents must be retained for later binding, never cleared";
-  EXPECT_TRUE(diagnostic_ids.contains(QStringLiteral("layout-import-unresolved-curves")))
-      << "ids seen: " << diagnostic_ids.join(QStringLiteral(", ")).toStdString();
+  // Diagnostics reach the recorder through a queued emit: it can still be in the
+  // event queue when the restore reports itself settled.
+  EXPECT_TRUE(pumpUntil([&diagnostic_ids]() {
+    return diagnostic_ids.contains(QStringLiteral("layout-import-unresolved-curves"));
+  })) << "ids seen: "
+      << diagnostic_ids.join(QStringLiteral(", ")).toStdString();
   EXPECT_EQ(MainWindowLayoutImportTestPeer::batch(window), nullptr) << "the settled restore must retire the batch";
   EXPECT_EQ(MainWindowLayoutImportTestPeer::totalCurveCount(window), 0);
 

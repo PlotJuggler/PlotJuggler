@@ -350,6 +350,7 @@ if(PJ_BUILD_TESTS)
             add_test(NAME ExportedSymbolsGuard COMMAND ${CMAKE_COMMAND}
                 -DTARGET=$<TARGET_FILE:pj_app>
                 -DNM=${PJ_NM_EXECUTABLE}
+                -DSANITIZERS_ACTIVE=${PJ_SANITIZERS_ACTIVE}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_exported_symbols.cmake)
         else()
             message(STATUS "pj_app: 'nm' not found — ExportedSymbolsGuard disabled (install binutils to enable it)")

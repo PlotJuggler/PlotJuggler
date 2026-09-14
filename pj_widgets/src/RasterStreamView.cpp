@@ -25,6 +25,18 @@ RasterStreamView::RasterStreamView(QWidget* parent) : QWidget(parent), key_trans
 }
 
 RasterStreamView::~RasterStreamView() {
+  // ~QWidget deletes the socket, server and process children after this body.
+  // Their signals must not reach our slots then: this object is no longer a
+  // RasterStreamView by that point, so endSession() would be undefined behavior.
+  if (socket_ != nullptr) {
+    socket_->disconnect(this);
+  }
+  if (server_ != nullptr) {
+    server_->disconnect(this);
+  }
+  if (process_ != nullptr) {
+    process_->disconnect(this);
+  }
   teardown();
 }
 

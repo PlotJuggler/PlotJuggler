@@ -65,8 +65,12 @@ TEST(MainWindowLayoutImportCancelTest, CancelMidImportRollsBackToPriorWorkspace)
   EXPECT_EQ(MainWindowLayoutImportTestPeer::totalCurveCount(window), prior_curve_count);
   EXPECT_TRUE(MainWindowLayoutImportTestPeer::binderEmpty(window))
       << "a cancelled restore leaves no retained intents behind";
-  EXPECT_TRUE(diagnostic_ids.contains(QStringLiteral("layout-import-cancelled")))
-      << "ids seen: " << diagnostic_ids.join(QStringLiteral(", ")).toStdString();
+  // Diagnostics reach the recorder through a queued emit, so the cancellation
+  // report can still be in the event queue when the batch is already gone.
+  EXPECT_TRUE(pumpUntil([&diagnostic_ids]() {
+    return diagnostic_ids.contains(QStringLiteral("layout-import-cancelled"));
+  })) << "ids seen: "
+      << diagnostic_ids.join(QStringLiteral(", ")).toStdString();
 }
 
 }  // namespace

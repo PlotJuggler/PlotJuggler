@@ -97,6 +97,7 @@ Scrollbar::Scrollbar(Qt::Orientation orientation, QWidget* parent) : QWidget(par
 
 void Scrollbar::attach(QAbstractScrollArea* area, Placement placement) {
   area_ = area;
+  area_object_ = area;
   placement_ = placement;
   viewport_ = area->viewport();
   // Stamp the marker EVERY attach path sets, so a host that attaches its own
@@ -362,7 +363,7 @@ void Scrollbar::installHoverObserver(QWidget* widget) {
 }
 
 bool Scrollbar::eventFilter(QObject* watched, QEvent* event) {
-  if (area_ == nullptr) {
+  if (area_ == nullptr || qobject_cast<QAbstractScrollArea*>(area_object_) == nullptr) {
     return false;
   }
 

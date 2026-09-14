@@ -261,6 +261,14 @@ class Scrollbar : public QWidget {
   Qt::Orientation orientation_;
   Placement placement_ = Placement::kOverlayViewport;
   QAbstractScrollArea* area_ = nullptr;
+  // The attached area as a plain QObject*, recorded while it was fully alive.
+  // eventFilter() checks it with qobject_cast before using area_: during the
+  // area's destruction Qt still delivers events from its children, but the
+  // object is already only a QWidget, so any QAbstractScrollArea member call on
+  // area_ is undefined behavior. qobject_cast resolves through the virtual
+  // metaObject(), which reports the class of the destructor stage currently
+  // running, so it fails safely instead.
+  QObject* area_object_ = nullptr;
   // Cached viewport, held as a QPointer so it auto-nulls if the viewport is
   // destroyed before this overlay. Guards recomputeGeometry() (wired to the live
   // bar's valueChanged/rangeChanged) against a dangling deref during host

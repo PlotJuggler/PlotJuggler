@@ -12,7 +12,13 @@ int main(int argc, char** argv) {
   fmt.setProfile(QSurfaceFormat::CoreProfile);
   fmt.setDepthBufferSize(24);
   QSurfaceFormat::setDefaultFormat(fmt);
-  QGuiApplication app(argc, argv);
   ::testing::InitGoogleTest(&argc, argv);
+  // ctest discovery (--gtest_list_tests) only needs the case names: answer it
+  // before Qt starts, because a cold fontconfig cache can push QApplication
+  // construction past the 5 s discovery timeout on a fresh CI runner.
+  if (::testing::GTEST_FLAG(list_tests)) {
+    return RUN_ALL_TESTS();
+  }
+  QGuiApplication app(argc, argv);
   return RUN_ALL_TESTS();
 }

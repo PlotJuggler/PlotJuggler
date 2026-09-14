@@ -14,8 +14,11 @@ function(pj_add_test_runner target)
     set(oneValueArgs MAIN PREFIX TIMEOUT WORKING_DIRECTORY)
     set(multiValueArgs SOURCES LIBS DEFINES)
     cmake_parse_arguments(R "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
-    if(NOT R_MAIN MATCHES "^(core|gui|gl)$")
-        message(FATAL_ERROR "pj_add_test_runner(${target}): MAIN must be core, gui or gl")
+    # plain = no Qt at all. It exists because core was previously the floor, so a
+    # module with no Qt in any of its test sources still linked Qt6::Core purely to
+    # satisfy this parameter. Pick the least the runner actually needs.
+    if(NOT R_MAIN MATCHES "^(plain|core|gui|gl)$")
+        message(FATAL_ERROR "pj_add_test_runner(${target}): MAIN must be plain, core, gui or gl")
     endif()
     if(NOT R_SOURCES)
         message(FATAL_ERROR "pj_add_test_runner(${target}): SOURCES is empty")
@@ -29,11 +32,13 @@ function(pj_add_test_runner target)
 
     add_executable(${target} ${R_SOURCES} "${PJ_TEST_MAINS_DIR}/pj_test_main_${R_MAIN}.cpp")
     target_link_libraries(${target} PRIVATE ${R_LIBS} GTest::gtest)
+    # "plain" deliberately falls through linking no Qt target: an else() branch
+    # here is what silently gave every runner a Qt dependency.
     if(R_MAIN STREQUAL "core")
         target_link_libraries(${target} PRIVATE Qt6::Core)
     elseif(R_MAIN STREQUAL "gui")
         target_link_libraries(${target} PRIVATE Qt6::Widgets)
-    else()
+    elseif(R_MAIN STREQUAL "gl")
         target_link_libraries(${target} PRIVATE Qt6::Gui)
     endif()
     if(R_DEFINES)
@@ -42,9 +47,6 @@ function(pj_add_test_runner target)
     # Opt in only for uniformly strict sources so merging tests does not introduce -Werror failures.
     if(R_WARNINGS AND DEFINED PJ_WARNING_FLAGS)
         target_compile_options(${target} PRIVATE ${PJ_WARNING_FLAGS})
-    endif()
-    if(DEFINED PJ_SANITIZER_FLAGS)
-        target_compile_options(${target} PRIVATE ${PJ_SANITIZER_FLAGS})
     endif()
 
     set(discover_args

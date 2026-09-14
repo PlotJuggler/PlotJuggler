@@ -34,10 +34,15 @@ struct PendingDisplayEntry {
   Kind kind = Kind::kCurve;
   QPointer<PlotWidget> plot;             ///< kCurve target; null means the plot was destroyed.
   QPointer<SceneDockWidget> scene_dock;  ///< kSceneLayer target; null means the dock was destroyed.
-  layout_xml::SeriesPath path;           ///< Topic (+field for curves; XY: the Y source).
-  layout_xml::SeriesPath x_path;         ///< Non-empty topic means this curve entry is XY.
-  QDomDocument curve_doc;                ///< kCurve: owns the detached <curve> clone.
-  QDomElement curve_element;             ///< kCurve: element imported into curve_doc.
+  /// The staged widget (plot or scene_dock) as a plain QObject*, recorded while
+  /// it was alive. The destroyed() sweep matches on it: inside destroyed() the
+  /// widget is already a bare QWidget, so reading plot/scene_dock through
+  /// QPointer<T>::data() would be an invalid downcast. Identity only.
+  QObject* target = nullptr;
+  layout_xml::SeriesPath path;    ///< Topic (+field for curves; XY: the Y source).
+  layout_xml::SeriesPath x_path;  ///< Non-empty topic means this curve entry is XY.
+  QDomDocument curve_doc;         ///< kCurve: owns the detached <curve> clone.
+  QDomElement curve_element;      ///< kCurve: element imported into curve_doc.
   // Demand references held for this entry (see PendingDisplayBinder's class doc):
   // one per (dataset, topic name) the entry's path(s) currently name. Empty when
   // no tracker was supplied to the binder.

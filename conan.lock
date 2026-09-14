@@ -12,7 +12,7 @@
         "rapidjson/cci.20230929#8dc0392af2b3aaea7312095f0ba53467%1705070242.903",
         "pybind11/2.13.6#42746850cd4c68d1b1ea42de456c2182%1755673714.548",
         "pugixml/1.14#6b0b93a0676c40e5204decd48fedba68%1782305327.444",
-        "plotjuggler_sdk/0.34.0#1b7b3d7bed1c9141ea70b65197b332c7",
+        "plotjuggler_sdk/0.34.1#57b2c19bd0f1e7f856176a4ee49f506c",
         "openssl/3.6.4#bc460bf37686ccae86a15bfdce71be11%1787920038.176",
         "nlohmann_json/3.12.0#2d634ab0ec8d9f56353e5ccef6d6612c%1744735883.94",
         "nanoarrow/0.7.0#ca9751ce5eaf71ccb47bc38cc90f3940%1769042150.583",

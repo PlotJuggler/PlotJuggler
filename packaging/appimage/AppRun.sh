@@ -15,6 +15,19 @@ set -e
 HERE="$(dirname "$(readlink -f "${0}")")"
 APPDIR="${APPDIR:-${HERE}}"
 
+# Key off the payload marker so renaming the AppImage keeps these defaults.
+# detect_leaks=0 is deliberate: this artifact hunts use-after-free at teardown;
+# Qt/plugin teardown leaks would bury that signal. Leak detection belongs to
+# the test lane. Preserve caller overrides, including explicitly empty values.
+if [[ -f "${APPDIR}/usr/.pj-asan" ]]; then
+  if [[ ! "${ASAN_OPTIONS+x}" ]]; then
+    export ASAN_OPTIONS=detect_leaks=0:abort_on_error=1:print_stacktrace=1
+  fi
+  if [[ ! "${UBSAN_OPTIONS+x}" ]]; then
+    export UBSAN_OPTIONS=print_stacktrace=1
+  fi
+fi
+
 # Join with ':' only when the variable is already set: an unconditional
 # "${new}:${old:-}" leaves a trailing colon when $old is empty, and the loader
 # reads an empty search-path entry as the current working directory.

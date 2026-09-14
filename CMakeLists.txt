@@ -31,8 +31,6 @@ configure_file(cmake/pj_version.h.in ${CMAKE_BINARY_DIR}/generated/pj_version.h 
 # ---------------------------------------------------------------------------
 
 option(PJ4_BUILD_APP "Build the pj_app desktop shell" ON)
-option(PJ_ENABLE_SANITIZERS "Enable AddressSanitizer instrumentation (opt-in, any build type)" OFF)
-option(PJ_ENABLE_TSAN "Enable ThreadSanitizer instrumentation (opt-in, any build type)" OFF)
 # Standalone dev tools (pj_scene2D/tools, e.g. extract_frame). Off by default so
 # they don't cost a default/CI build; configure with -DPJ_BUILD_TOOLS=ON to build.
 option(PJ_BUILD_TOOLS "Build pj_scene2D dev tools" OFF)
@@ -109,6 +107,9 @@ else()
     endif()
 endif()
 
+# Directory options must be set before subdirectories and the in-tree SDK inherit them.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjSanitizers.cmake)
+
 # Keep frame pointers in all PJ4-owned targets so `perf record --call-graph fp`
 # can unwind without DWARF.
 if(NOT MSVC)
@@ -147,41 +148,79 @@ find_package(fmt REQUIRED)
 file(STRINGS conanfile.txt _pj_sdk_require REGEX "^plotjuggler_sdk/")
 string(REGEX REPLACE "^plotjuggler_sdk/([0-9.]+).*" "\\1" PJ_SDK_VERSION "${_pj_sdk_require}")
 set(_pj_sdk_url https://github.com/PlotJuggler/plotjuggler_sdk/archive/refs/tags/v${PJ_SDK_VERSION}.tar.gz)
+# Pin the source build to bytes, not to a tag name: a tag can be moved, and the
+# sanitizer lanes compile this tarball instead of the Conan package, so an
+# unpinned fetch would make an instrumented build unreproducible. Update this
+# hash in the same commit as any PJ_SDK_VERSION bump in conanfile.txt — a stale
+# hash aborts the download loudly, which is the intended failure mode.
+set(_pj_sdk_url_hash
+    SHA256=b42b3d53f13cd495c3e8a73e5728503b1cc6949c9dd820e164ba449f22349c32)  # v0.34.1
 include(FetchContent)
+# Timestamps on extracted archives. DOWNLOAD_EXTRACT_TIMESTAMP is a CMake 3.24
+# keyword and the sanctioned builder image ships 3.22, where an unrecognised
+# keyword is silently swallowed into the preceding argument's value — which made
+# the source-SDK branch fail with "At least one entry of URL is a path". The
+# policy below expresses the same intent and is simply absent on 3.22.
+if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+endif()
+option(PJ_SDK_FORCE_SOURCE "Build plotjuggler_sdk from the pinned release sources instead of the Conan package" OFF)
 # Local-SDK development mode (./build.sh --sdk-local): build the SDK from a
 # working tree instead of the pinned Conan package, so testing an unreleased
 # SDK change needs no release. Dev-only: not reproducible, refused in CI.
 set(PJ_SDK_LOCAL_DIR "" CACHE PATH "Build plotjuggler_sdk from this local source tree instead of the Conan package")
+if(PJ_SANITIZERS_ACTIVE AND NOT PJ_SDK_FORCE_SOURCE AND NOT PJ_SDK_LOCAL_DIR)
+  message(FATAL_ERROR
+    "An instrumented build must not link the prebuilt plotjuggler_sdk. "
+    "Set PJ_SDK_FORCE_SOURCE=ON or PJ_SDK_LOCAL_DIR to build the SDK from source.")
+endif()
+
 if(PJ_SDK_LOCAL_DIR)
-    if(DEFINED ENV{CI})
-        message(FATAL_ERROR "PJ_SDK_LOCAL_DIR is a local development mode; refusing to run in CI")
-    endif()
-    message(STATUS "==================================================================")
-    message(STATUS " plotjuggler_sdk from LOCAL TREE: ${PJ_SDK_LOCAL_DIR}")
-    message(STATUS " NOT reproducible — do not use for release artifacts")
-    message(STATUS "==================================================================")
-    FetchContent_Declare(plotjuggler_sdk SOURCE_DIR "${PJ_SDK_LOCAL_DIR}")
-    FetchContent_MakeAvailable(plotjuggler_sdk)
-    set(plotjuggler_sdk_FOUND TRUE)
-else()
-    find_package(plotjuggler_sdk CONFIG QUIET)
+  if(DEFINED ENV{CI})
+    message(FATAL_ERROR "PJ_SDK_LOCAL_DIR is a local development mode; refusing to run in CI")
+  endif()
+  if(PJ_SDK_FORCE_SOURCE)
+    message(STATUS "PJ_SDK_LOCAL_DIR takes precedence over PJ_SDK_FORCE_SOURCE; using ${PJ_SDK_LOCAL_DIR}")
+  endif()
+  message(STATUS "==================================================================")
+  message(STATUS " plotjuggler_sdk from LOCAL TREE: ${PJ_SDK_LOCAL_DIR}")
+  message(STATUS " NOT reproducible — do not use for release artifacts")
+  message(STATUS "==================================================================")
+  FetchContent_Declare(plotjuggler_sdk SOURCE_DIR "${PJ_SDK_LOCAL_DIR}")
+  FetchContent_MakeAvailable(plotjuggler_sdk)
+  set(plotjuggler_sdk_FOUND TRUE)
+elseif(NOT PJ_SDK_FORCE_SOURCE)
+  find_package(plotjuggler_sdk CONFIG QUIET)
 endif()
 if(PJ_SDK_LOCAL_DIR)
-    # Handled above; the blocks below serve the Conan and no-Conan paths.
-elseif(NOT plotjuggler_sdk_FOUND)
+  # Handled above; the blocks below serve the Conan and pinned-release paths.
+elseif(PJ_SDK_FORCE_SOURCE OR NOT plotjuggler_sdk_FOUND)
+  if(PJ_SDK_FORCE_SOURCE)
+    message(STATUS "PJ_SDK_FORCE_SOURCE=ON: building plotjuggler_sdk v${PJ_SDK_VERSION} sources from GitHub")
+  else()
     message(STATUS "plotjuggler_sdk Conan package not found: building v${PJ_SDK_VERSION} sources from GitHub")
-    FetchContent_Declare(plotjuggler_sdk URL ${_pj_sdk_url} DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
-    FetchContent_MakeAvailable(plotjuggler_sdk)
+  endif()
+  FetchContent_Declare(plotjuggler_sdk URL ${_pj_sdk_url} URL_HASH ${_pj_sdk_url_hash})
+  # The SDK's test block calls find_package(Python3) purely to register a
+  # feature-floors check, and Conan's Python3Config raises a FATAL_ERROR on a
+  # version mismatch that QUIET cannot suppress — so an in-tree SDK plus PJ4's
+  # test suite fails to configure. Disable that ONE lookup across the subproject
+  # rather than its whole test block: pj_runtime consumes SDK test fixtures via
+  # pj_add_sdk_test_fixture(), which only exist when the SDK's tests are enabled.
+  set(_pj_saved_disable_py3 "${CMAKE_DISABLE_FIND_PACKAGE_Python3}")
+  set(CMAKE_DISABLE_FIND_PACKAGE_Python3 ON)
+  FetchContent_MakeAvailable(plotjuggler_sdk)
+  set(CMAKE_DISABLE_FIND_PACKAGE_Python3 "${_pj_saved_disable_py3}")
 elseif(PJ_BUILD_TESTS)
-    # Sources only (SOURCE_SUBDIR has no CMakeLists.txt, so nothing is added to
-    # the build). Survives solely for pj_dialog_host's mock_dialog.cpp, the one
-    # fixture the Conan package still does not ship — the data-source/toolbox
-    # mocks now come from pj_add_sdk_test_fixture(). Drop this block once the
-    # SDK packages mock_dialog.cpp too.
-    # Offline / local SDK checkout: -DFETCHCONTENT_SOURCE_DIR_PLOTJUGGLER_SDK=<dir>.
-    FetchContent_Declare(plotjuggler_sdk URL ${_pj_sdk_url} SOURCE_SUBDIR pj_plugins/examples
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
-    FetchContent_MakeAvailable(plotjuggler_sdk)
+  # Sources only (SOURCE_SUBDIR has no CMakeLists.txt, so nothing is added to
+  # the build). Survives solely for pj_dialog_host's mock_dialog.cpp, the one
+  # fixture the Conan package still does not ship — the data-source/toolbox
+  # mocks now come from pj_add_sdk_test_fixture(). Drop this block once the
+  # SDK packages mock_dialog.cpp too.
+  # Offline / local SDK checkout: -DFETCHCONTENT_SOURCE_DIR_PLOTJUGGLER_SDK=<dir>.
+  FetchContent_Declare(plotjuggler_sdk URL ${_pj_sdk_url} URL_HASH ${_pj_sdk_url_hash}
+    SOURCE_SUBDIR pj_plugins/examples)
+  FetchContent_MakeAvailable(plotjuggler_sdk)
 endif()
 # Header-only fmt for modules that format internally. The in-tree SDK build
 # defines the same target; the Conan package keeps fmt private.
@@ -209,6 +248,21 @@ endif()
 # pj_datastore: columnar store + DerivedEngine + the data-processor execution
 # substrate (DataProcessor base + ProcessorSisoAdapter, formerly pj_proc).
 add_subdirectory(pj_datastore)
+
+# The MemorySanitizer lane stops here, and the cut is load-bearing rather than an
+# optimisation. MSan reports reads of memory it never saw written, so a single
+# uninstrumented writer in the process turns correct code into a stream of false
+# reports — and MSan has no runtime suppressions to mute them. Everything below
+# reaches prebuilt Qt or, through the scene modules, the GL stack that dlopens a
+# GPU driver; neither can be rebuilt from these sources, so configuring them would
+# produce a lane whose output could not be trusted. pj_datastore is Qt-free by
+# design and its whole closure is instrumentable, which is what makes it the one
+# subtree this lane can cover. See cmake/msan/conanfile.txt and docs/SANITIZERS.md.
+if(PJ_ENABLE_MSAN)
+    message(STATUS "MemorySanitizer lane: configuring pj_datastore only (Qt-free closure)")
+    return()
+endif()
+
 # pj_scripting: Luau filter engine for Data Processors (self-describing filter
 # classes). Depends on pj_datastore (added above) + Conan Luau. See its CLAUDE.md.
 if(NOT EMSCRIPTEN OR PJ_WASM_WITH_LUAU)
@@ -221,6 +275,13 @@ endif()
 
 add_subdirectory(3rdparty/qwt)
 add_subdirectory(3rdparty/nanocdr)
+# nanocdr's constexpr getCurrentEndianness() reads an inactive union member. GCC
+# accepts it; Clang, which the sanitizer lanes use, reports -Winvalid-constexpr as
+# an error by default. The function is never evaluated in a constant context, so
+# its Clang consumers silence the diagnostic instead of patching 3rdparty/.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  target_compile_options(nanocdr INTERFACE -Wno-invalid-constexpr)
+endif()
 
 # Qt-Advanced-Docking submodule (PlotJuggler/Qt-Advanced-Docking-System fork
 # tracking upstream master + the Wayland fix + WASM Unix guards on
@@ -232,26 +293,11 @@ set(BUILD_STATIC ON CACHE BOOL "" FORCE)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(3rdparty/Qt-Advanced-Docking)
 add_library(qt_advanced_docking ALIAS qtadvanceddocking-qt6)
-
-# ---------------------------------------------------------------------------
-# Sanitizers (root-owned modules only)
-# ---------------------------------------------------------------------------
-
-# Opt-in and independent of build type: a fast RelWithDebInfo build can carry the
-# sanitizer without a Debug rebuild of the whole Conan dependency graph (the TSan
-# foundation job + `./build.sh --tsan` rely on this). ASan and TSan are mutually
-# exclusive instrumentations.
-if(PJ_ENABLE_SANITIZERS AND PJ_ENABLE_TSAN)
-    message(FATAL_ERROR "PJ_ENABLE_SANITIZERS (ASan) and PJ_ENABLE_TSAN are mutually exclusive")
-endif()
-if(PJ_ENABLE_SANITIZERS)
-    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
-    add_link_options(-fsanitize=address)
-    add_compile_definitions(PJ_ASAN_ACTIVE)
-endif()
-if(PJ_ENABLE_TSAN)
-    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
-    add_link_options(-fsanitize=thread)
+# Target options follow the directory-inherited sanitizer flags on the command
+# line, so -fno-sanitize=all wins for this library only. See PJ_SANITIZE_QT_ADS.
+if(PJ_SANITIZERS_ACTIVE AND NOT PJ_SANITIZE_QT_ADS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(qtadvanceddocking-qt6 PRIVATE -fno-sanitize=all)
+  message(STATUS "Sanitizers: Qt-Advanced-Docking excluded (PJ_SANITIZE_QT_ADS=OFF)")
 endif()
 
 # ---------------------------------------------------------------------------

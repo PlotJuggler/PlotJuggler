@@ -83,21 +83,29 @@ COPY versions.env /opt/versions.env
 COPY scripts/install_qt6.sh /opt/scripts/install_qt6.sh
 RUN bash /opt/scripts/install_qt6.sh
 
-# 5) Warm the Conan cache into /root/.conan2 with the SAME settings build.sh uses,
-#    so the run-time conan install is an offline cache hit. Only the requires file
-#    is needed to resolve.
+# 5) Warm the Conan cache into /root/.conan2 with the SAME settings AND lockfile
+#    build.sh uses, so the run-time conan install is an offline cache hit. The
+#    lockfile is load-bearing: resolving conanfile.txt alone picks whatever the
+#    remotes offer on bake day, which drifts from the revisions build.sh locks, and
+#    every drifted package is then rebuilt from source inside each --rm container.
 #    Dependency DWARF would otherwise be linked into every PJ4 executable;
 #    PJ4's own debug info is governed by cmake/PjDebugInfo.cmake.
-COPY conanfile.txt /opt/conan-ctx/conanfile.txt
+#    Clean BEFORE stripping: build folders of from-source packages hold thin
+#    archives (dav1d's meson tools), which strip rejects. Only the clean step is
+#    allowed to fail; a failed install or strip must fail the image build rather
+#    than silently skip the cleanup and ship the build folders.
+COPY conanfile.txt conan.lock /opt/conan-ctx/
 COPY scripts/configure_conan_remote.sh /opt/configure_conan_remote.sh
 RUN conan profile detect --force \
  && bash /opt/configure_conan_remote.sh \
  && conan install /opt/conan-ctx -r plotjuggler-conan -r conancenter \
+        --lockfile=/opt/conan-ctx/conan.lock --lockfile-partial \
         --output-folder=/tmp/conan-warm --build=missing \
         -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
- && find /root/.conan2/p -type f -name '*.a' -exec strip --strip-debug {} + \
  && rm -rf /tmp/conan-warm \
- && conan cache clean "*" --build --source --temp || true
+ && { conan cache clean "*" --build --source --temp || true; } \
+ && find /root/.conan2/p -type f -name '*.a' -exec sh -c \
+        'for f; do [ "$(head -c 7 "$f")" = "!<thin>" ] || strip --strip-debug "$f" || exit 1; done' _ {} +
 
 # 6) Baked entrypoint (quoted heredoc => nothing expanded at image-build time).
 RUN cat > /usr/local/bin/pj4-build-entry.sh <<'PJEOF'
