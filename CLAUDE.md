@@ -35,7 +35,7 @@ PJ4/
 ├── pj_app/                  # main window shell
 ├── resources/               # SVG icons (ported from PJ3) + resources.qrc
 ├── raster/                  # helper/ executable + ipc/ header-only wire contract
-├── scripts/                 # setup, worktrees, pre-commit hooks, and development utilities
+├── scripts/                 # setup, worktrees, pre-commit hooks, windows/ entry-point logic, and development utilities
 ├── packaging/               # AppImage, Debian package, and Windows installer
 └── docs/                    # cross-cutting guides, research, and archived plans
 ```
@@ -61,7 +61,7 @@ When adding files, use the owning module rather than creating new top-level fold
 - `resources/`: shared app resources registered in `resources.qrc`; module-local test/demo assets should live with that module.
 - `3rdparty/`: vendored source dependencies added via CMake `add_subdirectory`, plus `3rdparty/retro/` — the GPLv2/shareware license + source-offer compliance artifacts shipped alongside the separately-licensed `pj-raster-helper` (the root `CMakeLists.txt` installs these next to the helper binary). Conan/system dependencies do not belong here.
 - `raster/`: `helper/` is the standalone GPL-2.0 `pj-raster-helper` executable that links vendored doomgeneric; `ipc/` is its header-only, Qt-free MPL-2.0 wire contract, also consumed by `pj_widgets`. PlotJuggler consumes only the contract; it never links the helper or engine.
-- `scripts/`: setup and maintenance utilities, including `pre-commit/` hooks. Keep the everyday `build.sh`, `run.sh`, and `test.sh` entry points at the root.
+- `scripts/`: setup and maintenance utilities, including `pre-commit/` hooks and `windows/` (the PowerShell logic behind the root `build.bat` / `run.bat` / `test.bat` shims, plus `install_qt6.ps1` and `build_plugins.ps1`, which builds a pj-official-plugins checkout with its own `build.sh` and stages the plugin DLLs for `run.bat --plugin-dir`). Keep the everyday `build.sh`, `run.sh`, and `test.sh` entry points, and their Windows shims, at the root.
 - `packaging/`: scripts, templates, and metadata that repackage an already-built tree: `appimage/` (AppImage), `deb/` (Debian/Ubuntu package), and `installer/` (Windows installer). See the [packaging guides](./packaging/README.md). Packaging utilities stay with their format; general development utilities live in `scripts/`.
 
 ## Documentation
@@ -137,7 +137,7 @@ The "wholesale lift" strategy for plot widgets (see `pj_plotting/CLAUDE.md`) mea
 
 ## Build
 
-- **Qt 6.11.1** (required; pinned by [`versions.env`](./versions.env)). Install via [`./scripts/install_qt6.sh`](./scripts/install_qt6.sh). See [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) for what changed since 6.8 (new APIs past most training cutoffs, deprecations, build floors).
+- **Qt 6.11.1** (required; pinned by [`versions.env`](./versions.env)). Install via [`./scripts/install_qt6.sh`](./scripts/install_qt6.sh) on Linux, [`scripts/windows/install_qt6.ps1`](./scripts/windows/install_qt6.ps1) on Windows (the `msvc2022_64` kit). See [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) for what changed since 6.8 (new APIs past most training cutoffs, deprecations, build floors).
 - **CMake + Conan**. CMake is the build driver; Conan provides external non-vendored dependencies.
 - **C++20**.
 - **Linux and Windows are both required shipped targets**; macOS is not yet. Keep the code portable — no Linux-only APIs or POSIX-specific paths in module code; gate anything platform-specific behind the usual CMake / `#ifdef` guards. Licensing note for Windows: conda-forge ships no LGPL FFmpeg for win-64, so pixi-based Windows artifacts must use the local `recipes/ffmpeg` package (the Conan path builds its own LGPL-trimmed FFmpeg on all platforms). Windows runtime packaging (windeployqt + bundling the FFmpeg/Qt DLLs `pj_app` needs) is in scope: the Conan `windows-ci.yml` resolves DLLs via `PATH` at test time, which is not a shippable layout.
@@ -194,7 +194,9 @@ still installs Qt inline because the Linux installer uses the `gcc_64` build.
 > `PJ_QT_VERSION` (Qt), and `PJ_APPIMAGE_ARCH` (AppImage arch) live **only** in
 > [`versions.env`](./versions.env); always read them from there rather than
 > writing a literal (`3.999.0`, `6.11.1`, `x86_64`) anywhere. How each consumer
-> reads it: bash scripts `source "<anchor>/versions.env"` by absolute path; CMake
+> reads it: bash scripts `source "<anchor>/versions.env"` by absolute path; the
+> Windows PowerShell scripts under `scripts/windows/` parse its `KEY=VALUE` lines
+> themselves (`PjWindowsCommon.ps1`); CMake
 > via `pj_read_versions()` in [`cmake/PjVersions.cmake`](./cmake/PjVersions.cmake)
 > (which stamps `cmake/pj_version.h.in` → `main.cpp` and feeds `find_package(Qt6 …)`);
 > CI via a `Read versions` step (`source ./versions.env` → `$GITHUB_ENV`); Docker
@@ -240,6 +242,21 @@ Run the app:
 ```
 
 `run.sh` unsets `QT_IM_MODULE` before launching. Otherwise the IBus platform input context can get loaded from a system / older Qt install and crash under the pinned Qt runtime.
+
+**Windows:** `build.bat`, `run.bat` and `test.bat` are the entry points (thin cmd
+shims over `scripts/windows/build.ps1` / `run.ps1` / `test.ps1`, Windows PowerShell
+5.1, sharing `scripts/windows/PjWindowsCommon.ps1`). They take the same options and
+`PJ_*` variables as the `.sh` scripts (the Linux-only `--sanitize`, `--tsan`,
+`--debug-info`, `--no-compress-debug` are rejected) and reproduce `windows-ci.yml`:
+VS 2022 `vcvars64.bat` imported via vswhere (VS 2026 alone is refused: CI and the
+official plugins pin MSVC 14.4x), Conan with every profile setting pinned
+(`compiler.version=194`) and the source download cache seeded from
+`.github/conan/source-backup` (rewriting the `core.sources:download_cache=` line in
+Conan's `global.conf`), `-G "Ninja Multi-Config"` into the same `build/` tree CI
+uses, `RelWithDebInfo` only (`build/pj_app/RelWithDebInfo/plotjuggler4.exe`). Qt
+comes from `.qt/<PJ_QT_VERSION>/msvc2022_64` via `scripts/windows/install_qt6.ps1`.
+`run.bat` / `test.bat` put the Qt, FFmpeg and CPython DLL directories on `PATH`.
+See [`docs/BUILDING.md`](./docs/BUILDING.md#windows-setup).
 
 A dev build shows a generic gear in the GNOME/Wayland dock because no
 `plotjuggler4.desktop` is installed (Wayland resolves the icon through the

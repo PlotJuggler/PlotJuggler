@@ -77,6 +77,20 @@ if(PJ_SCENE2D_HAS_FFMPEG)
   target_link_libraries(pj_scene2d_core PRIVATE ${PJ_SCENE2D_FFMPEG_TARGETS})
   target_compile_definitions(pj_scene2d_core PUBLIC PJ_HAS_FFMPEG)
   message(STATUS "pj_scene2d_core: FFmpeg found via ${PJ_SCENE2D_FFMPEG_SOURCE} -> building FfmpegDecoder")
+
+  if(WIN32 AND PJ_SCENE2D_FFMPEG_BIN_DIRS)
+    # Every exe that transitively links pj_scene2d_core (pj_app and the FFmpeg
+    # tests) needs FFmpeg's shared DLLs (avcodec/avformat/avutil/swscale)
+    # resolvable at launch, else STATUS_DLL_NOT_FOUND (0xc0000135). Conan 2's
+    # CMakeDeps declares ffmpeg::* as INTERFACE IMPORTED with no
+    # IMPORTED_LOCATION, so $<TARGET_RUNTIME_DLLS:tgt> is empty. Rather than copy
+    # DLLs next to every target (a fragile per-target list that silently drops new
+    # consumers), export the Conan bin dir(s) for run.bat, test.bat and the CI Test
+    # step to prepend to PATH. Written with or without PJ_BUILD_TESTS, since
+    # pj_app needs them too.
+    string(REPLACE ";" "\n" _pj_ffmpeg_dirs_text "${PJ_SCENE2D_FFMPEG_BIN_DIRS}")
+    file(WRITE "${CMAKE_BINARY_DIR}/pj_ffmpeg_bin_dirs.txt" "${_pj_ffmpeg_dirs_text}\n")
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -204,22 +218,6 @@ if(PJ_BUILD_TESTS)
         ${PJ_SCENE2D_FFMPEG_TARGETS}
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     )
-
-    if(WIN32 AND PJ_SCENE2D_FFMPEG_BIN_DIRS)
-      # Windows is a non-blocking portability tracker (PJ4 v1 is Linux-only). Any
-      # exe that transitively links pj_scene2d_core (the FFmpeg tests AND pj_app)
-      # needs FFmpeg's shared DLLs (avcodec/avformat/avutil/swscale) resolvable at
-      # launch, else STATUS_DLL_NOT_FOUND (0xc0000135). Conan 2's CMakeDeps declares
-      # ffmpeg::* as INTERFACE IMPORTED with no IMPORTED_LOCATION, so
-      # $<TARGET_RUNTIME_DLLS:tgt> is empty. Rather than copy DLLs next to every
-      # target (a fragile per-target list that silently drops new consumers), export
-      # the Conan bin dir(s) so the CI Test step can prepend them to PATH for all
-      # test exes at once. Proper bundling (windeployqt + CPack) is deferred until
-      # Windows is a supported release target — see .github/workflows/windows-ci.yml
-      # and the "Non-goals" section of the root CLAUDE.md.
-      string(REPLACE ";" "\n" _pj_ffmpeg_dirs_text "${PJ_SCENE2D_FFMPEG_BIN_DIRS}")
-      file(WRITE "${CMAKE_BINARY_DIR}/pj_ffmpeg_bin_dirs.txt" "${_pj_ffmpeg_dirs_text}\n")
-    endif()
   endif()
 
   # Share the dependency closure while ctest runs each case in its own process.
