@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "marker_test_utils.h"
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_base/builtin/plot_markers_codec.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
@@ -29,8 +30,11 @@
 
 namespace {
 
+using PJ::kAllDatasetsMarkerDataset;
 using PJ::MarkerService;
 using PJ::MarkersRuntimeHost;
+using PJ::test::markerFamily;
+using PJ::test::readMarkerUnion;
 
 constexpr PJ::DatasetId kDataset = 1;
 
@@ -96,10 +100,10 @@ TEST(MarkersRuntimeHostTest, PluginCreateRunsPublishesAndNamespaces) {
   const PJ::Expected<std::vector<std::string>> created =
       view.createMarkers("gen1", PJ::Span<const std::string_view>(inputs), "in", "createMarker(0.0)\n", "{}");
   ASSERT_TRUE(created) << created.error();
-  EXPECT_EQ(created->front(), PJ::sdk::markerObjectTopicName("in"));
+  EXPECT_EQ(created->front(), PJ::markerOwnerTopicName("in", "anomaly/gen1")) << "the physical topic, readable back";
 
-  // Markers were published by the HOST into the ObjectStore under __markers__/in.
-  EXPECT_TRUE(store.findTopic(kDataset, PJ::sdk::markerObjectTopicName("in")).has_value());
+  // Markers were published by the HOST into the ObjectStore, in the __markers__/in family.
+  EXPECT_EQ(markerFamily(store, kDataset, "in").size(), 1u);
 
   // The service stored it under the plugin-namespaced key.
   ASSERT_EQ(service.recipes().size(), 1u);
@@ -166,7 +170,7 @@ TEST(MarkersRuntimeHostTest, CallbackNormalizedKeysAreWhatTheServiceStores) {
   ASSERT_EQ(service.recipes().size(), 1u);
   EXPECT_EQ(service.recipes()[0].inputs, (std::vector<std::string>{"in"}));
   EXPECT_EQ(service.recipes()[0].outputs, (std::vector<std::string>{"in"}));
-  EXPECT_TRUE(store.findTopic(kDataset, PJ::sdk::markerObjectTopicName("in")).has_value());
+  EXPECT_EQ(markerFamily(store, kDataset, "in").size(), 1u);
 }
 
 TEST(MarkersRuntimeHostTest, RemoveUnknownErrors) {
@@ -236,11 +240,11 @@ TEST(MarkersRuntimeHostTest, ScopeAllPublishesAcrossDatasets) {
       "g", PJ::Span<const std::string_view>(inputs), std::string(PJ::sdk::kGlobalMarkerTopic), "createMarker(0.0)\n",
       R"({"scope":"all"})");
   ASSERT_TRUE(created) << created.error();
-  EXPECT_EQ(created->front(), PJ::sdk::markerObjectTopicName(PJ::kAllDatasetsMarkerTopic));
+  EXPECT_EQ(created->front(), PJ::markerOwnerTopicName(PJ::kAllDatasetsMarkerTopic, "anomaly/g"));
 
-  const std::string topic = PJ::sdk::markerObjectTopicName(PJ::kAllDatasetsMarkerTopic);
-  EXPECT_TRUE(store.findTopic(1, topic).has_value());
-  EXPECT_TRUE(store.findTopic(2, topic).has_value());
+  EXPECT_EQ(markerFamily(store, kAllDatasetsMarkerDataset, PJ::kAllDatasetsMarkerTopic).size(), 1u);
+  EXPECT_TRUE(markerFamily(store, 1, PJ::kAllDatasetsMarkerTopic).empty());
+  EXPECT_TRUE(markerFamily(store, 2, PJ::kAllDatasetsMarkerTopic).empty());
 }
 
 // The Anomaly Detector submits a Dataset-scope and a Global-scope rule with the SAME
@@ -265,24 +269,15 @@ TEST(MarkersRuntimeHostTest, DatasetAndGlobalScopeRulesCoexistOverTheAbi) {
 
   EXPECT_EQ(service.recipes().size(), 2u);  // neither upsert replaced the other
 
-  const std::string dataset_topic = PJ::sdk::markerObjectTopicName(PJ::sdk::kGlobalMarkerTopic);
-  const std::string all_topic = PJ::sdk::markerObjectTopicName(PJ::kAllDatasetsMarkerTopic);
-  EXPECT_TRUE(store.findTopic(1, dataset_topic).has_value());
-  EXPECT_TRUE(store.findTopic(1, all_topic).has_value());
-  EXPECT_FALSE(store.findTopic(2, dataset_topic).has_value());  // bound to dataset 1 only
-  EXPECT_TRUE(store.findTopic(2, all_topic).has_value());
+  EXPECT_EQ(markerFamily(store, 1, PJ::sdk::kGlobalMarkerTopic).size(), 1u);
+  EXPECT_TRUE(markerFamily(store, 2, PJ::sdk::kGlobalMarkerTopic).empty());  // bound to dataset 1 only
+  EXPECT_EQ(markerFamily(store, kAllDatasetsMarkerDataset, PJ::kAllDatasetsMarkerTopic).size(), 1u);
 
   // Retiring the all-datasets rule leaves the dataset-scope one publishing.
   ASSERT_TRUE(view.remove("rule/__all__"));
   EXPECT_EQ(service.recipes().size(), 1u);
-  const std::optional<PJ::ObjectTopicId> kept = store.findTopic(1, dataset_topic);
-  ASSERT_TRUE(kept.has_value());
-  const std::optional<PJ::ResolvedObjectEntry> entry = store.latestAt(*kept, PJ::Timestamp{0});
-  ASSERT_TRUE(entry.has_value());
-  const PJ::Expected<PJ::sdk::PlotMarkers> decoded =
-      PJ::deserializePlotMarkers(entry->payload.bytes.data(), entry->payload.bytes.size());
-  ASSERT_TRUE(decoded) << decoded.error();
-  EXPECT_EQ(decoded->markers.size(), 1u);
+  EXPECT_EQ(readMarkerUnion(store, 1, PJ::sdk::kGlobalMarkerTopic).markers.size(), 1u);
+  EXPECT_TRUE(readMarkerUnion(store, kAllDatasetsMarkerDataset, PJ::kAllDatasetsMarkerTopic).markers.empty());
 }
 
 // Preview is now create(EPHEMERAL) + remove: the host publishes ephemerally (returns
@@ -302,11 +297,11 @@ TEST(MarkersRuntimeHostTest, PreviewViaEphemeralFlagPublishesAndIsEphemeral) {
   ASSERT_TRUE(topics) << topics.error();
   ASSERT_EQ(topics->size(), 1u);
   EXPECT_TRUE(PJ::sdk::isPreviewMarkerTopic(topics->front()));
-  EXPECT_TRUE(store.findTopic(kDataset, topics->front()).has_value());  // host published it
-  EXPECT_TRUE(service.recipes().empty());                               // ephemeral, not persisted
+  EXPECT_EQ(markerFamily(store, kDataset, topics->front()).size(), 1u);  // host published it
+  EXPECT_TRUE(service.recipes().empty());                                // ephemeral, not persisted
 
   EXPECT_TRUE(view.remove("__preview__"));
-  EXPECT_FALSE(store.findTopic(kDataset, topics->front()).has_value());
+  EXPECT_TRUE(markerFamily(store, kDataset, topics->front()).empty());
 }
 
 // The Anomaly Detector submits its Dataset-scope id ("rule/__global__") on whatever
@@ -336,23 +331,9 @@ TEST(MarkersRuntimeHostTest, DatasetScopeRuleOnEachDatasetKeepsBoth) {
 
   EXPECT_EQ(service.recipes().size(), 2u);
 
-  const std::string dataset_topic = PJ::sdk::markerObjectTopicName(PJ::sdk::kGlobalMarkerTopic);
-  const std::optional<PJ::ObjectTopicId> id1 = store.findTopic(1, dataset_topic);
-  const std::optional<PJ::ObjectTopicId> id2 = store.findTopic(2, dataset_topic);
-  ASSERT_TRUE(id1.has_value());
-  ASSERT_TRUE(id2.has_value());
-  const std::optional<PJ::ResolvedObjectEntry> entry1 = store.latestAt(*id1, PJ::Timestamp{0});
-  const std::optional<PJ::ResolvedObjectEntry> entry2 = store.latestAt(*id2, PJ::Timestamp{0});
-  ASSERT_TRUE(entry1.has_value());
-  ASSERT_TRUE(entry2.has_value());
-  const PJ::Expected<PJ::sdk::PlotMarkers> decoded1 =
-      PJ::deserializePlotMarkers(entry1->payload.bytes.data(), entry1->payload.bytes.size());
-  const PJ::Expected<PJ::sdk::PlotMarkers> decoded2 =
-      PJ::deserializePlotMarkers(entry2->payload.bytes.data(), entry2->payload.bytes.size());
-  ASSERT_TRUE(decoded1) << decoded1.error();
-  ASSERT_TRUE(decoded2) << decoded2.error();
-  EXPECT_EQ(decoded1->markers.size(), 1u) << "dataset 1's own marker survives";
-  EXPECT_EQ(decoded2->markers.size(), 1u) << "dataset 2 published its own";
+  EXPECT_EQ(readMarkerUnion(store, 1, PJ::sdk::kGlobalMarkerTopic).markers.size(), 1u)
+      << "dataset 1's own marker survives";
+  EXPECT_EQ(readMarkerUnion(store, 2, PJ::sdk::kGlobalMarkerTopic).markers.size(), 1u) << "dataset 2 published its own";
 
   const PJ::Expected<std::vector<std::string>> ids = view.list();
   ASSERT_TRUE(ids) << ids.error();
@@ -378,9 +359,7 @@ TEST(MarkersRuntimeHostTest, ScopeAllWithBareInputInTwoDatasetsIsNotAmbiguous) {
       "g", PJ::Span<const std::string_view>(inputs), std::string(PJ::sdk::kGlobalMarkerTopic), "createMarker(0.0)\n",
       R"({"scope":"all"})");
   ASSERT_TRUE(created) << created.error();
-  const std::string topic = PJ::sdk::markerObjectTopicName(PJ::kAllDatasetsMarkerTopic);
-  EXPECT_TRUE(store.findTopic(1, topic).has_value());
-  EXPECT_TRUE(store.findTopic(2, topic).has_value());
+  EXPECT_EQ(markerFamily(store, kAllDatasetsMarkerDataset, PJ::kAllDatasetsMarkerTopic).size(), 1u);
 }
 
 // Bug (PR #619 #2b): the same ordering makes a constant, input-free scope=all
@@ -396,9 +375,7 @@ TEST(MarkersRuntimeHostTest, ScopeAllWithZeroInputsSucceeds) {
       "g", PJ::Span<const std::string_view>{}, std::string(PJ::sdk::kGlobalMarkerTopic), "createMarker(0.0)\n",
       R"({"scope":"all"})");
   ASSERT_TRUE(created) << created.error();
-  const std::string topic = PJ::sdk::markerObjectTopicName(PJ::kAllDatasetsMarkerTopic);
-  EXPECT_TRUE(store.findTopic(1, topic).has_value());
-  EXPECT_TRUE(store.findTopic(2, topic).has_value());
+  EXPECT_EQ(markerFamily(store, kAllDatasetsMarkerDataset, PJ::kAllDatasetsMarkerTopic).size(), 1u);
 }
 
 // Bug (PR #619 #1): the callback strips "b:in" to "in" for storage, but the script
@@ -414,7 +391,7 @@ TEST(MarkersRuntimeHostTest, ScriptCanReadTheQualifiedInputNameItDeclared) {
       "g", PJ::Span<const std::string_view>(inputs), "b:in",
       "local s = series(\"b:in\")\nassert(s ~= nil, \"series('b:in') is nil\")\ncreateMarker(s:at(0).t)\n", "{}");
   ASSERT_TRUE(created) << created.error();
-  EXPECT_TRUE(store.findTopic(2, PJ::sdk::markerObjectTopicName("in")).has_value());
+  EXPECT_EQ(markerFamily(store, 2, "in").size(), 1u);
 }
 
 // The ABI contract (plugin_data_api.h's `flags` paragraph) requires the host to

@@ -13,12 +13,15 @@
 #include <QRectF>
 #include <QSizeF>
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <optional>
+#include <set>
 #include <utility>
 
 #include "pj_base/builtin/plot_markers_codec.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
 
@@ -119,6 +122,20 @@ void drawTimeLineMarker(
 
 }  // namespace
 
+std::vector<MarkerTargetTopic> markerTargetTopics(const ObjectStore& store, const MarkerTarget& target) {
+  const std::string key = target.topic.toStdString();
+  std::vector<MarkerTargetTopic> topics;
+  if (key != kAllDatasetsMarkerTopic) {
+    for (const ObjectTopicId id : markerTopicsOf(store, target.dataset, key)) {
+      topics.push_back(MarkerTargetTopic{.id = id, .display_frame = false});
+    }
+  }
+  for (const ObjectTopicId id : markerTopicsOf(store, kAllDatasetsMarkerDataset, key)) {
+    topics.push_back(MarkerTargetTopic{.id = id, .display_frame = true});
+  }
+  return topics;
+}
+
 PlotMarkersItem::PlotMarkersItem(SessionManager* session) : session_(session) {
   setZ(40.0);  // above curves (curves sit around z 20)
   setRenderHint(QwtPlotItem::RenderAntialiased, true);
@@ -136,127 +153,135 @@ void PlotMarkersItem::draw(
   ObjectStore& store = session_->objectStore();
   const std::vector<MarkerTarget> targets = targets_provider_();
   const QFontMetrics fm(painter->font());  // constant for the whole paint; built once
+  // A display-frame family carries no dataset alignment: only the global origin.
+  const DisplayOffset display_frame_offset{Duration{session_->globalTimeReference()}};
+  std::set<std::uint32_t> drawn;  // topic ids already painted this pass
 
   for (const MarkerTarget& target : targets) {
-    const DisplayOffset offset = session_->displayOffset(target.dataset);
-    // The marker set for this (dataset, topic) is one serialized PlotMarkers
-    // object, republished wholesale by its producer. Read the latest set
-    // regardless of playback position (sentinel timestamp).
-    const std::optional<ObjectTopicId> topic_id =
-        store.findTopic(target.dataset, sdk::markerObjectTopicName(target.topic.toStdString()));
-    if (!topic_id) {
-      continue;
-    }
-    const std::optional<ResolvedObjectEntry> entry = store.latestAt(*topic_id, std::numeric_limits<Timestamp>::max());
-    if (!entry) {
-      continue;
-    }
-    // Re-decode only when the producer republished (uid changed); otherwise reuse
-    // the cached set. Avoids a full deserialize (+ string/vector allocs) per paint.
-    CachedMarkers& slot = decode_cache_[topic_id->id];
-    if (slot.uid != entry->sequential_uid.value) {
-      const Expected<sdk::PlotMarkers> decoded =
-          deserializePlotMarkers(entry->payload.bytes.data(), entry->payload.bytes.size());
-      if (!decoded.has_value()) {
+    const DisplayOffset dataset_offset = session_->displayOffset(target.dataset);
+    for (const MarkerTargetTopic& topic : markerTargetTopics(store, target)) {
+      if (!drawn.insert(topic.id.id).second) {
         continue;
       }
-      slot.markers = decoded.value();
-      slot.uid = entry->sequential_uid.value;
+      drawTopic(
+          painter, xMap, yMap, canvasRect, fm, store, topic.id,
+          topic.display_frame ? display_frame_offset : dataset_offset);
     }
-    // Marker times are payload-embedded, so a time-shifted dataset merge moves the
-    // entry but not the bytes; the entry records the delta instead. Apply it here
-    // (per paint, NOT baked into the decode cache — the shift can change while the
-    // payload uid does not) so markers land on the merged clock like their curves.
-    const Timestamp stamp_shift = entry->payload_stamp_shift;
-    for (const sdk::PlotMarker& m : slot.markers.markers) {
-      const QColor color = severityColor(m.severity, m.color);
+  }
+}
 
-      switch (m.kind) {
-        case sdk::MarkerKind::kRegion: {
-          const double x0 = xMap.transform(rawToDisplaySeconds(m.t_start + stamp_shift, offset).value);
-          const double x1 = xMap.transform(rawToDisplaySeconds(m.t_end + stamp_shift, offset).value);
-          if (std::max(x0, x1) < canvasRect.left() || std::min(x0, x1) > canvasRect.right()) {
-            break;  // region fully outside the current view
+void PlotMarkersItem::drawTopic(
+    QPainter* painter, const QwtScaleMap& xMap, const QwtScaleMap& yMap, const QRectF& canvasRect,
+    const QFontMetrics& fm, const ObjectStore& store, ObjectTopicId topic_id, DisplayOffset offset) const {
+  // Read the latest set regardless of playback position (sentinel timestamp).
+  const std::optional<ResolvedObjectEntry> entry = store.latestAt(topic_id, std::numeric_limits<Timestamp>::max());
+  if (!entry) {
+    return;
+  }
+  // Re-decode only when the producer republished (uid changed); otherwise reuse
+  // the cached set. Avoids a full deserialize (+ string/vector allocs) per paint.
+  CachedMarkers& slot = decode_cache_[topic_id.id];
+  if (slot.uid != entry->sequential_uid.value) {
+    const Expected<sdk::PlotMarkers> decoded =
+        deserializePlotMarkers(entry->payload.bytes.data(), entry->payload.bytes.size());
+    if (!decoded.has_value()) {
+      return;
+    }
+    slot.markers = decoded.value();
+    slot.uid = entry->sequential_uid.value;
+  }
+  // Marker times are payload-embedded, so a time-shifted dataset merge moves the
+  // entry but not the bytes; the entry records the delta instead. Apply it here
+  // (per paint, NOT baked into the decode cache — the shift can change while the
+  // payload uid does not) so markers land on the merged clock like their curves.
+  const Timestamp stamp_shift = entry->payload_stamp_shift;
+  for (const sdk::PlotMarker& m : slot.markers.markers) {
+    const QColor color = severityColor(m.severity, m.color);
+
+    switch (m.kind) {
+      case sdk::MarkerKind::kRegion: {
+        const double x0 = xMap.transform(rawToDisplaySeconds(m.t_start + stamp_shift, offset).value);
+        const double x1 = xMap.transform(rawToDisplaySeconds(m.t_end + stamp_shift, offset).value);
+        if (std::max(x0, x1) < canvasRect.left() || std::min(x0, x1) > canvasRect.right()) {
+          break;  // region fully outside the current view
+        }
+        QColor fill = color;
+        fill.setAlpha(60);
+        painter->fillRect(
+            QRectF(QPointF(std::min(x0, x1), canvasRect.top()), QPointF(std::max(x0, x1), canvasRect.bottom())), fill);
+        QColor edge = color;
+        edge.setAlpha(190);
+        painter->setPen(QPen(edge, 1.0));
+        painter->drawLine(QPointF(x0, canvasRect.top()), QPointF(x0, canvasRect.bottom()));
+        painter->drawLine(QPointF(x1, canvasRect.top()), QPointF(x1, canvasRect.bottom()));
+        if (!m.label.empty()) {
+          const QString text = QString::fromStdString(m.label);
+          const QSizeF sz = pillSize(fm, text);
+          const QPointF tl = clampPill(QPointF(std::min(x0, x1) + 4.0, canvasRect.top() + 4.0), sz, canvasRect);
+          drawPill(painter, tl, text, color, fm);
+        }
+        break;
+      }
+      case sdk::MarkerKind::kEvent: {
+        const double x = xMap.transform(rawToDisplaySeconds(m.t_start + stamp_shift, offset).value);
+        if (m.has_value) {
+          // Point event: a hollow ring at (t, value) — coloured outline, transparent
+          // centre (the curve/grid shows through).
+          const double y = yMap.transform(m.value_low);
+          if (x < canvasRect.left() || x > canvasRect.right() || y < canvasRect.top() || y > canvasRect.bottom()) {
+            break;  // point outside the current view
           }
-          QColor fill = color;
-          fill.setAlpha(60);
-          painter->fillRect(
-              QRectF(QPointF(std::min(x0, x1), canvasRect.top()), QPointF(std::max(x0, x1), canvasRect.bottom())),
-              fill);
-          QColor edge = color;
-          edge.setAlpha(190);
-          painter->setPen(QPen(edge, 1.0));
-          painter->drawLine(QPointF(x0, canvasRect.top()), QPointF(x0, canvasRect.bottom()));
-          painter->drawLine(QPointF(x1, canvasRect.top()), QPointF(x1, canvasRect.bottom()));
+          painter->setPen(QPen(color, 2.0));
+          painter->setBrush(Qt::NoBrush);
+          painter->drawEllipse(QPointF(x, y), 4.5, 4.5);
           if (!m.label.empty()) {
             const QString text = QString::fromStdString(m.label);
             const QSizeF sz = pillSize(fm, text);
-            const QPointF tl = clampPill(QPointF(std::min(x0, x1) + 4.0, canvasRect.top() + 4.0), sz, canvasRect);
+            // Centered just above the dot; flip below if it would clip the top.
+            double top = y - 6.0 - sz.height();
+            if (top < canvasRect.top()) {
+              top = y + 6.0;
+            }
+            const QPointF tl = clampPill(QPointF(x - sz.width() / 2.0, top), sz, canvasRect);
             drawPill(painter, tl, text, color, fm);
           }
-          break;
-        }
-        case sdk::MarkerKind::kEvent: {
-          const double x = xMap.transform(rawToDisplaySeconds(m.t_start + stamp_shift, offset).value);
-          if (m.has_value) {
-            // Point event: a hollow ring at (t, value) — coloured outline, transparent
-            // centre (the curve/grid shows through).
-            const double y = yMap.transform(m.value_low);
-            if (x < canvasRect.left() || x > canvasRect.right() || y < canvasRect.top() || y > canvasRect.bottom()) {
-              break;  // point outside the current view
-            }
-            painter->setPen(QPen(color, 2.0));
-            painter->setBrush(Qt::NoBrush);
-            painter->drawEllipse(QPointF(x, y), 4.5, 4.5);
-            if (!m.label.empty()) {
-              const QString text = QString::fromStdString(m.label);
-              const QSizeF sz = pillSize(fm, text);
-              // Centered just above the dot; flip below if it would clip the top.
-              double top = y - 6.0 - sz.height();
-              if (top < canvasRect.top()) {
-                top = y + 6.0;
-              }
-              const QPointF tl = clampPill(QPointF(x - sz.width() / 2.0, top), sz, canvasRect);
-              drawPill(painter, tl, text, color, fm);
-            }
-          } else {
-            // Time event: a full-height vertical line (no value attached).
-            drawTimeLineMarker(painter, x, canvasRect, m.label, color, fm);
-          }
-          break;
-        }
-        case sdk::MarkerKind::kLabel: {
-          // A label marker renders identically to a time event: a vertical line + pill.
-          const double x = xMap.transform(rawToDisplaySeconds(m.t_start + stamp_shift, offset).value);
+        } else {
+          // Time event: a full-height vertical line (no value attached).
           drawTimeLineMarker(painter, x, canvasRect, m.label, color, fm);
-          break;
         }
-        case sdk::MarkerKind::kValueBand: {
-          const double y0 = yMap.transform(m.value_low);
-          const double y1 = yMap.transform(m.value_high);
-          if (m.value_low == m.value_high) {
-            // Zero-height band: draw a horizontal line at the value (a "value event"),
-            // the value-axis dual of a time event's vertical line.
-            if (y0 < canvasRect.top() || y0 > canvasRect.bottom()) {
-              break;  // horizontal line outside the current view
-            }
-            painter->setPen(QPen(color, 1.5));
-            painter->drawLine(QPointF(canvasRect.left(), y0), QPointF(canvasRect.right(), y0));
-            if (!m.label.empty()) {
-              const QString text = QString::fromStdString(m.label);
-              const QSizeF sz = pillSize(fm, text);
-              const QPointF tl = clampPill(QPointF(canvasRect.left() + 4.0, y0 - sz.height() / 2.0), sz, canvasRect);
-              drawPill(painter, tl, text, color, fm);
-            }
-          } else {
-            QColor fill = color;
-            fill.setAlpha(50);
-            painter->fillRect(
-                QRectF(QPointF(canvasRect.left(), std::min(y0, y1)), QPointF(canvasRect.right(), std::max(y0, y1))),
-                fill);
+        break;
+      }
+      case sdk::MarkerKind::kLabel: {
+        // A label marker renders identically to a time event: a vertical line + pill.
+        const double x = xMap.transform(rawToDisplaySeconds(m.t_start + stamp_shift, offset).value);
+        drawTimeLineMarker(painter, x, canvasRect, m.label, color, fm);
+        break;
+      }
+      case sdk::MarkerKind::kValueBand: {
+        const double y0 = yMap.transform(m.value_low);
+        const double y1 = yMap.transform(m.value_high);
+        if (m.value_low == m.value_high) {
+          // Zero-height band: draw a horizontal line at the value (a "value event"),
+          // the value-axis dual of a time event's vertical line.
+          if (y0 < canvasRect.top() || y0 > canvasRect.bottom()) {
+            break;  // horizontal line outside the current view
           }
-          break;
+          painter->setPen(QPen(color, 1.5));
+          painter->drawLine(QPointF(canvasRect.left(), y0), QPointF(canvasRect.right(), y0));
+          if (!m.label.empty()) {
+            const QString text = QString::fromStdString(m.label);
+            const QSizeF sz = pillSize(fm, text);
+            const QPointF tl = clampPill(QPointF(canvasRect.left() + 4.0, y0 - sz.height() / 2.0), sz, canvasRect);
+            drawPill(painter, tl, text, color, fm);
+          }
+        } else {
+          QColor fill = color;
+          fill.setAlpha(50);
+          painter->fillRect(
+              QRectF(QPointF(canvasRect.left(), std::min(y0, y1)), QPointF(canvasRect.right(), std::max(y0, y1))),
+              fill);
         }
+        break;
       }
     }
   }

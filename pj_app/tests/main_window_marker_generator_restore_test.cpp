@@ -24,6 +24,7 @@
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/MarkerService.h"
+#include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/SessionManager.h"
 
 using namespace Qt::StringLiterals;
@@ -81,7 +82,8 @@ QDomDocument layoutWithGenerator(PJ::DatasetId dataset_id, const QString& source
 // Markers published for the generator's output topic on `dataset`, if any.
 std::optional<PJ::sdk::PlotMarkers> publishedMarkers(PJ::AppSession& app, PJ::DatasetId dataset) {
   PJ::ObjectStore& store = app.sessionManager().objectStore();
-  const std::optional<PJ::ObjectTopicId> id = store.findTopic(dataset, PJ::sdk::markerObjectTopicName(kSeriesKey));
+  const std::optional<PJ::ObjectTopicId> id =
+      store.findTopic(dataset, PJ::markerOwnerTopicName(kSeriesKey, "toolbox-anomaly-detector/rule/sensor"));
   if (!id.has_value()) {
     return std::nullopt;
   }

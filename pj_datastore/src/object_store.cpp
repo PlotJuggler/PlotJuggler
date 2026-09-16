@@ -104,6 +104,17 @@ std::vector<ObjectTopicId> ObjectStore::listTopics(DatasetId dataset_id) const {
   return result;
 }
 
+std::vector<ObjectTopicId> ObjectStore::listTopics(DatasetId dataset_id, std::string_view name_prefix) const {
+  std::shared_lock lock(store_mutex_);
+  std::vector<ObjectTopicId> result;
+  for (const auto& [tid, series] : topics_) {
+    if (series->descriptor.dataset_id == dataset_id && series->descriptor.topic_name.starts_with(name_prefix)) {
+      result.push_back(tid);
+    }
+  }
+  return result;
+}
+
 // --- Write ---
 
 Status ObjectStore::pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector<uint8_t> payload) {

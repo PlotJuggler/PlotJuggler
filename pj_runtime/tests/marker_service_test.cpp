@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "marker_test_utils.h"
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_base/builtin/plot_markers_codec.hpp"
 #include "pj_base/types.hpp"
@@ -28,11 +29,16 @@
 #include "pj_runtime/MarkerService.h"
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/Time.h"
 
 namespace {
 
 using PJ::GeneratorKind;
+using PJ::kAllDatasetsMarkerDataset;
 using PJ::MarkerService;
+using PJ::test::markerFamily;
+using PJ::test::ownerPublishUid;
+using PJ::test::ownerTombstoned;
 
 constexpr PJ::DatasetId kDataset = 1;
 
@@ -60,23 +66,10 @@ MarkerService::SeriesResolver resolverOn(std::set<PJ::DatasetId> datasets) {
   };
 }
 
-// Read back and decode the PlotMarkers published for `marker_topic` on `dataset`.
+// What a plot draws for `marker_topic` on `dataset`: the union of every family
+// member (the bare topic plus one per owner). Empty when nothing is published.
 PJ::sdk::PlotMarkers readPublished(PJ::ObjectStore& store, PJ::DatasetId dataset, const std::string& marker_topic) {
-  const std::string topic_name = PJ::sdk::markerObjectTopicName(marker_topic);
-  const std::optional<PJ::ObjectTopicId> id = store.findTopic(dataset, topic_name);
-  EXPECT_TRUE(id.has_value()) << "marker object topic was not registered";
-  if (!id.has_value()) {
-    return {};
-  }
-  const std::optional<PJ::ResolvedObjectEntry> entry = store.latestAt(*id, PJ::Timestamp{0});
-  EXPECT_TRUE(entry.has_value()) << "no published marker payload";
-  if (!entry.has_value()) {
-    return {};
-  }
-  PJ::Expected<PJ::sdk::PlotMarkers> decoded =
-      PJ::deserializePlotMarkers(entry->payload.bytes.data(), entry->payload.bytes.size());
-  EXPECT_TRUE(decoded.has_value());
-  return decoded.has_value() ? *decoded : PJ::sdk::PlotMarkers{};
+  return PJ::test::readMarkerUnion(store, dataset, marker_topic);
 }
 
 // A kind=markers generator with a single output topic key.
@@ -103,7 +96,7 @@ TEST(MarkerServiceTest, RunsScriptAndPublishesMarkers) {
 
   const PJ::Expected<std::vector<std::string>> ok = service.upsertGenerator(recipe);
   ASSERT_TRUE(ok.has_value()) << (ok.has_value() ? std::string{} : ok.error());
-  EXPECT_EQ(ok->front(), PJ::sdk::markerObjectTopicName("in"));
+  EXPECT_EQ(ok->front(), PJ::markerOwnerTopicName("in", "plug/gen1")) << "the physical topic, readable back";
 
   const PJ::sdk::PlotMarkers set = readPublished(store, kDataset, "in");
   ASSERT_EQ(set.markers.size(), 1u);
@@ -128,7 +121,7 @@ TEST(MarkerServiceTest, WithoutAResolverTheRunFailsInsteadOfPublishingAnEmptySet
 
   const PJ::Expected<std::vector<std::string>> res = service.upsertGenerator(recipe);
   EXPECT_FALSE(res.has_value());
-  EXPECT_FALSE(store.findTopic(kDataset, PJ::sdk::markerObjectTopicName("in")).has_value());
+  EXPECT_TRUE(markerFamily(store, kDataset, "in").empty());
   EXPECT_TRUE(service.recipes().empty());
 }
 
@@ -154,7 +147,7 @@ TEST(MarkerServiceTest, RecomputeMatchesChangedKeyAndRemoveDrops) {
 
   const std::vector<std::string> affected = service.recomputeForChangedInputs({"in"}, MarkerService::kAnyDataset);
   ASSERT_EQ(affected.size(), 1u);
-  EXPECT_EQ(affected[0], PJ::sdk::markerObjectTopicName("in"));
+  EXPECT_EQ(affected[0], PJ::markerOwnerTopicName("in", "plug/gen"));
 
   EXPECT_TRUE(service.removeGenerator("plug/gen").has_value());
   EXPECT_FALSE(service.removeGenerator("plug/gen").has_value());
@@ -172,9 +165,10 @@ TEST(MarkerServiceTest, CommittedGeneratorRejectsPreviewPrefix) {
   EXPECT_TRUE(service.recipes().empty());
 }
 
-// A global-across-all generator publishes to every dataset the lister returns, on
-// the ALL-DATASETS key — the "__global__" it sent is normalized host-side.
-TEST(MarkerServiceTest, GlobalAllDatasetsPublishesEverywhere) {
+// A global-across-all generator publishes ONCE, on the dataset-independent home of
+// the ALL-DATASETS key — the "__global__" it sent is normalized host-side — and
+// never copies its set onto the datasets it reads from.
+TEST(MarkerServiceTest, GlobalAllDatasetsPublishesOnceOnTheSharedDataset) {
   PJ::ObjectStore store;
   MarkerService service(store, rampResolver(5));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
@@ -183,10 +177,11 @@ TEST(MarkerServiceTest, GlobalAllDatasetsPublishesEverywhere) {
   recipe.all_datasets = true;
   ASSERT_TRUE(service.upsertGenerator(recipe).has_value());
 
-  const std::string all_topic = PJ::sdk::markerObjectTopicName(PJ::kAllDatasetsMarkerTopic);
-  EXPECT_TRUE(store.findTopic(1, all_topic).has_value());
-  EXPECT_TRUE(store.findTopic(2, all_topic).has_value());
-  EXPECT_FALSE(store.findTopic(1, PJ::sdk::markerObjectTopicName(PJ::sdk::kGlobalMarkerTopic)).has_value());
+  const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
+  EXPECT_TRUE(ownerPublishUid(store, kAllDatasetsMarkerDataset, all_topic, "plug/g").has_value());
+  EXPECT_TRUE(markerFamily(store, 1, all_topic).empty());
+  EXPECT_TRUE(markerFamily(store, 2, all_topic).empty());
+  EXPECT_TRUE(markerFamily(store, 1, PJ::sdk::kGlobalMarkerTopic).empty());
   ASSERT_EQ(service.recipes().size(), 1u);
   EXPECT_EQ(service.recipes().front().outputs.front(), PJ::kAllDatasetsMarkerTopic);
 }
@@ -202,7 +197,7 @@ TEST(MarkerServiceTest, AllDatasetsOutputNormalizesGlobalToAll) {
   recipe.all_datasets = true;
   const PJ::Expected<std::vector<std::string>> ok = service.upsertGenerator(recipe);
   ASSERT_TRUE(ok.has_value()) << (ok.has_value() ? std::string{} : ok.error());
-  EXPECT_EQ(ok->front(), PJ::sdk::markerObjectTopicName(PJ::kAllDatasetsMarkerTopic));
+  EXPECT_EQ(ok->front(), PJ::markerOwnerTopicName(PJ::kAllDatasetsMarkerTopic, "plug/g"));
 }
 
 // A dataset-bound recipe (all_datasets false) may never target the reserved
@@ -231,33 +226,34 @@ TEST(MarkerServiceTest, DatasetAndAllScopesCoexistOnOneDataset) {
   all_scope.all_datasets = true;
   ASSERT_TRUE(service.upsertGenerator(all_scope).has_value());
 
-  EXPECT_TRUE(store.findTopic(1, PJ::sdk::markerObjectTopicName(PJ::sdk::kGlobalMarkerTopic)).has_value());
-  EXPECT_TRUE(store.findTopic(1, PJ::sdk::markerObjectTopicName(PJ::kAllDatasetsMarkerTopic)).has_value());
-  EXPECT_FALSE(store.findTopic(2, PJ::sdk::markerObjectTopicName(PJ::sdk::kGlobalMarkerTopic)).has_value());
-  EXPECT_TRUE(store.findTopic(2, PJ::sdk::markerObjectTopicName(PJ::kAllDatasetsMarkerTopic)).has_value());
+  EXPECT_EQ(markerFamily(store, 1, PJ::sdk::kGlobalMarkerTopic).size(), 1u);
+  EXPECT_TRUE(markerFamily(store, 2, PJ::sdk::kGlobalMarkerTopic).empty());
+  EXPECT_EQ(markerFamily(store, kAllDatasetsMarkerDataset, PJ::kAllDatasetsMarkerTopic).size(), 1u);
+  EXPECT_TRUE(markerFamily(store, 1, PJ::kAllDatasetsMarkerTopic).empty());
 }
 
-// Two generators publishing to the same target form a union: each keeps its own
-// part, and removing one leaves the other's part (and the topic) live.
-TEST(MarkerServiceTest, TwoGeneratorsSameTargetPublishUnion) {
+// Two generators on one marker topic each own their own object topic: the plot
+// draws both sets, and retiring one tombstones only its topic — the other's is
+// not even republished.
+TEST(MarkerServiceTest, TwoGeneratorsOnOneTopicOwnTheirOwnObjectTopics) {
   PJ::ObjectStore store;
   MarkerService service(store, rampResolver(5));
 
   ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/a", "shared", "createMarker(0.0)\n")).has_value());
   ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/b", "shared", "createMarker(1.0)\n")).has_value());
+  EXPECT_EQ(markerFamily(store, kDataset, "shared").size(), 2u) << "one object topic per owner";
   EXPECT_EQ(readPublished(store, kDataset, "shared").markers.size(), 2u);
+  const std::optional<std::uint64_t> b_uid = ownerPublishUid(store, kDataset, "shared", "plug/b");
+  ASSERT_TRUE(b_uid.has_value());
 
   ASSERT_TRUE(service.removeGenerator("plug/a").has_value());
-  ASSERT_TRUE(store.findTopic(kDataset, PJ::sdk::markerObjectTopicName("shared")).has_value())
-      << "the topic survives while B is still live";
+  EXPECT_TRUE(ownerTombstoned(store, kDataset, "shared", "plug/a"));
+  EXPECT_EQ(ownerPublishUid(store, kDataset, "shared", "plug/b"), b_uid) << "B's topic is untouched by A's retirement";
   EXPECT_EQ(readPublished(store, kDataset, "shared").markers.size(), 1u);
 
   ASSERT_TRUE(service.removeGenerator("plug/b").has_value());
-  const std::optional<PJ::ObjectTopicId> id = store.findTopic(kDataset, PJ::sdk::markerObjectTopicName("shared"));
-  ASSERT_TRUE(id.has_value()) << "tombstoned, not removed";
-  const std::optional<PJ::ResolvedObjectEntry> entry = store.latestAt(*id, PJ::Timestamp{0});
-  ASSERT_TRUE(entry.has_value());
-  EXPECT_EQ(entry->payload.bytes.size(), 0u);
+  EXPECT_TRUE(ownerTombstoned(store, kDataset, "shared", "plug/b"));
+  EXPECT_TRUE(readPublished(store, kDataset, "shared").markers.empty());
 }
 
 // A recompute rewrites only the re-run generator's own part of a shared target —
@@ -310,10 +306,10 @@ TEST(MarkerServiceTest, UpsertRetargetDropsOnlyOwnPart) {
   EXPECT_EQ(readPublished(store, kDataset, "new").markers.size(), 1u);
 }
 
-// A blob pushed directly to a marker object topic (no owning generator — the
-// direct-toolbox-write caveat) is adopted into the union rather than clobbered,
-// and survives once the generator that later shared the topic is removed.
-TEST(MarkerServiceTest, ForeignBlobSurvivesUnionPublish) {
+// A blob pushed directly to the bare marker object topic (a toolbox write, no
+// owning generator) is simply another member of the family: a generator on the
+// same key draws beside it, never rewrites it, and its removal leaves it alone.
+TEST(MarkerServiceTest, DirectWriteIsAnotherFamilyMember) {
   PJ::ObjectStore store;
   MarkerService service(store, rampResolver(5));
 
@@ -328,12 +324,15 @@ TEST(MarkerServiceTest, ForeignBlobSurvivesUnionPublish) {
   ASSERT_TRUE(id.has_value());
   store.setRetentionBudget(*id, PJ::RetentionBudget{.max_entries = 1});
   store.pushOwned(*id, PJ::Timestamp{0}, PJ::serializePlotMarkers(foreign));
+  const std::uint64_t direct_uid = PJ::test::latestEntry(store, *id)->sequential_uid.value;
 
   ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", "createMarker(0.0)\n")).has_value());
-  EXPECT_EQ(readPublished(store, kDataset, "in").markers.size(), 2u) << "the foreign blob is adopted, not overwritten";
+  EXPECT_EQ(readPublished(store, kDataset, "in").markers.size(), 2u) << "both sets are drawn";
+  EXPECT_EQ(PJ::test::latestEntry(store, *id)->sequential_uid.value, direct_uid) << "the direct write is not rewritten";
 
   ASSERT_TRUE(service.removeGenerator("plug/gen").has_value());
-  EXPECT_EQ(readPublished(store, kDataset, "in").markers.size(), 1u) << "the foreign part survives the owner's removal";
+  EXPECT_EQ(readPublished(store, kDataset, "in").markers.size(), 1u) << "the direct write survives the owner's removal";
+  EXPECT_EQ(PJ::test::latestEntry(store, *id)->sequential_uid.value, direct_uid);
 }
 
 // Retargeting a live generator's output must not strand the old topic: nothing else
@@ -349,12 +348,8 @@ TEST(MarkerServiceTest, UpsertRetargetTombstonesThePreviousOutput) {
   ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "new", "createMarker(0.0)\n")).has_value());
 
   EXPECT_FALSE(readPublished(store, kDataset, "new").markers.empty()) << "the new output is live";
-  const std::optional<PJ::ObjectTopicId> old_id = store.findTopic(kDataset, PJ::sdk::markerObjectTopicName("old"));
-  ASSERT_TRUE(old_id.has_value()) << "the tombstone keeps the topic registered";
-  const std::optional<PJ::ResolvedObjectEntry> entry =
-      store.latestAt(*old_id, std::numeric_limits<PJ::Timestamp>::max());
-  ASSERT_TRUE(entry.has_value());
-  EXPECT_TRUE(entry->payload.bytes.empty()) << "the abandoned output is emptied, not left stale";
+  EXPECT_TRUE(ownerTombstoned(store, kDataset, "old", "plug/gen"))
+      << "the abandoned output is emptied (topic kept), not left stale";
 }
 
 // An unchanged upsert must NOT tombstone its own fresh output — the overlap between
@@ -416,39 +411,26 @@ TEST(MarkerServiceTest, DropRecipesForDatasetKeepsGlobalGenerators) {
   EXPECT_TRUE(left.front().all_datasets);
 }
 
-// A recompute names the dataset whose data moved. An all_datasets generator must then
-// republish THERE ONLY — re-running it over every loaded dataset is unbounded work on
-// the hottest path in the app (one streaming tick per kPollPeriodMs), and a dataset
-// that did not change would yield the identical set anyway.
-TEST(MarkerServiceTest, ScopedRecomputeOfGlobalRuleRepublishesTheSharedSetEverywhere) {
+// A recompute names the dataset whose data moved. An all_datasets generator's set
+// is one shared union, so a contributor's change republishes that one topic.
+TEST(MarkerServiceTest, ScopedRecomputeOfGlobalRuleRepublishesTheSharedSet) {
   PJ::ObjectStore store;
   MarkerService service(store, rampResolver(5));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
 
   auto recipe = markerRecipe("plug/g", std::string(PJ::sdk::kGlobalMarkerTopic), "createMarker(0.0)\n");
   recipe.all_datasets = true;
-  ASSERT_TRUE(service.upsertGenerator(recipe).has_value());  // upsert lands on both
+  ASSERT_TRUE(service.upsertGenerator(recipe).has_value());
 
-  const std::string topic = PJ::sdk::markerObjectTopicName(PJ::kAllDatasetsMarkerTopic);
-  // A republish mints a new entry uid; an untouched topic keeps its own. A missing
-  // topic yields nullopt, which fails the comparisons below on its own.
-  const auto publishUid = [&store, &topic](PJ::DatasetId dataset) -> std::optional<std::uint64_t> {
-    const std::optional<PJ::ObjectTopicId> id = store.findTopic(dataset, topic);
-    const std::optional<PJ::ResolvedObjectEntry> entry =
-        id.has_value() ? store.latestAt(*id, std::numeric_limits<PJ::Timestamp>::max()) : std::nullopt;
-    return entry.has_value() ? std::optional<std::uint64_t>{entry->sequential_uid.value} : std::nullopt;
-  };
-  const std::optional<std::uint64_t> before_ingesting = publishUid(1);
-  const std::optional<std::uint64_t> before_idle = publishUid(2);
-  ASSERT_TRUE(before_ingesting.has_value());
-  ASSERT_TRUE(before_idle.has_value());
+  const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
+  const std::optional<std::uint64_t> before = ownerPublishUid(store, kAllDatasetsMarkerDataset, all_topic, "plug/g");
+  ASSERT_TRUE(before.has_value());
 
   // Dataset 1 ingested; dataset 2 sat still — but the set is shared, so a contributor's
   // change is everyone's change.
   EXPECT_FALSE(service.recomputeForChangedInputs({"in"}, /*scope=*/1).empty());
-
-  EXPECT_NE(publishUid(1), before_ingesting) << "the dataset that ingested is republished";
-  EXPECT_NE(publishUid(2), before_idle) << "the shared set is republished on the idle dataset too";
+  EXPECT_NE(ownerPublishUid(store, kAllDatasetsMarkerDataset, all_topic, "plug/g"), before)
+      << "the shared set is republished";
 }
 
 // The same attribution applies to per-dataset generators: `changed` carries bare topic
@@ -486,11 +468,11 @@ TEST(MarkerServiceTest, EphemeralPreviewPublishesAndRemoves) {
   ASSERT_EQ(topics->size(), 1u);
   const std::string object_topic = topics->front();
   EXPECT_TRUE(PJ::sdk::isPreviewMarkerTopic(object_topic));
-  EXPECT_TRUE(store.findTopic(kDataset, object_topic).has_value());  // published...
-  EXPECT_TRUE(service.recipes().empty());                            // ...but not persisted
+  EXPECT_EQ(markerFamily(store, kDataset, object_topic).size(), 1u);  // published...
+  EXPECT_TRUE(service.recipes().empty());                             // ...but not persisted
 
   EXPECT_TRUE(service.removeGenerator("plug/__preview__").has_value());
-  EXPECT_FALSE(store.findTopic(kDataset, object_topic).has_value());  // topic removed
+  EXPECT_TRUE(markerFamily(store, kDataset, object_topic).empty());  // topic removed, not tombstoned
 }
 
 // H3: removing a PERSISTENT generator tombstones its output — the topic survives
@@ -508,14 +490,10 @@ TEST(MarkerServiceTest, RemovePersistentGeneratorTombstonesOutput) {
   EXPECT_FALSE(readPublished(store, kDataset, "in").markers.empty());  // has markers
 
   ASSERT_TRUE(service.removeGenerator("plug/gen").has_value());
-  // Topic survives (tombstone), but its published blob is now empty: the empty set
-  // serializes to zero bytes, so the overlay draws nothing. Checked at the store
-  // level (not via deserialize, which treats an empty buffer as an error).
-  const std::optional<PJ::ObjectTopicId> id = store.findTopic(kDataset, PJ::sdk::markerObjectTopicName("in"));
-  ASSERT_TRUE(id.has_value());
-  const std::optional<PJ::ResolvedObjectEntry> entry = store.latestAt(*id, PJ::Timestamp{0});
-  ASSERT_TRUE(entry.has_value());
-  EXPECT_EQ(entry->payload.bytes.size(), 0u);
+  // The owner's topic survives (tombstone), but its published blob is now empty: the
+  // empty set serializes to zero bytes, so the overlay draws nothing.
+  EXPECT_TRUE(ownerTombstoned(store, kDataset, "in", "plug/gen"));
+  EXPECT_TRUE(readPublished(store, kDataset, "in").markers.empty());
 }
 
 // clearGenerators(RestoreIntent::kHistory) reconciles only the non-exempt persistent
@@ -677,9 +655,13 @@ TEST(MarkerServiceTest, MergeThenRecomputeOneGeneratorKeepsOthers) {
 
   service.mergeMarkerTopics(kAnchor, {PJ::DatasetMergeSource{.dataset_id = kSource, .raw_shift_ns = 1000}});
   service.remapGeneratorsToAnchor(kAnchor, {kSource});
+  EXPECT_EQ(markerFamily(store, kAnchor, "shared").size(), 2u) << "each owner's topic is carried through once";
+  EXPECT_TRUE(markerFamily(store, kSource, "shared").empty());
+  const std::optional<std::uint64_t> b_uid = ownerPublishUid(store, kAnchor, "shared", "plug/b");
 
   const std::vector<std::string> affected = service.recomputeForChangedInputs({"in"}, kAnchor);
   ASSERT_EQ(affected.size(), 1u) << "only A ('in') re-runs";
+  EXPECT_EQ(ownerPublishUid(store, kAnchor, "shared", "plug/b"), b_uid) << "B's topic is not republished";
 
   const PJ::sdk::PlotMarkers merged = readPublished(store, kAnchor, "shared");
   ASSERT_EQ(merged.markers.size(), 2u);
@@ -744,11 +726,7 @@ TEST(MarkerServiceTest, RemoveRetiresTheIdOnEveryDataset) {
   EXPECT_TRUE(service.recipes().empty());
 
   for (const PJ::DatasetId dataset : std::vector<PJ::DatasetId>{1, 2}) {
-    const std::optional<PJ::ObjectTopicId> id = store.findTopic(dataset, PJ::sdk::markerObjectTopicName("in"));
-    ASSERT_TRUE(id.has_value()) << "tombstone, not removed, on dataset " << dataset;
-    const std::optional<PJ::ResolvedObjectEntry> entry = store.latestAt(*id, PJ::Timestamp{0});
-    ASSERT_TRUE(entry.has_value());
-    EXPECT_EQ(entry->payload.bytes.size(), 0u);
+    EXPECT_TRUE(ownerTombstoned(store, dataset, "in", "plug/r")) << "tombstone, not removed, on dataset " << dataset;
   }
 }
 
@@ -772,12 +750,35 @@ TEST(MarkerServiceTest, MergeCollapsesSameIdRecipesOntoTheAnchor) {
 
   ASSERT_EQ(service.recipes().size(), 1u);
   EXPECT_EQ(service.recipes().front().dataset_id, 1u);
-  EXPECT_EQ(readPublished(store, 1, "in").markers.size(), 2u) << "the merge folded both parts under one owner";
+  EXPECT_EQ(readPublished(store, 1, "in").markers.size(), 2u) << "the merge concatenated both onto the anchor";
 
   const std::vector<std::string> affected = service.recomputeForDataset(1);
   ASSERT_EQ(affected.size(), 1u);
   EXPECT_EQ(readPublished(store, 1, "in").markers.size(), 1u)
       << "the surviving recipe's own output replaces the merged-in part";
+}
+
+// A merge moves a consumed binding's topic onto the anchor and drops the binding
+// (the anchor's own wins), so the surviving recipe no longer names that output:
+// retiring the id must still find every topic it owns.
+TEST(MarkerServiceTest, RemoveAfterMergeRetiresEveryTopicTheIdOwns) {
+  PJ::ObjectStore store;
+  MarkerService service(store, rampResolver(5));
+
+  auto on_anchor = markerRecipe("plug/r", "x", "createMarker(0.0)\n");
+  on_anchor.dataset_id = 1;
+  ASSERT_TRUE(service.upsertGenerator(on_anchor).has_value());
+  auto on_source = markerRecipe("plug/r", "y", "createMarker(1.0)\n");
+  on_source.dataset_id = 2;
+  ASSERT_TRUE(service.upsertGenerator(on_source).has_value());
+
+  service.mergeMarkerTopics(1, {PJ::DatasetMergeSource{.dataset_id = 2, .raw_shift_ns = 0}});
+  service.remapGeneratorsToAnchor(1, {2});
+  ASSERT_EQ(readPublished(store, 1, "y").markers.size(), 1u) << "moved onto the anchor";
+
+  ASSERT_TRUE(service.removeGenerator("plug/r").has_value());
+  EXPECT_TRUE(ownerTombstoned(store, 1, "x", "plug/r"));
+  EXPECT_TRUE(ownerTombstoned(store, 1, "y", "plug/r")) << "the merged-in output is retired too";
 }
 
 // A Global-scope rule that reads the series "in": t = 0 on every dataset that has it.
@@ -791,9 +792,9 @@ MarkerService::GeneratorRecipe globalRuleReadingIn() {
 }
 
 // Scope says where markers are DRAWN: an all_datasets rule reads from the datasets
-// that have its series and its set is drawn on every loaded dataset, including one
-// that lacks the series and could not have contributed.
-TEST(MarkerServiceTest, GlobalRuleDrawsOnDatasetsWithoutItsInputs) {
+// that have its series, and its set lives once on the shared dataset — the overlay
+// draws that one topic on every plot, including one whose dataset lacks the series.
+TEST(MarkerServiceTest, GlobalRuleIsPublishedOnceOnTheSharedDataset) {
   PJ::ObjectStore store;
   MarkerService service(store, resolverOn({1}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
@@ -802,23 +803,22 @@ TEST(MarkerServiceTest, GlobalRuleDrawsOnDatasetsWithoutItsInputs) {
   ASSERT_TRUE(ok.has_value()) << (ok.has_value() ? std::string{} : ok.error());
 
   const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
-  EXPECT_EQ(readPublished(store, 1, all_topic).markers.size(), 1u);
-  EXPECT_EQ(readPublished(store, 2, all_topic).markers.size(), 1u) << "drawn where the series does not exist";
+  EXPECT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 1u);
+  EXPECT_TRUE(markerFamily(store, 1, all_topic).empty()) << "no per-dataset copy on the contributor";
+  EXPECT_TRUE(markerFamily(store, 2, all_topic).empty()) << "nor on the dataset without the series";
   EXPECT_EQ(service.recipes().size(), 1u);
 }
 
-// The set is the UNION of every contributing dataset's run, drawn identically on all.
-TEST(MarkerServiceTest, GlobalRuleUnionsEveryContributorOnEveryDataset) {
+// The set is the UNION of every contributing dataset's run.
+TEST(MarkerServiceTest, GlobalRuleUnionsEveryContributor) {
   PJ::ObjectStore store;
   MarkerService service(store, resolverOn({1, 3}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2, 3}; });
 
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
 
-  const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
-  for (const PJ::DatasetId dataset : {1, 2, 3}) {
-    EXPECT_EQ(readPublished(store, dataset, all_topic).markers.size(), 2u) << "dataset " << dataset;
-  }
+  EXPECT_EQ(
+      readPublished(store, kAllDatasetsMarkerDataset, std::string(PJ::kAllDatasetsMarkerTopic)).markers.size(), 2u);
 }
 
 // An all_datasets recipe whose series exists on NO loaded dataset has nothing to
@@ -831,9 +831,7 @@ TEST(MarkerServiceTest, GlobalRuleWithNoInputsAnywhereIsRejected) {
   const PJ::Expected<std::vector<std::string>> res = service.upsertGenerator(globalRuleReadingIn());
   EXPECT_FALSE(res.has_value());
   EXPECT_TRUE(service.recipes().empty());
-  const std::string all_topic = PJ::sdk::markerObjectTopicName(PJ::kAllDatasetsMarkerTopic);
-  EXPECT_FALSE(store.findTopic(1, all_topic).has_value());
-  EXPECT_FALSE(store.findTopic(2, all_topic).has_value());
+  EXPECT_TRUE(markerFamily(store, kAllDatasetsMarkerDataset, PJ::kAllDatasetsMarkerTopic).empty());
 }
 
 // A dataset-bound recipe never skips: a missing input on ITS dataset is a plain
@@ -852,11 +850,11 @@ TEST(MarkerServiceTest, BoundRuleWithMissingInputStillErrors) {
   EXPECT_TRUE(service.recipes().empty());
 }
 
-// A dataset loaded AFTER an all_datasets recipe was applied never appears in a
-// `changed` batch whose prefixes match the recipe's inputs when it lacks the series,
-// so the prefix test alone can never reach it. recomputeForChangedInputs must copy
-// the shared set onto it, and must not re-run (or duplicate) once it is caught up.
-TEST(MarkerServiceTest, GlobalRuleReachesADatasetLoadedLater) {
+// A dataset loaded AFTER an all_datasets recipe was applied, without the series the
+// rule reads, needs no work at all: the set lives once on the shared dataset, so an
+// unrelated recompute republishes nothing and the roster hook re-runs the rule once
+// (it cannot know the newcomer has no inputs without running) with no duplication.
+TEST(MarkerServiceTest, ADatasetLoadedLaterWithoutTheInputsNeedsNoCopy) {
   PJ::ObjectStore store;
   MarkerService service(store, resolverOn({1}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1}; });
@@ -864,68 +862,50 @@ TEST(MarkerServiceTest, GlobalRuleReachesADatasetLoadedLater) {
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
 
   const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
-  EXPECT_EQ(readPublished(store, 1, all_topic).markers.size(), 1u);
-  EXPECT_FALSE(store.findTopic(2, PJ::sdk::markerObjectTopicName(all_topic)).has_value());
+  const std::optional<std::uint64_t> before = ownerPublishUid(store, kAllDatasetsMarkerDataset, all_topic, "plug/g");
+  ASSERT_TRUE(before.has_value());
 
   // Dataset 2 loads after the rule was applied, without the series the rule reads.
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
 
-  EXPECT_FALSE(service.recomputeForChangedInputs({"/unrelated"}, MarkerService::kAnyDataset).empty());
-  EXPECT_EQ(readPublished(store, 2, all_topic).markers.size(), 1u) << "the shared set is copied onto it";
-
-  // No duplication, no needless rerun on a dataset already caught up.
   EXPECT_TRUE(service.recomputeForChangedInputs({"/unrelated"}, MarkerService::kAnyDataset).empty());
-  EXPECT_EQ(readPublished(store, 2, all_topic).markers.size(), 1u);
+  EXPECT_EQ(ownerPublishUid(store, kAllDatasetsMarkerDataset, all_topic, "plug/g"), before) << "nothing to copy";
+  EXPECT_TRUE(markerFamily(store, 2, all_topic).empty());
+
+  EXPECT_EQ(service.reachNewDatasets().size(), 1u) << "the catalog grew: the rule is re-run";
+  EXPECT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 1u) << "no duplication";
 }
 
-// A Global set lives in the display frame: on a dataset with another clock (display
-// offset) the part is shifted so the marker sits at the same display instant, and
-// a dataset loaded later gets the set in its own frame too.
-TEST(MarkerServiceTest, GlobalRuleLandsAtTheSameDisplayInstantOnEveryDataset) {
+// A Global set is stored in the DISPLAY frame (raw − the contributor's alignment
+// offset), so a marker found on a dataset with another clock sits at the same
+// display instant as one found on an aligned dataset, with no per-dataset copy.
+TEST(MarkerServiceTest, GlobalRuleIsStoredInTheDisplayFrame) {
   PJ::ObjectStore store;
   MarkerService service(store, resolverOn({1}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
-  // display = raw − offset: dataset 2's clock runs 10 ns ahead of dataset 1's.
-  service.setDisplayOffsetResolver([](PJ::DatasetId dataset) { return dataset == 2 ? PJ::Timestamp{10} : 0; });
+  // display = raw − offset: dataset 1's clock runs 10 ns ahead of the display frame.
+  service.setDisplayOffsetResolver([](PJ::DatasetId dataset) { return dataset == 1 ? PJ::Timestamp{10} : 0; });
 
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());  // marker at raw 0 on dataset 1
 
   const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
-  EXPECT_EQ(readPublished(store, 1, all_topic).markers.front().t_start, 0);
-  EXPECT_EQ(readPublished(store, 2, all_topic).markers.front().t_start, 10) << "raw 10 on dataset 2 = display 0";
+  const PJ::sdk::PlotMarkers shared = readPublished(store, kAllDatasetsMarkerDataset, all_topic);
+  ASSERT_EQ(shared.markers.size(), 1u);
+  EXPECT_EQ(shared.markers.front().t_start, -10) << "raw 0 on dataset 1 = display -10";
 
+  // A later contributor on yet another clock lands in the same frame.
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2, 3}; });
+  service.setResolver(resolverOn({1, 3}));
   service.setDisplayOffsetResolver([](PJ::DatasetId dataset) {
-    return dataset == 2 ? PJ::Timestamp{10} : dataset == 3 ? PJ::Timestamp{-5} : 0;
+    return dataset == 1 ? PJ::Timestamp{10} : dataset == 3 ? PJ::Timestamp{-5} : 0;
   });
-  EXPECT_FALSE(service.recomputeForChangedInputs({"/unrelated"}, MarkerService::kAnyDataset).empty());
-  EXPECT_EQ(readPublished(store, 3, all_topic).markers.front().t_start, -5) << "copied into dataset 3's frame";
-}
-
-// Dragging a dataset in the Source Timeline changes its display offset; a Global
-// marker stays at its display instant (it belongs to no dataset), so that dataset's
-// part is re-derived and the others are untouched.
-TEST(MarkerServiceTest, RebaseForDisplayOffsetKeepsGlobalMarkersAtTheirDisplayInstant) {
-  PJ::ObjectStore store;
-  MarkerService service(store, resolverOn({1}));
-  service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
-  PJ::Timestamp offset_of_2 = 10;
-  service.setDisplayOffsetResolver([&offset_of_2](PJ::DatasetId dataset) { return dataset == 2 ? offset_of_2 : 0; });
-  ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
-
-  offset_of_2 = 25;  // the user dragged dataset 2
-  const std::vector<std::string> affected = service.rebaseForDisplayOffset(2);
-  ASSERT_EQ(affected.size(), 1u);
-  EXPECT_EQ(affected.front(), PJ::sdk::markerObjectTopicName(PJ::kAllDatasetsMarkerTopic));
-
-  const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
-  EXPECT_EQ(readPublished(store, 2, all_topic).markers.front().t_start, 25) << "same display instant, new raw";
-  EXPECT_EQ(readPublished(store, 1, all_topic).markers.front().t_start, 0) << "the other dataset is untouched";
-
-  // A dataset-bound rule is not shared: nothing to rebase.
-  ASSERT_TRUE(service.removeGenerator("plug/g").has_value());
-  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/bound", "in", "createMarker(0.0)\n")).has_value());
-  EXPECT_TRUE(service.rebaseForDisplayOffset(1).empty());
+  EXPECT_FALSE(service.recomputeForChangedInputs({"in"}, /*scope=*/3).empty());
+  std::vector<PJ::Timestamp> times;
+  for (const auto& marker : readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers) {
+    times.push_back(marker.t_start);
+  }
+  std::sort(times.begin(), times.end());
+  EXPECT_EQ(times, (std::vector<PJ::Timestamp>{-10, 5}));
 }
 
 // A dataset loaded later WITH the series is a new contributor: its topics arrive in a
@@ -938,15 +918,13 @@ TEST(MarkerServiceTest, GlobalRuleGrowsWhenAContributorLoadsLater) {
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
 
   const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
-  EXPECT_EQ(readPublished(store, 2, all_topic).markers.size(), 1u);
+  EXPECT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 1u);
 
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2, 3}; });
   service.setResolver(resolverOn({1, 3}));
 
   EXPECT_FALSE(service.recomputeForChangedInputs({"in"}, /*scope=*/3).empty());
-  for (const PJ::DatasetId dataset : {1, 2, 3}) {
-    EXPECT_EQ(readPublished(store, dataset, all_topic).markers.size(), 2u) << "dataset " << dataset;
-  }
+  EXPECT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 2u);
 }
 
 // With declared (qualified) names, the script enumerates each series once under
@@ -1011,7 +989,7 @@ TEST(MarkerServiceTest, UpsertRejectsABindingWhoseFlagsDifferFromItsSiblings) {
   const PJ::Expected<std::vector<std::string>> res = service.upsertGenerator(exempt);
   ASSERT_FALSE(res.has_value()) << "a history_exempt binding joined a non-exempt id";
   EXPECT_NE(res.error().find("plug/rule"), std::string::npos) << res.error();
-  EXPECT_FALSE(store.findTopic(2, PJ::sdk::markerObjectTopicName("in")).has_value()) << "rejected before publishing";
+  EXPECT_TRUE(markerFamily(store, 2, "in").empty()) << "rejected before publishing";
   EXPECT_EQ(service.recipes().size(), 1u);
 
   auto preview = plain;
@@ -1043,16 +1021,16 @@ TEST(MarkerServiceTest, ChangingScopeReplacesTheWholeId) {
   ASSERT_EQ(service.recipes().size(), 1u) << "Dataset -> Global replaces the binding";
   EXPECT_TRUE(service.recipes().front().all_datasets);
   EXPECT_TRUE(readPublished(store, 1, dataset_topic).markers.empty()) << "the Dataset-scope output is retired";
-  EXPECT_EQ(readPublished(store, 1, all_topic).markers.size(), 2u);
-  EXPECT_EQ(readPublished(store, 2, all_topic).markers.size(), 2u);
+  EXPECT_TRUE(ownerTombstoned(store, 1, dataset_topic, "plug/rule"));
+  EXPECT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 2u);
 
   ASSERT_TRUE(service.upsertGenerator(bound).has_value());
   ASSERT_EQ(service.recipes().size(), 1u) << "Global -> Dataset replaces the binding";
   EXPECT_FALSE(service.recipes().front().all_datasets);
   EXPECT_EQ(readPublished(store, 1, dataset_topic).markers.size(), 1u);
-  EXPECT_TRUE(readPublished(store, 1, all_topic).markers.empty()) << "the Global output is retired everywhere";
-  EXPECT_TRUE(readPublished(store, 2, all_topic).markers.empty());
-  EXPECT_TRUE(service.rebaseForDisplayOffset(2).empty()) << "no shared set survives the scope change";
+  EXPECT_TRUE(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.empty())
+      << "the Global output is retired";
+  EXPECT_TRUE(ownerTombstoned(store, kAllDatasetsMarkerDataset, all_topic, "plug/rule"));
 }
 
 // Removing a contributing dataset shrinks the shared set on the survivors — the
@@ -1063,16 +1041,15 @@ TEST(MarkerServiceTest, RemovingAContributorShrinksTheGlobalSetOnSurvivors) {
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
   const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
-  ASSERT_EQ(readPublished(store, 2, all_topic).markers.size(), 2u);
+  ASSERT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 2u);
 
   // Dataset 1 is removed: gone from the lister, its series gone from the resolver.
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{2}; });
   service.setResolver(resolverOn({2}));
-  service.clearGeneratorsForDataset(1);
+  EXPECT_EQ(service.clearGeneratorsForDataset(1).size(), 1u) << "the shared set is republished";
 
-  EXPECT_EQ(readPublished(store, 2, all_topic).markers.size(), 1u) << "dataset 1's contribution is gone";
-  EXPECT_EQ(service.rebaseForDisplayOffset(2).size(), 1u);
-  EXPECT_EQ(readPublished(store, 2, all_topic).markers.size(), 1u) << "the cached shared set shrank too";
+  EXPECT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 1u)
+      << "dataset 1's contribution is gone";
 }
 
 // With no contributor left there is nothing to draw: the rule's parts are cleared on
@@ -1083,53 +1060,102 @@ TEST(MarkerServiceTest, RemovingTheLastContributorClearsTheGlobalSetEverywhere) 
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
   const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
-  ASSERT_EQ(readPublished(store, 2, all_topic).markers.size(), 1u);
+  ASSERT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 1u);
 
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{2}; });
   service.setResolver(resolverOn({}));
-  service.clearGeneratorsForDataset(1);
+  EXPECT_EQ(service.clearGeneratorsForDataset(1).size(), 1u) << "the emptied set is announced";
 
-  EXPECT_TRUE(readPublished(store, 2, all_topic).markers.empty()) << "no contributor left: nothing to draw";
+  EXPECT_TRUE(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.empty())
+      << "no contributor left: nothing to draw";
+  EXPECT_TRUE(ownerTombstoned(store, kAllDatasetsMarkerDataset, all_topic, "plug/g"));
   ASSERT_EQ(service.recipes().size(), 1u) << "the session-wide rule itself survives";
-  EXPECT_TRUE(service.rebaseForDisplayOffset(2).empty()) << "no shared set to rebase";
 }
 
-// A Global set is published whole on every dataset, so a merge keeps ONE copy of it on
-// the anchor — the anchor's plus each source's would draw every marker twice.
-TEST(MarkerServiceTest, MergeKeepsOneCopyOfTheSharedGlobalSet) {
+// A Global set lives on the shared dataset, which no merge ever folds: the merge
+// leaves it alone — neither concatenated with itself nor republished.
+TEST(MarkerServiceTest, MergeLeavesTheSharedGlobalSetAlone) {
   PJ::ObjectStore store;
   MarkerService service(store, resolverOn({1}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
   const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
-  ASSERT_EQ(readPublished(store, 1, all_topic).markers.size(), 1u);
-  ASSERT_EQ(readPublished(store, 2, all_topic).markers.size(), 1u);
+  ASSERT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 1u);
+  const std::optional<std::uint64_t> before = ownerPublishUid(store, kAllDatasetsMarkerDataset, all_topic, "plug/g");
 
   service.mergeMarkerTopics(1, {PJ::DatasetMergeSource{.dataset_id = 2, .raw_shift_ns = 0}});
 
-  EXPECT_EQ(readPublished(store, 1, all_topic).markers.size(), 1u) << "the shared set is not concatenated with itself";
-  EXPECT_FALSE(store.findTopic(2, PJ::sdk::markerObjectTopicName(all_topic)).has_value());
+  EXPECT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 1u);
+  EXPECT_EQ(ownerPublishUid(store, kAllDatasetsMarkerDataset, all_topic, "plug/g"), before) << "untouched";
+  EXPECT_TRUE(markerFamily(store, 1, all_topic).empty());
+  EXPECT_TRUE(markerFamily(store, 2, all_topic).empty());
 }
 
-// The hook a dataset's catalog publication fires: every Global set is copied onto a
-// dataset the lister now reports — no script run, nothing else republished.
-TEST(MarkerServiceTest, ReachNewDatasetsCopiesEveryGlobalSetOntoANewlyListedDataset) {
+// The hook a dataset's catalog publication fires: a newly listed dataset may be a
+// new contributor, so every Global rule is re-run over the grown roster — once.
+TEST(MarkerServiceTest, ReachNewDatasetsRerunsGlobalRulesForANewContributor) {
+  PJ::ObjectStore store;
+  MarkerService service(store, resolverOn({1, 2}));
+  service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1}; });
+  ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
+  const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
+  ASSERT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 1u);
+
+  service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
+  EXPECT_EQ(service.reachNewDatasets().size(), 1u);
+  EXPECT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 2u);
+}
+
+// The catalog grows topic by topic: a dataset already listed may only now expose the
+// series a Global rule reads, so the hook re-runs on every catalog addition rather
+// than on a dataset-roster change.
+TEST(MarkerServiceTest, ReachNewDatasetsRerunsWhenAContributorAppearsUnderTheSameRoster) {
+  PJ::ObjectStore store;
+  MarkerService service(store, resolverOn({1}));
+  service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
+  ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
+  const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
+  ASSERT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 1u);
+
+  service.setResolver(resolverOn({1, 2}));  // dataset 2's series just reached the catalog
+  EXPECT_EQ(service.reachNewDatasets().size(), 1u);
+  EXPECT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 2u);
+}
+
+// A recompute that finds no contributor left for an existing Global rule (the last
+// one was replaced by data without its inputs) empties the set instead of leaving
+// the stale findings on screen; only the initial upsert treats it as an error.
+TEST(MarkerServiceTest, RecomputeWithNoContributorLeftClearsTheSharedSet) {
   PJ::ObjectStore store;
   MarkerService service(store, resolverOn({1}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1}; });
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
   const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
+  ASSERT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 1u);
 
-  service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
-  EXPECT_EQ(service.reachNewDatasets().size(), 1u);
-  EXPECT_EQ(readPublished(store, 2, all_topic).markers.size(), 1u);
-  EXPECT_TRUE(service.reachNewDatasets().empty()) << "already caught up";
+  service.setResolver(resolverOn({}));  // dataset 1 was replaced by a file without "in"
+  EXPECT_EQ(service.recomputeForDataset(1).size(), 1u) << "the emptied set is announced";
+  EXPECT_TRUE(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.empty());
+  EXPECT_TRUE(ownerTombstoned(store, kAllDatasetsMarkerDataset, all_topic, "plug/g"));
+  EXPECT_EQ(service.recipes().size(), 1u) << "the rule stays live";
+}
+
+// The owner separator is reserved: an id or output key carrying it would make two
+// different (key, owner) pairs spell the same object topic.
+TEST(MarkerServiceTest, UpsertRejectsTheOwnerSeparatorInIdsAndOutputs) {
+  PJ::ObjectStore store;
+  MarkerService service(store, rampResolver(5));
+
+  EXPECT_FALSE(service.upsertGenerator(markerRecipe("plug/a#b", "in", "createMarker(0.0)\n")).has_value());
+  EXPECT_FALSE(service.upsertGenerator(markerRecipe("plug/a", "in#x", "createMarker(0.0)\n")).has_value());
+  EXPECT_TRUE(service.recipes().empty());
+  EXPECT_TRUE(store.listTopics().empty()) << "rejected before publishing";
 }
 
 // Production ordering: a dataset's commit recompute runs BEFORE the catalog (the
-// dataset lister) publishes it, so no recompute ever sees the new dataset — the
-// catalog publication itself must hand it every Global set.
-TEST(MarkerServiceTest, ANewlyCatalogedDatasetReceivesTheGlobalSet) {
+// dataset lister and the series resolver) publishes it, so no recompute ever sees
+// the new dataset — the catalog publication itself must re-run every Global rule.
+TEST(MarkerServiceTest, ANewlyCatalogedContributorJoinsTheGlobalSet) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
   MarkerService& service = session.markerService();
@@ -1145,16 +1171,104 @@ TEST(MarkerServiceTest, ANewlyCatalogedDatasetReceivesTheGlobalSet) {
   const auto first = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
   ASSERT_TRUE(first.has_value());
   commit_scalar(*first, "/imu/x");
-  service.setResolver(resolverOn({*first}));
+  const auto second = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "b.mcap"});
+  ASSERT_TRUE(second.has_value());
+  service.setResolver(resolverOn({*first, *second}));  // both carry the rule's series
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
+  const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
+  ASSERT_EQ(readPublished(session.objectStore(), kAllDatasetsMarkerDataset, all_topic).markers.size(), 1u)
+      << "only the cataloged dataset contributes";
 
   int repaints = 0;
   QObject::connect(&session, &PJ::SessionManager::markersChanged, [&repaints] { ++repaints; });
-  const auto second = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "b.mcap"});
-  ASSERT_TRUE(second.has_value());
-  commit_scalar(*second, "/imu/x");  // a file with none of the rule's inputs
+  commit_scalar(*second, "/imu/x");  // the second dataset reaches the catalog
 
-  const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
-  EXPECT_EQ(readPublished(session.objectStore(), *second, all_topic).markers.size(), 1u);
+  EXPECT_EQ(readPublished(session.objectStore(), kAllDatasetsMarkerDataset, all_topic).markers.size(), 2u)
+      << "the newcomer's contribution joins the shared set";
   EXPECT_GE(repaints, 1) << "overlays are told to repaint";
+}
+
+// A refill publishes markers for the data it attempted; a rollback restores the
+// dataset but the shared set lives outside it, so the rollback must re-run the
+// generators over the restored data.
+TEST(MarkerServiceTest, RefillRollbackRecomputesTheSharedSet) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  MarkerService& service = session.markerService();
+  service.setDatasetLister([&catalog] { return catalog.datasetIds(); });
+
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(dataset.has_value());
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto handle = writer.registerScalarSeries(*dataset, "/imu/x", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value()) << handle.error();
+  writer.appendScalar(*handle, 100, 1.0);
+  ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  service.setResolver(resolverOn({*dataset}));
+  ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
+  const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
+  ASSERT_EQ(readPublished(session.objectStore(), kAllDatasetsMarkerDataset, all_topic).markers.size(), 1u);
+
+  ASSERT_EQ(readPublished(session.objectStore(), kAllDatasetsMarkerDataset, all_topic).markers.front().t_start, 0);
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(*dataset);
+    // The attempted refill's series starts at t = 5 where the original started at 0.
+    service.setResolver([](PJ::DatasetId, const std::string& key) -> std::optional<MarkerService::ResolvedSeries> {
+      if (key != "in") {
+        return std::nullopt;
+      }
+      MarkerService::ResolvedSeries series;
+      series.timestamps = {5.0};
+      series.values = {0.0};
+      return series;
+    });
+    ASSERT_FALSE(service.recomputeForDataset(*dataset).empty());  // what the refill's recompute does
+    ASSERT_EQ(readPublished(session.objectStore(), kAllDatasetsMarkerDataset, all_topic).markers.front().t_start, 5);
+    service.setResolver(resolverOn({*dataset}));  // what the restored data resolves to
+    // guard dtor (no commit) rolls back here.
+  }
+
+  const PJ::sdk::PlotMarkers restored = readPublished(session.objectStore(), kAllDatasetsMarkerDataset, all_topic);
+  ASSERT_EQ(restored.markers.size(), 1u);
+  EXPECT_EQ(restored.markers.front().t_start, 0) << "re-run over the restored data";
+}
+
+// A Source Timeline drag moves a dataset's display offset. A Global set is stored in
+// the display frame and read there, so the drag republishes nothing: no serialize,
+// no markersChanged, the shared topic keeps its entry.
+TEST(MarkerServiceTest, ASourceTimelineDragRepublishesNoMarkerSet) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  MarkerService& service = session.markerService();
+  service.setDatasetLister([&catalog] { return catalog.datasetIds(); });
+
+  const auto domain = session.dataEngine().createTimeDomain("a");
+  ASSERT_TRUE(domain.has_value());
+  const auto first =
+      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap", .time_domain_id = *domain});
+  ASSERT_TRUE(first.has_value());
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto handle = writer.registerScalarSeries(*first, "/imu/x", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value()) << handle.error();
+  writer.appendScalar(*handle, 100, 1.0);
+  ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  service.setResolver(resolverOn({*first}));
+  ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
+  const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
+  const std::optional<std::uint64_t> before =
+      ownerPublishUid(session.objectStore(), kAllDatasetsMarkerDataset, all_topic, "plug/g");
+  ASSERT_TRUE(before.has_value());
+
+  int repaints = 0;
+  QObject::connect(&session, &PJ::SessionManager::markersChanged, [&repaints] { ++repaints; });
+  int drags = 0;
+  QObject::connect(
+      &session, qOverload<PJ::DatasetId>(&PJ::SessionManager::displayOffsetChanged),
+      [&drags](PJ::DatasetId) { ++drags; });
+  session.setDisplayOffset(*first, PJ::DisplayOffset{PJ::Duration{10}});
+
+  ASSERT_EQ(drags, 1) << "the drag applied";
+  EXPECT_EQ(repaints, 0) << "a drag is not a marker change";
+  EXPECT_EQ(ownerPublishUid(session.objectStore(), kAllDatasetsMarkerDataset, all_topic, "plug/g"), before);
 }

@@ -2,28 +2,24 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include <cstddef>
 #include <functional>
 #include <map>
 #include <optional>
-#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-#include "pj_base/builtin/plot_markers.hpp"  // sdk::PlotMarkers — stored by value in parts_
+#include "pj_base/builtin/plot_markers.hpp"  // sdk::PlotMarkers
 #include "pj_base/expected.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/merge_result.hpp"  // DatasetMergeSource
 #include "pj_runtime/HistoryScope.h"
-#include "pj_runtime/MarkerTopics.h"  // MarkerScope
 
 namespace PJ {
 
 class ObjectStore;
-struct ObjectTopicId;  // pj_datastore/object_store.hpp; only used by-value in private decls below
-struct ResolvedObjectEntry;
+struct ObjectTopicId;  // pj_datastore/object_store.hpp; by value only in a private declaration below
 
 /// Output shape of a data processor (the `kind` discriminator of `pj.data_processors.v1`).
 /// Only "markers" (objects → ObjectStore) is handled by THIS engine. "transform"
@@ -43,40 +39,33 @@ enum class GeneratorKind {
 ///
 /// Host-driven model: a generator is pure DATA — a Luau script + input series keys +
 /// output topic + params. Nothing executable crosses any boundary; THIS service owns
-/// execution and re-runs on data change, so output survives plugin unload and
-/// recomputes live. Scripts run through `pj_scripting`'s `runMarkerScript` — the SAME
-/// engine the headless `anomaly_runner` links — so a generator yields identical
-/// output in the GUI and in CI ("GUI == headless"). Whole-series, so there is NO
-/// incremental path: any change to an input re-runs the whole script and
-/// republishes the marker set whole.
-///
-/// Series resolution is INJECTED (`SeriesResolver`), not wired to the catalog, so the
-/// service is unit-testable against synthetic data and the catalog coupling stays in
-/// the wiring layer. The public header stays free of the `pj_scripting` dependency
-/// (linked PRIVATE) — hence the local `ResolvedSeries` rather than the engine's view.
+/// execution and re-runs on data change, so output survives plugin unload. Scripts
+/// run through `pj_scripting`'s `runMarkerScript` — the SAME engine the headless
+/// `anomaly_runner` links, so GUI == headless. Whole-series: any input change
+/// re-runs the whole script and republishes the set whole. Series resolution is
+/// INJECTED (`SeriesResolver`) so the service is testable against synthetic data;
+/// the header stays free of `pj_scripting` (linked PRIVATE), hence `ResolvedSeries`.
 ///
 /// Invariants:
-/// 1. Every marker write goes through `setPart`/`dropParts` → `republishUnion`: a
-///    (dataset, marker topic) target's blob is always the union of every
-///    generator's last PART for it, so two rules on one target never clobber each
-///    other and retiring one drops only its own part.
-/// 2. A blob with no `parts_` entry is FOREIGN (a direct toolbox write, a pre-merge
-///    anchor set): it is adopted under `kForeignOwner` before the first union
-///    publish or merge touches that target, never silently dropped.
-/// 3. `parts_` never names a dataset the ObjectStore no longer holds.
-/// 4. `recipes_` is keyed by id — the plugin ABI's identity — holding that id's
+/// 1. Every generator writes its OWN object topic, `__markers__/<key>#<id>`
+///    (`markerOwnerTopicName`; `#` is refused in ids and keys): two rules on one key
+///    never clobber each other, and retiring one tombstones only the topics ending
+///    in its `#<id>` — found by scanning the store, so an output a merge moved onto
+///    the anchor is retired too. The overlay draws the union of a key's family, so
+///    the store is the ONLY copy — merge, reload and removal are the store's
+///    per-topic operations — and a direct toolbox write to the bare topic is just
+///    another family member this service never reads or rewrites.
+/// 2. `recipes_` is keyed by id — the plugin ABI's identity — holding that id's
 ///    per-dataset BINDINGS (add / replace / reject rules: `upsertGenerator`); an
 ///    `all_datasets` or `ephemeral` id has exactly one, and no id holds zero.
-/// 5. Scope says where markers are DRAWN, not where the script runs. A dataset-bound
+/// 3. Scope says where markers are DRAWN, not where the script runs. A dataset-bound
 ///    recipe reads and draws on its one dataset. An `all_datasets` recipe reads from
-///    every loaded dataset that carries its inputs, and the union of those runs is one
-///    session-wide set drawn on EVERY loaded dataset — those without the inputs and
-///    those loaded later included (`reachNewDatasets`). That set is kept ONCE in the
-///    DISPLAY frame (`shared_sets_`, raw − the contributor's display offset) and each
-///    dataset's part is that set shifted into the dataset's own frame, so a marker
-///    sits at the same display instant on every plot no matter how the datasets are
-///    aligned; `rebaseForDisplayOffset` re-derives a dataset's part when its offset
-///    moves, `clearGeneratorsForDataset` rebuilds the set when a contributor goes.
+///    every loaded dataset that carries its inputs, and the union of those runs is
+///    ONE session-wide set published once on `kAllDatasetsMarkerDataset`, in the
+///    DISPLAY frame (raw − the contributor's alignment offset): the overlay draws it
+///    on every plot at the same display instant, so a Source Timeline drag costs no
+///    republish. `reachNewDatasets` re-runs it when the dataset roster grows and
+///    `clearGeneratorsForDataset` when a contributor goes.
 class MarkerService {
  public:
   /// Samples of one resolved input series: timestamps in nanoseconds + values.
@@ -129,20 +118,16 @@ class MarkerService {
   /// Set the dataset lister used by `all_datasets` generators (defaults to empty).
   void setDatasetLister(DatasetLister lister);
 
-  /// A dataset's display offset in ns (`display = raw − offset`: the alignment shift
-  /// the Source Timeline edits). Keeps an `all_datasets` set at the same display
-  /// instant on every dataset (invariant 5). Defaults to 0 for every dataset.
+  /// A dataset's alignment offset in ns (`display = raw − offset`: the shift the
+  /// Source Timeline edits). Puts each contributor's run of an `all_datasets` rule
+  /// into the display frame (invariant 3). Defaults to 0 for every dataset.
   using DisplayOffsetResolver = std::function<Timestamp(DatasetId)>;
   void setDisplayOffsetResolver(DisplayOffsetResolver resolver);
 
-  /// `dataset`'s display offset moved: republish every `all_datasets` set on it,
-  /// shifted into its new frame (no script runs). Returns the republished object
-  /// topics — empty when no all-datasets generator exists.
-  [[nodiscard]] std::vector<std::string> rebaseForDisplayOffset(DatasetId dataset);
-
-  /// Publish every `all_datasets` recipe's shared set onto each loaded dataset that
-  /// does not hold its part yet (no script runs) and return the republished object
-  /// topics. The hook for a dataset that just became listed.
+  /// The catalog grew (a dataset or a topic was published): re-run every
+  /// `all_datasets` recipe, since the newcomer may contribute — the commit-time
+  /// recompute runs before the catalog rebuild, so it cannot see it. Returns the
+  /// republished object topics.
   [[nodiscard]] std::vector<std::string> reachNewDatasets();
 
   /// Every loaded dataset as the injected lister reports it (empty without one).
@@ -154,30 +139,26 @@ class MarkerService {
   [[nodiscard]] Status validateScript(GeneratorKind kind, std::string_view language, const std::string& script) const;
 
   /// Create or replace (by `id`) a generator and run it immediately. Returns the
-  /// resolved physical output topic name(s) (the marker object topic). On a script
-  /// error returns the message and leaves any prior output AND the prior recipe
-  /// untouched (a bad upsert never destroys a working generator). `ephemeral`
-  /// recipes are excluded from `recipes()`. A `declared_inputs` list whose length
-  /// differs from `inputs` is rejected.
-  ///
-  /// An id's `ephemeral` and `history_exempt` flags are homogeneous across its
-  /// bindings: a binding that would disagree with a surviving sibling is rejected
-  /// (naming the id) before anything runs. A recipe whose `all_datasets` differs
-  /// from the id's current bindings REPLACES the whole id — every old binding and
-  /// its output is retired — so no id ever owns both a Dataset-scope and a Global
-  /// output.
+  /// generator's own object topic (`markerOwnerTopicName`), the physical name a
+  /// plugin can read back. A script error returns the message and leaves
+  /// the prior output AND recipe untouched. A `declared_inputs` length mismatch is
+  /// rejected. An id's `ephemeral`/`history_exempt` flags are homogeneous across its
+  /// bindings (a disagreeing binding is rejected before anything runs), and a recipe
+  /// whose `all_datasets` differs from the id's bindings REPLACES the whole id, so no
+  /// id ever owns both a Dataset-scope and a Global output.
   [[nodiscard]] Expected<std::vector<std::string>> upsertGenerator(GeneratorRecipe recipe);
 
   /// Retire the rule on every dataset it is bound to (persistent or ephemeral; see
-  /// invariant 4). For an ephemeral preview the preview object topic is removed.
+  /// invariant 2). For an ephemeral preview the preview object topic is removed.
   /// Unknown `id` is an error.
   Status removeGenerator(std::string_view id);
 
   /// Re-run every generator whose input is affected by a change, re-publishing its
   /// output — the whole-series recompute hook. An input is affected when one of its
   /// series keys STARTS WITH a `changed` entry; an EMPTY `changed` re-runs ALL.
-  /// Returns the affected marker object topic names so the caller can re-notify
-  /// overlays; generators whose script errors on re-run are skipped.
+  /// Returns the republished object topics so the caller can re-notify overlays;
+  /// a generator whose script errors on re-run keeps its last set, and an
+  /// `all_datasets` one left without any contributor is emptied.
   ///
   /// `scope` bounds the work to the dataset that actually ingested; `kAnyDataset`
   /// means the change cannot be attributed to one. It matters because `changed`
@@ -196,15 +177,13 @@ class MarkerService {
   /// object-topic names.
   [[nodiscard]] std::vector<std::string> recomputeForDataset(DatasetId dataset);
 
-  /// Set-aware merge of the marker sets when datasets fold into `anchor`. Markers
-  /// opt out of the generic ObjectStore fold (single-entry supersede at a sentinel
-  /// timestamp — the generic interleave+retention fold keeps only one set); this
-  /// concatenates, per marker object-topic name, the anchor's set plus each
-  /// source's set shifted by its `raw_shift_ns` onto the anchor clock, republishes
-  /// one blob per name to the anchor, and drops the source marker topics. Preserves
-  /// every dataset's findings (no re-evaluation). MUST run while the source datasets
-  /// still hold their marker topics (i.e. before they are dropped). Returns the
-  /// affected marker object-topic names.
+  /// Set-aware merge of the marker topics when datasets fold into `anchor`. Markers
+  /// opt out of the generic ObjectStore fold (its interleave+retention would keep
+  /// one set): every source marker topic moves onto the anchor's same-named topic,
+  /// shifted by `raw_shift_ns` and concatenated after the anchor's set, then the
+  /// source topic is dropped. No re-evaluation; the shared all-datasets set lives
+  /// on no source and is untouched. MUST run before the sources are dropped.
+  /// Returns the touched anchor topic names.
   std::vector<std::string> mergeMarkerTopics(DatasetId anchor, const std::vector<DatasetMergeSource>& sources);
 
   /// True when at least one generator exists (including ephemeral previews, which
@@ -226,14 +205,10 @@ class MarkerService {
   /// replacement on that dataset keeps the slot), or null for an unknown id.
   [[nodiscard]] const GeneratorRecipe* firstBinding(std::string_view id) const;
 
-  /// Output names of persistent history-exempt generators that read any series
-  /// rooted at one of `removed_inputs`. A generator input matches a removed topic
-  /// via `seriesKeyBelongsToTopic`: the input IS the topic, or a field path beneath
-  /// it at a slash boundary — deliberately stricter than `recomputeForChangedInputs`'s
-  /// raw prefix match (`in.rfind(prefix, 0) == 0`), which also matches a differently
-  /// named sibling topic (e.g. `imu_raw/x` for prefix `imu`). Only the slash-bounded
-  /// match is a real dependency, so over-matching here would reject a restore that
-  /// does not actually strand anything.
+  /// Output names of persistent history-exempt generators reading a series rooted
+  /// at one of `removed_inputs` (the topic itself or a slash-bounded field below it
+  /// — stricter than `recomputeForChangedInputs`'s raw prefix match, which would
+  /// also hit `imu_raw/x` for `imu` and reject a restore that strands nothing).
   [[nodiscard]] std::vector<std::string> exemptDependentsOf(const std::vector<std::string>& removed_inputs) const;
 
   /// Remove every PERSISTENT generator (tombstoning its output); ephemeral
@@ -257,21 +232,16 @@ class MarkerService {
   /// user's rule stops producing without any error. `all_datasets` generators are
   /// untouched (they resolve through the dataset lister, not a stored id). When the
   /// anchor already holds its own binding of the same id, that binding wins and the
-  /// consumed one is retired: `mergeMarkerTopics` (which runs first) already folded
-  /// the consumed output onto the anchor under this id, and the anchor's next
+  /// consumed one is retired: `mergeMarkerTopics` (which runs first) already moved
+  /// the consumed output onto the anchor's topic of this id, and the anchor's next
   /// recompute replaces it with a run over the merged data.
   void remapGeneratorsToAnchor(DatasetId anchor, const std::vector<DatasetId>& consumed);
 
-  /// Forget every generator bound to `dataset`; `all_datasets` generators are kept
-  /// (they belong to the session, not to one dataset) but their shared sets are
-  /// rebuilt from the surviving contributors — with none left, the rule's parts are
-  /// cleared everywhere and the rule stays live for a later contributor. The markers
-  /// twin of `DataProcessorService::clearTransformsForDataset`. Call when a dataset
-  /// is removed: its object topics go with it, but a surviving recipe still names the
-  /// dead id, and the next recompute would resolve nothing and re-register a phantom
-  /// marker topic under a dataset that no longer exists (publishMarkerSet registers
-  /// on a miss). The removed dataset's outputs are not tombstoned — its topics are
-  /// already gone. Returns the object topics republished on the survivors.
+  /// Forget every generator bound to a removed `dataset` (its topics went with it —
+  /// a surviving recipe would otherwise re-register a phantom topic under the dead
+  /// id on the next recompute); `all_datasets` generators are kept and their shared
+  /// set rebuilt from the surviving contributors — emptied when none is left, the
+  /// rule staying live. Returns the republished object topics.
   std::vector<std::string> clearGeneratorsForDataset(DatasetId dataset);
 
  private:
@@ -279,12 +249,10 @@ class MarkerService {
   /// its slot). Never empty while the id is in `recipes_`.
   using GeneratorBindings = std::vector<GeneratorRecipe>;
 
-  /// The dataset a binding is keyed on. A producer's id carries the rule's SCOPE
-  /// ("rule/__global__", "rule/__all__", …) but not the dataset it targets, so
-  /// applying the same dataset-bound id on a second dataset is "the same rule
-  /// elsewhere" — a new binding — while re-applying it on the SAME dataset must
-  /// replace. An `all_datasets` or `ephemeral` recipe is pinned to `kAnyDataset`
-  /// so it stays one-per-id, since it is not bound to any one dataset.
+  /// The dataset a binding is keyed on: a producer's id carries the rule's SCOPE
+  /// but not its dataset, so the same dataset-bound id on a second dataset is a
+  /// new binding while re-applying it on the SAME dataset replaces. `all_datasets`
+  /// and `ephemeral` recipes are pinned to `kAnyDataset` (one per id).
   [[nodiscard]] static DatasetId bindingDataset(const GeneratorRecipe& recipe);
 
   /// The stored binding `recipe` would replace: same id, same `bindingDataset`.
@@ -294,83 +262,30 @@ class MarkerService {
   /// Every binding of every id, flattened (id order, then application order).
   [[nodiscard]] std::vector<std::reference_wrapper<const GeneratorRecipe>> allRecipes() const;
 
-  /// One place a recipe publishes to: the dataset and the object-topic name.
+  /// The one place a recipe publishes to: the dataset and its OWN object-topic name.
   using PublishTarget = std::pair<DatasetId, std::string>;
 
-  /// The datasets a recipe draws on: its own when bound, every loaded one when
-  /// `all_datasets`. The single enumerator behind both publishing and retiring —
-  /// deriving "where does this land" twice is how a rename strands a topic. The
-  /// `loaded` overload takes an already-fetched `loadedDatasets()` so a loop over
-  /// many recipes queries the lister once.
-  [[nodiscard]] std::vector<DatasetId> targetDatasets(const GeneratorRecipe& recipe) const;
-  [[nodiscard]] static std::vector<DatasetId> targetDatasets(
-      const GeneratorRecipe& recipe, const std::vector<DatasetId>& loaded);
+  /// `recipe`'s target: (`dataset_id`, `<key>#<id>`) when bound,
+  /// (`kAllDatasetsMarkerDataset`, …) when `all_datasets`. Requires an output
+  /// (`upsertGenerator` guarantees one on every stored binding).
+  [[nodiscard]] static PublishTarget publishTarget(const GeneratorRecipe& recipe);
 
-  /// After a successful re-run of `recipe`: drop every target of its previous
-  /// revision that NEITHER the new revision NOR a sibling binding of the same id
-  /// still covers, so a retargeting upsert (renamed output, rebound dataset,
-  /// all-datasets toggled off) strands no topic.
-  void dropStaleTargets(const GeneratorRecipe& recipe);
+  /// Retire `target`: tombstone it (persistent) or remove the topic outright
+  /// (`ephemeral`). A no-op when it equals `keep` — the target the new revision of
+  /// the same binding just rewrote.
+  void retireTarget(const PublishTarget& target, bool ephemeral, const PublishTarget* keep = nullptr);
 
-  /// Every (dataset, object-topic) a recipe publishes to right now — one entry for a
-  /// per-dataset recipe, one per loaded dataset for an `all_datasets` one.
-  [[nodiscard]] std::vector<PublishTarget> publishTargets(const GeneratorRecipe& recipe) const;
-
-  /// Parts of one target, keyed by owner (generator id) — std::map so the union
-  /// order is deterministic (by owner id).
-  using PartsByOwner = std::map<std::string, sdk::PlotMarkers>;
-
-  /// (dataset, object topic) -> owner -> that owner's last published part. The
-  /// ObjectStore blob for a target is always the ordered concatenation of its
-  /// parts (see `republishUnion`) — this service never writes it any other way.
-  std::map<PublishTarget, PartsByOwner> parts_;
-
-  /// Owner id reserved for a store blob no generator owns: a direct toolbox write,
-  /// or a pre-existing set adopted on first union publish / merge. Cannot collide
-  /// with a recipe id: those are `<plugin>/<local id>` (`MarkersRuntimeHost::makeKey`),
-  /// so every one of them contains a '/'.
-  static constexpr std::string_view kForeignOwner = "foreign";
-
-  /// Set `owner`'s part of `target` to `part` and republish the union. If `target`
-  /// has no tracked parts yet, adopts any pre-existing store blob as foreign first
-  /// (see `adoptForeignBlob`) so it is not overwritten unseen.
-  [[nodiscard]] Status setPart(const PublishTarget& target, std::string_view owner, sdk::PlotMarkers part);
-
-  /// Drop `owner`'s part from every `parts_` entry except those in `keep` (its
-  /// still-live targets). A touched target left with no owners is tombstoned
-  /// (persistent) or removed outright (`ephemeral`) and erased from `parts_`;
-  /// otherwise its union is republished.
-  void dropParts(std::string_view owner, const std::vector<PublishTarget>& keep, bool ephemeral);
-
-  /// Adopt the store's current blob at `target` into `owners` (a fresh, empty
-  /// `parts_` entry) under `kForeignOwner`. No-op when the store has nothing
-  /// published there, the blob is empty, or it fails to decode.
-  void adoptForeignBlob(const PublishTarget& target, PartsByOwner& owners) const;
-
-  /// The store's currently published entry at `topic_id` (nullopt when never
-  /// published). Its payload decodes via `decodeStoredMarkers`; its
-  /// `payload_stamp_shift` is what a merge bakes into an already-tracked part.
-  [[nodiscard]] std::optional<ResolvedObjectEntry> latestMarkerEntry(ObjectTopicId topic_id) const;
-
-  /// Decode `entry`'s blob. Returns `nullopt` when there is nothing worth adopting
-  /// — no entry, an empty/tombstoned set, or undecodable bytes — so every call
-  /// site gets one decode-then-bail instead of hand-rolling the same guard.
-  [[nodiscard]] static std::optional<sdk::PlotMarkers> decodeStoredMarkers(
-      const std::optional<ResolvedObjectEntry>& entry);
-
-  /// Concatenate `parts_[target]`'s parts (map order = owner id) into one
-  /// `sdk::PlotMarkers` and publish it — the union's single write to the
-  /// ObjectStore (besides the tombstone `dropParts` publishes directly). A
-  /// single-owner target publishes that part as-is, without building a union.
-  [[nodiscard]] Status republishUnion(const PublishTarget& target);
-  [[nodiscard]] Status republishUnion(const PublishTarget& target, const PartsByOwner& owners);
+  /// `retireTarget` every store topic ending in `#<id>`, `keep` excepted. A store
+  /// scan rather than the recipe's targets: a merge moves a consumed binding's
+  /// output onto the anchor and drops the binding, so no recipe names it anymore.
+  void retireOwnedTopics(std::string_view id, bool ephemeral, const PublishTarget* keep = nullptr);
 
   /// Run `recipe` and route its output by kind. Returns the resolved output topic(s).
   [[nodiscard]] Expected<std::vector<std::string>> runAndPublish(const GeneratorRecipe& recipe);
 
-  /// kind=markers: run the script and publish PlotMarkers to the object topic(s) —
-  /// on the one dataset when bound; when `all_datasets`, the union of every
-  /// contributing dataset's run is published on every loaded dataset (invariant 5).
+  /// kind=markers: run the script and publish PlotMarkers to `publishTarget(recipe)`
+  /// — the one dataset's run when bound, the display-frame union of every
+  /// contributor's run when `all_datasets` (invariant 3).
   [[nodiscard]] Expected<std::vector<std::string>> runMarkers(const GeneratorRecipe& recipe);
 
   /// The display-frame union of every contributing dataset's run of an
@@ -378,11 +293,9 @@ class MarkerService {
   /// dataset carries its inputs.
   [[nodiscard]] Expected<std::optional<sdk::PlotMarkers>> computeShared(const GeneratorRecipe& recipe);
 
-  /// Run `recipe`'s script over `dataset_id`'s series and return the markers it
-  /// produced — nothing is published. `nullopt` means the dataset is not one this
-  /// rule reads from: an `all_datasets` recipe whose inputs ALL fail to resolve
-  /// there. A dataset-bound recipe never skips — a missing input on its own dataset
-  /// is the user's mistake and surfaces as a script error.
+  /// Run `recipe`'s script over `dataset_id`'s series — nothing is published.
+  /// `nullopt` = an `all_datasets` recipe whose inputs ALL fail to resolve there;
+  /// a dataset-bound recipe never skips (a missing input is a script error).
   [[nodiscard]] Expected<std::optional<sdk::PlotMarkers>> evaluateMarkers(
       const GeneratorRecipe& recipe, DatasetId dataset_id);
 
@@ -390,21 +303,11 @@ class MarkerService {
   /// failed run contributes nothing (the recompute paths never surface errors).
   void runAndAccumulate(const GeneratorRecipe& recipe, std::vector<std::string>& affected);
 
-  /// Publish an `all_datasets` recipe's shared (display-frame) set onto every loaded
-  /// dataset that does not hold its part yet — a dataset loaded after the rule was
-  /// applied never appears in a `changed` batch whose prefixes the recipe's inputs
-  /// match, so the recompute prefix test alone can never reach it. No script runs;
-  /// only when the recipe has no shared set yet is it run again.
-  void reachUnpublishedDatasets(
-      const GeneratorRecipe& recipe, const std::vector<DatasetId>& loaded, std::vector<std::string>& affected);
-
-  /// Publish `shared` as `recipe`'s part on every loaded dataset and cache it in
-  /// `shared_sets_`. Fails on the first dataset that refuses the publish.
-  [[nodiscard]] Status publishSharedEverywhere(const GeneratorRecipe& recipe, sdk::PlotMarkers shared);
-
-  /// Set `recipe`'s part on `dataset` to `shared` shifted into that dataset's frame
-  /// (`+ displayOffsetOf(dataset)`) and republish the union there.
-  [[nodiscard]] Status publishShared(const GeneratorRecipe& recipe, const sdk::PlotMarkers& shared, DatasetId dataset);
+  /// Re-run an existing `all_datasets` `recipe` over the current roster and
+  /// republish it, appending its topic to `affected`; with no contributor left the
+  /// set is emptied (tombstoned), not kept stale — only the initial upsert treats
+  /// that as an error. A script error keeps the last good set.
+  void republishShared(const GeneratorRecipe& recipe, std::vector<std::string>& affected);
 
   [[nodiscard]] Timestamp displayOffsetOf(DatasetId dataset) const;
 
@@ -420,29 +323,16 @@ class MarkerService {
   /// on remove). Pairs with the codec's empty-buffer→empty-set decode.
   void publishEmptyMarkers(DatasetId dataset_id, const std::string& object_topic_name);
 
-  /// `mergeMarkerTopics` phase 1: fold `anchor`'s OWN pre-merge marker sets into
-  /// `parts_`, baking in any pending payload shift, and record every touched topic
-  /// name in `touched`. MUST run before `foldSourcePartsOntoAnchor`: doing this first
-  /// means phase 2 never finds an anchor target still untracked when it moves a
-  /// source part onto it, so that part is never shifted twice and an untracked
-  /// anchor blob is never lost underneath it.
-  void foldAnchorPartsBeforeMerge(DatasetId anchor, std::set<std::string>& touched);
-
-  /// `mergeMarkerTopics` phase 2: fold `source`'s marker sets onto `anchor`'s clock
-  /// (shifted by `source.raw_shift_ns` plus any pending payload shift), drop
-  /// `source`'s marker object topics, and record every touched anchor topic name in
-  /// `touched`. Must run after `foldAnchorPartsBeforeMerge` (see its doc-comment).
-  void foldSourcePartsOntoAnchor(DatasetId anchor, const DatasetMergeSource& source, std::set<std::string>& touched);
+  /// The set stored on `topic_id` shifted by `shift` plus any pending
+  /// `payload_stamp_shift`; empty for a tombstone, a never-published topic or
+  /// undecodable bytes.
+  [[nodiscard]] sdk::PlotMarkers storedMarkers(ObjectTopicId topic_id, Timestamp shift) const;
 
   ObjectStore& object_store_;
   SeriesResolver resolver_;
   DatasetLister dataset_lister_;
   DisplayOffsetResolver display_offset_resolver_;
-  /// Display-frame union of each `all_datasets` recipe's contributors — the one copy
-  /// every dataset's part is derived from (invariant 5). Keyed by id (an
-  /// `all_datasets` recipe has one binding).
-  std::map<std::string, sdk::PlotMarkers> shared_sets_;
-  std::map<std::string, GeneratorBindings> recipes_;  ///< id → per-dataset bindings (incl. ephemeral); invariant 4
+  std::map<std::string, GeneratorBindings> recipes_;  ///< id → per-dataset bindings (incl. ephemeral); invariant 2
 };
 
 }  // namespace PJ

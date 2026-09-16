@@ -24,6 +24,7 @@
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/PlotWidgetBase.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/SessionManager.h"
 using namespace Qt::StringLiterals;
 
@@ -56,13 +57,15 @@ QString scopeTopicName(PJ::MarkerScope scope) {
   return QString::fromUtf8(topic.data(), static_cast<qsizetype>(topic.size()));
 }
 
-// Registers `scope`'s marker object topic on `dataset_id` the same way
-// MarkerService::publishMarkerSet does (that method is private; this mirrors
-// its ObjectStore calls) and notifies the plot overlay.
+// Registers `scope`'s bare marker object topic where the overlay reads it for
+// `dataset_id` (the dataset itself, or the shared dataset for the ALL-DATASETS
+// scope) the same way MarkerService::publishMarkerSet does (that method is
+// private; this mirrors its ObjectStore calls) and notifies the plot overlay.
 void publishScopeTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, PJ::MarkerScope scope) {
   const std::string object_topic = PJ::sdk::markerObjectTopicName(PJ::markerScopeTopic(scope));
   const auto registered = session.objectStore().registerTopic(
-      PJ::ObjectTopicDescriptor{.dataset_id = dataset_id, .topic_name = object_topic, .metadata_json = {}});
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = PJ::markerScopeDataset(scope, dataset_id), .topic_name = object_topic, .metadata_json = {}});
   EXPECT_TRUE(registered.has_value()) << registered.error();
   if (!registered.has_value()) {
     return;
@@ -360,4 +363,65 @@ TEST(PlotWidgetGlobalMarkers, ScopeRowSetFollowsEachTopic) {
   ASSERT_EQ(rows.size(), 1U);
   EXPECT_EQ(rows.front(), PJ::MarkerScopeKey(*dataset, PJ::MarkerScope::kAllDatasets));
   EXPECT_EQ(changed_count, 1);
+}
+
+// A generator's own topic (`__markers__/__global__#<owner>`) is a member of the
+// scope's family: the row follows it exactly as it follows the bare topic.
+TEST(PlotWidgetGlobalMarkers, ScopeRowFollowsAnOwnerTopic) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const QString key = keyForTopic(catalog, addScalarTopic(session, *dataset, "/imu/x"));
+  ASSERT_FALSE(key.isEmpty());
+
+  PJ::PlotWidget plot(&session, &catalog);
+  ASSERT_NE(plot.addCurve(key), nullptr);
+  EXPECT_TRUE(plot.markerScopeRows().empty());
+
+  const auto registered = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *dataset,
+          .topic_name = PJ::markerOwnerTopicName(PJ::markerScopeTopic(PJ::MarkerScope::kDataset), "plug/rule"),
+          .metadata_json = {}});
+  ASSERT_TRUE(registered.has_value()) << registered.error();
+  ASSERT_TRUE(session.objectStore()
+                  .pushOwned(*registered, PJ::Timestamp{0}, PJ::serializePlotMarkers(PJ::sdk::PlotMarkers{}))
+                  .has_value());
+  session.notifyMarkersChanged();
+
+  const std::vector<PJ::MarkerScopeKey> rows = plot.markerScopeRows();
+  ASSERT_EQ(rows.size(), 1U);
+  EXPECT_EQ(rows.front(), PJ::MarkerScopeKey(*dataset, PJ::MarkerScope::kDataset));
+}
+
+// A scope=all rule with a per-series output publishes on the shared dataset: a
+// plot showing that series draws its own dataset's family (dataset frame) AND the
+// shared-home family (display frame), each member tagged with its frame.
+TEST(PlotWidgetGlobalMarkers, SeriesTargetResolvesItsOwnAndTheSharedFamily) {
+  PJ::ObjectStore store;
+  const auto own = store.registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = 7, .topic_name = PJ::markerOwnerTopicName("imu/x", "plug/bound"), .metadata_json = {}});
+  const auto shared = store.registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = PJ::kAllDatasetsMarkerDataset,
+          .topic_name = PJ::markerOwnerTopicName("imu/x", "plug/all"),
+          .metadata_json = {}});
+  const auto other = store.registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = 8, .topic_name = PJ::markerOwnerTopicName("imu/x", "plug/bound"), .metadata_json = {}});
+  ASSERT_TRUE(own.has_value() && shared.has_value() && other.has_value());
+
+  const std::vector<PJ::MarkerTargetTopic> topics =
+      PJ::markerTargetTopics(store, PJ::MarkerTarget{7, QString::fromUtf8("imu/x")});
+  ASSERT_EQ(topics.size(), 2U);
+  EXPECT_EQ(topics[0].id.id, own->id);
+  EXPECT_FALSE(topics[0].display_frame);
+  EXPECT_EQ(topics[1].id.id, shared->id);
+  EXPECT_TRUE(topics[1].display_frame);
+
+  const std::vector<PJ::MarkerTargetTopic> all_scope =
+      PJ::markerTargetTopics(store, PJ::MarkerTarget{7, QString::fromUtf8(PJ::kAllDatasetsMarkerTopic.data())});
+  EXPECT_TRUE(all_scope.empty()) << "the all-datasets scope reads the shared dataset only";
 }

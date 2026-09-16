@@ -15,7 +15,7 @@
 #include "pj_base/builtin/plot_markers.hpp"        // sdk::PlotMarker(s), markerObjectTopicName, kPreviewMarkerTopic
 #include "pj_base/builtin/plot_markers_codec.hpp"  // serializePlotMarkers, deserializePlotMarkers
 #include "pj_datastore/object_store.hpp"
-#include "pj_runtime/MarkerTopics.h"     // isMarkerObjectTopic
+#include "pj_runtime/MarkerTopics.h"     // isMarkerObjectTopic, markerOwnerTopicName, kAllDatasetsMarkerDataset
 #include "pj_scripting/marker_engine.h"  // scripting::SeriesView/SeriesProvider, runMarkerScript
 
 namespace PJ {
@@ -122,9 +122,10 @@ Timestamp MarkerService::displayOffsetOf(DatasetId dataset) const {
 
 std::vector<std::string> MarkerService::reachNewDatasets() {
   std::vector<std::string> affected;
-  const std::vector<DatasetId> loaded = loadedDatasets();
   for (const GeneratorRecipe& recipe : allRecipes()) {
-    reachUnpublishedDatasets(recipe, loaded, affected);
+    if (recipe.all_datasets) {
+      republishShared(recipe, affected);
+    }
   }
   return affected;
 }
@@ -166,43 +167,19 @@ Expected<std::optional<sdk::PlotMarkers>> MarkerService::evaluateMarkers(
 }
 
 Expected<std::vector<std::string>> MarkerService::runMarkers(const GeneratorRecipe& recipe) {
-  const std::string marker_topic = recipe.outputs.empty() ? std::string{} : recipe.outputs.front();
-  const std::string object_topic_name = sdk::markerObjectTopicName(marker_topic);
-  const std::vector<std::string> resolved{object_topic_name};
-
-  if (!recipe.all_datasets) {
-    Expected<std::optional<sdk::PlotMarkers>> run = evaluateMarkers(recipe, recipe.dataset_id);
-    if (!run.has_value()) {
-      return unexpected(run.error());
-    }
-    if (Status pushed = setPart(PublishTarget{recipe.dataset_id, object_topic_name}, recipe.id, std::move(**run));
-        !pushed.has_value()) {
-      return unexpected(pushed.error());
-    }
-    return resolved;
+  Expected<std::optional<sdk::PlotMarkers>> set =
+      recipe.all_datasets ? computeShared(recipe) : evaluateMarkers(recipe, recipe.dataset_id);
+  if (!set.has_value()) {
+    return unexpected(set.error());
   }
-
-  Expected<std::optional<sdk::PlotMarkers>> shared = computeShared(recipe);
-  if (!shared.has_value()) {
-    return unexpected(shared.error());
-  }
-  if (!shared->has_value()) {
+  if (!set->has_value()) {
     return unexpected("none of the inputs exist in any loaded dataset");
   }
-  if (Status pushed = publishSharedEverywhere(recipe, std::move(**shared)); !pushed.has_value()) {
+  const PublishTarget target = publishTarget(recipe);
+  if (Status pushed = publishMarkerSet(target.first, target.second, **set); !pushed.has_value()) {
     return unexpected(pushed.error());
   }
-  return resolved;
-}
-
-Status MarkerService::publishSharedEverywhere(const GeneratorRecipe& recipe, sdk::PlotMarkers shared) {
-  for (const DatasetId dataset_id : targetDatasets(recipe)) {
-    if (Status pushed = publishShared(recipe, shared, dataset_id); !pushed.has_value()) {
-      return pushed;
-    }
-  }
-  shared_sets_[recipe.id] = std::move(shared);
-  return okStatus();
+  return std::vector<std::string>{target.second};
 }
 
 Expected<std::optional<sdk::PlotMarkers>> MarkerService::computeShared(const GeneratorRecipe& recipe) {
@@ -210,7 +187,7 @@ Expected<std::optional<sdk::PlotMarkers>> MarkerService::computeShared(const Gen
   // misrepresent the rule on every dataset it is drawn on.
   sdk::PlotMarkers shared;
   bool contributed = false;
-  for (const DatasetId dataset_id : targetDatasets(recipe)) {
+  for (const DatasetId dataset_id : loadedDatasets()) {
     Expected<std::optional<sdk::PlotMarkers>> run = evaluateMarkers(recipe, dataset_id);
     if (!run.has_value()) {
       return unexpected(run.error());
@@ -228,22 +205,20 @@ Expected<std::optional<sdk::PlotMarkers>> MarkerService::computeShared(const Gen
   return std::optional<sdk::PlotMarkers>{std::move(shared)};
 }
 
-Status MarkerService::publishShared(const GeneratorRecipe& recipe, const sdk::PlotMarkers& shared, DatasetId dataset) {
-  sdk::PlotMarkers part = shared;
-  shiftMarkers(part.markers, displayOffsetOf(dataset));
-  return setPart(
-      PublishTarget{dataset, sdk::markerObjectTopicName(recipe.outputs.front())}, recipe.id, std::move(part));
-}
-
-std::vector<std::string> MarkerService::rebaseForDisplayOffset(DatasetId dataset) {
-  std::vector<std::string> affected;
-  for (const auto& [id, shared] : shared_sets_) {
-    const GeneratorRecipe& recipe = recipes_.at(id).front();  // all_datasets: one binding
-    if (publishShared(recipe, shared, dataset).has_value()) {
-      affected.push_back(sdk::markerObjectTopicName(recipe.outputs.front()));
-    }
+void MarkerService::republishShared(const GeneratorRecipe& recipe, std::vector<std::string>& affected) {
+  Expected<std::optional<sdk::PlotMarkers>> shared = computeShared(recipe);
+  if (!shared.has_value()) {
+    return;
   }
-  return affected;
+  const PublishTarget target = publishTarget(recipe);
+  if (shared->has_value()) {
+    if (!publishMarkerSet(target.first, target.second, **shared).has_value()) {
+      return;
+    }
+  } else {
+    publishEmptyMarkers(target.first, target.second);
+  }
+  affected.push_back(target.second);
 }
 
 // ---- routing + lifecycle ---------------------------------------------------
@@ -260,28 +235,6 @@ void MarkerService::runAndAccumulate(const GeneratorRecipe& recipe, std::vector<
   if (Expected<std::vector<std::string>> resolved = runAndPublish(recipe); resolved.has_value()) {
     for (std::string& topic : *resolved) {
       affected.push_back(std::move(topic));
-    }
-  }
-}
-
-void MarkerService::reachUnpublishedDatasets(
-    const GeneratorRecipe& recipe, const std::vector<DatasetId>& loaded, std::vector<std::string>& affected) {
-  if (!recipe.all_datasets || recipe.outputs.empty()) {
-    return;
-  }
-  const auto shared_it = shared_sets_.find(recipe.id);
-  if (shared_it == shared_sets_.end()) {
-    runAndAccumulate(recipe, affected);  // never contributed anywhere yet — try again
-    return;
-  }
-  const std::string object_topic_name = sdk::markerObjectTopicName(recipe.outputs.front());
-  for (const DatasetId dataset_id : targetDatasets(recipe, loaded)) {
-    const auto parts_it = parts_.find(PublishTarget{dataset_id, object_topic_name});
-    if (parts_it != parts_.end() && parts_it->second.contains(recipe.id)) {
-      continue;  // already publishing there
-    }
-    if (publishShared(recipe, shared_it->second, dataset_id).has_value()) {
-      affected.push_back(object_topic_name);
     }
   }
 }
@@ -307,17 +260,23 @@ Expected<std::vector<std::string>> MarkerService::upsertGenerator(GeneratorRecip
     }
   }
 
+  // The owner separator is what keeps `<key>#<id>` unambiguous (MarkerTopics.h).
+  const auto carries_separator = [](const std::string& text) {
+    return text.find(kMarkerOwnerSeparator) != std::string::npos;
+  };
+  if (carries_separator(recipe.id) || std::any_of(recipe.outputs.begin(), recipe.outputs.end(), carries_separator)) {
+    return unexpected("'#' is reserved as the marker owner separator (generator id and output topic)");
+  }
+
   // Normalize the scope-encoded output topic host-side (see MarkerTopics.h): a
   // producer always addresses "__global__"; all_datasets rewrites that to the
-  // ALL-DATASETS key, so the two scopes never share one union. A dataset-bound
+  // ALL-DATASETS key, so the two scopes never share one family. A dataset-bound
   // recipe targeting the ALL-DATASETS key is rejected outright — silently
   // reinterpreting its scope would move the rule between UI rows with no signal.
-  if (!recipe.outputs.empty()) {
-    if (recipe.all_datasets && recipe.outputs.front() == sdk::kGlobalMarkerTopic) {
-      recipe.outputs.front() = std::string(kAllDatasetsMarkerTopic);
-    } else if (!recipe.all_datasets && recipe.outputs.front() == kAllDatasetsMarkerTopic) {
-      return unexpected("output '__all__' is reserved for all-datasets generators");
-    }
+  if (recipe.all_datasets && recipe.outputs.front() == sdk::kGlobalMarkerTopic) {
+    recipe.outputs.front() = std::string(kAllDatasetsMarkerTopic);
+  } else if (!recipe.all_datasets && recipe.outputs.front() == kAllDatasetsMarkerTopic) {
+    return unexpected("output '__all__' is reserved for all-datasets generators");
   }
 
   // Flags are per-id (clearGenerators, removeGenerator and generatorIds read the
@@ -340,16 +299,15 @@ Expected<std::vector<std::string>> MarkerService::upsertGenerator(GeneratorRecip
     return resolved;  // leave any prior published output + recipe untouched
   }
 
+  // The previous revision's topic would otherwise keep drawing a set nothing ever
+  // revisits: retire it unless this run just rewrote it (same dataset, same key).
+  const PublishTarget fresh = publishTarget(recipe);
   if (scope_changed) {
-    // The rule moved between Dataset and Global scope: every old binding and its
-    // output goes, only the freshly published targets stay.
-    if (!recipe.all_datasets) {
-      shared_sets_.erase(recipe.id);
-    }
-    dropParts(recipe.id, publishTargets(recipe), existing->second.front().ephemeral);
+    // The rule moved between Dataset and Global scope: every old output goes.
+    retireOwnedTopics(recipe.id, existing->second.front().ephemeral, &fresh);
     recipes_.erase(existing);
-  } else {
-    dropStaleTargets(recipe);
+  } else if (const GeneratorRecipe* replaced = findBinding(recipe)) {
+    retireTarget(publishTarget(*replaced), replaced->ephemeral, &fresh);
   }
   if (GeneratorRecipe* replaced = findBinding(recipe)) {
     *replaced = std::move(recipe);
@@ -357,29 +315,6 @@ Expected<std::vector<std::string>> MarkerService::upsertGenerator(GeneratorRecip
     recipes_[recipe.id].push_back(std::move(recipe));
   }
   return resolved;
-}
-
-void MarkerService::dropStaleTargets(const GeneratorRecipe& recipe) {
-  // A previous revision's part would otherwise stay stuck forever with a set
-  // nothing ever revisits — no later recompute or remove names it again. The
-  // binding THIS upsert replaces is deliberately excluded from `keep`: its old
-  // targets are exactly what must stay droppable when the new revision no longer
-  // covers them — only a sibling's targets (another dataset's binding) are a live,
-  // unrelated binding that must survive.
-  const auto it = recipes_.find(recipe.id);
-  if (it == recipes_.end()) {
-    return;
-  }
-  const bool prev_ephemeral = it->second.front().ephemeral;  // ephemeral is a per-id property, not per-dataset
-  std::vector<PublishTarget> keep = publishTargets(recipe);
-  for (const GeneratorRecipe& sibling : it->second) {
-    if (bindingDataset(sibling) == bindingDataset(recipe)) {
-      continue;
-    }
-    const std::vector<PublishTarget> sibling_targets = publishTargets(sibling);
-    keep.insert(keep.end(), sibling_targets.begin(), sibling_targets.end());
-  }
-  dropParts(recipe.id, keep, prev_ephemeral);
 }
 
 Status MarkerService::publishMarkerSet(
@@ -410,103 +345,47 @@ void MarkerService::publishEmptyMarkers(DatasetId dataset_id, const std::string&
   (void)object_store_.pushOwned(*topic_id, Timestamp{0}, serializePlotMarkers(sdk::PlotMarkers{}));
 }
 
-std::vector<DatasetId> MarkerService::targetDatasets(const GeneratorRecipe& recipe) const {
-  return recipe.all_datasets ? loadedDatasets() : std::vector<DatasetId>{recipe.dataset_id};
-}
-
-std::vector<DatasetId> MarkerService::targetDatasets(
-    const GeneratorRecipe& recipe, const std::vector<DatasetId>& loaded) {
-  return recipe.all_datasets ? loaded : std::vector<DatasetId>{recipe.dataset_id};
-}
-
-std::vector<MarkerService::PublishTarget> MarkerService::publishTargets(const GeneratorRecipe& recipe) const {
-  std::vector<PublishTarget> targets;
-  if (recipe.outputs.empty()) {
-    return targets;
-  }
-  const std::string object_topic_name = sdk::markerObjectTopicName(recipe.outputs.front());
-  for (const DatasetId dataset_id : targetDatasets(recipe)) {
-    targets.emplace_back(dataset_id, object_topic_name);
-  }
-  return targets;
-}
-
-void MarkerService::adoptForeignBlob(const PublishTarget& target, PartsByOwner& owners) const {
-  const std::optional<ObjectTopicId> topic_id = object_store_.findTopic(target.first, target.second);
-  if (!topic_id.has_value()) {
-    return;  // nothing published there yet
-  }
-  if (std::optional<sdk::PlotMarkers> decoded = decodeStoredMarkers(latestMarkerEntry(*topic_id))) {
-    owners[std::string(kForeignOwner)] = std::move(*decoded);
-  }
-}
-
-std::optional<ResolvedObjectEntry> MarkerService::latestMarkerEntry(ObjectTopicId topic_id) const {
-  return object_store_.latestAt(topic_id, std::numeric_limits<Timestamp>::max());
-}
-
-std::optional<sdk::PlotMarkers> MarkerService::decodeStoredMarkers(const std::optional<ResolvedObjectEntry>& entry) {
-  if (!entry.has_value()) {
-    return std::nullopt;
+sdk::PlotMarkers MarkerService::storedMarkers(ObjectTopicId topic_id, Timestamp shift) const {
+  const std::optional<ResolvedObjectEntry> entry =
+      object_store_.latestAt(topic_id, std::numeric_limits<Timestamp>::max());
+  if (!entry.has_value() || entry->payload.bytes.empty()) {
+    return {};
   }
   Expected<sdk::PlotMarkers> decoded = deserializePlotMarkers(entry->payload.bytes.data(), entry->payload.bytes.size());
-  if (!decoded.has_value() || decoded->empty()) {
-    return std::nullopt;  // indecodable or already a tombstone — nothing to adopt
+  if (!decoded.has_value()) {
+    return {};
   }
+  shiftMarkers(decoded->markers, shift + entry->payload_stamp_shift);
   return std::move(*decoded);
 }
 
-Status MarkerService::republishUnion(const PublishTarget& target) {
-  const auto it = parts_.find(target);
-  return republishUnion(target, it != parts_.end() ? it->second : PartsByOwner{});
+MarkerService::PublishTarget MarkerService::publishTarget(const GeneratorRecipe& recipe) {
+  return PublishTarget{
+      recipe.all_datasets ? kAllDatasetsMarkerDataset : recipe.dataset_id,
+      markerOwnerTopicName(recipe.outputs.front(), recipe.id)};
 }
 
-Status MarkerService::republishUnion(const PublishTarget& target, const PartsByOwner& owners) {
-  if (owners.size() == 1) {
-    return publishMarkerSet(target.first, target.second, owners.begin()->second);
+void MarkerService::retireTarget(const PublishTarget& target, bool ephemeral, const PublishTarget* keep) {
+  if (keep != nullptr && *keep == target) {
+    return;
   }
-  sdk::PlotMarkers set;
-  for (const auto& [owner, part] : owners) {
-    set.markers.insert(set.markers.end(), part.markers.begin(), part.markers.end());
+  if (!ephemeral) {
+    publishEmptyMarkers(target.first, target.second);
+    return;
   }
-  return publishMarkerSet(target.first, target.second, set);
+  if (const std::optional<ObjectTopicId> topic_id = object_store_.findTopic(target.first, target.second)) {
+    object_store_.removeTopic(*topic_id);
+  }
 }
 
-Status MarkerService::setPart(const PublishTarget& target, std::string_view owner, sdk::PlotMarkers part) {
-  const auto [it, inserted] = parts_.try_emplace(target);
-  if (inserted) {
-    adoptForeignBlob(target, it->second);  // never clobber a live part with the stale store blob
-  }
-  it->second[std::string(owner)] = std::move(part);
-  return republishUnion(target, it->second);
-}
-
-void MarkerService::dropParts(std::string_view owner, const std::vector<PublishTarget>& keep, bool ephemeral) {
-  const std::set<PublishTarget> kept(keep.begin(), keep.end());
-  for (auto it = parts_.begin(); it != parts_.end();) {
-    const PublishTarget& target = it->first;
-    if (kept.contains(target)) {
-      ++it;
-      continue;
+void MarkerService::retireOwnedTopics(std::string_view id, bool ephemeral, const PublishTarget* keep) {
+  std::string suffix(1, kMarkerOwnerSeparator);
+  suffix.append(id);
+  for (const ObjectTopicId topic_id : object_store_.listTopics()) {
+    const ObjectTopicDescriptor descriptor = object_store_.descriptor(topic_id);
+    if (isMarkerObjectTopic(descriptor.topic_name) && descriptor.topic_name.ends_with(suffix)) {
+      retireTarget(PublishTarget{descriptor.dataset_id, descriptor.topic_name}, ephemeral, keep);
     }
-    if (it->second.erase(std::string(owner)) == 0) {
-      ++it;  // this owner had nothing here — leave the target untouched
-      continue;
-    }
-    if (!it->second.empty()) {
-      (void)republishUnion(target);  // other owners remain — republish the smaller union
-      ++it;
-      continue;
-    }
-    // The last owner just left: tombstone (persistent) or remove outright (ephemeral).
-    if (ephemeral) {
-      if (const std::optional<ObjectTopicId> oid = object_store_.findTopic(target.first, target.second)) {
-        object_store_.removeTopic(*oid);
-      }
-    } else {
-      publishEmptyMarkers(target.first, target.second);
-    }
-    it = parts_.erase(it);
   }
 }
 
@@ -515,10 +394,8 @@ Status MarkerService::removeGenerator(std::string_view id) {
   if (it == recipes_.end()) {
     return unexpected("unknown generator id");
   }
-  const bool ephemeral = it->second.front().ephemeral;  // ephemeral is a per-id property, not per-dataset
-  shared_sets_.erase(it->first);
+  retireOwnedTopics(id, it->second.front().ephemeral);
   recipes_.erase(it);
-  dropParts(id, {}, ephemeral);
   return okStatus();
 }
 
@@ -528,8 +405,8 @@ void MarkerService::remapGeneratorsToAnchor(DatasetId anchor, const std::vector<
   };
   for (auto& [id, bindings] : recipes_) {
     // Collision rule (see the header): the anchor's own binding wins. mergeMarkerTopics
-    // runs before this call (SessionManager::mergeDatasets, (3b)) and already folded
-    // every consumed part onto the anchor under this owner id, so retiring the
+    // runs before this call (SessionManager::mergeDatasets, (3b)) and already moved
+    // every consumed output onto the anchor's topic of this id, so retiring the
     // consumed binding loses no published marker.
     const bool anchor_bound = std::any_of(bindings.begin(), bindings.end(), [&](const GeneratorRecipe& recipe) {
       return !recipe.all_datasets && recipe.dataset_id == anchor;
@@ -555,30 +432,15 @@ std::vector<std::string> MarkerService::clearGeneratorsForDataset(DatasetId data
     });
   }
   std::erase_if(recipes_, [](const auto& entry) { return entry.second.empty(); });
-  // The dataset's object topics went with it — nothing left to republish there.
-  std::erase_if(parts_, [dataset](const auto& entry) { return entry.first.first == dataset; });
 
   // The removed dataset may have contributed to a shared set: rebuild each from the
-  // survivors. With no contributor left the rule draws nothing (its parts go), but
-  // it stays live so a contributor loaded later revives it.
+  // survivors. With no contributor left the rule draws nothing, but it stays live
+  // so a contributor loaded later revives it.
   std::vector<std::string> affected;
   for (const GeneratorRecipe& recipe : allRecipes()) {
-    if (!recipe.all_datasets || !shared_sets_.contains(recipe.id)) {
-      continue;
+    if (recipe.all_datasets) {
+      republishShared(recipe, affected);
     }
-    Expected<std::optional<sdk::PlotMarkers>> shared = computeShared(recipe);
-    if (!shared.has_value()) {
-      continue;  // a script error keeps the last good set, as every recompute does
-    }
-    if (shared->has_value()) {
-      if (publishSharedEverywhere(recipe, std::move(**shared)).has_value()) {
-        affected.push_back(sdk::markerObjectTopicName(recipe.outputs.front()));
-      }
-      continue;
-    }
-    shared_sets_.erase(recipe.id);
-    affected.push_back(sdk::markerObjectTopicName(recipe.outputs.front()));
-    dropParts(recipe.id, {}, recipe.ephemeral);
   }
   return affected;
 }
@@ -586,7 +448,6 @@ std::vector<std::string> MarkerService::clearGeneratorsForDataset(DatasetId data
 std::vector<std::string> MarkerService::recomputeForChangedInputs(
     const std::vector<std::string>& changed, DatasetId scope) {
   std::vector<std::string> affected;
-  const std::vector<DatasetId> loaded = loadedDatasets();
   for (const GeneratorRecipe& recipe : allRecipes()) {
     // Topic names are not unique across datasets, so the name test alone would re-run
     // a generator bound to a dataset that never changed.
@@ -599,13 +460,15 @@ std::vector<std::string> MarkerService::recomputeForChangedInputs(
               changed.begin(), changed.end(), [&in](const std::string& prefix) { return in.rfind(prefix, 0) == 0; });
         });
     if (!rerun) {
-      reachUnpublishedDatasets(recipe, loaded, affected);
       continue;
     }
     // An all_datasets recipe's set is shared, so a change on one contributing
-    // dataset re-runs the whole union and re-publishes it everywhere — `scope` only
-    // attributes the change, it never bounds where the result lands.
-    runAndAccumulate(recipe, affected);
+    // dataset re-runs the whole union — `scope` only attributes the change.
+    if (recipe.all_datasets) {
+      republishShared(recipe, affected);
+    } else {
+      runAndAccumulate(recipe, affected);
+    }
   }
   return affected;
 }
@@ -666,92 +529,32 @@ std::vector<std::string> MarkerService::recomputeForDataset(DatasetId dataset) {
   return recomputeForChangedInputs(/*changed=*/{}, dataset);
 }
 
-void MarkerService::foldAnchorPartsBeforeMerge(DatasetId anchor, std::set<std::string>& touched) {
-  for (const ObjectTopicId tid : object_store_.listTopics(anchor)) {
-    const ObjectTopicDescriptor desc = object_store_.descriptor(tid);
-    if (!isMarkerObjectTopic(desc.topic_name)) {
-      continue;
-    }
-    const PublishTarget target{anchor, desc.topic_name};
-    const std::optional<ResolvedObjectEntry> stored = latestMarkerEntry(tid);
-    const Timestamp shift = stored.has_value() ? stored->payload_stamp_shift : Timestamp{0};
-
-    if (const auto it = parts_.find(target); it != parts_.end()) {
-      if (shift != 0) {
-        for (auto& [owner, part] : it->second) {
-          shiftMarkers(part.markers, shift);
-        }
-      }
-    } else if (std::optional<sdk::PlotMarkers> decoded = decodeStoredMarkers(stored); decoded.has_value()) {
-      shiftMarkers(decoded->markers, shift);
-      parts_[target][std::string(kForeignOwner)] = std::move(*decoded);
-    }
-    touched.insert(desc.topic_name);
-  }
-}
-
-void MarkerService::foldSourcePartsOntoAnchor(
-    DatasetId anchor, const DatasetMergeSource& source, std::set<std::string>& touched) {
-  std::vector<ObjectTopicId> to_remove;
-  for (const ObjectTopicId tid : object_store_.listTopics(source.dataset_id)) {
-    const ObjectTopicDescriptor desc = object_store_.descriptor(tid);
-    if (!isMarkerObjectTopic(desc.topic_name)) {
-      continue;
-    }
-    const PublishTarget src_target{source.dataset_id, desc.topic_name};
-    const PublishTarget dst_target{anchor, desc.topic_name};
-    const std::optional<ResolvedObjectEntry> stored = latestMarkerEntry(tid);
-    const Timestamp total_shift = source.raw_shift_ns + (stored.has_value() ? stored->payload_stamp_shift : 0);
-    const auto append_to = [](sdk::PlotMarkers& dst, std::vector<sdk::PlotMarker>&& markers) {
-      dst.markers.insert(
-          dst.markers.end(), std::make_move_iterator(markers.begin()), std::make_move_iterator(markers.end()));
-    };
-
-    if (const auto it = parts_.find(src_target); it != parts_.end()) {
-      PartsByOwner& dst_owners = parts_[dst_target];
-      for (auto& [owner, part] : it->second) {
-        // A shared (all_datasets) set is the SAME set on every dataset: the anchor's
-        // copy already holds it, so the source's copy would only double every marker.
-        if (shared_sets_.contains(owner) && dst_owners.contains(owner)) {
-          continue;
-        }
-        shiftMarkers(part.markers, total_shift);
-        append_to(dst_owners[owner], std::move(part.markers));
-      }
-      parts_.erase(it);
-    } else if (std::optional<sdk::PlotMarkers> decoded = decodeStoredMarkers(stored); decoded.has_value()) {
-      shiftMarkers(decoded->markers, total_shift);
-      append_to(parts_[dst_target][std::string(kForeignOwner)], std::move(decoded->markers));
-    }
-    touched.insert(desc.topic_name);
-    to_remove.push_back(tid);
-  }
-  for (const ObjectTopicId tid : to_remove) {
-    object_store_.removeTopic(tid);
-  }
-}
-
 std::vector<std::string> MarkerService::mergeMarkerTopics(
     DatasetId anchor, const std::vector<DatasetMergeSource>& sources) {
-  // Names of every anchor marker target touched by this merge (dataset is always
-  // `anchor`) — republished once at the end, in a deterministic sorted order.
+  // Anchor topic names touched by this merge, republished once each in sorted order.
   std::set<std::string> touched;
-
-  // MUST run before the source loop below — see foldAnchorPartsBeforeMerge's doc.
-  foldAnchorPartsBeforeMerge(anchor, touched);
-
-  for (const DatasetMergeSource& src : sources) {
-    foldSourcePartsOntoAnchor(anchor, src, touched);
-  }
-
-  // Republish every touched anchor target once, as the union of its parts.
-  std::vector<std::string> affected;
-  for (const std::string& name : touched) {
-    if (republishUnion(PublishTarget{anchor, name}).has_value()) {
-      affected.push_back(name);
+  for (const DatasetMergeSource& source : sources) {
+    for (const ObjectTopicId source_id : object_store_.listTopics(source.dataset_id)) {
+      const std::string name = object_store_.descriptor(source_id).topic_name;
+      if (!isMarkerObjectTopic(name)) {
+        continue;
+      }
+      // The anchor's own set (unshifted) first, then the source's on the anchor clock.
+      sdk::PlotMarkers merged;
+      if (const std::optional<ObjectTopicId> anchor_id = object_store_.findTopic(anchor, name)) {
+        merged = storedMarkers(*anchor_id, Timestamp{0});
+      }
+      sdk::PlotMarkers moved = storedMarkers(source_id, source.raw_shift_ns);
+      merged.markers.insert(
+          merged.markers.end(), std::make_move_iterator(moved.markers.begin()),
+          std::make_move_iterator(moved.markers.end()));
+      object_store_.removeTopic(source_id);
+      if (publishMarkerSet(anchor, name, merged).has_value()) {
+        touched.insert(name);
+      }
     }
   }
-  return affected;
+  return {touched.begin(), touched.end()};
 }
 
 std::vector<MarkerService::GeneratorRecipe> MarkerService::recipes() const {

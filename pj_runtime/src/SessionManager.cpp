@@ -107,8 +107,8 @@ SessionManager::SessionManager(QObject* parent)
   // late would silently run every restored rule against no data.
   marker_service_ = std::make_unique<MarkerService>(
       object_store_, [](DatasetId, const std::string&) { return std::optional<MarkerService::ResolvedSeries>{}; });
-  // An all-datasets set is kept in the display frame and shifted per dataset, so it
-  // lands at the same display instant everywhere; only the alignment shift matters
+  // An all-datasets set is stored once in the display frame, so each contributor's
+  // run is shifted by its alignment offset; only that shift matters
   // (globalTimeReference is uniform and cancels out).
   marker_service_->setDisplayOffsetResolver(
       [this](DatasetId dataset_id) { return static_cast<Timestamp>(sourceDisplayOffset(dataset_id).value.count()); });
@@ -567,11 +567,6 @@ void SessionManager::setDisplayOffset(DatasetId dataset_id, DisplayOffset offset
   }
   data_engine_.setDisplayOffset(dataset->time_domain.id, static_cast<Timestamp>(offset.value.count()));
   emit displayOffsetChanged(dataset_id);
-  // All-datasets marker sets follow the display frame: re-derive this dataset's part.
-  if (marker_service_ && marker_service_->hasGenerators() &&
-      !marker_service_->rebaseForDisplayOffset(dataset_id).empty()) {
-    notifyMarkersChanged();
-  }
 }
 
 std::vector<TopicId> SessionManager::commitChunks(std::vector<std::pair<TopicId, TopicChunk>> chunks) {
@@ -1049,6 +1044,13 @@ void RefillGuard::rollback() {
     });
   }
   session_->restoreObjectTopicParsers(std::move(object_parser_snapshot_));
+  // (g) Markers published during the refill described the attempted data, and the
+  // shared all-datasets set lives outside this dataset's snapshot: re-run over the
+  // restored data. Runs before (f) only in source order — the two are independent.
+  if (session_->markerService().hasGenerators() &&
+      !session_->markerService().recomputeForDataset(dataset_id_).empty()) {
+    session_->notifyMarkersChanged();
+  }
   // (f) A failed tentative replay may have reset stateful operator internals.
   // Replaying over the byte-for-byte restored raw snapshot repairs that state.
   if (auto replayed = session_->dataProcessorService().rebindAndRecomputeForReplacedSources(replaced_source_topic_ids_);

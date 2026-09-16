@@ -12,6 +12,12 @@
 
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_base/types.hpp"
+#include "pj_datastore/object_store.hpp"  // ObjectStore, ObjectTopicId
+#include "pj_runtime/Time.h"              // DisplayOffset
+
+class QFontMetrics;
+class QPainter;
+class QwtScaleMap;
 
 namespace PJ {
 
@@ -24,15 +30,32 @@ struct MarkerTarget {
   QString topic;
 };
 
+/// One object topic the overlay draws for a target, and the frame its times are
+/// stored in: the dataset's raw clock, or the display frame of the shared
+/// all-datasets home (`kAllDatasetsMarkerDataset`).
+struct MarkerTargetTopic {
+  ObjectTopicId id;
+  bool display_frame = false;
+};
+
+/// Every family member `target` resolves to: the all-datasets scope reads the
+/// shared home only; any other key reads its dataset's family and then the shared
+/// home's (a scope=all rule may publish under a per-series key). The overlay's
+/// resolver, exposed as the test seam.
+[[nodiscard]] std::vector<MarkerTargetTopic> markerTargetTopics(const ObjectStore& store, const MarkerTarget& target);
+
 // The reserved marker-scope topic names live in pj_runtime/MarkerTopics.h; this
 // module has no shadow copy of them.
 
 /// Custom QwtPlotItem that overlays plot markers (regions / events / value bands /
-/// labels), drawn on top of the curves. The marker set for each (dataset, topic)
-/// is read from the session ObjectStore as one serialized PlotMarkers object
-/// (republished wholesale by its producer). Time anchors (raw int64 ns) are
-/// converted to display seconds via the dataset's display offset before mapping
-/// to pixels.
+/// labels), drawn on top of the curves. Each (dataset, topic) target is a FAMILY of
+/// serialized PlotMarkers object topics in the session ObjectStore — the bare topic
+/// plus one per owning generator (`markerTopicsOf`) — drawn as their union; each
+/// topic is drawn once per paint even when several targets resolve to it (the
+/// all-datasets scope of every dataset on the plot is the same shared topic).
+/// Time anchors (raw int64 ns) are converted to display seconds via the dataset's
+/// display offset; a family on the shared all-datasets home is already stored in
+/// the display frame, so only the uniform global origin applies to it.
 class PlotMarkersItem : public QwtPlotItem {
  public:
   explicit PlotMarkersItem(SessionManager* session);
@@ -53,6 +76,12 @@ class PlotMarkersItem : public QwtPlotItem {
       QPainter* painter, const QwtScaleMap& xMap, const QwtScaleMap& yMap, const QRectF& canvasRect) const override;
 
  private:
+  /// Paint one object topic's set (decoded through `decode_cache_`), raw times
+  /// mapped through `offset`.
+  void drawTopic(
+      QPainter* painter, const QwtScaleMap& xMap, const QwtScaleMap& yMap, const QRectF& canvasRect,
+      const QFontMetrics& fm, const ObjectStore& store, ObjectTopicId topic_id, DisplayOffset offset) const;
+
   SessionManager* session_ = nullptr;
   std::function<std::vector<MarkerTarget>()> targets_provider_;
 

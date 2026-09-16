@@ -138,15 +138,16 @@ class SessionManager : public QObject {
     return ingest_taps_;
   }
   // Plot markers (findings) live in the ObjectStore as serialized PlotMarkers
-  // object topics (one set per (dataset, topic), republished wholesale by the
-  // producer). Call notifyMarkersChanged() after a producer pushes/clears a
-  // marker object topic to repaint the plot overlays.
+  // object topics (one set per (dataset, topic, owner), republished wholesale by
+  // the producer; see MarkerTopics.h). Call notifyMarkersChanged() after a
+  // producer pushes/clears a marker object topic to repaint the plot overlays.
   void notifyMarkersChanged() {
     emit markersChanged();
   }
-  // A dataset just became listed (the catalog published it): hand it every
-  // all-datasets marker set. Wired by CatalogModel; the commit recompute runs
-  // before the catalog rebuild, so it can never reach a new dataset itself.
+  // A dataset just became listed (the catalog published it): re-run every
+  // all-datasets marker rule, since the newcomer may contribute. Wired by
+  // CatalogModel; the commit recompute runs before the catalog rebuild, so it can
+  // never see a new dataset itself.
   void publishSharedMarkersToNewDatasets();
 
   // The session-wide budget for ingest-seeded object payload residency (see

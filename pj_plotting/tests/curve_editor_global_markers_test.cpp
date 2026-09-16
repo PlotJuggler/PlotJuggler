@@ -50,13 +50,15 @@ QString keyForTopic(PJ::CatalogModel& catalog, PJ::TopicId topic_id) {
   return {};
 }
 
-// Registers `scope`'s marker object topic on `dataset_id` the same way
-// MarkerService::publishMarkerSet does (that method is private; this mirrors
-// its ObjectStore calls) and notifies the plot overlay.
+// Registers `scope`'s bare marker object topic where the overlay reads it for
+// `dataset_id` (the dataset itself, or the shared dataset for the ALL-DATASETS
+// scope) the same way MarkerService::publishMarkerSet does (that method is
+// private; this mirrors its ObjectStore calls) and notifies the plot overlay.
 void publishScopeTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, PJ::MarkerScope scope) {
   const std::string object_topic = PJ::sdk::markerObjectTopicName(PJ::markerScopeTopic(scope));
   const auto registered = session.objectStore().registerTopic(
-      PJ::ObjectTopicDescriptor{.dataset_id = dataset_id, .topic_name = object_topic, .metadata_json = {}});
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = PJ::markerScopeDataset(scope, dataset_id), .topic_name = object_topic, .metadata_json = {}});
   EXPECT_TRUE(registered.has_value()) << registered.error();
   if (!registered.has_value()) {
     return;

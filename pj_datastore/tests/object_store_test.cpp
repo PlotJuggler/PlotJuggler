@@ -143,6 +143,25 @@ TEST(ObjectStoreTest, ListTopicsByDataset) {
   EXPECT_EQ(ds2.size(), 1u);
 }
 
+// The prefix overload scans one dataset's names under a single lock: the family
+// `__markers__/k#…` is listed in registration order, other datasets and other
+// keys (`__markers__/k2#…` shares the bare prefix but not the separator) excluded.
+TEST(ObjectStoreTest, ListTopicsByDatasetAndNamePrefix) {
+  ObjectStore store;
+  const auto first = store.registerTopic({.dataset_id = 1, .topic_name = "__markers__/k#b", .metadata_json = "{}"});
+  store.registerTopic({.dataset_id = 2, .topic_name = "__markers__/k#a", .metadata_json = "{}"});
+  store.registerTopic({.dataset_id = 1, .topic_name = "__markers__/k2#a", .metadata_json = "{}"});
+  const auto second = store.registerTopic({.dataset_id = 1, .topic_name = "__markers__/k#a", .metadata_json = "{}"});
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(second.has_value());
+
+  const std::vector<ObjectTopicId> family = store.listTopics(1, "__markers__/k#");
+  ASSERT_EQ(family.size(), 2u);
+  EXPECT_EQ(family[0].id, first->id);
+  EXPECT_EQ(family[1].id, second->id);
+  EXPECT_TRUE(store.listTopics(3, "__markers__/k#").empty());
+}
+
 // =========================================================================
 // Push + basic queries
 // =========================================================================

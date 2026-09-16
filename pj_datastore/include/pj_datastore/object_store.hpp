@@ -177,6 +177,10 @@ class ObjectStore {
 
   std::vector<ObjectTopicId> listTopics() const;
   std::vector<ObjectTopicId> listTopics(DatasetId dataset_id) const;
+  /// `dataset_id`'s topics whose name starts with `name_prefix`, in registration
+  /// order — one lock, no descriptor copies, for callers that scan a name family
+  /// on every paint.
+  std::vector<ObjectTopicId> listTopics(DatasetId dataset_id, std::string_view name_prefix) const;
 
   // --- Write ---
 
