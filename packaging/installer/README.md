@@ -148,11 +148,12 @@ source), `-PluginPlatform <key>` (defaults to `windows-x86_64`), and
 `-CleanReleaseName` (name the output `PlotJuggler-<Version>-Windows-x64.exe`
 instead of the commit-stamped default — used by release CI on tag builds).
 
-The default whitelist bundles these 13 published plugins:
-`mcap-loader`, `csv-loader`, `parquet-loader`, `ulog-loader`, `dummy-streamer`,
-`foxglove-bridge`, `plotjuggler-bridge`, `ros-parser`, `protobuf-parser`,
-`json-parser`, `toolbox-quaternion`, `toolbox-transform-editor`, and
-`toolbox-mosaico`.
+The default whitelist bundles these 18 published plugins:
+`mcap-loader`, `csv-loader`, `parquet-loader`, `ulog-loader`, `mp4-loader`,
+`pointcloud-3d-loader`, `dummy-streamer`, `foxglove-bridge`,
+`plotjuggler-bridge`, `webrtc-client`, `ros-parser`, `protobuf-parser`,
+`json-parser`, `data-tamer-parser`, `toolbox-quaternion`,
+`toolbox-transform-editor`, `toolbox-mosaico`, and `arrow-parser`.
 
 ## Install-time behaviour
 

@@ -68,7 +68,8 @@ Linux-only `ros2-topic-subscriber`):
 `pointcloud-3d-loader`, `dummy-streamer`, `foxglove-bridge`,
 `plotjuggler-bridge`, `webrtc-client`, `ros-parser`, `protobuf-parser`,
 `json-parser`, `data-tamer-parser`, `toolbox-quaternion`,
-`toolbox-transform-editor`, `toolbox-mosaico`, `ros2-topic-subscriber`.
+`toolbox-transform-editor`, `toolbox-mosaico`, `arrow-parser`,
+`ros2-topic-subscriber`.
 
 Not bundled: `toolbox-colormap`, `toolbox-reactive-scripts-editor` (excluded by
 request); `toolbox-fft`, `mqtt-subscriber`, `udp-server`, `zmq-subscriber`,

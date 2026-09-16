@@ -118,6 +118,7 @@ BUNDLE_IDS=(
   toolbox-quaternion
   toolbox-transform-editor
   toolbox-mosaico
+  arrow-parser
   # Multi-distro ROS 2 subscriber: the single linux-x86_64 zip carries the
   # distro-agnostic proxy + per-distro inners under dist/<distro>/;
   # registry-mode unpacks it verbatim, no special handling needed.

@@ -15,15 +15,15 @@
 #                          orchestrator then extracts the produced AppImage,
 #                          drops non-MUST .so from the plugins dir, and repacks
 #                          so the released AppImage carries exactly the curated
-#                          17 (matching --host-build).
+#                          19 (matching --host-build).
 #                          With --host-build: ./build.sh + pj_ported_plugins/
-#                          build.sh on the host, curated 17-plugin filter, then
+#                          build.sh on the host, curated 19-plugin filter, then
 #                          packaging/appimage/build_appimage.sh --plugins-dir.
 #
 # DEFAULT = docker (portable). The AppImage inherits the container's glibc 2.35
 # floor and runs on any distro with glibc >= 2.35 (Ubuntu 22.04 and newer, and
 # equivalents on other families). Ros2 is ALWAYS Docker-per-distro either way.
-# Both modes produce the same curated 17-plugin bundle.
+# Both modes produce the same curated 19-plugin bundle.
 #
 # --host-build (opt-in) = host build (fast, this machine). The resulting AppImage
 # inherits the HOST glibc floor (e.g. Ubuntu 24.04 => glibc 2.38), so it only
@@ -37,7 +37,7 @@
 #                             [--ros2-distros "humble iron jazzy rolling"]
 #
 #   --host-build                            opt into the legacy host-build flow
-#                                           (curated 17 plugins, non-portable).
+#                                           (curated 19 plugins, non-portable).
 #   --fresh                                 (docker mode only) drop the
 #                                           persistent Conan + ccache Docker
 #                                           volumes so app+plugins compile from
@@ -157,10 +157,11 @@ RELEASE_FLAT_SOS=(
   libparser_protobuf_plugin.so
   libparser_json_plugin.so
   libparser_data_tamer_plugin.so
+  libparser_arrow_plugin.so
   libtoolbox_quaternion_plugin.so
   libtoolbox_transform_editor_plugin.so
+  libtoolbox_mosaico_plugin.so
 )
-MOSAICO_SO="libtoolbox_mosaico_plugin.so"   # standalone (Arrow Flight + gRPC)
 ROS2_EXTENSION_DIR="ros2-topic-subscriber"  # bundle dir name inside the plugin tree
 
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
@@ -193,7 +194,7 @@ if [[ "${USE_DOCKER}" == 1 ]]; then
   # extract + repack step.
   docker_cmd=( "${PJ4_ROOT}/packaging/appimage/build_in_docker.sh" --plugins-dir "${PLUGINS_REPO}" )
   [[ "${FRESH}" == 1 ]] && docker_cmd+=( --fresh )
-  PJ_INCLUDE_PLUGINS="${RELEASE_FLAT_SOS[*]} ${MOSAICO_SO} ${ROS2_EXTENSION_DIR}" \
+  PJ_INCLUDE_PLUGINS="${RELEASE_FLAT_SOS[*]} ${ROS2_EXTENSION_DIR}" \
     "${docker_cmd[@]}"
 else
   # Host mode (opt-in): compile on the host, then stage only the MUST-set and
@@ -205,17 +206,15 @@ else
   [[ -x "${PJ4_ROOT}/build/pj_app/plotjuggler4" ]] || \
     { echo "ERROR: app binary missing (build/pj_app/plotjuggler4) — drop --skip-app" >&2; exit 1; }
 
-  # toolbox_mosaico and toolbox_transform_editor are NOT in the aggregate's
-  # add_subdirectory list (the `else()` branch of pj_ported_plugins/CMakeLists.txt
-  # in standalone mode), so each is built on its own. They are kept separate from
-  # one another too: mosaico already pulls a heavy Arrow Flight + gRPC closure.
+  # toolbox_mosaico, toolbox_transform_editor and parser_arrow are all part of
+  # the aggregate's `else()` add_subdirectory list (pj_ported_plugins/CMakeLists.txt
+  # in standalone mode) — a plain `./build.sh` already produces every .so below,
+  # no per-plugin standalone build needed.
   if [[ "${SKIP_PLUGINS}" == 0 ]]; then
-    log "Building non-ros2 plugin set + mosaico + transform_editor (host)"
+    log "Building the aggregate plugin set (host)"
     ( cd "${PLUGINS_REPO}"
       [[ -x scripts/ensure_core.sh ]] && scripts/ensure_core.sh
-      ./build.sh                         # aggregate set
-      ./build.sh toolbox_mosaico         # standalone (heavy: Arrow Flight + gRPC)
-      ./build.sh toolbox_transform_editor # standalone (not in the aggregate list)
+      ./build.sh
     )
   fi
 
@@ -226,7 +225,7 @@ else
       | grep -vE '/test|/lib/' | head -1
   }
   missing=0
-  for so in "${RELEASE_FLAT_SOS[@]}" "${MOSAICO_SO}"; do
+  for so in "${RELEASE_FLAT_SOS[@]}"; do
     f="$(find_so "${so}")"
     if [[ -n "${f}" ]]; then cp "${f}" "${STAGING}/"; echo "  + ${so}"
     else echo "  ! MISSING ${so}"; missing=1; fi
@@ -253,7 +252,7 @@ BUILT="$(ls -t "${PJ4_ROOT}/packaging/appimage/"PlotJuggler-*-x86_64.AppImage 2>
 if [[ -n "${OUT}" && -n "${BUILT}" ]]; then cp "${BUILT}" "${OUT}"; BUILT="${OUT}"; fi
 log "Done: ${BUILT}"
 if [[ "${USE_DOCKER}" == 1 ]]; then
-  echo "Mode: docker (Ubuntu 22.04, glibc 2.35). Curated $(( ${#RELEASE_FLAT_SOS[@]} + 2 )) plugins embedded + ros2(${ROS2_DISTROS})."
+  echo "Mode: docker (Ubuntu 22.04, glibc 2.35). Curated $(( ${#RELEASE_FLAT_SOS[@]} + 1 )) plugins embedded + ros2(${ROS2_DISTROS})."
 else
-  echo "Mode: host build. Curated $(( ${#RELEASE_FLAT_SOS[@]} + 2 )) plugins embedded + ros2(${ROS2_DISTROS})."
+  echo "Mode: host build. Curated $(( ${#RELEASE_FLAT_SOS[@]} + 1 )) plugins embedded + ros2(${ROS2_DISTROS})."
 fi

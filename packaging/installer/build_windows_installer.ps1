@@ -102,7 +102,8 @@ param(
     "mp4-loader", "pointcloud-3d-loader",
     "dummy-streamer", "foxglove-bridge", "plotjuggler-bridge", "webrtc-client",
     "ros-parser", "protobuf-parser", "json-parser", "data-tamer-parser",
-    "toolbox-quaternion", "toolbox-transform-editor", "toolbox-mosaico"
+    "toolbox-quaternion", "toolbox-transform-editor", "toolbox-mosaico",
+    "arrow-parser"
   ),
   [string]$PluginPlatform = "windows-x86_64",
   [string]$ConanHome  = "$env:USERPROFILE\.conan2",
