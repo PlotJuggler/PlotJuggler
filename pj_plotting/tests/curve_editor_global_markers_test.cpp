@@ -53,8 +53,9 @@ QString keyForTopic(PJ::CatalogModel& catalog, PJ::TopicId topic_id) {
 // Registers `scope`'s bare marker object topic where the overlay reads it for
 // `dataset_id` (the dataset itself, or the shared dataset for the ALL-DATASETS
 // scope) the same way MarkerService::publishMarkerSet does (that method is
-// private; this mirrors its ObjectStore calls) and notifies the plot overlay.
-void publishScopeTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, PJ::MarkerScope scope) {
+// private; this mirrors its ObjectStore calls). Notification is kept separate
+// (publishScopeTopic) so a test can pin what the footer shows before it.
+void registerScopeTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, PJ::MarkerScope scope) {
   const std::string object_topic = PJ::sdk::markerObjectTopicName(PJ::markerScopeTopic(scope));
   const auto registered = session.objectStore().registerTopic(
       PJ::ObjectTopicDescriptor{
@@ -66,6 +67,10 @@ void publishScopeTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, PJ
   EXPECT_TRUE(session.objectStore()
                   .pushOwned(*registered, PJ::Timestamp{0}, PJ::serializePlotMarkers(PJ::sdk::PlotMarkers{}))
                   .has_value());
+}
+
+void publishScopeTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, PJ::MarkerScope scope) {
+  registerScopeTopic(session, dataset_id, scope);
   session.notifyMarkersChanged();
 }
 
@@ -222,4 +227,69 @@ TEST(CurveEditorGlobalMarkers, ToggleDrivesPlotFlagAndUndoRefreshes) {
   const auto toggles_after = rows_after[1]->findChildren<QToolButton*>(u"curveMarkersToggle"_s);
   ASSERT_EQ(toggles_after.size(), 1);
   EXPECT_TRUE(toggles_after.front()->isChecked());
+}
+
+TEST(CurveEditorGlobalMarkers, RestoredHiddenScopeRendersUnchecked) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const QString key = keyForTopic(catalog, addScalarTopic(session, *dataset, "/imu/x"));
+  ASSERT_FALSE(key.isEmpty());
+  PJ::PlotWidget saved(&session, &catalog);
+  ASSERT_NE(saved.addCurve(key), nullptr);
+  saved.setDatasetMarkerScopeVisible(*dataset, PJ::MarkerScope::kDataset, false);
+  QDomDocument doc;
+  const QDomElement element = saved.xmlSaveState(doc);
+
+  PJ::PlotWidget restored(&session, &catalog);
+  ASSERT_TRUE(restored.xmlLoadState(element));
+  if (restored.curveList().empty()) {
+    ASSERT_NE(restored.addCurve(key), nullptr);
+  }
+  PJ::CurveEditor editor;
+  editor.setPlot(&restored);
+  auto* footer = editor.findChild<QWidget*>(u"markerScopesFooter"_s);
+  ASSERT_NE(footer, nullptr);
+  EXPECT_TRUE(footerRows(footer).isEmpty());
+  publishScopeTopic(session, *dataset, PJ::MarkerScope::kDataset);
+  const auto rows = footerRows(footer);
+  ASSERT_EQ(rows.size(), 1);
+  const auto toggles = rows.front()->findChildren<QToolButton*>(u"curveMarkersToggle"_s);
+  ASSERT_EQ(toggles.size(), 1);
+  EXPECT_FALSE(toggles.front()->isChecked());
+}
+
+TEST(CurveEditorGlobalMarkers, PendingHiddenScopeRendersUncheckedOnceResolved) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotWidget plot(&session, &catalog);
+  QDomDocument doc;
+  QDomElement element = plot.xmlSaveState(doc);
+  QDomElement scope = doc.createElement(u"marker_scope"_s);
+  scope.setAttribute(u"dataset_id"_s, u"7"_s);
+  scope.setAttribute(u"dataset_source"_s, u"drive.mcap"_s);
+  scope.setAttribute(u"scope"_s, u"dataset"_s);
+  scope.setAttribute(u"visible"_s, u"false"_s);
+  element.appendChild(scope);
+  ASSERT_TRUE(plot.xmlLoadState(element));
+  PJ::CurveEditor editor;
+  editor.setPlot(&plot);
+  auto* footer = editor.findChild<QWidget*>(u"markerScopesFooter"_s);
+  ASSERT_NE(footer, nullptr);
+
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const QString key = keyForTopic(catalog, addScalarTopic(session, *dataset, "/imu/x"));
+  ASSERT_FALSE(key.isEmpty());
+  ASSERT_NE(plot.addCurve(key), nullptr);
+  EXPECT_TRUE(footerRows(footer).isEmpty());
+  // The topic appears after the curve, without a producer notification.
+  registerScopeTopic(session, *dataset, PJ::MarkerScope::kDataset);
+  plot.resolvePendingMarkerScopes();
+  const auto rows = footerRows(footer);
+  ASSERT_EQ(rows.size(), 1);
+  const auto toggles = rows.front()->findChildren<QToolButton*>(u"curveMarkersToggle"_s);
+  ASSERT_EQ(toggles.size(), 1);
+  EXPECT_FALSE(toggles.front()->isChecked());
 }

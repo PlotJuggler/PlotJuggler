@@ -11,6 +11,7 @@
 
 #include <QApplication>
 #include <QDomDocument>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <optional>
 #include <string>
@@ -40,6 +41,16 @@ class MainWindowMarkerGeneratorTestPeer {
   [[nodiscard]] static bool restoreDataProcessors(MainWindow& window, const QDomElement& root) {
     return window.restoreDataProcessors(root);
   }
+
+  [[nodiscard]] static auto captureWorkspace(MainWindow& window) {
+    return window.captureWorkspace();
+  }
+
+  [[nodiscard]] static bool restoreWorkspace(MainWindow& window, const MainWindow::CapturedWorkspace& captured) {
+    return window.restoreWorkspaceState(
+               captured, MainWindow::MissingCurvePolicy::kExact, MainWindow::TimelineRestoreMode::kExact) ==
+           MainWindow::RestoreResult::kApplied;
+  }
 };
 
 }  // namespace PJ
@@ -48,6 +59,7 @@ namespace {
 
 constexpr const char* kTopic = "sensor";
 constexpr const char* kSeriesKey = "sensor/value";
+constexpr const char* kGeneratorId = "toolbox-anomaly-detector/rule/sensor";
 
 // A layout carrying one marker generator over `series_key`, shaped exactly as
 // MainWindow::saveDataProcessors writes it.
@@ -59,7 +71,7 @@ QDomDocument layoutWithGenerator(PJ::DatasetId dataset_id, const QString& source
   root.appendChild(processors);
 
   QDomElement gen = doc.createElement(u"generator"_s);
-  gen.setAttribute(u"id"_s, u"toolbox-anomaly-detector/rule/sensor"_s);
+  gen.setAttribute(u"id"_s, QString::fromLatin1(kGeneratorId));
   gen.setAttribute(u"language"_s, u"luau"_s);
   gen.setAttribute(u"all_datasets"_s, u"0"_s);
   gen.setAttribute(u"dataset_id"_s, QString::number(dataset_id));
@@ -79,21 +91,9 @@ QDomDocument layoutWithGenerator(PJ::DatasetId dataset_id, const QString& source
   return doc;
 }
 
-// Markers published for the generator's output topic on `dataset`, if any.
+// Markers the layout's generator published for its output topic on `dataset`, if any.
 std::optional<PJ::sdk::PlotMarkers> publishedMarkers(PJ::AppSession& app, PJ::DatasetId dataset) {
-  PJ::ObjectStore& store = app.sessionManager().objectStore();
-  const std::optional<PJ::ObjectTopicId> id =
-      store.findTopic(dataset, PJ::markerOwnerTopicName(kSeriesKey, "toolbox-anomaly-detector/rule/sensor"));
-  if (!id.has_value()) {
-    return std::nullopt;
-  }
-  const std::optional<PJ::ResolvedObjectEntry> entry = store.latestAt(*id, PJ::Timestamp{0});
-  if (!entry.has_value()) {
-    return std::nullopt;
-  }
-  PJ::Expected<PJ::sdk::PlotMarkers> decoded =
-      PJ::deserializePlotMarkers(entry->payload.bytes.data(), entry->payload.bytes.size());
-  return decoded.has_value() ? std::optional<PJ::sdk::PlotMarkers>{*decoded} : std::nullopt;
+  return pj_test::publishedMarkers(app, dataset, kSeriesKey, kGeneratorId);
 }
 
 // The whole point: no toolbox is ever launched here, yet the restored rule must see
@@ -182,6 +182,79 @@ TEST(MainWindowMarkerGeneratorRestoreTest, RestoresGeneratorBySourceWhenIdsSwap)
   EXPECT_EQ(recipes.front().dataset_id, dataset_b);
   EXPECT_TRUE(publishedMarkers(app, dataset_b).has_value());
   EXPECT_FALSE(publishedMarkers(app, dataset_a).has_value());
+}
+
+TEST(MainWindowMarkerGeneratorRestoreTest, ReplayAnnouncesMarkersChangedOnce) {
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  PJ::MainWindow window(extensions_dir.path());
+  PJ::AppSession& app = PJ::MainWindowMarkerGeneratorTestPeer::session(window);
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "run.csv");
+  ASSERT_NE(dataset, 0U);
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset, kTopic), 0U);
+
+  QSignalSpy changed(&app.sessionManager(), &PJ::SessionManager::markersChanged);
+  const QDomDocument doc = layoutWithGenerator(dataset, u"run.csv"_s, u"createMarker(100)"_s);
+  ASSERT_TRUE(PJ::MainWindowMarkerGeneratorTestPeer::restoreDataProcessors(window, doc.documentElement()));
+  EXPECT_EQ(changed.count(), 1);
+
+  ASSERT_TRUE(PJ::MainWindowMarkerGeneratorTestPeer::restoreDataProcessors(window, QDomElement{}));
+  EXPECT_EQ(changed.count(), 2);
+  ASSERT_TRUE(PJ::MainWindowMarkerGeneratorTestPeer::restoreDataProcessors(window, QDomElement{}));
+  EXPECT_EQ(changed.count(), 2);
+}
+
+TEST(MainWindowMarkerGeneratorRestoreTest, GeneratorReplaysUnderTheSnapshotsDisplayOffsets) {
+  constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  PJ::MainWindow window(extensions_dir.path());
+  PJ::AppSession& app = PJ::MainWindowMarkerGeneratorTestPeer::session(window);
+  const PJ::DatasetId dataset_a = pj_test::createDataset(app, "a", /*own_time_domain=*/true);
+  const PJ::DatasetId dataset_b = pj_test::createDataset(app, "b", /*own_time_domain=*/true);
+  ASSERT_NE(dataset_a, 0U);
+  ASSERT_NE(dataset_b, 0U);
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset_a, kTopic, 100 * kSecond, 200 * kSecond), 0U);
+  ASSERT_NE(pj_test::addScalarTopic(app, dataset_b, "other", 100 * kSecond, 200 * kSecond), 0U);
+  app.sessionManager().setDisplayOffset(dataset_a, PJ::DisplayOffset{PJ::Duration{20 * kSecond}});
+  auto captured = PJ::MainWindowMarkerGeneratorTestPeer::captureWorkspace(window);
+
+  QDomDocument doc;
+  ASSERT_TRUE(static_cast<bool>(doc.setContent(captured.xml)));
+  QDomElement processors = doc.documentElement().firstChildElement(u"data_processors"_s);
+  if (processors.isNull()) {
+    processors = doc.createElement(u"data_processors"_s);
+    doc.documentElement().appendChild(processors);
+  }
+  QDomElement gen = doc.createElement(u"generator"_s);
+  gen.setAttribute(u"id"_s, u"test/global-rule"_s);
+  gen.setAttribute(u"language"_s, u"luau"_s);
+  gen.setAttribute(u"all_datasets"_s, u"1"_s);
+  processors.appendChild(gen);
+  QDomElement input = doc.createElement(u"input"_s);
+  input.setAttribute(u"name"_s, u"sensor/value"_s);
+  gen.appendChild(input);
+  QDomElement output = doc.createElement(u"output"_s);
+  output.setAttribute(u"name"_s, QString::fromStdString(std::string(PJ::kAllDatasetsMarkerTopic)));
+  gen.appendChild(output);
+  QDomElement script = doc.createElement(u"script"_s);
+  script.appendChild(
+      doc.createCDATASection(uR"(
+    local s = series("sensor/value")
+    if s ~= nil then
+      for i = 0, s:size() - 1 do createMarker(s:at(i).t) end
+    end
+  )"_s));
+  gen.appendChild(script);
+  captured.xml = doc.toByteArray();
+
+  app.sessionManager().setDisplayOffset(dataset_a, PJ::DisplayOffset{PJ::Duration{0}});
+  ASSERT_TRUE(PJ::MainWindowMarkerGeneratorTestPeer::restoreWorkspace(window, captured));
+  EXPECT_EQ(app.sessionManager().sourceDisplayOffset(dataset_a).value.count(), 20 * kSecond);
+  // Only a carries the input; replayed under its restored 20 s offset, raw 100/200 sit at 80/180.
+  EXPECT_EQ(
+      pj_test::markerTimes(app, PJ::kAllDatasetsMarkerDataset, PJ::kAllDatasetsMarkerTopic, "test/global-rule"),
+      (std::vector<PJ::Timestamp>{80 * kSecond, 180 * kSecond}));
 }
 
 }  // namespace

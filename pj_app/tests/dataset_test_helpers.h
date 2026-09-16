@@ -10,16 +10,25 @@
 // scalar topic through the live AppSession, then refresh the catalog. Failures
 // are signaled with ADD_FAILURE (not ASSERT_*) so the helpers stay usable from
 // value-returning call sites; the caller checks the returned id (0 = failure)
-// where it cares.
+// where it cares. Also the readers of what a marker generator published
+// (publishedMarkers / markerTimes), shared by the history and restore suites.
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
+#include "pj_base/builtin/plot_markers.hpp"
+#include "pj_base/builtin/plot_markers_codec.hpp"
+#include "pj_datastore/object_store.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/SessionManager.h"
 
 namespace pj_test {
@@ -75,6 +84,39 @@ inline PJ::TopicId addScalarTopic(
 // Convenience overload at the default two-sample timestamps (100, 200 ns).
 inline PJ::TopicId addScalarTopic(PJ::AppSession& app_session, PJ::DatasetId dataset_id, std::string_view topic_name) {
   return addScalarTopic(app_session, dataset_id, topic_name, /*first_ts=*/100, /*second_ts=*/200);
+}
+
+// The set marker generator `owner` last published for `output` on `dataset`
+// (nullopt when it never did). An all-datasets rule publishes on
+// PJ::kAllDatasetsMarkerDataset under PJ::kAllDatasetsMarkerTopic, with t_start
+// already in the display frame (raw − the contributing dataset's offset).
+inline std::optional<PJ::sdk::PlotMarkers> publishedMarkers(
+    PJ::AppSession& app_session, PJ::DatasetId dataset, std::string_view output, std::string_view owner) {
+  const PJ::ObjectStore& store = app_session.sessionManager().objectStore();
+  const std::optional<PJ::ObjectTopicId> id = store.findTopic(dataset, PJ::markerOwnerTopicName(output, owner));
+  if (!id.has_value()) {
+    return std::nullopt;
+  }
+  const std::optional<PJ::ResolvedObjectEntry> entry = store.latestAt(*id, std::numeric_limits<PJ::Timestamp>::max());
+  if (!entry.has_value()) {
+    return std::nullopt;
+  }
+  const PJ::Expected<PJ::sdk::PlotMarkers> decoded =
+      PJ::deserializePlotMarkers(entry->payload.bytes.data(), entry->payload.bytes.size());
+  return decoded.has_value() ? std::optional<PJ::sdk::PlotMarkers>{*decoded} : std::nullopt;
+}
+
+// Sorted t_start of publishedMarkers(...); empty when nothing was published.
+inline std::vector<PJ::Timestamp> markerTimes(
+    PJ::AppSession& app_session, PJ::DatasetId dataset, std::string_view output, std::string_view owner) {
+  std::vector<PJ::Timestamp> times;
+  if (const auto published = publishedMarkers(app_session, dataset, output, owner)) {
+    for (const PJ::sdk::PlotMarker& marker : published->markers) {
+      times.push_back(marker.t_start);
+    }
+  }
+  std::sort(times.begin(), times.end());
+  return times;
 }
 
 }  // namespace pj_test

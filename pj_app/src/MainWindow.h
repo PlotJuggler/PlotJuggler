@@ -852,11 +852,23 @@ class MainWindow : public QMainWindow {
   void supersedeActiveRestore();
   // Re-applies the timeline state (offsets + track order) stashed by a progressive
   // restore, now that the async worker has registered the reloaded datasets' source
-  // paths. Called from onProgressiveLayoutDrained BEFORE the viewport re-frame so the
-  // saved absolute window converts with the settled offset. Returns whether any
-  // offset moved. No-op when nothing was stashed.
+  // paths. Called from onProgressiveLayoutDrained BEFORE the processor graph replay
+  // (an all_datasets marker generator must recompute under the settled offset, not
+  // the pre-apply one) and BEFORE the viewport re-frame, so the saved absolute
+  // window converts with the settled offset. Returns whether any offset moved.
+  // No-op when nothing was stashed.
   bool applyPendingTimelineState();
-  void restoreChromeAndPanels(const QDomDocument& doc, const QString& path);
+  // One resolved layout source track, shared by the early offset write and
+  // the later track-order restore so neither pass can bind a different dataset.
+  struct LayoutTimelineTrack {
+    DatasetId dataset_id;
+    qint64 display_offset_ns;
+    bool has_display_offset;
+    int timeline_order;
+  };
+  using LayoutTimelinePlan = std::vector<LayoutTimelineTrack>;
+  void restoreChromeAndPanels(
+      const QDomDocument& doc, const QString& path, const LayoutTimelinePlan* resolved_timeline = nullptr);
   void saveLayoutToPath(const QString& path, bool include_data_source);
   void recordRecentLayout(const QString& path);
   [[nodiscard]] QStringList recentLayouts() const;
@@ -881,9 +893,9 @@ class MainWindow : public QMainWindow {
   // Restore a COMPLETE workspace snapshot (filters + curve rebinding + plots/toggles)
   // onto the live session — the single restore path shared by layout load and undo/redo,
   // so the two can never drift (that drift is what let undo silently drop filters).
-  // Order matters: recreate the snapshot's filters FIRST (so each derived output topic
-  // is in the catalog), then rebind curve keys, then apply plots+toggles via
-  // xmlLoadState. Snapshots carry stable topic/field paths, not per-load keys, so one
+  // Order matters: apply saved display offsets, recreate processors and marker
+  // generators, then rebind curve keys and apply plots/toggles via xmlLoadState.
+  // Snapshots carry stable topic/field paths, not per-load keys, so one
   // survives an intervening data reload. Callers run it under applying_state_ as needed.
   // `out_reason`, when non-null, receives the one-sentence rejection reason from
   // a `kHistory` intent's exempt-dependency check (see `restoreDataProcessors`);
@@ -916,6 +928,11 @@ class MainWindow : public QMainWindow {
       const std::vector<std::pair<DatasetId, QString>>& live_datasets) const;
   [[nodiscard]] std::optional<TimelineResolutionPlan> validateTimelineState(
       const TimelineState& state, TimelineRestoreMode mode) const;
+  // Before the processor replay, writes each track's
+  // display offset so a marker generator that replays right after sees the settled
+  // offset instead of the pre-restore one. `plan` must already be validated
+  // (validateTimelineState); false on a size mismatch, mutating nothing.
+  [[nodiscard]] bool applyTimelineOffsets(const TimelineState& state, const TimelineResolutionPlan& plan);
   [[nodiscard]] bool applyTimelineState(const TimelineState& state, const TimelineResolutionPlan& plan);
   [[nodiscard]] RestoreResult applyWorkspace(
       QDomDocument& doc, MissingCurvePolicy policy, const TimelineState* timeline_state,
@@ -947,14 +964,19 @@ class MainWindow : public QMainWindow {
   // absolute otherwise. Returns a null element when no source is recorded.
   [[nodiscard]] QDomElement appendDataSourceElement(QDomDocument& doc, const QDir& layout_dir) const;
 
-  // Re-applies the per-source Source Timeline state saved in `sources` (one
-  // DataSourceRef per <fileInfo>) after the layout's datasets are (re)loaded.
-  // DatasetIds are re-minted each session, so each saved entry is matched back
-  // to a live dataset by source path; matched datasets get their display offset
-  // restored and the timeline's vertical track order rebuilt. No-op for
-  // generic (data-less) layouts and pre-v3 layouts that carry no timeline attrs.
-  // Returns true iff at least one dataset's display offset actually MOVED, so the
-  // caller can re-frame plots whose viewport was restored under the pre-apply offset.
+  // The per-source Source Timeline state saved in `sources` (one DataSourceRef
+  // per <fileInfo>), applied after the layout's datasets are (re)loaded in two
+  // passes over ONE resolution: DatasetIds are re-minted each session, so
+  // `resolveLayoutTimelineTracks` matches each saved entry back to a live dataset
+  // by source path once (empty for generic layouts and pre-v3 layouts without
+  // timeline attrs); `applyLayoutTimelineOffsets` writes the display offsets
+  // (before the processor replay, so all_datasets generators see the settled
+  // frame) and returns true iff one actually MOVED; `applyLayoutTimelineOrder`
+  // rebuilds the timeline's vertical track order afterwards, when the chrome
+  // is restored. `applyTimelineStateFromLayout` runs all three back to back.
+  [[nodiscard]] LayoutTimelinePlan resolveLayoutTimelineTracks(const QList<layout_xml::DataSourceRef>& sources) const;
+  bool applyLayoutTimelineOffsets(const LayoutTimelinePlan& plan);
+  void applyLayoutTimelineOrder(const LayoutTimelinePlan& plan);
   bool applyTimelineStateFromLayout(const QList<layout_xml::DataSourceRef>& sources);
 
   // Builds <source_timeline zoom="…" scroll_left_ns="…" name_column_width="…"
@@ -1013,6 +1035,16 @@ class MainWindow : public QMainWindow {
   // non-null, is cleared on entry and set only on the history rejection path.
   [[nodiscard]] bool restoreDataProcessors(
       const QDomElement& root, RestoreIntent intent = RestoreIntent::kReplace, QString* out_reason = nullptr);
+
+  // The read-only preflight `restoreDataProcessors` runs before its first clear:
+  // true outside `kHistory` or when nothing exempt is live; otherwise parses `root`
+  // and reports whether removing its non-exempt processors would strand an exempt
+  // transform or marker generator, WITHOUT mutating any participant. `applyWorkspace`
+  // calls it before applyTimelineOffsets so a refusal never has to undo a moved
+  // offset; `restoreDataProcessors` calls the same helper for its other callers.
+  // `out_reason`, when non-null, is cleared on entry and set only on refusal.
+  [[nodiscard]] bool checkDataProcessorDependencies(
+      const QDomElement& root, RestoreIntent intent, QString* out_reason = nullptr);
 
   // Parses every <transform> under `element` (a <data_processors> node) into the
   // recipes the snapshot wants live, resolving persisted dataset identities against

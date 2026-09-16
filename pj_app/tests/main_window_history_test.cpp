@@ -30,6 +30,8 @@
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/MarkerService.h"
+#include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
@@ -185,6 +187,21 @@ PJ::DatasetId addScalarDataset(
     return 0;
   }
   return dataset;
+}
+
+// Sorted t_start of the Global set all-datasets generator `owner` publishes.
+std::vector<PJ::Timestamp> allDatasetsMarkerTimes(PJ::AppSession& app, std::string_view owner) {
+  return pj_test::markerTimes(app, PJ::kAllDatasetsMarkerDataset, PJ::kAllDatasetsMarkerTopic, owner);
+}
+
+QString catalogKeyForTopic(PJ::CatalogModel& catalog, PJ::TopicId topic_id) {
+  for (const auto& curve : catalog.curves()) {
+    if (const auto descriptor = catalog.curveDescriptor(curve.name);
+        descriptor.has_value() && descriptor->topic_id == topic_id) {
+      return curve.name;
+    }
+  }
+  return {};
 }
 
 QDomElement addSavedAbsoluteProcessor(
@@ -754,6 +771,151 @@ TEST_F(MainWindowHistoryFixture, SourceTimelineUndoRedoIsExactTransactionalAndNo
   EXPECT_EQ(PJ::MainWindowHistoryTestPeer::undoSize(window), 2U);
   EXPECT_EQ(PJ::MainWindowHistoryTestPeer::redoSize(window), 0U);
   timeline.setDatasetFilter(QString{});
+}
+
+TEST_F(MainWindowHistoryFixture, UndoOfASourceTimelineDragKeepsGlobalMarkersAtTheirDisplayInstant) {
+  constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
+  PJ::MainWindow& window = mainWindow();
+  PJ::AppSession& app = PJ::MainWindowHistoryTestPeer::appSession(window);
+  PJ::SessionManager& session = app.sessionManager();
+  const PJ::DatasetId a = addScalarDataset(app, "a", "/sensor", 100 * kSecond, 110 * kSecond);
+  const PJ::DatasetId b = addScalarDataset(app, "b", "/sensor", 100 * kSecond, 110 * kSecond);
+  ASSERT_NE(a, 0U);
+  ASSERT_NE(b, 0U);
+  constexpr std::string_view kRule = "test/global-rule";
+  PJ::MarkerService::GeneratorRecipe recipe;
+  recipe.id = std::string(kRule);
+  recipe.all_datasets = true;
+  recipe.inputs = {"/sensor/value"};
+  recipe.outputs = {std::string(PJ::kAllDatasetsMarkerTopic)};
+  recipe.script = R"(
+    local s = series("/sensor/value")
+    for i = 0, s:size() - 1 do createMarker(s:at(i).t) end
+  )";
+  const auto inserted = session.markerService().upsertGenerator(recipe);
+  ASSERT_TRUE(inserted.has_value()) << (inserted.has_value() ? std::string{} : inserted.error());
+  // Both datasets are aligned, so each contributes its two samples at their raw instants.
+  const std::vector<PJ::Timestamp> baseline{100 * kSecond, 100 * kSecond, 110 * kSecond, 110 * kSecond};
+  ASSERT_EQ(allDatasetsMarkerTimes(app, kRule), baseline);
+  PJ::MainWindowHistoryTestPeer::resetHistory(window);
+
+  // A drag alone republishes nothing: the set stays where it was drawn.
+  session.setDisplayOffset(a, PJ::DisplayOffset{PJ::Duration{20 * kSecond}});
+  PJ::MainWindowHistoryTestPeer::recordDiscreteState(window);
+  EXPECT_EQ(allDatasetsMarkerTimes(app, kRule), baseline);
+
+  // Undo replays the rule once the offset is back at 0, so nothing moves.
+  PJ::MainWindowHistoryTestPeer::undo(window);
+  EXPECT_EQ(session.sourceDisplayOffset(a).value.count(), 0);
+  EXPECT_EQ(allDatasetsMarkerTimes(app, kRule), baseline);
+
+  // Redo replays under the snapshot's offset: a's raw 100/110 sit at display 80/90.
+  PJ::MainWindowHistoryTestPeer::redo(window);
+  EXPECT_EQ(session.sourceDisplayOffset(a).value.count(), 20 * kSecond);
+  const std::vector<PJ::Timestamp> redone{80 * kSecond, 90 * kSecond, 100 * kSecond, 110 * kSecond};
+  EXPECT_EQ(allDatasetsMarkerTimes(app, kRule), redone);
+
+  // Undoing a drag of the other track restores its offset before the replay too.
+  session.setDisplayOffset(b, PJ::DisplayOffset{PJ::Duration{5 * kSecond}});
+  PJ::MainWindowHistoryTestPeer::recordDiscreteState(window);
+  PJ::MainWindowHistoryTestPeer::undo(window);
+  EXPECT_EQ(session.sourceDisplayOffset(b).value.count(), 0);
+  EXPECT_EQ(allDatasetsMarkerTimes(app, kRule), redone);
+}
+
+TEST_F(MainWindowHistoryFixture, ProgressiveDrainRestoresOffsetsGlobalMarkersAndHiddenScopeRows) {
+  constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
+  QTemporaryDir source_dir;
+  ASSERT_TRUE(source_dir.isValid());
+  const QString source_a = source_dir.filePath(u"progressive-a.mcap"_s);
+  const QString source_b = source_dir.filePath(u"progressive-b.mcap"_s);
+  for (const QString& path : {source_a, source_b}) {
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+  }
+  PJ::MainWindow& window = mainWindow();
+  PJ::AppSession& app = PJ::MainWindowHistoryTestPeer::appSession(window);
+  PJ::SessionManager& session = app.sessionManager();
+  const PJ::DatasetId a = pj_test::createDataset(app, "progressive-a", /*own_time_domain=*/true);
+  const PJ::DatasetId b = pj_test::createDataset(app, "progressive-b", /*own_time_domain=*/true);
+  ASSERT_NE(a, 0U);
+  ASSERT_NE(b, 0U);
+  const PJ::TopicId topic_a = pj_test::addScalarTopic(app, a, "/sensor", 100 * kSecond, 200 * kSecond);
+  const PJ::TopicId topic_b = pj_test::addScalarTopic(app, b, "/other", 100 * kSecond, 200 * kSecond);
+  ASSERT_NE(topic_a, 0U);
+  ASSERT_NE(topic_b, 0U);
+  PJ::PlotWidget* plot = ensureCurrentPlot(window);
+  ASSERT_NE(plot, nullptr);
+  const QString key_a = catalogKeyForTopic(app.catalogModel(), topic_a);
+  const QString key_b = catalogKeyForTopic(app.catalogModel(), topic_b);
+  ASSERT_FALSE(key_a.isEmpty());
+  ASSERT_FALSE(key_b.isEmpty());
+  ASSERT_NE(plot->addCurve(key_a), nullptr);
+  ASSERT_NE(plot->addCurve(key_b), nullptr);
+
+  QDomDocument target;
+  ASSERT_TRUE(static_cast<bool>(target.setContent(PJ::MainWindowHistoryTestPeer::liveState(window))));
+  QDomElement root = target.documentElement();
+  root.setAttribute(u"pj4_version"_s, u"4"_s);
+  QDomElement sources = target.createElement(u"previouslyLoaded_Datafiles"_s);
+  root.appendChild(sources);
+  const std::vector<std::pair<QString, PJ::Timestamp>> source_offsets{{source_a, 20 * kSecond}, {source_b, 0}};
+  for (const auto& [path, offset] : source_offsets) {
+    QDomElement file = target.createElement(u"fileInfo"_s);
+    file.setAttribute(u"filename"_s, path);
+    file.setAttribute(u"display_offset_ns"_s, QString::number(offset));
+    sources.appendChild(file);
+  }
+  QDomElement processors = root.firstChildElement(u"data_processors"_s);
+  if (processors.isNull()) {
+    processors = target.createElement(u"data_processors"_s);
+    root.appendChild(processors);
+  }
+  QDomElement generator = target.createElement(u"generator"_s);
+  generator.setAttribute(u"id"_s, u"test/progressive-global"_s);
+  generator.setAttribute(u"language"_s, u"luau"_s);
+  generator.setAttribute(u"all_datasets"_s, u"1"_s);
+  processors.appendChild(generator);
+  QDomElement input = target.createElement(u"input"_s);
+  input.setAttribute(u"name"_s, u"/sensor/value"_s);
+  generator.appendChild(input);
+  QDomElement output = target.createElement(u"output"_s);
+  output.setAttribute(u"name"_s, QString::fromStdString(std::string(PJ::kAllDatasetsMarkerTopic)));
+  generator.appendChild(output);
+  QDomElement script = target.createElement(u"script"_s);
+  script.appendChild(
+      target.createCDATASection(uR"(
+    local s = series("/sensor/value")
+    if s ~= nil then
+      for i = 0, s:size() - 1 do createMarker(s:at(i).t) end
+    end
+  )"_s));
+  generator.appendChild(script);
+  QDomElement saved_plot = target.elementsByTagName(u"plot"_s).at(0).toElement();
+  ASSERT_FALSE(saved_plot.isNull());
+  QDomElement scope = target.createElement(u"marker_scope"_s);
+  scope.setAttribute(u"dataset_id"_s, QString::number(a));
+  scope.setAttribute(u"dataset_source"_s, u"progressive-a"_s);
+  scope.setAttribute(u"scope"_s, u"global"_s);
+  scope.setAttribute(u"visible"_s, u"false"_s);
+  saved_plot.appendChild(scope);
+
+  PJ::MainWindowHistoryTestPeer::beginProgressiveRestore(window, target);
+  ASSERT_TRUE(PJ::MainWindowHistoryTestPeer::progressiveRestoreInFlight(window));
+  EXPECT_EQ(session.sourceDisplayOffset(a).value.count(), 0);
+  session.setDatasetSourcePath(a, source_a);
+  session.setDatasetSourcePath(b, source_b);
+  PJ::MainWindowHistoryTestPeer::drainProgressiveRestore(window);
+  EXPECT_FALSE(PJ::MainWindowHistoryTestPeer::progressiveRestoreInFlight(window));
+  EXPECT_EQ(session.sourceDisplayOffset(a).value.count(), 20 * kSecond);
+  plot = ensureCurrentPlot(window);
+  ASSERT_NE(plot, nullptr);
+  EXPECT_FALSE(plot->markerScopeRows().empty());
+  EXPECT_FALSE(plot->datasetMarkerScopeVisible(a, PJ::MarkerScope::kAllDatasets));
+  // Only a carries /sensor; replayed under its restored 20 s offset, raw 100/200 sit at 80/180.
+  EXPECT_EQ(
+      allDatasetsMarkerTimes(app, "test/progressive-global"),
+      (std::vector<PJ::Timestamp>{80 * kSecond, 180 * kSecond}));
 }
 
 }  // namespace

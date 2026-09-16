@@ -202,7 +202,9 @@ class PlotWidget : public PlotWidgetBase {
   // and moves the ones that now name a live dataset into the hidden set —
   // possibly under a reminted id. The pending binder calls it for each plot it
   // bound a curve on, since a dataset's scopes only exist once its curves do.
-  // Ambiguous entries stay pending; emits datasetMarkerScopesChanged on a move.
+  // Ambiguous entries stay pending. Also rebuilds markerScopeRows(), since a
+  // generator replayed after this plot's curves resolved can leave its footer
+  // row unbuilt; emits datasetMarkerScopesChanged on either change.
   void resolvePendingMarkerScopes();
   void removeAllCurves() override;
 

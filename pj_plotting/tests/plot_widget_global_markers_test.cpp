@@ -60,8 +60,9 @@ QString scopeTopicName(PJ::MarkerScope scope) {
 // Registers `scope`'s bare marker object topic where the overlay reads it for
 // `dataset_id` (the dataset itself, or the shared dataset for the ALL-DATASETS
 // scope) the same way MarkerService::publishMarkerSet does (that method is
-// private; this mirrors its ObjectStore calls) and notifies the plot overlay.
-void publishScopeTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, PJ::MarkerScope scope) {
+// private; this mirrors its ObjectStore calls). Notification is kept separate
+// (publishScopeTopic) so tests can pin when PlotWidget observes a new topic.
+void registerScopeTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, PJ::MarkerScope scope) {
   const std::string object_topic = PJ::sdk::markerObjectTopicName(PJ::markerScopeTopic(scope));
   const auto registered = session.objectStore().registerTopic(
       PJ::ObjectTopicDescriptor{
@@ -73,6 +74,10 @@ void publishScopeTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, PJ
   EXPECT_TRUE(session.objectStore()
                   .pushOwned(*registered, PJ::Timestamp{0}, PJ::serializePlotMarkers(PJ::sdk::PlotMarkers{}))
                   .has_value());
+}
+
+void publishScopeTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, PJ::MarkerScope scope) {
+  registerScopeTopic(session, dataset_id, scope);
   session.notifyMarkersChanged();
 }
 
@@ -424,4 +429,53 @@ TEST(PlotWidgetGlobalMarkers, SeriesTargetResolvesItsOwnAndTheSharedFamily) {
   const std::vector<PJ::MarkerTargetTopic> all_scope =
       PJ::markerTargetTopics(store, PJ::MarkerTarget{7, QString::fromUtf8(PJ::kAllDatasetsMarkerTopic.data())});
   EXPECT_TRUE(all_scope.empty()) << "the all-datasets scope reads the shared dataset only";
+}
+
+// Rows are rebuilt on markersChanged, not on the store write itself: a topic
+// registered silently stays invisible until the session announces it.
+TEST(PlotWidgetGlobalMarkers, RowsRebuildOnlyOnMarkersChanged) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const QString key = keyForTopic(catalog, addScalarTopic(session, *dataset, "/imu/x"));
+  ASSERT_FALSE(key.isEmpty());
+  PJ::PlotWidget plot(&session, &catalog);
+  ASSERT_NE(plot.addCurve(key), nullptr);
+  registerScopeTopic(session, *dataset, PJ::MarkerScope::kDataset);
+  EXPECT_TRUE(plot.markerScopeRows().empty());
+  session.notifyMarkersChanged();
+  ASSERT_EQ(plot.markerScopeRows().size(), 1U);
+  EXPECT_EQ(plot.markerScopeRows().front(), PJ::MarkerScopeKey(*dataset, PJ::MarkerScope::kDataset));
+}
+
+TEST(PlotWidgetGlobalMarkers, PendingScopeResolutionRebuildsRows) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotWidget plot(&session, &catalog);
+  QDomDocument doc;
+  QDomElement plot_element = plot.xmlSaveState(doc);
+  QDomElement scope = doc.createElement(u"marker_scope"_s);
+  scope.setAttribute(u"dataset_id"_s, u"7"_s);
+  scope.setAttribute(u"dataset_source"_s, u"drive.mcap"_s);
+  scope.setAttribute(u"scope"_s, u"dataset"_s);
+  scope.setAttribute(u"visible"_s, u"false"_s);
+  plot_element.appendChild(scope);
+  ASSERT_TRUE(plot.xmlLoadState(plot_element));
+
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const QString key = keyForTopic(catalog, addScalarTopic(session, *dataset, "/imu/x"));
+  ASSERT_FALSE(key.isEmpty());
+  ASSERT_NE(plot.addCurve(key), nullptr);
+  EXPECT_TRUE(plot.markerScopeRows().empty());
+  registerScopeTopic(session, *dataset, PJ::MarkerScope::kDataset);
+
+  int changed_count = 0;
+  QObject::connect(&plot, &PJ::PlotWidget::datasetMarkerScopesChanged, [&]() { ++changed_count; });
+  plot.resolvePendingMarkerScopes();
+  ASSERT_EQ(plot.markerScopeRows().size(), 1U);
+  EXPECT_EQ(plot.markerScopeRows().front(), PJ::MarkerScopeKey(*dataset, PJ::MarkerScope::kDataset));
+  EXPECT_FALSE(plot.datasetMarkerScopeVisible(*dataset, PJ::MarkerScope::kDataset));
+  EXPECT_EQ(changed_count, 1);
 }

@@ -1372,9 +1372,15 @@ void PlotWidget::resolvePendingMarkerScopes() {
     hidden_marker_scopes_.insert(MarkerScopeKey{*resolution.id, pending.scope});
     return true;
   });
-  if (moved) {
-    emit datasetMarkerScopesChanged();
+  if (!moved) {
+    return;
   }
+  // A dataset resolved here can already carry curves whose footer row never got
+  // built (curveListChanged fired before this dataset's marker object topics
+  // existed, e.g. a generator replayed after the pending binder ran) — refresh
+  // the row set too, not just the hidden flag.
+  refreshMarkerScopeRowSet();
+  emit datasetMarkerScopesChanged();
 }
 
 std::vector<MarkerTarget> PlotWidget::markerTargets() const {

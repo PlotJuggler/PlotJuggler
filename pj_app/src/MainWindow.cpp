@@ -5873,13 +5873,19 @@ void MainWindow::applyRestoredLayout(QDomDocument doc, const QString& path, Miss
   // in-flight previous restore now (a no-op when the do_reload branch
   // already did; see supersedeActiveRestore).
   supersedeActiveRestore();
+  // A generator replays under the saved display offsets. Capture the rollback
+  // before moving them, then reuse one source resolution for the later track order.
+  const CapturedWorkspace rollback = captureWorkspace();
+  const QDir layout_dir(QFileInfo(path).absoluteDir());
+  const LayoutTimelinePlan timeline_plan = resolveLayoutTimelineTracks(layout_xml::extractDataSource(doc, layout_dir));
+  static_cast<void>(applyLayoutTimelineOffsets(timeline_plan));
   // 4. Recreate filters, rebind curves, and apply plots/toggles through the ONE restore
   // path shared with undo/redo (kPrompt: a curve no loaded dataset can provide raises the
   // missing-curve prompt). Filters are recreated BEFORE the curve rebind so each derived
   // output topic is in the catalog. Panel/chrome restores below stay layout-only.
   QStringList issues;
   layout_issue_capture_ = &issues;
-  const RestoreResult restore_result = restoreWorkspaceState(doc, policy);
+  const RestoreResult restore_result = restoreWorkspaceState(doc, policy, &rollback);
   layout_issue_capture_ = nullptr;
   switch (restore_result) {
     case RestoreResult::kCancelled:
@@ -5902,12 +5908,13 @@ void MainWindow::applyRestoredLayout(QDomDocument doc, const QString& path, Miss
       break;
   }
 
-  restoreChromeAndPanels(doc, path);
+  restoreChromeAndPanels(doc, path, &timeline_plan);
   commitRestoredLayout(doc, policy);
   emit layoutRestoreSettled(true);
 }
 
-void MainWindow::restoreChromeAndPanels(const QDomDocument& doc, const QString& path) {
+void MainWindow::restoreChromeAndPanels(
+    const QDomDocument& doc, const QString& path, const LayoutTimelinePlan* resolved_timeline) {
   // 4a. Restore curve-list content state (filters + show_topics/show_values toggles).
   ui_->curveListPanel->restoreListState(doc.documentElement().firstChildElement(u"curve_list_state"_s));
 
@@ -5920,28 +5927,19 @@ void MainWindow::restoreChromeAndPanels(const QDomDocument& doc, const QString& 
   // 4d. Restore chrome state (panel visibilities + splitter sizes).
   restoreChromeState(doc.documentElement().firstChildElement(u"chrome_state"_s));
 
-  // 4e. Restore Source Timeline state (per-source display offsets + track order).
-  // Runs after the datasets are (re)loaded so it re-binds them by path. The data
-  // source refs were consumed during the reload classification in
-  // loadLayoutFromPath; re-extract them here (a pure parse of doc) so this restore
-  // step has them in scope.
-  const QDir timeline_layout_dir(QFileInfo(path).absoluteDir());
-  const QList<layout_xml::DataSourceRef> timeline_sources = layout_xml::extractDataSource(doc, timeline_layout_dir);
-  const bool offset_changed = applyTimelineStateFromLayout(timeline_sources);
-  if (progressive_layout_in_flight_) {
-    // Async reload: the worker has not yet registered the in-flight dataset's source
-    // path, so applyTimelineStateFromLayout above found no candidates and skipped its
-    // offsets. Stash the refs so onProgressiveLayoutDrained re-applies them (and then
-    // re-frames viewports) once the paths settle. Skip-don't-guess is preserved: a
-    // ref already consumed on this leg re-applies idempotently (setDisplayOffset no-ops).
-    pending_timeline_sources_ = timeline_sources;
-  } else if (offset_changed) {
-    // Sync leg: the plots were framed by restoreWorkspaceState with the PRE-apply
-    // offset, and the per-dataset displayOffsetChanged handler only replots (never
-    // reframes). The saved-viewport stash survives xmlLoadState (clear_after=false),
-    // so re-convert the saved ABSOLUTE window with the now-settled offset and drop the
-    // stash. A plot with no/degenerate saved range falls back to zoomOut.
-    forEachPlot([](PlotWidget* plot) { plot->applySavedViewportOrZoom(/*clear_after=*/true); });
+  // 4e. Restore Source Timeline track order. The synchronous path already
+  // resolved its sources and applied offsets before replaying processors.
+  if (resolved_timeline != nullptr) {
+    applyLayoutTimelineOrder(*resolved_timeline);
+  } else {
+    // A progressive reload may not have registered every dataset path yet.
+    // Re-resolve these refs at drain, before replaying marker generators.
+    const QDir layout_dir(QFileInfo(path).absoluteDir());
+    const QList<layout_xml::DataSourceRef> sources = layout_xml::extractDataSource(doc, layout_dir);
+    static_cast<void>(applyTimelineStateFromLayout(sources));
+    if (progressive_layout_in_flight_) {
+      pending_timeline_sources_ = sources;
+    }
   }
 
   // 4f. Restore the timeline's global view chrome (zoom/scroll/name-column/snap),
@@ -6291,8 +6289,10 @@ void MainWindow::onProgressiveLayoutDrained() {
     pending_items_added_conn_ = {};
   }
 
-  // All file inputs now exist. Rebuild the complete saved processor graph
-  // before the binder's last pass so derived curves resolve to fresh outputs.
+  // Settle display offsets before replaying generators: an all-datasets rule
+  // reads every dataset in the display frame. Rebuild processors before the
+  // binder's last pass so derived curves resolve to fresh outputs.
+  static_cast<void>(applyPendingTimelineState());
   if (!progressive_layout_doc_.isNull() && !restoreDataProcessors(progressive_layout_doc_.documentElement())) {
     const bool rolled_back = abortProgressiveRestore();
     reportLayoutRestoreIssue(
@@ -6322,13 +6322,6 @@ void MainWindow::onProgressiveLayoutDrained() {
 
   if (pending_binder_ != nullptr) {
     static_cast<void>(pending_binder_->flush({}));
-    // Now that the worker has registered the reloaded datasets' source paths, apply the
-    // timeline state (per-source offsets + track order) that restoreChromeAndPanels
-    // could not bind mid-load — it stashed the refs in pending_timeline_sources_. This
-    // MUST run before the viewport re-frame below so applySavedViewportOrZoom converts
-    // the saved ABSOLUTE window with the settled offset (otherwise the async leg would
-    // frame the pre-offset window, the FIX-1 bug on the progressive path).
-    static_cast<void>(applyPendingTimelineState());
     // Frame each restored plot to its layout-saved window with the now-settled display
     // offset (the file has finished loading). PR #248 made the saved X ABSOLUTE and
     // applySavedViewportOrZoom converts it with the live offset, so re-applying it is
@@ -7023,9 +7016,63 @@ bool MainWindow::repairDataProcessors(
   return filters_restored && transforms_restored;
 }
 
-bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent intent, QString* out_reason) {
+bool MainWindow::checkDataProcessorDependencies(const QDomElement& root, RestoreIntent intent, QString* out_reason) {
   if (out_reason != nullptr) {
     out_reason->clear();
+  }
+  if (intent != RestoreIntent::kHistory) {
+    return true;
+  }
+  auto& service = session_->sessionManager().dataProcessorService();
+  MarkerService& marker_service = session_->sessionManager().markerService();
+  // Reject before the first clear if what this restore removes — each filter and
+  // each non-exempt transform the snapshot drops or changes, plus everything the
+  // removal cascades into — would strand an exempt transform or marker generator.
+  // Removal cascades between filters and transforms, so checking after the first
+  // clear would be too late. Nothing below mutates the session: this is a query
+  // over the same parse restoreDataProcessors repeats to actually apply it.
+  if (!service.hasHistoryExemptTransforms() && !marker_service.hasHistoryExemptGenerators()) {
+    return true;
+  }
+  const QDomElement element = root.firstChildElement(u"data_processors"_s);
+  bool restored_all = true;
+  const std::vector<WantedFilter> wanted_filters = parseWantedFilters(element);
+  const std::vector<DataProcessorService::TransformRecipe> wanted_transforms =
+      parseWantedTransforms(element, /*keep_exempt=*/true, &restored_all);
+  std::vector<DataProcessorService::PersistedFilter> persisted_filters;
+  persisted_filters.reserve(wanted_filters.size());
+  for (const WantedFilter& wanted : wanted_filters) {
+    persisted_filters.push_back(wanted.persisted);
+  }
+  const std::unordered_set<TopicId> unchanged_filters = service.unchangedFilterOutputs(persisted_filters);
+  const std::unordered_set<std::string> unchanged_keys = service.unchangedTransformKeys(wanted_transforms, intent);
+  const DataProcessorService::HistoryRemovalImpact impact =
+      service.historyRemovalImpact(unchanged_keys, unchanged_filters);
+  std::vector<std::string> blocked = impact.exempt_transform_names;
+  const std::vector<std::string> blocked_markers = marker_service.exemptDependentsOf(impact.removed_output_names);
+  blocked.insert(blocked.end(), blocked_markers.begin(), blocked_markers.end());
+  std::sort(blocked.begin(), blocked.end());
+  blocked.erase(std::unique(blocked.begin(), blocked.end()), blocked.end());
+  if (blocked.empty()) {
+    return true;
+  }
+  QStringList names;
+  names.reserve(static_cast<int>(blocked.size()));
+  for (const std::string& name : blocked) {
+    names.push_back(QString::fromStdString(name));
+  }
+  const QString reason =
+      tr("Cannot undo: protected outputs would lose an input this step removes: %1").arg(names.join(u", "_s));
+  if (out_reason != nullptr) {
+    *out_reason = reason;
+  }
+  emitDiagnostic(DiagnosticLevel::kWarning, "Layout", "history-exempt-blocked", reason);
+  return false;
+}
+
+bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent intent, QString* out_reason) {
+  if (!checkDataProcessorDependencies(root, intent, out_reason)) {
+    return false;
   }
   auto& service = session_->sessionManager().dataProcessorService();
   MarkerService& marker_service = session_->sessionManager().markerService();
@@ -7034,7 +7081,7 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent in
   // it leaves unchanged: those stay live with their output TopicIds, so curves
   // bound to them (e.g. in a preserved history-exempt tab, which no history
   // snapshot describes) survive an unrelated undo. The same sets define what the
-  // preflight below and the clears further down count as removed.
+  // clears further down count as removed.
   const QDomElement element = root.firstChildElement(u"data_processors"_s);
   const bool keep_exempt = intent == RestoreIntent::kHistory;
   bool restored_all = true;
@@ -7055,36 +7102,6 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent in
     }
   }
 
-  // Reject before the first clear if what this restore removes — each filter and
-  // each non-exempt transform the snapshot drops or changes, plus everything the
-  // removal cascades into — would strand an exempt transform or marker generator.
-  // Removal cascades between filters and transforms, so checking after the first
-  // clear would be too late.
-  if (intent == RestoreIntent::kHistory &&
-      (service.hasHistoryExemptTransforms() || marker_service.hasHistoryExemptGenerators())) {
-    const DataProcessorService::HistoryRemovalImpact impact =
-        service.historyRemovalImpact(unchanged_keys, unchanged_filters);
-    std::vector<std::string> blocked = impact.exempt_transform_names;
-    const std::vector<std::string> blocked_markers = marker_service.exemptDependentsOf(impact.removed_output_names);
-    blocked.insert(blocked.end(), blocked_markers.begin(), blocked_markers.end());
-    std::sort(blocked.begin(), blocked.end());
-    blocked.erase(std::unique(blocked.begin(), blocked.end()), blocked.end());
-    if (!blocked.empty()) {
-      QStringList names;
-      names.reserve(static_cast<int>(blocked.size()));
-      for (const std::string& name : blocked) {
-        names.push_back(QString::fromStdString(name));
-      }
-      const QString reason =
-          tr("Cannot undo: protected outputs would lose an input this step removes: %1").arg(names.join(u", "_s));
-      if (out_reason != nullptr) {
-        *out_reason = reason;
-      }
-      emitDiagnostic(DiagnosticLevel::kWarning, "Layout", "history-exempt-blocked", reason);
-      return false;
-    }
-  }
-
   // Drop the filters and the transforms the snapshot lacks or changes; a kept
   // entry reading a removed output falls with it and is re-created below. A
   // snapshot with NO <data_processors> clears everything; the rebuild at the end
@@ -7101,6 +7118,12 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent in
   // re-creates AND re-runs each in one call, so no separate recompute is needed.
   // Replacement clears every generator; history clears only the non-exempt ones,
   // after the dependency preflight above.
+  //
+  // upsertGenerator publishes to the store without announcing it. The toolbox's
+  // onDataChanged sends the same notification; this replay must do so too, once,
+  // after the catalog rebuild below.
+  const std::size_t generators_before = marker_service.recipes().size();
+  bool any_generator_restored = false;
   marker_service.clearGenerators(intent);
   std::unordered_set<std::string> live_exempt_generators;
   if (keep_exempt) {
@@ -7176,9 +7199,14 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent in
           DiagnosticLevel::kWarning, "Layout", "generator-restore-failed",
           tr("Could not restore marker generator '%1': %2")
               .arg(QString::fromStdString(recipe.id), QString::fromStdString(restored.error())));
+    } else {
+      any_generator_restored = true;
     }
   }
   session_->catalogModel().rebuildFromDatastore();
+  if (any_generator_restored || marker_service.recipes().size() != generators_before) {
+    session_->sessionManager().notifyMarkersChanged();
+  }
   // A null <data_processors> reaches here with every clearAll* done and nothing
   // replayed, so this empties the panel — which is what the teardown pass of a
   // progressive restore wants.
@@ -7485,6 +7513,18 @@ std::optional<MainWindow::TimelineResolutionPlan> MainWindow::validateTimelineSt
   return plan;
 }
 
+bool MainWindow::applyTimelineOffsets(const TimelineState& state, const TimelineResolutionPlan& plan) {
+  if (plan.size() != state.tracks.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < state.tracks.size(); ++index) {
+    const TimelineTrackState& track = state.tracks[index];
+    const DatasetId dataset_id = plan[index];
+    session_->sessionManager().setDisplayOffset(dataset_id, DisplayOffset{Duration{track.display_offset_ns}});
+  }
+  return true;
+}
+
 bool MainWindow::applyTimelineState(const TimelineState& state, const TimelineResolutionPlan& plan) {
   if (plan.size() != state.tracks.size()) {
     return false;
@@ -7494,7 +7534,6 @@ bool MainWindow::applyTimelineState(const TimelineState& state, const TimelineRe
   for (std::size_t index = 0; index < state.tracks.size(); ++index) {
     const TimelineTrackState& track = state.tracks[index];
     const DatasetId dataset_id = plan[index];
-    session_->sessionManager().setDisplayOffset(dataset_id, DisplayOffset{Duration{track.display_offset_ns}});
     if (track.timeline_order >= 0) {
       ordered.emplace_back(track.timeline_order, dataset_id);
     }
@@ -7524,12 +7563,31 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
     QDomDocument& doc, MissingCurvePolicy policy, const TimelineState* timeline_state,
     const TimelineResolutionPlan* timeline_plan, RestoreIntent intent, QString* out_reason) {
   const QDomElement root = doc.documentElement();
-  // 1. Recreate the snapshot's filters first, so each derived output topic is in the
-  //    catalog and its plotted (derived) curve resolves like any other curve.
+  // Order matters: datasets are already present by the time this runs, so restore
+  // proceeds display offsets -> processors (filters, transforms, then marker
+  // generators) -> plots/curves. A generator that reads
+  // the display frame (all_datasets rules) must see the settled offset, not the
+  // pre-restore one, so offsets move BEFORE the processor replay.
+  // 1. Preflight (read-only): reject before anything mutates if dropping this
+  //    snapshot's processors would strand an exempt transform or marker generator.
+  if (!checkDataProcessorDependencies(root, intent, out_reason)) {
+    return RestoreResult::kFailed;
+  }
+  // 2. Move each track's display offset to its saved value.
+  if (timeline_state != nullptr &&
+      (timeline_plan == nullptr || !applyTimelineOffsets(*timeline_state, *timeline_plan))) {
+    emitDiagnostic(
+        DiagnosticLevel::kWarning, "Layout", "layout-timeline-failed",
+        tr("The saved per-source time offsets could not be applied."));
+    return RestoreResult::kFailed;
+  }
+  // 3. Recreate the snapshot's filters and replay its generators, so each derived
+  //    output topic is in the catalog and its plotted (derived) curve resolves like
+  //    any other curve, and a marker generator recomputes under the offset above.
   if (!restoreDataProcessors(root, intent, out_reason)) {
     return RestoreResult::kFailed;
   }
-  // 2. Rebind every curve's stable topic+field to a concrete catalog key.
+  // 4. Rebind every curve's stable topic+field to a concrete catalog key.
   const QList<layout_xml::SeriesPath> unresolved = rebindCurvesToLoadedDatasets(doc);
   if (policy == MissingCurvePolicy::kExact && !unresolved.isEmpty()) {
     QStringList names;
@@ -7573,12 +7631,14 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
   }
   // kSilentDrop compatibility restores leave unresolved curves for xmlLoadState
   // to discard. Undo/redo uses kExact.
-  // 3. Apply plots + global toggles.
+  // 5. Apply plots + global toggles.
   if (!xmlLoadState(doc, intent)) {
     return RestoreResult::kFailed;
   }
-  // Plot reconstruction, the timeline, and scene docks are independent restore
-  // participants of this bool-and-rollback transaction.
+  // Plot reconstruction, the timeline order/chrome, and scene docks are
+  // independent restore participants of this bool-and-rollback transaction.
+  // Offsets already moved in step 2; this only orders the tracks and restores
+  // the timeline's view chrome.
   if (timeline_state != nullptr && (timeline_plan == nullptr || !applyTimelineState(*timeline_state, *timeline_plan))) {
     emitDiagnostic(
         DiagnosticLevel::kWarning, "Layout", "layout-timeline-failed",
@@ -7625,13 +7685,13 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
       }
     }
   });
-  // 4. Seed the just-recreated docks with the current playhead. currentTimeChanged
+  // 6. Seed the just-recreated docks with the current playhead. currentTimeChanged
   // only fires on a CHANGE, so a freshly restored dock would sit at no-tracker-time
   // until the next scrub — scene docks then render blank (TF lookups / image decode
   // key off the tracker instant). Same seeding the drag-drop / click-create paths do
   // (MainWindow.cpp:480, makeSeededEmptyObjectDock); here it covers layout load + undo/redo.
   broadcastTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
-  // 5. Re-route the right panel to the restored active dock's family. xmlLoadState
+  // 7. Re-route the right panel to the restored active dock's family. xmlLoadState
   // rebuilds docks with focus suppressed (PlotDocker::restoring_state_), so no
   // dockFocused signal fires — without this the panel keeps whatever page it last
   // showed (page 0 / plot-config at startup), so a scene-only layout would display
@@ -7882,22 +7942,17 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
   return wrapper;
 }
 
-bool MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSourceRef>& sources) {
-  if (sources.isEmpty()) {
-    return false;
-  }
-  SessionManager& mgr = session_->sessionManager();
-
+MainWindow::LayoutTimelinePlan MainWindow::resolveLayoutTimelineTracks(
+    const QList<layout_xml::DataSourceRef>& sources) const {
+  LayoutTimelinePlan plan;
+  const SessionManager& mgr = session_->sessionManager();
   // Re-bind each saved <fileInfo> to every loaded dataset produced from that
   // file. DatasetIds are re-minted per session, so path + fan-out
-  // (source_name, source_index) is the stable identity. Apply each track's
-  // offset and collect (id, slot) for the vertical-order rebuild.
-  std::vector<std::pair<int, DatasetId>> ordered;  // (timeline_order, id)
+  // (source_name, source_index) is the stable identity.
   QSet<DatasetId> matched_ids;
-  bool offset_changed = false;
-  const auto apply_state = [this, &mgr, &ordered, &matched_ids, &offset_changed](
-                               DatasetId matched, qint64 offset_ns, bool has_offset, bool includes_global_reference,
-                               int order) {
+  const auto add_track = [this, &mgr, &plan, &matched_ids](
+                             DatasetId matched, qint64 offset_ns, bool has_offset, bool includes_global_reference,
+                             int order) {
     // Multiple <fileInfo>/<dataset> aliases can resolve to one physical dataset.
     // First match wins; never apply its offset twice or draw it in two slots.
     if (matched_ids.contains(matched)) {
@@ -7922,19 +7977,8 @@ bool MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSource
           (!timelineDifferenceFits(raw->min, offset_ns) || !timelineDifferenceFits(raw->max, offset_ns))) {
         has_offset = false;
       }
-      // Track whether this write actually MOVES the offset: plots restored earlier
-      // (restoreWorkspaceState) framed their viewport with the pre-apply offset, so
-      // the caller must re-frame only when an offset really changed here.
-      if (has_offset && mgr.sourceDisplayOffset(matched).value.count() != offset_ns) {
-        offset_changed = true;
-      }
-      if (has_offset) {
-        mgr.setDisplayOffset(matched, DisplayOffset{Duration{offset_ns}});
-      }
     }
-    if (order >= 0) {
-      ordered.emplace_back(order, matched);
-    }
+    plan.push_back(LayoutTimelineTrack{matched, offset_ns, has_offset, order});
   };
 
   // datasets() copies the whole catalog list per call; the candidate scan below
@@ -7958,7 +8002,7 @@ bool MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSource
       // Legacy (<=v3) layout: one state on <fileInfo>, no fan-out description.
       // Deterministically apply it to the first dataset the file created,
       // matching the historical one-track behavior.
-      apply_state(
+      add_track(
           candidates.front(), ref.display_offset_ns, ref.has_display_offset,
           ref.display_offset_includes_global_reference, ref.timeline_order);
       continue;
@@ -7977,25 +8021,55 @@ bool MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSource
         continue;  // missing/ambiguous fan-out entry: never shift a sibling
       }
       const layout_xml::DataSourceDatasetRef& saved = ref.datasets[child_index];
-      apply_state(
+      add_track(
           matched, saved.display_offset_ns, saved.has_display_offset, saved.display_offset_includes_global_reference,
           saved.timeline_order);
     }
   }
 
-  // Rebuild the vertical track order from the saved slots. Sorting by the saved
-  // index (not document order) keeps the arrangement exact even if <fileInfo>
-  // elements were written in load order rather than display order.
-  if (source_timeline_controller_ != nullptr && !ordered.empty()) {
-    std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-    std::vector<DatasetId> order;
-    order.reserve(ordered.size());
-    for (const auto& [slot, id] : ordered) {
-      (void)slot;
-      order.push_back(id);
+  return plan;
+}
+
+bool MainWindow::applyLayoutTimelineOffsets(const LayoutTimelinePlan& plan) {
+  bool changed = false;
+  SessionManager& mgr = session_->sessionManager();
+  for (const LayoutTimelineTrack& track : plan) {
+    if (!track.has_display_offset) {
+      continue;
     }
-    source_timeline_controller_->setDisplayOrder(std::move(order));
+    changed |= mgr.sourceDisplayOffset(track.dataset_id).value.count() != track.display_offset_ns;
+    mgr.setDisplayOffset(track.dataset_id, DisplayOffset{Duration{track.display_offset_ns}});
   }
+  return changed;
+}
+
+void MainWindow::applyLayoutTimelineOrder(const LayoutTimelinePlan& plan) {
+  if (source_timeline_controller_ == nullptr) {
+    return;
+  }
+  std::vector<std::pair<int, DatasetId>> ordered;
+  for (const LayoutTimelineTrack& track : plan) {
+    if (track.timeline_order >= 0) {
+      ordered.emplace_back(track.timeline_order, track.dataset_id);
+    }
+  }
+  if (ordered.empty()) {
+    return;
+  }
+  std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+  std::vector<DatasetId> order;
+  order.reserve(ordered.size());
+  for (const auto& [slot, id] : ordered) {
+    (void)slot;
+    order.push_back(id);
+  }
+  source_timeline_controller_->setDisplayOrder(std::move(order));
+}
+
+bool MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSourceRef>& sources) {
+  const LayoutTimelinePlan plan = resolveLayoutTimelineTracks(sources);
+  const bool offset_changed = applyLayoutTimelineOffsets(plan);
+  applyLayoutTimelineOrder(plan);
   return offset_changed;
 }
 
