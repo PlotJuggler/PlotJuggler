@@ -4,6 +4,8 @@
 #include <pj_plotting/PlotWidget.h>
 #include <pj_runtime/AppSession.h>
 #include <pj_widgets/Dialog.h>
+#include <qwt_scale_div.h>
+#include <qwt_scale_map.h>
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -12,6 +14,7 @@
 #include <QEvent>
 #include <QEventLoop>
 #include <QFrame>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPointer>
@@ -41,6 +44,38 @@ namespace {
 // identity QSettings needs on Windows; this only returns the instance.
 QApplication* qapp() {
   return qobject_cast<QApplication*>(QCoreApplication::instance());
+}
+
+TEST(ChartPreviewWidgetTest, MarkerOverlayReplacesAndClearsWithoutChangingAxes) {
+  PJ::ChartPreviewWidget chart;
+  chart.resize(480, 320);
+  chart.setAxisScale(QwtPlot::xBottom, 0.0, 10.0);
+  chart.setAxisScale(QwtPlot::yLeft, 0.0, 10.0);
+  chart.show();
+  chart.replot();
+  const QImage bare = chart.canvas()->grab().toImage();
+
+  using Marker = PJ::ChartPreviewWidget::Marker;
+  chart.setMarkers({
+      Marker{"region", 2.0, 4.0, 0.0, 0.0, false, "#e6463c", "Region"},
+      Marker{"event", 5.0, 0.0, 5.0, 0.0, true, "#e6463c", "Point"},
+      Marker{"event", 6.0, 0.0, 0.0, 0.0, false, "#e6463c", "Time"},
+      Marker{"value_band", 0.0, 0.0, 7.0, 8.0, false, "#e6463c", "Band"},
+      Marker{"value_band", 0.0, 0.0, 3.0, 3.0, false, "#e6463c", "Level"},
+  });
+  EXPECT_EQ(chart.axisScaleDiv(QwtPlot::xBottom).lowerBound(), 0.0);
+  EXPECT_EQ(chart.axisScaleDiv(QwtPlot::xBottom).upperBound(), 10.0);
+  const QImage overlay = chart.canvas()->grab().toImage();
+  EXPECT_NE(overlay, bare);
+  // The region's badge has a solid marker-color background. The former Qwt
+  // zone renderer had no region label at all, only a translucent fill.
+  const int region_x = static_cast<int>(chart.canvasMap(QwtPlot::xBottom).transform(2.0));
+  EXPECT_EQ(overlay.pixelColor(region_x + 7, 10).rgb(), QColor("#e6463c").rgb());
+
+  chart.setMarkers({Marker{"label", 8.0, 0.0, 0.0, 0.0, false, {}, "Label"}});
+  EXPECT_NE(chart.canvas()->grab().toImage(), bare);
+  chart.setMarkers({});
+  EXPECT_EQ(chart.canvas()->grab().toImage(), bare);
 }
 
 // Pump the event loop for `ms` milliseconds to let timers and queued

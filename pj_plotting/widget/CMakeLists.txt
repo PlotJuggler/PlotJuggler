@@ -19,6 +19,7 @@ add_library(pj_plotting STATIC
     src/PlotFocusOverlay.cpp
     src/PlotLegend.cpp
     src/PlotMagnifier.cpp
+    src/MarkerPainter.cpp
     src/PlotMarkersItem.cpp
     src/PlotPanner.cpp
     src/PlotSampleReducer.cpp
@@ -45,6 +46,7 @@ add_library(pj_plotting STATIC
     include/pj_plotting/PlotFocusOverlay.h
     include/pj_plotting/PlotLegend.h
     include/pj_plotting/PlotMagnifier.h
+    include/pj_plotting/MarkerPainter.h
     include/pj_plotting/PlotMarkersItem.h
     include/pj_plotting/PlotPanner.h
     include/pj_plotting/PlotSampleReducer.h

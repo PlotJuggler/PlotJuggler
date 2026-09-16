@@ -7,21 +7,20 @@
 #include <qwt_plot_curve.h>
 #include <qwt_plot_grid.h>
 #include <qwt_plot_item.h>
-#include <qwt_plot_marker.h>
 #include <qwt_plot_panner.h>
-#include <qwt_plot_zoneitem.h>
 #include <qwt_plot_zoomer.h>
 #include <qwt_scale_div.h>
 #include <qwt_scale_draw.h>
-#include <qwt_symbol.h>
+#include <qwt_scale_map.h>
 #include <qwt_text.h>
 
-#include <QBrush>
 #include <QColor>
 #include <QEvent>
+#include <QFontMetrics>
 #include <QFrame>
 #include <QGuiApplication>
 #include <QLocale>
+#include <QPainter>
 #include <QPalette>
 #include <QPen>
 #include <QPointF>
@@ -33,6 +32,7 @@
 #include <limits>
 #include <pj_plugins/host_qt/chart_preview_widget.hpp>
 
+#include "pj_plotting/MarkerPainter.h"
 #include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
@@ -67,6 +67,63 @@ class PreviewScaleDraw : public QwtScaleDraw {
     }
     return str;
   }
+};
+
+sdk::MarkerKind previewMarkerKind(const std::string& kind) {
+  if (kind == "region") {
+    return sdk::MarkerKind::kRegion;
+  }
+  if (kind == "value_band") {
+    return sdk::MarkerKind::kValueBand;
+  }
+  if (kind == "label") {
+    return sdk::MarkerKind::kLabel;
+  }
+  return sdk::MarkerKind::kEvent;
+}
+
+class PreviewMarkersItem final : public QwtPlotItem {
+ public:
+  explicit PreviewMarkersItem(const std::vector<ChartPreviewWidget::Marker>& markers) {
+    markers_.reserve(markers.size());
+    for (const auto& marker : markers) {
+      QColor color(QString::fromStdString(marker.color));
+      if (!color.isValid()) {
+        color = markerSeverityColor(sdk::MarkerSeverity::kInfo, {});
+      }
+      markers_.push_back({marker, previewMarkerKind(marker.kind), color});
+    }
+    setZ(40.0);
+    setRenderHint(QwtPlotItem::RenderAntialiased, true);
+  }
+
+  void draw(
+      QPainter* painter, const QwtScaleMap& xMap, const QwtScaleMap& yMap, const QRectF& canvasRect) const override {
+    const QFontMetrics fm(painter->font());
+    for (const auto& prepared : markers_) {
+      const auto& m = prepared.marker;
+      paintMarker(
+          painter, xMap, yMap, canvasRect, fm,
+          MarkerPaintData{
+              .kind = prepared.kind,
+              .x0 = m.x0,
+              .x1 = m.x1,
+              .y0 = m.y0,
+              .y1 = m.y1,
+              .has_value = m.has_value,
+              .color = prepared.color,
+              .label = m.label,
+          });
+    }
+  }
+
+ private:
+  struct PreparedMarker {
+    ChartPreviewWidget::Marker marker;
+    sdk::MarkerKind kind;
+    QColor color;
+  };
+  std::vector<PreparedMarker> markers_;
 };
 }  // namespace
 
@@ -198,57 +255,10 @@ void ChartPreviewWidget::setMarkers(const std::vector<Marker>& markers) {
   }
   marker_items_.clear();
 
-  // Resolve the marker color: explicit hex wins; otherwise a neutral red so an
-  // unstyled marker is still visible.
-  auto resolveColor = [](const std::string& hex) -> QColor {
-    const QColor c(QString::fromStdString(hex));
-    return c.isValid() ? c : QColor(0xd6, 0x27, 0x28);
-  };
-
-  for (const auto& m : markers) {
-    const QColor color = resolveColor(m.color);
-
-    // Filled bands: a region is a vertical x-band; a value_band with height is a
-    // horizontal y-band. (A zero-height value_band falls through to an HLine.)
-    if (m.kind == "region" || (m.kind == "value_band" && m.y0 != m.y1)) {
-      const bool vertical = (m.kind == "region");
-      auto* zone = new QwtPlotZoneItem();
-      zone->setOrientation(vertical ? Qt::Vertical : Qt::Horizontal);
-      zone->setInterval(vertical ? m.x0 : m.y0, vertical ? m.x1 : m.y1);
-      QColor fill = color;
-      fill.setAlpha(40);
-      zone->setBrush(QBrush(fill));
-      QPen pen(color);
-      pen.setWidthF(1.0);
-      zone->setPen(pen);
-      zone->attach(this);
-      marker_items_.push_back(zone);
-      continue;
-    }
-
-    auto* marker = new QwtPlotMarker();
-    if (m.kind == "value_band") {  // y0 == y1 → horizontal line
-      marker->setLineStyle(QwtPlotMarker::HLine);
-      marker->setYValue(m.y0);
-    } else if (m.kind == "event" && m.has_value) {  // point: a hollow ring on the sample
-      marker->setLineStyle(QwtPlotMarker::NoLine);
-      marker->setValue(m.x0, m.y0);
-      marker->setSymbol(new QwtSymbol(QwtSymbol::Ellipse, Qt::NoBrush, QPen(color, 1.5), QSize(8, 8)));
-    } else {  // event vertical line / label
-      marker->setLineStyle(QwtPlotMarker::VLine);
-      marker->setXValue(m.x0);
-    }
-    QPen pen(color);
-    pen.setWidthF(1.0);
-    marker->setLinePen(pen);
-    if (!m.label.empty()) {
-      QwtText label(QString::fromStdString(m.label));
-      label.setColor(color);
-      marker->setLabel(label);
-      marker->setLabelAlignment(Qt::AlignTop | Qt::AlignRight);
-    }
-    marker->attach(this);
-    marker_items_.push_back(marker);
+  if (!markers.empty()) {
+    auto* item = new PreviewMarkersItem(markers);
+    item->attach(this);
+    marker_items_.push_back(item);
   }
 
   replot();
