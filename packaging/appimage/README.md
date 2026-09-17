@@ -62,14 +62,15 @@ There are two ways to bundle them (and a no-plugin default):
 
 The registry lists every official extension; the AppImage bundles this subset
 (`BUNDLE_IDS` — same set as the Windows installer's `$PluginIds`, plus the
-Linux-only `ros2-topic-subscriber`):
+Linux-only `ros2-topic-subscriber` and `toolbox-assistant-agent`, whose CLI
+backends are POSIX-only):
 
 `csv-loader`, `mcap-loader`, `parquet-loader`, `ulog-loader`, `mp4-loader`,
 `pointcloud-3d-loader`, `dummy-streamer`, `foxglove-bridge`,
 `plotjuggler-bridge`, `webrtc-client`, `ros-parser`, `protobuf-parser`,
 `json-parser`, `data-tamer-parser`, `toolbox-quaternion`,
 `toolbox-transform-editor`, `toolbox-mosaico`, `arrow-parser`,
-`ros2-topic-subscriber`.
+`toolbox-assistant-agent`, `ros2-topic-subscriber`.
 
 Not bundled: `toolbox-colormap`, `toolbox-reactive-scripts-editor` (excluded by
 request); `toolbox-fft`, `mqtt-subscriber`, `udp-server`, `zmq-subscriber`,

@@ -12,11 +12,11 @@ from `pj-official-plugins` source and embedding it.
 full build. Use it when the registry is not an option — offline builds, testing
 unpublished plugin changes, or building against a not-yet-released SDK.
 
-## The full bundled set (17 + ROS 2)
+## The full bundled set (19 + ROS 2)
 
 | Loaders | Parsers | Streams | Toolboxes |
 |---|---|---|---|
-| csv, mcap, parquet, ulog, mp4, pointcloud-3d | ros, protobuf, json, data-tamer | dummy-streamer, foxglove-bridge, plotjuggler-bridge, webrtc-client, ros2-topic-subscriber | quaternion, transform-editor, mosaico |
+| csv, mcap, parquet, ulog, mp4, pointcloud-3d | ros, protobuf, json, data-tamer, arrow | dummy-streamer, foxglove-bridge, plotjuggler-bridge, webrtc-client, ros2-topic-subscriber | quaternion, transform-editor, mosaico, assistant-agent (Linux-only: POSIX CLI backends) |
 
 (Excluded by request: `toolbox-colormap`, `toolbox-reactive-scripts-editor`.
 The set matches `BUNDLE_IDS` in `build_appimage.sh`; keep the two in lockstep.)
@@ -32,9 +32,9 @@ The set matches `BUNDLE_IDS` in `build_appimage.sh`; keep the two in lockstep.)
    --plugins-dir <sdk>/pj_ported_plugins`, which compiles both the app and the aggregate
    plugin set in the Ubuntu 22.04 builder image (glibc 2.35), picks up the ROS 2 bundle
    from step 1, and packages the AppImage. `build_release_appimage.sh` then extracts the
-   result, drops any `.so` outside the curated 17 (the aggregate build produces more),
-   and repacks — so the released AppImage is portable **and** carries exactly the 17.
-   With `--host-build` the same 17-plugin filter runs but the app + plugins are built on
+   result, drops any `.so` outside the curated 19 (the aggregate build produces more),
+   and repacks — so the released AppImage is portable **and** carries exactly the 19 (plus the ROS 2 bundle).
+   With `--host-build` the same 19-plugin filter runs but the app + plugins are built on
    the host (`./build.sh` and `pj_ported_plugins/build.sh`), producing a faster iteration
    but non-portable AppImage tied to the host's glibc.
 

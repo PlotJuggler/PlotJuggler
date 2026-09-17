@@ -98,7 +98,9 @@ REGISTRY_URL="https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/r
 # registry lists every official extension; this is the subset that ships in the
 # AppImage. Keep in lockstep with $PluginIds in
 # packaging/installer/build_windows_installer.ps1 (same set, plus the Linux-only
-# ros2-topic-subscriber). Excluded by request: toolbox-colormap,
+# ros2-topic-subscriber and toolbox-assistant-agent: the assistant's CLI
+# backends are POSIX-only, so it ships in the AppImage/.deb but not in the
+# Windows installer). Excluded by request: toolbox-colormap,
 # toolbox-reactive-scripts-editor.
 BUNDLE_IDS=(
   csv-loader
@@ -119,6 +121,9 @@ BUNDLE_IDS=(
   toolbox-transform-editor
   toolbox-mosaico
   arrow-parser
+  # LLM assistant (spawns the user's claude/codex CLI; POSIX-only backends,
+  # so bundled on Linux only — deliberately absent from the Windows list).
+  toolbox-assistant-agent
   # Multi-distro ROS 2 subscriber: the single linux-x86_64 zip carries the
   # distro-agnostic proxy + per-distro inners under dist/<distro>/;
   # registry-mode unpacks it verbatim, no special handling needed.

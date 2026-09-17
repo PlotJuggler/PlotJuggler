@@ -15,15 +15,15 @@
 #                          orchestrator then extracts the produced AppImage,
 #                          drops non-MUST .so from the plugins dir, and repacks
 #                          so the released AppImage carries exactly the curated
-#                          19 (matching --host-build).
+#                          20 (matching --host-build).
 #                          With --host-build: ./build.sh + pj_ported_plugins/
-#                          build.sh on the host, curated 19-plugin filter, then
+#                          build.sh on the host, curated 20-plugin filter, then
 #                          packaging/appimage/build_appimage.sh --plugins-dir.
 #
 # DEFAULT = docker (portable). The AppImage inherits the container's glibc 2.35
 # floor and runs on any distro with glibc >= 2.35 (Ubuntu 22.04 and newer, and
 # equivalents on other families). Ros2 is ALWAYS Docker-per-distro either way.
-# Both modes produce the same curated 19-plugin bundle.
+# Both modes produce the same curated 20-plugin bundle.
 #
 # --host-build (opt-in) = host build (fast, this machine). The resulting AppImage
 # inherits the HOST glibc floor (e.g. Ubuntu 24.04 => glibc 2.38), so it only
@@ -37,7 +37,7 @@
 #                             [--ros2-distros "humble iron jazzy rolling"]
 #
 #   --host-build                            opt into the legacy host-build flow
-#                                           (curated 19 plugins, non-portable).
+#                                           (curated 20 plugins, non-portable).
 #   --fresh                                 (docker mode only) drop the
 #                                           persistent Conan + ccache Docker
 #                                           volumes so app+plugins compile from
@@ -161,6 +161,8 @@ RELEASE_FLAT_SOS=(
   libtoolbox_quaternion_plugin.so
   libtoolbox_transform_editor_plugin.so
   libtoolbox_mosaico_plugin.so
+  # Linux-only in the bundle (POSIX-only CLI backends); see BUNDLE_IDS.
+  libtoolbox_assistant_agent_plugin.so
 )
 ROS2_EXTENSION_DIR="ros2-topic-subscriber"  # bundle dir name inside the plugin tree
 

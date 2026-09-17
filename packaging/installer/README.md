@@ -172,3 +172,6 @@ The default whitelist bundles these 18 published plugins:
   run ("More info" → "Run anyway").
 - **ROS 2 subscriber.** The ros2-stream build system is Linux-only, so ROS
   streaming is absent from the Windows installer for this release.
+- **Assistant Agent.** `toolbox-assistant-agent` is published for Windows, but
+  its backends drive the `claude`/`codex` CLI through POSIX-only code, so it
+  is bundled on Linux only (AppImage/.deb) and left out of the whitelist here.
