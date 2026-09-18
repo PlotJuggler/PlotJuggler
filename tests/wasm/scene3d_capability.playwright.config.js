@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 const { defineConfig } = require('@playwright/test');
+const { launchOptions } = require('./support/browser');
 
 module.exports = defineConfig({
   testMatch: 'scene3d_capability.spec.js',
@@ -19,9 +20,7 @@ module.exports = defineConfig({
       name: 'chromium',
       use: {
         browserName: 'chromium',
-        launchOptions: process.env.PJ_CHROMIUM_EXECUTABLE
-          ? { executablePath: process.env.PJ_CHROMIUM_EXECUTABLE }
-          : {},
+        launchOptions: launchOptions(),
       },
     },
   ],

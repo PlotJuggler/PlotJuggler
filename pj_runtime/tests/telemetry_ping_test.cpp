@@ -4,13 +4,16 @@
 // Drives TelemetryPing against a local capturing HTTP server. This is where
 // the privacy contract is enforced on the wire: the POSTed body contains ONLY
 // the documented environment-fact keys (adding a payload field must break this
-// test), the user id is a stable salted hash (never the raw machine id), and
-// every failure mode stays silent (finished(false), no crash).
+// test), the user id is a stable salted hash (never the raw machine id),
+// unpackaged builds never reach the endpoint at all, and every failure mode
+// stays silent (finished(false), no crash).
 
 #include <gtest/gtest.h>
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QDeadlineTimer>
+#include <QEventLoop>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
@@ -72,6 +75,35 @@ TEST(TelemetryPingTest, UserIdIsStableSaltedSha256Hex) {
   if (!raw_machine_id.isEmpty()) {
     EXPECT_NE(first.toLatin1(), raw_machine_id);
     EXPECT_NE(first.toLatin1(), raw_machine_id.toHex());
+  }
+}
+
+TEST(TelemetryPingTest, UnpackagedBuildsNeverReachTheEndpoint) {
+  // "source" is the PJ_INSTALLATION default, so every self-built tree carries
+  // it: developers, CI, and any automation that launches the real app. They
+  // all report the in-development version, so a leak here invents users on a
+  // version that was never released. An unstamped build is refused for the
+  // same reason.
+  for (const QString& installation : {u"source"_s, QString()}) {
+    LocalHttpServer server;
+    server.setResponse("200 OK", "{}");
+
+    PJ::TelemetryPing ping;
+    ping.setEndpointUrl(server.url());
+    QSignalSpy finished_spy(&ping, &PJ::TelemetryPing::finished);
+
+    ping.send(installation);
+
+    ASSERT_TRUE(waitForSignal(finished_spy)) << "installation: " << installation.toStdString();
+    EXPECT_FALSE(finished_spy.takeFirst().at(0).toBool());
+    // Nothing must arrive even late: keep pumping past the terminal signal.
+    // WaitForMoreEvents idles between deliveries instead of spinning.
+    QDeadlineTimer settle(250);
+    while (!settle.hasExpired()) {
+      QCoreApplication::processEvents(QEventLoop::AllEvents | QEventLoop::WaitForMoreEvents, 50);
+    }
+    EXPECT_TRUE(server.requestHeaders().isEmpty())
+        << "unpackaged build reached the endpoint: " << server.requestHeaders().toStdString();
   }
 }
 

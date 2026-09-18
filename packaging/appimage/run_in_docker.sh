@@ -73,6 +73,7 @@ docker run --rm \
   -e DISPLAY="${DISPLAY}" \
   -e QT_X11_NO_MITSHM=1 \
   -e QT_IM_MODULE= \
+  -e PJ_DISABLE_TELEMETRY=1 \
   -v /tmp/.X11-unix:/tmp/.X11-unix:ro \
   -v "${APPIMAGE}:/opt/app.AppImage:ro" \
   "${IMAGE_TAG}" \

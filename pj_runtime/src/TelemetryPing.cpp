@@ -25,6 +25,12 @@ namespace {
 constexpr auto kDefaultEndpointUrl = "https://app.plotjuggler.io/telemetry";
 constexpr int kTransferTimeoutMs = 15000;
 
+// The PJ_INSTALLATION default (see the root CMakeLists.txt): anything that
+// release packaging did not stamp. Self-built trees are developers, CI and
+// automation rather than installs, and they all carry the in-development
+// version, so counting them reports a user base that does not exist.
+constexpr auto kUnpackagedInstallation = "source";
+
 // Stable anonymous per-machine id: SHA-256 of the OS machine id + app salt.
 // Hashing follows Qt's own machineUniqueId() privacy guidance — the value
 // cannot be reversed to the machine id nor correlated with other apps that
@@ -85,6 +91,17 @@ QUrl TelemetryPing::endpointUrl() const {
 }
 
 void TelemetryPing::send(const QString& installation) {
+  // An unstamped build never reports; every other channel does, including a
+  // downstream packager's own. The outcome is the ordinary silent failure, so
+  // callers need no special case. PJ_INSTALLATION is a free-form CMake cache
+  // string, so compare it folded: "Source" or a stray trailing space must not
+  // slip a developer build past the gate.
+  const QString stamp = installation.trimmed();
+  if (stamp.isEmpty() || stamp.compare(QLatin1String(kUnpackagedInstallation), Qt::CaseInsensitive) == 0) {
+    QMetaObject::invokeMethod(this, [this]() { emit finished(false); }, Qt::QueuedConnection);
+    return;
+  }
+
   QNetworkRequest request(endpoint_url_);
   request.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_s);
   request.setHeader(QNetworkRequest::UserAgentHeader, u"PlotJuggler"_s);

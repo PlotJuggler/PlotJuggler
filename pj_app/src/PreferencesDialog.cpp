@@ -235,6 +235,15 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
         /*animate=*/false);
     ui_->splashMode->setSelectedIndex(
         settings.value(kSplashModeKey, kSplashModeMemes).toString() == kSplashModeSerious ? 1 : 0);
+#ifdef PJ_TARGET_WASM
+    // Neither startup network call exists in the browser build (see main.cpp):
+    // a tab cannot self-update, and it is a page view rather than an installed
+    // user. Hide the two switches instead of offering controls over nothing.
+    ui_->labelCheckUpdates->hide();
+    ui_->checkUpdatesToggle->hide();
+    ui_->labelTelemetry->hide();
+    ui_->telemetryToggle->hide();
+#endif
   }
 
   if (main_window != nullptr) {

@@ -753,8 +753,11 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // AboutDialog::exec() blocks on a nested event loop, unusable on wasm.
   // Async port deferred to W8.
   help_menu->addAction(tr("About PlotJuggler..."), this, &MainWindow::onShowAboutDialog);
-#endif
+  // A browser tab cannot install a release, and the check itself cannot
+  // succeed there (the GitHub API refuses the cross-origin request), so the
+  // action would only ever toast a failure.
   help_menu->addAction(tr("Check for Updates..."), this, &MainWindow::onCheckForUpdates);
+#endif
   help_menu->addAction(
       tr("Documentation"), this, []() { QDesktopServices::openUrl(QUrl(u"https://plotjuggler.io"_s)); });
   help_menu->addAction(tr("Report an Issue"), this, []() {

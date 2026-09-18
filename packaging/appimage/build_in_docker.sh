@@ -545,6 +545,7 @@ run_cmd=(docker run --rm
   "${PLUGINS_MOUNT[@]}"
   -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)"
   -e PJ_VERSION="${PJ_VERSION:-}"
+  -e PJ_INSTALLATION="${PJ_INSTALLATION:-}"
   -e PJ_SANITIZER_CLANG_VERSION="${PJ_SANITIZER_CLANG_VERSION}"
   "${build_env[@]}"
   --entrypoint bash

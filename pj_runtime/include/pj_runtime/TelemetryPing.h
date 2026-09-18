@@ -20,8 +20,9 @@ namespace PJ {
 // ignored and nothing is ever surfaced to the user; failures are silent by
 // design (startup path).
 //
-// Widget-free (lives in pj_runtime); the shell owns the opt-out gate — this
-// class sends whenever told to.
+// Widget-free (lives in pj_runtime). The shell owns the user-facing opt-out
+// and the automation guards; this class owns which builds may report at all,
+// so an unpackaged build cannot reach the endpoint from any call site.
 class TelemetryPing : public QObject {
   Q_OBJECT
 
@@ -33,6 +34,12 @@ class TelemetryPing : public QObject {
   // build stamp, passed in by the shell so pj_runtime never includes the
   // generated pj_version.h. Each call emits finished(ok) exactly once (a
   // transfer timeout counts as a failure).
+  //
+  // An unstamped build never reports: "source" (the CMake default, i.e. any
+  // self-built tree, matched case-insensitively and trimmed) and an empty
+  // stamp send nothing and report finished(false), like any other silent
+  // failure. Every other stamp is sent as-is, so a downstream packager's own
+  // channel name reaches the dashboard rather than being silently dropped.
   void send(const QString& installation);
 
   // Override the endpoint (tests point this at a local server).

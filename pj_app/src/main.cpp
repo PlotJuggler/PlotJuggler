@@ -538,6 +538,13 @@ int main(int argc, char* argv[]) {
   }
 #endif
 
+  // Both startup network calls below are desktop-only. A browser tab is a page
+  // view rather than an installed user, and it can neither self-update nor
+  // install an extension. It also cannot be excluded by the environment guards
+  // they rely on: getenv() under Emscripten reads a synthetic table that never
+  // inherits the host process environment, so `CI` is invisible to the running
+  // module and every headless-browser suite would report itself as real users.
+#ifndef PJ_TARGET_WASM
   // One-shot GitHub release check, opt-out via Preferences (default on) and
   // skipped for headless --screenshot runs. Deferred to the running event loop
   // (QNetworkAccessManager needs it); failures/no-release are silent.
@@ -557,12 +564,17 @@ int main(int argc, char* argv[]) {
   // and virtually every CI system; PJ_DISABLE_TELEMETRY covers other
   // automation, e.g. local docker/test harnesses). Deferred like the update
   // check; all failures are silent.
+  //
+  // These gates cover a *packaged* build that automation launches. An
+  // unpackaged one is refused by TelemetryPing itself, so a self-built tree
+  // never reports whatever the settings below say.
   const bool automated_environment =
       qEnvironmentVariableIsSet("CI") || qEnvironmentVariableIsSet("PJ_DISABLE_TELEMETRY");
   if (!parser.isSet(screenshot_option) && !automated_environment &&
       QSettings().value(u"Preferences::send_anonymous_stats"_s, true).toBool()) {
     QTimer::singleShot(0, &window, [&window]() { window.sendTelemetryPing(QStringLiteral(PJ_INSTALLATION_STRING)); });
   }
+#endif
 
   if (parser.isSet(screenshot_option)) {
     const QString path = parser.value(screenshot_option);
