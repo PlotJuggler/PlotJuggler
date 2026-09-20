@@ -20,9 +20,6 @@ in a single application.
 - **Add your own functions.** Create derived series with custom transforms in Lua and Python, alongside the built-in filters.
 - **Reuse your analysis.** Arrange plots in tabs and dockable panels, then save your layout and transforms for the next investigation.
 
-![Angular velocity signals plotted together, with the filter and plot arrangement menu open](docs/images/time-series.jpg)
-
-
 ## Multimodal data, synchronized in time
 
 Efficient data storage, GPU-accelerated rendering and on-demand media decoding
