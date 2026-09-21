@@ -136,9 +136,14 @@ jobs:
           $conf = Join-Path $conanHome "global.conf"
           $lines = @()
           if (Test-Path $conf) {
-            $lines = @(Get-Content $conf | Where-Object { $_ -notmatch '^core\.sources:download_cache=' })
+            $lines = @(Get-Content $conf | Where-Object { $_ -notmatch '^core\.sources:(download_cache|download_urls)=' })
           }
-          $lines + "core.sources:download_cache=$cacheDir" | Set-Content $conf
+          $lines += "core.sources:download_cache=$cacheDir"
+          # Retry through ConanCenter's sha256-addressed mirror when a recipe's own
+          # host refuses a datacenter IP. 'origin' stays FIRST: Conan aborts the
+          # download if a backup entry answers 401/403 (only 404 falls through).
+          $lines += 'core.sources:download_urls=["origin", "https://c3i.jfrog.io/artifactory/conan-center-backup-sources/"]'
+          $lines | Set-Content $conf
 
       # ─────────────────────────── Qt caches: restore/install/save ───────────────────────────
 

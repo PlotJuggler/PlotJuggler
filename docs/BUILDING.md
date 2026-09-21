@@ -147,8 +147,9 @@ From the repository root, in PowerShell or cmd:
 `build.bat` registers the public PlotJuggler Conan remote, creates a default
 Conan profile only if none exists, seeds Conan's source download cache from
 `.github\conan\source-backup` into `%LOCALAPPDATA%\PlotJuggler4\conan-source-cache`
-(rewriting the `core.sources:download_cache=` line of Conan's `global.conf` to
-point there and printing the edit; `core.*` settings cannot be passed on the
+(rewriting the `core.sources:download_cache=` and `core.sources:download_urls=`
+lines of Conan's `global.conf` to point there and at ConanCenter's source
+mirror, and printing the edit; `core.*` settings cannot be passed on the
 command line), runs `conan install` with the CI settings, configures with
 `-G "Ninja Multi-Config"` into `build\`, copies `build\compile_commands.json` to
 the repository root, and builds the `RelWithDebInfo` configuration. The first
