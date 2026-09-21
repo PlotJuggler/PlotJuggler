@@ -2,10 +2,10 @@ name: Linux CI
 
 on:
   pull_request:
-    branches: [main, development]
+    branches: [main, main-4.x, development]
     types: [opened, synchronize, reopened, ready_for_review]
   push:
-    branches: [main, development]
+    branches: [main, main-4.x, development]
   workflow_dispatch:
 
 concurrency:
@@ -108,10 +108,17 @@ jobs:
           conf="${conan_home}/global.conf"
           mkdir -p "${conan_home}"
           if [[ -f "$conf" ]]; then
-            grep -v '^core\.sources:download_cache=' "$conf" > "${conf}.tmp" || true
+            grep -vE '^core\.sources:(download_cache|download_urls)=' "$conf" > "${conf}.tmp" || true
             mv "${conf}.tmp" "$conf"
           fi
           echo "core.sources:download_cache=${cache_dir}" >> "$conf"
+          # When a recipe's own host refuses a datacenter IP (sourceware.org 403s
+          # for elfutils, zlib.net 415s for minizip), retry through ConanCenter's
+          # sha256-addressed mirror instead of failing the build. 'origin' stays
+          # FIRST deliberately: Conan aborts the whole download if a backup entry
+          # answers 401/403 (only 404 falls through), so a mirror-first list would
+          # put every cold build at the mercy of that one server.
+          echo 'core.sources:download_urls=["origin", "https://c3i.jfrog.io/artifactory/conan-center-backup-sources/"]' >> "$conf"
           cat "$conf"
 
       - name: Cache Qt

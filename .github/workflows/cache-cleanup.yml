@@ -31,7 +31,7 @@ on:
   push:
     # Prune right after every merge: the rolling per-SHA families otherwise
     # hold 2-3 near-identical generations (~1-2 GB) between cron ticks.
-    branches: [main]
+    branches: [main, main-4.x]
   schedule:
     # Daily. The GitHub-hosted store this prunes (see the scope note above) sees
     # only a handful of small writes per day, so a tighter tick reclaims nothing.

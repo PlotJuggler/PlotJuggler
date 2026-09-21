@@ -8,7 +8,7 @@ name: AppImage builder image
 
 on:
   push:
-    branches: [main]
+    branches: [main, main-4.x]
     paths:
       - packaging/appimage/Dockerfile.build
       - .github/workflows/appimage-builder-image.yml
