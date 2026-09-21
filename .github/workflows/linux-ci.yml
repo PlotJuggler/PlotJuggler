@@ -227,7 +227,19 @@ jobs:
         # failing project compile still saves the third-party deps that
         # finished earlier — they're the expensive part. Keys are immutable,
         # so skip only on an exact-key hit.
-        if: always() && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        #
+        # Not from pull requests, the same rule the ccache save below follows:
+        # Depot Cache is repo-wide with no branch isolation, and this namespace
+        # is what the release restores from, so only trusted refs (push,
+        # dispatch) may write it. PR runs still RESTORE via the prefix key.
+        #
+        # conan_install must have succeeded: an install that died partway
+        # leaves an incomplete closure, and the immutable exact key would then
+        # pin that gap until conanfile.txt/conan.lock change.
+        if: >-
+          always() && github.event_name != 'pull_request'
+          && steps.conan_install.outcome == 'success'
+          && steps.conan-gha-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ~/.conan2
