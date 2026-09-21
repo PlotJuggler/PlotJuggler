@@ -2,10 +2,10 @@ name: Windows CI
 
 on:
   pull_request:
-    branches: [main, development]
+    branches: [main, main-4.x, development]
     types: [opened, synchronize, reopened, ready_for_review]
   push:
-    branches: [main, development]
+    branches: [main, main-4.x, development]
   workflow_dispatch:
 
 concurrency:
@@ -126,9 +126,14 @@ jobs:
           $conf = Join-Path $conanHome "global.conf"
           $lines = @()
           if (Test-Path $conf) {
-            $lines = @(Get-Content $conf | Where-Object { $_ -notmatch '^core\.sources:download_cache=' })
+            $lines = @(Get-Content $conf | Where-Object { $_ -notmatch '^core\.sources:(download_cache|download_urls)=' })
           }
-          $lines + "core.sources:download_cache=$cacheDir" | Set-Content $conf
+          $lines += "core.sources:download_cache=$cacheDir"
+          # Retry through ConanCenter's sha256-addressed mirror when a recipe's own
+          # host refuses a datacenter IP. 'origin' stays FIRST: Conan aborts the
+          # download if a backup entry answers 401/403 (only 404 falls through).
+          $lines += 'core.sources:download_urls=["origin", "https://c3i.jfrog.io/artifactory/conan-center-backup-sources/"]'
+          $lines | Set-Content $conf
           # Surface the effective conf in the log so a clobber regression is
           # visible at a glance.
           Get-Content $conf
@@ -262,7 +267,16 @@ jobs:
         # always(): a failed app compile must still persist the expensive
         # third-party closure. Immutable keys make a re-save a no-op, so skip
         # only on an exact-key hit.
-        if: always() && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        #
+        # Not from pull requests: Depot Cache is repo-wide with no branch
+        # isolation, so only trusted refs (push, dispatch) write a namespace
+        # that release builds restore. PR runs still RESTORE via the prefix.
+        # conan_install must also have succeeded — an install that died partway
+        # would pin an incomplete closure under an immutable key.
+        if: >-
+          always() && github.event_name != 'pull_request'
+          && steps.conan_install.outcome == 'success'
+          && steps.conan-gha-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ~/.conan2

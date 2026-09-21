@@ -318,15 +318,26 @@ function Initialize-PjConanSourceCache([string]$ConanHome) {
   New-Item -ItemType Directory -Force -Path $storeDir | Out-Null
   Get-ChildItem -LiteralPath $backup -File | Where-Object { $_.Name -ne 'README.md' } | Copy-Item -Destination $storeDir -Force
   $conf = Join-Path $ConanHome 'global.conf'
-  $lines = @()
-  if (Test-Path -LiteralPath $conf) {
-    $lines = @([System.IO.File]::ReadAllLines($conf) | Where-Object { $_ -notmatch '^core\.sources:download_cache=' })
-  }
+  $existing = @()
+  if (Test-Path -LiteralPath $conf) { $existing = @([System.IO.File]::ReadAllLines($conf)) }
+  # Only the download_cache line is ours to rewrite. A developer who has already
+  # pointed Conan at their own source mirror keeps it: this is a shared, per-user
+  # global.conf, not a CI-owned one.
+  $hasUrls = @($existing | Where-Object { $_ -match '^core\.sources:download_urls=' }).Count -gt 0
+  $lines = @($existing | Where-Object { $_ -notmatch '^core\.sources:download_cache=' })
   $entry = 'core.sources:download_cache=' + $cacheDir.Replace('\', '/')
   $lines += $entry
-  [System.IO.File]::WriteAllLines($conf, [string[]]$lines)
   Write-Host "Editing $conf (Conan source download cache, seeded from $backup):"
   Write-Host "  $entry"
+  if (-not $hasUrls) {
+    # Anything not seeded retries through ConanCenter's sha256-addressed mirror
+    # when the recipe's own host refuses the request. 'origin' stays first: Conan
+    # aborts the download if a backup entry answers 401/403, only 404 falls through.
+    $mirror = 'core.sources:download_urls=["origin", "https://c3i.jfrog.io/artifactory/conan-center-backup-sources/"]'
+    $lines += $mirror
+    Write-Host "  $mirror"
+  }
+  [System.IO.File]::WriteAllLines($conf, [string[]]$lines)
 }
 
 if (-not $SkipConanInstall) {
