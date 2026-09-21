@@ -234,10 +234,17 @@ void MarketplaceWindow::finishConstruction(const QMap<QString, InstalledExtensio
 }
 
 MarketplaceWindow::~MarketplaceWindow() {
-  // The manager keeps whatever confirmation was registered last, and it outlives
-  // every window; disarm ours so a pending local install cannot put its question
-  // to a destroyed window. A no-op once another window took the registration over.
-  ext_mgr_->clearReplaceConfirmation(this);
+  // The manager keeps whatever confirmation was registered last; disarm ours so a
+  // pending local install cannot put its question to a destroyed window. A no-op
+  // once another window took the registration over.
+  //
+  // The guard is not defensive padding: at shutdown the manager is destroyed
+  // first. It belongs to a service MainWindow owns as a member, and a member dies
+  // before ~QWidget deletes the child widgets this window is one of — so nothing
+  // is left to disarm, and reaching for it is a use-after-free.
+  if (ext_mgr_) {
+    ext_mgr_->clearReplaceConfirmation(this);
+  }
   delete ui_;
 }
 

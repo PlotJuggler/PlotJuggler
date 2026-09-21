@@ -4,6 +4,7 @@
 
 #include <QDateTime>
 #include <QMap>
+#include <QPointer>
 #include <QUrl>
 
 #include "pj_marketplace/extension.hpp"
@@ -235,7 +236,10 @@ class MarketplaceWindow : public Dialog {
   QWidget* content_widget_ = nullptr;  ///< the UI body; exposed for embedding
   DownloadManager* download_mgr_ = nullptr;
   RegistryManager* registry_mgr_ = nullptr;
-  ExtensionManager* ext_mgr_ = nullptr;
+  // Guarded: the manager is owned by a service that MainWindow holds as a member,
+  // and members die before ~QWidget deletes the child widgets — so by the time
+  // this window is destroyed at shutdown, the manager may already be gone.
+  QPointer<ExtensionManager> ext_mgr_;
   QUrl registry_url_;
 
   // Registry rows exactly as fetched, kept apart from extensions_ so the local-only
