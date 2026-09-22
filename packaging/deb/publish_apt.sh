@@ -337,6 +337,10 @@ for f in Release Release.gpg InRelease; do
 done
 s3 cp "${STAGE}/plotjuggler-archive-keyring.asc" "s3://${R2_BUCKET}/plotjuggler-archive-keyring.asc" \
   --content-type "text/plain" --cache-control "${NOCACHE}" --no-progress
+# The one-line installer the README points at; it rides along with every
+# publish so it always matches the repository layout it writes.
+s3 cp "$(dirname "${BASH_SOURCE[0]}")/install.sh" "s3://${R2_BUCKET}/install.sh" \
+  --content-type "text/x-shellscript" --cache-control "${NOCACHE}" --no-progress
 
 echo "Published: ${POOL_PATH}"
 

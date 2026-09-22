@@ -155,14 +155,15 @@ where the file came from.
 **The apt repository**, which does support `apt upgrade`:
 
 ```bash
-sudo install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://apt.plotjuggler.io/plotjuggler-archive-keyring.asc \
-  | sudo gpg --dearmor -o /etc/apt/keyrings/plotjuggler.gpg
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/plotjuggler.gpg] \
-https://apt.plotjuggler.io stable main" \
-  | sudo tee /etc/apt/sources.list.d/plotjuggler.list
-sudo apt update && sudo apt install plotjuggler4
+curl -fsSL https://apt.plotjuggler.io/install.sh | sudo sh
 ```
+
+[`install.sh`](install.sh) writes the armored key to
+`/etc/apt/keyrings/plotjuggler.asc` (apt ≥ 2.4 reads `.asc` directly through
+`signed-by`, so the host needs no `gpg`), writes
+`/etc/apt/sources.list.d/plotjuggler.list`, and installs `plotjuggler4`. It is
+idempotent and refuses non-amd64 hosts. `publish_apt.sh` uploads it on every
+publish, so the served copy always matches the repository it configures.
 
 `arch=amd64` is there because that is the only architecture built today; a host
 on another architecture would otherwise log a missing-index warning on every

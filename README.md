@@ -77,8 +77,7 @@ Pick the one that fits your system.
 Download `PlotJuggler-<version>-Windows-x64.exe` from the
 [latest release](https://github.com/PlotJuggler/PlotJuggler/releases/latest)
 and run it. It installs for the current user, so no administrator rights are
-needed. The installer is not code-signed yet: if SmartScreen warns you, choose
-**More info → Run anyway**.
+needed.
 
 ### Debian and Ubuntu (apt repository)
 
@@ -86,14 +85,24 @@ Recommended on Ubuntu 22.04+ and Debian 12+: add the apt repository once, and
 future releases arrive with `sudo apt upgrade`.
 
 ```bash
+curl -fsSL https://apt.plotjuggler.io/install.sh | sudo sh
+```
+
+<details>
+<summary>Prefer to run the steps yourself?</summary>
+
+The script ([`packaging/deb/install.sh`](packaging/deb/install.sh)) does exactly this:
+
+```bash
 sudo install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://apt.plotjuggler.io/plotjuggler-archive-keyring.asc \
-  | sudo gpg --dearmor -o /etc/apt/keyrings/plotjuggler.gpg
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/plotjuggler.gpg] \
-https://apt.plotjuggler.io stable main" \
+sudo curl -fsSL https://apt.plotjuggler.io/plotjuggler-archive-keyring.asc \
+  -o /etc/apt/keyrings/plotjuggler.asc
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/plotjuggler.asc] https://apt.plotjuggler.io stable main" \
   | sudo tee /etc/apt/sources.list.d/plotjuggler.list
 sudo apt update && sudo apt install plotjuggler4
 ```
+
+</details>
 
 To install a single release without adding the repository, download
 `plotjuggler4_<version>_amd64.deb` from the
