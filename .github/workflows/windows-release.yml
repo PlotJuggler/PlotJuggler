@@ -399,6 +399,18 @@ jobs:
           path: dist/*.exe
           if-no-files-found: error
 
+      - name: Upload the update repository (rehearsal)
+        # A later rehearsal's update-check installs this run's installer
+        # against THIS repository, so the install resolves this version rather
+        # than whatever the staging prefix has advertised since.
+        if: github.ref_type != 'tag' && env.PJ_WINDOWS_UPDATE_URL != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-repo-${{ env.PJ_VERSION }}
+          path: dist/repo
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Attach installer to the GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
@@ -471,8 +483,17 @@ jobs:
           }
 
           $installer = (Get-ChildItem old -Recurse -Filter *.exe | Select-Object -First 1).FullName
-          Write-Host "installing $installer into $root"
-          Invoke-Ifw $installer @("install", "--root", $root, "--accept-licenses", "--default-answer", "--confirm-command")
+          $oldRepo = (Get-ChildItem old -Recurse -Filter Updates.xml | Select-Object -First 1).DirectoryName
+          if (-not $oldRepo) { throw "run $env:OLD_RUN has no update-repo artifact; rebuild it with update_url set" }
+          # An installer carrying <RemoteRepositories> consults them at install
+          # time and installs the NEWEST version it finds there. Restricting the
+          # fetch to the old run's own repository (not saved into the
+          # maintenance tool) reproduces a machine that installed before the
+          # newer version was published.
+          $oldRepoUri = ([uri]$oldRepo).AbsoluteUri
+          Write-Host "installing $installer into $root, resolving only $oldRepoUri"
+          Invoke-Ifw $installer @("install", "--root", $root, "--set-temp-repository", $oldRepoUri,
+                                   "--accept-licenses", "--default-answer", "--confirm-command")
           $before = Get-InstalledVersion
           Write-Host "installed: $before"
           if ($before -eq $env:EXPECT) { throw "the older installer is already $env:EXPECT; nothing to update" }

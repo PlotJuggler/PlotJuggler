@@ -236,6 +236,12 @@ the same rule for the same reason.)
   build already carrying `-UpdateUrl` can ever check for updates — turning
   this on does nothing for anyone who installed an earlier release. That is an
   argument for enabling it sooner rather than later.
+- **An installer installs the newest published version.** With
+  `<RemoteRepositories>` set, IFW consults the update repository while
+  installing, so running an older installer after a newer release is published
+  installs the newer release (downloaded from the repository, checksummed).
+  The rehearsal's `update-check` pins the fetch with `--set-temp-repository`
+  to reproduce a machine that installed earlier.
 - **No delta updates.** The app is a single component of several hundred MB,
   so an update re-downloads the whole payload. The `.deb` behaves the same
   way; do not expect Chrome-style patching.
