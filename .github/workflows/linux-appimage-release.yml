@@ -28,6 +28,10 @@ name: Release Linux packages
 #     clean 22.04/24.04 containers, runs it, then re-runs the same checks
 #     against the AppImage — the only place either artifact is exercised on a
 #     machine without build dependencies.
+#   * apt-publish job: uploads that same smoke-tested .deb to the Artifactory
+#     apt repository, so `apt upgrade` reaches users who added it. Runs only
+#     for tags, only after deb-release, and only where the PJ4_APT_REPO_URL
+#     repo variable exists. See packaging/deb/README.md, "Distribution".
 #
 # Triggers:
 #   - workflow_dispatch          -> build from any branch (artifacts only, no Release upload)
@@ -520,3 +524,43 @@ jobs:
         with:
           files: pkg/${{ needs.appimage.outputs.deb_name }}
           fail_on_unmatched_files: true
+
+  apt-publish:
+    # Push the released .deb into the Artifactory apt repository, so machines
+    # that added it pick the new version up with `apt upgrade`. Artifactory's
+    # Debian repository type regenerates and GPG-signs dists/** itself; this
+    # job only uploads.
+    #
+    # Gated on deb-release rather than just smoke: the GitHub Release asset is
+    # the canonical artifact, so it lands first — the same ordering rule that
+    # publishes the AppImage before the .deb is packaged.
+    #
+    # Skipped entirely unless PJ4_APT_REPO_URL is set (the `secrets` context is
+    # not available in a job-level `if`, so the repo variable is what gates it).
+    # A fork, or this repo before the repository exists, therefore releases
+    # exactly as it did before.
+    needs: [appimage, smoke, deb-release]
+    if: startsWith(github.ref, 'refs/tags/') && vars.PJ4_APT_REPO_URL != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: false
+
+      - name: Download the .deb
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.appimage.outputs.deb_name }}
+          path: pkg
+
+      - name: Publish to the apt repository
+        env:
+          ARTIFACTORY_USER: ${{ secrets.ARTIFACTORY_USER }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          PJ_APT_REPO_URL: ${{ vars.PJ4_APT_REPO_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash packaging/deb/publish_apt.sh "pkg/${{ needs.appimage.outputs.deb_name }}"

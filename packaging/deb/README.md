@@ -141,7 +141,93 @@ them). Older releases fail at run time on the glibc floor; non-dpkg distros
 
 ## Distribution
 
-The package is a **release asset**, not an apt repository — install it with
-`apt install ./plotjuggler4_<version>_amd64.deb`. `apt upgrade` therefore does
-not update PlotJuggler; the in-app update check behaves as it does for the
-AppImage. Publishing a signed apt repository is a separate piece of work.
+The same `.deb` reaches users two ways.
+
+**A release asset**, downloaded and installed by hand:
+
+```bash
+sudo apt install ./plotjuggler4_<version>_amd64.deb
+```
+
+`apt upgrade` does not update a package installed this way — nothing tells apt
+where the file came from.
+
+**The apt repository**, which does support `apt upgrade`:
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://plotjuggler.jfrog.io/artifactory/api/gpg/key/public \
+  | sudo gpg --dearmor -o /etc/apt/keyrings/plotjuggler.gpg
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/plotjuggler.gpg] \
+https://plotjuggler.jfrog.io/artifactory/plotjuggler-deb stable main" \
+  | sudo tee /etc/apt/sources.list.d/plotjuggler.list
+sudo apt update && sudo apt install plotjuggler4
+```
+
+`arch=amd64` is there because that is the only architecture built today; a host
+on another architecture would otherwise log a missing-index warning on every
+`apt update`. `build_deb.sh` already maps `aarch64` → `arm64`, so adding arm64
+later means publishing into the same suite — existing users need no change.
+
+The in-app update check is unchanged either way: it is a compile-time
+`PJ_INSTALLATION=deb` stamp on one binary, so an apt-installed copy still
+points at the GitHub release page rather than saying `apt upgrade`.
+
+### The suite name is permanent
+
+Packages are filed under the single suite **`stable`**, one component
+(`main`). One suite is the honest model: this is a bundled vendor package with
+a glibc 2.35 floor, not a per-codename build, so `jammy`/`noble` suites would
+promise a distinction that does not exist.
+
+Never rename it. apt refuses a repository whose `Release` reports a different
+`Suite` than the one it last saw and makes every user confirm the change by
+hand.
+
+## Publishing to the apt repository
+
+`publish_apt.sh` uploads a built `.deb` to an
+[Artifactory Debian repository](https://jfrog.com/help/r/jfrog-artifactory-documentation/debian-repositories),
+which generates and GPG-signs `dists/**` itself — there is no `apt-ftparchive`
+step and no `gh-pages` branch to maintain:
+
+```bash
+ARTIFACTORY_USER=<user> ARTIFACTORY_TOKEN=<token> \
+  packaging/deb/publish_apt.sh packaging/deb/plotjuggler4_<version>_amd64.deb
+```
+
+Credentials are read from the environment only — never argv, which is world
+readable through `/proc`. `--dry-run` prints the target URL and exits.
+
+Release CI does this in the `apt-publish` job of
+[`linux-appimage-release.yml`](../../.github/workflows/linux-appimage-release.yml),
+gated on `deb-release` so the GitHub Release asset lands first. It needs two
+repository secrets (`ARTIFACTORY_USER`, `ARTIFACTORY_TOKEN`) and the repository
+variable `PJ4_APT_REPO_URL`; **without that variable the job is skipped**, so a
+fork releases exactly as before.
+
+Tag builds only. A dispatch build's `<ver>~<hash>` version sorts *below* the
+release it precedes, so apt would never offer it as an upgrade — the script
+refuses such a version unless `--allow-prerelease` is passed.
+
+### One-time Artifactory setup
+
+1. A **local repository of type Debian** (`plotjuggler-deb`), default
+   architecture `amd64`. A Generic repository accepts the upload and indexes
+   nothing, which is why the script verifies the index rather than trusting the
+   upload's 200.
+2. A **GPG signing key pair** (Administration → Security → Keys Management),
+   with automatic signing enabled on the repository. Artifactory cannot publish
+   an unsigned suite, and apt will not use one. The public half is served at
+   `/artifactory/api/gpg/key/public`.
+3. **Anonymous read** on the repository, as for the `plotjuggler-conan` remote.
+   Without it `apt update` gets a 401.
+
+### Watch the quota
+
+This is a bundled vendor package carrying all of Qt 6 and the Conan closure —
+a few hundred MB per release, pulled by *every user*, unlike the Conan remote
+whose traffic is mostly cached CI. Storage and monthly transfer are the
+binding constraint on the JFrog plan, not anything in this tree. Keep an eye
+on Administration → Subscription, and prune old versions from the repository
+rather than accumulating every release forever.
