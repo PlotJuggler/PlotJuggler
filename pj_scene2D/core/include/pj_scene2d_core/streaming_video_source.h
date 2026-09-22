@@ -94,19 +94,24 @@ class StreamingVideoSource : public MediaSource {
   // optional instant thumbnail preview on scrubs, then the full-res decode.
   void decodeRequest(const AsyncFrameWorker::Request& request, AsyncFrameWorker& worker);
 
-  std::unique_ptr<StreamingVideoDecoder> decoder_;
-
   // Keeps the MessageParser handle (parser instance + plugin DSO) mapped for as
   // long as this source — and thus the decode worker that calls parseObject — is
-  // alive. Dropped only after the worker is joined in the destructor, so the
-  // parser can never be torn down (dlclose) underneath an in-flight parseObject.
-  // Null in raw-bytes mode. See SessionManager::parserKeepaliveForObjectTopic.
+  // alive. Null in raw-bytes mode. See SessionManager::parserKeepaliveForObjectTopic.
+  //
+  // Declared FIRST so it is destroyed LAST. Everything below it must die while the
+  // DSO is still mapped: the worker (no parseObject on a dlclosed parser) and every
+  // cached parse — an ObjectRecord is a std::any whose manager function, and whose
+  // BufferAnchor control block, are addresses inside that DSO.
   std::shared_ptr<void> parser_keepalive_;
 
+  // Owns the NAL extractor, which caches the last parsed ObjectRecord in a slot —
+  // hence destroyed before parser_keepalive_ drops (see above).
+  std::unique_ptr<StreamingVideoDecoder> decoder_;
+
   // Scrub-preview thumbnail cache (file-backed topics only; null for streaming
-  // and raw-bytes modes). Declared AFTER parser_keepalive_ so it is destroyed —
-  // and its build thread joined — BEFORE the parser keepalive drops: the build
-  // thread decodes keyframes through the (DSO-kept-alive) parser.
+  // and raw-bytes modes). Its build thread decodes keyframes through the same
+  // parser and its extractor keeps its own record slot, so it too is destroyed —
+  // and joined — before parser_keepalive_ drops.
   std::unique_ptr<EntryThumbnailCache> thumbnail_cache_;
 
   // Worker-thread-only decode state: ts of the last successfully decoded

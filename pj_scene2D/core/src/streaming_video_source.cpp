@@ -38,7 +38,7 @@ StreamingVideoSource::StreamingVideoSource(ObjectStore* store, ObjectTopicId top
 StreamingVideoSource::StreamingVideoSource(
     ObjectStore* store, ObjectTopicId topic, MessageParserPluginBase* parser, std::shared_ptr<std::mutex> parser_mutex,
     std::shared_ptr<void> parser_keepalive)
-    : decoder_(std::make_unique<StreamingVideoDecoder>()), parser_keepalive_(std::move(parser_keepalive)) {
+    : parser_keepalive_(std::move(parser_keepalive)), decoder_(std::make_unique<StreamingVideoDecoder>()) {
   // Each concurrently-running decoder needs its own extractor (the single-thread
   // keepalive slot must not be shared). The playback decoder gets one here.
   decoder_->attach(store, topic, makeVideoFrameNalExtractor(parser, parser_mutex));
