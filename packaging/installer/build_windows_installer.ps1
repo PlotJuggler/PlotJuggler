@@ -82,6 +82,21 @@
   Scratch directory for the staged package tree (default: $env:TEMP\pj4-installer-stage).
   Wiped at the start of every run.
 
+.PARAMETER UpdateUrl
+  Publish the installer with remote updates enabled, pointing the installed
+  maintenance tool at this repository URL (e.g. https://apt.plotjuggler.io/windows).
+  Omit it and the installer behaves exactly as before: the maintenance tool
+  only uninstalls.
+
+  This URL is compiled into the maintenance tool at INSTALL time, so it only
+  ever reaches machines that installed a build which already carried it —
+  turning it on does nothing for anyone who installed an earlier release.
+
+.PARAMETER RepoOutDir
+  Also run repogen over the same staged packages tree and write an IFW update
+  repository here (wiped first). This is what -UpdateUrl points at once
+  published; the two are set together in a release.
+
 .NOTES
   Host requirements:
     - Qt 6.11.1 msvc2022_64 (windeployqt.exe) -- auto-found in .qt when present
@@ -110,7 +125,9 @@ param(
   [string]$Version    = "",
   [string]$OutDir     = ".",
   [string]$StageDir   = "",
-  [switch]$CleanReleaseName
+  [switch]$CleanReleaseName,
+  [string]$UpdateUrl  = "",
+  [string]$RepoOutDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -170,8 +187,11 @@ $windeployqt = Resolve-Exe "windeployqt.exe" $qtBinDir
 if (-not $windeployqt) { Die "windeployqt.exe not found. Pass -QtDir <kit> (e.g. .qt\6.11.1\msvc2022_64 or C:\Qt\6.11.1\msvc2022_64) or add it to PATH." }
 Info "windeployqt : $windeployqt"
 
-$binarycreator = Resolve-Exe "binarycreator.exe" $IfwDir
-if (-not $binarycreator) {
+# binarycreator and repogen ship in the same IFW bin directory, so one search
+# serves both.
+function Resolve-IfwTool([string]$name) {
+  $found = Resolve-Exe $name $IfwDir
+  if ($found) { return $found }
   # Search the usual IFW-tool locations. aqt lays them under <aqt-base>\Tools\
   # QtInstallerFramework, where <aqt-base> is two levels above the kit dir
   # (e.g. .qt\6.11.1\msvc2022_64 -> .qt); the Qt online installer uses C:\Qt\Tools.
@@ -183,13 +203,25 @@ if (-not $binarycreator) {
   $ifwRoots += "C:\Qt\Tools\QtInstallerFramework"
   foreach ($root in $ifwRoots) {
     if (-not (Test-Path $root)) { continue }
-    $cand = Get-ChildItem $root -Recurse -Filter "binarycreator.exe" -ErrorAction SilentlyContinue |
+    $cand = Get-ChildItem $root -Recurse -Filter $name -ErrorAction SilentlyContinue |
             Sort-Object FullName -Descending | Select-Object -First 1
-    if ($cand) { $binarycreator = $cand.FullName; break }
+    if ($cand) { return $cand.FullName }
   }
+  return $null
 }
+
+$binarycreator = Resolve-IfwTool "binarycreator.exe"
 if (-not $binarycreator) { Die "binarycreator.exe not found. Install the Qt Installer Framework tools (aqt install-tool --outputdir .qt windows desktop tools_ifw) and/or pass -IfwDir." }
 Info "binarycreator: $binarycreator"
+
+# Resolved up front, not after the long staging run: a missing repogen should
+# fail in the first seconds, not after windeployqt and the plugin downloads.
+$repogen = ""
+if ($RepoOutDir) {
+  $repogen = Resolve-IfwTool "repogen.exe"
+  if (-not $repogen) { Die "repogen.exe not found, but -RepoOutDir was given. It ships beside binarycreator in the Qt Installer Framework tools." }
+  Info "repogen      : $repogen"
+}
 
 # --- locate the built app --------------------------------------------------
 # Prefer RelWithDebInfo (CI default), then Release, then any config. The CMake
@@ -497,6 +529,32 @@ function Render-Template([string]$src, [string]$dst) {
 Render-Template $configXmlSrc  (Join-Path $StageDir "config.xml")
 Render-Template $packageXmlSrc (Join-Path $stageMeta "package.xml")
 
+# --- remote updates (optional) ---------------------------------------------
+# Injected here rather than templated into config.xml so that a build without
+# -UpdateUrl stays byte-identical to one from before this existed: an empty
+# <Url/> would leave every maintenance tool polling nothing on each launch.
+if ($UpdateUrl) {
+  $cfgPath = Join-Path $StageDir "config.xml"
+  $closing = "</Installer>"
+  $cfg = (Get-Content -Raw $cfgPath).TrimEnd()
+  if (-not $cfg.EndsWith($closing)) { Die "config.xml does not end with $closing; cannot inject the update repository." }
+  # Built by concatenation rather than -replace: a URL is substituted verbatim
+  # here, while -replace would read a '$' in it as a capture-group reference.
+  $block = @"
+
+  <RemoteRepositories>
+    <Repository>
+      <Url>$UpdateUrl</Url>
+      <Enabled>1</Enabled>
+      <DisplayName>PlotJuggler 4 updates</DisplayName>
+    </Repository>
+  </RemoteRepositories>
+$closing
+"@
+  Set-Content $cfgPath ($cfg.Substring(0, $cfg.Length - $closing.Length).TrimEnd() + $block)
+  Info "remote updates: $UpdateUrl"
+}
+
 # Non-templated meta files (script, UI, licenses) go verbatim.
 foreach ($f in Get-ChildItem (Join-Path $pkgSrc "meta") -File | Where-Object { $_.Name -ne "package.xml" }) {
   Copy-Item $f.FullName $stageMeta -Force
@@ -522,5 +580,29 @@ if ($CleanReleaseName) {
 Info "running binarycreator -> $outExe"
 & $binarycreator --offline-only -c (Join-Path $StageDir "config.xml") -p $stagePackages $outExe
 if ($LASTEXITCODE -ne 0) { Die "binarycreator failed (exit $LASTEXITCODE)." }
+
+# --- update repository (optional) ------------------------------------------
+# Generated from the SAME staged packages tree the installer was just built
+# from, so the offline installer and the update repository can never describe
+# different payloads for one version.
+if ($RepoOutDir) {
+  # repogen refuses to write into a populated directory without --update, and
+  # a full regeneration is what gets published, so start clean.
+  if (Test-Path $RepoOutDir) { Remove-Item $RepoOutDir -Recurse -Force }
+  New-Item -ItemType Directory -Force -Path $RepoOutDir | Out-Null
+  $repoAbs = (Resolve-Path $RepoOutDir).Path
+  Info "running repogen -> $repoAbs"
+  & $repogen -p $stagePackages $repoAbs
+  if ($LASTEXITCODE -ne 0) { Die "repogen failed (exit $LASTEXITCODE)." }
+  $updatesXml = Join-Path $repoAbs "Updates.xml"
+  if (-not (Test-Path $updatesXml)) { Die "repogen produced no Updates.xml in $repoAbs." }
+  # The version in Updates.xml is what a maintenance tool compares against the
+  # installed one; a mismatch here means nobody is ever offered the update.
+  if ((Get-Content -Raw $updatesXml) -notmatch [regex]::Escape("<Version>$Version</Version>")) {
+    $found = (Select-String -Path $updatesXml -Pattern '<Version>.*?</Version>' -AllMatches).Matches.Value -join ", "
+    Die "Updates.xml advertises [$found], not $Version."
+  }
+  Info "update repository: $repoAbs"
+}
 
 Info "DONE: $outExe"

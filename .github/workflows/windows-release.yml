@@ -322,13 +322,27 @@ jobs:
         # meaningful name there (matches the AppImage's plain naming); dispatch
         # builds keep the date + main-commit stamp to stay distinguishable.
         shell: pwsh
+        env:
+          PJ_WINDOWS_UPDATE_URL: ${{ vars.PJ4_WINDOWS_UPDATE_URL }}
         run: |
+          # Remote updates only on a tag build, because only a tag build
+          # publishes a repository for the maintenance tool to find. Shipping
+          # a dispatch installer that points at one would leave it polling a
+          # URL advertising a different build than it installed.
+          # A hashtable splat, not an array: it binds by parameter NAME, so a
+          # future reordering of the script's parameters cannot silently bind
+          # these to the wrong ones.
+          $updateArgs = @{}
+          if ($env:PJ_WINDOWS_UPDATE_URL -and $env:GITHUB_REF_TYPE -eq "tag") {
+            $updateArgs = @{ UpdateUrl = $env:PJ_WINDOWS_UPDATE_URL; RepoOutDir = "dist/repo" }
+          }
           .\packaging\installer\build_windows_installer.ps1 `
             -QtDir ".qt\$env:PJ_QT_VERSION\msvc2022_64" `
             -PluginRegistryUrl "https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/refs/heads/development/registry.json" `
             -Version $env:PJ_VERSION `
             -OutDir dist `
-            -CleanReleaseName:($env:GITHUB_REF_TYPE -eq "tag")
+            -CleanReleaseName:($env:GITHUB_REF_TYPE -eq "tag") `
+            @updateArgs
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
@@ -344,3 +358,25 @@ jobs:
           files: dist/*.exe
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+      - name: Publish the update repository
+        # After the Release attach, deliberately: the installer .exe is the
+        # canonical artifact, so a publishing failure must not cost it the
+        # upload. Same ordering rule as the Linux .deb and its apt repository.
+        #
+        # Skipped unless PJ4_WINDOWS_UPDATE_URL is set — which is also what
+        # decides whether the installer above was built with remote updates at
+        # all, so the two can never disagree.
+        if: startsWith(github.ref, 'refs/tags/') && vars.PJ4_WINDOWS_UPDATE_URL != ''
+        shell: pwsh
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          PJ_WINDOWS_UPDATE_URL: ${{ vars.PJ4_WINDOWS_UPDATE_URL }}
+        run: |
+          .\packaging\installer\publish_update_repo.ps1 `
+            -RepoDir dist/repo `
+            -Prefix windows `
+            -Version $env:PJ_VERSION

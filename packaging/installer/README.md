@@ -166,6 +166,54 @@ The default whitelist bundles these 18 published plugins:
   earlier flow purged silently.
 - **Shortcuts** — Start Menu and Desktop link to `PlotJuggler4.exe`.
 
+## Remote updates (maintenance tool)
+
+Off unless a release opts in. `build_windows_installer.ps1` takes two
+parameters that are set together:
+
+| Parameter | Effect |
+|---|---|
+| `-UpdateUrl <url>` | Injects a `<RemoteRepositories>` entry into the staged `config.xml`, so the installed maintenance tool gains a "Update components" path pointing at `<url>`. |
+| `-RepoOutDir <dir>` | Also runs `repogen` over the *same* staged packages tree, writing an IFW update repository there. |
+
+They are generated from one staging run on purpose: the offline installer and
+the update repository can then never describe different payloads for the same
+version.
+
+`publish_update_repo.ps1` uploads that repository to the R2 bucket that also
+hosts the [apt repository](../deb/README.md#publishing-to-the-apt-repository),
+under the `windows/` prefix. Release CI runs both from `windows-release.yml`,
+gated on the repository variable `PJ4_WINDOWS_UPDATE_URL` and using the same
+R2 secrets as the Linux side. Without that variable the installer is built
+exactly as before and nothing is published.
+
+`config.xml` itself stays clean — the block is injected at render time rather
+than templated, so a build without `-UpdateUrl` is byte-identical to one from
+before this existed. An empty `<Url/>` would leave every maintenance tool
+polling nothing on each launch.
+
+### Upload order
+
+The maintenance tool reads `Updates.xml` and then fetches the component
+archives it names, so the publisher uploads archives first and `Updates.xml`
+last. A tool polling mid-publish then sees an index older than the payload,
+never one promising an archive that has not landed. (The apt publisher follows
+the same rule for the same reason.)
+
+### Three things to know before relying on it
+
+- **The URL is compiled in at install time.** Only machines that installed a
+  build already carrying `-UpdateUrl` can ever check for updates — turning
+  this on does nothing for anyone who installed an earlier release. That is an
+  argument for enabling it sooner rather than later.
+- **No delta updates.** The app is a single component of several hundred MB,
+  so an update re-downloads the whole payload. The `.deb` behaves the same
+  way; do not expect Chrome-style patching.
+- **Integrity rests on TLS.** IFW has no signing mechanism comparable to the
+  apt repository's detached GPG signature, so the trust anchor is the HTTPS
+  certificate of the update host. Authenticode-signing the installer and
+  maintenance tool is the usual complement — see the code-signing gap below.
+
 ## Known gaps (first version)
 
 - **No code signing.** The `.exe` is unsigned, so SmartScreen warns on first
