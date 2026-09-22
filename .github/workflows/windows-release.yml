@@ -35,6 +35,13 @@ on:
           second run to see an installed maintenance tool offer the update.
         type: string
         default: ""
+      update_check_from_run:
+        description: >-
+          ID of an earlier run of this workflow (built with the same update_url
+          and a lower version). Its installer is installed headlessly, then
+          updated from the repository this run publishes.
+        type: string
+        default: ""
   push:
     tags:
       - '[0-9]+.[0-9]+.[0-9]+'
@@ -53,6 +60,8 @@ jobs:
     # Backstop against hangs — app build plus registry download/validation/packaging.
     # Plugins are not compiled here.
     timeout-minutes: 180
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     env:
       # The one URL the installer is built against and the repository is
@@ -87,15 +96,18 @@ jobs:
       - name: Resolve installer version
         # Tag build -> the tag verbatim; manual build -> the `version` input,
         # else PJ_APP_VERSION.
+        id: version
         shell: bash
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
-            echo "PJ_VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+            v="${GITHUB_REF_NAME}"
           else
-            echo "PJ_VERSION=${INPUT_VERSION:-${PJ_APP_VERSION}}" >> "$GITHUB_ENV"
+            v="${INPUT_VERSION:-${PJ_APP_VERSION}}"
           fi
+          echo "PJ_VERSION=${v}" >> "$GITHUB_ENV"
+          echo "version=${v}" >> "$GITHUB_OUTPUT"
 
       - name: Refuse to rehearse against the production update channel
         # A dispatch build is not a release. Publishing it where installed
@@ -416,3 +428,62 @@ jobs:
             -RepoDir dist/repo `
             -Prefix (([uri]$env:PJ_WINDOWS_UPDATE_URL).AbsolutePath.Trim('/')) `
             -Version $env:PJ_VERSION
+
+  update-check:
+    # Rehearsal only: install the installer an earlier dispatch run built, then
+    # let its maintenance tool update from the repository the job above just
+    # published — the path a real user takes, driven through IFW's command
+    # line because nobody sits at the runner. The installed version recorded
+    # in components.xml is the assertion; check-updates output is only logged,
+    # since IFW's console output from a GUI-subsystem binary is best-effort.
+    needs: windows-installer
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.update_check_from_run != '' && inputs.update_url != ''
+    runs-on: windows-2022
+    timeout-minutes: 30
+    permissions:
+      actions: read     # gh run download of the earlier run's artifact
+    env:
+      GH_TOKEN: ${{ github.token }}
+      OLD_RUN: ${{ inputs.update_check_from_run }}
+      EXPECT: ${{ needs.windows-installer.outputs.version }}
+    steps:
+      - name: Download the older installer
+        shell: bash
+        run: gh run download "${OLD_RUN}" --repo "${GITHUB_REPOSITORY}" --dir old
+
+      - name: Install it, then update through the maintenance tool
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "pj4"
+          # Start-Process -Wait, because PowerShell does not wait for a
+          # GUI-subsystem executable invoked directly.
+          function Invoke-Ifw([string]$exe, [string[]]$ifwArgs, [switch]$AllowFailure) {
+            $p = Start-Process $exe -ArgumentList $ifwArgs -Wait -PassThru -NoNewWindow `
+                   -RedirectStandardOutput ifw.out -RedirectStandardError ifw.err
+            Get-Content ifw.out, ifw.err | Out-Host
+            if (-not $AllowFailure -and $p.ExitCode -ne 0) { throw "$exe $ifwArgs exited $($p.ExitCode)" }
+          }
+          function Get-InstalledVersion {
+            [xml]$c = Get-Content (Join-Path $root "components.xml")
+            ($c.Packages.Package | Where-Object { $_.Name -eq "io.plotjuggler.application" }).Version
+          }
+
+          $installer = (Get-ChildItem old -Recurse -Filter *.exe | Select-Object -First 1).FullName
+          Write-Host "installing $installer into $root"
+          Invoke-Ifw $installer @("install", "--root", $root, "--accept-licenses", "--default-answer", "--confirm-command")
+          $before = Get-InstalledVersion
+          Write-Host "installed: $before"
+          if ($before -eq $env:EXPECT) { throw "the older installer is already $env:EXPECT; nothing to update" }
+
+          $tool = Join-Path $root "maintenancetool.exe"
+          Write-Host "--- check-updates ---"
+          Invoke-Ifw $tool @("check-updates") -AllowFailure
+          Write-Host "--- update ---"
+          Invoke-Ifw $tool @("update", "--accept-licenses", "--default-answer", "--confirm-command")
+
+          $after = Get-InstalledVersion
+          if ($after -ne $env:EXPECT) { throw "after the update components.xml says $after, expected $env:EXPECT" }
+          if (-not (Test-Path (Join-Path $root "bin\PlotJuggler4.exe"))) { throw "bin\PlotJuggler4.exe missing after the update" }
+          Write-Host "updated $before -> $after"

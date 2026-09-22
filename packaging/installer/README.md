@@ -197,14 +197,25 @@ refuses the production URL):
 ```bash
 gh workflow run windows-release.yml --ref <branch> \
   -f update_url=https://updates.plotjuggler.io/windows-staging -f version=4.0.1
+# after it finishes, with <run-id> of the first run:
 gh workflow run windows-release.yml --ref <branch> \
-  -f update_url=https://updates.plotjuggler.io/windows-staging -f version=4.0.2
+  -f update_url=https://updates.plotjuggler.io/windows-staging -f version=4.0.2 \
+  -f update_check_from_run=<run-id>
 ```
 
 The first run proves `repogen`, the `Updates.xml` assertion and the upload.
-Install its artifact on a Windows machine, let the second run publish, then
-open the maintenance tool: it should offer 4.0.2. Delete the prefix afterwards
-(`windows-staging/` in the bucket).
+The second publishes 4.0.2, then its `update-check` job installs the first
+run's 4.0.1 installer headlessly on a Windows runner and updates it through the
+maintenance tool's command line (`check-updates`, `update`), asserting that
+`components.xml` reports 4.0.2 afterwards. No Windows machine is needed. The
+two runs share a concurrency group, so start the second only once the first
+has finished. Delete `windows-staging/` from the bucket afterwards.
+
+The maintenance tool runs the component's `installscript.qs` too, so anything
+there that only makes sense for a first install (the target-directory page,
+the replace-existing-installation prompt) must return early unless
+`installer.isInstaller()`; during an update, `TargetDir` is the installation
+being updated.
 
 `config.xml` itself stays clean — the block is injected at render time rather
 than templated, so a build without `-UpdateUrl` is byte-identical to one from
