@@ -182,10 +182,29 @@ version.
 
 `publish_update_repo.ps1` uploads that repository to the R2 bucket that also
 hosts the [apt repository](../deb/README.md#publishing-to-the-apt-repository),
-under the `windows/` prefix. Release CI runs both from `windows-release.yml`,
-gated on the repository variable `PJ4_WINDOWS_UPDATE_URL` and using the same
-R2 secrets as the Linux side. Without that variable the installer is built
-exactly as before and nothing is published.
+under the path of the update URL (`windows/` in production). Release CI runs
+both from `windows-release.yml`, gated on the repository variable
+`PJ4_WINDOWS_UPDATE_URL` and using the same R2 secrets as the Linux side.
+Without that variable the installer is built exactly as before and nothing is
+published.
+
+### Rehearsing on a staging prefix
+
+A tag is the only production trigger, so the path is rehearsed with a manual
+run whose `update_url` input points somewhere users never look (the workflow
+refuses the production URL):
+
+```bash
+gh workflow run windows-release.yml --ref <branch> \
+  -f update_url=https://updates.plotjuggler.io/windows-staging -f version=4.0.1
+gh workflow run windows-release.yml --ref <branch> \
+  -f update_url=https://updates.plotjuggler.io/windows-staging -f version=4.0.2
+```
+
+The first run proves `repogen`, the `Updates.xml` assertion and the upload.
+Install its artifact on a Windows machine, let the second run publish, then
+open the maintenance tool: it should offer 4.0.2. Delete the prefix afterwards
+(`windows-staging/` in the bucket).
 
 `config.xml` itself stays clean — the block is injected at render time rather
 than templated, so a build without `-UpdateUrl` is byte-identical to one from

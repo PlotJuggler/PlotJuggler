@@ -140,8 +140,9 @@ Asymmetric, deliberately stated:
   scripts are reviewed but unverified. The likeliest first-run failure is the
   `Updates.xml` version assertion, if IFW formats `<Version>` differently than
   expected; both call sites print what they actually found so that is a
-  one-look diagnosis. **Run a `workflow_dispatch` build with
-  `PJ4_WINDOWS_UPDATE_URL` temporarily set before relying on a tag.**
+  one-look diagnosis. **Rehearse it on a staging prefix before relying on a
+  tag** — a manual run with the `update_url` input (see
+  [`packaging/installer/README.md`](../packaging/installer/README.md#rehearsing-on-a-staging-prefix)).
 
 One methodology note, because it nearly produced a false negative: the first
 tamper test edited the plain `Packages` file and apt accepted it. apt fetches
