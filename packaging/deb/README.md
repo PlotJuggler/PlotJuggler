@@ -156,10 +156,10 @@ where the file came from.
 
 ```bash
 sudo install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://plotjuggler.jfrog.io/artifactory/api/gpg/key/public \
+curl -fsSL https://apt.plotjuggler.io/plotjuggler-archive-keyring.asc \
   | sudo gpg --dearmor -o /etc/apt/keyrings/plotjuggler.gpg
 echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/plotjuggler.gpg] \
-https://plotjuggler.jfrog.io/artifactory/plotjuggler-deb stable main" \
+https://apt.plotjuggler.io stable main" \
   | sudo tee /etc/apt/sources.list.d/plotjuggler.list
 sudo apt update && sudo apt install plotjuggler4
 ```
@@ -186,48 +186,102 @@ hand.
 
 ## Publishing to the apt repository
 
-`publish_apt.sh` uploads a built `.deb` to an
-[Artifactory Debian repository](https://jfrog.com/help/r/jfrog-artifactory-documentation/debian-repositories),
-which generates and GPG-signs `dists/**` itself — there is no `apt-ftparchive`
-step and no `gh-pages` branch to maintain:
+`publish_apt.sh` uploads a built `.deb` to the repository on **Cloudflare R2**
+and regenerates the signed metadata around it:
 
 ```bash
-ARTIFACTORY_USER=<user> ARTIFACTORY_TOKEN=<token> \
+R2_BUCKET=<bucket> R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com \
+AWS_ACCESS_KEY_ID=<key> AWS_SECRET_ACCESS_KEY=<secret> \
+APT_GPG_PRIVATE_KEY="$(cat archive-key.asc)" \
+PJ_APT_PUBLIC_URL=https://apt.plotjuggler.io \
   packaging/deb/publish_apt.sh packaging/deb/plotjuggler4_<version>_amd64.deb
 ```
 
-Credentials are read from the environment only — never argv, which is world
-readable through `/proc`. `--dry-run` prints the target URL and exits.
+`--dry-run` builds and signs everything locally, uploads nothing, and leaves
+the staged repository tree for inspection. It needs no R2 credentials.
 
 Release CI does this in the `apt-publish` job of
 [`linux-appimage-release.yml`](../../.github/workflows/linux-appimage-release.yml),
-gated on `deb-release` so the GitHub Release asset lands first. It needs two
-repository secrets (`ARTIFACTORY_USER`, `ARTIFACTORY_TOKEN`) and the repository
-variable `PJ4_APT_REPO_URL`; **without that variable the job is skipped**, so a
-fork releases exactly as before.
+gated on `deb-release` so the GitHub Release asset lands first. It needs the
+secrets `R2_BUCKET`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
+`APT_GPG_PRIVATE_KEY` (and `APT_GPG_PASSPHRASE` if the key has one) plus the
+repository variable `PJ4_APT_PUBLIC_URL`; **without that variable the job is
+skipped**, so a fork releases exactly as before.
 
-Tag builds only. A dispatch build's `<ver>~<hash>` version sorts *below* the
-release it precedes, so apt would never offer it as an upgrade — the script
-refuses such a version unless `--allow-prerelease` is passed.
+Tag builds only — the script refuses a `<ver>~<hash>` dispatch version, which
+sorts below the release it precedes and could never be offered as an upgrade.
 
-### One-time Artifactory setup
+### Why the repository rebuilds itself every time
 
-1. A **local repository of type Debian** (`plotjuggler-deb`), default
-   architecture `amd64`. A Generic repository accepts the upload and indexes
-   nothing, which is why the script verifies the index rather than trusting the
-   upload's 200.
-2. A **GPG signing key pair** (Administration → Security → Keys Management),
-   with automatic signing enabled on the repository. Artifactory cannot publish
-   an unsigned suite, and apt will not use one. The public half is served at
-   `/artifactory/api/gpg/key/public`.
-3. **Anonymous read** on the repository, as for the `plotjuggler-conan` remote.
-   Without it `apt update` gets a 401.
+R2 is plain object storage, so unlike a package-manager service it maintains no
+index: `dists/**` is regenerated and re-signed on every publish. Doing that
+needs a `Packages` stanza for **every** version still on offer, not just the new
+one — and re-downloading hundreds of MB of old `.deb`s to rescan them would be
+absurd. So each stanza is kept beside the pool as repository state:
 
-### Watch the quota
+```
+pool/main/p/plotjuggler4/plotjuggler4_<version>_amd64.deb   the packages
+.index/<suite>/<component>/<arch>/<pkg>_<ver>_<arch>.stanza one per published version
+dists/<suite>/<component>/binary-<arch>/Packages{,.gz}      built from those stanzas
+dists/<suite>/{Release,Release.gpg,InRelease}               signed
+plotjuggler-archive-keyring.asc                             the public key
+```
 
-This is a bundled vendor package carrying all of Qt 6 and the Conan closure —
-a few hundred MB per release, pulled by *every user*, unlike the Conan remote
-whose traffic is mostly cached CI. Storage and monthly transfer are the
-binding constraint on the JFrog plan, not anything in this tree. Keep an eye
-on Administration → Subscription, and prune old versions from the repository
-rather than accumulating every release forever.
+A few KB per release buys an incremental publish. Nothing under `.index/` is
+read by apt.
+
+### Two orderings that matter
+
+**Upload order is the reverse of apt's read order.** apt reads `InRelease` →
+`Packages` → the `.deb`, so the publisher writes the package first, then the
+indexes, then `Release`. A client fetching mid-publish can then only ever see
+an index *older* than the pool, never one promising a file that has not landed.
+
+**Retention is decided before the index is built, applied after it is live.**
+`--keep <n>` drops the retired versions from the set `Packages` is generated
+from, and only deletes their objects once that index is published. The reverse
+order would briefly advertise a version whose file is already gone — a 404 at
+install time for anyone who ran `apt update` in the window. Retention is off by
+default; `--keep` never touches anything but other versions of the same
+package and architecture.
+
+### Cache headers
+
+Pool objects go up `immutable` with a one-year max-age — they never change.
+Metadata goes up with a 60-second max-age, because a stale index at the edge is
+exactly what makes `apt update` miss a release that is already published.
+
+### No `Valid-Until`
+
+The `Release` file deliberately carries no expiry. It would turn any pause in
+releases longer than the window into "repository is no longer signed" errors on
+machines that are perfectly fine.
+
+## One-time Cloudflare setup
+
+1. An **R2 bucket** for the repository, exposed at a stable public URL —
+   a custom domain (`apt.plotjuggler.io`) is worth it over the `r2.dev`
+   subdomain, because that hostname ends up in every user's `sources.list` and
+   moving it later means asking all of them to edit a file.
+2. **Public read** on the bucket. apt fetches unauthenticated; the publisher
+   verifies this at the end of every run by re-fetching through the public URL
+   rather than the S3 endpoint.
+3. An **R2 API token** scoped to object read/write on that bucket only.
+4. A **GPG signing key** — the archive key. Generate it offline, keep the
+   private half in GitHub secrets and the revocation certificate somewhere
+   else. Give it an expiry and a calendar reminder; a key that outlives its
+   owner's attention is the usual way archive keys go wrong.
+
+### Cost
+
+Storage runs to a few cents a month at this package size, and R2 charges
+nothing for egress — which is the entire reason this repository lives here
+rather than somewhere metered. The bundled Qt and Conan closure make each
+release a few hundred MB, and every user pulls it.
+
+### The signing key lives in CI
+
+This is the one real downside against a hosted package service: anyone who can
+land a workflow change on this repository can sign packages as PlotJuggler.
+Keep the key's use narrow, prefer a signing subkey over the primary key, and
+treat `APT_GPG_PRIVATE_KEY` as the most sensitive secret in the repository.

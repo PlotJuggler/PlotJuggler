@@ -76,10 +76,10 @@ with `apt upgrade`:
 
 ```bash
 sudo install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://plotjuggler.jfrog.io/artifactory/api/gpg/key/public \
+curl -fsSL https://apt.plotjuggler.io/plotjuggler-archive-keyring.asc \
   | sudo gpg --dearmor -o /etc/apt/keyrings/plotjuggler.gpg
 echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/plotjuggler.gpg] \
-https://plotjuggler.jfrog.io/artifactory/plotjuggler-deb stable main" \
+https://apt.plotjuggler.io stable main" \
   | sudo tee /etc/apt/sources.list.d/plotjuggler.list
 sudo apt update && sudo apt install plotjuggler4
 ```
