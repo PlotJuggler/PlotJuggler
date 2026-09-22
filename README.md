@@ -66,13 +66,24 @@ Need a custom integration? Build a loader, streamer, parser or toolbox with the
 [plugin SDK](https://github.com/PlotJuggler/plotjuggler_sdk), or start from the
 [official plugins](https://github.com/PlotJuggler/pj-official-plugins).
 
-## Get started
+## How to get started
 
-[Download PlotJuggler 4](https://github.com/PlotJuggler/PlotJuggler/releases/latest)
-for **Linux** (AppImage or Debian package) or **Windows** (installer).
+Every build is attached to the
+[latest release](https://github.com/PlotJuggler/PlotJuggler/releases/latest).
+Pick the one that fits your system.
 
-On Debian and Ubuntu you can add the apt repository instead and get updates
-with `apt upgrade`:
+### Windows
+
+Download `PlotJuggler-<version>-Windows-x64.exe` from the
+[latest release](https://github.com/PlotJuggler/PlotJuggler/releases/latest)
+and run it. It installs for the current user, so no administrator rights are
+needed. The installer is not code-signed yet: if SmartScreen warns you, choose
+**More info → Run anyway**.
+
+### Debian and Ubuntu (apt repository)
+
+Recommended on Ubuntu 22.04+ and Debian 12+: add the apt repository once, and
+future releases arrive with `sudo apt upgrade`.
 
 ```bash
 sudo install -d -m 0755 /etc/apt/keyrings
@@ -83,6 +94,27 @@ https://apt.plotjuggler.io stable main" \
   | sudo tee /etc/apt/sources.list.d/plotjuggler.list
 sudo apt update && sudo apt install plotjuggler4
 ```
+
+To install a single release without adding the repository, download
+`plotjuggler4_<version>_amd64.deb` from the
+[latest release](https://github.com/PlotJuggler/PlotJuggler/releases/latest)
+and run `sudo apt install ./plotjuggler4_<version>_amd64.deb`. A package
+installed this way is not updated by `apt upgrade`.
+
+### Any Linux distribution (AppImage)
+
+Download `PlotJuggler-<version>-x86_64.AppImage` from the
+[latest release](https://github.com/PlotJuggler/PlotJuggler/releases/latest),
+then make it executable and run it:
+
+```bash
+chmod +x PlotJuggler-*-x86_64.AppImage
+./PlotJuggler-*-x86_64.AppImage
+```
+
+It needs glibc 2.35 or newer (Ubuntu 22.04 and later, or equivalent).
+
+### Building from source
 
 For compilation and development setup, see [Building from source](docs/BUILDING.md).
 
