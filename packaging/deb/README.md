@@ -158,23 +158,10 @@ where the file came from.
 curl -fsSL https://apt.plotjuggler.io/pj4_install.sh | sudo sh
 ```
 
-[`pj4_install.sh`](pj4_install.sh) writes the armored key to
-`/etc/apt/keyrings/plotjuggler.asc` (apt ≥ 2.4 reads `.asc` directly through
-`signed-by`, so the host needs no `gpg`), writes
-`/etc/apt/sources.list.d/plotjuggler.list`, and installs `plotjuggler4`.
-`publish_apt.sh` uploads it on every publish, so the served copy always matches
-the repository it configures.
-
-Before it changes anything it refuses, with a message saying what to do
-instead: a non-root run, a non-apt system, a non-amd64 host, glibc below 2.35
-(apt would otherwise reject the package only after the repository was added),
-and a repository entry already present under another file name (two entries
-with different `signed-by` keys make every `apt update` fail). It also rejects
-a key download that is not a PGP key (captive portals), waits for a concurrent
-apt run instead of failing on its lock, and turns an unreachable repository
-into a clear error rather than apt's "Unable to locate package". All code runs
-from `main` on the last line, so a truncated download executes nothing.
-Re-running it rewrites its two files and installs or upgrades the package.
+[`pj4_install.sh`](pj4_install.sh) adds the key and source entry, then
+installs `plotjuggler4`. It checks the system (root, apt, amd64, glibc ≥ 2.35,
+no duplicate source entry) before changing anything, and is safe to re-run.
+`publish_apt.sh` uploads it with every publish.
 
 `arch=amd64` is there because that is the only architecture built today; a host
 on another architecture would otherwise log a missing-index warning on every
