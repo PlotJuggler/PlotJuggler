@@ -350,7 +350,7 @@ done
 put "${STAGE}/plotjuggler-archive-keyring.asc" "plotjuggler-archive-keyring.asc" "text/plain" "${NOCACHE}"
 # The one-line installer the README points at; it rides along with every
 # publish so it always matches the repository layout it writes.
-put "$(dirname "${BASH_SOURCE[0]}")/install.sh" "install.sh" "text/x-shellscript" "${NOCACHE}"
+put "$(dirname "${BASH_SOURCE[0]}")/pj4_install.sh" "pj4_install.sh" "text/x-shellscript" "${NOCACHE}"
 
 echo "Published: ${POOL_PATH}"
 

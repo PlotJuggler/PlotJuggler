@@ -85,13 +85,13 @@ Recommended on Ubuntu 22.04+ and Debian 12+: add the apt repository once, and
 future releases arrive with `sudo apt upgrade`.
 
 ```bash
-curl -fsSL https://apt.plotjuggler.io/install.sh | sudo sh
+curl -fsSL https://apt.plotjuggler.io/pj4_install.sh | sudo sh
 ```
 
 <details>
 <summary>Prefer to run the steps yourself?</summary>
 
-The script ([`packaging/deb/install.sh`](packaging/deb/install.sh)) does exactly this:
+The script ([`packaging/deb/pj4_install.sh`](packaging/deb/pj4_install.sh)) does exactly this:
 
 ```bash
 sudo install -d -m 0755 /etc/apt/keyrings
