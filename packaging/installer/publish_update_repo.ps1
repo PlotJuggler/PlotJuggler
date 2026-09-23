@@ -19,20 +19,16 @@
     R2_ENDPOINT             https://<account-id>.r2.cloudflarestorage.com
     AWS_ACCESS_KEY_ID       R2 API token with object read/write on the bucket
     AWS_SECRET_ACCESS_KEY
-    PJ_WINDOWS_UPDATE_URL   public URL the repository is served at; used only
-                            to verify the publish
+    PJ_WINDOWS_UPDATE_URL   public URL the repository is served at — the one the
+                            installer was built with. Its path is the key
+                            prefix inside the bucket, so the repository always
+                            lands exactly where installed maintenance tools look.
 
 .PARAMETER RepoDir
   The repogen output directory to publish.
 
-.PARAMETER Prefix
-  Key prefix inside the bucket (default: windows). Must match the path segment
-  of the -UpdateUrl the installer was built with, or installed maintenance
-  tools will look somewhere else.
-
 .PARAMETER Version
-  Version expected to be advertised by the published Updates.xml. Defaults to
-  PJ_APP_VERSION from versions.env.
+  Version expected to be advertised by the published Updates.xml.
 
 .PARAMETER SkipVerify
   Do not re-fetch the published repository to check it.
@@ -42,8 +38,7 @@
 #>
 param(
   [Parameter(Mandatory = $true)][string]$RepoDir,
-  [string]$Prefix  = "windows",
-  [string]$Version = "",
+  [Parameter(Mandatory = $true)][string]$Version,
   [switch]$SkipVerify,
   [switch]$DryRun
 )
@@ -52,22 +47,15 @@ $ErrorActionPreference = "Stop"
 function Info($m) { Write-Host "[publish-repo] $m" -ForegroundColor Cyan }
 function Die($m)  { Write-Host "[publish-repo] ERROR: $m" -ForegroundColor Red; exit 1 }
 
-$installerRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$repoRoot      = Split-Path -Parent (Split-Path -Parent $installerRoot)
-
 if (-not (Test-Path $RepoDir)) { Die "repository directory not found: $RepoDir" }
 $RepoDir = (Resolve-Path $RepoDir).Path
 $updatesXml = Join-Path $RepoDir "Updates.xml"
 if (-not (Test-Path $updatesXml)) { Die "$RepoDir has no Updates.xml — is it a repogen output directory?" }
 
-if (-not $Version) {
-  $versionsEnv = Join-Path $repoRoot "versions.env"
-  if (Test-Path $versionsEnv) {
-    $line = Get-Content $versionsEnv | Where-Object { $_ -match '^\s*PJ_APP_VERSION\s*=\s*(.+?)\s*$' } | Select-Object -First 1
-    if ($line -and $Matches[1]) { $Version = $Matches[1] }
-  }
-}
-if (-not $Version) { Die "could not determine the expected version; pass -Version." }
+if (-not $env:PJ_WINDOWS_UPDATE_URL) { Die "PJ_WINDOWS_UPDATE_URL is not set" }
+$publicUrl = $env:PJ_WINDOWS_UPDATE_URL.TrimEnd('/')
+$Prefix    = ([uri]$publicUrl).AbsolutePath.Trim('/')
+if (-not $Prefix) { Die "PJ_WINDOWS_UPDATE_URL ($publicUrl) has no path to use as the bucket prefix" }
 
 # Checked before anything is uploaded: publishing a repository that advertises
 # the wrong version offers users either nothing or the wrong build.
@@ -76,7 +64,6 @@ if ((Get-Content -Raw $updatesXml) -notmatch [regex]::Escape("<Version>$Version<
   Die "$updatesXml advertises [$found], not $Version."
 }
 
-$Prefix = $Prefix.Trim('/')
 Info "repository: $RepoDir"
 Info "version   : $Version"
 Info "prefix    : $Prefix"
@@ -110,6 +97,24 @@ $dest = "s3://$env:R2_BUCKET/$Prefix"
 $immutable = "public, max-age=31536000, immutable"
 $nocache   = "public, max-age=60, must-revalidate"
 
+# A version is published once. Archive names carry the version and go up
+# immutable, so an edge that already served one keeps serving it for a year:
+# replacing it (a re-run release rebuilds with different bytes) would pair the
+# new checksum with the old archive and fail every update's hash verification.
+# Re-publishing identical bytes, e.g. a retried job, is harmless. Comparing the
+# small .sha1 files repogen writes beside each archive is enough.
+$existing = @(& aws s3 ls "$dest/" --recursive --endpoint-url $env:R2_ENDPOINT 2>$null) |
+  ForEach-Object { ($_.Trim() -split '\s+', 4)[3] }
+foreach ($sha in Get-ChildItem $RepoDir -Recurse -Filter *.sha1) {
+  $key = "$Prefix/" + $sha.FullName.Substring($RepoDir.Length).TrimStart('\', '/').Replace('\', '/')
+  if ($existing -notcontains $key) { continue }
+  $remote = (& aws s3 cp "s3://$env:R2_BUCKET/$key" - --endpoint-url $env:R2_ENDPOINT) -join ''
+  if ($LASTEXITCODE -ne 0) { Die "could not read s3://$env:R2_BUCKET/$key (exit $LASTEXITCODE)." }
+  if ($remote.Trim() -ne (Get-Content -Raw $sha.FullName).Trim()) {
+    Die "$key is already published with different content; archives are immutable at the edge, so publish a new version instead."
+  }
+}
+
 Info "uploading component archives..."
 & aws s3 sync $RepoDir $dest --endpoint-url $env:R2_ENDPOINT `
     --exclude "Updates.xml" --cache-control $immutable --no-progress
@@ -127,14 +132,6 @@ if ($SkipVerify) { Info "--skip-verify: not re-fetching the published repository
 # Verified through the PUBLIC url and unauthenticated, because that is how a
 # maintenance tool reaches it: a bucket that only answers to the CI credentials
 # is broken for every user while every upload above succeeded.
-if (-not $env:PJ_WINDOWS_UPDATE_URL) { Die "PJ_WINDOWS_UPDATE_URL is not set (or pass -SkipVerify)" }
-$publicUrl = $env:PJ_WINDOWS_UPDATE_URL.TrimEnd('/')
-# The installer was built pointing at this exact URL, so if it does not end in
-# the prefix just uploaded to, every installed maintenance tool is looking
-# somewhere the repository is not. Cheaper to catch here than in a bug report.
-if ($Prefix -and -not $publicUrl.EndsWith("/$Prefix")) {
-  Die "PJ_WINDOWS_UPDATE_URL ($publicUrl) does not end in the published prefix '/$Prefix'."
-}
 Info "verifying $publicUrl as a maintenance tool would fetch it..."
 
 $published = $null

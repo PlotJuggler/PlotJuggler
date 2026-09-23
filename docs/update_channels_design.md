@@ -103,7 +103,12 @@ caught in testing, not review.
 - **Cache headers split by mutability.** Pool objects and IFW component
   archives are immutable (version in the filename) and cached for a year;
   indexes get 60 seconds, because a stale index at the edge is precisely what
-  makes a client miss a release that is already published.
+  makes a client miss a release that is already published. The cost is that
+  **a version is published once**: both publishers refuse to replace a
+  published version with different bytes (a re-run release rebuilds them),
+  because the edge would keep serving the old archive against the new
+  checksum and every install would fail hash verification. A staging
+  rehearsal hit exactly this by re-publishing 4.0.2.
 - **Windows: `<RemoteRepositories>` is injected at render time**, not
   templated into the checked-in `config.xml`. A build without `-UpdateUrl`
   stays byte-identical to one from before this existed; an empty `<Url/>`

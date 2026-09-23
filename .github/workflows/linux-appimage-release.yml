@@ -557,8 +557,8 @@ jobs:
 
       - name: Install apt-ftparchive
         # The AWS CLI is preinstalled on the runner image; apt-ftparchive
-        # (apt-utils) is the one tool the publisher needs that is not.
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends apt-utils
+        # (apt-utils) may not be, and is the one other tool the publisher needs.
+        run: command -v apt-ftparchive || { sudo apt-get update && sudo apt-get install -y --no-install-recommends apt-utils; }
 
       - name: Publish to the apt repository
         env:

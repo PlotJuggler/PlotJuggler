@@ -155,11 +155,39 @@ mkdir -p "${STAGE}/$(dirname "${POOL_PATH}")" "${BIN_DIR}" "${STAGE}/${INDEX_PRE
 cp "${DEB}" "${STAGE}/${POOL_PATH}"
 
 # ---------------------------------------------------------------------------
-# 3. This package's Packages stanza
-#     apt-ftparchive scans a directory, so it is pointed at the staged pool
-#     with only this .deb in it. Running from the repository root is what makes
-#     the emitted Filename field repository-relative, which is how apt turns it
-#     back into a download URL.
+# 3. Every OTHER version still on offer
+#     Fetched from the stanza store rather than rescanned from the .debs: the
+#     packages are hundreds of MB each and their stanzas are already final.
+# ---------------------------------------------------------------------------
+if (( ! DRY_RUN )); then
+  echo ""
+  echo "Fetching the stanzas of previously published versions..."
+  s3 sync "s3://${R2_BUCKET}/${INDEX_PREFIX}/" "${STAGE}/${INDEX_PREFIX}/" \
+    --exclude "*" --include "*.stanza" --exact-timestamps --no-progress
+fi
+
+# A version is published once. Pool files go up immutable, so an edge that
+# already served this version keeps serving those bytes for a year: replacing
+# them (a re-run release rebuilds with different bytes) would pair the new
+# Packages checksum with the old .deb and fail `apt install` with Hash Sum
+# mismatch. Re-publishing identical bytes, e.g. a retried job, is harmless.
+PREVIOUS_STANZA="${STAGE}/${INDEX_PREFIX}/${STANZA_NAME}"
+if [[ -f "${PREVIOUS_STANZA}" ]]; then
+  published_sha="$(awk '/^SHA256:/ { print $2; exit }' "${PREVIOUS_STANZA}")"
+  if [[ "${published_sha}" != "$(sha256sum "${DEB}" | cut -d' ' -f1)" ]]; then
+    echo "ERROR: ${PACKAGE} ${VERSION} is already published with different content." >&2
+    echo "Pool files are immutable at the edge; publish a new version instead." >&2
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 4. This package's Packages stanza
+#     Written after the sync, so the stanza comes from the .deb actually being
+#     uploaded. apt-ftparchive scans a directory, so it is pointed at the staged
+#     pool with only this .deb in it.
+#     Running from the repository root is what makes the emitted Filename field
+#     repository-relative, which is how apt turns it back into a download URL.
 # ---------------------------------------------------------------------------
 echo ""
 echo "Generating the Packages stanza..."
@@ -168,20 +196,6 @@ echo "Generating the Packages stanza..."
   || { echo "ERROR: apt-ftparchive produced an empty stanza for ${DEB}" >&2; exit 1; }
 grep -qxF "Filename: ${POOL_PATH}" "${STAGE}/${INDEX_PREFIX}/${STANZA_NAME}" \
   || { echo "ERROR: stanza Filename does not match ${POOL_PATH}" >&2; exit 1; }
-
-# ---------------------------------------------------------------------------
-# 4. Every OTHER version still on offer
-#     Fetched from the stanza store rather than rescanned from the .debs: the
-#     packages are hundreds of MB each and their stanzas are already final.
-# ---------------------------------------------------------------------------
-if (( ! DRY_RUN )); then
-  echo "Fetching the stanzas of previously published versions..."
-  s3 sync "s3://${R2_BUCKET}/${INDEX_PREFIX}/" "${STAGE}/${INDEX_PREFIX}/" \
-    --exclude "*" --include "*.stanza" --exact-timestamps --no-progress
-  # The sync must not clobber the stanza just generated: this publish is the
-  # authority on this version, including a rebuild that replaces it.
-  ( cd "${STAGE}" && apt-ftparchive packages pool > "${INDEX_PREFIX}/${STANZA_NAME}" )
-fi
 
 published=()
 while IFS= read -r stanza; do
@@ -316,31 +330,27 @@ fi
 IMMUTABLE="public, max-age=31536000, immutable"
 NOCACHE="public, max-age=60, must-revalidate"
 
+# put <local file> <key relative to the repository root> <content type> <cache-control>
+put() { s3 cp "$1" "s3://${R2_BUCKET}/$2" --content-type "$3" --cache-control "$4" --no-progress; }
+BIN_KEY="dists/${DISTRIBUTION}/${COMPONENT}/binary-${ARCH}"
+
 echo ""
 echo "Uploading the package ($(du -h "${DEB}" | cut -f1))..."
-s3 cp "${STAGE}/${POOL_PATH}" "s3://${R2_BUCKET}/${POOL_PATH}" \
-  --content-type "application/vnd.debian.binary-package" \
-  --cache-control "${IMMUTABLE}" --no-progress
+put "${STAGE}/${POOL_PATH}" "${POOL_PATH}" "application/vnd.debian.binary-package" "${IMMUTABLE}"
 
 echo "Uploading the indexes..."
-s3 cp "${STAGE}/${INDEX_PREFIX}/${STANZA_NAME}" "s3://${R2_BUCKET}/${INDEX_PREFIX}/${STANZA_NAME}" \
-  --content-type "text/plain" --cache-control "${NOCACHE}" --no-progress
-s3 cp "${BIN_DIR}/Packages" "s3://${R2_BUCKET}/dists/${DISTRIBUTION}/${COMPONENT}/binary-${ARCH}/Packages" \
-  --content-type "text/plain" --cache-control "${NOCACHE}" --no-progress
-s3 cp "${BIN_DIR}/Packages.gz" "s3://${R2_BUCKET}/dists/${DISTRIBUTION}/${COMPONENT}/binary-${ARCH}/Packages.gz" \
-  --content-type "application/gzip" --cache-control "${NOCACHE}" --no-progress
+put "${STAGE}/${INDEX_PREFIX}/${STANZA_NAME}" "${INDEX_PREFIX}/${STANZA_NAME}" "text/plain" "${NOCACHE}"
+put "${BIN_DIR}/Packages"    "${BIN_KEY}/Packages"    "text/plain"       "${NOCACHE}"
+put "${BIN_DIR}/Packages.gz" "${BIN_KEY}/Packages.gz" "application/gzip" "${NOCACHE}"
 
 echo "Uploading Release..."
 for f in Release Release.gpg InRelease; do
-  s3 cp "${DIST_DIR}/${f}" "s3://${R2_BUCKET}/dists/${DISTRIBUTION}/${f}" \
-    --content-type "text/plain" --cache-control "${NOCACHE}" --no-progress
+  put "${DIST_DIR}/${f}" "dists/${DISTRIBUTION}/${f}" "text/plain" "${NOCACHE}"
 done
-s3 cp "${STAGE}/plotjuggler-archive-keyring.asc" "s3://${R2_BUCKET}/plotjuggler-archive-keyring.asc" \
-  --content-type "text/plain" --cache-control "${NOCACHE}" --no-progress
+put "${STAGE}/plotjuggler-archive-keyring.asc" "plotjuggler-archive-keyring.asc" "text/plain" "${NOCACHE}"
 # The one-line installer the README points at; it rides along with every
 # publish so it always matches the repository layout it writes.
-s3 cp "$(dirname "${BASH_SOURCE[0]}")/install.sh" "s3://${R2_BUCKET}/install.sh" \
-  --content-type "text/x-shellscript" --cache-control "${NOCACHE}" --no-progress
+put "$(dirname "${BASH_SOURCE[0]}")/install.sh" "install.sh" "text/x-shellscript" "${NOCACHE}"
 
 echo "Published: ${POOL_PATH}"
 

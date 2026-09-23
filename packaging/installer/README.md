@@ -209,7 +209,11 @@ run's 4.0.1 installer headlessly on a Windows runner and updates it through the
 maintenance tool's command line (`check-updates`, `update`), asserting that
 `components.xml` reports 4.0.2 afterwards. No Windows machine is needed. The
 two runs share a concurrency group, so start the second only once the first
-has finished. Delete `windows-staging/` from the bucket afterwards.
+has finished. Each rehearsal needs version numbers never published to that
+prefix before: a version is published once (see
+[`docs/update_channels_design.md`](../../docs/update_channels_design.md)), and
+deleting `windows-staging/` from the bucket does not clear what the edge has
+already cached.
 
 The maintenance tool runs the component's `installscript.qs` too, so anything
 there that only makes sense for a first install (the target-directory page,

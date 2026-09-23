@@ -62,6 +62,7 @@ jobs:
     timeout-minutes: 180
     outputs:
       version: ${{ steps.version.outputs.version }}
+      update_url: ${{ env.PJ_WINDOWS_UPDATE_URL }}
 
     env:
       # The one URL the installer is built against and the repository is
@@ -426,8 +427,8 @@ jobs:
         #
         # Skipped unless PJ_WINDOWS_UPDATE_URL is set — which is also what
         # decided whether the installer above was built with remote updates at
-        # all, so the two can never disagree. The bucket prefix is the URL's
-        # path, so the repository lands exactly where the installer looks.
+        # all, so the two can never disagree. The publisher takes the bucket
+        # prefix from the URL's path, so it lands where the installer looks.
         if: env.PJ_WINDOWS_UPDATE_URL != ''
         shell: pwsh
         env:
@@ -438,7 +439,6 @@ jobs:
         run: |
           .\packaging\installer\publish_update_repo.ps1 `
             -RepoDir dist/repo `
-            -Prefix (([uri]$env:PJ_WINDOWS_UPDATE_URL).AbsolutePath.Trim('/')) `
             -Version $env:PJ_VERSION
 
   update-check:
@@ -449,9 +449,7 @@ jobs:
     # in components.xml is the assertion; check-updates output is only logged,
     # since IFW's console output from a GUI-subsystem binary is best-effort.
     needs: windows-installer
-    if: >-
-      github.event_name == 'workflow_dispatch' &&
-      inputs.update_check_from_run != '' && inputs.update_url != ''
+    if: inputs.update_check_from_run != '' && needs.windows-installer.outputs.update_url != ''
     runs-on: windows-2022
     timeout-minutes: 30
     permissions:
