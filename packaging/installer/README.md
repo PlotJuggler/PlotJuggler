@@ -166,6 +166,96 @@ The default whitelist bundles these 18 published plugins:
   earlier flow purged silently.
 - **Shortcuts** — Start Menu and Desktop link to `PlotJuggler4.exe`.
 
+## Remote updates (maintenance tool)
+
+Off unless a release opts in. `build_windows_installer.ps1` takes two
+parameters that are set together:
+
+| Parameter | Effect |
+|---|---|
+| `-UpdateUrl <url>` | Injects a `<RemoteRepositories>` entry into the staged `config.xml`, so the installed maintenance tool gains a "Update components" path pointing at `<url>`. |
+| `-RepoOutDir <dir>` | Also runs `repogen` over the *same* staged packages tree, writing an IFW update repository there. |
+
+They are generated from one staging run on purpose: the offline installer and
+the update repository can then never describe different payloads for the same
+version.
+
+`publish_update_repo.ps1` uploads that repository to the R2 bucket that also
+hosts the [apt repository](../deb/README.md#publishing-to-the-apt-repository),
+under the path of the update URL (`windows/` in production). Release CI runs
+both from `windows-release.yml`, gated on the repository variable
+`PJ4_WINDOWS_UPDATE_URL` and using the same R2 secrets as the Linux side.
+Without that variable the installer is built exactly as before and nothing is
+published.
+
+### Rehearsing on a staging prefix
+
+A tag is the only production trigger, so the path is rehearsed with a manual
+run whose `update_url` input points somewhere users never look (the workflow
+refuses the production URL):
+
+```bash
+gh workflow run windows-release.yml --ref <branch> \
+  -f update_url=https://updates.plotjuggler.io/windows-staging -f version=4.0.1
+# after it finishes, with <run-id> of the first run:
+gh workflow run windows-release.yml --ref <branch> \
+  -f update_url=https://updates.plotjuggler.io/windows-staging -f version=4.0.2 \
+  -f update_check_from_run=<run-id>
+```
+
+The first run proves `repogen`, the `Updates.xml` assertion and the upload.
+The second publishes 4.0.2, then its `update-check` job installs the first
+run's 4.0.1 installer headlessly on a Windows runner and updates it through the
+maintenance tool's command line (`check-updates`, `update`), asserting that
+`components.xml` reports 4.0.2 afterwards. First it installs the same
+installer with the update host blocked, proving an installer carrying
+`<RemoteRepositories>` still installs offline. No Windows machine is needed. The
+two runs share a concurrency group, so start the second only once the first
+has finished. Each rehearsal needs version numbers never published to that
+prefix before: a version is published once (see
+[`docs/update_channels_design.md`](../../docs/update_channels_design.md)), and
+deleting `windows-staging/` from the bucket does not clear what the edge has
+already cached.
+
+The maintenance tool runs the component's `installscript.qs` too, so anything
+there that only makes sense for a first install (the target-directory page,
+the replace-existing-installation prompt) must return early unless
+`installer.isInstaller()`; during an update, `TargetDir` is the installation
+being updated.
+
+`config.xml` itself stays clean — the block is injected at render time rather
+than templated, so a build without `-UpdateUrl` is byte-identical to one from
+before this existed. An empty `<Url/>` would leave every maintenance tool
+polling nothing on each launch.
+
+### Upload order
+
+The maintenance tool reads `Updates.xml` and then fetches the component
+archives it names, so the publisher uploads archives first and `Updates.xml`
+last. A tool polling mid-publish then sees an index older than the payload,
+never one promising an archive that has not landed. (The apt publisher follows
+the same rule for the same reason.)
+
+### Three things to know before relying on it
+
+- **The URL is compiled in at install time.** Only machines that installed a
+  build already carrying `-UpdateUrl` can ever check for updates — turning
+  this on does nothing for anyone who installed an earlier release. That is an
+  argument for enabling it sooner rather than later.
+- **An installer installs the newest published version.** With
+  `<RemoteRepositories>` set, IFW consults the update repository while
+  installing, so running an older installer after a newer release is published
+  installs the newer release (downloaded from the repository, checksummed).
+  The rehearsal's `update-check` pins the fetch with `--set-temp-repository`
+  to reproduce a machine that installed earlier.
+- **No delta updates.** The app is a single component of several hundred MB,
+  so an update re-downloads the whole payload. The `.deb` behaves the same
+  way; do not expect Chrome-style patching.
+- **Integrity rests on TLS.** IFW has no signing mechanism comparable to the
+  apt repository's detached GPG signature, so the trust anchor is the HTTPS
+  certificate of the update host. Authenticode-signing the installer and
+  maintenance tool is the usual complement — see the code-signing gap below.
+
 ## Known gaps (first version)
 
 - **No code signing.** The `.exe` is unsigned, so SmartScreen warns on first

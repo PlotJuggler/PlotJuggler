@@ -14,12 +14,34 @@ name: Release Windows Installer
 #   - Conan packages via the shared Depot-backed Actions cache, then ConanCenter
 #
 # Triggers:
-#   - workflow_dispatch     -> build the installer from any branch (artifact only)
+#   - workflow_dispatch     -> build the installer from any branch (artifact only);
+#     with `update_url`, also build + publish an update repository there, to
+#     rehearse the maintenance-tool update path against a staging prefix
 #   - push of a version tag -> build + attach the installer to that tag's Release
 #     (e.g. `3.9.1` — no leading 'v')
 
 on:
   workflow_dispatch:
+    inputs:
+      update_url:
+        description: >-
+          Staging update repository, e.g. https://updates.plotjuggler.io/windows-staging.
+          Empty = no update repository. The production URL is refused.
+        type: string
+        default: ""
+      version:
+        description: >-
+          Version to stamp (default: PJ_APP_VERSION). Publish a higher one in a
+          second run to see an installed maintenance tool offer the update.
+        type: string
+        default: ""
+      update_check_from_run:
+        description: >-
+          ID of an earlier run of this workflow (built with the same update_url
+          and a lower version). Its installer is installed headlessly, then
+          updated from the repository this run publishes.
+        type: string
+        default: ""
   push:
     tags:
       - '[0-9]+.[0-9]+.[0-9]+'
@@ -38,6 +60,15 @@ jobs:
     # Backstop against hangs — app build plus registry download/validation/packaging.
     # Plugins are not compiled here.
     timeout-minutes: 180
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      update_url: ${{ env.PJ_WINDOWS_UPDATE_URL }}
+
+    env:
+      # The one URL the installer is built against and the repository is
+      # published to: the production variable on a tag push, the staging input
+      # on a dispatch (even one started from a tag), empty otherwise. Both steps read it, so they cannot disagree.
+      PJ_WINDOWS_UPDATE_URL: ${{ github.event_name == 'push' && vars.PJ4_WINDOWS_UPDATE_URL || (github.event_name == 'workflow_dispatch' && inputs.update_url || '') }}
 
     # sccache uses Depot Cache via the SCCACHE_WEBDAV_* env vars the Depot
     # runner pre-sets — the same org-wide object store as Windows CI and the
@@ -64,14 +95,38 @@ jobs:
           echo "PJ_QT_VERSION=${PJ_QT_VERSION}" >> "${GITHUB_ENV}"
 
       - name: Resolve installer version
-        # Tag build -> the tag verbatim; manual build -> PJ_APP_VERSION.
+        # Tag build -> the tag verbatim; manual build -> the `version` input,
+        # else PJ_APP_VERSION.
+        id: version
         shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
-            echo "PJ_VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+            v="${GITHUB_REF_NAME}"
           else
-            echo "PJ_VERSION=${PJ_APP_VERSION}" >> "$GITHUB_ENV"
+            v="${INPUT_VERSION:-${PJ_APP_VERSION}}"
           fi
+          echo "PJ_VERSION=${v}" >> "$GITHUB_ENV"
+          echo "version=${v}" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse to rehearse against the production update channel
+        # A dispatch build is not a release. Publishing it where installed
+        # maintenance tools look would offer every Windows user a dev build.
+        # Compared by bucket prefix, not URL: every update URL is served from
+        # the same bucket, so another host or a doubled slash with the same
+        # path would still overwrite the production repository.
+        if: github.event_name != 'push' && env.PJ_WINDOWS_UPDATE_URL != ''
+        shell: bash
+        env:
+          PROD_URL: ${{ vars.PJ4_WINDOWS_UPDATE_URL }}
+        run: |
+          prefix_of() { local p="${1#*://}"; [[ "${p}" == */* ]] && p="${p#*/}" || p=""; printf '%s' "${p}" | tr -s '/' | sed 's#^/##; s#/$##'; }
+          if [[ -n "${PROD_URL}" && "$(prefix_of "${PJ_WINDOWS_UPDATE_URL}")" == "$(prefix_of "${PROD_URL}")" ]]; then
+            echo "::error::update_url publishes to the production prefix of ${PROD_URL}; use a staging prefix." >&2
+            exit 1
+          fi
+          echo "Rehearsing against ${PJ_WINDOWS_UPDATE_URL}"
 
       - name: Install Conan
         uses: conan-io/setup-conan@v1
@@ -323,12 +378,24 @@ jobs:
         # builds keep the date + main-commit stamp to stay distinguishable.
         shell: pwsh
         run: |
+          # Remote updates only when this run also publishes a repository at
+          # PJ_WINDOWS_UPDATE_URL (a tag, or a dispatch rehearsal): an installer
+          # pointing at a URL it was not published to would poll a repository
+          # advertising a different build than it installed.
+          # A hashtable splat, not an array: it binds by parameter NAME, so a
+          # future reordering of the script's parameters cannot silently bind
+          # these to the wrong ones.
+          $updateArgs = @{}
+          if ($env:PJ_WINDOWS_UPDATE_URL) {
+            $updateArgs = @{ UpdateUrl = $env:PJ_WINDOWS_UPDATE_URL; RepoOutDir = "dist/repo" }
+          }
           .\packaging\installer\build_windows_installer.ps1 `
             -QtDir ".qt\$env:PJ_QT_VERSION\msvc2022_64" `
             -PluginRegistryUrl "https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/refs/heads/development/registry.json" `
             -Version $env:PJ_VERSION `
             -OutDir dist `
-            -CleanReleaseName:($env:GITHUB_REF_TYPE -eq "tag")
+            -CleanReleaseName:($env:GITHUB_REF_TYPE -eq "tag") `
+            @updateArgs
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
@@ -337,10 +404,136 @@ jobs:
           path: dist/*.exe
           if-no-files-found: error
 
+      - name: Upload the update repository (rehearsal)
+        # A later rehearsal's update-check installs this run's installer
+        # against THIS repository, so the install resolves this version rather
+        # than whatever the staging prefix has advertised since.
+        if: github.event_name != 'push' && env.PJ_WINDOWS_UPDATE_URL != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-repo-${{ env.PJ_VERSION }}
+          path: dist/repo
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Attach installer to the GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+        # Never a rehearsal build: it points at a staging repository.
+        if: startsWith(github.ref, 'refs/tags/') && inputs.update_url == ''
         uses: softprops/action-gh-release@v3
         with:
           files: dist/*.exe
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+      - name: Publish the update repository
+        # After the Release attach, deliberately: the installer .exe is the
+        # canonical artifact, so a publishing failure must not cost it the
+        # upload. Same ordering rule as the Linux .deb and its apt repository.
+        #
+        # Skipped unless PJ_WINDOWS_UPDATE_URL is set — which is also what
+        # decided whether the installer above was built with remote updates at
+        # all, so the two can never disagree. The publisher takes the bucket
+        # prefix from the URL's path, so it lands where the installer looks.
+        if: env.PJ_WINDOWS_UPDATE_URL != ''
+        shell: pwsh
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          .\packaging\installer\publish_update_repo.ps1 `
+            -RepoDir dist/repo `
+            -Version $env:PJ_VERSION
+
+  update-check:
+    # Rehearsal only: install the installer an earlier dispatch run built, then
+    # let its maintenance tool update from the repository the job above just
+    # published — the path a real user takes, driven through IFW's command
+    # line because nobody sits at the runner. The installed version recorded
+    # in components.xml is the assertion; check-updates output is only logged,
+    # since IFW's console output from a GUI-subsystem binary is best-effort.
+    needs: windows-installer
+    if: inputs.update_check_from_run != '' && needs.windows-installer.outputs.update_url != ''
+    runs-on: windows-2022
+    timeout-minutes: 30
+    permissions:
+      actions: read     # gh run download of the earlier run's artifact
+    env:
+      GH_TOKEN: ${{ github.token }}
+      OLD_RUN: ${{ inputs.update_check_from_run }}
+      EXPECT: ${{ needs.windows-installer.outputs.version }}
+      UPDATE_URL: ${{ needs.windows-installer.outputs.update_url }}
+    steps:
+      - name: Download the older installer
+        shell: bash
+        run: gh run download "${OLD_RUN}" --repo "${GITHUB_REPOSITORY}" --dir old
+
+      - name: Install it offline, then install and update it online
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "pj4"
+          # Start-Process -Wait, because PowerShell does not wait for a
+          # GUI-subsystem executable invoked directly.
+          function Invoke-Ifw([string]$exe, [string[]]$ifwArgs, [switch]$AllowFailure) {
+            $p = Start-Process $exe -ArgumentList $ifwArgs -Wait -PassThru -NoNewWindow `
+                   -RedirectStandardOutput ifw.out -RedirectStandardError ifw.err
+            Get-Content ifw.out, ifw.err | Out-Host
+            if (-not $AllowFailure -and $p.ExitCode -ne 0) { throw "$exe $ifwArgs exited $($p.ExitCode)" }
+          }
+          function Get-InstalledVersion([string]$dir = $root) {
+            [xml]$c = Get-Content (Join-Path $dir "components.xml")
+            ($c.Packages.Package | Where-Object { $_.Name -eq "io.plotjuggler.application" }).Version
+          }
+
+          $installer = (Get-ChildItem old -Recurse -Filter *.exe | Select-Object -First 1).FullName
+
+          # Offline: every installer carries <RemoteRepositories>, and it must
+          # still install its own embedded payload when the update host is
+          # unreachable (air-gapped labs, blocking proxies).
+          $updateHost = ([uri]$env:UPDATE_URL).Host
+          $hosts = "$env:SystemRoot\System32\drivers\etc\hosts"
+          $saved = Get-Content -Raw $hosts
+          Add-Content $hosts "`n0.0.0.0 $updateHost`n:: $updateHost"
+          ipconfig /flushdns | Out-Null
+          try {
+            $reachable = $true
+            try { Invoke-WebRequest "$env:UPDATE_URL/Updates.xml" -UseBasicParsing -TimeoutSec 10 | Out-Null } catch { $reachable = $false }
+            if ($reachable) { throw "$updateHost is still reachable; the offline check would prove nothing" }
+            $offRoot = Join-Path $env:RUNNER_TEMP "pj4-offline"
+            Write-Host "offline: installing $installer into $offRoot with $updateHost blocked"
+            Invoke-Ifw $installer @("install", "--root", $offRoot, "--accept-licenses", "--default-answer", "--confirm-command")
+            $offline = Get-InstalledVersion $offRoot
+            if (-not $offline -or $offline -eq $env:EXPECT) { throw "offline install reports [$offline]; expected the installer's own version" }
+            if (-not (Test-Path (Join-Path $offRoot "bin\PlotJuggler4.exe"))) { throw "offline install has no bin\PlotJuggler4.exe" }
+            Write-Host "offline install OK: $offline"
+          } finally {
+            [IO.File]::WriteAllText($hosts, $saved)
+            ipconfig /flushdns | Out-Null
+          }
+
+          $oldRepo = (Get-ChildItem old -Recurse -Filter Updates.xml | Select-Object -First 1).DirectoryName
+          if (-not $oldRepo) { throw "run $env:OLD_RUN has no update-repo artifact; rebuild it with update_url set" }
+          # An installer carrying <RemoteRepositories> consults them at install
+          # time and installs the NEWEST version it finds there. Restricting the
+          # fetch to the old run's own repository (not saved into the
+          # maintenance tool) reproduces a machine that installed before the
+          # newer version was published.
+          $oldRepoUri = ([uri]$oldRepo).AbsoluteUri
+          Write-Host "installing $installer into $root, resolving only $oldRepoUri"
+          Invoke-Ifw $installer @("install", "--root", $root, "--set-temp-repository", $oldRepoUri,
+                                   "--accept-licenses", "--default-answer", "--confirm-command")
+          $before = Get-InstalledVersion
+          Write-Host "installed: $before"
+          if ($before -eq $env:EXPECT) { throw "the older installer is already $env:EXPECT; nothing to update" }
+
+          $tool = Join-Path $root "maintenancetool.exe"
+          Write-Host "--- check-updates ---"
+          Invoke-Ifw $tool @("check-updates") -AllowFailure
+          Write-Host "--- update ---"
+          Invoke-Ifw $tool @("update", "--accept-licenses", "--default-answer", "--confirm-command")
+
+          $after = Get-InstalledVersion
+          if ($after -ne $env:EXPECT) { throw "after the update components.xml says $after, expected $env:EXPECT" }
+          if (-not (Test-Path (Join-Path $root "bin\PlotJuggler4.exe"))) { throw "bin\PlotJuggler4.exe missing after the update" }
+          Write-Host "updated $before -> $after"

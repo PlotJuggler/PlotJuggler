@@ -141,7 +141,146 @@ them). Older releases fail at run time on the glibc floor; non-dpkg distros
 
 ## Distribution
 
-The package is a **release asset**, not an apt repository — install it with
-`apt install ./plotjuggler4_<version>_amd64.deb`. `apt upgrade` therefore does
-not update PlotJuggler; the in-app update check behaves as it does for the
-AppImage. Publishing a signed apt repository is a separate piece of work.
+The same `.deb` reaches users two ways.
+
+**A release asset**, downloaded and installed by hand:
+
+```bash
+sudo apt install ./plotjuggler4_<version>_amd64.deb
+```
+
+`apt upgrade` does not update a package installed this way — nothing tells apt
+where the file came from.
+
+**The apt repository**, which does support `apt upgrade`:
+
+```bash
+curl -fsSL https://apt.plotjuggler.io/pj4_install.sh | sudo sh
+```
+
+[`pj4_install.sh`](pj4_install.sh) adds the key and source entry, then
+installs `plotjuggler4`. It checks the system (root, apt, amd64, glibc ≥ 2.35,
+no duplicate source entry) before changing anything, and is safe to re-run.
+`publish_apt.sh` uploads it with every publish.
+
+`arch=amd64` is there because that is the only architecture built today; a host
+on another architecture would otherwise log a missing-index warning on every
+`apt update`. `build_deb.sh` already maps `aarch64` → `arm64`, so adding arm64
+later means publishing into the same suite — existing users need no change.
+
+The in-app update check is unchanged either way: it is a compile-time
+`PJ_INSTALLATION=deb` stamp on one binary, so an apt-installed copy still
+points at the GitHub release page rather than saying `apt upgrade`.
+
+### The suite name is permanent
+
+Packages are filed under the single suite **`stable`**, one component
+(`main`). One suite is the honest model: this is a bundled vendor package with
+a glibc 2.35 floor, not a per-codename build, so `jammy`/`noble` suites would
+promise a distinction that does not exist.
+
+Never rename it. apt refuses a repository whose `Release` reports a different
+`Suite` than the one it last saw and makes every user confirm the change by
+hand.
+
+## Publishing to the apt repository
+
+`publish_apt.sh` uploads a built `.deb` to the repository on **Cloudflare R2**
+and regenerates the signed metadata around it:
+
+```bash
+R2_BUCKET=<bucket> R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com \
+AWS_ACCESS_KEY_ID=<key> AWS_SECRET_ACCESS_KEY=<secret> \
+APT_GPG_PRIVATE_KEY="$(cat archive-key.asc)" \
+PJ_APT_PUBLIC_URL=https://apt.plotjuggler.io \
+  packaging/deb/publish_apt.sh packaging/deb/plotjuggler4_<version>_amd64.deb
+```
+
+`--dry-run` builds and signs everything locally, uploads nothing, and leaves
+the staged repository tree for inspection. It needs no R2 credentials.
+
+Release CI does this in the `apt-publish` job of
+[`linux-appimage-release.yml`](../../.github/workflows/linux-appimage-release.yml),
+gated on `deb-release` so the GitHub Release asset lands first. It needs the
+secrets `R2_BUCKET`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
+`APT_GPG_PRIVATE_KEY` (and `APT_GPG_PASSPHRASE` if the key has one) plus the
+repository variable `PJ4_APT_PUBLIC_URL`; **without that variable the job is
+skipped**, so a fork releases exactly as before.
+
+Tag builds only — the script refuses a `<ver>~<hash>` dispatch version, which
+sorts below the release it precedes and could never be offered as an upgrade.
+
+### Why the repository rebuilds itself every time
+
+R2 is plain object storage, so unlike a package-manager service it maintains no
+index: `dists/**` is regenerated and re-signed on every publish. Doing that
+needs a `Packages` stanza for **every** version still on offer, not just the new
+one — and re-downloading hundreds of MB of old `.deb`s to rescan them would be
+absurd. So each stanza is kept beside the pool as repository state:
+
+```
+pool/main/p/plotjuggler4/plotjuggler4_<version>_amd64.deb   the packages
+.index/<suite>/<component>/<arch>/<pkg>_<ver>_<arch>.stanza one per published version
+dists/<suite>/<component>/binary-<arch>/Packages{,.gz}      built from those stanzas
+dists/<suite>/{Release,Release.gpg,InRelease}               signed
+plotjuggler-archive-keyring.asc                             the public key
+```
+
+A few KB per release buys an incremental publish. Nothing under `.index/` is
+read by apt.
+
+### Two orderings that matter
+
+**Upload order is the reverse of apt's read order.** apt reads `InRelease` →
+`Packages` → the `.deb`, so the publisher writes the package first, then the
+indexes, then `Release`. A client fetching mid-publish can then only ever see
+an index *older* than the pool, never one promising a file that has not landed.
+
+**Retention is decided before the index is built, applied after it is live.**
+`--keep <n>` drops the retired versions from the set `Packages` is generated
+from, and only deletes their objects once that index is published. The reverse
+order would briefly advertise a version whose file is already gone — a 404 at
+install time for anyone who ran `apt update` in the window. Retention is off by
+default; `--keep` never touches anything but other versions of the same
+package and architecture.
+
+### Cache headers
+
+Pool objects go up `immutable` with a one-year max-age — they never change.
+Metadata goes up with `max-age=0`: the edge caches `InRelease` and
+`Packages.gz` independently, and a mismatched pair fails `apt update`.
+
+### No `Valid-Until`
+
+The `Release` file deliberately carries no expiry. It would turn any pause in
+releases longer than the window into "repository is no longer signed" errors on
+machines that are perfectly fine.
+
+## One-time Cloudflare setup
+
+1. An **R2 bucket** for the repository, exposed at a stable public URL —
+   a custom domain (`apt.plotjuggler.io`) is worth it over the `r2.dev`
+   subdomain, because that hostname ends up in every user's `sources.list` and
+   moving it later means asking all of them to edit a file.
+2. **Public read** on the bucket. apt fetches unauthenticated; the publisher
+   verifies this at the end of every run by re-fetching through the public URL
+   rather than the S3 endpoint.
+3. An **R2 API token** scoped to object read/write on that bucket only.
+4. A **GPG signing key** — the archive key. Generate it offline, keep the
+   private half in GitHub secrets and the revocation certificate somewhere
+   else. Give it an expiry and a calendar reminder; a key that outlives its
+   owner's attention is the usual way archive keys go wrong.
+
+### Cost
+
+Storage runs to a few cents a month at this package size, and R2 charges
+nothing for egress — which is the entire reason this repository lives here
+rather than somewhere metered. The bundled Qt and Conan closure make each
+release a few hundred MB, and every user pulls it.
+
+### The signing key lives in CI
+
+This is the one real downside against a hosted package service: anyone who can
+land a workflow change on this repository can sign packages as PlotJuggler.
+Keep the key's use narrow, prefer a signing subkey over the primary key, and
+treat `APT_GPG_PRIVATE_KEY` as the most sensitive secret in the repository.

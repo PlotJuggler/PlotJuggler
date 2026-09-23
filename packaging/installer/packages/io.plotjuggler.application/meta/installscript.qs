@@ -46,6 +46,13 @@ Component.prototype.createOperations = function()
 // Custom target-directory page — https://stackoverflow.com/a/46614107
 Component.prototype.installerLoaded = function()
 {
+    // Only a fresh GUI install picks a directory or replaces a previous one.
+    // The maintenance tool runs this script too, and during an update its
+    // TargetDir IS the existing installation: the replace prompt below would
+    // purge the very install being updated. A command-line run has no gui.
+    if (!installer.isInstaller() || installer.isCommandLineInstance())
+        return;
+
     installer.setDefaultPageVisible(QInstaller.TargetDirectory, false);
     installer.addWizardPage(component, "TargetWidget", QInstaller.TargetDirectory);
 

@@ -28,6 +28,11 @@ name: Release Linux packages
 #     clean 22.04/24.04 containers, runs it, then re-runs the same checks
 #     against the AppImage — the only place either artifact is exercised on a
 #     machine without build dependencies.
+#   * apt-publish job: uploads that same smoke-tested .deb to the apt
+#     repository on Cloudflare R2 and re-signs its metadata, so `apt upgrade`
+#     reaches users who added it. Runs only for tags, only after deb-release,
+#     and only where the PJ4_APT_PUBLIC_URL repo variable exists. See
+#     packaging/deb/README.md, "Distribution".
 #
 # Triggers:
 #   - workflow_dispatch          -> build from any branch (artifacts only, no Release upload)
@@ -520,3 +525,56 @@ jobs:
         with:
           files: pkg/${{ needs.appimage.outputs.deb_name }}
           fail_on_unmatched_files: true
+
+  apt-publish:
+    # Push the released .deb into the apt repository on Cloudflare R2 and
+    # re-sign the metadata around it, so machines that added the repository
+    # pick the new version up with `apt upgrade`.
+    #
+    # Gated on deb-release rather than just smoke: the GitHub Release asset is
+    # the canonical artifact, so it lands first — the same ordering rule that
+    # publishes the AppImage before the .deb is packaged.
+    #
+    # Skipped entirely unless PJ4_APT_PUBLIC_URL is set (the `secrets` context
+    # is not available in a job-level `if`, so the repo variable is what gates
+    # it). A fork, or this repo before the bucket exists, therefore releases
+    # exactly as it did before.
+    needs: [appimage, smoke, deb-release]
+    if: startsWith(github.ref, 'refs/tags/') && vars.PJ4_APT_PUBLIC_URL != ''
+    runs-on: ubuntu-latest
+    # Each publish rebuilds the index from the stanza store; two tags publishing
+    # at once would each drop the other's version, so they queue.
+    concurrency:
+      group: apt-publish
+      cancel-in-progress: false
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: false
+
+      - name: Download the .deb
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.appimage.outputs.deb_name }}
+          path: pkg
+
+      - name: Install apt-ftparchive
+        # The AWS CLI is preinstalled on the runner image; apt-ftparchive
+        # (apt-utils) may not be, and is the one other tool the publisher needs.
+        run: command -v apt-ftparchive || { sudo apt-get update && sudo apt-get install -y --no-install-recommends apt-utils; }
+
+      - name: Publish to the apt repository
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+          PJ_APT_PUBLIC_URL: ${{ vars.PJ4_APT_PUBLIC_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash packaging/deb/publish_apt.sh "pkg/${{ needs.appimage.outputs.deb_name }}"
