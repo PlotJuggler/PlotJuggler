@@ -508,7 +508,7 @@ jobs:
             if (-not (Test-Path (Join-Path $offRoot "bin\PlotJuggler4.exe"))) { throw "offline install has no bin\PlotJuggler4.exe" }
             Write-Host "offline install OK: $offline"
           } finally {
-            Set-Content -NoNewline $hosts $saved
+            [IO.File]::WriteAllText($hosts, $saved)
             ipconfig /flushdns | Out-Null
           }
 
