@@ -212,12 +212,18 @@ done < <(find "${STAGE}/${INDEX_PREFIX}" -name '*.stanza' -type f | LC_ALL=C sor
 # ---------------------------------------------------------------------------
 doomed_pool=()
 doomed_stanza=()
-if (( KEEP > 0 && ${#published[@]} > KEEP )); then
+# The stanza store holds every package of this suite/component/arch, so only
+# this package's own versions are candidates for retirement.
+mine=()
+for stanza in "${published[@]}"; do
+  [[ "$(basename "${stanza}")" == "${PACKAGE}_"* ]] && mine+=("${stanza}")
+done
+if (( KEEP > 0 && ${#mine[@]} > KEEP )); then
   # Debian version ordering is not lexicographic (1.10 > 1.9), so dpkg is the
   # only correct comparator. Insertion sort, newest first — the list is a
   # handful of releases.
   sorted_stanzas=()
-  for stanza in "${published[@]}"; do
+  for stanza in "${mine[@]}"; do
     v="$(awk -F': ' '/^Version: /{ print $2; exit }' "${stanza}")"
     inserted=0
     for (( i = 0; i < ${#sorted_stanzas[@]}; i++ )); do
@@ -328,7 +334,10 @@ fi
 #     what makes `apt update` miss a release that is already published.
 # ---------------------------------------------------------------------------
 IMMUTABLE="public, max-age=31536000, immutable"
-NOCACHE="public, max-age=60, must-revalidate"
+# max-age=0, not a short TTL: InRelease and Packages.gz are cached
+# independently at the edge, and a client that got the new InRelease with a
+# cached old Packages.gz would fail 'apt update' with a hash mismatch.
+NOCACHE="public, max-age=0, must-revalidate"
 
 # put <local file> <key relative to the repository root> <content type> <cache-control>
 put() { s3 cp "$1" "s3://${R2_BUCKET}/$2" --content-type "$3" --cache-control "$4" --no-progress; }
@@ -387,15 +396,20 @@ echo "Verifying ${PUBLIC_URL} as a user would fetch it..."
 
 VERIFY_DIR="${STAGE}/verify"
 mkdir -p "${VERIFY_DIR}"
+# Retried as a whole: an older signed InRelease verifies too, so success means
+# the NEW index is visible, not just some index.
 for attempt in $(seq 1 10); do
   if curl --silent --fail --location --output "${VERIFY_DIR}/InRelease" \
        "${PUBLIC_URL}/dists/${DISTRIBUTION}/InRelease" 2>/dev/null \
-     && gpg --batch --quiet --verify "${VERIFY_DIR}/InRelease" >/dev/null 2>&1; then
+     && gpg --batch --quiet --verify "${VERIFY_DIR}/InRelease" >/dev/null 2>&1 \
+     && curl --silent --fail --location --output "${VERIFY_DIR}/Packages" \
+          "${PUBLIC_URL}/dists/${DISTRIBUTION}/${COMPONENT}/binary-${ARCH}/Packages" 2>/dev/null \
+     && grep -qxF "Version: ${VERSION}" "${VERIFY_DIR}/Packages"; then
     break
   fi
   [[ "${attempt}" -lt 10 ]] || {
     {
-      echo "ERROR: could not fetch and verify ${PUBLIC_URL}/dists/${DISTRIBUTION}/InRelease"
+      echo "ERROR: ${PUBLIC_URL} does not serve a verified index listing ${VERSION}"
       echo "The uploads succeeded, so this is a serving problem. Check:"
       echo "  * the bucket is exposed at that URL (R2 custom domain or r2.dev)."
       echo "  * public read is enabled — apt fetches without credentials."
@@ -404,12 +418,6 @@ for attempt in $(seq 1 10); do
   }
   sleep 6
 done
-
-curl --silent --fail --location --output "${VERIFY_DIR}/Packages" \
-  "${PUBLIC_URL}/dists/${DISTRIBUTION}/${COMPONENT}/binary-${ARCH}/Packages" \
-  || { echo "ERROR: Packages is not fetchable from ${PUBLIC_URL}" >&2; exit 1; }
-grep -qxF "Version: ${VERSION}" "${VERIFY_DIR}/Packages" \
-  || { echo "ERROR: ${VERSION} is missing from the published Packages index" >&2; exit 1; }
 
 # The index is only as good as the file it points at: a HEAD proves the pool
 # object is actually readable at the URL apt will derive from Filename.

@@ -102,8 +102,9 @@ caught in testing, not review.
   suite; existing users need no change.
 - **Cache headers split by mutability.** Pool objects and IFW component
   archives are immutable (version in the filename) and cached for a year;
-  indexes get 60 seconds, because a stale index at the edge is precisely what
-  makes a client miss a release that is already published. The cost is that
+  indexes are not cached at the edge (`max-age=0`). A short TTL is not enough:
+  `InRelease` and `Packages.gz` are cached independently, and a client that
+  got the new one with the old other fails `apt update` with a hash mismatch. The cost is that
   **a version is published once**: both publishers refuse to replace a
   published version with different bytes (a re-run release rebuilds them),
   because the edge would keep serving the old archive against the new

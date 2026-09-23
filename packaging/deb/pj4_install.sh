@@ -48,7 +48,10 @@ preflight() {
 
   # apt rejects every 'apt update' when one repository is listed twice with
   # different keys, so an entry added by hand under another name must go first.
-  others="$(grep -rlsF "${REPO_URL#https://}" /etc/apt/sources.list /etc/apt/sources.list.d \
+  # Only files and lines apt reads: not .save/.distUpgrade copies, nor entries
+  # commented out (as a release upgrade does to third-party sources).
+  others="$(grep -lsE "^[^#]*${REPO_URL#https://}" /etc/apt/sources.list \
+              /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources \
             | grep -vxF "${SOURCES}" | tr '\n' ' ' || true)"
   [ -z "${others}" ] \
     || die "the PlotJuggler repository is already configured in: ${others}- remove that entry, then run this again"

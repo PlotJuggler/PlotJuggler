@@ -247,8 +247,8 @@ package and architecture.
 ### Cache headers
 
 Pool objects go up `immutable` with a one-year max-age — they never change.
-Metadata goes up with a 60-second max-age, because a stale index at the edge is
-exactly what makes `apt update` miss a release that is already published.
+Metadata goes up with `max-age=0`: the edge caches `InRelease` and
+`Packages.gz` independently, and a mismatched pair fails `apt update`.
 
 ### No `Valid-Until`
 

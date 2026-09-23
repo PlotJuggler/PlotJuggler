@@ -66,9 +66,9 @@ jobs:
 
     env:
       # The one URL the installer is built against and the repository is
-      # published to: the production variable on a tag, the staging input on a
-      # dispatch, empty otherwise. Both steps read it, so they cannot disagree.
-      PJ_WINDOWS_UPDATE_URL: ${{ github.ref_type == 'tag' && vars.PJ4_WINDOWS_UPDATE_URL || (github.event_name == 'workflow_dispatch' && inputs.update_url || '') }}
+      # published to: the production variable on a tag push, the staging input
+      # on a dispatch (even one started from a tag), empty otherwise. Both steps read it, so they cannot disagree.
+      PJ_WINDOWS_UPDATE_URL: ${{ github.event_name == 'push' && vars.PJ4_WINDOWS_UPDATE_URL || (github.event_name == 'workflow_dispatch' && inputs.update_url || '') }}
 
     # sccache uses Depot Cache via the SCCACHE_WEBDAV_* env vars the Depot
     # runner pre-sets — the same org-wide object store as Windows CI and the
@@ -113,13 +113,17 @@ jobs:
       - name: Refuse to rehearse against the production update channel
         # A dispatch build is not a release. Publishing it where installed
         # maintenance tools look would offer every Windows user a dev build.
-        if: github.ref_type != 'tag' && env.PJ_WINDOWS_UPDATE_URL != ''
+        # Compared by bucket prefix, not URL: every update URL is served from
+        # the same bucket, so another host or a doubled slash with the same
+        # path would still overwrite the production repository.
+        if: github.event_name != 'push' && env.PJ_WINDOWS_UPDATE_URL != ''
         shell: bash
         env:
           PROD_URL: ${{ vars.PJ4_WINDOWS_UPDATE_URL }}
         run: |
-          if [[ "${PJ_WINDOWS_UPDATE_URL%/}" == "${PROD_URL%/}" ]]; then
-            echo "::error::update_url is the production channel (${PROD_URL}); use a staging prefix." >&2
+          prefix_of() { local p="${1#*://}"; [[ "${p}" == */* ]] && p="${p#*/}" || p=""; printf '%s' "${p}" | tr -s '/' | sed 's#^/##; s#/$##'; }
+          if [[ -n "${PROD_URL}" && "$(prefix_of "${PJ_WINDOWS_UPDATE_URL}")" == "$(prefix_of "${PROD_URL}")" ]]; then
+            echo "::error::update_url publishes to the production prefix of ${PROD_URL}; use a staging prefix." >&2
             exit 1
           fi
           echo "Rehearsing against ${PJ_WINDOWS_UPDATE_URL}"
@@ -404,7 +408,7 @@ jobs:
         # A later rehearsal's update-check installs this run's installer
         # against THIS repository, so the install resolves this version rather
         # than whatever the staging prefix has advertised since.
-        if: github.ref_type != 'tag' && env.PJ_WINDOWS_UPDATE_URL != ''
+        if: github.event_name != 'push' && env.PJ_WINDOWS_UPDATE_URL != ''
         uses: actions/upload-artifact@v4
         with:
           name: update-repo-${{ env.PJ_VERSION }}
@@ -413,7 +417,8 @@ jobs:
           retention-days: 7
 
       - name: Attach installer to the GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+        # Never a rehearsal build: it points at a staging repository.
+        if: startsWith(github.ref, 'refs/tags/') && inputs.update_url == ''
         uses: softprops/action-gh-release@v3
         with:
           files: dist/*.exe

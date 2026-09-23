@@ -95,7 +95,7 @@ $dest = "s3://$env:R2_BUCKET/$Prefix"
 # once written; Updates.xml does, and a stale copy at the edge is exactly what
 # makes a maintenance tool miss a release that is already published.
 $immutable = "public, max-age=31536000, immutable"
-$nocache   = "public, max-age=60, must-revalidate"
+$nocache   = "public, max-age=0, must-revalidate"
 
 # A version is published once. Archive names carry the version and go up
 # immutable, so an edge that already served one keeps serving it for a year:
@@ -103,8 +103,12 @@ $nocache   = "public, max-age=60, must-revalidate"
 # new checksum with the old archive and fail every update's hash verification.
 # Re-publishing identical bytes, e.g. a retried job, is harmless. Comparing the
 # small .sha1 files repogen writes beside each archive is enough.
-$existing = @(& aws s3 ls "$dest/" --recursive --endpoint-url $env:R2_ENDPOINT 2>$null) |
-  ForEach-Object { ($_.Trim() -split '\s+', 4)[3] }
+# list-objects-v2, not 's3 ls': it exits 0 on an empty prefix, so a failure
+# really is a failure, and an unreadable bucket cannot pass as "nothing there".
+$listing = & aws s3api list-objects-v2 --bucket $env:R2_BUCKET --prefix "$Prefix/" `
+  --query 'Contents[].Key' --output text --endpoint-url $env:R2_ENDPOINT
+if ($LASTEXITCODE -ne 0) { Die "could not list s3://$env:R2_BUCKET/$Prefix/ (exit $LASTEXITCODE); not publishing blind." }
+$existing = @(($listing -join "`t") -split '\s+' | Where-Object { $_ -and $_ -ne 'None' })
 foreach ($sha in Get-ChildItem $RepoDir -Recurse -Filter *.sha1) {
   $key = "$Prefix/" + $sha.FullName.Substring($RepoDir.Length).TrimStart('\', '/').Replace('\', '/')
   if ($existing -notcontains $key) { continue }
