@@ -207,7 +207,9 @@ The first run proves `repogen`, the `Updates.xml` assertion and the upload.
 The second publishes 4.0.2, then its `update-check` job installs the first
 run's 4.0.1 installer headlessly on a Windows runner and updates it through the
 maintenance tool's command line (`check-updates`, `update`), asserting that
-`components.xml` reports 4.0.2 afterwards. No Windows machine is needed. The
+`components.xml` reports 4.0.2 afterwards. First it installs the same
+installer with the update host blocked, proving an installer carrying
+`<RemoteRepositories>` still installs offline. No Windows machine is needed. The
 two runs share a concurrency group, so start the second only once the first
 has finished. Each rehearsal needs version numbers never published to that
 prefix before: a version is published once (see

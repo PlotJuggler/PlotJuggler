@@ -463,12 +463,13 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       OLD_RUN: ${{ inputs.update_check_from_run }}
       EXPECT: ${{ needs.windows-installer.outputs.version }}
+      UPDATE_URL: ${{ needs.windows-installer.outputs.update_url }}
     steps:
       - name: Download the older installer
         shell: bash
         run: gh run download "${OLD_RUN}" --repo "${GITHUB_REPOSITORY}" --dir old
 
-      - name: Install it, then update through the maintenance tool
+      - name: Install it offline, then install and update it online
         shell: pwsh
         run: |
           $root = Join-Path $env:RUNNER_TEMP "pj4"
@@ -480,12 +481,37 @@ jobs:
             Get-Content ifw.out, ifw.err | Out-Host
             if (-not $AllowFailure -and $p.ExitCode -ne 0) { throw "$exe $ifwArgs exited $($p.ExitCode)" }
           }
-          function Get-InstalledVersion {
-            [xml]$c = Get-Content (Join-Path $root "components.xml")
+          function Get-InstalledVersion([string]$dir = $root) {
+            [xml]$c = Get-Content (Join-Path $dir "components.xml")
             ($c.Packages.Package | Where-Object { $_.Name -eq "io.plotjuggler.application" }).Version
           }
 
           $installer = (Get-ChildItem old -Recurse -Filter *.exe | Select-Object -First 1).FullName
+
+          # Offline: every installer carries <RemoteRepositories>, and it must
+          # still install its own embedded payload when the update host is
+          # unreachable (air-gapped labs, blocking proxies).
+          $updateHost = ([uri]$env:UPDATE_URL).Host
+          $hosts = "$env:SystemRoot\System32\drivers\etc\hosts"
+          $saved = Get-Content -Raw $hosts
+          Add-Content $hosts "`n0.0.0.0 $updateHost`n:: $updateHost"
+          ipconfig /flushdns | Out-Null
+          try {
+            $reachable = $true
+            try { Invoke-WebRequest "$env:UPDATE_URL/Updates.xml" -UseBasicParsing -TimeoutSec 10 | Out-Null } catch { $reachable = $false }
+            if ($reachable) { throw "$updateHost is still reachable; the offline check would prove nothing" }
+            $offRoot = Join-Path $env:RUNNER_TEMP "pj4-offline"
+            Write-Host "offline: installing $installer into $offRoot with $updateHost blocked"
+            Invoke-Ifw $installer @("install", "--root", $offRoot, "--accept-licenses", "--default-answer", "--confirm-command")
+            $offline = Get-InstalledVersion $offRoot
+            if (-not $offline -or $offline -eq $env:EXPECT) { throw "offline install reports [$offline]; expected the installer's own version" }
+            if (-not (Test-Path (Join-Path $offRoot "bin\PlotJuggler4.exe"))) { throw "offline install has no bin\PlotJuggler4.exe" }
+            Write-Host "offline install OK: $offline"
+          } finally {
+            Set-Content -NoNewline $hosts $saved
+            ipconfig /flushdns | Out-Null
+          }
+
           $oldRepo = (Get-ChildItem old -Recurse -Filter Updates.xml | Select-Object -First 1).DirectoryName
           if (-not $oldRepo) { throw "run $env:OLD_RUN has no update-repo artifact; rebuild it with update_url set" }
           # An installer carrying <RemoteRepositories> consults them at install
