@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <string>
 
 #include "pj_marketplace/sha256.hpp"
@@ -40,11 +41,14 @@ class TempTree {
   }
 
  private:
-  // No clock or RNG: a monotonic counter is enough to keep concurrent cases apart
-  // and keeps the name reproducible when a failure has to be chased.
+  // ctest runs every case in its own process, so a per-process counter alone would
+  // hand the same name to concurrent cases and one's cleanup would delete another's
+  // tree. A per-process random tag keeps them apart; the counter separates the trees
+  // within one case.
   static std::string uniqueName() {
+    static const unsigned process_tag = std::random_device{}();
     static int counter = 0;
-    return "pj-content-manifest-" + std::to_string(++counter);
+    return "pj-content-manifest-" + std::to_string(process_tag) + "-" + std::to_string(++counter);
   }
 
   std::filesystem::path root_;

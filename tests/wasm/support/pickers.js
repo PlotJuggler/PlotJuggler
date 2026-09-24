@@ -5,7 +5,24 @@ const PICKER_ATTEMPTS = 3;
 const PICKER_DELIVERY_TIMEOUT_MS = 8000;
 const PICKER_RETRY_DELAY_MS = 500;
 
+const interceptedPages = new WeakSet();
+
+// Playwright intercepts native choosers only while a 'filechooser' listener
+// exists: each waitForEvent re-sends Page.setInterceptFileChooserDialog without
+// awaiting it, and removing the waiter disables it again. A trigger that reaches
+// input.click() before that enable lands opens the real picker instead, which
+// headless Chromium cancels at once, so the waiter times out. A permanent no-op
+// listener keeps interception on for the page's lifetime: only the page's very
+// first request can race the enable, and the retry below covers that one.
+function keepChooserInterception(page) {
+  if (!interceptedPages.has(page)) {
+    interceptedPages.add(page);
+    page.on('filechooser', () => {});
+  }
+}
+
 async function retryChooser(page, trigger) {
+  keepChooserInterception(page);
   let lastError;
   for (let attempt = 0; attempt < PICKER_ATTEMPTS; ++attempt) {
     const chooserPromise = page.waitForEvent('filechooser', { timeout: PICKER_DELIVERY_TIMEOUT_MS });
