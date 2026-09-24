@@ -58,9 +58,11 @@ add_executable(plot_canvas_context_recreation_gl_test
 )
 
 target_compile_options(plot_canvas_context_recreation_gl_test PRIVATE ${PJ_WARNING_FLAGS})
+pj_ensure_gpu_test_gate()
 target_link_libraries(plot_canvas_context_recreation_gl_test PRIVATE
     pj_plotting
     GTest::gtest
+    pj_gpu_test_gate
 )
 
 add_test(NAME PlotCanvasContextRecreationGlTest COMMAND plot_canvas_context_recreation_gl_test)
@@ -70,9 +72,11 @@ add_executable(raster_text_gl_test
 )
 
 target_compile_options(raster_text_gl_test PRIVATE ${PJ_WARNING_FLAGS})
+pj_ensure_gpu_test_gate()
 target_link_libraries(raster_text_gl_test PRIVATE
     pj_plotting
     GTest::gtest
+    pj_gpu_test_gate
 )
 
 add_test(NAME RasterTextGlTest COMMAND raster_text_gl_test)

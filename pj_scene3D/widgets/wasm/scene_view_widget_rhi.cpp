@@ -1,7 +1,6 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include <GLES3/gl3.h>
 #include <rhi/qrhi.h>
 
 #include <QBuffer>
@@ -12,6 +11,8 @@
 #include <QImageReader>
 #include <QMatrix4x4>
 #include <QMouseEvent>
+#include <QOpenGLContext>
+#include <QOpenGLFunctions>
 #include <QPalette>
 #include <QVarLengthArray>
 #include <QWheelEvent>
@@ -33,6 +34,7 @@
 #include "pj_scene3d_widgets/cube_mesh.h"
 #include "pj_scene3d_widgets/gizmos/arrow_mesh.h"
 #include "pj_scene3d_widgets/passes/grid_geometry.h"
+#include "pj_scene3d_widgets/rhi_conventions.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
 #include "pj_scene3d_widgets/scene_state_xml.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
@@ -44,6 +46,7 @@
 #include "pj_scene3d_widgets/wasm/voxel_grid_layer_wasm.h"
 #include "pj_widgets/Colormap.h"
 #include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/GraphicsApi.h"
 #include "scene_view_widget_rhi_quality_p.h"
 
 // The resource object lives in a static archive.  Explicit initialization both
@@ -406,6 +409,24 @@ QShader loadShader(const QString& path) {
   return QShader::fromSerialized(file.readAll());
 }
 
+// QRhi 6.11 reports no 3D-texture limit. On OpenGL the widget's context is current
+// inside initialize()/render(), so ask the driver; elsewhere use 2048, the D3D11
+// feature-level-11 and Metal minimum.
+// ponytail: Vulkan only guarantees 256, but desktop drivers report >= 2048; query
+// VkPhysicalDeviceLimits through QRhiVulkanNativeHandles if a device rejects it.
+int max3dTextureSize(const QRhi& rhi) {
+  if (rhi.backend() != QRhi::OpenGLES2) {
+    return 2048;
+  }
+  QOpenGLContext* context = QOpenGLContext::currentContext();
+  if (context == nullptr) {
+    return 0;
+  }
+  GLint limit = 0;
+  context->functions()->glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &limit);
+  return std::max(limit, 0);
+}
+
 QMatrix4x4 toQMatrix(const glm::mat4& matrix) {
   // glm stores columns; QMatrix4x4's scalar constructor is row-major.
   return QMatrix4x4(
@@ -484,7 +505,7 @@ SceneViewWidget::SceneViewWidget(QWidget* parent) : QRhiWidget(parent) {
   // QRhiWidget's API is immutable after platform resources exist.  Set it while
   // the widget is still parentless; SceneDockWidget reparents only after this
   // constructor returns.
-  setApi(Api::OpenGL);
+  setApi(PJ::preferredGraphicsApi());
   setSampleCount(4);
   setObjectName(QStringLiteral("scene3dRhiCanvas"));
   setMinimumSize(320, 240);
@@ -1254,9 +1275,6 @@ QString SceneViewWidget::voxelGpuRejection(QRhi* owner, const WasmVoxelGridLayer
   if (!owner->isFeatureSupported(QRhi::ThreeDimensionalTextures)) {
     return tr("This browser GPU does not support 3D textures");
   }
-  GLint webgl_limit = 0;
-  glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &webgl_limit);
-  max_3d_texture_size_ = std::max(webgl_limit, 0);
   const int effective_limit = std::min(max_3d_texture_size_, owner->resourceLimit(QRhi::TextureSizeMax));
   const quint32 columns = layer->columnCount();
   const quint32 rows = layer->rowCount();
@@ -1578,6 +1596,8 @@ void SceneViewWidget::initialize(QRhiCommandBuffer* /*command_buffer*/) {
   if (resource_rhi_ != current_rhi) {
     releaseResources();
     resource_rhi_ = current_rhi;
+    max_3d_texture_size_ = max3dTextureSize(*current_rhi);
+    PJ::logGraphicsBackend(*this, current_rhi);
   }
   if (line_pipeline_ != nullptr && triangle_pipeline_ != nullptr && line_no_depth_pipeline_ != nullptr &&
       triangle_no_depth_pipeline_ != nullptr && marker_triangle_pipeline_ != nullptr &&
@@ -3108,9 +3128,13 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   const QMatrix4x4 matrix = corrected_projection * toQMatrix(view);
   const QMatrix4x4 shadow_matrix =
       clip_correction * toQMatrix(shadow_fit.valid ? shadow_fit.light_view_proj : glm::mat4(1.0F));
+  const RhiConventions conventions = rhiConventions(*current_rhi);
+  const QMatrix4x4 clip_to_texture = clipToTextureMatrix(conventions);
+  // View space -> this backend's render-target texture space (u, v, stored depth).
+  const QMatrix4x4 texture_projection = clip_to_texture * corrected_projection;
   if (hdr_active) {
     bool inverse_projection_valid = false;
-    const QMatrix4x4 inverse_projection = corrected_projection.inverted(&inverse_projection_valid);
+    const QMatrix4x4 inverse_projection = texture_projection.inverted(&inverse_projection_valid);
     ssao_active = ssao_active && inverse_projection_valid;
     ssao_stage_.last_active = ssao_active;
     edl_active = edl_active && inverse_projection_valid;
@@ -3138,13 +3162,13 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     updates->updateDynamicBuffer(composite_uniform_buffer_, 0, kCompositeUniformBytes, &composite);
     if (ssao_active && ssao_uniform_buffer_ != nullptr) {
       SsaoUniforms ssao_uniforms;
-      copyMatrix(corrected_projection, ssao_uniforms.projection);
+      copyMatrix(texture_projection, ssao_uniforms.projection);
       copyMatrix(inverse_projection, ssao_uniforms.inverse_projection);
       ssao_uniforms.params = {
           look::kSsaoRadiusM,
           look::kSsaoPower,
           look::kSsaoBias,
-          0.0F,
+          textureVSign(conventions),
       };
       ssao_uniforms.kernel = ssaoKernel();
       updates->updateDynamicBuffer(ssao_uniform_buffer_, 0, kSsaoUniformBytes, &ssao_uniforms);
@@ -3167,7 +3191,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
         shading_params_.reflectivity, shading_params_.ambient_scale, shading_params_.direct_scale,
         shading_params_.fill_light_scale};
     model_uniforms.environment = {key_direction.x, key_direction.y, key_direction.z, shading_params_.env_intensity};
-    copyMatrix(shadow_matrix, model_uniforms.light_view_projection);
+    copyMatrix(clip_to_texture * shadow_matrix, model_uniforms.light_view_projection);
     model_uniforms.shadow_params = {
         shadow_active ? shadow_fit.world_units_per_texel * look::kShadowNormalOffsetTexels : 0.0F,
         look::kShadowSoftnessTexels, shadow_active ? 1.0F : 0.0F, static_cast<float>(shadow_map_size_)};

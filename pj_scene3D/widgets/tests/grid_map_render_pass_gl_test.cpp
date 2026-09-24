@@ -25,8 +25,8 @@
 #include <utility>
 #include <vector>
 
-#include "gl_scene_test_support.h"
 #include "pj_base/time.hpp"
+#include "pj_gpu_test_gate.h"  // PJ_SKIP_WITHOUT_GPU
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/passes/grid_map_render_pass.h"
@@ -62,19 +62,10 @@ class GridMapRenderPassGlTest : public ::testing::Test {
     fmt.setDepthBufferSize(24);
 
     surface_ = std::make_unique<QOffscreenSurface>();
-    surface_->setFormat(fmt);
-    surface_->create();
-    if (!surface_->isValid()) {
-      GTEST_SKIP() << "no usable offscreen surface (headless without GL)";
-    }
     ctx_ = std::make_unique<QOpenGLContext>();
     ctx_->setFormat(fmt);
-    if (!ctx_->create() || !ctx_->makeCurrent(surface_.get())) {
-      GTEST_SKIP() << "could not create/make-current an OpenGL context";
-    }
-    const auto* version = reinterpret_cast<const char*>(ctx_->functions()->glGetString(GL_VERSION));
-    if (test::parseGlVersion(version) < std::pair<int, int>(4, 5)) {
-      GTEST_SKIP() << "GL " << (version != nullptr ? version : "?") << " below 4.5 - can't compile scene shaders";
+    if (auto why = gl45ContextUnavailable(*surface_, *ctx_)) {
+      PJ_SKIP_WITHOUT_GPU(*why);
     }
 
     QOpenGLFramebufferObjectFormat fbo_fmt;

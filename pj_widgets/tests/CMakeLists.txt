@@ -24,6 +24,7 @@ pj_add_test_runner(pj_widgets_tests
         marker_timeline_test.cpp
         progress_bar_test.cpp
         colormap_test.cpp
+        graphics_api_test.cpp
         messagebox_test.cpp
         ingest_progress_widget_test.cpp
         # Headless: StateColors is constexpr hash/palette math (QColor only at the rim).

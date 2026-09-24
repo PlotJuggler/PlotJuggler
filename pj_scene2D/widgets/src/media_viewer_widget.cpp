@@ -22,6 +22,7 @@
 #include "pj_scene2d_widgets/pixel_inspector.h"
 #include "pj_widgets/Colormap.h"  // shared Colormap enum + buildColormapLut + colormapGlsl
 #include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/GraphicsApi.h"
 using namespace Qt::StringLiterals;
 
 void pjMediaQtInitResources() {
@@ -35,7 +36,7 @@ static constexpr int kPointInspectorCropSize = 10;
 MediaViewerWidget::MediaViewerWidget(QWidget* parent) : QRhiWidget(parent) {
   const auto fw_theme = theme::appTheme();
   clear_color_ = theme::surface(theme::Surface::DataBackdrop, fw_theme);
-  setApi(Api::OpenGL);
+  setApi(preferredGraphicsApi());
   setObjectName(u"mediaViewerCanvas"_s);
   setFocusPolicy(Qt::StrongFocus);
   setMouseTracking(true);
@@ -844,6 +845,7 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
   if (rhi_cached_ != r) {
     releaseResources();
     rhi_cached_ = r;
+    logGraphicsBackend(*this, r);
   }
 
   if (pipeline_ != nullptr) {

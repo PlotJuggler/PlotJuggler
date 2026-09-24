@@ -29,6 +29,7 @@
 #include "gl_scene_test_support.h"  // haveGl, liveGlVersion
 #include "pj_base/sdk/platform.hpp"
 #include "pj_base/time.hpp"
+#include "pj_gpu_test_gate.h"  // PJ_SKIP_WITHOUT_GPU
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
@@ -67,7 +68,7 @@ class TfConnectionsGlTest : public ::testing::Test {
   void SetUp() override {
     const QString platform = QGuiApplication::platformName();
     if (platform == QLatin1String("offscreen") || platform == QLatin1String("minimal")) {
-      GTEST_SKIP() << "platform '" << platform.toStdString() << "' has no real-GL QOpenGLWidget support";
+      PJ_SKIP_WITHOUT_GPU("platform '" << platform.toStdString() << "' has no real-GL QOpenGLWidget support");
     }
     host_ = std::make_unique<QWidget>();
     auto* layout = new QVBoxLayout(host_.get());
@@ -80,10 +81,10 @@ class TfConnectionsGlTest : public ::testing::Test {
     host_->show();
     QApplication::processEvents();
     if (!haveGl(*view_)) {
-      GTEST_SKIP() << "No usable OpenGL context (headless without xvfb/GL).";
+      PJ_SKIP_WITHOUT_GPU("No usable OpenGL context (headless without xvfb/GL).");
     }
     if (liveGlVersion(*view_) < std::pair<int, int>(4, 5)) {
-      GTEST_SKIP() << "GL context below 4.5 cannot compile the scene's #version 450 shaders";
+      PJ_SKIP_WITHOUT_GPU("GL context below 4.5 cannot compile the scene's #version 450 shaders");
     }
 
     // Several children of the fixed frame 'base_link', spread around the origin
@@ -165,7 +166,7 @@ TEST_F(TfConnectionsGlTest, LinesSurviveContextRecreation) {
 
   reparentAndRecreate();
   if (!haveGl(*view_)) {
-    GTEST_SKIP() << "context not usable after reparent on this backend";
+    PJ_SKIP_WITHOUT_GPU("context not usable after reparent on this backend");
   }
 
   EXPECT_GT(magentaPixels(view_->grabFramebuffer()), 30) << "parent-connection lines vanished after context recreation";

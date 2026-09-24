@@ -1,9 +1,9 @@
 #version 440
 
 layout(std140, binding = 0) uniform SsaoUniforms {
-    mat4 projection;
-    mat4 inverse_projection;
-    vec4 ssao_params;  // radius in metres, AO power, depth bias, unused
+    mat4 projection;          // view space -> texture space (u, v, stored depth)
+    mat4 inverse_projection;  // texture space -> view space
+    vec4 ssao_params;  // radius in metres, AO power, depth bias, texture-v sign (see textureVSign)
     vec4 kernel[32];
 };
 
@@ -14,8 +14,7 @@ layout(location = 0) out vec4 fragment_color;
 
 vec3 viewPosition(vec2 uv) {
     float depth = texture(scene_depth, uv).r;
-    vec4 ndc = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
-    vec4 view = inverse_projection * ndc;
+    vec4 view = inverse_projection * vec4(uv, depth, 1.0);
     return view.xyz / view.w;
 }
 
@@ -32,7 +31,7 @@ vec3 normalFromDepth(vec2 uv) {
     vec3 vertical = abs(down.z - center.z) < abs(up.z - center.z)
         ? center - down
         : up - center;
-    return normalize(cross(horizontal, vertical));
+    return normalize(cross(horizontal, vertical)) * ssao_params.w;
 }
 
 void main() {
@@ -56,7 +55,6 @@ void main() {
         vec3 sample_position = position + (tangent_basis * kernel[index].xyz) * ssao_params.x;
         vec4 projected = projection * vec4(sample_position, 1.0);
         projected.xyz /= projected.w;
-        projected.xyz = projected.xyz * 0.5 + 0.5;
         if (projected.x < 0.0 || projected.x > 1.0 || projected.y < 0.0 || projected.y > 1.0) {
             continue;
         }

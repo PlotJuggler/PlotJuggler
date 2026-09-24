@@ -469,7 +469,7 @@ QWidget* Scene2DDockWidget::createSceneView() {
   view_stack_->addWidget(makeEmptyPlaceholder(view_stack_));
 
 #ifdef PJ_TARGET_WASM
-  // Construct parentless so MediaViewerWidget::setApi(OpenGL) completes before
+  // Construct parentless so MediaViewerWidget::setApi() completes before
   // QStackedWidget inserts it into an already-visible top-level hierarchy.
   // QRhiWidget documents the API choice as immutable once that happens.
   viewer_ = new MediaViewerWidget();

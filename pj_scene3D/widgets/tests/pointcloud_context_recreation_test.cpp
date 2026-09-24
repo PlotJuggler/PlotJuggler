@@ -22,6 +22,7 @@
 
 #include "pj_base/span.hpp"
 #include "pj_base/time.hpp"
+#include "pj_gpu_test_gate.h"  // PJ_SKIP_WITHOUT_GPU
 #include "pj_scene3d_core/pointcloud.h"
 #include "pj_scene3d_core/pointcloud_convert.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
@@ -182,12 +183,13 @@ TEST(PointcloudContextRecreationTest, ReleaseLeavesNoCloudCleanWithoutGl) {
 TEST(PointcloudContextRecreationTest, FastCloudReuploadsAfterContextRecreationWhenGl45IsAvailable) {
   OffscreenGlContext gl;
   if (!gl.createAndMakeCurrent()) {
-    GTEST_SKIP() << "No usable offscreen OpenGL context";
+    PJ_SKIP_WITHOUT_GPU("No usable offscreen OpenGL context");
   }
   const auto gl_version = currentGlVersion(gl.context);
   if (gl_version < std::pair<int, int>(4, 5)) {
-    GTEST_SKIP() << "GL " << gl_version.first << "." << gl_version.second
-                 << " context cannot compile the scene's #version 450 shaders (need GL 4.5)";
+    PJ_SKIP_WITHOUT_GPU(
+        "GL " << gl_version.first << "." << gl_version.second
+              << " context cannot compile the scene's #version 450 shaders (need GL 4.5)");
   }
 
   CloudFixture fixture(/*point_count=*/2U, /*point_step=*/16U);
@@ -239,10 +241,10 @@ TEST(PointcloudContextRecreationTest, FastCloudReuploadsAfterContextRecreationWh
 TEST(PointcloudContextRecreationTest, GpuAabbReductionFiresBoundsCallbackWhenGl45IsAvailable) {
   OffscreenGlContext gl;
   if (!gl.createAndMakeCurrent()) {
-    GTEST_SKIP() << "No usable offscreen OpenGL context";
+    PJ_SKIP_WITHOUT_GPU("No usable offscreen OpenGL context");
   }
   if (currentGlVersion(gl.context) < std::pair<int, int>(4, 5)) {
-    GTEST_SKIP() << "GL < 4.5 cannot compile the compute reduction";
+    PJ_SKIP_WITHOUT_GPU("GL < 4.5 cannot compile the compute reduction");
   }
 
   CloudFixture fixture(/*point_count=*/3U, /*point_step=*/16U);

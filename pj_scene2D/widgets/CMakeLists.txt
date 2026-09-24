@@ -27,16 +27,8 @@ if(EMSCRIPTEN)
   # The browser backend needs GLSL ES 300 inside every serialized shader pack.
   # Re-bake to the build tree and compare hashes at configure time so CI catches
   # both a missing WebGL2 dialect and a source/blob mismatch.
-  if(NOT TARGET Qt6::qsb)
-    message(FATAL_ERROR "WASM Scene2D shader verification requires Qt6::qsb")
-  endif()
-  get_target_property(_pj_scene2d_qsb Qt6::qsb IMPORTED_LOCATION)
-  if(NOT _pj_scene2d_qsb OR _pj_scene2d_qsb MATCHES "-NOTFOUND$")
-    get_target_property(_pj_scene2d_qsb Qt6::qsb IMPORTED_LOCATION_RELWITHDEBINFO)
-  endif()
-  if(NOT EXISTS "${_pj_scene2d_qsb}")
-    message(FATAL_ERROR "WASM Scene2D cannot locate the host qsb executable")
-  endif()
+  include(${CMAKE_SOURCE_DIR}/cmake/PjQsb.cmake)
+  pj_find_host_qsb(_pj_scene2d_qsb "WASM Scene2D")
 
   set(_pj_scene2d_shader_verify_dir "${CMAKE_CURRENT_BINARY_DIR}/verified_shaders")
   file(MAKE_DIRECTORY "${_pj_scene2d_shader_verify_dir}")

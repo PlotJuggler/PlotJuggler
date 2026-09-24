@@ -22,7 +22,6 @@
 #include <QOpenGLFunctions>
 #include <QSettings>
 #include <QString>
-#include <QStringList>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QtGlobal>
@@ -30,6 +29,7 @@
 #include <utility>
 
 #include "pj_datastore/writer.hpp"
+#include "pj_gpu_test_gate.h"  // PJ_SKIP_WITHOUT_GPU
 #include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
@@ -70,12 +70,7 @@ std::pair<int, int> glVersionOf(QOpenGLContext* ctx) {
   if (ctx == nullptr || !ctx->isValid()) {
     return {0, 0};
   }
-  const auto* v = reinterpret_cast<const char*>(ctx->functions()->glGetString(GL_VERSION));
-  if (v == nullptr) {
-    return {0, 0};
-  }
-  const QStringList parts = QString::fromLatin1(v).section(QLatin1Char(' '), 0, 0).split(QLatin1Char('.'));
-  return {parts.value(0).toInt(), parts.value(1).toInt()};
+  return parseGlVersion(reinterpret_cast<const char*>(ctx->functions()->glGetString(GL_VERSION)));
 }
 
 // A real render has both light (background) and dark (curve/axes) pixels; a
@@ -128,7 +123,7 @@ TEST(PlotCanvasContextRecreation, CanvasStillDrawsAfterContextRecreation) {
   if (glVersionOf(canvas->context()) < std::pair<int, int>(4, 5)) {
     plot->setParent(nullptr);  // detach before the stack windows unwind, else window1
                                // and the unique_ptr both delete the plot (double free)
-    GTEST_SKIP() << "no real GL >= 4.5 context (offscreen/software)";
+    PJ_SKIP_WITHOUT_GPU("no real GL >= 4.5 context (offscreen/software)");
   }
 
   bool context_recreated = false;

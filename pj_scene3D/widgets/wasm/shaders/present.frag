@@ -2,7 +2,7 @@
 
 layout(std140, binding = 0) uniform CompositeUniforms {
     vec4 composite_params;  // exposure, saturation, background coverage threshold, EDL floor
-    mat4 inverse_projection;
+    mat4 inverse_projection;  // texture space (u, v, stored depth) -> view space
     vec4 edl_params;        // strength, radius in pixels, maximum neighbour gap, enabled
     vec4 ssao_params;       // AO strength, enabled, unused, unused
 };
@@ -39,8 +39,7 @@ float meshDepth(vec2 uv) {
         return FAR_SENTINEL;
     }
     float depth = texture(scene_depth, uv).r;
-    vec4 ndc = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
-    vec4 view = inverse_projection * ndc;
+    vec4 view = inverse_projection * vec4(uv, depth, 1.0);
     return log2(max(abs(view.z / view.w), 1.0e-6));
 }
 

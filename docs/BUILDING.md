@@ -85,6 +85,12 @@ under a virtual display, use the same command as Linux CI:
 xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120
 ```
 
+GL-backed tests self-skip when there is no usable GL context or the driver's GL
+version is below 4.5 — expected on a plain headless run, but Linux CI's xvfb +
+Mesa llvmpipe lane is supposed to have GL 4.5. Set `PJ_REQUIRE_GPU_TESTS=1` (as
+that CI lane does) to turn those skips into hard failures instead, so a broken
+GL stack can't go quietly green there.
+
 ## Windows setup
 
 Windows builds use the same Conan + CMake flow through three root entry points,

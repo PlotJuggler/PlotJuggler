@@ -28,6 +28,8 @@
 #include <utility>
 #include <vector>
 
+#include "pj_gpu_test_gate.h"  // PJ_SKIP_WITHOUT_GPU
+
 namespace {
 
 using pj::scene3d::AABB;
@@ -121,10 +123,10 @@ class AabbReducerTest : public ::testing::Test {
  protected:
   void SetUp() override {
     if (!gl_.createAndMakeCurrent()) {
-      GTEST_SKIP() << "No usable offscreen OpenGL context";
+      PJ_SKIP_WITHOUT_GPU("No usable offscreen OpenGL context");
     }
     if (currentGlVersion(gl_.context) < std::pair<int, int>(4, 5)) {
-      GTEST_SKIP() << "GL < 4.5 cannot compile the #version 430 compute shader";
+      PJ_SKIP_WITHOUT_GPU("GL < 4.5 cannot compile the #version 430 compute shader");
     }
     f_ = gl_.context.functions();
   }

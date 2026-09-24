@@ -106,6 +106,7 @@ class CapabilityWidget final : public QRhiWidget {
         float_color_(std::move(float_color)),
         volume_slice_0_(solidSlice(QColor(12, 12, 12))),
         volume_slice_1_(solidSlice(volume_color_)) {
+    // A WebGL2 capability probe by design, not PJ::preferredGraphicsApi().
     setApi(Api::OpenGL);
     setSampleCount(4);
     setMinimumSize(440, 440);

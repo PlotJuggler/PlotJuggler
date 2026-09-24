@@ -205,10 +205,13 @@ at geometry discontinuities. SSAO allocation, rejected-size caching, telemetry,
 warning, and recovery are independent of HDR and EDL; warning priority is HDR,
 then SSAO, then EDL.
 
-The twenty-four shader sources and committed `.qsb` packs contain GLSL ES 300.
-CMake locates the matching host Qt `qsb`, rebuilds every pack during configure,
-and compares SHA-256 before compiling. A stale pack therefore fails closed
-instead of silently shipping a different shader.
+The committed `.qsb` packs are baked by `wasm/shaders/bake.sh` for every QRhi
+backend (GLSL ES 300, GLSL 330/440, HLSL, MSL, SPIR-V), plus a `-DPJ_FLIP_Y`
+variant of the fullscreen triangle for D3D/Metal. The configure step re-runs the
+script with the host Qt `qsb` and fails on any byte difference or on a pack
+without a source, so a stale pack fails closed instead of silently shipping a
+different shader. Shaders never remap between GL and other clip conventions:
+the renderer folds that into the matrices it uploads (`rhi_conventions.h`).
 
 Camera models, fixed/follow behavior, `TransformBuffer`, `TransformService`, TF
 hierarchy/connection logic, tracker-time repaint keys, and scene-control values

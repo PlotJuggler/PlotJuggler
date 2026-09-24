@@ -56,6 +56,8 @@ system (four pluggable models, adaptive near/far, zoom-to-cursor, Position-only
 frame-follow via the `ICamera::followShift` seam + `SceneViewWidget::applyFollow`,
 XML persistence), and live-streaming data path — lives in
 `pj_scene3D/docs/ARCHITECTURE.md`.
+The in-progress migration of both renderers to one QRhi renderer (phases,
+decisions, platform matrix) is tracked in `pj_scene3D/docs/QRHI_MIGRATION.md`.
 
 ## Decoding boundary (important)
 
@@ -250,7 +252,9 @@ The three demos and three benchmarks remain executables gated by `PJ_BUILD_DEMOS
 GL-backed cases (the GL runner, retained GL widget tests, and context-recreation cases)
 require a real GL ≥ 4.5 context (llvmpipe under `xvfb` on CI) and **self-skip below
 GL 4.5** — Windows software GL is only GL 3.0 / GLSL 1.30, so a `#version 450`
-shader test cannot run there.
+shader test cannot run there. Skip through `PJ_SKIP_WITHOUT_GPU`
+(`cmake/test_mains/pj_gpu_test_gate.h`), which turns the skip into a failure
+under `PJ_REQUIRE_GPU_TESTS=1` (the Linux CI lane).
 
 Make sure that all the markdown files in this folder are updated, if necessary.
 

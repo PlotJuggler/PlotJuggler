@@ -127,7 +127,8 @@ null result. The measured browser lifecycle is instead:
 
 1. omit both the top-level and per-dock zero-size Scene2D bootstraps;
 2. construct the real `MediaViewerWidget` parentless, so its constructor calls
-   `setApi(OpenGL)` before `QStackedWidget` adds it to the visible hierarchy;
+   `setApi(PJ::preferredGraphicsApi())` (OpenGL/WebGL2) before `QStackedWidget`
+   adds it to the visible hierarchy;
 3. let that nonzero widget switch the top-level from raster to RHI composition;
 4. after its first `frameSubmitted`, queue one full top-level repaint so the
    pre-existing raster regions are uploaded to the mixed compositor; and

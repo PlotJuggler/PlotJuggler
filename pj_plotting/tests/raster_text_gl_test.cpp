@@ -28,6 +28,7 @@
 #include <tuple>
 
 #include "pj_datastore/writer.hpp"
+#include "pj_gpu_test_gate.h"  // PJ_SKIP_WITHOUT_GPU
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/RasterTextEngine.h"
 #include "pj_runtime/CatalogModel.h"
@@ -84,13 +85,13 @@ int darkPixelCount(const QImage& image) {
 TEST(RasterTextGl, DetectsGlPainterAndLeavesInk) {
   QOpenGLContext context;
   if (!context.create()) {
-    GTEST_SKIP() << "no OpenGL context available";
+    PJ_SKIP_WITHOUT_GPU("no OpenGL context available");
   }
   QOffscreenSurface surface;
   surface.setFormat(context.format());
   surface.create();
   if (!surface.isValid() || !context.makeCurrent(&surface)) {
-    GTEST_SKIP() << "no usable offscreen GL surface";
+    PJ_SKIP_WITHOUT_GPU("no usable offscreen GL surface");
   }
 
   QOpenGLFramebufferObject fbo(QSize(200, 60));
@@ -154,7 +155,7 @@ TEST(RasterTextGl, LegendTextOnGlCanvasRoutesThroughRasterPath) {
   QApplication::processEvents();
 
   if (canvas->context() == nullptr || !canvas->context()->isValid()) {
-    GTEST_SKIP() << "canvas did not get a GL context on this platform";
+    PJ_SKIP_WITHOUT_GPU("canvas did not get a GL context on this platform");
   }
 
   // grabFramebuffer() forces a synchronous paintGL -> legend draw -> QwtText

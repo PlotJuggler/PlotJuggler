@@ -251,4 +251,9 @@ jobs:
         # --timeout kills any single test after 2 min (the suite normally
         # finishes in well under that), so one deadlocked test fails loudly
         # with its name in the log instead of stalling the whole job.
+        env:
+          # This lane runs under xvfb + Mesa llvmpipe, which is expected to
+          # provide a real GL >= 4.5 context: turn the GL-availability self-skips
+          # into hard failures so a broken GL stack can't go quietly green here.
+          PJ_REQUIRE_GPU_TESTS: "1"
         run: xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120

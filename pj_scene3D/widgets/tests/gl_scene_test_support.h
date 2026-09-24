@@ -9,12 +9,11 @@
 
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
-#include <QString>
-#include <QStringList>
 #include <QSurface>
 #include <QSurfaceFormat>
 #include <utility>
 
+#include "pj_gpu_test_gate.h"  // parseGlVersion
 #include "pj_scene3d_widgets/scene_view_widget.h"
 
 namespace pj::scene3d::test {
@@ -22,14 +21,6 @@ namespace pj::scene3d::test {
 // True when the view holds a usable (valid) GL context.
 inline bool haveGl(const SceneViewWidget& view) {
   return view.context() != nullptr && view.context()->isValid();
-}
-
-// (major, minor) parsed from a glGetString(GL_VERSION) string. Desktop GL_VERSION
-// begins "MAJOR.MINOR…" (e.g. "4.5 (Core Profile) Mesa…"); null or unparsable
-// (e.g. OpenGL ES) yields (0, 0), which callers treat as "too old".
-inline std::pair<int, int> parseGlVersion(const char* version) {
-  const QStringList parts = QString::fromLatin1(version).section(QLatin1Char(' '), 0, 0).split(QLatin1Char('.'));
-  return {parts.value(0).toInt(), parts.value(1).toInt()};
 }
 
 // (major, minor) of the live GL context as the DRIVER reports it via

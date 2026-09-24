@@ -9,6 +9,18 @@ include(GoogleTest)
 
 set(PJ_TEST_MAINS_DIR "${CMAKE_CURRENT_LIST_DIR}/test_mains")
 
+# Header-only: pj_gpu_test_gate.h (PJ_SKIP_WITHOUT_GPU, gl45ContextUnavailable) for
+# any test target, GL or not. A function (not inlined here) because this file is
+# include()'d before Qt6/plotjuggler_sdk are found; every caller triggers the
+# guarded, one-time creation on first use instead.
+function(pj_ensure_gpu_test_gate)
+    if(NOT TARGET pj_gpu_test_gate)
+        add_library(pj_gpu_test_gate INTERFACE)
+        target_include_directories(pj_gpu_test_gate INTERFACE "${PJ_TEST_MAINS_DIR}")
+        target_link_libraries(pj_gpu_test_gate INTERFACE plotjuggler_sdk::base GTest::gtest Qt6::Gui)
+    endif()
+endfunction()
+
 function(pj_add_test_runner target)
     set(options WARNINGS)
     set(oneValueArgs MAIN PREFIX TIMEOUT WORKING_DIRECTORY)
@@ -37,9 +49,11 @@ function(pj_add_test_runner target)
     if(R_MAIN STREQUAL "core")
         target_link_libraries(${target} PRIVATE Qt6::Core)
     elseif(R_MAIN STREQUAL "gui")
-        target_link_libraries(${target} PRIVATE Qt6::Widgets)
+        pj_ensure_gpu_test_gate()
+        target_link_libraries(${target} PRIVATE Qt6::Widgets pj_gpu_test_gate)
     elseif(R_MAIN STREQUAL "gl")
-        target_link_libraries(${target} PRIVATE Qt6::Gui)
+        pj_ensure_gpu_test_gate()
+        target_link_libraries(${target} PRIVATE Qt6::Gui pj_gpu_test_gate)
     endif()
     if(R_DEFINES)
         target_compile_definitions(${target} PRIVATE ${R_DEFINES})

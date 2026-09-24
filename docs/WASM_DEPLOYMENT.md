@@ -22,8 +22,8 @@ the release workflow is:
 ```bash
 source /path/to/emsdk/emsdk_env.sh
 cmake -S . -B build-wasm -G Ninja \
-  -DCMAKE_TOOLCHAIN_FILE=/path/to/Qt/6.11.0/wasm_multithread/lib/cmake/Qt6/qt.toolchain.cmake \
-  -DQT_HOST_PATH=/path/to/Qt/6.11.0/gcc_64 \
+  -DCMAKE_TOOLCHAIN_FILE=/path/to/Qt/<PJ_QT_VERSION>/wasm_multithread/lib/cmake/Qt6/qt.toolchain.cmake \
+  -DQT_HOST_PATH=/path/to/Qt/<PJ_QT_VERSION>/gcc_64 \
   -DCMAKE_BUILD_TYPE=Release \
   -DPJ_BUILD_TESTS=OFF -DPJ_BUILD_DEMOS=OFF \
   -DPJ_WASM_WITH_SCENE2D=ON -DPJ_WASM_WITH_SCENE3D=OFF

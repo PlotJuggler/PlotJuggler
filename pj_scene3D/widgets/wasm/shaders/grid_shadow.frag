@@ -4,7 +4,7 @@ layout(std140, binding = 1) uniform ModelLightingUniforms {
     vec4 camera_position;
     vec4 lighting;
     vec4 environment;
-    mat4 light_view_projection;
+    mat4 light_view_projection;  // world -> shadow-map texture space (u, v, stored depth)
     vec4 shadow_params;
 };
 
@@ -21,7 +21,7 @@ layout(location = 0) out vec4 fragment_color;
 float floorShadow(vec3 position) {
     vec3 biased = position + vec3(0.0, 0.0, shadow_params.x * max(shadow_params.y, 1.0));
     vec4 light_clip = light_view_projection * vec4(biased, 1.0);
-    vec3 projected = (light_clip.xyz / light_clip.w) * 0.5 + 0.5;
+    vec3 projected = light_clip.xyz / light_clip.w;
     if (projected.x < 0.0 || projected.x > 1.0 || projected.y < 0.0 || projected.y > 1.0 ||
         projected.z > 1.0) {
         return 1.0;

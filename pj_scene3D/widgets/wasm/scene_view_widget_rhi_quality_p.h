@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include <rhi/qrhi.h>
+
+#include <QString>
 #include <QtGlobal>
 #include <array>
 #include <cstddef>
@@ -11,9 +14,21 @@
 #include <glm/vec3.hpp>
 #include <random>
 
+#include "pj_scene3d_widgets/rhi_conventions.h"
 #include "pj_scene3d_widgets/ssao_kernel.h"
 
 namespace pj::scene3d {
+
+inline RhiConventions rhiConventions(const QRhi& rhi) {
+  return {rhi.isYUpInNDC(), rhi.isYUpInFramebuffer(), rhi.isClipDepthZeroToOne()};
+}
+
+/// The fullscreen-triangle vertex shader for `rhi`: the -DPJ_FLIP_Y bake where
+/// texture row 0 is not at NDC y = -1.
+inline QString presentVertexShaderPath(const QRhi& rhi) {
+  return fullscreenNeedsYFlip(rhiConventions(rhi)) ? QStringLiteral(":/scene3d_wasm/present_flip_y.vert.qsb")
+                                                   : QStringLiteral(":/scene3d_wasm/present.vert.qsb");
+}
 
 constexpr quint32 kShadowUniformBytes = 64U;
 constexpr quint32 kCompositeUniformBytes = 112U;

@@ -577,7 +577,7 @@ bool SceneViewWidget::ensureSsaoResources(QRhi* owner, const QSize& size) {
     return fail(tr("Could not create the browser SSAO bindings"));
   }
 
-  const QShader vertex_shader = loadShader(QStringLiteral(":/scene3d_wasm/present.vert.qsb"));
+  const QShader vertex_shader = loadShader(presentVertexShaderPath(*owner));
   const QShader fragment_shader = loadShader(QStringLiteral(":/scene3d_wasm/ssao.frag.qsb"));
   if (!vertex_shader.isValid() || !fragment_shader.isValid()) {
     return fail(tr("Could not load the browser SSAO shaders"));
@@ -911,7 +911,7 @@ bool SceneViewWidget::ensureHdrResources(QRhi* owner, const QSize& size) {
   }
 
   if (present_pipeline_ == nullptr) {
-    const QShader vertex_shader = loadShader(QStringLiteral(":/scene3d_wasm/present.vert.qsb"));
+    const QShader vertex_shader = loadShader(presentVertexShaderPath(*owner));
     const QShader fragment_shader = loadShader(QStringLiteral(":/scene3d_wasm/present.frag.qsb"));
     if (!vertex_shader.isValid() || !fragment_shader.isValid()) {
       return fail(tr("Could not load the browser HDR presentation shaders"));

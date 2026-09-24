@@ -53,42 +53,40 @@ if(EMSCRIPTEN)
   set(_pj_scene3d_qt_components Widgets Gui GuiPrivate Xml Concurrent Network)
   find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS ${_pj_scene3d_qt_components})
 
-  if(NOT TARGET Qt6::qsb)
-    message(FATAL_ERROR "WASM Scene3D shader verification requires Qt6::qsb")
-  endif()
-  get_target_property(_pj_scene3d_qsb Qt6::qsb IMPORTED_LOCATION)
-  if(NOT _pj_scene3d_qsb OR _pj_scene3d_qsb MATCHES "-NOTFOUND$")
-    get_target_property(_pj_scene3d_qsb Qt6::qsb IMPORTED_LOCATION_RELWITHDEBINFO)
-  endif()
-  if(NOT EXISTS "${_pj_scene3d_qsb}")
-    message(FATAL_ERROR "WASM Scene3D cannot locate the host qsb executable")
-  endif()
+  include(${CMAKE_SOURCE_DIR}/cmake/PjQsb.cmake)
+  pj_find_host_qsb(_pj_scene3d_qsb "WASM Scene3D")
 
+  # bake.sh is the single source of the qsb targets; re-run it and require the
+  # committed packs to match byte for byte.
+  set(_pj_scene3d_shader_dir "${CMAKE_CURRENT_SOURCE_DIR}/wasm/shaders")
   set(_pj_scene3d_shader_verify_dir "${CMAKE_CURRENT_BINARY_DIR}/verified_shaders")
+  file(REMOVE_RECURSE "${_pj_scene3d_shader_verify_dir}")
   file(MAKE_DIRECTORY "${_pj_scene3d_shader_verify_dir}")
-  foreach(_pj_scene3d_shader IN ITEMS
-      scene.vert scene.frag point.vert point.frag cube.vert cube.frag
-      pose.vert pose.frag occupancy.vert occupancy.frag voxel.vert voxel.frag
-      marker.vert marker.frag model.vert model.frag shadow.vert shadow.frag
-      mesh_mask.frag ssao.frag grid_shadow.vert grid_shadow.frag present.vert present.frag)
-    set(_pj_scene3d_shader_source "${CMAKE_CURRENT_SOURCE_DIR}/wasm/shaders/${_pj_scene3d_shader}")
-    set(_pj_scene3d_shader_pack "${_pj_scene3d_shader_source}.qsb")
-    set(_pj_scene3d_shader_rebuilt "${_pj_scene3d_shader_verify_dir}/${_pj_scene3d_shader}.qsb")
-    execute_process(
-      COMMAND "${_pj_scene3d_qsb}" --glsl "300 es" -o "${_pj_scene3d_shader_rebuilt}"
-        "${_pj_scene3d_shader_source}"
-      RESULT_VARIABLE _pj_scene3d_qsb_result
-      ERROR_VARIABLE _pj_scene3d_qsb_error)
-    if(NOT _pj_scene3d_qsb_result EQUAL 0)
-      message(FATAL_ERROR "Failed to bake ${_pj_scene3d_shader}: ${_pj_scene3d_qsb_error}")
-    endif()
-    file(SHA256 "${_pj_scene3d_shader_pack}" _pj_scene3d_committed_hash)
-    file(SHA256 "${_pj_scene3d_shader_rebuilt}" _pj_scene3d_rebuilt_hash)
+  execute_process(
+    COMMAND bash "${_pj_scene3d_shader_dir}/bake.sh" "${_pj_scene3d_qsb}" "${_pj_scene3d_shader_verify_dir}"
+    RESULT_VARIABLE _pj_scene3d_qsb_result
+    ERROR_VARIABLE _pj_scene3d_qsb_error)
+  if(NOT _pj_scene3d_qsb_result EQUAL 0)
+    message(FATAL_ERROR "Failed to bake the Scene3D shaders: ${_pj_scene3d_qsb_error}")
+  endif()
+  file(GLOB _pj_scene3d_rebuilt_packs RELATIVE "${_pj_scene3d_shader_verify_dir}"
+    "${_pj_scene3d_shader_verify_dir}/*.qsb")
+  file(GLOB _pj_scene3d_committed_packs RELATIVE "${_pj_scene3d_shader_dir}" "${_pj_scene3d_shader_dir}/*.qsb")
+  if(NOT _pj_scene3d_committed_packs STREQUAL _pj_scene3d_rebuilt_packs)
+    message(FATAL_ERROR "Scene3D shader packs out of sync with wasm/shaders/bake.sh: committed "
+      "[${_pj_scene3d_committed_packs}], baked [${_pj_scene3d_rebuilt_packs}]")
+  endif()
+  foreach(_pj_scene3d_pack IN LISTS _pj_scene3d_rebuilt_packs)
+    file(SHA256 "${_pj_scene3d_shader_dir}/${_pj_scene3d_pack}" _pj_scene3d_committed_hash)
+    file(SHA256 "${_pj_scene3d_shader_verify_dir}/${_pj_scene3d_pack}" _pj_scene3d_rebuilt_hash)
     if(NOT _pj_scene3d_committed_hash STREQUAL _pj_scene3d_rebuilt_hash)
       message(FATAL_ERROR
-        "Stale Scene3D shader pack ${_pj_scene3d_shader_pack}; re-bake with the documented qsb command")
+        "Stale Scene3D shader pack ${_pj_scene3d_pack}; re-bake with wasm/shaders/bake.sh")
     endif()
   endforeach()
+  file(GLOB _pj_scene3d_shader_sources "${_pj_scene3d_shader_dir}/*.vert" "${_pj_scene3d_shader_dir}/*.frag")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${_pj_scene3d_shader_dir}/bake.sh" ${_pj_scene3d_shader_sources})
 
   add_library(pj_scene3d_widgets STATIC
     wasm/scene_view_widget_rhi.cpp
@@ -305,6 +303,7 @@ if(PJ_BUILD_TESTS)
   # per-vertex parity, and the line-grid vertex counts.
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/grid_geometry_test.cpp
+    tests/rhi_conventions_test.cpp
   )
 
   # Keep this executable separate: its debug thread-affinity death test forks
@@ -424,8 +423,8 @@ if(PJ_BUILD_TESTS)
   )
 
   # Keep this executable separate: PJ_WASM_SHADER_DIR is unique to its source.
-  # qsb has no include mechanism, so the browser's hand-written GLSL ES shaders spell the
-  # cube's appearance constants a second time. Nothing in the build makes those agree with
+  # The browser's hand-written shaders spell the cube's appearance constants a second
+  # time. Nothing in the build makes those agree with
   # cube_mesh.h, so this reads them as data on the DESKTOP build (the WASM target is not
   # built in ordinary CI) and fails if either side drifts. No GL context needed.
   add_executable(wasm_shader_constants_test
@@ -584,10 +583,12 @@ if(PJ_BUILD_TESTS)
   add_executable(hud_overlay_gl_test
     tests/hud_overlay_gl_test.cpp
   )
+  pj_ensure_gpu_test_gate()
   target_link_libraries(hud_overlay_gl_test PRIVATE
     pj_scene3d_widgets
     pj_resources
     GTest::gtest
+    pj_gpu_test_gate
   )
   # The overlay text/border colours now resolve from the framework palette
   # (pj_widgets FrameworkTokens), so the stylesheet resource must be compiled in.
@@ -603,9 +604,11 @@ if(PJ_BUILD_TESTS)
   add_executable(tf_connections_gl_test
     tests/tf_connections_gl_test.cpp
   )
+  pj_ensure_gpu_test_gate()
   target_link_libraries(tf_connections_gl_test PRIVATE
     pj_scene3d_widgets
     GTest::gtest
+    pj_gpu_test_gate
   )
   target_compile_options(tf_connections_gl_test PRIVATE ${PJ_WARNING_FLAGS})
   add_test(NAME tf_connections_gl_test COMMAND tf_connections_gl_test)
@@ -625,9 +628,11 @@ if(PJ_BUILD_TESTS)
   add_executable(shadow_persistence_gl_test
     tests/shadow_persistence_gl_test.cpp
   )
+  pj_ensure_gpu_test_gate()
   target_link_libraries(shadow_persistence_gl_test PRIVATE
     pj_scene3d_widgets
     GTest::gtest
+    pj_gpu_test_gate
   )
   target_compile_options(shadow_persistence_gl_test PRIVATE ${PJ_WARNING_FLAGS})
   add_test(NAME shadow_persistence_gl_test COMMAND shadow_persistence_gl_test)

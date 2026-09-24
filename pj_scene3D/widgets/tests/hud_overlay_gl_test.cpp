@@ -49,6 +49,7 @@
 #include "gl_scene_test_support.h"  // haveGl, liveGlVersion
 #include "pj_base/sdk/platform.hpp"
 #include "pj_base/time.hpp"
+#include "pj_gpu_test_gate.h"  // PJ_SKIP_WITHOUT_GPU
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
@@ -123,7 +124,7 @@ class HudOverlayGlTest : public ::testing::Test {
     // CI runs the suite under xvfb-run (xcb + software GL).
     const QString platform = QGuiApplication::platformName();
     if (platform == QLatin1String("offscreen") || platform == QLatin1String("minimal")) {
-      GTEST_SKIP() << "platform '" << platform.toStdString() << "' has no real-GL QOpenGLWidget support";
+      PJ_SKIP_WITHOUT_GPU("platform '" << platform.toStdString() << "' has no real-GL QOpenGLWidget support");
     }
     host_ = std::make_unique<QWidget>();
     auto* layout = new QVBoxLayout(host_.get());
@@ -136,7 +137,7 @@ class HudOverlayGlTest : public ::testing::Test {
     host_->show();
     QApplication::processEvents();
     if (!haveGl(*view_)) {
-      GTEST_SKIP() << "No usable OpenGL context (headless without xvfb/GL).";
+      PJ_SKIP_WITHOUT_GPU("No usable OpenGL context (headless without xvfb/GL).");
     }
     // A context can be valid yet too old to compile the scene's shaders: every
     // scene3D shader is `#version 450` (GL 4.5). Linux CI's llvmpipe reports GL
@@ -147,8 +148,9 @@ class HudOverlayGlTest : public ::testing::Test {
     // exactly as we skip when there is no GL at all.
     const auto gl_version = liveGlVersion(*view_);
     if (gl_version < std::pair<int, int>(4, 5)) {
-      GTEST_SKIP() << "GL " << gl_version.first << "." << gl_version.second
-                   << " context cannot compile the scene's #version 450 shaders (need GL 4.5)";
+      PJ_SKIP_WITHOUT_GPU(
+          "GL " << gl_version.first << "." << gl_version.second
+                << " context cannot compile the scene's #version 450 shaders (need GL 4.5)");
     }
   }
 
@@ -229,7 +231,7 @@ TEST_F(HudOverlayGlTest, PerfHudRendersAndSurvivesContextRecreation) {
 
   ASSERT_TRUE(reparentAndRecreate());
   if (!haveGl(*view_)) {
-    GTEST_SKIP() << "context not usable after reparent on this backend";
+    PJ_SKIP_WITHOUT_GPU("context not usable after reparent on this backend");
   }
 
   // The HUD must still render after recreation — the regression the fix targets.
@@ -308,7 +310,7 @@ TEST_F(HudOverlayGlTest, HoverLabelRendersAndSurvivesContextRecreation) {
 
   ASSERT_TRUE(reparentAndRecreate());
   if (!haveGl(*view_)) {
-    GTEST_SKIP() << "context not usable after reparent on this backend";
+    PJ_SKIP_WITHOUT_GPU("context not usable after reparent on this backend");
   }
 
   const auto [label2, text2] = measureHoverLabel(view_);

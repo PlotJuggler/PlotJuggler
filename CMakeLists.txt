@@ -123,8 +123,8 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PjDebugInfo.cmake)
 # ---------------------------------------------------------------------------
 
 if(EMSCRIPTEN)
-    set(PJ_QT_REQUIRED_VERSION ${PJ_WASM_QT_VERSION})
-    # The installed wasm kit is pinned by versions.env. OpenGLWidgets is
+    set(PJ_QT_REQUIRED_VERSION ${PJ_QT_VERSION})
+    # The installed wasm kit is pinned by versions.env, like the desktop kit. OpenGLWidgets is
     # omitted: QOpenGLWidget is unsupported by Qt/WASM and accelerated browser
     # surfaces are ported to QRhiWidget/WebGL instead.
     find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS

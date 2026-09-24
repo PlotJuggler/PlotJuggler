@@ -7,16 +7,8 @@ endif()
 
 find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS Widgets Gui GuiPrivate)
 
-if(NOT TARGET Qt6::qsb)
-    message(FATAL_ERROR "The Scene3D capability probe requires the host Qt6::qsb tool")
-endif()
-get_target_property(_pj_cap_qsb Qt6::qsb IMPORTED_LOCATION)
-if(NOT _pj_cap_qsb OR _pj_cap_qsb MATCHES "-NOTFOUND$")
-    get_target_property(_pj_cap_qsb Qt6::qsb IMPORTED_LOCATION_RELWITHDEBINFO)
-endif()
-if(NOT EXISTS "${_pj_cap_qsb}")
-    message(FATAL_ERROR "The Scene3D capability probe cannot locate the host qsb executable")
-endif()
+include(${CMAKE_SOURCE_DIR}/cmake/PjQsb.cmake)
+pj_find_host_qsb(_pj_cap_qsb "The Scene3D capability probe")
 
 set(_pj_cap_shader_dir "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 set(_pj_cap_verify_dir "${CMAKE_CURRENT_BINARY_DIR}/verified_shaders")

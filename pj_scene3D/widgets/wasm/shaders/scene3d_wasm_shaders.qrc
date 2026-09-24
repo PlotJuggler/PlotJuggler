@@ -23,6 +23,7 @@
     <file>grid_shadow.vert.qsb</file>
     <file>grid_shadow.frag.qsb</file>
     <file>present.vert.qsb</file>
+    <file>present_flip_y.vert.qsb</file>
     <file>present.frag.qsb</file>
   </qresource>
 </RCC>

@@ -65,10 +65,10 @@ jobs:
         run: |
           set -euo pipefail
           source ./versions.env
-          for name in PJ_WASM_QT_VERSION PJ_EMSCRIPTEN_VERSION PJ_WASM_NODE_VERSION; do
+          for name in PJ_QT_VERSION PJ_EMSCRIPTEN_VERSION PJ_WASM_NODE_VERSION; do
             echo "${name}=${!name}" >> "${GITHUB_ENV}"
           done
-          echo "wasm_qt=${PJ_WASM_QT_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "wasm_qt=${PJ_QT_VERSION}" >> "${GITHUB_OUTPUT}"
           echo "emscripten=${PJ_EMSCRIPTEN_VERSION}" >> "${GITHUB_OUTPUT}"
           echo "node=${PJ_WASM_NODE_VERSION}" >> "${GITHUB_OUTPUT}"
 
@@ -103,10 +103,10 @@ jobs:
           set -euo pipefail
           python3 -m pip install --user 'aqtinstall==3.3.0'
           "${HOME}/.local/bin/aqt" install-qt linux desktop \
-            "${PJ_WASM_QT_VERSION}" linux_gcc_64 --outputdir .qt-wasm \
+            "${PJ_QT_VERSION}" linux_gcc_64 --outputdir .qt-wasm \
             -m qtshadertools
           "${HOME}/.local/bin/aqt" install-qt all_os wasm \
-            "${PJ_WASM_QT_VERSION}" wasm_multithread --outputdir .qt-wasm \
+            "${PJ_QT_VERSION}" wasm_multithread --outputdir .qt-wasm \
             -m qtshadertools
 
       - name: Cache Emscripten SDK
@@ -154,8 +154,8 @@ jobs:
           set -euo pipefail
           source .emsdk/emsdk_env.sh >/dev/null
           cmake -S . -B build-wasm-mvp -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="${PWD}/.qt-wasm/${PJ_WASM_QT_VERSION}/wasm_multithread/lib/cmake/Qt6/qt.toolchain.cmake" \
-            -DQT_HOST_PATH="${PWD}/.qt-wasm/${PJ_WASM_QT_VERSION}/gcc_64" \
+            -DCMAKE_TOOLCHAIN_FILE="${PWD}/.qt-wasm/${PJ_QT_VERSION}/wasm_multithread/lib/cmake/Qt6/qt.toolchain.cmake" \
+            -DQT_HOST_PATH="${PWD}/.qt-wasm/${PJ_QT_VERSION}/gcc_64" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
@@ -199,8 +199,8 @@ jobs:
           # configure so a cold emsdk cache doesn't fail at find_package time.
           embuilder build zlib
           cmake -S . -B build-wasm-probe -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="${PWD}/.qt-wasm/${PJ_WASM_QT_VERSION}/wasm_multithread/lib/cmake/Qt6/qt.toolchain.cmake" \
-            -DQT_HOST_PATH="${PWD}/.qt-wasm/${PJ_WASM_QT_VERSION}/gcc_64" \
+            -DCMAKE_TOOLCHAIN_FILE="${PWD}/.qt-wasm/${PJ_QT_VERSION}/wasm_multithread/lib/cmake/Qt6/qt.toolchain.cmake" \
+            -DQT_HOST_PATH="${PWD}/.qt-wasm/${PJ_QT_VERSION}/gcc_64" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \

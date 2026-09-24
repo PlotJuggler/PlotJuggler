@@ -3,6 +3,7 @@
 
 #include "pj_plotting/PlotRhiCanvas.h"
 
+#include <pj_widgets/GraphicsApi.h>
 #include <qwt_axis.h>
 #include <qwt_plot.h>
 #include <qwt_plot_curve.h>
@@ -1438,7 +1439,7 @@ struct PlotGeometry {
 
 PlotRhiCanvas::PlotRhiCanvas(QwtPlot* plot, QWidget* parent) : QRhiWidget(parent), plot_(plot) {
   pjPlotRhiInitResources();
-  setApi(Api::OpenGL);
+  setApi(preferredGraphicsApi());
   setSampleCount(4);
   setContentsMargins(1, 1, 1, 1);
   setAutoFillBackground(false);

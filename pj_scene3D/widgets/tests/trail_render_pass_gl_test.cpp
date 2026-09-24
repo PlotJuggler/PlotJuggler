@@ -20,6 +20,7 @@
 #include <glm/glm.hpp>
 #include <vector>
 
+#include "pj_gpu_test_gate.h"  // PJ_SKIP_WITHOUT_GPU
 #include "pj_scene3d_widgets/passes/trail_render_pass.h"
 #include "pj_scene3d_widgets/render_pass.h"
 
@@ -31,19 +32,10 @@ using pj::scene3d::ViewParams;
 class TrailRenderPassGlTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    context_.setFormat(QSurfaceFormat::defaultFormat());
-    if (!context_.create()) {
-      GTEST_SKIP() << "no GL context available";
-    }
-    surface_.setFormat(context_.format());
-    surface_.create();
-    if (!surface_.isValid() || !context_.makeCurrent(&surface_)) {
-      GTEST_SKIP() << "offscreen surface unusable";
-    }
-    const auto* version = reinterpret_cast<const char*>(context_.functions()->glGetString(GL_VERSION));
-    const QStringList parts = QString::fromLatin1(version).section(QLatin1Char(' '), 0, 0).split(QLatin1Char('.'));
-    if (parts.value(0).toInt() < 4 || (parts.value(0).toInt() == 4 && parts.value(1).toInt() < 5)) {
-      GTEST_SKIP() << "driver GL " << (version != nullptr ? version : "?") << " < 4.5";
+    const QSurfaceFormat fmt = QSurfaceFormat::defaultFormat();
+    context_.setFormat(fmt);
+    if (auto why = gl45ContextUnavailable(surface_, context_)) {
+      PJ_SKIP_WITHOUT_GPU(*why);
     }
   }
 

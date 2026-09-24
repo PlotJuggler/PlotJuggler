@@ -1,4 +1,4 @@
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Network Svg Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui GuiPrivate Network Svg Widgets)
 
 add_library(pj_widgets STATIC
     src/CheckButton.cpp
@@ -17,6 +17,7 @@ add_library(pj_widgets STATIC
     src/DoubleScrubber.cpp
     src/FileDialog.cpp
     src/FrameworkTokens.cpp
+    src/GraphicsApi.cpp
     src/FlowLayout.cpp
     src/HeaderDividerHighlight.cpp
     src/HeaderResizePolicy.cpp
@@ -62,6 +63,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/FileDialog.h
     include/pj_widgets/FlowLayout.h
     include/pj_widgets/FrameworkTokens.h
+    include/pj_widgets/GraphicsApi.h
     include/pj_widgets/HeaderDividerHighlight.h
     include/pj_widgets/HeaderResizePolicy.h
     include/pj_widgets/IngestProgressWidget.h
@@ -118,6 +120,8 @@ target_link_libraries(pj_widgets PUBLIC
     Qt6::Svg
     Qt6::Widgets
 )
+# <rhi/qrhi.h> (backend logging); Qt 6.11 no longer leaks GuiPrivate transitively.
+target_link_libraries(pj_widgets PRIVATE Qt6::GuiPrivate)
 
 if(PJ_BUILD_TESTS)
     add_subdirectory(tests)
