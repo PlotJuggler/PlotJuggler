@@ -156,7 +156,7 @@ std::uint64_t estimateMeshBytes(const MeshData& mesh) {
       }
     }
   }
-  const auto retained = browserModelRetainedBytes(
+  const auto retained = modelRetainedByteCount(
       mesh.vertices.size(), sizeof(Vertex), mesh.indices.size(), mesh.submeshes.size(), sizeof(SubMesh), texture_bytes);
   return retained.value_or(kSaturated);
 }
@@ -279,10 +279,10 @@ Preflight preflight(const PJ::sdk::SceneEntities& scene) {
     if (inserted) {
       output.frame_string_bytes = saturatedAdd(output.frame_string_bytes, saturatedAdd(entity.frame_id.size(), 1U));
     }
-    if (frames.size() > kBrowserMaxMarkerFramesPerLayer) {
+    if (frames.size() > kSceneLimits.max_marker_frames_per_layer) {
       output.frames = frames.size();
-      output.error = QObject::tr("SceneEntities exceeds the browser limit of %1 distinct frames")
-                         .arg(kBrowserMaxMarkerFramesPerLayer);
+      output.error = QObject::tr("SceneEntities exceeds the limit of %1 distinct frames")
+                         .arg(kSceneLimits.max_marker_frames_per_layer);
       return output;
     }
     output.cubes = saturatedAdd(output.cubes, entity.cubes.size());
@@ -318,14 +318,14 @@ Preflight preflight(const PJ::sdk::SceneEntities& scene) {
   output.retained_bytes = saturatedAdd(
       output.retained_bytes,
       saturatedMultiply(saturatedAdd(output.line_batches, output.triangle_batches), sizeof(WasmMarkerStreamBatch)));
-  if (!browserMarkerLayerCountsFit(output.instances, output.stream_vertices, output.frames)) {
-    output.error = QObject::tr("SceneEntities exceeds browser limits (%1 instances, %2 expanded vertices, %3 frames)")
+  if (!markerLayerCountsFit(output.instances, output.stream_vertices, output.frames)) {
+    output.error = QObject::tr("SceneEntities exceeds the layer limits (%1 instances, %2 expanded vertices, %3 frames)")
                        .arg(
                            QString::number(output.instances), QString::number(output.stream_vertices),
                            QString::number(output.frames));
-  } else if (!browserMarkerRetainedBytesFit(output.retained_bytes)) {
-    output.error = QObject::tr("SceneEntities would retain more than %1 MiB in the browser")
-                       .arg(kBrowserMaxMarkerRetainedBytesPerLayer / (1024ULL * 1024ULL));
+  } else if (!markerRetainedBytesFit(output.retained_bytes)) {
+    output.error = QObject::tr("SceneEntities would retain more than %1 MiB")
+                       .arg(kSceneLimits.max_marker_retained_bytes_per_layer / (1024ULL * 1024ULL));
   }
   return output;
 }
@@ -498,11 +498,11 @@ bool WasmSceneEntitiesLayer::decodeAt(PJ::Timepoint time) {
   if (sample == active_sample_) {
     return false;
   }
-  if (!browserMarkerWirePayloadFits(resolved->payload.bytes.size())) {
+  if (!markerWirePayloadFits(resolved->payload.bytes.size())) {
     active_sample_ = sample;
     clearGeometry();
     setDataWarning(
-        tr("SceneEntities payload is %1 MiB; the browser limit is %2 MiB")
+        tr("SceneEntities payload is %1 MiB; the limit is %2 MiB")
             .arg(QString::number(static_cast<double>(resolved->payload.bytes.size()) / (1024.0 * 1024.0), 'f', 1))
             .arg(kMaxWireBytesPerSample / (1024ULL * 1024ULL)));
     return true;
@@ -760,7 +760,7 @@ WasmSceneEntitiesLayer::DecodeResult WasmSceneEntitiesLayer::decode(DecodeReques
     }
   } catch (const std::bad_alloc&) {
     result.geometry = {};
-    result.error = QObject::tr("Not enough browser memory to build these SceneEntities markers");
+    result.error = QObject::tr("Not enough memory to build these SceneEntities markers");
   } catch (const std::exception& error) {
     result.geometry = {};
     result.error = QObject::tr("SceneEntities conversion failed: %1").arg(QString::fromUtf8(error.what()));
@@ -904,9 +904,9 @@ bool WasmSceneEntitiesLayer::applyModelWindow(std::int64_t lo_ns, std::int64_t h
   bool applied = false;
   const auto apply_snapshot = [this, &applied](const PJ::sdk::SceneEntities& snapshot, std::int64_t store_ns) {
     const auto projected = model_state_.projectedRetainedBytes(snapshot);
-    if (!projected.has_value() || *projected > kBrowserMaxModelStateBytesPerLayer) {
-      model_state_warning_ = tr("SceneEntities model state would retain more than %1 MiB in the browser")
-                                 .arg(kBrowserMaxModelStateBytesPerLayer / (1024ULL * 1024ULL));
+    if (!projected.has_value() || *projected > kSceneLimits.max_model_state_bytes_per_layer) {
+      model_state_warning_ = tr("SceneEntities model state would retain more than %1 MiB")
+                                 .arg(kSceneLimits.max_model_state_bytes_per_layer / (1024ULL * 1024ULL));
       return;
     }
     applied = model_state_.applySnapshot(snapshot, store_ns) || applied;
@@ -925,8 +925,8 @@ bool WasmSceneEntitiesLayer::applyModelWindow(std::int64_t lo_ns, std::int64_t h
     if (!entry.has_value() || entry->payload.bytes.empty()) {
       continue;
     }
-    if (!browserMarkerWirePayloadFits(entry->payload.bytes.size())) {
-      model_state_warning_ = tr("A SceneEntities model snapshot exceeds the %1 MiB browser payload limit")
+    if (!markerWirePayloadFits(entry->payload.bytes.size())) {
+      model_state_warning_ = tr("A SceneEntities model snapshot exceeds the %1 MiB payload limit")
                                  .arg(kMaxWireBytesPerSample / (1024ULL * 1024ULL));
       continue;
     }
@@ -958,7 +958,7 @@ void WasmSceneEntitiesLayer::cacheSnapshot(
   }
   CachedSnapshot cached;
   cached.bytes = estimateSnapshotBytes(*batch);
-  if (cached.bytes > kBrowserMaxModelSnapshotCacheBytes) {
+  if (cached.bytes > kSceneLimits.max_model_snapshot_cache_bytes) {
     // The current decode/model fold may still use this owned snapshot, but it
     // must not become an over-budget retained cache entry by itself.
     return;
@@ -967,7 +967,7 @@ void WasmSceneEntitiesLayer::cacheSnapshot(
   cached.store_ns = store_ns;
   snapshot_cache_bytes_ = saturatedAdd(snapshot_cache_bytes_, cached.bytes);
   snapshot_cache_.emplace(uid, std::move(cached));
-  while (snapshot_cache_bytes_ > kBrowserMaxModelSnapshotCacheBytes && snapshot_cache_.size() > 1U) {
+  while (snapshot_cache_bytes_ > kSceneLimits.max_model_snapshot_cache_bytes && snapshot_cache_.size() > 1U) {
     const auto oldest = snapshot_cache_.begin();
     snapshot_cache_bytes_ -= oldest->second.bytes;
     snapshot_cache_.erase(oldest);
@@ -1055,10 +1055,10 @@ void WasmSceneEntitiesLayer::refreshModelDrawCalls() {
           });
     }
   }
-  if (model_draw_calls_.size() > kBrowserMaxModelDrawsPerLayer) {
+  if (model_draw_calls_.size() > kSceneLimits.max_model_draws_per_layer) {
     model_draw_calls_.clear();
     model_state_warning_ =
-        tr("SceneEntities has more than %1 live browser model draws").arg(kBrowserMaxModelDrawsPerLayer);
+        tr("SceneEntities has more than %1 live model draws").arg(kSceneLimits.max_model_draws_per_layer);
   } else if (invalid != 0U) {
     model_state_warning_ = tr("Skipped %n model(s) with an invalid pose or scale", nullptr, static_cast<int>(invalid));
   } else if (
@@ -1117,9 +1117,9 @@ void WasmSceneEntitiesLayer::pumpModelLoads() {
       const std::uint64_t generation = current->second.generation;
       const QString hint = modelFormatHint(primitive);
       if (!primitive.data.empty()) {
-        if (!browserModelSourceFits(primitive.data.size())) {
-          current->second.error = tr("model source exceeds the %1 MiB browser limit")
-                                      .arg(kBrowserMaxModelSourceBytes / (1024ULL * 1024ULL));
+        if (!modelSourceFits(primitive.data.size())) {
+          current->second.error = tr("model source exceeds the %1 MiB limit")
+                                      .arg(kSceneLimits.max_model_source_bytes / (1024ULL * 1024ULL));
           current->second.phase = ModelLoad::Phase::kFailed;
           continue;
         }
@@ -1257,12 +1257,12 @@ void WasmSceneEntitiesLayer::finishModelImport(
   const std::uint64_t old_bytes = old != model_meshes_.end() ? estimateMeshBytes(*old->second) : 0U;
   const std::uint64_t retained_without_old =
       old_bytes <= model_retained_bytes_ ? model_retained_bytes_ - old_bytes : kSaturated;
-  if (retained == kSaturated || retained > kBrowserMaxModelRetainedBytesPerMesh || retained_without_old == kSaturated ||
-      retained_without_old > kBrowserMaxModelRetainedBytesPerLayer ||
-      retained > kBrowserMaxModelRetainedBytesPerLayer ||
-      retained > kBrowserMaxModelRetainedBytesPerLayer - retained_without_old) {
-    current->second.error = tr("model would exceed the %1 MiB browser layer memory limit")
-                                .arg(kBrowserMaxModelRetainedBytesPerLayer / (1024ULL * 1024ULL));
+  if (retained == kSaturated || retained > kSceneLimits.max_model_retained_bytes_per_mesh ||
+      retained_without_old == kSaturated || retained_without_old > kSceneLimits.max_model_retained_bytes_per_layer ||
+      retained > kSceneLimits.max_model_retained_bytes_per_layer ||
+      retained > kSceneLimits.max_model_retained_bytes_per_layer - retained_without_old) {
+    current->second.error = tr("model would exceed the %1 MiB layer memory limit")
+                                .arg(kSceneLimits.max_model_retained_bytes_per_layer / (1024ULL * 1024ULL));
     current->second.phase = ModelLoad::Phase::kFailed;
     updateModelWarning();
     emit repaintRequested();

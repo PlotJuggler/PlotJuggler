@@ -54,8 +54,8 @@ class WasmPointCloudLayer final : public PJ::ISceneLayer, public WasmPointRender
   // A rejected cloud leaves the prior sample neither painted nor retained. The
   // two independent limits bound conversion peak memory under the app's 256 MiB
   // initial heap while still admitting ordinary 1M-point lidar frames.
-  static constexpr std::uint64_t kMaxPointsPerCloud = kBrowserMaxPointsPerCloud;
-  static constexpr std::uint64_t kMaxWireBytesPerCloud = kBrowserMaxWireBytesPerCloud;
+  static constexpr std::uint64_t kMaxPointsPerCloud = kSceneLimits.max_points_per_cloud;
+  static constexpr std::uint64_t kMaxWireBytesPerCloud = kSceneLimits.max_point_wire_bytes_per_cloud;
 
   WasmPointCloudLayer(
       PJ::ObjectTopicId topic_id, QString display_name, PJ::sdk::BuiltinObjectType object_type,

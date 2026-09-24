@@ -57,12 +57,12 @@ constexpr std::string_view kSphereKey = "robot:primitive:sphere";
 constexpr std::string_view kPlaceholderKey = "robot:placeholder";
 constexpr std::uint64_t kSaturated = std::numeric_limits<std::uint64_t>::max();
 
-constexpr UrdfParseLimits kBrowserUrdfLimits{
-    .max_links = 4'096,
-    .max_joints = 8'192,
-    .max_geometries = 16'384,
-    .max_materials = 4'096,
-    .max_string_bytes = 8'192,
+constexpr UrdfParseLimits kUrdfLimits{
+    .max_links = kSceneLimits.max_urdf_links,
+    .max_joints = kSceneLimits.max_urdf_joints,
+    .max_geometries = kSceneLimits.max_urdf_geometries,
+    .max_materials = kSceneLimits.max_urdf_materials,
+    .max_string_bytes = kSceneLimits.max_urdf_string_bytes,
 };
 
 QString sourceTypeName(WasmRobotModelLayer::SourceType type) {
@@ -210,7 +210,7 @@ std::uint64_t estimateMeshBytes(const MeshData& mesh) {
       texture_bytes = saturatedAdd(texture_bytes, texture->bytes.size());
     }
   }
-  const auto bytes = browserModelRetainedBytes(
+  const auto bytes = modelRetainedByteCount(
       mesh.vertices.size(), sizeof(Vertex), mesh.indices.size(), mesh.submeshes.size(), sizeof(SubMesh), texture_bytes);
   return bytes.value_or(kSaturated);
 }
@@ -475,9 +475,9 @@ bool WasmRobotModelLayer::tryLoadTopicDescription() {
 
 void WasmRobotModelLayer::queueParse(
     QByteArray bytes, QString format, QString label, QString base, bool source_is_url) {
-  if (!browserModelSourceFits(static_cast<std::uint64_t>(bytes.size()))) {
-    setStatus(tr("robot_description exceeds the %1 MiB browser limit")
-                  .arg(kBrowserMaxModelSourceBytes / (1024ULL * 1024ULL)));
+  if (!modelSourceFits(static_cast<std::uint64_t>(bytes.size()))) {
+    setStatus(tr("robot_description exceeds the %1 MiB limit")
+                  .arg(kSceneLimits.max_model_source_bytes / (1024ULL * 1024ULL)));
     setWarning(status_text_);
     return;
   }
@@ -520,7 +520,7 @@ WasmRobotModelLayer::ParseResult WasmRobotModelLayer::parse(ParseRequest request
   result.resolver = request.resolver;
   auto parsed = parseUrdf(
       request.bytes.toStdString(), request.resolver.get(), request.base.toStdString(), request.source_is_url,
-      request.label.toStdString(), &kBrowserUrdfLimits);
+      request.label.toStdString(), &kUrdfLimits);
   result.model = std::move(parsed.first);
   result.error = QString::fromStdString(parsed.second);
   return result;
@@ -848,10 +848,10 @@ void WasmRobotModelLayer::finishMeshImport() {
     mesh_errors_[task.key] = mesh.error.isEmpty() ? tr("mesh contains no renderable geometry") : std::move(mesh.error);
   } else {
     const std::uint64_t retained = estimateMeshBytes(mesh);
-    if (retained == kSaturated || retained > kBrowserMaxModelRetainedBytesPerMesh ||
-        mesh_retained_bytes_ > kBrowserMaxModelRetainedBytesPerLayer ||
-        retained > kBrowserMaxModelRetainedBytesPerLayer - mesh_retained_bytes_) {
-      mesh_errors_[task.key] = tr("mesh would exceed the browser layer memory limit");
+    if (retained == kSaturated || retained > kSceneLimits.max_model_retained_bytes_per_mesh ||
+        mesh_retained_bytes_ > kSceneLimits.max_model_retained_bytes_per_layer ||
+        retained > kSceneLimits.max_model_retained_bytes_per_layer - mesh_retained_bytes_) {
+      mesh_errors_[task.key] = tr("mesh would exceed the layer memory limit");
     } else {
       try {
         model_meshes_[task.key] = std::make_shared<MeshData>(std::move(mesh));
