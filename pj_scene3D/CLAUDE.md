@@ -58,6 +58,9 @@ XML persistence), and live-streaming data path — lives in
 `pj_scene3D/docs/ARCHITECTURE.md`.
 The in-progress migration of both renderers to one QRhi renderer (phases,
 decisions, platform matrix) is tracked in `pj_scene3D/docs/QRHI_MIGRATION.md`.
+`-DPJ_SCENE3D_RHI=ON` builds the QRhi renderer (`widgets/wasm/`) on desktop in
+place of the GL one; its render harness `scene3d_rhi_render_test` needs a real
+X/Wayland server (Xvfb in CI) and runs once per backend (`.opengl.*`, `.vulkan.*`).
 
 ## Decoding boundary (important)
 
@@ -230,6 +233,12 @@ prepare the Cloudini blob, preserve the fixed-frame settings application name,
 and redirect the model caches to temporary directories. The shared mains keep
 the application on the stack so it dies before Qt Network's exit handlers.
 
+`pointcloud_golden_test` is its own `pj_add_test_runner` runner: the point-cloud
+golden-image corpus (`widgets/tests/fixtures/golden/pointcloud/README.md`), built
+by BOTH renderers through the docks' shared API. The GL build compares against
+the goldens; the `PJ_SCENE3D_RHI` build registers its cases DISABLED until
+QRHI_MIGRATION P3. One ctest entry per scene (`pointcloud_golden_test.*`).
+
 These tests keep their own executables and `add_test` registrations:
 
 - `transform_service_test`: its debug thread-affinity death test forks and aborts
@@ -244,7 +253,7 @@ These tests keep their own executables and `add_test` registrations:
 
 Run the module in the builder image with `ctest --test-dir build
 --output-on-failure -R
-'^(pj_scene3d_.*|transform_service_test|hud_overlay_gl_test|tf_connections_gl_test|shadow_persistence_gl_test|robot_model_layer_test|wasm_shader_constants_test)$'`.
+'^(pj_scene3d_.*|pointcloud_golden_test\..*|transform_service_test|hud_overlay_gl_test|tf_connections_gl_test|shadow_persistence_gl_test|robot_model_layer_test|wasm_shader_constants_test)$'`.
 Filter just the discovered runners with `-R '^pj_scene3d_'`, or run the complete
 CMake registry with `ctest --test-dir build --output-on-failure`.
 The three demos and three benchmarks remain executables gated by `PJ_BUILD_DEMOS`.

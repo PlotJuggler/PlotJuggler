@@ -35,8 +35,8 @@ class WasmVoxelGridLayer final : public PJ::ISceneLayer {
   Q_OBJECT
 
  public:
-  static constexpr std::uint64_t kMaxVoxelsPerLayer = kBrowserMaxVoxelsPerLayer;
-  static constexpr std::uint64_t kMaxWireBytesPerSample = kBrowserMaxVoxelWireBytes;
+  static constexpr std::uint64_t kMaxVoxelsPerLayer = kSceneLimits.max_voxels_per_layer;
+  static constexpr std::uint64_t kMaxWireBytesPerSample = kSceneLimits.max_voxel_wire_bytes;
 
   WasmVoxelGridLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent = nullptr);
   ~WasmVoxelGridLayer() override;

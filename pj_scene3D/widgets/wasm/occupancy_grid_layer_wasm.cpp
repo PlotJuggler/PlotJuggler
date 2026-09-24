@@ -175,7 +175,7 @@ bool WasmOccupancyGridLayer::prepareForRender(std::uint64_t remaining_view_cells
   const std::uint64_t cells = static_cast<std::uint64_t>(grid().width) * grid().height;
   if (!grid().empty() && cells > remaining_view_cells) {
     budget_rejected_cell_count_ = cells;
-    setDataWarning(tr("Layer needs %1 occupancy cells; only %2 remain in the browser view budget")
+    setDataWarning(tr("Layer needs %1 occupancy cells; only %2 remain in this view's budget")
                        .arg(QString::number(cells), QString::number(remaining_view_cells)));
     stageEmpty();
     reconstructor_.invalidate();
@@ -190,7 +190,7 @@ bool WasmOccupancyGridLayer::bootstrap() {
   }
   const auto first = session_->objectStore().at(topic_id_, 0);
   if (!first.has_value() || first->payload.bytes.empty() ||
-      !browserOccupancyPayloadFits(static_cast<std::uint64_t>(first->payload.bytes.size()))) {
+      !occupancyPayloadFits(static_cast<std::uint64_t>(first->payload.bytes.size()))) {
     return false;
   }
   const auto binding = session_->parserBindingForObjectTopic(topic_id_);
@@ -245,8 +245,8 @@ bool WasmOccupancyGridLayer::reconstructAt(PJ::Timepoint time) {
     if (base_cache_.has_value() && entry->sequential_uid == base_cache_uid_) {
       return BaseSample{*base_cache_, base_cache_uid_.value};
     }
-    if (!browserOccupancyPayloadFits(static_cast<std::uint64_t>(entry->payload.bytes.size()))) {
-      rejection = tr("Occupancy-grid payload is %1 MiB; the browser limit is %2 MiB")
+    if (!occupancyPayloadFits(static_cast<std::uint64_t>(entry->payload.bytes.size()))) {
+      rejection = tr("Occupancy-grid payload is %1 MiB; the limit is %2 MiB")
                       .arg(
                           QString::number(static_cast<double>(entry->payload.bytes.size()) / (1024.0 * 1024.0), 'f', 1),
                           QString::number(kMaxWireBytesPerSample / (1024ULL * 1024ULL)));
@@ -263,11 +263,12 @@ bool WasmOccupancyGridLayer::reconstructAt(PJ::Timepoint time) {
       rejection = tr("This browser layer accepts OccupancyGrid base samples only");
       return std::nullopt;
     }
-    if (!browserOccupancyDimensionsFit(decoded->width, decoded->height)) {
-      rejection = tr("Occupancy grid is %1 x %2; the browser limit is %3 cells and %4 per dimension")
-                      .arg(
-                          QString::number(decoded->width), QString::number(decoded->height),
-                          QString::number(kMaxCellsPerLayer), QString::number(kBrowserMaxOccupancyTextureDimension));
+    if (!occupancyDimensionsFit(decoded->width, decoded->height)) {
+      rejection =
+          tr("Occupancy grid is %1 x %2; the limit is %3 cells and %4 per dimension")
+              .arg(
+                  QString::number(decoded->width), QString::number(decoded->height), QString::number(kMaxCellsPerLayer),
+                  QString::number(kSceneLimits.max_occupancy_texture_dimension));
       return std::nullopt;
     }
     const double width_metres = decoded->resolution * static_cast<double>(decoded->width);
@@ -310,8 +311,8 @@ bool WasmOccupancyGridLayer::reconstructAt(PJ::Timepoint time) {
       if (!entry.has_value() || entry->payload.bytes.empty()) {
         continue;
       }
-      if (!browserOccupancyPayloadFits(static_cast<std::uint64_t>(entry->payload.bytes.size()))) {
-        rejection = tr("Occupancy update payload exceeds the %1 MiB browser sample limit")
+      if (!occupancyPayloadFits(static_cast<std::uint64_t>(entry->payload.bytes.size()))) {
+        rejection = tr("Occupancy update payload exceeds the %1 MiB sample limit")
                         .arg(kMaxWireBytesPerSample / (1024ULL * 1024ULL));
         return std::vector<PJ::sdk::OccupancyGridUpdate>{};
       }
@@ -334,8 +335,8 @@ bool WasmOccupancyGridLayer::reconstructAt(PJ::Timepoint time) {
             entry->timestamp, tr("Occupancy update data was shorter than its declared rectangle and was skipped"));
         continue;
       }
-      if (!browserOccupancyUpdateWindowFits(declared) || declared > kMaxUpdateWindowBytes - update_window_bytes) {
-        rejection = tr("Occupancy updates in this seek window exceed the %1 MiB browser limit")
+      if (!occupancyUpdateWindowFits(declared) || declared > kMaxUpdateWindowBytes - update_window_bytes) {
+        rejection = tr("Occupancy updates in this seek window exceed the %1 MiB limit")
                         .arg(kMaxUpdateWindowBytes / (1024ULL * 1024ULL));
         return std::vector<PJ::sdk::OccupancyGridUpdate>{};
       }

@@ -43,16 +43,22 @@ endforeach()
 string(APPEND _pj_cube_glsl_content "}  // namespace pj::scene3d\n")
 file(GENERATE OUTPUT "${_pj_cube_glsl_header}" CONTENT "${_pj_cube_glsl_content}")
 
-if(EMSCRIPTEN)
-  # Product Scene3D uses Qt's RHI/WebGL2 backend in the browser.  Keep this a
-  # deliberately small, platform-selected source set: no QOpenGLWidget or raw
-  # GL pass enters the browser link. W19a adds the explicitly gated compressed-
-  # cloud transcoder; W19g adds bounded Assimp model import and HTTP(S) loading;
-  # W19h adds the bounded URDF parser and RobotDescription adapter.
+if(PJ_SCENE3D_RHI)
+  # The QRhi renderer: always in the browser (WebGL2), opt-in on desktop. Keep
+  # this a deliberately small source set: no QOpenGLWidget or raw GL pass enters
+  # its link. The browser-only policy it carries (file picking, bounded model
+  # and URL loading) is gated on PJ_TARGET_WASM, not on the renderer.
   set(CMAKE_AUTORCC ON)
   set(_pj_scene3d_qt_components Widgets Gui GuiPrivate Xml Concurrent Network)
   find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS ${_pj_scene3d_qt_components})
+  if(NOT EMSCRIPTEN)
+    find_package(assimp REQUIRED)
+  endif()
+endif()
 
+# The committed packs are verified in the browser build only, whose Qt kit
+# carries the host qsb (Qt ShaderTools); desktop kits don't install it.
+if(EMSCRIPTEN)
   include(${CMAKE_SOURCE_DIR}/cmake/PjQsb.cmake)
   pj_find_host_qsb(_pj_scene3d_qsb "WASM Scene3D")
 
@@ -87,6 +93,31 @@ if(EMSCRIPTEN)
   file(GLOB _pj_scene3d_shader_sources "${_pj_scene3d_shader_dir}/*.vert" "${_pj_scene3d_shader_dir}/*.frag")
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${_pj_scene3d_shader_dir}/bake.sh" ${_pj_scene3d_shader_sources})
+endif()
+
+# ---- Point-cloud golden-image corpus (both renderers) -----------------------
+# Declared before the renderer split so one registration serves both builds;
+# pj_scene3d_widgets resolves at generate time. Needs a real display (see
+# scene3d_render_test_support.h). The goldens come from the GL renderer; the
+# QRhi build compares against them for parity but its cases are DISABLED in
+# ctest until QRHI_MIGRATION P3 (run the binary directly).
+if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
+  set(_pj_golden_props)
+  if(PJ_SCENE3D_RHI)
+    set(_pj_golden_props DISABLED TRUE)
+  endif()
+  pj_add_test_runner(pointcloud_golden_test
+    MAIN gui WARNINGS
+    SOURCES tests/pointcloud_golden_test.cpp
+    LIBS pj_scene3d_widgets pj_resources
+    DEFINES PJ_POINTCLOUD_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/golden/pointcloud"
+    PROPERTIES ${_pj_golden_props}
+  )
+  unset(_pj_golden_props)
+endif()
+# ---- end point-cloud golden corpus ------------------------------------------
+
+if(PJ_SCENE3D_RHI)
 
   add_library(pj_scene3d_widgets STATIC
     wasm/scene_view_widget_rhi.cpp
@@ -133,9 +164,14 @@ if(EMSCRIPTEN)
     PUBLIC include "${CMAKE_CURRENT_BINARY_DIR}/generated"
     PRIVATE src)
   target_compile_features(pj_scene3d_widgets PUBLIC cxx_std_20)
-  target_compile_options(pj_scene3d_widgets PRIVATE
-    ${PJ_WARNING_FLAGS} -fexceptions
-  )
+  target_compile_definitions(pj_scene3d_widgets PUBLIC PJ_SCENE3D_RHI)
+  target_compile_options(pj_scene3d_widgets PRIVATE ${PJ_WARNING_FLAGS})
+  if(EMSCRIPTEN)
+    target_compile_options(pj_scene3d_widgets PRIVATE -fexceptions)
+  else()
+    # Desktop pj_scene3d_core always carries the Draco/Cloudini decoders.
+    target_compile_definitions(pj_scene3d_widgets PUBLIC PJ_WASM_WITH_COMPRESSED_POINTCLOUDS=1)
+  endif()
   target_link_libraries(pj_scene3d_widgets
     PUBLIC
       pj_scene3d_core
@@ -151,6 +187,29 @@ if(EMSCRIPTEN)
       Qt6::Network
       assimp::assimp
   )
+
+  # --- QRhi render harness (desktop only) ---------------------------------
+  # Needs an RHI-capable QPA (xcb/wayland; xvfb in CI), never `offscreen` (see
+  # scene3d_render_test_support.h). Registered once per backend; each needs a
+  # software or real driver (llvmpipe / lavapipe in CI), and
+  # PJ_REQUIRE_GPU_TESTS=1 turns a missing one into a failure. The runner
+  # registers the OpenGL pass; the Vulkan pass re-discovers the same binary.
+  if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
+    find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS Test)
+    pj_add_test_runner(scene3d_rhi_render_test
+      MAIN gui WARNINGS
+      SOURCES tests/scene3d_rhi_render_test.cpp
+      LIBS pj_scene3d_widgets pj_resources Qt6::Test
+      PREFIX "scene3d_rhi_render_test.opengl."
+      TIMEOUT 60
+      PROPERTIES ENVIRONMENT "PJ_GRAPHICS_API=opengl"
+    )
+    gtest_discover_tests(scene3d_rhi_render_test
+      TEST_PREFIX "scene3d_rhi_render_test.vulkan."
+      DISCOVERY_MODE PRE_TEST
+      PROPERTIES TIMEOUT 60 ENVIRONMENT "PJ_GRAPHICS_API=vulkan")
+  endif()
+  # --- end QRhi render harness --------------------------------------------
 
   unset(_pj_scene3d_committed_hash)
   unset(_pj_scene3d_qsb)

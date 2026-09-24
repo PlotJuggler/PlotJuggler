@@ -8,6 +8,7 @@
 #include <QRhiWidget>
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -64,13 +65,6 @@ class SceneViewWidget : public QRhiWidget {
   Q_OBJECT
 
  public:
-  static constexpr std::uint64_t kMaxPointVerticesPerView = kBrowserMaxPointVerticesPerView;
-  static constexpr std::uint64_t kMaxPoseArmsPerView = kBrowserMaxPoseArmsPerView;
-  static constexpr std::uint64_t kMaxOccupancyCellsPerView = kBrowserMaxOccupancyCellsPerView;
-  static constexpr std::uint64_t kMaxVoxelsPerView = kBrowserMaxVoxelsPerView;
-  static constexpr std::uint64_t kMaxMarkerInstancesPerView = kBrowserMaxMarkerInstancesPerView;
-  static constexpr std::uint64_t kMaxMarkerStreamVerticesPerView = kBrowserMaxMarkerStreamVerticesPerView;
-  static constexpr std::uint64_t kMaxModelTrianglesPerView = kBrowserMaxModelTrianglesPerView;
   using GridStyle = pj::scene3d::GridStyle;
   enum class CameraModel { kOrbit, kXyOrbit, kFly, kTopDownOrtho };
 
@@ -149,6 +143,17 @@ class SceneViewWidget : public QRhiWidget {
 
   void refreshAvailableFrames();
   [[nodiscard]] uint64_t tfRenderKey(PJ::Timepoint time) const;
+
+  // Delivers the current scene as an image to `done`; use it instead of
+  // grabFramebuffer(). A shown view first presents one real frame (asynchronously,
+  // up to 2 s): Qt 6.11.1's OpenGL QRhi advances its frame number only in
+  // swapchain frames, so across grab-only frames a pipeline sharing an SRB keeps
+  // stale uniforms (an old camera). The image is null when that frame never comes
+  // (occluded window). A never-shown view is grabbed at once, and in Qt 6.11.1
+  // only ONCE: each such grab creates a new QRhi without re-running initialize().
+  // `done` runs once on the GUI thread, or never if the view is destroyed first.
+  // Never blocks: no nested event loop, which Qt for WebAssembly cannot run.
+  void grabPresentedFrame(std::function<void(const QImage&)> done);
 
   // Observation-only browser acceptance seams.  They report the last submitted
   // product frame; no test method mutates the camera, TF buffer, or renderer.
@@ -337,6 +342,12 @@ class SceneViewWidget : public QRhiWidget {
   void setForceEdlFallbackForTest(bool force);
   [[nodiscard]] const std::vector<std::uint32_t>& lastSubmittedLayerIdsForTest() const {
     return last_submitted_layer_ids_;
+  }
+  // QRhi::backendName() of the last initialize() ("OpenGL", "Vulkan", ...):
+  // the backend actually used, which can differ from api() after a fallback.
+  // Kept after releaseResources(), so it survives an offscreen grab.
+  [[nodiscard]] const QString& rhiBackendNameForTest() const {
+    return rhi_backend_name_;
   }
 
  signals:
@@ -550,6 +561,7 @@ class SceneViewWidget : public QRhiWidget {
   mutable std::vector<std::string> tf_render_key_frames_;
 
   QRhi* resource_rhi_ = nullptr;
+  QString rhi_backend_name_;
   QRhiBuffer* uniform_buffer_ = nullptr;
   QRhiBuffer* render_mode_uniform_buffer_ = nullptr;
   QRhiBuffer* annotation_render_mode_uniform_buffer_ = nullptr;

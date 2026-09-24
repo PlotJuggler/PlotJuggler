@@ -122,6 +122,7 @@ if(PJ_BUILD_TESTS)
     ../tests/voxel_grid_view_test.cpp
     ../tests/voxel_grid_value_test.cpp
     ../tests/voxel_grid_budget_test.cpp
+    ../tests/scene_limits_test.cpp
   )
   # pointcloud_codecs_test drives the Draco + Cloudini *encoders* directly to build
   # fixtures, so it links them explicitly (pj_scene3d_core links them PRIVATE).

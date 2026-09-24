@@ -61,10 +61,10 @@ struct FetchResult {
 class UrlFetcher : public QObject {
   Q_OBJECT
  public:
-  // Hard cap on accepted response bytes: 32 MiB in WASM, preserving the
-  // existing 64 MiB native contract.
-#ifdef PJ_TARGET_WASM
-  static constexpr qint64 kMaxFetchBytes = static_cast<qint64>(kBrowserMaxModelSourceBytes);
+  // Hard cap on accepted response bytes: the scene's model-source limit with the
+  // QRhi renderer; the OpenGL renderer keeps its 64 MiB contract.
+#ifdef PJ_SCENE3D_RHI
+  static constexpr qint64 kMaxFetchBytes = static_cast<qint64>(kSceneLimits.max_model_source_bytes);
 #else
   static constexpr qint64 kMaxFetchBytes = 64LL * 1024 * 1024;
 #endif

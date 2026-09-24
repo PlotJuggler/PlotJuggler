@@ -343,10 +343,12 @@ Session recording is a **runtime capability**, not a build flag: `RecordingServi
 
 The 3D widget family ships as `pj_scene3D` (built and wired into `pj_app` via `Scene3DDockWidget`): TF, pointclouds, occupancy grids, axis/grid render passes, SceneEntities/markers, pluggable camera models, URDF/mesh robot models, the HDR/tonemap/SSAO/EDL rendering pipeline, live/streaming TF+object ingest (`TransformService` + `driveVisibleLayersToLiveEdge`), and per-use parser bindings (`parse_locked.h`) — see `pj_scene3D/docs/ARCHITECTURE.md` for the as-built design, `pj_scene3D/docs/REQUIREMENTS.md` for scope.
 
-For WebAssembly, Scene3D is a compile-time platform split behind those same
-public widget names. Desktop remains the full `QOpenGLWidget`/OpenGL layer graph;
-the browser uses a minimal `QRhiWidget` product backend and must add object
-layers one work package at a time. Do not pull native GL passes, Assimp/network
+Scene3D has two renderers behind the same public widget names, chosen at
+compile time by `PJ_SCENE3D_RHI`: the full `QOpenGLWidget`/OpenGL layer graph
+(desktop default) and the `QRhiWidget` renderer (always on for WebAssembly,
+opt-in on desktop, where it is being grown to replace the GL one — see
+`pj_scene3D/docs/QRHI_MIGRATION.md`). `PJ_SCENE3D_RHI` selects the renderer;
+browser policy (file picking, bounded loading) stays on `PJ_TARGET_WASM`. Do not pull native GL passes, Assimp/network
 model code, or codecs into the browser merely to expose grid/TF. Browser shader
 packs are GLSL ES 300 and must be reproducibly rebuilt with the pinned host
 `qsb` and hash-checked at configure time. Every new static archive in the

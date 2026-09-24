@@ -32,9 +32,9 @@ class WasmOccupancyGridLayer final : public PJ::ISceneLayer {
  public:
   enum class ColorScheme : std::int32_t { kMap, kCostmap };
 
-  static constexpr std::uint64_t kMaxCellsPerLayer = kBrowserMaxOccupancyGridCells;
-  static constexpr std::uint64_t kMaxWireBytesPerSample = kBrowserMaxOccupancyWireBytes;
-  static constexpr std::uint64_t kMaxUpdateWindowBytes = kBrowserMaxOccupancyUpdateWindowBytes;
+  static constexpr std::uint64_t kMaxCellsPerLayer = kSceneLimits.max_occupancy_cells_per_layer;
+  static constexpr std::uint64_t kMaxWireBytesPerSample = kSceneLimits.max_occupancy_wire_bytes;
+  static constexpr std::uint64_t kMaxUpdateWindowBytes = kSceneLimits.max_occupancy_update_window_bytes;
 
   WasmOccupancyGridLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent = nullptr);
   ~WasmOccupancyGridLayer() override;
@@ -123,7 +123,7 @@ class WasmOccupancyGridLayer final : public PJ::ISceneLayer {
   std::optional<PJ::Timestamp> skipped_update_warning_timestamp_;
   QString skipped_update_warning_;
 
-  OccupancyGridReconstructor reconstructor_{kBrowserOccupancySnapshotBudgetBytes};
+  OccupancyGridReconstructor reconstructor_{kSceneLimits.occupancy_snapshot_budget_bytes};
   std::vector<CellRect> dirty_rects_;
   std::string source_frame_;
   std::uint64_t texture_revision_ = 0;

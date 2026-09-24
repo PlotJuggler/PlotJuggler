@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "pj_scene3d_core/scene_limits.h"
 #include "pj_scene3d_core/shadow_camera.h"
 #include "pj_scene3d_widgets/passes/grid_geometry.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
@@ -27,11 +28,12 @@ constexpr int kHdrSampleCount = 4;
 // Replay the bounded scene once into single-sample RGBA8 coverage + D32F depth:
 // 4x (RGBA16F 8 + D32F 4) + RGBA16F 8 + RGBA8 4 + D32F 4 = 64 B/px.
 constexpr std::uint64_t kHdrBytesPerPixel = 64U;
-constexpr std::uint64_t kMaxHdrBytesPerView = 256U * 1024U * 1024U;
-constexpr std::uint64_t kMaxHdrBytesPerRhi = 512U * 1024U * 1024U;
+constexpr std::uint64_t kMaxHdrBytesPerView = kSceneLimits.max_hdr_bytes_per_view;
+constexpr std::uint64_t kMaxHdrBytesPerRhi = kSceneLimits.max_hdr_bytes_per_rhi;
 
-// Every live Scene3D dock shares one QRhi in the browser. Keep the retained
-// offscreen chains below both a per-view and an aggregate per-engine ceiling.
+// Live Scene3D docks share one QRhi (every dock in the browser, every dock of a
+// top-level window on desktop). Keep the retained offscreen chains below both a
+// per-view and an aggregate per-QRhi ceiling.
 std::unordered_map<QRhi*, std::uint64_t> hdr_bytes_by_rhi;
 
 QShader loadShader(const QString& path) {
@@ -160,7 +162,7 @@ bool SceneViewWidget::ensureShadowResources(QRhi* owner) {
   }
   const int maximum_texture_size = owner->resourceLimit(QRhi::TextureSizeMax);
   if (maximum_texture_size < kShadowMapSize) {
-    return fail(tr("A %1 x %1 shadow map exceeds this browser GPU's %2-pixel texture limit")
+    return fail(tr("A %1 x %1 shadow map exceeds this GPU's %2-pixel texture limit")
                     .arg(QString::number(kShadowMapSize), QString::number(maximum_texture_size)));
   }
   if (!owner->isTextureFormatSupported(QRhiTexture::D32F, QRhiTexture::RenderTarget)) {
@@ -817,7 +819,7 @@ bool SceneViewWidget::ensureHdrResources(QRhi* owner, const QSize& size) {
   }
   const int texture_limit = owner->resourceLimit(QRhi::TextureSizeMax);
   if (texture_limit <= 0 || size.width() > texture_limit || size.height() > texture_limit) {
-    return fail(tr("The %1 x %2 Scene3D view exceeds this browser GPU's %3-pixel texture limit")
+    return fail(tr("The %1 x %2 Scene3D view exceeds this GPU's %3-pixel texture limit")
                     .arg(size.width())
                     .arg(size.height())
                     .arg(texture_limit));
@@ -826,7 +828,7 @@ bool SceneViewWidget::ensureHdrResources(QRhi* owner, const QSize& size) {
   const std::uint64_t pixels = static_cast<std::uint64_t>(size.width()) * static_cast<std::uint64_t>(size.height());
   const std::uint64_t bytes = pixels * kHdrBytesPerPixel;
   if (bytes > kMaxHdrBytesPerView) {
-    return fail(tr("The %1 x %2 Scene3D HDR chain needs %3 MiB; the browser per-view limit is %4 MiB")
+    return fail(tr("The %1 x %2 Scene3D HDR chain needs %3 MiB; this view's limit is %4 MiB")
                     .arg(size.width())
                     .arg(size.height())
                     .arg((bytes + 1024U * 1024U - 1U) / (1024U * 1024U))
@@ -836,7 +838,7 @@ bool SceneViewWidget::ensureHdrResources(QRhi* owner, const QSize& size) {
   const std::uint64_t aggregate = aggregate_iterator != hdr_bytes_by_rhi.end() ? aggregate_iterator->second : 0U;
   const std::uint64_t aggregate_without_this = aggregate > hdr_allocated_bytes_ ? aggregate - hdr_allocated_bytes_ : 0U;
   if (bytes > kMaxHdrBytesPerRhi - std::min(aggregate_without_this, kMaxHdrBytesPerRhi)) {
-    return fail(tr("Live Scene3D HDR views would exceed the browser engine's %1 MiB limit")
+    return fail(tr("Live Scene3D HDR views would exceed their shared %1 MiB GPU limit")
                     .arg(kMaxHdrBytesPerRhi / (1024U * 1024U)));
   }
 

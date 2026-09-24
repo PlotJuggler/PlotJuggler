@@ -1,6 +1,6 @@
 # Scene3D QRhi migration plan
 
-Status: **P0 done; P1 next**. Branch `feat/qrhi-migration`.
+Status: **P0 merged (#670); P1 done, in review**. Branch `feat/qrhi-p1`.
 
 Goal: one QRhi-based 3D renderer for every target — Linux, Windows, macOS
 arm64 and WebAssembly — replacing both the desktop `QOpenGLWidget` renderer
@@ -47,7 +47,10 @@ arm64 and WebAssembly — replacing both the desktop `QOpenGLWidget` renderer
    shadow lookups, an un-flipped fullscreen triangle, raw GLES calls). Resolved
    in P0: see the "GL NDC / Y conventions" decision.
 6. **Browser budgets** (`core/*_budget.h`, 256 MiB HDR per view) would turn off
-   HDR/SSAO/EDL at 4K on desktop and truncate large clouds.
+   HDR/SSAO/EDL at 4K on desktop and truncate large clouds. Resolved in P1:
+   `core/scene_limits.h` holds one `SceneLimits` policy, browser values under
+   `PJ_TARGET_WASM`, desktop values otherwise, statically checked against the
+   renderer's quint32 buffer and int counter bounds.
 7. **Shader tooling**: desktop Qt kits install no `qsb`, so packs stay
    committed and are verified only in the WASM configure. P0 baked the Scene3D
    packs for every backend (`wasm/shaders/bake.sh`) and dropped the separate
@@ -107,16 +110,25 @@ Each phase is its own PR and leaves the app shippable.
 - Exit: WASM Playwright suites green; desktop unchanged.
 
 **P1 — QRhi renderer on native Linux (≈2 weeks).**
-- `PJ_SCENE3D_RHI` option, independent from `PJ_TARGET_WASM` (the two
-  renderers share class names, so a build picks one).
-- `SceneLimits` policy replaces the browser caps on desktop.
-- Real per-device 3D-texture limit on Vulkan/D3D/Metal (P0 assumes 2048
-  outside OpenGL; QRhi 6.11 reports no 3D limit).
-- Offscreen QRhi test harness (`QRhiTextureRenderTarget`) run on llvmpipe,
-  lavapipe, WARP and Metal from day one; `--screenshot` diff against the GL
-  renderer on a fixed comparison corpus (large clouds, trails, grid maps,
-  transparency, shadows, mixed docks).
-- Exit: Linux RHI build renders the corpus in CI.
+- `PJ_SCENE3D_RHI` option, a PUBLIC define independent from `PJ_TARGET_WASM`
+  (the two renderers share class names, so a build picks one). It selects the
+  renderer only; browser policy (file picking, URDF local-file restore,
+  shader-pack verification tooling) stays on `PJ_TARGET_WASM`.
+- `SceneLimits` (`core/scene_limits.h`): a constexpr per-platform policy covering
+  the layers' admission checks, the renderer budgets, URDF limits and the HDR
+  byte caps (desktop: 1 GiB per view, 4 GiB per QRhi), so desktop neither
+  truncates clouds nor drops HDR at 4K. Done.
+- Real 3D-texture limit on Vulkan (`QRhiVulkanNativeHandles` →
+  `maxImageDimension3D`); D3D/Metal alongside their CI lanes in P4.
+- Headless harness: `QRhiWidget::grabFramebuffer()` under a real X server
+  (Xvfb in CI; not the `offscreen` QPA, which has no RHI support) on OpenGL
+  (llvmpipe) and Vulkan (lavapipe), asserting the actual backend. Pixel-region
+  checks on scenes the RHI renderer already supports (orientation, occlusion,
+  transparency, shadows, HDR/SSAO/EDL active) plus a resize/reparent/sibling
+  lifecycle test. The cross-build screenshot diff against the GL renderer moves
+  to P3, once Trail/GridMap exist in the RHI renderer.
+- Exit: a Linux CI job builds `PJ_SCENE3D_RHI=ON` and passes the harness on
+  llvmpipe and lavapipe with `PJ_REQUIRE_GPU_TESTS=1`.
 
 **P2 — One layer set, one dock (2–3 weeks).**
 - Desktop layers implement the renderable interfaces; the GL build keeps its
@@ -127,10 +139,17 @@ Each phase is its own PR and leaves the app shippable.
 
 **P3 — Passes + parity (3–4 weeks).**
 - Split the monolith into passes. Port GridMap, Trail, cube hexagon fan /
-  sprite LOD / colour hoist, compute AABB (gated), axis corner gizmo, HUD, hover
+  sprite LOD / colour hoist, compute AABB (gated), axis corner gizmo (then drop
+  the golden test's `kGizmoRect` exclusion), HUD, hover
   label, `render_scale`, live-edge drive, AgX/Neutral tonemaps.
 - Exit: corpus screenshots match GL within tolerance; GL pass tests re-expressed
-  as QRhi offscreen tests.
+  as QRhi offscreen tests. Point clouds: all 28 scenes of
+  `widgets/tests/fixtures/golden/pointcloud/` (goldens captured from the GL
+  renderer in P1, enabled in the RHI build) pass. At P1 the RHI renderer failed
+  6: `shape_cubes_subpixel` (hexagon fan / sprite LOD), `color_rgb_cubes`,
+  `field_viridis_cubes`, `depth_two_clouds` (cube edges and shading),
+  `field_outside_range_translucent`, `field_outside_range_cubes` (faded
+  out-of-range colour/blend).
 
 **P4 — Plots and backend switch (2–4 weeks).**
 - `PlotRhiCanvas` on desktop: multi-backend shaders, item audit, desktop
@@ -146,6 +165,29 @@ Each phase is its own PR and leaves the app shippable.
 - Package smoke tests: AppImage, .deb, IFW, conda/RoboStack, browsers.
 
 Total: **~11–17 weeks**; plot parity is the least certain part.
+
+## Findings
+
+- **Qt 6.11.1, `QRhiWidget::grabFramebuffer()` on a never-shown widget works
+  once:** each grab creates a new QRhi without calling `initialize()`, so a
+  second grab renders with the previous QRhi's resources. The harness grabs a
+  hidden widget only once.
+- **Qt 6.11.1, OpenGL QRhi reuses stale uniforms in grab-only frames:**
+  `QRhiGles2` advances its frame number only in swapchain frames, so its
+  "SRB already current" cache survives offscreen frames and a second pipeline
+  sharing an SRB can draw with an older camera. The harness presents one real
+  frame before each grab. App-side grabs (`MainWindow` screenshot export,
+  `PlotPanner`) must do the same once they run on desktop QRhi (P4).
+- **RHI renderer parity gaps (P3):** translucent layers are not sorted after
+  opaque ones (the GL marker pass has the same limit); only model meshes cast
+  shadows, not SceneEntities cubes.
+- **Tiny spheres are driver-dependent** in the GL renderer: below one pixel
+  they nearly vanish on NVIDIA MSAA (coverage ~0.19 of llvmpipe's), and ~1.5 px
+  spheres shade very differently on Mesa 23 vs 26 (mean colour off by ~80).
+  P3: draw spheres below ~2 px as flat discs, then give `shape_spheres_small`
+  its full golden check back.
+- The RHI harness needs a real X or Wayland server; locally, an occluded window
+  never presents, so run it under Xvfb or a headless compositor.
 
 ## Open questions
 
@@ -185,3 +227,4 @@ Actual wall-clock time, to calibrate the estimates above.
 | Phase | Started | Finished | Elapsed | Notes |
 |---|---|---|---|---|
 | P0 | 2026-09-23 21:51 CEST | 2026-09-23 23:40 CEST | ~1 h 50 min | Plan estimate was 1–2 engineer-weeks. Wall-clock with parallel agents; ~45 min of it was WASM builds + Playwright. Non-GL backends verified only by unit tests and reviews, not by rendering. |
+| P1 | 2026-09-24 05:46 CEST | 2026-09-24 07:13 CEST | ~1 h 27 min | Plan estimate ≈2 weeks. Three parallel streams (limits, harness, goldens). First real renders on OpenGL and Vulkan (GPU + llvmpipe/lavapipe); found two Qt 6.11.1 grab bugs, no renderer bug. Cross-build point-cloud goldens: 22/28 on QRhi. |

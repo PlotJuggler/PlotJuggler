@@ -63,9 +63,9 @@ QImage readBoundedImage(const std::uint8_t* data, std::size_t size, QString& err
   const QSize dimensions = reader.size();
   std::uint64_t pixels = 0;
   if (!dimensions.isValid() ||
-      !browserDepthDimensionsFit(
+      !depthDimensionsFit(
           static_cast<std::uint32_t>(dimensions.width()), static_cast<std::uint32_t>(dimensions.height()), pixels)) {
-    error = QObject::tr("Decoded depth image exceeds the %1-pixel browser limit")
+    error = QObject::tr("Decoded depth image exceeds the %1-pixel limit")
                 .arg(QString::number(WasmDepthCloudLayer::kMaxPixelsPerImage));
     return {};
   }
@@ -80,8 +80,8 @@ bool makeDepthView(
     const PJ::sdk::Image& image, std::vector<std::uint8_t>& scratch, PJ::sdk::DepthImage& view, QString& error) {
   if (image.encoding == "16UC1" || image.encoding == "32FC1") {
     std::uint64_t declared_pixels = 0;
-    if (!browserDepthDimensionsFit(image.width, image.height, declared_pixels)) {
-      error = QObject::tr("Depth image dimensions exceed the %1-pixel browser limit")
+    if (!depthDimensionsFit(image.width, image.height, declared_pixels)) {
+      error = QObject::tr("Depth image dimensions exceed the %1-pixel limit")
                   .arg(QString::number(WasmDepthCloudLayer::kMaxPixelsPerImage));
       return false;
     }
@@ -137,9 +137,9 @@ bool makeDepthView(
     png = png.convertToFormat(QImage::Format_Grayscale16);
   }
   std::uint64_t decoded_pixels = 0;
-  if (!browserDepthDimensionsFit(
+  if (!depthDimensionsFit(
           static_cast<std::uint32_t>(png.width()), static_cast<std::uint32_t>(png.height()), decoded_pixels)) {
-    error = QObject::tr("Decoded depth image exceeds the %1-pixel browser limit")
+    error = QObject::tr("Decoded depth image exceeds the %1-pixel limit")
                 .arg(QString::number(WasmDepthCloudLayer::kMaxPixelsPerImage));
     return false;
   }
@@ -282,7 +282,7 @@ bool WasmDepthCloudLayer::prepareForRender(std::uint64_t remaining_view_vertices
   }
   if (static_cast<std::uint64_t>(vertices_.size()) > remaining_view_vertices) {
     budget_rejected_vertex_count_ = vertices_.size();
-    setWarning(tr("DepthCloud has %1 points; only %2 remain in the browser view budget")
+    setWarning(tr("DepthCloud has %1 points; only %2 remain in this view's budget")
                    .arg(QString::number(vertices_.size()), QString::number(remaining_view_vertices)));
     active_sample_ = {};
     clearGeometry();
@@ -344,21 +344,20 @@ bool WasmDepthCloudLayer::decodeAt(PJ::Timepoint time) {
     return true;
   }
   updateSourceFrame(image->frame_id);
-  if (!browserPointPayloadFits(static_cast<std::uint64_t>(image->data.size()))) {
+  if (!pointPayloadFits(static_cast<std::uint64_t>(image->data.size()))) {
     active_sample_ = sample;
     clearGeometry();
-    setWarning(tr("Depth image payload is %1 MiB; the browser limit is %2 MiB")
+    setWarning(tr("Depth image payload is %1 MiB; the limit is %2 MiB")
                    .arg(QString::number(static_cast<double>(image->data.size()) / (1024.0 * 1024.0), 'f', 1))
                    .arg(kMaxWireBytesPerImage / (1024ULL * 1024ULL)));
     return true;
   }
   if (image->encoding != "compressedDepth") {
     std::uint64_t pixels = 0;
-    if (!browserDepthDimensionsFit(image->width, image->height, pixels)) {
+    if (!depthDimensionsFit(image->width, image->height, pixels)) {
       active_sample_ = sample;
       clearGeometry();
-      setWarning(
-          tr("Depth image dimensions exceed the %1-pixel browser limit").arg(QString::number(kMaxPixelsPerImage)));
+      setWarning(tr("Depth image dimensions exceed the %1-pixel limit").arg(QString::number(kMaxPixelsPerImage)));
       return true;
     }
   }
@@ -503,7 +502,7 @@ WasmDepthCloudLayer::DecodeResult WasmDepthCloudLayer::decode(DecodeRequest requ
   } catch (const std::bad_alloc&) {
     result.vertices.clear();
     result.bounds = {};
-    result.error = QObject::tr("Not enough browser memory to build this DepthCloud");
+    result.error = QObject::tr("Not enough memory to build this DepthCloud");
   } catch (const std::exception& error) {
     result.vertices.clear();
     result.bounds = {};

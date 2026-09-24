@@ -79,6 +79,13 @@ endif()
 set(PJ_BUILD_TESTS ${_PJ_BUILD_TESTS_DEFAULT} CACHE BOOL "Build foundation (SDK + pj_datastore) tests")
 unset(_PJ_BUILD_TESTS_DEFAULT)
 option(PJ_BUILD_DEMOS "Build the pj_scene3D standalone dev demos" ON)
+# Scene3D renderer: QRhi (Vulkan/D3D/Metal/OpenGL; the only one in the browser)
+# or the OpenGL one. Both define the same classes, so a build has exactly one.
+# See pj_scene3D/docs/QRHI_MIGRATION.md.
+option(PJ_SCENE3D_RHI "Build Scene3D with the QRhi renderer instead of the OpenGL one" OFF)
+if(EMSCRIPTEN)
+    set(PJ_SCENE3D_RHI ON)
+endif()
 set(PJ_BUILD_PARQUET_IMPORT_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(PJ_BUILD_PORTED_PLUGINS OFF CACHE BOOL "" FORCE)
 
@@ -327,7 +334,8 @@ endif()
 if(TARGET pj_scene3d_widgets)
     add_compile_definitions(PJ_WITH_SCENE3D)
 endif()
-if(PJ_BUILD_DEMOS AND NOT EMSCRIPTEN)
+# The demos drive the OpenGL renderer directly.
+if(PJ_BUILD_DEMOS AND NOT PJ_SCENE3D_RHI)
     add_subdirectory(pj_scene3D/demos)
 endif()
 add_subdirectory(pj_dialog_host)

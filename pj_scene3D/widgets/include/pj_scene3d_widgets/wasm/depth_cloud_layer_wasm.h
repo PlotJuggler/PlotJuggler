@@ -37,8 +37,8 @@ class WasmDepthCloudLayer final : public PJ::ISceneLayer, public WasmPointRender
   Q_OBJECT
 
  public:
-  static constexpr std::uint64_t kMaxPixelsPerImage = kBrowserMaxPointsPerCloud;
-  static constexpr std::uint64_t kMaxWireBytesPerImage = kBrowserMaxWireBytesPerCloud;
+  static constexpr std::uint64_t kMaxPixelsPerImage = kSceneLimits.max_points_per_cloud;
+  static constexpr std::uint64_t kMaxWireBytesPerImage = kSceneLimits.max_point_wire_bytes_per_cloud;
 
   WasmDepthCloudLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent = nullptr);
   ~WasmDepthCloudLayer() override;
