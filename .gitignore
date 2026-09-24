@@ -1,4 +1,7 @@
 build/
+# Nix build output links.
+/result
+/result-*
 # AppImage extraction scratch (including renamed artifacts).
 squashfs-root/
 
