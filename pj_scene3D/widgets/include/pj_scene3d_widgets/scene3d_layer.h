@@ -13,6 +13,7 @@
 #include <glm/glm.hpp>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 
 #include "pj_scene3d_core/camera/camera.h"  // AABB
@@ -44,6 +45,14 @@ struct FrameContext;
   return key;
 }
 
+// Folds the fixed<-source transform at `time` into a sample key, the second half
+// of every frame-placed layer's renderKey (sample identity + transform). An
+// unresolved lookup folds nothing, so resolving or losing the transform changes
+// the key too. Without it a static sample in a moving frame never repaints.
+[[nodiscard]] uint64_t foldFrameTransformIntoKey(
+    uint64_t key, const TransformBuffer* tf_buffer, const std::string& fixed_frame, const std::string& source_frame,
+    PJ::Timepoint time);
+
 // Widget-global services every 3D layer needs at attach time. Scene3DDockWidget
 // always passes this concrete context to Scene3DLayer instances; concrete layers
 // static_cast PJ::SceneLayerContext to Scene3DLayerContext in attach() and rely
@@ -55,7 +64,8 @@ struct Scene3DLayerContext : PJ::SceneLayerContext {
 // Abstract base for everything the 3D scene renders on behalf of a user-added
 // topic. Generic identity/lifecycle/config/XML/visibility/repaint behavior is
 // inherited from PJ::ISceneLayer; this type adds only 3D-specific frame and GL
-// hooks consumed by Scene3DDockWidget and SceneViewWidget.
+// hooks consumed by Scene3DDockWidget and SceneViewWidget. The GL hooks exist only
+// in the GL renderer build; with PJ_SCENE3D_RHI the QRhi view owns all GPU state.
 //
 // Concrete subclasses live under
 // `pj_scene3D/widgets/include/pj_scene3d_widgets/layers/`.
@@ -83,6 +93,7 @@ class Scene3DLayer : public PJ::ISceneLayer {
   // treats that as "not warning, pending data" rather than "broken".
   [[nodiscard]] virtual QString sourceFrame() const = 0;
 
+#ifndef PJ_SCENE3D_RHI
   // GL. initializeGL() is called by the SceneViewWidget at the top of
   // every paintGL with a current GL context. Subclasses are expected to
   // guard against double-init internally (`if (initialized_) return;`)
@@ -102,6 +113,7 @@ class Scene3DLayer : public PJ::ISceneLayer {
   // GL context is about to be destroyed (see IRenderPass::releaseGL); the
   // layer re-initializes lazily on the next paintGL.
   virtual void releaseGL() = 0;
+#endif  // PJ_SCENE3D_RHI
 
   // Source-frame extent of this layer's geometry, or nullopt when
   // the layer reports no bounds (no data decoded yet, or a bounds-less layer
@@ -124,6 +136,7 @@ class Scene3DLayer : public PJ::ISceneLayer {
     return std::nullopt;
   }
 
+#ifndef PJ_SCENE3D_RHI
   // Depth-only render of this layer's shadow casters from the light's point of view,
   // into the shadow map currently bound by the SceneViewWidget pre-pass.
   // `light_view_proj` is the world->light-clip matrix from fitDirectionalShadowCamera.
@@ -131,16 +144,22 @@ class Scene3DLayer : public PJ::ISceneLayer {
   // MeshRenderPass, which owns the per-context depth-only program). REQUIRES a current
   // GL context (called from the pre-pass, before renderScene).
   virtual void renderShadowCasters(const glm::mat4& /*light_view_proj*/, const FrameContext& /*frame_ctx*/) {}
+#endif  // PJ_SCENE3D_RHI
 
-  // A layer-specific warning to surface on the layer's row (icon + tooltip),
-  // distinct from the dock's frame-orphan check — e.g. a model that failed to
-  // fetch or import. Empty means "nothing to warn about". The dock OR-combines
-  // this with the orphan state so neither clobbers the other (see
-  // Scene3DDockWidget::recomputeOrphanStates). Default: no layer warning.
-  // Emit statusWarningChanged() whenever the returned value changes.
+  // The layer's own row warning (icon + tooltip), distinct from the dock's
+  // frame-orphan check: the data part (decode, admission, budget) then the
+  // renderer part, one per line. Empty means nothing to warn about. The dock
+  // combines it with the orphan state (Scene3DDockWidget::updateLayerWarning).
+  // statusWarningChanged() fires whenever the value changes.
   [[nodiscard]] virtual QString statusWarning() const {
-    return {};
+    return warning_;
   }
+
+  // Renderer part of statusWarning(): a GPU-side failure (texture limit,
+  // allocation, per-view budget) reported by the QRhi view. A later success
+  // clears only this part.
+  void noteRenderFailure(QString warning);
+  void noteRenderSuccess();
 
  signals:
   // Layer noticed new source-frame candidates — the dock unions these
@@ -157,6 +176,26 @@ class Scene3DLayer : public PJ::ISceneLayer {
   // polling. (Routed through recomputeOrphanStates, NOT the base relay, so it
   // merges with the orphan state instead of overwriting it.)
   void statusWarningChanged();
+
+ protected:
+  // Data part of statusWarning().
+  void setDataWarning(QString warning);
+  [[nodiscard]] const QString& dataWarning() const {
+    return data_warning_;
+  }
+  [[nodiscard]] const QString& renderWarning() const {
+    return render_warning_;
+  }
+  // Called after the renderer part changed (a layer that mirrors it elsewhere,
+  // e.g. in a status line, refreshes there).
+  virtual void renderWarningChanged() {}
+
+ private:
+  void updateWarning();
+
+  QString data_warning_;
+  QString render_warning_;
+  QString warning_;  // data_warning_ + render_warning_, cached for statusWarning()
 };
 
 }  // namespace pj::scene3d

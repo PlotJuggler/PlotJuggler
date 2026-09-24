@@ -11,40 +11,41 @@
 #include <vector>
 
 #include "pj_scene3d_core/camera/camera.h"
+#include "pj_scene3d_widgets/layer_style.h"
 #include "pj_widgets/Colormap.h"
 
 namespace pj::scene3d {
 
-// GPU-ready vertex shared by the browser's canonical PointCloud and DepthCloud
-// adapters. Positions stay in the source frame; SceneViewWidget applies
+// GPU-ready vertex retained by PointCloudLayer and DepthCloudLayer for the QRhi
+// view. Positions stay in the source frame; SceneViewWidget applies
 // fixed<-source so camera/TF changes never rebuild the retained CPU vertices.
-struct WasmPointVertex {
+struct PointVertex {
   float x = 0.0F;
   float y = 0.0F;
   float z = 0.0F;
   float scalar = 0.0F;
   std::uint32_t rgba = 0xFFFFFFFFU;  // byte0=R, byte1=G, byte2=B, byte3=A
 };
-static_assert(sizeof(WasmPointVertex) == 20);
+static_assert(sizeof(PointVertex) == 20);
 
-enum class WasmPointShape : std::int32_t { kSphere, kPoint, kCube };
-enum class WasmPointColorType : std::int32_t { kField, kSolid, kRgb };
-
-// Non-owning renderer contract for point-like WASM layers. QObject ownership,
+// Non-owning QRhi renderer contract for point-like layers. QObject ownership,
 // decoding, persistence, and warnings remain in each concrete ISceneLayer; this
-// interface only lets the QRhi view share one bounded vertex/GPU path.
-class WasmPointRenderable {
+// interface only lets the QRhi view share one bounded vertex/GPU path. The
+// layers implement it in both builds; the GL build never reads it.
+class PointRenderable {
  public:
-  virtual ~WasmPointRenderable() = default;
+  virtual ~PointRenderable() = default;
 
   virtual bool prepareForRender(std::uint64_t remaining_view_vertices) = 0;
-  [[nodiscard]] virtual const std::vector<WasmPointVertex>& vertices() const = 0;
+  [[nodiscard]] virtual const std::vector<PointVertex>& vertices() const = 0;
   [[nodiscard]] virtual std::uint64_t geometryRevision() const = 0;
-  [[nodiscard]] virtual const std::string& sourceFrame() const = 0;
+  // Frame the vertices are expressed in (empty until data arrives). Distinct from
+  // Scene3DLayer::sourceFrame() (a QString for the dock) so one class can implement both.
+  [[nodiscard]] virtual const std::string& renderFrameId() const = 0;
   [[nodiscard]] virtual std::optional<AABB> sourceBounds() const = 0;
   [[nodiscard]] virtual bool visible() const = 0;
-  [[nodiscard]] virtual WasmPointShape shape() const = 0;
-  [[nodiscard]] virtual WasmPointColorType colorType() const = 0;
+  [[nodiscard]] virtual PointShape shape() const = 0;
+  [[nodiscard]] virtual PointColorType colorType() const = 0;
   [[nodiscard]] virtual float sizeMeters() const = 0;
   [[nodiscard]] virtual float sizePixels() const = 0;
   [[nodiscard]] virtual QColor solidColor() const = 0;

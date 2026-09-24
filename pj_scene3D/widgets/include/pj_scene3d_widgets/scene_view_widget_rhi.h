@@ -44,18 +44,15 @@ class QRhiTexture;
 class QRhiTextureRenderTarget;
 class QRhiRenderPassDescriptor;
 
-namespace PJ {
-class ISceneLayer;
-}
-
 namespace pj::scene3d {
 
-class WasmPointRenderable;
-class WasmPosesInFrameLayer;
-class WasmOccupancyGridLayer;
-class WasmVoxelGridLayer;
-class WasmSceneEntitiesLayer;
-class WasmModelRenderable;
+class PointRenderable;
+class Scene3DLayer;
+class PosesInFrameLayer;
+class OccupancyGridLayer;
+class VoxelGridLayer;
+class SceneEntitiesLayer;
+class ModelRenderable;
 
 // WebAssembly product implementation of the public SceneViewWidget contract.
 // The native class with the same name remains a QOpenGLWidget in the other
@@ -96,8 +93,11 @@ class SceneViewWidget : public QRhiWidget {
     return camera_model_;
   }
   void resetCamera();
+  // Owns the scene bounds in this renderer: every frame it unions what it draws,
+  // and it fits the camera once to each newly added layer's first data. A value
+  // set here lasts only until the next frame.
   void setSceneBounds(const AABB& bounds);
-  void setLayers(const std::vector<PJ::ISceneLayer*>& ordered_layers);
+  void setLayers(const std::vector<Scene3DLayer*>& ordered_layers);
 
   void setGridStyle(GridStyle style);
   [[nodiscard]] GridStyle gridStyle() const {
@@ -370,19 +370,19 @@ class SceneViewWidget : public QRhiWidget {
   [[nodiscard]] std::optional<Transform> resolveFixedFromSource(
       const std::string& source_frame, const std::string& fixed_frame) const;
   using OrderedLayer = std::variant<
-      WasmPointRenderable*, WasmPosesInFrameLayer*, WasmOccupancyGridLayer*, WasmVoxelGridLayer*,
-      WasmSceneEntitiesLayer*, WasmModelRenderable*>;
+      PointRenderable*, PosesInFrameLayer*, OccupancyGridLayer*, VoxelGridLayer*, SceneEntitiesLayer*,
+      ModelRenderable*>;
   struct OrderedLayerEntry {
     OrderedLayer layer;
     std::uint32_t topic_id = 0;
   };
 
-  void setPointRenderableLayers(const std::vector<WasmPointRenderable*>& layers);
-  void setPosesInFrameLayers(const std::vector<WasmPosesInFrameLayer*>& layers);
-  void setOccupancyGridLayers(const std::vector<WasmOccupancyGridLayer*>& layers);
-  void setVoxelGridLayers(const std::vector<WasmVoxelGridLayer*>& layers);
-  void setSceneEntitiesLayers(const std::vector<WasmSceneEntitiesLayer*>& layers);
-  void setModelRenderableLayers(const std::vector<WasmModelRenderable*>& layers);
+  void setPointRenderableLayers(const std::vector<PointRenderable*>& layers);
+  void setPosesInFrameLayers(const std::vector<PosesInFrameLayer*>& layers);
+  void setOccupancyGridLayers(const std::vector<OccupancyGridLayer*>& layers);
+  void setVoxelGridLayers(const std::vector<VoxelGridLayer*>& layers);
+  void setSceneEntitiesLayers(const std::vector<SceneEntitiesLayer*>& layers);
+  void setModelRenderableLayers(const std::vector<ModelRenderable*>& layers);
 
   struct Vertex {
     float x = 0.0F;
@@ -503,18 +503,17 @@ class SceneViewWidget : public QRhiWidget {
   void appendTriangle(const glm::dvec3& a, const glm::dvec3& b, const glm::dvec3& c, const glm::vec4& color);
   bool ensureVertexBuffer(
       QRhi* owner, QRhiBuffer*& buffer, quint32& capacity, quint32 required_bytes, quint32 minimum_capacity);
-  bool ensurePointLayerGpu(QRhi* owner, WasmPointRenderable* layer, PointLayerGpu& gpu);
+  bool ensurePointLayerGpu(QRhi* owner, PointRenderable* layer, PointLayerGpu& gpu);
   void releasePointLayerGpu(PointLayerGpu& gpu);
   bool ensurePoseLayerGpu(QRhi* owner, PoseLayerGpu& gpu);
   void releasePoseLayerGpu(PoseLayerGpu& gpu);
-  bool ensureOccupancyLayerGpu(
-      QRhi* owner, WasmOccupancyGridLayer* layer, OccupancyLayerGpu& gpu, bool& texture_recreated);
+  bool ensureOccupancyLayerGpu(QRhi* owner, OccupancyGridLayer* layer, OccupancyLayerGpu& gpu, bool& texture_recreated);
   void releaseOccupancyLayerGpu(OccupancyLayerGpu& gpu);
-  bool ensureVoxelLayerGpu(QRhi* owner, WasmVoxelGridLayer* layer, VoxelLayerGpu& gpu, bool& texture_recreated);
-  [[nodiscard]] QString voxelGpuRejection(QRhi* owner, const WasmVoxelGridLayer* layer);
+  bool ensureVoxelLayerGpu(QRhi* owner, VoxelGridLayer* layer, VoxelLayerGpu& gpu, bool& texture_recreated);
+  [[nodiscard]] QString voxelGpuRejection(QRhi* owner, const VoxelGridLayer* layer);
   void releaseVoxelLayerGpu(VoxelLayerGpu& gpu);
   void releaseMarkerMeshGpu(MarkerMeshGpu& gpu);
-  bool ensureModelLayerGpu(QRhi* owner, WasmModelRenderable* layer, ModelLayerGpu& gpu);
+  bool ensureModelLayerGpu(QRhi* owner, ModelRenderable* layer, ModelLayerGpu& gpu);
   QRhiShaderResourceBindings* createModelMaterialBindings(QRhi* owner, const ModelMaterialGpu& material);
   bool rebuildModelMaterialBindings(QRhi* owner, ModelMaterialGpu& material);
   bool rebuildAllModelMaterialBindings(QRhi* owner);
@@ -694,9 +693,9 @@ class SceneViewWidget : public QRhiWidget {
   std::vector<OrderedLayerEntry> ordered_layers_;
   std::vector<std::uint32_t> last_submitted_layer_ids_;
 
-  std::vector<WasmPointRenderable*> point_layers_;
-  std::unordered_map<WasmPointRenderable*, PointLayerGpu> point_layer_gpu_;
-  std::unordered_set<WasmPointRenderable*> point_layers_pending_fit_;
+  std::vector<PointRenderable*> point_layers_;
+  std::unordered_map<PointRenderable*, PointLayerGpu> point_layer_gpu_;
+  std::unordered_set<PointRenderable*> point_layers_pending_fit_;
   int last_point_vertex_count_ = 0;
   int last_point_layer_count_ = 0;
   int last_cube_layer_count_ = 0;
@@ -707,9 +706,9 @@ class SceneViewWidget : public QRhiWidget {
   int last_depth_layer_count_ = 0;
   AABB last_depth_bounds_;
 
-  std::vector<WasmPosesInFrameLayer*> pose_layers_;
-  std::unordered_map<WasmPosesInFrameLayer*, PoseLayerGpu> pose_layer_gpu_;
-  std::unordered_set<WasmPosesInFrameLayer*> pose_layers_pending_fit_;
+  std::vector<PosesInFrameLayer*> pose_layers_;
+  std::unordered_map<PosesInFrameLayer*, PoseLayerGpu> pose_layer_gpu_;
+  std::unordered_set<PosesInFrameLayer*> pose_layers_pending_fit_;
   int last_pose_layer_count_ = 0;
   int last_pose_arm_count_ = 0;
   // TF "Frames" gizmos drawn as solid instanced arrow triads (the desktop look),
@@ -720,32 +719,32 @@ class SceneViewWidget : public QRhiWidget {
   PoseLayerGpu tf_triad_gpu_;
   AABB last_pose_bounds_;
 
-  std::vector<WasmOccupancyGridLayer*> occupancy_layers_;
-  std::unordered_map<WasmOccupancyGridLayer*, OccupancyLayerGpu> occupancy_layer_gpu_;
-  std::unordered_set<WasmOccupancyGridLayer*> occupancy_layers_pending_fit_;
+  std::vector<OccupancyGridLayer*> occupancy_layers_;
+  std::unordered_map<OccupancyGridLayer*, OccupancyLayerGpu> occupancy_layer_gpu_;
+  std::unordered_set<OccupancyGridLayer*> occupancy_layers_pending_fit_;
   int last_occupancy_layer_count_ = 0;
   int last_occupancy_cell_count_ = 0;
   int occupancy_full_upload_count_ = 0;
   int occupancy_partial_upload_count_ = 0;
   AABB last_occupancy_bounds_;
 
-  std::vector<WasmVoxelGridLayer*> voxel_layers_;
-  std::unordered_map<WasmVoxelGridLayer*, VoxelLayerGpu> voxel_layer_gpu_;
-  std::unordered_set<WasmVoxelGridLayer*> voxel_layers_pending_fit_;
+  std::vector<VoxelGridLayer*> voxel_layers_;
+  std::unordered_map<VoxelGridLayer*, VoxelLayerGpu> voxel_layer_gpu_;
+  std::unordered_set<VoxelGridLayer*> voxel_layers_pending_fit_;
   int last_voxel_layer_count_ = 0;
   int last_voxel_count_ = 0;
   int voxel_full_upload_count_ = 0;
   int max_3d_texture_size_ = 0;
   AABB last_voxel_bounds_;
 
-  std::vector<WasmSceneEntitiesLayer*> marker_layers_;
-  std::unordered_set<WasmSceneEntitiesLayer*> marker_layers_pending_fit_;
+  std::vector<SceneEntitiesLayer*> marker_layers_;
+  std::unordered_set<SceneEntitiesLayer*> marker_layers_pending_fit_;
   int last_marker_layer_count_ = 0;
   int last_marker_instance_count_ = 0;
   int last_marker_stream_vertex_count_ = 0;
   AABB last_marker_bounds_;
-  std::vector<WasmModelRenderable*> model_layers_;
-  std::unordered_map<WasmModelRenderable*, ModelLayerGpu> model_layer_gpu_;
+  std::vector<ModelRenderable*> model_layers_;
+  std::unordered_map<ModelRenderable*, ModelLayerGpu> model_layer_gpu_;
   int last_model_layer_count_ = 0;
   int last_model_draw_count_ = 0;
   int last_model_triangle_count_ = 0;

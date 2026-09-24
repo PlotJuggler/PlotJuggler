@@ -89,21 +89,10 @@ uint64_t GridMapLayer::renderKey(PJ::Timepoint time) const {
   // Sample identity by SequentialUID from latestEntryIdAt() (a binary search that
   // never resolves payload bytes) folded with the fixed<-source transform, the
   // same recipe as PointCloudLayer::renderKey.
-  uint64_t key = 0x9e3779b97f4a7c15ULL;
-  if (ctx_.session != nullptr) {
-    PJ::ObjectStore& store = ctx_.session->objectStore();
-    if (const auto entry_id = store.latestEntryIdAt(topic_id_, PJ::toRaw(time)); entry_id.has_value()) {
-      key ^= entry_id->uid.value;
-    } else {
-      key ^= PJ::kNoSampleRenderKey;
-    }
-  }
-  if (ctx_.tf_buffer != nullptr && !source_frame_.empty()) {
-    if (const auto tf = ctx_.tf_buffer->tryLookupTransform(fixed_frame_.toStdString(), source_frame_, time); tf) {
-      key = foldTransformIntoKey(key, glm::mat4(tf->matrix()));
-    }
-  }
-  return key;
+  uint64_t key =
+      0x9e3779b97f4a7c15ULL ^
+      PJ::latestEntryRenderKey(ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_, time);
+  return foldFrameTransformIntoKey(key, ctx_.tf_buffer.get(), fixed_frame_.toStdString(), source_frame_, time);
 }
 
 QDomElement GridMapLayer::xmlSaveState(QDomDocument& doc) const {
@@ -179,7 +168,9 @@ bool GridMapLayer::attach(const PJ::SceneLayerContext& ctx) {
 void GridMapLayer::detach() {
   disconnect(reload_connection_);
   reload_connection_ = {};
+#ifndef PJ_SCENE3D_RHI
   pass_.clearGrid();
+#endif
   resetStreamingState();
   ctx_ = {};
 }
@@ -198,7 +189,7 @@ void GridMapLayer::resetStreamingState() {
   resolved_color_.clear();
   resolve_warning_.clear();
   last_auto_range_ = {};
-  setStatusWarning(QString());
+  setDataWarning(QString());
 }
 
 void GridMapLayer::onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id) {
@@ -207,7 +198,9 @@ void GridMapLayer::onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id) {
   }
   // The topic id survives the swap but every UID is minted fresh: a stale memo
   // must never serve the old bytes.
+#ifndef PJ_SCENE3D_RHI
   pass_.clearGrid();
+#endif
   resetStreamingState();
   tracker_dirty_ = true;
   emit repaintRequested();
@@ -241,7 +234,7 @@ bool GridMapLayer::bootstrap() {
 bool GridMapLayer::resolveFields(const PJ::sdk::GridMap& grid) {
   if (std::ranges::equal(grid.fields, fields_memo_, sameField) &&
       resolved_requests_ == std::pair{elevation_request_, color_request_}) {
-    setStatusWarning(resolve_warning_);  // a decode warning may have replaced it since
+    setDataWarning(resolve_warning_);  // a decode warning may have replaced it since
     return !resolved_color_.empty();
   }
   fields_memo_ = grid.fields;
@@ -284,11 +277,12 @@ bool GridMapLayer::resolveFields(const PJ::sdk::GridMap& grid) {
     warnings << tr("Grid map has no scalar field to display");
   }
   resolve_warning_ = warnings.join(u"; "_s);
-  setStatusWarning(resolve_warning_);
+  setDataWarning(resolve_warning_);
   emit fieldsChanged();
   return color != nullptr;
 }
 
+#ifndef PJ_SCENE3D_RHI
 void GridMapLayer::renderAt(int64_t time_ns) {
   if (ctx_.session == nullptr) {
     return;
@@ -308,7 +302,7 @@ void GridMapLayer::renderAt(int64_t time_ns) {
     pass_.clearGrid();
     uploaded_uid_ = {};
     setBounds(std::nullopt);
-    setStatusWarning(QString());  // the resolve memo keeps its own warning for the back-scrub
+    setDataWarning(QString());  // the resolve memo keeps its own warning for the back-scrub
     return;
   }
   if (entry->sequential_uid == uploaded_uid_) {
@@ -317,7 +311,7 @@ void GridMapLayer::renderAt(int64_t time_ns) {
   const auto remember_upload = [this, uid = entry->sequential_uid]() { uploaded_uid_ = uid; };
   // A refused sample is remembered like a staged one so it is not retried every tick.
   const auto bail = [&](const QString& why) {
-    setStatusWarning(why);
+    setDataWarning(why);
     pass_.clearGrid();
     setBounds(std::nullopt);
     remember_upload();
@@ -359,7 +353,7 @@ void GridMapLayer::renderAt(int64_t time_ns) {
     return;
   }
   if (!resolveFields(grid)) {
-    bail(status_warning_);  // resolveFields already set the warning
+    bail(dataWarning());  // resolveFields already set the warning
     return;
   }
 
@@ -385,6 +379,7 @@ void GridMapLayer::renderAt(int64_t time_ns) {
   ++pack_count_;
   remember_upload();
 }
+#endif
 
 void GridMapLayer::setFixedFrame(const QString& frame) {
   if (fixed_frame_ == frame) {
@@ -392,14 +387,6 @@ void GridMapLayer::setFixedFrame(const QString& frame) {
   }
   fixed_frame_ = frame;  // placement is resolved per frame via FrameContext
   emit repaintRequested();
-}
-
-void GridMapLayer::setStatusWarning(const QString& reason) {
-  if (status_warning_ == reason) {
-    return;
-  }
-  status_warning_ = reason;
-  emit statusWarningChanged();
 }
 
 void GridMapLayer::setBounds(std::optional<AABB> bounds) {
@@ -424,11 +411,12 @@ void GridMapLayer::setVisible(bool visible) {
     return;
   }
   visible_ = visible;
-  pass_.setVisible(visible);
+  pushDisplayParamsToPass();
   emit visibilityChanged(visible);
   emit repaintRequested();
 }
 
+#ifndef PJ_SCENE3D_RHI
 void GridMapLayer::initializeGL() {
   pass_.initializeGL();
 }
@@ -447,10 +435,11 @@ void GridMapLayer::render(const ViewParams& view_params, const FrameContext& fra
   }
   pass_.render(view_params, frame_ctx);
   if (const auto& why = pass_.rejection(); why.has_value()) {
-    setStatusWarning(*why);  // a GL-limit verdict, known only once the upload was attempted
+    setDataWarning(*why);  // a GL-limit verdict, known only once the upload was attempted
     setBounds(std::nullopt);
   }
 }
+#endif
 
 std::optional<AABB> GridMapLayer::worldBounds() const {
   if (!bounds_.has_value() || !bounds_->valid) {
@@ -460,12 +449,14 @@ std::optional<AABB> GridMapLayer::worldBounds() const {
 }
 
 void GridMapLayer::pushDisplayParamsToPass() {
+#ifndef PJ_SCENE3D_RHI
   pass_.setAutoRange(auto_range_);
   pass_.setManualRange(static_cast<float>(manual_lo_), static_cast<float>(manual_hi_));
   pass_.setColormap(colormap_);
   pass_.setLighting(lighting_);
   pass_.setOpacity(static_cast<float>(opacity_));
   pass_.setVisible(visible_);
+#endif
 }
 
 void GridMapLayer::setElevationField(const QString& field_name) {
@@ -497,7 +488,7 @@ void GridMapLayer::setColormap(PJ::Colormap colormap) {
     return;
   }
   colormap_ = colormap;
-  pass_.setColormap(colormap);
+  pushDisplayParamsToPass();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -507,7 +498,7 @@ void GridMapLayer::setAutoRange(bool on) {
     return;
   }
   auto_range_ = on;
-  pass_.setAutoRange(on);
+  pushDisplayParamsToPass();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -526,7 +517,7 @@ void GridMapLayer::setManualRange(double lo, double hi) {
   }
   manual_lo_ = lo;
   manual_hi_ = hi;
-  pass_.setManualRange(static_cast<float>(lo), static_cast<float>(hi));
+  pushDisplayParamsToPass();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -536,7 +527,7 @@ void GridMapLayer::setLighting(bool on) {
     return;
   }
   lighting_ = on;
-  pass_.setLighting(on);
+  pushDisplayParamsToPass();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -547,7 +538,7 @@ void GridMapLayer::setOpacity(double opacity) {
     return;
   }
   opacity_ = clamped;
-  pass_.setOpacity(static_cast<float>(opacity_));
+  pushDisplayParamsToPass();
   emit configurationChanged();
   emit repaintRequested();
 }

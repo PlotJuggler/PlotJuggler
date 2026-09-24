@@ -9,7 +9,6 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
-#include <QtConcurrent>
 #include <algorithm>
 #include <any>
 #include <chrono>
@@ -35,9 +34,11 @@ namespace pj::scene3d {
 namespace {
 Q_LOGGING_CATEGORY(lcTrail, "pj.scene3d.trail")
 
+#ifndef PJ_SCENE3D_RHI
 glm::vec3 toVec3(const QColor& color) {
   return glm::vec3(color.redF(), color.greenF(), color.blueF());
 }
+#endif
 
 QString datasetSource(PJ::SessionManager& session, PJ::DatasetId dataset_id) {
   const PJ::DatasetInfo* info = session.dataEngine().getDataset(dataset_id);
@@ -85,10 +86,6 @@ QString TrailLayer::sourceFrame() const {
   // A trail poses nothing through TF at render time (points are pre-baked in
   // the fixed frame), so it never participates in the dock's orphan check.
   return {};
-}
-
-QString TrailLayer::statusWarning() const {
-  return warning_;
 }
 
 std::size_t TrailLayer::pastCount(PJ::Timepoint time) const {
@@ -247,7 +244,7 @@ bool TrailLayer::attach(const PJ::SceneLayerContext& ctx) {
     // Tolerated: layout restore replays layers BEFORE the config topic that
     // binds TF, so a restored trail starts buffer-less and the dock pushes the
     // buffer via setTransformBuffer once the binding lands.
-    warning_ = tr("waiting for TF");
+    setDataWarning(tr("waiting for TF"));
   }
   if (source_.kind == TrailSource::Kind::kPoseTopic &&
       !scene3d_ctx.session->parserBindingForObjectTopic(source_.topic) &&
@@ -257,7 +254,9 @@ bool TrailLayer::attach(const PJ::SceneLayerContext& ctx) {
   }
   stamps_.clear();
   points_.clear();
+#ifndef PJ_SCENE3D_RHI
   pass_.setPoints({});
+#endif
   ++build_revision_;
   // fixed_frame_ stays empty: the first render() adopts it from the
   // FrameContext (authoritative) and triggers the initial rebuild.
@@ -265,12 +264,14 @@ bool TrailLayer::attach(const PJ::SceneLayerContext& ctx) {
 }
 
 void TrailLayer::detach() {
-  ++build_generation_;  // orphan any in-flight rebuild result
+  rebuild_worker_.invalidate();  // orphan any in-flight rebuild result
   stamps_.clear();
   points_.clear();
+#ifndef PJ_SCENE3D_RHI
   pass_.setPoints({});
+#endif
   ++build_revision_;
-  setWarning({});
+  setDataWarning({});
 }
 
 void TrailLayer::setTransformBuffer(std::shared_ptr<TransformBuffer> tf_buffer) {
@@ -278,16 +279,18 @@ void TrailLayer::setTransformBuffer(std::shared_ptr<TransformBuffer> tf_buffer) 
     return;
   }
   ctx_.tf_buffer = std::move(tf_buffer);
-  ++build_generation_;  // orphan any in-flight build against the old buffer
+  rebuild_worker_.invalidate();  // orphan any in-flight build against the old buffer
   stamps_.clear();
   points_.clear();
+#ifndef PJ_SCENE3D_RHI
   pass_.setPoints({});
+#endif
   ++build_revision_;
   if (ctx_.tf_buffer == nullptr) {
-    setWarning(tr("waiting for TF"));
+    setDataWarning(tr("waiting for TF"));
   } else {
-    setWarning({});  // definitive state comes from the next adoptPolyline
-    startRebuild();  // no-op until the first render adopts the fixed frame
+    setDataWarning({});  // definitive state comes from the next adoptPolyline
+    startRebuild();      // no-op until the first render adopts the fixed frame
   }
   emit repaintRequested();
 }
@@ -316,6 +319,7 @@ void TrailLayer::setVisible(bool visible) {
   emit repaintRequested();
 }
 
+#ifndef PJ_SCENE3D_RHI
 void TrailLayer::initializeGL() {
   pass_.initializeGL();
 }
@@ -339,6 +343,7 @@ void TrailLayer::render(const ViewParams& view_params, const FrameContext& frame
       view_params, frame_ctx.render_origin, pastCount(frame_ctx.time), toVec3(past_color_), toVec3(future_color_),
       thickness_px_, past_visible_, future_visible_);
 }
+#endif
 
 void TrailLayer::setPastColor(QColor color) {
   if (!color.isValid() || past_color_.rgb() == color.rgb()) {
@@ -391,17 +396,15 @@ void TrailLayer::setFutureVisible(bool visible) {
   emit repaintRequested();
 }
 
-void TrailLayer::setWarning(const QString& warning) {
-  if (warning_ == warning) {
-    return;
-  }
-  warning_ = warning;
-  emit statusWarningChanged();
+void TrailLayer::requestRebuild() {
+  rebuild_worker_.invalidate();
+  startRebuild();
 }
 
-void TrailLayer::requestRebuild() {
-  ++build_generation_;
-  startRebuild();
+TrailPolyline TrailLayer::buildTfTrail(const TfTrailRequest& request) {
+  // Allocation-only work; the worker's barrier covers what could throw.
+  return buildTfFrameTrail(
+      *request.tf, request.fixed_frame, request.frame, PJ::Timepoint::min(), PJ::Timepoint::max(), kMaxTrailPoints);
 }
 
 void TrailLayer::startRebuild(bool synchronous) {
@@ -421,36 +424,7 @@ void TrailLayer::startRebuild(bool synchronous) {
         kMaxTrailPoints));
     return;
   }
-  if (inflight_) {
-    return;  // onRebuildFinished sees generation != inflight_generation_ and relaunches
-  }
-  if (watcher_ == nullptr) {
-    watcher_ = new QFutureWatcher<TrailPolyline>(this);
-    connect(watcher_, &QFutureWatcher<TrailPolyline>::finished, this, &TrailLayer::onRebuildFinished);
-  }
-  inflight_ = true;
-  inflight_generation_ = build_generation_;
-  // The shared_ptr copy keeps the buffer alive off-thread; TransformBuffer is
-  // shared_mutex-protected, so concurrent GUI-thread writes are safe.
-  const std::shared_ptr<TransformBuffer> tf = ctx_.tf_buffer;
-  const std::string fixed = fixed_frame_;
-  const std::string frame = source_.frame.toStdString();
-  watcher_->setFuture(QtConcurrent::run([tf, fixed, frame]() -> TrailPolyline {
-    return buildTfFrameTrail(*tf, fixed, frame, PJ::Timepoint::min(), PJ::Timepoint::max(), kMaxTrailPoints);
-  }));
-}
-
-void TrailLayer::onRebuildFinished() {
-  inflight_ = false;
-  // result() would rethrow a worker exception into this slot; buildTfFrameTrail
-  // does allocation-only work, and nothing cancels the watcher (it dies with
-  // the layer), so both QtConcurrent failure modes are structurally absent.
-  TrailPolyline result = watcher_->result();
-  if (inflight_generation_ == build_generation_) {
-    adoptPolyline(std::move(result));
-  } else {
-    startRebuild();  // stale: parameters changed while running; go again
-  }
+  rebuild_worker_.request(TfTrailRequest{ctx_.tf_buffer, fixed_frame_, source_.frame.toStdString()});
 }
 
 void TrailLayer::adoptPolyline(TrailPolyline polyline) {
@@ -462,21 +436,23 @@ void TrailLayer::adoptPolyline(TrailPolyline polyline) {
     stamps_.push_back(point.t);
     points_.push_back(point.pos);
   }
+#ifndef PJ_SCENE3D_RHI
   pass_.setPoints(points_);
+#endif
   ++build_revision_;
   if (ctx_.tf_buffer != nullptr) {
     last_seen_tf_revision_ = ctx_.tf_buffer->revision();
   }
   if (stamps_.size() >= 2) {
-    setWarning({});
+    setDataWarning({});
   } else if (source_.kind == TrailSource::Kind::kTfFrame && !fixed_frame_.empty() && ctx_.tf_buffer != nullptr) {
     const bool connected = ctx_.tf_buffer->areConnected(fixed_frame_, source_.frame.toStdString());
-    setWarning(
+    setDataWarning(
         connected
             ? tr("no motion samples for '%1'").arg(source_.frame)
             : tr("'%1' is not connected to fixed frame '%2'").arg(source_.frame, QString::fromStdString(fixed_frame_)));
   } else if (source_.kind == TrailSource::Kind::kPoseTopic) {
-    setWarning(
+    setDataWarning(
         last_pose_decode_failures_ > 0
             ? tr("pose data could not be decoded (%1 message(s) failed)").arg(last_pose_decode_failures_)
             : tr("waiting for pose samples"));
@@ -498,9 +474,11 @@ void TrailLayer::appendTail(TrailPolyline tail) {
     stamps_.erase(stamps_.begin(), stamps_.begin() + drop);
     points_.erase(points_.begin(), points_.begin() + drop);
   }
+#ifndef PJ_SCENE3D_RHI
   pass_.setPoints(points_);
+#endif
   ++build_revision_;
-  setWarning({});
+  setDataWarning({});
   emit repaintRequested();
 }
 
@@ -561,7 +539,7 @@ std::optional<PoseTrailSample> TrailLayer::decodePoseSample(
 }
 
 void TrailLayer::maybeAppendLiveSamples() {
-  if (inflight_ || ctx_.tf_buffer == nullptr || fixed_frame_.empty()) {
+  if (rebuild_worker_.busy() || ctx_.tf_buffer == nullptr || fixed_frame_.empty()) {
     return;  // a full rebuild is running; it lands on the live edge itself
   }
   if (source_.kind == TrailSource::Kind::kTfFrame) {

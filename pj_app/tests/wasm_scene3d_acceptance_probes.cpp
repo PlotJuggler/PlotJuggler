@@ -19,14 +19,14 @@
 
 #include "MainWindow.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
+#include "pj_scene3d_widgets/layers/depth_cloud_layer.h"
+#include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
+#include "pj_scene3d_widgets/layers/pointcloud_layer.h"
+#include "pj_scene3d_widgets/layers/poses_in_frame_layer.h"
+#include "pj_scene3d_widgets/layers/robot_model_layer.h"
+#include "pj_scene3d_widgets/layers/scene_entities_layer.h"
+#include "pj_scene3d_widgets/layers/voxel_grid_layer.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
-#include "pj_scene3d_widgets/wasm/depth_cloud_layer_wasm.h"
-#include "pj_scene3d_widgets/wasm/occupancy_grid_layer_wasm.h"
-#include "pj_scene3d_widgets/wasm/point_cloud_layer_wasm.h"
-#include "pj_scene3d_widgets/wasm/poses_in_frame_layer_wasm.h"
-#include "pj_scene3d_widgets/wasm/robot_model_layer_wasm.h"
-#include "pj_scene3d_widgets/wasm/scene_entities_layer_wasm.h"
-#include "pj_scene3d_widgets/wasm/voxel_grid_layer_wasm.h"
 #include "pj_widgets/LayerListView.h"
 #include "pj_widgets/RealSlider.h"
 #include "ui/Scene3DConfigPanel.h"
@@ -131,7 +131,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_scene3d_foundation() {
       const QByteArray encoded_fixed = QUrl::toPercentEncoding(dock->currentFixedFrame());
       const QByteArray encoded_follow = QUrl::toPercentEncoding(dock->currentFollowFrame());
       auto* fixed_combo = dock->findChild<QComboBox*>(u"scene3dFixedFrameCombo"_s);
-      auto* camera_combo = dock->findChild<QComboBox*>(u"scene3dCameraModelCombo"_s);
+      auto* camera_combo = dock->findChild<QComboBox*>(u"cameraModelCombo"_s);
       auto* home_button = dock->findChild<QToolButton*>(u"cameraHomeButton"_s);
       const QRect view_geometry = geometryRelativeTo(main_window, view);
       const QRect fixed_geometry = geometryRelativeTo(main_window, fixed_combo);
@@ -211,43 +211,43 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_scene3d_foundation() {
       for (const PJ::SceneLayerInfo& info : dock->layers()) {
         ui_order.push_back(QString::number(info.topic_id.id));
         PJ::ISceneLayer* layer = dock->layerFor(info.topic_id);
-        if (auto* point = dynamic_cast<pj::scene3d::WasmPointCloudLayer*>(layer)) {
+        if (auto* point = dynamic_cast<pj::scene3d::PointCloudLayer*>(layer)) {
           ++point_layers;
           if (point->isCompressedForTest()) {
             ++compressed_layers;
-            compressed_decoding += point->compressedDecodeInFlightForTest() ? 1 : 0;
-            compressed_starts += point->compressedDecodeStartsForTest();
-            compressed_completed += point->compressedDecodeCompletionsForTest();
-            compressed_off_main += point->compressedDecodeOffMainCompletionsForTest();
+            compressed_decoding += point->decodeInFlightForTest() ? 1 : 0;
+            compressed_starts += static_cast<quint64>(point->startDecodeCountForTest());
+            compressed_completed += static_cast<quint64>(point->decodeCompletionsForTest());
+            compressed_off_main += static_cast<quint64>(point->decodeOffMainCompletionsForTest());
           }
-          if (!point->warningReason().isEmpty()) {
-            warnings.push_back(point->warningReason());
+          if (!point->statusWarning().isEmpty()) {
+            warnings.push_back(point->statusWarning());
           }
-        } else if (auto* depth = dynamic_cast<pj::scene3d::WasmDepthCloudLayer*>(layer)) {
+        } else if (auto* depth = dynamic_cast<pj::scene3d::DepthCloudLayer*>(layer)) {
           ++depth_layers;
           depth_decoding += depth->decodeInFlightForTest() ? 1 : 0;
           depth_starts += depth->decodeStartsForTest();
           depth_completed += depth->decodeCompletionsForTest();
           depth_off_main += depth->decodeOffMainCompletionsForTest();
-          if (!depth->warningReason().isEmpty()) {
-            warnings.push_back(depth->warningReason());
+          if (!depth->statusWarning().isEmpty()) {
+            warnings.push_back(depth->statusWarning());
           }
-        } else if (auto* poses = dynamic_cast<pj::scene3d::WasmPosesInFrameLayer*>(layer)) {
+        } else if (auto* poses = dynamic_cast<pj::scene3d::PosesInFrameLayer*>(layer)) {
           ++pose_layers;
-          if (!poses->warningReason().isEmpty()) {
-            warnings.push_back(poses->warningReason());
+          if (!poses->statusWarning().isEmpty()) {
+            warnings.push_back(poses->statusWarning());
           }
-        } else if (auto* occupancy = dynamic_cast<pj::scene3d::WasmOccupancyGridLayer*>(layer)) {
+        } else if (auto* occupancy = dynamic_cast<pj::scene3d::OccupancyGridLayer*>(layer)) {
           ++occupancy_layers;
-          if (!occupancy->warningReason().isEmpty()) {
-            warnings.push_back(occupancy->warningReason());
+          if (!occupancy->statusWarning().isEmpty()) {
+            warnings.push_back(occupancy->statusWarning());
           }
-        } else if (auto* voxels = dynamic_cast<pj::scene3d::WasmVoxelGridLayer*>(layer)) {
+        } else if (auto* voxels = dynamic_cast<pj::scene3d::VoxelGridLayer*>(layer)) {
           ++voxel_layers;
-          if (!voxels->warningReason().isEmpty()) {
-            warnings.push_back(voxels->warningReason());
+          if (!voxels->statusWarning().isEmpty()) {
+            warnings.push_back(voxels->statusWarning());
           }
-        } else if (auto* markers = dynamic_cast<pj::scene3d::WasmSceneEntitiesLayer*>(layer)) {
+        } else if (auto* markers = dynamic_cast<pj::scene3d::SceneEntitiesLayer*>(layer)) {
           ++marker_layers;
           marker_decoding += markers->decodeInFlightForTest() ? 1 : 0;
           marker_starts += markers->decodeStartsForTest();
@@ -267,16 +267,16 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_scene3d_foundation() {
           ready_models += markers->readyModelCountForTest();
           live_models += markers->liveModelCountForTest();
           model_bytes += markers->modelRetainedBytes();
-          if (!markers->warningReason().isEmpty()) {
-            warnings.push_back(markers->warningReason());
+          if (!markers->statusWarning().isEmpty()) {
+            warnings.push_back(markers->statusWarning());
           }
-        } else if (auto* robot = dynamic_cast<pj::scene3d::WasmRobotModelLayer*>(layer)) {
+        } else if (auto* robot = dynamic_cast<pj::scene3d::RobotModelLayer*>(layer)) {
           ++robot_layers;
           robot_meshes += robot->modelMeshes().size();
           robot_draws += robot->modelDrawCalls().size();
           for (const auto& draw : robot->modelDrawCalls()) {
-            robot_visuals += draw.group == pj::scene3d::WasmModelDrawGroup::kVisual ? 1U : 0U;
-            robot_collisions += draw.group == pj::scene3d::WasmModelDrawGroup::kCollision ? 1U : 0U;
+            robot_visuals += draw.group == pj::scene3d::ModelDrawGroup::kVisual ? 1U : 0U;
+            robot_collisions += draw.group == pj::scene3d::ModelDrawGroup::kCollision ? 1U : 0U;
             robot_placeholders += draw.mesh_key == "robot:placeholder" ? 1U : 0U;
           }
           robot_bridges += robot->fixedJointBridgeCount();

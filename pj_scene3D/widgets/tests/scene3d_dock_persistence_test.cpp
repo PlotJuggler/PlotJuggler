@@ -13,8 +13,8 @@
 //    frame survives even when zero layers restore (view_ otherwise null).
 //
 // These exercise the dock through its public surface against a real
-// SessionManager/DataEngine/ObjectStore + TransformService. The GL view is a
-// QOpenGLWidget; its ctor defers all GL to initializeGL(), so constructing it
+// SessionManager/DataEngine/ObjectStore + TransformService. Either view (GL or
+// QRhi) defers all GPU work until it is first shown, so constructing it
 // headless (offscreen platform, never shown) is safe and touches no context.
 
 #include <gtest/gtest.h>
@@ -22,9 +22,11 @@
 #include <QApplication>
 #include <QDomDocument>
 #include <QDomElement>
+#include <QFile>
 #include <QMouseEvent>
 #include <QSet>
 #include <QString>
+#include <QTemporaryDir>
 #include <QWheelEvent>
 #include <array>
 #include <cstdint>
@@ -229,7 +231,7 @@ class Scene3DDockStrictXmlTest : public ::testing::Test {
     auto* view = dock_.sceneView();
     view->setCameraModel(pj::scene3d::SceneViewWidget::CameraModel::kFly);
     view->setGridVisible(false);
-    view->setGridStyle(pj::scene3d::GridRenderPass::Style::kFilledCells);
+    view->setGridStyle(pj::scene3d::SceneViewWidget::GridStyle::kFilledCells);
     view->setGridExtentMetres(37.0f);
     view->setGridDivisions(19);
     view->setAxesVisible(false);
@@ -848,6 +850,49 @@ TEST(Scene3DDockPersistence, DeferredMalformedLayerIsRemovedAndConsumedWhenTopic
   EXPECT_EQ(workspace_changes, 0) << "automatic pending cleanup is not a new user edit";
 }
 
+// A browser-saved local URDF layer carries only the file reference, never its
+// bytes. A native build restores it by reading that path; only the browser asks
+// the user to select the file again (RobotModelLayer, PJ_TARGET_WASM).
+TEST(Scene3DDockPersistence, BrowserSavedLocalFileRobotRestoresFromPathNatively) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString urdf_path = dir.filePath(u"restored.urdf"_s);
+  QFile urdf(urdf_path);
+  ASSERT_TRUE(urdf.open(QIODevice::WriteOnly));
+  ASSERT_GT(urdf.write(kRobotUrdf), 0);
+  urdf.close();
+
+  QDomDocument doc;
+  QDomElement scene = doc.createElement(u"scene3d"_s);
+  doc.appendChild(scene);
+  QDomElement layer = doc.createElement(u"layer"_s);
+  layer.setAttribute(u"local"_s, u"true"_s);
+  layer.setAttribute(u"topic_name"_s, QString());
+  layer.setAttribute(u"object_type"_s, u"kRobotDescription"_s);
+  layer.setAttribute(u"display_name"_s, u"restored.urdf"_s);
+  layer.setAttribute(u"visible"_s, u"true"_s);
+  layer.setAttribute(u"order"_s, u"0"_s);
+  QDomElement payload = doc.createElement(u"robot_model"_s);
+  payload.setAttribute(u"source_type"_s, u"file"_s);
+  payload.setAttribute(u"source_value"_s, urdf_path);
+  layer.appendChild(payload);
+  scene.appendChild(layer);
+
+  PJ::SessionManager session;
+  pj::scene3d::TransformService transform_service(session);
+  PJ::Scene3DDockWidget dock;
+  dock.setSessionManager(&session);
+  dock.setTransformService(&transform_service);
+  ASSERT_TRUE(dock.xmlLoadState(scene));
+  ASSERT_EQ(dock.layers().size(), 1U);
+  auto* robot = dynamic_cast<pj::scene3d::RobotModelLayer*>(dock.layerFor(dock.layers().front().topic_id));
+  ASSERT_NE(robot, nullptr);
+  EXPECT_EQ(robot->sourceType(), pj::scene3d::RobotModelLayer::SourceType::kFile);
+  EXPECT_NE(robot->robotModel(), nullptr) << robot->statusWarning().toStdString();
+  EXPECT_FALSE(robot->statusWarning().contains(u"again"_s)) << robot->statusWarning().toStdString();
+  EXPECT_FALSE(dock.hasTransformBufferForTest()) << "a local robot needs no dataset TF binding";
+}
+
 TEST(Scene3DDockPersistence, DeferredNestedRobotTopicMaterializesWithoutDuplicateLocalLayer) {
   PJ::SessionManager session;
   pj::scene3d::TransformService transform_service(session);
@@ -1212,7 +1257,11 @@ TEST(Scene3DDockPersistence, PoseTrailBuildsPolylineFromDecodedMessages) {
   // pose lands identity-transformed (no TF needed) — full decode path headless.
   trail->rebuildNowForTest(u"odom"_s);
   EXPECT_EQ(trail->pointCountForTest(), 2U);
+#ifdef PJ_SCENE3D_RHI
+  EXPECT_EQ(trail->statusWarning(), u"Not rendered by this renderer yet"_s);
+#else
   EXPECT_TRUE(trail->statusWarning().isEmpty());
+#endif
   EXPECT_EQ(PJ::toRaw(trail->timeRange().min), 100);
   EXPECT_EQ(PJ::toRaw(trail->timeRange().max), 200);
 }
@@ -1264,6 +1313,9 @@ TEST(Scene3DDockPersistence, TfTrailRemovedWhenItsDatasetUnloads) {
   EXPECT_TRUE(dock.layers().empty()) << "the TF trail must be removed with its dataset";
 }
 
+// The pose layer owns a trail only where trails are drawn (the QRhi build keeps
+// the nested <trail> verbatim instead; scene3d_layer_xml_validation_test).
+#ifndef PJ_SCENE3D_RHI
 TEST(Scene3DDockPersistence, PoseLayerOwnsEmbeddedTrailInsteadOfAddingALayer) {
   PJ::SessionManager session;
   pj::scene3d::TransformService transform_service(session);
@@ -1321,6 +1373,7 @@ TEST(Scene3DDockPersistence, PoseLayerOwnsEmbeddedTrailInsteadOfAddingALayer) {
   const QDomElement off_state = restored->xmlSaveState(off_doc);
   EXPECT_TRUE(off_state.firstChildElement(u"trail"_s).isNull());
 }
+#endif  // PJ_SCENE3D_RHI
 
 TEST(Scene3DDockPersistence, TrailRestoreRejectsMalformedElements) {
   PJ::SessionManager session;

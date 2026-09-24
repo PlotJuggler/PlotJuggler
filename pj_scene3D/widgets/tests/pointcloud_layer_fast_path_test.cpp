@@ -111,7 +111,7 @@ TEST(PointCloudLayerFastPath, WorldBoundsTracksLatestCloudInSolidMode) {
   ASSERT_TRUE(layer.attach(ctx));  // renders the near cloud (stamp 100)
 
   // Switch to solid colour (no colormap) and advance to the far cloud (stamp 200).
-  layer.setColorType(pj::scene3d::PointcloudRenderPass::ColorType::kSolid);
+  layer.setColorType(pj::scene3d::PointColorType::kSolid);
   layer.renderAtForTest(200);
 
   const auto bounds = layer.worldBounds();
@@ -122,7 +122,8 @@ TEST(PointCloudLayerFastPath, WorldBoundsTracksLatestCloudInSolidMode) {
   EXPECT_FLOAT_EQ(bounds->max.x, 5.0f);
 }
 
-// A packed-rgba RGB-direct cloud must take the zero-copy fast path (not the CPU fallback).
+// A packed-rgba RGB-direct cloud must take the zero-copy fast path (not the CPU fallback) in
+// the GL build; the QRhi sink always retains PointVertex data, carrying the wire colour as-is.
 TEST(PointCloudLayerFastPath, RgbCloudTakesFastPath) {
   g_rgba_calls.store(0);
   PJ::SessionManager session;
@@ -141,9 +142,14 @@ TEST(PointCloudLayerFastPath, RgbCloudTakesFastPath) {
   ASSERT_TRUE(layer.attach(ctx));
 
   // RGB-direct is the smart default once a colour field is detected; assert it explicitly too.
-  layer.setColorType(pj::scene3d::PointcloudRenderPass::ColorType::kRgb);
+  layer.setColorType(pj::scene3d::PointColorType::kRgb);
   layer.renderAtForTest(100);
+#ifdef PJ_SCENE3D_RHI
+  ASSERT_EQ(layer.vertices().size(), 1U);
+  EXPECT_EQ(layer.vertices()[0].rgba, 0xff302010U) << "packed-rgba colour was not carried verbatim";
+#else
   EXPECT_TRUE(layer.activeCloudIsFastForTest()) << "packed-rgba RGB cloud did not take the fast path";
+#endif
 }
 
 }  // namespace

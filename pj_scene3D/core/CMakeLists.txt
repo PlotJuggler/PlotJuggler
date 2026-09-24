@@ -7,14 +7,15 @@ find_package(nlohmann_json REQUIRED)
 
 if(EMSCRIPTEN)
   # Expose only the backend-neutral slice used by the product QRhi view and its
-  # canonical point-cloud, pose-array, occupancy, voxel, marker, and robot-model
-  # layers. Compressed canonical clouds add only the existing transcoder when
+  # layers (grid-map and trail layers included: they persist in the browser,
+  # though nothing draws them yet). Compressed canonical clouds add only the existing transcoder when
   # their explicit browser dependency option is enabled. The native branch
   # below is unchanged.
   set(_pj_scene3d_core_sources
     src/camera/camera.cpp
     src/camera/camera_math.cpp
     src/depth_backproject.cpp
+    src/grid_map_view.cpp
     src/occupancy_grid_reconstructor.cpp
     src/pointcloud_convert.cpp
     src/poses_in_frame_render.cpp
@@ -24,6 +25,7 @@ if(EMSCRIPTEN)
     src/shadow_camera.cpp
     src/tf/tf_buffer.cpp
     src/tf/tf_connections.cpp
+    src/trail_sampling.cpp
     src/version.cpp
     src/voxel_grid_view.cpp
     src/voxel_grid_value.cpp

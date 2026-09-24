@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QColor>
-#include <QFutureWatcher>
 #include <QPointer>
 #include <QString>
 #include <QStringList>
@@ -12,32 +11,45 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/compressed_point_cloud.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
-#include "pj_datastore/object_store.hpp"  // ObjectStore::TimeRangeEntry (SampleId)
-#include "pj_scene3d_widgets/passes/pointcloud_render_pass.h"
+#include "pj_datastore/object_store.hpp"   // ObjectStore::TimeRangeEntry (SampleId)
+#include "pj_scene3d_core/scene_limits.h"  // BudgetLatch
+#include "pj_scene3d_widgets/latest_wins_worker.h"
+#include "pj_scene3d_widgets/layer_style.h"
+#include "pj_scene3d_widgets/point_renderable.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+#ifndef PJ_SCENE3D_RHI
+#include "pj_scene3d_widgets/passes/pointcloud_render_pass.h"
+#endif
 
 class QWidget;
 
 namespace pj::scene3d {
 
 // First concrete Scene3DLayer: a single sensor_msgs/PointCloud2 topic.
-// Owns its own PointcloudRenderPass and absorbs the per-topic state that
-// used to live in Scene3DDockWidget::PointCloudTopicState.
 //
 // Dual-mode: the topic may carry raw PointCloud objects (converted and pushed
 // synchronously) or CompressedPointCloud blobs (Draco / Cloudini), which are
 // decoded on the Qt thread pool and pushed when the result lands. The mode is
 // derived per-sample from the parsed object, never latched.
 //
+// Decode, the async worker, kSceneLimits admission (per-cloud limits, decode
+// limits before decompression; fail-closed with a status warning), persistence
+// and the config widget are shared by both renderers; only the sink differs. GL
+// build: the layer owns a PointcloudRenderPass and uploads to it (zero-copy when
+// the wire layout allows). QRhi build (PJ_SCENE3D_RHI): the layer retains
+// source-frame PointVertex data that the view reads through PointRenderable,
+// under the view's vertex budget.
+//
 // Exposes a per-instance config widget containing the color-field combo.
 // Adding new per-instance parameters (point size, alpha, colormap choice)
 // is local to this class — Scene3DDockWidget and Scene3DConfigPanel do
 // not need to change.
-class PointCloudLayer : public Scene3DLayer {
+class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   Q_OBJECT
  public:
   // The topic id + initial display name are needed before attach() since
@@ -68,9 +80,11 @@ class PointCloudLayer : public Scene3DLayer {
   [[nodiscard]] uint64_t renderKey(PJ::Timepoint time) const override;
   void setVisible(bool visible) override;
 
+#ifndef PJ_SCENE3D_RHI
   void initializeGL() override;
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
   void releaseGL() override;
+#endif
   // Source-frame extent of the decoded cloud, recomputed on each decode in
   // renderAt(). nullopt until the first cloud is decoded.
   [[nodiscard]] std::optional<AABB> worldBounds() const override {
@@ -88,16 +102,16 @@ class PointCloudLayer : public Scene3DLayer {
   [[nodiscard]] QString colorField() const {
     return QString::fromStdString(color_field_);
   }
-  [[nodiscard]] PointcloudRenderPass::Shape shape() const {
+  [[nodiscard]] PointShape shape() const override {
     return shape_;
   }
-  [[nodiscard]] float sizeMeters() const {
+  [[nodiscard]] float sizeMeters() const override {
     return size_meters_;
   }
-  [[nodiscard]] float sizePixels() const {
+  [[nodiscard]] float sizePixels() const override {
     return size_pixels_;
   }
-  [[nodiscard]] PointcloudRenderPass::ColorType colorType() const {
+  [[nodiscard]] PointColorType colorType() const override {
     return color_type_;
   }
   // True when the active cloud carries a per-point colour field (a packed 'rgba'/'rgb'
@@ -106,13 +120,13 @@ class PointCloudLayer : public Scene3DLayer {
   [[nodiscard]] bool hasColorField() const {
     return has_color_;
   }
-  [[nodiscard]] QColor solidColor() const {
+  [[nodiscard]] QColor solidColor() const override {
     return solid_color_;
   }
-  [[nodiscard]] PointcloudRenderPass::Colormap colormap() const {
+  [[nodiscard]] PJ::Colormap colormap() const override {
     return colormap_;
   }
-  [[nodiscard]] bool invertLut() const {
+  [[nodiscard]] bool invertLut() const override {
     return invert_lut_;
   }
   [[nodiscard]] float outsideRangeOpacity() const {
@@ -132,17 +146,75 @@ class PointCloudLayer : public Scene3DLayer {
   }
 
   void setColorField(const QString& field);
-  void setShape(PointcloudRenderPass::Shape shape);
+  void setShape(PointShape shape);
   void setSizeMeters(float meters);
   void setSizePixels(float pixels);
-  void setColorType(PointcloudRenderPass::ColorType type);
+  void setColorType(PointColorType type);
   void setSolidColor(QColor color);
-  void setColormap(PointcloudRenderPass::Colormap cm);
+  void setColormap(PJ::Colormap cm);
   void setInvertLut(bool invert);
   void setOutsideRangeOpacity(float opacity);
   void setOutsideRangeVisible(bool visible);
   void setAutoRange(bool enable);
   void setManualRange(float min_value, float max_value);
+
+  // Full validation of a <pointcloud> payload without mutating any layer, so a
+  // dock can vet a whole workspace before it tears down its live layers.
+  [[nodiscard]] static bool validateXml(const QDomElement& element);
+
+  // Compressed-decode worker counters, read by the browser acceptance probes.
+  [[nodiscard]] bool isCompressedForTest() const {
+    return object_type_ == PJ::sdk::BuiltinObjectType::kCompressedPointCloud;
+  }
+  // True while an async compressed decode is in flight (or its finished event
+  // is still queued) — lets tests pump the loop until the result landed.
+  [[nodiscard]] bool decodeInFlightForTest() const {
+    return decode_worker_.busy();
+  }
+  // Number of decodes actually dispatched. The coalescing test asserts on this:
+  // a superseded pending sample, a known-failed sample, and a redundant
+  // re-request must NOT bump it.
+  [[nodiscard]] int startDecodeCountForTest() const {
+    return static_cast<int>(decode_worker_.starts());
+  }
+  [[nodiscard]] int decodeCompletionsForTest() const {
+    return static_cast<int>(decode_worker_.completions());
+  }
+  [[nodiscard]] int decodeOffMainCompletionsForTest() const {
+    return static_cast<int>(decode_worker_.offMainCompletions());
+  }
+
+  // PointRenderable (read by the QRhi view; the GL build keeps these empty).
+  // prepareForRender() drains a pending tracker move (one decode per painted
+  // frame) and enforces the view's aggregate vertex budget: an over-budget cloud
+  // is dropped with a warning and retried once the budget frees up.
+  bool prepareForRender(std::uint64_t remaining_view_vertices) override;
+  [[nodiscard]] const std::vector<PointVertex>& vertices() const override {
+    return vertices_;
+  }
+  [[nodiscard]] std::uint64_t geometryRevision() const override {
+    return geometry_revision_;
+  }
+  [[nodiscard]] const std::string& renderFrameId() const override {
+    return source_frame_;
+  }
+  [[nodiscard]] std::optional<AABB> sourceBounds() const override {
+    return world_bounds_;
+  }
+  [[nodiscard]] bool visible() const override {
+    return visible_;
+  }
+  [[nodiscard]] float outsideRangeAlpha() const override {
+    return outside_range_visible_ ? outside_range_opacity_ : 0.0f;
+  }
+  [[nodiscard]] int scalarAxis() const override;
+  [[nodiscard]] std::pair<float, float> scalarRange(const glm::mat4& fixed_from_source) const override;
+  // The view owns fixed<-source, so it reports the effective auto range after
+  // applying TF; an interactive auto->manual toggle freezes exactly these colours.
+  void noteRenderedScalarRange(float minimum, float maximum) override;
+  [[nodiscard]] bool isDepthCloud() const override {
+    return false;
+  }
 
 #ifdef PJ_SCENE3D_TEST_HOOKS
   void renderAtForTest(int64_t time_ns) {
@@ -153,22 +225,13 @@ class PointCloudLayer : public Scene3DLayer {
   [[nodiscard]] std::optional<int64_t> lastPushedStampForTest() const {
     return last_pushed_id_ == SampleId{} ? std::nullopt : std::optional<int64_t>{last_pushed_id_.timestamp};
   }
-  // True while an async compressed decode is in flight (or its finished event
-  // is still queued) — lets tests pump the loop until the result landed.
-  [[nodiscard]] bool decodeInFlightForTest() const {
-    return inflight_ != SampleId{};
-  }
-  // Number of times startDecode() actually dispatched a worker. The coalescing
-  // test asserts on this: a superseded pending sample, a known-failed sample,
-  // and a redundant re-request must NOT bump it.
-  [[nodiscard]] int startDecodeCountForTest() const {
-    return start_decode_count_;
-  }
+#ifndef PJ_SCENE3D_RHI
   // True when the render pass holds a zero-copy fast cloud (vs the CloudVertex fallback) — lets a
   // test assert an eligible cloud (incl. packed-rgba RGB-direct) actually took the fast path.
   [[nodiscard]] bool activeCloudIsFastForTest() const {
     return cloud_pass_.activeCloudIsFastForTest();
   }
+#endif
 #endif
 
  signals:
@@ -194,6 +257,24 @@ class PointCloudLayer : public Scene3DLayer {
     std::shared_ptr<PJ::sdk::PointCloud> cloud;  // null on decode failure
     QString error;
   };
+  // Every persisted <pointcloud> attribute, parsed and range-checked.
+  struct Settings {
+    PointShape shape = PointShape::kSphere;
+    float size_meters = 0.0f;
+    float size_pixels = 0.0f;
+    PointColorType color_type = PointColorType::kField;
+    bool color_choice_explicit = false;
+    std::optional<QString> color_field;  // absent attribute: keep the current field
+    std::optional<QColor> solid_color;   // absent attribute: keep the current colour
+    PJ::Colormap colormap = PJ::Colormap::kTurbo;
+    bool auto_range = true;
+    bool invert_lut = false;
+    float outside_range_opacity = 1.0f;
+    bool outside_range_visible = true;
+    float range_min = 0.0f;
+    float range_max = 1.0f;
+  };
+  [[nodiscard]] static std::optional<Settings> parseSettings(const QDomElement& element);
   // The newest sample requested while a decode ran (the depth-1 "latest wins" queue).
   struct PendingDecode {
     PJ::sdk::CompressedPointCloud cloud;  // its shared anchor keeps the blob alive
@@ -208,6 +289,9 @@ class PointCloudLayer : public Scene3DLayer {
   // time_ns. Skips all work when the pass already holds exactly that
   // sample with the current color field (the common tracker tick).
   void renderAt(int64_t time_ns);
+  // Decode at the playhead when a tracker move is pending (once per painted
+  // frame, by GL render() or prepareForRender()).
+  void drainPendingUpdate();
   // Consults the sample-identity memos for `id`, recording it as wanted_.
   // Returns true when no payload resolve is needed: the sample is already
   // pushed under the current color settings, was re-pushed from the decoded
@@ -220,16 +304,34 @@ class PointCloudLayer : public Scene3DLayer {
   // the new state without waiting for the next tracker tick.
   void refreshNow();
 
+  // Drops every sample-identity memo (decode cache, failure memo, pushed sample,
+  // wanted_) and invalidates queued and running decodes. Used when the store
+  // bytes behind a stable topic id are replaced, and (QRhi) when a hidden layer
+  // releases its retained cloud.
+  void invalidateSampleState();
+
   // Convert a canonical PointCloud (raw, or freshly decompressed) into the render
   // struct and push it to the pass. The single point where a cloud reaches the GPU,
   // shared by the raw and compressed paths. `id` identifies the pushed sample for
   // the redundant-push skip in renderAt().
   void pushCloud(const PJ::sdk::PointCloud& cloud, SampleId id);
 
+  // Fail-closed outcome for sample `id`: clears the drawn cloud, shows `warning`
+  // on the layer row, and memoizes the failure so the sample is not re-decoded
+  // until a reload (or re-show) resets the memos.
+  void failSample(SampleId id, const QString& warning);
+  // Drops the drawn cloud (the pass's, or the retained vertices) and its bounds.
+  void clearGeometry();
+  // Pushes the style state into the GL pass (a no-op for QRhi, whose view reads
+  // the getters every frame). Every style setter ends here.
+  void syncPassStyle();
+
+#ifndef PJ_SCENE3D_RHI
   // Receives an async GPU AABB reduction from the render pass (GL thread). Updates
   // world_bounds_ (+ the spatial-axis colormap range) and requests a repaint so the
   // camera scene-fit picks up the new extent. Wired as the pass bounds callback.
   void onGpuAabb(std::optional<AABB> box);
+#endif
 
   // The single writer of world_bounds_: it also hands the extent to the render pass,
   // which frustum-culls the whole cloud with it. Assigning the member directly would
@@ -254,20 +356,16 @@ class PointCloudLayer : public Scene3DLayer {
   // the just-restored saved range with the recomputed data range.
   void applyAutoRange(bool enable, bool seed_manual_from_world);
 
-  // Fold the opacity scrubber + visibility eye into the pass's single effective
-  // outside-range alpha (eye off -> 0). Called from both setters and construction.
-  void pushOutsideRangeAlpha();
-
   // --- Compressed-cloud async decode (Draco / Cloudini) ---
   // Compressed decode is CPU-heavy (~100ms for large Draco clouds), so it runs on the
   // Qt thread pool and never blocks the UI. requestDecode() records the request as
   // wanted_ and coalesces latest-wins; onDecodeFinished() runs on the GUI thread,
   // caches the result, and pushes it only if it still matches wanted_.
   // Raw PointCloud topics skip all of this and convert synchronously (cheap).
-  void ensureDecodeWorker();
   void requestDecode(const PJ::sdk::CompressedPointCloud& cloud, SampleId id);
-  void startDecode(const PJ::sdk::CompressedPointCloud& cloud, SampleId id);
-  void onDecodeFinished();
+  // The worker job: pure, touches no layer state (safe past the layer's death).
+  [[nodiscard]] static DecodeResult decodeCompressed(const PendingDecode& request);
+  void onDecodeFinished(DecodeResult result);
   void populateColorFields(const PJ::sdk::PointCloud& cloud);
 
   // Invoked by SessionManager::datasetAboutToBeReplaced (any dataset; filtered to
@@ -293,9 +391,9 @@ class PointCloudLayer : public Scene3DLayer {
   // nullopt until the first tracker tick — 0 ns is a valid timestamp, so absence
   // is explicit (the dock's stance; see SceneDockWidget::registerLayer).
   std::optional<PJ::Timepoint> decoded_at_ns_;
-  // Set by setTrackerTime, consumed by render(): the decode (parse + convert +
-  // GPU upload) is deferred to the next painted frame instead of running eagerly
-  // per tracker tick. Qt coalesces repaints, so a fast scrub that fires many ticks
+  // Set by setTrackerTime, consumed by drainPendingUpdate(): the decode (parse +
+  // convert + GPU upload) is deferred to the next painted frame instead of
+  // running eagerly per tracker tick. Qt coalesces repaints, so a fast scrub that fires many ticks
   // decodes only the final cloud once, not every skipped intermediate frame.
   bool tracker_dirty_ = false;
 
@@ -311,10 +409,10 @@ class PointCloudLayer : public Scene3DLayer {
   // User-tunable per-cloud parameters. Mirror the render pass's current
   // values; the panel reads them on rebuild so a re-opened config widget
   // always reflects what the user picked.
-  PointcloudRenderPass::Shape shape_ = PointcloudRenderPass::Shape::kSphere;
+  PointShape shape_ = PointShape::kSphere;
   float size_meters_ = 0.02f;
   float size_pixels_ = 2.0f;
-  PointcloudRenderPass::ColorType color_type_ = PointcloudRenderPass::ColorType::kField;
+  PointColorType color_type_ = PointColorType::kField;
   // True once the active cloud is known to carry a per-point colour field. Drives the
   // "RGB" combo entry and the fresh-attach default to kRgb.
   bool has_color_ = false;
@@ -323,7 +421,7 @@ class PointCloudLayer : public Scene3DLayer {
   // default on the next decoded sample. Cleared state = "pick a smart default".
   bool color_choice_explicit_ = false;
   QColor solid_color_{255, 0, 0};
-  PointcloudRenderPass::Colormap colormap_ = PointcloudRenderPass::Colormap::kTurbo;
+  PJ::Colormap colormap_ = PJ::Colormap::kTurbo;
   bool invert_lut_ = false;
   float outside_range_opacity_ = 1.0f;
   bool outside_range_visible_ = true;
@@ -348,28 +446,31 @@ class PointCloudLayer : public Scene3DLayer {
   int last_pushed_axis_ = -1;
 
   // Async compressed-cloud decode state. Inert for raw PointCloud topics.
-  QFutureWatcher<DecodeResult>* decode_watcher_ = nullptr;  // child of this; created on first compressed sample
-  SampleId inflight_;                                       // the sample currently decoding; default = idle
-  std::optional<PendingDecode> pending_;
   std::shared_ptr<PJ::sdk::PointCloud> decoded_cache_;  // last decoded cloud, reused on color-field change
   SampleId decoded_cache_id_;                           // identity of decoded_cache_
-  SampleId wanted_;     // the sample the tracker currently wants; gates painting async results
-  SampleId failed_id_;  // last failed decode; not retried until a dataset reload swaps the store bytes
-
-  // Counts startDecode() dispatches; read only via startDecodeCountForTest(). Kept
-  // unconditional (not behind PJ_SCENE3D_TEST_HOOKS) so the class layout is identical
-  // in the library and in the test TUs — a macro-gated member would mismatch and
-  // read garbage from the test side.
-  int start_decode_count_ = 0;
+  SampleId wanted_;         // the sample the tracker currently wants; gates painting async results
+  SampleId failed_id_;      // last failed sample; not retried until a dataset reload swaps the store bytes
+  QString failed_warning_;  // the warning re-shown whenever failed_id_ is revisited
 
   // Lives only while attached: resets the sample-identity caches when a dataset
   // reload swaps this topic's store bytes (see onDatasetAboutToBeReplaced).
   QMetaObject::Connection reload_connection_;
-  // Set when a reload invalidates the sample currently decoding: its result is
-  // pre-reload content, so onDecodeFinished must not cache or memoize it.
-  bool drop_inflight_result_ = false;
 
+  // QRhi sink (empty in the GL build).
+  std::vector<PointVertex> vertices_;  // finite points of the active cloud, source frame
+  std::uint64_t geometry_revision_ = 0;
+  // Auto range of the active cloud's non-spatial scalar (spatial axes derive it
+  // from world_bounds_ under the live transform instead).
+  std::pair<float, float> automatic_scalar_range_{0.0f, 1.0f};
+  std::pair<float, float> last_rendered_scalar_range_{0.0f, 1.0f};
+  // Point count of a cloud dropped for the view budget.
+  BudgetLatch budget_;
+#ifndef PJ_SCENE3D_RHI
   PointcloudRenderPass cloud_pass_;
+#endif
+
+  LatestWinsWorker<PendingDecode, DecodeResult> decode_worker_{
+      this, &PointCloudLayer::decodeCompressed, [this](DecodeResult result) { onDecodeFinished(std::move(result)); }};
 };
 
 }  // namespace pj::scene3d

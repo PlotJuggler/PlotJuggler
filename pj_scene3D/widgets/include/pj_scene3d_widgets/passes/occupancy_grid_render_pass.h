@@ -13,6 +13,7 @@
 #include "pj_scene3d_widgets/gl/program.h"
 #include "pj_scene3d_widgets/gl/texture.h"
 #include "pj_scene3d_widgets/gl/vertex_array.h"
+#include "pj_scene3d_widgets/layer_style.h"
 #include "pj_scene3d_widgets/render_pass.h"
 
 namespace pj::scene3d {
@@ -24,7 +25,7 @@ namespace pj::scene3d {
 // and discards unknown cells (transparent).
 class OccupancyGridRenderPass : public IRenderPass {
  public:
-  enum class ColorScheme { kMap, kCostmap };
+  using ColorScheme = OccupancyColorScheme;
 
   OccupancyGridRenderPass();
   ~OccupancyGridRenderPass() override;
