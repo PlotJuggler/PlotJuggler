@@ -37,6 +37,16 @@ namespace {
   return done();
 }
 
+// Deterministically deliver every posted event. A single processEvents() does
+// NOT guarantee that: under the glib dispatcher one non-blocking iteration
+// dispatches only the highest-priority ready GSources, and a GTK-backed
+// platform theme (gtk3 — Qt's default on GNOME, X11 or Wayland) attaches
+// sources to the same default context that can win the first iteration, so
+// the posted-event source is skipped.
+void flushPostedEvents() {
+  QCoreApplication::sendPostedEvents();
+}
+
 // The dump's top level is a versioned envelope — {"version": 1, "records":
 // [...]} — so run-level metadata can be added compatibly later.
 [[nodiscard]] QJsonObject readDumpEnvelope(const QString& path) {
@@ -164,7 +174,7 @@ TEST(DiagnosticDumpTest, WriteDrainsOnlyTheBridgeNeverUnrelatedPostedEvents) {
   EXPECT_FALSE(unrelated_ran) << "unrelated posted events must not run during a quit-time write";
 
   // Hygiene: deliver the unrelated event now, while its captures are alive.
-  QCoreApplication::processEvents();
+  flushPostedEvents();
   EXPECT_TRUE(unrelated_ran);
 }
 
@@ -184,7 +194,7 @@ TEST(DiagnosticDumpTest, PumpBeforeAttachLosesEarlyDiagnostics) {
   PJ::DiagnosticDump dump(dir.filePath(QStringLiteral("late.json")));
 
   sink(PJ::Diagnostic{PJ::DiagnosticLevel::kError, "Plugins", "plugin-load-failed", "early"});
-  QCoreApplication::processEvents();  // the splash-wait analog: pump BEFORE attach
+  flushPostedEvents();  // the splash-wait analog: pump BEFORE attach
   dump.attachTo(&bridge);
 
   ASSERT_TRUE(dump.write());
