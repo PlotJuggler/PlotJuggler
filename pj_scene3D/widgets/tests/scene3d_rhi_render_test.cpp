@@ -21,9 +21,11 @@
 
 #include <QDir>
 #include <QDomDocument>
+#include <QFile>
 #include <QHBoxLayout>
 #include <QImage>
 #include <QLoggingCategory>
+#include <QTemporaryDir>
 #include <QTest>
 #include <QVBoxLayout>
 #include <cmath>
@@ -32,7 +34,7 @@
 #include <vector>
 
 #include "pj_base/builtin/scene_entities_codec.hpp"
-#include "pj_scene3d_widgets/wasm/scene_entities_layer_wasm.h"
+#include "pj_scene3d_widgets/layers/scene_entities_layer.h"
 #include "scene3d_render_test_support.h"
 
 using namespace Qt::StringLiterals;
@@ -201,7 +203,7 @@ class RhiScene {
     scene.entities = std::move(entities);
     const auto id = fixture_.add(topic, BT::kSceneEntities, PJ::serializeSceneEntities(scene));
     // Through the persisted state: the layer's setter is private to its UI.
-    auto* layer = dynamic_cast<pj::scene3d::WasmSceneEntitiesLayer*>(dock()->layerFor(id));
+    auto* layer = dynamic_cast<pj::scene3d::SceneEntitiesLayer*>(dock()->layerFor(id));
     EXPECT_NE(layer, nullptr);
     if (layer != nullptr) {
       QDomDocument doc;
@@ -211,10 +213,16 @@ class RhiScene {
     }
     return id;
   }
-  // A local (file-content) URDF robot: its visual is the renderer's shadow
-  // caster, and the local TF buffer it brings is what enables shadows.
+  // A local URDF file robot: its visual is the renderer's shadow caster, and
+  // the local TF buffer it brings is what enables shadows.
   void addRobot(const QByteArray& urdf) {
-    EXPECT_NE(dock()->addRobotModelLayerFromContent(u"caster.urdf"_s, urdf).id, 0U);
+    ASSERT_TRUE(urdf_dir_.isValid());
+    const QString path = urdf_dir_.filePath(u"caster.urdf"_s);
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    ASSERT_EQ(file.write(urdf), urdf.size());
+    file.close();
+    EXPECT_NE(dock()->addRobotModelLayer(path).id, 0U);
   }
 
   SceneViewWidget* view() {
@@ -254,6 +262,7 @@ class RhiScene {
 
  private:
   pj::scene3d::test::Scene3DRenderFixture fixture_;
+  QTemporaryDir urdf_dir_;
 };
 
 class Scene3dRhiRenderTest : public ::testing::Test {

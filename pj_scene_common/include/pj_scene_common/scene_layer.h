@@ -61,6 +61,12 @@ struct SceneLayerContext {
 /// this value still cannot be confused with another layer's no-sample state).
 inline constexpr uint64_t kNoSampleRenderKey = 0x0D15EA5EDEADBEEFULL;
 
+/// `renderKey()` of a single-topic layer: the SequentialUID of the store entry
+/// active at `time`, or kNoSampleRenderKey when there is none (or no store).
+/// Metadata-only (latestEntryIdAt never resolves payload bytes), and the UID
+/// rather than the stamp, so a same-stamp replacement entry still changes it.
+[[nodiscard]] uint64_t latestEntryRenderKey(const ObjectStore* store, ObjectTopicId topic_id, PJ::Timepoint time);
+
 /// Backend-neutral contract for one object topic in a layered scene.
 ///
 /// Implementations own the per-topic adapter state and expose changes through

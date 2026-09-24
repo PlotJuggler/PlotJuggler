@@ -5,9 +5,12 @@
 #include <gtest/gtest.h>
 
 #include <QByteArray>
+#include <QCoreApplication>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QFuture>
+#include <QObject>
 #include <QString>
 #include <QTemporaryDir>
 #include <array>
@@ -16,6 +19,8 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
+
+#include "mesh_import.h"
 using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
@@ -112,6 +117,26 @@ TEST(MeshLoaderTest, LoadsStlFromPath) {
 // --- Path load: Collada (DAE) -----------------------------------------------
 // Proves the assimp Conan `with_collada=True` option name is correct: a wrong
 // name silently disables the importer and this would return empty geometry.
+
+// MeshLoader caches a path's future and hands it to every caller: taking the
+// result for one import must leave it intact for the next.
+TEST(MeshLoaderTest, CachedLoadServesEveryImport) {
+  MeshLoader loader;
+  QObject context;
+  const QString path = fixturePath("cube.stl");
+  const auto import_once = [&]() -> MeshData {
+    bool done = false;
+    MeshImport job(loader.load(path), &context, [&done] { done = true; });
+    for (int spin = 0; !done && spin < 1000; ++spin) {
+      QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    }
+    EXPECT_TRUE(done);
+    return job.take();
+  };
+  EXPECT_TRUE(import_once().ok);
+  ASSERT_TRUE(loader.load(path).isValid()) << "the first import consumed the cached result";
+  EXPECT_TRUE(import_once().ok);
+}
 
 TEST(MeshLoaderTest, LoadsColladaFromPath) {
   MeshLoader loader;

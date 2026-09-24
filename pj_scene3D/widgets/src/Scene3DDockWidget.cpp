@@ -9,6 +9,7 @@
 #include <QFileInfo>
 #include <QFontMetrics>
 #include <QIcon>
+#include <QLabel>
 #include <QLoggingCategory>
 #include <QMenu>
 #include <QPoint>
@@ -46,8 +47,8 @@
 #include "pj_scene3d_widgets/layers/trail_layer.h"
 #include "pj_scene3d_widgets/layers/voxel_grid_layer.h"
 #include "pj_scene3d_widgets/object_topic_metadata.h"
-#include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_scene3d_widgets/render_pass.h"
+#include "pj_scene3d_widgets/resolve_object.h"
 #include "pj_scene3d_widgets/scene_state_xml.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene3d_widgets/transform_service.h"
@@ -87,9 +88,11 @@ pj::scene3d::TrailLayer* trailOf(ISceneLayer* layer) {
   if (auto* trail = dynamic_cast<pj::scene3d::TrailLayer*>(layer); trail != nullptr) {
     return trail;
   }
+#ifndef PJ_SCENE3D_RHI
   if (const auto* poses = dynamic_cast<const PosesInFrameLayer*>(layer); poses != nullptr) {
     return poses->trail();
   }
+#endif
   return nullptr;
 }
 
@@ -208,6 +211,13 @@ std::optional<ValidatedSceneState> validateSceneState(const QDomElement& element
   return frames.isEmpty() ? QString() : QString::fromStdString(frames.first().name);
 }
 
+// Compressed clouds need the Draco/Cloudini decoders, optional in the browser.
+#if defined(PJ_TARGET_WASM) && !defined(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS)
+constexpr bool kCompressedPointClouds = false;
+#else
+constexpr bool kCompressedPointClouds = true;
+#endif
+
 // True when topic_id's first stored sample is an sdk::Image with a DEPTH encoding.
 // The kImage type alone can't distinguish depth from color, so the dock peeks the
 // first sample (the parser can't — classify_schema sees no payload) to offer only
@@ -218,11 +228,10 @@ std::optional<ValidatedSceneState> validateSceneState(const QDomElement& element
   if (!first.has_value() || first->payload.bytes.empty()) {
     return false;
   }
-  const auto binding = session.parserBindingForObjectTopic(topic_id);
-  if (!binding) {
-    return false;
-  }
-  auto obj = pj::scene3d::parseLocked(binding, first->timestamp, first->payload);
+  // Parser-bound, or a serialized canonical Image pushed without a parser.
+  auto obj = pj::scene3d::resolveObject(
+      session.parserBindingForObjectTopic(topic_id), PJ::sdk::BuiltinObjectType::kImage, first->timestamp,
+      first->payload);
   if (!obj.has_value()) {
     return false;
   }
@@ -248,7 +257,9 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
     return layer;
   };
   layerFactory().registerType(sdk::BuiltinObjectType::kPointCloud, pointcloud_factory);
-  layerFactory().registerType(sdk::BuiltinObjectType::kCompressedPointCloud, pointcloud_factory);
+  if (kCompressedPointClouds) {
+    layerFactory().registerType(sdk::BuiltinObjectType::kCompressedPointCloud, pointcloud_factory);
+  }
   // Depth image -> back-projected point cloud ("DepthCloud"). Depth arrives as
   // sdk::Image with a depth encoding (no kDepthImage producer exists); addTopic()
   // gates kImage topics so only depth-encoded ones become DepthClouds. Intrinsics
@@ -267,7 +278,9 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
       [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
           -> std::unique_ptr<ISceneLayer> {
         const bool local_layer = isLocalLayerId(topic_id);
-        if (!local_layer) {
+        if (local_layer) {
+          ensureLocalTransformBuffer();  // before attach: makeContext() hands the buffer over
+        } else {
           prepareTransformBufferForTopic(topic_id);
         }
         auto layer = std::make_unique<RobotModelLayer>(topic_id, display_name, this);
@@ -325,6 +338,7 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
       });
 
   frame_overlay_combo_ = new ComboBox(this);
+  frame_overlay_combo_->setObjectName(u"scene3dFixedFrameCombo"_s);
   frame_overlay_combo_->setFocusPolicy(Qt::ClickFocus);
   frame_overlay_combo_->raise();
   refreshFrameOverlayCombo();
@@ -368,6 +382,17 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
       view_->resetCamera();
     }
   });
+
+#ifdef PJ_SCENE3D_RHI
+  rendering_warning_label_ = new QLabel(this);
+  rendering_warning_label_->setObjectName(u"scene3dRenderingWarning"_s);
+  rendering_warning_label_->setWordWrap(true);
+  rendering_warning_label_->setAlignment(Qt::AlignCenter);
+  rendering_warning_label_->setAttribute(Qt::WA_TransparentForMouseEvents);
+  rendering_warning_label_->setStyleSheet(
+      u"QLabel { color: #fff4d6; background: rgba(116, 70, 0, 220); border-radius: 4px; padding: 6px; }"_s);
+  rendering_warning_label_->hide();
+#endif
 
   // Forget a removed topic's cached orphan/warning state. pj_app drives its UI
   // off the base SceneDockWidget layer* signals directly, so no relay is needed.
@@ -421,8 +446,9 @@ void Scene3DDockWidget::onDatasetTransformsReady(DatasetId dataset_id) {
   const std::shared_ptr<pj::scene3d::TransformBuffer> ready_buffer = transform_service_->transformBuffer(dataset_id);
   if (tf_buffer_ != ready_buffer) {
     tf_buffer_ = ready_buffer;
+    tf_buffer_is_local_ = false;
     view_->setTransformBuffer(tf_buffer_);
-    pushTransformBufferToTrailLayers();
+    pushTransformBufferToLayers();
   }
   // Re-enumerate the whole hierarchy, including a progressive in-place update
   // where setTransformBuffer correctly no-ops on the unchanged pointer.
@@ -461,7 +487,9 @@ void Scene3DDockWidget::reconnectLiveSamples(SessionManager* session) {
         if (!live || transform_service_ == nullptr || tf_buffer_ == nullptr) {
           return;
         }
-        transform_service_->ingestNewTransforms(dataset_id_);
+        if (!tf_buffer_is_local_) {
+          transform_service_->ingestNewTransforms(dataset_id_);
+        }
         // Recompute orphan states only when the TF buffer actually changed
         // (force=false gates on revision()+fixed-frame): a sibling 3D dock sharing
         // this dataset may have advanced the shared ingest cursor, so we cannot
@@ -560,7 +588,7 @@ void Scene3DDockWidget::setSourcePath(const QString& path) {
 
 bool Scene3DDockWidget::handlesObjectType(sdk::BuiltinObjectType object_type) {
   return object_type == sdk::BuiltinObjectType::kPointCloud ||
-         object_type == sdk::BuiltinObjectType::kCompressedPointCloud ||
+         (kCompressedPointClouds && object_type == sdk::BuiltinObjectType::kCompressedPointCloud) ||
          object_type == sdk::BuiltinObjectType::kFrameTransforms ||
          object_type == sdk::BuiltinObjectType::kOccupancyGrid ||
          object_type == sdk::BuiltinObjectType::kRobotDescription ||
@@ -637,6 +665,24 @@ ObjectTopicId Scene3DDockWidget::addRobotModelLayer(const QString& urdf_path) {
   }
   return topic_id;
 }
+
+#ifdef PJ_TARGET_WASM
+ObjectTopicId Scene3DDockWidget::addRobotModelLayerFromContent(QString filename, QByteArray bytes) {
+  const ObjectTopicId topic_id = allocateLocalLayerId();
+  if (topic_id.id == 0) {
+    return ObjectTopicId{0};
+  }
+  const QString title = filename.isEmpty() ? tr("Robot model") : filename;
+  if (!addTopic(topic_id, sdk::BuiltinObjectType::kRobotDescription, title)) {
+    local_layer_ids_.erase(topic_id.id);
+    return ObjectTopicId{0};
+  }
+  if (auto* layer = dynamic_cast<RobotModelLayer*>(layerFor(topic_id)); layer != nullptr) {
+    layer->setSourceFileContent(std::move(filename), std::move(bytes));
+  }
+  return topic_id;
+}
+#endif
 
 ObjectTopicId Scene3DDockWidget::addRobotModelLayerFromUrl(const QString& url) {
   const ObjectTopicId topic_id = allocateLocalLayerId();
@@ -785,6 +831,13 @@ QWidget* Scene3DDockWidget::createSceneView() {
     view_->setCameraModel(static_cast<SceneViewWidget::CameraModel>(camera_model_combo_->currentIndex()));
   }
   connect(view_, &pj::scene3d::SceneViewWidget::framesChanged, this, &Scene3DDockWidget::onAvailableFrames);
+#ifdef PJ_SCENE3D_RHI
+  connect(view_, &SceneViewWidget::renderingWarningChanged, this, [this](const QString& warning) {
+    rendering_warning_label_->setText(warning);
+    rendering_warning_label_->setVisible(!warning.isEmpty());
+    layoutFrameOverlayCombo();
+  });
+#else
   // Right-click on a frame gizmo: the view picks the frame (hover machinery)
   // and the dock owns the menu — trail creation plus two one-click conveniences
   // over existing dock APIs. Empty-space right-clicks never reach here (the
@@ -800,6 +853,7 @@ QWidget* Scene3DDockWidget::createSceneView() {
         menu.addAction(tr("Follow this frame"), this, [this, frame]() { setFollowFrame(frame); });
         menu.exec(global_pos);
       });
+#endif  // PJ_SCENE3D_RHI: the QRhi view has no frame picking yet (QRHI_MIGRATION P3)
   if (tf_buffer_ != nullptr) {
     view_->setTransformBuffer(tf_buffer_);
   }
@@ -877,6 +931,7 @@ void Scene3DDockWidget::syncViewLayers(const std::vector<ISceneLayer*>& ordered_
 }
 
 void Scene3DDockWidget::updateSceneBounds() {
+#ifndef PJ_SCENE3D_RHI
   if (view_ == nullptr) {
     return;
   }
@@ -900,6 +955,7 @@ void Scene3DDockWidget::updateSceneBounds() {
     }
   }
   view_->setSceneBounds(scene);
+#endif
 }
 
 void Scene3DDockWidget::refreshView() {
@@ -953,7 +1009,7 @@ void Scene3DDockWidget::prepareTransformBufferForTopic(ObjectTopicId topic_id) {
   // config_topics_; this covers render-layer topics.
   scene_topic_datasets_[topic_id.id] = dataset_id;
 
-  if (tf_buffer_ != nullptr) {
+  if (tf_buffer_ != nullptr && !tf_buffer_is_local_) {
     // Already bound. Mixing a second dataset's topics into one 3D dock would
     // resolve B's frames against A's TF tree — silently wrong. Warn loudly and
     // keep the existing binding rather than rebinding underneath live layers.
@@ -968,14 +1024,15 @@ void Scene3DDockWidget::prepareTransformBufferForTopic(ObjectTopicId topic_id) {
   }
   dataset_id_ = dataset_id;  // cached for the live-samples TF ingest slot
   tf_buffer_ = transform_service_->transformBuffer(dataset_id);
+  tf_buffer_is_local_ = false;
   if (view_ != nullptr) {
     view_->setTransformBuffer(tf_buffer_);
   }
-  pushTransformBufferToTrailLayers();
+  pushTransformBufferToLayers();
 }
 
 void Scene3DDockWidget::resetTransformBindingIfDatasetGone() {
-  if (tf_buffer_ == nullptr) {
+  if (tf_buffer_ == nullptr || tf_buffer_is_local_) {
     return;
   }
   const bool dataset_still_present = std::any_of(
@@ -1006,15 +1063,38 @@ void Scene3DDockWidget::resetTransformBindingIfDatasetGone() {
   for (const ObjectTopicId topic_id : dead_trails) {
     removeTopic(topic_id);
   }
-  pushTransformBufferToTrailLayers();
+  const std::vector<SceneLayerInfo> remaining = layers();
+  const bool has_local_robot = std::any_of(remaining.begin(), remaining.end(), [this](const SceneLayerInfo& info) {
+    return isLocalLayerId(info.topic_id) && dynamic_cast<RobotModelLayer*>(layerFor(info.topic_id)) != nullptr;
+  });
+  if (has_local_robot) {
+    ensureLocalTransformBuffer();  // pushes the new buffer itself
+    return;
+  }
+  pushTransformBufferToLayers();
 }
 
-void Scene3DDockWidget::pushTransformBufferToTrailLayers() {
+void Scene3DDockWidget::pushTransformBufferToLayers() {
   for (const SceneLayerInfo& info : layers()) {
-    if (auto* trail = trailOf(layerFor(info.topic_id)); trail != nullptr) {
+    ISceneLayer* layer = layerFor(info.topic_id);
+    if (auto* trail = trailOf(layer); trail != nullptr) {
       trail->setTransformBuffer(tf_buffer_);
+    } else if (auto* robot = dynamic_cast<RobotModelLayer*>(layer); robot != nullptr) {
+      robot->setTransformBuffer(tf_buffer_);
     }
   }
+}
+
+void Scene3DDockWidget::ensureLocalTransformBuffer() {
+  if (tf_buffer_ != nullptr) {
+    return;
+  }
+  tf_buffer_ = std::make_shared<pj::scene3d::TransformBuffer>();
+  tf_buffer_is_local_ = true;
+  if (view_ != nullptr) {
+    view_->setTransformBuffer(tf_buffer_);
+  }
+  pushTransformBufferToLayers();
 }
 
 void Scene3DDockWidget::wireScene3DLayer(Scene3DLayer* layer) {
@@ -1026,9 +1106,13 @@ void Scene3DDockWidget::wireScene3DLayer(Scene3DLayer* layer) {
   });
   connect(layer, &Scene3DLayer::sourceFrameChanged, this, [this](const QString&) { recomputeOrphanStates(); });
   // A layer-self warning (e.g. a model that failed to fetch/import) shares the
-  // per-row warning slot with the orphan state; force a recompute so the combine
-  // runs even when TF/fixed-frame are unchanged (the fast-path guard would skip).
-  connect(layer, &Scene3DLayer::statusWarningChanged, this, [this]() { recomputeOrphanStates(/*force=*/true); });
+  // per-row warning slot with the orphan state: re-combine just that row.
+  connect(layer, &Scene3DLayer::statusWarningChanged, this, [this, layer]() {
+    const ObjectTopicId topic_id = layer->info().topic_id;
+    if (layerFor(topic_id) == layer) {  // not while it is still being attached
+      updateLayerWarning(topic_id, *layer, knownFrames());
+    }
+  });
 }
 
 void Scene3DDockWidget::absorbFallbackFrames(Scene3DLayer* layer) {
@@ -1209,6 +1293,7 @@ void Scene3DDockWidget::applyRestoredFixedFrame(FixedFrameMode mode, const QStri
 void Scene3DDockWidget::resetDatasetBindingForRestore() {
   const bool had_frames = !available_frames_.isEmpty();
   tf_buffer_.reset();
+  tf_buffer_is_local_ = false;
   dataset_id_ = 0;
   scene_topic_datasets_.clear();
   config_topics_.clear();
@@ -1326,6 +1411,15 @@ void Scene3DDockWidget::layoutFrameOverlayCombo() {
     camera_model_combo_->setGeometry(left_x, top_y, cam_w, cam_h);
     camera_model_combo_->raise();
   }
+#ifdef PJ_SCENE3D_RHI
+  if (rendering_warning_label_->isVisible()) {
+    const int warning_w = std::max(120, view_->width() - 2 * kMargin);
+    const int warning_h = rendering_warning_label_->heightForWidth(warning_w);
+    rendering_warning_label_->setGeometry(
+        view_origin.x() + kMargin, view_origin.y() + view_->height() - kMargin - warning_h, warning_w, warning_h);
+    rendering_warning_label_->raise();
+  }
+#endif
 }
 
 void Scene3DDockWidget::resizeEvent(QResizeEvent* event) {
@@ -1342,65 +1436,69 @@ Scene3DDockWidget::OrphanSnapshot Scene3DDockWidget::orphanState(ObjectTopicId t
 }
 
 void Scene3DDockWidget::recomputeOrphanStates(bool force) {
-  if (tf_buffer_ == nullptr) {
-    return;
-  }
   const QString fixed = currentFixedFrame();
+  const uint64_t revision = tf_buffer_ != nullptr ? tf_buffer_->revision() : 0;
   // Hot live-ingest path: skip the per-layer frame walk when neither the buffer
-  // nor the fixed frame moved since the last full recompute (L.45/L.47).
-  if (!force && tf_buffer_->revision() == last_orphan_revision_ && fixed == last_orphan_fixed_frame_) {
+  // nor the fixed frame moved since the last full recompute.
+  if (!force && revision == last_orphan_revision_ && fixed == last_orphan_fixed_frame_) {
     return;
   }
-  const std::string fixed_std = fixed.toStdString();
-
-  std::unordered_set<std::string> known_frames;
-  for (auto&& frame : tf_buffer_->getAllFrames()) {
-    known_frames.insert(std::move(frame));
-  }
-
+  const std::unordered_set<std::string> known_frames = knownFrames();
   for (const SceneLayerInfo& info : layers()) {
-    auto* layer = dynamic_cast<Scene3DLayer*>(layerFor(info.topic_id));
-    if (layer == nullptr) {
-      continue;
-    }
-    const QString src = layer->sourceFrame();
-    bool warn = false;
-    QString reason;
-    if (src.isEmpty() || fixed.isEmpty()) {
-      // Pending data.
-    } else if (src == fixed) {
-      // Identity transform.
-    } else {
-      const std::string src_std = src.toStdString();
-      if (known_frames.count(src_std) == 0) {
-        warn = true;
-        reason = tr("Frame '%1' can't be resolved").arg(src);
-      } else if (!tf_buffer_->areConnected(fixed_std, src_std)) {
-        warn = true;
-        reason = tr("Frame '%1' is not connected to fixed frame '%2'").arg(src, fixed);
-      }
-    }
-    // A frame issue blocks rendering entirely, so it wins the row's message when
-    // both apply; otherwise surface the layer's own warning (e.g. a model that
-    // failed to fetch/import). Combining here keeps a 169 Hz TF stream from
-    // clobbering a model-load warning that shares this per-row slot.
-    if (const QString self_warn = layer->statusWarning(); !warn && !self_warn.isEmpty()) {
-      warn = true;
-      reason = self_warn;
-    }
-
-    auto& state = orphan_states_[topicKey(info.topic_id)];
-    if (state.is_orphan != warn || state.reason != reason) {
-      state.is_orphan = warn;
-      state.reason = reason;
-      emit layerWarningChanged(info.topic_id, warn, reason);
+    if (auto* layer = dynamic_cast<Scene3DLayer*>(layerFor(info.topic_id)); layer != nullptr) {
+      updateLayerWarning(info.topic_id, *layer, known_frames);
     }
   }
-
   // Record what this full recompute observed so the force=false fast path can
   // detect "nothing changed" on the next live tick.
-  last_orphan_revision_ = tf_buffer_->revision();
+  last_orphan_revision_ = revision;
   last_orphan_fixed_frame_ = fixed;
+}
+
+std::unordered_set<std::string> Scene3DDockWidget::knownFrames() const {
+  std::unordered_set<std::string> known_frames;
+  if (tf_buffer_ != nullptr) {
+    for (auto&& frame : tf_buffer_->getAllFrames()) {
+      known_frames.insert(std::move(frame));
+    }
+  }
+  return known_frames;
+}
+
+void Scene3DDockWidget::updateLayerWarning(
+    ObjectTopicId topic_id, const Scene3DLayer& layer, const std::unordered_set<std::string>& known_frames) {
+  const QString fixed = currentFixedFrame();
+  const QString src = layer.sourceFrame();
+  bool warn = false;
+  QString reason;
+  if (src.isEmpty() || fixed.isEmpty() || tf_buffer_ == nullptr) {
+    // Pending data, or no TF bound yet: only the layer's own warning applies.
+  } else if (src == fixed) {
+    // Identity transform.
+  } else {
+    const std::string src_std = src.toStdString();
+    if (known_frames.count(src_std) == 0) {
+      warn = true;
+      reason = tr("Frame '%1' can't be resolved").arg(src);
+    } else if (!tf_buffer_->areConnected(fixed.toStdString(), src_std)) {
+      warn = true;
+      reason = tr("Frame '%1' is not connected to fixed frame '%2'").arg(src, fixed);
+    }
+  }
+  // A frame issue blocks rendering entirely, so it wins the row's message when
+  // both apply; otherwise surface the layer's own warning (e.g. a model that
+  // failed to fetch/import). Combining here keeps a 169 Hz TF stream from
+  // clobbering a model-load warning that shares this per-row slot.
+  if (const QString self_warn = layer.statusWarning(); !warn && !self_warn.isEmpty()) {
+    warn = true;
+    reason = self_warn;
+  }
+  auto& state = orphan_states_[topicKey(topic_id)];
+  if (state.is_orphan != warn || state.reason != reason) {
+    state.is_orphan = warn;
+    state.reason = reason;
+    emit layerWarningChanged(topic_id, warn, reason);
+  }
 }
 
 bool Scene3DDockWidget::isLocalLayerId(ObjectTopicId topic_id) const {
@@ -1801,7 +1899,7 @@ QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
     const auto bool_attr = [](bool value) { return value ? u"true"_s : u"false"_s; };
     QDomElement sc = doc.createElement(u"scene_controls"_s);
     sc.setAttribute(u"grid_visible"_s, bool_attr(view_->gridVisible()));
-    sc.setAttribute(u"grid_style"_s, view_->gridStyle() == pj::scene3d::GridRenderPass::Style::kFilledCells ? 1 : 0);
+    sc.setAttribute(u"grid_style"_s, view_->gridStyle() == SceneViewWidget::GridStyle::kFilledCells ? 1 : 0);
     sc.setAttribute(u"grid_extent_m"_s, view_->gridExtentMetres());
     sc.setAttribute(u"grid_divisions"_s, view_->gridDivisions());
     sc.setAttribute(u"axes_visible"_s, bool_attr(view_->axesVisible()));
@@ -1965,8 +2063,7 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
       }
       if (controls.grid_style.has_value()) {
         view_->setGridStyle(
-            *controls.grid_style == 1 ? pj::scene3d::GridRenderPass::Style::kFilledCells
-                                      : pj::scene3d::GridRenderPass::Style::kLines);
+            *controls.grid_style == 1 ? SceneViewWidget::GridStyle::kFilledCells : SceneViewWidget::GridStyle::kLines);
       }
       if (controls.grid_extent_m.has_value()) {
         view_->setGridExtentMetres(*controls.grid_extent_m);

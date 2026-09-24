@@ -18,25 +18,26 @@ namespace pj::scene3d {
 // View-level visibility/opacity applies only to robot visual and collision
 // groups. Independent model draws (SceneEntities ModelPrimitive) retain their
 // layer's own presentation controls.
-enum class WasmModelDrawGroup : std::uint8_t { kIndependent, kVisual, kCollision };
+enum class ModelDrawGroup : std::uint8_t { kIndependent, kVisual, kCollision };
 
-struct WasmModelDrawCall {
+struct ModelDrawCall {
   std::string mesh_key;
   std::string frame_id;
   glm::dmat4 model{1.0};
   glm::vec4 override_color{1.0F};
   bool use_material = true;
-  WasmModelDrawGroup group = WasmModelDrawGroup::kIndependent;
+  ModelDrawGroup group = ModelDrawGroup::kIndependent;
 };
 
-// Non-owning QRhi input seam shared by browser layers that submit imported or
+// Non-owning QRhi input seam shared by layers that submit imported or
 // procedural MeshData. Implementations retain CPU meshes until modelRevision()
 // changes; the view owns and rebuilds the corresponding GPU resources.
-class WasmModelRenderable {
+// Implementers are Scene3DLayers, which carry the renderer warning.
+class ModelRenderable {
  public:
-  virtual ~WasmModelRenderable() = default;
+  virtual ~ModelRenderable() = default;
 
-  [[nodiscard]] virtual const std::vector<WasmModelDrawCall>& modelDrawCalls() const = 0;
+  [[nodiscard]] virtual const std::vector<ModelDrawCall>& modelDrawCalls() const = 0;
   [[nodiscard]] virtual const std::unordered_map<std::string, std::shared_ptr<const MeshData>>& modelMeshes() const = 0;
   [[nodiscard]] virtual std::uint64_t modelRevision() const = 0;
   [[nodiscard]] virtual bool visible() const = 0;
@@ -44,10 +45,9 @@ class WasmModelRenderable {
   [[nodiscard]] virtual bool colorOverrideEnabled() const = 0;
   [[nodiscard]] virtual QColor overrideColor() const = 0;
   [[nodiscard]] virtual bool wireframe() const = 0;
-  [[nodiscard]] virtual const std::string& sourceFrame() const = 0;
+  // Root frame of the model draws; see PointRenderable::renderFrameId().
+  [[nodiscard]] virtual const std::string& renderFrameId() const = 0;
   [[nodiscard]] virtual bool contributesToSceneBounds() const = 0;
-  virtual void noteRenderFailure(QString warning) = 0;
-  virtual void noteRenderSuccess() = 0;
 };
 
 }  // namespace pj::scene3d

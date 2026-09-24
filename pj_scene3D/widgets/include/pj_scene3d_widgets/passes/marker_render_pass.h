@@ -38,17 +38,8 @@ class MarkerRenderPass : public IRenderPass {
   // baked here).
   void setActive(std::shared_ptr<const DecodedSceneEntities> markers);
 
-  // Viewer-side display overrides (a per-topic preference, NOT marker data):
-  //  - opacity   : multiplies every primitive's alpha (transparency slider).
-  //  - color_*   : when set, replaces every primitive's rgb with override_color.
-  //  - wireframe : draws mesh primitives as edges (glPolygonMode). View-only —
-  //                the marker protocol has no solid/wireframe field.
-  struct DisplayOverrides {
-    float opacity = 1.0F;
-    bool color_override = false;
-    glm::vec4 override_color{1.0F};
-    bool wireframe = false;
-  };
+  // Viewer-side display overrides; wireframe uses glPolygonMode here.
+  using DisplayOverrides = MarkerDisplayOverrides;
   void setOverrides(const DisplayOverrides& overrides) {
     overrides_ = overrides;
   }

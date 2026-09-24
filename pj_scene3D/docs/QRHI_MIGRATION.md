@@ -1,6 +1,6 @@
 # Scene3D QRhi migration plan
 
-Status: **P0 merged (#670); P1 done, in review**. Branch `feat/qrhi-p1`.
+Status: **P0 merged (#670); P1 in review (#672); P2 done, in review**. Branch `feat/qrhi-p2` (stacked on `feat/qrhi-p1`).
 
 Goal: one QRhi-based 3D renderer for every target — Linux, Windows, macOS
 arm64 and WebAssembly — replacing both the desktop `QOpenGLWidget` renderer
@@ -13,9 +13,7 @@ arm64 and WebAssembly — replacing both the desktop `QOpenGLWidget` renderer
 - Windows ships software GL 1.1 without a driver; D3D11 (and WARP in CI) is
   always present.
 - Two renderers, two layer sets (7 WASM layers, ~6.2k lines, vs 9 desktop
-  layers, ~7.4k lines) and two docks (1.4k vs 2.0k lines) drift apart: the WASM
-  point-cloud layer persists 26 XML keys, the desktop one 32; GridMap and Trail
-  never reached the browser.
+  layers, ~7.4k lines) and two docks (1.4k vs 2.0k lines) drift apart: GridMap and Trail never reached the browser.
 
 ## Constraints found in the code
 
@@ -39,8 +37,8 @@ arm64 and WebAssembly — replacing both the desktop `QOpenGLWidget` renderer
    (attribute setup, state and draws are raw calls in the passes), so passes are
    rewritten, not re-targeted.
 4. **The WASM renderer has the right ownership model but the wrong shape**:
-   layers are CPU-only data providers (`WasmPointRenderable`,
-   `WasmModelRenderable`), the renderer owns all GPU state — but as one
+   layers are CPU-only data providers (`PointRenderable`,
+   `ModelRenderable`), the renderer owns all GPU state — but as one
    4.1k-line widget (`initialize()` 570 lines, `render()` 1730, ~45 pipeline
    members).
 5. **The WASM renderer assumed GL conventions** (`depth*2-1`, `*0.5+0.5`
@@ -131,17 +129,91 @@ Each phase is its own PR and leaves the app shippable.
   llvmpipe and lavapipe with `PJ_REQUIRE_GPU_TESTS=1`.
 
 **P2 — One layer set, one dock (2–3 weeks).**
-- Desktop layers implement the renderable interfaces; the GL build keeps its
-  passes, so both renderers consume the same layers.
-- Delete the WASM layer/dock forks and most `PJ_TARGET_WASM` branches in
-  `Scene3DConfigPanel`; one XML format.
-- Exit: Playwright + desktop persistence tests green.
+The desktop layers and dock become the only ones; the WASM forks are deleted.
+Each layer shares decode, `SceneLimits` admission and worker scheduling across
+renderers; only its sink differs (GL build: its pass, byte-identical to today;
+RHI build: retained CPU data the RHI view reads). Steps, each keeping the GL,
+RHI-desktop and WASM builds green:
+- A. Foundation: the point/model renderable interfaces leave `wasm/` (no `Wasm`
+  prefix); shared enums/data leave the GL pass headers; `Scene3DLayer` compiles
+  in both builds (GL hooks guarded); the RHI view gains
+  `setLayers(std::vector<Scene3DLayer*>)` holding today's six-way dispatch; the
+  shared CPU/persistence tests also run in the RHI build. Done.
+- B. Point + depth clouds; C. poses, occupancy, voxels (CPU preparation moved
+  out of GL `render()` so it runs in both builds). B and C in parallel.
+  B done: `PointCloudLayer`/`DepthCloudLayer` are the only point layers; the
+  retained `PointVertex` sink and off-thread depth projection are QRhi-only,
+  the GL sink is unchanged. C done: the three layers
+  prepare their CPU data outside `render()` in both builds.
+- D. Scene entities + robot model, with an explicit coordinate contract
+  (link-local geometry + frame id, no double TF). Done: `SceneEntitiesLayer` and
+  `RobotModelLayer` are the only implementations. Shared in both builds: sample
+  selection, payload admission before parsing, model-entity replay
+  (`SceneEntitiesModelState`), bounded fetch/import scheduling
+  (`maxConcurrentMeshLoads()`: one in the browser) with generation
+  invalidation, and the model byte budgets; the GL build keeps its passes, the
+  QRhi build exposes `MarkerGeometry` (expanded on a worker, `marker_geometry.h`)
+  and frame-local `ModelDrawCall`s. The browser keeps URDF-from-bytes with the
+  "select again" restore (`PJ_TARGET_WASM`); both native builds load URDF paths.
+- E. One dock + settings panel (browser input branches stay on
+  `PJ_TARGET_WASM`); acceptance probes migrated; forks deleted. The RHI view
+  marks the layers it does not draw (Trail/GridMap) "not rendered by this
+  renderer yet" until P3.
+  Done: `src/Scene3DDockWidget.cpp` is the only dock. The views share one
+  `setLayers(std::vector<Scene3DLayer*>)` seam. One warning channel in both
+  builds: `Scene3DLayer::statusWarning()` + `statusWarningChanged`, combined by
+  the dock with the frame-orphan state. Bounds: the GL view gets them from the
+  dock, the QRhi view owns them (its per-frame union + one-shot fit per new
+  layer). The dock's live-edge drive (`driveVisibleLayersToLiveEdge`) now runs
+  for both renderers. Browser-only in the dock: `addRobotModelLayerFromContent`
+  and the compressed-cloud gate (`PJ_WASM_WITH_COMPRESSED_POINTCLOUDS`);
+  QRhi-only: the `renderingWarningChanged` overlay. A dock with only local
+  robots gets a private TF buffer in both builds. Trail/GridMap layers build in
+  the RHI and WASM targets (with `trail_sampling`/`grid_map_view` in the WASM
+  core) and persist, but are not drawn; the "Create Trail" row and the frame
+  right-click menu stay GL-only. The dock/persistence/XML/row-spacing tests run
+  in both native builds.
+- **Admission rule.** Per-sample admission — payload size, dimension and count
+  limits from `kSceneLimits`, applied before any decode, plus the mesh importer
+  and model-fetch limits — runs in both builds (the desktop limits are large, so
+  the GL build rarely hits them) and fails closed with a row warning. Only the
+  per-view budgets (`prepareForRender(remaining_*)`, `BudgetLatch`) are
+  QRhi-only: the QRhi view is their only caller. Each layer's
+  `prepareForRender` drains its pending update first, then checks what it would
+  draw against the remaining budget, so a single check covers both new data
+  and a budget shrunk by earlier layers.
+- Shared scaffolding from the `/simplify` pass: `LatestWinsWorker` (point,
+  depth, marker and trail workers), `MeshImport` + `maxConcurrentMeshLoads()`,
+  `BudgetLatch`, `Scene3DLayer`'s data/renderer warning slots,
+  `latestEntryRenderKey`. Both builds drain a pending tracker move at the
+  layer's own `requested_time_` (GL `render()` and QRhi `prepareForRender()`
+  share one drain), and the `renderKey`s (sample identity ⊕ the fixed←source
+  transform, `foldFrameTransformIntoKey`, so a static sample in a moving frame
+  still repaints) coalesce repaints in the GL build too — except the GL pose
+  layer while its embedded trail is on (its past/future split moves every tick).
+- Browser behaviour to preserve: worker decode with latest-wins and generation
+  invalidation, decode limits applied before decompression, failed-sample
+  memoization, budget recovery, URDF-from-bytes with "select again" restore,
+  pose-trail round-trip without warnings.
+- Exit: all five Playwright Scene3D files, desktop persistence/layer tests in
+  both native builds, 28/28 GL goldens, RHI harness, and RHI goldens no worse
+  than P1's 22/28.
+
+Deferred from P2:
+- P3: one owner for scene bounds + camera fit (today the GL view gets them
+  from the dock, the QRhi view owns its own); rename `widgets/wasm/` to
+  `widgets/rhi/` (it is the desktop QRhi view too).
+- P5 (performance): drop the RHI CPU copies of data already uploaded, convert
+  clouds straight to `PointVertex` (no intermediate `DecodedPointCloud`), and
+  share primitive meshes (URDF box/cylinder/sphere) across layers.
 
 **P3 — Passes + parity (3–4 weeks).**
-- Split the monolith into passes. Port GridMap, Trail, cube hexagon fan /
+- Split the monolith into passes. Port GridMap, Trail (standalone, the pose
+  layer's embedded one, the "Create Trail" row and the frame right-click menu,
+  which needs frame picking in the QRhi view), cube hexagon fan /
   sprite LOD / colour hoist, compute AABB (gated), axis corner gizmo (then drop
   the golden test's `kGizmoRect` exclusion), HUD, hover
-  label, `render_scale`, live-edge drive, AgX/Neutral tonemaps.
+  label, `render_scale`, AgX/Neutral tonemaps.
 - Exit: corpus screenshots match GL within tolerance; GL pass tests re-expressed
   as QRhi offscreen tests. Point clouds: all 28 scenes of
   `widgets/tests/fixtures/golden/pointcloud/` (goldens captured from the GL
@@ -189,6 +261,13 @@ Total: **~11–17 weeks**; plot parity is the least certain part.
 - The RHI harness needs a real X or Wayland server; locally, an occluded window
   never presents, so run it under Xvfb or a headless compositor.
 
+## Known gaps
+
+- `RobotModelLayer::resetModelState` drops in-flight mesh imports on a source
+  reset while their workers keep running (results are discarded by generation,
+  but rapid source changes can accumulate work). SceneEntities keeps superseded
+  work counted until it finishes; the robot layer should do the same.
+
 ## Open questions
 
 - `PlotRhiCanvas` throughput on desktop-scale data.
@@ -228,3 +307,4 @@ Actual wall-clock time, to calibrate the estimates above.
 |---|---|---|---|---|
 | P0 | 2026-09-23 21:51 CEST | 2026-09-23 23:40 CEST | ~1 h 50 min | Plan estimate was 1–2 engineer-weeks. Wall-clock with parallel agents; ~45 min of it was WASM builds + Playwright. Non-GL backends verified only by unit tests and reviews, not by rendering. |
 | P1 | 2026-09-24 05:46 CEST | 2026-09-24 07:13 CEST | ~1 h 27 min | Plan estimate ≈2 weeks. Three parallel streams (limits, harness, goldens). First real renders on OpenGL and Vulkan (GPU + llvmpipe/lavapipe); found two Qt 6.11.1 grab bugs, no renderer bug. Cross-build point-cloud goldens: 22/28 on QRhi. |
+| P2 | 2026-09-24 13:33 CEST | 2026-09-24 18:23 CEST | ~4 h 50 min | Plan estimate 2–3 weeks. Stacked on P1 (#672). Steps B/C/D as three parallel streams, then E; ~12k lines of forks deleted. Reviews found 5 real bugs (TF-only repaint freeze, depth wrong-sample and dataset-replace races, stale robot model, in-flight bound bypass), all fixed with regression tests. |

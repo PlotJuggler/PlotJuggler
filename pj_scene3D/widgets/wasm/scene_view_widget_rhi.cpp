@@ -40,17 +40,17 @@
 #include "pj_scene3d_core/tf/tf_connections.h"
 #include "pj_scene3d_widgets/cube_mesh.h"
 #include "pj_scene3d_widgets/gizmos/arrow_mesh.h"
+#include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
+#include "pj_scene3d_widgets/layers/poses_in_frame_layer.h"
+#include "pj_scene3d_widgets/layers/scene_entities_layer.h"
+#include "pj_scene3d_widgets/layers/voxel_grid_layer.h"
+#include "pj_scene3d_widgets/model_renderable.h"
 #include "pj_scene3d_widgets/passes/grid_geometry.h"
+#include "pj_scene3d_widgets/point_renderable.h"
 #include "pj_scene3d_widgets/rhi_conventions.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
 #include "pj_scene3d_widgets/scene_state_xml.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
-#include "pj_scene3d_widgets/wasm/model_renderable_wasm.h"
-#include "pj_scene3d_widgets/wasm/occupancy_grid_layer_wasm.h"
-#include "pj_scene3d_widgets/wasm/point_renderable_wasm.h"
-#include "pj_scene3d_widgets/wasm/poses_in_frame_layer_wasm.h"
-#include "pj_scene3d_widgets/wasm/scene_entities_layer_wasm.h"
-#include "pj_scene3d_widgets/wasm/voxel_grid_layer_wasm.h"
 #include "pj_widgets/Colormap.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/GraphicsApi.h"
@@ -338,7 +338,7 @@ const std::array<MarkerMeshData, 5>& markerMeshes() {
   return meshes;
 }
 
-AABB transformedMarkerBounds(const WasmMarkerBounds& source, const Transform& fixed_from_frame) {
+AABB transformedMarkerBounds(const MarkerBounds& source, const Transform& fixed_from_frame) {
   if (!source.valid) {
     return {};
   }
@@ -512,6 +512,12 @@ AABB occupancyBoundsInFixed(const ReconstructedGrid& grid, const Transform& fixe
   return bounds;
 }
 
+// The layer behind a ModelRenderable (every implementer is a Scene3DLayer),
+// which carries the renderer part of its row warning.
+Scene3DLayer& asLayer(ModelRenderable* model) {
+  return *dynamic_cast<Scene3DLayer*>(model);
+}
+
 }  // namespace
 
 SceneViewWidget::SceneViewWidget(QWidget* parent) : QRhiWidget(parent) {
@@ -520,7 +526,7 @@ SceneViewWidget::SceneViewWidget(QWidget* parent) : QRhiWidget(parent) {
   // line/triangle stream keeps half the range for the unbudgeted grid/TF lines.
   constexpr auto fits_buffers = [](const SceneLimits& limits) {
     constexpr std::uint64_t kMaxBytes = std::numeric_limits<quint32>::max();
-    return limits.max_point_vertices_per_view * sizeof(WasmPointVertex) <= kMaxBytes &&
+    return limits.max_point_vertices_per_view * sizeof(PointVertex) <= kMaxBytes &&
            limits.max_pose_arms_per_view * sizeof(PoseTriadInstance) <= kMaxBytes &&
            limits.max_marker_instances_per_view * sizeof(MarkerInstance) <= kMaxBytes &&
            limits.max_marker_stream_vertices_per_view * sizeof(Vertex) <= kMaxBytes / 2U &&
@@ -562,14 +568,14 @@ void SceneViewWidget::setTransformBuffer(std::shared_ptr<TransformBuffer> tf) {
   update();
 }
 
-void SceneViewWidget::setLayers(const std::vector<PJ::ISceneLayer*>& ordered_layers) {
+void SceneViewWidget::setLayers(const std::vector<Scene3DLayer*>& ordered_layers) {
   std::vector<OrderedLayerEntry> order;
-  std::vector<WasmPointRenderable*> points;
-  std::vector<WasmPosesInFrameLayer*> poses;
-  std::vector<WasmOccupancyGridLayer*> occupancy;
-  std::vector<WasmVoxelGridLayer*> voxels;
-  std::vector<WasmSceneEntitiesLayer*> markers;
-  std::vector<WasmModelRenderable*> models;
+  std::vector<PointRenderable*> points;
+  std::vector<PosesInFrameLayer*> poses;
+  std::vector<OccupancyGridLayer*> occupancy;
+  std::vector<VoxelGridLayer*> voxels;
+  std::vector<SceneEntitiesLayer*> markers;
+  std::vector<ModelRenderable*> models;
   order.reserve(ordered_layers.size());
   points.reserve(ordered_layers.size());
   poses.reserve(ordered_layers.size());
@@ -577,26 +583,29 @@ void SceneViewWidget::setLayers(const std::vector<PJ::ISceneLayer*>& ordered_lay
   voxels.reserve(ordered_layers.size());
   markers.reserve(ordered_layers.size());
   models.reserve(ordered_layers.size());
-  for (PJ::ISceneLayer* layer : ordered_layers) {
-    if (auto* point = dynamic_cast<WasmPointRenderable*>(layer); point != nullptr) {
+  for (Scene3DLayer* layer : ordered_layers) {
+    if (auto* point = dynamic_cast<PointRenderable*>(layer); point != nullptr) {
       order.push_back({point, layer->info().topic_id.id});
       points.push_back(point);
-    } else if (auto* pose = dynamic_cast<WasmPosesInFrameLayer*>(layer); pose != nullptr) {
+    } else if (auto* pose = dynamic_cast<PosesInFrameLayer*>(layer); pose != nullptr) {
       order.push_back({pose, layer->info().topic_id.id});
       poses.push_back(pose);
-    } else if (auto* grid = dynamic_cast<WasmOccupancyGridLayer*>(layer); grid != nullptr) {
+    } else if (auto* grid = dynamic_cast<OccupancyGridLayer*>(layer); grid != nullptr) {
       order.push_back({grid, layer->info().topic_id.id});
       occupancy.push_back(grid);
-    } else if (auto* voxel = dynamic_cast<WasmVoxelGridLayer*>(layer); voxel != nullptr) {
+    } else if (auto* voxel = dynamic_cast<VoxelGridLayer*>(layer); voxel != nullptr) {
       order.push_back({voxel, layer->info().topic_id.id});
       voxels.push_back(voxel);
-    } else if (auto* marker = dynamic_cast<WasmSceneEntitiesLayer*>(layer); marker != nullptr) {
+    } else if (auto* marker = dynamic_cast<SceneEntitiesLayer*>(layer); marker != nullptr) {
       order.push_back({marker, layer->info().topic_id.id});
       markers.push_back(marker);
       models.push_back(marker);
-    } else if (auto* model = dynamic_cast<WasmModelRenderable*>(layer); model != nullptr) {
+    } else if (auto* model = dynamic_cast<ModelRenderable*>(layer); model != nullptr) {
       order.push_back({model, layer->info().topic_id.id});
       models.push_back(model);
+    } else if (layer != nullptr) {
+      // Trail / GridMap: kept and persisted, but not drawn until P3.
+      layer->noteRenderFailure(tr("Not rendered by this renderer yet"));
     }
   }
   ordered_layers_ = std::move(order);
@@ -608,35 +617,35 @@ void SceneViewWidget::setLayers(const std::vector<PJ::ISceneLayer*>& ordered_lay
   setModelRenderableLayers(models);
 }
 
-void SceneViewWidget::setPointRenderableLayers(const std::vector<WasmPointRenderable*>& layers) {
+void SceneViewWidget::setPointRenderableLayers(const std::vector<PointRenderable*>& layers) {
   adoptLayerList(layers, point_layers_, point_layer_gpu_, point_layers_pending_fit_, [this](PointLayerGpu& gpu) {
     releasePointLayerGpu(gpu);
   });
   update();
 }
 
-void SceneViewWidget::setPosesInFrameLayers(const std::vector<WasmPosesInFrameLayer*>& layers) {
+void SceneViewWidget::setPosesInFrameLayers(const std::vector<PosesInFrameLayer*>& layers) {
   adoptLayerList(layers, pose_layers_, pose_layer_gpu_, pose_layers_pending_fit_, [this](PoseLayerGpu& gpu) {
     releasePoseLayerGpu(gpu);
   });
   update();
 }
 
-void SceneViewWidget::setOccupancyGridLayers(const std::vector<WasmOccupancyGridLayer*>& layers) {
+void SceneViewWidget::setOccupancyGridLayers(const std::vector<OccupancyGridLayer*>& layers) {
   adoptLayerList(
       layers, occupancy_layers_, occupancy_layer_gpu_, occupancy_layers_pending_fit_,
       [this](OccupancyLayerGpu& gpu) { releaseOccupancyLayerGpu(gpu); });
   update();
 }
 
-void SceneViewWidget::setVoxelGridLayers(const std::vector<WasmVoxelGridLayer*>& layers) {
+void SceneViewWidget::setVoxelGridLayers(const std::vector<VoxelGridLayer*>& layers) {
   adoptLayerList(layers, voxel_layers_, voxel_layer_gpu_, voxel_layers_pending_fit_, [this](VoxelLayerGpu& gpu) {
     releaseVoxelLayerGpu(gpu);
   });
   update();
 }
 
-void SceneViewWidget::setSceneEntitiesLayers(const std::vector<WasmSceneEntitiesLayer*>& layers) {
+void SceneViewWidget::setSceneEntitiesLayers(const std::vector<SceneEntitiesLayer*>& layers) {
   for (auto iterator = marker_layers_pending_fit_.begin(); iterator != marker_layers_pending_fit_.end();) {
     if (std::find(layers.cbegin(), layers.cend(), *iterator) == layers.cend()) {
       iterator = marker_layers_pending_fit_.erase(iterator);
@@ -644,7 +653,7 @@ void SceneViewWidget::setSceneEntitiesLayers(const std::vector<WasmSceneEntities
       ++iterator;
     }
   }
-  for (WasmSceneEntitiesLayer* layer : layers) {
+  for (SceneEntitiesLayer* layer : layers) {
     if (std::find(marker_layers_.cbegin(), marker_layers_.cend(), layer) == marker_layers_.cend()) {
       marker_layers_pending_fit_.insert(layer);
     }
@@ -653,7 +662,7 @@ void SceneViewWidget::setSceneEntitiesLayers(const std::vector<WasmSceneEntities
   update();
 }
 
-void SceneViewWidget::setModelRenderableLayers(const std::vector<WasmModelRenderable*>& layers) {
+void SceneViewWidget::setModelRenderableLayers(const std::vector<ModelRenderable*>& layers) {
   for (auto iterator = model_layer_gpu_.begin(); iterator != model_layer_gpu_.end();) {
     if (std::find(layers.cbegin(), layers.cend(), iterator->first) == layers.cend() || !iterator->first->visible()) {
       releaseModelLayerGpu(iterator->second);
@@ -682,8 +691,7 @@ void SceneViewWidget::setFixedFrame(const std::string& frame) {
   }
   fixed_frame_ = frame;
   follow_seeded_ = false;
-  update();
-  emit presentationChanged();
+  update();  // the dock owns and persists the fixed frame, and reports its changes
 }
 
 void SceneViewWidget::setFollowFrame(const std::string& frame) {
@@ -985,7 +993,7 @@ std::string SceneViewWidget::effectiveFixedFrame() const {
   // behavior instead of silently producing an empty browser view.
   for (const OrderedLayerEntry& entry : ordered_layers_) {
     const std::string source = std::visit(
-        [](const auto* layer) { return layer != nullptr ? layer->sourceFrame() : std::string{}; }, entry.layer);
+        [](const auto* layer) { return layer != nullptr ? layer->renderFrameId() : std::string{}; }, entry.layer);
     if (!source.empty()) {
       return source;
     }
@@ -1117,7 +1125,7 @@ bool SceneViewWidget::ensureVertexBuffer(
   return true;
 }
 
-bool SceneViewWidget::ensurePointLayerGpu(QRhi* owner, WasmPointRenderable* /*layer*/, PointLayerGpu& gpu) {
+bool SceneViewWidget::ensurePointLayerGpu(QRhi* owner, PointRenderable* /*layer*/, PointLayerGpu& gpu) {
   if (owner == nullptr || colormap_texture_ == nullptr || colormap_sampler_ == nullptr) {
     return false;
   }
@@ -1187,7 +1195,7 @@ void SceneViewWidget::releasePoseLayerGpu(PoseLayerGpu& gpu) {
 }
 
 bool SceneViewWidget::ensureOccupancyLayerGpu(
-    QRhi* owner, WasmOccupancyGridLayer* layer, OccupancyLayerGpu& gpu, bool& texture_recreated) {
+    QRhi* owner, OccupancyGridLayer* layer, OccupancyLayerGpu& gpu, bool& texture_recreated) {
   texture_recreated = false;
   if (owner == nullptr || layer == nullptr || occupancy_sampler_ == nullptr) {
     return false;
@@ -1256,7 +1264,7 @@ void SceneViewWidget::releaseOccupancyLayerGpu(OccupancyLayerGpu& gpu) {
 }
 
 bool SceneViewWidget::ensureVoxelLayerGpu(
-    QRhi* owner, WasmVoxelGridLayer* layer, VoxelLayerGpu& gpu, bool& texture_recreated) {
+    QRhi* owner, VoxelGridLayer* layer, VoxelLayerGpu& gpu, bool& texture_recreated) {
   texture_recreated = false;
   if (owner == nullptr || layer == nullptr || voxel_sampler_ == nullptr || colormap_texture_ == nullptr ||
       colormap_sampler_ == nullptr) {
@@ -1329,7 +1337,7 @@ bool SceneViewWidget::ensureVoxelLayerGpu(
   return true;
 }
 
-QString SceneViewWidget::voxelGpuRejection(QRhi* owner, const WasmVoxelGridLayer* layer) {
+QString SceneViewWidget::voxelGpuRejection(QRhi* owner, const VoxelGridLayer* layer) {
   if (owner == nullptr || layer == nullptr) {
     return tr("The voxel-grid renderer is not available");
   }
@@ -1460,7 +1468,7 @@ bool SceneViewWidget::rebuildAllModelMaterialBindings(QRhi* owner) {
   return true;
 }
 
-bool SceneViewWidget::ensureModelLayerGpu(QRhi* owner, WasmModelRenderable* layer, ModelLayerGpu& gpu) {
+bool SceneViewWidget::ensureModelLayerGpu(QRhi* owner, ModelRenderable* layer, ModelLayerGpu& gpu) {
   if (owner == nullptr || layer == nullptr || model_white_texture_ == nullptr || model_sampler_ == nullptr ||
       uniform_buffer_ == nullptr || model_uniform_buffer_ == nullptr) {
     return false;
@@ -1482,7 +1490,7 @@ bool SceneViewWidget::ensureModelLayerGpu(QRhi* owner, WasmModelRenderable* laye
     const std::uint64_t vertex_bytes = source->vertices.size() * sizeof(pj::scene3d::Vertex);
     const std::uint64_t index_bytes = source->indices.size() * sizeof(std::uint32_t);
     if (vertex_bytes > std::numeric_limits<quint32>::max() || index_bytes > std::numeric_limits<quint32>::max()) {
-      layer->noteRenderFailure(tr("A model GPU buffer exceeds the 4 GiB buffer limit"));
+      asLayer(layer).noteRenderFailure(tr("A model GPU buffer exceeds the 4 GiB buffer limit"));
       releaseModelLayerGpu(gpu);
       return false;
     }
@@ -1509,7 +1517,7 @@ bool SceneViewWidget::ensureModelLayerGpu(QRhi* owner, WasmModelRenderable* laye
     if (!mesh.edge_indices.empty()) {
       const std::uint64_t edge_bytes = mesh.edge_indices.size() * sizeof(quint32);
       if (edge_bytes > std::numeric_limits<quint32>::max()) {
-        layer->noteRenderFailure(tr("A model wireframe buffer exceeds the 4 GiB buffer limit"));
+        asLayer(layer).noteRenderFailure(tr("A model wireframe buffer exceeds the 4 GiB buffer limit"));
         releaseModelMeshGpu(mesh);
         releaseModelLayerGpu(gpu);
         return false;
@@ -1519,7 +1527,7 @@ bool SceneViewWidget::ensureModelLayerGpu(QRhi* owner, WasmModelRenderable* laye
     }
     if (!mesh.vertex_buffer->create() || !mesh.triangle_index_buffer->create() ||
         (mesh.edge_index_buffer != nullptr && !mesh.edge_index_buffer->create())) {
-      layer->noteRenderFailure(tr("Could not allocate model GPU buffers"));
+      asLayer(layer).noteRenderFailure(tr("Could not allocate model GPU buffers"));
       releaseModelMeshGpu(mesh);
       releaseModelLayerGpu(gpu);
       return false;
@@ -1559,7 +1567,7 @@ bool SceneViewWidget::ensureModelLayerGpu(QRhi* owner, WasmModelRenderable* laye
                 static_cast<std::uint64_t>(size.width()) * static_cast<std::uint64_t>(size.height());
             if (size.width() > max_texture_size || size.height() > max_texture_size ||
                 !tryConsumeModelTexturePixels(pixels, remaining_texture_pixels, candidate_layer_texture_pixels)) {
-              layer->noteRenderFailure(tr("A model exceeds the decoded-texture limit"));
+              asLayer(layer).noteRenderFailure(tr("A model exceeds the decoded-texture limit"));
               releaseModelMeshGpu(mesh);
               releaseModelLayerGpu(gpu);
               return false;
@@ -1574,7 +1582,7 @@ bool SceneViewWidget::ensureModelLayerGpu(QRhi* owner, WasmModelRenderable* laye
                 static_cast<std::uint64_t>(size.width()) * static_cast<std::uint64_t>(size.height());
             if (size.width() > max_texture_size || size.height() > max_texture_size ||
                 !tryConsumeModelTexturePixels(pixels, remaining_texture_pixels, candidate_layer_texture_pixels)) {
-              layer->noteRenderFailure(tr("A model exceeds the decoded-texture limit"));
+              asLayer(layer).noteRenderFailure(tr("A model exceeds the decoded-texture limit"));
               releaseModelMeshGpu(mesh);
               releaseModelLayerGpu(gpu);
               return false;
@@ -1583,7 +1591,7 @@ bool SceneViewWidget::ensureModelLayerGpu(QRhi* owner, WasmModelRenderable* laye
           }
         }
         if (!size.isValid() || image.isNull()) {
-          layer->noteRenderFailure(tr("Could not decode a model material texture"));
+          asLayer(layer).noteRenderFailure(tr("Could not decode a model material texture"));
           releaseModelMeshGpu(mesh);
           releaseModelLayerGpu(gpu);
           return false;
@@ -1615,7 +1623,7 @@ bool SceneViewWidget::ensureModelLayerGpu(QRhi* owner, WasmModelRenderable* laye
         }
         auto decoded = decoded_textures.find(texture);
         if (decoded == decoded_textures.end() || decoded->second.image.isNull() || decoded->second.slot != slot) {
-          layer->noteRenderFailure(tr("A model material texture lost its decoded upload state"));
+          asLayer(layer).noteRenderFailure(tr("A model material texture lost its decoded upload state"));
           releaseModelMeshGpu(mesh);
           releaseModelLayerGpu(gpu);
           return false;
@@ -1624,7 +1632,7 @@ bool SceneViewWidget::ensureModelLayerGpu(QRhi* owner, WasmModelRenderable* laye
         texture_gpu.texture = owner->newTexture(QRhiTexture::RGBA8, decoded->second.image.size(), 1, flags);
         texture_gpu.owns_texture = true;
         if (texture_gpu.texture == nullptr || !texture_gpu.texture->create()) {
-          layer->noteRenderFailure(tr("Could not allocate a model material texture"));
+          asLayer(layer).noteRenderFailure(tr("Could not allocate a model material texture"));
           releaseModelMeshGpu(mesh);
           releaseModelLayerGpu(gpu);
           return false;
@@ -1634,7 +1642,7 @@ bool SceneViewWidget::ensureModelLayerGpu(QRhi* owner, WasmModelRenderable* laye
         shared_textures.emplace(texture, texture_gpu.texture);
       }
       if (!rebuildModelMaterialBindings(owner, material_gpu)) {
-        layer->noteRenderFailure(tr("Could not create model material bindings"));
+        asLayer(layer).noteRenderFailure(tr("Could not create model material bindings"));
         releaseModelMeshGpu(mesh);
         releaseModelLayerGpu(gpu);
         return false;
@@ -1943,11 +1951,11 @@ void SceneViewWidget::initialize(QRhiCommandBuffer* /*command_buffer*/) {
   colormap_upload_pending_ = true;
 
   QRhiVertexInputLayout point_layout;
-  point_layout.setBindings({QRhiVertexInputBinding(sizeof(WasmPointVertex))});
+  point_layout.setBindings({QRhiVertexInputBinding(sizeof(PointVertex))});
   point_layout.setAttributes({
-      QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, offsetof(WasmPointVertex, x)),
-      QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float, offsetof(WasmPointVertex, scalar)),
-      QRhiVertexInputAttribute(0, 2, QRhiVertexInputAttribute::UNormByte4, offsetof(WasmPointVertex, rgba)),
+      QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, offsetof(PointVertex, x)),
+      QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float, offsetof(PointVertex, scalar)),
+      QRhiVertexInputAttribute(0, 2, QRhiVertexInputAttribute::UNormByte4, offsetof(PointVertex, rgba)),
   });
   point_layout_uniform_buffer_ =
       current_rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, kPointUniformBytes);
@@ -2003,14 +2011,14 @@ void SceneViewWidget::initialize(QRhiCommandBuffer* /*command_buffer*/) {
   QRhiVertexInputLayout cube_layout;
   cube_layout.setBindings({
       QRhiVertexInputBinding(sizeof(CubeVertex)),
-      QRhiVertexInputBinding(sizeof(WasmPointVertex), QRhiVertexInputBinding::PerInstance),
+      QRhiVertexInputBinding(sizeof(PointVertex), QRhiVertexInputBinding::PerInstance),
   });
   cube_layout.setAttributes({
       QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, offsetof(CubeVertex, px)),
       QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float3, offsetof(CubeVertex, nx)),
-      QRhiVertexInputAttribute(1, 2, QRhiVertexInputAttribute::Float3, offsetof(WasmPointVertex, x)),
-      QRhiVertexInputAttribute(1, 3, QRhiVertexInputAttribute::Float, offsetof(WasmPointVertex, scalar)),
-      QRhiVertexInputAttribute(1, 4, QRhiVertexInputAttribute::UNormByte4, offsetof(WasmPointVertex, rgba)),
+      QRhiVertexInputAttribute(1, 2, QRhiVertexInputAttribute::Float3, offsetof(PointVertex, x)),
+      QRhiVertexInputAttribute(1, 3, QRhiVertexInputAttribute::Float, offsetof(PointVertex, scalar)),
+      QRhiVertexInputAttribute(1, 4, QRhiVertexInputAttribute::UNormByte4, offsetof(PointVertex, rgba)),
   });
   cube_pipeline_ = current_rhi->newGraphicsPipeline();
   cube_pipeline_->setTopology(QRhiGraphicsPipeline::Triangles);
@@ -2240,17 +2248,17 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
                            : 1.0F;
 
   struct PreparedPointLayer {
-    WasmPointRenderable* layer = nullptr;
+    PointRenderable* layer = nullptr;
     Transform fixed_from_source;
   };
   std::vector<PreparedPointLayer> prepared_points;
   prepared_points.reserve(point_layers_.size());
-  std::vector<WasmPointRenderable*> fitted_point_layers;
+  std::vector<PointRenderable*> fitted_point_layers;
   AABB fixed_point_bounds;
   AABB fixed_depth_bounds;
   const std::string fixed_frame = effectiveFixedFrame();
   std::uint64_t remaining_point_vertices = kSceneLimits.max_point_vertices_per_view;
-  for (WasmPointRenderable* layer : point_layers_) {
+  for (PointRenderable* layer : point_layers_) {
     if (layer == nullptr || !layer->visible()) {
       continue;
     }
@@ -2262,7 +2270,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
       }
       continue;
     }
-    const auto placed = resolveFixedFromSource(layer->sourceFrame(), fixed_frame);
+    const auto placed = resolveFixedFromSource(layer->renderFrameId(), fixed_frame);
     if (!placed.has_value()) {
       continue;
     }
@@ -2286,15 +2294,15 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   last_depth_bounds_ = fixed_depth_bounds;
 
   struct PreparedPoseLayer {
-    WasmPosesInFrameLayer* layer = nullptr;
+    PosesInFrameLayer* layer = nullptr;
     Transform fixed_from_source;
   };
   std::vector<PreparedPoseLayer> prepared_poses;
   prepared_poses.reserve(pose_layers_.size());
-  std::vector<WasmPosesInFrameLayer*> fitted_pose_layers;
+  std::vector<PosesInFrameLayer*> fitted_pose_layers;
   AABB fixed_pose_bounds;
   std::uint64_t remaining_pose_arms = kSceneLimits.max_pose_arms_per_view;
-  for (WasmPosesInFrameLayer* layer : pose_layers_) {
+  for (PosesInFrameLayer* layer : pose_layers_) {
     if (layer == nullptr || !layer->visible()) {
       continue;
     }
@@ -2306,7 +2314,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
       }
       continue;
     }
-    const auto placed = resolveFixedFromSource(layer->sourceFrame(), fixed_frame);
+    const auto placed = resolveFixedFromSource(layer->renderFrameId(), fixed_frame);
     if (!placed.has_value()) {
       continue;
     }
@@ -2327,15 +2335,15 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   last_pose_bounds_ = fixed_pose_bounds;
 
   struct PreparedOccupancyLayer {
-    WasmOccupancyGridLayer* layer = nullptr;
+    OccupancyGridLayer* layer = nullptr;
     Transform fixed_from_source;
   };
   std::vector<PreparedOccupancyLayer> prepared_occupancy;
   prepared_occupancy.reserve(occupancy_layers_.size());
-  std::vector<WasmOccupancyGridLayer*> fitted_occupancy_layers;
+  std::vector<OccupancyGridLayer*> fitted_occupancy_layers;
   AABB fixed_occupancy_bounds;
   std::uint64_t remaining_occupancy_cells = kSceneLimits.max_occupancy_cells_per_view;
-  for (WasmOccupancyGridLayer* layer : occupancy_layers_) {
+  for (OccupancyGridLayer* layer : occupancy_layers_) {
     if (layer == nullptr || !layer->visible()) {
       continue;
     }
@@ -2348,7 +2356,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
       }
       continue;
     }
-    const auto placed = resolveFixedFromSource(layer->sourceFrame(), fixed_frame);
+    const auto placed = resolveFixedFromSource(layer->renderFrameId(), fixed_frame);
     if (!placed.has_value()) {
       continue;
     }
@@ -2371,15 +2379,15 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   last_occupancy_bounds_ = fixed_occupancy_bounds;
 
   struct PreparedVoxelLayer {
-    WasmVoxelGridLayer* layer = nullptr;
+    VoxelGridLayer* layer = nullptr;
     Transform fixed_from_source;
   };
   std::vector<PreparedVoxelLayer> prepared_voxels;
   prepared_voxels.reserve(voxel_layers_.size());
-  std::vector<WasmVoxelGridLayer*> fitted_voxel_layers;
+  std::vector<VoxelGridLayer*> fitted_voxel_layers;
   AABB fixed_voxel_bounds;
   std::uint64_t remaining_voxels = kSceneLimits.max_voxels_per_view;
-  for (WasmVoxelGridLayer* layer : voxel_layers_) {
+  for (VoxelGridLayer* layer : voxel_layers_) {
     if (layer == nullptr || !layer->visible()) {
       continue;
     }
@@ -2400,7 +2408,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
       }
       continue;
     }
-    const auto placed = resolveFixedFromSource(layer->sourceFrame(), fixed_frame);
+    const auto placed = resolveFixedFromSource(layer->renderFrameId(), fixed_frame);
     if (!placed.has_value()) {
       continue;
     }
@@ -2422,23 +2430,23 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   last_voxel_bounds_ = fixed_voxel_bounds;
 
   struct PreparedMarkerLayer {
-    WasmSceneEntitiesLayer* layer = nullptr;
+    SceneEntitiesLayer* layer = nullptr;
     std::vector<std::optional<Transform>> fixed_from_frames;
     std::uint64_t instances = 0;
     std::uint64_t stream_vertices = 0;
   };
   std::vector<PreparedMarkerLayer> prepared_markers;
   prepared_markers.reserve(marker_layers_.size());
-  std::vector<WasmSceneEntitiesLayer*> fitted_marker_layers;
+  std::vector<SceneEntitiesLayer*> fitted_marker_layers;
   AABB fixed_marker_bounds;
   std::uint64_t remaining_marker_instances = kSceneLimits.max_marker_instances_per_view;
   std::uint64_t remaining_marker_stream_vertices = kSceneLimits.max_marker_stream_vertices_per_view;
-  for (WasmSceneEntitiesLayer* layer : marker_layers_) {
+  for (SceneEntitiesLayer* layer : marker_layers_) {
     if (layer == nullptr || !layer->visible()) {
       continue;
     }
     layer->prepareForRender();
-    const WasmMarkerGeometry& geometry = layer->geometry();
+    const MarkerGeometry& geometry = layer->geometry();
     if (geometry.empty() || fixed_frame.empty()) {
       continue;
     }
@@ -2482,13 +2490,13 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
       continue;
     }
     prepared.instances = *submitted_instances;
-    for (const WasmMarkerStreamBatch& batch : geometry.lines) {
+    for (const MarkerStreamBatch& batch : geometry.lines) {
       if (batch.frame_index < prepared.fixed_from_frames.size() &&
           prepared.fixed_from_frames[batch.frame_index].has_value()) {
         prepared.stream_vertices += batch.vertices.size();
       }
     }
-    for (const WasmMarkerStreamBatch& batch : geometry.triangles) {
+    for (const MarkerStreamBatch& batch : geometry.triangles) {
       if (batch.frame_index < prepared.fixed_from_frames.size() &&
           prepared.fixed_from_frames[batch.frame_index].has_value()) {
         prepared.stream_vertices += batch.vertices.size() * (layer->wireframe() ? 2U : 1U);
@@ -2534,10 +2542,10 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     glm::dmat4 fixed_from_model{1.0};
     glm::vec4 override_color{1.0F};
     bool use_material = true;
-    WasmModelDrawGroup group = WasmModelDrawGroup::kIndependent;
+    ModelDrawGroup group = ModelDrawGroup::kIndependent;
   };
   struct PreparedModelLayer {
-    WasmModelRenderable* layer = nullptr;
+    ModelRenderable* layer = nullptr;
     std::vector<PreparedModelCall> color_calls;
     std::vector<PreparedModelCall> shadow_calls;
     std::uint64_t draws = 0;
@@ -2553,7 +2561,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   std::uint64_t remaining_shadow_draws = kSceneLimits.max_model_draws_per_view;
   std::uint64_t remaining_shadow_triangles = kSceneLimits.max_model_triangles_per_view;
   std::unordered_map<const MeshData*, AABB> model_bounds_cache;
-  for (WasmModelRenderable* layer : model_layers_) {
+  for (ModelRenderable* layer : model_layers_) {
     if (layer == nullptr || !layer->visible() || fixed_frame.empty() || layer->modelDrawCalls().empty()) {
       continue;
     }
@@ -2562,16 +2570,16 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     prepared.color_calls.reserve(layer->modelDrawCalls().size());
     prepared.shadow_calls.reserve(layer->modelDrawCalls().size());
     AABB layer_bounds;
-    for (const WasmModelDrawCall& draw : layer->modelDrawCalls()) {
-      const bool color_requested = (draw.group != WasmModelDrawGroup::kVisual ||
+    for (const ModelDrawCall& draw : layer->modelDrawCalls()) {
+      const bool color_requested = (draw.group != ModelDrawGroup::kVisual ||
                                     (shading_params_.meshes_visible && shading_params_.mesh_opacity > 0.0F)) &&
-                                   (draw.group != WasmModelDrawGroup::kCollision ||
+                                   (draw.group != ModelDrawGroup::kCollision ||
                                     (shading_params_.collisions_visible && shading_params_.collision_opacity > 0.0F));
       // Native casts SceneEntities model primitives and RobotModel visuals. A
       // hidden Robot visual still casts there; collisions never do. Keep the
       // same intentionally asymmetric visibility contract in the browser.
       const bool shadow_requested =
-          shading_params_.shadows_enabled && tf_ != nullptr && draw.group != WasmModelDrawGroup::kCollision;
+          shading_params_.shadows_enabled && tf_ != nullptr && draw.group != ModelDrawGroup::kCollision;
       if (!color_requested && !shadow_requested) {
         continue;
       }
@@ -2627,20 +2635,20 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     }
     if (prepared.draws > kSceneLimits.max_model_draws_per_layer ||
         prepared.triangles > kSceneLimits.max_model_triangles_per_layer) {
-      layer->noteRenderFailure(tr("Models need %1 draws and %2 triangles; the layer limits are %3 and %4")
-                                   .arg(
-                                       QString::number(prepared.draws), QString::number(prepared.triangles),
-                                       QString::number(kSceneLimits.max_model_draws_per_layer),
-                                       QString::number(kSceneLimits.max_model_triangles_per_layer)));
+      asLayer(layer).noteRenderFailure(tr("Models need %1 draws and %2 triangles; the layer limits are %3 and %4")
+                                           .arg(
+                                               QString::number(prepared.draws), QString::number(prepared.triangles),
+                                               QString::number(kSceneLimits.max_model_draws_per_layer),
+                                               QString::number(kSceneLimits.max_model_triangles_per_layer)));
       continue;
     }
     if (!prepared.color_calls.empty() &&
         !tryConsumeModels(prepared.draws, prepared.triangles, remaining_model_draws, remaining_model_triangles)) {
-      layer->noteRenderFailure(tr("Models need %1 draws and %2 triangles; the remaining view budget is %3 and %4")
-                                   .arg(
-                                       QString::number(prepared.draws), QString::number(prepared.triangles),
-                                       QString::number(remaining_model_draws),
-                                       QString::number(remaining_model_triangles)));
+      asLayer(layer).noteRenderFailure(
+          tr("Models need %1 draws and %2 triangles; the remaining view budget is %3 and %4")
+              .arg(
+                  QString::number(prepared.draws), QString::number(prepared.triangles),
+                  QString::number(remaining_model_draws), QString::number(remaining_model_triangles)));
       continue;
     }
     QString shadow_warning;
@@ -2655,7 +2663,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     }
     if (layer->contributesToSceneBounds()) {
       fixed_model_bounds = unionAABB(fixed_model_bounds, layer_bounds);
-      if (auto* marker = dynamic_cast<WasmSceneEntitiesLayer*>(layer);
+      if (auto* marker = dynamic_cast<SceneEntitiesLayer*>(layer);
           marker != nullptr && marker_layers_pending_fit_.contains(marker) &&
           std::find(fitted_marker_layers.cbegin(), fitted_marker_layers.cend(), marker) ==
               fitted_marker_layers.cend()) {
@@ -2663,9 +2671,9 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
       }
     }
     if (shadow_warning.isEmpty()) {
-      layer->noteRenderSuccess();
+      asLayer(layer).noteRenderSuccess();
     } else {
-      layer->noteRenderFailure(shadow_warning);
+      asLayer(layer).noteRenderFailure(shadow_warning);
     }
     prepared_models.push_back(std::move(prepared));
   }
@@ -2682,19 +2690,19 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
        !fitted_voxel_layers.empty() || !fitted_marker_layers.empty()) &&
       fixed_scene_bounds.valid) {
     camera_->fitToBoundingBox(fixed_scene_bounds);
-    for (WasmPointRenderable* layer : fitted_point_layers) {
+    for (PointRenderable* layer : fitted_point_layers) {
       point_layers_pending_fit_.erase(layer);
     }
-    for (WasmPosesInFrameLayer* layer : fitted_pose_layers) {
+    for (PosesInFrameLayer* layer : fitted_pose_layers) {
       pose_layers_pending_fit_.erase(layer);
     }
-    for (WasmOccupancyGridLayer* layer : fitted_occupancy_layers) {
+    for (OccupancyGridLayer* layer : fitted_occupancy_layers) {
       occupancy_layers_pending_fit_.erase(layer);
     }
-    for (WasmVoxelGridLayer* layer : fitted_voxel_layers) {
+    for (VoxelGridLayer* layer : fitted_voxel_layers) {
       voxel_layers_pending_fit_.erase(layer);
     }
-    for (WasmSceneEntitiesLayer* layer : fitted_marker_layers) {
+    for (SceneEntitiesLayer* layer : fitted_marker_layers) {
       marker_layers_pending_fit_.erase(layer);
     }
     ++camera_fit_count_;
@@ -2714,7 +2722,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     bool depth_write = true;
   };
   struct MarkerLayerDraw {
-    WasmSceneEntitiesLayer* layer = nullptr;
+    SceneEntitiesLayer* layer = nullptr;
     std::vector<MarkerDrawRange> ranges;
   };
   std::vector<MarkerLayerDraw> marker_draws;
@@ -2725,8 +2733,8 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   last_marker_stream_vertex_count_ = 0;
 
   for (const PreparedMarkerLayer& prepared : prepared_markers) {
-    WasmSceneEntitiesLayer* layer = prepared.layer;
-    const WasmMarkerGeometry& geometry = layer->geometry();
+    SceneEntitiesLayer* layer = prepared.layer;
+    const MarkerGeometry& geometry = layer->geometry();
     MarkerLayerDraw draw;
     draw.layer = layer;
     const bool pass_translucent = layer->opacity() < 0.999F;
@@ -2741,10 +2749,10 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
       color.a *= layer->opacity();
       return color;
     };
-    const auto append_instances = [&](const std::vector<WasmMarkerInstanceSource>& sources,
+    const auto append_instances = [&](const std::vector<MarkerInstanceSource>& sources,
                                       bool cube_edge_overlay = false) {
       const quint32 first = static_cast<quint32>(marker_instances_.size());
-      for (const WasmMarkerInstanceSource& source : sources) {
+      for (const MarkerInstanceSource& source : sources) {
         if (source.frame_index >= prepared.fixed_from_frames.size() ||
             !prepared.fixed_from_frames[source.frame_index].has_value()) {
           continue;
@@ -2810,13 +2818,13 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     append_family(geometry.axes, 3U, false);
 
     const quint32 line_offset = static_cast<quint32>(line_vertices_.size());
-    for (const WasmMarkerStreamBatch& batch : geometry.lines) {
+    for (const MarkerStreamBatch& batch : geometry.lines) {
       if (batch.frame_index >= prepared.fixed_from_frames.size() ||
           !prepared.fixed_from_frames[batch.frame_index].has_value()) {
         continue;
       }
       const glm::dmat4 model = prepared.fixed_from_frames[batch.frame_index]->matrix() * batch.model;
-      for (const WasmMarkerStreamVertex& source : batch.vertices) {
+      for (const MarkerStreamVertex& source : batch.vertices) {
         const glm::dvec3 point = glm::dvec3(model * glm::dvec4(source.position, 1.0)) - render_origin;
         const glm::vec4 color = apply_color(source.color);
         line_vertices_.push_back(
@@ -2831,7 +2839,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
 
     if (layer->wireframe()) {
       const quint32 triangle_edge_offset = static_cast<quint32>(line_vertices_.size());
-      for (const WasmMarkerStreamBatch& batch : geometry.triangles) {
+      for (const MarkerStreamBatch& batch : geometry.triangles) {
         if (batch.frame_index >= prepared.fixed_from_frames.size() ||
             !prepared.fixed_from_frames[batch.frame_index].has_value()) {
           continue;
@@ -2840,7 +2848,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
         for (std::size_t index = 0; index + 2U < batch.vertices.size(); index += 3U) {
           std::array<Vertex, 3> vertices;
           for (std::size_t corner = 0; corner < vertices.size(); ++corner) {
-            const WasmMarkerStreamVertex& source = batch.vertices[index + corner];
+            const MarkerStreamVertex& source = batch.vertices[index + corner];
             const glm::dvec3 point = glm::dvec3(model * glm::dvec4(source.position, 1.0)) - render_origin;
             const glm::vec4 color = apply_color(source.color);
             vertices[corner] = {
@@ -2863,13 +2871,13 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
       }
     } else {
       const quint32 triangle_offset = static_cast<quint32>(triangle_vertices_.size());
-      for (const WasmMarkerStreamBatch& batch : geometry.triangles) {
+      for (const MarkerStreamBatch& batch : geometry.triangles) {
         if (batch.frame_index >= prepared.fixed_from_frames.size() ||
             !prepared.fixed_from_frames[batch.frame_index].has_value()) {
           continue;
         }
         const glm::dmat4 model = prepared.fixed_from_frames[batch.frame_index]->matrix() * batch.model;
-        for (const WasmMarkerStreamVertex& source : batch.vertices) {
+        for (const MarkerStreamVertex& source : batch.vertices) {
           const glm::dvec3 point = glm::dvec3(model * glm::dvec4(source.position, 1.0)) - render_origin;
           const glm::vec4 color = apply_color(source.color);
           triangle_vertices_.push_back(
@@ -2901,7 +2909,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     bool depth_write = true;
   };
   struct ModelLayerDraw {
-    WasmModelRenderable* layer = nullptr;
+    ModelRenderable* layer = nullptr;
     std::vector<ModelDrawRange> ranges;
   };
   struct ShadowDrawRange {
@@ -2923,7 +2931,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   last_shadow_triangle_count_ = 0;
   AABB render_shadow_bounds;
   for (const PreparedModelLayer& prepared : prepared_models) {
-    WasmModelRenderable* layer = prepared.layer;
+    ModelRenderable* layer = prepared.layer;
     ModelLayerGpu& gpu = model_layer_gpu_[layer];
     if (!ensureModelLayerGpu(current_rhi, layer, gpu)) {
       continue;
@@ -2960,9 +2968,9 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
           use_material = false;
         }
         float opacity = layer->opacity();
-        if (call.group == WasmModelDrawGroup::kVisual) {
+        if (call.group == ModelDrawGroup::kVisual) {
           opacity *= shading_params_.mesh_opacity;
-        } else if (call.group == WasmModelDrawGroup::kCollision) {
+        } else if (call.group == ModelDrawGroup::kCollision) {
           opacity *= shading_params_.collision_opacity;
         }
         tint.a *= opacity;
@@ -2985,7 +2993,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
         instance.pbr_factors = {
             material.has_pbr ? material.metallic_factor : 0.0F,
             material.has_pbr ? material.roughness_factor : shading_params_.roughness, pbr_active ? 1.0F : 0.0F,
-            call.group == WasmModelDrawGroup::kCollision ? 1.0F : 0.0F};
+            call.group == ModelDrawGroup::kCollision ? 1.0F : 0.0F};
         instance.emissive_factor = {
             pbr_active ? material.emissive_factor.r : 0.0F, pbr_active ? material.emissive_factor.g : 0.0F,
             pbr_active ? material.emissive_factor.b : 0.0F, 0.0F};
@@ -2997,7 +3005,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
         const bool lines = layer->wireframe();
         const quint32 index_offset = lines ? mesh.edge_offsets[index] : static_cast<quint32>(submesh.index_offset);
         const quint32 index_count = lines ? mesh.edge_counts[index] : static_cast<quint32>(submesh.index_count);
-        const bool translucent = call.group == WasmModelDrawGroup::kCollision || tint.a < 0.999F || alpha_mode > 1.5F;
+        const bool translucent = call.group == ModelDrawGroup::kCollision || tint.a < 0.999F || alpha_mode > 1.5F;
         layer_draw.ranges.push_back(
             ModelDrawRange{&mesh, &material_gpu, instance_offset, index_offset, index_count, lines, !translucent});
       }
@@ -3084,7 +3092,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
       noted_shadow_failure_ = shadow_stage_.capability_error;
       for (const PreparedModelLayer& prepared : prepared_models) {
         if (prepared.layer != nullptr && !prepared.shadow_calls.empty()) {
-          prepared.layer->noteRenderFailure(shadow_stage_.capability_error);
+          asLayer(prepared.layer).noteRenderFailure(shadow_stage_.capability_error);
         }
       }
     }
@@ -3258,7 +3266,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   }
 
   struct PointDraw {
-    WasmPointRenderable* layer = nullptr;
+    PointRenderable* layer = nullptr;
     QRhiBuffer* vertex_buffer = nullptr;
     QRhiShaderResourceBindings* shader_resources = nullptr;
     quint32 vertex_count = 0;
@@ -3273,14 +3281,14 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   last_cube_layer_count_ = 0;
   last_cube_instance_count_ = 0;
   for (const PreparedPointLayer& prepared : prepared_points) {
-    WasmPointRenderable* layer = prepared.layer;
+    PointRenderable* layer = prepared.layer;
     PointLayerGpu& gpu = point_layer_gpu_[layer];
     if (!ensurePointLayerGpu(current_rhi, layer, gpu)) {
       continue;
     }
     if (gpu.uploaded_revision != layer->geometryRevision()) {
       const auto& vertices = layer->vertices();
-      const quint32 bytes = static_cast<quint32>(vertices.size() * sizeof(WasmPointVertex));
+      const quint32 bytes = static_cast<quint32>(vertices.size() * sizeof(PointVertex));
       const std::uint64_t shrink_threshold =
           std::max<std::uint64_t>(static_cast<std::uint64_t>(bytes) * 2U, kPointInitialVertexBufferBytes);
       if (gpu.vertex_buffer != nullptr && gpu.vertex_capacity > shrink_threshold) {
@@ -3324,12 +3332,11 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
         layer->sizeMeters() * 0.5F, layer->sizePixels(), static_cast<float>(std::max(output_size.height(), 1)),
         projection[1][1]};
     point_uniforms.range_params = {
-        range_minimum, range_maximum, layer->outsideRangeAlpha(),
-        layer->shape() == WasmPointShape::kPoint ? 0.0F : 1.0F};
+        range_minimum, range_maximum, layer->outsideRangeAlpha(), layer->shape() == PointShape::kPoint ? 0.0F : 1.0F};
     const QColor solid = layer->solidColor();
     point_uniforms.solid_params = {
         static_cast<float>(solid.redF()), static_cast<float>(solid.greenF()), static_cast<float>(solid.blueF()),
-        layer->shape() == WasmPointShape::kSphere ? 1.0F : 0.0F};
+        layer->shape() == PointShape::kSphere ? 1.0F : 0.0F};
     point_uniforms.modes = {
         static_cast<std::int32_t>(layer->colorType()), static_cast<std::int32_t>(layer->colormap()),
         layer->invertLut() ? 1 : 0, layer->scalarAxis()};
@@ -3340,7 +3347,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
             gpu.vertex_buffer,
             gpu.shader_resources,
             gpu.vertex_count,
-            layer->shape() == WasmPointShape::kCube,
+            layer->shape() == PointShape::kCube,
         });
     if (layer->isDepthCloud()) {
       last_depth_vertex_count_ += static_cast<int>(gpu.vertex_count);
@@ -3349,14 +3356,14 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
       last_point_vertex_count_ += static_cast<int>(gpu.vertex_count);
       ++last_point_layer_count_;
     }
-    if (!layer->isDepthCloud() && layer->shape() == WasmPointShape::kCube) {
+    if (!layer->isDepthCloud() && layer->shape() == PointShape::kCube) {
       last_cube_instance_count_ += static_cast<int>(gpu.vertex_count);
       ++last_cube_layer_count_;
     }
   }
 
   struct PoseDraw {
-    WasmPosesInFrameLayer* layer = nullptr;
+    PosesInFrameLayer* layer = nullptr;
     QRhiBuffer* instance_buffer = nullptr;
     QRhiShaderResourceBindings* shader_resources = nullptr;
     quint32 instance_count = 0;
@@ -3366,7 +3373,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   last_pose_layer_count_ = 0;
   last_pose_arm_count_ = 0;
   for (const PreparedPoseLayer& prepared : prepared_poses) {
-    WasmPosesInFrameLayer* layer = prepared.layer;
+    PosesInFrameLayer* layer = prepared.layer;
     PoseLayerGpu& gpu = pose_layer_gpu_[layer];
     if (!ensurePoseLayerGpu(current_rhi, gpu)) {
       continue;
@@ -3426,7 +3433,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   }
 
   struct OccupancyDraw {
-    WasmOccupancyGridLayer* layer = nullptr;
+    OccupancyGridLayer* layer = nullptr;
     QRhiShaderResourceBindings* shader_resources = nullptr;
   };
   std::vector<OccupancyDraw> occupancy_draws;
@@ -3434,7 +3441,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   last_occupancy_layer_count_ = 0;
   last_occupancy_cell_count_ = 0;
   for (const PreparedOccupancyLayer& prepared : prepared_occupancy) {
-    WasmOccupancyGridLayer* layer = prepared.layer;
+    OccupancyGridLayer* layer = prepared.layer;
     OccupancyLayerGpu& gpu = occupancy_layer_gpu_[layer];
     bool texture_recreated = false;
     if (!ensureOccupancyLayerGpu(current_rhi, layer, gpu, texture_recreated)) {
@@ -3487,8 +3494,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     copyMatrix(clip_correction * toQMatrix(view_projection), occupancy_uniforms.view_projection);
     copyMatrix(toQMatrix(glm::mat4(fixed_from_grid)), occupancy_uniforms.fixed_from_grid);
     occupancy_uniforms.display_params = {
-        layer->opacity(), layer->colorScheme() == WasmOccupancyGridLayer::ColorScheme::kCostmap ? 1.0F : 0.0F, 0.0F,
-        0.0F};
+        layer->opacity(), layer->colorScheme() == OccupancyColorScheme::kCostmap ? 1.0F : 0.0F, 0.0F, 0.0F};
     updates->updateDynamicBuffer(gpu.uniform_buffer, 0, kOccupancyUniformBytes, &occupancy_uniforms);
     occupancy_draws.push_back(OccupancyDraw{layer, gpu.shader_resources});
     ++last_occupancy_layer_count_;
@@ -3496,7 +3502,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   }
 
   struct VoxelDraw {
-    WasmVoxelGridLayer* layer = nullptr;
+    VoxelGridLayer* layer = nullptr;
     QRhiShaderResourceBindings* shader_resources = nullptr;
     quint32 instance_count = 0;
   };
@@ -3505,7 +3511,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   last_voxel_layer_count_ = 0;
   last_voxel_count_ = 0;
   for (const PreparedVoxelLayer& prepared : prepared_voxels) {
-    WasmVoxelGridLayer* layer = prepared.layer;
+    VoxelGridLayer* layer = prepared.layer;
     VoxelLayerGpu& gpu = voxel_layer_gpu_[layer];
     bool texture_recreated = false;
     if (!ensureVoxelLayerGpu(current_rhi, layer, gpu, texture_recreated)) {
@@ -3673,7 +3679,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
       std::size_t voxel_draw_index = 0;
       std::size_t marker_draw_index = 0;
       std::size_t model_draw_index = 0;
-      const auto submit_model_layer = [&](WasmModelRenderable* layer) {
+      const auto submit_model_layer = [&](ModelRenderable* layer) {
         if (model_draw_index == model_draws.size() || model_draws[model_draw_index].layer != layer) {
           return false;
         }
@@ -3716,7 +3722,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
         std::visit(
             [&](auto* layer) {
               using Layer = std::remove_pointer_t<decltype(layer)>;
-              if constexpr (std::is_same_v<Layer, WasmPointRenderable>) {
+              if constexpr (std::is_same_v<Layer, PointRenderable>) {
                 if (point_pipeline_ == nullptr || cube_pipeline_ == nullptr) {
                   return;
                 }
@@ -3744,7 +3750,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
                   command_buffer->draw(draw.vertex_count);
                 }
                 last_submitted_layer_ids_.push_back(ordered.topic_id);
-              } else if constexpr (std::is_same_v<Layer, WasmPosesInFrameLayer>) {
+              } else if constexpr (std::is_same_v<Layer, PosesInFrameLayer>) {
                 if (pose_pipeline_ == nullptr || pose_vertex_buffer_ == nullptr || pose_index_buffer_ == nullptr) {
                   return;
                 }
@@ -3764,7 +3770,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
                     QRhiCommandBuffer::IndexUInt32);
                 command_buffer->drawIndexed(pose_index_count_, draw.instance_count);
                 last_submitted_layer_ids_.push_back(ordered.topic_id);
-              } else if constexpr (std::is_same_v<Layer, WasmOccupancyGridLayer>) {
+              } else if constexpr (std::is_same_v<Layer, OccupancyGridLayer>) {
                 if (occupancy_pipeline_ == nullptr || occupancy_quad_buffer_ == nullptr) {
                   return;
                 }
@@ -3781,7 +3787,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
                 command_buffer->setVertexInput(0, 1, &input);
                 command_buffer->draw(6U);
                 last_submitted_layer_ids_.push_back(ordered.topic_id);
-              } else if constexpr (std::is_same_v<Layer, WasmVoxelGridLayer>) {
+              } else if constexpr (std::is_same_v<Layer, VoxelGridLayer>) {
                 if (voxel_pipeline_ == nullptr || cube_vertex_buffer_ == nullptr || cube_index_buffer_ == nullptr) {
                   return;
                 }
@@ -3796,7 +3802,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
                 command_buffer->setVertexInput(0, 1, &input, cube_index_buffer_, 0, QRhiCommandBuffer::IndexUInt16);
                 command_buffer->drawIndexed(static_cast<quint32>(kCubeIndices.size()), draw.instance_count);
                 last_submitted_layer_ids_.push_back(ordered.topic_id);
-              } else if constexpr (std::is_same_v<Layer, WasmSceneEntitiesLayer>) {
+              } else if constexpr (std::is_same_v<Layer, SceneEntitiesLayer>) {
                 bool submitted = false;
                 if (marker_draw_index != marker_draws.size() && marker_draws[marker_draw_index].layer == layer) {
                   const MarkerLayerDraw& marker_draw = marker_draws[marker_draw_index++];
@@ -3877,7 +3883,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
                 if (submitted) {
                   last_submitted_layer_ids_.push_back(ordered.topic_id);
                 }
-              } else if constexpr (std::is_same_v<Layer, WasmModelRenderable>) {
+              } else if constexpr (std::is_same_v<Layer, ModelRenderable>) {
                 if (submit_model_layer(layer)) {
                   last_submitted_layer_ids_.push_back(ordered.topic_id);
                 }

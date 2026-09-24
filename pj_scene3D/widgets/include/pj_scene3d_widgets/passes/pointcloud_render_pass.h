@@ -18,6 +18,7 @@
 #include "pj_scene3d_widgets/gl/buffer.h"
 #include "pj_scene3d_widgets/gl/program.h"
 #include "pj_scene3d_widgets/gl/vertex_array.h"
+#include "pj_scene3d_widgets/layer_style.h"
 #include "pj_scene3d_widgets/passes/pointcloud_aabb_reducer.h"
 #include "pj_scene3d_widgets/render_pass.h"
 #include "pj_widgets/Colormap.h"  // shared Colormap enum + colormapGlsl()
@@ -46,23 +47,12 @@ inline constexpr float kDefaultCubeLodThresholdPx = 1.0f;
 
 class PointcloudRenderPass : public IRenderPass {
  public:
-  // Shape mode for each point.
-  //   kSphere  — world-radius sphere imposter; foreshortens with depth under a
-  //              perspective camera, fixed on-screen size under an orthographic one.
-  //   kPoint   — flat 1-pixel-fixed sprite (no perspective).
-  //   kCube    — instanced 3D cube, fixed-frame-axis-aligned. Drawn as the
-  //              3-camera-facing-faces hexagon fan (cube_mesh.h), so it costs
-  //              7 vertices and 6 triangles per point rather than 24 and 12.
-  //              Falls back to kSphere if the cube program fails to compile.
-  enum class Shape { kSphere, kPoint, kCube };
-
-  // Color sourcing mode.
-  //   kField — per-point scalar → colormap → fragment color (today).
-  //   kSolid — single uniform color, scalar ignored.
-  //   kRgb   — per-point packed RGBA color used directly (no colormap). Requires
-  //            the active cloud to carry `DecodedPointCloud::rgba`; falls back to
-  //            white when absent.
-  enum class ColorType { kField, kSolid, kRgb };
+  // Shape / colour source per point (layer_style.h). kCube is drawn as the
+  // 3-camera-facing-faces hexagon fan (cube_mesh.h), 7 vertices and 6 triangles
+  // per point rather than 24 and 12, and falls back to kSphere if the cube program
+  // fails to compile. kRgb needs `DecodedPointCloud::rgba`.
+  using Shape = PointShape;
+  using ColorType = PointColorType;
 
   // Colormap selector (used only in ColorType::kField mode). The colormap set +
   // its math (CPU LUT and the in-shader GLSL) is shared with the 2D depth view

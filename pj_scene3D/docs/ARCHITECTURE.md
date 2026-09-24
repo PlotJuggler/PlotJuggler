@@ -123,12 +123,35 @@ planned refinement.
 
 ## WebAssembly product backend (W13-W19m)
 
-The browser selects a different implementation behind the same
-`SceneViewWidget` and `Scene3DDockWidget` public product names. This is the
-compile-time `PJ_SCENE3D_RHI` split, forced on for WebAssembly and opt-in on
-desktop (see QRHI_MIGRATION.md); browser policy (file picking, bounded loading)
-stays on `PJ_TARGET_WASM`. The default desktop build keeps the native OpenGL
-pipeline above and its full layer graph.
+The browser selects a different `SceneViewWidget` behind the same public name.
+This is the compile-time `PJ_SCENE3D_RHI` split, forced on for WebAssembly and
+opt-in on desktop (see QRHI_MIGRATION.md); browser policy (file picking, bounded
+loading) stays on `PJ_TARGET_WASM`. The default desktop build keeps the native
+OpenGL pipeline above. There is one `Scene3DDockWidget` and one layer set
+(`src/layers/`) for both renderers; only the view and each layer's render sink
+differ.
+
+What the dock does differently per renderer is small and explicit:
+
+- **Scene bounds.** The OpenGL view gets them from
+  `Scene3DDockWidget::updateSceneBounds`; the QRhi view owns them (it unions what
+  it draws each frame and fits the camera once to each new layer's first data),
+  so the dock pushes nothing there.
+- **Rendering warning.** Only the QRhi view drops quality stages or budgets at
+  runtime; the dock shows its `renderingWarningChanged` text in a bottom overlay
+  label (`scene3dRenderingWarning`).
+- **Not yet drawn by QRhi** (P3): `TrailLayer` and `GridMapLayer` still build,
+  persist and restore; the QRhi view marks every layer it does not draw with a
+  "Not rendered by this renderer yet" renderer warning (in `setLayers`), and the
+  frame right-click menu (GL frame picking) is absent. The pose layer's embedded
+  trail is kept verbatim as XML there.
+
+Every layer reports its row warning through `Scene3DLayer::statusWarning()` +
+`statusWarningChanged`: a data part (the layer's `setDataWarning`: decode,
+admission, budget) then a renderer part (`noteRenderFailure`/`noteRenderSuccess`,
+called by the QRhi view), one per line. The dock combines it with the
+frame-orphan state per row (`updateLayerWarning`; `recomputeOrphanStates` runs it
+for every row, also with no TF bound) in both builds.
 
 The browser view is a `QRhiWidget` configured for Qt's OpenGL/WebGL2 backend
 and 4x renderbuffer MSAA. It owns only QRhi buffers, bindings, and pipelines.
@@ -217,20 +240,27 @@ the renderer folds that into the matrices it uploads (`rhi_conventions.h`).
 
 Camera models, fixed/follow behavior, `TransformBuffer`, `TransformService`, TF
 hierarchy/connection logic, tracker-time repaint keys, and scene-control values
-are shared with the native product. The browser dock accepts TF config topics,
-raw/compressed point clouds, depth clouds, pose arrays, occupancy/voxel grids,
-procedural SceneEntities, models, and RobotModel sources. The browser source
+are shared with the native product, and so is the dock. Compressed point clouds
+are accepted only when the browser build has the decoders
+(`PJ_WASM_WITH_COMPRESSED_POINTCLOUDS`). The browser source
 lists deliberately omit the native GL pass implementations while providing
 equivalent QRhi/WebGL2 post processing. Draco 1.5.7, Cloudini 1.2.2, and bounded Assimp enter only the
 explicitly gated browser graph; the non-Emscripten source graph and runtime
 behavior are unchanged.
 
 Compressed decode never blocks or joins the browser UI thread. Each compressed
-layer has one `QtConcurrent` job in flight and at most one pending request;
-scrubbing replaces that pending request with the newest canonical sample.
-Generation tokens invalidate results across hide, detach, and dataset replace,
-while the worker captures only owned canonical bytes and therefore may drain
-safely after the layer disappears. One successful decoded sample is cached.
+layer runs its decode through a `LatestWinsWorker` (`latest_wins_worker.h`, also
+used by the depth back-projection, the QRhi marker expansion and the TF trail
+rebuild): one `QtConcurrent` job in flight and at most one waiting request;
+scrubbing replaces the waiting request with the newest canonical sample.
+Results are invalidated across hide, detach, and dataset replace
+(`invalidate()` drops the waiting request and discards the running result; the
+point and depth layers also track the wanted sample — the depth one keyed by
+sample + CameraInfo sample — cancel the waiting request when the tracker returns
+to the running or displayed sample, and drop any completion that is not the
+wanted one), while the
+worker captures only owned canonical bytes and therefore may drain safely after
+the layer disappears. One successful decoded sample is cached.
 One failed sample is memoized with its warning: revisiting it restores empty
 geometry and the same warning without retrying the codec, while moving to a
 different sample can recover normally; a later distinct failure may replace
@@ -241,10 +271,10 @@ compaction, per-layer, and per-view budget path. Decoded caches remain per layer
 not a global RSS quota; the W19 product-envelope audit owns aggregate memory
 measurement and policy.
 
-Persistence uses the native `<scene3d version="1">` field names for fixed and
-follow frames, camera model/pose, TF config topics, and shared scene controls.
-Browser restore prevalidates all control/camera fields before mutation and rolls
-back the complete previous dock state if topic resolution later proves invalid.
+Persistence is the one dock's `<scene3d version="1">` format in every build.
+Restore prevalidates all control/camera fields before mutation and rolls back
+the complete previous dock state if a layer payload or topic resolution later
+proves invalid.
 
 ## Mesh shadows
 
@@ -409,7 +439,7 @@ testable (`camera_near_far_test`, `camera_zoom_to_cursor_test`,
   `VoxelGridLayer`, and `GridMapLayer` override it. `RobotModelLayer` remains
   bounds-less by design: a robot is posed by the live TF tree the camera already
   frames through the other store-backed layers, so adding its links would pull the
-  camera around as joints move. `Scene3DDockWidget::updateSceneBounds` resolves
+  camera around as joints move. In the OpenGL build `Scene3DDockWidget::updateSceneBounds` resolves
   each box into the current fixed frame at the tracker time, unions **every**
   resolved box (`unionAABB` over all layers that report one — there is no per-layer
   visibility filter), and pushes the result to
@@ -422,7 +452,7 @@ testable (`camera_near_far_test`, `camera_zoom_to_cursor_test`,
   resets the active model to its default view — not fit-to-scene), anchored flush
   to the top-right edge. The orientation gizmo (`AxisOverlayPass`) sits in the
   bottom-right corner (set in the `SceneViewWidget` ctor) so it no longer crowds
-  these controls. They are children of the dock, not the `QOpenGLWidget`, and
+  these controls. They are children of the dock, not the view widget, and
   `raise()`'d above it (ADS native-window z-order).
 - **Persistence.** `xmlSaveState` writes the active model as a stable string id
   (`orbit` / `xy_orbit` / `fly` / `top_down_ortho` — independent of the enum
@@ -464,11 +494,14 @@ desaturated X/Y/Z colors match the TF "Frames" gizmos.
   draw call. Lit shading + annotation blend (bracketed like the TF axes) keep the look
   identical to the frame gizmos.
 - **Ingest.** Mirrors `OccupancyGridLayer`: `attach` bootstraps the source frame;
-  `setTrackerTime` defers to `render()`, which decodes `store.latestAt(t)` via a
-  **per-use** `parseLocked` binding (never cached — the reload-UAF rule), expands, and
-  stages into the pass. A `SequentialUID`-keyed coalescing guard skips redundant
-  decodes while scrubbing within one message; a `style_revision_` bump forces the
-  current sample to re-expand after any style edit. `render` resolves
+  `setTrackerTime` defers to the next painted frame, where the renderer-independent
+  `updateAt` decodes `store.latestAt(t)` via a **per-use** `resolveObject` binding
+  (never cached — the reload-UAF rule) and expands it into the retained instances.
+  A `SequentialUID`-keyed coalescing guard skips redundant decodes while scrubbing
+  within one message; a `style_revision_` bump forces the current sample to
+  re-expand after any style edit. An undecodable sample fails closed (no arms plus
+  a layer-row warning); non-finite instances are compacted away before bounds. The
+  GL `render` hands a changed expansion to the pass and resolves
   `frame_ctx.lookup(frame_id)` once — an unresolvable frame draws nothing (orphan).
 - **Params persistence.** `xmlSaveState`/`xmlLoadState` round-trip `<poses_in_frame
   gizmo_size gizmo_opacity x_arrow_only override_color override_color_value>`, which
@@ -477,16 +510,17 @@ desaturated X/Y/Z colors match the TF "Frames" gizmos.
   checkbox + always-visible "Color:" swatch reuse `SceneEntitiesLayer`'s marker-recolor
   text and layout (picking a color auto-ticks the box) for cross-layer consistency.
   No host edits.
-- **WASM backend.** `WasmPosesInFrameLayer` resolves the same canonical object
-  and calls the same `buildPoseTriadInstances` function. The QRhi path retains
-  the native 80-byte instance format and shared unit-arrow mesh, draws each
-  layer with one UInt32-indexed instanced call, and keeps fixed-from-source TF in
-  a uniform so camera/TF motion does not rebuild instances. It uses direct-sRGB
-  view-space Lambert shading and the native annotation blend. Browser-only
-  limits are 100,000 poses and 32 MiB of wire bytes per layer, plus 300,000
-  expanded arms per view; rejected layers warn visibly and release retained CPU
-  and QRhi buffers. Non-finite instances are compacted in place before bounds and
-  upload. Desktop never compiles this adapter or QRhi pass.
+- **QRhi renderer.** The same `PosesInFrameLayer` compiles in the
+  `PJ_SCENE3D_RHI` build without its GL pass; `SceneViewWidget` calls
+  `prepareForRender(remaining_arms)` each frame and uploads `instances()` when
+  `geometryRevision()` moves. It keeps the 80-byte instance format and shared
+  unit-arrow mesh, draws each layer with one UInt32-indexed instanced call, and
+  keeps fixed-from-source TF in a uniform so camera/TF motion does not rebuild
+  instances. Admission follows `SceneLimits` (browser: 100,000 poses and 32 MiB of
+  wire bytes per layer, 300,000 arms per view; RHI build only); rejected layers
+  warn visibly and release their arms. The owned trail is not rendered there
+  until QRHI_MIGRATION P3: a saved `<trail>` is kept verbatim so layouts
+  round-trip without a warning.
 
 ## Trail layer (`TrailLayer`)
 
@@ -534,7 +568,7 @@ the behavioral contract; the as-built mechanics:
 - **Fixed-frame self-heal.** The layer adopts the fixed frame from the render
   `FrameContext` (authoritative) and rebuilds on mismatch, so attach order
   never matters. The TF buffer itself arrives via `Scene3DLayerContext` at
-  attach **and** through `Scene3DDockWidget::pushTransformBufferToTrailLayers`
+  attach **and** through `Scene3DDockWidget::pushTransformBufferToLayers`
   whenever the dock's binding changes — necessary because layout restore
   replays `<layer>` elements BEFORE the `<config_topic>` that binds TF, so a
   restored trail starts buffer-less ("waiting for TF") and heals when the
@@ -698,7 +732,7 @@ straddling clouds must come out bit-identical, pinning the gate as whole-cloud.
 #### What the browser gets, and what it would take to port
 
 None of the above runs in the browser. `scene_view_widget_rhi.cpp` never includes
-`PointcloudRenderPass`; it draws `WasmPointShape::kCube` from its own `.qsb` pipelines over
+`PointcloudRenderPass`; it draws `PointShape::kCube` from its own `.qsb` pipelines over
 the 24-vertex solid. The one change it does inherit is the **winding fix**, which is a
 browser-specific bug fix: those pipelines set `CullMode::Back`, so a CW-outward
 `kCubeVertices` had them culling front faces and drawing each solid's far side.
@@ -827,13 +861,23 @@ min/max anyway, getting bounds for free in the same pass), a misaligned layout, 
 e.g. Windows software GL). The layer only drops the CPU scan once the pass confirms
 `gpuAabbAvailable()`, so unsupported drivers degrade safely.
 
-The WASM-selected `WasmPointCloudLayer` is deliberately separate from this
-native OpenGL implementation but accepts both `kPointCloud` and, when
-`PJ_WASM_WITH_COMPRESSED_POINTCLOUDS` is enabled, `kCompressedPointCloud`.
-Compressed samples are only transcoded in the core codec boundary; wire/CDR
-parsing remains in the data-source parser. Both object types converge at
-`convertCanonical()` and share point/cube rendering, colors, bounds, warnings,
-visibility cleanup, and `<pointcloud>` persistence. Dock classification,
+**One layer, two sinks.** `PointCloudLayer` (and `DepthCloudLayer`) compile in
+both renderer builds. Sample resolution, the latest-wins compressed worker and
+its memos, `<pointcloud>` persistence and the config widget are shared; only
+what happens to a converted cloud differs. The GL build pushes it into the
+layer's own `PointcloudRenderPass` (zero-copy fast path, GPU AABB, all of the
+above) exactly as before. The QRhi build (`PJ_SCENE3D_RHI`) instead retains the
+finite points as source-frame `PointVertex` data that `SceneViewWidget` reads
+through `PointRenderable`, decodes a pending tracker move in
+`prepareForRender()`, and admits every cloud against `kSceneLimits`: per-cloud
+point/byte limits (compressed blobs before decompression, with the decode limits
+handed to the codec), then the view's aggregate vertex budget, retried once it
+frees up. Every rejection clears the cloud and shows a warning on the layer row
+(fail closed); a hidden layer releases its retained cloud. The per-cloud
+admission and the failed-sample memo apply in both builds (with the desktop
+limits); only the view's vertex budget is QRhi-only. Compressed samples are only transcoded in
+the core codec boundary; wire/CDR parsing remains in the data-source parser.
+Both object types converge at `convertCanonical()`. In the browser, dock classification,
 interactive acceptance, factory registration, deferred restore, and XML
 validation all use the same feature-gated type predicate; registering a factory
 alone is insufficient because the host otherwise falls through to a modal
@@ -872,9 +916,13 @@ colored by depth. Sibling of the 2D depth view — same data, different geometry
   (`depthToPoints`); a single pass yields positions, the per-point depth scalar,
   the world AABB, and the colormap range together (via the optional
   `scalar_out` / `bounds_out` / `scalar_range_out` out-params).
-- **Render + color.** The POC feeds the points through the existing
-  `PointcloudRenderPass` (a dedicated GPU attributeless / `texelFetch` pass is a
-  planned follow-up). Depth is colored through the **shared** `PJ::Colormap`
+- **Render + color.** The GL build feeds the points synchronously through the
+  existing `PointcloudRenderPass` (a dedicated GPU attributeless / `texelFetch`
+  pass is a planned follow-up). The QRhi build admits the image against
+  `kSceneLimits` (payload bytes, declared or PNG-header dimensions) on the UI
+  thread, then inflates and back-projects on the Qt thread pool (one job in
+  flight, the newest request pending, stale results dropped by generation) and
+  retains the points for the view as `PointRenderable` data. Depth is colored through the **shared** `PJ::Colormap`
   (turbo / viridis / plasma / grayscale, `pj_widgets/Colormap.h`) — the same
   source of truth as the 2D depth view and the pointcloud field coloring.
 - **Config.** Per-layer colormap, point size, and a min/max depth range.
@@ -902,9 +950,10 @@ volumetric data.
   `kCubeVertices` is genuinely CCW-outward.
 - **Qt-free core.** The coordinate/value math (`core/voxel_grid_view.{h,cpp}`,
   `core/voxel_grid_value.{h,cpp}`) is headless unit-tested.
-- **WASM backend.** `WasmVoxelGridLayer` resolves the same canonical object and
-  reuses the same field selection, scalar/RGBA packing, bounds, and draw-mode
-  vocabulary. QRhi retains one packed volume per layer and submits one indexed
+- **QRhi renderer.** The same `VoxelGridLayer` compiles in the `PJ_SCENE3D_RHI`
+  build: its renderer-independent `updateAt` packs the volume (the GL build moves
+  it into the pass; the RHI build retains it and drops the decoded-grid memo to
+  spare the browser heap). QRhi retains one packed volume per layer and submits one indexed
   cube draw with `column*row*slice` instances; the vertex shader performs the
   same `gl_InstanceID`/`texelFetch` predicate as native. Grid origin, fixed-frame
   TF, and camera-relative conversion compose in double precision before upload.
@@ -912,10 +961,9 @@ volumetric data.
   voxels per view. Allocation also checks the live WebGL
   `GL_MAX_3D_TEXTURE_SIZE`; the retained 2026-07-16 Chromium/Firefox/WebKit
   matrix measured 2,048 on all three engines. Rejected layers warn visibly and
-  release retained CPU/QRhi volume state. The browser direct-sRGB target omits
-  the native HDR composite, but field, predicate, color, opacity, geometry, and
-  XML semantics are preserved. Desktop never compiles this adapter or QRhi
-  pipeline.
+  release retained CPU/QRhi volume state (per-layer/per-view caps apply to the
+  RHI build only). The browser direct-sRGB target omits the native HDR composite,
+  but field, predicate, color, opacity, geometry, and XML semantics are preserved.
 - **Follow-up.** A GPU compute-shader compaction path (`glDrawElementsIndirect` over
   only the accepted voxels, GL ≥ 4.3) is a documented follow-up for very large dense
   grids; not built.
@@ -925,8 +973,9 @@ volumetric data.
 Renders an `sdk::GridMap` (SDK ≥ 0.26.0) — a 2D grid of per-cell channels, the
 canonical form of `grid_map_msgs/GridMap` and `foxglove.Grid` — as a lit,
 colormapped **heightfield** surface, the way Foxglove's linear-interpolation
-Grid mode does. Desktop OpenGL only (`isKnownFutureScene3dLayer` lists the type in
-the browser backend so deferred layouts survive).
+Grid mode does. Drawn by the OpenGL renderer only; the QRhi build keeps the
+layer (settings, field list, persistence) with a "Not rendered by this renderer
+yet" row warning until P3.
 
 - **Procedural geometry.** `GridMapRenderPass` draws `6 * (cols-1) * (rows-1)`
   vertices with `glDrawArrays` and no VBO or index buffer: the vertex shader derives
@@ -980,7 +1029,8 @@ the browser backend so deferred layouts survive).
 
 - **Per-tick repaint coalescing.** During playback the scene must not free-run at
   60 Hz redrawing identical frames. `ISceneLayer::renderKey` produces a decode-free
-  per-layer fingerprint (sample stamp ⊕ transform), and `SceneDockWidget::onTrackerTime`
+  per-layer fingerprint (sample identity ⊕ the fixed←source transform, folded by
+  `foldFrameTransformIntoKey`), and `SceneDockWidget::onTrackerTime`
   skips the repaint when nothing a layer would draw has changed — holding the
   ≤ 60 Hz / idle→~0 CPU budget the performance goals require (PR #259). `renderKey`
   must derive from index/entry timestamps, **never** from a `latestAt` that would
@@ -1014,11 +1064,37 @@ the browser backend so deferred layouts survive).
   default-to-0) is deferred.
 - **Sources.** A `RobotModelLayer` reads its URDF from a store topic
   (`kRobotDescription`, decoded via the topic's parser — payload bytes are
-  CDR-framed, never cast to a string), a local file, or an http(s) URL.
+  CDR-framed, never cast to a string), a local file, or a URL.
   File/URL layers are dock-local: synthetic registry ids that never touch the
-  ObjectStore (`Scene3DDockWidget::addRobotModelLayer{,FromUrl}`).
-- **Mesh loading** is async (`QtConcurrent::run` → futures polled in
-  `render()`); the GL thread never blocks. assimp covers STL/DAE/OBJ/glTF.
+  ObjectStore (`Scene3DDockWidget::addRobotModelLayer{,FromUrl}`). The browser
+  (`PJ_TARGET_WASM`) receives a local URDF as bytes
+  (`setSourceFileContent`, `addRobotModelLayerFromContent`) and never a path, so a
+  restored browser layout asks the user to select the file again; both native
+  builds read the path, even for a layout the browser saved. A dock whose only
+  content is local robots gets a private TF buffer
+  (`Scene3DDockWidget::ensureLocalTransformBuffer`) for the fixed-joint bridges;
+  a dataset binding replaces it.
+- **One layer, two renderers (coordinate contract).** `RobotModelLayer` and
+  `SceneEntitiesLayer` are shared by the GL and QRhi builds. Their CPU model is
+  TF-free: a robot geometry is its prefixed link frame plus the link-local
+  `<origin>` and scale; a scene-entity model is its entity frame plus pose × scale.
+  The GL build composes `TF(fixed ← frame) × local` at draw time into
+  `MeshRenderPass::DrawCall` (same float operation order as before the split); the
+  QRhi build exposes the local draws as `ModelDrawCall`s through
+  `ModelRenderable` and the view applies TF and the render origin. TF is applied
+  once in either renderer; fixed-joint bridges are injected into the buffer each
+  renderer resolves against (GL: the frame's live buffer; QRhi: the buffer the
+  dock hands the layer through `setTransformBuffer`).
+- **Mesh loading** is async with a small bound: up to `maxConcurrentMeshLoads()`
+  fetches + assimp imports (`QtConcurrent::run`, watched by `MeshImport`) in
+  flight per layer — at most four on desktop, one in the browser — each completion
+  requesting its own repaint; the GUI thread never blocks. Each mesh is admitted
+  as it lands against `kSceneLimits`' retained-byte budgets (per mesh, per
+  layer), and a source switch (or, for a topic-backed robot, a dataset
+  replacement) bumps a generation that drops stale completions. SceneEntities
+  keeps a superseded import or fetch counted until it settles, so rapid
+  per-entity source replacement never runs more than the bound; `MeshImport::take()` copies, since `MeshLoader`
+  shares one cached future per path. assimp covers STL/DAE/OBJ/glTF.
   `MeshData` carries UV0 + tangents (`aiProcess_CalcTangentSpace`) and a
   per-`SubMesh` `Material` (glTF 2.0 metallic-roughness, read via assimp's
   material abstraction). Each map (`TextureSource`) is an external file path OR

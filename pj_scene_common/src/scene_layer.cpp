@@ -13,6 +13,11 @@ PJ::Range<PJ::Timepoint> liveTopicTimeRange(const ObjectStore* store, ObjectTopi
   return {PJ::fromRaw(lo), PJ::fromRaw(hi)};
 }
 
+uint64_t latestEntryRenderKey(const ObjectStore* store, ObjectTopicId topic_id, PJ::Timepoint time) {
+  const auto entry = store != nullptr ? store->latestEntryIdAt(topic_id, PJ::toRaw(time)) : std::nullopt;
+  return entry.has_value() ? entry->uid.value : kNoSampleRenderKey;
+}
+
 ISceneLayer::ISceneLayer(QObject* parent) : QObject(parent) {}
 
 ISceneLayer::~ISceneLayer() = default;

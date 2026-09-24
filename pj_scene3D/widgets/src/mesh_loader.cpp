@@ -99,7 +99,6 @@ TextureSource resolveTexture(
       return {};  // missing, or raw-RGBA embedded (unsupported) — leave untextured.
     }
     const auto* bytes = reinterpret_cast<const std::uint8_t*>(tex->pcData);
-#ifdef PJ_SCENE3D_RHI
     // Charged once per resolved slot (not per distinct image): every resolved
     // slot retains its own encoded copy below, so per-copy charging is what
     // bounds worst-case CPU retention.
@@ -111,9 +110,6 @@ TextureSource resolveTexture(
     if (texture_budget != nullptr) {
       texture_budget->bytes += tex->mWidth;
     }
-#else
-    (void)texture_budget;
-#endif
     TextureSource source;
     source.bytes.assign(bytes, bytes + tex->mWidth);  // mWidth is the encoded byte count when mHeight == 0.
     source.key = contentHashKey(bytes, tex->mWidth);
@@ -333,7 +329,6 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
     out.error = u"assimp returned no scene for %1"_s.arg(source);
     return out;
   }
-#ifdef PJ_SCENE3D_RHI
   // Assimp has already parsed the bounded source bytes, but do not let
   // file-declared mesh counts drive our own material/vertex/index allocations.
   // Widen every accumulation before comparing with the scene limits.
@@ -396,7 +391,6 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
   out.vertices.reserve(static_cast<std::size_t>(vertex_count));
   out.indices.reserve(static_cast<std::size_t>(index_count));
   out.submeshes.reserve(static_cast<std::size_t>(submesh_count));
-#endif
   // Resolve each material once (embedded-texture extraction is per-material, not
   // per-mesh) and index into it by aiMesh::mMaterialIndex while walking the graph.
   std::vector<std::shared_ptr<const Material>> materials;
@@ -405,12 +399,10 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
   for (unsigned int i = 0; i < scene->mNumMaterials; ++i) {
     materials.push_back(std::make_shared<const Material>(readMaterial(scene, i, base_dir, &texture_budget)));
   }
-#ifdef PJ_SCENE3D_RHI
   if (texture_budget.exceeded) {
     out.error = u"model exceeds the embedded-texture limit in %1"_s.arg(source);
     return out;
   }
-#endif
   const glm::mat3 extra = flip_to_z_up ? zUpFromYUpRotation() : glm::mat3(1.0f);
   appendNode(scene, scene->mRootNode, glm::mat4(1.0f), extra, materials, out);
   if (out.vertices.empty() || out.indices.empty()) {
@@ -418,7 +410,6 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
     out.ok = false;
     return out;
   }
-#ifdef PJ_SCENE3D_RHI
   const auto retained = modelRetainedByteCount(
       out.vertices.size(), sizeof(Vertex), out.indices.size(), out.submeshes.size(), sizeof(SubMesh),
       texture_budget.bytes);
@@ -428,7 +419,6 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
         kSceneLimits.max_model_retained_bytes_per_mesh / (1024ULL * 1024ULL));
     return out;
   }
-#endif
   out.ok = true;
   return out;
 }
@@ -452,7 +442,6 @@ MeshData MeshLoader::importFromFile(const QString& path, bool flip_to_z_up) {
   // exception would be rethrown by QFuture::result() on the GUI thread (inside
   // paintGL) and terminate the app. Mirrors pointcloud_codecs.cpp's barriers.
   try {
-#ifdef PJ_SCENE3D_RHI
     const QFileInfo source_info(path);
     if (source_info.size() < 0 || !modelSourceFits(static_cast<std::uint64_t>(source_info.size()))) {
       MeshData out;
@@ -460,7 +449,6 @@ MeshData MeshLoader::importFromFile(const QString& path, bool flip_to_z_up) {
           u"model source exceeds the %1 MiB limit"_s.arg(kSceneLimits.max_model_source_bytes / (1024ULL * 1024ULL));
       return out;
     }
-#endif
     Assimp::Importer importer;
     const aiScene* scene = importer.ReadFile(path.toStdString(), kPostProcessFlags);
     if (scene == nullptr) {
@@ -486,14 +474,12 @@ MeshData MeshLoader::importFromFile(const QString& path, bool flip_to_z_up) {
 MeshData MeshLoader::importFromMemory(const QByteArray& bytes, const QString& format_hint, bool flip_to_z_up) {
   // Same exception barrier as importFromFile (see the comment there).
   try {
-#ifdef PJ_SCENE3D_RHI
     if (bytes.size() < 0 || !modelSourceFits(static_cast<std::uint64_t>(bytes.size()))) {
       MeshData out;
       out.error =
           u"model source exceeds the %1 MiB limit"_s.arg(kSceneLimits.max_model_source_bytes / (1024ULL * 1024ULL));
       return out;
     }
-#endif
     Assimp::Importer importer;
     const std::string hint = format_hint.toStdString();
     const aiScene* scene = importer.ReadFileFromMemory(

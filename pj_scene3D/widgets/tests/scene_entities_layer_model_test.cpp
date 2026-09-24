@@ -28,6 +28,7 @@
 #include <utility>
 #include <vector>
 
+#include "mesh_import.h"  // maxConcurrentMeshLoads
 #include "mock_parser_support.h"
 #include "pj_base/builtin/scene_entities_codec.hpp"
 #include "pj_base/time.hpp"
@@ -801,6 +802,33 @@ TEST(SceneEntitiesLayerModelTest, MeshLoadCompletionRequestsRepaintWithoutRender
   EXPECT_GT(repaints, 0) << "finished mesh load did not request a repaint (only render() would have consumed it)";
 }
 
+// Rapidly replacing one entity's model source must not stack imports: a
+// superseded import keeps its slot until its worker finishes, so the imports
+// still running never exceed maxConcurrentMeshLoads(), and every one settles.
+TEST(SceneEntitiesLayerModelTest, RapidModelReplacementStaysWithinImportBound) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  constexpr int kReplacements = 12;
+  for (int index = 1; index <= kReplacements; ++index) {
+    PJ::sdk::SceneEntity entity = makeEntity("car", 10 * index);
+    entity.models.front().data.push_back(static_cast<uint8_t>(index));  // new source bytes each batch
+    pushSceneEntities(session, topic_id, 10 * index, batchWithEntities({entity}));
+  }
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  for (int index = 1; index <= kReplacements; ++index) {
+    layer.setTrackerTime(PJ::fromRaw(10 * index));
+    ASSERT_LE(layer.modelImportsOutstandingForTest(), pj::scene3d::maxConcurrentMeshLoads())
+        << "after replacement " << index;
+  }
+  EXPECT_TRUE(pumpUntil([&] { return layer.modelImportsOutstandingForTest() == 0; }, std::chrono::seconds(10)))
+      << "superseded imports never settled";
+}
+
+#ifndef PJ_SCENE3D_RHI
 TEST(SceneEntitiesLayerModelTest, FrameCompositionAppliesTfPrimitivePoseAndScale) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -843,6 +871,46 @@ TEST(SceneEntitiesLayerModelTest, FrameCompositionAppliesTfPrimitivePoseAndScale
   EXPECT_NEAR(draws.front().color.b, 76.0f / 255.0f, 1e-6f);
   EXPECT_NEAR(draws.front().color.a, 102.0f / 255.0f, 1e-6f);
 }
+#else
+// QRhi build: the layer hands the view a FRAME-LOCAL draw (frame_id + pose ×
+// scale); the view applies TF. Applying TF here too would double-transform.
+TEST(SceneEntitiesLayerModelTest, ModelDrawCallIsFrameLocalPoseAndScale) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+
+  PJ::sdk::SceneEntity entity = makeEntity("car", 10, "base_link");
+  auto& primitive = entity.models.front();
+  primitive.pose.position = {.x = 1.0, .y = 2.0, .z = 3.0};
+  const double half_angle = std::numbers::pi / 4.0;
+  primitive.pose.orientation = {.x = 0.0, .y = 0.0, .z = std::sin(half_angle), .w = std::cos(half_angle)};
+  primitive.scale = {.x = 2.0, .y = 3.0, .z = 4.0};
+  primitive.override_color = true;
+  primitive.color = {.r = 25, .g = 51, .b = 76, .a = 102};
+  pushSceneEntities(session, topic_id, 10, batchWithEntities({entity}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(ctx.tf_buffer->setTransform(
+      pj::scene3d::StampedTransform{
+          .stamp = PJ::fromRaw(0),
+          .parent_frame = "world",
+          .child_frame = "base_link",
+          .transform = pj::scene3d::Transform({10.0, 20.0, 30.0}, {1.0, 0.0, 0.0, 0.0}),
+      }));
+  ASSERT_TRUE(layer.attach(ctx));
+  layer.setTrackerTime(PJ::fromRaw(10));
+
+  const auto& draws = layer.modelDrawCalls();
+  ASSERT_EQ(draws.size(), 1u);
+  EXPECT_EQ(draws.front().frame_id, "base_link");
+  const glm::mat4 expected = poseToMat4(primitive.pose) * glm::scale(glm::mat4(1.0f), glm::vec3(2.0f, 3.0f, 4.0f));
+  expectMatrixNear(glm::mat4(draws.front().model), expected);
+  EXPECT_FALSE(draws.front().use_material);
+  EXPECT_NEAR(draws.front().override_color.r, 25.0f / 255.0f, 1e-6f);
+  EXPECT_NEAR(draws.front().override_color.a, 102.0f / 255.0f, 1e-6f);
+}
+#endif
 
 // H.8: a DATA-SUPPLIED http(s) model URL must not be fetched without the
 // explicit opt-in (QSettings pj_scene3d/allow_remote_model_fetch, default off):
