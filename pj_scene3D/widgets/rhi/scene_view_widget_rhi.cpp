@@ -13,7 +13,6 @@
 #include <QOpenGLFunctions>
 #include <QPainter>
 #include <QPalette>
-#include <QTimer>
 #include <QWheelEvent>
 #include <QtMath>
 #if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
@@ -110,10 +109,11 @@ QColor sceneBackdropColor() {
   return PJ::theme::surface(PJ::theme::Surface::DataBackdrop, theme);
 }
 
-// QRhi 6.11 reports no 3D-texture limit, so ask the backend. OpenGL: the widget's
-// context is current inside initialize()/render(). Vulkan: the physical device.
-// D3D/Metal: 2048, the D3D11 feature-level-11 and Metal minimum.
-int max3dTextureSize(QRhi& rhi) {
+// The backend's 3D-texture limit (QRhi 6.11 reports none); 0 when it cannot be
+// asked. OpenGL: the widget's context is current inside initialize()/render().
+// Vulkan: the physical device, where the build has the Vulkan headers. D3D11:
+// the device's feature level. D3D12/Metal: the documented constant.
+int queriedMax3dTextureSize(QRhi& rhi) {
   switch (rhi.backend()) {
     case QRhi::OpenGLES2: {
       QOpenGLContext* context = QOpenGLContext::currentContext();
@@ -135,9 +135,33 @@ int max3dTextureSize(QRhi& rhi) {
       return static_cast<int>(std::min<uint32_t>(properties.limits.maxImageDimension3D, INT_MAX));
     }
 #endif
+#if defined(Q_OS_WIN)
+    case QRhi::D3D11: {
+      const auto* handles = static_cast<const QRhiD3D11NativeHandles*>(rhi.nativeHandles());
+      return d3d11Max3dTextureSize(handles != nullptr ? handles->featureLevel : 0);
+    }
+    case QRhi::D3D12:
+      return kDocumentedMax3dTextureSize;
+#endif
+    case QRhi::Metal:
+      return kDocumentedMax3dTextureSize;
     default:
-      return 2048;
+      return 0;
   }
+}
+
+// queriedMax3dTextureSize(), or the API-guaranteed floor when the backend could
+// not be asked (logged once per process).
+int max3dTextureSize(QRhi& rhi) {
+  const int queried = queriedMax3dTextureSize(rhi);
+  const int limit = queried > 0 ? queried : kGuaranteedMax3dTextureSize;
+  static bool logged = false;
+  if (queried <= 0 && !std::exchange(logged, true)) {
+    qWarning(
+        "SceneViewWidget QRhi: %s cannot report its 3D-texture limit; voxel grids use the guaranteed %d",
+        rhi.backendName(), limit);
+  }
+  return limit;
 }
 
 bool cameraStatesEqual(const CameraState& left, const CameraState& right) {
@@ -212,7 +236,13 @@ SceneViewWidget::SceneViewWidget(QWidget* parent) : QRhiWidget(parent) {
   setMinimumSize(320, 240);
   setFocusPolicy(Qt::StrongFocus);
   setMouseTracking(true);
-  connect(this, &QRhiWidget::renderFailed, this, []() { qWarning("SceneViewWidget QRhi: render failed"); });
+  // Qt's own failure (no QRhi for this window, e.g. its API differs from the one
+  // another widget pinned the window to) reaches the log and the dock warning too.
+  connect(this, &QRhiWidget::renderFailed, this, [this] {
+    if (!render_failure_.failed()) {
+      setRenderFailure(tr("Scene3D has no graphics device: Qt could not create a QRhi for this window"), false);
+    }
+  });
 }
 
 SceneViewWidget::~SceneViewWidget() {
@@ -668,30 +698,7 @@ void SceneViewWidget::setMeshShadingParams(const MeshShadingParams& params) {
 }
 
 void SceneViewWidget::grabPresentedFrame(std::function<void(const QImage&)> done) {
-  if (!isVisible()) {
-    done(grabFramebuffer());
-    return;
-  }
-  // The presented frame and the timeout race; whichever comes first delivers.
-  auto pending = std::make_shared<std::function<void(const QImage&)>>(std::move(done));
-  auto presented = std::make_shared<QMetaObject::Connection>();
-  const auto deliver = [pending, presented](const QImage& image) {
-    QObject::disconnect(*presented);
-    // A second frameSubmitted may already be queued when the first one delivers.
-    if (*pending) {
-      std::exchange(*pending, nullptr)(image);
-    }
-  };
-  // Queued: grab after frameSubmitted returns, never from inside the frame.
-  *presented = connect(
-      this, &QRhiWidget::frameSubmitted, this, [this, deliver]() { deliver(grabFramebuffer()); }, Qt::QueuedConnection);
-  QTimer::singleShot(2000, this, [pending, deliver]() {
-    if (*pending) {
-      qWarning("Scene3D: the shown view presented no frame to grab (occluded window?)");
-      deliver(QImage());
-    }
-  });
-  update();
+  PJ::grabPresentedFrame(*this, std::move(done));
 }
 
 void SceneViewWidget::refreshAvailableFrames() {
@@ -858,63 +865,105 @@ void SceneViewWidget::initialize(QRhiCommandBuffer* /*command_buffer*/) {
   if (current_rhi == nullptr || renderTarget() == nullptr) {
     return;
   }
-  const bool new_rhi = resource_rhi_ != current_rhi;
-  // The descriptor's address catches a new target whose format serializes the same
-  // (OpenGL); the serialized format catches a new one allocated at the old address.
-  const QRhiRenderPassDescriptor* target_render_pass = renderTarget()->renderPassDescriptor();
-  const QVector<quint32> target_format = target_render_pass->serializedFormat();
-  if (new_rhi || target_render_pass != built_render_pass_ || target_format != built_target_format_ ||
-      sampleCount() != built_sample_count_) {
+  const PJ::RhiTargetKey target = PJ::RhiTargetKey::of(*renderTarget(), sampleCount());
+  if (resource_rhi_ != current_rhi || target != built_target_) {
+    PJ::noteRhiAdoption(*this, resource_rhi_, current_rhi);
     releaseResources();
     resource_rhi_ = current_rhi;
     rhi_backend_name_ = QString::fromLatin1(current_rhi->backendName());
     max_3d_texture_size_ = max3dTextureSize(*current_rhi);
-    if (new_rhi) {
-      PJ::logGraphicsBackend(*this, current_rhi);
+  }
+  if (!baseResourcesReady(*current_rhi)) {
+    if (const char* failed_part = createBaseResources(current_rhi); failed_part != nullptr) {
+      releaseResources();
+      setRenderFailure(tr("Scene3D cannot render with %1: its %2 could not be created")
+                           .arg(rhi_backend_name_, QLatin1String(failed_part)));
+      return;
     }
+    built_target_ = target;
   }
-  const bool three_d_textures = current_rhi->isFeatureSupported(QRhi::ThreeDimensionalTextures);
-  if (render_mode_uniform_buffer_ != nullptr && annotation_render_mode_uniform_buffer_ != nullptr &&
-      model_uniform_buffer_ != nullptr && point_pass_->ready() && marker_pass_->ready() && model_pass_->ready() &&
-      pose_pass_->ready() && occupancy_pass_->ready() && grid_pass_->ready() && overlay_pass_->ready() &&
-      gridmap_pass_->ready() && trail_pass_->ready() && (!three_d_textures || voxel_pass_->ready())) {
-    return;
+  setRenderFailure({});
+  if (!overlay_pass_->ready() && !overlay_pass_->initialize(passSetup(current_rhi))) {
+    overlay_pass_->release();  // retried on the next initialize()
   }
+  const QString overlay_failure =
+      overlay_pass_->ready() ? QString{} : tr("The view overlays (corner axes, HUD, frame labels) are unavailable");
+  if (overlay_failure != overlay_failure_) {
+    overlay_failure_ = overlay_failure;
+    if (!overlay_failure_.isEmpty()) {
+      qWarning("SceneViewWidget QRhi: %s", qPrintable(overlay_failure_));
+    }
+    updateRenderingWarning();
+  }
+}
 
-  if (!ensureUniformBuffer(current_rhi, uniform_buffer_, 64U) ||
-      !ensureUniformBuffer(current_rhi, render_mode_uniform_buffer_, kRenderModeUniformBytes) ||
-      !ensureUniformBuffer(current_rhi, annotation_render_mode_uniform_buffer_, kRenderModeUniformBytes) ||
-      !ensureUniformBuffer(current_rhi, model_uniform_buffer_, kModelUniformBytes) ||
-      !shared_geometry_->create(current_rhi)) {
-    releaseResources();
-    return;
-  }
-  render_mode_hdr_written_ = -1;
-
-  const RhiPassSetup pass_setup{
-      current_rhi,
+RhiPassSetup SceneViewWidget::passSetup(QRhi* rhi) const {
+  return {
+      rhi,
       renderTarget()->renderPassDescriptor(),
       sampleCount(),
       render_mode_uniform_buffer_,
       annotation_render_mode_uniform_buffer_,
       uniform_buffer_,
       shared_geometry_.get()};
-  if (!point_pass_->initialize(pass_setup) || !trail_pass_->initialize(pass_setup) ||
-      !pose_pass_->initialize(pass_setup) || !occupancy_pass_->initialize(pass_setup) ||
-      (three_d_textures && !voxel_pass_->initialize(pass_setup, max_3d_texture_size_)) ||
-      !marker_pass_->initialize(pass_setup) || !model_pass_->initialize(pass_setup, model_uniform_buffer_) ||
-      !gridmap_pass_->initialize(pass_setup) || !grid_pass_->initialize(pass_setup) ||
-      !overlay_pass_->initialize(pass_setup)) {
-    releaseResources();
-    return;
+}
+
+bool SceneViewWidget::baseResourcesReady(QRhi& rhi) const {
+  return uniform_buffer_ != nullptr && render_mode_uniform_buffer_ != nullptr &&
+         annotation_render_mode_uniform_buffer_ != nullptr && model_uniform_buffer_ != nullptr &&
+         point_pass_->ready() && marker_pass_->ready() && model_pass_->ready() && pose_pass_->ready() &&
+         occupancy_pass_->ready() && grid_pass_->ready() && gridmap_pass_->ready() && trail_pass_->ready() &&
+         (!rhi.isFeatureSupported(QRhi::ThreeDimensionalTextures) || voxel_pass_->ready());
+}
+
+const char* SceneViewWidget::createBaseResources(QRhi* rhi) {
+  if (!ensureUniformBuffer(rhi, uniform_buffer_, 64U) ||
+      !ensureUniformBuffer(rhi, render_mode_uniform_buffer_, kRenderModeUniformBytes) ||
+      !ensureUniformBuffer(rhi, annotation_render_mode_uniform_buffer_, kRenderModeUniformBytes) ||
+      !ensureUniformBuffer(rhi, model_uniform_buffer_, kModelUniformBytes)) {
+    return "uniform buffers";
+  }
+  if (!shared_geometry_->create(rhi)) {
+    return "shared meshes";
+  }
+  render_mode_hdr_written_ = -1;
+  const RhiPassSetup setup = passSetup(rhi);
+  const bool three_d_textures = rhi->isFeatureSupported(QRhi::ThreeDimensionalTextures);
+  const std::pair<const char*, std::function<bool()>> families[] = {
+      {"point pipelines", [&] { return point_pass_->initialize(setup); }},
+      {"trail pipelines", [&] { return trail_pass_->initialize(setup); }},
+      {"pose pipelines", [&] { return pose_pass_->initialize(setup); }},
+      {"occupancy pipelines", [&] { return occupancy_pass_->initialize(setup); }},
+      {"voxel pipelines", [&] { return !three_d_textures || voxel_pass_->initialize(setup, max_3d_texture_size_); }},
+      {"marker pipelines", [&] { return marker_pass_->initialize(setup); }},
+      {"model pipelines", [&] { return model_pass_->initialize(setup, model_uniform_buffer_); }},
+      {"grid-map pipelines", [&] { return gridmap_pass_->initialize(setup); }},
+      {"grid pipelines", [&] { return grid_pass_->initialize(setup); }},
+  };
+  for (const auto& [part, initialize_family] : families) {
+    if (!initialize_family()) {
+      return part;
+    }
   }
   // Every direct pipeline the scene passes bind (the grid's shadow receiver
   // registers itself in ensureShadowResources).
   grid_pass_->registerPipelines(*pipelines_);
   forEachFamily([this](const auto& family) { family.registerPipelines(*pipelines_); });
-  built_render_pass_ = target_render_pass;
-  built_target_format_ = target_format;
-  built_sample_count_ = sampleCount();
+  return nullptr;
+}
+
+void SceneViewWidget::setRenderFailure(QString reason, bool emit_failed) {
+  const PJ::RhiFailureLatch::Change change = render_failure_.set(std::move(reason));
+  if (change == PJ::RhiFailureLatch::Change::kNone) {
+    return;
+  }
+  updateRenderingWarning();
+  if (change == PJ::RhiFailureLatch::Change::kEntered) {
+    qWarning("SceneViewWidget QRhi: %s", qPrintable(render_failure_.reason()));
+    if (emit_failed) {
+      emit renderFailed();
+    }
+  }
 }
 
 // What admission decided for one frame: the effective fixed frame (resolved
@@ -973,6 +1022,12 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   if (current_rhi == nullptr || target == nullptr) {
     return;
   }
+  if (resource_rhi_ != current_rhi || !baseResourcesReady(*current_rhi)) {
+    // The failure state (or resources of another QRhi): no draw may reference them.
+    command_buffer->beginPass(target, sceneBackdropColor(), {1.0F, 0});
+    command_buffer->endPass();
+    return;
+  }
 
   if (show_perf_hud_) {
     cpu_timer_.start();
@@ -989,6 +1044,11 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   // The one owner of the frame's stage flags: HDR, SSAO and EDL here, shadows in
   // prepareFrame() once the casters are known.
   PreparedFrame& frame = *frame_;
+  if (pipelines_->cloneFailed()) {
+    // Last frame drew without a pipeline whose HDR clone failed; the direct pass
+    // has them all.
+    rejectHdr(scaled_size, tr("A scene pipeline has no HDR variant on this GPU"));
+  }
   frame.hdr_active = ensureHdrResources(current_rhi, scaled_size);
   hdr_stage_.last_active = frame.hdr_active;
   const QSize render_size = frame.hdr_active ? scaled_size : output_size;
@@ -1064,6 +1124,9 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   } else {
     // Direct-to-backing fallback: no HDR encode, so use the theme token as-is.
     submitScenePass(command_buffer, target, ScenePass::kDirect, scene_bg, updates, frame);
+  }
+  if (pipelines_->cloneFailed()) {
+    update();  // the next frame drops HDR
   }
 }
 
@@ -1317,10 +1380,12 @@ void SceneViewWidget::submitScenePass(
       }
     }
   }
-  last_submitted_layer_ids_.clear();
-  for (std::size_t slot = 0; slot < submitted_slots_.size(); ++slot) {
-    if (submitted_slots_[slot] != 0) {
-      last_submitted_layer_ids_.push_back(ordered_layers_[slot].topic_id);
+  if (scene_pass != ScenePass::kDepthReplay) {
+    last_submitted_layer_ids_.clear();
+    for (std::size_t slot = 0; slot < submitted_slots_.size(); ++slot) {
+      if (submitted_slots_[slot] != 0) {
+        last_submitted_layer_ids_.push_back(ordered_layers_[slot].topic_id);
+      }
     }
   }
   if (scene_pass == ScenePass::kDirect) {
@@ -1341,6 +1406,7 @@ void SceneViewWidget::submitEdlMeshMask(QRhiCommandBuffer* command_buffer, const
 }
 
 void SceneViewWidget::releaseResources() {
+  PJ::noteRhiRelease(*this, resource_rhi_);
   releaseShadowResources(false);
   releaseHdrResources();
   forEachFamily([](auto& family) { family.release(); });
@@ -1371,9 +1437,7 @@ void SceneViewWidget::releaseResources() {
   last_shadow_bounds_ = {};
   pipelines_->clear();
   resource_rhi_ = nullptr;
-  built_render_pass_ = nullptr;
-  built_target_format_.clear();
-  built_sample_count_ = 0;
+  built_target_ = {};
 }
 
 void SceneViewWidget::mousePressEvent(QMouseEvent* event) {
@@ -1522,6 +1586,10 @@ void SceneViewWidget::setHoveredFrame(std::optional<std::string> frame) {
 
 void SceneViewWidget::prepareOverlays(
     QRhiResourceUpdateBatch* updates, const QSize& output_size, const std::string& fixed_frame) {
+  if (!overlay_pass_->ready()) {
+    last_overlay_rects_ = {};
+    return;
+  }
   const qreal dpr = height() > 0 ? static_cast<qreal>(output_size.height()) / height() : 1.0;
   if (dpr != overlay_image_dpr_) {
     overlay_image_dpr_ = dpr;

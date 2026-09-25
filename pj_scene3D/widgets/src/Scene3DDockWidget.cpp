@@ -382,14 +382,7 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   });
 
 #ifdef PJ_SCENE3D_RHI
-  rendering_warning_label_ = new QLabel(this);
-  rendering_warning_label_->setObjectName(u"scene3dRenderingWarning"_s);
-  rendering_warning_label_->setWordWrap(true);
-  rendering_warning_label_->setAlignment(Qt::AlignCenter);
-  rendering_warning_label_->setAttribute(Qt::WA_TransparentForMouseEvents);
-  rendering_warning_label_->setStyleSheet(
-      u"QLabel { color: #fff4d6; background: rgba(116, 70, 0, 220); border-radius: 4px; padding: 6px; }"_s);
-  rendering_warning_label_->hide();
+  rendering_warning_label_ = createRenderingWarningLabel(this, u"scene3dRenderingWarning"_s);
 #endif
 
   // Forget a removed topic's cached orphan/warning state. pj_app drives its UI

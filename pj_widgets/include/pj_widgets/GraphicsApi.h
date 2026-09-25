@@ -3,10 +3,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QRhiWidget>
+#include <QString>
 #include <QStringView>
+#include <QVector>
+#include <QtGlobal>
+#include <functional>
 #include <optional>
 
+class QImage;
 class QRhi;
+class QRhiGraphicsPipeline;
+class QRhiRenderPassDescriptor;
+class QRhiRenderTarget;
 
 namespace PJ {
 
@@ -14,19 +22,133 @@ namespace PJ {
 /// opengl, vulkan, metal, d3d11, d3d12). nullopt for anything else.
 [[nodiscard]] std::optional<QRhiWidget::Api> parseGraphicsApi(QStringView name);
 
+/// Every GPU widget of this build is a `QRhiWidget` (`PJ_RHI_WIDGETS`: the QRhi
+/// desktop build and WebAssembly); see nativeGraphicsApi().
+#ifdef PJ_RHI_WIDGETS
+inline constexpr bool kRhiWidgetsBuild = true;
+#else
+inline constexpr bool kRhiWidgetsBuild = false;
+#endif
+
+/// Platform families the graphics-API policy distinguishes. A value rather than
+/// `#ifdef`s so every platform's policy is testable from any host.
+enum class GraphicsPlatform { Linux, Windows, MacOS, Wasm };
+
+/// The platform this translation unit is compiled for. Linux stands for every
+/// other desktop Unix too.
+[[nodiscard]] constexpr GraphicsPlatform currentGraphicsPlatform() {
+#if defined(Q_OS_WASM)
+  return GraphicsPlatform::Wasm;
+#elif defined(Q_OS_WIN)
+  return GraphicsPlatform::Windows;
+#elif defined(Q_OS_DARWIN)
+  return GraphicsPlatform::MacOS;
+#else
+  return GraphicsPlatform::Linux;
+#endif
+}
+
+/// The API a build uses when nothing overrides it. `rhi_widgets` says every GPU
+/// widget of the build is a `QRhiWidget` (kRhiWidgetsBuild); only then can a
+/// window leave OpenGL, because a `QOpenGLWidget` pins its whole top-level to it.
+/// With `rhi_widgets`: D3D11 on Windows (always present, WARP without a driver),
+/// Metal on macOS (GL is capped at 4.1 there), OpenGL on Linux and WebGL2.
+[[nodiscard]] constexpr QRhiWidget::Api nativeGraphicsApi(GraphicsPlatform platform, bool rhi_widgets) {
+  if (!rhi_widgets) {
+    return QRhiWidget::Api::OpenGL;
+  }
+  switch (platform) {
+    case GraphicsPlatform::Windows:
+      return QRhiWidget::Api::Direct3D11;
+    case GraphicsPlatform::MacOS:
+      return QRhiWidget::Api::Metal;
+    case GraphicsPlatform::Linux:
+    case GraphicsPlatform::Wasm:
+      break;
+  }
+  return QRhiWidget::Api::OpenGL;
+}
+
 /// The QRhi backend every `QRhiWidget` in the app must request, before the widget
-/// joins a shown hierarchy. Qt runs one backend per top-level window, and the
-/// `QOpenGLWidget` plot canvas and 3D view still pin that window to OpenGL, so this
-/// is OpenGL on every platform for now.
+/// joins a shown hierarchy.
 ///
-/// `PJ_GRAPHICS_API` overrides it for diagnostics only: a non-OpenGL value leaves
-/// the `QOpenGLWidget`s in the same window without a working backend.
+/// **One API per top-level window**: Qt composites a window's widgets with a single
+/// QRhi, created for the first GPU widget it meets. A widget asking for another API
+/// logs "The top-level window is already using another graphics API" and renders
+/// nothing, and a `QOpenGLWidget` always asks for OpenGL. Every GPU widget therefore
+/// requests this one value; floating docks are separate top-levels under the same rule.
+///
+/// It is `nativeGraphicsApi()` for this build: the platform's native API with
+/// `PJ_RHI_WIDGETS`, OpenGL otherwise. `PJ_GRAPHICS_API` overrides it for
+/// diagnostics. When Metal cannot start (a VM without a Metal device; Qt does not
+/// retry it) this falls back to OpenGL. D3D11 is not probed: Qt already retries it
+/// on the WARP software adapter. Resolved and logged (category `pj.graphics`) on the
+/// first call, which must precede every GPU widget (pj_app makes it right after
+/// constructing `QApplication`).
 [[nodiscard]] QRhiWidget::Api preferredGraphicsApi();
 
-/// Logs (category `pj.graphics`) the backend and adapter `widget` actually got.
-/// Call from `QRhiWidget::initialize()` when `rhi()` changes (it is protected, so
-/// only the widget can pass it); a software rasterizer or an unexpected fallback is
-/// otherwise invisible.
-void logGraphicsBackend(const QWidget& widget, QRhi* rhi);
+/// Logs (category `pj.graphics`) the backend and adapter `widget` actually got,
+/// once per QRhi: a software rasterizer or an unexpected fallback is otherwise
+/// invisible. The widget passes `rhi()` (protected) from its initialize(); see
+/// noteRhiAdoption().
+void logGraphicsBackend(QWidget& widget, QRhi* rhi);
+
+/// Bookkeeping for a QRhiWidget whose initialize() (re)builds its resources on
+/// `rhi` while holding resources on `held` (null when it holds none). Call it
+/// before releasing them. Logs the backend (logGraphicsBackend()); builds with
+/// tests (`PJ_RHI_TEST_HOOKS`) also count, as dynamic properties on the widget,
+/// `pjTestRhiAdoptions` and, when `held` is another QRhi Qt did not release first,
+/// `pjTestRhiStale`.
+void noteRhiAdoption(QRhiWidget& widget, const QRhi* held, QRhi* rhi);
+
+/// The releaseResources() counterpart: counts `pjTestRhiReleases` when `held`
+/// is set (builds with tests only; a no-op otherwise).
+void noteRhiRelease(QRhiWidget& widget, const QRhi* held);
+
+/// Test-only fault injection (`PJ_RHI_TEST_HOOKS`): true while `owner`'s dynamic
+/// property `pjTestFailPipeline` equals `name`. Always false in other builds.
+[[nodiscard]] bool rhiTestFault(const QObject& owner, const char* name);
+
+/// `pipeline.create()`, unless rhiTestFault(owner, name). Builds with tests also
+/// count each call in `owner`'s `pjTestPipelineAttempts`, so a test can see that a
+/// failed widget does not retry on every frame.
+[[nodiscard]] bool createRhiPipeline(QObject& owner, QRhiGraphicsPipeline& pipeline, const char* name);
+
+/// What a QRhiWidget built its pipelines for on its current QRhi. The
+/// descriptor's address catches a new target whose format serializes the same
+/// (OpenGL); the serialized format catches a new one allocated at the old address.
+struct RhiTargetKey {
+  const QRhiRenderPassDescriptor* render_pass = nullptr;
+  QVector<quint32> format;
+  int sample_count = 0;
+
+  [[nodiscard]] static RhiTargetKey of(const QRhiRenderTarget& target, int sample_count);
+  bool operator==(const RhiTargetKey&) const = default;
+};
+
+/// A GPU widget's failure state, so each onset is reported once.
+class RhiFailureLatch {
+ public:
+  enum class Change { kNone, kEntered, kChanged, kLeft };
+
+  /// Enters (non-empty `reason`) or leaves (empty) the failure state, or
+  /// changes its reason. The caller reports kEntered (log, renderFailed()).
+  Change set(QString reason);
+  [[nodiscard]] const QString& reason() const noexcept {
+    return reason_;
+  }
+  [[nodiscard]] bool failed() const noexcept {
+    return !reason_.isEmpty();
+  }
+
+ private:
+  QString reason_;
+};
+
+/// Delivers the next frame `widget` presents, read back as an image (null after
+/// 2 s without a presented frame, e.g. an occluded window). A hidden widget is
+/// grabbed offscreen immediately. Asynchronous: `done` runs from the event loop,
+/// never from inside render().
+void grabPresentedFrame(QRhiWidget& widget, std::function<void(const QImage&)> done);
 
 }  // namespace PJ

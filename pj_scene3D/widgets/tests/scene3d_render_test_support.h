@@ -36,29 +36,8 @@
 
 namespace pj::scene3d::test {
 
-// The shared gui test main defaults to `offscreen`, which renders nothing in
-// 3D. Runs before main(): with a display, ask for the real platform instead, in
-// Qt's own order (wayland, then xcb). An explicit QT_QPA_PLATFORM (test.sh sets
-// offscreen) still wins, and the tests skip.
-inline const bool kRealDisplayPlatform = [] {
-  if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
-    if (qEnvironmentVariableIsSet("WAYLAND_DISPLAY")) {
-      qputenv("QT_QPA_PLATFORM", "wayland;xcb");
-    } else if (qEnvironmentVariableIsSet("DISPLAY")) {
-      qputenv("QT_QPA_PLATFORM", "xcb");
-    }
-  }
-  return true;
-}();
-
-// Skips (fails under PJ_REQUIRE_GPU_TESTS=1) on a QPA that cannot render the view.
-#define PJ_SKIP_ON_HEADLESS_QPA()                                                                        \
-  do {                                                                                                   \
-    const QString pj_qpa = QGuiApplication::platformName();                                              \
-    if (pj_qpa == QLatin1String("offscreen") || pj_qpa == QLatin1String("minimal")) {                    \
-      PJ_SKIP_WITHOUT_GPU("QPA '" << pj_qpa.toStdString() << "' cannot render the 3D view (xvfb-run?)"); \
-    }                                                                                                    \
-  } while (0)
+// Runs before main(); see pjPreferRealDisplayQpa().
+inline const bool kRealDisplayPlatform = pjPreferRealDisplayQpa();
 
 // One extra per-point field written after xyz; `write` fills point i's bytes.
 struct ExtraField {
@@ -164,21 +143,7 @@ class Scene3DRenderFixture {
 // One presented frame as RGB32, after letting queued layer/frame reconciliation
 // run. Null when the view could not present (occluded window, no driver).
 inline QImage grab(pj::scene3d::SceneViewWidget& view) {
-  for (int i = 0; i < 3; ++i) {
-    QCoreApplication::processEvents();
-  }
-  QImage image;
-  bool delivered = false;
-  QEventLoop loop;
-  view.grabPresentedFrame([&](const QImage& frame) {
-    image = frame;
-    delivered = true;
-    loop.quit();
-  });
-  if (!delivered) {
-    loop.exec();
-  }
-  return image.convertToFormat(QImage::Format_RGB32);
+  return pjWaitForGrab([&view](auto done) { view.grabPresentedFrame(std::move(done)); });
 }
 
 // Grabs until two consecutive frames match: the GL renderer's async GPU AABB

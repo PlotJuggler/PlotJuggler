@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <deque>
 #include <glm/glm.hpp>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -67,7 +68,8 @@ class UrlFetcher;
 // Meshes load a few at a time (one in the browser; see maxConcurrentMeshLoads):
 // URL meshes are fetched, then imported off the GUI thread, and each result is
 // admitted against kSceneLimits' retained-byte budgets as it lands. A source
-// switch bumps a generation that drops every stale completion.
+// switch bumps a generation that drops every stale completion; a superseded
+// import keeps its concurrency slot until its worker finishes.
 //
 // Parser lifetime (kTopic): parsers are deliberately NOT cached; every decode
 // resolves a fresh ParserBinding through ctx_.session.
@@ -177,6 +179,9 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   [[nodiscard]] int unresolvedMeshCount() const {
     return unresolved_mesh_count_;
   }
+  [[nodiscard]] int loadedMeshCount() const {
+    return loaded_mesh_count_;
+  }
   [[nodiscard]] std::size_t fixedJointBridgeCount() const {
     return static_bridges_.size();
   }
@@ -216,6 +221,11 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   }
 
 #ifdef PJ_SCENE3D_TEST_HOOKS
+  // Mesh imports started whose worker has not finished yet (superseded ones
+  // included): what actually runs on the pool.
+  [[nodiscard]] std::size_t meshImportsOutstandingForTest() const {
+    return active_imports_.size();
+  }
   // Injects the fixed-joint TF bridges into frame_ctx.tf (the buffer the layer
   // renders against) and, in the GL build, rebuilds the world-space draw cache.
   // Inline: test hooks are compiled only into the test TU, never the library.
@@ -382,10 +392,11 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   // URDF/mesh fetches and drops their callbacks.
   std::unique_ptr<UrlFetcher> url_fetcher_;
   std::deque<MeshTask> mesh_queue_;
-  // In-flight URL fetches and imports, keyed by resolved mesh path; together at
-  // most maxConcurrentMeshLoads().
+  // In-flight URL fetches (keyed by resolved mesh path) and imports (keyed by
+  // load generation + path, superseded ones included until their worker
+  // finishes); together at most maxConcurrentMeshLoads().
   std::unordered_set<std::string> active_fetches_;
-  std::unordered_map<std::string, std::unique_ptr<MeshImport>> active_imports_;
+  std::map<std::pair<std::uint64_t, std::string>, std::unique_ptr<MeshImport>> active_imports_;
   std::unordered_map<std::string, QString> mesh_errors_;
   // Retained estimate of each admitted mesh, keyed by resolved path; the key
   // set is the ready set.

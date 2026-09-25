@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
 #include <QSignalSpy>
 #include <QTest>
 #include <memory>
@@ -119,8 +120,11 @@ class StateTransitionsControllerTest : public ::testing::Test {
   }
 
   /// Let the coalescing refresh's trailing edge (~100 ms window) fire.
-  static void waitForCoalescedRefresh() {
-    QTest::qWait(150);
+  // Until the trailing refresh has run: a fixed wait races the 100 ms window on
+  // a loaded runner (seen on 3-core macOS CI).
+  void waitForCoalescedRefresh() {
+    QCoreApplication::processEvents();  // deliver any queued change first
+    ASSERT_TRUE(QTest::qWaitFor([this] { return controller_->refreshIdleForTesting(); }, 5000));
   }
 
   void appendStateAndCommit(std::initializer_list<std::pair<Timestamp, const char*>> samples) {

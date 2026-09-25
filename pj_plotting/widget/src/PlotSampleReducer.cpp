@@ -32,7 +32,8 @@ struct FiniteRun {
   return std::isfinite(point.x()) && std::isfinite(point.y());
 }
 
-void appendRunEndpoints(PlotSampleReduction& result, const FiniteRun& run, const PlotSampleAccessor& sample_at) {
+template <typename Accessor>
+void appendRunEndpoints(PlotSampleReduction& result, const FiniteRun& run, const Accessor& sample_at) {
   result.samples.push_back({.point = sample_at(run.begin), .source_index = run.begin, .starts_new_run = true});
   if (run.size() > 1) {
     result.samples.push_back({.point = sample_at(run.end - 1), .source_index = run.end - 1, .starts_new_run = false});
@@ -81,8 +82,9 @@ void appendRunEndpoints(PlotSampleReduction& result, const FiniteRun& run, const
   return allocation;
 }
 
+template <typename Accessor>
 void appendReducedRun(
-    PlotSampleReduction& result, const FiniteRun& run, std::size_t bucket_count, const PlotSampleAccessor& sample_at) {
+    PlotSampleReduction& result, const FiniteRun& run, std::size_t bucket_count, const Accessor& sample_at) {
   std::vector<std::size_t> selected;
   selected.reserve(2 + bucket_count * 4);
   selected.push_back(run.begin);
@@ -142,14 +144,15 @@ void appendReducedRun(
   ++result.retained_runs;
 }
 
-}  // namespace
-
-PlotSampleReduction reducePlotSamples(
+// One instantiation per accessor type, so a plain lambda over a vector is
+// inlined into the scans instead of paying a std::function call per sample.
+template <typename Accessor>
+PlotSampleReduction reduceSamples(
     std::size_t sample_count, std::size_t sample_budget, std::size_t horizontal_bucket_count,
-    const PlotSampleAccessor& sample_at) {
+    const Accessor& sample_at) {
   PlotSampleReduction result;
   result.input_samples = sample_count;
-  if (sample_count == 0 || !sample_at) {
+  if (sample_count == 0) {
     result.reduced = sample_count > 0;
     return result;
   }
@@ -263,6 +266,26 @@ PlotSampleReduction reducePlotSamples(
     appendReducedRun(result, runs[index], buckets[index], sample_at);
   }
   return result;
+}
+
+}  // namespace
+
+PlotSampleReduction reducePlotSamples(
+    std::size_t sample_count, std::size_t sample_budget, std::size_t horizontal_bucket_count,
+    const PlotSampleAccessor& sample_at) {
+  if (!sample_at) {
+    PlotSampleReduction result;
+    result.input_samples = sample_count;
+    result.reduced = sample_count > 0;
+    return result;
+  }
+  return reduceSamples(sample_count, sample_budget, horizontal_bucket_count, sample_at);
+}
+
+PlotSampleReduction reducePlotSamples(
+    std::span<const QPointF> samples, std::size_t sample_budget, std::size_t horizontal_bucket_count) {
+  return reduceSamples(
+      samples.size(), sample_budget, horizontal_bucket_count, [samples](std::size_t index) { return samples[index]; });
 }
 
 void annotatePlotSamplePathOffsets(

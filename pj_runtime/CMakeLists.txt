@@ -314,7 +314,8 @@ if(PJ_BUILD_TESTS)
     target_compile_definitions(mock_data_source_pinning_v2_plugin PRIVATE PIN_MOCK_VERSION="2.0.0")
     target_link_libraries(mock_data_source_pinning_v2_plugin PRIVATE plotjuggler_sdk::base)
 
-    if(NOT WIN32)
+    # ELF-only pin (ld64 has no -z nodelete); the residency canary that checks it is Linux-only too.
+    if(NOT WIN32 AND NOT APPLE)
       target_link_options(mock_data_source_pinning_plugin PRIVATE -Wl,-z,nodelete)
       target_link_options(mock_data_source_pinning_v2_plugin PRIVATE -Wl,-z,nodelete)
     endif()

@@ -18,12 +18,14 @@
 #include <rhi/qrhi.h>
 
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFont>
 #include <QImage>
 #include <QLabel>
 #include <QLineF>
 #include <QLoggingCategory>
+#include <QMatrix4x4>
 #include <QPainter>
 #include <QPicture>
 #include <QPointF>
@@ -40,9 +42,13 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <set>
+#include <span>
 #include <tuple>
+#include <utility>
 #include <vector>
 
+#include "pj_plotting/PlotCurve.h"
 #include "pj_plotting/PlotLegend.h"
 #include "pj_plotting/PlotSampleReducer.h"
 
@@ -53,7 +59,6 @@ void pjPlotRhiInitResources() {
 }
 
 namespace PJ {
-
 Q_LOGGING_CATEGORY(lcPlotRhi, "pj.plotting.rhi")
 
 namespace {
@@ -63,17 +68,43 @@ using TextVertex = PlotRhiTextVertex;
 
 // Hard frame-wide vertex ceiling, enforced inside the builder so it holds even
 // when dashed/symbol expansion turns each retained sample into many vertices.
-// 1,000,000 vertices at sizeof(Vertex) == 24 B
-// is ~24 MB — a firm cap against exhausting the 32-bit wasm heap (a few hundred
-// MB total, shared with Qt/Qwt/the datastore), while still far exceeding any
-// legible on-screen line density.
+#ifdef PJ_TARGET_WASM
+// 1,000,000 vertices at sizeof(Vertex) == 12 B is ~12 MB — a firm cap against
+// exhausting the 32-bit wasm heap (a few hundred MB total, shared with
+// Qt/Qwt/the datastore), while still far exceeding any legible line density.
 constexpr std::size_t kMaxFrameVertices = 1'000'000;
+// The browser splits one density budget (4 samples per device-pixel column)
+// across every curve of the plot.
+constexpr bool kPerCurveDensity = false;
+#else
+// Desktop: 8M vertices (96 MB of CPU staging + 96 MB GPU buffer at the cap)
+// holds 50 full-density Lines curves on a 4K-wide canvas; the cap only guards
+// pathological dash/symbol expansion.
+constexpr std::size_t kMaxFrameVertices = 8'000'000;
+// Every curve gets the full density budget of its own: the reducer keeps each
+// pixel column's X/Y extrema, so a curve drawn from 4 samples per device-pixel
+// column is indistinguishable from the full series.
+constexpr bool kPerCurveDensity = true;
+#endif
+#ifdef PJ_TARGET_WASM
+// The 32-bit heap cannot hold a mapped copy of a multi-million-sample series
+// (16 B per sample): map lazily on every reducer pass instead.
+constexpr bool kMapSamplesOnce = false;
+#else
+constexpr bool kMapSamplesOnce = true;
+#endif
+// Mapped samples a canvas keeps between rebuilds (1 MiB): a zoomed-out view of
+// a long series maps it all, and a canvas must not hold that for its lifetime.
+constexpr std::size_t kRetainedMappedSamples = std::size_t{1} << 16;
+// Density floor (samples) for narrow canvases.
+constexpr std::size_t kMinDensitySamples = 2048;
 constexpr std::size_t kTextVerticesPerLayer = 6;
 constexpr std::size_t kMaxTextLayers = 256;
 constexpr std::size_t kMaxTextVertices = kTextVerticesPerLayer * kMaxTextLayers;
 constexpr std::size_t kMaxGeometryVertices = kMaxFrameVertices - kMaxTextVertices;
 constexpr int kSymbolSegments = 12;
 constexpr qreal kTau = 6.28318530717958647692;
+constexpr qreal kSqrtHalf = 0.70710678118654752440;
 
 // Reducer planning deliberately leaves one quarter of the hard ceiling for
 // grids, markers, dash expansion, and estimator error. GeometryBuilder remains
@@ -93,14 +124,20 @@ constexpr std::size_t kPlannedCurveVertices = (kMaxFrameVertices * 3) / 4;
       static_cast<qreal>(target_size.height()) / logical_size.height());
 }
 
-[[nodiscard]] QPointF ndcFromLogical(const QPointF& point, QSize logical_size) {
+// Logical widget pixels (y down) to the backend's clip space: GL-style NDC
+// (y up) followed by QRhi::clipSpaceCorrMatrix(), which flips y on Vulkan. The
+// shaders pass positions through unchanged, so this is the only place that
+// knows the backend's conventions. z stays 0 and w 1, inside every backend's
+// depth range; only the 2D part of the correction matters.
+[[nodiscard]] QTransform logicalToClip(QSize logical_size, const QMatrix4x4& clip_correction) {
   if (logical_size.isEmpty()) {
-    return {};
+    return QTransform(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
   }
-  return {
-      (point.x() / logical_size.width()) * 2.0 - 1.0,
-      1.0 - (point.y() / logical_size.height()) * 2.0,
-  };
+  const QTransform to_ndc(2.0 / logical_size.width(), 0.0, 0.0, -2.0 / logical_size.height(), -1.0, 1.0);
+  const QTransform correction(
+      clip_correction(0, 0), clip_correction(1, 0), clip_correction(0, 1), clip_correction(1, 1), clip_correction(0, 3),
+      clip_correction(1, 3));
+  return to_ndc * correction;
 }
 
 // Fold a double into a running FNV-1a-style fingerprint via its raw bit
@@ -124,22 +161,19 @@ void hashUInt(std::uint64_t& state, std::uint64_t value) {
   return QShader::fromSerialized(file.readAll());
 }
 
-[[nodiscard]] QString backendName(QRhi::Implementation backend) {
-  switch (backend) {
-    case QRhi::Null:
-      return u"Null"_s;
-    case QRhi::Vulkan:
-      return u"Vulkan"_s;
-    case QRhi::OpenGLES2:
-      return u"OpenGLES2/WebGL"_s;
-    case QRhi::D3D11:
-      return u"Direct3D11"_s;
-    case QRhi::Metal:
-      return u"Metal"_s;
-    case QRhi::D3D12:
-      return u"Direct3D12"_s;
+// QRhi's own name, except OpenGL: the browser's breadcrumbs report it as
+// "OpenGLES2/WebGL".
+[[nodiscard]] QString backendName(const QRhi& rhi) {
+  return rhi.backend() == QRhi::OpenGLES2 ? u"OpenGLES2/WebGL"_s : QString::fromLatin1(rhi.backendName());
+}
+
+// Logs each distinct unsupported feature once per process: the canvas keeps
+// drawing an approximation, so the log is the only signal.
+void warnUnsupportedOnce(const QString& what) {
+  static std::set<QString> reported;
+  if (reported.insert(what).second) {
+    qCWarning(lcPlotRhi).noquote() << "PlotRhiCanvas: unsupported" << what;
   }
-  return u"Unknown"_s;
 }
 
 // Appends triangulated 2D geometry (in logical widget pixels, converted to NDC
@@ -147,9 +181,15 @@ void hashUInt(std::uint64_t& state, std::uint64_t value) {
 // frames: the caller clear()s it (retaining capacity) before building.
 class GeometryBuilder {
  public:
-  GeometryBuilder(std::vector<Vertex>& sink, QSize logical_size, qreal device_pixel_ratio)
+  GeometryBuilder(std::vector<Vertex>& sink, QSize logical_size, qreal device_pixel_ratio, const QTransform& to_clip)
       : vertices_(sink),
         logical_size_(logical_size),
+        clip_xx_(to_clip.m11()),
+        clip_xy_(to_clip.m21()),
+        clip_dx_(to_clip.dx()),
+        clip_yx_(to_clip.m12()),
+        clip_yy_(to_clip.m22()),
+        clip_dy_(to_clip.dy()),
         cosmetic_width_(1.0 / std::max<qreal>(std::numeric_limits<qreal>::epsilon(), device_pixel_ratio)) {}
 
   [[nodiscard]] qreal effectivePenWidth(qreal width) const noexcept {
@@ -323,6 +363,17 @@ class GeometryBuilder {
     }
   }
 
+  // Fills a polygon that is star-shaped around `center` (every QwtSymbol
+  // outline is) as a triangle fan.
+  void addFan(const QPointF& center, const std::vector<QPointF>& ring, const QColor& color) {
+    if (curve_limit_hit_ || ring.size() < 3 || !finitePoint(center) || !color.isValid() || color.alpha() == 0) {
+      return;
+    }
+    for (std::size_t index = 0; index < ring.size(); ++index) {
+      addTriangle(center, ring[index], ring[(index + 1) % ring.size()], color);
+    }
+  }
+
   void addRect(const QRectF& rect, const QColor& color) {
     if (curve_limit_hit_ || !rect.isValid() || !finitePoint(rect.topLeft()) || !finitePoint(rect.bottomRight()) ||
         !color.isValid() || color.alpha() == 0 || !rect.intersects(QRectF(QPointF(0.0, 0.0), QSizeF(logical_size_)))) {
@@ -393,37 +444,44 @@ class GeometryBuilder {
     addTriangle(start - offset, end + offset, start + offset, color);
   }
 
+  // Hot path for every solid curve: one direction per segment, reused by the
+  // segment quad and the bevel join after it. Consecutive points are distinct
+  // (addPolyline compacts duplicates).
   void addSolidPolyline(const std::vector<QPointF>& points, qreal width, const QColor& color) {
-    std::size_t first_segment = points.size();
-    std::size_t last_segment = 0;
-    for (std::size_t index = 1; index < points.size(); ++index) {
-      if (QLineF(points[index - 1], points[index]).length() > std::numeric_limits<qreal>::epsilon()) {
-        first_segment = std::min(first_segment, index);
-        last_segment = index;
-      }
+    const std::size_t segments = points.size() - 1;
+    segment_directions_.resize(segments);
+    for (std::size_t index = 0; index < segments; ++index) {
+      const QPointF delta = points[index + 1] - points[index];
+      segment_directions_[index] = delta / std::sqrt(QPointF::dotProduct(delta, delta));
     }
-    if (first_segment == points.size()) {
-      return;
-    }
-    for (std::size_t index = first_segment; index <= last_segment; ++index) {
+    const QRectF bounds(QPointF(0.0, 0.0), QSizeF(logical_size_));
+    const QRectF join_bounds = bounds.adjusted(-width, -width, width, width);
+    const qreal half_width = width * 0.5;
+    for (std::size_t index = 0; index < segments; ++index) {
       if (curve_limit_hit_) {
         return;
       }
-      QPointF from = points[index - 1];
-      QPointF to = points[index];
-      if (QLineF(from, to).length() <= std::numeric_limits<qreal>::epsilon()) {
-        continue;
-      }
+      const QPointF& from = points[index];
+      const QPointF& to = points[index + 1];
+      const QPointF& direction = segment_directions_[index];
       qreal lower = 0.0;
       qreal upper = 1.0;
-      if (clipLine(from, to, lower, upper)) {
+      if ((bounds.contains(from) && bounds.contains(to)) || clipLine(from, to, lower, upper)) {
         const QPointF delta = to - from;
-        addSolidLine(
-            from + (delta * lower), from + (delta * upper), width, color, index == first_segment,
-            index == last_segment);
+        const QPointF offset(-direction.y() * half_width, direction.x() * half_width);
+        const QPointF start = from + (delta * lower) - (index == 0 ? direction * half_width : QPointF());
+        const QPointF end = from + (delta * upper) + (index + 1 == segments ? direction * half_width : QPointF());
+        addTriangle(start - offset, end - offset, end + offset, color);
+        addTriangle(start - offset, end + offset, start + offset, color);
       }
-      if (index < last_segment) {
-        addBevelJoin(points[index - 1], points[index], points[index + 1], width, color);
+      if (index + 1 < segments && join_bounds.contains(to)) {
+        const QPointF& next = segment_directions_[index + 1];
+        const qreal cross = (direction.x() * next.y()) - (direction.y() * next.x());
+        if (std::abs(cross) > std::numeric_limits<qreal>::epsilon()) {
+          const qreal side = (cross > 0.0 ? -1.0 : 1.0) * half_width;
+          addTriangle(
+              to, to + QPointF(-direction.y(), direction.x()) * side, to + QPointF(-next.y(), next.x()) * side, color);
+        }
       }
     }
   }
@@ -547,36 +605,54 @@ class GeometryBuilder {
       curve_limit_hit_ = true;
       return;
     }
-    addVertex(a, color);
-    addVertex(b, color);
-    addVertex(c, color);
-  }
-
-  void addVertex(const QPointF& point, const QColor& color) {
     if (logical_size_.width() <= 0 || logical_size_.height() <= 0) {
       return;
     }
-    const QPointF ndc = ndcFromLogical(point, logical_size_);
+    // Hot path (millions of vertices per rebuild): convert the colour once per
+    // run of same-coloured triangles and apply the affine clip transform inline.
+    if (color != packed_source_) {
+      packed_source_ = color;
+      const QRgb rgba = color.rgba();
+      packed_color_ = {
+          static_cast<std::uint8_t>(qRed(rgba)), static_cast<std::uint8_t>(qGreen(rgba)),
+          static_cast<std::uint8_t>(qBlue(rgba)), static_cast<std::uint8_t>(qAlpha(rgba))};
+    }
+    addVertex(a);
+    addVertex(b);
+    addVertex(c);
+  }
+
+  void addVertex(const QPointF& point) {
     vertices_.push_back(
         Vertex{
-            .x = static_cast<float>(ndc.x()),
-            .y = static_cast<float>(ndc.y()),
-            .red = static_cast<float>(color.redF()),
-            .green = static_cast<float>(color.greenF()),
-            .blue = static_cast<float>(color.blueF()),
-            .alpha = static_cast<float>(color.alphaF()),
+            .x = static_cast<float>(clip_xx_ * point.x() + clip_xy_ * point.y() + clip_dx_),
+            .y = static_cast<float>(clip_yx_ * point.x() + clip_yy_ * point.y() + clip_dy_),
+            .rgba = packed_color_,
         });
   }
 
   std::vector<Vertex>& vertices_;
   QSize logical_size_;
+  // The clip transform's coefficients (x' = xx x + xy y + dx, y' = yx x + yy y + dy).
+  qreal clip_xx_ = 0.0;
+  qreal clip_xy_ = 0.0;
+  qreal clip_dx_ = 0.0;
+  qreal clip_yx_ = 0.0;
+  qreal clip_yy_ = 0.0;
+  qreal clip_dy_ = 0.0;
+  // Scratch for addSolidPolyline, reused across polylines.
+  std::vector<QPointF> segment_directions_;
+  QColor packed_source_;
+  std::array<std::uint8_t, 4> packed_color_{};
   qreal cosmetic_width_ = 1.0;
   std::size_t active_vertex_limit_ = kMaxGeometryVertices;
   bool curve_limit_hit_ = false;
   bool truncated_ = false;
 };
 
-enum class TextLayerKind { Legend, Marker };
+// Legend: the in-canvas legend. Marker: a QwtPlotMarker label. Item: any other
+// plot item (PlotMarkersItem, unknown QwtPlotItems), rasterised whole.
+enum class TextLayerKind { Legend, Marker, Item };
 
 struct TextRasterLayer {
   QImage image;
@@ -593,6 +669,7 @@ struct TextRasterBuild {
   qsizetype alpha_pixels = 0;
   qsizetype legend_layers = 0;
   qsizetype marker_layers = 0;
+  qsizetype item_layers = 0;
   bool truncated = false;
   bool allocation_failed = false;
 };
@@ -602,14 +679,21 @@ void refreshTextRasterStats(TextRasterBuild& build) {
   build.alpha_pixels = 0;
   build.legend_layers = 0;
   build.marker_layers = 0;
+  build.item_layers = 0;
   for (const TextRasterLayer& layer : build.layers) {
     build.logical_bounds =
         build.logical_bounds.isValid() ? build.logical_bounds.united(layer.logical_rect) : layer.logical_rect;
     build.alpha_pixels += layer.alpha_pixels;
-    if (layer.kind == TextLayerKind::Legend) {
-      ++build.legend_layers;
-    } else {
-      ++build.marker_layers;
+    switch (layer.kind) {
+      case TextLayerKind::Legend:
+        ++build.legend_layers;
+        break;
+      case TextLayerKind::Marker:
+        ++build.marker_layers;
+        break;
+      case TextLayerKind::Item:
+        ++build.item_layers;
+        break;
     }
   }
 }
@@ -846,12 +930,19 @@ void appendRecordedTextLayer(
     return result;
   }
   const qreal dpr = device_pixel_ratio;
-  const QRectF canvas_rect(QPointF(0.0, 0.0), QSizeF(logical_size));
+  // The rect Qwt hands every item (QwtPlot::drawCanvas): the canvas's contents,
+  // inside its margins. Legends and marker labels align to its edges.
+  const QRectF canvas_rect = plot->canvas() != nullptr ? QRectF(plot->canvas()->contentsRect())
+                                                       : QRectF(QPointF(0.0, 0.0), QSizeF(logical_size));
   const QFont text_font = plot->canvas() != nullptr ? plot->canvas()->font() : plot->font();
   const QwtScaleMap bottom_map = plot->canvasMap(QwtPlot::xBottom);
   const QwtScaleMap left_map = plot->canvasMap(QwtPlot::yLeft);
   for (const QwtPlotItem* item : plot->itemList()) {
-    if (const auto* legend = dynamic_cast<const PlotLegend*>(item); legend != nullptr && legend->isVisible()) {
+    if (!item->isVisible() || dynamic_cast<const QwtPlotCurve*>(item) != nullptr ||
+        dynamic_cast<const QwtPlotGrid*>(item) != nullptr) {
+      continue;
+    }
+    if (dynamic_cast<const PlotLegend*>(item) != nullptr) {
       appendRecordedTextLayer(
           result, scratch, TextLayerKind::Legend, canvas_rect, dpr, text_font, item,
           [item, &bottom_map, &left_map, &canvas_rect](QPainter* painter) {
@@ -860,7 +951,20 @@ void appendRecordedTextLayer(
       continue;
     }
     const auto* marker = dynamic_cast<const QwtPlotMarker*>(item);
-    if (marker == nullptr || !marker->isVisible() || marker->label().isEmpty()) {
+    if (marker == nullptr) {
+      // No geometry translation for this item: rasterise its own QPainter
+      // drawing, in its own Z slot. Region fills make these layers large, and
+      // they are re-rasterised on every rebuild like the text.
+      const QwtScaleMap item_x_map = plot->canvasMap(item->xAxis());
+      const QwtScaleMap item_y_map = plot->canvasMap(item->yAxis());
+      appendRecordedTextLayer(
+          result, scratch, TextLayerKind::Item, canvas_rect, dpr, text_font, item,
+          [item, &item_x_map, &item_y_map, &canvas_rect](QPainter* painter) {
+            item->draw(painter, item_x_map, item_y_map, canvas_rect);
+          });
+      continue;
+    }
+    if (marker->label().isEmpty()) {
       continue;
     }
     LabelOnlyMarker label_marker;
@@ -997,12 +1101,16 @@ void appendRecordedTextLayer(
   return true;
 }
 
-void appendTextQuad(std::vector<TextVertex>& vertices, const QRectF& rect, const QRectF& uv_rect, QSize logical_size) {
+void appendTextQuad(
+    std::vector<TextVertex>& vertices, const QRectF& rect, const QRectF& uv_rect, QSize logical_size,
+    const QTransform& to_clip) {
   if (!rect.isValid() || logical_size.isEmpty()) {
     return;
   }
-  const QPointF top_left = ndcFromLogical(rect.topLeft(), logical_size);
-  const QPointF bottom_right = ndcFromLogical(rect.bottomRight(), logical_size);
+  // Atlas row 0 is v = 0 on every backend (uploaded images are not render
+  // targets), so the uv corners stay tied to the logical corners.
+  const QPointF top_left = to_clip.map(rect.topLeft());
+  const QPointF bottom_right = to_clip.map(rect.bottomRight());
   const float left = static_cast<float>(top_left.x());
   const float right = static_cast<float>(bottom_right.x());
   const float top = static_cast<float>(top_left.y());
@@ -1065,8 +1173,13 @@ void appendTextQuad(std::vector<TextVertex>& vertices, const QRectF& rect, const
       // for a hollow center. Reserve the larger app-visible fill+ring case.
       cost += static_cast<std::size_t>(kSymbolSegments * 9);
     } else {
-      cost += 6;
+      // A fan of up to six triangles plus a closed outline stroke.
+      cost += static_cast<std::size_t>(kSymbolSegments * 9);
     }
+  }
+  if (const auto* plot_curve = dynamic_cast<const PlotCurve*>(curve);
+      plot_curve != nullptr && curve->style() == QwtPlotCurve::Lines && plot_curve->dotWidth() > 0.0) {
+    cost += 6;
   }
   return cost;
 }
@@ -1127,13 +1240,14 @@ void appendSymbol(GeometryBuilder& geometry, const QPointF& point, const QwtSymb
   }
   const QSize size = symbol->size();
   const QSizeF radii(size.width() * 0.5, size.height() * 0.5);
+  const QPen symbol_pen = symbol->pen();
+  const bool has_pen = symbol_pen.style() != Qt::NoPen && symbol_pen.color().alpha() > 0;
   if (symbol->style() == QwtSymbol::Ellipse) {
     const QBrush brush = symbol->brush();
     if (brush.style() != Qt::NoBrush) {
       geometry.addEllipse(point, radii, brush.color());
     }
-    const QPen symbol_pen = symbol->pen();
-    if (symbol_pen.style() != Qt::NoPen && symbol_pen.color().alpha() > 0) {
+    if (has_pen) {
       const qreal half_pen_width = geometry.effectivePenWidth(symbol_pen.widthF()) * 0.5;
       const QSizeF outer_radii(radii.width() + half_pen_width, radii.height() + half_pen_width);
       const QSizeF inner_radii(radii.width() - half_pen_width, radii.height() - half_pen_width);
@@ -1146,17 +1260,91 @@ void appendSymbol(GeometryBuilder& geometry, const QPointF& point, const QwtSymb
     return;
   }
 
-  // PJ4 production constructs ellipse symbols only. Keep the historical
-  // rectangular fallback for an unknown external Qwt symbol, but do not imply
-  // full generic Qwt path/pixmap/SVG-symbol support.
-  const QColor color = symbol->brush().style() != Qt::NoBrush
-                           ? symbol->brush().color()
-                           : (symbol->pen().style() != Qt::NoPen ? symbol->pen().color() : fallback);
-  geometry.addRect(QRectF(point - QPointF(radii.width(), radii.height()), QSizeF(size)), color);
+  // The outlines follow qwt_symbol.cpp; brush fills, pen strokes.
+  const qreal x = point.x();
+  const qreal y = point.y();
+  const qreal left = x - radii.width();
+  const qreal right = x + radii.width();
+  const qreal top = y - radii.height();
+  const qreal bottom = y + radii.height();
+  const auto stroke = [&](QPointF from, QPointF to) {
+    if (has_pen) {
+      geometry.addLine(from, to, symbol_pen.widthF(), symbol_pen.color(), symbol_pen.style());
+    }
+  };
+  std::vector<QPointF> outline;
+  switch (symbol->style()) {
+    case QwtSymbol::Rect:
+      outline = {{left, top}, {right, top}, {right, bottom}, {left, bottom}};
+      break;
+    case QwtSymbol::Diamond:
+      outline = {{x, top}, {right, y}, {x, bottom}, {left, y}};
+      break;
+    case QwtSymbol::Triangle:
+    case QwtSymbol::UTriangle:
+      outline = {{x, top}, {right, bottom}, {left, bottom}};
+      break;
+    case QwtSymbol::DTriangle:
+      outline = {{x, bottom}, {left, top}, {right, top}};
+      break;
+    case QwtSymbol::LTriangle:
+      outline = {{left, y}, {right, top}, {right, bottom}};
+      break;
+    case QwtSymbol::RTriangle:
+      outline = {{right, y}, {left, bottom}, {left, top}};
+      break;
+    case QwtSymbol::Hexagon: {
+      const qreal quarter = size.height() * 0.25;
+      outline = {{x, top},    {right, top + quarter},   {right, bottom - quarter},
+                 {x, bottom}, {left, bottom - quarter}, {left, top + quarter}};
+      break;
+    }
+    case QwtSymbol::Star1: {
+      const qreal diagonal_x = radii.width() * kSqrtHalf;
+      const qreal diagonal_y = radii.height() * kSqrtHalf;
+      stroke({x - diagonal_x, y - diagonal_y}, {x + diagonal_x, y + diagonal_y});
+      stroke({x - diagonal_x, y + diagonal_y}, {x + diagonal_x, y - diagonal_y});
+      [[fallthrough]];
+    }
+    case QwtSymbol::Cross:
+      stroke({left, y}, {right, y});
+      stroke({x, top}, {x, bottom});
+      return;
+    case QwtSymbol::XCross:
+      stroke({left, top}, {right, bottom});
+      stroke({left, bottom}, {right, top});
+      return;
+    case QwtSymbol::HLine:
+      stroke({left, y}, {right, y});
+      return;
+    case QwtSymbol::VLine:
+      stroke({x, top}, {x, bottom});
+      return;
+    default: {
+      // Star2, path, pixmap, graphic, SVG and user symbols: a filled square
+      // of the symbol size keeps the sample visible.
+      warnUnsupportedOnce(u"QwtSymbol style %1 (drawn as a square)"_s.arg(static_cast<int>(symbol->style())));
+      const QColor color =
+          symbol->brush().style() != Qt::NoBrush ? symbol->brush().color() : (has_pen ? symbol_pen.color() : fallback);
+      geometry.addRect(QRectF(point - QPointF(radii.width(), radii.height()), QSizeF(size)), color);
+      return;
+    }
+  }
+  if (symbol->brush().style() != Qt::NoBrush) {
+    geometry.addFan(point, outline, symbol->brush().color());
+  }
+  if (has_pen) {
+    outline.push_back(outline.front());
+    const qreal pen_width = geometry.effectivePenWidth(symbol_pen.widthF());
+    geometry.addPolyline(
+        outline, pen_width, symbol_pen.color(), symbol_pen.style(),
+        GeometryBuilder::dashPattern(symbol_pen.style(), pen_width));
+  }
 }
 
 [[nodiscard]] CurveReductionStats appendCurve(
-    GeometryBuilder& geometry, const QwtPlot* plot, const QwtPlotCurve* curve, std::size_t sample_budget) {
+    GeometryBuilder& geometry, const QwtPlot* plot, const QwtPlotCurve* curve, std::size_t sample_budget,
+    std::size_t pixel_columns, std::vector<QPointF>* mapped_scratch) {
   if (curve == nullptr || !curve->isVisible() || curve->data() == nullptr) {
     return {};
   }
@@ -1164,19 +1352,84 @@ void appendSymbol(GeometryBuilder& geometry, const QPointF& point, const QwtSymb
   if (count == 0) {
     return {};
   }
+  if (curve->style() == QwtPlotCurve::UserCurve) {
+    warnUnsupportedOnce(u"QwtPlotCurve::UserCurve style (only its symbols are drawn)"_s);
+  }
+  if (curve->brush().style() != Qt::NoBrush) {
+    warnUnsupportedOnce(u"QwtPlotCurve area brush (the fill is not drawn)"_s);
+  }
+  if (curve->testCurveAttribute(QwtPlotCurve::Fitted)) {
+    warnUnsupportedOnce(u"QwtPlotCurve::Fitted (drawn unfitted)"_s);
+  }
   const QwtScaleMap x_map = plot->canvasMap(curve->xAxis());
   const QwtScaleMap y_map = plot->canvasMap(curve->yAxis());
   const auto transform = [&](const QPointF& point) {
     return QPointF(x_map.transform(point.x()), y_map.transform(point.y()));
   };
-  const auto mapped_sample = [&](std::size_t index) {
+  const auto map_sample = [&](std::size_t index) {
     const QPointF sample = curve->sample(index);
     return finitePoint(sample)
                ? transform(sample)
                : QPointF(std::numeric_limits<qreal>::quiet_NaN(), std::numeric_limits<qreal>::quiet_NaN());
   };
-  PlotSampleReduction reduction = reducePlotSamples(
-      count, sample_budget, static_cast<std::size_t>(std::max(1, plot->canvas()->width())), mapped_sample);
+  // The reducer scans the series several times. Mapping it once into the
+  // caller's scratch (reused across curves) replaces a virtual sample() + two
+  // scale transforms per sample per pass with a vector read.
+  PlotSampleAccessor mapped_sample = map_sample;
+  std::size_t visible_count = count;
+  if (mapped_scratch != nullptr) {
+    mapped_scratch->clear();
+    // A time series (finite, x non-decreasing) keeps only its visible index
+    // range plus a margin for edge symbols and dots, and one sample beyond it
+    // on each side so the edge segments still cross the canvas border: only
+    // that range is stored, while one pass checks the whole series is sorted.
+    // Dashed pens keep the whole series: their phase is measured from the first sample.
+    const Qt::PenStyle pen_style = curve->pen().style();
+    bool sorted = pen_style == Qt::SolidLine || pen_style == Qt::NoPen;
+    if (sorted) {
+      constexpr qreal kCullMargin = 32.0;
+      const qreal right = plot->canvas()->width() + kCullMargin;
+      qreal previous_x = -std::numeric_limits<qreal>::infinity();
+      QPointF before_view;  // the last sample left of the view
+      bool storing = true;
+      for (std::size_t index = 0; index < count && sorted; ++index) {
+        const QPointF point = map_sample(index);
+        sorted = finitePoint(point) && point.x() >= previous_x;
+        previous_x = point.x();
+        if (!sorted || !storing) {
+          continue;
+        }
+        if (point.x() < -kCullMargin) {
+          before_view = point;
+          continue;
+        }
+        if (mapped_scratch->empty() && index > 0) {
+          mapped_scratch->push_back(before_view);
+        }
+        mapped_scratch->push_back(point);
+        storing = point.x() <= right;
+      }
+      if (sorted && mapped_scratch->empty()) {
+        mapped_scratch->push_back(before_view);  // everything is left of the view: keep the last sample
+      }
+    }
+    if (!sorted) {
+      mapped_scratch->clear();
+      mapped_scratch->reserve(count);
+      for (std::size_t index = 0; index < count; ++index) {
+        mapped_scratch->push_back(map_sample(index));
+      }
+    }
+    visible_count = mapped_scratch->size();
+    mapped_sample = [mapped_scratch](std::size_t index) { return (*mapped_scratch)[index]; };
+  }
+  if (visible_count == 0) {
+    return {};
+  }
+  PlotSampleReduction reduction =
+      mapped_scratch != nullptr
+          ? reducePlotSamples(std::span<const QPointF>(*mapped_scratch), sample_budget, pixel_columns)
+          : reducePlotSamples(visible_count, sample_budget, pixel_columns, mapped_sample);
   const QPen pen = curve->pen();
   const qreal width = geometry.effectivePenWidth(pen.widthF());
   const std::vector<qreal> dash = GeometryBuilder::dashPattern(pen.style(), width);
@@ -1248,6 +1501,15 @@ void appendSymbol(GeometryBuilder& geometry, const QPointF& point, const QwtSymb
   for (const StrokePath& curve_path : paths) {
     geometry.addPolyline(curve_path.points, width, pen.color(), pen.style(), dash, curve_path.phase_offsets);
   }
+  // PlotCurve's "Lines and Dots" pass: square dots of the dot width over the
+  // line, as PlotCurve::drawCurve's SquareCap drawPoints batch paints them.
+  if (const auto* plot_curve = dynamic_cast<const PlotCurve*>(curve);
+      plot_curve != nullptr && style == QwtPlotCurve::Lines && plot_curve->dotWidth() > 0.0) {
+    const qreal dot = plot_curve->dotWidth();
+    for (const ReducedPlotSample& sample : reduction.samples) {
+      geometry.addRect(QRectF(sample.point - QPointF(dot * 0.5, dot * 0.5), QSizeF(dot, dot)), pen.color());
+    }
+  }
   // QwtPlotCurve::drawSeries() draws the complete curve first and then all
   // symbols. A per-sample interleave lets a later line segment cover an earlier
   // symbol on self-intersections, which diverges from the desktop painter.
@@ -1309,9 +1571,12 @@ struct PlotGeometry {
   bool truncated = false;
 };
 
+// `pixel_columns` is the render target's width in device pixels: the reducer
+// keeps up to 4 extrema per column.
 [[nodiscard]] PlotGeometry buildGeometry(
-    std::vector<Vertex>& sink, const QwtPlot* plot, QSize logical_size, qreal device_pixel_ratio) {
-  GeometryBuilder geometry(sink, logical_size, device_pixel_ratio);
+    std::vector<Vertex>& sink, const QwtPlot* plot, QSize logical_size, qreal device_pixel_ratio,
+    std::size_t pixel_columns, const QTransform& to_clip, std::vector<QPointF>* mapped_scratch) {
+  GeometryBuilder geometry(sink, logical_size, device_pixel_ratio, to_clip);
   PlotGeometry geometry_stats;
   std::size_t curve_vertices = 0;
   const QwtPlotItemList items = plot->itemList();
@@ -1322,7 +1587,9 @@ struct PlotGeometry {
     }
   }
   const std::size_t curve_count = visible_curves.size();
-  const std::size_t frame_sample_budget = static_cast<std::size_t>(std::max(2048, plot->canvas()->width() * 4));
+  const std::size_t density_budget = std::max(kMinDensitySamples, pixel_columns * 4);
+  const std::size_t frame_sample_budget =
+      kPerCurveDensity ? density_budget * std::max<std::size_t>(1, curve_count) : density_budget;
   for (const QwtPlotItem* item : items) {
     if (const auto* grid = dynamic_cast<const QwtPlotGrid*>(item)) {
       const std::size_t before = geometry.vertexCount();
@@ -1354,7 +1621,8 @@ struct PlotGeometry {
       bool retried = false;
       while (!committed) {
         geometry.beginCurveBudget(vertex_share);
-        const CurveReductionStats attempt = appendCurve(geometry, plot, curve, attempt_budget);
+        const CurveReductionStats attempt =
+            appendCurve(geometry, plot, curve, attempt_budget, pixel_columns, mapped_scratch);
         const bool limited = geometry.endCurveBudget();
         if (!limited) {
           reduction = attempt;
@@ -1444,7 +1712,7 @@ PlotRhiCanvas::PlotRhiCanvas(QwtPlot* plot, QWidget* parent) : QRhiWidget(parent
   setContentsMargins(1, 1, 1, 1);
   setAutoFillBackground(false);
   setMouseTracking(true);
-  connect(this, &QRhiWidget::renderFailed, this, &PlotRhiCanvas::showRenderFailure);
+  connect(this, &QRhiWidget::renderFailed, this, [this]() { reportFailure(/*emit_signal=*/false); });
   connect(this, &QRhiWidget::frameSubmitted, this, [this]() {
     QWidget* top_level = window();
     // Qt/WASM switches a raster top-level to its RHI compositor when the first
@@ -1485,6 +1753,22 @@ std::size_t PlotRhiCanvas::lastVertexCount() const noexcept {
   return last_vertex_count_;
 }
 
+std::size_t PlotRhiCanvas::retainedSampleScratchBytes() const noexcept {
+  return mapped_scratch_.capacity() * sizeof(QPointF);
+}
+
+double PlotRhiCanvas::lastRenderCpuMs() const noexcept {
+  return last_render_cpu_ms_;
+}
+
+double PlotRhiCanvas::lastGpuFrameMs() const noexcept {
+  return last_gpu_frame_ms_;
+}
+
+void PlotRhiCanvas::grabPresentedFrame(std::function<void(const QImage&)> done) {
+  PJ::grabPresentedFrame(*this, std::move(done));
+}
+
 void PlotRhiCanvas::replot() {
   // Authoritative geometry-invalidation source: QwtPlot::replot() reaches here
   // reflectively on every semantic change (data, pens, items, axes). Mark dirty
@@ -1504,8 +1788,11 @@ void PlotRhiCanvas::clearTextLayers() {
 }
 
 void PlotRhiCanvas::releaseResources() {
+  noteRhiRelease(*this, rhi_);
   clearTextLayers();
   text_raster_scratch_ = {};
+  mapped_scratch_.clear();
+  mapped_scratch_.shrink_to_fit();
   delete text_pipeline_;
   text_pipeline_ = nullptr;
   delete text_layout_bindings_;
@@ -1558,9 +1845,12 @@ bool PlotRhiCanvas::createPipeline(QRhiCommandBuffer* /*command_buffer*/) {
     return false;
   }
 
+  // Static (device-local): the geometry is retained across frames and only
+  // re-uploaded on a rebuild, and a Dynamic buffer would be host-visible and
+  // duplicated per frame in flight on Vulkan/D3D/Metal.
   constexpr qsizetype kInitialVertexBufferCapacity = 64 * 1024;
   auto vertex_buffer = std::unique_ptr<QRhiBuffer>(
-      rhi_->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer, kInitialVertexBufferCapacity));
+      rhi_->newBuffer(QRhiBuffer::Static, QRhiBuffer::VertexBuffer, kInitialVertexBufferCapacity));
   if (!vertex_buffer->create()) {
     return false;
   }
@@ -1569,7 +1859,7 @@ bool PlotRhiCanvas::createPipeline(QRhiCommandBuffer* /*command_buffer*/) {
   input_layout.setBindings({QRhiVertexInputBinding(sizeof(Vertex))});
   input_layout.setAttributes({
       QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float2, offsetof(Vertex, x)),
-      QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float4, offsetof(Vertex, red)),
+      QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::UNormByte4, offsetof(Vertex, rgba)),
   });
   auto pipeline = std::unique_ptr<QRhiGraphicsPipeline>(rhi_->newGraphicsPipeline());
   pipeline->setShaderStages({
@@ -1589,30 +1879,40 @@ bool PlotRhiCanvas::createPipeline(QRhiCommandBuffer* /*command_buffer*/) {
   blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
   pipeline->setTargetBlends({blend});
   pipeline->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
-  if (!pipeline->create()) {
+  if (!createRhiPipeline(*this, *pipeline, "color")) {
     return false;
   }
+  shader_resources_ = shader_resources.release();
+  vertex_buffer_ = vertex_buffer.release();
+  vertex_buffer_capacity_ = kInitialVertexBufferCapacity;
+  pipeline_ = pipeline.release();
 
+  // The text pipeline is optional: without it legends and labels drop, the
+  // curves still draw. There is no raster fallback in the browser.
+  const auto drop_text = [] {
+    qCWarning(lcPlotRhi) << "PlotRhiCanvas: failed to create the text pipeline; rendering geometry without text";
+    return true;
+  };
   auto text_sampler = std::unique_ptr<QRhiSampler>(rhi_->newSampler(
       QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::None, QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge));
   if (!text_sampler->create()) {
-    return false;
+    return drop_text();
   }
   auto text_placeholder_texture = std::unique_ptr<QRhiTexture>(rhi_->newTexture(QRhiTexture::RGBA8, QSize(1, 1)));
   if (!text_placeholder_texture->create()) {
-    return false;
+    return drop_text();
   }
   auto text_layout_bindings = std::unique_ptr<QRhiShaderResourceBindings>(rhi_->newShaderResourceBindings());
   text_layout_bindings->setBindings({QRhiShaderResourceBinding::sampledTexture(
       0, QRhiShaderResourceBinding::FragmentStage, text_placeholder_texture.get(), text_sampler.get())});
   if (!text_layout_bindings->create()) {
-    return false;
+    return drop_text();
   }
   constexpr qsizetype kInitialTextVertexBufferCapacity = 16 * 1024;
   auto text_vertex_buffer = std::unique_ptr<QRhiBuffer>(
-      rhi_->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer, kInitialTextVertexBufferCapacity));
+      rhi_->newBuffer(QRhiBuffer::Static, QRhiBuffer::VertexBuffer, kInitialTextVertexBufferCapacity));
   if (!text_vertex_buffer->create()) {
-    return false;
+    return drop_text();
   }
   QRhiVertexInputLayout text_input_layout;
   text_input_layout.setBindings({QRhiVertexInputBinding(sizeof(TextVertex))});
@@ -1639,14 +1939,10 @@ bool PlotRhiCanvas::createPipeline(QRhiCommandBuffer* /*command_buffer*/) {
   text_blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
   text_pipeline->setTargetBlends({text_blend});
   text_pipeline->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
-  if (!text_pipeline->create()) {
-    return false;
+  if (!createRhiPipeline(*this, *text_pipeline, "text")) {
+    return drop_text();
   }
 
-  shader_resources_ = shader_resources.release();
-  vertex_buffer_ = vertex_buffer.release();
-  vertex_buffer_capacity_ = kInitialVertexBufferCapacity;
-  pipeline_ = pipeline.release();
   text_sampler_ = text_sampler.release();
   text_placeholder_texture_ = text_placeholder_texture.release();
   text_layout_bindings_ = text_layout_bindings.release();
@@ -1657,23 +1953,31 @@ bool PlotRhiCanvas::createPipeline(QRhiCommandBuffer* /*command_buffer*/) {
 }
 
 void PlotRhiCanvas::initialize(QRhiCommandBuffer* command_buffer) {
-  if (rhi_ != rhi()) {
-    releaseResources();
-    rhi_ = rhi();
-  }
-  if (rhi_ == nullptr) {
-    showRenderFailure();
+  QRhi* current_rhi = rhi();
+  if (current_rhi == nullptr || renderTarget() == nullptr) {
+    reportFailure(/*emit_signal=*/true);
     return;
   }
-  renderer_backend_ = backendName(rhi_->backend());
-  if ((pipeline_ == nullptr || text_pipeline_ == nullptr) && !createPipeline(command_buffer)) {
-    showRenderFailure();
+  // A new QRhi (reparent to another top-level, device loss) or a new output
+  // target format/sample count invalidates every pipeline.
+  const RhiTargetKey target = RhiTargetKey::of(*renderTarget(), sampleCount());
+  if (rhi_ != current_rhi || target != built_target_) {
+    noteRhiAdoption(*this, rhi_, current_rhi);
+    releaseResources();
+    rhi_ = current_rhi;
+    built_target_ = target;
+  }
+  renderer_backend_ = backendName(*rhi_);
+  // After a failure this is the only retry: render() does not call it again
+  // until the QRhi or the render target changes.
+  if (pipeline_ == nullptr && !createPipeline(command_buffer)) {
+    reportFailure(/*emit_signal=*/true);
     return;
   }
   if (failure_label_ != nullptr) {
     failure_label_->hide();
   }
-  failure_reported_ = false;
+  (void)failure_.set({});
   if (!ready_reported_) {
     ready_reported_ = true;
     const QRhiDriverInfo driver = rhi_->driverInfo();
@@ -1684,21 +1988,27 @@ void PlotRhiCanvas::initialize(QRhiCommandBuffer* command_buffer) {
 }
 
 void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
+  QElapsedTimer cpu_timer;
+  cpu_timer.start();
+  // QRhiWidget does not re-run initialize() for every new QRhi (a grab of a
+  // hidden widget creates one), so never draw with resources of another QRhi.
+  // A new render target always gets its initialize().
+  if (rhi_ != rhi()) {
+    initialize(command_buffer);
+  }
   QwtPlot* plot = plot_;
   const QColor clear_color = plot != nullptr ? plot->canvasBackground().color() : QColor(Qt::transparent);
   bool force_pipeline_failure = false;
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
   force_pipeline_failure = property("pjWasmForcePipelineFailure").toBool();
 #endif
-  // Real GPU errors (no device, pipeline, or render target): show the failure
-  // overlay + emit the PJ_WASM_PLOT_RHI_FAILED telemetry.
-  if (force_pipeline_failure || rhi_ == nullptr || pipeline_ == nullptr || text_pipeline_ == nullptr ||
-      renderTarget() == nullptr) {
+  // Failed state (no device, pipeline, or render target): a clear-only pass.
+  if (force_pipeline_failure || rhi_ == nullptr || pipeline_ == nullptr || renderTarget() == nullptr) {
     if (renderTarget() != nullptr) {
       command_buffer->beginPass(renderTarget(), clear_color, {1.0F, 0}, nullptr);
       command_buffer->endPass();
     }
-    showRenderFailure();
+    reportFailure(/*emit_signal=*/true);
     return;
   }
   if (plot == nullptr) {
@@ -1722,7 +2032,7 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
     command_buffer->beginPass(renderTarget(), clear_color, {1.0F, 0}, nullptr);
     command_buffer->endPass();
     env_key_valid_ = false;
-    showRenderFailure();
+    reportFailure(/*emit_signal=*/true);
   };
 
   // Rebuild geometry when a semantic change flagged it dirty (via replot()) or a
@@ -1737,13 +2047,22 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
   QImage text_upload;
   bool retry_text_rebuild = false;
   if (rebuild) {
+    const QTransform to_clip = logicalToClip(size(), rhi_->clipSpaceCorrMatrix());
     vertices_.clear();
     vertices_.reserve(last_vertex_count_);
-    const PlotGeometry geometry = buildGeometry(vertices_, plot, size(), device_pixel_ratio);
+    const PlotGeometry geometry = buildGeometry(
+        vertices_, plot, size(), device_pixel_ratio, static_cast<std::size_t>(std::max(1, target_size.width())),
+        to_clip, kMapSamplesOnce ? &mapped_scratch_ : nullptr);
+    if (mapped_scratch_.capacity() > kRetainedMappedSamples) {
+      mapped_scratch_.clear();
+      mapped_scratch_.shrink_to_fit();
+    }
     last_vertex_count_ = vertices_.size();
     bytes = static_cast<qsizetype>(vertices_.size() * sizeof(Vertex));
 
-    TextRasterBuild text_raster = buildTextRasters(plot, size(), device_pixel_ratio, text_raster_scratch_);
+    TextRasterBuild text_raster = text_pipeline_ != nullptr
+                                      ? buildTextRasters(plot, size(), device_pixel_ratio, text_raster_scratch_)
+                                      : TextRasterBuild{};
     text_vertices_.clear();
     std::vector<PlotGeometry::ItemSpan> text_spans;
     bool text_failed = false;
@@ -1823,7 +2142,7 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
               static_cast<qreal>(layer.image.width()) / text_texture_capacity_.width(),
               static_cast<qreal>(layer.image.height()) / text_texture_capacity_.height());
           const std::size_t before = text_vertices_.size();
-          appendTextQuad(text_vertices_, layer.logical_rect, uv_rect, size());
+          appendTextQuad(text_vertices_, layer.logical_rect, uv_rect, size(), to_clip);
           text_spans.push_back({layer.source_item, before, text_vertices_.size() - before});
         }
         text_bytes = static_cast<qsizetype>(text_vertices_.size() * sizeof(TextVertex));
@@ -1832,7 +2151,7 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
       if (!text_failed && text_bytes > text_vertex_buffer_capacity_) {
         const qsizetype new_capacity = std::max(text_bytes, text_vertex_buffer_capacity_ * 2);
         auto replacement =
-            std::unique_ptr<QRhiBuffer>(rhi_->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer, new_capacity));
+            std::unique_ptr<QRhiBuffer>(rhi_->newBuffer(QRhiBuffer::Static, QRhiBuffer::VertexBuffer, new_capacity));
         if (!replacement->create()) {
           drop_text_for_frame(u"failed to allocate the text vertex buffer"_s);
         } else {
@@ -1945,8 +2264,10 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
         batch_sequence.constData());
 #endif
 
+#ifdef PJ_TARGET_WASM
     // Content breadcrumb: emit on the first curve-bearing frame and again
     // whenever the plotted content changes. Format is fixed (Playwright greps).
+    // Browser-only: a streaming desktop plot would log it on every frame.
     const QwtPlotItemList curves = plot->itemList(QwtPlotItem::Rtti_PlotCurve);
     const auto* first_curve = curves.empty() ? nullptr : dynamic_cast<const QwtPlotCurve*>(curves.front());
     if (first_curve != nullptr && first_curve->dataSize() > 0) {
@@ -1996,6 +2317,7 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
             qPrintable(first_curve->pen().color().name(QColor::HexArgb)), geometry.truncated ? 1 : 0);
       }
     }
+#endif
 
     if (bytes > vertex_buffer_capacity_) {
       // Never grow past the frame-wide ceiling: the builder already caps the
@@ -2003,7 +2325,7 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
       const qsizetype ceiling_bytes = static_cast<qsizetype>(kMaxGeometryVertices * sizeof(Vertex));
       const qsizetype new_capacity = std::min(ceiling_bytes, std::max(bytes, vertex_buffer_capacity_ * 2));
       auto replacement =
-          std::unique_ptr<QRhiBuffer>(rhi_->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer, new_capacity));
+          std::unique_ptr<QRhiBuffer>(rhi_->newBuffer(QRhiBuffer::Static, QRhiBuffer::VertexBuffer, new_capacity));
       if (!replacement->create()) {
         fail_rebuild();
         return;
@@ -2018,17 +2340,17 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
 
   QRhiResourceUpdateBatch* updates = rhi_->nextResourceUpdateBatch();
   if (rebuild && bytes > 0) {
-    updates->updateDynamicBuffer(vertex_buffer_, 0, bytes, vertices_.data());
+    updates->uploadStaticBuffer(vertex_buffer_, 0, bytes, vertices_.data());
   }
   if (rebuild && text_bytes > 0 && text_texture_ != nullptr && !text_upload.isNull()) {
     QRhiTextureSubresourceUploadDescription upload(text_upload);
     upload.setSourceSize(text_upload.size());
     updates->uploadTexture(text_texture_, QRhiTextureUploadDescription({0, 0, upload}));
-    updates->updateDynamicBuffer(text_vertex_buffer_, 0, text_bytes, text_vertices_.data());
+    updates->uploadStaticBuffer(text_vertex_buffer_, 0, text_bytes, text_vertices_.data());
   }
   command_buffer->beginPass(renderTarget(), clear_color, {1.0F, 0}, updates);
-  command_buffer->setViewport(
-      QRhiViewport(0.0F, 0.0F, static_cast<float>(target_size.width()), static_cast<float>(target_size.height())));
+  const QRhiViewport viewport(
+      0.0F, 0.0F, static_cast<float>(target_size.width()), static_cast<float>(target_size.height()));
   for (const DrawBatch& batch : draw_batches_) {
     if (batch.text) {
       if (text_pipeline_ == nullptr || text_bindings_ == nullptr || text_vertex_buffer_ == nullptr) {
@@ -2044,6 +2366,9 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
       const QRhiCommandBuffer::VertexInput binding(vertex_buffer_, 0);
       command_buffer->setVertexInput(0, 1, &binding);
     }
+    // After the pipeline: QRhi records the viewport as dynamic state of the
+    // bound pipeline, and Vulkan draws nothing without it.
+    command_buffer->setViewport(viewport);
     command_buffer->draw(batch.vertex_count, 1, batch.first_vertex);
   }
   command_buffer->endPass();
@@ -2053,7 +2378,9 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
   if (failure_label_ != nullptr) {
     failure_label_->hide();
   }
-  failure_reported_ = false;
+  (void)failure_.set({});
+  last_render_cpu_ms_ = static_cast<double>(cpu_timer.nsecsElapsed()) / 1e6;
+  last_gpu_frame_ms_ = command_buffer->lastCompletedGpuTime() * 1000.0;
   // Geometry is now uploaded and drawn. A text-only allocation failure gets one
   // delayed retry while the usable geometry remains visible; repeated failures
   // wait for another semantic/view/rebind/lifecycle dirty source instead of
@@ -2068,7 +2395,7 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
   }
 }
 
-void PlotRhiCanvas::showRenderFailure() {
+void PlotRhiCanvas::reportFailure(bool emit_signal) {
   if (failure_label_ == nullptr) {
     failure_label_ = new QLabel(tr("GPU plot renderer unavailable"), this);
     failure_label_->setAlignment(Qt::AlignCenter);
@@ -2077,9 +2404,16 @@ void PlotRhiCanvas::showRenderFailure() {
   failure_label_->setGeometry(rect());
   failure_label_->show();
   failure_label_->raise();
-  if (!failure_reported_) {
-    failure_reported_ = true;
-    qCritical("PJ_WASM_PLOT_RHI_FAILED");
+  if (failure_.set(failure_label_->text()) != RhiFailureLatch::Change::kEntered) {
+    return;
+  }
+#ifdef PJ_TARGET_WASM
+  qCritical("PJ_WASM_PLOT_RHI_FAILED");
+#else
+  qCWarning(lcPlotRhi) << "PlotRhiCanvas:" << failure_.reason();
+#endif
+  if (emit_signal) {
+    emit renderFailed();
   }
 }
 

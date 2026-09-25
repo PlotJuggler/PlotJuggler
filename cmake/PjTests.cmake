@@ -21,9 +21,17 @@ function(pj_ensure_gpu_test_gate)
     endif()
 endfunction()
 
+# RHI_BACKENDS: a QRhi display runner. Its cases register once per graphics
+# backend of the platform, as <runner>.<backend>.* with PJ_GRAPHICS_API set to
+# match and the ctest label qrhi-<backend>: opengl and vulkan on Linux, d3d11 on
+# Windows, metal and opengl on macOS. DPR2 adds <runner>.opengl_dpr2.* at
+# QT_SCALE_FACTOR=2 where OpenGL is registered (label qrhi-opengl), limited to
+# the gtest DPR2_FILTER glob when given. The runner also joins the pj_qrhi_tests
+# target, so CI builds every one with `--target pj_qrhi_tests` and picks their
+# passes with `-L qrhi-<backend>` (every pass: `-L qrhi`; none: `-LE qrhi`).
 function(pj_add_test_runner target)
-    set(options WARNINGS)
-    set(oneValueArgs MAIN PREFIX TIMEOUT WORKING_DIRECTORY)
+    set(options WARNINGS RHI_BACKENDS DPR2)
+    set(oneValueArgs MAIN PREFIX TIMEOUT WORKING_DIRECTORY DPR2_FILTER)
     # PROPERTIES: extra ctest properties for every discovered case (DISABLED, ENVIRONMENT, ...).
     set(multiValueArgs SOURCES LIBS DEFINES PROPERTIES)
     cmake_parse_arguments(R "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
@@ -64,6 +72,50 @@ function(pj_add_test_runner target)
         target_compile_options(${target} PRIVATE ${PJ_WARNING_FLAGS})
     endif()
 
+    if(R_RHI_BACKENDS)
+        if(WIN32)
+            set(backends d3d11)
+        elseif(APPLE)
+            set(backends metal opengl)
+        else()
+            set(backends opengl vulkan)
+        endif()
+        # macOS OpenGL without a GL-capable GPU (the CI VMs) is Apple's software
+        # renderer: a float/redock case that takes 1-2 s on Metal takes 40-60 s+.
+        set(opengl_timeout ${R_TIMEOUT})
+        if(APPLE)
+            math(EXPR opengl_timeout "${R_TIMEOUT} * 5")
+        endif()
+        # One list element per property value: gtest_discover_tests splits a ';'
+        # inside one, hence ENVIRONMENT_MODIFICATION for the scale factor.
+        foreach(api IN LISTS backends)
+            set(timeout ${R_TIMEOUT})
+            if(api STREQUAL "opengl")
+                set(timeout ${opengl_timeout})
+            endif()
+            gtest_discover_tests(${target}
+                TEST_PREFIX "${target}.${api}."
+                DISCOVERY_MODE PRE_TEST
+                PROPERTIES TIMEOUT ${timeout} LABELS "qrhi-${api}" ENVIRONMENT "PJ_GRAPHICS_API=${api}")
+        endforeach()
+        if(R_DPR2 AND "opengl" IN_LIST backends)
+            set(filter)
+            if(R_DPR2_FILTER)
+                set(filter TEST_FILTER "${R_DPR2_FILTER}")
+            endif()
+            gtest_discover_tests(${target}
+                TEST_PREFIX "${target}.opengl_dpr2."
+                ${filter}
+                DISCOVERY_MODE PRE_TEST
+                PROPERTIES TIMEOUT ${opengl_timeout} LABELS "qrhi-opengl" ENVIRONMENT "PJ_GRAPHICS_API=opengl"
+                           ENVIRONMENT_MODIFICATION "QT_SCALE_FACTOR=set:2")
+        endif()
+        if(NOT TARGET pj_qrhi_tests)
+            add_custom_target(pj_qrhi_tests)
+        endif()
+        add_dependencies(pj_qrhi_tests ${target})
+        return()
+    endif()
     set(discover_args
         TEST_PREFIX "${R_PREFIX}"
         DISCOVERY_MODE PRE_TEST

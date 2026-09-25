@@ -140,7 +140,7 @@ The "wholesale lift" strategy for plot widgets (see `pj_plotting/CLAUDE.md`) mea
 - **Qt 6.11.1** (required; pinned by [`versions.env`](./versions.env)). Install via [`./scripts/install_qt6.sh`](./scripts/install_qt6.sh) on Linux, [`scripts/windows/install_qt6.ps1`](./scripts/windows/install_qt6.ps1) on Windows (the `msvc2022_64` kit). See [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) for what changed since 6.8 (new APIs past most training cutoffs, deprecations, build floors).
 - **CMake + Conan**. CMake is the build driver; Conan provides external non-vendored dependencies.
 - **C++20**.
-- **Linux and Windows are both required shipped targets**; macOS is not yet. Keep the code portable — no Linux-only APIs or POSIX-specific paths in module code; gate anything platform-specific behind the usual CMake / `#ifdef` guards. Licensing note for Windows: conda-forge ships no LGPL FFmpeg for win-64, so pixi-based Windows artifacts must use the local `recipes/ffmpeg` package (the Conan path builds its own LGPL-trimmed FFmpeg on all platforms). Windows runtime packaging (windeployqt + bundling the FFmpeg/Qt DLLs `pj_app` needs) is in scope: the Conan `windows-ci.yml` resolves DLLs via `PATH` at test time, which is not a shippable layout.
+- **Linux and Windows are both required shipped targets**; macOS is not yet, but `macos-ci.yml` builds and tests every PR on macOS arm64 (AppleClang, QRhi build with Scene3D on Metal). Keep the code portable (AppleClang's `-Wunused-const-variable` / `-Wunused-lambda-capture` catch platform-conditional code GCC accepts; macOS temp dirs sit behind the `/var -> /private/var` symlink, so tests must compare canonical paths) — no Linux-only APIs or POSIX-specific paths in module code; gate anything platform-specific behind the usual CMake / `#ifdef` guards. Licensing note for Windows: conda-forge ships no LGPL FFmpeg for win-64, so pixi-based Windows artifacts must use the local `recipes/ffmpeg` package (the Conan path builds its own LGPL-trimmed FFmpeg on all platforms). Windows runtime packaging (windeployqt + bundling the FFmpeg/Qt DLLs `pj_app` needs) is in scope: the Conan `windows-ci.yml` resolves DLLs via `PATH` at test time, which is not a shippable layout.
 
 ### Sanitizer lanes
 
@@ -166,7 +166,7 @@ behavior that PJ3 carried as in-tree Qwt patches lives in the app instead: axis
 tick-label formatting in `pj_plotting`'s `PlotScaleDraw` (twin in
 `pj_dialog_host`'s chart preview), and the "Lines and Dots" curve style in
 `pj_plotting`'s `PlotCurve` (Lines + one batched, pixel-weeded `drawDots` pass;
-WASM keeps an explicit symbol for `PlotRhiCanvas` geometry instead). See
+`PlotRhiCanvas` builds the same square dots as geometry). See
 `3rdparty/qwt/README.PJ4.md`.
 
 Other PJ3-style vendorables (`QCodeEditor`, `sol2`, `color_widgets`, `date`) will be vendored on the same pattern as we pull in the modules that need them — decide per-case when each module lands.

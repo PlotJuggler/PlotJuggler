@@ -78,9 +78,16 @@ class ScenePipelineRegistry {
   /// releaseClones() and forgets every registration (direct pipelines dying).
   void clear();
   /// The pipeline `pass` binds for `direct`: `direct` itself for kDirect, else its
-  /// clone, created on this first request; nullptr when unregistered, without
-  /// targets, or when the clone cannot be created (then retried next call).
+  /// clone, created on this first request. nullptr means "do not draw": always for
+  /// kDepthReplay when `direct` writes no depth (the depth replay records only
+  /// depth-writing coverage, like the GL composite), and when unregistered, without
+  /// targets, or when the clone cannot be created (see cloneFailed()).
   [[nodiscard]] QRhiGraphicsPipeline* resolve(QRhiGraphicsPipeline* direct, ScenePass pass) const;
+  /// A clone could not be created since the clones were last released: its draw
+  /// went missing from an HDR pass, so the view must drop the HDR chain.
+  [[nodiscard]] bool cloneFailed() const {
+    return clone_failed_;
+  }
   /// Every direct pipeline satisfies pipelineBuiltFor(render_pass, sample_count).
   [[nodiscard]] bool directsBuiltFor(const QRhiRenderPassDescriptor* render_pass, int sample_count) const;
 
@@ -92,6 +99,7 @@ class ScenePipelineRegistry {
   };
   // The clones are a cache that resolve() fills, hence mutable.
   mutable std::vector<Entry> entries_;
+  mutable bool clone_failed_ = false;
   QRhi* rhi_ = nullptr;
   QRhiRenderPassDescriptor* hdr_ = nullptr;
   int hdr_samples_ = 1;
@@ -221,6 +229,12 @@ struct PipelineDesc {
 };
 /// A created pipeline for `setup`'s render pass and sample count, or nullptr.
 QRhiGraphicsPipeline* createScenePipeline(const RhiPassSetup& setup, const PipelineDesc& desc);
+
+/// `pipeline->create()`: every graphics pipeline of the view is created through
+/// it. Builds with tests add fault injection: while the environment variable
+/// PJ_SCENE3D_TEST_FAIL_SHADER holds a suffix of a shader path loadRhiShader()
+/// read (e.g. "trail.frag.qsb"), a pipeline using that shader fails to create.
+bool createGraphicsPipeline(QRhiGraphicsPipeline* pipeline);
 
 /// Per-frame values a family reads in prepare(), after admission and camera fit.
 struct RhiFrameContext {

@@ -3,16 +3,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QImage>
+#include <QPointF>
 #include <QPointer>
 #include <QRhiWidget>
 #include <QString>
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <vector>
+
+#include "pj_widgets/GraphicsApi.h"
 
 class QLabel;
 class QRhiBuffer;
 class QRhiCommandBuffer;
+class QRhiRenderPassDescriptor;
 class QRhiGraphicsPipeline;
 class QRhiSampler;
 class QRhiShaderResourceBindings;
@@ -21,16 +27,14 @@ class QwtPlot;
 
 namespace PJ {
 
-// Interleaved position+color vertex, laid out to match the vertex input
-// attributes wired in createPipeline (Float2 position, Float4 RGBA). Lives here
-// only so the reusable per-frame vertex buffer can be a canvas member.
+// Interleaved position+color vertex (12 B), laid out to match the vertex input
+// attributes wired in createPipeline (Float2 clip-space position, UNormByte4
+// straight-alpha RGBA). Lives here only so the reusable per-frame vertex buffer
+// can be a canvas member.
 struct PlotRhiVertex {
   float x = 0.0F;
   float y = 0.0F;
-  float red = 0.0F;
-  float green = 0.0F;
-  float blue = 0.0F;
-  float alpha = 1.0F;
+  std::array<std::uint8_t, 4> rgba{};
 };
 
 struct PlotRhiTextVertex {
@@ -40,12 +44,25 @@ struct PlotRhiTextVertex {
   float v = 0.0F;
 };
 
-// WebAssembly plot canvas. Qwt continues to own axes, data, and interaction
-// state; this widget translates the visible Qwt curve/grid/marker items into
-// bounded triangle geometry and submits it through QRhi's WebGL backend.
+// QRhi plot canvas, used wherever PJ_RHI_WIDGETS is defined (the desktop QRhi
+// build and WebAssembly). Qwt continues to own axes, data, and interaction
+// state; this widget translates the visible Qwt curves, grid and markers into
+// bounded triangle geometry, and rasterises text and every other plot item
+// (legend, marker labels, PlotMarkersItem, unknown QwtPlotItems) with the
+// item's own QPainter drawing into one texture atlas. Any QRhi backend works:
+// clip-space corrections are folded into the CPU vertex transform.
 //
 // It is installed as the QwtPlot canvas (QwtPlot::setCanvas), so QwtPlot::replot
 // reaches it reflectively — see the replot() slot.
+//
+// Failure state: when its colour pipeline or its vertex buffer cannot be
+// created, the canvas records clear-only passes (never a draw with a missing
+// resource), shows a banner, emits renderFailed() once per onset, and retries
+// the pipelines only in the next initialize() (new QRhi or render target),
+// never per frame. Text is optional: a text pipeline or atlas failure drops
+// legends and labels with a one-time warning while the curves still draw.
+// renderFailed() may be emitted from inside render(): a receiver that deletes
+// the canvas must connect with Qt::QueuedConnection.
 class PlotRhiCanvas final : public QRhiWidget {
   Q_OBJECT
 
@@ -63,13 +80,27 @@ class PlotRhiCanvas final : public QRhiWidget {
   // its canvas during its own constructor, so the canvas exists first.
   void setPlot(QwtPlot* plot);
 
-  // Human-readable QRhi backend string (e.g. "OpenGLES2/WebGL"), valid only
-  // after initialize() has run. Test seam.
+  // QRhi::backendName() of the backend in use ("OpenGLES2/WebGL" for OpenGL
+  // ES/WebGL), valid only after initialize() has run. Test seam.
   [[nodiscard]] QString rendererBackend() const;
 
   // Vertex count uploaded on the last frame that rebuilt geometry (a skipped
   // dirty-gate frame leaves this unchanged). Test seam.
   [[nodiscard]] std::size_t lastVertexCount() const noexcept;
+
+  // CPU time of the last render() call, and the GPU time of the last completed
+  // frame (0 unless the QRhi was created with timestamps, e.g. QSG_RHI_PROFILE=1),
+  // both in milliseconds. Benchmark seams.
+  [[nodiscard]] double lastRenderCpuMs() const noexcept;
+  [[nodiscard]] double lastGpuFrameMs() const noexcept;
+
+  // Bytes the canvas keeps between frames for mapping curve samples: only the
+  // samples of the last rebuild's visible ranges, and none past a small cap.
+  // Test seam.
+  [[nodiscard]] std::size_t retainedSampleScratchBytes() const noexcept;
+
+  // PJ::grabPresentedFrame() on this canvas.
+  void grabPresentedFrame(std::function<void(const QImage&)> done);
 
  public slots:
   // Invoked by QwtPlot::replot via QMetaObject::invokeMethod(canvas, "replot").
@@ -99,7 +130,10 @@ class PlotRhiCanvas final : public QRhiWidget {
 
   bool createPipeline(QRhiCommandBuffer* command_buffer);
   void clearTextLayers();
-  void showRenderFailure();
+  // Shows the banner; once per failure onset also logs and, when `emit_signal`,
+  // emits renderFailed(). QRhiWidget's own renderFailed() ("No QRhi") comes in
+  // with emit_signal false so it is not echoed.
+  void reportFailure(bool emit_signal);
 
   QPointer<QwtPlot> plot_;
   QRhi* rhi_ = nullptr;
@@ -114,6 +148,10 @@ class PlotRhiCanvas final : public QRhiWidget {
   // draws its line/symbol geometry and then its label before the next same-Z
   // marker, matching Qwt rather than flattening every label above all markers.
   std::vector<DrawBatch> draw_batches_;
+  // Desktop only: one curve's samples mapped to canvas pixels (its visible
+  // range for an x-sorted solid curve, else all of it; 16 B per sample), reused
+  // across curves; released after a rebuild that grew it past a small cap.
+  std::vector<QPointF> mapped_scratch_;
   // Reusable CPU staging surface for tight text rasters. Its active rectangle
   // is cleared before every paint; it is scratch capacity, not a text cache.
   QImage text_raster_scratch_;
@@ -132,6 +170,11 @@ class PlotRhiCanvas final : public QRhiWidget {
   qsizetype text_vertex_buffer_capacity_ = 0;
   std::size_t last_vertex_count_ = 0;
   QString renderer_backend_;
+  // The target the pipelines were set up for on rhi_, whether or not that
+  // setup succeeded.
+  RhiTargetKey built_target_;
+  double last_render_cpu_ms_ = 0.0;
+  double last_gpu_frame_ms_ = 0.0;
 
   // Geometry-invalidation contract (four signals, one retained buffer):
   //   * replot()  = a SEMANTIC change (data, pens, items, axes) — Qwt drives it
@@ -153,10 +196,11 @@ class PlotRhiCanvas final : public QRhiWidget {
   bool env_key_valid_ = false;
 
   // One-shot telemetry latches. ready_/content_ reset in releaseResources so a
-  // recreated context re-logs; failure_ resets in initialize() on recovery.
+  // recreated context re-logs; failure_ leaves on the next successful
+  // initialize() or frame, which re-arms renderFailed() for a later onset.
   bool ready_reported_ = false;
   bool content_reported_ = false;
-  bool failure_reported_ = false;
+  RhiFailureLatch failure_;
 
   // Latches frame-wide or per-curve vertex-limit warnings so each onset logs
   // once, not every frame while over budget. Cleared by a within-budget frame.

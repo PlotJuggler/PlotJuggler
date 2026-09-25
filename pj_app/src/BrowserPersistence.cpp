@@ -43,9 +43,9 @@ EM_JS(void, pj_wasm_install_persistence_test_probes, (), {
 // clang-format on
 #endif
 
-constexpr auto kSessionSettingsRoot = "/tmp/plotjuggler4-settings";
-constexpr auto kPreferencesKey = "BrowserPersistence/preferences_v1";
-constexpr auto kRecentLayoutsKey = "BrowserPersistence/recent_generic_layouts_v1";
+[[maybe_unused]] constexpr auto kSessionSettingsRoot = "/tmp/plotjuggler4-settings";
+[[maybe_unused]] constexpr auto kPreferencesKey = "BrowserPersistence/preferences_v1";
+[[maybe_unused]] constexpr auto kRecentLayoutsKey = "BrowserPersistence/recent_generic_layouts_v1";
 constexpr int kPreferencesVersion = 1;
 constexpr int kRecentLayoutsVersion = 1;
 constexpr int kMaxRecentLayouts = 5;

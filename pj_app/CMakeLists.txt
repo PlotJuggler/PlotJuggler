@@ -747,4 +747,30 @@ if(PJ_BUILD_TESTS)
         LIBS pj_app_shell pj_resources Qt6::Test
     )
     set_target_properties(pj_app_gui_tests PROPERTIES AUTOMOC ON)
+
+    # QRhiWidgets in ADS docks across float/redock, split, sibling destruction,
+    # floating-window close and DPR changes, plus the mixed-API negative case.
+    # QRhi builds only; needs a real display (skips on offscreen). Runs on every
+    # backend of the platform plus OpenGL at DPR 2 (RHI_BACKENDS, cmake/PjTests.cmake).
+    if(PJ_SCENE3D_RHI AND NOT EMSCRIPTEN)
+        find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS OpenGLWidgets)
+        pj_add_test_runner(rhi_dock_lifecycle_test
+            MAIN gui WARNINGS RHI_BACKENDS DPR2
+            SOURCES tests/rhi_dock_lifecycle_test.cpp
+            LIBS qt_advanced_docking pj_widgets $<TARGET_NAME_IF_EXISTS:pj_scene2d_widgets> pj_resources
+                 Qt6::OpenGLWidgets Qt6::Test
+            TIMEOUT 60
+        )
+        # The same matrix with the real widgets: a plot, a Scene3D point cloud and
+        # the Scene2D media viewer (plus its failure state) in one dock manager.
+        if(TARGET pj_scene2d_widgets AND TARGET pj_scene3d_widgets)
+            pj_add_test_runner(rhi_mixed_dock_test
+                MAIN gui WARNINGS RHI_BACKENDS DPR2
+                SOURCES tests/rhi_mixed_dock_test.cpp
+                LIBS qt_advanced_docking pj_plotting pj_scene2d_widgets pj_scene3d_widgets pj_resources Qt6::Test
+                TIMEOUT 60
+            )
+            target_include_directories(rhi_mixed_dock_test PRIVATE ${CMAKE_SOURCE_DIR}/pj_scene3D/widgets/tests)
+        endif()
+    endif()
 endif()

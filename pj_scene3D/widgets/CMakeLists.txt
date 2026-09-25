@@ -100,26 +100,19 @@ endif()
 # Declared before the renderer split so one registration serves both builds;
 # pj_scene3d_widgets resolves at generate time. Needs a real display (see
 # scene3d_render_test_support.h). The goldens come from the GL renderer; the
-# QRhi build compares against them on each backend (.opengl.*, .vulkan.*).
+# QRhi build compares against them on every backend of the platform (RHI_BACKENDS).
 if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
-  set(_pj_golden_backend)
+  set(_pj_golden_rhi_backends)
   if(PJ_SCENE3D_RHI)
-    set(_pj_golden_backend PREFIX "pointcloud_golden_test.opengl." PROPERTIES ENVIRONMENT "PJ_GRAPHICS_API=opengl")
+    set(_pj_golden_rhi_backends RHI_BACKENDS)
   endif()
   pj_add_test_runner(pointcloud_golden_test
-    MAIN gui WARNINGS
+    MAIN gui WARNINGS ${_pj_golden_rhi_backends}
     SOURCES tests/pointcloud_golden_test.cpp
     LIBS pj_scene3d_widgets pj_resources
     DEFINES PJ_POINTCLOUD_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/golden/pointcloud"
-    ${_pj_golden_backend}
   )
-  if(PJ_SCENE3D_RHI)
-    gtest_discover_tests(pointcloud_golden_test
-      TEST_PREFIX "pointcloud_golden_test.vulkan."
-      DISCOVERY_MODE PRE_TEST
-      PROPERTIES TIMEOUT 120 ENVIRONMENT "PJ_GRAPHICS_API=vulkan")
-  endif()
-  unset(_pj_golden_backend)
+  unset(_pj_golden_rhi_backends)
 endif()
 # ---- end point-cloud golden corpus ------------------------------------------
 
@@ -205,6 +198,13 @@ if(PJ_SCENE3D_RHI)
     PRIVATE src)
   target_compile_features(pj_scene3d_widgets PUBLIC cxx_std_20)
   target_compile_definitions(pj_scene3d_widgets PUBLIC PJ_SCENE3D_RHI)
+  # The view queries Vulkan's 3D-texture limit only with the Vulkan headers
+  # (the renderer's QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>) guard);
+  # without them voxel grids fall back to the guaranteed 256 per dimension.
+  if(NOT EMSCRIPTEN AND QT_FEATURE_vulkan AND NOT TARGET WrapVulkanHeaders::WrapVulkanHeaders)
+    message(WARNING "Vulkan headers not found (install libvulkan-dev / the Vulkan SDK): the QRhi Scene3D view "
+      "cannot query the Vulkan 3D-texture limit and caps voxel grids at 256 cells per dimension.")
+  endif()
   target_compile_options(pj_scene3d_widgets PRIVATE ${PJ_WARNING_FLAGS})
   if(EMSCRIPTEN)
     target_compile_options(pj_scene3d_widgets PRIVATE -fexceptions)
@@ -226,46 +226,38 @@ if(PJ_SCENE3D_RHI)
   )
 
   # --- QRhi render harness (desktop only) ---------------------------------
-  # Needs an RHI-capable QPA (xcb/wayland; xvfb in CI), never `offscreen` (see
-  # scene3d_render_test_support.h). Registered once per backend; each needs a
-  # software or real driver (llvmpipe / lavapipe in CI), and
-  # PJ_REQUIRE_GPU_TESTS=1 turns a missing one into a failure. The runner
-  # registers the OpenGL pass; the Vulkan pass re-discovers the same binary.
+  # Needs an RHI-capable QPA (xcb/wayland/windows/cocoa), never `offscreen` (see
+  # scene3d_render_test_support.h). Registered on every backend of the platform
+  # (RHI_BACKENDS); each needs a software or real driver (llvmpipe / lavapipe /
+  # WARP / Metal in CI), and PJ_REQUIRE_GPU_TESTS=1 turns a missing one into a
+  # failure.
   if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS Test)
     pj_add_test_runner(scene3d_rhi_render_test
-      MAIN gui WARNINGS
+      MAIN gui WARNINGS RHI_BACKENDS
+      # The presentation cases also run at device-pixel ratio 2: overlay placement,
+      # picking and render_scale must hold in logical pixels.
+      DPR2 DPR2_FILTER "Scene3dRhiRenderTest.Presentation*"
       SOURCES tests/scene3d_rhi_render_test.cpp
       LIBS pj_scene3d_widgets pj_resources Qt6::Test
-      PREFIX "scene3d_rhi_render_test.opengl."
       TIMEOUT 60
-      PROPERTIES ENVIRONMENT "PJ_GRAPHICS_API=opengl"
     )
-    gtest_discover_tests(scene3d_rhi_render_test
-      TEST_PREFIX "scene3d_rhi_render_test.vulkan."
-      DISCOVERY_MODE PRE_TEST
-      PROPERTIES TIMEOUT 60 ENVIRONMENT "PJ_GRAPHICS_API=vulkan")
-    # The presentation cases again at device-pixel ratio 2: overlay placement,
-    # picking and render_scale must hold in logical pixels.
-    gtest_discover_tests(scene3d_rhi_render_test
-      TEST_PREFIX "scene3d_rhi_render_test.opengl_dpr2."
-      TEST_FILTER "Scene3dRhiRenderTest.Presentation*"
-      DISCOVERY_MODE PRE_TEST
-      PROPERTIES TIMEOUT 60 ENVIRONMENT "PJ_GRAPHICS_API=opengl;QT_SCALE_FACTOR=2")
     # Point-pass behaviour the golden corpus does not pin (fan faces, cube LOD,
     # sphere sizing, faded-range occlusion, frustum-edge quads); same display needs.
     pj_add_test_runner(scene3d_rhi_point_test
-      MAIN gui WARNINGS
+      MAIN gui WARNINGS RHI_BACKENDS
       SOURCES tests/scene3d_rhi_point_test.cpp
       LIBS pj_scene3d_widgets pj_resources Qt6::Test
-      PREFIX "scene3d_rhi_point_test.opengl."
       TIMEOUT 60
-      PROPERTIES ENVIRONMENT "PJ_GRAPHICS_API=opengl"
     )
-    gtest_discover_tests(scene3d_rhi_point_test
-      TEST_PREFIX "scene3d_rhi_point_test.vulkan."
-      DISCOVERY_MODE PRE_TEST
-      PROPERTIES TIMEOUT 60 ENVIRONMENT "PJ_GRAPHICS_API=vulkan")
+    # The failure state and the optional-stage fallbacks, driven by the fault
+    # injection of builds with tests (PJ_RHI_TEST_HOOKS); same display needs.
+    pj_add_test_runner(scene3d_rhi_failure_test
+      MAIN gui WARNINGS RHI_BACKENDS
+      SOURCES tests/scene3d_rhi_failure_test.cpp
+      LIBS pj_scene3d_widgets pj_resources Qt6::OpenGLWidgets Qt6::Test
+      TIMEOUT 60
+    )
   endif()
   # --- end QRhi render harness --------------------------------------------
 

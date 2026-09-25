@@ -267,10 +267,11 @@ bool MarkerRhiPass::initialize(const RhiPassSetup& setup) {
   instance_layout.setAttributes({
       QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, offsetof(CubeVertex, px)),
       QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float3, offsetof(CubeVertex, nx)),
-      QRhiVertexInputAttribute(1, 2, QRhiVertexInputAttribute::Float4, 0U),
-      QRhiVertexInputAttribute(1, 3, QRhiVertexInputAttribute::Float4, 16U),
-      QRhiVertexInputAttribute(1, 4, QRhiVertexInputAttribute::Float4, 32U),
-      QRhiVertexInputAttribute(1, 5, QRhiVertexInputAttribute::Float4, 48U),
+      // mat4 rows carry their slice: D3D matches them as TEXCOORD<first>_<slice>.
+      QRhiVertexInputAttribute(1, 2, QRhiVertexInputAttribute::Float4, 0U, 0),
+      QRhiVertexInputAttribute(1, 3, QRhiVertexInputAttribute::Float4, 16U, 1),
+      QRhiVertexInputAttribute(1, 4, QRhiVertexInputAttribute::Float4, 32U, 2),
+      QRhiVertexInputAttribute(1, 5, QRhiVertexInputAttribute::Float4, 48U, 3),
       QRhiVertexInputAttribute(1, 6, QRhiVertexInputAttribute::Float4, 64U),
       QRhiVertexInputAttribute(1, 7, QRhiVertexInputAttribute::Float4, 80U),
   });
@@ -762,10 +763,11 @@ bool MarkerRhiPass::ensureShadowPipeline(
   });
   layout.setAttributes({
       QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, offsetof(CubeVertex, px)),
-      QRhiVertexInputAttribute(1, 2, QRhiVertexInputAttribute::Float4, 0U),
-      QRhiVertexInputAttribute(1, 3, QRhiVertexInputAttribute::Float4, 16U),
-      QRhiVertexInputAttribute(1, 4, QRhiVertexInputAttribute::Float4, 32U),
-      QRhiVertexInputAttribute(1, 5, QRhiVertexInputAttribute::Float4, 48U),
+      // mat4 rows carry their slice: D3D matches them as TEXCOORD<first>_<slice>.
+      QRhiVertexInputAttribute(1, 2, QRhiVertexInputAttribute::Float4, 0U, 0),
+      QRhiVertexInputAttribute(1, 3, QRhiVertexInputAttribute::Float4, 16U, 1),
+      QRhiVertexInputAttribute(1, 4, QRhiVertexInputAttribute::Float4, 32U, 2),
+      QRhiVertexInputAttribute(1, 5, QRhiVertexInputAttribute::Float4, 48U, 3),
       QRhiVertexInputAttribute(1, 7, QRhiVertexInputAttribute::Float4, offsetof(Instance, bottom_scale)),
   });
   // Same caster state as the model casters: two-sided, biased depth.

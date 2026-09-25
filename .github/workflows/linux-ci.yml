@@ -281,15 +281,30 @@ jobs:
             "-DCMAKE_PREFIX_PATH=${PWD}/.qt/${PJ_QT_VERSION}/gcc_64" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DPJ_DEBUG_INFO=split -DPJ_COMPRESS_DEBUG=ON -DPJ_BUILD_DEMOS=OFF -DPJ_SCENE3D_RHI=ON
-          cmake --build build-rhi --target pj_app scene3d_rhi_render_test scene3d_rhi_point_test pointcloud_golden_test -j"$(nproc)"
+          # pj_qrhi_tests: every QRhi display runner (RHI_BACKENDS in cmake/PjTests.cmake).
+          cmake --build build-rhi --target pj_app pj_qrhi_tests -j"$(nproc)"
 
       - name: Test the QRhi Scene3D renderer (llvmpipe + lavapipe)
         env:
           PJ_REQUIRE_GPU_TESTS: "1"
+          PJ_POINTCLOUD_GOLDEN_OUT: ${{ runner.temp }}/rhi-golden-out
+          PJ_RHI_TEST_DUMP_DIR: ${{ runner.temp }}/rhi-dump
         run: |
+          mkdir -p "${PJ_POINTCLOUD_GOLDEN_OUT}"
           # Mesa's software Vulkan driver (the manifest name carries the arch on
           # Ubuntu); the OpenGL runs use llvmpipe under xvfb.
           VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)"
           test -f "${VK_ICD_FILENAMES}"
           export VK_ICD_FILENAMES
-          xvfb-run -a ctest --test-dir build-rhi -R 'scene3d_rhi|pointcloud_golden_test' --output-on-failure --timeout 120
+          # -L qrhi: every backend pass of the QRhi display runners.
+          xvfb-run -a ctest --test-dir build-rhi -L qrhi --output-on-failure --timeout 120
+
+      - name: Upload QRhi failure images
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qrhi-linux-failures
+          path: |
+            ${{ runner.temp }}/rhi-golden-out
+            ${{ runner.temp }}/rhi-dump
+          if-no-files-found: ignore

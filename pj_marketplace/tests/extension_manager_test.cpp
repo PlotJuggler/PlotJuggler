@@ -451,7 +451,9 @@ class ExtensionManagerTest : public ::testing::Test {
     QDir(transactionStageDirFor(ext_dir_.path())).removeRecursively();
   }
 
-  QTemporaryDir ext_dir_;
+  // Under the canonical temp root: the manager keeps canonical store paths, and
+  // the macOS temp dir sits behind a symlink (/var -> /private/var).
+  QTemporaryDir ext_dir_{QDir(QDir::tempPath()).canonicalPath() + u"/pj_ext_XXXXXX"_s};
   QTemporaryDir pending_dir_;
   LocalHttpServer server_;
   DownloadManager* downloader_ = nullptr;
@@ -2123,9 +2125,9 @@ TEST(PlatformDetectionTest, CurrentPlatformHasExpectedFormat) {
 // On the primary Linux x86_64 build/CI host, the reported platform must match the
 // key used in the registry fixture so that install() can resolve the download artifact.
 TEST(PlatformDetectionTest, LinuxX86PlatformMatchesRegistryKey) {
-  if (PlatformUtils::isWindows()) {
-    GTEST_SKIP() << "test pins the Linux x86_64 platform key";
-  }
+#if !defined(Q_OS_LINUX) || !defined(Q_PROCESSOR_X86_64)
+  GTEST_SKIP() << "test pins the Linux x86_64 platform key";
+#endif
   EXPECT_EQ(PlatformUtils::currentPlatform(), "linux-x86_64");
 }
 
@@ -2141,6 +2143,9 @@ TEST(PlatformDetectionTest, CurrentPlatformResolvesRegistryArtifact) {
       "sha256:0000000000000000000000000000000000000000000000000000000000000000"};
   ext.platforms["windows-x86_64"] = {
       "https://example.com/test/extension-windows-x64.zip",
+      "sha256:0000000000000000000000000000000000000000000000000000000000000000"};
+  ext.platforms["macos-arm64"] = {
+      "https://example.com/test/extension-macos-arm64.zip",
       "sha256:0000000000000000000000000000000000000000000000000000000000000000"};
 
   EXPECT_TRUE(ext.platforms.contains(PlatformUtils::currentPlatform()))

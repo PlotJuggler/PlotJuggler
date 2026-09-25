@@ -10,7 +10,7 @@
 // blobs in the ObjectStore, addTopic, the layer's <pointcloud> XML payload,
 // onTrackerTime, sceneView()->camera() and grabPresentedFrame(). In the GL build
 // it is a regression test; in the QRhi build it holds that renderer to the same
-// goldens on each backend (PJ_GRAPHICS_API=opengl|vulkan).
+// goldens on each backend (PJ_GRAPHICS_API=opengl|vulkan|d3d11|metal).
 //
 // PJ_UPDATE_POINTCLOUD_GOLDENS=1 (GL build only) rewrites the goldens instead of
 // comparing. Failing cases write <case>_actual.png / <case>_diff.png into
@@ -389,11 +389,11 @@ std::vector<Scene> corpus() {
 // The QRhi build counts a pixel as differing only when no golden pixel in its
 // 3x3 neighbourhood is within `channel` of it: edge and sub-pixel coverage that
 // moved by less than a pixel is rasterization, not rendering. It matters for the
-// QRhi Vulkan backend on lavapipe, whose framebuffer is y-down where llvmpipe's
-// GL target is y-up: the same 4x MSAA pattern lands mirrored on the scene, so
-// diagonal silhouettes, cube edge bands and 1 px points resolve differently (up
-// to 8% of pixels per-pixel, at most 2% with this rule), while every surface
-// interior is identical.
+// QRhi backends whose framebuffer is y-down (Vulkan on lavapipe, D3D11, Metal)
+// where llvmpipe's GL target is y-up: the same 4x MSAA pattern lands mirrored on
+// the scene, so diagonal silhouettes, cube edge bands and 1 px points resolve
+// differently (up to 8% of pixels per-pixel on lavapipe, at most 2% with this
+// rule), while every surface interior is identical.
 #ifdef PJ_SCENE3D_RHI
 constexpr bool kNeighbourhoodRule = true;
 #else
@@ -413,11 +413,32 @@ struct Tolerance {
   // it by <= 9 (tiny spheres under NVIDIA MSAA); a swapped colormap, shape or
   // colour mode moves it by 17-229.
   int mean_color = 12;
+  // The differing fraction of the foreground (non-background in the golden or
+  // the actual image), so a small cloud cannot hide behind the frame's empty
+  // pixels: the frame-relative limit above lets a scene whose foreground is 10%
+  // of the frame differ on 30% of it. It targets colour inside surfaces, so it
+  // always uses the 3x3 neighbourhood rule, in the GL build too: sphere impostor
+  // silhouettes move by a pixel between Mesa releases (13-17% of the foreground
+  // per pixel on CI's Mesa 23 vs the Mesa 26 goldens, <= 3% with the rule), and
+  // silhouettes are what the frame-relative checks above bound. Worst legitimate
+  // value 0.086 (`field_viridis_cubes` on Vulkan/lavapipe). A 5% shift of a
+  // colormap range fails it (0.21-0.27) while every frame-relative check still passes.
+  double max_fg_diff_frac = 0.12;
+  // Pixels farther than kBackgroundMargin from the golden's foreground that are
+  // not background: stray geometry. An absolute count, not a fraction; 0 on
+  // every scene measured.
+  int max_background_strays = 4;
 };
+
+// Distance (pixels) from the golden's foreground within which the background
+// check leaves a pixel alone: silhouettes and MSAA edges move by less.
+constexpr int kBackgroundMargin = 2;
 
 struct Stats {
   double diff_frac = 0.0;        // differing pixels (neighbourhood rule in the QRhi build)
   double plain_diff_frac = 0.0;  // pixels off their own golden pixel, for information
+  double fg_diff_frac = 0.0;     // neighbourhood-rule differing pixels among the foreground of either image
+  int background_strays = 0;     // non-background pixels far from the golden's foreground
   double coverage_ratio = 1.0;   // actual / golden non-background pixel counts
   int mean_color_delta = 0;      // max per-channel |mean(actual) - mean(golden)| over covered pixels
   QImage diff;
@@ -428,9 +449,22 @@ Stats compare(const QImage& actual, const QImage& golden, const Tolerance& tol) 
   stats.diff = QImage(golden.size(), QImage::Format_RGB32);
   // Every scene leaves the top-left corner empty, so it is the backdrop colour.
   const QRgb background = golden.pixel(0, 0);
+  const auto covered = [background](QRgb pixel) { return maxChannelDelta(pixel, background) > 12; };
+  const auto near_golden_cover = [&](int x, int y) {
+    for (int dy = -kBackgroundMargin; dy <= kBackgroundMargin; ++dy) {
+      for (int dx = -kBackgroundMargin; dx <= kBackgroundMargin; ++dx) {
+        if (golden.valid(x + dx, y + dy) && covered(golden.pixel(x + dx, y + dy))) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
   long compared = 0;
   long differing = 0;
   long plain_differing = 0;
+  long foreground = 0;
+  long fg_differing = 0;
   long golden_cover = 0;
   long actual_cover = 0;
   std::array<double, 3> golden_sum{};
@@ -445,33 +479,40 @@ Stats compare(const QImage& actual, const QImage& golden, const Tolerance& tol) 
       const QRgb a = actual.pixel(x, y);
       const QRgb g = golden.pixel(x, y);
       ++compared;
-      if (maxChannelDelta(g, background) > 12) {
+      if (covered(g)) {
         ++golden_cover;
         accumulate(golden_sum, g);
       }
-      if (maxChannelDelta(a, background) > 12) {
+      if (covered(a)) {
         ++actual_cover;
         accumulate(actual_sum, a);
+        if (!near_golden_cover(x, y)) {
+          ++stats.background_strays;
+        }
       }
       const bool plain_differs = maxChannelDelta(a, g) > tol.channel;
-      bool differs = plain_differs;
-      if constexpr (kNeighbourhoodRule) {
-        for (int dy = -1; differs && dy <= 1; ++dy) {
-          for (int dx = -1; differs && dx <= 1; ++dx) {
-            if (golden.valid(x + dx, y + dy)) {
-              differs = maxChannelDelta(a, golden.pixel(x + dx, y + dy)) > tol.channel;
-            }
+      bool neighbourhood_differs = plain_differs;
+      for (int dy = -1; neighbourhood_differs && dy <= 1; ++dy) {
+        for (int dx = -1; neighbourhood_differs && dx <= 1; ++dx) {
+          if (golden.valid(x + dx, y + dy)) {
+            neighbourhood_differs = maxChannelDelta(a, golden.pixel(x + dx, y + dy)) > tol.channel;
           }
         }
       }
+      const bool differs = kNeighbourhoodRule ? neighbourhood_differs : plain_differs;
       plain_differing += plain_differs ? 1 : 0;
       differing += differs ? 1 : 0;
+      if (covered(g) || covered(a)) {
+        ++foreground;
+        fg_differing += neighbourhood_differs ? 1 : 0;
+      }
       const int shade = qGray(g) / 3;
       stats.diff.setPixel(x, y, differs ? qRgb(255, 0, 255) : qRgb(shade, shade, shade));
     }
   }
   stats.diff_frac = compared > 0 ? static_cast<double>(differing) / static_cast<double>(compared) : 0.0;
   stats.plain_diff_frac = compared > 0 ? static_cast<double>(plain_differing) / static_cast<double>(compared) : 0.0;
+  stats.fg_diff_frac = foreground > 0 ? static_cast<double>(fg_differing) / static_cast<double>(foreground) : 0.0;
   stats.coverage_ratio = golden_cover > 0 ? static_cast<double>(actual_cover) / static_cast<double>(golden_cover)
                                           : (actual_cover == 0 ? 1.0 : 0.0);
   if (golden_cover > 0 && actual_cover > 0) {
@@ -581,14 +622,18 @@ TEST_P(PointCloudGolden, MatchesGolden) {
   const Tolerance tol;
   const Stats stats = compare(actual, golden, tol);
   std::printf(
-      "[golden] %-34s diff %.4f (per-pixel %.4f)  coverage %.4f  mean colour %d\n", scene.name.c_str(), stats.diff_frac,
-      stats.plain_diff_frac, stats.coverage_ratio, stats.mean_color_delta);
+      "[golden] %-34s diff %.4f (per-pixel %.4f)  coverage %.4f  mean colour %d  fg-diff %.4f (<= %.2f)  strays %d "
+      "(<= %d)\n",
+      scene.name.c_str(), stats.diff_frac, stats.plain_diff_frac, stats.coverage_ratio, stats.mean_color_delta,
+      stats.fg_diff_frac, tol.max_fg_diff_frac, stats.background_strays, tol.max_background_strays);
   const bool check_colour = scene.check != Scene::Check::kCoverage;
   const bool check_pixels = scene.check == Scene::Check::kFull;
   const bool coverage_ok = std::abs(stats.coverage_ratio - 1.0) <= tol.coverage &&
                            (!check_colour || stats.mean_color_delta <= tol.mean_color);
   const bool pixels_ok = !check_pixels || (stats.diff_frac <= tol.max_diff_frac &&
-                                           (!kNeighbourhoodRule || stats.plain_diff_frac <= tol.max_plain_diff_frac));
+                                           (!kNeighbourhoodRule || stats.plain_diff_frac <= tol.max_plain_diff_frac) &&
+                                           stats.fg_diff_frac <= tol.max_fg_diff_frac &&
+                                           stats.background_strays <= tol.max_background_strays);
   if (!coverage_ok || !pixels_ok || PJ::sdk::getEnv("PJ_POINTCLOUD_GOLDEN_DUMP_ALL") == "1") {
     actual.save(outPath(scene.name, "_actual.png"));
     stats.diff.save(outPath(scene.name, "_diff.png"));
@@ -603,6 +648,10 @@ TEST_P(PointCloudGolden, MatchesGolden) {
       EXPECT_LE(stats.plain_diff_frac, tol.max_plain_diff_frac)
           << "per-pixel fraction off by more than " << tol.channel << " (no neighbourhood allowance)";
     }
+    EXPECT_LE(stats.fg_diff_frac, tol.max_fg_diff_frac)
+        << "fraction of the foreground off by more than " << tol.channel;
+    EXPECT_LE(stats.background_strays, tol.max_background_strays)
+        << "non-background pixels more than " << kBackgroundMargin << " px from the golden's foreground";
   }
 }
 

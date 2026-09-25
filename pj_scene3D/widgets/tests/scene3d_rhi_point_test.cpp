@@ -35,9 +35,10 @@
 
 #include "../rhi/passes/point_rhi_pass.h"
 #include "pj_scene3d_widgets/point_renderable.h"
+#include "pj_widgets/GraphicsApi.h"
 #include "scene3d_render_test_support.h"
-// Qt declares the Vulkan QRhi types only where the Vulkan headers exist, whatever
-// QT_CONFIG(vulkan) says (the renderer guards the same way).
+// Qt declares the Vulkan QRhi types only where the Vulkan headers exist (not in a
+// Windows build without the Vulkan SDK), whatever QT_CONFIG(vulkan) says.
 #if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
 #define PJ_TEST_HAS_VULKAN 1
 #include <QVulkanInstance>
@@ -251,8 +252,11 @@ TEST_F(Scene3dRhiPointTest, SubPixelCubeCloudBecomesColouredSprites) {
   VIEW_OR_SKIP(view, scene.frame(frontCamera(14.0F, 0.0F)));
   const QImage far_image = grab(*view);
   EXPECT_EQ(view->lastCubeSpriteLayerCountForTest(), 1) << "a sub-pixel cloud must draw as LOD sprites";
-  // OpenGL and Vulkan have QRhi::VertexShaderPointSize: small sprites use the point list.
-  EXPECT_EQ(view->lastPointListLayerCountForTest(), 1);
+  // Small sprites use the point list where the backend has QRhi::VertexShaderPointSize
+  // (every backend but Direct3D), and stay quads elsewhere.
+  const auto api = PJ::preferredGraphicsApi();
+  const bool point_size = api != QRhiWidget::Api::Direct3D11 && api != QRhiWidget::Api::Direct3D12;
+  EXPECT_EQ(view->lastPointListLayerCountForTest(), point_size ? 1 : 0);
   const QImage empty = emptyScene(scene, *view);
   auto pixels = covered(far_image, empty);
   EXPECT_GT(pixels.size(), lattice.size() * 3 / 4) << "sprites lost: fewer lit pixels than cubes";
@@ -339,15 +343,15 @@ TEST_F(Scene3dRhiPointTest, FadedOutOfRangePointsNeitherOccludeNorVanish) {
     const QImage image = grab(*view);
     return image.isNull() ? -1 : qGray(image.pixel(image.width() / 2, image.height() / 2));
   };
-  const glm::vec3 near{0.0F, -1.0F, 0.0F};
-  const glm::vec3 far{0.0F, 1.0F, 0.0F};
-  const int near_white_alone = centre_gray({near}, {5.0F}, u"0.5"_s);
+  const glm::vec3 near_point{0.0F, -1.0F, 0.0F};
+  const glm::vec3 far_point{0.0F, 1.0F, 0.0F};
+  const int near_white_alone = centre_gray({near_point}, {5.0F}, u"0.5"_s);
   if (near_white_alone < 0) {
     PJ_SKIP_WITHOUT_GPU("the QRhi view presented no frame");
   }
-  const int over_in_range_black = centre_gray({near, far}, {5.0F, 0.0F}, u"0.5"_s);
-  const int over_faded_black = centre_gray({near, far}, {5.0F, -5.0F}, u"0.5"_s);
-  const int culled = centre_gray({near, far}, {5.0F, 0.0F}, u"0"_s);
+  const int over_in_range_black = centre_gray({near_point, far_point}, {5.0F, 0.0F}, u"0.5"_s);
+  const int over_faded_black = centre_gray({near_point, far_point}, {5.0F, -5.0F}, u"0.5"_s);
+  const int culled = centre_gray({near_point, far_point}, {5.0F, 0.0F}, u"0"_s);
   // On the light backdrop the faded white point alone is invisible (255).
   EXPECT_LT(over_in_range_black, near_white_alone - 20)
       << "the in-range black point does not show through the faded one";
@@ -557,25 +561,51 @@ class BoundlessCloud : public pj::scene3d::PointRenderable {
   std::string frame_ = "map";
 };
 
-// An offscreen QRhi on the backend PJ_GRAPHICS_API names, with a small target
-// the point pass can build its pipelines against.
+// An offscreen QRhi on the backend the widgets use (PJ_GRAPHICS_API, else the
+// platform default), with a small target the point pass can build its pipelines
+// against.
 class OffscreenRhi {
  public:
   OffscreenRhi() {
-    if (qEnvironmentVariable("PJ_GRAPHICS_API").compare(u"vulkan"_s, Qt::CaseInsensitive) == 0) {
+    // The same adapter preference the widgets' backing store applies (Qt Quick's variable).
+    const QRhi::Flags flags = qEnvironmentVariableIntValue("QSG_RHI_PREFER_SOFTWARE_RENDERER") != 0
+                                  ? QRhi::Flags(QRhi::PreferSoftwareRenderer)
+                                  : QRhi::Flags();
+    switch (PJ::preferredGraphicsApi()) {
+      case QRhiWidget::Api::Vulkan: {
 #if PJ_TEST_HAS_VULKAN
-      vulkan_.setExtensions(QRhiVulkanInitParams::preferredInstanceExtensions());
-      if (vulkan_.create()) {
-        QRhiVulkanInitParams params;
-        params.inst = &vulkan_;
-        rhi_.reset(QRhi::create(QRhi::Vulkan, &params));
-      }
+        vulkan_.setExtensions(QRhiVulkanInitParams::preferredInstanceExtensions());
+        if (vulkan_.create()) {
+          QRhiVulkanInitParams params;
+          params.inst = &vulkan_;
+          rhi_.reset(QRhi::create(QRhi::Vulkan, &params, flags));
+        }
 #endif
-    } else {
-      surface_.reset(QRhiGles2InitParams::newFallbackSurface());
-      QRhiGles2InitParams params;
-      params.fallbackSurface = surface_.get();
-      rhi_.reset(QRhi::create(QRhi::OpenGLES2, &params));
+        break;
+      }
+      case QRhiWidget::Api::Direct3D11: {
+#ifdef Q_OS_WIN
+        QRhiD3D11InitParams params;
+        rhi_.reset(QRhi::create(QRhi::D3D11, &params, flags));
+#endif
+        break;
+      }
+      case QRhiWidget::Api::Metal: {
+#if QT_CONFIG(metal)
+        QRhiMetalInitParams params;
+        rhi_.reset(QRhi::create(QRhi::Metal, &params, flags));
+#endif
+        break;
+      }
+      case QRhiWidget::Api::OpenGL: {
+        surface_.reset(QRhiGles2InitParams::newFallbackSurface());
+        QRhiGles2InitParams params;
+        params.fallbackSurface = surface_.get();
+        rhi_.reset(QRhi::create(QRhi::OpenGLES2, &params, flags));
+        break;
+      }
+      default:
+        break;  // no QRhi: the test skips
     }
     if (rhi_ == nullptr) {
       return;

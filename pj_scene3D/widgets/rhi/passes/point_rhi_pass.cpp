@@ -343,12 +343,6 @@ bool PointRhiPass::submit(
     QRhiCommandBuffer* command_buffer, const Draw& draw, ScenePass pass, const ScenePipelineRegistry& registry,
     const QRhiViewport& viewport) const {
   const bool opaque = draw.draw_class == DrawClass::kOpaque;
-  if (!opaque && pass == ScenePass::kDepthReplay) {
-    // The faded half writes no depth, so it leaves no coverage either: like the GL
-    // renderer, whose composite finds the background by depth, the pixels it tints
-    // over the background stay ungraded background.
-    return true;
-  }
   const bool fan = draw.geometry == Geometry::kFan;
   QRhiGraphicsPipeline* pipeline =
       registry.resolve(pipelines_[static_cast<std::size_t>(draw.geometry)][opaque ? 0 : 1], pass);

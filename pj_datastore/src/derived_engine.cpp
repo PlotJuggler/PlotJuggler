@@ -31,29 +31,6 @@ namespace PJ {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// Walk a TypeTreeNode DFS to find the first primitive leaf's PrimitiveType.
-static std::optional<PJ::PrimitiveType> findFirstLeaf(const PJ::TypeTreeNode& node) {
-  switch (node.kind) {
-    case PJ::TypeKind::kPrimitive:
-      return node.primitive_type;
-    case PJ::TypeKind::kEnum:
-      return node.primitive_type;  // set by make_enum via primitive_type field
-    case PJ::TypeKind::kStruct:
-      for (const auto& child : node.children) {
-        if (auto r = findFirstLeaf(*child)) {
-          return r;
-        }
-      }
-      return std::nullopt;
-    case PJ::TypeKind::kArray:
-      if (node.element_type) {
-        return findFirstLeaf(*node.element_type);
-      }
-      return std::nullopt;
-  }
-  return std::nullopt;
-}
-
 // Return the PrimitiveType of the flat leaf column at index `target` (0-based).
 // Arrays are expanded element-wise exactly like count_leaf_fields_impl / the
 // chunk column layout, so `target` matches the engine's column index. `seen`

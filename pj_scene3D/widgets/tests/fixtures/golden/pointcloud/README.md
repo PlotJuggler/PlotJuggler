@@ -4,8 +4,9 @@ Reference renders for `pointcloud_golden_test`
 (`pj_scene3D/widgets/tests/pointcloud_golden_test.cpp`), captured from the
 **OpenGL** Scene3D renderer on Mesa llvmpipe (the CI renderer). They guard
 point-cloud rendering in the GL build and hold the QRhi renderer to the same
-images on OpenGL and Vulkan (`docs/QRHI_MIGRATION.md`, P3; ctest runs the QRhi
-build's cases once per backend, `pointcloud_golden_test.opengl.*` / `.vulkan.*`).
+images on every backend of the platform (`docs/QRHI_MIGRATION.md`; ctest runs
+the QRhi build's cases once per backend, `pointcloud_golden_test.<backend>.*`,
+see `RHI_BACKENDS` in `cmake/PjTests.cmake`).
 
 Every scene: 256x256 view at DPR 1, light theme (white application palette),
 grid/TF axes/TF lines off, default look (tonemap, SSAO, EDL, MSAA), orbit camera
@@ -60,12 +61,39 @@ build also fails a scene when more than max(3 x 3%, 10%) = 10% of its pixels
 are off their own golden pixel (the log's "per-pixel" value); the worst
 legitimate value measured is 8% (Vulkan on lavapipe, `shape_cubes_subpixel`).
 
+Every fraction above is relative to the whole 256x256 frame, where a small
+cloud is a small part: a scene whose foreground covers 10% of the frame could
+differ on 30% of it and still pass. So both builds add two foreground checks to
+the full (per-pixel) scenes:
+
+- **Foreground diff**: the differing pixels as a fraction of the foreground,
+  the pixels that are non-background (off the backdrop by more than 12) in the
+  golden or in the actual image. Limit 0.12. It always counts with the 3x3
+  neighbourhood rule, in the GL build too, because its job is colour inside
+  surfaces, not silhouettes: the frame-relative checks above already bound
+  silhouettes (per pixel in the GL build), and sphere impostor silhouettes move
+  by a pixel between Mesa releases. CI's Mesa 23 against the Mesa 26 goldens
+  differs per pixel on 13% (`shape_spheres_large`) and 17% (`field_axis_z`) of
+  the foreground, almost all of it on sphere rims and off by more than 128, so
+  no colour tolerance separates it from a real change; with the rule it is 3%.
+  Measured worst with the rule: 0.028 on Mesa 23 (GL build), 0.061 on QRhi
+  OpenGL (`shape_cubes_subpixel`), 0.086 on Vulkan/lavapipe and D3D11/WARP
+  (`field_viridis_cubes`). A 5% shift of `field_outside_range_hidden`'s colormap
+  range (`range_min` 0.28 or `range_max` 0.72) scores 0.21-0.23 in the GL build
+  and 0.24-0.27 in the QRhi build while every frame-relative check passes.
+- **Background strays**: non-background pixels in the actual image farther than
+  2 px from the golden's foreground. Limit 4 pixels, an absolute count; 0 on
+  every scene measured.
+
+The foreground fraction of each scene is about 10-24% of the frame (the corner
+gizmo included). The `[golden]` log line prints both values next to their limits.
+
 Weaker checks, where pixels depend on the driver rather than on our rendering:
 `field_turbo_spheres` and `large_1m_points`: coverage and mean colour. Sphere
 impostor shading follows the sprite's rounded point size, which differs between
 Mesa releases (CI's 23.x differs from 26.x on ~10% of pixels).
 
-On failure the test writes `<scene>_actual.png` and `<scene>_diff.png`
+On failure (or with `PJ_POINTCLOUD_GOLDEN_DUMP_ALL=1`) the test writes `<scene>_actual.png` and `<scene>_diff.png`
 (magenta = differing) into `$PJ_POINTCLOUD_GOLDEN_OUT`, default the working
 directory.
 

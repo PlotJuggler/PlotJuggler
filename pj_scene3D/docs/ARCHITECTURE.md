@@ -222,6 +222,14 @@ lists are reused across frames.
 (`setCloneTargets`), and `resolve(direct, pass)` returns the direct pipeline or
 creates its HDR-colour or depth-replay clone on first use. The clones copy every
 state of the source, so HDR and depth replay always match the direct pipeline.
+One exception, decided centrally in `resolve()`: the depth replay never draws
+with a source pipeline that writes no depth (`!hasDepthWrite()`: translucent
+markers and models, occupancy, translucent grid maps, faded points) and returns
+nullptr for it, which every family's `submit` treats as "skip". The GL
+composite finds the background by depth, so those draws leave no coverage there
+either: the pixels they tint over the background stay ungraded background and
+SSAO/EDL never see them. `lastSubmittedLayerIdsForTest()` counts the colour
+pass only.
 The TF connection lines keep their own direct pipeline with the annotation
 alpha blend; only its HDR clone is bound (the direct pass and the depth replay
 draw them with the grid-line pipeline). Direct pipelines are built for the
@@ -229,6 +237,43 @@ widget's render target; `setSampleCount()` or `setColorBufferFormat()` recreate
 that target on the same QRhi, so `initialize()` compares its descriptor
 (address and serialized format) and sample count with those it built for and
 rebuilds every resource, overlays and the HDR present included, when they differ.
+
+**Failure state and fallbacks.** No draw may reference a resource whose
+`create()` failed: D3D11 crashed in `beginPass` on the Windows WARP lane when a
+failed `initialize()` left `render()` uploading into released buffers. Every
+graphics pipeline is created through `createGraphicsPipeline()`
+(`rhi_scene_pass.h`), and every `create()` in `widgets/rhi/` falls in one of
+four classes:
+
+| Class | Resources | On failure |
+|---|---|---|
+| Base | the view's four uniform buffers, `RhiSharedGeometry`, and each scene family's `initialize()`: pipelines, layout SRBs, samplers, the voxel LUT, occupancy quad and marker unit meshes | Failure state (below) |
+| Optional stage | HDR chain (targets, samplers, present SRB and pipeline) and the pipelines' HDR/depth-replay clones; SSAO; EDL mask target and pipelines; shadow target, bindings, caster and receiver pipelines, material rebinds; `OverlayRhiPass` (corner gizmo, HUD, hover label) | The stage drops and the view renders without it; one warning (logged when the reason changes, shown in the dock label; shadow errors on the caster rows) |
+| Silent optional | the point-list pipelines, the GPU AABB reducer (compute pipeline, per-request buffers and SRBs) | Same pixels another way: quads, CPU bounds |
+| Per layer / per frame | per-layer uniforms, SRBs, textures, instance and stream buffers of every family; overlay image textures | That layer's (or image's) draw is skipped this frame; occupancy, voxel, grid-map and model rows note a warning |
+
+The failure state: when `createBaseResources()` fails, `initialize()` releases
+everything, and `render()` (which checks `baseResourcesReady()` first) only
+clears the target to the backdrop. `setRenderFailure()` names the part that
+failed ("its trail pipelines could not be created"), puts it first in
+`renderingWarningChanged()` and emits `QRhiWidget::renderFailed()` once per
+episode. QRhiWidget runs `initialize()` again for a new QRhi (reparent, top-level
+change) or a new output size, format or sample count; each retries the build,
+and success clears the warning. Overlays are retried the same way. QRhiWidget's
+own `renderFailed()` (no QRhi for the window, e.g. another widget pinned it to
+a different API) sets a "no graphics device" failure the same way, without a
+second emission. A clone that
+`ScenePipelineRegistry::resolve()` cannot create skips its draw and sets
+`cloneFailed()`; the next `render()` drops the HDR chain for that output size
+(`rejectHdr`), so the frame after draws directly with every direct pipeline.
+Builds with tests (`PJ_RHI_TEST_HOOKS`, set when `PJ_BUILD_TESTS`) inject
+failures: while `PJ_SCENE3D_TEST_FAIL_SHADER` holds a suffix of a loaded shader
+path, every pipeline using that shader fails to create
+(`scene3d_rhi_failure_test`, on each backend of the platform). They also keep
+the `pjTestRhiAdoptions` / `pjTestRhiReleases` / `pjTestRhiStale` counters
+(`PJ::noteRhiAdoption()`, `pj_widgets/GraphicsApi.h`) that `rhi_mixed_dock_test`
+(pj_app) checks across dock moves. The backend line is logged once per QRhi, not
+on every retry of a failed view.
 
 **Opaque/translucent submission.** Each scene pass draws the prelude
 (`GridRhiPass`: grid cells as data — the shadow-receiving pipeline when shadows
@@ -945,9 +990,9 @@ appearance GLSL (`shaders/cube/*.glslinc`, including the colour/cull helpers of
   about twice as slow for many small points (QRHI_MIGRATION.md → P3 stream A).
 - **Faded out-of-range points** (field colour, 0 < opacity < 1) draw in two prepared
   draws: the in-range half opaque, then the faded half as a translucent draw
-  (`DrawClass::kTranslucent`) without depth writes. The faded half skips the depth
-  replay: the GL composite finds the background by depth, so pixels it tints over the
-  background stay ungraded there, and leaving no coverage in the replay does the same.
+  (`DrawClass::kTranslucent`) without depth writes. Like every draw that writes no
+  depth, the faded half skips the depth replay (the registry rule under "Pipeline
+  registry"), so pixels it tints over the background stay ungraded, as in GL.
   Each layer's uniform buffer holds both halves' uniforms (two SRBs at two offsets).
 - **GPU bounds** (`point_aabb_reducer.{h,cpp}`, `point_aabb.comp`): a layer that
   reports no CPU bounds gets them from a compute reduction of its uploaded instance
@@ -1115,9 +1160,17 @@ volumetric data.
   same `gl_InstanceID`/`texelFetch` predicate as native. Grid origin, fixed-frame
   TF, and camera-relative conversion compose in double precision before upload.
   Browser-only caps are 4 Mi voxels and 32 MiB wire bytes per layer plus 8 Mi
-  voxels per view. Allocation also checks the live WebGL
-  `GL_MAX_3D_TEXTURE_SIZE`; the retained 2026-07-16 Chromium/Firefox/WebKit
-  matrix measured 2,048 on all three engines. Rejected layers warn visibly and
+  voxels per view. Allocation also checks the backend's per-dimension 3D texture
+  limit (QRhi reports none), queried once per QRhi by `max3dTextureSize()`:
+  OpenGL/WebGL `GL_MAX_3D_TEXTURE_SIZE`, Vulkan `maxImageDimension3D`, D3D11 by
+  the device's feature level (`d3d11Max3dTextureSize()` in `rhi_conventions.h`:
+  2048 from 10_0, 256 on 9_x), D3D12 and Metal the documented 2048
+  (feature level 11_0 minimum; every Apple GPU family). A backend that cannot be
+  asked (Vulkan in a build without `<vulkan/vulkan.h>`, which CMake warns about;
+  OpenGL without a current context) gets `kGuaranteedMax3dTextureSize`, 256, the
+  Vulkan / GL 3.3 / GLES 3.0 floor, logged once, instead of refusing every voxel
+  grid. The retained 2026-07-16
+  Chromium/Firefox/WebKit matrix measured 2,048 on all three engines. Rejected layers warn visibly and
   release retained CPU/QRhi volume state (per-layer/per-view caps apply to the
   RHI build only). The browser direct-sRGB target omits the native HDR composite,
   but field, predicate, color, opacity, geometry, and XML semantics are preserved.
@@ -1251,8 +1304,9 @@ geometric two-sided test (the normal faces the eye) instead of
   as it lands against `kSceneLimits`' retained-byte budgets (per mesh, per
   layer), and a source switch (or, for a topic-backed robot, a dataset
   replacement) bumps a generation that drops stale completions. SceneEntities
-  keeps a superseded import or fetch counted until it settles, so rapid
-  per-entity source replacement never runs more than the bound; `MeshImport::take()` copies, since `MeshLoader`
+  and the robot layer keep a superseded import counted until its worker finishes
+  (the robot keys imports by generation + path and drops the result), so rapid
+  source replacement never runs more than the bound; `MeshImport::take()` copies, since `MeshLoader`
   shares one cached future per path. assimp covers STL/DAE/OBJ/glTF.
   `MeshData` carries UV0 + tangents (`aiProcess_CalcTangentSpace`) and a
   per-`SubMesh` `Material` (glTF 2.0 metallic-roughness, read via assimp's

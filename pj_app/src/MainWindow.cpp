@@ -319,7 +319,7 @@ constexpr int kTrackerBroadcastIntervalMs = 33;
 // finish inside this window never flash it. WASM shortens this for deterministic
 // cancellation fixtures (PJ_WASM_ENABLE_INGRESS_PROBE below).
 constexpr int kIngestStripShowDelayMs = 500;
-constexpr int kIngestStripShowDelayWasmMs = 50;
+[[maybe_unused]] constexpr int kIngestStripShowDelayWasmMs = 50;
 // Linger after the last load/import drains before the strip hides.
 constexpr int kIngestStripHideLingerMs = 1000;
 // Progress-bar resolution: byte counts exceed QProgressBar's int range, so the

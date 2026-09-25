@@ -117,10 +117,11 @@ bool ModelRhiPass::initialize(const RhiPassSetup& setup, QRhiBuffer* lighting_un
       QRhiVertexInputAttribute(0, 2, QRhiVertexInputAttribute::Float4, offsetof(pj::scene3d::Vertex, color)),
       QRhiVertexInputAttribute(0, 3, QRhiVertexInputAttribute::Float2, offsetof(pj::scene3d::Vertex, uv)),
       QRhiVertexInputAttribute(0, 4, QRhiVertexInputAttribute::Float4, offsetof(pj::scene3d::Vertex, tangent)),
-      QRhiVertexInputAttribute(1, 5, QRhiVertexInputAttribute::Float4, 0U),
-      QRhiVertexInputAttribute(1, 6, QRhiVertexInputAttribute::Float4, 16U),
-      QRhiVertexInputAttribute(1, 7, QRhiVertexInputAttribute::Float4, 32U),
-      QRhiVertexInputAttribute(1, 8, QRhiVertexInputAttribute::Float4, 48U),
+      // mat4 rows carry their slice: D3D matches them as TEXCOORD<first>_<slice>.
+      QRhiVertexInputAttribute(1, 5, QRhiVertexInputAttribute::Float4, 0U, 0),
+      QRhiVertexInputAttribute(1, 6, QRhiVertexInputAttribute::Float4, 16U, 1),
+      QRhiVertexInputAttribute(1, 7, QRhiVertexInputAttribute::Float4, 32U, 2),
+      QRhiVertexInputAttribute(1, 8, QRhiVertexInputAttribute::Float4, 48U, 3),
       QRhiVertexInputAttribute(1, 9, QRhiVertexInputAttribute::Float4, 64U),
       QRhiVertexInputAttribute(1, 10, QRhiVertexInputAttribute::Float4, 80U),
       QRhiVertexInputAttribute(1, 11, QRhiVertexInputAttribute::Float4, 96U),
@@ -488,10 +489,11 @@ bool ModelRhiPass::ensureShadowPipeline(
   });
   layout.setAttributes({
       QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, offsetof(pj::scene3d::Vertex, position)),
-      QRhiVertexInputAttribute(1, 5, QRhiVertexInputAttribute::Float4, 0U),
-      QRhiVertexInputAttribute(1, 6, QRhiVertexInputAttribute::Float4, 16U),
-      QRhiVertexInputAttribute(1, 7, QRhiVertexInputAttribute::Float4, 32U),
-      QRhiVertexInputAttribute(1, 8, QRhiVertexInputAttribute::Float4, 48U),
+      // mat4 rows carry their slice: D3D matches them as TEXCOORD<first>_<slice>.
+      QRhiVertexInputAttribute(1, 5, QRhiVertexInputAttribute::Float4, 0U, 0),
+      QRhiVertexInputAttribute(1, 6, QRhiVertexInputAttribute::Float4, 16U, 1),
+      QRhiVertexInputAttribute(1, 7, QRhiVertexInputAttribute::Float4, 32U, 2),
+      QRhiVertexInputAttribute(1, 8, QRhiVertexInputAttribute::Float4, 48U, 3),
   });
   shadow_pipeline_ = createScenePipeline(
       {rhi, render_pass, 1}, {

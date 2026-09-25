@@ -38,9 +38,8 @@ if(EMSCRIPTEN)
       scene_text.vert scene_text.frag
       yuv_to_rgb.vert yuv_to_rgb.frag)
     if(_pj_scene2d_shader MATCHES "^yuv_to_rgb\\.")
-      # Preserve the image pass's existing desktop GLSL 440 target while
-      # adding only the WebGL2 dialect needed by WASM.
-      set(_pj_scene2d_glsl_targets "300 es,440")
+      # WebGL2, GLSL 330 (an OpenGL 3.3 or macOS 4.1 core context) and 440.
+      set(_pj_scene2d_glsl_targets "300 es,330,440")
     else()
       # Preserve the overlay packs' existing targets and add WebGL2.
       set(_pj_scene2d_glsl_targets "100 es,120,150,300 es")

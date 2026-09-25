@@ -83,10 +83,11 @@ qsb --glsl "100 es,120,150,300 es" --hlsl 50 --msl 12 \
   -o shaders/<overlay-name>.qsb shaders/<overlay-name>
 ```
 
-The image pass retains its existing desktop GLSL 440 target and adds WebGL2:
+The image pass bakes WebGL2, GLSL 330 (an OpenGL 3.3 context, or the macOS
+4.1 core context of the Metal-to-OpenGL fallback) and GLSL 440:
 
 ```bash
-qsb --glsl "300 es,440" --hlsl 50 --msl 12 \
+qsb --glsl "300 es,330,440" --hlsl 50 --msl 12 \
   -o shaders/yuv_to_rgb.<stage>.qsb shaders/yuv_to_rgb.<stage>
 ```
 
@@ -139,6 +140,52 @@ repeated `QRhiWidget: No QRhi` and a blank dock. The parentless-before-API-fixed
 ordering follows QRhiWidget's documented one-time API selection rule. A QRhi
 framebuffer readback proves GPU output, while a separate full-window snapshot is
 required to catch uninitialized black raster regions after the compositor switch.
+
+### Backends and reparenting
+
+The viewer requests `PJ::preferredGraphicsApi()`: OpenGL in the GL build, the
+platform's native API (D3D11, Metal, OpenGL on Linux) in the QRhi build. Its
+shaders are baked for every backend. The view matrix is built in GL clip space,
+which QRhi scissors also use; the shaders receive `clipSpaceCorrMatrix() * view`,
+so Vulkan's y-down clip space does not flip the image.
+
+Floating, redocking or switching an ADS tab moves the viewer through another
+top-level, so Qt calls `releaseResources()` and then `initialize()` on the new
+QRhi. The viewer keeps its last frame and annotations on the CPU and re-uploads
+both. `rhi_dock_lifecycle_test` (pj_app) checks orientation and overlays across
+a float, a redock and a tab switch on OpenGL and Vulkan.
+
+### GPU failure state
+
+No draw may reference a resource whose `create()` failed (D3D11 crashes in
+`beginPass` on one). When the image pipeline, its samplers or the base texture
+layer cannot be created, `initialize()` releases everything and the viewer enters
+its failed state: `render()` only clears to the background, `renderFailed()` and
+`renderingWarningChanged()` fire once, and `Scene2DDockWidget` shows the warning
+in a label below the viewer (not over it: a raster label does not composite on
+the QRhiWidget's surface). Every later `initialize()` (a new QRhi after a
+reparent, or a new render-target size) retries. Optional parts degrade instead:
+a failed overlay pipeline or buffer drops that overlay, a failed frame texture
+drops that frame, and without the blending pipeline the pixel layers draw opaque
+through the image pipeline, each with a warning logged once per QRhi. Every
+`initialize()` rebuilds whichever optional part is missing, so a dropped overlay
+or blending pipeline returns with the next new render target.
+
+A frame's texture uploads go to a resource-update batch of their own, merged into
+the frame's batch only once every texture and binding of the layer exists: a
+dropped layer deletes textures an upload already queued for it (a depth frame's
+colormap, the frame planes) references, so that batch is discarded, never
+submitted.
+
+Builds with tests (`PJ_RHI_TEST_HOOKS`, `pj_widgets/GraphicsApi.h`) give the
+viewer its fault injection: the `pjTestFailPipeline` dynamic property (`base`,
+`composite`, `points`, `thick`, `text`, or `layer srb` for a frame layer's
+bindings) fails that creation, and the `pjTestRhiAdoptions` /
+`pjTestRhiReleases` / `pjTestRhiStale` counters record which QRhi it holds
+resources on. `rhi_mixed_dock_test` (pj_app) uses both beside a working plot and
+Scene3D view, then clears the fault and checks the recovery;
+`rhi_dock_lifecycle_test` checks that a dropped overlay returns and that a depth
+frame whose bindings fail is dropped with its uploads.
 
 ### Static JPEG ABI in the monolithic WASM module
 

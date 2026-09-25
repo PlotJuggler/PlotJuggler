@@ -112,5 +112,16 @@ TEST(RhiConventionsTest, UpInViewMatchesTheBackendsRowOrder) {
   }
 }
 
+TEST(RhiConventionsTest, D3d11ThreeDTextureLimitFollowsTheFeatureLevel) {
+  EXPECT_EQ(d3d11Max3dTextureSize(0xc100), 2048);  // 12_1
+  EXPECT_EQ(d3d11Max3dTextureSize(0xb000), 2048);  // 11_0
+  EXPECT_EQ(d3d11Max3dTextureSize(0xa000), 2048);  // 10_0
+  EXPECT_EQ(d3d11Max3dTextureSize(0x9300), 256);   // 9_3
+  EXPECT_EQ(d3d11Max3dTextureSize(0x9100), 256);   // 9_1
+  EXPECT_EQ(d3d11Max3dTextureSize(0), 256);        // not reported: the floor
+  EXPECT_EQ(kDocumentedMax3dTextureSize, 2048);
+  EXPECT_EQ(kGuaranteedMax3dTextureSize, 256);
+}
+
 }  // namespace
 }  // namespace pj::scene3d

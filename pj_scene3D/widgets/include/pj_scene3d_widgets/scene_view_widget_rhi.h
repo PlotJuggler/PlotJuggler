@@ -25,6 +25,7 @@
 #include "pj_scene3d_widgets/moving_average.h"
 #include "pj_scene3d_widgets/passes/grid_geometry.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
+#include "pj_widgets/GraphicsApi.h"
 
 class QEvent;
 class QContextMenuEvent;
@@ -66,6 +67,7 @@ class PoseRhiPass;
 class VoxelRhiPass;
 class PointRhiPass;
 class ScenePipelineRegistry;
+struct RhiPassSetup;
 struct RhiSharedGeometry;
 struct SceneBoundsCollector;
 enum class ScenePass;
@@ -75,6 +77,14 @@ enum class ScenePass;
 // name is a QOpenGLWidget (scene_view_widget.h). This class owns only QRhi
 // resources; camera and TF semantics come from pj_scene3d_core. The frame
 // contract and pass vocabulary live in rhi/rhi_scene_pass.h.
+//
+// Failure state: when the base pipeline set (every scene family, the shared
+// geometry and uniforms) cannot be built on the current QRhi, the view submits
+// no scene draw. It clears to the backdrop, shows the reason through
+// renderingWarningChanged(), emits renderFailed() once, and retries on the next
+// initialize() (a new QRhi, or a new output size, format or sample count).
+// Optional stages (HDR and its pipeline clones, SSAO, EDL, shadows, overlays)
+// drop on their own, each with a one-time warning.
 class SceneViewWidget : public QRhiWidget {
   Q_OBJECT
 
@@ -343,8 +353,9 @@ class SceneViewWidget : public QRhiWidget {
     return edl_stage_.resource_generation;
   }
   void setForceEdlFallbackForTest(bool force);
-  // Topic ids of the layers that submitted at least one draw last frame, in
-  // logical (dock) order even when a translucent draw was deferred.
+  // Topic ids of the layers that submitted at least one colour draw (direct or
+  // HDR) last frame, in logical (dock) order even when a translucent draw was
+  // deferred. The depth replay, which skips no-depth-write draws, does not count.
   [[nodiscard]] const std::vector<std::uint32_t>& lastSubmittedLayerIdsForTest() const {
     return last_submitted_layer_ids_;
   }
@@ -417,6 +428,17 @@ class SceneViewWidget : public QRhiWidget {
     std::uint32_t topic_id = 0;
   };
 
+  // What every family's initialize() binds from this view on `rhi`.
+  [[nodiscard]] RhiPassSetup passSetup(QRhi* rhi) const;
+  // Every resource the scene families draw with exists (the overlays are optional).
+  [[nodiscard]] bool baseResourcesReady(QRhi& rhi) const;
+  // Creates the base resources on `rhi`; the name of the part that failed, or
+  // nullptr. A failure leaves them partly built: releaseResources() next.
+  [[nodiscard]] const char* createBaseResources(QRhi* rhi);
+  // Enters (non-empty `reason`) or leaves the failure state; see the class
+  // comment. `emit_failed` false when echoing QRhiWidget's own renderFailed().
+  void setRenderFailure(QString reason, bool emit_failed = true);
+
   // Frame contract steps, once per render() in this order.
   void admitFrame(QRhi* rhi, FrameAdmission& admission);
   void applySceneBounds(const SceneBoundsCollector& bounds);
@@ -443,6 +465,9 @@ class SceneViewWidget : public QRhiWidget {
   bool ensureHdrResources(QRhi* owner, const QSize& size);
   void releaseHdrTargetResources();
   void releaseHdrResources();
+  // Drops the HDR chain for output `size` (a resize re-probes) with `reason` as
+  // its warning, logged when it changes. Always false.
+  bool rejectHdr(const QSize& size, QString reason);
   bool ensureSsaoResources(QRhi* owner, const QSize& size);
   void releaseSsaoTargetResources();
   void releaseSsaoResources();
@@ -486,9 +511,7 @@ class SceneViewWidget : public QRhiWidget {
   // The widget target the passes were built for. setSampleCount() or
   // setColorBufferFormat() recreate it on the same QRhi, and initialize() then
   // rebuilds every resource bound to the old one.
-  const QRhiRenderPassDescriptor* built_render_pass_ = nullptr;  // compared by address only
-  QVector<quint32> built_target_format_;
-  int built_sample_count_ = 0;
+  PJ::RhiTargetKey built_target_;
   QRhiBuffer* uniform_buffer_ = nullptr;
   QRhiBuffer* render_mode_uniform_buffer_ = nullptr;
   QRhiBuffer* annotation_render_mode_uniform_buffer_ = nullptr;
@@ -587,6 +610,10 @@ class SceneViewWidget : public QRhiWidget {
   QSize hdr_render_size_;
   std::uint64_t hdr_allocated_bytes_ = 0;
   QString rendering_warning_;
+  // Why the base resources could not be built; set only in the failure state.
+  PJ::RhiFailureLatch render_failure_;
+  // Why the overlays (corner gizmo, HUD, hover label) are off; empty while they draw.
+  QString overlay_failure_;
 
   // Bookkeeping every optional quality stage carries: whether it ran last
   // frame, the acceptance-test fallback override, the size-keyed failure latch

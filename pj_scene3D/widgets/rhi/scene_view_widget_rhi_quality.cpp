@@ -274,7 +274,9 @@ void SceneViewWidget::releaseEdlResources() {
 void SceneViewWidget::updateRenderingWarning() {
   // SSAO/EDL are probed only while the HDR chain runs, so their stored errors
   // go stale the moment HDR is down — suppress them until HDR is live again.
-  const QString warning = !hdr_stage_.capability_error.isEmpty()    ? hdr_stage_.capability_error
+  const QString warning = render_failure_.failed()                  ? render_failure_.reason()
+                          : !hdr_stage_.capability_error.isEmpty()  ? hdr_stage_.capability_error
+                          : !overlay_failure_.isEmpty()             ? overlay_failure_
                           : !hdr_stage_.last_active                 ? QString{}
                           : !ssao_stage_.capability_error.isEmpty() ? ssao_stage_.capability_error
                                                                     : edl_stage_.capability_error;
@@ -472,7 +474,7 @@ bool SceneViewWidget::ensureEdlResources(QRhi* owner, const QSize& size) {
     destination->setSlopeScaledDepthBias(source->slopeScaledDepthBias());
     destination->setSampleCount(1);
     destination->setRenderPassDescriptor(edl_mesh_mask_render_pass_descriptor_);
-    return destination->create();
+    return createGraphicsPipeline(destination);
   };
   if (!create_pipeline(edl_mesh_mask_triangle_pipeline_, model_pass_->trianglePipeline()) ||
       !create_pipeline(edl_mesh_mask_line_pipeline_, model_pass_->linePipeline())) {
@@ -488,6 +490,18 @@ bool SceneViewWidget::ensureEdlResources(QRhi* owner, const QSize& size) {
   return true;
 }
 
+bool SceneViewWidget::rejectHdr(const QSize& size, QString reason) {
+  releaseHdrResources();
+  hdr_stage_.rejected_size = size;
+  const bool changed = hdr_stage_.capability_error != reason;
+  hdr_stage_.capability_error = std::move(reason);
+  if (changed) {
+    qWarning("SceneViewWidget QRhi HDR unavailable: %s", qPrintable(hdr_stage_.capability_error));
+  }
+  updateRenderingWarning();
+  return false;
+}
+
 bool SceneViewWidget::ensureHdrResources(QRhi* owner, const QSize& size) {
   if (owner == nullptr || !size.isValid() || size.isEmpty()) {
     return false;
@@ -500,17 +514,7 @@ bool SceneViewWidget::ensureHdrResources(QRhi* owner, const QSize& size) {
     return false;
   }
 
-  const auto fail = [this, &size](QString reason) {
-    releaseHdrResources();
-    hdr_stage_.rejected_size = size;
-    const bool changed = hdr_stage_.capability_error != reason;
-    hdr_stage_.capability_error = std::move(reason);
-    if (changed) {
-      qWarning("SceneViewWidget QRhi HDR unavailable: %s", qPrintable(hdr_stage_.capability_error));
-    }
-    updateRenderingWarning();
-    return false;
-  };
+  const auto fail = [this, &size](QString reason) { return rejectHdr(size, std::move(reason)); };
 
   if (hdr_stage_.force_fallback_for_test) {
     return fail(tr("HDR rendering disabled by the browser acceptance override"));

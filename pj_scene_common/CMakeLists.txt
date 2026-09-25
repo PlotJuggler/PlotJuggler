@@ -32,6 +32,8 @@ target_link_libraries(pj_scene_common PUBLIC
   pj_datastore
   plotjuggler_sdk::base
 )
+# Theme tokens of the rendering-warning label.
+target_link_libraries(pj_scene_common PRIVATE pj_widgets)
 
 if(PJ_BUILD_TESTS)
   add_subdirectory(tests)
