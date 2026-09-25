@@ -67,6 +67,32 @@ std::optional<encoding::FrameOfReferenceEncoded> encodeWholeFloats(const TypedCo
       StorageKind::kInt64, values.size(), min, max);
 }
 
+// The bytes a constant-encoded column repeats: the FIRST NON-NULL row's value.
+// Row 0 can be a null slot (bulk appends, or a null sorted to the front at
+// seal), whose payload is not a value. An all-null column returns row 0. The
+// non-null values must also be bit-identical: ColumnStats::is_constant compares
+// doubles, so it accepts +0.0 next to -0.0 and distinct uint64 values above
+// 2^53 that round to the same double — nullopt then, and the column is not
+// constant-encoded.
+std::optional<Span<const uint8_t>> constantValueBytes(const TypedColumnBuffer& col, StorageKind kind) {
+  const std::size_t esize = storageKindSize(kind);
+  const uint8_t* data = col.valueBuffer().data();
+  std::size_t first = 0;
+  while (first < col.rowCount() && !col.isValid(first)) {
+    ++first;
+  }
+  if (first == col.rowCount()) {
+    return Span<const uint8_t>(data, esize);
+  }
+  const uint8_t* value = data + first * esize;
+  for (std::size_t r = first + 1; r < col.rowCount(); ++r) {
+    if (col.isValid(r) && std::memcmp(data + r * esize, value, esize) != 0) {
+      return std::nullopt;
+    }
+  }
+  return Span<const uint8_t>(value, esize);
+}
+
 // Dispatch a callable with the correct numeric type tag.
 // Returns true if kind is numeric (kFloat32..kUint64), false for kBool/kString.
 template <typename F>
@@ -312,13 +338,19 @@ void TopicChunkBuilder::finishBulkAppend() {
   }
 
   const std::size_t count = bulk_pending_rows_;
+  const std::size_t expected_rows = static_cast<std::size_t>(stats_.row_count) + count;
 
   for (std::size_t col = 0; col < columns_.size(); ++col) {
+    // A batch may omit columns (an Arrow stream carrying a subset of the topic's
+    // fields): pad them with nulls, as finishRow() does for unset columns. The
+    // stats pass below counts the padded slots as nulls.
+    while (columns_[col].rowCount() < expected_rows) {
+      columns_[col].appendNull();
+    }
     PJ_ASSERT(
-        columns_[col].rowCount() >= count,
-        "finishBulkAppend: column has fewer rows than bulk_pending_rows_ — "
-        "appendColumn*() must be called with exactly bulk_pending_rows_ values");
-    const std::size_t first_row = columns_[col].rowCount() - count;
+        columns_[col].rowCount() == expected_rows,
+        "finishBulkAppend: column has more rows than the batch — appendColumn*() called twice for one column?");
+    const std::size_t first_row = expected_rows - count;
     const auto kind = storageKindOf(column_descriptors_[col].logical_type);
 
     if (kind == StorageKind::kString) {
@@ -484,7 +516,6 @@ Timestamp TopicChunkBuilder::lastTimestamp() const noexcept {
 
 void TopicChunkBuilder::updateColumnStats(std::size_t col_index, double value) {
   auto& cs = stats_.column_stats[col_index];
-  const std::size_t current_row = columns_[col_index].rowCount() - 1;
 
   if (!cs.min_value.has_value() || value < *cs.min_value) {
     cs.min_value = value;
@@ -493,13 +524,13 @@ void TopicChunkBuilder::updateColumnStats(std::size_t col_index, double value) {
     cs.max_value = value;
   }
 
-  if (current_row == 0) {
+  // Constancy starts at the first NON-NULL value (as in the bulk path): a
+  // leading null must not make a constant column look varying.
+  if (cs.run_count == 0) {
     cs.run_count = 1;
-  } else {
-    if (value != last_column_values_[col_index]) {
-      cs.is_constant = false;
-      cs.run_count++;
-    }
+  } else if (value != last_column_values_[col_index]) {
+    cs.is_constant = false;
+    cs.run_count++;
   }
   last_column_values_[col_index] = value;
 }
@@ -596,9 +627,9 @@ TopicChunk TopicChunkBuilder::seal() {
         break;
       }
       case StorageKind::kBool: {
-        if (cs.is_constant && col.rowCount() > 0) {
-          chunk.columns[i].data = encoding::constantEncode(
-              Span<const uint8_t>(col.valueBuffer().data(), col.valueBuffer().size()), kind, col.rowCount());
+        if (const auto value = cs.is_constant && col.rowCount() > 0 ? constantValueBytes(col, kind) : std::nullopt;
+            value.has_value()) {
+          chunk.columns[i].data = encoding::constantEncode(*value, kind, col.rowCount());
         } else {
           chunk.columns[i].data = encoding::packBools(Span<const uint8_t>(col.valueBuffer().data(), col.rowCount()));
         }
@@ -639,7 +670,9 @@ TopicChunk TopicChunkBuilder::seal() {
           chunk.columns[i].data =
               encoding::constantEncode(Span<const uint8_t>(buf_data, col.valueBuffer().size()), kind, row_count);
         } else if (row_count > 0) {
-          const auto range = static_cast<uint64_t>(exact_max - exact_min);
+          // Unsigned subtraction: exact_max - exact_min overflows int64 for spans
+          // like [INT64_MIN, 0].
+          const uint64_t range = static_cast<uint64_t>(exact_max) - static_cast<uint64_t>(exact_min);
           const uint8_t ob = encoding::offsetBytesFor(range);
 
           if (ob < storageKindSize(kind)) {
@@ -662,13 +695,14 @@ TopicChunk TopicChunkBuilder::seal() {
         const uint8_t* buf_data = col.valueBuffer().data();
         const bool is_float = kind == StorageKind::kFloat32 || kind == StorageKind::kFloat64;
         if (cs.is_constant && row_count > 0) {
-          if (is_float) {
-            // The constant is the recorded min (absent when every row is null).
-            chunk.stats.column_stats[i].all_integral = !cs.min_value || encoding::isWholeInt64(*cs.min_value);
+          if (const auto value = constantValueBytes(col, kind); value.has_value()) {
+            if (is_float) {
+              // The constant is the recorded min (absent when every row is null).
+              chunk.stats.column_stats[i].all_integral = !cs.min_value || encoding::isWholeInt64(*cs.min_value);
+            }
+            chunk.columns[i].data = encoding::constantEncode(*value, kind, row_count);
+            break;
           }
-          chunk.columns[i].data =
-              encoding::constantEncode(Span<const uint8_t>(buf_data, col.valueBuffer().size()), kind, row_count);
-          break;
         }
         // Float chunks holding only whole numbers (e.g. JSON integers parsed as
         // double) are flagged all_integral and, when that narrows them, stored

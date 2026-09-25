@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -332,6 +333,69 @@ TEST(MergeTest, EmptyAnchorTopicKeepsItsColumnOrder) {
   const auto col_y = readColumn(engine, a_m, 1);
   const std::vector<std::pair<Timestamp, double>> expected_y = {{0, 30.0}, {1000, 40.0}};
   EXPECT_EQ(col_y, expected_y);
+}
+
+// Rows below a contributor's retention floor are logically evicted (their
+// chunk may still physically straddle the floor): a merge must not revive them,
+// neither from a source nor from the anchor it rebuilds.
+TEST(MergeTest, RowsBelowRetentionFloorAreNotRevived) {
+  DataEngine engine;
+  const DatasetId a = makeDataset(engine, "A");
+  const DatasetId b = makeDataset(engine, "B");
+  const TopicId a_s = writeScalar(engine, a, "s", {0, 1000, 2000}, {0.0, 1.0, 2.0});
+  const TopicId b_s = writeScalar(engine, b, "s", {0, 1000, 2000}, {10.0, 11.0, 12.0});
+  engine.getTopicStorage(a_s)->evictBefore(500);   // anchor keeps 1000, 2000
+  engine.getTopicStorage(b_s)->evictBefore(1500);  // source keeps 2000
+  ASSERT_EQ(engine.getTopicStorage(b_s)->sealedChunks().size(), 1U) << "the chunk straddles the floor";
+
+  auto report = engine.mergeDatasets(a, {{b, 5000}});
+  ASSERT_TRUE(report.has_value()) << (report.has_value() ? "" : report.error());
+
+  const std::vector<std::pair<Timestamp, double>> expected = {{1000, 1.0}, {2000, 2.0}, {7000, 12.0}};
+  EXPECT_EQ(readColumn(engine, a_s), expected);
+}
+
+// Timestamp arithmetic at the int64 limits clamps instead of overflowing (UB).
+TEST(MergeTest, ShiftNearInt64MaxSaturates) {
+  DataEngine engine;
+  const DatasetId a = makeDataset(engine, "A");
+  const DatasetId b = makeDataset(engine, "B");
+  constexpr Timestamp kMax = std::numeric_limits<Timestamp>::max();
+  const TopicId a_s = writeScalar(engine, a, "s", {0}, {0.0});
+  writeScalar(engine, b, "s", {kMax - 10}, {1.0});
+
+  auto report = engine.mergeDatasets(a, {{b, 100}});
+  ASSERT_TRUE(report.has_value()) << (report.has_value() ? "" : report.error());
+
+  const std::vector<std::pair<Timestamp, double>> expected = {{0, 0.0}, {kMax, 1.0}};
+  EXPECT_EQ(readColumn(engine, a_s), expected);
+}
+
+TEST(MergeTest, RetentionWindowWiderThanTheTimelineDoesNotOverflow) {
+  DataEngine engine;
+  const DatasetId a = makeDataset(engine, "A");
+  // t_max = -2, so t_max - INT64_MAX is one below INT64_MIN: unclamped it wraps
+  // to INT64_MAX and evicts everything.
+  const TopicId a_s = writeScalar(engine, a, "s", {-3, -2}, {1.0, 2.0});
+  engine.enforceRetention(std::numeric_limits<Timestamp>::max());
+  const std::vector<std::pair<Timestamp, double>> expected = {{-3, 1.0}, {-2, 2.0}};
+  EXPECT_EQ(readColumn(engine, a_s), expected);
+}
+
+// evictTopicHistory() drops everything up to the newest sample; at INT64_MAX the
+// "newest + 1" cutoff must not overflow.
+TEST(MergeTest, EvictTopicHistoryAtInt64MaxDoesNotOverflow) {
+  DataEngine engine;
+  const DatasetId a = makeDataset(engine, "A");
+  constexpr Timestamp kMax = std::numeric_limits<Timestamp>::max();
+  const TopicId a_s = writeScalar(engine, a, "s", {0, kMax}, {1.0, 2.0});
+  engine.evictTopicHistory(a_s);
+  // The cutoff saturates at INT64_MAX: everything older is gone, and nothing
+  // wraps around to resurrect the past.
+  const auto rows = readColumn(engine, a_s);
+  for (const auto& [ts, value] : rows) {
+    EXPECT_EQ(ts, kMax) << "value " << value;
+  }
 }
 
 }  // namespace

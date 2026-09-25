@@ -703,5 +703,98 @@ TEST(ArrowImportTest, ImportWithNulls) {
   EXPECT_EQ(row, 4u);
 }
 
+// ===========================================================================
+// Streams: LARGE_STRING offsets, synthetic timestamps across batches
+// ===========================================================================
+
+// One-column (plus nothing else) schema of `type` named `name`.
+nanoarrow::UniqueSchema makeOneColumnSchema(ArrowType type, const char* name) {
+  nanoarrow::UniqueSchema schema;
+  EXPECT_EQ(ArrowSchemaInitFromType(schema.get(), NANOARROW_TYPE_STRUCT), NANOARROW_OK);
+  EXPECT_EQ(ArrowSchemaAllocateChildren(schema.get(), 1), NANOARROW_OK);
+  ArrowSchemaInit(schema->children[0]);
+  EXPECT_EQ(ArrowSchemaSetType(schema->children[0], type), NANOARROW_OK);
+  EXPECT_EQ(ArrowSchemaSetName(schema->children[0], name), NANOARROW_OK);
+  return schema;
+}
+
+TEST(ArrowImportTest, LargeStringOffsetsAreReadAs64Bit) {
+  DataEngine engine;
+  auto ds_or = engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
+  ASSERT_TRUE(ds_or.has_value());
+  DataWriter writer = engine.createWriter();
+
+  nanoarrow::UniqueSchema schema = makeOneColumnSchema(NANOARROW_TYPE_LARGE_STRING, "name");
+  nanoarrow::UniqueArray array;
+  ASSERT_EQ(ArrowArrayInitFromSchema(array.get(), schema.get(), nullptr), NANOARROW_OK);
+  ASSERT_EQ(ArrowArrayStartAppending(array.get()), NANOARROW_OK);
+  for (const char* text : {"alpha", "bravo", "charlie"}) {
+    ASSERT_EQ(ArrowArrayAppendString(array->children[0], ArrowCharView(text)), NANOARROW_OK);
+    ASSERT_EQ(ArrowArrayFinishElement(array.get()), NANOARROW_OK);
+  }
+  ASSERT_EQ(ArrowArrayFinishBuildingDefault(array.get(), nullptr), NANOARROW_OK);
+
+  nanoarrow::UniqueArrayStream stream;
+  nanoarrow::UniqueSchema stream_schema;
+  ASSERT_EQ(ArrowSchemaDeepCopy(schema.get(), stream_schema.get()), NANOARROW_OK);
+  ASSERT_EQ(ArrowBasicArrayStreamInit(stream.get(), stream_schema.get(), 1), NANOARROW_OK);
+  ArrowBasicArrayStreamSetArray(stream.get(), 0, array.get());
+
+  auto [type_tree, mappings] = *schemaFromArrowStream(stream.get());
+  auto sid = *writer.registerSchema("large_str", type_tree);
+  auto tid = *writer.registerTopic(*ds_or, TopicDescriptor{.name = "large_str_topic", .schema_id = sid});
+  auto status = importArrowStream(writer, tid, stream.get(), mappings);
+  ASSERT_TRUE(status.has_value()) << status.error();
+  engine.commitChunks(writer.flushAll());
+
+  std::vector<std::string> read_strings;
+  DataReader reader = engine.createReader();
+  auto cursor_or = reader.rangeQuery(QueryRange{.topic_id = tid, .t_min = 0, .t_max = 10});
+  ASSERT_TRUE(cursor_or.has_value());
+  cursor_or->forEach([&](const SampleRow& row) { read_strings.emplace_back(row.chunk->readString(0, row.row_index)); });
+  EXPECT_EQ(read_strings, (std::vector<std::string>{"alpha", "bravo", "charlie"}));
+}
+
+TEST(ArrowImportTest, SyntheticTimestampsContinueAcrossBatches) {
+  DataEngine engine;
+  auto ds_or = engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
+  ASSERT_TRUE(ds_or.has_value());
+  DataWriter writer = engine.createWriter();
+
+  nanoarrow::UniqueSchema schema = makeOneColumnSchema(NANOARROW_TYPE_DOUBLE, "v");
+  nanoarrow::UniqueArrayStream stream;
+  nanoarrow::UniqueSchema stream_schema;
+  ASSERT_EQ(ArrowSchemaDeepCopy(schema.get(), stream_schema.get()), NANOARROW_OK);
+  ASSERT_EQ(ArrowBasicArrayStreamInit(stream.get(), stream_schema.get(), 2), NANOARROW_OK);
+  for (int64_t b = 0; b < 2; ++b) {
+    nanoarrow::UniqueArray array;
+    ASSERT_EQ(ArrowArrayInitFromSchema(array.get(), schema.get(), nullptr), NANOARROW_OK);
+    ASSERT_EQ(ArrowArrayStartAppending(array.get()), NANOARROW_OK);
+    for (int i = 0; i < 2; ++i) {
+      ASSERT_EQ(ArrowArrayAppendDouble(array->children[0], static_cast<double>(b * 2 + i)), NANOARROW_OK);
+      ASSERT_EQ(ArrowArrayFinishElement(array.get()), NANOARROW_OK);
+    }
+    ASSERT_EQ(ArrowArrayFinishBuildingDefault(array.get(), nullptr), NANOARROW_OK);
+    ArrowBasicArrayStreamSetArray(stream.get(), b, array.get());
+  }
+
+  auto [type_tree, mappings] = *schemaFromArrowStream(stream.get());
+  auto sid = *writer.registerSchema("seq", type_tree);
+  auto tid = *writer.registerTopic(*ds_or, TopicDescriptor{.name = "seq_topic", .schema_id = sid});
+  auto status = importArrowStream(writer, tid, stream.get(), mappings, /*timestamp_column=*/-1);
+  ASSERT_TRUE(status.has_value()) << status.error();
+  engine.commitChunks(writer.flushAll());
+
+  std::vector<std::pair<Timestamp, double>> rows;
+  DataReader reader = engine.createReader();
+  auto cursor_or = reader.rangeQuery(QueryRange{.topic_id = tid, .t_min = 0, .t_max = 100});
+  ASSERT_TRUE(cursor_or.has_value());
+  cursor_or->forEach([&](const SampleRow& row) {
+    rows.emplace_back(row.timestamp, row.chunk->readNumericAsDouble(0, row.row_index));
+  });
+  const std::vector<std::pair<Timestamp, double>> expected = {{0, 0.0}, {1, 1.0}, {2, 2.0}, {3, 3.0}};
+  EXPECT_EQ(rows, expected);  // the second batch continues at 2, not back at 0
+}
+
 }  // namespace
 }  // namespace PJ::arrow_import

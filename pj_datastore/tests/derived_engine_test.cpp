@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -1981,6 +1982,86 @@ TEST(MimoTransformTest, MidStreamColumn_OldChunkNotOutOfBounds) {
   // 3,4,5 produce output (sum of A.b + B.value).
   const auto rows = collectRowsCol(engine, derived.outputTopics(*node_or)[0]);
   EXPECT_EQ(rows.size(), 3u);
+}
+
+// ---------------------------------------------------------------------------
+// Null input cells and logically evicted rows are not samples
+// ---------------------------------------------------------------------------
+
+// Topic "xy" with float64 x, y: rows at 1000/1001/1002, x null at 1001.
+static PJ::TopicId makeXyTopicWithNullX(DataEngine& engine, PJ::DatasetId ds) {
+  DataWriter writer = engine.createWriter();
+  PJ::SchemaId schema_id = *writer.registerSchema(
+      "xy",
+      makeStruct("xy", {makePrimitive("x", PrimitiveType::kFloat64), makePrimitive("y", PrimitiveType::kFloat64)}));
+  TopicDescriptor td;
+  td.name = "xy_topic";
+  td.schema_id = schema_id;
+  td.dataset_id = ds;
+  PJ::TopicId tid = *writer.registerTopic(ds, td);
+  const std::optional<double> xs[] = {1.0, std::nullopt, 3.0};
+  for (int i = 0; i < 3; ++i) {
+    (void)writer.beginRow(tid, 1000 + i);
+    if (xs[i].has_value()) {
+      writer.set(tid, 0, *xs[i]);
+    }
+    writer.set(tid, 1, 10.0 * (i + 1));
+    (void)writer.finishRow(tid);  // an unset x is null
+  }
+  engine.commitChunks(writer.flushAll());
+  return tid;
+}
+
+TEST(DerivedEngineNullInputTest, SisoSkipsNullInputCells) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+  PJ::TopicId tid = makeXyTopicWithNullX(engine, ds);
+
+  auto node_or = derived.addSisoTransform(tid, "x_id", ds, std::make_unique<IdentityTransform>(), 0);
+  ASSERT_TRUE(node_or.has_value()) << node_or.error();
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  const auto rows = collectRows(engine, derived.outputTopics(*node_or)[0]);
+  const std::vector<std::pair<PJ::Timestamp, double>> expected = {{1000, 1.0}, {1002, 3.0}};
+  EXPECT_EQ(rows, expected);  // no fabricated 0.0 at 1001
+}
+
+TEST(DerivedEngineNullInputTest, MimoSkipsJoinsWithANullInput) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+  PJ::TopicId tid = makeXyTopicWithNullX(engine, ds);
+
+  auto node_or = derived.addMimoTransform({tid, tid}, {"sum"}, ds, std::make_unique<SumMimoTransform>(), {0, 1});
+  ASSERT_TRUE(node_or.has_value()) << node_or.error();
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  const auto rows = collectRows(engine, derived.outputTopics(*node_or)[0]);
+  const std::vector<std::pair<PJ::Timestamp, double>> expected = {{1000, 11.0}, {1002, 33.0}};
+  EXPECT_EQ(rows, expected);
+}
+
+TEST(DerivedEngineRetentionTest, ReplayHonoursTheInputRetentionFloor) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+  constexpr PJ::Timestamp kSec = 1'000'000'000LL;
+  PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 5);  // one chunk, t = 0..4 s
+  PJ::TopicId t2 = makeLinearTopic(engine, ds, 2.0, 5);
+  engine.getTopicStorage(t1)->evictBefore(2 * kSec);  // the chunk straddles: rows 0..1 s are evicted
+  ASSERT_EQ(engine.getTopicStorage(t1)->sealedChunks().size(), 1U);
+
+  auto siso = derived.addSisoTransform(t1, "id", ds, std::make_unique<IdentityTransform>());
+  auto mimo = derived.addMimoTransform({t1, t2}, {"sum"}, ds, std::make_unique<SumMimoTransform>());
+  ASSERT_TRUE(siso.has_value() && mimo.has_value());
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  for (const PJ::NodeId node : {*siso, *mimo}) {
+    const auto rows = collectRows(engine, derived.outputTopics(node)[0]);
+    ASSERT_EQ(rows.size(), 3U) << "node " << node;
+    EXPECT_EQ(rows.front().first, 2 * kSec) << "node " << node;
+  }
 }
 
 }  // namespace

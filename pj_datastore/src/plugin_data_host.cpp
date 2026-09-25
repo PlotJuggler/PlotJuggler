@@ -1010,6 +1010,11 @@ struct WriteCore {
     }
 
     if (!timestamp_name.empty() && ts_arrow_col < 0) {
+      // Not a value-typed column: a native Arrow TIMESTAMP (with its s/ms/us/ns
+      // unit, which the importer scales) is looked up in the full schema.
+      ts_arrow_col = arrow_import::columnIndexByName(stream, timestamp_name);
+    }
+    if (!timestamp_name.empty() && ts_arrow_col < 0) {
       setError(fmt::format("timestamp column '{}' not found in stream schema", timestamp_name));
       return false;
     }
@@ -1747,7 +1752,14 @@ bool toolboxRegisterObjectTopicOnDataset(
     propagateError(out_error, "out_handle must not be null");
     return false;
   }
-  if (impl->core.engine.getDataset(dataset_id) == nullptr) {
+  bool dataset_exists = false;
+  {
+    // getDataset() is a raw accessor: hold the engine lock for the lookup only —
+    // never across the ObjectStore calls below (the two locks must not nest).
+    const auto lock = impl->core.engine.lockEngine();
+    dataset_exists = impl->core.engine.getDataset(dataset_id) != nullptr;
+  }
+  if (!dataset_exists) {
     impl->setObjectError(fmt::format("dataset {} not found", dataset_id));
     propagateError(out_error, impl->object_last_error.c_str());
     return false;

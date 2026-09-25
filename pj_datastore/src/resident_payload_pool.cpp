@@ -152,32 +152,55 @@ std::shared_ptr<ResidentSlot> ResidentPayloadPool::admit(sdk::PayloadView payloa
     auto class_bytes = [this, is_small]() -> size_t {
       return is_small ? state_->small_resident_bytes : (state_->resident_bytes - state_->small_resident_bytes);
     };
-    while (class_bytes() + bytes > class_capacity && !fifo.empty()) {
-      auto victim = fifo.front().lock();
-      fifo.pop_front();
+    // Evict the oldest resident of `victims` (the small or the large FIFO).
+    auto evict_front = [this, &released](std::deque<std::weak_ptr<ResidentSlot>>& victims, bool small_victims) {
+      auto victim = victims.front().lock();
+      victims.pop_front();
       if (victim == nullptr) {
-        continue;  // slot already died with its entry and retired itself
+        return;  // slot already died with its entry and retired itself
       }
       if (auto taken = victim->take()) {
         // Both counters are charged for a small payload (small_resident_bytes is
         // a subset of resident_bytes), so both must be credited back.
         state_->resident_bytes -= victim->charged_bytes_;
-        if (is_small) {
+        if (small_victims) {
           state_->small_resident_bytes -= victim->charged_bytes_;
         }
         state_->evicted += 1;
         released.push_back(std::move(*taken));
       }
+    };
+    // The total budget is hard. A large payload may borrow the unused small
+    // reservation (a single payload bigger than the large class), but never
+    // evicts small residents: reject it up front — before evicting anything — if
+    // it cannot fit beside them. The slot's payload is handed back through
+    // `released`, so its destructor has no charge to retire.
+    if (!is_small && state_->small_resident_bytes + bytes > state_->capacity_bytes) {
+      if (auto taken = slot->take()) {
+        released.push_back(std::move(*taken));
+      }
+      state_->rejected_oversize.fetch_add(1, std::memory_order_relaxed);
+      slot.reset();
+    } else {
+      while (class_bytes() + bytes > class_capacity && !fifo.empty()) {
+        evict_front(fifo, is_small);
+      }
+      // A small payload's reservation is guaranteed: reclaim space a large
+      // payload borrowed from it.
+      while (is_small && state_->resident_bytes + bytes > state_->capacity_bytes && !state_->fifo.empty()) {
+        evict_front(state_->fifo, /*small_victims=*/false);
+      }
+      state_->resident_bytes += bytes;
+      if (is_small) {
+        state_->small_resident_bytes += bytes;
+      }
+      state_->high_water_bytes = std::max(state_->high_water_bytes, state_->resident_bytes);
+      state_->admitted += 1;
+      fifo.push_back(slot);
     }
-    state_->resident_bytes += bytes;
-    if (is_small) {
-      state_->small_resident_bytes += bytes;
-    }
-    state_->high_water_bytes = std::max(state_->high_water_bytes, state_->resident_bytes);
-    state_->admitted += 1;
-    fifo.push_back(slot);
   }
-  // `released` drops here — anchors run outside the pool mutex.
+  // `released` drops here — anchors run outside the pool mutex. A rejected
+  // admission returns nullptr (its payload is in `released`).
   return slot;
 }
 

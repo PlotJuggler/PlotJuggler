@@ -514,5 +514,68 @@ TEST(EngineThreadSafety, SetTargetSwapVsWorkerEnsureTopicRace) {
   ASSERT_TRUE(final_topic.has_value()) << final_topic.error();
 }
 
+// The GUI merges two loaded datasets while a streaming worker keeps committing
+// into (and creating topics in) another dataset of the same engine. mergeDatasets
+// reads and rewrites topic storage; before it took the engine lock it raced the
+// worker's commits and the topic-map rehash (TSan flags it).
+TEST(EngineThreadSafety, MergeDatasetsSerializesWithWorkerCommits) {
+  DataEngine engine;
+  const DatasetId anchor = *engine.createDataset(DatasetDescriptor{.source_name = "anchor", .time_domain_id = 0});
+  const TopicId anchor_topic = makeTopic(engine, anchor, "s", 64);
+  const DatasetId live = *engine.createDataset(DatasetDescriptor{.source_name = "live", .time_domain_id = 0});
+
+  // DataWriter callers hold the engine lock (as the C-ABI write host does per
+  // call); mergeDatasets is called WITHOUT it, as SessionManager does — its own
+  // lock is what this test exercises.
+  std::atomic<bool> stop{false};
+  std::thread worker([&]() {
+    for (int i = 0; !stop.load(std::memory_order_relaxed); ++i) {
+      const auto lock = engine.lockEngine();
+      (void)makeTopic(engine, live, "w" + std::to_string(i), 8);  // commit + createTopic rehash
+    }
+  });
+
+  constexpr int kMerges = 200;
+  for (int m = 0; m < kMerges; ++m) {
+    const DatasetId source =
+        *engine.createDataset(DatasetDescriptor{.source_name = "src" + std::to_string(m), .time_domain_id = 0});
+    {
+      const auto lock = engine.lockEngine();
+      (void)makeTopic(engine, source, "s", 16);
+    }
+    ASSERT_TRUE(engine.mergeDatasets(anchor, {{source, (m + 1) * 1000}}).has_value());
+  }
+  stop.store(true, std::memory_order_relaxed);
+  worker.join();
+
+  DataReader reader = engine.createReader();
+  EXPECT_EQ(readAll(reader, anchor_topic), 64U + kMerges * 16U);
+}
+
+// A toolbox registers an object topic on an existing dataset while datasets are
+// created concurrently (the datasets map rehashes). The dataset lookup must hold
+// the engine lock (TSan flags the unlocked read).
+TEST(EngineThreadSafety, ToolboxObjectTopicRegistrationVsDatasetCreation) {
+  DataEngine engine;
+  ObjectStore store;
+  DatastoreToolboxHost toolbox_impl{engine, store};
+  sdk::ToolboxHostView toolbox{toolbox_impl.raw()};
+  const auto source = *toolbox.createDataSource("target");
+  const auto dataset = static_cast<DatasetId>(source.id);
+
+  constexpr int kIterations = 4000;
+  std::thread creator([&]() {
+    for (int i = 0; i < kIterations; ++i) {
+      (void)engine.createDataset(DatasetDescriptor{.source_name = "d" + std::to_string(i), .time_domain_id = 0});
+    }
+  });
+  int registered = 0;
+  for (int i = 0; i < kIterations; ++i) {
+    registered += toolbox.registerObjectTopicOnDataset(dataset, "__markers__/t", "{}").has_value() ? 1 : 0;
+  }
+  creator.join();
+  EXPECT_EQ(registered, kIterations);
+}
+
 }  // namespace
 }  // namespace PJ

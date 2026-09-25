@@ -814,6 +814,9 @@ static PJ::Status runSisoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& en
   bool wrote_any = false;
   PJ::Timestamp out_ts = 0;
   PJ::Status status = PJ::okStatus();
+  // Rows below the input's retention floor are logically evicted even while
+  // their straddling chunk remains: a replay must not feed them.
+  const PJ::Timestamp retention_floor = in_storage->retentionFloor();
 
   auto feed_row = [&](const TopicChunk& chunk, std::size_t row) {
     if (!status.has_value()) {
@@ -825,7 +828,15 @@ static PJ::Status runSisoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& en
     if (node.siso_input_column_index >= chunk.columns.size()) {
       return;
     }
+    // A null cell is no sample either (the source series skips it too); its
+    // payload is a placeholder, not a value to feed the transform.
+    if (chunk.isNull(node.siso_input_column_index, row)) {
+      return;
+    }
     const PJ::Timestamp ts = chunk.timestamps[row];
+    if (ts < retention_floor) {
+      return;
+    }
     node.in_val_buf = decodeAsVarvalue(chunk, node.siso_input_column_index, row, node.siso_input_kind);
     node.siso_last_ts = std::max(node.siso_last_ts, ts);
 
@@ -922,14 +933,21 @@ static PJ::Status runMimoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& en
       return PJ::unexpected(
           fmt::format("run_mimo_incremental: input topic {} not found", node.mimo_input_topic_ids[i]));
     }
+    const std::size_t column = node.mimo_input_columns[i];
+    const PJ::Timestamp retention_floor = storage->retentionFloor();
     for (const TopicChunk& chunk : storage->sealedChunks()) {
       max_chunk_seen = std::max(max_chunk_seen, chunk.id);
-      if (chunk.stats.t_max <= node.mimo_last_ts) {
-        continue;  // entire chunk already processed
+      if (chunk.stats.t_max <= node.mimo_last_ts || chunk.stats.t_max < retention_floor) {
+        continue;  // entire chunk already processed, or logically evicted
       }
       for (uint32_t r = 0; r < chunk.stats.row_count; ++r) {
         PJ::Timestamp ts = chunk.timestamps[r];
-        if (ts <= node.mimo_last_ts) {
+        if (ts <= node.mimo_last_ts || ts < retention_floor) {
+          continue;
+        }
+        // A null cell, or a chunk sealed before this column existed, carries no
+        // sample of this input: its timestamp must not join.
+        if (column >= chunk.columns.size() || chunk.isNull(column, r)) {
           continue;
         }
         per_topic[i].push_back({ts, &chunk, r});

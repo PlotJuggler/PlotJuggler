@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -64,5 +65,10 @@ struct ArrowColumnMapping {
 /// does not consume batches). Caller retains ownership of @p stream.
 [[nodiscard]] PJ::Expected<std::pair<std::shared_ptr<PJ::TypeTreeNode>, std::vector<ArrowColumnMapping>>>
 schemaFromArrowStream(struct ::ArrowArrayStream* stream);
+
+/// Index of the top-level field named @p name in the stream's schema, or -1.
+/// Covers every Arrow type — including a native TIMESTAMP column, which the
+/// value-column mappings of schemaFromArrowStream() leave out.
+[[nodiscard]] int columnIndexByName(struct ::ArrowArrayStream* stream, std::string_view name);
 
 }  // namespace PJ::arrow_import

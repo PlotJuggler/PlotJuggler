@@ -23,6 +23,7 @@
 #include "pj_datastore/column_buffer.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_datastore/writer.hpp"
+#include "saturating_time.hpp"
 
 namespace PJ {
 
@@ -316,7 +317,7 @@ void DataEngine::enforceRetention(Timestamp retention_window_ns) {
     auto& storage = *it.value();
     if (!storage.empty()) {
       Timestamp t_max = storage.timeMax();
-      storage.evictBefore(t_max - retention_window_ns);
+      storage.evictBefore(saturatingSub(t_max, retention_window_ns));
     }
   }
 }
@@ -329,7 +330,7 @@ void DataEngine::enforceRetention(Timestamp retention_window_ns, DatasetId datas
       continue;
     }
     Timestamp t_max = storage.timeMax();
-    storage.evictBefore(t_max - retention_window_ns);
+    storage.evictBefore(saturatingSub(t_max, retention_window_ns));
   }
 }
 
@@ -341,7 +342,7 @@ void DataEngine::evictTopicHistory(TopicId topic_id) {
   }
   auto& storage = *it.value();
   if (!storage.empty()) {
-    storage.evictBefore(storage.timeMax() + 1);
+    storage.evictBefore(saturatingAdd(storage.timeMax(), 1));
   }
 }
 
@@ -684,6 +685,10 @@ std::vector<TopicId> DataEngine::listTopicsLocked(DatasetId dataset_id) const {
 
 Expected<DatasetMergeReport> DataEngine::mergeDatasets(
     DatasetId anchor_id, const std::vector<DatasetMergeSource>& sources) {
+  // Held for the whole merge: it reads and rewrites topic storage that a
+  // streaming worker may be committing to (recursive, so the locked helpers
+  // called below re-acquire it).
+  auto lock = lockEngine();
   // Atomicity: this up-front validation block holds ALL caller/data-driven
   // failure modes (unknown anchor/source, source==anchor, duplicate source), so
   // every reachable error returns here with nothing mutated. The error returns
@@ -873,8 +878,14 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
         }
         colmap_pool.push_back(std::move(colmap));
         const std::vector<int>* colmap_ptr = &colmap_pool.back();
+        // Rows below the contributor's retention floor are logically evicted: the
+        // rebuilt destination (clearChunks resets its floor) must not revive them.
+        const Timestamp floor = st->retentionFloor();
         for (std::size_t r = 0; r < chunk.stats.row_count; ++r) {
-          rows.push_back(RowRef{chunk.readTimestamp(r) + c.shift, &chunk, r, colmap_ptr});
+          const Timestamp ts = chunk.readTimestamp(r);
+          if (ts >= floor) {
+            rows.push_back(RowRef{saturatingAdd(ts, c.shift), &chunk, r, colmap_ptr});
+          }
         }
       }
     }

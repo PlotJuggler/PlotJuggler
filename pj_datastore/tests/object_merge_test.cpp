@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -239,6 +240,19 @@ TEST(ObjectMergeTest, SourceWithNoObjectTopicsIsNoOp) {
   EXPECT_TRUE(report->added_topics.empty());
   EXPECT_TRUE(report->consumed_datasets.empty());
   EXPECT_EQ(timestamps(store, a), (std::vector<Timestamp>{0}));
+}
+
+// A merge shift that would push a timestamp past INT64_MAX saturates instead of
+// overflowing (UB) and wrapping to the far past, which would break the order.
+TEST(ObjectMergeTest, ShiftNearInt64MaxSaturates) {
+  ObjectStore store;
+  constexpr Timestamp kMax = std::numeric_limits<Timestamp>::max();
+  const auto a = registerTopic(store, 1, "/img");
+  const auto b = registerTopic(store, 2, "/img");
+  push(store, a, 0, 0xA0);
+  push(store, b, kMax - 10, 0xB0);
+  ASSERT_TRUE(store.mergeDatasets(1, {DatasetMergeSource{.dataset_id = 2, .raw_shift_ns = 100}}).has_value());
+  EXPECT_EQ(timestamps(store, a), (std::vector<Timestamp>{0, kMax}));
 }
 
 }  // namespace

@@ -177,7 +177,7 @@ FrameOfReferenceEncoded forEncode(
   result.reference = min_val;
   result.count = count;
 
-  const auto range = static_cast<uint64_t>(max_val - min_val);
+  const uint64_t range = static_cast<uint64_t>(max_val) - static_cast<uint64_t>(min_val);  // no int64 overflow
   result.offset_bytes = offsetBytesFor(range);
 
   const std::size_t esize = storageKindSize(kind);
@@ -240,26 +240,28 @@ uint64_t forReadOffset(const uint8_t* data, std::size_t row, uint8_t offset_byte
 
 }  // namespace
 
-double forDecodeOneAsDouble(const FrameOfReferenceEncoded& enc, std::size_t row) {
-  const uint64_t offset = forReadOffset(enc.offsets.data(), row, enc.offset_bytes);
-  return static_cast<double>(enc.reference) + static_cast<double>(offset);
-}
-
 int64_t forDecodeOneAsInt64(const FrameOfReferenceEncoded& enc, std::size_t row) {
   const uint64_t offset = forReadOffset(enc.offsets.data(), row, enc.offset_bytes);
   return enc.reference + static_cast<int64_t>(offset);
 }
 
+double forDecodeOneAsDouble(const FrameOfReferenceEncoded& enc, std::size_t row) {
+  // Add in integer arithmetic, then convert once: double(reference) + offset
+  // rounds twice and can miss the value above 2^53.
+  return static_cast<double>(forDecodeOneAsInt64(enc, row));
+}
+
 void forDecodeRangeAsDoubles(const FrameOfReferenceEncoded& enc, Span<double> out, std::size_t row_start) {
   const std::size_t count = out.size();
-  const double ref = static_cast<double>(enc.reference);
+  // Integer add, one conversion per value (see forDecodeOneAsDouble).
+  const int64_t ref = enc.reference;
   const uint8_t* base = enc.offsets.data();
 
   switch (enc.offset_bytes) {
     case 1: {
       const uint8_t* src = base + row_start;
       for (std::size_t i = 0; i < count; ++i) {
-        out[i] = ref + static_cast<double>(src[i]);
+        out[i] = static_cast<double>(ref + static_cast<int64_t>(src[i]));
       }
       break;
     }
@@ -268,7 +270,7 @@ void forDecodeRangeAsDoubles(const FrameOfReferenceEncoded& enc, Span<double> ou
       for (std::size_t i = 0; i < count; ++i) {
         uint16_t v{};
         std::memcpy(&v, src + i * 2, sizeof(v));
-        out[i] = ref + static_cast<double>(v);
+        out[i] = static_cast<double>(ref + static_cast<int64_t>(v));
       }
       break;
     }
@@ -277,7 +279,7 @@ void forDecodeRangeAsDoubles(const FrameOfReferenceEncoded& enc, Span<double> ou
       for (std::size_t i = 0; i < count; ++i) {
         uint32_t v{};
         std::memcpy(&v, src + i * 4, sizeof(v));
-        out[i] = ref + static_cast<double>(v);
+        out[i] = static_cast<double>(ref + static_cast<int64_t>(v));
       }
       break;
     }

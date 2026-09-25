@@ -1439,5 +1439,203 @@ TEST(ChunkTest, AllIntegralIgnoresNullSlots) {
   EXPECT_EQ(chunk.readNumericAsDouble(0, 2), 4.0);
 }
 
+// ===========================================================================
+// Constant encoding stores the first NON-NULL value, bit for bit
+// ===========================================================================
+
+TEST(ChunkTest, BulkConstantColumnWithLeadingNullKeepsItsValue) {
+  std::vector<ColumnDescriptor> cols = {
+      makeCol(1, PrimitiveType::kFloat64, "f"),
+      makeCol(2, PrimitiveType::kBool, "b"),
+  };
+  TopicChunkBuilder builder(/*topic_id=*/220, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+  const Timestamp ts[] = {0, 1, 2};
+  const double f[] = {0.0, 5.0, 5.0};  // row 0 is null: its payload is not a value
+  const uint8_t b[] = {0, 1, 1};
+  const uint8_t bitmap[] = {0x06};  // bits [0, 1, 1]
+  builder.appendTimestamps(Span<const Timestamp>(ts, 3));
+  builder.appendColumn(0, Span<const double>(f, 3));
+  builder.appendColumnValidity(0, BitSpan{Span<const uint8_t>(bitmap, 1), 0, 3});
+  builder.appendColumn(1, Span<const uint8_t>(b, 3));
+  builder.appendColumnValidity(1, BitSpan{Span<const uint8_t>(bitmap, 1), 0, 3});
+  builder.finishBulkAppend();
+  TopicChunk chunk = builder.seal();
+
+  ASSERT_EQ(chunk.columnEncoding(0), EncodingType::kConstant);
+  ASSERT_EQ(chunk.columnEncoding(1), EncodingType::kConstant);
+  EXPECT_TRUE(chunk.isNull(0, 0));
+  EXPECT_TRUE(chunk.isNull(1, 0));
+  for (std::size_t row = 1; row < 3; ++row) {
+    EXPECT_EQ(chunk.readNumericAsDouble(0, row), 5.0) << "row " << row;
+    EXPECT_TRUE(chunk.readBool(1, row)) << "row " << row;
+  }
+}
+
+TEST(ChunkTest, RowConstantColumnWithLeadingNullIsConstantAndKeepsItsValue) {
+  std::vector<ColumnDescriptor> cols = {makeCol(1, PrimitiveType::kFloat64, "f")};
+  TopicChunkBuilder builder(/*topic_id=*/221, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+  builder.beginRow(0);
+  builder.setNull(0);
+  builder.finishRow();
+  for (Timestamp t = 1; t < 3; ++t) {
+    builder.beginRow(t);
+    builder.set(0, 5.5);
+    builder.finishRow();
+  }
+  TopicChunk chunk = builder.seal();
+
+  EXPECT_EQ(chunk.columnEncoding(0), EncodingType::kConstant);
+  EXPECT_TRUE(chunk.isNull(0, 0));
+  EXPECT_EQ(chunk.readNumericAsDouble(0, 1), 5.5);
+  EXPECT_EQ(chunk.readNumericAsDouble(0, 2), 5.5);
+}
+
+TEST(ChunkTest, NullSortedToTheFrontDoesNotBecomeTheConstant) {
+  // Rows arrive out of timestamp order; seal() sorts them, moving the null
+  // (t=1) in front of the valued rows.
+  std::vector<ColumnDescriptor> cols = {makeCol(1, PrimitiveType::kFloat64, "f")};
+  TopicChunkBuilder builder(/*topic_id=*/222, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+  builder.beginRow(2);
+  builder.set(0, 7.0);
+  builder.finishRow();
+  builder.beginRow(1);
+  builder.setNull(0);
+  builder.finishRow();
+  builder.beginRow(3);
+  builder.set(0, 7.0);
+  builder.finishRow();
+  TopicChunk chunk = builder.seal();
+
+  ASSERT_EQ(chunk.readTimestamp(0), 1);
+  EXPECT_TRUE(chunk.isNull(0, 0));
+  EXPECT_EQ(chunk.readNumericAsDouble(0, 1), 7.0);
+  EXPECT_EQ(chunk.readNumericAsDouble(0, 2), 7.0);
+}
+
+TEST(ChunkTest, MixedSignedZerosAreNotConstantEncoded) {
+  // +0.0 == -0.0, but a constant can hold only one sign.
+  std::vector<ColumnDescriptor> cols = {makeCol(1, PrimitiveType::kFloat64, "f")};
+  TopicChunkBuilder builder(/*topic_id=*/223, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+  const double values[] = {0.0, -0.0, 0.0};
+  for (Timestamp t = 0; t < 3; ++t) {
+    builder.beginRow(t);
+    builder.set(0, values[t]);
+    builder.finishRow();
+  }
+  TopicChunk chunk = builder.seal();
+
+  EXPECT_NE(chunk.columnEncoding(0), EncodingType::kConstant);
+  for (std::size_t row = 0; row < 3; ++row) {
+    EXPECT_EQ(std::signbit(chunk.readNumericAsDouble(0, row)), std::signbit(values[row])) << "row " << row;
+  }
+}
+
+// Distinct uint64 values above 2^53 round to the same double, which is what
+// ColumnStats::is_constant compares; the chunk must not collapse them.
+TEST(ChunkTest, DistinctUint64AboveTwoPow53AreNotConstantEncoded) {
+  std::vector<ColumnDescriptor> cols = {makeCol(1, PrimitiveType::kUint64, "u")};
+  TopicChunkBuilder builder(/*topic_id=*/224, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+  const uint64_t values[] = {9007199254740992ULL, 9007199254740993ULL};
+  for (Timestamp t = 0; t < 2; ++t) {
+    builder.beginRow(t);
+    builder.set(0, values[t]);
+    builder.finishRow();
+  }
+  TopicChunk chunk = builder.seal();
+
+  EXPECT_NE(chunk.columnEncoding(0), EncodingType::kConstant);
+  EXPECT_EQ(chunk.readNumericAsUint64(0, 0), values[0]);
+  EXPECT_EQ(chunk.readNumericAsUint64(0, 1), values[1]);
+}
+
+// FOR decode to double must add in integer arithmetic and convert once:
+// double(reference) + offset rounds twice above 2^53.
+TEST(ChunkTest, FrameOfReferenceDecodesToTheNearestDoubleAboveTwoPow53) {
+  std::vector<ColumnDescriptor> cols = {makeCol(1, PrimitiveType::kInt64, "i")};
+  TopicChunkBuilder builder(/*topic_id=*/225, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+  const int64_t values[] = {9007199254740993LL, 9007199254740994LL};
+  for (Timestamp t = 0; t < 2; ++t) {
+    builder.beginRow(t);
+    builder.set(0, values[t]);
+    builder.finishRow();
+  }
+  TopicChunk chunk = builder.seal();
+
+  ASSERT_EQ(chunk.columnEncoding(0), EncodingType::kFrameOfReference);
+  std::vector<double> bulk(2);
+  chunk.readColumnAsDoubles(0, Span<double>(bulk), 0);
+  for (std::size_t row = 0; row < 2; ++row) {
+    const double expected = static_cast<double>(values[row]);
+    EXPECT_EQ(chunk.readNumericAsDouble(0, row), expected) << "row " << row;
+    EXPECT_EQ(bulk[row], expected) << "bulk row " << row;
+    EXPECT_EQ(chunk.readNumericAsInt64(0, row), values[row]) << "row " << row;
+  }
+}
+
+// The int64 range check must not overflow for spans wider than INT64_MAX.
+TEST(ChunkTest, FullSpanInt64ColumnStaysRawAndExact) {
+  std::vector<ColumnDescriptor> cols = {makeCol(1, PrimitiveType::kInt64, "i")};
+  TopicChunkBuilder builder(/*topic_id=*/226, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+  const int64_t values[] = {std::numeric_limits<int64_t>::min(), 0, std::numeric_limits<int64_t>::max()};
+  for (Timestamp t = 0; t < 3; ++t) {
+    builder.beginRow(t);
+    builder.set(0, values[t]);
+    builder.finishRow();
+  }
+  TopicChunk chunk = builder.seal();
+
+  EXPECT_EQ(chunk.columnEncoding(0), EncodingType::kRaw);
+  for (std::size_t row = 0; row < 3; ++row) {
+    EXPECT_EQ(chunk.readNumericAsInt64(0, row), values[row]) << "row " << row;
+  }
+}
+
+// A bulk batch may carry a subset of the topic's columns (an Arrow stream
+// omitting a field): the omitted columns are null for the batch's rows, after
+// any rows the row-at-a-time path already appended.
+TEST(ChunkTest, BulkBatchOmittingColumnsPadsThemWithNulls) {
+  std::vector<ColumnDescriptor> cols = {
+      makeCol(1, PrimitiveType::kFloat64, "a"), makeCol(2, PrimitiveType::kInt64, "b")};
+  TopicChunkBuilder builder(/*topic_id=*/227, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+  builder.beginRow(0);  // row path first: both columns set
+  builder.set(0, 1.5);
+  builder.set(1, int64_t{10});
+  builder.finishRow();
+
+  const Timestamp ts[] = {1, 2};
+  const double a[] = {2.5, 3.5};
+  builder.appendTimestamps(Span<const Timestamp>(ts, 2));
+  builder.appendColumn(0, Span<const double>(a, 2));  // "b" omitted
+  builder.finishBulkAppend();
+  TopicChunk chunk = builder.seal();
+
+  ASSERT_EQ(chunk.stats.row_count, 3U);
+  EXPECT_EQ(chunk.readNumericAsDouble(0, 0), 1.5);
+  EXPECT_EQ(chunk.readNumericAsDouble(0, 1), 2.5);
+  EXPECT_EQ(chunk.readNumericAsDouble(0, 2), 3.5);
+  EXPECT_FALSE(chunk.isNull(1, 0));
+  EXPECT_EQ(chunk.readNumericAsInt64(1, 0), 10);
+  EXPECT_TRUE(chunk.isNull(1, 1));
+  EXPECT_TRUE(chunk.isNull(1, 2));
+  EXPECT_EQ(chunk.stats.column_stats[1].null_count, 2U);
+}
+
+TEST(ChunkTest, FreshBulkBatchOmittingAColumnDoesNotReadOutOfBounds) {
+  std::vector<ColumnDescriptor> cols = {
+      makeCol(1, PrimitiveType::kFloat64, "a"), makeCol(2, PrimitiveType::kString, "s")};
+  TopicChunkBuilder builder(/*topic_id=*/228, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+  const Timestamp ts[] = {0, 1, 2};
+  const double a[] = {1.0, 2.0, 3.0};
+  builder.appendTimestamps(Span<const Timestamp>(ts, 3));
+  builder.appendColumn(0, Span<const double>(a, 3));
+  builder.finishBulkAppend();
+  TopicChunk chunk = builder.seal();
+
+  ASSERT_EQ(chunk.stats.row_count, 3U);
+  for (std::size_t row = 0; row < 3; ++row) {
+    EXPECT_TRUE(chunk.isNull(1, row)) << "row " << row;
+  }
+}
+
 }  // namespace
 }  // namespace PJ

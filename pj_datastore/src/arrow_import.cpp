@@ -111,7 +111,7 @@ struct ColumnDataWithBuffer {
   std::vector<uint32_t> offset_buf;
 };
 
-ColumnDataWithBuffer makeColumnDataNanoarrow(
+PJ::Expected<ColumnDataWithBuffer> makeColumnDataNanoarrow(
     const ArrowArrayView* child, const ArrowColumnMapping& mapping, int64_t length) {
   ColumnDataWithBuffer result;
   const auto sk = storageKindOf(mapping.pj_type);
@@ -207,11 +207,24 @@ ColumnDataWithBuffer makeColumnDataNanoarrow(
       break;
     }
     case StorageKind::kString: {
-      // STRING: Arrow uses int32_t offsets; PJ uses uint32_t. Copy with cast to avoid UB.
-      const auto* offsets_ptr = child->buffer_views[1].data.as_int32 + child->offset;
+      // Arrow STRING has int32 offsets, LARGE_STRING int64; PJ stores uint32.
       result.offset_buf.resize(n + 1);
-      for (std::size_t i = 0; i <= n; ++i) {
-        result.offset_buf[i] = static_cast<uint32_t>(offsets_ptr[i]);
+      if (child->storage_type == NANOARROW_TYPE_LARGE_STRING) {
+        const auto* offsets_ptr = child->buffer_views[1].data.as_int64 + child->offset;
+        if (offsets_ptr[n] > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+          return PJ::unexpected(
+              fmt::format(
+                  "Arrow LARGE_STRING column '{}': {} bytes of string data in one batch exceed the 4 GiB limit",
+                  mapping.field_name, offsets_ptr[n]));
+        }
+        for (std::size_t i = 0; i <= n; ++i) {
+          result.offset_buf[i] = static_cast<uint32_t>(offsets_ptr[i]);
+        }
+      } else {
+        const auto* offsets_ptr = child->buffer_views[1].data.as_int32 + child->offset;
+        for (std::size_t i = 0; i <= n; ++i) {
+          result.offset_buf[i] = static_cast<uint32_t>(offsets_ptr[i]);
+        }
       }
       result.col_data = ColumnData::string(
           mapping.pj_column_index, Span<const uint32_t>(result.offset_buf.data(), n + 1),
@@ -316,11 +329,13 @@ Expected<std::vector<Timestamp>> extractTimestampsNanoarrow(
   return result;
 }
 
-std::vector<Timestamp> generateSequentialTimestamps(int64_t length) {
+// Row indices [first, first + length) as timestamps, for streams without a
+// timestamp column. `first` carries over between batches so indices stay unique.
+std::vector<Timestamp> generateSequentialTimestamps(int64_t first, int64_t length) {
   const auto n = static_cast<std::size_t>(length);
   std::vector<Timestamp> result(n);
   for (int64_t i = 0; i < length; ++i) {
-    result[static_cast<std::size_t>(i)] = i;
+    result[static_cast<std::size_t>(i)] = first + i;
   }
   return result;
 }
@@ -397,6 +412,7 @@ PJ::Status ingestBatchesFromStream(
     }
   }
 
+  int64_t synthetic_first_row = 0;  // next row index when the stream has no timestamp column
   nanoarrow::UniqueArray batch;
   while (true) {
     batch.reset();
@@ -431,7 +447,8 @@ PJ::Status ingestBatchesFromStream(
       }
       timestamps = std::move(*timestamps_or);
     } else {
-      timestamps = generateSequentialTimestamps(num_rows);
+      timestamps = generateSequentialTimestamps(synthetic_first_row, num_rows);
+      synthetic_first_row += num_rows;
     }
 
     std::vector<ColumnDataWithBuffer> col_buffers;
@@ -440,8 +457,11 @@ PJ::Status ingestBatchesFromStream(
       if (mapping.arrow_column_index >= static_cast<int>(array_view->n_children)) {
         return PJ::unexpected(fmt::format("Arrow column index {} out of range", mapping.arrow_column_index));
       }
-      col_buffers.push_back(
-          makeColumnDataNanoarrow(array_view->children[mapping.arrow_column_index], mapping, num_rows));
+      auto column_or = makeColumnDataNanoarrow(array_view->children[mapping.arrow_column_index], mapping, num_rows);
+      if (!column_or.has_value()) {
+        return PJ::unexpected(column_or.error());
+      }
+      col_buffers.push_back(std::move(*column_or));
     }
 
     std::vector<ColumnData> col_data_vec;
@@ -483,6 +503,26 @@ PJ::Expected<std::pair<std::shared_ptr<PJ::TypeTreeNode>, std::vector<ArrowColum
   }
 
   return mappingsFromSchema(schema.get());
+}
+
+// ---------------------------------------------------------------------------
+// columnIndexByName
+// ---------------------------------------------------------------------------
+
+int columnIndexByName(ArrowArrayStream* stream, std::string_view name) {
+  if (stream == nullptr || stream->get_schema == nullptr || name.empty()) {
+    return -1;
+  }
+  nanoarrow::UniqueSchema schema;
+  if (stream->get_schema(stream, schema.get()) != NANOARROW_OK) {
+    return -1;
+  }
+  for (int64_t i = 0; i < schema->n_children; ++i) {
+    if (schema->children[i]->name != nullptr && name == schema->children[i]->name) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
 }
 
 // ---------------------------------------------------------------------------

@@ -97,6 +97,35 @@ TEST(ResidentPayloadPoolTest, PayloadTooBigForTheReservationIsTreatedAsLarge) {
   EXPECT_TRUE(b->load().has_value());
 }
 
+// The byte budget is hard: a large payload that fits the whole pool but not the
+// large class (capacity minus the small reservation) is rejected, rather than
+// admitted over the cap once the large FIFO has nothing left to evict.
+TEST(ResidentPayloadPoolTest, LargePayloadThatCannotFitBesideSmallResidentsIsRejected) {
+  ResidentPayloadPool pool(800);  // small reservation 100, large class 700
+  auto small = pool.admit(makePayload(100, 1));
+  ASSERT_NE(small, nullptr);
+
+  EXPECT_EQ(pool.admit(makePayload(750, 2)), nullptr);  // 100 + 750 > 800
+  const auto stats = pool.stats();
+  EXPECT_EQ(stats.resident_bytes, 100U);
+  EXPECT_TRUE(small->load().has_value()) << "a large payload never evicts small residents";
+}
+
+// A large payload may borrow the unused small reservation; a small payload then
+// reclaims it — the total never exceeds the budget.
+TEST(ResidentPayloadPoolTest, SmallPayloadReclaimsItsBorrowedReservation) {
+  ResidentPayloadPool pool(800);                 // small reservation 100, large class 700
+  auto large = pool.admit(makePayload(750, 1));  // borrows 50 bytes of the reservation
+  ASSERT_NE(large, nullptr);
+  auto small = pool.admit(makePayload(100, 2));
+  ASSERT_NE(small, nullptr);
+
+  const auto stats = pool.stats();
+  EXPECT_LE(stats.resident_bytes, 800U);
+  EXPECT_EQ(large->load(), std::nullopt) << "the borrower is evicted";
+  EXPECT_TRUE(small->load().has_value());
+}
+
 TEST(ResidentPayloadPoolTest, FifoEvictionByAdmissionOrder) {
   ResidentPayloadPool pool(250);
   auto first = pool.admit(makePayload(100, 1));

@@ -366,5 +366,50 @@ TEST(ArrowStreamRoundTripTest, CollapsesDoubleSlashesInNames) {
   EXPECT_FALSE(found_raw) << "raw or leading-slash field name survived ingest";
 }
 
+// A native Arrow TIMESTAMP column (here in milliseconds) can be selected as the
+// timestamp by name; the value-column mappings do not list it.
+TEST(ArrowStreamRoundTripTest, NativeTimestampColumnIsSelectableByName) {
+  DataEngine engine;
+  auto td_id = engine.createTimeDomain("td");
+  auto ds_id = engine.createDataset(DatasetDescriptor{.source_name = "src", .time_domain_id = *td_id});
+  ASSERT_TRUE(ds_id.has_value());
+  DatastoreSourceWriteHost write_host(engine, PJ_data_source_handle_t{static_cast<uint32_t>(*ds_id)});
+  sdk::SourceWriteHostView writer(write_host.raw());
+  const auto topic = writer.ensureTopic("stamped");
+  ASSERT_TRUE(topic.has_value());
+
+  BuiltStream built;
+  ArrowSchemaInit(built.schema.get());
+  ASSERT_EQ(ArrowSchemaSetTypeStruct(built.schema.get(), 2), NANOARROW_OK);
+  ASSERT_EQ(
+      ArrowSchemaSetTypeDateTime(
+          built.schema->children[0], NANOARROW_TYPE_TIMESTAMP, NANOARROW_TIME_UNIT_MILLI, nullptr),
+      NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(built.schema->children[0], "time"), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetType(built.schema->children[1], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(built.schema->children[1], "value"), NANOARROW_OK);
+  ASSERT_EQ(ArrowArrayInitFromSchema(built.array.get(), built.schema.get(), nullptr), NANOARROW_OK);
+  ASSERT_EQ(ArrowArrayStartAppending(built.array.get()), NANOARROW_OK);
+  for (int64_t ms : {5, 6}) {
+    ASSERT_EQ(ArrowArrayAppendInt(built.array->children[0], ms), NANOARROW_OK);
+    ASSERT_EQ(ArrowArrayAppendDouble(built.array->children[1], static_cast<double>(ms) * 10.0), NANOARROW_OK);
+    ASSERT_EQ(ArrowArrayFinishElement(built.array.get()), NANOARROW_OK);
+  }
+  ASSERT_EQ(ArrowArrayFinishBuildingDefault(built.array.get(), nullptr), NANOARROW_OK);
+
+  ArrowArrayStream stream{};
+  initOneBatchStream(&stream, std::move(built));
+  auto raw = write_host.raw();
+  PJ_error_t err{};
+  ASSERT_TRUE(raw.vtable->append_arrow_stream(raw.ctx, *topic, &stream, PJ_string_view_t{"time", 4}, &err))
+      << err.message;
+  write_host.flushPending();
+
+  const auto lock = engine.lockEngine();
+  const auto& chunks = engine.getTopicStorage(topic->id)->sealedChunks();
+  ASSERT_EQ(chunks.size(), 1U);
+  EXPECT_EQ(chunks.front().timestamps, (std::vector<Timestamp>{5'000'000, 6'000'000}));  // ms scaled to ns
+}
+
 }  // namespace
 }  // namespace PJ

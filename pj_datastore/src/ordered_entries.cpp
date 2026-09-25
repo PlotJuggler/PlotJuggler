@@ -7,6 +7,8 @@
 #include <cassert>
 #include <numeric>
 
+#include "saturating_time.hpp"
+
 namespace PJ {
 
 // --- Entry access ---
@@ -172,7 +174,7 @@ bool OrderedEntries::shift(Timestamp delta) {
     return false;
   }
   for (size_t i = 0; i < entries_.size(); ++i) {
-    entries_[i].timestamp += delta;
+    entries_[i].timestamp = saturatingAdd(entries_[i].timestamp, delta);
     entry_timestamps_[i] = entries_[i].timestamp;
     // Slide the store clock AND remember the slide for payload-embedded stamps:
     // the payload bytes (a serialized canonical object or a wire message) are not
