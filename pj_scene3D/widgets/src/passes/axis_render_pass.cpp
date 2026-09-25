@@ -25,11 +25,6 @@ ArrowGizmo::Params paramsForLength(float length) {
   return p;
 }
 
-// Luminance gain applied to the hovered frame's triad colors so the highlighted
-// gizmo reads brighter than its neighbours. >1 boosts toward white (clamped);
-// values feed the HDR pipeline so a moderate push is plenty.
-constexpr float kHighlightGain = 1.8f;
-
 }  // namespace
 
 void AxisRenderPass::initializeGL() {
@@ -68,7 +63,7 @@ void AxisRenderPass::render(const ViewParams& view_params, const FrameContext& f
   if (has_highlight) {
     for (std::size_t axis = 0; axis < colors.size(); ++axis) {
       highlight_colors[axis] =
-          glm::vec4(glm::min(glm::vec3(colors[axis]) * kHighlightGain, glm::vec3(1.0f)), colors[axis].a);
+          glm::vec4(glm::min(glm::vec3(colors[axis]) * look::kHighlightGain, glm::vec3(1.0f)), colors[axis].a);
     }
   }
 

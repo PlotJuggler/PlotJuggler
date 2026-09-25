@@ -53,8 +53,8 @@ function reportCount(consoleMessages) {
 
 // One <trail> element exactly as a desktop build writes it (TrailLayer::
 // xmlSaveState) for a trail owned by a pose layer. The source-bound attributes
-// are deliberate: the browser has no trail renderer and must ignore the whole
-// element, not merely tolerate its tag name.
+// are deliberate: the browser must restore the trail from the pose layer's own
+// topic, never retarget it from the payload.
 const DESKTOP_POSE_TRAIL = '<trail source_kind="pose_topic" source_topic_name="/poses"'
   + ' source_dataset_id="1" source_dataset_source="ros2_scene3d_order_real.mcap"'
   + ' past_color="#1f77b4" future_color="#9ecae1" thickness="4"'
@@ -169,7 +169,7 @@ test('occupancy updates and voxel textures stay bounded and seekable', async ({ 
   expect(errors).toEqual([]);
 });
 
-test('a desktop-saved pose trail is ignored without costing the browser its poses', async ({ page }) => {
+test('a desktop-saved pose trail replays and draws in the browser', async ({ page }) => {
   test.setTimeout(150000);
   const consoleMessages = [];
   const errors = [];
@@ -183,11 +183,12 @@ test('a desktop-saved pose trail is ignored without costing the browser its pose
   await dropRows(page, screen, [212, 232, 252, 283, 302]);
   const live = await waitForData(page, consoleMessages, data =>
     data.points.live === 2 && data.poses.live === 1 && data.poses.arms === 768);
+  expect(live.docks[0].data.trails.rendered).toBe(0);
 
   const downloaded = await downloadLayoutFromFileMenu(page, screen, consoleMessages);
   const browserXml = downloaded.bytes.toString('utf8');
-  // The browser never writes a trail, so this payload can only reach it from a
-  // desktop session — which is exactly why nothing else covers the path.
+  // The trail is opt-in, so the browser's own layout has none; the nested
+  // payload below is exactly what a desktop session writes.
   expect(browserXml).not.toMatch(/<trail\b/);
   const desktopXml = withDesktopPoseTrail(browserXml);
   expect([...desktopXml.matchAll(/<trail\b/g)]).toHaveLength(1);
@@ -208,7 +209,8 @@ test('a desktop-saved pose trail is ignored without costing the browser its pose
   // then pass against the dock the drops built rather than the replayed one.
   const restored = await waitForData(page, consoleMessages, (data, state) =>
     state.docks[0].identity !== live.docks[0].identity
-    && data.poses.live === 1 && data.poses.arms === 768);
+    && data.poses.live === 1 && data.poses.arms === 768
+    && data.trails.rendered === 1 && data.trails.vertices >= 4);
   expect(restored.docks[0].data.warnings).toEqual([]);
   expect(errors).toEqual([]);
 });

@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "pj_base/builtin/frame_transforms.hpp"  // PJ::sdk::Pose
-#include "pj_scene3d_core/grid_map_view.h"       // FiniteRange
+#include "pj_scene3d_core/grid_map_view.h"       // GridMapUpload
 #include "pj_scene3d_widgets/gl/program.h"
 #include "pj_scene3d_widgets/gl/texture.h"
 #include "pj_scene3d_widgets/gl/vertex_array.h"
@@ -19,22 +19,6 @@
 #include "pj_widgets/Colormap.h"  // PJ::Colormap
 
 namespace pj::scene3d {
-
-// One GridMap ready for the GPU: placement plus the two de-interleaved channels,
-// row-major `row_count * column_count` floats each (NaN = hole). `elevation` may
-// be empty (a flat plane: the "None" selector). Built by GridMapLayer, moved into
-// setGrid(); the CPU pack runs once per new sample / selector change.
-struct GridMapUpload {
-  std::string frame_id;
-  PJ::sdk::Pose origin;       ///< Corner of cell (0,0), in `frame_id`.
-  glm::vec2 cell_size{1.0f};  ///< Metric cell size along local x (columns) and y (rows).
-  uint32_t column_count = 0;
-  uint32_t row_count = 0;
-  std::vector<float> elevation;
-  std::vector<float> color;
-  bool color_is_elevation = false;  ///< `color` is empty: the elevation channel is also the color channel.
-  FiniteRange color_range;          ///< Finite min/max of the color channel (the auto colormap range).
-};
 
 // Draws a GridMap as a lit, colormapped heightfield surface. The geometry is
 // procedural: `6 * (cols-1) * (rows-1)` vertices from gl_VertexID (no VBO, no index

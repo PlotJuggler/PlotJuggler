@@ -100,7 +100,10 @@ endif()
 # ---------------------------------------------------------------------------
 
 if(MSVC)
-    set(PJ_WARNING_FLAGS /W4 /WX /permissive-)
+    # C4702 (unreachable code) is a code-generation warning that Qt's own
+    # headers raise once inlined (qnumeric.h's overflow helpers after their
+    # intrinsic early return), so it cannot be scoped to our sources.
+    set(PJ_WARNING_FLAGS /W4 /WX /permissive- /wd4702)
 else()
     set(PJ_WARNING_FLAGS
         -Wall -Wextra -Wshadow -Wnon-virtual-dtor -Wold-style-cast
@@ -334,8 +337,8 @@ endif()
 if(TARGET pj_scene3d_widgets)
     add_compile_definitions(PJ_WITH_SCENE3D)
 endif()
-# The demos drive the OpenGL renderer directly.
-if(PJ_BUILD_DEMOS AND NOT PJ_SCENE3D_RHI)
+# Most demos drive the OpenGL renderer directly; the QRhi build gets only its own.
+if(PJ_BUILD_DEMOS AND NOT EMSCRIPTEN)
     add_subdirectory(pj_scene3D/demos)
 endif()
 add_subdirectory(pj_dialog_host)

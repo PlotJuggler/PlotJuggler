@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: MPL-2.0
 """Generate the deterministic mixed-family Scene3D ordering fixture.
 
-Reproduce with mcap==1.3.1. One raw PointCloud2, one PoseArray, one translucent
+Reproduce with mcap==1.3.1. One raw PointCloud2, two PoseArrays (the second
+shifted 1 m along x, so a pose trail has two distinct points), one translucent
 OccupancyGrid, a second PointCloud2, and their TF chain share a dataset so
 browser acceptance can physically reorder unlike/interleaved layer families
 and verify the renderer's actual command submission order.
@@ -103,6 +104,13 @@ def build_fixture() -> bytes:
         data=data.pose_array_cdr(0),
     )
     writer.add_message(
+        channel_id=pose_channel,
+        log_time=0,
+        publish_time=0,
+        sequence=1,
+        data=data.pose_array_cdr(0, x_offset=1.0),
+    )
+    writer.add_message(
         channel_id=grid_channel,
         log_time=0,
         publish_time=0,
@@ -130,7 +138,7 @@ def build_fixture() -> bytes:
 def verify_fixture(payload: bytes) -> None:
     messages = list(make_reader(io.BytesIO(payload), validate_crcs=True).iter_messages(log_time_order=True))
     topics = [channel.topic for _, channel, _ in messages]
-    if topics != [POINT_TOPIC, POSE_TOPIC, GRID_TOPIC, SECOND_POINT_TOPIC, TF_TOPIC]:
+    if topics != [POINT_TOPIC, POSE_TOPIC, POSE_TOPIC, GRID_TOPIC, SECOND_POINT_TOPIC, TF_TOPIC]:
         raise RuntimeError(f"fixture topic order/count changed: {topics}")
     if any(message.log_time != 0 or message.publish_time != 0 for _, _, message in messages):
         raise RuntimeError("fixture timestamps changed")

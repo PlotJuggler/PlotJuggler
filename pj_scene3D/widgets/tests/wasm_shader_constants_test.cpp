@@ -27,6 +27,7 @@
 #include <string_view>
 
 #include "pj_scene3d_widgets/cube_mesh.h"
+#include "pj_widgets/Colormap.h"
 
 namespace {
 
@@ -74,6 +75,17 @@ TEST(WasmShaderConstantsTest, BrowserSolidsIncludeTheSharedEdgeBand) {
     EXPECT_EQ(source.find("cubeEdgeFactor(vec3"), std::string::npos)
         << shader << " re-declared cubeEdgeFactor locally instead of including it";
     EXPECT_EQ(source.find(kEdgeWidth), std::string::npos) << shader << " re-inlined the edge band half-width";
+  }
+}
+
+// The QRhi point and grid-map shaders evaluate the colormap polynomials from a file copy of
+// PJ::colormapGlsl() (qsb can only #include files); the two must stay identical.
+TEST(WasmShaderConstantsTest, ColormapCopyMatchesTheSharedPolynomials) {
+  const std::string copy = readShader("colormap.glslinc");
+  EXPECT_NE(copy.find(PJ::colormapGlsl()), std::string::npos)
+      << "rhi/shaders/colormap.glslinc drifted from PJ::colormapGlsl(): paste the Colormap.cpp string again";
+  for (const std::string_view shader : {"point.vert", "cube.vert", "gridmap.frag"}) {
+    EXPECT_NE(readShader(shader).find("colormap.glslinc"), std::string::npos) << shader;
   }
 }
 

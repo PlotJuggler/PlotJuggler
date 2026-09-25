@@ -20,9 +20,9 @@
 #include "pj_datastore/object_store.hpp"            // PJ::ObjectTopicId, PJ::SequentialUID
 #include "pj_scene3d_core/poses_in_frame_render.h"  // PoseTriadInstance
 #include "pj_scene3d_core/scene_limits.h"           // BudgetLatch
+#include "pj_scene3d_widgets/layers/trail_layer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #ifndef PJ_SCENE3D_RHI
-#include "pj_scene3d_widgets/layers/trail_layer.h"
 #include "pj_scene3d_widgets/passes/poses_render_pass.h"
 #endif
 
@@ -54,12 +54,10 @@ class PosesInFrameLayer : public Scene3DLayer {
   [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
   [[nodiscard]] QStringList fallbackFrames() const override;
   [[nodiscard]] QString sourceFrame() const override;
-#ifndef PJ_SCENE3D_RHI
   // This layer's decode warning, else the owned trail's ("waiting for TF", decode
   // failures): the dock only polls REGISTERED layers, so without the relay an
   // embedded trail that cannot draw would fail silently.
   [[nodiscard]] QString statusWarning() const override;
-#endif
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
 
@@ -75,8 +73,8 @@ class PosesInFrameLayer : public Scene3DLayer {
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
   void releaseGL() override;
 #endif
-  // Coalesces repaints to sample changes, except while the GL build's owned
-  // trail is on: its past/future split moves with every tick.
+  // Coalesces repaints to sample changes, except while the owned trail is on:
+  // its past/future split moves with every tick.
   [[nodiscard]] std::uint64_t renderKey(PJ::Timepoint time) const override;
 
   // QRhi view hook, called once per frame for a visible layer: drains a pending
@@ -136,7 +134,6 @@ class PosesInFrameLayer : public Scene3DLayer {
     return override_color_;
   }
 
-#ifndef PJ_SCENE3D_RHI
   // Trail: an optional TrailLayer this layer OWNS outright. It is never
   // registered with the dock, so it gets no Topics row and no settings panel of
   // its own — its style rows are appended to this layer's config widget, and it
@@ -153,7 +150,6 @@ class PosesInFrameLayer : public Scene3DLayer {
   [[nodiscard]] TrailLayer* trail() const {
     return trail_.get();
   }
-#endif
 
 #ifdef PJ_SCENE3D_TEST_HOOKS
   // Decode + expand at a chosen time with no GL context (the dock normally drives
@@ -199,13 +195,11 @@ class PosesInFrameLayer : public Scene3DLayer {
   void onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id);
   // Track the (possibly changing) source frame_id; notify the dock on change.
   void updateSourceFrame(const std::string& frame_id);
-#ifndef PJ_SCENE3D_RHI
   // Bring a freshly-created trail up to this layer's current lifecycle state
-  // (context, fixed frame, tracker time, visibility, GL). Enabling can happen
-  // at any point after attach, so the trail must catch up rather than assume it
-  // was present from the start.
+  // (context, fixed frame, tracker time, visibility). Enabling can happen at any
+  // point after attach, so the trail must catch up rather than assume it was
+  // present from the start.
   void syncTrailToCurrentState();
-#endif
 
   PJ::ObjectTopicId topic_id_;
   QString display_name_;
@@ -250,15 +244,11 @@ class PosesInFrameLayer : public Scene3DLayer {
 #ifndef PJ_SCENE3D_RHI
   PosesRenderPass pass_;
   std::uint64_t pass_revision_ = 0;  // geometry_revision_ last handed to pass_
+#endif
 
   // Owned outright (no QObject parent) so destruction is deterministic and the
   // dock never sees it as a layer. Null when the trail is disabled.
   std::unique_ptr<TrailLayer> trail_;
-#else
-  // The trail is not rendered by this renderer yet (QRHI_MIGRATION P3). A saved
-  // <trail> is kept verbatim so a layout round-trips without loss or warning.
-  QDomDocument trail_xml_;
-#endif
 };
 
 }  // namespace pj::scene3d

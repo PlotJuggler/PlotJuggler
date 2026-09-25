@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <glm/vec2.hpp>
 #include <optional>
 #include <string>
 #include <vector>
@@ -28,6 +29,22 @@ struct FiniteRange {
   bool valid = false;
 };
 [[nodiscard]] FiniteRange finiteRange(const std::vector<float>& values);
+
+// One GridMap ready for the GPU: placement plus the two de-interleaved channels,
+// row-major `row_count * column_count` floats each (NaN = hole). `elevation` may
+// be empty (a flat plane: the "None" selector). Built by GridMapLayer once per new
+// sample / selector change and handed to whichever renderer draws it.
+struct GridMapUpload {
+  std::string frame_id;
+  PJ::sdk::Pose origin;       ///< Corner of cell (0,0), in `frame_id`.
+  glm::vec2 cell_size{1.0f};  ///< Metric cell size along local x (columns) and y (rows).
+  uint32_t column_count = 0;
+  uint32_t row_count = 0;
+  std::vector<float> elevation;
+  std::vector<float> color;
+  bool color_is_elevation = false;  ///< `color` is empty: the elevation channel is also the color channel.
+  FiniteRange color_range;          ///< Finite min/max of the color channel (the auto colormap range).
+};
 
 // De-interleave `field` into a dense row-major float array (index = r*column_count + c,
 // the layout the render pass uploads as an R32F texture). Integer datatypes widen to
