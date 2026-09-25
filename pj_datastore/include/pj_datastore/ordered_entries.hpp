@@ -53,6 +53,10 @@ class ResidentSlot;  // pj_datastore/resident_payload_pool.hpp
 struct LazyPayload {
   LazyCallback fetch;
   std::shared_ptr<ResidentSlot> seed;
+  /// Bytes the closure ITSELF keeps alive (a captured payload, as streaming's
+  /// kEager entries hold), charged to the series' memory budget like an owned
+  /// payload. 0 for a closure that re-reads its bytes on demand.
+  size_t resident_bytes = 0;
 };
 
 /// Eager owned bytes, or a (possibly seeded) lazy resolver; resolveEntry
@@ -173,9 +177,11 @@ class OrderedEntries {
   // immediately before) — the incremental uid_order maintenance relies on it. A
   // caller inserting a non-max UID must rebuildUidOrder() instead.
   PushOrder push(ObjectEntry&& entry);
-  // Drop the oldest entry (front position). No-op when empty. Triple only — the
-  // caller drops the warm cache and adjusts memory accounting around it.
-  void evictFront();
+  // Remove the oldest entry (front position) and return it, so the caller decides
+  // where it is destroyed (ObjectStore drops it after releasing its locks).
+  // Precondition: !empty(). Triple only — the caller drops the warm cache and
+  // adjusts memory accounting around it.
+  ObjectEntry evictFront();
   // Empty the triple. Memory/cache stay the caller's (see clearEntriesLocked).
   void clear();
   // Slide every store timestamp by `delta` (also entry_timestamps and each entry's

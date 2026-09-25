@@ -15,9 +15,12 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "pj_datastore/resident_payload_pool.hpp"
 
 namespace PJ {
 namespace {
@@ -1821,6 +1824,119 @@ TEST(ObjectStoreLockScopeTest, SlowResolveDoesNotBlockSameSeriesPush) {
   pusher.join();
   resolver.join();
   EXPECT_EQ(store.entryCount(id), 2U);
+}
+
+// =========================================================================
+// Review fixes (objectstore correctness review)
+// =========================================================================
+
+TEST(ObjectStoreReviewTest, LazyResidentBytesCountAgainstTheMemoryBudget) {
+  // Streaming's kEager entries are lazy closures that pin their payload; they must
+  // count against max_memory_bytes like owned payloads, or the cap never fires.
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  store.setRetentionBudget(id, {.time_window_ns = 0, .max_memory_bytes = 250});
+  for (int i = 0; i < 5; ++i) {
+    auto bytes = std::make_shared<const std::vector<uint8_t>>(100, 0x11);
+    auto fetch = [bytes]() -> std::optional<sdk::PayloadView> {
+      return sdk::PayloadView{Span<const uint8_t>{bytes->data(), bytes->size()}, sdk::BufferAnchor{bytes}};
+    };
+    ASSERT_TRUE(store.pushLazy(id, i, std::move(fetch), bytes->size()).has_value());
+  }
+  EXPECT_EQ(store.entryCount(id), 2U);
+  EXPECT_EQ(store.memoryUsage(id), 200U);
+  store.evictBefore(id, 100);
+  EXPECT_EQ(store.memoryUsage(id), 0U);
+}
+
+TEST(ObjectStoreReviewTest, RetentionWindowNearInt64MinDoesNotWrap) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  store.setRetentionBudget(id, {.time_window_ns = 10, .max_memory_bytes = 0});
+  const Timestamp near_min = std::numeric_limits<Timestamp>::min() + 5;
+  ASSERT_TRUE(store.pushOwned(id, near_min, makePayload(4)).has_value());
+  // newest - window lies below INT64_MIN: the floor saturates, nothing is evicted.
+  EXPECT_EQ(store.entryCount(id), 1U);
+
+  // "Infinite" window with negative timestamps.
+  auto id2 = registerTestTopic(store, "second");
+  store.setRetentionBudget(id2, {.time_window_ns = std::numeric_limits<int64_t>::max(), .max_memory_bytes = 0});
+  ASSERT_TRUE(store.pushOwned(id2, -5, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id2, -2, makePayload(4)).has_value());
+  EXPECT_EQ(store.entryCount(id2), 2U);
+}
+
+TEST(ObjectStoreReviewTest, LazyEntryWithoutFetcherResolvesAsFetchFailed) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  ASSERT_TRUE(store.pushLazy(id, 1, LazyCallback{}).has_value());
+  const auto entry = store.at(id, size_t{0});
+  ASSERT_TRUE(entry.has_value());
+  EXPECT_TRUE(entry->fetch_failed);
+  EXPECT_TRUE(entry->payload.bytes.empty());
+}
+
+TEST(ObjectStoreReviewTest, SeededPushToUnknownTopicDoesNotTouchThePool) {
+  ObjectStore store;
+  auto pool = std::make_shared<ResidentPayloadPool>(1024);
+  store.setResidentPayloadPool(pool);
+  auto id = registerTestTopic(store);
+  auto fetch = []() -> std::optional<sdk::PayloadView> { return sdk::makePayloadView(std::vector<uint8_t>(600)); };
+  ASSERT_TRUE(store.pushLazyWithSeed(id, 1, sdk::makePayloadView(std::vector<uint8_t>(600)), fetch).has_value());
+  const auto before = pool->stats();
+
+  EXPECT_FALSE(store.pushLazyWithSeed(ObjectTopicId{9999}, 1, sdk::makePayloadView(std::vector<uint8_t>(600)), fetch)
+                   .has_value());
+  const auto after = pool->stats();
+  EXPECT_EQ(after.admitted, before.admitted);
+  EXPECT_EQ(after.resident_bytes, before.resident_bytes) << "the live seed must not be evicted";
+}
+
+// A payload whose destruction calls back into the store, like a plugin
+// fetch_ctx_destroy that queries its host. Dropping it under a store or series
+// lock would self-deadlock (or be UB on the shared_mutex).
+struct ReentrantOnDestroy {
+  ObjectStore* store;
+  ObjectTopicId probe;
+  std::atomic<int>* destroyed;
+  ~ReentrantOnDestroy() {
+    (void)store->entryCount(probe);
+    (void)store->listTopics();
+    destroyed->fetch_add(1);
+  }
+};
+
+LazyCallback reentrantFetch(ObjectStore& store, ObjectTopicId probe, std::atomic<int>& destroyed) {
+  auto guard = std::make_shared<ReentrantOnDestroy>(&store, probe, &destroyed);
+  return [guard]() -> std::optional<sdk::PayloadView> { return sdk::makePayloadView(std::vector<uint8_t>{1}); };
+}
+
+TEST(ObjectStoreReviewTest, EntryDestructionRunsAfterTheLocksRelease) {
+  ObjectStore store;
+  std::atomic<int> destroyed{0};
+  auto id = registerTestTopic(store);
+
+  // Retention eviction on push (series lock held exclusively inside the push).
+  store.setRetentionBudget(id, {.time_window_ns = 0, .max_memory_bytes = 0, .max_entries = 1});
+  ASSERT_TRUE(store.pushLazy(id, 1, reentrantFetch(store, id, destroyed)).has_value());
+  ASSERT_TRUE(store.pushLazy(id, 2, reentrantFetch(store, id, destroyed)).has_value());
+  EXPECT_EQ(destroyed.load(), 1);
+
+  // Explicit eviction.
+  store.evictBefore(id, 100);
+  EXPECT_EQ(destroyed.load(), 2);
+
+  // Dataset clear, topic removal and full clear (store lock held exclusively).
+  ASSERT_TRUE(store.pushLazy(id, 3, reentrantFetch(store, id, destroyed)).has_value());
+  store.clearDataset(1);
+  EXPECT_EQ(destroyed.load(), 3);
+  ASSERT_TRUE(store.pushLazy(id, 4, reentrantFetch(store, id, destroyed)).has_value());
+  store.removeTopic(id);
+  EXPECT_EQ(destroyed.load(), 4);
+  auto id2 = registerTestTopic(store, "again");
+  ASSERT_TRUE(store.pushLazy(id2, 5, reentrantFetch(store, id2, destroyed)).has_value());
+  store.clear();
+  EXPECT_EQ(destroyed.load(), 5);
 }
 
 }  // namespace

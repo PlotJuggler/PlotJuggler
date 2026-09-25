@@ -385,6 +385,30 @@ TEST(ObjectDatasetSnapshotTest, DetachLeavesSeriesEmptyRegistered) {
   EXPECT_EQ(rawIds(store.listTopics(ds)), ids_before) << "ids stay registered";
 }
 
+TEST(ObjectDatasetSnapshotTest, ReattachAfterClearNeverRestoresIntoAnotherDatasetsTopic) {
+  // clear() while a dataset is detached restarts id allocation, so an unrelated
+  // dataset's new topic can take the detached topic's raw id. Rollback must not
+  // pour the snapshot's entries into that stranger.
+  ObjectStore store;
+  const DatasetId ds_a = 7;
+  const DatasetId ds_b = 8;
+  const ObjectTopicId a = registerObjectTopic(store, ds_a, "cam/a");
+  for (int i = 0; i < 10; ++i) {
+    ASSERT_TRUE(store.pushOwned(a, static_cast<Timestamp>(i), std::vector<uint8_t>(8, 0xAB)).has_value());
+  }
+  ObjectStore::ObjectDatasetSnapshot snap = store.detachDataset(ds_a);
+  store.clear();
+  const ObjectTopicId b = registerObjectTopic(store, ds_b, "other");
+  ASSERT_EQ(b.id, a.id) << "precondition: the raw id was reused";
+  ASSERT_TRUE(store.pushOwned(b, 100, std::vector<uint8_t>(4, 0xCD)).has_value());
+
+  store.reattachDataset(ds_a, std::move(snap));
+
+  EXPECT_EQ(store.entryCount(b), 1u);
+  EXPECT_EQ(store.memoryUsage(b), 4u);
+  EXPECT_EQ(store.descriptor(b).dataset_id, ds_b);
+}
+
 TEST(ObjectDatasetSnapshotTest, ReattachRestoresEntriesAndLatestAt) {
   ObjectStore store;
   const DatasetId ds = 7;

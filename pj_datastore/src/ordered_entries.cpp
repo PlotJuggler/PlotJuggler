@@ -141,10 +141,9 @@ OrderedEntries::PushOrder OrderedEntries::push(ObjectEntry&& entry) {
   return PushOrder::kOutOfOrderInsert;
 }
 
-void OrderedEntries::evictFront() {
-  if (entries_.empty()) {
-    return;
-  }
+ObjectEntry OrderedEntries::evictFront() {
+  assert(!entries_.empty());
+  ObjectEntry front = std::move(entries_.front());
   entries_.pop_front();
   entry_timestamps_.erase(entry_timestamps_.begin());
   // Front entry (position 0) is gone: drop its slot from uid_order (exactly one
@@ -161,6 +160,7 @@ void OrderedEntries::evictFront() {
 #ifndef NDEBUG
   checkInvariant();
 #endif
+  return front;
 }
 
 void OrderedEntries::clear() {
@@ -179,7 +179,7 @@ bool OrderedEntries::shift(Timestamp delta) {
     // Slide the store clock AND remember the slide for payload-embedded stamps:
     // the payload bytes (a serialized canonical object or a wire message) are not
     // rewritten, so a consumer reading their inner timestamps must add this delta.
-    entries_[i].payload_stamp_shift += delta;
+    entries_[i].payload_stamp_shift = saturatingAdd(entries_[i].payload_stamp_shift, delta);
   }
   return true;
 }

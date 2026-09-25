@@ -228,6 +228,19 @@ void collectTypeTreeLeaves(
 
 }  // namespace
 
+std::string objectPayloadFormatFromMetadata(std::string_view metadata_json) {
+  const auto metadata = nlohmann::json::parse(metadata_json, nullptr, /*allow_exceptions=*/false);
+  if (!metadata.is_object()) {
+    return {};
+  }
+  const std::string encoding = metadata.value("payload_encoding", std::string{});
+  const std::string schema = metadata.value("payload_schema", std::string{});
+  if (encoding.empty() && schema.empty()) {
+    return {};
+  }
+  return encoding + ":" + schema;
+}
+
 sdk::BuiltinObjectType objectTypeFromMetadata(std::string_view metadata_json) {
   if (metadata_json.empty()) {
     return sdk::BuiltinObjectType::kNone;

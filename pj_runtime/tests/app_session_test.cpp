@@ -456,9 +456,12 @@ PJ::DatasetId makeEmptyShiftedDataset(
 
 PJ::ObjectTopicId addObjectTopic(
     PJ::AppSession& session, PJ::DatasetId dataset_id, const std::string& topic_name,
-    PJ::sdk::BuiltinObjectType object_type, PJ::Timestamp timestamp = 0) {
+    PJ::sdk::BuiltinObjectType object_type, PJ::Timestamp timestamp = 0, const std::string& payload_schema = {}) {
+  // A non-empty payload_schema makes it a parser-backed topic (as ingest registers them).
   const std::string metadata =
-      std::string{R"({"builtin_object_type":")"} + std::string(PJ::sdk::name(object_type)) + R"("})";
+      std::string{R"({"builtin_object_type":")"} + std::string(PJ::sdk::name(object_type)) +
+      (payload_schema.empty() ? std::string{} : R"(","payload_encoding":"cdr","payload_schema":")" + payload_schema) +
+      R"("})";
   auto& object_store = session.sessionManager().objectStore();
   auto topic = object_store.registerTopic(
       PJ::ObjectTopicDescriptor{.dataset_id = dataset_id, .topic_name = topic_name, .metadata_json = metadata});
@@ -621,6 +624,30 @@ TEST(AppSessionMergeTest, NoConflictWhenSharedObjectTopicsSameType) {
   session.catalogModel().rebuildFromDatastore();
 
   EXPECT_TRUE(session.objectMergeConflicts({a, b}).empty());
+}
+
+TEST(AppSessionMergeTest, DetectsConflictBetweenSameTypeTopicsWithDifferentPayloadFormats) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  // Both "/img" topics are images, but one stores ROS messages and the other canonical
+  // serialized images: fused, one side's bytes would reach the other side's decoder.
+  const PJ::DatasetId a = makeShiftedDataset(session, "A", 0, "/s", {0, 1'000'000'000LL});
+  const PJ::DatasetId b = makeShiftedDataset(session, "B", 0, "/s", {2'000'000'000LL, 3'000'000'000LL});
+  const PJ::DatasetId c = makeShiftedDataset(session, "C", 0, "/s", {4'000'000'000LL, 5'000'000'000LL});
+  addObjectTopic(session, a, "/img", PJ::sdk::BuiltinObjectType::kImage, 0, "sensor_msgs/msg/Image");
+  addObjectTopic(session, b, "/img", PJ::sdk::BuiltinObjectType::kImage, 2'000'000'000LL);
+  addObjectTopic(session, c, "/img", PJ::sdk::BuiltinObjectType::kImage, 4'000'000'000LL, "sensor_msgs/msg/Image");
+  session.catalogModel().rebuildFromDatastore();
+
+  const auto conflicts = session.objectMergeConflicts({a, b});
+  ASSERT_EQ(conflicts.size(), 1U);
+  EXPECT_EQ(conflicts[0].topic_name, "/img");
+  EXPECT_EQ(conflicts[0].anchor_format, "cdr:sensor_msgs/msg/Image");
+  EXPECT_EQ(conflicts[0].source_format, "");
+  // Same format on both sides merges fine.
+  EXPECT_TRUE(session.objectMergeConflicts({a, c}).empty());
 }
 
 TEST(AppSessionMergeTest, DetectsConflictBetweenTwoSourceOnlyTopics) {

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "pj_base/sdk/plugin_data_api.hpp"
@@ -215,8 +216,92 @@ TEST(PluginDataHostObjectTest, PushLazyWithNullFetchFnFails) {
   std::atomic<int> destroyed{0};
   auto destroy_fn = [](void* c) noexcept { static_cast<std::atomic<int>*>(c)->fetch_add(1); };
   EXPECT_FALSE(raw.vtable->push_lazy(raw.ctx, topic, 1, nullptr, &destroyed, destroy_fn, &err));
-  // Even on failure, the store calls destroy_fn to free plugin-owned ctx.
-  EXPECT_EQ(destroyed.load(), 1);
+  // A rejected push leaves fetch_ctx with the plugin (the SDK wrapper deletes its
+  // box itself), so the host must NOT destroy it.
+  EXPECT_EQ(destroyed.load(), 0);
+}
+
+TEST(PluginDataHostObjectTest, RejectedPushLazyLeavesFetchCtxToThePlugin) {
+  // The store rejects an unknown topic. The ctx must come back undestroyed:
+  // the SDK's pushLazy wrapper deletes its box on `false`, so a host-side
+  // destroy as well was a double free.
+  Fixture f;
+  const auto raw = f.host.raw();
+  PJ_error_t err{};
+  std::atomic<int> destroyed{0};
+  auto fetch_fn = [](void*, const uint8_t**, uint64_t*) noexcept -> bool { return false; };
+  auto destroy_fn = [](void* c) noexcept { static_cast<std::atomic<int>*>(c)->fetch_add(1); };
+  EXPECT_FALSE(
+      raw.vtable->push_lazy(raw.ctx, PJ_object_topic_handle_t{99999}, 1, fetch_fn, &destroyed, destroy_fn, &err));
+  EXPECT_EQ(destroyed.load(), 0);
+}
+
+TEST(PluginDataHostObjectTest, RejectedSdkPushLazyFreesTheBoxOnce) {
+  // End to end through the SDK wrapper: its LazyBox is deleted exactly once
+  // (by the SDK) — the fetch closure's captured sentinel is released, with no
+  // double delete for ASan to flag.
+  Fixture f;
+  auto sentinel = std::make_shared<int>(0);
+  auto result = f.host.pushLazy(ObjectTopicHandle{99999}, 1, [sentinel]() { return std::vector<uint8_t>{1}; });
+  EXPECT_FALSE(result.has_value());
+  EXPECT_EQ(sentinel.use_count(), 1);
+}
+
+TEST(PluginDataHostObjectTest, PushOwnedRejectsNullDataWithNonzeroSize) {
+  Fixture f;
+  const auto topic = *f.host.registerTopic("blobs", "{}");
+  const auto raw = f.host.raw();
+  PJ_error_t err{};
+  EXPECT_FALSE(raw.vtable->push_owned(raw.ctx, topic, 1, nullptr, 16, &err));
+  EXPECT_EQ(f.store.entryCount(ObjectTopicId{topic.id}), 0U);
+  // A zero-size push with no data is a legitimately empty payload.
+  EXPECT_TRUE(raw.vtable->push_owned(raw.ctx, topic, 2, nullptr, 0, &err));
+  EXPECT_EQ(f.store.entryCount(ObjectTopicId{topic.id}), 1U);
+}
+
+TEST(PluginDataHostObjectTest, ConcurrentReadsOfOneLazyEntrySerializeThePluginFetch) {
+  // The ABI keeps a fetch's buffer valid only until the NEXT call on the same
+  // fetch_ctx, and the store resolves with no lock held. Concurrent readers of
+  // one entry must therefore never overlap inside the plugin's fetch.
+  Fixture f;
+  const auto topic = *f.host.registerTopic("frames", "{}");
+  struct Ctx {
+    std::atomic<int> inside{0};
+    std::atomic<int> overlaps{0};
+    std::vector<uint8_t> last_bytes;
+  };
+  Ctx ctx;
+  auto fetch_fn = [](void* c, const uint8_t** out_data, uint64_t* out_size) noexcept -> bool {
+    auto* self = static_cast<Ctx*>(c);
+    if (self->inside.fetch_add(1) != 0) {
+      self->overlaps.fetch_add(1);
+    }
+    self->last_bytes.assign(4096, 0x5A);
+    std::this_thread::yield();
+    *out_data = self->last_bytes.data();
+    *out_size = self->last_bytes.size();
+    self->inside.fetch_sub(1);
+    return true;
+  };
+  const auto raw = f.host.raw();
+  PJ_error_t err{};
+  ASSERT_TRUE(raw.vtable->push_lazy(raw.ctx, topic, 1, fetch_fn, &ctx, nullptr, &err));
+
+  std::vector<std::thread> readers;
+  for (int t = 0; t < 4; ++t) {
+    readers.emplace_back([&f, topic] {
+      for (int i = 0; i < 200; ++i) {
+        // at() never memoizes, so every call reaches the plugin fetch.
+        const auto entry = f.store.at(ObjectTopicId{topic.id}, size_t{0});
+        ASSERT_TRUE(entry.has_value());
+        ASSERT_EQ(entry->payload.bytes.size(), 4096U);
+      }
+    });
+  }
+  for (auto& reader : readers) {
+    reader.join();
+  }
+  EXPECT_EQ(ctx.overlaps.load(), 0);
 }
 
 TEST(PluginDataHostObjectTest, PushRejectsUnknownTopicHandle) {

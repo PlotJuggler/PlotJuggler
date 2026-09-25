@@ -119,12 +119,14 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageEagerCommitsScalarsAndS
 
   auto object_topic = object_store_.findTopic(dataset_id_, "/camera/image");
   ASSERT_TRUE(object_topic.has_value());
-  EXPECT_EQ(object_store_.descriptor(*object_topic).metadata_json, R"({"builtin_object_type":"kImage"})");
+  EXPECT_EQ(
+      object_store_.descriptor(*object_topic).metadata_json,
+      R"({"builtin_object_type":"kImage","payload_encoding":"runtime_host_object","payload_schema":"mock/image"})");
   EXPECT_EQ(object_store_.entryCount(*object_topic), 1U);
-  // Under always-lazy ingest with captured anchor, object entries go to the
-  // store via pushLazy. The lazy slot does not contribute to memoryUsage —
-  // bytes are owned upstream via the captured anchor.
-  EXPECT_EQ(object_store_.memoryUsage(*object_topic), 0U);
+  // kEager entries go to the store via pushLazy with a closure that captures the
+  // payload, so the entry pins those bytes and is charged their size — which is
+  // what lets a streaming topic's memory budget evict it.
+  EXPECT_EQ(object_store_.memoryUsage(*object_topic), payload.size());
   auto entry = object_store_.latestAt(*object_topic, 123);
   ASSERT_TRUE(entry.has_value());
   ASSERT_NE(entry->payload.anchor, nullptr);
@@ -138,7 +140,9 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, BindSchemaRegisteredObjectTypeCrea
 
   auto object_topic = object_store_.findTopic(dataset_id_, "/camera/deferred_image");
   ASSERT_TRUE(object_topic.has_value());
-  EXPECT_EQ(object_store_.descriptor(*object_topic).metadata_json, R"({"builtin_object_type":"kImage"})");
+  EXPECT_EQ(
+      object_store_.descriptor(*object_topic).metadata_json,
+      R"({"builtin_object_type":"kImage","payload_encoding":"runtime_host_object","payload_schema":"mock/bind_schema_image"})");
 }
 
 TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageLazyObjectsEagerScalarsCommitsScalarsAndDefersObjectBytes) {

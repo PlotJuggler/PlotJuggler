@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -25,6 +26,12 @@ namespace PJ {
 // Parses the canonical object type from an ObjectTopicDescriptor::metadata_json
 // blob. Invalid or missing metadata maps to sdk::BuiltinObjectType::kNone.
 [[nodiscard]] sdk::BuiltinObjectType objectTypeFromMetadata(std::string_view metadata_json);
+
+// The wire format of a parser-backed object topic's payloads, "<encoding>:<schema>"
+// (from the metadata's payload_encoding / payload_schema), or "" for a topic that
+// stores canonical serialized objects. Two same-name topics are only mergeable
+// when their formats match: the merged bytes are decoded by ONE topic's parser.
+[[nodiscard]] std::string objectPayloadFormatFromMetadata(std::string_view metadata_json);
 
 // Scalar-field payload: a single value-per-timestamp series read from the data
 // engine. `logical_type` is the column's schema-declared primitive

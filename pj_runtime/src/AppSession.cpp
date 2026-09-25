@@ -250,28 +250,39 @@ std::vector<ObjectMergeConflict> AppSession::objectMergeConflicts(const std::vec
   // source-vs-anchor: the established type for a name is the anchor's, or — when the anchor lacks it —
   // the FIRST source (in plan order) to contribute that name, which becomes the fuse destination. A
   // later contributor with the same name but a different canonical type is the conflict, whether it
-  // disagrees with the anchor or with an earlier source-only contributor.
-  std::unordered_map<std::string, sdk::BuiltinObjectType> type_by_name;
+  // disagrees with the anchor or with an earlier source-only contributor. The payload format must
+  // match as well: the fused entries are all decoded by the destination topic's parser.
+  struct Kind {
+    sdk::BuiltinObjectType type{};
+    std::string format;
+  };
+  const auto kindOf = [](const ObjectTopicDescriptor& descriptor) {
+    return Kind{
+        objectTypeFromMetadata(descriptor.metadata_json), objectPayloadFormatFromMetadata(descriptor.metadata_json)};
+  };
+  std::unordered_map<std::string, Kind> kind_by_name;
   for (const ObjectTopicId object_topic_id : object_store.listTopics(plan->anchor)) {
     const ObjectTopicDescriptor descriptor = object_store.descriptor(object_topic_id);
-    type_by_name.emplace(descriptor.topic_name, objectTypeFromMetadata(descriptor.metadata_json));
+    kind_by_name.emplace(descriptor.topic_name, kindOf(descriptor));
   }
 
   std::vector<ObjectMergeConflict> conflicts;
   for (const DatasetMergeSource& source : plan->sources) {
     for (const ObjectTopicId object_topic_id : object_store.listTopics(source.dataset_id)) {
       const ObjectTopicDescriptor descriptor = object_store.descriptor(object_topic_id);
-      const sdk::BuiltinObjectType source_type = objectTypeFromMetadata(descriptor.metadata_json);
-      const auto [it, inserted] = type_by_name.emplace(descriptor.topic_name, source_type);
-      if (inserted || source_type == it->second) {
-        continue;  // first contributor for this name (sets the destination type), or a match.
+      Kind source_kind = kindOf(descriptor);
+      const auto [it, inserted] = kind_by_name.emplace(descriptor.topic_name, source_kind);
+      if (inserted || (source_kind.type == it->second.type && source_kind.format == it->second.format)) {
+        continue;  // first contributor for this name (sets the destination kind), or a match.
       }
       conflicts.push_back(
           ObjectMergeConflict{
               .topic_name = descriptor.topic_name,
               .source_dataset_id = source.dataset_id,
-              .anchor_type = it->second,
-              .source_type = source_type,
+              .anchor_type = it->second.type,
+              .source_type = source_kind.type,
+              .anchor_format = it->second.format,
+              .source_format = std::move(source_kind.format),
           });
     }
   }

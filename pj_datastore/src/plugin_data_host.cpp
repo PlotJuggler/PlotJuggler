@@ -1824,6 +1824,11 @@ bool toolboxPushOwnedObject(
     void* ctx, PJ_object_topic_handle_t topic, int64_t timestamp_ns, const uint8_t* data, uint64_t size,
     PJ_error_t* out_error) noexcept {
   auto* impl = static_cast<DatastoreToolboxHostState*>(ctx);
+  if (data == nullptr && size > 0) {
+    impl->setObjectError("data must not be null when size > 0");
+    propagateError(out_error, impl->object_last_error.c_str());
+    return false;
+  }
   try {
     std::vector<uint8_t> bytes;
     if (data != nullptr && size > 0) {
@@ -1868,6 +1873,12 @@ class PluginFetchCtx {
   PluginFetchCtx(PluginFetchCtx&&) = delete;
   PluginFetchCtx& operator=(PluginFetchCtx&&) = delete;
 
+  // Hand fetch_ctx back to the plugin without destroying it (a rejected push:
+  // see pushPluginLazy). Only valid while this holder is the sole reference.
+  void disarm() noexcept {
+    destroy_fn_ = nullptr;
+  }
+
   // nullopt = the plugin reported failure (or promised bytes it did not hand
   // over): the LazyCallback contract's fetch-failed signal. An engaged empty
   // vector is a payload the plugin legitimately produced with zero bytes —
@@ -1876,6 +1887,11 @@ class PluginFetchCtx {
     if (fetch_fn_ == nullptr) {
       return std::nullopt;
     }
+    // The ABI keeps the returned buffer valid only until the NEXT call on this
+    // fetch_ctx (the SDK's LazyBox reuses one vector), and the store resolves
+    // with no lock held, so two readers of one entry would otherwise race: hold
+    // the lock across the fetch AND the copy.
+    const std::lock_guard lock(mutex_);
     const uint8_t* data = nullptr;
     uint64_t size = 0;  // matches PJ_lazy_fetch_fn_t out_size (uint64_t*)
     if (!fetch_fn_(ctx_, &data, &size)) {
@@ -1894,7 +1910,40 @@ class PluginFetchCtx {
   PJ_lazy_fetch_fn_t fetch_fn_;
   void* ctx_;
   void (*destroy_fn_)(void*);
+  mutable std::mutex mutex_;
 };
+
+// Shared body of the source and parser push_lazy trampolines. fetch_ctx_destroy
+// runs only for an entry the store ACCEPTED (when it is evicted/removed): on
+// failure the plugin keeps ownership, because the SDK's pushLazy wrappers delete
+// their box when push_lazy returns false — destroying it here as well would
+// double-free it.
+Status pushPluginLazy(
+    ObjectStore& store, ObjectTopicId topic, int64_t timestamp_ns, PJ_lazy_fetch_fn_t fetch_fn, void* fetch_ctx,
+    void (*fetch_ctx_destroy)(void*)) {
+  // shared_ptr keeps the ctx holder alive as long as ObjectStore keeps the lambda
+  // (std::function needs a copyable target); its destructor runs destroy once.
+  auto holder = std::make_shared<PluginFetchCtx>(fetch_fn, fetch_ctx, fetch_ctx_destroy);
+  // Plugins return raw bytes via the C ABI; wrap them as a PayloadView whose
+  // anchor is a shared_ptr<const vector<uint8_t>>, per the pushLazy contract.
+  auto closure = [holder]() -> std::optional<sdk::PayloadView> {
+    auto bytes = holder->invoke();
+    if (!bytes.has_value()) {
+      return std::nullopt;  // plugin fetch failed -> entry resolves as fetch_failed
+    }
+    return sdk::makePayloadView(std::move(*bytes));
+  };
+  try {
+    auto status = store.pushLazy(topic, timestamp_ns, std::move(closure));
+    if (!status) {
+      holder->disarm();  // rejected: the store holds no copy, `holder` is the last one
+    }
+    return status;
+  } catch (...) {
+    holder->disarm();
+    throw;
+  }
+}
 
 bool sourceObjectRegisterTopic(
     void* ctx, PJ_string_view_t topic_name, PJ_string_view_t metadata_json, PJ_object_topic_handle_t* out_handle,
@@ -1937,6 +1986,11 @@ bool sourceObjectPushOwned(
     void* ctx, PJ_object_topic_handle_t topic, int64_t timestamp_ns, const uint8_t* data, uint64_t size,
     PJ_error_t* out_error) noexcept {
   auto* impl = static_cast<DatastoreSourceObjectWriteHostState*>(ctx);
+  if (data == nullptr && size > 0) {
+    impl->setError("data must not be null when size > 0");
+    propagateError(out_error, impl->last_error.c_str());
+    return false;
+  }
   auto* target = impl->target.load(std::memory_order_acquire);
   try {
     std::vector<uint8_t> bytes;
@@ -1967,35 +2021,18 @@ bool sourceObjectPushLazy(
     void (*fetch_ctx_destroy)(void*), PJ_error_t* out_error) noexcept {
   auto* impl = static_cast<DatastoreSourceObjectWriteHostState*>(ctx);
   if (fetch_fn == nullptr) {
-    if (fetch_ctx_destroy != nullptr) {
-      fetch_ctx_destroy(fetch_ctx);
-    }
-    propagateError(out_error, "fetch_fn must not be null");
+    propagateError(out_error, "fetch_fn must not be null");  // fetch_ctx stays the plugin's
     return false;
   }
+  // Target pointer comes from the atomic swap layer (so writes follow the
+  // current target store, not a captured-at-construction one).
   auto* target = impl->target.load(std::memory_order_acquire);
   try {
-    // shared_ptr keeps the ctx holder alive as long as ObjectStore keeps
-    // the lambda; destructor runs exactly once when ObjectStore drops the
-    // entry (retention, evict, removeTopic, clear, or store teardown).
-    auto holder = std::make_shared<PluginFetchCtx>(fetch_fn, fetch_ctx, fetch_ctx_destroy);
-    // Plugins return raw bytes via the C ABI; wrap them as a PayloadView whose
-    // anchor is a shared_ptr<const vector<uint8_t>>, per the pushLazy contract.
-    // Target pointer comes from the atomic swap layer (so writes follow the
-    // current target store, not a captured-at-construction one).
-    auto closure = [holder]() -> std::optional<sdk::PayloadView> {
-      auto bytes = holder->invoke();
-      if (!bytes.has_value()) {
-        return std::nullopt;  // plugin fetch failed -> entry resolves as fetch_failed
-      }
-      return sdk::makePayloadView(std::move(*bytes));
-    };
-    auto result = target->pushLazy(ObjectTopicId{topic.id}, timestamp_ns, std::move(closure));
+    auto result =
+        pushPluginLazy(*target, ObjectTopicId{topic.id}, timestamp_ns, fetch_fn, fetch_ctx, fetch_ctx_destroy);
     if (!result) {
       impl->setError(result.error());
       propagateError(out_error, impl->last_error.c_str());
-      // `holder` is the only reference to the ctx on failure; dropping it
-      // runs fetch_ctx_destroy exactly once (the destructor already does it).
       return false;
     }
     impl->last_error.clear();
@@ -2003,8 +2040,6 @@ bool sourceObjectPushLazy(
   } catch (const std::exception& e) {
     impl->setError(e.what());
     propagateError(out_error, impl->last_error.c_str());
-    // On exception before the ObjectStore took ownership, PluginFetchCtx's
-    // destructor runs as part of shared_ptr teardown — single destroy call.
     return false;
   } catch (...) {
     impl->setError("pushLazy: unknown exception");
@@ -2207,6 +2242,11 @@ bool toolboxObjectTimeRange(
 bool parserObjectPushOwned(
     void* ctx, int64_t timestamp_ns, const uint8_t* data, uint64_t size, PJ_error_t* out_error) noexcept {
   auto* impl = static_cast<DatastoreParserObjectWriteHostState*>(ctx);
+  if (data == nullptr && size > 0) {
+    impl->setError("data must not be null when size > 0");
+    propagateError(out_error, impl->last_error.c_str());
+    return false;
+  }
   auto* target = impl->target.load(std::memory_order_acquire);
   try {
     std::vector<uint8_t> bytes;
@@ -2237,23 +2277,12 @@ bool parserObjectPushLazy(
     PJ_error_t* out_error) noexcept {
   auto* impl = static_cast<DatastoreParserObjectWriteHostState*>(ctx);
   if (fetch_fn == nullptr) {
-    if (fetch_ctx_destroy != nullptr) {
-      fetch_ctx_destroy(fetch_ctx);
-    }
-    propagateError(out_error, "fetch_fn must not be null");
+    propagateError(out_error, "fetch_fn must not be null");  // fetch_ctx stays the plugin's
     return false;
   }
   auto* target = impl->target.load(std::memory_order_acquire);
   try {
-    auto holder = std::make_shared<PluginFetchCtx>(fetch_fn, fetch_ctx, fetch_ctx_destroy);
-    auto closure = [holder]() -> std::optional<sdk::PayloadView> {
-      auto bytes = holder->invoke();
-      if (!bytes.has_value()) {
-        return std::nullopt;  // plugin fetch failed -> entry resolves as fetch_failed
-      }
-      return sdk::makePayloadView(std::move(*bytes));
-    };
-    auto result = target->pushLazy(impl->bound_topic, timestamp_ns, std::move(closure));
+    auto result = pushPluginLazy(*target, impl->bound_topic, timestamp_ns, fetch_fn, fetch_ctx, fetch_ctx_destroy);
     if (!result) {
       impl->setError(result.error());
       propagateError(out_error, impl->last_error.c_str());

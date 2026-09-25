@@ -189,7 +189,9 @@ class ObjectStore {
   // Fetcher runs on every read; the store retains the anchor via PayloadView
   // and never copies. The closure can return a view over bytes the producer
   // already owns (chunk cache, mmap, hand-off between stores).
-  Status pushLazy(ObjectTopicId id, Timestamp timestamp, LazyCallback fetch);
+  // `resident_bytes`: what the closure itself pins (a captured payload), charged
+  // to the series' memory budget; 0 when it re-reads its bytes on demand.
+  Status pushLazy(ObjectTopicId id, Timestamp timestamp, LazyCallback fetch, size_t resident_bytes = 0);
 
   // pushLazy plus an ingest-time seed: `seed` (bytes the pushing host already
   // holds — the producer's synchronous "hot path") is admitted to the store's
@@ -403,6 +405,17 @@ class ObjectStore {
     mutable std::optional<ResolvedObjectEntry> cached_latest;
   };
 
+  // Everything a mutation unlinks under the store/series locks: dropped entries,
+  // displaced warm-cache values and erased series. Dropping a payload can run
+  // plugin code (a C-ABI fetch_ctx_destroy, a payload anchor's release, a
+  // library unload) that may call back into this store, so every mutator
+  // declares one BEFORE taking its locks: it is destroyed after they release.
+  struct Graveyard {
+    std::vector<ObjectEntry> entries;
+    std::vector<ResolvedObjectEntry> cached;
+    std::vector<std::unique_ptr<ObjectSeries>> series;
+  };
+
   ObjectSeries* findSeries(ObjectTopicId id);
   const ObjectSeries* findSeries(ObjectTopicId id) const;
 
@@ -412,7 +425,7 @@ class ObjectStore {
 
   // Erase a topic from topics_. Caller must already hold store_mutex_ (used by
   // removeTopic under its own lock and by replaceDatasetFrom under the dual lock).
-  void eraseTopicLocked(ObjectTopicId id);
+  void eraseTopicLocked(ObjectTopicId id, Graveyard& graveyard);
 
   // Wait out any in-flight shared readers (e.g. an EntryTimestampsView, which
   // holds only the series lock — not store_mutex_) before `series` storage is
@@ -427,7 +440,10 @@ class ObjectStore {
   // exclusively AND must have already drained the series' readers
   // (drainSeriesReaders) so no EntryTimestampsView dangles into the timestamp
   // vector being cleared.
-  static void clearEntriesLocked(ObjectSeries& series);
+  static void clearEntriesLocked(ObjectSeries& series, Graveyard& graveyard);
+
+  // Reset the warm cache, moving any held value into `graveyard`.
+  static void dropCache(const ObjectSeries& series, Graveyard& graveyard);
 
   // Resolve an entry SNAPSHOT (a cheap copy of the payload variant — refcount
   // bumps only) taken under the series lock; called with that lock RELEASED so
@@ -439,8 +455,8 @@ class ObjectStore {
 
   // Drop the oldest entry: the warm cache (if it holds it) + owned-payload memory
   // accounting live here; the triple pop delegates to OrderedEntries::evictFront.
-  void evictFront(ObjectSeries& series);
-  void applyRetention(ObjectSeries& series, Timestamp newest_ts);
+  void evictFront(ObjectSeries& series, Graveyard& graveyard);
+  void applyRetention(ObjectSeries& series, Timestamp newest_ts, Graveyard& graveyard);
 
   // See setResidentPayloadPool. Read without synchronization on the push path;
   // wiring must complete before ingest starts.

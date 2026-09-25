@@ -162,11 +162,19 @@ std::optional<DatasetId> confirmAndMergeDatasets(
     const auto shown = std::min<qsizetype>(static_cast<qsizetype>(conflicts.size()), kMaxConflictItems);
     for (qsizetype i = 0; i < shown; ++i) {
       const ObjectMergeConflict& c = conflicts[static_cast<std::size_t>(i)];
+      // Same type means the payload formats differ: name those instead.
+      const auto describe = [&c](sdk::BuiltinObjectType type, const std::string& format) {
+        if (c.anchor_type != c.source_type) {
+          return QString::fromUtf8(sdk::name(type));
+        }
+        return format.empty() ? tr("canonical %1").arg(QString::fromUtf8(sdk::name(type)))
+                              : QString::fromStdString(format).toHtmlEscaped();
+      };
       list += u"<li>"_s +
               tr("\"%1\": %2 vs %3")
                   .arg(
-                      QString::fromStdString(c.topic_name).toHtmlEscaped(), QString::fromUtf8(sdk::name(c.anchor_type)),
-                      QString::fromUtf8(sdk::name(c.source_type))) +
+                      QString::fromStdString(c.topic_name).toHtmlEscaped(), describe(c.anchor_type, c.anchor_format),
+                      describe(c.source_type, c.source_format)) +
               u"</li>"_s;
     }
     if (const qsizetype remaining = static_cast<qsizetype>(conflicts.size()) - shown; remaining > 0) {
@@ -176,7 +184,8 @@ std::optional<DatasetId> confirmAndMergeDatasets(
     MessageBox::warning(
         parent, tr("Cannot merge datasets"),
         u"<p>"_s +
-            tr("These object topics share a name but have incompatible types, so the datasets cannot be merged:") +
+            tr("These object topics share a name but have incompatible types or formats, so the datasets cannot be "
+               "merged:") +
             u"</p>"_s + list + u"<p>"_s + tr("Remove or rename the conflicting topic and try again.") + u"</p>"_s);
     return std::nullopt;
   }

@@ -11,6 +11,7 @@
 #include <exception>
 #include <functional>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <utility>
 #include <vector>
 
@@ -778,7 +779,16 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
           object_topic_id = existing;
         }
       } else {
-        const std::string metadata_json = fmt::format(R"({{"builtin_object_type":"{}"}})", sdk::name(object_kind));
+        // The payload's wire format travels with the topic: the bytes are only
+        // decodable by a parser for this encoding + schema, which a dataset merge
+        // must check before fusing same-name topics (objectPayloadFormatFromMetadata).
+        const std::string metadata_json =
+            nlohmann::json{
+                {"builtin_object_type", sdk::name(object_kind)},
+                {"payload_encoding", std::string(encoding)},
+                {"payload_schema", std::string(type_name)},
+            }
+                .dump();
         const ObjectTopicDescriptor descriptor{
             .dataset_id = self->dataset_id_,
             .topic_name = std::string(topic_name),
@@ -1025,9 +1035,11 @@ bool DataSourceRuntimeHost::cbPushMessage(
       return true;
     }
     // Streaming has no durable source to re-read. Its kEager entries therefore
-    // keep the captured payload even when a tap also consumed it synchronously.
+    // keep the captured payload even when a tap also consumed it synchronously,
+    // and are charged its size so the per-topic memory budget can evict them.
     if (auto status = self->object_store_target_.load()->pushLazy(
-            *binding.object_topic_id, timestamp_ns, makeCapturedPayloadClosure(payload, std::move(payload_anchor)));
+            *binding.object_topic_id, timestamp_ns, makeCapturedPayloadClosure(payload, std::move(payload_anchor)),
+            static_cast<size_t>(payload.size));
         !status) {
       return self->fail(out_error, ("ObjectStore.pushLazy failed: " + status.error()).c_str());
     }

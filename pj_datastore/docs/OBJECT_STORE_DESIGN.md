@@ -125,9 +125,11 @@ is invoked on resolve and returns a `sdk::PayloadView` — a `Span<const uint8_t
 paired with a type-erased `BufferAnchor` that keeps those bytes alive for as long
 as the resolved view is held. The producer anchors on whatever already owns the
 bytes (a decompressed chunk, an mmap, or a fresh allocation via
-`sdk::makePayloadView`), so the store never copies on resolve. Lazy entries do not
-contribute to `memoryUsage()` because the store retains the callable, not the
-fetched bytes. The callable runs on every `at()` read; `latestAt()` repeats of the
+`sdk::makePayloadView`), so the store never copies on resolve. A lazy entry
+contributes the optional `resident_bytes` argument to `memoryUsage()`: what the
+callable itself keeps alive (streaming's kEager entries capture their whole
+payload and pass its size), or 0 for a callable that re-reads its bytes on
+demand. The callable runs on every `at()` read; `latestAt()` repeats of the
 same sample are served from a warm cache without re-invoking it (see Read Paths).
 
 Kinds with a registered synchronous ingest tap use this unseeded form for
@@ -295,20 +297,21 @@ cache: the most-recently-resolved `ResolvedObjectEntry`, keyed by its
 
 Retention is configured per topic:
 
-- `time_window_ns > 0`: drop entries older than `newest_push_ts -
-  time_window_ns`.
-- `max_memory_bytes > 0`: drop oldest entries until owned-payload memory is at
-  or below the cap.
+- `time_window_ns > 0`: drop entries older than `newest_retained_ts -
+  time_window_ns` (saturating: a floor below INT64_MIN evicts nothing).
+- `max_memory_bytes > 0`: drop oldest entries until charged memory (owned
+  payloads plus lazy `resident_bytes`) is at or below the cap.
+- `max_entries > 0`: keep at most that many of the most recent entries.
 
 Either axis can be zero to disable that axis. Both zero disables automatic
 retention.
 
-Automatic retention runs only during `pushOwned()` and `pushLazy()`. Explicit
+Automatic retention runs on push and after `flushTo()` / `mergeDatasets()`. Explicit
 eviction is available through `evictBefore(id, threshold)` and
 `evictAllBefore(threshold)`.
 
-Memory accounting includes only owned payloads. Lazy entries are counted as zero
-bytes because the store retains a fetch callable, not the fetched payload.
+Memory accounting includes owned payloads and each lazy entry's `resident_bytes`.
+Seeded bytes are charged to the ResidentPayloadPool instead, never to the series.
 
 ## Threading
 
@@ -329,17 +332,33 @@ copy the target entry (cheap — the payload variant copies as refcount bumps /
 a closure copy) under the series shared lock, RELEASE that lock, and only then
 invoke `resolveEntry()`. A slow lazy fetch (file re-read + decompress) therefore
 never blocks writers pushing to the same series, and never holds the cache
-mutex. Only the global store shared lock stays held across the resolve — it
-keeps the series object alive and conflicts only with registration-level
-exclusive operations, never with pushes. An entry evicted mid-resolve is
+mutex. The global store lock is released before the resolve too (the snapshot
+owns every capture it needs), so a slow fetch never stalls registration-level
+exclusive operations either; `latestAt` re-takes it only to write the warm
+cache back. An entry evicted mid-resolve is
 harmless (the snapshot owns its captures); the warm cache may then briefly
 memoize that already-evicted payload, bounded at one per topic, until the next
 differing read replaces it.
 
 The ResidentPayloadPool has its own mutex, taken briefly by seed admission and
-by slot retirement (which entry destruction may trigger under store locks —
-store→pool nesting only; pool code never takes store locks). Payload anchors of
-evicted seeds are always released outside the pool mutex.
+by slot retirement. Payload anchors of evicted seeds are always released outside
+the pool mutex.
+
+**Nothing is destroyed under a store lock.** Dropping an entry, a warm-cache
+value or a whole series can run foreign code: a C-ABI plugin's
+`fetch_ctx_destroy`, a payload anchor's release, a plugin library unload. Such
+code may call back into the store, which would self-deadlock on the store or
+series mutex. Every mutator therefore moves what it unlinks into a local
+`Graveyard` declared before its locks, so the destruction runs after they
+release.
+
+**C-ABI `push_lazy` ownership.** The store owns `fetch_ctx` only once the push
+SUCCEEDS; it then runs `fetch_ctx_destroy` exactly once, when the entry is
+dropped. A rejected push (unknown topic, null `fetch_fn`, exception) leaves
+`fetch_ctx` with the plugin: the SDK's `pushLazy` wrappers delete their box
+themselves when `push_lazy` returns false. The host also serializes calls into
+one `fetch_ctx` (fetch plus copy under a per-context mutex), because the ABI
+keeps the returned buffer valid only until the next call.
 
 ### Deferred: off-thread prefetch
 

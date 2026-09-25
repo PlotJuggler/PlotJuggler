@@ -32,6 +32,10 @@ struct ObjectMergeConflict {
   DatasetId source_dataset_id = 0;
   sdk::BuiltinObjectType anchor_type{};
   sdk::BuiltinObjectType source_type{};
+  // objectPayloadFormatFromMetadata of each side ("" = canonical objects). Same
+  // type but different formats is a conflict too: one parser decodes the merge.
+  std::string anchor_format;
+  std::string source_format;
 };
 
 // Central runtime object for PlotJuggler 4. Owns long-lived application
