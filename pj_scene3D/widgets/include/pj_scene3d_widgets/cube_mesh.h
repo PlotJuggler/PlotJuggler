@@ -153,4 +153,29 @@ inline constexpr float kCubeSrgbGamma = 2.2f;
 // The value kCubeSpriteGlsl hard-codes, mirrored for the test that checks the two agree.
 inline constexpr float kCubeEdgeMeanScale = 0.887f;
 
+// kSphereDiscShading from kCubeLightingGlsl, mirrored for the test that re-derives it.
+inline constexpr float kSphereDiscShading = 0.702f;
+
+// Mean of the shared Lambert (ambient 0.35, diffuse 0.65, key light (0.4, 0.5, 0.8))
+// over a sphere imposter's unit disc, whose normal is (x, y, sqrt(1 - x^2 - y^2)).
+[[nodiscard]] inline double sphereDiscMeanShading(int samples = 1000) {
+  const double norm = std::sqrt(0.4 * 0.4 + 0.5 * 0.5 + 0.8 * 0.8);
+  double total = 0.0;
+  int inside = 0;
+  for (int j = 0; j < samples; ++j) {
+    for (int i = 0; i < samples; ++i) {
+      const double x = 2.0 * (i + 0.5) / samples - 1.0;
+      const double y = 2.0 * (j + 0.5) / samples - 1.0;
+      const double r2 = x * x + y * y;
+      if (r2 > 1.0) {
+        continue;
+      }
+      const double lit = (0.4 * x + 0.5 * y + 0.8 * std::sqrt(1.0 - r2)) / norm;
+      total += 0.35 + 0.65 * std::max(lit, 0.0);
+      ++inside;
+    }
+  }
+  return total / inside;
+}
+
 }  // namespace pj::scene3d

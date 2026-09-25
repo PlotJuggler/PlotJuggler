@@ -37,7 +37,15 @@ test('Scene3D quality passes activate and recover independently', async ({ page 
     models.quality.shadow.active);
   const baseline = active.docks[0].models;
   expect(baseline.quality.shadow).toMatchObject({ ready: true, fit: true, size: 2048 });
-  expect(baseline.quality.shadow.draws).toBe(baseline.models.draws);
+  // Shadow casters: one draw per model call (each fixture model has one
+  // submesh, so as many as the colour draws) plus, since P3, one instanced
+  // draw per solid SceneEntities marker family (cubes, spheres, cylinders,
+  // arrows; axes, lines and triangle lists never cast). The fixture is one
+  // marker layer with every solid family resolvable.
+  const solidFamilies = ['cubes', 'spheres', 'cylinders', 'arrows']
+    .filter(family => baseline.markers.families[family] > 0).length;
+  expect(solidFamilies).toBe(4);
+  expect(baseline.quality.shadow.draws).toBe(baseline.models.draws + solidFamilies);
   expect(active.docks[0].readback.rgbSum).toBeGreaterThan(0);
 
   // Fault injection observes the product renderer and a still-live framebuffer;

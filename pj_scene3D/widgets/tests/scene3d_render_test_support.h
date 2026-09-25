@@ -132,12 +132,21 @@ class Scene3DRenderFixture {
     return *id;
   }
 
+  // Pushes one more object at `t_ns` for a topic add() registered.
+  void push(PJ::ObjectTopicId id, PJ::Timestamp t_ns, std::vector<uint8_t> bytes) {
+    EXPECT_TRUE(session_.objectStore().pushOwned(id, t_ns, std::move(bytes)).has_value());
+  }
+
   QWidget& window() {
     return window_;
   }
   // Null once a test reparents the dock into a window it destroys.
   PJ::Scene3DDockWidget* dock() {
     return dock_;
+  }
+  // The dataset every add()ed topic belongs to.
+  [[nodiscard]] PJ::DatasetId dataset() const {
+    return dataset_;
   }
   // Not wired by default: connect it with dock()->setTransformService().
   pj::scene3d::TransformService& transforms() {

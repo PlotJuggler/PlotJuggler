@@ -112,15 +112,7 @@ class SceneViewWidget : public QOpenGLWidget {
 
   // Composite/look knobs (read in paintGL; call update() after changing).
   // Defaults are the User's 2026-06-10 look-dev pick (mesh_viewer demo).
-  struct CompositeParams {
-    int tonemap_mode = look::kTonemapMode;  // 0 None, 1 ACES, 2 AgX, 3 Khronos PBR Neutral
-    float exposure = look::kExposure;
-    float saturation = look::kSaturation;  // post-tonemap; data pixels only
-    float ao_strength = look::kAoStrength;
-    bool ssao_enabled = true;
-    bool edl_enabled = true;
-    float edl_floor = look::kEdlFloor;  // EDL darkens toward floor*color (0 = old black; 1 = off)
-  };
+  using CompositeParams = pj::scene3d::CompositeParams;
   [[nodiscard]] CompositeParams& compositeParams() {
     return composite_params_;
   }
@@ -149,6 +141,13 @@ class SceneViewWidget : public QOpenGLWidget {
   // Latest fixed-frame scene extent; forwarded to the active camera for adaptive
   // near/far and framing.
   void setSceneBounds(const AABB& bounds);
+  // Camera-framing extent of the view's layers: each layer's worldBounds()
+  // placed in the fixed frame through `frame_ctx`; unplaceable layers are skipped.
+  [[nodiscard]] AABB layerSceneBounds(const FrameContext& frame_ctx) const;
+  // The dock restored the camera from a layout. The OpenGL renderer never
+  // auto-fits the camera, so there is nothing to suppress (the QRhi view applies
+  // CameraFitPolicy).
+  void noteCameraRestored() {}
 #ifdef PJ_SCENE3D_TEST_HOOKS
   [[nodiscard]] const AABB& sceneBoundsForTest() const {
     return scene_bounds_;

@@ -4,7 +4,18 @@
 
 set(CMAKE_AUTOMOC ON)
 
-if(TARGET pj_scene3d_widgets)
+# GPU/CPU benchmark of the QRhi point pass (instanced quads vs the point-list fast
+# path, static vs re-uploaded clouds) on an offscreen QRhi. QRHI_MIGRATION.md has
+# the numbers it produced.
+if(TARGET pj_scene3d_widgets AND PJ_SCENE3D_RHI)
+  add_executable(pointcloud_rhi_benchmark pointcloud_rhi_benchmark.cpp)
+  target_compile_features(pointcloud_rhi_benchmark PRIVATE cxx_std_20)
+  target_compile_options(pointcloud_rhi_benchmark PRIVATE ${PJ_WARNING_FLAGS})
+  target_include_directories(pointcloud_rhi_benchmark PRIVATE ../widgets)
+  target_link_libraries(pointcloud_rhi_benchmark PRIVATE pj_scene3d_widgets)
+endif()
+
+if(TARGET pj_scene3d_widgets AND NOT PJ_SCENE3D_RHI)
   add_executable(marker_gallery_demo marker_gallery_demo.cpp)
   target_compile_features(marker_gallery_demo PRIVATE cxx_std_20)
   target_link_libraries(marker_gallery_demo PRIVATE

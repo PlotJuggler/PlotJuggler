@@ -617,7 +617,6 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
       qOverload<double>(&DoubleScrubber::valueChanged));
   addGridRow(tm_grid, tm_row, tr("Collision opacity"), collision_opacity_, collision_eye_);
 
-#ifndef PJ_SCENE3D_RHI
   // Last row: unlike the rows above it does not edit existing scene state, it
   // creates a new trail layer.
   trail_frame_combo_ = new ComboBox;
@@ -638,7 +637,6 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
       bound_dock_->addTrailLayer(pj::scene3d::TrailSource::tfFrame(frame));
     }
   });
-#endif  // PJ_SCENE3D_RHI: the QRhi renderer draws no trails yet (QRHI_MIGRATION P3)
 
   // Pin both grids' label column to the widest label across BOTH sections, read
   // back from the labels just added (no separate string list to keep in sync).

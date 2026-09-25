@@ -37,8 +37,7 @@ inline constexpr std::string_view kGridMapElevationNone = "<none>";
 // elevation + a color channel, and staged into a GridMapRenderPass ONCE per new
 // sample / selector change. The requested field names are kept apart from the
 // effective ones so a persisted request is honoured again once its field reappears.
-// The QRhi renderer does not draw grid maps yet (QRHI_MIGRATION P3): there the
-// layer keeps its settings, persistence and field list, and its row warns.
+// The QRhi view reads the staged grid through prepareForRender()/stagedGrid().
 class GridMapLayer : public Scene3DLayer {
   Q_OBJECT
  public:
@@ -66,6 +65,43 @@ class GridMapLayer : public Scene3DLayer {
   void releaseGL() override;
 #endif
   [[nodiscard]] std::optional<AABB> worldBounds() const override;
+
+#ifdef PJ_SCENE3D_RHI
+  // QRhi view hook, called once per frame for a visible layer: decodes and packs
+  // the sample at the last tracker time when a tracker move or selector change is
+  // pending. The result is stagedGrid(); stagedRevision() bumps on every change.
+  void prepareForRender();
+  // The grid to draw, nullopt when none (before the first sample, a refused one).
+  [[nodiscard]] const std::optional<GridMapUpload>& stagedGrid() const {
+    return staged_grid_;
+  }
+  [[nodiscard]] std::uint64_t stagedRevision() const {
+    return staged_revision_;
+  }
+#endif
+  // The last decoded sample's frame id (empty before the first sample).
+  [[nodiscard]] const std::string& renderFrameId() const {
+    return source_frame_;
+  }
+  // Display params as set (the persisted values).
+  [[nodiscard]] PJ::Colormap colormap() const {
+    return colormap_;
+  }
+  [[nodiscard]] bool autoRange() const {
+    return auto_range_;
+  }
+  [[nodiscard]] std::pair<double, double> manualRange() const {
+    return {manual_lo_, manual_hi_};
+  }
+  [[nodiscard]] bool lighting() const {
+    return lighting_;
+  }
+  [[nodiscard]] double opacity() const {
+    return opacity_;
+  }
+  [[nodiscard]] bool visible() const {
+    return visible_;
+  }
 
   QWidget* createConfigWidget(QWidget* parent) override;
 
@@ -117,11 +153,12 @@ class GridMapLayer : public Scene3DLayer {
  private:
   // Decode the first sample at attach to learn the source frame + field list.
   bool bootstrap();
-#ifndef PJ_SCENE3D_RHI
   // Fetch the sample at time_ns, pack the selected fields, stage the upload. Cheap
   // no-op when the same sample + selectors are already staged (the scrub path).
   void renderAt(int64_t time_ns);
-#endif
+  // Hand a packed grid to the renderer (GL: the pass; QRhi: stagedGrid()).
+  void stageGrid(GridMapUpload upload);
+  void clearStagedGrid();
   // Forget everything learned from the topic's bytes (parse/upload memos, bounds,
   // frame, field list, effective picks, warnings); the persisted requests and
   // display settings survive.
@@ -187,6 +224,10 @@ class GridMapLayer : public Scene3DLayer {
 
 #ifndef PJ_SCENE3D_RHI
   GridMapRenderPass pass_;
+#else
+  std::optional<GridMapUpload> staged_grid_;
+  std::uint64_t staged_revision_ = 0;
+  std::optional<PJ::Timepoint> requested_time_;  // the last tracker time, drained by prepareForRender()
 #endif
 };
 

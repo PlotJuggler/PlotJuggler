@@ -88,11 +88,9 @@ pj::scene3d::TrailLayer* trailOf(ISceneLayer* layer) {
   if (auto* trail = dynamic_cast<pj::scene3d::TrailLayer*>(layer); trail != nullptr) {
     return trail;
   }
-#ifndef PJ_SCENE3D_RHI
   if (const auto* poses = dynamic_cast<const PosesInFrameLayer*>(layer); poses != nullptr) {
     return poses->trail();
   }
-#endif
   return nullptr;
 }
 
@@ -837,23 +835,25 @@ QWidget* Scene3DDockWidget::createSceneView() {
     rendering_warning_label_->setVisible(!warning.isEmpty());
     layoutFrameOverlayCombo();
   });
-#else
+#endif
   // Right-click on a frame gizmo: the view picks the frame (hover machinery)
   // and the dock owns the menu — trail creation plus two one-click conveniences
   // over existing dock APIs. Empty-space right-clicks never reach here (the
-  // view ignore()s them, so the standard dock menu appears instead).
+  // view ignore()s them, so the standard dock menu appears instead). popup(),
+  // never exec(): a nested event loop is not WebAssembly-safe.
   connect(
       view_, &pj::scene3d::SceneViewWidget::frameContextMenuRequested, this,
       [this](const QString& frame, const QPoint& global_pos) {
-        QMenu menu(this);
-        menu.addAction(tr("Create trail for '%1'").arg(frame), this, [this, frame]() {
+        auto* menu = new QMenu(this);
+        menu->setObjectName(u"scene3dFrameMenu"_s);
+        menu->setAttribute(Qt::WA_DeleteOnClose);
+        menu->addAction(tr("Create trail for '%1'").arg(frame), this, [this, frame]() {
           addTrailLayer(pj::scene3d::TrailSource::tfFrame(frame));
         });
-        menu.addAction(tr("Set as fixed frame"), this, [this, frame]() { setFixedFrame(frame); });
-        menu.addAction(tr("Follow this frame"), this, [this, frame]() { setFollowFrame(frame); });
-        menu.exec(global_pos);
+        menu->addAction(tr("Set as fixed frame"), this, [this, frame]() { setFixedFrame(frame); });
+        menu->addAction(tr("Follow this frame"), this, [this, frame]() { setFollowFrame(frame); });
+        menu->popup(global_pos);
       });
-#endif  // PJ_SCENE3D_RHI: the QRhi view has no frame picking yet (QRHI_MIGRATION P3)
   if (tf_buffer_ != nullptr) {
     view_->setTransformBuffer(tf_buffer_);
   }
@@ -935,26 +935,10 @@ void Scene3DDockWidget::updateSceneBounds() {
   if (view_ == nullptr) {
     return;
   }
-  pj::scene3d::AABB scene;
   static const pj::scene3d::TransformBuffer k_empty_buffer;
   const pj::scene3d::TransformBuffer& tf = tf_buffer_ != nullptr ? *tf_buffer_ : k_empty_buffer;
   const pj::scene3d::FrameContext frame_ctx{tf, view_->fixedFrame(), PJ::fromRaw(lastTrackerNs().value_or(0))};
-  for (Scene3DLayer* layer : view_->layers()) {
-    if (layer == nullptr) {
-      continue;
-    }
-    if (const auto bounds = layer->worldBounds(); bounds.has_value()) {
-      std::string source_frame = layer->sourceFrame().toStdString();
-      if (source_frame.empty()) {
-        source_frame = view_->fixedFrame();  // matches DepthCloud's unframed-image fallback
-      }
-      if (const auto fixed_from_source = frame_ctx.lookup(source_frame); fixed_from_source.has_value()) {
-        scene = pj::scene3d::unionAABB(
-            scene, pj::scene3d::transformedAABB(glm::mat4(fixed_from_source->matrix()), *bounds));
-      }
-    }
-  }
-  view_->setSceneBounds(scene);
+  view_->setSceneBounds(view_->layerSceneBounds(frame_ctx));
 #endif
 }
 
@@ -2046,6 +2030,7 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
         camera.perspective = *saved.perspective;
       }
       view_->camera().adoptState(camera);
+      view_->noteCameraRestored();
     }
     // Restore the camera follow target (empty = off). Tolerant of older layouts
     // (missing attribute → empty → follow off). A target absent from the current

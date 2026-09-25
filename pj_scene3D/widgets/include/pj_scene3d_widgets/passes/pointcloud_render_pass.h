@@ -37,14 +37,6 @@ struct FastCloudData {
   AttribLayout layout;
 };
 
-// Default cube LOD threshold, in device pixels — see setCubeLodThresholdPx(). One pixel
-// is the
-// conservative choice on both counts: cosmetically a cube keeps its real geometry until it
-// is genuinely sub-pixel, and a threshold sweep on the benchmark showed the speedup is
-// already at its maximum by 1 px (it comes from dropping the fan draw for the whole cloud,
-// not from how many cubes convert), so raising it buys nothing.
-inline constexpr float kDefaultCubeLodThresholdPx = 1.0f;
-
 class PointcloudRenderPass : public IRenderPass {
  public:
   // Shape / colour source per point (layer_style.h). kCube is drawn as the

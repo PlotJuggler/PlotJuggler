@@ -134,17 +134,24 @@ differ.
 What the dock does differently per renderer is small and explicit:
 
 - **Scene bounds.** The OpenGL view gets them from
-  `Scene3DDockWidget::updateSceneBounds`; the QRhi view owns them (it unions what
-  it draws each frame and fits the camera once to each new layer's first data),
-  so the dock pushes nothing there.
+  `Scene3DDockWidget::updateSceneBounds` (each layer's `worldBounds()` placed in
+  the fixed frame, `SceneViewWidget::layerSceneBounds`); the QRhi view owns them
+  (`applySceneBounds`: the union of every admitted and placed draw this frame,
+  see below), so the dock pushes nothing there.
+- **Camera fit.** Both views apply one rule, `CameraFitPolicy`
+  (`core/camera/camera_fit_policy.h`): fit once per newly added layer, on the
+  first frame that layer contributes placed bounds, and never over a camera
+  restored from a layout (the dock calls `noteCameraRestored()` after
+  `adoptState`; fits resume only once the layer set is emptied). The QRhi view
+  fits inside `render()` with that frame's bounds; only visible layers trigger
+  a fit. The GL view does not auto-fit (unchanged; it is removed in P5).
 - **Rendering warning.** Only the QRhi view drops quality stages or budgets at
   runtime; the dock shows its `renderingWarningChanged` text in a bottom overlay
   label (`scene3dRenderingWarning`).
-- **Not yet drawn by QRhi** (P3): `TrailLayer` and `GridMapLayer` still build,
-  persist and restore; the QRhi view marks every layer it does not draw with a
-  "Not rendered by this renderer yet" renderer warning (in `setLayers`), and the
-  frame right-click menu (GL frame picking) is absent. The pose layer's embedded
-  trail is kept verbatim as XML there.
+- **Frame context menu.** Both views emit `frameContextMenuRequested` for a
+  right-click on a TF frame (the QRhi view through `frameAt`) and ignore() any
+  other right-click; the dock shows the menu with `QMenu::popup()` in both
+  builds, never `exec()` (no nested event loop: WebAssembly-safe).
 
 Every layer reports its row warning through `Scene3DLayer::statusWarning()` +
 `statusWarningChanged`: a data part (the layer's `setDataWarning`: decode,
@@ -153,13 +160,138 @@ called by the QRhi view), one per line. The dock combines it with the
 frame-orphan state per row (`updateLayerWarning`; `recomputeOrphanStates` runs it
 for every row, also with no TF bound) in both builds.
 
-The browser view is a `QRhiWidget` configured for Qt's OpenGL/WebGL2 backend
-and 4x renderbuffer MSAA. It owns only QRhi buffers, bindings, and pipelines.
-`scene_view_widget_rhi.cpp` owns scene preparation and command submission;
-`scene_view_widget_rhi_quality.cpp` owns shadow and HDR/SSAO/EDL resource
-creation, fallback, and teardown. Their small private header contains only the
-shared uniform layouts and constants, keeping the shader ABI explicit without
-exposing a second public renderer API.
+The QRhi view (`widgets/rhi/`) is a `QRhiWidget` with 4x MSAA on the backend
+`PJ::preferredGraphicsApi()` picks (OpenGL/WebGL2 today). It owns only QRhi
+buffers, bindings, and pipelines. `scene_view_widget_rhi.cpp` owns scene
+preparation and command submission; `scene_view_widget_rhi_quality.cpp` owns
+shadow and HDR/SSAO/EDL resource creation, fallback, and teardown;
+`scene_view_widget_rhi_quality_p.h` holds the shared uniform layouts and
+constants. The pass structure (P3) lives beside them:
+
+- `rhi_scene_pass.h` — the vocabulary every family shares: `ScenePass`
+  (direct, HDR colour, depth replay), `DrawClass` (opaque/translucent),
+  `ScenePipelineRegistry`, `RhiSharedGeometry`, `SceneBoundsCollector`,
+  `RhiPassSetup`, `RhiFrameContext`, `PlaceFn`/`PlacedLayer`, and the helpers
+  every family builds with: `createScenePipeline(setup, PipelineDesc)`,
+  `ensureUniformBuffer`, `createBindings`, `adoptLayerList`/`pruneLayerGpu`
+  (per-layer GPU state), `findDraws`, `relativeModel` (camera-relative model
+  matrices, origin subtracted in double) and `rhiConventions`.
+- `passes/<family>_rhi_pass.{h,cpp}` — one class per family: occupancy
+  (`OccupancyRhiPass`, the pattern), voxels (`VoxelRhiPass`), poses
+  (`PoseRhiPass`, which also draws the TF frame triads the view builds, with the
+  same pipeline and arrow mesh), SceneEntities markers (`MarkerRhiPass`), models
+  (`ModelRhiPass`) and point clouds (`PointRhiPass`, see "Point family in the QRhi
+  renderer"); `GridRhiPass` draws the prelude (ground grid, TF parent-connection
+  lines), `OverlayRhiPass` the presentation overlays, `GridMapRhiPass` the
+  grid-map heightfields and `TrailRhiPass` the standalone and pose-embedded
+  trails. A scene family owns its pipeline(s), layout SRB, per-layer GPU state
+  and counters, and exposes one shape: `initialize(RhiPassSetup)` (the model
+  pass also takes the view's lighting buffer), `registerPipelines(registry)`,
+  `setLayers`, `admit(place, bounds)`, `prepare(RhiFrameContext, ...)`,
+  `drawsFor(layer)` (a span of `Draw`s, each carrying its `draw_class`),
+  `submit(cb, draw, ScenePass, registry, viewport)` and `release()`. The view
+  orders the calls, owns the command buffer and the logical layer order, and
+  loops over the families generically (`forEachFamily`): registration,
+  release, collecting each slot's draws, and one `std::visit` that submits any
+  family's draw.
+
+**Frame contract.** `render()` admits every layer once (`admitFrame`:
+the effective fixed frame, resolved once, then `prepareForRender`, fixed-frame
+placement, per-view budgets, scene bounds), applies the bounds and camera fit
+once (`applySceneBounds`), computes the frame's camera matrices once
+(`frameView`), then prepares once (`prepareFrame`: every family's `prepare`
+with the one `RhiFrameContext` — streams, instances, uploads, uniforms — and
+`scene_draws`, every draw in logical/dock order with its `DrawClass`). The
+quality-stage flags have one owner: `render()` decides HDR, then SSAO and EDL
+(both also need an invertible projection), `prepareFrame` decides shadows once
+the casters are known; each stage's `last_active` is set once from them. The
+shadow pass, the HDR colour pass, the depth replay (or the direct pass), and the
+EDL mesh mask all replay that `PreparedFrame`; no pass re-admits a layer or
+consumes a budget. A family whose buffers cannot grow drops its own draws for
+the frame; the others still draw. The prelude geometry is rebuilt only when its
+inputs change: the grid and TF connection lines key on the grid settings, the
+TF buffer and its revision, the fixed frame, the render time and the render
+origin; the TF triads on the same TF inputs plus the gizmo settings and the
+hovered frame. The prepared frame, the submission marks and the per-family draw
+lists are reused across frames.
+
+**Pipeline registry.** Each family registers the direct pipelines it creates
+(the view in `initialize()`, the grid's shadow receiver through
+`GridRhiPass::createShadowReceiver` from `ensureShadowResources`, passes through
+`registerPipelines`); once the HDR chain exists the view names the clone targets
+(`setCloneTargets`), and `resolve(direct, pass)` returns the direct pipeline or
+creates its HDR-colour or depth-replay clone on first use. The clones copy every
+state of the source, so HDR and depth replay always match the direct pipeline.
+The TF connection lines keep their own direct pipeline with the annotation
+alpha blend; only its HDR clone is bound (the direct pass and the depth replay
+draw them with the grid-line pipeline). Direct pipelines are built for the
+widget's render target; `setSampleCount()` or `setColorBufferFormat()` recreate
+that target on the same QRhi, so `initialize()` compares its descriptor
+(address and serialized format) and sample count with those it built for and
+rebuilds every resource, overlays and the HDR present included, when they differ.
+
+**Opaque/translucent submission.** Each scene pass draws the prelude
+(`GridRhiPass`: grid cells as data — the shadow-receiving pipeline when shadows
+are active — grid lines, then connection lines with the annotation blend; then
+the view's TF triads), then every opaque draw in logical order, then every
+translucent draw in logical order — no depth sort. Classification: point clouds
+are opaque except their faded out-of-range half, and poses and trails are opaque;
+occupancy, voxels and grid maps are translucent below full layer
+opacity; marker and model ranges are translucent when they skip depth writes
+(the edge overlay of translucent cubes stays with its fill). A translucent layer
+placed before an opaque one in the dock therefore still blends over it.
+`lastSubmittedLayerIdsForTest()` keeps reporting logical order.
+
+**Markers (`MarkerRhiPass`).** Admission places each SceneEntities layer's
+frames and applies the per-layer and per-view instance/stream budgets.
+`prepare()` expands the layer's `MarkerGeometry` into camera-relative instances
+(unit cube + twelve-edge overlay, sphere, cylinder/cone with a per-instance
+taper, arrow for arrows and axes) and stream vertices (line lists, triangle
+lists), all in buffers the pass owns, including its own stream line/triangle
+buffers and pipelines (the grid and TF lines live in `GridRhiPass`). Ranges keep
+the native family order. Wireframe draws every primitive's triangle edges as
+line lists (instanced edge index buffers; streamed triangles expanded to
+edges) on every backend — the GL renderer's `glPolygonMode` look without
+depending on `QRhi::NonFillPolygonMode`, which WebGL2 lacks. The GL renderer
+additionally culls back-facing wire edges of closed solids and keeps the cube
+edge overlay in wireframe; the QRhi renderer shows every edge.
+
+**Models (`ModelRhiPass`).** Every `ModelRenderable` (robot visuals and
+collisions, SceneEntities model primitives): per-layer GPU meshes, triangle-edge
+index lists for wireframe, up to five decoded material textures (budgeted
+before decode) and one material SRB per submesh; one instance per submesh draw.
+The view owns the camera/lighting uniform buffer (binding 6, shared with the
+grid shadow receiver) and hands the shadow map to the pass
+(`setShadowMap`/`clearShadowMap` rebuild every material binding atomically).
+The EDL mesh mask replays the pass's colour draws (`submitMeshMask`) with
+mask pipelines the view derives from the pass's model pipelines.
+
+**Shadows.** The view owns the shadow target (2048² D32F), its light
+uniforms and the orchestration (`submitShadowPass`); `GridRhiPass` owns the
+checkerboard receiver; each
+caster family owns a depth-only pipeline built against that target and records
+its own prepared casters. Casters: model draws (visual robot links, hidden or
+not, and SceneEntities model primitives; collisions never) and, unlike the GL
+renderer, the solid SceneEntities markers — cubes, spheres, cylinders/cones
+and arrows of non-wireframe layers, whatever their opacity, one instanced draw
+per family replaying the colour instance buffer (`marker_shadow.vert` applies
+the cone taper). Axes, cube edge overlays, lines, triangle lists, points,
+poses, occupancy and voxels do not cast. The light frustum fits the union of
+both families' caster bounds, extended to the ground. Receivers are unchanged:
+models and the filled-cell grid (markers do not receive).
+
+**Shared geometry.** The unit cube (voxels), the cube hexagon-fan indices
+(point cubes) and the unit pose arrow (pose triads, TF triads, the corner gizmo)
+are one `RhiSharedGeometry` owned by the view (`RhiPassSetup::geometry`),
+created in `initialize()`, uploaded once, released after every pipeline that
+draws them. The voxel pass owns the colormap LUT texture it samples.
+
+**Scene bounds diverge between the renderers.** The OpenGL view unions every
+layer's `worldBounds()` placed in the fixed frame (hidden layers included,
+`layerSceneBounds`); the QRhi view unions only what it admitted and placed this
+frame (see `applySceneBounds`). A hidden, orphaned or over-budget layer
+therefore frames the GL camera but not the QRhi one. The GL behaviour goes away
+with the GL view in P5.
 Vertex positions are made relative to the camera focal point before conversion
 to float, preserving the existing camera's large-world precision model. The
 current submissions are:
@@ -169,7 +301,7 @@ current submissions are:
   tracker time; and
 - magenta parent/child segments from the shared `buildTfConnectionSegments`;
 - raw canonical point clouds, plus Draco/Cloudini compressed clouds transcoded
-  to the same canonical representation, as point/sphere sprites or instanced
+  to the same canonical representation, as point/sphere sprites or hexagon-fan
   cubes with the native color/range/size controls; and
 - `PosesInFrame` as instanced solid arrow triads using the shared expansion and
   unit-arrow mesh;
@@ -179,12 +311,16 @@ current submissions are:
   cube, with the native field/predicate/range/color semantics;
 - bounded procedural SceneEntities, embedded/remote ModelPrimitives, and
   RobotModel/URDF visuals and collisions; and
-- visual-mesh shadow casting plus model/checkerboard receiving through a lazy
-  2048-square sampled D32F map.
+- visual-mesh and solid-marker shadow casting plus model/checkerboard
+  receiving through a lazy 2048-square sampled D32F map.
 
 The normal WebGL2 path renders linear light into a 4x RGBA16F color
-renderbuffer with D32F depth, resolves color, and composites with the native
-default exposure, ACES, saturation, annotation marker, and manual sRGB encode.
+renderbuffer with D32F depth, resolves color, and composites with the view's
+`CompositeParams` (the GL view's type, `scene_look_defaults.h`: tonemap None /
+ACES / AgX / Khronos PBR Neutral — the same code as the GL composite, AgX
+matrices column-major — exposure, saturation, AO strength, SSAO/EDL switches,
+EDL floor), the annotation marker, and the manual sRGB encode. Background and
+annotation (TF lines/triads) pixels bypass the grade in every mode.
 Qt's GLES backend did not produce usable depth or second-color MSAA resolves in
 real Chrome despite accepting the targets. The browser therefore replays the
 already-bounded retained draws once into single-sample RGBA8 coverage plus a
@@ -230,13 +366,44 @@ at geometry discontinuities. SSAO allocation, rejected-size caching, telemetry,
 warning, and recovery are independent of HDR and EDL; warning priority is HDR,
 then SSAO, then EDL.
 
-The committed `.qsb` packs are baked by `wasm/shaders/bake.sh` for every QRhi
+The committed `.qsb` packs are baked by `rhi/shaders/bake.sh` for every QRhi
 backend (GLSL ES 300, GLSL 330/440, HLSL, MSL, SPIR-V), plus a `-DPJ_FLIP_Y`
 variant of the fullscreen triangle for D3D/Metal. The configure step re-runs the
 script with the host Qt `qsb` and fails on any byte difference or on a pack
 without a source, so a stale pack fails closed instead of silently shipping a
 different shader. Shaders never remap between GL and other clip conventions:
 the renderer folds that into the matrices it uploads (`rhi_conventions.h`).
+
+**Presentation.** The scene chain renders at `render_scale` x the output
+(`setRenderScale`, clamped to [1, 4], the GL view's SSAA): HDR, replay, SSAO and
+EDL targets, the scene viewport, the projection aspect and the point-size pixel
+scale all use that render size, the EDL radius is scaled by it (SSAO works in
+metres), the HDR byte budgets and the size-keyed failure latches apply to it, and
+the present pass downsamples to the output viewport. The direct fallback ignores
+the scale. After presentation (or at the end of the direct pass) `OverlayRhiPass`
+draws at output resolution on the output target:
+
+- the corner axis gizmo: the GL `AxisOverlayPass` triad (bottom-right, 80
+  logical px, lit arrows oriented by the camera rotation) from the shared unit
+  arrow scaled to the GL arrow's proportions, with `pose.vert` and
+  `gizmo.frag` (the GL renderer's linear write + sRGB encode). Its viewport's
+  depth range is [0, 1e-4], which keeps it in front of whatever depth the
+  output holds while its arms still occlude each other, so there is no mid-pass
+  depth clear;
+- CPU-rasterised images as premultiplied texture quads (`overlay.vert/.frag`):
+  the perf HUD (`setShowPerfHud`, 'P'; GPU time from
+  `QRhiCommandBuffer::lastCompletedGpuTime`, "--" where timestamps are off) and
+  the TF hover label + ring, both from `renderHudPanel`. The view re-rasterises
+  an image only when its text, DPR or theme changes; the pass keeps each texture
+  while the image's `cacheKey()` holds. Output alpha stays opaque.
+
+**Frame picking.** `frameAt(QPointF logical)` is the one picking primitive (the
+hover label and the frame context menu, `contextMenuEvent`): it projects every resolvable TF
+frame origin with the current camera (camera-relative, like the draw) in logical
+widget pixels via `core/tf/frame_picking.h` and returns the nearest within 20 px,
+nullopt when triads are hidden. It does not depend on DPR or `render_scale`.
+Hover tracking runs in `mouseMoveEvent` while no button is held and emits
+`hoveredFrameChanged` (empty on leave).
 
 Camera models, fixed/follow behavior, `TransformBuffer`, `TransformService`, TF
 hierarchy/connection logic, tracker-time repaint keys, and scene-control values
@@ -277,6 +444,10 @@ the complete previous dock state if a layer payload or topic resolution later
 proves invalid.
 
 ## Mesh shadows
+
+This section describes the native OpenGL renderer; the QRhi renderer's shadow
+pass (which also casts solid SceneEntities markers) is described under
+"WebAssembly product backend".
 
 Real-time directional shadows for **meshes only**, from the existing fixed key/"sun"
 light (`MeshShadingParams::key_light_dir`). **Casters: meshes only** — URDF/robot
@@ -511,16 +682,16 @@ desaturated X/Y/Z colors match the TF "Frames" gizmos.
   text and layout (picking a color auto-ticks the box) for cross-layer consistency.
   No host edits.
 - **QRhi renderer.** The same `PosesInFrameLayer` compiles in the
-  `PJ_SCENE3D_RHI` build without its GL pass; `SceneViewWidget` calls
+  `PJ_SCENE3D_RHI` build without its GL pass; `PoseRhiPass`
+  (`widgets/rhi/passes/pose_rhi_pass.{h,cpp}`) calls
   `prepareForRender(remaining_arms)` each frame and uploads `instances()` when
   `geometryRevision()` moves. It keeps the 80-byte instance format and shared
   unit-arrow mesh, draws each layer with one UInt32-indexed instanced call, and
   keeps fixed-from-source TF in a uniform so camera/TF motion does not rebuild
   instances. Admission follows `SceneLimits` (browser: 100,000 poses and 32 MiB of
   wire bytes per layer, 300,000 arms per view; RHI build only); rejected layers
-  warn visibly and release their arms. The owned trail is not rendered there
-  until QRHI_MIGRATION P3: a saved `<trail>` is kept verbatim so layouts
-  round-trip without a warning.
+  warn visibly and release their arms. The owned trail is drawn by
+  `TrailRhiPass` in the pose layer's slot, before its triads (the GL order).
 
 ## Trail layer (`TrailLayer`)
 
@@ -550,7 +721,11 @@ the behavioral contract; the as-built mechanics:
   re-uploads nothing; the buffer re-uploads only on rebuild or a render-origin
   change. `renderKey` folds (build revision, style revision, split index) —
   between two samples the key is constant and the PR #259 repaint gate
-  coalesces.
+  coalesces. The QRhi build's `TrailRhiPass` is the same ribbon (`trail.vert`):
+  one vertex buffer and a two-block uniform buffer (past, future colour) per
+  trail owner, the view reading `syncFixedFrame()` / `points()` /
+  `buildRevision()` / `pastCount()` from the layer. The colour is written
+  unlinearised on every target, like the GL pass.
 - **Documented follow-up — incremental live-append upload.** A live append
   currently rebuilds the pass's expanded vertex buffer and re-uploads it
   wholesale (near the 50k cap: ~4 MB CPU touch + ~2.8 MB `glBufferData` per
@@ -703,11 +878,10 @@ the threshold? — via `aabbClipWRange()` (clip w is affine, so the box bounds e
 and runs one program or the other. A stale extent can therefore only draw near cubes as
 sprites; it can never make points vanish, which a shader-side cull could.
 
-**It is currently OFF by default** (`cube_lod_threshold_px_` is 0; `setCubeLodThresholdPx()`
-enables it, which the equivalence tests and the A/B benchmark do). The appearance match
-below is exact in every respect except one, and that one is disqualifying in the product:
-see "Why the LOD is disabled". Each piece is otherwise an exact property of the cube, not a
-fudge (`kCubeSpriteGlsl`):
+**It is on by default** at `kDefaultCubeLodThresholdPx` (1 device pixel,
+`core/cube_draw_policy.h`, shared by both renderers); `setCubeLodThresholdPx(0)` disables it
+in the GL pass (the equivalence tests and the A/B benchmark do). Each piece of the
+appearance match is an exact property of the cube, not a fudge (`kCubeSpriteGlsl`):
 
 - **Area, not side.** The three visible faces cover `(|r.x|+|r.y|+|r.z|) * side²` where `r`
   is the view rotation's third row, so the sprite is a square of that area. (Cauchy's 1.5
@@ -720,102 +894,84 @@ fudge (`kCubeSpriteGlsl`):
   fragment shader so the two cannot drift apart.
 - **`kCubeEdgeMeanScale`.** The dark edge band covers a fixed fraction of every face;
   dropping it leaves sprites reading 13% brighter than the cubes beside them.
-- **Energy conservation below the driver's minimum point size.** Where `GL_POINT_SIZE_RANGE`
-  refuses to go as small as the cube, the sprite is widened and dimmed by the area
-  overshoot, so a receding cloud keeps losing brightness instead of plateauing at one pixel.
+- **A one-pixel floor at full colour.** Below one device pixel the sprite stays one pixel
+  in the cloud's own colour, the contract every other shape has. Dimming it by the area
+  overshoot instead conserves light only against a black background: the opaque pass
+  replaces the background under the whole widened sprite, so on PJ's light backdrop a
+  zoomed-out cloud turned black (the reason the LOD was once disabled). At the threshold
+  itself the sprite is ~1.2 px, above the floor, so the switch is still an exact area match.
 
 `pointcloud_cube_lod_gl_test` measures all of it against the fan: total emitted light
 agrees within 3.4% from 0.67 px down to 0.125 px (the test allows 8%), which is also the
 no-popping guarantee, since the fan's brightness is continuous in distance. Near and
 straddling clouds must come out bit-identical, pinning the gate as whole-cloud.
 
-#### What the browser gets, and what it would take to port
+#### Point family in the QRhi renderer (`PointRhiPass`)
 
-None of the above runs in the browser. `scene_view_widget_rhi.cpp` never includes
-`PointcloudRenderPass`; it draws `PointShape::kCube` from its own `.qsb` pipelines over
-the 24-vertex solid. The one change it does inherit is the **winding fix**, which is a
-browser-specific bug fix: those pipelines set `CullMode::Back`, so a CW-outward
-`kCubeVertices` had them culling front faces and drawing each solid's far side.
+`rhi/passes/point_rhi_pass.{h,cpp}` draws every `PointRenderable` (point and depth
+clouds) with the GL pass's executable behaviour, from `.qsb` shaders that share the
+appearance GLSL (`shaders/cube/*.glslinc`, including the colour/cull helpers of
+`cube_point_color.glslinc`) and the `pj_widgets` colormap polynomials
+(`rhi/shaders/colormap.glslinc`, a copy of `colormapGlsl()` that
+`wasm_shader_constants_test` keeps identical):
 
-Five of the six optimizations are portable to WebGL 2 whenever someone builds it; only the
-compute-compaction follow-up is not (WebGL 2 has no compute shaders, SSBOs or indirect
-draw). Two mechanics matter when doing it:
+- **Colour hoist.** Colormap, solid or per-point RGB and the linearization for the HDR
+  target run once per point in the vertex stage (`toTargetSpace()` skips the gamma on the
+  direct fallback), so no fragment stage samples a LUT.
+- **Hexagon fan** (`cube.vert`/`cube.frag`): 7 logical vertices / 18 indices per
+  instance from `gl_VertexIndex`, faces picked from each cube's centre against
+  `face_pick_eye` (eye position, or view direction under ortho), `centroid` local
+  coordinates, no `discard`. The pipelines cull back faces: with the eye inside an axis
+  slab (or a cube) a picked face is seen from behind, which the faded half (no depth
+  write) would otherwise blend in. The GL pass draws its fan with culling off.
+- **Whole-cloud cube LOD** through the shared `chooseCubeDrawMode()` (frustum reject on
+  the inflated box, camera-inside fallback, the 1 px switch); the sprites are the
+  `shape == 2` mode of the point shader. Every shape goes through the same reject, with
+  `screen_reach_ndc` set to the widest sprite the shape can draw (a point's pixel size,
+  a sphere's size clamp, a LOD sprite's threshold size), so a quad whose centre is just
+  off screen is kept. The GL pass leaves that reach at 0: its `GL_POINTS` are clipped
+  whole at their centre anyway.
+- **Spheres below 2 device pixels** (`kSphereDiscMaxPx`) draw as flat discs at
+  `kSphereDiscShading`, the disc mean of the shared Lambert (`cube_mesh_test` re-derives
+  it). Imposter shading at that size depends on the driver's MSAA placement and point
+  rounding; the GL pass does the same, and `shape_spheres_small` has its full golden check.
+- **Instanced quads or a point list.** Points, spheres and LOD sprites are camera-facing
+  quads (a 4-vertex strip per instance, offset in clip space by the sprite size, the y
+  offset signed by the backend's clip-space y) on every backend: D3D has no
+  `gl_PointSize`, and a quad keeps its visible part when its centre leaves the view,
+  where a point is culled whole. A cloud whose largest sprite is at most
+  `kPointListMaxPx` (4 device px) draws as a point list instead where the backend has
+  `QRhi::VertexShaderPointSize` (the `-DPJ_POINT_TOPOLOGY` bake), because quads measured
+  about twice as slow for many small points (QRHI_MIGRATION.md → P3 stream A).
+- **Faded out-of-range points** (field colour, 0 < opacity < 1) draw in two prepared
+  draws: the in-range half opaque, then the faded half as a translucent draw
+  (`DrawClass::kTranslucent`) without depth writes. The faded half skips the depth
+  replay: the GL composite finds the background by depth, so pixels it tints over the
+  background stay ungraded there, and leaving no coverage in the replay does the same.
+  Each layer's uniform buffer holds both halves' uniforms (two SRBs at two offsets).
+- **GPU bounds** (`point_aabb_reducer.{h,cpp}`, `point_aabb.comp`): a layer that
+  reports no CPU bounds gets them from a compute reduction of its uploaded instance
+  buffer, where `QRhi::Compute` exists (never WebGL2). The view records it in a compute
+  pass before the frame's first render pass; a buffer readback delivers the box a frame
+  or more later, keyed by layer and geometry revision. The shader reads the point count
+  from a uniform: the D3D11 backend views a storage buffer to its end whatever the
+  binding size. The newest box adopted stands in for the scene bounds until a newer
+  sample's lands (a box never replaces a newer one), so a streaming cloud does not drop
+  out of the bounds every sample; the frustum reject uses a box only while it describes
+  the cloud still retained. `release()` drains in-flight readbacks
+  (`QRhi::finish()`), so a QRhi teardown never leaves one writing into freed memory.
+  Every layer today computes CPU bounds for free in `convertCanonical()`, so the
+  reduction runs only for layers that stop doing so (the zero-copy upload of P5).
+- **Instance buffers are `Static`**: a cloud changes per sample, not per frame, and a
+  `Dynamic` buffer keeps a host-visible copy per frame in flight.
 
-- `gl_VertexID` becomes `gl_VertexIndex` under qsb's Vulkan semantics. This costs nothing
-  because every helper in `cube_mesh.h` takes the vertex id as an **argument** rather than
-  reading the builtin — keep it that way.
-- The colour hoist cannot be shared. The browser samples a `color_lut` **texture** where
-  the desktop evaluates colormap polynomials in-shader, so that one is a parallel
-  implementation, not a reuse. (Vertex texture fetch is guaranteed in GLES 3.0, so it is
-  still possible.)
-
-**Shared shader source (in place).** qsb honours `GL_GOOGLE_include_directive`, resolving
-includes against the including file's directory, so the appearance helpers live once in
-`pj_scene3D/widgets/shaders/cube/*.glslinc`: the browser `.frag` files `#include` them
-directly, and `pj_scene3D/widgets/CMakeLists.txt` embeds the same files into a generated
-`cube_shader_sources.h` of `constexpr std::string_view`s that the desktop concatenates at
-runtime. Those files must stay free of uniforms, builtins and version-specific syntax —
-the two backends differ completely on all three, which is exactly why only pure functions
-and constants can be shared.
-
-Two mechanics to respect when adding one: the `.glslinc` list joins
-`CMAKE_CONFIGURE_DEPENDS`, because the `.qsb` staleness check runs at *configure* time and
-would otherwise not see the edit; and the browser sources are Vulkan-style `#version 440`
-qsb *inputs* — the GLSL ES 300 the browser actually runs is what qsb emits from them.
-`wasm_shader_constants_test` guards that the browser shaders keep including the shared
-files rather than re-inlining a literal.
-
-**Ported so far:** the winding fix (a browser-only *bug* fix — those pipelines set
-`CullMode::Back`, so a CW-outward `kCubeVertices` had them culling front faces and drawing
-each solid's far side) and the shared shader source above. Both are appearance-neutral or
-appearance-correcting, and the shared-source change was verified byte-for-byte equivalent
-by diffing the compiled ES 300 output.
-
-**Nothing else has been ported, deliberately.** The browser Scene3D path is built with
-`PJ_WASM_WITH_SCENE3D=OFF` in CI, so no automated check ever renders a browser cube; any
-behaviour change there has to be paired with a visual check on a real browser build, and
-that has not happened. The remaining items, in the order they should land, each with the
-mechanic that makes them non-trivial:
-
-1. **Drop the `discard` from `cube.frag`.** The largest single win on the desktop, and the
-   cheapest of these — it is provably dead code there (`buildColormapLut` writes alpha 255
-   and `cube.vert` already culls the only path to a transparent fragment), so it is purely
-   a matter of confirming it on screen.
-2. **Colour hoist.** Binding 1 (`color_lut`) is fragment-only in the shader-resource
-   bindings and must become vertex-visible. Vertex texture fetch is guaranteed in GLES 3.0.
-   This one cannot share code with the desktop: the browser samples a LUT texture where the
-   desktop evaluates colormap polynomials in-shader.
-3. **Hexagon fan.** Needs `face_pick_eye` in `PointUniforms` (272 → 288 bytes, touching
-   every shader that declares the block), an 18-entry index buffer, and a per-instance-only
-   vertex layout for the point-cloud cube pipeline *alone* — voxels and markers keep the
-   full solid. `cubeFanCorner` already takes the vertex id as an argument, so the shared
-   GLSL works unchanged despite qsb spelling the builtin `gl_VertexIndex`.
-4. **Sprite LOD.** A second `Points` pipeline plus its HDR clone and depth-replay entries.
-   `chooseCubeDrawMode()` already makes the decision and is backend-agnostic, so the CPU
-   half is done; only the pipeline is missing.
-
-Compute compaction is the one item that cannot be ported at all — WebGL 2 has no compute
-shaders, SSBOs or indirect draw.
-
-#### Why the LOD is disabled
-
-**Coverage is applied as brightness, and that is wrong on a light background.** Where the
-driver's minimum point size exceeds the cube, the sprite is widened and its colour scaled
-by the area overshoot — at 0.1 px that factor is 0.01. Total light is conserved, which is
-exact against a *black* background. But the opaque pass writes alpha 1 with blending
-disabled, so the widened sprite REPLACES the background over the whole minimum-sized point
-rather than blending into it: on PJ's light 3D background a zoomed-out cloud turns black,
-and flips between black and coloured as streaming moves the cloud's extent across the
-whole-cloud gate. Observed in the app; that is why `cube_lod_threshold_px_` defaults to 0.
-
-Note the LOD's own GL test cannot see this — it clears to black, the one background where
-conserving energy and conserving coverage look identical. Re-enabling the LOD means fixing
-the compositing AND rendering that test against a non-black background so it can fail.
-
-The fix is coverage, not brightness: write `gl_SampleMask` from the coverage fraction so
-the sprite lights a FRACTION of the MSAA samples, exactly as the fan's sub-pixel triangles
-do. That composites correctly against any background and gets depth right too, at the cost
-of early-Z on the sprite path — acceptable, since sub-pixel sprites barely overdraw.
+`scene3d_rhi_point_test` (both backends) re-expresses the GL pass tests: mirrored cubes
+cover equal areas with three face shades, sub-pixel clouds become coloured sprites,
+sphere size follows depth only under perspective, faded points neither occlude nor
+vanish and opacity 0 culls, int8 extrema keep their sign, geometry crossing the
+frustum edge keeps its visible part (also a lone pixel-sized point whose centre is off
+screen), a faded cube seen from inside an axis slab and a camera inside a cube show no
+back faces, and the GPU bounds are exact and generation-safe.
 
 #### Other known limits of the sprite LOD
 - **A camera inside an individual cube** still gets the wrong three faces — the fan picks
@@ -953,7 +1109,8 @@ volumetric data.
 - **QRhi renderer.** The same `VoxelGridLayer` compiles in the `PJ_SCENE3D_RHI`
   build: its renderer-independent `updateAt` packs the volume (the GL build moves
   it into the pass; the RHI build retains it and drops the decoded-grid memo to
-  spare the browser heap). QRhi retains one packed volume per layer and submits one indexed
+  spare the browser heap). `VoxelRhiPass` (`widgets/rhi/passes/voxel_rhi_pass.{h,cpp}`)
+  retains one packed volume per layer and submits one indexed
   cube draw with `column*row*slice` instances; the vertex shader performs the
   same `gl_InstanceID`/`texelFetch` predicate as native. Grid origin, fixed-frame
   TF, and camera-relative conversion compose in double precision before upload.
@@ -973,9 +1130,11 @@ volumetric data.
 Renders an `sdk::GridMap` (SDK ≥ 0.26.0) — a 2D grid of per-cell channels, the
 canonical form of `grid_map_msgs/GridMap` and `foxglove.Grid` — as a lit,
 colormapped **heightfield** surface, the way Foxglove's linear-interpolation
-Grid mode does. Drawn by the OpenGL renderer only; the QRhi build keeps the
-layer (settings, field list, persistence) with a "Not rendered by this renderer
-yet" row warning until P3.
+Grid mode does. The QRhi build stages the packed grid in the layer
+(`prepareForRender()` / `stagedGrid()`) and `GridMapRhiPass` draws it with the
+same procedural geometry (`gl_VertexIndex`), the GL pass's in-shader colormaps (`colormap.glslinc`), and a
+geometric two-sided test (the normal faces the eye) instead of
+`gl_FrontFacing`, whose winding a backend's clip-space correction can flip.
 
 - **Procedural geometry.** `GridMapRenderPass` draws `6 * (cols-1) * (rows-1)`
   vertices with `glDrawArrays` and no VBO or index buffer: the vertex shader derives

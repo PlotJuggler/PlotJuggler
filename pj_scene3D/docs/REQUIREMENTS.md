@@ -62,7 +62,7 @@ pose arrays, occupancy updates, dense voxel grids, procedural SceneEntities,
 PBR ModelPrimitives, and topic/file/URL URDF robot models. It uses the shared
 camera, fixed/follow, tracker replay, style, and layout contracts while enforcing
 browser-specific decode, retained-memory, texture, model, and network budgets.
-The QRhi/WebGL2 renderer provides mesh shadows and an HDR presentation chain
+The QRhi/WebGL2 renderer provides mesh and solid-marker shadows and an HDR presentation chain
 with SSAO and mesh-masked EDL; each optional pass fails independently to a live
 lower-quality or direct-render path. Browser-selected local model bytes are
 capabilities for the current session and are never persisted as reopenable host

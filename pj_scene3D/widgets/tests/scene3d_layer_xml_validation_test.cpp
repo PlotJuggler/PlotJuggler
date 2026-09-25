@@ -271,11 +271,10 @@ TEST(Scene3DLayerXmlValidation, PosesInFrameRejectsMalformedPayloadTransactional
         element.appendChild(payload_doc.createElement(u"trail"_s));
       });
 
-  // The one nested payload this layer owns. The QRhi build has no trail
-  // renderer yet and instead keeps this element verbatim so a desktop-saved
-  // layout still restores its poses (PosesInFrameLayer::xmlLoadState), so the
-  // tag name and the single-child rule are a CROSS-PLATFORM contract, not a
-  // desktop detail. tests/wasm/scene3d_data.spec.js drives the browser half.
+  // The one nested payload this layer owns, shared by every build: a
+  // desktop-saved layout restores its trail in the browser too, so the tag name
+  // and the single-child rule are a CROSS-PLATFORM contract.
+  // tests/wasm/scene3d_data.spec.js drives the browser half.
   QDomDocument trail_doc;
   QDomElement with_trail = trail_doc.importNode(valid, true).toElement();
   trail_doc.appendChild(with_trail);
@@ -285,11 +284,9 @@ TEST(Scene3DLayerXmlValidation, PosesInFrameRejectsMalformedPayloadTransactional
   trail.setAttribute(u"thickness"_s, u"3"_s);
   with_trail.appendChild(trail);
   ASSERT_TRUE(layer.xmlLoadState(with_trail));
-#ifndef PJ_SCENE3D_RHI
   EXPECT_TRUE(layer.trailEnabled());
   ASSERT_NE(layer.trail(), nullptr);
   EXPECT_EQ(layer.trail()->pastColor().name(QColor::HexRgb), u"#123456"_s);
-#endif
   // Round-tripping must reproduce exactly one <trail>, or the browser's
   // single-nested-child rule would start rejecting desktop layouts.
   QDomDocument saved_doc;

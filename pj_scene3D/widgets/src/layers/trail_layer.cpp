@@ -332,11 +332,7 @@ void TrailLayer::render(const ViewParams& view_params, const FrameContext& frame
   if (!visible_) {
     return;
   }
-  // Fixed-frame self-heal: attach can precede the dock's fixed-frame fan-out,
-  // and the render context is authoritative. Adopt + rebuild; draw next paint.
-  if (fixed_frame_ != frame_ctx.fixed_frame) {
-    fixed_frame_ = frame_ctx.fixed_frame;
-    requestRebuild();
+  if (!syncFixedFrame(frame_ctx.fixed_frame)) {
     return;
   }
   pass_.render(
@@ -344,6 +340,16 @@ void TrailLayer::render(const ViewParams& view_params, const FrameContext& frame
       thickness_px_, past_visible_, future_visible_);
 }
 #endif
+
+bool TrailLayer::syncFixedFrame(const std::string& fixed_frame) {
+  // Adopt + rebuild; draw from the next paint on.
+  if (fixed_frame_ == fixed_frame) {
+    return true;
+  }
+  fixed_frame_ = fixed_frame;
+  requestRebuild();
+  return false;
+}
 
 void TrailLayer::setPastColor(QColor color) {
   if (!color.isValid() || past_color_.rgb() == color.rgb()) {

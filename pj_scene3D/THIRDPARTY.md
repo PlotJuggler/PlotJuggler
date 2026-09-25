@@ -4,7 +4,7 @@ Shader snippets in this module derived from external sources. Each file
 carrying derived shader code opens with a comment block naming the source;
 full license texts live here.
 
-## AgX tonemapper (`scene_view_widget.cpp`, composite present shader)
+## AgX tonemapper (`scene_view_widget.cpp` composite present shader; `widgets/rhi/shaders/present.frag`)
 
 Adapted from three.js `tonemapping_pars_fragment.glsl.js` (AgX implementation,
 itself derived from Filament's AgX by Benoit Mayaux and Troy Sobotka's
@@ -35,7 +35,7 @@ reference). License: **MIT**.
 Krzysztof Narkowicz, "ACES Filmic Tone Mapping Curve" (2016). Released by the
 author as **CC0 / public domain**.
 
-## Khronos PBR Neutral tonemapper (`scene_view_widget.cpp`, composite present shader)
+## Khronos PBR Neutral tonemapper (`scene_view_widget.cpp` composite present shader; `widgets/rhi/shaders/present.frag`)
 
 The `PBRNeutral` tone-mapping curve is the **Khronos PBR Neutral** tone mapper
 from the glTF Sample Viewer, adopted via three.js `NeutralToneMapping`

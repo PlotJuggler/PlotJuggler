@@ -7,6 +7,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "pj_scene3d_widgets/gl/gl_functions.h"
+#include "pj_scene3d_widgets/scene_look_defaults.h"
 
 namespace pj::scene3d {
 
@@ -98,7 +99,7 @@ void AxisOverlayPass::render(const ViewParams& view_params, const FrameContext& 
   // View is the scene camera's rotation only, so the triad tracks orbit motion.
   // renderTriadBound owns the +Y/+Z arm rotations (shared with the axis pass).
   const std::array<glm::vec4, 3> colors{
-      glm::vec4{1.00f, 0.30f, 0.30f, 1.0f}, glm::vec4{0.35f, 0.85f, 0.35f, 1.0f}, glm::vec4{0.40f, 0.55f, 1.00f, 1.0f}};
+      glm::vec4(look::kHudTriadX, 1.0f), glm::vec4(look::kHudTriadY, 1.0f), glm::vec4(look::kHudTriadZ, 1.0f)};
 
   arrow_.bindForRender();
   renderTriadBound(arrow_, ortho, view, glm::mat4{1.0f}, glm::mat4{1.0f}, colors);

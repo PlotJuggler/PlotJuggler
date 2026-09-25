@@ -181,4 +181,13 @@ TEST(CubeEdgeMeanScaleTest, ShaderSourceDeclaresTheSameConstants) {
       << "the sprite shader's kCubeEdgeMeanScale drifted from the C++ constant";
 }
 
+// The flat shade a sub-2-px sphere gets must stay the disc mean of the shared Lambert,
+// or spheres change brightness as they cross the flat-disc threshold.
+TEST(SphereDiscShadingTest, MatchesTheDiscMeanOfTheSharedLight) {
+  EXPECT_NEAR(pj::scene3d::sphereDiscMeanShading(), pj::scene3d::kSphereDiscShading, 1e-3);
+  EXPECT_NE(
+      std::string_view(pj::scene3d::kCubePointColorGlsl).find("kSphereDiscShading = 0.702"), std::string_view::npos)
+      << "the shader's kSphereDiscShading drifted from the C++ constant";
+}
+
 }  // namespace

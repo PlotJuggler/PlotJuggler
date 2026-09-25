@@ -58,12 +58,13 @@ XML persistence), and live-streaming data path — lives in
 `pj_scene3D/docs/ARCHITECTURE.md`.
 The in-progress migration of both renderers to one QRhi renderer (phases,
 decisions, platform matrix) is tracked in `pj_scene3D/docs/QRHI_MIGRATION.md`.
-`-DPJ_SCENE3D_RHI=ON` builds the QRhi view (`widgets/wasm/`) on desktop in
-place of the GL one; its render harness `scene3d_rhi_render_test` needs a real
+`-DPJ_SCENE3D_RHI=ON` builds the QRhi view (`widgets/rhi/`: the view, its
+pass vocabulary and frame contract in `rhi_scene_pass.h`, one class per family
+under `rhi/passes/`, shaders under `rhi/shaders/`) on desktop in place of the GL
+one; its render harness `scene3d_rhi_render_test` needs a real
 X/Wayland server (Xvfb in CI) and runs once per backend (`.opengl.*`, `.vulkan.*`).
 The dock (`src/Scene3DDockWidget.cpp`) and every layer (`src/layers/`) are the
-same in both builds; the QRhi view does not draw trails and grid maps yet (it
-marks their rows "Not rendered by this renderer yet").
+same in both builds, and both views draw every layer family.
 
 ## Decoding boundary (important)
 
@@ -114,7 +115,10 @@ sub-pixel to area- and brightness-matched point sprites (a whole-cloud switch ga
 AABB, because a *per-instance* split measures slower than no LOD at all). The face-choice,
 face-normal, MSAA and LOD-matching pitfalls that shape has are spelled out in
 `docs/ARCHITECTURE.md` → "Cube shape: the hexagon fan"; read it before touching that
-shader. On the bounds-only paths the geometry AABB that fits the
+shader. The QRhi view ports all of it (plus flat discs for sub-2-px spheres, a
+point-list fast path for small sprites and the faded out-of-range two-partition draw)
+in `widgets/rhi/passes/point_rhi_pass.{h,cpp}` — see `docs/ARCHITECTURE.md` →
+"Point family in the QRhi renderer". On the bounds-only paths the geometry AABB that fits the
 camera is computed by an **async GPU compute reduction** (`PointcloudAabbReducer`: the CPU
 seeds the first sample, then drops the scan once the pass reports `gpuAabbAvailable()`),
 so the per-sample bounds cost leaves the GUI thread — see `docs/ARCHITECTURE.md` for the
@@ -134,7 +138,7 @@ full mechanism.
   decoders add a PRIVATE `draco` + `cloudini` link (compressed-cloud transcoding only —
   see "Decoding boundary"); the public API stays `glm` / `pj_base` / `nlohmann_json`.
 - `widgets/` — Qt viewer (`SceneViewWidget`: a `QOpenGLWidget`, or with
-  `PJ_SCENE3D_RHI` the `QRhiWidget` in `wasm/`, embedded as a direct child of
+  `PJ_SCENE3D_RHI` the `QRhiWidget` in `rhi/`, embedded as a direct child of
   `Scene3DDockWidget`), render passes, layers, and `Scene3DDockWidget` (an
   `IDataWidget`, one class for both views). Key public headers:
   `widgets/include/pj_scene3d_widgets/{Scene3DDockWidget.h,
@@ -242,9 +246,11 @@ the application on the stack so it dies before Qt Network's exit handlers.
 
 `pointcloud_golden_test` is its own `pj_add_test_runner` runner: the point-cloud
 golden-image corpus (`widgets/tests/fixtures/golden/pointcloud/README.md`), built
-by BOTH renderers through the docks' shared API. The GL build compares against
-the goldens; the `PJ_SCENE3D_RHI` build registers its cases DISABLED until
-QRHI_MIGRATION P3. One ctest entry per scene (`pointcloud_golden_test.*`).
+by BOTH renderers through the docks' shared API, all comparing against the GL
+goldens. One ctest entry per scene (`pointcloud_golden_test.*`); the
+`PJ_SCENE3D_RHI` build registers each scene once per backend
+(`pointcloud_golden_test.opengl.*`, `.vulkan.*`), like the render harness and
+`scene3d_rhi_point_test` (the QRhi point-pass behaviour tests).
 
 These tests keep their own executables and `add_test` registrations:
 

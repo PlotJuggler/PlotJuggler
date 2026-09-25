@@ -140,7 +140,7 @@ jobs:
             libxcb-xkb1 libxkbcommon-x11-0 libfontconfig1 libdbus-1-3 \
             libva-dev libdrm-dev \
             xvfb ccache zstd \
-            mesa-vulkan-drivers
+            mesa-vulkan-drivers libvulkan-dev
 
       - name: Configure ccache
         # Compiler-output cache for our own C++ — complementary to the Conan
@@ -281,7 +281,7 @@ jobs:
             "-DCMAKE_PREFIX_PATH=${PWD}/.qt/${PJ_QT_VERSION}/gcc_64" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DPJ_DEBUG_INFO=split -DPJ_COMPRESS_DEBUG=ON -DPJ_BUILD_DEMOS=OFF -DPJ_SCENE3D_RHI=ON
-          cmake --build build-rhi --target pj_app scene3d_rhi_render_test pointcloud_golden_test -j"$(nproc)"
+          cmake --build build-rhi --target pj_app scene3d_rhi_render_test scene3d_rhi_point_test pointcloud_golden_test -j"$(nproc)"
 
       - name: Test the QRhi Scene3D renderer (llvmpipe + lavapipe)
         env:
@@ -292,4 +292,4 @@ jobs:
           VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)"
           test -f "${VK_ICD_FILENAMES}"
           export VK_ICD_FILENAMES
-          xvfb-run -a ctest --test-dir build-rhi -R scene3d_rhi --output-on-failure --timeout 120
+          xvfb-run -a ctest --test-dir build-rhi -R 'scene3d_rhi|pointcloud_golden_test' --output-on-failure --timeout 120

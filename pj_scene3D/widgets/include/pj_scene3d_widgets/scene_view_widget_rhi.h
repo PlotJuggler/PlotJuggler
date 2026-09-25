@@ -2,6 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QElapsedTimer>
 #include <QImage>
 #include <QList>
 #include <QPoint>
@@ -10,27 +11,24 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <variant>
 #include <vector>
 
 #include "pj_base/time.hpp"
 #include "pj_scene3d_core/camera/camera.h"
-#include "pj_scene3d_core/model_budget.h"
-#include "pj_scene3d_core/occupancy_grid_budget.h"
-#include "pj_scene3d_core/pointcloud_budget.h"
-#include "pj_scene3d_core/poses_budget.h"
+#include "pj_scene3d_core/camera/camera_fit_policy.h"
 #include "pj_scene3d_core/poses_in_frame_render.h"
-#include "pj_scene3d_core/scene_entities_budget.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_core/voxel_grid_budget.h"
-#include "pj_scene3d_widgets/mesh_data.h"
 #include "pj_scene3d_widgets/mesh_shading_params.h"
+#include "pj_scene3d_widgets/moving_average.h"
 #include "pj_scene3d_widgets/passes/grid_geometry.h"
+#include "pj_scene3d_widgets/scene_look_defaults.h"
 
 class QEvent;
+class QContextMenuEvent;
+class QKeyEvent;
 class QMouseEvent;
 class QWheelEvent;
 class QRhi;
@@ -43,6 +41,8 @@ class QRhiShaderResourceBindings;
 class QRhiTexture;
 class QRhiTextureRenderTarget;
 class QRhiRenderPassDescriptor;
+class QRhiRenderTarget;
+class QRhiResourceUpdateBatch;
 
 namespace pj::scene3d {
 
@@ -53,11 +53,28 @@ class OccupancyGridLayer;
 class VoxelGridLayer;
 class SceneEntitiesLayer;
 class ModelRenderable;
+class OccupancyRhiPass;
+class MarkerRhiPass;
+class ModelRhiPass;
+class GridMapLayer;
+class GridMapRhiPass;
+class TrailLayer;
+class TrailRhiPass;
+class GridRhiPass;
+class OverlayRhiPass;
+class PoseRhiPass;
+class VoxelRhiPass;
+class PointRhiPass;
+class ScenePipelineRegistry;
+struct RhiSharedGeometry;
+struct SceneBoundsCollector;
+enum class ScenePass;
 
-// WebAssembly product implementation of the public SceneViewWidget contract.
-// The native class with the same name remains a QOpenGLWidget in the other
-// platform branch of scene_view_widget.h.  This class owns only QRhi resources;
-// camera and TF semantics continue to come from pj_scene3d_core.
+// QRhi implementation of the public SceneViewWidget contract (the browser view,
+// and the desktop view with PJ_SCENE3D_RHI); the GL build's class of the same
+// name is a QOpenGLWidget (scene_view_widget.h). This class owns only QRhi
+// resources; camera and TF semantics come from pj_scene3d_core. The frame
+// contract and pass vocabulary live in rhi/rhi_scene_pass.h.
 class SceneViewWidget : public QRhiWidget {
   Q_OBJECT
 
@@ -93,10 +110,13 @@ class SceneViewWidget : public QRhiWidget {
     return camera_model_;
   }
   void resetCamera();
-  // Owns the scene bounds in this renderer: every frame it unions what it draws,
-  // and it fits the camera once to each newly added layer's first data. A value
-  // set here lasts only until the next frame.
+  // Owns the scene bounds in this renderer: every frame it unions what it draws
+  // (see applySceneBounds) and fits the camera per CameraFitPolicy. A value set
+  // here lasts only until the next frame.
   void setSceneBounds(const AABB& bounds);
+  // The dock restored the camera from a layout: no automatic fit overrides it
+  // (CameraFitPolicy::noteCameraRestored).
+  void noteCameraRestored();
   void setLayers(const std::vector<Scene3DLayer*>& ordered_layers);
 
   void setGridStyle(GridStyle style);
@@ -141,6 +161,40 @@ class SceneViewWidget : public QRhiWidget {
   }
   void setMeshShadingParams(const MeshShadingParams& params);
 
+  // Present-pass look knobs (tonemap, exposure, saturation, AO/EDL), the GL
+  // view's type and semantics: read every frame, call update() after changing.
+  using CompositeParams = pj::scene3d::CompositeParams;
+  [[nodiscard]] CompositeParams& compositeParams() {
+    return composite_params_;
+  }
+
+  // The GPU/CPU timing overlay (bottom-left), also toggled with 'P'. Off by default.
+  void setShowPerfHud(bool on);
+  [[nodiscard]] bool showPerfHud() const {
+    return show_perf_hud_;
+  }
+
+  // Supersampling factor, clamped to [1, 4]: the HDR chain renders at scale x
+  // output pixels and the present pass downsamples it. Screen-space sizes (point
+  // pixels, EDL radius) scale with it; the HDR byte budgets apply to the scaled
+  // size. Ignored on the direct fallback. Not wired into the app UI.
+  void setRenderScale(float scale);
+  [[nodiscard]] float renderScale() const {
+    return render_scale_;
+  }
+
+  // Frame picking, the one owner for the hover label and the frame context menu:
+  // the TF frame whose origin projects within 20 logical pixels of `logical_pos`
+  // (widget coordinates, independent of DPR and render scale), nearest first;
+  // nullopt when the frame triads are hidden, there is no TF buffer or nothing
+  // is close enough. Uses the current camera, so it is valid before any frame.
+  [[nodiscard]] std::optional<std::string> frameAt(const QPointF& logical_pos) const;
+  // The frame under the cursor, tracked while no mouse button is held; see
+  // hoveredFrameChanged.
+  [[nodiscard]] const std::optional<std::string>& hoveredFrame() const {
+    return hovered_frame_;
+  }
+
   void refreshAvailableFrames();
   [[nodiscard]] uint64_t tfRenderKey(PJ::Timepoint time) const;
 
@@ -166,99 +220,51 @@ class SceneViewWidget : public QRhiWidget {
   [[nodiscard]] int lastResolvedFrameCountForTest() const {
     return last_resolved_frame_count_;
   }
-  [[nodiscard]] int lastPointVertexCountForTest() const {
-    return last_point_vertex_count_;
-  }
-  [[nodiscard]] int lastPointLayerCountForTest() const {
-    return last_point_layer_count_;
-  }
-  [[nodiscard]] int lastCubeLayerCountForTest() const {
-    return last_cube_layer_count_;
-  }
-  [[nodiscard]] int lastCubeInstanceCountForTest() const {
-    return last_cube_instance_count_;
-  }
+  [[nodiscard]] int lastPointVertexCountForTest() const;
+  [[nodiscard]] int lastPointLayerCountForTest() const;
+  [[nodiscard]] int lastCubeLayerCountForTest() const;
+  [[nodiscard]] int lastCubeInstanceCountForTest() const;
+  // Cube layers the whole-cloud LOD drew as sprites last frame.
+  [[nodiscard]] int lastCubeSpriteLayerCountForTest() const;
+  // Point layers drawn as a point list (not quads) last frame.
+  [[nodiscard]] int lastPointListLayerCountForTest() const;
   [[nodiscard]] int cameraFitCountForTest() const {
     return camera_fit_count_;
   }
-  [[nodiscard]] AABB lastPointBoundsForTest() const {
-    return last_point_bounds_;
-  }
-  [[nodiscard]] int lastDepthLayerCountForTest() const {
-    return last_depth_layer_count_;
-  }
-  [[nodiscard]] int lastDepthVertexCountForTest() const {
-    return last_depth_vertex_count_;
-  }
-  [[nodiscard]] AABB lastDepthBoundsForTest() const {
-    return last_depth_bounds_;
-  }
-  [[nodiscard]] int lastPoseLayerCountForTest() const {
-    return last_pose_layer_count_;
-  }
-  [[nodiscard]] int lastPoseArmCountForTest() const {
-    return last_pose_arm_count_;
-  }
-  [[nodiscard]] AABB lastPoseBoundsForTest() const {
-    return last_pose_bounds_;
-  }
-  [[nodiscard]] int lastOccupancyLayerCountForTest() const {
-    return last_occupancy_layer_count_;
-  }
-  [[nodiscard]] int lastOccupancyCellCountForTest() const {
-    return last_occupancy_cell_count_;
-  }
-  [[nodiscard]] int occupancyFullUploadCountForTest() const {
-    return occupancy_full_upload_count_;
-  }
-  [[nodiscard]] int occupancyPartialUploadCountForTest() const {
-    return occupancy_partial_upload_count_;
-  }
-  [[nodiscard]] AABB lastOccupancyBoundsForTest() const {
-    return last_occupancy_bounds_;
-  }
-  [[nodiscard]] int lastVoxelLayerCountForTest() const {
-    return last_voxel_layer_count_;
-  }
-  [[nodiscard]] int lastVoxelCountForTest() const {
-    return last_voxel_count_;
-  }
-  [[nodiscard]] int voxelFullUploadCountForTest() const {
-    return voxel_full_upload_count_;
-  }
+  [[nodiscard]] AABB lastPointBoundsForTest() const;
+  [[nodiscard]] int lastDepthLayerCountForTest() const;
+  [[nodiscard]] int lastDepthVertexCountForTest() const;
+  [[nodiscard]] AABB lastDepthBoundsForTest() const;
+  [[nodiscard]] int lastPoseLayerCountForTest() const;
+  [[nodiscard]] int lastPoseArmCountForTest() const;
+  [[nodiscard]] AABB lastPoseBoundsForTest() const;
+  [[nodiscard]] int lastOccupancyLayerCountForTest() const;
+  [[nodiscard]] int lastOccupancyCellCountForTest() const;
+  [[nodiscard]] int occupancyFullUploadCountForTest() const;
+  [[nodiscard]] int occupancyPartialUploadCountForTest() const;
+  [[nodiscard]] AABB lastOccupancyBoundsForTest() const;
+  [[nodiscard]] int lastGridMapLayerCountForTest() const;
+  [[nodiscard]] int lastGridMapVertexCountForTest() const;
+  [[nodiscard]] int gridMapUploadCountForTest() const;
+  // Trails drawn last frame (standalone and pose-embedded) and their strip vertices.
+  [[nodiscard]] int lastTrailCountForTest() const;
+  [[nodiscard]] int lastTrailVertexCountForTest() const;
+  [[nodiscard]] int lastVoxelLayerCountForTest() const;
+  [[nodiscard]] int lastVoxelCountForTest() const;
+  [[nodiscard]] int voxelFullUploadCountForTest() const;
   [[nodiscard]] int max3DTextureSizeForTest() const {
     return max_3d_texture_size_;
   }
-  [[nodiscard]] AABB lastVoxelBoundsForTest() const {
-    return last_voxel_bounds_;
-  }
-  [[nodiscard]] int lastMarkerLayerCountForTest() const {
-    return last_marker_layer_count_;
-  }
-  [[nodiscard]] int lastMarkerInstanceCountForTest() const {
-    return last_marker_instance_count_;
-  }
-  [[nodiscard]] int lastMarkerStreamVertexCountForTest() const {
-    return last_marker_stream_vertex_count_;
-  }
-  [[nodiscard]] AABB lastMarkerBoundsForTest() const {
-    return last_marker_bounds_;
-  }
-  [[nodiscard]] int lastModelLayerCountForTest() const {
-    return last_model_layer_count_;
-  }
-  [[nodiscard]] int lastModelDrawCountForTest() const {
-    return last_model_draw_count_;
-  }
-  [[nodiscard]] int lastModelTriangleCountForTest() const {
-    return last_model_triangle_count_;
-  }
-  [[nodiscard]] std::array<int, 5> lastModelTextureSlotCountsForTest() const {
-    return last_model_texture_slot_counts_;
-  }
-  [[nodiscard]] AABB lastModelBoundsForTest() const {
-    return last_model_bounds_;
-  }
+  [[nodiscard]] AABB lastVoxelBoundsForTest() const;
+  [[nodiscard]] int lastMarkerLayerCountForTest() const;
+  [[nodiscard]] int lastMarkerInstanceCountForTest() const;
+  [[nodiscard]] int lastMarkerStreamVertexCountForTest() const;
+  [[nodiscard]] AABB lastMarkerBoundsForTest() const;
+  [[nodiscard]] int lastModelLayerCountForTest() const;
+  [[nodiscard]] int lastModelDrawCountForTest() const;
+  [[nodiscard]] int lastModelTriangleCountForTest() const;
+  [[nodiscard]] std::array<int, 5> lastModelTextureSlotCountsForTest() const;
+  [[nodiscard]] AABB lastModelBoundsForTest() const;
   [[nodiscard]] bool lastShadowActiveForTest() const {
     return shadow_stage_.last_active;
   }
@@ -271,12 +277,9 @@ class SceneViewWidget : public QRhiWidget {
   [[nodiscard]] int shadowMapSizeForTest() const {
     return shadow_map_size_;
   }
-  [[nodiscard]] int lastShadowDrawCountForTest() const {
-    return last_shadow_draw_count_;
-  }
-  [[nodiscard]] int lastShadowTriangleCountForTest() const {
-    return last_shadow_triangle_count_;
-  }
+  // Shadow-caster draws / triangles of the last prepared frame.
+  [[nodiscard]] int lastShadowDrawCountForTest() const;
+  [[nodiscard]] int lastShadowTriangleCountForTest() const;
   [[nodiscard]] AABB lastShadowBoundsForTest() const {
     return last_shadow_bounds_;
   }
@@ -340,6 +343,8 @@ class SceneViewWidget : public QRhiWidget {
     return edl_stage_.resource_generation;
   }
   void setForceEdlFallbackForTest(bool force);
+  // Topic ids of the layers that submitted at least one draw last frame, in
+  // logical (dock) order even when a translucent draw was deferred.
   [[nodiscard]] const std::vector<std::uint32_t>& lastSubmittedLayerIdsForTest() const {
     return last_submitted_layer_ids_;
   }
@@ -349,11 +354,26 @@ class SceneViewWidget : public QRhiWidget {
   [[nodiscard]] const QString& rhiBackendNameForTest() const {
     return rhi_backend_name_;
   }
+  // Every pipeline that draws into the widget's own render target (the direct
+  // scene pipelines, the overlays, the HDR present) was built for the current
+  // one: its render pass descriptor and sample count.
+  [[nodiscard]] bool pipelinesBuiltForTargetForTest() const;
+  // Output pixel rectangle (top-left origin) of each overlay image drawn last
+  // frame, in OverlayRhiPass::Slot order (perf HUD, hover label, hover ring);
+  // empty for a slot that drew nothing.
+  [[nodiscard]] const std::array<QRect, 3>& lastOverlayRectsForTest() const {
+    return last_overlay_rects_;
+  }
 
  signals:
   void framesChanged(const QList<FrameRow>& frames);
   void presentationChanged();
   void renderingWarningChanged(const QString& warning);
+  // The hovered TF frame changed (see frameAt); empty when the cursor left every frame.
+  void hoveredFrameChanged(const QString& frame);
+  // Right-click landed on a TF frame (frameAt). The dock builds and shows the
+  // menu; the view stays menu-free. Empty-space right-clicks are not emitted.
+  void frameContextMenuRequested(const QString& frame, const QPoint& global_pos);
 
  protected:
   void initialize(QRhiCommandBuffer* command_buffer) override;
@@ -364,165 +384,63 @@ class SceneViewWidget : public QRhiWidget {
   void mouseMoveEvent(QMouseEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
   void changeEvent(QEvent* event) override;
+  // Clears the hover label when the cursor leaves the view.
+  void leaveEvent(QEvent* event) override;
+  // 'P' toggles the perf HUD.
+  void keyPressEvent(QKeyEvent* event) override;
+  // Accepts only on a TF frame (emits frameContextMenuRequested); otherwise
+  // ignore()s so the event reaches the host dock's standard context menu.
+  void contextMenuEvent(QContextMenuEvent* event) override;
 
  private:
+  // Per-frame state of the frame contract (rhi/rhi_scene_pass.h), defined in
+  // the .cpp: what admission decided, the frame's camera matrices, and the
+  // prepared draws every pass replays.
+  struct FrameAdmission;
+  struct FrameView;
+  struct PreparedFrame;
+
   // Shared placement step of the per-family render loops; see the definition.
   [[nodiscard]] std::optional<Transform> resolveFixedFromSource(
       const std::string& source_frame, const std::string& fixed_frame) const;
+  // The follow frame in the effective fixed frame at `time`; nullopt when there
+  // is no follow frame, no TF or no transform.
+  [[nodiscard]] std::optional<Transform> followTransform(PJ::Timepoint time) const;
+  // Where the fixed-frame `point` lands in logical widget pixels (current camera,
+  // camera-relative like the drawn frame); nullopt when behind the camera.
+  [[nodiscard]] std::optional<glm::vec2> projectToWidget(const glm::dvec3& point) const;
   using OrderedLayer = std::variant<
-      PointRenderable*, PosesInFrameLayer*, OccupancyGridLayer*, VoxelGridLayer*, SceneEntitiesLayer*,
-      ModelRenderable*>;
+      PointRenderable*, PosesInFrameLayer*, OccupancyGridLayer*, VoxelGridLayer*, SceneEntitiesLayer*, ModelRenderable*,
+      GridMapLayer*, TrailLayer*>;
   struct OrderedLayerEntry {
     OrderedLayer layer;
     std::uint32_t topic_id = 0;
   };
 
-  void setPointRenderableLayers(const std::vector<PointRenderable*>& layers);
-  void setPosesInFrameLayers(const std::vector<PosesInFrameLayer*>& layers);
-  void setOccupancyGridLayers(const std::vector<OccupancyGridLayer*>& layers);
-  void setVoxelGridLayers(const std::vector<VoxelGridLayer*>& layers);
-  void setSceneEntitiesLayers(const std::vector<SceneEntitiesLayer*>& layers);
-  void setModelRenderableLayers(const std::vector<ModelRenderable*>& layers);
+  // Frame contract steps, once per render() in this order.
+  void admitFrame(QRhi* rhi, FrameAdmission& admission);
+  void applySceneBounds(const SceneBoundsCollector& bounds);
+  [[nodiscard]] FrameView frameView(QRhi* rhi, const QSize& render_size) const;
+  QRhiResourceUpdateBatch* prepareFrame(
+      QRhi* rhi, const QSize& render_size, const FrameView& view, const FrameAdmission& admission,
+      PreparedFrame& frame);
+  void submitShadowPass(QRhiCommandBuffer* command_buffer, QRhiResourceUpdateBatch* updates);
+  void submitScenePass(
+      QRhiCommandBuffer* command_buffer, QRhiRenderTarget* target, ScenePass pass, const QColor& clear,
+      QRhiResourceUpdateBatch* updates, const PreparedFrame& frame);
+  void submitEdlMeshMask(QRhiCommandBuffer* command_buffer, const PreparedFrame& frame);
 
-  struct Vertex {
-    float x = 0.0F;
-    float y = 0.0F;
-    float z = 0.0F;
-    float r = 0.0F;
-    float g = 0.0F;
-    float b = 0.0F;
-    float a = 1.0F;
-  };
-
-  struct PointLayerGpu {
-    QRhiBuffer* vertex_buffer = nullptr;
-    QRhiBuffer* uniform_buffer = nullptr;
-    QRhiShaderResourceBindings* shader_resources = nullptr;
-    quint32 vertex_capacity = 0;
-    quint32 vertex_count = 0;
-    uint64_t uploaded_revision = ~uint64_t{0};
-  };
-
-  struct PoseLayerGpu {
-    QRhiBuffer* instance_buffer = nullptr;
-    QRhiBuffer* uniform_buffer = nullptr;
-    QRhiShaderResourceBindings* shader_resources = nullptr;
-    quint32 instance_capacity = 0;
-    quint32 instance_count = 0;
-    uint64_t uploaded_revision = ~uint64_t{0};
-  };
-
-  struct OccupancyLayerGpu {
-    QRhiTexture* texture = nullptr;
-    QRhiBuffer* uniform_buffer = nullptr;
-    QRhiShaderResourceBindings* shader_resources = nullptr;
-    quint32 width = 0;
-    quint32 height = 0;
-    uint64_t uploaded_revision = ~uint64_t{0};
-  };
-
-  struct VoxelLayerGpu {
-    QRhiTexture* texture = nullptr;
-    QRhiBuffer* uniform_buffer = nullptr;
-    QRhiShaderResourceBindings* shader_resources = nullptr;
-    quint32 columns = 0;
-    quint32 rows = 0;
-    quint32 slices = 0;
-    int value_kind = -1;
-    uint64_t uploaded_revision = ~uint64_t{0};
-  };
-
-  struct MarkerInstance {
-    std::array<float, 16> model{};
-    float r = 1.0F;
-    float g = 1.0F;
-    float b = 1.0F;
-    float a = 1.0F;
-    float bottom_scale = 1.0F;
-    float top_scale = 1.0F;
-    float unused0 = 0.0F;
-    float unused1 = 0.0F;
-  };
-
-  struct MarkerMeshGpu {
-    QRhiBuffer* vertex_buffer = nullptr;
-    QRhiBuffer* triangle_index_buffer = nullptr;
-    QRhiBuffer* edge_index_buffer = nullptr;
-    quint32 triangle_index_count = 0;
-    quint32 edge_index_count = 0;
-  };
-
-  struct ModelInstance {
-    std::array<float, 16> model{};
-    std::array<float, 4> tint{1.0F, 1.0F, 1.0F, 1.0F};
-    std::array<float, 4> params{};
-    std::array<float, 4> texture_flags{};
-    std::array<float, 4> pbr_factors{};
-    std::array<float, 4> emissive_factor{};
-  };
-
-  struct ShadowInstance {
-    std::array<float, 16> model{};
-  };
-  static_assert(sizeof(ShadowInstance) == 64U);
-
-  struct ModelTextureGpu {
-    QRhiTexture* texture = nullptr;
-    QImage pending_image;
-    bool owns_texture = false;
-    bool texture_upload_pending = false;
-    bool present = false;
-  };
-
-  struct ModelMaterialGpu {
-    std::array<ModelTextureGpu, 5> textures{};
-    QRhiShaderResourceBindings* shader_resources = nullptr;
-  };
-
-  struct ModelMeshGpu {
-    QRhiBuffer* vertex_buffer = nullptr;
-    QRhiBuffer* triangle_index_buffer = nullptr;
-    QRhiBuffer* edge_index_buffer = nullptr;
-    std::vector<quint32> edge_indices;
-    std::vector<quint32> edge_offsets;
-    std::vector<quint32> edge_counts;
-    std::vector<ModelMaterialGpu> materials;
-    std::shared_ptr<const MeshData> source;
-    bool upload_pending = false;
-  };
-
-  struct ModelLayerGpu {
-    std::unordered_map<std::string, ModelMeshGpu> meshes;
-    std::uint64_t uploaded_revision = ~std::uint64_t{0};
-  };
-
+  // Calls `visitor` with each scene family (the passes with per-layer draws).
+  template <typename Visitor>
+  void forEachFamily(Visitor&& visitor) const;
   void applyFollow();
   [[nodiscard]] std::string effectiveFixedFrame() const;
-  void buildGeometry(const glm::dvec3& render_origin);
-  void appendLine(const glm::dvec3& a, const glm::dvec3& b, const glm::vec4& color);
-  void appendTriangle(const glm::dvec3& a, const glm::dvec3& b, const glm::dvec3& c, const glm::vec4& color);
-  bool ensureVertexBuffer(
-      QRhi* owner, QRhiBuffer*& buffer, quint32& capacity, quint32 required_bytes, quint32 minimum_capacity);
-  bool ensurePointLayerGpu(QRhi* owner, PointRenderable* layer, PointLayerGpu& gpu);
-  void releasePointLayerGpu(PointLayerGpu& gpu);
-  bool ensurePoseLayerGpu(QRhi* owner, PoseLayerGpu& gpu);
-  void releasePoseLayerGpu(PoseLayerGpu& gpu);
-  bool ensureOccupancyLayerGpu(QRhi* owner, OccupancyGridLayer* layer, OccupancyLayerGpu& gpu, bool& texture_recreated);
-  void releaseOccupancyLayerGpu(OccupancyLayerGpu& gpu);
-  bool ensureVoxelLayerGpu(QRhi* owner, VoxelGridLayer* layer, VoxelLayerGpu& gpu, bool& texture_recreated);
-  [[nodiscard]] QString voxelGpuRejection(QRhi* owner, const VoxelGridLayer* layer);
-  void releaseVoxelLayerGpu(VoxelLayerGpu& gpu);
-  void releaseMarkerMeshGpu(MarkerMeshGpu& gpu);
-  bool ensureModelLayerGpu(QRhi* owner, ModelRenderable* layer, ModelLayerGpu& gpu);
-  QRhiShaderResourceBindings* createModelMaterialBindings(QRhi* owner, const ModelMaterialGpu& material);
-  bool rebuildModelMaterialBindings(QRhi* owner, ModelMaterialGpu& material);
-  bool rebuildAllModelMaterialBindings(QRhi* owner);
-  void releaseModelMeshGpu(ModelMeshGpu& gpu);
-  void releaseModelLayerGpu(ModelLayerGpu& gpu);
+  // Rebuilds the TF frame triads (drawn right after the grid prelude) when
+  // their inputs changed since the last frame.
+  void buildTfTriads(const glm::dvec3& render_origin, const std::string& fixed_frame);
   bool ensureShadowResources(QRhi* owner);
   void releaseShadowResources(bool restore_model_bindings);
   bool ensureHdrResources(QRhi* owner, const QSize& size);
-  bool ensureHdrPipelines(QRhi* owner);
   void releaseHdrTargetResources();
   void releaseHdrResources();
   bool ensureSsaoResources(QRhi* owner, const QSize& size);
@@ -532,6 +450,9 @@ class SceneViewWidget : public QRhiWidget {
   void releaseEdlTargetResources();
   void releaseEdlResources();
   void updateRenderingWarning();
+  void setHoveredFrame(std::optional<std::string> frame);
+  // Uploads the corner gizmo and this frame's HUD / hover-label images.
+  void prepareOverlays(QRhiResourceUpdateBatch* updates, const QSize& output_size, const std::string& fixed_frame);
   void emitPresentationIfChanged(const CameraState& before);
 
   std::shared_ptr<TransformBuffer> tf_;
@@ -544,6 +465,7 @@ class SceneViewWidget : public QRhiWidget {
   std::unique_ptr<ICamera> camera_{std::make_unique<OrbitCamera>()};
   CameraModel camera_model_ = CameraModel::kOrbit;
   AABB scene_bounds_{};
+  CameraFitPolicy camera_fit_;
 
   GridStyle grid_style_ = GridStyle::kLines;
   float grid_extent_m_ = 10.0F;
@@ -561,88 +483,29 @@ class SceneViewWidget : public QRhiWidget {
 
   QRhi* resource_rhi_ = nullptr;
   QString rhi_backend_name_;
+  // The widget target the passes were built for. setSampleCount() or
+  // setColorBufferFormat() recreate it on the same QRhi, and initialize() then
+  // rebuilds every resource bound to the old one.
+  const QRhiRenderPassDescriptor* built_render_pass_ = nullptr;  // compared by address only
+  QVector<quint32> built_target_format_;
+  int built_sample_count_ = 0;
   QRhiBuffer* uniform_buffer_ = nullptr;
   QRhiBuffer* render_mode_uniform_buffer_ = nullptr;
   QRhiBuffer* annotation_render_mode_uniform_buffer_ = nullptr;
-  QRhiBuffer* line_buffer_ = nullptr;
-  QRhiBuffer* triangle_buffer_ = nullptr;
-  QRhiShaderResourceBindings* shader_resources_ = nullptr;
-  QRhiShaderResourceBindings* annotation_shader_resources_ = nullptr;
-  QRhiGraphicsPipeline* line_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* triangle_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* line_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* triangle_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* point_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* cube_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* pose_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* occupancy_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* voxel_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* marker_triangle_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* marker_triangle_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* marker_triangle_cull_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* marker_triangle_cull_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* marker_line_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* marker_line_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* model_triangle_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* model_triangle_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* model_line_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* model_line_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_line_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_annotation_line_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_triangle_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_line_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_triangle_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_point_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_cube_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_pose_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_occupancy_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_voxel_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_marker_triangle_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_marker_triangle_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_marker_triangle_cull_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_marker_triangle_cull_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_marker_line_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_marker_line_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_model_triangle_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_model_triangle_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_model_line_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_model_line_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* hdr_grid_shadow_pipeline_ = nullptr;
-  QRhiBuffer* point_layout_uniform_buffer_ = nullptr;
-  QRhiShaderResourceBindings* point_layout_shader_resources_ = nullptr;
-  QRhiBuffer* cube_vertex_buffer_ = nullptr;
-  QRhiBuffer* cube_index_buffer_ = nullptr;
-  QRhiBuffer* pose_layout_uniform_buffer_ = nullptr;
-  QRhiShaderResourceBindings* pose_layout_shader_resources_ = nullptr;
-  QRhiBuffer* pose_vertex_buffer_ = nullptr;
-  QRhiBuffer* pose_index_buffer_ = nullptr;
-  QRhiBuffer* occupancy_layout_uniform_buffer_ = nullptr;
-  QRhiShaderResourceBindings* occupancy_layout_shader_resources_ = nullptr;
-  QRhiTexture* occupancy_layout_texture_ = nullptr;
-  QRhiSampler* occupancy_sampler_ = nullptr;
-  QRhiBuffer* occupancy_quad_buffer_ = nullptr;
-  QRhiBuffer* voxel_layout_uniform_buffer_ = nullptr;
-  QRhiShaderResourceBindings* voxel_layout_shader_resources_ = nullptr;
-  QRhiTexture* voxel_layout_texture_ = nullptr;
-  QRhiSampler* voxel_sampler_ = nullptr;
-  QRhiTexture* colormap_texture_ = nullptr;
-  QRhiSampler* colormap_sampler_ = nullptr;
-  QRhiBuffer* marker_instance_buffer_ = nullptr;
+  int render_mode_hdr_written_ = -1;  // the hdr flag both render-mode blocks hold; -1: unwritten
+  // Every family's direct pipelines and their HDR-colour and depth-replay clones.
+  std::unique_ptr<ScenePipelineRegistry> pipelines_;
+  // Unit meshes shared by the families (cube, cube fan, arrow).
+  std::unique_ptr<RhiSharedGeometry> shared_geometry_;
+  // Camera/lighting/shadow parameters: binding 6 of the model materials,
+  // binding 1 of the grid shadow receiver.
   QRhiBuffer* model_uniform_buffer_ = nullptr;
-  QRhiBuffer* model_instance_buffer_ = nullptr;
-  QRhiTexture* model_white_texture_ = nullptr;
-  QRhiSampler* model_sampler_ = nullptr;
-  QRhiShaderResourceBindings* model_layout_shader_resources_ = nullptr;
   QRhiTexture* shadow_texture_ = nullptr;
   QRhiSampler* shadow_sampler_ = nullptr;
   QRhiTextureRenderTarget* shadow_render_target_ = nullptr;
   QRhiRenderPassDescriptor* shadow_render_pass_descriptor_ = nullptr;
   QRhiBuffer* shadow_uniform_buffer_ = nullptr;
-  QRhiBuffer* shadow_instance_buffer_ = nullptr;
   QRhiShaderResourceBindings* shadow_shader_resources_ = nullptr;
-  QRhiShaderResourceBindings* grid_shadow_shader_resources_ = nullptr;
-  QRhiGraphicsPipeline* shadow_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* grid_shadow_pipeline_ = nullptr;
   QRhiRenderBuffer* hdr_msaa_color_ = nullptr;
   QRhiRenderBuffer* hdr_msaa_depth_ = nullptr;
   QRhiTexture* hdr_resolve_color_ = nullptr;
@@ -660,100 +523,63 @@ class SceneViewWidget : public QRhiWidget {
   QRhiSampler* hdr_coverage_sampler_ = nullptr;
   QRhiBuffer* composite_uniform_buffer_ = nullptr;
   QRhiBuffer* ssao_uniform_buffer_ = nullptr;
+  bool ssao_kernel_pending_ = false;  // the constant kernel is written once per buffer
   QRhiShaderResourceBindings* present_shader_resources_ = nullptr;
   QRhiShaderResourceBindings* ssao_shader_resources_ = nullptr;
   QRhiGraphicsPipeline* present_pipeline_ = nullptr;
   QRhiGraphicsPipeline* ssao_pipeline_ = nullptr;
   QRhiGraphicsPipeline* edl_mesh_mask_triangle_pipeline_ = nullptr;
   QRhiGraphicsPipeline* edl_mesh_mask_line_pipeline_ = nullptr;
-  std::unordered_map<QRhiGraphicsPipeline*, QRhiGraphicsPipeline*> hdr_depth_pipelines_;
-  std::array<MarkerMeshGpu, 5> marker_meshes_{};
-  bool colormap_upload_pending_ = false;
-  bool cube_upload_pending_ = false;
-  bool pose_mesh_upload_pending_ = false;
-  bool occupancy_quad_upload_pending_ = false;
-  bool marker_mesh_upload_pending_ = false;
-  bool model_white_upload_pending_ = false;
-  quint32 pose_index_count_ = 0;
-  quint32 line_buffer_capacity_ = 0;
-  quint32 triangle_buffer_capacity_ = 0;
-  quint32 marker_instance_buffer_capacity_ = 0;
-  quint32 model_instance_buffer_capacity_ = 0;
-  quint32 shadow_instance_buffer_capacity_ = 0;
-  std::vector<Vertex> line_vertices_;
-  std::vector<Vertex> triangle_vertices_;
-  std::vector<MarkerInstance> marker_instances_;
-  std::vector<ModelInstance> model_instances_;
-  std::vector<ShadowInstance> shadow_instances_;
-  quint32 grid_line_vertex_count_ = 0;
-  quint32 grid_triangle_vertex_count_ = 0;
   int last_line_vertex_count_ = 0;
   int last_triangle_vertex_count_ = 0;
   int last_resolved_frame_count_ = 0;
   std::vector<OrderedLayerEntry> ordered_layers_;
   std::vector<std::uint32_t> last_submitted_layer_ids_;
+  // Reused across frames: the prepared frame and the per-slot "submitted" marks.
+  std::unique_ptr<PreparedFrame> frame_;
+  std::vector<char> submitted_slots_;
 
-  std::vector<PointRenderable*> point_layers_;
-  std::unordered_map<PointRenderable*, PointLayerGpu> point_layer_gpu_;
-  std::unordered_set<PointRenderable*> point_layers_pending_fit_;
-  int last_point_vertex_count_ = 0;
-  int last_point_layer_count_ = 0;
-  int last_cube_layer_count_ = 0;
-  int last_cube_instance_count_ = 0;
+  std::unique_ptr<PointRhiPass> point_pass_;
   int camera_fit_count_ = 0;
-  AABB last_point_bounds_;
-  int last_depth_vertex_count_ = 0;
-  int last_depth_layer_count_ = 0;
-  AABB last_depth_bounds_;
 
-  std::vector<PosesInFrameLayer*> pose_layers_;
-  std::unordered_map<PosesInFrameLayer*, PoseLayerGpu> pose_layer_gpu_;
-  std::unordered_set<PosesInFrameLayer*> pose_layers_pending_fit_;
-  int last_pose_layer_count_ = 0;
-  int last_pose_arm_count_ = 0;
-  // TF "Frames" gizmos drawn as solid instanced arrow triads (the desktop look),
-  // reusing the pose arrow mesh/pipeline. Each frame's fixed-frame transform is
-  // baked into the instance model (uniform fixed_from_source is identity), so
-  // the GPU resources reuse the pose PoseLayerGpu shape.
+  // Pose triads plus the TF "Frames" gizmos, drawn as solid instanced arrow
+  // triads (the desktop look) with the pose pipeline and arrow mesh.
+  std::unique_ptr<PoseRhiPass> pose_pass_;
+  // TF triad arms of the current frame, each frame's fixed-frame transform
+  // (relative to the render origin) baked into its instance model.
   std::vector<PoseTriadInstance> tf_triad_instances_;
-  PoseLayerGpu tf_triad_gpu_;
-  AABB last_pose_bounds_;
+  std::vector<std::string> tf_triad_frames_;
+  // What tf_triad_instances_ were built from; the revision moves on each rebuild.
+  struct TfTriadKey {
+    const TransformBuffer* tf = nullptr;
+    uint64_t tf_revision = 0;
+    PJ::Timepoint time{};
+    std::string fixed_frame;
+    glm::dvec3 render_origin{0.0};
+    bool axes_visible = false;
+    float size = 0.0F;
+    float opacity = 0.0F;
+    std::optional<std::string> hovered_frame;
 
-  std::vector<OccupancyGridLayer*> occupancy_layers_;
-  std::unordered_map<OccupancyGridLayer*, OccupancyLayerGpu> occupancy_layer_gpu_;
-  std::unordered_set<OccupancyGridLayer*> occupancy_layers_pending_fit_;
-  int last_occupancy_layer_count_ = 0;
-  int last_occupancy_cell_count_ = 0;
-  int occupancy_full_upload_count_ = 0;
-  int occupancy_partial_upload_count_ = 0;
-  AABB last_occupancy_bounds_;
+    bool operator==(const TfTriadKey&) const = default;
+  };
+  std::optional<TfTriadKey> tf_triad_key_;
+  std::uint64_t tf_triad_revision_ = 0;
 
-  std::vector<VoxelGridLayer*> voxel_layers_;
-  std::unordered_map<VoxelGridLayer*, VoxelLayerGpu> voxel_layer_gpu_;
-  std::unordered_set<VoxelGridLayer*> voxel_layers_pending_fit_;
-  int last_voxel_layer_count_ = 0;
-  int last_voxel_count_ = 0;
-  int voxel_full_upload_count_ = 0;
+  std::unique_ptr<OccupancyRhiPass> occupancy_pass_;
+  // Grid + TF connection lines, drawn first in every scene pass.
+  std::unique_ptr<GridRhiPass> grid_pass_;
+  std::unique_ptr<GridMapRhiPass> gridmap_pass_;
+  // Standalone and pose-embedded trails.
+  std::unique_ptr<TrailRhiPass> trail_pass_;
+
+  std::unique_ptr<VoxelRhiPass> voxel_pass_;
   int max_3d_texture_size_ = 0;
-  AABB last_voxel_bounds_;
 
-  std::vector<SceneEntitiesLayer*> marker_layers_;
-  std::unordered_set<SceneEntitiesLayer*> marker_layers_pending_fit_;
-  int last_marker_layer_count_ = 0;
-  int last_marker_instance_count_ = 0;
-  int last_marker_stream_vertex_count_ = 0;
-  AABB last_marker_bounds_;
-  std::vector<ModelRenderable*> model_layers_;
-  std::unordered_map<ModelRenderable*, ModelLayerGpu> model_layer_gpu_;
-  int last_model_layer_count_ = 0;
-  int last_model_draw_count_ = 0;
-  int last_model_triangle_count_ = 0;
-  std::array<int, 5> last_model_texture_slot_counts_{};
-  AABB last_model_bounds_;
+  std::unique_ptr<MarkerRhiPass> marker_pass_;
+  std::unique_ptr<ModelRhiPass> model_pass_;
   bool last_shadow_fit_valid_ = false;
   int shadow_map_size_ = 0;
-  int last_shadow_draw_count_ = 0;
-  int last_shadow_triangle_count_ = 0;
   AABB last_shadow_bounds_;
   // Last shadow failure already forwarded to the caster layers, so a persistent
   // error is noted once instead of re-marked every frame.
@@ -782,6 +608,29 @@ class SceneViewWidget : public QRhiWidget {
   QualityStageState hdr_stage_;
   QualityStageState ssao_stage_;
   QualityStageState edl_stage_;
+
+  std::unique_ptr<OverlayRhiPass> overlay_pass_;
+  CompositeParams composite_params_;
+  float render_scale_ = 1.0F;
+  bool show_perf_hud_ = false;
+  QElapsedTimer cpu_timer_;
+  MovingAverage cpu_average_;
+  MovingAverage gpu_average_;
+  // Overlay images are re-rasterised only when their content changes, so the
+  // pass keeps their textures (keyed by QImage::cacheKey()).
+  QStringList hud_lines_;
+  QImage hud_image_;
+  // Paces the HUD text refresh; invalid while the HUD is hidden, so the first
+  // frame after showing it refreshes at once.
+  QElapsedTimer hud_refresh_timer_;
+  std::string hover_label_frame_;
+  QImage hover_label_image_;
+  QImage hover_ring_image_;
+  qreal overlay_image_dpr_ = 0.0;
+  std::array<QRect, 3> last_overlay_rects_{};
+  std::optional<std::string> hovered_frame_;
+  mutable std::vector<std::string> pick_frames_;
+  mutable std::vector<glm::vec2> pick_points_;
 
   QPoint last_mouse_position_;
   Qt::MouseButton active_button_ = Qt::NoButton;
