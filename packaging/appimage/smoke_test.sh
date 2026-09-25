@@ -12,7 +12,7 @@
 # whose `apt install` resolved the .deb's Depends — which doubles as proof
 # that the set declared there covers the payload both artifacts share. For a
 # standalone run, install those packages (see `Depends:` in the .deb, or
-# SONAME_PKG in packaging/deb/build_deb.sh) plus xvfb first.
+# SONAME_PKG in packaging/deb/build_deb.sh) plus xvfb and libgl1-mesa-dri first.
 #
 #   sh packaging/appimage/smoke_test.sh <path/to/PlotJuggler-*.AppImage>
 set -e
@@ -57,3 +57,9 @@ else
   tail -60 "${WORK}/gui.log"
   exit 1
 fi
+
+# Startup alone does not prove drawing: open the fixture layout and require
+# every plot, the Scene3D view and the media viewer to render through QRhi.
+echo "--- render check under Xvfb (AppImage) ---"
+xvfb-run -a --server-args="-screen 0 1280x800x24" \
+  sh "$(dirname "$0")/../smoke/render_check.sh" "${WORK}/pj4.AppImage"

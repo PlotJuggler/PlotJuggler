@@ -3,7 +3,6 @@
 
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 
-#include <QFile>
 #include <QFont>
 #include <QFontMetricsF>
 #include <QImage>
@@ -38,6 +37,7 @@ MediaViewerWidget::MediaViewerWidget(QWidget* parent) : QRhiWidget(parent) {
   const auto fw_theme = theme::appTheme();
   clear_color_ = theme::surface(theme::Surface::DataBackdrop, fw_theme);
   setApi(preferredGraphicsApi());
+  setAutoRenderTarget(false);  // colour only, see color_target_
   setObjectName(u"mediaViewerCanvas"_s);
   setFocusPolicy(Qt::StrongFocus);
   setMouseTracking(true);
@@ -94,6 +94,13 @@ void MediaViewerWidget::setPointInspectorEnabled(bool enabled) {
   }
   refreshPointInspector();
 }
+
+#ifdef PJ_RHI_TEST_HOOKS
+void MediaViewerWidget::setMaxTextureSizeForTest(int pixels) {
+  max_texture_size_for_test_ = std::max(pixels, 0);
+  oversize_frame_logged_ = false;
+}
+#endif
 
 bool MediaViewerWidget::pointInspectorEnabled() const noexcept {
   return point_inspector_enabled_.load(std::memory_order_relaxed);
@@ -299,6 +306,7 @@ void MediaViewerWidget::releaseResources() {
   pipeline_ = nullptr;
   delete composite_pipeline_;
   composite_pipeline_ = nullptr;
+  color_target_.release();
   destroyTextureLayer(base_texture_);
   delete sampler_;
   sampler_ = nullptr;
@@ -510,6 +518,29 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
 
   const int w = frame.width;
   const int h = frame.height;
+  const int size_limit = max_texture_size_for_test_ > 0 ? max_texture_size_for_test_ : max_texture_size_;
+  if (size_limit > 0 && (w > size_limit || h > size_limit)) {
+    if (!std::exchange(oversize_frame_logged_, true)) {
+      qWarning(
+          "MediaViewerWidget: a %d x %d frame exceeds this GPU's %d-pixel texture limit; it is not drawn", w, h,
+          size_limit);
+    }
+    return dropTextureLayer(layer);
+  }
+  const TexturePathFormat path = texturePathFor(frame.format);
+  if (path == TexturePathFormat::kDepth) {
+    layer.invert = frame.depth.invert ? 1 : 0;
+    layer.near_m = frame.depth.near_m;
+    layer.far_m = frame.depth.far_m;
+    layer.colormap = static_cast<int32_t>(frame.depth.colormap);
+  }
+  // The textures already hold this buffer: only the per-frame state above changed.
+  if (frame_in.pixels == layer.uploaded_pixels && w == layer.width && h == layer.height && path == layer.format &&
+      !mag_changed) {
+    return true;
+  }
+  layer.uploaded_pixels.reset();  // set again once this upload is queued
+  ++frame_upload_count_;
   const uint8_t* src = frame.pixels->data();
   const size_t src_size = frame.pixels->size();
 
@@ -547,6 +578,7 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
     QRhiTextureSubresourceUploadDescription v_desc(src + y_size + uv_size, uv_size);
     v_desc.setSourceSize(QSize(uv_w, uv_h));
     updates->uploadTexture(layer.tex_v, QRhiTextureUploadDescription({0, 0, v_desc}));
+    layer.uploaded_pixels = frame_in.pixels;
     return true;
   }
 
@@ -581,13 +613,13 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
     QRhiTextureSubresourceUploadDescription uv_desc(src + y_size, uv_h * uv_row_bytes);
     uv_desc.setSourceSize(QSize(uv_w, uv_h));
     updates->uploadTexture(layer.tex_u, QRhiTextureUploadDescription({0, 0, uv_desc}));
+    layer.uploaded_pixels = frame_in.pixels;
     return true;
   }
 
   // Single-plane upload. Mono8 and BGRA go to the GPU verbatim (R8 / RGBA8) and
   // are expanded/swizzled in the shader — no CPU repack. RGB888/BGR888 (3-byte)
   // have no clean 4-byte-row GPU layout, so they still expand to RGBA on the CPU.
-  const TexturePathFormat path = texturePathFor(frame.format);
   QRhiTexture::Format tex_format = QRhiTexture::RGBA8;
   const uint8_t* upload_data = nullptr;
   size_t upload_size = 0;
@@ -596,10 +628,6 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
     tex_format = QRhiTexture::R32F;
     upload_data = src;  // float32 metric depth; the shader colormaps via the LUT in u_tex
     upload_size = static_cast<size_t>(w) * static_cast<size_t>(h) * sizeof(float);
-    layer.invert = frame.depth.invert ? 1 : 0;
-    layer.near_m = frame.depth.near_m;
-    layer.far_m = frame.depth.far_m;
-    layer.colormap = static_cast<int32_t>(frame.depth.colormap);
   } else if (path == TexturePathFormat::kMono8) {
     tex_format = QRhiTexture::R8;
     upload_data = src;
@@ -658,6 +686,7 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
   QRhiTextureSubresourceUploadDescription sub_desc(upload_data, static_cast<quint32>(upload_size));
   sub_desc.setSourceSize(QSize(w, h));
   updates->uploadTexture(layer.tex_y, QRhiTextureUploadDescription({0, 0, sub_desc}));
+  layer.uploaded_pixels = frame_in.pixels;
   return true;
 }
 
@@ -695,7 +724,7 @@ bool MediaViewerWidget::ensureRemapTexture(
   // (Re)create the LUT texture when the rectified output size changes.
   if (layer.tex_remap == nullptr || layer.remap_w != out_w || layer.remap_h != out_h) {
     delete layer.tex_remap;
-    layer.tex_remap = r->newTexture(QRhiTexture::RGBA32F, QSize(out_w, out_h));
+    layer.tex_remap = r->newTexture(QRhiTexture::RG32UI, QSize(out_w, out_h));
     if (!layer.tex_remap->create()) {
       delete layer.tex_remap;
       layer.tex_remap = nullptr;
@@ -726,18 +755,15 @@ bool MediaViewerWidget::ensureRemapTexture(
   }
 
   // Upload the LUT only when the underlying map changes (calibration is constant
-  // per camera, so this runs once). RGBA32F: .rg = normalized source UV, .ba = 0.
+  // per camera, so this runs once). QRhi has no RG32F, so the normalized source UV
+  // goes up as the bits of its two floats (RG32UI, 8 B/px) and the shader
+  // reinterprets them.
   if (layer.remap_map_key != static_cast<const void*>(&map)) {
     const std::vector<float> rg = undistortMapToNormalizedRG(map);
     if (rg.size() != static_cast<size_t>(out_w) * static_cast<size_t>(out_h) * 2) {
       return false;
     }
-    std::vector<float> rgba(static_cast<size_t>(out_w) * static_cast<size_t>(out_h) * 4, 0.0F);
-    for (size_t i = 0, n = static_cast<size_t>(out_w) * static_cast<size_t>(out_h); i < n; ++i) {
-      rgba[i * 4 + 0] = rg[i * 2 + 0];
-      rgba[i * 4 + 1] = rg[i * 2 + 1];
-    }
-    QRhiTextureSubresourceUploadDescription desc(rgba.data(), static_cast<quint32>(rgba.size() * sizeof(float)));
+    QRhiTextureSubresourceUploadDescription desc(rg.data(), static_cast<quint32>(rg.size() * sizeof(float)));
     desc.setSourceSize(QSize(out_w, out_h));
     updates->uploadTexture(layer.tex_remap, QRhiTextureUploadDescription({0, 0, desc}));
     layer.remap_map_key = static_cast<const void*>(&map);
@@ -841,7 +867,7 @@ bool MediaViewerWidget::createOverlayGraphicsPipeline(
   overlay.pipeline->setTopology(topology);
   overlay.pipeline->setVertexInputLayout(input_layout);
   overlay.pipeline->setShaderResourceBindings(overlay.srb);
-  overlay.pipeline->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
+  overlay.pipeline->setRenderPassDescriptor(color_target_.renderPass());
   overlay.pipeline->setTargetBlends({alphaBlend()});
   if (!createRhiPipeline(*this, *overlay.pipeline, name)) {
     if (warn) {
@@ -899,9 +925,9 @@ bool MediaViewerWidget::createBaseResources(const QShader& vert, const QShader& 
   remap_sampler_ = r->newSampler(
       QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None, QRhiSampler::ClampToEdge,
       QRhiSampler::ClampToEdge);
-  // 1x1 RGBA32F placeholder bound at slot 4 for non-rectifying layers so all
-  // texture-layer SRBs share one binding layout.
-  remap_placeholder_tex_ = r->newTexture(QRhiTexture::RGBA32F, QSize(1, 1));
+  // 1x1 RG32UI placeholder bound at slot 4 for non-rectifying layers so all
+  // texture-layer SRBs share one binding layout (and the shader's usampler2D).
+  remap_placeholder_tex_ = r->newTexture(QRhiTexture::RG32UI, QSize(1, 1));
   // Uniform buffer + placeholder textures (1x1) — resized on first frame.
   if (!sampler_->create() || !mag_nearest_sampler_->create() || !remap_sampler_->create() ||
       !remap_placeholder_tex_->create() || !ensureTextureLayer(base_texture_)) {
@@ -914,7 +940,7 @@ bool MediaViewerWidget::createBaseResources(const QShader& vert, const QShader& 
       {QRhiShaderStage(QRhiShaderStage::Vertex, vert), QRhiShaderStage(QRhiShaderStage::Fragment, frag)});
   pipeline_->setVertexInputLayout(QRhiVertexInputLayout());
   pipeline_->setShaderResourceBindings(base_texture_.srb);
-  pipeline_->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
+  pipeline_->setRenderPassDescriptor(color_target_.renderPass());
   return createRhiPipeline(*this, *pipeline_, "base");
 }
 
@@ -928,6 +954,13 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
     noteRhiAdoption(*this, rhi_cached_, r);
     releaseResources();
     rhi_cached_ = r;
+    max_texture_size_ = r->resourceLimit(QRhi::TextureSizeMax);
+  }
+  if (!color_target_.ensure(*r, colorTexture(), msaaColorBuffer(), resolveTexture(), /*refresh=*/true)) {
+    releaseResources();
+    setRenderingWarning(tr("GPU rendering is unavailable (%1): the render target could not be created.")
+                            .arg(QString::fromLatin1(r->backendName())));
+    return;
   }
 
   // Nothing to build: the common case of a resize's initialize().
@@ -941,8 +974,8 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
   QShader vert;
   QShader frag;
   if (pipeline_ == nullptr || composite_pipeline_ == nullptr) {
-    vert = loadShader(":/shaders/yuv_to_rgb.vert.qsb");
-    frag = loadShader(":/shaders/yuv_to_rgb.frag.qsb");
+    vert = PJ::loadRhiShader(QStringLiteral(":/shaders/yuv_to_rgb.vert.qsb"));
+    frag = PJ::loadRhiShader(QStringLiteral(":/shaders/yuv_to_rgb.frag.qsb"));
   }
   if (pipeline_ == nullptr) {
     if (!vert.isValid() || !frag.isValid() || !createBaseResources(vert, frag)) {
@@ -959,11 +992,11 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
   // creation or in render() comes back on the next initialize().
   createOptionalResources(r, vert, frag);
 
-  // GPU rectification needs the base pipeline plus a sampleable RGBA32F LUT. When
+  // GPU rectification needs the base pipeline plus a sampleable RG32UI LUT. When
   // available, tell the source to defer rectification to the GPU (raw upload +
   // map); otherwise it keeps rectifying on the CPU (the precompute fallback).
   gpu_rectify_supported_.store(
-      pipeline_ != nullptr && r->isTextureFormatSupported(QRhiTexture::RGBA32F), std::memory_order_relaxed);
+      pipeline_ != nullptr && r->isTextureFormatSupported(QRhiTexture::RG32UI), std::memory_order_relaxed);
   applyGpuRectifyCapability();
 
   if (has_pending_ || has_pending_pixel_layers_) {
@@ -988,7 +1021,7 @@ void MediaViewerWidget::createOptionalResources(QRhi* r, const QShader& vert, co
         {QRhiShaderStage(QRhiShaderStage::Vertex, vert), QRhiShaderStage(QRhiShaderStage::Fragment, frag)});
     composite_pipeline_->setVertexInputLayout(QRhiVertexInputLayout());
     composite_pipeline_->setShaderResourceBindings(base_texture_.srb);
-    composite_pipeline_->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
+    composite_pipeline_->setRenderPassDescriptor(color_target_.renderPass());
     composite_pipeline_->setTargetBlends({alphaBlend()});
     if (!createRhiPipeline(*this, *composite_pipeline_, "composite")) {
       warning("failed to create the composite pipeline; layers draw without blending");
@@ -1003,8 +1036,8 @@ void MediaViewerWidget::createOptionalResources(QRhi* r, const QShader& vert, co
   QShader marker_vert;
   QShader marker_frag;
   if (marker_uniform_buf_ == nullptr || thick_overlay_.pipeline == nullptr) {
-    marker_vert = loadShader(":/shaders/scene_lines.vert.qsb");
-    marker_frag = loadShader(":/shaders/scene_lines.frag.qsb");
+    marker_vert = PJ::loadRhiShader(QStringLiteral(":/shaders/scene_lines.vert.qsb"));
+    marker_frag = PJ::loadRhiShader(QStringLiteral(":/shaders/scene_lines.frag.qsb"));
     if (!marker_vert.isValid() || !marker_frag.isValid()) {
       warning("scene_lines shaders not loaded; markers disabled");
     } else if (marker_uniform_buf_ == nullptr) {
@@ -1024,8 +1057,8 @@ void MediaViewerWidget::createOptionalResources(QRhi* r, const QShader& vert, co
   // ----- kPoints quad pipeline -----
   // Solid-fill triangles, shares marker_uniform_buf_ but has its own SRB and VBO.
   if (points_overlay_.pipeline == nullptr) {
-    const QShader quads_vert = loadShader(":/shaders/scene_quads.vert.qsb");
-    const QShader quads_frag = loadShader(":/shaders/scene_quads.frag.qsb");
+    const QShader quads_vert = PJ::loadRhiShader(QStringLiteral(":/shaders/scene_quads.vert.qsb"));
+    const QShader quads_frag = PJ::loadRhiShader(QStringLiteral(":/shaders/scene_quads.frag.qsb"));
     if (!quads_vert.isValid() || !quads_frag.isValid()) {
       warning("scene_quads shaders not loaded; kPoints disabled");
     } else {
@@ -1052,8 +1085,8 @@ void MediaViewerWidget::createOptionalResources(QRhi* r, const QShader& vert, co
 
   // ----- Text pipeline (textured quads, R8 alpha mask + tint color) -----
   if (text_overlay_.pipeline == nullptr) {
-    const QShader text_vert = loadShader(":/shaders/scene_text.vert.qsb");
-    const QShader text_frag = loadShader(":/shaders/scene_text.frag.qsb");
+    const QShader text_vert = PJ::loadRhiShader(QStringLiteral(":/shaders/scene_text.vert.qsb"));
+    const QShader text_frag = PJ::loadRhiShader(QStringLiteral(":/shaders/scene_text.frag.qsb"));
     if (!text_vert.isValid() || !text_frag.isValid()) {
       warning("scene_text shaders not loaded; text disabled");
     } else {
@@ -1099,7 +1132,12 @@ void MediaViewerWidget::createOptionalResources(QRhi* r, const QShader& vert, co
 }
 
 void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
-  auto* rt = renderTarget();
+  // The failed state released it with everything else, yet still clears.
+  if (rhi() == nullptr ||
+      !color_target_.ensure(*rhi(), colorTexture(), msaaColorBuffer(), resolveTexture(), /*refresh=*/false)) {
+    return;
+  }
+  QRhiRenderTarget* rt = color_target_.target();
   if (pipeline_ == nullptr) {
     // Failed state: show the background, draw nothing (see initialize()).
     cb->beginPass(rt, clear_color_, {1.0f, 0});
@@ -1254,6 +1292,9 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
       // ----- Text rebuild (textured quads) — only when the annotation set
       // changes; text size is not cosmetic, so a pure zoom change leaves it. -----
       if (overlays_dirty_ && text_overlay_.pipeline != nullptr) {
+        if (text_cache_.size() > kMaxGlyphCacheEntries) {
+          clearTextCache();  // nothing borrows its bindings between rebuilds
+        }
         text_overlay_.vertex_data.clear();
         text_draw_items_.clear();
         constexpr size_t kFloatsPerTextQuad = 6 * 8;  // 6 verts × (pos2+uv2+color4) = 48 floats
@@ -1568,15 +1609,6 @@ void MediaViewerWidget::hidePointInspector() {
   if (point_inspector_ != nullptr) {
     point_inspector_->hideImmediately();
   }
-}
-
-QShader MediaViewerWidget::loadShader(const QString& path) {
-  QFile f(path);
-  if (!f.open(QIODevice::ReadOnly)) {
-    qWarning("Failed to load shader: %s", qPrintable(path));
-    return {};
-  }
-  return QShader::fromSerialized(f.readAll());
 }
 
 MediaViewerWidget::TextEntry* MediaViewerWidget::getOrCreateTextTexture(

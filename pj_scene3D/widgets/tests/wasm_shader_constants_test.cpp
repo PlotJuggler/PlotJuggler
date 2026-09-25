@@ -19,12 +19,16 @@
 // is built with PJ_WASM_WITH_SCENE3D=OFF in CI and so never compiles them there.
 
 #include <gtest/gtest.h>
+#include <rhi/qshader.h>
 
+#include <QByteArray>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "pj_scene3d_widgets/cube_mesh.h"
 #include "pj_widgets/Colormap.h"
@@ -87,6 +91,39 @@ TEST(WasmShaderConstantsTest, ColormapCopyMatchesTheSharedPolynomials) {
   for (const std::string_view shader : {"point.vert", "cube.vert", "gridmap.frag"}) {
     EXPECT_NE(readShader(shader).find("colormap.glslinc"), std::string::npos) << shader;
   }
+}
+
+// D3D11 links a vertex shader's outputs to the next stage's inputs by register,
+// in declaration order, not by location: a fragment shader that skips a location
+// its vertex shader writes reads every later input from the wrong register (every
+// mesh drew nothing when model.frag dropped location 0). Every baked stage's
+// varyings are therefore contiguous from location 0, which makes each fragment
+// shader's inputs a prefix of its vertex shader's outputs.
+TEST(WasmShaderConstantsTest, EveryPackVaryingIsContiguousFromLocationZero) {
+  int packs = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(PJ_WASM_SHADER_DIR)) {
+    const std::string name = entry.path().filename().string();
+    const bool fragment = name.ends_with(".frag.qsb");
+    if (!fragment && !name.ends_with(".vert.qsb")) {
+      continue;
+    }
+    std::ifstream stream(entry.path(), std::ios::binary);
+    const std::string bytes((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const QShader shader = QShader::fromSerialized(QByteArray::fromStdString(bytes));
+    ASSERT_TRUE(shader.isValid()) << name;
+    const QShaderDescription description = shader.description();
+    std::vector<int> locations;
+    for (const QShaderDescription::InOutVariable& variable :
+         fragment ? description.inputVariables() : description.outputVariables()) {
+      locations.push_back(variable.location);
+    }
+    std::sort(locations.begin(), locations.end());
+    for (std::size_t index = 0; index < locations.size(); ++index) {
+      EXPECT_EQ(locations[index], static_cast<int>(index)) << name << ": varying locations must be 0..n-1";
+    }
+    ++packs;
+  }
+  EXPECT_GT(packs, 20);
 }
 
 }  // namespace

@@ -18,28 +18,29 @@ jobs:
   # pre-commit runs once per PR cycle, from linux-ci.yml.
   build:
     if: github.event.pull_request.draft == false
-    # Two lanes on one set of steps. `build` is the full GL build and test suite.
-    # `qrhi-d3d11` is the QRhi build (-DPJ_SCENE3D_RHI=ON): only the QRhi display
-    # runners (Scene3D harness, point, failure and golden tests, the plot canvas,
-    # the dock tests), on D3D11 through WARP (the runner has no GPU), with the
-    # native `windows` QPA.
+    # Two lanes on one set of steps. `build` is the default (QRhi) build: the unit
+    # suite, then every QRhi display runner (RHI_BACKENDS in cmake/PjTests.cmake)
+    # on D3D11 through WARP (the runner has no GPU) with the native `windows` QPA.
+    # `gl` is the legacy OpenGL build (-DPJ_SCENE3D_RHI=OFF), kept for one release
+    # as the rollback: it must compile and pass its non-GPU tests (hosted Windows
+    # has no GL 4.5, so its GL GPU tests skip, as they always did).
     name: ${{ matrix.lane }}
     strategy:
       fail-fast: false
       matrix:
-        lane: [build, qrhi-d3d11]
+        lane: [build, gl]
     # Keep the application CI ABI-compatible with the published official
     # plugins and windows-release.yml. windows-latest now selects VS18/MSVC
     # 14.5x, while both release pipelines deliberately use VS2022/MSVC 14.44.
     # Pinning this also lets CI and the installer share the same sccache objects
     # and Conan package IDs instead of maintaining two Windows toolchain graphs.
     runs-on: depot-windows-2022-4
-    # Windows is a required shipped target (CLAUDE.md), but the `build` lane stays
-    # non-blocking for now: Windows runtime packaging is still being
-    # productionized, so failures surface on the PR without gating the merge.
-    # The `qrhi-d3d11` lane is blocking: it is the Windows exit gate of the QRhi
-    # migration (pj_scene3D/docs/QRHI_MIGRATION.md).
-    continue-on-error: ${{ matrix.lane == 'build' }}
+    # Windows is a required shipped target (CLAUDE.md). The `build` lane blocks on
+    # its compile and its D3D11 display runners (the Windows gate of the QRhi
+    # renderer, pj_scene3D/docs/TECHNICAL_NOTES.md, CI lanes); its unit-suite step stays
+    # non-blocking while Windows runtime packaging is productionized. The `gl`
+    # rollback lane is non-blocking.
+    continue-on-error: ${{ matrix.lane == 'gl' }}
     # Backstop against hangs (a deadlocked build otherwise holds the runner for
     # GitHub's 6-hour default). A first run can still rebuild a missing Conan
     # closure from source before the cache save persists it, then compile the
@@ -325,14 +326,13 @@ jobs:
             echo "::warning::sccache unavailable; building without a compiler cache"
           fi
 
-          # The QRhi lane builds only the QRhi display runners its test step runs
-          # (pj_qrhi_tests), and keeps going past a failed object so one run lists
+          # The GL rollback lane is the legacy renderer without the demos; the
+          # renderer is passed explicitly on both lanes so a restored cache can
+          # never pick it. Both keep going past a failed object, so one run lists
           # every compile error.
-          lane_args=()
-          target_args=()
-          if [[ "$LANE" == "qrhi-d3d11" ]]; then
-            lane_args=(-DPJ_SCENE3D_RHI=ON -DPJ_BUILD_DEMOS=OFF)
-            target_args=(--target pj_qrhi_tests -- -k 0)
+          lane_args=(-DPJ_SCENE3D_RHI=ON)
+          if [[ "$LANE" == "gl" ]]; then
+            lane_args=(-DPJ_SCENE3D_RHI=OFF -DPJ_BUILD_DEMOS=OFF)
           fi
 
           cmake -S . -B build -G "Ninja Multi-Config" \
@@ -342,7 +342,7 @@ jobs:
             -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded \
             "${launcher_args[@]}" "${lane_args[@]}"
 
-          cmake --build build --config RelWithDebInfo --parallel "${target_args[@]}"
+          cmake --build build --config RelWithDebInfo --parallel -- -k 0
 
           # Surface sccache stats before the post-action does, so they
           # appear in the Build step's log next to the compile output.
@@ -350,49 +350,51 @@ jobs:
             sccache --show-stats
           fi
 
-      - name: Test
+      - name: Put the runtime DLLs on PATH
         # Prepend Qt's and FFmpeg's bin/ dirs to PATH so the OS loader can resolve
         # their DLLs (Qt6Core.dll, avcodec/avformat/avutil/swscale) when ctest
         # launches the test executables. Without this they exit 0xC0000135
         # (STATUS_DLL_NOT_FOUND) before any test code runs.
         shell: bash
-        env:
-          LANE: ${{ matrix.lane }}
-          PJ_POINTCLOUD_GOLDEN_OUT: ${{ runner.temp }}/golden-out
-          PJ_RHI_TEST_DUMP_DIR: ${{ runner.temp }}/rhi-dump
         run: |
-          export PATH="$(pwd)/.qt/${PJ_QT_VERSION}/msvc2022_64/bin:$PATH"
+          echo "$(cygpath -w "$(pwd)/.qt/${PJ_QT_VERSION}/msvc2022_64/bin")" >> "$GITHUB_PATH"
           # FFmpeg's Conan bin dir(s) are emitted at configure time by
           # pj_scene2D/core/CMakeLists.txt (Conan's package path is hashed and not
           # knowable here). Prepend each so every exe that transitively links
           # pj_scene2d_core resolves the FFmpeg DLLs — covers all such tests at once,
           # no per-target list.
-          if [[ -f build/pj_ffmpeg_bin_dirs.txt ]]; then
-            while IFS= read -r _d; do
-              [[ -n "$_d" ]] && export PATH="$(cygpath -u "$_d"):$PATH"
-            done < build/pj_ffmpeg_bin_dirs.txt
-          fi
           # CPython runtime dir (pythonXY.dll) for python_engine_test — emitted by
           # pj_scripting/CMakeLists.txt when cpython is built shared (Windows only).
           # Same rationale as the FFmpeg dirs above.
-          if [[ -f build/pj_python_bin_dirs.txt ]]; then
+          for f in build/pj_ffmpeg_bin_dirs.txt build/pj_python_bin_dirs.txt; do
+            [[ -f "$f" ]] || continue
             while IFS= read -r _d; do
-              [[ -n "$_d" ]] && export PATH="$(cygpath -u "$_d"):$PATH"
-            done < build/pj_python_bin_dirs.txt
-          fi
+              [[ -n "$_d" ]] && echo "$_d" >> "$GITHUB_PATH"
+            done < "$f"
+          done
+
+      - name: Test
+        # Non-blocking on the `build` lane (see continue-on-error above); the
+        # D3D11 step below is its gate.
+        continue-on-error: ${{ matrix.lane == 'build' }}
+        shell: bash
+        run: |
           # --timeout kills any single test after 2 min so a deadlocked test
           # fails loudly with its name in the log instead of stalling the job.
-          if [[ "$LANE" == "build" ]]; then
-            unset PJ_POINTCLOUD_GOLDEN_OUT PJ_RHI_TEST_DUMP_DIR
-            ctest --test-dir build --build-config RelWithDebInfo --output-on-failure --timeout 120
-            exit
-          fi
+          # The QRhi display runners (label qrhi) run in the D3D11 step below.
+          ctest --test-dir build --build-config RelWithDebInfo --output-on-failure --timeout 120 -LE qrhi
 
-          # QRhi lane: the native `windows` QPA (the test main defaults to
-          # `offscreen`, which cannot render the 3D view), WARP as the adapter
-          # (the flag Qt's widget backing store honours; the runner has no GPU),
-          # a missing backend fails instead of skipping, and every view logs the
-          # backend and adapter it got.
+      - name: Test the QRhi display runners on D3D11 (WARP)
+        if: matrix.lane == 'build'
+        shell: bash
+        env:
+          PJ_POINTCLOUD_GOLDEN_OUT: ${{ runner.temp }}/golden-out
+          PJ_RHI_TEST_DUMP_DIR: ${{ runner.temp }}/rhi-dump
+        run: |
+          # The native `windows` QPA (the test main defaults to `offscreen`, which
+          # cannot render the 3D view), WARP as the adapter (the flag Qt's widget
+          # backing store honours; the runner has no GPU), a missing backend fails
+          # instead of skipping, and every view logs the backend and adapter it got.
           export QT_QPA_PLATFORM=windows
           export QSG_RHI_PREFER_SOFTWARE_RENDERER=1
           export PJ_REQUIRE_GPU_TESTS=1
@@ -401,14 +403,15 @@ jobs:
           export QT_FORCE_STDERR_LOGGING=1
           mkdir -p "$PJ_POINTCLOUD_GOLDEN_OUT"
           log="${RUNNER_TEMP}/qrhi-d3d11-ctest.log"
-          ctest --test-dir build --build-config RelWithDebInfo -V --timeout 120 -L qrhi-d3d11 2>&1 | tee "$log" ||
+          ctest --test-dir build --build-config RelWithDebInfo -V --timeout 120 --no-tests=error -L qrhi-d3d11 2>&1 | tee "$log" ||
             status=$?
-          # Every view must report D3D11 on a software (Cpu) adapter, i.e. WARP.
-          bash scripts/ci/check_qrhi_backend.sh "$log" 'D3D11, .*deviceType=Cpu\)'
+          # Every view must report D3D11 on a software (Cpu) adapter, i.e. WARP,
+          # and at least one plot canvas must have run on D3D11.
+          bash scripts/ci/check_qrhi_backend.sh "$log" 'D3D11, .*deviceType=Cpu\)' D3D11
           exit "${status:-0}"
 
       - name: Upload QRhi D3D11 failure images
-        if: failure() && matrix.lane == 'qrhi-d3d11'
+        if: failure() && matrix.lane == 'build'
         uses: actions/upload-artifact@v4
         with:
           name: qrhi-d3d11-failures

@@ -122,6 +122,14 @@ target_link_libraries(pj_widgets PUBLIC
 )
 # <rhi/qrhi.h> (backend logging); Qt 6.11 no longer leaks GuiPrivate transitively.
 target_link_libraries(pj_widgets PRIVATE Qt6::GuiPrivate)
+# In a QRhi build every GPU widget (plot canvas, Scene3D, Scene2D media) is a
+# QRhiWidget, so a top-level window can use the platform's native graphics API;
+# a QOpenGLWidget anywhere in a window would pin it to OpenGL. PUBLIC: every
+# module with a GPU widget (and pj_app, and the test mains of their runners)
+# links pj_widgets; the modules below it compile identically in both builds.
+if(PJ_SCENE3D_RHI)
+    target_compile_definitions(pj_widgets PUBLIC PJ_RHI_WIDGETS)
+endif()
 
 if(PJ_BUILD_TESTS)
     add_subdirectory(tests)

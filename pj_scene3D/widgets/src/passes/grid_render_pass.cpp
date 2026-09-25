@@ -58,6 +58,7 @@ uniform vec3 u_color;       // line color
 uniform vec3 u_color_a;     // checkerboard tone A
 uniform vec3 u_color_b;     // checkerboard tone B
 uniform float u_cell_m;     // cell size in metres
+uniform float u_cell_phase; // the cells start at -extent/2: half a cell for an odd division count, else 0
 // Shadow receive on the SOLID floor only (the User's goal: meshes cast onto the
 // ground). The floor sits at world z=0 with normal +Z; the shadow lookup uses
 // v_render_pos (render-space, render_origin already subtracted) so it matches the
@@ -101,7 +102,7 @@ void main() {
     return;
   }
   vec3 tone = mix(u_color_a, u_color_b, v_parity);
-  vec2 coord = v_world_xy / u_cell_m;
+  vec2 coord = (v_world_xy + u_cell_phase) / u_cell_m;
   vec2 grid = abs(fract(coord - 0.5) - 0.5) / fwidth(coord);
   float line = 1.0 - min(min(grid.x, grid.y), 1.0);
   vec3 base = mix(tone, u_color, line);
@@ -187,7 +188,9 @@ void GridRenderPass::render(const ViewParams& view_params, const FrameContext& f
     program_->setInt("u_mode", 1);
     program_->setVec3("u_color_a", cell_color_a_);
     program_->setVec3("u_color_b", cell_color_b_);
-    program_->setFloat("u_cell_m", extent_m_ / static_cast<float>(divisions_));
+    const float cell = extent_m_ / static_cast<float>(divisions_);
+    program_->setFloat("u_cell_m", cell);
+    program_->setFloat("u_cell_phase", divisions_ % 2 == 1 ? 0.5F * cell : 0.0F);
     // Solid floor receives mesh shadows (User goal). The map + light matrix come from
     // ViewParams (set by the shadow pre-pass); shadow_map_id == 0 leaves u_has_shadow
     // 0 so the floor renders fully lit. Bind the depth map on unit 0 (the grid uses no

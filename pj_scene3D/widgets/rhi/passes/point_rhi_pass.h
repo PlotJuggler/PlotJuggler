@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "../rhi_scene_pass.h"
-#include "point_aabb_reducer.h"
 
 namespace pj::scene3d {
 
@@ -23,13 +22,13 @@ class PointRenderable;
 /// draw (D3D has no gl_PointSize) and which keep their visible part at the
 /// frustum edge; where the backend has QRhi::VertexShaderPointSize, clouds whose
 /// sprites stay small draw as a point list instead, about twice as fast (the
-/// measurements are in QRHI_MIGRATION.md). Cubes are the hexagon fan (cube_mesh.h). A cloud with faded
+/// measurements are in docs/TECHNICAL_NOTES.md). Cubes are the hexagon fan (cube_mesh.h). A cloud with faded
 /// out-of-range points draws twice: its in-range points opaque, then the faded
 /// ones translucent with depth writes off, so they tint without occluding.
-/// A layer without CPU bounds (PointRenderable::sourceBounds() empty) gets them
-/// from an async GPU reduction of its uploaded cloud where QRhi::Compute exists.
-/// Per frame the view calls admit() (once), prepare() (once), recordCompute()
-/// (before any render pass), then submit() per ScenePass for each draw.
+/// Bounds come from the layer's conversion (PointRenderable::sourceBounds()),
+/// which every non-empty cloud has.
+/// Per frame the view calls admit() (once), prepare() (once), then submit() per
+/// ScenePass for each draw.
 class PointRhiPass {
  public:
   /// How a cloud's instances are drawn: camera-facing quads, the cube hexagon
@@ -81,16 +80,6 @@ class PointRhiPass {
   void admit(const PlaceFn& place, SceneBoundsCollector& bounds);
   /// Uploads admitted clouds and uniforms and builds this frame's draws.
   void prepare(const RhiFrameContext& frame, const ViewInputs& view);
-  /// Records the GPU bounds reductions prepare() asked for, in a compute pass that
-  /// consumes `updates`; call it before the frame's first render pass. False when
-  /// nothing was recorded (`updates` untouched).
-  bool recordCompute(QRhiCommandBuffer* command_buffer, QRhiResourceUpdateBatch* updates) {
-    return aabb_reducer_.record(command_buffer, updates);
-  }
-  /// A GPU bounds result is still on its way: keep rendering frames to adopt it.
-  [[nodiscard]] bool gpuBoundsPending() const {
-    return gpu_bounds_pending_;
-  }
   /// The prepared draws of `layer` (none, one, or opaque then faded).
   [[nodiscard]] std::span<const Draw> drawsFor(const PointRenderable* layer) const {
     return findDraws(draws_, layer);
@@ -142,22 +131,11 @@ class PointRhiPass {
     std::uint64_t uploaded_revision = ~std::uint64_t{0};
     QRhiBuffer* uniforms = nullptr;  ///< two slots: [0] all / in-range, [1] faded
     std::array<QRhiShaderResourceBindings*, 2> shader_resources{};
-    AABB gpu_bounds;  ///< the newest GPU reduction adopted, of the cloud at gpu_bounds_revision
-    std::optional<std::uint64_t> gpu_bounds_revision;  ///< empty until a reduction lands
   };
   static constexpr std::size_t kQuadIndex = static_cast<std::size_t>(Geometry::kQuad);
   static constexpr std::size_t kFanIndex = static_cast<std::size_t>(Geometry::kFan);
   static constexpr std::size_t kPointListIndex = static_cast<std::size_t>(Geometry::kPointList);
 
-  /// The layer's CPU bounds, else its GPU reduction. `current_only` accepts only a
-  /// reduction of the cloud now retained (culling must not trust a moved cloud's old
-  /// box); otherwise the newest one adopted stands in until the next lands, so a
-  /// streaming cloud keeps contributing to the scene bounds.
-  [[nodiscard]] static std::optional<AABB> boundsOf(
-      const PointRenderable* layer, const LayerGpu& gpu, bool current_only);
-  void adoptGpuBounds();
-  /// Releases `gpu` and drops the layer's pending bounds reduction.
-  void dropLayerGpu(PointRenderable* layer, LayerGpu& gpu);
   /// An SRB over `uniforms` bytes [offset, offset + kPointUniformBytes) and the render mode.
   QRhiShaderResourceBindings* createLayerBindings(QRhi* rhi, QRhiBuffer* uniforms, quint32 offset) const;
   bool ensureLayerGpu(QRhi* rhi, LayerGpu& gpu);
@@ -173,8 +151,6 @@ class PointRhiPass {
   /// exists only with QRhi::VertexShaderPointSize.
   std::array<std::array<QRhiGraphicsPipeline*, 2>, 3> pipelines_{};
   bool point_list_enabled_ = true;
-  PointAabbReducer aabb_reducer_;
-  bool gpu_bounds_pending_ = false;
 
   std::vector<PointRenderable*> layers_;
   std::unordered_map<PointRenderable*, LayerGpu> layer_gpu_;

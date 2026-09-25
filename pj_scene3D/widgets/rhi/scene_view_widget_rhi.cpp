@@ -100,13 +100,26 @@ QImage toOverlayFormat(const QImage& image) {
   return image.convertToFormat(QImage::Format_RGBA8888_Premultiplied);
 }
 
-// Scene backdrop colour for the current theme, read the same way the desktop GL
-// view does (application-palette Window lightness -> framework DataBackdrop
-// token) so both backends share one source of truth.
-QColor sceneBackdropColor() {
+// The output target's sample count in the direct fallback (the HDR chain's is its own).
+constexpr int kDirectSampleCount = 4;
+
+// The current theme's scene colours, read the way the desktop GL view reads them
+// (application-palette Window lightness -> framework DataBackdrop token), so both
+// backends share one source of truth. Display-referred: the HDR target and the
+// grid shaders linearize them.
+struct SceneThemeColors {
+  QColor backdrop;
+  look::GridColors grid;
+};
+SceneThemeColors sceneThemeColors() {
   const QColor window_background = QGuiApplication::palette().color(QPalette::Window);
   const auto theme = PJ::theme::themeFor(window_background.lightness() >= 128);
-  return PJ::theme::surface(PJ::theme::Surface::DataBackdrop, theme);
+  const QColor backdrop = PJ::theme::surface(PJ::theme::Surface::DataBackdrop, theme);
+  const QColor foreground = PJ::theme::onSurface(PJ::theme::Surface::DataBackdrop, PJ::theme::Emphasis::Default, theme);
+  return {
+      backdrop, look::gridColors(
+                    {backdrop.redF(), backdrop.greenF(), backdrop.blueF()},
+                    {foreground.redF(), foreground.greenF(), foreground.blueF()})};
 }
 
 // The backend's 3D-texture limit (QRhi 6.11 reports none); 0 when it cannot be
@@ -193,6 +206,23 @@ struct Overloaded : Visitors... {
   using Visitors::operator()...;
 };
 
+// Submits one prepared draw through its family: the std::visit visitor over
+// PreparedFrame::DrawRef.
+struct SubmitDraw {
+  QRhiCommandBuffer* command_buffer;
+  ScenePass pass;
+  const ScenePipelineRegistry& registry;
+  const QRhiViewport& viewport;
+
+  bool operator()(std::monostate /*unused*/) const {
+    return false;
+  }
+  template <typename Ref>
+  bool operator()(const Ref& ref) const {
+    return ref.family->submit(command_buffer, *ref.draw, pass, registry, viewport);
+  }
+};
+
 }  // namespace
 
 SceneViewWidget::SceneViewWidget(QWidget* parent) : QRhiWidget(parent) {
@@ -231,7 +261,7 @@ SceneViewWidget::SceneViewWidget(QWidget* parent) : QRhiWidget(parent) {
   // the widget is still parentless; SceneDockWidget reparents only after this
   // constructor returns.
   setApi(PJ::preferredGraphicsApi());
-  setSampleCount(4);
+  setSampleCount(1);  // initialize() picks the output target's sample count per QRhi
   setObjectName(QStringLiteral("scene3dRhiCanvas"));
   setMinimumSize(320, 240);
   setFocusPolicy(Qt::StrongFocus);
@@ -872,6 +902,18 @@ void SceneViewWidget::initialize(QRhiCommandBuffer* /*command_buffer*/) {
     resource_rhi_ = current_rhi;
     rhi_backend_name_ = QString::fromLatin1(current_rhi->backendName());
     max_3d_texture_size_ = max3dTextureSize(*current_rhi);
+    // The output target anti-aliases only what is drawn on it: the whole scene
+    // where the GPU cannot run the HDR chain, else just the gizmo and HUD over
+    // the chain's (already multisampled) present. Decided per QRhi, not per
+    // frame: a change rebuilds every resource, so a runtime HDR refusal (size,
+    // budget, a missing pipeline variant) draws its direct pass without MSAA.
+    if (const int samples = hdrUnsupportedReason(*current_rhi).isEmpty() ? 1 : kDirectSampleCount;
+        sampleCount() != samples) {
+      // QRhiWidget rebuilds its target and calls initialize() again: nothing is
+      // built for this one (render() clears it).
+      setSampleCount(samples);
+      return;
+    }
   }
   if (!baseResourcesReady(*current_rhi)) {
     if (const char* failed_part = createBaseResources(current_rhi); failed_part != nullptr) {
@@ -997,9 +1039,11 @@ struct SceneViewWidget::PreparedFrame {
     const Family* family = nullptr;
     const typename Family::Draw* draw = nullptr;
   };
+  // std::monostate first: Clang 22 with libstdc++ 12 never emits a templated
+  // visitor's call for alternative 0 (SubmitDraw), so that slot holds no draw.
   using DrawRef = std::variant<
-      DrawOf<PointRhiPass>, DrawOf<TrailRhiPass>, DrawOf<PoseRhiPass>, DrawOf<OccupancyRhiPass>, DrawOf<VoxelRhiPass>,
-      DrawOf<MarkerRhiPass>, DrawOf<ModelRhiPass>, DrawOf<GridMapRhiPass>>;
+      std::monostate, DrawOf<PointRhiPass>, DrawOf<TrailRhiPass>, DrawOf<PoseRhiPass>, DrawOf<OccupancyRhiPass>,
+      DrawOf<VoxelRhiPass>, DrawOf<MarkerRhiPass>, DrawOf<ModelRhiPass>, DrawOf<GridMapRhiPass>>;
   // One prepared draw in submission terms: its logical slot (index into
   // ordered_layers_), blending class and family record.
   struct SceneDraw {
@@ -1022,9 +1066,14 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   if (current_rhi == nullptr || target == nullptr) {
     return;
   }
+  if (show_paint_pending_ && resource_rhi_ == current_rhi && target->pixelSize() == last_frame_size_) {
+    // Recording nothing keeps the target's last frame on screen.
+    QMetaObject::invokeMethod(this, qOverload<>(&QWidget::update), Qt::QueuedConnection);
+    return;
+  }
   if (resource_rhi_ != current_rhi || !baseResourcesReady(*current_rhi)) {
     // The failure state (or resources of another QRhi): no draw may reference them.
-    command_buffer->beginPass(target, sceneBackdropColor(), {1.0F, 0});
+    command_buffer->beginPass(target, sceneThemeColors().backdrop, {1.0F, 0});
     command_buffer->endPass();
     return;
   }
@@ -1070,14 +1119,6 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     cpu_average_.add(static_cast<double>(cpu_timer_.nsecsElapsed()) / 1.0e6);
   }
   prepareOverlays(updates, output_size, admission.fixed_frame);
-  // Compute runs outside render passes, so it goes first and takes the uploads.
-  if (point_pass_->recordCompute(command_buffer, updates)) {
-    updates = nullptr;
-  }
-  if (point_pass_->gpuBoundsPending()) {
-    update();  // the bounds readback lands in a later frame; render until it does
-  }
-
   if (frame.shadow_active) {
     submitShadowPass(command_buffer, updates);
     updates = nullptr;
@@ -1087,7 +1128,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   // reads the same token per frame). PaletteChange calls update(), so a theme
   // switch re-applies here. The HDR target is linear-light — the present pass
   // re-encodes to sRGB — so linearize the display-referred token on write.
-  const QColor scene_bg = sceneBackdropColor();
+  const QColor scene_bg = sceneThemeColors().backdrop;
   const auto linear_channel = [](float channel) { return std::pow(channel, 2.2F); };
   const QColor hdr_scene_clear = QColor::fromRgbF(
       linear_channel(static_cast<float>(scene_bg.redF())), linear_channel(static_cast<float>(scene_bg.greenF())),
@@ -1098,7 +1139,14 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     // Reusing the same immutable HDR mode keeps both passes independent of
     // dynamic-buffer update ordering. The replay's RGBA8 alpha records the
     // shaders' post-discard opacity while its D32F attachment records depth.
-    submitScenePass(command_buffer, hdr_depth_render_target_, ScenePass::kDepthReplay, Qt::transparent, nullptr, frame);
+    if (hdr_depth_resolve_) {
+      // The HDR pass resolved the depth; only the coverage the stages below write into needs clearing.
+      command_buffer->beginPass(hdr_depth_render_target_, Qt::transparent, {1.0F, 0});
+      command_buffer->endPass();
+    } else {
+      submitScenePass(
+          command_buffer, hdr_depth_render_target_, ScenePass::kDepthReplay, Qt::transparent, nullptr, frame);
+    }
     if (frame.ssao_active && ssao_raw_render_target_ != nullptr) {
       // Preserve replay alpha/red and write native's raw scene-wide AO into the
       // otherwise-unused green channel. The sampled D32F texture is not attached
@@ -1128,6 +1176,14 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   if (pipelines_->cloneFailed()) {
     update();  // the next frame drops HDR
   }
+  last_frame_size_ = output_size;
+}
+
+bool SceneViewWidget::event(QEvent* event) {
+  show_paint_pending_ = event->type() == QEvent::Show;
+  const bool handled = QRhiWidget::event(event);
+  show_paint_pending_ = false;
+  return handled;
 }
 
 // Frame contract step 1: runs every visible layer's prepareForRender() against
@@ -1202,7 +1258,9 @@ QRhiResourceUpdateBatch* SceneViewWidget::prepareFrame(
 
   buildTfTriads(render_origin, admission.fixed_frame);
   grid_pass_->build(
-      GridRhiPass::Settings{grid_visible_, grid_style_, grid_extent_m_, grid_divisions_, tf_connections_visible_},
+      GridRhiPass::Settings{
+          grid_visible_, grid_style_, grid_extent_m_, grid_divisions_, tf_connections_visible_,
+          sceneThemeColors().grid},
       tf_.get(), admission.fixed_frame, render_time_, render_origin);
   last_line_vertex_count_ = grid_pass_->lastLineVertexCount();
   last_triangle_vertex_count_ = grid_pass_->lastTriangleVertexCount();
@@ -1264,7 +1322,7 @@ QRhiResourceUpdateBatch* SceneViewWidget::prepareFrame(
     composite.ssao_params = {
         composite_params_.ao_strength,
         frame.ssao_active ? 1.0F : 0.0F,
-        0.0F,
+        hdr_depth_resolve_ ? 1.0F : 0.0F,
         0.0F,
     };
     composite.grade_params = {static_cast<float>(std::clamp(composite_params_.tonemap_mode, 0, 3)), 0.0F, 0.0F, 0.0F};
@@ -1370,12 +1428,10 @@ void SceneViewWidget::submitScenePass(
   submitted_slots_.assign(ordered_layers_.size(), 0);
   for (const DrawClass phase : {DrawClass::kOpaque, DrawClass::kTranslucent}) {
     for (const PreparedFrame::SceneDraw& scene_draw : frame.scene_draws) {
-      if (scene_draw.draw_class == phase && std::visit(
-                                                [&](const auto& ref) {
-                                                  return ref.family->submit(
-                                                      command_buffer, *ref.draw, scene_pass, *pipelines_, viewport);
-                                                },
-                                                scene_draw.draw)) {
+      if (scene_draw.draw_class != phase) {
+        continue;
+      }
+      if (std::visit(SubmitDraw{command_buffer, scene_pass, *pipelines_, viewport}, scene_draw.draw)) {
         submitted_slots_[scene_draw.slot] = 1;
       }
     }
@@ -1407,6 +1463,7 @@ void SceneViewWidget::submitEdlMeshMask(QRhiCommandBuffer* command_buffer, const
 
 void SceneViewWidget::releaseResources() {
   PJ::noteRhiRelease(*this, resource_rhi_);
+  last_frame_size_ = {};
   releaseShadowResources(false);
   releaseHdrResources();
   forEachFamily([](auto& family) { family.release(); });

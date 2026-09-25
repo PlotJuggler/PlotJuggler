@@ -5,7 +5,10 @@
 
 #include <rhi/qrhi.h>
 #include <rhi/qrhi_platform.h>
+#include <rhi/qshader.h>
 
+#include <QFile>
+#include <QHash>
 #include <QImage>
 #include <QLoggingCategory>
 #include <QTimer>
@@ -22,6 +25,11 @@ Q_LOGGING_CATEGORY(lcGraphics, "pj.graphics")
 #ifdef PJ_RHI_TEST_HOOKS
 void incrementProperty(QObject& object, const char* name) {
   object.setProperty(name, object.property(name).toInt() + 1);
+}
+
+QHash<QShader, QString>& loadedShaderPaths() {
+  static QHash<QShader, QString> paths;
+  return paths;
 }
 #endif
 
@@ -131,6 +139,86 @@ RhiFailureLatch::Change RhiFailureLatch::set(QString reason) {
     return Change::kLeft;
   }
   return was_failed ? Change::kChanged : Change::kEntered;
+}
+
+QShader loadRhiShader(const QString& path) {
+  // Every widget and every new QRhi (a float or redock) reuses the packs: the
+  // resources never change, so each is read and deserialized once per process.
+  static QHash<QString, QShader> loaded;
+  if (const auto cached = loaded.constFind(path); cached != loaded.cend()) {
+    return *cached;
+  }
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly)) {
+    qCWarning(lcGraphics) << "Failed to open shader" << path;
+    return {};
+  }
+  QShader shader = QShader::fromSerialized(file.readAll());
+  if (!shader.isValid()) {
+    qCWarning(lcGraphics) << "Invalid shader pack" << path;
+    return {};
+  }
+#ifdef PJ_RHI_TEST_HOOKS
+  loadedShaderPaths().insert(shader, path);
+#endif
+  loaded.insert(path, shader);
+  return shader;
+}
+
+#ifdef PJ_RHI_TEST_HOOKS
+QString rhiShaderPathForTest(const QShader& shader) {
+  return loadedShaderPaths().value(shader);
+}
+#endif
+
+RhiColorTarget::~RhiColorTarget() {
+  release();
+}
+
+bool RhiColorTarget::ensure(
+    QRhi& rhi, QRhiTexture* texture, QRhiRenderBuffer* msaa, QRhiTexture* resolve, bool refresh) {
+  const void* attachment = texture != nullptr ? static_cast<const void*>(texture) : msaa;
+  if (attachment == nullptr) {
+    return false;
+  }
+  if (target_ != nullptr && attachment == attachment_ && !refresh) {
+    return true;
+  }
+  if (target_ == nullptr || attachment != attachment_) {
+    QRhiColorAttachment color;
+    if (texture != nullptr) {
+      color.setTexture(texture);
+    } else {
+      color.setRenderBuffer(msaa);
+      color.setResolveTexture(resolve);
+    }
+    auto target =
+        std::unique_ptr<QRhiTextureRenderTarget>(rhi.newTextureRenderTarget(QRhiTextureRenderTargetDescription(color)));
+    auto render_pass = std::unique_ptr<QRhiRenderPassDescriptor>(target->newCompatibleRenderPassDescriptor());
+    delete target_;
+    target_ = target.release();
+    if (render_pass_ == nullptr || !render_pass_->isCompatible(render_pass.get())) {
+      delete render_pass_;
+      render_pass_ = render_pass.release();
+    }
+    target_->setRenderPassDescriptor(render_pass_);
+    attachment_ = attachment;
+  }
+  if (!target_->create()) {
+    delete target_;
+    target_ = nullptr;
+    attachment_ = nullptr;
+    return false;
+  }
+  return true;
+}
+
+void RhiColorTarget::release() {
+  delete target_;
+  target_ = nullptr;
+  delete render_pass_;
+  render_pass_ = nullptr;
+  attachment_ = nullptr;
 }
 
 void grabPresentedFrame(QRhiWidget& widget, std::function<void(const QImage&)> done) {

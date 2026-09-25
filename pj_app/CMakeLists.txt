@@ -767,10 +767,49 @@ if(PJ_BUILD_TESTS)
             pj_add_test_runner(rhi_mixed_dock_test
                 MAIN gui WARNINGS RHI_BACKENDS DPR2
                 SOURCES tests/rhi_mixed_dock_test.cpp
-                LIBS qt_advanced_docking pj_plotting pj_scene2d_widgets pj_scene3d_widgets pj_resources Qt6::Test
+                LIBS pj_mixed_layout_fixture pj_resources Qt6::Test
                 TIMEOUT 60
             )
-            target_include_directories(rhi_mixed_dock_test PRIVATE ${CMAKE_SOURCE_DIR}/pj_scene3D/widgets/tests)
+        endif()
+        # The packaging smokes' render check (packaging/smoke/render_check.sh) on this
+        # tree's app: the fixture's plots, Scene3D view and media viewer must all come
+        # up on OpenGL. Needs a display, hence the qrhi-opengl label, and runs the
+        # built app, so build pj_app first (CI does). Linux only: Windows runs the
+        # same check on the installed app (windows-release.yml).
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET pj_scene2d_widgets AND TARGET pj_scene3d_widgets)
+            add_test(NAME scene3d_rhi_app_smoke
+                COMMAND sh ${CMAKE_SOURCE_DIR}/packaging/smoke/render_check.sh $<TARGET_FILE:pj_app>)
+            # Skipped (77) without a display, as the gtest display passes are,
+            # unless PJ_REQUIRE_GPU_TESTS=1.
+            set_tests_properties(scene3d_rhi_app_smoke PROPERTIES
+                LABELS qrhi-opengl TIMEOUT 120 SKIP_RETURN_CODE 77
+                ENVIRONMENT "PJ_RENDER_BACKEND=OpenGL;PJ_RENDER_SKIP_WITHOUT_DISPLAY=1")
+        endif()
+    endif()
+endif()
+
+# The mixed-layout fixture (tests/mixed_layout_fixture.h): a plot, a Scene3D view
+# and a media viewer in one dock manager, through public APIs only, so it builds
+# in the GL and the QRhi build. EXCLUDE_FROM_ALL: built for its consumers only,
+# rhi_mixed_dock_test above and mixed_layout_benchmark below.
+if(NOT EMSCRIPTEN AND TARGET pj_scene2d_widgets AND TARGET pj_scene3d_widgets)
+    add_library(pj_mixed_layout_fixture STATIC EXCLUDE_FROM_ALL
+        tests/mixed_layout_fixture.cpp
+        tests/mixed_layout_fixture.h
+    )
+    target_include_directories(pj_mixed_layout_fixture PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_link_libraries(pj_mixed_layout_fixture PUBLIC
+        qt_advanced_docking pj_plotting pj_scene2d_widgets pj_scene3d_widgets Qt6::Widgets Qt6::Xml)
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(pj_mixed_layout_fixture PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+
+    # Mixed-layout budgets (a dev demo, no ctest), same gate as the root demos.
+    if(PJ_BUILD_DEMOS)
+        add_executable(mixed_layout_benchmark benchmarks/mixed_layout_benchmark.cpp)
+        target_link_libraries(mixed_layout_benchmark PRIVATE pj_mixed_layout_fixture pj_resources pj_bench_probes)
+        if(DEFINED PJ_WARNING_FLAGS)
+            target_compile_options(mixed_layout_benchmark PRIVATE ${PJ_WARNING_FLAGS})
         endif()
     endif()
 endif()

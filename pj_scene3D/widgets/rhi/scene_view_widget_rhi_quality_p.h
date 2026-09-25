@@ -41,7 +41,7 @@ struct alignas(16) CompositeUniforms {
   std::array<float, 4> params{};
   std::array<float, 16> inverse_projection{};
   std::array<float, 4> edl_params{};
-  std::array<float, 4> ssao_params{};
+  std::array<float, 4> ssao_params{};   // AO strength, enabled, coverage from depth, unused
   std::array<float, 4> grade_params{};  // tonemap mode, unused x3
 };
 static_assert(sizeof(CompositeUniforms) == kCompositeUniformBytes);

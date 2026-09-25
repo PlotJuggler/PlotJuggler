@@ -108,8 +108,9 @@ class PoseRhiPass {
   std::unordered_map<PosesInFrameLayer*, LayerGpu> layer_gpu_;
   std::vector<PlacedLayer<PosesInFrameLayer>> admitted_;
   std::vector<Draw> draws_;
-  // The TF triads reuse the per-layer GPU shape; the transform is baked into
-  // each instance model, so its fixed_from_source uniform is identity.
+  // The TF triads reuse the per-layer GPU shape, with a Dynamic instance buffer
+  // (they follow the render origin and the playback time); the transform is
+  // baked into each instance model, so its fixed_from_source uniform is identity.
   LayerGpu tf_triad_gpu_;
   quint32 tf_triad_instance_count_ = 0;
   std::uint64_t tf_triads_uploaded_revision_ = ~std::uint64_t{0};

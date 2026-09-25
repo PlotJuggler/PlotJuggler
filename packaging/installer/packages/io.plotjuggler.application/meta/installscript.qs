@@ -46,6 +46,10 @@ Component.prototype.createOperations = function()
 // Custom target-directory page — https://stackoverflow.com/a/46614107
 Component.prototype.installerLoaded = function()
 {
+    // A command-line run (the release smoke's silent install) has no gui.
+    if (installer.isCommandLineInstance())
+        return;
+
     installer.setDefaultPageVisible(QInstaller.TargetDirectory, false);
     installer.addWizardPage(component, "TargetWidget", QInstaller.TargetDirectory);
 

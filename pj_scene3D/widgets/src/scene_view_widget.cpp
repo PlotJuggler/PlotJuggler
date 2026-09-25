@@ -831,19 +831,13 @@ void SceneViewWidget::renderScene(
     return linear_target ? static_cast<float>(std::pow(c, 2.2)) : static_cast<float>(c);
   };
   funcs->glClearColor(lin(bg.redF()), lin(bg.greenF()), lin(bg.blueF()), 1.0f);
-  // Grid colors are derived from the theme (no user color controls). blend(t) is
-  // the linearized bg→fg mix at fraction t. The line color is the high-contrast
-  // 0.35 blend (unchanged); the two checkerboard tile tones are subtler blends
-  // just above the background, so the lines read clearly on top of the fill.
-  const auto blend = [&](double frac) {
-    return glm::vec3{
-        lin(bg.redF() * (1.0 - frac) + fg.redF() * frac),
-        lin(bg.greenF() * (1.0 - frac) + fg.greenF() * frac),
-        lin(bg.blueF() * (1.0 - frac) + fg.blueF() * frac),
-    };
-  };
-  grid_.setColor(blend(0.35));                    // grid lines
-  grid_.setCellColors(blend(0.10), blend(0.24));  // checkerboard tile tones (A, B)
+  // Grid colors are derived from the theme (no user color controls), the same
+  // helper the QRhi view uses; linearized here for the linear-light target.
+  const look::GridColors grid_colors =
+      look::gridColors({bg.redF(), bg.greenF(), bg.blueF()}, {fg.redF(), fg.greenF(), fg.blueF()});
+  const auto linearized = [&](const glm::dvec3& color) { return glm::vec3{lin(color.r), lin(color.g), lin(color.b)}; };
+  grid_.setColor(linearized(grid_colors.line));
+  grid_.setCellColors(linearized(grid_colors.tone_a), linearized(grid_colors.tone_b));
   funcs->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   // Clear the is-mesh mask (COLOR_ATTACHMENT1) to 0 each frame so only the mesh
   // pass marks it. The glClear above only touches the FBO's standing draw buffer

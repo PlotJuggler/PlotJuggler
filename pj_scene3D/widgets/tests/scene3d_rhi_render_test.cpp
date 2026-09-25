@@ -505,6 +505,58 @@ TEST_F(Scene3dRhiRenderTest, GroundGridFillsLowerHalf) {
   EXPECT_EQ(grid.count_in(QRect(0, 0, w, std::max(0, int(horizon) - 3))), 0) << "horizon at y=" << horizon;
 }
 
+// An odd division count: the filled grid's cells start half a cell off the
+// origin, and its analytic lines must follow their edges instead of bisecting
+// every cell. Along y = 0.25 m of a 3 m, 3-division grid (inside the middle row
+// of cells) the edges are at x = +-0.5 m, where a line pixel lies outside the
+// two tones beside it; x = 0 and x = 1 are cell centres, as plain as a point
+// 0.25 m away.
+TEST_F(Scene3dRhiRenderTest, FilledGridLinesFollowOddCellEdges) {
+  RhiScene scene;
+  scene.addPoints(pointBlock({0.0F, 0.0F, 40.0F}, 0.1F, 2));  // behind the camera: only the grid shows
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  view->setGridExtentMetres(3.0F);
+  view->setGridDivisions(3);
+  pj::scene3d::CameraState state;
+  state.focal = {0.0F, 0.0F, 0.0F};
+  state.radius = 4.0F;
+  state.azimuth = glm::radians(-90.0F);
+  state.elevation = glm::radians(60.0F);
+  view->camera().adoptState(state);
+  GRAB_OR_SKIP(image, view, "odd_grid");
+  // R + G + B of the pixel `dx` columns right of where (x, 0.25, 0) projects.
+  const auto intensity = [&](float x, int dx = 0) {
+    const QPointF pixel = project(*view, {x, 0.25F, 0.0F}, image.size());
+    const QRgb rgb =
+        image.pixel(static_cast<int>(std::lround(pixel.x())) + dx, static_cast<int>(std::lround(pixel.y())));
+    return qRed(rgb) + qGreen(rgb) + qBlue(rgb);
+  };
+  // The largest step between x's pixels (+-1 px) and a reference 0.25 m away in the same cell.
+  const auto step = [&](float x, float reference) {
+    int largest = 0;
+    for (int dx = -1; dx <= 1; ++dx) {
+      largest = std::max(largest, std::abs(intensity(x, dx) - intensity(reference)));
+    }
+    return largest;
+  };
+  // Whether a pixel within +-2 px of edge x lies outside both neighbouring tones.
+  const auto line_on_edge = [&](float x) {
+    const int low = std::min(intensity(x - 0.25F), intensity(x + 0.25F));
+    const int high = std::max(intensity(x - 0.25F), intensity(x + 0.25F));
+    for (int dx = -2; dx <= 2; ++dx) {
+      if (intensity(x, dx) < low - 5 || intensity(x, dx) > high + 5) {
+        return true;
+      }
+    }
+    return false;
+  };
+  EXPECT_LE(step(0.0F, 0.25F), 3) << "a line bisects the centre cell";
+  EXPECT_LE(step(1.0F, 0.75F), 3) << "a line bisects the right cell";
+  EXPECT_TRUE(line_on_edge(0.5F)) << "no line on the cell edge at x = 0.5";
+  EXPECT_TRUE(line_on_edge(-0.5F)) << "no line on the cell edge at x = -0.5";
+}
+
 // A point block up and to the right of the focal must render in the upper-right
 // quadrant, exactly where the camera projects it (catches X and Y flips).
 TEST_F(Scene3dRhiRenderTest, PointCloudLandsWhereProjected) {
@@ -891,6 +943,51 @@ TEST_F(Scene3dRhiRenderTest, NoDepthWriteDrawLeavesBackgroundUngraded) {
       << "glass over the opaque cube was not graded";
 }
 
+// OpenGL and Vulkan resolve the multisample depth in the HDR pass; the forced
+// depth replay (D3D11 and WebGL's path) must draw the same frame, SSAO and EDL
+// included: only the edge pixels the resolved sample and the replay's pixel
+// centre see differently may move.
+TEST_F(Scene3dRhiRenderTest, DepthResolveMatchesTheForcedReplay) {
+  RhiScene scene;
+  scene.addRobot(kCasterUrdf);
+  scene.addPoints(pointBlock({2.5F, 0.0F, 0.5F}, 0.8F, 6));
+  scene.addEntities({cubeEntity("cube", {-2.5F, 0.0F, 0.5F}, 1.0F, {200, 200, 60, 255})});
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  GRAB_OR_SKIP(resolved, view, "depth_resolve");
+  ASSERT_TRUE(view->lastHdrActiveForTest()) << view->hdrCapabilityErrorForTest().toStdString();
+  const QRhiWidget::Api api = PJ::preferredGraphicsApi();
+#ifdef Q_OS_MACOS
+  // macOS's OpenGL 4.1 core context cannot create multisample textures in Qt 6.11
+  // (they need GL 4.3), so that fallback keeps the replay.
+  const bool gl_resolves = false;
+#else
+  const bool gl_resolves = true;
+#endif
+  if ((api == QRhiWidget::Api::OpenGL && gl_resolves) || api == QRhiWidget::Api::Vulkan ||
+      api == QRhiWidget::Api::Metal) {
+    EXPECT_TRUE(view->depthResolveActiveForTest())
+        << "no depth-resolve fast path on " << requestedBackend().toStdString();
+  }
+  EXPECT_TRUE(view->lastSsaoActiveForTest());
+  EXPECT_TRUE(view->lastEdlActiveForTest());
+  // The budget charges the chain's actual formats: OpenGL resolves D32FS8
+  // (8 B per depth sample), every other chain uses D32F.
+  const QSize hdr_size = view->hdrRenderSizeForTest();
+  const auto hdr_pixels = static_cast<std::uint64_t>(hdr_size.width()) * static_cast<std::uint64_t>(hdr_size.height());
+  const bool stencil_depth = view->depthResolveActiveForTest() && api == QRhiWidget::Api::OpenGL;
+  EXPECT_EQ(view->hdrAllocatedBytesForTest(), hdr_pixels * (stencil_depth ? 84U : 64U));
+
+  view->setForceDepthReplayForTest(true);
+  GRAB_OR_SKIP(replayed, view, "depth_replay");
+  EXPECT_FALSE(view->depthResolveActiveForTest());
+  EXPECT_TRUE(view->lastHdrActiveForTest()) << view->hdrCapabilityErrorForTest().toStdString();
+  EXPECT_EQ(view->hdrAllocatedBytesForTest(), hdr_pixels * 64U);
+  const DiffMask moved = diffMask(resolved, replayed, 24);
+  EXPECT_LT(moved.count, resolved.width() * resolved.height() / 100) << "the two depth paths disagree";
+  view->setForceDepthReplayForTest(false);
+}
+
 // Real top-levels: show, resize, reparent the dock to a second window, destroy
 // a sibling view there, and the view must keep rendering its content.
 TEST_F(Scene3dRhiRenderTest, SurvivesShowResizeReparentAndSiblingDestruction) {
@@ -1147,7 +1244,14 @@ TEST_F(Scene3dRhiRenderTest, PresentationRenderScaleSupersamples) {
 // annotation (TF triad) pixels bypass the grade in every mode.
 TEST_F(Scene3dRhiRenderTest, PresentationTonemapModes) {
   RhiScene scene;
-  scene.addRobot(kOffsetRobotUrdf);
+  // kOffsetRobotUrdf's box in a saturated colour: the default grey is graded
+  // almost alike by AgX and Neutral.
+  QByteArray urdf(kOffsetRobotUrdf);
+  urdf.replace(
+      "<geometry><box size=\"1 1 1\"/></geometry>",
+      "<geometry><box size=\"1 1 1\"/></geometry><material name=\"orange\"><color rgba=\"0.95 0.45 0.1 "
+      "1\"/></material>");
+  scene.addRobot(urdf);
   scene.frame();
   SceneViewWidget* view = scene.view();
   view->setGridVisible(false);

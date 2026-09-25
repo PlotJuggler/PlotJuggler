@@ -2,13 +2,14 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QByteArray>
 #include <QColor>
 #include <QString>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <utility>
-#include <vector>
 
 #include "pj_scene3d_core/camera/camera.h"
 #include "pj_scene3d_widgets/layer_style.h"
@@ -37,11 +38,20 @@ class PointRenderable {
   virtual ~PointRenderable() = default;
 
   virtual bool prepareForRender(std::uint64_t remaining_view_vertices) = 0;
-  [[nodiscard]] virtual const std::vector<PointVertex>& vertices() const = 0;
+  /// The retained cloud, packed PointVertex records. Implicitly shared: the view
+  /// hands this array to the GPU upload without copying it, so a layer never writes
+  /// into an array it has handed out (that would detach and bring the copy back);
+  /// every sample gets a fresh one.
+  [[nodiscard]] virtual const QByteArray& vertexBytes() const = 0;
+  [[nodiscard]] std::size_t pointCount() const {
+    return static_cast<std::size_t>(vertexBytes().size()) / sizeof(PointVertex);
+  }
   [[nodiscard]] virtual std::uint64_t geometryRevision() const = 0;
   // Frame the vertices are expressed in (empty until data arrives). Distinct from
   // Scene3DLayer::sourceFrame() (a QString for the dock) so one class can implement both.
   [[nodiscard]] virtual const std::string& renderFrameId() const = 0;
+  /// The finite extent of vertexBytes() in renderFrameId(); set whenever the cloud
+  /// is non-empty (the point pass asserts it and does not scan).
   [[nodiscard]] virtual std::optional<AABB> sourceBounds() const = 0;
   [[nodiscard]] virtual bool visible() const = 0;
   [[nodiscard]] virtual PointShape shape() const = 0;

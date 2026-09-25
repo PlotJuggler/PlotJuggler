@@ -3,10 +3,12 @@
 
 #pragma once
 
+#include <QColor>
 #include <QImage>
 #include <QString>
 #include <array>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <span>
 #include <string>
@@ -27,6 +29,17 @@ namespace pj::scene3d {
 /// state, the colour and shadow-caster instance buffers and the shadow-caster
 /// pipeline. The view owns the shadow map and EDL mask targets and replays this
 /// pass's prepared draws into them (submitShadowCasters, submitMeshMask).
+///
+/// Caches, all valid for one QRhi (release() drops them):
+///  - GPU meshes per layer, keyed by mesh key and MeshData identity: a
+///    modelRevision() bump rebuilds only keys that are new or whose pointer changed;
+///  - decoded textures per pass, keyed by TextureSource::key + colour space and
+///    reference-counted by the meshes that bind them, shared across layers;
+///  - wireframe edge lists, built on a mesh's first wireframe draw; the CPU copy
+///    is dropped once queued for upload;
+///  - the colour and shadow instances: rebuilt and re-uploaded only when the render
+///    origin, the shading inputs or the admitted draws (layer, revision, look and
+///    every draw's resolved TF placement) differ from the last prepared frame.
 class ModelRhiPass {
  public:
   struct MeshGpu;
@@ -142,6 +155,32 @@ class ModelRhiPass {
     return last_shadow_triangle_count_;
   }
 
+#ifdef PJ_RHI_TEST_HOOKS
+  /// False rebuilds every mesh of a layer on each modelRevision() bump and the
+  /// instances every frame (the textures stay shared).
+  void setCachesEnabledForTest(bool enabled) {
+    caches_enabled_ = enabled;
+  }
+#endif
+  /// GPU meshes built, textures decoded, wireframe edge lists built, and colour /
+  /// shadow instance uploads queued, over the pass lifetime.
+  struct CacheCounters {
+    int mesh_builds = 0;
+    int texture_decodes = 0;
+    int edge_builds = 0;
+    int instance_uploads = 0;
+    int shadow_instance_uploads = 0;
+  };
+#ifdef PJ_RHI_TEST_HOOKS
+  [[nodiscard]] const CacheCounters& cacheCountersForTest() const {
+    return counters_;
+  }
+  /// Live entries of the pass texture cache.
+  [[nodiscard]] int cachedTextureCountForTest() const {
+    return static_cast<int>(textures_.size());
+  }
+#endif
+
   /// Per-submesh instance data (144 bytes, the model.vert per-instance layout).
   struct Instance {
     std::array<float, 16> model{};
@@ -156,26 +195,30 @@ class ModelRhiPass {
   };
 
   struct TextureGpu {
-    QRhiTexture* texture = nullptr;
-    QImage pending_image;
-    bool owns_texture = false;
-    bool texture_upload_pending = false;
+    QRhiTexture* texture = nullptr;  ///< the white texture or a textures_ entry's
     bool present = false;
   };
   struct MaterialGpu {
     std::array<TextureGpu, 5> textures{};
     QRhiShaderResourceBindings* shader_resources = nullptr;
   };
+  /// A texture cache key: TextureSource::key (a content hash or resolved path)
+  /// and whether it samples as sRGB.
+  using TextureKey = std::pair<std::string, bool>;
   struct MeshGpu {
     QRhiBuffer* vertex_buffer = nullptr;
     QRhiBuffer* triangle_index_buffer = nullptr;
-    QRhiBuffer* edge_index_buffer = nullptr;
-    std::vector<quint32> edge_indices;
+    QRhiBuffer* edge_index_buffer = nullptr;  ///< null until the first wireframe draw
+    std::vector<quint32> edge_indices;        ///< held only until queued for upload
     std::vector<quint32> edge_offsets;
     std::vector<quint32> edge_counts;
     std::vector<MaterialGpu> materials;
+    std::vector<TextureKey> texture_refs;  ///< one textures_ reference per distinct key
+    std::uint64_t texture_pixels = 0;      ///< charged to the layer texture budget
     std::shared_ptr<const MeshData> source;
     bool upload_pending = false;
+    bool edges_built = false;
+    bool edge_upload_pending = false;
   };
 
  private:
@@ -183,22 +226,37 @@ class ModelRhiPass {
     std::unordered_map<std::string, MeshGpu> meshes;
     std::uint64_t uploaded_revision = ~std::uint64_t{0};
   };
+  /// One admitted draw call. The layer's revision pins what `draw_index` names
+  /// (mesh, colour, group), so the index and the placement are the whole key.
   struct Call {
-    std::string mesh_key;
-    std::shared_ptr<const MeshData> mesh;
-    glm::dmat4 fixed_from_model{1.0};
-    glm::vec4 override_color{1.0F};
-    bool use_material = true;
-    ModelDrawGroup group = ModelDrawGroup::kIndependent;
+    std::uint32_t draw_index = 0;      ///< into the layer's modelDrawCalls()
+    glm::dmat4 fixed_from_model{1.0};  ///< the resolved TF placement times the draw's model
+    bool color = false;                ///< drawn in the colour pass
+    bool shadow = false;               ///< cast into the shadow map
+    bool operator==(const Call&) const = default;
   };
+  /// One admitted layer: equal Admitted lists (with the same render origin and
+  /// shading) produce the same instances, which is what the instance skip keys on.
   struct Admitted {
     ModelRenderable* layer = nullptr;
-    std::vector<Call> color_calls;
-    std::vector<Call> shadow_calls;
+    std::uint64_t revision = 0;
+    float opacity = 1.0F;
+    bool color_override = false;
+    QColor override_color;
+    bool wireframe = false;
+    std::vector<Call> calls;
+    bool casts = false;  ///< some call casts a shadow
     std::uint64_t draws = 0;
     std::uint64_t triangles = 0;
     std::uint64_t shadow_draws = 0;
     std::uint64_t shadow_triangles = 0;
+    bool operator==(const Admitted&) const = default;
+  };
+  struct CachedTexture {
+    QRhiTexture* texture = nullptr;
+    QImage pending_image;  ///< decoded, not yet queued for upload
+    std::uint64_t pixels = 0;
+    int references = 0;
   };
   struct ShadowDraw {
     MeshGpu* mesh = nullptr;
@@ -206,7 +264,22 @@ class ModelRhiPass {
     quint32 index_count = 0;
   };
 
-  bool ensureLayerGpu(QRhi* rhi, ModelRenderable* layer, LayerGpu& gpu);
+  /// Brings `gpu` to the layer's modelRevision(); false when the layer cannot draw
+  /// this frame. Sets `changed` when it built or dropped anything.
+  bool ensureLayerGpu(QRhi* rhi, ModelRenderable* layer, LayerGpu& gpu, bool& changed);
+  /// Builds the GPU mesh of `source`: buffers, and materials whose textures come
+  /// from (or are decoded into) textures_. `remaining_layer_pixels` is the layer
+  /// texture budget left; the mesh's charge is taken from it on success. Null
+  /// `error` on success.
+  bool buildMesh(
+      QRhi* rhi, const std::shared_ptr<const MeshData>& source, std::uint64_t& remaining_layer_pixels, MeshGpu& mesh,
+      const char*& error);
+  /// Builds `mesh`'s triangle-edge index list and buffer on its first wireframe
+  /// draw; false when the buffer cannot be allocated.
+  bool ensureEdges(QRhi* rhi, MeshGpu& mesh);
+  /// Rebuilds this frame's colour and shadow draws and instances from admitted_.
+  void buildInstances(QRhi* rhi, const glm::dvec3& render_origin, const MeshShadingParams& shading);
+  void releaseTexture(const TextureKey& key);
   QRhiShaderResourceBindings* createMaterialBindings(QRhi* rhi, const MaterialGpu& material) const;
   bool rebuildMaterialBindings(QRhi* rhi, MaterialGpu& material) const;
   bool rebuildAllMaterialBindings(QRhi* rhi);
@@ -240,11 +313,25 @@ class ModelRhiPass {
   /// Vertex bounds per immutable mesh, computed once. Holding the key keeps a
   /// released mesh alive only until admit() prunes entries nobody else holds.
   std::unordered_map<std::shared_ptr<const MeshData>, AABB> bounds_cache_;
-  /// Meshes (in layer_gpu_) with buffer or texture uploads still to queue;
+  /// Meshes (in layer_gpu_) with buffer uploads still to queue;
   /// releaseMeshGpu() removes a mesh before it is freed.
   std::vector<MeshGpu*> pending_uploads_;
+  std::map<TextureKey, CachedTexture> textures_;
+  /// textures_ entries with a decoded image still to queue.
+  std::vector<CachedTexture*> pending_textures_;
   std::vector<Admitted> admitted_;
-  std::vector<Draw> draws_;  ///< contiguous per layer, in admission order
+  /// The admitted_ that the current instances were built from, and its origin and
+  /// shading inputs. admit() rotates it in only after a prepare(), so an admission
+  /// that never reached prepare() cannot stand in for the uploaded data.
+  std::vector<Admitted> prepared_admitted_;
+  bool admitted_prepared_ = false;
+  glm::dvec3 prepared_origin_{0.0};
+  std::array<float, 3> prepared_shading_{};
+  bool instances_valid_ = false;
+  bool shadow_upload_pending_ = false;
+  bool caches_enabled_ = true;  // test hook
+  CacheCounters counters_;      // test counters
+  std::vector<Draw> draws_;     ///< contiguous per layer, in admission order
   std::vector<Instance> instances_;
   std::vector<ShadowInstance> shadow_instances_;
   std::vector<ShadowDraw> shadow_draws_;

@@ -11,6 +11,8 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <map>
+#include <string>
 #include <utility>
 
 #include "pj_scene3d_core/model_budget.h"
@@ -55,6 +57,14 @@ std::array<const TextureSource*, 5> textureSources(const Material& material) {
 
 constexpr bool textureIsSrgb(std::size_t slot) {
   return slot == kBaseColorSlot || slot == kEmissiveSlot;
+}
+
+// Unkeyed sources share by address: an entry exists only while a mesh holding
+// the source's MeshData references it, so the address cannot be reused meanwhile.
+ModelRhiPass::TextureKey textureKey(const TextureSource& texture, std::size_t slot) {
+  std::string key =
+      !texture.key.empty() ? texture.key : "@" + std::to_string(reinterpret_cast<std::uintptr_t>(&texture));
+  return {std::move(key), textureIsSrgb(slot)};
 }
 
 bool materialUsesPbrPath(const Material& material) {
@@ -162,6 +172,10 @@ void ModelRhiPass::setLayers(const std::vector<ModelRenderable*>& layers) {
 
 void ModelRhiPass::admit(
     const PlaceFn& place, const MeshShadingParams& shading, bool shadows_requested, SceneBoundsCollector& bounds) {
+  if (admitted_prepared_) {
+    prepared_admitted_.swap(admitted_);
+    admitted_prepared_ = false;
+  }
   admitted_.clear();
   admitted_.reserve(layers_.size());
   std::erase_if(bounds_cache_, [](const auto& entry) { return entry.first.use_count() == 1; });
@@ -176,10 +190,19 @@ void ModelRhiPass::admit(
     }
     Admitted prepared;
     prepared.layer = layer;
-    prepared.color_calls.reserve(layer->modelDrawCalls().size());
-    prepared.shadow_calls.reserve(layer->modelDrawCalls().size());
+    prepared.revision = layer->modelRevision();
+    prepared.opacity = layer->opacity();
+    prepared.color_override = layer->colorOverrideEnabled();
+    if (prepared.color_override) {
+      prepared.override_color = layer->overrideColor();
+    }
+    prepared.wireframe = layer->wireframe();
+    prepared.calls.reserve(layer->modelDrawCalls().size());
+    bool has_color = false;
     AABB layer_bounds;
-    for (const ModelDrawCall& draw : layer->modelDrawCalls()) {
+    const std::vector<ModelDrawCall>& draw_calls = layer->modelDrawCalls();
+    for (std::size_t draw_index = 0; draw_index < draw_calls.size(); ++draw_index) {
+      const ModelDrawCall& draw = draw_calls[draw_index];
       const bool color_requested =
           (draw.group != ModelDrawGroup::kVisual || (shading.meshes_visible && shading.mesh_opacity > 0.0F)) &&
           (draw.group != ModelDrawGroup::kCollision ||
@@ -225,17 +248,15 @@ void ModelRhiPass::admit(
       if (inserted) {
         cached->second = meshBounds(*mesh->second);
       }
-      const Call call{draw.mesh_key,       mesh->second,      fixed_from_model,
-                      draw.override_color, draw.use_material, draw.group};
       if (color_requested) {
         layer_bounds = unionAABB(layer_bounds, transformedBounds(cached->second, fixed_from_model));
-        prepared.color_calls.push_back(call);
       }
-      if (shadow_requested) {
-        prepared.shadow_calls.push_back(call);
-      }
+      prepared.calls.push_back(
+          {static_cast<std::uint32_t>(draw_index), fixed_from_model, color_requested, shadow_requested});
+      has_color = has_color || color_requested;
+      prepared.casts = prepared.casts || shadow_requested;
     }
-    if (prepared.color_calls.empty() && prepared.shadow_calls.empty()) {
+    if (prepared.calls.empty()) {
       continue;
     }
     if (prepared.draws > kSceneLimits.max_model_draws_per_layer ||
@@ -247,8 +268,7 @@ void ModelRhiPass::admit(
                                                QString::number(kSceneLimits.max_model_triangles_per_layer)));
       continue;
     }
-    if (!prepared.color_calls.empty() &&
-        !tryConsumeModels(prepared.draws, prepared.triangles, remaining_draws, remaining_triangles)) {
+    if (has_color && !tryConsumeModels(prepared.draws, prepared.triangles, remaining_draws, remaining_triangles)) {
       asLayer(layer).noteRenderFailure(
           tr("Models need %1 draws and %2 triangles; the remaining view budget is %3 and %4")
               .arg(
@@ -262,7 +282,11 @@ void ModelRhiPass::admit(
         !tryConsumeModels(
             prepared.shadow_draws, prepared.shadow_triangles, remaining_shadow_draws, remaining_shadow_triangles)) {
       shadow_warning = tr("Model shadows exceed this view's draw/triangle budget");
-      prepared.shadow_calls.clear();
+      for (Call& call : prepared.calls) {
+        call.shadow = false;
+      }
+      std::erase_if(prepared.calls, [](const Call& call) { return !call.color; });
+      prepared.casts = false;
       prepared.shadow_draws = 0;
       prepared.shadow_triangles = 0;
     }
@@ -282,7 +306,72 @@ void ModelRhiPass::admit(
 
 void ModelRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingParams& shading) {
   QRhi* rhi = frame.rhi;
-  const glm::dvec3& render_origin = frame.render_origin;
+  admitted_prepared_ = true;
+  bool gpu_changed = false;
+  for (const Admitted& prepared : admitted_) {
+    bool changed = false;
+    if (!ensureLayerGpu(rhi, prepared.layer, layer_gpu_[prepared.layer], changed)) {
+      changed = true;
+    }
+    gpu_changed = gpu_changed || changed;
+  }
+  // The instances are a pure function of the admitted draws (placements
+  // included), the render origin and these shading inputs; kept GPU meshes keep
+  // the draws' mesh/material pointers valid.
+  const std::array<float, 3> shading_key{shading.mesh_opacity, shading.collision_opacity, shading.roughness};
+  const bool reuse = caches_enabled_ && instances_valid_ && !gpu_changed && frame.render_origin == prepared_origin_ &&
+                     shading_key == prepared_shading_ && admitted_ == prepared_admitted_;
+  if (!reuse) {
+    buildInstances(rhi, frame.render_origin, shading);
+    prepared_origin_ = frame.render_origin;
+    prepared_shading_ = shading_key;
+    shadow_upload_pending_ = true;
+  }
+  QRhiResourceUpdateBatch* updates = frame.updates;
+  const quint32 instance_bytes = static_cast<quint32>(instances_.size() * sizeof(Instance));
+  const quint32 instance_capacity = instance_capacity_;
+  if (!ensureVertexBuffer(rhi, instance_buffer_, instance_capacity_, instance_bytes, kInitialBufferBytes)) {
+    draws_.clear();
+    instances_valid_ = false;
+  } else if (instance_bytes != 0U && (!reuse || instance_capacity_ != instance_capacity)) {
+    // A recreated buffer (new capacity) starts empty. A skipped Dynamic update
+    // leaves every frame slot holding the last write.
+    updates->updateDynamicBuffer(instance_buffer_, 0, instance_bytes, instances_.data());
+    ++counters_.instance_uploads;
+  }
+  if (white_upload_pending_ && white_texture_ != nullptr) {
+    static constexpr std::array<std::uint8_t, 4> white{255U, 255U, 255U, 255U};
+    QRhiTextureSubresourceUploadDescription description(white.data(), static_cast<quint32>(white.size()));
+    description.setSourceSize(QSize(1, 1));
+    updates->uploadTexture(white_texture_, QRhiTextureUploadDescription({0, 0, description}));
+    white_upload_pending_ = false;
+  }
+  // The batch copies the bytes: the edge list's CPU copy can go right after.
+  for (MeshGpu* mesh : pending_uploads_) {
+    if (mesh->source == nullptr) {
+      continue;
+    }
+    if (mesh->upload_pending) {
+      updates->uploadStaticBuffer(mesh->vertex_buffer, mesh->source->vertices.data());
+      updates->uploadStaticBuffer(mesh->triangle_index_buffer, mesh->source->indices.data());
+      mesh->upload_pending = false;
+    }
+    if (mesh->edge_upload_pending && mesh->edge_index_buffer != nullptr) {
+      updates->uploadStaticBuffer(mesh->edge_index_buffer, mesh->edge_indices.data());
+      mesh->edge_indices = {};
+      mesh->edge_upload_pending = false;
+    }
+  }
+  pending_uploads_.clear();
+  for (CachedTexture* texture : pending_textures_) {
+    const QRhiTextureSubresourceUploadDescription description(texture->pending_image);
+    updates->uploadTexture(texture->texture, QRhiTextureUploadDescription({0, 0, description}));
+    texture->pending_image = {};
+  }
+  pending_textures_.clear();
+}
+
+void ModelRhiPass::buildInstances(QRhi* rhi, const glm::dvec3& render_origin, const MeshShadingParams& shading) {
   draws_.clear();
   shadow_draws_.clear();
   instances_.clear();
@@ -293,22 +382,38 @@ void ModelRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingParams
   last_triangle_count_ = 0;
   last_shadow_triangle_count_ = 0;
   last_texture_slot_counts_.fill(0);
+  bool edges_failed = false;
   for (const Admitted& prepared : admitted_) {
     ModelRenderable* layer = prepared.layer;
-    LayerGpu& gpu = layer_gpu_[layer];
-    if (!ensureLayerGpu(rhi, layer, gpu)) {
-      continue;
+    const auto found = layer_gpu_.find(layer);
+    if (found == layer_gpu_.end() || found->second.uploaded_revision != prepared.revision) {
+      continue;  // its GPU state could not be built this frame
     }
+    LayerGpu& gpu = found->second;
+    const std::vector<ModelDrawCall>& draw_calls = layer->modelDrawCalls();
+    // The admitted call's mesh on the GPU (its source is the layer's MeshData).
+    const auto gpu_mesh_of = [&](const Call& call) {
+      const auto gpu_mesh = gpu.meshes.find(draw_calls[call.draw_index].mesh_key);
+      return gpu_mesh == gpu.meshes.end() || gpu_mesh->second.source == nullptr ? nullptr : &gpu_mesh->second;
+    };
     const std::size_t first_draw = draws_.size();
-    for (const Call& call : prepared.color_calls) {
-      const auto gpu_mesh = gpu.meshes.find(call.mesh_key);
-      if (gpu_mesh == gpu.meshes.end() || gpu_mesh->second.source == nullptr) {
+    for (const Call& call : prepared.calls) {
+      MeshGpu* gpu_mesh = call.color ? gpu_mesh_of(call) : nullptr;
+      if (gpu_mesh == nullptr) {
         continue;
       }
-      MeshGpu& mesh = gpu_mesh->second;
+      const ModelDrawCall& draw = draw_calls[call.draw_index];
+      const MeshData& source = *gpu_mesh->source;
+      MeshGpu& mesh = *gpu_mesh;
+      const bool lines = prepared.wireframe;
+      if (lines && !ensureEdges(rhi, mesh)) {
+        asLayer(layer).noteRenderFailure(tr("Could not allocate a model wireframe buffer"));
+        edges_failed = true;
+        continue;
+      }
       const glm::mat4 narrowed = relativeModel(call.fixed_from_model, render_origin);
-      for (std::size_t index = 0; index < call.mesh->submeshes.size() && index < mesh.materials.size(); ++index) {
-        const SubMesh& submesh = call.mesh->submeshes[index];
+      for (std::size_t index = 0; index < source.submeshes.size() && index < mesh.materials.size(); ++index) {
+        const SubMesh& submesh = source.submeshes[index];
         if (submesh.index_count == 0U) {
           continue;
         }
@@ -316,19 +421,19 @@ void ModelRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingParams
         const Material& material = submesh.material != nullptr ? *submesh.material : fallback;
         MaterialGpu& material_gpu = mesh.materials[index];
         const bool pbr_active = materialUsesPbrPath(material);
-        bool use_material = call.use_material;
-        glm::vec4 tint = use_material ? material.base_color_factor : call.override_color;
-        if (layer->colorOverrideEnabled()) {
-          const QColor override = layer->overrideColor();
+        bool use_material = draw.use_material;
+        glm::vec4 tint = use_material ? material.base_color_factor : draw.override_color;
+        if (prepared.color_override) {
+          const QColor& override = prepared.override_color;
           tint.r = static_cast<float>(override.redF());
           tint.g = static_cast<float>(override.greenF());
           tint.b = static_cast<float>(override.blueF());
           use_material = false;
         }
-        float opacity = layer->opacity();
-        if (call.group == ModelDrawGroup::kVisual) {
+        float opacity = prepared.opacity;
+        if (draw.group == ModelDrawGroup::kVisual) {
           opacity *= shading.mesh_opacity;
-        } else if (call.group == ModelDrawGroup::kCollision) {
+        } else if (draw.group == ModelDrawGroup::kCollision) {
           opacity *= shading.collision_opacity;
         }
         tint.a *= opacity;
@@ -351,7 +456,7 @@ void ModelRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingParams
         instance.pbr_factors = {
             material.has_pbr ? material.metallic_factor : 0.0F,
             material.has_pbr ? material.roughness_factor : shading.roughness, pbr_active ? 1.0F : 0.0F,
-            call.group == ModelDrawGroup::kCollision ? 1.0F : 0.0F};
+            draw.group == ModelDrawGroup::kCollision ? 1.0F : 0.0F};
         instance.emissive_factor = {
             pbr_active ? material.emissive_factor.r : 0.0F, pbr_active ? material.emissive_factor.g : 0.0F,
             pbr_active ? material.emissive_factor.b : 0.0F, 0.0F};
@@ -360,10 +465,9 @@ void ModelRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingParams
         }
         const quint32 instance_offset = static_cast<quint32>(instances_.size());
         instances_.push_back(instance);
-        const bool lines = layer->wireframe();
         const quint32 index_offset = lines ? mesh.edge_offsets[index] : static_cast<quint32>(submesh.index_offset);
         const quint32 index_count = lines ? mesh.edge_counts[index] : static_cast<quint32>(submesh.index_count);
-        const bool translucent = call.group == ModelDrawGroup::kCollision || tint.a < 0.999F || alpha_mode > 1.5F;
+        const bool translucent = draw.group == ModelDrawGroup::kCollision || tint.a < 0.999F || alpha_mode > 1.5F;
         draws_.push_back(
             Draw{
                 layer, &mesh, &material_gpu, instance_offset, index_offset, index_count, lines,
@@ -375,10 +479,9 @@ void ModelRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingParams
       last_draw_count_ += static_cast<int>(draws_.size() - first_draw);
       last_triangle_count_ += static_cast<int>(prepared.triangles);
     }
-    for (const Call& call : prepared.shadow_calls) {
-      const auto gpu_mesh = gpu.meshes.find(call.mesh_key);
-      if (gpu_mesh == gpu.meshes.end() || gpu_mesh->second.source == nullptr ||
-          gpu_mesh->second.triangle_index_buffer == nullptr || call.mesh->indices.empty()) {
+    for (const Call& call : prepared.calls) {
+      MeshGpu* gpu_mesh = call.shadow ? gpu_mesh_of(call) : nullptr;
+      if (gpu_mesh == nullptr || gpu_mesh->triangle_index_buffer == nullptr || gpu_mesh->source->indices.empty()) {
         continue;
       }
       const glm::mat4 narrowed = relativeModel(call.fixed_from_model, render_origin);
@@ -386,62 +489,32 @@ void ModelRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingParams
       copyMatrix(narrowed, instance.model);
       const quint32 instance_offset = static_cast<quint32>(shadow_instances_.size());
       shadow_instances_.push_back(instance);
-      const auto cached = bounds_cache_.find(call.mesh);
+      const auto cached = bounds_cache_.find(gpu_mesh->source);
       if (cached != bounds_cache_.end()) {
         shadow_bounds_ =
             unionAABB(shadow_bounds_, transformedBounds(cached->second, call.fixed_from_model, render_origin));
       }
-      const quint32 index_count = static_cast<quint32>(call.mesh->indices.size());
-      shadow_draws_.push_back(ShadowDraw{&gpu_mesh->second, instance_offset, index_count});
+      const quint32 index_count = static_cast<quint32>(gpu_mesh->source->indices.size());
+      shadow_draws_.push_back(ShadowDraw{gpu_mesh, instance_offset, index_count});
       last_shadow_triangle_count_ += static_cast<int>(index_count / 3U);
     }
   }
-  QRhiResourceUpdateBatch* updates = frame.updates;
-  const quint32 instance_bytes = static_cast<quint32>(instances_.size() * sizeof(Instance));
-  if (!ensureVertexBuffer(rhi, instance_buffer_, instance_capacity_, instance_bytes, kInitialBufferBytes)) {
-    draws_.clear();
-  } else if (instance_bytes != 0U) {
-    updates->updateDynamicBuffer(instance_buffer_, 0, instance_bytes, instances_.data());
-  }
-  if (white_upload_pending_ && white_texture_ != nullptr) {
-    static constexpr std::array<std::uint8_t, 4> white{255U, 255U, 255U, 255U};
-    QRhiTextureSubresourceUploadDescription description(white.data(), static_cast<quint32>(white.size()));
-    description.setSourceSize(QSize(1, 1));
-    updates->uploadTexture(white_texture_, QRhiTextureUploadDescription({0, 0, description}));
-    white_upload_pending_ = false;
-  }
-  for (MeshGpu* mesh : pending_uploads_) {
-    if (mesh->upload_pending && mesh->source != nullptr) {
-      updates->uploadStaticBuffer(mesh->vertex_buffer, mesh->source->vertices.data());
-      updates->uploadStaticBuffer(mesh->triangle_index_buffer, mesh->source->indices.data());
-      if (mesh->edge_index_buffer != nullptr && !mesh->edge_indices.empty()) {
-        updates->uploadStaticBuffer(mesh->edge_index_buffer, mesh->edge_indices.data());
-      }
-      mesh->upload_pending = false;
-    }
-    for (MaterialGpu& material : mesh->materials) {
-      for (TextureGpu& texture : material.textures) {
-        if (texture.texture_upload_pending && texture.texture != nullptr && !texture.pending_image.isNull()) {
-          const QRhiTextureSubresourceUploadDescription description(texture.pending_image);
-          updates->uploadTexture(texture.texture, QRhiTextureUploadDescription({0, 0, description}));
-          texture.pending_image = {};
-          texture.texture_upload_pending = false;
-        }
-      }
-    }
-  }
-  pending_uploads_.clear();
+  // A failed edge list retries on the next frame instead of being skipped.
+  instances_valid_ = !edges_failed;
 }
 
 bool ModelRhiPass::uploadShadowCasters(const RhiFrameContext& frame) {
   const quint32 shadow_bytes = static_cast<quint32>(shadow_instances_.size() * sizeof(ShadowInstance));
+  const quint32 capacity = shadow_instance_capacity_;
   if (!ensureVertexBuffer(
           frame.rhi, shadow_instance_buffer_, shadow_instance_capacity_, shadow_bytes, kInitialBufferBytes)) {
     return false;
   }
-  if (shadow_bytes != 0U) {
+  if (shadow_bytes != 0U && (shadow_upload_pending_ || shadow_instance_capacity_ != capacity)) {
     frame.updates->updateDynamicBuffer(shadow_instance_buffer_, 0, shadow_bytes, shadow_instances_.data());
+    ++counters_.shadow_instance_uploads;
   }
+  shadow_upload_pending_ = false;
   return true;
 }
 
@@ -571,7 +644,7 @@ void ModelRhiPass::clearShadowMap(QRhi* rhi, bool restore_bindings) {
 
 void ModelRhiPass::noteShadowFailure(const QString& error) {
   for (const Admitted& prepared : admitted_) {
-    if (prepared.layer != nullptr && !prepared.shadow_calls.empty()) {
+    if (prepared.layer != nullptr && prepared.casts) {
       asLayer(prepared.layer).noteRenderFailure(error);
     }
   }
@@ -684,7 +757,7 @@ void ModelRhiPass::dropMaterialBindings(bool invalidate_layers) {
   }
 }
 
-bool ModelRhiPass::ensureLayerGpu(QRhi* rhi, ModelRenderable* layer, LayerGpu& gpu) {
+bool ModelRhiPass::ensureLayerGpu(QRhi* rhi, ModelRenderable* layer, LayerGpu& gpu, bool& changed) {
   if (rhi == nullptr || layer == nullptr || white_texture_ == nullptr || sampler_ == nullptr ||
       view_uniforms_ == nullptr || lighting_uniforms_ == nullptr) {
     return false;
@@ -692,149 +765,51 @@ bool ModelRhiPass::ensureLayerGpu(QRhi* rhi, ModelRenderable* layer, LayerGpu& g
   if (gpu.uploaded_revision == layer->modelRevision()) {
     return true;
   }
-  releaseLayerGpu(gpu);
-  const int max_texture_size = rhi->resourceLimit(QRhi::TextureSizeMax);
-  // Decoded QImages and their QRhi textures are retained across the whole
-  // layer, not just one mesh. Enforce both envelopes before QImage allocation.
-  std::uint64_t remaining_layer_texture_pixels = kSceneLimits.max_model_texture_pixels_per_layer;
-  const auto fail = [&](MeshGpu& mesh, const char* reason) {
+  changed = true;
+  const auto& sources = layer->modelMeshes();
+  if (!caches_enabled_) {
+    releaseLayerGpu(gpu);
+  }
+  // MeshData is immutable: a key still holding the same pointer is unchanged.
+  std::erase_if(gpu.meshes, [&](auto& entry) {
+    const auto source = sources.find(entry.first);
+    if (source != sources.end() && source->second == entry.second.source) {
+      return false;
+    }
+    releaseMeshGpu(entry.second);
+    return true;
+  });
+  // Decoded textures and their QRhi textures are retained across the whole
+  // layer, not just one mesh: kept meshes keep their charge.
+  std::uint64_t remaining_layer_pixels = kSceneLimits.max_model_texture_pixels_per_layer;
+  for (const auto& [_, mesh] : gpu.meshes) {
+    remaining_layer_pixels -= std::min(remaining_layer_pixels, mesh.texture_pixels);
+  }
+  const auto fail = [&](const char* reason) {
     asLayer(layer).noteRenderFailure(tr(reason));
-    releaseMeshGpu(mesh);
     releaseLayerGpu(gpu);
     return false;
   };
-  for (const auto& [key, source] : layer->modelMeshes()) {
+  for (const auto& [key, source] : sources) {
     if (source == nullptr || !source->ok || source->vertices.empty() || source->indices.empty()) {
       continue;
     }
+    if (const auto kept = gpu.meshes.find(key); kept != gpu.meshes.end()) {
+      // clearShadowMap() may have dropped its bindings.
+      for (MaterialGpu& material : kept->second.materials) {
+        if (material.shader_resources == nullptr && !rebuildMaterialBindings(rhi, material)) {
+          return fail("Could not create model material bindings");
+        }
+      }
+      continue;
+    }
     MeshGpu mesh;
-    mesh.source = source;
-    const std::uint64_t vertex_bytes = source->vertices.size() * sizeof(pj::scene3d::Vertex);
-    const std::uint64_t index_bytes = source->indices.size() * sizeof(std::uint32_t);
-    if (vertex_bytes > std::numeric_limits<quint32>::max() || index_bytes > std::numeric_limits<quint32>::max()) {
-      return fail(mesh, "A model GPU buffer exceeds the 4 GiB buffer limit");
+    const char* error = nullptr;
+    if (!buildMesh(rhi, source, remaining_layer_pixels, mesh, error)) {
+      releaseMeshGpu(mesh);
+      return fail(error);
     }
-    mesh.vertex_buffer =
-        rhi->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer, static_cast<quint32>(vertex_bytes));
-    mesh.triangle_index_buffer =
-        rhi->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::IndexBuffer, static_cast<quint32>(index_bytes));
-
-    mesh.edge_indices.reserve(source->indices.size() * 2U);
-    mesh.edge_offsets.reserve(source->submeshes.size());
-    mesh.edge_counts.reserve(source->submeshes.size());
-    for (const SubMesh& submesh : source->submeshes) {
-      const quint32 first = static_cast<quint32>(mesh.edge_indices.size());
-      const std::size_t end = std::min(source->indices.size(), submesh.index_offset + submesh.index_count);
-      for (std::size_t index = submesh.index_offset; index + 2U < end; index += 3U) {
-        const quint32 a = source->indices[index];
-        const quint32 b = source->indices[index + 1U];
-        const quint32 c = source->indices[index + 2U];
-        mesh.edge_indices.insert(mesh.edge_indices.end(), {a, b, b, c, c, a});
-      }
-      mesh.edge_offsets.push_back(first);
-      mesh.edge_counts.push_back(static_cast<quint32>(mesh.edge_indices.size()) - first);
-    }
-    if (!mesh.edge_indices.empty()) {
-      const std::uint64_t edge_bytes = mesh.edge_indices.size() * sizeof(quint32);
-      if (edge_bytes > std::numeric_limits<quint32>::max()) {
-        return fail(mesh, "A model wireframe buffer exceeds the 4 GiB buffer limit");
-      }
-      mesh.edge_index_buffer =
-          rhi->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::IndexBuffer, static_cast<quint32>(edge_bytes));
-    }
-    if (!mesh.vertex_buffer->create() || !mesh.triangle_index_buffer->create() ||
-        (mesh.edge_index_buffer != nullptr && !mesh.edge_index_buffer->create())) {
-      return fail(mesh, "Could not allocate model GPU buffers");
-    }
-
-    // Decode every distinct material slot against temporary mesh/layer budgets
-    // before allocating any texture. A late fifth-slot rejection therefore
-    // cannot leave a partially committed material or consume the layer budget.
-    struct DecodedTexture {
-      QImage image;
-      std::size_t slot = 0U;
-    };
-    std::unordered_map<const TextureSource*, DecodedTexture> decoded_textures;
-    std::uint64_t remaining_texture_pixels = kSceneLimits.max_model_texture_pixels_per_mesh;
-    std::uint64_t candidate_layer_texture_pixels = remaining_layer_texture_pixels;
-    for (const SubMesh& submesh : source->submeshes) {
-      if (submesh.material == nullptr) {
-        continue;
-      }
-      const auto textures = textureSources(*submesh.material);
-      for (std::size_t slot = 0; slot < textures.size(); ++slot) {
-        const TextureSource* texture = textures[slot];
-        if (texture == nullptr || texture->empty() || decoded_textures.contains(texture)) {
-          continue;
-        }
-        QByteArray encoded;
-        QBuffer buffer(&encoded);
-        QImageReader reader;
-        if (!texture->bytes.empty()) {
-          encoded = QByteArray(
-              reinterpret_cast<const char*>(texture->bytes.data()), static_cast<qsizetype>(texture->bytes.size()));
-          buffer.open(QIODevice::ReadOnly);
-          reader.setDevice(&buffer);
-        } else {
-          reader.setFileName(texture->path);
-        }
-        const QSize size = reader.size();
-        QImage image;
-        if (size.isValid()) {
-          const std::uint64_t pixels =
-              static_cast<std::uint64_t>(size.width()) * static_cast<std::uint64_t>(size.height());
-          if (size.width() > max_texture_size || size.height() > max_texture_size ||
-              !tryConsumeModelTexturePixels(pixels, remaining_texture_pixels, candidate_layer_texture_pixels)) {
-            return fail(mesh, "A model exceeds the decoded-texture limit");
-          }
-          image = reader.read();
-        }
-        if (!size.isValid() || image.isNull()) {
-          return fail(mesh, "Could not decode a model material texture");
-        }
-        decoded_textures.emplace(texture, DecodedTexture{image.convertToFormat(QImage::Format_RGBA8888), slot});
-      }
-    }
-    remaining_layer_texture_pixels = candidate_layer_texture_pixels;
-
-    mesh.materials.resize(source->submeshes.size());
-    std::unordered_map<const TextureSource*, QRhiTexture*> shared_textures;
-    for (std::size_t index = 0; index < source->submeshes.size(); ++index) {
-      const std::shared_ptr<const Material>& material = source->submeshes[index].material;
-      MaterialGpu& material_gpu = mesh.materials[index];
-      const Material fallback;
-      const Material& resolved_material = material != nullptr ? *material : fallback;
-      const auto textures = textureSources(resolved_material);
-      for (std::size_t slot = 0; slot < textures.size(); ++slot) {
-        const TextureSource* texture = textures[slot];
-        TextureGpu& texture_gpu = material_gpu.textures[slot];
-        texture_gpu.texture = white_texture_;
-        if (texture == nullptr || texture->empty()) {
-          continue;
-        }
-        texture_gpu.present = true;
-        if (const auto shared = shared_textures.find(texture); shared != shared_textures.end()) {
-          texture_gpu.texture = shared->second;
-          continue;
-        }
-        auto decoded = decoded_textures.find(texture);
-        if (decoded == decoded_textures.end() || decoded->second.image.isNull() || decoded->second.slot != slot) {
-          return fail(mesh, "A model material texture lost its decoded upload state");
-        }
-        const QRhiTexture::Flags flags = textureIsSrgb(slot) ? QRhiTexture::sRGB : QRhiTexture::Flags{};
-        texture_gpu.texture = rhi->newTexture(QRhiTexture::RGBA8, decoded->second.image.size(), 1, flags);
-        texture_gpu.owns_texture = true;
-        if (texture_gpu.texture == nullptr || !texture_gpu.texture->create()) {
-          return fail(mesh, "Could not allocate a model material texture");
-        }
-        texture_gpu.pending_image = std::move(decoded->second.image);
-        texture_gpu.texture_upload_pending = true;
-        shared_textures.emplace(texture, texture_gpu.texture);
-      }
-      if (!rebuildMaterialBindings(rhi, material_gpu)) {
-        return fail(mesh, "Could not create model material bindings");
-      }
-    }
+    ++counters_.mesh_builds;
     mesh.upload_pending = true;
     pending_uploads_.push_back(&gpu.meshes.emplace(key, std::move(mesh)).first->second);
   }
@@ -842,20 +817,199 @@ bool ModelRhiPass::ensureLayerGpu(QRhi* rhi, ModelRenderable* layer, LayerGpu& g
   return true;
 }
 
+bool ModelRhiPass::buildMesh(
+    QRhi* rhi, const std::shared_ptr<const MeshData>& source, std::uint64_t& remaining_layer_pixels, MeshGpu& mesh,
+    const char*& error) {
+  const auto fail = [&error](const char* reason) {
+    error = reason;
+    return false;
+  };
+  mesh.source = source;
+  const std::uint64_t vertex_bytes = source->vertices.size() * sizeof(pj::scene3d::Vertex);
+  const std::uint64_t index_bytes = source->indices.size() * sizeof(std::uint32_t);
+  if (vertex_bytes > std::numeric_limits<quint32>::max() || index_bytes > std::numeric_limits<quint32>::max()) {
+    return fail("A model GPU buffer exceeds the 4 GiB buffer limit");
+  }
+  mesh.vertex_buffer =
+      rhi->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer, static_cast<quint32>(vertex_bytes));
+  mesh.triangle_index_buffer =
+      rhi->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::IndexBuffer, static_cast<quint32>(index_bytes));
+  if (!mesh.vertex_buffer->create() || !mesh.triangle_index_buffer->create()) {
+    return fail("Could not allocate model GPU buffers");
+  }
+
+  // Charge every distinct texture against the mesh/layer budgets, decoding the
+  // cache misses, before taking any cache reference: a late fifth-slot
+  // rejection cannot leave a partially committed material or consume the layer
+  // budget. Sizes are checked before a decode allocates.
+  const int max_texture_size = rhi->resourceLimit(QRhi::TextureSizeMax);
+  std::vector<TextureKey> keys;
+  std::map<TextureKey, QImage> decoded;
+  std::uint64_t remaining_mesh_pixels = kSceneLimits.max_model_texture_pixels_per_mesh;
+  std::uint64_t candidate_layer_pixels = remaining_layer_pixels;
+  for (const SubMesh& submesh : source->submeshes) {
+    if (submesh.material == nullptr) {
+      continue;
+    }
+    const auto textures = textureSources(*submesh.material);
+    for (std::size_t slot = 0; slot < textures.size(); ++slot) {
+      const TextureSource* texture = textures[slot];
+      if (texture == nullptr || texture->empty()) {
+        continue;
+      }
+      TextureKey key = textureKey(*texture, slot);
+      if (std::find(keys.cbegin(), keys.cend(), key) != keys.cend()) {
+        continue;
+      }
+      if (const auto cached = textures_.find(key); cached != textures_.end()) {
+        if (!tryConsumeModelTexturePixels(cached->second.pixels, remaining_mesh_pixels, candidate_layer_pixels)) {
+          return fail("A model exceeds the decoded-texture limit");
+        }
+        keys.push_back(std::move(key));
+        continue;
+      }
+      QByteArray encoded;
+      QBuffer buffer(&encoded);
+      QImageReader reader;
+      if (!texture->bytes.empty()) {
+        encoded = QByteArray(
+            reinterpret_cast<const char*>(texture->bytes.data()), static_cast<qsizetype>(texture->bytes.size()));
+        buffer.open(QIODevice::ReadOnly);
+        reader.setDevice(&buffer);
+      } else {
+        reader.setFileName(texture->path);
+      }
+      const QSize size = reader.size();
+      QImage image;
+      if (size.isValid()) {
+        const std::uint64_t pixels =
+            static_cast<std::uint64_t>(size.width()) * static_cast<std::uint64_t>(size.height());
+        if (size.width() > max_texture_size || size.height() > max_texture_size ||
+            !tryConsumeModelTexturePixels(pixels, remaining_mesh_pixels, candidate_layer_pixels)) {
+          return fail("A model exceeds the decoded-texture limit");
+        }
+        image = reader.read();
+      }
+      if (!size.isValid() || image.isNull()) {
+        return fail("Could not decode a model material texture");
+      }
+      ++counters_.texture_decodes;
+      decoded.emplace(key, image.convertToFormat(QImage::Format_RGBA8888));
+      keys.push_back(std::move(key));
+    }
+  }
+
+  // Commit: every reference taken is in texture_refs, which releaseMeshGpu() drops.
+  for (const TextureKey& key : keys) {
+    const auto image = decoded.find(key);
+    if (image == decoded.end()) {
+      ++textures_.at(key).references;
+      mesh.texture_refs.push_back(key);
+      continue;
+    }
+    const QRhiTexture::Flags flags = key.second ? QRhiTexture::sRGB : QRhiTexture::Flags{};
+    QRhiTexture* texture = rhi->newTexture(QRhiTexture::RGBA8, image->second.size(), 1, flags);
+    if (texture == nullptr || !texture->create()) {
+      delete texture;
+      return fail("Could not allocate a model material texture");
+    }
+    const std::uint64_t pixels =
+        static_cast<std::uint64_t>(image->second.width()) * static_cast<std::uint64_t>(image->second.height());
+    CachedTexture& cached = textures_[key];
+    cached = CachedTexture{texture, std::move(image->second), pixels, 1};
+    pending_textures_.push_back(&cached);
+    mesh.texture_refs.push_back(key);
+  }
+
+  mesh.materials.resize(source->submeshes.size());
+  for (std::size_t index = 0; index < source->submeshes.size(); ++index) {
+    const std::shared_ptr<const Material>& material = source->submeshes[index].material;
+    MaterialGpu& material_gpu = mesh.materials[index];
+    const Material fallback;
+    const auto textures = textureSources(material != nullptr ? *material : fallback);
+    for (std::size_t slot = 0; slot < textures.size(); ++slot) {
+      TextureGpu& texture_gpu = material_gpu.textures[slot];
+      texture_gpu.texture = white_texture_;
+      if (textures[slot] != nullptr && !textures[slot]->empty()) {
+        texture_gpu.texture = textures_.at(textureKey(*textures[slot], slot)).texture;
+        texture_gpu.present = true;
+      }
+    }
+    if (!rebuildMaterialBindings(rhi, material_gpu)) {
+      return fail("Could not create model material bindings");
+    }
+  }
+  mesh.texture_pixels = kSceneLimits.max_model_texture_pixels_per_mesh - remaining_mesh_pixels;
+  remaining_layer_pixels = candidate_layer_pixels;
+  return true;
+}
+
+bool ModelRhiPass::ensureEdges(QRhi* rhi, MeshGpu& mesh) {
+  if (mesh.edges_built) {
+    return true;
+  }
+  const MeshData& source = *mesh.source;
+  mesh.edge_indices.clear();
+  mesh.edge_offsets.clear();
+  mesh.edge_counts.clear();
+  mesh.edge_indices.reserve(source.indices.size() * 2U);
+  for (const SubMesh& submesh : source.submeshes) {
+    const quint32 first = static_cast<quint32>(mesh.edge_indices.size());
+    const std::size_t end = std::min(source.indices.size(), submesh.index_offset + submesh.index_count);
+    for (std::size_t index = submesh.index_offset; index + 2U < end; index += 3U) {
+      const quint32 a = source.indices[index];
+      const quint32 b = source.indices[index + 1U];
+      const quint32 c = source.indices[index + 2U];
+      mesh.edge_indices.insert(mesh.edge_indices.end(), {a, b, b, c, c, a});
+    }
+    mesh.edge_offsets.push_back(first);
+    mesh.edge_counts.push_back(static_cast<quint32>(mesh.edge_indices.size()) - first);
+  }
+  if (!mesh.edge_indices.empty()) {
+    const std::uint64_t edge_bytes = mesh.edge_indices.size() * sizeof(quint32);
+    if (edge_bytes <= std::numeric_limits<quint32>::max()) {
+      mesh.edge_index_buffer =
+          rhi->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::IndexBuffer, static_cast<quint32>(edge_bytes));
+      if (!mesh.edge_index_buffer->create()) {
+        delete mesh.edge_index_buffer;
+        mesh.edge_index_buffer = nullptr;
+      }
+    }
+    if (mesh.edge_index_buffer == nullptr) {
+      mesh.edge_indices = {};
+      mesh.edge_offsets.clear();
+      mesh.edge_counts.clear();
+      return false;
+    }
+    mesh.edge_upload_pending = true;
+    if (std::find(pending_uploads_.cbegin(), pending_uploads_.cend(), &mesh) == pending_uploads_.cend()) {
+      pending_uploads_.push_back(&mesh);
+    }
+  }
+  mesh.edges_built = true;
+  ++counters_.edge_builds;
+  return true;
+}
+
+void ModelRhiPass::releaseTexture(const TextureKey& key) {
+  const auto found = textures_.find(key);
+  if (found == textures_.end() || --found->second.references > 0) {
+    return;
+  }
+  std::erase(pending_textures_, &found->second);
+  delete found->second.texture;
+  textures_.erase(found);
+}
+
 void ModelRhiPass::releaseMeshGpu(MeshGpu& gpu) {
   std::erase(pending_uploads_, &gpu);
-  // Bindings may reference textures owned by another submesh entry representing
-  // the same shared material. Destroy every binding before any owned texture.
+  // Destroy every binding before any texture it may reference.
   for (MaterialGpu& material : gpu.materials) {
     delete material.shader_resources;
     material.shader_resources = nullptr;
   }
-  for (MaterialGpu& material : gpu.materials) {
-    for (TextureGpu& texture : material.textures) {
-      if (texture.owns_texture) {
-        delete texture.texture;
-      }
-    }
+  for (const TextureKey& key : gpu.texture_refs) {
+    releaseTexture(key);
   }
   delete gpu.edge_index_buffer;
   delete gpu.triangle_index_buffer;
@@ -884,6 +1038,15 @@ void ModelRhiPass::release() {
   instances_.clear();
   bounds_cache_.clear();
   pending_uploads_.clear();
+  for (auto& [_, texture] : textures_) {
+    delete texture.texture;  // none left once every layer is released
+  }
+  textures_.clear();
+  pending_textures_.clear();
+  prepared_admitted_.clear();
+  admitted_prepared_ = false;
+  instances_valid_ = false;
+  shadow_upload_pending_ = false;
   for (QRhiGraphicsPipeline** pipeline :
        {&line_no_depth_pipeline_, &line_pipeline_, &triangle_no_depth_pipeline_, &triangle_pipeline_}) {
     delete *pipeline;

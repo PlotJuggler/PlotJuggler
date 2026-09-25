@@ -493,20 +493,29 @@ TEST_F(Scene3dRhiPointTest, CameraInsideACubeDrawsNoInterior) {
   EXPECT_EQ(covered(image, empty).size(), 0U) << "the cube's interior faces drew";
 }
 
-// ---- GPU bounds reduction ----------------------------------------------------
+// ---- The pass against a PointRenderable of its own ----------------------------
 
-// A cloud with no CPU bounds: the point pass has to reduce them on the GPU.
-class BoundlessCloud : public pj::scene3d::PointRenderable {
+// A minimal cloud layer: its bounds are the finite extent of its vertices, as a
+// layer's conversion computes them.
+class ScannedCloud : public pj::scene3d::PointRenderable {
  public:
-  void set(std::vector<pj::scene3d::PointVertex> vertices) {
-    vertices_ = std::move(vertices);
+  void set(const std::vector<pj::scene3d::PointVertex>& vertices) {
+    bytes_ = QByteArray(
+        reinterpret_cast<const char*>(vertices.data()),
+        static_cast<qsizetype>(vertices.size() * sizeof(pj::scene3d::PointVertex)));
+    bounds_ = {};
+    for (const pj::scene3d::PointVertex& vertex : vertices) {
+      if (std::isfinite(vertex.x) && std::isfinite(vertex.y) && std::isfinite(vertex.z)) {
+        pj::scene3d::expandAABB(bounds_, glm::vec3(vertex.x, vertex.y, vertex.z));
+      }
+    }
     ++revision_;
   }
   bool prepareForRender(std::uint64_t /*remaining*/) override {
     return true;
   }
-  [[nodiscard]] const std::vector<pj::scene3d::PointVertex>& vertices() const override {
-    return vertices_;
+  [[nodiscard]] const QByteArray& vertexBytes() const override {
+    return bytes_;
   }
   [[nodiscard]] std::uint64_t geometryRevision() const override {
     return revision_;
@@ -515,7 +524,7 @@ class BoundlessCloud : public pj::scene3d::PointRenderable {
     return frame_;
   }
   [[nodiscard]] std::optional<pj::scene3d::AABB> sourceBounds() const override {
-    return std::nullopt;
+    return bounds_.valid ? std::optional(bounds_) : std::nullopt;
   }
   [[nodiscard]] bool visible() const override {
     return true;
@@ -556,7 +565,8 @@ class BoundlessCloud : public pj::scene3d::PointRenderable {
   }
 
  private:
-  std::vector<pj::scene3d::PointVertex> vertices_;
+  QByteArray bytes_;
+  pj::scene3d::AABB bounds_;
   std::uint64_t revision_ = 0;
   std::string frame_ = "map";
 };
@@ -629,7 +639,8 @@ class OffscreenRhi {
   pj::scene3d::RhiPassSetup setup() {
     return {rhi_.get(), pass_descriptor_.get(), 1, render_mode_.get()};
   }
-  // One frame of the view's contract: admit, prepare, compute, then an empty pass.
+  // One frame of the view's contract: admit, prepare, then an empty pass that
+  // consumes the uploads.
   void frame(pj::scene3d::PointRhiPass& pass) {
     QRhiCommandBuffer* command_buffer = nullptr;
     ASSERT_EQ(rhi_->beginOffscreenFrame(&command_buffer), QRhi::FrameOpSuccess);
@@ -638,9 +649,6 @@ class OffscreenRhi {
     pass.admit(
         [](const std::string&) { return std::optional<pj::scene3d::Transform>(pj::scene3d::Transform{}); }, bounds);
     pass.prepare({rhi_.get(), updates, glm::dvec3(0.0), QMatrix4x4()}, {glm::mat4(1.0F), QSize(64, 64), 1.0F});
-    if (pass.recordCompute(command_buffer, updates)) {
-      updates = nullptr;
-    }
     command_buffer->beginPass(target_.get(), Qt::black, {1.0F, 0}, updates);
     command_buffer->endPass();
     rhi_->endOffscreenFrame();
@@ -669,60 +677,39 @@ std::vector<pj::scene3d::PointVertex> box(glm::vec3 minimum, glm::vec3 maximum) 
       {0.5F * (minimum.x + maximum.x), 0.5F * (minimum.y + maximum.y), 0.5F * (minimum.z + maximum.z), 0.0F, 0U}};
 }
 
-// A layer without CPU bounds gets exactly its finite extent from the compute
-// reduction, a frame or more late. A new sample keeps reporting the last adopted
-// box until its own lands (a streaming cloud never drops out of the scene
-// bounds), and the bounds never roll back to an older sample afterwards.
-TEST_F(Scene3dRhiPointTest, GpuBoundsReductionIsExactAndGenerationSafe) {
+// The pass reports a layer's bounds in the frame its sample arrives, and a new
+// sample replaces them at once. A released pass (QRhi teardown, e.g. a dock
+// reparent) uploads the retained cloud again.
+TEST_F(Scene3dRhiPointTest, CloudBoundsFollowEachSampleAndReuploadAfterRelease) {
   OffscreenRhi offscreen;
   if (offscreen.rhi() == nullptr) {
     PJ_SKIP_WITHOUT_GPU("no QRhi for " << qPrintable(qEnvironmentVariable("PJ_GRAPHICS_API")));
   }
-  if (!offscreen.rhi()->isFeatureSupported(QRhi::Compute)) {
-    GTEST_SKIP() << "no compute on this backend: the CPU bounds stay in charge";
-  }
-  BoundlessCloud cloud;
+  ScannedCloud cloud;
   pj::scene3d::PointRhiPass pass;
   ASSERT_TRUE(pass.initialize(offscreen.setup()));
   pass.setLayers({&cloud});
 
   using Box = std::pair<glm::vec3, glm::vec3>;
-  const auto is = [](const pj::scene3d::AABB& bounds, const Box& box) {
-    return bounds.valid && bounds.min == box.first && bounds.max == box.second;
-  };
-  // Frames until the reported bounds are `box`; until then they must be `held`.
-  const auto converge = [&](const Box& box, const std::optional<Box>& held) {
-    for (int frame = 0; frame < 10; ++frame) {
-      offscreen.frame(pass);
-      const pj::scene3d::AABB bounds = pass.lastPointBounds();
-      if (is(bounds, box)) {
-        return true;
-      }
-      if (held.has_value()) {
-        EXPECT_TRUE(is(bounds, *held)) << "frame " << frame << ": lost the last adopted box before the new one landed";
-      }
-    }
-    return false;
+  const auto expect_frame = [&](const Box& box, const char* what) {
+    offscreen.frame(pass);
+    const pj::scene3d::AABB bounds = pass.lastPointBounds();
+    EXPECT_TRUE(bounds.valid && bounds.min == box.first && bounds.max == box.second)
+        << what << ": the bounds are not the layer's";
+    // Counted once uploaded, before the frustum reject (this identity view culls the cloud).
+    EXPECT_EQ(pass.lastPointVertexCount(), 4) << what << ": the retained cloud was not uploaded";
   };
   const Box first{{-1.0F, 3.0F, 5.0F}, {2.0F, 4.0F, 6.0F}};
   const Box second{{10.0F, 11.0F, 12.0F}, {13.0F, 14.0F, 15.0F}};
   cloud.set(box(first.first, first.second));
-  EXPECT_TRUE(converge(first, std::nullopt)) << "the GPU bounds never matched the finite extent";
-  EXPECT_FALSE(pass.gpuBoundsPending());
-
-  // A new sample: the first box stands in until the second lands, then stays gone.
+  expect_frame(first, "first sample");
   cloud.set(box(second.first, second.second));
-  EXPECT_TRUE(converge(second, first));
-  for (int frame = 0; frame < 3; ++frame) {
-    offscreen.frame(pass);
-    EXPECT_TRUE(is(pass.lastPointBounds(), second)) << "the bounds rolled back after the new box landed";
-  }
+  expect_frame(second, "second sample");
 
-  // A released pass (QRhi teardown) starts over cleanly.
   pass.release();
   ASSERT_TRUE(pass.initialize(offscreen.setup()));
   pass.setLayers({&cloud});
-  EXPECT_TRUE(converge(second, std::nullopt));
+  expect_frame(second, "after release()");
   pass.release();
 }
 

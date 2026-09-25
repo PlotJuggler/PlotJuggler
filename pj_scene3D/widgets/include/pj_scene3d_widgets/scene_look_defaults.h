@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cmath>
+#include <glm/ext/vector_double3.hpp>
 #include <glm/trigonometric.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
@@ -89,11 +90,27 @@ inline constexpr float kShadowNormalOffsetTexels = 1.5f;
 inline constexpr float kSsaoBias = 0.025f;
 
 // ---- Scene geometry colors (grid / frame axes / TF connections) ----
-// Shared by the native GL passes and the WASM QRhi geometry builder so the two
-// backends cannot drift apart.
-inline constexpr glm::vec3 kGridLineColor{0.35f, 0.35f, 0.35f};
-inline constexpr glm::vec3 kGridCellToneA{0.30f, 0.30f, 0.30f};
-inline constexpr glm::vec3 kGridCellToneB{0.42f, 0.42f, 0.42f};
+// Shared by the native GL passes and the QRhi passes so the two backends cannot
+// drift apart.
+
+/// The ground grid's colours, display-referred (sRGB-encoded, like the theme
+/// tokens they come from): blends of the scene backdrop toward its foreground.
+struct GridColors {
+  glm::dvec3 line{0.0};    ///< high-contrast grid lines
+  glm::dvec3 tone_a{0.0};  ///< checkerboard tile tone A, just above the backdrop
+  glm::dvec3 tone_b{0.0};  ///< checkerboard tile tone B
+
+  bool operator==(const GridColors&) const = default;
+};
+
+/// Grid colours for a theme's backdrop and foreground (display-referred 0..1):
+/// lines at 0.35 of the way to the foreground, tiles at 0.10 and 0.24, so the
+/// lines read clearly on top of the fill. Double math: the GL view linearizes
+/// these on the CPU, and its pixels must not move by a rounding step.
+inline GridColors gridColors(const glm::dvec3& backdrop, const glm::dvec3& foreground) {
+  const auto blend = [&](double fraction) { return backdrop * (1.0 - fraction) + foreground * fraction; };
+  return {blend(0.35), blend(0.10), blend(0.24)};
+}
 // Luminance gain on the hovered frame's triad colours, so the highlighted gizmo
 // reads brighter than its neighbours (clamped to 1; it feeds the HDR pipeline).
 inline constexpr float kHighlightGain = 1.8f;

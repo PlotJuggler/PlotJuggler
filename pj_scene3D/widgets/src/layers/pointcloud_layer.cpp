@@ -18,6 +18,7 @@
 #include <QWidget>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <exception>
 #include <glm/glm.hpp>
 #include <limits>
@@ -1156,28 +1157,18 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id) {
     return;
   }
   const bool has_scalar = decoded.scalar.size() == decoded.positions.size();
-  const bool has_rgba = decoded.rgba.size() == decoded.positions.size();
-  std::vector<PointVertex> next_vertices;
-  next_vertices.reserve(decoded.positions.size());
-  for (std::size_t index = 0; index < decoded.positions.size(); ++index) {
-    const glm::vec3& position = decoded.positions[index];
-    if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z)) {
-      continue;
-    }
-    next_vertices.push_back(
-        PointVertex{
-            .x = position.x,
-            .y = position.y,
-            .z = position.z,
-            .scalar = has_scalar ? decoded.scalar[index] : 0.0f,
-            .rgba = has_rgba ? decoded.rgba[index] : 0xFFFFFFFFU,
-        });
+  QByteArray next_vertices;
+  try {
+    next_vertices = packFinitePointVertices(decoded);
+  } catch (const std::bad_alloc&) {
+    failSample(id, tr("Not enough memory to convert this point cloud"));
+    return;
   }
-  if (next_vertices.empty()) {
+  if (next_vertices.isEmpty()) {
     failSample(id, tr("Point cloud contains no finite positions"));
     return;
   }
-  vertices_ = std::move(next_vertices);
+  vertex_bytes_ = std::move(next_vertices);
   ++geometry_revision_;
   world_bounds_ = converted.bounds.valid ? std::optional<AABB>{converted.bounds} : std::nullopt;
   automatic_scalar_range_ = has_scalar ? computeScalarRange(decoded.scalar) : std::pair<float, float>{0.0f, 1.0f};
@@ -1568,10 +1559,10 @@ bool PointCloudLayer::prepareForRender(std::uint64_t remaining_view_vertices) {
     tracker_dirty_ = true;
   }
   drainPendingUpdate();
-  if (static_cast<std::uint64_t>(vertices_.size()) > remaining_view_vertices) {
-    budget_.reject(vertices_.size());
+  if (static_cast<std::uint64_t>(pointCount()) > remaining_view_vertices) {
+    budget_.reject(pointCount());
     setDataWarning(tr("Layer has %1 finite points; only %2 remain in this view's budget")
-                       .arg(QString::number(vertices_.size()), QString::number(remaining_view_vertices)));
+                       .arg(QString::number(pointCount()), QString::number(remaining_view_vertices)));
     clearGeometry();
     last_pushed_id_ = {};  // re-push once the budget frees up
   }
@@ -1622,13 +1613,36 @@ void PointCloudLayer::clearGeometry() {
   // An empty cloud, not none: the pass must stop drawing the previous sample.
   cloud_pass_.setActiveCloud(std::make_shared<DecodedPointCloud>());
 #endif
-  if (vertices_.empty() && !world_bounds_.has_value()) {
+  if (vertex_bytes_.isEmpty() && !world_bounds_.has_value()) {
     return;
   }
-  // clear() would keep the capacity pinned (~20 MiB for a million points).
-  std::vector<PointVertex>{}.swap(vertices_);
+  vertex_bytes_ = QByteArray();  // clear() would keep the capacity pinned (~20 MiB per million points)
   setWorldBounds(std::nullopt);
   ++geometry_revision_;
+}
+
+QByteArray packFinitePointVertices(const DecodedPointCloud& decoded) {
+  const bool has_scalar = decoded.scalar.size() == decoded.positions.size();
+  const bool has_rgba = decoded.rgba.size() == decoded.positions.size();
+  QByteArray bytes(static_cast<qsizetype>(decoded.positions.size() * sizeof(PointVertex)), Qt::Uninitialized);
+  char* out = bytes.data();
+  for (std::size_t index = 0; index < decoded.positions.size(); ++index) {
+    const glm::vec3& position = decoded.positions[index];
+    if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z)) {
+      continue;
+    }
+    const PointVertex vertex{
+        .x = position.x,
+        .y = position.y,
+        .z = position.z,
+        .scalar = has_scalar ? decoded.scalar[index] : 0.0f,
+        .rgba = has_rgba ? decoded.rgba[index] : 0xFFFFFFFFU,
+    };
+    std::memcpy(out, &vertex, sizeof(vertex));
+    out += sizeof(vertex);
+  }
+  bytes.truncate(out - bytes.constData());
+  return bytes;
 }
 
 }  // namespace pj::scene3d

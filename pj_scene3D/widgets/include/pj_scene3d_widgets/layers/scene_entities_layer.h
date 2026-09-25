@@ -179,7 +179,12 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   [[nodiscard]] std::uint64_t modelImportsOutstandingForTest() const {
     return model_import_starts_ - model_import_settles_;
   }
-#ifdef PJ_SCENE3D_RHI
+#ifndef PJ_SCENE3D_RHI
+  /// The overrides the GL marker pass draws with.
+  [[nodiscard]] const MarkerDisplayOverrides& markerPassOverridesForTest() const {
+    return pass_.overrides();
+  }
+#else
   // Re-selects the marker batch when live samples arrived since the last tick;
   // called by the view before it reads geometry(). Returns true when the
   // geometry changed synchronously (cleared).

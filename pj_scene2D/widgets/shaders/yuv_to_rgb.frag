@@ -10,9 +10,10 @@ layout(binding = 2) uniform sampler2D u_tex;
 // V plane (unused for NV12/RGBA)
 layout(binding = 3) uniform sampler2D v_tex;
 // Rectification lookup: per output pixel, the SOURCE sample point in [0,1]
-// texture space (.rg); .r < 0 marks an out-of-bounds pixel (render black).
-// Sampled NEAREST so each output pixel gets its exact precomputed source coord.
-layout(binding = 4) uniform sampler2D remap_tex;
+// texture space, as the bits of two floats (RG32UI: QRhi has no RG32F); .r < 0
+// marks an out-of-bounds pixel (render black). Fetched texel-exact so each
+// output pixel gets its precomputed source coord.
+layout(binding = 4) uniform usampler2D remap_tex;
 
 layout(std140, binding = 0) uniform Uniforms {
     mat4 viewTransform;
@@ -37,7 +38,9 @@ void main()
     vec2 uv = v_uv;
     if (rectify == 1) {
         // Look up the source sample point for this output pixel.
-        vec2 s = texture(remap_tex, v_uv).rg;
+        ivec2 remap_size = textureSize(remap_tex, 0);
+        ivec2 texel = clamp(ivec2(v_uv * vec2(remap_size)), ivec2(0), remap_size - 1);
+        vec2 s = uintBitsToFloat(texelFetch(remap_tex, texel, 0).rg);
         if (s.x < 0.0) {  // out-of-bounds sentinel -> black border
             fragColor = vec4(0.0, 0.0, 0.0, 1.0);
             return;

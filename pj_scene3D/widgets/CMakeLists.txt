@@ -44,7 +44,7 @@ string(APPEND _pj_cube_glsl_content "}  // namespace pj::scene3d\n")
 file(GENERATE OUTPUT "${_pj_cube_glsl_header}" CONTENT "${_pj_cube_glsl_content}")
 
 if(PJ_SCENE3D_RHI)
-  # The QRhi renderer: always in the browser (WebGL2), opt-in on desktop. Keep
+  # The QRhi renderer: always in the browser (WebGL2), the desktop default. Keep
   # this a deliberately small source set: no QOpenGLWidget or raw GL pass enters
   # its link. The browser-only policy it carries (file picking, bounded model
   # and URL loading) is gated on PJ_TARGET_WASM, not on the renderer.
@@ -91,30 +91,37 @@ if(EMSCRIPTEN)
     endif()
   endforeach()
   file(GLOB _pj_scene3d_shader_sources "${_pj_scene3d_shader_dir}/*.vert" "${_pj_scene3d_shader_dir}/*.frag"
-    "${_pj_scene3d_shader_dir}/*.comp" "${_pj_scene3d_shader_dir}/*.glslinc")
+    "${_pj_scene3d_shader_dir}/*.glslinc")
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${_pj_scene3d_shader_dir}/bake.sh" ${_pj_scene3d_shader_sources})
 endif()
 
-# ---- Point-cloud golden-image corpus (both renderers) -----------------------
+# ---- Runners of both renderers: golden corpus, frame benchmark -------------
 # Declared before the renderer split so one registration serves both builds;
 # pj_scene3d_widgets resolves at generate time. Needs a real display (see
 # scene3d_render_test_support.h). The goldens come from the GL renderer; the
 # QRhi build compares against them on every backend of the platform (RHI_BACKENDS).
 if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
-  set(_pj_golden_rhi_backends)
+  set(_pj_both_builds_rhi_backends)
   if(PJ_SCENE3D_RHI)
-    set(_pj_golden_rhi_backends RHI_BACKENDS)
+    set(_pj_both_builds_rhi_backends RHI_BACKENDS)
   endif()
   pj_add_test_runner(pointcloud_golden_test
-    MAIN gui WARNINGS ${_pj_golden_rhi_backends}
+    MAIN gui WARNINGS GL_ROLLBACK ${_pj_both_builds_rhi_backends}
     SOURCES tests/pointcloud_golden_test.cpp
     LIBS pj_scene3d_widgets pj_resources
     DEFINES PJ_POINTCLOUD_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/golden/pointcloud"
   )
-  unset(_pj_golden_rhi_backends)
+  # Frame budgets of the Scene3D view, in both builds: a smoke at its default
+  # (tiny) sizes; larger ones come from its environment variables.
+  pj_add_test_runner(scene3d_frame_benchmark
+    MAIN gui WARNINGS GL_ROLLBACK ${_pj_both_builds_rhi_backends}
+    SOURCES tests/scene3d_frame_benchmark.cpp
+    LIBS pj_scene3d_widgets pj_resources pj_bench_probes
+  )
+  unset(_pj_both_builds_rhi_backends)
 endif()
-# ---- end point-cloud golden corpus ------------------------------------------
+# ---- end runners of both renderers ------------------------------------------
 
 if(PJ_SCENE3D_RHI)
 
@@ -143,8 +150,6 @@ if(PJ_SCENE3D_RHI)
     rhi/passes/pose_rhi_pass.h
     rhi/passes/voxel_rhi_pass.cpp
     rhi/passes/voxel_rhi_pass.h
-    rhi/passes/point_aabb_reducer.cpp
-    rhi/passes/point_aabb_reducer.h
     rhi/passes/point_rhi_pass.cpp
     rhi/passes/point_rhi_pass.h
     src/Scene3DDockWidget.cpp
@@ -258,6 +263,18 @@ if(PJ_SCENE3D_RHI)
       LIBS pj_scene3d_widgets pj_resources Qt6::OpenGLWidgets Qt6::Test
       TIMEOUT 60
     )
+    # The marker instance cache, the model mesh/instance caches and the platform
+    # limits; same display needs.
+    foreach(_pj_rhi_runner scene3d_rhi_marker_cache_test scene3d_rhi_model_cache_test scene3d_rhi_platform_test)
+      pj_add_test_runner(${_pj_rhi_runner}
+        MAIN gui WARNINGS RHI_BACKENDS
+        SOURCES tests/${_pj_rhi_runner}.cpp
+        LIBS pj_scene3d_widgets pj_resources pj_bench_probes Qt6::Test
+        DEFINES PJ_SCENE3D_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+        TIMEOUT 60
+      )
+    endforeach()
+    unset(_pj_rhi_runner)
   endif()
   # --- end QRhi render harness --------------------------------------------
 
@@ -435,8 +452,12 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
   add_executable(wasm_shader_constants_test
     tests/wasm_shader_constants_test.cpp
   )
+  # Qt6::GuiPrivate: <rhi/qshader.h>, to read the baked packs' reflection (the GL
+  # build does not otherwise find it).
+  find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS GuiPrivate)
   target_link_libraries(wasm_shader_constants_test PRIVATE
     pj_scene3d_widgets
+    Qt6::GuiPrivate
     GTest::gtest
   )
   target_compile_definitions(wasm_shader_constants_test PRIVATE
@@ -470,7 +491,7 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
   # test can link it directly (same as pointcloud_codecs_test in core/).
   find_package(cloudini REQUIRED)
 
-  # Point/depth layers are shared by both renderers (QRHI_MIGRATION P2 step B).
+  # Point/depth layers are shared by both renderers.
   # PointCloudLayer sample-identity caches: reset on dataset replace (stale
   # decoded/failed/pushed ids under a stable topic id), stamp-0 is data not a
   # sentinel, and wanted_-gating of stale async decodes on mixed-mode topics.
@@ -733,6 +754,7 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     # (pj_widgets FrameworkTokens), so the stylesheet resource must be compiled in.
     target_compile_options(hud_overlay_gl_test PRIVATE ${PJ_WARNING_FLAGS})
     add_test(NAME hud_overlay_gl_test COMMAND hud_overlay_gl_test)
+    pj_gl_rollback_test(hud_overlay_gl_test hud_overlay_gl_test)
 
     # Keep this executable separate: it needs the GL format before QApplication;
     # MAIN gl creates QGuiApplication, which cannot host its SceneViewWidget.
@@ -751,6 +773,7 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     )
     target_compile_options(tf_connections_gl_test PRIVATE ${PJ_WARNING_FLAGS})
     add_test(NAME tf_connections_gl_test COMMAND tf_connections_gl_test)
+    pj_gl_rollback_test(tf_connections_gl_test tf_connections_gl_test)
 
     # Real-GL test for the trail split-draw pass on a raw offscreen context (no
     # SceneViewWidget needed — the pass is layer-owned).
@@ -775,10 +798,11 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     )
     target_compile_options(shadow_persistence_gl_test PRIVATE ${PJ_WARNING_FLAGS})
     add_test(NAME shadow_persistence_gl_test COMMAND shadow_persistence_gl_test)
+    pj_gl_rollback_test(shadow_persistence_gl_test shadow_persistence_gl_test)
 
     # WARNINGS: all 9 merged tests carried PJ_WARNING_FLAGS before
     pj_add_test_runner(pj_scene3d_gl_tests
-      MAIN gl WARNINGS
+      MAIN gl WARNINGS GL_ROLLBACK
       SOURCES ${PJ_SCENE3D_GL_TESTS}
       LIBS pj_scene3d_widgets
     )
@@ -788,14 +812,14 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
   # QApplication supplies their QGuiApplication needs as well as the dock tests'.
   # WARNINGS: all 17 merged tests carried PJ_WARNING_FLAGS before
   pj_add_test_runner(pj_scene3d_widget_tests
-    MAIN gui WARNINGS
+    MAIN gui WARNINGS GL_ROLLBACK
     SOURCES ${PJ_SCENE3D_WIDGET_TESTS}
     LIBS pj_scene3d_widgets pj_scene_common pj_widgets cloudini::cloudini
     DEFINES PJ_SCENE3D_TEST_HOOKS
   )
   # WARNINGS: all 11 merged tests carried PJ_WARNING_FLAGS before
   pj_add_test_runner(pj_scene3d_widget_plain_tests
-    MAIN gui WARNINGS
+    MAIN gui WARNINGS GL_ROLLBACK
     SOURCES ${PJ_SCENE3D_WIDGET_PLAIN_TESTS}
     LIBS pj_scene3d_widgets pj_scene_common pj_widgets pj_resources glm::glm Qt6::Network
   )
@@ -803,7 +827,7 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
   # directly; pj_scene3d_widgets links Qt6::Network only PRIVATEly.
   # WARNINGS: all 7 merged tests carried PJ_WARNING_FLAGS before
   pj_add_test_runner(pj_scene3d_widget_fixture_tests
-    MAIN gui WARNINGS
+    MAIN gui WARNINGS GL_ROLLBACK
     SOURCES ${PJ_SCENE3D_WIDGET_FIXTURE_TESTS}
     LIBS pj_scene3d_widgets Qt6::Network
     DEFINES PJ_SCENE3D_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures" PJ_SCENE3D_TEST_HOOKS

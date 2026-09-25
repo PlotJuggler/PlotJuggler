@@ -4,7 +4,7 @@
 // PlotRhiCanvas on a real display, per QRhi backend (PJ_GRAPHICS_API picks it;
 // ctest registers each backend of the platform). Each case renders one kind of plot
 // item and compares the presented frame with Qwt's own QPainter rendering of the
-// same canvas (QwtPlot::drawCanvas into a QImage), so pixel positions are
+// same canvas (its items drawn into a QImage as QwtPlot::drawItems does), so pixel positions are
 // checked against Qwt's scale maps, and a y-flipped or offset frame fails.
 // Needs an RHI-capable QPA (wayland/xcb/windows/cocoa); on `offscreen` every case skips, or
 // fails under PJ_REQUIRE_GPU_TESTS=1. The failure cases use the
@@ -15,6 +15,7 @@
 #include <qwt_plot.h>
 #include <qwt_plot_canvas.h>
 #include <qwt_plot_curve.h>
+#include <qwt_plot_grid.h>
 #include <qwt_plot_marker.h>
 #include <qwt_scale_div.h>
 #include <qwt_scale_map.h>
@@ -40,10 +41,12 @@
 #include <QWheelEvent>
 #include <QWidget>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <numeric>
 #include <string_view>
 #include <vector>
 
@@ -125,12 +128,13 @@ QImage grabPresented(PJ::PlotRhiCanvas& canvas) {
   return pjWaitForGrab([&canvas](auto done) { canvas.grabPresentedFrame(std::move(done)); }, &canvas);
 }
 
-// Qwt's own QPainter rendering of the canvas items, at the frame's resolution.
-// Qwt snaps mapped coordinates to whole pixels on screen devices
-// (QwtPainter::roundingAlignment()); the RHI canvas keeps them exact, so its
-// references are drawn unsnapped: a 1 px line half a pixel off would split
-// into two half-covered rows and no colour would match. `snapped` gives the
-// on-screen rendering, for the raster canvas.
+// Qwt's own QPainter rendering of the canvas items, at the frame's resolution
+// (QwtPlot::drawItems, item by item). Qwt snaps mapped coordinates to whole
+// pixels on screen devices (QwtPainter::roundingAlignment()). The RHI canvas
+// snaps the grid and marker lines the same way, and keeps curves exact, so its
+// references snap only those items: a 1 px curve half a pixel off would split
+// into two half-covered rows and no colour would match. `snapped` snaps every
+// item: the on-screen rendering, for the raster canvas.
 // The image format follows the canvas's text path. With ClearType on (Windows),
 // Qt's raster engine draws subpixel (coloured-fringe) glyphs only into opaque
 // ARGB32_Premultiplied/RGB32 targets: the on-screen raster canvas gets them, the
@@ -142,10 +146,25 @@ QImage referenceCanvas(QwtPlot& plot, QSize device_size, bool snapped = false) {
   image.setDevicePixelRatio(static_cast<qreal>(device_size.width()) / canvas->width());
   image.fill(plot.canvasBackground().color());
   QPainter painter(&image);
-  painter.setRenderHint(QPainter::Antialiasing, true);
+  std::array<QwtScaleMap, QwtAxis::AxisPositions> maps;
+  for (int axis = 0; axis < QwtAxis::AxisPositions; ++axis) {
+    maps[static_cast<std::size_t>(axis)] = plot.canvasMap(axis);
+  }
+  const QRectF canvas_rect = canvas->contentsRect();
   const bool was_snapping = QwtPainter::roundingAlignment();
-  QwtPainter::setRoundingAlignment(snapped);
-  plot.drawCanvas(&painter);
+  for (QwtPlotItem* item : plot.itemList()) {
+    if (!item->isVisible()) {
+      continue;
+    }
+    const bool axis_line = item->rtti() == QwtPlotItem::Rtti_PlotGrid || item->rtti() == QwtPlotItem::Rtti_PlotMarker;
+    QwtPainter::setRoundingAlignment(snapped || axis_line);
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, item->testRenderHint(QwtPlotItem::RenderAntialiased));
+    item->draw(
+        &painter, maps[static_cast<std::size_t>(item->xAxis())], maps[static_cast<std::size_t>(item->yAxis())],
+        canvas_rect);
+    painter.restore();
+  }
   QwtPainter::setRoundingAlignment(was_snapping);
   painter.end();
   return image.convertToFormat(QImage::Format_RGB32);
@@ -194,19 +213,23 @@ struct ReferenceComparison {
 
 constexpr int kColourTolerance = 48;
 
-// The 1-device-pixel border is excluded: Qwt draws items in the canvas contents
-// rect, the RHI canvas across the whole widget.
+// The canvas frame (1 logical px) and one device pixel beyond it are excluded:
+// Qwt draws items in the canvas contents rect, the RHI canvas across the whole
+// widget, and the frame's antialiasing fringe reaches past it on some rasterizers
+// (Apple's software OpenGL at DPR 2).
 ReferenceComparison compareWithReference(const QImage& frame, const QImage& reference, QRgb background, int radius) {
   const int width = frame.width();
   const int height = frame.height();
+  const int border =
+      1 + std::max(1, static_cast<int>(std::lround(frame.width() / reference.deviceIndependentSize().width())));
   const auto is_foreground = [background](const QImage& image, int x, int y) {
     return channelDelta(image.pixel(x, y), background) > 60;
   };
   std::vector<char> reference_mask(static_cast<std::size_t>(width * height), 0);
   std::vector<char> frame_mask(reference_mask.size(), 0);
   std::vector<char> reference_drawn(reference_mask.size(), 0);
-  for (int y = 2; y < height - 2; ++y) {
-    for (int x = 2; x < width - 2; ++x) {
+  for (int y = border; y < height - border; ++y) {
+    for (int x = border; x < width - border; ++x) {
       const auto index = static_cast<std::size_t>(y * width + x);
       reference_mask[index] = is_foreground(reference, x, y) ? 1 : 0;
       frame_mask[index] = is_foreground(frame, x, y) ? 1 : 0;
@@ -226,8 +249,8 @@ ReferenceComparison compareWithReference(const QImage& frame, const QImage& refe
     return false;
   };
   ReferenceComparison result;
-  for (int y = 2; y < height - 2; ++y) {
-    for (int x = 2; x < width - 2; ++x) {
+  for (int y = border; y < height - border; ++y) {
+    for (int x = border; x < width - border; ++x) {
       const bool in_reference = reference_mask[static_cast<std::size_t>(y * width + x)] != 0;
       const bool in_frame = frame_mask[static_cast<std::size_t>(y * width + x)] != 0;
       if (in_reference || in_frame) {
@@ -256,19 +279,59 @@ ReferenceComparison compareWithReference(const QImage& frame, const QImage& refe
   return result;
 }
 
+// A pixel's ink between the clear colour (0) and `ink` (1), read from the
+// channel where the two differ most.
+double inkCoverage(QRgb pixel, QRgb clear, QRgb ink) {
+  const std::array<int, 3> pixel_channels = {qRed(pixel), qGreen(pixel), qBlue(pixel)};
+  const std::array<int, 3> clear_channels = {qRed(clear), qGreen(clear), qBlue(clear)};
+  const std::array<int, 3> ink_channels = {qRed(ink), qGreen(ink), qBlue(ink)};
+  std::size_t best = 0;
+  for (std::size_t channel = 1; channel < 3; ++channel) {
+    if (std::abs(ink_channels[channel] - clear_channels[channel]) >
+        std::abs(ink_channels[best] - clear_channels[best])) {
+      best = channel;
+    }
+  }
+  const double span = ink_channels[best] - clear_channels[best];
+  return std::clamp((pixel_channels[best] - clear_channels[best]) / span, 0.0, 1.0);
+}
+
+// Share of `inked` (true where ink was found, one entry per device pixel along
+// a line) that follows a dash pattern of `on` pixels out of `period`, at the
+// best phase. Entries of -1 (crossing lines) are not compared.
+double cadenceMatch(const std::vector<int>& inked, int period, int on) {
+  double best = 0.0;
+  for (int phase = 0; phase < period; ++phase) {
+    int compared = 0;
+    int matched = 0;
+    for (std::size_t index = 0; index < inked.size(); ++index) {
+      if (inked[index] < 0) {
+        continue;
+      }
+      const bool expected = ((static_cast<int>(index) + phase) % period) < on;
+      ++compared;
+      matched += (inked[index] == 1) == expected ? 1 : 0;
+    }
+    best = std::max(best, compared == 0 ? 0.0 : static_cast<double>(matched) / compared);
+  }
+  return best;
+}
+
 // The RHI frame and Qwt's raster agree: nearly every foreground pixel of either
 // (`min_colour_match`) has the reference's colour close by, neither misses nor
 // adds geometry, the background is exactly the clear colour, and both drew a
 // meaningful amount.
 void expectMatchesReference(
     const QImage& frame, const QImage& reference, QRgb background, std::size_t min_pixels,
-    double min_colour_match = 0.95) {
+    double min_colour_match = 0.98, std::size_t max_strays = 2) {
   ASSERT_EQ(frame.size(), reference.size());
   // PJ_RHI_TEST_DUMP_DIR=<dir> saves both images (CI uploads the dir on failure).
   if (const QString dir = qEnvironmentVariable("PJ_RHI_TEST_DUMP_DIR"); !dir.isEmpty()) {
-    const QString base = dir + u"/plot_"_s +
-                         QString::fromUtf8(::testing::UnitTest::GetInstance()->current_test_info()->name()) + u'_' +
-                         qEnvironmentVariable("PJ_GRAPHICS_API", u"default"_s);
+    const QString base =
+        dir + u"/plot_"_s + QString::fromUtf8(::testing::UnitTest::GetInstance()->current_test_info()->name()) + u'_' +
+        qEnvironmentVariable("PJ_GRAPHICS_API", u"default"_s) +
+        (qEnvironmentVariableIsSet("QT_SCALE_FACTOR") ? u"_dpr"_s + qEnvironmentVariable("QT_SCALE_FACTOR")
+                                                      : QString());
     QDir().mkpath(dir);
     frame.save(base + u"_frame.png"_s);
     reference.save(base + u"_ref.png"_s);
@@ -288,13 +351,14 @@ void expectMatchesReference(
       c.background_strays, c.foreground);
   EXPECT_GE(c.reference_pixels, min_pixels) << "the reference drew too little to compare";
   EXPECT_GE(c.frame_pixels, min_pixels);
-  // Measured on llvmpipe/lavapipe at DPR 1 and 2: colour match >= 0.985 (0.90
-  // for the aliased symbols, see SymbolsOfEveryStyleMatchQwt), missing <= 0.014 (PlotMarkersItem text), no extra pixel
-  // and no stray. A red/blue swap in the vertex colour drops the colour match to 0.00-0.68.
+  // Measured on llvmpipe/lavapipe at DPR 1 and 2 (one sample per pixel, shader
+  // edge antialiasing): colour match >= 0.986, 1.000 for curves, grid and
+  // dashes; missing <= 0.014 (PlotMarkersItem text), no extra pixel and no
+  // stray. A red/blue swap in the vertex colour drops the colour match to 0.00-0.68.
   EXPECT_GE(colour_match, min_colour_match) << "foreground colours differ from Qwt's";
   EXPECT_LE(missing, 0.03) << "reference pixels missing in frame";
   EXPECT_LE(extra, 0.02) << "frame pixels absent from reference";
-  EXPECT_LE(c.background_strays, 2U) << "the background is not exactly the clear colour";
+  EXPECT_LE(c.background_strays, max_strays) << "the background is not exactly the clear colour";
 }
 
 // A top-level window hosting one plot, shown and exposed.
@@ -445,7 +509,7 @@ TEST_F(PlotRhiRenderTest, DashedLinesMatchQwt) {
   PJ_GRAB_OR_SKIP(frame, *plot->qwtPlot());
   expectMatchesReference(frame, referenceCanvas(*plot->qwtPlot(), frame.size()), background(*plot->qwtPlot()), 100);
   // Gaps exist: along the line the ink dips once per dash period (at most 12
-  // device pixels). A 1 px gap can straddle two pixels under MSAA, so a dip is
+  // device pixels). An antialiased gap edge can straddle two pixels, so a dip is
   // any run below 3/4 of the line's full ink, not a background pixel.
   const qreal dpr = static_cast<qreal>(frame.width()) / plot->qwtPlot()->canvas()->width();
   const int y = static_cast<int>(std::lround(plot->qwtPlot()->canvasMap(QwtPlot::yLeft).transform(5.0) * dpr));
@@ -488,12 +552,10 @@ TEST_F(PlotRhiRenderTest, SymbolsOfEveryStyleMatchQwt) {
   }
   plot->qwtPlot()->replot();
   PJ_GRAB_OR_SKIP(frame, *plot->qwtPlot());
-  // Qwt draws Rect, Cross, HLine and VLine symbols aliased (qwt_symbol.cpp turns
-  // antialiasing off for them); the MSAA canvas does not snap their 2 px strokes
-  // to whole pixels, so those edges differ: 0.90 at DPR 1, 0.94 at DPR 2.
-  expectMatchesReference(
-      frame, referenceCanvas(*plot->qwtPlot(), frame.size()), background(*plot->qwtPlot()), 1000,
-      /*min_colour_match=*/0.85);
+  // Qwt draws Rect, Cross, HLine and VLine symbols aliased on whole pixels
+  // (qwt_symbol.cpp); the canvas places them on whole pixels too, antialiased
+  // edges and all: 0.989 at DPR 1, 0.992 at DPR 2.
+  expectMatchesReference(frame, referenceCanvas(*plot->qwtPlot(), frame.size()), background(*plot->qwtPlot()), 1000);
 }
 
 TEST_F(PlotRhiRenderTest, LinesAndDotsDrawSquareDots) {
@@ -540,7 +602,7 @@ TEST_F(PlotRhiRenderTest, MarkerLineSymbolAndLabelMatchQwt) {
   auto* symbol = new QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(230, 40, 40)), QPen(Qt::NoPen), QSize(12, 12));
   symbol->setCachePolicy(QwtSymbol::NoCache);  // the pixmap cache snaps symbols to whole pixels
   marker->setSymbol(symbol);
-  // The RHI canvas antialiases everything (MSAA); so does this reference.
+  // The RHI canvas antialiases every edge; so does this reference.
   marker->setRenderHint(QwtPlotItem::RenderAntialiased, true);
   QwtText label(u"Marker label"_s);
   label.setColor(QColor(240, 240, 60));
@@ -550,6 +612,65 @@ TEST_F(PlotRhiRenderTest, MarkerLineSymbolAndLabelMatchQwt) {
   plot->qwtPlot()->replot();
   PJ_GRAB_OR_SKIP(frame, *plot->qwtPlot());
   expectMatchesReference(frame, referenceCanvas(*plot->qwtPlot(), frame.size()), background(*plot->qwtPlot()), 300);
+}
+
+// A labelled marker replaced by an identical one (the old one deleted after the
+// new one is attached, so the two never share an address): the reused text
+// atlas follows the new item, whose label still draws.
+TEST_F(PlotRhiRenderTest, IdenticalMarkerReplacementKeepsItsLabel) {
+  PJ_SKIP_ON_HEADLESS_QPA();
+  auto* plot = new TestPlot();
+  PlotWindow window(plot);
+  ASSERT_TRUE(window.exposed());
+  prepare(*plot);
+  QwtPlot& qwt = *plot->qwtPlot();
+  const auto make_marker = [&qwt] {
+    auto* marker = new QwtPlotMarker();
+    marker->setLineStyle(QwtPlotMarker::VLine);
+    marker->setLinePen(QColor(40, 200, 90), 2.0);
+    marker->setValue(3.0, 6.0);
+    marker->setRenderHint(QwtPlotItem::RenderAntialiased, true);
+    QwtText label(u"Marker label"_s);
+    label.setColor(QColor(240, 240, 60));
+    marker->setLabel(label);
+    marker->setLabelAlignment(Qt::AlignRight | Qt::AlignTop);
+    marker->attach(&qwt);
+    return marker;
+  };
+  QwtPlotMarker* first = make_marker();
+  qwt.replot();
+  PJ_GRAB_OR_SKIP(before, qwt);
+  expectMatchesReference(before, referenceCanvas(qwt, before.size()), background(qwt), 300);
+
+  make_marker();
+  delete first;
+  qwt.replot();
+  const QImage after = presentedFrame(qwt);
+  ASSERT_FALSE(after.isNull());
+  expectMatchesReference(after, referenceCanvas(qwt, after.size()), background(qwt), 300);
+}
+
+// An XY curve doubling back along itself, past its first point: the returning
+// segment keeps the full stroke width instead of reusing the incoming corner
+// pair (a self-crossing quad that pinches to nothing halfway).
+TEST_F(PlotRhiRenderTest, CollinearReversalKeepsTheStrokeWidth) {
+  PJ_SKIP_ON_HEADLESS_QPA();
+  auto* plot = new TestPlot();
+  PlotWindow window(plot);
+  ASSERT_TRUE(window.exposed());
+  prepare(*plot);
+  auto* info = plot->addCurve(u"reversal"_s, series({{4.0, 5.0}, {5.0, 5.0}, {0.5, 5.0}}), QColor(230, 40, 40));
+  ASSERT_NE(info, nullptr);
+  QPen pen = info->curve->pen();
+  pen.setWidthF(8.0);
+  info->curve->setPen(pen);
+  plot->qwtPlot()->replot();
+  PJ_GRAB_OR_SKIP(frame, *plot->qwtPlot());
+  // Where the path doubles back over itself, its antialiased edge pixels blend
+  // twice (Qwt fills the stroke once): 5% of the foreground on llvmpipe/lavapipe.
+  expectMatchesReference(
+      frame, referenceCanvas(*plot->qwtPlot(), frame.size()), background(*plot->qwtPlot()), 1500,
+      /*min_colour_match=*/0.9);
 }
 
 TEST_F(PlotRhiRenderTest, LegendTextMatchesQwt) {
@@ -973,6 +1094,328 @@ TEST_F(PlotRhiRenderTest, NoQRhiFallsBackToTheRasterCanvas) {
   const QImage drawn = rasterFrame(*raster);
   expectMatchesReference(
       drawn, referenceCanvas(*plot->qwtPlot(), drawn.size(), /*snapped=*/true), background(*plot->qwtPlot()), 200);
+}
+
+// The grid and marker lines sit on whole device pixels as Qwt puts them, not
+// blurred across two rows, and the cosmetic grid pens keep Qt's cadence: dotted
+// 1 on / 2 off, dashed 4 on / 2 off, in device pixels. The 1 px canvas frame is
+// drawn in the palette's WindowText, as the Qwt canvases draw it.
+TEST_F(PlotRhiRenderTest, GridAndMarkerLinesMatchQwt) {
+  PJ_SKIP_ON_HEADLESS_QPA();
+  auto* plot = new TestPlot();
+  PlotWindow window(plot);
+  ASSERT_TRUE(window.exposed());
+  prepare(*plot);
+  plot->setGridVisible(true);
+  QwtPlot& qwt = *plot->qwtPlot();
+  const QwtPlotItemList grids = qwt.itemList(QwtPlotItem::Rtti_PlotGrid);
+  ASSERT_EQ(grids.size(), 1);
+  auto* grid = static_cast<QwtPlotGrid*>(grids.front());
+  ASSERT_EQ(grid->majorPen().widthF(), 0.0) << "PlotWidgetBase's grid pens are cosmetic";
+  ASSERT_EQ(grid->majorPen().style(), Qt::DashLine);
+  ASSERT_EQ(grid->minorPen().style(), Qt::DotLine);
+  // A colour the checks can tell from the background; same pens otherwise.
+  const QColor grid_ink(40, 90, 230);
+  grid->setMajorPen(QPen(grid_ink, 0.0, Qt::DashLine));
+  grid->setMinorPen(QPen(grid_ink, 0.0, Qt::DotLine));
+  auto* marker = new QwtPlotMarker();
+  marker->setLineStyle(QwtPlotMarker::VLine);
+  const QColor marker_ink(230, 40, 40);
+  marker->setLinePen(marker_ink, 0.0);
+  marker->setValue(3.37, 5.0);
+  marker->attach(&qwt);
+  qwt.replot();
+  PJ_GRAB_OR_SKIP(frame, qwt);
+  const QRgb clear = background(qwt);
+  expectMatchesReference(frame, referenceCanvas(qwt, frame.size()), clear, 1000, /*min_colour_match=*/0.99);
+
+  // Device rows and columns of every grid line and of the marker, where Qwt
+  // puts them (the logical pixel rounded).
+  const qreal dpr = static_cast<qreal>(frame.width()) / qwt.canvas()->width();
+  const auto device = [dpr](qreal logical) { return static_cast<int>(std::lround(std::round(logical) * dpr)); };
+  const auto lines = [&](QwtAxisId axis) {
+    std::vector<int> positions;
+    const QwtScaleMap map = qwt.canvasMap(axis);
+    for (int type : {QwtScaleDiv::MajorTick, QwtScaleDiv::MediumTick, QwtScaleDiv::MinorTick}) {
+      for (double tick : qwt.axisScaleDiv(axis).ticks(type)) {
+        positions.push_back(device(map.transform(tick)));
+      }
+    }
+    return positions;
+  };
+  std::vector<int> columns = lines(QwtPlot::xBottom);
+  const int marker_column = device(qwt.canvasMap(QwtPlot::xBottom).transform(3.37));
+  columns.push_back(marker_column);
+  const std::vector<int> rows = lines(QwtPlot::yLeft);
+  const auto crossing = [](const std::vector<int>& positions, int at) {
+    return std::find(positions.begin(), positions.end(), at) != positions.end();
+  };
+  const int border = static_cast<int>(std::ceil(2.0 * dpr));
+  const auto cadence_along_row = [&](double tick) {
+    const int row = device(qwt.canvasMap(QwtPlot::yLeft).transform(tick));
+    std::vector<int> inked;
+    for (int x = border; x < frame.width() - border; ++x) {
+      inked.push_back(
+          crossing(columns, x) ? -1 : (inkCoverage(frame.pixel(x, row), clear, grid_ink.rgb()) > 0.5 ? 1 : 0));
+    }
+    return inked;
+  };
+  const QwtScaleDiv& y_division = qwt.axisScaleDiv(QwtPlot::yLeft);
+  ASSERT_FALSE(y_division.ticks(QwtScaleDiv::MinorTick).isEmpty());
+  ASSERT_GE(y_division.ticks(QwtScaleDiv::MajorTick).size(), 3);
+  const double minor_tick = y_division.ticks(QwtScaleDiv::MinorTick).at(1);
+  const double major_tick = y_division.ticks(QwtScaleDiv::MajorTick).at(1);
+  const double minor_match = cadenceMatch(cadence_along_row(minor_tick), 3, 1);
+  const double major_match = cadenceMatch(cadence_along_row(major_tick), 6, 4);
+  std::printf("[grid] dpr=%.1f minor 1/2 match=%.3f major 4/2 match=%.3f\n", dpr, minor_match, major_match);
+  EXPECT_GE(minor_match, 0.95) << "the dotted minor grid is not 1 on / 2 off device pixels";
+  EXPECT_GE(major_match, 0.95) << "the dashed major grid is not 4 on / 2 off device pixels";
+
+  // The marker line: its ink in one device column, not split across two.
+  std::array<double, 7> column_ink{};
+  for (int y = border; y < frame.height() - border; ++y) {
+    if (crossing(rows, y)) {
+      continue;
+    }
+    for (int dx = -3; dx <= 3; ++dx) {
+      column_ink[static_cast<std::size_t>(dx + 3)] +=
+          inkCoverage(frame.pixel(marker_column + dx, y), clear, marker_ink.rgb());
+    }
+  }
+  const double total = std::accumulate(column_ink.begin(), column_ink.end(), 0.0);
+  ASSERT_GT(total, 10.0) << "no marker line near column " << marker_column;
+  EXPECT_GE(column_ink[3] / total, 0.9) << "the marker line is blurred across columns";
+
+  // The frame: the outermost logical pixel ring.
+  const QRgb frame_ink = qwt.canvas()->palette().color(QPalette::WindowText).rgb();
+  for (const QPoint& point :
+       {QPoint(0, frame.height() / 2), QPoint(frame.width() / 2, 0), QPoint(frame.width() - 1, frame.height() / 3),
+        QPoint(frame.width() / 3, frame.height() - 1)}) {
+    EXPECT_LE(maxChannelDelta(frame.pixel(point), frame_ink), 8) << "no frame at " << point.x() << "," << point.y();
+  }
+}
+
+// Every edge is antialiased over about one device pixel: across a wide,
+// gently sloped line each device column holds the line's exact coverage
+// (width / cos(slope)), with partial pixels only at the two edges, one or two
+// per edge, and an aliased edge (no partial pixel) in almost no column.
+TEST_F(PlotRhiRenderTest, EdgeAntialiasingRampsCoverageAcrossOneDevicePixel) {
+  PJ_SKIP_ON_HEADLESS_QPA();
+  auto* plot = new TestPlot();
+  PlotWindow window(plot);
+  ASSERT_TRUE(window.exposed());
+  prepare(*plot);
+  const QColor ink(20, 20, 20);
+  auto* info = plot->addCurve(u"slope"_s, series({{0.5, 4.0}, {9.5, 5.0}}), ink);
+  ASSERT_NE(info, nullptr);
+  QPen pen = info->curve->pen();
+  pen.setColor(ink);
+  // Not a whole number of device pixels at DPR 1 or 2: the two edges never
+  // both land on a pixel boundary, where no pixel is partial however smooth.
+  pen.setWidthF(5.3);
+  info->curve->setPen(pen);
+  QwtPlot& qwt = *plot->qwtPlot();
+  qwt.replot();
+  PJ_GRAB_OR_SKIP(frame, qwt);
+  const QRgb clear = background(qwt);
+  expectMatchesReference(frame, referenceCanvas(qwt, frame.size()), clear, 1000);
+
+  const qreal dpr = static_cast<qreal>(frame.width()) / qwt.canvas()->width();
+  const QwtScaleMap x_map = qwt.canvasMap(QwtPlot::xBottom);
+  const QwtScaleMap y_map = qwt.canvasMap(QwtPlot::yLeft);
+  const QLineF line(x_map.transform(0.5), y_map.transform(4.0), x_map.transform(9.5), y_map.transform(5.0));
+  const double expected_ink = 5.3 * dpr * line.length() / std::abs(line.dx());
+  int columns = 0;
+  int aliased_columns = 0;
+  int wide_ramps = 0;
+  double worst_error = 0.0;
+  for (int x = frame.width() / 4; x < frame.width() * 3 / 4; ++x) {
+    double column_ink = 0.0;
+    int partial = 0;
+    for (int y = 2; y < frame.height() - 2; ++y) {
+      const double coverage = inkCoverage(frame.pixel(x, y), clear, ink.rgb());
+      column_ink += coverage;
+      partial += coverage > 0.03 && coverage < 0.97 ? 1 : 0;
+    }
+    ++columns;
+    aliased_columns += partial == 0 ? 1 : 0;
+    wide_ramps += partial > 4 ? 1 : 0;
+    worst_error = std::max(worst_error, std::abs(column_ink - expected_ink));
+  }
+  std::printf(
+      "[edge-aa] dpr=%.1f expected=%.3f worst_error=%.3f aliased=%d wide=%d of %d\n", dpr, expected_ink, worst_error,
+      aliased_columns, wide_ramps, columns);
+  EXPECT_LE(worst_error, 0.25) << "a column's coverage differs from the line's width";
+  EXPECT_LE(aliased_columns, columns / 20) << "the edges are aliased";
+  EXPECT_EQ(wide_ramps, 0) << "an edge ramp spans more than two device pixels";
+}
+
+// GPU dashes follow Qt's patterns: each dashed style, cosmetic (per-pixel
+// pattern, no caps) and 2 px wide (square caps lengthen each dash), puts its
+// dashes where Qwt's raster does.
+TEST_F(PlotRhiRenderTest, DashPatternsMatchQwt) {
+  PJ_SKIP_ON_HEADLESS_QPA();
+  auto* plot = new TestPlot();
+  PlotWindow window(plot, {720, 480});
+  ASSERT_TRUE(window.exposed());
+  prepare(*plot);
+  const std::array<Qt::PenStyle, 4> styles = {Qt::DashLine, Qt::DotLine, Qt::DashDotLine, Qt::DashDotDotLine};
+  const QColor ink(230, 40, 40);
+  std::vector<double> levels;
+  for (std::size_t index = 0; index < styles.size() * 2; ++index) {
+    const double y = 1.0 + static_cast<double>(index);
+    levels.push_back(y);
+    auto* info = plot->addCurve(u"dash%1"_s.arg(index), series({{0.5, y}, {9.5, y}}), ink);
+    ASSERT_NE(info, nullptr);
+    info->curve->setPen(QPen(ink, index < styles.size() ? 0.0 : 2.0, styles[index % styles.size()]));
+  }
+  QwtPlot& qwt = *plot->qwtPlot();
+  qwt.replot();
+  PJ_GRAB_OR_SKIP(frame, qwt);
+  const QRgb clear = background(qwt);
+  const QImage reference = referenceCanvas(qwt, frame.size());
+#ifdef Q_OS_WIN
+  // D3D11 (WARP) ends three of the 2 px dashed lines one 2-3 px dash after Qwt's
+  // last one (9 strays); llvmpipe, lavapipe and Metal match exactly.
+  constexpr std::size_t kMaxStrays = 12;
+#else
+  constexpr std::size_t kMaxStrays = 2;
+#endif
+  expectMatchesReference(frame, reference, clear, 1000, 0.98, kMaxStrays);
+
+  // Along each line: the columns whose ink (summed across the line) is at least
+  // half the solid width, in the frame and in Qwt's raster.
+  const qreal dpr = static_cast<qreal>(frame.width()) / qwt.canvas()->width();
+  const QwtScaleMap x_map = qwt.canvasMap(QwtPlot::xBottom);
+  const QwtScaleMap y_map = qwt.canvasMap(QwtPlot::yLeft);
+  const int first = static_cast<int>(std::ceil(x_map.transform(1.0) * dpr));
+  const int last = static_cast<int>(std::floor(x_map.transform(9.0) * dpr));
+  for (std::size_t index = 0; index < levels.size(); ++index) {
+    const int row = static_cast<int>(std::lround(y_map.transform(levels[index]) * dpr));
+    const auto dashes = [&](const QImage& image) {
+      std::vector<double> ink_per_column;
+      for (int x = first; x < last; ++x) {
+        double column = 0.0;
+        for (int y = row - 4; y <= row + 4; ++y) {
+          column += inkCoverage(image.pixel(x, y), clear, ink.rgb());
+        }
+        ink_per_column.push_back(column);
+      }
+      const double solid = *std::max_element(ink_per_column.begin(), ink_per_column.end());
+      std::vector<bool> on;
+      for (double column : ink_per_column) {
+        on.push_back(column >= 0.5 * solid);
+      }
+      return on;
+    };
+    const std::vector<bool> drawn = dashes(frame);
+    const std::vector<bool> expected = dashes(reference);
+    // The best of three phases: Apple's software OpenGL at DPR 2 cuts the
+    // cosmetic patterns one device pixel later (a tie at the pixel centre).
+    double agreement = 0.0;
+    for (int shift = -1; shift <= 1; ++shift) {
+      std::size_t agree = 0;
+      std::size_t compared = 0;
+      for (std::size_t x = 1; x + 1 < drawn.size(); ++x) {
+        agree += drawn[x] == expected[static_cast<std::size_t>(static_cast<int>(x) + shift)] ? 1U : 0U;
+        ++compared;
+      }
+      agreement = std::max(agreement, static_cast<double>(agree) / static_cast<double>(compared));
+    }
+    std::printf("[dash] line=%zu agreement=%.3f\n", index, agreement);
+    EXPECT_GE(agreement, 0.9) << "line " << index << " (style " << static_cast<int>(styles[index % styles.size()])
+                              << (index < styles.size() ? ", cosmetic" : ", 2 px") << ") dashes differ from Qwt's";
+  }
+}
+
+// Moving the playback tracker (PlotWidget::setTrackerPosition) rebuilds only
+// the markers and the changed text: the curve layer stays, and the legend's
+// raster is reused. A full replot rebuilds the curves.
+TEST_F(PlotRhiRenderTest, TrackerOnlyReplotKeepsTheCurveLayer) {
+  PJ_SKIP_ON_HEADLESS_QPA();
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value());
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto handle = writer.registerScalarSeries(*dataset, "/imu/x", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value());
+  for (int i = 0; i < 200; ++i) {
+    writer.appendScalar(*handle, 1'000'000'000 + i * 10'000'000LL, std::sin(i * 0.1));
+  }
+  ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  QString key;
+  for (const auto& curve : catalog.curves()) {
+    key = curve.name;
+  }
+  ASSERT_FALSE(key.isEmpty());
+
+  auto* plot = new TestPlotWidget(&session, &catalog);
+  PlotWindow window(plot);
+  ASSERT_TRUE(window.exposed());
+  ASSERT_NE(plot->addCurve(key), nullptr);
+  plot->zoomOut(/*emit_signal=*/false);
+  plot->setGridVisible(true);
+  plot->setLegendVisible(true);
+  plot->setTrackerParameter(PJ::CurveTracker::kLineOnly);
+  QwtPlot& qwt = *plot->qwtPlot();
+  const QwtScaleDiv& x_axis = qwt.axisScaleDiv(QwtPlot::xBottom);
+  const auto at = [&x_axis](double share) { return x_axis.lowerBound() + share * x_axis.range(); };
+  plot->setTrackerPosition(at(0.3));
+  PJ::PlotRhiCanvas* canvas = rhiCanvas(&qwt);
+  { PJ_GRAB_OR_SKIP(frame, qwt); }
+  const std::size_t curve_builds = canvas->curveLayerBuildsForTest();
+  const std::size_t rasterized = canvas->textLayerRasterizationsForTest();
+
+  for (double share : {0.45, 0.6}) {
+    plot->setTrackerPosition(at(share));
+    PJ_GRAB_OR_SKIP(frame, qwt);
+    EXPECT_EQ(canvas->curveLayerBuildsForTest(), curve_builds) << "a tracker move rebuilt the curves";
+    EXPECT_EQ(canvas->textLayerRasterizationsForTest(), rasterized) << "a tracker move re-rasterised the legend";
+    // The tracker line moved: the frame matches Qwt's rendering at the new position.
+    expectMatchesReference(frame, referenceCanvas(qwt, frame.size()), background(qwt), 200);
+  }
+
+  // With the value box on, a move re-rasterises that box only.
+  plot->setTrackerParameter(PJ::CurveTracker::kValue);
+  { PJ_GRAB_OR_SKIP(frame, qwt); }
+  const std::size_t builds_with_value = canvas->curveLayerBuildsForTest();
+  const std::size_t rasterized_with_value = canvas->textLayerRasterizationsForTest();
+  plot->setTrackerPosition(at(0.7));
+  { PJ_GRAB_OR_SKIP(frame, qwt); }
+  EXPECT_EQ(canvas->curveLayerBuildsForTest(), builds_with_value);
+  EXPECT_LE(canvas->textLayerRasterizationsForTest(), rasterized_with_value + 1);
+
+  qwt.replot();
+  { PJ_GRAB_OR_SKIP(frame, qwt); }
+  EXPECT_EQ(canvas->curveLayerBuildsForTest(), builds_with_value + 1) << "a full replot kept stale curves";
+}
+
+// The canvas renders at one sample per pixel into a colour-only target: 4 bytes
+// per device pixel, no depth-stencil. A sample count set by hand gets an MSAA
+// colour buffer and its resolve, still without depth-stencil.
+TEST_F(PlotRhiRenderTest, RendersIntoOneColourOnlyTarget) {
+  PJ_SKIP_ON_HEADLESS_QPA();
+  auto* plot = new TestPlot();
+  PlotWindow window(plot);
+  ASSERT_TRUE(window.exposed());
+  prepare(*plot);
+  plot->addCurve(u"ramp"_s, series({{0.5, 6.0}, {2.0, 9.5}, {4.0, 7.0}, {9.0, 1.0}}), QColor(230, 40, 40));
+  QwtPlot& qwt = *plot->qwtPlot();
+  qwt.replot();
+  PJ::PlotRhiCanvas* canvas = rhiCanvas(&qwt);
+  {
+    PJ_GRAB_OR_SKIP(frame, qwt);
+    EXPECT_EQ(canvas->sampleCount(), 1);
+    EXPECT_EQ(canvas->renderTargetBytesPerPixel(), 4);
+  }
+  canvas->setSampleCount(4);
+  qwt.replot();
+  {
+    PJ_GRAB_OR_SKIP(frame, qwt);
+    EXPECT_EQ(canvas->renderTargetBytesPerPixel(), 4 * 4 + 4) << "MSAA colour + resolve, no depth-stencil";
+    expectMatchesReference(frame, referenceCanvas(qwt, frame.size()), background(qwt), 200);
+  }
 }
 
 }  // namespace

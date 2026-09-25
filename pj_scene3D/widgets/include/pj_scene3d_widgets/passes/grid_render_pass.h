@@ -57,9 +57,10 @@ class GridRenderPass : public IRenderPass {
   // needs the line buffer; kFilledCells builds both the cell and line buffers.
   void rebuildGeometry();
 
-  glm::vec3 color_{look::kGridLineColor};
-  glm::vec3 cell_color_a_{look::kGridCellToneA};
-  glm::vec3 cell_color_b_{look::kGridCellToneB};
+  // Set from the theme every frame before render() (SceneViewWidget::paintGL).
+  glm::vec3 color_{0.0f};
+  glm::vec3 cell_color_a_{0.0f};
+  glm::vec3 cell_color_b_{0.0f};
   float extent_m_{10.0f};
   int divisions_{10};
   Style style_{Style::kLines};

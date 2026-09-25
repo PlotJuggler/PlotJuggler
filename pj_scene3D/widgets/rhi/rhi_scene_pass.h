@@ -41,6 +41,7 @@
 #include "pj_scene3d_core/camera/camera.h"
 #include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/rhi_conventions.h"
+#include "pj_widgets/GraphicsApi.h"
 
 namespace pj::scene3d {
 
@@ -168,6 +169,15 @@ inline glm::mat4 relativeModel(glm::dmat4 model, const glm::dvec3& origin) {
   return glm::mat4(model);
 }
 
+/// Sizes `buffer` (a Static vertex buffer, filled by uploadStaticBuffer()) for
+/// `required_bytes` with the point pass's rule: reallocates to grow, or to give
+/// back a buffer more than twice max(required_bytes, minimum_capacity / 2), to
+/// max(required_bytes, minimum_capacity); keeps it otherwise. A reallocated
+/// buffer holds nothing (its capacity always changes). Zero bytes keeps any
+/// buffer. False, and `buffer` null, when it cannot be allocated.
+bool ensureStaticVertexBuffer(
+    QRhi* owner, QRhiBuffer*& buffer, quint32& capacity, quint32 required_bytes, quint32 minimum_capacity);
+
 /// Grows `buffer` (a Dynamic vertex buffer) to hold `required_bytes`, doubling
 /// from max(capacity, minimum_capacity); keeps it when already large enough.
 /// Recreating drops the old contents. False when it cannot be allocated.
@@ -278,7 +288,10 @@ void pruneLayerGpu(Map& gpu, const typename Map::key_type& layer, Release&& rele
 
 /// Every family's setLayers(): releases the GPU state of layers that left the
 /// list or are hidden (layers without visible(), the trail owners, only when they
-/// leave), then adopts the new list.
+/// leave), then adopts the new list. The families key their caches by layer
+/// address and revision; this is what keeps a layer created at a freed layer's
+/// address from meeting a stale entry: the dock syncs a layer out of the view's
+/// list (SceneDockWidget::removeTopic(), clearLayers()) before destroying it.
 template <typename Layer, typename Map, typename Release>
 void adoptLayerList(const std::vector<Layer*>& layers, std::vector<Layer*>& current, Map& gpu, Release&& release) {
   std::erase_if(gpu, [&](auto& entry) {
@@ -294,7 +307,7 @@ void adoptLayerList(const std::vector<Layer*>& layers, std::vector<Layer*>& curr
   current = layers;
 }
 
-QShader loadRhiShader(const QString& path);
+using PJ::loadRhiShader;
 
 /// A copy of `source` for `render_pass`/`sample_count`; `coverage_alpha_only`
 /// masks colour writes to alpha (the depth replay's coverage).

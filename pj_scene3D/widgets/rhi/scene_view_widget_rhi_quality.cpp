@@ -5,6 +5,7 @@
 #include <rhi/qshader.h>
 
 #include <QFile>
+#include <QOpenGLContext>
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -27,11 +28,20 @@ namespace pj::scene3d {
 namespace {
 
 constexpr int kHdrSampleCount = 4;
-// WebGL2 cannot resolve depth from Qt's multisample renderbuffer, and its GLES
-// QRhi does not resolve a second multisample color attachment reliably either.
-// Replay the bounded scene once into single-sample RGBA8 coverage + D32F depth:
-// 4x (RGBA16F 8 + D32F 4) + RGBA16F 8 + RGBA8 4 + D32F 4 = 64 B/px.
-constexpr std::uint64_t kHdrBytesPerPixel = 64U;
+// Where QRhi resolves multisample depth (ResolveDepthStencil with multisample
+// textures: OpenGL 4.3+, Vulkan, Metal), the HDR pass resolves its D32F into the
+// single-sample depth texture and present derives coverage from it. Elsewhere
+// (D3D11, WebGL2: no depth resolve, and WebGL's GLES QRhi does not resolve a
+// second multisample color attachment reliably either) the bounded scene is
+// replayed once into single-sample RGBA8 coverage + D32F depth.
+//
+// Bytes per pixel of a chain whose depth takes `depth_bytes` per sample:
+// 4x (RGBA16F 8 + depth) + RGBA16F 8 + RGBA8 4 + depth. D32F (4 B): 64 B/px;
+// OpenGL's resolve uses D32FS8 (8 B): 84 B/px.
+constexpr std::uint64_t hdrBytesPerPixel(std::uint64_t depth_bytes) {
+  return kHdrSampleCount * (8U + depth_bytes) + 8U + 4U + depth_bytes;
+}
+static_assert(hdrBytesPerPixel(4U) == 64U && hdrBytesPerPixel(8U) == 84U);
 constexpr std::uint64_t kMaxHdrBytesPerView = kSceneLimits.max_hdr_bytes_per_view;
 constexpr std::uint64_t kMaxHdrBytesPerRhi = kSceneLimits.max_hdr_bytes_per_rhi;
 
@@ -39,6 +49,27 @@ constexpr std::uint64_t kMaxHdrBytesPerRhi = kSceneLimits.max_hdr_bytes_per_rhi;
 // top-level window on desktop). Keep the retained offscreen chains below both a
 // per-view and an aggregate per-QRhi ceiling.
 std::unordered_map<QRhi*, std::uint64_t> hdr_bytes_by_rhi;
+
+// Qt 6.11's OpenGL backend reports QRhi::MultisampleTexture from GL 3.0 (GLES
+// 3.1) but allocates the texture with glTexStorage2DMultisample, which is core
+// only from GL 4.3: on macOS's 4.1 core context that entry point is null and
+// create() crashes. The OpenGL context is current inside render().
+bool canCreateMultisampleTextures(QRhi& rhi) {
+  if (!rhi.isFeatureSupported(QRhi::MultisampleTexture)) {
+    return false;
+  }
+  if (rhi.backend() != QRhi::OpenGLES2) {
+    return true;
+  }
+  QOpenGLContext* context = QOpenGLContext::currentContext();
+  if (context == nullptr) {
+    return false;
+  }
+  const std::pair<int, int> version = context->format().version();
+  return context->isOpenGLES()
+             ? version >= std::pair{3, 1}
+             : version >= std::pair{4, 3} || context->hasExtension("GL_ARB_texture_storage_multisample");
+}
 
 }  // namespace
 
@@ -51,6 +82,15 @@ void SceneViewWidget::setForceHdrFallbackForTest(bool force) {
   if (force) {
     releaseHdrResources();
   }
+  update();
+}
+
+void SceneViewWidget::setForceDepthReplayForTest(bool force) {
+  if (force_depth_replay_for_test_ == force) {
+    return;
+  }
+  force_depth_replay_for_test_ = force;
+  releaseHdrResources();  // the chains differ in their render-pass descriptors
   update();
 }
 
@@ -205,6 +245,7 @@ void SceneViewWidget::releaseHdrTargetResources() {
   delete hdr_render_target_;
   delete hdr_msaa_color_;
   delete hdr_msaa_depth_;
+  delete hdr_msaa_depth_texture_;
   delete hdr_resolve_color_;
   delete hdr_resolve_depth_;
   delete hdr_resolve_coverage_;
@@ -213,6 +254,7 @@ void SceneViewWidget::releaseHdrTargetResources() {
   hdr_render_target_ = nullptr;
   hdr_msaa_color_ = nullptr;
   hdr_msaa_depth_ = nullptr;
+  hdr_msaa_depth_texture_ = nullptr;
   hdr_resolve_color_ = nullptr;
   hdr_resolve_depth_ = nullptr;
   hdr_resolve_coverage_ = nullptr;
@@ -470,8 +512,12 @@ bool SceneViewWidget::ensureEdlResources(QRhi* owner, const QSize& size) {
     destination->setDepthTest(true);
     destination->setDepthWrite(false);
     destination->setDepthOp(QRhiGraphicsPipeline::LessOrEqual);
-    destination->setDepthBias(source->depthBias());
-    destination->setSlopeScaledDepthBias(source->slopeScaledDepthBias());
+    // A resolved depth holds one sample of the 4x pattern, off the pixel centre
+    // where the mask rasterizes: pull the mask up to a pixel's slope closer so a
+    // sloped mesh still passes against its own depth.
+    const int resolve_bias = hdr_depth_resolve_ ? -1 : 0;
+    destination->setDepthBias(source->depthBias() + resolve_bias);
+    destination->setSlopeScaledDepthBias(source->slopeScaledDepthBias() + static_cast<float>(resolve_bias));
     destination->setSampleCount(1);
     destination->setRenderPassDescriptor(edl_mesh_mask_render_pass_descriptor_);
     return createGraphicsPipeline(destination);
@@ -502,6 +548,19 @@ bool SceneViewWidget::rejectHdr(const QSize& size, QString reason) {
   return false;
 }
 
+QString SceneViewWidget::hdrUnsupportedReason(QRhi& rhi) {
+  if (!rhi.supportedSampleCounts().contains(kHdrSampleCount) ||
+      !rhi.isFeatureSupported(QRhi::MultisampleRenderBuffer)) {
+    return tr("This GPU does not support 4x multisample renderbuffers");
+  }
+  if (!rhi.isTextureFormatSupported(QRhiTexture::RGBA16F, QRhiTexture::RenderTarget) ||
+      !rhi.isTextureFormatSupported(QRhiTexture::D32F, QRhiTexture::RenderTarget) ||
+      !rhi.isTextureFormatSupported(QRhiTexture::RGBA8, QRhiTexture::RenderTarget)) {
+    return tr("This GPU does not support the RGBA16F/D32F/RGBA8 HDR attachments");
+  }
+  return {};
+}
+
 bool SceneViewWidget::ensureHdrResources(QRhi* owner, const QSize& size) {
   if (owner == nullptr || !size.isValid() || size.isEmpty()) {
     return false;
@@ -519,14 +578,8 @@ bool SceneViewWidget::ensureHdrResources(QRhi* owner, const QSize& size) {
   if (hdr_stage_.force_fallback_for_test) {
     return fail(tr("HDR rendering disabled by the browser acceptance override"));
   }
-  if (!owner->supportedSampleCounts().contains(kHdrSampleCount) ||
-      !owner->isFeatureSupported(QRhi::MultisampleRenderBuffer)) {
-    return fail(tr("This GPU does not support 4x multisample renderbuffers"));
-  }
-  if (!owner->isTextureFormatSupported(QRhiTexture::RGBA16F, QRhiTexture::RenderTarget) ||
-      !owner->isTextureFormatSupported(QRhiTexture::D32F, QRhiTexture::RenderTarget) ||
-      !owner->isTextureFormatSupported(QRhiTexture::RGBA8, QRhiTexture::RenderTarget)) {
-    return fail(tr("This GPU does not support the RGBA16F/D32F/RGBA8 HDR attachments"));
+  if (QString unsupported = hdrUnsupportedReason(*owner); !unsupported.isEmpty()) {
+    return fail(std::move(unsupported));
   }
   const int texture_limit = owner->resourceLimit(QRhi::TextureSizeMax);
   if (texture_limit <= 0 || size.width() > texture_limit || size.height() > texture_limit) {
@@ -536,8 +589,18 @@ bool SceneViewWidget::ensureHdrResources(QRhi* owner, const QSize& size) {
                     .arg(texture_limit));
   }
 
+  // The depth chain decides the charge, so it is picked before admission.
+  // Qt 6.11's OpenGL resolve blits depth AND stencil (it attaches the textures
+  // as both), which leaves a stencil-less D32F framebuffer incomplete and the
+  // resolved depth unwritten: OpenGL resolves D32FS8. The replay uses D32F.
+  const QRhiTexture::Format resolve_format =
+      owner->backend() == QRhi::OpenGLES2 ? QRhiTexture::D32FS8 : QRhiTexture::D32F;
+  const bool depth_resolve = !force_depth_replay_for_test_ && owner->isFeatureSupported(QRhi::ResolveDepthStencil) &&
+                             canCreateMultisampleTextures(*owner) &&
+                             owner->isTextureFormatSupported(resolve_format, QRhiTexture::RenderTarget);
+  const QRhiTexture::Format depth_format = depth_resolve ? resolve_format : QRhiTexture::D32F;
   const std::uint64_t pixels = static_cast<std::uint64_t>(size.width()) * static_cast<std::uint64_t>(size.height());
-  const std::uint64_t bytes = pixels * kHdrBytesPerPixel;
+  const std::uint64_t bytes = pixels * hdrBytesPerPixel(depth_format == QRhiTexture::D32FS8 ? 8U : 4U);
   if (bytes > kMaxHdrBytesPerView) {
     return fail(tr("The %1 x %2 Scene3D HDR chain needs %3 MiB; this view's limit is %4 MiB")
                     .arg(size.width())
@@ -573,13 +636,22 @@ bool SceneViewWidget::ensureHdrResources(QRhi* owner, const QSize& size) {
   // unavailable. The backing-format hints are required so the resolves have
   // matching RGBA16F/D32F storage rather than QRhi's usual RGBA8/depth default.
   hdr_msaa_color_ = owner->newRenderBuffer(QRhiRenderBuffer::Color, size, kHdrSampleCount, {}, QRhiTexture::RGBA16F);
-  hdr_msaa_depth_ =
-      owner->newRenderBuffer(QRhiRenderBuffer::DepthStencil, size, kHdrSampleCount, {}, QRhiTexture::D32F);
+  // The depth resolve needs a multisample depth texture; the replay a renderbuffer.
+  hdr_depth_resolve_ = depth_resolve;
   hdr_resolve_color_ = owner->newTexture(QRhiTexture::RGBA16F, size, 1, QRhiTexture::RenderTarget);
-  hdr_resolve_depth_ = owner->newTexture(QRhiTexture::D32F, size, 1, QRhiTexture::RenderTarget);
+  hdr_resolve_depth_ = owner->newTexture(depth_format, size, 1, QRhiTexture::RenderTarget);
   hdr_resolve_coverage_ = owner->newTexture(QRhiTexture::RGBA8, size, 1, QRhiTexture::RenderTarget);
-  if (!hdr_msaa_color_->create() || !hdr_msaa_depth_->create() || !hdr_resolve_color_->create() ||
-      !hdr_resolve_depth_->create() || !hdr_resolve_coverage_->create()) {
+  if (!hdr_msaa_color_->create() || !hdr_resolve_color_->create() || !hdr_resolve_depth_->create() ||
+      !hdr_resolve_coverage_->create()) {
+    return fail(tr("Could not allocate the HDR color and depth-replay chain"));
+  }
+  if (hdr_depth_resolve_) {
+    hdr_msaa_depth_texture_ = owner->newTexture(depth_format, size, kHdrSampleCount, QRhiTexture::RenderTarget);
+  } else {
+    hdr_msaa_depth_ =
+        owner->newRenderBuffer(QRhiRenderBuffer::DepthStencil, size, kHdrSampleCount, {}, QRhiTexture::D32F);
+  }
+  if (hdr_depth_resolve_ ? !hdr_msaa_depth_texture_->create() : !hdr_msaa_depth_->create()) {
     return fail(tr("Could not allocate the HDR color and depth-replay chain"));
   }
 
@@ -587,7 +659,12 @@ bool SceneViewWidget::ensureHdrResources(QRhi* owner, const QSize& size) {
   color_attachment.setResolveTexture(hdr_resolve_color_);
   QRhiTextureRenderTargetDescription description;
   description.setColorAttachments({color_attachment});
-  description.setDepthStencilBuffer(hdr_msaa_depth_);
+  if (hdr_depth_resolve_) {
+    description.setDepthTexture(hdr_msaa_depth_texture_);
+    description.setDepthResolveTexture(hdr_resolve_depth_);
+  } else {
+    description.setDepthStencilBuffer(hdr_msaa_depth_);
+  }
   hdr_render_target_ = owner->newTextureRenderTarget(description);
   if (hdr_render_pass_descriptor_ == nullptr) {
     hdr_render_pass_descriptor_ = hdr_render_target_->newCompatibleRenderPassDescriptor();
@@ -599,7 +676,9 @@ bool SceneViewWidget::ensureHdrResources(QRhi* owner, const QSize& size) {
 
   QRhiTextureRenderTargetDescription depth_description;
   depth_description.setColorAttachments({QRhiColorAttachment(hdr_resolve_coverage_)});
-  depth_description.setDepthTexture(hdr_resolve_depth_);
+  if (!hdr_depth_resolve_) {
+    depth_description.setDepthTexture(hdr_resolve_depth_);
+  }
   hdr_depth_render_target_ = owner->newTextureRenderTarget(depth_description);
   if (hdr_depth_render_pass_descriptor_ == nullptr) {
     hdr_depth_render_pass_descriptor_ = hdr_depth_render_target_->newCompatibleRenderPassDescriptor();

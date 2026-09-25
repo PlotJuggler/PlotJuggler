@@ -203,6 +203,10 @@ SceneEntitiesLayer::SceneEntitiesLayer(PJ::ObjectTopicId topic_id, QString displ
       mesh_pass_(std::make_unique<MeshRenderPass>())
 #endif
 {
+#ifndef PJ_SCENE3D_RHI
+  // The marker pass starts from its own defaults; the layer's (0.6 opacity) win.
+  pass_.setOverrides(overrides_);
+#endif
 }
 
 SceneEntitiesLayer::~SceneEntitiesLayer() = default;
@@ -363,7 +367,7 @@ void SceneEntitiesLayer::resetReplayState() {
   model_load_queue_.clear();
   model_loads_.clear();
   while (!model_mesh_bytes_.empty()) {
-    releaseModelMesh(model_mesh_bytes_.begin()->first);
+    releaseModelMesh(std::string(model_mesh_bytes_.begin()->first));  // a copy: the call erases the entry
   }
 #ifdef PJ_SCENE3D_RHI
   model_draw_calls_.clear();

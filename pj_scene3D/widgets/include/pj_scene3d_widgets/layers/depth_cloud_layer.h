@@ -117,8 +117,8 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
   // prepareForRender() drains a pending tracker move (queuing an off-thread
   // back-projection) and enforces the view's aggregate vertex budget.
   bool prepareForRender(std::uint64_t remaining_view_vertices) override;
-  [[nodiscard]] const std::vector<PointVertex>& vertices() const override {
-    return vertices_;
+  [[nodiscard]] const QByteArray& vertexBytes() const override {
+    return vertex_bytes_;
   }
   [[nodiscard]] std::uint64_t geometryRevision() const override {
     return geometry_revision_;
@@ -248,7 +248,7 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
   };
   struct BackprojectResult {
     ProjectionKey key;
-    std::vector<PointVertex> vertices;
+    QByteArray vertices;  // PointVertex records, a fresh array per result
     AABB bounds;
     std::pair<float, float> scalar_range{0.0f, 1.0f};
     QString error;  // non-empty: the sample renders nothing and warns
@@ -338,7 +338,7 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
   std::optional<IntrinsicsCache> intrinsics_cache_;
 
   // QRhi sink (empty in the GL build).
-  std::vector<PointVertex> vertices_;  // finite back-projected points, camera frame
+  QByteArray vertex_bytes_;  // PointVertex records: finite back-projected points, camera frame
   std::uint64_t geometry_revision_ = 0;
   std::pair<float, float> scalar_range_{0.0f, 1.0f};
   std::string render_frame_;

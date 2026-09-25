@@ -733,6 +733,18 @@ void PlotWidgetBase::replot() {
   plot_->replot();
 }
 
+void PlotWidgetBase::replotOverlays() {
+#ifdef PJ_RHI_WIDGETS
+  if (auto* canvas = qobject_cast<PlotRhiCanvas*>(plot_->canvas()); canvas != nullptr) {
+    canvas->setOverlayOnlyReplot(true);
+    replot();
+    canvas->setOverlayOnlyReplot(false);
+    return;
+  }
+#endif
+  replot();
+}
+
 void PlotWidgetBase::removeAllCurves() {
   for (auto& info : plot_->curve_list) {
     info.curve->detach();

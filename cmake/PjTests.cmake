@@ -21,6 +21,26 @@ function(pj_ensure_gpu_test_gate)
     endif()
 endfunction()
 
+# The legacy OpenGL renderer's suite (PJ_SCENE3D_RHI=OFF, the rollback kept for
+# one release): `target` joins pj_gl_rollback_tests and the ctest cases named in
+# ARGN get the label gl-rollback, so linux-ci builds one target and runs
+# `-L gl-rollback`. Does nothing in the QRhi build.
+function(pj_gl_rollback_test target)
+    if(PJ_SCENE3D_RHI)
+        return()
+    endif()
+    if(NOT TARGET pj_gl_rollback_tests)
+        add_custom_target(pj_gl_rollback_tests)
+    endif()
+    add_dependencies(pj_gl_rollback_tests ${target})
+    if(ARGN)
+        set_tests_properties(${ARGN} PROPERTIES LABELS gl-rollback)
+    endif()
+endfunction()
+
+# GL_ROLLBACK: the runner belongs to the legacy OpenGL renderer's suite (see
+# pj_gl_rollback_test()); its cases get the label gl-rollback in that build.
+#
 # RHI_BACKENDS: a QRhi display runner. Its cases register once per graphics
 # backend of the platform, as <runner>.<backend>.* with PJ_GRAPHICS_API set to
 # match and the ctest label qrhi-<backend>: opengl and vulkan on Linux, d3d11 on
@@ -30,7 +50,7 @@ endfunction()
 # target, so CI builds every one with `--target pj_qrhi_tests` and picks their
 # passes with `-L qrhi-<backend>` (every pass: `-L qrhi`; none: `-LE qrhi`).
 function(pj_add_test_runner target)
-    set(options WARNINGS RHI_BACKENDS DPR2)
+    set(options WARNINGS RHI_BACKENDS DPR2 GL_ROLLBACK)
     set(oneValueArgs MAIN PREFIX TIMEOUT WORKING_DIRECTORY DPR2_FILTER)
     # PROPERTIES: extra ctest properties for every discovered case (DISABLED, ENVIRONMENT, ...).
     set(multiValueArgs SOURCES LIBS DEFINES PROPERTIES)
@@ -115,6 +135,10 @@ function(pj_add_test_runner target)
         endif()
         add_dependencies(pj_qrhi_tests ${target})
         return()
+    endif()
+    if(R_GL_ROLLBACK AND NOT PJ_SCENE3D_RHI)
+        list(APPEND R_PROPERTIES LABELS gl-rollback)
+        pj_gl_rollback_test(${target})
     endif()
     set(discover_args
         TEST_PREFIX "${R_PREFIX}"

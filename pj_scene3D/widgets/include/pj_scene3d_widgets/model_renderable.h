@@ -30,8 +30,12 @@ struct ModelDrawCall {
 };
 
 // Non-owning QRhi input seam shared by layers that submit imported or
-// procedural MeshData. Implementations retain CPU meshes until modelRevision()
-// changes; the view owns and rebuilds the corresponding GPU resources.
+// procedural MeshData; the view owns the GPU resources. Bump modelRevision()
+// whenever modelMeshes() or modelDrawCalls() change. TF motion of the draw
+// frames needs no bump: the view resolves every placement each frame. A
+// published MeshData is immutable: change a mesh by storing a new shared_ptr
+// under its key. A bump rebuilds the GPU state only of keys whose pointer
+// changed, so keeping the pointer of an unchanged mesh avoids its re-upload.
 // Implementers are Scene3DLayers, which carry the renderer warning.
 class ModelRenderable {
  public:

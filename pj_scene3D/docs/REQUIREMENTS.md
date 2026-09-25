@@ -42,23 +42,23 @@ PJ4's 3D visualization module — the sibling family to `pj_scene2D`, focused on
 **Full v1 target:**
 - Rigid bodies (TF + URDF meshes). *(implemented)*
 - Occupancy grids / costmaps (`nav_msgs/OccupancyGrid` + incremental `OccupancyGridUpdate`, with stateful time-travel reconstruction). *(implemented — `OccupancyGridLayer`)*
-- Grid maps (`grid_map_msgs/GridMap`, `foxglove.Grid` → canonical `GridMap`, SDK ≥ 0.26.0), drawn as a lit, colormapped heightfield surface: one scalar field displaces the plane (or "None" for a flat plane), another colors it through the shared colormap with an auto or manual range; NaN cells are holes. Geometry is procedural (`gl_VertexID`, no vertex or index buffer), so a new sample costs two R32F texture uploads. Desktop OpenGL only; the browser backend lists the type as known but unavailable. *(implemented — `GridMapLayer`)*
+- Grid maps (`grid_map_msgs/GridMap`, `foxglove.Grid` → canonical `GridMap`, SDK ≥ 0.26.0), drawn as a lit, colormapped heightfield surface: one scalar field displaces the plane (or "None" for a flat plane), another colors it through the shared colormap with an auto or manual range; NaN cells are holes. Geometry is procedural (derived from the vertex index, no vertex or index buffer), so a new sample costs two R32F texture uploads. Every build, the browser included. *(implemented — `GridMapLayer`)*
 - Pointclouds (`sensor_msgs/PointCloud2` and equivalents). *(implemented)*
 - Compressed pointclouds (`foxglove_msgs/CompressedPointCloud` + `point_cloud_interfaces/CompressedPointCloud2`), formats **Draco** and **Cloudini** — decoded into a `PointCloud` and rendered identically (see §3a). *(implemented)*
 - 3D markers / visualization primitives (arrows, boxes, spheres, cylinders, line strips, text). *(implemented — `SceneEntitiesLayer`)*
 - Pose arrays (`geometry_msgs/PoseArray`, `foxglove.PosesInFrame` → canonical `PosesInFrame`), drawn as per-pose coordinate-triad gizmos with customizable arrow length + opacity, an X-arrow-only geometry mode, and an orthogonal color override (one shared color across all arms, in either mode). *(implemented — `PosesInFrameLayer`)*
-- Dense voxel grids (`foxglove.VoxelGrid` → canonical `VoxelGrid`), drawn as GPU-instanced cubes; the per-voxel value is generic (occupancy/cost/ESDF/semantic via `fields`, or a direct RGBA channel) and a viewer-side draw predicate + colormap decide which voxels are shown. The dense→cubes expansion is entirely GPU-side (one `glDrawElementsInstanced`, `gl_InstanceID`→texel), so the **CPU / draw-call** cost is independent of voxel count (the GPU vertex shader still evaluates the draw predicate per voxel). *(implemented — `VoxelGridLayer`)*
+- Dense voxel grids (`foxglove.VoxelGrid` → canonical `VoxelGrid`), drawn as GPU-instanced cubes; the per-voxel value is generic (occupancy/cost/ESDF/semantic via `fields`, or a direct RGBA channel) and a viewer-side draw predicate + colormap decide which voxels are shown. The dense→cubes expansion is entirely GPU-side (one instanced draw, instance id → texel), so the **CPU / draw-call** cost is independent of voxel count (the GPU vertex shader still evaluates the draw predicate per voxel). *(implemented — `VoxelGridLayer`)*
 - Depth images back-projected into point clouds: an `sdk::Image` with a depth `encoding` joined to a `CameraInfo` by `frame_id`, back-projected one point per valid pixel and colored by depth. *(implemented — `DepthCloudLayer`)*
 - Paths (`nav_msgs/Path`).
 - Laserscans (`sensor_msgs/LaserScan`).
 
 **Phase 1 subset** (two types):
-- **TF axes** as 3D gizmos — substituting for the URDF mesh path since real mesh assets are not available for the Phase 1 input data. This is a permanent first-class display, not a placeholder. Hovering a triad shows the frame's name in a small label (screen-space pick of the nearest frame origin; see ARCHITECTURE.md "TF frame hover labels").
+- **TF axes** as 3D gizmos — substituting for the URDF mesh path since real mesh assets are not available for the Phase 1 input data. This is a permanent first-class display, not a placeholder. Hovering a triad shows the frame's name in a small label (screen-space pick of the nearest frame origin; see ARCHITECTURE.md "Frame picking").
 - **Pointclouds** (`sensor_msgs/PointCloud2`).
 
 **WebAssembly status (W19m):** the browser product implements TF axes/parent
 connections, line/checker grid, raw and Draco/Cloudini-compressed point clouds,
-pose arrays, occupancy updates, dense voxel grids, procedural SceneEntities,
+pose arrays, occupancy updates, dense voxel grids, grid maps, trails, procedural SceneEntities,
 PBR ModelPrimitives, and topic/file/URL URDF robot models. It uses the shared
 camera, fixed/follow, tracker replay, style, and layout contracts while enforcing
 browser-specific decode, retained-memory, texture, model, and network budgets.
@@ -66,8 +66,10 @@ The QRhi/WebGL2 renderer provides mesh and solid-marker shadows and an HDR prese
 with SSAO and mesh-masked EDL; each optional pass fails independently to a live
 lower-quality or direct-render path. Browser-selected local model bytes are
 capabilities for the current session and are never persisted as reopenable host
-paths. The desktop application continues to select the native OpenGL
-implementation and dependency graph unchanged. Paths, laser scans, and the
+paths. The desktop application uses the same QRhi renderer on the platform's
+native API (OpenGL on Linux, D3D11 on Windows, Metal on macOS); the legacy
+OpenGL renderer stays selectable at build time (`-DPJ_SCENE3D_RHI=OFF`) for one
+release. Paths, laser scans, and the
 Image+Pinhole view remain future work and must not be inferred from parser
 availability alone.
 
@@ -119,8 +121,8 @@ layer, no separate widget.
 A **trail** visualizes the trajectory of a frame's origin across the whole loaded time range as a
 polyline in the current fixed frame, split-colored at the tracker time (past = blue `#1f77b4`,
 future = light blue `#9ecae1`; both per-trail configurable). Thickness is a per-trail parameter
-(1-8 px, default 4, exact at any width — rendered as a screen-space ribbon because core GL caps
-real lines at 1 px), and each half has its own eye toggle to show/hide the past or future segment
+(1-8 px, default 4, exact at any width — rendered as a screen-space ribbon because GPU line
+primitives are 1 px wide on most backends), and each half has its own eye toggle to show/hide the past or future segment
 independently. Colors, thickness, and the two visibility flags all persist per-trail. Two sources:
 
 - **TF frame** — any frame in the TF tree, sampled at the connecting chain's own update stamps
@@ -204,9 +206,12 @@ Performance is **benchmark-driven**, not pre-committed at the requirements stage
 **Headline target (post-Phase-1)**: aggregate ~10 million points snappy across N concurrent pointcloud displays in a single PJ4 process, characterized empirically against a stress-test MCAP set.
 
 **Render loop policy** (Phase 1 forward):
-- Vsync-capped via `QSurfaceFormat::setSwapInterval(1)` (~60 Hz on standard monitors).
+- Vsync-paced: frames present through the top-level window's swap chain (~60 Hz on standard monitors).
 - On-demand repaint: the widget invalidates only on tracker change, slider move, or camera interaction. No free-running redraw.
 - Idle → 0 CPU.
+
+The measured budgets, the performance gate and the current baseline are in
+[TECHNICAL_NOTES.md](./TECHNICAL_NOTES.md) §6 and §9.
 
 This matches the pattern `pj_scene2D` already uses for video playback.
 
@@ -282,87 +287,19 @@ Third-party drawable type registration by plugins. Out of v1 scope. Built-in dra
 - **Out-of-core / surveying-scale pointclouds** (>500M points).
 - **octomap** (adaptive octree with variable-size leaves) — belongs in SceneEntities/cube primitives, not the uniform-lattice `VoxelGrid`. (Dense voxel grids — costmap-3D / ESDF / semantic — *are* supported via `VoxelGridLayer`; see §3.)
 
-## 13. Phase 1 acceptance — explicit
+## 13. Stack (locked)
 
-Phase 1 ships an **end-to-end MCAP-driven demo binary** that exercises the substrate, the adapted TF buffer, the lazy pointcloud pipeline, and the per-widget UI. It is *not* a substrate-only proof; it is the smallest demo that proves the foundation works on real data.
-
-### Phase 1 input
-
-A ROS2 MCAP file (provided by the user) containing at minimum:
-- `tf2_msgs/TFMessage` transforms.
-- `sensor_msgs/PointCloud2` pointcloud(s).
-
-### Phase 1 ingest behavior
-
-- **TF**: eagerly decoded at load. Every `TFMessage` sample pushed into the per-dataset TF buffer.
-- **PointCloud2**: **lazily decoded on tracker change**, mirroring `pj_scene2D`'s MCAP lazy-media pattern. Raw CDR bytes remain indexed in MCAP at open; decoding occurs on demand through a small LRU cache for recently decoded clouds.
-
-### Phase 1 rendering
-
-- **TF axes**: one XYZ axis triad (red = X, green = Y, blue = Z) per frame in the active dataset's TF buffer. Fixed world-space size (per-widget uniform, e.g., 0.3 m). Frame names show on hover (see above). An optional per-widget **parent-connection** overlay draws a magenta line from each frame to its parent (rviz2 / Foxglove "show parent connections"), toggled by the graph button on the "Frames size" row of the scene-controls panel; default on, persisted per-dock in the layout. Geometry is the Qt/GL-free `core/tf/tf_connections.h` helper; the GL shell is `TfConnectionsRenderPass`.
-- **Origin grid**: a 10×10 grid of 1-metre squares on the ground plane (Z = 0) at the world origin, drawn in a subdued color. Always visible in Phase 1 (no per-widget toggle yet). Renders in the fixed-frame (i.e., translates/rotates with whichever frame the user selects as fixed).
-- **Pointcloud**: rendered as `GL_POINTS` (single VBO, no LOD), in its source frame, re-transformed to the widget's fixed-frame each frame via the TF buffer.
-- **Pointcloud coloring**: a per-display dropdown selects the source scalar field from `{ X, Y, Z, intensity, ring }`. The dropdown is populated by inspecting the first decoded cloud's `fields` schema (the `timestamp` field is explicitly ignored). The selected field drives a **colormap** — Phase 1 shipped Turbo only; the current build offers the shared `PJ::Colormap` set (turbo / viridis / plasma / grayscale, from `pj_widgets/Colormap.h`, the same colors as the 2D depth view). For a **spatial axis (X/Y/Z)** the colormap input is the coordinate in the **fixed frame**, computed on the GPU from the same source→fixed transform that places the geometry — so sensors at different mounts agree on world height (the raw x/y/z field is sensor-local). Its auto-range is derived per frame from the cloud's source-AABB transformed by that live model, so colour and range track TF motion without a re-decode. Non-spatial fields (intensity, ring, …) colour by the raw per-point value and auto-fit to the cloud's min/max; both spatial and non-spatial ranges are held across tracker scrub so colors stay stable.
-  - **RGB-direct mode**: when a cloud carries a per-point colour, the dropdown does **not** list the colour channels as individual scalar fields. Instead a single **"RGB"** entry paints each point its literal colour (no colormap), and it is the **default** colour mode for such clouds (matching Foxglove Studio / rviz). The canonical representation is a single `rgba` field of datatype `kUint32` whose 4 bytes are R, G, B, A in increasing-address order; the DataSource parsers normalize to it (`parser_protobuf` collapses foxglove's separate `red`/`green`/`blue`/`alpha` uint8 channels; `parser_ros` repacks a PCL-packed `rgb`/`rgba` `0x00RRGGBB` field), so the host renders one canonical colour and never sees per-source byte order. The host (`detectColorLayout` in `pointcloud_convert`) also defensively recognizes raw channels, so an un-normalized source still renders true colour. `alpha` is treated as opaque padding (ignored for blending); see `pointcloud_layer.cpp` (mode selection / persistence) and `passes/pointcloud_render_pass.cpp` (`ColorType::kRgb`).
-
-### Phase 1 UI
-
-- **Per-widget fixed-frame dropdown**: populated from the TF buffer's frame enumeration. Switching re-renders within one vsync.
-- **Time slider**: drives the demo's tracker time. Dragging back and forth scrubs correctly:
-  - TF axes snap to ZOH positions between samples (no glide).
-  - Pointcloud re-decodes from cache or MCAP without visible stall on a cache miss for typical cloud sizes.
-- **Render loop**: vsync + on-demand repaint (no free-running redraw).
-
-### Phase 1 acceptance criteria
-
-The demo passes Phase 1 when, on the user-provided MCAP, all of the following hold:
-
-1. Loads without error.
-2. TF axes render at the position of each frame, expressed in the currently selected fixed-frame.
-3. A 10×10 origin grid (1m squares, ground plane Z=0) renders at the fixed-frame's origin.
-3. The fixed-frame dropdown lists every frame present in the MCAP's TF data.
-4. The color-field dropdown lists every numeric field present in the first decoded pointcloud (excluding `timestamp`).
-5. The slider scrubs through the full time range of the MCAP.
-6. Dragging the slider back and forth produces correct ZOH axis snapping and stutter-free pointcloud updates on cache hits.
-7. `Scene` is implemented with hardcoded `axes_` and `pointcloud_` members; no premature `IDrawable` polymorphism. (Polymorphism arrives in Phase 2 when the third drawable type lands.)
-8. No crashes. `GL_DEBUG_OUTPUT` is clean.
-9. Render loop sustains 60 Hz under typical scrub load on integrated graphics; idle CPU is approximately zero.
-
-### Explicitly out of Phase 1
-
-assimp, URDF, tinyply, PCD reader, RGB-direct color mode, additional colormaps beyond Turbo, display-frame, follow-mode, TF Frames panel, picking, measurement, click-to-publish, gridmaps, paths, laserscans, integration into `pj_app` (the Phase 1 demo is a standalone binary, mirroring `pj_scene2D/tools/`).
-
-> **Note (post–Phase 1):** several of the above have since shipped — URDF/mesh
-> models (assimp), occupancy grids, the additional colormaps, depth-image
-> back-projection (`DepthCloudLayer`), the **RGB-direct color mode** (see
-> *Pointcloud coloring* above), and full `pj_app` integration. This list
-> is the historical Phase-1 boundary; for the current as-built feature set see
-> `CLAUDE.md` and `ARCHITECTURE.md`.
-
-> **Note (post–Phase 1):** several of the above have since shipped — URDF/mesh
-> models (assimp), occupancy grids, the additional colormaps, depth-image
-> back-projection (`DepthCloudLayer`), and full `pj_app` integration. This list
-> is the historical Phase-1 boundary; for the current as-built feature set see
-> `CLAUDE.md` and `ARCHITECTURE.md`.
-
-> **Note (post–Phase 1):** several of the above have since shipped — URDF/mesh
-> models (assimp), occupancy grids, the additional colormaps, depth-image
-> back-projection (`DepthCloudLayer`), the **RGB-direct color mode** (see
-> *Pointcloud coloring* above), and full `pj_app` integration. This list
-> is the historical Phase-1 boundary; for the current as-built feature set see
-> `CLAUDE.md` and `ARCHITECTURE.md`.
-
-## 14. Stack (locked)
-
-- **GPU API**: OpenGL 4.5 core via `QOpenGLWidget`.
+- **GPU API**: QRhi via `QRhiWidget` (OpenGL 3.3+ / Vulkan on Linux, D3D11 on
+  Windows, Metal on macOS, WebGL2 in the browser). The legacy OpenGL 4.5 core
+  `QOpenGLWidget` renderer remains behind `-DPJ_SCENE3D_RHI=OFF` for one release.
 - **Math**: GLM (column-major, GLSL-matching types).
 - **Canonical objects in**: `pj_base/builtin` schemas read from the `ObjectStore`
   (no wire/CDR decoding in this module — see the architecture note at the top).
 - **Test framework**: `gtest` (matches `pj_scene2D`).
 
-`pj_scene3D` (OpenGL) and `pj_scene2D` (QRhi) form a mixed GPU stack inside the same PJ4 process. They are sibling widget families that never share GPU state. An `IRenderPass` invariant in the substrate keeps GL calls confined so a future QRhi swap would be a contained refactor rather than a rewrite.
+`pj_scene3D`, `pj_scene2D` and the plot canvas all render through QRhi inside the same PJ4 process, one graphics API per top-level window. They are sibling widget families that never share GPU state.
 
-## 15. TF prototype adaptation summary
+## 14. TF prototype adaptation summary
 
 The TF prototype has been promoted into `pj_scene3D/core/include/pj_scene3d_core/tf/` as the `TransformBuffer` class (`tf/tf_buffer.h`, `tf/transform.h`) — single source of truth, no wrapper layer. The edits applied during promotion were:
 

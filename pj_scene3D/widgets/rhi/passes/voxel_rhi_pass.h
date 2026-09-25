@@ -48,7 +48,8 @@ class VoxelRhiPass {
   /// fixed-frame bounds to `bounds`.
   void admit(QRhi* rhi, const PlaceFn& place, SceneBoundsCollector& bounds);
   /// Uploads the colormap (once), admitted layers' volumes (when their revision
-  /// moved) and uniforms, and builds this frame's draws.
+  /// moved) and uniforms, and builds this frame's draws: none for a grid wholly
+  /// outside the view frustum (the GL pass's reject), which still counts as admitted.
   void prepare(const RhiFrameContext& frame);
   /// The prepared draw of `layer` (none or one).
   [[nodiscard]] std::span<const Draw> drawsFor(const VoxelGridLayer* layer) const {

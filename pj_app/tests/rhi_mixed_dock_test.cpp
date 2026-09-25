@@ -10,22 +10,19 @@
 // (QT_RHI_LEAK_CHECK, which does not see OpenGL uniform buffers). The widgets'
 // lifecycle counters (test hooks) also show each one re-initializing on every
 // new top-level and never holding resources on two QRhis. Also the media
-// viewer's failure state, beside working siblings. Registered per backend (PJ_GRAPHICS_API); needs a real display
-// (skips on the offscreen QPA).
+// viewer's failure state, beside working siblings. The widgets and their data
+// come from mixed_layout_fixture.h. Registered per backend (PJ_GRAPHICS_API);
+// needs a real display (skips on the offscreen QPA).
 
 #include <DockAreaWidget.h>
 #include <DockManager.h>
 #include <DockWidget.h>
 #include <FloatingDockContainer.h>
 #include <gtest/gtest.h>
-#include <qwt_plot.h>
-#include <qwt_plot_curve.h>
 
 #include <QApplication>
-#include <QDomDocument>
 #include <QLabel>
 #include <QMainWindow>
-#include <QPen>
 #include <QPointer>
 #include <QRhiWidget>
 #include <QScreen>
@@ -33,22 +30,17 @@
 #include <algorithm>
 #include <array>
 #include <functional>
-#include <glm/glm.hpp>
 #include <memory>
 #include <vector>
 
-#include "pj_base/builtin/image.hpp"
-#include "pj_base/builtin/image_codec.hpp"
-#include "pj_datastore/writer.hpp"
+#include "mixed_layout_fixture.h"
 #include "pj_gpu_test_gate.h"  // PJ_SKIP_WITHOUT_GPU
 #include "pj_plotting/PlotRhiCanvas.h"
 #include "pj_plotting/PlotWidget.h"
-#include "pj_runtime/CatalogModel.h"
-#include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
-#include "scene3d_render_test_support.h"  // serializeCloud
+#include "pj_scene3d_widgets/scene_view_widget.h"
 #include "support/rhi_dock_test_support.h"
 
 using namespace Qt::StringLiterals;
@@ -56,7 +48,7 @@ using namespace pj_rhi_dock_test;
 
 namespace {
 
-const QColor kCurveColour(230, 40, 40);
+using pj_mixed_layout::kCurveColour;
 constexpr int kCloudSide = 8;  // points per edge of the cube-shaped cloud
 constexpr int kCloudPoints = kCloudSide * kCloudSide * kCloudSide;
 
@@ -105,25 +97,27 @@ class RhiMixedDockFixture : public ::testing::Test {
  protected:
   void SetUp() override {
     PJ_SKIP_ON_HEADLESS_QPA();
-    PJ::PlotWidgetBase::setOpenGlDisabledOverride(false);
-    window_ = std::make_unique<QMainWindow>();
-    manager_ = new ads::CDockManager(window_.get());
-    // As in rhi_dock_lifecycle_test: ADS's Wayland stays-on-top emulation can
-    // hide a floated dock mid-test.
-    window_->removeEventFilter(manager_);
-
-    plot_dock_ = addDock(u"plot"_s, createPlot(), ads::LeftDockWidgetArea);
-    scene_dock_ = addDock(u"scene3d"_s, createScene3D(), ads::RightDockWidgetArea);
-    media_dock_ = addDock(u"media"_s, createMedia(), ads::BottomDockWidgetArea);
+    layout_ = std::make_unique<pj_mixed_layout::MixedLayout>();
+    manager_ = &layout_->manager();
+    plot_ = layout_->createPlot();
+    scene_ = layout_->createScene3D(kCloudSide);
+    media_ = layout_->createMedia();
+    if (media_fail_pipeline_ != nullptr) {
+      mediaViewer()->setProperty("pjTestFailPipeline", QString::fromLatin1(media_fail_pipeline_));
+    }
+    plot_dock_ = layout_->addDock(u"plot"_s, plot_, ads::LeftDockWidgetArea);
+    scene_dock_ = layout_->addDock(u"scene3d"_s, scene_, ads::RightDockWidgetArea);
+    media_dock_ = layout_->addDock(u"media"_s, media_, ads::BottomDockWidgetArea);
+    window_ = &layout_->window();
     const std::array<QRhiWidget*, 3> widgets{plotCanvas(), sceneView(), mediaViewer()};
     for (std::size_t i = 0; i < widgets.size(); ++i) {
       ASSERT_NE(widgets[i], nullptr) << "GPU widget " << i << " missing";
-      QObject::connect(widgets[i], &QRhiWidget::renderFailed, window_.get(), [this, i] { ++render_failures_[i]; });
+      QObject::connect(widgets[i], &QRhiWidget::renderFailed, window_, [this, i] { ++render_failures_[i]; });
     }
 
     window_->resize(1000, 760);
     window_->show();
-    if (!QTest::qWaitForWindowExposed(window_.get())) {
+    if (!QTest::qWaitForWindowExposed(window_)) {
       PJ_SKIP_WITHOUT_GPU("the main window was never exposed");
     }
     (void)pjWaitForGrab([this](auto done) { sceneView()->grabPresentedFrame(std::move(done)); });  // one-shot auto-fit
@@ -133,7 +127,7 @@ class RhiMixedDockFixture : public ::testing::Test {
   }
 
   void TearDown() override {
-    window_.reset();
+    layout_.reset();
     QApplication::processEvents();
     if (IsSkipped()) {
       return;
@@ -142,119 +136,6 @@ class RhiMixedDockFixture : public ::testing::Test {
     EXPECT_EQ(render_failures_[0], 0) << "the plot canvas failed";
     EXPECT_EQ(render_failures_[1], 0) << "the Scene3D view failed";
     EXPECT_EQ(render_failures_[2], expected_media_failures_) << "media viewer renderFailed() count";
-  }
-
-  ads::CDockWidget* addDock(const QString& name, QWidget* content, ads::DockWidgetArea area) {
-    auto* dock = new ads::CDockWidget(manager_, name);
-    dock->setWidget(content, ads::CDockWidget::ForceNoScrollArea);
-    manager_->addDockWidget(area, dock);
-    return dock;
-  }
-
-  // A PlotWidget with one thick red curve from the datastore.
-  QWidget* createPlot() {
-    auto dataset = session_.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "plot.mcap"});
-    EXPECT_TRUE(dataset.has_value());
-    PJ::DataWriter writer = session_.dataEngine().createWriter();
-    auto handle = writer.registerScalarSeries(*dataset, "/imu/x", PJ::NumericType::kFloat64);
-    EXPECT_TRUE(handle.has_value());
-    for (int i = 0; i < 20; ++i) {
-      writer.appendScalar(*handle, 1'000'000'000 + i * 100'000'000LL, static_cast<double>(i % 5));
-    }
-    EXPECT_FALSE(session_.commitChunks(writer.flushAll()).empty());
-    auto* plot = new PJ::PlotWidget(&session_, &catalog_);
-    for (const auto& curve : catalog_.curves()) {
-      auto* info = plot->addCurve(curve.name, kCurveColour);
-      EXPECT_NE(info, nullptr);
-      if (info != nullptr) {
-        info->curve->setPen(QPen(kCurveColour, 3.0));
-      }
-    }
-    plot->setGridVisible(false);
-    plot->setLegendVisible(false);
-    plot->zoomOut(/*emit_signal=*/false);
-    plot_ = plot;
-    return plot;
-  }
-
-  // A Scene3D dock with a solid-green cube-shaped point cloud, no grid or axes.
-  QWidget* createScene3D() {
-    auto* dock = new PJ::Scene3DDockWidget();
-    dock->setSessionManager(&session_);
-    const auto dataset =
-        *session_.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "scene", .time_domain_id = 0});
-    std::vector<glm::vec3> points;
-    for (int i = 0; i < kCloudSide; ++i) {
-      for (int j = 0; j < kCloudSide; ++j) {
-        for (int k = 0; k < kCloudSide; ++k) {
-          points.push_back(glm::vec3(i, j, k) / float(kCloudSide - 1) - 0.5F);
-        }
-      }
-    }
-    const auto topic = session_.objectStore().registerTopic(
-        PJ::ObjectTopicDescriptor{
-            .dataset_id = dataset,
-            .topic_name = "/points",
-            .metadata_json = R"({"builtin_object_type":"kPointCloud"})"});
-    EXPECT_TRUE(topic.has_value());
-    EXPECT_TRUE(
-        session_.objectStore().pushOwned(*topic, 100, pj::scene3d::test::serializeCloud(points, "map")).has_value());
-    EXPECT_TRUE(dock->addTopic(*topic, PJ::sdk::BuiltinObjectType::kPointCloud, u"points"_s));
-    // Through the persisted state: the layer's setters are private to its UI.
-    if (auto* layer = dock->layerFor(*topic); layer != nullptr) {
-      QDomDocument doc;
-      QDomElement state = layer->xmlSaveState(doc);
-      state.setAttribute(u"color_type"_s, u"solid"_s);
-      state.setAttribute(u"color_choice_explicit"_s, u"true"_s);
-      state.setAttribute(u"solid_color"_s, u"#00ff00"_s);
-      state.setAttribute(u"size_meters"_s, u"0.1"_s);
-      EXPECT_TRUE(layer->xmlLoadState(state));
-    }
-    dock->setFixedFrame(u"map"_s);
-    EXPECT_NE(dock->sceneView(), nullptr);
-    dock->sceneView()->setGridVisible(false);
-    dock->sceneView()->setAxesVisible(false);
-    scene_ = dock;
-    return dock;
-  }
-
-  // A Scene2D dock showing one 64x64 rgba8 image: red top half, blue bottom half.
-  QWidget* createMedia() {
-    constexpr uint32_t kSize = 64;
-    std::vector<uint8_t> pixels(static_cast<size_t>(kSize * kSize * 4));
-    for (uint32_t y = 0; y < kSize; ++y) {
-      for (uint32_t x = 0; x < kSize; ++x) {
-        uint8_t* px = pixels.data() + static_cast<size_t>((y * kSize + x) * 4);
-        px[0] = y < kSize / 2 ? 255 : 0;
-        px[2] = y < kSize / 2 ? 0 : 255;
-        px[3] = 255;
-      }
-    }
-    PJ::sdk::Image image;
-    image.timestamp_ns = 100;
-    image.width = kSize;
-    image.height = kSize;
-    image.encoding = "rgba8";
-    image.data = PJ::Span<const uint8_t>(pixels.data(), pixels.size());
-    const auto dataset =
-        *session_.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "media", .time_domain_id = 0});
-    const auto topic = session_.objectStore().registerTopic(
-        PJ::ObjectTopicDescriptor{
-            .dataset_id = dataset, .topic_name = "/camera/image", .metadata_json = R"({"image_codec":"pj_image_v1"})"});
-    EXPECT_TRUE(topic.has_value());
-    EXPECT_TRUE(session_.objectStore().pushOwned(*topic, 100, PJ::serializeImage(image)).has_value());
-
-    auto* dock = new PJ::Scene2DDockWidget();
-    dock->setSessionManager(&session_);
-    EXPECT_TRUE(dock->addTopic(*topic, PJ::sdk::BuiltinObjectType::kImage, u"image"_s));
-    auto* viewer = dock->findChild<PJ::MediaViewerWidget*>(u"scene2dMediaViewer"_s);
-    EXPECT_NE(viewer, nullptr);
-    if (media_fail_pipeline_ != nullptr) {
-      viewer->setProperty("pjTestFailPipeline", QString::fromLatin1(media_fail_pipeline_));
-    }
-    dock->onTrackerTime(100.0 / 1'000'000'000.0);
-    media_ = dock;
-    return dock;
   }
 
   [[nodiscard]] PJ::PlotRhiCanvas* plotCanvas() const {
@@ -358,14 +239,13 @@ class RhiMixedDockFixture : public ::testing::Test {
   const char* media_fail_pipeline_ = nullptr;
   int expected_media_failures_ = 0;
 
-  // Declaration order is destruction order reversed: the window (and the widgets
-  // pointing at the session) dies first.
+  // Declaration order is destruction order reversed: the layout dies before the
+  // collector that checks its warnings.
   WarningCollector warnings_;
-  PJ::SessionManager session_;
-  PJ::CatalogModel catalog_{&session_};
   std::array<int, 3> render_failures_{};  // plot, Scene3D, media
-  std::unique_ptr<QMainWindow> window_;
-  ads::CDockManager* manager_ = nullptr;
+  std::unique_ptr<pj_mixed_layout::MixedLayout> layout_;
+  QMainWindow* window_ = nullptr;         // layout_'s
+  ads::CDockManager* manager_ = nullptr;  // layout_'s
   QPointer<PJ::PlotWidget> plot_;
   QPointer<PJ::Scene3DDockWidget> scene_;
   QPointer<PJ::Scene2DDockWidget> media_;
@@ -379,12 +259,12 @@ TEST_F(RhiMixedDockFixture, FloatAndRedockEachKeepsEveryWidgetRendering) {
     SCOPED_TRACE(dock->objectName().toStdString());
     const int docked = adoptions(dock);
     ASSERT_NO_FATAL_FAILURE(floatDock(dock));
-    EXPECT_NE(dock->window(), window_.get());
+    EXPECT_NE(dock->window(), window_);
     ASSERT_NO_FATAL_FAILURE(expectAllRender("one dock floating"));
     EXPECT_GT(adoptions(dock), docked) << "no initialize() on the floating window's QRhi";
     const int floating = adoptions(dock);
     manager_->addDockWidget(ads::BottomDockWidgetArea, dock);
-    ASSERT_EQ(dock->window(), window_.get());
+    ASSERT_EQ(dock->window(), window_);
     ASSERT_NO_FATAL_FAILURE(expectAllRender("redocked"));
     EXPECT_GT(adoptions(dock), floating) << "no initialize() on the main window's QRhi";
   }

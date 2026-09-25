@@ -694,7 +694,7 @@ test('real curve-style and width controls render every app-exposed QRhi variant'
   expect(errors).toEqual([]);
 });
 
-test('dense dotted curves reduce transactionally without committing a front-loaded prefix', async ({ page }) => {
+test('dense dotted curves draw complete without a budget retry', async ({ page }) => {
   test.setTimeout(150000);
   const errors = [];
   const consoleMessages = [];
@@ -747,12 +747,12 @@ test('dense dotted curves reduce transactionally without committing a front-load
     /budget_limited_curves=(\d+) budget_reduced_curves=(\d+) budget_reduction_retries=(\d+) budget_discarded_trial_vertices=(\d+) budget_dropped_samples=(\d+) budget_omitted_curves=(\d+)/,
   );
   expect(telemetry, `unparseable budget telemetry: ${frame}`).not.toBeNull();
-  expect(Number(telemetry[1])).toBe(0);
-  expect(Number(telemetry[2])).toBe(1);
-  expect(Number(telemetry[3])).toBeGreaterThan(0);
-  expect(Number(telemetry[4])).toBeGreaterThan(0);
-  expect(Number(telemetry[5])).toBeGreaterThan(0);
-  expect(Number(telemetry[6])).toBe(0);
+  // The shader cuts the dots, so a dotted curve costs a solid curve's vertices
+  // (one quad and one bevel per segment) and fits its budget first time: no
+  // reduction retry, no rolled-back prefix.
+  for (let field = 1; field <= 6; ++field) {
+    expect(Number(telemetry[field])).toBe(0);
+  }
   expect(frame).toContain('truncated=0');
 
   const styleMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_STYLE_PIXELS')).length;
@@ -1279,10 +1279,13 @@ test('Shift-drag seeks playback and moves the QRhi tracker without changing the 
   expect(valueNameText.markerLabels).toBe(1);
   expect(valueNameText.vertices).toBe(12);
   expect(valueNamePixels.pixels).toBeGreaterThan(0);
+  // Z order across the three buffers: the curve layer, the tracker line
+  // (overlay), its label, the tracker's point markers, the legend, and the
+  // canvas frame over everything.
   await expect.poll(
     () => consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_DRAW_BATCHES')).at(-1) || '',
     { timeout: 10000 },
-  ).toMatch(/sequence=GTG/);
+  ).toMatch(/sequence=GGTGTG\b/);
   await page.screenshot();
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(
     () => requestAnimationFrame(resolve),

@@ -82,6 +82,7 @@ target_link_libraries(plot_canvas_context_recreation_gl_test PRIVATE
 )
 
 add_test(NAME PlotCanvasContextRecreationGlTest COMMAND plot_canvas_context_recreation_gl_test)
+pj_gl_rollback_test(plot_canvas_context_recreation_gl_test PlotCanvasContextRecreationGlTest)
 
 add_executable(raster_text_gl_test
     raster_text_gl_test.cpp
@@ -96,3 +97,4 @@ target_link_libraries(raster_text_gl_test PRIVATE
 )
 
 add_test(NAME RasterTextGlTest COMMAND raster_text_gl_test)
+pj_gl_rollback_test(raster_text_gl_test RasterTextGlTest)
