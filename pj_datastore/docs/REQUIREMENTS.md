@@ -67,7 +67,7 @@ Requirements:
 
 - New fields may appear at any point during ingestion. The engine seals the current chunk and continues with the expanded column set. Rows in earlier chunks have no value for the new column; readers treat absent columns as null.
 - Field IDs are append-only and stable — existing handles are never invalidated by later column additions.
-- Once a field is created with a given type, subsequent writes must use the same type. Type mismatches are rejected with a clear error.
+- Once a field is created with a given type, it keeps that type. A record value of another type is stored converted when the conversion is exact (e.g. an unsigned `0` into an int64 field, `3` into a float64 field); otherwise that field is null for the record, the rest of the record is still written, and the field is reported once through the ingest-warning handler. Explicitly re-registering a field (`ensureField()`) with a different type is an error.
 - Schema changes are resolved between rows, never mid-row.
 - Pre-registration with `ensureField()` is an optimization for the fixed-schema case, not a prerequisite for writing data.
 

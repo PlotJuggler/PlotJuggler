@@ -8,18 +8,23 @@
 #include <tsl/robin_set.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <deque>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "nanoarrow/nanoarrow.h"
@@ -84,6 +89,133 @@ using FieldHandle = PJ_field_handle_t;
     return unexpected(fmt::format("unsupported primitive type value {}", raw));
   }
   return static_cast<PrimitiveType>(type);
+}
+
+std::atomic<IngestWarningHandler> g_ingest_warning_handler{nullptr};
+
+[[nodiscard]] std::string_view primitiveTypeName(PrimitiveType type) {
+  static constexpr std::array<std::string_view, 12> kNames = {
+      "float32", "float64", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "bool", "string"};
+  const auto index = static_cast<std::size_t>(type);
+  return index < kNames.size() ? kNames[index] : "unspecified";
+}
+
+// A numeric scalar in the widest carrier of its kind; every source value is exact in it.
+using ExactNumber = std::variant<int64_t, uint64_t, double>;
+
+[[nodiscard]] std::optional<ExactNumber> exactNumber(const PJ_scalar_value_t& value) {
+  switch (static_cast<PrimitiveType>(value.type)) {
+    case PrimitiveType::kFloat32:
+      return double{value.data.as_float32};
+    case PrimitiveType::kFloat64:
+      return value.data.as_float64;
+    case PrimitiveType::kInt8:
+      return int64_t{value.data.as_int8};
+    case PrimitiveType::kInt16:
+      return int64_t{value.data.as_int16};
+    case PrimitiveType::kInt32:
+      return int64_t{value.data.as_int32};
+    case PrimitiveType::kInt64:
+      return value.data.as_int64;
+    case PrimitiveType::kUint8:
+      return uint64_t{value.data.as_uint8};
+    case PrimitiveType::kUint16:
+      return uint64_t{value.data.as_uint16};
+    case PrimitiveType::kUint32:
+      return uint64_t{value.data.as_uint32};
+    case PrimitiveType::kUint64:
+      return value.data.as_uint64;
+    default:
+      return std::nullopt;  // bool and string are never converted
+  }
+}
+
+// `number` as T, or nullopt unless it converts exactly (no wrap, truncation or rounding).
+template <typename T>
+[[nodiscard]] std::optional<T> exactAs(const ExactNumber& number) {
+  return std::visit(
+      [](auto x) -> std::optional<T> {
+        using S = decltype(x);
+        if constexpr (std::is_integral_v<T> && std::is_integral_v<S>) {
+          return std::in_range<T>(x) ? std::optional<T>(static_cast<T>(x)) : std::nullopt;
+        } else if constexpr (std::is_integral_v<T>) {
+          // hi = 2^digits (= max + 1), exact in double for every integer width.
+          constexpr double hi = static_cast<double>(std::numeric_limits<T>::max() / 2 + 1) * 2.0;
+          constexpr double lo = std::is_signed_v<T> ? -hi : 0.0;
+          const bool ok = x >= lo && x < hi && x == std::trunc(x);  // false for NaN
+          return ok ? std::optional<T>(static_cast<T>(x)) : std::nullopt;
+        } else if constexpr (std::is_integral_v<S>) {
+          const T rounded = static_cast<T>(x);
+          const auto back = exactAs<S>(ExactNumber{static_cast<double>(rounded)});
+          return back == x ? std::optional<T>(rounded) : std::nullopt;
+        } else if constexpr (std::is_same_v<T, double>) {
+          return x;
+        } else {
+          if (std::isnan(x) || std::isinf(x)) {
+            return static_cast<T>(x);
+          }
+          if (std::fabs(x) > static_cast<double>(std::numeric_limits<T>::max())) {
+            return std::nullopt;
+          }
+          const T narrowed = static_cast<T>(x);
+          return static_cast<double>(narrowed) == x ? std::optional<T>(narrowed) : std::nullopt;
+        }
+      },
+      number);
+}
+
+// `value` re-encoded as `target` when it converts exactly; nullopt otherwise
+// (lossy numeric conversions, and anything to/from bool or string).
+[[nodiscard]] std::optional<PJ_scalar_value_t> coerceExact(const PJ_scalar_value_t& value, PrimitiveType target) {
+  const auto number = exactNumber(value);
+  if (!number.has_value()) {
+    return std::nullopt;
+  }
+  PJ_scalar_value_t out{};
+  out.type = static_cast<PJ_primitive_type_t>(target);
+  auto store = [&]<typename T>(T& slot) {
+    const auto converted = exactAs<T>(*number);
+    if (converted.has_value()) {
+      slot = *converted;
+    }
+    return converted.has_value();
+  };
+  bool ok = false;
+  switch (target) {
+    case PrimitiveType::kFloat32:
+      ok = store(out.data.as_float32);
+      break;
+    case PrimitiveType::kFloat64:
+      ok = store(out.data.as_float64);
+      break;
+    case PrimitiveType::kInt8:
+      ok = store(out.data.as_int8);
+      break;
+    case PrimitiveType::kInt16:
+      ok = store(out.data.as_int16);
+      break;
+    case PrimitiveType::kInt32:
+      ok = store(out.data.as_int32);
+      break;
+    case PrimitiveType::kInt64:
+      ok = store(out.data.as_int64);
+      break;
+    case PrimitiveType::kUint8:
+      ok = store(out.data.as_uint8);
+      break;
+    case PrimitiveType::kUint16:
+      ok = store(out.data.as_uint16);
+      break;
+    case PrimitiveType::kUint32:
+      ok = store(out.data.as_uint32);
+      break;
+    case PrimitiveType::kUint64:
+      ok = store(out.data.as_uint64);
+      break;
+    default:
+      break;
+  }
+  return ok ? std::optional<PJ_scalar_value_t>(out) : std::nullopt;
 }
 
 template <typename T>
@@ -331,6 +463,8 @@ struct WriteCore {
   tsl::robin_map<DatasetTopicKey, TopicHandle, DatasetTopicKeyHash> topic_cache;
   tsl::robin_map<TopicFieldKey, FieldHandle, TopicFieldKeyHash, TopicFieldKeyEq> field_cache;
   tsl::robin_map<TopicFieldIdKey, PrimitiveType, TopicFieldIdKeyHash> field_types;
+  // Fields already reported through the ingest-warning handler (once per field).
+  tsl::robin_set<TopicFieldIdKey, TopicFieldIdKeyHash> warned_fields;
 
   void setError(std::string message) {
     last_error = std::move(message);
@@ -483,8 +617,13 @@ struct WriteCore {
     return true;
   }
 
+  // With `out_column_type` null (the explicit C-ABI register path) a type
+  // mismatch against an existing column is an error. Non-null (appendRecord's
+  // lazy path) the existing column is returned with its type instead, and the
+  // caller converts the value (coerceExact).
   [[nodiscard]] bool ensureField(
-      TopicHandle topic, std::string_view field_name, PJ_primitive_type_t abi_type, FieldHandle* out_field) {
+      TopicHandle topic, std::string_view field_name, PJ_primitive_type_t abi_type, FieldHandle* out_field,
+      PrimitiveType* out_column_type = nullptr) {
     // Normalize the field name on every entry point (direct ensureField and the lazy
     // auto-create inside appendRecord). A field path is relative to its topic, so two
     // things get fixed: internal runs "//" collapse to "/", and a leading '/' (e.g. a
@@ -521,7 +660,7 @@ struct WriteCore {
       if (!lookupFieldType(topic, it->second.id, &existing)) {
         return false;
       }
-      if (existing != type) {
+      if (existing != type && out_column_type == nullptr) {
         setError(fmt::format("field '{}' already exists with a different type", field_name));
         return false;
       }
@@ -531,18 +670,32 @@ struct WriteCore {
       // in the steady state.
       if (secondary_engine != nullptr) {
         auto mirror_or =
-            secondary_engine->createTopicField(topic.id, field_name, type, std::optional<FieldId>{it->second.id});
+            secondary_engine->createTopicField(topic.id, field_name, existing, std::optional<FieldId>{it->second.id});
         if (!mirror_or.has_value()) {
           setError(fmt::format("secondary mirror createTopicField failed: {}", mirror_or.error()));
           return false;
         }
       }
       *out_field = it->second;
+      if (out_column_type != nullptr) {
+        *out_column_type = existing;
+      }
       last_error.clear();
       return true;
     }
 
-    auto field_id_or = writer.ensureColumn(topic.id, field_name, type);
+    // Cache miss on a column that may already exist with another type: a fresh
+    // core after a setTarget swap, or a column another writer created. Adopt its
+    // type so ensureColumn resolves it instead of rejecting the mismatch.
+    PrimitiveType column_type = type;
+    if (out_column_type != nullptr) {
+      const auto& columns = storage->columnDescriptors();
+      if (auto col = std::ranges::find(columns, field_name, &ColumnDescriptor::field_path); col != columns.end()) {
+        column_type = col->logical_type;
+      }
+    }
+
+    auto field_id_or = writer.ensureColumn(topic.id, field_name, column_type);
     if (!field_id_or.has_value()) {
       setError(field_id_or.error());
       return false;
@@ -561,7 +714,7 @@ struct WriteCore {
     // sentinel would silently mis-assign the first field of every topic.
     if (secondary_engine != nullptr) {
       auto mirror_or =
-          secondary_engine->createTopicField(topic.id, field_name, type, std::optional<FieldId>{*field_id_or});
+          secondary_engine->createTopicField(topic.id, field_name, column_type, std::optional<FieldId>{*field_id_or});
       if (!mirror_or.has_value()) {
         setError(fmt::format("secondary mirror createTopicField failed: {}", mirror_or.error()));
         return false;
@@ -570,22 +723,40 @@ struct WriteCore {
 
     *out_field = FieldHandle{.topic = topic, .id = *field_id_or};
     field_cache.emplace(TopicFieldKey{.topic_id = topic.id, .field_name = std::string(field_name)}, *out_field);
-    field_types[{.topic_id = topic.id, .field_id = *field_id_or}] = type;
+    field_types[{.topic_id = topic.id, .field_id = *field_id_or}] = column_type;
+    if (out_column_type != nullptr) {
+      *out_column_type = column_type;
+    }
     last_error.clear();
     return true;
   }
 
-  [[nodiscard]] bool validateScalar(const PJ_scalar_value_t& value, PrimitiveType expected, std::string_view where) {
-    auto actual_or = fromAbiType(value.type);
-    if (!actual_or.has_value()) {
-      setError(actual_or.error());
-      return false;
+  // A value of the wrong type for its column: returns it converted when that is
+  // exact, else nullopt after reporting the field (once) — the caller stores
+  // null for that field and keeps the rest of the record.
+  [[nodiscard]] std::optional<PJ_scalar_value_t> convertForColumn(
+      TopicId topic_id, FieldId field_id, const PJ_scalar_value_t& value, PrimitiveType column_type) {
+    auto converted = coerceExact(value, column_type);
+    if (converted.has_value() || !warned_fields.insert({.topic_id = topic_id, .field_id = field_id}).second) {
+      return converted;
     }
-    if (*actual_or != expected) {
-      setError(fmt::format("{}: scalar type mismatch", where));
-      return false;
+    if (auto handler = g_ingest_warning_handler.load(std::memory_order_acquire)) {
+      std::string_view topic_name = "?";
+      std::string_view field_name = "?";
+      if (const auto* storage = engine.getTopicStorage(topic_id)) {
+        topic_name = storage->descriptor().name;
+        const auto& columns = storage->columnDescriptors();
+        if (auto col = std::ranges::find(columns, field_id, &ColumnDescriptor::field_id); col != columns.end()) {
+          field_name = col->field_path;
+        }
+      }
+      handler(
+          fmt::format(
+              "{}/{}: {} value does not fit the field's {} type exactly; stored as null (reported once per field)",
+              topic_name, field_name, primitiveTypeName(static_cast<PrimitiveType>(value.type)),
+              primitiveTypeName(column_type)));
     }
-    return true;
+    return std::nullopt;
   }
 
   void setFieldValue(
@@ -644,7 +815,8 @@ struct WriteCore {
     struct ResolvedField {
       FieldHandle handle;
       PrimitiveType type;
-      const PJ_named_field_value_t* raw;
+      PJ_scalar_value_t value;
+      bool is_null;
     };
     std::vector<ResolvedField> resolved;
     resolved.reserve(field_count);
@@ -681,7 +853,7 @@ struct WriteCore {
             if (!ensureField(topic, name, field.value.type, &handle)) {
               return false;
             }
-            resolved.push_back({handle, *type_or, &field});
+            resolved.push_back({handle, *type_or, field.value, true});
           }
           continue;
         }
@@ -689,7 +861,7 @@ struct WriteCore {
         if (!lookupFieldType(topic, it->second.id, &existing)) {
           return false;
         }
-        resolved.push_back({it->second, existing, &field});
+        resolved.push_back({it->second, existing, field.value, true});
       } else {
         auto type_or = fromAbiType(field.value.type);
         if (!type_or.has_value()) {
@@ -697,13 +869,16 @@ struct WriteCore {
           return false;
         }
         FieldHandle handle{};
-        if (!ensureField(topic, name, field.value.type, &handle)) {
+        PrimitiveType column_type{};
+        if (!ensureField(topic, name, field.value.type, &handle, &column_type)) {
           return false;
         }
-        if (!validateScalar(field.value, *type_or, "appendRecord")) {
-          return false;
+        if (column_type == *type_or) {
+          resolved.push_back({handle, column_type, field.value, false});
+        } else {
+          auto converted = convertForColumn(topic.id, handle.id, field.value, column_type);
+          resolved.push_back({handle, column_type, converted.value_or(field.value), !converted.has_value()});
         }
-        resolved.push_back({handle, *type_or, &field});
       }
     }
 
@@ -713,10 +888,10 @@ struct WriteCore {
       return false;
     }
     for (const auto& field : resolved) {
-      if (field.raw->is_null) {
+      if (field.is_null) {
         writer.setNull(topic.id, static_cast<std::size_t>(field.handle.id));
       } else {
-        setFieldValue(topic.id, static_cast<std::size_t>(field.handle.id), field.type, field.raw->value);
+        setFieldValue(topic.id, static_cast<std::size_t>(field.handle.id), field.type, field.value);
       }
     }
     auto finish_status = writer.finishRow(topic.id);
@@ -738,8 +913,10 @@ struct WriteCore {
 
     tsl::robin_set<FieldId> seen_ids;
     struct ResolvedField {
+      FieldId id;
       PrimitiveType type;
-      const PJ_bound_field_value_t* raw;
+      PJ_scalar_value_t value;
+      bool is_null;
     };
     std::vector<ResolvedField> resolved;
     resolved.reserve(field_count);
@@ -757,10 +934,16 @@ struct WriteCore {
       if (!lookupFieldType(topic, field.field.id, &type)) {
         return false;
       }
-      if (!field.is_null && !validateScalar(field.value, type, "appendBoundRecord")) {
+      if (field.is_null || field.value.type == static_cast<PJ_primitive_type_t>(type)) {
+        resolved.push_back({field.field.id, type, field.value, field.is_null});
+        continue;
+      }
+      if (auto value_type_or = fromAbiType(field.value.type); !value_type_or.has_value()) {
+        setError(value_type_or.error());
         return false;
       }
-      resolved.push_back({type, &field});
+      auto converted = convertForColumn(topic.id, field.field.id, field.value, type);
+      resolved.push_back({field.field.id, type, converted.value_or(field.value), !converted.has_value()});
     }
 
     auto begin_status = writer.beginRow(topic.id, timestamp);
@@ -769,10 +952,10 @@ struct WriteCore {
       return false;
     }
     for (const auto& field : resolved) {
-      if (field.raw->is_null) {
-        writer.setNull(topic.id, static_cast<std::size_t>(field.raw->field.id));
+      if (field.is_null) {
+        writer.setNull(topic.id, static_cast<std::size_t>(field.id));
       } else {
-        setFieldValue(topic.id, static_cast<std::size_t>(field.raw->field.id), field.type, field.raw->value);
+        setFieldValue(topic.id, static_cast<std::size_t>(field.id), field.type, field.value);
       }
     }
     auto finish_status = writer.finishRow(topic.id);
@@ -2232,6 +2415,10 @@ void DatastoreParserWriteHost::setSecondaryEngine(DataEngine* secondary) {
   if (auto core = state_->core.load(std::memory_order_acquire)) {
     core->secondary_engine = (&core->engine == state_->primary_engine) ? secondary : state_->primary_engine;
   }
+}
+
+void setIngestWarningHandler(IngestWarningHandler handler) noexcept {
+  g_ingest_warning_handler.store(handler, std::memory_order_release);
 }
 
 DatastoreToolboxHost::DatastoreToolboxHost(DataEngine& engine, ObjectStore& object_store)

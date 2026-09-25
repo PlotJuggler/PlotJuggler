@@ -292,6 +292,11 @@ DataSourceRuntimeHost::DataSourceRuntimeHost(
   // Mirroring happens inside DatastoreSourceWriteHost via DataEngine's new
   // createTopic(requested_id) + createTopicField(requested_id) primitives.
   source_write_host_.setSecondaryEngine(secondary_data_engine_);
+  // Values the datastore stores as null (don't fit their column's type) are
+  // reported here. Process-wide and idempotent: every host installs the same sink.
+  setIngestWarningHandler([](std::string_view message) {
+    qCWarning(lcIngest) << QString::fromUtf8(message.data(), static_cast<qsizetype>(message.size()));
+  });
 }
 
 DataSourceRuntimeHost::~DataSourceRuntimeHost() = default;

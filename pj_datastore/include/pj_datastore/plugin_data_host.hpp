@@ -7,6 +7,7 @@
 // flushPending() seals+commits. See docs/OBJECT_STORE_DESIGN.md (ABI bridge).
 
 #include <memory>
+#include <string_view>
 
 #include "pj_base/plugin_data_api.h"
 #include "pj_base/types.hpp"
@@ -21,6 +22,15 @@ struct DatastoreParserWriteHostState;
 struct DatastoreParserObjectWriteHostState;
 struct DatastoreToolboxHostState;
 struct DatastoreToolboxObjectReadHostState;
+
+/// Receives ingest diagnostics that do not fail the write: today, a field value
+/// stored as null because it does not fit its column's type exactly (e.g. 1.5
+/// into an int64 column). Reported once per field per write host.
+using IngestWarningHandler = void (*)(std::string_view message);
+
+/// Install the process-wide IngestWarningHandler (nullptr, the default, discards).
+/// Safe to call while ingest threads run.
+void setIngestWarningHandler(IngestWarningHandler handler) noexcept;
 
 /// Bridges the `pj.source_write` C ABI onto DataWriter for a DataSource session.
 /// Owns a pimpl state; flushPending() seals+commits accumulated scalar rows.
