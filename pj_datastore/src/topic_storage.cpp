@@ -77,6 +77,9 @@ PJ::Status TopicStorage::appendSealedChunk(TopicChunk chunk) {
     chunk_agg_row_count_ += chunk.stats.row_count;
     chunk_agg_byte_size_ += chunk.stats.encoded_byte_size;
   }
+  if (whole_agg_valid_) {
+    foldWholeNumbers(chunk, +1);
+  }
 
   sealed_chunks_.push_back(std::move(chunk));
   return PJ::okStatus();
@@ -91,8 +94,15 @@ void TopicStorage::evictBefore(Timestamp t_keep_min) {
   }
 
   if (end_to_remove > 0) {
+    // Retention evicts often while streaming: subtract the dropped chunks from the
+    // whole-number counts instead of forcing a full rebuild.
+    if (whole_agg_valid_) {
+      for (std::size_t k = 0; k < end_to_remove; ++k) {
+        foldWholeNumbers(sealed_chunks_[k], -1);
+      }
+    }
     sealed_chunks_.erase(sealed_chunks_.begin(), sealed_chunks_.begin() + static_cast<std::ptrdiff_t>(end_to_remove));
-    invalidateChunkAggregate();
+    chunk_agg_valid_ = false;  // the time/size aggregate rebuilds lazily
   }
 
   // Raise the logical retention floor to the requested cutoff. Whole-chunk
@@ -169,6 +179,66 @@ void TopicStorage::ensureChunkAggregate() const noexcept {
     }
   }
   chunk_agg_valid_ = true;
+}
+
+namespace {
+[[nodiscard]] uint64_t wholeNumberEntryHash(FieldId field_id, bool whole) noexcept {
+  uint64_t x = (static_cast<uint64_t>(field_id) << 1 | (whole ? 1U : 0U)) + 0x9E3779B97F4A7C15ULL;
+  x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+  return x ^ (x >> 31);
+}
+}  // namespace
+
+void TopicStorage::foldWholeNumbers(const TopicChunk& chunk, int direction) const {
+  for (std::size_t c = 0; c < chunk.columns.size(); ++c) {
+    const auto& descriptor = chunk.columns[c].descriptor;
+    if (descriptor == nullptr) {
+      continue;
+    }
+    const StorageKind kind = storageKindOf(descriptor->logical_type);
+    if (kind != StorageKind::kFloat32 && kind != StorageKind::kFloat64) {
+      continue;
+    }
+    if (c < chunk.stats.column_stats.size() && chunk.stats.column_stats[c].null_count >= chunk.stats.row_count) {
+      continue;  // an all-null chunk holds no value of the field: no evidence either way
+    }
+    const bool fractional = c >= chunk.stats.column_stats.size() || !chunk.stats.column_stats[c].all_integral;
+    auto& counts = whole_agg_[descriptor->field_id];
+    if (counts.chunks > 0) {
+      whole_agg_signature_ -= wholeNumberEntryHash(descriptor->field_id, counts.fractional_chunks == 0);
+    }
+    counts.chunks += static_cast<uint32_t>(direction);
+    counts.fractional_chunks += fractional ? static_cast<uint32_t>(direction) : 0U;
+    if (counts.chunks > 0) {
+      whole_agg_signature_ += wholeNumberEntryHash(descriptor->field_id, counts.fractional_chunks == 0);
+    } else {
+      whole_agg_.erase(descriptor->field_id);
+    }
+  }
+}
+
+void TopicStorage::ensureWholeNumberAggregate() const {
+  if (whole_agg_valid_) {
+    return;
+  }
+  whole_agg_.clear();
+  whole_agg_signature_ = 0;
+  for (const auto& chunk : sealed_chunks_) {
+    foldWholeNumbers(chunk, +1);
+  }
+  whole_agg_valid_ = true;
+}
+
+std::optional<bool> TopicStorage::wholeNumbersOnly(FieldId field_id) const {
+  ensureWholeNumberAggregate();
+  const auto it = whole_agg_.find(field_id);
+  return it == whole_agg_.end() ? std::nullopt : std::optional<bool>(it->second.fractional_chunks == 0);
+}
+
+uint64_t TopicStorage::wholeNumbersSignature() const {
+  ensureWholeNumberAggregate();
+  return whole_agg_signature_;
 }
 
 void TopicStorage::setColumnDescriptors(std::vector<ColumnDescriptor> descs) noexcept {

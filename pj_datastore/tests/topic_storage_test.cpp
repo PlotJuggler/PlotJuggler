@@ -6,7 +6,9 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "pj_base/expected.hpp"
@@ -469,6 +471,122 @@ TEST(TopicStorageTest, DetachRestoreRoundTripsChunksAndMutableMetadata) {
   EXPECT_EQ(restored.stats.t_max, 5000);
   EXPECT_EQ(restored.readNumericAsDouble(0, 0), 0.0);
   EXPECT_EQ(restored.readNumericAsDouble(0, 30), 30.0);
+}
+
+// ===========================================================================
+// wholeNumbersOnly(): per float field, AND of ColumnStats::all_integral
+// ===========================================================================
+
+TopicChunk makeFloatChunk(Timestamp t, std::vector<double> values) {
+  std::vector<ColumnDescriptor> cols = {{7, PrimitiveType::kFloat64, "mode"}, {8, PrimitiveType::kInt64, "count"}};
+  TopicChunkBuilder builder(/*topic_id=*/1, /*schema_id=*/0, cols, /*max_rows=*/1000);
+  for (const double v : values) {
+    builder.beginRow(t++);
+    builder.set(0, v);
+    builder.set(1, int64_t{1});
+    builder.finishRow();
+  }
+  return builder.seal();
+}
+
+TEST(TopicStorageTest, WholeNumbersOnlyFoldsChunksAndSignalsFlips) {
+  TopicStorage storage(/*topic_id=*/1, TopicDescriptor{.name = "json"});
+  EXPECT_EQ(storage.wholeNumbersOnly(7), std::nullopt);  // no data yet
+  const uint64_t empty_signature = storage.wholeNumbersSignature();
+
+  ASSERT_TRUE(storage.appendSealedChunk(makeFloatChunk(0, {1.0, 2.0})).has_value());
+  EXPECT_EQ(storage.wholeNumbersOnly(7), std::optional<bool>(true));
+  EXPECT_EQ(storage.wholeNumbersOnly(8), std::nullopt) << "integer columns are not tracked";
+  const uint64_t whole_signature = storage.wholeNumbersSignature();
+  EXPECT_NE(whole_signature, empty_signature) << "the field appearing must change the signature";
+
+  ASSERT_TRUE(storage.appendSealedChunk(makeFloatChunk(10, {3.0})).has_value());
+  EXPECT_EQ(storage.wholeNumbersSignature(), whole_signature) << "more whole chunks change nothing";
+
+  ASSERT_TRUE(storage.appendSealedChunk(makeFloatChunk(20, {3.5})).has_value());
+  EXPECT_EQ(storage.wholeNumbersOnly(7), std::optional<bool>(false));
+  const uint64_t fractional_signature = storage.wholeNumbersSignature();
+  EXPECT_NE(fractional_signature, whole_signature) << "the flip must change the signature";
+
+  ASSERT_TRUE(storage.appendSealedChunk(makeFloatChunk(30, {4.0})).has_value());
+  EXPECT_EQ(storage.wholeNumbersOnly(7), std::optional<bool>(false)) << "a fractional chunk is sticky";
+}
+
+TEST(TopicStorageTest, WholeNumbersOnlyFollowsClearEvictAndRestore) {
+  TopicStorage storage(/*topic_id=*/1, TopicDescriptor{.name = "json"});
+  ASSERT_TRUE(storage.appendSealedChunk(makeFloatChunk(0, {0.5})).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeFloatChunk(100, {2.0})).has_value());
+  ASSERT_EQ(storage.wholeNumbersOnly(7), std::optional<bool>(false));
+  const uint64_t fractional_signature = storage.wholeNumbersSignature();
+
+  // Evicting the only fractional chunk: the retained data is whole again.
+  storage.evictBefore(50);
+  EXPECT_EQ(storage.wholeNumbersOnly(7), std::optional<bool>(true));
+
+  auto detached = storage.detachChunks();
+  EXPECT_EQ(storage.wholeNumbersOnly(7), std::nullopt);
+  ASSERT_TRUE(storage.appendSealedChunk(makeFloatChunk(200, {0.25})).has_value());
+  EXPECT_EQ(storage.wholeNumbersOnly(7), std::optional<bool>(false));
+  storage.restoreChunks(std::move(detached));
+  EXPECT_EQ(storage.wholeNumbersOnly(7), std::optional<bool>(true));
+
+  storage.clearChunks();
+  EXPECT_EQ(storage.wholeNumbersOnly(7), std::nullopt);
+  EXPECT_NE(storage.wholeNumbersSignature(), fractional_signature);
+}
+
+// Eviction subtracts the dropped chunks from the counts (no rebuild): the
+// answers must match a from-scratch rebuild at every step.
+TEST(TopicStorageTest, WholeNumbersOnlyEvictionMatchesRebuild) {
+  TopicStorage storage(/*topic_id=*/1, TopicDescriptor{.name = "json"});
+  ASSERT_TRUE(storage.appendSealedChunk(makeFloatChunk(0, {1.0})).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeFloatChunk(100, {1.5})).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeFloatChunk(200, {2.5})).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeFloatChunk(300, {3.0})).has_value());
+  ASSERT_EQ(storage.wholeNumbersOnly(7), std::optional<bool>(false));  // aggregate built, now incremental
+
+  const auto rebuilt = [&storage] {
+    TopicStorage copy(/*topic_id=*/1, TopicDescriptor{.name = "json"});
+    for (const TopicChunk& chunk : storage.sealedChunks()) {
+      EXPECT_TRUE(copy.appendSealedChunk(chunk).has_value());
+    }
+    return std::pair{copy.wholeNumbersOnly(7), copy.wholeNumbersSignature()};
+  };
+
+  storage.evictBefore(150);  // drops the 1.0 and 1.5 chunks; 2.5 still fractional
+  EXPECT_EQ(storage.wholeNumbersOnly(7), std::optional<bool>(false));
+  EXPECT_EQ(std::pair(storage.wholeNumbersOnly(7), storage.wholeNumbersSignature()), rebuilt());
+
+  storage.evictBefore(250);  // drops the last fractional chunk
+  EXPECT_EQ(storage.wholeNumbersOnly(7), std::optional<bool>(true));
+  EXPECT_EQ(std::pair(storage.wholeNumbersOnly(7), storage.wholeNumbersSignature()), rebuilt());
+
+  ASSERT_TRUE(storage.appendSealedChunk(makeFloatChunk(400, {4.25})).has_value());  // appends still fold in
+  EXPECT_EQ(storage.wholeNumbersOnly(7), std::optional<bool>(false));
+
+  storage.evictBefore(1000);  // everything
+  EXPECT_EQ(storage.wholeNumbersOnly(7), std::nullopt);
+  EXPECT_EQ(std::pair(storage.wholeNumbersOnly(7), storage.wholeNumbersSignature()), rebuilt());
+}
+
+// A chunk where the field is null in every row holds no value of it, so it is
+// no evidence of whole numbers: evicting the field's only valued chunk leaves
+// "no data" (nullopt), not "whole" — an optional field must not flicker discrete.
+TEST(TopicStorageTest, AllNullChunkDoesNotCountAsWholeNumbers) {
+  TopicStorage storage(/*topic_id=*/1, TopicDescriptor{.name = "json"});
+  ASSERT_TRUE(storage.appendSealedChunk(makeFloatChunk(0, {21.5})).has_value());
+  std::vector<ColumnDescriptor> cols = {{7, PrimitiveType::kFloat64, "mode"}};
+  TopicChunkBuilder builder(/*topic_id=*/1, /*schema_id=*/0, cols, /*max_rows=*/1000);
+  for (Timestamp t = 100; t < 103; ++t) {
+    builder.beginRow(t);
+    builder.setNull(0);
+    builder.finishRow();
+  }
+  ASSERT_TRUE(storage.appendSealedChunk(builder.seal()).has_value());
+  EXPECT_EQ(storage.wholeNumbersOnly(7), std::optional<bool>(false));
+
+  storage.evictBefore(50);
+  EXPECT_EQ(storage.wholeNumbersOnly(7), std::nullopt);
 }
 
 }  // namespace

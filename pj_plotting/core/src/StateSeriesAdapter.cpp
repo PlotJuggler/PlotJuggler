@@ -53,7 +53,16 @@ namespace {
     case PrimitiveType::kUint64:
       return QString::number(chunk.readNumericAsUint64(column_index, row_index));
     case PrimitiveType::kFloat32:
-    case PrimitiveType::kFloat64:
+    case PrimitiveType::kFloat64: {
+      // A float column is only discrete while it holds whole numbers
+      // (ScalarFieldPayload::whole_numbers_only): label them as integers. A
+      // fractional value (the catalog has not caught up yet) reads as null.
+      const double value = chunk.readNumericAsDouble(column_index, row_index);
+      if (!encoding::isWholeInt64(value)) {
+        return std::nullopt;
+      }
+      return QString::number(static_cast<qlonglong>(value));
+    }
     case PrimitiveType::kUnspecified:
       return std::nullopt;
   }

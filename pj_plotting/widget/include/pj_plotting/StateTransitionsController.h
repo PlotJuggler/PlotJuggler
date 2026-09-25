@@ -30,7 +30,8 @@ class SessionManager;
 /// the range max so bands reach the right edge).
 ///
 /// The view stays runtime-agnostic: this controller injects the droppable
-/// predicate (CatalogModel::isDiscreteKey — string/integer/bool series),
+/// predicate (CatalogModel::isDiscreteKey — string/integer/bool series, and
+/// floats holding only whole numbers),
 /// answers its seriesDropped / rowRemoveRequested intents, and re-feeds rows.
 /// The dock widget owns persistence; it reads currentSeries() and replays keys
 /// via addSeries().

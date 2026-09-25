@@ -79,7 +79,7 @@ class StateTransitionsControllerTest : public ::testing::Test {
 
     appendState(writer, {{0, "IDLE"}, {5, "RUNNING"}});
     ASSERT_TRUE(writer.beginRow(numeric_topic_id_, 0).has_value());
-    writer.set(numeric_topic_id_, 0, 1.0);
+    writer.set(numeric_topic_id_, 0, 1.5);  // fractional: a float that is NOT a state
     ASSERT_TRUE(writer.finishRow(numeric_topic_id_).has_value());
     ASSERT_TRUE(writer.beginRow(*int_topic_or, 0).has_value());
     writer.set(*int_topic_or, 0, static_cast<int32_t>(2));
@@ -157,7 +157,8 @@ class StateTransitionsControllerTest : public ::testing::Test {
   /// field with a DIFFERENT primitive — the schema-drift case rebindRowFromCatalog
   /// exists for. Follows the replaceDataset contract: stage into a throwaway
   /// engine/store, replace, rebuild the catalog with no event loop between.
-  void replaceStateTopicWithType(PrimitiveType type) {
+  // Float retypes write fractional values unless `whole_floats` (0.0, 1.0).
+  void replaceStateTopicWithType(PrimitiveType type, bool whole_floats = false) {
     DataEngine staged_engine;
     ObjectStore staged_store;
     auto staged_dataset_or = staged_engine.createDataset(DatasetDescriptor{.source_name = "test.mcap"});
@@ -176,7 +177,7 @@ class StateTransitionsControllerTest : public ::testing::Test {
       if (type == PrimitiveType::kInt64) {
         writer.set(*topic_or, 0, static_cast<int64_t>(second + 1));
       } else {
-        writer.set(*topic_or, 0, static_cast<double>(second));
+        writer.set(*topic_or, 0, static_cast<double>(second) + (whole_floats ? 0.0 : 0.5));
       }
       ASSERT_TRUE(writer.finishRow(*topic_or).has_value());
     }
@@ -328,6 +329,50 @@ TEST_F(StateTransitionsControllerTest, ReplaceRetypeToFloatDropsRow) {
   EXPECT_EQ(controller_->rowCount(), 0);
   EXPECT_EQ(view_->rowCountForTest(), 0);
   EXPECT_GE(changed.count(), 1);
+}
+
+TEST_F(StateTransitionsControllerTest, ReplaceRetypeToWholeNumberFloatKeepsRow) {
+  ASSERT_TRUE(controller_->addSeries(string_key_));
+
+  // Retyped to a float that only holds whole numbers (JSON integers parsed as
+  // double): still discrete, so the row stays and relabels as integers.
+  replaceStateTopicWithType(PrimitiveType::kFloat64, /*whole_floats=*/true);
+  waitForCoalescedRefresh();
+  ASSERT_EQ(controller_->rowCount(), 1);
+  const StateRow row = view_->rowForTest(0);
+  ASSERT_EQ(row.segments.size(), 2U);
+  EXPECT_EQ(row.segments[0].value, u"0"_s);
+  EXPECT_EQ(row.segments[1].value, u"1"_s);
+}
+
+TEST_F(StateTransitionsControllerTest, ItemsChangedDropsRowThatStoppedBeingDiscrete) {
+  // Commits go straight to the engine (no SessionManager::samplesIngested), so
+  // only the catalog's itemsChanged can tell the controller: the row drop must
+  // not depend on the order in which ingest slots run.
+  auto writer = session_.dataEngine().createWriter();
+  auto schema_or = writer.registerSchema("level_sample", makePrimitive("level", PrimitiveType::kFloat64));
+  ASSERT_TRUE(schema_or.has_value());
+  TopicDescriptor descriptor;
+  descriptor.name = "/robot/level";
+  descriptor.schema_id = *schema_or;
+  auto topic_or = writer.registerTopic(dataset_id_, descriptor);
+  ASSERT_TRUE(topic_or.has_value());
+  ASSERT_TRUE(writer.bindTopicWriter(*topic_or).has_value());
+  const auto commit = [&](Timestamp second, double value) {
+    ASSERT_TRUE(writer.beginRow(*topic_or, second * kNs).has_value());
+    writer.set(*topic_or, 0, value);
+    ASSERT_TRUE(writer.finishRow(*topic_or).has_value());
+    EXPECT_FALSE(session_.dataEngine().commitChunks(writer.flushAll()).empty());
+    catalog_->rebuildFromDatastore();
+  };
+  commit(0, 1.0);
+  const QString key = keyFor(u"level"_s);
+  ASSERT_TRUE(controller_->addSeries(key));
+  ASSERT_EQ(controller_->rowCount(), 1);
+
+  commit(1, 1.5);
+  waitForCoalescedRefresh();
+  EXPECT_EQ(controller_->rowCount(), 0);
 }
 
 TEST_F(StateTransitionsControllerTest, CatalogRemovalPrunesRows) {

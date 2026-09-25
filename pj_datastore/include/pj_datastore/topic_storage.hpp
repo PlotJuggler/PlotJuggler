@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -167,6 +168,17 @@ class TopicStorage {
   [[nodiscard]] uint64_t seriesGeneration() const noexcept {
     return series_generation_;
   }
+  /// For a float field: whether every non-null value in the retained chunks is a
+  /// whole number (ColumnStats::all_integral ANDed over the chunks). nullopt when
+  /// no retained chunk carries the field as a float column. Lets consumers treat a
+  /// float column that only ever held integers (e.g. JSON integers parsed as
+  /// double) as discrete. Maintained incrementally on append; rebuilt from
+  /// per-chunk stats after a destructive mutation.
+  [[nodiscard]] std::optional<bool> wholeNumbersOnly(FieldId field_id) const;
+  /// Changes whenever any wholeNumbersOnly() answer changes (a float field gains
+  /// its first chunk, or its first fractional chunk), so caches keyed on it (the
+  /// catalog fingerprint) can detect the flip without scanning every field.
+  [[nodiscard]] uint64_t wholeNumbersSignature() const;
 
   /// Update descriptor schema id for future writes.
   void updateSchema(SchemaId new_schema);
@@ -204,12 +216,18 @@ class TopicStorage {
   /// appendSealedChunk (friend moves, eviction, clear).
   void invalidateChunkAggregate() const noexcept {
     chunk_agg_valid_ = false;
+    whole_agg_valid_ = false;
   }
 
   /// Rebuild the cached aggregate from per-chunk stats when invalid. Stats-only
   /// scan — never walks column buffers (their encoded size is memoized in
   /// ChunkStats::encoded_byte_size at append time).
   void ensureChunkAggregate() const noexcept;
+  /// Same lazy scheme for the whole-number aggregate (kept apart because its map
+  /// can allocate, so it cannot live in the noexcept rebuild above).
+  void ensureWholeNumberAggregate() const;
+  /// Add (+1) or remove (-1) one chunk's float columns from the aggregate.
+  void foldWholeNumbers(const TopicChunk& chunk, int direction) const;
 
   TopicId topic_id_;
   TopicDescriptor descriptor_;
@@ -224,6 +242,17 @@ class TopicStorage {
   mutable Timestamp chunk_agg_t_max_ = 0;
   mutable uint64_t chunk_agg_row_count_ = 0;
   mutable uint64_t chunk_agg_byte_size_ = 0;
+  // wholeNumbersOnly() aggregate: per float field, how many retained chunks carry
+  // it and how many of those are not all_integral — counts (not a plain AND) so
+  // prefix eviction can subtract exactly instead of rebuilding. Plus an
+  // order-independent signature of the answers (see wholeNumbersSignature()).
+  struct WholeNumberCounts {
+    uint32_t chunks = 0;
+    uint32_t fractional_chunks = 0;
+  };
+  mutable bool whole_agg_valid_ = false;
+  mutable std::unordered_map<FieldId, WholeNumberCounts> whole_agg_;
+  mutable uint64_t whole_agg_signature_ = 0;
 
   std::vector<ColumnDescriptor> column_descriptors_;  // for schema_id==0 topics
   uint32_t max_observed_array_length_ = 0;

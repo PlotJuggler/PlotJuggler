@@ -232,6 +232,47 @@ TEST_F(StateTransitionsDockWidgetTest, PendingSeriesResolvesWhenDatasetLoadsLate
   EXPECT_TRUE(kept.nextSiblingElement(u"series"_s).isNull());
 }
 
+TEST_F(StateTransitionsDockWidgetTest, PendingSeriesResolvesWhenFloatFieldBecomesDiscrete) {
+  // A float topic registered with no data yet: its catalog item exists but is
+  // not discrete, so a saved strip row for it stays pending...
+  auto writer = session_.dataEngine().createWriter();
+  auto schema_or = writer.registerSchema("level_sample", makePrimitive("level", PrimitiveType::kFloat64));
+  ASSERT_TRUE(schema_or.has_value());
+  TopicDescriptor descriptor;
+  descriptor.name = "/robot/level";
+  descriptor.schema_id = *schema_or;
+  auto topic_or = writer.registerTopic(dataset_id_, descriptor);
+  ASSERT_TRUE(topic_or.has_value());
+  ASSERT_TRUE(writer.bindTopicWriter(*topic_or).has_value());
+  catalog_->rebuildFromDatastore();
+
+  auto dock = makeDock();
+  ASSERT_TRUE(dock->tryAcceptSeriesKeys({string_key_}));
+  QDomDocument doc;
+  QDomElement saved = dock->xmlSaveState(doc);
+  QDomElement series = saved.firstChildElement(u"series"_s);
+  series.setAttribute(u"topic"_s, u"/robot/level"_s);
+  series.setAttribute(u"field"_s, u"level"_s);
+
+  auto restored = makeDock();
+  ASSERT_TRUE(restored->xmlLoadState(saved));
+  ASSERT_EQ(restored->controller()->rowCount(), 0);
+
+  // ...until its first whole-number data makes it discrete. The catalog key is
+  // unchanged (no itemsAdded), so the capability-change notice must retry it.
+  QSignalSpy capability_changed(catalog_.get(), &CatalogModel::itemsChanged);
+  for (int second = 0; second < 2; ++second) {
+    ASSERT_TRUE(writer.beginRow(*topic_or, second * kNs).has_value());
+    writer.set(*topic_or, 0, static_cast<double>(second + 1));
+    ASSERT_TRUE(writer.finishRow(*topic_or).has_value());
+  }
+  EXPECT_FALSE(session_.commitChunks(writer.flushAll()).empty());
+  catalog_->rebuildFromDatastore();
+
+  EXPECT_EQ(capability_changed.count(), 1);
+  EXPECT_EQ(restored->controller()->rowCount(), 1);
+}
+
 TEST_F(StateTransitionsDockWidgetTest, TrackerTimeDrivesPlayhead) {
   auto dock = makeDock();
   dock->onTrackerTime(2.5);

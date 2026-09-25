@@ -976,6 +976,61 @@ TEST(CatalogModelTest, CapabilityMatrixSplitsPlottableAndDiscrete) {
   EXPECT_TRUE(unqualified.has_value());
 }
 
+// A float column that has only held whole numbers (JSON integers parsed as
+// double) is offered to the State Transitions strip; its first fractional value
+// takes it out again.
+TEST(CatalogModelTest, WholeNumberFloatIsDiscreteUntilAFractionalValue) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot.json"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto schema = PJ::makeStruct(
+      "status", {
+                    PJ::makePrimitive("mode", PJ::PrimitiveType::kFloat64),
+                    PJ::makePrimitive("speed", PJ::PrimitiveType::kFloat64),
+                });
+  auto schema_or = writer.registerSchema("status", schema);
+  ASSERT_TRUE(schema_or.has_value()) << schema_or.error();
+  PJ::TopicDescriptor descriptor;
+  descriptor.name = "/robot/status";
+  descriptor.schema_id = *schema_or;
+  auto topic_or = writer.registerTopic(*dataset, descriptor);
+  ASSERT_TRUE(topic_or.has_value()) << topic_or.error();
+  ASSERT_TRUE(writer.bindTopicWriter(*topic_or).has_value());
+  const auto commit_rows = [&](std::initializer_list<std::pair<double, double>> rows, PJ::Timestamp t) {
+    for (const auto& [mode, speed] : rows) {
+      ASSERT_TRUE(writer.beginRow(*topic_or, t++).has_value());
+      writer.set(*topic_or, 0, mode);
+      writer.set(*topic_or, 1, speed);
+      ASSERT_TRUE(writer.finishRow(*topic_or).has_value());
+    }
+    ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  };
+  commit_rows({{2.0, 0.5}, {3.0, 1.5}}, 1'000'000'000);
+
+  QHash<QString, QString> key_by_field;
+  for (const PJ::CatalogItem& item : catalog.items()) {
+    key_by_field.insert(PJ::asScalarField(item)->field_path, item.key);
+  }
+  ASSERT_EQ(key_by_field.size(), 2);
+  EXPECT_TRUE(catalog.isDiscreteKey(key_by_field[u"mode"_s]));
+  EXPECT_FALSE(catalog.isDiscreteKey(key_by_field[u"speed"_s]));
+  EXPECT_TRUE(catalog.curveDescriptor(key_by_field[u"mode"_s], PJ::SeriesCapability::kDiscrete).has_value());
+  EXPECT_TRUE(catalog.curveDescriptor(key_by_field[u"mode"_s], PJ::SeriesCapability::kPlottable).has_value());
+  EXPECT_FALSE(catalog.curveDescriptor(key_by_field[u"speed"_s], PJ::SeriesCapability::kDiscrete).has_value());
+
+  QSignalSpy capability_changed(&catalog, &PJ::CatalogModel::itemsChanged);
+  commit_rows({{2.5, 2.0}}, 2'000'000'000);
+  ASSERT_EQ(capability_changed.count(), 1);
+  EXPECT_EQ(capability_changed.at(0).at(0).toStringList(), QStringList{key_by_field[u"mode"_s]});
+  EXPECT_FALSE(catalog.isDiscreteKey(key_by_field[u"mode"_s]));
+  EXPECT_FALSE(catalog.curveDescriptor(key_by_field[u"mode"_s], PJ::SeriesCapability::kDiscrete).has_value());
+  EXPECT_TRUE(catalog.curveDescriptor(key_by_field[u"mode"_s], PJ::SeriesCapability::kPlottable).has_value());
+}
+
 // --- Advertised (available-but-unsubscribed) placeholders (per-topic pause) ---
 
 TEST(CatalogModelTest, AdvertisedTopicsAppearAsDataLessPlaceholders) {

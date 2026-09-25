@@ -37,6 +37,12 @@ struct ScalarFieldPayload {
   TopicId topic_id = 0;
   std::size_t column_index = 0;
   PrimitiveType logical_type = PrimitiveType::kUnspecified;
+  // Float columns: every value retained so far is a whole number
+  // (TopicStorage::wholeNumbersOnly), e.g. JSON integers parsed as double. Such
+  // a column is also offered as a discrete state series (isDiscreteField).
+  bool whole_numbers_only = false;
+
+  friend bool operator==(const ScalarFieldPayload&, const ScalarFieldPayload&) = default;
 };
 
 // Consumer-family predicates over a scalar column's schema-declared primitive.
@@ -91,6 +97,12 @@ struct ScalarFieldPayload {
   return false;
 }
 
+// A scalar field the state strip can display: a discrete primitive, or a float
+// column that has only ever held whole numbers.
+[[nodiscard]] constexpr bool isDiscreteField(const ScalarFieldPayload& field) noexcept {
+  return isDiscretePrimitive(field.logical_type) || field.whole_numbers_only;
+}
+
 // Which consumer family a saved series identity may (re)bind to — the resolver
 // filter of resolveCurveKey / descriptorForPath. A capability selector over the
 // predicates above, so the overlap is deliberate: a strip series saved against
@@ -98,7 +110,7 @@ struct ScalarFieldPayload {
 // reload (both are kDiscrete), while a plot curve can never bind a string.
 enum class SeriesCapability : uint8_t {
   kPlottable,  // numeric curves a plot can draw (floats, integers, bool)
-  kDiscrete,   // state series the strip can display (strings, integers, bool)
+  kDiscrete,   // state series the strip can display (strings, integers, bool, whole-number floats)
 };
 
 // Object-topic payload: time-indexed canonical-object stream from the object
@@ -107,6 +119,8 @@ struct ObjectTopicPayload {
   ObjectTopicId object_topic_id;
   sdk::BuiltinObjectType object_type = sdk::BuiltinObjectType::kNone;
   QString metadata_json;
+
+  friend bool operator==(const ObjectTopicPayload&, const ObjectTopicPayload&) = default;
 };
 
 // Advertised-topic payload: a topic a streaming source knows it can stream but
@@ -118,6 +132,8 @@ struct ObjectTopicPayload {
 // always-active infrastructure tier (TF / CameraInfo).
 struct AdvertisedTopicPayload {
   sdk::BuiltinObjectType classification = sdk::BuiltinObjectType::kNone;
+
+  friend bool operator==(const AdvertisedTopicPayload&, const AdvertisedTopicPayload&) = default;
 };
 
 // A single entry in the catalog. The variant payload statically separates
@@ -132,6 +148,8 @@ struct CatalogItem {
   QString topic_name;
   DatasetId dataset_id;
   std::variant<ScalarFieldPayload, ObjectTopicPayload, AdvertisedTopicPayload> payload;
+
+  friend bool operator==(const CatalogItem&, const CatalogItem&) = default;
 };
 
 // True for canonical object types the 2D scene module (pj_scene2D) can display
@@ -238,8 +256,9 @@ class CatalogModel : public QObject {
   [[nodiscard]] bool isStringKey(const QString& key) const;
 
   // True iff `key` names a scalar field the State Transitions strip can display
-  // (string / integer / bool — see isDiscretePrimitive). Superset of
-  // isStringKey; overlaps the plottable family on integers and bools.
+  // (string / integer / bool, or a float holding only whole numbers — see
+  // isDiscreteField). Superset of isStringKey; overlaps the plottable family on
+  // integers, bools and whole-number floats.
   [[nodiscard]] bool isDiscreteKey(const QString& key) const;
 
   // Latest string value at or before display-axis time `display_seconds` for the
@@ -389,6 +408,11 @@ class CatalogModel : public QObject {
   // that vanished on a rebuild) so consumers react once, not per key.
   void itemsRemoved(const QStringList& keys);
   void cleared();
+  // Keys that survived a rebuild with a different item (payload or labels): e.g.
+  // a float field turning discrete on its first whole-number chunk, or a reload
+  // retyping a column. The key is unchanged, so itemsAdded/itemsRemoved do not
+  // fire for it; consumers that resolve keys by capability re-resolve here.
+  void itemsChanged(const QStringList& keys);
 
  private:
   // Connected to SessionManager::samplesIngested in place of a direct

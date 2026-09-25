@@ -33,6 +33,9 @@ StateTransitionsDockWidget::StateTransitionsDockWidget(
     // its items surface, so a layout restored mid-load self-heals like plot
     // curves do (PendingDisplayBinder's flush, in strip form).
     connect(catalog_, &CatalogModel::itemsAdded, this, &StateTransitionsDockWidget::retryPendingSeries);
+    // A surviving key whose item changed (e.g. a float field turning discrete on
+    // its first whole-number data) surfaces no new key, so retry on that too.
+    connect(catalog_, &CatalogModel::itemsChanged, this, &StateTransitionsDockWidget::retryPendingSeries);
   }
 }
 

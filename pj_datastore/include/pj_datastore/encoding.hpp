@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -32,8 +33,9 @@ struct ConstantEncoded {
 
 // ---------------------------------------------------------------------------
 // Frame of Reference — subtract min, store narrowed offsets
-// (Applied to kInt32 and kInt64 columns; kUint64 is excluded because large
-//  unsigned values overflow the int64_t reference.)
+// (Applied to kInt32 and kInt64 columns, and to float32/float64 chunks whose
+//  values are all whole numbers; kUint64 is excluded because large unsigned
+//  values overflow the int64_t reference.)
 // ---------------------------------------------------------------------------
 struct FrameOfReferenceEncoded {
   /// Base value added to each offset during decode.
@@ -106,7 +108,8 @@ using EncodedData = std::variant<RawBuffer, ConstantEncoded, FrameOfReferenceEnc
 
 // ---------------------------------------------------------------------------
 // Frame of Reference encoding functions
-// Data must be kInt32 or kInt64 values.
+// Data must be kInt32 or kInt64 values (whole-number float chunks are converted
+// to int64 before encoding).
 // ---------------------------------------------------------------------------
 /// Encode signed integers as offsets from `min_val`.
 [[nodiscard]] FrameOfReferenceEncoded forEncode(
@@ -119,6 +122,13 @@ using EncodedData = std::variant<RawBuffer, ConstantEncoded, FrameOfReferenceEnc
 
 /// Decode a contiguous FOR range into `out`.
 void forDecodeRangeAsDoubles(const FrameOfReferenceEncoded& enc, PJ::Span<double> out, std::size_t row_start);
+
+/// True when `v` is a whole number representable as int64: finite, inside
+/// [-2^63, 2^63), no fractional part. Such a float is an exact integer, which is
+/// what lets whole-number float chunks use frame-of-reference.
+[[nodiscard]] inline bool isWholeInt64(double v) noexcept {
+  return v >= -0x1p63 && v < 0x1p63 && v == std::trunc(v);  // false for NaN
+}
 
 // ---------------------------------------------------------------------------
 // Byte-width helpers

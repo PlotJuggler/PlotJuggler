@@ -58,7 +58,7 @@ Hierarchy: **Dataset -> Topic -> Chunk -> Column**
 - *Row-at-a-time*: `beginRow(timestamp)` -> `set<T>(col, value)` / `setNull(col)` -> `finishRow()`. `finishRow()` pads unset columns with null.
 - *Bulk*: `appendTimestamps(span)` -> `appendColumn<T>(col, span)` per column -> `appendColumnValidity(col, bitspan)` -> `finishBulkAppend()` (computes stats).
 
-Tracks per-column `ColumnStats` incrementally (min, max, null_count, is_constant, run_count). `seal()` encodes columns, assigns a monotonic `ChunkId` via `std::atomic<ChunkId>`, and produces an immutable `TopicChunk`.
+Tracks per-column `ColumnStats` incrementally (min, max, null_count, is_constant, run_count); `seal()` adds `all_integral` for float columns (every non-null value a whole number). `TopicStorage::wholeNumbersOnly(field)` ANDs that flag over the retained chunks (incremental on append, rebuilt lazily after clear/evict/restore/moves) and `wholeNumbersSignature()` changes whenever an answer does — the catalog uses both to offer whole-number float columns as discrete state series. `seal()` encodes columns, assigns a monotonic `ChunkId` via `std::atomic<ChunkId>`, and produces an immutable `TopicChunk`.
 
 **`TopicStorage`** — Per-topic container of committed chunks in a `std::deque<TopicChunk>`. `appendSealedChunk()` appends in commit order without rejecting any chunk — out-of-order ingest means chunk time ranges may overlap, so queries merge across them (see §5). `evictBefore()` removes the contiguous prefix of chunks whose `t_max < threshold` and raises a per-topic retention floor. Also stores column descriptors for schemaless (schema_id == 0) topics and per-field array expansion counts.
 
@@ -119,9 +119,9 @@ Five `EncodingType` values, selected at seal time per column:
 
 | EncodingType | When used | Representation |
 |---|---|---|
-| kRaw (`RawBuffer`) | Default for float/uint64 when not constant | Typed byte buffer |
+| kRaw (`RawBuffer`) | Default for uint64, and for floats with fractional/special values, when not constant | Typed byte buffer |
 | kConstant (`ConstantEncoded`) | All non-null values equal (`is_constant && rowCount > 0`) | 8-byte value + count |
-| kFrameOfReference (`FrameOfReferenceEncoded`) | kInt32/kInt64 when range fits in fewer bytes | int64 reference + packed uint8/16/32 offsets |
+| kFrameOfReference (`FrameOfReferenceEncoded`) | kInt32/kInt64, and float32/float64 chunks holding only whole numbers, when the range fits in fewer bytes | int64 reference + packed uint8/16/32 offsets |
 | kDictionary (`DictionaryEncoded`) | Always for kString | Unique string list + narrowed uint8/16/32 indices |
 | kPackedBool (`PackedBools`) | kBool when not constant | 1 bit per value, LSB first |
 
@@ -131,7 +131,8 @@ Encoding selection in `TopicChunkBuilder::seal()`:
 1. **Strings**: always dictionary encoded via `dictionaryEncodeStrings()`.
 2. **Bools**: constant if `is_constant`, otherwise packed bits via `packBools()`.
 3. **Signed integers** (kInt32/kInt64): recomputes exact int64 min/max from raw buffer (avoids double-precision loss). Constant if all equal, frame-of-reference if `offsetBytesFor(range) < storageKindSize(kind)`, otherwise raw.
-4. **Float32/float64/uint64**: constant if `is_constant`, otherwise raw.
+4. **Float32/float64**: constant if `is_constant`; otherwise, if every value is a whole number (finite, not `-0.0`, inside the int64 range), frame-of-reference over the int64 values when `offsetBytesFor(range) < storageKindSize(kind)`; otherwise raw. The column keeps its declared float type, and FOR decoding (`reference + offset`) reproduces the original floats exactly — a whole float is an exact integer at any magnitude.
+5. **Uint64**: constant if `is_constant`, otherwise raw.
 
 ### Derived Layer
 

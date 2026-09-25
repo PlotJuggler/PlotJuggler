@@ -5,7 +5,9 @@
 
 #include <gtest/gtest.h>
 
+#include <bit>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -72,7 +74,8 @@ TEST(ChunkTest, BuildAndSealFloat32Chunk) {
   EXPECT_EQ(chunk.stats.row_count, 5U);
   EXPECT_EQ(chunk.columns.size(), 3U);
   for (std::size_t c = 0; c < 3; ++c) {
-    EXPECT_EQ(chunk.columnEncoding(c), EncodingType::kRaw);
+    // Whole-number floats with a narrow range: frame-of-reference.
+    EXPECT_EQ(chunk.columnEncoding(c), EncodingType::kFrameOfReference);
   }
 }
 
@@ -717,10 +720,10 @@ TEST(ChunkTest, WideRangeIntColumnStaysRaw) {
 }
 
 // ===========================================================================
-// NEW: Float column always stays raw (never gets FOR)
+// NEW: Float column with fractional values stays raw (never gets FOR)
 // ===========================================================================
 
-TEST(ChunkTest, FloatColumnAlwaysStaysRaw) {
+TEST(ChunkTest, FractionalFloatColumnStaysRaw) {
   std::vector<ColumnDescriptor> cols = {
       makeCol(1, PrimitiveType::kFloat32, "f32"),
       makeCol(2, PrimitiveType::kFloat64, "f64"),
@@ -739,6 +742,199 @@ TEST(ChunkTest, FloatColumnAlwaysStaysRaw) {
 
   EXPECT_EQ(chunk.columnEncoding(0), EncodingType::kRaw);
   EXPECT_EQ(chunk.columnEncoding(1), EncodingType::kRaw);
+}
+
+// ===========================================================================
+// Float columns whose chunk values are all whole numbers get FOR
+// ===========================================================================
+
+TEST(ChunkTest, IntegralFloat64ChunkGetsFOR) {
+  std::vector<ColumnDescriptor> cols = {makeCol(1, PrimitiveType::kFloat64, "current_mA")};
+  TopicChunkBuilder builder(/*topic_id=*/205, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+  for (int i = 0; i < 100; ++i) {
+    builder.beginRow(static_cast<Timestamp>(i));
+    builder.set(0, static_cast<double>(i - 60));  // -60..39: range 99 -> 1-byte offsets
+    builder.finishRow();
+  }
+  TopicChunk chunk = builder.seal();
+
+  ASSERT_EQ(chunk.columnEncoding(0), EncodingType::kFrameOfReference);
+  const auto& for_enc = std::get<encoding::FrameOfReferenceEncoded>(chunk.columns[0].data);
+  EXPECT_EQ(for_enc.offset_bytes, 1);
+  EXPECT_EQ(for_enc.reference, -60);
+  EXPECT_EQ(chunk.columns[0].descriptor->logical_type, PrimitiveType::kFloat64);  // declared type unchanged
+
+  std::vector<double> out(100);
+  chunk.readColumnAsDoubles(0, Span<double>(out), 0);
+  for (std::size_t i = 0; i < 100; ++i) {
+    const double expected = static_cast<double>(i) - 60.0;
+    EXPECT_EQ(chunk.readNumericAsDouble(0, i), expected) << "row " << i;
+    EXPECT_EQ(out[i], expected) << "bulk row " << i;
+  }
+}
+
+TEST(ChunkTest, IntegralFloat32ChunkGetsFOROnlyWhenNarrower) {
+  std::vector<ColumnDescriptor> cols = {
+      makeCol(1, PrimitiveType::kFloat32, "narrow"),  // range 100 -> 1 byte < 4
+      makeCol(2, PrimitiveType::kFloat32, "wide"),    // range ~2^24 -> 4 bytes, not < 4
+  };
+  TopicChunkBuilder builder(/*topic_id=*/206, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+  for (int i = 0; i <= 100; ++i) {
+    builder.beginRow(static_cast<Timestamp>(i));
+    builder.set(0, 16777216.0F + static_cast<float>(2 * i));  // above 2^24: still whole, exact floats
+    builder.set(1, i == 0 ? 0.0F : 16777216.0F);
+    builder.finishRow();
+  }
+  TopicChunk chunk = builder.seal();
+
+  ASSERT_EQ(chunk.columnEncoding(0), EncodingType::kFrameOfReference);
+  EXPECT_EQ(chunk.columnEncoding(1), EncodingType::kRaw);
+  for (std::size_t i = 0; i <= 100; ++i) {
+    EXPECT_EQ(chunk.readNumericAsDouble(0, i), 16777216.0 + 2.0 * static_cast<double>(i)) << "row " << i;
+  }
+}
+
+TEST(ChunkTest, IntegralFloatChunkWithNullsGetsFOR) {
+  std::vector<ColumnDescriptor> cols = {makeCol(1, PrimitiveType::kFloat64, "x")};
+  TopicChunkBuilder builder(/*topic_id=*/207, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+  for (int i = 0; i < 10; ++i) {
+    builder.beginRow(static_cast<Timestamp>(i));
+    if (i % 3 == 0) {
+      builder.setNull(0);
+    } else {
+      builder.set(0, 1000.0 + static_cast<double>(i));
+    }
+    builder.finishRow();
+  }
+  TopicChunk chunk = builder.seal();
+
+  ASSERT_EQ(chunk.columnEncoding(0), EncodingType::kFrameOfReference);
+  for (std::size_t i = 0; i < 10; ++i) {
+    ASSERT_EQ(chunk.isNull(0, i), i % 3 == 0) << "row " << i;
+    if (i % 3 != 0) {
+      EXPECT_EQ(chunk.readNumericAsDouble(0, i), 1000.0 + static_cast<double>(i)) << "row " << i;
+    }
+  }
+  // Bulk read starting mid-chunk: non-null rows 4, 5, 7, 8.
+  std::vector<double> out(6);
+  chunk.readColumnAsDoubles(0, Span<double>(out), 4);
+  for (std::size_t k = 0; k < out.size(); ++k) {
+    const std::size_t row = 4 + k;
+    if (row % 3 != 0) {
+      EXPECT_EQ(out[k], 1000.0 + static_cast<double>(row)) << "bulk row " << row;
+    }
+  }
+}
+
+TEST(ChunkTest, LargeMagnitudeIntegralFloat64KeepsExactValues) {
+  // 1e15 is beyond float32 but well inside the exact-integer range of double.
+  std::vector<ColumnDescriptor> cols = {makeCol(1, PrimitiveType::kFloat64, "big")};
+  TopicChunkBuilder builder(/*topic_id=*/208, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+  for (int i = 0; i < 20; ++i) {
+    builder.beginRow(static_cast<Timestamp>(i));
+    builder.set(0, 1e15 + static_cast<double>(i * 1000));
+    builder.finishRow();
+  }
+  TopicChunk chunk = builder.seal();
+
+  ASSERT_EQ(chunk.columnEncoding(0), EncodingType::kFrameOfReference);
+  for (std::size_t i = 0; i < 20; ++i) {
+    EXPECT_EQ(chunk.readNumericAsDouble(0, i), 1e15 + static_cast<double>(i) * 1000.0) << "row " << i;
+  }
+}
+
+// Whole doubles beyond 2^53 and at both ends of the int64 range: FOR must
+// reproduce every value bit for bit.
+TEST(ChunkTest, WholeDoublesAtExtremeMagnitudesRoundTripBitExact) {
+  const std::vector<std::pair<double, double>> series = {
+      {0x1p60, 256.0},                // above 2^53: spacing 256
+      {-0x1p63, 2048.0},              // int64 min upward: spacing 2048
+      {0x1p63 - 1024.0 * 64, 1024.0}  // up to the largest double below 2^63
+  };
+  for (const auto& [start, step] : series) {
+    std::vector<ColumnDescriptor> cols = {makeCol(1, PrimitiveType::kFloat64, "x")};
+    TopicChunkBuilder builder(/*topic_id=*/210, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+    std::vector<double> expected;
+    for (int i = 0; i < 64; ++i) {
+      expected.push_back(start + step * static_cast<double>(i));
+      builder.beginRow(static_cast<Timestamp>(i));
+      builder.set(0, expected.back());
+      builder.finishRow();
+    }
+    TopicChunk chunk = builder.seal();
+
+    ASSERT_EQ(chunk.columnEncoding(0), EncodingType::kFrameOfReference) << "start " << start;
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+      EXPECT_EQ(std::bit_cast<uint64_t>(chunk.readNumericAsDouble(0, i)), std::bit_cast<uint64_t>(expected[i]))
+          << "start " << start << " row " << i;
+    }
+  }
+}
+
+TEST(ChunkTest, WholeFloatOffsetWidthFollowsRange) {
+  const std::vector<std::pair<double, uint8_t>> cases = {
+      {255.0, 1}, {256.0, 2}, {65535.0, 2}, {65536.0, 4}, {4294967295.0, 4}};
+  for (const auto& [range, offset_bytes] : cases) {
+    std::vector<ColumnDescriptor> cols = {makeCol(1, PrimitiveType::kFloat64, "x")};
+    TopicChunkBuilder builder(/*topic_id=*/211, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+    for (const double v : {-7.0, -7.0 + range, 3.0}) {
+      builder.beginRow(0);
+      builder.set(0, v);
+      builder.finishRow();
+    }
+    TopicChunk chunk = builder.seal();
+
+    ASSERT_EQ(chunk.columnEncoding(0), EncodingType::kFrameOfReference) << "range " << range;
+    EXPECT_EQ(std::get<encoding::FrameOfReferenceEncoded>(chunk.columns[0].data).offset_bytes, offset_bytes)
+        << "range " << range;
+  }
+}
+
+TEST(ChunkTest, WholeDoublesWithRangeBeyondUint32StayRaw) {
+  const std::vector<std::vector<double>> cases = {
+      {0.0, 4294967296.0},        // range 2^32
+      {-0x1p62, 0x1p62},          // opposite signs, range 2^63
+      {-0x1p63, 0x1p63 - 1024.0}  // the full int64 span
+  };
+  for (const auto& values : cases) {
+    std::vector<ColumnDescriptor> cols = {makeCol(1, PrimitiveType::kFloat64, "x")};
+    TopicChunkBuilder builder(/*topic_id=*/212, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+    for (const double v : values) {
+      builder.beginRow(0);
+      builder.set(0, v);
+      builder.finishRow();
+    }
+    TopicChunk chunk = builder.seal();
+
+    EXPECT_EQ(chunk.columnEncoding(0), EncodingType::kRaw) << "last " << values.back();
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      EXPECT_EQ(chunk.readNumericAsDouble(0, i), values[i]);
+    }
+  }
+}
+
+TEST(ChunkTest, FloatChunkWithNonIntegralOrSpecialValueStaysRaw) {
+  const std::vector<double> specials = {0.5,  std::nan(""), std::numeric_limits<double>::infinity(),
+                                        -0.0, 0x1p63,       -0x1p64};
+  for (const double special : specials) {
+    std::vector<ColumnDescriptor> cols = {makeCol(1, PrimitiveType::kFloat64, "x")};
+    TopicChunkBuilder builder(/*topic_id=*/209, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+    for (int i = 0; i < 10; ++i) {
+      builder.beginRow(static_cast<Timestamp>(i));
+      builder.set(0, i == 5 ? special : static_cast<double>(i));
+      builder.finishRow();
+    }
+    TopicChunk chunk = builder.seal();
+
+    EXPECT_EQ(chunk.columnEncoding(0), EncodingType::kRaw) << "special " << special;
+    const double read_back = chunk.readNumericAsDouble(0, 5);
+    if (std::isnan(special)) {
+      EXPECT_TRUE(std::isnan(read_back));
+    } else {
+      EXPECT_EQ(read_back, special);
+      EXPECT_EQ(std::signbit(read_back), std::signbit(special)) << "special " << special;
+    }
+  }
 }
 
 // ===========================================================================
@@ -1186,6 +1382,62 @@ TEST(ChunkDeathTest, OutOfOrderTimestampAsserts) {
 }
 
 #endif  // !defined(NDEBUG) || defined(PJ_ASSERT_THROWS)
+
+// ===========================================================================
+// ColumnStats::all_integral — whole-number detection, independent of encoding
+// ===========================================================================
+
+TEST(ChunkTest, AllIntegralFlagTracksWholeNumbersNotEncoding) {
+  struct Case {
+    const char* name;
+    std::vector<double> values;
+    bool all_integral;
+    EncodingType encoding;
+  };
+  const std::vector<Case> cases = {
+      {"narrow whole", {1.0, 2.0, 3.0}, true, EncodingType::kFrameOfReference},
+      {"wide whole", {0.0, 4294967296.0}, true, EncodingType::kRaw},
+      {"constant whole", {3.0, 3.0, 3.0}, true, EncodingType::kConstant},
+      {"constant fractional", {0.5, 0.5}, false, EncodingType::kConstant},
+      {"fractional", {1.0, 1.5}, false, EncodingType::kRaw},
+  };
+  for (const Case& c : cases) {
+    std::vector<ColumnDescriptor> cols = {
+        makeCol(1, PrimitiveType::kFloat64, "x"), makeCol(2, PrimitiveType::kInt64, "i")};
+    TopicChunkBuilder builder(/*topic_id=*/213, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+    for (const double v : c.values) {
+      builder.beginRow(0);
+      builder.set(0, v);
+      builder.set(1, int64_t{1});
+      builder.finishRow();
+    }
+    TopicChunk chunk = builder.seal();
+
+    EXPECT_EQ(chunk.stats.column_stats[0].all_integral, c.all_integral) << c.name;
+    EXPECT_EQ(chunk.columnEncoding(0), c.encoding) << c.name;
+    EXPECT_FALSE(chunk.stats.column_stats[1].all_integral) << "integer columns never carry the flag";
+  }
+}
+
+TEST(ChunkTest, AllIntegralIgnoresNullSlots) {
+  std::vector<ColumnDescriptor> cols = {makeCol(1, PrimitiveType::kFloat64, "x")};
+  TopicChunkBuilder builder(/*topic_id=*/214, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
+  // Bulk append with a NaN payload behind a null: the null slot must not count.
+  const double values[] = {2.0, std::nan(""), 4.0};
+  const Timestamp ts[] = {0, 1, 2};
+  builder.appendTimestamps(Span<const Timestamp>(ts, 3));
+  builder.appendColumn(0, Span<const double>(values, 3));
+  const uint8_t bitmap[] = {0x05};  // bits [1, 0, 1]
+  builder.appendColumnValidity(0, BitSpan{Span<const uint8_t>(bitmap, 1), 0, 3});
+  builder.finishBulkAppend();
+  TopicChunk chunk = builder.seal();
+
+  EXPECT_TRUE(chunk.stats.column_stats[0].all_integral);
+  ASSERT_EQ(chunk.columnEncoding(0), EncodingType::kFrameOfReference);
+  EXPECT_TRUE(chunk.isNull(0, 1));
+  EXPECT_EQ(chunk.readNumericAsDouble(0, 0), 2.0);
+  EXPECT_EQ(chunk.readNumericAsDouble(0, 2), 4.0);
+}
 
 }  // namespace
 }  // namespace PJ

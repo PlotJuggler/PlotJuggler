@@ -46,12 +46,12 @@ struct QStringHash {
   }
 };
 
-[[nodiscard]] bool matchesCapability(PrimitiveType type, SeriesCapability capability) noexcept {
+[[nodiscard]] bool matchesCapability(const ScalarFieldPayload& field, SeriesCapability capability) noexcept {
   switch (capability) {
     case SeriesCapability::kPlottable:
-      return isPlottablePrimitive(type);
+      return isPlottablePrimitive(field.logical_type);
     case SeriesCapability::kDiscrete:
-      return isDiscretePrimitive(type);
+      return isDiscreteField(field);
   }
   return false;
 }
@@ -430,7 +430,7 @@ bool CatalogModel::isDiscreteKey(const QString& key) const {
     return false;
   }
   const ScalarFieldPayload* scalar = asScalarField(it->second);
-  return scalar != nullptr && isDiscretePrimitive(scalar->logical_type);
+  return scalar != nullptr && isDiscreteField(*scalar);
 }
 
 std::optional<QString> CatalogModel::stringValueAt(const QString& key, double display_seconds) const {
@@ -485,7 +485,7 @@ std::optional<CurveDescriptor> CatalogModel::curveDescriptor(const QString& key,
     return std::nullopt;
   }
   const ScalarFieldPayload* scalar = asScalarField(it->second);
-  if (scalar == nullptr || !matchesCapability(scalar->logical_type, capability)) {
+  if (scalar == nullptr || !matchesCapability(*scalar, capability)) {
     return std::nullopt;
   }
   return curveFromItem(it->second);
@@ -615,7 +615,7 @@ std::optional<CurveDescriptor> CatalogModel::descriptorForPath(
     // deliberate (a strip series saved against a string field may rebind onto
     // an integer field at the same path after a reload).
     const ScalarFieldPayload* scalar = asScalarField(item);
-    if (scalar->field_path == field && matchesCapability(scalar->logical_type, capability)) {
+    if (scalar->field_path == field && matchesCapability(*scalar, capability)) {
       return curveFromItem(item);
     }
   }
@@ -623,11 +623,15 @@ std::optional<CurveDescriptor> CatalogModel::descriptorForPath(
 }
 
 void CatalogModel::rebuildFromDatastore() {
-  rebuildNow();
   // Keep the samplesIngested gate's cache in sync after EVERY rebuild — whether
   // triggered by the gate or by an explicit caller (load completion, dataset
-  // removal, display-name change) — so the next ingest can correctly skip.
-  impl_->last_fingerprint = catalogFingerprint();
+  // removal, display-name change) — so the next ingest can correctly skip. The
+  // fingerprint is taken BEFORE the rebuild: a worker commit landing while the
+  // rebuild reads the datastore then differs from the saved value, so the next
+  // ingest rebuilds again instead of skipping past a change the rebuild missed.
+  const std::uint64_t fingerprint = catalogFingerprint();
+  rebuildNow();
+  impl_->last_fingerprint = fingerprint;
 }
 
 void CatalogModel::rebuildIfChanged() {
@@ -640,7 +644,8 @@ void CatalogModel::rebuildIfChanged() {
   if (impl_->last_fingerprint == fp) {
     return;
   }
-  rebuildFromDatastore();
+  rebuildNow();
+  impl_->last_fingerprint = fp;  // taken before the rebuild — see rebuildFromDatastore
 }
 
 std::uint64_t CatalogModel::catalogFingerprint() const {
@@ -677,10 +682,15 @@ std::uint64_t CatalogModel::catalogFingerprint() const {
             continue;
           }
           std::uint64_t columns = 0;
+          std::uint64_t whole_numbers = 0;
           if (const TopicStorage* storage = engine.getTopicStorage(topic_id); storage != nullptr) {
             columns = storage->columnDescriptors().size();
+            whole_numbers = storage->wholeNumbersSignature();
           }
           fp += mix(2, (static_cast<std::uint64_t>(topic_id) << 20) ^ columns);
+          // A float field gaining its first chunk, or its first fractional value,
+          // changes whether it is discrete (ScalarFieldPayload::whole_numbers_only).
+          fp += mix(10, whole_numbers ^ static_cast<std::uint64_t>(topic_id));
         }
       }
       for (const ObjectTopicId object_topic_id : object_store.listTopics(dataset_id)) {
@@ -819,6 +829,7 @@ void CatalogModel::rebuildNow() {
       // engine lock is held, so copy the columns under a short lock — a concurrent
       // worker commit / createTopicField cannot then race the descriptor read.
       std::vector<ColumnDescriptor> columns;
+      std::vector<bool> whole_numbers_only;
       {
         const auto lock = engine.lockEngine();
         const TopicStorage* storage = engine.getTopicStorage(topic_id);
@@ -826,6 +837,12 @@ void CatalogModel::rebuildNow() {
           continue;
         }
         columns = topicColumns(*storage, type_tree);
+        whole_numbers_only.reserve(columns.size());
+        for (const ColumnDescriptor& column : columns) {
+          const StorageKind kind = storageKindOf(column.logical_type);
+          const bool is_float = kind == StorageKind::kFloat32 || kind == StorageKind::kFloat64;
+          whole_numbers_only.push_back(is_float && storage->wholeNumbersOnly(column.field_id).value_or(false));
+        }
       }
       for (std::size_t column_index = 0; column_index < columns.size(); ++column_index) {
         const ColumnDescriptor& column = columns[column_index];
@@ -852,6 +869,7 @@ void CatalogModel::rebuildNow() {
                              .topic_id = topic_id,
                              .column_index = column_index,
                              .logical_type = column.logical_type,
+                             .whole_numbers_only = whole_numbers_only[column_index],
                          },
                  });
       }
@@ -940,10 +958,13 @@ void CatalogModel::rebuildNow() {
 
   std::vector<CatalogItem> added_items;
   QStringList removed_keys;
+  QStringList changed_keys;
   for (const auto& [key, descriptor] : previous_items) {
-    (void)descriptor;
-    if (impl_->items.find(key) == impl_->items.end()) {
+    const auto current = impl_->items.find(key);
+    if (current == impl_->items.end()) {
       removed_keys.push_back(key);
+    } else if (!(current->second == descriptor)) {
+      changed_keys.push_back(key);
     }
   }
   for (const auto& [key, descriptor] : impl_->items) {
@@ -960,6 +981,9 @@ void CatalogModel::rebuildNow() {
   }
   if (!removed_keys.isEmpty()) {
     emit itemsRemoved(removed_keys);
+  }
+  if (!changed_keys.isEmpty()) {
+    emit itemsChanged(changed_keys);
   }
 }
 

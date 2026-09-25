@@ -43,6 +43,10 @@ struct ColumnStats {
   std::optional<double> min_value;
   /// Maximum non-null numeric value, if applicable.
   std::optional<double> max_value;
+  /// Float columns only (false otherwise): every non-null value in the chunk is a
+  /// whole number (encoding::isWholeInt64; -0.0 counts). Set at seal; drives
+  /// frame-of-reference encoding and TopicStorage::wholeNumbersOnly().
+  bool all_integral = false;
 };
 
 /// Per-chunk aggregate statistics.

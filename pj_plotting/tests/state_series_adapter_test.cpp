@@ -292,14 +292,30 @@ TEST_F(StateSeriesAdapterTest, MismatchedLogicalTypeYieldsNoSegmentsNotAThrow) {
   EXPECT_TRUE(mismatched.segments().empty());
 }
 
-TEST_F(StateSeriesAdapterTest, NonDiscreteTypeYieldsNoSegments) {
-  // A float adapter should never materialize labels, even over real data.
+TEST_F(StateSeriesAdapterTest, FractionalFloatValuesYieldNoSegments) {
+  // A float adapter labels only whole numbers; fractional samples read as null.
   TypedSeries series = makeTypedSeries("/robot/speed", PrimitiveType::kFloat64);
   appendTyped(series.topic_id, {0, 1}, [&](DataWriter& writer, std::size_t i) {
-    writer.set(series.topic_id, 0, static_cast<double>(i) * 0.5);
+    writer.set(series.topic_id, 0, static_cast<double>(i) + 0.5);
   });
   ASSERT_TRUE(series.adapter->rebuild());
   EXPECT_TRUE(series.adapter->segments().empty());
+}
+
+TEST_F(StateSeriesAdapterTest, WholeNumberFloatSeriesFormatsIntegerLabels) {
+  // JSON integers parsed as double: labels read "3", not "3.0".
+  TypedSeries series = makeTypedSeries("/robot/mode", PrimitiveType::kFloat64);
+  const std::vector<double> values = {3.0, 3.0, -1.0, 1e15};
+  appendTyped(series.topic_id, {0, 1, 2, 3}, [&](DataWriter& writer, std::size_t i) {
+    writer.set(series.topic_id, 0, values[i]);
+  });
+  ASSERT_TRUE(series.adapter->rebuild());
+  const auto& segments = series.adapter->segments();
+  ASSERT_EQ(segments.size(), 3U);
+  EXPECT_EQ(segments[0].value, u"3"_s);
+  EXPECT_EQ(segments[0].t_end_raw_ns, 2 * kNs);
+  EXPECT_EQ(segments[1].value, u"-1"_s);
+  EXPECT_EQ(segments[2].value, u"1000000000000000"_s);
 }
 
 }  // namespace

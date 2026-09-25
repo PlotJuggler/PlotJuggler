@@ -46,7 +46,9 @@ struct BuiltStream {
   nanoarrow::UniqueArray array;
 };
 
-BuiltStream makeStream(const std::vector<int64_t>& timestamps, const std::vector<double>& values) {
+BuiltStream makeStream(
+    const std::vector<int64_t>& timestamps, const std::vector<double>& values,
+    ArrowType value_type = NANOARROW_TYPE_DOUBLE) {
   EXPECT_EQ(timestamps.size(), values.size());
   const int64_t n = static_cast<int64_t>(timestamps.size());
 
@@ -57,7 +59,7 @@ BuiltStream makeStream(const std::vector<int64_t>& timestamps, const std::vector
   EXPECT_EQ(ArrowSchemaSetType(result.schema->children[0], NANOARROW_TYPE_INT64), NANOARROW_OK);
   EXPECT_EQ(ArrowSchemaSetName(result.schema->children[0], "ts_col"), NANOARROW_OK);
   ArrowSchemaInit(result.schema->children[1]);
-  EXPECT_EQ(ArrowSchemaSetType(result.schema->children[1], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
+  EXPECT_EQ(ArrowSchemaSetType(result.schema->children[1], value_type), NANOARROW_OK);
   EXPECT_EQ(ArrowSchemaSetName(result.schema->children[1], "value"), NANOARROW_OK);
 
   ArrowError err;
@@ -120,7 +122,11 @@ void initOneBatchStream(ArrowArrayStream* out_stream, BuiltStream built) {
 // Round-trip test
 // ---------------------------------------------------------------------------
 
-TEST(ArrowStreamRoundTripTest, WriteViaAppendArrowStreamReadViaReadSeriesArrow) {
+// Writes `values` (at timestamps 1000, 2000, ...) through append_arrow_stream,
+// reads them back through read_series_arrow, and checks the round trip. Reports
+// the encoding of the stored value column.
+void roundTripThroughArrow(
+    const std::vector<double>& values, EncodingType* stored_encoding, ArrowType value_type = NANOARROW_TYPE_DOUBLE) {
   // Set up engine + dataset.
   DataEngine engine;
   auto td_id = engine.createTimeDomain("test_td");
@@ -139,9 +145,11 @@ TEST(ArrowStreamRoundTripTest, WriteViaAppendArrowStreamReadViaReadSeriesArrow) 
   ASSERT_TRUE(write_vtable.vtable->ensure_topic(write_vtable.ctx, topic_name, &topic, &err)) << err.message;
 
   // Build a stream with {timestamp, value} and feed it through append_arrow_stream.
-  const std::vector<int64_t> timestamps = {1000, 2000, 3000, 4000, 5000};
-  const std::vector<double> values = {1.5, 2.5, 3.5, 4.5, 5.5};
-  auto built = makeStream(timestamps, values);
+  std::vector<int64_t> timestamps;
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    timestamps.push_back(static_cast<int64_t>(i + 1) * 1000);
+  }
+  auto built = makeStream(timestamps, values, value_type);
 
   ArrowArrayStream stream{};
   initOneBatchStream(&stream, std::move(built));
@@ -156,6 +164,16 @@ TEST(ArrowStreamRoundTripTest, WriteViaAppendArrowStreamReadViaReadSeriesArrow) 
   EXPECT_EQ(stream.release, nullptr);
 
   write_host.flushPending();
+  {
+    const auto lock = engine.lockEngine();
+    const auto& chunks = engine.getTopicStorage(topic.id)->sealedChunks();
+    ASSERT_EQ(chunks.size(), 1U);
+    for (std::size_t c = 0; c < chunks.front().columns.size(); ++c) {
+      if (chunks.front().columns[c].descriptor->field_path == "value") {
+        *stored_encoding = chunks.front().columnEncoding(c);
+      }
+    }
+  }
 
   // Catalog snapshot — look up the field handle for "value".
   ObjectStore object_store;
@@ -191,7 +209,7 @@ TEST(ArrowStreamRoundTripTest, WriteViaAppendArrowStreamReadViaReadSeriesArrow) 
   ASSERT_EQ(out_schema.n_children, 2);
   EXPECT_EQ(std::string(out_schema.children[0]->name), "timestamp");
   EXPECT_EQ(std::string(out_schema.children[0]->format), "l");  // int64
-  EXPECT_EQ(std::string(out_schema.children[1]->format), "g");  // float64
+  EXPECT_EQ(std::string(out_schema.children[1]->format), value_type == NANOARROW_TYPE_FLOAT ? "f" : "g");
 
   // Array layout matches.
   ASSERT_EQ(out_array.length, static_cast<int64_t>(timestamps.size()));
@@ -205,7 +223,7 @@ TEST(ArrowStreamRoundTripTest, WriteViaAppendArrowStreamReadViaReadSeriesArrow) 
 
   for (int64_t i = 0; i < out_array.length; ++i) {
     EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view->children[0], i), timestamps[static_cast<std::size_t>(i)]);
-    EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view->children[1], i), values[static_cast<std::size_t>(i)]);
+    EXPECT_EQ(ArrowArrayViewGetDoubleUnsafe(view->children[1], i), values[static_cast<std::size_t>(i)]);
   }
 
   // Release the host-owned structs as per the ABI contract.
@@ -213,6 +231,28 @@ TEST(ArrowStreamRoundTripTest, WriteViaAppendArrowStreamReadViaReadSeriesArrow) 
   out_array.release(&out_array);
   EXPECT_EQ(out_schema.release, nullptr);
   EXPECT_EQ(out_array.release, nullptr);
+}
+
+TEST(ArrowStreamRoundTripTest, WriteViaAppendArrowStreamReadViaReadSeriesArrow) {
+  EncodingType encoding{};
+  roundTripThroughArrow({1.5, 2.5, 3.5, 4.5, 5.5}, &encoding);
+  EXPECT_EQ(encoding, EncodingType::kRaw);
+}
+
+// Whole-number doubles are stored frame-of-reference; read_series_arrow must
+// still hand back the exact float64 values.
+TEST(ArrowStreamRoundTripTest, WholeNumberDoublesRoundTripThroughFrameOfReference) {
+  EncodingType encoding{};
+  roundTripThroughArrow({-20.0, 0.0, 15.0, 1000.0, -3.0}, &encoding);
+  EXPECT_EQ(encoding, EncodingType::kFrameOfReference);
+}
+
+TEST(ArrowStreamRoundTripTest, WholeNumberFloat32RoundTripsThroughFrameOfReference) {
+  EncodingType encoding{};
+  // Around 2^24, where float32 spacing becomes 2: every value is still a whole,
+  // exactly representable float, with a narrow (2-byte) range.
+  roundTripThroughArrow({16777196.0, 16777216.0, 16777218.0, 16777236.0, 16778216.0}, &encoding, NANOARROW_TYPE_FLOAT);
+  EXPECT_EQ(encoding, EncodingType::kFrameOfReference);
 }
 
 TEST(ArrowStreamRoundTripTest, ParserWriteHostAppendArrowStreamWritesBoundTopic) {

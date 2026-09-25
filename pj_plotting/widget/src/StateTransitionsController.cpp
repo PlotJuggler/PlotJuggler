@@ -95,6 +95,23 @@ void StateTransitionsController::connectRuntime() {
         emit seriesListChanged();
       }
     });
+    // A surviving key whose item changed (e.g. a float field's first fractional
+    // value makes it non-discrete) re-resolves on the next refresh. Keyed on the
+    // catalog's own signal so it does not depend on the catalog's samplesIngested
+    // slot having run before ours.
+    connect(catalog_, &CatalogModel::itemsChanged, this, [this](const QStringList& keys) {
+      const QSet<QString> changed(keys.begin(), keys.end());
+      bool any_dirty = false;
+      for (RowBinding& binding : rows_) {
+        if (changed.contains(binding.catalog_key)) {
+          binding.dirty = true;
+          any_dirty = true;
+        }
+      }
+      if (any_dirty) {
+        refresh_trigger_.request();
+      }
+    });
     connect(catalog_, &CatalogModel::cleared, this, [this]() {
       if (!rows_.empty()) {
         rows_.clear();
@@ -126,7 +143,7 @@ bool StateTransitionsController::addSeries(const QString& catalog_key) {
   const std::optional<CatalogItem> item = catalog_->itemDescriptor(catalog_key);
   const ScalarFieldPayload* scalar = item.has_value() ? asScalarField(*item) : nullptr;
   // The kDiscrete descriptor doubles as the gate: only discrete fields
-  // (string / integer / bool) form rows.
+  // (string / integer / bool / whole-number float) form rows.
   std::optional<CurveDescriptor> descriptor = catalog_->curveDescriptor(catalog_key, SeriesCapability::kDiscrete);
   if (scalar == nullptr || !descriptor.has_value()) {
     return false;

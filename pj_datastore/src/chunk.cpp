@@ -4,10 +4,12 @@
 #include "pj_datastore/chunk.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <utility>
 #include <variant>
 
@@ -16,6 +18,54 @@
 namespace PJ {
 
 namespace {
+
+// Whole-number detection and frame-of-reference for one non-constant float
+// column. Sets `all_integral` (every non-null value passes
+// encoding::isWholeInt64) and returns the FOR encoding when, in addition, no
+// value is -0.0 (FOR would drop its sign) and the offsets are narrower than the
+// float; nullopt otherwise. The detection pass does not allocate, so rejecting a
+// fractional column costs one early-exit scan. A whole float is an exact
+// integer, so decoding reference + offset reproduces it bit for bit.
+template <typename Float>
+std::optional<encoding::FrameOfReferenceEncoded> encodeWholeFloats(const TypedColumnBuffer& col, bool& all_integral) {
+  const uint8_t* data = col.valueBuffer().data();
+  const auto value_at = [data](std::size_t row) {
+    Float v{};
+    std::memcpy(&v, data + row * sizeof(Float), sizeof(Float));
+    return v;
+  };
+  all_integral = false;
+  int64_t min = std::numeric_limits<int64_t>::max();
+  int64_t max = std::numeric_limits<int64_t>::min();
+  bool negative_zero = false;
+  for (std::size_t r = 0; r < col.rowCount(); ++r) {
+    if (!col.isValid(r)) {
+      continue;  // a null slot's payload is not a value
+    }
+    const Float v = value_at(r);
+    if (!encoding::isWholeInt64(v)) {
+      return std::nullopt;
+    }
+    negative_zero = negative_zero || (v == 0 && std::signbit(v));
+    min = std::min(min, static_cast<int64_t>(v));
+    max = std::max(max, static_cast<int64_t>(v));
+  }
+  all_integral = true;
+  if (negative_zero || min > max ||
+      encoding::offsetBytesFor(static_cast<uint64_t>(max) - static_cast<uint64_t>(min)) >= sizeof(Float)) {
+    return std::nullopt;
+  }
+  // Null slots encode as the reference (offset 0); the validity bitmap keeps them null.
+  std::vector<int64_t> values(col.rowCount(), min);
+  for (std::size_t r = 0; r < values.size(); ++r) {
+    if (col.isValid(r)) {
+      values[r] = static_cast<int64_t>(value_at(r));
+    }
+  }
+  return encoding::forEncode(
+      Span<const uint8_t>(reinterpret_cast<const uint8_t*>(values.data()), values.size() * sizeof(int64_t)),
+      StorageKind::kInt64, values.size(), min, max);
+}
 
 // Dispatch a callable with the correct numeric type tag.
 // Returns true if kind is numeric (kFloat32..kUint64), false for kBool/kString.
@@ -608,14 +658,35 @@ TopicChunk TopicChunkBuilder::seal() {
         break;
       }
       default: {
-        if (cs.is_constant && col.rowCount() > 0) {
-          chunk.columns[i].data = encoding::constantEncode(
-              Span<const uint8_t>(col.valueBuffer().data(), col.valueBuffer().size()), kind, col.rowCount());
-        } else {
-          RawBuffer raw;
-          raw.append(col.valueBuffer().data(), col.valueBuffer().size());
-          chunk.columns[i].data = std::move(raw);
+        const std::size_t row_count = col.rowCount();
+        const uint8_t* buf_data = col.valueBuffer().data();
+        const bool is_float = kind == StorageKind::kFloat32 || kind == StorageKind::kFloat64;
+        if (cs.is_constant && row_count > 0) {
+          if (is_float) {
+            // The constant is the recorded min (absent when every row is null).
+            chunk.stats.column_stats[i].all_integral = !cs.min_value || encoding::isWholeInt64(*cs.min_value);
+          }
+          chunk.columns[i].data =
+              encoding::constantEncode(Span<const uint8_t>(buf_data, col.valueBuffer().size()), kind, row_count);
+          break;
         }
+        // Float chunks holding only whole numbers (e.g. JSON integers parsed as
+        // double) are flagged all_integral and, when that narrows them, stored
+        // frame-of-reference like an integer column. The declared type is
+        // unchanged and reads decode back to the same floats.
+        if (is_float) {
+          bool all_integral = false;
+          auto encoded = kind == StorageKind::kFloat64 ? encodeWholeFloats<double>(col, all_integral)
+                                                       : encodeWholeFloats<float>(col, all_integral);
+          chunk.stats.column_stats[i].all_integral = all_integral;
+          if (encoded.has_value()) {
+            chunk.columns[i].data = std::move(*encoded);
+            break;
+          }
+        }
+        RawBuffer raw;
+        raw.append(buf_data, col.valueBuffer().size());
+        chunk.columns[i].data = std::move(raw);
         break;
       }
     }
