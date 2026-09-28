@@ -13,6 +13,7 @@ namespace PJ {
 class SceneDockWidget;
 class LayerListView;
 class ConfigPanelHost;
+class DualOptionsWidget;
 
 // Right-sidepanel content for the active Scene2DDockWidget (or any
 // SceneDockWidget). A thin reactive shell: it reuses the generic
@@ -23,7 +24,8 @@ class ConfigPanelHost;
 // owned by each ISceneLayer. The panel translates user input into dock slots.
 //
 // This mirrors Scene3DConfigPanel but talks only to the shared SceneDockWidget
-// base, so it works for the 2D family and could host any future family.
+// base, so it works for the 2D family and could host any future family. The one
+// 2D-specific control, the view rotation selector, shows only for a Scene2DDockWidget.
 class Scene2DConfigPanel : public QWidget {
   Q_OBJECT
  public:
@@ -42,8 +44,13 @@ class Scene2DConfigPanel : public QWidget {
   void disconnectDock();
   void rebuildList();
   void updateConfigPane();
+  /// Mirrors the dock's rotation into the selector (restore/undo included).
+  void syncRotation(int degrees);
 
   LayerListView* list_ = nullptr;
+  // Band + selector, shown only when the bound dock is a Scene2DDockWidget.
+  QWidget* rotation_section_ = nullptr;
+  DualOptionsWidget* rotation_ = nullptr;
   ConfigPanelHost* config_host_ = nullptr;
   QPointer<SceneDockWidget> dock_;
   QString theme_;

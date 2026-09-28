@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 #include <vector>
 
 namespace PJ::overlay_geometry {
@@ -142,3 +143,28 @@ TEST(OverlayGeometryStroke, LoopFillIsImageSpace) {
 
 }  // namespace
 }  // namespace PJ::overlay_geometry
+
+// The viewer shows image pixels (y down) turned clockwise by `rotation_deg`, up to
+// a uniform scale. Upright text = its quad, seen through that turn, is an
+// unrotated w x h box whose top-left is the anchor.
+TEST(OverlayGeometryText, QuadCornersReadUprightOnScreenAtEveryRotation) {
+  const PJ::Point2 anchor{40.0, 25.0};
+  constexpr double kWidth = 30.0;
+  constexpr double kHeight = 12.0;
+  for (const int rotation : {0, 90, -90, 180}) {
+    const double radians = rotation * std::numbers::pi / 180.0;
+    const auto to_screen = [&](const PJ::Point2& p) {
+      const double dx = p.x - anchor.x;
+      const double dy = p.y - anchor.y;
+      return PJ::Point2{
+          dx * std::cos(radians) - dy * std::sin(radians), dx * std::sin(radians) + dy * std::cos(radians)};
+    };
+    const auto corners = PJ::overlay_geometry::uprightTextQuadCorners(anchor, kWidth, kHeight, rotation);
+    const PJ::Point2 expected[4] = {{0.0, 0.0}, {kWidth, 0.0}, {kWidth, kHeight}, {0.0, kHeight}};
+    for (size_t i = 0; i < 4; ++i) {
+      const PJ::Point2 on_screen = to_screen(corners[i]);
+      EXPECT_NEAR(on_screen.x, expected[i].x, 1e-9) << "rotation " << rotation << " corner " << i;
+      EXPECT_NEAR(on_screen.y, expected[i].y, 1e-9) << "rotation " << rotation << " corner " << i;
+    }
+  }
+}

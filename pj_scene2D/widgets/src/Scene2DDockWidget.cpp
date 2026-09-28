@@ -44,6 +44,7 @@ constexpr auto kViewTag = "view";
 constexpr auto kViewZoom = "zoom";
 constexpr auto kViewPanX = "pan_x";
 constexpr auto kViewPanY = "pan_y";
+constexpr auto kViewRotation = "rotation";
 constexpr auto kLayerKind = "layer_kind";
 constexpr auto kImageKind = "image";
 constexpr auto kDepthKind = "depth";
@@ -69,6 +70,11 @@ constexpr auto kDepthKind = "depth";
   state.zoom = read(kViewZoom, state.zoom, valid);
   state.pan_x = read(kViewPanX, state.pan_x, valid);
   state.pan_y = read(kViewPanY, state.pan_y, valid);
+  if (const QString rotation = view.attribute(QString::fromLatin1(kViewRotation)); !rotation.isEmpty()) {
+    bool ok = false;
+    state.rotation_deg = rotation.toInt(&ok);
+    valid = valid && ok;
+  }
   if (!valid || !MediaViewerWidget::isViewStateValid(state)) {
     return std::nullopt;
   }
@@ -209,6 +215,12 @@ std::unique_ptr<ISceneLayer> createDepthImageLayer(
   return std::make_unique<DepthImageLayer>(topic_id, object_type, display_name);
 }
 
+// Full-frame pixel sources: a dock shows at most one, beneath the overlays.
+[[nodiscard]] bool isBackgroundType(sdk::BuiltinObjectType object_type) {
+  return object_type == sdk::BuiltinObjectType::kImage || object_type == sdk::BuiltinObjectType::kDepthImage ||
+         object_type == sdk::BuiltinObjectType::kVideoFrame;
+}
+
 // True for the depth `encoding` strings the DepthImageLayer colormaps. A scene2D-
 // local copy: scene3D's identical predicate lives in a sibling widget family this
 // module must not depend on.
@@ -321,6 +333,7 @@ QDomElement Scene2DDockWidget::xmlSaveState(QDomDocument& doc) const {
   view.setAttribute(QString::fromLatin1(kViewZoom), QString::number(state.zoom, 'g', 9));
   view.setAttribute(QString::fromLatin1(kViewPanX), QString::number(state.pan_x, 'g', 9));
   view.setAttribute(QString::fromLatin1(kViewPanY), QString::number(state.pan_y, 'g', 9));
+  view.setAttribute(QString::fromLatin1(kViewRotation), QString::number(state.rotation_deg));
   root.appendChild(view);
   return root;
 }
@@ -402,9 +415,40 @@ void Scene2DDockWidget::setSessionManager(SessionManager* session) {
   reconnectLiveSamples(session);
 }
 
+bool Scene2DDockWidget::tryAcceptObjectTopic(
+    ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
+  if (!isBackgroundType(object_type)) {
+    return addTopic(topic_id, object_type, title);
+  }
+  if (!addTopic(topic_id, object_type, title)) {
+    return false;
+  }
+  promoteBackground(topic_id);
+  return true;
+}
+
+std::vector<ObjectTopicId> Scene2DDockWidget::backgroundTopics() const {
+  std::vector<ObjectTopicId> topics;
+  for (const SceneLayerInfo& info : layers()) {
+    if (isBackgroundType(info.object_type)) {
+      topics.push_back(info.topic_id);
+    }
+  }
+  return topics;
+}
+
+void Scene2DDockWidget::promoteBackground(ObjectTopicId topic_id) {
+  for (const ObjectTopicId background : backgroundTopics()) {
+    if (background.id != topic_id.id) {
+      removeTopic(background);
+    }
+  }
+  reorderLayers({topic_id});
+}
+
 bool Scene2DDockWidget::setImageTopic(
     ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
-  const bool accepted = addTopic(topic_id, object_type, title);
+  const bool accepted = tryAcceptObjectTopic(topic_id, object_type, title);
   if (accepted) {
     setWindowTitle(title.isEmpty() ? tr("2D View") : tr("2D View - %1").arg(title));
   }
@@ -419,6 +463,22 @@ void Scene2DDockWidget::setPointInspectorEnabled(bool enabled) {
 
 bool Scene2DDockWidget::pointInspectorEnabled() const noexcept {
   return viewer_ != nullptr && viewer_->pointInspectorEnabled();
+}
+
+void Scene2DDockWidget::setViewRotation(int degrees) {
+  ensureSceneViewCreated();
+  if (viewer_ == nullptr || degrees == viewRotation()) {
+    return;
+  }
+  MediaViewState state = viewer_->viewState();
+  state.rotation_deg = degrees;
+  if (viewer_->setViewState(state)) {
+    notifyWorkspaceChanged();
+  }
+}
+
+int Scene2DDockWidget::viewRotation() const {
+  return viewer_ != nullptr ? viewer_->viewState().rotation_deg : 0;
 }
 
 size_t Scene2DDockWidget::compositeLayerCountForTesting() const noexcept {
@@ -479,6 +539,7 @@ QWidget* Scene2DDockWidget::createSceneView() {
   viewer_->setObjectName(u"scene2dMediaViewer"_s);
   viewer_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   connect(viewer_, &MediaViewerWidget::viewInteractionCommitted, this, [this]() { notifyWorkspaceChanged(); });
+  connect(viewer_, &MediaViewerWidget::rotationChanged, this, &Scene2DDockWidget::viewRotationChanged);
   view_stack_->addWidget(viewer_);
   if (composite_ != nullptr) {
     viewer_->setMediaSource(composite_.get());
@@ -648,11 +709,31 @@ void Scene2DDockWidget::primeRestoreLayerKind(const QDomElement& layer_element) 
 }
 
 bool Scene2DDockWidget::restoreOnePending(const QDomElement& element) {
+  // A deferred drop (advertised topic, no data yet) gets tryAcceptObjectTopic's
+  // one-background policy; saved layout layers keep appending.
+  const auto object_type = sdk::parseBuiltinObjectType(element.attribute(u"object_type"_s).toStdString());
+  const bool dropped_background =
+      element.attribute(u"pending_intent"_s) == u"true"_s && object_type.has_value() && isBackgroundType(*object_type);
+  const std::vector<ObjectTopicId> previous_backgrounds =
+      dropped_background ? backgroundTopics() : std::vector<ObjectTopicId>{};
+
   auto previous_kinds = std::move(restore_image_layer_kinds_);
   restore_image_layer_kinds_.clear();
   primeRestoreLayerKind(element);
   const bool restored = SceneDockWidget::restoreOnePending(element);
   restore_image_layer_kinds_ = std::move(previous_kinds);
+
+  if (restored && dropped_background) {
+    for (const ObjectTopicId candidate : backgroundTopics()) {
+      const bool is_new = std::none_of(
+          previous_backgrounds.begin(), previous_backgrounds.end(),
+          [candidate](ObjectTopicId old_background) { return old_background.id == candidate.id; });
+      if (is_new) {
+        promoteBackground(candidate);
+        break;
+      }
+    }
+  }
   return restored;
 }
 

@@ -67,22 +67,43 @@ PJ::theme::Theme widgetTheme(const QWidget* widget) {
 
 }  // namespace
 
+QPointF fitScale(QSize widget_size, float frame_aspect, int rotation_deg) {
+  if (frame_aspect <= 0.0f || widget_size.width() <= 0 || widget_size.height() <= 0) {
+    return {1.0, 1.0};
+  }
+  const double shown_aspect = isQuarterTurn(rotation_deg) ? 1.0 / frame_aspect : frame_aspect;
+  const double widget_aspect = static_cast<double>(widget_size.width()) / static_cast<double>(widget_size.height());
+  if (widget_aspect > shown_aspect) {
+    return {shown_aspect / widget_aspect, 1.0};
+  }
+  return {1.0, widget_aspect / shown_aspect};
+}
+
+QPointF panAfterDrag(QPointF pan, float zoom, QPointF delta_px, QSize widget_size, QPointF fit) {
+  // Clip space is y-up, widget pixels are y-down.
+  const double clip_dx = delta_px.x() / widget_size.width() * 2.0;
+  const double clip_dy = -delta_px.y() / widget_size.height() * 2.0;
+  return {pan.x() + clip_dx / (fit.x() * zoom), pan.y() + clip_dy / (fit.y() * zoom)};
+}
+
+QPointF panAfterZoom(QPointF pan, float old_zoom, float new_zoom, QPointF cursor_px, QSize widget_size, QPointF fit) {
+  const double clip_x = 2.0 * cursor_px.x() / widget_size.width() - 1.0;
+  const double clip_y = 1.0 - 2.0 * cursor_px.y() / widget_size.height();
+  const double inverse_zoom_step = 1.0 / new_zoom - 1.0 / old_zoom;
+  return {pan.x() + clip_x / fit.x() * inverse_zoom_step, pan.y() + clip_y / fit.y() * inverse_zoom_step};
+}
+
 std::optional<QPoint> widgetPointToImagePixel(
-    QPointF widget_point, QSize widget_size, QSize image_size, float zoom, float pan_x, float pan_y) {
+    QPointF widget_point, QSize widget_size, QSize image_size, float zoom, float pan_x, float pan_y, int rotation_deg) {
   if (widget_size.width() <= 0 || widget_size.height() <= 0 || image_size.width() <= 0 || image_size.height() <= 0 ||
       zoom <= 0.0f) {
     return std::nullopt;
   }
 
-  float sx = zoom;
-  float sy = zoom;
   const float image_aspect = static_cast<float>(image_size.width()) / static_cast<float>(image_size.height());
-  const float widget_aspect = static_cast<float>(widget_size.width()) / static_cast<float>(widget_size.height());
-  if (widget_aspect > image_aspect) {
-    sx *= image_aspect / widget_aspect;
-  } else {
-    sy *= widget_aspect / image_aspect;
-  }
+  const QPointF fit = fitScale(widget_size, image_aspect, rotation_deg);
+  const float sx = zoom * static_cast<float>(fit.x());
+  const float sy = zoom * static_cast<float>(fit.y());
 
   if (sx == 0.0f || sy == 0.0f) {
     return std::nullopt;
@@ -93,8 +114,29 @@ std::optional<QPoint> widgetPointToImagePixel(
   const float clip_x = widget_u * 2.0f - 1.0f;
   const float clip_y = (1.0f - widget_v) * 2.0f - 1.0f;
 
-  const float u = (clip_x / sx - pan_x + 1.0f) * 0.5f;
-  const float v = (1.0f - clip_y / sy + pan_y) * 0.5f;
+  // Undo the clockwise quarter-turn (inverse of buildViewTransform's rotate).
+  const float rotated_x = clip_x / sx - pan_x;
+  const float rotated_y = clip_y / sy - pan_y;
+  float quad_x = rotated_x;
+  float quad_y = rotated_y;
+  switch (rotation_deg) {
+    case 90:
+      quad_x = -rotated_y;
+      quad_y = rotated_x;
+      break;
+    case -90:
+      quad_x = rotated_y;
+      quad_y = -rotated_x;
+      break;
+    case 180:
+      quad_x = -rotated_x;
+      quad_y = -rotated_y;
+      break;
+    default:
+      break;
+  }
+  const float u = (quad_x + 1.0f) * 0.5f;
+  const float v = (1.0f - quad_y) * 0.5f;
   if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f) {
     return std::nullopt;
   }

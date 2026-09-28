@@ -155,6 +155,24 @@ TEST(MediaViewerWidget, ViewStateSetterValidatesAndLeavesStateUntouchedOnFailure
   }
 }
 
+TEST(MediaViewerWidget, RotationIsValidatedAndSurvivesDoubleClickReset) {
+  EventTestMediaViewer viewer;
+  for (const int degrees : {90, -90, 180, 0}) {
+    EXPECT_TRUE(viewer.setViewState(PJ::MediaViewState{.rotation_deg = degrees}));
+    EXPECT_EQ(viewer.viewState().rotation_deg, degrees);
+  }
+  ASSERT_TRUE(viewer.setViewState(PJ::MediaViewState{.zoom = 2.0f, .pan_x = 0.1f, .rotation_deg = 90}));
+  EXPECT_FALSE(viewer.setViewState(PJ::MediaViewState{.rotation_deg = 45}));
+  EXPECT_FALSE(viewer.setViewState(PJ::MediaViewState{.rotation_deg = 270}));
+  EXPECT_EQ(viewer.viewState().rotation_deg, 90);
+
+  QMouseEvent double_click(
+      QEvent::MouseButtonDblClick, QPointF(10.0, 10.0), QPointF(10.0, 10.0), QPointF(10.0, 10.0), Qt::LeftButton,
+      Qt::LeftButton, Qt::NoModifier);
+  viewer.mouseDoubleClickEvent(&double_click);
+  EXPECT_EQ(viewer.viewState(), PJ::MediaViewState{.rotation_deg = 90}) << "reset clears zoom/pan, not rotation";
+}
+
 TEST(MediaViewerWidget, EmitsOneCommittedSignalPerWheelPanAndDoubleClickInteraction) {
   EventTestMediaViewer viewer;
   viewer.resize(200, 200);
@@ -225,6 +243,35 @@ TEST(Scene2DDockWidget, XmlRoundTripPreservesViewStateAndLoadDoesNotNotifyWorksp
   const QDomElement after_rejection = dock.xmlSaveState(output_doc).firstChildElement(u"view"_s);
   EXPECT_FLOAT_EQ(after_rejection.attribute(u"zoom"_s).toFloat(), 4.25f);
   EXPECT_EQ(workspace_changes, 0);
+}
+
+TEST(Scene2DDockWidget, ViewRotationNotifiesOncePersistsAndRejectsUnknownAngles) {
+  PJ::Scene2DDockWidget dock;
+  int workspace_changes = 0;
+  std::vector<int> announced;
+  QObject::connect(&dock, &PJ::SceneDockWidget::workspaceChanged, [&workspace_changes]() { ++workspace_changes; });
+  QObject::connect(
+      &dock, &PJ::Scene2DDockWidget::viewRotationChanged, [&announced](int deg) { announced.push_back(deg); });
+
+  dock.setViewRotation(-90);
+  dock.setViewRotation(-90);
+  EXPECT_EQ(dock.viewRotation(), -90);
+  EXPECT_EQ(workspace_changes, 1) << "re-selecting the current rotation is not a mutation";
+
+  QDomDocument doc(u"scene2d"_s);
+  QDomElement saved = dock.xmlSaveState(doc);
+  EXPECT_EQ(saved.firstChildElement(u"view"_s).attribute(u"rotation"_s), u"-90"_s);
+
+  PJ::Scene2DDockWidget restored;
+  QObject::connect(
+      &restored, &PJ::Scene2DDockWidget::viewRotationChanged, [&announced](int deg) { announced.push_back(deg); });
+  ASSERT_TRUE(restored.xmlLoadState(saved));
+  EXPECT_EQ(restored.viewRotation(), -90);
+  EXPECT_EQ(announced, (std::vector<int>{-90, -90})) << "restore must refresh a bound panel too";
+
+  saved.firstChildElement(u"view"_s).setAttribute(u"rotation"_s, u"45"_s);
+  EXPECT_FALSE(restored.xmlLoadState(saved));
+  EXPECT_EQ(restored.viewRotation(), -90);
 }
 
 TEST(Scene2DDockWidget, RejectsInvalidLayerPayloadBeforeReplacingCurrentState) {
@@ -573,6 +620,46 @@ TEST(Scene2DDockWidget, CompositeTracksVisibilityAndOrder) {
   EXPECT_EQ(dock.compositeLayerCountForTesting(), 2U);
   EXPECT_EQ(ids(dock.compositeTopicOrderForTesting()), (std::vector<uint32_t>{depth.id, image.id}));
   EXPECT_EQ(layerIds(dock.layers()), (std::vector<uint32_t>{depth.id, image.id}));
+}
+
+TEST(Scene2DDockWidget, DroppedBackgroundReplacesPreviousAndKeepsOverlaysOnTop) {
+  PJ::SessionManager session;
+  const auto markers = registerTopic(session, 1, "/camera/markers");
+  const auto first = registerTopic(session, 1, "/camera/image");
+  const auto second = registerTopic(session, 1, "/camera/depth");
+
+  PJ::Scene2DDockWidget dock;
+  dock.setSessionManager(&session);
+  ASSERT_TRUE(dock.tryAcceptObjectTopic(markers, PJ::sdk::BuiltinObjectType::kImageAnnotations, u"markers"_s));
+  ASSERT_TRUE(dock.tryAcceptObjectTopic(first, PJ::sdk::BuiltinObjectType::kImage, u"image"_s));
+  EXPECT_EQ(layerIds(dock.layers()), (std::vector<uint32_t>{first.id, markers.id}));
+
+  int reorders = 0;
+  QObject::connect(&dock, &PJ::SceneDockWidget::layersReordered, [&reorders]() { ++reorders; });
+  ASSERT_TRUE(dock.tryAcceptObjectTopic(second, PJ::sdk::BuiltinObjectType::kDepthImage, u"depth"_s));
+  EXPECT_EQ(layerIds(dock.layers()), (std::vector<uint32_t>{second.id, markers.id}));
+  EXPECT_EQ(reorders, 1) << "a bound layer list must learn the background moved beneath the overlays";
+
+  // Re-dropping the current background is refused and leaves the stack untouched.
+  EXPECT_FALSE(dock.tryAcceptObjectTopic(second, PJ::sdk::BuiltinObjectType::kDepthImage, u"depth"_s));
+  EXPECT_EQ(layerIds(dock.layers()), (std::vector<uint32_t>{second.id, markers.id}));
+}
+
+TEST(Scene2DDockWidget, DeferredBackgroundDropReplacesPreviousWhenItMaterializes) {
+  PJ::SessionManager session;
+  const auto markers = registerTopic(session, 1, "/camera/markers");
+  const auto first = registerTopic(session, 1, "/camera/image");
+
+  PJ::Scene2DDockWidget dock;
+  dock.setSessionManager(&session);
+  ASSERT_TRUE(dock.tryAcceptObjectTopic(first, PJ::sdk::BuiltinObjectType::kImage, u"image"_s));
+  ASSERT_TRUE(dock.tryAcceptObjectTopic(markers, PJ::sdk::BuiltinObjectType::kImageAnnotations, u"markers"_s));
+
+  // An advertised streaming topic with no data yet is dropped as a deferred intent.
+  ASSERT_TRUE(dock.deferTopicIntent(1, u"/camera/late"_s, PJ::sdk::BuiltinObjectType::kImage, u"late"_s));
+  const auto late = registerTopic(session, 1, "/camera/late", R"({"builtin_object_type":"kImage"})");
+  EXPECT_EQ(dock.retryPendingRestores(QSet<QString>{u"/camera/late"_s}), 1);
+  EXPECT_EQ(layerIds(dock.layers()), (std::vector<uint32_t>{late.id, markers.id}));
 }
 
 TEST(Scene2DDockWidget, DatasetReloadRebindsAnnotationParserAtAnUnchangedTrackerTime) {

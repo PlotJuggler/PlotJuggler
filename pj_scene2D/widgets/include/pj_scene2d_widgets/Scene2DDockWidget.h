@@ -44,6 +44,11 @@ class Scene2DDockWidget : public SceneDockWidget {
   /// Stores a non-owning SessionManager pointer in the base and reconnects the
   /// live-sample follow connection. Replacing the session drops the old connection.
   void setSessionManager(SessionManager* session) override;
+  /// Interactive drop: overlays (annotations/markers) stack, but a full-frame
+  /// image/depth/video replaces the current background and is drawn beneath the
+  /// overlays. The old background is removed only after the new one attached.
+  /// addTopic() stays a plain append (workspace restore, programmatic stacking).
+  bool tryAcceptObjectTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) override;
   /// Adds a 2D render layer for the topic. Returns false when the object type is
   /// unsupported or layer attach fails; success also updates the dock title.
   bool setImageTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
@@ -51,6 +56,11 @@ class Scene2DDockWidget : public SceneDockWidget {
   /// a pre-create call is intentionally not latched.
   void setPointInspectorEnabled(bool enabled);
   [[nodiscard]] bool pointInspectorEnabled() const noexcept;
+
+  /// Clockwise quarter-turn applied to every layer: 0, 90, -90 or 180; other
+  /// values are ignored. A real change is a workspace mutation (undo, save).
+  void setViewRotation(int degrees);
+  [[nodiscard]] int viewRotation() const;
 
   /// Single source of truth for the canonical object types the 2D scene family
   /// handles (render layers; the 2D family has no scene-wide config topics).
@@ -65,6 +75,10 @@ class Scene2DDockWidget : public SceneDockWidget {
   [[nodiscard]] bool emptyPlaceholderActiveForTesting() const noexcept {
     return empty_placeholder_active_;
   }
+
+ signals:
+  /// Emitted whenever the rotation changes, including on workspace restore/undo.
+  void viewRotationChanged(int degrees);
 
  protected:
   /// Workspace XML tag for the 2D scene dock.
@@ -95,6 +109,10 @@ class Scene2DDockWidget : public SceneDockWidget {
   /// Resolves saved layer identities that are already available and primes the
   /// encoding-aware factory with their explicit concrete kind.
   void primeRestoreLayerKinds(const QDomElement& root);
+  /// Full-frame (image/depth/video) layers, in draw order.
+  [[nodiscard]] std::vector<ObjectTopicId> backgroundTopics() const;
+  /// Makes `topic_id` the only background, drawn beneath the overlays.
+  void promoteBackground(ObjectTopicId topic_id);
   void primeRestoreLayerKind(const QDomElement& layer_element);
   /// Builds the centered, greyed image-SVG placeholder shown while the dock is
   /// empty (a nicer "drop a topic here" affordance than a blank GPU surface).

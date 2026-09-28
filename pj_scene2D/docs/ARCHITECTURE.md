@@ -811,7 +811,7 @@ and 4.
 `MediaViewerWidget` subclasses `QRhiWidget` (Qt 6.11.1), which abstracts
 over Vulkan, Metal, D3D11, and OpenGL at runtime. The widget owns five
 QRhi graphics pipelines that share the same `viewTransform` UBO so
-zoom/pan apply uniformly:
+zoom/pan/rotation apply uniformly:
 
 | # | Pipeline | Topology | Responsibility |
 |---|---|---|---|

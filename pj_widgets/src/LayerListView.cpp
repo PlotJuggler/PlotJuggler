@@ -559,6 +559,12 @@ void LayerListView::installRowWidget(QListWidgetItem* item, const LayerRow& row)
 #endif
 }
 
+void LayerListView::setOrder(const std::vector<qint64>& ordered_ids) {
+  if (ordered_ids != order()) {
+    rebuildFromOrder(ordered_ids, currentId().value_or(-1));
+  }
+}
+
 void LayerListView::rebuildFromOrder(const std::vector<qint64>& ordered_ids, qint64 select_id) {
   const bool had_selection = currentId().has_value();
   std::unordered_map<qint64, LayerRow> stored_rows;
@@ -590,7 +596,7 @@ void LayerListView::rebuildFromOrder(const std::vector<qint64>& ordered_ids, qin
   }
   if (to_select != nullptr) {
     list_->setCurrentItem(to_select);
-  } else if (list_->count() > 0) {
+  } else if (had_selection && list_->count() > 0) {
     list_->setCurrentRow(0);
   } else if (had_selection) {
     emit selectionChanged();

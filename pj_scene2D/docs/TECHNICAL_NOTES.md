@@ -525,12 +525,33 @@ re-derive the index via `indexAt(last_decoded_ts_)` instead of caching it.
 With QRhiWidget rendering, zoom and pan require only a view transform matrix
 in the vertex shader (scale + translate). No pixel reprocessing.
 
-Cursor-anchored zoom (keeps the point under the cursor fixed):
+Cursor-anchored zoom (keeps the point under the cursor fixed; `cursor_pos` in
+y-up clip space, `fit` the aspect-preserving per-axis scale):
 ```
-pan += cursor_pos * (1/new_zoom - 1/old_zoom)
+pan += cursor_pos / fit * (1/new_zoom - 1/old_zoom)
 ```
+Drag divides the clip-space mouse delta by `fit * zoom` likewise. Omitting `fit`
+makes a letterboxed image (always the case for a landscape frame at ±90°) lag
+the cursor. `fitScale` / `panAfterZoom` / `panAfterDrag` in `pixel_inspector.h`
+own this math, shared with the viewer transform and the inspector inverse.
 
 When zoom <= 1.0, reset pan to zero (video fits entirely in widget).
+
+Rotation (clockwise quarter-turns) is the last factor of the same matrix:
+`scale(fit × zoom) · translate(pan) · rotate(−deg)`. The image quad spans
+[−1,1]² whatever its aspect, so a quarter turn is an exact axis swap there;
+only the aspect-preserving fit uses the swapped aspect (and the overlay
+`effective_scale` the swapped texture size). Pan comes after the rotation, so
+drag and cursor-anchored zoom stay in screen directions. Clip space is y-up,
+hence the negative angle for a clockwise turn. `widgetPointToImagePixel`
+mirrors the rotation by hand (the fit is shared via `fitScale`); any change to
+one must change the other.
+
+Text labels stay upright under rotation without a shader change: image pixels
+reach the screen through a similarity (uniform scale + the clockwise turn), so
+`overlay_geometry::uprightTextQuadCorners` counter-rotates each glyph quad about
+its anchor in image space. The text quads are therefore rebuilt when the
+rotation changes, not only when the annotation set does.
 
 ---
 

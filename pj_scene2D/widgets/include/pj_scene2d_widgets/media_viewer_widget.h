@@ -13,7 +13,6 @@
 #ifdef PJ_TARGET_WASM
 #include <QShowEvent>
 #endif
-#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -25,7 +24,8 @@
 #include "pj_scene2d_core/media_frame.h"
 #include "pj_scene2d_core/scene_frame.h"
 #include "pj_scene2d_core/undistort_remap.h"
-#include "pj_scene2d_core/video_color.h"  // buildYuvMatrix (per-layer YUV->RGB matrix cache)
+#include "pj_scene2d_core/video_color.h"         // buildYuvMatrix (per-layer YUV->RGB matrix cache)
+#include "pj_scene2d_widgets/pixel_inspector.h"  // kViewRotations
 #include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
@@ -41,6 +41,9 @@ struct MediaViewState {
   float zoom = 1.0f;
   float pan_x = 0.0f;
   float pan_y = 0.0f;
+  /// Clockwise rotation of the whole composite, one of kViewRotations. Pan is
+  /// applied after the rotation, so it stays in screen directions.
+  int rotation_deg = 0;
 
   friend bool operator==(const MediaViewState&, const MediaViewState&) = default;
 };
@@ -74,14 +77,15 @@ class MediaViewerWidget : public QRhiWidget {
   /// No-op if no source is attached.
   void setTimestamp(int64_t ts_ns);
 
-  /// Reset zoom to 1x and pan to origin.
+  /// Reset zoom to 1x and pan to origin; keeps the rotation.
   void resetView();
 
   /// Returns the spatial viewport represented in Scene2D workspace XML.
   [[nodiscard]] MediaViewState viewState() const noexcept;
 
   /// Applies a validated spatial viewport. Rejects non-finite values, zoom
-  /// outside [1, 20], and non-zero pan at 1x without changing the current view.
+  /// outside [1, 20], non-zero pan at 1x and a rotation outside kViewRotations
+  /// without changing the current view.
   /// Programmatic restore does not emit viewInteractionCommitted().
   bool setViewState(const MediaViewState& state);
 
@@ -97,6 +101,7 @@ class MediaViewerWidget : public QRhiWidget {
 
  signals:
   void zoomChanged(float zoom);
+  void rotationChanged(int degrees);
   /// One complete user gesture changed the XML-visible viewport: one wheel
   /// event, a finished pan drag, or a double-click reset.
   void viewInteractionCommitted();
@@ -283,6 +288,7 @@ class MediaViewerWidget : public QRhiWidget {
   float zoom_ = 1.0f;
   float pan_x_ = 0.0f;
   float pan_y_ = 0.0f;
+  int rotation_deg_ = 0;
   bool pan_interaction_changed_ = false;
   QPointF last_mouse_pos_;
   QPointF last_point_inspector_pos_;

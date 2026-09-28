@@ -6,6 +6,7 @@
 #include <QSize>
 #include <QString>
 #include <QWidget>
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -26,11 +27,34 @@ struct InspectorRgb {
   }
 };
 
+/// The clockwise view rotations a MediaViewState accepts, in selector order.
+inline constexpr std::array<int, 4> kViewRotations{0, 90, -90, 180};
+
+/// True for the rotations that swap the displayed width and height.
+[[nodiscard]] constexpr bool isQuarterTurn(int rotation_deg) {
+  return rotation_deg == 90 || rotation_deg == -90;
+}
+
+/// Per-axis clip-space scale at zoom 1 that fits the (rotated) image inside the
+/// widget: the aspect-preserving sx/sy of MediaViewerWidget::buildViewTransform().
+/// {1, 1} while the frame aspect is unknown (<= 0).
+[[nodiscard]] QPointF fitScale(QSize widget_size, float frame_aspect, int rotation_deg);
+
+/// Pan after dragging `delta_px` (widget pixels, y down) at `zoom`, so the grabbed
+/// image point follows the cursor. `fit` comes from fitScale().
+[[nodiscard]] QPointF panAfterDrag(QPointF pan, float zoom, QPointF delta_px, QSize widget_size, QPointF fit);
+
+/// Pan after zooming from `old_zoom` to `new_zoom` so the image point under
+/// `cursor_px` stays under it. `fit` comes from fitScale().
+[[nodiscard]] QPointF panAfterZoom(
+    QPointF pan, float old_zoom, float new_zoom, QPointF cursor_px, QSize widget_size, QPointF fit);
+
 /// Maps a widget point to an image pixel using MediaViewerWidget::buildViewTransform()
-/// zoom/pan semantics. Returns nullopt for invalid sizes/zoom or off-image points;
-/// pan is normalized clip-space offset (+X moves image right, +Y moves it up).
+/// zoom/pan/rotation semantics. Returns nullopt for invalid sizes/zoom or off-image
+/// points; pan is normalized clip-space offset (+X moves image right, +Y moves it up)
+/// and `rotation_deg` is the clockwise quarter-turn (0, 90, -90 or 180).
 [[nodiscard]] std::optional<QPoint> widgetPointToImagePixel(
-    QPointF widget_point, QSize widget_size, QSize image_size, float zoom, float pan_x, float pan_y);
+    QPointF widget_point, QSize widget_size, QSize image_size, float zoom, float pan_x, float pan_y, int rotation_deg);
 
 /// Samples one image pixel as RGB, converting supported YUV/mono/BGR layouts.
 /// Returns nullopt for invalid storage, unsupported bounds, or off-image points.

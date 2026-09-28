@@ -33,6 +33,10 @@ class LayerListView : public QWidget {
   void setRows(const std::vector<LayerRow>& rows);
   void addRow(const LayerRow& row);
   void removeRow(qint64 id);
+  /// Re-sequences existing rows to an order decided by the owner, keeping each
+  /// row's warning and the selection (none stays none). Unknown ids are skipped.
+  /// Does not emit reordered(), which reports user drags only.
+  void setOrder(const std::vector<qint64>& ordered_ids);
   void clearRows();
   void setRowVisible(qint64 id, bool visible);
   void setRowName(qint64 id, const QString& name);

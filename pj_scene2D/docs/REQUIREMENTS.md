@@ -568,6 +568,13 @@ decoder seek and entry eviction.
   No pixel reprocessing; transformation is free on the GPU. This
   functionality is a carry-over from the prototype and is a hard
   requirement.
+- **Rotation**: a dock-wide clockwise rotation of 0°, 90°, -90° or 180°
+  (the side panel's Rotation selector, below the layer list) turns every
+  layer together — images, pixel layers, overlays — through the same view
+  transform, and the point inspector maps through its inverse. It is a
+  setting, not a gesture: double-click reset clears zoom/pan but keeps it.
+  Persisted in the layout XML (`<view rotation="…">`). Text labels stay
+  upright: their anchor moves with the image, the glyphs do not turn.
 - **Software fallback**: when no GPU/HW path is available, the decoder
   falls back to software decode and the widget uses a CPU upload path.
   Acceptable degradation; the UX remains functional.
@@ -615,6 +622,18 @@ definitions in [`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/do
 
 **Layer ordering and blending modes** (direct color, colormap, false-color,
 alpha blending) are widget configuration, not part of the data model.
+
+**One background per dock**: a full-frame source (image, depth image,
+video) is the dock's background; overlays (image annotations, scene
+entities) stack on top of it. Dropping a topic onto a dock
+(`Scene2DDockWidget::tryAcceptObjectTopic`) appends an overlay, but a
+dropped full-frame source *replaces* the current background and is drawn
+beneath every overlay. The old background is removed only after the new
+one attached. A dropped topic that is advertised but has no data yet is
+deferred and gets the same policy when it materializes
+(`restoreOnePending`, `pending_intent` elements only). Workspace restore
+and the programmatic `addTopic()` keep appending, so a saved multi-image
+layout still loads as saved.
 
 ## 5. Non-Functional Requirements
 

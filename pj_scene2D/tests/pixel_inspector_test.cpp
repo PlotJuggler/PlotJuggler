@@ -39,7 +39,7 @@ PJ::DecodedFrame makeDepthFrame(int width, int height, std::vector<float> depths
 
 TEST(PixelInspectorMapping, CenterWithoutLetterboxMapsToImageCenter) {
   const auto point =
-      PJ::widgetPointToImagePixel(QPointF(400.0, 300.0), QSize(800, 600), QSize(640, 480), 1.0f, 0.0f, 0.0f);
+      PJ::widgetPointToImagePixel(QPointF(400.0, 300.0), QSize(800, 600), QSize(640, 480), 1.0f, 0.0f, 0.0f, 0);
 
   ASSERT_TRUE(point.has_value());
   EXPECT_EQ(*point, QPoint(320, 240));
@@ -47,20 +47,66 @@ TEST(PixelInspectorMapping, CenterWithoutLetterboxMapsToImageCenter) {
 
 TEST(PixelInspectorMapping, PillarboxRejectsMouseOutsideImage) {
   EXPECT_FALSE(
-      PJ::widgetPointToImagePixel(QPointF(49.0, 50.0), QSize(200, 100), QSize(100, 100), 1.0f, 0.0f, 0.0f).has_value());
+      PJ::widgetPointToImagePixel(QPointF(49.0, 50.0), QSize(200, 100), QSize(100, 100), 1.0f, 0.0f, 0.0f, 0)
+          .has_value());
 
   const auto left_edge =
-      PJ::widgetPointToImagePixel(QPointF(50.0, 50.0), QSize(200, 100), QSize(100, 100), 1.0f, 0.0f, 0.0f);
+      PJ::widgetPointToImagePixel(QPointF(50.0, 50.0), QSize(200, 100), QSize(100, 100), 1.0f, 0.0f, 0.0f, 0);
   ASSERT_TRUE(left_edge.has_value());
   EXPECT_EQ(*left_edge, QPoint(0, 50));
 }
 
 TEST(PixelInspectorMapping, ZoomAndPanUseSameTransformAsViewer) {
   const auto point =
-      PJ::widgetPointToImagePixel(QPointF(150.0, 50.0), QSize(200, 200), QSize(100, 100), 2.0f, 0.25f, 0.25f);
+      PJ::widgetPointToImagePixel(QPointF(150.0, 50.0), QSize(200, 200), QSize(100, 100), 2.0f, 0.25f, 0.25f, 0);
 
   ASSERT_TRUE(point.has_value());
   EXPECT_EQ(*point, QPoint(50, 50));
+}
+
+// A 100x50 image in a 100x100 widget, sampled half a pixel inside the displayed
+// image's top-left corner: that corner is a different source corner per rotation.
+TEST(PixelInspectorMapping, RotationMapsDisplayedCornerToRotatedSourceCorner) {
+  const QSize widget(100, 100);
+  const QSize image(100, 50);
+  // Quarter turns show a 50x100 pillarbox starting at x=25.
+  EXPECT_EQ(PJ::widgetPointToImagePixel(QPointF(26.5, 1.5), widget, image, 1.0f, 0.0f, 0.0f, 90), QPoint(1, 48));
+  EXPECT_EQ(PJ::widgetPointToImagePixel(QPointF(26.5, 1.5), widget, image, 1.0f, 0.0f, 0.0f, -90), QPoint(98, 1));
+  // A half turn keeps the 100x50 letterbox starting at y=25.
+  EXPECT_EQ(PJ::widgetPointToImagePixel(QPointF(1.5, 26.5), widget, image, 1.0f, 0.0f, 0.0f, 180), QPoint(98, 48));
+  EXPECT_FALSE(PJ::widgetPointToImagePixel(QPointF(24.0, 50.0), widget, image, 1.0f, 0.0f, 0.0f, 90).has_value());
+}
+
+// Gestures must keep the grabbed image point under the cursor. A 200x100 image
+// in a 200x100 widget is letterboxed at +-90, where a zoom-only drag lags.
+TEST(ViewGestures, DragAndWheelKeepImagePointUnderCursorAtEveryRotation) {
+  const QSize widget(200, 100);
+  const QSize image(200, 100);
+  constexpr float kZoom = 2.0f;
+  for (const int rotation : {0, 90, -90, 180}) {
+    const QPointF fit = PJ::fitScale(widget, 2.0f, rotation);
+
+    const QPointF grab(100.3, 50.3);
+    const QPointF release(110.3, 45.3);
+    const QPointF dragged = PJ::panAfterDrag(QPointF(), kZoom, release - grab, widget, fit);
+    const auto grabbed = PJ::widgetPointToImagePixel(grab, widget, image, kZoom, 0.0f, 0.0f, rotation);
+    ASSERT_TRUE(grabbed.has_value()) << rotation;
+    EXPECT_EQ(
+        PJ::widgetPointToImagePixel(
+            release, widget, image, kZoom, static_cast<float>(dragged.x()), static_cast<float>(dragged.y()), rotation),
+        grabbed)
+        << rotation;
+
+    const QPointF cursor(120.3, 20.3);
+    const QPointF zoomed = PJ::panAfterZoom(QPointF(), kZoom, 2.5f, cursor, widget, fit);
+    const auto under_cursor = PJ::widgetPointToImagePixel(cursor, widget, image, kZoom, 0.0f, 0.0f, rotation);
+    ASSERT_TRUE(under_cursor.has_value()) << rotation;
+    EXPECT_EQ(
+        PJ::widgetPointToImagePixel(
+            cursor, widget, image, 2.5f, static_cast<float>(zoomed.x()), static_cast<float>(zoomed.y()), rotation),
+        under_cursor)
+        << rotation;
+  }
 }
 
 TEST(PixelInspectorPixels, ReadsRgbFamilyFormatsAsDisplayRgb) {

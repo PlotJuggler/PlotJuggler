@@ -99,11 +99,11 @@ bool MediaViewerWidget::pointInspectorEnabled() const noexcept {
 }
 
 void MediaViewerWidget::resetView() {
-  static_cast<void>(setViewState({}));
+  static_cast<void>(setViewState({.rotation_deg = rotation_deg_}));
 }
 
 MediaViewState MediaViewerWidget::viewState() const noexcept {
-  return MediaViewState{.zoom = zoom_, .pan_x = pan_x_, .pan_y = pan_y_};
+  return MediaViewState{.zoom = zoom_, .pan_x = pan_x_, .pan_y = pan_y_, .rotation_deg = rotation_deg_};
 }
 
 bool MediaViewerWidget::isViewStateValid(const MediaViewState& state) noexcept {
@@ -111,6 +111,9 @@ bool MediaViewerWidget::isViewStateValid(const MediaViewState& state) noexcept {
   constexpr float kMaxZoom = 20.0f;
   if (!std::isfinite(state.zoom) || !std::isfinite(state.pan_x) || !std::isfinite(state.pan_y) ||
       state.zoom < kMinZoom || state.zoom > kMaxZoom) {
+    return false;
+  }
+  if (std::find(kViewRotations.begin(), kViewRotations.end(), state.rotation_deg) == kViewRotations.end()) {
     return false;
   }
   return state.zoom != kMinZoom || (state.pan_x == 0.0f && state.pan_y == 0.0f);
@@ -127,9 +130,17 @@ bool MediaViewerWidget::setViewState(const MediaViewState& state) {
   zoom_ = state.zoom;
   pan_x_ = state.pan_x;
   pan_y_ = state.pan_y;
+  rotation_deg_ = state.rotation_deg;
   update();
   if (zoom_ != previous.zoom) {
     emit zoomChanged(zoom_);
+  }
+  if (rotation_deg_ != previous.rotation_deg) {
+    {
+      std::lock_guard lock(frame_mutex_);
+      overlays_dirty_ = true;  // text quads are counter-rotated per rotation
+    }
+    emit rotationChanged(rotation_deg_);
   }
   if (point_inspector_enabled_.load(std::memory_order_relaxed) &&
       point_inspector_active_.load(std::memory_order_relaxed)) {
@@ -1112,9 +1123,11 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
   // zoom × aspect-preserving fit (so a single isotropic scalar is exact).
   double effective_scale = 0.0;
   if (tex_width_ > 0 && tex_height_ > 0 && output_size.width() > 0 && output_size.height() > 0) {
+    const int shown_width = isQuarterTurn(rotation_deg_) ? tex_height_ : tex_width_;
+    const int shown_height = isQuarterTurn(rotation_deg_) ? tex_width_ : tex_height_;
     const double fit = std::min(
-        static_cast<double>(output_size.width()) / static_cast<double>(tex_width_),
-        static_cast<double>(output_size.height()) / static_cast<double>(tex_height_));
+        static_cast<double>(output_size.width()) / static_cast<double>(shown_width),
+        static_cast<double>(output_size.height()) / static_cast<double>(shown_height));
     effective_scale = fit * static_cast<double>(zoom_);
   }
 
@@ -1152,8 +1165,9 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
       uploadOverlayVertexData(points_overlay_, updates);
       last_overlay_scale_ = effective_scale;
 
-      // ----- Text rebuild (textured quads) — only when the annotation set
-      // changes; text size is not cosmetic, so a pure zoom change leaves it. -----
+      // ----- Text rebuild (textured quads) — only when the annotation set or
+      // the rotation changes (quads are counter-rotated to stay upright); text
+      // size is not cosmetic, so a pure zoom change leaves it. -----
       if (overlays_dirty_ && text_overlay_.pipeline != nullptr) {
         text_overlay_.vertex_data.clear();
         text_draw_items_.clear();
@@ -1172,24 +1186,22 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
               if (entry == nullptr || entry->tex == nullptr) {
                 continue;
               }
-              const float x0 = static_cast<float>(ta.position.x);
-              const float y0 = static_cast<float>(ta.position.y);
-              const float x1 = x0 + static_cast<float>(entry->width);
-              const float y1 = y0 + static_cast<float>(entry->height);
+              const auto corners = overlay_geometry::uprightTextQuadCorners(
+                  ta.position, static_cast<double>(entry->width), static_cast<double>(entry->height), rotation_deg_);
               const float tr = static_cast<float>(ta.color.r) / 255.0f;
               const float tg = static_cast<float>(ta.color.g) / 255.0f;
               const float tb = static_cast<float>(ta.color.b) / 255.0f;
               const float tap = static_cast<float>(ta.color.a) / 255.0f;
               const size_t offset_bytes = text_overlay_.vertex_data.size() * sizeof(float);
-              const float quad[6][8] = {
-                  {x0, y0, 0.0f, 0.0f, tr, tg, tb, tap}, {x1, y0, 1.0f, 0.0f, tr, tg, tb, tap},
-                  {x1, y1, 1.0f, 1.0f, tr, tg, tb, tap}, {x0, y0, 0.0f, 0.0f, tr, tg, tb, tap},
-                  {x1, y1, 1.0f, 1.0f, tr, tg, tb, tap}, {x0, y1, 0.0f, 1.0f, tr, tg, tb, tap},
-              };
-              for (const auto& v : quad) {
-                for (int k = 0; k < 8; ++k) {
-                  text_overlay_.vertex_data.push_back(v[k]);
-                }
+              // Two triangles over corners TL,TR,BR,BL; UV (0,0) is the glyph's top-left.
+              constexpr std::array<size_t, 6> kTriangleCorners{0, 1, 2, 0, 2, 3};
+              constexpr std::array<std::array<float, 2>, 4> kCornerUv{
+                  {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}}};
+              for (const size_t corner : kTriangleCorners) {
+                text_overlay_.vertex_data.insert(
+                    text_overlay_.vertex_data.end(),
+                    {static_cast<float>(corners[corner].x), static_cast<float>(corners[corner].y), kCornerUv[corner][0],
+                     kCornerUv[corner][1], tr, tg, tb, tap});
               }
               text_draw_items_.push_back(TextDrawItem{entry->srb, offset_bytes});
             }
@@ -1295,10 +1307,11 @@ void MediaViewerWidget::wheelEvent(QWheelEvent* e) {
     next.pan_x = 0.0f;
     next.pan_y = 0.0f;
   } else {
-    const float mx = (2.0f * static_cast<float>(e->position().x()) / static_cast<float>(width()) - 1.0f);
-    const float my = (2.0f * static_cast<float>(e->position().y()) / static_cast<float>(height()) - 1.0f);
-    next.pan_x += mx * (1.0f / next.zoom - 1.0f / previous.zoom);
-    next.pan_y += my * (1.0f / next.zoom - 1.0f / previous.zoom);
+    const QPointF pan = panAfterZoom(
+        QPointF(previous.pan_x, previous.pan_y), previous.zoom, next.zoom, e->position(), size(),
+        fitScale(size(), frame_aspect_, rotation_deg_));
+    next.pan_x = static_cast<float>(pan.x());
+    next.pan_y = static_cast<float>(pan.y());
   }
 
   if (next != previous && setViewState(next)) {
@@ -1320,11 +1333,12 @@ void MediaViewerWidget::mousePressEvent(QMouseEvent* e) {
 
 void MediaViewerWidget::mouseMoveEvent(QMouseEvent* e) {
   if ((e->buttons() & Qt::LeftButton) != 0 && zoom_ > 1.0f) {
-    auto dx = static_cast<float>(e->position().x() - last_mouse_pos_.x()) / static_cast<float>(width()) * 2.0f / zoom_;
-    auto dy = static_cast<float>(e->position().y() - last_mouse_pos_.y()) / static_cast<float>(height()) * 2.0f / zoom_;
-    pan_x_ += dx;
-    pan_y_ -= dy;
-    pan_interaction_changed_ = pan_interaction_changed_ || dx != 0.0f || dy != 0.0f;
+    const QPointF delta = e->position() - last_mouse_pos_;
+    const QPointF pan =
+        panAfterDrag(QPointF(pan_x_, pan_y_), zoom_, delta, size(), fitScale(size(), frame_aspect_, rotation_deg_));
+    pan_x_ = static_cast<float>(pan.x());
+    pan_y_ = static_cast<float>(pan.y());
+    pan_interaction_changed_ = pan_interaction_changed_ || !delta.isNull();
     last_mouse_pos_ = e->position();
     update();
     e->accept();
@@ -1366,18 +1380,13 @@ void MediaViewerWidget::leaveEvent(QEvent* e) {
 
 QMatrix4x4 MediaViewerWidget::buildViewTransform(QSize output_size) const {
   QMatrix4x4 m;
-  float widget_aspect = static_cast<float>(output_size.width()) / static_cast<float>(output_size.height());
-  float sx = 1.0f;
-  float sy = 1.0f;
-  if (frame_aspect_ > 0.0f) {
-    if (widget_aspect > frame_aspect_) {
-      sx = frame_aspect_ / widget_aspect;
-    } else {
-      sy = widget_aspect / frame_aspect_;
-    }
-  }
-  m.scale(sx * zoom_, sy * zoom_);
+  const QPointF fit = fitScale(output_size, frame_aspect_, rotation_deg_);
+  m.scale(static_cast<float>(fit.x()) * zoom_, static_cast<float>(fit.y()) * zoom_);
   m.translate(pan_x_, pan_y_);
+  // The image quad spans [-1,1]^2 whatever its aspect, so a quarter turn is an
+  // exact axis swap there; fitScale() handles the aspect. Negative angle
+  // because clip space is y-up and the rotation is clockwise on screen.
+  m.rotate(static_cast<float>(-rotation_deg_), 0.0f, 0.0f, 1.0f);
   return m;
 }
 
@@ -1405,8 +1414,8 @@ void MediaViewerWidget::refreshPointInspector() {
   const int logical_w = gpu_rectified ? frame.rectify_map->out_width : frame.width;
   const int logical_h = gpu_rectified ? frame.rectify_map->out_height : frame.height;
 
-  const auto image_point =
-      widgetPointToImagePixel(last_point_inspector_pos_, size(), QSize(logical_w, logical_h), zoom_, pan_x_, pan_y_);
+  const auto image_point = widgetPointToImagePixel(
+      last_point_inspector_pos_, size(), QSize(logical_w, logical_h), zoom_, pan_x_, pan_y_, rotation_deg_);
   if (!image_point.has_value()) {
     hidePointInspector();
     return;

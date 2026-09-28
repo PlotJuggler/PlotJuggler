@@ -170,6 +170,43 @@ TEST(LayerListViewTest, ReorderPreservesWarningAndEmitsReordered) {
   EXPECT_EQ(list->item(0)->toolTip(), u"bad"_s);
 }
 
+TEST(LayerListViewTest, SetOrderKeepsWarningAndSelectionWithoutEmittingReordered) {
+  PJ::LayerListView view;
+  view.setRows({
+      {.id = 1, .name = u"a"_s, .visible = true},
+      {.id = 2, .name = u"b"_s, .visible = true, .warn = true, .warning_reason = u"bad"_s},
+      {.id = 3, .name = u"c"_s, .visible = true},
+  });
+  view.setCurrentId(3);
+  QSignalSpy spy(&view, &PJ::LayerListView::reordered);
+  ASSERT_TRUE(spy.isValid());
+
+  view.setOrder(ids({3, 1, 2}));
+
+  EXPECT_EQ(view.order(), ids({3, 1, 2}));
+  EXPECT_EQ(spy.count(), 0) << "an order pushed from the owner must not echo back as a user reorder";
+  EXPECT_EQ(view.currentId(), std::optional<qint64>(3));
+  auto* list = view.findChild<QListWidget*>();
+  ASSERT_NE(list, nullptr);
+  EXPECT_EQ(list->item(2)->toolTip(), u"bad"_s);
+}
+
+TEST(LayerListViewTest, SetOrderDoesNotInventASelection) {
+  PJ::LayerListView view;
+  view.setRows({{.id = 1, .name = u"a"_s, .visible = true}, {.id = 2, .name = u"b"_s, .visible = true}});
+  auto* list = view.findChild<QListWidget*>();
+  ASSERT_NE(list, nullptr);
+  list->setCurrentRow(-1);
+  ASSERT_FALSE(view.currentId().has_value());
+  QSignalSpy selection(&view, &PJ::LayerListView::selectionChanged);
+
+  view.setOrder(ids({2, 1}));
+
+  EXPECT_EQ(view.order(), ids({2, 1}));
+  EXPECT_FALSE(view.currentId().has_value()) << "a programmatic reorder must not open a config pane";
+  EXPECT_EQ(selection.count(), 0);
+}
+
 TEST(LayerListViewTest, AddRowIgnoresDuplicateId) {
   PJ::LayerListView view;
   view.addRow({.id = 5, .name = u"first"_s, .visible = true});

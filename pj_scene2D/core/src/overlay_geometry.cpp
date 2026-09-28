@@ -163,4 +163,16 @@ void appendCircleFill(const CircleAnnotation& circle, std::vector<float>& out) {
   }
 }
 
+std::array<Point2, 4> uprightTextQuadCorners(const Point2& anchor, double width, double height, int rotation_deg) {
+  // Exact quarter-turn cos/sin: no drift, so text stays pixel-aligned.
+  const double sin_turn = rotation_deg == 90 ? 1.0 : (rotation_deg == -90 ? -1.0 : 0.0);
+  const double cos_turn = rotation_deg == 180 ? -1.0 : (sin_turn == 0.0 ? 1.0 : 0.0);
+  // Inverse (counter-clockwise, y-down) turn of each screen-space offset.
+  const auto corner = [&](double screen_dx, double screen_dy) {
+    return Point2{
+        anchor.x + screen_dx * cos_turn + screen_dy * sin_turn, anchor.y - screen_dx * sin_turn + screen_dy * cos_turn};
+  };
+  return {corner(0.0, 0.0), corner(width, 0.0), corner(width, height), corner(0.0, height)};
+}
+
 }  // namespace PJ::overlay_geometry

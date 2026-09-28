@@ -445,6 +445,7 @@ void SceneDockWidget::reorderLayers(const std::vector<ObjectTopicId>& ordered_to
   draw_order_ = std::move(ordered);
   syncViewLayers();
   refreshView();
+  emit layersReordered();
   notifyWorkspaceChanged();
 }
 

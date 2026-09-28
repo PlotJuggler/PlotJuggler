@@ -123,6 +123,8 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   void layerAdded(ObjectTopicId topic_id);
   void layerRemoved(ObjectTopicId topic_id);
   void layerVisibilityChanged(ObjectTopicId topic_id, bool visible);
+  /// Emitted after reorderLayers() changed the draw order; read layers() for it.
+  void layersReordered();
   void layerWarningChanged(ObjectTopicId topic_id, bool warn, QString reason);
   /// Emitted whenever the dock-owned deferred queue changes.
   void pendingRestoresChanged();

@@ -2,6 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <array>
 #include <vector>
 
 #include "pj_scene2d_core/scene_frame.h"
@@ -60,5 +61,13 @@ void appendCircleStroke(const CircleAnnotation& circle, double image_px_per_scre
 /// Triangle-fan fill of a circle in image space (scales with zoom). No-op for an
 /// empty/transparent fill.
 void appendCircleFill(const CircleAnnotation& circle, std::vector<float>& out);
+
+/// Image-space corners (top-left, top-right, bottom-right, bottom-left) of a
+/// `width` x `height` text quad anchored at its top-left, counter-rotated about the
+/// anchor so it reads upright once the view turns the image clockwise by
+/// `rotation_deg` (0, 90, -90 or 180; anything else is treated as 0). The anchor
+/// still rotates with the image.
+[[nodiscard]] std::array<Point2, 4> uprightTextQuadCorners(
+    const Point2& anchor, double width, double height, int rotation_deg);
 
 }  // namespace PJ::overlay_geometry
