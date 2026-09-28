@@ -219,7 +219,7 @@ are shared with the native product. The browser dock accepts TF config topics,
 raw/compressed point clouds, depth clouds, pose arrays, occupancy/voxel grids,
 procedural SceneEntities, models, and RobotModel sources. The browser source
 lists deliberately omit the native GL pass implementations while providing
-equivalent QRhi/WebGL2 post processing. Draco 1.5.7, Cloudini 1.2.2, and bounded Assimp enter only the
+equivalent QRhi/WebGL2 post processing. Draco 1.5.7, Cloudini 1.4.1, and bounded Assimp enter only the
 explicitly gated browser graph; the non-Emscripten source graph and runtime
 behavior are unchanged.
 

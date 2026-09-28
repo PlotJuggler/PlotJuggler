@@ -43,7 +43,7 @@ backward-cpp/1.6
 # Pinned at 1.5.7 to match what the assimp/6.0.5 ConanCenter recipe requires; keep
 # in lock-step with whatever assimp declares, or the two conflict in the graph.
 draco/1.5.7
-cloudini/1.2.3
+cloudini/1.4.1
 # pj_scene3D mesh loader: STL / Collada(DAE) / OBJ / glTF importers only.
 assimp/6.0.5
 

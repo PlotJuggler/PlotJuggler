@@ -38,7 +38,7 @@ FetchContent_MakeAvailable(assimp)
 target_compile_options(assimp PRIVATE -fexceptions)
 
 if(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS)
-    # Match the native graph (Draco 1.5.7 + Cloudini 1.2.2). The common wasm
+    # Match the native graph (Draco 1.5.7 + Cloudini 1.4.1). The common wasm
     # dependency file has already provided the shared LZ4 and Zstd targets.
     set(DRACO_JS_GLUE OFF CACHE BOOL "" FORCE)
     set(DRACO_MESH_COMPRESSION OFF CACHE BOOL "" FORCE)
@@ -59,8 +59,8 @@ if(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS)
         OVERRIDE_FIND_PACKAGE
         SYSTEM)
     FetchContent_Declare(cloudini
-        URL https://github.com/facontidavide/cloudini/archive/refs/tags/1.2.2.tar.gz
-        URL_HASH SHA256=fd71f0dce1bc23ff12e82f26666861df8fdc5a250f4d8440851bd45f10e5eb6a
+        URL https://github.com/facontidavide/cloudini/archive/refs/tags/1.4.1.tar.gz
+        URL_HASH SHA256=0fb83aa71c665fc73fdaaf3eefb2f16282f554f3d326c626437467acb203f59b
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         SOURCE_SUBDIR _pj_source_only_no_cmakelists
         SYSTEM)
@@ -101,7 +101,8 @@ if(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS)
         ${cloudini_SOURCE_DIR}/cloudini_lib/src/field_decoder.cpp
         ${cloudini_SOURCE_DIR}/cloudini_lib/src/ros_msg_utils.cpp
         ${cloudini_SOURCE_DIR}/cloudini_lib/src/v4_codec.cpp
-        ${cloudini_SOURCE_DIR}/cloudini_lib/src/v5_codec.cpp)
+        ${cloudini_SOURCE_DIR}/cloudini_lib/src/v5_codec.cpp
+        ${cloudini_SOURCE_DIR}/cloudini_lib/src/v6_codec.cpp)
     target_compile_features(pj_wasm_cloudini PUBLIC cxx_std_20)
     target_include_directories(pj_wasm_cloudini SYSTEM PUBLIC
         ${cloudini_SOURCE_DIR}/cloudini_lib/include

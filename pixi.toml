@@ -61,7 +61,7 @@ assimp = "*"                     # conda-forge is 6.x vs conan 5.4.3 — API ris
 # --- local channel (gaps vs conda-forge; see recipes/) ------------------------
 luau = "0.700.*"
 libmcap = "2.1.*"                # C++ header-only mcap (conda-forge `mcap` is the Python wrapper)
-cloudini = "1.2.*"
+cloudini = "1.4.*"
 kissfft = "131.1.*"              # FFT for pj_scripting's bandPower (static, datatype=float)
 
 # Linux-only deps. elfutils backs backward-cpp's `dw` stack-trace backend
