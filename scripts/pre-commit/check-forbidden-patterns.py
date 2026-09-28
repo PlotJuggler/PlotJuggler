@@ -2,7 +2,8 @@
 """
 Pre-commit hook to detect forbidden patterns in source code.
 
-Checks for patterns that should never be committed (e.g., std::getenv on Windows).
+Checks for patterns that should never be committed (e.g., std::getenv, or identifiers
+named near/far, which windows.h defines as macros).
 Exit code: 0 if no violations found, 1 if violations found.
 """
 
@@ -11,14 +12,37 @@ import sys
 from pathlib import Path
 from typing import List, Tuple
 
-# Pattern definitions: (regex, message, file_extensions)
+CPP_EXTENSIONS = {'.cpp', '.h', '.hpp', '.cxx', '.cc', '.c'}
+
+# Pattern definitions: (regex, message, file_extensions, code_only). A code_only
+# pattern ignores comments and string literals, for words that also occur in prose.
 FORBIDDEN_PATTERNS = [
     (
         r'\bstd::getenv\s*\(',
         "std::getenv is not portable (Windows MSVC C4996); use sdk::getEnv instead",
-        {'.cpp', '.h', '.hpp', '.cxx', '.cc', '.c'},
+        CPP_EXTENSIONS,
+        False,
+    ),
+    (
+        r'\b(near|far|NEAR|FAR)\b',
+        "near/far are empty macros on Windows (windows.h, pulled in transitively), so an "
+        "identifier with that name breaks the MSVC build; use e.g. near_plane / far_image",
+        CPP_EXTENSIONS,
+        True,
     ),
 ]
+
+_RAW_STRING_LITERAL = re.compile(r'R"([^(\s]*)\(.*?\)\1"')
+_STRING_LITERAL = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
+
+
+def code_part(line: str) -> str:
+    """The line without string literals and comments (block-comment lines are skipped whole)."""
+    stripped = line.lstrip()
+    if stripped.startswith(('*', '/*')):
+        return ''
+    line = _STRING_LITERAL.sub('""', _RAW_STRING_LITERAL.sub('""', line))
+    return line.split('//', 1)[0]
 
 
 def check_file(filepath: str) -> List[Tuple[int, str, str]]:
@@ -31,7 +55,7 @@ def check_file(filepath: str) -> List[Tuple[int, str, str]]:
 
     # Check if file extension matches any pattern
     applicable_patterns = [
-        (pattern, message) for pattern, message, extensions in FORBIDDEN_PATTERNS
+        (pattern, message, code_only) for pattern, message, extensions, code_only in FORBIDDEN_PATTERNS
         if path.suffix in extensions
     ]
 
@@ -42,8 +66,9 @@ def check_file(filepath: str) -> List[Tuple[int, str, str]]:
     try:
         with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
             for line_num, line in enumerate(f, start=1):
-                for pattern, message in applicable_patterns:
-                    if re.search(pattern, line):
+                code = code_part(line)
+                for pattern, message, code_only in applicable_patterns:
+                    if re.search(pattern, code if code_only else line):
                         violations.append((line_num, message, line.rstrip()))
     except Exception as e:
         print(f"Error reading {filepath}: {e}", file=sys.stderr)
