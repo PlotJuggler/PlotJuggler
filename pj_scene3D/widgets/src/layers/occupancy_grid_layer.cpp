@@ -552,7 +552,7 @@ void OccupancyGridLayer::render(const ViewParams& view_params, const FrameContex
   if (!grid_staged_) {
     grid_pass_.clearGrid();
   } else if (pass_revision_ != texture_revision_) {
-    grid_pass_.setGrid(reconstructor_.grid(), full_upload_pending_, dirty_rects_);
+    grid_pass_.setGrid(reconstructor_.grid(), !dirtyRectsCatchUp(pass_revision_), dirty_rects_);
   }
   pass_revision_ = texture_revision_;
   grid_pass_.setColorScheme(color_scheme_);
@@ -587,8 +587,14 @@ std::uint64_t OccupancyGridLayer::renderKey(PJ::Timepoint time) const {
 }
 
 bool OccupancyGridLayer::prepareForRender(std::uint64_t remaining_view_cells) {
+  // The budget_ candidate: the base keyframe at the playhead, which sizes the grid.
+  const auto candidate = [this] {
+    return PJ::latestEntryRenderKey(
+        ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_,
+        requested_time_.value_or(PJ::Timepoint{}));
+  };
   bool released = false;
-  if (budget_.blocked(remaining_view_cells, released)) {
+  if (budget_.blocked(remaining_view_cells, candidate, released)) {
     return false;
   }
   if (released) {
@@ -602,7 +608,7 @@ bool OccupancyGridLayer::prepareForRender(std::uint64_t remaining_view_cells) {
   if (grid().empty() || cells <= remaining_view_cells) {
     return changed;
   }
-  budget_.reject(cells);
+  budget_.reject(cells, candidate());
   setDataWarning(tr("Layer needs %1 occupancy cells; only %2 remain in this view's budget")
                      .arg(QString::number(cells), QString::number(remaining_view_cells)));
   stageEmpty();

@@ -302,8 +302,8 @@ class Scene3DDockWidget : public SceneDockWidget {
   void layoutFrameOverlayCombo();
   // Transform each layer's source-frame worldBounds() into the current fixed frame,
   // union them, and push the result to the camera (adaptive near/far + framing).
-  // Cheap; called on layer changes and tracker-time changes. OpenGL renderer
-  // only: the QRhi view owns its bounds (see its setSceneBounds).
+  // Cheap; called on layer changes and on every refreshView() (tracker ticks and
+  // async layer pushes). Hidden layers count; the camera is never fitted to it.
   void updateSceneBounds();
   // Re-evaluate each layer's frame-resolvability and emit layerWarningChanged on
   // flips. force=false (the hot live-ingest path only) early-returns when neither

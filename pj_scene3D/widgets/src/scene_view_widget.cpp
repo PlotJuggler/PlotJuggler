@@ -978,25 +978,6 @@ void SceneViewWidget::setSceneBounds(const AABB& bounds) {
   camera_->setSceneBounds(bounds);
 }
 
-AABB SceneViewWidget::layerSceneBounds(const FrameContext& frame_ctx) const {
-  AABB scene;
-  for (Scene3DLayer* layer : layers_) {
-    if (layer == nullptr) {
-      continue;
-    }
-    if (const auto bounds = layer->worldBounds(); bounds.has_value()) {
-      std::string source_frame = layer->sourceFrame().toStdString();
-      if (source_frame.empty()) {
-        source_frame = fixed_frame_;  // matches DepthCloud's unframed-image fallback
-      }
-      if (const auto fixed_from_source = frame_ctx.lookup(source_frame); fixed_from_source.has_value()) {
-        scene = unionAABB(scene, transformedAABB(glm::mat4(fixed_from_source->matrix()), *bounds));
-      }
-    }
-  }
-  return scene;
-}
-
 void SceneViewWidget::mousePressEvent(QMouseEvent* event) {
   last_mouse_pos_ = event->position().toPoint();
   active_button_ = event->button();

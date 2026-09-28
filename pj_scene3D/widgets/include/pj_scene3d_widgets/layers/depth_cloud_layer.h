@@ -120,6 +120,12 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
   [[nodiscard]] const QByteArray& vertexBytes() const override {
     return vertex_bytes_;
   }
+  [[nodiscard]] PointVertexFormat vertexFormat() const override {
+    return PointVertexFormat::kXyzScalar;  // coloured by depth, always
+  }
+  [[nodiscard]] std::size_t pointCount() const override {
+    return point_count_;
+  }
   [[nodiscard]] std::uint64_t geometryRevision() const override {
     return geometry_revision_;
   }
@@ -187,7 +193,11 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
     return pushed_.sample == SampleId{} ? std::nullopt : std::optional<int64_t>{pushed_.sample.timestamp};
   }
   [[nodiscard]] std::size_t lastPointCountForTest() const {
+#ifdef PJ_SCENE3D_RHI
+    return point_count_;
+#else
     return last_point_count_;
+#endif
   }
   [[nodiscard]] QString sourceFrameForTest() const {
     return QString::fromStdString(source_frame_);
@@ -248,7 +258,8 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
   };
   struct BackprojectResult {
     ProjectionKey key;
-    QByteArray vertices;  // PointVertex records, a fresh array per result
+    QByteArray vertices;          // PointVertex records, padded (PJ::padForUpload()); a fresh array per result
+    std::size_t point_count = 0;  // records in vertices
     AABB bounds;
     std::pair<float, float> scalar_range{0.0f, 1.0f};
     QString error;  // non-empty: the sample renders nothing and warns
@@ -282,6 +293,10 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
   // Project at the playhead when a tracker move is pending (once per painted
   // frame, by GL render() or prepareForRender()).
   void drainPendingUpdate();
+  // budget_ candidates: a depth sample's UID under the current depth range, and
+  // the one the playhead asks for.
+  [[nodiscard]] std::uint64_t budgetKey(std::uint64_t sample_uid) const;
+  [[nodiscard]] std::uint64_t budgetCandidate() const;
   void updateSourceFrame(const std::string& frame_id);
 
   // Turn a depth-encoded sdk::Image into a raw sdk::DepthImage the core can
@@ -334,15 +349,18 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
   // What the playhead wants shown: a projection finishing with any other key is
   // obsolete and dropped (QRhi; the GL build projects inline).
   ProjectionKey wanted_;
-  std::size_t last_point_count_ = 0;
+#ifndef PJ_SCENE3D_RHI
+  std::size_t last_point_count_ = 0;  // points of the cloud handed to the GL pass
+#endif
   std::optional<IntrinsicsCache> intrinsics_cache_;
 
   // QRhi sink (empty in the GL build).
-  QByteArray vertex_bytes_;  // PointVertex records: finite back-projected points, camera frame
+  QByteArray vertex_bytes_;      // PointVertex records: finite back-projected points, camera frame
+  std::size_t point_count_ = 0;  // records in vertex_bytes_ (the rest is padding)
   std::uint64_t geometry_revision_ = 0;
   std::pair<float, float> scalar_range_{0.0f, 1.0f};
   std::string render_frame_;
-  // Point count of a cloud dropped for the view budget.
+  // Point count and candidate of a cloud dropped for the view budget.
   BudgetLatch budget_;
 #ifndef PJ_SCENE3D_RHI
   PointcloudRenderPass cloud_pass_;

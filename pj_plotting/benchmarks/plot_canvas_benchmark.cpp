@@ -5,6 +5,7 @@
 //
 //   plot_canvas_benchmark --canvas rhi|gl|raster --case NAME [--frames N]
 //       [--samples N] [--plots K] [--grid] [--legend] [--msaa N] [--gpu]
+//       [--generic-series]
 //
 // Cases: static_1m, static_10m (one curve, replotted every frame), streaming
 // (10 curves x 100k samples, 2 samples appended per curve per frame with a
@@ -16,9 +17,12 @@
 // --samples overrides the samples per curve; --plots K lays out K such plots in
 // the 1600x900 window; --grid and --legend add PlotWidgetBase's grid (dashed
 // major, dotted minor, cosmetic pens) and an in-canvas legend. --msaa N sets
-// the RHI canvas's sample count (default: the canvas's own, 1).
+// the RHI canvas's sample count (default: the canvas's own, 1). The series are
+// RevisionedSeries like the app's datastore adapters (an unchanged replot reuses
+// the RHI canvas's curve layer); --generic-series makes them plain Qwt data.
 //
-// Reported per run (medians after warm-up, summed over the plots): canvas CPU
+// Reported per run (medians after a time-based warm-up, pj_bench::WarmUp, whose
+// first frame is cold_ms; summed over the plots): canvas CPU
 // time (PlotRhiCanvas's render(), or QwtPlotOpenGLCanvas::paintGL /
 // QwtPlotCanvas::paintEvent), GPU time (--gpu only: QRhi timestamps through
 // QSG_RHI_PROFILE, a GL_TIME_ELAPSED query around paintGL; both cost CPU), the
@@ -60,13 +64,16 @@
 #include "pj_plotting/PlotCurve.h"
 #include "pj_plotting/PlotLegend.h"
 #include "pj_plotting/PlotRhiCanvas.h"
+#include "pj_plotting/RevisionedSeries.h"
 
 using namespace Qt::StringLiterals;
 
 namespace {
 
-// Growable series; the bounding rect is not used (the axes are fixed).
-class VectorSeries final : public QwtSeriesData<QPointF> {
+// Growable series; the bounding rect is not used (the axes are fixed). A
+// RevisionedSeries, as the app's datastore adapters are: an append bumps its
+// revision. With --generic-series the canvas sees plain Qwt data instead.
+class VectorSeries : public QwtSeriesData<QPointF> {
  public:
   explicit VectorSeries(std::vector<QPointF> points) : points_(std::move(points)) {}
   [[nodiscard]] size_t size() const override {
@@ -78,12 +85,21 @@ class VectorSeries final : public QwtSeriesData<QPointF> {
   [[nodiscard]] QRectF boundingRect() const override {
     return {0.0, -2.0, points_.empty() ? 1.0 : points_.back().x(), 4.0};
   }
-  void append(QPointF point) {
+  virtual void append(QPointF point) {
     points_.push_back(point);
   }
 
  private:
   std::vector<QPointF> points_;
+};
+
+class RevisionedVectorSeries final : public VectorSeries, public PJ::RevisionedSeries {
+ public:
+  using VectorSeries::VectorSeries;
+  void append(QPointF point) override {
+    VectorSeries::append(point);
+    bumpContentRevision();
+  }
 };
 
 // Noisy sine at `rate` Hz starting at t = 0.
@@ -159,14 +175,6 @@ class TimedRasterCanvas final : public QwtPlotCanvas {
   int painted = 0;
 };
 
-double percentile95(std::vector<double> values) {
-  if (values.empty()) {
-    return 0.0;
-  }
-  std::sort(values.begin(), values.end());
-  return values[std::min(values.size() - 1, values.size() * 95 / 100)];
-}
-
 }  // namespace
 
 // One benchmarked plot: its canvas (exactly one of the three is set), series
@@ -212,11 +220,13 @@ int main(int argc, char** argv) {
   parser.addOption({u"legend"_s, u"draw an in-canvas legend"_s});
   parser.addOption({u"msaa"_s, u"RHI canvas sample count"_s, u"samples"_s});
   parser.addOption({u"gpu"_s, u"measure GPU time (timestamp queries)"_s});
+  parser.addOption({u"generic-series"_s, u"plain Qwt series data (no content revision)"_s});
   parser.process(app);
   const QString canvas_kind = parser.value(u"canvas"_s);
   const QString workload = parser.value(u"case"_s);
   const int frames = parser.value(u"frames"_s).toInt();
   const int plot_count = std::max(1, parser.value(u"plots"_s).toInt());
+  const bool generic_series = parser.isSet(u"generic-series"_s);
 
   std::size_t curve_count = 1;
   std::size_t samples = 1'000'000;
@@ -299,7 +309,9 @@ int main(int argc, char** argv) {
       curve->setPaintAttribute(QwtPlotCurve::ClipPolygons, true);
       curve->setPaintAttribute(QwtPlotCurve::FilterPointsAggressive, true);
       curve->setRenderHint(QwtPlotItem::RenderAntialiased, true);
-      auto* data = new VectorSeries(makeSignal(samples, kRate, static_cast<unsigned>(index)));
+      std::vector<QPointF> signal = makeSignal(samples, kRate, static_cast<unsigned>(index));
+      VectorSeries* data =
+          generic_series ? new VectorSeries(std::move(signal)) : new RevisionedVectorSeries(std::move(signal));
       bench->series.push_back(data);
       curve->setData(data);
       curve->setPen(
@@ -332,8 +344,12 @@ int main(int argc, char** argv) {
   std::vector<double> gpu;
   std::vector<double> wall;
   double now = duration;
-  constexpr int kWarmup = 5;
-  for (int frame = 0; frame < frames + kWarmup; ++frame) {
+  // A time-based warm-up (pj_bench::WarmUp); its first frame, after the idle
+  // since the window was exposed, is the cold-after-idle latency (cold_ms).
+  pj_bench::WarmUp warm_up;
+  bool warming = true;
+  int measured = 0;
+  for (int frame = 0; measured < frames; ++frame) {
     QElapsedTimer timer;
     timer.start();
     std::vector<int> before;
@@ -385,9 +401,11 @@ int main(int argc, char** argv) {
       QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
     }
     const double wall_ms = static_cast<double>(timer.nsecsElapsed()) / 1e6;
-    if (frame < kWarmup) {
+    if (warming) {
+      warming = !warm_up.done(wall_ms);
       continue;
     }
+    ++measured;
     wall.push_back(wall_ms);
     double frame_cpu = 0.0;
     double frame_gpu = 0.0;
@@ -414,11 +432,12 @@ int main(int argc, char** argv) {
   }
   std::printf(
       "canvas=%s case=%s backend=\"%s\" plots=%d frames=%d cpu_ms=%.2f cpu_p95_ms=%.2f gpu_ms=%s wall_ms=%.2f "
-      "samples=%d dpr=%.1f vertices=%zu gpu_drm_mib=%s\n",
+      "samples=%d dpr=%.1f vertices=%zu gpu_drm_mib=%s cold_ms=%.2f warmup_frames=%d gpu_mhz=%s\n",
       qPrintable(canvas_kind), qPrintable(workload), qPrintable(backend), plot_count, frames,
-      pj_bench::stats(cpu).median, percentile95(cpu),
+      pj_bench::stats(cpu).median, pj_bench::stats(cpu).p95,
       gpu_timing ? QByteArray::number(pj_bench::stats(gpu).median, 'f', 2).constData() : "n/a",
       pj_bench::stats(wall).median, first.rhi != nullptr ? first.rhi->sampleCount() : 0,
-      first.plot->devicePixelRatioF(), vertices, pj_bench::fmt(pj_bench::drmTotalMib()).constData());
+      first.plot->devicePixelRatioF(), vertices, pj_bench::fmt(pj_bench::drmTotalMib()).constData(), warm_up.coldMs(),
+      warm_up.frames(), pj_bench::fmt(warm_up.gpuMhzAtEnd(), 0).constData());
   return 0;
 }

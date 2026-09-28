@@ -468,8 +468,14 @@ std::uint64_t PosesInFrameLayer::renderKey(PJ::Timepoint time) const {
 }
 
 bool PosesInFrameLayer::prepareForRender(std::uint64_t remaining_view_arms) {
+  // The budget_ candidate: the sample at the playhead (settings changes reset the latch).
+  const auto candidate = [this] {
+    return PJ::latestEntryRenderKey(
+        ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_,
+        requested_time_.value_or(PJ::Timepoint{}));
+  };
   bool released = false;
-  if (budget_.blocked(remaining_view_arms, released)) {
+  if (budget_.blocked(remaining_view_arms, candidate, released)) {
     return false;
   }
   if (released) {
@@ -481,7 +487,7 @@ bool PosesInFrameLayer::prepareForRender(std::uint64_t remaining_view_arms) {
   if (static_cast<std::uint64_t>(instances_.size()) <= remaining_view_arms) {
     return changed;
   }
-  budget_.reject(instances_.size());
+  budget_.reject(instances_.size(), candidate());
   setDataWarning(tr("Layer needs %1 pose arrows; only %2 remain in this view's budget")
                      .arg(QString::number(instances_.size()), QString::number(remaining_view_arms)));
   clearGeometry();

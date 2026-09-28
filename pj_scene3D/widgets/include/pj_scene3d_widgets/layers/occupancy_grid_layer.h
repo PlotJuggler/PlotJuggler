@@ -71,16 +71,21 @@ class OccupancyGridLayer : public Scene3DLayer {
   bool prepareForRender(std::uint64_t remaining_view_cells);
   [[nodiscard]] std::optional<AABB> worldBounds() const override;
 
-  // Upload plan of the staged grid: textureRevision() bumps on every change;
-  // fullUploadPending() says whether it needs a full upload or only dirtyRects().
+  // Upload plan of the staged grid: textureRevision() bumps by one on every
+  // change, and dirtyRects() are the cells that change made.
   [[nodiscard]] const ReconstructedGrid& grid() const {
     return reconstructor_.grid();
   }
   [[nodiscard]] const std::vector<CellRect>& dirtyRects() const {
     return dirty_rects_;
   }
-  [[nodiscard]] bool fullUploadPending() const {
-    return full_upload_pending_;
+  // Whether a texture holding `uploaded_revision` catches up with dirtyRects()
+  // alone: only when it holds exactly the revision before textureRevision(), and
+  // the latest change was a patch. Any other state (a change it skipped, such as
+  // a frame the layer was not drawn, or a new epoch or backward seek, even with a
+  // patch staged after it) needs the whole grid.
+  [[nodiscard]] bool dirtyRectsCatchUp(std::uint64_t uploaded_revision) const {
+    return !full_upload_pending_ && uploaded_revision + 1U == texture_revision_;
   }
   [[nodiscard]] std::uint64_t textureRevision() const {
     return texture_revision_;
@@ -206,7 +211,7 @@ class OccupancyGridLayer : public Scene3DLayer {
   bool grid_staged_ = false;
 
   OccupancyGridReconstructor reconstructor_{kSceneLimits.occupancy_snapshot_budget_bytes};
-  // Cell count that last overflowed the view budget (QRhi).
+  // Cell count and base keyframe that last overflowed the view budget (QRhi).
   BudgetLatch budget_;
 #ifndef PJ_SCENE3D_RHI
   OccupancyGridRenderPass grid_pass_;

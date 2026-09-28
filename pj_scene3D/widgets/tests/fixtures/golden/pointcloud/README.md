@@ -22,7 +22,7 @@ corner axis gizmo, which both renderers draw and every comparison includes.
 | `shape_spheres_large` | 8x8 wavy lattice, 0.16 m spheres, solid colour |
 | `shape_cubes_large` | 8x8 wavy lattice, 0.16 m cubes (hexagon fan), solid colour |
 | `shape_points_1px` | 120x120 dense wavy lattice, 1 px points |
-| `shape_spheres_small` | 120x120 dense lattice, 2 cm spheres (~1.5 px): below 2 px spheres draw as flat discs at the disc-mean shade. Coverage-only: the discs' rasterized size still varies by driver (Mesa 23 draws them smaller than Mesa 26) |
+| `shape_spheres_small` | 120x120 dense lattice, 2 cm spheres (~1.5 px): below 2 px spheres draw as flat discs at the disc-mean shade. Coverage and the coarse spatial checks, no colour: the discs' rasterized size still varies by driver (Mesa 23 draws them smaller than Mesa 26) |
 | `shape_cubes_subpixel` | 120x120 dense lattice, 3 mm cubes (~0.3 px): the whole-cloud LOD draws them as 1 px sprites |
 | `color_rgb_packed` / `color_rgba_packed` | 16x16 lattice, packed uint32 `rgb` / `rgba` field (RGB-direct fast path), 10 px points |
 | `color_rgb_channels` | same colours as separate uint8 `red`/`green`/`blue` fields (CPU fallback) |
@@ -35,7 +35,7 @@ corner axis gizmo, which both renderers draw and every comparison includes.
 | `field_outside_range_cubes` | same as translucent, on 0.07 m cubes |
 | `field_int8` … `field_uint32` | the ramp as int8, uint8, int16, uint16, int32, uint32 (zero-copy integer attributes), auto range, turbo |
 | `depth_two_clouds` | red 0.14 m cube floor crossed by a tilted blue sphere plane: occlusion between two layers |
-| `large_1m_points` | 1000x1000 (1 M) wavy lattice, 2 px points coloured by z; coverage and mean colour |
+| `large_1m_points` | 1000x1000 (1 M) wavy lattice, 2 px points coloured by z; coverage, mean colour and the coarse spatial checks |
 
 The scene corpus (`scene_*`: suites `GridGolden`, `MarkerGolden`, `SceneGolden`)
 guards the rest of the scene against the GL look, with a lower camera (radius
@@ -43,7 +43,7 @@ guards the rest of the scene against the GL look, with a lower camera (radius
 
 | Scene | Content |
 |---|---|
-| `scene_grid_lines_light` / `_dark` | the ground grid alone, line style, default 10 m / 10 divisions, light and dark (Window 0x202020) theme: colours from the theme; coverage and mean colour (1 px lines are all edge) |
+| `scene_grid_lines_light` / `_dark` | the ground grid alone, line style, default 10 m / 10 divisions, light and dark (Window 0x202020) theme: colours from the theme; coverage, mean colour and the coarse spatial checks (1 px lines are all edge) |
 | `scene_grid_filled_light` / `_dark` | filled cells with the analytically drawn lines, 3 m so the corner gizmo sits on the backdrop (the GL view draws the filled grid darker under the gizmo's square) |
 | `scene_grid_filled_odd` | the light filled grid with 5 divisions: its cells start half a cell off the origin, where the lines must follow them |
 | `scene_markers_default` / `_opaque` | SceneEntities: three rotated cubes (fill + edge overlay) and two line strips, at the layer default opacity 0.6 and at 1.0 |
@@ -103,7 +103,25 @@ gizmo included). The `[golden]` log line prints both values next to their limits
 
 Weaker checks, where pixels depend on the driver rather than on our rendering:
 `field_turbo_spheres`, `large_1m_points` and the two line grids: coverage and
-mean colour. The line grids are all 1 px edges, which lavapipe's mirrored MSAA
+mean colour; `shape_spheres_small`: coverage. Neither sees position, so both
+modes add coarse spatial checks, with background strays counted outside a 4 px
+margin instead of 2:
+
+- **Tiles**: the covered pixels per 16x16 px tile, sum of |actual - golden|
+  over the golden's covered count; limit the coverage limit + 0.10.
+- **Tile colour** (coverage and mean colour only): the golden-weighted mean over
+  tiles both images cover of the tile's largest per-channel mean-colour change;
+  limit 20. A colormap reversed in place keeps the frame's mean colour but not
+  this.
+- **Centroid** of the covered pixels, limit 2 px (6 px on the line grids), and
+  each **bounding-box edge**, limit 4 px.
+
+Measured on Mesa 26 (llvmpipe, lavapipe, Iris GL and Vulkan): tiles <= 0.053,
+tile colour <= 6 (10 on the uncoloured `shape_spheres_small`), centroid <= 0.4
+on the clouds and 2.8 on the line grids of the y-down backends, bounding box
+<= 1, strays 0. `GoldenComparator.CoverageModesRejectMovedForeground` checks
+that a translated or rearranged synthetic foreground with the same pixel count
+and mean colour fails these modes. The line grids are all 1 px edges, which lavapipe's mirrored MSAA
 pattern resolves differently on up to 18% of their foreground. Sphere
 impostor shading follows the sprite's rounded point size, which differs between
 Mesa releases (CI's 23.x differs from 26.x on ~10% of pixels).

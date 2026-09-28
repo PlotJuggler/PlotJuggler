@@ -1,6 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 #version 440
+#extension GL_GOOGLE_include_directive : require
 
 layout(std140, binding = 0) uniform CompositeUniforms {
     vec4 composite_params;  // exposure, saturation, background coverage threshold, EDL floor
@@ -17,11 +18,7 @@ layout(binding = 3) uniform sampler2D scene_depth;
 layout(location = 0) in vec2 texture_uv;
 layout(location = 0) out vec4 fragment_color;
 
-vec3 linearToSrgb(vec3 color) {
-    vec3 low = color * 12.92;
-    vec3 high = 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
-    return mix(high, low, lessThanEqual(color, vec3(0.0031308)));
-}
+#include "srgb.glslinc"
 
 vec3 aces(vec3 color) {
     return clamp(

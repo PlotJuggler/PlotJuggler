@@ -63,7 +63,8 @@ PJ::Expected<PJ::sdk::ObjectRecord> resolveObject(
   const auto size = payload.bytes.size();
   switch (type) {
     case BT::kPointCloud:
-      return wrapCanonical(PJ::deserializePointCloud(data, size));
+      // The store's payload is immutable and anchored: alias the point bytes.
+      return wrapCanonical(PJ::deserializePointCloudView(data, size, payload.anchor));
     case BT::kCompressedPointCloud:
       return wrapCanonical(PJ::deserializeCompressedPointCloud(data, size));
     case BT::kFrameTransforms:

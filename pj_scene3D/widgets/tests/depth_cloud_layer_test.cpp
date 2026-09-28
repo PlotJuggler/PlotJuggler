@@ -154,6 +154,12 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitCameraInfoCamB(PJ::Timestamp ts, PJ::sdk
   return makeCameraInfo(ts, "camB", 200.0);  // fx=fy=200 (half the X/Y spread of camA)
 }
 
+// Frame "cam" CameraInfo whose focal length changes with the sample: fx=fy=100
+// before t=60, 200 from it, so a re-projection has a new X/Y spread to show.
+PJ::Expected<PJ::sdk::ObjectRecord> emitCameraInfoRefocused(PJ::Timestamp ts, PJ::sdk::PayloadView /*p*/) {
+  return makeCameraInfo(ts, "cam", ts < 60 ? 100.0 : 200.0);
+}
+
 // Bumped once per CameraInfo parse, so a test can assert intrinsics are resolved
 // from a latched CameraInfo once and cached, not re-parsed on every depth frame.
 std::atomic<int> g_camera_info_parse_count{0};
@@ -308,7 +314,7 @@ TEST(DepthCloudLayer, CameraInfoOnlyUpdateReprojects) {
   session.registerObjectTopicParser(info, makeBoundHandle(kInfoSchema, []() noexcept -> void* {
                                       return new CountingObjectParser(
                                           kInfoSchema, PJ::sdk::BuiltinObjectType::kCameraInfo,
-                                          &g_camera_info_parse_count, &emitCameraInfo);
+                                          &g_camera_info_parse_count, &emitCameraInfoRefocused);
                                     }));
 
   pj::scene3d::Scene3DLayerContext ctx;
@@ -318,13 +324,23 @@ TEST(DepthCloudLayer, CameraInfoOnlyUpdateReprojects) {
   settle(layer);
   ASSERT_EQ(layer.lastPointCountForTest(), 4U);
   ASSERT_EQ(g_camera_info_parse_count.load(), 1);
+  // max X = (1-0.5)*z_max/fx = 0.5*4/100 = 0.02 with info@50's fx=100.
+  const auto before = layer.worldBounds();
+  ASSERT_TRUE(before.has_value());
+  ASSERT_NEAR(before->max.x, 0.02f, 2e-3f);
 
-  // CameraInfo-only update at/before the playhead: a new camera-topic entry.
+  // CameraInfo-only update at/before the playhead: a new camera-topic entry
+  // with fx=fy=200, which halves the X/Y spread of the same depth pixels.
   ASSERT_TRUE(store.pushOwned(info, 60, std::vector<uint8_t>{0x02}).has_value());
   layer.renderAtForTest(100);  // depth sample unchanged
   settle(layer);
   EXPECT_EQ(g_camera_info_parse_count.load(), 2) << "new CameraInfo was not re-resolved (stale calibration)";
   EXPECT_EQ(layer.lastPointCountForTest(), 4U) << "re-projection did not run";
+  const auto after = layer.worldBounds();
+  ASSERT_TRUE(after.has_value());
+  EXPECT_NEAR(after->max.x, 0.01f, 2e-3f) << "points kept the old intrinsics' coordinates";
+  EXPECT_NEAR(after->max.y, 0.01f, 2e-3f) << "points kept the old intrinsics' coordinates";
+  EXPECT_NEAR(after->max.z, before->max.z, 1e-4f) << "depth changed without a new depth sample";
 }
 
 TEST(DepthCloudLayer, CachesIntrinsicsAcrossFramesNotReparsedPerFrame) {

@@ -16,6 +16,7 @@
 
 namespace pj::scene3d {
 
+class PosesInFrameLayer;
 class Scene3DLayer;
 class TrailLayer;
 
@@ -46,6 +47,10 @@ class TrailRhiPass {
   /// Adopts the view's trail owners: TrailLayers and PosesInFrameLayers (whose
   /// trail may come and go between calls). Drops GPU state of owners that left.
   void setLayers(const std::vector<Scene3DLayer*>& owners);
+  /// A layer of this family is in the view: the view builds the family (initialize()) only then.
+  [[nodiscard]] bool hasLayers() const {
+    return !owners_.empty();
+  }
 
   /// Syncs each visible trail to `fixed_frame`, uploads changed polylines and this
   /// frame's uniforms, and splits each ribbon at `time`. `render_size` is the
@@ -85,6 +90,14 @@ class TrailRhiPass {
     QRhiShaderResourceBindings* future_resources = nullptr;
   };
 
+  /// An owner's kind, resolved once in setLayers(): a standalone trail, or the
+  /// pose layer whose trail() comes and goes between frames.
+  struct OwnerKind {
+    TrailLayer* trail = nullptr;
+    PosesInFrameLayer* poses = nullptr;
+  };
+  static TrailLayer* trailOf(const OwnerKind& kind);
+
   bool ensureOwnerGpu(QRhi* rhi, OwnerGpu& gpu, quint32 vertex_bytes);
   static void releaseOwnerGpu(OwnerGpu& gpu);
 
@@ -94,6 +107,7 @@ class TrailRhiPass {
   quint32 block_stride_ = 0;  // one uniform block, rounded to the backend's alignment
 
   std::vector<Scene3DLayer*> owners_;
+  std::vector<OwnerKind> owner_kinds_;  // parallel to owners_
   std::unordered_map<Scene3DLayer*, OwnerGpu> owner_gpu_;
   std::vector<Draw> draws_;
   std::vector<float> scratch_;

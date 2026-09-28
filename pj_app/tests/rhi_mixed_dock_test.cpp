@@ -120,7 +120,7 @@ class RhiMixedDockFixture : public ::testing::Test {
     if (!QTest::qWaitForWindowExposed(window_)) {
       PJ_SKIP_WITHOUT_GPU("the main window was never exposed");
     }
-    (void)pjWaitForGrab([this](auto done) { sceneView()->grabPresentedFrame(std::move(done)); });  // one-shot auto-fit
+    (void)pjWaitForGrab([this](auto done) { sceneView()->grabPresentedFrame(std::move(done)); });  // first frame
     if (expected_media_failures_ == 0) {
       ASSERT_NO_FATAL_FAILURE(expectAllRender("initial layout"));
     }
@@ -282,6 +282,58 @@ TEST_F(RhiMixedDockFixture, HiddenTabsRenderAgainWhenShown) {
   }
 }
 
+// A dock-area tab switch keeps the hidden tab parented (our ADS patch,
+// pj_scene3D/docs/TECHNICAL_NOTES.md §5): after the first visit, switching back
+// to a tab adopts no QRhi, rebuilds nothing and uploads nothing, and what
+// changed while the Scene3D tab was hidden shows when it comes back.
+TEST_F(RhiMixedDockFixture, TabSwitchesAfterTheFirstVisitRebuildNothing) {
+  manager_->addDockWidgetTabToArea(scene_dock_, plot_dock_->dockAreaWidget());
+  manager_->addDockWidgetTabToArea(media_dock_, plot_dock_->dockAreaWidget());
+  for (ads::CDockWidget* dock : docks()) {
+    dock->setAsCurrentTab();
+    ASSERT_NO_FATAL_FAILURE(expectAllRender("first visit"));
+  }
+  std::array<int, 3> adopted{};
+  for (std::size_t i = 0; i < adopted.size(); ++i) {
+    adopted[i] = adoptions(docks()[i]);
+  }
+#ifdef PJ_RHI_TEST_HOOKS
+  const auto& scene_work = sceneView()->stageTimesForTest();
+  const int builds = scene_work.base_builds;
+  const std::uint64_t uploads = scene_work.point_uploads;
+#endif
+  for (int round = 0; round < 3; ++round) {
+    for (ads::CDockWidget* dock : docks()) {
+      SCOPED_TRACE(dock->objectName().toStdString());
+      dock->setAsCurrentTab();
+      ASSERT_NO_FATAL_FAILURE(expectAllRender("switched back"));
+    }
+  }
+  for (std::size_t i = 0; i < adopted.size(); ++i) {
+    EXPECT_EQ(adoptions(docks()[i]), adopted[i]) << docks()[i]->objectName().toStdString() << " adopted a QRhi again";
+  }
+#ifdef PJ_RHI_TEST_HOOKS
+  EXPECT_EQ(scene_work.base_builds, builds) << "the Scene3D view rebuilt its base resources";
+  EXPECT_EQ(scene_work.point_uploads, uploads) << "the Scene3D view uploaded its cloud again";
+#endif
+
+  auto* view = sceneView();
+  const auto green_pixels = [view] {
+    const QImage image = pjWaitForGrab([view](auto done) { view->grabPresentedFrame(std::move(done)); });
+    EXPECT_TRUE(capturedAtPixelSize(image, view));
+    return countPixels(image, [](QRgb p) { return qGreen(p) > qRed(p) + 50 && qGreen(p) > qBlue(p) + 50; });
+  };
+  scene_dock_->setAsCurrentTab();
+  const int with_cloud = green_pixels();
+  plot_dock_->setAsCurrentTab();
+  ASSERT_NO_FATAL_FAILURE(expectAllRender("plot in front"));
+  scene_->setLayerVisible(scene_->layers().front().topic_id, false);
+  scene_dock_->setAsCurrentTab();
+  const int without_cloud = green_pixels();  // the corner gizmo's Y axis stays
+  EXPECT_EQ(view->lastPointVertexCountForTest(), 0) << "the cloud hidden while its tab was hidden still drew";
+  EXPECT_LT(without_cloud * 2, with_cloud);
+}
+
 TEST_F(RhiMixedDockFixture, SplittingAndMovingWithinTheWindowKeepRendering) {
   manager_->addDockWidget(ads::TopDockWidgetArea, scene_dock_, media_dock_->dockAreaWidget());
   ASSERT_NO_FATAL_FAILURE(expectAllRender("Scene3D split above the media viewer"));
@@ -335,8 +387,10 @@ TEST_F(RhiMixedDockFixture, ClosingEachFloatingWindowAndReopeningRendersAgain) {
   }
 }
 
-// Needs two screens with different device-pixel ratios, e.g. two gnome-shell
-// virtual monitors plus QT_SCREEN_SCALE_FACTORS="1;2"; skips otherwise.
+// Needs two screens with different device-pixel ratios on xcb: a headless
+// mutter's Xwayland with two virtual monitors plus QT_SCREEN_SCALE_FACTORS="1;2"
+// (linux-ci's mixed-DPR step). Skips without them (fails with
+// PJ_REQUIRE_MIXED_DPR=1); a move that does not change the ratio fails.
 TEST_F(RhiMixedDockFixture, FloatingDocksMovedToAScreenWithAnotherPixelRatio) {
   QScreen* other = nullptr;
   for (QScreen* screen : QGuiApplication::screens()) {
@@ -345,7 +399,13 @@ TEST_F(RhiMixedDockFixture, FloatingDocksMovedToAScreenWithAnotherPixelRatio) {
     }
   }
   if (other == nullptr) {
-    GTEST_SKIP() << "needs two screens with different device-pixel ratios";
+    if (qEnvironmentVariableIntValue("PJ_REQUIRE_MIXED_DPR") == 1) {
+      FAIL() << "PJ_REQUIRE_MIXED_DPR=1 but no screen has another device-pixel ratio";
+    }
+    GTEST_SKIP() << "needs two screens with different device-pixel ratios (TECHNICAL_NOTES §8, mixed-DPR lane)";
+  }
+  if (QGuiApplication::platformName() == u"wayland") {
+    GTEST_SKIP() << "the Wayland compositor places windows; run on xcb";
   }
   for (ads::CDockWidget* dock : docks()) {
     SCOPED_TRACE(dock->objectName().toStdString());
@@ -354,10 +414,8 @@ TEST_F(RhiMixedDockFixture, FloatingDocksMovedToAScreenWithAnotherPixelRatio) {
     ASSERT_NE(floating, nullptr);
     const qreal before = dock->widget()->devicePixelRatio();
     floating->setScreen(other);
-    if (!QTest::qWaitFor([&] { return dock->widget()->devicePixelRatio() != before; }, 3000)) {
-      GTEST_SKIP() << "the window system kept the window on its screen ("
-                   << QGuiApplication::platformName().toStdString() << ")";
-    }
+    ASSERT_TRUE(QTest::qWaitFor([&] { return dock->widget()->devicePixelRatio() != before; }, 3000))
+        << "the window system kept the window on its screen (" << QGuiApplication::platformName().toStdString() << ")";
     ASSERT_NO_FATAL_FAILURE(expectAllRender("moved to the other screen"));
   }
 }

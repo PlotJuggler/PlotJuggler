@@ -23,6 +23,7 @@
 
 #include <QDomDocument>
 #include <QOffscreenSurface>
+#include <QScopeGuard>
 #include <QTest>
 #include <algorithm>
 #include <cstring>
@@ -81,7 +82,7 @@ class PointScene {
     return id;
   }
 
-  // Shows the window, lets the one-shot camera fit happen, then pins `camera`.
+  // Shows the window, presents a warm-up frame, then pins `camera`.
   SceneViewWidget* frame(const pj::scene3d::CameraState& camera, bool ortho = false) {
     PJ::Scene3DDockWidget* dock = fixture_.dock();
     for (int i = 0; i < 20 && dock->sceneView() == nullptr; ++i) {
@@ -274,6 +275,32 @@ TEST_F(Scene3dRhiPointTest, SubPixelCubeCloudBecomesColouredSprites) {
   view->camera().adoptState(frontCamera(0.9F, 0.0F));
   grab(*view);
   EXPECT_EQ(view->lastCubeSpriteLayerCountForTest(), 0) << "a near cloud must keep its fans";
+}
+
+// A GPU that cannot build the point-list pipeline draws the same small sprites
+// as quads (the point list is optional): no failure state, no missing frame.
+TEST_F(Scene3dRhiPointTest, PointListFailureFallsBackToQuads) {
+  qputenv("PJ_SCENE3D_TEST_FAIL_SHADER", "/point_list.frag.qsb");
+  const auto clear_fault = qScopeGuard([] { qunsetenv("PJ_SCENE3D_TEST_FAIL_SHADER"); });
+  PointScene scene;
+  int failures = 0;
+  std::vector<glm::vec3> lattice;
+  for (int j = 0; j < 20; ++j) {
+    for (int i = 0; i < 20; ++i) {
+      lattice.emplace_back(0.25F * (static_cast<float>(i) - 9.5F), 0.0F, 0.25F * (static_cast<float>(j) - 9.5F));
+    }
+  }
+  scene.add(lattice, solid(u"cube"_s, u"size_meters"_s, u"0.004"_s));
+  VIEW_OR_SKIP(view, scene.frame(frontCamera(14.0F, 0.0F)));
+  QObject::connect(view, &QRhiWidget::renderFailed, view, [&failures] { ++failures; });
+  const QImage image = grab(*view);
+  EXPECT_EQ(view->lastCubeSpriteLayerCountForTest(), 1);
+  EXPECT_EQ(view->lastPointListLayerCountForTest(), 0) << "a failed point list still drew";
+  EXPECT_GT(view->lastPointVertexCountForTest() + view->lastCubeInstanceCountForTest(), 0);
+  const QImage empty = emptyScene(scene, *view);
+  EXPECT_GT(covered(image, empty).size(), lattice.size() * 3 / 4) << "the quads did not draw the sprites";
+  EXPECT_EQ(failures, 0);
+  EXPECT_TRUE(view->renderingWarningForTest().isEmpty()) << view->renderingWarningForTest().toStdString();
 }
 
 // Perspective: a sphere twice as far covers less. Orthographic: spheres at any
@@ -517,6 +544,12 @@ class ScannedCloud : public pj::scene3d::PointRenderable {
   [[nodiscard]] const QByteArray& vertexBytes() const override {
     return bytes_;
   }
+  [[nodiscard]] pj::scene3d::PointVertexFormat vertexFormat() const override {
+    return pj::scene3d::PointVertexFormat::kXyzScalar;
+  }
+  [[nodiscard]] std::size_t pointCount() const override {
+    return static_cast<std::size_t>(bytes_.size()) / sizeof(pj::scene3d::PointVertex);  // unpadded
+  }
   [[nodiscard]] std::uint64_t geometryRevision() const override {
     return revision_;
   }
@@ -645,9 +678,7 @@ class OffscreenRhi {
     QRhiCommandBuffer* command_buffer = nullptr;
     ASSERT_EQ(rhi_->beginOffscreenFrame(&command_buffer), QRhi::FrameOpSuccess);
     QRhiResourceUpdateBatch* updates = rhi_->nextResourceUpdateBatch();
-    pj::scene3d::SceneBoundsCollector bounds;
-    pass.admit(
-        [](const std::string&) { return std::optional<pj::scene3d::Transform>(pj::scene3d::Transform{}); }, bounds);
+    pass.admit([](const std::string&) { return std::optional<pj::scene3d::Transform>(pj::scene3d::Transform{}); });
     pass.prepare({rhi_.get(), updates, glm::dvec3(0.0), QMatrix4x4()}, {glm::mat4(1.0F), QSize(64, 64), 1.0F});
     command_buffer->beginPass(target_.get(), Qt::black, {1.0F, 0}, updates);
     command_buffer->endPass();
@@ -671,10 +702,10 @@ class OffscreenRhi {
 std::vector<pj::scene3d::PointVertex> box(glm::vec3 minimum, glm::vec3 maximum) {
   const float nan = std::numeric_limits<float>::quiet_NaN();
   return {
-      {minimum.x, maximum.y, maximum.z, 0.0F, 0U},
-      {maximum.x, minimum.y, minimum.z, 0.0F, 0U},
-      {nan, 100.0F, 100.0F, 0.0F, 0U},  // non-finite: ignored
-      {0.5F * (minimum.x + maximum.x), 0.5F * (minimum.y + maximum.y), 0.5F * (minimum.z + maximum.z), 0.0F, 0U}};
+      {minimum.x, maximum.y, maximum.z, 0U},
+      {maximum.x, minimum.y, minimum.z, 0U},
+      {nan, 100.0F, 100.0F, 0U},  // non-finite: ignored
+      {0.5F * (minimum.x + maximum.x), 0.5F * (minimum.y + maximum.y), 0.5F * (minimum.z + maximum.z), 0U}};
 }
 
 // The pass reports a layer's bounds in the frame its sample arrives, and a new

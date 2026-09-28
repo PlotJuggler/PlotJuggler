@@ -16,44 +16,16 @@
 #include <unordered_map>
 #include <utility>
 
+#include "pj_scene3d_core/pose_math.h"
 #include "pj_scene3d_core/scene_entities_budget.h"
 
 namespace pj::scene3d {
 namespace {
 
-bool finite(const glm::dmat4& matrix) {
-  for (int column = 0; column < 4; ++column) {
-    for (int row = 0; row < 4; ++row) {
-      if (!std::isfinite(matrix[column][row])) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
+using pj::scene3d::finite;  // the dmat4 overload, beside the dvec3 one below
 
 bool finite(const glm::dvec3& value) {
   return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
-}
-
-std::optional<glm::dmat4> poseMatrix(const PJ::sdk::Pose& pose) {
-  const glm::dvec3 translation{pose.position.x, pose.position.y, pose.position.z};
-  const glm::dquat orientation{pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z};
-  const double norm = glm::length(orientation);
-  if (!finite(translation) || !std::isfinite(norm) || norm < 1e-15) {
-    return std::nullopt;
-  }
-  const glm::dmat4 matrix = glm::translate(glm::dmat4(1.0), translation) * glm::mat4_cast(orientation / norm);
-  return finite(matrix) ? std::optional<glm::dmat4>{matrix} : std::nullopt;
-}
-
-glm::vec4 colorVector(const PJ::sdk::ColorRGBA& color) {
-  return {
-      color.r / 255.0F,
-      color.g / 255.0F,
-      color.b / 255.0F,
-      color.a / 255.0F,
-  };
 }
 
 glm::dvec3 pointVector(const PJ::sdk::Point3& point) {
@@ -102,7 +74,12 @@ struct Preflight {
   std::uint64_t axes_arms = 0;
   std::uint64_t line_batches = 0;
   std::uint64_t triangle_batches = 0;
+  std::uint64_t stream_bytes = 0;  ///< the batches' points, per-point colours and indices
   std::uint64_t frame_string_bytes = 0;
+  // Each distinct frame_id's index, numbered in order of first appearance, and
+  // the frame_ids in that order.
+  std::unordered_map<std::string, std::uint32_t> frame_index;
+  std::vector<std::string> frame_ids;
   QString error;
 };
 
@@ -121,10 +98,11 @@ std::uint64_t lineExpandedVertexCount(const PJ::sdk::LinePrimitive& line) {
 
 Preflight preflight(const PJ::sdk::SceneEntities& scene) {
   Preflight output;
-  std::unordered_map<std::string, std::uint32_t> frames;
+  auto& frames = output.frame_index;
   for (const PJ::sdk::SceneEntity& entity : scene.entities) {
     const bool inserted = frames.try_emplace(entity.frame_id, static_cast<std::uint32_t>(frames.size())).second;
     if (inserted) {
+      output.frame_ids.push_back(entity.frame_id);
       output.frame_string_bytes = saturatedAdd(output.frame_string_bytes, saturatedAdd(entity.frame_id.size(), 1U));
     }
     if (frames.size() > kSceneLimits.max_marker_frames_per_layer) {
@@ -139,10 +117,21 @@ Preflight preflight(const PJ::sdk::SceneEntities& scene) {
     output.arrows = saturatedAdd(output.arrows, entity.arrows.size());
     output.axes_arms = saturatedAdd(output.axes_arms, saturatedMultiply(entity.axes.size(), 3U));
 
+    // An upper bound of a batch's retained arrays: every point, its colour when
+    // the primitive has per-point colours, one index per expanded vertex.
+    const auto batch_bytes = [](std::uint64_t points, bool per_point_colors, std::uint64_t vertices) {
+      const std::uint64_t point_bytes =
+          sizeof(glm::dvec3) + (per_point_colors ? sizeof(PJ::sdk::ColorRGBA) : std::uint64_t{0});
+      return saturatedAdd(saturatedMultiply(points, point_bytes), saturatedMultiply(vertices, sizeof(std::uint32_t)));
+    };
     for (const PJ::sdk::LinePrimitive& line : entity.lines) {
       const std::uint64_t vertices = lineExpandedVertexCount(line);
       output.stream_vertices = saturatedAdd(output.stream_vertices, vertices);
       output.line_batches = saturatedAdd(output.line_batches, vertices == 0U ? 0U : 1U);
+      if (vertices != 0U) {
+        output.stream_bytes = saturatedAdd(
+            output.stream_bytes, batch_bytes(line.points.size(), line.colors.size() == line.points.size(), vertices));
+      }
     }
     for (const PJ::sdk::TrianglePrimitive& triangles : entity.triangles) {
       const std::uint64_t count = triangles.indices.empty() ? triangles.points.size() : triangles.indices.size();
@@ -151,6 +140,12 @@ Preflight preflight(const PJ::sdk::SceneEntities& scene) {
       // vertices for every three triangle vertices.
       output.stream_vertices = saturatedAdd(output.stream_vertices, saturatedMultiply(triangle_count, 6U));
       output.triangle_batches = saturatedAdd(output.triangle_batches, triangle_count == 0U ? 0U : 1U);
+      if (triangle_count != 0U) {
+        output.stream_bytes = saturatedAdd(
+            output.stream_bytes, batch_bytes(
+                                     triangles.points.size(), triangles.colors.size() == triangles.points.size(),
+                                     saturatedMultiply(triangle_count, 3U)));
+      }
     }
   }
   output.instances = saturatedAdd(
@@ -158,8 +153,7 @@ Preflight preflight(const PJ::sdk::SceneEntities& scene) {
       saturatedAdd(saturatedAdd(output.cylinders, output.arrows), output.axes_arms));
   output.frames = frames.size();
   output.retained_bytes = saturatedMultiply(output.instances, sizeof(MarkerInstanceSource));
-  output.retained_bytes =
-      saturatedAdd(output.retained_bytes, saturatedMultiply(output.stream_vertices, sizeof(MarkerStreamVertex)));
+  output.retained_bytes = saturatedAdd(output.retained_bytes, output.stream_bytes);
   output.retained_bytes =
       saturatedAdd(output.retained_bytes, saturatedMultiply(output.frames, sizeof(MarkerBounds) + sizeof(std::string)));
   output.retained_bytes = saturatedAdd(output.retained_bytes, output.frame_string_bytes);
@@ -178,16 +172,49 @@ Preflight preflight(const PJ::sdk::SceneEntities& scene) {
   return output;
 }
 
-std::uint32_t internFrame(MarkerGeometry& geometry, const std::string& frame) {
-  for (std::uint32_t index = 0; index < geometry.frames.size(); ++index) {
-    if (geometry.frames[index] == frame) {
-      return index;
+// A batch holding every point of a primitive (as doubles) and its colours:
+// per-point only when the primitive has per-point colours that differ.
+MarkerStreamBatch streamBatch(
+    const glm::dmat4& model, std::uint32_t frame_index, const std::vector<PJ::sdk::Point3>& points,
+    const std::vector<PJ::sdk::ColorRGBA>& colors, const PJ::sdk::ColorRGBA& color) {
+  MarkerStreamBatch batch;
+  batch.model = model;
+  batch.frame_index = frame_index;
+  batch.points.reserve(points.size());
+  for (const PJ::sdk::Point3& point : points) {
+    batch.points.push_back(pointVector(point));
+  }
+  const bool per_point = !points.empty() && colors.size() == points.size();
+  const bool uniform = !per_point || std::all_of(colors.cbegin(), colors.cend(), [&colors](const auto& c) {
+    return c == colors.front();
+  });
+  batch.color = markerColor(per_point ? colors.front() : color);
+  if (!uniform) {
+    batch.colors = colors;
+  }
+  return batch;
+}
+
+// Adds each point of `batch` to `bounds` the first time an accepted segment or
+// triangle references it: a strip or an indexed mesh transforms every point once.
+// Min/max keep the earlier of equal values, so this is the bounds of every
+// referenced vertex in index order.
+class StreamBounds {
+ public:
+  StreamBounds(MarkerBounds& bounds, const MarkerStreamBatch& batch)
+      : bounds_(bounds), batch_(batch), seen_(batch.points.size(), false) {}
+  void add(std::size_t point) {
+    if (!seen_[point]) {
+      seen_[point] = true;
+      expandBounds(bounds_, glm::dvec3(batch_.model * glm::dvec4(batch_.points[point], 1.0)));
     }
   }
-  geometry.frames.push_back(frame);
-  geometry.frame_bounds.emplace_back();
-  return static_cast<std::uint32_t>(geometry.frames.size() - 1U);
-}
+
+ private:
+  MarkerBounds& bounds_;
+  const MarkerStreamBatch& batch_;
+  std::vector<bool> seen_;
+};
 
 template <typename Primitive>
 void appendSolid(
@@ -204,7 +231,7 @@ void appendSolid(
     ++skipped_invalid;
     return;
   }
-  destination.push_back({model, colorVector(primitive.color), frame_index, 1.0F, 1.0F});
+  destination.push_back({model, markerColor(primitive.color), frame_index, 1.0F, 1.0F});
   expandUnitBounds(bounds, model, glm::dvec3(-0.5), glm::dvec3(0.5));
 }
 
@@ -213,14 +240,14 @@ void appendSolid(
 MarkerGeometryResult buildMarkerGeometry(const PJ::sdk::SceneEntities& scene) {
   MarkerGeometryResult result;
   try {
-    const Preflight counts = preflight(scene);
+    Preflight counts = preflight(scene);
     if (!counts.error.isEmpty()) {
       result.error = counts.error;
       return result;
     }
     MarkerGeometry& geometry = result.geometry;
-    geometry.frames.reserve(static_cast<std::size_t>(counts.frames));
-    geometry.frame_bounds.reserve(static_cast<std::size_t>(counts.frames));
+    geometry.frames = std::move(counts.frame_ids);
+    geometry.frame_bounds.resize(geometry.frames.size());
     geometry.cubes.reserve(static_cast<std::size_t>(counts.cubes));
     geometry.spheres.reserve(static_cast<std::size_t>(counts.spheres));
     geometry.cylinders.reserve(static_cast<std::size_t>(counts.cylinders));
@@ -230,7 +257,7 @@ MarkerGeometryResult buildMarkerGeometry(const PJ::sdk::SceneEntities& scene) {
     geometry.triangles.reserve(static_cast<std::size_t>(counts.triangle_batches));
 
     for (const PJ::sdk::SceneEntity& entity : scene.entities) {
-      const std::uint32_t frame_index = internFrame(geometry, entity.frame_id);
+      const std::uint32_t frame_index = counts.frame_index.find(entity.frame_id)->second;
       MarkerBounds& bounds = geometry.frame_bounds[frame_index];
 
       for (const PJ::sdk::CubePrimitive& cube : entity.cubes) {
@@ -255,7 +282,7 @@ MarkerGeometryResult buildMarkerGeometry(const PJ::sdk::SceneEntities& scene) {
           ++geometry.skipped_invalid;
           continue;
         }
-        geometry.cylinders.push_back({model, colorVector(cylinder.color), frame_index, bottom_scale, top_scale});
+        geometry.cylinders.push_back({model, markerColor(cylinder.color), frame_index, bottom_scale, top_scale});
         expandUnitBounds(bounds, model, {-radius, -radius, -0.5}, {radius, radius, 0.5});
       }
       for (const PJ::sdk::ArrowPrimitive& arrow : entity.arrows) {
@@ -271,7 +298,7 @@ MarkerGeometryResult buildMarkerGeometry(const PJ::sdk::SceneEntities& scene) {
           ++geometry.skipped_invalid;
           continue;
         }
-        geometry.arrows.push_back({model, colorVector(arrow.color), frame_index, 1.0F, 1.0F});
+        geometry.arrows.push_back({model, markerColor(arrow.color), frame_index, 1.0F, 1.0F});
         expandUnitBounds(bounds, model, {0.0, -0.5, -0.5}, {1.0, 0.5, 0.5});
       }
       for (const PJ::sdk::AxesPrimitive& axes : entity.axes) {
@@ -305,9 +332,9 @@ MarkerGeometryResult buildMarkerGeometry(const PJ::sdk::SceneEntities& scene) {
           ++geometry.skipped_invalid;
           continue;
         }
-        MarkerStreamBatch batch{.model = *model, .vertices = {}, .frame_index = frame_index};
-        batch.vertices.reserve(static_cast<std::size_t>(lineExpandedVertexCount(line)));
-        const bool per_vertex_color = line.colors.size() == line.points.size();
+        MarkerStreamBatch batch = streamBatch(*model, frame_index, line.points, line.colors, line.color);
+        batch.indices.reserve(static_cast<std::size_t>(lineExpandedVertexCount(line)));
+        StreamBounds batch_bounds(bounds, batch);
         const std::size_t count = line.indices.empty() ? line.points.size() : line.indices.size();
         const auto resolve = [&line](std::size_t index) {
           return line.indices.empty() ? index : static_cast<std::size_t>(line.indices[index]);
@@ -319,16 +346,15 @@ MarkerGeometryResult buildMarkerGeometry(const PJ::sdk::SceneEntities& scene) {
             ++geometry.skipped_invalid;
             return;
           }
-          const glm::dvec3 pa = pointVector(line.points[a]);
-          const glm::dvec3 pb = pointVector(line.points[b]);
+          const glm::dvec3& pa = batch.points[a];
+          const glm::dvec3& pb = batch.points[b];
           if (!finite(pa) || !finite(pb)) {
             ++geometry.skipped_invalid;
             return;
           }
-          batch.vertices.push_back({pa, colorVector(per_vertex_color ? line.colors[a] : line.color)});
-          batch.vertices.push_back({pb, colorVector(per_vertex_color ? line.colors[b] : line.color)});
-          expandBounds(bounds, glm::dvec3(*model * glm::dvec4(pa, 1.0)));
-          expandBounds(bounds, glm::dvec3(*model * glm::dvec4(pb, 1.0)));
+          batch.indices.insert(batch.indices.end(), {static_cast<std::uint32_t>(a), static_cast<std::uint32_t>(b)});
+          batch_bounds.add(a);
+          batch_bounds.add(b);
         };
         switch (line.type) {
           case PJ::sdk::LineType::kLineList:
@@ -350,8 +376,8 @@ MarkerGeometryResult buildMarkerGeometry(const PJ::sdk::SceneEntities& scene) {
             }
             break;
         }
-        if (!batch.vertices.empty()) {
-          geometry.line_vertices += batch.vertices.size();
+        if (!batch.indices.empty()) {
+          geometry.line_vertices += batch.indices.size();
           geometry.lines.push_back(std::move(batch));
         }
       }
@@ -362,13 +388,13 @@ MarkerGeometryResult buildMarkerGeometry(const PJ::sdk::SceneEntities& scene) {
           ++geometry.skipped_invalid;
           continue;
         }
-        MarkerStreamBatch batch{.model = *model, .vertices = {}, .frame_index = frame_index};
-        const bool per_vertex_color = triangles.colors.size() == triangles.points.size();
+        MarkerStreamBatch batch = streamBatch(*model, frame_index, triangles.points, triangles.colors, triangles.color);
         const std::size_t count = triangles.indices.empty() ? triangles.points.size() : triangles.indices.size();
         const auto resolve = [&triangles](std::size_t index) {
           return triangles.indices.empty() ? index : static_cast<std::size_t>(triangles.indices[index]);
         };
-        batch.vertices.reserve(count - count % 3U);
+        batch.indices.reserve(count - count % 3U);
+        StreamBounds batch_bounds(bounds, batch);
         for (std::size_t index = 0; index + 2U < count; index += 3U) {
           const std::size_t ia = resolve(index);
           const std::size_t ib = resolve(index + 1U);
@@ -377,23 +403,23 @@ MarkerGeometryResult buildMarkerGeometry(const PJ::sdk::SceneEntities& scene) {
             ++geometry.skipped_invalid;
             continue;
           }
-          const glm::dvec3 a = pointVector(triangles.points[ia]);
-          const glm::dvec3 b = pointVector(triangles.points[ib]);
-          const glm::dvec3 c = pointVector(triangles.points[ic]);
+          const glm::dvec3& a = batch.points[ia];
+          const glm::dvec3& b = batch.points[ib];
+          const glm::dvec3& c = batch.points[ic];
           const glm::dvec3 cross = glm::cross(b - a, c - a);
           if (!finite(a) || !finite(b) || !finite(c) || !finite(cross) || glm::length(cross) < 1e-15) {
             ++geometry.skipped_invalid;
             continue;
           }
-          batch.vertices.push_back({a, colorVector(per_vertex_color ? triangles.colors[ia] : triangles.color)});
-          batch.vertices.push_back({b, colorVector(per_vertex_color ? triangles.colors[ib] : triangles.color)});
-          batch.vertices.push_back({c, colorVector(per_vertex_color ? triangles.colors[ic] : triangles.color)});
-          expandBounds(bounds, glm::dvec3(*model * glm::dvec4(a, 1.0)));
-          expandBounds(bounds, glm::dvec3(*model * glm::dvec4(b, 1.0)));
-          expandBounds(bounds, glm::dvec3(*model * glm::dvec4(c, 1.0)));
+          batch.indices.insert(
+              batch.indices.end(),
+              {static_cast<std::uint32_t>(ia), static_cast<std::uint32_t>(ib), static_cast<std::uint32_t>(ic)});
+          batch_bounds.add(ia);
+          batch_bounds.add(ib);
+          batch_bounds.add(ic);
         }
-        if (!batch.vertices.empty()) {
-          geometry.triangle_vertices += batch.vertices.size();
+        if (!batch.indices.empty()) {
+          geometry.triangle_vertices += batch.indices.size();
           geometry.triangles.push_back(std::move(batch));
         }
       }

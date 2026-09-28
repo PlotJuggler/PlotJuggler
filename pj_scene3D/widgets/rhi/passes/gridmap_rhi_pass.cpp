@@ -9,6 +9,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <limits>
 
+#include "pj_scene3d_core/pose_math.h"
 #include "pj_scene3d_widgets/layers/grid_map_layer.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
 
@@ -30,22 +31,12 @@ struct alignas(16) GridMapUniforms {
 constexpr quint32 kUniformBytes = sizeof(GridMapUniforms);
 static_assert(kUniformBytes == 304U);
 
-QString tr(const char* text) {
-  return QCoreApplication::translate("pj::scene3d::SceneViewWidget", text);
-}
-
 // The staged grid has quads and a complete payload (the GL pass's setGrid check).
 bool drawable(const GridMapUpload& grid) {
   const std::uint64_t cells = static_cast<std::uint64_t>(grid.column_count) * grid.row_count;
   const bool have_elevation = grid.elevation.size() == cells;
   const bool have_color = grid.color_is_elevation ? have_elevation : grid.color.size() == cells;
   return grid.column_count >= 2 && grid.row_count >= 2 && have_color && (grid.elevation.empty() || have_elevation);
-}
-
-Transform sourceFromGrid(const GridMapUpload& grid) {
-  const auto& p = grid.origin.position;
-  const auto& q = grid.origin.orientation;
-  return {glm::dvec3(p.x, p.y, p.z), glm::normalize(glm::dquat(q.w, q.x, q.y, q.z))};
 }
 
 void uploadChannel(
@@ -107,7 +98,7 @@ void GridMapRhiPass::setLayers(const std::vector<GridMapLayer*>& layers) {
   adoptLayerList(layers, layers_, layer_gpu_, releaseLayerGpu);
 }
 
-void GridMapRhiPass::admit(const PlaceFn& place, SceneBoundsCollector& bounds) {
+void GridMapRhiPass::admit(const PlaceFn& place) {
   admitted_.clear();
   for (GridMapLayer* layer : layers_) {
     if (layer == nullptr || !layer->visible()) {
@@ -123,14 +114,14 @@ void GridMapRhiPass::admit(const PlaceFn& place, SceneBoundsCollector& bounds) {
     if (!placed.has_value()) {
       continue;
     }
-    if (const auto layer_bounds = layer->worldBounds(); layer_bounds.has_value()) {
-      bounds.add(dynamic_cast<const void*>(layer), transformedAABB(glm::mat4(placed->matrix()), *layer_bounds));
-    }
     admitted_.push_back({layer, *placed});
   }
 }
 
 void GridMapRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingParams& shading) {
+  if (!ready()) {
+    return;  // never built: no layer of this family since the last release
+  }
   draws_.clear();
   last_layer_count_ = 0;
   last_vertex_count_ = 0;
@@ -159,7 +150,7 @@ void GridMapRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingPara
     }
 
     const glm::mat4 model_f =
-        relativeModel(admitted.fixed_from_source.matrix() * sourceFromGrid(grid).matrix(), frame.render_origin);
+        relativeModel(admitted.fixed_from_source.matrix() * poseTransform(grid.origin).matrix(), frame.render_origin);
     // An auto range with no finite sample collapses to lo == hi: the shader then
     // paints the LUT midpoint instead of dividing by zero.
     float color_lo = static_cast<float>(layer->manualRange().first);

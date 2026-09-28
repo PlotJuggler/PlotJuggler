@@ -157,12 +157,23 @@ Keep these porting and rendering constraints in mind:
   a dash runs through it. Custom dash patterns draw solid.
 - **Dirty layers.** Three retained vertex buffers: grid + curves + frame, the
   overlay (every `QwtPlotMarker`: the tracker, hover and ride-along markers), and
-  text. `replot()` dirties both geometry layers; inside
+  text. `replot()` dirties the overlay, and the curve layer unless the data of
+  every curve it draws (any `QwtPlotCurve` subclass, whatever its RTTI) is a
+  `RevisionedSeries` (`core/RevisionedSeries.h`: the
+  datastore adapters and `PointSeriesXY` inherit it and call
+  `bumpContentRevision()` on every commit, clear, display-offset move, filter
+  change and new rect of interest) whose revision is unchanged; plain Qwt data
+  rebuilds on every replot. Revisions come from one process-wide counter, so the
+  content key holds the revisions alone, and a series re-created at a freed one's
+  address (a transform applied in place) never repeats it. Inside
   `setOverlayOnlyReplot(true)` (what `PlotWidgetBase::replotOverlays()`, and so
   `PlotWidget::setTrackerPosition()`, wraps around one replot) only the overlay.
-  The curve layer is rebuilt anyway when the view (size, dpr, axis bounds, clear
-  or frame colour) or its structure (items, visibility, pens, styles, data object
-  and size) changed. Any geometry rebuild regathers the text layers, reusing the
+  The curve layer is rebuilt anyway when the view (size, dpr, axis bounds, maps,
+  each grid tick list with its type, clear or frame colour), its structure
+  (items, visibility, pens, brushes, styles, symbols, axes, grid flags, data
+  object and size) or a curve's content revision changed. A map's transformation
+  counts by type and parameter (none, `QwtLogTransform`, `QwtPowerTransform`);
+  any other transformation rebuilds every frame. Any geometry rebuild regathers the text layers, reusing the
   cached rasters, and re-uploads the atlas only when the layer set changed (the
   canvas size, the truncation and the layer keys in draw order); a reused atlas
   still re-owns its quads to this build's items, so an identical replacement item

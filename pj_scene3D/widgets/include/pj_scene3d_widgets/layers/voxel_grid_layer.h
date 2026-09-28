@@ -246,7 +246,7 @@ class VoxelGridLayer : public Scene3DLayer {
   bool tracker_dirty_ = false;
   std::optional<PJ::Timepoint> requested_time_;
   bool visible_ = true;
-  // Voxel count that last overflowed the view budget (QRhi).
+  // Voxel count and sample that last overflowed the view budget (QRhi).
   BudgetLatch budget_;
 
   // The packed volume + its placement.

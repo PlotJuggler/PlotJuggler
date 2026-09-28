@@ -80,7 +80,7 @@ TEST(UrdfResolver, HttpBlockedForNonUrlSource) {
 }
 
 // An absolute filesystem path that exists is returned verbatim (NOT joined onto
-// urdf_dir); a missing one is unresolved with kMissingFile (review M.36).
+// urdf_dir); a missing one is unresolved with kMissingFile.
 TEST(UrdfResolver, AbsolutePathPassthroughAndMissing) {
   UrdfPackageResolver r;
   QTemporaryFile existing;
@@ -272,7 +272,7 @@ TEST(UrdfResolver, RememberEnablesCrossDatasetSearchRoot) {
 // Two well-formed refs that flatten to the SAME name ("package://pkg/a/b.stl" vs
 // "package://pkg/a_b.stl" both -> "package___pkg_a_b.stl") must extract to
 // DISTINCT files with their respective bytes — the hash prefix disambiguates
-// them (review L.32).
+// them.
 TEST(UrdfResolver, CollidingAttachmentRefsExtractToDistinctFiles) {
   UrdfPackageResolver r;
   QMap<QString, QByteArray> att;
@@ -296,7 +296,7 @@ TEST(UrdfResolver, CollidingAttachmentRefsExtractToDistinctFiles) {
 
 // A second resolve of the same attachment returns the same path WITHOUT
 // rewriting the file (immutable content) — guards the truncation-under-assimp
-// race (review M.42). We overwrite the extracted bytes out-of-band, resolve
+// race. We overwrite the extracted bytes out-of-band, resolve
 // again, and assert the resolver left our bytes intact (it did not reopen
 // WriteOnly).
 TEST(UrdfResolver, AttachmentReResolveDoesNotRewrite) {

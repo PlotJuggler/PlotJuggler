@@ -1,8 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// GL-free unit tests for the owning-context delete guard (review M.43/H.16/L.39)
-// and the RAII wrappers' teardown safety. The app deliberately does NOT share
+// GL-free unit tests for the owning-context delete guard and the RAII wrappers'
+// teardown safety. The app deliberately does NOT share
 // OpenGL contexts, so a wrapper must DROP its GL name rather than delete it when
 // no owning context is current; deleting under a foreign context would corrupt a
 // sibling view. These cases are reachable WITHOUT a GL platform because the

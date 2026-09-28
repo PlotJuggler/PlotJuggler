@@ -293,7 +293,8 @@ jobs:
         # goldens (point sprites and sphere impostors) and which is 10-40x slower.
         # Hence no pointcloud goldens, no sub-pixel sprite colour check (its 1 px
         # sprites resolve to ~15% coverage there), no odd-cell-edge grid line check
-        # (its 1 px analytic line loses the same coverage), and no DPR 2 mixed-dock
+        # (its 1 px analytic line loses the same coverage), no frame-identity check
+        # across a shadow toggle (not reproducible frame to frame there), and no DPR 2 mixed-dock
         # pass (every float recompiles the whole pipeline set at 4x the pixels;
         # Linux runs it). pj_scene3D/docs/TECHNICAL_NOTES.md, "macOS OpenGL fallback".
         if: always() && steps.build.outcome == 'success'
@@ -309,7 +310,7 @@ jobs:
           mkdir -p "$PJ_POINTCLOUD_GOLDEN_OUT"
           log="${RUNNER_TEMP}/qrhi-opengl-ctest.log"
           ctest --test-dir build -V --timeout 120 -L qrhi-opengl \
-            -E '^pointcloud_golden_test\.|SubPixelCubeCloudBecomesColouredSprites|FilledGridLinesFollowOddCellEdges|^rhi_mixed_dock_test\.opengl_dpr2\.' \
+            -E '^pointcloud_golden_test\.|SubPixelCubeCloudBecomesColouredSprites|FilledGridLinesFollowOddCellEdges|ShadowToggleRebindsKeptMeshes|^rhi_mixed_dock_test\.opengl_dpr2\.' \
             2>&1 | tee "$log" || status=$?
           bash scripts/ci/check_qrhi_backend.sh "$log" 'OpenGL, ' OpenGL
           exit "${status:-0}"

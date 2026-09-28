@@ -95,6 +95,7 @@ bool sceneEntityExpiredAt(const PJ::sdk::SceneEntity& entity, std::int64_t ancho
 void SceneEntitiesModelState::clear() {
   entities_.clear();
   expiry_anchor_ns_.clear();
+  finite_lifetimes_ = 0;
   retained_bytes_ = 0;
 }
 
@@ -153,7 +154,9 @@ bool SceneEntitiesModelState::applySnapshot(const PJ::sdk::SceneEntities& snapsh
     // that pre-gate a bookkeeping error instead of undefined behavior.
     if (const auto current = entities_.find(entity.id); current != entities_.end()) {
       retained_bytes_ -= modelEntityBytes(current->second).value_or(0);
+      finite_lifetimes_ -= current->second.lifetime_ns != 0 ? 1U : 0U;
     }
+    finite_lifetimes_ += entity.lifetime_ns != 0 ? 1U : 0U;
     PJ::sdk::SceneEntity slim = modelOnlyEntity(entity);
     retained_bytes_ += modelEntityBytes(slim).value_or(0);
     entities_[entity.id] = std::move(slim);
@@ -167,8 +170,9 @@ bool SceneEntitiesModelState::applySnapshot(const PJ::sdk::SceneEntities& snapsh
 
 bool SceneEntitiesModelState::dropExpired(std::int64_t time_ns) {
   bool changed = false;
-  for (auto iterator = entities_.begin(); iterator != entities_.end();) {
-    if (sceneEntityExpiredAt(iterator->second, expiry_anchor_ns_.at(iterator->first), time_ns)) {
+  for (auto iterator = entities_.begin(); finite_lifetimes_ != 0 && iterator != entities_.end();) {
+    if (iterator->second.lifetime_ns != 0 &&
+        sceneEntityExpiredAt(iterator->second, expiry_anchor_ns_.at(iterator->first), time_ns)) {
       iterator = erase(iterator);
       changed = true;
     } else {
@@ -180,6 +184,7 @@ bool SceneEntitiesModelState::dropExpired(std::int64_t time_ns) {
 
 SceneEntitiesModelState::Iterator SceneEntitiesModelState::erase(Iterator iterator) {
   retained_bytes_ -= modelEntityBytes(iterator->second).value_or(0);
+  finite_lifetimes_ -= iterator->second.lifetime_ns != 0 ? 1U : 0U;
   expiry_anchor_ns_.erase(iterator->first);
   return entities_.erase(iterator);
 }

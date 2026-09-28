@@ -16,16 +16,22 @@
 #include <QStackedWidget>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QtConcurrent/QtConcurrentMap>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <exception>
+#include <functional>
 #include <glm/glm.hpp>
 #include <limits>
 #include <memory>
 #include <new>
+#include <numeric>
+#include <span>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "layer_xml_validation.h"
 #include "pj_base/builtin/builtin_object.hpp"
@@ -39,7 +45,7 @@
 #include "pj_scene3d_core/pointcloud.h"
 #include "pj_scene3d_core/pointcloud_budget.h"
 #include "pj_scene3d_core/pointcloud_codecs.h"
-#include "pj_scene3d_core/pointcloud_convert.h"  // convertCanonical, ConvertedPointCloud
+#include "pj_scene3d_core/pointcloud_convert.h"  // packPointVertices (QRhi), convertCanonical (GL)
 #include "pj_scene3d_core/tf/tf_buffer.h"        // source->fixed lookup for world-axis range
 #include "pj_scene3d_widgets/resolve_object.h"   // resolveObject, hasCanonical3DCodec
 #include "pj_widgets/CheckButton.h"
@@ -61,6 +67,13 @@ using PJ::sdk::CompressedPointCloud;
 using PJ::sdk::PayloadView;
 using PJ::sdk::PointCloud;
 
+#ifdef PJ_SCENE3D_RHI
+// A sample arriving this soon after the previous one marks a stream: its layer
+// keeps the uploaded array to rewrite in place. A slower stream re-allocates per
+// sample, which costs little against its period.
+constexpr std::chrono::milliseconds kStreamingWindow{1000};
+#endif
+
 std::pair<float, float> clampScalarRange(float lo, float hi) {
   if (lo > hi) {
     return {0.0f, 1.0f};
@@ -71,10 +84,12 @@ std::pair<float, float> clampScalarRange(float lo, float hi) {
   return {lo, hi};
 }
 
+#ifndef PJ_SCENE3D_RHI
 std::pair<float, float> computeScalarRange(const std::vector<float>& scalar) {
   const FiniteRange range = finiteRange(scalar);
   return range.valid ? clampScalarRange(range.lo, range.hi) : std::pair<float, float>{0.0f, 1.0f};
 }
+#endif
 
 // Fixed-frame spatial colour axis for a colour-field name: x->0, y->1, z->2, else
 // -1 (a non-spatial scalar field like intensity, coloured by its raw value).
@@ -160,6 +175,14 @@ QString toggleButtonQss(PJ::theme::Theme active_theme) {
 
 }  // namespace
 
+#ifdef PJ_SCENE3D_RHI
+void parallelForOnPool(std::size_t count, const std::function<void(std::size_t)>& body) {
+  std::vector<std::size_t> chunks(count);
+  std::iota(chunks.begin(), chunks.end(), std::size_t{0});
+  QtConcurrent::blockingMap(chunks, [&body](std::size_t chunk) { body(chunk); });
+}
+#endif
+
 PointCloudLayer::PointCloudLayer(
     PJ::ObjectTopicId topic_id, QString display_name, BuiltinObjectType object_type, QObject* parent)
     : Scene3DLayer(parent), topic_id_(topic_id), display_name_(std::move(display_name)), object_type_(object_type) {
@@ -168,6 +191,20 @@ PointCloudLayer::PointCloudLayer(
   syncPassStyle();
   decode_worker_.setWaitingFilter(
       [this](const PendingDecode& next) { return next.id == wanted_ && next.id != failed_id_; });
+#ifdef PJ_SCENE3D_RHI
+  evict_timer_.setSingleShot(true);
+  connect(&evict_timer_, &QTimer::timeout, this, [this]() {
+    // Armed once, not per upload: re-armed for the rest of the window while uploads still come.
+    if (const auto quiet = std::chrono::milliseconds(last_stream_upload_.elapsed()); quiet < kStreamingWindow) {
+      evict_timer_.start(kStreamingWindow - quiet);
+      return;
+    }
+    streaming_ = false;
+    if (uploaded_revision_ == geometry_revision_) {
+      evictVertices();
+    }
+  });
+#endif
 #ifndef PJ_SCENE3D_RHI
   // The pass owns the GPU AABB reducer and polls it inside render() (GL thread);
   // a completed reduction flows back here to refresh world_bounds_ + the camera.
@@ -436,9 +473,12 @@ void PointCloudLayer::setVisible(bool visible) {
   if (!visible_) {
     // A hidden layer releases its retained cloud (the view drops its GPU buffer
     // too), keeping the per-view memory ceiling real; re-showing decodes once.
+    // Its bounds stay: a hidden layer still counts in the camera's scene bounds.
+    const std::optional<AABB> bounds = world_bounds_;
     invalidateSampleState();
     budget_.reset();
     clearGeometry();
+    world_bounds_ = bounds;
   }
 #else
   cloud_pass_.setVisible(visible);
@@ -880,14 +920,16 @@ void PointCloudLayer::setColorType(PointColorType type) {
     }
     return;
   }
-  // Toggling RGB-direct on/off changes what convertCanonical extracts (per-point colour
-  // vs. a colormap scalar), so the GPU buffer must be rebuilt — force a re-decode. A
-  // kField<->kSolid switch only flips a shader uniform, so a repaint suffices.
+  // A change of what the vertices carry (per-point colour, the colormap scalar or
+  // neither) rebuilds them; otherwise only a shader uniform flips and a repaint
+  // suffices.
   const bool rgb_changed = (color_type_ == PointColorType::kRgb) != (type == PointColorType::kRgb);
+  const bool stored_scalar = storesScalar();
   color_type_ = type;
+  const bool repack = rgb_changed || storesScalar() != stored_scalar;
   syncPassStyle();
   emit configurationChanged();
-  if (rgb_changed) {
+  if (repack) {
     range_dirty_ = true;  // re-fit the scalar auto-range when leaving RGB
     refreshNow();
   } else {
@@ -1115,14 +1157,14 @@ std::optional<std::pair<float, float>> PointCloudLayer::currentWorldAxisRange(in
     return std::nullopt;
   }
   // fixed<-source at the tracker time — the same transform the render pass applies.
-  const auto tf = ctx_.tf_buffer->tryLookupTransform(fixed_frame_.toStdString(), source_frame_, *decoded_at_ns_);
+  const auto tf = ctx_.tf_buffer->tryLookupTransform(fixed_frame_.toStdString(), geometry_frame_, *decoded_at_ns_);
   if (!tf) {
     return std::nullopt;
   }
   return transformedAabbAxisRange(*world_bounds_, glm::mat4(tf->matrix()), axis);
 }
 
-void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id) {
+void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id, [[maybe_unused]] bool rederive) {
   updateSourceFrame(cloud.frame_id);
   if (available_color_fields_.isEmpty() && !cloud.fields.empty()) {
     // Self-heal after a failed bootstrap (topic attached before its first sample):
@@ -1141,37 +1183,43 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id) {
     return;
   }
 #ifdef PJ_SCENE3D_RHI
-  ConvertedPointCloud converted;
+  const std::optional<PointVertexPlan> plan =
+      planPointVertices(cloud, scalar_sv, /*extract_rgba=*/rgb_mode, storesScalar());
+  if (!plan.has_value()) {
+    failSample(
+        id,
+        point_count != 0 ? tr("Malformed point cloud was rejected") : tr("Point cloud contains no finite positions"));
+    return;
+  }
+  PackedPointVertices packed;
   try {
-    converted = convertCanonical(cloud, scalar_sv, /*extract_rgba=*/rgb_mode);
+    packIntoRetained(
+        vertex_bytes_, static_cast<qsizetype>(plan->maxBytes()), [&](std::span<std::byte> out, bool reused) {
+          packed =
+              packPointVertices(cloud, *plan, out, parallelForOnPool, reused ? kMaxPackChunks : kMaxFreshPackChunks);
+          return static_cast<qsizetype>(packed.count * pointVertexStride(packed.format));
+        });
   } catch (const std::bad_alloc&) {
     failSample(id, tr("Not enough memory to convert this point cloud"));
     return;
-  } catch (const std::exception& error) {
-    failSample(id, tr("Point-cloud conversion failed: %1").arg(QString::fromUtf8(error.what())));
-    return;
   }
-  const DecodedPointCloud& decoded = converted.cloud;
-  if (point_count != 0 && decoded.positions.empty()) {
-    failSample(id, tr("Malformed point cloud was rejected"));
-    return;
-  }
-  const bool has_scalar = decoded.scalar.size() == decoded.positions.size();
-  QByteArray next_vertices;
-  try {
-    next_vertices = packFinitePointVertices(decoded);
-  } catch (const std::bad_alloc&) {
-    failSample(id, tr("Not enough memory to convert this point cloud"));
-    return;
-  }
-  if (next_vertices.isEmpty()) {
+  if (packed.count == 0) {
     failSample(id, tr("Point cloud contains no finite positions"));
     return;
   }
-  vertex_bytes_ = std::move(next_vertices);
-  ++geometry_revision_;
-  world_bounds_ = converted.bounds.valid ? std::optional<AABB>{converted.bounds} : std::nullopt;
-  automatic_scalar_range_ = has_scalar ? computeScalarRange(decoded.scalar) : std::pair<float, float>{0.0f, 1.0f};
+  vertex_format_ = packed.format;
+  point_count_ = packed.count;
+  if (!rederive) {
+    ++geometry_revision_;
+    if (id != last_pushed_id_) {
+      streaming_ = last_sample_push_.isValid() && last_sample_push_.elapsed() < kStreamingWindow.count();
+      last_sample_push_.start();
+    }
+  }
+  world_bounds_ = packed.bounds.valid ? std::optional<AABB>{packed.bounds} : std::nullopt;
+  automatic_scalar_range_ = packed.scalar_range
+                                ? clampScalarRange(packed.scalar_range->first, packed.scalar_range->second)
+                                : std::pair<float, float>{0.0f, 1.0f};
   range_dirty_ = false;
 #else
   const bool colormap = color_type_ == PointColorType::kField;
@@ -1296,9 +1344,16 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id) {
 #endif
   setDataWarning({});
   last_pushed_id_ = id;
+  geometry_frame_ = cloud.frame_id;
   last_pushed_color_field_ = color_field_;
   last_pushed_rgb_ = rgb_mode;
+  last_pushed_scalar_ = storesScalar();
   last_pushed_axis_ = axis;
+#ifdef PJ_SCENE3D_RHI
+  if (rederive) {
+    return;  // the frame that asked for it is being prepared
+  }
+#endif
   emit repaintRequested();
 }
 
@@ -1339,7 +1394,9 @@ bool PointCloudLayer::servedFromMemos(SampleId id) {
   // is "same sample, same color field" — skip the whole parse/convert/upload then.
   // range_dirty_ only matters when auto-range will actually recompute in pushCloud.
   if (id == last_pushed_id_ && color_field_ == last_pushed_color_field_ &&
-      (color_type_ == PointColorType::kRgb) == last_pushed_rgb_ && !(auto_range_ && range_dirty_)) {
+      (color_type_ == PointColorType::kRgb) == last_pushed_rgb_ && storesScalar() == last_pushed_scalar_ &&
+      !(auto_range_ && range_dirty_)) {
+    updateSourceFrame(geometry_frame_);  // back from a pending sample in another frame
     return true;
   }
   // Compressed sample already decoded? Re-convert from cache so repaints /
@@ -1540,6 +1597,16 @@ void PointCloudLayer::invalidateSampleState() {
   decode_worker_.invalidate();  // queued/running decodes hold content nobody wants any more
 }
 
+std::uint64_t PointCloudLayer::budgetCandidate() const {
+  // The sample refreshNow() would draw; no setting changes a cloud's point count.
+  const PJ::ObjectStore* store = ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr;
+  if (decoded_at_ns_.has_value()) {
+    return PJ::latestEntryRenderKey(store, topic_id_, *decoded_at_ns_);
+  }
+  return ts_first_.has_value() ? PJ::latestEntryRenderKey(store, topic_id_, PJ::fromRaw(*ts_first_))
+                               : PJ::kNoSampleRenderKey;
+}
+
 void PointCloudLayer::drainPendingUpdate() {
   // renderAt's own SampleId guard makes this cheap when the active sample is
   // unchanged; refreshNow() decodes at the latest tracker time.
@@ -1552,7 +1619,7 @@ void PointCloudLayer::drainPendingUpdate() {
 bool PointCloudLayer::prepareForRender(std::uint64_t remaining_view_vertices) {
   const std::uint64_t revision_before = geometry_revision_;
   bool released = false;
-  if (budget_.blocked(remaining_view_vertices, released)) {
+  if (budget_.blocked(remaining_view_vertices, [this] { return budgetCandidate(); }, released)) {
     return false;
   }
   if (released) {
@@ -1560,13 +1627,97 @@ bool PointCloudLayer::prepareForRender(std::uint64_t remaining_view_vertices) {
   }
   drainPendingUpdate();
   if (static_cast<std::uint64_t>(pointCount()) > remaining_view_vertices) {
-    budget_.reject(pointCount());
+    budget_.reject(pointCount(), last_pushed_id_.uid.value);
     setDataWarning(tr("Layer has %1 finite points; only %2 remain in this view's budget")
                        .arg(QString::number(pointCount()), QString::number(remaining_view_vertices)));
     clearGeometry();
     last_pushed_id_ = {};  // re-push once the budget frees up
   }
   return geometry_revision_ != revision_before;
+}
+
+#ifdef PJ_SCENE3D_RHI
+void PointCloudLayer::onVerticesUploaded(std::uint64_t revision) {
+  uploaded_revision_ = revision;
+  if (revision != geometry_revision_ || vertex_bytes_.isEmpty()) {
+    return;
+  }
+  if (streaming_) {
+    last_stream_upload_.start();  // the timer fires once the stream is quiet
+    if (!evict_timer_.isActive()) {
+      evict_timer_.start(kStreamingWindow);
+    }
+  } else {
+    evictVertices();
+  }
+}
+
+void PointCloudLayer::evictVertices() {
+  if (vertex_bytes_.isEmpty() || point_count_ == 0) {
+    return;
+  }
+  // Only our reference: an upload batch still holding the array keeps it alive
+  // until its frame is submitted.
+  vertex_bytes_ = QByteArray();
+}
+
+bool PointCloudLayer::ensureVertexBytes() {
+  if (!evicted()) {
+    return true;
+  }
+  rederivePushedSample();
+  return point_count_ > 0 && !evicted();
+}
+
+void PointCloudLayer::rederivePushedSample() {
+  const SampleId id = last_pushed_id_;
+  if (decoded_cache_ && decoded_cache_id_ == id) {
+    pushCloud(*decoded_cache_, id, /*rederive=*/true);
+    return;
+  }
+  std::optional<PJ::ResolvedObjectEntry> resolved;
+  if (ctx_.session != nullptr) {
+    resolved = ctx_.session->objectStore().at(topic_id_, id.uid);
+  }
+  if (!resolved.has_value() || resolved->payload.bytes.empty()) {
+    // Retention dropped the sample since: the playhead's sample replaces it.
+    clearGeometry();
+    last_pushed_id_ = {};
+    tracker_dirty_ = true;
+    emit repaintRequested();
+    return;
+  }
+  const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
+  auto obj = resolveObject(binding, object_type_, resolved->timestamp, resolved->payload);
+  if (!obj.has_value()) {
+    failSample(id, tr("Point cloud could not be decoded: %1").arg(QString::fromStdString(obj.error())));
+    return;
+  }
+  if (const auto* cpc = obj->object.get<CompressedPointCloud>()) {
+    // The decode cache holds another sample: decode off the UI thread, and the
+    // cloud reappears when it lands (unless the tracker already wants another).
+    clearGeometry();
+    last_pushed_id_ = {};
+    if (wanted_ == id) {
+      requestDecode(*cpc, id);
+    }
+    return;
+  }
+  const auto* sdk_cloud = obj->object.get<PointCloud>();
+  if (sdk_cloud == nullptr) {
+    failSample(id, tr("Point-cloud sample has an unexpected canonical type"));
+    return;
+  }
+  pushCloud(*sdk_cloud, id, /*rederive=*/true);
+}
+#endif
+
+bool PointCloudLayer::storesScalar() const {
+#ifdef PJ_SCENE3D_RHI
+  return color_type_ == PointColorType::kField && spatialAxisIndex(color_field_) < 0;
+#else
+  return color_type_ != PointColorType::kRgb;  // the GL pass uploads it in every non-RGB mode
+#endif
 }
 
 int PointCloudLayer::scalarAxis() const {
@@ -1613,36 +1764,13 @@ void PointCloudLayer::clearGeometry() {
   // An empty cloud, not none: the pass must stop drawing the previous sample.
   cloud_pass_.setActiveCloud(std::make_shared<DecodedPointCloud>());
 #endif
-  if (vertex_bytes_.isEmpty() && !world_bounds_.has_value()) {
+  if (vertex_bytes_.isEmpty() && point_count_ == 0 && !world_bounds_.has_value()) {
     return;
   }
   vertex_bytes_ = QByteArray();  // clear() would keep the capacity pinned (~20 MiB per million points)
+  point_count_ = 0;
   setWorldBounds(std::nullopt);
   ++geometry_revision_;
-}
-
-QByteArray packFinitePointVertices(const DecodedPointCloud& decoded) {
-  const bool has_scalar = decoded.scalar.size() == decoded.positions.size();
-  const bool has_rgba = decoded.rgba.size() == decoded.positions.size();
-  QByteArray bytes(static_cast<qsizetype>(decoded.positions.size() * sizeof(PointVertex)), Qt::Uninitialized);
-  char* out = bytes.data();
-  for (std::size_t index = 0; index < decoded.positions.size(); ++index) {
-    const glm::vec3& position = decoded.positions[index];
-    if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z)) {
-      continue;
-    }
-    const PointVertex vertex{
-        .x = position.x,
-        .y = position.y,
-        .z = position.z,
-        .scalar = has_scalar ? decoded.scalar[index] : 0.0f,
-        .rgba = has_rgba ? decoded.rgba[index] : 0xFFFFFFFFU,
-    };
-    std::memcpy(out, &vertex, sizeof(vertex));
-    out += sizeof(vertex);
-  }
-  bytes.truncate(out - bytes.constData());
-  return bytes;
 }
 
 }  // namespace pj::scene3d

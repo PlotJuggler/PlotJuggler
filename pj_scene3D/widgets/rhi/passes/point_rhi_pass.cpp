@@ -66,6 +66,7 @@ bool PointRhiPass::initialize(const RhiPassSetup& setup) {
   if (rhi == nullptr) {
     return false;
   }
+  setup_ = setup;
   render_mode_uniforms_ = setup.render_mode_uniforms;
   geometry_ = setup.geometry;
   uniform_stride_ = static_cast<quint32>(rhi->ubufAligned(static_cast<int>(kPointUniformBytes)));
@@ -73,52 +74,79 @@ bool PointRhiPass::initialize(const RhiPassSetup& setup) {
     return false;
   }
   layout_shader_resources_ = createLayerBindings(rhi, layout_uniforms_, 0U);
-
-  // Instance data only: the quad corners and fan corners come from the vertex index.
-  QRhiVertexInputLayout layout;
-  layout.setBindings({QRhiVertexInputBinding(sizeof(PointVertex), QRhiVertexInputBinding::PerInstance)});
-  layout.setAttributes({
-      QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, offsetof(PointVertex, x)),
-      QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float, offsetof(PointVertex, scalar)),
-      QRhiVertexInputAttribute(0, 2, QRhiVertexInputAttribute::UNormByte4, offsetof(PointVertex, rgba)),
-  });
-  // The point list reads the same attributes once per vertex.
-  QRhiVertexInputLayout list_layout = layout;
-  list_layout.setBindings({QRhiVertexInputBinding(sizeof(PointVertex))});
-  const auto create_pair = [&](Geometry geometry, QRhiGraphicsPipeline::Topology topology, const QString& shader,
-                               const QRhiVertexInputLayout& input_layout,
-                               QRhiGraphicsPipeline::CullMode cull = QRhiGraphicsPipeline::None) {
-    PipelineDesc desc{
-        .topology = topology,
-        .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/%1.vert.qsb").arg(shader)),
-        .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/%1.frag.qsb").arg(shader)),
-        .input_layout = input_layout,
-        .bindings = layout_shader_resources_,
-        .cull = cull,
-    };
-    auto& pair = pipelines_[static_cast<std::size_t>(geometry)];
-    pair[0] = createScenePipeline(setup, desc);
-    desc.depth_write = false;
-    pair[1] = createScenePipeline(setup, desc);
-  };
-  create_pair(Geometry::kQuad, QRhiGraphicsPipeline::TriangleStrip, QStringLiteral("point"), layout);
-  // The fan picks its faces from the eye against the cube's CENTRE: with the eye
-  // inside an axis slab (or inside the cube) a picked face is seen from behind.
-  // Opaque cubes hide it by depth, but the faded half writes no depth and would
-  // blend the interior in; culling drops exactly those faces (the fan is
-  // CCW-outward, cube_mesh.h).
-  create_pair(
-      Geometry::kFan, QRhiGraphicsPipeline::Triangles, QStringLiteral("cube"), layout, QRhiGraphicsPipeline::Back);
-  if (rhi->isFeatureSupported(QRhi::VertexShaderPointSize)) {
-    create_pair(Geometry::kPointList, QRhiGraphicsPipeline::Points, QStringLiteral("point_list"), list_layout);
-  }
+  pipeline_warned_ = false;
+  pipelines_attempted_ = {};
+  point_size_supported_ = rhi->isFeatureSupported(QRhi::VertexShaderPointSize);
   return ready();
 }
 
+bool PointRhiPass::ensurePipelines(Layout layout, Geometry geometry, bool faded) {
+  auto& pair = pipelines_[static_cast<std::size_t>(layout)][static_cast<std::size_t>(geometry)];
+  auto& attempted = pipelines_attempted_[static_cast<std::size_t>(layout)][static_cast<std::size_t>(geometry)];
+  const std::size_t halves = faded ? 2U : 1U;
+  const auto built = [&] { return pair[0] != nullptr && (!faded || pair[1] != nullptr); };
+  if (built() || std::all_of(attempted.begin(), attempted.begin() + halves, [](bool tried) { return tried; })) {
+    return built();
+  }
+  // Instance data only: the quad corners and fan corners come from the vertex index.
+  // Both layouts feed location 1; the 12-byte one points it at z, which the
+  // shaders ignore for PointVertexFormat::kXyz.
+  const bool xyz = layout == Layout::kXyz;
+  QRhiVertexInputLayout input_layout;
+  input_layout.setBindings({QRhiVertexInputBinding(
+      static_cast<quint32>(pointVertexStride(xyz ? PointVertexFormat::kXyz : PointVertexFormat::kXyzScalar)),
+      geometry == Geometry::kPointList ? QRhiVertexInputBinding::PerVertex : QRhiVertexInputBinding::PerInstance)});
+  input_layout.setAttributes({
+      QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, offsetof(PointVertex, x)),
+      QRhiVertexInputAttribute(
+          0, 1, QRhiVertexInputAttribute::UInt, xyz ? offsetof(PointVertex, z) : offsetof(PointVertex, attribute)),
+  });
+  const bool fan = geometry == Geometry::kFan;
+  const QString shader = fan                                ? QStringLiteral("cube")
+                         : geometry == Geometry::kPointList ? QStringLiteral("point_list")
+                                                            : QStringLiteral("point");
+  PipelineDesc desc{
+      .topology = fan                                ? QRhiGraphicsPipeline::Triangles
+                  : geometry == Geometry::kPointList ? QRhiGraphicsPipeline::Points
+                                                     : QRhiGraphicsPipeline::TriangleStrip,
+      .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/%1.vert.qsb").arg(shader)),
+      .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/%1.frag.qsb").arg(shader)),
+      .input_layout = input_layout,
+      .bindings = layout_shader_resources_,
+      // The fan picks its faces from the eye against the cube's CENTRE: with the eye
+      // inside an axis slab (or inside the cube) a picked face is seen from behind.
+      // Opaque cubes hide it by depth, but the faded half writes no depth and would
+      // blend the interior in; culling drops exactly those faces (the fan is
+      // CCW-outward, cube_mesh.h).
+      .cull = fan ? QRhiGraphicsPipeline::Back : QRhiGraphicsPipeline::None,
+  };
+  // The point list is optional: a cloud falls back to quads without it. So it is
+  // created at once instead of as a template (which would fail only when a frame
+  // needs it, too late to pick quads), at the cost of its direct program.
+  RhiPassSetup setup = setup_;
+  if (geometry == Geometry::kPointList) {
+    setup.templates = nullptr;
+  }
+  for (std::size_t half = 0; half < halves; ++half) {
+    if (pair[half] == nullptr && !attempted[half]) {
+      attempted[half] = true;
+      desc.depth_write = half == 0;
+      pair[half] = createScenePipeline(setup, desc);
+      if (registry_ != nullptr) {
+        registry_->add(pair[half]);
+      }
+    }
+  }
+  return built();
+}
+
 void PointRhiPass::registerPipelines(ScenePipelineRegistry& registry) const {
-  for (const auto& pair : pipelines_) {
-    registry.add(pair[0]);
-    registry.add(pair[1]);
+  registry_ = &registry;
+  for (const auto& layout : pipelines_) {
+    for (const auto& pair : layout) {
+      registry.add(pair[0]);
+      registry.add(pair[1]);
+    }
   }
 }
 
@@ -126,45 +154,33 @@ void PointRhiPass::setLayers(const std::vector<PointRenderable*>& layers) {
   adoptLayerList(layers, layers_, layer_gpu_, releaseLayerGpu);
 }
 
-void PointRhiPass::admit(const PlaceFn& place, SceneBoundsCollector& bounds) {
-  admitted_.clear();
+void PointRhiPass::admit(const PlaceFn& place) {
   AABB point_bounds;
   AABB depth_bounds;
-  std::uint64_t remaining_vertices = kSceneLimits.max_point_vertices_per_view;
-  for (PointRenderable* layer : layers_) {
-    if (layer == nullptr || !layer->visible()) {
-      continue;
-    }
-    layer->prepareForRender(remaining_vertices);
-    if (layer->pointCount() == 0) {
-      pruneLayerGpu(layer_gpu_, layer, releaseLayerGpu);
-      continue;
-    }
-    const auto placed = place(layer->renderFrameId());
-    if (!placed.has_value()) {
-      continue;
-    }
-    // Placement first, budget second: a temporarily unplaceable layer must not
-    // reserve capacity ahead of a later layer whose frame resolves this frame.
-    if (!tryConsumeBudget(static_cast<std::uint64_t>(layer->pointCount()), remaining_vertices)) {
-      continue;  // prepareForRender() normally clears this; keep subtraction fail-closed.
-    }
-    const std::optional<AABB> source_bounds = layer->sourceBounds();
-    // Every conversion bounds the finite points it keeps: a non-empty cloud has bounds.
-    Q_ASSERT(source_bounds.has_value());
-    if (source_bounds.has_value()) {
-      const AABB placed_bounds = transformedBounds(*source_bounds, *placed);
-      AABB& family_bounds = layer->isDepthCloud() ? depth_bounds : point_bounds;
-      family_bounds = unionAABB(family_bounds, placed_bounds);
-      bounds.add(dynamic_cast<const void*>(layer), placed_bounds);
-    }
-    admitted_.push_back({layer, *placed});
-  }
+  admitLayers(
+      layers_, kSceneLimits.max_point_vertices_per_view, place, admitted_, layer_gpu_, releaseLayerGpu,
+      [](const PointRenderable* layer) { return layer->pointCount() != 0; },
+      [](const PointRenderable* layer) { return static_cast<std::uint64_t>(layer->pointCount()); },
+      [&](const PointRenderable* layer, const Transform& placed) -> std::optional<AABB> {
+        const std::optional<AABB> source_bounds = layer->sourceBounds();
+        // Every conversion bounds the finite points it keeps: a non-empty cloud has bounds.
+        Q_ASSERT(source_bounds.has_value());
+        if (!source_bounds.has_value()) {
+          return std::nullopt;
+        }
+        const AABB placed_bounds = transformedBounds(*source_bounds, placed);
+        AABB& family_bounds = layer->isDepthCloud() ? depth_bounds : point_bounds;
+        family_bounds = unionAABB(family_bounds, placed_bounds);
+        return placed_bounds;
+      });
   last_point_bounds_ = point_bounds;
   last_depth_bounds_ = depth_bounds;
 }
 
 void PointRhiPass::prepare(const RhiFrameContext& frame, const ViewInputs& view) {
+  if (!ready()) {
+    return;  // never built: no layer of this family since the last release
+  }
   draws_.clear();
   last_point_layer_count_ = 0;
   last_point_vertex_count_ = 0;
@@ -255,7 +271,6 @@ void PointRhiPass::prepare(const RhiFrameContext& frame, const ViewInputs& view)
       largest_px = std::clamp(size_px, min_px, max_px);
     }
     const bool point_list = !(cube && !sprites) && largest_px <= kPointListMaxPx * pixel_scale && pointListActive();
-    last_point_list_layer_count_ += point_list ? 1 : 0;
 
     // Only a colormapped field has a range to leave; 0 hides, (0, 1) fades.
     const float outside_alpha =
@@ -285,14 +300,24 @@ void PointRhiPass::prepare(const RhiFrameContext& frame, const ViewInputs& view)
     const ShapeMode shape_mode = sprites                       ? ShapeMode::kCubeSprite
                                  : shape == PointShape::kPoint ? ShapeMode::kPoint
                                                                : ShapeMode::kSphere;
-    uniforms.shape = {static_cast<std::int32_t>(shape_mode), 0, 0, 0};
-    const Geometry geometry = cube && !sprites ? Geometry::kFan : point_list ? Geometry::kPointList : Geometry::kQuad;
+    uniforms.shape = {static_cast<std::int32_t>(shape_mode), static_cast<std::int32_t>(gpu.format), 0, 0};
+    const Layout layout = gpu.format == PointVertexFormat::kXyz ? Layout::kXyz : Layout::kAttribute;
+    Geometry geometry = cube && !sprites ? Geometry::kFan : point_list ? Geometry::kPointList : Geometry::kQuad;
+    if (!ensurePipelines(layout, geometry, faded_half) &&
+        (geometry != Geometry::kPointList || !ensurePipelines(layout, geometry = Geometry::kQuad, faded_half))) {
+      if (!pipeline_warned_) {
+        pipeline_warned_ = true;
+        qWarning("Scene3D: a point-cloud pipeline could not be created; those clouds are not drawn");
+      }
+      continue;
+    }
+    last_point_list_layer_count_ += geometry == Geometry::kPointList ? 1 : 0;
 
     const auto add_draw = [&](std::size_t slot, Partition partition, DrawClass draw_class) {
       uniforms.range_params = {range_minimum, range_maximum, outside_alpha, static_cast<float>(partition)};
       frame.updates->updateDynamicBuffer(
           gpu.uniforms, static_cast<quint32>(slot) * uniform_stride_, kPointUniformBytes, &uniforms);
-      draws_.push_back(Draw{layer, gpu.instances, gpu.shader_resources[slot], gpu.count, geometry, draw_class});
+      draws_.push_back(Draw{layer, gpu.instances, gpu.shader_resources[slot], gpu.count, geometry, layout, draw_class});
     };
     add_draw(0U, faded_half ? Partition::kInRange : Partition::kAll, DrawClass::kOpaque);
     if (faded_half) {
@@ -306,8 +331,8 @@ bool PointRhiPass::submit(
     const QRhiViewport& viewport) const {
   const bool opaque = draw.draw_class == DrawClass::kOpaque;
   const bool fan = draw.geometry == Geometry::kFan;
-  QRhiGraphicsPipeline* pipeline =
-      registry.resolve(pipelines_[static_cast<std::size_t>(draw.geometry)][opaque ? 0 : 1], pass);
+  QRhiGraphicsPipeline* pipeline = registry.resolve(
+      pipelines_[static_cast<std::size_t>(draw.layout)][static_cast<std::size_t>(draw.geometry)][opaque ? 0 : 1], pass);
   if (pipeline == nullptr || draw.instances == nullptr || draw.instance_count == 0U ||
       (fan && (geometry_ == nullptr || geometry_->cube_fan_indices == nullptr))) {
     return false;
@@ -349,26 +374,42 @@ bool PointRhiPass::ensureLayerGpu(QRhi* rhi, LayerGpu& gpu) {
   return true;
 }
 
-// Static, not Dynamic: a cloud changes per sample, not per frame, and a Dynamic
-// buffer keeps one host-visible copy per frame in flight. The batch shares the
-// layer's array instead of copying it; only the backend's staging copy remains.
+// Immutable, then Static once re-uploaded, never Dynamic: a cloud changes per
+// sample, not per frame, and a Dynamic buffer keeps one host-visible copy per frame
+// in flight. Vulkan frees an Immutable buffer's staging copy after the upload and
+// keeps a Static one's for the next. The layer pads its array for upload
+// (PJ::padForUpload()), so the upload is one copy the batch shares instead of copying; only the
+// backend's staging copy remains, and a static cloud's layer may then drop its own
+// reference (onVerticesUploaded()).
 bool PointRhiPass::uploadInstances(QRhi* rhi, QRhiResourceUpdateBatch* updates, PointRenderable* layer, LayerGpu& gpu) {
   if (gpu.uploaded_revision == layer->geometryRevision()) {
     return true;
   }
+  if (!layer->ensureVertexBytes()) {
+    gpu.count = 0;
+    return false;
+  }
   const QByteArray& bytes = layer->vertexBytes();
+  gpu.format = layer->vertexFormat();
   if (static_cast<std::uint64_t>(bytes.size()) > std::numeric_limits<quint32>::max()) {
     return false;
   }
   // Admission drops empty clouds, so `bytes` is never empty here.
+  gpu.streamed = gpu.streamed || gpu.instances != nullptr;
   if (!ensureStaticVertexBuffer(
-          rhi, gpu.instances, gpu.capacity, static_cast<quint32>(bytes.size()), kMinimumInstanceBytes)) {
+          rhi, gpu.instances, gpu.capacity, static_cast<quint32>(bytes.size()), kMinimumInstanceBytes,
+          gpu.streamed ? QRhiBuffer::Static : QRhiBuffer::Immutable)) {
     gpu.count = 0;
     return false;
   }
   updates->uploadStaticBuffer(gpu.instances, 0, bytes);
+#ifdef PJ_RHI_TEST_HOOKS
+  ++upload_count_;
+  uploaded_bytes_ += static_cast<std::uint64_t>(bytes.size());
+#endif
   gpu.count = static_cast<quint32>(layer->pointCount());
   gpu.uploaded_revision = layer->geometryRevision();
+  layer->onVerticesUploaded(gpu.uploaded_revision);  // after the last read of `bytes`
   return true;
 }
 
@@ -389,12 +430,18 @@ void PointRhiPass::release() {
   layer_gpu_.clear();
   admitted_.clear();
   draws_.clear();
-  for (auto& pair : pipelines_) {
-    for (QRhiGraphicsPipeline*& pipeline : pair) {
-      delete pipeline;
-      pipeline = nullptr;
+  for (auto& layout : pipelines_) {
+    for (auto& pair : layout) {
+      for (QRhiGraphicsPipeline*& pipeline : pair) {
+        delete pipeline;
+        pipeline = nullptr;
+      }
     }
   }
+  pipelines_attempted_ = {};
+  setup_ = {};
+  registry_ = nullptr;
+  point_size_supported_ = false;
   delete layout_shader_resources_;
   delete layout_uniforms_;
   layout_shader_resources_ = nullptr;

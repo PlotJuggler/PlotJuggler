@@ -2,11 +2,13 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QByteArray>
 #include <QRhiWidget>
 #include <QString>
 #include <QStringView>
 #include <QVector>
 #include <QtGlobal>
+#include <algorithm>
 #include <functional>
 #include <optional>
 
@@ -17,6 +19,8 @@ class QRhiRenderPassDescriptor;
 class QRhiRenderTarget;
 class QRhiRenderBuffer;
 class QRhiTexture;
+class QRhiBuffer;
+class QRhiResourceUpdateBatch;
 class QRhiTextureRenderTarget;
 class QShader;
 
@@ -84,11 +88,13 @@ enum class GraphicsPlatform { Linux, Windows, MacOS, Wasm };
 ///
 /// It is `nativeGraphicsApi()` for this build: the platform's native API with
 /// `PJ_RHI_WIDGETS`, OpenGL otherwise. `PJ_GRAPHICS_API` overrides it for
-/// diagnostics. When Metal cannot start (a VM without a Metal device; Qt does not
-/// retry it) this falls back to OpenGL. D3D11 is not probed: Qt already retries it
-/// on the WARP software adapter. Resolved and logged (category `pj.graphics`) on the
-/// first call, which must precede every GPU widget (pj_app makes it right after
-/// constructing `QApplication`).
+/// diagnostics; an override other than that default is probed by creating a
+/// throwaway QRhi, and one that cannot start falls back to the default with a
+/// warning. When Metal cannot start (a VM without a Metal device; Qt does not
+/// retry it) this falls back to OpenGL. The default D3D11 is not probed: Qt already
+/// retries it on the WARP software adapter. Resolved and logged (category
+/// `pj.graphics`) on the first call, which must precede every GPU widget (pj_app
+/// makes it right after constructing `QApplication`).
 [[nodiscard]] QRhiWidget::Api preferredGraphicsApi();
 
 /// Logs (category `pj.graphics`) the backend and adapter `widget` actually got,
@@ -199,5 +205,45 @@ class RhiColorTarget {
 /// grabbed offscreen immediately. Asynchronous: `done` runs from the event loop,
 /// never from inside render().
 void grabPresentedFrame(QRhiWidget& widget, std::function<void(const QImage&)> done);
+
+/// The static-upload size Mesa's anv (26.0) copies fast. It records each Vulkan
+/// copy (QRhi's vkCmdCopyBuffer for a static upload) by searching its element
+/// count for a 2D/3D surface shape on the CPU: a count with a large prime factor
+/// costs milliseconds (36 ms per frame for a 50-curve plot, 22 ms for a
+/// 1000003-point cloud; TECHNICAL_NOTES §9), a multiple of this or a copy of at
+/// most this size does not.
+inline constexpr qsizetype kUploadGranule = 64 * 1024;
+
+/// The size an array of `used` bytes takes padded for a one-piece upload:
+/// `used` up to kUploadGranule, else the next multiple of it.
+[[nodiscard]] constexpr qsizetype paddedUploadSize(qsizetype used) {
+  return used <= kUploadGranule ? used : (used + kUploadGranule - 1) / kUploadGranule * kUploadGranule;
+}
+
+/// Resizes `bytes`, whose first `used` bytes are the records, to
+/// paddedUploadSize(used) and zeroes what follows the records (never drawn), so
+/// one uploadStaticBuffer() of it is a fast copy. The padding also keeps a Vulkan
+/// Immutable buffer's upload at one staging buffer: QRhi gives each copy into
+/// one its own full-size staging buffer. Allocate paddedUploadSize() of the
+/// largest `used` up front to keep the resize in place.
+inline void padForUpload(QByteArray& bytes, qsizetype used) {
+  const qsizetype padded = paddedUploadSize(used);
+  bytes.resize(padded);
+  std::fill(bytes.begin() + used, bytes.end(), '\0');
+}
+
+/// `updates->uploadStaticBuffer(buffer, offset, data)` into a Static `buffer`,
+/// for data that is not padded (padForUpload()): issued as up to two copies, the
+/// leading multiple of kUploadGranule, then the rest. The leading part reads
+/// `data` in place, without holding it: `data` must stay alive and unchanged
+/// until the frame is submitted. The remainder (under kUploadGranule) is copied.
+/// Data of at most kUploadGranule or a whole multiple of it is one upload that
+/// shares `data`.
+void uploadStaticBufferInPieces(
+    QRhiResourceUpdateBatch* updates, QRhiBuffer* buffer, quint32 offset, const QByteArray& data);
+/// The same for `size` bytes at `data`, both pieces copied into the batch (as
+/// `uploadStaticBuffer(buffer, offset, size, data)` copies them).
+void uploadStaticBufferInPieces(
+    QRhiResourceUpdateBatch* updates, QRhiBuffer* buffer, quint32 offset, quint32 size, const void* data);
 
 }  // namespace PJ

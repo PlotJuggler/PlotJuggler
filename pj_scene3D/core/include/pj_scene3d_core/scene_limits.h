@@ -134,7 +134,7 @@ inline constexpr SceneLimits kBrowserSceneLimits{
 // triangle robots) but not unlimited: every per-view total stays below the
 // renderer's quint32 buffer sizes and int statistics counters (static_asserts
 // below and in scene_view_widget_rhi.cpp). Largest single buffers: 100M points x
-// 20 B = 2 GB, 20M marker vertices x 28 B = 560 MB. HDR: 3840x2160 x 64 B =
+// 16 B = 1.6 GB, 20M marker vertices x 28 B = 560 MB. HDR: 3840x2160 x 64 B =
 // 506 MiB, so 1 GiB per view fits one 5K view and 4 GiB per QRhi eight 4K
 // docks. Model node depth stays at 256: it bounds recursion, not memory.
 inline constexpr SceneLimits kDesktopSceneLimits{
@@ -236,34 +236,44 @@ inline constexpr std::uint64_t kSaturated = std::numeric_limits<std::uint64_t>::
 }
 
 // Per-layer memory of a per-view budget rejection. A layer that did not fit the
-// view's remaining budget drops its data and records the size; it is retried
-// only once that much fits again, instead of re-decoding every frame.
+// view's remaining budget drops its data and records its size and its candidate:
+// what it measured, as a key of its sample and of the settings that size it. The
+// same candidate is retried only once that much fits again, instead of
+// re-decoding every frame; any other candidate (a tracker move to another
+// sample, a settings change) is examined on the next frame.
 class BudgetLatch {
  public:
-  // True while the rejected size still exceeds `remaining` (the layer stays
-  // dropped this frame). Once it fits, the latch clears and returns false with
-  // `released` set: the caller must re-decode what it dropped.
-  [[nodiscard]] constexpr bool blocked(std::uint64_t remaining, bool& released) noexcept {
+  // True while the rejected size still exceeds `remaining` and `candidate()`
+  // (what the layer would draw now) is still the rejected one: the layer stays
+  // dropped this frame. Otherwise the latch clears and returns false with
+  // `released` set: the caller must re-decode what it dropped. `candidate` runs
+  // only while a rejection is latched.
+  template <typename CandidateFn>
+  [[nodiscard]] constexpr bool blocked(std::uint64_t remaining, CandidateFn&& candidate, bool& released) {
     released = false;
     if (!rejected_.has_value()) {
       return false;
     }
-    if (*rejected_ > remaining) {
+    if (rejected_->count > remaining && rejected_->candidate == candidate()) {
       return true;
     }
     rejected_.reset();
     released = true;
     return false;
   }
-  constexpr void reject(std::uint64_t count) noexcept {
-    rejected_ = count;
+  constexpr void reject(std::uint64_t count, std::uint64_t candidate) noexcept {
+    rejected_ = Rejection{count, candidate};
   }
   constexpr void reset() noexcept {
     rejected_.reset();
   }
 
  private:
-  std::optional<std::uint64_t> rejected_;
+  struct Rejection {
+    std::uint64_t count = 0;
+    std::uint64_t candidate = 0;
+  };
+  std::optional<Rejection> rejected_;
 };
 
 }  // namespace pj::scene3d

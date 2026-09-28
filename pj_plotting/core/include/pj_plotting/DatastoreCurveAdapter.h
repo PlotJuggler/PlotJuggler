@@ -14,6 +14,7 @@
 
 #include "pj_base/types.hpp"
 #include "pj_datastore/query.hpp"
+#include "pj_plotting/RevisionedSeries.h"
 #include "pj_runtime/CurveDescriptor.h"
 #include "pj_runtime/Time.h"
 
@@ -25,7 +26,7 @@ class SessionManager;
 // rides the SAME samplesIngested -> onTopicCommitted() refresh path as the raw
 // ghost (see FilteredCurveAdapter.h). The data accessors are already virtual via
 // QwtSeriesData; the commit/clear hooks are made virtual for that subclass.
-class DatastoreCurveAdapter : public QwtSeriesData<QPointF> {
+class DatastoreCurveAdapter : public QwtSeriesData<QPointF>, public RevisionedSeries {
  public:
   DatastoreCurveAdapter(SessionManager* session, CurveDescriptor source);
   ~DatastoreCurveAdapter() override = default;

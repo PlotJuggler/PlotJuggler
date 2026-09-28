@@ -435,10 +435,13 @@ void VoxelGridLayer::setVisible(bool visible) {
   visible_ = visible;
 #ifdef PJ_SCENE3D_RHI
   // Release the packed volume while hidden; un-hiding re-packs. (The GL build
-  // has already moved it into its pass, which keeps it across a hide.)
+  // has already moved it into its pass, which keeps it across a hide.) Its
+  // bounds stay: a hidden layer still counts in the camera's scene bounds.
   if (!visible_) {
     budget_.reset();
+    const AABB bounds = source_bounds_;
     clearVolume();
+    source_bounds_ = bounds;
     uploaded_uid_ = {};
     uploaded_field_setting_ = kNoFieldSetting;
   } else if (requested_time_.has_value()) {
@@ -519,8 +522,14 @@ std::uint64_t VoxelGridLayer::renderKey(PJ::Timepoint time) const {
 }
 
 bool VoxelGridLayer::prepareForRender(std::uint64_t remaining_view_voxels) {
+  // The budget_ candidate: the sample at the playhead (settings changes reset the latch).
+  const auto candidate = [this] {
+    return PJ::latestEntryRenderKey(
+        ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_,
+        requested_time_.value_or(PJ::Timepoint{}));
+  };
   bool released = false;
-  if (budget_.blocked(remaining_view_voxels, released)) {
+  if (budget_.blocked(remaining_view_voxels, candidate, released)) {
     return false;
   }
   if (released) {
@@ -532,7 +541,7 @@ bool VoxelGridLayer::prepareForRender(std::uint64_t remaining_view_voxels) {
   if (!hasVolume() || voxelCount() <= remaining_view_voxels) {
     return changed;
   }
-  budget_.reject(voxelCount());
+  budget_.reject(voxelCount(), candidate());
   setDataWarning(tr("Layer needs %1 voxels; only %2 remain in this view's budget")
                      .arg(QString::number(voxelCount()), QString::number(remaining_view_voxels)));
   clearVolume();

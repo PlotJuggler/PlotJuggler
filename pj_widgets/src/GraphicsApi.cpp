@@ -14,6 +14,12 @@
 #include <QTimer>
 #include <QVariant>
 #include <QtGlobal>
+#if QT_CONFIG(opengl)
+#include <QOffscreenSurface>
+#endif
+#if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+#include <QtGui/private/qvulkandefaultinstance_p.h>
+#endif
 #include <memory>
 #include <utility>
 
@@ -32,6 +38,62 @@ QHash<QShader, QString>& loadedShaderPaths() {
   return paths;
 }
 #endif
+
+// Whether Qt can create a QRhi for `api` here, as the window's backing store
+// would. Creates and drops a context or device (Metal only checks for one):
+// tens of milliseconds.
+bool canCreateRhi(QRhiWidget::Api api) {
+  switch (api) {
+    case QRhiWidget::Api::OpenGL: {
+#if QT_CONFIG(opengl)
+      const std::unique_ptr<QOffscreenSurface> surface(QRhiGles2InitParams::newFallbackSurface());
+      QRhiGles2InitParams params;
+      params.fallbackSurface = surface.get();
+      return QRhi::probe(QRhi::OpenGLES2, &params);
+#else
+      return false;
+#endif
+    }
+    case QRhiWidget::Api::Vulkan: {
+#if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+      // Qt's default instance, which the window's backing store uses next: the
+      // probe then adds only a device, not a second instance.
+      QRhiVulkanInitParams params;
+      params.inst = QVulkanDefaultInstance::instance();
+      return params.inst != nullptr && QRhi::probe(QRhi::Vulkan, &params);
+#else
+      return false;
+#endif
+    }
+    case QRhiWidget::Api::Metal: {
+#if QT_CONFIG(metal)
+      QRhiMetalInitParams params;
+      return QRhi::probe(QRhi::Metal, &params);
+#else
+      return false;
+#endif
+    }
+    case QRhiWidget::Api::Direct3D11: {
+#ifdef Q_OS_WIN
+      QRhiD3D11InitParams params;
+      return QRhi::probe(QRhi::D3D11, &params);
+#else
+      return false;
+#endif
+    }
+    case QRhiWidget::Api::Direct3D12: {
+#ifdef Q_OS_WIN
+      QRhiD3D12InitParams params;
+      return QRhi::probe(QRhi::D3D12, &params);
+#else
+      return false;
+#endif
+    }
+    case QRhiWidget::Api::Null:
+      return true;
+  }
+  return false;
+}
 
 }  // namespace
 
@@ -57,19 +119,21 @@ QRhiWidget::Api preferredGraphicsApi() {
     if (!requested.isEmpty() && !overridden) {
       qCWarning(lcGraphics) << "Ignoring unknown PJ_GRAPHICS_API value" << requested;
     }
-    QRhiWidget::Api chosen = overridden.value_or(nativeGraphicsApi(currentGraphicsPlatform(), kRhiWidgetsBuild));
-#if QT_CONFIG(metal)
+    const QRhiWidget::Api native = nativeGraphicsApi(currentGraphicsPlatform(), kRhiWidgetsBuild);
+    QRhiWidget::Api chosen = overridden.value_or(native);
+    // Only an override other than the default is probed: the default path stays
+    // free of a throwaway device at startup.
+    if (chosen != native && !canCreateRhi(chosen)) {
+      qCWarning(lcGraphics) << "PJ_GRAPHICS_API" << requested << "cannot start here; using" << native;
+      chosen = native;
+    }
     // Qt's backing store gives up on Metal without a device (it only logs at debug
     // level), which would leave every GPU widget blank; OpenGL 4.1 still works there.
-    if (chosen == QRhiWidget::Api::Metal) {
-      QRhiMetalInitParams params;
-      if (!QRhi::probe(QRhi::Metal, &params)) {
-        qCWarning(lcGraphics) << "Metal is unavailable; falling back to OpenGL";
-        chosen = QRhiWidget::Api::OpenGL;
-      }
+    if (chosen == QRhiWidget::Api::Metal && !canCreateRhi(chosen)) {
+      qCWarning(lcGraphics) << "Metal is unavailable; falling back to OpenGL";
+      chosen = QRhiWidget::Api::OpenGL;
     }
-#endif
-    qCInfo(lcGraphics) << "Graphics API:" << chosen << (overridden ? "(set by PJ_GRAPHICS_API)" : "");
+    qCInfo(lcGraphics) << "Graphics API:" << chosen << (overridden == chosen ? "(set by PJ_GRAPHICS_API)" : "");
     return chosen;
   }();
   return api;
@@ -249,6 +313,33 @@ void grabPresentedFrame(QRhiWidget& widget, std::function<void(const QImage&)> d
     }
   });
   widget.update();
+}
+
+namespace {
+constexpr auto kGranule = static_cast<quint32>(kUploadGranule);
+}  // namespace
+
+void uploadStaticBufferInPieces(
+    QRhiResourceUpdateBatch* updates, QRhiBuffer* buffer, quint32 offset, const QByteArray& data) {
+  const auto size = static_cast<quint32>(data.size());
+  const quint32 head = size / kGranule * kGranule;
+  if (head == 0 || head == size) {
+    updates->uploadStaticBuffer(buffer, offset, data);
+    return;
+  }
+  updates->uploadStaticBuffer(buffer, offset, QByteArray::fromRawData(data.constData(), head));
+  updates->uploadStaticBuffer(buffer, offset + head, size - head, data.constData() + head);
+}
+
+void uploadStaticBufferInPieces(
+    QRhiResourceUpdateBatch* updates, QRhiBuffer* buffer, quint32 offset, quint32 size, const void* data) {
+  const quint32 head = size / kGranule * kGranule;
+  if (head > 0 && head < size) {
+    updates->uploadStaticBuffer(buffer, offset, head, data);
+    updates->uploadStaticBuffer(buffer, offset + head, size - head, static_cast<const char*>(data) + head);
+    return;
+  }
+  updates->uploadStaticBuffer(buffer, offset, size, data);
 }
 
 }  // namespace PJ

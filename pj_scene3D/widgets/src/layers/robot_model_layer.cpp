@@ -356,67 +356,72 @@ bool RobotModelLayer::xmlLoadState(const QDomElement& element) {
   return xmlLoadStateResult(element) == XmlLoadResult::kRestored;
 }
 
-bool RobotModelLayer::validateXml(const QDomElement& element) {
+std::optional<RobotModelLayer::ParsedSettings> RobotModelLayer::parseSettings(const QDomElement& element) {
   if (element.isNull() || element.tagName() != "robot_model"_L1 || !detail::isLeafPayload(element)) {
-    return false;
+    return std::nullopt;
   }
   const QString source_type_text = element.attribute(u"source_type"_s, u"topic"_s);
   if (source_type_text != "topic"_L1 && source_type_text != "file"_L1 && source_type_text != "url"_L1) {
-    return false;
+    return std::nullopt;
   }
   const QString display_mode_text = element.attribute(u"display_mode"_s, u"auto"_s);
   if (display_mode_text != "auto"_L1 && display_mode_text != "visual"_L1 && display_mode_text != "collision"_L1) {
-    return false;
+    return std::nullopt;
   }
-  bool visible = true;
-  bool ignore_up_axis = false;
-  if (!detail::parseTrueFalse(element, "visible", true, visible) ||
-      !detail::parseTrueFalse(element, "ignore_collada_up_axis", false, ignore_up_axis)) {
-    return false;
+  ParsedSettings settings;
+  settings.source_type = sourceTypeFromString(source_type_text);
+  settings.display_mode = displayModeFromString(display_mode_text);
+  if (!detail::parseTrueFalse(element, "visible", true, settings.visible) ||
+      !detail::parseTrueFalse(element, "ignore_collada_up_axis", false, settings.ignore_collada_up_axis)) {
+    return std::nullopt;
   }
-  if (element.hasAttribute(u"color"_s) && !QColor(element.attribute(u"color"_s)).isValid()) {
-    return false;
+  if (element.hasAttribute(u"color"_s)) {
+    settings.color = QColor(element.attribute(u"color"_s));
+    if (!settings.color->isValid()) {
+      return std::nullopt;
+    }
   }
   const bool has_topic_name = element.hasAttribute(u"source_topic_name"_s);
   const bool has_dataset_id = element.hasAttribute(u"source_dataset_id"_s);
   const bool has_dataset_source = element.hasAttribute(u"source_dataset_source"_s);
   const bool has_dataset_path = element.hasAttribute(u"source_dataset_path"_s);
   const bool has_topic_identity = has_topic_name || has_dataset_id || has_dataset_source || has_dataset_path;
-  if ((source_type_text != "topic"_L1 && has_topic_identity) ||
+  if ((settings.source_type != SourceType::kTopic && has_topic_identity) ||
       (!has_topic_name && (has_dataset_id || has_dataset_source || has_dataset_path))) {
-    return false;
+    return std::nullopt;
   }
   if (has_dataset_id) {
     bool id_ok = false;
     const qulonglong value = element.attribute(u"source_dataset_id"_s).toULongLong(&id_ok);
     if (!id_ok || value == 0 || value > std::numeric_limits<uint32_t>::max()) {
-      return false;
+      return std::nullopt;
     }
+    settings.dataset_id = static_cast<PJ::DatasetId>(value);
   }
-  return !has_topic_name || !element.attribute(u"source_topic_name"_s).isEmpty();
+  settings.topic_name = element.attribute(u"source_topic_name"_s);
+  if (has_topic_name && settings.topic_name.isEmpty()) {
+    return std::nullopt;
+  }
+  settings.dataset_source = element.attribute(u"source_dataset_source"_s);
+  settings.dataset_path = element.attribute(u"source_dataset_path"_s);
+  return settings;
+}
+
+bool RobotModelLayer::validateXml(const QDomElement& element) {
+  return parseSettings(element).has_value();
 }
 
 RobotModelLayer::XmlLoadResult RobotModelLayer::xmlLoadStateResult(const QDomElement& element) {
-  if (!validateXml(element)) {
+  const std::optional<ParsedSettings> settings = parseSettings(element);
+  if (!settings.has_value()) {
     return XmlLoadResult::kInvalid;
   }
-  const SourceType restored_source_type = sourceTypeFromString(element.attribute(u"source_type"_s, u"topic"_s));
-  bool restored_visible = true;
-  bool restored_ignore_up_axis = false;
-  detail::parseTrueFalse(element, "visible", true, restored_visible);
-  detail::parseTrueFalse(element, "ignore_collada_up_axis", false, restored_ignore_up_axis);
-  const QColor restored_color =
-      element.hasAttribute(u"color"_s) ? QColor(element.attribute(u"color"_s)) : fallback_color_;
-  const bool has_topic_name = element.hasAttribute(u"source_topic_name"_s);
-  const bool has_dataset_id = element.hasAttribute(u"source_dataset_id"_s);
-  const PJ::DatasetId saved_dataset_id =
-      has_dataset_id ? static_cast<PJ::DatasetId>(element.attribute(u"source_dataset_id"_s).toULongLong()) : 0;
-  const QString topic_name = element.attribute(u"source_topic_name"_s);
+  const QString& topic_name = settings->topic_name;
   std::optional<PJ::ObjectTopicId> restored_topic;
-  if (restored_source_type == SourceType::kTopic && ctx_.session != nullptr && has_topic_name) {
-    const QString source = element.attribute(u"source_dataset_source"_s);
-    const QString path = element.attribute(u"source_dataset_path"_s);
-    if (!has_dataset_id && source.isEmpty() && path.isEmpty()) {
+  if (settings->source_type == SourceType::kTopic && ctx_.session != nullptr && !topic_name.isEmpty()) {
+    const QString& source = settings->dataset_source;
+    const QString& path = settings->dataset_path;
+    if (settings->dataset_id == 0 && source.isEmpty() && path.isEmpty()) {
       const UniqueObjectTopicResolution generic = resolveUniqueObjectTopic(
           ctx_.session->objectStore(), topic_name.toStdString(), PJ::sdk::BuiltinObjectType::kRobotDescription);
       if (generic.ambiguous) {
@@ -425,7 +430,7 @@ RobotModelLayer::XmlLoadResult RobotModelLayer::xmlLoadStateResult(const QDomEle
       restored_topic = generic.topic_id;
     } else {
       const PJ::DatasetIdentityResolution dataset =
-          ctx_.session->resolveDatasetIdentity(saved_dataset_id, source, path);
+          ctx_.session->resolveDatasetIdentity(settings->dataset_id, source, path);
       if (dataset.ambiguous) {
         return XmlLoadResult::kInvalid;
       }
@@ -451,13 +456,13 @@ RobotModelLayer::XmlLoadResult RobotModelLayer::xmlLoadStateResult(const QDomEle
   const bool old_visible = visible_;
   const QRgb old_color = fallback_color_.rgb();
   const bool old_ignore_up_axis = ignore_collada_up_axis_;
-  source_type_ = restored_source_type;
+  source_type_ = settings->source_type;
   source_value_ = element.attribute(u"source_value"_s, source_value_);
   frame_prefix_ = element.attribute(u"frame_prefix"_s);
-  display_mode_ = displayModeFromString(element.attribute(u"display_mode"_s, u"auto"_s));
-  visible_ = restored_visible;
-  fallback_color_ = restored_color;
-  ignore_collada_up_axis_ = restored_ignore_up_axis;
+  display_mode_ = settings->display_mode;
+  visible_ = settings->visible;
+  fallback_color_ = settings->color.value_or(fallback_color_);
+  ignore_collada_up_axis_ = settings->ignore_collada_up_axis;
   // Layout bytes never carry file content: a restored kFile reads its path
   // (desktop) or asks for the file again (browser).
   local_file_bytes_.clear();
@@ -1635,7 +1640,7 @@ void RobotModelLayer::setStatus(QString status) {
 
 QStringList RobotModelLayer::unresolvedPackagesList() const {
   // Per-MODEL, not resolver-global: the resolver is dock-shared across robot
-  // layers (review M.29). Distinct package names, in first-seen order.
+  // layers. Distinct package names, in first-seen order.
   QStringList packages;
   if (!model_.has_value()) {
     return packages;
@@ -1666,7 +1671,7 @@ QString RobotModelLayer::unresolvedIssueClause() const {
     return {};
   }
   // kBlockedHttp and kMissingFile are the kinds Locate cannot fix, so name them
-  // explicitly (review L.31).
+  // explicitly.
   int blocked_http = 0;
   int missing_file = 0;
   const auto tally = [&](const LinkGeom& geom) {

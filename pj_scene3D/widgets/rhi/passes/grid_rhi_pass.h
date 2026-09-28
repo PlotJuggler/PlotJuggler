@@ -55,6 +55,8 @@ class GridRhiPass {
 
   /// The shadow-receiving grid pipeline, sampling the view's shadow map with the
   /// view's lighting uniforms. Built with the shadow stage, released before it.
+  /// Created at once even when the grid's other pipelines are templates: false
+  /// when it cannot be, which the caller answers by turning shadows off.
   [[nodiscard]] bool createShadowReceiver(
       QRhiBuffer* lighting_uniforms, QRhiTexture* shadow_map, QRhiSampler* shadow_sampler,
       ScenePipelineRegistry& registry);

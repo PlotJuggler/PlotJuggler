@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <vector>
 
 #include "pj_widgets/GraphicsApi.h"
@@ -273,14 +274,20 @@ class PlotRhiCanvas final : public QRhiWidget {
   // Geometry-invalidation contract (three retained layers: grid+curves+frame,
   // overlay = markers and the tracker, text):
   //   * replot()  = a SEMANTIC change (data, pens, items, axes) — Qwt drives it
-  //                 reflectively, so it is the authoritative dirty source: both
-  //                 geometry layers. Under setOverlayOnlyReplot() only the overlay.
+  //                 reflectively: the overlay, and the curve layer unless every
+  //                 curve's data is a RevisionedSeries and the content key below,
+  //                 the env key and the curve key are all unchanged. Under
+  //                 setOverlayOnlyReplot() only the overlay.
   //   * env key   = a VIEW change (logical size, target pixel size, clear and
   //                 frame colours, dpr; plus the 4 axis bounds as belt-and-braces,
   //                 since zoomers mutate scale divisions without a full replot).
   //   * curve key = the curve/grid STRUCTURE (items, visibility, pens, styles,
-  //                 data object and size): keeps an overlay-only replot from
-  //                 hiding an added, restyled or grown curve.
+  //                 symbols, axes, grid flags, data object and size): keeps an
+  //                 overlay-only replot from hiding an added, restyled or grown
+  //                 curve. The env key adds the axis maps and grid ticks.
+  //   * content key = each curve's content revision (process-unique), when every
+  //                 curve has one (RevisionedSeries); a changed one rebuilds even
+  //                 without a replot.
   //   * setPlot() = a SOURCE rebind, which invalidates the retained content and
   //                 schedules a frame even when the new environment is equal.
   //   * render()  = one self-dirty retry after a transient text allocation
@@ -293,9 +300,10 @@ class PlotRhiCanvas final : public QRhiWidget {
   bool curves_dirty_ = true;
   bool overlay_dirty_ = true;
   bool overlay_only_replot_ = false;
-  std::uint64_t env_key_ = 0;
+  bool replot_requested_ = false;         // a full replot since the last successful frame
+  std::optional<std::uint64_t> env_key_;  // empty: rebuild (none yet, or invalidated)
   std::uint64_t curve_key_ = 0;
-  bool env_key_valid_ = false;
+  std::optional<std::uint64_t> content_key_;
 
   // One-shot telemetry latches. ready_/content_ reset in releaseResources so a
   // recreated context re-logs; failure_ leaves on the next successful

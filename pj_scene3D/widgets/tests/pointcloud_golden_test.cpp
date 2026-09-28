@@ -186,8 +186,8 @@ struct Scene {
   // on the driver's rasterization rules, not on our rendering.
   enum class Check {
     kFull,            // per-pixel, coverage and mean colour
-    kCoverageColour,  // coverage and mean colour
-    kCoverage,        // coverage only
+    kCoverageColour,  // coverage, mean colour and coarse spatial (tiles, tile colour, centroid, bbox, strays)
+    kCoverage,        // coverage and coarse spatial, without colour
   };
   Check check = Check::kFull;
 };
@@ -264,7 +264,8 @@ std::vector<Scene> corpus() {
        cam,
        // ponytail: the ~1.5 px flat discs rasterize at a different size per
        // driver (Mesa 23 draws them visibly smaller than Mesa 26, shifting the
-       // mean colour by ~77), so only coverage is stable across CI and local runs.
+       // mean colour by ~77), so only coverage and position are stable across CI
+       // and local runs.
        Scene::Check::kCoverage});
   scenes.push_back(
       {"shape_cubes_subpixel",
@@ -379,7 +380,9 @@ std::vector<Scene> corpus() {
          with(solid(u"sphere"_s, u"#2040e0"_s), {{u"size_meters"_s, u"0.12"_s}})}},
        cam});
 
-  // Large cloud: coverage only.
+  // Large cloud: a million 2 px points overlapping many to a pixel, so which one
+  // wins each pixel is the driver's rasterization order. Coverage, mean colour
+  // and the coarse spatial checks.
   scenes.push_back(
       {"large_1m_points",
        {{[] { return CloudSpec{lattice(1000, 1000, 0.002f, wave), {}}; },
@@ -436,23 +439,49 @@ struct Tolerance {
   // value 0.086 (`field_viridis_cubes` on Vulkan/lavapipe). A 5% shift of a
   // colormap range fails it (0.21-0.27) while every frame-relative check still passes.
   double max_fg_diff_frac = 0.12;
-  // Pixels farther than kBackgroundMargin from the golden's foreground that are
+  // Pixels farther than `background_margin` from the golden's foreground that are
   // not background: stray geometry. An absolute count, not a fraction; 0 on
   // every scene measured.
   int max_background_strays = 4;
+  // Distance (pixels) from the golden's foreground within which the background
+  // check leaves a pixel alone: silhouettes and MSAA edges move by less. The
+  // coverage modes widen it (kCoarseBackgroundMargin).
+  int background_margin = 2;
+  // The coverage modes' coarse spatial checks, which the per-pixel ones of the
+  // full mode subsume. Tile coverage: sum over kTile x kTile tiles of
+  // |actual - golden| covered pixels, over the golden's covered pixels. A uniform
+  // rasterization change moves it by about |coverage - 1|, so the bound is
+  // `coverage` plus this slack; measured <= 0.053 (line grids on lavapipe).
+  double tile_coverage_slack = 0.10;
+  // Tile colour: the golden-coverage-weighted mean, over tiles both images cover,
+  // of the tile's max per-channel |mean(actual) - mean(golden)|. Catches a
+  // colormap reversed in place, which keeps coverage and the frame's mean colour.
+  // Measured <= 6 on the coverage-colour scenes, 10 on the tiny spheres.
+  int max_tile_colour = 20;
+  // Distance (pixels) between the covered pixels' centroids. Clouds measure
+  // <= 0.4 on every Mesa backend (llvmpipe, lavapipe, Iris GL and Vulkan).
+  double max_centroid_shift = 2.0;
+  // Largest move (pixels) of an edge of the covered pixels' bounding box; <= 1 measured.
+  int max_bbox_shift = 4;
 };
 
-// Distance (pixels) from the golden's foreground within which the background
-// check leaves a pixel alone: silhouettes and MSAA edges move by less.
-constexpr int kBackgroundMargin = 2;
+// The coverage modes' background margin: sub-pixel sprites and 1 px lines land
+// a pixel or two apart per driver, which the default margin counts as strays.
+constexpr int kCoarseBackgroundMargin = 4;
+// Side (pixels) of the tiles of the coarse spatial checks: 16 x 16 tiles on a 256 px view.
+constexpr int kTile = 16;
 
 struct Stats {
-  double diff_frac = 0.0;        // differing pixels (neighbourhood rule in the QRhi build)
-  double plain_diff_frac = 0.0;  // pixels off their own golden pixel, for information
-  double fg_diff_frac = 0.0;     // neighbourhood-rule differing pixels among the foreground of either image
-  int background_strays = 0;     // non-background pixels far from the golden's foreground
-  double coverage_ratio = 1.0;   // actual / golden non-background pixel counts
-  int mean_color_delta = 0;      // max per-channel |mean(actual) - mean(golden)| over covered pixels
+  double diff_frac = 0.0;          // differing pixels (neighbourhood rule in the QRhi build)
+  double plain_diff_frac = 0.0;    // pixels off their own golden pixel, for information
+  double fg_diff_frac = 0.0;       // neighbourhood-rule differing pixels among the foreground of either image
+  int background_strays = 0;       // non-background pixels far from the golden's foreground
+  double coverage_ratio = 1.0;     // actual / golden non-background pixel counts
+  int mean_color_delta = 0;        // max per-channel |mean(actual) - mean(golden)| over covered pixels
+  double tile_coverage_delta = 0;  // see Tolerance::tile_coverage_slack
+  int tile_colour_delta = 0;       // see Tolerance::max_tile_colour
+  double centroid_shift = 0.0;     // pixels between the covered pixels' centroids
+  int bbox_shift = 0;              // largest move (pixels) of a bounding-box edge of the covered pixels
   QImage diff;
 };
 
@@ -462,9 +491,10 @@ Stats compare(const QImage& actual, const QImage& golden, const Tolerance& tol) 
   // Every scene leaves the top-left corner empty, so it is the backdrop colour.
   const QRgb background = golden.pixel(0, 0);
   const auto covered = [background](QRgb pixel) { return maxChannelDelta(pixel, background) > 12; };
+  const int margin = tol.background_margin;
   const auto near_golden_cover = [&](int x, int y) {
-    for (int dy = -kBackgroundMargin; dy <= kBackgroundMargin; ++dy) {
-      for (int dx = -kBackgroundMargin; dx <= kBackgroundMargin; ++dx) {
+    for (int dy = -margin; dy <= margin; ++dy) {
+      for (int dx = -margin; dx <= margin; ++dx) {
         if (golden.valid(x + dx, y + dy) && covered(golden.pixel(x + dx, y + dy))) {
           return true;
         }
@@ -486,6 +516,27 @@ Stats compare(const QImage& actual, const QImage& golden, const Tolerance& tol) 
     sum[1] += qGreen(pixel);
     sum[2] += qBlue(pixel);
   };
+  // Per image (0 golden, 1 actual): covered pixels and their colour sums per
+  // tile, and the covered pixels' coordinate sums and bounding box.
+  const int tiles_x = (golden.width() + kTile - 1) / kTile;
+  const int tiles_y = (golden.height() + kTile - 1) / kTile;
+  const auto tile_count = static_cast<std::size_t>(tiles_x) * static_cast<std::size_t>(tiles_y);
+  std::array<std::vector<long>, 2> tile_cover{std::vector<long>(tile_count), std::vector<long>(tile_count)};
+  std::array<std::vector<std::array<double, 3>>, 2> tile_sum{
+      std::vector<std::array<double, 3>>(tile_count), std::vector<std::array<double, 3>>(tile_count)};
+  std::array<std::array<double, 2>, 2> position_sum{};
+  std::array<std::array<int, 4>, 2> bbox{};  // min x, min y, max x, max y
+  bbox.fill({golden.width(), golden.height(), -1, -1});
+  const auto note_cover = [&](int image, int x, int y, QRgb pixel) {
+    const auto tile = static_cast<std::size_t>((y / kTile) * tiles_x + x / kTile);
+    ++tile_cover[image][tile];
+    accumulate(tile_sum[image][tile], pixel);
+    position_sum[image][0] += x;
+    position_sum[image][1] += y;
+    bbox[image] = {
+        std::min(bbox[image][0], x), std::min(bbox[image][1], y), std::max(bbox[image][2], x),
+        std::max(bbox[image][3], y)};
+  };
   for (int y = 0; y < golden.height(); ++y) {
     for (int x = 0; x < golden.width(); ++x) {
       const QRgb a = actual.pixel(x, y);
@@ -494,10 +545,12 @@ Stats compare(const QImage& actual, const QImage& golden, const Tolerance& tol) 
       if (covered(g)) {
         ++golden_cover;
         accumulate(golden_sum, g);
+        note_cover(0, x, y, g);
       }
       if (covered(a)) {
         ++actual_cover;
         accumulate(actual_sum, a);
+        note_cover(1, x, y, a);
         if (!near_golden_cover(x, y)) {
           ++stats.background_strays;
         }
@@ -533,8 +586,78 @@ Stats compare(const QImage& actual, const QImage& golden, const Tolerance& tol) 
           actual_sum[c] / static_cast<double>(actual_cover) - golden_sum[c] / static_cast<double>(golden_cover);
       stats.mean_color_delta = std::max(stats.mean_color_delta, static_cast<int>(std::lround(std::abs(delta))));
     }
+    long tile_moved = 0;
+    double colour_weighted = 0.0;
+    double colour_weight = 0.0;
+    for (std::size_t t = 0; t < tile_count; ++t) {
+      const long g = tile_cover[0][t];
+      const long a = tile_cover[1][t];
+      tile_moved += std::abs(a - g);
+      if (g > 0 && a > 0) {
+        double worst = 0.0;
+        for (std::size_t c = 0; c < 3; ++c) {
+          worst = std::max(
+              worst, std::abs(tile_sum[1][t][c] / static_cast<double>(a) - tile_sum[0][t][c] / static_cast<double>(g)));
+        }
+        colour_weighted += worst * static_cast<double>(g);
+        colour_weight += static_cast<double>(g);
+      }
+    }
+    stats.tile_coverage_delta = static_cast<double>(tile_moved) / static_cast<double>(golden_cover);
+    stats.tile_colour_delta = colour_weight > 0.0 ? static_cast<int>(std::lround(colour_weighted / colour_weight)) : 0;
+    stats.centroid_shift = std::hypot(
+        position_sum[1][0] / static_cast<double>(actual_cover) - position_sum[0][0] / static_cast<double>(golden_cover),
+        position_sum[1][1] / static_cast<double>(actual_cover) -
+            position_sum[0][1] / static_cast<double>(golden_cover));
+    for (std::size_t edge = 0; edge < 4; ++edge) {
+      stats.bbox_shift = std::max(stats.bbox_shift, std::abs(bbox[1][edge] - bbox[0][edge]));
+    }
+  } else if (golden_cover != actual_cover) {
+    // One image empty, the other not: every spatial measure is off the scale.
+    stats.tile_coverage_delta = 1.0;
+    stats.centroid_shift = golden.width();
+    stats.bbox_shift = golden.width();
   }
   return stats;
+}
+
+// Which of a check mode's comparisons hold; expectMatchesGolden() reports each,
+// the comparator self-test below asserts the verdict.
+struct Verdict {
+  bool coverage = true;  // non-background pixel count
+  bool colour = true;    // mean colour (not in kCoverage)
+  bool pixels = true;    // per-pixel, foreground and stray checks (kFull)
+  bool spatial = true;   // tile coverage and colour, centroid, bounding box, wide strays (the coverage modes)
+  [[nodiscard]] bool ok() const {
+    return coverage && colour && pixels && spatial;
+  }
+};
+
+Verdict judge(const Stats& stats, const Tolerance& tol, Scene::Check check) {
+  Verdict verdict;
+  verdict.coverage = std::abs(stats.coverage_ratio - 1.0) <= tol.coverage;
+  if (check != Scene::Check::kCoverage) {
+    verdict.colour = stats.mean_color_delta <= tol.mean_color;
+  }
+  if (check == Scene::Check::kFull) {
+    verdict.pixels = stats.diff_frac <= tol.max_diff_frac &&
+                     (!kNeighbourhoodRule || stats.plain_diff_frac <= tol.max_plain_diff_frac) &&
+                     stats.fg_diff_frac <= tol.max_fg_diff_frac && stats.background_strays <= tol.max_background_strays;
+  } else {
+    verdict.spatial = stats.tile_coverage_delta <= tol.coverage + tol.tile_coverage_slack &&
+                      (check == Scene::Check::kCoverage || stats.tile_colour_delta <= tol.max_tile_colour) &&
+                      stats.centroid_shift <= tol.max_centroid_shift && stats.bbox_shift <= tol.max_bbox_shift &&
+                      stats.background_strays <= tol.max_background_strays;
+  }
+  return verdict;
+}
+
+// The coverage modes compare strays outside the wider margin.
+Tolerance forCheck(Tolerance tol, Scene::Check check) {
+  if (check != Scene::Check::kFull) {
+    tol.background_margin = std::max(tol.background_margin, kCoarseBackgroundMargin);
+  }
+  return tol;
 }
 
 QString goldenPath(const std::string& name) {
@@ -601,8 +724,7 @@ class GoldenView {
     return skip_reason_;
   }
 
-  // The QRhi view fits the camera to each new layer on its first frames; let
-  // that happen, then pin the camera and grab.
+  // Warm-up frames land the decodes and uploads; then pin the camera and grab.
   QImage render(const pj::scene3d::CameraState& camera) {
     for (int i = 0; i < 3; ++i) {
       pj::scene3d::test::grab(*view_);
@@ -651,7 +773,9 @@ Tolerance lineSceneTolerance() {
 
 // Writes `actual` as the golden in the GL build with PJ_UPDATE_POINTCLOUD_GOLDENS=1,
 // otherwise compares it with the golden under the scene's checks and tolerances.
-void expectMatchesGolden(const std::string& name, const QImage& actual, Scene::Check check, const Tolerance& tol = {}) {
+void expectMatchesGolden(
+    const std::string& name, const QImage& actual, Scene::Check check, const Tolerance& scene_tol = {}) {
+  const Tolerance tol = forCheck(scene_tol, check);
   ASSERT_EQ(actual.size(), QSize(kViewSize, kViewSize));
   const QString golden_file = goldenPath(name);
   if (PJ::sdk::getEnv("PJ_UPDATE_POINTCLOUD_GOLDENS") == "1") {
@@ -671,24 +795,31 @@ void expectMatchesGolden(const std::string& name, const QImage& actual, Scene::C
   const Stats stats = compare(actual, golden, tol);
   std::printf(
       "[golden] %-34s diff %.4f (per-pixel %.4f)  coverage %.4f  mean colour %d  fg-diff %.4f (<= %.2f)  strays %d "
-      "(<= %d)\n",
+      "(<= %d, margin %d)  tiles %.4f  tile colour %d  centroid %.2f  bbox %d\n",
       name.c_str(), stats.diff_frac, stats.plain_diff_frac, stats.coverage_ratio, stats.mean_color_delta,
-      stats.fg_diff_frac, tol.max_fg_diff_frac, stats.background_strays, tol.max_background_strays);
+      stats.fg_diff_frac, tol.max_fg_diff_frac, stats.background_strays, tol.max_background_strays,
+      tol.background_margin, stats.tile_coverage_delta, stats.tile_colour_delta, stats.centroid_shift,
+      stats.bbox_shift);
   const bool check_colour = check != Scene::Check::kCoverage;
   const bool check_pixels = check == Scene::Check::kFull;
-  const bool coverage_ok = std::abs(stats.coverage_ratio - 1.0) <= tol.coverage &&
-                           (!check_colour || stats.mean_color_delta <= tol.mean_color);
-  const bool pixels_ok = !check_pixels || (stats.diff_frac <= tol.max_diff_frac &&
-                                           (!kNeighbourhoodRule || stats.plain_diff_frac <= tol.max_plain_diff_frac) &&
-                                           stats.fg_diff_frac <= tol.max_fg_diff_frac &&
-                                           stats.background_strays <= tol.max_background_strays);
-  if (!coverage_ok || !pixels_ok || PJ::sdk::getEnv("PJ_POINTCLOUD_GOLDEN_DUMP_ALL") == "1") {
+  if (!judge(stats, tol, check).ok() || PJ::sdk::getEnv("PJ_POINTCLOUD_GOLDEN_DUMP_ALL") == "1") {
     actual.save(outPath(name, "_actual.png"));
     stats.diff.save(outPath(name, "_diff.png"));
   }
   EXPECT_LE(std::abs(stats.coverage_ratio - 1.0), tol.coverage) << "non-background pixel count vs golden";
   if (check_colour) {
     EXPECT_LE(stats.mean_color_delta, tol.mean_color) << "mean colour of covered pixels vs golden";
+  }
+  if (!check_pixels) {
+    EXPECT_LE(stats.tile_coverage_delta, tol.coverage + tol.tile_coverage_slack)
+        << "covered pixels moved between " << kTile << " px tiles";
+    if (check_colour) {
+      EXPECT_LE(stats.tile_colour_delta, tol.max_tile_colour) << "mean colour per " << kTile << " px tile vs golden";
+    }
+    EXPECT_LE(stats.centroid_shift, tol.max_centroid_shift) << "centroid of the covered pixels moved (px)";
+    EXPECT_LE(stats.bbox_shift, tol.max_bbox_shift) << "bounding box of the covered pixels moved (px)";
+    EXPECT_LE(stats.background_strays, tol.max_background_strays)
+        << "non-background pixels more than " << tol.background_margin << " px from the golden's foreground";
   }
   if (check_pixels) {
     EXPECT_LE(stats.diff_frac, tol.max_diff_frac) << "fraction of pixels off by more than " << tol.channel;
@@ -699,8 +830,71 @@ void expectMatchesGolden(const std::string& name, const QImage& actual, Scene::C
     EXPECT_LE(stats.fg_diff_frac, tol.max_fg_diff_frac)
         << "fraction of the foreground off by more than " << tol.channel;
     EXPECT_LE(stats.background_strays, tol.max_background_strays)
-        << "non-background pixels more than " << kBackgroundMargin << " px from the golden's foreground";
+        << "non-background pixels more than " << tol.background_margin << " px from the golden's foreground";
   }
+}
+
+// ---- Comparator self-test ------------------------------------------------
+
+// A synthetic "render": on white, a lattice of 2 px dots whose colour ramps
+// with x (reversed with `reversed`), offset by `dx`, plus a solid 20 px blob
+// at (blob_x, blob_y). No GPU: it pins what the coverage modes can see.
+QImage syntheticFrame(int dx, int blob_x, int blob_y, bool reversed = false) {
+  QImage image(kViewSize, kViewSize, QImage::Format_RGB32);
+  image.fill(qRgb(255, 255, 255));
+  for (int y = 70; y < 170; y += 4) {
+    for (int x = 60; x < 200; x += 4) {
+      const int ramp = (x - 60) * 255 / 140;
+      const QRgb colour = qRgb(reversed ? 255 - ramp : ramp, 40, reversed ? ramp : 255 - ramp);
+      for (int py = 0; py < 2; ++py) {
+        for (int px = 0; px < 2; ++px) {
+          image.setPixel(x + dx + px, y + py, colour);
+        }
+      }
+    }
+  }
+  for (int y = blob_y; y < blob_y + 20; ++y) {
+    for (int x = blob_x; x < blob_x + 20; ++x) {
+      image.setPixel(x, y, qRgb(30, 160, 60));
+    }
+  }
+  return image;
+}
+
+// The coverage modes keep a coarse spatial check: a foreground translated by a
+// few pixels or rearranged (same pixel count, same mean colour) fails them,
+// while a one-pixel jitter (driver rasterization) passes.
+TEST(GoldenComparator, CoverageModesRejectMovedForeground) {
+  const QImage golden = syntheticFrame(0, 30, 200);
+  const Tolerance tol;
+  for (const auto check : {Scene::Check::kCoverage, Scene::Check::kCoverageColour}) {
+    SCOPED_TRACE(check == Scene::Check::kCoverage ? "kCoverage" : "kCoverageColour");
+    const Tolerance mode_tol = forCheck(tol, check);
+    const auto verdict = [&](const QImage& actual) {
+      return judge(compare(actual, golden, mode_tol), mode_tol, check);
+    };
+    EXPECT_TRUE(verdict(golden).ok());
+    EXPECT_TRUE(verdict(syntheticFrame(1, 31, 200)).ok()) << "a one-pixel jitter";
+
+    // Every case below keeps the pixel count and the mean colour, which is all
+    // the coverage modes compared before; only the spatial checks catch them.
+    for (const auto& [what, actual] : {
+             std::pair{"lattice and blob translated by 12 px", syntheticFrame(12, 42, 200)},
+             std::pair{"blob moved across the frame", syntheticFrame(0, 200, 30)},
+             std::pair{"blob moved by 16 px", syntheticFrame(0, 46, 200)},
+         }) {
+      const Verdict result = verdict(actual);
+      EXPECT_TRUE(result.coverage && result.colour) << what;
+      EXPECT_FALSE(result.spatial) << what;
+    }
+  }
+  // A colour ramp reversed in place: same pixels, same mean colour. Only the
+  // per-tile colour sees it; kCoverage does not compare colour at all.
+  const QImage reversed = syntheticFrame(0, 30, 200, true);
+  const Tolerance colour_tol = forCheck(tol, Scene::Check::kCoverageColour);
+  const Verdict result = judge(compare(reversed, golden, colour_tol), colour_tol, Scene::Check::kCoverageColour);
+  EXPECT_TRUE(result.coverage && result.colour);
+  EXPECT_FALSE(result.spatial);
 }
 
 class PointCloudGolden : public ::testing::TestWithParam<Scene> {};
@@ -777,7 +971,8 @@ class GridGolden : public ::testing::TestWithParam<GridScene> {};
 // filled grid darker under the gizmo's square, the QRhi view (gizmo drawn after
 // presentation) does not. The line grid (default 10 m) is all 1 px edges,
 // which a y-down backend's mirrored MSAA pattern resolves differently (up to 18%
-// of its foreground on lavapipe), so it checks coverage and mean colour only.
+// of its foreground on lavapipe), so it checks coverage, mean colour and the
+// coarse spatial checks.
 TEST_P(GridGolden, MatchesGolden) {
   const GridScene& scene = GetParam();
   PJ_SKIP_ON_HEADLESS_QPA();
@@ -803,6 +998,9 @@ TEST_P(GridGolden, MatchesGolden) {
 #else
     tol.coverage = 0.08;
 #endif
+    // A y-down backend's mirrored MSAA pattern keeps more of the lines of one
+    // slope than of the other: lavapipe and Iris Vulkan move the centroid by 2.8 px.
+    tol.max_centroid_shift = 6.0;
   }
   expectMatchesGolden(
       scene.name, golden_view.render(sceneCamera()), lines ? Scene::Check::kCoverageColour : Scene::Check::kFull, tol);

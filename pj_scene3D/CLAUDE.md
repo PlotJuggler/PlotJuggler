@@ -40,7 +40,7 @@ no match `resolveIntrinsics` falls back to a lone `CameraInfo` only when
 unambiguous (a single camera, or a frame-less image) and otherwise refuses rather
 than pair the wrong camera. The back-projection math is the Qt-free core
 `depth_backproject.{h,cpp}`; a worker writes the points straight into the
-`PointVertex` array the layer hands the view as a `PointRenderable`, drawn by the
+vertex array the layer hands the view as a `PointRenderable`, drawn by the
 same point pass as a raw cloud.
 
 Drag-drop: because depth and color share `kImage`, an empty-placeholder drop of
@@ -109,7 +109,7 @@ transport/CDR parsing, so it lives here: `core/pointcloud_codecs.{h,cpp}`
 `pj_scene3d_core` — the same shape as `pj_scene2d_core` decoding JPEG/PNG. The decode is
 CPU-heavy, so `PointCloudLayer` runs it on the Qt thread pool (`LatestWinsWorker`:
 one job in flight, the newest request waiting) and never blocks the UI; the decoded
-`PointCloud` then flows through the **same** `convertCanonical()` path as a raw cloud.
+`PointCloud` then flows through the **same** `packPointVertices()` path as a raw cloud.
 Notes: Cloudini `INT64`/`UINT64` fields have no PJ datatype and are dropped; Draco field
 names are recovered from Draco attribute metadata when present (Foxglove /
 `draco_point_cloud_transport` store the original name there), else inferred from the
@@ -117,8 +117,9 @@ attribute type; plain `zstd_point_cloud_transport` is out of scope (its blob isn
 self-describing). This is the *only* codec in the module — the no-`nanocdr`/CDR rule
 still holds for everything else.
 
-`PointCloudLayer` converts every cloud with `convertCanonical()` and packs the
-finite points into an implicitly shared `PointVertex` array (still consuming
+`PointCloudLayer` plans a cloud once (`planPointVertices()`: validation and the
+vertex format) and packs its finite points with `packPointVertices()` into an
+implicitly shared array of 12- or 16-byte records (still consuming
 `sdk::PointCloud`: canonical-in / render-structs-out, no wire decode added). Its
 `kCube` shape draws only the three camera-facing faces, as an attributeless
 7-vertex / 18-index hexagon fan around each cube's near corner (`cube_mesh.h`) —
@@ -130,15 +131,15 @@ face-choice, face-normal, MSAA and LOD-matching pitfalls are spelled out in
 `docs/ARCHITECTURE.md` → "Cube shape: the hexagon fan"; read it before touching
 that shader. `widgets/rhi/passes/point_rhi_pass.{h,cpp}` draws it all (plus flat
 discs for sub-2-px spheres, a point-list path for small sprites and the faded
-out-of-range two-partition draw); the geometry AABB that fits the camera comes
-from the conversion itself.
+out-of-range two-partition draw); the geometry AABB behind the camera's scene bounds
+comes from the conversion itself.
 
 ## Layout
 
 - `core/` — pure geometry/scene logic, **no Qt or GL**. The TF buffer + frame
   hierarchy, the SE(3) `Transform`, the `OccupancyGridReconstructor` (stateful
   time-travel over an `OccupancyGrid` base plus incremental `OccupancyGridUpdate`
-  patches), and the `DecodedPointCloud` render struct. Links only `glm`,
+  patches), and the `PointVertex` / `DecodedPointCloud` (GL rollback) render structs. Links only `glm`,
   `pj_base`, `nlohmann_json`. Key headers:
   `core/include/pj_scene3d_core/{tf/tf_buffer.h, tf/transform.h,
   tf/frame_picking.h, occupancy_grid_reconstructor.h, pointcloud.h, pointcloud_codecs.h,
@@ -159,8 +160,11 @@ from the conversion itself.
   frame opens the dock's frame menu.
   - **QRhi lifecycle (don't regress this):** Qt calls `releaseResources()` and
     then `initialize()` on a new QRhi whenever the view changes top-level — an ADS
-    float, redock or dock-area tab switch. Every GPU resource is rebuilt there from
-    the CPU data the layers retain, and no draw may reference a resource whose
+    float, redock or move between areas (a dock-area tab switch keeps the view
+    parented, TECHNICAL_NOTES.md §5). Every GPU resource is rebuilt there from
+    the CPU data the layers retain or re-derive (an uploaded static point cloud
+    converts its sample again, `PointRenderable::ensureVertexBytes()`), and no
+    draw may reference a resource whose
     `create()` failed (ARCHITECTURE.md → "Failure state and fallbacks", "Widget
     lifecycle and reparenting"). Overlay text (perf HUD, TF hover label) is
     CPU-rasterized into a `QImage` (`hud_overlay.h::renderHudPanel`) and drawn as a

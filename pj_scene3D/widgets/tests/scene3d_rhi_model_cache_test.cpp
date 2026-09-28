@@ -198,8 +198,7 @@ void fixCamera(SceneViewWidget& view, glm::vec3 focal, float azimuth_deg, float 
   view.camera().adoptState(state);
 }
 
-// Filled grid, no axes, and a warm-up frame that consumes the view's one-shot
-// auto-fit before a test fixes the camera.
+// Filled grid, no axes, and a warm-up frame before a test fixes the camera.
 void settle(SceneViewWidget& view) {
   view.setGridStyle(SceneViewWidget::GridStyle::kFilledCells);
   view.setGridExtentMetres(10.0F);

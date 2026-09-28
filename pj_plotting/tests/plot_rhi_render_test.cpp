@@ -18,10 +18,12 @@
 #include <qwt_plot_grid.h>
 #include <qwt_plot_marker.h>
 #include <qwt_scale_div.h>
+#include <qwt_scale_engine.h>
 #include <qwt_scale_map.h>
 #include <qwt_series_data.h>
 #include <qwt_symbol.h>
 #include <qwt_text.h>
+#include <qwt_transform.h>
 
 #include <QApplication>
 #include <QDialog>
@@ -43,9 +45,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <new>
 #include <numeric>
 #include <string_view>
 #include <vector>
@@ -59,6 +64,7 @@
 #include "pj_plotting/PlotRhiCanvas.h"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/PlotWidgetBase.h"
+#include "pj_plotting/RevisionedSeries.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/SessionManager.h"
@@ -99,6 +105,33 @@ class TestPlot : public PJ::PlotWidgetBase {
   }
   using PJ::PlotWidgetBase::qwtPlot;
   using PJ::PlotWidgetBase::setStyle;
+};
+
+// Points with a content revision the test bumps by hand: an unchanged revision
+// lets a full replot reuse the curve layer.
+class Revisioned : public QwtPointSeriesData, public PJ::RevisionedSeries {
+ public:
+  using QwtPointSeriesData::QwtPointSeriesData;
+  void bump() {
+    bumpContentRevision();
+  }
+};
+
+// Revisioned points always allocated at one address, as a series reallocated
+// by a transform applied in place can be. One alive at a time.
+class SameAddressRevisioned final : public Revisioned {
+ public:
+  using Revisioned::Revisioned;
+  static void* operator new(std::size_t size) {
+    if (size > sizeof(slot_)) {
+      throw std::bad_alloc();
+    }
+    return slot_;
+  }
+  static void operator delete(void* /*slot*/) noexcept {}
+
+ private:
+  alignas(std::max_align_t) static inline std::byte slot_[512];
 };
 
 class TestPlotWidget : public PJ::PlotWidget {
@@ -671,6 +704,49 @@ TEST_F(PlotRhiRenderTest, CollinearReversalKeepsTheStrokeWidth) {
   expectMatchesReference(
       frame, referenceCanvas(*plot->qwtPlot(), frame.size()), background(*plot->qwtPlot()), 1500,
       /*min_colour_match=*/0.9);
+}
+
+// A solid segment between a sample in view and one mapped far off the canvas:
+// 1e41 on a 0..10 axis lands about 4e42 px away, past the float range of the
+// clip coordinates. The stroke still reaches the canvas edge, whichever end is
+// the far one.
+TEST_F(PlotRhiRenderTest, SegmentToAFarOffCanvasSampleReachesTheEdge) {
+  PJ_SKIP_ON_HEADLESS_QPA();
+  for (const bool far_last : {true, false}) {
+    SCOPED_TRACE(far_last ? "far final sample" : "far first sample");
+    auto* plot = new TestPlot();
+    PlotWindow window(plot);
+    ASSERT_TRUE(window.exposed());
+    prepare(*plot);
+    std::vector<QPointF> points = {{3.0, 2.0}, {3.0, 1e41}};
+    if (!far_last) {
+      std::reverse(points.begin(), points.end());
+    }
+    auto* info = plot->addCurve(u"spike"_s, series(points), QColor(230, 40, 40));
+    ASSERT_NE(info, nullptr);
+    QPen pen = info->curve->pen();
+    pen.setWidthF(3.0);
+    info->curve->setPen(pen);
+    plot->qwtPlot()->replot();
+    PJ_GRAB_OR_SKIP(frame, *plot->qwtPlot());
+    const QRgb clear = background(*plot->qwtPlot());
+    expectMatchesReference(frame, referenceCanvas(*plot->qwtPlot(), frame.size()), clear, 200);
+
+    // Every row from the in-view sample up to the canvas edge is inked.
+    const qreal dpr = static_cast<qreal>(frame.width()) / plot->qwtPlot()->canvas()->width();
+    const int x = static_cast<int>(std::lround(plot->qwtPlot()->canvasMap(QwtPlot::xBottom).transform(3.0) * dpr));
+    const int sample_y = static_cast<int>(std::lround(plot->qwtPlot()->canvasMap(QwtPlot::yLeft).transform(2.0) * dpr));
+    const int edge = 2 + static_cast<int>(std::lround(dpr));  // past the 1 px canvas frame
+    int blank_rows = 0;
+    for (int y = edge; y < sample_y; ++y) {
+      bool inked = false;
+      for (int dx = -2; dx <= 2 && !inked; ++dx) {
+        inked = channelDelta(frame.pixel(x + dx, y), clear) > 60;
+      }
+      blank_rows += inked ? 0 : 1;
+    }
+    EXPECT_EQ(blank_rows, 0) << "of " << (sample_y - edge) << " rows between the edge and the sample";
+  }
 }
 
 TEST_F(PlotRhiRenderTest, LegendTextMatchesQwt) {
@@ -1386,9 +1462,201 @@ TEST_F(PlotRhiRenderTest, TrackerOnlyReplotKeepsTheCurveLayer) {
   EXPECT_EQ(canvas->curveLayerBuildsForTest(), builds_with_value);
   EXPECT_LE(canvas->textLayerRasterizationsForTest(), rasterized_with_value + 1);
 
+  // The adapter's content revision is unchanged: a full replot keeps the curves.
   qwt.replot();
   { PJ_GRAB_OR_SKIP(frame, qwt); }
-  EXPECT_EQ(canvas->curveLayerBuildsForTest(), builds_with_value + 1) << "a full replot kept stale curves";
+  EXPECT_EQ(canvas->curveLayerBuildsForTest(), builds_with_value) << "an unchanged full replot rebuilt the curves";
+  // New samples reach the adapter (samplesIngested) and rebuild them.
+  writer.appendScalar(*handle, 1'000'000'000 + 200 * 10'000'000LL, 5.0);
+  ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  qwt.replot();
+  {
+    PJ_GRAB_OR_SKIP(frame, qwt);
+    EXPECT_EQ(canvas->curveLayerBuildsForTest(), builds_with_value + 1) << "new samples kept stale curves";
+    expectMatchesReference(frame, referenceCanvas(qwt, frame.size()), background(qwt), 200);
+  }
+}
+
+// A revisioned series (RevisionedSeries) keeps its geometry across an unchanged
+// full replot, and every in-place change a replot carries still rebuilds: a
+// revision bump, a grid flag, a symbol edited in place, a log axis. Plain Qwt data
+// has no revision and rebuilds on every full replot.
+TEST_F(PlotRhiRenderTest, FullReplotRebuildsOnlyChangedContent) {
+  PJ_SKIP_ON_HEADLESS_QPA();
+  auto* plot = new TestPlot();
+  PlotWindow window(plot);
+  ASSERT_TRUE(window.exposed());
+  prepare(*plot);
+  auto* data = new Revisioned(QVector<QPointF>{{0.5, 6.0}, {2.0, 9.5}, {4.0, 7.0}, {9.0, 1.0}});
+  PJ::PlotWidgetBase::CurveInfo* info = plot->addCurve(u"ramp"_s, data, QColor(230, 40, 40));
+  ASSERT_NE(info, nullptr);
+  QwtPlot& qwt = *plot->qwtPlot();
+  qwt.replot();
+  PJ::PlotRhiCanvas* canvas = rhiCanvas(&qwt);
+  { PJ_GRAB_OR_SKIP(frame, qwt); }
+  std::size_t builds = canvas->curveLayerBuildsForTest();
+  const auto expect_after_replot = [&](const char* what, bool rebuilt) {
+    qwt.replot();
+    PJ_GRAB_OR_SKIP(frame, qwt);
+    EXPECT_EQ(canvas->curveLayerBuildsForTest(), builds + (rebuilt ? 1 : 0)) << what;
+    builds = canvas->curveLayerBuildsForTest();
+    expectMatchesReference(frame, referenceCanvas(qwt, frame.size()), background(qwt), 200);
+  };
+  expect_after_replot("an unchanged replot rebuilt the curves", false);
+
+  data->setSamples(QVector<QPointF>{{0.5, 1.0}, {2.0, 2.0}, {4.0, 8.0}, {9.0, 9.0}});
+  data->bump();
+  expect_after_replot("a new revision kept stale curves", true);
+
+  plot->setGridVisible(true);
+  expect_after_replot("showing the grid kept the curves", true);
+  auto* grid = [&qwt]() -> QwtPlotGrid* {
+    for (QwtPlotItem* item : qwt.itemList(QwtPlotItem::Rtti_PlotGrid)) {
+      return static_cast<QwtPlotGrid*>(item);
+    }
+    return nullptr;
+  }();
+  ASSERT_NE(grid, nullptr);
+  grid->enableXMin(!grid->xMinEnabled());
+  expect_after_replot("a grid flag changed in place kept the grid", true);
+
+  auto* symbol = new QwtSymbol(QwtSymbol::Rect, QBrush(Qt::blue), QPen(Qt::black), QSize(5, 5));
+  info->curve->setSymbol(symbol);
+  expect_after_replot("a new symbol kept the curves", true);
+  symbol->setSize(QSize(9, 9));
+  expect_after_replot("a symbol resized in place kept the curves", true);
+
+  // The range reaches the axis widget first: the engine switch lays the axis
+  // out at once, and a log transformation of the old ticks (<= 0) feeds a NaN to
+  // an int cast inside Qwt (UBSan).
+  qwt.setAxisScale(QwtPlot::yLeft, 0.5, 10.0);
+  qwt.updateAxes();
+  qwt.setAxisScaleEngine(QwtPlot::yLeft, new QwtLogScaleEngine());
+  expect_after_replot("a log axis kept the linear geometry", true);
+
+  // The canvas does not draw area fills, so only the rebuild is checked.
+  info->curve->setBrush(QBrush(Qt::green));
+  qwt.replot();
+  {
+    PJ_GRAB_OR_SKIP(frame, qwt);
+    EXPECT_EQ(canvas->curveLayerBuildsForTest(), builds + 1) << "a new brush kept the curves";
+  }
+  info->curve->setBrush(Qt::NoBrush);
+  qwt.replot();
+  { PJ_GRAB_OR_SKIP(frame, qwt); }
+  builds = canvas->curveLayerBuildsForTest();
+
+  // Plain Qwt data: every full replot rebuilds.
+  plot->addCurve(u"floor"_s, series({{1.0, 1.0}, {9.0, 2.0}}), QColor(40, 90, 230));
+  expect_after_replot("a new curve kept the curves", true);
+  expect_after_replot("a replot of unrevisioned data kept the curves", true);
+}
+
+// Scales that differ only in which list holds a tick, or only in a transformation's
+// parameter, are different views: a full replot of unchanged content rebuilds.
+TEST_F(PlotRhiRenderTest, FullReplotSeesTickTypesAndTransformations) {
+  PJ_SKIP_ON_HEADLESS_QPA();
+  auto* plot = new TestPlot();
+  PlotWindow window(plot);
+  ASSERT_TRUE(window.exposed());
+  prepare(*plot);
+  plot->addCurve(
+      u"ramp"_s, new Revisioned(QVector<QPointF>{{0.5, -6.0}, {2.0, 9.5}, {4.0, -3.0}, {9.0, 5.0}}),
+      QColor(230, 40, 40));
+  plot->setGridVisible(true);
+  QwtPlot& qwt = *plot->qwtPlot();
+  auto* grid = static_cast<QwtPlotGrid*>(qwt.itemList(QwtPlotItem::Rtti_PlotGrid).value(0));
+  ASSERT_NE(grid, nullptr);
+  grid->enableXMin(false);  // medium ticks draw no line; major ones do
+  grid->enableYMin(false);
+  const QwtScaleDiv y_div(-10.0, 10.0, {}, {}, {-10.0, 0.0, 10.0});
+  qwt.setAxisScaleDiv(QwtPlot::xBottom, QwtScaleDiv(-1.0, 10.0, {}, {}, {0.0, 1.0, 2.0}));
+  qwt.setAxisScaleDiv(QwtPlot::yLeft, y_div);
+  qwt.replot();
+  PJ::PlotRhiCanvas* canvas = rhiCanvas(&qwt);
+  { PJ_GRAB_OR_SKIP(frame, qwt); }
+  std::size_t builds = canvas->curveLayerBuildsForTest();
+  const auto expect_rebuilt_after_replot = [&](const char* what) {
+    qwt.replot();
+    PJ_GRAB_OR_SKIP(frame, qwt);
+    EXPECT_EQ(canvas->curveLayerBuildsForTest(), builds + 1) << what;
+    builds = canvas->curveLayerBuildsForTest();
+    expectMatchesReference(frame, referenceCanvas(qwt, frame.size()), background(qwt), 200);
+  };
+
+  // The same tick values in the same order: the major line at 0 disappears.
+  qwt.setAxisScaleDiv(QwtPlot::xBottom, QwtScaleDiv(-1.0, 10.0, {}, {0.0}, {1.0, 2.0}));
+  expect_rebuilt_after_replot("a major tick turned medium kept its grid line");
+
+  // Power transformations map the midpoint of symmetric bounds alike and every
+  // other value differently.
+  for (const double exponent : {2.0, 3.0}) {
+    auto* engine = new QwtLinearScaleEngine();
+    engine->setTransformation(new QwtPowerTransform(exponent));
+    qwt.setAxisScaleEngine(QwtPlot::yLeft, engine);
+    qwt.setAxisScaleDiv(QwtPlot::yLeft, y_div);
+    expect_rebuilt_after_replot("a new power exponent kept the old mapping");
+  }
+}
+
+// A curve removed and re-added with new data whose series lands at the freed
+// one's address (a transform applied in place) rebuilds: revisions are unique
+// for the process, not per series.
+TEST_F(PlotRhiRenderTest, ReplacedSeriesAtOneAddressRebuilds) {
+  PJ_SKIP_ON_HEADLESS_QPA();
+  auto* plot = new TestPlot();
+  PlotWindow window(plot);
+  ASSERT_TRUE(window.exposed());
+  prepare(*plot);
+  QwtPlot& qwt = *plot->qwtPlot();
+  auto* first = new SameAddressRevisioned(QVector<QPointF>{{0.5, 6.0}, {2.0, 9.5}, {4.0, 7.0}, {9.0, 1.0}});
+  ASSERT_NE(plot->addCurve(u"ramp"_s, first, QColor(230, 40, 40)), nullptr);
+  qwt.replot();
+  PJ::PlotRhiCanvas* canvas = rhiCanvas(&qwt);
+  { PJ_GRAB_OR_SKIP(frame, qwt); }
+  const std::size_t builds = canvas->curveLayerBuildsForTest();
+
+  plot->removeCurve(u"ramp"_s);
+  auto* second = new SameAddressRevisioned(QVector<QPointF>{{0.5, 1.0}, {2.0, 2.0}, {4.0, 8.0}, {9.0, 9.0}});
+  ASSERT_EQ(static_cast<void*>(second), static_cast<void*>(first));
+  ASSERT_NE(plot->addCurve(u"ramp"_s, second, QColor(230, 40, 40)), nullptr);
+  qwt.replot();
+  PJ_GRAB_OR_SKIP(frame, qwt);
+  EXPECT_GT(canvas->curveLayerBuildsForTest(), builds) << "the replaced series kept the old geometry";
+  expectMatchesReference(frame, referenceCanvas(qwt, frame.size()), background(qwt), 200);
+}
+
+// A curve subclass with its own RTTI is drawn like any curve, so its content is
+// tracked like one: plain Qwt data changed in place, same count, rebuilds on replot.
+TEST_F(PlotRhiRenderTest, CustomRttiCurveRebuildsOnReplot) {
+  PJ_SKIP_ON_HEADLESS_QPA();
+  class CustomRttiCurve : public QwtPlotCurve {
+   public:
+    [[nodiscard]] int rtti() const override {
+      return QwtPlotItem::Rtti_PlotUserItem + 1;
+    }
+  };
+  auto* plot = new TestPlot();
+  PlotWindow window(plot);
+  ASSERT_TRUE(window.exposed());
+  prepare(*plot);
+  QwtPlot& qwt = *plot->qwtPlot();
+  auto* data = new QwtPointSeriesData(QVector<QPointF>{{0.5, 6.0}, {2.0, 9.5}, {4.0, 7.0}, {9.0, 1.0}});
+  auto* curve = new CustomRttiCurve();  // owned by the plot once attached
+  curve->setPen(QColor(230, 40, 40), 2.0);
+  curve->setRenderHint(QwtPlotItem::RenderAntialiased, true);  // as the canvas draws, for the reference
+  curve->setData(data);
+  curve->attach(&qwt);
+  qwt.replot();
+  PJ::PlotRhiCanvas* canvas = rhiCanvas(&qwt);
+  { PJ_GRAB_OR_SKIP(frame, qwt); }
+  const std::size_t builds = canvas->curveLayerBuildsForTest();
+
+  data->setSamples(QVector<QPointF>{{0.5, 1.0}, {2.0, 2.0}, {4.0, 8.0}, {9.0, 9.0}});
+  qwt.replot();
+  PJ_GRAB_OR_SKIP(frame, qwt);
+  EXPECT_EQ(canvas->curveLayerBuildsForTest(), builds + 1) << "a custom-RTTI curve kept stale geometry";
+  expectMatchesReference(frame, referenceCanvas(qwt, frame.size()), background(qwt), 200);
 }
 
 // The canvas renders at one sample per pixel into a colour-only target: 4 bytes

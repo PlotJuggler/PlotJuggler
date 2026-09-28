@@ -34,8 +34,10 @@ Qt 6.11.1 sources (`qbackingstorerhisupport.cpp`, `qrhiwidget.cpp`):
   QRhi" and stay blank. `preferredGraphicsApi()` therefore runs the same
   `QRhi::probe(Metal)` itself and picks OpenGL when it fails. Not verified on a
   Mac (compiled only under `QT_CONFIG(metal)`).
-- **Vulkan** (only through `PJ_GRAPHICS_API`) is not probed; if it fails, the
-  widgets report "No QRhi".
+- **Overrides:** a `PJ_GRAPHICS_API` other than the default (Vulkan on Linux,
+  say) is probed by creating a throwaway QRhi (Vulkan on Qt's default instance,
+  which the window then reuses: about 10 ms net on Iris Xe); one that
+  cannot start falls back to the default with a `pj.graphics` warning.
 
 **macOS OpenGL fallback.** macOS gives an OpenGL QRhi a legacy 2.1 context unless
 the window asks for core, below every pack's GLSL 330. `pj_app` (and the GUI test
@@ -106,7 +108,7 @@ Linux CI floor step caps Mesa at 3.3 (`MESA_GL_VERSION_OVERRIDE=3.3`,
 | The OpenGL depth resolve blits depth and stencil together, attaching the textures as both, so a stencil-less D32F framebuffer is incomplete and the resolved depth stays unwritten | OpenGL resolves D32FS8 |
 | The OpenGL backend reports `QRhi::MultisampleTexture` from GL 3.0 (GLES 3.1) but allocates with `glTexStorage2DMultisample`, core only from GL 4.3: on a 4.1 context the entry point is null and `create()` crashes | The depth resolve also requires GL 4.3, GLES 3.1 or `GL_ARB_texture_storage_multisample` (`canCreateMultisampleTextures()`); other contexts replay |
 | The widget backing store probes Metal and gives up without the OpenGL fallback its comment promises | `preferredGraphicsApi()` probes Metal itself (§1) |
-| QRhiWidget re-renders synchronously on every Show, even on the same QRhi at the same size | `event()` marks the Show paint and `render()` records nothing (ARCHITECTURE, "Widget lifecycle") |
+| QRhiWidget paints synchronously inside every Show (an offscreen frame; on Vulkan a fence wait), even on the same QRhi at the same size, the paint dispatching back through `event()`; and an `update()` on a hidden render-to-texture widget sets `renderToTextureReallyDirty`, so a later repaint of its parent (an ADS tab switch) paints it again | `event()` marks the Show scope with a scoped flag (the nested paint keeps it) and `paintEvent()` skips QRhiWidget's paint while the target holds the last frame; a frame follows only if the content changed (`SceneViewWidget::update()`) (ARCHITECTURE, "Widget lifecycle") |
 | The backing store creates the widget's QRhi (`QPlatformBackingStoreRhiConfig` carries only the API and the debug layer), so `EnablePipelineCacheDataSave` cannot be set and `setPipelineCacheData()` would come after Qt's own pipelines | None: pipeline-cache persistence is unreachable through `QRhiWidget`. OpenGL already persists program binaries through Qt's shader disk cache |
 | Without a console (ctest, CI), Qt logs to `OutputDebugString` on Windows and to os_log on macOS | The native lanes set `QT_FORCE_STDERR_LOGGING=1` so the backend lines reach the test log |
 
@@ -127,17 +129,17 @@ the DPR 2 passes set `QT_SCALE_FACTOR` through `ENVIRONMENT_MODIFICATION`.
 | Problem | Decision | Why |
 |---|---|---|
 | `gl_PointSize` is absent on D3D | Instanced camera-facing quads on every backend; a point list only where `QRhi::VertexShaderPointSize` exists and the cloud's sprites stay at most 4 px | Quads measured 1.8-2.2x the point list's GPU time for 10M 2 px points on real GPUs (table below), above the 1.5x gate; larger sprites are fill-bound either way, and a quad keeps its visible part at the frustum edge |
-| Non-float scalar vertex fields | CPU float conversion into the shared `PointVertex` array | Integer zero-copy needs a vertex layout and shader variant per wire datatype, NaN rejection in the shader, a re-bake of every pack and a full golden re-verification (numbers below) |
+| Non-float scalar vertex fields | CPU float conversion into the retained vertex array | Integer zero-copy needs a vertex layout and shader variant per wire datatype, NaN rejection in the shader, a re-bake of every pack and a full golden re-verification (numbers below) |
 | MSAA depth for SSAO/EDL | `QRhi::ResolveDepthStencil` where QRhi reports it and multisample textures (OpenGL 4.3+, Vulkan, Metal); the single-sample depth replay elsewhere (D3D11, WebGL2, older GL) | The replay was +11.3 ms on OpenGL and +11.5 ms on Vulkan for a 10M cloud (+58%) on Iris Xe, the whole gap to the GL renderer; it is 40–45% of the static GPU time in the point benchmark |
 | Mesh mask for EDL | A separate mask pass replaying the model ranges | WebGL's GLES QRhi does not resolve a second multisample colour attachment reliably |
 | GL clip / Y conventions | Folded into CPU matrices (§2) | Shaders stay backend-neutral |
 | Scene bounds | CPU bounds from the conversion, or a scan of the retained vertices once per revision | Nothing ever reported empty bounds with points; a compute reducer cost a pipeline, a compute bake and `StorageBuffer` usage on every instance buffer |
 | Wireframe | Triangle edges as line lists on every backend | `NonFillPolygonMode` is missing on WebGL2 and would split the looks for a cosmetic gain |
 | HUD and hover label | CPU-rasterized `QImage`s uploaded as texture quads | No per-context glyph atlas to lose across a QRhi teardown |
-| Marker instances | A per-layer Static cache keyed on the resolved placements; the render origin stays on the CPU | See "Render origin" |
+| Marker instances | A per-layer Static cache keyed on the resolved placements; the render origin stays on the CPU, and an origin-only change of a recurring layer rewrites only the translations from cached world doubles | See "Render origin" |
 | Grid | Built once at the fixed-frame origin; the origin offset added in the shader | Exact (see "Render origin") |
 | Output sample count | 1 when the HDR chain can run, 4 otherwise, chosen once per QRhi | A per-frame switch rebuilds every resource bound to the target (and broke the missing-HDR-variant fallback) |
-| Lazy direct pipelines | Not done | Every backend caches compiled shaders per QRhi, so an HDR clone reuses its direct pipeline's compile; only Vulkan builds a `VkPipeline` per pipeline object (OpenGL first show: `pipeline_ms` 25 with the clones included; Vulkan's first show is within 3 ms of OpenGL's) |
+| Families on demand, template pipelines | A family is built with its first layer; every pipeline is created only as drawn (HDR clones), the direct ones before a direct frame's first pass; a pipeline that cannot be created withholds its frame (the last frame stays), then the failure state or the direct fallback | OpenGL builds a program per pipeline object even for a shader seen before (Qt's program-binary cache still calls `glProgramBinary`, 1–4 ms each on the Iris), so every unused pipeline cost a new QRhi (a float, redock, first show) its time: 50 pipelines and 78 ms at the cloud + robot first show before, 18 and 25 ms after. Vulkan's pipeline cache makes each well under 1 ms. `PJ_SCENE3D_PIPELINE_LOG=1` (test builds) logs each creation |
 | GPU timing | `QRhi::EnableTimestamps` + `lastCompletedGpuTime` | Frame-level only; enough for the HUD |
 | Colormaps | The `pj_widgets` polynomials, in-shader | One source with the plots and the 2D depth view |
 | Shader packs | Committed `.qsb`, `--glsl "300 es,330,440" --hlsl 50 --msl 12` + SPIR-V, hash-checked in the WASM configure | Desktop Qt kits install no `qsb`; GLSL 330 keeps the macOS GL 4.1 fallback possible |
@@ -162,24 +164,27 @@ converted), while the whole-cloud switch is exactly 1.00x there and 1.7-2.2x in 
 wide shot. The emitted light of the sprites agrees with the fan within 3.4% from
 0.67 px down to 0.125 px, which is also the no-popping guarantee.
 
-**Integer zero-copy analysis** (streaming quads, 10M points per sample, Iris Xe;
-decode+upload CPU = convert + prepare + enqueue + endFrame own-thread CPU):
+**Integer zero-copy analysis** (`pointcloud_rhi_benchmark`, streaming quads,
+10M points per sample, Iris Xe; convert = `packPointVertices()` inside the frame on
+the global thread pool, as the layer runs it, wall time; decode+upload = convert
++ prepare + enqueue + endFrame own-thread CPU; 20-byte records, before the compact
+formats):
 
-| x/y/z | API | convert ms | bounds scan ms | decode+upload CPU ms | (convert − scan) share | peak RSS |
+| x/y/z | API | convert ms | bounds scan ms | decode+upload ms | convert share | peak RSS |
 |---|---|---|---|---|---|---|
-| u16 | Vulkan | 206.7 | 22.2 | 228.4 | 81% | 768 MiB |
-| u32 | Vulkan | 205.5 | 26.5 | 227.1 | 79% | 806 MiB |
-| f32 | Vulkan | 204.5 | 27.8 | 226.1 | 78% | 806 MiB |
-| u16 | OpenGL | 195.0 | 22.2 | 234.6 | 74% | 993 MiB |
-| u32 | OpenGL | 195.8 | 26.5 | 235.4 | 72% | 1031 MiB |
-| f32 | OpenGL | 194.8 | 30.5 | 234.3 | 70% | 1030 MiB |
+| u16 | Vulkan | 24.5 | 24.2 | 56.5 | 43% | 464 MiB |
+| u32 | Vulkan | 24.6 | 30.2 | 56.6 | 43% | 502 MiB |
+| f32 | Vulkan | 16.2 | 25.9 | 48.2 | 34% | 502 MiB |
+| u16 | OpenGL | 25.3 | 24.8 | 85.6 | 29% | 614 MiB |
+| u32 | OpenGL | 24.9 | 30.6 | 84.3 | 30% | 653 MiB |
+| f32 | OpenGL | 16.8 | 26.3 | 74.9 | 22% | 653 MiB |
 
-A zero-copy upload would save 70–81% of the decode+upload CPU (about 170–185 ms
-per 10M sample) and the transient decoded arrays (153 MiB) plus the 191 MiB
-`PointVertex` array; the retained copy would become the wire blob (114 or
-153 MiB). About 82 ms of an f32 conversion is `convertCanonical()` and about
-115 ms the pack into a fresh `PointVertex` array, dominated by first-touch page
-faults. The integer rows' GPU times are not comparable with f32: an integer
+A zero-copy upload would save at most the conversion (22–43% of decode+upload),
+and it would need its own bounds pass, which the conversion provides for free (a
+single-threaded strided scan costs as much as the whole parallel conversion). Its
+remaining gain was memory, which the compact formats took: an xyz-only style
+retains and uploads 12 bytes a point (114 MiB at 10M), one reading a scalar or a
+colour 16 (153 MiB), at or below the wire blob. The integer rows' GPU times are not comparable with f32: an integer
 lattice under a scaled camera rasterizes about 20x slower.
 
 **Render origin.** Moving a camera-relative subtraction into a float shader add
@@ -200,13 +205,26 @@ shader's correctly rounded float add equals the float of the double subtraction.
   floated, or crashed in the lavapipe swapchain).
   `Qt::AA_DontCreateNativeWidgetSiblings`, set before `QApplication` in the QRhi
   build, keeps them non-native.
-- **ADS reparents docks through a parentless state.** It moves a dock within one
-  window, and keeps only the current tab of a dock area parented
-  (`CDockAreaLayout::setCurrentIndex` calls `setParent(nullptr)` on the tab it
-  hides). A float, a redock, a move and a dock-area tab switch are therefore each
-  a top-level change for a `QRhiWidget`: `releaseResources()`, then a fresh
+- **ADS reparents docks through a parentless state.** A float, a redock and a
+  move to another area (`removeDockWidget()` → `setDockArea(nullptr)`) are each a
+  top-level change for a `QRhiWidget`: `releaseResources()`, then a fresh
   `initialize()`. Widgets must rebuild all their GPU state from retained CPU data:
   correct, but costly for a large 3D scene.
+- **Our ADS fork keeps a dock area's hidden tabs parented** (`CDockAreaLayout`
+  in `3rdparty/Qt-Advanced-Docking/src/DockAreaWidget.cpp`). Upstream ADS unparents
+  the tab it hides on every tab switch (`setCurrentIndex`), and on an insert
+  and a removal, so each tab switch released and rebuilt the shown view (a 10M
+  cloud: a new QRhi's pipelines and a 190 MiB re-upload, and on OpenGL a stall of
+  the plot shown next while the driver freed it). The patch takes the previous
+  tab out of the layout (only the current tab takes part in sizing) and hides it,
+  but leaves it parented; `insertWidget()` and `removeWidget()` no longer unparent
+  either, since `insertDockWidget()` / `removeDockWidget()` reparent through
+  `setDockArea()` right after, and a reordered tab stays in its area. Hidden tabs
+  are explicitly hidden, so showing the area does not show them; they move with
+  their area (a whole area floated takes them to the new window, where they
+  re-initialize when shown) and die with it, as upstream's never-shown tabs
+  always did. The cost: a hidden tab keeps its GPU resources (§9, note ⁷). `rhi_dock_lifecycle_test` covers reorder, close/reopen, restore,
+  float of the whole area, moving and destroying a hidden tab.
 - **ADS hides floating docks on Wayland.** Its Linux stays-on-top emulation calls
   `setWindowFlag(Qt::WindowStaysOnTopHint, ...)` on every visible floating
   container when the main window is activated or deactivated. Off xcb that is a
@@ -249,7 +267,7 @@ The HDR chain costs 4x (RGBA16F 8 + depth) + RGBA16F 8 + RGBA8 4 + depth per
 render pixel: 64 B with D32F (4 B) and 84 B with OpenGL's D32FS8 resolve (8 B).
 3840x2160 is 506 MiB (664 MiB on OpenGL), so 1 GiB fits one 5K view (one 4K view
 on OpenGL) and 4 GiB eight 4K docks (six on OpenGL). The largest single buffers at the desktop limits: 100 M points ×
-20 B = 2 GB, 20 M marker vertices × 28 B = 560 MB.
+16 B = 1.6 GB, 20 M marker vertices × 28 B = 560 MB.
 
 Fixed sizes: shadow map 2048² D32F (`kShadowMapSize`, independent of
 `render_scale`); point list up to 4 device px (`kPointListMaxPx`); flat sphere
@@ -282,21 +300,32 @@ In short:
 - Both builds add a foreground diff (differing pixels over the foreground, limit
   0.12, always with the neighbourhood rule) and a stray count (non-background
   pixels farther than 2 px from the golden's foreground, limit 4).
-- Driver-dependent scenes check coverage and mean colour only
-  (`field_turbo_spheres`, `large_1m_points`, the line grids) or coverage only
-  (`shape_spheres_small`: its ~1.5 px discs rasterize at a different size per Mesa
-  version).
+- Driver-dependent scenes drop the per-pixel, foreground-diff and 2 px stray
+  checks for coverage and mean colour (`field_turbo_spheres`, `large_1m_points`,
+  the line grids) or coverage alone (`shape_spheres_small`: its ~1.5 px discs
+  rasterize at a different size per Mesa version). Both modes keep a coarse
+  spatial check, which the pixel count and mean colour cannot give (a moved or
+  rearranged foreground keeps both): the covered pixels per 16 px tile (sum of
+  |actual - golden| over the golden's count, at most the coverage limit + 0.10),
+  the per-tile mean colour (coverage-and-colour mode, at most 20), the centroid
+  (2 px; 6 px for the line grids) and the bounding box (4 px) of the covered
+  pixels, and the stray count outside a 4 px margin (limit 4).
+  `GoldenComparator.CoverageModesRejectMovedForeground` feeds the comparator
+  synthetic frames: a foreground translated by 12 px, a blob moved by 16 px or
+  across the frame and a colour ramp reversed in place all keep the pixel count
+  and mean colour and fail, a 1 px jitter passes.
 
 Per-backend allowances and measurements:
 
 | Backend | Allowance | Measured worst |
 |---|---|---|
 | OpenGL (llvmpipe) | none | foreground diff 0.007 (`shape_cubes_subpixel`), per-pixel 0.003 |
-| Vulkan (lavapipe) | none | foreground diff 0.083 (`field_viridis_cubes`), per-pixel 0.077; line grids 18% of their foreground (hence coverage-only) |
+| Vulkan (lavapipe) | none | foreground diff 0.083 (`field_viridis_cubes`), per-pixel 0.077; line grids 18% of their foreground (hence the coverage mode) |
 | D3D11 (WARP) | line scenes (grid, marker edges, line strips): coverage 0.12, foreground diff 0.2 | neighbourhood 0.019 (`field_viridis_cubes`), per-pixel 0.074 (`shape_cubes_subpixel`), point-cloud coverage within 0.6%; line grids 1.19x the golden's pixels |
 | Metal (paravirtual) | none | the D3D11 bands on the point clouds; line grids 0.94x |
 | All, line grids | coverage 0.08 (0.25 on D3D11/WARP) | llvmpipe 0.994, lavapipe 0.982, Metal 0.937, WARP 1.194 of the golden's pixels |
 | Apple software GL | not run | sphere imposters ~10% larger, soft point sprites: coverage up to 19%, mean colour up to 58 |
+| Coverage modes, spatial | line-grid centroid 6 px | Mesa 26 on llvmpipe, lavapipe, Iris GL and Iris Vulkan: tiles 0.053, tile colour 6 (10 on `shape_spheres_small`, whose colour is not checked), centroid 0.39 on the clouds and 2.8 on the line grids of the y-down backends (their mirrored MSAA keeps more of one line slope), bounding box 1, strays 0; D3D11, Metal and CI's Mesa 23 not measured |
 
 The GL build reproduces the goldens exactly (0.0000) and writes them
 (`PJ_UPDATE_POINTCLOUD_GOLDENS=1`); the QRhi build refuses to.
@@ -331,7 +360,7 @@ opengl on macOS. `DPR2` adds `<runner>.opengl_dpr2.*` at `QT_SCALE_FACTOR=2`
 | `scene3d_rhi_marker_cache_test`, `scene3d_rhi_model_cache_test` | the marker and model caches, pixel-identical to the uncached frames | — |
 | `scene3d_rhi_platform_test` | `max3dTextureSize()` per backend | — |
 | `pointcloud_golden_test` | the golden corpus (§7) | — |
-| `scene3d_frame_benchmark` | frame budgets, a smoke at default sizes; `PJ_S3D_BENCH_FULL=1` for the Gate A sizes | — |
+| `scene3d_frame_benchmark` | frame budgets, a smoke at default sizes; `PJ_S3D_BENCH_FULL=1` for the Gate A sizes. The smoke asserts no timing, only each case's workload: its cloud, markers or model drawn in the last frame (QRhi build: the view's draw counters) and, in the animated cases, data that advances (a cloud uploaded every streamed frame, the followed frame moving, the robot's pose changing the image) | — |
 | `plot_rhi_render_test` (pj_plotting) | the plot canvas against Qwt's raster | yes |
 | `rhi_dock_lifecycle_test`, `rhi_mixed_dock_test` (pj_app) | the floating-dock matrix, stand-ins and real widgets | yes |
 
@@ -358,9 +387,44 @@ test-enabled desktop builds; release builds configure `PJ_BUILD_TESTS=OFF`):
   widget meets a new QRhi before releasing the old one's resources;
 - `setForceDepthReplayForTest()` keeps the depth replay where the chain would
   resolve depth; `scene3d_frame_benchmark`'s `DepthReplayOnOff` times the two;
+- `MarkerRhiPass::setIdleReleasePausedForTest()` holds kept marker expansions
+  through idle spells (the 250 ms wall-clock release), so the frame-window
+  checks of `ExpansionIsKeptOnlyWhileReuploading` cannot race a slow grab;
+  releasing it re-arms the release, which the test then waits for;
 - `QT_RHI_LEAK_CHECK` catches resources left on a dying QRhi on Vulkan, D3D11
   and Metal; on OpenGL uniform buffers are CPU-side and untracked, hence the
   counters.
+
+**Display runners in parallel.** Every CI lane runs ctest serially under xvfb.
+A local `ctest -j` of the display runners on one Wayland compositor (a headless
+GNOME Shell) lets the tests' windows cover each other, and the compositor sends
+no frame callbacks to a covered surface: a `grabPresentedFrame()` then times out
+("presented no frame to grab (occluded window?)"). `rhi_mixed_dock_test` fails
+this way in about 3 of 4 parallel runs, and in none with one compositor per
+process or with xcb (Xwayland). Run the display runners serially, one compositor
+each, or through xcb when parallel.
+
+**Mixed device-pixel ratios.** `FloatingDockMovedToAScreenWithAnotherPixelRatio`
+(`rhi_dock_lifecycle_test`) and `FloatingDocksMovedToAScreenWithAnotherPixelRatio`
+(`rhi_mixed_dock_test`) move a floating dock to a screen with another ratio. They
+need two screens whose ratios differ, on xcb (a Wayland compositor places windows
+itself, so they skip there): they skip without such screens, fail with
+`PJ_REQUIRE_MIXED_DPR=1`, and fail when the move leaves the ratio unchanged. xvfb
+cannot provide them: every RandR output of Xvfb is named `screen`, so
+`QT_SCREEN_SCALE_FACTORS` gives both the last factor; `xrandr --setmonitor` adds no
+monitor there; and two X screens (`-screen 0 .. -screen 1 ..`, RandR off) make
+`QWindow::setScreen()` hide and re-create the window, not change its ratio live.
+A headless mutter (or GNOME Shell) with two virtual monitors does: its Xwayland
+has one named output per monitor, and xcb moves the window between them with the
+window exposed throughout. Locally:
+
+```bash
+XDG_RUNTIME_DIR=<dir> dbus-run-session -- gnome-shell --headless --wayland \
+  --virtual-monitor 1024x768 --virtual-monitor 1024x768 --wayland-display <name> &
+# DISPLAY: "Using public X11 display :N" in its log; XAUTHORITY: <dir>/.mutter-Xwaylandauth.*
+QT_QPA_PLATFORM=xcb QT_SCREEN_SCALE_FACTORS="1;2" PJ_REQUIRE_MIXED_DPR=1 \
+  ctest --test-dir build -R 'AnotherPixelRatio'
+```
 
 Dumps: `PJ_RHI_TEST_DUMP_DIR` saves the harness frames, and
 `PJ_POINTCLOUD_GOLDEN_OUT` / `PJ_POINTCLOUD_GOLDEN_DUMP_ALL=1` the golden actuals
@@ -372,14 +436,25 @@ and diffs.
 |---|---|---|---|
 | `linux-ci.yml` | `build` (QRhi) | the whole suite under xvfb, every `.opengl`, `.opengl_dpr2` and `.vulkan` pass (lavapipe via `VK_ICD_FILENAMES`), `PJ_REQUIRE_GPU_TESTS=1` | blocking |
 | | OpenGL floor step | `scene3d_rhi_render_test.opengl` and `rhi_dock_lifecycle_test.opengl` with Mesa capped at GL 3.3 | blocking |
+| | mixed-DPR step | the two `*AnotherPixelRatio` cases, `.opengl` and `.vulkan`, on a headless mutter's Xwayland with two virtual monitors, `QT_SCREEN_SCALE_FACTORS="1;2"`, `PJ_REQUIRE_MIXED_DPR=1` | non-blocking (`continue-on-error`) until it has run green on the runner's mutter 42 |
 | | `build-gl` tree | the legacy GL build (`-DPJ_SCENE3D_RHI=OFF -DPJ_BUILD_DEMOS=OFF`): `pj_app` and `pj_gl_rollback_tests`, run as `ctest -L gl-rollback` (the GL runners and tests, goldens per pixel) | blocking |
 | `windows-ci.yml` | `build` (QRhi) | the unit suite (`-LE qrhi`), then `-L qrhi-d3d11` with the `windows` QPA, `QSG_RHI_PREFER_SOFTWARE_RENDERER=1`; `scripts/ci/check_qrhi_backend.sh` fails unless every view and plot canvas logs `D3D11` on a `Cpu` (WARP) adapter | compile and display step blocking; unit step non-blocking |
 | | `gl` | the legacy GL build and its non-GPU tests (hosted Windows has no GL 4.5) | non-blocking |
 | `macos-ci.yml` | `qrhi-metal` (`macos-14`) | a Metal device and presentation probe, then `-L qrhi-metal` and `-L qrhi-opengl` with the `cocoa` QPA, each requiring every view and plot canvas on its backend, then `-LE qrhi`; on a failure it reruns up to three failed QRhi cases under lldb (their backend from the ctest name) for every thread's backtrace | on PRs |
 | `pixi-ci.yml` | linux-64, win-64 | the QRhi build against conda Qt; win-64 runs the whole suite with the display passes skipped (its runner exposes no window) | — |
-| `sanitizers.yml` | asan, msan, tsan | the Clang 22 + libstdc++ build; `tsan.supp` carries audited entries for `LatestWinsWorker`'s Qt hand-offs | — |
+| `sanitizers.yml` | asan, msan, tsan | the Clang 22 + libstdc++ build, offscreen (`test.sh`), so every display case skips; `tsan.supp` carries audited entries for `LatestWinsWorker`'s Qt hand-offs | nightly, on push to main, on dispatch |
 | `wasm-ci.yml` | | build, Playwright suites, the Scene3D capability probe | — |
 | release workflows | | the render check on the IFW install (D3D11/WARP) and on the .deb and AppImage (Ubuntu 22.04 and 24.04) | see `packaging/README.md` |
+
+**ASan on a display (local).** No CI lane runs the display cases instrumented.
+Before merging a change to QRhi resource lifetimes or failure handling, run the
+`.opengl` (llvmpipe) and `.vulkan` (lavapipe) passes of `scene3d_rhi_failure_test`,
+`scene3d_rhi_marker_cache_test`, `scene3d_rhi_model_cache_test`,
+`rhi_dock_lifecycle_test`, `rhi_mixed_dock_test` and `plot_rhi_render_test` under
+ASan with `./test.sh --sanitize asan --display`, `PJ_REQUIRE_GPU_TESTS=1`, in a
+`dbus-run-session` (without a session bus, Qt's D-Bus client on xcb leaks a libdbus
+buffer and LeakSanitizer fails every case): 154 cases, 89 s on a 20-core machine.
+The command is in [docs/SANITIZERS.md](../../docs/SANITIZERS.md#asan--ubsan).
 
 The macOS OpenGL step is a functional smoke run, not a parity gate (Metal is):
 it leaves out what measures Apple's software renderer rather than ours, namely the
@@ -390,53 +465,159 @@ recompiles the pipeline set at 4x the pixels; Linux runs it). The PR lane runs o
 GitHub's `macos-14`, because Depot's macOS capacity is not elastic (a job queued
 40 min); Depot stays a `workflow_dispatch` choice.
 
-## 9. Performance baseline (Gate A, final run)
+## 9. Performance (Gate A)
 
-Method: `scene3d_frame_benchmark`, `plot_canvas_benchmark` and
-`mixed_layout_benchmark` on Intel Iris Xe (RPL-P), Mesa 26.0.3, i915, AC power,
-`powersave` governor; xcb on a private rootful Xwayland in a headless GNOME Shell,
-vsync off (`vblank_mode=0`, `MESA_VK_WSI_PRESENT_MODE=immediate`); 5 interleaved
-rounds, one process per case, each the median of 30 frames after 3 warm-up
-frames. Median [min–max]. Verdicts are on RHI GL, Linux's native backend; RHI VK
-(opt-in on Linux) is for reference. Plot rows compare with the Qwt GL canvas. The
-RTX 4070 column is still open (QRHI_NEXT.md).
+Method: `scripts/perf/gate_a.sh` (see "Harness" below) on Intel Iris Xe (RPL-P),
+Mesa 26.0.3, i915, AC power, `performance` governor with the P-cores capped at
+2.4 GHz; xcb on a private rootful Xwayland in a headless GNOME Shell, vsync off
+(`vblank_mode=0`, `MESA_VK_WSI_PRESENT_MODE=immediate`); 5 interleaved rounds,
+one process per case and configuration, each the median of 30 frames after the
+warm-up. Median [min–max] where the spread exceeds 10%. Verdicts are on RHI GL,
+Linux's native backend: time within max(1.2x, +1 ms) of the GL build, memory
+within 1.10x, the row's own limit where it has one, idle frames 0; RHI VK
+(opt-in on Linux) is for reference. Plot rows compare with the Qwt GL canvas.
+Run of 2026-09-28, load average 1.3–3.3; the cloud, stream, dock and first-show
+rows are from a second run that day (`--only`, load 1.3–2.9), and the two marker
+rows from a third, since markers cast no shadows (`--only MarkersPanFollow`,
+3 interleaved rounds, load 4.3–8.5). The RTX 4070 column is still open
+(QRHI_NEXT.md).
 
 | Row | GL build | RHI GL | Ratio (RHI GL) | Verdict | RHI VK |
 |---|---|---|---|---|---|
-| Cloud 10M static: wall / CPU ms | 20.0 / 1.8 | 19.9 / 1.5 | 1.00x / 0.83x | pass | 21.5 / 1.6 |
-| Cloud 10M static: RSS MiB | 371 | 448 | 1.21x | **fail** | 443 |
-| Cloud 10M GPU ≤ 550 MiB (DRM; DPR 2) | 245; 595 | 284; 531 | – | pass | allocator 442; 621 |
-| Cloud stream 300k/frame: wall ms | 6.0 [6.0–6.9] | 8.0 [5.6–8.5] | 1.33x (limit 7.2) | **fail** | 17.7 |
-| Cloud stream: CPU ms / RSS MiB | 5.3 / 276 | 6.1 / 296 | 1.15x / 1.07x | pass | 10.2 / 289 |
-| 100k cubes + 1M line vertices, orbit: wall / CPU ms | 33.7 / 33.0 | 28.7 / 3.6 | 0.85x / 0.11x | pass | 32.7 / 3.8 |
-| Cubes + lines: RSS MiB | 301 | 438 (peak 490) | 1.46x | **fail** | 434 |
-| 10k markers, pan + follow: wall ms | 13.1 | 14.2 | 1.08x | pass | 36.9 |
-| Markers: GUI CPU ms | 6.6 [4.7–7.0] | 8.6 [7.1–9.4] | 1.30x (limit 7.9) | **fail** | 11.7 |
-| 50-link robot, TF each frame: wall / CPU ms | 2.2 / 1.3 | 3.6 [1.8–4.2] / 1.9 | +1.4 ms (limit 3.2) / pass | **fail** (bimodal) | 4.7 / 1.4 |
-| 10 / 100 / 1000 layers: wall ms | 2.5 / 3.8 / 8.7 | 1.9 / 2.1 / 3.4 | ≤ 0.76x | pass | 3.1 / 4.8 / 11.4 |
-| 1000 layers: RSS MiB, first show ms | 1017, 4429 | 167, 123 | 0.16x | pass | 196, 105 |
-| 10M cloud dock: float / redock / hide-show ms | 93.9 / 85.0 / 1.2 | 138.0 / 115.5 / 1.7 | 1.47x / 1.36x / +0.5 ms | **fail** (float, redock) | 149.1 / 114.8 / 54.0 |
-| 50-link robot dock: float / redock / hide-show ms | 36.2 / 26.7 / 1.2 | 72.0 / 49.0 / 2.1 | 1.99x / 1.84x / +0.9 ms | **fail** (float, redock) | 38.1 / 12.2 / 6.5 |
-| First show, 10M cloud + robot, ms | 147.5 | 221.1 (pipelines 24) | 1.50x | **fail** | 201.3 |
+| Cloud 10M static: wall / CPU ms | 19.8 / 0.8 [0.7–0.8] | 19.6 / 0.6 [0.6–0.7] | 0.99x / 0.79x | pass | 19.9 / 0.6 |
+| Cloud 10M static: RSS MiB ¹ | 255.3 | 247.2 | 0.97x | pass | 294.5 |
+| Cloud 10M GPU (DRM MiB; DPR 2 ≤ 550) | 240.9; 581.5 | 206.7; 453.2 | 0.86x; limit 550 | pass | 426.0; 660.7 |
+| Cloud stream 300k/frame: wall ms ² | 2.0 [1.9–2.5] | 1.9 [1.8–2.2] | 0.96x | pass | 7.5 [6.8–8.2] |
+| Cloud stream: GUI CPU ms / RSS MiB | 1.2 [1.1–1.4] / 260.9 | 1.0 [0.9–1.1] / 256.0 | 0.90x / 0.98x | pass | 1.1 / 303.4 |
+| Cloud stream: ingestion ms (not gated) | 1.9 | 1.9 | 0.99x | – | 1.9 |
+| 100k cubes + 1M line vertices, orbit: wall / CPU ms ³ | 50.0 [46.7–51.8] / 48.5 [46.5–51.4] | 23.5 / 0.6 [0.6–0.7] | 0.47x / 0.01x | pass | 23.4 / 0.7 |
+| Cubes + lines: RSS / peak MiB | 300.2 / 300.2 | 301.7 / 353.6 | 1.00x / 1.18x | pass | 348.5 / 400.3 |
+| 10k markers, pan + follow: wall ms ⁴ | 7.8 | 7.6 | 0.97x | pass | 8.2 |
+| Markers: GUI CPU ms | 2.5 | 0.9 | 0.34x | pass | 0.9 |
+| 50-link robot, TF each frame: wall / CPU ms ⁵ | 2.1 [2.0–2.4] / 1.3 [1.2–1.5] | 2.0 [1.7–2.3] / 0.7 [0.7–1.0] | 0.97x / 0.58x | pass | 3.4 [2.5–4.4] / 0.8 [0.7–0.9] |
+| 10 / 100 / 1000 layers: wall ms | 1.8 [1.4–1.9] / 1.9 [1.5–2.0] / 10.9 | 1.9 [1.4–2.1] / 1.9 [1.5–2.1] / 3.3 | 1.06x / 0.99x / 0.30x | pass | 1.7 [1.5–2.7] / 2.2 [2.0–3.6] / 8.9 [7.0–9.3] |
+| 1000 layers: RSS MiB / first show ms | 1015.5 / 7014.6 | 216.8 / 146.4 | 0.21x / 0.02x | pass | 299.8 / 254.6 |
+| 10M cloud dock: float / redock / hide-show ms ⁶ | 119.9 / 115.5 / 1.6 | 131.3 / 126.6 / 1.9 | 1.10x / 1.10x / 1.18x | pass | 198.0 / 161.2 / 2.2 [2.1–3.0] |
+| 50-link robot dock: float / redock / hide-show ms ⁶ | 53.9 / 39.1 / 1.6 | 62.1 / 27.5 / 1.9 [1.9–2.1] | 1.15x / 0.70x / 1.25x | pass | 50.2 / 13.1 / 2.2 [2.0–3.3] |
+| ADS dock-area tab switch, 9.9M cloud: to the cloud / to the plot, ms ⁷ | 5.3 / 13.8 [8.7–17.4] | 4.5 / 5.2 [4.6–5.2] | 0.84x / 0.38x | pass | 4.9 [4.3–5.2] / 13.0 |
+| First show, 10M cloud + robot, ms ⁶ | 206.1 | 187.6 | 0.91x | pass | 316.0 |
 | Idle frames when static, every case | 0 | 0 | – | pass | 0 |
-| Plots: dashed 5 x 100k, wall ms | 14.6 | 13.7 | 0.94x | pass | 18.0 (1.23x) |
-| Plots: 50 x 100k, wall ms | 59.3 | 54.1 | 0.91x | pass | 102.6 (1.73x) |
-| Plots: tracker only, 10 x 100k, wall ms | 12.5 | 2.2 | 0.18x | pass | 5.9 |
-| Plot GPU memory per 1600x900 plot, DPR 1 / 2 (MiB) | 61.9 / 174.1 | 42.6 / 136.6 | 0.69x / 0.78x | pass | 106.1 / 315.8 |
-| Streaming plot, 10 x 100k, ≤ 16.7 ms | 18.5 | 8.8 | – | pass | 15.1 |
-| Mixed: 6 plots + Scene3D, wall / CPU ms | 35.5 / 35.4 | 34.3 / 16.9 | 0.97x / 0.48x | pass | 64.7 / 20.0 |
-| Mixed: RSS MiB | 266 | 285 | 1.07x | pass | 269 |
+| Plots: dashed 5 x 100k, wall ms ⁸ | 22.8 | 1.6 [1.5–1.7] | 0.07x | pass | 1.8 [1.6–2.0] |
+| Plots: 50 x 100k, wall ms ⁸ | 94.1 | 11.2 | 0.12x | pass | 11.4 |
+| Plots: tracker only, 10 x 100k, wall ms | 21.2 | 2.6 | 0.12x | pass | 6.2 [5.5–7.4] |
+| Plot GPU memory, 1600x900, DPR 1 / 2 (DRM MiB) | 61.8 / 174.1 | 45.0 / 183.2 | 0.73x / 1.05x | pass | 106.1 / 315.8 |
+| Streaming plot, 10 x 100k, ≤ 16.7 ms | 29.1 | 10.9 [10.7–12.9] | limit 16.7 | pass | 19.4 |
+| Mixed: 6 plots + Scene3D, wall / CPU ms | 59.4 / 56.1 | 37.1 / 8.8 | 0.63x / 0.16x | pass | 49.0 / 9.0 [8.8–10.0] |
+| Mixed: RSS MiB | 250.9 | 258.4 | 1.03x | pass | 302.7 |
 
-The failing rows were signed off for release N (2026-09-26); their follow-ups
-are in QRHI_NEXT.md. The benchmark's "tab" move is a hide/show on the same QRhi
-(a workspace tab); an ADS dock-area tab switch reparents and costs a float-like
-rebuild (§5).
+¹ Both builds settle on one 114 MiB anonymous block for the 10M cloud: the
+ObjectStore's wire bytes, which the zero-copy decode reads in place. RHI GL drops
+its 12-byte `PointVertex` array (114.4 MiB) once the upload is enqueued
+(ARCHITECTURE, "Eviction"); a stream keeps its array. Peak RSS during the load
+is 362.7 vs 257.2 MiB (not gated): the array lives until the upload's frame is
+submitted. A float, a redock or a move to another dock area converts the same
+sample again for the new QRhi: 10.4 ms at 10M, into a fresh array in up to 16
+chunks (18.5 ms with 8, the first-touch page faults dominating), part of the
+prepare stage in note ⁶. A compressed cloud converts from its decode cache; a
+cache holding another sample decodes again off the UI thread, which Cloudini
+takes 476 ms for at 10M points (lossy, 1 mm, ZSTD; 610 ms lossless).
+
+² The stream converts each 300k sample (`packPointVertices()` in place, 12-byte
+xyz records: the benchmark clouds are coloured by the z axis) in chunks of at
+least 256k points on the global thread pool, the GUI thread taking chunks too,
+into the retained array, which an unshared array reuses: 0 minor faults per
+frame in both builds. The GUI thread's CPU is gated; the pool adds CPU the GUI
+thread does not see (about 1 ms per frame at 300k; at 10M, 8 chunks cut 70 ms of
+wall for 19 ms more process CPU). The ingestion (the untimed push into the
+ObjectStore) is in neither wall nor CPU. On Vulkan the frame waits for its GPU
+work inside the offscreen frame (see "Reading the numbers").
+
+³ The shadow map is kept while its inputs hold (ARCHITECTURE, "Shadows"): an
+orbit of a static scene renders it once (27.9 → 23.5 ms on RHI GL). The frame is
+GPU-bound in the HDR chain: 7.0 ms without it, SSAO and EDL under 0.3 ms each.
+
+⁴ GPU-bound, the HDR chain about 1.4 ms of it. Markers cast no shadows, as on
+the GL build, so a pan or follow, which moves the render origin every frame,
+renders no shadow map. The GUI thread's work per frame is the origin-only update
+of the recurring layer (about 0.55 ms), the upload and `endFrame`.
+
+⁵ i915 settles each configuration at its own clock once warmed up: 1500 MHz for
+RHI GL on this row, 600 MHz on Vulkan (every light row), and the GL build either
+(its range 2.0–2.4 ms). `cold_ms`, the first frame after a second of idle, is
+1.0 ms on RHI GL, 2.2 in the GL build and 5.1 on Vulkan.
+
+⁶ A new QRhi (a float, a redock, a first show) builds only the families the
+scene uses, and of their pipelines only the ones it draws (ARCHITECTURE,
+"Families are built on demand", "Pipeline registry"): 13 pipelines and 20.7 ms of
+creation at the first show, against 50 and 78 ms when every family's pipelines
+were built. Where the rest goes (RHI GL, stage sums per operation): the robot
+float 62.6 ms is the new top-level and QRhi 12.2, the HDR chain's targets 12.2,
+prepare 6.3, submit 7.4 and the first frame's GPU work and swap 25.4; the 10M
+cloud float 131.3 ms spends 72.2 of it in the present (the 114 MiB re-upload
+executes there) and 30.8 in prepare (the buffer allocation and the 10 ms
+conversion of the evicted cloud, note ¹). On Vulkan a pipeline
+costs under 1 ms (its pipeline cache), but the re-upload waits in the offscreen
+frame (submit 57.9, present 107.3 ms for the cloud).
+
+⁷ Our ADS fork keeps a dock area's hidden tabs parented (§5), so a tab switch
+adopts no QRhi, builds nothing and uploads nothing, and a Show whose target
+still holds the last frame renders nothing (ARCHITECTURE, "Widget lifecycle and
+reparenting"): the switch costs the same at 10.6k and 9.9M points (RHI GL 4.5 /
+5.2 ms, Vulkan 4.9–5.1 / 13.0 ms; the Vulkan plot tab's 13 ms is the plot
+canvas's own synchronous offscreen frame). The GL build's switch to the plot
+waits on its GPU. Hidden tabs keep their GPU memory; DRM MiB with a 1M-point
+Scene3D tab and K plot tabs visited (1260x780), upstream ADS → our fork:
+
+| Plot tabs | 1 | 4 | 8 |
+|---|---|---|---|
+| RHI GL | 132 → 138 | 132 → 158 | 132 → 184 |
+| RHI VK | 366 → 302 | 366 → 366 | 366 → 366 (allocator blocks) |
+| GL build | 153 → 172 | 149 → 228 | 153 → 303 |
+
+About 6.5 MiB per hidden plot on RHI GL (19 MiB in the GL build); a hidden
+Scene3D tab keeps its whole scene (a 10M cloud: 114 MiB of vertices and the HDR
+targets). RSS is unchanged.
+
+⁸ The plot rows replot unchanged data every frame. The app's datastore curves
+are `RevisionedSeries` (pj_plotting CLAUDE.md, "Dirty layers"), and so is the
+benchmark's data: an unchanged replot keeps the RHI canvas's curve layer. With
+plain Qwt data (`plot_canvas_benchmark --generic-series`, 3 rounds, wall / canvas
+CPU ms) every replot rebuilds:
+
+| Case | Qwt GL | RHI GL | RHI VK |
+|---|---|---|---|
+| 50 x 100k static | 91.5 / 90.6 | 85.2 / 81.9 | 107.1 / 90.9 |
+| 5 x 100k dashed | 22.6 / 22.1 | 21.8 / 21.1 | 26.5 / 22.3 |
+| 1M static | 16.1 / 15.6 | 13.8 / 13.4 | 17.2 / 15.1 |
+
+Streaming and zoom/pan change the data or the maps every frame and rebuild in
+both modes; the tracker case replots overlays only.
+
+Markers with long line strips (1.1M strip points in 110 strips, OpenGL, GUI-thread
+CPU per frame): a pan (origin-only update) 18.8 ms, a full rebuild each frame
+18.8 ms, a live 100k-point layer with a new sample each frame 9.6 ms; with
+per-point colours 18.9, 17.2 and 15.0 ms. What remains of a pan is the vertex
+write (2.2M vertices, 62 MB) and the driver's copy of it in `endFrame` (21% of
+the frame).
 
 Reading the numbers:
 
-- Vulkan on the Iris costs more GUI CPU than OpenGL wherever the frame is
-  CPU-bound (markers 11.7 vs 8.6 ms, stream 10.2 vs 6.1 ms), consistent with
-  OpenGL as Linux's native backend.
+- Vulkan on the Iris costs more wall time than OpenGL wherever a frame has GPU
+  work: a `QRhiWidget` frame is an offscreen frame, which on Vulkan submits and
+  waits for its fence (wall = CPU + GPU), where OpenGL overlaps the GPU with the
+  next frame (the stream: 8.9 vs 2.2 ms).
+- Buffer uploads: a cloud's first upload goes into an `Immutable` buffer (one
+  copy; Vulkan then frees the staging, which a `Static` buffer keeps: the 10M
+  static cloud 684 → 428 MiB DRM), later ones into `Static`. The layers pad their
+  arrays past 64 KiB to a 64 KiB multiple, because Mesa's anv records a buffer copy of an
+  awkward size slowly (QRHI_NEXT.md): a 1000003-point stream takes 21.4 ms
+  padded, 43.3 unpadded; a 10000019-point first upload 79.9 ms padded, 163.2 ms
+  unpadded.
+- A settled OpenGL view keeps the last frame's uploads until its next frame:
+  QRhi's GL backend retains each upload's data in the command buffer until the
+  next `beginFrame` (`retainBufferData`), 53 MiB after a pan of the 1.1M-point
+  strips above. Vulkan copies into staging and keeps nothing; the marker pass
+  itself drops a kept expansion 250 ms after the last frame.
 - QRhi's Vulkan backend frees an upload's staging buffer only frames later, so a
   settled view (which renders no more frames) keeps reporting it in the DRM
   total; the multisample depth texture of the resolve chain also comes from a
@@ -444,20 +625,87 @@ Reading the numbers:
 - The software rasterizers run the frame on the GUI thread for OpenGL and on
   worker threads for Vulkan, so only wall time compares between them.
 
+### Harness
+
+`scripts/perf/gate_a.sh --rhi <QRhi tree> --gl <GL rollback tree>` runs every
+Gate A case with the method above and builds nothing: it starts its own headless
+GNOME Shell and rootful Xwayland (`--display`, default `:96`), runs each case in
+its own process with the configurations (GL build, RHI GL, RHI VK) interleaved
+within each round, keeps every run's output under `<out>/raw/<round>/`, and ends
+with `scripts/perf/gate_a_report.py <out>`, which writes `<out>/gate_a.md`: the
+median of the rounds with [min–max] where the spread exceeds 10%, the ratio and
+the verdict of each row: pass, fail, or incomplete when a gated measurement is
+missing or a run failed (each log ends with the run's exit status) and nothing
+present fails the row. Every round under `raw/` is expected of every
+configuration and case a row gates, so a run absent from a round is missing;
+the idle row needs every idle-reporting case. The GL tree is configured with `-DPJ_SCENE3D_RHI=OFF
+-DPJ_BUILD_DEMOS=ON` and builds `scene3d_frame_benchmark` and
+`mixed_layout_benchmark`; the QRhi tree also builds `plot_canvas_benchmark`
+(both canvases). Run it under the machine's build lock (no compile may overlap a
+round); `--first-round K --rounds 1` runs one round at a time into the same
+`--out`, so builds can run between rounds. A round whose load average stands out
+is rerun, not averaged in. Start the display outside the lock and pass
+`--keep-display`: a compositor started under `flock` inherits the lock and holds
+it after the run.
+
+Every per-frame benchmark (`scene3d_frame_benchmark`, the mixed layout, the
+plots) warms up with `pj_bench::WarmUp`: at least 250 ms of frames, the last 5
+within 10% of each other and the i915 clock (`gt_act_freq_mhz`) unchanged for
+100 ms, capped at 120 frames or 2 s. The first warm-up frame, after a second of
+idle, is reported as `cold_ms`: the first interaction a user sees, with the GPU
+still at its idle clock. The warm clock is a steady state per configuration, not
+a constant: on this Iris the robot row settles at 600 MHz in the GL build and at
+1500 in RHI GL, and RHI VK stays at 600 MHz on every light row, so those rows
+compare clock policies as much as renderers (`gpu_mhz` at the end of the warm-up,
+`gpu_mhz_range` over the measured frames).
+
+What the benchmarks report besides wall, CPU and memory:
+
+- `scene3d_frame_benchmark`: per-frame wall p90 and max, GUI-thread CPU p50 and
+  p90, minor page faults per frame (the whole process), upload work per frame
+  (point-cloud uploads and MiB, marker rebuilds, model mesh builds), and, in the
+  QRhi build, a stage split per frame (`stages_ms`: step, sched, targets, admit,
+  prepare, submit, present, init; the header of the file defines them). A case
+  that ingests data per frame (`CloudStream`) does it before the timed request:
+  its wall, CPU and faults exclude it and `ingest_ms` reports it. The dock and
+  first-show cases sum the stages of every full render in the operation (`float_stages_ms`,
+  `first_stages_ms`, ...; `sched` is the rest of the wall outside `render()` and
+  present), and count the base builds (`*_inits`), paint events, render calls
+  and skipped paints (`*_paints`, `*_renders`, `*_skips`).
+  `PJ_S3D_BENCH_CSV_DIR` writes every frame's sample; `window_ns` is the
+  measured span in `CLOCK_MONOTONIC`, to cut a `perf record -k CLOCK_MONOTONIC`
+  profile to it.
+- `mixed_layout_benchmark --tab-switch N`: a real ADS dock-area tab switch
+  (`setAsCurrentTab()`) between a Scene3D dock and the plot docks, all tabs of
+  one area, the camera fixed as in the frame case and rendered before the
+  layout settles. Every tab is shown once
+  first; then each switch is timed to the shown widget's first frame, with the
+  Scene3D view's QRhi adoptions, base builds, uploads, paints, render calls,
+  skipped paints and full renders per switch, and the memory with every tab
+  visited (`--plots K` for K plot tabs).
+
+`scene3d_frame_benchmark` has attribution switches, not for the gate:
+`QSG_RHI_PROFILE=1` reports `gpu_ms` (QRhi timestamps, which slow the frame),
+`PJ_S3D_BENCH_NO_HDR=1` forces the direct pass, `PJ_S3D_BENCH_NO_SHADOWS=1` turns
+shadows off and `PJ_S3D_BENCH_NO_SSAO=1` / `PJ_S3D_BENCH_NO_EDL=1` those stages;
+the test builds' `PJ_SCENE3D_PIPELINE_LOG=1` logs every pipeline creation.
+
 ## 10. Known gaps
 
-- The Gate A rows marked **fail** above (QRHI_NEXT.md, "P6: performance
-  follow-ups").
-- An ADS dock-area tab switch rebuilds the view like a float (ADS parks the
-  hidden tab parentless, §5); the Show skip covers only a hide/show on the same
-  QRhi.
-- Markers rebuild on pan and follow: the render origin is in their cache key.
+- A move to another dock area (a drag within the window) still rebuilds the
+  view like a float: ADS unparents the dock on the way (§5).
+- Hidden tabs keep their GPU resources (§9, note ⁷).
+- Markers re-upload on pan and follow (the render origin is in their cache key);
+  a recurring layer updates only its translations and stream positions. A model
+  scene's shadow map is rendered again on every pan or follow frame, for the
+  same reason.
 - A runtime HDR refusal on a GPU that can run the chain (size, budget, a missing
   HDR variant) draws its direct pass without MSAA: the widget's sample count is
   chosen once per QRhi.
 - Large point sprites are quads above `kPointListMaxPx` (4 px), about 1.2x the GL
   build's `gl_PointSize` sprites on Iris Xe (a 1M 0.1 m sphere cloud: 34.9 vs
-  29.6 ms on OpenGL).
+  29.6 ms on OpenGL; the 9.9M-sphere tab-switch lattice: 400 vs 310 ms, 311 ms
+  as a point list; QRHI_NEXT.md).
 - ADS hides floating docks on Wayland, on every backend (§5).
 - D3D11 (WARP) rasterizes 1 px lines differently from Mesa; three wide dashed plot
   lines end one dash later than Qwt's raster. The goldens and the dash test carry
@@ -478,6 +726,10 @@ Reading the numbers:
   tones by the test's threshold (same coverage loss as the sub-pixel sprite
   case, §8); the macOS `qrhi-opengl` step excludes it and Mesa/Vulkan/Metal run
   it as usual.
+- On the same renderer `ShadowToggleRebindsKeptMeshes`'s bit-identical check of a
+  shadowed frame before and after a shadow toggle failed 3 of its 5 CI runs (the
+  frames differ with the same inputs); the macOS
+  `qrhi-opengl` step excludes it, and Mesa (OpenGL, Vulkan) and Metal run it.
 - The AppImage smoke runs after its upload; a `workflow_dispatch` of the release
   workflows on a branch is its only pre-merge gate (`packaging/README.md`).
 - Vulkan (opt-in on Linux) misses most CPU-bound and plot rows of Gate A

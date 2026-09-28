@@ -37,10 +37,14 @@ class OccupancyRhiPass {
   /// Adopts the view's occupancy layers; drops GPU state of layers that left or
   /// are hidden.
   void setLayers(const std::vector<OccupancyGridLayer*>& layers);
+  /// A layer of this family is in the view: the view builds the family (initialize()) only then.
+  [[nodiscard]] bool hasLayers() const {
+    return !layers_.empty();
+  }
 
   /// Runs each visible layer's prepareForRender() against the per-view cell
-  /// budget, places it, and adds its fixed-frame bounds to `bounds`.
-  void admit(const PlaceFn& place, SceneBoundsCollector& bounds);
+  /// budget, places it, and records the family's fixed-frame bounds (lastBounds()).
+  void admit(const PlaceFn& place);
   /// Uploads admitted layers' textures (full or dirty rects) and uniforms and
   /// builds this frame's draws.
   void prepare(const RhiFrameContext& frame);

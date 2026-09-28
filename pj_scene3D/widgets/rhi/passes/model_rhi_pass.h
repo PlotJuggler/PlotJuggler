@@ -67,13 +67,16 @@ class ModelRhiPass {
   /// Adopts the view's model layers; drops GPU state of layers that left or
   /// are hidden.
   void setLayers(const std::vector<ModelRenderable*>& layers);
+  /// A layer of this family is in the view: the view builds the family (initialize()) only then.
+  [[nodiscard]] bool hasLayers() const {
+    return !layers_.empty();
+  }
 
   /// Places every draw call, applies the per-layer and per-view draw/triangle
   /// budgets (colour and, when `shadows_requested`, shadow casting: hidden
   /// robot visuals still cast, collisions never do), notes row warnings and
-  /// adds the bounds of layers that contribute to the scene bounds.
-  void admit(
-      const PlaceFn& place, const MeshShadingParams& shading, bool shadows_requested, SceneBoundsCollector& bounds);
+  /// records the bounds of layers that contribute to them (lastBounds()).
+  void admit(const PlaceFn& place, const MeshShadingParams& shading, bool shadows_requested);
   /// Creates or refreshes GPU meshes/materials of admitted layers, builds this
   /// frame's colour draws, shadow-caster draws and caster bounds (relative to
   /// the render origin) and uploads the colour instances and pending
@@ -96,6 +99,10 @@ class ModelRhiPass {
   /// This frame's caster bounds, relative to the prepare() render origin.
   [[nodiscard]] AABB shadowCasterBounds() const {
     return shadow_bounds_;
+  }
+  /// Changes whenever prepare() rebuilt the casters (their draws and instances).
+  [[nodiscard]] std::uint64_t shadowRevision() const {
+    return shadow_revision_;
   }
   /// Creates the depth-only caster pipeline for the view's shadow target, whose
   /// `bindings` (binding 0: light view-projection) it binds; true when it exists.
@@ -135,6 +142,10 @@ class ModelRhiPass {
 
   [[nodiscard]] int lastLayerCount() const {
     return last_layer_count_;
+  }
+  /// This frame's colour draws exist (what submitMeshMask() records).
+  [[nodiscard]] bool hasDraws() const {
+    return !draws_.empty();
   }
   [[nodiscard]] int lastDrawCount() const {
     return last_draw_count_;
@@ -331,7 +342,8 @@ class ModelRhiPass {
   bool shadow_upload_pending_ = false;
   bool caches_enabled_ = true;  // test hook
   CacheCounters counters_;      // test counters
-  std::vector<Draw> draws_;     ///< contiguous per layer, in admission order
+  std::uint64_t shadow_revision_ = 0;
+  std::vector<Draw> draws_;  ///< contiguous per layer, in admission order
   std::vector<Instance> instances_;
   std::vector<ShadowInstance> shadow_instances_;
   std::vector<ShadowDraw> shadow_draws_;

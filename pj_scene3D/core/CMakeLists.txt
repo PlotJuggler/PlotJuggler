@@ -106,7 +106,6 @@ if(PJ_BUILD_TESTS)
     ../tests/camera_zoom_to_cursor_test.cpp
     ../tests/camera_state_transfer_test.cpp
     ../tests/camera_follow_test.cpp
-    ../tests/camera_fit_policy_test.cpp
     ../tests/poses_in_frame_render_test.cpp
     ../tests/poses_budget_test.cpp
     ../tests/model_budget_test.cpp

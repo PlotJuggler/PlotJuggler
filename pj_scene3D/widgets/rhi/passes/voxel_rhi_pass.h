@@ -42,11 +42,15 @@ class VoxelRhiPass {
   void registerPipelines(ScenePipelineRegistry& registry) const;
   /// Adopts the view's voxel layers; drops GPU state of layers that left or are hidden.
   void setLayers(const std::vector<VoxelGridLayer*>& layers);
+  /// A layer of this family is in the view: the view builds the family (initialize()) only then.
+  [[nodiscard]] bool hasLayers() const {
+    return !layers_.empty();
+  }
 
   /// Runs each visible layer's prepareForRender() against the per-view voxel
-  /// budget, rejects volumes `rhi` cannot hold, places the rest, and adds their
-  /// fixed-frame bounds to `bounds`.
-  void admit(QRhi* rhi, const PlaceFn& place, SceneBoundsCollector& bounds);
+  /// budget, rejects volumes `rhi` cannot hold, places the rest, and records the
+  /// family's fixed-frame bounds (lastBounds()).
+  void admit(QRhi* rhi, const PlaceFn& place);
   /// Uploads the colormap (once), admitted layers' volumes (when their revision
   /// moved) and uniforms, and builds this frame's draws: none for a grid wholly
   /// outside the view frustum (the GL pass's reject), which still counts as admitted.

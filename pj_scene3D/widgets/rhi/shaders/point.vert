@@ -14,8 +14,7 @@
 #include "../../shaders/cube/cube_sprite.glslinc"
 
 layout(location = 0) in vec3 instance_position;
-layout(location = 1) in float instance_scalar;
-layout(location = 2) in vec4 instance_color;
+layout(location = 1) in uint instance_attribute;  // decodePointAttribute()
 
 layout(location = 0) flat out vec4 v_color;   // rgb: target space, shaded unless an imposter; a: alpha
 layout(location = 1) out vec2 v_corner;       // [-1, 1] across the quad, +y screen-up
@@ -26,6 +25,9 @@ void cull() {
 }
 
 void main() {
+    float instance_scalar;
+    vec4 instance_color;
+    decodePointAttribute(instance_attribute, instance_scalar, instance_color);
     vec3 in_render = (fixed_from_source * vec4(instance_position, 1.0)).xyz;
     vec4 clip = view_projection * vec4(in_render, 1.0);
     float scalar = modes.w < 0 ? instance_scalar : in_render[modes.w] + color_axis_offset[modes.w];

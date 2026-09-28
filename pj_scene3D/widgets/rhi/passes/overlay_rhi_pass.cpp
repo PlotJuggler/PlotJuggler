@@ -65,7 +65,7 @@ bool OverlayRhiPass::initialize(const RhiPassSetup& setup) {
       rhi,
       {QRhiShaderResourceBinding::uniformBuffer(0, QRhiShaderResourceBinding::VertexStage, gizmo_uniform_buffer_)});
   // Keeps the output's alpha (Wayland treats a non-opaque surface as translucent).
-  QRhiGraphicsPipeline::TargetBlend over = dataAlphaBlend();
+  QRhiGraphicsPipeline::TargetBlend over = PJ::straightAlphaBlend();
   over.srcAlpha = QRhiGraphicsPipeline::Zero;
   over.dstAlpha = QRhiGraphicsPipeline::One;
   gizmo_pipeline_ = createScenePipeline(

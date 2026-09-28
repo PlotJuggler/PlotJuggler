@@ -193,13 +193,15 @@ bool SceneViewWidget::ensureShadowResources(QRhi* owner) {
     return fail(tr("Could not create the shadow resource bindings"));
   }
 
-  if (!model_pass_->ensureShadowPipeline(owner, shadow_render_pass_descriptor_, shadow_shader_resources_) ||
-      !marker_pass_->ensureShadowPipeline(owner, shadow_render_pass_descriptor_, shadow_shader_resources_)) {
+  // The caster pipeline of the model family, the one family that casts, once
+  // built (createSceneResources() drops these resources when it is built later).
+  if (model_pass_->ready() &&
+      !model_pass_->ensureShadowPipeline(owner, shadow_render_pass_descriptor_, shadow_shader_resources_)) {
     return fail(tr("Could not create the shadow depth pipeline"));
   }
 
   if (!grid_pass_->createShadowReceiver(model_uniform_buffer_, shadow_texture_, shadow_sampler_, *pipelines_) ||
-      !model_pass_->setShadowMap(owner, shadow_texture_, shadow_sampler_)) {
+      (model_pass_->ready() && !model_pass_->setShadowMap(owner, shadow_texture_, shadow_sampler_))) {
     return fail(tr("Could not create the shadow receiver pipeline"));
   }
   shadow_map_size_ = kShadowMapSize;
@@ -211,7 +213,6 @@ bool SceneViewWidget::ensureShadowResources(QRhi* owner) {
 void SceneViewWidget::releaseShadowResources(bool restore_model_bindings) {
   grid_pass_->releaseShadowReceiver(*pipelines_);
   model_pass_->releaseShadowResources();
-  marker_pass_->releaseShadowResources();
   delete shadow_shader_resources_;
   shadow_shader_resources_ = nullptr;
 
@@ -439,56 +440,14 @@ bool SceneViewWidget::ensureSsaoResources(QRhi* owner, const QSize& size) {
   return true;
 }
 
-bool SceneViewWidget::ensureEdlResources(QRhi* owner, const QSize& size) {
-  if (owner == nullptr || !size.isValid() || size.isEmpty()) {
-    return false;
-  }
-  if (edl_mesh_mask_render_target_ != nullptr && edl_mesh_mask_triangle_pipeline_ != nullptr &&
-      edl_mesh_mask_line_pipeline_ != nullptr) {
+bool SceneViewWidget::createEdlMaskPipelines(QRhi* owner) {
+  if (!model_pass_->ready()) {
     return true;
   }
-  if (edl_stage_.blockedFor(size)) {
-    return false;
-  }
-
-  const auto fail = [this, &size](QString reason) {
-    releaseEdlResources();
-    edl_stage_.rejected_size = size;
-    const bool changed = edl_stage_.capability_error != reason;
-    edl_stage_.capability_error = std::move(reason);
-    if (changed) {
-      qWarning("SceneViewWidget QRhi EDL unavailable: %s", qPrintable(edl_stage_.capability_error));
-    }
-    updateRenderingWarning();
-    return false;
-  };
-
-  if (edl_stage_.force_fallback_for_test) {
-    return fail(tr("EDL rendering disabled by the browser acceptance override"));
-  }
-  if (hdr_resolve_coverage_ == nullptr || hdr_resolve_depth_ == nullptr || model_pass_->trianglePipeline() == nullptr ||
-      model_pass_->linePipeline() == nullptr || model_pass_->layoutBindings() == nullptr) {
-    return fail(tr("The HDR depth replay is not ready for EDL"));
-  }
-
-  QRhiTextureRenderTargetDescription description;
-  description.setColorAttachments({QRhiColorAttachment(hdr_resolve_coverage_)});
-  description.setDepthTexture(hdr_resolve_depth_);
-  edl_mesh_mask_render_target_ = owner->newTextureRenderTarget(
-      description,
-      QRhiTextureRenderTarget::PreserveColorContents | QRhiTextureRenderTarget::PreserveDepthStencilContents);
-  if (edl_mesh_mask_render_pass_descriptor_ == nullptr) {
-    edl_mesh_mask_render_pass_descriptor_ = edl_mesh_mask_render_target_->newCompatibleRenderPassDescriptor();
-  }
-  edl_mesh_mask_render_target_->setRenderPassDescriptor(edl_mesh_mask_render_pass_descriptor_);
-  if (!edl_mesh_mask_render_target_->create()) {
-    return fail(tr("Could not preserve the depth replay for the EDL mesh mask"));
-  }
-
   const QShader vertex_shader = loadRhiShader(QStringLiteral(":/scene3d_rhi/model.vert.qsb"));
   const QShader fragment_shader = loadRhiShader(QStringLiteral(":/scene3d_rhi/mesh_mask.frag.qsb"));
   if (!vertex_shader.isValid() || !fragment_shader.isValid()) {
-    return fail(tr("Could not load the EDL mesh-mask shaders"));
+    return false;
   }
   const auto create_pipeline = [owner, this, &vertex_shader, &fragment_shader](
                                    QRhiGraphicsPipeline*& destination, const QRhiGraphicsPipeline* source) {
@@ -522,8 +481,65 @@ bool SceneViewWidget::ensureEdlResources(QRhi* owner, const QSize& size) {
     destination->setRenderPassDescriptor(edl_mesh_mask_render_pass_descriptor_);
     return createGraphicsPipeline(destination);
   };
-  if (!create_pipeline(edl_mesh_mask_triangle_pipeline_, model_pass_->trianglePipeline()) ||
-      !create_pipeline(edl_mesh_mask_line_pipeline_, model_pass_->linePipeline())) {
+  return create_pipeline(edl_mesh_mask_triangle_pipeline_, model_pass_->trianglePipeline()) &&
+         create_pipeline(edl_mesh_mask_line_pipeline_, model_pass_->linePipeline());
+}
+
+bool SceneViewWidget::ensureEdlResources(QRhi* owner, const QSize& size) {
+  if (owner == nullptr || !size.isValid() || size.isEmpty()) {
+    return false;
+  }
+  // The mesh mask needs the model family's pipelines; without it (no model
+  // layer) the mask pass would record nothing, and is skipped.
+  const bool masks_meshes = model_pass_->ready();
+  if (edl_mesh_mask_render_target_ != nullptr &&
+      (!masks_meshes || (edl_mesh_mask_triangle_pipeline_ != nullptr && edl_mesh_mask_line_pipeline_ != nullptr))) {
+    return true;
+  }
+  if (edl_stage_.blockedFor(size)) {
+    return false;
+  }
+
+  const auto fail = [this, &size](QString reason) {
+    releaseEdlResources();
+    edl_stage_.rejected_size = size;
+    const bool changed = edl_stage_.capability_error != reason;
+    edl_stage_.capability_error = std::move(reason);
+    if (changed) {
+      qWarning("SceneViewWidget QRhi EDL unavailable: %s", qPrintable(edl_stage_.capability_error));
+    }
+    updateRenderingWarning();
+    return false;
+  };
+
+  if (edl_stage_.force_fallback_for_test) {
+    return fail(tr("EDL rendering disabled by the browser acceptance override"));
+  }
+  if (hdr_resolve_coverage_ == nullptr || hdr_resolve_depth_ == nullptr ||
+      (masks_meshes && (model_pass_->trianglePipeline() == nullptr || model_pass_->linePipeline() == nullptr ||
+                        model_pass_->layoutBindings() == nullptr))) {
+    return fail(tr("The HDR depth replay is not ready for EDL"));
+  }
+  if (edl_mesh_mask_render_target_ != nullptr) {
+    // Built before the model family was: only the mask pipelines are missing.
+    return createEdlMaskPipelines(owner) || fail(tr("Could not create the EDL mesh-mask pipelines"));
+  }
+
+  QRhiTextureRenderTargetDescription description;
+  description.setColorAttachments({QRhiColorAttachment(hdr_resolve_coverage_)});
+  description.setDepthTexture(hdr_resolve_depth_);
+  edl_mesh_mask_render_target_ = owner->newTextureRenderTarget(
+      description,
+      QRhiTextureRenderTarget::PreserveColorContents | QRhiTextureRenderTarget::PreserveDepthStencilContents);
+  if (edl_mesh_mask_render_pass_descriptor_ == nullptr) {
+    edl_mesh_mask_render_pass_descriptor_ = edl_mesh_mask_render_target_->newCompatibleRenderPassDescriptor();
+  }
+  edl_mesh_mask_render_target_->setRenderPassDescriptor(edl_mesh_mask_render_pass_descriptor_);
+  if (!edl_mesh_mask_render_target_->create()) {
+    return fail(tr("Could not preserve the depth replay for the EDL mesh mask"));
+  }
+
+  if (!createEdlMaskPipelines(owner)) {
     return fail(tr("Could not create the EDL mesh-mask pipelines"));
   }
 

@@ -283,6 +283,21 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   void statusTextChanged(const QString& status);
 
  private:
+  // The checked attributes of a "robot_model" payload (validateXml()); the free
+  // text ones (source_value, frame_prefix) are read as they are.
+  struct ParsedSettings {
+    SourceType source_type = SourceType::kTopic;
+    DisplayMode display_mode = DisplayMode::kAuto;
+    bool visible = true;
+    bool ignore_collada_up_axis = false;
+    std::optional<QColor> color;
+    QString topic_name;            // non-empty exactly when the payload names a topic
+    PJ::DatasetId dataset_id = 0;  // 0: none saved
+    QString dataset_source;
+    QString dataset_path;
+  };
+  [[nodiscard]] static std::optional<ParsedSettings> parseSettings(const QDomElement& element);
+
   // One geometry of one link, TF-free: the model both renderers draw from.
   struct LinkDraw {
     enum class Shape : std::uint8_t { kBox, kCylinder, kSphere, kMesh, kPlaceholder };

@@ -41,6 +41,26 @@ TEST(SceneEntitiesModelStateTest, ReplacesByIdAndAnchorsLifetimeOnIngestClock) {
   EXPECT_EQ(state.entities().at("car").timestamp, 30);
 }
 
+// Expiry skips entities that never expire; a replacement or a deletion moves an
+// id between finite and infinite lifetimes, and expiry must keep following it.
+TEST(SceneEntitiesModelStateTest, ExpiryFollowsLifetimeChangesOfAnId) {
+  SceneEntitiesModelState state;
+  EXPECT_TRUE(state.applySnapshot(batch({entity("a", 10, 50), entity("b", 10)}), 1'000));
+  EXPECT_TRUE(state.applySnapshot(batch({entity("a", 20)}), 1'010));  // now never expires
+  EXPECT_FALSE(state.dropExpired(std::numeric_limits<std::int64_t>::max()));
+  EXPECT_EQ(state.entities().size(), 2U);
+
+  EXPECT_TRUE(state.applySnapshot(batch({entity("b", 30, 5)}), 2'000));  // now expires
+  EXPECT_FALSE(state.dropExpired(2'005));
+  EXPECT_TRUE(state.dropExpired(2'006));
+  EXPECT_FALSE(state.entities().contains("b"));
+  EXPECT_TRUE(state.entities().contains("a"));
+
+  state.clear();
+  EXPECT_TRUE(state.applySnapshot(batch({entity("c", 40, 5)}), 3'000));
+  EXPECT_TRUE(state.dropExpired(3'006));
+}
+
 TEST(SceneEntitiesModelStateTest, AppliesDeletionsBeforeSameBatchReAdd) {
   SceneEntitiesModelState state;
   EXPECT_TRUE(state.applySnapshot(batch({entity("old", 10)}), 10));

@@ -124,11 +124,13 @@ QRectF PointSeriesXY::boundingRect() const {
 void PointSeriesXY::setRectOfInterest(const QRectF& /*rect*/) {}
 
 void PointSeriesXY::onTopicCommitted() {
+  bumpContentRevision();
   alignment_dirty_ = true;
   bounding_rect_valid_ = false;
 }
 
 void PointSeriesXY::onDataCleared() {
+  bumpContentRevision();
   pairs_.clear();
   alignment_dirty_ = true;
   bounding_rect_valid_ = false;

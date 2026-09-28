@@ -110,22 +110,43 @@ TEST(SceneLimits, DesktopHdrFitsSeveral4kDocks) {
 
 TEST(SceneLimits, BudgetLatchHoldsUntilTheRejectedSizeFits) {
   BudgetLatch latch;
+  const auto same = [] { return std::uint64_t{7}; };
   bool released = true;
-  EXPECT_FALSE(latch.blocked(0U, released));
+  EXPECT_FALSE(latch.blocked(0U, same, released));
   EXPECT_FALSE(released);
-  latch.reject(100U);
-  EXPECT_TRUE(latch.blocked(99U, released));
+  latch.reject(100U, 7U);
+  EXPECT_TRUE(latch.blocked(99U, same, released));
   EXPECT_FALSE(released);
-  EXPECT_FALSE(latch.blocked(100U, released));
+  EXPECT_FALSE(latch.blocked(100U, same, released));
   EXPECT_TRUE(released);
-  EXPECT_FALSE(latch.blocked(0U, released));  // cleared by the release
+  EXPECT_FALSE(latch.blocked(0U, same, released));  // cleared by the release
   EXPECT_FALSE(released);
-  latch.reject(5U);
+  latch.reject(5U, 7U);
   latch.reset();
-  EXPECT_FALSE(latch.blocked(0U, released));
+  EXPECT_FALSE(latch.blocked(0U, same, released));
   EXPECT_FALSE(released);
   EXPECT_EQ(saturatedAdd(kSaturated, 1U), kSaturated);
   EXPECT_EQ(saturatedMultiply(kSaturated, 2U), kSaturated);
+}
+
+TEST(SceneLimits, BudgetLatchReleasesForAnotherCandidate) {
+  BudgetLatch latch;
+  std::uint64_t candidate = 7U;
+  int evaluations = 0;
+  const auto current = [&] {
+    ++evaluations;
+    return candidate;
+  };
+  bool released = false;
+  EXPECT_FALSE(latch.blocked(0U, current, released));
+  EXPECT_EQ(evaluations, 0) << "the candidate was computed with nothing latched";
+  latch.reject(100U, 7U);
+  EXPECT_TRUE(latch.blocked(10U, current, released));
+  candidate = 8U;  // the tracker moved to another sample, or a sizing setting changed
+  EXPECT_FALSE(latch.blocked(10U, current, released));
+  EXPECT_TRUE(released);
+  EXPECT_FALSE(latch.blocked(10U, current, released));
+  EXPECT_FALSE(released);
 }
 
 }  // namespace

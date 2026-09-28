@@ -1,37 +1,81 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Frame budgets of the Scene3D view, in both builds (P5 budgets, Gate A). Each
+// Frame budgets of the Scene3D view, in both builds (Gate A, TECHNICAL_NOTES §9). Each
 // case builds a real Scene3DDockWidget scene through public APIs, drives frames
 // and prints one line:
 //
 //   S3D_BENCH case=<name> build=gl|rhi backend=<API> device="<adapter>" frames=N
-//     wall_ms=<median per frame> wall_min wall_max cpu_ms=<GUI-thread CPU per
-//     frame> rss_mib hwm_mib gpu_drm_mib gpu_vma_mib idle_frames first_show_ms
-//     [case extras]
+//     wall_ms=<median per frame> wall_min wall_p90 wall_max cpu_ms=<GUI-thread
+//     CPU per frame, mean> cpu_p50 cpu_p90 faults=<minor page faults per frame,
+//     median> ingest_ms ingest_cpu_ms rss_mib hwm_mib gpu_drm_mib gpu_vma_mib
+//     idle_frames first_show_ms cpu_mhz cold_ms warmup_frames warmup_ms gpu_mhz
+//     window_ns=<begin>-<end> [stages_ms=...] [case extras]
 //
 // wall is request-to-finished-frame (QRhiWidget::frameSubmitted / the GL
 // view's frameSwapped); frames are driven back to back, so a GPU-bound case
-// reports its throughput. rss/hwm: VmRSS and its peak since show() (Linux).
-// gpu_drm_mib: the DRM driver's per-process total (Linux fdinfo; n/a on
-// software rasterizers and the NVIDIA driver); gpu_vma_mib: the top-level
-// QRhi's allocator (Vulkan). idle_frames: frames the settled view still
-// rendered in 1 s, which the QRhi build requires to be 0.
+// reports its throughput. The measured frames follow a time-based warm-up
+// (pj_bench::WarmUp: at least 250 ms, 5 steady frames and a settled GPU clock,
+// at most 120 frames; warmup_frames, warmup_ms, and gpu_mhz at its end); cold_ms is the first
+// warm-up frame, the first interaction after a second of idle, when the GPU
+// clock is still low; gpu_mhz_range is the clock over the measured frames (i915
+// can still raise it among them). cpu and faults cover the same span as wall. A case
+// that feeds new data per frame (CloudStream) ingests it untimed before the
+// request; ingest_ms / ingest_cpu_ms report that ingestion (median wall, mean
+// GUI-thread CPU), apart from the frame. rss/hwm: VmRSS and its peak since
+// show() (Linux). gpu_drm_mib: the DRM driver's per-process total (Linux fdinfo;
+// n/a on software rasterizers and the NVIDIA driver); gpu_vma_mib: the
+// top-level QRhi's allocator (Vulkan). idle_frames: frames the settled view
+// still rendered in 1 s, which the QRhi build requires to be 0: its full
+// render() calls (test hooks), not frameSubmitted, which Qt also emits when it
+// only composites the retained texture (a repaint elsewhere in the window); the
+// GL build counts frameSwapped. cpu_mhz: the
+// mean scaling_cur_freq at the report. window_ns: the measured span in
+// CLOCK_MONOTONIC ns, to cut a `perf record -k CLOCK_MONOTONIC` profile to it.
+//
+// QRhi build only: QSG_RHI_PROFILE=1 adds gpu_ms (the view's GPU time per frame,
+// QRhi timestamps; the profiling itself slows the frame), PJ_S3D_BENCH_NO_HDR=1
+// forces the direct pass (no HDR chain), PJ_S3D_BENCH_NO_SHADOWS=1 turns
+// shadows off and PJ_S3D_BENCH_NO_SSAO=1 / PJ_S3D_BENCH_NO_EDL=1 those stages,
+// all for attributing a GPU-bound frame, not for Gate A.
+//
+// stages_ms (QRhi build with PJ_RHI_TEST_HOOKS): per-frame medians of step (the
+// case's own work before update()), sched (update() to render()), targets (HDR
+// chain), admit (layers' prepareForRender(): synchronous decode and pack,
+// placement), prepare (streams, upload enqueue, uniforms), submit (pass
+// recording) and present (render() end to frameSubmitted: on OpenGL the command
+// execution with its buffer uploads, then the swap). The dock and first-show
+// cases split their first frame the same way, with init (initialize()'s base
+// build: every family's pipelines). A dock move or first show can run several
+// callbacks (QRhiWidget renders synchronously on Show and resize): its split
+// sums the stages of every full render() in it, sched is the rest of its wall
+// outside render() and present (window and QRhi creation, initialize(), the
+// other callbacks' offscreen frames), and <kind>_paints / _renders / _skips
+// count its paint events, render() calls and the paints the view skipped
+// (SceneViewWidget::paintEvent: no offscreen frame).
 //
 // Sizes default to a ctest smoke; PJ_S3D_BENCH_FULL=1 selects the budget sizes
 // and PJ_S3D_BENCH_<NAME> overrides one (CLOUD_POINTS, STREAM_POINTS, CUBES,
 // LINE_VERTICES, MARKERS, LINKS, FRAMES, MOVES); PJ_S3D_BENCH_DUMP_DIR=<dir>
-// saves each case's final frame there. Needs a real display; skips on
+// saves each case's final frame there, PJ_S3D_BENCH_CSV_DIR=<dir> its
+// per-frame samples with their spans (<case>_<build>.csv). Needs a real display; skips on
 // the offscreen QPA. The QRhi build registers it per backend (PJ_GRAPHICS_API).
+//
+// As a ctest smoke it asserts no timing, only that each case did its work: the
+// cloud, markers or model drawn in its last frame (QRhi build: the view's draw
+// counters; the GL view has none) and, for the animated cases, that the data
+// advanced (a new cloud uploaded every frame, the followed frame moved, the
+// robot's pose changed the image).
 
 #include <gtest/gtest.h>
 
 #include <QByteArray>
-#include <QElapsedTimer>
 #include <QFile>
 #include <QLayout>
 #include <QTemporaryDir>
+#include <QTextStream>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -43,8 +87,10 @@
 #include <vector>
 
 #ifndef PJ_SCENE3D_RHI
+#include <QOffscreenSurface>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
+#include <QSurfaceFormat>
 #endif
 
 #include "pj_base/builtin/frame_transforms.hpp"
@@ -52,6 +98,7 @@
 #include "pj_base/builtin/scene_entities.hpp"
 #include "pj_base/builtin/scene_entities_codec.hpp"
 #include "pj_bench_probes.h"
+#include "pj_bench_scene_work.h"
 #include "scene3d_render_test_support.h"
 
 namespace {
@@ -60,7 +107,6 @@ using BT = PJ::sdk::BuiltinObjectType;
 using pj::scene3d::SceneViewWidget;
 
 constexpr char kFrame[] = "map";
-constexpr int kWarmupFrames = 3;
 constexpr PJ::Timestamp kStepNs = 10'000'000;  // data time per driven frame
 
 #ifdef PJ_SCENE3D_RHI
@@ -142,6 +188,34 @@ std::vector<uint8_t> robotTf(int links, int k, PJ::Timestamp t) {
   return PJ::serializeFrameTransforms(transforms);
 }
 
+// A frame's stages (see the header comment); init is initialize()'s base build,
+// set on a dock move or first show only.
+enum Stage : std::uint8_t { kStep, kSched, kTargets, kAdmit, kPrepare, kSubmit, kPresent, kInit, kStageCount };
+constexpr std::array<const char*, kStageCount> kStageNames{"step",    "sched",  "targets", "admit",
+                                                           "prepare", "submit", "present", "init"};
+using Stages = std::array<double, kStageCount>;
+
+// One measured frame: wall and GUI-thread CPU ms, the process's minor page
+// faults, and its stages in ms (-1 where the build has no stamps).
+struct Sample {
+  double wall_ms = 0.0;
+  double cpu_ms = 0.0;
+  double faults = 0.0;
+  double uploads = 0.0;     // point-cloud uploads + marker layer rebuilds + model mesh builds
+  double upload_mib = 0.0;  // point-cloud bytes uploaded
+  double inits = 0.0;       // initialize() base builds
+  double paints = 0.0;      // paint events, render() calls and skipped paints (lifecycle operations)
+  double renders = 0.0;
+  double skips = 0.0;
+  double gpu_ms = -1.0;       // the view's last completed GPU frame (QSG_RHI_PROFILE=1), -1 without
+  double gpu_mhz = -1.0;      // the GPU clock at the frame's end (pj_bench::gpuMhz()), -1 unreadable
+  std::int64_t begin_ns = 0;  // the sample's span (steadyNs()), for cutting a profile to it
+  std::int64_t end_ns = 0;
+  Stages stages{};
+};
+
+using pj_bench::SceneViewWork;
+
 // One Scene3D dock on a real session, the numbers of one case, and its report.
 class SceneBench {
  public:
@@ -164,9 +238,27 @@ class SceneBench {
   [[nodiscard]] std::uint64_t finished() const {
     return counter_ == nullptr ? 0 : counter_->count();
   }
+  // Frames the view drew: its full render() calls where the build counts them,
+  // else its finished frames.
+  [[nodiscard]] std::uint64_t renders() {
+    return counter_ == nullptr ? 0 : pj_bench::viewRenders(view(), *counter_);
+  }
+  // The fewest uploads of any sample of the last drive(); 0 where the build has
+  // no counters (the GL build).
+  [[nodiscard]] double minUploads() const {
+    double least = samples_.empty() ? 0.0 : samples_.front().uploads;
+    for (const Sample& sample : samples_) {
+      least = std::min(least, sample.uploads);
+    }
+    return least;
+  }
   // Per-frame wall times of the last drive().
-  [[nodiscard]] const std::vector<double>& lastWallMs() const {
-    return wall_ms_;
+  [[nodiscard]] std::vector<double> lastWallMs() const {
+    std::vector<double> wall;
+    for (const Sample& sample : samples_) {
+      wall.push_back(sample.wall_ms);
+    }
+    return wall;
   }
 
   // A TF topic of the robot's link poses at steps 0..steps-1, ingested.
@@ -197,32 +289,51 @@ class SceneBench {
       return false;
     }
     counter_ = std::make_unique<pj_bench::FrameCounter>(&view());
+#ifdef PJ_SCENE3D_RHI
+    if (qEnvironmentVariableIntValue("PJ_S3D_BENCH_NO_HDR") == 1) {
+      view().setForceHdrFallbackForTest(true);  // attribution runs: the direct pass, no HDR chain
+    }
+    if (qEnvironmentVariableIntValue("PJ_S3D_BENCH_NO_SSAO") == 1) {
+      view().compositeParams().ssao_enabled = false;
+    }
+    if (qEnvironmentVariableIntValue("PJ_S3D_BENCH_NO_EDL") == 1) {
+      view().compositeParams().edl_enabled = false;
+    }
+    if (qEnvironmentVariableIntValue("PJ_S3D_BENCH_NO_SHADOWS") == 1) {
+      pj::scene3d::MeshShadingParams params = view().meshShadingParams();
+      params.shadows_enabled = false;
+      view().setMeshShadingParams(params);
+    }
+#endif
     dock().setFixedFrame(QString::fromLatin1(kFrame));
     dock().onTrackerTime(100.0e-9);  // every scene starts at t = 100 ns
     pj_bench::resetPeakRss();
-    QElapsedTimer timer;
-    timer.start();
-    fixture_.window().show();
-    if (!pj_bench::waitUntil([this] { return finished() > 0; })) {
+    first_show_sample_ = measure([this] { fixture_.window().show(); }, lifecycle());
+    if (first_show_sample_.wall_ms < 0.0) {
       return false;
     }
-    first_show_ms_ = static_cast<double>(timer.nsecsElapsed()) / 1.0e6;
-    settle();  // after the QRhi view's one-shot fit, which the camera below replaces
+    window_begin_ns_ = first_show_sample_.begin_ns;
+    window_end_ns_ = first_show_sample_.end_ns;
+    first_show_ms_ = first_show_sample_.wall_ms;
+    settle();
     camera_.focal = {0.0F, 0.0F, 0.5F};
     camera_.radius = 22.0F;
     camera_.azimuth = glm::radians(-60.0F);
     camera_.elevation = glm::radians(35.0F);
+    azimuth0_ = camera_.azimuth;
     view().camera().adoptState(camera_);
     return true;
   }
-  // Lets queued decodes, uploads and fits land: returns once no frame came for 1 s.
+  // Lets queued decodes and uploads land: returns once no frame came for 1 s.
   void settle() {
     (void)pj_bench::idleFrames([this] { return finished(); }, 1000, 15000, 0);
   }
 
-  // Moves the orbit camera by `degrees` of azimuth.
-  void orbit(float degrees = 1.0F) {
-    camera_.azimuth += glm::radians(degrees);
+  // Puts the orbit camera at driven frame `k` (see drive()): k + 1 degrees of
+  // azimuth, and -2 / -1 degrees alternately while warming up, so the last
+  // frame does not depend on the warm-up's length.
+  void orbit(int k) {
+    camera_.azimuth = azimuth0_ + glm::radians(static_cast<float>(k >= 0 ? k + 1 : k % 2 - 1));
     view().camera().adoptState(camera_);
   }
   // Pans the camera focal by `dy` metres along +Y (from wherever follow left it).
@@ -232,77 +343,147 @@ class SceneBench {
     view().camera().adoptState(camera_);
   }
 
-  // Runs `step`, requests a frame and waits until one is finished: ms from
-  // `step` to that frame, or negative on timeout.
-  double frame(const std::function<void()>& step) {
-    const std::uint64_t before = finished();
-    QElapsedTimer timer;
-    timer.start();
-    step();
-    view().update();
-    if (!pj_bench::waitUntil([&] { return finished() > before; })) {
-      return -1.0;
-    }
-    return static_cast<double>(timer.nsecsElapsed()) / 1.0e6;
+  // How measure() splits a sample into stages, given the view's work before it.
+  using StageSplit = std::function<Stages(const Sample&, const SceneViewWork&)>;
+  // The split of a lifecycle operation (a dock move, the first show).
+  StageSplit lifecycle() {
+    return [this](const Sample& sample, const SceneViewWork& before) { return lifecycleStages(sample, before); };
   }
 
-  // kWarmupFrames, then `frames` measured frames of `step(k)` (k counts every
-  // driven frame from 0); `prepare(k)` runs untimed before each.
-  void drive(int frames, const std::function<void(int)>& step, const std::function<void(int)>& prepare = {}) {
-    wall_ms_.clear();
-    double cpu_start = 0.0;
-    for (int k = 0; k < kWarmupFrames + frames; ++k) {
-      if (k == kWarmupFrames) {
-        cpu_start = pj_bench::threadCpuMs();
-      }
-      if (prepare) {
-        prepare(k);
-      }
-      const double ms = frame([&] { step(k); });
-      ASSERT_GE(ms, 0.0) << "frame " << k << " never finished";
-      if (k >= kWarmupFrames) {
-        wall_ms_.push_back(ms);
+  // Runs `action` and waits until the view finished a frame after it: the
+  // sample of that span (wall ms negative on timeout), split by `split`.
+  Sample measure(const std::function<void()>& action, const StageSplit& split) {
+    Sample sample;
+    const std::uint64_t before = finished();
+    const long long faults = pj_bench::minorFaults();
+    const SceneViewWork work = pj_bench::viewWork(view());
+    const double cpu = pj_bench::threadCpuMs();
+    sample.begin_ns = pj_bench::steadyNs();
+    action();
+    const bool done = pj_bench::waitUntil([&] { return finished() > before; });
+    sample.end_ns = pj_bench::steadyNs();
+    sample.wall_ms = done ? static_cast<double>(sample.end_ns - sample.begin_ns) / 1.0e6 : -1.0;
+    sample.cpu_ms = pj_bench::threadCpuMs() - cpu;
+    sample.faults = static_cast<double>(pj_bench::minorFaults() - faults);
+    noteWork(sample, work);
+    sample.stages = split(sample, work);
+    return sample;
+  }
+
+  // Runs `step`, requests a frame and waits until one is finished: its sample
+  // (wall ms from `step` to that frame, negative on timeout).
+  Sample frame(const std::function<void()>& step) {
+    std::int64_t requested_ns = 0;
+    Sample sample = measure(
+        [&] {
+          step();
+          requested_ns = pj_bench::steadyNs();
+          view().update();
+        },
+        [&](const Sample& measured, const SceneViewWork& /*before*/) {
+          return stagesSince(measured.begin_ns, requested_ns);
+        });
+    sample.gpu_ms = lastGpuMs();
+    sample.gpu_mhz = pj_bench::gpuMhz();
+    return sample;
+  }
+
+  // A warm-up (pj_bench::WarmUp), then `frames` measured frames of
+  // `step(k)`, k = 0, 1, ...; the warm-up frames run step(-1), step(-2), ...,
+  // which must request a frame that differs from the previous one and from
+  // step(0) without consuming data meant for the measured frames (their
+  // number varies). `ingest(k)` runs before each measured frame, outside its
+  // wall, CPU and faults, and is reported apart (ingest_ms, ingest_cpu_ms).
+  void drive(int frames, const std::function<void(int)>& step, const std::function<void(int)>& ingest = {}) {
+    samples_.clear();
+    ingest_wall_ms_.clear();
+    ingest_cpu_ms_ = 0.0;
+    pj_bench::WarmUp warm_up;
+    for (int w = 0;; ++w) {
+      const Sample sample = frame([&] { step(-1 - w); });
+      ASSERT_GE(sample.wall_ms, 0.0) << "warm-up frame " << w << " never finished";
+      if (warm_up.done(sample.wall_ms)) {
+        break;
       }
     }
-    cpu_ms_ = frames > 0 ? (pj_bench::threadCpuMs() - cpu_start) / frames : 0.0;
+    cold_ms_ = warm_up.coldMs();
+    warmup_frames_ = warm_up.frames();
+    warmup_ms_ = warm_up.elapsedMs();
+    warmup_gpu_mhz_ = warm_up.gpuMhzAtEnd();
+    window_begin_ns_ = pj_bench::steadyNs();
+    for (int k = 0; k < frames; ++k) {
+      if (ingest) {
+        const double cpu = pj_bench::threadCpuMs();
+        const std::int64_t begin_ns = pj_bench::steadyNs();
+        ingest(k);
+        ingest_wall_ms_.push_back(static_cast<double>(pj_bench::steadyNs() - begin_ns) / 1.0e6);
+        ingest_cpu_ms_ += (pj_bench::threadCpuMs() - cpu) / frames;
+      }
+      const Sample sample = frame([&] { step(k); });
+      ASSERT_GE(sample.wall_ms, 0.0) << "frame " << k << " never finished";
+      samples_.push_back(sample);
+    }
+    window_end_ns_ = pj_bench::steadyNs();
   }
 
   // Float (reparent to a new top-level), redock and tab-switch (hide, then
-  // show) the dock `moves` times, each timed to its first finished frame;
-  // the medians as "float_ms=.. redock_ms=.. tab_ms=..".
+  // show) the dock `moves` times, each timed to its first finished frame; the
+  // medians as "float_ms=.. redock_ms=.. tab_ms=..", then each move's first
+  // frame split into stages ("float_stages_ms=..", QRhi build).
   std::string dockMoves(int moves) {
-    std::vector<double> float_ms;
-    std::vector<double> redock_ms;
-    std::vector<double> tab_ms;
+    std::array<std::vector<Sample>, 3> kinds;  // float, redock, tab
     PJ::Scene3DDockWidget* moved = &dock();
     QLayout* layout = fixture_.window().layout();
+    window_begin_ns_ = pj_bench::steadyNs();
     const auto timed = [this](const std::function<void()>& action) {
-      const std::uint64_t before = finished();
-      QElapsedTimer timer;
-      timer.start();
-      action();
-      const bool done = pj_bench::waitUntil([&] { return finished() > before; });
-      const double ms = static_cast<double>(timer.nsecsElapsed()) / 1.0e6;
+      const Sample sample = measure(action, lifecycle());
       settle();
-      return done ? ms : -1.0;
+      return sample;
     };
     for (int i = 0; i < moves; ++i) {
-      float_ms.push_back(timed([&] {
+      kinds[0].push_back(timed([&] {
         moved->setParent(nullptr);
         moved->resize(fixture_.window().size());
         moved->show();
       }));
-      redock_ms.push_back(timed([&] {
+      kinds[1].push_back(timed([&] {
         layout->addWidget(moved);
         moved->show();
       }));
       moved->hide();
       QCoreApplication::processEvents();
-      tab_ms.push_back(timed([&] { moved->show(); }));
+      kinds[2].push_back(timed([&] { moved->show(); }));
     }
-    const auto median = [](std::vector<double> values) { return pj_bench::stats(std::move(values)).median; };
-    return "float_ms=" + std::to_string(median(float_ms)) + " redock_ms=" + std::to_string(median(redock_ms)) +
-           " tab_ms=" + std::to_string(median(tab_ms));
+    window_end_ns_ = pj_bench::steadyNs();
+    std::string out;
+    const char* names[] = {"float", "redock", "tab"};
+    for (std::size_t kind = 0; kind < kinds.size(); ++kind) {
+      out += std::string(out.empty() ? "" : " ") + names[kind] + "_ms=" + fmtMs(median(kinds[kind], &Sample::wall_ms));
+    }
+    for (std::size_t kind = 0; kind < kinds.size(); ++kind) {
+      out += std::string(" ") + names[kind] + "_faults=" + fmtMs(median(kinds[kind], &Sample::faults), 0);
+      out += std::string(" ") + names[kind] + "_inits=" + fmtMs(median(kinds[kind], &Sample::inits), 0);
+      out += std::string(" ") + names[kind] + "_uploads=" + fmtMs(median(kinds[kind], &Sample::uploads), 0);
+      out += std::string(" ") + names[kind] + "_upload_mib=" + fmtMs(median(kinds[kind], &Sample::upload_mib), 1);
+      out += std::string(" ") + names[kind] + "_paints=" + fmtMs(median(kinds[kind], &Sample::paints), 0);
+      out += std::string(" ") + names[kind] + "_renders=" + fmtMs(median(kinds[kind], &Sample::renders), 0);
+      out += std::string(" ") + names[kind] + "_skips=" + fmtMs(median(kinds[kind], &Sample::skips), 0);
+      out += stagesField((std::string(names[kind]) + "_stages_ms").c_str(), kinds[kind]);
+    }
+    samples_.clear();
+    for (const auto& kind : kinds) {
+      samples_.insert(samples_.end(), kind.begin(), kind.end());
+    }
+    return out;
+  }
+
+  // Splits a first frame (show() or a dock move) that began at `begin_ns`:
+  // the extra of the first-show case.
+  [[nodiscard]] std::string firstFrameStages() const {
+    return stagesField("first_stages_ms", {first_show_sample_}) +
+           " first_paints=" + fmtMs(first_show_sample_.paints, 0) +
+           " first_renders=" + fmtMs(first_show_sample_.renders, 0) +
+           " first_skips=" + fmtMs(first_show_sample_.skips, 0);
   }
 
   // Prints the case line: the last drive()'s numbers, the probes, then `extra`,
@@ -312,8 +493,14 @@ class SceneBench {
       pj::scene3d::test::grab(view()).save(
           dir + u'/' + QString::fromLatin1(name) + u'_' + QString::fromLatin1(kBuild) + u".png");
     }
-    const std::uint64_t idle_frames = pj_bench::idleFrames([this] { return finished(); });
-    const pj_bench::Stats wall = pj_bench::stats(wall_ms_);
+    const std::uint64_t idle_frames = pj_bench::idleFrames([this] { return renders(); });
+    const pj_bench::Stats wall = pj_bench::stats(column(samples_, &Sample::wall_ms));
+    const pj_bench::Stats cpu = pj_bench::stats(column(samples_, &Sample::cpu_ms));
+    double cpu_mean = 0.0;
+    for (const Sample& sample : samples_) {
+      cpu_mean += sample.cpu_ms / static_cast<double>(samples_.size());
+    }
+    writeCsv(name);
 #ifdef PJ_SCENE3D_RHI
     QRhi* rhi = pj_bench::rhiOf(view());
     const double vma = pj_bench::rhiAllocatorMib(rhi);
@@ -329,13 +516,29 @@ class SceneBench {
     }
     view().doneCurrent();
 #endif
+    std::string stages = stagesField("stages_ms", samples_);
+    if (!samples_.empty() && samples_.front().gpu_mhz >= 0.0) {
+      const pj_bench::Stats mhz = pj_bench::stats(column(samples_, &Sample::gpu_mhz));
+      stages += " gpu_mhz_range=" + fmtMs(mhz.min, 0) + "-" + fmtMs(mhz.max, 0);
+    }
+    if (!samples_.empty() && samples_.front().gpu_ms > 0.0) {
+      stages += " gpu_ms=" + fmtMs(median(samples_, &Sample::gpu_ms));
+    }
     std::printf(
-        "S3D_BENCH case=%s build=%s backend=%s device=\"%s\" frames=%zu wall_ms=%.2f wall_min=%.2f wall_max=%.2f "
-        "cpu_ms=%.2f rss_mib=%s hwm_mib=%s gpu_drm_mib=%s gpu_vma_mib=%s idle_frames=%llu first_show_ms=%.1f%s%s\n",
-        name, kBuild, qPrintable(backend), qPrintable(device), wall_ms_.size(), wall.median, wall.min, wall.max,
-        cpu_ms_, pj_bench::fmt(pj_bench::rssMib()).constData(), pj_bench::fmt(pj_bench::peakRssMib()).constData(),
+        "S3D_BENCH case=%s build=%s backend=%s device=\"%s\" frames=%zu wall_ms=%.2f wall_min=%.2f wall_p90=%.2f "
+        "wall_max=%.2f cpu_ms=%.2f cpu_p50=%.2f cpu_p90=%.2f faults=%.0f uploads=%.0f upload_mib=%.1f ingest_ms=%.2f "
+        "ingest_cpu_ms=%.2f rss_mib=%s "
+        "hwm_mib=%s gpu_drm_mib=%s gpu_vma_mib=%s idle_frames=%llu first_show_ms=%.1f cpu_mhz=%s cold_ms=%.2f "
+        "warmup_frames=%d warmup_ms=%.0f gpu_mhz=%s window_ns=%lld-%lld%s%s%s\n",
+        name, kBuild, qPrintable(backend), qPrintable(device), samples_.size(), wall.median, wall.min, wall.p90,
+        wall.max, cpu_mean, cpu.median, cpu.p90, median(samples_, &Sample::faults), median(samples_, &Sample::uploads),
+        median(samples_, &Sample::upload_mib), pj_bench::stats(ingest_wall_ms_).median, ingest_cpu_ms_,
+        pj_bench::fmt(pj_bench::rssMib()).constData(), pj_bench::fmt(pj_bench::peakRssMib()).constData(),
         pj_bench::fmt(pj_bench::drmTotalMib()).constData(), pj_bench::fmt(vma).constData(),
-        static_cast<unsigned long long>(idle_frames), first_show_ms_, extra.empty() ? "" : " ", extra.c_str());
+        static_cast<unsigned long long>(idle_frames), first_show_ms_, pj_bench::fmt(pj_bench::cpuMhz(), 0).constData(),
+        cold_ms_, warmup_frames_, warmup_ms_, pj_bench::fmt(warmup_gpu_mhz_, 0).constData(),
+        static_cast<long long>(window_begin_ns_), static_cast<long long>(window_end_ns_), stages.c_str(),
+        extra.empty() ? "" : " ", extra.c_str());
     std::fflush(stdout);
 #ifdef PJ_SCENE3D_RHI
     EXPECT_EQ(idle_frames, 0U) << "a settled, unchanged view kept rendering";
@@ -343,24 +546,196 @@ class SceneBench {
   }
 
  private:
+  static double median(const std::vector<Sample>& samples, double Sample::* field) {
+    return pj_bench::stats(column(samples, field)).median;
+  }
+  static std::vector<double> column(const std::vector<Sample>& samples, double Sample::* field) {
+    std::vector<double> values;
+    values.reserve(samples.size());
+    for (const Sample& sample : samples) {
+      values.push_back(sample.*field);
+    }
+    return values;
+  }
+  static std::string fmtMs(double value, int decimals = 2) {
+    return pj_bench::fmt(value, decimals).toStdString();
+  }
+  // " <name>=step:..,sched:..,.." of the per-stage medians over `samples`, or
+  // nothing where the view has no stage stamps (the GL build).
+  static std::string stagesField(const char* name, const std::vector<Sample>& samples) {
+    if (samples.empty() || samples.front().stages[kPresent] < 0.0) {
+      return {};
+    }
+    std::string out = std::string(" ") + name + "=";
+    for (std::size_t stage = 0; stage < kStageCount; ++stage) {
+      std::vector<double> values;
+      for (const Sample& sample : samples) {
+        values.push_back(sample.stages[stage]);
+      }
+      out += std::string(stage == 0 ? "" : ",") + kStageNames[stage] + ":" +
+             fmtMs(pj_bench::stats(std::move(values)).median);
+    }
+    return out;
+  }
+  // PJ_S3D_BENCH_CSV_DIR/<name>_<build>.csv: one row per measured sample (the
+  // first-show sample when no frame was driven).
+  void writeCsv(const char* name) const {
+    const QString dir = qEnvironmentVariable("PJ_S3D_BENCH_CSV_DIR");
+    if (dir.isEmpty()) {
+      return;
+    }
+    QFile file(dir + u'/' + QString::fromLatin1(name) + u'_' + QString::fromLatin1(kBuild) + u".csv");
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+      return;
+    }
+    QTextStream csv(&file);
+    csv << "frame,begin_ns,end_ns,wall_ms,cpu_ms,faults,uploads,upload_mib,inits,gpu_ms,gpu_mhz";
+    for (const char* stage : kStageNames) {
+      csv << ',' << stage << "_ms";
+    }
+    csv << '\n';
+    const std::vector<Sample> rows = samples_.empty() ? std::vector<Sample>{first_show_sample_} : samples_;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+      const Sample& sample = rows[i];
+      csv << i << ',' << sample.begin_ns << ',' << sample.end_ns << ',' << sample.wall_ms << ',' << sample.cpu_ms << ','
+          << sample.faults << ',' << sample.uploads << ',' << sample.upload_mib << ',' << sample.inits << ','
+          << sample.gpu_ms << ',' << sample.gpu_mhz;
+      for (const double stage : sample.stages) {
+        csv << ',' << stage;
+      }
+      csv << '\n';
+    }
+  }
+
+  // Adds the upload work done since `before` to `sample`.
+  void noteWork(Sample& sample, const SceneViewWork& before) {
+    const SceneViewWork now = pj_bench::viewWork(view());
+    sample.uploads = now.uploads - before.uploads;
+    sample.upload_mib = now.upload_mib - before.upload_mib;
+    sample.inits = now.inits - before.inits;
+    sample.paints = now.paints - before.paints;
+    sample.renders = now.renders - before.renders;
+    sample.skips = now.skips - before.skips;
+  }
+
+#if defined(PJ_SCENE3D_RHI) && defined(PJ_RHI_TEST_HOOKS)
+  // The split of a lifecycle operation (`sample`, work counted from `before`):
+  // the stage sums of its full renders, present from the last one to the
+  // finished frame, init its base builds, sched the rest of its wall (init
+  // included); every stage -1 when it drew no full frame.
+  Stages lifecycleStages(const Sample& sample, const SceneViewWork& before) {
+    Stages stages;
+    stages.fill(-1.0);
+    const SceneViewWork now = pj_bench::viewWork(view());
+    const auto& t = view().stageTimesForTest();
+    const std::int64_t finished_ns = counter_->lastFinishedNs();
+    if (now.full_renders <= before.full_renders || sample.wall_ms < 0.0 || finished_ns < t.render_end_ns) {
+      return stages;
+    }
+    stages[kStep] = 0.0;
+    stages[kTargets] = now.targets_ms - before.targets_ms;
+    stages[kAdmit] = now.admit_ms - before.admit_ms;
+    stages[kPrepare] = now.prepare_ms - before.prepare_ms;
+    stages[kSubmit] = now.submit_ms - before.submit_ms;
+    stages[kPresent] = static_cast<double>(finished_ns - t.render_end_ns) / 1.0e6;
+    stages[kInit] = now.init_ms - before.init_ms;
+    stages[kSched] =
+        sample.wall_ms - stages[kTargets] - stages[kAdmit] - stages[kPrepare] - stages[kSubmit] - stages[kPresent];
+    return stages;
+  }
+  [[nodiscard]] double lastGpuMs() {
+    const double ms = view().stageTimesForTest().last_gpu_ms;
+    return ms > 0.0 ? ms : -1.0;
+  }
+  // The stage split of the frame finished last, requested at `requested_ns`
+  // after a step that began at `begin_ns`; every stage -1 without stamps.
+  Stages stagesSince(std::int64_t begin_ns, std::int64_t requested_ns) {
+    Stages stages;
+    stages.fill(-1.0);
+    const auto& t = view().stageTimesForTest();
+    const std::int64_t finished_ns = counter_->lastFinishedNs();
+    if (t.render_begin_ns < requested_ns || t.render_end_ns < t.render_begin_ns || finished_ns < t.render_end_ns) {
+      return stages;  // no render() of this request reached the stamps (the Show skip, a failure)
+    }
+    const auto ms = [](std::int64_t from, std::int64_t to) { return static_cast<double>(to - from) / 1.0e6; };
+    stages[kStep] = ms(begin_ns, requested_ns);
+    stages[kSched] = ms(requested_ns, t.render_begin_ns);
+    stages[kTargets] = ms(t.render_begin_ns, t.targets_ready_ns);
+    stages[kAdmit] = ms(t.targets_ready_ns, t.admitted_ns);
+    stages[kPrepare] = ms(t.admitted_ns, t.prepared_ns);
+    stages[kSubmit] = ms(t.prepared_ns, t.render_end_ns);
+    stages[kPresent] = ms(t.render_end_ns, finished_ns);
+    stages[kInit] = 0.0;
+    return stages;
+  }
+#else
+  [[nodiscard]] double lastGpuMs() {
+    return -1.0;
+  }
+  Stages lifecycleStages(const Sample& /*sample*/, const SceneViewWork& /*before*/) {
+    Stages stages;
+    stages.fill(-1.0);
+    return stages;
+  }
+  Stages stagesSince(std::int64_t /*begin_ns*/, std::int64_t /*requested_ns*/) {
+    Stages stages;
+    stages.fill(-1.0);
+    return stages;
+  }
+#endif
+
   pj::scene3d::test::Scene3DRenderFixture fixture_;
   QTemporaryDir urdf_dir_;
   std::unique_ptr<pj_bench::FrameCounter> counter_;
   pj::scene3d::CameraState camera_;
-  std::vector<double> wall_ms_;
-  double cpu_ms_ = 0.0;
+  std::vector<Sample> samples_;
+  std::vector<double> ingest_wall_ms_;
+  double ingest_cpu_ms_ = 0.0;
   double first_show_ms_ = 0.0;
+  Sample first_show_sample_;
+  float azimuth0_ = 0.0F;  // the camera's azimuth after show(); orbit() is relative to it
+  double cold_ms_ = 0.0;   // the last drive()'s first warm-up frame
+  int warmup_frames_ = 0;
+  double warmup_ms_ = 0.0;
+  double warmup_gpu_mhz_ = -1.0;
+  // The measured span of the last drive(), dockMoves() or show() (steadyNs()):
+  // the window of a `perf record -k CLOCK_MONOTONIC` profile.
+  std::int64_t window_begin_ns_ = 0;
+  std::int64_t window_end_ns_ = 0;
+};
+
+// What a case's last frame must have drawn, so a run whose cloud, markers or
+// model were never admitted fails instead of timing a near-empty frame.
+struct Workload {
+  bool points = false;
+  bool markers = false;  // instanced primitives and line strips
+  bool models = false;
 };
 
 #ifdef PJ_SCENE3D_RHI
+void expectDrawn(SceneViewWidget& view, Workload workload) {
+  if (workload.points) {
+    EXPECT_GT(view.lastPointVertexCountForTest(), 0) << "no point cloud drawn";
+  }
+  if (workload.markers) {
+    EXPECT_GT(view.lastMarkerInstanceCountForTest(), 0) << "no marker drawn";
+  }
+  if (workload.models) {
+    EXPECT_GT(view.lastModelDrawCountForTest(), 0) << "no model drawn";
+  }
+}
+
 // What the last frame drew, so a run that silently drew nothing shows up.
 std::string drawn(SceneViewWidget& view) {
   return "points=" + std::to_string(view.lastPointVertexCountForTest()) +
          " markers=" + std::to_string(view.lastMarkerInstanceCountForTest()) +
          " models=" + std::to_string(view.lastModelDrawCountForTest()) +
-         " hdr=" + std::to_string(static_cast<int>(view.lastHdrActiveForTest()));
+         " hdr=" + std::to_string(static_cast<int>(view.lastHdrActiveForTest())) +
+         " shadow_draws=" + std::to_string(view.lastShadowDrawCountForTest());
 }
 #else
+// The GL view has no draw counters.
+void expectDrawn(SceneViewWidget& /*view*/, Workload /*workload*/) {}
 std::string drawn(SceneViewWidget& /*view*/) {
   return {};
 }
@@ -370,6 +745,20 @@ class Scene3dFrameBenchmark : public ::testing::Test {
  protected:
   void SetUp() override {
     PJ_SKIP_ON_HEADLESS_QPA();
+#ifndef PJ_SCENE3D_RHI
+    // The GL view's shaders are #version 450: below a driver-reported GL 4.5 it
+    // presents frames that draw nothing, so pixel checks would be meaningless.
+    QSurfaceFormat format;
+    format.setVersion(4, 5);
+    format.setProfile(QSurfaceFormat::CoreProfile);
+    QOffscreenSurface surface;
+    QOpenGLContext context;
+    context.setFormat(format);
+    if (auto why = gl45ContextUnavailable(surface, context)) {
+      PJ_SKIP_WITHOUT_GPU(*why);
+    }
+    context.doneCurrent();
+#endif
   }
 };
 
@@ -383,22 +772,32 @@ TEST_F(Scene3dFrameBenchmark, CloudStatic) {
   SceneBench bench;
   bench.fixture().add("/points", BT::kPointCloud, randomCloud(cloudPoints(), 1));
   SHOW_OR_SKIP(bench);
-  ASSERT_NO_FATAL_FAILURE(bench.drive(benchFrames(), [&](int) { bench.orbit(); }));
+  ASSERT_NO_FATAL_FAILURE(bench.drive(benchFrames(), [&](int k) { bench.orbit(k); }));
+  expectDrawn(bench.view(), {.points = true});
   bench.report("cloud_static", drawn(bench.view()));
 }
 
 // A new cloud every frame (live streaming): pushed untimed, then the tracker
-// moves onto it.
+// moves onto it. The warm-up alternates between two clouds already stored, so
+// the store holds the same samples whatever the warm-up's length.
 TEST_F(Scene3dFrameBenchmark, CloudStream) {
   SceneBench bench;
   const long long points = benchSize("STREAM_POINTS", 5'000, 300'000);
   const std::vector<std::vector<uint8_t>> clouds{randomCloud(points, 1), randomCloud(points, 2)};
   const PJ::ObjectTopicId id = bench.fixture().add("/points", BT::kPointCloud, clouds[0]);
+  constexpr PJ::Timestamp kWarmSampleNs = 100 + kStepNs / 2;
+  bench.fixture().push(id, kWarmSampleNs, clouds[1]);
   SHOW_OR_SKIP(bench);
-  const auto time_of = [](int k) { return 100 + static_cast<PJ::Timestamp>(k + 1) * kStepNs; };
+  const auto time_of = [](int k) {
+    return k < 0 ? (k % 2 != 0 ? kWarmSampleNs : 100) : 100 + static_cast<PJ::Timestamp>(k + 1) * kStepNs;
+  };
   ASSERT_NO_FATAL_FAILURE(bench.drive(
       benchFrames(), [&](int k) { bench.dock().onTrackerTime(static_cast<double>(time_of(k)) / 1.0e9); },
       [&](int k) { bench.fixture().push(id, time_of(k), clouds[static_cast<std::size_t>(k % 2)]); }));
+  expectDrawn(bench.view(), {.points = true});
+#ifdef PJ_SCENE3D_RHI
+  EXPECT_GE(bench.minUploads(), 1.0) << "a measured frame did not upload its new cloud";
+#endif
   bench.report("cloud_stream", drawn(bench.view()));
 }
 
@@ -441,7 +840,11 @@ TEST_F(Scene3dFrameBenchmark, CubesAndLinesOrbit) {
   scene.entities.push_back(std::move(lines));
   bench.fixture().add("/entities", BT::kSceneEntities, PJ::serializeSceneEntities(scene));
   SHOW_OR_SKIP(bench);
-  ASSERT_NO_FATAL_FAILURE(bench.drive(benchFrames(), [&](int) { bench.orbit(); }));
+  ASSERT_NO_FATAL_FAILURE(bench.drive(benchFrames(), [&](int k) { bench.orbit(k); }));
+  expectDrawn(bench.view(), {.markers = true});
+#ifdef PJ_SCENE3D_RHI
+  EXPECT_GT(bench.view().lastMarkerStreamVertexCountForTest(), 0) << "no line strip drawn";
+#endif
   bench.report("cubes_lines_orbit", drawn(bench.view()));
 }
 
@@ -452,6 +855,9 @@ TEST_F(Scene3dFrameBenchmark, MarkersPanFollow) {
   const long long marker_count = benchSize("MARKERS", 100, 10'000);
   const int frames = benchFrames();
   const auto time_of = [](int k) { return 100 + static_cast<PJ::Timestamp>(k) * kStepNs; };
+  // Warm-up frames alternate the tracker between the first TF sample and half
+  // way to the second (the follow frame moves, the camera does not pan).
+  const auto tracker_of = [&](int k) { return k < 0 ? time_of(0) + (k % 2 != 0 ? kStepNs / 2 : 0) : time_of(k + 1); };
   const auto base_tf = [&](int k) {
     PJ::sdk::FrameTransforms transforms;
     PJ::sdk::FrameTransform edge;
@@ -463,7 +869,7 @@ TEST_F(Scene3dFrameBenchmark, MarkersPanFollow) {
     return PJ::serializeFrameTransforms(transforms);
   };
   const PJ::ObjectTopicId tf = bench.fixture().add("/tf", BT::kFrameTransforms, base_tf(0));
-  for (int k = 1; k <= kWarmupFrames + frames; ++k) {
+  for (int k = 1; k <= frames; ++k) {
     bench.fixture().push(tf, time_of(k), base_tf(k));
   }
   bench.fixture().transforms().ingestFrameTransformsForDataset(bench.fixture().dataset());
@@ -485,10 +891,19 @@ TEST_F(Scene3dFrameBenchmark, MarkersPanFollow) {
   bench.fixture().add("/markers", BT::kSceneEntities, PJ::serializeSceneEntities(scene));
   SHOW_OR_SKIP(bench);
   bench.dock().setFollowFrame(QStringLiteral("base"));
+  float followed_x = 0.0F;
   ASSERT_NO_FATAL_FAILURE(bench.drive(frames, [&](int k) {
-    bench.dock().onTrackerTime(static_cast<double>(time_of(k + 1)) / 1.0e9);
-    bench.pan(0.01F);
+    bench.dock().onTrackerTime(static_cast<double>(tracker_of(k)) / 1.0e9);
+    if (k == 0) {
+      followed_x = bench.view().camera().state().focal.x;
+    }
+    if (k >= 0) {
+      bench.pan(0.01F);
+    }
   }));
+  expectDrawn(bench.view(), {.markers = true});
+  // base moves +0.02 m in X per TF sample; the pans move only Y.
+  EXPECT_GT(bench.view().camera().state().focal.x, followed_x) << "the followed TF frame never advanced";
   bench.report("markers_pan_follow", drawn(bench.view()));
 }
 
@@ -497,12 +912,19 @@ TEST_F(Scene3dFrameBenchmark, RobotTfAnimated) {
   SceneBench bench;
   const int links = robotLinks();
   const int frames = benchFrames();
-  bench.addRobotTf(links, kWarmupFrames + frames + 1);
+  bench.addRobotTf(links, frames + 1);
   ASSERT_NO_FATAL_FAILURE(bench.addRobot(links));
   SHOW_OR_SKIP(bench);
+  const QImage first = pj::scene3d::test::grab(bench.view());
+  // Warm-up frames alternate between the first TF sample and half way to the second.
   ASSERT_NO_FATAL_FAILURE(bench.drive(frames, [&](int k) {
-    bench.dock().onTrackerTime(static_cast<double>(100 + static_cast<PJ::Timestamp>(k + 1) * kStepNs) / 1.0e9);
+    const PJ::Timestamp t =
+        k < 0 ? 100 + (k % 2 != 0 ? kStepNs / 2 : 0) : 100 + static_cast<PJ::Timestamp>(k + 1) * kStepNs;
+    bench.dock().onTrackerTime(static_cast<double>(t) / 1.0e9);
   }));
+  expectDrawn(bench.view(), {.models = true});
+  // The camera stays put: only the links' TF can change the frame.
+  EXPECT_TRUE(pj::scene3d::test::grab(bench.view()) != first) << "the robot's TF never advanced";
   bench.report("robot_tf_animated", drawn(bench.view()));
 }
 
@@ -524,7 +946,11 @@ void runLayers(const char* name, long long count) {
         "/points_" + std::to_string(i), BT::kPointCloud, pj::scene3d::test::serializeCloud(points, kFrame));
   }
   SHOW_OR_SKIP(bench);
-  ASSERT_NO_FATAL_FAILURE(bench.drive(benchFrames(), [&](int) { bench.orbit(); }));
+  ASSERT_NO_FATAL_FAILURE(bench.drive(benchFrames(), [&](int k) { bench.orbit(k); }));
+  expectDrawn(bench.view(), {.points = true});
+#ifdef PJ_SCENE3D_RHI
+  EXPECT_EQ(bench.view().lastPointLayerCountForTest(), count) << "a cloud layer was not drawn";
+#endif
   bench.report(name, "layers=" + std::to_string(count) + " " + drawn(bench.view()));
 }
 TEST_F(Scene3dFrameBenchmark, Layers10) {
@@ -540,13 +966,14 @@ TEST_F(Scene3dFrameBenchmark, Layers1000) {
 // Float, redock and tab-switch of a dock holding a large cloud, then of one
 // holding a many-link robot, each to its first finished frame. Float is a
 // reparent to a new top-level (what an ADS floating container is), tab-switch
-// a hide/show on the same QRhi (what hiding a workspace tab does; an ADS
-// dock-area tab switch reparents through a parentless state, like a float).
+// a hide/show on the same QRhi (what hiding a workspace tab or, with our ADS
+// fork, a dock-area tab does; mixed_layout_benchmark --tab-switch runs a real one).
 TEST_F(Scene3dFrameBenchmark, DockMovesCloud) {
   SceneBench bench;
   bench.fixture().add("/points", BT::kPointCloud, randomCloud(cloudPoints(), 1));
   SHOW_OR_SKIP(bench);
   const std::string moves = bench.dockMoves(static_cast<int>(benchSize("MOVES", 2, 5)));
+  expectDrawn(bench.view(), {.points = true});
   bench.report("dock_moves_cloud", moves + " " + drawn(bench.view()));
 }
 TEST_F(Scene3dFrameBenchmark, DockMovesRobot) {
@@ -556,6 +983,7 @@ TEST_F(Scene3dFrameBenchmark, DockMovesRobot) {
   ASSERT_NO_FATAL_FAILURE(bench.addRobot(links));
   SHOW_OR_SKIP(bench);
   const std::string moves = bench.dockMoves(static_cast<int>(benchSize("MOVES", 2, 5)));
+  expectDrawn(bench.view(), {.models = true});
   bench.report("dock_moves_robot", moves + " " + drawn(bench.view()));
 }
 
@@ -568,7 +996,8 @@ TEST_F(Scene3dFrameBenchmark, FirstShow) {
   bench.fixture().add("/points", BT::kPointCloud, randomCloud(cloudPoints(), 1));
   ASSERT_NO_FATAL_FAILURE(bench.addRobot(links));
   SHOW_OR_SKIP(bench);
-  std::string extra = drawn(bench.view());
+  expectDrawn(bench.view(), {.points = true, .models = true});
+  std::string extra = drawn(bench.view()) + bench.firstFrameStages();
 #ifdef PJ_SCENE3D_RHI
   if (QRhi* rhi = pj_bench::rhiOf(bench.view()); rhi != nullptr) {
     extra += " pipeline_ms=" + std::to_string(rhi->statistics().totalPipelineCreationTime);
@@ -594,11 +1023,12 @@ TEST_F(Scene3dFrameBenchmark, DepthReplayOnOff) {
   for (int round = 0; round < 4; ++round) {
     const bool forced = round % 2 == 0;
     bench.view().setForceDepthReplayForTest(forced);
-    ASSERT_NO_FATAL_FAILURE(bench.drive(frames, [&](int) { bench.orbit(); }));
+    ASSERT_NO_FATAL_FAILURE(bench.drive(frames, [&](int k) { bench.orbit(k); }));
     (forced ? replay : chain).push_back(pj_bench::stats(bench.lastWallMs()).median);
     resolves = resolves || bench.view().depthResolveActiveForTest();
   }
   bench.view().setForceDepthReplayForTest(false);
+  expectDrawn(bench.view(), {.points = true});
   bench.report(
       "depth_replay", "replay_ms=" + std::to_string(pj_bench::stats(replay).median) +
                           " default_ms=" + std::to_string(pj_bench::stats(chain).median) +

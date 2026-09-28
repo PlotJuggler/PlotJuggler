@@ -12,6 +12,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include "pj_scene3d_core/cube_draw_policy.h"
+#include "pj_scene3d_core/pose_math.h"
 #include "pj_scene3d_core/scene_limits.h"
 #include "pj_scene3d_widgets/cube_mesh.h"
 #include "pj_scene3d_widgets/layers/voxel_grid_layer.h"
@@ -32,10 +33,6 @@ struct alignas(16) VoxelUniforms {
   std::array<float, 4> mode_params{};
 };
 static_assert(sizeof(VoxelUniforms) == kVoxelUniformBytes);
-
-QString tr(const char* text) {
-  return QCoreApplication::translate("pj::scene3d::SceneViewWidget", text);
-}
 
 }  // namespace
 
@@ -100,46 +97,31 @@ void VoxelRhiPass::setLayers(const std::vector<VoxelGridLayer*>& layers) {
   adoptLayerList(layers, layers_, layer_gpu_, releaseLayerGpu);
 }
 
-void VoxelRhiPass::admit(QRhi* rhi, const PlaceFn& place, SceneBoundsCollector& bounds) {
-  admitted_.clear();
-  AABB family_bounds;
-  std::uint64_t remaining_voxels = kSceneLimits.max_voxels_per_view;
-  for (VoxelGridLayer* layer : layers_) {
-    if (layer == nullptr || !layer->visible()) {
-      continue;
-    }
-    layer->prepareForRender(remaining_voxels);
-    if (!layer->hasVolume()) {
-      pruneLayerGpu(layer_gpu_, layer, releaseLayerGpu);
-      continue;
-    }
-    const QString rejection = gpuRejection(rhi, layer);
-    if (!rejection.isEmpty()) {
-      layer->rejectVolumeForRender(rejection);
-      pruneLayerGpu(layer_gpu_, layer, releaseLayerGpu);
-      continue;
-    }
-    const auto placed = place(layer->renderFrameId());
-    if (!placed.has_value()) {
-      continue;
-    }
-    // The view budget describes submitted/drawable voxels. An otherwise valid
-    // layer whose frame cannot currently be placed must not reserve capacity
-    // and starve a later layer that can be rendered in this frame.
-    if (!tryConsumeBudget(layer->voxelCount(), remaining_voxels)) {
-      continue;
-    }
-    if (const auto source_bounds = layer->sourceBounds(); source_bounds.has_value()) {
-      const AABB placed_bounds = transformedBounds(*source_bounds, *placed);
-      family_bounds = unionAABB(family_bounds, placed_bounds);
-      bounds.add(dynamic_cast<const void*>(layer), placed_bounds);
-    }
-    admitted_.push_back({layer, *placed});
-  }
-  last_bounds_ = family_bounds;
+void VoxelRhiPass::admit(QRhi* rhi, const PlaceFn& place) {
+  last_bounds_ = admitLayers(
+      layers_, kSceneLimits.max_voxels_per_view, place, admitted_, layer_gpu_, releaseLayerGpu,
+      [&](VoxelGridLayer* layer) {
+        if (!layer->hasVolume()) {
+          return false;
+        }
+        const QString rejection = gpuRejection(rhi, layer);
+        if (!rejection.isEmpty()) {
+          layer->rejectVolumeForRender(rejection);
+          return false;
+        }
+        return true;
+      },
+      [](const VoxelGridLayer* layer) { return layer->voxelCount(); },
+      [](const VoxelGridLayer* layer, const Transform& placed) -> std::optional<AABB> {
+        const auto source_bounds = layer->sourceBounds();
+        return source_bounds.has_value() ? std::optional(transformedBounds(*source_bounds, placed)) : std::nullopt;
+      });
 }
 
 void VoxelRhiPass::prepare(const RhiFrameContext& frame) {
+  if (!ready()) {
+    return;  // never built: no layer of this family since the last release
+  }
   draws_.clear();
   last_layer_count_ = 0;
   last_voxel_count_ = 0;
@@ -179,9 +161,7 @@ void VoxelRhiPass::prepare(const RhiFrameContext& frame) {
       ++full_upload_count_;
     }
 
-    const auto& p = layer->origin().position;
-    const auto& q = layer->origin().orientation;
-    const Transform source_from_grid(glm::dvec3(p.x, p.y, p.z), glm::normalize(glm::dquat(q.w, q.x, q.y, q.z)));
+    const Transform source_from_grid = poseTransform(layer->origin());
 
     const glm::vec3 cell_size = layer->cellSize();
     const glm::mat4 fixed_from_grid =

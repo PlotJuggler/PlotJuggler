@@ -23,7 +23,6 @@
     <file>mesh_mask.frag.qsb</file>
     <file>ssao.frag.qsb</file>
     <file>shadow.vert.qsb</file>
-    <file>marker_shadow.vert.qsb</file>
     <file>shadow.frag.qsb</file>
     <file>grid_cell.vert.qsb</file>
     <file>grid_cell.frag.qsb</file>

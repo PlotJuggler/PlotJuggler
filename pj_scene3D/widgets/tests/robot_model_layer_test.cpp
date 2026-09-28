@@ -74,7 +74,7 @@ constexpr const char* kMixedCollisionUrdf = R"(
 )";
 
 // An entirely-collision model (no <visual> anywhere): kAuto must promote it to the
-// visuals group so it renders solid (review L.21).
+// visuals group so it renders solid.
 constexpr const char* kAllCollisionUrdf = R"(
 <robot name="allcol">
   <link name="solid">
@@ -1185,7 +1185,7 @@ TEST(RobotModelLayerTest, AutoModeCollisionOnlyLinkRendersInCollisionGroupWhenMo
 }
 
 // kAuto in an ENTIRELY-collision model: promote to the visuals group so it renders
-// solid instead of ghosting at the collision opacity (review L.21 preserved).
+// solid instead of ghosting at the collision opacity.
 TEST(RobotModelLayerTest, AutoModeAllCollisionModelPromotesToVisuals) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);

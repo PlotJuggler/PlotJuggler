@@ -27,6 +27,9 @@
 #include <QOpenGLWidget>  // the GL build's GPU widgets; the QRhi build's need not link QtOpenGLWidgets
 #endif
 #include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -38,6 +41,8 @@
 #endif
 #include <windows.h>
 #else
+#include <sys/resource.h>
+
 #include <ctime>
 #endif
 
@@ -59,6 +64,131 @@ inline double threadCpuMs() {
   return static_cast<double>(now.tv_sec) * 1.0e3 + static_cast<double>(now.tv_nsec) / 1.0e6;
 #endif
 }
+
+/// std::chrono::steady_clock now, ns: the clock of the views' test-hook stage stamps.
+inline std::int64_t steadyNs() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+/// Minor page faults of the whole process so far (every thread: decode workers
+/// and the driver's too); negative off Linux/Unix.
+inline long long minorFaults() {
+#ifdef Q_OS_WIN
+  return -1;
+#else
+  rusage usage{};
+  return getrusage(RUSAGE_SELF, &usage) == 0 ? static_cast<long long>(usage.ru_minflt) : -1;
+#endif
+}
+
+/// Mean current frequency of the CPUs cpufreq reports, MHz; negative when none
+/// does (off Linux, some VMs).
+inline double cpuMhz() {
+  double sum_khz = 0.0;
+  int count = 0;
+#ifdef Q_OS_LINUX
+  for (int cpu = 0;; ++cpu) {
+    QFile freq(QStringLiteral("/sys/devices/system/cpu/cpu%1/cpufreq/scaling_cur_freq").arg(cpu));
+    if (!freq.open(QIODevice::ReadOnly)) {
+      break;
+    }
+    sum_khz += freq.readAll().trimmed().toDouble();
+    ++count;
+  }
+#endif
+  return count > 0 ? sum_khz / count / 1000.0 : -1.0;
+}
+
+/// The GPU's actual clock (i915 `gt_act_freq_mhz` of the first DRM card that
+/// has one), MHz; negative where none is readable (other drivers, platforms).
+inline double gpuMhz() {
+#ifdef Q_OS_LINUX
+  static const QString path = [] {
+    for (int card = 0; card < 8; ++card) {
+      const QString candidate = QStringLiteral("/sys/class/drm/card%1/gt_act_freq_mhz").arg(card);
+      if (QFile::exists(candidate)) {
+        return candidate;
+      }
+    }
+    return QString();
+  }();
+  QFile freq(path);
+  if (!path.isEmpty() && freq.open(QIODevice::ReadOnly)) {
+    return freq.readAll().trimmed().toDouble();
+  }
+#endif
+  return -1.0;
+}
+
+/// Warm-up of a frame loop: call done(frame_ms) after each warm-up frame. True
+/// once frames ran for at least `min_ms`, the last 5 frames' wall times are
+/// within 10% of each other and the GPU clock (gpuMhz(), where readable) moved
+/// less than 5% over the last `settle_ms`; always true after `max_frames` frames
+/// or `max_ms`. The rule waits on time and the clock, not a frame count, because
+/// a GPU idle before the loop sits at its lowest clock and ramps up over several
+/// frames (i915: 0 -> 600 -> 1500 MHz). i915 may also hold a light load at an
+/// intermediate clock for a while and raise it later, inside the measured
+/// frames: no warm-up rules that out, so report the clock over the measured
+/// frames too. coldMs() is the first frame's wall time, the cold-after-idle
+/// latency a user sees on a first interaction (reported apart as cold_ms).
+class WarmUp {
+ public:
+  explicit WarmUp(int min_ms = 250, int settle_ms = 100, int max_frames = 120, int max_ms = 2000)
+      : min_ms_(min_ms), settle_ms_(settle_ms), max_frames_(max_frames), max_ms_(max_ms) {
+    timer_.start();
+    settled_.start();
+    mhz_ = gpuMhz();
+  }
+  [[nodiscard]] bool done(double frame_ms) {
+    if (frames_ == 0) {
+      cold_ms_ = frame_ms;
+    }
+    last_ms_[static_cast<std::size_t>(frames_ % kSteadyFrames)] = frame_ms;
+    ++frames_;
+    const double mhz = gpuMhz();
+    last_mhz_ = mhz;
+    if (mhz >= 0.0 && std::abs(mhz - mhz_) > 0.05 * std::max(mhz_, 100.0)) {
+      mhz_ = mhz;
+      settled_.restart();
+    }
+    const qint64 elapsed = timer_.elapsed();
+    if (elapsed >= max_ms_ || frames_ >= max_frames_) {
+      return true;
+    }
+    const auto [fastest, slowest] = std::minmax_element(last_ms_.begin(), last_ms_.end());
+    const bool steady = frames_ >= kSteadyFrames && *slowest <= 1.1 * *fastest;
+    return elapsed >= min_ms_ && steady && (mhz < 0.0 || settled_.elapsed() >= settle_ms_);
+  }
+  [[nodiscard]] int frames() const {
+    return frames_;
+  }
+  /// The first frame's wall time; negative before it.
+  [[nodiscard]] double coldMs() const {
+    return cold_ms_;
+  }
+  [[nodiscard]] double elapsedMs() const {
+    return static_cast<double>(timer_.nsecsElapsed()) / 1.0e6;
+  }
+  /// The GPU clock when the warm-up ended (negative where unreadable).
+  [[nodiscard]] double gpuMhzAtEnd() const {
+    return last_mhz_;
+  }
+
+ private:
+  static constexpr int kSteadyFrames = 5;
+  int min_ms_;
+  int settle_ms_;
+  int max_frames_;
+  int max_ms_;
+  int frames_ = 0;
+  std::array<double, kSteadyFrames> last_ms_{};
+  double mhz_ = -1.0;  // the clock the settle window started at
+  double last_mhz_ = -1.0;
+  double cold_ms_ = -1.0;
+  QElapsedTimer timer_;
+  QElapsedTimer settled_;
+};
 
 /// A "Vm*:" field of /proc/self/status in MiB; negative off Linux.
 inline double procStatusMib([[maybe_unused]] const char* field) {
@@ -175,17 +305,17 @@ inline QByteArray fmt(double value, int decimals = 1) {
 }
 
 /// Counts the frames a GPU widget finished: QRhiWidget::frameSubmitted, or in
-/// the GL build QOpenGLWidget::frameSwapped. Anything else (a raster widget)
-/// never counts; see valid().
+/// the GL build QOpenGLWidget::frameSwapped, and stamps the last one
+/// (steadyNs()). Anything else (a raster widget) never counts; see valid().
 class FrameCounter {
  public:
   explicit FrameCounter(QWidget* widget) {
     if (auto* rhi_widget = qobject_cast<QRhiWidget*>(widget); rhi_widget != nullptr) {
-      connection_ = QObject::connect(rhi_widget, &QRhiWidget::frameSubmitted, [this] { ++count_; });
+      connection_ = QObject::connect(rhi_widget, &QRhiWidget::frameSubmitted, [this] { finish(); });
     }
 #ifndef PJ_RHI_WIDGETS
     if (auto* gl_widget = qobject_cast<QOpenGLWidget*>(widget); gl_widget != nullptr) {
-      connection_ = QObject::connect(gl_widget, &QOpenGLWidget::frameSwapped, [this] { ++count_; });
+      connection_ = QObject::connect(gl_widget, &QOpenGLWidget::frameSwapped, [this] { finish(); });
     }
 #endif
   }
@@ -201,9 +331,18 @@ class FrameCounter {
   [[nodiscard]] bool valid() const {
     return static_cast<bool>(connection_);
   }
+  [[nodiscard]] std::int64_t lastFinishedNs() const {
+    return last_ns_;
+  }
 
  private:
+  void finish() {
+    ++count_;
+    last_ns_ = steadyNs();
+  }
+
   std::uint64_t count_ = 0;
+  std::int64_t last_ns_ = 0;
   QMetaObject::Connection connection_;
 };
 
@@ -246,18 +385,25 @@ inline std::uint64_t idleFrames(
   return frames() - start;
 }
 
-/// Median, min and max of `values` (0 when empty).
+/// Median, min, max, 90th percentile (nearest rank) and 95th (the sorted value
+/// at index floor(0.95 n)) of `values` (0 when empty).
 struct Stats {
   double median = 0.0;
   double min = 0.0;
   double max = 0.0;
+  double p90 = 0.0;
+  double p95 = 0.0;
 };
 inline Stats stats(std::vector<double> values) {
   if (values.empty()) {
     return {};
   }
   std::sort(values.begin(), values.end());
-  return {values[values.size() / 2], values.front(), values.back()};
+  const std::size_t last = values.size() - 1;
+  const std::size_t p90 = std::min(last, (values.size() * 9 + 9) / 10 - 1);
+  return {
+      values[values.size() / 2], values.front(), values.back(), values[p90],
+      values[std::min(last, values.size() * 95 / 100)]};
 }
 
 }  // namespace pj_bench

@@ -1006,6 +1006,48 @@ TEST(SceneEntitiesLayerModelTest, LocalFileModelUrlLoadsWithoutOptIn) {
       << "local file URL tripped the remote gate: " << layer.remoteFetchNotice().toStdString();
 }
 
+// A local-file fetch's completion is queued at fetch() time. Superseding its
+// model aborts the fetcher, and destroying the layer before the event loop runs
+// must take that queued completion with it: the callback captures the layer.
+// The steps run without pumping events in between; an application event filter
+// then reports any delivery that still reaches a fetcher (under ASan, the
+// delivery itself is the use-after-free).
+TEST(SceneEntitiesLayerModelTest, AbortedFetchCompletionDiesWithTheLayer) {
+  isolateSettings();
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  const QString fixture = QString(PJ_SCENE3D_FIXTURES_DIR) + u"/meshes/cube.stl"_s;
+  pushSceneEntities(
+      session, topic_id, 10,
+      batchWithEntities(
+          {makeUrlEntity("car", 10, QUrl::fromLocalFile(fixture).toString().toStdString(), "model/stl")}));
+  pushSceneEntities(session, topic_id, 20, batchWithEntities({makeEntity("car", 20)}));  // same key, embedded bytes
+
+  class FetcherDeliveries : public QObject {
+   public:
+    int count = 0;
+
+   protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+      if (event->type() == QEvent::MetaCall && watched->inherits("pj::scene3d::UrlFetcher")) {
+        ++count;
+      }
+      return false;
+    }
+  } deliveries;
+  QCoreApplication::instance()->installEventFilter(&deliveries);
+
+  auto layer = std::make_unique<pj::scene3d::SceneEntitiesLayer>(topic_id, u"/scene_entities"_s);
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer->attach(ctx));         // t=10: the local-file fetch queues its completion
+  layer->setTrackerTime(PJ::fromRaw(20));  // supersedes the fetched model: the fetcher is aborted
+  layer.reset();                           // destroyed before the queued completion runs
+  pumpUntil([] { return false; }, std::chrono::milliseconds(200));
+  QCoreApplication::instance()->removeEventFilter(&deliveries);
+  EXPECT_EQ(deliveries.count, 0) << "an aborted fetcher outlived its layer and delivered its completion";
+}
+
 // A URL record exists BEFORE its bytes do (pending fetch, future default-
 // invalid). pollMeshLoads — driven here by a sibling embedded-data record's
 // completion watcher — must skip the pending record instead of calling

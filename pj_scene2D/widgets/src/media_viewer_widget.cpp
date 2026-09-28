@@ -23,6 +23,7 @@
 #include "pj_widgets/Colormap.h"  // shared Colormap enum + buildColormapLut + colormapGlsl
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/GraphicsApi.h"
+#include "pj_widgets/RhiBlend.h"
 using namespace Qt::StringLiterals;
 
 void pjMediaQtInitResources() {
@@ -41,6 +42,14 @@ MediaViewerWidget::MediaViewerWidget(QWidget* parent) : QRhiWidget(parent) {
   setObjectName(u"mediaViewerCanvas"_s);
   setFocusPolicy(Qt::StrongFocus);
   setMouseTracking(true);
+  // Qt's own failure (no QRhi for this window, e.g. its API differs from the one
+  // another widget pinned the window to) never reaches initialize(): show it too.
+  // setRenderingWarning() emits renderFailed() itself, after the latch is set.
+  connect(this, &QRhiWidget::renderFailed, this, [this] {
+    if (!rendering_warning_.failed()) {
+      setRenderingWarning(tr("GPU rendering is unavailable: Qt could not create a QRhi for this window."));
+    }
+  });
 #ifdef PJ_TARGET_WASM
   connect(this, &QRhiWidget::frameSubmitted, this, [this]() {
     if (composition_refresh_queued_) {
@@ -225,16 +234,6 @@ bool recreateTexture(QRhiTexture* tex, QRhiTexture::Format format, QSize size) {
   return tex->create();
 }
 
-QRhiGraphicsPipeline::TargetBlend alphaBlend() {
-  QRhiGraphicsPipeline::TargetBlend blend;
-  blend.enable = true;
-  blend.srcColor = QRhiGraphicsPipeline::SrcAlpha;
-  blend.dstColor = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-  blend.srcAlpha = QRhiGraphicsPipeline::One;
-  blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-  return blend;
-}
-
 QRhiVertexInputLayout colorVertexInputLayout() {
   QRhiVertexInputLayout layout;
   layout.setBindings({QRhiVertexInputBinding(24)});  // stride: vec2 pos + vec4 color
@@ -355,6 +354,28 @@ void MediaViewerWidget::clearTextCache() {
   }
   text_cache_.clear();
   text_draw_items_.clear();
+}
+
+void MediaViewerWidget::trimTextCache() {
+  if (text_cache_.size() <= kMaxGlyphCacheEntries) {
+    return;
+  }
+  // Only labels the last rebuild did not draw: text_draw_items_ borrows the others.
+  std::vector<decltype(text_cache_)::iterator> unused;
+  for (auto it = text_cache_.begin(); it != text_cache_.end(); ++it) {
+    if (it->second.last_used != text_rebuilds_) {
+      unused.push_back(it);
+    }
+  }
+  const std::size_t evict = std::min(unused.size(), text_cache_.size() - kMaxGlyphCacheEntries);
+  std::nth_element(
+      unused.begin(), unused.begin() + static_cast<std::ptrdiff_t>(evict), unused.end(),
+      [](auto a, auto b) { return a->second.last_used < b->second.last_used; });
+  for (std::size_t i = 0; i < evict; ++i) {
+    delete unused[i]->second.srb;
+    delete unused[i]->second.tex;
+    text_cache_.erase(unused[i]);
+  }
 }
 
 void MediaViewerWidget::clearPixelLayerTextures() {
@@ -740,16 +761,8 @@ bool MediaViewerWidget::ensureRemapTexture(
     layer.remap_w = out_w;
     layer.remap_h = out_h;
     layer.remap_map_key = nullptr;  // force a re-upload into the new texture.
-    // Rebind slot 4 to the real LUT (was the placeholder). Preserve the layer's
-    // sampler choice (magnification filter / depth nearest) via layerSamplers().
-    QRhiSampler* y_s = nullptr;
-    QRhiSampler* uv_s = nullptr;
-    layerSamplers(layer, y_s, uv_s);
-    layer.srb->destroy();
-    setTextureLayerBindings(
-        layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, uv_s, layer.tex_remap, remap_sampler_,
-        y_s);
-    if (!layer.srb->create()) {
+    // Bind slot 4 to the new LUT instead of the placeholder.
+    if (!rebuildLayerSrb(layer)) {
       return dropTextureLayer(layer);
     }
   }
@@ -868,7 +881,7 @@ bool MediaViewerWidget::createOverlayGraphicsPipeline(
   overlay.pipeline->setVertexInputLayout(input_layout);
   overlay.pipeline->setShaderResourceBindings(overlay.srb);
   overlay.pipeline->setRenderPassDescriptor(color_target_.renderPass());
-  overlay.pipeline->setTargetBlends({alphaBlend()});
+  overlay.pipeline->setTargetBlends({PJ::straightAlphaBlend()});
   if (!createRhiPipeline(*this, *overlay.pipeline, name)) {
     if (warn) {
       qWarning("MediaViewerWidget: failed to create the %s overlay pipeline; that overlay is disabled", name);
@@ -992,11 +1005,13 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
   // creation or in render() comes back on the next initialize().
   createOptionalResources(r, vert, frag);
 
-  // GPU rectification needs the base pipeline plus a sampleable RG32UI LUT. When
-  // available, tell the source to defer rectification to the GPU (raw upload +
+  // GPU rectification needs only the base pipeline: its RG32UI placeholder is
+  // the LUT's format, so the LUT works wherever the pipeline was created. Not
+  // isTextureFormatSupported(RG32UI): Qt's GLES backend reports the 32-bit
+  // integer formats from ES 3.1 on, though RG32UI is core in ES 3.0 (WebGL2).
+  // When available, the source defers rectification to the GPU (raw upload +
   // map); otherwise it keeps rectifying on the CPU (the precompute fallback).
-  gpu_rectify_supported_.store(
-      pipeline_ != nullptr && r->isTextureFormatSupported(QRhiTexture::RG32UI), std::memory_order_relaxed);
+  gpu_rectify_supported_.store(pipeline_ != nullptr, std::memory_order_relaxed);
   applyGpuRectifyCapability();
 
   if (has_pending_ || has_pending_pixel_layers_) {
@@ -1022,7 +1037,7 @@ void MediaViewerWidget::createOptionalResources(QRhi* r, const QShader& vert, co
     composite_pipeline_->setVertexInputLayout(QRhiVertexInputLayout());
     composite_pipeline_->setShaderResourceBindings(base_texture_.srb);
     composite_pipeline_->setRenderPassDescriptor(color_target_.renderPass());
-    composite_pipeline_->setTargetBlends({alphaBlend()});
+    composite_pipeline_->setTargetBlends({PJ::straightAlphaBlend()});
     if (!createRhiPipeline(*this, *composite_pipeline_, "composite")) {
       warning("failed to create the composite pipeline; layers draw without blending");
       delete composite_pipeline_;
@@ -1292,9 +1307,7 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
       // ----- Text rebuild (textured quads) — only when the annotation set
       // changes; text size is not cosmetic, so a pure zoom change leaves it. -----
       if (overlays_dirty_ && text_overlay_.pipeline != nullptr) {
-        if (text_cache_.size() > kMaxGlyphCacheEntries) {
-          clearTextCache();  // nothing borrows its bindings between rebuilds
-        }
+        ++text_rebuilds_;
         text_overlay_.vertex_data.clear();
         text_draw_items_.clear();
         constexpr size_t kFloatsPerTextQuad = 6 * 8;  // 6 verts × (pos2+uv2+color4) = 48 floats
@@ -1336,6 +1349,7 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
           }
         }
         uploadOverlayVertexData(text_overlay_, updates);
+        trimTextCache();
       }
 
       overlays_dirty_ = false;
@@ -1618,6 +1632,7 @@ MediaViewerWidget::TextEntry* MediaViewerWidget::getOrCreateTextTexture(
   TextKey key{text, fq};
   auto it = text_cache_.find(key);
   if (it != text_cache_.end()) {
+    it->second.last_used = text_rebuilds_;
     return &it->second;
   }
   auto* r = rhi();
@@ -1668,7 +1683,8 @@ MediaViewerWidget::TextEntry* MediaViewerWidget::getOrCreateTextTexture(
     return nullptr;
   }
 
-  TextEntry entry{tex, srb, w, h};
+  ++label_rasterizations_;
+  TextEntry entry{tex, srb, w, h, text_rebuilds_};
   auto [ins_it, _] = text_cache_.emplace(std::move(key), entry);
   return &ins_it->second;
 }

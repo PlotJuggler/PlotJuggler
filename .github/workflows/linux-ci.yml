@@ -283,6 +283,38 @@ jobs:
           xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120 --no-tests=error \
             -R '^(scene3d_rhi_render_test|rhi_dock_lifecycle_test)\.opengl\.'
 
+      - name: Test floating docks moved to a screen of another pixel ratio
+        # Needs two screens with different device-pixel ratios, which xvfb cannot
+        # give Qt: its RandR outputs are all named "screen", so
+        # QT_SCREEN_SCALE_FACTORS cannot tell them apart, and two X screens turn a
+        # move into a hide and re-create, not a live ratio change. A headless
+        # mutter with two virtual monitors gives its Xwayland two named outputs,
+        # between which xcb moves a window live. PJ_REQUIRE_MIXED_DPR turns the
+        # cases' missing-screen skip into a failure.
+        env:
+          PJ_REQUIRE_GPU_TESTS: "1"
+          PJ_REQUIRE_MIXED_DPR: "1"
+          QT_QPA_PLATFORM: xcb
+          QT_SCREEN_SCALE_FACTORS: "1;2"
+        run: |
+          sudo apt-get install -y --no-install-recommends mutter xwayland
+          export XDG_RUNTIME_DIR="${RUNNER_TEMP}/mutter-run"
+          mkdir -p "${XDG_RUNTIME_DIR}"
+          chmod 700 "${XDG_RUNTIME_DIR}"
+          log="${RUNNER_TEMP}/mutter.log"
+          dbus-run-session -- mutter --wayland --headless --virtual-monitor 1024x768 \
+            --virtual-monitor 1024x768 --wayland-display pj-mixed-dpr > "${log}" 2>&1 &
+          for _ in $(seq 60); do grep -q "Using public X11 display" "${log}" && break; sleep 0.5; done
+          DISPLAY="$(grep -o 'Using public X11 display :[0-9]*' "${log}" | grep -o ':[0-9]*$' || true)"
+          if [[ -z "${DISPLAY}" ]]; then cat "${log}"; exit 1; fi
+          export DISPLAY
+          XAUTHORITY="$(ls "${XDG_RUNTIME_DIR}"/.mutter-Xwaylandauth.* | head -n1)"
+          export XAUTHORITY
+          VK_ICD_FILENAMES="$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)"
+          export VK_ICD_FILENAMES
+          ctest --test-dir build --output-on-failure --timeout 120 --no-tests=error \
+            -R '^(rhi_dock_lifecycle_test|rhi_mixed_dock_test)\.(opengl|vulkan)\..*AnotherPixelRatio$'
+
       - name: Build the legacy OpenGL renderer (PJ_SCENE3D_RHI=OFF)
         # The GL build is kept for one release as the rollback: this trimmed tree
         # keeps it compiling and checks its GL-only tests and its goldens per pixel.
