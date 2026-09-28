@@ -712,11 +712,15 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     title_bar_->setUnseenError(false);
   });
 
-  // File menu: layout persistence + marketplace + preferences + quit.
+  // File menu: open data + layout persistence + marketplace + preferences + quit.
   // Recent layouts are no longer a File-menu submenu — they live in the
   // LeftPanel "recent" popup (Layouts section) alongside recent data files,
   // wired below via LeftPanel::recentLayoutSelected.
   QMenu* file_menu = title_bar_->fileMenu();
+  // Duplicates the LeftPanel load button: many users look for "open" here first.
+  action_open_data_ = file_menu->addAction(tr("Open Data File..."), this, &MainWindow::onLoadDataRequested);
+  action_open_data_->setShortcut(QKeySequence::Open);
+  file_menu->addSeparator();
   // Desktop retains its path-based layout dialogs. WASM exposes W9's
   // content-based layout open/download actions; Preferences remains omitted
   // until its nested dialog flow has a browser-safe continuation.
@@ -3657,6 +3661,9 @@ void MainWindow::applyIcons(QString theme) {
   // Title-bar menus: their QActions persist across theme changes, so
   // re-tint here.
   ui_->actionExit->setIcon(QIcon(loadSvg(":/resources/svg/logout.svg", theme)));
+  if (action_open_data_ != nullptr) {
+    action_open_data_->setIcon(QIcon(loadSvg(":/resources/svg/upload_file.svg", theme)));
+  }
   ui_->actionMarketplace->setIcon(QIcon(loadSvg(":/resources/svg/archive.svg", theme)));
   if (action_preferences_ != nullptr) {
     action_preferences_->setIcon(QIcon(loadSvg(":/resources/svg/settings_cog_light.svg", theme)));

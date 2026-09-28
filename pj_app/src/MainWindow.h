@@ -1500,6 +1500,7 @@ class MainWindow : public QMainWindow {
   // Stored so applyIcons() can re-tint them on theme change.
   QAction* action_load_layout_ = nullptr;
   QAction* action_save_layout_ = nullptr;
+  QAction* action_open_data_ = nullptr;
   QAction* action_preferences_ = nullptr;
 #ifdef PJ_TARGET_WASM
   struct BrowserLayoutRuntime;
