@@ -545,7 +545,10 @@ int main(int argc, char* argv[]) {
   // inherits the host process environment, so `CI` is invisible to the running
   // module and every headless-browser suite would report itself as real users.
 #ifndef PJ_TARGET_WASM
-  // One-shot GitHub release check, opt-out via Preferences (default on) and
+  // The release check asks this build's own update channel (apt, the Windows
+  // maintenance tool, or GitHub), so it needs to know which one it came from.
+  window.setInstallation(QStringLiteral(PJ_INSTALLATION_STRING));
+  // One-shot release check, opt-out via Preferences (default on) and
   // skipped for headless --screenshot runs. Deferred to the running event loop
   // (QNetworkAccessManager needs it); failures/no-release are silent.
   if (!parser.isSet(screenshot_option) &&

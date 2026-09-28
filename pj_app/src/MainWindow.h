@@ -220,6 +220,10 @@ class MainWindow : public QMainWindow {
   // consumer). The opt-out gate lives at the call site, not here.
   void sendTelemetryPing(const QString& installation);
 
+  // The PJ_INSTALLATION build stamp, passed by main.cpp. Decides where
+  // checkForUpdates() looks for a newer release and how the toast offers it.
+  void setInstallation(const QString& installation);
+
   // Presents the embedded external-process view in the central area (via
   // presentPanel) and restores the chart when the session ends. Idempotent:
   // a no-op if a panel is already presented.
@@ -375,6 +379,11 @@ class MainWindow : public QMainWindow {
   // Help ▸ Check for Updates… — a manual, always-runs release check that also
   // reports when the app is already current (unlike the silent startup check).
   void onCheckForUpdates();
+
+  // Target of the update toast's "Update now" link (the `pj-update:` scheme):
+  // starts the Windows maintenance tool in updater mode, then closes the app,
+  // whose files Windows keeps locked while it runs.
+  void onUpdateLinkActivated(const QUrl& url);
 
   // Rebuilds the Help ▸ Installed Extensions submenu from the current
   // ExtensionCatalogService snapshot. Informational only (disabled
@@ -1328,6 +1337,7 @@ class MainWindow : public QMainWindow {
   DiagnosticsDialog* diagnostics_dialog_ = nullptr;
   ToastManager* toast_manager_ = nullptr;
   UpdateChecker* update_checker_ = nullptr;
+  QString installation_;
   TelemetryPing* telemetry_ping_ = nullptr;
   // Outcome handlers are rebound on each checkForUpdates() call so the check's
   // interactivity (silent startup vs. noisy Help ▸ Check for Updates) is captured

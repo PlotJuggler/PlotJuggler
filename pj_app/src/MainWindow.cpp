@@ -15,6 +15,9 @@
 #include <QColor>
 #include <QCoreApplication>
 #include <QDesktopServices>
+#if QT_CONFIG(process)
+#include <QProcess>
+#endif
 #include <QDomDocument>
 #include <QFile>
 #include <QFileInfo>
@@ -2284,6 +2287,7 @@ void MainWindow::onPlaceholderTopicDropped(
 }
 
 MainWindow::~MainWindow() {
+  QDesktopServices::unsetUrlHandler(u"pj-update"_s);
   // FIRST, before `delete ui_` below: stop() emits stopped(), whose slot
   // touches the left panel. A quit that never ran closeEvent (--screenshot,
   // --exit-after-layout) would otherwise reach that slot with the widgets gone.
@@ -3425,7 +3429,11 @@ void MainWindow::showToast(const QString& message, const QPixmap& icon) {
 void MainWindow::checkForUpdates(bool interactive) {
   if (!update_checker_) {
     update_checker_ = new UpdateChecker(this);
+    // A custom scheme, so the toast's external-link handling routes "Update
+    // now" back here instead of to a browser.
+    QDesktopServices::setUrlHandler(u"pj-update"_s, this, "onUpdateLinkActivated");
   }
+  update_checker_->setInstallation(installation_);
 
   // Rebind the outcome handlers so this call's `interactive` is captured
   // per-request: checkLatestRelease() aborts any prior in-flight check (whose
@@ -3438,8 +3446,24 @@ void MainWindow::checkForUpdates(bool interactive) {
   update_available_conn_ =
       connect(update_checker_, &UpdateChecker::updateAvailable, this, [this](const ReleaseInfo& release) {
         QString message = tr("New release available: <b>%1</b>").arg(release.name.toHtmlEscaped());
+        switch (release.route) {
+          case UpdateRoute::AptUpgrade:
+            message += u"<br>"_s + tr("Update with <code>sudo apt update &amp;&amp; sudo apt upgrade</code>");
+            break;
+          case UpdateRoute::AptAddRepository:
+            message += u"<br>"_s + tr("Get it, and future releases, through apt:<br>"
+                                      "<code>curl -fsSL https://apt.plotjuggler.io/pj4_install.sh | sudo sh</code>");
+            break;
+          case UpdateRoute::MaintenanceTool:
+            message += u"<br>"_s + tr("<a href=\"pj-update:maintenance-tool\">Update now</a> (PlotJuggler will close)");
+            break;
+          case UpdateRoute::Download:
+            break;
+        }
         if (!release.html_url.isEmpty()) {
-          message += u"<br>"_s + tr("<a href=\"%1\">View on GitHub</a>").arg(release.html_url);
+          message += u"<br>"_s + (release.route == UpdateRoute::Download ? tr("<a href=\"%1\">View on GitHub</a>")
+                                                                         : tr("<a href=\"%1\">Release notes</a>"))
+                                     .arg(release.html_url);
         }
         showToast(message, QPixmap(u":/resources/success_kid.png"_s));
       });
@@ -3463,6 +3487,20 @@ void MainWindow::checkForUpdates(bool interactive) {
 
 void MainWindow::onCheckForUpdates() {
   checkForUpdates(/*interactive=*/true);
+}
+
+void MainWindow::setInstallation(const QString& installation) {
+  installation_ = installation;
+}
+
+void MainWindow::onUpdateLinkActivated(const QUrl& /*url*/) {
+#if QT_CONFIG(process)
+  if (update_checker_ && QProcess::startDetached(update_checker_->maintenanceToolPath(), {u"--start-updater"_s})) {
+    close();
+    return;
+  }
+#endif
+  showToast(tr("Could not start the PlotJuggler maintenance tool."));
 }
 
 void MainWindow::checkExtensionUpdates() {

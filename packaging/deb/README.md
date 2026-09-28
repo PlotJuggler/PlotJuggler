@@ -143,5 +143,5 @@ them). Older releases fail at run time on the glibc floor; non-dpkg distros
 
 The package is a **release asset**, not an apt repository — install it with
 `apt install ./plotjuggler4_<version>_amd64.deb`. `apt upgrade` therefore does
-not update PlotJuggler; the in-app update check behaves as it does for the
-AppImage. Publishing a signed apt repository is a separate piece of work.
+not update PlotJuggler; the in-app update check reports new releases from
+GitHub and offers the one-line apt repository installer instead. Publishing a signed apt repository is a separate piece of work.
