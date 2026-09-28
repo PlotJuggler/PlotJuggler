@@ -10,11 +10,14 @@
 
 #include "benchmark/benchmark.h"
 #include "pj_base/dataset.hpp"
+#include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/type_tree.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/chunk.hpp"
 #include "pj_datastore/column_buffer.hpp"
 #include "pj_datastore/engine.hpp"
+#include "pj_datastore/object_store.hpp"
+#include "pj_datastore/plugin_data_host.hpp"
 #include "pj_datastore/writer.hpp"
 
 namespace PJ {
@@ -255,6 +258,49 @@ void BM_Writer_AppendColumns_Float32(benchmark::State& state) {
 
 BENCHMARK(BM_Writer_RowAtATime_Float32);
 BENCHMARK(BM_Writer_AppendColumns_Float32);
+
+// ===========================================================================
+// Plugin source write host: bound rows across many topics
+// ===========================================================================
+
+// The shape of a large flight log (e.g. ULog: ~1k topics x tens of fields): the
+// host resolves every field of every record in a map keyed by (topic, field),
+// so this is sensitive to how well that key hashes at realistic cardinality.
+void BM_SourceHost_BoundAppend_ManyTopics(benchmark::State& state) {
+  constexpr int kTopics = 1000;
+  constexpr int kFields = 50;
+  constexpr int kRowsPerTopic = 20;
+
+  for (auto _ : state) {
+    DataEngine engine;
+    ObjectStore object_store;
+    DatastoreToolboxHost toolbox_impl{engine, object_store};
+    sdk::ToolboxHostView toolbox{toolbox_impl.raw()};
+    DatastoreSourceWriteHost write_impl(engine, *toolbox.createDataSource("bench"));
+    sdk::SourceWriteHostView writer(write_impl.raw());
+
+    std::vector<sdk::TopicHandle> topics;
+    std::vector<std::vector<sdk::BoundFieldValue>> rows(kTopics);
+    for (int t = 0; t < kTopics; ++t) {
+      topics.push_back(*writer.ensureTopic("topic_" + std::to_string(t)));
+      for (int f = 0; f < kFields; ++f) {
+        auto field = *writer.ensureField(topics.back(), "field_" + std::to_string(f), PrimitiveType::kFloat32);
+        rows[static_cast<std::size_t>(t)].push_back({.field = field, .value = static_cast<float>(f)});
+      }
+    }
+    for (int r = 0; r < kRowsPerTopic; ++r) {
+      for (std::size_t t = 0; t < topics.size(); ++t) {
+        (void)writer.appendBoundRecord(
+            topics[t], Timestamp{r}, Span<const sdk::BoundFieldValue>(rows[t].data(), rows[t].size()));
+      }
+    }
+    write_impl.flushPending();
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * kTopics * kFields * kRowsPerTopic);
+}
+
+BENCHMARK(BM_SourceHost_BoundAppend_ManyTopics)->Unit(benchmark::kMillisecond);
 
 }  // namespace
 }  // namespace PJ

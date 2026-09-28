@@ -452,11 +452,15 @@ struct WriteCore {
     }
   };
 
+  // Probed per field per appended record. std::hash of an integer is the
+  // identity and robin_map masks the low bits, so small topic/field ids must be
+  // mixed: xor-combining them left ~2k distinct hashes for ~200k fields.
   struct TopicFieldIdKeyHash {
     std::size_t operator()(const TopicFieldIdKey& key) const noexcept {
-      std::size_t h1 = std::hash<TopicId>{}(key.topic_id);
-      std::size_t h2 = std::hash<FieldId>{}(key.field_id);
-      return h1 ^ (h2 << 1);
+      uint64_t mixed = (static_cast<uint64_t>(key.topic_id) << 32) | key.field_id;
+      mixed = (mixed ^ (mixed >> 30)) * 0xbf58476d1ce4e5b9ULL;  // splitmix64 finalizer
+      mixed = (mixed ^ (mixed >> 27)) * 0x94d049bb133111ebULL;
+      return static_cast<std::size_t>(mixed ^ (mixed >> 31));
     }
   };
 
