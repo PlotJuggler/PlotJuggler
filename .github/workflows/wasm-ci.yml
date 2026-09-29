@@ -10,10 +10,11 @@
 #      contract + cold threaded Chromium boot.
 #   2. Acceptance — Scene2D/Scene3D ON, ingress probe ON: the retained QRhi
 #      capability probe and functional browser suite run against the same
-#      source graph used by the packaged application.
+#      source graph used by the packaged application, in Chromium (wasm-chromium
+#      job) and Firefox (wasm-firefox job), which run in parallel on this job's package.
 #
-# Cross-browser product coverage, the deterministic release archive, and
-# performance budgets remain part of the release tranche.
+# The deterministic release archive and performance budgets remain part of
+# the release tranche.
 name: WASM CI
 
 on:
@@ -178,6 +179,12 @@ jobs:
             --source build-wasm-mvp/pj_app --output build-wasm-mvp/deploy-b
           diff -qr build-wasm-mvp/deploy build-wasm-mvp/deploy-b
 
+      - name: Cache Playwright browsers
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ hashFiles('tests/wasm/package-lock.json') }}
+
       - name: Install browser gate
         working-directory: tests/wasm
         run: |
@@ -245,19 +252,155 @@ jobs:
           PJ_WASM_SCENE3D_CAP_URL="http://127.0.0.1:6932/scene3d_capability_probe.html" \
             npm --prefix tests/wasm run test:scene3d-capability
 
+      - name: Package acceptance build
+        run: |
+          node scripts/package_wasm.mjs \
+            --source build-wasm-probe/pj_app --output build-wasm-probe/deploy
+
+      - name: Upload acceptance package for the browser jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-acceptance
+          # emrun.py is stdlib-only Python: the Firefox job serves the
+          # capability probe exactly as below without installing emsdk.
+          path: |
+            build-wasm-probe/deploy
+            build-wasm-probe/pj_app/scene3d_capability_probe.*
+            build-wasm-probe/pj_app/qtloader.js
+            build-wasm-probe/pj_app/qtlogo.svg
+            .emsdk/upstream/emscripten/emrun.py
+          include-hidden-files: true
+          # The package is already .br/.gz compressed.
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
+
+  wasm-chromium:
+    # The acceptance package of the wasm job, in Chromium (SwiftShader WebGL).
+    needs: wasm
+    runs-on: depot-ubuntu-22.04-4
+    timeout-minutes: 60
+    env:
+      PJ_WASM_URL: http://127.0.0.1:6931/
+      PJ_WASM_BUILD_DIR: build-wasm-probe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Read toolchain versions
+        id: versions
+        run: |
+          source ./versions.env
+          echo "node=${PJ_WASM_NODE_VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install pinned packaging runtime
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ steps.versions.outputs.node }}
+
+      - name: Download acceptance package
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-acceptance
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ hashFiles('tests/wasm/package-lock.json') }}
+
+      - name: Install browser gate
+        working-directory: tests/wasm
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
       - name: Functional browser suite (acceptance package)
         shell: bash
         run: |
           set -euo pipefail
-          node scripts/package_wasm.mjs \
-            --source build-wasm-probe/pj_app --output build-wasm-probe/deploy
           node scripts/serve_wasm.mjs --root build-wasm-probe/deploy --port 6931 &
           server_pid=$!
           trap 'kill "${server_pid}" 2>/dev/null || true' EXIT
           for _ in $(seq 1 50); do
-            curl -fsS -o /dev/null http://127.0.0.1:6931/ && break
+            curl -fsS -o /dev/null "${PJ_WASM_URL}" && break
             sleep 0.2
           done
-          curl -fsS -o /dev/null http://127.0.0.1:6931/ || { echo "wasm server failed to start"; exit 1; }
-          PJ_WASM_URL="http://127.0.0.1:6931/" PJ_WASM_BUILD_DIR=build-wasm-probe \
-            npm --prefix tests/wasm run test
+          curl -fsS -o /dev/null "${PJ_WASM_URL}" || { echo "wasm server failed to start"; exit 1; }
+          npm --prefix tests/wasm run test
+
+  wasm-firefox:
+    # The acceptance package of the wasm job, in Firefox. Firefox has no
+    # SwiftShader: WebGL comes from Mesa's llvmpipe on the GPU-less runner,
+    # and headless Firefox gets no WebGL at all without a display (Xvfb).
+    needs: wasm
+    runs-on: depot-ubuntu-22.04-4
+    timeout-minutes: 60
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      PJ_WASM_URL: http://127.0.0.1:6931/
+      PJ_WASM_SCENE3D_CAP_URL: http://127.0.0.1:6932/scene3d_capability_probe.html
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Read toolchain versions
+        id: versions
+        run: |
+          source ./versions.env
+          echo "node=${PJ_WASM_NODE_VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install pinned packaging runtime
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ steps.versions.outputs.node }}
+
+      - name: Download acceptance package
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-acceptance
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-firefox-${{ hashFiles('tests/wasm/package-lock.json') }}
+
+      - name: Install browser gate
+        # --with-deps installs xvfb (Playwright's ubuntu22.04 tool list); Firefox's
+        # own dependency list has no Mesa, so llvmpipe's GL/EGL come from here.
+        working-directory: tests/wasm
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libegl1 libgl1-mesa-dri libegl-mesa0
+          npm ci
+          npx playwright install --with-deps firefox
+
+      - name: Serve acceptance package and capability probe
+        # Background servers outlive this step; the runner reaps them at job end.
+        run: |
+          python3 .emsdk/upstream/emscripten/emrun.py --no-browser --serve-after-exit \
+            --port 6932 build-wasm-probe/pj_app/scene3d_capability_probe.html > /dev/null 2>&1 &
+          node scripts/serve_wasm.mjs --root build-wasm-probe/deploy --port 6931 > /dev/null 2>&1 &
+          for url in "${PJ_WASM_URL}" "${PJ_WASM_SCENE3D_CAP_URL}"; do
+            for _ in $(seq 1 50); do
+              curl -fsS -o /dev/null "${url}" && break
+              sleep 0.2
+            done
+            curl -fsS -o /dev/null "${url}" || { echo "server for ${url} failed to start"; exit 1; }
+          done
+
+      - name: Retained Scene3D capability probe (Firefox)
+        run: xvfb-run -a npm --prefix tests/wasm run test:scene3d-capability:firefox
+
+      - name: Functional browser suite (Firefox)
+        run: xvfb-run -a npm --prefix tests/wasm run test:firefox -- --grep-invert editors.spec.js
+
+      - name: Editors suite (Firefox, non-blocking)
+        # Non-blocking until the time-sliced first Luau materialization is
+        # proven to hold the 100 ms main-thread heartbeat budget in Firefox
+        # on CI runners.
+        continue-on-error: true
+        run: xvfb-run -a npm --prefix tests/wasm run test:firefox -- --grep editors.spec.js

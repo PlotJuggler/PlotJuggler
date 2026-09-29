@@ -1185,13 +1185,16 @@ class MainWindow : public QMainWindow {
   void paintEvent(QPaintEvent* event) override;
 
  private:
-  // Swaps the chart area (ui_->tabbedPlotWidget) out and presents `panel` in
-  // its place; returns false if a panel is already up. restoreCentralArea
-  // tears the panel down and restores the chart; releaseCentralPanel is the
-  // non-destructive variant that swaps the chart back and RETURNS the panel
-  // (reparented out, hidden) instead of deleting it — the "migrate to tab"
-  // gesture uses it to keep the live toolbox widget.
-  bool presentPanel(QWidget* panel);
+  // Presents `panel` (non-null) in place of the chart area, as a page of
+  // ui_->centralAreaStack, dismissing any panel already up. restoreCentralArea
+  // tears the panel down and shows the chart again; releaseCentralPanel is the
+  // non-destructive variant that shows the chart and RETURNS the panel (hidden,
+  // still a child of the stack) instead of deleting it — the "migrate to tab"
+  // gesture uses it to keep the live toolbox widget. Neither reparents: the
+  // destination does that once (and a teardown deletes the panel in place),
+  // because every reparent unpolishes and repolishes the whole widget tree
+  // against the app stylesheet (~180 ms for a toolbox panel in a browser).
+  void presentPanel(QWidget* panel);
   void restoreCentralArea();
   QWidget* releaseCentralPanel();
 
@@ -1613,16 +1616,13 @@ class MainWindow : public QMainWindow {
   QWidget* empty_dock_page_ = nullptr;
 
   // Active toolbox panel presented in place of the chart area by
-  // presentPanel()/restoreCentralArea(). At most one at a time;
-  // panel_parent_/panel_layout_index_ remember where the chart was.
+  // presentPanel()/restoreCentralArea(). At most one at a time.
   // current_panel_engine_ is the owning PanelEngine when the panel is a
   // toolbox dialog (null for non-toolbox panels like the console / filter
   // editor); presentPanel() uses it to tear the previous toolbox down before
   // showing a new one, so launching a toolbox replaces the open panel.
   QWidget* current_panel_ = nullptr;
   PanelEngine* current_panel_engine_ = nullptr;
-  int panel_layout_index_ = -1;
-  QWidget* panel_parent_ = nullptr;
   // The marketplace controller while its panel holds the central area, so a
   // second open request re-activates it instead of building a second one (the
   // title-bar Update button and the File menu both route to onOpenMarketplace).

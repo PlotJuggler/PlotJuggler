@@ -180,12 +180,12 @@ if [[ $WASM == 1 ]]; then
   node scripts/serve_wasm.mjs --root build-wasm-probe/deploy --port $port > "$OUT/wasm_serve.log" 2>&1 &
   SERVE_PID=$!
   for _ in $(seq 50); do curl -fsS -o /dev/null "http://127.0.0.1:$port/" 2>/dev/null && break; sleep 0.2; done
-  specs=$(node -p "require('./tests/wasm/package.json').scripts.test.replace(/^playwright test /, '').replace(/ -.*/, '')")
+  specs=$(cd tests/wasm && node -p "require('./playwright.config.js').testMatch.join(' ')")
   PW_PARALLEL=""; for f in $specs; do [[ " $PW_SERIAL " == *" $f "* ]] || PW_PARALLEL+=" $f"; done
   # shellcheck disable=SC2086  # the spec lists are word lists
   ( st=$OUT/status_wasm
     cd tests/wasm && PJ_WASM_URL="http://127.0.0.1:$port/" PJ_WASM_BUILD_DIR=build-wasm-probe \
-      npx playwright test $PW_PARALLEL --reporter=line --workers="$PW" > "$OUT/playwright.log" 2>&1
+      npx playwright test $PW_PARALLEL --project=chromium --reporter=line --workers="$PW" > "$OUT/playwright.log" 2>&1
     rc=$?; st_ playwright_parallel $rc; echo "playwright (parallel) exit $rc"
     echo "wasm parallel done $(( $(date +%s) - t1 )) s" ) > "$OUT/j_wasm.out" 2>&1 &
   JOBS_PIDS+=($!)
@@ -195,7 +195,7 @@ if [[ $WASM == 1 ]]; then
   # shellcheck disable=SC2086
   ( st=$OUT/status_wasm
     cd tests/wasm && PJ_WASM_URL="http://127.0.0.1:$port/" PJ_WASM_BUILD_DIR=build-wasm-probe \
-      npx playwright test $PW_SERIAL --reporter=line --workers=1 > "$OUT/playwright_serial.log" 2>&1
+      npx playwright test $PW_SERIAL --project=chromium --reporter=line --workers=1 > "$OUT/playwright_serial.log" 2>&1
     rc=$?; st_ playwright_serial $rc; echo "playwright (serial: $PW_SERIAL) exit $rc" ) >> "$OUT/j_wasm.out" 2>&1
 fi
 st=$OUT/status_summary

@@ -946,7 +946,8 @@ struct ToolboxCore {
       write.setError("readSeriesArrow: out_schema and out_array must be non-null");
       return false;
     }
-    auto lock = engine.lockEngine();  // held through the row-decode loop below
+    engine.awaitCompleteSeries(field.topic.id);  // a snapshot must not catch a derived series mid-replay
+    auto lock = engine.lockEngine();             // held through the row-decode loop below
 
     const auto* storage = engine.getTopicStorage(field.topic.id);
     if (storage == nullptr) {

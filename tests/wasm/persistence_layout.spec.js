@@ -3,6 +3,7 @@ const { test, expect } = require('@playwright/test');
 const crypto = require('crypto');
 const fs = require('fs');
 const { observeRuntimeTarget, replaceRuntimeTarget, waitForQtApp } = require('./support/app');
+const { nativePickerType } = require('./support/browser');
 const { clickActiveDialogButton } = require('./support/dialogs');
 const { elementAttribute } = require('./support/layout_xml');
 const { downloadLayoutFromFileMenu, saveLayoutActionCenter } = require('./support/layout_actions');
@@ -275,7 +276,7 @@ test('browser persistence survives refresh through a bounded allowlist and scrub
   expect(errors).toEqual([]);
 });
 
-test('browser layouts open transactionally and download with exact round-trip state', async ({ page }) => {
+test('browser layouts open transactionally and download with exact round-trip state', async ({ page, browserName }) => {
   test.setTimeout(150000);
   const errors = [];
   const consoleMessages = [];
@@ -297,7 +298,8 @@ test('browser layouts open transactionally and download with exact round-trip st
       save: typeof window.showSaveFilePicker,
     };
   });
-  expect(pickerApisBefore).toEqual({ open: 'function', save: 'function' });
+  const nativePicker = nativePickerType(browserName);
+  expect(pickerApisBefore).toEqual({ open: nativePicker, save: nativePicker });
   const screen = await page.locator('#screen').boundingBox();
   expect(screen).not.toBeNull();
 

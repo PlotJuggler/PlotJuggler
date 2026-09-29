@@ -8,11 +8,15 @@
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
 #include <algorithm>
+#include <chrono>
 #include <limits>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -1065,6 +1069,464 @@ TEST(DataProcessorTransformTest, StrandPreflightSeesGroupedTransformOutputTopic)
   const std::vector<std::string> removed = fx.service.liveNonExemptOutputNames();
   EXPECT_EQ(markers.exemptDependentsOf(removed), std::vector<std::string>{"exempt_markers"})
       << "removable outputs reported as: " << (removed.empty() ? std::string("<none>") : removed.front());
+}
+
+// ---------------------------------------------------------------------------
+// Time-sliced first materialization (a new persistent transform)
+// ---------------------------------------------------------------------------
+
+// Large enough that the Luau replay needs several 8 ms slices even on a fast box.
+constexpr std::size_t kLargeRows = 200'000;
+
+// Stateful Luau running sum: any row a slice boundary dropped, repeated or
+// reordered changes every later value. `extra_work` spins a Luau loop on each of
+// the first `slow_rows` samples to make the transform slower there.
+std::string accumulateScript(
+    const std::string& id, double gain = 1.0, int extra_work = 0, std::size_t slow_rows = kLargeRows * 2) {
+  return "-- pj-script: luau\nreturn { id=\"" + id + "\", name=\"Acc\", output=\"same\",\n" +
+         "  create = function(p) local s = 0 local n = 0 return { calculate = function(t, v)\n" +
+         "    n = n + 1 if n <= " + std::to_string(slow_rows) + " then for _ = 1, " + std::to_string(extra_work) +
+         " do s = s + 0 end end\n" + "    s = s + v * " + std::to_string(gain) + " return s end } end }\n";
+}
+
+std::vector<std::pair<Timestamp, double>> readRows(DataEngine& engine, TopicId tid) {
+  std::vector<std::pair<Timestamp, double>> out;
+  const TopicStorage* storage = engine.getTopicStorage(tid);
+  if (!storage) {
+    return out;
+  }
+  auto cursor = rangeQuery(storage->sealedChunks(), 0, std::numeric_limits<Timestamp>::max());
+  cursor.forEach(
+      [&](const SampleRow& row) { out.emplace_back(row.timestamp, row.chunk->readNumericAsDouble(0, row.row_index)); });
+  return out;
+}
+
+std::vector<double> largeInput() {
+  std::vector<double> values(kLargeRows);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] = static_cast<double>(static_cast<int>(i % 7) - 3);
+  }
+  return values;
+}
+
+// A persistent create is time-sliced; an ephemeral one replays synchronously.
+Expected<DataProcessorService::TransformRecipe> createAccumulator(
+    DataProcessorService& service, const std::string& id, const std::string& input, const std::string& output,
+    double gain = 1.0, bool ephemeral = false, int extra_work = 0, std::size_t slow_rows = kLargeRows * 2) {
+  return service.upsertTransform(
+      "p", id, {input}, {output}, accumulateScript(id, gain, extra_work, slow_rows), "{}", ephemeral);
+}
+
+// Synchronous reference output of an accumulator over the current input.
+std::vector<std::pair<Timestamp, double>> synchronousAccumulator(
+    Fixture& fx, const std::string& input, double gain = 1.0) {
+  auto sync = createAccumulator(fx.service, "reference", input, "reference_out", gain, /*ephemeral=*/true);
+  EXPECT_TRUE(sync.has_value()) << sync.error();
+  auto rows = readRows(fx.engine, sync->output_topic_ids.front());
+  EXPECT_TRUE(fx.service.removeTransform("p/reference").has_value());
+  return rows;
+}
+
+struct SliceLog {
+  int slices = 0;
+  std::chrono::nanoseconds longest{0};
+};
+
+SliceLog stepUntilDone(DataProcessorService& service) {
+  SliceLog log;
+  for (int guard = 0; guard < 1'000'000; ++guard) {
+    const auto start = std::chrono::steady_clock::now();
+    const bool done = service.stepMaterialization();
+    log.longest = std::max<std::chrono::nanoseconds>(log.longest, std::chrono::steady_clock::now() - start);
+    ++log.slices;
+    if (done) {
+      break;
+    }
+  }
+  return log;
+}
+
+TEST(DataProcessorTimeSliceTest, CreateYieldsInSlicesAndMatchesTheSynchronousCreate) {
+  Fixture fx;
+  fx.seed("x", largeInput());
+  auto sliced = createAccumulator(fx.service, "acc", "x", "acc_out");
+  ASSERT_TRUE(sliced.has_value()) << sliced.error();
+  const TopicId out = sliced->output_topic_ids.front();
+
+  // The call returned after one slice: recipe live, output partial.
+  EXPECT_TRUE(fx.service.materializationPending());
+  EXPECT_EQ(fx.service.transformRecipes().size(), 1u);
+  const std::size_t after_create = readRows(fx.engine, out).size();
+  EXPECT_LT(after_create, kLargeRows);
+
+  const SliceLog log = stepUntilDone(fx.service);
+  EXPECT_GE(log.slices, 2);
+  // Budget plus the per-slice notify tail, with sanitizer headroom.
+  EXPECT_LT(log.longest, 4 * DataProcessorService::kMaterializationSliceBudget);
+  EXPECT_FALSE(fx.service.materializationPending());
+  const auto rows = readRows(fx.engine, out);
+  EXPECT_EQ(rows.size(), kLargeRows);
+  EXPECT_EQ(rows, synchronousAccumulator(fx, "x"));
+}
+
+TEST(DataProcessorTimeSliceTest, TimerDrivesTheReplayToCompletion) {
+  Fixture fx;
+  fx.seed("x", largeInput());
+  auto sliced = createAccumulator(fx.service, "acc", "x", "acc_out");
+  ASSERT_TRUE(sliced.has_value()) << sliced.error();
+  ASSERT_TRUE(fx.service.materializationPending());
+  const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+  while (fx.service.materializationPending() && std::chrono::steady_clock::now() < give_up) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+  }
+  EXPECT_FALSE(fx.service.materializationPending());
+  EXPECT_EQ(readRows(fx.engine, sliced->output_topic_ids.front()), synchronousAccumulator(fx, "x"));
+}
+
+TEST(DataProcessorTimeSliceTest, DeleteDuringReplayDropsIt) {
+  Fixture fx;
+  fx.seed("x", largeInput());
+  ASSERT_TRUE(createAccumulator(fx.service, "acc", "x", "acc_out").has_value());
+  ASSERT_TRUE(fx.service.materializationPending());
+  ASSERT_TRUE(fx.service.removeTransform("p/acc").has_value());
+  EXPECT_FALSE(fx.service.materializationPending());
+  EXPECT_TRUE(fx.service.stepMaterialization());
+  EXPECT_TRUE(fx.service.transformRecipes().empty());
+  // The name is free again.
+  EXPECT_TRUE(createAccumulator(fx.service, "acc", "x", "acc_out").has_value());
+}
+
+// An in-place edit replays the new script synchronously, which ends the pending
+// replay at once: nothing is left pending, and the output is the new script's.
+TEST(DataProcessorTimeSliceTest, EditDuringReplayReplaysTheNewScriptInFull) {
+  Fixture fx;
+  fx.seed("x", largeInput());
+  auto sliced = createAccumulator(fx.service, "acc", "x", "acc_out");
+  ASSERT_TRUE(sliced.has_value()) << sliced.error();
+  ASSERT_TRUE(fx.service.materializationPending());
+
+  auto edited = createAccumulator(fx.service, "acc", "x", "acc_out", /*gain=*/2.0);
+  ASSERT_TRUE(edited.has_value()) << edited.error();
+  EXPECT_EQ(edited->output_topic_ids, sliced->output_topic_ids);
+  EXPECT_FALSE(fx.service.materializationPending());
+  EXPECT_EQ(readRows(fx.engine, sliced->output_topic_ids.front()), synchronousAccumulator(fx, "x", 2.0));
+  EXPECT_TRUE(fx.service.stepMaterialization());
+}
+
+TEST(DataProcessorTimeSliceTest, AppendsDuringReplayAreIncluded) {
+  Fixture fx;
+  fx.seed("x", largeInput());
+  auto sliced = createAccumulator(fx.service, "acc", "x", "acc_out");
+  ASSERT_TRUE(sliced.has_value()) << sliced.error();
+  ASSERT_TRUE(fx.service.materializationPending());
+
+  // Streaming tail committed mid-replay through the session commit path.
+  DataWriter writer = fx.engine.createWriter();
+  for (std::size_t i = kLargeRows; i < kLargeRows + 5000; ++i) {
+    ASSERT_TRUE(writer.beginRow(fx.input, static_cast<Timestamp>(i) * 1'000'000'000LL).has_value());
+    writer.set(fx.input, 0, 0.5);
+    ASSERT_TRUE(writer.finishRow(fx.input).has_value());
+  }
+  (void)fx.session.commitChunks(writer.flushAll());
+
+  stepUntilDone(fx.service);
+  const auto rows = readRows(fx.engine, sliced->output_topic_ids.front());
+  EXPECT_EQ(rows.size(), kLargeRows + 5000);
+  EXPECT_EQ(rows, synchronousAccumulator(fx, "x"));
+}
+
+TEST(DataProcessorTimeSliceTest, ReplacedDatasetDuringReplayRecomputesOverTheNewData) {
+  Fixture fx;
+  fx.seed("x", largeInput());
+  auto sliced = createAccumulator(fx.service, "acc", "x", "acc_out");
+  ASSERT_TRUE(sliced.has_value()) << sliced.error();
+  ASSERT_TRUE(fx.service.materializationPending());
+
+  // In-place reload: the dataset's chunks are swapped for new data, then the
+  // replaced inputs replay.
+  fx.engine.clearDatasetChunks(fx.ds);
+  DataWriter writer = fx.engine.createWriter();
+  for (std::size_t i = 0; i < 1000; ++i) {
+    ASSERT_TRUE(writer.beginRow(fx.input, static_cast<Timestamp>(i) * 1'000'000'000LL).has_value());
+    writer.set(fx.input, 0, 2.0);
+    ASSERT_TRUE(writer.finishRow(fx.input).has_value());
+  }
+  fx.engine.commitChunks(writer.flushAll());
+  ASSERT_TRUE(fx.service.rebindAndRecomputeForReplacedSources({fx.input}).has_value());
+
+  stepUntilDone(fx.service);
+  const auto rows = readRows(fx.engine, sliced->output_topic_ids.front());
+  ASSERT_EQ(rows.size(), 1000u);
+  EXPECT_DOUBLE_EQ(rows.back().second, 2000.0);
+  EXPECT_EQ(rows, synchronousAccumulator(fx, "x"));
+}
+
+TEST(DataProcessorTimeSliceTest, UndoAndRedoOfACreateDuringReplay) {
+  Fixture fx;
+  fx.seed("x", largeInput());
+  auto sliced = createAccumulator(fx.service, "acc", "x", "acc_out");
+  ASSERT_TRUE(sliced.has_value()) << sliced.error();
+  ASSERT_TRUE(fx.service.materializationPending());
+  const std::vector<DataProcessorService::TransformRecipe> snapshot = fx.service.transformRecipes();
+  ASSERT_EQ(snapshot.size(), 1u);
+
+  // Undo: restore the pre-create history state (no transforms).
+  fx.service.clearTransforms(RestoreIntent::kHistory);
+  EXPECT_FALSE(fx.service.materializationPending());
+  EXPECT_TRUE(fx.service.transformRecipes().empty());
+
+  // Redo: restore the snapshot taken mid-replay; the restore replays in full.
+  auto redone = fx.service.restoreTransform(snapshot.front());
+  ASSERT_TRUE(redone.has_value()) << redone.error();
+  EXPECT_FALSE(fx.service.materializationPending());
+  const auto rows = readRows(fx.engine, redone->output_topic_ids.front());
+  EXPECT_EQ(rows.size(), kLargeRows);
+  EXPECT_EQ(rows, synchronousAccumulator(fx, "x"));
+}
+
+TEST(DataProcessorTimeSliceTest, DestroyingTheSessionDuringReplayIsSafe) {
+  auto fx = std::make_unique<Fixture>();
+  fx->seed("x", largeInput());
+  ASSERT_TRUE(createAccumulator(fx->service, "acc", "x", "acc_out").has_value());
+  ASSERT_TRUE(fx->service.materializationPending());
+  fx.reset();
+  QCoreApplication::processEvents(QEventLoop::AllEvents, 50);  // no timer may fire into the dead service
+}
+
+// Running sum that raises a runtime error once it has seen `fail_after` rows.
+std::string lateFailureScript(const std::string& id, std::size_t fail_after) {
+  return "-- pj-script: luau\nreturn { id=\"" + id + "\", name=\"Late\", output=\"same\",\n" +
+         "  create = function(p) local s = 0 local n = 0 return { calculate = function(t, v)\n" +
+         "    n = n + 1 if n > " + std::to_string(fail_after) + " then error(\"late boom\") end\n" +
+         "    s = s + v return s end } end }\n";
+}
+
+TEST(DataProcessorTimeSliceTest, FailureAfterTheFirstSliceIsReportedAsAnError) {
+  Fixture fx;
+  fx.seed("x", largeInput());
+  std::vector<Diagnostic> reported;
+  fx.service.setDiagnosticSink([&reported](const Diagnostic& d) { reported.push_back(d); });
+
+  constexpr std::size_t kFailAfter = kLargeRows - 1000;
+  auto sliced =
+      fx.service.upsertTransform("p", "late", {"x"}, {"late_out"}, lateFailureScript("late", kFailAfter), "{}");
+  ASSERT_TRUE(sliced.has_value()) << sliced.error();  // the first slice is healthy
+  ASSERT_TRUE(fx.service.materializationPending());
+  EXPECT_TRUE(reported.empty());
+
+  stepUntilDone(fx.service);
+  ASSERT_EQ(reported.size(), 1u);
+  EXPECT_EQ(reported.front().level, DiagnosticLevel::kError);
+  EXPECT_EQ(reported.front().id, "p/late");
+  EXPECT_NE(reported.front().message.find("late_out"), std::string::npos) << reported.front().message;
+  EXPECT_NE(reported.front().message.find("late boom"), std::string::npos) << reported.front().message;
+  EXPECT_NE(reported.front().message.find("incomplete"), std::string::npos) << reported.front().message;
+  // The transform stays, with the rows committed before the failing slice.
+  EXPECT_EQ(fx.service.transformRecipes().size(), 1u);
+  EXPECT_LT(readRows(fx.engine, sliced->output_topic_ids.front()).size(), kFailAfter);
+}
+
+// A streaming transform that starts failing is reported once, not on every
+// commit; after an edit fixes it, a new failure is reported again.
+TEST(DataProcessorTimeSliceTest, StreamingTransformThatStartsFailingIsReportedOnce) {
+  Fixture fx;
+  fx.seed("x", {1.0, 2.0, 3.0});
+  std::vector<Diagnostic> reported;
+  fx.service.setDiagnosticSink([&reported](const Diagnostic& d) { reported.push_back(d); });
+  const auto commit_rows = [&fx](std::size_t first, std::size_t count) {
+    DataWriter writer = fx.engine.createWriter();
+    for (std::size_t i = first; i < first + count; ++i) {
+      ASSERT_TRUE(writer.beginRow(fx.input, static_cast<Timestamp>(i) * 1'000'000'000LL).has_value());
+      writer.set(fx.input, 0, 1.0);
+      ASSERT_TRUE(writer.finishRow(fx.input).has_value());
+    }
+    (void)fx.session.commitChunks(writer.flushAll());
+  };
+  ASSERT_TRUE(
+      fx.service.upsertTransform("p", "late", {"x"}, {"late_out"}, lateFailureScript("late", 5), "{}").has_value());
+  ASSERT_FALSE(fx.service.materializationPending());
+
+  commit_rows(3, 1);  // 4 rows seen: healthy
+  EXPECT_TRUE(reported.empty());
+  commit_rows(4, 3);  // the 6th row fails
+  ASSERT_EQ(reported.size(), 1u);
+  EXPECT_EQ(reported.front().id, "p/late");
+  EXPECT_NE(reported.front().message.find("late_out"), std::string::npos) << reported.front().message;
+  EXPECT_NE(reported.front().message.find("late boom"), std::string::npos) << reported.front().message;
+  commit_rows(7, 3);  // still failing: not reported again
+  EXPECT_EQ(reported.size(), 1u);
+
+  // An edit replays the history healthily; its next failure is a new one.
+  ASSERT_TRUE(
+      fx.service.upsertTransform("p", "late", {"x"}, {"late_out"}, lateFailureScript("late", 12), "{}").has_value());
+  commit_rows(10, 1);  // 11 rows: healthy
+  EXPECT_EQ(reported.size(), 1u);
+  commit_rows(11, 2);  // the 13th row fails
+  EXPECT_EQ(reported.size(), 2u);
+}
+
+// A late commit fully recomputes the upstream transform and cascades into its
+// chained one. Only the chained one fails, so only it is reported.
+TEST(DataProcessorTimeSliceTest, LateCommitCascadeReportsOnlyTheFailingChainedTransform) {
+  Fixture fx;
+  fx.seed("x", {1.0, 2.0, 3.0});
+  std::vector<Diagnostic> reported;
+  fx.service.setDiagnosticSink([&reported](const Diagnostic& d) { reported.push_back(d); });
+  ASSERT_TRUE(createAccumulator(fx.service, "acc", "x", "acc_out").has_value());
+  ASSERT_TRUE(fx.service.upsertTransform("p", "late", {"acc_out"}, {"late_out"}, lateFailureScript("late", 3), "{}")
+                  .has_value());
+  ASSERT_FALSE(fx.service.materializationPending());
+  ASSERT_TRUE(reported.empty());
+
+  DataWriter writer = fx.engine.createWriter();  // behind the watermark: forces a full recompute
+  ASSERT_TRUE(writer.beginRow(fx.input, 500'000'000LL).has_value());
+  writer.set(fx.input, 0, 1.0);
+  ASSERT_TRUE(writer.finishRow(fx.input).has_value());
+  (void)fx.session.commitChunks(writer.flushAll());
+
+  ASSERT_EQ(reported.size(), 1u);
+  EXPECT_EQ(reported.front().id, "p/late");
+  EXPECT_NE(reported.front().message.find("late boom"), std::string::npos) << reported.front().message;
+}
+
+// The growing output is announced about every kMaterializationNotifyInterval, not
+// on every tick, and once more when the replay completes.
+TEST(DataProcessorTimeSliceTest, GrowthIsAnnouncedAtTheNotifyRateAndOnCompletion) {
+  Fixture fx;
+  fx.seed("x", largeInput());
+  auto sliced = createAccumulator(fx.service, "acc", "x", "acc_out");
+  ASSERT_TRUE(sliced.has_value()) << sliced.error();
+  const TopicId out = sliced->output_topic_ids.front();
+  struct Announcement {
+    std::chrono::steady_clock::time_point at;
+    std::size_t rows;
+  };
+  std::vector<Announcement> announcements;
+  QObject::connect(&fx.session, &SessionManager::samplesIngested, [&](const QVector<TopicId>& ids, bool /*live*/) {
+    if (ids.contains(out)) {
+      announcements.push_back({std::chrono::steady_clock::now(), readRows(fx.engine, out).size()});
+    }
+  });
+
+  int ticks = 0;
+  for (bool done = false; !done; ++ticks) {
+    done = fx.service.stepMaterialization(std::chrono::milliseconds(1));
+  }
+  ASSERT_GE(announcements.size(), 2u);
+  EXPECT_LT(announcements.size(), static_cast<std::size_t>(ticks) / 2) << ticks << " ticks";
+  // The slot stamps each announcement when it is delivered, not when the service
+  // decided to announce, so two stamps can be a little closer than the interval.
+  constexpr auto kDeliverySlack = std::chrono::milliseconds(1);
+  for (std::size_t i = 1; i + 1 < announcements.size(); ++i) {
+    EXPECT_GE(
+        announcements[i].at - announcements[i - 1].at,
+        DataProcessorService::kMaterializationNotifyInterval - kDeliverySlack);
+  }
+  EXPECT_EQ(announcements.back().rows, kLargeRows);
+}
+
+// A processor chained on a replaying output follows it inside the tick's budget,
+// even when it is much slower than its parent, and ends like a synchronous chain.
+TEST(DataProcessorTimeSliceTest, ChainedProcessorFollowsWithinTheBudget) {
+  Fixture fx;
+  fx.seed("x", largeInput());
+  // The parent is slow on its first rows only, so its first slice leaves little
+  // output and the (uniformly slow) child created on it catches up at once: from
+  // then on the child is a caught-up dependent, not a replay of its own.
+  auto parent =
+      createAccumulator(fx.service, "acc", "x", "acc_out", 1.0, false, /*extra_work=*/2000, /*slow_rows=*/2000);
+  ASSERT_TRUE(parent.has_value()) << parent.error();
+  auto child = createAccumulator(fx.service, "slow", "acc_out", "slow_out", 1.0, false, /*extra_work=*/200);
+  ASSERT_TRUE(child.has_value()) << child.error();
+  ASSERT_EQ(fx.service.derivedEngine().deferredNodes(), std::vector<NodeId>{parent->node_id});
+
+  const SliceLog log = stepUntilDone(fx.service);
+  EXPECT_LT(log.longest, 4 * DataProcessorService::kMaterializationSliceBudget);
+  const auto parent_rows = readRows(fx.engine, parent->output_topic_ids.front());
+  EXPECT_EQ(parent_rows, synchronousAccumulator(fx, "x"));
+  EXPECT_EQ(readRows(fx.engine, child->output_topic_ids.front()), synchronousAccumulator(fx, "acc_out"));
+}
+
+// A whole-series read completes the replay behind the topic it reads — including
+// through a processor chained on it — and leaves unrelated replays to the timer.
+TEST(DataProcessorTimeSliceTest, FinishPendingCompletesOnlyTheReplayBehindTheReadTopic) {
+  Fixture fx;
+  fx.seed("x", largeInput());
+  auto first = createAccumulator(fx.service, "first", "x", "first_out");
+  auto second = createAccumulator(fx.service, "second", "x", "second_out");
+  ASSERT_TRUE(first.has_value() && second.has_value());
+  auto chained = createAccumulator(fx.service, "chained", "first_out", "chained_out");
+  ASSERT_TRUE(chained.has_value()) << chained.error();
+  ASSERT_TRUE(fx.service.materializationPending());
+
+  fx.service.finishPendingMaterialization(fx.input);  // not a replay output
+  const std::vector<NodeId> pending = fx.service.derivedEngine().deferredNodes();
+  EXPECT_NE(std::find(pending.begin(), pending.end(), first->node_id), pending.end());
+
+  fx.engine.awaitCompleteSeries(chained->output_topic_ids.front());
+  const std::vector<NodeId> left = fx.service.derivedEngine().deferredNodes();
+  EXPECT_EQ(left, std::vector<NodeId>{second->node_id});
+  EXPECT_EQ(readRows(fx.engine, first->output_topic_ids.front()), synchronousAccumulator(fx, "x"));
+  EXPECT_EQ(readRows(fx.engine, chained->output_topic_ids.front()), synchronousAccumulator(fx, "first_out"));
+  stepUntilDone(fx.service);
+  EXPECT_EQ(readRows(fx.engine, second->output_topic_ids.front()), synchronousAccumulator(fx, "x"));
+}
+
+// The service is GUI-thread only: a whole-series read from another thread (a
+// toolbox worker) gets the current snapshot and leaves the replay to the GUI thread.
+TEST(DataProcessorTimeSliceTest, CompleteReadFromAnotherThreadLeavesTheReplayPending) {
+  Fixture fx;
+  fx.seed("x", largeInput());
+  auto sliced = createAccumulator(fx.service, "acc", "x", "acc_out");
+  ASSERT_TRUE(sliced.has_value()) << sliced.error();
+  ASSERT_TRUE(fx.service.materializationPending());
+  const std::vector<NodeId> pending = fx.service.derivedEngine().deferredNodes();
+
+  std::thread reader([&fx, out = sliced->output_topic_ids.front()] { fx.engine.awaitCompleteSeries(out); });
+  reader.join();
+
+  EXPECT_TRUE(fx.service.materializationPending());
+  EXPECT_EQ(fx.service.derivedEngine().deferredNodes(), pending);
+  fx.engine.awaitCompleteSeries(sliced->output_topic_ids.front());  // the GUI thread still completes it
+  EXPECT_FALSE(fx.service.materializationPending());
+}
+
+TEST(DataProcessorTimeSliceTest, MarkerGeneratorReadsTheCompleteOutput) {
+  Fixture fx;
+  fx.seed("x", largeInput());
+  auto sliced = createAccumulator(fx.service, "acc", "x", "acc_out");
+  ASSERT_TRUE(sliced.has_value()) << sliced.error();
+  ASSERT_TRUE(fx.service.materializationPending());
+  const TopicId out = sliced->output_topic_ids.front();
+
+  // Stand-in for the shell's catalog resolver (MainWindow): the complete-read
+  // barrier, then the rows it hands the generator.
+  std::size_t rows_seen = 0;
+  fx.session.markerService().setResolver(
+      [&](DatasetId, const std::string& key) -> std::optional<MarkerService::ResolvedSeries> {
+        if (key != "acc_out/value") {
+          return std::nullopt;
+        }
+        fx.engine.awaitCompleteSeries(out);
+        MarkerService::ResolvedSeries resolved;
+        for (const auto& [ts, value] : readRows(fx.engine, out)) {
+          resolved.timestamps.push_back(static_cast<double>(ts));
+          resolved.values.push_back(value);
+        }
+        rows_seen = resolved.values.size();
+        return resolved;
+      });
+  MarkerService::GeneratorRecipe recipe;
+  recipe.id = "p/gen";
+  recipe.kind = GeneratorKind::kMarkers;
+  recipe.dataset_id = fx.ds;
+  recipe.inputs = {"acc_out/value"};
+  recipe.outputs = {"acc_markers"};
+  recipe.script = "local s = series(\"acc_out/value\")\ncreateMarker(s:at(0).t, s:at(0).v, {label=\"first\"})\n";
+  ASSERT_TRUE(fx.session.markerService().upsertGenerator(recipe).has_value());
+
+  EXPECT_EQ(rows_seen, kLargeRows);
+  EXPECT_FALSE(fx.service.materializationPending());
 }
 
 }  // namespace

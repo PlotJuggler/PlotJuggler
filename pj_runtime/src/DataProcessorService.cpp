@@ -3,6 +3,11 @@
 
 #include "pj_runtime/DataProcessorService.h"
 
+#include <QCoreApplication>
+#include <QThread>
+#include <QTimer>
+#include <QVector>
+#include <QtDebug>
 #include <algorithm>
 #include <functional>
 #include <memory>
@@ -61,12 +66,29 @@ std::string normalizedFieldPath(std::string path);
 }  // namespace
 
 DataProcessorService::DataProcessorService(DataEngine& engine)
-    : engine_(engine), derived_(std::make_unique<DerivedEngine>(engine)) {}
+    : engine_(engine), derived_(std::make_unique<DerivedEngine>(engine)) {
+  installCompleteReadBarrier();
+}
 
 DataProcessorService::DataProcessorService(SessionManager& session)
-    : engine_(session.dataEngine()), session_(&session), derived_(std::make_unique<DerivedEngine>(engine_)) {}
+    : engine_(session.dataEngine()), session_(&session), derived_(std::make_unique<DerivedEngine>(engine_)) {
+  installCompleteReadBarrier();
+}
 
-DataProcessorService::~DataProcessorService() = default;
+DataProcessorService::~DataProcessorService() {
+  engine_.setCompleteReadBarrier({});
+}
+
+void DataProcessorService::installCompleteReadBarrier() {
+  // The service is single-threaded, so a reader on another thread (a toolbox worker)
+  // gets the current, possibly partial, snapshot. No hop to the owner: a blocking
+  // one would deadlock a reader the GUI thread waits on.
+  engine_.setCompleteReadBarrier([this, owner = QThread::currentThread()](TopicId topic_id) {
+    if (QThread::currentThread() == owner) {
+      finishPendingMaterialization(topic_id);
+    }
+  });
+}
 
 Expected<DataProcessorService::FilterHandle> DataProcessorService::applyFilter(
     TopicId input_topic_id, DatasetId dataset_id, std::string_view processor_id, std::string output_name,
@@ -301,10 +323,12 @@ std::vector<TopicId> DataProcessorService::advanceOnCommit(const std::vector<Top
   // Mark dependent nodes dirty for the just-committed inputs, then run them.
   // scheduleAll only re-runs dirty nodes (incremental watermark), so a stateful
   // node folds just the new tail and its accumulator persists across commits.
+  reportTransformFailures();
   derived_->onSourceCommitted(changed_inputs);
-  // Best-effort: a processor/script failure must not abort ingest. The node
-  // surfaces its own failed state; we still notify whatever advanced.
+  // Best-effort: a processor/script failure must not abort ingest. A failing
+  // transform is reported below; we still notify whatever advanced.
   (void)derived_->scheduleAll();
+  reportTransformFailures();
 
   // Re-notify every filter AND transform output (covers chained nodes too); plots re-read.
   std::vector<TopicId> outputs;
@@ -906,7 +930,8 @@ std::pair<std::string, std::vector<std::string>> parseGroupedOutput(const std::v
 
 }  // namespace
 
-Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTransform(TransformRecipe recipe) {
+Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTransform(
+    TransformRecipe recipe, bool time_sliced) {
   // 1. Shape: N inputs -> M outputs (SISO is the 1->1 case). Field-level binding
   //    (a column within a multi-column input) is still a follow-up: inputs resolve
   //    to whole scalar topics here.
@@ -1147,15 +1172,27 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
   if (!node.has_value()) {
     return PJ::unexpected(node.error());
   }
-  derived_->onSourceCommitted(input_topic_ids);
-  if (const Status scheduled = derived_->scheduleAll(); !scheduled.has_value()) {
+  Status materialized = PJ::okStatus();
+  bool replay_pending = false;
+  if (time_sliced) {
+    auto first_slice = derived_->materializeStep(*node, kMaterializationSliceBudget);
+    if (first_slice.has_value()) {
+      replay_pending = !*first_slice;
+    } else {
+      materialized = PJ::unexpected(first_slice.error());
+    }
+  } else {
+    derived_->onSourceCommitted(input_topic_ids);
+    materialized = derived_->scheduleAll();
+  }
+  if (!materialized.has_value()) {
     // Roll back the half-installed node + its output topic (capture outputs first).
     const std::vector<TopicId> outs = derived_->outputTopics(*node);
     (void)derived_->removeNode(*node);
     for (const TopicId out : outs) {
       engine_.retireTopic(out);
     }
-    return PJ::unexpected(scheduled.error());
+    return PJ::unexpected(materialized.error());
   }
   const std::vector<TopicId> outputs = derived_->outputTopics(*node);
   if (outputs.empty()) {
@@ -1165,7 +1202,140 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
   recipe.node_id = *node;
   recipe.output_topic_ids = outputs;
   transform_recipes_[recipe.key] = recipe;
+  if (replay_pending) {
+    armMaterializationTimer();
+  }
   return recipe;
+}
+
+void DataProcessorService::armMaterializationTimer() {
+  if (QCoreApplication::instance() == nullptr) {
+    return;  // no event loop to drive a timer: the caller steps by hand
+  }
+  if (!materialize_timer_) {
+    materialize_timer_ = std::make_unique<QTimer>();
+    materialize_timer_->setInterval(0);
+    QObject::connect(materialize_timer_.get(), &QTimer::timeout, materialize_timer_.get(), [this]() {
+      if (stepMaterialization()) {
+        materialize_timer_->stop();
+      }
+    });
+  }
+  materialize_timer_->start();
+}
+
+bool DataProcessorService::materializationPending() const {
+  return !derived_->deferredNodes().empty();
+}
+
+bool DataProcessorService::stepMaterialization(std::chrono::nanoseconds budget) {
+  const auto deadline = std::chrono::steady_clock::now() + budget;
+  const auto remaining = [deadline]() {
+    return std::max<std::chrono::nanoseconds>(
+        deadline - std::chrono::steady_clock::now(), std::chrono::nanoseconds::zero());
+  };
+  reportTransformFailures();
+  bool replay_ended = false;
+  for (const NodeId node : derived_->deferredNodes()) {
+    if (remaining() == std::chrono::nanoseconds::zero()) {
+      break;
+    }
+    std::vector<NodeId> chained;
+    const std::vector<TopicId> outputs = outputsWithDependents(node, &chained);
+    const Expected<bool> done = derived_->materializeStep(node, remaining());
+    replay_ended = replay_ended || !done.has_value() || *done;
+    // Processors chained on the growing output follow it within the same budget. One
+    // the budget leaves behind is deferred itself and continues on a later tick.
+    for (const NodeId dependent : chained) {
+      (void)derived_->materializeStep(dependent, remaining());
+    }
+    unannounced_outputs_.insert(outputs.begin(), outputs.end());
+  }
+  reportTransformFailures();
+  const bool idle = !materializationPending();
+  if (replay_ended || idle || std::chrono::steady_clock::now() - last_announcement_ >= kMaterializationNotifyInterval) {
+    announceGrownOutputs();
+  }
+  return idle;
+}
+
+void DataProcessorService::finishPendingMaterialization(TopicId read) {
+  // A step's budget only bounds its wall time, so an unbounded one runs to completion.
+  constexpr std::chrono::hours kUnbounded{24};
+  bool finished = false;
+  for (const NodeId node : derived_->deferredNodes()) {
+    std::vector<NodeId> chained;
+    const std::vector<TopicId> outputs = outputsWithDependents(node, &chained);
+    if (std::find(outputs.begin(), outputs.end(), read) == outputs.end()) {
+      continue;
+    }
+    if (!finished) {
+      reportTransformFailures();
+      finished = true;
+    }
+    (void)derived_->materializeStep(node, kUnbounded);
+    for (const NodeId dependent : chained) {
+      (void)derived_->materializeStep(dependent, kUnbounded);
+    }
+    unannounced_outputs_.insert(outputs.begin(), outputs.end());
+  }
+  if (finished) {
+    reportTransformFailures();
+    announceGrownOutputs();
+  }
+}
+
+std::vector<TopicId> DataProcessorService::outputsWithDependents(NodeId node, std::vector<NodeId>* dependents) const {
+  std::vector<TopicId> outputs = derived_->outputTopics(node);
+  std::unordered_set<TopicId> affected(outputs.begin(), outputs.end());
+  const auto add = [&outputs, dependents](NodeId dependent, const std::vector<TopicId>& dependent_outputs) {
+    outputs.insert(outputs.end(), dependent_outputs.begin(), dependent_outputs.end());
+    if (dependents != nullptr) {
+      dependents->push_back(dependent);
+    }
+  };
+  forEachDependentProcessor(
+      affected, /*include_ephemeral_transforms=*/true,
+      [&add](TopicId output_topic_id, const FilterRecipe& recipe) { add(recipe.node_id, {output_topic_id}); },
+      [&add](const std::string&, const TransformRecipe& recipe) { add(recipe.node_id, recipe.output_topic_ids); });
+  if (dependents != nullptr) {
+    std::sort(dependents->begin(), dependents->end());  // node ids are monotonic: producers first
+  }
+  return outputs;
+}
+
+void DataProcessorService::announceGrownOutputs() {
+  last_announcement_ = std::chrono::steady_clock::now();
+  QVector<TopicId> grown(unannounced_outputs_.begin(), unannounced_outputs_.end());
+  unannounced_outputs_.clear();
+  if (session_ != nullptr && !grown.isEmpty()) {
+    session_->notifyIngest(std::move(grown), /*live=*/false);
+  }
+}
+
+void DataProcessorService::reportTransformFailures() {
+  std::erase_if(reported_failures_, [this](const std::string& key) {
+    const auto live = transform_recipes_.find(key);
+    return live == transform_recipes_.end() || derived_->nodeError(live->second.node_id).empty();
+  });
+  for (const auto& [key, recipe] : transform_recipes_) {
+    const std::string error = derived_->nodeError(recipe.node_id);
+    if (error.empty() || !reported_failures_.insert(key).second) {
+      continue;
+    }
+    std::string outputs;
+    for (const std::string& output : recipe.outputs) {
+      outputs += (outputs.empty() ? "" : ", ") + output;
+    }
+    const std::string message = "Transform '" + outputs + "' failed: " + error +
+                                ". Its series is incomplete; fix the script and apply it again.";
+    if (diagnostic_sink_) {
+      diagnostic_sink_(
+          Diagnostic{.level = DiagnosticLevel::kError, .source = "Data Processors", .id = key, .message = message});
+    } else {
+      qWarning().noquote() << QString::fromStdString(message);
+    }
+  }
 }
 
 Expected<DataProcessorService::TransformRecipe> DataProcessorService::upsertTransform(
@@ -1183,7 +1353,7 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::upsertTran
   recipe.ephemeral = ephemeral;
   recipe.input_column_index = input_column_index;
   recipe.history_exempt = history_exempt;
-  return installTransform(std::move(recipe));
+  return installTransform(std::move(recipe), /*time_sliced=*/!ephemeral);
 }
 
 Status DataProcessorService::removeTransform(std::string_view namespaced_key) {

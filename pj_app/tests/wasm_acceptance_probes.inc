@@ -1587,21 +1587,26 @@ void PJ::MainWindow::installWasmPlotAcceptanceProbes() {
     const QByteArray encoded_hover_label = QUrl::toPercentEncoding(hover.label);
     const int curve_style = static_cast<int>(plot->defaultCurveStyle());
     const int line_width = static_cast<int>(plot->lineWidth());
+    static quint64 sequence = 0;
+    const quint64 current_sequence = ++sequence;
     qInfo(
         "PJ_WASM_PLOT_STATE count=%lld titles=%s canvas=%d,%d,%dx%d view=%.17g,%.17g,%.17g,%.17g "
-        "time=%.17g tracker_enabled=%d tracker_parameter=%d xy=%d style=%d width=%d",
+        "time=%.17g tracker_enabled=%d tracker_parameter=%d xy=%d style=%d width=%d sequence=%llu",
         static_cast<long long>(titles.size()), qPrintable(titles.join(',')), canvas_position.x(), canvas_position.y(),
         canvas->width(), canvas->height(), view.left(), view.right(), view.bottom(), view.top(),
         toAxisDouble(session_->playbackEngine().currentTime()), plot->trackerEnabled() ? 1 : 0,
-        static_cast<int>(plot->trackerParameter()), plot->isXYPlot() ? 1 : 0, curve_style, line_width);
+        static_cast<int>(plot->trackerParameter()), plot->isXYPlot() ? 1 : 0, curve_style, line_width,
+        static_cast<unsigned long long>(current_sequence));
     qInfo(
-        "PJ_WASM_PLOT_HOVER enabled=%d visible=%d point=%.17g,%.17g label=%s", plot->showPoints() ? 1 : 0,
-        hover.visible ? 1 : 0, hover.point.x(), hover.point.y(), encoded_hover_label.constData());
+        "PJ_WASM_PLOT_HOVER sequence=%llu enabled=%d visible=%d point=%.17g,%.17g label=%s",
+        static_cast<unsigned long long>(current_sequence),
+        plot->showPoints() ? 1 : 0, hover.visible ? 1 : 0, hover.point.x(), hover.point.y(),
+        encoded_hover_label.constData());
 
     QTimer::singleShot(
         250, canvas,
         [canvas, curve_colors = std::move(curve_colors), tracker_color, grid_color, hover_fill_color, canvas_color,
-         curve_style, line_width]() {
+         curve_style, line_width, current_sequence]() {
           const QImage image = canvas->grabFramebuffer();
           QStringList counts;
           WasmPixelBounds first_curve;
@@ -1653,10 +1658,11 @@ void PJ::MainWindow::installWasmPlotAcceptanceProbes() {
             hover_border = findWasmDarkPixels(image, hover_border_rect);
           }
           qInfo(
-              "PJ_WASM_PLOT_HOVER_PIXELS yellow_pixels=%lld yellow_bounds=%d,%d..%d,%d border_pixels=%lld "
-              "framebuffer=%dx%d",
-              static_cast<long long>(hover_fill.pixels), hover_fill.min_x, hover_fill.min_y, hover_fill.max_x,
-              hover_fill.max_y, static_cast<long long>(hover_border.pixels), image.width(), image.height());
+              "PJ_WASM_PLOT_HOVER_PIXELS sequence=%llu yellow_pixels=%lld yellow_bounds=%d,%d..%d,%d "
+              "border_pixels=%lld framebuffer=%dx%d",
+              static_cast<unsigned long long>(current_sequence), static_cast<long long>(hover_fill.pixels), hover_fill.min_x, hover_fill.min_y,
+              hover_fill.max_x, hover_fill.max_y, static_cast<long long>(hover_border.pixels), image.width(),
+              image.height());
         });
   });
 }

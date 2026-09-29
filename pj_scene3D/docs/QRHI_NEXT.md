@@ -244,8 +244,10 @@ Not scheduled; each item names what would bring it back.
   they are needed before the conda channel can be trusted. The pixi lanes compile
   the QRhi build against conda Qt, and win-64 runs the whole suite with the
   display passes skipped.
-- **Browsers beyond Chromium.** WASM is QRhi already and the Chromium Playwright
-  suites are its smoke; Firefox and Safari wait for cross-browser CI.
+- **Safari.** WASM is QRhi already and the Playwright suites run in Chromium and
+  Firefox (`wasm-ci.yml`; Firefox's `editors.spec.js` is non-blocking until its
+  main-thread heartbeat budget holds on CI runners). Safari waits for a WebKit
+  lane.
 - **macOS distribution.** No macOS package ships from this repo; the `macos-ci`
   lane is the only macOS gate, and a real Mac's OpenGL fallback is unverified.
 - **ADS on Wayland.** Floating docks hide on every backend (TECHNICAL_NOTES §5);

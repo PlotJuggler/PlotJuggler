@@ -93,7 +93,8 @@ class ToolboxPanelFoldTestPeer {
   }
 
   [[nodiscard]] static bool presentPanel(MainWindow& window, QWidget* panel) {
-    return window.presentPanel(panel);
+    window.presentPanel(panel);
+    return window.current_panel_ == panel;
   }
 
   static QWidget* releaseCentralPanel(MainWindow& window) {
@@ -194,7 +195,8 @@ class ToolboxPanelFoldTestPeer {
     if (presenter == nullptr) {
       presenter = &registerBare(window, plugin_id, container, title, []() { return u"{}"_s; }, host);
     }
-    return presenter->moveToDock();
+    presenter->moveToDock();
+    return presenter->presentation() == ToolboxPresenter::Presentation::kTakeover;
   }
 
   [[nodiscard]] static bool isTakeover(const MainWindow& window, const QString& plugin_id) {
@@ -387,7 +389,7 @@ class ToolboxPanelFoldTest : public ::testing::Test {
         /*on_migrate=*/[id]() { Peer::userPin(mainWindow(), id); },
         /*on_float=*/[id]() { Peer::withToolbox(mainWindow(), id, &PJ::ToolboxPresenter::moveToFloating); },
         /*persist_key=*/{},
-        /*on_dock=*/[id]() { Peer::withToolbox(mainWindow(), id, &PJ::ToolboxPresenter::moveToDockOrTab); });
+        /*on_dock=*/[id]() { Peer::withToolbox(mainWindow(), id, &PJ::ToolboxPresenter::moveToDock); });
     container_ = wrapped_.container;
     Peer::registerBare(
         mainWindow(), id, wrapped_.container, panelTitle(), saveConfig(), ownHost(), wrapped_.apply_chrome);

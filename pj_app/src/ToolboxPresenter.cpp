@@ -67,19 +67,16 @@ QWidget* ToolboxPresenter::releasableContent() {
   return never_presented ? container_.data() : nullptr;
 }
 
-bool ToolboxPresenter::moveToDock() {
+void ToolboxPresenter::moveToDock() {
   QWidget* content = releasableContent();
   if (content == nullptr) {
-    return false;
+    return;
   }
-  if (!shell_.presentPanel(content)) {
-    return false;
-  }
+  shell_.presentPanel(content);
   shell_.current_panel_engine_ = engine_.data();
   if (apply_chrome_) {
     apply_chrome_(false);
   }
-  return true;
 }
 
 void ToolboxPresenter::moveToTab(bool transient) {
@@ -91,12 +88,6 @@ void ToolboxPresenter::moveToTab(bool transient) {
 void ToolboxPresenter::moveToFloating() {
   if (QWidget* content = releasableContent()) {
     attachAsFloating(content);
-  }
-}
-
-void ToolboxPresenter::moveToDockOrTab() {
-  if (!moveToDock()) {
-    moveToTab(/*transient=*/false);
   }
 }
 
@@ -120,8 +111,9 @@ QWidget* ToolboxPresenter::release() {
       if (window == nullptr) {
         return nullptr;
       }
-      // The side column goes back to the panel's own splitter before the
-      // panel leaves the window, so nothing is stranded in the dying window.
+      // The side column goes back to the panel's own splitter, so nothing is
+      // stranded in the dying window. The panel itself stays in it until its
+      // destination reparents it (the window is only deleted later).
       QWidget* side = window->sideWidget();
       QSplitter* splitter = side != nullptr ? toolboxDrawerSplitter(container_) : nullptr;
       if (side != nullptr && splitter == nullptr) {
@@ -134,7 +126,6 @@ QWidget* ToolboxPresenter::release() {
         splitter->setStretchFactor(0, 0);
         splitter->setStretchFactor(1, 1);
       }
-      container_->setParent(nullptr);
       window->close();
       window->deleteLater();
       floating_window_ = nullptr;
@@ -271,7 +262,7 @@ void ToolboxPresenter::attachAsFloating(QWidget* content) {
   to_dock_button->setObjectName(u"buttonFloatingMigrateDock"_s);
   window->addTitleBarAction(to_dock_button);
   QObject::connect(to_dock_button, &QAbstractButton::clicked, &shell_, [&shell, id]() {
-    shell.withToolbox(id, [](ToolboxPresenter& live) { live.moveToDockOrTab(); });
+    shell.withToolbox(id, [](ToolboxPresenter& live) { live.moveToDock(); });
   });
   window->show();
   shell_.schedulePanelPreviewSync();

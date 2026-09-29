@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -306,6 +307,24 @@ class DataEngine {
   /// commitChunks() while holding lockEngine() would self-deadlock.
   std::vector<PJ::TopicId> commitChunksLocked(std::vector<std::pair<PJ::TopicId, TopicChunk>> chunks);
 
+  /// Runs before a whole-series snapshot read of a topic (the toolbox
+  /// `read_series_arrow` bridge that exporters and analysis toolboxes use). The
+  /// derived-series owner installs it to finish a time-sliced replay still growing
+  /// that topic, so a snapshot is never a silent truncation; live views (plots)
+  /// read without it and watch the series grow. An empty barrier (the default)
+  /// does nothing. Set on the GUI thread. awaitCompleteSeries() may be called from
+  /// any thread, but the installed owner only completes the series for a caller on
+  /// its own (GUI) thread: another thread gets the current, possibly partial, rows.
+  using CompleteReadBarrier = std::function<void(PJ::TopicId)>;
+  void setCompleteReadBarrier(CompleteReadBarrier barrier) {
+    complete_read_barrier_ = std::move(barrier);
+  }
+  void awaitCompleteSeries(PJ::TopicId topic_id) const {
+    if (complete_read_barrier_) {
+      complete_read_barrier_(topic_id);
+    }
+  }
+
  private:
   // Move src's sealed chunks into dst, re-stamping each chunk's topic_id to
   // dst's id. Shared by flushTo (append between mirrored topics) and
@@ -324,6 +343,7 @@ class DataEngine {
 
   struct Impl;
   std::unique_ptr<Impl> impl_;
+  CompleteReadBarrier complete_read_barrier_;
 };
 
 /// Guard pair returned by lockEnginePair(). `primary` is always engaged;
