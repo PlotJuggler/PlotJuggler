@@ -96,11 +96,18 @@ RUN bash /opt/scripts/install_qt6.sh
 #    than silently skip the cleanup and ship the build folders.
 COPY conanfile.txt conan.lock /opt/conan-ctx/
 COPY scripts/configure_conan_remote.sh /opt/configure_conan_remote.sh
+#    -cc core.sources:download_urls: whatever has to be built here retries
+#    through ConanCenter's sha256-addressed mirror when the recipe's own host
+#    refuses this bake's datacenter IP (sourceware.org 403s for elfutils,
+#    zlib.net 415s for minizip). "origin" stays first: Conan aborts the download
+#    if a backup entry answers 401/403, only 404 falls through. core.* confs are
+#    rejected in profiles and by -c, so -cc is the only way to pass one.
 RUN conan profile detect --force \
  && bash /opt/configure_conan_remote.sh \
  && conan install /opt/conan-ctx -r plotjuggler-conan -r conancenter \
         --lockfile=/opt/conan-ctx/conan.lock --lockfile-partial \
         --output-folder=/tmp/conan-warm --build=missing \
+        -cc core.sources:download_urls='["origin", "https://c3i.jfrog.io/artifactory/conan-center-backup-sources/"]' \
         -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
  && rm -rf /tmp/conan-warm \
  && { conan cache clean "*" --build --source --temp || true; } \
