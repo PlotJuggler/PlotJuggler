@@ -7,6 +7,11 @@ PJ4 uses **C++20, CMake and Conan 2**, with Qt pinned in
 Linux build scripts; the Windows entry points follow them, and packaging
 references are at the end.
 
+For a native **x86_64 Linux Nix** build, use `nix build`, `nix run`, or
+`nix develop` with the root flake. See the [Nix guide](../packaging/nix/README.md)
+for prerequisites, the development/test commands, and plugin limitations. This
+path does not require Conan or a separate Qt installation.
+
 ## Linux setup
 
 On Ubuntu 22.04 or newer, install the compiler, build tools and system libraries:

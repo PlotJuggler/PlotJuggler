@@ -36,7 +36,7 @@ PJ4/
 ├── resources/               # SVG icons (ported from PJ3) + resources.qrc
 ├── raster/                  # helper/ executable + ipc/ header-only wire contract
 ├── scripts/                 # setup, worktrees, pre-commit hooks, windows/ entry-point logic, and development utilities
-├── packaging/               # AppImage, Debian package, and Windows installer
+├── packaging/               # Nix, AppImage, Debian package, and Windows installer
 └── docs/                    # cross-cutting guides, research, and archived plans
 ```
 
@@ -62,7 +62,7 @@ When adding files, use the owning module rather than creating new top-level fold
 - `3rdparty/`: vendored source dependencies added via CMake `add_subdirectory`, plus `3rdparty/retro/` — the GPLv2/shareware license + source-offer compliance artifacts shipped alongside the separately-licensed `pj-raster-helper` (the root `CMakeLists.txt` installs these next to the helper binary). Conan/system dependencies do not belong here.
 - `raster/`: `helper/` is the standalone GPL-2.0 `pj-raster-helper` executable that links vendored doomgeneric; `ipc/` is its header-only, Qt-free MPL-2.0 wire contract, also consumed by `pj_widgets`. PlotJuggler consumes only the contract; it never links the helper or engine.
 - `scripts/`: setup and maintenance utilities, including `pre-commit/` hooks and `windows/` (the PowerShell logic behind the root `build.bat` / `run.bat` / `test.bat` shims, plus `install_qt6.ps1` and `build_plugins.ps1`, which builds a pj-official-plugins checkout with its own `build.sh` and stages the plugin DLLs for `run.bat --plugin-dir`). Keep the everyday `build.sh`, `run.sh`, and `test.sh` entry points, and their Windows shims, at the root.
-- `packaging/`: scripts, templates, and metadata that repackage an already-built tree: `appimage/` (AppImage), `deb/` (Debian/Ubuntu package), and `installer/` (Windows installer). See the [packaging guides](./packaging/README.md). Packaging utilities stay with their format; general development utilities live in `scripts/`.
+- `packaging/`: format-specific build/package definitions: `nix/` (native Nix build behind the root flake), plus scripts that repackage an already-built tree in `appimage/` (AppImage), `deb/` (Debian/Ubuntu package), and `installer/` (Windows installer). See the [packaging guides](./packaging/README.md). Packaging utilities stay with their format; general development utilities live in `scripts/`.
 
 ## Documentation
 
@@ -138,7 +138,7 @@ The "wholesale lift" strategy for plot widgets (see `pj_plotting/CLAUDE.md`) mea
 ## Build
 
 - **Qt 6.11.1** (required; pinned by [`versions.env`](./versions.env)). Install via [`./scripts/install_qt6.sh`](./scripts/install_qt6.sh) on Linux, [`scripts/windows/install_qt6.ps1`](./scripts/windows/install_qt6.ps1) on Windows (the `msvc2022_64` kit). See [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) for what changed since 6.8 (new APIs past most training cutoffs, deprecations, build floors).
-- **CMake + Conan**. CMake is the build driver; Conan provides external non-vendored dependencies.
+- **CMake + Conan**. CMake is the default build driver; Conan provides external non-vendored dependencies. For the native x86_64 Linux **Nix** path (`nix build`, `nix run`, `nix develop`), read [packaging/nix/README.md](./packaging/nix/README.md); it supplies dependencies without Conan or `.qt/`.
 - **C++20**.
 - **Linux and Windows are both required shipped targets**; macOS is not yet. Keep the code portable — no Linux-only APIs or POSIX-specific paths in module code; gate anything platform-specific behind the usual CMake / `#ifdef` guards. Licensing note for Windows: conda-forge ships no LGPL FFmpeg for win-64, so pixi-based Windows artifacts must use the local `recipes/ffmpeg` package (the Conan path builds its own LGPL-trimmed FFmpeg on all platforms). Windows runtime packaging (windeployqt + bundling the FFmpeg/Qt DLLs `pj_app` needs) is in scope: the Conan `windows-ci.yml` resolves DLLs via `PATH` at test time, which is not a shippable layout.
 
