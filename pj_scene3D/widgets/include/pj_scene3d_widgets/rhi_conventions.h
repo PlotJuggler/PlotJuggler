@@ -21,6 +21,13 @@ struct RhiConventions {
   return conventions.y_up_in_ndc != conventions.y_up_in_framebuffer;
 }
 
+/// True where a render-target texture's row 0 holds the bottom row of what was
+/// drawn into it (OpenGL): a quad showing it upright must put row 0 at its
+/// bottom edge. Uploaded images keep row 0 at the top on every backend.
+[[nodiscard]] inline bool renderTargetIsBottomUp(const RhiConventions& conventions) {
+  return conventions.y_up_in_framebuffer;
+}
+
 /// +1 where texture v grows with view-space y (OpenGL), -1 where it grows
 /// downwards (Vulkan, D3D, Metal). A normal rebuilt from depth texels as
 /// cross(d/du, d/dv) must be multiplied by it to face the camera, under both

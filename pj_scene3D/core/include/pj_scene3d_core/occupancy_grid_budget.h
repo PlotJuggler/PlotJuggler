@@ -19,14 +19,4 @@ namespace pj::scene3d {
          height <= limits.max_occupancy_texture_dimension && width * height <= limits.max_occupancy_cells_per_layer;
 }
 
-[[nodiscard]] constexpr bool occupancyPayloadFits(
-    std::uint64_t wire_bytes, const SceneLimits& limits = kSceneLimits) noexcept {
-  return wire_bytes <= limits.max_occupancy_wire_bytes;
-}
-
-[[nodiscard]] constexpr bool occupancyUpdateWindowFits(
-    std::uint64_t decoded_bytes, const SceneLimits& limits = kSceneLimits) noexcept {
-  return decoded_bytes <= limits.max_occupancy_update_window_bytes;
-}
-
 }  // namespace pj::scene3d

@@ -75,7 +75,7 @@ bool OccupancyRhiPass::initialize(const RhiPassSetup& setup) {
       !sampler_->create() || !quad_buffer_->create()) {
     return false;
   }
-  quad_upload_pending_ = true;
+  setup.updates->uploadStaticBuffer(quad_buffer_, kOccupancyQuad.data());
   layout_shader_resources_ = createLayerBindings(rhi, layout_uniform_buffer_, layout_texture_);
   QRhiVertexInputLayout layout;
   layout.setBindings({QRhiVertexInputBinding(2U * sizeof(float))});
@@ -121,10 +121,6 @@ void OccupancyRhiPass::prepare(const RhiFrameContext& frame) {
   draws_.reserve(admitted_.size());
   last_layer_count_ = 0;
   last_cell_count_ = 0;
-  if (quad_upload_pending_ && quad_buffer_ != nullptr) {
-    frame.updates->uploadStaticBuffer(quad_buffer_, kOccupancyQuad.data());
-    quad_upload_pending_ = false;
-  }
   for (const auto& admitted : admitted_) {
     OccupancyGridLayer* layer = admitted.layer;
     LayerGpu& gpu = layer_gpu_[layer];
@@ -277,7 +273,6 @@ void OccupancyRhiPass::release() {
   sampler_ = nullptr;
   layout_texture_ = nullptr;
   render_mode_uniforms_ = nullptr;
-  quad_upload_pending_ = false;
 }
 
 }  // namespace pj::scene3d

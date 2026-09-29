@@ -12,9 +12,9 @@
 //    second dataset can rebind to the correct TF tree.
 //
 // These exercise the dock through its public IObjectViewer surface against a real
-// SessionManager/ObjectStore + TransformService. The GL view is created lazily
-// (a queued singleShot in the base ctor) and never realized here, so no OpenGL
-// context is required: addTopic of a config topic and revalidateObjects touch the
+// SessionManager/ObjectStore + TransformService. The view is created lazily
+// (a queued singleShot in the base ctor) and never shown here, so no GPU is
+// required: addTopic of a config topic and revalidateObjects touch the
 // view only behind a `view_ != nullptr` guard.
 
 #include <gtest/gtest.h>
@@ -115,8 +115,8 @@ class ProbeDock : public PJ::Scene3DDockWidget {
 // duplicate timestamps) must reopen the per-tick gate and reach the layer. With a
 // stamp-keyed renderKey the combined key never changed, the tick was swallowed at
 // the gate, and renderAt's UID memo never saw the new entry. The headless harness
-// cannot run the GL paint that drains the deferred decode, so renderAtForTest()
-// stands in for paintGL after each delivered tick.
+// cannot run the paint that drains the deferred decode, so renderAtForTest()
+// stands in for it after each delivered tick.
 TEST(Scene3DDockStreaming, SameStampReplacementCloudPassesRepaintGate) {
   g_cloud_parser_calls.store(0);
   PJ::SessionManager session;
@@ -143,7 +143,7 @@ TEST(Scene3DDockStreaming, SameStampReplacementCloudPassesRepaintGate) {
   ASSERT_NE(layer, nullptr);
 
   dock.onTrackerTime(0.0);      // clamps to the lone sample; the first tick always paints
-  layer->renderAtForTest(100);  // stand-in for the gated paintGL
+  layer->renderAtForTest(100);  // stand-in for the gated paint
   const int parses_after_first = g_cloud_parser_calls.load();
   ASSERT_GE(parses_after_first, 1);
 

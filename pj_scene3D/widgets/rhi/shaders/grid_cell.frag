@@ -5,7 +5,7 @@
 
 // The filled-cell grid: the cell tone comes from the vertex colour, the grid
 // lines are drawn from the distance to the nearest cell edge, anti-aliased with
-// screen-space derivatives, as the GL GridRenderPass does. Lines in the same
+// screen-space derivatives. Lines in the same
 // surface as the fill cannot z-fight it at grazing angles, and stay about one
 // pixel wide into the distance. Built with PJ_GRID_SHADOW as the shadow receiver.
 

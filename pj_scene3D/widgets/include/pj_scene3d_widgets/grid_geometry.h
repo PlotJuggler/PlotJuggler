@@ -7,9 +7,7 @@
 
 namespace pj::scene3d {
 
-// Which ground-grid geometry is built and drawn. Shared by the native
-// GridRenderPass and the WASM QRhi widget so the two backends agree on the
-// persisted grid_style meaning by construction.
+// Which ground-grid geometry is built and drawn (the persisted grid_style).
 enum class GridStyle { kLines, kFilledCells };
 
 // One ground-grid vertex on the z=0 plane plus a checkerboard parity flag
@@ -22,12 +20,12 @@ struct GridVertex {
 };
 
 // Line grid: (divisions+1) lines per axis, 2 vertices per line (drawn as
-// GL_LINES). extent_m is the full side length; the grid is centered on the
+// a line list). extent_m is the full side length; the grid is centered on the
 // origin. Every vertex carries parity 0.
 std::vector<GridVertex> buildGridLines(float extent_m, int divisions);
 
 // Full checkerboard: EVERY cell is emitted as a solid quad (two triangles,
-// 6 vertices, drawn as GL_TRIANGLES), tagged parity = (i + j) & 1 so the two
+// 6 vertices, drawn as a triangle list), tagged parity = (i + j) & 1 so the two
 // tile tones alternate. Unlike a half-checkerboard, no cell is skipped — the
 // total is exactly divisions*divisions*6 vertices.
 std::vector<GridVertex> buildCheckerboardCells(float extent_m, int divisions);

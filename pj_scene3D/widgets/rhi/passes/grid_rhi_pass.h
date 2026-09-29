@@ -12,7 +12,7 @@
 #include "../rhi_scene_pass.h"
 #include "pj_base/time.hpp"
 #include "pj_scene3d_core/tf/tf_connections.h"
-#include "pj_scene3d_widgets/passes/grid_geometry.h"
+#include "pj_scene3d_widgets/grid_geometry.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
 
 namespace pj::scene3d {
@@ -142,7 +142,6 @@ class GridRhiPass {
   // and a zero offset for the connections
   QRhiBuffer* origin_offset_uniforms_ = nullptr;
   QRhiBuffer* zero_offset_uniforms_ = nullptr;
-  bool zero_offset_pending_ = true;
   std::array<float, 8> grid_uniforms_{};  // origin offset + cell-edge phase, then line colour + cell side
   QRhiBuffer* grid_buffer_ = nullptr;     // Static: cells, then lines
   QRhiBuffer* connection_buffer_ = nullptr;

@@ -21,11 +21,9 @@ class Scene3DLayer;
 class TrailLayer;
 
 /// The trail family of the QRhi view: each trail is a screen-space ribbon (a
-/// triangle strip, two vertices per polyline point, the GL TrailRenderPass's
-/// shape) drawn as a past and a future half in their own colours from one vertex
-/// buffer. A trail is either a standalone TrailLayer or the one a
-/// PosesInFrameLayer owns; the owner is what the view orders. Trails have no
-/// per-view budget and add nothing to the scene bounds (the GL view's rule).
+/// triangle strip, two vertices per polyline point) drawn as a past and a future half in their own colours from one
+/// vertex buffer. A trail is either a standalone TrailLayer or the one a PosesInFrameLayer owns; the owner is what the
+/// view orders. Trails have no per-view budget and add nothing to the scene bounds.
 class TrailRhiPass {
  public:
   struct Draw {

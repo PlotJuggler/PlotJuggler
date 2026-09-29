@@ -31,7 +31,7 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/camera/camera.h"  // AABB, expandAABB
-#include "pj_scene3d_core/pointcloud.h"     // DecodedPointCloud
+#include "pj_scene3d_core/pointcloud.h"     // PointVertex
 #include "pj_scene3d_core/pointcloud_budget.h"
 #include "pj_scene3d_widgets/object_topic_metadata.h"
 #include "pj_scene3d_widgets/parse_locked.h"
@@ -82,9 +82,7 @@ bool isDepthEncoding(const std::string& encoding) {
 
 DepthCloudLayer::DepthCloudLayer(
     PJ::ObjectTopicId topic_id, QString display_name, BuiltinObjectType object_type, QObject* parent)
-    : Scene3DLayer(parent), topic_id_(topic_id), display_name_(std::move(display_name)), object_type_(object_type) {
-  syncPassStyle();
-}
+    : Scene3DLayer(parent), topic_id_(topic_id), display_name_(std::move(display_name)), object_type_(object_type) {}
 
 DepthCloudLayer::~DepthCloudLayer() = default;
 
@@ -160,12 +158,6 @@ void DepthCloudLayer::setFixedFrame(const QString& frame) {
   }
   fixed_frame_ = frame;
   updateRenderFrame();  // the QRhi view places the retained points; no re-projection
-#ifndef PJ_SCENE3D_RHI
-  if (source_frame_.empty()) {
-    pushed_ = {};  // placed in the fixed frame -> re-stamp frame_id
-    refreshNow();
-  }
-#endif
   emit repaintRequested();
 }
 
@@ -182,7 +174,6 @@ void DepthCloudLayer::setVisible(bool visible) {
     return;
   }
   visible_ = visible;
-#ifdef PJ_SCENE3D_RHI
   if (!visible_) {
     // A hidden layer releases its retained points; re-showing projects once.
     // Its bounds stay: a hidden layer still counts in the camera's scene bounds.
@@ -192,34 +183,15 @@ void DepthCloudLayer::setVisible(bool visible) {
     clearGeometry();
     world_bounds_ = bounds;
   }
-#else
-  cloud_pass_.setVisible(visible);
-#endif
   emit visibilityChanged(visible);
   emit repaintRequested();
 }
-
-#ifndef PJ_SCENE3D_RHI
-void DepthCloudLayer::initializeGL() {
-  cloud_pass_.initializeGL();
-}
-
-void DepthCloudLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
-  drainPendingUpdate();
-  cloud_pass_.render(view_params, frame_ctx);
-}
-
-void DepthCloudLayer::releaseGL() {
-  cloud_pass_.releaseGL();
-}
-#endif
 
 void DepthCloudLayer::setColormap(PJ::Colormap cm) {
   if (colormap_ == cm) {
     return;
   }
   colormap_ = cm;
-  syncPassStyle();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -229,7 +201,6 @@ void DepthCloudLayer::setPointSizePixels(float pixels) {
     return;
   }
   point_size_px_ = pixels;
-  syncPassStyle();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -631,7 +602,6 @@ void DepthCloudLayer::renderAt(int64_t time_ns) {
     return;
   }
   const ProjectionKey key{id, memoCamera()};
-#ifdef PJ_SCENE3D_RHI
   // Latest wins: while one runs, only the newest request waits behind it.
   wanted_ = key;
   backproject_worker_.request(
@@ -642,40 +612,6 @@ void DepthCloudLayer::renderAt(int64_t time_ns) {
           .min_depth_m = min_depth_m_,
           .max_depth_m = max_depth_m_,
       });
-#else
-  std::vector<uint8_t> scratch;  // keeps decoded compressedDepth bytes alive through depthToPoints
-  QString error;
-  const auto depth_view = toDepthView(*image, scratch, &error);
-  pushed_ = key;
-  if (!depth_view.has_value()) {
-    fail(error);
-    return;
-  }
-  BackprojectOptions opts;
-  opts.min_depth_m = min_depth_m_;
-  opts.max_depth_m = max_depth_m_;
-  std::vector<float> scalar;
-  AABB bounds;
-  PJ::Range<float> scalar_range{0.0f, 1.0f};
-  // One pass yields positions, depth scalars, the world AABB, and the colormap
-  // range together — no separate AABB or min/max sweep over the ~1 point/pixel.
-  std::vector<glm::vec3> points = depthToPoints(*depth_view, intr, opts, &scalar, &bounds, &scalar_range);
-
-  DecodedPointCloud decoded;
-  // No frame on the image -> place in the fixed frame so the geometry is visible.
-  decoded.frame_id = render_frame_;
-  decoded.scalar_field_name = "depth";
-
-  world_bounds_ = bounds.valid ? std::optional<AABB>{bounds} : std::nullopt;
-  cloud_pass_.setColormapRange(scalar_range.min, scalar_range.max);
-
-  last_point_count_ = points.size();
-  decoded.positions = std::move(points);
-  decoded.scalar = std::move(scalar);
-  cloud_pass_.setActiveCloud(std::make_shared<DecodedPointCloud>(std::move(decoded)));
-  setDataWarning({});
-  emit repaintRequested();
-#endif
 }
 
 void DepthCloudLayer::refreshNow() {
@@ -745,7 +681,7 @@ QString DepthCloudLayer::admissionError(const Image& image) {
   if (!isDepthEncoding(image.encoding)) {
     return tr("Not a depth image (encoding '%1')").arg(QString::fromStdString(image.encoding));
   }
-  if (!pointPayloadFits(static_cast<std::uint64_t>(image.data.size()))) {
+  if (static_cast<std::uint64_t>(image.data.size()) > kSceneLimits.max_point_wire_bytes_per_cloud) {
     return tr("Depth image payload is %1 MiB; the limit is %2 MiB")
         .arg(QString::number(static_cast<double>(image.data.size()) / (1024.0 * 1024.0), 'f', 1))
         .arg(kSceneLimits.max_point_wire_bytes_per_cloud / (1024ULL * 1024ULL));
@@ -848,11 +784,6 @@ void DepthCloudLayer::onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id) {
 }
 
 void DepthCloudLayer::clearGeometry() {
-#ifndef PJ_SCENE3D_RHI
-  last_point_count_ = 0;
-  // An empty cloud, not none: the pass must stop drawing the previous sample.
-  cloud_pass_.setActiveCloud(std::make_shared<DecodedPointCloud>());
-#endif
   if (vertex_bytes_.isEmpty() && !world_bounds_.has_value()) {
     return;
   }
@@ -865,16 +796,6 @@ void DepthCloudLayer::clearGeometry() {
 
 void DepthCloudLayer::updateRenderFrame() {
   render_frame_ = source_frame_.empty() ? fixed_frame_.toStdString() : source_frame_;
-}
-
-void DepthCloudLayer::syncPassStyle() {
-#ifndef PJ_SCENE3D_RHI
-  cloud_pass_.setShape(shape());
-  cloud_pass_.setSizePixels(point_size_px_);
-  cloud_pass_.setColorType(colorType());
-  cloud_pass_.setScalarAxis(scalarAxis());  // color by the uploaded depth scalar
-  cloud_pass_.setColormap(colormap_);
-#endif
 }
 
 }  // namespace pj::scene3d

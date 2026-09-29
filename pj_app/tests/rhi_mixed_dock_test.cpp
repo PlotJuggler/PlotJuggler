@@ -99,6 +99,15 @@ class RhiMixedDockFixture : public ::testing::Test {
     PJ_SKIP_ON_HEADLESS_QPA();
     layout_ = std::make_unique<pj_mixed_layout::MixedLayout>();
     manager_ = &layout_->manager();
+    window_ = &layout_->window();
+    if (late_gpu_docks_) {
+      // A raster-only first show: no QRhiWidget exists when the window maps.
+      layout_->addDock(u"raster"_s, new QLabel(u"raster"_s), ads::TopDockWidgetArea);
+      ASSERT_NO_FATAL_FAILURE(showMainWindow());
+      if (IsSkipped()) {
+        return;
+      }
+    }
     plot_ = layout_->createPlot();
     scene_ = layout_->createScene3D(kCloudSide);
     media_ = layout_->createMedia();
@@ -108,17 +117,15 @@ class RhiMixedDockFixture : public ::testing::Test {
     plot_dock_ = layout_->addDock(u"plot"_s, plot_, ads::LeftDockWidgetArea);
     scene_dock_ = layout_->addDock(u"scene3d"_s, scene_, ads::RightDockWidgetArea);
     media_dock_ = layout_->addDock(u"media"_s, media_, ads::BottomDockWidgetArea);
-    window_ = &layout_->window();
     const std::array<QRhiWidget*, 3> widgets{plotCanvas(), sceneView(), mediaViewer()};
     for (std::size_t i = 0; i < widgets.size(); ++i) {
       ASSERT_NE(widgets[i], nullptr) << "GPU widget " << i << " missing";
       QObject::connect(widgets[i], &QRhiWidget::renderFailed, window_, [this, i] { ++render_failures_[i]; });
     }
 
-    window_->resize(1000, 760);
-    window_->show();
-    if (!QTest::qWaitForWindowExposed(window_)) {
-      PJ_SKIP_WITHOUT_GPU("the main window was never exposed");
+    ASSERT_NO_FATAL_FAILURE(showMainWindow());
+    if (IsSkipped()) {
+      return;
     }
     (void)pjWaitForGrab([this](auto done) { sceneView()->grabPresentedFrame(std::move(done)); });  // first frame
     if (expected_media_failures_ == 0) {
@@ -136,6 +143,16 @@ class RhiMixedDockFixture : public ::testing::Test {
     EXPECT_EQ(render_failures_[0], 0) << "the plot canvas failed";
     EXPECT_EQ(render_failures_[1], 0) << "the Scene3D view failed";
     EXPECT_EQ(render_failures_[2], expected_media_failures_) << "media viewer renderFailed() count";
+  }
+
+  // Shows the main window and waits for it to map; skips (fails under
+  // PJ_REQUIRE_GPU_TESTS=1) when it never does.
+  void showMainWindow() {
+    window_->resize(1000, 760);
+    window_->show();
+    if (!QTest::qWaitForWindowExposed(window_)) {
+      PJ_SKIP_WITHOUT_GPU("the main window was never exposed");
+    }
   }
 
   [[nodiscard]] PJ::PlotRhiCanvas* plotCanvas() const {
@@ -235,8 +252,28 @@ class RhiMixedDockFixture : public ::testing::Test {
     QApplication::processEvents();
   }
 
+  // Floats each dock, then docks it back, checking every widget each time.
+  void floatAndRedockEach() {
+    for (ads::CDockWidget* dock : docks()) {
+      SCOPED_TRACE(dock->objectName().toStdString());
+      const int docked = adoptions(dock);
+      ASSERT_NO_FATAL_FAILURE(floatDock(dock));
+      EXPECT_NE(dock->window(), window_);
+      ASSERT_NO_FATAL_FAILURE(expectAllRender("one dock floating"));
+      EXPECT_GT(adoptions(dock), docked) << "no initialize() on the floating window's QRhi";
+      const int floating = adoptions(dock);
+      manager_->addDockWidget(ads::BottomDockWidgetArea, dock);
+      ASSERT_EQ(dock->window(), window_);
+      ASSERT_NO_FATAL_FAILURE(expectAllRender("redocked"));
+      EXPECT_GT(adoptions(dock), floating) << "no initialize() on the main window's QRhi";
+    }
+  }
+
   // Set by a derived fixture before SetUp(): the media viewer pipeline to fail.
   const char* media_fail_pipeline_ = nullptr;
+  // Set by a derived fixture before SetUp(): show the window before any GPU
+  // widget exists, then dock them.
+  bool late_gpu_docks_ = false;
   int expected_media_failures_ = 0;
 
   // Declaration order is destruction order reversed: the layout dies before the
@@ -255,19 +292,22 @@ class RhiMixedDockFixture : public ::testing::Test {
 };
 
 TEST_F(RhiMixedDockFixture, FloatAndRedockEachKeepsEveryWidgetRendering) {
-  for (ads::CDockWidget* dock : docks()) {
-    SCOPED_TRACE(dock->objectName().toStdString());
-    const int docked = adoptions(dock);
-    ASSERT_NO_FATAL_FAILURE(floatDock(dock));
-    EXPECT_NE(dock->window(), window_);
-    ASSERT_NO_FATAL_FAILURE(expectAllRender("one dock floating"));
-    EXPECT_GT(adoptions(dock), docked) << "no initialize() on the floating window's QRhi";
-    const int floating = adoptions(dock);
-    manager_->addDockWidget(ads::BottomDockWidgetArea, dock);
-    ASSERT_EQ(dock->window(), window_);
-    ASSERT_NO_FATAL_FAILURE(expectAllRender("redocked"));
-    EXPECT_GT(adoptions(dock), floating) << "no initialize() on the main window's QRhi";
+  floatAndRedockEach();
+}
+
+// GPU docks created after the window's first show had no QRhiWidget (the app
+// without a GPU plot canvas, then a Scene3D or media dock): Qt switches the
+// window to QRhi composition, and no zero-size bootstrap widget is needed.
+class RhiMixedLateDockFixture : public RhiMixedDockFixture {
+ protected:
+  void SetUp() override {
+    late_gpu_docks_ = true;
+    RhiMixedDockFixture::SetUp();
   }
+};
+
+TEST_F(RhiMixedLateDockFixture, GpuDocksAddedAfterARasterOnlyFirstShowRender) {
+  expectAllRender("GPU docks added after the first show");
 }
 
 TEST_F(RhiMixedDockFixture, HiddenTabsRenderAgainWhenShown) {

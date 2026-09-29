@@ -9,10 +9,10 @@
 // "committed object dock refused the topic" path fires instead of a broken layer).
 //
 // The dock is exercised through its public IObjectViewer surface against a real
-// SessionManager/ObjectStore. The GL view is created lazily (a queued singleShot
-// in the base ctor) and never realized here, so no OpenGL context is required —
-// addTopic only touches the view behind a `view_ != nullptr` guard, and building
-// a DepthCloudLayer is pure CPU until initializeGL().
+// SessionManager/ObjectStore. The view is created lazily (a queued singleShot
+// in the base ctor) and never shown here, so no GPU is required — addTopic only
+// touches the view behind a `view_ != nullptr` guard, and building a
+// DepthCloudLayer is pure CPU.
 
 #include <gtest/gtest.h>
 

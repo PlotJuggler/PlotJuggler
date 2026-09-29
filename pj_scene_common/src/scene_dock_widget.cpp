@@ -339,11 +339,10 @@ void SceneDockWidget::removeTopic(ObjectTopicId topic_id) {
   }
   invalidateTrackerRenderKey();  // layer set shrank → next tick must repaint
   // Mutate -> reconcile view -> detach -> notify. syncViewLayers() drives
-  // SceneViewWidget::setLayers, which runs releaseGL() on the dropped layer under
-  // makeCurrent. detach() MUST follow that, because for GL-owning layers detach
-  // tears down GL-bearing containers (e.g. mesh/texture caches) with no context
-  // current — running it first orphans those resources before the contexted
-  // releaseGL can free them. Keep the removed layer alive until after the
+  // SceneViewWidget::setLayers, which releases the GPU state the view holds for
+  // the dropped layer. detach() MUST follow that: it tears down the layer's
+  // caches (e.g. meshes, textures), which the view must no longer reference
+  // when they go. Keep the removed layer alive until after the
   // notification so a paint from a layerRemoved slot never borrows a destroyed
   // source. Destroyed at scope exit.
   std::unique_ptr<ISceneLayer> removed = std::move(it->second);
@@ -958,11 +957,11 @@ void SceneDockWidget::clearLayers() {
     return;
   }
   invalidateTrackerRenderKey();
-  // Contract (same ordering removeTopic now uses): re-point the view off every
+  // Contract (the ordering removeTopic uses): re-point the view off every
   // layer (a sync with an empty draw order) while the layers are still alive, so
-  // the view runs each layer's releaseGL() under its current context BEFORE any
-  // detach. Only then detach (which, for GL-owning layers, tears down GL-bearing
-  // caches with no context current). The retired layers are destroyed at scope exit.
+  // the view releases the GPU state it holds for each BEFORE any detach. Only then
+  // detach (which tears down the layers' caches). The retired layers are destroyed
+  // at scope exit.
   auto retired = std::move(layers_);
   layers_.clear();
   draw_order_.clear();

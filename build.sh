@@ -37,8 +37,6 @@ usage() {
     "PJ_BUILD_WIDGET_DEMOS, PJ_BUILD_MARKETPLACE_APP, PJ_BUILD_TARGET, PJ_DEBUG_INFO," \
     "PJ_COMPRESS_DEBUG and PJ_SANITIZE environment variables (how CI and the" \
     "container wrapper drive this script); an option always wins over the variable." \
-    "PJ_SCENE3D_RHI=OFF builds the legacy OpenGL Scene3D renderer and plot canvas" \
-    "(default ON: QRhi; the GL build is kept for one release)." \
     "PJ_DRY_RUN=1 prints the lane, build directory and CMake arguments without building."
 }
 
@@ -250,9 +248,7 @@ PJ_BUILD_TESTS="${PJ_BUILD_TESTS:-ON}"
 PJ_BUILD_DEMOS="${PJ_BUILD_DEMOS:-ON}"
 PJ_BUILD_WIDGET_DEMOS="${PJ_BUILD_WIDGET_DEMOS:-${PJ_BUILD_TESTS}}"
 PJ_BUILD_MARKETPLACE_APP="${PJ_BUILD_MARKETPLACE_APP:-${PJ_BUILD_TESTS}}"
-PJ_SCENE3D_RHI="${PJ_SCENE3D_RHI:-ON}"
 PJ_FLAG_ARGS+=(
-  "-DPJ_SCENE3D_RHI=${PJ_SCENE3D_RHI}"
   "-DPJ_BUILD_TESTS=${PJ_BUILD_TESTS}"
   "-DPJ_BUILD_DEMOS=${PJ_BUILD_DEMOS}"
   "-DPJ_BUILD_WIDGET_DEMOS=${PJ_BUILD_WIDGET_DEMOS}"

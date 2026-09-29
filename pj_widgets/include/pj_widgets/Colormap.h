@@ -9,7 +9,7 @@
 namespace PJ {
 
 /// Scientific colormaps shared by the visualization views — the 3D pointcloud
-/// field colouring (`PointcloudRenderPass`) and the 2D depth-image LUT
+/// field colouring (`PointRhiPass`) and the 2D depth-image LUT
 /// (`DepthImageLayer`) — so the same scalar maps to the same colour in every
 /// view. The order is the LUT row index AND the persisted id: append only,
 /// never reorder.

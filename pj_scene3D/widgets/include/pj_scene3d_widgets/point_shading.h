@@ -9,8 +9,7 @@
 
 namespace pj::scene3d {
 
-// Point-cloud shading inputs both renderers (GL pointcloud pass, QRhi point pass)
-// feed their point shaders, so the two stay in step.
+// Point-cloud shading inputs the point pass feeds its shaders.
 
 // Sphere perspective falloff softens beyond this view depth (metres).
 inline constexpr float kSphereDepthThreshold = 5.0f;

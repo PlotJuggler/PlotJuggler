@@ -181,9 +181,7 @@ QString formatHint(const QString& source) {
   return QFileInfo(url.isValid() && !url.scheme().isEmpty() ? url.path() : source).suffix().toLower();
 }
 
-#ifdef PJ_SCENE3D_RHI
-// The QRhi renderer draws URDF primitives as unit meshes the layer retains; the
-// GL MeshRenderPass owns its own. Same unit conventions: box ±0.5, cylinder
+// URDF primitives are drawn as unit meshes the layer retains: box ±0.5, cylinder
 // radius 1 / height 1 along Z, sphere radius 1.
 constexpr std::string_view kBoxKey = "robot:primitive:box";
 constexpr std::string_view kCylinderKey = "robot:primitive:cylinder";
@@ -276,7 +274,6 @@ MeshData makeSphere() {
   mesh.submeshes.push_back(SubMesh{0, mesh.indices.size(), solidMaterial(color)});
   return mesh;
 }
-#endif  // PJ_SCENE3D_RHI
 
 }  // namespace
 
@@ -287,12 +284,7 @@ RobotModelLayer::RobotModelLayer(PJ::ObjectTopicId topic_id, QString display_nam
       display_name_(std::move(display_name)),
       source_value_(display_name_),
       owned_resolver_(std::make_unique<UrdfPackageResolver>()),
-      mesh_loader_(std::make_unique<MeshLoader>())
-#ifndef PJ_SCENE3D_RHI
-      ,
-      mesh_pass_(std::make_unique<MeshRenderPass>())
-#endif
-{
+      mesh_loader_(std::make_unique<MeshLoader>()) {
   resolver_ = owned_resolver_.get();
 }
 
@@ -530,20 +522,11 @@ void RobotModelLayer::detach() {
 
 void RobotModelLayer::setFixedFrame(const QString& frame) {
   fixed_frame_ = frame;
-#ifndef PJ_SCENE3D_RHI
-  draws_dirty_ = true;
-#endif
   emit repaintRequested();
 }
 
 void RobotModelLayer::setTrackerTime(PJ::Timepoint time) {
   tracker_time_ = time;
-#ifndef PJ_SCENE3D_RHI
-  // TF reaches this layer ONLY via tracker ticks (the dock drives setTrackerTime
-  // on every live ingest tick and every scrub), so this is where TF-driven pose
-  // changes invalidate the world-space draw cache.
-  draws_dirty_ = true;
-#endif
   ensureStaticBridges();
   if (source_type_ == SourceType::kTopic && latch_pending_) {
     const auto now = std::chrono::steady_clock::now();
@@ -561,12 +544,6 @@ void RobotModelLayer::setVisible(bool visible) {
     return;
   }
   visible_ = visible;
-#ifndef PJ_SCENE3D_RHI
-  if (visible) {
-    // The cache may predate the hide (TF advanced while we skipped render).
-    draws_dirty_ = true;
-  }
-#endif
   emit visibilityChanged(visible);
   emit infoChanged();
   emit repaintRequested();
@@ -630,7 +607,6 @@ void RobotModelLayer::rebuildLinkDraws() {
       }
     }
   }
-#ifdef PJ_SCENE3D_RHI
   model_draw_calls_.clear();
   model_draw_calls_.reserve(link_draws_.size());
   for (const LinkDraw& draw : link_draws_) {
@@ -640,7 +616,7 @@ void RobotModelLayer::rebuildLinkDraws() {
     call.group = draw.collision ? ModelDrawGroup::kCollision : ModelDrawGroup::kVisual;
     // Primitives and the placeholder carry the draw's colour alone (their unit
     // meshes' material and vertex colours would apply it a second time); only a
-    // mesh without an explicit URDF colour shows its own materials, as on GL.
+    // mesh without an explicit URDF colour shows its own materials.
     call.use_material = draw.shape == LinkDraw::Shape::kMesh && !draw.explicit_color;
     call.override_color = draw.color;
     switch (draw.shape) {
@@ -663,123 +639,7 @@ void RobotModelLayer::rebuildLinkDraws() {
     model_draw_calls_.push_back(std::move(call));
   }
   ++model_revision_;
-#else
-  draws_dirty_ = true;
-#endif
 }
-
-#ifndef PJ_SCENE3D_RHI
-void RobotModelLayer::initializeGL() {
-  mesh_pass_->initializeGL();
-}
-
-void RobotModelLayer::rebuildDrawCache(const FrameContext& frame_ctx) {
-  // Reuse the member vectors so a steady robot does not churn the heap.
-  cached_visual_draws_.clear();
-  cached_collision_draws_.clear();
-
-  // Bridge the URDF's fixed joints into the buffer we actually pose links against:
-  // frame_ctx.tf is the dock's LIVE buffer. const_cast is safe here:
-  // TransformBuffer is internally synchronized and this runs on the GUI thread.
-  ensureStaticBridges(const_cast<TransformBuffer&>(frame_ctx.tf));
-
-  // The link lookup is repeated per geometry of a link; links are few and the
-  // lookup is a hash probe, so no per-link memo.
-  for (const LinkDraw& link_draw : link_draws_) {
-    const auto tf = frame_ctx.lookup(link_draw.frame_id);
-    if (!tf.has_value()) {
-      continue;
-    }
-    MeshRenderPass::DrawCall draw;
-    // Same float operation order as the model's world matrix has always had:
-    // TF × <origin>, then the geometry scale.
-    draw.model = glm::mat4(tf->matrix()) * glm::mat4(link_draw.origin);
-    draw.model = glm::scale(draw.model, glm::vec3(link_draw.scale));
-    draw.color = link_draw.color;
-    draw.use_vertex_color = false;
-    switch (link_draw.shape) {
-      case LinkDraw::Shape::kBox:
-        draw.kind = MeshRenderPass::GeometryKind::kBox;
-        break;
-      case LinkDraw::Shape::kCylinder:
-        draw.kind = MeshRenderPass::GeometryKind::kCylinder;
-        break;
-      case LinkDraw::Shape::kSphere:
-        draw.kind = MeshRenderPass::GeometryKind::kSphere;
-        break;
-      case LinkDraw::Shape::kMesh:
-        draw.kind = MeshRenderPass::GeometryKind::kMesh;
-        draw.mesh_key = link_draw.mesh_path;
-        draw.use_vertex_color = !link_draw.explicit_color;
-        break;
-      case LinkDraw::Shape::kPlaceholder:
-        draw.kind = MeshRenderPass::GeometryKind::kPlaceholderCube;
-        break;
-    }
-    (link_draw.collision ? cached_collision_draws_ : cached_visual_draws_).push_back(std::move(draw));
-  }
-  cached_render_origin_ = frame_ctx.render_origin;
-}
-
-bool RobotModelLayer::drawCacheNeedsRebuild(const FrameContext& frame_ctx) const {
-  if (draws_dirty_ || !cached_render_origin_.has_value()) {
-    return true;
-  }
-  const glm::dvec3 delta = *cached_render_origin_ - frame_ctx.render_origin;
-  return delta.x != 0.0 || delta.y != 0.0 || delta.z != 0.0;
-}
-
-void RobotModelLayer::ensureDrawCache(const FrameContext& frame_ctx) {
-  // DrawCall matrices are in camera-relative render space, so the cache is
-  // rebuilt when draws_dirty_ OR the render origin moved; a pure view/projection
-  // repaint reuses it. Shared by render() and the shadow hooks so a frame's
-  // pre-pass and color pass use one list.
-  if (drawCacheNeedsRebuild(frame_ctx)) {
-    rebuildDrawCache(frame_ctx);
-    draws_dirty_ = false;
-  }
-}
-
-void RobotModelLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
-  if (!visible_ || !model_.has_value()) {
-    return;
-  }
-  ensureDrawCache(frame_ctx);
-  // Per-view opacities ("Meshes"/"Collision" sliders); 0 hides the group.
-  const MeshShadingParams& shading = view_params.shading;
-  if (shading.meshes_visible && shading.mesh_opacity > 0.0f) {
-    mesh_pass_->renderVisuals(view_params, cached_visual_draws_, shading.mesh_opacity);
-  }
-  if (shading.collisions_visible && shading.collision_opacity > 0.0f) {
-    mesh_pass_->renderCollisions(view_params, cached_collision_draws_, shading.collision_opacity);
-  }
-}
-
-std::optional<AABB> RobotModelLayer::meshShadowBounds(const FrameContext& frame_ctx) {
-  if (!visible_ || !model_.has_value()) {
-    return std::nullopt;
-  }
-  ensureDrawCache(frame_ctx);
-  const AABB bounds = mesh_pass_->worldBoundsOfDraws(cached_visual_draws_);
-  return bounds.valid ? std::optional<AABB>(bounds) : std::nullopt;
-}
-
-void RobotModelLayer::renderShadowCasters(const glm::mat4& light_view_proj, const FrameContext& frame_ctx) {
-  if (!visible_ || !model_.has_value()) {
-    return;
-  }
-  // Visual links only: collision hulls coincide with the visuals and would
-  // double-darken the silhouette. The "meshes hidden" per-view toggle is not
-  // consulted here (the hook has no ViewParams); a hidden mesh still casting is an
-  // accepted v1 edge case.
-  ensureDrawCache(frame_ctx);
-  mesh_pass_->renderDepthOnly(light_view_proj, cached_visual_draws_);
-}
-
-void RobotModelLayer::releaseGL() {
-  mesh_pass_->releaseGL();
-}
-#endif  // !PJ_SCENE3D_RHI
 
 QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
   auto* container = new QWidget(parent);
@@ -1233,14 +1093,7 @@ void RobotModelLayer::resetModelState() {
   latch_pending_ = false;
   base_status_.clear();
   noteRenderSuccess();
-#ifdef PJ_SCENE3D_RHI
   model_meshes_.clear();
-#else
-  cached_visual_draws_.clear();
-  cached_collision_draws_.clear();
-  cached_render_origin_.reset();
-  mesh_pass_->clearMeshes();
-#endif
   rebuildLinkDraws();
 }
 
@@ -1371,7 +1224,7 @@ bool RobotModelLayer::applyRobotDescription(
     const QString& text, const QString& format, const QString& label, const QString& urdf_dir, bool source_is_url) {
   latch_pending_ = false;
   const std::string xml = text.toStdString();
-  if (!modelSourceFits(xml.size())) {
+  if (static_cast<std::uint64_t>(xml.size()) > kSceneLimits.max_model_source_bytes) {
     fail(tr("robot_description exceeds the %1 MiB limit")
              .arg(kSceneLimits.max_model_source_bytes / (1024ULL * 1024ULL)));
     return false;
@@ -1398,7 +1251,6 @@ bool RobotModelLayer::applyRobotDescription(
   model_has_visuals_ = std::any_of(
       model_->links.cbegin(), model_->links.cend(), [](const RobotLink& link) { return !link.visuals.empty(); });
   rebuildStaticBridges();  // cache (and inject) the fixed-joint TF bridges
-#ifdef PJ_SCENE3D_RHI
   const auto retain = [this](std::string_view key, MeshData mesh) {
     mesh_retained_bytes_ = saturatedAdd(mesh_retained_bytes_, estimateRetainedMeshBytes(mesh));
     model_meshes_.emplace(std::string(key), std::make_shared<const MeshData>(std::move(mesh)));
@@ -1407,7 +1259,6 @@ bool RobotModelLayer::applyRobotDescription(
   retain(kCylinderKey, makeCylinder());
   retain(kSphereKey, makeSphere());
   retain(kPlaceholderKey, makeCube(kPlaceholderColor));
-#endif
   base_status_ = tr("URDF: %1").arg(label);
   queueMeshLoads();
   rebuildLinkDraws();
@@ -1530,11 +1381,7 @@ void RobotModelLayer::finishMeshImport(const std::string& key, std::uint64_t gen
     if (!retainedMeshFits(retained, mesh_retained_bytes_)) {
       mesh_errors_[key] = tr("mesh would exceed the layer memory limit");
     } else {
-#ifdef PJ_SCENE3D_RHI
       model_meshes_[key] = std::make_shared<const MeshData>(std::move(mesh));
-#else
-      mesh_pass_->setMeshData(key, std::move(mesh));
-#endif
       mesh_bytes_[key] = retained;
       mesh_retained_bytes_ += retained;
       mesh_errors_.erase(key);

@@ -13,10 +13,6 @@ namespace pj::scene3d {
 // Mesh/model admission against SceneLimits: bounds decoded model memory (both
 // renderers) and QRhi work.
 
-[[nodiscard]] constexpr bool modelSourceFits(std::uint64_t bytes, const SceneLimits& limits = kSceneLimits) noexcept {
-  return bytes <= limits.max_model_source_bytes;
-}
-
 [[nodiscard]] constexpr bool modelMeshCountsFit(
     std::uint64_t vertices, std::uint64_t indices, std::uint64_t submeshes,
     const SceneLimits& limits = kSceneLimits) noexcept {

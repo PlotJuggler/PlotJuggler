@@ -10,8 +10,6 @@
 namespace pj::scene3d {
 
 TEST(ModelBudgetTest, SourceAndMeshBoundariesAreInclusive) {
-  EXPECT_TRUE(modelSourceFits(kBrowserSceneLimits.max_model_source_bytes, kBrowserSceneLimits));
-  EXPECT_FALSE(modelSourceFits(kBrowserSceneLimits.max_model_source_bytes + 1U, kBrowserSceneLimits));
   EXPECT_TRUE(modelMeshCountsFit(
       kBrowserSceneLimits.max_model_vertices_per_mesh, kBrowserSceneLimits.max_model_indices_per_mesh,
       kBrowserSceneLimits.max_model_submeshes_per_mesh, kBrowserSceneLimits));

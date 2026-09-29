@@ -65,13 +65,9 @@ The first build may also compile missing dependencies.
 Rerun `./build.sh` for incremental builds. To omit the test suite, use
 `./build.sh --skip-test`; other options are listed by `./build.sh --help`.
 
-The default build renders Scene3D, the plots and the media viewer through QRhi
-(`PJ_SCENE3D_RHI=ON`): OpenGL on Linux, D3D11 on Windows, Metal on macOS;
-`PJ_GRAPHICS_API=opengl|vulkan|d3d11|d3d12|metal` overrides the API at run time.
-For one release, `PJ_SCENE3D_RHI=OFF ./build.sh` (or `-DPJ_SCENE3D_RHI=OFF` on a
-manual configure) still builds the legacy OpenGL renderer, which needs OpenGL
-4.5; CMake warns when it is selected. The scripts pass the flag on every
-configure, so switching back needs no clean tree.
+Scene3D, the plots and the media viewer render through QRhi: OpenGL on Linux,
+D3D11 on Windows, Metal on macOS; `PJ_GRAPHICS_API=opengl|vulkan|d3d11|d3d12|metal`
+overrides the API at run time.
 
 File loaders, streamers and toolboxes are distributed separately. Open
 **File → Marketplace** to install them after launching your source build.
@@ -86,17 +82,17 @@ After a default build:
 ./test.sh
 ```
 
-The wrapper runs CTest without opening windows. For GUI and OpenGL coverage
-under a virtual display, use the same command as Linux CI:
+The wrapper runs CTest without opening windows. For GUI and GPU coverage under a
+virtual display, use the same command as Linux CI:
 
 ```bash
 xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120
 ```
 
 GPU-backed tests self-skip when there is no usable graphics backend (the QRhi
-display runners under `offscreen`, or GL below 4.5 in the legacy build) —
-expected on a plain headless run, but Linux CI's xvfb + Mesa llvmpipe/lavapipe
-lane is supposed to have both. Set `PJ_REQUIRE_GPU_TESTS=1` (as that CI lane
+display runners under `offscreen`, or a backend without a driver) — expected on a
+plain headless run, but Linux CI's xvfb + Mesa llvmpipe/lavapipe lane is supposed
+to have both. Set `PJ_REQUIRE_GPU_TESTS=1` (as that CI lane
 does) to turn those skips into hard failures instead, so a broken stack can't go
 quietly green there. The QRhi display runners register one pass per backend
 (`<runner>.opengl.*`, `.vulkan.*`, labels `qrhi-<backend>`); the Vulkan passes

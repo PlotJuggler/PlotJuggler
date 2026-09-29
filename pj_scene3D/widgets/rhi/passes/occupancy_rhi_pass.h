@@ -96,7 +96,6 @@ class OccupancyRhiPass {
   QRhiBuffer* quad_buffer_ = nullptr;
   QRhiShaderResourceBindings* layout_shader_resources_ = nullptr;
   QRhiGraphicsPipeline* pipeline_ = nullptr;
-  bool quad_upload_pending_ = false;
 
   std::vector<OccupancyGridLayer*> layers_;
   std::unordered_map<OccupancyGridLayer*, LayerGpu> layer_gpu_;

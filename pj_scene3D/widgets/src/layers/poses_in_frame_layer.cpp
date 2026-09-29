@@ -22,16 +22,13 @@
 #include "pj_base/time.hpp"  // PJ::toRaw
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_scene3d_core/poses_budget.h"
+#include "pj_scene3d_core/scene_limits.h"
 #include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/resolve_object.h"  // resolveObject, hasCanonical3DCodec
 #include "pj_widgets/ColorPickerWidget.h"
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/ToggleSwitch.h"
-#ifndef PJ_SCENE3D_RHI
-#include "pj_scene3d_widgets/render_pass.h"  // ViewParams, FrameContext
-#endif
 using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
@@ -256,7 +253,7 @@ bool PosesInFrameLayer::bootstrap() {
   PJ::ObjectStore& store = ctx_.session->objectStore();
   auto first = store.at(topic_id_, 0);
   if (!first.has_value() || first->payload.bytes.empty() ||
-      !posePayloadFits(static_cast<std::uint64_t>(first->payload.bytes.size()))) {
+      static_cast<std::uint64_t>(first->payload.bytes.size()) > kSceneLimits.max_pose_wire_bytes_per_layer) {
     return false;
   }
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
@@ -309,7 +306,7 @@ bool PosesInFrameLayer::updateAt(int64_t time_ns) {
     setDataWarning(std::move(warning));
     return true;
   };
-  if (!posePayloadFits(static_cast<std::uint64_t>(entry->payload.bytes.size()))) {
+  if (static_cast<std::uint64_t>(entry->payload.bytes.size()) > kSceneLimits.max_pose_wire_bytes_per_layer) {
     return fail(tr("Pose payload is %1 MiB; the limit is %2 MiB")
                     .arg(QString::number(static_cast<double>(entry->payload.bytes.size()) / (1024.0 * 1024.0), 'f', 1))
                     .arg(kSceneLimits.max_pose_wire_bytes_per_layer / kMiB));
@@ -325,7 +322,7 @@ bool PosesInFrameLayer::updateAt(int64_t time_ns) {
     return fail(tr("This layer accepts PosesInFrame samples only"));
   }
   updateSourceFrame(msg->frame_id);
-  if (!poseCountFits(static_cast<std::uint64_t>(msg->poses.size()))) {
+  if (static_cast<std::uint64_t>(msg->poses.size()) > kSceneLimits.max_poses_per_layer) {
     return fail(tr("Pose array has %1 poses; the limit is %2")
                     .arg(QString::number(msg->poses.size()), QString::number(kSceneLimits.max_poses_per_layer)));
   }
@@ -406,49 +403,6 @@ void PosesInFrameLayer::setVisible(bool visible) {
   // Catch-up on un-hide is the dock's job (it re-delivers the last tracker time).
   emit repaintRequested();
 }
-
-#ifndef PJ_SCENE3D_RHI
-void PosesInFrameLayer::initializeGL() {
-  pass_.initializeGL();
-  // The view calls this every paintGL before render(), so a trail enabled later
-  // (outside any GL context) initializes on the first paint that sees it.
-  if (trail_ != nullptr) {
-    trail_->initializeGL();
-  }
-}
-
-void PosesInFrameLayer::releaseGL() {
-  pass_.releaseGL();
-  if (trail_ != nullptr) {
-    trail_->releaseGL();
-  }
-}
-
-void PosesInFrameLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
-  if (!visible_) {
-    return;
-  }
-  // Ahead of every early-out below: the trail carries its own geometry and
-  // resolves its own frame, so it must still draw on ticks where this instant
-  // has no decoded pose set (before the first sample, or an empty array).
-  if (trail_ != nullptr) {
-    trail_->render(view_params, frame_ctx);
-  }
-  drainPendingUpdate();
-  if (pass_revision_ != geometry_revision_) {
-    pass_.setInstances(instances_);
-    pass_revision_ = geometry_revision_;
-  }
-  if (source_frame_.empty() || instances_.empty()) {
-    return;  // nothing decoded yet, or an empty pose set
-  }
-  const auto transform = frame_ctx.lookup(source_frame_);
-  if (!transform.has_value()) {
-    return;  // orphan: source frame can't resolve into the fixed frame -> draw nothing
-  }
-  pass_.render(view_params, glm::mat4(transform->matrix()));
-}
-#endif
 
 bool PosesInFrameLayer::drainPendingUpdate() {
   if (!visible_ || !tracker_dirty_ || !requested_time_.has_value()) {

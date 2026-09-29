@@ -2,29 +2,31 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // Rendering regression corpus: small deterministic scenes rendered through the
-// real Scene3DDockWidget and compared against golden PNGs captured from the
-// OpenGL renderer (fixtures/golden/pointcloud/, see its README): point clouds,
-// plus a scene corpus (`scene_*`) for the ground grid in both themes and styles,
+// real Scene3DDockWidget and compared against golden PNGs (fixtures/golden/pointcloud/,
+// see its README): point clouds, plus a scene corpus (`scene_*`) for the ground grid in both themes and styles,
 // SceneEntities markers and a URDF robot.
 //
-// The same source builds against both renderers (PJ_SCENE3D_RHI selects the
-// QRhi one) and touches only the API both docks share: canonical PointCloud
-// blobs in the ObjectStore, addTopic, the layer's <pointcloud> XML payload,
-// onTrackerTime, sceneView()->camera() and grabPresentedFrame() (and, for the
-// scene corpus, SceneEntities blobs, local URDF files and the view's grid setters). In the GL build
-// it is a regression test; in the QRhi build it holds that renderer to the same
-// goldens on each backend (PJ_GRAPHICS_API=opengl|vulkan|d3d11|metal).
+// It drives only the dock's public API: canonical PointCloud blobs in the
+// ObjectStore, addTopic, the layer's <pointcloud> XML payload, onTrackerTime,
+// sceneView()->camera() and grabPresentedFrame() (and, for the scene corpus,
+// SceneEntities blobs, local URDF files and the view's grid setters), and holds
+// the view to the goldens on each backend (PJ_GRAPHICS_API=opengl|vulkan|d3d11|metal).
 //
-// PJ_UPDATE_POINTCLOUD_GOLDENS=1 (GL build only) rewrites the goldens instead of
-// comparing. Failing cases write <case>_actual.png / <case>_diff.png into
+// PJ_UPDATE_POINTCLOUD_GOLDENS=1 writes the goldens instead of comparing, and only
+// from the pinned writer, QRhi OpenGL on Mesa llvmpipe (any other backend or
+// driver fails the case), recording its device in writer.txt: that stack must
+// then match them exactly, every other one within tolerances. PJ_POINTCLOUD_GOLDEN_DIR overrides the golden directory
+// for both, so a regeneration can land in a scratch copy for review. Failing cases
+// write <case>_actual.png / <case>_diff.png into
 // PJ_POINTCLOUD_GOLDEN_OUT (default: the working directory);
 // PJ_POINTCLOUD_GOLDEN_DUMP_ALL=1 writes them for passing cases too, for
 // pixel-exact before/after comparisons of a renderer refactor.
 //
-// Needs a real windowing platform (xcb under xvfb in CI) with GL >= 4.5 for the
-// GL renderer; skips through PJ_SKIP_WITHOUT_GPU otherwise.
+// Needs a real windowing platform (xcb under xvfb in CI); skips through
+// PJ_SKIP_WITHOUT_GPU otherwise.
 
 #include <gtest/gtest.h>
+#include <rhi/qrhi.h>
 
 #include <QApplication>
 #include <QDir>
@@ -33,7 +35,6 @@
 #include <QImage>
 #include <QPalette>
 #include <QString>
-#include <QSurfaceFormat>
 #include <QTemporaryDir>
 #include <algorithm>
 #include <array>
@@ -51,11 +52,9 @@
 
 #include "pj_base/builtin/scene_entities_codec.hpp"
 #include "pj_base/sdk/platform.hpp"
+#include "pj_bench_probes.h"
 #include "pj_scene3d_core/camera/camera.h"
 #include "scene3d_render_test_support.h"
-#ifndef PJ_SCENE3D_RHI
-#include "gl_scene_test_support.h"  // haveGl, liveGlVersion
-#endif
 
 using namespace Qt::StringLiterals;
 
@@ -66,16 +65,9 @@ using pj::scene3d::test::ExtraField;
 using pj::scene3d::test::maxChannelDelta;
 
 // Before QApplication exists (the shared gui main creates it): goldens are
-// pixel-exact at DPR 1, and the GL view expects a 4.5 core context.
+// pixel-exact at DPR 1.
 [[maybe_unused]] const bool kGoldenPlatformSetup = [] {
   qputenv("QT_ENABLE_HIGHDPI_SCALING", "0");
-#ifndef PJ_SCENE3D_RHI
-  QSurfaceFormat fmt;
-  fmt.setVersion(4, 5);
-  fmt.setProfile(QSurfaceFormat::CoreProfile);
-  fmt.setDepthBufferSize(24);
-  QSurfaceFormat::setDefaultFormat(fmt);
-#endif
   return true;
 }();
 
@@ -94,7 +86,7 @@ struct LightPalette : ::testing::Environment {
 };
 [[maybe_unused]] const auto* const kLightPalette = ::testing::AddGlobalTestEnvironment(new LightPalette);
 
-// Both renderers draw the 80x80 corner axis gizmo (bottom-right); it is part
+// The view draws the 80x80 corner axis gizmo (bottom-right); it is part
 // of every comparison.
 constexpr int kViewSize = 256;
 
@@ -400,25 +392,20 @@ std::vector<Scene> corpus() {
 // coverage within 1.3%. The bounds leave ~1.7x headroom; a colormap, shading or
 // size regression moves far more pixels than that.
 //
-// The GL build (the goldens' own renderer) checks plain per-pixel differences.
-// The QRhi build counts a pixel as differing only when no golden pixel in its
-// 3x3 neighbourhood is within `channel` of it: edge and sub-pixel coverage that
+// A pixel counts as differing only when no golden pixel in its 3x3
+// neighbourhood is within `channel` of it: edge and sub-pixel coverage that
 // moved by less than a pixel is rasterization, not rendering. It matters for the
-// QRhi backends whose framebuffer is y-down (Vulkan on lavapipe, D3D11, Metal)
+// backends whose framebuffer is y-down (Vulkan on lavapipe, D3D11, Metal)
 // where llvmpipe's GL target is y-up: the same 4x MSAA pattern lands mirrored on
 // the scene, so diagonal silhouettes, cube edge bands and 1 px points resolve
 // differently (up to 8% of pixels per-pixel on lavapipe, at most 2% with this
-// rule), while every surface interior is identical.
-#ifdef PJ_SCENE3D_RHI
-constexpr bool kNeighbourhoodRule = true;
-#else
-constexpr bool kNeighbourhoodRule = false;
-#endif
+// rule), while every surface interior is identical. The plain per-pixel
+// fraction is bounded separately (max_plain_diff_frac).
 
 struct Tolerance {
   int channel = 16;             // per-channel |delta| a pixel may differ by before it counts
   double max_diff_frac = 0.03;  // allowed fraction of differing pixels
-  // QRhi build only: ceiling on the plain per-pixel fraction, so the neighbourhood
+  // Ceiling on the plain per-pixel fraction, so the neighbourhood
   // rule cannot hide a gross regression (a one-pixel shift of the whole scene,
   // say): max(3 x the limit above, 0.10). The worst legitimate value measured is
   // 0.08 (Vulkan on lavapipe, `shape_cubes_subpixel`).
@@ -432,7 +419,7 @@ struct Tolerance {
   // the actual image), so a small cloud cannot hide behind the frame's empty
   // pixels: the frame-relative limit above lets a scene whose foreground is 10%
   // of the frame differ on 30% of it. It targets colour inside surfaces, so it
-  // always uses the 3x3 neighbourhood rule, in the GL build too: sphere impostor
+  // uses the 3x3 neighbourhood rule: sphere impostor
   // silhouettes move by a pixel between Mesa releases (13-17% of the foreground
   // per pixel on CI's Mesa 23 vs the Mesa 26 goldens, <= 3% with the rule), and
   // silhouettes are what the frame-relative checks above bound. Worst legitimate
@@ -472,8 +459,8 @@ constexpr int kCoarseBackgroundMargin = 4;
 constexpr int kTile = 16;
 
 struct Stats {
-  double diff_frac = 0.0;          // differing pixels (neighbourhood rule in the QRhi build)
-  double plain_diff_frac = 0.0;    // pixels off their own golden pixel, for information
+  double diff_frac = 0.0;          // differing pixels (neighbourhood rule)
+  double plain_diff_frac = 0.0;    // pixels off their own golden pixel
   double fg_diff_frac = 0.0;       // neighbourhood-rule differing pixels among the foreground of either image
   int background_strays = 0;       // non-background pixels far from the golden's foreground
   double coverage_ratio = 1.0;     // actual / golden non-background pixel counts
@@ -564,15 +551,14 @@ Stats compare(const QImage& actual, const QImage& golden, const Tolerance& tol) 
           }
         }
       }
-      const bool differs = kNeighbourhoodRule ? neighbourhood_differs : plain_differs;
       plain_differing += plain_differs ? 1 : 0;
-      differing += differs ? 1 : 0;
+      differing += neighbourhood_differs ? 1 : 0;
       if (covered(g) || covered(a)) {
         ++foreground;
         fg_differing += neighbourhood_differs ? 1 : 0;
       }
       const int shade = qGray(g) / 3;
-      stats.diff.setPixel(x, y, differs ? qRgb(255, 0, 255) : qRgb(shade, shade, shade));
+      stats.diff.setPixel(x, y, neighbourhood_differs ? qRgb(255, 0, 255) : qRgb(shade, shade, shade));
     }
   }
   stats.diff_frac = compared > 0 ? static_cast<double>(differing) / static_cast<double>(compared) : 0.0;
@@ -640,8 +626,7 @@ Verdict judge(const Stats& stats, const Tolerance& tol, Scene::Check check) {
     verdict.colour = stats.mean_color_delta <= tol.mean_color;
   }
   if (check == Scene::Check::kFull) {
-    verdict.pixels = stats.diff_frac <= tol.max_diff_frac &&
-                     (!kNeighbourhoodRule || stats.plain_diff_frac <= tol.max_plain_diff_frac) &&
+    verdict.pixels = stats.diff_frac <= tol.max_diff_frac && stats.plain_diff_frac <= tol.max_plain_diff_frac &&
                      stats.fg_diff_frac <= tol.max_fg_diff_frac && stats.background_strays <= tol.max_background_strays;
   } else {
     verdict.spatial = stats.tile_coverage_delta <= tol.coverage + tol.tile_coverage_slack &&
@@ -660,8 +645,18 @@ Tolerance forCheck(Tolerance tol, Scene::Check check) {
   return tol;
 }
 
+QString goldenDir() {
+  return QString::fromStdString(
+      PJ::sdk::getEnv("PJ_POINTCLOUD_GOLDEN_DIR").value_or(std::string{PJ_POINTCLOUD_GOLDEN_DIR}));
+}
+
 QString goldenPath(const std::string& name) {
-  return QStringLiteral(PJ_POINTCLOUD_GOLDEN_DIR) + u'/' + QString::fromStdString(name) + u".png"_s;
+  return goldenDir() + u'/' + QString::fromStdString(name) + u".png"_s;
+}
+
+// The file naming the device that wrote the goldens.
+QString writerRecordPath() {
+  return goldenDir() + u"/writer.txt"_s;
 }
 
 QString outPath(const std::string& name, const char* suffix) {
@@ -704,17 +699,6 @@ class GoldenView {
     QApplication::processEvents();
     EXPECT_EQ(view_->size(), QSize(kViewSize, kViewSize));
     EXPECT_EQ(view_->devicePixelRatioF(), 1.0) << "goldens are captured at DPR 1";
-#ifndef PJ_SCENE3D_RHI
-    if (!pj::scene3d::test::haveGl(*view_)) {
-      skip_reason_ = "no usable OpenGL context";
-      return false;
-    }
-    const auto gl_version = pj::scene3d::test::liveGlVersion(*view_);
-    if (gl_version < std::pair<int, int>(4, 5)) {
-      skip_reason_ = "GL " + std::to_string(gl_version.first) + "." + std::to_string(gl_version.second) + " below 4.5";
-      return false;
-    }
-#endif
     view_->setGridVisible(false);
     view_->setAxesVisible(false);
     view_->setTfConnectionsVisible(false);
@@ -759,37 +743,66 @@ class GoldenView {
   }
 
 // The defaults, widened on D3D11 for scenes with 1 px lines (grid, marker edges,
-// line strips): WARP rasterizes them wider than Mesa (coverage up to 1.094 and a
-// foreground diff up to 0.153 against the GL golden; fills match). OpenGL, Vulkan
-// and Metal stay within the defaults.
+// line strips): WARP rasterizes them wider than Mesa (fills match). OpenGL, Vulkan and
+// Metal stay within the defaults.
 Tolerance lineSceneTolerance() {
   Tolerance tol;
-#if defined(PJ_SCENE3D_RHI) && defined(Q_OS_WIN)
+#ifdef Q_OS_WIN
   tol.coverage = 0.12;
   tol.max_fg_diff_frac = 0.2;
 #endif
   return tol;
 }
 
-// Writes `actual` as the golden in the GL build with PJ_UPDATE_POINTCLOUD_GOLDENS=1,
-// otherwise compares it with the golden under the scene's checks and tolerances.
+// Why `view` may not write goldens (empty when it may): the references come from
+// one pinned software renderer, QRhi OpenGL on Mesa llvmpipe, never from a
+// hardware driver or another backend, whose rasterization the tolerances absorb
+// only on the comparison side.
+std::string goldenWriterRefusal(const QRhiWidget& view) {
+  const QRhi* rhi = pj_bench::rhiOf(view);
+  if (rhi == nullptr) {
+    return "the view has no QRhi";
+  }
+  const QByteArray& device = rhi->driverInfo().deviceName;
+  if (rhi->backend() == QRhi::OpenGLES2 && device.contains("llvmpipe")) {
+    return {};
+  }
+  return "goldens are written only by QRhi OpenGL on Mesa llvmpipe, not by " + std::string(rhi->backendName()) +
+         " on '" + device.toStdString() +
+         "' (PJ_GRAPHICS_API=opengl LIBGL_ALWAYS_SOFTWARE=1 and Mesa's EGL/GLX vendor, see the golden README)";
+}
+
+// The writer on the very stack that wrote the goldens (its device string, which
+// names llvmpipe's LLVM version and vector width, matches writer.txt): it
+// reproduces them bit for bit, so no tolerance applies there.
+bool isGoldenWriterStack(const QRhiWidget& view) {
+  QFile record(writerRecordPath());
+  return goldenWriterRefusal(view).empty() && record.open(QIODevice::ReadOnly) &&
+         record.readAll().trimmed() == pj_bench::rhiOf(view)->driverInfo().deviceName;
+}
+
+// Renders `view` from `camera` and compares the frame with the golden: exactly
+// on the writer's own stack, else under the scene's checks and tolerances. Or
+// writes it as the golden (PJ_UPDATE_POINTCLOUD_GOLDENS=1, pinned writer only).
 void expectMatchesGolden(
-    const std::string& name, const QImage& actual, Scene::Check check, const Tolerance& scene_tol = {}) {
+    const std::string& name, GoldenView& view, const pj::scene3d::CameraState& camera, Scene::Check check,
+    const Tolerance& scene_tol = {}) {
+  const QImage actual = view.render(camera);
   const Tolerance tol = forCheck(scene_tol, check);
   ASSERT_EQ(actual.size(), QSize(kViewSize, kViewSize));
   const QString golden_file = goldenPath(name);
   if (PJ::sdk::getEnv("PJ_UPDATE_POINTCLOUD_GOLDENS") == "1") {
-#ifdef PJ_SCENE3D_RHI
-    FAIL() << "goldens come from the OpenGL renderer; regenerate them in the GL build (-DPJ_SCENE3D_RHI=OFF)";
-#else
+    const std::string refusal = goldenWriterRefusal(view.view());
+    ASSERT_TRUE(refusal.empty()) << refusal;
     ASSERT_TRUE(actual.save(golden_file)) << golden_file.toStdString();
+    QFile record(writerRecordPath());
+    ASSERT_TRUE(record.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    record.write(pj_bench::rhiOf(view.view())->driverInfo().deviceName + '\n');
     GTEST_SKIP() << "golden written: " << golden_file.toStdString();
-#endif
   }
 
   const QImage golden = QImage(golden_file).convertToFormat(QImage::Format_RGB32);
-  ASSERT_FALSE(golden.isNull()) << "missing golden " << golden_file.toStdString()
-                                << " (run with PJ_UPDATE_POINTCLOUD_GOLDENS=1 in the GL build)";
+  ASSERT_FALSE(golden.isNull()) << "missing golden " << golden_file.toStdString() << " (see the golden README)";
   ASSERT_EQ(golden.size(), actual.size());
 
   const Stats stats = compare(actual, golden, tol);
@@ -802,9 +815,16 @@ void expectMatchesGolden(
       stats.bbox_shift);
   const bool check_colour = check != Scene::Check::kCoverage;
   const bool check_pixels = check == Scene::Check::kFull;
-  if (!judge(stats, tol, check).ok() || PJ::sdk::getEnv("PJ_POINTCLOUD_GOLDEN_DUMP_ALL") == "1") {
+  const bool exact = isGoldenWriterStack(view.view());
+  const int off_golden = pj::scene3d::test::differingPixels(actual, golden);
+  if ((exact ? off_golden != 0 : !judge(stats, tol, check).ok()) ||
+      PJ::sdk::getEnv("PJ_POINTCLOUD_GOLDEN_DUMP_ALL") == "1") {
     actual.save(outPath(name, "_actual.png"));
     stats.diff.save(outPath(name, "_diff.png"));
+  }
+  if (exact) {
+    EXPECT_EQ(off_golden, 0) << "pixels off the golden on the stack that wrote it (see the golden README)";
+    return;
   }
   EXPECT_LE(std::abs(stats.coverage_ratio - 1.0), tol.coverage) << "non-background pixel count vs golden";
   if (check_colour) {
@@ -823,10 +843,8 @@ void expectMatchesGolden(
   }
   if (check_pixels) {
     EXPECT_LE(stats.diff_frac, tol.max_diff_frac) << "fraction of pixels off by more than " << tol.channel;
-    if constexpr (kNeighbourhoodRule) {
-      EXPECT_LE(stats.plain_diff_frac, tol.max_plain_diff_frac)
-          << "per-pixel fraction off by more than " << tol.channel << " (no neighbourhood allowance)";
-    }
+    EXPECT_LE(stats.plain_diff_frac, tol.max_plain_diff_frac)
+        << "per-pixel fraction off by more than " << tol.channel << " (no neighbourhood allowance)";
     EXPECT_LE(stats.fg_diff_frac, tol.max_fg_diff_frac)
         << "fraction of the foreground off by more than " << tol.channel;
     EXPECT_LE(stats.background_strays, tol.max_background_strays)
@@ -922,7 +940,7 @@ TEST_P(PointCloudGolden, MatchesGolden) {
   }
   dock.setFixedFrame(u"map"_s);
   dock.onTrackerTime(0.0);
-  expectMatchesGolden(scene.name, golden_view.render(scene.camera), scene.check);
+  expectMatchesGolden(scene.name, golden_view, scene.camera, scene.check);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -965,11 +983,9 @@ class GridGolden : public ::testing::TestWithParam<GridScene> {};
   *os << scene.name;
 }
 
-// The ground grid alone (10 divisions, 5 for the odd case: its cells start
-// half a cell off the origin), its colours from the theme. The filled
-// grid is 3 m so the corner gizmo sits on the backdrop: the GL view draws the
-// filled grid darker under the gizmo's square, the QRhi view (gizmo drawn after
-// presentation) does not. The line grid (default 10 m) is all 1 px edges,
+// The ground grid alone (default 10 m, 10 divisions, 5 for the odd case: its
+// cells start half a cell off the origin), its colours from the theme. The line
+// grid is all 1 px edges,
 // which a y-down backend's mirrored MSAA pattern resolves differently (up to 18%
 // of its foreground on lavapipe), so it checks coverage, mean colour and the
 // coarse spatial checks.
@@ -983,17 +999,14 @@ TEST_P(GridGolden, MatchesGolden) {
   GoldenView golden_view;
   SHOW_OR_SKIP(golden_view);
   golden_view.view().setGridStyle(scene.style);
-  if (scene.style == pj::scene3d::SceneViewWidget::GridStyle::kFilledCells) {
-    golden_view.view().setGridExtentMetres(3.0f);
-  }
   golden_view.view().setGridDivisions(scene.divisions);
   golden_view.view().setGridVisible(true);
   const bool lines = scene.style == pj::scene3d::SceneViewWidget::GridStyle::kLines;
-  // 1 px lines: each backend rasterizes its own share of them (of the GL
-  // golden's pixels: llvmpipe 0.994, lavapipe 0.982, Metal 0.937, WARP 1.194).
+  // 1 px lines: each backend rasterizes its own share of them, so the
+  // coverage tolerance below is per backend.
   Tolerance tol;
   if (lines) {
-#if defined(PJ_SCENE3D_RHI) && defined(Q_OS_WIN)
+#ifdef Q_OS_WIN
     tol.coverage = 0.25;
 #else
     tol.coverage = 0.08;
@@ -1003,7 +1016,7 @@ TEST_P(GridGolden, MatchesGolden) {
     tol.max_centroid_shift = 6.0;
   }
   expectMatchesGolden(
-      scene.name, golden_view.render(sceneCamera()), lines ? Scene::Check::kCoverageColour : Scene::Check::kFull, tol);
+      scene.name, golden_view, sceneCamera(), lines ? Scene::Check::kCoverageColour : Scene::Check::kFull, tol);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -1076,7 +1089,7 @@ TEST_P(MarkerGolden, MatchesGolden) {
   }
   golden_view.dock().setFixedFrame(u"map"_s);
   golden_view.dock().onTrackerTime(0.0);
-  expectMatchesGolden(scene.name, golden_view.render(sceneCamera()), Scene::Check::kFull, lineSceneTolerance());
+  expectMatchesGolden(scene.name, golden_view, sceneCamera(), Scene::Check::kFull, lineSceneTolerance());
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -1149,8 +1162,7 @@ TEST(SceneGolden, RobotPrimitivesAndMesh) {
   golden_view.view().setGridVisible(true);
   golden_view.dock().setFixedFrame(u"base_link"_s);
   golden_view.dock().onTrackerTime(0.0);
-  expectMatchesGolden(
-      "scene_robot_primitives", golden_view.render(sceneCamera()), Scene::Check::kFull, lineSceneTolerance());
+  expectMatchesGolden("scene_robot_primitives", golden_view, sceneCamera(), Scene::Check::kFull, lineSceneTolerance());
 }
 
 }  // namespace

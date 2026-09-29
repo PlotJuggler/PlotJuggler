@@ -25,11 +25,7 @@
 #include "pj_scene3d_core/tf/transform.h"  // StampedTransform (cached fixed-joint bridges)
 #include "pj_scene3d_widgets/mesh_data.h"
 #include "pj_scene3d_widgets/model_renderable.h"
-#include "pj_scene3d_widgets/render_pass.h"  // FrameContext (test hooks)
 #include "pj_scene3d_widgets/scene3d_layer.h"
-#ifndef PJ_SCENE3D_RHI
-#include "pj_scene3d_widgets/passes/mesh_render_pass.h"
-#endif
 
 class QWidget;
 
@@ -42,7 +38,7 @@ class UrdfPackageResolver;
 class UrlFetcher;
 
 // Scene3DLayer that renders a robot's URDF (links, primitive geometry, and
-// async-loaded meshes) posed by the live TF tree, shared by both renderers.
+// async-loaded meshes) posed by the live TF tree.
 // It decodes its description at most once per source change and then latches,
 // so it is not a hot path.
 //
@@ -59,10 +55,8 @@ class UrlFetcher;
 //
 // Coordinate contract. The layer's CPU model is TF-free: one LinkDraw per link
 // geometry, holding the prefixed link frame plus the link-local <origin> and
-// scale. The GL build composes world = TF(fixed <- link) × origin × scale at
-// draw time into MeshRenderPass::DrawCall; the QRhi build exposes the same draws
-// as ModelDrawCalls (frame_id + origin × scale) and the view applies TF. TF is
-// therefore applied exactly once in either renderer. URDF fixed joints the data
+// scale, exposed as ModelDrawCalls (frame_id + origin × scale); the view applies
+// TF(fixed <- link), exactly once. URDF fixed joints the data
 // never publishes are bridged into the TF buffer (see ensureStaticBridges).
 //
 // Meshes load a few at a time (one in the browser; see maxConcurrentMeshLoads):
@@ -112,23 +106,11 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   void setTrackerTime(PJ::Timepoint time) override;
   void setVisible(bool visible) override;
 
-#ifndef PJ_SCENE3D_RHI
-  void initializeGL() override;
-  void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
-  void releaseGL() override;
-  // Shadow casting: the visual links cast (collision hulls do not).
-  // meshShadowBounds reports their world AABB so the light frustum encloses the
-  // robot the camera does not frame.
-  [[nodiscard]] std::optional<AABB> meshShadowBounds(const FrameContext& frame_ctx) override;
-  void renderShadowCasters(const glm::mat4& light_view_proj, const FrameContext& frame_ctx) override;
-#endif
-
   QWidget* createConfigWidget(QWidget* parent) override;
 
   void setPackageResolver(UrdfPackageResolver* resolver);
-  // The buffer that fixed-joint bridges are injected into for renderers that
-  // resolve TF themselves (QRhi). The GL build also bridges the buffer it
-  // renders against at draw time.
+  // The buffer that fixed-joint bridges are injected into (the one the view
+  // resolves TF from).
   void setTransformBuffer(std::shared_ptr<TransformBuffer> buffer);
   // In-band mesh assets (name == verbatim mesh ref) offered to the resolver on
   // the next parse.
@@ -187,7 +169,7 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   }
   [[nodiscard]] QString linkFrameName(const std::string& link_name) const;
 
-  // ModelRenderable (read by the QRhi view; empty in the GL build): link-local
+  // ModelRenderable (read by the view): link-local
   // draws; the view applies TF(fixed <- frame_id).
   [[nodiscard]] const std::vector<ModelDrawCall>& modelDrawCalls() const override {
     return model_draw_calls_;
@@ -219,6 +201,9 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   [[nodiscard]] bool contributesToSceneBounds() const override {
     return false;
   }
+  [[nodiscard]] Scene3DLayer& modelLayer() override {
+    return *this;
+  }
 
 #ifdef PJ_SCENE3D_TEST_HOOKS
   // Mesh imports started whose worker has not finished yet (superseded ones
@@ -226,15 +211,10 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   [[nodiscard]] std::size_t meshImportsOutstandingForTest() const {
     return active_imports_.size();
   }
-  // Injects the fixed-joint TF bridges into frame_ctx.tf (the buffer the layer
-  // renders against) and, in the GL build, rebuilds the world-space draw cache.
-  // Inline: test hooks are compiled only into the test TU, never the library.
-  void rebuildDrawCacheForTest(const FrameContext& frame_ctx) {
-#ifdef PJ_SCENE3D_RHI
-    ensureStaticBridges(const_cast<TransformBuffer&>(frame_ctx.tf));
-#else
-    rebuildDrawCache(frame_ctx);
-#endif
+  // Injects the fixed-joint TF bridges into `tf` (the buffer the layer renders
+  // against). Inline: test hooks are compiled only into the test TU, never the library.
+  void ensureStaticBridgesForTest(TransformBuffer& tf) {
+    ensureStaticBridges(tf);
   }
   // Draw-group sizes of the TF-free model — lets a test assert which group
   // (visuals vs collision) a link's geometry landed in.
@@ -256,22 +236,6 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
     }
     return glm::vec4(0.0f);
   }
-#ifndef PJ_SCENE3D_RHI
-  // GL world-space draw cache: its dirty flag (render() clears it after a
-  // rebuild, which needs a GL context the unit harness lacks) and contents.
-  [[nodiscard]] bool drawsDirtyForTest() const {
-    return draws_dirty_;
-  }
-  void clearDrawsDirtyForTest() {
-    draws_dirty_ = false;
-  }
-  [[nodiscard]] bool drawCacheNeedsRebuildForTest(const FrameContext& frame_ctx) const {
-    return drawCacheNeedsRebuild(frame_ctx);
-  }
-  [[nodiscard]] glm::vec3 firstVisualDrawTranslationForTest() const {
-    return cached_visual_draws_.empty() ? glm::vec3{0.0f} : glm::vec3(cached_visual_draws_.front().model[3]);
-  }
-#endif
 #endif
 
  signals:
@@ -298,7 +262,7 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   };
   [[nodiscard]] static std::optional<ParsedSettings> parseSettings(const QDomElement& element);
 
-  // One geometry of one link, TF-free: the model both renderers draw from.
+  // One geometry of one link, TF-free: the model the view draws from.
   struct LinkDraw {
     enum class Shape : std::uint8_t { kBox, kCylinder, kSphere, kMesh, kPlaceholder };
     std::string frame_id;    // prefixed link frame (the TF child to pose it by)
@@ -421,30 +385,10 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   // older generation are dropped.
   std::uint64_t load_generation_{0};
 
-  // QRhi sink (empty in the GL build).
+  // What the view reads (ModelRenderable).
   std::unordered_map<std::string, std::shared_ptr<const MeshData>> model_meshes_;
   std::vector<ModelDrawCall> model_draw_calls_;
   std::uint64_t model_revision_{0};
-#ifndef PJ_SCENE3D_RHI
-  // Rebuild cached_visual_draws_ / cached_collision_draws_ (world space,
-  // camera-relative) from link_draws_ posed by frame_ctx's TF, after bridging
-  // the fixed joints into frame_ctx.tf (the dock's live buffer).
-  void rebuildDrawCache(const FrameContext& frame_ctx);
-  // True when the cached draws cannot be reused for this frame: the model or TF
-  // changed (draws_dirty_) or the render origin moved.
-  [[nodiscard]] bool drawCacheNeedsRebuild(const FrameContext& frame_ctx) const;
-  void ensureDrawCache(const FrameContext& frame_ctx);
-
-  // INVALIDATION SET: draws_dirty_ is set wherever the world-space draws can
-  // change: setTrackerTime (TF reaches the layer only via tracker ticks),
-  // setFixedFrame, setVisible(true), and rebuildLinkDraws (model, prefix,
-  // display mode, colour, loaded meshes, detach).
-  std::vector<MeshRenderPass::DrawCall> cached_visual_draws_;
-  std::vector<MeshRenderPass::DrawCall> cached_collision_draws_;
-  bool draws_dirty_{true};
-  std::optional<glm::dvec3> cached_render_origin_;
-  std::unique_ptr<MeshRenderPass> mesh_pass_;
-#endif
 };
 
 }  // namespace pj::scene3d

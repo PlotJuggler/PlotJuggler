@@ -9,8 +9,8 @@
 // over the map/world/odom heuristic when it is present in the live TF tree.
 //
 // Driven headless through the dock's public surface + a mock FrameTransforms
-// parser, like scene3d_dock_persistence_test: the GL view defers all GL to
-// initializeGL(), so an offscreen, never-shown dock touches no context.
+// parser, like scene3d_dock_persistence_test: the view touches no GPU until it
+// is shown, so an offscreen, never-shown dock needs none.
 
 #include <gtest/gtest.h>
 
@@ -94,14 +94,14 @@ DatasetTopic makeTfDataset(
 }
 
 // Bring up a dock bound to session/tf, add the TF topic, and let its lazily
-// created GL view come into existence (the base schedules it via singleShot(0)).
+// created view come into existence (the base schedules it via singleShot(0)).
 void attachTfTopic(
     PJ::Scene3DDockWidget& dock, PJ::SessionManager& session, pj::scene3d::TransformService& tf,
     PJ::ObjectTopicId topic_id) {
   dock.setSessionManager(&session);
   dock.setTransformService(&tf);
   ASSERT_TRUE(dock.addTopic(topic_id, PJ::sdk::BuiltinObjectType::kFrameTransforms, u"tf"_s));
-  ASSERT_TRUE(pumpUntil([&] { return dock.sceneView() != nullptr; })) << "the lazily-created GL view must come up";
+  ASSERT_TRUE(pumpUntil([&] { return dock.sceneView() != nullptr; })) << "the lazily-created view must come up";
 }
 
 // A new dock prefers the dataset's remembered manual frame over the heuristic root.

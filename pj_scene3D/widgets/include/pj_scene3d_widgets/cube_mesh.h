@@ -9,11 +9,11 @@
 #include <string_view>
 
 // kCubeLightingGlsl / kCubeEdgeGlsl, generated from shaders/cube/*.glslinc — the same
-// files the browser's .vert/.frag #include, so the two backends cannot describe a solid
-// differently. Edit the .glslinc, never the generated header.
+// files the shaders #include, so the C++ mirrors below can be checked against them.
+// Edit the .glslinc, never the generated header.
 #include "pj_scene3d_widgets/cube_shader_sources.h"
 
-// Shared unit-cube geometry + single-pass GLSL helpers for every instanced-cube
+// Shared unit-cube geometry + the C++ mirrors of the GLSL helpers for every instanced-cube
 // pass (the point-cloud "cube" shape and the voxel grid). Keeping the mesh and its
 // vertex-attrib contract (location 0 = position, location 1 = outward normal) in
 // one place means the two passes can't drift, and both draw an identically-edged
@@ -99,8 +99,8 @@ inline constexpr std::array<uint16_t, 36> kCubeIndices = {{
 
 // Hexagon fan over the 3 camera-facing faces: 6 triangles sharing the near corner
 // (logical vertex 0) around the 6-vertex silhouette ring (1..6). No vertex buffer
-// — the corner positions come from cubeFanGlsl()'s cubeFanCorner(gl_VertexID, s).
-// Draw with glDrawElementsInstanced(GL_TRIANGLES, 18, GL_UNSIGNED_SHORT, ...).
+// — the corner positions come from cube_fan.glslinc's cubeFanCorner(gl_VertexID, s).
+// Draw as 18 instanced indexed triangles-list vertices.
 // Consecutive pairs of triangles tile one face each; which face a pair lands on
 // depends on the per-instance sign vector, so don't annotate them by axis.
 inline constexpr std::array<uint16_t, 18> kCubeFanIndices = {{
@@ -125,9 +125,7 @@ inline constexpr std::array<uint16_t, 18> kCubeFanIndices = {{
 }};
 
 // C++ mirrors of the numbers the edge band is built from, so kCubeEdgeMeanScale can be
-// RE-DERIVED in a headless test instead of trusted. The GL test that measures it end to
-// end self-skips below GL 4.5 — which is every Windows CI run — so without this the
-// constant would be unguarded on one of the two shipped targets.
+// RE-DERIVED in a headless test instead of trusted, on every platform.
 inline constexpr float kCubeEdgeWidth = 0.06f;
 inline constexpr float kCubeEdgeDarken = 0.6f;
 inline constexpr float kCubeSrgbGamma = 2.2f;

@@ -27,7 +27,6 @@
 #include <climits>
 #include <cmath>
 #include <cstddef>
-#include <cstring>
 #include <functional>
 #include <limits>
 #include <optional>
@@ -61,6 +60,7 @@
 #include "pj_scene3d_widgets/scene_look_defaults.h"
 #include "pj_scene3d_widgets/scene_state_xml.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
+#include "pj_widgets/Fnv1a.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/GraphicsApi.h"
 #include "rhi_scene_pass.h"
@@ -80,7 +80,7 @@ namespace {
 
 constexpr quint32 kModelUniformBytes = 128U;
 constexpr quint32 kRenderModeUniformBytes = 16U;
-// Cursor pick radius for TF frames, in logical pixels (the GL view's value).
+// Cursor pick radius for TF frames, in logical pixels.
 constexpr float kFramePickRadiusPx = 20.0F;
 
 #ifdef PJ_RHI_TEST_HOOKS
@@ -114,9 +114,8 @@ QImage toOverlayFormat(const QImage& image) {
 // The output target's sample count in the direct fallback (the HDR chain's is its own).
 constexpr int kDirectSampleCount = 4;
 
-// The current theme's scene colours, read the way the desktop GL view reads them
-// (application-palette Window lightness -> framework DataBackdrop token), so both
-// backends share one source of truth. Display-referred: the HDR target and the
+// The current theme's scene colours (application-palette Window lightness ->
+// framework DataBackdrop token), one source of truth for every backend. Display-referred: the HDR target and the
 // grid shaders linearize them.
 struct SceneThemeColors {
   QColor backdrop;
@@ -188,28 +187,25 @@ int max3dTextureSize(QRhi& rhi) {
   return limit;
 }
 
-bool cameraStatesEqual(const CameraState& left, const CameraState& right) {
-  return left.focal == right.focal && left.radius == right.radius && left.azimuth == right.azimuth &&
-         left.elevation == right.elevation && left.fov_y == right.fov_y && left.ortho_scale == right.ortho_scale &&
-         left.perspective == right.perspective;
-}
-
-// One FNV-1a step over the bits of `value`.
-uint64_t fnvMix(uint64_t hash, double value) {
-  uint64_t bits = 0;
-  std::memcpy(&bits, &value, sizeof(bits));
-  return (hash ^ bits) * 0x100000001b3ULL;
-}
-
-uint64_t hashTransform(const Transform& transform, uint64_t seed) {
-  const glm::dmat4 matrix = transform.matrix();
-  uint64_t hash = seed;
-  for (int column = 0; column < 4; ++column) {
-    for (int row = 0; row < 4; ++row) {
-      hash = fnvMix(hash, matrix[column][row]);
-    }
+// Records `build` into a fresh update batch and submits it on `command_buffer`
+// when `build` succeeds. A failed build's batch is released unsubmitted: it may
+// name resources the failure path deletes. Returns what `build` returned.
+template <typename Build>
+bool submitIfBuilt(QRhi& rhi, QRhiCommandBuffer& command_buffer, Build&& build) {
+  QRhiResourceUpdateBatch* batch = rhi.nextResourceUpdateBatch();
+  const bool built = build(batch);
+  if (built) {
+    command_buffer.resourceUpdate(batch);
+  } else {
+    batch->release();
   }
-  return hash;
+  return built;
+}
+
+// Output pixels per logical pixel of `widget` rendering `output_size`: the
+// fixed colour-buffer size and the DPR both show in it.
+qreal outputDpr(const QWidget& widget, const QSize& output_size) {
+  return widget.height() > 0 ? static_cast<qreal>(output_size.height()) / widget.height() : 1.0;
 }
 
 template <class... Visitors>
@@ -433,9 +429,9 @@ uint64_t SceneViewWidget::followRenderKey(PJ::Timepoint time) const {
   if (!transform) {
     return 0;
   }
-  uint64_t hash = 1469598103934665603ULL;
+  uint64_t hash = PJ::kFnv1aOffsetBasis;
   for (const double component : {transform->t.x, transform->t.y, transform->t.z}) {
-    hash = fnvMix(hash, component);
+    hash = PJ::fnv1aMixBits(hash, component);
   }
   return hash == 0 ? 1U : hash;
 }
@@ -794,7 +790,7 @@ uint64_t SceneViewWidget::tfRenderKey(PJ::Timepoint time) const {
   for (const std::string& frame : tf_render_key_frames_) {
     uint64_t hash = std::hash<std::string>{}(frame);
     if (const auto transform = tf_->tryLookupTransform(fixed, frame, time); transform) {
-      hash = hashTransform(*transform, hash);
+      hash = foldTransformIntoKey(hash, transform->matrix());
     } else {
       hash ^= 0xD15C0FFEEULL;
     }
@@ -814,8 +810,8 @@ std::string SceneViewWidget::effectiveFixedFrame() const {
     }
   }
   // A raw cloud is useful without /tf: use its own source frame as the fixed
-  // frame and draw with the identity transform, matching native's fallback-frame
-  // behavior instead of silently producing an empty view.
+  // frame and draw with the identity transform instead of silently producing an
+  // empty view.
   for (const OrderedLayerEntry& entry : ordered_layers_) {
     const std::string source = std::visit(
         [](const auto* layer) -> std::string {
@@ -855,7 +851,7 @@ void SceneViewWidget::buildTfTriads(const glm::dvec3& render_origin, const std::
   if (tf_ == nullptr || fixed_frame.empty() || !axes_visible_) {
     return;
   }
-  // Solid arrow triads, matching the desktop AxisRenderPass. The frame's
+  // Solid arrow triads. The frame's
   // fixed-from-frame transform (camera-relative) is baked into each arm's model,
   // so the draw uses an identity fixed_from_source uniform.
   const PoseTriadStyle triad_style{
@@ -887,7 +883,7 @@ void SceneViewWidget::buildTfTriads(const glm::dvec3& render_origin, const std::
 }
 
 // The scene families in the order one layer's draws submit: a pose layer's
-// trail under its triads (like GL), a SceneEntities layer's markers before its
+// trail under its triads, a SceneEntities layer's markers before its
 // models.
 template <typename Visitor>
 void SceneViewWidget::forEachFamily(Visitor&& visitor) const {
@@ -901,7 +897,7 @@ void SceneViewWidget::forEachFamily(Visitor&& visitor) const {
   visitor(*gridmap_pass_);
 }
 
-void SceneViewWidget::initialize(QRhiCommandBuffer* /*command_buffer*/) {
+void SceneViewWidget::initialize(QRhiCommandBuffer* command_buffer) {
   // QRhiWidget calls this whenever it (re)created the render target: no frame
   // of ours is on it, so the Show skip must not present it.
   last_frame_request_.reset();
@@ -916,11 +912,12 @@ void SceneViewWidget::initialize(QRhiCommandBuffer* /*command_buffer*/) {
     resource_rhi_ = current_rhi;
     rhi_backend_name_ = QString::fromLatin1(current_rhi->backendName());
     max_3d_texture_size_ = max3dTextureSize(*current_rhi);
-    // The output target anti-aliases only what is drawn on it: the whole scene
-    // where the GPU cannot run the HDR chain, else just the gizmo and HUD over
-    // the chain's (already multisampled) present. Decided per QRhi, not per
-    // frame: a change rebuilds every resource, so a runtime HDR refusal (size,
-    // budget, a missing pipeline variant) draws its direct pass without MSAA.
+    // The output multisamples only where the GPU cannot run the HDR chain (the
+    // direct pass draws the whole scene on it); over the chain's (already
+    // multisampled) present it is single-sample, and the corner gizmo brings
+    // its own 4x target. Decided per QRhi, not per frame: a change rebuilds
+    // every resource, so a runtime HDR refusal (size, budget, a missing
+    // pipeline variant) draws its direct pass without MSAA.
     if (const int samples = hdrUnsupportedReason(*current_rhi).isEmpty() ? 1 : kDirectSampleCount;
         sampleCount() != samples) {
       // QRhiWidget rebuilds its target and calls initialize() again: nothing is
@@ -930,13 +927,17 @@ void SceneViewWidget::initialize(QRhiCommandBuffer* /*command_buffer*/) {
     }
   }
   if (!baseResourcesReady() || !familiesReady(*current_rhi)) {
-    if (const char* failed_part = createSceneResources(current_rhi); failed_part != nullptr) {
+    if (const char* failed_part = createSceneResources(current_rhi, command_buffer); failed_part != nullptr) {
       failScene(failed_part);
       return;
     }
     built_target_ = target;
   }
-  if (!overlay_pass_->ready() && !overlay_pass_->initialize(passSetup(current_rhi))) {
+  if (!overlay_pass_->ready() && !submitIfBuilt(*current_rhi, *command_buffer, [&](QRhiResourceUpdateBatch* updates) {
+        RhiPassSetup setup = passSetup(current_rhi);
+        setup.updates = updates;
+        return overlay_pass_->initialize(setup, outputDpr(*this, renderTarget()->pixelSize()));
+      })) {
     overlay_pass_->release();  // retried on the next initialize()
   }
   const QString overlay_failure =
@@ -1005,7 +1006,16 @@ void SceneViewWidget::forEachLazyFamily(QRhi& rhi, Visitor&& visitor) const {
   });
 }
 
-const char* SceneViewWidget::createSceneResources(QRhi* rhi) {
+const char* SceneViewWidget::createSceneResources(QRhi* rhi, QRhiCommandBuffer* command_buffer) {
+  const char* failed_part = nullptr;
+  submitIfBuilt(*rhi, *command_buffer, [&](QRhiResourceUpdateBatch* constants) {
+    failed_part = createMissingResources(rhi, constants);
+    return failed_part == nullptr;
+  });
+  return failed_part;
+}
+
+const char* SceneViewWidget::createMissingResources(QRhi* rhi, QRhiResourceUpdateBatch* constants) {
 #ifdef PJ_RHI_TEST_HOOKS
   const std::int64_t build_begin_ns = steadyNowNs();
   const auto account = qScopeGuard([this, build_begin_ns] {
@@ -1018,16 +1028,22 @@ const char* SceneViewWidget::createSceneResources(QRhi* rhi) {
     if (!ensureUniformBuffer(rhi, uniform_buffer_, 64U) ||
         !ensureUniformBuffer(rhi, render_mode_uniform_buffer_, kRenderModeUniformBytes) ||
         !ensureUniformBuffer(rhi, annotation_render_mode_uniform_buffer_, kRenderModeUniformBytes) ||
-        !ensureUniformBuffer(rhi, model_uniform_buffer_, kModelUniformBytes)) {
+        !ensureUniformBuffer(rhi, model_uniform_buffer_, kModelUniformBytes) ||
+        !ensureUniformBuffer(rhi, ssao_uniform_buffer_, kSsaoUniformBytes)) {
       return "uniform buffers";
     }
-    if (shared_geometry_->cube_vertices == nullptr && !shared_geometry_->create(rhi)) {
+    // SSAO's constant kernel; its frames write only the part before it.
+    constants->updateDynamicBuffer(
+        ssao_uniform_buffer_, static_cast<quint32>(offsetof(SsaoUniforms, kernel)),
+        static_cast<quint32>(sizeof(SsaoUniforms::kernel)), ssaoKernel().data());
+    if (shared_geometry_->cube_vertices == nullptr && !shared_geometry_->create(rhi, constants)) {
       return "shared meshes";
     }
     render_mode_hdr_written_ = -1;
     // The grid and the TF triads (the pose pass) draw without any layer. Their
     // pipelines are templates too (see the families below).
     RhiPassSetup base_setup = passSetup(rhi);
+    base_setup.updates = constants;
     base_setup.templates = pipelines_.get();
     base_setup.part = "pose pipelines";
     if (!pose_pass_->ready() && !pose_pass_->initialize(base_setup)) {
@@ -1050,6 +1066,7 @@ const char* SceneViewWidget::createSceneResources(QRhi* rhi) {
     // Their pipelines are templates: the HDR chain creates only the clones it
     // draws with, and the direct ones are created on a direct frame.
     RhiPassSetup setup = passSetup(rhi);
+    setup.updates = constants;
     setup.templates = pipelines_.get();
     setup.part = part;
     if (!initialize(setup)) {
@@ -1190,7 +1207,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   // A family whose first layer arrived since initialize(): built before any
   // pass of this frame binds it.
   if (!familiesReady(*current_rhi)) {
-    if (const char* failed_part = createSceneResources(current_rhi); failed_part != nullptr) {
+    if (const char* failed_part = createSceneResources(current_rhi, command_buffer); failed_part != nullptr) {
       failScene(failed_part);
       clearToBackdrop(command_buffer, target);
       return;
@@ -1209,7 +1226,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     }
   }
   // The HDR chain renders at render_scale x the output and the present pass
-  // downsamples it (the GL view's SSAA); the direct fallback stays at output size.
+  // downsamples it (SSAA); the direct fallback stays at output size.
   const QSize output_size = target->pixelSize();
   const QSize scaled_size(
       std::max(1, static_cast<int>(std::lround(static_cast<float>(output_size.width()) * render_scale_))),
@@ -1251,7 +1268,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   if (show_perf_hud_) {
     cpu_average_.add(static_cast<double>(cpu_timer_.nsecsElapsed()) / 1.0e6);
   }
-  prepareOverlays(updates, output_size, admission.fixed_frame);
+  prepareOverlays(updates, output_size, view.view, admission.fixed_frame);
 #ifdef PJ_RHI_TEST_HOOKS
   stage_times_.prepared_ns = steadyNowNs();
 #endif
@@ -1268,6 +1285,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
 #endif
     return;
   }
+  updates = overlay_pass_->submitGizmoTarget(command_buffer, updates);
   if (frame.shadow_active) {
     // The map is kept across frames: re-rendered only when an input changed
     // (an orbit of a static scene keeps it; a pan moves the render origin).
@@ -1283,8 +1301,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     }
   }
 
-  // Scene backdrop tracks the active theme (matching the desktop GL view, which
-  // reads the same token per frame). PaletteChange calls update(), so a theme
+  // Scene backdrop tracks the active theme (the same token, read per frame). PaletteChange calls update(), so a theme
   // switch re-applies here. The HDR target is linear-light — the present pass
   // re-encodes to sRGB — so linearize the display-referred token on write.
   const QColor scene_bg = sceneThemeColors().backdrop;
@@ -1307,7 +1324,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
           command_buffer, hdr_depth_render_target_, ScenePass::kDepthReplay, Qt::transparent, nullptr, frame);
     }
     if (frame.ssao_active && ssao_raw_render_target_ != nullptr) {
-      // Preserve replay alpha/red and write native's raw scene-wide AO into the
+      // Preserve replay alpha/red and write the raw scene-wide AO into the
       // otherwise-unused green channel. The sampled D32F texture is not attached
       // to this color-only target, avoiding a read/write feedback loop.
       command_buffer->beginPass(ssao_raw_render_target_, Qt::transparent, {1.0F, 0});
@@ -1469,7 +1486,6 @@ QRhiResourceUpdateBatch* SceneViewWidget::prepareFrame(
         annotation_render_mode_uniform_buffer_, 0, kRenderModeUniformBytes, &annotation_render_mode);
     render_mode_hdr_written_ = hdr;
   }
-  shared_geometry_->upload(updates);
 
   buildTfTriads(render_origin, admission.fixed_frame);
   grid_pass_->build(
@@ -1553,14 +1569,8 @@ QRhiResourceUpdateBatch* SceneViewWidget::prepareFrame(
           look::kSsaoBias,
           textureVSign(view.conventions),
       };
-      if (ssao_kernel_pending_) {
-        ssao_uniforms.kernel = ssaoKernel();
-        updates->updateDynamicBuffer(ssao_uniform_buffer_, 0, kSsaoUniformBytes, &ssao_uniforms);
-        ssao_kernel_pending_ = false;
-      } else {
-        updates->updateDynamicBuffer(
-            ssao_uniform_buffer_, 0, static_cast<quint32>(offsetof(SsaoUniforms, kernel)), &ssao_uniforms);
-      }
+      updates->updateDynamicBuffer(
+          ssao_uniform_buffer_, 0, static_cast<quint32>(offsetof(SsaoUniforms, kernel)), &ssao_uniforms);
     }
   }
   if (uniform_buffer_ != nullptr) {
@@ -1669,7 +1679,7 @@ void SceneViewWidget::submitScenePass(
 // model ranges, so this visibility pass sits outside every per-frame budget.
 void SceneViewWidget::submitEdlMeshMask(QRhiCommandBuffer* command_buffer, const PreparedFrame& frame) {
   // Preserve the full-scene replay depth and alpha coverage, then reserve
-  // coverage.r for native's mesh-only EDL mask.
+  // coverage.r for the mesh-only EDL mask.
   command_buffer->beginPass(edl_mesh_mask_render_target_, Qt::transparent, {1.0F, 0});
   model_pass_->submitMeshMask(
       command_buffer, edl_mesh_mask_triangle_pipeline_, edl_mesh_mask_line_pipeline_, frame.viewport);
@@ -1688,6 +1698,8 @@ void SceneViewWidget::releaseResources() {
   frame_->rendered_shadow_key.reset();
   // After every pipeline that draws the shared cube/arrow meshes.
   shared_geometry_->release();
+  delete ssao_uniform_buffer_;
+  ssao_uniform_buffer_ = nullptr;
   delete model_uniform_buffer_;
   delete annotation_render_mode_uniform_buffer_;
   delete render_mode_uniform_buffer_;
@@ -1764,7 +1776,7 @@ void SceneViewWidget::mouseMoveEvent(QMouseEvent* event) {
   } else {
     return;
   }
-  if (!cameraStatesEqual(before, camera_->state())) {
+  if (before != camera_->state()) {
     camera_gesture_changed_ = true;
   }
   update();
@@ -1868,12 +1880,12 @@ void SceneViewWidget::setHoveredFrame(std::optional<std::string> frame) {
 }
 
 void SceneViewWidget::prepareOverlays(
-    QRhiResourceUpdateBatch* updates, const QSize& output_size, const std::string& fixed_frame) {
+    QRhiResourceUpdateBatch* updates, const QSize& output_size, const glm::mat4& view, const std::string& fixed_frame) {
   if (!overlay_pass_->ready()) {
     last_overlay_rects_ = {};
     return;
   }
-  const qreal dpr = height() > 0 ? static_cast<qreal>(output_size.height()) / height() : 1.0;
+  const qreal dpr = outputDpr(*this, output_size);
   if (dpr != overlay_image_dpr_) {
     overlay_image_dpr_ = dpr;
     hud_lines_.clear();
@@ -1892,7 +1904,7 @@ void SceneViewWidget::prepareOverlays(
     QStringList lines;
     lines << (gpu_average_.empty() ? u"GPU  --"_s : u"GPU  %1 ms"_s.arg(gpu_average_.average(), 0, 'f', 2));
     lines << u"CPU  %1 ms"_s.arg(cpu_average_.average(), 0, 'f', 2);
-    lines << u"MSAA %1x"_s.arg(hdr_stage_.last_active ? 4 : sampleCount());
+    lines << u"MSAA %1x"_s.arg(hdr_stage_.last_active ? kHdrSampleCount : sampleCount());
     if (lines != hud_lines_) {
       QFont font;
       font.setFamily(u"monospace"_s);
@@ -1957,11 +1969,11 @@ void SceneViewWidget::prepareOverlays(
             ? QRect()
             : QRect(QPoint(qRound(image.top_left.x() * dpr), qRound(image.top_left.y() * dpr)), image.image.size());
   }
-  overlay_pass_->prepare(updates, camera_->viewMatrix(), output_size, dpr, images);
+  overlay_pass_->prepare(updates, view, output_size, dpr, images);
 }
 
 void SceneViewWidget::emitPresentationIfChanged(const CameraState& before) {
-  if (!cameraStatesEqual(before, camera_->state())) {
+  if (before != camera_->state()) {
     emit presentationChanged();
   }
 }

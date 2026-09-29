@@ -119,7 +119,7 @@ QRhiWidget::Api preferredGraphicsApi() {
     if (!requested.isEmpty() && !overridden) {
       qCWarning(lcGraphics) << "Ignoring unknown PJ_GRAPHICS_API value" << requested;
     }
-    const QRhiWidget::Api native = nativeGraphicsApi(currentGraphicsPlatform(), kRhiWidgetsBuild);
+    const QRhiWidget::Api native = nativeGraphicsApi(currentGraphicsPlatform());
     QRhiWidget::Api chosen = overridden.value_or(native);
     // Only an override other than the default is probed: the default path stays
     // free of a throwaway device at startup.

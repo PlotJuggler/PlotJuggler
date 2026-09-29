@@ -9,7 +9,7 @@
 
 namespace pj::scene3d {
 
-// Default cube LOD threshold, in device pixels, for both renderers' point-cloud cubes.
+// Default cube LOD threshold, in device pixels, for point-cloud cubes.
 // One pixel is the conservative choice on both counts: cosmetically a cube keeps its
 // real geometry until it is genuinely sub-pixel, and a threshold sweep on the benchmark
 // showed the speedup is already at its maximum by 1 px (it comes from dropping the fan

@@ -5,7 +5,6 @@
 // GridMap heightfield: 6 * (cols-1) * (rows-1) procedural vertices, two
 // triangles per quad between adjacent cell centres, elevation fetched per
 // corner. A triangle touching a NaN corner is dropped through a flat validity.
-// Mirrors the GL GridMapRenderPass shader.
 layout(std140, binding = 0) uniform GridMapUniforms {
     mat4 view_projection;  // clip-corrected, camera-relative
     mat4 model;            // grid-local -> camera-relative scene

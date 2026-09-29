@@ -12,8 +12,6 @@ namespace pj::scene3d {
 namespace {
 
 TEST(SceneEntitiesBudget, LayerBoundariesAreInclusive) {
-  EXPECT_TRUE(markerWirePayloadFits(kBrowserSceneLimits.max_marker_wire_bytes, kBrowserSceneLimits));
-  EXPECT_FALSE(markerWirePayloadFits(kBrowserSceneLimits.max_marker_wire_bytes + 1U, kBrowserSceneLimits));
   EXPECT_TRUE(markerLayerCountsFit(
       kBrowserSceneLimits.max_marker_instances_per_layer, kBrowserSceneLimits.max_marker_stream_vertices_per_layer,
       kBrowserSceneLimits.max_marker_frames_per_layer, kBrowserSceneLimits));
@@ -22,9 +20,6 @@ TEST(SceneEntitiesBudget, LayerBoundariesAreInclusive) {
   EXPECT_FALSE(
       markerLayerCountsFit(0, kBrowserSceneLimits.max_marker_stream_vertices_per_layer + 1U, 0, kBrowserSceneLimits));
   EXPECT_FALSE(markerLayerCountsFit(0, 0, kBrowserSceneLimits.max_marker_frames_per_layer + 1U, kBrowserSceneLimits));
-  EXPECT_TRUE(markerRetainedBytesFit(kBrowserSceneLimits.max_marker_retained_bytes_per_layer, kBrowserSceneLimits));
-  EXPECT_FALSE(
-      markerRetainedBytesFit(kBrowserSceneLimits.max_marker_retained_bytes_per_layer + 1U, kBrowserSceneLimits));
 }
 
 TEST(SceneEntitiesBudget, AggregateConsumptionCannotUnderflow) {

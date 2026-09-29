@@ -1990,6 +1990,138 @@ PR 2 also enables `PJ_UPDATE_POINTCLOUD_GOLDENS` in the QRhi build (the goldens
 stay GL-made until then, because release N's GL lane checks them per pixel), and
 drops the `macos-ci.yml` push trigger if it is still there.
 
+## Final Gate A against the GL renderer (2026-09-28)
+
+The last Gate A run against the GL renderer (the "GL build" column, a tree of
+the release that still built it), which met the "final GL vs QRhi A/B"
+precondition above; its RHI GL and RHI VK columns became the QRhi baseline of
+`pj_scene3D/docs/TECHNICAL_NOTES.md` §9. Method: `scripts/perf/gate_a.sh`
+(TECHNICAL_NOTES §9, "Harness") on Intel Iris Xe (RPL-P),
+Mesa 26.0.3, i915, AC power, `performance` governor with the P-cores capped at
+2.4 GHz; xcb on a private rootful Xwayland in a headless GNOME Shell, vsync off
+(`vblank_mode=0`, `MESA_VK_WSI_PRESENT_MODE=immediate`); 5 interleaved rounds,
+one process per case and configuration, each the median of 30 frames after the
+warm-up. Median [min–max] where the spread exceeds 10%. Verdicts are on RHI GL,
+Linux's native backend: time within max(1.2x, +1 ms) of the GL build, memory
+within 1.10x, the row's own limit where it has one, idle frames 0; RHI VK
+(opt-in on Linux) is for reference. Plot rows compare with the Qwt GL canvas.
+Run of 2026-09-28, load average 1.3–3.3; the cloud, stream, dock and first-show
+rows are from a second run that day (`--only`, load 1.3–2.9), and the two marker
+rows from a third, since markers cast no shadows (`--only MarkersPanFollow`,
+3 interleaved rounds, load 4.3–8.5). The RTX 4070 column was left open
+(`pj_scene3D/docs/QRHI_NEXT.md`).
+
+| Row | GL build | RHI GL | Ratio (RHI GL) | Verdict | RHI VK |
+|---|---|---|---|---|---|
+| Cloud 10M static: wall / CPU ms | 19.8 / 0.8 [0.7–0.8] | 19.6 / 0.6 [0.6–0.7] | 0.99x / 0.79x | pass | 19.9 / 0.6 |
+| Cloud 10M static: RSS MiB ¹ | 255.3 | 247.2 | 0.97x | pass | 294.5 |
+| Cloud 10M GPU (DRM MiB; DPR 2 ≤ 550) | 240.9; 581.5 | 206.7; 453.2 | 0.86x; limit 550 | pass | 426.0; 660.7 |
+| Cloud stream 300k/frame: wall ms ² | 2.0 [1.9–2.5] | 1.9 [1.8–2.2] | 0.96x | pass | 7.5 [6.8–8.2] |
+| Cloud stream: GUI CPU ms / RSS MiB | 1.2 [1.1–1.4] / 260.9 | 1.0 [0.9–1.1] / 256.0 | 0.90x / 0.98x | pass | 1.1 / 303.4 |
+| Cloud stream: ingestion ms (not gated) | 1.9 | 1.9 | 0.99x | – | 1.9 |
+| 100k cubes + 1M line vertices, orbit: wall / CPU ms ³ | 50.0 [46.7–51.8] / 48.5 [46.5–51.4] | 23.5 / 0.6 [0.6–0.7] | 0.47x / 0.01x | pass | 23.4 / 0.7 |
+| Cubes + lines: RSS / peak MiB | 300.2 / 300.2 | 301.7 / 353.6 | 1.00x / 1.18x | pass | 348.5 / 400.3 |
+| 10k markers, pan + follow: wall ms ⁴ | 7.8 | 7.6 | 0.97x | pass | 8.2 |
+| Markers: GUI CPU ms | 2.5 | 0.9 | 0.34x | pass | 0.9 |
+| 50-link robot, TF each frame: wall / CPU ms ⁵ | 2.1 [2.0–2.4] / 1.3 [1.2–1.5] | 2.0 [1.7–2.3] / 0.7 [0.7–1.0] | 0.97x / 0.58x | pass | 3.4 [2.5–4.4] / 0.8 [0.7–0.9] |
+| 10 / 100 / 1000 layers: wall ms | 1.8 [1.4–1.9] / 1.9 [1.5–2.0] / 10.9 | 1.9 [1.4–2.1] / 1.9 [1.5–2.1] / 3.3 | 1.06x / 0.99x / 0.30x | pass | 1.7 [1.5–2.7] / 2.2 [2.0–3.6] / 8.9 [7.0–9.3] |
+| 1000 layers: RSS MiB / first show ms | 1015.5 / 7014.6 | 216.8 / 146.4 | 0.21x / 0.02x | pass | 299.8 / 254.6 |
+| 10M cloud dock: float / redock / hide-show ms ⁶ | 119.9 / 115.5 / 1.6 | 131.3 / 126.6 / 1.9 | 1.10x / 1.10x / 1.18x | pass | 198.0 / 161.2 / 2.2 [2.1–3.0] |
+| 50-link robot dock: float / redock / hide-show ms ⁶ | 53.9 / 39.1 / 1.6 | 62.1 / 27.5 / 1.9 [1.9–2.1] | 1.15x / 0.70x / 1.25x | pass | 50.2 / 13.1 / 2.2 [2.0–3.3] |
+| ADS dock-area tab switch, 9.9M cloud: to the cloud / to the plot, ms ⁷ | 5.3 / 13.8 [8.7–17.4] | 4.5 / 5.2 [4.6–5.2] | 0.84x / 0.38x | pass | 4.9 [4.3–5.2] / 13.0 |
+| First show, 10M cloud + robot, ms ⁶ | 206.1 | 187.6 | 0.91x | pass | 316.0 |
+| Idle frames when static, every case | 0 | 0 | – | pass | 0 |
+| Plots: dashed 5 x 100k, wall ms ⁸ | 22.8 | 1.6 [1.5–1.7] | 0.07x | pass | 1.8 [1.6–2.0] |
+| Plots: 50 x 100k, wall ms ⁸ | 94.1 | 11.2 | 0.12x | pass | 11.4 |
+| Plots: tracker only, 10 x 100k, wall ms | 21.2 | 2.6 | 0.12x | pass | 6.2 [5.5–7.4] |
+| Plot GPU memory, 1600x900, DPR 1 / 2 (DRM MiB) | 61.8 / 174.1 | 45.0 / 183.2 | 0.73x / 1.05x | pass | 106.1 / 315.8 |
+| Streaming plot, 10 x 100k, ≤ 16.7 ms | 29.1 | 10.9 [10.7–12.9] | limit 16.7 | pass | 19.4 |
+| Mixed: 6 plots + Scene3D, wall / CPU ms | 59.4 / 56.1 | 37.1 / 8.8 | 0.63x / 0.16x | pass | 49.0 / 9.0 [8.8–10.0] |
+| Mixed: RSS MiB | 250.9 | 258.4 | 1.03x | pass | 302.7 |
+
+¹ Both builds settle on one 114 MiB anonymous block for the 10M cloud: the
+ObjectStore's wire bytes, which the zero-copy decode reads in place. RHI GL drops
+its 12-byte `PointVertex` array (114.4 MiB) once the upload is enqueued
+(ARCHITECTURE, "Eviction"); a stream keeps its array. Peak RSS during the load
+is 362.7 vs 257.2 MiB (not gated): the array lives until the upload's frame is
+submitted. A float, a redock or a move to another dock area converts the same
+sample again for the new QRhi: 10.4 ms at 10M, into a fresh array in up to 16
+chunks (18.5 ms with 8, the first-touch page faults dominating), part of the
+prepare stage in note ⁶. A compressed cloud converts from its decode cache; a
+cache holding another sample decodes again off the UI thread, which Cloudini
+takes 476 ms for at 10M points (lossy, 1 mm, ZSTD; 610 ms lossless).
+
+² The stream converts each 300k sample (`packPointVertices()` in place, 12-byte
+xyz records: the benchmark clouds are coloured by the z axis) in chunks of at
+least 256k points on the global thread pool, the GUI thread taking chunks too,
+into the retained array, which an unshared array reuses: 0 minor faults per
+frame in both builds. The GUI thread's CPU is gated; the pool adds CPU the GUI
+thread does not see (about 1 ms per frame at 300k; at 10M, 8 chunks cut 70 ms of
+wall for 19 ms more process CPU). The ingestion (the untimed push into the
+ObjectStore) is in neither wall nor CPU. On Vulkan the frame waits for its GPU
+work inside the offscreen frame (see "Reading the numbers").
+
+³ The shadow map is kept while its inputs hold (ARCHITECTURE, "Shadows"): an
+orbit of a static scene renders it once (27.9 → 23.5 ms on RHI GL). The frame is
+GPU-bound in the HDR chain: 7.0 ms without it, SSAO and EDL under 0.3 ms each.
+
+⁴ GPU-bound, the HDR chain about 1.4 ms of it. Markers cast no shadows, as on
+the GL build, so a pan or follow, which moves the render origin every frame,
+renders no shadow map. The GUI thread's work per frame is the origin-only update
+of the recurring layer (about 0.55 ms), the upload and `endFrame`.
+
+⁵ i915 settles each configuration at its own clock once warmed up: 1500 MHz for
+RHI GL on this row, 600 MHz on Vulkan (every light row), and the GL build either
+(its range 2.0–2.4 ms). `cold_ms`, the first frame after a second of idle, is
+1.0 ms on RHI GL, 2.2 in the GL build and 5.1 on Vulkan.
+
+⁶ A new QRhi (a float, a redock, a first show) builds only the families the
+scene uses, and of their pipelines only the ones it draws (ARCHITECTURE,
+"Families are built on demand", "Pipeline registry"): 13 pipelines and 20.7 ms of
+creation at the first show, against 50 and 78 ms when every family's pipelines
+were built. Where the rest goes (RHI GL, stage sums per operation): the robot
+float 62.6 ms is the new top-level and QRhi 12.2, the HDR chain's targets 12.2,
+prepare 6.3, submit 7.4 and the first frame's GPU work and swap 25.4; the 10M
+cloud float 131.3 ms spends 72.2 of it in the present (the 114 MiB re-upload
+executes there) and 30.8 in prepare (the buffer allocation and the 10 ms
+conversion of the evicted cloud, note ¹). On Vulkan a pipeline
+costs under 1 ms (its pipeline cache), but the re-upload waits in the offscreen
+frame (submit 57.9, present 107.3 ms for the cloud).
+
+⁷ Our ADS fork keeps a dock area's hidden tabs parented (TECHNICAL_NOTES §5), so a tab switch
+adopts no QRhi, builds nothing and uploads nothing, and a Show whose target
+still holds the last frame renders nothing (ARCHITECTURE, "Widget lifecycle and
+reparenting"): the switch costs the same at 10.6k and 9.9M points (RHI GL 4.5 /
+5.2 ms, Vulkan 4.9–5.1 / 13.0 ms; the Vulkan plot tab's 13 ms is the plot
+canvas's own synchronous offscreen frame). The GL build's switch to the plot
+waits on its GPU. Hidden tabs keep their GPU memory; DRM MiB with a 1M-point
+Scene3D tab and K plot tabs visited (1260x780), upstream ADS → our fork:
+
+| Plot tabs | 1 | 4 | 8 |
+|---|---|---|---|
+| RHI GL | 132 → 138 | 132 → 158 | 132 → 184 |
+| RHI VK | 366 → 302 | 366 → 366 | 366 → 366 (allocator blocks) |
+| GL build | 153 → 172 | 149 → 228 | 153 → 303 |
+
+About 6.5 MiB per hidden plot on RHI GL (19 MiB in the GL build); a hidden
+Scene3D tab keeps its whole scene (a 10M cloud: 114 MiB of vertices and the HDR
+targets). RSS is unchanged.
+
+⁸ The plot rows replot unchanged data every frame. The app's datastore curves
+are `RevisionedSeries` (pj_plotting CLAUDE.md, "Dirty layers"), and so is the
+benchmark's data: an unchanged replot keeps the RHI canvas's curve layer. With
+plain Qwt data (`plot_canvas_benchmark --generic-series`, 3 rounds, wall / canvas
+CPU ms) every replot rebuilds:
+
+| Case | Qwt GL | RHI GL | RHI VK |
+|---|---|---|---|
+| 50 x 100k static | 91.5 / 90.6 | 85.2 / 81.9 | 107.1 / 90.9 |
+| 5 x 100k dashed | 22.6 / 22.1 | 21.8 / 21.1 | 26.5 / 22.3 |
+| 1M static | 16.1 / 15.6 | 13.8 / 13.4 | 17.2 / 15.1 |
+
+Streaming and zoom/pan change the data or the maps every frame and rebuild in
+both modes; the tracker case replots overlays only.
+
 ## Findings
 
 - **Qt 6.11.1, `QRhiWidget::grabFramebuffer()` on a never-shown widget works

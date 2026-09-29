@@ -53,7 +53,7 @@ class VoxelRhiPass {
   void admit(QRhi* rhi, const PlaceFn& place);
   /// Uploads the colormap (once), admitted layers' volumes (when their revision
   /// moved) and uniforms, and builds this frame's draws: none for a grid wholly
-  /// outside the view frustum (the GL pass's reject), which still counts as admitted.
+  /// outside the view frustum, which still counts as admitted.
   void prepare(const RhiFrameContext& frame);
   /// The prepared draw of `layer` (none or one).
   [[nodiscard]] std::span<const Draw> drawsFor(const VoxelGridLayer* layer) const {
@@ -102,7 +102,6 @@ class VoxelRhiPass {
   const RhiSharedGeometry* geometry_ = nullptr;  // view-owned
   QRhiTexture* colormap_texture_ = nullptr;
   QRhiSampler* colormap_sampler_ = nullptr;
-  bool colormap_upload_pending_ = false;
   int max_3d_texture_size_ = 0;
   QRhiBuffer* layout_uniform_buffer_ = nullptr;
   QRhiTexture* layout_texture_ = nullptr;

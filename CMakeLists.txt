@@ -78,18 +78,7 @@ else()
 endif()
 set(PJ_BUILD_TESTS ${_PJ_BUILD_TESTS_DEFAULT} CACHE BOOL "Build foundation (SDK + pj_datastore) tests")
 unset(_PJ_BUILD_TESTS_DEFAULT)
-option(PJ_BUILD_DEMOS "Build the pj_scene3D standalone dev demos" ON)
-# Scene3D renderer: QRhi (Vulkan/D3D/Metal/OpenGL; the only one in the browser)
-# or the legacy OpenGL one. Both define the same classes, so a build has exactly
-# one. OFF also selects the QwtPlotOpenGLCanvas plots; it is kept for one release
-# as the rollback and is then deleted. See pj_scene3D/docs/QRHI_NEXT.md.
-option(PJ_SCENE3D_RHI "Build Scene3D with the QRhi renderer instead of the OpenGL one" ON)
-if(EMSCRIPTEN)
-    set(PJ_SCENE3D_RHI ON)
-elseif(NOT PJ_SCENE3D_RHI)
-    message(WARNING "PJ_SCENE3D_RHI=OFF builds the legacy OpenGL Scene3D renderer and plot "
-                    "canvas. It is deprecated, kept for one release as a rollback, and will be removed.")
-endif()
+option(PJ_BUILD_DEMOS "Build the pj_scene3D standalone benchmarks" ON)
 # The GPU widgets' test-only fault injection and QRhi lifecycle counters
 # (pj_widgets/GraphicsApi.h: rhiTestFault, noteRhiAdoption). Release builds
 # configure PJ_BUILD_TESTS=OFF, so shipped binaries carry none of it.
@@ -156,6 +145,8 @@ if(EMSCRIPTEN)
         Core Gui GuiPrivate Widgets Concurrent Network Xml Svg SvgWidgets PrintSupport ShaderTools)
 else()
     set(PJ_QT_REQUIRED_VERSION ${PJ_QT_VERSION})
+    # OpenGLWidgets is for Qwt only (3rdparty/qwt): its desktop library carries
+    # QwtPlotOpenGLCanvas, which PJ4 never instantiates, and pixi's prebuilt Qwt links it.
     find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS Core Gui Widgets Network OpenGLWidgets Xml Svg SvgWidgets)
     # Header-only process and frame probes (cmake/test_mains/pj_bench_probes.h) of
     # every frame benchmark, with or without tests.
@@ -362,7 +353,7 @@ endif()
 if(TARGET pj_scene3d_widgets)
     add_compile_definitions(PJ_WITH_SCENE3D)
 endif()
-# Most demos drive the OpenGL renderer directly; the QRhi build gets only its own.
+# The Scene3D standalone benchmarks.
 if(PJ_BUILD_DEMOS AND NOT EMSCRIPTEN)
     add_subdirectory(pj_scene3D/demos)
 endif()

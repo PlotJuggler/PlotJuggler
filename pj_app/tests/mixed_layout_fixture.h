@@ -3,10 +3,9 @@
 #pragma once
 
 // The app's three GPU widget families in one Qt-Advanced-Docking manager, fed
-// through public APIs only, so the same code builds in the GL and the QRhi
-// build: a PlotWidget, a Scene3D view showing a point cloud and the Scene2D
-// media viewer showing an image. Shared by rhi_mixed_dock_test (QRhi build) and
-// mixed_layout_benchmark (both builds).
+// through public APIs only: a PlotWidget, a Scene3D view showing a point cloud
+// and the Scene2D media viewer showing an image. Shared by rhi_mixed_dock_test
+// and mixed_layout_benchmark.
 
 #include <DockManager.h>
 #include <DockWidget.h>
@@ -55,14 +54,13 @@ class MixedLayout {
 
   /// A plot of `curves` series of `samples` points each, from a dataset of its
   /// own, every one 3 px wide in kCurveColour, with no grid or legend, zoomed
-  /// to fit. Forces the GPU canvas (PlotWidgetBase::setOpenGlDisabledOverride),
+  /// to fit. Forces the GPU canvas (PlotWidgetBase::setGpuCanvasDisabledOverride),
   /// a process-wide setting.
   PJ::PlotWidget* createPlot(int curves = 1, int samples = 20);
 
   /// A Scene3D dock showing a solid-green cube of `cloud_side`^3 points
   /// (0.1 m sprites, frame "map", t = 100 ns) with no grid or axes, bound to the
-  /// session's TransformService as the app binds it (the GL view draws nothing
-  /// without a transform buffer, even in the fixed frame).
+  /// session's TransformService as the app binds it.
   PJ::Scene3DDockWidget* createScene3D(int cloud_side = 8);
 
   /// A Scene2D dock showing a 64x64 rgba8 image at t = 100 ns: red top half,

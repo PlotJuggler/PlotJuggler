@@ -1,22 +1,17 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// The desktop and the browser render the same solids through completely separate
-// backends — loose uniforms and runtime-composed GLSL 450 on one side, a std140 UBO and
-// ahead-of-time-baked qsb packs on the other. What they must NOT differ on is how a solid
-// LOOKS, and the key light and edge band used to be spelled once per shader with nothing
-// keeping the copies equal.
+// The QRhi cube shaders share one source for how a solid LOOKS (key light, edge band,
+// point colour): pj_scene3D/widgets/shaders/cube/*.glslinc, which the shaders #include
+// directly (qsb honours GL_GOOGLE_include_directive) and which CMake embeds into
+// cube_shader_sources.h so cube_mesh.h's C++ mirrors can be checked against the GLSL.
+// This test guards that arrangement from the two ways it can quietly rot:
 //
-// They now share one source: pj_scene3D/widgets/shaders/cube/*.glslinc, which the browser
-// shaders #include directly (qsb honours GL_GOOGLE_include_directive) and which CMake
-// embeds into cube_shader_sources.h for the desktop. This test guards that arrangement
-// from the two ways it can quietly rot:
-//
-//   1. a browser shader stops including the shared file, or
+//   1. a shader stops including the shared file, or
 //   2. someone re-inlines a literal light or edge constant next to the include.
 //
-// Runs on the DESKTOP build, reading the browser shaders as data, because the WASM target
-// is built with PJ_WASM_WITH_SCENE3D=OFF in CI and so never compiles them there.
+// It reads the shaders as data, so it runs on any build (the WASM target never compiles
+// the test).
 
 #include <gtest/gtest.h>
 #include <rhi/qshader.h>

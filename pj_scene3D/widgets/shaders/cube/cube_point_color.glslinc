@@ -1,10 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
-// A point's colour and its outside-range cull, shared by every point-cloud program on
-// both backends (the GL point/cube/sprite programs and the QRhi point/cube shaders). Both
-// take the already-resolved `scalar` because how a shape gets one differs (vertex
-// attribute, per-instance attribute or fixed-frame axis), while everything downstream of
-// it does not. Needs sampleColormap() (pj_widgets colormapGlsl()) declared before it.
+// A point's colour and its outside-range cull, shared by every point-cloud shader
+// (point, cube and sprite). They take the already-resolved
+// `scalar` because how a shape gets one differs (vertex attribute, per-instance attribute
+// or fixed-frame axis), while everything downstream of it does not. Needs sampleColormap() (pj_widgets colormapGlsl()) declared before it.
 
 // Display-referred base colour. The colormaps are display-referred sRGB; callers
 // linearize for a linear-light target.

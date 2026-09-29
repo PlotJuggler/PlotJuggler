@@ -34,11 +34,11 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/model_budget.h"
 #include "pj_scene3d_core/pose_math.h"
-#include "pj_scene3d_core/scene_entities_budget.h"
 #include "pj_scene3d_core/scene_entities_decode.h"
 #include "pj_scene3d_widgets/resolve_object.h"
 #include "pj_widgets/ColorPickerWidget.h"
 #include "pj_widgets/DoubleScrubber.h"
+#include "pj_widgets/Fnv1a.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/ToggleSwitch.h"
 #include "url_fetcher.h"
@@ -60,15 +60,6 @@ std::string batchSourceFrame(const PJ::sdk::SceneEntities& batch) {
 
 std::string meshKey(PJ::ObjectTopicId topic_id, const std::string& entity_id, std::size_t model_index) {
   return std::to_string(topic_id.id) + ":" + entity_id + ":" + std::to_string(model_index);
-}
-
-std::uint64_t fnv1a(const std::vector<std::uint8_t>& data) {
-  std::uint64_t hash = 1469598103934665603ULL;
-  for (std::uint8_t byte : data) {
-    hash ^= byte;
-    hash *= 1099511628211ULL;
-  }
-  return hash;
 }
 
 QString hintFromMediaType(const std::string& media_type, const std::string& url) {
@@ -105,7 +96,7 @@ QString hintFromMediaType(const std::string& media_type, const std::string& url)
 std::string sourceSignature(const PJ::sdk::ModelPrimitive& primitive) {
   if (!primitive.data.empty()) {
     return "data:" + primitive.media_type + ":" + std::to_string(primitive.data.size()) + ":" +
-           std::to_string(fnv1a(primitive.data));
+           std::to_string(PJ::fnv1a(primitive.data));
   }
   if (!primitive.url.empty()) {
     return "url:" + primitive.url + ":" + primitive.media_type;
@@ -175,17 +166,7 @@ SceneEntitiesLayer::SceneEntitiesLayer(PJ::ObjectTopicId topic_id, QString displ
     : Scene3DLayer(parent),
       topic_id_(topic_id),
       display_name_(std::move(display_name)),
-      mesh_loader_(std::make_unique<MeshLoader>())
-#ifndef PJ_SCENE3D_RHI
-      ,
-      mesh_pass_(std::make_unique<MeshRenderPass>())
-#endif
-{
-#ifndef PJ_SCENE3D_RHI
-  // The marker pass starts from its own defaults; the layer's (0.6 opacity) win.
-  pass_.setOverrides(overrides_);
-#endif
-}
+      mesh_loader_(std::make_unique<MeshLoader>()) {}
 
 SceneEntitiesLayer::~SceneEntitiesLayer() = default;
 
@@ -285,7 +266,6 @@ bool SceneEntitiesLayer::attach(const PJ::SceneLayerContext& ctx) {
   reload_connection_ = connect(
       ctx_.session, &PJ::SessionManager::datasetAboutToBeReplaced, this,
       &SceneEntitiesLayer::onDatasetAboutToBeReplaced);
-#ifdef PJ_SCENE3D_RHI
   disconnect(samples_connection_);
   samples_connection_ = connect(ctx_.session, &PJ::SessionManager::samplesIngested, this, [this](const auto&, bool) {
     if (visible_ && requested_time_.has_value()) {
@@ -293,7 +273,6 @@ bool SceneEntitiesLayer::attach(const PJ::SceneLayerContext& ctx) {
       emit repaintRequested();
     }
   });
-#endif
   // Seed only when a first sample exists; gate on presence, not on a 0 sentinel
   // (t=0 is a valid first timestamp under ROS sim time).
   PJ::ObjectStore& store = ctx_.session->objectStore();
@@ -309,10 +288,8 @@ bool SceneEntitiesLayer::attach(const PJ::SceneLayerContext& ctx) {
 void SceneEntitiesLayer::detach() {
   disconnect(reload_connection_);
   reload_connection_ = {};
-#ifdef PJ_SCENE3D_RHI
   disconnect(samples_connection_);
   samples_connection_ = {};
-#endif
   resetReplayState();
   ctx_ = {};
 }
@@ -325,15 +302,9 @@ void SceneEntitiesLayer::onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id) {
 }
 
 void SceneEntitiesLayer::resetReplayState() {
-#ifdef PJ_SCENE3D_RHI
   decode_dirty_ = false;
   invalidateDecodeState();
   clearGeometry();
-#else
-  // Drop the active batch too: with the topic still empty renderAt() never
-  // runs, so a batch left here would keep drawing prior-generation markers.
-  pass_.setActive(nullptr);
-#endif
   requested_time_.reset();
   last_marker_uid_ = {};
   model_state_.clear();
@@ -352,12 +323,8 @@ void SceneEntitiesLayer::resetReplayState() {
   while (!model_mesh_bytes_.empty()) {
     releaseModelMesh(std::string(model_mesh_bytes_.begin()->first));  // a copy: the call erases the entry
   }
-#ifdef PJ_SCENE3D_RHI
   model_draw_calls_.clear();
   ++model_revision_;
-#else
-  mesh_pass_->clearMeshes();
-#endif
   batch_warning_.clear();
   model_state_warning_.clear();
   model_draw_warning_.clear();
@@ -379,7 +346,6 @@ void SceneEntitiesLayer::setVisible(bool visible) {
     return;
   }
   visible_ = visible;
-#ifdef PJ_SCENE3D_RHI
   if (!visible_) {
     // Release the expanded geometry while hidden; the dock re-delivers the
     // tracker time on un-hide, which re-selects the batch.
@@ -387,9 +353,6 @@ void SceneEntitiesLayer::setVisible(bool visible) {
     clearGeometry();
     noteRenderSuccess();
   }
-#else
-  pass_.setVisible(visible);
-#endif
   emit visibilityChanged(visible);
   emit infoChanged();
   emit repaintRequested();
@@ -447,7 +410,7 @@ SceneEntitiesLayer::MarkerPick SceneEntitiesLayer::selectMarkerBatch(
     return MarkerPick::kUnchanged;
   }
   last_marker_uid_ = resolved->sequential_uid;
-  if (!markerWirePayloadFits(resolved->payload.bytes.size())) {
+  if (static_cast<std::uint64_t>(resolved->payload.bytes.size()) > kSceneLimits.max_marker_wire_bytes) {
     setBatchWarning(
         tr("SceneEntities payload is %1 MiB; the limit is %2 MiB")
             .arg(QString::number(static_cast<double>(resolved->payload.bytes.size()) / (1024.0 * 1024.0), 'f', 1))
@@ -477,7 +440,6 @@ SceneEntitiesLayer::MarkerPick SceneEntitiesLayer::selectMarkerBatch(
 void SceneEntitiesLayer::renderAt(std::int64_t time_ns) {
   std::shared_ptr<const PJ::sdk::SceneEntities> batch;
   const MarkerPick pick = selectMarkerBatch(time_ns, batch);
-#ifdef PJ_SCENE3D_RHI
   switch (pick) {
     case MarkerPick::kUnchanged:
       return;
@@ -500,104 +462,11 @@ void SceneEntitiesLayer::renderAt(std::int64_t time_ns) {
       decode_worker_.request(DecodeRequest{std::move(batch), last_marker_uid_});
       return;
   }
-#else
-  switch (pick) {
-    case MarkerPick::kUnchanged:
-    case MarkerPick::kNoSample:
-      return;
-    case MarkerPick::kRejected:
-      pass_.setActive(nullptr);
-      emit repaintRequested();
-      return;
-    case MarkerPick::kBatch:
-      pass_.setActive(std::make_shared<const DecodedSceneEntities>(decodeSceneEntities(*batch)));
-      emit repaintRequested();
-      return;
-  }
-#endif
 }
 
 void SceneEntitiesLayer::applyOverrides() {
-#ifndef PJ_SCENE3D_RHI
-  pass_.setOverrides(overrides_);
-#endif
   emit repaintRequested();
 }
-
-#ifndef PJ_SCENE3D_RHI
-void SceneEntitiesLayer::initializeGL() {
-  pass_.initializeGL();
-  mesh_pass_->initializeGL();
-}
-
-void SceneEntitiesLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
-  pass_.render(view_params, frame_ctx);
-  // MarkerRenderPass tracks visibility internally (setVisible); the model path
-  // guards here.
-  if (!visible_) {
-    return;
-  }
-  ensureModelStateAt(frame_ctx.time);
-  mesh_pass_->renderVisuals(view_params, modelDrawCallsForFrame(frame_ctx), overrides_.opacity);
-}
-
-void SceneEntitiesLayer::releaseGL() {
-  pass_.releaseGL();
-  mesh_pass_->releaseGL();
-}
-
-std::optional<AABB> SceneEntitiesLayer::meshShadowBounds(const FrameContext& frame_ctx) {
-  if (!visible_) {
-    return std::nullopt;
-  }
-  ensureModelStateAt(frame_ctx.time);
-  const AABB bounds = mesh_pass_->worldBoundsOfDraws(modelDrawCallsForFrame(frame_ctx));
-  return bounds.valid ? std::optional<AABB>(bounds) : std::nullopt;
-}
-
-void SceneEntitiesLayer::renderShadowCasters(const glm::mat4& light_view_proj, const FrameContext& frame_ctx) {
-  if (!visible_) {
-    return;
-  }
-  ensureModelStateAt(frame_ctx.time);
-  mesh_pass_->renderDepthOnly(light_view_proj, modelDrawCallsForFrame(frame_ctx));
-}
-
-std::vector<MeshRenderPass::DrawCall> SceneEntitiesLayer::modelDrawCallsForFrame(const FrameContext& frame_ctx) const {
-  std::vector<MeshRenderPass::DrawCall> draws;
-  for (const auto& [entity_id, entity] : model_state_.entities()) {
-    const auto tf = frame_ctx.lookup(entity.frame_id);
-    if (!tf.has_value()) {
-      continue;
-    }
-    const glm::mat4 frame_model = glm::mat4(tf->matrix());
-    for (std::size_t i = 0; i < entity.models.size(); ++i) {
-      const PJ::sdk::ModelPrimitive& primitive = entity.models[i];
-      MeshRenderPass::DrawCall draw;
-      draw.kind = MeshRenderPass::GeometryKind::kMesh;
-      draw.mesh_key = meshKey(topic_id_, entity_id, i);
-      draw.model = frame_model * poseToMat4(primitive.pose);
-      draw.model = glm::scale(draw.model, toVec3(primitive.scale));
-      if (primitive.override_color) {
-        draw.color = toVec4(primitive.color);
-        draw.use_vertex_color = false;
-      } else {
-        draw.color = glm::vec4(1.0f);
-        draw.use_vertex_color = true;
-      }
-      // The viewer-side recolor trumps the message's own color, same as the
-      // marker path; the alpha channel is preserved.
-      if (overrides_.color_override) {
-        draw.color = glm::vec4(
-            overrides_.override_color.r, overrides_.override_color.g, overrides_.override_color.b, draw.color.a);
-        draw.use_vertex_color = false;
-      }
-      draws.push_back(std::move(draw));
-    }
-  }
-  return draws;
-}
-#endif  // !PJ_SCENE3D_RHI
 
 bool SceneEntitiesLayer::applyModelWindow(std::int64_t lo_ns, std::int64_t hi_ns) {
   PJ::ObjectStore& store = ctx_.session->objectStore();
@@ -631,7 +500,7 @@ bool SceneEntitiesLayer::applyModelWindow(std::int64_t lo_ns, std::int64_t hi_ns
     if (!entry.has_value() || entry->payload.bytes.empty()) {
       continue;  // evicted between the snapshot and the resolve
     }
-    if (!markerWirePayloadFits(entry->payload.bytes.size())) {
+    if (static_cast<std::uint64_t>(entry->payload.bytes.size()) > kSceneLimits.max_marker_wire_bytes) {
       model_state_warning_ = tr("A SceneEntities model snapshot exceeds the %1 MiB payload limit")
                                  .arg(kSceneLimits.max_marker_wire_bytes / (1024ULL * 1024ULL));
       continue;
@@ -737,7 +606,7 @@ void SceneEntitiesLayer::ensureModelStateAt(PJ::Timepoint time) {
       const bool dropped = model_state_.dropExpired(time_ns);
       // The marker UID guard skips its per-tick repaint while the batch is
       // unchanged, so model-state changes request their own frame. Gated on a
-      // real change: render() also lands here.
+      // real change: prepareForRender() also lands here.
       if (applied_new || dropped) {
         updateModelFrames();
         syncModelSources();
@@ -790,9 +659,7 @@ void SceneEntitiesLayer::syncModelSources() {
     const PJ::sdk::ModelPrimitive& primitive = model_state_.entities().at(queued.entity_id).models[queued.model_index];
     startModelLoad(key, primitive, std::move(queued));
   }
-#ifdef PJ_SCENE3D_RHI
   refreshModelDrawCalls();
-#endif
   pumpModelLoads();
 }
 
@@ -862,7 +729,7 @@ void SceneEntitiesLayer::pumpModelLoads() {
     ModelLoad& load = current->second;
     const QString hint = hintFromMediaType(primitive.media_type, primitive.url);
     if (!primitive.data.empty()) {
-      if (!modelSourceFits(primitive.data.size())) {
+      if (static_cast<std::uint64_t>(primitive.data.size()) > kSceneLimits.max_model_source_bytes) {
         load.error =
             tr("model source exceeds the %1 MiB limit").arg(kSceneLimits.max_model_source_bytes / (1024ULL * 1024ULL));
         load.phase = ModelLoad::Phase::kFailed;
@@ -912,7 +779,7 @@ void SceneEntitiesLayer::pumpModelLoads() {
         active->second.fetch_failed = true;
         active->second.error = result.error;
         emit repaintRequested();
-      } else if (!modelSourceFits(static_cast<std::uint64_t>(result.bytes.size()))) {
+      } else if (static_cast<std::uint64_t>(result.bytes.size()) > kSceneLimits.max_model_source_bytes) {
         active->second.phase = ModelLoad::Phase::kFailed;
         active->second.error =
             tr("model source exceeds the %1 MiB limit").arg(kSceneLimits.max_model_source_bytes / (1024ULL * 1024ULL));
@@ -1005,12 +872,8 @@ void SceneEntitiesLayer::finishModelImport(
 
 void SceneEntitiesLayer::storeModelMesh(const std::string& key, MeshData mesh, std::uint64_t bytes) {
   releaseModelMesh(key);
-#ifdef PJ_SCENE3D_RHI
   model_meshes_[key] = std::make_shared<const MeshData>(std::move(mesh));
   ++model_revision_;
-#else
-  mesh_pass_->setMeshData(key, std::move(mesh));
-#endif
   model_mesh_bytes_[key] = bytes;
   model_retained_bytes_ = saturatedAdd(model_retained_bytes_, bytes);
 }
@@ -1022,12 +885,8 @@ void SceneEntitiesLayer::releaseModelMesh(const std::string& key) {
   }
   model_retained_bytes_ = found->second <= model_retained_bytes_ ? model_retained_bytes_ - found->second : 0U;
   model_mesh_bytes_.erase(found);
-#ifdef PJ_SCENE3D_RHI
   model_meshes_.erase(key);
   ++model_revision_;
-#else
-  mesh_pass_->setMeshData(key, MeshData{});
-#endif
 }
 
 void SceneEntitiesLayer::updateRemoteFetchNotice() {
@@ -1123,7 +982,6 @@ void SceneEntitiesLayer::setWireframe(bool enabled) {
   applyOverrides();
 }
 
-#ifdef PJ_SCENE3D_RHI
 bool SceneEntitiesLayer::prepareForRender() {
   if (!visible_ || !decode_dirty_ || !requested_time_.has_value()) {
     return false;
@@ -1208,8 +1066,6 @@ void SceneEntitiesLayer::refreshModelDrawCalls() {
   }
   ++model_revision_;
 }
-
-#endif  // PJ_SCENE3D_RHI
 
 QWidget* SceneEntitiesLayer::createConfigWidget(QWidget* parent) {
   auto* container = new QWidget(parent);

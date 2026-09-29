@@ -378,8 +378,14 @@ bool MarkerRhiPass::initialize(const RhiPassSetup& setup) {
     }
     gpu.triangle_index_count = static_cast<quint32>(mesh.triangle_indices.size());
     gpu.edge_index_count = static_cast<quint32>(mesh.edge_indices.size());
+    setup.updates->uploadStaticBuffer(gpu.vertex_buffer, mesh.vertices.data());
+    if (gpu.triangle_index_buffer != nullptr) {
+      setup.updates->uploadStaticBuffer(gpu.triangle_index_buffer, mesh.triangle_indices.data());
+    }
+    if (gpu.edge_index_buffer != nullptr) {
+      setup.updates->uploadStaticBuffer(gpu.edge_index_buffer, mesh.edge_indices.data());
+    }
   }
-  mesh_upload_pending_ = true;
   return true;
 }
 
@@ -659,9 +665,9 @@ void MarkerRhiPass::expandLayer(const MarkerGeometry& geometry, const LayerKey& 
     add_instance_range(kCubeMesh, cube_offset, cube_count, false, !pass_translucent, true);
   } else {
     add_instance_range(kCubeMesh, cube_offset, cube_count, true, !cubes_translucent, false);
-    // Desktop's normal cube overlay contains only the twelve geometric box
+    // The normal cube overlay contains only the twelve geometric box
     // edges, over the fill's own instances. Explicit wireframe mode above still
-    // uses the triangle mesh edges, including face diagonals, like native polygon mode.
+    // uses the triangle mesh edges, including face diagonals, as a line polygon mode would.
     if (cube_count != 0U) {
       add_range(Kind::kCubeEdges, kCubeEdgeOverlayMesh, cube_offset, cube_count, false, !pass_translucent);
       if (cubes_translucent) {
@@ -764,19 +770,6 @@ void MarkerRhiPass::prepare(const RhiFrameContext& frame) {
   QRhiResourceUpdateBatch* updates = frame.updates;
 
   updates->updateDynamicBuffer(camera_view_uniforms_, 0, sizeof(glm::mat4), &frame.view[0][0]);
-  if (mesh_upload_pending_) {
-    const auto& mesh_data = unitMeshes();
-    for (std::size_t index = 0; index < mesh_data.size(); ++index) {
-      updates->uploadStaticBuffer(meshes_[index].vertex_buffer, mesh_data[index].vertices.data());
-      if (meshes_[index].triangle_index_buffer != nullptr) {
-        updates->uploadStaticBuffer(meshes_[index].triangle_index_buffer, mesh_data[index].triangle_indices.data());
-      }
-      if (meshes_[index].edge_index_buffer != nullptr) {
-        updates->uploadStaticBuffer(meshes_[index].edge_index_buffer, mesh_data[index].edge_indices.data());
-      }
-    }
-    mesh_upload_pending_ = false;
-  }
   ++frame_serial_;
   for (const Admitted& prepared : admitted_) {
     SceneEntitiesLayer* layer = prepared.layer;
@@ -937,7 +930,6 @@ void MarkerRhiPass::release() {
   data_bindings_ = nullptr;
   edge_bindings_ = nullptr;
   camera_view_uniforms_ = nullptr;
-  mesh_upload_pending_ = false;
   admitted_.clear();
   placements_.clear();
   draws_.clear();

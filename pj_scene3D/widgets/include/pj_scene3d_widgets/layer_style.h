@@ -6,8 +6,8 @@
 
 namespace pj::scene3d {
 
-// Renderer-neutral style enums shared by the layers and by both renderers (the GL
-// passes alias them), so a layer header needs no GL pass to spell its settings.
+// Style enums shared by the layers and the view's passes, so a layer header needs
+// no pass to spell its settings.
 
 // Per-point shape.
 //   kSphere — world-radius sphere imposter; foreshortens with depth under a

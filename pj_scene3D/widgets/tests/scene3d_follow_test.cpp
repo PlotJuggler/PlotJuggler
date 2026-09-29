@@ -6,9 +6,9 @@
 // to keep the frame in place while orbit/zoom stay world-referenced.
 //
 // View-level tests drive a bare SceneViewWidget against a hand-built TransformBuffer
-// (no parser, no GL — the follow math is Qt/GL-free); dock-level tests cover the
+// (no parser, no GPU — the follow math is Qt/GPU-free); dock-level tests cover the
 // forwarding slot + per-dock layout persistence. Headless like the other dock tests:
-// the GL view defers all GL to initializeGL().
+// the view touches no GPU until it is shown.
 
 #include <gtest/gtest.h>
 

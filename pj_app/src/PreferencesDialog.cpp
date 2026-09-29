@@ -213,7 +213,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   //    next redraw.
   //  - Curve-colour sequence (Plotting): global = one continuous colour sequence
   //    across all plots; per plot = the sequence restarts within each plot.
-  //  - OpenGL (Appearance): default on; PlotWidgetBase reads the key when a plot
+  //  - GPU canvas (Appearance): default on; PlotWidgetBase reads the key when a plot
   //    is constructed (applies to newly created plots). --disable-opengl can
   //    force it off for a session without touching this saved value.
   ui_->scrubberFloatPrecision->setRange(1, 6);

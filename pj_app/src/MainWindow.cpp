@@ -182,7 +182,6 @@
 #include "pj_runtime/ViewportRuntimeHost.h"
 #ifdef PJ_WITH_SCENE2D
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
-#include "pj_scene2d_widgets/media_viewer_widget.h"
 #endif
 #ifdef PJ_WITH_SCENE3D
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
@@ -627,22 +626,6 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   ui_->globalToolbarWidget->setContentsMargins(
       PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
       PJ::theme::space(theme::Space::None));
-
-  // Qt 6.8 QRhiWidget needs an RHI-capable top-level backing store from
-  // the first show(). Keep a zero-size viewer in an existing visible layout
-  // so image docks created later can initialize their QRhi.
-  // Excluded on wasm: an early WebGL context can be lost across a cold
-  // browser file-picker round-trip, and Emscripten then dereferences null
-  // WebGL context attributes (see docs/research/wasm_reboot_plan.md, W8a).
-#if defined(PJ_WITH_SCENE2D) && !defined(PJ_TARGET_WASM)
-  auto* rhi_bootstrap = new MediaViewerWidget(ui_->globalToolbarWidget);
-  rhi_bootstrap->setObjectName(u"rhi_bootstrap"_s);
-  rhi_bootstrap->setMaximumSize(0, 0);
-  rhi_bootstrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-  if (auto* global_toolbar_layout = qobject_cast<QVBoxLayout*>(ui_->globalToolbarWidget->layout())) {
-    global_toolbar_layout->addWidget(rhi_bootstrap);
-  }
-#endif
 
   ui_->mainSplitter->setHandleWidth(1);
   ui_->timelineSplitter->setHandleWidth(1);

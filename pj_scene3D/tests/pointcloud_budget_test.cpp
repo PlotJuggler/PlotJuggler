@@ -10,13 +10,6 @@
 namespace pj::scene3d {
 namespace {
 
-TEST(PointCloudBrowserBudget, InputLimitsAcceptTheirExactBoundaryOnly) {
-  EXPECT_TRUE(pointCountFits(kBrowserSceneLimits.max_points_per_cloud, kBrowserSceneLimits));
-  EXPECT_FALSE(pointCountFits(kBrowserSceneLimits.max_points_per_cloud + 1U, kBrowserSceneLimits));
-  EXPECT_TRUE(pointPayloadFits(kBrowserSceneLimits.max_point_wire_bytes_per_cloud, kBrowserSceneLimits));
-  EXPECT_FALSE(pointPayloadFits(kBrowserSceneLimits.max_point_wire_bytes_per_cloud + 1U, kBrowserSceneLimits));
-}
-
 TEST(PointCloudBrowserBudget, ViewBudgetAggregatesWithoutUnsignedUnderflow) {
   std::uint64_t remaining = kBrowserSceneLimits.max_point_vertices_per_view;
   EXPECT_TRUE(tryConsumeBudget(400'000U, remaining));

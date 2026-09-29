@@ -67,6 +67,7 @@ bool PointRhiPass::initialize(const RhiPassSetup& setup) {
     return false;
   }
   setup_ = setup;
+  setup_.updates = nullptr;  // the batch is valid only during initialize()
   render_mode_uniforms_ = setup.render_mode_uniforms;
   geometry_ = setup.geometry;
   uniform_stride_ = static_cast<quint32>(rhi->ubufAligned(static_cast<int>(kPointUniformBytes)));
@@ -132,8 +133,8 @@ bool PointRhiPass::ensurePipelines(Layout layout, Geometry geometry, bool faded)
       attempted[half] = true;
       desc.depth_write = half == 0;
       pair[half] = createScenePipeline(setup, desc);
-      if (registry_ != nullptr) {
-        registry_->add(pair[half]);
+      if (setup_.templates != nullptr) {
+        setup_.templates->add(pair[half]);  // the point list is not a template: registered as built
       }
     }
   }
@@ -141,7 +142,6 @@ bool PointRhiPass::ensurePipelines(Layout layout, Geometry geometry, bool faded)
 }
 
 void PointRhiPass::registerPipelines(ScenePipelineRegistry& registry) const {
-  registry_ = &registry;
   for (const auto& layout : pipelines_) {
     for (const auto& pair : layout) {
       registry.add(pair[0]);
@@ -225,7 +225,7 @@ void PointRhiPass::prepare(const RhiFrameContext& frame, const ViewInputs& view)
     const auto [range_minimum, range_maximum] = layer->scalarRange(glm::mat4(admitted.fixed_from_source.matrix()));
     layer->noteRenderedScalarRange(range_minimum, range_maximum);
 
-    // One decision for every shape (the GL pass's): frustum reject against the
+    // One decision for every shape: frustum reject against the
     // geometry, camera-inside fallback, and the whole-cloud cube LOD.
     CubeCloudView cloud_view;
     cloud_view.centre_bounds = source_bounds.value_or(AABB{});
@@ -440,7 +440,6 @@ void PointRhiPass::release() {
   }
   pipelines_attempted_ = {};
   setup_ = {};
-  registry_ = nullptr;
   point_size_supported_ = false;
   delete layout_shader_resources_;
   delete layout_uniforms_;

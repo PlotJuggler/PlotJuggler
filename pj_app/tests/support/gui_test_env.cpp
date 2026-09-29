@@ -6,7 +6,7 @@
 namespace pj_app_test {
 
 void GuiTestEnvironment::SetUp() {
-  PJ::PlotWidgetBase::setOpenGlDisabledOverride(true);
+  PJ::PlotWidgetBase::setGpuCanvasDisabledOverride(true);
 }
 
 bool isTestSuiteSelected(std::string_view suite_name) {

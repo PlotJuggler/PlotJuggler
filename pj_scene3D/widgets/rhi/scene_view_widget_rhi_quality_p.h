@@ -27,6 +27,8 @@ inline QString presentVertexShaderPath(const QRhi& rhi) {
                                                    : QStringLiteral(":/scene3d_rhi/present.vert.qsb");
 }
 
+/// Samples of the HDR chain's colour and depth targets.
+constexpr int kHdrSampleCount = 4;
 constexpr quint32 kShadowUniformBytes = 64U;
 constexpr quint32 kCompositeUniformBytes = 128U;
 constexpr quint32 kSsaoUniformBytes = 656U;

@@ -23,18 +23,18 @@ app like PJ4.
 ## What PJ4 actually uses (so you can judge relevance)
 
 PJ4 is a **Qt Widgets** desktop app. It links Widgets, Core, Gui, Network, Xml,
-OpenGLWidgets, Svg/SvgWidgets, Concurrent, UiTools, Charts, and **GuiPrivate**
-(private headers — version-sensitive). It does **not** use QML / Qt Quick /
-Qt Quick 3D, and **not** Qt Multimedia (video goes through FFmpeg directly).
+Svg/SvgWidgets, Concurrent, UiTools, and **GuiPrivate** (private headers —
+version-sensitive). OpenGLWidgets comes in through Qwt only (its desktop library
+carries the unused `QwtPlotOpenGLCanvas`); no PJ4 code uses `QOpenGLWidget` outside
+tests. It does **not** use QML / Qt Quick / Qt Quick 3D, and **not** Qt Multimedia
+(video goes through FFmpeg directly).
 
-Graphics — important: **every GPU widget goes through Qt's RHI** in the default
-build (`PJ_SCENE3D_RHI=ON`): the `pj_scene2D` `MediaViewerWidget`, the
+Graphics — important: **every GPU widget goes through Qt's RHI**: the `pj_scene2D` `MediaViewerWidget`, the
 `pj_scene3D` view (its own HDR / SSAO / EDL / AgX passes on `QRhiWidget`) and the
 plot canvas (`PlotRhiCanvas`), on the native API (OpenGL on Linux, D3D11 on
 Windows, Metal on macOS, WebGL2 in the browser). QRhi changes matter to all
 three, and `<rhi/qrhi.h>` has no cross-minor compatibility guarantee, so every
-channel stays on the pinned minor. The legacy `QOpenGLWidget` Scene3D renderer
-and `QwtPlotOpenGLCanvas` remain behind `-DPJ_SCENE3D_RHI=OFF` for one release.
+channel stays on the pinned minor.
 Qt 6.11 specifics the QRhi code works around (grab-only frames, the OpenGL
 depth resolve and multisample textures, the Metal fallback, `QRhiWidget` pipeline
 caches) are in `pj_scene3D/docs/TECHNICAL_NOTES.md` §3; the 6.12 upgrade

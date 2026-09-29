@@ -50,8 +50,8 @@ QImage renderHudPanel(
 
   // Allocate at PHYSICAL resolution (logical * dpr) and tag the image with the
   // ratio, so painting below — and the caller's drawImage() — work in logical
-  // coordinates and stay crisp at any DPR. This is the property the GL glyph
-  // atlas failed to honour across a context recreation (see header).
+  // coordinates and stay crisp at any DPR, which a GPU glyph cache would lose
+  // across a QRhi recreation (see header).
   const int phys_w = static_cast<int>(std::lround(box_w * dpr));
   const int phys_h = static_cast<int>(std::lround(box_h * dpr));
   QImage image(QSize(phys_w, phys_h), QImage::Format_ARGB32_Premultiplied);

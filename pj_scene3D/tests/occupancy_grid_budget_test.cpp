@@ -13,11 +13,6 @@ TEST(OccupancyGridBrowserBudget, LayerLimitsAcceptExactBoundariesOnly) {
   EXPECT_FALSE(occupancyDimensionsFit(8192U, 1025U, kBrowserSceneLimits));
   EXPECT_FALSE(occupancyDimensionsFit(8193U, 1U, kBrowserSceneLimits));
   EXPECT_FALSE(occupancyDimensionsFit(0U, 1024U, kBrowserSceneLimits));
-  EXPECT_TRUE(occupancyPayloadFits(kBrowserSceneLimits.max_occupancy_wire_bytes, kBrowserSceneLimits));
-  EXPECT_FALSE(occupancyPayloadFits(kBrowserSceneLimits.max_occupancy_wire_bytes + 1U, kBrowserSceneLimits));
-  EXPECT_TRUE(occupancyUpdateWindowFits(kBrowserSceneLimits.max_occupancy_update_window_bytes, kBrowserSceneLimits));
-  EXPECT_FALSE(
-      occupancyUpdateWindowFits(kBrowserSceneLimits.max_occupancy_update_window_bytes + 1U, kBrowserSceneLimits));
 }
 
 TEST(OccupancyGridBrowserBudget, ViewBudgetAggregatesWithoutUnsignedUnderflow) {

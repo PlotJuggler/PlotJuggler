@@ -53,23 +53,24 @@ process-wide state. The shared main owns the only QApplication.
 
 These tests retain their standalone executable and ctest entry:
 
-- `rhi_dock_lifecycle_test` (QRhi build only): `QRhiWidget`s in ADS docks through
+- `rhi_dock_lifecycle_test`: `QRhiWidget`s in ADS docks through
   float/redock, split, tab switch, sibling destruction, floating-window close,
   a DPR change, plus the mixed-API negative case. It needs a real display (it
   skips on `offscreen`) and is registered on every backend of the platform plus
   `.opengl_dpr2.` (`RHI_BACKENDS DPR2` in `cmake/PjTests.cmake`). Its setup mirrors `main()`'s
   `AA_DontCreateNativeWidgetSiblings`; see `pj_scene3D/docs/TECHNICAL_NOTES.md`
   §5 (ADS and window-system quirks).
-- `rhi_mixed_dock_test` (QRhi build only): the same matrix with the real widgets
+- `rhi_mixed_dock_test`: the same matrix with the real widgets
   in one dock manager (a `PlotWidget`, a Scene3D point cloud, a Scene2D image),
   each checked for its own content at its pixel size, no QRhi warning, no
   resource left on a dying QRhi (`QT_RHI_LEAK_CHECK`), and, through the widgets'
   test-hook lifecycle counters, a re-initialize on every float and redock and
-  never resources on two QRhis at once; plus the media viewer's
-  failure state beside them. Registered like `rhi_dock_lifecycle_test`. Both
+  never resources on two QRhis at once; the same docks added to a window first
+  shown without a GPU widget (`RhiMixedLateDockFixture`: the app needs no
+  bootstrap QRhiWidget); plus the media viewer's failure state beside them. Registered like `rhi_dock_lifecycle_test`. Both
   share `tests/support/rhi_dock_test_support.h`. Its widgets and their data come
   from `tests/mixed_layout_fixture.h` (`pj_mixed_layout_fixture`, public APIs
-  only, so it builds in the GL build too), which the `mixed_layout_benchmark`
+  only), which the `mixed_layout_benchmark`
   demo (`benchmarks/`, `PJ_BUILD_DEMOS`) also uses.
 
 - `main_window_layout_exit_test`: the last case leaves an import parked for

@@ -3,7 +3,7 @@
 
 // Frame cost of plot canvases under the plot workloads that matter:
 //
-//   plot_canvas_benchmark --canvas rhi|gl|raster --case NAME [--frames N]
+//   plot_canvas_benchmark --canvas rhi|raster --case NAME [--frames N]
 //       [--samples N] [--plots K] [--grid] [--legend] [--msaa N] [--gpu]
 //       [--generic-series]
 //
@@ -23,32 +23,26 @@
 //
 // Reported per run (medians after a time-based warm-up, pj_bench::WarmUp, whose
 // first frame is cold_ms; summed over the plots): canvas CPU
-// time (PlotRhiCanvas's render(), or QwtPlotOpenGLCanvas::paintGL /
-// QwtPlotCanvas::paintEvent), GPU time (--gpu only: QRhi timestamps through
-// QSG_RHI_PROFILE, a GL_TIME_ELAPSED query around paintGL; both cost CPU), the
+// time (PlotRhiCanvas's render() or QwtPlotCanvas::paintEvent), GPU time (--gpu
+// only: QRhi timestamps through QSG_RHI_PROFILE; costs CPU), the
 // wall time from replot to the finished frames (includes any compositor vsync
 // wait), the RHI canvases' vertices of the last build, plus the GPU memory the
 // DRM driver charges to the process at the end of the run (Linux fdinfo
 // drm-total, any canvas and API; n/a on software rasterizers); pass
 // QT_SCALE_FACTOR=2 for DPR 2. The QRhi backend follows PJ_GRAPHICS_API. Needs a
 // display; run without LIBGL_ALWAYS_SOFTWARE for the real GPU. Built with
-// PJ_BUILD_DEMOS in the QRhi build (PJ_SCENE3D_RHI=ON), the only build that has
-// both canvases.
+// PJ_BUILD_DEMOS.
 
 #include <qwt_plot.h>
 #include <qwt_plot_canvas.h>
 #include <qwt_plot_curve.h>
 #include <qwt_plot_grid.h>
-#include <qwt_plot_opengl_canvas.h>
 #include <qwt_series_data.h>
 
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QElapsedTimer>
 #include <QGridLayout>
-#include <QOpenGLContext>
-#include <QOpenGLExtraFunctions>
-#include <QOpenGLFunctions>
 #include <QPen>
 #include <QSurfaceFormat>
 #include <QTest>
@@ -114,49 +108,6 @@ std::vector<QPointF> makeSignal(std::size_t count, double rate, unsigned seed) {
   return points;
 }
 
-// QwtPlotOpenGLCanvas with its paintGL CPU time and, with --gpu, a
-// GL_TIME_ELAPSED query.
-class TimedGlCanvas final : public QwtPlotOpenGLCanvas {
- public:
-  using QwtPlotOpenGLCanvas::QwtPlotOpenGLCanvas;
-  double cpu_ms = 0.0;
-  double gpu_ms = 0.0;
-  bool timed = false;
-
- protected:
-  void paintGL() override {
-    if (!timed) {
-      QElapsedTimer timer;
-      timer.start();
-      QwtPlotOpenGLCanvas::paintGL();
-      cpu_ms = static_cast<double>(timer.nsecsElapsed()) / 1e6;
-      return;
-    }
-    constexpr GLenum kTimeElapsed = 0x88BF;
-    auto* gl = QOpenGLContext::currentContext()->extraFunctions();
-    using GetQueryUi64 = void (*)(GLuint, GLenum, quint64*);
-    static const auto get_result =
-        reinterpret_cast<GetQueryUi64>(QOpenGLContext::currentContext()->getProcAddress("glGetQueryObjectui64v"));
-    if (query_ == 0) {
-      gl->glGenQueries(1, &query_);
-    }
-    QElapsedTimer timer;
-    timer.start();
-    gl->glBeginQuery(kTimeElapsed, query_);
-    QwtPlotOpenGLCanvas::paintGL();
-    gl->glEndQuery(kTimeElapsed);
-    cpu_ms = static_cast<double>(timer.nsecsElapsed()) / 1e6;
-    if (get_result != nullptr) {
-      quint64 nanoseconds = 0;
-      get_result(query_, GL_QUERY_RESULT, &nanoseconds);  // waits for the GPU
-      gpu_ms = static_cast<double>(nanoseconds) / 1e6;
-    }
-  }
-
- private:
-  GLuint query_ = 0;
-};
-
 class TimedRasterCanvas final : public QwtPlotCanvas {
  public:
   using QwtPlotCanvas::QwtPlotCanvas;
@@ -177,12 +128,11 @@ class TimedRasterCanvas final : public QwtPlotCanvas {
 
 }  // namespace
 
-// One benchmarked plot: its canvas (exactly one of the three is set), series
+// One benchmarked plot: its canvas (exactly one of the two is set), series
 // and optional tracker.
 struct BenchPlot {
   QwtPlot* plot = nullptr;
   PJ::PlotRhiCanvas* rhi = nullptr;
-  TimedGlCanvas* gl = nullptr;
   TimedRasterCanvas* raster = nullptr;
   std::vector<VectorSeries*> series;
   std::unique_ptr<PJ::CurveTracker> tracker;
@@ -192,10 +142,10 @@ struct BenchPlot {
     return raster != nullptr ? raster->painted : presented;
   }
   [[nodiscard]] double cpuMs() const {
-    return rhi != nullptr ? rhi->lastRenderCpuMs() : gl != nullptr ? gl->cpu_ms : raster->cpu_ms;
+    return rhi != nullptr ? rhi->lastRenderCpuMs() : raster->cpu_ms;
   }
   [[nodiscard]] double gpuMs() const {
-    return rhi != nullptr ? rhi->lastGpuFrameMs() : gl != nullptr ? gl->gpu_ms : 0.0;
+    return rhi != nullptr ? rhi->lastGpuFrameMs() : 0.0;
   }
 };
 
@@ -211,7 +161,7 @@ int main(int argc, char** argv) {
   QApplication app(argc, argv);
   QCommandLineParser parser;
   parser.addHelpOption();
-  parser.addOption({u"canvas"_s, u"rhi, gl or raster"_s, u"canvas"_s, u"rhi"_s});
+  parser.addOption({u"canvas"_s, u"rhi or raster"_s, u"canvas"_s, u"rhi"_s});
   parser.addOption({u"case"_s, u"workload"_s, u"case"_s, u"static_1m"_s});
   parser.addOption({u"frames"_s, u"measured frames"_s, u"frames"_s, u"60"_s});
   parser.addOption({u"samples"_s, u"samples per curve (default: the case's)"_s, u"samples"_s});
@@ -223,6 +173,10 @@ int main(int argc, char** argv) {
   parser.addOption({u"generic-series"_s, u"plain Qwt series data (no content revision)"_s});
   parser.process(app);
   const QString canvas_kind = parser.value(u"canvas"_s);
+  if (canvas_kind != u"rhi"_s && canvas_kind != u"raster"_s) {
+    std::fprintf(stderr, "unknown --canvas %s (rhi or raster)\n", qPrintable(canvas_kind));
+    return 2;
+  }
   const QString workload = parser.value(u"case"_s);
   const int frames = parser.value(u"frames"_s).toInt();
   const int plot_count = std::max(1, parser.value(u"plots"_s).toInt());
@@ -281,11 +235,6 @@ int main(int argc, char** argv) {
       }
       plot.setCanvas(bench->rhi);
       bench->rhi->setPlot(&plot);
-    } else if (canvas_kind == u"gl"_s) {
-      bench->gl = new TimedGlCanvas();
-      bench->gl->timed = gpu_timing;
-      bench->gl->setPaintAttribute(QwtPlotOpenGLCanvas::BackingStore, false);
-      plot.setCanvas(bench->gl);
     } else {
       bench->raster = new TimedRasterCanvas();
       bench->raster->setPaintAttribute(QwtPlotCanvas::BackingStore, false);
@@ -323,12 +272,10 @@ int main(int argc, char** argv) {
     if (tracker_only) {
       bench->tracker = std::make_unique<PJ::CurveTracker>(&plot, QColor(255, 180, 0));
     }
-    // Frames the canvas actually finished (submitted, swapped or painted).
+    // Frames the canvas actually finished (submitted or painted).
     BenchPlot* raw = bench.get();
     if (bench->rhi != nullptr) {
       QObject::connect(bench->rhi, &QRhiWidget::frameSubmitted, [raw]() { ++raw->presented; });
-    } else if (bench->gl != nullptr) {
-      QObject::connect(bench->gl, &QOpenGLWidget::frameSwapped, [raw]() { ++raw->presented; });
     }
     layout->addWidget(bench->plot, plot_index / columns, plot_index % columns);
     plots.push_back(std::move(bench));
@@ -417,15 +364,7 @@ int main(int argc, char** argv) {
     gpu.push_back(frame_gpu);
   }
   BenchPlot& first = *plots.front();
-  if (first.gl != nullptr) {
-    first.gl->makeCurrent();
-  }
-  const QString backend =
-      first.rhi != nullptr ? first.rhi->rendererBackend()
-      : first.gl != nullptr
-          ? QString::fromLatin1(
-                reinterpret_cast<const char*>(first.gl->context()->functions()->glGetString(GL_RENDERER)))
-          : u"QPainter raster"_s;
+  const QString backend = first.rhi != nullptr ? first.rhi->rendererBackend() : u"QPainter raster"_s;
   std::size_t vertices = 0;
   for (const auto& bench : plots) {
     vertices += bench->rhi != nullptr ? bench->rhi->lastVertexCount() : 0;

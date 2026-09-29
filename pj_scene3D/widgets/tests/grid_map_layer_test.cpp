@@ -22,6 +22,8 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -279,7 +281,11 @@ TEST(GridMapLayer, DockTransformsSourceBoundsIntoFixedFrame) {
   ASSERT_NE(layer, nullptr);
   layer->renderAtForTest(100);
 
-  const auto bounds = dock.sceneView()->sceneBoundsForTest();
+  // The dock places the layer's source-frame box in the view's fixed frame
+  // (looked up in the dock's buffer) and hands the union to the view's camera.
+  // No GPU is involved: the view is never shown.
+  ASSERT_EQ(dock.sceneView()->fixedFrame(), "world");
+  const pj::scene3d::AABB bounds = dock.sceneView()->sceneBoundsForTest();
   ASSERT_TRUE(bounds.valid);
   EXPECT_FLOAT_EQ(bounds.min.x, 101.0f);
   EXPECT_FLOAT_EQ(bounds.max.x, 103.0f);
@@ -289,9 +295,8 @@ TEST(GridMapLayer, DockTransformsSourceBoundsIntoFixedFrame) {
   EXPECT_FLOAT_EQ(bounds.max.z, 311.0f);
 }
 
-// Bounds are computed inside renderAt (during paint) after the dock has already
-// unioned the layers' bounds for this frame, so a changed extent must ask for
-// another repaint (PointCloudLayer::onGpuAabb does the same).
+// Bounds are computed inside renderAt, i.e. during the paint, so a changed extent
+// must ask for another repaint to re-fit the scene bounds.
 TEST(GridMapLayer, BoundsChangeRequestsRepaint) {
   Rig rig;
   rig.pushAndBind();

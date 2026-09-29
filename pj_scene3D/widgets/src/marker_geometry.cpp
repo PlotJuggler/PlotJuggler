@@ -165,7 +165,7 @@ Preflight preflight(const PJ::sdk::SceneEntities& scene) {
                        .arg(
                            QString::number(output.instances), QString::number(output.stream_vertices),
                            QString::number(output.frames));
-  } else if (!markerRetainedBytesFit(output.retained_bytes)) {
+  } else if (output.retained_bytes > kSceneLimits.max_marker_retained_bytes_per_layer) {
     output.error = QObject::tr("SceneEntities would retain more than %1 MiB")
                        .arg(kSceneLimits.max_marker_retained_bytes_per_layer / (1024ULL * 1024ULL));
   }

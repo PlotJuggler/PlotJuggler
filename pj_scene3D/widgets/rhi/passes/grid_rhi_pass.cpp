@@ -44,7 +44,10 @@ bool GridRhiPass::initialize(const RhiPassSetup& setup) {
       !ensureUniformBuffer(rhi, zero_offset_uniforms_, kOffsetUniformBytes)) {
     return false;
   }
+  const std::array<float, 4> zero{};
+  setup.updates->updateDynamicBuffer(zero_offset_uniforms_, 0, kOffsetUniformBytes, zero.data());
   setup_ = setup;
+  setup_.updates = nullptr;  // the batch is valid only during initialize()
   shader_resources_ = createBindings(
       rhi, {
                QRhiShaderResourceBinding::uniformBuffer(0, QRhiShaderResourceBinding::VertexStage, setup.view_uniforms),
@@ -196,11 +199,6 @@ void GridRhiPass::build(
 void GridRhiPass::prepare(const RhiFrameContext& frame, bool shadow_active) {
   receive_shadow_ = shadow_active && shadow_pipeline_ != nullptr;
   frame.updates->updateDynamicBuffer(origin_offset_uniforms_, 0, kGridUniformBytes, grid_uniforms_.data());
-  if (zero_offset_pending_) {
-    const std::array<float, 4> zero{};
-    frame.updates->updateDynamicBuffer(zero_offset_uniforms_, 0, kOffsetUniformBytes, zero.data());
-    zero_offset_pending_ = false;
-  }
   // A failed allocation retries next frame.
   if (grid_upload_pending_) {
     const auto bytes = static_cast<quint32>(grid_vertices_.size() * sizeof(Vertex));
@@ -282,7 +280,6 @@ void GridRhiPass::release() {
   connection_buffer_ = nullptr;
   origin_offset_uniforms_ = nullptr;
   zero_offset_uniforms_ = nullptr;
-  zero_offset_pending_ = true;
   grid_capacity_ = 0;
   connection_capacity_ = 0;
   grid_ready_ = false;

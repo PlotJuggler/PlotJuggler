@@ -291,7 +291,6 @@ TEST(PointCloudLayerCoalescing, FailedSampleIsMemoizedAndNotRedecoded) {
       << "a known-failed sample triggered a redundant re-decode at tracker rate";
 }
 
-#ifdef PJ_SCENE3D_RHI
 // An evicted compressed cloud re-derives from the decode cache on the UI thread
 // (the conversion alone); when the cache holds another sample, it decodes again
 // off the UI thread and draws nothing until that lands.
@@ -331,7 +330,6 @@ TEST(PointCloudLayerCoalescing, EvictedCloudRederivesFromTheCacheElseDecodesAsyn
   EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
   EXPECT_EQ(layer.vertexBytes(), uploaded);
 }
-#endif
 
 }  // namespace
 

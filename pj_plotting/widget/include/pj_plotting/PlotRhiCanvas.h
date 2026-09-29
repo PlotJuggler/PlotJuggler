@@ -74,12 +74,12 @@ struct PlotRhiTextVertex {
   float v = 0.0F;
 };
 
-// QRhi plot canvas, used wherever PJ_RHI_WIDGETS is defined (the desktop QRhi
-// build and WebAssembly). Qwt continues to own axes, data, and interaction
-// state; this widget translates the visible Qwt curves, grid and markers into
-// bounded triangle geometry, and rasterises text and every other plot item
-// (legend, marker labels, PlotMarkersItem, unknown QwtPlotItems) with the
-// item's own QPainter drawing into one texture atlas. Any QRhi backend works:
+// QRhi plot canvas, the GPU plot canvas on desktop and in the browser. Qwt
+// continues to own axes, data, and interaction state; this widget translates
+// the visible Qwt curves, grid and markers into bounded triangle geometry, and
+// rasterises text and every other plot item (legend, marker labels,
+// PlotMarkersItem, unknown QwtPlotItems) with the item's own QPainter drawing
+// into one texture atlas. Any QRhi backend works:
 // clip-space corrections are folded into the CPU vertex transform.
 //
 // It renders at one sample per pixel into a colour-only target it owns (no

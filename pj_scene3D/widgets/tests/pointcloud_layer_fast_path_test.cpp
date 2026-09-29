@@ -1,14 +1,15 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// PointCloudLayer zero-copy fast-path integration tests:
+// PointCloudLayer conversion and retained-array integration tests:
 //  - world_bounds_ must refresh on EVERY new sample even when no colormap consumes the scan
 //    (solid / RGB / auto-off). It feeds the camera scene-fit (Scene3DDockWidget::
 //    updateSceneBounds) every frame; gating the bounds scan on colour mode silently froze it
 //    (a regression caught in review). This test pushes two differently-placed clouds in solid
 //    mode and asserts worldBounds() tracks the second, not the first.
-//  - an RGB-direct (kRgb) cloud carrying a packed rgba uint32 field must take the zero-copy
-//    fast path (verbatim colour upload), not the CPU fallback.
+//  - an RGB-direct (kRgb) cloud carrying a packed rgba uint32 field keeps its wire colour
+//    verbatim in kXyzRgba records.
+//  - the retained array's reuse, eviction and re-derivation.
 
 #include <gtest/gtest.h>
 
@@ -83,7 +84,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitRgbaCloud(PJ::Timestamp ts, PJ::sdk::Pay
   return PJ::sdk::ObjectRecord{.ts = ts, .object = cloud};
 }
 
-#ifdef PJ_SCENE3D_RHI  // helpers of the retained-array cases
 // The size of a layer's retained array: its records, padded for upload.
 qsizetype paddedBytes(const pj::scene3d::PointCloudLayer& layer) {
   return PJ::paddedUploadSize(
@@ -135,7 +135,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitIntensityCloud(PJ::Timestamp ts, PJ::sdk
   cloud.data = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(k_points), sizeof(k_points));
   return PJ::sdk::ObjectRecord{.ts = ts, .object = cloud};
 }
-#endif  // PJ_SCENE3D_RHI
 
 PJ::ObjectTopicId registerCloudTopic(PJ::ObjectStore& store) {
   PJ::ObjectTopicDescriptor desc;
@@ -179,8 +178,7 @@ TEST(PointCloudLayerFastPath, WorldBoundsTracksLatestCloudInSolidMode) {
   EXPECT_FLOAT_EQ(bounds->max.x, 5.0f);
 }
 
-// A packed-rgba RGB-direct cloud must take the zero-copy fast path (not the CPU fallback) in
-// the GL build; the QRhi sink retains kXyzRgba records, carrying the wire colour as-is.
+// A packed-rgba RGB-direct cloud is retained as kXyzRgba records, carrying the wire colour as-is.
 TEST(PointCloudLayerFastPath, RgbCloudTakesFastPath) {
   g_rgba_calls.store(0);
   PJ::SessionManager session;
@@ -201,18 +199,13 @@ TEST(PointCloudLayerFastPath, RgbCloudTakesFastPath) {
   // RGB-direct is the smart default once a colour field is detected; assert it explicitly too.
   layer.setColorType(pj::scene3d::PointColorType::kRgb);
   layer.renderAtForTest(100);
-#ifdef PJ_SCENE3D_RHI
   ASSERT_EQ(layer.pointCount(), 1U);
   ASSERT_EQ(layer.vertexFormat(), pj::scene3d::PointVertexFormat::kXyzRgba);
   pj::scene3d::PointVertex vertex;
   std::memcpy(&vertex, layer.vertexBytes().constData(), sizeof(vertex));
   EXPECT_EQ(vertex.attribute, 0xff302010U) << "packed-rgba colour was not carried verbatim";
-#else
-  EXPECT_TRUE(layer.activeCloudIsFastForTest()) << "packed-rgba RGB cloud did not take the fast path";
-#endif
 }
 
-#ifdef PJ_SCENE3D_RHI
 // The retained array is rewritten in place for the next sample only while nothing
 // shares it: an array the view's upload still holds keeps the old cloud.
 TEST(PointCloudLayerFastPath, RetainedVerticesReusedOnlyWhenUnshared) {
@@ -448,6 +441,5 @@ TEST(PointCloudLayerFastPath, SampleChangeWhileEvictedConvertsAndAStreamKeepsIts
   EXPECT_FALSE(layer.verticesEvictedForTest()) << "a stream dropped the array it rewrites";
   EXPECT_FALSE(layer.vertexBytes().isEmpty());
 }
-#endif
 
 }  // namespace

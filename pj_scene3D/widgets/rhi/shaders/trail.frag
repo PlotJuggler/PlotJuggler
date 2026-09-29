@@ -11,6 +11,6 @@ layout(std140, binding = 0) uniform TrailUniforms {
 layout(location = 0) out vec4 fragment_color;
 
 void main() {
-    // Written as-is on every target, like the GL ribbon (no linearisation).
+    // Written as-is (no linearisation).
     fragment_color = vec4(color.rgb, 1.0);
 }

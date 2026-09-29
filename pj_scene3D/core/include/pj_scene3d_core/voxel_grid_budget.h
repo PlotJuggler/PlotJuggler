@@ -26,9 +26,4 @@ namespace pj::scene3d {
   return slices <= limits.max_voxels_per_layer / columns_rows;
 }
 
-[[nodiscard]] constexpr bool voxelPayloadFits(
-    std::uint64_t wire_bytes, const SceneLimits& limits = kSceneLimits) noexcept {
-  return wire_bytes <= limits.max_voxel_wire_bytes;
-}
-
 }  // namespace pj::scene3d

@@ -16,7 +16,7 @@ uint64_t foldFrameTransformIntoKey(
     return key;
   }
   if (const auto tf = tf_buffer->tryLookupTransform(fixed_frame, source_frame, time); tf) {
-    key = foldTransformIntoKey(key, glm::mat4(tf->matrix()));
+    key = foldTransformIntoKey(key, tf->matrix());
   }
   return key;
 }

@@ -75,7 +75,7 @@ ads::CDockWidget* MixedLayout::addDock(const QString& name, QWidget* content, ad
 }
 
 PJ::PlotWidget* MixedLayout::createPlot(int curves, int samples) {
-  PJ::PlotWidgetBase::setOpenGlDisabledOverride(false);
+  PJ::PlotWidgetBase::setGpuCanvasDisabledOverride(false);
   const auto dataset = session_.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "plot.mcap"});
   require(dataset.has_value(), "plot dataset");
   PJ::DataWriter writer = session_.dataEngine().createWriter();

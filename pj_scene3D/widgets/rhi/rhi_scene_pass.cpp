@@ -185,7 +185,7 @@ QRhiGraphicsPipeline* ScenePipelineRegistry::resolve(QRhiGraphicsPipeline* direc
     return direct;
   }
   if (pass == ScenePass::kDepthReplay && direct != nullptr && !direct->hasDepthWrite()) {
-    // The GL composite finds the background by depth, so a draw that writes no
+    // The composite finds the background by depth, so a draw that writes no
     // depth leaves no coverage there: the pixels it tints over the background
     // stay ungraded background, and SSAO/EDL never see it.
     return nullptr;
@@ -350,8 +350,21 @@ QRhiGraphicsPipeline* newScenePipeline(const RhiPassSetup& setup, const Pipeline
   return pipeline;
 }
 
-bool RhiSharedGeometry::create(QRhi* rhi) {
-  const ArrowMeshData& arrow = unitPoseArrowMesh();
+bool createStaticMesh(
+    QRhi* rhi, QRhiResourceUpdateBatch* updates, const ArrowMeshData& mesh, QRhiBuffer*& vertices,
+    QRhiBuffer*& indices) {
+  const auto bytes = [](const auto& values) { return static_cast<quint32>(values.size() * sizeof(values.front())); };
+  vertices = rhi->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer, bytes(mesh.vertices));
+  indices = rhi->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::IndexBuffer, bytes(mesh.indices));
+  if (!vertices->create() || !indices->create()) {
+    return false;
+  }
+  updates->uploadStaticBuffer(vertices, mesh.vertices.data());
+  updates->uploadStaticBuffer(indices, mesh.indices.data());
+  return true;
+}
+
+bool RhiSharedGeometry::create(QRhi* rhi, QRhiResourceUpdateBatch* updates) {
   cube_vertices = rhi->newBuffer(
       QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer, static_cast<quint32>(kCubeVertices.size() * sizeof(CubeVertex)));
   cube_indices = rhi->newBuffer(
@@ -360,31 +373,15 @@ bool RhiSharedGeometry::create(QRhi* rhi) {
   cube_fan_indices = rhi->newBuffer(
       QRhiBuffer::Immutable, QRhiBuffer::IndexBuffer,
       static_cast<quint32>(kCubeFanIndices.size() * sizeof(std::uint16_t)));
-  arrow_vertices = rhi->newBuffer(
-      QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer, static_cast<quint32>(arrow.vertices.size() * sizeof(float)));
-  arrow_indices = rhi->newBuffer(
-      QRhiBuffer::Immutable, QRhiBuffer::IndexBuffer,
-      static_cast<quint32>(arrow.indices.size() * sizeof(std::uint32_t)));
-  if (!cube_vertices->create() || !cube_indices->create() || !cube_fan_indices->create() || !arrow_vertices->create() ||
-      !arrow_indices->create()) {
+  if (!cube_vertices->create() || !cube_indices->create() || !cube_fan_indices->create() ||
+      !createStaticMesh(rhi, updates, unitPoseArrowMesh(), arrow_vertices, arrow_indices)) {
     return false;
   }
-  arrow_index_count = static_cast<quint32>(arrow.indices.size());
-  upload_pending = true;
-  return true;
-}
-
-void RhiSharedGeometry::upload(QRhiResourceUpdateBatch* updates) {
-  if (!upload_pending || cube_vertices == nullptr || arrow_vertices == nullptr) {
-    return;
-  }
+  arrow_index_count = static_cast<quint32>(unitPoseArrowMesh().indices.size());
   updates->uploadStaticBuffer(cube_vertices, kCubeVertices.data());
   updates->uploadStaticBuffer(cube_indices, kCubeIndices.data());  // already uint16, as QRhi wants
   updates->uploadStaticBuffer(cube_fan_indices, kCubeFanIndices.data());
-  const ArrowMeshData& arrow = unitPoseArrowMesh();
-  updates->uploadStaticBuffer(arrow_vertices, arrow.vertices.data());
-  updates->uploadStaticBuffer(arrow_indices, arrow.indices.data());
-  upload_pending = false;
+  return true;
 }
 
 void RhiSharedGeometry::release() {

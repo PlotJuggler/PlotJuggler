@@ -68,9 +68,7 @@ mesh-masked EDL; each optional pass fails independently to a live
 lower-quality or direct-render path. Browser-selected local model bytes are
 capabilities for the current session and are never persisted as reopenable host
 paths. The desktop application uses the same QRhi renderer on the platform's
-native API (OpenGL on Linux, D3D11 on Windows, Metal on macOS); the legacy
-OpenGL renderer stays selectable at build time (`-DPJ_SCENE3D_RHI=OFF`) for one
-release. Paths, laser scans, and the
+native API (OpenGL on Linux, D3D11 on Windows, Metal on macOS). Paths, laser scans, and the
 Image+Pinhole view remain future work and must not be inferred from parser
 availability alone.
 
@@ -291,8 +289,7 @@ Third-party drawable type registration by plugins. Out of v1 scope. Built-in dra
 ## 13. Stack (locked)
 
 - **GPU API**: QRhi via `QRhiWidget` (OpenGL 3.3+ / Vulkan on Linux, D3D11 on
-  Windows, Metal on macOS, WebGL2 in the browser). The legacy OpenGL 4.5 core
-  `QOpenGLWidget` renderer remains behind `-DPJ_SCENE3D_RHI=OFF` for one release.
+  Windows, Metal on macOS, WebGL2 in the browser).
 - **Math**: GLM (column-major, GLSL-matching types).
 - **Canonical objects in**: `pj_base/builtin` schemas read from the `ObjectStore`
   (no wire/CDR decoding in this module — see the architecture note at the top).

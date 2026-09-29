@@ -17,8 +17,7 @@ class GridMapLayer;
 
 /// The GridMap family of the QRhi view: a lit, colormapped heightfield per layer,
 /// drawn attribute-less (6 procedural vertices per quad, elevation and colour
-/// fetched from two R32F textures), the GL GridMapRenderPass's geometry and
-/// in-shader colormaps (colormap.glslinc). Owns its
+/// fetched from two R32F textures) with in-shader colormaps (colormap.glslinc). Owns its
 /// pipelines, per-layer textures and uniforms; the view owns ordering and the
 /// command buffer. Per frame: admit() (once), prepare() (once), then submit()
 /// per ScenePass for each draw.
@@ -91,7 +90,7 @@ class GridMapRhiPass {
   QRhiBuffer* layout_uniform_buffer_ = nullptr;
   QRhiShaderResourceBindings* layout_shader_resources_ = nullptr;
   QRhiGraphicsPipeline* opaque_pipeline_ = nullptr;       // writes depth
-  QRhiGraphicsPipeline* translucent_pipeline_ = nullptr;  // depth test only, like the GL pass
+  QRhiGraphicsPipeline* translucent_pipeline_ = nullptr;  // depth test only
 
   std::vector<GridMapLayer*> layers_;
   std::unordered_map<GridMapLayer*, LayerGpu> layer_gpu_;

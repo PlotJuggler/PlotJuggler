@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // QRhi point-pass behaviour the golden corpus does not pin, rendered through the
-// real Scene3DDockWidget on every backend (the OpenGL-only point-pass tests,
-// re-expressed for the QRhi renderer):
+// real Scene3DDockWidget on every backend:
 //
 //  - the hexagon fan picks each cube's faces from its own centre (mirrored cubes
 //    cover equal areas) and keeps three distinctly lit faces;

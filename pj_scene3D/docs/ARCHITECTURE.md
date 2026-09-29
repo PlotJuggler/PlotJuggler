@@ -4,8 +4,8 @@ How the 3D scene is built and how its data gets on screen. The WHAT lives in
 [REQUIREMENTS.md](./REQUIREMENTS.md). The facts this design works around
 (backend conventions, Qt 6.11.1 bugs, limits and budgets, the rationale behind
 specific choices, golden-image rules, test registration and CI lanes, known gaps)
-are in [TECHNICAL_NOTES.md](./TECHNICAL_NOTES.md). Planned work (deleting the
-legacy renderer, performance follow-ups, Qt 6.12) is in [QRHI_NEXT.md](./QRHI_NEXT.md).
+are in [TECHNICAL_NOTES.md](./TECHNICAL_NOTES.md). Planned work (performance
+follow-ups, Qt 6.12) is in [QRHI_NEXT.md](./QRHI_NEXT.md).
 
 ## Overview
 
@@ -24,12 +24,8 @@ legacy renderer, performance follow-ups, Qt 6.12) is in [QRHI_NEXT.md](./QRHI_NE
   picking, the shadow camera, point-cloud conversion and codecs, `SceneLimits` and the per-family budgets, trail sampling, and the
   grid-map and voxel views. All of it is unit-tested headless.
 
-`PJ_SCENE3D_RHI` (ON by default, forced ON for WebAssembly) selects the renderer.
-The two renderers define the same class names, so a build has exactly one; the
-dock and the layers are the same in both. Browser policy (file picking, bounded
-loading, URDF from bytes) is keyed on `PJ_TARGET_WASM`, not on the renderer. The
-legacy OpenGL renderer that `-DPJ_SCENE3D_RHI=OFF` still builds is described
-only in the appendix.
+The desktop and the browser build the same view; browser policy (file picking,
+bounded loading, URDF from bytes) is keyed on `PJ_TARGET_WASM`.
 
 ## Renderer
 
@@ -48,7 +44,7 @@ The widget's own sample count is chosen once per QRhi in `initialize()`:
 - **1** when the GPU can run the HDR chain (`hdrUnsupportedReason()` is empty: 4x
   multisample renderbuffers and RGBA16F / D32F / RGBA8 render targets). The scene
   is multisampled inside the chain; the output only carries the present, the
-  corner gizmo and the HUD.
+  composited gizmo and the HUD.
 - **4** (`kDirectSampleCount`) when it cannot: the direct pass then draws the
   scene into the output.
 
@@ -105,7 +101,11 @@ takes the view's lighting buffer), `registerPipelines(registry)`, `setLayers`,
 `admit(place, bounds)`, `prepare(RhiFrameContext, ...)`, `drawsFor(layer)` (a
 span of `Draw`s, each carrying its `draw_class`), `submit(cb, draw, ScenePass,
 registry, viewport)` and `release()`. A family owns its pipelines, layout SRB,
-per-layer GPU state and counters. The view owns the command buffer and the
+per-layer GPU state and counters. Constant contents (unit meshes, the voxel
+colour LUT, the model pass's white texture, the gizmo arrow and arms) are recorded once
+in `initialize()` into `RhiPassSetup::updates`, a batch the view submits on the
+command buffer when every part it built succeeded and discards otherwise (a
+failure releases what it names). The view owns the command buffer and the
 logical layer order: `setLayers(std::vector<Scene3DLayer*>)` receives the dock's
 order and dispatches each layer to its family. It loops over the families
 generically (`forEachFamily`) for registration, release and collecting a slot's
@@ -153,7 +153,8 @@ pass (which would record nothing) is skipped.
    logical (dock) order with its `DrawClass`.
 7. **Overlays** (`prepareOverlays`): the corner gizmo and the HUD / hover-label
    images.
-8. **Submit.** The shadow pass when active. With HDR: the HDR colour pass, then
+8. **Submit.** The gizmo's pass when its rotation or size changed (below), then the
+   shadow pass when active. With HDR: the HDR colour pass, then
    the coverage pass (the depth replay, or a clear where the chain resolves its
    depth), SSAO, the EDL mesh mask, and the present pass with the overlays on the
    output. Without HDR: the direct pass on the output, overlays at its end.
@@ -245,6 +246,7 @@ and calls it again, and the frame in between is a backdrop clear.
 | Target | Format | Written by | Read by |
 |---|---|---|---|
 | Output | the widget's colour buffer, 1 or 4 samples | present, overlays; or the direct pass | the window compositor |
+| Gizmo | 4x RGBA8 + depth renderbuffers resolved into an RGBA8 texture (1x: the texture itself plus a depth renderbuffer, where 4x multisample renderbuffers are missing), 80 logical px square at the output DPR | gizmo pass | overlays (composite) |
 | HDR colour | 4x RGBA16F renderbuffer, resolved into a single-sample RGBA16F texture | HDR colour pass | present |
 | HDR depth | depth resolve: 4x D32F texture (D32FS8 on OpenGL) resolved into a single-sample depth texture. Replay: a 4x D32F renderbuffer for the HDR pass, and the replay's own single-sample D32F texture | HDR pass / depth replay | SSAO, EDL, present |
 | Coverage | single-sample RGBA8: alpha = replay coverage, green = raw AO, red = EDL mesh mask | depth replay, SSAO, EDL mask | present |
@@ -320,9 +322,14 @@ present (or at the end of the direct pass), `OverlayRhiPass` draws at output
 resolution on the output target:
 
 - the corner axis gizmo: a lit triad (bottom-right, 80 logical px, oriented by
-  the camera rotation) from the shared unit arrow, `pose.vert` + `gizmo.frag`.
-  Its viewport depth range is [0, 1e-4], which keeps it in front of the output's
-  depth while its arms still occlude each other, with no mid-pass depth clear;
+  the camera rotation), `pose.vert` + `gizmo.frag`, with its own arrow mesh
+  (24 segments; the scene's unit arrow is thinner). It is always drawn into its
+  own target (4x where the GPU has multisample renderbuffers), opaque arms on a
+  transparent clear, whose resolve is premultiplied coverage composited here as
+  a texture quad; the target is redrawn only when the camera rotation or the
+  gizmo's pixel size changed, otherwise the last resolve is composited again.
+  The target is optional: when it cannot be built or resized there is no corner
+  gizmo (a warning in the log; retried on the next `initialize()`);
 - CPU-rasterized images as premultiplied texture quads (`overlay.vert/.frag`): the
   perf HUD (`setShowPerfHud`, key 'P'; GPU time from
   `QRhiCommandBuffer::lastCompletedGpuTime`, "--" where the backend reports none)
@@ -383,9 +390,9 @@ depth-only pipeline built against that target and records its prepared casters.
 ### Per-family passes and caches
 
 **Shared geometry.** The unit cube (voxels), the cube hexagon-fan indices (point
-cubes) and the unit pose arrow (pose triads, TF triads, the corner gizmo) are one
-`RhiSharedGeometry` owned by the view (`RhiPassSetup::geometry`), created in
-`initialize()`, uploaded once, released after every pipeline that draws them.
+cubes) and the unit pose arrow (pose triads, TF triads) are one
+`RhiSharedGeometry` owned by the view (`RhiPassSetup::geometry`), created and
+uploaded in `initialize()`, released after every pipeline that draws them.
 
 **Buffer policy.** Per-sample data (clouds, marker expansions, pose instances,
 trail ribbons, the grid) sits in Static buffers uploaded on a revision change;
@@ -645,7 +652,7 @@ No draw may reference a resource whose `create()` failed. Every `create()` in
 | Class | Resources | On failure |
 |---|---|---|
 | Base | the view's four uniform buffers, `RhiSharedGeometry`, and each built scene family's `initialize()` (the grid and pose pass at once, the others on their first layer): layout SRBs, samplers, the voxel LUT, occupancy quad and marker unit meshes; a template pipeline when a direct frame creates it | Failure state (below), the frame that needed it withheld |
-| Optional stage | the HDR chain (targets, samplers, present SRB and pipeline) and the pipelines' HDR/depth-replay clones (the frame that lost one withheld); SSAO; the EDL mask target and pipelines; the shadow target, bindings, caster and receiver pipelines, material rebinds; `OverlayRhiPass` (corner gizmo, HUD, hover label) | The stage drops and the view renders without it; one warning (logged when the reason changes, shown in the dock label; shadow errors on the caster rows) |
+| Optional stage | the HDR chain (targets, samplers, present SRB and pipeline) and the pipelines' HDR/depth-replay clones (the frame that lost one withheld); SSAO; the EDL mask target and pipelines; the shadow target, bindings, caster and receiver pipelines, material rebinds; `OverlayRhiPass` (corner gizmo, HUD, hover label; without the gizmo's target there is no corner gizmo) | The stage drops and the view renders without it; one warning (logged when the reason changes, shown in the dock label; shadow errors on the caster rows) |
 | Silent optional | the point-list pipelines (on a direct frame) | The same pixels another way: quads |
 | Per layer / per frame | per-layer uniforms, SRBs, textures, instance and stream buffers of every family; overlay image textures | That layer's (or image's) draw is skipped this frame; occupancy, voxel, grid-map and model rows note a warning |
 
@@ -704,8 +711,7 @@ Test builds inject failures (TECHNICAL_NOTES, "Test hooks").
   either nothing changed or the paint is the Show's, which then queues the frame
   if something changed while hidden. A hidden ADS tab or workspace tab (a
   `TabbedPlotWidget` page) shown again therefore composites its last frame at
-  once and renders only if its content changed, like the GL build's
-  `QOpenGLWidget`. `QWidget::update()` is not virtual, so every change must
+  once and renders only if its content changed. `QWidget::update()` is not virtual, so every change must
   request its frame through a `SceneViewWidget` (the view's setters, the dock,
   the config panel): a call through a `QWidget` pointer presents the retained
   frame. `grabPresentedFrame()` marks the content, so its presented frame is a
@@ -778,8 +784,9 @@ through:
 - `PointRenderable` (`point_renderable.h`): `vertexBytes()` / `pointCount()` /
   `sourceBounds()` / `geometryRevision()`, implemented by `PointCloudLayer` and
   `DepthCloudLayer`;
-- `ModelRenderable` (`model_renderable.h`): frame-local `ModelDrawCall`s and
-  `modelRevision()`, implemented by `RobotModelLayer` and `SceneEntitiesLayer`;
+- `ModelRenderable` (`model_renderable.h`): frame-local `ModelDrawCall`s,
+  `modelRevision()` and `modelLayer()` (the layer that carries the renderer
+  warning), implemented by `RobotModelLayer` and `SceneEntitiesLayer`;
 - each other family's accessors (`instances()`, `stagedGrid()`, `points()`, the
   packed volume, the marker geometry).
 
@@ -1046,8 +1053,8 @@ scalar range from the same pass.
   (read even when not stored); RGB-direct mode reads a packed `rgba` (or separate
   `red`/`green`/`blue` channels). A colour-type or field change that needs another
   format re-packs the same sample. It validates exactly as `convertCanonical()`
-  (the GL rollback's decoder into `DecodedPointCloud`) and produces the same
-  values. The layer runs it in chunks on the global thread pool, the GUI thread
+  (the canonical decoder into `DecodedPointCloud`, kept as the reference) and
+  produces the same values. The layer runs it in chunks on the global thread pool, the GUI thread
   taking chunks too (up to 16 into a fresh array, whose first-touch page faults
   scale with the threads, 8 when rewriting one), and writes into the retained
   array in place while nothing
@@ -1502,27 +1509,3 @@ frame prefix, colour override, COLLADA up_axis, resolution override — exists o
 the layer but is not reachable from the panel). The look knobs (tonemap,
 exposure, saturation, SSAO, EDL) are runtime APIs on the view with baked defaults
 and no app UI.
-
-## Appendix: Legacy OpenGL renderer (release N only)
-
-`-DPJ_SCENE3D_RHI=OFF` builds the previous renderer for one release, as the
-rollback: CMake warns, and `build.sh` / `build.ps1` pass the flag on every
-configure. It is **frozen**: no feature or fix lands in it, and PR 2 deletes it
-(QRHI_NEXT.md, "PR 2").
-
-- **What it is.** `widgets/src/scene_view_widget.cpp` (a `QOpenGLWidget`,
-  OpenGL 4.5 core), the GL passes in `widgets/src/passes/`, the object wrappers in
-  `widgets/src/gl/`, and `SceneHdrFbo`. The same dock and layers; each layer keeps
-  a GL sink beside its QRhi one (`#ifndef PJ_SCENE3D_RHI` blocks), including the
-  zero-copy point upload and the GPU AABB reducer. The plots use
-  `QwtPlotOpenGLCanvas`, and every GPU widget requests OpenGL.
-- **Behaviour that differs** from the design above: markers draw in layer
-  order; wireframe culls back-facing edges of closed solids; the HDR chain always
-  resolves depth; `QOpenGLWidget` recreates its context on every ADS reparent, and
-  every pass rebuilds in `initializeGL` (the app never sets
-  `AA_ShareOpenGLContexts`).
-- **Where it is still tested.** Linux CI's trimmed `build-gl` tree (its goldens
-  per pixel, the GL-only runners and tests: the `pj_gl_rollback_tests` target,
-  ctest label `gl-rollback`) and Windows CI's non-blocking `gl`
-  lane (TECHNICAL_NOTES, "CI lanes"). The golden images come from this renderer
-  until PR 2.

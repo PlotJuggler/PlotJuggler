@@ -9,7 +9,6 @@
 #include <QStringList>
 #include <chrono>
 #include <cstdint>
-#include <cstring>
 #include <glm/glm.hpp>
 #include <memory>
 #include <optional>
@@ -18,6 +17,7 @@
 
 #include "pj_scene3d_core/camera/camera.h"  // AABB
 #include "pj_scene_common/scene_layer.h"
+#include "pj_widgets/Fnv1a.h"
 
 class QWidget;
 
@@ -28,18 +28,16 @@ class SessionManager;
 namespace pj::scene3d {
 
 class TransformBuffer;
-struct ViewParams;
-struct FrameContext;
 
-// Fold a transform's 16 float bit patterns into a renderKey (FNV-1a style). The
-// TF is a zero-order hold, so keys only change when the pose actually moves —
-// what lets a 60 Hz playhead coalesce repaints down to the TF update rate.
-[[nodiscard]] inline uint64_t foldTransformIntoKey(uint64_t key, const glm::mat4& transform) {
+// Fold a transform's 16 bit patterns (float or double) into an in-process key
+// (FNV-1a style). The TF is a zero-order hold, so keys only change when the pose
+// actually moves — what lets a 60 Hz playhead coalesce repaints down to the TF
+// update rate.
+template <typename T>
+[[nodiscard]] uint64_t foldTransformIntoKey(uint64_t key, const glm::mat<4, 4, T>& transform) {
   for (int col = 0; col < 4; ++col) {
     for (int row = 0; row < 4; ++row) {
-      uint32_t bits = 0;
-      std::memcpy(&bits, &transform[col][row], sizeof(bits));
-      key = (key ^ bits) * 0x100000001b3ULL;
+      key = PJ::fnv1aMixBits(key, transform[col][row]);
     }
   }
   return key;
@@ -63,9 +61,9 @@ struct Scene3DLayerContext : PJ::SceneLayerContext {
 
 // Abstract base for everything the 3D scene renders on behalf of a user-added
 // topic. Generic identity/lifecycle/config/XML/visibility/repaint behavior is
-// inherited from PJ::ISceneLayer; this type adds only 3D-specific frame and GL
-// hooks consumed by Scene3DDockWidget and SceneViewWidget. The GL hooks exist only
-// in the GL renderer build; with PJ_SCENE3D_RHI the QRhi view owns all GPU state.
+// inherited from PJ::ISceneLayer; this type adds only 3D-specific frame hooks
+// consumed by Scene3DDockWidget and SceneViewWidget. Layers own no GPU resource:
+// the view owns all GPU state.
 //
 // Concrete subclasses live under
 // `pj_scene3D/widgets/include/pj_scene3d_widgets/layers/`.
@@ -93,28 +91,6 @@ class Scene3DLayer : public PJ::ISceneLayer {
   // treats that as "not warning, pending data" rather than "broken".
   [[nodiscard]] virtual QString sourceFrame() const = 0;
 
-#ifndef PJ_SCENE3D_RHI
-  // GL. initializeGL() is called by the SceneViewWidget at the top of
-  // every paintGL with a current GL context. Subclasses are expected to
-  // guard against double-init internally (`if (initialized_) return;`)
-  // — mirroring the idiom each IRenderPass already uses. The
-  // per-frame call is what lets layers added *after* the widget has
-  // been realised initialise their GL state on the first paint they
-  // see, without requiring the dock to hold a current context at
-  // attach time. render() is called every paintGL frame; the layer
-  // internally sequences its one or more IRenderPass instances. frame_ctx
-  // (TF buffer + fixed frame + time) is borrowed for the call's duration —
-  // layers must not store it.
-  virtual void initializeGL() = 0;
-  virtual void render(const ViewParams& view_params, const FrameContext& frame_ctx) = 0;
-
-  // Drop the GL resources owned by this layer's render pass(es), returning
-  // them to their pre-initializeGL state. Called by SceneViewWidget when the
-  // GL context is about to be destroyed (see IRenderPass::releaseGL); the
-  // layer re-initializes lazily on the next paintGL.
-  virtual void releaseGL() = 0;
-#endif  // PJ_SCENE3D_RHI
-
   // Source-frame extent of this layer's geometry, or nullopt when
   // the layer reports no bounds (no data decoded yet, or a bounds-less layer
   // kind). The dock transforms each box into the current fixed frame before
@@ -123,28 +99,6 @@ class Scene3DLayer : public PJ::ISceneLayer {
   [[nodiscard]] virtual std::optional<AABB> worldBounds() const {
     return std::nullopt;
   }
-
-  // World-space AABB of this layer's shadow-CASTER geometry at the current frame, or
-  // nullopt for layers that cast nothing. DISTINCT from worldBounds() on purpose:
-  // worldBounds() drives camera framing (and RobotModelLayer deliberately reports
-  // none so a moving robot can't yank the camera), whereas the shadow frustum MUST
-  // enclose the robot mesh. Only mesh-bearing layers (RobotModelLayer,
-  // SceneEntitiesLayer model primitives) override this; everything else casts no
-  // shadow. Non-const and FrameContext-taking because the bounds depend on the
-  // current TF poses (the layer rebuilds its draw list to compute them).
-  [[nodiscard]] virtual std::optional<AABB> meshShadowBounds(const FrameContext& /*frame_ctx*/) {
-    return std::nullopt;
-  }
-
-#ifndef PJ_SCENE3D_RHI
-  // Depth-only render of this layer's shadow casters from the light's point of view,
-  // into the shadow map currently bound by the SceneViewWidget pre-pass.
-  // `light_view_proj` is the world->light-clip matrix from fitDirectionalShadowCamera.
-  // Default no-op: only mesh layers cast (they forward their visual draws to their
-  // MeshRenderPass, which owns the per-context depth-only program). REQUIRES a current
-  // GL context (called from the pre-pass, before renderScene).
-  virtual void renderShadowCasters(const glm::mat4& /*light_view_proj*/, const FrameContext& /*frame_ctx*/) {}
-#endif  // PJ_SCENE3D_RHI
 
   // The layer's own row warning (icon + tooltip), distinct from the dock's
   // frame-orphan check: the data part (decode, admission, budget) then the

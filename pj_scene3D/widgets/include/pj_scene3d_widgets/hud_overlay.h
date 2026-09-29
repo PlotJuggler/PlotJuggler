@@ -22,18 +22,13 @@ namespace pj::scene3d {
 // Returns a NULL QImage when there is nothing to draw
 // (no lines, or every line empty), so the caller can skip the blit.
 //
-// Why this exists — the perf HUD and the TF hover label must NOT paint their
-// text with `QPainter` bound directly to the `SceneViewWidget` (a
-// `QOpenGLWidget`). That path caches glyphs in a per-GL-context texture atlas,
-// and this module deliberately runs each 3D view on its own unshared GL context
-// (no `Qt::AA_ShareOpenGLContexts`), so the context is *recreated* whenever ADS
-// reparents the dock — dock/float/split, and notably **layout restore**, which
-// reparents the view into the reconstructed dock tree. After such a recreation
-// the glyph atlas is left stale / built at the wrong device-pixel ratio, so
-// text renders doubled/garbled while vector fills (the panel itself) stay
-// correct. Rasterizing the text on the CPU here and blitting the result with
-// `drawImage()` — a plain textured quad that never touches the glyph atlas — is
-// immune to the context recreation and to later DPR changes.
+// Why this exists — the perf HUD and the TF hover label are CPU-rasterized
+// here and drawn by the view as a plain textured quad, never painted with
+// `QPainter` glyphs on the view: the view's QRhi is *recreated* whenever ADS
+// reparents the dock — dock/float/split, and notably **layout restore** — and
+// a GPU glyph cache tied to it would go stale or keep the wrong device-pixel
+// ratio. A CPU-rasterized image is immune to the recreation and to later DPR
+// changes.
 QImage renderHudPanel(
     const QStringList& lines, const QFont& font, qreal device_pixel_ratio, int padding, int panel_alpha,
     const QColor& text_color);

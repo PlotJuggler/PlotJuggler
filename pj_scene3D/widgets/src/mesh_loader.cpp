@@ -17,11 +17,13 @@
 #include <exception>
 #include <glm/gtc/matrix_transform.hpp>
 #include <limits>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "pj_scene3d_core/model_budget.h"
+#include "pj_widgets/Fnv1a.h"
 using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
@@ -57,13 +59,9 @@ glm::mat3 zUpFromYUpRotation() {
 }
 
 // FNV-1a over a byte span — a cheap, stable content hash for embedded-texture
-// cache keys (dedups identical embedded images and survives GL-context recreation).
+// cache keys (dedups identical embedded images and survives a QRhi recreation).
 std::string contentHashKey(const std::uint8_t* data, std::size_t size) {
-  std::uint64_t h = 1469598103934665603ULL;  // FNV offset basis
-  for (std::size_t i = 0; i < size; ++i) {
-    h ^= data[i];
-    h *= 1099511628211ULL;  // FNV prime
-  }
+  const std::uint64_t h = PJ::fnv1a(std::span(data, size));
   std::array<char, 17> buf{};
   std::snprintf(buf.data(), buf.size(), "%016llx", static_cast<unsigned long long>(h));
   return std::string("emb:") + buf.data();
@@ -439,11 +437,12 @@ MeshData MeshLoader::importFromFile(const QString& path, bool flip_to_z_up) {
   // Exception barrier: assimp drives allocations from file-declared counts and
   // buildMeshData reserves from them too, so hostile input can throw
   // bad_alloc/length_error. This runs on a QtConcurrent worker — an escaped
-  // exception would be rethrown by QFuture::result() on the GUI thread (inside
-  // paintGL) and terminate the app. Mirrors pointcloud_codecs.cpp's barriers.
+  // exception would be rethrown by QFuture::result() on the GUI thread and
+  // terminate the app. Mirrors pointcloud_codecs.cpp's barriers.
   try {
     const QFileInfo source_info(path);
-    if (source_info.size() < 0 || !modelSourceFits(static_cast<std::uint64_t>(source_info.size()))) {
+    if (source_info.size() < 0 ||
+        static_cast<std::uint64_t>(source_info.size()) > kSceneLimits.max_model_source_bytes) {
       MeshData out;
       out.error =
           u"model source exceeds the %1 MiB limit"_s.arg(kSceneLimits.max_model_source_bytes / (1024ULL * 1024ULL));
@@ -474,7 +473,7 @@ MeshData MeshLoader::importFromFile(const QString& path, bool flip_to_z_up) {
 MeshData MeshLoader::importFromMemory(const QByteArray& bytes, const QString& format_hint, bool flip_to_z_up) {
   // Same exception barrier as importFromFile (see the comment there).
   try {
-    if (bytes.size() < 0 || !modelSourceFits(static_cast<std::uint64_t>(bytes.size()))) {
+    if (bytes.size() < 0 || static_cast<std::uint64_t>(bytes.size()) > kSceneLimits.max_model_source_bytes) {
       MeshData out;
       out.error =
           u"model source exceeds the %1 MiB limit"_s.arg(kSceneLimits.max_model_source_bytes / (1024ULL * 1024ULL));

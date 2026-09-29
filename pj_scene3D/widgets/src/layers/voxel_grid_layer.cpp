@@ -175,19 +175,12 @@ void VoxelGridLayer::detach() {
   noteRenderSuccess();
   requested_time_.reset();
   tracker_dirty_ = false;
-#ifndef PJ_SCENE3D_RHI
-  pass_.clearGrid();
-#endif
 }
 
 void VoxelGridLayer::resetStreamingState() {
   uploaded_uid_ = {};
   uploaded_field_setting_ = kNoFieldSetting;
   budget_.reset();
-#ifndef PJ_SCENE3D_RHI
-  cached_grid_.reset();
-  cached_grid_uid_ = {};
-#endif
 }
 
 void VoxelGridLayer::onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id) {
@@ -206,7 +199,7 @@ bool VoxelGridLayer::bootstrap() {
   PJ::ObjectStore& store = ctx_.session->objectStore();
   auto first = store.at(topic_id_, 0);
   if (!first.has_value() || first->payload.bytes.empty() ||
-      !voxelPayloadFits(static_cast<std::uint64_t>(first->payload.bytes.size()))) {
+      static_cast<std::uint64_t>(first->payload.bytes.size()) > kSceneLimits.max_voxel_wire_bytes) {
     return false;
   }
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
@@ -318,37 +311,20 @@ bool VoxelGridLayer::updateAt(int64_t time_ns) {
     return true;
   };
 
-  // Reuse the parse memo (GL build) when only the field changed; otherwise decode.
-  const PJ::sdk::VoxelGrid* grid = nullptr;
-#ifndef PJ_SCENE3D_RHI
-  if (cached_grid_.has_value() && entry->sequential_uid == cached_grid_uid_) {
-    grid = &*cached_grid_;
+  if (static_cast<std::uint64_t>(entry->payload.bytes.size()) > kSceneLimits.max_voxel_wire_bytes) {
+    return fail(tr("Voxel-grid payload is %1 MiB; the limit is %2 MiB")
+                    .arg(QString::number(static_cast<double>(entry->payload.bytes.size()) / (1024.0 * 1024.0), 'f', 1))
+                    .arg(kSceneLimits.max_voxel_wire_bytes / kMiB));
   }
-#endif
-  std::optional<PJ::sdk::ObjectRecord> decoded;  // keeps a fresh decode alive for this call
+  const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
+  auto obj = resolveObject(binding, PJ::sdk::BuiltinObjectType::kVoxelGrid, entry->timestamp, entry->payload);
+  if (!obj.has_value()) {
+    qCWarning(lcVoxel) << "updateAt: parseObject failed:" << QString::fromStdString(obj.error());
+    return fail(tr("Voxel grid could not be decoded: %1").arg(QString::fromStdString(obj.error())));
+  }
+  const PJ::sdk::VoxelGrid* grid = obj->object.get<PJ::sdk::VoxelGrid>();  // valid while obj lives
   if (grid == nullptr) {
-    if (!voxelPayloadFits(static_cast<std::uint64_t>(entry->payload.bytes.size()))) {
-      return fail(
-          tr("Voxel-grid payload is %1 MiB; the limit is %2 MiB")
-              .arg(QString::number(static_cast<double>(entry->payload.bytes.size()) / (1024.0 * 1024.0), 'f', 1))
-              .arg(kSceneLimits.max_voxel_wire_bytes / kMiB));
-    }
-    const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
-    auto obj = resolveObject(binding, PJ::sdk::BuiltinObjectType::kVoxelGrid, entry->timestamp, entry->payload);
-    if (!obj.has_value()) {
-      qCWarning(lcVoxel) << "updateAt: parseObject failed:" << QString::fromStdString(obj.error());
-      return fail(tr("Voxel grid could not be decoded: %1").arg(QString::fromStdString(obj.error())));
-    }
-    decoded = std::move(*obj);
-    grid = decoded->object.get<PJ::sdk::VoxelGrid>();
-    if (grid == nullptr) {
-      return fail(tr("This layer accepts VoxelGrid samples only"));
-    }
-#ifndef PJ_SCENE3D_RHI
-    cached_grid_ = *grid;  // copy carries the anchor → bytes stay alive past the call
-    cached_grid_uid_ = entry->sequential_uid;
-    grid = &*cached_grid_;
-#endif
+    return fail(tr("This layer accepts VoxelGrid samples only"));
   }
 
   updateSourceFrame(grid->frame_id);
@@ -407,10 +383,8 @@ bool VoxelGridLayer::updateAt(int64_t time_ns) {
   rows_ = grid->row_count;
   slices_ = grid->slice_count;
   source_bounds_ = voxelGridBounds(*grid);
-#ifdef PJ_SCENE3D_RHI
   const FiniteRange range = value_kind_ == VoxelValueKind::kScalar ? finiteRange(scalar_volume_) : FiniteRange{};
   automatic_range_ = range.valid ? std::pair<float, float>{range.lo, range.hi} : std::pair<float, float>{0.0f, 1.0f};
-#endif
   ++texture_revision_;
   setDataWarning({});
   return true;
@@ -433,10 +407,8 @@ void VoxelGridLayer::setVisible(bool visible) {
     return;
   }
   visible_ = visible;
-#ifdef PJ_SCENE3D_RHI
-  // Release the packed volume while hidden; un-hiding re-packs. (The GL build
-  // has already moved it into its pass, which keeps it across a hide.) Its
-  // bounds stay: a hidden layer still counts in the camera's scene bounds.
+  // Release the packed volume while hidden; un-hiding re-packs. Its bounds
+  // stay: a hidden layer still counts in the camera's scene bounds.
   if (!visible_) {
     budget_.reset();
     const AABB bounds = source_bounds_;
@@ -447,65 +419,9 @@ void VoxelGridLayer::setVisible(bool visible) {
   } else if (requested_time_.has_value()) {
     tracker_dirty_ = true;
   }
-#endif
   emit visibilityChanged(visible);
   emit repaintRequested();
 }
-
-#ifndef PJ_SCENE3D_RHI
-void VoxelGridLayer::initializeGL() {
-  pass_.initializeGL();
-}
-
-void VoxelGridLayer::releaseGL() {
-  pass_.releaseGL();
-}
-
-void VoxelGridLayer::syncPass() {
-  if (pass_revision_ == texture_revision_) {
-    return;
-  }
-  pass_revision_ = texture_revision_;
-  if (!hasVolume()) {
-    pass_.clearGrid();
-    return;
-  }
-  // The pass retains its own copy across context loss, so the layer hands the
-  // volume over instead of keeping a second one.
-  VoxelGridUpload upload;
-  upload.frame_id = source_frame_;
-  upload.origin = origin_;
-  upload.cell_size = cell_size_;
-  upload.column_count = columns_;
-  upload.row_count = rows_;
-  upload.slice_count = slices_;
-  upload.kind = value_kind_;
-  upload.scalar = std::move(scalar_volume_);
-  upload.rgba = std::move(rgba_volume_);
-  pass_.setGrid(std::move(upload));
-}
-
-void VoxelGridLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
-  if (!visible_) {
-    return;
-  }
-  drainPendingUpdate();
-  syncPass();
-  pushDisplayParamsToPass();
-  pass_.render(view_params, frame_ctx);
-}
-
-void VoxelGridLayer::pushDisplayParamsToPass() {
-  pass_.setDrawMode(draw_mode_);
-  pass_.setThreshold(static_cast<float>(threshold_));
-  pass_.setAutoRange(auto_range_);
-  pass_.setManualRange(static_cast<float>(manual_lo_), static_cast<float>(manual_hi_));
-  pass_.setColormap(colormap_);
-  pass_.setOpacity(static_cast<float>(opacity_));
-  pass_.setVisible(visible_);
-}
-
-#endif
 
 bool VoxelGridLayer::drainPendingUpdate() {
   if (!visible_ || !tracker_dirty_ || !requested_time_.has_value()) {
