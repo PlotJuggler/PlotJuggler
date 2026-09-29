@@ -346,9 +346,9 @@ bool MarkerRhiPass::initialize(const RhiPassSetup& setup) {
   for (std::size_t index = 0; index < descs.size(); ++index) {
     PipelineDesc desc = descs[index];
     desc.depth_write = false;
-    pipelines_[index][0] = createScenePipeline(setup, desc);
+    pipelines_[index][0] = setup.pipelines->add(desc, setup.part);
     desc.depth_write = true;
-    pipelines_[index][1] = createScenePipeline(setup, desc);
+    pipelines_[index][1] = setup.pipelines->add(desc, setup.part);
   }
   if (!ready()) {
     return false;
@@ -393,14 +393,6 @@ bool MarkerRhiPass::ready() const {
   return std::all_of(pipelines_.cbegin(), pipelines_.cend(), [](const auto& variants) {
     return variants[0] != nullptr && variants[1] != nullptr;
   });
-}
-
-void MarkerRhiPass::registerPipelines(ScenePipelineRegistry& registry) const {
-  for (const auto& variants : pipelines_) {
-    for (QRhiGraphicsPipeline* pipeline : variants) {
-      registry.add(pipeline);
-    }
-  }
 }
 
 void MarkerRhiPass::setLayers(const std::vector<SceneEntitiesLayer*>& layers) {
@@ -839,7 +831,7 @@ void MarkerRhiPass::prepare(const RhiFrameContext& frame) {
   }
 }
 
-QRhiGraphicsPipeline* MarkerRhiPass::instancePipeline(const Draw& draw) const {
+const ScenePipeline* MarkerRhiPass::instancePipeline(const Draw& draw) const {
   const Pipeline pipeline = [&draw] {
     switch (draw.kind) {
       case Kind::kInstanceLines:
@@ -911,12 +903,7 @@ void MarkerRhiPass::release() {
     delete mesh.vertex_buffer;
     mesh = {};
   }
-  for (auto& variants : pipelines_) {
-    for (QRhiGraphicsPipeline*& pipeline : variants) {
-      delete pipeline;
-      pipeline = nullptr;
-    }
-  }
+  pipelines_ = {};
   for (auto& [layer, gpu] : layer_gpu_) {
     (void)layer;
     releaseLayerGpu(gpu);

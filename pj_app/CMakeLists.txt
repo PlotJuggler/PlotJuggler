@@ -136,6 +136,7 @@ if(EMSCRIPTEN)
             target_sources(pj_app_shell PRIVATE
                 tests/wasm_scene3d_acceptance_probes.cpp
                 tests/wasm_scene3d_acceptance_probes.h)
+            target_link_libraries(pj_app_shell PRIVATE pj_scene3d_widgets_testing)
         endif()
         if(TARGET pj_wasm_mcap_source AND NOT TARGET pj_wasm_ros_parser)
             target_sources(pj_app_shell PRIVATE tests/wasm_mcap_probe_parser.cpp)
@@ -766,7 +767,7 @@ if(PJ_BUILD_TESTS)
             pj_add_test_runner(rhi_mixed_dock_test
                 MAIN gui WARNINGS RHI_BACKENDS DPR2
                 SOURCES tests/rhi_mixed_dock_test.cpp
-                LIBS pj_mixed_layout_fixture pj_resources Qt6::Test
+                LIBS pj_mixed_layout_fixture pj_scene3d_widgets_testing pj_resources Qt6::Test
                 TIMEOUT 60
             )
         endif()
@@ -805,7 +806,8 @@ if(NOT EMSCRIPTEN AND TARGET pj_scene2d_widgets AND TARGET pj_scene3d_widgets)
     # Mixed-layout budgets (a dev demo, no ctest), same gate as the root demos.
     if(PJ_BUILD_DEMOS)
         add_executable(mixed_layout_benchmark benchmarks/mixed_layout_benchmark.cpp)
-        target_link_libraries(mixed_layout_benchmark PRIVATE pj_mixed_layout_fixture pj_resources pj_bench_probes)
+        target_link_libraries(mixed_layout_benchmark PRIVATE
+            pj_mixed_layout_fixture pj_scene3d_widgets_testing pj_resources pj_bench_probes)
         if(DEFINED PJ_WARNING_FLAGS)
             target_compile_options(mixed_layout_benchmark PRIVATE ${PJ_WARNING_FLAGS})
         endif()

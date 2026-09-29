@@ -27,6 +27,11 @@ Scene3DLayer::Scene3DLayer(QObject* parent) : PJ::ISceneLayer(parent) {}
 
 Scene3DLayer::~Scene3DLayer() = default;
 
+const std::string& Scene3DLayer::renderFrameId() const {
+  static const std::string kNone;
+  return kNone;
+}
+
 void Scene3DLayer::noteRenderFailure(QString warning) {
   if (render_warning_ == warning) {
     return;

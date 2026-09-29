@@ -39,12 +39,22 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <glm/glm.hpp>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "../rhi/passes/gridmap_rhi_pass.h"
+#include "../rhi/passes/marker_rhi_pass.h"
+#include "../rhi/passes/model_rhi_pass.h"
+#include "../rhi/passes/occupancy_rhi_pass.h"
+#include "../rhi/passes/point_rhi_pass.h"
+#include "../rhi/passes/pose_rhi_pass.h"
+#include "../rhi/passes/trail_rhi_pass.h"
+#include "../rhi/passes/voxel_rhi_pass.h"
+#include "../rhi/scene_view_widget_rhi_quality_p.h"
 #include "pj_base/builtin/grid_map_codec.hpp"
 #include "pj_base/builtin/occupancy_grid_codec.hpp"
 #include "pj_base/builtin/occupancy_grid_update_codec.hpp"
@@ -58,12 +68,14 @@
 #include "pj_scene3d_widgets/layers/trail_layer.h"
 #include "pj_widgets/GraphicsApi.h"
 #include "scene3d_render_test_support.h"
+#include "scene_view_test_access.h"
 
 using namespace Qt::StringLiterals;
 
 namespace {
 
 using BT = PJ::sdk::BuiltinObjectType;
+using pj::scene3d::SceneViewTestAccess;
 using pj::scene3d::SceneViewWidget;
 using pj::scene3d::test::channelDeltaSum;
 using pj::scene3d::test::countPixels;
@@ -110,9 +122,9 @@ void dumpCounters(const SceneViewWidget& v, const char* name) {
     return;
   }
   const auto* test = ::testing::UnitTest::GetInstance()->current_test_info();
-  const auto texture_slots = v.lastModelTextureSlotCountsForTest();
+  const auto texture_slots = SceneViewTestAccess::modelPass(v).lastTextureSlotCounts();
   QStringList ids;
-  for (const std::uint32_t id : v.lastSubmittedLayerIdsForTest()) {
+  for (const std::uint32_t id : SceneViewTestAccess::lastSubmittedLayerIds(v)) {
     ids.push_back(QString::number(id));
   }
   const QString line =
@@ -120,42 +132,42 @@ void dumpCounters(const SceneViewWidget& v, const char* name) {
       u"occ=%15/%16/%17/%18 vox=%19/%20/%21 markers=%22/%23/%24 models=%25/%26/%27 slots=%28,%29,%30,%31,%32 "
       u"shadow=%33/%34/%35/%36 hdr=%37 ssao=%38 edl=%39 submitted=%40\n"_s
           .arg(requestedBackend(), QString::fromLatin1(test->name()), QLatin1String(name))
-          .arg(v.lastLineVertexCountForTest())
-          .arg(v.lastTriangleVertexCountForTest())
-          .arg(v.lastResolvedFrameCountForTest())
-          .arg(v.lastPointLayerCountForTest())
-          .arg(v.lastPointVertexCountForTest())
-          .arg(v.lastCubeLayerCountForTest())
-          .arg(v.lastCubeInstanceCountForTest())
-          .arg(v.lastDepthLayerCountForTest())
-          .arg(v.lastDepthVertexCountForTest())
-          .arg(v.lastPoseLayerCountForTest())
-          .arg(v.lastPoseArmCountForTest())
-          .arg(v.lastOccupancyLayerCountForTest())
-          .arg(v.lastOccupancyCellCountForTest())
-          .arg(v.occupancyFullUploadCountForTest())
-          .arg(v.occupancyPartialUploadCountForTest())
-          .arg(v.lastVoxelLayerCountForTest())
-          .arg(v.lastVoxelCountForTest())
-          .arg(v.voxelFullUploadCountForTest())
-          .arg(v.lastMarkerLayerCountForTest())
-          .arg(v.lastMarkerInstanceCountForTest())
-          .arg(v.lastMarkerStreamVertexCountForTest())
-          .arg(v.lastModelLayerCountForTest())
-          .arg(v.lastModelDrawCountForTest())
-          .arg(v.lastModelTriangleCountForTest())
+          .arg(SceneViewTestAccess::lastLineVertexCount(v))
+          .arg(SceneViewTestAccess::lastTriangleVertexCount(v))
+          .arg(SceneViewTestAccess::lastResolvedFrameCount(v))
+          .arg(SceneViewTestAccess::pointPass(v).lastPointLayerCount())
+          .arg(SceneViewTestAccess::pointPass(v).lastPointVertexCount())
+          .arg(SceneViewTestAccess::pointPass(v).lastCubeLayerCount())
+          .arg(SceneViewTestAccess::pointPass(v).lastCubeInstanceCount())
+          .arg(SceneViewTestAccess::pointPass(v).lastDepthLayerCount())
+          .arg(SceneViewTestAccess::pointPass(v).lastDepthVertexCount())
+          .arg(SceneViewTestAccess::posePass(v).lastLayerCount())
+          .arg(SceneViewTestAccess::posePass(v).lastArmCount())
+          .arg(SceneViewTestAccess::occupancyPass(v).lastLayerCount())
+          .arg(SceneViewTestAccess::occupancyPass(v).lastCellCount())
+          .arg(SceneViewTestAccess::occupancyPass(v).fullUploadCount())
+          .arg(SceneViewTestAccess::occupancyPass(v).partialUploadCount())
+          .arg(SceneViewTestAccess::voxelPass(v).lastLayerCount())
+          .arg(SceneViewTestAccess::voxelPass(v).lastVoxelCount())
+          .arg(SceneViewTestAccess::voxelPass(v).fullUploadCount())
+          .arg(SceneViewTestAccess::markerPass(v).lastLayerCount())
+          .arg(SceneViewTestAccess::markerPass(v).lastInstanceCount())
+          .arg(SceneViewTestAccess::markerPass(v).lastStreamVertexCount())
+          .arg(SceneViewTestAccess::modelPass(v).lastLayerCount())
+          .arg(SceneViewTestAccess::modelPass(v).lastDrawCount())
+          .arg(SceneViewTestAccess::modelPass(v).lastTriangleCount())
           .arg(texture_slots[0])
           .arg(texture_slots[1])
           .arg(texture_slots[2])
           .arg(texture_slots[3])
           .arg(texture_slots[4])
-          .arg(v.lastShadowActiveForTest() ? 1 : 0)
-          .arg(v.lastShadowFitValidForTest() ? 1 : 0)
-          .arg(v.lastShadowDrawCountForTest())
-          .arg(v.lastShadowTriangleCountForTest())
-          .arg(v.lastHdrActiveForTest() ? 1 : 0)
-          .arg(v.lastSsaoActiveForTest() ? 1 : 0)
-          .arg(v.lastEdlActiveForTest() ? 1 : 0)
+          .arg(SceneViewTestAccess::stage(v, SceneViewTestAccess::Stage::kShadow).last_active ? 1 : 0)
+          .arg(SceneViewTestAccess::lastShadowFitValid(v) ? 1 : 0)
+          .arg(SceneViewTestAccess::modelPass(v).lastShadowDrawCount())
+          .arg(SceneViewTestAccess::modelPass(v).lastShadowTriangleCount())
+          .arg(SceneViewTestAccess::stage(v, SceneViewTestAccess::Stage::kHdr).last_active ? 1 : 0)
+          .arg(SceneViewTestAccess::stage(v, SceneViewTestAccess::Stage::kSsao).last_active ? 1 : 0)
+          .arg(SceneViewTestAccess::stage(v, SceneViewTestAccess::Stage::kEdl).last_active ? 1 : 0)
           .arg(ids.join(u','));
   file.write(line.toUtf8());
 }
@@ -514,7 +526,7 @@ TEST_F(Scene3dRhiRenderTest, BackendMatchesRequestAndImageSize) {
     return;
   }
 #endif
-  EXPECT_TRUE(view->renderingWarningForTest().isEmpty()) << view->renderingWarningForTest().toStdString();
+  EXPECT_TRUE(view->renderingWarning().isEmpty()) << view->renderingWarning().toStdString();
 }
 
 // A Y flip puts the ground grid in the upper half; the grid diff must sit below
@@ -604,7 +616,7 @@ TEST_F(Scene3dRhiRenderTest, PointCloudLandsWhereProjected) {
   SceneViewWidget* view = scene.view();
   view->setGridVisible(false);
   GRAB_OR_SKIP(with_points, view, "points");
-  EXPECT_EQ(view->lastPointVertexCountForTest(), static_cast<int>(points.size()));
+  EXPECT_EQ(SceneViewTestAccess::pointPass(*view).lastPointVertexCount(), static_cast<int>(points.size()));
   scene.dock()->setLayerVisible(topic, false);
   GRAB_OR_SKIP(without_points, view, "no_points");
 
@@ -649,7 +661,7 @@ void checkOcclusionAndTranslucency(bool glass_layer_first) {
   SceneViewWidget* view = scene.view();
   view->setGridVisible(false);
   GRAB_OR_SKIP(image, view, "cubes");
-  EXPECT_EQ(view->lastMarkerInstanceCountForTest(), 8) << "4 cube fills + 4 edge overlays";
+  EXPECT_EQ(SceneViewTestAccess::markerPass(*view).lastInstanceCount(), 8) << "4 cube fills + 4 edge overlays";
 
   const QColor red = meanColor(image, project(*view, near_red, image.size()));
   EXPECT_GT(red.red(), red.blue() + 60) << "near red cube hidden by the far blue one: depth broken? rgb=" << red.red()
@@ -666,7 +678,8 @@ void checkOcclusionAndTranslucency(bool glass_layer_first) {
   const auto layers = scene.dock()->layers();
   ASSERT_EQ(layers.size(), 2U);
   EXPECT_EQ(
-      view->lastSubmittedLayerIdsForTest(), (std::vector<std::uint32_t>{layers[0].topic_id.id, layers[1].topic_id.id}));
+      SceneViewTestAccess::lastSubmittedLayerIds(*view),
+      (std::vector<std::uint32_t>{layers[0].topic_id.id, layers[1].topic_id.id}));
 }
 
 TEST_F(Scene3dRhiRenderTest, OcclusionAndTranslucency) {
@@ -710,21 +723,25 @@ TEST_F(Scene3dRhiRenderTest, QualityStagesActiveAndMeshCastsShadow) {
   SceneViewWidget* view = scene.view();
   GRAB_OR_SKIP(shadowed, view, "shadows");
 
-  EXPECT_TRUE(view->lastHdrActiveForTest()) << view->hdrCapabilityErrorForTest().toStdString();
-  EXPECT_TRUE(view->lastSsaoActiveForTest()) << view->ssaoCapabilityErrorForTest().toStdString();
-  EXPECT_TRUE(view->lastEdlActiveForTest()) << view->edlCapabilityErrorForTest().toStdString();
-  EXPECT_TRUE(view->lastShadowActiveForTest()) << view->shadowCapabilityErrorForTest().toStdString();
-  EXPECT_GT(view->lastShadowDrawCountForTest(), 0);
-  EXPECT_GT(view->lastModelDrawCountForTest(), 0);
-  EXPECT_GT(view->lastPointVertexCountForTest(), 0);
-  EXPECT_GT(view->lastMarkerInstanceCountForTest(), 0);
-  EXPECT_TRUE(view->renderingWarningForTest().isEmpty()) << view->renderingWarningForTest().toStdString();
+  EXPECT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active)
+      << SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).capability_error.toStdString();
+  EXPECT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kSsao).last_active)
+      << SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kSsao).capability_error.toStdString();
+  EXPECT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kEdl).last_active)
+      << SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kEdl).capability_error.toStdString();
+  EXPECT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).last_active)
+      << SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).capability_error.toStdString();
+  EXPECT_GT(SceneViewTestAccess::modelPass(*view).lastShadowDrawCount(), 0);
+  EXPECT_GT(SceneViewTestAccess::modelPass(*view).lastDrawCount(), 0);
+  EXPECT_GT(SceneViewTestAccess::pointPass(*view).lastPointVertexCount(), 0);
+  EXPECT_GT(SceneViewTestAccess::markerPass(*view).lastInstanceCount(), 0);
+  EXPECT_TRUE(view->renderingWarning().isEmpty()) << view->renderingWarning().toStdString();
 
   auto params = view->meshShadingParams();
   params.shadows_enabled = false;
   view->setMeshShadingParams(params);
   GRAB_OR_SKIP(unshadowed, view, "no_shadows");
-  EXPECT_FALSE(view->lastShadowActiveForTest());
+  EXPECT_FALSE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).last_active);
   EXPECT_GT(darkenedPixels(shadowed, unshadowed), 300) << "enabling shadows darkened no ground pixels";
 }
 
@@ -745,14 +762,15 @@ TEST_F(Scene3dRhiRenderTest, MarkersCastNoShadowMeshesDo) {
   params.key_light_dir = glm::normalize(glm::vec3(0.1F, -0.2F, 1.0F));
   view->setMeshShadingParams(params);
   GRAB_OR_SKIP(shadowed, view, "shadows");
-  ASSERT_TRUE(view->lastShadowActiveForTest()) << view->shadowCapabilityErrorForTest().toStdString();
-  EXPECT_EQ(view->lastShadowDrawCountForTest(), 1) << "the box is the only caster";
-  EXPECT_EQ(view->lastShadowTriangleCountForTest(), 12);
+  ASSERT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).last_active)
+      << SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).capability_error.toStdString();
+  EXPECT_EQ(SceneViewTestAccess::modelPass(*view).lastShadowDrawCount(), 1) << "the box is the only caster";
+  EXPECT_EQ(SceneViewTestAccess::modelPass(*view).lastShadowTriangleCount(), 12);
 
   params.shadows_enabled = false;
   view->setMeshShadingParams(params);
   GRAB_OR_SKIP(unshadowed, view, "no_shadows");
-  EXPECT_FALSE(view->lastShadowActiveForTest());
+  EXPECT_FALSE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).last_active);
   const auto darkened_under = [&](glm::vec3 caster) {
     const QPointF centre = project(*view, {caster.x, caster.y, 0.0F}, shadowed.size());
     return darkenedPixels(shadowed, unshadowed, 12, QRect(int(centre.x()) - 25, int(centre.y()) - 12, 51, 25));
@@ -794,14 +812,17 @@ TEST_F(Scene3dRhiRenderTest, FloorShadowClearsWhenDataRemoved) {
   params.shadows_enabled = true;
   view->setMeshShadingParams(params);
   GRAB_OR_SKIP(shadowed, view, "bound");
-  ASSERT_TRUE(view->lastShadowActiveForTest()) << view->shadowCapabilityErrorForTest().toStdString();
+  ASSERT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).last_active)
+      << SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).capability_error.toStdString();
   ASSERT_GT(darkened_under_box(shadowed, unshadowed), 100) << "the box cast no floor shadow; the test would be vacuous";
 
   view->setTransformBuffer(nullptr);
   GRAB_OR_SKIP(unbound, view, "unbound");
-  EXPECT_GT(view->lastModelDrawCountForTest(), 0) << "the caster layer no longer draws; the test would be vacuous";
-  EXPECT_FALSE(view->lastShadowActiveForTest()) << "the shadow pass ran without a transform buffer";
-  EXPECT_EQ(view->lastShadowDrawCountForTest(), 0);
+  EXPECT_GT(SceneViewTestAccess::modelPass(*view).lastDrawCount(), 0)
+      << "the caster layer no longer draws; the test would be vacuous";
+  EXPECT_FALSE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).last_active)
+      << "the shadow pass ran without a transform buffer";
+  EXPECT_EQ(SceneViewTestAccess::modelPass(*view).lastShadowDrawCount(), 0);
   EXPECT_EQ(darkened_under_box(unbound, unshadowed), 0) << "the floor shadow outlived the transform buffer";
 }
 
@@ -864,7 +885,7 @@ TEST_F(Scene3dRhiRenderTest, TargetPropertyChangesRenderWithoutAnUpdate) {
   scene.frame();
   SceneViewWidget* view = scene.view();
   GRAB_OR_SKIP(settled, view, "target_settled");
-  const auto& t = view->stageTimesForTest();
+  const auto& t = SceneViewTestAccess::stageTimes(*view);
   QTest::qWait(100);
 
   const std::uint64_t before_format = t.full_renders;
@@ -899,8 +920,9 @@ TEST_F(Scene3dRhiRenderTest, ShadowMapReusedOnlyWhileItsInputsHold) {
   scene.frame();
   SceneViewWidget* view = scene.view();
   GRAB_OR_SKIP(first, view, "shadow_reuse_first");
-  ASSERT_TRUE(view->lastShadowActiveForTest()) << view->shadowCapabilityErrorForTest().toStdString();
-  const auto& t = view->stageTimesForTest();
+  ASSERT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).last_active)
+      << SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).capability_error.toStdString();
+  const auto& t = SceneViewTestAccess::stageTimes(*view);
 
   pj::scene3d::CameraState state = view->camera().state();
   state.azimuth += glm::radians(20.0F);
@@ -910,9 +932,8 @@ TEST_F(Scene3dRhiRenderTest, ShadowMapReusedOnlyWhileItsInputsHold) {
   GRAB_OR_SKIP(orbited, view, "shadow_reuse_orbited");
   EXPECT_EQ(t.shadow_passes, rendered) << "an orbit re-rendered the shadow map";
   EXPECT_GT(t.shadow_passes_reused, reused);
-  view->setShadowReuseForTest(false);
+  SceneViewTestAccess::discardShadowMap(*view);
   GRAB_OR_SKIP(rerendered, view, "shadow_reuse_rerendered");
-  view->setShadowReuseForTest(true);
   EXPECT_GT(t.shadow_passes, rendered);
   EXPECT_EQ(orbited, rerendered) << "the kept shadow map differs from a fresh one";
 
@@ -925,7 +946,7 @@ TEST_F(Scene3dRhiRenderTest, ShadowMapReusedOnlyWhileItsInputsHold) {
   const std::uint64_t before_caster = t.shadow_passes;
   scene.addRobot(boxUrdf({1.5F, 0.0F, 1.2F}, 0.5F), u"second.urdf"_s);
   GRAB_OR_SKIP(two_casters, view, "shadow_reuse_two_casters");
-  EXPECT_EQ(view->lastShadowDrawCountForTest(), 2);
+  EXPECT_EQ(SceneViewTestAccess::modelPass(*view).lastShadowDrawCount(), 2);
   EXPECT_GT(t.shadow_passes, before_caster) << "a new caster kept the old shadow map";
 }
 #endif
@@ -962,14 +983,15 @@ TEST_F(Scene3dRhiRenderTest, OrientationTextureMarkedCornerStaysTopLeft) {
   SceneViewWidget* view = scene.view();
   view->setGridVisible(false);
   QImage image;
-  for (int attempt = 0; attempt < 100 && view->lastModelTextureSlotCountsForTest()[0] == 0; ++attempt) {
+  for (int attempt = 0; attempt < 100 && SceneViewTestAccess::modelPass(*view).lastTextureSlotCounts()[0] == 0;
+       ++attempt) {
     QTest::qWait(20);  // the mesh imports off the GUI thread
     image = grab(view, "quad");
     if (image.isNull()) {
       PJ_SKIP_WITHOUT_GPU("QRhiWidget::grabFramebuffer() failed for " << requestedBackend().toStdString());
     }
   }
-  ASSERT_GT(view->lastModelTextureSlotCountsForTest()[0], 0) << "the textured quad never loaded";
+  ASSERT_GT(SceneViewTestAccess::modelPass(*view).lastTextureSlotCounts()[0], 0) << "the textured quad never loaded";
   GRAB_OR_SKIP(textured, view, "textured");
 
   const auto sample = [&](float x, float z) {
@@ -1003,7 +1025,8 @@ TEST_F(Scene3dRhiRenderTest, OrientationShadowFallsAwayFromTheLight) {
   params.key_light_dir = glm::normalize(glm::vec3(-1.0F, 1.0F, 1.5F));  // to the light: left, behind, above
   view->setMeshShadingParams(params);
   GRAB_OR_SKIP(shadowed, view, "shadows");
-  ASSERT_TRUE(view->lastShadowActiveForTest()) << view->shadowCapabilityErrorForTest().toStdString();
+  ASSERT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).last_active)
+      << SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).capability_error.toStdString();
   params.shadows_enabled = false;
   view->setMeshShadingParams(params);
   GRAB_OR_SKIP(unshadowed, view, "no_shadows");
@@ -1056,8 +1079,10 @@ TEST_F(Scene3dRhiRenderTest, OrientationSsaoAndEdlStayWithTheirContent) {
   SceneViewWidget* view = scene.view();
   view->setGridVisible(false);
   GRAB_OR_SKIP(both, view, "ssao_edl");
-  ASSERT_TRUE(view->lastSsaoActiveForTest()) << view->ssaoCapabilityErrorForTest().toStdString();
-  ASSERT_TRUE(view->lastEdlActiveForTest()) << view->edlCapabilityErrorForTest().toStdString();
+  ASSERT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kSsao).last_active)
+      << SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kSsao).capability_error.toStdString();
+  ASSERT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kEdl).last_active)
+      << SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kEdl).capability_error.toStdString();
   view->compositeParams().ssao_enabled = false;
   GRAB_OR_SKIP(edl_only, view, "edl_only");
   view->compositeParams().edl_enabled = false;
@@ -1096,7 +1121,8 @@ TEST_F(Scene3dRhiRenderTest, NoDepthWriteDrawLeavesBackgroundUngraded) {
   view->setGridVisible(false);
   view->compositeParams().tonemap_mode = 0;
   GRAB_OR_SKIP(plain, view, "tonemap_none");
-  ASSERT_TRUE(view->lastHdrActiveForTest()) << view->hdrCapabilityErrorForTest().toStdString();
+  ASSERT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active)
+      << SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).capability_error.toStdString();
   view->compositeParams().tonemap_mode = 1;
   GRAB_OR_SKIP(aces, view, "tonemap_aces");
 
@@ -1123,7 +1149,8 @@ TEST_F(Scene3dRhiRenderTest, DepthResolveMatchesTheForcedReplay) {
   scene.frame();
   SceneViewWidget* view = scene.view();
   GRAB_OR_SKIP(resolved, view, "depth_resolve");
-  ASSERT_TRUE(view->lastHdrActiveForTest()) << view->hdrCapabilityErrorForTest().toStdString();
+  ASSERT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active)
+      << SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).capability_error.toStdString();
   const QRhiWidget::Api api = PJ::preferredGraphicsApi();
 #ifdef Q_OS_MACOS
   // macOS's OpenGL 4.1 core context cannot create multisample textures in Qt 6.11
@@ -1134,26 +1161,27 @@ TEST_F(Scene3dRhiRenderTest, DepthResolveMatchesTheForcedReplay) {
 #endif
   if ((api == QRhiWidget::Api::OpenGL && gl_resolves) || api == QRhiWidget::Api::Vulkan ||
       api == QRhiWidget::Api::Metal) {
-    EXPECT_TRUE(view->depthResolveActiveForTest())
+    EXPECT_TRUE(SceneViewTestAccess::depthResolveActive(*view))
         << "no depth-resolve fast path on " << requestedBackend().toStdString();
   }
-  EXPECT_TRUE(view->lastSsaoActiveForTest());
-  EXPECT_TRUE(view->lastEdlActiveForTest());
+  EXPECT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kSsao).last_active);
+  EXPECT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kEdl).last_active);
   // The budget charges the chain's actual formats: OpenGL resolves D32FS8
   // (8 B per depth sample), every other chain uses D32F.
-  const QSize hdr_size = view->hdrRenderSizeForTest();
+  const QSize hdr_size = SceneViewTestAccess::hdrRenderSize(*view);
   const auto hdr_pixels = static_cast<std::uint64_t>(hdr_size.width()) * static_cast<std::uint64_t>(hdr_size.height());
-  const bool stencil_depth = view->depthResolveActiveForTest() && api == QRhiWidget::Api::OpenGL;
-  EXPECT_EQ(view->hdrAllocatedBytesForTest(), hdr_pixels * (stencil_depth ? 84U : 64U));
+  const bool stencil_depth = SceneViewTestAccess::depthResolveActive(*view) && api == QRhiWidget::Api::OpenGL;
+  EXPECT_EQ(SceneViewTestAccess::hdrAllocatedBytes(*view), hdr_pixels * (stencil_depth ? 84U : 64U));
 
-  view->setForceDepthReplayForTest(true);
+  SceneViewTestAccess::setForceDepthReplay(*view, true);
   GRAB_OR_SKIP(replayed, view, "depth_replay");
-  EXPECT_FALSE(view->depthResolveActiveForTest());
-  EXPECT_TRUE(view->lastHdrActiveForTest()) << view->hdrCapabilityErrorForTest().toStdString();
-  EXPECT_EQ(view->hdrAllocatedBytesForTest(), hdr_pixels * 64U);
+  EXPECT_FALSE(SceneViewTestAccess::depthResolveActive(*view));
+  EXPECT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active)
+      << SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).capability_error.toStdString();
+  EXPECT_EQ(SceneViewTestAccess::hdrAllocatedBytes(*view), hdr_pixels * 64U);
   const DiffMask moved = diffMask(resolved, replayed, 24);
   EXPECT_LT(moved.count, resolved.width() * resolved.height() / 100) << "the two depth paths disagree";
-  view->setForceDepthReplayForTest(false);
+  SceneViewTestAccess::setForceDepthReplay(*view, false);
 }
 
 // Real top-levels: show, resize, reparent the dock to a second window, destroy
@@ -1174,7 +1202,7 @@ TEST_F(Scene3dRhiRenderTest, SurvivesShowResizeReparentAndSiblingDestruction) {
   ASSERT_TRUE(showExposed(first));
   GRAB_OR_SKIP(shown, view, "shown");
   const qreal dpr = view->devicePixelRatio();
-  EXPECT_EQ(view->lastPointVertexCountForTest(), static_cast<int>(points.size()));
+  EXPECT_EQ(SceneViewTestAccess::pointPass(*view).lastPointVertexCount(), static_cast<int>(points.size()));
 
   // Shrink the dock inside the window: a compositor may veto a top-level resize.
   scene.dock()->setFixedSize(kViewSize - QSize(100, 80));
@@ -1195,7 +1223,7 @@ TEST_F(Scene3dRhiRenderTest, SurvivesShowResizeReparentAndSiblingDestruction) {
   delete sibling;
   GRAB_OR_SKIP(after_sibling, view, "after_sibling");
 
-  EXPECT_EQ(view->lastPointVertexCountForTest(), static_cast<int>(points.size()));
+  EXPECT_EQ(SceneViewTestAccess::pointPass(*view).lastPointVertexCount(), static_cast<int>(points.size()));
   view->setGridVisible(false);
   GRAB_OR_SKIP(no_grid, view, "after_sibling_no_grid");
   const auto layer = scene.dock()->layers().front().topic_id;
@@ -1223,7 +1251,7 @@ TEST_F(Scene3dRhiRenderTest, ShowOfAnUnchangedTargetSkipsTheSynchronousPaint) {
   scene.frame();
   SceneViewWidget* view = scene.view();
   GRAB_OR_SKIP(shown, view, "shown");
-  ASSERT_EQ(view->lastPointVertexCountForTest(), static_cast<int>(points.size()));
+  ASSERT_EQ(SceneViewTestAccess::pointPass(*view).lastPointVertexCount(), static_cast<int>(points.size()));
   int presented = 0;
   QObject::connect(view, &QRhiWidget::frameSubmitted, view, [&presented] { ++presented; });
   const auto show_and_present = [&] {
@@ -1231,7 +1259,7 @@ TEST_F(Scene3dRhiRenderTest, ShowOfAnUnchangedTargetSkipsTheSynchronousPaint) {
     scene.dock()->show();
     return QTest::qWaitFor([&] { return presented > before; }, 5000);
   };
-  const auto& t = view->stageTimesForTest();
+  const auto& t = SceneViewTestAccess::stageTimes(*view);
   const int adoptions = view->property("pjTestRhiAdoptions").toInt();
 
   scene.dock()->hide();
@@ -1253,7 +1281,7 @@ TEST_F(Scene3dRhiRenderTest, ShowOfAnUnchangedTargetSkipsTheSynchronousPaint) {
   EXPECT_GT(t.paints_skipped, skipped) << "the Show paint was not skipped";
   EXPECT_TRUE(QTest::qWaitFor([&] { return t.full_renders > full; }, 5000))
       << "no frame drew what changed while hidden";
-  EXPECT_EQ(view->lastPointVertexCountForTest(), 0);
+  EXPECT_EQ(SceneViewTestAccess::pointPass(*view).lastPointVertexCount(), 0);
   EXPECT_EQ(t.base_builds, builds);
   EXPECT_EQ(view->property("pjTestRhiAdoptions").toInt(), adoptions);
 
@@ -1266,7 +1294,7 @@ TEST_F(Scene3dRhiRenderTest, ShowOfAnUnchangedTargetSkipsTheSynchronousPaint) {
   GRAB_OR_SKIP(resized, view, "resized");
   EXPECT_EQ(resized.size(), QSize(qRound(view->width() * dpr), qRound(view->height() * dpr)));
   EXPECT_NE(resized.size(), shown.size());
-  EXPECT_EQ(view->lastPointVertexCountForTest(), static_cast<int>(points.size()));
+  EXPECT_EQ(SceneViewTestAccess::pointPass(*view).lastPointVertexCount(), static_cast<int>(points.size()));
 
   scene.dock()->hide();
   QApplication::processEvents();
@@ -1281,7 +1309,84 @@ TEST_F(Scene3dRhiRenderTest, ShowOfAnUnchangedTargetSkipsTheSynchronousPaint) {
       << "a Show on a new QRhi drew nothing";
   GRAB_OR_SKIP(moved, view, "moved");
   EXPECT_GT(view->property("pjTestRhiAdoptions").toInt(), adoptions);
-  EXPECT_EQ(view->lastPointVertexCountForTest(), static_cast<int>(points.size()));
+  EXPECT_EQ(SceneViewTestAccess::pointPass(*view).lastPointVertexCount(), static_cast<int>(points.size()));
+}
+#endif
+
+#ifdef PJ_RHI_TEST_HOOKS
+// Only an invalidation re-renders the scene: a repaint of a settled, visible
+// view (Qt's own update() or repaint(), through any QWidget pointer) presents
+// the retained frame and renders none; invalidateContent() renders.
+TEST_F(Scene3dRhiRenderTest, RepaintOfAnUnchangedViewRendersNothing) {
+  RhiScene scene;
+  scene.addPoints(pointBlock({0.0F, 0.0F, 1.0F}, 1.0F, 4));
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  GRAB_OR_SKIP(settled, view, "repaint_settled");
+  const auto& t = SceneViewTestAccess::stageTimes(*view);
+  QTest::qWait(100);
+  const std::uint64_t full = t.full_renders;
+  const std::uint64_t skipped = t.paints_skipped;
+  QWidget* widget = view;
+  widget->update();
+  EXPECT_TRUE(QTest::qWaitFor([&] { return t.paints_skipped > skipped; }, 3000)) << "the repaint was not skipped";
+  widget->repaint();
+  QTest::qWait(100);
+  EXPECT_EQ(t.full_renders, full) << "a repaint of an unchanged view rendered a frame";
+
+  view->invalidateContent();
+  EXPECT_TRUE(QTest::qWaitFor([&] { return t.full_renders > full; }, 3000)) << "an invalidation rendered nothing";
+}
+
+// What changes through the view while it is hidden (a setter, a camera move)
+// draws when it is shown again, and only then.
+TEST_F(Scene3dRhiRenderTest, HiddenViewChangesRenderOnShow) {
+  RhiScene scene;
+  scene.addPoints(pointBlock({0.0F, 0.0F, 1.0F}, 1.0F, 4));
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  GRAB_OR_SKIP(shown, view, "hidden_change_shown");
+  const auto& t = SceneViewTestAccess::stageTimes(*view);
+  const auto change_while_hidden = [&](const std::function<void()>& change) {
+    scene.dock()->hide();
+    QApplication::processEvents();
+    const std::uint64_t full = t.full_renders;
+    change();
+    QTest::qWait(100);
+    EXPECT_EQ(t.full_renders, full) << "a hidden view rendered";
+    scene.dock()->show();
+    return QTest::qWaitFor([&] { return t.full_renders > full; }, 5000);
+  };
+
+  EXPECT_TRUE(change_while_hidden([&] { view->setGridVisible(false); })) << "the hidden setter never drew";
+  const glm::mat4 projection = SceneViewTestAccess::lastViewProjection(*view);
+  EXPECT_TRUE(change_while_hidden([&] {
+    view->camera().rotate(40.0F, 10.0F);
+    view->invalidateContent();  // camera() moves do not notify the view
+  })) << "the hidden camera move never drew";
+  EXPECT_NE(SceneViewTestAccess::lastViewProjection(*view), projection);
+}
+
+// A target change while hidden (here the colour-buffer format, through
+// QRhiWidget's own setter) renders the new target on the Show with no content
+// invalidation: the retained frame belongs to the old target.
+TEST_F(Scene3dRhiRenderTest, TargetChangeWhileHiddenRendersOnShow) {
+  RhiScene scene;
+  scene.addPoints(pointBlock({0.0F, 0.0F, 1.0F}, 1.0F, 4));
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  GRAB_OR_SKIP(shown, view, "hidden_target_shown");
+  const auto& t = SceneViewTestAccess::stageTimes(*view);
+  QTest::qWait(100);
+
+  scene.dock()->hide();
+  QApplication::processEvents();
+  const std::uint64_t full = t.full_renders;
+  view->setColorBufferFormat(QRhiWidget::TextureFormat::RGBA16F);
+  scene.dock()->show();
+  EXPECT_TRUE(QTest::qWaitFor([&] { return t.full_renders > full; }, 5000))
+      << "the new colour-buffer format was never rendered";
+  EXPECT_TRUE(SceneViewTestAccess::pipelinesBuiltForTarget(*view));
 }
 #endif
 
@@ -1324,14 +1429,14 @@ TEST_F(Scene3dRhiRenderTest, PresentationCornerGizmoFollowsCamera) {
   view->setGridVisible(false);
   scene.dock()->setLayerVisible(topic, false);
   GRAB_OR_SKIP(front, view, "front");
-  const auto gizmo_passes = [view] { return view->overlayPassForTest().gizmoPassCountForTest(); };
+  const auto gizmo_passes = [view] { return SceneViewTestAccess::overlayPass(*view).gizmoPassCountForTest(); };
   const std::uint64_t passes = gizmo_passes();
-  const std::uint64_t renders = view->stageTimesForTest().full_renders;
+  const std::uint64_t renders = SceneViewTestAccess::stageTimes(*view).full_renders;
   auto state = view->camera().state();
   state.focal += glm::vec3(0.3F, -0.2F, 0.1F);
   view->camera().adoptState(state);
   GRAB_OR_SKIP(panned, view, "panned");
-  ASSERT_GT(view->stageTimesForTest().full_renders, renders);
+  ASSERT_GT(SceneViewTestAccess::stageTimes(*view).full_renders, renders);
   EXPECT_EQ(gizmo_passes(), passes) << "an unchanged rotation redrew the gizmo";
   EXPECT_EQ(differingPixels(panned.copy(gizmoRect(*view, panned)), front.copy(gizmoRect(*view, front))), 0)
       << "the kept gizmo image changed";
@@ -1433,8 +1538,8 @@ TEST_F(Scene3dRhiRenderTest, PresentationHoverLabelAndPerfHud) {
   EXPECT_EQ(view->hoveredFrame(), picked);
   EXPECT_EQ(hovered, QStringList{QString::fromStdString(*picked)});
   GRAB_OR_SKIP(labelled, view, "labelled");
-  const QRect label = view->lastOverlayRectsForTest()[1];
-  const QRect ring = view->lastOverlayRectsForTest()[2];
+  const QRect label = SceneViewTestAccess::lastOverlayRects(*view)[1];
+  const QRect ring = SceneViewTestAccess::lastOverlayRects(*view)[2];
   ASSERT_TRUE(label.isValid() && ring.isValid());
   // Above-right of the origin, in output pixels.
   EXPECT_GT(label.left(), origin.x() * dpr);
@@ -1465,12 +1570,12 @@ TEST_F(Scene3dRhiRenderTest, PresentationHoverLabelAndPerfHud) {
   EXPECT_FALSE(view->hoveredFrame().has_value());
   EXPECT_EQ(hovered, (QStringList{QString::fromStdString(*picked), QString()}));
   GRAB_OR_SKIP(left, view, "left");
-  EXPECT_FALSE(view->lastOverlayRectsForTest()[1].isValid());
+  EXPECT_FALSE(SceneViewTestAccess::lastOverlayRects(*view)[1].isValid());
   EXPECT_EQ(diffMask(plain, left, 0).count, 0) << "hover label left behind";
 
   view->setShowPerfHud(true);
   GRAB_OR_SKIP(hud, view, "hud");
-  const QRect panel = view->lastOverlayRectsForTest()[0];
+  const QRect panel = SceneViewTestAccess::lastOverlayRects(*view)[0];
   ASSERT_TRUE(panel.isValid());
   EXPECT_EQ(panel.left(), qRound(8 * dpr));
   EXPECT_NEAR(panel.bottom() + 1, hud.height() - 8 * dpr, 1.0);
@@ -1491,21 +1596,24 @@ TEST_F(Scene3dRhiRenderTest, PresentationRenderScaleSupersamples) {
   SceneViewWidget* view = scene.view();
   GRAB_OR_SKIP(scale1, view, "scale1");
   const QSize output = scale1.size();
-  EXPECT_EQ(view->hdrRenderSizeForTest(), output);
+  EXPECT_EQ(SceneViewTestAccess::hdrRenderSize(*view), output);
 
   view->setRenderScale(2.0F);
   EXPECT_EQ(view->renderScale(), 2.0F);
   GRAB_OR_SKIP(scale2, view, "scale2");
   EXPECT_EQ(scale2.size(), output);
-  EXPECT_EQ(view->hdrRenderSizeForTest(), output * 2);
-  EXPECT_TRUE(view->lastHdrActiveForTest() && view->lastSsaoActiveForTest() && view->lastEdlActiveForTest());
+  EXPECT_EQ(SceneViewTestAccess::hdrRenderSize(*view), output * 2);
+  EXPECT_TRUE(
+      SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active &&
+      SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kSsao).last_active &&
+      SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kEdl).last_active);
   // The same picture, only anti-aliased: few pixels move noticeably.
   const DiffMask moved = diffMask(scale1, scale2, 90);
   EXPECT_LT(moved.count, output.width() * output.height() / 50) << "supersampled image differs beyond edges";
 
-  view->setForceHdrFallbackForTest(true);
+  SceneViewTestAccess::forceStageFallback(*view, SceneViewTestAccess::Stage::kHdr, true);
   GRAB_OR_SKIP(fallback, view, "fallback");
-  EXPECT_FALSE(view->lastHdrActiveForTest());
+  EXPECT_FALSE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active);
   EXPECT_EQ(fallback.size(), output);
   const QColor block = meanColor(fallback, project(*view, centre, output));
   const QColor sky = meanColor(fallback, QPointF(4.0, 4.0));
@@ -1513,14 +1621,14 @@ TEST_F(Scene3dRhiRenderTest, PresentationRenderScaleSupersamples) {
       std::abs(block.red() - sky.red()) + std::abs(block.green() - sky.green()) + std::abs(block.blue() - sky.blue()),
       60)
       << "direct fallback lost the points";
-  view->setForceHdrFallbackForTest(false);
+  SceneViewTestAccess::forceStageFallback(*view, SceneViewTestAccess::Stage::kHdr, false);
   GRAB_OR_SKIP(recovered, view, "recovered");
-  EXPECT_TRUE(view->lastHdrActiveForTest());
-  EXPECT_EQ(view->hdrRenderSizeForTest(), output * 2);
+  EXPECT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active);
+  EXPECT_EQ(SceneViewTestAccess::hdrRenderSize(*view), output * 2);
 
   view->setRenderScale(1.0F);
   GRAB_OR_SKIP(back, view, "back");
-  EXPECT_EQ(view->hdrRenderSizeForTest(), output);
+  EXPECT_EQ(SceneViewTestAccess::hdrRenderSize(*view), output);
   EXPECT_LT(diffMask(scale1, back, 3).count, output.width() * output.height() / 1000) << "scale 1 not restored";
 
   // A resize at scale 2 follows the new output.
@@ -1529,7 +1637,7 @@ TEST_F(Scene3dRhiRenderTest, PresentationRenderScaleSupersamples) {
   const qreal dpr = view->devicePixelRatio();
   ASSERT_TRUE(QTest::qWaitFor([&]() { return view->size() * dpr != output; }, 2000));
   GRAB_OR_SKIP(resized, view, "resized");
-  EXPECT_EQ(view->hdrRenderSizeForTest(), resized.size() * 2);
+  EXPECT_EQ(SceneViewTestAccess::hdrRenderSize(*view), resized.size() * 2);
 
   view->setRenderScale(10.0F);
   EXPECT_EQ(view->renderScale(), 4.0F);
@@ -1561,10 +1669,10 @@ TEST_F(Scene3dRhiRenderTest, PresentationTonemapModes) {
   std::vector<QImage> images;
   for (int mode = 0; mode < 4; ++mode) {
     view->compositeParams().tonemap_mode = mode;
-    view->update();
+    view->invalidateContent();
     const std::string name = "mode" + std::to_string(mode);
     GRAB_OR_SKIP(image, view, name.c_str());
-    EXPECT_TRUE(view->lastHdrActiveForTest());
+    EXPECT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active);
     images.push_back(image);
   }
   const QSize size = images.front().size();
@@ -1594,8 +1702,9 @@ TEST_F(Scene3dRhiRenderTest, VoxelPredicateDrawsAndCulls) {
   SceneViewWidget* view = scene.view();
   view->setGridVisible(false);
   GRAB_OR_SKIP(with_voxels, view, "voxels");
-  EXPECT_EQ(view->lastVoxelLayerCountForTest(), 1);
-  EXPECT_EQ(view->lastVoxelCountForTest(), 3) << "one instance per lattice cell, culled ones included";
+  EXPECT_EQ(SceneViewTestAccess::voxelPass(*view).lastLayerCount(), 1);
+  EXPECT_EQ(SceneViewTestAccess::voxelPass(*view).lastVoxelCount(), 3)
+      << "one instance per lattice cell, culled ones included";
   scene.dock()->setLayerVisible(topic, false);
   GRAB_OR_SKIP(without_voxels, view, "no_voxels");
 
@@ -1621,8 +1730,8 @@ TEST_F(Scene3dRhiRenderTest, PoseTriadLandsWhereProjected) {
   SceneViewWidget* view = scene.view();
   view->setGridVisible(false);
   GRAB_OR_SKIP(with_pose, view, "pose");
-  EXPECT_EQ(view->lastPoseLayerCountForTest(), 1);
-  EXPECT_EQ(view->lastPoseArmCountForTest(), 3);
+  EXPECT_EQ(SceneViewTestAccess::posePass(*view).lastLayerCount(), 1);
+  EXPECT_EQ(SceneViewTestAccess::posePass(*view).lastArmCount(), 3);
   scene.dock()->setLayerVisible(topic, false);
   GRAB_OR_SKIP(without_pose, view, "no_pose");
 
@@ -1653,7 +1762,7 @@ TEST_F(Scene3dRhiRenderTest, TfFrameTriadDrawsAtFrameOrigin) {
   GRAB_OR_SKIP(without_axes, view, "no_axes");
   view->setAxesVisible(true);
   GRAB_OR_SKIP(with_axes, view, "axes");
-  EXPECT_GE(view->lastResolvedFrameCountForTest(), 1);
+  EXPECT_GE(SceneViewTestAccess::lastResolvedFrameCount(*view), 1);
 
   const DiffMask mask = diffMask(with_axes, without_axes);
   ASSERT_GT(mask.count, 100) << "the TF triad coloured no pixels";
@@ -1778,13 +1887,13 @@ TEST_F(Scene3dRhiRenderTest, GridMapDrawsWhereProjected) {
   ASSERT_NE(layer, nullptr);
   layer->setTrackerTime(PJ::fromRaw(100));  // what the dock's tracker fan-out does
   GRAB_OR_SKIP(with_map, view, "grid_map");
-  EXPECT_EQ(view->lastGridMapLayerCountForTest(), 1);
-  EXPECT_EQ(view->lastGridMapVertexCountForTest(), 6 * (kCells - 1) * (kCells - 1));
-  EXPECT_GE(view->gridMapUploadCountForTest(), 1);
+  EXPECT_EQ(SceneViewTestAccess::gridMapPass(*view).lastLayerCount(), 1);
+  EXPECT_EQ(SceneViewTestAccess::gridMapPass(*view).lastVertexCount(), 6 * (kCells - 1) * (kCells - 1));
+  EXPECT_GE(SceneViewTestAccess::gridMapPass(*view).uploadCount(), 1);
   EXPECT_TRUE(layer->statusWarning().isEmpty()) << layer->statusWarning().toStdString();
   scene.dock()->setLayerVisible(topic, false);
   GRAB_OR_SKIP(without_map, view, "no_grid_map");
-  EXPECT_EQ(view->lastGridMapLayerCountForTest(), 0);
+  EXPECT_EQ(SceneViewTestAccess::gridMapPass(*view).lastLayerCount(), 0);
 
   const DiffMask mask = diffMask(with_map, without_map);
   ASSERT_GT(mask.count, 1000) << "grid map drew nothing";
@@ -1823,14 +1932,14 @@ void checkTrailDraws(bool embedded) {
   // The first frame adopts the fixed frame and rebuilds; the next one draws.
   GRAB_OR_SKIP(adopt, view, "adopt");
   GRAB_OR_SKIP(future_only, view, "future_only");
-  EXPECT_EQ(view->lastTrailCountForTest(), 1);
-  EXPECT_EQ(view->lastTrailVertexCountForTest(), 2 * static_cast<int>(positions.size()))
+  EXPECT_EQ(SceneViewTestAccess::trailPass(*view).lastTrailCount(), 1);
+  EXPECT_EQ(SceneViewTestAccess::trailPass(*view).lastVertexCount(), 2 * static_cast<int>(positions.size()))
       << "before the first sample the whole ribbon is the future half";
 
   view->setTrackerTime(PJ::fromRaw(300));
   GRAB_OR_SKIP(split, view, "split");
   // Past: points 0..2; future: 2..4 (the shared pair keeps the ribbon continuous).
-  EXPECT_EQ(view->lastTrailVertexCountForTest(), 2 * 3 + 2 * 3);
+  EXPECT_EQ(SceneViewTestAccess::trailPass(*view).lastVertexCount(), 2 * 3 + 2 * 3);
   EXPECT_GT(diffMask(future_only, split, 20).count, 50) << "the past half kept the future colour";
 
   if (embedded) {
@@ -1839,7 +1948,7 @@ void checkTrailDraws(bool embedded) {
     scene.dock()->setLayerVisible(*standalone, false);
   }
   GRAB_OR_SKIP(without, view, "no_trail");
-  EXPECT_EQ(view->lastTrailCountForTest(), 0);
+  EXPECT_EQ(SceneViewTestAccess::trailPass(*view).lastTrailCount(), 0);
   const DiffMask mask = diffMask(split, without, 20);
   ASSERT_GT(mask.count, 300) << "trail drew nothing";
   const QSize size = split.size();
@@ -1870,11 +1979,12 @@ TEST_F(Scene3dRhiRenderTest, OutputTargetChangeRebuildsPipelines) {
   scene.frame();
   SceneViewWidget* view = scene.view();
   GRAB_OR_SKIP(first, view, "first");
-  EXPECT_TRUE(view->pipelinesBuiltForTargetForTest());
+  EXPECT_TRUE(SceneViewTestAccess::pipelinesBuiltForTarget(*view));
 
   const auto check_still_renders = [&](const char* name) {
     GRAB_OR_SKIP(with_points, view, name);
-    EXPECT_TRUE(view->pipelinesBuiltForTargetForTest()) << name << ": a pipeline still targets the old render pass";
+    EXPECT_TRUE(SceneViewTestAccess::pipelinesBuiltForTarget(*view))
+        << name << ": a pipeline still targets the old render pass";
     scene.dock()->setLayerVisible(topic, false);
     GRAB_OR_SKIP(without_points, view, name);
     scene.dock()->setLayerVisible(topic, true);
@@ -1936,13 +2046,13 @@ TEST_F(Scene3dRhiRenderTest, LayerChangesLeaveTheCameraAlone) {
   GRAB_OR_SKIP(before, view, "before");
   const pj::scene3d::CameraState pinned = view->camera().state();
 
-  const PJ::ObjectTopicId farLayer = scene.addPoints(pointBlock({200.0F, 150.0F, 40.0F}, 5.0F, 2), "/far");
+  const PJ::ObjectTopicId far_layer = scene.addPoints(pointBlock({200.0F, 150.0F, 40.0F}, 5.0F, 2), "/far");
   GRAB_OR_SKIP(added, view, "added");
   EXPECT_EQ(view->camera().state(), pinned);
 
-  scene.dock()->setLayerVisible(farLayer, false);
+  scene.dock()->setLayerVisible(far_layer, false);
   GRAB_OR_SKIP(hidden, view, "hidden");
-  scene.dock()->setLayerVisible(farLayer, true);
+  scene.dock()->setLayerVisible(far_layer, true);
   GRAB_OR_SKIP(shown, view, "shown");
   EXPECT_EQ(view->camera().state(), pinned);
 }
@@ -1974,11 +2084,12 @@ TEST_F(Scene3dRhiRenderTest, ProjectionUsesTheLogicalAspect) {
                          << view->width() << "x" << view->height() << " dpr " << dpr;
   view->setRenderScale(scale);
   GRAB_OR_SKIP(image, view, "scaled");
-  ASSERT_TRUE(view->lastHdrActiveForTest()) << "the render scale applies to the HDR chain only";
+  ASSERT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active)
+      << "the render scale applies to the HDR chain only";
 
   const pj::scene3d::ICamera& camera = view->camera();
   const glm::mat4 expected = camera.projMatrix(logical) * camera.viewMatrixRelativeTo(glm::dvec3(camera.state().focal));
-  const glm::mat4& painted = view->lastViewProjectionForTest();
+  const glm::mat4& painted = SceneViewTestAccess::lastViewProjection(*view);
   for (int column = 0; column < 4; ++column) {
     for (int row = 0; row < 4; ++row) {
       EXPECT_NEAR(painted[column][row], expected[column][row], 1.0e-6F * (1.0F + std::abs(expected[column][row])))

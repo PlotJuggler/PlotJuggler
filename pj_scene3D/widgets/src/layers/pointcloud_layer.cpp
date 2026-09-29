@@ -48,8 +48,10 @@
 #include "pj_scene3d_core/scene_limits.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"       // source->fixed lookup for world-axis range
 #include "pj_scene3d_widgets/resolve_object.h"  // resolveObject, hasCanonical3DCodec
+#include "pj_scene3d_widgets/retained_upload.h"
 #include "pj_widgets/CheckButton.h"
 #include "pj_widgets/ColorPickerWidget.h"
+#include "pj_widgets/Colormap.h"
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/FrameworkTokens.h"
@@ -233,7 +235,7 @@ QDomElement PointCloudLayer::xmlSaveState(QDomDocument& doc) const {
   el.setAttribute(u"color_choice_explicit"_s, color_choice_explicit_ ? u"true"_s : u"false"_s);
   el.setAttribute(u"color_field"_s, QString::fromStdString(color_field_));
   el.setAttribute(u"solid_color"_s, solid_color_.name(QColor::HexRgb));
-  el.setAttribute(u"colormap"_s, colormapToken(colormap_));
+  el.setAttribute(u"colormap"_s, PJ::colormapToken(colormap_));
   el.setAttribute(u"auto_range"_s, auto_range_ ? u"true"_s : u"false"_s);
   el.setAttribute(u"invert_lut"_s, invert_lut_ ? u"true"_s : u"false"_s);
   el.setAttribute(u"outside_range_opacity"_s, QString::number(static_cast<double>(outside_range_opacity_), 'g', 6));
@@ -286,7 +288,7 @@ std::optional<PointCloudLayer::Settings> PointCloudLayer::parseSettings(const QD
   } else if (color_type_str == "rgb"_L1) {
     settings.color_type = PointColorType::kRgb;
   }
-  const auto colormap = parseColormap(element.attribute(u"colormap"_s, u"turbo"_s));
+  const auto colormap = PJ::parseColormap(element.attribute(u"colormap"_s, PJ::colormapToken(PJ::Colormap::kTurbo)));
   if (!colormap.has_value()) {
     return std::nullopt;
   }
@@ -562,10 +564,9 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
       PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
   colormap_row_layout->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
   auto* colormap_combo = new PJ::ComboBox(colormap_row);
-  colormap_combo->addItem(u"turbo"_s, static_cast<int>(PJ::Colormap::kTurbo));
-  colormap_combo->addItem(u"viridis"_s, static_cast<int>(PJ::Colormap::kViridis));
-  colormap_combo->addItem(u"plasma"_s, static_cast<int>(PJ::Colormap::kPlasma));
-  colormap_combo->addItem(u"grayscale"_s, static_cast<int>(PJ::Colormap::kGrayscale));
+  for (int index = 0; index < PJ::kColormapCount; ++index) {
+    colormap_combo->addItem(PJ::colormapToken(static_cast<PJ::Colormap>(index)), index);
+  }
   colormap_combo->setCurrentIndex(static_cast<int>(colormap_));
   colormap_row_layout->addWidget(colormap_combo, 1);
   auto* invert_btn = new QPushButton(colormap_row);

@@ -63,11 +63,11 @@ QRhiShaderResourceBindings* PointRhiPass::createLayerBindings(QRhi* rhi, QRhiBuf
 
 bool PointRhiPass::initialize(const RhiPassSetup& setup) {
   QRhi* rhi = setup.rhi;
-  if (rhi == nullptr) {
+  if (rhi == nullptr || setup.pipelines == nullptr) {
     return false;
   }
-  setup_ = setup;
-  setup_.updates = nullptr;  // the batch is valid only during initialize()
+  registry_ = setup.pipelines;
+  part_ = setup.part;
   render_mode_uniforms_ = setup.render_mode_uniforms;
   geometry_ = setup.geometry;
   uniform_stride_ = static_cast<quint32>(rhi->ubufAligned(static_cast<int>(kPointUniformBytes)));
@@ -79,6 +79,11 @@ bool PointRhiPass::initialize(const RhiPassSetup& setup) {
   pipelines_attempted_ = {};
   point_size_supported_ = rhi->isFeatureSupported(QRhi::VertexShaderPointSize);
   return ready();
+}
+
+bool PointRhiPass::pointListFailed(Layout layout, bool faded) const {
+  const auto& pair = pipelines_[static_cast<std::size_t>(layout)][static_cast<std::size_t>(Geometry::kPointList)];
+  return registry_->optionalFailed(pair[0]) || (faded && registry_->optionalFailed(pair[1]));
 }
 
 bool PointRhiPass::ensurePipelines(Layout layout, Geometry geometry, bool faded) {
@@ -121,33 +126,16 @@ bool PointRhiPass::ensurePipelines(Layout layout, Geometry geometry, bool faded)
       // CCW-outward, cube_mesh.h).
       .cull = fan ? QRhiGraphicsPipeline::Back : QRhiGraphicsPipeline::None,
   };
-  // The point list is optional: a cloud falls back to quads without it. So it is
-  // created at once instead of as a template (which would fail only when a frame
-  // needs it, too late to pick quads), at the cost of its direct program.
-  RhiPassSetup setup = setup_;
-  if (geometry == Geometry::kPointList) {
-    setup.templates = nullptr;
-  }
+  // The point list is optional: a GPU that cannot build it draws quads instead.
+  const bool optional = geometry == Geometry::kPointList;
   for (std::size_t half = 0; half < halves; ++half) {
     if (pair[half] == nullptr && !attempted[half]) {
       attempted[half] = true;
       desc.depth_write = half == 0;
-      pair[half] = createScenePipeline(setup, desc);
-      if (setup_.templates != nullptr) {
-        setup_.templates->add(pair[half]);  // the point list is not a template: registered as built
-      }
+      pair[half] = registry_->add(desc, part_, optional);
     }
   }
   return built();
-}
-
-void PointRhiPass::registerPipelines(ScenePipelineRegistry& registry) const {
-  for (const auto& layout : pipelines_) {
-    for (const auto& pair : layout) {
-      registry.add(pair[0]);
-      registry.add(pair[1]);
-    }
-  }
 }
 
 void PointRhiPass::setLayers(const std::vector<PointRenderable*>& layers) {
@@ -303,8 +291,14 @@ void PointRhiPass::prepare(const RhiFrameContext& frame, const ViewInputs& view)
     uniforms.shape = {static_cast<std::int32_t>(shape_mode), static_cast<std::int32_t>(gpu.format), 0, 0};
     const Layout layout = gpu.format == PointVertexFormat::kXyz ? Layout::kXyz : Layout::kAttribute;
     Geometry geometry = cube && !sprites ? Geometry::kFan : point_list ? Geometry::kPointList : Geometry::kQuad;
-    if (!ensurePipelines(layout, geometry, faded_half) &&
-        (geometry != Geometry::kPointList || !ensurePipelines(layout, geometry = Geometry::kQuad, faded_half))) {
+    // A point list this GPU could not build draws quads; the quads are also
+    // registered beside it, for submit() to fall back to on the frame it fails.
+    if (geometry == Geometry::kPointList &&
+        (!ensurePipelines(layout, geometry, faded_half) || pointListFailed(layout, faded_half))) {
+      geometry = Geometry::kQuad;
+    }
+    if (!ensurePipelines(layout, geometry, faded_half) ||
+        (geometry == Geometry::kPointList && !ensurePipelines(layout, Geometry::kQuad, faded_half))) {
       if (!pipeline_warned_) {
         pipeline_warned_ = true;
         qWarning("Scene3D: a point-cloud pipeline could not be created; those clouds are not drawn");
@@ -329,10 +323,17 @@ void PointRhiPass::prepare(const RhiFrameContext& frame, const ViewInputs& view)
 bool PointRhiPass::submit(
     QRhiCommandBuffer* command_buffer, const Draw& draw, ScenePass pass, const ScenePipelineRegistry& registry,
     const QRhiViewport& viewport) const {
-  const bool opaque = draw.draw_class == DrawClass::kOpaque;
-  const bool fan = draw.geometry == Geometry::kFan;
-  QRhiGraphicsPipeline* pipeline = registry.resolve(
-      pipelines_[static_cast<std::size_t>(draw.layout)][static_cast<std::size_t>(draw.geometry)][opaque ? 0 : 1], pass);
+  const auto registered = [&](Geometry geometry) {
+    return pipelines_[static_cast<std::size_t>(draw.layout)][static_cast<std::size_t>(geometry)]
+                     [draw.draw_class == DrawClass::kOpaque ? 0 : 1];
+  };
+  Geometry geometry = draw.geometry;
+  QRhiGraphicsPipeline* pipeline = registry.resolve(registered(geometry), pass);
+  if (pipeline == nullptr && registry.optionalFailed(registered(geometry))) {
+    geometry = Geometry::kQuad;  // the point list failed on this frame's first bind
+    pipeline = registry.resolve(registered(geometry), pass);
+  }
+  const bool fan = geometry == Geometry::kFan;
   if (pipeline == nullptr || draw.instances == nullptr || draw.instance_count == 0U ||
       (fan && (geometry_ == nullptr || geometry_->cube_fan_indices == nullptr))) {
     return false;
@@ -344,7 +345,7 @@ bool PointRhiPass::submit(
   if (fan) {
     command_buffer->setVertexInput(0, 1, &input, geometry_->cube_fan_indices, 0, QRhiCommandBuffer::IndexUInt16);
     command_buffer->drawIndexed(static_cast<quint32>(kCubeFanIndices.size()), draw.instance_count);
-  } else if (draw.geometry == Geometry::kPointList) {
+  } else if (geometry == Geometry::kPointList) {
     command_buffer->setVertexInput(0, 1, &input);
     command_buffer->draw(draw.instance_count);
   } else {
@@ -430,16 +431,10 @@ void PointRhiPass::release() {
   layer_gpu_.clear();
   admitted_.clear();
   draws_.clear();
-  for (auto& layout : pipelines_) {
-    for (auto& pair : layout) {
-      for (QRhiGraphicsPipeline*& pipeline : pair) {
-        delete pipeline;
-        pipeline = nullptr;
-      }
-    }
-  }
+  pipelines_ = {};
   pipelines_attempted_ = {};
-  setup_ = {};
+  registry_ = nullptr;
+  part_ = nullptr;
   point_size_supported_ = false;
   delete layout_shader_resources_;
   delete layout_uniforms_;

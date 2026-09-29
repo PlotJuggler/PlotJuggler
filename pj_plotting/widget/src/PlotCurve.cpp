@@ -36,11 +36,13 @@ void PlotCurve::drawCurve(
   dot_pen.setWidthF(dot_width_);
   dot_pen.setCapStyle(Qt::SquareCap);
   painter->setPen(dot_pen);
-  // Map and weed the points here instead of delegating to drawDots():
-  // QwtPlotCurve::drawDots skips weeding whenever antialiasing is on, and the
-  // OpenGL paint engine reports no rounding alignment — together that emits one
-  // quad per SAMPLE. RoundPoints + WeedOutPoints with a valid bounding rect
-  // selects the pixel-matrix path: one dot per covered pixel.
+  // One drawPoints() batch over pixel-weeded points, not per-sample symbols.
+  // QwtPlotCurve::drawDots would not weed: it skips weeding whenever
+  // antialiasing is on, as it is on every PJ4 curve. It would then paint one
+  // antialiased square per sample, and samples sharing a pixel overdraw the
+  // partially covered edge pixels of the same square, darkening the antialiased
+  // edges. RoundPoints + WeedOutPoints with a valid bounding rect selects the
+  // pixel-matrix path: one dot per covered pixel, which also paints fewer squares.
   QwtPointMapper mapper;
   mapper.setBoundingRect(canvas_rect);
   mapper.setFlag(QwtPointMapper::RoundPoints, true);

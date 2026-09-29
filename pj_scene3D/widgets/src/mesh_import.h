@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 
@@ -60,8 +61,10 @@ namespace pj::scene3d {
 // running detached and its result is discarded.
 class MeshImport {
  public:
-  MeshImport(QFuture<MeshData> future, QObject* context, std::function<void()> on_done)
-      : future_(std::move(future)), watcher_(new QFutureWatcher<MeshData>()) {
+  // `shared`: other holders read the same future (MeshLoader's path cache), so
+  // take() copies the result instead of moving it out.
+  MeshImport(QFuture<MeshData> future, QObject* context, std::function<void()> on_done, bool shared = true)
+      : future_(std::move(future)), watcher_(new QFutureWatcher<MeshData>()), shared_(shared) {
     // Connected before setFuture so an already-finished (cached) load still fires.
     QObject::connect(watcher_, &QFutureWatcher<MeshData>::finished, context, std::move(on_done));
     watcher_->setFuture(future_);
@@ -75,14 +78,14 @@ class MeshImport {
   MeshImport(const MeshImport&) = delete;
   MeshImport& operator=(const MeshImport&) = delete;
 
-  // The imported mesh, after `on_done`. A copy: MeshLoader hands one cached
-  // future to every caller of a path, so the result must stay in it. A stored
-  // worker exception comes back as an error MeshData instead of being rethrown
-  // on the GUI thread.
+  // The imported mesh, once, after `on_done`: moved out of an unshared future,
+  // copied out of a shared one. A stored worker exception comes back as an
+  // error MeshData instead of being rethrown on the GUI thread.
   [[nodiscard]] MeshData take() {
+    static_assert(std::is_nothrow_move_constructible_v<MeshData>, "takeResult() would copy");
     MeshData mesh;
     try {
-      mesh = future_.result();
+      mesh = shared_ ? future_.result() : future_.takeResult();
     } catch (const std::exception& error) {
       mesh.error = QObject::tr("mesh import threw: %1").arg(QString::fromUtf8(error.what()));
     } catch (...) {
@@ -94,6 +97,7 @@ class MeshImport {
  private:
   QFuture<MeshData> future_;
   QFutureWatcher<MeshData>* watcher_;
+  bool shared_;
 };
 
 }  // namespace pj::scene3d

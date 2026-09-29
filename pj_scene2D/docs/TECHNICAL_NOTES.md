@@ -190,7 +190,7 @@ dropped layer deletes textures an upload already queued for it (a depth frame's
 colormap, the frame planes) references, so that batch is discarded, never
 submitted.
 
-Builds with tests (`PJ_RHI_TEST_HOOKS`, `pj_widgets/GraphicsApi.h`) give the
+Builds with tests (`PJ_RHI_TEST_HOOKS`, `pj_widgets/RhiTestHooks.h`) give the
 viewer its fault injection: the `pjTestFailPipeline` dynamic property (`base`,
 `composite`, `points`, `thick`, `text`, or `layer srb` for a frame layer's
 bindings) fails that creation, and the `pjTestRhiAdoptions` /

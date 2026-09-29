@@ -24,6 +24,10 @@ add_library(pj_plotting STATIC
     src/PlotMarkersItem.cpp
     src/PlotPanner.cpp
     src/PlotRhiCanvas.cpp
+    src/PlotRhiGeometry.cpp
+    src/PlotRhiGeometry.h
+    src/PlotRhiTextAtlas.cpp
+    src/PlotRhiTextAtlas.h
     src/PlotSampleReducer.cpp
     src/PlotScaleDraw.cpp
     src/PlotWidget.cpp

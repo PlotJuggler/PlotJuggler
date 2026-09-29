@@ -12,7 +12,7 @@ namespace pj::scene3d {
 // CompositeParams (SceneViewWidget::meshShadingParams()) and handed to its passes
 // every frame, so the bound view's mesh/collision opacity and shading reach the
 // model pass through render-time plumbing rather than a process-global. Read per
-// draw; mutate freely from the GUI thread (call view->update() afterwards). Two 3D
+// draw; mutate freely from the GUI thread (call view->invalidateContent() afterwards). Two 3D
 // docks therefore hold independent look state and never clobber each other.
 // Defaults are the User's 2026-06-10 look-dev pick.
 struct MeshShadingParams {

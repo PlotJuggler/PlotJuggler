@@ -15,8 +15,8 @@ namespace pj::scene3d {
 class OccupancyGridLayer;
 
 /// The occupancy-grid family of the QRhi view: one R8 texture per layer drawn
-/// as a textured unit quad scaled to the grid. It owns its pipeline, layout SRB,
-/// quad, per-layer GPU state and counters; the view owns ordering, budgets'
+/// as a textured unit quad scaled to the grid. It owns its layout SRB, quad,
+/// per-layer GPU state and counters (the view's registry its pipeline); the view owns ordering, budgets'
 /// frame lifetime and the command buffer. Per frame the view calls, in order:
 /// admit() (once), prepare() (once), then submit() per ScenePass for each draw.
 class OccupancyRhiPass {
@@ -27,13 +27,12 @@ class OccupancyRhiPass {
     DrawClass draw_class = DrawClass::kOpaque;  ///< translucent below full layer opacity
   };
 
-  /// Creates the pipeline and shared resources; false leaves the pass unusable
+  /// Registers the pipeline and creates the shared resources; false leaves the pass unusable
   /// (the view then releases everything, as for any other family).
   [[nodiscard]] bool initialize(const RhiPassSetup& setup);
   [[nodiscard]] bool ready() const {
     return pipeline_ != nullptr;
   }
-  void registerPipelines(ScenePipelineRegistry& registry) const;
   /// Adopts the view's occupancy layers; drops GPU state of layers that left or
   /// are hidden.
   void setLayers(const std::vector<OccupancyGridLayer*>& layers);
@@ -95,7 +94,7 @@ class OccupancyRhiPass {
   QRhiSampler* sampler_ = nullptr;
   QRhiBuffer* quad_buffer_ = nullptr;
   QRhiShaderResourceBindings* layout_shader_resources_ = nullptr;
-  QRhiGraphicsPipeline* pipeline_ = nullptr;
+  const ScenePipeline* pipeline_ = nullptr;
 
   std::vector<OccupancyGridLayer*> layers_;
   std::unordered_map<OccupancyGridLayer*, LayerGpu> layer_gpu_;

@@ -24,6 +24,9 @@
 #include <QUrl>
 #include <functional>
 #include <memory>
+
+#include "mock_parser_support.h"
+
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -142,11 +145,9 @@ TEST(UrlFetcherTest, DestructionDropsInFlightCallback) {
   // A server that accepts the connection but never responds keeps the request
   // in flight for as long as the test wants.
   QTcpServer server;
-  ASSERT_TRUE(server.listen(QHostAddress::LocalHost, 0));
-
   auto fetcher = std::make_unique<pj::scene3d::UrlFetcher>();
   bool called = false;
-  const QUrl url(u"http://127.0.0.1:%1/never"_s.arg(server.serverPort()));
+  const QUrl url(pj::scene3d::test::silentServerUrl(server, u"never"_s));
   fetcher->fetch(url, [&called](pj::scene3d::FetchResult) { called = true; });
 
   // Let the connection actually establish, then kill the fetcher mid-flight.

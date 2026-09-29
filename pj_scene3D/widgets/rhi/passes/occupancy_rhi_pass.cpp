@@ -80,20 +80,17 @@ bool OccupancyRhiPass::initialize(const RhiPassSetup& setup) {
   QRhiVertexInputLayout layout;
   layout.setBindings({QRhiVertexInputBinding(2U * sizeof(float))});
   layout.setAttributes({QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float2, 0U)});
-  pipeline_ = createScenePipeline(
-      setup, {
-                 .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/occupancy.vert.qsb")),
-                 .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/occupancy.frag.qsb")),
-                 .input_layout = layout,
-                 .bindings = layout_shader_resources_,
-                 .depth_write = false,
-                 .depth_bias = -1,
-             });
+  pipeline_ = setup.pipelines->add(
+      {
+          .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/occupancy.vert.qsb")),
+          .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/occupancy.frag.qsb")),
+          .input_layout = layout,
+          .bindings = layout_shader_resources_,
+          .depth_write = false,
+          .depth_bias = -1,
+      },
+      setup.part);
   return pipeline_ != nullptr;
-}
-
-void OccupancyRhiPass::registerPipelines(ScenePipelineRegistry& registry) const {
-  registry.add(pipeline_);
 }
 
 void OccupancyRhiPass::setLayers(const std::vector<OccupancyGridLayer*>& layers) {
@@ -260,7 +257,6 @@ void OccupancyRhiPass::release() {
   layer_gpu_.clear();
   admitted_.clear();
   draws_.clear();
-  delete pipeline_;
   delete layout_shader_resources_;
   delete layout_uniform_buffer_;
   delete quad_buffer_;

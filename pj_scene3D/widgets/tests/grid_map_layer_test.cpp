@@ -285,7 +285,7 @@ TEST(GridMapLayer, DockTransformsSourceBoundsIntoFixedFrame) {
   // (looked up in the dock's buffer) and hands the union to the view's camera.
   // No GPU is involved: the view is never shown.
   ASSERT_EQ(dock.sceneView()->fixedFrame(), "world");
-  const pj::scene3d::AABB bounds = dock.sceneView()->sceneBoundsForTest();
+  const pj::scene3d::AABB bounds = dock.sceneView()->sceneBounds();
   ASSERT_TRUE(bounds.valid);
   EXPECT_FLOAT_EQ(bounds.min.x, 101.0f);
   EXPECT_FLOAT_EQ(bounds.max.x, 103.0f);

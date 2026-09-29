@@ -35,6 +35,8 @@
 #include "pj_scene3d_core/pointcloud_budget.h"
 #include "pj_scene3d_widgets/object_topic_metadata.h"
 #include "pj_scene3d_widgets/parse_locked.h"
+#include "pj_scene3d_widgets/retained_upload.h"
+#include "pj_widgets/Colormap.h"
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/FrameworkTokens.h"
@@ -227,7 +229,7 @@ void DepthCloudLayer::setMaxDepth(float metres) {
 
 QDomElement DepthCloudLayer::xmlSaveState(QDomDocument& doc) const {
   QDomElement el = doc.createElement(u"depthcloud"_s);
-  el.setAttribute(u"colormap"_s, colormapToken(colormap_));
+  el.setAttribute(u"colormap"_s, PJ::colormapToken(colormap_));
   el.setAttribute(u"point_size_px"_s, QString::number(static_cast<double>(point_size_px_), 'g', 6));
   el.setAttribute(u"min_depth"_s, QString::number(static_cast<double>(min_depth_m_), 'g', 6));
   el.setAttribute(u"max_depth"_s, QString::number(static_cast<double>(max_depth_m_), 'g', 6));
@@ -239,7 +241,7 @@ std::optional<DepthCloudLayer::Settings> DepthCloudLayer::parseSettings(const QD
     return std::nullopt;
   }
   Settings settings;
-  const auto colormap = parseColormap(element.attribute(u"colormap"_s, u"turbo"_s));
+  const auto colormap = PJ::parseColormap(element.attribute(u"colormap"_s, PJ::colormapToken(PJ::Colormap::kTurbo)));
   if (!colormap.has_value() ||
       !detail::parseFiniteFloat(element, "point_size_px", 2.0f, 1.0f, 32.0f, settings.point_size_px) ||
       !detail::parseFiniteFloat(element, "min_depth", 0.0f, 0.0f, 1000.0f, settings.min_depth_m) ||
@@ -285,10 +287,9 @@ QWidget* DepthCloudLayer::createConfigWidget(QWidget* parent) {
   outer->addLayout(form);
 
   auto* colormap_combo = new PJ::ComboBox(container);
-  colormap_combo->addItem(u"turbo"_s, static_cast<int>(PJ::Colormap::kTurbo));
-  colormap_combo->addItem(u"viridis"_s, static_cast<int>(PJ::Colormap::kViridis));
-  colormap_combo->addItem(u"plasma"_s, static_cast<int>(PJ::Colormap::kPlasma));
-  colormap_combo->addItem(u"grayscale"_s, static_cast<int>(PJ::Colormap::kGrayscale));
+  for (int index = 0; index < PJ::kColormapCount; ++index) {
+    colormap_combo->addItem(PJ::colormapToken(static_cast<PJ::Colormap>(index)), index);
+  }
   colormap_combo->setCurrentIndex(static_cast<int>(colormap_));
   form->addRow(tr("Colormap:"), colormap_combo);
 

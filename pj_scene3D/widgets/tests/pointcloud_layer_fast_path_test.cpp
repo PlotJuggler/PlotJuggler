@@ -32,6 +32,7 @@
 #include "pj_scene3d_core/camera/camera.h"  // AABB
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+#include "pj_widgets/GraphicsApi.h"  // paddedUploadSize
 using namespace Qt::StringLiterals;
 
 namespace {

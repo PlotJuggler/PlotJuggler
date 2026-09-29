@@ -35,13 +35,12 @@ class PoseRhiPass {
     DrawClass draw_class = DrawClass::kOpaque;
   };
 
-  /// Creates the pipeline, which grades triads as annotations (the setup's
+  /// Registers the pipeline, which grades triads as annotations (the setup's
   /// annotation render mode) and draws the setup's arrow mesh.
   [[nodiscard]] bool initialize(const RhiPassSetup& setup);
   [[nodiscard]] bool ready() const {
     return pipeline_ != nullptr;
   }
-  void registerPipelines(ScenePipelineRegistry& registry) const;
   /// Adopts the view's pose layers; drops GPU state of layers that left or are hidden.
   void setLayers(const std::vector<PosesInFrameLayer*>& layers);
 
@@ -102,7 +101,7 @@ class PoseRhiPass {
   const RhiSharedGeometry* geometry_ = nullptr;  // view-owned
   QRhiBuffer* layout_uniform_buffer_ = nullptr;
   QRhiShaderResourceBindings* layout_shader_resources_ = nullptr;
-  QRhiGraphicsPipeline* pipeline_ = nullptr;
+  const ScenePipeline* pipeline_ = nullptr;
 
   std::vector<PosesInFrameLayer*> layers_;
   std::unordered_map<PosesInFrameLayer*, LayerGpu> layer_gpu_;

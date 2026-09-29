@@ -28,6 +28,33 @@ class SessionManager;
 namespace pj::scene3d {
 
 class TransformBuffer;
+class PointRenderable;
+class ModelRenderable;
+class PosesInFrameLayer;
+class OccupancyGridLayer;
+class VoxelGridLayer;
+class SceneEntitiesLayer;
+class GridMapLayer;
+class TrailLayer;
+
+// What one layer draws, family by family, each through the family's typed
+// interface: the layer's registration with the view (Scene3DLayer::
+// sceneContributions()), read once per SceneViewWidget::setLayers(), never per
+// frame. A layer may contribute to several families (a SceneEntities layer draws
+// markers and models; a pose layer its triads and the trail it owns, which comes
+// and goes between frames without a new registration); all its
+// draws keep its logical (dock) slot, and within the slot the families submit in
+// the view's fixed family order. A layer with no contribution draws nothing.
+struct SceneContributions {
+  PointRenderable* points = nullptr;
+  TrailLayer* trail = nullptr;         ///< a standalone trail
+  PosesInFrameLayer* poses = nullptr;  ///< its triads, and the trail it owns (poses->trail())
+  OccupancyGridLayer* occupancy = nullptr;
+  VoxelGridLayer* voxels = nullptr;
+  SceneEntitiesLayer* markers = nullptr;
+  ModelRenderable* models = nullptr;
+  GridMapLayer* grid_map = nullptr;
+};
 
 // Fold a transform's 16 bit patterns (float or double) into an in-process key
 // (FNV-1a style). The TF is a zero-order hold, so keys only change when the pose
@@ -90,6 +117,15 @@ class Scene3DLayer : public PJ::ISceneLayer {
   // Return an empty string when no data has been decoded yet — the dock
   // treats that as "not warning, pending data" rather than "broken".
   [[nodiscard]] virtual QString sourceFrame() const = 0;
+
+  // The scene families this layer draws through (see SceneContributions);
+  // constant for the layer's lifetime.
+  [[nodiscard]] virtual SceneContributions sceneContributions() = 0;
+
+  // The frame the view places this layer's geometry from; empty before data
+  // arrives, and for a trail (its points are already in the fixed frame). One
+  // override also implements PointRenderable's and ModelRenderable's.
+  [[nodiscard]] virtual const std::string& renderFrameId() const;
 
   // Source-frame extent of this layer's geometry, or nullopt when
   // the layer reports no bounds (no data decoded yet, or a bounds-less layer

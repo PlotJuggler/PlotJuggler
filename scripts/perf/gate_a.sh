@@ -31,7 +31,7 @@
 # one at a time (each under the build lock, letting builds run in between).
 #
 # Hold the machine's build lock for the whole run (no compile may add noise),
-# e.g. `flock /path/build.lock scripts/perf/gate_a.sh ...`. Needs gnome-shell,
+# e.g. `scripts/perf/build_slot.sh scripts/perf/gate_a.sh ...`. Needs gnome-shell,
 # Xwayland and dbus-run-session; the GPU is whatever Mesa picks (check the
 # report's device column).
 set -euo pipefail
@@ -81,34 +81,11 @@ done
 # --- the display: headless GNOME Shell + rootful Xwayland ----------------------
 DISPLAY_NUM="${DISPLAY_ID#:}"
 RUN_DIR="/tmp/pjx${DISPLAY_NUM}"
-SHELL_PID="" XWAYLAND_PID=""
-stop_display() {
-  [[ -n "$XWAYLAND_PID" ]] && kill "$XWAYLAND_PID" 2>/dev/null || true
-  [[ -n "$SHELL_PID" ]] && kill "$SHELL_PID" 2>/dev/null || true
-  # gnome-shell leaves ~30 session helpers behind: kill every process of this runtime dir.
-  for environ in /proc/[0-9]*/environ; do
-    if tr '\0' '\n' 2>/dev/null <"$environ" | grep -qx "XDG_RUNTIME_DIR=$RUN_DIR"; then
-      pid="${environ#/proc/}"; kill "${pid%/environ}" 2>/dev/null || true
-    fi
-  done
-}
+source "$ROOT/scripts/perf/headless_display.sh"
 if [[ "$KEEP_DISPLAY" == 0 ]]; then
-  trap stop_display EXIT
+  trap 'stop_display "$RUN_DIR"' EXIT
 fi
-if [[ ! -S "/tmp/.X11-unix/X${DISPLAY_NUM}" ]]; then
-  mkdir -p "$RUN_DIR"; chmod 700 "$RUN_DIR"
-  XDG_RUNTIME_DIR="$RUN_DIR" dbus-run-session -- gnome-shell --headless --wayland \
-    --virtual-monitor 1920x1080 --wayland-display "pjperf${DISPLAY_NUM}" >"$RUN_DIR/shell.log" 2>&1 &
-  SHELL_PID=$!
-  for _ in $(seq 60); do [[ -S "$RUN_DIR/pjperf${DISPLAY_NUM}" ]] && break; sleep 0.5; done
-  sleep 3
-  env -u DISPLAY XDG_RUNTIME_DIR="$RUN_DIR" WAYLAND_DISPLAY="pjperf${DISPLAY_NUM}" \
-    Xwayland "$DISPLAY_ID" -geometry 1920x1080 -noreset >"$RUN_DIR/xwayland.log" 2>&1 &
-  XWAYLAND_PID=$!
-  for _ in $(seq 40); do [[ -S "/tmp/.X11-unix/X${DISPLAY_NUM}" ]] && break; sleep 0.5; done
-  [[ -S "/tmp/.X11-unix/X${DISPLAY_NUM}" ]] || { echo "Xwayland did not start (see $RUN_DIR)" >&2; exit 1; }
-  sleep 2
-fi
+start_display "$DISPLAY_NUM" "$RUN_DIR" || [[ $? == 3 ]] || exit 1  # 3 = reused, on purpose
 
 # --- the cases -------------------------------------------------------------------
 # One "<config> <case> <command...>" per line; configs: base (the baseline tree on

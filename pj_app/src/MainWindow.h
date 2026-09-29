@@ -164,6 +164,9 @@ class MainWindow : public QMainWindow {
   // Supersedes an in-flight source-replay picker without opening another host
   // picker, making late-callback rejection deterministic in browser tests.
   void wasmProbeSupersedeBrowserReplayPicker();
+  // Installs the plot readback shortcuts (F8, F9, F10); defined with the other
+  // acceptance probes in tests/wasm_acceptance_probes.inc.
+  void installWasmPlotAcceptanceProbes();
 #endif
 
   // Loads `path` on startup and auto-reloads its data source(s) without prompting

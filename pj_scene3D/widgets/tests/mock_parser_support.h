@@ -12,6 +12,13 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#ifdef PJ_SCENE3D_FIXTURES_DIR
+#include <QFile>
+#include <QHostAddress>
+#include <QString>
+#include <QTcpServer>
+#include <QTemporaryDir>
+#endif
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -115,5 +122,28 @@ bool pumpUntil(Predicate predicate, std::chrono::milliseconds timeout = std::chr
   }
   return predicate();
 }
+
+#ifdef PJ_SCENE3D_FIXTURES_DIR
+// The fixture runner's (pj_scene3d_widget_fixture_tests, which links Qt6::Network).
+
+// `count` distinct copies of the cube fixture in `dir`: MeshLoader caches by
+// path, and a cached future would finish without occupying a worker.
+inline std::vector<QString> cubeCopies(const QTemporaryDir& dir, int count) {
+  std::vector<QString> paths;
+  for (int index = 0; index < count; ++index) {
+    const QString path = dir.filePath(QStringLiteral("cube_%1.stl").arg(index));
+    EXPECT_TRUE(QFile::copy(QStringLiteral(PJ_SCENE3D_FIXTURES_DIR "/meshes/cube.stl"), path));
+    paths.push_back(path);
+  }
+  return paths;
+}
+
+// An http URL for `name` on `server`, which listens on localhost from the first
+// call on: it accepts connections and never responds, so a fetch stays in flight.
+inline QString silentServerUrl(QTcpServer& server, const QString& name) {
+  EXPECT_TRUE(server.isListening() || server.listen(QHostAddress::LocalHost, 0));
+  return QStringLiteral("http://127.0.0.1:%1/%2").arg(server.serverPort()).arg(name);
+}
+#endif
 
 }  // namespace pj::scene3d::test

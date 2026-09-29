@@ -18,6 +18,13 @@
 #include <vector>
 
 #include "MainWindow.h"
+#include "passes/marker_rhi_pass.h"
+#include "passes/model_rhi_pass.h"
+#include "passes/occupancy_rhi_pass.h"
+#include "passes/point_rhi_pass.h"
+#include "passes/pose_rhi_pass.h"
+#include "passes/trail_rhi_pass.h"
+#include "passes/voxel_rhi_pass.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/layers/depth_cloud_layer.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
@@ -30,11 +37,15 @@
 #include "pj_widgets/Fnv1a.h"
 #include "pj_widgets/LayerListView.h"
 #include "pj_widgets/RealSlider.h"
+#include "scene_view_test_access.h"
+#include "scene_view_widget_rhi_quality_p.h"
 #include "ui/Scene3DConfigPanel.h"
 
 using namespace Qt::StringLiterals;
 
 namespace {
+
+using pj::scene3d::SceneViewTestAccess;
 
 struct ObservedView {
   quint64 identity = 0;
@@ -155,10 +166,11 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_scene3d_foundation() {
           view != nullptr ? static_cast<int>(view->cameraModel()) : -1, static_cast<double>(camera.focal.x),
           static_cast<double>(camera.focal.y), static_cast<double>(camera.focal.z), static_cast<double>(camera.radius),
           static_cast<double>(camera.azimuth), static_cast<double>(camera.elevation),
-          static_cast<double>(camera.ortho_scale), view != nullptr ? view->lastLineVertexCountForTest() : 0,
-          view != nullptr ? view->lastTriangleVertexCountForTest() : 0,
-          view != nullptr ? view->lastResolvedFrameCountForTest() : 0, fixed_geometry.x(), fixed_geometry.y(),
-          fixed_geometry.width(), fixed_geometry.height(), camera_geometry.x(), camera_geometry.y(),
+          static_cast<double>(camera.ortho_scale),
+          view != nullptr ? SceneViewTestAccess::lastLineVertexCount(*view) : 0,
+          view != nullptr ? SceneViewTestAccess::lastTriangleVertexCount(*view) : 0,
+          view != nullptr ? SceneViewTestAccess::lastResolvedFrameCount(*view) : 0, fixed_geometry.x(),
+          fixed_geometry.y(), fixed_geometry.width(), fixed_geometry.height(), camera_geometry.x(), camera_geometry.y(),
           camera_geometry.width(), camera_geometry.height(), home_geometry.x(), home_geometry.y(),
           home_geometry.width(), home_geometry.height(), static_cast<unsigned long long>(frame_hash),
           static_cast<unsigned long long>(rgb_sum), framebuffer.width(), framebuffer.height());
@@ -293,7 +305,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_scene3d_foundation() {
 
       QStringList submitted_order;
       if (view != nullptr) {
-        for (const std::uint32_t topic_id : view->lastSubmittedLayerIdsForTest()) {
+        for (const std::uint32_t topic_id : SceneViewTestAccess::lastSubmittedLayerIds(*view)) {
           submitted_order.push_back(QString::number(topic_id));
         }
       }
@@ -321,20 +333,22 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_scene3d_foundation() {
           "depth=%d,%d,%llu,%llu,%llu,%d poses=%d,%d occupancy=%d,%d,%d,%d voxels=%d,%d,%d,%d trails=%d,%d "
           "order=%s submitted=%s list=%d,%d,%dx%d rows=%s toggle=%d,%d,%dx%d right_visible=%d warnings=%s",
           static_cast<unsigned long long>(current_sequence), static_cast<long long>(index), point_layers,
-          view != nullptr ? view->lastPointLayerCountForTest() : 0,
-          view != nullptr ? view->lastPointVertexCountForTest() : 0, static_cast<unsigned long long>(compressed_starts),
-          static_cast<unsigned long long>(compressed_completed), static_cast<unsigned long long>(compressed_off_main),
-          compressed_decoding, compressed_layers, depth_layers, depth_decoding,
-          static_cast<unsigned long long>(depth_starts), static_cast<unsigned long long>(depth_completed),
-          static_cast<unsigned long long>(depth_off_main), view != nullptr ? view->lastDepthVertexCountForTest() : 0,
-          pose_layers, view != nullptr ? view->lastPoseArmCountForTest() : 0, occupancy_layers,
-          view != nullptr ? view->lastOccupancyCellCountForTest() : 0,
-          view != nullptr ? view->occupancyFullUploadCountForTest() : 0,
-          view != nullptr ? view->occupancyPartialUploadCountForTest() : 0, voxel_layers,
-          view != nullptr ? view->lastVoxelCountForTest() : 0,
-          view != nullptr ? view->voxelFullUploadCountForTest() : 0,
-          view != nullptr ? view->max3DTextureSizeForTest() : 0, view != nullptr ? view->lastTrailCountForTest() : 0,
-          view != nullptr ? view->lastTrailVertexCountForTest() : 0,
+          view != nullptr ? SceneViewTestAccess::pointPass(*view).lastPointLayerCount() : 0,
+          view != nullptr ? SceneViewTestAccess::pointPass(*view).lastPointVertexCount() : 0,
+          static_cast<unsigned long long>(compressed_starts), static_cast<unsigned long long>(compressed_completed),
+          static_cast<unsigned long long>(compressed_off_main), compressed_decoding, compressed_layers, depth_layers,
+          depth_decoding, static_cast<unsigned long long>(depth_starts),
+          static_cast<unsigned long long>(depth_completed), static_cast<unsigned long long>(depth_off_main),
+          view != nullptr ? SceneViewTestAccess::pointPass(*view).lastDepthVertexCount() : 0, pose_layers,
+          view != nullptr ? SceneViewTestAccess::posePass(*view).lastArmCount() : 0, occupancy_layers,
+          view != nullptr ? SceneViewTestAccess::occupancyPass(*view).lastCellCount() : 0,
+          view != nullptr ? SceneViewTestAccess::occupancyPass(*view).fullUploadCount() : 0,
+          view != nullptr ? SceneViewTestAccess::occupancyPass(*view).partialUploadCount() : 0, voxel_layers,
+          view != nullptr ? SceneViewTestAccess::voxelPass(*view).lastVoxelCount() : 0,
+          view != nullptr ? SceneViewTestAccess::voxelPass(*view).fullUploadCount() : 0,
+          view != nullptr ? SceneViewTestAccess::max3DTextureSize(*view) : 0,
+          view != nullptr ? SceneViewTestAccess::trailPass(*view).lastTrailCount() : 0,
+          view != nullptr ? SceneViewTestAccess::trailPass(*view).lastVertexCount() : 0,
           QUrl::toPercentEncoding(ui_order.join(u',')).constData(),
           QUrl::toPercentEncoding(submitted_order.join(u',')).constData(), list_geometry.x(), list_geometry.y(),
           list_geometry.width(), list_geometry.height(), QUrl::toPercentEncoding(row_centers.join(u',')).constData(),
@@ -342,7 +356,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_scene3d_foundation() {
           right_toggle_geometry.height(), right_panel != nullptr && right_panel->isVisibleTo(main_window) ? 1 : 0,
           encoded_warnings.constData());
 
-      const auto model_maps = view != nullptr ? view->lastModelTextureSlotCountsForTest() : std::array<int, 5>{};
+      const auto model_maps =
+          view != nullptr ? SceneViewTestAccess::modelPass(*view).lastTextureSlotCounts() : std::array<int, 5>{};
       auto* source_combo = config_panel != nullptr && config_panel->boundDockForTest() == dock
                                ? config_panel->findChild<QComboBox*>(u"scene3dModelSource"_s)
                                : nullptr;
@@ -354,9 +369,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_scene3d_foundation() {
           static_cast<unsigned long long>(current_sequence), static_cast<long long>(index), marker_layers,
           marker_decoding, static_cast<unsigned long long>(marker_starts),
           static_cast<unsigned long long>(marker_completed), static_cast<unsigned long long>(marker_off_main),
-          view != nullptr ? view->lastMarkerLayerCountForTest() : 0,
-          view != nullptr ? view->lastMarkerInstanceCountForTest() : 0,
-          view != nullptr ? view->lastMarkerStreamVertexCountForTest() : 0,
+          view != nullptr ? SceneViewTestAccess::markerPass(*view).lastLayerCount() : 0,
+          view != nullptr ? SceneViewTestAccess::markerPass(*view).lastInstanceCount() : 0,
+          view != nullptr ? SceneViewTestAccess::markerPass(*view).lastStreamVertexCount() : 0,
           static_cast<unsigned long long>(marker_cubes), static_cast<unsigned long long>(marker_spheres),
           static_cast<unsigned long long>(marker_cylinders), static_cast<unsigned long long>(marker_arrows),
           static_cast<unsigned long long>(marker_axes), static_cast<unsigned long long>(marker_lines),
@@ -364,10 +379,10 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_scene3d_foundation() {
           static_cast<unsigned long long>(marker_skipped_models),
           static_cast<unsigned long long>(marker_skipped_invalid), static_cast<unsigned long long>(ready_models),
           static_cast<unsigned long long>(live_models), static_cast<unsigned long long>(model_bytes),
-          view != nullptr ? view->lastModelLayerCountForTest() : 0,
-          view != nullptr ? view->lastModelDrawCountForTest() : 0,
-          view != nullptr ? view->lastModelTriangleCountForTest() : 0, model_maps[0], model_maps[1], model_maps[2],
-          model_maps[3], model_maps[4], robot_layers, static_cast<unsigned long long>(robot_meshes),
+          view != nullptr ? SceneViewTestAccess::modelPass(*view).lastLayerCount() : 0,
+          view != nullptr ? SceneViewTestAccess::modelPass(*view).lastDrawCount() : 0,
+          view != nullptr ? SceneViewTestAccess::modelPass(*view).lastTriangleCount() : 0, model_maps[0], model_maps[1],
+          model_maps[2], model_maps[3], model_maps[4], robot_layers, static_cast<unsigned long long>(robot_meshes),
           static_cast<unsigned long long>(robot_draws), static_cast<unsigned long long>(robot_visuals),
           static_cast<unsigned long long>(robot_collisions), static_cast<unsigned long long>(robot_placeholders),
           static_cast<unsigned long long>(robot_bridges), robot_source_type, robot_display_mode,
@@ -375,32 +390,49 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_scene3d_foundation() {
           QUrl::toPercentEncoding(robot_statuses.join(u'|')).constData(),
           source_combo != nullptr ? source_combo->currentIndex() : -1);
 
-      const QSize hdr_size = view != nullptr ? view->hdrRenderSizeForTest() : QSize{};
+      const QSize hdr_size = view != nullptr ? SceneViewTestAccess::hdrRenderSize(*view) : QSize{};
       const QByteArray quality_errors = QUrl::toPercentEncoding(
-          (view != nullptr ? view->hdrCapabilityErrorForTest() : QString{}) + u'|' +
-          (view != nullptr ? view->ssaoCapabilityErrorForTest() : QString{}) + u'|' +
-          (view != nullptr ? view->edlCapabilityErrorForTest() : QString{}) + u'|' +
-          (view != nullptr ? view->shadowCapabilityErrorForTest() : QString{}));
+          (view != nullptr ? SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).capability_error
+                           : QString{}) +
+          u'|' +
+          (view != nullptr ? SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kSsao).capability_error
+                           : QString{}) +
+          u'|' +
+          (view != nullptr ? SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kEdl).capability_error
+                           : QString{}) +
+          u'|' +
+          (view != nullptr ? SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).capability_error
+                           : QString{}));
       qInfo(
           "PJ_WASM_SCENE3D_QUALITY sequence=%llu index=%lld "
           "quality=%d,%d,%d,%d,%llu,%llu,%d,%d,%llu,%d,%d,%llu,%d,%d,%d,%d,%d,%d,%llu errors=%s",
           static_cast<unsigned long long>(current_sequence), static_cast<long long>(index),
-          view != nullptr && view->lastHdrActiveForTest() ? 1 : 0,
-          view != nullptr && view->hdrResourcesReadyForTest() ? 1 : 0, hdr_size.width(), hdr_size.height(),
-          static_cast<unsigned long long>(view != nullptr ? view->hdrAllocatedBytesForTest() : 0U),
-          static_cast<unsigned long long>(view != nullptr ? view->hdrResourceGenerationForTest() : 0U),
-          view != nullptr && view->lastSsaoActiveForTest() ? 1 : 0,
-          view != nullptr && view->ssaoResourcesReadyForTest() ? 1 : 0,
-          static_cast<unsigned long long>(view != nullptr ? view->ssaoResourceGenerationForTest() : 0U),
-          view != nullptr && view->lastEdlActiveForTest() ? 1 : 0,
-          view != nullptr && view->edlResourcesReadyForTest() ? 1 : 0,
-          static_cast<unsigned long long>(view != nullptr ? view->edlResourceGenerationForTest() : 0U),
-          view != nullptr && view->lastShadowActiveForTest() ? 1 : 0,
-          view != nullptr && view->shadowResourcesReadyForTest() ? 1 : 0,
-          view != nullptr && view->lastShadowFitValidForTest() ? 1 : 0,
-          view != nullptr ? view->shadowMapSizeForTest() : 0, view != nullptr ? view->lastShadowDrawCountForTest() : 0,
-          view != nullptr ? view->lastShadowTriangleCountForTest() : 0,
-          static_cast<unsigned long long>(view != nullptr ? view->shadowResourceGenerationForTest() : 0U),
+          view != nullptr && SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active ? 1 : 0,
+          view != nullptr && SceneViewTestAccess::hdrResourcesReady(*view) ? 1 : 0, hdr_size.width(), hdr_size.height(),
+          static_cast<unsigned long long>(view != nullptr ? SceneViewTestAccess::hdrAllocatedBytes(*view) : 0U),
+          static_cast<unsigned long long>(
+              view != nullptr ? SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).resource_generation
+                              : 0U),
+          view != nullptr && SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kSsao).last_active ? 1 : 0,
+          view != nullptr && SceneViewTestAccess::ssaoResourcesReady(*view) ? 1 : 0,
+          static_cast<unsigned long long>(
+              view != nullptr ? SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kSsao).resource_generation
+                              : 0U),
+          view != nullptr && SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kEdl).last_active ? 1 : 0,
+          view != nullptr && SceneViewTestAccess::edlResourcesReady(*view) ? 1 : 0,
+          static_cast<unsigned long long>(
+              view != nullptr ? SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kEdl).resource_generation
+                              : 0U),
+          view != nullptr && SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).last_active ? 1 : 0,
+          view != nullptr && SceneViewTestAccess::shadowResourcesReady(*view) ? 1 : 0,
+          view != nullptr && SceneViewTestAccess::lastShadowFitValid(*view) ? 1 : 0,
+          view != nullptr ? SceneViewTestAccess::shadowMapSize(*view) : 0,
+          view != nullptr ? SceneViewTestAccess::modelPass(*view).lastShadowDrawCount() : 0,
+          view != nullptr ? SceneViewTestAccess::modelPass(*view).lastShadowTriangleCount() : 0,
+          static_cast<unsigned long long>(
+              view != nullptr
+                  ? SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).resource_generation
+                  : 0U),
           quality_errors.constData());
     }
     return;
@@ -416,13 +448,13 @@ void setScene3dFallback(int mode, bool enabled) {
         continue;
       }
       if (mode == 0) {
-        view->setForceHdrFallbackForTest(enabled);
+        SceneViewTestAccess::forceStageFallback(*view, SceneViewTestAccess::Stage::kHdr, enabled);
       } else if (mode == 1) {
-        view->setForceSsaoFallbackForTest(enabled);
+        SceneViewTestAccess::forceStageFallback(*view, SceneViewTestAccess::Stage::kSsao, enabled);
       } else if (mode == 3) {
-        view->setForceShadowFallbackForTest(enabled);
+        SceneViewTestAccess::forceStageFallback(*view, SceneViewTestAccess::Stage::kShadow, enabled);
       } else {
-        view->setForceEdlFallbackForTest(enabled);
+        SceneViewTestAccess::forceStageFallback(*view, SceneViewTestAccess::Stage::kEdl, enabled);
       }
     }
   }

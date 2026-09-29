@@ -26,10 +26,12 @@ namespace pj::scene3d {
 /// The model family of the QRhi view: every ModelRenderable (RobotModel/URDF
 /// visuals and collisions, SceneEntities model primitives) as indexed meshes
 /// with PBR/Blinn materials and up to five textures, drawn one instance per
-/// submesh. It owns the model pipelines, per-layer mesh/material/texture GPU
-/// state, the colour and shadow-caster instance buffers and the shadow-caster
-/// pipeline. The view owns the shadow map and EDL mask targets and replays this
-/// pass's prepared draws into them (submitShadowCasters, submitMeshMask).
+/// submesh. It registers its colour pipelines (the view's registry owns them)
+/// and owns per-layer mesh/material/texture GPU state, the colour and
+/// shadow-caster instance buffers and the shadow-caster and EDL mesh-mask
+/// pipelines. The view owns the shadow map and EDL mask targets
+/// and replays this pass's prepared draws into them (submitShadowCasters,
+/// submitMeshMask).
 ///
 /// Caches, all valid for one QRhi (release() drops them):
 ///  - GPU meshes per layer, keyed by mesh key and MeshData identity: a
@@ -64,7 +66,6 @@ class ModelRhiPass {
   /// all view-owned and outliving release().
   [[nodiscard]] bool initialize(const RhiPassSetup& setup, QRhiBuffer* lighting_uniforms);
   [[nodiscard]] bool ready() const;
-  void registerPipelines(ScenePipelineRegistry& registry) const;
   /// Adopts the view's model layers; drops GPU state of layers that left or
   /// are hidden.
   void setLayers(const std::vector<ModelRenderable*>& layers);
@@ -124,20 +125,18 @@ class ModelRhiPass {
   void clearShadowMap(QRhi* rhi, bool restore_bindings);
   /// Notes `error` on every layer with shadow casters this frame.
   void noteShadowFailure(const QString& error);
-  /// Records the mask draws (every colour draw) with the view's mask pipelines.
-  void submitMeshMask(
-      QRhiCommandBuffer* command_buffer, QRhiGraphicsPipeline* triangle_pipeline, QRhiGraphicsPipeline* line_pipeline,
-      const QRhiViewport& viewport) const;
-  /// Source state for the view's EDL mask pipelines.
-  [[nodiscard]] QRhiGraphicsPipeline* trianglePipeline() const {
-    return triangle_pipeline_;
+  /// Creates the EDL mesh-mask pipelines for the view's mask target
+  /// `render_pass` (single-sample: coverage colour plus the scene depth), from
+  /// the colour pipelines' description; `depth_resolve`: that depth is a
+  /// resolved multisample one. True when they exist (they are kept until
+  /// releaseMeshMaskPipelines(), and the view releases them with its target).
+  bool ensureMeshMaskPipelines(QRhi* rhi, QRhiRenderPassDescriptor* render_pass, bool depth_resolve);
+  void releaseMeshMaskPipelines();
+  [[nodiscard]] bool meshMaskReady() const {
+    return mask_triangle_pipeline_ != nullptr && mask_line_pipeline_ != nullptr;
   }
-  [[nodiscard]] QRhiGraphicsPipeline* linePipeline() const {
-    return line_pipeline_;
-  }
-  [[nodiscard]] QRhiShaderResourceBindings* layoutBindings() const {
-    return layout_bindings_;
-  }
+  /// Records the mask draws (every colour draw) into the view's already-begun mask pass.
+  void submitMeshMask(QRhiCommandBuffer* command_buffer, const QRhiViewport& viewport) const;
 
   void release();
 
@@ -329,6 +328,9 @@ class ModelRhiPass {
   /// Frees `gpu`'s resources and drops it from pending_uploads_.
   void releaseMeshGpu(MeshGpu& gpu);
   void releaseLayerGpu(LayerGpu& gpu);
+  /// The colour pipelines' description (triangles, depth writes) over
+  /// layout_bindings_; the mask pipelines derive from it.
+  [[nodiscard]] PipelineDesc meshDesc() const;
 
   QRhiBuffer* view_uniforms_ = nullptr;         // view-owned
   QRhiBuffer* lighting_uniforms_ = nullptr;     // view-owned
@@ -338,13 +340,15 @@ class ModelRhiPass {
   QRhiTexture* white_texture_ = nullptr;
   QRhiSampler* sampler_ = nullptr;
   QRhiShaderResourceBindings* layout_bindings_ = nullptr;
-  QRhiGraphicsPipeline* triangle_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* triangle_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* line_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* line_no_depth_pipeline_ = nullptr;
+  const ScenePipeline* triangle_pipeline_ = nullptr;
+  const ScenePipeline* triangle_no_depth_pipeline_ = nullptr;
+  const ScenePipeline* line_pipeline_ = nullptr;
+  const ScenePipeline* line_no_depth_pipeline_ = nullptr;
+  std::unique_ptr<QRhiGraphicsPipeline> mask_triangle_pipeline_;
+  std::unique_ptr<QRhiGraphicsPipeline> mask_line_pipeline_;
   QRhiBuffer* instance_buffer_ = nullptr;
   quint32 instance_capacity_ = 0;
-  QRhiGraphicsPipeline* shadow_pipeline_ = nullptr;
+  std::unique_ptr<QRhiGraphicsPipeline> shadow_pipeline_;
   QRhiShaderResourceBindings* shadow_bindings_ = nullptr;  // view-owned
   QRhiBuffer* shadow_instance_buffer_ = nullptr;
   quint32 shadow_instance_capacity_ = 0;

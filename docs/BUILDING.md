@@ -98,6 +98,17 @@ quietly green there. The QRhi display runners register one pass per backend
 (`<runner>.opengl.*`, `.vulkan.*`, labels `qrhi-<backend>`); the Vulkan passes
 need `VK_ICD_FILENAMES` pointing at a Vulkan driver such as lavapipe.
 
+Before a push, `scripts/perf/gate_par.sh <out> [--wasm] [--baseline
+<previous out>/dump]` runs the whole local gate in parallel: one compile under
+the build slot (`scripts/perf/build_slot.sh`, an `flock` shared by every build
+and benchmark on the machine), then the offscreen suite, the OpenGL and Vulkan
+display runners (each on its own private headless GNOME Shell + Xwayland) and
+the Playwright browser suite at the same time, and a pixel
+dump compared image by image (`scripts/perf/pxcmp.py`) with the previous run's.
+The script exits non-zero when any step failed (`<out>/status_*`). `--check` prints the resolved inputs and exits; the script header lists the
+environment variables (emsdk and Qt WebAssembly locations, build jobs, lock
+file).
+
 ## Windows setup
 
 Windows builds use the same Conan + CMake flow through three root entry points,

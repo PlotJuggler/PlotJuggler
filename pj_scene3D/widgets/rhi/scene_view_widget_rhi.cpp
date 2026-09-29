@@ -230,6 +230,41 @@ struct SubmitDraw {
   }
 };
 
+// What a family keys `layer`'s draws by (its drawsFor() argument) given the
+// layer's registration; nullptr when the layer contributes nothing to it.
+const PointRenderable* familyKey(
+    const PointRhiPass& /*family*/, const Scene3DLayer* /*layer*/, const SceneContributions& contributes) {
+  return contributes.points;
+}
+const Scene3DLayer* familyKey(
+    const TrailRhiPass& /*family*/, const Scene3DLayer* layer, const SceneContributions& contributes) {
+  return contributes.trail != nullptr || contributes.poses != nullptr ? layer : nullptr;
+}
+const PosesInFrameLayer* familyKey(
+    const PoseRhiPass& /*family*/, const Scene3DLayer* /*layer*/, const SceneContributions& contributes) {
+  return contributes.poses;
+}
+const OccupancyGridLayer* familyKey(
+    const OccupancyRhiPass& /*family*/, const Scene3DLayer* /*layer*/, const SceneContributions& contributes) {
+  return contributes.occupancy;
+}
+const VoxelGridLayer* familyKey(
+    const VoxelRhiPass& /*family*/, const Scene3DLayer* /*layer*/, const SceneContributions& contributes) {
+  return contributes.voxels;
+}
+const SceneEntitiesLayer* familyKey(
+    const MarkerRhiPass& /*family*/, const Scene3DLayer* /*layer*/, const SceneContributions& contributes) {
+  return contributes.markers;
+}
+const ModelRenderable* familyKey(
+    const ModelRhiPass& /*family*/, const Scene3DLayer* /*layer*/, const SceneContributions& contributes) {
+  return contributes.models;
+}
+const GridMapLayer* familyKey(
+    const GridMapRhiPass& /*family*/, const Scene3DLayer* /*layer*/, const SceneContributions& contributes) {
+  return contributes.grid_map;
+}
+
 }  // namespace
 
 SceneViewWidget::SceneViewWidget(QWidget* parent) : QRhiWidget(parent) {
@@ -246,6 +281,10 @@ SceneViewWidget::SceneViewWidget(QWidget* parent) : QRhiWidget(parent) {
 
   pipelines_ = std::make_unique<ScenePipelineRegistry>();
   shared_geometry_ = std::make_unique<RhiSharedGeometry>();
+  shadow_ = std::make_unique<ShadowResources>();
+  hdr_ = std::make_unique<HdrResources>();
+  ssao_ = std::make_unique<SsaoResources>();
+  edl_ = std::make_unique<EdlResources>();
   occupancy_pass_ = std::make_unique<OccupancyRhiPass>();
   grid_pass_ = std::make_unique<GridRhiPass>();
   overlay_pass_ = std::make_unique<OverlayRhiPass>();
@@ -296,59 +335,48 @@ void SceneViewWidget::setTransformBuffer(std::shared_ptr<TransformBuffer> tf) {
   grid_pass_->invalidate();
   last_frames_revision_ = ~uint64_t{0};
   refreshAvailableFrames();
-  update();
+  invalidateContent();
 }
 
 void SceneViewWidget::setLayers(const std::vector<Scene3DLayer*>& ordered_layers) {
   std::vector<PointRenderable*> points;
+  std::vector<TrailRhiPass::Owner> trails;
   std::vector<PosesInFrameLayer*> poses;
   std::vector<OccupancyGridLayer*> occupancy;
   std::vector<VoxelGridLayer*> voxels;
   std::vector<SceneEntitiesLayer*> markers;
   std::vector<ModelRenderable*> models;
   std::vector<GridMapLayer*> grid_maps;
-  std::vector<Scene3DLayer*> trail_owners;
-  layers_ = ordered_layers;
-  ordered_layers_.clear();
-  for (Scene3DLayer* layer : ordered_layers) {
-    const std::uint32_t topic_id = layer->info().topic_id.id;
-    if (auto* point = dynamic_cast<PointRenderable*>(layer); point != nullptr) {
-      ordered_layers_.push_back({point, topic_id});
-      points.push_back(point);
-    } else if (auto* pose = dynamic_cast<PosesInFrameLayer*>(layer); pose != nullptr) {
-      ordered_layers_.push_back({pose, topic_id});
-      poses.push_back(pose);
-      trail_owners.push_back(pose);
-    } else if (auto* grid = dynamic_cast<OccupancyGridLayer*>(layer); grid != nullptr) {
-      ordered_layers_.push_back({grid, topic_id});
-      occupancy.push_back(grid);
-    } else if (auto* voxel = dynamic_cast<VoxelGridLayer*>(layer); voxel != nullptr) {
-      ordered_layers_.push_back({voxel, topic_id});
-      voxels.push_back(voxel);
-    } else if (auto* marker = dynamic_cast<SceneEntitiesLayer*>(layer); marker != nullptr) {
-      ordered_layers_.push_back({marker, topic_id});
-      markers.push_back(marker);
-      models.push_back(marker);
-    } else if (auto* model = dynamic_cast<ModelRenderable*>(layer); model != nullptr) {
-      ordered_layers_.push_back({model, topic_id});
-      models.push_back(model);
-    } else if (auto* grid_map = dynamic_cast<GridMapLayer*>(layer); grid_map != nullptr) {
-      ordered_layers_.push_back({grid_map, topic_id});
-      grid_maps.push_back(grid_map);
-    } else if (auto* trail = dynamic_cast<TrailLayer*>(layer); trail != nullptr) {
-      ordered_layers_.push_back({trail, topic_id});
-      trail_owners.push_back(trail);
+  const auto add = [](auto& family_layers, auto* layer) {
+    if (layer != nullptr) {
+      family_layers.push_back(layer);
     }
+  };
+  layers_ = ordered_layers;
+  layer_contributions_.clear();
+  for (Scene3DLayer* layer : ordered_layers) {
+    const SceneContributions contributes = layer->sceneContributions();
+    layer_contributions_.push_back(contributes);
+    add(points, contributes.points);
+    if (contributes.trail != nullptr || contributes.poses != nullptr) {
+      trails.push_back({layer, contributes.trail, contributes.poses});
+    }
+    add(poses, contributes.poses);
+    add(occupancy, contributes.occupancy);
+    add(voxels, contributes.voxels);
+    add(markers, contributes.markers);
+    add(models, contributes.models);
+    add(grid_maps, contributes.grid_map);
   }
   point_pass_->setLayers(points);
+  trail_pass_->setLayers(trails);
   pose_pass_->setLayers(poses);
   occupancy_pass_->setLayers(occupancy);
   voxel_pass_->setLayers(voxels);
   marker_pass_->setLayers(markers);
   model_pass_->setLayers(models);
   gridmap_pass_->setLayers(grid_maps);
-  trail_pass_->setLayers(trail_owners);
-  update();
+  invalidateContent();
 }
 
 void SceneViewWidget::setTrackerTime(PJ::Timepoint time) {
@@ -358,7 +386,7 @@ void SceneViewWidget::setTrackerTime(PJ::Timepoint time) {
   render_time_ = time;
   refreshAvailableFrames();
   applyFollow();
-  update();
+  invalidateContent();
 }
 
 void SceneViewWidget::setFixedFrame(const std::string& frame) {
@@ -367,7 +395,7 @@ void SceneViewWidget::setFixedFrame(const std::string& frame) {
   }
   fixed_frame_ = frame;
   follow_seeded_ = false;
-  update();  // the dock owns and persists the fixed frame, and reports its changes
+  invalidateContent();  // the dock owns and persists the fixed frame, and reports its changes
 }
 
 void SceneViewWidget::setFollowFrame(const std::string& frame) {
@@ -377,7 +405,7 @@ void SceneViewWidget::setFollowFrame(const std::string& frame) {
   follow_frame_ = frame;
   follow_seeded_ = false;
   applyFollow();
-  update();
+  invalidateContent();
 }
 
 std::optional<Transform> SceneViewWidget::followTransform(PJ::Timepoint time) const {
@@ -420,7 +448,7 @@ void SceneViewWidget::recenterOnFollowFrame() {
   camera_->followShift(glm::vec3(transform->t) - before.focal);
   follow_previous_origin_ = transform->t;
   follow_seeded_ = true;
-  update();
+  invalidateContent();
   emitPresentationIfChanged(before);
 }
 
@@ -460,14 +488,14 @@ void SceneViewWidget::setCameraModel(CameraModel model) {
   replacement->setSceneBounds(scene_bounds_);
   camera_ = std::move(replacement);
   camera_model_ = model;
-  update();
+  invalidateContent();
   emit presentationChanged();
 }
 
 void SceneViewWidget::resetCamera() {
   const CameraState before = camera_->state();
   camera_->reset();
-  update();
+  invalidateContent();
   emitPresentationIfChanged(before);
 }
 
@@ -476,175 +504,12 @@ void SceneViewWidget::setSceneBounds(const AABB& bounds) {
   camera_->setSceneBounds(bounds);
 }
 
-int SceneViewWidget::lastPointVertexCountForTest() const {
-  return point_pass_->lastPointVertexCount();
-}
-
-int SceneViewWidget::lastPointLayerCountForTest() const {
-  return point_pass_->lastPointLayerCount();
-}
-
-int SceneViewWidget::lastCubeLayerCountForTest() const {
-  return point_pass_->lastCubeLayerCount();
-}
-
-int SceneViewWidget::lastCubeInstanceCountForTest() const {
-  return point_pass_->lastCubeInstanceCount();
-}
-
-int SceneViewWidget::lastCubeSpriteLayerCountForTest() const {
-  return point_pass_->lastCubeSpriteLayerCount();
-}
-
-int SceneViewWidget::lastPointListLayerCountForTest() const {
-  return point_pass_->lastPointListLayerCount();
-}
-
-bool SceneViewWidget::pipelinesBuiltForTargetForTest() const {
-  const QRhiRenderTarget* target = renderTarget();
-  if (target == nullptr) {
-    return false;
-  }
-  const QRhiRenderPassDescriptor* render_pass = target->renderPassDescriptor();
-  return pipelines_->directsBuiltFor(render_pass, sampleCount()) &&
-         overlay_pass_->builtFor(render_pass, sampleCount()) &&
-         pipelineBuiltFor(present_pipeline_, render_pass, sampleCount());
-}
-
-AABB SceneViewWidget::lastPointBoundsForTest() const {
-  return point_pass_->lastPointBounds();
-}
-
-int SceneViewWidget::lastDepthLayerCountForTest() const {
-  return point_pass_->lastDepthLayerCount();
-}
-
-int SceneViewWidget::lastDepthVertexCountForTest() const {
-  return point_pass_->lastDepthVertexCount();
-}
-
-AABB SceneViewWidget::lastDepthBoundsForTest() const {
-  return point_pass_->lastDepthBounds();
-}
-
-int SceneViewWidget::lastOccupancyLayerCountForTest() const {
-  return occupancy_pass_->lastLayerCount();
-}
-
-int SceneViewWidget::lastOccupancyCellCountForTest() const {
-  return occupancy_pass_->lastCellCount();
-}
-
-int SceneViewWidget::occupancyFullUploadCountForTest() const {
-  return occupancy_pass_->fullUploadCount();
-}
-
-int SceneViewWidget::occupancyPartialUploadCountForTest() const {
-  return occupancy_pass_->partialUploadCount();
-}
-
-AABB SceneViewWidget::lastOccupancyBoundsForTest() const {
-  return occupancy_pass_->lastBounds();
-}
-
-int SceneViewWidget::lastGridMapLayerCountForTest() const {
-  return gridmap_pass_->lastLayerCount();
-}
-
-int SceneViewWidget::lastGridMapVertexCountForTest() const {
-  return gridmap_pass_->lastVertexCount();
-}
-
-int SceneViewWidget::gridMapUploadCountForTest() const {
-  return gridmap_pass_->uploadCount();
-}
-
-int SceneViewWidget::lastTrailCountForTest() const {
-  return trail_pass_->lastTrailCount();
-}
-
-int SceneViewWidget::lastTrailVertexCountForTest() const {
-  return trail_pass_->lastVertexCount();
-}
-
-int SceneViewWidget::lastPoseLayerCountForTest() const {
-  return pose_pass_->lastLayerCount();
-}
-
-int SceneViewWidget::lastPoseArmCountForTest() const {
-  return pose_pass_->lastArmCount();
-}
-
-AABB SceneViewWidget::lastPoseBoundsForTest() const {
-  return pose_pass_->lastBounds();
-}
-
-int SceneViewWidget::lastVoxelLayerCountForTest() const {
-  return voxel_pass_->lastLayerCount();
-}
-
-int SceneViewWidget::lastVoxelCountForTest() const {
-  return voxel_pass_->lastVoxelCount();
-}
-
-int SceneViewWidget::voxelFullUploadCountForTest() const {
-  return voxel_pass_->fullUploadCount();
-}
-
-AABB SceneViewWidget::lastVoxelBoundsForTest() const {
-  return voxel_pass_->lastBounds();
-}
-
-int SceneViewWidget::lastMarkerLayerCountForTest() const {
-  return marker_pass_->lastLayerCount();
-}
-
-int SceneViewWidget::lastMarkerInstanceCountForTest() const {
-  return marker_pass_->lastInstanceCount();
-}
-
-int SceneViewWidget::lastMarkerStreamVertexCountForTest() const {
-  return marker_pass_->lastStreamVertexCount();
-}
-
-AABB SceneViewWidget::lastMarkerBoundsForTest() const {
-  return marker_pass_->lastBounds();
-}
-
-int SceneViewWidget::lastModelLayerCountForTest() const {
-  return model_pass_->lastLayerCount();
-}
-
-int SceneViewWidget::lastModelDrawCountForTest() const {
-  return model_pass_->lastDrawCount();
-}
-
-int SceneViewWidget::lastModelTriangleCountForTest() const {
-  return model_pass_->lastTriangleCount();
-}
-
-std::array<int, 5> SceneViewWidget::lastModelTextureSlotCountsForTest() const {
-  return model_pass_->lastTextureSlotCounts();
-}
-
-AABB SceneViewWidget::lastModelBoundsForTest() const {
-  return model_pass_->lastBounds();
-}
-
-int SceneViewWidget::lastShadowDrawCountForTest() const {
-  return model_pass_->lastShadowDrawCount();
-}
-
-int SceneViewWidget::lastShadowTriangleCountForTest() const {
-  return model_pass_->lastShadowTriangleCount();
-}
-
 void SceneViewWidget::setGridStyle(GridStyle style) {
   if (grid_style_ == style) {
     return;
   }
   grid_style_ = style;
-  update();
+  invalidateContent();
   emit presentationChanged();
 }
 
@@ -654,7 +519,7 @@ void SceneViewWidget::setGridDivisions(int divisions) {
     return;
   }
   grid_divisions_ = divisions;
-  update();
+  invalidateContent();
   emit presentationChanged();
 }
 
@@ -664,7 +529,7 @@ void SceneViewWidget::setGridExtentMetres(float extent_m) {
     return;
   }
   grid_extent_m_ = extent_m;
-  update();
+  invalidateContent();
   emit presentationChanged();
 }
 
@@ -673,7 +538,7 @@ void SceneViewWidget::setGridVisible(bool visible) {
     return;
   }
   grid_visible_ = visible;
-  update();
+  invalidateContent();
   emit presentationChanged();
 }
 
@@ -682,7 +547,7 @@ void SceneViewWidget::setAxesVisible(bool visible) {
     return;
   }
   axes_visible_ = visible;
-  update();
+  invalidateContent();
   emit presentationChanged();
 }
 
@@ -692,7 +557,7 @@ void SceneViewWidget::setGizmoSize(float length_m) {
     return;
   }
   gizmo_size_m_ = length_m;
-  update();
+  invalidateContent();
   emit presentationChanged();
 }
 
@@ -702,7 +567,7 @@ void SceneViewWidget::setGizmoOpacity(float opacity) {
     return;
   }
   gizmo_opacity_ = opacity;
-  update();
+  invalidateContent();
   emit presentationChanged();
 }
 
@@ -711,7 +576,7 @@ void SceneViewWidget::setTfConnectionsVisible(bool visible) {
     return;
   }
   tf_connections_visible_ = visible;
-  update();
+  invalidateContent();
   emit presentationChanged();
 }
 
@@ -723,19 +588,19 @@ void SceneViewWidget::setMeshShadingParams(const MeshShadingParams& params) {
                        shading_params_.shadows_enabled != params.shadows_enabled;
   shading_params_ = params;
   if (changed) {
-    update();
+    invalidateContent();
     emit presentationChanged();
   }
 }
 
 void SceneViewWidget::grabPresentedFrame(std::function<void(const QImage&)> done) {
-  update();  // the presented frame must be a real one (TECHNICAL_NOTES §3)
+  invalidateContent();  // the presented frame must be a real one (TECHNICAL_NOTES §3)
   PJ::grabPresentedFrame(*this, std::move(done));
 }
 
-void SceneViewWidget::update() {
+void SceneViewWidget::invalidateContent() {
   content_changed_ = true;
-  QRhiWidget::update();
+  update();
 }
 
 void SceneViewWidget::refreshAvailableFrames() {
@@ -812,17 +677,8 @@ std::string SceneViewWidget::effectiveFixedFrame() const {
   // A raw cloud is useful without /tf: use its own source frame as the fixed
   // frame and draw with the identity transform instead of silently producing an
   // empty view.
-  for (const OrderedLayerEntry& entry : ordered_layers_) {
-    const std::string source = std::visit(
-        [](const auto* layer) -> std::string {
-          if constexpr (std::is_same_v<std::remove_cv_t<std::remove_pointer_t<decltype(layer)>>, TrailLayer>) {
-            return {};  // points are already in the fixed frame
-          } else {
-            return layer != nullptr ? layer->renderFrameId() : std::string{};
-          }
-        },
-        entry.layer);
-    if (!source.empty()) {
+  for (const Scene3DLayer* layer : layers_) {
+    if (const std::string& source = layer->renderFrameId(); !source.empty()) {
       return source;
     }
   }
@@ -953,13 +809,13 @@ void SceneViewWidget::initialize(QRhiCommandBuffer* command_buffer) {
 
 RhiPassSetup SceneViewWidget::passSetup(QRhi* rhi) const {
   return {
-      rhi,
-      renderTarget()->renderPassDescriptor(),
-      sampleCount(),
-      render_mode_uniform_buffer_,
-      annotation_render_mode_uniform_buffer_,
-      uniform_buffer_,
-      shared_geometry_.get()};
+      .rhi = rhi,
+      .render_mode_uniforms = render_mode_uniform_buffer_,
+      .annotation_render_mode_uniforms = annotation_render_mode_uniform_buffer_,
+      .view_uniforms = uniform_buffer_,
+      .geometry = shared_geometry_.get(),
+      .pipelines = pipelines_.get(),
+  };
 }
 
 bool SceneViewWidget::baseResourcesReady() const {
@@ -1040,11 +896,10 @@ const char* SceneViewWidget::createMissingResources(QRhi* rhi, QRhiResourceUpdat
       return "shared meshes";
     }
     render_mode_hdr_written_ = -1;
-    // The grid and the TF triads (the pose pass) draw without any layer. Their
-    // pipelines are templates too (see the families below).
+    pipelines_->setDirectTarget(rhi, renderTarget()->renderPassDescriptor(), sampleCount());
+    // The grid and the TF triads (the pose pass) draw without any layer.
     RhiPassSetup base_setup = passSetup(rhi);
     base_setup.updates = constants;
-    base_setup.templates = pipelines_.get();
     base_setup.part = "pose pipelines";
     if (!pose_pass_->ready() && !pose_pass_->initialize(base_setup)) {
       return base_setup.part;
@@ -1053,9 +908,6 @@ const char* SceneViewWidget::createMissingResources(QRhi* rhi, QRhiResourceUpdat
     if (!grid_pass_->ready() && !grid_pass_->initialize(base_setup)) {
       return base_setup.part;
     }
-    // The grid's shadow receiver registers itself in ensureShadowResources().
-    grid_pass_->registerPipelines(*pipelines_);
-    pose_pass_->registerPipelines(*pipelines_);
   }
   const char* failed_part = nullptr;
   const bool had_model = model_pass_->ready();
@@ -1063,19 +915,16 @@ const char* SceneViewWidget::createMissingResources(QRhi* rhi, QRhiResourceUpdat
     if (failed_part != nullptr || family.ready()) {
       return;
     }
-    // Their pipelines are templates: the HDR chain creates only the clones it
-    // draws with, and the direct ones are created on a direct frame.
+    // Registering builds no pipeline: the HDR chain creates only the variants
+    // it draws with, and the direct ones are created on a direct frame.
     RhiPassSetup setup = passSetup(rhi);
     setup.updates = constants;
-    setup.templates = pipelines_.get();
     setup.part = part;
     if (!initialize(setup)) {
       failed_part = part;
-      return;
     }
-    family.registerPipelines(*pipelines_);
   });
-  if (model_pass_->ready() != had_model && shadow_texture_ != nullptr) {
+  if (model_pass_->ready() != had_model && shadow_->texture != nullptr) {
     // The shadow resources hold the model family's caster pipeline: rebuilt with
     // it on the next shadowed frame.
     releaseShadowResources(true);
@@ -1153,7 +1002,7 @@ struct SceneViewWidget::PreparedFrame {
       std::monostate, DrawOf<PointRhiPass>, DrawOf<TrailRhiPass>, DrawOf<PoseRhiPass>, DrawOf<OccupancyRhiPass>,
       DrawOf<VoxelRhiPass>, DrawOf<MarkerRhiPass>, DrawOf<ModelRhiPass>, DrawOf<GridMapRhiPass>>;
   // One prepared draw in submission terms: its logical slot (index into
-  // ordered_layers_), blending class and family record.
+  // layers_), blending class and family record.
   struct SceneDraw {
     std::size_t slot = 0;
     DrawClass draw_class = DrawClass::kOpaque;
@@ -1198,9 +1047,10 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     clearToBackdrop(command_buffer, target);
     return;
   }
-  // A template pipeline that could not be created when a direct frame needed it.
-  if (const char* failed_part = pipelines_->deferredFailure(); failed_part != nullptr) {
-    failScene(failed_part);
+  // A required pipeline that could not be created when a direct frame needed it.
+  if (const auto& failure = pipelines_->failure();
+      failure.has_value() && failure->severity == PipelineFailure::Severity::kRequired) {
+    failScene(failure->part);
     clearToBackdrop(command_buffer, target);
     return;
   }
@@ -1213,7 +1063,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
       return;
     }
   }
-  content_changed_ = false;  // an update() from here on marks it again
+  content_changed_ = false;  // an invalidateContent() from here on marks it again
 
 #ifdef PJ_RHI_TEST_HOOKS
   stage_times_.render_begin_ns = steadyNowNs();
@@ -1234,13 +1084,13 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   // The one owner of the frame's stage flags: HDR, SSAO and EDL here, shadows in
   // prepareFrame() once the casters are known.
   PreparedFrame& frame = *frame_;
-  if (pipelines_->cloneFailed()) {
-    // Last frame drew without a pipeline whose HDR clone failed; the direct pass
-    // has them all.
+  if (pipelines_->failure().has_value()) {
+    // Last frame drew without a pipeline whose HDR variant failed (a required
+    // failure returned above); the direct pass has them all.
     rejectHdr(scaled_size, tr("A scene pipeline has no HDR variant on this GPU"));
   }
   frame.hdr_active = ensureHdrResources(current_rhi, scaled_size);
-  hdr_stage_.last_active = frame.hdr_active;
+  hdr_->state.last_active = frame.hdr_active;
   const QSize render_size = frame.hdr_active ? scaled_size : output_size;
 
   // The frame contract (rhi_scene_pass.h): admit once, prepare once;
@@ -1262,8 +1112,8 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
                       ensureSsaoResources(current_rhi, scaled_size) && view.inverse_projection_valid;
   frame.edl_active = frame.hdr_active && composite_params_.edl_enabled &&
                      ensureEdlResources(current_rhi, scaled_size) && view.inverse_projection_valid;
-  ssao_stage_.last_active = frame.ssao_active;
-  edl_stage_.last_active = frame.edl_active;
+  ssao_->state.last_active = frame.ssao_active;
+  edl_->state.last_active = frame.edl_active;
   QRhiResourceUpdateBatch* updates = prepareFrame(current_rhi, render_size, view, admission, frame);
   if (show_perf_hud_) {
     cpu_average_.add(static_cast<double>(cpu_timer_.nsecsElapsed()) / 1.0e6);
@@ -1272,14 +1122,14 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
 #ifdef PJ_RHI_TEST_HOOKS
   stage_times_.prepared_ns = steadyNowNs();
 #endif
-  // Without the HDR chain the direct pipelines draw: every template is created
+  // Without the HDR chain the direct pipelines draw: every one is created
   // before any pass, so a pipeline that cannot be created shows no frame with
   // its draws missing. The frame's uploads still run; the target keeps its last
   // frame (or the backdrop), and the next render() enters the failure state.
-  if (!frame.hdr_active && !pipelines_->createTemplates()) {
+  if (!frame.hdr_active && !pipelines_->createDirects()) {
     command_buffer->resourceUpdate(updates);
     keepLastFrameOrClear(command_buffer, target);
-    update();
+    invalidateContent();
 #ifdef PJ_RHI_TEST_HOOKS
     ++stage_times_.frames_withheld;
 #endif
@@ -1289,7 +1139,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   if (frame.shadow_active) {
     // The map is kept across frames: re-rendered only when an input changed
     // (an orbit of a static scene keeps it; a pan moves the render origin).
-    if (!shadow_reuse_for_test_ || frame.rendered_shadow_key != frame.shadow_key) {
+    if (frame.rendered_shadow_key != frame.shadow_key) {
       submitShadowPass(command_buffer, updates);
       updates = nullptr;
       frame.rendered_shadow_key = frame.shadow_key;
@@ -1301,60 +1151,60 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     }
   }
 
-  // Scene backdrop tracks the active theme (the same token, read per frame). PaletteChange calls update(), so a theme
-  // switch re-applies here. The HDR target is linear-light — the present pass
-  // re-encodes to sRGB — so linearize the display-referred token on write.
+  // Scene backdrop tracks the active theme (the same token, read per frame). A
+  // PaletteChange invalidates the content, so a theme switch re-applies here.
+  // The HDR target is linear-light — the present pass re-encodes to sRGB — so
+  // linearize the display-referred token on write.
   const QColor scene_bg = sceneThemeColors().backdrop;
   const auto linear_channel = [](float channel) { return std::pow(channel, 2.2F); };
   const QColor hdr_scene_clear = QColor::fromRgbF(
       linear_channel(static_cast<float>(scene_bg.redF())), linear_channel(static_cast<float>(scene_bg.greenF())),
       linear_channel(static_cast<float>(scene_bg.blueF())), 1.0F);
   if (frame.hdr_active) {
-    submitScenePass(command_buffer, hdr_render_target_, ScenePass::kHdrColor, hdr_scene_clear, updates, frame);
+    submitScenePass(command_buffer, hdr_->target.get(), ScenePass::kHdrColor, hdr_scene_clear, updates, frame);
     updates = nullptr;
     // Reusing the same immutable HDR mode keeps both passes independent of
     // dynamic-buffer update ordering. The replay's RGBA8 alpha records the
     // shaders' post-discard opacity while its D32F attachment records depth.
-    if (hdr_depth_resolve_) {
+    if (hdr_->depth_resolve) {
       // The HDR pass resolved the depth; only the coverage the stages below write into needs clearing.
-      command_buffer->beginPass(hdr_depth_render_target_, Qt::transparent, {1.0F, 0});
+      command_buffer->beginPass(hdr_->depth_target.get(), Qt::transparent, {1.0F, 0});
       command_buffer->endPass();
     } else {
       submitScenePass(
-          command_buffer, hdr_depth_render_target_, ScenePass::kDepthReplay, Qt::transparent, nullptr, frame);
+          command_buffer, hdr_->depth_target.get(), ScenePass::kDepthReplay, Qt::transparent, nullptr, frame);
     }
-    if (frame.ssao_active && ssao_raw_render_target_ != nullptr) {
+    if (frame.ssao_active && ssao_->target != nullptr) {
       // Preserve replay alpha/red and write the raw scene-wide AO into the
       // otherwise-unused green channel. The sampled D32F texture is not attached
       // to this color-only target, avoiding a read/write feedback loop.
-      command_buffer->beginPass(ssao_raw_render_target_, Qt::transparent, {1.0F, 0});
-      command_buffer->setGraphicsPipeline(ssao_pipeline_);
+      command_buffer->beginPass(ssao_->target.get(), Qt::transparent, {1.0F, 0});
+      command_buffer->setGraphicsPipeline(ssao_->pipeline.get());
       command_buffer->setViewport(frame.viewport);
-      command_buffer->setShaderResources(ssao_shader_resources_);
+      command_buffer->setShaderResources(ssao_->bindings.get());
       command_buffer->draw(3U);
       command_buffer->endPass();
     }
     // The mask pass preserves the coverage it is begun on: with no model draw it
     // would change nothing (EDL then treats every pixel as non-mesh anyway).
-    if (frame.edl_active && edl_mesh_mask_render_target_ != nullptr && edl_mesh_mask_triangle_pipeline_ != nullptr &&
-        model_pass_->hasDraws()) {
+    if (frame.edl_active && edl_->target != nullptr && model_pass_->meshMaskReady() && model_pass_->hasDraws()) {
       submitEdlMeshMask(command_buffer, frame);
     }
-    if (pipelines_->cloneFailed()) {
-      // A clone could not be created: its draws are missing from the chain.
+    if (pipelines_->failure().has_value()) {
+      // A variant could not be created: its draws are missing from the chain.
       // Present nothing of it; the next frame draws without the HDR chain.
       keepLastFrameOrClear(command_buffer, target);
-      update();
+      invalidateContent();
 #ifdef PJ_RHI_TEST_HOOKS
       ++stage_times_.frames_withheld;
 #endif
       return;
     }
     command_buffer->beginPass(target, Qt::transparent, {1.0F, 0});
-    command_buffer->setGraphicsPipeline(present_pipeline_);
+    command_buffer->setGraphicsPipeline(hdr_->present_pipeline.get());
     command_buffer->setViewport(
         QRhiViewport(0.0F, 0.0F, static_cast<float>(output_size.width()), static_cast<float>(output_size.height())));
-    command_buffer->setShaderResources(present_shader_resources_);
+    command_buffer->setShaderResources(hdr_->present_bindings.get());
     command_buffer->draw(3U);
     overlay_pass_->submit(command_buffer);
     command_buffer->endPass();
@@ -1362,8 +1212,8 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     // Direct-to-backing fallback: no HDR encode, so use the theme token as-is.
     submitScenePass(command_buffer, target, ScenePass::kDirect, scene_bg, updates, frame);
   }
-  if (pipelines_->cloneFailed()) {
-    update();  // the next frame drops HDR
+  if (pipelines_->failure().has_value()) {
+    invalidateContent();  // the next frame drops HDR
   }
   last_frame_request_ = requestedTarget();
   // A full frame: whatever failed before (a pipeline, no QRhi) works now. Not
@@ -1400,7 +1250,7 @@ bool SceneViewWidget::event(QEvent* event) {
 
 void SceneViewWidget::paintEvent(QPaintEvent* event) {
   // Qt paints a render-to-texture widget on its own too: synchronously inside a
-  // Show, and in a parent's repaint once an update() reached it while hidden.
+  // Show, and in a parent's repaint once a repaint request reached it while hidden.
   if ((show_paint_pending_ || !content_changed_) && retainsLastFrame()) {
 #ifdef PJ_RHI_TEST_HOOKS
     ++stage_times_.paints_skipped;
@@ -1500,7 +1350,7 @@ QRhiResourceUpdateBatch* SceneViewWidget::prepareFrame(
   marker_pass_->prepare(context);
   model_pass_->prepare(context, shading_params_);
 
-  if (!shading_params_.shadows_enabled && shadow_texture_ != nullptr) {
+  if (!shading_params_.shadows_enabled && shadow_->texture != nullptr) {
     releaseShadowResources(true);
   }
   AABB render_shadow_bounds = model_pass_->shadowCasterBounds();
@@ -1515,19 +1365,19 @@ QRhiResourceUpdateBatch* SceneViewWidget::prepareFrame(
   const bool shadow_requested = shadows_requested && model_pass_->hasShadowCasters() && shadow_fit.valid;
   bool shadow_active = shadow_requested && ensureShadowResources(rhi);
   if (shadow_active && !model_pass_->uploadShadowCasters(context)) {
-    shadow_stage_.capability_error = tr("Could not allocate the shadow instance buffer");
-    qWarning("SceneViewWidget QRhi shadows unavailable: %s", qPrintable(shadow_stage_.capability_error));
+    shadow_->state.capability_error = tr("Could not allocate the shadow instance buffer");
+    qWarning("SceneViewWidget QRhi shadows unavailable: %s", qPrintable(shadow_->state.capability_error));
     releaseShadowResources(true);
     shadow_active = false;
   }
   frame.shadow_active = shadow_active;
   frame.shadow_key = {
-      shadow_stage_.resource_generation, model_pass_->shadowRevision(), shadow_fit.light_view_proj, render_origin};
-  shadow_stage_.last_active = shadow_active;
-  if (shadow_requested && !shadow_active && !shadow_stage_.capability_error.isEmpty()) {
-    if (noted_shadow_failure_ != shadow_stage_.capability_error) {
-      noted_shadow_failure_ = shadow_stage_.capability_error;
-      model_pass_->noteShadowFailure(shadow_stage_.capability_error);
+      shadow_->state.resource_generation, model_pass_->shadowRevision(), shadow_fit.light_view_proj, render_origin};
+  shadow_->state.last_active = shadow_active;
+  if (shadow_requested && !shadow_active && !shadow_->state.capability_error.isEmpty()) {
+    if (noted_shadow_failure_ != shadow_->state.capability_error) {
+      noted_shadow_failure_ = shadow_->state.capability_error;
+      model_pass_->noteShadowFailure(shadow_->state.capability_error);
     }
   } else {
     noted_shadow_failure_.clear();
@@ -1554,11 +1404,11 @@ QRhiResourceUpdateBatch* SceneViewWidget::prepareFrame(
     composite.ssao_params = {
         composite_params_.ao_strength,
         frame.ssao_active ? 1.0F : 0.0F,
-        hdr_depth_resolve_ ? 1.0F : 0.0F,
+        hdr_->depth_resolve ? 1.0F : 0.0F,
         0.0F,
     };
     composite.grade_params = {static_cast<float>(std::clamp(composite_params_.tonemap_mode, 0, 3)), 0.0F, 0.0F, 0.0F};
-    updates->updateDynamicBuffer(composite_uniform_buffer_, 0, kCompositeUniformBytes, &composite);
+    updates->updateDynamicBuffer(hdr_->composite_uniforms.get(), 0, kCompositeUniformBytes, &composite);
     if (frame.ssao_active && ssao_uniform_buffer_ != nullptr) {
       SsaoUniforms ssao_uniforms;
       copyMatrix(view.texture_projection, ssao_uniforms.projection);
@@ -1577,8 +1427,8 @@ QRhiResourceUpdateBatch* SceneViewWidget::prepareFrame(
     const QMatrix4x4 view_uniform = view.corrected_projection * toQMatrix(view.view);
     updates->updateDynamicBuffer(uniform_buffer_, 0, 64, view_uniform.constData());
   }
-  if (shadow_active && shadow_uniform_buffer_ != nullptr) {
-    updates->updateDynamicBuffer(shadow_uniform_buffer_, 0, kShadowUniformBytes, shadow_matrix.constData());
+  if (shadow_active && shadow_->uniforms != nullptr) {
+    updates->updateDynamicBuffer(shadow_->uniforms.get(), 0, kShadowUniformBytes, shadow_matrix.constData());
   }
   if (model_uniform_buffer_ != nullptr) {
     const glm::dvec3 camera_position = glm::dvec3(camera_->position()) - render_origin;
@@ -1594,7 +1444,7 @@ QRhiResourceUpdateBatch* SceneViewWidget::prepareFrame(
     copyMatrix(clipToTextureMatrix(view.conventions) * shadow_matrix, model_uniforms.light_view_projection);
     model_uniforms.shadow_params = {
         shadow_active ? shadow_fit.world_units_per_texel * look::kShadowNormalOffsetTexels : 0.0F,
-        look::kShadowSoftnessTexels, shadow_active ? 1.0F : 0.0F, static_cast<float>(shadow_map_size_)};
+        look::kShadowSoftnessTexels, shadow_active ? 1.0F : 0.0F, static_cast<float>(shadow_->mapSize())};
     updates->updateDynamicBuffer(model_uniform_buffer_, 0, kModelUniformBytes, &model_uniforms);
   }
 
@@ -1617,25 +1467,21 @@ QRhiResourceUpdateBatch* SceneViewWidget::prepareFrame(
   // Logical order: the dock's heterogeneous layer order; within a slot, the
   // forEachFamily() order.
   frame.scene_draws.clear();
-  for (std::size_t slot = 0; slot < ordered_layers_.size(); ++slot) {
-    std::visit(
-        [&](const auto* layer) {
-          forEachFamily([&](const auto& family) {
-            if constexpr (requires { family.drawsFor(layer); }) {
-              using Family = std::remove_cvref_t<decltype(family)>;
-              for (const auto& draw : family.drawsFor(layer)) {
-                frame.scene_draws.push_back({slot, draw.draw_class, PreparedFrame::DrawOf<Family>{&family, &draw}});
-              }
-            }
-          });
-        },
-        ordered_layers_[slot].layer);
+  for (std::size_t slot = 0; slot < layers_.size(); ++slot) {
+    forEachFamily([&](const auto& family) {
+      if (const auto* key = familyKey(family, layers_[slot], layer_contributions_[slot]); key != nullptr) {
+        using Family = std::remove_cvref_t<decltype(family)>;
+        for (const auto& draw : family.drawsFor(key)) {
+          frame.scene_draws.push_back({slot, draw.draw_class, PreparedFrame::DrawOf<Family>{&family, &draw}});
+        }
+      }
+    });
   }
   return updates;
 }
 
 void SceneViewWidget::submitShadowPass(QRhiCommandBuffer* command_buffer, QRhiResourceUpdateBatch* updates) {
-  command_buffer->beginPass(shadow_render_target_, Qt::transparent, {1.0F, 0}, updates);
+  command_buffer->beginPass(shadow_->target.get(), Qt::transparent, {1.0F, 0}, updates);
   const QRhiViewport viewport(0.0F, 0.0F, static_cast<float>(kShadowMapSize), static_cast<float>(kShadowMapSize));
   model_pass_->submitShadowCasters(command_buffer, viewport);
   command_buffer->endPass();
@@ -1650,7 +1496,7 @@ void SceneViewWidget::submitScenePass(
   const QRhiViewport& viewport = frame.viewport;
   grid_pass_->submit(command_buffer, scene_pass, *pipelines_, viewport);
   pose_pass_->submitTfTriads(command_buffer, scene_pass, *pipelines_, viewport);
-  submitted_slots_.assign(ordered_layers_.size(), 0);
+  submitted_slots_.assign(layers_.size(), 0);
   for (const DrawClass phase : {DrawClass::kOpaque, DrawClass::kTranslucent}) {
     for (const PreparedFrame::SceneDraw& scene_draw : frame.scene_draws) {
       if (scene_draw.draw_class != phase) {
@@ -1665,7 +1511,7 @@ void SceneViewWidget::submitScenePass(
     last_submitted_layer_ids_.clear();
     for (std::size_t slot = 0; slot < submitted_slots_.size(); ++slot) {
       if (submitted_slots_[slot] != 0) {
-        last_submitted_layer_ids_.push_back(ordered_layers_[slot].topic_id);
+        last_submitted_layer_ids_.push_back(layers_[slot]->info().topic_id.id);
       }
     }
   }
@@ -1680,10 +1526,13 @@ void SceneViewWidget::submitScenePass(
 void SceneViewWidget::submitEdlMeshMask(QRhiCommandBuffer* command_buffer, const PreparedFrame& frame) {
   // Preserve the full-scene replay depth and alpha coverage, then reserve
   // coverage.r for the mesh-only EDL mask.
-  command_buffer->beginPass(edl_mesh_mask_render_target_, Qt::transparent, {1.0F, 0});
-  model_pass_->submitMeshMask(
-      command_buffer, edl_mesh_mask_triangle_pipeline_, edl_mesh_mask_line_pipeline_, frame.viewport);
+  command_buffer->beginPass(edl_->target.get(), Qt::transparent, {1.0F, 0});
+  model_pass_->submitMeshMask(command_buffer, frame.viewport);
   command_buffer->endPass();
+}
+
+void SceneViewWidget::discardShadowMap() {
+  frame_->rendered_shadow_key.reset();
 }
 
 void SceneViewWidget::releaseResources() {
@@ -1691,11 +1540,13 @@ void SceneViewWidget::releaseResources() {
   last_frame_request_.reset();
   releaseShadowResources(false);
   releaseHdrResources();
+  // Every scene pipeline, before the family resources (layout SRBs) they bind.
+  pipelines_->clear();
   forEachFamily([](auto& family) { family.release(); });
   grid_pass_->release();
   overlay_pass_->release();
   frame_->scene_draws.clear();
-  frame_->rendered_shadow_key.reset();
+  discardShadowMap();
   // After every pipeline that draws the shared cube/arrow meshes.
   shared_geometry_->release();
   delete ssao_uniform_buffer_;
@@ -1709,20 +1560,17 @@ void SceneViewWidget::releaseResources() {
   render_mode_uniform_buffer_ = nullptr;
   uniform_buffer_ = nullptr;
   max_3d_texture_size_ = 0;
-  shadow_stage_.capability_error.clear();
-  shadow_stage_.rejected_size = {};
+  shadow_->state.capability_error.clear();
+  shadow_->state.rejected_size = {};
   noted_shadow_failure_.clear();
   // Preserve an active warning across RHI teardown. Clearing the rejected
   // sizes below permits the new RHI to probe again; a successful allocation
   // then clears the warning through renderingWarningChanged().
-  hdr_stage_.rejected_size = {};
-  ssao_stage_.rejected_size = {};
-  edl_stage_.rejected_size = {};
-  shadow_stage_.last_active = false;
-  hdr_stage_.last_active = false;
+  hdr_->state.rejected_size = {};
+  ssao_->state.rejected_size = {};
+  edl_->state.rejected_size = {};
   last_shadow_fit_valid_ = false;
   last_shadow_bounds_ = {};
-  pipelines_->clear();
   resource_rhi_ = nullptr;
   built_target_ = {};
 }
@@ -1779,7 +1627,7 @@ void SceneViewWidget::mouseMoveEvent(QMouseEvent* event) {
   if (before != camera_->state()) {
     camera_gesture_changed_ = true;
   }
-  update();
+  invalidateContent();
   event->accept();
 }
 
@@ -1787,7 +1635,7 @@ void SceneViewWidget::wheelEvent(QWheelEvent* event) {
   const float ticks = static_cast<float>(event->angleDelta().y()) / 120.0F;
   const CameraState before = camera_->state();
   camera_->zoomToCursor(ticks, glm::vec2(event->position().x(), event->position().y()), width(), height());
-  update();
+  invalidateContent();
   emitPresentationIfChanged(before);
   event->accept();
 }
@@ -1799,7 +1647,7 @@ void SceneViewWidget::changeEvent(QEvent* event) {
     hud_lines_.clear();
     hover_label_frame_.clear();
     hover_ring_image_ = {};
-    update();
+    invalidateContent();
   }
 }
 
@@ -1831,7 +1679,7 @@ void SceneViewWidget::setShowPerfHud(bool on) {
     return;
   }
   show_perf_hud_ = on;
-  update();
+  invalidateContent();
 }
 
 void SceneViewWidget::setRenderScale(float scale) {
@@ -1840,7 +1688,7 @@ void SceneViewWidget::setRenderScale(float scale) {
     return;
   }
   render_scale_ = clamped;
-  update();
+  invalidateContent();
 }
 
 std::optional<glm::vec2> SceneViewWidget::projectToWidget(const glm::dvec3& point) const {
@@ -1875,7 +1723,7 @@ void SceneViewWidget::setHoveredFrame(std::optional<std::string> frame) {
     return;
   }
   hovered_frame_ = std::move(frame);
-  update();
+  invalidateContent();
   emit hoveredFrameChanged(hovered_frame_ ? QString::fromStdString(*hovered_frame_) : QString{});
 }
 
@@ -1904,7 +1752,7 @@ void SceneViewWidget::prepareOverlays(
     QStringList lines;
     lines << (gpu_average_.empty() ? u"GPU  --"_s : u"GPU  %1 ms"_s.arg(gpu_average_.average(), 0, 'f', 2));
     lines << u"CPU  %1 ms"_s.arg(cpu_average_.average(), 0, 'f', 2);
-    lines << u"MSAA %1x"_s.arg(hdr_stage_.last_active ? kHdrSampleCount : sampleCount());
+    lines << u"MSAA %1x"_s.arg(hdr_->state.last_active ? kHdrSampleCount : sampleCount());
     if (lines != hud_lines_) {
       QFont font;
       font.setFamily(u"monospace"_s);

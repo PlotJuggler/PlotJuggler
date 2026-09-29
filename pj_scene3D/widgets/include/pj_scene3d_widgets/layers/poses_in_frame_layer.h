@@ -48,6 +48,9 @@ class PosesInFrameLayer : public Scene3DLayer {
   [[nodiscard]] PJ::SceneLayerInfo info() const override;
   [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
   [[nodiscard]] QStringList fallbackFrames() const override;
+  [[nodiscard]] SceneContributions sceneContributions() override {
+    return {.poses = this};
+  }
   [[nodiscard]] QString sourceFrame() const override;
   // This layer's decode warning, else the owned trail's ("waiting for TF", decode
   // failures): the dock only polls REGISTERED layers, so without the relay an
@@ -83,7 +86,7 @@ class PosesInFrameLayer : public Scene3DLayer {
   [[nodiscard]] std::uint64_t geometryRevision() const {
     return geometry_revision_;
   }
-  [[nodiscard]] const std::string& renderFrameId() const {
+  [[nodiscard]] const std::string& renderFrameId() const override {
     return source_frame_;
   }
   [[nodiscard]] bool visible() const {

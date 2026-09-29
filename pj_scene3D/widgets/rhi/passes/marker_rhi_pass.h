@@ -122,7 +122,6 @@ class MarkerRhiPass {
   /// stream batches). False leaves the pass unusable.
   [[nodiscard]] bool initialize(const RhiPassSetup& setup);
   [[nodiscard]] bool ready() const;
-  void registerPipelines(ScenePipelineRegistry& registry) const;
   /// Adopts the view's marker layers; drops GPU state of layers that left or are hidden.
   void setLayers(const std::vector<SceneEntitiesLayer*>& layers);
   /// A layer of this family is in the view: the view builds the family (initialize()) only then.
@@ -308,7 +307,7 @@ class MarkerRhiPass {
     std::uint64_t instances = 0;
     std::uint64_t stream_vertices = 0;
   };
-  QRhiGraphicsPipeline* instancePipeline(const Draw& draw) const;
+  const ScenePipeline* instancePipeline(const Draw& draw) const;
 
   /// The placement of `frame_index` of `admitted`, or nullptr when unplaced.
   [[nodiscard]] const Transform* placement(const Admitted& admitted, std::uint32_t frame_index) const;
@@ -317,7 +316,7 @@ class MarkerRhiPass {
   QRhiShaderResourceBindings* annotation_bindings_ = nullptr;
   QRhiShaderResourceBindings* edge_bindings_ = nullptr;  ///< data_bindings_ plus camera_view_uniforms_
   QRhiBuffer* camera_view_uniforms_ = nullptr;           ///< binding 4 of marker_edge.vert, written per frame
-  /// The direct pipelines; each has a depth-writing and a no-depth-write variant.
+  /// The registered pipelines; each has a depth-writing and a no-depth-write registration.
   enum Pipeline : std::uint8_t {
     kTrianglePipeline,
     kTriangleCullPipeline,
@@ -331,7 +330,7 @@ class MarkerRhiPass {
     kPipelineCount,
   };
   /// [pipeline][depth_write]
-  std::array<std::array<QRhiGraphicsPipeline*, 2>, kPipelineCount> pipelines_{};
+  std::array<std::array<const ScenePipeline*, 2>, kPipelineCount> pipelines_{};
   std::array<MeshGpu, 5> meshes_{};
 
   std::vector<SceneEntitiesLayer*> layers_;

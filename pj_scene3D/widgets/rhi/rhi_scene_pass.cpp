@@ -5,8 +5,6 @@
 
 #include <rhi/qshader.h>
 
-#include <QElapsedTimer>
-#include <QStringList>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -18,16 +16,6 @@
 namespace pj::scene3d {
 namespace {
 
-#ifdef PJ_RHI_TEST_HOOKS
-bool injectedPipelineFailure(const QRhiGraphicsPipeline& pipeline) {
-  const QString shader = qEnvironmentVariable("PJ_SCENE3D_TEST_FAIL_SHADER");
-  return !shader.isEmpty() &&
-         std::any_of(pipeline.cbeginShaderStages(), pipeline.cendShaderStages(), [&](const QRhiShaderStage& stage) {
-           return PJ::rhiShaderPathForTest(stage.shader()).endsWith(shader);
-         });
-}
-#endif
-
 const ArrowMeshData& unitPoseArrowMesh() {
   static const ArrowMeshData mesh = buildArrowMesh(
       ArrowMeshParams{
@@ -37,172 +25,194 @@ const ArrowMeshData& unitPoseArrowMesh() {
 
 }  // namespace
 
-bool createGraphicsPipeline(QRhiGraphicsPipeline* pipeline) {
-#ifdef PJ_RHI_TEST_HOOKS
-  if (injectedPipelineFailure(*pipeline)) {
-    return false;
-  }
-  const bool log = qEnvironmentVariableIntValue("PJ_SCENE3D_PIPELINE_LOG") == 1;
-  QElapsedTimer timer;
-  if (log) {
-    timer.start();
-  }
-#endif
-  const bool created = pipeline->create();
-#ifdef PJ_RHI_TEST_HOOKS
-  if (log) {
-    QStringList shaders;
-    for (auto stage = pipeline->cbeginShaderStages(); stage != pipeline->cendShaderStages(); ++stage) {
-      shaders << PJ::rhiShaderPathForTest(stage->shader()).section(u'/', -1);
-    }
-    qInfo(
-        "PJ_PIPELINE %s samples=%d ms=%.3f", qPrintable(shaders.join(u'+')), pipeline->sampleCount(),
-        static_cast<double>(timer.nsecsElapsed()) / 1.0e6);
-  }
-#endif
-  return created;
-}
-
-QRhiGraphicsPipeline* clonePipelineForRenderPass(
-    QRhi* owner, const QRhiGraphicsPipeline* source, QRhiRenderPassDescriptor* render_pass, int sample_count,
-    bool coverage_alpha_only) {
-  if (owner == nullptr || source == nullptr || render_pass == nullptr) {
+std::unique_ptr<QRhiGraphicsPipeline> createPipeline(
+    QRhi* rhi, const PipelineDesc& desc, QRhiRenderPassDescriptor* render_pass, int sample_count) {
+  if (rhi == nullptr || render_pass == nullptr || !desc.vertex.isValid() || !desc.fragment.isValid() ||
+      desc.bindings == nullptr) {
     return nullptr;
   }
-  QRhiGraphicsPipeline* pipeline = owner->newGraphicsPipeline();
-  pipeline->setFlags(source->flags());
-  pipeline->setTopology(source->topology());
-  pipeline->setShaderStages(source->cbeginShaderStages(), source->cendShaderStages());
-  pipeline->setVertexInputLayout(source->vertexInputLayout());
-  pipeline->setShaderResourceBindings(source->shaderResourceBindings());
-  std::vector<QRhiGraphicsPipeline::TargetBlend> target_blends(
-      source->cbeginTargetBlends(), source->cendTargetBlends());
-  if (target_blends.empty()) {
-    target_blends.emplace_back();
+  std::unique_ptr<QRhiGraphicsPipeline> pipeline(rhi->newGraphicsPipeline());
+  pipeline->setFlags(desc.flags);
+  pipeline->setTopology(desc.topology);
+  pipeline->setShaderStages({{QRhiShaderStage::Vertex, desc.vertex}, {QRhiShaderStage::Fragment, desc.fragment}});
+  pipeline->setVertexInputLayout(desc.input_layout);
+  pipeline->setShaderResourceBindings(desc.bindings);
+  if (desc.blend.has_value()) {
+    pipeline->setTargetBlends({*desc.blend});
   }
-  if (coverage_alpha_only) {
-    target_blends.front().colorWrite = QRhiGraphicsPipeline::A;
-  }
-  pipeline->setTargetBlends(target_blends.cbegin(), target_blends.cend());
-  pipeline->setCullMode(source->cullMode());
-  pipeline->setFrontFace(source->frontFace());
-  pipeline->setDepthTest(source->hasDepthTest());
-  pipeline->setDepthWrite(source->hasDepthWrite());
-  pipeline->setDepthOp(source->depthOp());
-  pipeline->setDepthBias(source->depthBias());
-  pipeline->setSlopeScaledDepthBias(source->slopeScaledDepthBias());
+  pipeline->setCullMode(desc.cull);
+  pipeline->setDepthTest(desc.depth_test);
+  pipeline->setDepthWrite(desc.depth_write);
+  pipeline->setDepthOp(desc.depth_op);
+  pipeline->setDepthBias(desc.depth_bias);
+  pipeline->setSlopeScaledDepthBias(desc.slope_scaled_depth_bias);
   pipeline->setSampleCount(sample_count);
   pipeline->setRenderPassDescriptor(render_pass);
-  if (!createGraphicsPipeline(pipeline)) {
-    delete pipeline;
+  if (!PJ::createRhiPipeline(*pipeline)) {
     return nullptr;
   }
   return pipeline;
 }
 
-void ScenePipelineRegistry::add(QRhiGraphicsPipeline* direct) {
-  if (direct == nullptr || std::any_of(entries_.cbegin(), entries_.cend(), [direct](const Entry& entry) {
-        return entry.direct == direct;
-      })) {
-    return;
-  }
-  entries_.push_back(Entry{direct});
+struct ScenePipeline {
+  PipelineDesc desc;
+  const char* part = nullptr;
+  bool optional = false;
+  mutable bool failed = false;  // optional only: a variant could not be created
+  std::unique_ptr<QRhiGraphicsPipeline> direct;
+  // The HDR variants are a cache resolve() fills, hence mutable.
+  mutable std::unique_ptr<QRhiGraphicsPipeline> hdr;
+  mutable std::unique_ptr<QRhiGraphicsPipeline> depth;
+};
+
+ScenePipelineRegistry::ScenePipelineRegistry() = default;
+ScenePipelineRegistry::~ScenePipelineRegistry() = default;
+
+void ScenePipelineRegistry::setDirectTarget(QRhi* rhi, QRhiRenderPassDescriptor* render_pass, int sample_count) {
+  rhi_ = rhi;
+  direct_ = render_pass;
+  direct_samples_ = sample_count;
 }
 
-QRhiGraphicsPipeline* ScenePipelineRegistry::addTemplate(QRhiGraphicsPipeline* direct, const char* part) {
-  if (direct != nullptr) {
-    entries_.push_back(Entry{direct, nullptr, nullptr, part != nullptr ? part : "scene pipelines"});
+const ScenePipeline* ScenePipelineRegistry::add(const PipelineDesc& desc, const char* part, bool optional) {
+  if (!desc.vertex.isValid() || !desc.fragment.isValid() || desc.bindings == nullptr) {
+    return nullptr;
   }
-  return direct;
+  auto& pipeline = pipelines_.emplace_back(std::make_unique<ScenePipeline>());
+  pipeline->desc = desc;
+  pipeline->part = part != nullptr ? part : "scene pipelines";
+  pipeline->optional = optional;
+  return pipeline.get();
 }
 
-bool ScenePipelineRegistry::createTemplates() {
-  if (deferred_failure_ != nullptr) {
-    return false;  // not retried: the view fails on deferredFailure()
+bool ScenePipelineRegistry::optionalFailed(const ScenePipeline* pipeline) const {
+  return pipeline != nullptr && pipeline->failed;
+}
+
+void ScenePipelineRegistry::remove(const ScenePipeline* pipeline) {
+  std::erase_if(pipelines_, [pipeline](const auto& entry) { return entry.get() == pipeline; });
+}
+
+bool ScenePipelineRegistry::createDirects() {
+  if (failure_.has_value() && failure_->severity == PipelineFailure::Severity::kRequired) {
+    return false;  // not retried: the view fails on failure()
   }
-  for (Entry& entry : entries_) {
-    if (entry.uncreated_part == nullptr) {
+  for (const auto& pipeline : pipelines_) {
+    if (pipeline->direct != nullptr || pipeline->failed) {
       continue;
     }
-    if (!createGraphicsPipeline(entry.direct)) {
-      deferred_failure_ = entry.uncreated_part;
+    pipeline->direct = createPipeline(rhi_, pipeline->desc, direct_, direct_samples_);
+    if (pipeline->direct == nullptr && pipeline->optional) {
+      pipeline->failed = true;
+    } else if (pipeline->direct == nullptr) {
+      failure_ = PipelineFailure{PipelineFailure::Severity::kRequired, pipeline->part};
       return false;
     }
-    entry.uncreated_part = nullptr;
   }
   return true;
 }
 
-void ScenePipelineRegistry::remove(QRhiGraphicsPipeline* direct) {
-  const auto existing =
-      std::find_if(entries_.begin(), entries_.end(), [direct](const Entry& entry) { return entry.direct == direct; });
-  if (existing == entries_.end()) {
-    return;
-  }
-  delete existing->depth;
-  delete existing->hdr;
-  entries_.erase(existing);
-}
-
-void ScenePipelineRegistry::setCloneTargets(
-    QRhi* rhi, QRhiRenderPassDescriptor* hdr, int hdr_samples, QRhiRenderPassDescriptor* depth) {
-  if (rhi != rhi_ || hdr != hdr_ || hdr_samples != hdr_samples_ || depth != depth_) {
-    releaseClones();
-    rhi_ = rhi;
+void ScenePipelineRegistry::setVariantTargets(
+    QRhiRenderPassDescriptor* hdr, int hdr_samples, QRhiRenderPassDescriptor* depth) {
+  if (hdr != hdr_ || hdr_samples != hdr_samples_ || depth != depth_) {
+    releaseVariants();
     hdr_ = hdr;
     hdr_samples_ = hdr_samples;
     depth_ = depth;
   }
 }
 
-void ScenePipelineRegistry::releaseClones() {
-  for (Entry& entry : entries_) {
-    delete entry.depth;
-    delete entry.hdr;
-    entry.depth = nullptr;
-    entry.hdr = nullptr;
+void ScenePipelineRegistry::releaseVariants() {
+  for (const auto& pipeline : pipelines_) {
+    pipeline->depth.reset();
+    pipeline->hdr.reset();
   }
-  clone_failed_ = false;
-  rhi_ = nullptr;
+  if (failure_.has_value() && failure_->severity == PipelineFailure::Severity::kHdrVariant) {
+    failure_.reset();
+  }
   hdr_ = nullptr;
   depth_ = nullptr;
 }
 
 void ScenePipelineRegistry::clear() {
-  releaseClones();
-  entries_.clear();
-  deferred_failure_ = nullptr;
+  releaseVariants();
+  pipelines_.clear();
+  failure_.reset();
+  rhi_ = nullptr;
+  direct_ = nullptr;
+  direct_samples_ = 1;
 }
 
 bool ScenePipelineRegistry::directsBuiltFor(const QRhiRenderPassDescriptor* render_pass, int sample_count) const {
-  return std::all_of(entries_.cbegin(), entries_.cend(), [&](const Entry& entry) {
-    return pipelineBuiltFor(entry.direct, render_pass, sample_count);
+  return std::all_of(pipelines_.cbegin(), pipelines_.cend(), [&](const auto& pipeline) {
+    return pipelineBuiltFor(pipeline->direct.get(), render_pass, sample_count);
   });
 }
 
-QRhiGraphicsPipeline* ScenePipelineRegistry::resolve(QRhiGraphicsPipeline* direct, ScenePass pass) const {
-  if (pass == ScenePass::kDirect) {
-    return direct;
+ScenePipelineRegistry::Counts ScenePipelineRegistry::counts() const {
+  Counts counts;
+  for (const auto& pipeline : pipelines_) {
+    ++counts.registered;
+    counts.directs += pipeline->direct != nullptr ? 1 : 0;
+    counts.hdr_variants += (pipeline->hdr != nullptr ? 1 : 0) + (pipeline->depth != nullptr ? 1 : 0);
   }
-  if (pass == ScenePass::kDepthReplay && direct != nullptr && !direct->hasDepthWrite()) {
-    // The composite finds the background by depth, so a draw that writes no
-    // depth leaves no coverage there: the pixels it tints over the background
-    // stay ungraded background, and SSAO/EDL never see it.
+  return counts;
+}
+
+QRhiGraphicsPipeline* ScenePipelineRegistry::resolve(const ScenePipeline* pipeline, ScenePass pass) const {
+  if (pipeline == nullptr || pipeline->failed) {
     return nullptr;
   }
-  const auto existing =
-      std::find_if(entries_.begin(), entries_.end(), [direct](const Entry& entry) { return entry.direct == direct; });
-  if (existing == entries_.end() || rhi_ == nullptr) {
+  if (pass != ScenePass::kDirect && failure_.has_value()) {
+    // The frame is withheld and the next one drops the HDR chain: no compile
+    // is retried on every later bind of this frame.
     return nullptr;
   }
-  const bool depth_replay = pass == ScenePass::kDepthReplay;
-  QRhiGraphicsPipeline*& clone = depth_replay ? existing->depth : existing->hdr;
-  if (clone == nullptr) {
-    clone = depth_replay ? clonePipelineForRenderPass(rhi_, direct, depth_, 1, true)
-                         : clonePipelineForRenderPass(rhi_, direct, hdr_, hdr_samples_);
-    clone_failed_ = clone_failed_ || clone == nullptr;
+  switch (pass) {
+    case ScenePass::kDirect:
+      return pipeline->direct.get();
+    case ScenePass::kHdrColor:
+      if (pipeline->hdr == nullptr) {
+        pipeline->hdr = createVariant(*pipeline, pass);
+      }
+      return pipeline->hdr.get();
+    case ScenePass::kDepthReplay:
+      // The composite finds the background by depth, so a draw that writes no
+      // depth leaves no coverage there: the pixels it tints over the background
+      // stay ungraded background, and SSAO/EDL never see it.
+      if (!pipeline->desc.depth_write) {
+        return nullptr;
+      }
+      if (pipeline->depth == nullptr) {
+        pipeline->depth = createVariant(*pipeline, pass);
+      }
+      return pipeline->depth.get();
   }
-  return clone;
+  return nullptr;
+}
+
+std::unique_ptr<QRhiGraphicsPipeline> ScenePipelineRegistry::createVariant(
+    const ScenePipeline& pipeline, ScenePass pass) const {
+  if (hdr_ == nullptr) {
+    return nullptr;
+  }
+  std::unique_ptr<QRhiGraphicsPipeline> variant;
+  if (pass == ScenePass::kDepthReplay) {
+    // The replay's coverage: the colour target takes alpha only.
+    PipelineDesc desc = pipeline.desc;
+    QRhiGraphicsPipeline::TargetBlend blend = desc.blend.value_or(QRhiGraphicsPipeline::TargetBlend{});
+    blend.colorWrite = QRhiGraphicsPipeline::A;
+    desc.blend = blend;
+    variant = createPipeline(rhi_, desc, depth_, 1);
+  } else {
+    variant = createPipeline(rhi_, pipeline.desc, hdr_, hdr_samples_);
+  }
+  if (variant == nullptr && pipeline.optional) {
+    pipeline.failed = true;
+  } else if (variant == nullptr) {
+    failure_ = PipelineFailure{PipelineFailure::Severity::kHdrVariant, pipeline.part};
+  }
+  return variant;
 }
 
 namespace {
@@ -312,42 +322,6 @@ QRhiShaderResourceBindings* createBindings(QRhi* owner, std::initializer_list<QR
     return nullptr;
   }
   return resources;
-}
-
-QRhiGraphicsPipeline* createScenePipeline(const RhiPassSetup& setup, const PipelineDesc& desc) {
-  QRhiGraphicsPipeline* pipeline = newScenePipeline(setup, desc);
-  if (setup.templates != nullptr) {
-    return setup.templates->addTemplate(pipeline, setup.part);
-  }
-  if (pipeline != nullptr && !createGraphicsPipeline(pipeline)) {
-    delete pipeline;
-    return nullptr;
-  }
-  return pipeline;
-}
-
-QRhiGraphicsPipeline* newScenePipeline(const RhiPassSetup& setup, const PipelineDesc& desc) {
-  if (setup.rhi == nullptr || !desc.vertex.isValid() || !desc.fragment.isValid() || desc.bindings == nullptr) {
-    return nullptr;
-  }
-  QRhiGraphicsPipeline* pipeline = setup.rhi->newGraphicsPipeline();
-  pipeline->setFlags(desc.flags);
-  pipeline->setTopology(desc.topology);
-  pipeline->setShaderStages({{QRhiShaderStage::Vertex, desc.vertex}, {QRhiShaderStage::Fragment, desc.fragment}});
-  pipeline->setVertexInputLayout(desc.input_layout);
-  pipeline->setShaderResourceBindings(desc.bindings);
-  if (desc.blend.has_value()) {
-    pipeline->setTargetBlends({*desc.blend});
-  }
-  pipeline->setCullMode(desc.cull);
-  pipeline->setDepthTest(desc.depth_test);
-  pipeline->setDepthWrite(desc.depth_write);
-  pipeline->setDepthOp(desc.depth_op);
-  pipeline->setDepthBias(desc.depth_bias);
-  pipeline->setSlopeScaledDepthBias(desc.slope_scaled_depth_bias);
-  pipeline->setSampleCount(setup.sample_count);
-  pipeline->setRenderPassDescriptor(setup.render_pass);
-  return pipeline;
 }
 
 bool createStaticMesh(

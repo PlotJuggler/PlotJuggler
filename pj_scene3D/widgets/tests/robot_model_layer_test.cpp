@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "mesh_import.h"  // maxConcurrentMeshLoads
+#include "mock_parser_support.h"
 #include "pj_base/time.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
@@ -1162,13 +1163,12 @@ TEST(RobotModelLayerTest, SourceSwitchKeepsSupersededImportsWithinTheBound) {
   ASSERT_TRUE(dir.isValid());
   const std::size_t limit = pj::scene3d::maxConcurrentMeshLoads();
   const int mesh_count = static_cast<int>(limit) + 2;  // more than one wave
+  const std::vector<QString> paths = pj::scene3d::test::cubeCopies(dir, mesh_count);
   QString links;
   for (int index = 0; index < mesh_count; ++index) {
-    const QString path = dir.filePath(u"mesh_%1.stl"_s.arg(index));
-    ASSERT_TRUE(QFile::copy(QStringLiteral(PJ_SCENE3D_FIXTURES_DIR "/meshes/cube.stl"), path));
     links +=
         uR"(<link name="link_%1"><visual><geometry><mesh filename="%2"/></geometry></visual></link>)"_s.arg(index).arg(
-            path);
+            paths[static_cast<std::size_t>(index)]);
   }
   const auto urdf = [&](const QString& name) { return u"<robot name=\"%1\">%2</robot>"_s.arg(name, links).toUtf8(); };
 

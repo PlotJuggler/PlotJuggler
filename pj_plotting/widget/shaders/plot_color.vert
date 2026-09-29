@@ -4,7 +4,7 @@
 
 layout(location = 0) in vec2 a_position;
 layout(location = 1) in vec4 a_color;
-// PlotRhiVertex::aux: across (0..1 for -1..1), style code, second coordinate
+// plot_rhi::Vertex::aux: across (0..1 for -1..1), style code, second coordinate
 // high and low byte, each normalized from 0..255.
 layout(location = 2) in vec4 a_aux;
 

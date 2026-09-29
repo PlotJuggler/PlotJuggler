@@ -54,6 +54,7 @@
 #include "pj_scene3d_core/pointcloud_convert.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"  // parallelForOnPool
 #include "pj_scene3d_widgets/point_renderable.h"
+#include "pj_scene3d_widgets/retained_upload.h"
 #include "rhi/passes/point_rhi_pass.h"
 #include "rhi/rhi_scene_pass.h"
 
@@ -327,16 +328,18 @@ Result run(
     Mode mode, bool replay, int frames) {
   QRhiBuffer* render_mode = rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 16);
   render_mode->create();
+  // The HDR target stands in for the widget's: the pass draws its direct pipelines into it.
   pj::scene3d::ScenePipelineRegistry registry;
+  registry.setDirectTarget(rhi, targets.hdr_pass, 4);
+  registry.setVariantTargets(targets.hdr_pass, 4, targets.replay_pass);
   pj::scene3d::PointRhiPass pass;
   Result result;
-  if (!pass.initialize({rhi, targets.hdr_pass, 4, render_mode})) {
+  if (!pass.initialize(
+          {.rhi = rhi, .render_mode_uniforms = render_mode, .pipelines = &registry, .part = "point pipelines"})) {
     std::fprintf(stderr, "pass initialization failed\n");
     return result;
   }
   pass.setPointListEnabled(point_list);
-  pass.registerPipelines(registry);
-  registry.setCloneTargets(rhi, targets.hdr_pass, 4, targets.replay_pass);
   pass.setLayers({&cloud});
 
   const QSize size = targets.hdr->pixelSize();
@@ -396,6 +399,10 @@ Result run(
     pass.admit([](const std::string&) { return std::optional<pj::scene3d::Transform>(pj::scene3d::Transform{}); });
     pass.prepare({rhi, updates, glm::dvec3(0.0), view_projection, view}, {projection, size, 1.0F});
     const double prepare_ms = elapsedMs(prepare_timer);
+    if (!registry.createDirects()) {
+      std::fprintf(stderr, "pipeline creation failed\n");
+      break;
+    }
     QElapsedTimer enqueue_timer;
     enqueue_timer.start();
     const auto draws = pass.drawsFor(&cloud);
@@ -456,8 +463,8 @@ Result run(
   result.scan_ms = median(scan);
   result.latency_ms = median(latency);
   result.used_mib = static_cast<double>(rhi->statistics().usedBytes) / (1024.0 * 1024.0);
-  pass.release();
   registry.clear();
+  pass.release();
   delete render_mode;
   return result;
 }

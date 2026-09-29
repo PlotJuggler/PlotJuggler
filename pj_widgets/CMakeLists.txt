@@ -18,6 +18,7 @@ add_library(pj_widgets STATIC
     src/FileDialog.cpp
     src/FrameworkTokens.cpp
     src/GraphicsApi.cpp
+    src/RhiTestHooks.cpp
     src/FlowLayout.cpp
     src/HeaderDividerHighlight.cpp
     src/HeaderResizePolicy.cpp
@@ -66,6 +67,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/FlowLayout.h
     include/pj_widgets/FrameworkTokens.h
     include/pj_widgets/GraphicsApi.h
+    include/pj_widgets/RhiTestHooks.h
     include/pj_widgets/HeaderDividerHighlight.h
     include/pj_widgets/HeaderResizePolicy.h
     include/pj_widgets/IngestProgressWidget.h

@@ -92,24 +92,21 @@ void logGraphicsBackend(QWidget& widget, QRhi* rhi);
 
 /// Bookkeeping for a QRhiWidget whose initialize() (re)builds its resources on
 /// `rhi` while holding resources on `held` (null when it holds none). Call it
-/// before releasing them. Logs the backend (logGraphicsBackend()); builds with
-/// tests (`PJ_RHI_TEST_HOOKS`) also count, as dynamic properties on the widget,
-/// `pjTestRhiAdoptions` and, when `held` is another QRhi Qt did not release first,
-/// `pjTestRhiStale`.
+/// before releasing them. Logs the backend (logGraphicsBackend()) and counts
+/// `pjTestRhiAdoptions`, and `pjTestRhiStale` when `held` is another QRhi Qt did
+/// not release first (RhiTestHooks.h).
 void noteRhiAdoption(QRhiWidget& widget, const QRhi* held, QRhi* rhi);
 
 /// The releaseResources() counterpart: counts `pjTestRhiReleases` when `held`
-/// is set (builds with tests only; a no-op otherwise).
+/// is set (RhiTestHooks.h).
 void noteRhiRelease(QRhiWidget& widget, const QRhi* held);
 
-/// Test-only fault injection (`PJ_RHI_TEST_HOOKS`): true while `owner`'s dynamic
-/// property `pjTestFailPipeline` equals `name`. Always false in other builds.
-[[nodiscard]] bool rhiTestFault(const QObject& owner, const char* name);
-
-/// `pipeline.create()`, unless rhiTestFault(owner, name). Builds with tests also
-/// count each call in `owner`'s `pjTestPipelineAttempts`, so a test can see that a
-/// failed widget does not retry on every frame.
+/// `pipeline.create()`, unless rhiTestFault(owner, name) or rhiTestShaderFault()
+/// (RhiTestHooks.h). Each call counts in `owner`'s `pjTestPipelineAttempts`, so a
+/// test can see that a failed widget does not retry on every frame.
 [[nodiscard]] bool createRhiPipeline(QObject& owner, QRhiGraphicsPipeline& pipeline, const char* name);
+/// The owner-less form: `pipeline.create()`, unless rhiTestShaderFault().
+[[nodiscard]] bool createRhiPipeline(QRhiGraphicsPipeline& pipeline);
 
 /// What a QRhiWidget built its pipelines for on its current QRhi. The
 /// descriptor's address catches a new target whose format serializes the same
@@ -145,12 +142,6 @@ class RhiFailureLatch {
 /// The .qsb pack at `path` (a resource), read once per process and shared by
 /// every widget and QRhi; invalid (and logged) when it cannot be read. GUI thread only.
 [[nodiscard]] QShader loadRhiShader(const QString& path);
-
-#ifdef PJ_RHI_TEST_HOOKS
-/// The path loadRhiShader() read `shader` from (empty for any other shader), so
-/// fault injection can name a pipeline by its shaders.
-[[nodiscard]] QString rhiShaderPathForTest(const QShader& shader);
-#endif
 
 /// A colour-only render target over a QRhiWidget's own colour buffer, for a
 /// widget with autoRenderTarget off (no depth-stencil). Its render pass

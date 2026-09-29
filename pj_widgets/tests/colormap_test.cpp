@@ -7,7 +7,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <iterator>
+#include <optional>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace PJ {
@@ -86,6 +89,29 @@ TEST(ColormapTest, LutMatchesColorForAndGrayscaleRowRamps) {
     const uint8_t* p = texel(gray_row, x);
     EXPECT_EQ(p[0], p[1]);
     EXPECT_EQ(p[1], p[2]);
+  }
+}
+
+// The persisted layout-XML tokens: saved layouts depend on these exact spellings.
+TEST(ColormapTest, TokensRoundTripEveryColormap) {
+  const std::pair<Colormap, const char*> kPairs[] = {
+      {Colormap::kTurbo, "turbo"},
+      {Colormap::kViridis, "viridis"},
+      {Colormap::kPlasma, "plasma"},
+      {Colormap::kGrayscale, "grayscale"},
+  };
+  static_assert(std::size(kPairs) == kColormapCount);
+  for (const auto& [colormap, token] : kPairs) {
+    EXPECT_EQ(colormapToken(colormap), QString::fromLatin1(token));
+    EXPECT_EQ(parseColormap(QString::fromLatin1(token)), colormap) << token;
+  }
+}
+
+// Matching is exact and case-sensitive; anything else is nullopt, and each caller
+// picks its own fallback (Scene3D rejects the element, the 2D depth layer uses turbo).
+TEST(ColormapTest, UnknownOrMiscasedTokensDoNotParse) {
+  for (const char* token : {"", "jet", "rainbow", "Turbo", "VIRIDIS", "Grayscale", " plasma", "gray", "0"}) {
+    EXPECT_EQ(parseColormap(QString::fromLatin1(token)), std::nullopt) << token;
   }
 }
 

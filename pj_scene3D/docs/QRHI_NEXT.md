@@ -41,11 +41,12 @@ For the release notes and the PR description:
 
 The golden corpus (`pointcloud_golden_test`, TECHNICAL_NOTES §7) compares against
 images `PJ_UPDATE_POINTCLOUD_GOLDENS=1` wrote from QRhi OpenGL on llvmpipe (the
-writer refuses every other backend and driver). Left:
+writer refuses every other backend and driver). Every lane passes against the
+current images: Mesa 26 llvmpipe, lavapipe, Iris GL and Iris Vulkan locally, D3D11
+(WARP) and Metal in CI. Left:
 
-- [ ] Re-run the D3D11 (WARP) and Metal comparisons against the current images
-  (Mesa 26 llvmpipe, lavapipe, Iris GL and Iris Vulkan pass) and refresh their
-  measured rows in TECHNICAL_NOTES §7.
+- [ ] Refresh the D3D11 and Metal measured rows in TECHNICAL_NOTES §7 from a CI
+  run's output (their ratios are still those measured against the previous images).
 
 ## P6: performance follow-ups
 
@@ -95,9 +96,10 @@ nothing (TECHNICAL_NOTES §9, note ⁷). Left:
 - *Hidden tabs keep their GPU memory* (about 6.5 MiB per hidden 1260x780 plot on
   RHI GL, the whole scene for a Scene3D tab). Add a release policy (hidden for
   minutes, or over a budget) if users keep many heavy tabs.
-- *The content-change mark* (`SceneViewWidget::update()`) sees only requests made
-  through a `SceneViewWidget`; a new path that changes the scene and repaints
-  through a `QWidget` pointer would present the retained frame on the next Show.
+- *Content invalidation is explicit* (`SceneViewWidget::invalidateContent()`):
+  a new path that changes what the view draws (in particular a mutation through
+  the non-const `camera()`, `compositeParams()` or `meshShadingParams()`) must
+  call it, or a hidden view presents its retained frame on the next Show.
 - *The i915 clock policy* differs per configuration (TECHNICAL_NOTES §9, note ⁵),
   which moves light rows and the first frame after idle (`cold_ms`); why the boost
   differs is open.
@@ -164,9 +166,8 @@ Deferred with a trigger, not failing any row:
 - *Shared primitive meshes* (URDF box/cylinder/sphere) across layers: when more
   than 32 MiB is duplicated across repeated robots.
 - *Indexing* `drawsFor` (a linear search per logical slot, O(L²) in the layer
-  count) and `ScenePipelineRegistry::resolve` (a scan per draw): when the
-  1000-layer case exceeds 1 ms or 10% of `prepareFrame` CPU. A finger index needs a
-  `draws[hint-1].layer != layer` check.
+  count): when the 1000-layer case exceeds 1 ms or 10% of `prepareFrame` CPU. A
+  finger index needs a `draws[hint-1].layer != layer` check.
 - *Large sprites* above 4 px are quads, about 1.3x a point list's frame (the
   lattice above): revisit with a use case that draws many large sprites.
 - *Runtime HDR refusal* draws without MSAA: revisit if users hit the HDR byte
@@ -194,6 +195,48 @@ compatibility guarantee, so the upgrade is one change across every channel:
 - [ ] Re-run the golden corpus, the harness and Gate A on every lane.
 - Not needed now: 6.12's indirect draws and device-fault reporting. Revisit with a
   use (the voxel compaction path, a device-lost recovery).
+
+## Deferred (with triggers)
+
+Not scheduled; each item names what would bring it back.
+
+- **Raw `delete` in the passes** (about 110 left): convert a pass to owning
+  pointers when it is next edited.
+- **Test-only surface in production classes:** the layer and pass `*ForTest`
+  accessors, the plot canvas probe and fault-injection code, and the remaining
+  `MainWindow` `wasmProbe` members. Move them behind the test boundary
+  (`SceneViewTestAccess`, the RHI test hooks) when their class is next touched.
+- **Header moves under `rhi/` and `*_rhi` file naming:** churn only; only alongside a
+  change that already touches those files.
+- **`findDraws` indexing:** only if the 1000-layer Gate A row regresses.
+- **Retention unification and a shared QRhi widget base:** not planned; revisit
+  for a new retention case or a fourth GPU widget.
+- **Browser stage fallbacks through the test hooks:** the browser acceptance
+  probes hold a quality stage down with `forceStageFallback()`, whose capability
+  error names the override (`forced_off`), not with a fault a driver could
+  raise. Moving them to the RHI test hooks needs the hooks in the WASM probe
+  build and the browser specs matching the real failure messages; do it when a
+  browser test has to exercise a stage's real failure path.
+- **Per-request cancel in `UrlFetcher`:** a request aborts only with its
+  fetcher, so `MeshLoadQueue` retires its fetcher (a new one, with new
+  connections, serves the next fetch) once none of its fetches is wanted.
+  Per-request cancel would remove the retirement; worth it if reloads with many
+  remote meshes show the reconnect cost.
+- **Named pipelines:** the shader fault (`PJ_RHI_TEST_FAIL_SHADER`) fails every
+  pipeline built from a shader, in every view. A name in `PipelineDesc` plus a
+  per-view `pjTestFailPipeline` would fault one pipeline of one view; needed once
+  a test must fail one of several pipelines sharing a shader, or one view of two.
+- **gtest discovery at build time:** discovery runs at ctest time (`PRE_TEST`)
+  everywhere, so parallel ctest runs on a freshly built tree race on it and the
+  gate discovers once first. `POST_BUILD` on non-WIN32 (Windows lacks the DLLs
+  at build time) would remove that step; do it if the race bites another caller.
+- **Robot meshes held twice:** MeshLoader's path cache keeps every mesh
+  imported from a path while the robot layer keeps its admitted copy. Drop the
+  cache entry once admitted, or share one `MeshData`, when a large URDF's
+  memory matters.
+- **Per-mesh draw-call rebuilds:** every admitted robot mesh rebuilds the
+  layer's draw calls; coalesce them (one rebuild per settled batch) if loading a
+  many-mesh robot shows in a profile.
 
 ## Open questions
 

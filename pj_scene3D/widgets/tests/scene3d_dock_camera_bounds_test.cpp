@@ -133,8 +133,8 @@ bool waitForBounds(PJ::Scene3DDockWidget& dock, const std::vector<PJ::ObjectTopi
 
 TEST(Scene3DDockCameraBounds, HiddenLayersCountPosesDoNot) {
   DockFixture fixture;
-  const auto nearLayer = fixture.add("/near", BT::kPointCloud, cloudBytes({{1.0F, 2.0F, 3.0F}, {2.0F, 3.0F, 4.0F}}));
-  const auto farLayer = fixture.add("/far", BT::kPointCloud, cloudBytes({{100.0F, 2.0F, 3.0F}}));
+  const auto near_layer = fixture.add("/near", BT::kPointCloud, cloudBytes({{1.0F, 2.0F, 3.0F}, {2.0F, 3.0F, 4.0F}}));
+  const auto far_layer = fixture.add("/far", BT::kPointCloud, cloudBytes({{100.0F, 2.0F, 3.0F}}));
   const auto voxels = fixture.add("/voxels", BT::kVoxelGrid, voxelBytes({1.0F, 2.0F, 49.0F}, 1.0F));
   fixture.add("/poses", BT::kPosesInFrame, poseBytes({-50.0F, -60.0F, -70.0F}));
   PJ::Scene3DDockWidget& dock = fixture.dock();
@@ -144,12 +144,12 @@ TEST(Scene3DDockCameraBounds, HiddenLayersCountPosesDoNot) {
   auto* voxel_layer = dynamic_cast<pj::scene3d::VoxelGridLayer*>(dock.layerFor(voxels));
   ASSERT_NE(voxel_layer, nullptr);
   voxel_layer->renderAtForTest(100);
-  ASSERT_TRUE(waitForBounds(dock, {nearLayer, farLayer, voxels}));
-  dock.setLayerVisible(farLayer, false);
+  ASSERT_TRUE(waitForBounds(dock, {near_layer, far_layer, voxels}));
+  dock.setLayerVisible(far_layer, false);
   dock.setLayerVisible(voxels, false);
   ASSERT_NE(dock.sceneView(), nullptr);
 
-  const pj::scene3d::AABB bounds = dock.sceneView()->sceneBoundsForTest();
+  const pj::scene3d::AABB bounds = dock.sceneView()->sceneBounds();
   ASSERT_TRUE(bounds.valid) << "the view has no camera bounds without a frame";
   EXPECT_FLOAT_EQ(bounds.min.x, 1.0F) << "the pose layer must not extend the bounds";
   EXPECT_FLOAT_EQ(bounds.min.y, 2.0F);

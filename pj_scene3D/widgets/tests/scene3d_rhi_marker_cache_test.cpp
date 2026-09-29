@@ -36,16 +36,20 @@
 
 #include "../rhi/passes/grid_rhi_pass.h"
 #include "../rhi/passes/marker_rhi_pass.h"
+#include "../rhi/passes/model_rhi_pass.h"
+#include "../rhi/passes/voxel_rhi_pass.h"
 #include "pj_base/builtin/scene_entities_codec.hpp"
 #include "pj_base/builtin/voxel_grid_codec.hpp"
 #include "pj_scene3d_widgets/layers/scene_entities_layer.h"
 #include "scene3d_render_test_support.h"
+#include "scene_view_test_access.h"
 
 using namespace Qt::StringLiterals;
 
 namespace {
 
 using BT = PJ::sdk::BuiltinObjectType;
+using pj::scene3d::SceneViewTestAccess;
 using pj::scene3d::SceneViewWidget;
 using pj::scene3d::test::differingPixels;
 using pj::scene3d::test::serializeTfEdges;
@@ -177,7 +181,7 @@ class CacheScene {
     return fixture_.dock()->sceneView();
   }
   pj::scene3d::MarkerRhiPass& markers() {
-    return view()->markerPassForTest();
+    return SceneViewTestAccess::markerPass(*view());
   }
 
   // Shows the window at kT0, presents a warm-up frame, then pins a
@@ -215,7 +219,7 @@ class CacheScene {
       if (grab().isNull()) {
         return false;
       }
-      if (view()->lastMarkerLayerCountForTest() == expected_layers_) {
+      if (SceneViewTestAccess::markerPass(*view()).lastLayerCount() == expected_layers_) {
         break;
       }
       QTest::qWait(5);
@@ -270,7 +274,7 @@ TEST_F(Scene3dRhiMarkerCacheTest, OrbitAndZoomRebuildNothing) {
   CacheScene scene;
   scene.addEntities("/markers", mixedEntities(kFrame, {0.0F, 0.0F, 0.0F}));
   SHOW_OR_SKIP(scene);
-  ASSERT_GT(scene.view()->lastMarkerInstanceCountForTest(), 0);
+  ASSERT_GT(SceneViewTestAccess::markerPass(*scene.view()).lastInstanceCount(), 0);
   const std::uint64_t rebuilds = scene.markers().layerRebuildCountForTest();
   const QImage start = scene.grab();
 
@@ -299,7 +303,7 @@ TEST_F(Scene3dRhiMarkerCacheTest, OnlyTheLiveLayerRebuildsPerTick) {
   }
   scene.expectLayers(2);
   SHOW_OR_SKIP(scene);
-  ASSERT_EQ(scene.view()->lastMarkerLayerCountForTest(), 2);
+  ASSERT_EQ(SceneViewTestAccess::markerPass(*scene.view()).lastLayerCount(), 2);
   auto* live_layer = scene.markerLayer(live);
   ASSERT_NE(live_layer, nullptr);
   for (int k = 1; k <= 3; ++k) {
@@ -316,7 +320,7 @@ TEST_F(Scene3dRhiMarkerCacheTest, TfOnlyMoveOfAStaticLayerRebuildsAndMovesIt) {
   SHOW_OR_SKIP(scene);
   auto* layer = scene.markerLayer(id);
   ASSERT_NE(layer, nullptr);
-  ASSERT_EQ(scene.view()->lastMarkerLayerCountForTest(), 1);
+  ASSERT_EQ(SceneViewTestAccess::markerPass(*scene.view()).lastLayerCount(), 1);
   const std::uint64_t revision = layer->geometryRevision();
   const std::uint64_t rebuilds = scene.markers().layerRebuildCountForTest();
   const QImage before = scene.grab();
@@ -357,10 +361,10 @@ TEST_F(Scene3dRhiMarkerCacheTest, StyleAndVisibilityInvalidate) {
   // Markers cast no shadows: the shadow toggle is not theirs.
   EXPECT_EQ(rebuilt_by([&] { set_shadows(false); }), 0U);
   EXPECT_EQ(rebuilt_by([&] { set_shadows(true); }), 0U);
-  EXPECT_EQ(scene.view()->lastShadowDrawCountForTest(), 0);
+  EXPECT_EQ(SceneViewTestAccess::modelPass(*scene.view()).lastShadowDrawCount(), 0);
   // A hidden layer gives its buffers back; showing it again rebuilds.
   EXPECT_EQ(rebuilt_by([&] { layer->setVisible(false); }), 0U);
-  EXPECT_EQ(scene.view()->lastMarkerLayerCountForTest(), 0);
+  EXPECT_EQ(SceneViewTestAccess::markerPass(*scene.view()).lastLayerCount(), 0);
   EXPECT_EQ(
       rebuilt_by([&] {
         layer->setVisible(true);
@@ -418,11 +422,11 @@ TEST_F(Scene3dRhiMarkerCacheTest, OriginOnlyUpdatesMatchTheUncachedPath) {
     auto& markers = scene.markers();
     const glm::vec3 focal = base + glm::vec3(0.0F, 0.0F, 0.3F);
     const float ulp = std::nextafter(focal.x, std::numeric_limits<float>::infinity()) - focal.x;
-    const float smallPan = std::max(0.01F, 3.0F * ulp);
+    const float small_pan = std::max(0.01F, 3.0F * ulp);
     const auto pan = [&](glm::vec3 delta) { return [delta](auto& camera) { camera.focal += delta; }; };
     // Onto the scene, then one more pan: the layers keep re-uploading.
     scene.moveCamera([&](auto& camera) { camera.focal = focal; });
-    scene.moveCamera(pan({smallPan, 0.0F, 0.0F}));
+    scene.moveCamera(pan({small_pan, 0.0F, 0.0F}));
     const auto matches = [&](const char* what, auto move, bool origin_only) {
       const std::uint64_t updates = markers.originUpdateCountForTest();
       const QImage cached = scene.moveCamera(move);
@@ -432,11 +436,11 @@ TEST_F(Scene3dRhiMarkerCacheTest, OriginOnlyUpdatesMatchTheUncachedPath) {
       markers.setMarkerCacheEnabledForTest(true);
       EXPECT_EQ(differingPixels(cached, uncached), 0) << what;
     };
-    matches("small pan", pan({smallPan, -smallPan, smallPan}), true);
-    matches("small pan back", pan({-smallPan, smallPan, -smallPan}), true);
+    matches("small pan", pan({small_pan, -small_pan, small_pan}), true);
+    matches("small pan back", pan({-small_pan, small_pan, -small_pan}), true);
     matches("large pan", pan({0.9F, -0.6F, 0.25F}), true);
     matches("TF move", [&](auto&) { scene.tick(kT0 + kStepNs); }, false);
-    matches("pan after the TF move", pan({-smallPan, 0.0F, smallPan}), true);
+    matches("pan after the TF move", pan({-small_pan, 0.0F, small_pan}), true);
     EXPECT_GT(markers.retainedExpansionCountForTest(), 0);
   }
 }
@@ -528,19 +532,19 @@ TEST_F(Scene3dRhiMarkerCacheTest, PartialAllocationFailureDropsTheLayerAndRetrie
   SHOW_OR_SKIP(scene);
   auto& markers = scene.markers();
   const QImage drawn = scene.grab();
-  ASSERT_EQ(scene.view()->lastMarkerLayerCountForTest(), 1);
+  ASSERT_EQ(SceneViewTestAccess::markerPass(*scene.view()).lastLayerCount(), 1);
 
   markers.setMarkerCacheEnabledForTest(false);  // every frame rebuilds
   markers.setFailStreamAllocationForTest(true);
   const QImage failed = scene.grab();
-  EXPECT_EQ(scene.view()->lastMarkerLayerCountForTest(), 0);
+  EXPECT_EQ(SceneViewTestAccess::markerPass(*scene.view()).lastLayerCount(), 0);
   EXPECT_GT(differingPixels(drawn, failed), 1000) << "the failed layer still drew";
   scene.grab();
 
   markers.setFailStreamAllocationForTest(false);
   markers.setMarkerCacheEnabledForTest(true);
   const QImage retried = scene.grab();
-  EXPECT_EQ(scene.view()->lastMarkerLayerCountForTest(), 1);
+  EXPECT_EQ(SceneViewTestAccess::markerPass(*scene.view()).lastLayerCount(), 1);
   EXPECT_EQ(differingPixels(drawn, retried), 0);
 }
 
@@ -551,10 +555,13 @@ TEST_F(Scene3dRhiMarkerCacheTest, GridBuildsOnceUnderPanAndPlayback) {
   SHOW_OR_SKIP(scene, /*grid=*/true);
   scene.view()->setTfConnectionsVisible(true);
   scene.grab();
-  const auto& grid = scene.view()->gridPassForTest();
+  const auto& grid = SceneViewTestAccess::gridPass(*scene.view());
   const std::uint64_t grid_builds = grid.gridBuildCountForTest();
   const std::uint64_t connection_builds = grid.connectionBuildCountForTest();
-  ASSERT_GT(scene.view()->lastTriangleVertexCountForTest() + scene.view()->lastLineVertexCountForTest(), 0);
+  ASSERT_GT(
+      SceneViewTestAccess::lastTriangleVertexCount(*scene.view()) +
+          SceneViewTestAccess::lastLineVertexCount(*scene.view()),
+      0);
 
   const QImage before = scene.grab();
   const QImage panned = scene.moveCamera([](auto& camera) { camera.focal += glm::vec3(0.6F, 0.4F, 0.0F); });
@@ -577,14 +584,14 @@ TEST_F(Scene3dRhiMarkerCacheTest, VoxelGridOutsideTheFrustumIsRejected) {
   SHOW_OR_SKIP(scene);
   SceneViewWidget* view = scene.view();
   const QImage empty = scene.moveCamera([](auto& camera) { camera.focal = {0.0F, 0.0F, 60.0F}; });
-  EXPECT_EQ(view->lastVoxelLayerCountForTest(), 0) << "a grid behind the camera's view was drawn";
-  EXPECT_TRUE(view->lastVoxelBoundsForTest().valid) << "the rejected grid still counts as admitted";
+  EXPECT_EQ(SceneViewTestAccess::voxelPass(*view).lastLayerCount(), 0) << "a grid behind the camera's view was drawn";
+  EXPECT_TRUE(SceneViewTestAccess::voxelPass(*view).lastBounds().valid) << "the rejected grid still counts as admitted";
 
   scene.moveCamera([](auto& camera) {
     camera.focal = {0.0F, 0.0F, 0.2F};
     camera.radius = 3.0F;
   });
-  ASSERT_EQ(view->lastVoxelLayerCountForTest(), 1);
+  ASSERT_EQ(SceneViewTestAccess::voxelPass(*view).lastLayerCount(), 1);
   const QImage visible = scene.grab();
   EXPECT_GT(differingPixels(empty, visible, 60), 500);
 }

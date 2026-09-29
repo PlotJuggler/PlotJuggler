@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // The QRhi view's failure contract, driven by the pipeline fault injection of
-// builds with tests (PJ_SCENE3D_TEST_FAIL_SHADER, see createGraphicsPipeline()):
+// builds with tests (PJ_RHI_TEST_FAIL_SHADER, see createPipeline()):
 //
 //  - a base pipeline that cannot be created puts the view in its failure state:
 //    no crash, only the backdrop, the reason in the dock's warning label and
@@ -12,12 +12,13 @@
 //    comes with the first frames; none of them is presented with a pipeline
 //    missing (each keeps the last full frame, or the backdrop);
 //  - so does a family's pipeline built when its first layer arrives (the
-//    families are built on demand), and a base pipeline first needed by a
-//    direct frame after HDR frames;
+//    families are built on demand, and of their pipelines only the variants a
+//    frame binds), and a base pipeline first needed by a direct frame after HDR
+//    frames;
 //  - the same holds after a recovery in a new top-level (a new QRhi);
 //  - Qt's own failure (no QRhi for the window) reaches the warning too;
-//  - optional stages drop alone: the overlays, and the HDR chain when a
-//    pipeline has no HDR variant.
+//  - optional stages drop alone: the overlays, the HDR chain when a pipeline
+//    has no HDR variant, and each quality stage whose allocation fails.
 //
 // Needs a real display like the render harness (see scene3d_render_test_support.h).
 
@@ -29,42 +30,32 @@
 #include <QLoggingCategory>
 #include <QOpenGLWidget>
 #include <QRhiWidget>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QVBoxLayout>
+#include <QVariant>
 #include <functional>
 #include <glm/glm.hpp>
 #include <vector>
 
+#include "../rhi/passes/marker_rhi_pass.h"
+#include "../rhi/scene_view_widget_rhi_quality_p.h"
 #include "pj_base/builtin/scene_entities_codec.hpp"
 #include "pj_widgets/GraphicsApi.h"
 #include "scene3d_render_test_support.h"
+#include "scene_view_test_access.h"
 
 using namespace Qt::StringLiterals;
 
 namespace {
 
+using pj::scene3d::SceneViewTestAccess;
 using pj::scene3d::SceneViewWidget;
 using pj::scene3d::test::grab;
+using pj::scene3d::test::PipelineFault;
 
 constexpr QSize kViewSize{320, 240};
-constexpr char kFailShader[] = "PJ_SCENE3D_TEST_FAIL_SHADER";
-
-// Arms the fault injection for `shader` (a shader path suffix) until clear().
-class PipelineFault {
- public:
-  explicit PipelineFault(const char* shader) {
-    qputenv(kFailShader, shader);
-  }
-  ~PipelineFault() {
-    clear();
-  }
-  PipelineFault(const PipelineFault&) = delete;
-  PipelineFault& operator=(const PipelineFault&) = delete;
-  void clear() {
-    qunsetenv(kFailShader);
-  }
-};
 
 // A GPU sibling sharing the window's QRhi: clears to green, counting its frames.
 class ClearWidget : public QRhiWidget {
@@ -139,7 +130,7 @@ class FailureScene {
   bool renderUntil(const std::function<bool()>& done) {
     return QTest::qWaitFor(
         [&] {
-          view()->update();
+          view()->invalidateContent();
           return done();
         },
         3000);
@@ -208,8 +199,8 @@ TEST_F(Scene3dRhiFailureTest, BasePipelineFailureClearsWarnsAndRecovers) {
   failed = grab(*view);
   EXPECT_TRUE(uniform(failed)) << "the failure state drew more than the backdrop";
   EXPECT_EQ(scene.failures, 1);
-  EXPECT_GE(view->stageTimesForTest().frames_withheld, 1U);
-  const QString warning = view->renderingWarningForTest();
+  EXPECT_GE(SceneViewTestAccess::stageTimes(*view).frames_withheld, 1U);
+  const QString warning = view->renderingWarning();
   EXPECT_TRUE(warning.contains(u"grid pipelines"_s)) << warning.toStdString();
   QLabel* label = scene.warningLabel();
   ASSERT_NE(label, nullptr);
@@ -218,7 +209,7 @@ TEST_F(Scene3dRhiFailureTest, BasePipelineFailureClearsWarnsAndRecovers) {
 
   // The sibling renders through the same QRhi while the view keeps failing.
   const int sibling_frames = sibling->frames;
-  view->update();
+  view->invalidateContent();
   sibling->update();
   ASSERT_TRUE(QTest::qWaitFor([&] { return sibling->frames > sibling_frames; }, 3000));
   const QImage green = sibling->grabFramebuffer();
@@ -228,8 +219,8 @@ TEST_F(Scene3dRhiFailureTest, BasePipelineFailureClearsWarnsAndRecovers) {
 
   fault.clear();
   scene.resize();
-  ASSERT_TRUE(scene.renderUntil([&] { return view->renderingWarningForTest().isEmpty(); }))
-      << view->renderingWarningForTest().toStdString();
+  ASSERT_TRUE(scene.renderUntil([&] { return view->renderingWarning().isEmpty(); }))
+      << view->renderingWarning().toStdString();
   EXPECT_FALSE(uniform(grab(*view))) << "the recovered view draws nothing";
   EXPECT_FALSE(label->isVisible());
   EXPECT_EQ(scene.failures, 1);
@@ -249,27 +240,75 @@ TEST_F(Scene3dRhiFailureTest, FamilyBuiltOnDemandFailsAndRecovers) {
   ASSERT_EQ(scene.failures, 0);
 
   PipelineFault fault("/marker.frag.qsb");
-  const std::uint64_t withheld = view->stageTimesForTest().frames_withheld;
+  const std::uint64_t withheld = SceneViewTestAccess::stageTimes(*view).frames_withheld;
   scene.addCube();
   ASSERT_TRUE(scene.renderUntil([&] { return scene.failures > 0; })) << "the marker family did not fail";
   EXPECT_EQ(scene.failures, 1);
-  EXPECT_GT(view->stageTimesForTest().frames_withheld, withheld) << "a frame without the markers was presented";
+  EXPECT_GT(SceneViewTestAccess::stageTimes(*view).frames_withheld, withheld)
+      << "a frame without the markers was presented";
   EXPECT_TRUE(uniform(grab(*view))) << "the failure state drew more than the backdrop";
-  EXPECT_TRUE(view->renderingWarningForTest().contains(u"marker pipelines"_s))
-      << view->renderingWarningForTest().toStdString();
+  EXPECT_TRUE(view->renderingWarning().contains(u"marker pipelines"_s)) << view->renderingWarning().toStdString();
   EXPECT_TRUE(scene.warningLabel()->isVisible());
 
   fault.clear();
   scene.resize();
-  ASSERT_TRUE(scene.renderUntil([&] { return view->renderingWarningForTest().isEmpty(); }))
-      << view->renderingWarningForTest().toStdString();
-  EXPECT_GT(view->lastMarkerInstanceCountForTest(), 0);
+  ASSERT_TRUE(scene.renderUntil([&] { return view->renderingWarning().isEmpty(); }))
+      << view->renderingWarning().toStdString();
+  EXPECT_GT(SceneViewTestAccess::markerPass(*view).lastInstanceCount(), 0);
   EXPECT_FALSE(uniform(grab(*view)));
   EXPECT_EQ(scene.failures, 1);
 }
 
+// Only what the scene draws is built: the families of its layers (beside the
+// base's grid and pose pass), and of their registered pipelines only the
+// variants its frames bind. A GPU running the HDR chain builds no direct
+// pipeline; one without it builds every direct one and no HDR variant.
+TEST_F(Scene3dRhiFailureTest, FamiliesAndVariantsAreBuiltOnDemand) {
+  FailureScene scene;
+  SceneViewWidget* view = scene.view();
+  ASSERT_TRUE(scene.show());
+  if (grab(*view).isNull() || view->rhiBackendName().isEmpty()) {
+    PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
+  }
+  const bool hdr = SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active;
+  const auto expect_lazy = [&](const SceneViewTestAccess::PipelineCounts& counts, const char* what) {
+    if (hdr) {
+      EXPECT_EQ(counts.directs, 0) << what << ": an HDR frame built a direct pipeline";
+      EXPECT_GT(counts.hdr_variants, 0) << what;
+      EXPECT_LT(counts.hdr_variants, 2 * counts.registered) << what << ": every variant was built";
+    } else {
+      EXPECT_EQ(counts.directs, counts.registered) << what;
+      EXPECT_EQ(counts.hdr_variants, 0) << what << ": a direct frame built an HDR variant";
+    }
+  };
+  EXPECT_EQ(SceneViewTestAccess::builtFamilies(*view), QStringList{u"points"_s});
+  const SceneViewTestAccess::PipelineCounts points = SceneViewTestAccess::pipelineCounts(*view);
+  expect_lazy(points, "points");
+
+  // A SceneEntities layer contributes markers and models.
+  scene.addCube();
+  ASSERT_TRUE(scene.renderUntil([&] { return SceneViewTestAccess::markerPass(*view).lastInstanceCount() > 0; }));
+  EXPECT_EQ(SceneViewTestAccess::builtFamilies(*view), (QStringList{u"points"_s, u"markers"_s, u"models"_s}));
+  const SceneViewTestAccess::PipelineCounts markers = SceneViewTestAccess::pipelineCounts(*view);
+  EXPECT_GT(markers.registered, points.registered);
+  expect_lazy(markers, "points and markers");
+  if (hdr) {
+    EXPECT_LT(markers.hdr_variants - points.hdr_variants, markers.registered - points.registered)
+        << "the new families built a variant of every pipeline they registered";
+    // Without the chain: every direct pipeline, and the variants gone with it.
+    const auto& times = SceneViewTestAccess::stageTimes(*view);
+    const std::uint64_t renders = times.full_renders;
+    SceneViewTestAccess::forceStageFallback(*view, SceneViewTestAccess::Stage::kHdr, true);
+    ASSERT_TRUE(scene.renderUntil([&] { return times.full_renders > renders; }));
+    ASSERT_FALSE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active);
+    const SceneViewTestAccess::PipelineCounts direct = SceneViewTestAccess::pipelineCounts(*view);
+    EXPECT_EQ(direct.directs, direct.registered);
+    EXPECT_EQ(direct.hdr_variants, 0);
+  }
+}
+
 // A base pipeline the HDR frames never needed (the grid's direct pipelines are
-// templates, built only for a frame without the HDR chain) fails on the first
+// created only for a frame without the HDR chain) fails on the first
 // direct frame: that frame is withheld (its target keeps the last HDR frame),
 // then the failure state; the fault gone, a resize recovers.
 TEST_F(Scene3dRhiFailureTest, BaseTemplateFailsOnTheFirstDirectFrame) {
@@ -280,27 +319,26 @@ TEST_F(Scene3dRhiFailureTest, BaseTemplateFailsOnTheFirstDirectFrame) {
   if (hdr.isNull() || view->rhiBackendName().isEmpty()) {
     PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
   }
-  if (!view->lastHdrActiveForTest()) {
+  if (!SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active) {
     GTEST_SKIP() << "this GPU draws without the HDR chain: the directs exist from the first frame";
   }
   ASSERT_FALSE(uniform(hdr));
 
   PipelineFault fault("/grid.vert.qsb");
-  const auto& t = view->stageTimesForTest();
+  const auto& t = SceneViewTestAccess::stageTimes(*view);
   const std::uint64_t withheld = t.frames_withheld;
-  view->setForceHdrFallbackForTest(true);
+  SceneViewTestAccess::forceStageFallback(*view, SceneViewTestAccess::Stage::kHdr, true);
   ASSERT_TRUE(scene.renderUntil([&] { return t.frames_withheld > withheld; })) << "no direct frame was withheld";
   ASSERT_TRUE(scene.renderUntil([&] { return scene.failures > 0; }));
   EXPECT_EQ(scene.failures, 1);
   EXPECT_TRUE(uniform(grab(*view)));
-  EXPECT_TRUE(view->renderingWarningForTest().contains(u"grid pipelines"_s))
-      << view->renderingWarningForTest().toStdString();
+  EXPECT_TRUE(view->renderingWarning().contains(u"grid pipelines"_s)) << view->renderingWarning().toStdString();
 
   fault.clear();
-  view->setForceHdrFallbackForTest(false);
+  SceneViewTestAccess::forceStageFallback(*view, SceneViewTestAccess::Stage::kHdr, false);
   scene.resize();
-  ASSERT_TRUE(scene.renderUntil([&] { return view->renderingWarningForTest().isEmpty(); }))
-      << view->renderingWarningForTest().toStdString();
+  ASSERT_TRUE(scene.renderUntil([&] { return view->renderingWarning().isEmpty(); }))
+      << view->renderingWarning().toStdString();
   EXPECT_FALSE(uniform(grab(*view)));
   EXPECT_EQ(scene.failures, 1);
 }
@@ -315,20 +353,21 @@ TEST_F(Scene3dRhiFailureTest, WithheldFrameKeepsThePickCamera) {
   if (hdr.isNull() || view->rhiBackendName().isEmpty()) {
     PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
   }
-  if (!view->lastHdrActiveForTest()) {
+  if (!SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active) {
     GTEST_SKIP() << "this GPU draws without the HDR chain: the directs exist from the first frame";
   }
-  const glm::mat4 shown = view->lastViewProjectionForTest();
+  const glm::mat4 shown = SceneViewTestAccess::lastViewProjection(*view);
 
   PipelineFault fault("/grid.vert.qsb");
-  const auto& t = view->stageTimesForTest();
+  const auto& t = SceneViewTestAccess::stageTimes(*view);
   const std::uint64_t withheld = t.frames_withheld;
   // A rotation, not a pan: the stored matrix is relative to the render origin,
   // which a pan moves along with the focal.
   view->camera().rotate(80.0F, 40.0F);
-  view->setForceHdrFallbackForTest(true);
+  SceneViewTestAccess::forceStageFallback(*view, SceneViewTestAccess::Stage::kHdr, true);
   ASSERT_TRUE(scene.renderUntil([&] { return t.frames_withheld > withheld; })) << "no direct frame was withheld";
-  EXPECT_EQ(view->lastViewProjectionForTest(), shown) << "picking projects with a frame that was never shown";
+  EXPECT_EQ(SceneViewTestAccess::lastViewProjection(*view), shown)
+      << "picking projects with a frame that was never shown";
 }
 
 // The grid's shadow receiver is an optional stage: a GPU that cannot build its
@@ -345,21 +384,25 @@ TEST_F(Scene3dRhiFailureTest, ShadowReceiverFailureTurnsShadowsOff) {
     PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
   }
   ASSERT_TRUE(scene.renderUntil([&] {
-    return scene.failures > 0 || view->shadowCapabilityErrorForTest().contains(u"shadow receiver"_s);
-  })) << view->renderingWarningForTest().toStdString();
+    return scene.failures > 0 || SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow)
+                                     .capability_error.contains(u"shadow receiver"_s);
+  })) << view->renderingWarning().toStdString();
   for (int frame = 0; frame < 3; ++frame) {
     (void)grab(*view);  // the frames after the fallback, direct and HDR alike
   }
-  EXPECT_EQ(scene.failures, 0) << view->renderingWarningForTest().toStdString();
+  EXPECT_EQ(scene.failures, 0) << view->renderingWarning().toStdString();
   EXPECT_FALSE(uniform(grab(*view))) << "the scene went down with its optional shadow receiver";
-  EXPECT_FALSE(view->lastShadowActiveForTest());
-  EXPECT_TRUE(view->shadowCapabilityErrorForTest().contains(u"shadow receiver"_s))
-      << view->shadowCapabilityErrorForTest().toStdString();
+  EXPECT_FALSE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).last_active);
+  EXPECT_TRUE(
+      SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow)
+          .capability_error.contains(u"shadow receiver"_s))
+      << SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).capability_error.toStdString();
 
   fault.clear();
   scene.resize();
-  EXPECT_TRUE(scene.renderUntil([&] { return view->lastShadowActiveForTest(); }))
-      << view->shadowCapabilityErrorForTest().toStdString();
+  EXPECT_TRUE(scene.renderUntil([&] {
+    return SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).last_active;
+  })) << SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kShadow).capability_error.toStdString();
   EXPECT_EQ(scene.failures, 0);
 }
 
@@ -378,7 +421,7 @@ void checkStageRetriesOnANewQRhi(
   if (grab(*view).isNull() || view->rhiBackendName().isEmpty()) {
     PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
   }
-  if (!view->lastHdrActiveForTest()) {
+  if (!SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active) {
     GTEST_SKIP() << "this GPU draws without the HDR chain, which SSAO and EDL need";
   }
   ASSERT_TRUE(scene.renderUntil([&] { return !error(*view).isEmpty(); })) << "the fault never reached " << shader;
@@ -401,14 +444,103 @@ void checkStageRetriesOnANewQRhi(
 
 TEST_F(Scene3dRhiFailureTest, SsaoRetriesOnANewQRhiAtTheSameSize) {
   checkStageRetriesOnANewQRhi(
-      "/ssao.frag.qsb", [](const SceneViewWidget& view) { return view.lastSsaoActiveForTest(); },
-      [](const SceneViewWidget& view) { return view.ssaoCapabilityErrorForTest(); });
+      "/ssao.frag.qsb",
+      [](const SceneViewWidget& view) {
+        return SceneViewTestAccess::stage(view, SceneViewTestAccess::Stage::kSsao).last_active;
+      },
+      [](const SceneViewWidget& view) {
+        return SceneViewTestAccess::stage(view, SceneViewTestAccess::Stage::kSsao).capability_error;
+      });
 }
 
 TEST_F(Scene3dRhiFailureTest, EdlRetriesOnANewQRhiAtTheSameSize) {
   checkStageRetriesOnANewQRhi(
-      "/mesh_mask.frag.qsb", [](const SceneViewWidget& view) { return view.lastEdlActiveForTest(); },
-      [](const SceneViewWidget& view) { return view.edlCapabilityErrorForTest(); });
+      "/mesh_mask.frag.qsb",
+      [](const SceneViewWidget& view) {
+        return SceneViewTestAccess::stage(view, SceneViewTestAccess::Stage::kEdl).last_active;
+      },
+      [](const SceneViewWidget& view) {
+        return SceneViewTestAccess::stage(view, SceneViewTestAccess::Stage::kEdl).capability_error;
+      });
+}
+
+// An allocation that fails part way through a quality stage (pjTestFailPipeline
+// names it; test builds) drops that stage alone: its partial resources are
+// released, the scene still draws without it, and a new output size probes it
+// again.
+void checkStageAllocationFailure(
+    SceneViewTestAccess::Stage stage, const char* resource, const std::function<bool(const SceneViewWidget&)>& active,
+    const std::function<QString(const SceneViewWidget&)>& error) {
+  FailureScene scene;
+  scene.addRobot();  // a shadow caster, and a mesh for EDL's mask
+  SceneViewWidget* view = scene.view();
+  ASSERT_TRUE(scene.show());
+  if (grab(*view).isNull() || view->rhiBackendName().isEmpty()) {
+    PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
+  }
+  if (!SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active) {
+    GTEST_SKIP() << "this GPU draws without the HDR chain, which SSAO and EDL need";
+  }
+  ASSERT_TRUE(scene.renderUntil([&] { return active(*view); })) << resource << " never ran";
+
+  view->setProperty("pjTestFailPipeline", QString::fromLatin1(resource));
+  // Released and let go at once: the next frame allocates the stage again.
+  SceneViewTestAccess::forceStageFallback(*view, stage, true);
+  SceneViewTestAccess::forceStageFallback(*view, stage, false);
+  ASSERT_TRUE(scene.renderUntil([&] { return !error(*view).isEmpty(); })) << "the fault never reached " << resource;
+  EXPECT_FALSE(active(*view));
+  EXPECT_EQ(scene.failures, 0) << view->renderingWarning().toStdString();
+  EXPECT_FALSE(uniform(grab(*view))) << "the scene went down with its optional " << resource;
+
+  view->setProperty("pjTestFailPipeline", QVariant());
+  scene.resize({80, 80});
+  EXPECT_TRUE(scene.renderUntil([&] { return active(*view); })) << error(*view).toStdString();
+  EXPECT_TRUE(error(*view).isEmpty()) << error(*view).toStdString();
+  EXPECT_EQ(scene.failures, 0);
+}
+
+TEST_F(Scene3dRhiFailureTest, ShadowAllocationFailureDropsShadowsAlone) {
+  checkStageAllocationFailure(
+      SceneViewTestAccess::Stage::kShadow, "shadow target",
+      [](const SceneViewWidget& view) {
+        return SceneViewTestAccess::stage(view, SceneViewTestAccess::Stage::kShadow).last_active;
+      },
+      [](const SceneViewWidget& view) {
+        return SceneViewTestAccess::stage(view, SceneViewTestAccess::Stage::kShadow).capability_error;
+      });
+}
+
+TEST_F(Scene3dRhiFailureTest, HdrAllocationFailureDrawsDirectly) {
+  checkStageAllocationFailure(
+      SceneViewTestAccess::Stage::kHdr, "hdr attachments",
+      [](const SceneViewWidget& view) {
+        return SceneViewTestAccess::stage(view, SceneViewTestAccess::Stage::kHdr).last_active;
+      },
+      [](const SceneViewWidget& view) {
+        return SceneViewTestAccess::stage(view, SceneViewTestAccess::Stage::kHdr).capability_error;
+      });
+}
+
+TEST_F(Scene3dRhiFailureTest, SsaoAllocationFailureDropsSsaoAlone) {
+  checkStageAllocationFailure(
+      SceneViewTestAccess::Stage::kSsao, "ssao target",
+      [](const SceneViewWidget& view) {
+        return SceneViewTestAccess::stage(view, SceneViewTestAccess::Stage::kSsao).last_active;
+      },
+      [](const SceneViewWidget& view) {
+        return SceneViewTestAccess::stage(view, SceneViewTestAccess::Stage::kSsao).capability_error;
+      });
+}
+
+TEST_F(Scene3dRhiFailureTest, EdlAllocationFailureDropsEdlAlone) {
+  checkStageAllocationFailure(
+      SceneViewTestAccess::Stage::kEdl, "edl target",
+      [](const SceneViewWidget& view) {
+        return SceneViewTestAccess::stage(view, SceneViewTestAccess::Stage::kEdl).last_active;
+      },
+      [](const SceneViewWidget& view) {
+        return SceneViewTestAccess::stage(view, SceneViewTestAccess::Stage::kEdl).capability_error;
+      });
 }
 
 // Backend lines ("<widget>: <backend>, QRhiDriverInfo(...)", category
@@ -473,8 +605,8 @@ TEST_F(Scene3dRhiFailureTest, FailureAfterRecoveryRecoversInANewWindow) {
   ASSERT_EQ(scene.failures, 1);
   fault.clear();
   scene.resize();
-  ASSERT_TRUE(scene.renderUntil([&] { return view->renderingWarningForTest().isEmpty(); }))
-      << view->renderingWarningForTest().toStdString();
+  ASSERT_TRUE(scene.renderUntil([&] { return view->renderingWarning().isEmpty(); }))
+      << view->renderingWarning().toStdString();
 
   PipelineFault again("/grid.vert.qsb");
   QWidget other;
@@ -485,14 +617,13 @@ TEST_F(Scene3dRhiFailureTest, FailureAfterRecoveryRecoversInANewWindow) {
   ASSERT_TRUE(QTest::qWaitForWindowExposed(&other));
   ASSERT_TRUE(scene.renderUntil([&] { return scene.failures == 2; })) << "no failure in the new window";
   EXPECT_TRUE(uniform(grab(*view))) << "the failure state drew more than the backdrop";
-  EXPECT_TRUE(view->renderingWarningForTest().contains(u"grid pipelines"_s))
-      << view->renderingWarningForTest().toStdString();
+  EXPECT_TRUE(view->renderingWarning().contains(u"grid pipelines"_s)) << view->renderingWarning().toStdString();
   EXPECT_TRUE(scene.warningLabel()->isVisible());
 
   again.clear();
   scene.resize({80, 80});
-  ASSERT_TRUE(scene.renderUntil([&] { return view->renderingWarningForTest().isEmpty(); }))
-      << view->renderingWarningForTest().toStdString();
+  ASSERT_TRUE(scene.renderUntil([&] { return view->renderingWarning().isEmpty(); }))
+      << view->renderingWarning().toStdString();
   EXPECT_FALSE(uniform(grab(*view))) << "the recovered view draws nothing";
   EXPECT_FALSE(scene.warningLabel()->isVisible());
   EXPECT_EQ(scene.failures, 2);
@@ -514,8 +645,7 @@ TEST_F(Scene3dRhiFailureTest, NoQRhiShowsTheWarning) {
   ASSERT_TRUE(QTest::qWaitForWindowExposed(&gl_window));
   layout->addWidget(scene.dock());
   ASSERT_TRUE(scene.renderUntil([&] { return scene.failures > 0; })) << "Qt reported no failure";
-  EXPECT_TRUE(view->renderingWarningForTest().contains(u"no graphics device"_s))
-      << view->renderingWarningForTest().toStdString();
+  EXPECT_TRUE(view->renderingWarning().contains(u"no graphics device"_s)) << view->renderingWarning().toStdString();
   ASSERT_NE(scene.warningLabel(), nullptr);
   EXPECT_TRUE(scene.warningLabel()->isVisible());
 }
@@ -533,36 +663,38 @@ TEST_F(Scene3dRhiFailureTest, OverlayFailureKeepsTheScene) {
 
   EXPECT_FALSE(uniform(image)) << "the scene must still draw";
   EXPECT_EQ(scene.failures, 0);
-  EXPECT_TRUE(view->renderingWarningForTest().contains(u"overlays"_s)) << view->renderingWarningForTest().toStdString();
-  EXPECT_TRUE(view->lastOverlayRectsForTest()[0].isNull()) << "the HUD drew without its pipeline";
+  EXPECT_TRUE(view->renderingWarning().contains(u"overlays"_s)) << view->renderingWarning().toStdString();
+  EXPECT_TRUE(SceneViewTestAccess::lastOverlayRects(*view)[0].isNull()) << "the HUD drew without its pipeline";
 
   fault.clear();
   scene.resize();
-  ASSERT_TRUE(scene.renderUntil([&] { return !view->lastOverlayRectsForTest()[0].isNull(); }));
-  EXPECT_TRUE(view->renderingWarningForTest().isEmpty()) << view->renderingWarningForTest().toStdString();
+  ASSERT_TRUE(scene.renderUntil([&] { return !SceneViewTestAccess::lastOverlayRects(*view)[0].isNull(); }));
+  EXPECT_TRUE(view->renderingWarning().isEmpty()) << view->renderingWarning().toStdString();
 }
 
 TEST_F(Scene3dRhiFailureTest, MissingHdrPipelineVariantFallsBackToDirect) {
   FailureScene scene;
   SceneViewWidget* view = scene.view();
   ASSERT_TRUE(scene.show());
-  view->setForceHdrFallbackForTest(true);  // only the direct pipelines exist
+  SceneViewTestAccess::forceStageFallback(
+      *view, SceneViewTestAccess::Stage::kHdr, true);  // only the direct pipelines exist
   if (grab(*view).isNull()) {
     PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
   }
-  ASSERT_FALSE(view->lastHdrActiveForTest());
+  ASSERT_FALSE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active);
 
-  // From now on the grid's HDR clones cannot be created; its direct pipelines,
+  // From now on the grid's HDR variants cannot be created; its direct pipelines,
   // created by the direct frames above, stand. The HDR frame that lost its grid
-  // clone is not presented (the last frame stays); the next one draws directly.
+  // variant is not presented (the last frame stays); the next one draws directly.
   PipelineFault fault("/scene.frag.qsb");
-  const std::uint64_t withheld = view->stageTimesForTest().frames_withheld;
-  view->setForceHdrFallbackForTest(false);
-  ASSERT_TRUE(scene.renderUntil([&] { return view->renderingWarningForTest().contains(u"HDR variant"_s); }))
-      << view->renderingWarningForTest().toStdString();
-  EXPECT_GT(view->stageTimesForTest().frames_withheld, withheld) << "the HDR frame without its grid was presented";
+  const std::uint64_t withheld = SceneViewTestAccess::stageTimes(*view).frames_withheld;
+  SceneViewTestAccess::forceStageFallback(*view, SceneViewTestAccess::Stage::kHdr, false);
+  ASSERT_TRUE(scene.renderUntil([&] { return view->renderingWarning().contains(u"HDR variant"_s); }))
+      << view->renderingWarning().toStdString();
+  EXPECT_GT(SceneViewTestAccess::stageTimes(*view).frames_withheld, withheld)
+      << "the HDR frame without its grid was presented";
   const QImage with_grid = grab(*view);
-  EXPECT_FALSE(view->lastHdrActiveForTest());
+  EXPECT_FALSE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active);
   EXPECT_EQ(scene.failures, 0);
   view->setGridVisible(false);
   const QImage without_grid = grab(*view);
@@ -571,9 +703,10 @@ TEST_F(Scene3dRhiFailureTest, MissingHdrPipelineVariantFallsBackToDirect) {
 
   fault.clear();
   scene.resize();  // the HDR rejection is latched per output size
-  ASSERT_TRUE(scene.renderUntil([&] { return view->lastHdrActiveForTest(); }));
-  EXPECT_TRUE(scene.renderUntil([&] { return view->renderingWarningForTest().isEmpty(); }))
-      << view->renderingWarningForTest().toStdString();
+  ASSERT_TRUE(scene.renderUntil(
+      [&] { return SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active; }));
+  EXPECT_TRUE(scene.renderUntil([&] { return view->renderingWarning().isEmpty(); }))
+      << view->renderingWarning().toStdString();
 }
 
 }  // namespace

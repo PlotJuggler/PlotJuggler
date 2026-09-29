@@ -58,20 +58,17 @@ bool PoseRhiPass::initialize(const RhiPassSetup& setup) {
   layout_shader_resources_ = createLayerBindings(rhi, layout_uniform_buffer_);
   // Annotation alpha: triads leave destination alpha (the present pass's
   // data/annotation split) unchanged.
-  pipeline_ = createScenePipeline(
-      setup, {
-                 .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/pose.vert.qsb")),
-                 .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/pose.frag.qsb")),
-                 .input_layout = poseTriadInputLayout(),
-                 .bindings = layout_shader_resources_,
-                 .blend = annotationAlphaBlend(),
-                 .cull = QRhiGraphicsPipeline::Back,
-             });
+  pipeline_ = setup.pipelines->add(
+      {
+          .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/pose.vert.qsb")),
+          .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/pose.frag.qsb")),
+          .input_layout = poseTriadInputLayout(),
+          .bindings = layout_shader_resources_,
+          .blend = annotationAlphaBlend(),
+          .cull = QRhiGraphicsPipeline::Back,
+      },
+      setup.part);
   return pipeline_ != nullptr;
-}
-
-void PoseRhiPass::registerPipelines(ScenePipelineRegistry& registry) const {
-  registry.add(pipeline_);
 }
 
 void PoseRhiPass::setLayers(const std::vector<PosesInFrameLayer*>& layers) {
@@ -235,7 +232,6 @@ void PoseRhiPass::release() {
   tf_triads_uploaded_revision_ = ~std::uint64_t{0};
   admitted_.clear();
   draws_.clear();
-  delete pipeline_;
   delete layout_shader_resources_;
   delete layout_uniform_buffer_;
   pipeline_ = nullptr;

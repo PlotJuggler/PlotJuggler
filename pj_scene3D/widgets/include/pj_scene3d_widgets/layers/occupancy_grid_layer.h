@@ -41,6 +41,9 @@ class OccupancyGridLayer : public Scene3DLayer {
   [[nodiscard]] PJ::SceneLayerInfo info() const override;
   [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
   [[nodiscard]] QStringList fallbackFrames() const override;
+  [[nodiscard]] SceneContributions sceneContributions() override {
+    return {.occupancy = this};
+  }
   [[nodiscard]] QString sourceFrame() const override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
@@ -81,7 +84,7 @@ class OccupancyGridLayer : public Scene3DLayer {
   [[nodiscard]] std::uint64_t textureRevision() const {
     return texture_revision_;
   }
-  [[nodiscard]] const std::string& renderFrameId() const {
+  [[nodiscard]] const std::string& renderFrameId() const override {
     return source_frame_;
   }
   [[nodiscard]] bool visible() const {

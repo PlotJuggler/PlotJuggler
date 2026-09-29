@@ -50,10 +50,13 @@
 #include "pj_plotting/PlotWidget.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
+#include "scene_view_test_access.h"
 
 using namespace Qt::StringLiterals;
 
 namespace {
+
+using pj::scene3d::SceneViewTestAccess;
 
 using pj_bench::SceneViewWork;
 using pj_bench::viewWork;
@@ -110,7 +113,7 @@ int runTabSwitches(
     add(to_scene_render_ms, before.renderMs(), after.renderMs());
 #ifdef PJ_RHI_TEST_HOOKS
     if (viewWork(view).inits > before.inits) {
-      init_ms.push_back(view.stageTimesForTest().last_base_build_ms);
+      init_ms.push_back(SceneViewTestAccess::stageTimes(view).last_base_build_ms);
     }
 #else
     (void)before;
@@ -253,7 +256,7 @@ int main(int argc, char** argv) {
     // settling, or the QRhi view's Shows keep presenting the fitted one.
     const std::uint64_t renders = pj_bench::viewRenders(*view, *counters.front());
     view->camera().adoptState(camera);
-    view->update();
+    view->invalidateContent();
     if (!pj_bench::waitUntil([&] { return pj_bench::viewRenders(*view, *counters.front()) > renders; })) {
       std::fprintf(stderr, "the adopted camera was never rendered\n");
       return 1;
@@ -275,7 +278,7 @@ int main(int argc, char** argv) {
     }
     camera.azimuth = azimuth0 + 0.02F * static_cast<float>(k + 1);
     view->camera().adoptState(camera);
-    view->update();
+    view->invalidateContent();
     if (!pj_bench::waitUntil([&] { return all_finished_since(before); })) {
       std::fprintf(stderr, "frame %d never finished in every widget\n", k);
       return -1.0;

@@ -10,7 +10,6 @@
 #include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
-#include <QFutureWatcher>
 #include <QGroupBox>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -29,7 +28,6 @@
 #include <any>
 #include <array>
 #include <cmath>
-#include <exception>
 #include <glm/gtc/matrix_transform.hpp>
 #include <limits>
 #include <memory>
@@ -43,7 +41,7 @@
 
 #include "layer_xml_validation.h"
 #include "mesh_import.h"
-#include "mesh_loader.h"
+#include "mesh_load_queue.h"
 #include "pj_base/builtin/robot_description.hpp"
 #include "pj_base/time.hpp"
 #include "pj_runtime/SessionManager.h"
@@ -284,7 +282,7 @@ RobotModelLayer::RobotModelLayer(PJ::ObjectTopicId topic_id, QString display_nam
       display_name_(std::move(display_name)),
       source_value_(display_name_),
       owned_resolver_(std::make_unique<UrdfPackageResolver>()),
-      mesh_loader_(std::make_unique<MeshLoader>()) {
+      mesh_queue_(std::make_unique<MeshLoadQueue>(this)) {
   resolver_ = owned_resolver_.get();
 }
 
@@ -465,7 +463,7 @@ RobotModelLayer::XmlLoadResult RobotModelLayer::xmlLoadStateResult(const QDomEle
   } else if (ctx_.session != nullptr) {
     loadFromCurrentSource();
   } else {
-    rebuildLinkDraws();
+    rebuildDrawCalls();
   }
   const bool changed = old_source_type != source_type_ || old_source_value != source_value_ ||
                        old_topic_id != source_topic_id_.id || old_prefix != frame_prefix_ ||
@@ -549,45 +547,50 @@ void RobotModelLayer::setVisible(bool visible) {
   emit repaintRequested();
 }
 
-void RobotModelLayer::rebuildLinkDraws() {
-  link_draws_.clear();
+void RobotModelLayer::rebuildDrawCalls() {
+  model_draw_calls_.clear();
   if (model_.has_value()) {
     const std::string prefix = frame_prefix_.toStdString();
     const auto append = [&](const RobotLink& link, const LinkGeom& geom, bool collision) {
-      LinkDraw draw;
-      draw.frame_id = prefix + link.name;
-      draw.origin = originToMat4(geom.origin_xyz, geom.origin_rpy);
-      draw.collision = collision;
+      ModelDrawCall call;
+      call.frame_id = prefix + link.name;
+      call.group = collision ? ModelDrawGroup::kCollision : ModelDrawGroup::kVisual;
+      // Primitives and the placeholder carry the call's colour alone (their unit
+      // meshes' material and vertex colours would apply it a second time); only a
+      // mesh without an explicit URDF colour shows its own materials.
+      call.use_material = false;
+      call.mesh_key = std::string(kPlaceholderKey);
+      bool explicit_color = true;
       if (geom.has_color) {
-        draw.color = geom.color;
-        draw.explicit_color = true;
+        call.override_color = geom.color;
       } else if (collision) {
         // Collision geometry with no <material>: orange tint so hulls read as
         // distinct from the visual meshes (RViz convention).
-        draw.color = look::kCollisionDefaultColor;
-        draw.explicit_color = true;
+        call.override_color = look::kCollisionDefaultColor;
+      } else {
+        explicit_color = false;
       }
+      glm::dvec3 scale{1.0};
       if (const auto* box = std::get_if<GeomBox>(&geom.shape); box != nullptr) {
-        draw.shape = LinkDraw::Shape::kBox;
-        draw.scale = box->size;
+        call.mesh_key = std::string(kBoxKey);
+        scale = box->size;
       } else if (const auto* cylinder = std::get_if<GeomCylinder>(&geom.shape); cylinder != nullptr) {
-        draw.shape = LinkDraw::Shape::kCylinder;
-        draw.scale = {cylinder->radius, cylinder->radius, cylinder->length};
+        call.mesh_key = std::string(kCylinderKey);
+        scale = {cylinder->radius, cylinder->radius, cylinder->length};
       } else if (const auto* sphere = std::get_if<GeomSphere>(&geom.shape); sphere != nullptr) {
-        draw.shape = LinkDraw::Shape::kSphere;
-        draw.scale = glm::dvec3(sphere->radius);
+        call.mesh_key = std::string(kSphereKey);
+        scale = glm::dvec3(sphere->radius);
       } else if (const auto* mesh = std::get_if<GeomMesh>(&geom.shape); mesh != nullptr) {
-        draw.scale = mesh->scale;
+        scale = mesh->scale;
         if (mesh->resolved && meshReady(mesh->resolved_path)) {
-          draw.shape = LinkDraw::Shape::kMesh;
-          draw.mesh_path = mesh->resolved_path;
+          call.mesh_key = mesh->resolved_path;
+          call.use_material = !explicit_color;
         } else {
-          draw.shape = LinkDraw::Shape::kPlaceholder;
-          draw.color = kPlaceholderColor;
-          draw.explicit_color = true;
+          call.override_color = kPlaceholderColor;
         }
       }
-      link_draws_.push_back(std::move(draw));
+      call.model = glm::scale(originToMat4(geom.origin_xyz, geom.origin_rpy), scale);
+      model_draw_calls_.push_back(std::move(call));
     };
     for (const RobotLink& link : model_->links) {
       if (display_mode_ == DisplayMode::kCollision) {
@@ -606,37 +609,6 @@ void RobotModelLayer::rebuildLinkDraws() {
         }
       }
     }
-  }
-  model_draw_calls_.clear();
-  model_draw_calls_.reserve(link_draws_.size());
-  for (const LinkDraw& draw : link_draws_) {
-    ModelDrawCall call;
-    call.frame_id = draw.frame_id;
-    call.model = glm::scale(draw.origin, draw.scale);
-    call.group = draw.collision ? ModelDrawGroup::kCollision : ModelDrawGroup::kVisual;
-    // Primitives and the placeholder carry the draw's colour alone (their unit
-    // meshes' material and vertex colours would apply it a second time); only a
-    // mesh without an explicit URDF colour shows its own materials.
-    call.use_material = draw.shape == LinkDraw::Shape::kMesh && !draw.explicit_color;
-    call.override_color = draw.color;
-    switch (draw.shape) {
-      case LinkDraw::Shape::kBox:
-        call.mesh_key = std::string(kBoxKey);
-        break;
-      case LinkDraw::Shape::kCylinder:
-        call.mesh_key = std::string(kCylinderKey);
-        break;
-      case LinkDraw::Shape::kSphere:
-        call.mesh_key = std::string(kSphereKey);
-        break;
-      case LinkDraw::Shape::kMesh:
-        call.mesh_key = draw.mesh_path;
-        break;
-      case LinkDraw::Shape::kPlaceholder:
-        call.mesh_key = std::string(kPlaceholderKey);
-        break;
-    }
-    model_draw_calls_.push_back(std::move(call));
   }
   ++model_revision_;
 }
@@ -994,7 +966,7 @@ void RobotModelLayer::setFramePrefix(QString prefix) {
   frame_prefix_ = std::move(prefix);
   source_frame_ = model_.has_value() ? linkFrameName(model_->root_link).toStdString() : std::string{};
   rebuildStaticBridges();  // bridge frames carry the prefix too
-  rebuildLinkDraws();      // changes which TF frames each link resolves against
+  rebuildDrawCalls();      // changes which TF frames each link resolves against
   emit sourceFrameChanged(sourceFrame());
   emit fallbackFramesChanged(fallbackFrames());
   emit configurationChanged();
@@ -1034,7 +1006,7 @@ void RobotModelLayer::setDisplayMode(DisplayMode mode) {
     return;
   }
   display_mode_ = mode;
-  rebuildLinkDraws();
+  rebuildDrawCalls();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -1044,7 +1016,7 @@ void RobotModelLayer::setFallbackColor(QColor color) {
     return;
   }
   fallback_color_ = std::move(color);
-  rebuildLinkDraws();
+  rebuildDrawCalls();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -1072,15 +1044,13 @@ void RobotModelLayer::resetModelState() {
   // Every in-flight URDF fetch, mesh fetch and import of the previous source is
   // now stale: its completion must not land on the next source.
   ++load_generation_;
-  url_fetcher_.reset();
-  active_fetches_.clear();
-  // In-flight imports stay: their workers keep running, so they keep their
-  // concurrency slots until they finish (finishMeshImport drops the result).
-  mesh_queue_.clear();
+  // Aborts the URDF and mesh fetches. Running imports keep their concurrency
+  // slots until their workers finish; their results are dropped.
+  mesh_queue_->cancelAll();
   mesh_errors_.clear();
   // Release the previous model's cached MeshData and make Retry/Locate
   // genuinely re-import (failed loads included).
-  mesh_loader_->clearCache();
+  mesh_queue_->clearLoaderCache();
   model_.reset();
   static_bridges_.clear();
   model_has_visuals_ = false;
@@ -1094,7 +1064,7 @@ void RobotModelLayer::resetModelState() {
   base_status_.clear();
   noteRenderSuccess();
   model_meshes_.clear();
-  rebuildLinkDraws();
+  rebuildDrawCalls();
 }
 
 void RobotModelLayer::onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id) {
@@ -1157,19 +1127,19 @@ bool RobotModelLayer::loadFromCurrentSource() {
 
   const QUrl url(source_value_);
 #ifdef PJ_TARGET_WASM
-  if (!url.isValid() || (url.scheme() != "http"_L1 && url.scheme() != "https"_L1)) {
+  if (!url.isValid() || !isNetworkUrl(url)) {
     fail(tr("Only http(s) URDF URLs are supported in the browser"));
     return false;
   }
 #endif
-  url_fetcher_ = std::make_unique<UrlFetcher>();
   setStatus(tr("Fetching %1").arg(source_value_));
   const QString url_text = source_value_;
   const std::uint64_t generation = load_generation_;
-  // Fire-and-forget: attach()/xmlLoadState never block on the network. The
-  // layer-owned fetcher's destruction is the primary lifetime guard.
+  // Fire-and-forget: attach()/xmlLoadState never block on the network. Through
+  // the mesh queue, so the model's meshes reuse this fetch's connections; the
+  // layer-owned queue's destruction is the primary lifetime guard.
   QPointer<RobotModelLayer> guard(this);
-  url_fetcher_->fetch(url, [this, guard, generation, url_text](const FetchResult& fetched) {
+  mesh_queue_->fetch(url, [this, guard, generation, url_text](const FetchResult& fetched) {
     if (guard.isNull() || generation != load_generation_) {
       return;  // layer destroyed, or a newer load superseded this fetch
     }
@@ -1261,7 +1231,7 @@ bool RobotModelLayer::applyRobotDescription(
   retain(kPlaceholderKey, makeCube(kPlaceholderColor));
   base_status_ = tr("URDF: %1").arg(label);
   queueMeshLoads();
-  rebuildLinkDraws();
+  rebuildDrawCalls();
   updateMeshCounters();
   updateStatus();
   const QStringList unresolved = unresolvedPackagesList();
@@ -1285,16 +1255,19 @@ void RobotModelLayer::queueMeshLoads() {
         !queued.insert(mesh->resolved_path).second) {
       return;
     }
-    const QString source = QString::fromStdString(mesh->resolved_path);
-    const QUrl url(source);
-    mesh_queue_.push_back(
-        MeshTask{
-            .key = mesh->resolved_path,
-            .source = source,
-            .format_hint = formatHint(source),
-            .is_url = url.scheme() == "http"_L1 || url.scheme() == "https"_L1,
-            .generation = load_generation_,
-        });
+    MeshLoadQueue::Source source;
+    source.location = QString::fromStdString(mesh->resolved_path);
+    const QUrl url(source.location);
+    source.kind = isNetworkUrl(url) ? MeshLoadQueue::Source::Kind::kUrl : MeshLoadQueue::Source::Kind::kPath;
+    source.format_hint = formatHint(source.location);
+    // COLLADA flip override is scoped to .dae/.collada (the checkbox's intent).
+    const bool collada = source.format_hint == "dae"_L1 || source.format_hint == "collada"_L1;
+    if (ignore_collada_up_axis_ && collada) {
+      source.flip_override = false;
+    }
+    mesh_queue_->enqueue(
+        [source]() { return std::optional(source); },
+        [this, key = mesh->resolved_path](MeshLoadQueue::Outcome outcome) { admitMesh(key, std::move(outcome.mesh)); });
   };
   for (const RobotLink& link : model_->links) {
     for (const LinkGeom& geometry : link.visuals) {
@@ -1304,83 +1277,19 @@ void RobotModelLayer::queueMeshLoads() {
       inspect(geometry);
     }
   }
-  pumpMeshLoads();
+  mesh_queue_->pump();
 }
 
-void RobotModelLayer::pumpMeshLoads() {
-  while (active_fetches_.size() + active_imports_.size() < maxConcurrentMeshLoads() && !mesh_queue_.empty()) {
-    MeshTask task = std::move(mesh_queue_.front());
-    mesh_queue_.pop_front();
-    if (task.generation != load_generation_) {
-      continue;
-    }
-    if (!task.is_url) {
-      startMeshImport(std::move(task));
-      continue;
-    }
-    if (url_fetcher_ == nullptr) {
-      url_fetcher_ = std::make_unique<UrlFetcher>();
-    }
-    active_fetches_.insert(task.key);
-    QPointer<RobotModelLayer> guard(this);
-    url_fetcher_->fetch(QUrl(task.source), [this, guard, task](const FetchResult& result) mutable {
-      if (guard.isNull() || task.generation != load_generation_ || active_fetches_.erase(task.key) == 0) {
-        return;
-      }
-      if (!result.ok) {
-        mesh_errors_[task.key] = result.error;
-        onMeshLoadSettled();
-      } else {
-        startMeshImport(std::move(task), result.bytes);
-      }
-      pumpMeshLoads();
-    });
-  }
-}
-
-void RobotModelLayer::startMeshImport(MeshTask task, QByteArray bytes) {
-  if (task.generation != load_generation_ || active_imports_.contains({task.generation, task.key})) {
-    return;
-  }
-  try {
-    // COLLADA flip override is scoped to .dae/.collada (the checkbox's intent).
-    const bool collada = task.format_hint == "dae"_L1 || task.format_hint == "collada"_L1;
-    const std::optional<bool> flip = ignore_collada_up_axis_ && collada ? std::optional<bool>(false) : std::nullopt;
-    QFuture<MeshData> future = bytes.isEmpty() ? mesh_loader_->load(task.source, flip)
-                                               : mesh_loader_->loadFromMemory(bytes, task.format_hint, flip);
-    // The completion requests its own repaint, so a landed mesh replaces its
-    // placeholder without waiting for an unrelated paint.
-    active_imports_.emplace(
-        std::pair{task.generation, task.key},
-        std::make_unique<MeshImport>(std::move(future), this, [this, key = task.key, generation = task.generation]() {
-          finishMeshImport(key, generation);
-        }));
-  } catch (const std::exception& error) {
-    active_imports_.erase({task.generation, task.key});
-    mesh_errors_[task.key] = tr("could not start import: %1").arg(QString::fromUtf8(error.what()));
-    onMeshLoadSettled();
-  }
-}
-
-void RobotModelLayer::finishMeshImport(const std::string& key, std::uint64_t generation) {
-  const auto found = active_imports_.find({generation, key});
-  if (found == active_imports_.end()) {
-    return;
-  }
-  const std::unique_ptr<MeshImport> job = std::move(found->second);
-  active_imports_.erase(found);
-  if (generation != load_generation_) {
-    pumpMeshLoads();  // superseded: discard the result, its slot is free now
-    return;
-  }
-  MeshData mesh = job->take();
+void RobotModelLayer::admitMesh(const std::string& key, MeshData mesh) {
   if (!mesh.ok) {
-    mesh_errors_[key] = mesh.error.isEmpty() ? tr("mesh contains no renderable geometry") : std::move(mesh.error);
+    mesh_errors_[key] = std::move(mesh.error);
   } else {
     const std::uint64_t retained = estimateRetainedMeshBytes(mesh);
     if (!retainedMeshFits(retained, mesh_retained_bytes_)) {
       mesh_errors_[key] = tr("mesh would exceed the layer memory limit");
     } else {
+      // The settle requests its own repaint, so a landed mesh replaces its
+      // placeholder without waiting for an unrelated paint.
       model_meshes_[key] = std::make_shared<const MeshData>(std::move(mesh));
       mesh_bytes_[key] = retained;
       mesh_retained_bytes_ += retained;
@@ -1388,16 +1297,19 @@ void RobotModelLayer::finishMeshImport(const std::string& key, std::uint64_t gen
     }
   }
   onMeshLoadSettled();
-  pumpMeshLoads();
 }
 
 void RobotModelLayer::onMeshLoadSettled() {
   // A placeholder cube must swap to the freshly-loaded mesh.
-  rebuildLinkDraws();
+  rebuildDrawCalls();
   updateMeshCounters();
   updateStatus();
   emit meshLoadStatusChanged(loaded_mesh_count_, total_mesh_count_, unresolvedPackagesList());
   emit repaintRequested();
+}
+
+std::size_t RobotModelLayer::meshImportsOutstandingForTest() const {
+  return mesh_queue_->importsRunning();
 }
 
 bool RobotModelLayer::meshReady(const std::string& key) const {

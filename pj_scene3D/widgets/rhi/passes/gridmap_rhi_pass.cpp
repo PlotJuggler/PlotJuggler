@@ -83,15 +83,10 @@ bool GridMapRhiPass::initialize(const RhiPassSetup& setup) {
       .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/gridmap.frag.qsb")),
       .bindings = layout_shader_resources_,  // procedural: gl_VertexIndex only, no vertex input
   };
-  opaque_pipeline_ = createScenePipeline(setup, desc);
+  opaque_pipeline_ = setup.pipelines->add(desc, setup.part);
   desc.depth_write = false;  // depth test only
-  translucent_pipeline_ = createScenePipeline(setup, desc);
+  translucent_pipeline_ = setup.pipelines->add(desc, setup.part);
   return ready();
-}
-
-void GridMapRhiPass::registerPipelines(ScenePipelineRegistry& registry) const {
-  registry.add(opaque_pipeline_);
-  registry.add(translucent_pipeline_);
 }
 
 void GridMapRhiPass::setLayers(const std::vector<GridMapLayer*>& layers) {
@@ -275,8 +270,6 @@ void GridMapRhiPass::release() {
   layer_gpu_.clear();
   admitted_.clear();
   draws_.clear();
-  delete opaque_pipeline_;
-  delete translucent_pipeline_;
   delete layout_shader_resources_;
   delete layout_uniform_buffer_;
   delete layout_texture_;

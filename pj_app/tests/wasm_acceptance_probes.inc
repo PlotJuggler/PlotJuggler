@@ -1508,3 +1508,155 @@ EM_JS(void, pj_wasm_install_browser_test_probes, (), {
   globalThis.pjWasmReportQuitActionProbe = () => Module._pj_wasm_test_report_quit_action();
 });
 // clang-format on
+
+// The plot readback probes (F8 state + pixels, F9 add-and-read a curve, F10 the
+// same after fitting the whole series), for plotting.spec.js: they only report,
+// through qInfo breadcrumbs, what the canvas drew.
+void PJ::MainWindow::installWasmPlotAcceptanceProbes() {
+  const auto run_wasm_plot_probe = [this](bool fit_complete_series) {
+    PlotWidget* plot = firstPlotOfActiveTab();
+    const auto curves = session_->catalogModel().curves();
+    if (plot == nullptr || curves.empty()) {
+      qWarning("PJ_WASM_PLOT_PROBE_FAILED no plot or scalar curve");
+      return;
+    }
+    auto selected = std::find_if(
+        curves.begin(), curves.end(), [](const CurveDescriptor& curve) { return curve.field_name == u"temp"_s; });
+    if (selected == curves.end()) {
+      selected = curves.begin();
+    }
+    auto* added = plot->addCurve(selected->name);
+    if (added == nullptr) {
+      qWarning("PJ_WASM_PLOT_PROBE_FAILED addCurve rejected %s", qPrintable(selected->name));
+      return;
+    }
+    if (fit_complete_series) {
+      plot->zoomOut(/*emit_signal=*/false);
+    }
+    auto* canvas = plot->findChild<PlotRhiCanvas*>();
+    const QColor curve_color = added->curve->pen().color();
+    QTimer::singleShot(500, canvas, [canvas, curve_color]() {
+      const QImage image = canvas->grabFramebuffer();
+      const WasmPixelBounds curve = findWasmExactColor(image, curve_color);
+      qInfo(
+          "PJ_WASM_PLOT_READBACK size=%dx%d curve=%s curve_pixels=%lld curve_bounds=%d,%d..%d,%d", image.width(),
+          image.height(), qPrintable(curve_color.name(QColor::HexArgb)), static_cast<long long>(curve.pixels),
+          curve.min_x, curve.min_y, curve.max_x, curve.max_y);
+    });
+  };
+  auto* wasm_plot_probe_shortcut = new QShortcut(QKeySequence(Qt::Key_F9), this);
+  connect(wasm_plot_probe_shortcut, &QShortcut::activated, this, [run_wasm_plot_probe]() {
+    run_wasm_plot_probe(/*fit_complete_series=*/false);
+  });
+  auto* wasm_reduction_probe_shortcut = new QShortcut(QKeySequence(Qt::Key_F10), this);
+  connect(wasm_reduction_probe_shortcut, &QShortcut::activated, this, [run_wasm_plot_probe]() {
+    run_wasm_plot_probe(/*fit_complete_series=*/true);
+  });
+  auto* wasm_plot_state_shortcut = new QShortcut(QKeySequence(Qt::Key_F8), this);
+  connect(wasm_plot_state_shortcut, &QShortcut::activated, this, [this]() {
+    PlotWidget* plot = firstPlotOfActiveTab();
+    if (plot == nullptr) {
+      qWarning("PJ_WASM_PLOT_STATE_FAILED no plot");
+      return;
+    }
+    auto* canvas = plot->findChild<PlotRhiCanvas*>();
+    if (canvas == nullptr) {
+      qWarning("PJ_WASM_PLOT_STATE_FAILED no RHI canvas");
+      return;
+    }
+    QStringList titles;
+    std::vector<std::pair<QString, QColor>> curve_colors;
+    for (const PlotWidgetBase::CurveInfo& info : plot->curveList()) {
+      if (info.curve == nullptr) {
+        continue;
+      }
+      const QString title = info.curve->title().text();
+      titles.push_back(title);
+      curve_colors.emplace_back(title, info.curve->pen().color());
+    }
+    const QPoint canvas_position = canvas->mapTo(this, QPoint(0, 0));
+    const QRectF view = plot->currentBoundingRect();
+    const QColor tracker_color =
+        theme::interaction(theme::Variant::Highlight, theme::State::Checked, theme::appTheme());
+    const QColor grid_color =
+        theme::outline(theme::OutlineRole::Gridline, theme::OutlineState::Rest, theme::appTheme());
+    const QColor hover_fill_color =
+        theme::interaction(theme::Variant::Emphasis, theme::State::Nominal, theme::appTheme());
+    const QColor canvas_color = canvas->palette().color(QPalette::Window);
+    const WasmHoverState hover = findWasmHoverState(plot);
+    const QByteArray encoded_hover_label = QUrl::toPercentEncoding(hover.label);
+    const int curve_style = static_cast<int>(plot->defaultCurveStyle());
+    const int line_width = static_cast<int>(plot->lineWidth());
+    qInfo(
+        "PJ_WASM_PLOT_STATE count=%lld titles=%s canvas=%d,%d,%dx%d view=%.17g,%.17g,%.17g,%.17g "
+        "time=%.17g tracker_enabled=%d tracker_parameter=%d xy=%d style=%d width=%d",
+        static_cast<long long>(titles.size()), qPrintable(titles.join(',')), canvas_position.x(), canvas_position.y(),
+        canvas->width(), canvas->height(), view.left(), view.right(), view.bottom(), view.top(),
+        toAxisDouble(session_->playbackEngine().currentTime()), plot->trackerEnabled() ? 1 : 0,
+        static_cast<int>(plot->trackerParameter()), plot->isXYPlot() ? 1 : 0, curve_style, line_width);
+    qInfo(
+        "PJ_WASM_PLOT_HOVER enabled=%d visible=%d point=%.17g,%.17g label=%s", plot->showPoints() ? 1 : 0,
+        hover.visible ? 1 : 0, hover.point.x(), hover.point.y(), encoded_hover_label.constData());
+
+    QTimer::singleShot(
+        250, canvas,
+        [canvas, curve_colors = std::move(curve_colors), tracker_color, grid_color, hover_fill_color, canvas_color,
+         curve_style, line_width]() {
+          const QImage image = canvas->grabFramebuffer();
+          QStringList counts;
+          WasmPixelBounds first_curve;
+          for (const auto& [title, color] : curve_colors) {
+            const WasmPixelBounds pixels = findWasmExactColor(image, color);
+            if (counts.empty()) {
+              first_curve = pixels;
+            }
+            counts.push_back(u"%1:%2:%3"_s.arg(title, color.name(QColor::HexArgb)).arg(pixels.pixels));
+          }
+          qInfo("PJ_WASM_PLOT_CURVE_PIXELS curves=%s", qPrintable(counts.join(',')));
+          if (!curve_colors.empty()) {
+            qInfo(
+                "PJ_WASM_PLOT_STYLE_PIXELS style=%d width=%d pixels=%lld bounds=%d,%d..%d,%d hash=%llu "
+                "framebuffer=%dx%d",
+                curve_style, line_width, static_cast<long long>(first_curve.pixels), first_curve.min_x,
+                first_curve.min_y, first_curve.max_x, first_curve.max_y,
+                static_cast<unsigned long long>(first_curve.coordinate_hash), image.width(), image.height());
+          }
+
+          const WasmLineCadence major_grid = findWasmVerticalCadence(image, grid_color, 6, 4);
+          const WasmLineCadence minor_grid = findWasmVerticalCadence(image, grid_color, 3, 1);
+          qInfo(
+              "PJ_WASM_PLOT_GRID_PIXELS major_pixels=%lld major_column=%d major_period=%d "
+              "major_period_matches=%d major_period_comparisons=%d major_phase_mask=%d major_on_phases=%d "
+              "minor_pixels=%lld minor_column=%d minor_period=%d minor_period_matches=%d "
+              "minor_period_comparisons=%d minor_phase_mask=%d minor_on_phases=%d",
+              static_cast<long long>(major_grid.pixels), major_grid.column, major_grid.period,
+              major_grid.period_matches, major_grid.period_comparisons, major_grid.phase_mask, major_grid.on_phases,
+              static_cast<long long>(minor_grid.pixels), minor_grid.column, minor_grid.period,
+              minor_grid.period_matches, minor_grid.period_comparisons, minor_grid.phase_mask, minor_grid.on_phases);
+
+          const WasmPixelBounds tracker = findWasmBlendedColor(image, tracker_color, canvas_color);
+          qInfo(
+              "PJ_WASM_PLOT_TRACKER color=%s pixels=%lld bounds=%d,%d..%d,%d framebuffer=%dx%d",
+              qPrintable(tracker_color.name(QColor::HexArgb)), static_cast<long long>(tracker.pixels), tracker.min_x,
+              tracker.min_y, tracker.max_x, tracker.max_y, image.width(), image.height());
+          const WasmPixelBounds text = findWasmDarkPixels(image);
+          qInfo(
+              "PJ_WASM_PLOT_TEXT_PIXELS pixels=%lld bounds=%d,%d..%d,%d framebuffer=%dx%d",
+              static_cast<long long>(text.pixels), text.min_x, text.min_y, text.max_x, text.max_y, image.width(),
+              image.height());
+          const WasmPixelBounds hover_fill = findWasmExactColor(image, hover_fill_color);
+          WasmPixelBounds hover_border;
+          if (hover_fill.pixels > 0) {
+            const QRect hover_border_rect =
+                QRect(QPoint(hover_fill.min_x, hover_fill.min_y), QPoint(hover_fill.max_x, hover_fill.max_y))
+                    .adjusted(-3, -3, 3, 3);
+            hover_border = findWasmDarkPixels(image, hover_border_rect);
+          }
+          qInfo(
+              "PJ_WASM_PLOT_HOVER_PIXELS yellow_pixels=%lld yellow_bounds=%d,%d..%d,%d border_pixels=%lld "
+              "framebuffer=%dx%d",
+              static_cast<long long>(hover_fill.pixels), hover_fill.min_x, hover_fill.min_y, hover_fill.max_x,
+              hover_fill.max_y, static_cast<long long>(hover_border.pixels), image.width(), image.height());
+        });
+  });
+}

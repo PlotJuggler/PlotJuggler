@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "mixed_layout_fixture.h"
+#include "passes/point_rhi_pass.h"
 #include "pj_gpu_test_gate.h"  // PJ_SKIP_WITHOUT_GPU
 #include "pj_plotting/PlotRhiCanvas.h"
 #include "pj_plotting/PlotWidget.h"
@@ -41,12 +42,15 @@
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
+#include "scene_view_test_access.h"
 #include "support/rhi_dock_test_support.h"
 
 using namespace Qt::StringLiterals;
 using namespace pj_rhi_dock_test;
 
 namespace {
+
+using pj::scene3d::SceneViewTestAccess;
 
 using pj_mixed_layout::kCurveColour;
 constexpr int kCloudSide = 8;  // points per edge of the cube-shaped cloud
@@ -178,7 +182,7 @@ class RhiMixedDockFixture : public ::testing::Test {
     auto* view = sceneView();
     const QImage image = pjWaitForGrab([view](auto done) { view->grabPresentedFrame(std::move(done)); });
     ASSERT_TRUE(capturedAtPixelSize(image, view)) << where << ": Scene3D";
-    EXPECT_EQ(view->lastPointVertexCountForTest(), kCloudPoints) << where;
+    EXPECT_EQ(SceneViewTestAccess::pointPass(*view).lastPointVertexCount(), kCloudPoints) << where;
     const int green = countPixels(image, [](QRgb p) { return qGreen(p) > qRed(p) + 50 && qGreen(p) > qBlue(p) + 50; });
     EXPECT_GT(green, 200) << where << ": no point cloud drawn";
   }
@@ -338,7 +342,7 @@ TEST_F(RhiMixedDockFixture, TabSwitchesAfterTheFirstVisitRebuildNothing) {
     adopted[i] = adoptions(docks()[i]);
   }
 #ifdef PJ_RHI_TEST_HOOKS
-  const auto& scene_work = sceneView()->stageTimesForTest();
+  const auto& scene_work = SceneViewTestAccess::stageTimes(*sceneView());
   const int builds = scene_work.base_builds;
   const std::uint64_t uploads = scene_work.point_uploads;
 #endif
@@ -370,7 +374,8 @@ TEST_F(RhiMixedDockFixture, TabSwitchesAfterTheFirstVisitRebuildNothing) {
   scene_->setLayerVisible(scene_->layers().front().topic_id, false);
   scene_dock_->setAsCurrentTab();
   const int without_cloud = green_pixels();  // the corner gizmo's Y axis stays
-  EXPECT_EQ(view->lastPointVertexCountForTest(), 0) << "the cloud hidden while its tab was hidden still drew";
+  EXPECT_EQ(SceneViewTestAccess::pointPass(*view).lastPointVertexCount(), 0)
+      << "the cloud hidden while its tab was hidden still drew";
   EXPECT_LT(without_cloud * 2, with_cloud);
 }
 
