@@ -4,28 +4,21 @@
 
 #include <cstdint>
 
-#include "pj_scene3d_core/browser_budget.h"
+#include "pj_scene3d_core/scene_limits.h"
 
 namespace pj::scene3d {
 
-// Browser-only retained-memory limits. A full pose triad expands to three
-// 80-byte PoseTriadInstances, so 100k poses / 300k arms is about 24 MiB in the
-// CPU staging vector and another 24 MiB in the QRhi instance buffer. Native
-// rendering does not consume these constants and remains unconstrained.
-inline constexpr std::uint64_t kBrowserMaxPosesPerLayer = 100'000;
-inline constexpr std::uint64_t kBrowserMaxPoseWireBytesPerLayer = 32ULL * 1024ULL * 1024ULL;
-inline constexpr std::uint64_t kBrowserMaxPoseArmsPerView = 300'000;
+// Pose admission against SceneLimits. A full pose triad expands to three
+// 80-byte PoseTriadInstances, so the browser's 300k arms are about 24 MiB in
+// the CPU staging vector and another 24 MiB in the QRhi instance buffer.
 
-[[nodiscard]] constexpr bool browserPoseCountFits(std::uint64_t poses) noexcept {
-  return poses <= kBrowserMaxPosesPerLayer;
+[[nodiscard]] constexpr bool poseCountFits(std::uint64_t poses, const SceneLimits& limits = kSceneLimits) noexcept {
+  return poses <= limits.max_poses_per_layer;
 }
 
-[[nodiscard]] constexpr bool browserPosePayloadFits(std::uint64_t wire_bytes) noexcept {
-  return wire_bytes <= kBrowserMaxPoseWireBytesPerLayer;
-}
-
-[[nodiscard]] constexpr bool tryConsumeBrowserPoseArms(std::uint64_t requested, std::uint64_t& remaining) noexcept {
-  return tryConsumeBrowserBudget(requested, remaining);
+[[nodiscard]] constexpr bool posePayloadFits(
+    std::uint64_t wire_bytes, const SceneLimits& limits = kSceneLimits) noexcept {
+  return wire_bytes <= limits.max_pose_wire_bytes_per_layer;
 }
 
 }  // namespace pj::scene3d

@@ -124,9 +124,11 @@ planned refinement.
 ## WebAssembly product backend (W13-W19m)
 
 The browser selects a different implementation behind the same
-`SceneViewWidget` and `Scene3DDockWidget` public product names. This is a
-compile-time `PJ_TARGET_WASM` branch, not a preference: desktop continues to use
-the native OpenGL pipeline above and full layer graph unchanged.
+`SceneViewWidget` and `Scene3DDockWidget` public product names. This is the
+compile-time `PJ_SCENE3D_RHI` split, forced on for WebAssembly and opt-in on
+desktop (see QRHI_MIGRATION.md); browser policy (file picking, bounded loading)
+stays on `PJ_TARGET_WASM`. The default desktop build keeps the native OpenGL
+pipeline above and its full layer graph.
 
 The browser view is a `QRhiWidget` configured for Qt's OpenGL/WebGL2 backend
 and 4x renderbuffer MSAA. It owns only QRhi buffers, bindings, and pipelines.

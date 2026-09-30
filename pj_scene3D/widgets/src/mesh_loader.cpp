@@ -99,12 +99,12 @@ TextureSource resolveTexture(
       return {};  // missing, or raw-RGBA embedded (unsupported) — leave untextured.
     }
     const auto* bytes = reinterpret_cast<const std::uint8_t*>(tex->pcData);
-#ifdef PJ_TARGET_WASM
+#ifdef PJ_SCENE3D_RHI
     // Charged once per resolved slot (not per distinct image): every resolved
     // slot retains its own encoded copy below, so per-copy charging is what
     // bounds worst-case CPU retention.
     if (texture_budget != nullptr &&
-        (texture_budget->bytes + tex->mWidth > kBrowserMaxModelEncodedTextureBytesPerMesh)) {
+        (texture_budget->bytes + tex->mWidth > kSceneLimits.max_model_encoded_texture_bytes_per_mesh)) {
       texture_budget->exceeded = true;
       return {};
     }
@@ -333,10 +333,10 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
     out.error = u"assimp returned no scene for %1"_s.arg(source);
     return out;
   }
-#ifdef PJ_TARGET_WASM
+#ifdef PJ_SCENE3D_RHI
   // Assimp has already parsed the bounded source bytes, but do not let
   // file-declared mesh counts drive our own material/vertex/index allocations.
-  // Widen every accumulation before comparing with the browser envelope.
+  // Widen every accumulation before comparing with the scene limits.
   std::uint64_t vertex_count = 0;
   std::uint64_t index_count = 0;
   std::uint64_t submesh_count = 0;
@@ -348,14 +348,14 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
     pending_nodes.pop_back();
     ++node_count;
     max_node_depth = std::max(max_node_depth, depth);
-    if (!browserModelStructureFits(scene->mNumMaterials, node_count, max_node_depth)) {
-      out.error = u"model exceeds browser structure limits in %1 (%2 materials, %3 nodes, depth %4)"_s.arg(
+    if (!modelStructureFits(scene->mNumMaterials, node_count, max_node_depth)) {
+      out.error = u"model exceeds structure limits in %1 (%2 materials, %3 nodes, depth %4)"_s.arg(
           source, QString::number(scene->mNumMaterials), QString::number(node_count), QString::number(max_node_depth));
       return out;
     }
     for (unsigned int child_index = 0; child_index < node->mNumChildren; ++child_index) {
       if (node->mChildren[child_index] == nullptr ||
-          pending_nodes.size() + node_count >= kBrowserMaxModelNodesPerMesh) {
+          pending_nodes.size() + node_count >= kSceneLimits.max_model_nodes_per_mesh) {
         out.error = u"model has an invalid or over-limit node graph in %1"_s.arg(source);
         return out;
       }
@@ -388,8 +388,8 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
       }
     }
   }
-  if (!browserModelMeshCountsFit(vertex_count, index_count, submesh_count)) {
-    out.error = u"model exceeds browser geometry limits in %1 (%2 vertices, %3 indices, %4 submeshes)"_s.arg(
+  if (!modelMeshCountsFit(vertex_count, index_count, submesh_count)) {
+    out.error = u"model exceeds geometry limits in %1 (%2 vertices, %3 indices, %4 submeshes)"_s.arg(
         source, QString::number(vertex_count), QString::number(index_count), QString::number(submesh_count));
     return out;
   }
@@ -405,9 +405,9 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
   for (unsigned int i = 0; i < scene->mNumMaterials; ++i) {
     materials.push_back(std::make_shared<const Material>(readMaterial(scene, i, base_dir, &texture_budget)));
   }
-#ifdef PJ_TARGET_WASM
+#ifdef PJ_SCENE3D_RHI
   if (texture_budget.exceeded) {
-    out.error = u"model exceeds the browser embedded-texture limit in %1"_s.arg(source);
+    out.error = u"model exceeds the embedded-texture limit in %1"_s.arg(source);
     return out;
   }
 #endif
@@ -418,14 +418,14 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
     out.ok = false;
     return out;
   }
-#ifdef PJ_TARGET_WASM
-  const auto retained = browserModelRetainedBytes(
+#ifdef PJ_SCENE3D_RHI
+  const auto retained = modelRetainedByteCount(
       out.vertices.size(), sizeof(Vertex), out.indices.size(), out.submeshes.size(), sizeof(SubMesh),
       texture_budget.bytes);
-  if (!retained.has_value() || *retained > kBrowserMaxModelRetainedBytesPerMesh) {
+  if (!retained.has_value() || *retained > kSceneLimits.max_model_retained_bytes_per_mesh) {
     out = {};
-    out.error = u"model would retain more than %1 MiB in the browser"_s.arg(
-        kBrowserMaxModelRetainedBytesPerMesh / (1024ULL * 1024ULL));
+    out.error = u"model would retain more than %1 MiB"_s.arg(
+        kSceneLimits.max_model_retained_bytes_per_mesh / (1024ULL * 1024ULL));
     return out;
   }
 #endif
@@ -452,12 +452,12 @@ MeshData MeshLoader::importFromFile(const QString& path, bool flip_to_z_up) {
   // exception would be rethrown by QFuture::result() on the GUI thread (inside
   // paintGL) and terminate the app. Mirrors pointcloud_codecs.cpp's barriers.
   try {
-#ifdef PJ_TARGET_WASM
+#ifdef PJ_SCENE3D_RHI
     const QFileInfo source_info(path);
-    if (source_info.size() < 0 || !browserModelSourceFits(static_cast<std::uint64_t>(source_info.size()))) {
+    if (source_info.size() < 0 || !modelSourceFits(static_cast<std::uint64_t>(source_info.size()))) {
       MeshData out;
       out.error =
-          u"model source exceeds the %1 MiB browser limit"_s.arg(kBrowserMaxModelSourceBytes / (1024ULL * 1024ULL));
+          u"model source exceeds the %1 MiB limit"_s.arg(kSceneLimits.max_model_source_bytes / (1024ULL * 1024ULL));
       return out;
     }
 #endif
@@ -486,11 +486,11 @@ MeshData MeshLoader::importFromFile(const QString& path, bool flip_to_z_up) {
 MeshData MeshLoader::importFromMemory(const QByteArray& bytes, const QString& format_hint, bool flip_to_z_up) {
   // Same exception barrier as importFromFile (see the comment there).
   try {
-#ifdef PJ_TARGET_WASM
-    if (bytes.size() < 0 || !browserModelSourceFits(static_cast<std::uint64_t>(bytes.size()))) {
+#ifdef PJ_SCENE3D_RHI
+    if (bytes.size() < 0 || !modelSourceFits(static_cast<std::uint64_t>(bytes.size()))) {
       MeshData out;
       out.error =
-          u"model source exceeds the %1 MiB browser limit"_s.arg(kBrowserMaxModelSourceBytes / (1024ULL * 1024ULL));
+          u"model source exceeds the %1 MiB limit"_s.arg(kSceneLimits.max_model_source_bytes / (1024ULL * 1024ULL));
       return out;
     }
 #endif

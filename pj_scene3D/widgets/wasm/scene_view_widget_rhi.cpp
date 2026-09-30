@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <rhi/qrhi.h>
+#include <rhi/qrhi_platform.h>
 
 #include <QBuffer>
 #include <QByteArray>
@@ -14,10 +15,16 @@
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
 #include <QPalette>
+#include <QTimer>
 #include <QVarLengthArray>
 #include <QWheelEvent>
+#if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+#include <QVulkanFunctions>
+#include <QVulkanInstance>
+#endif
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -409,22 +416,34 @@ QShader loadShader(const QString& path) {
   return QShader::fromSerialized(file.readAll());
 }
 
-// QRhi 6.11 reports no 3D-texture limit. On OpenGL the widget's context is current
-// inside initialize()/render(), so ask the driver; elsewhere use 2048, the D3D11
-// feature-level-11 and Metal minimum.
-// ponytail: Vulkan only guarantees 256, but desktop drivers report >= 2048; query
-// VkPhysicalDeviceLimits through QRhiVulkanNativeHandles if a device rejects it.
-int max3dTextureSize(const QRhi& rhi) {
-  if (rhi.backend() != QRhi::OpenGLES2) {
-    return 2048;
+// QRhi 6.11 reports no 3D-texture limit, so ask the backend. OpenGL: the widget's
+// context is current inside initialize()/render(). Vulkan: the physical device.
+// D3D/Metal: 2048, the D3D11 feature-level-11 and Metal minimum.
+int max3dTextureSize(QRhi& rhi) {
+  switch (rhi.backend()) {
+    case QRhi::OpenGLES2: {
+      QOpenGLContext* context = QOpenGLContext::currentContext();
+      if (context == nullptr) {
+        return 0;
+      }
+      GLint limit = 0;
+      context->functions()->glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &limit);
+      return std::max(limit, 0);
+    }
+#if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+    case QRhi::Vulkan: {
+      const auto* handles = static_cast<const QRhiVulkanNativeHandles*>(rhi.nativeHandles());
+      if (handles == nullptr || handles->inst == nullptr || handles->physDev == VK_NULL_HANDLE) {
+        return 0;
+      }
+      VkPhysicalDeviceProperties properties{};
+      handles->inst->functions()->vkGetPhysicalDeviceProperties(handles->physDev, &properties);
+      return static_cast<int>(std::min<uint32_t>(properties.limits.maxImageDimension3D, INT_MAX));
+    }
+#endif
+    default:
+      return 2048;
   }
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    return 0;
-  }
-  GLint limit = 0;
-  context->functions()->glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &limit);
-  return std::max(limit, 0);
 }
 
 QMatrix4x4 toQMatrix(const glm::mat4& matrix) {
@@ -496,6 +515,21 @@ AABB occupancyBoundsInFixed(const ReconstructedGrid& grid, const Transform& fixe
 }  // namespace
 
 SceneViewWidget::SceneViewWidget(QWidget* parent) : QRhiWidget(parent) {
+  // Each per-view budget fills one quint32-sized buffer (the point and pose
+  // budgets bound the sum of per-layer buffers). Prove both policies fit; the
+  // line/triangle stream keeps half the range for the unbudgeted grid/TF lines.
+  constexpr auto fits_buffers = [](const SceneLimits& limits) {
+    constexpr std::uint64_t kMaxBytes = std::numeric_limits<quint32>::max();
+    return limits.max_point_vertices_per_view * sizeof(WasmPointVertex) <= kMaxBytes &&
+           limits.max_pose_arms_per_view * sizeof(PoseTriadInstance) <= kMaxBytes &&
+           limits.max_marker_instances_per_view * sizeof(MarkerInstance) <= kMaxBytes &&
+           limits.max_marker_stream_vertices_per_view * sizeof(Vertex) <= kMaxBytes / 2U &&
+           limits.max_model_draws_per_view * sizeof(ModelInstance) <= kMaxBytes &&
+           limits.max_model_draws_per_view * sizeof(ShadowInstance) <= kMaxBytes;
+  };
+  static_assert(fits_buffers(kBrowserSceneLimits));
+  static_assert(fits_buffers(kDesktopSceneLimits));
+
   static const bool resources_initialized = [] {
     initializeScene3dWasmResources();
     return true;
@@ -846,6 +880,33 @@ void SceneViewWidget::setMeshShadingParams(const MeshShadingParams& params) {
     update();
     emit presentationChanged();
   }
+}
+
+void SceneViewWidget::grabPresentedFrame(std::function<void(const QImage&)> done) {
+  if (!isVisible()) {
+    done(grabFramebuffer());
+    return;
+  }
+  // The presented frame and the timeout race; whichever comes first delivers.
+  auto pending = std::make_shared<std::function<void(const QImage&)>>(std::move(done));
+  auto presented = std::make_shared<QMetaObject::Connection>();
+  const auto deliver = [pending, presented](const QImage& image) {
+    QObject::disconnect(*presented);
+    // A second frameSubmitted may already be queued when the first one delivers.
+    if (*pending) {
+      std::exchange(*pending, nullptr)(image);
+    }
+  };
+  // Queued: grab after frameSubmitted returns, never from inside the frame.
+  *presented = connect(
+      this, &QRhiWidget::frameSubmitted, this, [this, deliver]() { deliver(grabFramebuffer()); }, Qt::QueuedConnection);
+  QTimer::singleShot(2000, this, [pending, deliver]() {
+    if (*pending) {
+      qWarning("Scene3D: the shown view presented no frame to grab (occluded window?)");
+      deliver(QImage());
+    }
+  });
+  update();
 }
 
 void SceneViewWidget::refreshAvailableFrames() {
@@ -1411,7 +1472,7 @@ bool SceneViewWidget::ensureModelLayerGpu(QRhi* owner, WasmModelRenderable* laye
   const int max_texture_size = owner->resourceLimit(QRhi::TextureSizeMax);
   // Decoded QImages and their QRhi textures are retained across the whole
   // layer, not just one mesh. Enforce both envelopes before QImage allocation.
-  std::uint64_t remaining_layer_texture_pixels = kBrowserMaxModelTexturePixelsPerLayer;
+  std::uint64_t remaining_layer_texture_pixels = kSceneLimits.max_model_texture_pixels_per_layer;
   for (const auto& [key, source] : layer->modelMeshes()) {
     if (source == nullptr || !source->ok || source->vertices.empty() || source->indices.empty()) {
       continue;
@@ -1421,7 +1482,7 @@ bool SceneViewWidget::ensureModelLayerGpu(QRhi* owner, WasmModelRenderable* laye
     const std::uint64_t vertex_bytes = source->vertices.size() * sizeof(pj::scene3d::Vertex);
     const std::uint64_t index_bytes = source->indices.size() * sizeof(std::uint32_t);
     if (vertex_bytes > std::numeric_limits<quint32>::max() || index_bytes > std::numeric_limits<quint32>::max()) {
-      layer->noteRenderFailure(tr("A model GPU buffer exceeds the browser addressable limit"));
+      layer->noteRenderFailure(tr("A model GPU buffer exceeds the 4 GiB buffer limit"));
       releaseModelLayerGpu(gpu);
       return false;
     }
@@ -1448,7 +1509,7 @@ bool SceneViewWidget::ensureModelLayerGpu(QRhi* owner, WasmModelRenderable* laye
     if (!mesh.edge_indices.empty()) {
       const std::uint64_t edge_bytes = mesh.edge_indices.size() * sizeof(quint32);
       if (edge_bytes > std::numeric_limits<quint32>::max()) {
-        layer->noteRenderFailure(tr("A model wireframe buffer exceeds the browser addressable limit"));
+        layer->noteRenderFailure(tr("A model wireframe buffer exceeds the 4 GiB buffer limit"));
         releaseModelMeshGpu(mesh);
         releaseModelLayerGpu(gpu);
         return false;
@@ -1472,7 +1533,7 @@ bool SceneViewWidget::ensureModelLayerGpu(QRhi* owner, WasmModelRenderable* laye
       std::size_t slot = 0U;
     };
     std::unordered_map<const TextureSource*, DecodedTexture> decoded_textures;
-    std::uint64_t remaining_texture_pixels = kBrowserMaxModelTexturePixelsPerMesh;
+    std::uint64_t remaining_texture_pixels = kSceneLimits.max_model_texture_pixels_per_mesh;
     std::uint64_t candidate_layer_texture_pixels = remaining_layer_texture_pixels;
     for (const SubMesh& submesh : source->submeshes) {
       if (submesh.material == nullptr) {
@@ -1497,9 +1558,8 @@ bool SceneViewWidget::ensureModelLayerGpu(QRhi* owner, WasmModelRenderable* laye
             const std::uint64_t pixels =
                 static_cast<std::uint64_t>(size.width()) * static_cast<std::uint64_t>(size.height());
             if (size.width() > max_texture_size || size.height() > max_texture_size ||
-                !tryConsumeBrowserModelTexturePixels(
-                    pixels, remaining_texture_pixels, candidate_layer_texture_pixels)) {
-              layer->noteRenderFailure(tr("A model exceeds the browser decoded-texture limit"));
+                !tryConsumeModelTexturePixels(pixels, remaining_texture_pixels, candidate_layer_texture_pixels)) {
+              layer->noteRenderFailure(tr("A model exceeds the decoded-texture limit"));
               releaseModelMeshGpu(mesh);
               releaseModelLayerGpu(gpu);
               return false;
@@ -1513,9 +1573,8 @@ bool SceneViewWidget::ensureModelLayerGpu(QRhi* owner, WasmModelRenderable* laye
             const std::uint64_t pixels =
                 static_cast<std::uint64_t>(size.width()) * static_cast<std::uint64_t>(size.height());
             if (size.width() > max_texture_size || size.height() > max_texture_size ||
-                !tryConsumeBrowserModelTexturePixels(
-                    pixels, remaining_texture_pixels, candidate_layer_texture_pixels)) {
-              layer->noteRenderFailure(tr("A model exceeds the browser decoded-texture limit"));
+                !tryConsumeModelTexturePixels(pixels, remaining_texture_pixels, candidate_layer_texture_pixels)) {
+              layer->noteRenderFailure(tr("A model exceeds the decoded-texture limit"));
               releaseModelMeshGpu(mesh);
               releaseModelLayerGpu(gpu);
               return false;
@@ -1596,6 +1655,7 @@ void SceneViewWidget::initialize(QRhiCommandBuffer* /*command_buffer*/) {
   if (resource_rhi_ != current_rhi) {
     releaseResources();
     resource_rhi_ = current_rhi;
+    rhi_backend_name_ = QString::fromLatin1(current_rhi->backendName());
     max_3d_texture_size_ = max3dTextureSize(*current_rhi);
     PJ::logGraphicsBackend(*this, current_rhi);
   }
@@ -1847,20 +1907,20 @@ void SceneViewWidget::initialize(QRhiCommandBuffer* /*command_buffer*/) {
 
   const auto& marker_mesh_data = markerMeshes();
   for (std::size_t index = 0; index < marker_mesh_data.size(); ++index) {
-    const MarkerMeshData& data = marker_mesh_data[index];
+    const MarkerMeshData& mesh = marker_mesh_data[index];
     MarkerMeshGpu& gpu = marker_meshes_[index];
     gpu.vertex_buffer = current_rhi->newBuffer(
         QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer,
-        static_cast<quint32>(data.vertices.size() * sizeof(CubeVertex)));
-    if (!data.triangle_indices.empty()) {
+        static_cast<quint32>(mesh.vertices.size() * sizeof(CubeVertex)));
+    if (!mesh.triangle_indices.empty()) {
       gpu.triangle_index_buffer = current_rhi->newBuffer(
           QRhiBuffer::Immutable, QRhiBuffer::IndexBuffer,
-          static_cast<quint32>(data.triangle_indices.size() * sizeof(std::uint32_t)));
+          static_cast<quint32>(mesh.triangle_indices.size() * sizeof(std::uint32_t)));
     }
-    if (!data.edge_indices.empty()) {
+    if (!mesh.edge_indices.empty()) {
       gpu.edge_index_buffer = current_rhi->newBuffer(
           QRhiBuffer::Immutable, QRhiBuffer::IndexBuffer,
-          static_cast<quint32>(data.edge_indices.size() * sizeof(std::uint32_t)));
+          static_cast<quint32>(mesh.edge_indices.size() * sizeof(std::uint32_t)));
     }
     if (!gpu.vertex_buffer->create() ||
         (gpu.triangle_index_buffer != nullptr && !gpu.triangle_index_buffer->create()) ||
@@ -1868,8 +1928,8 @@ void SceneViewWidget::initialize(QRhiCommandBuffer* /*command_buffer*/) {
       releaseResources();
       return;
     }
-    gpu.triangle_index_count = static_cast<quint32>(data.triangle_indices.size());
-    gpu.edge_index_count = static_cast<quint32>(data.edge_indices.size());
+    gpu.triangle_index_count = static_cast<quint32>(mesh.triangle_indices.size());
+    gpu.edge_index_count = static_cast<quint32>(mesh.edge_indices.size());
   }
   marker_mesh_upload_pending_ = true;
 
@@ -2189,7 +2249,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   AABB fixed_point_bounds;
   AABB fixed_depth_bounds;
   const std::string fixed_frame = effectiveFixedFrame();
-  std::uint64_t remaining_point_vertices = kMaxPointVerticesPerView;
+  std::uint64_t remaining_point_vertices = kSceneLimits.max_point_vertices_per_view;
   for (WasmPointRenderable* layer : point_layers_) {
     if (layer == nullptr || !layer->visible()) {
       continue;
@@ -2210,8 +2270,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     // The aggregate applies to actual drawable point-like layers. A temporarily
     // unplaceable point/depth layer must not reserve capacity ahead of a later
     // layer whose source frame resolves in this frame.
-    if (!tryConsumeBrowserPointVertices(
-            static_cast<std::uint64_t>(layer->vertices().size()), remaining_point_vertices)) {
+    if (!tryConsumeBudget(static_cast<std::uint64_t>(layer->vertices().size()), remaining_point_vertices)) {
       continue;  // prepareForRender() normally clears this; keep subtraction fail-closed.
     }
     if (const auto bounds = layer->sourceBounds(); bounds.has_value()) {
@@ -2234,7 +2293,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   prepared_poses.reserve(pose_layers_.size());
   std::vector<WasmPosesInFrameLayer*> fitted_pose_layers;
   AABB fixed_pose_bounds;
-  std::uint64_t remaining_pose_arms = kMaxPoseArmsPerView;
+  std::uint64_t remaining_pose_arms = kSceneLimits.max_pose_arms_per_view;
   for (WasmPosesInFrameLayer* layer : pose_layers_) {
     if (layer == nullptr || !layer->visible()) {
       continue;
@@ -2254,7 +2313,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     const Transform& fixed_from_source = *placed;
     // Placement first, budget second: a temporarily unplaceable layer must not
     // reserve capacity and starve a later drawable layer of the same family.
-    if (!tryConsumeBrowserPoseArms(static_cast<std::uint64_t>(layer->instances().size()), remaining_pose_arms)) {
+    if (!tryConsumeBudget(static_cast<std::uint64_t>(layer->instances().size()), remaining_pose_arms)) {
       continue;
     }
     if (const auto bounds = layer->sourceBounds(); bounds.has_value()) {
@@ -2275,7 +2334,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   prepared_occupancy.reserve(occupancy_layers_.size());
   std::vector<WasmOccupancyGridLayer*> fitted_occupancy_layers;
   AABB fixed_occupancy_bounds;
-  std::uint64_t remaining_occupancy_cells = kMaxOccupancyCellsPerView;
+  std::uint64_t remaining_occupancy_cells = kSceneLimits.max_occupancy_cells_per_view;
   for (WasmOccupancyGridLayer* layer : occupancy_layers_) {
     if (layer == nullptr || !layer->visible()) {
       continue;
@@ -2297,7 +2356,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     // Placement first, budget second: a temporarily unplaceable layer must not
     // reserve capacity and starve a later drawable layer of the same family.
     const std::uint64_t cells = static_cast<std::uint64_t>(grid.width) * grid.height;
-    if (!tryConsumeBrowserOccupancyCells(cells, remaining_occupancy_cells)) {
+    if (!tryConsumeBudget(cells, remaining_occupancy_cells)) {
       continue;
     }
     const AABB bounds = occupancyBoundsInFixed(grid, fixed_from_source);
@@ -2319,7 +2378,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   prepared_voxels.reserve(voxel_layers_.size());
   std::vector<WasmVoxelGridLayer*> fitted_voxel_layers;
   AABB fixed_voxel_bounds;
-  std::uint64_t remaining_voxels = kMaxVoxelsPerView;
+  std::uint64_t remaining_voxels = kSceneLimits.max_voxels_per_view;
   for (WasmVoxelGridLayer* layer : voxel_layers_) {
     if (layer == nullptr || !layer->visible()) {
       continue;
@@ -2349,7 +2408,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     // The view budget describes submitted/drawable voxels. An otherwise valid
     // layer whose frame cannot currently be placed must not reserve capacity
     // and starve a later layer that can be rendered in this frame.
-    if (!tryConsumeBrowserVoxels(layer->voxelCount(), remaining_voxels)) {
+    if (!tryConsumeBudget(layer->voxelCount(), remaining_voxels)) {
       continue;
     }
     if (const auto bounds = layer->sourceBounds(); bounds.has_value()) {
@@ -2372,8 +2431,8 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   prepared_markers.reserve(marker_layers_.size());
   std::vector<WasmSceneEntitiesLayer*> fitted_marker_layers;
   AABB fixed_marker_bounds;
-  std::uint64_t remaining_marker_instances = kMaxMarkerInstancesPerView;
-  std::uint64_t remaining_marker_stream_vertices = kMaxMarkerStreamVerticesPerView;
+  std::uint64_t remaining_marker_instances = kSceneLimits.max_marker_instances_per_view;
+  std::uint64_t remaining_marker_stream_vertices = kSceneLimits.max_marker_stream_vertices_per_view;
   for (WasmSceneEntitiesLayer* layer : marker_layers_) {
     if (layer == nullptr || !layer->visible()) {
       continue;
@@ -2417,9 +2476,9 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
                                             count_instances(geometry.cylinders) + count_instances(geometry.arrows) +
                                             count_instances(geometry.axes);
     const auto submitted_instances =
-        browserMarkerSubmittedInstanceCount(logical_instances, cube_instances, layer->wireframe());
+        markerSubmittedInstanceCount(logical_instances, cube_instances, layer->wireframe());
     if (!submitted_instances.has_value()) {
-      layer->noteRenderFailure(tr("Marker instance accounting overflowed the browser limit"));
+      layer->noteRenderFailure(tr("Marker instance accounting overflowed the view limit"));
       continue;
     }
     prepared.instances = *submitted_instances;
@@ -2438,26 +2497,26 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     if (prepared.instances == 0U && prepared.stream_vertices == 0U) {
       continue;
     }
-    if (!browserMarkerLayerCountsFit(prepared.instances, prepared.stream_vertices, geometry.frames.size())) {
+    if (!markerLayerCountsFit(prepared.instances, prepared.stream_vertices, geometry.frames.size())) {
       layer->noteRenderFailure(
-          tr("Markers need %1 submitted instances and %2 streamed vertices; the browser layer limits are %3 and %4")
+          tr("Markers need %1 submitted instances and %2 streamed vertices; the layer limits are %3 and %4")
               .arg(
                   QString::number(prepared.instances), QString::number(prepared.stream_vertices),
-                  QString::number(kBrowserMaxMarkerInstancesPerLayer),
-                  QString::number(kBrowserMaxMarkerStreamVerticesPerLayer)));
+                  QString::number(kSceneLimits.max_marker_instances_per_layer),
+                  QString::number(kSceneLimits.max_marker_stream_vertices_per_layer)));
       continue;
     }
     if (prepared.instances > remaining_marker_instances ||
         prepared.stream_vertices > remaining_marker_stream_vertices) {
       layer->noteRenderFailure(
-          tr("Markers need %1 instances and %2 streamed vertices; only %3 and %4 remain in the browser view budget")
+          tr("Markers need %1 instances and %2 streamed vertices; only %3 and %4 remain in this view's budget")
               .arg(
                   QString::number(prepared.instances), QString::number(prepared.stream_vertices),
                   QString::number(remaining_marker_instances), QString::number(remaining_marker_stream_vertices)));
       continue;
     }
-    if (!tryConsumeBrowserMarkerInstances(prepared.instances, remaining_marker_instances) ||
-        !tryConsumeBrowserMarkerStreamVertices(prepared.stream_vertices, remaining_marker_stream_vertices)) {
+    if (!tryConsumeBudget(prepared.instances, remaining_marker_instances) ||
+        !tryConsumeBudget(prepared.stream_vertices, remaining_marker_stream_vertices)) {
       continue;
     }
     layer->noteRenderSuccess();
@@ -2489,10 +2548,10 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   std::vector<PreparedModelLayer> prepared_models;
   prepared_models.reserve(model_layers_.size());
   AABB fixed_model_bounds;
-  std::uint64_t remaining_model_draws = kBrowserMaxModelDrawsPerView;
-  std::uint64_t remaining_model_triangles = kBrowserMaxModelTrianglesPerView;
-  std::uint64_t remaining_shadow_draws = kBrowserMaxModelDrawsPerView;
-  std::uint64_t remaining_shadow_triangles = kBrowserMaxModelTrianglesPerView;
+  std::uint64_t remaining_model_draws = kSceneLimits.max_model_draws_per_view;
+  std::uint64_t remaining_model_triangles = kSceneLimits.max_model_triangles_per_view;
+  std::uint64_t remaining_shadow_draws = kSceneLimits.max_model_draws_per_view;
+  std::uint64_t remaining_shadow_triangles = kSceneLimits.max_model_triangles_per_view;
   std::unordered_map<const MeshData*, AABB> model_bounds_cache;
   for (WasmModelRenderable* layer : model_layers_) {
     if (layer == nullptr || !layer->visible() || fixed_frame.empty() || layer->modelDrawCalls().empty()) {
@@ -2566,30 +2625,30 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     if (prepared.color_calls.empty() && prepared.shadow_calls.empty()) {
       continue;
     }
-    if (prepared.draws > kBrowserMaxModelDrawsPerLayer || prepared.triangles > kBrowserMaxModelTrianglesPerLayer) {
-      layer->noteRenderFailure(tr("Models need %1 draws and %2 triangles; the browser layer limits are %3 and %4")
+    if (prepared.draws > kSceneLimits.max_model_draws_per_layer ||
+        prepared.triangles > kSceneLimits.max_model_triangles_per_layer) {
+      layer->noteRenderFailure(tr("Models need %1 draws and %2 triangles; the layer limits are %3 and %4")
                                    .arg(
                                        QString::number(prepared.draws), QString::number(prepared.triangles),
-                                       QString::number(kBrowserMaxModelDrawsPerLayer),
-                                       QString::number(kBrowserMaxModelTrianglesPerLayer)));
+                                       QString::number(kSceneLimits.max_model_draws_per_layer),
+                                       QString::number(kSceneLimits.max_model_triangles_per_layer)));
       continue;
     }
     if (!prepared.color_calls.empty() &&
-        !tryConsumeBrowserModels(
-            prepared.draws, prepared.triangles, remaining_model_draws, remaining_model_triangles)) {
-      layer->noteRenderFailure(
-          tr("Models need %1 draws and %2 triangles; the remaining browser view budget is %3 and %4")
-              .arg(
-                  QString::number(prepared.draws), QString::number(prepared.triangles),
-                  QString::number(remaining_model_draws), QString::number(remaining_model_triangles)));
+        !tryConsumeModels(prepared.draws, prepared.triangles, remaining_model_draws, remaining_model_triangles)) {
+      layer->noteRenderFailure(tr("Models need %1 draws and %2 triangles; the remaining view budget is %3 and %4")
+                                   .arg(
+                                       QString::number(prepared.draws), QString::number(prepared.triangles),
+                                       QString::number(remaining_model_draws),
+                                       QString::number(remaining_model_triangles)));
       continue;
     }
     QString shadow_warning;
-    if (prepared.shadow_draws > kBrowserMaxModelDrawsPerLayer ||
-        prepared.shadow_triangles > kBrowserMaxModelTrianglesPerLayer ||
-        !tryConsumeBrowserModels(
+    if (prepared.shadow_draws > kSceneLimits.max_model_draws_per_layer ||
+        prepared.shadow_triangles > kSceneLimits.max_model_triangles_per_layer ||
+        !tryConsumeModels(
             prepared.shadow_draws, prepared.shadow_triangles, remaining_shadow_draws, remaining_shadow_triangles)) {
-      shadow_warning = tr("Model shadows exceed the browser draw/triangle budget");
+      shadow_warning = tr("Model shadows exceed this view's draw/triangle budget");
       prepared.shadow_calls.clear();
       prepared.shadow_draws = 0;
       prepared.shadow_triangles = 0;
@@ -3459,11 +3518,11 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
       entries.reserve(static_cast<qsizetype>(layer->sliceCount()));
       for (std::uint32_t slice = 0; slice < layer->sliceCount(); ++slice) {
         const std::uint64_t offset = static_cast<std::uint64_t>(slice) * slice_bytes;
-        const void* data =
+        const void* slice_data =
             layer->valueKind() == VoxelValueKind::kScalar
                 ? static_cast<const void*>(reinterpret_cast<const std::uint8_t*>(layer->scalarVolume().data()) + offset)
                 : static_cast<const void*>(layer->rgbaVolume().data() + offset);
-        QRhiTextureSubresourceUploadDescription description(data, static_cast<quint32>(slice_bytes));
+        QRhiTextureSubresourceUploadDescription description(slice_data, static_cast<quint32>(slice_bytes));
         description.setSourceSize(QSize(static_cast<int>(layer->columnCount()), static_cast<int>(layer->rowCount())));
         entries.append(QRhiTextureUploadEntry(static_cast<int>(slice), 0, description));
       }

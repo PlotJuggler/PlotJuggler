@@ -31,8 +31,8 @@ class WasmPosesInFrameLayer final : public PJ::ISceneLayer {
   Q_OBJECT
 
  public:
-  static constexpr std::uint64_t kMaxPosesPerLayer = kBrowserMaxPosesPerLayer;
-  static constexpr std::uint64_t kMaxWireBytesPerLayer = kBrowserMaxPoseWireBytesPerLayer;
+  static constexpr std::uint64_t kMaxPosesPerLayer = kSceneLimits.max_poses_per_layer;
+  static constexpr std::uint64_t kMaxWireBytesPerLayer = kSceneLimits.max_pose_wire_bytes_per_layer;
 
   WasmPosesInFrameLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent = nullptr);
   ~WasmPosesInFrameLayer() override;

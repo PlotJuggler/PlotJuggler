@@ -24,7 +24,8 @@ endfunction()
 function(pj_add_test_runner target)
     set(options WARNINGS)
     set(oneValueArgs MAIN PREFIX TIMEOUT WORKING_DIRECTORY)
-    set(multiValueArgs SOURCES LIBS DEFINES)
+    # PROPERTIES: extra ctest properties for every discovered case (DISABLED, ENVIRONMENT, ...).
+    set(multiValueArgs SOURCES LIBS DEFINES PROPERTIES)
     cmake_parse_arguments(R "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
     # plain = no Qt at all. It exists because core was previously the floor, so a
     # module with no Qt in any of its test sources still linked Qt6::Core purely to
@@ -66,7 +67,7 @@ function(pj_add_test_runner target)
     set(discover_args
         TEST_PREFIX "${R_PREFIX}"
         DISCOVERY_MODE PRE_TEST
-        PROPERTIES TIMEOUT ${R_TIMEOUT})
+        PROPERTIES TIMEOUT ${R_TIMEOUT} ${R_PROPERTIES})
     if(R_WORKING_DIRECTORY)
         list(APPEND discover_args WORKING_DIRECTORY "${R_WORKING_DIRECTORY}")
     endif()

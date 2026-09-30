@@ -100,9 +100,9 @@ class WasmSceneEntitiesLayer final : public PJ::ISceneLayer, public WasmModelRen
   Q_OBJECT
 
  public:
-  static constexpr std::uint64_t kMaxWireBytesPerSample = kBrowserMaxMarkerWireBytes;
-  static constexpr std::uint64_t kMaxInstancesPerLayer = kBrowserMaxMarkerInstancesPerLayer;
-  static constexpr std::uint64_t kMaxStreamVerticesPerLayer = kBrowserMaxMarkerStreamVerticesPerLayer;
+  static constexpr std::uint64_t kMaxWireBytesPerSample = kSceneLimits.max_marker_wire_bytes;
+  static constexpr std::uint64_t kMaxInstancesPerLayer = kSceneLimits.max_marker_instances_per_layer;
+  static constexpr std::uint64_t kMaxStreamVerticesPerLayer = kSceneLimits.max_marker_stream_vertices_per_layer;
 
   WasmSceneEntitiesLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent = nullptr);
   ~WasmSceneEntitiesLayer() override;

@@ -191,7 +191,7 @@ bool WasmVoxelGridLayer::prepareForRender(std::uint64_t remaining_view_voxels) {
   }
   if (hasVolume() && voxelCount() > remaining_view_voxels) {
     budget_rejected_voxel_count_ = voxelCount();
-    setDataWarning(tr("Layer needs %1 voxels; only %2 remain in the browser view budget")
+    setDataWarning(tr("Layer needs %1 voxels; only %2 remain in this view's budget")
                        .arg(QString::number(voxelCount()), QString::number(remaining_view_voxels)));
     clearVolume();
     staged_uid_ = {};
@@ -205,7 +205,7 @@ bool WasmVoxelGridLayer::prepareForRender(std::uint64_t remaining_view_voxels) {
   const bool changed = decodeAt(*requested_time_);
   if (hasVolume() && voxelCount() > remaining_view_voxels) {
     budget_rejected_voxel_count_ = voxelCount();
-    setDataWarning(tr("Layer needs %1 voxels; only %2 remain in the browser view budget")
+    setDataWarning(tr("Layer needs %1 voxels; only %2 remain in this view's budget")
                        .arg(QString::number(voxelCount()), QString::number(remaining_view_voxels)));
     clearVolume();
     staged_uid_ = {};
@@ -221,7 +221,7 @@ bool WasmVoxelGridLayer::bootstrap() {
   }
   const auto first = session_->objectStore().at(topic_id_, 0);
   if (!first.has_value() || first->payload.bytes.empty() ||
-      !browserVoxelPayloadFits(static_cast<std::uint64_t>(first->payload.bytes.size()))) {
+      !voxelPayloadFits(static_cast<std::uint64_t>(first->payload.bytes.size()))) {
     return false;
   }
   const auto binding = session_->parserBindingForObjectTopic(topic_id_);
@@ -256,9 +256,9 @@ bool WasmVoxelGridLayer::decodeAt(PJ::Timepoint time) {
   if (entry->sequential_uid == staged_uid_ && active_field_name_ == staged_field_setting_) {
     return false;
   }
-  if (!browserVoxelPayloadFits(static_cast<std::uint64_t>(entry->payload.bytes.size()))) {
+  if (!voxelPayloadFits(static_cast<std::uint64_t>(entry->payload.bytes.size()))) {
     setDataWarning(
-        tr("Voxel-grid payload is %1 MiB; the browser limit is %2 MiB")
+        tr("Voxel-grid payload is %1 MiB; the limit is %2 MiB")
             .arg(QString::number(static_cast<double>(entry->payload.bytes.size()) / (1024.0 * 1024.0), 'f', 1))
             .arg(kMaxWireBytesPerSample / (1024ULL * 1024ULL)));
     clearVolume();
@@ -287,9 +287,9 @@ bool WasmVoxelGridLayer::decodeAt(PJ::Timepoint time) {
 
   updateSourceFrame(grid->frame_id);
   populateFields(*grid);
-  if (!browserVoxelDimensionsFit(grid->column_count, grid->row_count, grid->slice_count)) {
+  if (!voxelDimensionsFit(grid->column_count, grid->row_count, grid->slice_count)) {
     const std::uint64_t declared = pj::scene3d::voxelCount(*grid);
-    setDataWarning(tr("Voxel grid is %1 x %2 x %3 (%4 voxels); the browser layer limit is %5")
+    setDataWarning(tr("Voxel grid is %1 x %2 x %3 (%4 voxels); the layer limit is %5")
                        .arg(
                            QString::number(grid->column_count), QString::number(grid->row_count),
                            QString::number(grid->slice_count), QString::number(declared),
@@ -324,7 +324,7 @@ bool WasmVoxelGridLayer::decodeAt(PJ::Timepoint time) {
       rgba = packRgbaField(*grid, *field);
     }
   } catch (const std::bad_alloc&) {
-    setDataWarning(tr("Not enough browser memory to pack this voxel grid"));
+    setDataWarning(tr("Not enough memory to pack this voxel grid"));
     clearVolume();
     staged_uid_ = entry->sequential_uid;
     staged_field_setting_ = active_field_name_;

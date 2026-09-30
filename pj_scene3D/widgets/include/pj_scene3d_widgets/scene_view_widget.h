@@ -2,7 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#ifdef PJ_TARGET_WASM
+#ifdef PJ_SCENE3D_RHI
 
 #include "pj_scene3d_widgets/scene_view_widget_rhi.h"
 
@@ -13,6 +13,7 @@
 #include <QOpenGLWidget>
 #include <QPoint>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -169,6 +170,13 @@ class SceneViewWidget : public QOpenGLWidget {
   // moving tree during playback AND for new frames/edges arriving mid-load. Cheap
   // (O(frames), no decode); GUI-thread only (reads the shared TransformBuffer).
   [[nodiscard]] uint64_t tfRenderKey(PJ::Timepoint time) const;
+
+  // Delivers the current scene as an image to `done`, synchronously; mirrors the
+  // QRhi view's API, which works around Qt grab bugs. Here grabFramebuffer()
+  // already renders a fresh frame.
+  void grabPresentedFrame(const std::function<void(const QImage&)>& done) {
+    done(grabFramebuffer());
+  }
 
   const std::string& fixedFrame() const {
     return fixed_frame_;
@@ -523,4 +531,4 @@ class SceneViewWidget : public QOpenGLWidget {
 
 }  // namespace pj::scene3d
 
-#endif  // PJ_TARGET_WASM
+#endif  // PJ_SCENE3D_RHI

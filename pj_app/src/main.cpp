@@ -588,14 +588,17 @@ int main(int argc, char* argv[]) {
       if (views.isEmpty()) {
         std::fprintf(stderr, "[screenshot] no 3D SceneViewWidget found\n");
       } else {
-        // grabFramebuffer() renders paintGL() on demand, so it returns a fresh frame
-        // with no separate update()/second timer needed.
-        const QImage img = views.first()->grabFramebuffer();
-        if (img.save(path)) {
-          std::printf("[screenshot] saved: %s (%dx%d)\n", qPrintable(path), img.width(), img.height());
-        } else {
-          std::fprintf(stderr, "[screenshot] save FAILED: %s\n", qPrintable(path));
-        }
+        // Renders a fresh frame on either renderer, possibly after returning to
+        // the event loop (see grabPresentedFrame()).
+        views.first()->grabPresentedFrame([path](const QImage& img) {
+          if (img.save(path)) {
+            std::printf("[screenshot] saved: %s (%dx%d)\n", qPrintable(path), img.width(), img.height());
+          } else {
+            std::fprintf(stderr, "[screenshot] save FAILED: %s\n", qPrintable(path));
+          }
+          QCoreApplication::quit();
+        });
+        return;
       }
 #else
       Q_UNUSED(window);

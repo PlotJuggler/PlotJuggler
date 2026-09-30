@@ -164,7 +164,7 @@ bool WasmPosesInFrameLayer::prepareForRender(std::uint64_t remaining_view_arms) 
   }
   if (static_cast<std::uint64_t>(instances_.size()) > remaining_view_arms) {
     budget_rejected_arm_count_ = instances_.size();
-    setWarning(tr("Layer needs %1 pose arrows; only %2 remain in the browser view budget")
+    setWarning(tr("Layer needs %1 pose arrows; only %2 remain in this view's budget")
                    .arg(QString::number(instances_.size()), QString::number(remaining_view_arms)));
     clearGeometry();
     return true;
@@ -176,7 +176,7 @@ bool WasmPosesInFrameLayer::prepareForRender(std::uint64_t remaining_view_arms) 
   const bool changed = decodeAt(*requested_time_);
   if (static_cast<std::uint64_t>(instances_.size()) > remaining_view_arms) {
     budget_rejected_arm_count_ = instances_.size();
-    setWarning(tr("Layer needs %1 pose arrows; only %2 remain in the browser view budget")
+    setWarning(tr("Layer needs %1 pose arrows; only %2 remain in this view's budget")
                    .arg(QString::number(instances_.size()), QString::number(remaining_view_arms)));
     clearGeometry();
     return true;
@@ -190,7 +190,7 @@ bool WasmPosesInFrameLayer::bootstrap() {
   }
   const auto first = session_->objectStore().at(topic_id_, 0);
   if (!first.has_value() || first->payload.bytes.empty() ||
-      !browserPosePayloadFits(static_cast<std::uint64_t>(first->payload.bytes.size()))) {
+      !posePayloadFits(static_cast<std::uint64_t>(first->payload.bytes.size()))) {
     return false;
   }
   const auto binding = session_->parserBindingForObjectTopic(topic_id_);
@@ -222,8 +222,8 @@ bool WasmPosesInFrameLayer::decodeAt(PJ::Timepoint time) {
   if (entry->sequential_uid == staged_uid_ && staged_style_revision_ == style_revision_) {
     return false;
   }
-  if (!browserPosePayloadFits(static_cast<std::uint64_t>(entry->payload.bytes.size()))) {
-    setWarning(tr("Pose payload is %1 MiB; the browser limit is %2 MiB")
+  if (!posePayloadFits(static_cast<std::uint64_t>(entry->payload.bytes.size()))) {
+    setWarning(tr("Pose payload is %1 MiB; the limit is %2 MiB")
                    .arg(QString::number(static_cast<double>(entry->payload.bytes.size()) / (1024.0 * 1024.0), 'f', 1))
                    .arg(kMaxWireBytesPerLayer / (1024ULL * 1024ULL)));
     clearGeometry();
@@ -250,8 +250,8 @@ bool WasmPosesInFrameLayer::decodeAt(PJ::Timepoint time) {
     return true;
   }
   updateSourceFrame(poses->frame_id);
-  if (!browserPoseCountFits(static_cast<std::uint64_t>(poses->poses.size()))) {
-    setWarning(tr("Pose array has %1 poses; the browser limit is %2")
+  if (!poseCountFits(static_cast<std::uint64_t>(poses->poses.size()))) {
+    setWarning(tr("Pose array has %1 poses; the limit is %2")
                    .arg(QString::number(poses->poses.size()), QString::number(kMaxPosesPerLayer)));
     clearGeometry();
     staged_uid_ = entry->sequential_uid;
@@ -270,7 +270,7 @@ bool WasmPosesInFrameLayer::decodeAt(PJ::Timepoint time) {
                     .color = glm::vec3(override_color_.redF(), override_color_.greenF(), override_color_.blueF()),
                 });
   } catch (const std::bad_alloc&) {
-    setWarning(tr("Not enough browser memory to expand this pose array"));
+    setWarning(tr("Not enough memory to expand this pose array"));
     clearGeometry();
     staged_uid_ = entry->sequential_uid;
     staged_style_revision_ = style_revision_;

@@ -215,7 +215,7 @@ bool WasmPointCloudLayer::prepareForRender(std::uint64_t remaining_view_vertices
   }
   if (static_cast<std::uint64_t>(vertices_.size()) > remaining_view_vertices) {
     budget_rejected_vertex_count_ = vertices_.size();
-    setWarning(tr("Layer has %1 finite points; only %2 remain in the browser view budget")
+    setWarning(tr("Layer has %1 finite points; only %2 remain in this view's budget")
                    .arg(QString::number(vertices_.size()), QString::number(remaining_view_vertices)));
     clearGeometry();
     return true;
@@ -227,7 +227,7 @@ bool WasmPointCloudLayer::prepareForRender(std::uint64_t remaining_view_vertices
   const bool changed = decodeAt(*requested_time_);
   if (static_cast<std::uint64_t>(vertices_.size()) > remaining_view_vertices) {
     budget_rejected_vertex_count_ = vertices_.size();
-    setWarning(tr("Layer has %1 finite points; only %2 remain in the browser view budget")
+    setWarning(tr("Layer has %1 finite points; only %2 remain in this view's budget")
                    .arg(QString::number(vertices_.size()), QString::number(remaining_view_vertices)));
     clearGeometry();
     return true;
@@ -312,9 +312,9 @@ bool WasmPointCloudLayer::decodeAt(PJ::Timepoint time) {
 #if defined(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS)
   if (const auto* compressed = object->object.get<PJ::sdk::CompressedPointCloud>()) {
     updateSourceFrame(compressed->frame_id);
-    if (!browserPointPayloadFits(static_cast<std::uint64_t>(compressed->data.size()))) {
+    if (!pointPayloadFits(static_cast<std::uint64_t>(compressed->data.size()))) {
       failed_warning_ =
-          tr("Compressed cloud payload is %1 MiB; the browser limit is %2 MiB")
+          tr("Compressed cloud payload is %1 MiB; the limit is %2 MiB")
               .arg(QString::number(static_cast<double>(compressed->data.size()) / (1024.0 * 1024.0), 'f', 1))
               .arg(kMaxWireBytesPerCloud / (1024ULL * 1024ULL));
       setWarning(failed_warning_);
@@ -345,15 +345,15 @@ bool WasmPointCloudLayer::pushCloud(const PJ::sdk::PointCloud& cloud, SampleId s
   updateSourceFrame(cloud.frame_id);
   populateColorFields(cloud);
   const std::uint64_t point_count = static_cast<std::uint64_t>(cloud.width) * cloud.height;
-  if (!browserPointCountFits(point_count)) {
-    setWarning(tr("Cloud has %1 points; the browser limit is %2")
+  if (!pointCountFits(point_count)) {
+    setWarning(tr("Cloud has %1 points; the limit is %2")
                    .arg(QString::number(point_count), QString::number(kMaxPointsPerCloud)));
     clearGeometry();
     active_sample_ = sample;
     return true;
   }
-  if (!browserPointPayloadFits(static_cast<std::uint64_t>(cloud.data.size()))) {
-    setWarning(tr("Cloud payload is %1 MiB; the browser limit is %2 MiB")
+  if (!pointPayloadFits(static_cast<std::uint64_t>(cloud.data.size()))) {
+    setWarning(tr("Cloud payload is %1 MiB; the limit is %2 MiB")
                    .arg(QString::number(static_cast<double>(cloud.data.size()) / (1024.0 * 1024.0), 'f', 1))
                    .arg(kMaxWireBytesPerCloud / (1024ULL * 1024ULL)));
     clearGeometry();
@@ -369,7 +369,7 @@ bool WasmPointCloudLayer::pushCloud(const PJ::sdk::PointCloud& cloud, SampleId s
   try {
     converted = convertCanonical(cloud, scalar_field, /*extract_rgba=*/rgb_mode);
   } catch (const std::bad_alloc&) {
-    setWarning(tr("Not enough browser memory to convert this point cloud"));
+    setWarning(tr("Not enough memory to convert this point cloud"));
     clearGeometry();
     active_sample_ = sample;
     return true;
@@ -502,8 +502,8 @@ void WasmPointCloudLayer::onCompressedDecodeFinished() {
 
   if (generation_is_current && result.cloud) {
     const std::uint64_t point_count = static_cast<std::uint64_t>(result.cloud->width) * result.cloud->height;
-    const bool decoded_budget_fits = browserPointCountFits(point_count) &&
-                                     browserPointPayloadFits(static_cast<std::uint64_t>(result.cloud->data.size()));
+    const bool decoded_budget_fits =
+        pointCountFits(point_count) && pointPayloadFits(static_cast<std::uint64_t>(result.cloud->data.size()));
     if (decoded_budget_fits) {
       decoded_cache_ = result.cloud;
       decoded_cache_id_ = result.id;
@@ -511,10 +511,10 @@ void WasmPointCloudLayer::onCompressedDecodeFinished() {
       // Do not let an over-budget decompression remain pinned in the WASM heap.
       failed_id_ = result.id;
       failed_warning_ =
-          !browserPointCountFits(point_count)
-              ? tr("Cloud has %1 points; the browser limit is %2")
+          !pointCountFits(point_count)
+              ? tr("Cloud has %1 points; the limit is %2")
                     .arg(QString::number(point_count), QString::number(kMaxPointsPerCloud))
-              : tr("Cloud payload is %1 MiB; the browser limit is %2 MiB")
+              : tr("Cloud payload is %1 MiB; the limit is %2 MiB")
                     .arg(QString::number(static_cast<double>(result.cloud->data.size()) / (1024.0 * 1024.0), 'f', 1))
                     .arg(kMaxWireBytesPerCloud / (1024ULL * 1024ULL));
     }
