@@ -13,12 +13,14 @@
 #include <QPixmap>
 #include <QScreen>
 #include <QSplashScreen>
+#include <QSurfaceFormat>
 #include <QThread>
 #include <QTimer>
 #include <Qt>
 #ifndef PJ_TARGET_WASM
 #include <backward.hpp>
 #endif
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #ifndef PJ_TARGET_WASM
@@ -54,6 +56,7 @@
 #include "pj_scripting/filter_catalogue.h"
 #include "pj_scripting/python_engine.h"
 #endif
+#include "pj_widgets/GraphicsApi.h"
 #ifdef PJ_WITH_SCENE3D
 #include "pj_scene3d_widgets/scene_view_widget.h"  // --screenshot grabs the 3D view
 #endif
@@ -238,7 +241,27 @@ int main(int argc, char* argv[]) {
   // QwtText objects still hold raw pointers to them. See RasterTextEngine.h.
   PJ::installRasterTextEngines();
 
+#ifdef PJ_RHI_WIDGETS
+  // ADS calls winId() on every floating dock container, a window parented to the
+  // dock manager, and by default Qt then makes all the manager's children native:
+  // the docked area becomes a native child window. Under Vulkan on Wayland that
+  // child surface stops getting frame callbacks, so the main window's docks stop
+  // repainting (or crash in the swapchain) once any dock floats.
+  QCoreApplication::setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
+#if defined(Q_OS_MACOS)
+  // macOS gives an OpenGL QRhi (the Metal fallback, or PJ_GRAPHICS_API=opengl) a
+  // legacy 2.1 context unless the window asks for core: the shader packs need
+  // GLSL 330+. Set before QApplication for every window; Metal ignores it.
+  QSurfaceFormat core_format = QSurfaceFormat::defaultFormat();
+  core_format.setVersion(4, 1);
+  core_format.setProfile(QSurfaceFormat::CoreProfile);
+  QSurfaceFormat::setDefaultFormat(core_format);
+#endif
+#endif
   QApplication app(argc, argv);
+  // Fixes (and logs) the graphics API, with its Metal-to-OpenGL fallback, before
+  // any QRhiWidget exists: each top-level can pick its API only once.
+  (void)PJ::preferredGraphicsApi();
 #ifdef PJ_TARGET_WASM
   // Qt's browser-backed exec() never returns, including on application exit.
   // Let File -> Quit close the window (and run MainWindow::closeEvent's
@@ -333,7 +356,7 @@ int main(int argc, char* argv[]) {
   const QCommandLineOption disable_opengl_option(
       u"disable-opengl"_s,
       QStringLiteral(
-          "Force plots onto the software raster canvas for this session, overriding the saved OpenGL "
+          "Force plots onto the software raster canvas for this session, overriding the saved GPU canvas "
           "preference (does not change it)."));
   parser.addOption(disable_opengl_option);
   // Headless 3D capture for verification: after --screenshot-delay ms (enough for an
@@ -341,7 +364,9 @@ int main(int argc, char* argv[]) {
   // first SceneViewWidget's framebuffer to a PNG and quit. GNOME Wayland blocks
   // external screen-capture tools, so the app must grab itself.
   const QCommandLineOption screenshot_option(
-      u"screenshot"_s, u"Grab the first 3D view to a PNG after --screenshot-delay, then exit."_s, u"path"_s);
+      u"screenshot"_s,
+      u"Grab the first 3D view to a PNG after --screenshot-delay, then exit (non-zero on a missing or blank capture)."_s,
+      u"path"_s);
   parser.addOption(screenshot_option);
   const QCommandLineOption screenshot_delay_option(
       u"screenshot-delay"_s, u"ms to wait before the screenshot grab (default 7000)."_s, u"ms"_s, u"7000"_s);
@@ -579,6 +604,8 @@ int main(int argc, char* argv[]) {
   }
 #endif
 
+  // Exits non-zero when nothing usable was captured (no view, a null or single-colour
+  // image, a failed save), so package smoke tests can rely on the status.
   if (parser.isSet(screenshot_option)) {
     const QString path = parser.value(screenshot_option);
     const int delay_ms = parser.value(screenshot_delay_option).toInt();
@@ -590,13 +617,31 @@ int main(int argc, char* argv[]) {
       } else {
         // Renders a fresh frame on either renderer, possibly after returning to
         // the event loop (see grabPresentedFrame()).
-        views.first()->grabPresentedFrame([path](const QImage& img) {
-          if (img.save(path)) {
+        pj::scene3d::SceneViewWidget* view = views.first();
+        view->grabPresentedFrame([path, view](const QImage& img) {
+#ifdef PJ_SCENE3D_RHI
+          std::printf("[screenshot] graphics backend: %s\n", qPrintable(view->rhiBackendNameForTest()));
+#else
+          Q_UNUSED(view);
+          std::printf("[screenshot] graphics backend: OpenGL\n");
+#endif
+          const QImage rgb = img.convertToFormat(QImage::Format_RGB32);
+          const QRgb first = rgb.isNull() ? 0 : rgb.pixel(0, 0);
+          bool blank = true;
+          for (int y = 0; blank && y < rgb.height(); ++y) {
+            const auto* line = reinterpret_cast<const QRgb*>(rgb.constScanLine(y));
+            blank = std::all_of(line, line + rgb.width(), [first](QRgb pixel) { return pixel == first; });
+          }
+          if (blank) {
+            std::fprintf(stderr, "[screenshot] FAILED: the captured image is %s\n", rgb.isNull() ? "null" : "blank");
+          } else if (img.save(path)) {
             std::printf("[screenshot] saved: %s (%dx%d)\n", qPrintable(path), img.width(), img.height());
+            QCoreApplication::exit(0);
+            return;
           } else {
             std::fprintf(stderr, "[screenshot] save FAILED: %s\n", qPrintable(path));
           }
-          QCoreApplication::quit();
+          QCoreApplication::exit(1);
         });
         return;
       }
@@ -605,7 +650,7 @@ int main(int argc, char* argv[]) {
       Q_UNUSED(path);
       std::fprintf(stderr, "[screenshot] Scene3D is not available in this build\n");
 #endif
-      QCoreApplication::quit();
+      QCoreApplication::exit(1);
     });
   }
 

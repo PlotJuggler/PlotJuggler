@@ -246,9 +246,9 @@ class SessionManager : public QObject {
 
   /// The physical-path normalization every stored source path goes through
   /// (setDatasetSourcePath, recordLoadedSource): canonicalFilePath when the
-  /// file exists (resolving symlink/relative aliases), cleaned absolute path
-  /// otherwise. Exposed so callers and tests can compare against the stored
-  /// form — on Windows even an absolute Unix-style input gains a drive prefix.
+  /// file exists (resolving symlink/relative aliases); for a missing file, its
+  /// canonical folder plus the file name, else the cleaned absolute path. Exposed so callers and tests can compare
+  /// against the stored form — on Windows even an absolute Unix-style input gains a drive prefix.
   [[nodiscard]] static QString normalizedSourcePath(const QString& path);
 
   /// Resolves a persisted identity without guessing. Resolution order:

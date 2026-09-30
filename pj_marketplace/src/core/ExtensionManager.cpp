@@ -45,10 +45,6 @@ static constexpr const char* kPendingUninstallMarker = ".pj_pending_uninstall";
 static constexpr const char* kPendingInstallIntent = ".pj_pending_install";
 static constexpr const char* kQuarantinePrefix = ".pj_quarantine_";
 static constexpr int kMaxDiagnostics = 50;
-// How long construction waits for the store's single-writer lock. Long enough to
-// ride out another instance's in-flight rename, short enough not to stall startup:
-// a busy store means read-only, never a hang.
-static constexpr int kStoreLockTimeoutMs = 200;
 // QSettings key holding the QStringList of disabled extension ids (installed but
 // not loaded). Read by both the marketplace and the runtime plugin catalog.
 static constexpr const char* kDisabledExtensionsKey = "Marketplace/disabledExtensions";

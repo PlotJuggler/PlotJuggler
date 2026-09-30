@@ -541,6 +541,17 @@ QWidget* Scene2DDockWidget::createSceneView() {
   connect(viewer_, &MediaViewerWidget::viewInteractionCommitted, this, [this]() { notifyWorkspaceChanged(); });
   connect(viewer_, &MediaViewerWidget::rotationChanged, this, &Scene2DDockWidget::viewRotationChanged);
   view_stack_->addWidget(viewer_);
+
+  // Below the viewer, not over it: a raster label does not composite reliably on
+  // the QRhiWidget's surface. Shown while the viewer cannot render.
+  QLabel* rendering_warning = createRenderingWarningLabel(container, u"scene2dRenderingWarning"_s);
+  layout->addWidget(rendering_warning);
+  connect(
+      viewer_, &MediaViewerWidget::renderingWarningChanged, rendering_warning,
+      [rendering_warning](const QString& warning) {
+        rendering_warning->setText(warning);
+        rendering_warning->setVisible(!warning.isEmpty());
+      });
   if (composite_ != nullptr) {
     viewer_->setMediaSource(composite_.get());
   }

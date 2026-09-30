@@ -1206,7 +1206,8 @@ void RobotModelLayer::resetModelState() {
   ++load_generation_;
   url_fetcher_.reset();
   active_fetches_.clear();
-  active_imports_.clear();
+  // In-flight imports stay: their workers keep running, so they keep their
+  // concurrency slots until they finish (finishMeshImport drops the result).
   mesh_queue_.clear();
   mesh_errors_.clear();
   // Release the previous model's cached MeshData and make Retry/Locate
@@ -1479,7 +1480,7 @@ void RobotModelLayer::pumpMeshLoads() {
 }
 
 void RobotModelLayer::startMeshImport(MeshTask task, QByteArray bytes) {
-  if (task.generation != load_generation_ || active_imports_.contains(task.key)) {
+  if (task.generation != load_generation_ || active_imports_.contains({task.generation, task.key})) {
     return;
   }
   try {
@@ -1491,24 +1492,28 @@ void RobotModelLayer::startMeshImport(MeshTask task, QByteArray bytes) {
     // The completion requests its own repaint, so a landed mesh replaces its
     // placeholder without waiting for an unrelated paint.
     active_imports_.emplace(
-        task.key,
+        std::pair{task.generation, task.key},
         std::make_unique<MeshImport>(std::move(future), this, [this, key = task.key, generation = task.generation]() {
           finishMeshImport(key, generation);
         }));
   } catch (const std::exception& error) {
-    active_imports_.erase(task.key);
+    active_imports_.erase({task.generation, task.key});
     mesh_errors_[task.key] = tr("could not start import: %1").arg(QString::fromUtf8(error.what()));
     onMeshLoadSettled();
   }
 }
 
 void RobotModelLayer::finishMeshImport(const std::string& key, std::uint64_t generation) {
-  const auto found = active_imports_.find(key);
-  if (found == active_imports_.end() || generation != load_generation_) {
+  const auto found = active_imports_.find({generation, key});
+  if (found == active_imports_.end()) {
     return;
   }
   const std::unique_ptr<MeshImport> job = std::move(found->second);
   active_imports_.erase(found);
+  if (generation != load_generation_) {
+    pumpMeshLoads();  // superseded: discard the result, its slot is free now
+    return;
+  }
   MeshData mesh = job->take();
   if (!mesh.ok) {
     mesh_errors_[key] = mesh.error.isEmpty() ? tr("mesh contains no renderable geometry") : std::move(mesh.error);

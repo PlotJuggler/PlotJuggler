@@ -18,16 +18,28 @@ jobs:
   # pre-commit runs once per PR cycle, from linux-ci.yml.
   build:
     if: github.event.pull_request.draft == false
+    # Two lanes on one set of steps. `build` is the full GL build and test suite.
+    # `qrhi-d3d11` is the QRhi build (-DPJ_SCENE3D_RHI=ON): only the QRhi display
+    # runners (Scene3D harness, point, failure and golden tests, the plot canvas,
+    # the dock tests), on D3D11 through WARP (the runner has no GPU), with the
+    # native `windows` QPA.
+    name: ${{ matrix.lane }}
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [build, qrhi-d3d11]
     # Keep the application CI ABI-compatible with the published official
     # plugins and windows-release.yml. windows-latest now selects VS18/MSVC
     # 14.5x, while both release pipelines deliberately use VS2022/MSVC 14.44.
     # Pinning this also lets CI and the installer share the same sccache objects
     # and Conan package IDs instead of maintaining two Windows toolchain graphs.
     runs-on: depot-windows-2022-4
-    # Windows is a required shipped target (CLAUDE.md), but this job stays
+    # Windows is a required shipped target (CLAUDE.md), but the `build` lane stays
     # non-blocking for now: Windows runtime packaging is still being
     # productionized, so failures surface on the PR without gating the merge.
-    continue-on-error: true
+    # The `qrhi-d3d11` lane is blocking: it is the Windows exit gate of the QRhi
+    # migration (pj_scene3D/docs/QRHI_MIGRATION.md).
+    continue-on-error: ${{ matrix.lane == 'build' }}
     # Backstop against hangs (a deadlocked build otherwise holds the runner for
     # GitHub's 6-hour default). A first run can still rebuild a missing Conan
     # closure from source before the cache save persists it, then compile the
@@ -205,7 +217,7 @@ jobs:
       - name: Save Qt SDK cache
         # Immutable, version-keyed blob: saved once per Qt version, from a
         # push-to-main run (see the restore step's comment for why not per-PR).
-        if: github.event_name == 'push' && steps.qt-sdk-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && matrix.lane == 'build' && steps.qt-sdk-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: .qt/${{ steps.versions.outputs.qt_version }}/msvc2022_64
@@ -259,14 +271,14 @@ jobs:
       - name: Trim Conan cache before saving
         # Drop build/source/temp trees so only recipes and package binaries
         # persist.
-        if: always() && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        if: always() && matrix.lane == 'build' && steps.conan-gha-cache.outputs.cache-hit != 'true'
         shell: bash
         run: conan cache clean "*" --build --source --temp || true
 
       - name: Save Conan cache
         # always(): a failed app compile must still persist the expensive
         # third-party closure. Immutable keys make a re-save a no-op, so skip
-        # only on an exact-key hit.
+        # only on an exact-key hit. Both lanes resolve the same closure; one saves it.
         #
         # Not from pull requests: Depot Cache is repo-wide with no branch
         # isolation, so only trusted refs (push, dispatch) write a namespace
@@ -274,7 +286,7 @@ jobs:
         # conan_install must also have succeeded — an install that died partway
         # would pin an incomplete closure under an immutable key.
         if: >-
-          always() && github.event_name != 'pull_request'
+          always() && matrix.lane == 'build' && github.event_name != 'pull_request'
           && steps.conan_install.outcome == 'success'
           && steps.conan-gha-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
@@ -289,6 +301,7 @@ jobs:
           # compiler-launcher wiring below so a flaked sccache install degrades
           # to an uncached (but correct) build instead of failing.
           SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
+          LANE: ${{ matrix.lane }}
         run: |
           QT_DIR="$(pwd)/.qt/${PJ_QT_VERSION}/msvc2022_64"
           if [[ ! -d "$QT_DIR" ]]; then
@@ -326,14 +339,24 @@ jobs:
             echo "::warning::sccache unavailable; building without a compiler cache"
           fi
 
+          # The QRhi lane builds only the QRhi display runners its test step runs
+          # (pj_qrhi_tests), and keeps going past a failed object so one run lists
+          # every compile error.
+          lane_args=()
+          target_args=()
+          if [[ "$LANE" == "qrhi-d3d11" ]]; then
+            lane_args=(-DPJ_SCENE3D_RHI=ON -DPJ_BUILD_DEMOS=OFF)
+            target_args=(--target pj_qrhi_tests -- -k 0)
+          fi
+
           cmake -S . -B build -G "Ninja Multi-Config" \
             -DCMAKE_TOOLCHAIN_FILE="build/conan_toolchain.cmake" \
             -DCMAKE_PREFIX_PATH="$QT_DIR" \
             -DCMAKE_POLICY_DEFAULT_CMP0141=NEW \
             -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded \
-            "${launcher_args[@]}"
+            "${launcher_args[@]}" "${lane_args[@]}"
 
-          cmake --build build --config RelWithDebInfo --parallel
+          cmake --build build --config RelWithDebInfo --parallel "${target_args[@]}"
 
           # Surface sccache stats before the post-action does, so they
           # appear in the Build step's log next to the compile output.
@@ -347,6 +370,10 @@ jobs:
         # launches the test executables. Without this they exit 0xC0000135
         # (STATUS_DLL_NOT_FOUND) before any test code runs.
         shell: bash
+        env:
+          LANE: ${{ matrix.lane }}
+          PJ_POINTCLOUD_GOLDEN_OUT: ${{ runner.temp }}/golden-out
+          PJ_RHI_TEST_DUMP_DIR: ${{ runner.temp }}/rhi-dump
         run: |
           export PATH="$(pwd)/.qt/${PJ_QT_VERSION}/msvc2022_64/bin:$PATH"
           # FFmpeg's Conan bin dir(s) are emitted at configure time by
@@ -369,4 +396,37 @@ jobs:
           fi
           # --timeout kills any single test after 2 min so a deadlocked test
           # fails loudly with its name in the log instead of stalling the job.
-          ctest --test-dir build --build-config RelWithDebInfo --output-on-failure --timeout 120
+          if [[ "$LANE" == "build" ]]; then
+            unset PJ_POINTCLOUD_GOLDEN_OUT PJ_RHI_TEST_DUMP_DIR
+            ctest --test-dir build --build-config RelWithDebInfo --output-on-failure --timeout 120
+            exit
+          fi
+
+          # QRhi lane: the native `windows` QPA (the test main defaults to
+          # `offscreen`, which cannot render the 3D view), WARP as the adapter
+          # (the flag Qt's widget backing store honours; the runner has no GPU),
+          # a missing backend fails instead of skipping, and every view logs the
+          # backend and adapter it got.
+          export QT_QPA_PLATFORM=windows
+          export QSG_RHI_PREFER_SOFTWARE_RENDERER=1
+          export PJ_REQUIRE_GPU_TESTS=1
+          export QT_LOGGING_RULES="pj.graphics.info=true"
+          # Without a console Qt logs to OutputDebugString, which ctest never sees.
+          export QT_FORCE_STDERR_LOGGING=1
+          mkdir -p "$PJ_POINTCLOUD_GOLDEN_OUT"
+          log="${RUNNER_TEMP}/qrhi-d3d11-ctest.log"
+          ctest --test-dir build --build-config RelWithDebInfo -V --timeout 120 -L qrhi-d3d11 2>&1 | tee "$log" ||
+            status=$?
+          # Every view must report D3D11 on a software (Cpu) adapter, i.e. WARP.
+          bash scripts/ci/check_qrhi_backend.sh "$log" 'D3D11, .*deviceType=Cpu\)'
+          exit "${status:-0}"
+
+      - name: Upload QRhi D3D11 failure images
+        if: failure() && matrix.lane == 'qrhi-d3d11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: qrhi-d3d11-failures
+          path: |
+            ${{ runner.temp }}/golden-out
+            ${{ runner.temp }}/rhi-dump
+          if-no-files-found: ignore

@@ -1,0 +1,332 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# macOS arm64 lane, in the QRhi build (-DPJ_SCENE3D_RHI=ON, pj_scene3D/docs/QRHI_MIGRATION.md).
+# Probes Metal first (device, then a presented drawable), builds everything
+# through Conan, runs the QRhi display tests on Metal and then on OpenGL (the
+# Metal fallback, a 4.1 core context) with the native `cocoa` QPA, failing
+# unless every view reports the backend of its pass, then the rest of the unit
+# tests.
+name: macOS CI
+
+on:
+  pull_request:
+    branches: [main, development]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    # TEMP until macos-ci.yml is on main; removed at the P5 cut-over.
+    branches: [main, development, 'feat/qrhi-**']
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner label (depot-macos-14 is faster, but its capacity is limited)
+        type: choice
+        options: [macos-14, depot-macos-14]
+        default: macos-14
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.runner || 'macos-14' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  qrhi-metal:
+    if: github.event.pull_request.draft == false
+    # GitHub-hosted Apple silicon (M1, 3 cores, 7 GB, paravirtual Metal GPU).
+    # depot-macos-14 (M2, 8 cores) waited 40 min in the queue for a runner
+    # (Depot macOS capacity is not elastic), so it is a manual choice only.
+    # The Conan closure has no prebuilt macOS binaries; the cache below keeps it.
+    runs-on: ${{ inputs.runner || 'macos-14' }}
+    # A cold Conan closure plus a cold compile takes about 45 min.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+
+    steps:
+      - name: Probe Metal (device and presentation)
+        # Cheap gate before any build: a VM without a usable Metal device, or
+        # without a window server to present to, fails here in seconds.
+        shell: bash
+        run: |
+          sw_vers
+          system_profiler SPDisplaysDataType
+          cat > "${RUNNER_TEMP}/metal_probe.swift" <<'SWIFT'
+          import AppKit
+          import Metal
+          import QuartzCore
+
+          guard let device = MTLCreateSystemDefaultDevice() else {
+            print("no Metal device"); exit(1)
+          }
+          print("Metal device: \(device.name), low power \(device.isLowPower), headless \(device.isHeadless)")
+          let app = NSApplication.shared
+          app.setActivationPolicy(.regular)
+          let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 64, height: 64),
+                                styleMask: [.titled], backing: .buffered, defer: false)
+          let layer = CAMetalLayer()
+          layer.device = device
+          layer.pixelFormat = .bgra8Unorm
+          layer.drawableSize = CGSize(width: 64, height: 64)
+          window.contentView!.wantsLayer = true
+          window.contentView!.layer = layer
+          window.makeKeyAndOrderFront(nil)
+          guard let drawable = layer.nextDrawable(), let queue = device.makeCommandQueue(),
+                let buffer = queue.makeCommandBuffer() else {
+            print("no drawable to present"); exit(1)
+          }
+          let pass = MTLRenderPassDescriptor()
+          pass.colorAttachments[0].texture = drawable.texture
+          pass.colorAttachments[0].loadAction = .clear
+          pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 1, blue: 0, alpha: 1)
+          pass.colorAttachments[0].storeAction = .store
+          buffer.makeRenderCommandEncoder(descriptor: pass)!.endEncoding()
+          buffer.present(drawable)
+          buffer.commit()
+          buffer.waitUntilCompleted()
+          guard buffer.status == .completed else {
+            print("present failed: \(String(describing: buffer.error))"); exit(1)
+          }
+          print("presented a drawable")
+          SWIFT
+          swift "${RUNNER_TEMP}/metal_probe.swift"
+
+      - name: Use HTTPS for github.com submodules
+        shell: bash
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Read versions
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./versions.env
+          echo "PJ_QT_VERSION=${PJ_QT_VERSION}" >> "${GITHUB_ENV}"
+          echo "qt_version=${PJ_QT_VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          brew install ccache ninja
+          xcodebuild -version
+          clang --version
+
+      - uses: conan-io/setup-conan@v1
+        with:
+          cache_packages: false
+
+      - name: Compute Conan cache key
+        # The toolchain is part of every package ID: a runner-image Xcode bump
+        # must start a new closure rather than restore one it cannot use.
+        id: conan_cache
+        shell: bash
+        run: |
+          hash=$( (cat conanfile.txt conan.lock; clang --version) | shasum -a 256 | cut -c1-16)
+          echo "hash=v1-${hash}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Conan cache
+        # On Depot runners actions/cache is backed by Depot Cache storage.
+        id: conan-gha-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.conan2
+          key: conan-macos-arm64-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
+          restore-keys: conan-macos-arm64-relwithdebinfo-v1-
+
+      - name: Seed Conan source download cache
+        # Same checksum-verified, repo-hosted source seed as linux-ci.yml
+        # (minizip's only zlib.net URL rejects runner IPs).
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_dir="${RUNNER_TEMP}/conan-source-cache"
+          mkdir -p "${cache_dir}/s"
+          find .github/conan/source-backup -maxdepth 1 -type f ! -name README.md \
+            -exec cp -f {} "${cache_dir}/s/" \;
+          conan_home="$(conan config home)"
+          conf="${conan_home}/global.conf"
+          mkdir -p "${conan_home}"
+          if [[ -f "$conf" ]]; then
+            grep -v '^core\.sources:download_cache=' "$conf" > "${conf}.tmp" || true
+            mv "${conf}.tmp" "$conf"
+          fi
+          echo "core.sources:download_cache=${cache_dir}" >> "$conf"
+          cat "$conf"
+
+      - name: Restore Qt SDK cache
+        id: qt-sdk-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: .qt/${{ steps.versions.outputs.qt_version }}/macos
+          key: qt-sdk-${{ steps.versions.outputs.qt_version }}-macos-v1
+
+      - name: Install Qt via aqt
+        # Inline like windows-ci.yml (scripts/install_qt6.sh is Linux-only); the
+        # version comes from versions.env.
+        if: steps.qt-sdk-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          # Same aqt pin as windows-ci.yml (released aqt cannot resolve the new repo layout).
+          pip3 install --break-system-packages \
+            "git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b"
+          attempt=0
+          until aqt install-qt mac desktop "${PJ_QT_VERSION}" clang_64 --outputdir ./.qt; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge 5 ]; then echo "aqt failed after ${attempt} attempts" >&2; exit 1; fi
+            sleep $((attempt * 15))
+          done
+          test -x ".qt/${PJ_QT_VERSION}/macos/bin/qmake"
+
+      - name: Save Qt SDK cache
+        # Right after the install, so a later failing step cannot skip it.
+        if: steps.qt-sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .qt/${{ steps.versions.outputs.qt_version }}/macos
+          key: qt-sdk-${{ steps.versions.outputs.qt_version }}-macos-v1
+
+      - name: Restore ccache
+        id: ccache_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-macos-arm64-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-macos-arm64-${{ github.ref_name }}-
+            ccache-macos-arm64-main-
+
+      - name: Set ccache limits
+        shell: bash
+        run: |
+          echo "CCACHE_DIR=${HOME}/.cache/ccache" >> "$GITHUB_ENV"
+          export CCACHE_DIR="${HOME}/.cache/ccache"
+          ccache --set-config=max_size=2G
+          ccache --set-config=compression=true
+          ccache --set-config=compiler_check=content
+          ccache --set-config=hash_dir=false
+          ccache --set-config=base_dir="${GITHUB_WORKSPACE}"
+          ccache -z
+
+      - name: Conan install
+        shell: bash
+        run: |
+          set -euo pipefail
+          conan profile detect --force
+          scripts/configure_conan_remote.sh
+          conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
+          conan install . --output-folder=build --build=missing -r=plotjuggler-conan -r=conancenter \
+            --lockfile=conan.lock --lockfile-partial \
+            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+            -c tools.cmake.cmaketoolchain:generator=Ninja \
+            2>&1 | tee "$conan_log"
+          if grep -q "Building from source" "$conan_log"; then
+            echo "::notice::Conan built missing macOS binaries; the cache save below persists them."
+          fi
+
+      - name: Trim Conan cache before saving
+        if: always() && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: conan cache clean "*" --build --source --temp || true
+
+      - name: Save Conan cache
+        # always(): a failed app compile must still persist the expensive
+        # third-party closure. Immutable keys: skip only on an exact-key hit.
+        if: always() && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.conan2
+          key: conan-macos-arm64-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
+
+      - name: Build (QRhi)
+        id: build
+        shell: bash
+        run: |
+          cmake -S . -B build -G Ninja \
+            "-DCMAKE_TOOLCHAIN_FILE=${PWD}/build/conan_toolchain.cmake" \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            "-DCMAKE_PREFIX_PATH=${PWD}/.qt/${PJ_QT_VERSION}/macos" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DPJ_BUILD_DEMOS=OFF -DPJ_SCENE3D_RHI=ON
+          # -k 0: one run lists every compile error.
+          cmake --build build --parallel -- -k 0
+
+      - name: Save ccache
+        # always(): a failed build's objects are still valid. Not from PR runs
+        # (each save is a new SHA-keyed blob); PRs restore main's.
+        if: always() && github.event_name != 'pull_request' && steps.ccache_restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-macos-arm64-${{ github.ref_name }}-${{ github.sha }}
+
+      - name: ccache stats
+        if: always()
+        shell: bash
+        run: ccache -s || true
+
+      - name: Test the QRhi renderer (Metal)
+        if: always() && steps.build.outcome == 'success'
+        shell: bash
+        env:
+          # The test main defaults to `offscreen`, which cannot render the 3D view.
+          QT_QPA_PLATFORM: cocoa
+          PJ_REQUIRE_GPU_TESTS: "1"
+          QT_LOGGING_RULES: pj.graphics.info=true
+          # Without a terminal Qt logs to os_log, which ctest never sees.
+          QT_FORCE_STDERR_LOGGING: "1"
+          PJ_POINTCLOUD_GOLDEN_OUT: ${{ runner.temp }}/golden-out
+          PJ_RHI_TEST_DUMP_DIR: ${{ runner.temp }}/rhi-dump
+        run: |
+          mkdir -p "$PJ_POINTCLOUD_GOLDEN_OUT"
+          log="${RUNNER_TEMP}/qrhi-metal-ctest.log"
+          ctest --test-dir build -V --timeout 120 -L qrhi-metal 2>&1 | tee "$log" || status=$?
+          bash scripts/ci/check_qrhi_backend.sh "$log" 'Metal, '
+          exit "${status:-0}"
+
+      - name: Test the QRhi renderer (OpenGL)
+        # The Metal-to-OpenGL fallback path: a 4.1 core context (the app's and the
+        # test main's macOS default format) running every GLSL 330 shader pack.
+        # A functional smoke run, not a parity gate (Metal is): the runner's GL is
+        # Apple's software renderer, whose rasterization differs from the Mesa
+        # goldens (point sprites and sphere impostors) and which is 10-40x slower.
+        # Hence no pointcloud goldens, no sub-pixel sprite colour check (its 1 px
+        # sprites resolve to ~15% coverage there), and no DPR 2 mixed-dock pass
+        # (every float recompiles the whole pipeline set at 4x the pixels; Linux
+        # runs it). pj_scene3D/docs/QRHI_MIGRATION.md, "macOS OpenGL fallback".
+        if: always() && steps.build.outcome == 'success'
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: cocoa
+          PJ_REQUIRE_GPU_TESTS: "1"
+          QT_LOGGING_RULES: pj.graphics.info=true
+          QT_FORCE_STDERR_LOGGING: "1"
+          PJ_POINTCLOUD_GOLDEN_OUT: ${{ runner.temp }}/golden-out
+          PJ_RHI_TEST_DUMP_DIR: ${{ runner.temp }}/rhi-dump
+        run: |
+          mkdir -p "$PJ_POINTCLOUD_GOLDEN_OUT"
+          log="${RUNNER_TEMP}/qrhi-opengl-ctest.log"
+          ctest --test-dir build -V --timeout 120 -L qrhi-opengl \
+            -E '^pointcloud_golden_test\.|SubPixelCubeCloudBecomesColouredSprites|^rhi_mixed_dock_test\.opengl_dpr2\.' \
+            2>&1 | tee "$log" || status=$?
+          bash scripts/ci/check_qrhi_backend.sh "$log" 'OpenGL, '
+          exit "${status:-0}"
+
+      - name: Test (unit)
+        # Plain serial ctest like the other lanes: the GUI test main's `offscreen`
+        # default, and GPU-gated tests (GL 4.5 ones cannot run on macOS) skip.
+        # Serial because the GUI runners share one per-runner config dir, so
+        # parallel cases contend for its extension-store lock.
+        if: always() && steps.build.outcome == 'success'
+        shell: bash
+        run: ctest --test-dir build --output-on-failure --timeout 120 -LE qrhi
+
+      - name: Upload QRhi Metal failure images
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qrhi-metal-failures
+          path: |
+            ${{ runner.temp }}/golden-out
+            ${{ runner.temp }}/rhi-dump
+          if-no-files-found: ignore

@@ -70,8 +70,8 @@ constexpr const char* kMockManifestId = "mock-file-source";
 // A statically registered file source claiming ".mcap", so a host-cache
 // artifact can be loaded through the real FileLoader in-process (the real
 // MCAP loader is an external plugin). Content-agnostic: writes one record.
-constexpr const char* kStaticMcapPluginName = "Static MCAP Source";
-constexpr const char* kStaticMcapManifestId = "static-mcap-source";
+[[maybe_unused]] constexpr const char* kStaticMcapPluginName = "Static MCAP Source";
+[[maybe_unused]] constexpr const char* kStaticMcapManifestId = "static-mcap-source";
 
 // Test knob: a true makes every StaticMcapSource import fail, modelling a
 // cached artifact the stock loader cannot ingest (the quarantine trigger).

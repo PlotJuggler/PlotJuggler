@@ -369,10 +369,10 @@
          <item row="4" column="0">
           <widget class="QLabel" name="labelOpenGL">
            <property name="toolTip">
-            <string>Render plots on a hardware OpenGL canvas (faster). Applies to newly created plots; existing plots keep their current canvas.</string>
+            <string>Render plots on a GPU-accelerated canvas (faster); off uses the software raster canvas. Applies to newly created plots; existing plots keep their current canvas.</string>
            </property>
            <property name="text">
-            <string>OpenGL:</string>
+            <string>GPU canvas:</string>
            </property>
           </widget>
          </item>

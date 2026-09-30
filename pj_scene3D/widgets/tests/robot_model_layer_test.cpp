@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "mesh_import.h"  // maxConcurrentMeshLoads
 #include "pj_base/time.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
@@ -1251,4 +1252,45 @@ TEST(RobotModelLayerTest, DrawsKeepLinkLocalGeometryAndApplyTfOnce) {
 #else
   EXPECT_NEAR(layer.firstVisualDrawTranslationForTest().x, 6.0f, 1e-5f) << "TF x <origin> composed once";
 #endif
+}
+
+// A source switch while mesh imports run must not stack imports: superseded
+// imports keep their slots until their workers finish, so the imports still
+// running never exceed maxConcurrentMeshLoads(); their results are dropped and
+// the new source's meshes all load.
+TEST(RobotModelLayerTest, SourceSwitchKeepsSupersededImportsWithinTheBound) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const std::size_t limit = pj::scene3d::maxConcurrentMeshLoads();
+  const int mesh_count = static_cast<int>(limit) + 2;  // more than one wave
+  QString links;
+  for (int index = 0; index < mesh_count; ++index) {
+    const QString path = dir.filePath(u"mesh_%1.stl"_s.arg(index));
+    ASSERT_TRUE(QFile::copy(QStringLiteral(PJ_SCENE3D_FIXTURES_DIR "/meshes/cube.stl"), path));
+    links +=
+        uR"(<link name="link_%1"><visual><geometry><mesh filename="%2"/></geometry></visual></link>)"_s.arg(index).arg(
+            path);
+  }
+  const auto urdf = [&](const QString& name) { return u"<robot name=\"%1\">%2</robot>"_s.arg(name, links).toUtf8(); };
+
+  pj::scene3d::RobotModelLayer layer(PJ::ObjectTopicId{}, u"robot"_s);
+  layer.setSourceFileContent(u"first.urdf"_s, urdf(u"first"_s));
+  ASSERT_NE(layer.robotModel(), nullptr) << layer.statusText().toStdString();
+  ASSERT_EQ(layer.totalMeshCount(), mesh_count);
+  ASSERT_EQ(layer.meshImportsOutstandingForTest(), limit);
+
+  // No event processing in between: every first-source import is still in flight.
+  layer.setSourceFileContent(u"second.urdf"_s, urdf(u"second"_s));
+  ASSERT_NE(layer.robotModel(), nullptr) << layer.statusText().toStdString();
+  EXPECT_LE(layer.meshImportsOutstandingForTest(), limit) << "superseded imports lost their concurrency slots";
+
+  QElapsedTimer timer;
+  timer.start();
+  while ((layer.meshImportsOutstandingForTest() != 0 || layer.loadedMeshCount() != mesh_count) &&
+         timer.elapsed() < 10000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    ASSERT_LE(layer.meshImportsOutstandingForTest(), limit);
+  }
+  EXPECT_EQ(layer.meshImportsOutstandingForTest(), 0U) << "superseded imports never settled";
+  EXPECT_EQ(layer.loadedMeshCount(), mesh_count) << "the new source's meshes did not all load";
 }

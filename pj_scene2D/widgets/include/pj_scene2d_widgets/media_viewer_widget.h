@@ -27,6 +27,7 @@
 #include "pj_scene2d_core/video_color.h"         // buildYuvMatrix (per-layer YUV->RGB matrix cache)
 #include "pj_scene2d_widgets/pixel_inspector.h"  // kViewRotations
 #include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/GraphicsApi.h"
 
 namespace PJ {
 
@@ -61,6 +62,15 @@ struct MediaViewState {
 ///
 /// Zoom (mouse wheel, cursor-anchored) and pan (mouse drag) via a view
 /// transform matrix in the vertex shader. See REQUIREMENTS.md §4.7.
+///
+/// GPU failure: when the image pipeline, its samplers or its base textures cannot
+/// be created on the current QRhi, the viewer only clears to its background,
+/// emits renderFailed() and renderingWarningChanged() once, and retries on every
+/// later initialize() (a new QRhi or a resized target). An overlay or a frame
+/// texture that fails is dropped, and without the blending pipeline the pixel
+/// layers draw opaque, each with a warning logged once per QRhi; the next
+/// initialize() rebuilds a dropped overlay or blending pipeline. No draw ever
+/// references a resource whose create() failed.
 class MediaViewerWidget : public QRhiWidget {
   Q_OBJECT
   Q_PROPERTY(QColor clearColor READ clearColor WRITE setClearColor)
@@ -100,6 +110,9 @@ class MediaViewerWidget : public QRhiWidget {
   [[nodiscard]] bool pointInspectorEnabled() const noexcept;
 
  signals:
+  /// Non-empty while the viewer cannot render (see the class comment); empty
+  /// once a later initialize() recovers. Emitted on changes only.
+  void renderingWarningChanged(const QString& warning);
   void zoomChanged(float zoom);
   void rotationChanged(int degrees);
   /// One complete user gesture changed the XML-visible viewport: one wheel
@@ -129,6 +142,11 @@ class MediaViewerWidget : public QRhiWidget {
   void schedulePointInspectorRefresh();
   void hidePointInspector();
   static QShader loadShader(const QString& path);
+  // Builds the samplers, placeholder and base texture layer and the image
+  // pipeline; false leaves partially created resources for releaseResources().
+  [[nodiscard]] bool createBaseResources(const QShader& vert, const QShader& frag);
+  // Enters (non-empty) or leaves (empty) the failed state.
+  void setRenderingWarning(const QString& warning);
   // Get-or-create the glyph mask texture for a given (text, font_size). Renders
   // via QPainter on first miss and uploads as an R8 QRhiTexture. The texture
   // pointer is owned by text_cache_; never delete the returned pointer.
@@ -191,6 +209,8 @@ class MediaViewerWidget : public QRhiWidget {
     std::array<float, 16> color_matrix = buildYuvMatrix(YuvColorSpace::kBt709, YuvColorRange::kFull);
     // Display magnification filter. A change rebuilds the SRB to swap the sampler.
     MagFilter mag_filter = MagFilter::kLinear;
+    // A (re)create failed during this upload: uploadLayerFrame() destroys the layer.
+    bool dropped = false;
   };
 
   struct OverlayPipeline {
@@ -203,6 +223,10 @@ class MediaViewerWidget : public QRhiWidget {
 
   void clearPixelLayerTextures();
   void destroyTextureLayer(TextureLayerResources& layer);
+  // Marks a texture layer whose GPU resources could not be (re)created, for
+  // uploadLayerFrame() to destroy; it is not drawn until the next upload
+  // rebuilds it. Always returns false.
+  bool dropTextureLayer(TextureLayerResources& layer);
   bool ensureTextureLayer(TextureLayerResources& layer);
   bool uploadDecodedFrameToTexture(
       const DecodedFrame& frame, TextureLayerResources& layer, QRhiResourceUpdateBatch* updates);
@@ -215,6 +239,7 @@ class MediaViewerWidget : public QRhiWidget {
   // pixel-layer paths so they never diverge. Returns the LOGICAL (displayed) size
   // — the map's output size when rectifying on GPU, else the uploaded texture size
   // — for the caller to drive overlay/aspect/inspector coords; empty on failure.
+  // The layer's uploads join `updates` only if the layer survives them.
   [[nodiscard]] QSize uploadLayerFrame(
       const DecodedFrame& frame, TextureLayerResources& layer, QRhiResourceUpdateBatch* updates);
   // Tell the attached source whether GPU rectification is available (probed in
@@ -229,24 +254,33 @@ class MediaViewerWidget : public QRhiWidget {
   // Destroy + recreate a layer's SRB against its current textures and samplers
   // (binds the real remap LUT when present, else the placeholder). Used by every
   // upload branch after a (re)create; keeps the bind list in exactly one place.
-  void rebuildLayerSrb(TextureLayerResources& layer);
+  [[nodiscard]] bool rebuildLayerSrb(TextureLayerResources& layer);
   void destroyOverlayPipeline(OverlayPipeline& overlay);
   bool createOverlayVbo(OverlayPipeline& overlay, size_t initial_capacity);
   bool createUniformOverlaySrb(OverlayPipeline& overlay);
+  // `warn` logs a creation failure; false while retrying after a logged one.
   bool createOverlayGraphicsPipeline(
       OverlayPipeline& overlay, const QShader& vert, const QShader& frag, QRhiGraphicsPipeline::Topology topology,
-      const QRhiVertexInputLayout& input_layout, const char* failure_message);
+      const QRhiVertexInputLayout& input_layout, const char* name, bool warn);
+  // Builds whichever optional parts are missing (the blending pipeline, the
+  // overlay uniform buffer and the points/outline/text overlays), so a part
+  // dropped at creation or in render() returns on the next initialize().
+  // Needs the base resources; `vert`/`frag` are the image shaders, loaded when
+  // the blending pipeline is missing.
+  void createOptionalResources(QRhi* r, const QShader& vert, const QShader& frag);
   void uploadOverlayVertexData(OverlayPipeline& overlay, QRhiResourceUpdateBatch* updates);
 
   // Pipeline for YUV→RGB shader (video frames)
-  QRhi* rhi_cached_ = nullptr;
+  QRhi* rhi_cached_ = nullptr;  ///< The QRhi whose resources this viewer holds; null after releaseResources().
+  bool optional_failures_logged_ = false;  ///< An optional part's failure was logged for this QRhi.
 #ifdef PJ_TARGET_WASM
   // Qt/WASM switches the top-level from raster to RHI composition when this
   // late-created widget submits its first frame. Re-armed by releaseResources().
   bool composition_refresh_queued_ = false;
 #endif
-  QRhiGraphicsPipeline* pipeline_ = nullptr;
+  QRhiGraphicsPipeline* pipeline_ = nullptr;  ///< Null while the viewer is in its failed state.
   QRhiGraphicsPipeline* composite_pipeline_ = nullptr;
+  RhiFailureLatch rendering_warning_;  ///< Failed while set; survives releaseResources().
   QRhiSampler* sampler_ = nullptr;
   // NEAREST/ClampToEdge sampler used when a layer requests MagFilter::kNearest
   // (crisp "pixelated" magnification, e.g. for pixel inspection). Distinct from

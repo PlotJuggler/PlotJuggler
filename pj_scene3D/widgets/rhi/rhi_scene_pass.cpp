@@ -6,6 +6,7 @@
 #include <rhi/qshader.h>
 
 #include <QFile>
+#include <QHash>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -16,6 +17,22 @@
 
 namespace pj::scene3d {
 namespace {
+
+#ifdef PJ_RHI_TEST_HOOKS
+// Where each loaded shader came from, so the fault injection can name it.
+QHash<QShader, QString>& loadedShaderPaths() {
+  static QHash<QShader, QString> paths;
+  return paths;
+}
+
+bool injectedPipelineFailure(const QRhiGraphicsPipeline& pipeline) {
+  const QString shader = qEnvironmentVariable("PJ_SCENE3D_TEST_FAIL_SHADER");
+  return !shader.isEmpty() &&
+         std::any_of(pipeline.cbeginShaderStages(), pipeline.cendShaderStages(), [&](const QRhiShaderStage& stage) {
+           return loadedShaderPaths().value(stage.shader()).endsWith(shader);
+         });
+}
+#endif
 
 const ArrowMeshData& unitPoseArrowMesh() {
   static const ArrowMeshData mesh = buildArrowMesh(
@@ -32,7 +49,20 @@ QShader loadRhiShader(const QString& path) {
     qWarning("SceneViewWidget QRhi: failed to open shader %s", qPrintable(path));
     return {};
   }
-  return QShader::fromSerialized(file.readAll());
+  QShader shader = QShader::fromSerialized(file.readAll());
+#ifdef PJ_RHI_TEST_HOOKS
+  loadedShaderPaths().insert(shader, path);
+#endif
+  return shader;
+}
+
+bool createGraphicsPipeline(QRhiGraphicsPipeline* pipeline) {
+#ifdef PJ_RHI_TEST_HOOKS
+  if (injectedPipelineFailure(*pipeline)) {
+    return false;
+  }
+#endif
+  return pipeline->create();
 }
 
 QRhiGraphicsPipeline* clonePipelineForRenderPass(
@@ -65,7 +95,7 @@ QRhiGraphicsPipeline* clonePipelineForRenderPass(
   pipeline->setSlopeScaledDepthBias(source->slopeScaledDepthBias());
   pipeline->setSampleCount(sample_count);
   pipeline->setRenderPassDescriptor(render_pass);
-  if (!pipeline->create()) {
+  if (!createGraphicsPipeline(pipeline)) {
     delete pipeline;
     return nullptr;
   }
@@ -110,6 +140,7 @@ void ScenePipelineRegistry::releaseClones() {
     entry.depth = nullptr;
     entry.hdr = nullptr;
   }
+  clone_failed_ = false;
   rhi_ = nullptr;
   hdr_ = nullptr;
   depth_ = nullptr;
@@ -130,6 +161,12 @@ QRhiGraphicsPipeline* ScenePipelineRegistry::resolve(QRhiGraphicsPipeline* direc
   if (pass == ScenePass::kDirect) {
     return direct;
   }
+  if (pass == ScenePass::kDepthReplay && direct != nullptr && !direct->hasDepthWrite()) {
+    // The GL composite finds the background by depth, so a draw that writes no
+    // depth leaves no coverage there: the pixels it tints over the background
+    // stay ungraded background, and SSAO/EDL never see it.
+    return nullptr;
+  }
   const auto existing =
       std::find_if(entries_.begin(), entries_.end(), [direct](const Entry& entry) { return entry.direct == direct; });
   if (existing == entries_.end() || rhi_ == nullptr) {
@@ -140,6 +177,7 @@ QRhiGraphicsPipeline* ScenePipelineRegistry::resolve(QRhiGraphicsPipeline* direc
   if (clone == nullptr) {
     clone = depth_replay ? clonePipelineForRenderPass(rhi_, direct, depth_, 1, true)
                          : clonePipelineForRenderPass(rhi_, direct, hdr_, hdr_samples_);
+    clone_failed_ = clone_failed_ || clone == nullptr;
   }
   return clone;
 }
@@ -252,7 +290,7 @@ QRhiGraphicsPipeline* createScenePipeline(const RhiPassSetup& setup, const Pipel
   pipeline->setSlopeScaledDepthBias(desc.slope_scaled_depth_bias);
   pipeline->setSampleCount(setup.sample_count);
   pipeline->setRenderPassDescriptor(setup.render_pass);
-  if (!pipeline->create()) {
+  if (!createGraphicsPipeline(pipeline)) {
     delete pipeline;
     return nullptr;
   }

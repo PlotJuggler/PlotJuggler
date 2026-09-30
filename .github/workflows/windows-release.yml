@@ -357,11 +357,12 @@ jobs:
             -DCMAKE_POLICY_DEFAULT_CMP0141=NEW \
             -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded \
             -DPJ_INSTALLATION=windows \
+            -DPJ_BUILD_TESTS=OFF \
             "${launcher_args[@]}"
 
-          # This release only packages the application. Building the default ALL
-          # target also compiles the repository's test executables, which are not
-          # consumed by the installer and needlessly delays the registry smoke test.
+          # This release only packages the application. PJ_BUILD_TESTS=OFF also
+          # keeps the widgets' test-only fault injection (the PJ_RHI_TEST_HOOKS
+          # definition) out of the shipped binaries.
           cmake --build build --config RelWithDebInfo --target pj_app --parallel
 
           if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then

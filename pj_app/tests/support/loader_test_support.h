@@ -17,6 +17,7 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+#include <QFileInfo>
 #include <QObject>
 #include <QSettings>
 #include <QString>
@@ -60,7 +61,10 @@ inline void flushQueuedEvents(int passes = 3) {
   QFile file(path);
   EXPECT_TRUE(file.open(QIODevice::WriteOnly));
   file.close();
-  return path;
+  // Canonical, like the stored source path: the macOS temp dir sits behind a
+  // symlink (/var -> /private/var).
+  const QString canonical = QFileInfo(path).canonicalFilePath();
+  return canonical.isEmpty() ? path : canonical;
 }
 
 // Unified hints builder: skip the dialog, target the mock source, with an

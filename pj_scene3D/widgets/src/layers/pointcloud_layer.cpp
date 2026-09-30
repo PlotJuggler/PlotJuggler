@@ -775,8 +775,7 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   // down). Block the sibling's signal so its programmatic update doesn't re-enter
   // the other handler, then push the now-consistent pair once.
   QObject::connect(
-      range_min_spin, &PJ::DoubleScrubber::valueChanged, this,
-      [range_min_spin, range_max_spin, push_manual_range](double v) {
+      range_min_spin, &PJ::DoubleScrubber::valueChanged, this, [range_max_spin, push_manual_range](double v) {
         if (v > range_max_spin->value()) {
           QSignalBlocker block(range_max_spin);
           range_max_spin->setValue(v);
@@ -784,8 +783,7 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
         push_manual_range();
       });
   QObject::connect(
-      range_max_spin, &PJ::DoubleScrubber::valueChanged, this,
-      [range_min_spin, range_max_spin, push_manual_range](double v) {
+      range_max_spin, &PJ::DoubleScrubber::valueChanged, this, [range_min_spin, push_manual_range](double v) {
         if (v < range_min_spin->value()) {
           QSignalBlocker block(range_min_spin);
           range_min_spin->setValue(v);

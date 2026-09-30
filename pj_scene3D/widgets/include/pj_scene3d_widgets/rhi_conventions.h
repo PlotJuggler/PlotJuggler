@@ -45,4 +45,24 @@ struct RhiConventions {
       0.0F, 0.0F, 0.0F, 1.0F);
 }
 
+/// The per-dimension 3D texture size every conformant Vulkan device (required
+/// limit maxImageDimension3D) and every OpenGL 3.3 / OpenGL ES 3.0 context
+/// (minimum MAX_3D_TEXTURE_SIZE, so WebGL2 too) supports: the fallback when the
+/// backend cannot be asked.
+inline constexpr int kGuaranteedMax3dTextureSize = 256;
+
+/// The documented per-dimension 3D texture limit where no device query is used:
+/// D3D11 from feature level 10_0 and D3D12 (D3D1x_REQ_TEXTURE3D_U_V_OR_W_DIMENSION;
+/// QRhi's D3D12 backend needs 11_0) and Metal (every Apple and Mac GPU family).
+inline constexpr int kDocumentedMax3dTextureSize = 2048;
+
+/// Per-dimension 3D texture limit of a D3D11 device at `feature_level` (the
+/// D3D_FEATURE_LEVEL value QRhiD3D11NativeHandles::featureLevel reports, e.g.
+/// 0xb000 for 11_0): 2048 from 10_0 up, 256 on 9_x. An unrecognised level gets
+/// the 9_x floor.
+[[nodiscard]] constexpr int d3d11Max3dTextureSize(int feature_level) {
+  constexpr int kFeatureLevel10_0 = 0xa000;
+  return feature_level >= kFeatureLevel10_0 ? kDocumentedMax3dTextureSize : 256;
+}
+
 }  // namespace pj::scene3d

@@ -82,12 +82,8 @@ struct QStringHash {
 // True when `live_path` and `saved_path` name the same on-disk source. Replicates
 // pj_app's layout_xml::isSamePath semantics without depending on it (pj_runtime is
 // below pj_app): literal-equality short-circuit first, then a QFileInfo-based
-// normalisation fallback. Both sides are normalised with the absoluteFilePath
-// fallback (matching normalizedSourcePath) so that a Windows path with a drive
-// letter ("C:/data/foo.mcap", from the registry) compares equal to its raw
-// "/data/foo.mcap" form from a saved layout. canonicalFilePath is preferred when
-// the file exists (resolves symlinks), and falls back to absoluteFilePath
-// otherwise. Empty inputs never match.
+// normalisation fallback through SessionManager::normalizedSourcePath. Empty
+// inputs never match.
 [[nodiscard]] bool isSamePathLike(const QString& live_path, const QString& saved_path) {
   if (live_path.isEmpty() || saved_path.isEmpty()) {
     return false;
@@ -95,17 +91,10 @@ struct QStringHash {
   if (live_path == saved_path) {
     return true;
   }
-  // canonicalFilePath resolves symlinks but returns empty for non-existent paths
-  // (e.g. a deleted recording). Fall back to absoluteFilePath so that Windows
-  // drive-letter normalisation (stored paths gain "C:/" via normalizedSourcePath)
-  // compares equal to their raw "/data/…" forms from a saved layout.
-  const auto normalize = [](const QString& p) -> QString {
-    const QFileInfo info(p);
-    const QString canonical = info.canonicalFilePath();
-    return QDir::cleanPath(canonical.isEmpty() ? info.absoluteFilePath() : canonical);
-  };
-  const QString norm_live = normalize(live_path);
-  const QString norm_saved = normalize(saved_path);
+  // The stored form (normalizedSourcePath) on both sides, so a deleted recording
+  // and a Windows drive-letter path compare equal to their saved-layout forms.
+  const QString norm_live = SessionManager::normalizedSourcePath(live_path);
+  const QString norm_saved = SessionManager::normalizedSourcePath(saved_path);
   return !norm_live.isEmpty() && !norm_saved.isEmpty() && norm_live == norm_saved;
 }
 

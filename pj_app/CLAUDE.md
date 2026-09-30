@@ -57,6 +57,21 @@ process-wide state. The shared main owns the only QApplication.
 
 These tests retain their standalone executable and ctest entry:
 
+- `rhi_dock_lifecycle_test` (QRhi build only): `QRhiWidget`s in ADS docks through
+  float/redock, split, tab switch, sibling destruction, floating-window close,
+  a DPR change, plus the mixed-API negative case. It needs a real display (it
+  skips on `offscreen`) and is registered on every backend of the platform plus
+  `.opengl_dpr2.` (`RHI_BACKENDS DPR2` in `cmake/PjTests.cmake`). Its setup mirrors `main()`'s
+  `AA_DontCreateNativeWidgetSiblings`; see `pj_scene3D/docs/QRHI_MIGRATION.md`.
+- `rhi_mixed_dock_test` (QRhi build only): the same matrix with the real widgets
+  in one dock manager (a `PlotWidget`, a Scene3D point cloud, a Scene2D image),
+  each checked for its own content at its pixel size, no QRhi warning, no
+  resource left on a dying QRhi (`QT_RHI_LEAK_CHECK`), and, through the widgets'
+  test-hook lifecycle counters, a re-initialize on every float and redock and
+  never resources on two QRhis at once; plus the media viewer's
+  failure state beside them. Registered like `rhi_dock_lifecycle_test`. Both
+  share `tests/support/rhi_dock_test_support.h`.
+
 - `main_window_layout_exit_test`: the last case leaves an import parked for
   destructor-time shutdown, so suite ordering and teardown are part of the test.
 - `main_window_layout_import_lifecycle_test`: ordered import supersession,

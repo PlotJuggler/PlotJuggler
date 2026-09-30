@@ -6,8 +6,9 @@
 // QRhiWidget::grabFramebuffer() renders a frame synchronously on a QPA with
 // RHI-based rendering (xcb, wayland); the `offscreen` QPA has none, so this
 // runner never defaults to it. CI runs it under Xvfb with Mesa llvmpipe
-// (OpenGL) and lavapipe (Vulkan); PJ_GRAPHICS_API picks the backend and
-// PJ_REQUIRE_GPU_TESTS=1 turns a missing one into a failure.
+// (OpenGL) and lavapipe (Vulkan), and on Windows with the `windows` QPA on D3D11
+// WARP; PJ_GRAPHICS_API picks the backend and PJ_REQUIRE_GPU_TESTS=1 turns a
+// missing one into a failure.
 //
 // Scenes are grabbed from a shown top-level through grabPresentedFrame(); a
 // never-shown widget is good for one grab only (Qt 6.11.1, see that method).
@@ -34,6 +35,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QVBoxLayout>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <glm/glm.hpp>
@@ -51,6 +53,7 @@
 #include "pj_scene3d_widgets/layers/poses_in_frame_layer.h"
 #include "pj_scene3d_widgets/layers/scene_entities_layer.h"
 #include "pj_scene3d_widgets/layers/trail_layer.h"
+#include "pj_widgets/GraphicsApi.h"
 #include "scene3d_render_test_support.h"
 
 using namespace Qt::StringLiterals;
@@ -72,10 +75,10 @@ struct GraphicsLog : ::testing::Environment {
 constexpr char kFrame[] = "base_link";
 constexpr QSize kViewSize{480, 360};
 
-// Backend the run asked for, as QRhi::backendName() spells it.
+// Backend the run asked for (PJ_GRAPHICS_API, else the platform default), as
+// QRhi::backendName() spells it.
 QString requestedBackend() {
-  return qEnvironmentVariable("PJ_GRAPHICS_API").compare(u"vulkan"_s, Qt::CaseInsensitive) == 0 ? u"Vulkan"_s
-                                                                                                : u"OpenGL"_s;
+  return pjRhiBackendName(PJ::preferredGraphicsApi());
 }
 
 void dump(const QImage& image, const char* name) {
@@ -467,6 +470,14 @@ TEST_F(Scene3dRhiRenderTest, BackendMatchesRequestAndImageSize) {
   const qreal dpr = view->devicePixelRatio();
   EXPECT_EQ(image.size(), QSize(qRound(view->width() * dpr), qRound(view->height() * dpr)));
   EXPECT_EQ(view->size(), kViewSize);
+#ifdef Q_OS_MACOS
+  // Qt creates this dedicated QRhi with a default-constructed QSurfaceFormat, not
+  // QSurfaceFormat::defaultFormat(): on macOS that is a legacy 2.1 context without
+  // GLSL 330, so the view reports it cannot render. A shown view gets 4.1 core.
+  if (PJ::preferredGraphicsApi() == QRhiWidget::Api::OpenGL) {
+    return;
+  }
+#endif
   EXPECT_TRUE(view->renderingWarningForTest().isEmpty()) << view->renderingWarningForTest().toStdString();
 }
 
@@ -645,6 +656,239 @@ TEST_F(Scene3dRhiRenderTest, SceneEntitiesCubeCastsShadow) {
   EXPECT_EQ(
       meanColor(shadowed, project(*view, front_face, shadowed.size())),
       meanColor(unshadowed, project(*view, front_face, unshadowed.size())));
+}
+
+// Pixels of `mask` in each image quadrant: {top-left, top-right, bottom-left, bottom-right}.
+std::array<int, 4> quadrantCounts(const DiffMask& mask, const QSize& size) {
+  const int w = size.width() / 2;
+  const int h = size.height() / 2;
+  return {
+      mask.count_in(QRect(0, 0, w, h)), mask.count_in(QRect(w, 0, size.width() - w, h)),
+      mask.count_in(QRect(0, h, w, size.height() - h)),
+      mask.count_in(QRect(w, h, size.width() - w, size.height() - h))};
+}
+
+// A unit quad in the XY plane textured with marked.png: UV (0,0) at (-x,-y), (1,1)
+// at (+x,+y) (tests/fixtures/meshes/textured_quad.dae with its own texture).
+constexpr char kMarkedQuadDae[] = R"(<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit name="meter" meter="1"/><up_axis>Z_UP</up_axis></asset>
+  <library_images><image id="img"><init_from>marked.png</init_from></image></library_images>
+  <library_effects><effect id="fx"><profile_COMMON>
+    <newparam sid="surf"><surface type="2D"><init_from>img</init_from></surface></newparam>
+    <newparam sid="samp"><sampler2D><source>surf</source></sampler2D></newparam>
+    <technique sid="common"><lambert><diffuse><texture texture="samp" texcoord="UV0"/></diffuse></lambert></technique>
+  </profile_COMMON></effect></library_effects>
+  <library_materials><material id="mat"><instance_effect url="#fx"/></material></library_materials>
+  <library_geometries><geometry id="quad"><mesh>
+    <source id="pos"><float_array id="pos-a" count="12">-0.5 -0.5 0 0.5 -0.5 0 0.5 0.5 0 -0.5 0.5 0</float_array>
+      <technique_common><accessor source="#pos-a" count="4" stride="3">
+        <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+      </accessor></technique_common></source>
+    <source id="uv"><float_array id="uv-a" count="8">0 0 1 0 1 1 0 1</float_array>
+      <technique_common><accessor source="#uv-a" count="4" stride="2">
+        <param name="S" type="float"/><param name="T" type="float"/>
+      </accessor></technique_common></source>
+    <vertices id="verts"><input semantic="POSITION" source="#pos"/></vertices>
+    <triangles material="sym" count="2">
+      <input semantic="VERTEX" source="#verts" offset="0"/>
+      <input semantic="TEXCOORD" source="#uv" offset="1" set="0"/>
+      <p>0 0 1 1 2 2 0 0 2 2 3 3</p>
+    </triangles>
+  </mesh></geometry></library_geometries>
+  <library_visual_scenes><visual_scene id="scene"><node id="node"><instance_geometry url="#quad">
+    <bind_material><technique_common><instance_material symbol="sym" target="#mat">
+      <bind_vertex_input semantic="UV0" input_semantic="TEXCOORD" input_set="0"/>
+    </instance_material></technique_common></bind_material>
+  </instance_geometry></node></visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#scene"/></scene>
+</COLLADA>
+)";
+
+// A textured model whose texture marks one corner: its top-left quadrant is green,
+// the rest red. Standing upright facing the camera (image top = +Z, image left =
+// -X), the green quadrant must land top-left on screen on every backend: a
+// mirrored or Y-flipped texture sample (or upload) moves it to another quadrant.
+TEST_F(Scene3dRhiRenderTest, OrientationTextureMarkedCornerStaysTopLeft) {
+  QTemporaryDir mesh_dir;
+  ASSERT_TRUE(mesh_dir.isValid());
+  QFile dae(mesh_dir.filePath(u"quad.dae"_s));
+  ASSERT_TRUE(dae.open(QIODevice::WriteOnly));
+  ASSERT_GT(dae.write(kMarkedQuadDae), 0);
+  dae.close();
+  QImage texture(64, 64, QImage::Format_RGB32);
+  texture.fill(QColor(255, 0, 0));
+  for (int y = 0; y < 32; ++y) {
+    for (int x = 0; x < 32; ++x) {
+      texture.setPixelColor(x, y, QColor(0, 255, 0));
+    }
+  }
+  ASSERT_TRUE(texture.save(mesh_dir.filePath(u"marked.png"_s)));
+
+  RhiScene scene;
+  const glm::vec3 centre{0.0F, 0.0F, 1.5F};
+  scene.addRobot(
+      u"<robot name=\"quad\"><link name=\"base_link\"><visual>"
+      "<origin xyz=\"0 0 1.5\" rpy=\"1.5707963 0 0\"/>"
+      "<geometry><mesh filename=\"%1\" scale=\"2 2 2\"/></geometry>"
+      "</visual></link></robot>"_s.arg(mesh_dir.filePath(u"quad.dae"_s))
+          .toUtf8());
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  view->setGridVisible(false);
+  QImage image;
+  for (int attempt = 0; attempt < 100 && view->lastModelTextureSlotCountsForTest()[0] == 0; ++attempt) {
+    QTest::qWait(20);  // the mesh imports off the GUI thread
+    image = grab(view, "quad");
+    if (image.isNull()) {
+      PJ_SKIP_WITHOUT_GPU("QRhiWidget::grabFramebuffer() failed for " << requestedBackend().toStdString());
+    }
+  }
+  ASSERT_GT(view->lastModelTextureSlotCountsForTest()[0], 0) << "the textured quad never loaded";
+  GRAB_OR_SKIP(textured, view, "textured");
+
+  const auto sample = [&](float x, float z) {
+    return meanColor(textured, project(*view, centre + glm::vec3(x, 0.0F, z), textured.size()), 2);
+  };
+  const auto is_green = [](const QColor& c) { return c.green() > c.red() + 40; };
+  const auto is_red = [](const QColor& c) { return c.red() > c.green() + 40; };
+  const QColor top_left = sample(-0.5F, 0.5F);
+  const QColor top_right = sample(0.5F, 0.5F);
+  const QColor bottom_left = sample(-0.5F, -0.5F);
+  const QColor bottom_right = sample(0.5F, -0.5F);
+  EXPECT_TRUE(is_green(top_left)) << "top-left rgb=" << top_left.red() << "," << top_left.green() << ","
+                                  << top_left.blue();
+  EXPECT_TRUE(is_red(top_right)) << "mirrored in X? top-right rgb=" << top_right.red() << "," << top_right.green();
+  EXPECT_TRUE(is_red(bottom_left)) << "flipped in Y? bottom-left rgb=" << bottom_left.red() << ","
+                                   << bottom_left.green();
+  EXPECT_TRUE(is_red(bottom_right)) << "bottom-right rgb=" << bottom_right.red() << "," << bottom_right.green();
+}
+
+// A cube lifted off the ground under a key light from the left and behind:
+// its shadow must fall right of and in front of the cube, where the light ray
+// through the cube's centre meets the ground. A Y-flipped shadow-map lookup (or
+// a flipped depth comparison) moves or loses it.
+TEST_F(Scene3dRhiRenderTest, OrientationShadowFallsAwayFromTheLight) {
+  RhiScene scene;
+  scene.bindTransforms();
+  const glm::vec3 cube{-1.0F, 0.5F, 1.2F};
+  scene.addEntities({cubeEntity("cube", cube, 0.8F, {200, 200, 60, 255})});
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  auto params = view->meshShadingParams();
+  params.key_light_dir = glm::normalize(glm::vec3(-1.0F, 1.0F, 1.5F));  // to the light: left, behind, above
+  view->setMeshShadingParams(params);
+  GRAB_OR_SKIP(shadowed, view, "shadows");
+  ASSERT_TRUE(view->lastShadowActiveForTest()) << view->shadowCapabilityErrorForTest().toStdString();
+  params.shadows_enabled = false;
+  view->setMeshShadingParams(params);
+  GRAB_OR_SKIP(unshadowed, view, "no_shadows");
+
+  // Pixels the shadow darkened on the ground (the cube itself receives none).
+  DiffMask shadow;
+  double sx = 0.0;
+  double sy = 0.0;
+  for (int y = 0; y < shadowed.height(); ++y) {
+    for (int x = 0; x < shadowed.width(); ++x) {
+      if (qGray(unshadowed.pixel(x, y)) - qGray(shadowed.pixel(x, y)) > 12) {
+        shadow.pixels.emplace_back(x, y);
+        sx += x;
+        sy += y;
+      }
+    }
+  }
+  shadow.count = static_cast<int>(shadow.pixels.size());
+  ASSERT_GT(shadow.count, 300) << "the cube cast no shadow";
+  const QPointF centroid(sx / shadow.count, sy / shadow.count);
+  const glm::vec3 to_light = params.key_light_dir;
+  const glm::vec3 ground_hit = cube - to_light * (cube.z / to_light.z);
+  const QPointF expected = project(*view, ground_hit, shadowed.size());
+  const QPointF caster = project(*view, cube, shadowed.size());
+  EXPECT_GT(centroid.x(), caster.x()) << "shadow on the light's side: mirrored in X?";
+  EXPECT_GT(centroid.y(), caster.y()) << "shadow above the caster: flipped in Y?";
+  // The penumbra and the cube's own silhouette keep the centroid a few pixels off;
+  // a v-mirrored shadow-map lookup moves it ~20 px at this size.
+  EXPECT_NEAR(centroid.x(), expected.x(), shadowed.width() * 0.025) << "expected x=" << expected.x();
+  EXPECT_NEAR(centroid.y(), expected.y(), shadowed.height() * 0.025) << "expected y=" << expected.y();
+}
+
+// Content only in the top-left quadrant: SSAO (a concave crease between two
+// cubes) and EDL (a box model's depth edges) must darken only there. The
+// present pass samples the coverage, AO and depth textures; any of them read
+// flipped in Y or mirrored in X moves the darkening into another quadrant.
+TEST_F(Scene3dRhiRenderTest, OrientationSsaoAndEdlStayWithTheirContent) {
+  RhiScene scene;
+  // A wall facing the camera with a small cube against it: a concave crease.
+  scene.addEntities({
+      cubeEntity("wall", {-2.6F, 1.0F, 2.6F}, 2.0F, {180, 180, 180, 255}),
+      cubeEntity("bump", {-2.6F, -0.3F, 2.6F}, 0.6F, {180, 180, 180, 255}),
+  });
+  // EDL shades model meshes (the replayed mesh mask): a box model, also top-left.
+  scene.addRobot(R"(<robot name="box"><link name="base_link"><visual>
+      <origin xyz="-1 -1 2.4"/><geometry><box size="0.6 0.6 0.6"/></geometry>
+    </visual></link></robot>)");
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  view->setGridVisible(false);
+  GRAB_OR_SKIP(both, view, "ssao_edl");
+  ASSERT_TRUE(view->lastSsaoActiveForTest()) << view->ssaoCapabilityErrorForTest().toStdString();
+  ASSERT_TRUE(view->lastEdlActiveForTest()) << view->edlCapabilityErrorForTest().toStdString();
+  view->compositeParams().ssao_enabled = false;
+  GRAB_OR_SKIP(edl_only, view, "edl_only");
+  view->compositeParams().edl_enabled = false;
+  GRAB_OR_SKIP(neither, view, "neither");
+
+  const DiffMask ssao = diffMask(both, edl_only, 6);
+  const DiffMask edl = diffMask(edl_only, neither, 6);
+  const auto ssao_quadrants = quadrantCounts(ssao, both.size());
+  const auto edl_quadrants = quadrantCounts(edl, both.size());
+  ASSERT_GT(ssao.count, 30) << "SSAO darkened nothing";
+  // AO hugs the crease: normals facing away from the camera (a flipped v sign)
+  // occlude every flat face instead.
+  int covered = 0;
+  const QRgb background = neither.pixel(neither.width() - 1, 0);
+  for (int y = 0; y < neither.height(); ++y) {
+    for (int x = 0; x < neither.width(); ++x) {
+      covered += channelDeltaSum(neither.pixel(x, y), background) > 6 ? 1 : 0;
+    }
+  }
+  EXPECT_LT(ssao.count * 8, covered) << "SSAO darkened flat faces: normals flipped?";
+  ASSERT_GT(edl.count, 30) << "EDL darkened nothing";
+  for (std::size_t quadrant = 1; quadrant < 4; ++quadrant) {
+    EXPECT_LT(ssao_quadrants[quadrant] * 10, ssao_quadrants[0]) << "SSAO in quadrant " << quadrant;
+    EXPECT_LT(edl_quadrants[quadrant] * 10, edl_quadrants[0]) << "EDL in quadrant " << quadrant;
+  }
+}
+
+// A draw that writes no depth (here a translucent cube) leaves no coverage in
+// the depth replay, like the GL composite that finds the background by depth:
+// where it tints only the background the present pass keeps that pixel
+// ungraded, so the tonemap cannot change it. Over an opaque cube the same glass
+// is graded.
+TEST_F(Scene3dRhiRenderTest, NoDepthWriteDrawLeavesBackgroundUngraded) {
+  RhiScene scene;
+  const glm::vec3 glass{0.0F, 0.0F, 1.0F};
+  const glm::vec3 behind{0.9F, 1.5F, 1.0F};  // covers the glass's right half only
+  scene.addEntities({cubeEntity("opaque", behind, 1.0F, {60, 60, 255, 255})}, "/opaque");
+  scene.addEntities({cubeEntity("glass", glass, 1.6F, {40, 255, 40, 120})}, "/glass");
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  view->setGridVisible(false);
+  view->compositeParams().tonemap_mode = 0;
+  GRAB_OR_SKIP(plain, view, "tonemap_none");
+  ASSERT_TRUE(view->lastHdrActiveForTest()) << view->hdrCapabilityErrorForTest().toStdString();
+  view->compositeParams().tonemap_mode = 1;
+  GRAB_OR_SKIP(aces, view, "tonemap_aces");
+
+  const QPointF over_background = project(*view, glass + glm::vec3(-0.5F, -0.8F, 0.2F), plain.size());
+  const QPointF over_opaque = project(*view, glass + glm::vec3(0.6F, -0.8F, 0.2F), plain.size());
+  const QColor background_plain = meanColor(plain, over_background, 2);
+  const QColor background_aces = meanColor(aces, over_background, 2);
+  EXPECT_GT(background_plain.green(), background_plain.blue() + 20) << "the glass is not over this pixel";
+  EXPECT_LE(channelDeltaSum(background_plain.rgb(), background_aces.rgb()), 3)
+      << "glass over the background was graded: it left coverage in the depth replay";
+  EXPECT_GT(channelDeltaSum(meanColor(plain, over_opaque, 2).rgb(), meanColor(aces, over_opaque, 2).rgb()), 10)
+      << "glass over the opaque cube was not graded";
 }
 
 // Real top-levels: show, resize, reparent the dock to a second window, destroy

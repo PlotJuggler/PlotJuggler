@@ -61,8 +61,9 @@ decisions, platform matrix) is tracked in `pj_scene3D/docs/QRHI_MIGRATION.md`.
 `-DPJ_SCENE3D_RHI=ON` builds the QRhi view (`widgets/rhi/`: the view, its
 pass vocabulary and frame contract in `rhi_scene_pass.h`, one class per family
 under `rhi/passes/`, shaders under `rhi/shaders/`) on desktop in place of the GL
-one; its render harness `scene3d_rhi_render_test` needs a real
-X/Wayland server (Xvfb in CI) and runs once per backend (`.opengl.*`, `.vulkan.*`).
+one; its render harness `scene3d_rhi_render_test` needs a real display (Xvfb
+in Linux CI) and runs on every backend of the platform (`RHI_BACKENDS` in
+`cmake/PjTests.cmake`).
 The dock (`src/Scene3DDockWidget.cpp`) and every layer (`src/layers/`) are the
 same in both builds, and both views draw every layer family.
 
@@ -248,9 +249,10 @@ the application on the stack so it dies before Qt Network's exit handlers.
 golden-image corpus (`widgets/tests/fixtures/golden/pointcloud/README.md`), built
 by BOTH renderers through the docks' shared API, all comparing against the GL
 goldens. One ctest entry per scene (`pointcloud_golden_test.*`); the
-`PJ_SCENE3D_RHI` build registers each scene once per backend
-(`pointcloud_golden_test.opengl.*`, `.vulkan.*`), like the render harness and
-`scene3d_rhi_point_test` (the QRhi point-pass behaviour tests).
+`PJ_SCENE3D_RHI` build registers each scene on every backend of the platform
+(`RHI_BACKENDS`), like the render
+harness, `scene3d_rhi_point_test` (the QRhi point-pass behaviour tests) and
+`scene3d_rhi_failure_test`.
 
 These tests keep their own executables and `add_test` registrations:
 

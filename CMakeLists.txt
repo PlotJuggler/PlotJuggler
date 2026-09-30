@@ -86,6 +86,18 @@ option(PJ_SCENE3D_RHI "Build Scene3D with the QRhi renderer instead of the OpenG
 if(EMSCRIPTEN)
     set(PJ_SCENE3D_RHI ON)
 endif()
+# In a QRhi build every GPU widget (plot canvas, Scene3D, Scene2D media) is a
+# QRhiWidget, so a top-level window can use the platform's native graphics API;
+# a QOpenGLWidget anywhere in a window would pin it to OpenGL.
+if(PJ_SCENE3D_RHI)
+    add_compile_definitions(PJ_RHI_WIDGETS)
+endif()
+# The GPU widgets' test-only fault injection and QRhi lifecycle counters
+# (pj_widgets/GraphicsApi.h: rhiTestFault, noteRhiAdoption). Release builds
+# configure PJ_BUILD_TESTS=OFF, so shipped binaries carry none of it.
+if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
+    add_compile_definitions(PJ_RHI_TEST_HOOKS)
+endif()
 set(PJ_BUILD_PARQUET_IMPORT_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(PJ_BUILD_PORTED_PLUGINS OFF CACHE BOOL "" FORCE)
 
@@ -114,6 +126,11 @@ else()
     # cross-compile bring-up into an unrelated warning-cleanup project.
     if(NOT EMSCRIPTEN)
         list(APPEND PJ_WARNING_FLAGS -Werror)
+    endif()
+    # Clang's -Wconversion also turns on -Wsign-conversion, which GCC's C++
+    # -Wconversion leaves off: keep one warning set across compilers.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        list(APPEND PJ_WARNING_FLAGS -Wno-sign-conversion)
     endif()
 endif()
 

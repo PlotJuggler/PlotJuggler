@@ -5,6 +5,7 @@
 #include <QPointF>
 #include <cstddef>
 #include <functional>
+#include <span>
 #include <vector>
 
 namespace PJ {
@@ -51,6 +52,12 @@ using PlotSegmentLength = std::function<qreal(const QPointF&, const QPointF&)>;
 [[nodiscard]] PlotSampleReduction reducePlotSamples(
     std::size_t sample_count, std::size_t sample_budget, std::size_t horizontal_bucket_count,
     const PlotSampleAccessor& sample_at);
+
+// The same reduction over samples already mapped into memory (desktop canvases
+// map each curve once and reduce the visible range), without a type-erased call
+// per sample and scan.
+[[nodiscard]] PlotSampleReduction reducePlotSamples(
+    std::span<const QPointF> samples, std::size_t sample_budget, std::size_t horizontal_bucket_count);
 
 // Annotates retained samples with cumulative distance measured over every
 // original mapped sample, not over the reduced chords. Finite runs restart at

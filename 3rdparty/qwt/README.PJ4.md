@@ -29,7 +29,7 @@ PJ trees carried as in-tree Qwt patches lives in the application:
   `pj_dialog_host/src/chart_preview_widget.cpp`).
 - The "Lines and Dots" curve style: `pj_plotting`'s `PlotCurve` draws
   `QwtPlotCurve::Lines` plus one batched, pixel-weeded `drawDots` pass
-  (on WASM, an explicit `QwtSymbol` that `PlotRhiCanvas` renders as geometry).
+  (`PlotRhiCanvas` builds the same square dots as geometry).
 
 To upgrade Qwt: bump the URL + SHA-256 in `CMakeLists.txt`, re-check the
 source list against upstream's `src/src.pri`, and align the conda-forge

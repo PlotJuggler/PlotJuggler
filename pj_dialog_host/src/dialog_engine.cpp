@@ -321,6 +321,7 @@ struct DialogEngine::AsyncRunner {
     }
 
     auto clamp_to_browser_screen = [dialog]() {
+      Q_UNUSED(dialog);  // captured for the browser branch only
 #ifdef Q_OS_WASM
       // A browser canvas is the whole available desktop. Authored plugin
       // dialogs can be taller than it (MCAP is 732 px before its title bar),

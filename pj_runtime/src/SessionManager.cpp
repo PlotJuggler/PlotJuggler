@@ -73,7 +73,15 @@ QString SessionManager::normalizedSourcePath(const QString& path) {
   }
   const QFileInfo info(path);
   const QString canonical = info.canonicalFilePath();
-  return QDir::cleanPath(canonical.isEmpty() ? info.absoluteFilePath() : canonical);
+  if (!canonical.isEmpty()) {
+    return QDir::cleanPath(canonical);
+  }
+  // A missing file (a deleted recording) has no canonical path, but its folder
+  // usually still exists: resolving that keeps a path stored while the file
+  // existed matching when the folder sits behind a symlink (macOS /var ->
+  // /private/var, a symlinked home).
+  const QString folder = info.absoluteDir().canonicalPath();
+  return QDir::cleanPath(folder.isEmpty() ? info.absoluteFilePath() : folder + u'/' + info.fileName());
 }
 
 // Session-wide cap on ingest-seeded resident object payloads. Large enough to
@@ -242,12 +250,11 @@ DatasetIdentityResolution SessionManager::resolveDatasetIdentity(
 DatasetIdentityResolution SessionManager::resolveDatasetIdentity(
     DatasetId saved_id, const QString& saved_source, const QString& saved_path,
     const SourceRecord& saved_record) const {
-  // normalizedSourcePath canonicalizes an existing file but falls back to the
-  // cleaned-absolute form once the file is gone. For a plain (non-symlinked) path
-  // both forms coincide, so a deleted-on-disk source still compares equal to its
-  // registered path here. (A source under a symlinked directory that is stored
-  // canonical and later deleted cannot be reconciled by string comparison — see the
-  // note on resolveSeriesPath; that residual corner is out of scope.)
+  // normalizedSourcePath resolves a deleted file through its still-existing
+  // folder, so a deleted-on-disk source (even under a symlinked folder) still
+  // compares equal to the canonical path registered while it existed. Only a
+  // source whose folder is gone too falls back to the cleaned-absolute form and
+  // can miss a registration made through a symlinked folder.
   const QString normalized_saved_path = normalizedSourcePath(saved_path);
   const auto source_matches = [&saved_source](const DatasetInfo* info) {
     return info != nullptr && (saved_source.isEmpty() || QString::fromStdString(info->source_name) == saved_source);

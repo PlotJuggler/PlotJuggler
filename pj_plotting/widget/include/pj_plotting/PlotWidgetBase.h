@@ -6,11 +6,13 @@
 
 #include <QColor>
 #include <QPointF>
+#include <QPointer>
 #include <QRectF>
 #include <QWidget>
 #include <list>
 #include <map>
 #include <optional>
+#include <vector>
 
 #include "pj_base/types.hpp"
 
@@ -134,12 +136,14 @@ class PlotWidgetBase : public QWidget {
 
   // Installs `filter` on the canvas and every visible axis scale widget,
   // so the caller sees Enter/Leave across the whole chart surface (Qt
-  // does not bubble those events to ancestors).
+  // does not bubble those events to ancestors). A replacement canvas (the
+  // raster fallback after a GPU failure) gets it too.
   void installHoverFilter(QObject* filter);
 
   // The Qwt canvas widget: the plot area proper, excluding axes and legend.
   // Overlays that must stay inside the plotted region (the model-tab
-  // watermark) anchor to its geometry.
+  // watermark) anchor to its geometry. Not stable: a failed GPU canvas is
+  // replaced by the raster one, so do not cache it.
   [[nodiscard]] QWidget* canvasWidget() const;
 
  public slots:
@@ -194,6 +198,11 @@ class PlotWidgetBase : public QWidget {
 
  private:
   void refreshCanvasBackground();
+  // Replaces a failed GPU canvas with the raster QwtPlotCanvas and moves the
+  // magnifier, panners, zoomer and every canvas event filter over, in their
+  // original order. No-op once the canvas is the raster one. Retries later
+  // while a popup or modal widget is open, since the swap deletes the canvas.
+  void fallBackToRasterCanvas();
 
   QwtPlotPimpl* plot_ = nullptr;
   bool xy_mode_ = false;
@@ -201,6 +210,10 @@ class PlotWidgetBase : public QWidget {
   bool keep_aspect_ratio_ = false;
   LineWidth line_width_ = LineWidth::kPoints10;
   int next_color_index_ = 0;
+  // installHoverFilter() filters, re-installed on a replacement canvas.
+  std::vector<QPointer<QObject>> hover_filters_;
+  // fallBackToRasterCanvas() waits for a popup or modal window to close.
+  bool fallback_retry_pending_ = false;
 };
 
 }  // namespace PJ

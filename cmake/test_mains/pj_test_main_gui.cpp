@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QSurfaceFormat>
 
 int main(int argc, char** argv) {
   if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
@@ -21,6 +22,13 @@ int main(int argc, char** argv) {
   if (::testing::GTEST_FLAG(list_tests)) {
     return RUN_ALL_TESTS();
   }
+#if defined(Q_OS_MACOS) && defined(PJ_RHI_WIDGETS)
+  // As pj_app's main(): an OpenGL QRhi on macOS needs a core-profile context.
+  QSurfaceFormat core_format = QSurfaceFormat::defaultFormat();
+  core_format.setVersion(4, 1);
+  core_format.setProfile(QSurfaceFormat::CoreProfile);
+  QSurfaceFormat::setDefaultFormat(core_format);
+#endif
   QApplication app(argc, argv);
   QCoreApplication::setOrganizationName(QStringLiteral("PlotJugglerTest"));
   QCoreApplication::setApplicationName(QFileInfo(QString::fromLocal8Bit(argv[0])).baseName());

@@ -50,6 +50,22 @@ pj_add_test_runner(pj_plotting_widget_tests
 )
 set_target_properties(pj_plotting_widget_tests PROPERTIES AUTOMOC ON)
 
+if(PJ_SCENE3D_RHI)
+    # PlotRhiCanvas against Qwt's own rendering, on every QRhi backend of the
+    # platform plus OpenGL at device-pixel ratio 2 (RHI_BACKENDS, see
+    # cmake/PjTests.cmake). Needs an RHI-capable QPA (wayland/xcb/windows/cocoa;
+    # xvfb in Linux CI), never `offscreen`, where every case skips (fails under
+    # PJ_REQUIRE_GPU_TESTS=1).
+    pj_add_test_runner(plot_rhi_render_test
+        MAIN gui WARNINGS RHI_BACKENDS DPR2
+        SOURCES plot_rhi_render_test.cpp
+        LIBS pj_plotting pj_widgets pj_resources Qt6::Test
+        TIMEOUT 60
+    )
+    # The two QwtPlotOpenGLCanvas regressions below have no canvas to test here.
+    return()
+endif()
+
 # These regressions need QApplication on a real GL platform and force the GL
 # canvas. Keep their startup separate from the offscreen-capable GUI runner
 # and its raster-only test environments.

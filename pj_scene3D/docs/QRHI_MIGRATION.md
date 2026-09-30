@@ -1,6 +1,6 @@
 # Scene3D QRhi migration plan
 
-Status: **P0 merged (#670); P1 (#672), P2 (#673) and P3 in review**. Branch `feat/qrhi-p3` (stacked on `feat/qrhi-p2`).
+Status: **P0 merged (#670); P1 (#672), P2 (#673), P3 (#675) and P4 in review**. Branch `feat/qrhi-p4` (stacked on `feat/qrhi-p3`).
 
 Goal: one QRhi-based 3D renderer for every target — Linux, Windows, macOS
 arm64 and WebAssembly — replacing both the desktop `QOpenGLWidget` renderer
@@ -22,15 +22,16 @@ arm64 and WebAssembly — replacing both the desktop `QOpenGLWidget` renderer
    per widget window. Today every GPU widget is OpenGL on purpose:
    - the `rhi_bootstrap` zero-size `MediaViewerWidget` (`pj_app/src/MainWindow.cpp`)
      and `scene2dRhiBootstrap` (`Scene2DDockWidget.cpp`) fix each window to GL;
-   - every `QRhiWidget` requests `PJ::preferredGraphicsApi()`, OpenGL for now;
-   - desktop plots use `QwtPlotOpenGLCanvas` (`PlotWidgetBase.cpp`);
-     `PlotRhiCanvas` is WASM-only.
+   - every `QRhiWidget` requests `PJ::preferredGraphicsApi()`: OpenGL in the GL
+     build, the native API in the QRhi build (P4 stream D);
+   - desktop plots use `QwtPlotOpenGLCanvas` (`PlotWidgetBase.cpp`) in the GL
+     build; since P4 the QRhi build (`PJ_RHI_WIDGETS`) uses `PlotRhiCanvas`.
    Scene3D can therefore only leave GL together with Scene2D **and the plots**.
    Floating ADS docks are new top-levels and follow the same rule.
-2. **`PlotRhiCanvas` renders only the Qwt items it knows** (curves, grid) and
-   applies browser sample budgets. Promoting it to desktop needs an item audit
-   (tracker, markers, zoom rubber band, legend, panner snapshot, export, print)
-   and desktop budgets. Patching Qwt is allowed if a gap needs it, but conda
+2. **`PlotRhiCanvas` rendered only the Qwt items it knew** (curves, grid) and
+   applied browser sample budgets. Resolved in P4 (see "P4 stream A (plot
+   canvas): results"): every other item is rasterised with its own QPainter
+   drawing, desktop budgets, panner grab. Patching Qwt is allowed if a gap needs it, but conda
    links the system `qwt` (`PJ_SYSTEM_QWT=ON`), so a patch means shipping our
    own qwt package there — avoid unless required.
 3. **Desktop layers are GL-free**; GL lives in `passes/` (~5.7k lines) and
@@ -73,7 +74,7 @@ arm64 and WebAssembly — replacing both the desktop `QOpenGLWidget` renderer
 |---|---|---|
 | Linux (AppImage, .deb, conda) | OpenGL (Vulkan opt-in) | llvmpipe; lavapipe for Vulkan |
 | Windows (installer) | D3D11 | WARP |
-| macOS arm64 (conda, later dmg) | Metal | runner's paravirtual Metal (to verify) |
+| macOS arm64 (conda, later dmg) | Metal | the runner's paravirtual Metal device |
 | WebAssembly | OpenGL / WebGL2 | Playwright (existing) |
 
 ## Technical decisions
@@ -88,6 +89,8 @@ arm64 and WebAssembly — replacing both the desktop `QOpenGLWidget` renderer
 | Compute AABB | Only where `QRhi::Compute`; existing CPU fallback otherwise. Compute packs bake GLSL ES 310 / GLSL 430 (no ES 300) |
 | Wireframe markers | Edge lines everywhere (already built; `NonFillPolygonMode` would split WebGL from desktop for a cosmetic gain) |
 | QPainter HUD / hover label | Upload the existing CPU-rasterised `QImage` as a texture quad |
+| Plot items without a geometry translation | Rasterise the item's own QPainter `draw()` into the canvas text atlas, in its Z slot (`PlotMarkersItem`, legend, labels, unknown items); no Qwt patch |
+| Plot canvas choice (QRhi build) | `PlotRhiCanvas` when "GPU canvas" is on, raster `QwtPlotCanvas` otherwise; never `QwtPlotOpenGLCanvas` (it would pin the window to OpenGL) |
 | GPU timing | `QRhi::EnableTimestamps` + `lastCompletedGpuTime` (frame-level only) |
 | Colormaps | Desktop polynomials from `pj_widgets` (one source with the plots) |
 | Shader packs | Checked-in `.qsb`, baked `--glsl "300 es,330,440" --hlsl 50 --msl 12` (+ SPIR-V); hash-verified in one pinned CI lane. GLSL 330 keeps a macOS GL 4.1 fallback possible |
@@ -118,7 +121,7 @@ Each phase is its own PR and leaves the app shippable.
   byte caps (desktop: 1 GiB per view, 4 GiB per QRhi), so desktop neither
   truncates clouds nor drops HDR at 4K. Done.
 - Real 3D-texture limit on Vulkan (`QRhiVulkanNativeHandles` →
-  `maxImageDimension3D`); D3D/Metal alongside their CI lanes in P4.
+  `maxImageDimension3D`); D3D/Metal alongside their CI lanes in P4 (done, see P4).
 - Headless harness: `QRhiWidget::grabFramebuffer()` under a real X server
   (Xvfb in CI; not the `offscreen` QPA, which has no RHI support) on OpenGL
   (llvmpipe) and Vulkan (lavapipe), asserting the actual backend. Pixel-region
@@ -290,18 +293,87 @@ Sequence (agreed with the pre-phase Codex check and an architecture map):
 **P4 — Plots and backend switch (2–4 weeks).**
 - `PlotRhiCanvas` on desktop: multi-backend shaders, item audit, desktop
   budgets, performance vs `QwtPlotOpenGLCanvas` on large curves; raster canvas
-  stays as fallback.
+  stays as fallback. Done (stream A): see "P4 stream A (plot canvas): results".
 - Flip Windows to D3D11, macOS to Metal; floating-dock matrix (float/redock,
-  split, sibling destruction, mixed-DPI moves).
-- Decide the offscreen orientation: render every offscreen target in GL
-  orientation on all backends (winding, texture-space matrices, present flip)
-  so y-down backends (Vulkan, D3D, Metal) put MSAA samples where the GL goldens
-  do, or keep the golden test's 3x3 neighbourhood rule with its per-pixel
-  ceiling (P3 stream A kept the rule; the change is renderer-wide).
-- Generalise the depth-replay skip that the faded point half has to every draw
-  that writes no depth (translucent markers and models, occupancy, translucent
-  voxels): they leave no coverage in the GL composite either. A behaviour change
-  against today's QRhi output, so it needs golden runs (P4 or P5).
+  split, sibling destruction, mixed-DPI moves). Done (stream D): see "P4 stream
+  D (API policy, floating docks): results".
+- Offscreen orientation: decided to keep the golden test's 3x3 neighbourhood
+  rule with its per-pixel ceiling (no renderer-wide GL-orientation rewrite) and
+  add asymmetric orientation/depth checks instead. Done (stream C): harness cases
+  `OrientationTextureMarkedCornerStaysTopLeft` (a texture with a marked corner on
+  an upright quad), `OrientationShadowFallsAwayFromTheLight` (an asymmetric key
+  light; the shadow centroid within 2.5% of where the light ray through the
+  caster meets the ground) and `OrientationSsaoAndEdlStayWithTheirContent`
+  (content only top-left; SSAO and EDL darkening must stay in that quadrant and
+  AO must hug the crease). Checked by mutation on OpenGL: a v-mirrored
+  shadow-map lookup moves the shadow centroid 22 px (fails), a flipped SSAO
+  normal sign darkens every flat face (fails).
+- Depth-replay skip generalised. Done (stream C): `ScenePipelineRegistry::resolve()`
+  returns nullptr for the depth replay of any source pipeline with
+  `!hasDepthWrite()` (translucent markers and models, occupancy, translucent grid
+  maps, faded points); the point pass's special case is gone and
+  `lastSubmittedLayerIdsForTest()` counts the colour pass. Trails and voxels
+  write depth in both renderers, so they are unaffected. Goldens: pixel-identical
+  to P3 on OpenGL and Vulkan (28/28, same metrics; the faded half already
+  skipped). Harness: only the glass cube of `OcclusionAndTranslucency` /
+  `TranslucentLayerFirstStillBlendsOverOpaque` changed (OpenGL 3634 px, Vulkan
+  3630 px, max channel delta 36/33): where the glass tints only the background
+  it is now ungraded (more saturated green), as in GL; the SSAO/EDL scene
+  (`QualityStagesActiveAndMeshCastsShadow`) and every counter are identical.
+  New case `NoDepthWriteDrawLeavesBackgroundUngraded` (fails without the rule).
+- Real 3D-texture limits on D3D and Metal. Done (stream C): `max3dTextureSize()`
+  reads the D3D11 device's feature level from `QRhiD3D11NativeHandles`
+  (`d3d11Max3dTextureSize()`: 2048 from 10_0, 256 on 9_x; unit-tested); D3D12
+  and Metal use the documented 2048 (D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION with
+  QRhi's feature-level-11_0 minimum; Metal feature set tables, every Apple and
+  Mac family). Verified: Qt 6.11.1's `qrhid3d11.cpp` fills `featureLevel` from
+  the created device. Documented only, not measured: the D3D11/D3D12 constants
+  and the Metal value (no Windows/macOS run). Where the backend cannot be asked
+  (stream X): a Vulkan build without `<vulkan/vulkan.h>` (the renderer's own
+  guard) or OpenGL without a current context now gets the guaranteed floor, 256
+  (Vulkan's required `maxImageDimension3D`, the GL 3.3 / GLES 3.0
+  `MAX_3D_TEXTURE_SIZE` minimum), logged once, instead of 0, which refused every
+  voxel grid. OpenGL already
+  queried `GL_MAX_3D_TEXTURE_SIZE` with the widget's current context and only
+  reported 0 without one. The desktop QRhi configure warns when Qt has Vulkan but
+  the headers are missing (no `WrapVulkanHeaders::WrapVulkanHeaders` target).
+- QRhi widget failure state. Done (stream X): a pipeline, SRB, buffer or
+  texture whose `create()` fails is never drawn with (D3D11 crashed in
+  `beginPass` on the WARP lane: a failed `initialize()` released everything, then
+  `render()` uploaded into the released uniform buffers). Every `create()` in
+  `widgets/rhi/` is classified (ARCHITECTURE.md → "Failure state and fallbacks"):
+  a failed base set (uniforms, shared meshes, any scene family) puts the view in
+  a failure state that clears to the backdrop, shows the reason in the dock's
+  warning label, emits `renderFailed()` once and retries on the next
+  `initialize()`; the overlays became optional, and a failed HDR or depth-replay
+  clone, which used to silently drop its draw from every HDR frame, now drops the
+  HDR chain with a warning. Test builds inject failures by shader
+  (`PJ_SCENE3D_TEST_FAIL_SHADER`); `scene3d_rhi_failure_test` covers the failure
+  state (a sibling `QRhiWidget` in the same window keeps rendering; clearing the
+  fault and resizing recovers, also after a reparent to a new top-level), Qt's
+  own "No QRhi" failure reaching the warning, the overlay fallback and the
+  HDR-clone fallback, on each backend of the platform. With the fix reverted the first two crash and the third
+  fails its assertions. D3D11 itself was not run locally.
+- Backend CI lanes. Done (stream B): every QRhi display runner
+  (`pj_add_test_runner(... RHI_BACKENDS)`, `cmake/PjTests.cmake`, which lists the
+  backends per platform) registers one pass per backend of the platform,
+  `<runner>.<backend>.*` with the ctest label `qrhi-<backend>`, plus
+  `.opengl_dpr2.*` (`QT_SCALE_FACTOR=2`) for the plot, dock and Scene3D
+  presentation runners, and joins the `pj_qrhi_tests` build target. The runners
+  are `scene3d_rhi_render_test`, `scene3d_rhi_point_test`,
+  `scene3d_rhi_failure_test`, `pointcloud_golden_test`, `plot_rhi_render_test`,
+  `rhi_dock_lifecycle_test` and `rhi_mixed_dock_test`. `windows-ci.yml`'s
+  blocking `qrhi-d3d11` lane builds `pj_qrhi_tests` and runs `-L qrhi-d3d11`
+  with the `windows` QPA, `QSG_RHI_PREFER_SOFTWARE_RENDERER=1` and
+  `PJ_REQUIRE_GPU_TESTS=1`, and fails unless every view logs `D3D11` on a `Cpu`
+  (WARP) adapter (`scripts/ci/check_qrhi_backend.sh`). `macos-ci.yml` is the
+  Metal lane, on PRs like the Linux and Windows lanes, on GitHub-hosted
+  `macos-14` (Apple silicon): a Metal device and presentation probe, the whole
+  tree built as a QRhi build, `-L qrhi-metal` and then `-L qrhi-opengl` (the
+  Metal-to-OpenGL fallback path) with the `cocoa` QPA and
+  `PJ_REQUIRE_GPU_TESTS=1`, each failing unless every view logs its pass's
+  backend, then the unit tests without the display runners (`-LE qrhi`). Until
+  `macos-ci.yml` reaches main it also runs on pushes to `feat/qrhi-**`.
 - Exit: required backend CI lanes green on all three desktop OSes.
 
 **P5 — Performance and cut-over (1–2 weeks).**
@@ -365,6 +437,293 @@ comes on top, P5). GPU memory (Vulkan, VMA): 479 MiB with the static cloud and
 the 1080p targets, 670 MiB while re-uploading (staging). The software rows ran on
 a machine loaded by three parallel builds (1.2-1.6x there).
 
+### P4 stream A (plot canvas): results
+
+`PlotRhiCanvas` (pj_plotting) is compiled whenever `PJ_SCENE3D_RHI` is on and on
+WASM; in those builds (`PJ_RHI_WIDGETS`) `PlotWidgetBase` picks it when the
+"GPU canvas" preference (`Preferences::use_opengl`, label renamed, objectName
+unchanged) is on and `--disable-opengl` is absent, else the raster
+`QwtPlotCanvas` — never `QwtPlotOpenGLCanvas`. The GL build is unchanged. Moved
+from `PJ_TARGET_WASM` to `PJ_RHI_WIDGETS`: the canvas choice, the legend
+alignment replot, `PlotPanner::grab()`. Lines and Dots is `PlotCurve`'s dot pass
+in every build (the WASM ellipse symbol is gone): the canvas draws the same
+square dots. The `pj_app` WASM probes stay browser-only.
+
+- **Backends.** Committed packs (`pj_plotting/widget/shaders/bake.sh`: GLSL ES
+  300, GLSL 120/150/330/440, HLSL 50, MSL 12, SPIR-V), re-baked and hash-checked
+  in the WASM configure like Scene2D/3D (desktop kits have no `qsb`, so
+  `qt_add_shaders` is gone). The vertex shaders pass positions through;
+  `clipSpaceCorrMatrix()` is folded into the CPU transform. Found on Vulkan: the
+  canvas set its viewport before binding the pipeline, which draws nothing
+  there (fine on GL); it is now set per pipeline bind.
+- **Items.** Geometry: curves (Lines, Sticks, Steps, Dots, Lines and Dots), grid,
+  `QwtPlotMarker` lines and symbols; every QwtSymbol outline except Star2 and the
+  path/pixmap/graphic/SVG/user styles (those draw as a square and log once).
+  Raster texture layers in their Z slot: legend, marker labels,
+  `PlotMarkersItem` and any unknown `QwtPlotItem` (its own `draw()`). Logged once
+  and approximated: `UserCurve` (symbols only), curve area brushes, `Fitted`.
+  Not drawn: the 1-px canvas frame of the Qwt canvases. Zoom rubber band,
+  panner drag image and focus overlays are child widgets and composite normally.
+  PJ4 has no plot image export or print path; the panner grab is the only one.
+- **Budgets** (device pixels): 4 extrema per device-pixel column per curve on
+  desktop (the browser keeps one budget split across curves), 8M-vertex frame
+  cap on desktop, 1M in the browser; vertices shrank from 24 to 12 B (UNormByte4
+  colour). Desktop maps each curve once into a reused scratch, reduces it with a
+  non-type-erased reducer, and drops samples outside the visible x range of a
+  finite, x-sorted series with a solid pen (dashes keep the whole series for
+  phase).
+- **Lifecycle.** Pipelines rebuild on a new QRhi, render-pass descriptor
+  (address or `serializedFormat()`) or sample count, re-checked in `render()`.
+  Geometry is retained in Static buffers and rebuilt only on replot/view change.
+  `grabPresentedFrame()` for tests; the panner keeps the synchronous
+  `grabFramebuffer()` (the canvas binds no uniforms, so the grab-only
+  stale-uniform issue does not apply).
+- **Failure state** (later P4 pass). A colour-pipeline or vertex-buffer
+  `create()` failure leaves clear-only passes, the banner and one
+  `renderFailed()` per onset; the pipelines are retried in the next
+  `initialize()` only, never per frame. The text pipeline is optional: without
+  it legends and labels drop with a one-time warning and the curves still draw
+  (the browser has no raster fallback). The canvas never drew with a failed resource (every create is
+  committed only on success), so the plot had no D3D11 `beginPass` crash to
+  fix. On desktop `PlotWidgetBase` swaps a failed canvas to the raster
+  `QwtPlotCanvas` (magnifier, panners, zoomer and event filters moved over in
+  order), waiting while a popup or modal widget is open, since a context menu's
+  nested loop may still own an event of the canvas the swap deletes; the
+  browser keeps the banner. Tests (`pjTestFailPipeline` and
+  `pjTestPipelineAttempts` hooks, `PJ_RHI_TEST_HOOKS`): raster fallback
+  with zoom/pan and a sibling that keeps rendering, banner + recovery on a bare
+  canvas with no pipeline retry per frame, a text-only failure that keeps the
+  curves, the swap deferred under an open popup, and the "No QRhi" case (an
+  OpenGL widget pins the window). The render cases fail, not skip, when a canvas
+  initialized a backend and then failed.
+- **Approximations audit.** None of the logged approximations (other symbol
+  styles, `UserCurve`, curve brushes, `Fitted`) is reachable in PJ4: every
+  curve style and layout-XML `style` sets no symbol, brush, `UserCurve` or
+  `Fitted`; all marker symbols are ellipses; the SDK has no curve-style API.
+  They keep their one-time log.
+- **Tests.** `plot_rhi_render_test` compares the presented frame with Qwt's own
+  `drawCanvas()` raster per item kind, plus reparent/resize/sample-count change,
+  the panner grab and the three failure cases: 12/12 on OpenGL, Vulkan and
+  OpenGL at DPR 2 (llvmpipe and lavapipe; the first nine also passed on the
+  Iris Xe Vulkan driver). Mutation checks: without
+  the clip correction 8/9 fail on Vulkan, and the marker case fails without the
+  raster fallback. Linux CI runs it in the QRhi step.
+
+Benchmark (`plot_canvas_benchmark`, 1600x900, every frame replots and waits for
+the canvas to finish; medians of 30 frames, 10 on llvmpipe; ms). CPU is the
+canvas's own frame work (`PlotRhiCanvas::render()` vs `QwtPlotOpenGLCanvas::paintGL`),
+wall is replot to finished frame. GPU time: GL timer query / QRhi timestamps
+where the driver reports them (Iris Xe OpenGL only; the rest report none).
+The machine was shared with other builds (load 11-40), so treat differences
+under ~20% as noise.
+
+| Case | Iris Xe: Qwt GL cpu / wall | Iris Xe: RHI GL cpu / wall | Iris Xe: RHI Vulkan cpu / wall | RTX 4070: Qwt GL cpu / wall | RTX 4070: RHI GL cpu / wall | RTX 4070: RHI Vulkan cpu / wall | llvmpipe: Qwt GL cpu / wall | llvmpipe: RHI GL cpu / wall |
+|---|---|---|---|---|---|---|---|---|
+| static 1M | 15.3 / 17.0 | 13.2 / 16.2 | 16.0 / 18.9 | 10.0 / 10.5 | 8.4 / 8.8 | 12.4 / 13.5 | 13.9 / 21.8 | 10.1 / 32.0 |
+| static 10M | 189 / 191 | 100 / 102 | 86 / 89 | 144 / 146 | 80 / 81 | 117 / 118 | 143 / 148 | 82 / 102 |
+| streaming 10x100k, 100 Hz | 17.3 / 19.9 | 6.9 / 13.2 | 6.9 / 12.7 | 17.2 / 18.8 | 6.2 / 8.2 | 11.0 / 15.0 | 25.5 / 33.4 | 7.2 / 42.8 |
+| zoom/pan 1M | 10.1 / 12.6 | 6.0 / 9.3 | 6.1 / 11.9 | 10.6 / 11.9 | 5.6 / 7.0 | 8.4 / 14.8 | 12.6 / 18.2 | 5.8 / 22.3 |
+| 50 curves x 100k | 57 / 68 | 57 / 110 | 63 / 117 | 58 / 58 | 54 / 59 | 131 / 136 | 106 / 112 | 72 / 423 |
+| dashed 5x100k | 12.0 / 15.1 | 26.7 / 31.0 | 28.1 / 32.1 | 12.4 / 12.9 | 28.4 / 30.8 | 39.7 / 41.6 | 48.5 / 51.8 | 26.5 / 70.9 |
+
+The RTX 4070 Vulkan column (device picked with `QT_VK_PHYSICAL_DEVICE_INDEX=1`)
+comes from a later paired run at higher load, where the Qwt GL canvas measured
+18.8 / 19.5, 232 / 234, 27.0 / 29.4, 20.6 / 24.8, 86 / 87 and 26.9 / 27.8: the
+same pattern, with 50 curves at 1.5x and dashes at 1.5x Qwt's CPU there.
+
+GPU time (Iris Xe, OpenGL): Qwt 0.8 / RHI 1.3 ms at static 1M, 9.8 / 17.5 ms
+for 50 curves, 2.1 / 2.4 ms dashed; llvmpipe 74 / 336 ms for 50 curves.
+
+Before the stream's optimisations the RHI canvas cost 2-7x Qwt's CPU (static 1M
+34 vs 24 ms, 50 curves 504 vs 112 ms, dashed 180 vs 25 ms on the Iris Xe): one
+curve was scanned through a `std::function` + virtual `sample()` + two scale
+maps per reducer pass, and every vertex converted its QColor and went through
+`QTransform::map`. Fixed in this stream: map once into a scratch, template the
+reducer over the accessor, visible-range culling of sorted series, a packed
+12 B vertex, colour conversion per colour change, and one direction per
+polyline segment shared by its quad and join.
+
+Where the RHI canvas is still slower:
+- **Dashed lines, ~2.2x CPU.** Dashes are expanded on the CPU into one quad per
+  dash (826k vertices for 5 dense curves). Proposed fix: carry the path
+  distance per vertex and the dash pattern per draw, and discard in the
+  fragment shader — dashes then cost nothing on the CPU. Not contained (vertex
+  format, both shaders, the WASM dash goldens and budget telemetry), so left
+  for P5.
+- **Many dense curves, wall/GPU.** 50 full-density curves emit 2.15M vertices
+  (9 per retained sample: a quad per segment plus a bevel join) into a 4x MSAA
+  target; CPU matches Qwt on OpenGL (1.5x in the RTX Vulkan run) but the upload and fill double the wall time on the
+  Iris Xe and dominate on llvmpipe (336 ms GPU). Proposed fix: an indexed strip
+  per polyline (4 shared vertices per sample, joins from the strip) and, when a
+  plot holds many curves, fewer extrema per column (min/max only for x-sorted
+  series; needs a visual check against the M4 output).
+- Vulkan wall times round up to the 60 Hz present of the headless compositor;
+  CPU times are the comparable figure there.
+
+Where it is faster: 10M static (1.8-1.9x), streaming (2.5-3.5x CPU) and zoom/pan
+(1.7-1.9x) — the culling skips the off-screen part of the series — and a replot-free
+repaint (expose, window moves, overlay widgets) rebuilds nothing, where the GL
+canvas repaints every item.
+
+### P4 stream D (API policy, floating docks): results
+
+**Policy.** `PJ::preferredGraphicsApi()` (`pj_widgets/GraphicsApi.h`) returns
+`nativeGraphicsApi(currentGraphicsPlatform(), PJ_RHI_WIDGETS)`: in the QRhi
+build D3D11 on Windows, Metal on macOS, OpenGL on Linux and WebGL2; OpenGL in the
+GL build. `PJ_GRAPHICS_API` still overrides it. The policy is a constexpr
+function of the platform, so `graphics_api_test` checks every platform's answer
+from Linux. The choice is logged once (`pj.graphics`), and each widget still
+logs the backend and adapter it got.
+
+**Startup and fallback.** pj_app resolves the API right after constructing
+`QApplication`, before any GPU widget exists; a top-level picks its API only
+once. From the Qt 6.11.1 sources (`qbackingstorerhisupport.cpp`, `qrhiwidget.cpp`):
+- D3D11: when the default device fails, the backing store retries with
+  `QRhi::PreferSoftwareRenderer`, i.e. WARP. PJ adds no fallback: WARP beats the
+  GL 1.1 software driver Windows ships. This answers the open question: QRhi
+  D3D selects WARP on GPU-less machines by itself.
+- Metal: the backing store probes Metal and, when the probe fails (a macOS VM
+  without a Metal device), gives up with only a debug message. Despite its
+  comment, it does not fall back to OpenGL, so every `QRhiWidget` would log
+  "No QRhi" and stay blank. `preferredGraphicsApi()` therefore runs the same
+  `QRhi::probe(Metal)` itself and picks OpenGL when it fails. This is not
+  verified on a Mac (the code is compiled only under `QT_CONFIG(metal)`).
+- Vulkan (only through `PJ_GRAPHICS_API`) is not probed. If it fails, the widgets
+  report "No QRhi".
+
+**Floating-dock matrix** (`pj_app/tests/rhi_dock_lifecycle_test.cpp`, QRhi
+build). Stand-in `QRhiWidget`s clear to a known colour and hold one buffer per
+QRhi; the real Scene2D `MediaViewerWidget` checks the image orientation and an
+annotation overlay. Each case asserts: a presented frame whose grab has the
+right colour; `releaseResources()` before every QRhi switch; nothing held after
+destruction; and no Qt warning about the API or a missing QRhi. Results, run
+under the private gnome-shell compositor (Wayland) and a rootful Xwayland (xcb),
+on llvmpipe (OpenGL) and lavapipe (Vulkan), plus an OpenGL pass at
+`QT_SCALE_FACTOR=2`:
+
+| Case | OpenGL | Vulkan |
+|---|---|---|
+| float to its own top-level, redock | pass | pass |
+| split, move into another split | pass | pass |
+| hidden tab, shown again | pass | pass |
+| destroy a sibling (docked and floating) | pass | pass |
+| close a floating window, reopen the dock | pass | pass |
+| float, then move to a screen with another DPR | pass | pass |
+| Scene2D media viewer: orientation and overlay across float, redock, tab switch | pass | pass |
+| negative: non-GL `QRhiWidget` beside a `QOpenGLWidget` | as documented | as documented |
+
+The DPR move needs two screens with different ratios, so it skips on a single
+screen. It passed 12/12 on gnome-shell with two `--virtual-monitor`s and
+`QT_SCREEN_SCALE_FACTORS="1;2"`: `QWindow::setScreen()` moved the floating
+window, and the widget re-rendered at the new pixel size. The negative case
+(OpenGL widget added first, then a Vulkan or Null `QRhiWidget`) does not crash:
+the window composites with OpenGL, and the second widget logs "The top-level
+window is already using another graphics API" and "No QRhi", emits
+`renderFailed()`, and never initializes, while the GL widget keeps painting.
+
+Fixes made in this stream (each one fails the media-viewer case when reverted):
+- `MediaViewerWidget` sent GL clip space to its shaders, so Vulkan drew images
+  upside down. It now uploads `clipSpaceCorrMatrix() * view` and keeps the GL
+  matrix for scissors. D3D11 and Metal share GL's y-up clip space, so only depth
+  changed for them.
+- `MediaViewerWidget::releaseResources()` now marks the overlays dirty. Otherwise
+  a viewer reparented at an unchanged size (an ADS tab switch) lost its
+  annotations until new data arrived.
+- pj_app sets `Qt::AA_DontCreateNativeWidgetSiblings` in the QRhi build; see the
+  Findings.
+
+### P4 stream Z (Scene2D failure state, real-widget docks): results
+
+- **Scene2D failure state.** `MediaViewerWidget` never draws with a resource
+  whose `create()` failed. Without its base pipeline set it clears to the
+  background, emits `renderFailed()` once, shows a warning label in
+  `Scene2DDockWidget`, and retries on every later `initialize()`. Without the
+  blending pipeline its layers draw opaque; a failed overlay or frame texture is
+  dropped, each logged once per QRhi, and the next `initialize()` rebuilds a
+  dropped overlay or blending pipeline. See `pj_scene2D/docs/TECHNICAL_NOTES.md`
+  (GPU failure state).
+- **Real widgets in one dock manager** (`pj_app/tests/rhi_mixed_dock_test.cpp`).
+  A `PlotWidget`, a Scene3D point cloud and a Scene2D image run through the
+  floating-dock matrix. Each widget must show its own content at its pixel size.
+  No Qt QRhi warning is allowed, and no resource may be left on a QRhi when it is
+  destroyed (`QT_RHI_LEAK_CHECK`). That leak check works on Vulkan/D3D11/Metal;
+  on OpenGL, uniform buffers are CPU-side and are not tracked, so each widget
+  also keeps lifecycle counters in test builds (`pjTestRhiAdoptions`,
+  `pjTestRhiReleases`, `pjTestRhiStale`): every float and redock must
+  re-initialize the moved widget (a closed floating dock reopens in its hidden
+  container, on the same QRhi), a shown widget holds resources on exactly one
+  QRhi, and none meets a new QRhi before releasing the old one's. The media
+  viewer's failure injection (`pjTestFailPipeline`, test builds only) runs
+  beside the other two. Both dock runners register like every QRhi display
+  runner (`RHI_BACKENDS`, see "Backend CI lanes" under P4).
+  Passing on llvmpipe/lavapipe under gnome-shell, DPR move included (two
+  virtual monitors). Its 2 s presentation waits can time out when several
+  display tests share one virtual monitor and occlude each other, so run it
+  serially (CI runs ctest serially under Xvfb).
+- **`--screenshot`** exits 1 when there is no 3D view, or when the capture is
+  null, a single colour, or cannot be saved. It prints
+  `[screenshot] graphics backend: <QRhi backend>`.
+
+### P4 final review: results
+
+- **Shared QRhi widget plumbing** (`pj_widgets/GraphicsApi.h`): the plot
+  canvas, the media viewer and the Scene3D view share `grabPresentedFrame()`,
+  `noteRhiAdoption()`/`noteRhiRelease()` (the backend log, once per QRhi, and
+  the `pjTestRhi*` counters), `RhiTargetKey` (what the pipelines were built
+  for), `RhiFailureLatch` and `createRhiPipeline()`/`rhiTestFault()` (the
+  `pjTestFailPipeline` injection). One `PJ_RHI_TEST_HOOKS` definition (root
+  CMake, test-enabled desktop builds) replaces the three per-module macros; the
+  Scene3D shader-suffix injection (`PJ_SCENE3D_TEST_FAIL_SHADER`) stays.
+- **Media viewer upload batch.** A frame layer's uploads go to their own
+  resource-update batch, merged only when the layer survived: a failed SRB
+  rebuild used to delete textures an already queued upload (a depth LUT, the
+  frame planes) still referenced, and `render()` submitted it.
+- **macOS OpenGL fallback.** pj_app and the gui test main request a 4.1 core
+  default format on macOS in the QRhi build (macOS otherwise gives a 2.1 legacy
+  context, below every Scene3D/media pack's GLSL), and the Scene2D image packs
+  gained GLSL 330. `macos-ci.yml` runs the `.opengl` passes too, as a
+  functional smoke run; Metal is the macOS parity gate. The runner has no GL
+  driver for its paravirtual GPU, so its GL is Apple's software renderer
+  ("Apple Software Renderer 4.1"): 10-40x slower than Metal (a float/redock
+  case takes 40-60 s+ instead of 1-2 s), hence 5x the ctest timeout for every
+  macOS `.opengl` case (`cmake/PjTests.cmake`). The step leaves out what
+  measures that renderer rather than ours: the point-cloud goldens (its
+  sphere impostors come out ~10% larger and its point sprites soft-edged, so
+  coverage moves by up to 19% and mean colour by up to 58), the sub-pixel
+  sprite colour check (1 px sprites resolve to ~15% coverage) and the DPR 2
+  mixed-dock pass (every float recompiles the pipeline set at 4x the pixels;
+  Linux runs it). Qt creates the QRhi of a never-shown `QRhiWidget` grab with
+  a default-constructed `QSurfaceFormat`, which on macOS is a legacy 2.1
+  context, so such a grab cannot render Scene3D there (no GLSL 330);
+  `BackendMatchesRequestAndImageSize` skips its warning check on macOS
+  OpenGL. The app never grabs a view that was not shown.
+- **Plot memory.** A curve maps only its visible index range (x-sorted, solid
+  pen) into the canvas's scratch, and a scratch grown past 1 MiB is released
+  after the rebuild; `plot_rhi_render_test` checks it with a 1 M-sample series.
+- **The DPR 2 passes ran at DPR 1.** gtest_discover_tests splits a `;` inside
+  a property value, so `ENVIRONMENT "PJ_GRAPHICS_API=opengl;QT_SCALE_FACTOR=2"`
+  silently dropped the scale factor. `QT_SCALE_FACTOR` now goes through
+  `ENVIRONMENT_MODIFICATION`, and the labels are one value each (`qrhi-<backend>`;
+  `-L qrhi` matches every pass, since ctest labels are regular expressions).
+- **Plot parity colours.** The plot comparisons check the foreground colours
+  (union of both images' foreground, 3x3 neighbourhood, 48 per channel), missing
+  and extra geometry, and an exactly-clear background, with an overlapping
+  translucent fixture; a red/blue swap in the vertex colour fails 11 of 16 cases.
+  They found the text layers (legend, marker labels, other rasterised items)
+  placed against the whole canvas where Qwt uses its contents rect: one logical
+  pixel off, now fixed. Qwt snaps curve, marker and grid coordinates to whole
+  pixels on screen (`QwtPainter::roundingAlignment()`) and draws Rect/Cross/line
+  symbols aliased; the canvas does neither, so its thin lines can sit half a pixel
+  off Qwt's canvas and the comparisons use an unsnapped reference. Snapping in the
+  canvas made the colours match Qwt's snapped rendering exactly, but a 1.4 px
+  axis-aligned line then covers no pixel fully, which fails the browser's
+  curve-style probe (exact-colour pixels) and would need its snapshots
+  re-baselined: left for a decision.
+- **Golden foreground metrics.** `pointcloud_golden_test` adds a differing
+  fraction relative to the foreground (the union of both images' non-background
+  pixels) and an absolute count of stray pixels away from the golden's
+  foreground; see the corpus README.
+
 ## Findings
 
 - **Qt 6.11.1, `QRhiWidget::grabFramebuffer()` on a never-shown widget works
@@ -396,26 +755,80 @@ a machine loaded by three parallel builds (1.2-1.6x there).
   render targets, so sub-pixel coverage and diagonal silhouettes differ from the
   GL goldens even on the same Mesa rasterizer (P3 stream A results). The
   QRhi build's golden test tolerates it with a 3x3 neighbourhood rule plus a
-  10% per-pixel ceiling; a renderer-wide orientation change is a P4 item.
+  10% per-pixel ceiling; P4 kept that rule and added asymmetric orientation
+  checks to the harness instead of a renderer-wide orientation change.
+- **ADS floating turns the docked area native** (Qt 6.11.1, our ADS fork):
+  `CFloatingDockContainer::show()` calls `winId()` to set X11 properties (on
+  every platform), and Qt then marks every child of the dock manager native
+  (`enforceNativeChildren`). The docked area becomes a native child window. Under
+  Vulkan on Wayland that child surface stopped getting frame callbacks: the main
+  window's docks froze once any dock floated, or crashed in the lavapipe
+  swapchain. `Qt::AA_DontCreateNativeWidgetSiblings` (set before `QApplication`
+  in the QRhi build) keeps them non-native. The GL build still creates the
+  native children and is unchanged.
+- **ADS reparents docks through a parentless state.** It moves a dock within one
+  window, and keeps only the current tab of an area parented. Each such move or
+  tab switch counts as a top-level change for a `QRhiWidget`, so it gets
+  `releaseResources()` and a fresh `initialize()`. Widgets must rebuild all their
+  GPU state from retained CPU data. That is correct but costly for a large 3D
+  scene.
+- **ADS hides floating docks on Wayland.** Its Linux stays-on-top emulation calls
+  `setWindowFlag(Qt::WindowStaysOnTopHint, ...)` on every visible floating
+  container when the main window is activated or deactivated. Off xcb that is a
+  real flag change, and Qt hides a window whose flags change; ADS does not show
+  it again. The dock test removes that event filter; the app is affected on
+  Wayland with every backend. The fix
+  belongs in the ADS fork: skip the call or re-show the window.
+- **Vulkan on Wayland: hiding and re-showing a window within about a frame of a
+  present is a protocol error.** Mesa queues the present behind its FIFO barrier.
+  The unmap commit waits behind it, and Qt's immediate `get_xdg_surface` then
+  fails with "wl_surface already has a buffer committed", which drops the
+  connection. Users do not reopen a window that fast, but programmatic
+  hide/show can. The dock test waits 100 ms before reopening. Vulkan is opt-in
+  on Linux.
+- **WARP on GPU-less runners** (Qt 6.11.1 sources): the widget backing store
+  creates D3D11 on the first DXGI adapter and retries with
+  `PreferSoftwareRenderer` only if that fails; `QSG_RHI_PREFER_SOFTWARE_RENDERER=1`
+  selects the adapter flagged `DXGI_ADAPTER_FLAG_SOFTWARE` (WARP, reported as
+  `deviceType=Cpu`) up front, so CI sets it rather than relying on adapter order.
+- **D3D11 needs `matrixSlice` on unrolled `mat4` vertex inputs:** SPIR-V Cross
+  names them `TEXCOORD<first>_<row>`, and without the slice the input layout
+  fails (`E_INVALIDARG`). OpenGL, Vulkan and Metal ignore it.
+- **Goldens on D3D11/WARP** pass within the QRhi tolerances: worst neighbourhood
+  diff 0.019 (`field_viridis_cubes`), worst per-pixel 0.074
+  (`shape_cubes_subpixel`), coverage within 0.6%.
+- **Metal on GitHub-hosted `macos-14`** (Apple silicon VM): `MTLCreateSystemDefaultDevice`
+  returns "Apple Paravirtual device" (not headless), a `CAMetalLayer` drawable
+  presents, and QRhi reports `Metal, deviceType=Integrated`. The harness, point
+  tests and all 28 goldens pass on it with the `cocoa` QPA: worst neighbourhood
+  diff 0.019 (`field_viridis_cubes`), worst per-pixel 0.074
+  (`shape_cubes_subpixel`), the same bands as D3D11/WARP.
+- **Depot macOS capacity is not elastic:** a `depot-macos-14` job queued 40 min
+  before a runner picked it up, so the PR lane runs on GitHub's `macos-14` and
+  Depot stays a `workflow_dispatch` choice. The Metal probe passed there too.
+- Without a console (ctest, CI), Qt on Windows logs to `OutputDebugString` and
+  on macOS to os_log; the native lanes set `QT_FORCE_STDERR_LOGGING=1` so the
+  backend lines reach the test log.
 - The RHI harness needs a real X or Wayland server; locally, an occluded window
   never presents, so run it under Xvfb or a headless compositor.
 
 ## Known gaps
 
-- `RobotModelLayer::resetModelState` drops in-flight mesh imports on a source
-  reset while their workers keep running (results are discarded by generation,
-  but rapid source changes can accumulate work). SceneEntities keeps superseded
-  work counted until it finishes; the robot layer should do the same.
+- None open from P2/P3. The robot in-flight import gap is closed (P4 stream C):
+  `RobotModelLayer` keys imports by generation + path, keeps superseded ones
+  counted against `maxConcurrentMeshLoads()` until their workers finish and
+  drops their results (regression test
+  `SourceSwitchKeepsSupersededImportsWithinTheBound`).
 
 ## Open questions
 
-- `PlotRhiCanvas` throughput on desktop-scale data.
-- Whether QRhi D3D selects WARP on GPU-less runners by itself.
+- `PlotRhiCanvas` throughput on desktop-scale data: measured in P4 (stream A
+  results); dashed and many-dense-curve plots remain slower than the Qwt GL
+  canvas.
 - `QT_WIDGETS_RHI=1` + `QT_WIDGETS_RHI_BACKEND` force RHI composition for every
   top-level and win over per-widget requests in 6.11.1 (Codex, from the Qt
   sources). They could replace the bootstrap widgets; deferred as a separate
   behaviour change.
-- Metal feature coverage on hosted macOS runners.
 - Pixi CI runs no GUI tests (conda Qt stalls without a GPU); needed before the
   conda channel can be trusted.
 
@@ -448,3 +861,4 @@ Actual wall-clock time, to calibrate the estimates above.
 | P1 | 2026-09-24 05:46 CEST | 2026-09-24 07:13 CEST | ~1 h 27 min | Plan estimate ≈2 weeks. Three parallel streams (limits, harness, goldens). First real renders on OpenGL and Vulkan (GPU + llvmpipe/lavapipe); found two Qt 6.11.1 grab bugs, no renderer bug. Cross-build point-cloud goldens: 22/28 on QRhi. |
 | P2 | 2026-09-24 13:33 CEST | 2026-09-24 18:23 CEST | ~4 h 50 min | Plan estimate 2–3 weeks. Stacked on P1 (#672). Steps B/C/D as three parallel streams, then E; ~12k lines of forks deleted. Reviews found 5 real bugs (TF-only repaint freeze, depth wrong-sample and dataset-replace races, stale robot model, in-flight bound bypass), all fixed with regression tests. |
 | P3 | 2026-09-24 20:33 CEST | 2026-09-25 06:45 CEST | ~6 h 30 min active (10 h 12 min wall-clock, incl. a ~3 h 40 min account rate-limit pause) | Plan estimate 3–4 weeks. Stacked on P2 (#673). S0 foundation serial, then five parallel streams (points; voxels + poses; markers + models; grid/gizmo/HUD/picking; GridMap + Trail + frame menu), merged one by one with pixel-exact checks. Point-cloud goldens 22/28 → 28/28 on OpenGL and Vulkan. Two /simplify waves (−409 lines, one pass contract). Reviews found 3 real bugs (edge-sprite frustum reject, unculled fan back faces, pipelines kept across sample-count/format changes) plus a latent D3D storage-view overread in the GPU AABB reducer; all fixed with regression tests. |
+| P4 | 2026-09-25 06:50 CEST | 2026-09-25 22:10 CEST | ~15 h 20 min wall-clock (a session restart and heavy build contention included) | Plan estimate 2–4 weeks. Stacked on P3 (#675). Four parallel streams (plots, CI lanes, scene correctness, API policy + docks), then three integration streams (failure state, plot audit, real mixed-dock test) with adversarial verifiers, then /simplify + Claude + Codex reviews. First macOS arm64 build ever (GitHub macos-14, paravirtual Metal). Reviews and CI found real bugs: D3D11 crash on failed pipeline creation, a Scene2D use-after-free on SRB failure, the macOS OpenGL fallback without a core profile, 16 B/sample plot scratch kept alive, DPR-2 test passes that never ran at DPR 2 (CTest splits `;` in ENVIRONMENT). Parallel builds oversubscribed the 30 GB machine (1.7 GB free at peak); later steps used one build slot at -j12. |
