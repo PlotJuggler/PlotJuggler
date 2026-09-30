@@ -9,6 +9,8 @@
 
 namespace PJ {
 
+class PlotAxisKeyState;
+
 class PlotMagnifier : public QwtPlotMagnifier {
   Q_OBJECT
  public:
@@ -28,6 +30,10 @@ class PlotMagnifier : public QwtPlotMagnifier {
   // no such quantization, so leave this false for them.
   void setTimeXAxis(bool is_time) {
     x_is_time_ = is_time;
+  }
+  // Axis keys constrain canvas wheel zoom; disable when XY aspect ratio is locked.
+  void setAxisKeyZoomEnabled(bool enabled) {
+    axis_key_zoom_enabled_ = enabled;
   }
   void widgetWheelEvent(QWheelEvent* event) override;
   void rescale(double factor) override {
@@ -52,6 +58,8 @@ class PlotMagnifier : public QwtPlotMagnifier {
   QPointF mouse_position_;
   AxisMode default_mode_ = kBothAxes;
   bool x_is_time_ = false;
+  bool axis_key_zoom_enabled_ = true;
+  PlotAxisKeyState* axis_keys_ = nullptr;
 };
 
 }  // namespace PJ
