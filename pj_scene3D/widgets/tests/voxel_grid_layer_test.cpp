@@ -14,6 +14,9 @@
 #include <QDomDocument>
 #include <QString>
 #include <atomic>
+#include <chrono>
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <memory>
 #include <string_view>
 #include <vector>
@@ -24,6 +27,8 @@
 #include "pj_base/builtin/voxel_grid.hpp"
 #include "pj_base/time.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_scene3d_core/tf/tf_buffer.h"
+#include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 using namespace Qt::StringLiterals;
 
@@ -65,6 +70,42 @@ void registerVoxelParser(PJ::SessionManager& session, PJ::ObjectTopicId topic_id
                                       return new CountingObjectParser(
                                           kSchema, PJ::sdk::BuiltinObjectType::kVoxelGrid, &g_parser_calls, &emitVoxel);
                                     }));
+}
+
+// Pushes world<-map as a pure +x translation at `stamp_ns`.
+void pushWorldFromMap(pj::scene3d::TransformBuffer& buffer, int64_t stamp_ns, double x) {
+  pj::scene3d::StampedTransform st;
+  st.stamp = pj::scene3d::TimePoint{std::chrono::nanoseconds(stamp_ns)};
+  st.parent_frame = "world";
+  st.child_frame = "map";
+  st.transform.t = glm::dvec3{x, 0.0, 0.0};
+  st.transform.q = glm::dquat{1.0, 0.0, 0.0, 0.0};
+  ASSERT_TRUE(buffer.setTransform(st).has_value());
+}
+
+// A static grid in a moving frame must re-key when world<-map moves (and when it
+// first resolves), or the dock's repaint gate freezes it at its first placement.
+TEST(VoxelGridLayer, RenderKeyFollowsSourceFrameTransform) {
+  PJ::SessionManager session;
+  const auto topic_id = registerObjectTopic(session, "/voxels");
+  ASSERT_TRUE(session.objectStore().pushOwned(topic_id, 100, std::vector<uint8_t>{0x01}).has_value());
+  registerVoxelParser(session, topic_id);
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session;
+  ctx.tf_buffer = std::make_shared<pj::scene3d::TransformBuffer>(pj::scene3d::TransformBuffer::kKeepAll);
+  pj::scene3d::VoxelGridLayer layer(topic_id, u"voxels"_s);
+  ASSERT_TRUE(layer.attach(ctx));
+  layer.setFixedFrame(u"world"_s);
+  layer.renderAtForTest(100);
+
+  const uint64_t unresolved = layer.renderKey(PJ::fromRaw(250));
+  pushWorldFromMap(*ctx.tf_buffer, 200, 1.0);
+  pushWorldFromMap(*ctx.tf_buffer, 300, 2.0);
+  const uint64_t at_first = layer.renderKey(PJ::fromRaw(200));
+  const uint64_t at_second = layer.renderKey(PJ::fromRaw(300));
+  EXPECT_NE(unresolved, at_first) << "resolving world<-map did not change the key";
+  EXPECT_NE(at_first, at_second) << "moving world<-map did not change the key";
 }
 
 TEST(VoxelGridLayer, RescrubToSameGridDoesNoReparse) {

@@ -2,62 +2,79 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include <QByteArray>
 #include <QColor>
+#include <QMap>
 #include <QString>
 #include <QStringList>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <glm/glm.hpp>
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "pj_datastore/object_store.hpp"
 #include "pj_scene3d_core/robot_model.h"
 #include "pj_scene3d_core/tf/transform.h"  // StampedTransform (cached fixed-joint bridges)
-// Needed in full (not forward-declared) because render() memoizes
-// std::vector<MeshRenderPass::DrawCall> members — a nested type that requires
-// the enclosing class to be complete. The header is public + self-contained
-// (it pulls mesh_data.h, no private src/ include), exactly as the sibling
-// scene_entities_layer.h already includes it.
-#include "pj_scene3d_widgets/passes/mesh_render_pass.h"
+#include "pj_scene3d_widgets/mesh_data.h"
+#include "pj_scene3d_widgets/model_renderable.h"
+#include "pj_scene3d_widgets/render_pass.h"  // FrameContext (test hooks)
 #include "pj_scene3d_widgets/scene3d_layer.h"
+#ifndef PJ_SCENE3D_RHI
+#include "pj_scene3d_widgets/passes/mesh_render_pass.h"
+#endif
 
 class QWidget;
 
 namespace pj::scene3d {
 
+class MeshImport;
 class MeshLoader;
-class MeshLoadSet;
+class TransformBuffer;
 class UrdfPackageResolver;
 class UrlFetcher;
 
 // Scene3DLayer that renders a robot's URDF (links, primitive geometry, and
-// async-loaded meshes) posed by the live TF tree. Unlike the per-tick store
-// layers it decodes its description at most once per source change and then
-// latches, so it is not a hot path.
+// async-loaded meshes) posed by the live TF tree, shared by both renderers.
+// It decodes its description at most once per source change and then latches,
+// so it is not a hot path.
 //
 // Three source modes (SourceType):
 //   - kTopic: a robot_description object topic in the ObjectStore, decoded
 //     through the topic's MessageParser. The first sample is latched; while the
 //     topic is still empty the layer waits and retries on each tracker tick.
-//   - kFile:  a local URDF/XML file read directly.
-//   - kUrl:   a file://, http://, or https:// URL fetched ASYNCHRONOUSLY:
-//     loadFromCurrentSource() (attach, xmlLoadState, the config widget) only
-//     kicks the fetch off and the model is applied when the bytes land. The
-//     layer never blocks the GUI thread on the network.
+//   - kFile:  a URDF file. Desktop reads the path; setSourceFileContent() feeds
+//     the bytes directly instead (the browser's only route: a browser layout
+//     never regains file access, so a restored kFile layer asks the user to
+//     select the file again).
+//   - kUrl:   a URL fetched ASYNCHRONOUSLY (file/http/https on desktop, http(s)
+//     in the browser); the model is applied when the bytes land.
 //
-// Parser lifetime (kTopic): like its sibling store layers, parsers are
-// deliberately NOT cached. Every decode resolves a fresh ParserBinding through
-// ctx_.session (see parseLocked()), so a file reload that re-registers the
-// topic's parser slot can never leave us decoding through a freed handle.
+// Coordinate contract. The layer's CPU model is TF-free: one LinkDraw per link
+// geometry, holding the prefixed link frame plus the link-local <origin> and
+// scale. The GL build composes world = TF(fixed <- link) × origin × scale at
+// draw time into MeshRenderPass::DrawCall; the QRhi build exposes the same draws
+// as ModelDrawCalls (frame_id + origin × scale) and the view applies TF. TF is
+// therefore applied exactly once in either renderer. URDF fixed joints the data
+// never publishes are bridged into the TF buffer (see ensureStaticBridges).
+//
+// Meshes load a few at a time (one in the browser; see maxConcurrentMeshLoads):
+// URL meshes are fetched, then imported off the GUI thread, and each result is
+// admitted against kSceneLimits' retained-byte budgets as it lands. A source
+// switch bumps a generation that drops every stale completion.
+//
+// Parser lifetime (kTopic): parsers are deliberately NOT cached; every decode
+// resolves a fresh ParserBinding through ctx_.session.
 //
 // The layer is deliberately bounds-less: it contributes nothing to the camera's
-// scene-fit AABB (it inherits Scene3DLayer::worldBounds()'s std::nullopt
-// default). A robot is posed by the live TF tree, which the camera already
-// frames through the other store-backed layers, so adding its links to the fit
-// would pull the camera around as joints move.
-class RobotModelLayer : public Scene3DLayer {
+// scene fit (a robot moved by joints would otherwise pull the camera around).
+class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   Q_OBJECT
  public:
   enum class SourceType { kTopic, kFile, kUrl };
@@ -66,10 +83,9 @@ class RobotModelLayer : public Scene3DLayer {
   // <visual> geometry when it has any; a collision-only link is promoted to the
   // visuals group (rendered solid) ONLY when the WHOLE model has no visuals, so an
   // all-collision URDF renders solid instead of ghosting at the collision group's
-  // default opacity (review L.21). In a MIXED model (some links have visuals), a
-  // collision-only link is auxiliary geometry (e.g. self-collision capsules) and
-  // renders in the COLLISION group so the Collision opacity/visibility toggle
-  // controls it rather than overlaying the visuals as an unhideable solid.
+  // default opacity. In a MIXED model, a collision-only link is
+  // auxiliary geometry (e.g. self-collision capsules) and renders in the
+  // COLLISION group so the Collision opacity/visibility toggle controls it.
   enum class DisplayMode { kAuto, kVisual, kCollision };
   enum class XmlLoadResult { kRestored, kDeferred, kInvalid };
 
@@ -83,6 +99,9 @@ class RobotModelLayer : public Scene3DLayer {
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
   [[nodiscard]] XmlLoadResult xmlLoadStateResult(const QDomElement& element);
+  // Session-free structural check of a "robot_model" payload (xmlLoadState
+  // additionally resolves the saved topic identity against the session).
+  [[nodiscard]] static bool validateXml(const QDomElement& element);
 
   bool attach(const PJ::SceneLayerContext& ctx) override;
   void detach() override;
@@ -91,33 +110,42 @@ class RobotModelLayer : public Scene3DLayer {
   void setTrackerTime(PJ::Timepoint time) override;
   void setVisible(bool visible) override;
 
+#ifndef PJ_SCENE3D_RHI
   void initializeGL() override;
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
   void releaseGL() override;
-  // worldBounds(): inherits Scene3DLayer's std::nullopt default (this layer is
-  // bounds-less by design — see the class doc-comment).
-  // Shadow casting: the robot meshes DO cast. meshShadowBounds reports the visual
-  // links' world AABB (so the light frustum encloses the robot the camera doesn't
-  // frame); renderShadowCasters depth-draws those visual links. Collision hulls are
-  // excluded from both (not casters).
+  // Shadow casting: the visual links cast (collision hulls do not).
+  // meshShadowBounds reports their world AABB so the light frustum encloses the
+  // robot the camera does not frame.
   [[nodiscard]] std::optional<AABB> meshShadowBounds(const FrameContext& frame_ctx) override;
   void renderShadowCasters(const glm::mat4& light_view_proj, const FrameContext& frame_ctx) override;
+#endif
 
   QWidget* createConfigWidget(QWidget* parent) override;
 
   void setPackageResolver(UrdfPackageResolver* resolver);
+  // The buffer that fixed-joint bridges are injected into for renderers that
+  // resolve TF themselves (QRhi). The GL build also bridges the buffer it
+  // renders against at draw time.
+  void setTransformBuffer(std::shared_ptr<TransformBuffer> buffer);
+  // In-band mesh assets (name == verbatim mesh ref) offered to the resolver on
+  // the next parse.
+  void setEmbeddedAssets(QMap<QString, QByteArray> assets);
   void setSourceTopic(PJ::ObjectTopicId topic_id, QString display_name = {});
   void setSourceFile(QString path);
+  // kFile from bytes: `filename` is only a label (persisted as source_value);
+  // the bytes are never persisted.
+  void setSourceFileContent(QString filename, QByteArray bytes);
   void setSourceUrl(QString url);
   void setFramePrefix(QString prefix);
   void setDisplayMode(DisplayMode mode);
   void setFallbackColor(QColor color);
   // Toggle the COLLADA up-axis override. When true, .dae/.collada meshes load
-  // with the Y->Z flip forced OFF (the loader otherwise flips them — see
-  // MeshLoader::load flip_override); other formats (STL/OBJ/glTF) are unaffected.
-  // Changing the value reloads from the current source (clearing the loader
-  // cache) so the new flip takes effect; an unchanged value is a no-op.
+  // with the Y->Z flip forced OFF; other formats are unaffected. Changing the
+  // value reloads from the current source (clearing the loader cache).
   void setIgnoreColladaUpAxis(bool ignore);
+  // Reload from the current source (Retry).
+  void retry();
 
   [[nodiscard]] SourceType sourceType() const {
     return source_type_;
@@ -149,15 +177,78 @@ class RobotModelLayer : public Scene3DLayer {
   [[nodiscard]] int unresolvedMeshCount() const {
     return unresolved_mesh_count_;
   }
+  [[nodiscard]] std::size_t fixedJointBridgeCount() const {
+    return static_bridges_.size();
+  }
   [[nodiscard]] QString linkFrameName(const std::string& link_name) const;
 
+  // ModelRenderable (read by the QRhi view; empty in the GL build): link-local
+  // draws; the view applies TF(fixed <- frame_id).
+  [[nodiscard]] const std::vector<ModelDrawCall>& modelDrawCalls() const override {
+    return model_draw_calls_;
+  }
+  [[nodiscard]] const std::unordered_map<std::string, std::shared_ptr<const MeshData>>& modelMeshes() const override {
+    return model_meshes_;
+  }
+  [[nodiscard]] std::uint64_t modelRevision() const override {
+    return model_revision_;
+  }
+  [[nodiscard]] bool visible() const override {
+    return visible_;
+  }
+  [[nodiscard]] float opacity() const override {
+    return 1.0F;
+  }
+  [[nodiscard]] bool colorOverrideEnabled() const override {
+    return false;
+  }
+  [[nodiscard]] QColor overrideColor() const override {
+    return fallback_color_;
+  }
+  [[nodiscard]] bool wireframe() const override {
+    return false;
+  }
+  [[nodiscard]] const std::string& renderFrameId() const override {
+    return source_frame_;
+  }
+  [[nodiscard]] bool contributesToSceneBounds() const override {
+    return false;
+  }
+
 #ifdef PJ_SCENE3D_TEST_HOOKS
-  // Exposes the render() memoization dirty flag so a GL-less test can assert the
-  // invalidation set: setters that change geometry flip it back on. Whether
-  // render() consumes (clears) it cannot be exercised here — that path needs a
-  // live GL context the unit harness does not provide, so the test clears the
-  // flag manually (mimicking what render() does after a rebuild) and checks that
-  // each invalidating call re-sets it.
+  // Injects the fixed-joint TF bridges into frame_ctx.tf (the buffer the layer
+  // renders against) and, in the GL build, rebuilds the world-space draw cache.
+  // Inline: test hooks are compiled only into the test TU, never the library.
+  void rebuildDrawCacheForTest(const FrameContext& frame_ctx) {
+#ifdef PJ_SCENE3D_RHI
+    ensureStaticBridges(const_cast<TransformBuffer&>(frame_ctx.tf));
+#else
+    rebuildDrawCache(frame_ctx);
+#endif
+  }
+  // Draw-group sizes of the TF-free model — lets a test assert which group
+  // (visuals vs collision) a link's geometry landed in.
+  [[nodiscard]] int visualDrawCountForTest() const {
+    int count = 0;
+    for (const LinkDraw& draw : link_draws_) {
+      count += draw.collision ? 0 : 1;
+    }
+    return count;
+  }
+  [[nodiscard]] int collisionDrawCountForTest() const {
+    return static_cast<int>(link_draws_.size()) - visualDrawCountForTest();
+  }
+  [[nodiscard]] glm::vec4 firstCollisionDrawColorForTest() const {
+    for (const LinkDraw& draw : link_draws_) {
+      if (draw.collision) {
+        return draw.color;
+      }
+    }
+    return glm::vec4(0.0f);
+  }
+#ifndef PJ_SCENE3D_RHI
+  // GL world-space draw cache: its dirty flag (render() clears it after a
+  // rebuild, which needs a GL context the unit harness lacks) and contents.
   [[nodiscard]] bool drawsDirtyForTest() const {
     return draws_dirty_;
   }
@@ -167,152 +258,167 @@ class RobotModelLayer : public Scene3DLayer {
   [[nodiscard]] bool drawCacheNeedsRebuildForTest(const FrameContext& frame_ctx) const {
     return drawCacheNeedsRebuild(frame_ctx);
   }
-  // Runs the (GL-free) draw-cache rebuild — which injects the fixed-joint TF
-  // bridges into frame_ctx.tf — so a test can assert the buffer the layer renders
-  // against gets bridged, without standing up a GL context.
-  void rebuildDrawCacheForTest(const FrameContext& frame_ctx) {
-    rebuildDrawCache(frame_ctx);
-  }
-  // Draw-group sizes after the last rebuild — lets a GL-less test assert which
-  // group (visuals vs collision) a link's geometry landed in.
-  [[nodiscard]] int visualDrawCountForTest() const {
-    return static_cast<int>(cached_visual_draws_.size());
-  }
   [[nodiscard]] glm::vec3 firstVisualDrawTranslationForTest() const {
     return cached_visual_draws_.empty() ? glm::vec3{0.0f} : glm::vec3(cached_visual_draws_.front().model[3]);
   }
-  [[nodiscard]] int collisionDrawCountForTest() const {
-    return static_cast<int>(cached_collision_draws_.size());
-  }
-  [[nodiscard]] glm::vec4 firstCollisionDrawColorForTest() const {
-    return cached_collision_draws_.empty() ? glm::vec4(0.0f) : cached_collision_draws_.front().color;
-  }
+#endif
 #endif
 
  signals:
   // Mesh-load progress. UNIT: all three of loaded/total/unresolved count
-  // per-GEOMETRY mesh references, NOT unique files — several links sharing one
-  // mesh file each count once, and `loaded` reaches `total` once their shared
-  // file is imported. (unresolved_packages, by contrast, is the resolver's
-  // distinct-package list.) updateMeshCounters() is the single source of truth.
+  // per-GEOMETRY mesh references, NOT unique files. (unresolved_packages, by
+  // contrast, is the distinct-package list.)
   void meshLoadStatusChanged(int loaded, int total, QStringList unresolved_packages);
   void unresolvedPackages(QStringList packages);
   void statusTextChanged(const QString& status);
 
  private:
-  // Rebuild cached_visual_draws_ / cached_collision_draws_ from the model posed
-  // by frame_ctx's TF lookups. Called by render() only when draws_dirty_.
-  void rebuildDrawCache(const FrameContext& frame_ctx);
-  // True when the memoized draw calls cannot be reused for this frame. The
-  // matrices stored in the cache are in camera-relative render space, so the
-  // cache is tied to the render origin as well as to TF/model state.
-  [[nodiscard]] bool drawCacheNeedsRebuild(const FrameContext& frame_ctx) const;
-  // Rebuild the draw cache iff drawCacheNeedsRebuild(), then clear draws_dirty_.
-  // Shared by render() and the shadow hooks so a frame's shadow pre-pass and
-  // color pass use one list built against the same render origin.
-  void ensureDrawCache(const FrameContext& frame_ctx);
+  // One geometry of one link, TF-free: the model both renderers draw from.
+  struct LinkDraw {
+    enum class Shape : std::uint8_t { kBox, kCylinder, kSphere, kMesh, kPlaceholder };
+    std::string frame_id;    // prefixed link frame (the TF child to pose it by)
+    glm::dmat4 origin{1.0};  // the geometry's <origin> in the link frame
+    glm::dvec3 scale{1.0};   // primitive dimensions, or the mesh scale
+    Shape shape = Shape::kPlaceholder;
+    std::string mesh_path;  // resolved path of a loaded mesh (kMesh only)
+    // Colour the geometry is drawn in when `explicit_color` (URDF material,
+    // collision tint or placeholder magenta); otherwise the mesh's own material.
+    glm::vec4 color{1.0F};
+    bool explicit_color = false;
+    bool collision = false;  // collision draw group
+  };
+  struct MeshTask {
+    std::string key;
+    QString source;
+    QString format_hint;
+    bool is_url = false;
+    std::uint64_t generation = 0;
+  };
+
+  // Rebuild link_draws_ (and the QRhi ModelDrawCalls) from the model, display
+  // mode and loaded meshes. TF-independent: runs only when those change.
+  void rebuildLinkDraws();
   // Recompute static_bridges_ from the current model_, with frame_prefix_ applied
   // to each parent/child frame. Called when the model loads or the prefix changes.
   void rebuildStaticBridges();
-  // Inject any not-yet-present fixed-joint bridge into `buf`. Idempotent + guarded
-  // (never overrides real /tf) and cheap, so rebuildDrawCache calls it every
-  // rebuild against the LIVE render buffer (frame_ctx.tf) — which self-heals after
-  // a buffer clear (same-file reload). No-op when static_bridges_ is empty.
+  // Inject any not-yet-present fixed-joint bridge into `buf`. Idempotent and
+  // guarded (never overrides real /tf), so it is re-run on every tracker tick
+  // and self-heals after a buffer clear (same-file reload).
   void ensureStaticBridges(TransformBuffer& buf);
+  void ensureStaticBridges();
+  void resetModelState();
+  // SessionManager::datasetAboutToBeReplaced: a topic-backed model belongs to the
+  // bytes being swapped out, so it goes now and reloads from the replacement.
+  void onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id);
   bool loadFromCurrentSource();
   bool tryLoadTopicDescription();
   bool applyRobotDescription(
       const QString& text, const QString& format, const QString& label, const QString& urdf_dir, bool source_is_url);
-  void startMeshLoads();
-  // Drain finished async loads into the mesh pass, recompute the loaded counter,
-  // then emit meshLoadStatusChanged + repaintRequested when anything landed.
-  // Called from render() and from each load's QFutureWatcher, so a completed
-  // mesh replaces its placeholder without waiting for an unrelated repaint.
-  void pollMeshLoads();
-  // O(1): the resolved-path-keyed load finished successfully. Per-frame draw path.
+  void queueMeshLoads();
+  void pumpMeshLoads();
+  void startMeshImport(MeshTask task, QByteArray bytes = {});
+  void finishMeshImport(const std::string& key, std::uint64_t generation);
+  // A mesh load settled (loaded or failed): refresh draws, counters, status.
+  void onMeshLoadSettled();
   [[nodiscard]] bool meshReady(const std::string& key) const;
-  // Single source of truth for all three counters: one traversal of every
-  // per-geometry mesh reference. ++total per GeomMesh; ++unresolved when the
-  // mesh is unresolved or has no resolved_path; ++loaded when its resolved path's
-  // load is ready(). startMeshLoads() does NOT touch the counters.
+  // Single source of truth for the three per-reference mesh counters.
   void updateMeshCounters();
+  // Recompute status_text_ and the data warning from the loaded model.
+  void updateStatus();
+  // The status text carries the renderer warning too.
+  void renderWarningChanged() override {
+    updateStatus();
+  }
+  // A terminal failure: status and warning both carry `message`.
+  void fail(const QString& message);
   void setStatus(QString status);
-  // Distinct unresolved package names for THIS model (not the dock-shared
-  // resolver's global tally), in first-seen order. Empty when all resolved.
+  // Distinct unresolved package names for THIS model, in first-seen order.
   [[nodiscard]] QStringList unresolvedPackagesList() const;
-  // A short " • N http refs blocked / N absolute paths missing" suffix for the
-  // status line, covering the unresolved kinds Locate cannot fix. Empty when
-  // there are none.
+  // " • N http refs blocked / N absolute paths missing": unresolved kinds Locate
+  // cannot fix. Empty when there are none.
   [[nodiscard]] QString unresolvedIssueClause() const;
+  [[nodiscard]] QString loadFailureClause() const;
 
   PJ::ObjectTopicId topic_id_;
   PJ::ObjectTopicId source_topic_id_;
   QString display_name_;
   Scene3DLayerContext ctx_;
-  // No parser pointer is cached here: tryLoadTopicDescription() resolves a fresh
-  // ParserBinding per decode (see the class lifetime note above).
+  QMetaObject::Connection reload_connection_;
+  std::shared_ptr<TransformBuffer> tf_buffer_;
 
   SourceType source_type_{SourceType::kTopic};
   QString source_value_;
+  QByteArray local_file_bytes_;
+  QMap<QString, QByteArray> embedded_assets_;
   QString frame_prefix_;
   DisplayMode display_mode_{DisplayMode::kAuto};
   QColor fallback_color_{178, 178, 178};
   bool ignore_collada_up_axis_{false};
   bool visible_{true};
   QString fixed_frame_;
+  // "URDF: <label>" once a model is applied; empty while none is.
+  QString base_status_;
   QString status_text_;
   bool latch_pending_{false};
   std::chrono::steady_clock::time_point last_latch_retry_{};
   PJ::Timepoint tracker_time_{};
 
   std::optional<RobotModel> model_;
+  std::string source_frame_;
   // Cached fixed-joint TF bridges (frame_prefix_ already applied), rebuilt on
-  // model load / prefix change. Re-asserted into ctx_.tf_buffer each tracker tick
-  // by ensureStaticBridges() so links the data's /tf never places (e.g. a gripper
-  // mount) still resolve. Empty when the model has no fixed joints.
+  // model load / prefix change. Empty when the model has no fixed joints.
   std::vector<StampedTransform> static_bridges_;
-  // True iff any link has visual geometry; gates kAuto's collision-only promotion
-  // (rebuildDrawCache). Cached at model load — it only depends on the latched model.
+  // True iff any link has visual geometry; gates kAuto's collision-only promotion.
   bool model_has_visuals_{false};
   int total_mesh_count_{0};
   int unresolved_mesh_count_{0};
   int loaded_mesh_count_{0};
-
-  // Memoized per-link DrawCall lists, rebuilt by render() only when their inputs
-  // changed. The lists are view/projection-independent, but their model matrices
-  // are in camera-relative render space (`FrameContext::lookup` subtracts
-  // render_origin), so panning/zoom-to-cursor must rebuild them when the render
-  // origin changes. The opacity/visibility gates and view_params stay per-frame.
-  // INVALIDATION SET — must be kept exhaustive by construction. draws_dirty_ is
-  // set in every place that can change the geometry: setTrackerTime (TF reaches
-  // the layer ONLY via tracker ticks, which the dock drives on every live
-  // ingest tick and every scrub, so TF-driven pose changes are covered — the
-  // one residual is a TF mutation at an unchanged playhead with no tracker
-  // tick, which renders one frame stale), setFixedFrame, setFramePrefix,
-  // setDisplayMode, setFallbackColor, setIgnoreColladaUpAxis, setVisible(true)
-  // (the cache may predate a hide), applyRobotDescription, xmlLoadState, detach,
-  // and pollMeshLoads when a drain reported a change (a placeholder cube must
-  // swap to the real mesh). When adding a new setter that affects geometry, add
-  // it to this set.
-  std::vector<MeshRenderPass::DrawCall> cached_visual_draws_;
-  std::vector<MeshRenderPass::DrawCall> cached_collision_draws_;
-  bool draws_dirty_{true};
-  std::optional<glm::dvec3> cached_render_origin_;
+  std::vector<LinkDraw> link_draws_;
 
   std::unique_ptr<UrdfPackageResolver> owned_resolver_;
   UrdfPackageResolver* resolver_{nullptr};
   std::unique_ptr<MeshLoader> mesh_loader_;
-  std::unique_ptr<MeshRenderPass> mesh_pass_;
-  // Async mesh loads keyed by resolved path. Held by unique_ptr so this header
-  // can forward-declare MeshLoadSet (its definition lives in the private src/).
-  std::unique_ptr<MeshLoadSet> mesh_loads_;
-  // Async fetcher for the kUrl source, owned by the layer: destroying the layer
-  // (or detach()) aborts an in-flight fetch and drops its callback.
+  // Owned by the layer: destroying it (or a source switch) aborts in-flight
+  // URDF/mesh fetches and drops their callbacks.
   std::unique_ptr<UrlFetcher> url_fetcher_;
-  // Monotonic stamp bumped by every loadFromCurrentSource()/detach(); a URL
-  // fetch result is applied only if no newer load superseded it (source
-  // switched, Retry pressed, layer detached).
-  uint64_t url_fetch_generation_{0};
+  std::deque<MeshTask> mesh_queue_;
+  // In-flight URL fetches and imports, keyed by resolved mesh path; together at
+  // most maxConcurrentMeshLoads().
+  std::unordered_set<std::string> active_fetches_;
+  std::unordered_map<std::string, std::unique_ptr<MeshImport>> active_imports_;
+  std::unordered_map<std::string, QString> mesh_errors_;
+  // Retained estimate of each admitted mesh, keyed by resolved path; the key
+  // set is the ready set.
+  std::unordered_map<std::string, std::uint64_t> mesh_bytes_;
+  std::uint64_t mesh_retained_bytes_{0};
+  // Bumped by every source (re)load and detach; fetch/import completions from an
+  // older generation are dropped.
+  std::uint64_t load_generation_{0};
+
+  // QRhi sink (empty in the GL build).
+  std::unordered_map<std::string, std::shared_ptr<const MeshData>> model_meshes_;
+  std::vector<ModelDrawCall> model_draw_calls_;
+  std::uint64_t model_revision_{0};
+#ifndef PJ_SCENE3D_RHI
+  // Rebuild cached_visual_draws_ / cached_collision_draws_ (world space,
+  // camera-relative) from link_draws_ posed by frame_ctx's TF, after bridging
+  // the fixed joints into frame_ctx.tf (the dock's live buffer).
+  void rebuildDrawCache(const FrameContext& frame_ctx);
+  // True when the cached draws cannot be reused for this frame: the model or TF
+  // changed (draws_dirty_) or the render origin moved.
+  [[nodiscard]] bool drawCacheNeedsRebuild(const FrameContext& frame_ctx) const;
+  void ensureDrawCache(const FrameContext& frame_ctx);
+
+  // INVALIDATION SET: draws_dirty_ is set wherever the world-space draws can
+  // change: setTrackerTime (TF reaches the layer only via tracker ticks),
+  // setFixedFrame, setVisible(true), and rebuildLinkDraws (model, prefix,
+  // display mode, colour, loaded meshes, detach).
+  std::vector<MeshRenderPass::DrawCall> cached_visual_draws_;
+  std::vector<MeshRenderPass::DrawCall> cached_collision_draws_;
+  bool draws_dirty_{true};
+  std::optional<glm::dvec3> cached_render_origin_;
+  std::unique_ptr<MeshRenderPass> mesh_pass_;
+#endif
 };
 
 }  // namespace pj::scene3d

@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 
 namespace pj::scene3d {
 
@@ -221,5 +222,48 @@ static_assert(sceneLimitsFitRendererTypes(kDesktopSceneLimits));
   remaining -= requested;
   return true;
 }
+
+// Saturating byte/count arithmetic for budget estimates: an overflow pins at
+// kSaturated, which every limit rejects.
+inline constexpr std::uint64_t kSaturated = std::numeric_limits<std::uint64_t>::max();
+
+[[nodiscard]] constexpr std::uint64_t saturatedAdd(std::uint64_t left, std::uint64_t right) noexcept {
+  return right > kSaturated - left ? kSaturated : left + right;
+}
+
+[[nodiscard]] constexpr std::uint64_t saturatedMultiply(std::uint64_t left, std::uint64_t right) noexcept {
+  return left != 0U && right > kSaturated / left ? kSaturated : left * right;
+}
+
+// Per-layer memory of a per-view budget rejection. A layer that did not fit the
+// view's remaining budget drops its data and records the size; it is retried
+// only once that much fits again, instead of re-decoding every frame.
+class BudgetLatch {
+ public:
+  // True while the rejected size still exceeds `remaining` (the layer stays
+  // dropped this frame). Once it fits, the latch clears and returns false with
+  // `released` set: the caller must re-decode what it dropped.
+  [[nodiscard]] constexpr bool blocked(std::uint64_t remaining, bool& released) noexcept {
+    released = false;
+    if (!rejected_.has_value()) {
+      return false;
+    }
+    if (*rejected_ > remaining) {
+      return true;
+    }
+    rejected_.reset();
+    released = true;
+    return false;
+  }
+  constexpr void reject(std::uint64_t count) noexcept {
+    rejected_ = count;
+  }
+  constexpr void reset() noexcept {
+    rejected_.reset();
+  }
+
+ private:
+  std::optional<std::uint64_t> rejected_;
+};
 
 }  // namespace pj::scene3d

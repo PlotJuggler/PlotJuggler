@@ -9,9 +9,8 @@
 
 namespace pj::scene3d {
 
-// Range-checked readers for persisted scene-dock XML state, shared by the
-// native and WASM Scene3DDockWidget implementations so the accepted layout
-// grammar cannot drift between platforms.
+// Range-checked readers for persisted scene-dock XML state (Scene3DDockWidget's
+// layout grammar).
 //
 // All three readers follow the same contract: a MISSING attribute is valid
 // (returns true, output untouched — absence means "keep the default"), a

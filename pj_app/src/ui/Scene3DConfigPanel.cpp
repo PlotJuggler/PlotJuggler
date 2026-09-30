@@ -26,13 +26,11 @@
 #include <vector>
 
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
-#ifdef PJ_SCENE3D_RHI
-#include "FileSelectionService.h"
-#include "pj_scene3d_widgets/wasm/robot_model_layer_wasm.h"
-#else
 #include "pj_scene3d_widgets/layers/robot_model_layer.h"
-#include "pj_scene3d_widgets/layers/trail_layer.h"
+#ifdef PJ_TARGET_WASM
+#include "FileSelectionService.h"
 #endif
+#include "pj_scene3d_widgets/layers/trail_layer.h"
 #include "pj_scene3d_widgets/mesh_shading_params.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene_common/layer_params.h"
@@ -57,7 +55,7 @@ namespace PJ {
 
 namespace {
 
-#ifndef PJ_SCENE3D_RHI
+#ifndef PJ_TARGET_WASM
 constexpr char kUrdfBrowseDirKey[] = "pj_scene3d/urdf_browse_dir";
 #endif
 constexpr auto kTrashIconPath = ":/resources/svg/trash.svg";
@@ -640,7 +638,7 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
       bound_dock_->addTrailLayer(pj::scene3d::TrailSource::tfFrame(frame));
     }
   });
-#endif  // PJ_SCENE3D_RHI: the QRhi renderer has no trails yet
+#endif  // PJ_SCENE3D_RHI: the QRhi renderer draws no trails yet (QRHI_MIGRATION P3)
 
   // Pin both grids' label column to the widest label across BOTH sections, read
   // back from the labels just added (no separate string list to keep in sync).
@@ -809,10 +807,8 @@ void Scene3DConfigPanel::onAddModelClicked() {
   }
   switch (model_source_combo_->currentIndex()) {
     case 0: {  // File
-#ifdef PJ_SCENE3D_RHI
-      // ponytail: the QRhi dock loads URDFs from bytes (browser route) on desktop
-      // too, so relative meshes don't resolve and layouts can't reload the file;
-      // P2 replaces it with the desktop path-based layer.
+#ifdef PJ_TARGET_WASM
+      // Browser policy: the sandbox grants the URDF's bytes, never a path.
       QPointer<Scene3DConfigPanel> self(this);
       QPointer<Scene3DDockWidget> dock(bound_dock_);
       FileSelectionService::selectFileContent(
@@ -984,19 +980,6 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
   if (bound_dock_ != nullptr) {
     ObjectTopicId topic_id;
     topic_id.id = topic_id_value;
-#ifdef PJ_SCENE3D_RHI
-    if (auto* robot = qobject_cast<pj::scene3d::WasmRobotModelLayer*>(bound_dock_->layerFor(topic_id))) {
-      const QString status = robot->statusText();
-      if (!status.isEmpty()) {
-        name->setToolTip(status);
-      }
-      connect(
-          robot, &pj::scene3d::WasmRobotModelLayer::statusTextChanged, name,
-          [name, tooltip](const QString& status_text) {
-            name->setToolTip(status_text.isEmpty() ? tooltip : status_text);
-          });
-    }
-#else
     if (auto* robot = qobject_cast<pj::scene3d::RobotModelLayer*>(bound_dock_->layerFor(topic_id))) {
       const QString status = robot->statusText();
       if (!status.isEmpty()) {
@@ -1007,7 +990,6 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
             name->setToolTip(status_text.isEmpty() ? tooltip : status_text);
           });
     }
-#endif
   }
 }
 

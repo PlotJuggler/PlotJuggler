@@ -503,6 +503,7 @@ TEST(RobotModelLayerTest, UnresolvedPackageMeshIsCountedForPlaceholderRendering)
   EXPECT_TRUE(layer.statusText().contains("packages unresolved"_L1));
 }
 
+#ifndef PJ_SCENE3D_RHI
 // M.48: render() memoizes the per-link DrawCall lists and rebuilds them only
 // when their inputs change. This asserts the geometry invalidation set: every
 // geometry-affecting call must re-flag the cache. The render-origin dependency
@@ -546,6 +547,7 @@ TEST(RobotModelLayerTest, DrawCacheInvalidationSetIsExhaustive) {
 
   expect_dirties("detach", [&]() { layer.detach(); });
 }
+#endif  // !PJ_SCENE3D_RHI
 
 // Regression: a finished async URDF mesh load must itself request the repaint
 // that consumes it (QFutureWatcher -> pollMeshLoads). The app paints strictly on
@@ -684,6 +686,36 @@ TEST(RobotModelLayerTest, ReloadSwapsParserWithoutTouchingStaleOne) {
       << "layer called the replaced (freed-in-production) parser after the reload swap";
   EXPECT_GE(g_second_urdf_parser_calls.load(), 1) << "layer did not rebind to the re-registered parser";
   EXPECT_NE(layer.robotModel(), nullptr) << "latch retry did not decode the new sample";
+}
+
+// A dataset replacement swaps the robot_description bytes under the stable topic
+// id: the previous dataset's model must go at once and the description be decoded
+// again from the replacement (after the swap, which runs no event loop).
+TEST(RobotModelLayerTest, DatasetReplacementReloadsTopicDescription) {
+  g_first_urdf_parser_calls.store(0);
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id, countingUrdfVtable([]() noexcept -> void* {
+                   return new CountingUrdfParser(&g_first_urdf_parser_calls);
+                 }));
+  pushWireBytes(session, topic_id);
+
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  ASSERT_NE(layer.robotModel(), nullptr);
+  const int parses_before = g_first_urdf_parser_calls.load();
+
+  emit session.datasetAboutToBeReplaced(session.objectStore().descriptor(topic_id).dataset_id);
+  EXPECT_EQ(layer.robotModel(), nullptr) << "the replaced dataset's model is still shown";
+
+  QElapsedTimer timer;
+  timer.start();
+  while (layer.robotModel() == nullptr && timer.elapsed() < 2000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+  }
+  EXPECT_GT(g_first_urdf_parser_calls.load(), parses_before) << "the description was not decoded again";
+  EXPECT_NE(layer.robotModel(), nullptr) << "no model loaded from the replacement";
 }
 
 // M.49/H.14 regression: the kUrl source must not block the caller. setSourceUrl
@@ -1080,6 +1112,7 @@ TEST(RobotModelLayerTest, FixedJointBridgeAppliesFramePrefix) {
   EXPECT_NEAR(tf->t.z, 0.1, 1e-9);
 }
 
+#ifndef PJ_SCENE3D_RHI
 // Camera-relative rendering made RobotModelLayer's cached DrawCall matrices
 // render-origin dependent: FrameContext::lookup subtracts the camera focal before
 // the float downcast. A stopped-playback camera pan/zoom changes that origin
@@ -1117,6 +1150,7 @@ TEST(RobotModelLayerTest, DrawCacheInvalidatesWhenRenderOriginChanges) {
   EXPECT_NEAR(layer.firstVisualDrawTranslationForTest().x, -3.0f, 1e-5f)
       << "draw cache should be rebuilt in the new camera-relative space";
 }
+#endif  // !PJ_SCENE3D_RHI
 
 // kAuto in a MIXED model: a collision-only sublink (the self-collision capsules)
 // must land in the COLLISION draw group so the Collision toggle/opacity hides it —
@@ -1173,12 +1207,48 @@ TEST(RobotModelLayerTest, AutoModeAllCollisionModelPromotesToVisuals) {
   EXPECT_EQ(layer.collisionDrawCountForTest(), 0);
 }
 
-// Custom main: QFutureWatcher/UrlFetcher tests need an event loop, and the
-// QCoreApplication must die BEFORE exit handlers run — QtNetwork (loaded by the
-// layer's UrlFetcher) registers global cleanup that a function-local-static app
-// would outlive, crashing at exit (pj_marketplace's download_manager_test pattern).
-int main(int argc, char** argv) {
-  QCoreApplication app(argc, argv);
-  testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
+// Coordinate contract: the layer's model is link-local (prefixed link frame +
+// <origin> × scale) and TF is applied exactly once, by whichever renderer draws
+// it — the GL cache composes TF × origin × scale, the QRhi view receives the
+// untransformed ModelDrawCall and applies TF itself.
+TEST(RobotModelLayerTest, DrawsKeepLinkLocalGeometryAndApplyTfOnce) {
+  pj::scene3d::RobotModelLayer layer(PJ::ObjectTopicId{}, u"robot"_s);
+  layer.setFramePrefix(u"robot1/"_s);
+  layer.setSourceFileContent(u"offset.urdf"_s, QByteArray(R"(
+<robot name="offset">
+  <link name="base_link">
+    <visual>
+      <origin xyz="1 0 0"/>
+      <geometry><box size="2 3 4"/></geometry>
+    </visual>
+  </link>
+</robot>
+)"));
+  ASSERT_NE(layer.robotModel(), nullptr) << layer.statusText().toStdString();
+  EXPECT_EQ(layer.sourceFrame(), u"robot1/base_link"_s);
+
+  pj::scene3d::TransformBuffer live;
+  pj::scene3d::StampedTransform tf;
+  tf.stamp = PJ::fromRaw(1000);
+  tf.parent_frame = "scene";
+  tf.child_frame = "robot1/base_link";
+  tf.transform = pj::scene3d::Transform{glm::dvec3(5, 0, 0), glm::dquat(1, 0, 0, 0)};
+  ASSERT_TRUE(live.setTransform(tf).has_value());
+  const std::string fixed_frame = "scene";
+  const pj::scene3d::FrameContext frame_ctx{live, fixed_frame, PJ::fromRaw(2000)};
+  layer.rebuildDrawCacheForTest(frame_ctx);
+  EXPECT_EQ(layer.visualDrawCountForTest(), 1);
+
+#ifdef PJ_SCENE3D_RHI
+  const auto& draws = layer.modelDrawCalls();
+  ASSERT_EQ(draws.size(), 1u);
+  EXPECT_EQ(draws.front().frame_id, "robot1/base_link");
+  EXPECT_EQ(draws.front().mesh_key, "robot:primitive:box");
+  EXPECT_EQ(draws.front().group, pj::scene3d::ModelDrawGroup::kVisual);
+  EXPECT_NEAR(draws.front().model[3].x, 1.0, 1e-12) << "TF must not be baked into the link-local draw";
+  EXPECT_NEAR(draws.front().model[0].x, 2.0, 1e-12);
+  EXPECT_NEAR(draws.front().model[2].z, 4.0, 1e-12);
+#else
+  EXPECT_NEAR(layer.firstVisualDrawTranslationForTest().x, 6.0f, 1e-5f) << "TF x <origin> composed once";
+#endif
 }

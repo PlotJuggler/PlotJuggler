@@ -5,7 +5,6 @@
 #include <QColor>
 #include <QDomDocument>
 #include <QDomElement>
-#include <QFutureWatcher>
 #include <QString>
 #include <QStringList>
 #include <cstdint>
@@ -18,8 +17,11 @@
 #include "pj_datastore/object_store.hpp"  // PJ::ObjectTopicId
 #include "pj_runtime/SessionManager.h"    // ParserBinding
 #include "pj_scene3d_core/trail_sampling.h"
-#include "pj_scene3d_widgets/passes/trail_render_pass.h"
+#include "pj_scene3d_widgets/latest_wins_worker.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+#ifndef PJ_SCENE3D_RHI
+#include "pj_scene3d_widgets/passes/trail_render_pass.h"
+#endif
 
 class QFormLayout;
 class QWidget;
@@ -62,6 +64,8 @@ struct TrailSource {
 // Not topic-id-backed: the dock registers it under a synthetic local id
 // (info().object_type == kNone) and persists it with role="trail" — see
 // Scene3DDockWidget::addTrailLayer / restoreTrailElement.
+// The QRhi renderer does not draw trails yet (QRHI_MIGRATION P3): there the
+// layer keeps its source, style and persistence, and its row warns.
 class TrailLayer : public Scene3DLayer {
   Q_OBJECT
  public:
@@ -83,7 +87,6 @@ class TrailLayer : public Scene3DLayer {
   [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
   [[nodiscard]] QStringList fallbackFrames() const override;
   [[nodiscard]] QString sourceFrame() const override;
-  [[nodiscard]] QString statusWarning() const override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   // Applies STYLE only (colors/thickness/visibility) — a family paste (PR #204
   // copy/paste) must restyle, never retarget, a trail. Full source-installing
@@ -98,9 +101,11 @@ class TrailLayer : public Scene3DLayer {
   [[nodiscard]] uint64_t renderKey(PJ::Timepoint time) const override;
   void setVisible(bool visible) override;
 
+#ifndef PJ_SCENE3D_RHI
   void initializeGL() override;
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
   void releaseGL() override;
+#endif
 
   QWidget* createConfigWidget(QWidget* parent) override;
   // Appends this trail's style rows (thickness, past/future colour + eye) to an
@@ -160,7 +165,7 @@ class TrailLayer : public Scene3DLayer {
   // Synchronous rebuild against an explicit fixed frame.
   void rebuildNowForTest(const QString& fixed_frame) {
     fixed_frame_ = fixed_frame.toStdString();
-    ++build_generation_;
+    rebuild_worker_.invalidate();
     startRebuild(/*synchronous=*/true);
   }
 #endif
@@ -171,12 +176,19 @@ class TrailLayer : public Scene3DLayer {
   bool loadStyle(const QDomElement& element);
   void adoptPolyline(TrailPolyline polyline);
   void appendTail(TrailPolyline tail);
-  void setWarning(const QString& warning);
+  // What an off-thread TF-frame rebuild needs, captured by value. The shared_ptr
+  // keeps the buffer alive off-thread; TransformBuffer is shared_mutex-protected,
+  // so concurrent GUI-thread writes are safe.
+  struct TfTrailRequest {
+    std::shared_ptr<TransformBuffer> tf;
+    std::string fixed_frame;
+    std::string frame;
+  };
+  [[nodiscard]] static TrailPolyline buildTfTrail(const TfTrailRequest& request);
   // Latest-wins async rebuild orchestration (see class comment for the
-  // TF-async / pose-sync split).
+  // TF-async / pose-sync split). requestRebuild() makes any running build stale.
   void requestRebuild();
   void startRebuild(bool synchronous = false);
-  void onRebuildFinished();
   [[nodiscard]] TrailPolyline buildPoseTrailNow();
   // Decodes one store entry into a PoseTrailSample (v1 contract: FIRST pose
   // only). nullopt for evicted/empty/undecodable entries; decode failures
@@ -205,19 +217,18 @@ class TrailLayer : public Scene3DLayer {
   float thickness_px_ = 4.0F;
   bool past_visible_ = true;
   bool future_visible_ = true;
-  QString warning_;
 
-  QFutureWatcher<TrailPolyline>* watcher_ = nullptr;
-  bool inflight_ = false;
-  uint64_t build_generation_ = 0;     // bumped by requestRebuild
-  uint64_t inflight_generation_ = 0;  // generation the running future was started for
+  LatestWinsWorker<TfTrailRequest, TrailPolyline> rebuild_worker_{
+      this, &TrailLayer::buildTfTrail, [this](TrailPolyline polyline) { adoptPolyline(std::move(polyline)); }};
   uint64_t last_seen_tf_revision_ = 0;
   std::size_t pose_seen_entry_count_ = 0;  // live-append cursor for pose sources
   // Decode failures of the last pose rebuild: distinguishes "no data yet"
   // from "data arrived but could not be decoded" in the row warning.
   std::size_t last_pose_decode_failures_ = 0;
 
+#ifndef PJ_SCENE3D_RHI
   TrailRenderPass pass_;
+#endif
 };
 
 }  // namespace pj::scene3d

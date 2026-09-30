@@ -16,12 +16,13 @@
 #include <QStackedWidget>
 #include <QVBoxLayout>
 #include <QWidget>
-#include <QtConcurrent>
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <glm/glm.hpp>
 #include <limits>
 #include <memory>
+#include <new>
 #include <string_view>
 #include <utility>
 
@@ -33,8 +34,9 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/camera/camera.h"  // AABB, expandAABB
-#include "pj_scene3d_core/grid_map_view.h"  // FiniteRange, finiteRange
+#include "pj_scene3d_core/grid_map_view.h"  // finiteRange
 #include "pj_scene3d_core/pointcloud.h"
+#include "pj_scene3d_core/pointcloud_budget.h"
 #include "pj_scene3d_core/pointcloud_codecs.h"
 #include "pj_scene3d_core/pointcloud_convert.h"  // convertCanonical, ConvertedPointCloud
 #include "pj_scene3d_core/tf/tf_buffer.h"        // source->fixed lookup for world-axis range
@@ -88,12 +90,29 @@ int spatialAxisIndex(const std::string& field) {
   return -1;
 }
 
+#ifndef PJ_SCENE3D_RHI
 // The GPU AABB reducer indexes the cloud buffer as uint words, so the fast-path
 // byte stride and the x offset (y/z follow contiguously at +4/+8) must both be
 // 4-byte aligned for the GPU path; otherwise the layer keeps the CPU scan.
 bool gpuAabbAligned(const AttribLayout& layout) {
   constexpr uint32_t kAlign = PointcloudAabbReducer::kRequiredAlignmentBytes;
   return layout.stride % kAlign == 0 && layout.xyz_offset % kAlign == 0;
+}
+#endif
+
+// Per-cloud admission against kSceneLimits; empty when `cloud` fits.
+QString cloudAdmissionError(const PointCloud& cloud) {
+  const uint64_t point_count = static_cast<uint64_t>(cloud.width) * cloud.height;
+  if (!pointCountFits(point_count)) {
+    return PointCloudLayer::tr("Cloud has %1 points; the limit is %2")
+        .arg(QString::number(point_count), QString::number(kSceneLimits.max_points_per_cloud));
+  }
+  if (!pointPayloadFits(static_cast<uint64_t>(cloud.data.size()))) {
+    return PointCloudLayer::tr("Cloud payload is %1 MiB; the limit is %2 MiB")
+        .arg(QString::number(static_cast<double>(cloud.data.size()) / (1024.0 * 1024.0), 'f', 1))
+        .arg(kSceneLimits.max_point_wire_bytes_per_cloud / (1024ULL * 1024ULL));
+  }
+  return {};
 }
 
 QString defaultColorField(const QStringList& available) {
@@ -143,21 +162,17 @@ QString toggleButtonQss(PJ::theme::Theme active_theme) {
 PointCloudLayer::PointCloudLayer(
     PJ::ObjectTopicId topic_id, QString display_name, BuiltinObjectType object_type, QObject* parent)
     : Scene3DLayer(parent), topic_id_(topic_id), display_name_(std::move(display_name)), object_type_(object_type) {
-  // Push layer defaults to the pass at construction so the first paint
-  // already reflects them (layer defaults are the design-spec values, not
-  // the pass's "minimum visual change" defaults).
-  cloud_pass_.setShape(shape_);
-  cloud_pass_.setSizeMeters(size_meters_);
-  cloud_pass_.setSizePixels(size_pixels_);
-  cloud_pass_.setColorType(color_type_);
-  cloud_pass_.setSolidColor(glm::vec3(solid_color_.redF(), solid_color_.greenF(), solid_color_.blueF()));
-  cloud_pass_.setColormap(colormap_);
-  cloud_pass_.setInvertLut(invert_lut_);
-  pushOutsideRangeAlpha();
+  // The layer defaults are the design-spec values, not the pass's "minimum
+  // visual change" defaults, so the first paint must already reflect them.
+  syncPassStyle();
+  decode_worker_.setWaitingFilter(
+      [this](const PendingDecode& next) { return next.id == wanted_ && next.id != failed_id_; });
+#ifndef PJ_SCENE3D_RHI
   // The pass owns the GPU AABB reducer and polls it inside render() (GL thread);
   // a completed reduction flows back here to refresh world_bounds_ + the camera.
   // cloud_pass_ is a member, so `this` outlives every callback invocation.
   cloud_pass_.setBoundsCallback([this](std::optional<AABB> box) { onGpuAabb(box); });
+#endif
 }
 
 PointCloudLayer::~PointCloudLayer() = default;
@@ -192,40 +207,27 @@ QDomElement PointCloudLayer::xmlSaveState(QDomDocument& doc) const {
   QDomElement el = doc.createElement(u"pointcloud"_s);
   auto shape_str = [&]() -> QString {
     switch (shape_) {
-      case PointcloudRenderPass::Shape::kSphere:
+      case PointShape::kSphere:
         return u"sphere"_s;
-      case PointcloudRenderPass::Shape::kPoint:
+      case PointShape::kPoint:
         return u"point"_s;
-      case PointcloudRenderPass::Shape::kCube:
+      case PointShape::kCube:
         return u"cube"_s;
     }
     return u"sphere"_s;
   }();
-  auto colormap_str = [&]() -> QString {
-    switch (colormap_) {
-      case PointcloudRenderPass::Colormap::kTurbo:
-        return u"turbo"_s;
-      case PointcloudRenderPass::Colormap::kViridis:
-        return u"viridis"_s;
-      case PointcloudRenderPass::Colormap::kPlasma:
-        return u"plasma"_s;
-      case PointcloudRenderPass::Colormap::kGrayscale:
-        return u"grayscale"_s;
-    }
-    return u"turbo"_s;
-  }();
   el.setAttribute(u"shape"_s, shape_str);
   el.setAttribute(u"size_meters"_s, QString::number(static_cast<double>(size_meters_), 'g', 6));
   el.setAttribute(u"size_pixels"_s, QString::number(static_cast<double>(size_pixels_), 'g', 6));
-  const QString color_type_str = !color_choice_explicit_                                  ? u"auto"_s
-                                 : color_type_ == PointcloudRenderPass::ColorType::kSolid ? u"solid"_s
-                                 : color_type_ == PointcloudRenderPass::ColorType::kRgb   ? u"rgb"_s
-                                                                                          : u"field"_s;
+  const QString color_type_str = !color_choice_explicit_                 ? u"auto"_s
+                                 : color_type_ == PointColorType::kSolid ? u"solid"_s
+                                 : color_type_ == PointColorType::kRgb   ? u"rgb"_s
+                                                                         : u"field"_s;
   el.setAttribute(u"color_type"_s, color_type_str);
   el.setAttribute(u"color_choice_explicit"_s, color_choice_explicit_ ? u"true"_s : u"false"_s);
   el.setAttribute(u"color_field"_s, QString::fromStdString(color_field_));
   el.setAttribute(u"solid_color"_s, solid_color_.name(QColor::HexRgb));
-  el.setAttribute(u"colormap"_s, colormap_str);
+  el.setAttribute(u"colormap"_s, colormapToken(colormap_));
   el.setAttribute(u"auto_range"_s, auto_range_ ? u"true"_s : u"false"_s);
   el.setAttribute(u"invert_lut"_s, invert_lut_ ? u"true"_s : u"false"_s);
   el.setAttribute(u"outside_range_opacity"_s, QString::number(static_cast<double>(outside_range_opacity_), 'g', 6));
@@ -235,106 +237,104 @@ QDomElement PointCloudLayer::xmlSaveState(QDomDocument& doc) const {
   return el;
 }
 
-bool PointCloudLayer::xmlLoadState(const QDomElement& element) {
+std::optional<PointCloudLayer::Settings> PointCloudLayer::parseSettings(const QDomElement& element) {
   if (element.isNull() || element.tagName() != "pointcloud"_L1 || !detail::isLeafPayload(element)) {
-    return false;
+    return std::nullopt;
   }
+  Settings settings;
   const QString shape_str = element.attribute(u"shape"_s, u"sphere"_s);
-  PointcloudRenderPass::Shape restored_shape;
   if (shape_str == "sphere"_L1) {
-    restored_shape = PointcloudRenderPass::Shape::kSphere;
+    settings.shape = PointShape::kSphere;
   } else if (shape_str == "point"_L1) {
-    restored_shape = PointcloudRenderPass::Shape::kPoint;
+    settings.shape = PointShape::kPoint;
   } else if (shape_str == "cube"_L1) {
-    restored_shape = PointcloudRenderPass::Shape::kCube;
+    settings.shape = PointShape::kCube;
   } else {
-    return false;
+    return std::nullopt;
   }
-  float restored_size_meters = 0.0f;
-  float restored_size_pixels = 0.0f;
-  float restored_outside_opacity = 0.0f;
-  float restored_range_min = 0.0f;
-  float restored_range_max = 0.0f;
-  if (!detail::parseFiniteFloat(element, "size_meters", 0.01f, 0.001f, 10.0f, restored_size_meters) ||
-      !detail::parseFiniteFloat(element, "size_pixels", 2.0f, 1.0f, 32.0f, restored_size_pixels) ||
-      !detail::parseFiniteFloat(element, "outside_range_opacity", 1.0f, 0.0f, 1.0f, restored_outside_opacity) ||
+  if (!detail::parseFiniteFloat(element, "size_meters", 0.01f, 0.001f, 10.0f, settings.size_meters) ||
+      !detail::parseFiniteFloat(element, "size_pixels", 2.0f, 1.0f, 32.0f, settings.size_pixels) ||
+      !detail::parseFiniteFloat(element, "outside_range_opacity", 1.0f, 0.0f, 1.0f, settings.outside_range_opacity) ||
       !detail::parseFiniteFloat(
           element, "range_min", 0.0f, std::numeric_limits<float>::lowest(), std::numeric_limits<float>::max(),
-          restored_range_min) ||
+          settings.range_min) ||
       !detail::parseFiniteFloat(
           element, "range_max", 1.0f, std::numeric_limits<float>::lowest(), std::numeric_limits<float>::max(),
-          restored_range_max) ||
-      restored_range_min > restored_range_max) {
-    return false;
+          settings.range_max) ||
+      settings.range_min > settings.range_max) {
+    return std::nullopt;
   }
   const QString color_type_str = element.attribute(u"color_type"_s, u"field"_s);
   if (color_type_str != "auto"_L1 && color_type_str != "solid"_L1 && color_type_str != "rgb"_L1 &&
       color_type_str != "field"_L1) {
-    return false;
+    return std::nullopt;
   }
   bool restored_explicit = color_type_str != "auto"_L1;
   if (!detail::parseTrueFalse(element, "color_choice_explicit", restored_explicit, restored_explicit) ||
       ((color_type_str == "auto"_L1) == restored_explicit)) {
-    return false;
+    return std::nullopt;
   }
-  PointcloudRenderPass::ColorType restored_color_type = PointcloudRenderPass::ColorType::kField;
+  settings.color_choice_explicit = restored_explicit;
   if (color_type_str == "solid"_L1) {
-    restored_color_type = PointcloudRenderPass::ColorType::kSolid;
+    settings.color_type = PointColorType::kSolid;
   } else if (color_type_str == "rgb"_L1) {
-    restored_color_type = PointcloudRenderPass::ColorType::kRgb;
+    settings.color_type = PointColorType::kRgb;
   }
-  const QString colormap_text = element.attribute(u"colormap"_s, u"turbo"_s);
-  PointcloudRenderPass::Colormap restored_colormap;
-  if (colormap_text == "turbo"_L1) {
-    restored_colormap = PointcloudRenderPass::Colormap::kTurbo;
-  } else if (colormap_text == "viridis"_L1) {
-    restored_colormap = PointcloudRenderPass::Colormap::kViridis;
-  } else if (colormap_text == "plasma"_L1) {
-    restored_colormap = PointcloudRenderPass::Colormap::kPlasma;
-  } else if (colormap_text == "grayscale"_L1) {
-    restored_colormap = PointcloudRenderPass::Colormap::kGrayscale;
-  } else {
-    return false;
+  const auto colormap = parseColormap(element.attribute(u"colormap"_s, u"turbo"_s));
+  if (!colormap.has_value()) {
+    return std::nullopt;
   }
-  bool restored_auto_range = true;
-  bool restored_invert_lut = false;
-  bool restored_outside_visible = true;
-  if (!detail::parseTrueFalse(element, "auto_range", true, restored_auto_range) ||
-      !detail::parseTrueFalse(element, "invert_lut", false, restored_invert_lut) ||
-      !detail::parseTrueFalse(element, "outside_range_visible", true, restored_outside_visible)) {
-    return false;
+  settings.colormap = *colormap;
+  if (!detail::parseTrueFalse(element, "auto_range", true, settings.auto_range) ||
+      !detail::parseTrueFalse(element, "invert_lut", false, settings.invert_lut) ||
+      !detail::parseTrueFalse(element, "outside_range_visible", true, settings.outside_range_visible)) {
+    return std::nullopt;
   }
-  QColor restored_solid_color;
-  const bool has_solid_color = element.hasAttribute(u"solid_color"_s);
-  if (has_solid_color) {
-    restored_solid_color = QColor(element.attribute(u"solid_color"_s));
-    if (!restored_solid_color.isValid()) {
-      return false;
+  if (element.hasAttribute(u"solid_color"_s)) {
+    const QColor color(element.attribute(u"solid_color"_s));
+    if (!color.isValid()) {
+      return std::nullopt;
     }
+    settings.solid_color = color;
   }
-  setShape(restored_shape);
-  setSizeMeters(restored_size_meters);
-  setSizePixels(restored_size_pixels);
-  setColorType(restored_color_type);
-  color_choice_explicit_ = restored_explicit;
+  if (element.hasAttribute(u"color_field"_s)) {
+    settings.color_field = element.attribute(u"color_field"_s);
+  }
+  return settings;
+}
+
+bool PointCloudLayer::validateXml(const QDomElement& element) {
+  return parseSettings(element).has_value();
+}
+
+bool PointCloudLayer::xmlLoadState(const QDomElement& element) {
+  const std::optional<Settings> settings = parseSettings(element);
+  if (!settings.has_value()) {
+    return false;
+  }
+  setShape(settings->shape);
+  setSizeMeters(settings->size_meters);
+  setSizePixels(settings->size_pixels);
+  setColorType(settings->color_type);
+  color_choice_explicit_ = settings->color_choice_explicit;
   // A latent ("auto") choice re-derives the colour-present RGB default the
   // smart default would have picked on the first decoded sample.
   if (!color_choice_explicit_ && has_color_) {
-    color_type_ = PointcloudRenderPass::ColorType::kRgb;
-    cloud_pass_.setColorType(color_type_);
+    color_type_ = PointColorType::kRgb;
+    syncPassStyle();
   }
-  if (element.hasAttribute(u"color_field"_s)) {
-    setColorField(element.attribute(u"color_field"_s));
+  if (settings->color_field.has_value()) {
+    setColorField(*settings->color_field);
   }
-  if (has_solid_color) {
-    setSolidColor(restored_solid_color);
+  if (settings->solid_color.has_value()) {
+    setSolidColor(*settings->solid_color);
   }
-  setColormap(restored_colormap);
-  setInvertLut(restored_invert_lut);
-  setOutsideRangeOpacity(restored_outside_opacity);
-  setOutsideRangeVisible(restored_outside_visible);
-  setManualRange(restored_range_min, restored_range_max);
-  applyAutoRange(restored_auto_range, /*seed_manual_from_world=*/false);
+  setColormap(settings->colormap);
+  setInvertLut(settings->invert_lut);
+  setOutsideRangeOpacity(settings->outside_range_opacity);
+  setOutsideRangeVisible(settings->outside_range_visible);
+  setManualRange(settings->range_min, settings->range_max);
+  applyAutoRange(settings->auto_range, /*seed_manual_from_world=*/false);
   return true;
 }
 
@@ -377,29 +377,13 @@ bool PointCloudLayer::attach(const PJ::SceneLayerContext& ctx) {
 void PointCloudLayer::detach() {
   disconnect(reload_connection_);
   reload_connection_ = {};
-  drop_inflight_result_ = false;
   ts_first_.reset();
   decoded_at_ns_.reset();
-  if (decode_watcher_ != nullptr) {
-    decode_watcher_->disconnect(this);  // a late result must not touch a detached layer
-    decode_watcher_->cancel();
-    // Drop the watcher entirely: ensureDecodeWorker() only wires the finished signal
-    // when it creates one, so a kept-but-disconnected watcher would leave a
-    // re-attached layer decoding into the void.
-    decode_watcher_->deleteLater();
-    decode_watcher_ = nullptr;
-  }
-  pending_.reset();
-  decoded_cache_.reset();
-  decoded_cache_id_ = {};
-  inflight_ = {};
-  wanted_ = {};
-  failed_id_ = {};
-  last_pushed_id_ = {};
-  last_pushed_color_field_.clear();
+  invalidateSampleState();  // a late decode result must not touch a detached layer
   ctx_ = {};
-  cloud_pass_.setActiveCloud(nullptr);
-  setWorldBounds(std::nullopt);
+  budget_.reset();
+  clearGeometry();
+  setDataWarning({});
 }
 
 void PointCloudLayer::setFixedFrame(const QString& frame) {
@@ -433,24 +417,13 @@ uint64_t PointCloudLayer::renderKey(PJ::Timepoint time) const {
   // duplicate timestamps, so a same-stamp replacement entry must still reopen the
   // dock's repaint gate (or renderAt's own UID memo would never get the chance to
   // see it); unlike a deque index it also survives retention eviction.
-  uint64_t key = 0x9e3779b97f4a7c15ULL;
-  if (ctx_.session != nullptr) {
-    PJ::ObjectStore& store = ctx_.session->objectStore();
-    if (const auto entry_id = store.latestEntryIdAt(topic_id_, PJ::toRaw(time)); entry_id.has_value()) {
-      key ^= entry_id->uid.value;
-    } else {
-      key ^= PJ::kNoSampleRenderKey;  // no active sample at this time
-    }
-  }
+  uint64_t key =
+      0x9e3779b97f4a7c15ULL ^
+      PJ::latestEntryRenderKey(ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_, time);
   // Fixed←source transform (zero-order hold, so it is constant between TF samples —
   // that is what lets a 60 Hz playhead coalesce down to the TF update rate). Folding
   // the matrix also captures colour-by-axis recolouring, a pure function of it.
-  if (ctx_.tf_buffer != nullptr && !source_frame_.empty()) {
-    if (const auto tf = ctx_.tf_buffer->tryLookupTransform(fixed_frame_.toStdString(), source_frame_, time); tf) {
-      key = foldTransformIntoKey(key, glm::mat4(tf->matrix()));
-    }
-  }
-  return key;
+  return foldFrameTransformIntoKey(key, ctx_.tf_buffer.get(), fixed_frame_.toStdString(), source_frame_, time);
 }
 
 void PointCloudLayer::setVisible(bool visible) {
@@ -458,7 +431,17 @@ void PointCloudLayer::setVisible(bool visible) {
     return;
   }
   visible_ = visible;
+#ifdef PJ_SCENE3D_RHI
+  if (!visible_) {
+    // A hidden layer releases its retained cloud (the view drops its GPU buffer
+    // too), keeping the per-view memory ceiling real; re-showing decodes once.
+    invalidateSampleState();
+    budget_.reset();
+    clearGeometry();
+  }
+#else
   cloud_pass_.setVisible(visible);
+#endif
   emit visibilityChanged(visible);
   // Catch-up on un-hide is the dock's job: SceneDockWidget::setLayerVisible
   // re-delivers the last tracker time (hidden layers receive no ticks), which
@@ -466,26 +449,20 @@ void PointCloudLayer::setVisible(bool visible) {
   emit repaintRequested();
 }
 
+#ifndef PJ_SCENE3D_RHI
 void PointCloudLayer::initializeGL() {
   cloud_pass_.initializeGL();
 }
 
 void PointCloudLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
-  // Drain a pending tracker move here (coalesced to one decode per painted frame).
-  // renderAt's own SampleId guard makes this cheap when the active sample is
-  // unchanged. frame_ctx.time and decoded_at_ns_ track the same playhead (the dock
-  // paints at the tracker time); refreshNow() re-decodes from the latter on
-  // color-field / range changes.
-  if (visible_ && tracker_dirty_) {
-    tracker_dirty_ = false;
-    renderAt(PJ::toRaw(frame_ctx.time));
-  }
+  drainPendingUpdate();
   cloud_pass_.render(view_params, frame_ctx);
 }
 
 void PointCloudLayer::releaseGL() {
   cloud_pass_.releaseGL();
 }
+#endif
 
 QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   auto* container = new QWidget(parent);
@@ -507,9 +484,9 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
 
   // --- Shape ----------------------------------------------------------------
   auto* shape_combo = new PJ::ComboBox(container);
-  shape_combo->addItem(tr("sphere"), static_cast<int>(PointcloudRenderPass::Shape::kSphere));
-  shape_combo->addItem(tr("point"), static_cast<int>(PointcloudRenderPass::Shape::kPoint));
-  shape_combo->addItem(tr("cube"), static_cast<int>(PointcloudRenderPass::Shape::kCube));
+  shape_combo->addItem(tr("sphere"), static_cast<int>(PointShape::kSphere));
+  shape_combo->addItem(tr("point"), static_cast<int>(PointShape::kPoint));
+  shape_combo->addItem(tr("cube"), static_cast<int>(PointShape::kCube));
   shape_combo->setCurrentIndex(static_cast<int>(shape_));
   form->addRow(tr("Shape:"), shape_combo);
 
@@ -517,7 +494,7 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   auto* size_spin = new PJ::DoubleScrubber(container);
   const auto apply_size_units = [size_spin, this]() {
     QSignalBlocker block(size_spin);
-    if (shape_ == PointcloudRenderPass::Shape::kPoint) {
+    if (shape_ == PointShape::kPoint) {
       size_spin->setSuffix(u" px"_s);
       size_spin->setDecimals(1);
       size_spin->setSingleStep(0.5);
@@ -549,9 +526,9 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
     for (const QString& f : available_color_fields_) {
       color_type_combo->addItem(tr("Field: %1").arg(f), f);
     }
-    if (color_type_ == PointcloudRenderPass::ColorType::kSolid) {
+    if (color_type_ == PointColorType::kSolid) {
       color_type_combo->setCurrentIndex(0);
-    } else if (color_type_ == PointcloudRenderPass::ColorType::kRgb) {
+    } else if (color_type_ == PointColorType::kRgb) {
       const int idx = color_type_combo->findData(kRgbComboToken);
       color_type_combo->setCurrentIndex(idx >= 0 ? idx : 0);
     } else {
@@ -596,10 +573,10 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
       PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
   colormap_row_layout->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
   auto* colormap_combo = new PJ::ComboBox(colormap_row);
-  colormap_combo->addItem(u"turbo"_s, static_cast<int>(PointcloudRenderPass::Colormap::kTurbo));
-  colormap_combo->addItem(u"viridis"_s, static_cast<int>(PointcloudRenderPass::Colormap::kViridis));
-  colormap_combo->addItem(u"plasma"_s, static_cast<int>(PointcloudRenderPass::Colormap::kPlasma));
-  colormap_combo->addItem(u"grayscale"_s, static_cast<int>(PointcloudRenderPass::Colormap::kGrayscale));
+  colormap_combo->addItem(u"turbo"_s, static_cast<int>(PJ::Colormap::kTurbo));
+  colormap_combo->addItem(u"viridis"_s, static_cast<int>(PJ::Colormap::kViridis));
+  colormap_combo->addItem(u"plasma"_s, static_cast<int>(PJ::Colormap::kPlasma));
+  colormap_combo->addItem(u"grayscale"_s, static_cast<int>(PJ::Colormap::kGrayscale));
   colormap_combo->setCurrentIndex(static_cast<int>(colormap_));
   colormap_row_layout->addWidget(colormap_combo, 1);
   auto* invert_btn = new QPushButton(colormap_row);
@@ -633,10 +610,7 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   color_stack->addWidget(rgb_page);
 
   // Initial stack page: Solid=0, gradient=1, RGB=2.
-  color_stack->setCurrentIndex(
-      color_type_ == PointcloudRenderPass::ColorType::kSolid ? 0
-      : color_type_ == PointcloudRenderPass::ColorType::kRgb ? 2
-                                                             : 1);
+  color_stack->setCurrentIndex(color_type_ == PointColorType::kSolid ? 0 : color_type_ == PointColorType::kRgb ? 2 : 1);
 
   // --- Range: row on the OUTER form (auto button as the field) ---
   auto* auto_btn = new PJ::CheckButton(tr("auto"), container);
@@ -714,7 +688,7 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   //   Range Min/Max   → shown only in gradient AND auto-range OFF.
   const auto apply_range_visibility = [form, auto_row, range_min_spin, range_max_spin, outside_row,
                                        this](bool auto_on) {
-    const bool gradient = color_type_ == PointcloudRenderPass::ColorType::kField;
+    const bool gradient = color_type_ == PointColorType::kField;
     const bool show_spins = !auto_on && gradient;
     auto_row->setVisible(gradient);
     if (auto* lbl = form->labelForField(auto_row)) {
@@ -740,13 +714,13 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   QObject::connect(
       shape_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
       [this, shape_combo, apply_size_units](int) {
-        const auto v = static_cast<PointcloudRenderPass::Shape>(shape_combo->currentData().toInt());
+        const auto v = static_cast<PointShape>(shape_combo->currentData().toInt());
         setShape(v);
         apply_size_units();
       });
 
   QObject::connect(size_spin, &PJ::DoubleScrubber::valueChanged, this, [this](double v) {
-    if (shape_ == PointcloudRenderPass::Shape::kPoint) {
+    if (shape_ == PointShape::kPoint) {
       setSizePixels(static_cast<float>(v));
     } else {
       setSizeMeters(static_cast<float>(v));
@@ -758,13 +732,13 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
       [this, color_type_combo, color_stack, apply_range_step, apply_range_visibility](int) {
         const QString data = color_type_combo->currentData().toString();
         if (data.isEmpty()) {
-          setColorType(PointcloudRenderPass::ColorType::kSolid);
+          setColorType(PointColorType::kSolid);
           color_stack->setCurrentIndex(0);
         } else if (data == kRgbComboToken) {
-          setColorType(PointcloudRenderPass::ColorType::kRgb);
+          setColorType(PointColorType::kRgb);
           color_stack->setCurrentIndex(2);
         } else {
-          setColorType(PointcloudRenderPass::ColorType::kField);
+          setColorType(PointColorType::kField);
           setColorField(data);
           color_stack->setCurrentIndex(1);
           apply_range_step();
@@ -775,9 +749,8 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   QObject::connect(color_button, &PJ::ColorPickerWidget::colorChanged, this, [this](QColor c) { setSolidColor(c); });
 
   QObject::connect(
-      colormap_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, colormap_combo](int) {
-        setColormap(static_cast<PointcloudRenderPass::Colormap>(colormap_combo->currentData().toInt()));
-      });
+      colormap_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+      [this, colormap_combo](int) { setColormap(static_cast<PJ::Colormap>(colormap_combo->currentData().toInt())); });
 
   QObject::connect(auto_btn, &PJ::CheckButton::toggled, this, [this, apply_range_visibility](bool on) {
     setAutoRange(on);
@@ -869,12 +842,12 @@ void PointCloudLayer::setColorField(const QString& field) {
   refreshNow();
 }
 
-void PointCloudLayer::setShape(PointcloudRenderPass::Shape shape) {
+void PointCloudLayer::setShape(PointShape shape) {
   if (shape_ == shape) {
     return;
   }
   shape_ = shape;
-  cloud_pass_.setShape(shape_);
+  syncPassStyle();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -884,7 +857,7 @@ void PointCloudLayer::setSizeMeters(float meters) {
     return;
   }
   size_meters_ = meters;
-  cloud_pass_.setSizeMeters(size_meters_);
+  syncPassStyle();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -894,12 +867,12 @@ void PointCloudLayer::setSizePixels(float pixels) {
     return;
   }
   size_pixels_ = pixels;
-  cloud_pass_.setSizePixels(size_pixels_);
+  syncPassStyle();
   emit configurationChanged();
   emit repaintRequested();
 }
 
-void PointCloudLayer::setColorType(PointcloudRenderPass::ColorType type) {
+void PointCloudLayer::setColorType(PointColorType type) {
   const bool explicitness_changed = !color_choice_explicit_;
   color_choice_explicit_ = true;
   if (color_type_ == type) {
@@ -911,10 +884,9 @@ void PointCloudLayer::setColorType(PointcloudRenderPass::ColorType type) {
   // Toggling RGB-direct on/off changes what convertCanonical extracts (per-point colour
   // vs. a colormap scalar), so the GPU buffer must be rebuilt — force a re-decode. A
   // kField<->kSolid switch only flips a shader uniform, so a repaint suffices.
-  const bool rgb_changed =
-      (color_type_ == PointcloudRenderPass::ColorType::kRgb) != (type == PointcloudRenderPass::ColorType::kRgb);
+  const bool rgb_changed = (color_type_ == PointColorType::kRgb) != (type == PointColorType::kRgb);
   color_type_ = type;
-  cloud_pass_.setColorType(color_type_);
+  syncPassStyle();
   emit configurationChanged();
   if (rgb_changed) {
     range_dirty_ = true;  // re-fit the scalar auto-range when leaving RGB
@@ -929,17 +901,17 @@ void PointCloudLayer::setSolidColor(QColor color) {
     return;
   }
   solid_color_ = color;
-  cloud_pass_.setSolidColor(glm::vec3(solid_color_.redF(), solid_color_.greenF(), solid_color_.blueF()));
+  syncPassStyle();
   emit configurationChanged();
   emit repaintRequested();
 }
 
-void PointCloudLayer::setColormap(PointcloudRenderPass::Colormap cm) {
+void PointCloudLayer::setColormap(PJ::Colormap cm) {
   if (colormap_ == cm) {
     return;
   }
   colormap_ = cm;
-  cloud_pass_.setColormap(colormap_);
+  syncPassStyle();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -949,7 +921,7 @@ void PointCloudLayer::setInvertLut(bool invert) {
     return;
   }
   invert_lut_ = invert;
-  cloud_pass_.setInvertLut(invert_lut_);
+  syncPassStyle();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -960,7 +932,7 @@ void PointCloudLayer::setOutsideRangeOpacity(float opacity) {
     return;
   }
   outside_range_opacity_ = clamped;
-  pushOutsideRangeAlpha();
+  syncPassStyle();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -970,13 +942,25 @@ void PointCloudLayer::setOutsideRangeVisible(bool visible) {
     return;
   }
   outside_range_visible_ = visible;
-  pushOutsideRangeAlpha();
+  syncPassStyle();
   emit configurationChanged();
   emit repaintRequested();
 }
 
-void PointCloudLayer::pushOutsideRangeAlpha() {
-  cloud_pass_.setOutsideRangeAlpha(outside_range_visible_ ? outside_range_opacity_ : 0.0f);
+void PointCloudLayer::syncPassStyle() {
+#ifndef PJ_SCENE3D_RHI
+  cloud_pass_.setShape(shape_);
+  cloud_pass_.setSizeMeters(size_meters_);
+  cloud_pass_.setSizePixels(size_pixels_);
+  cloud_pass_.setColorType(color_type_);
+  cloud_pass_.setSolidColor(glm::vec3(solid_color_.redF(), solid_color_.greenF(), solid_color_.blueF()));
+  cloud_pass_.setColormap(colormap_);
+  cloud_pass_.setInvertLut(invert_lut_);
+  cloud_pass_.setOutsideRangeAlpha(outsideRangeAlpha());  // the eye off folds to 0
+  if (!auto_range_) {
+    cloud_pass_.setColormapRange(manual_range_min_, manual_range_max_);
+  }
+#endif
 }
 
 void PointCloudLayer::setAutoRange(bool enable) {
@@ -1004,6 +988,14 @@ void PointCloudLayer::applyAutoRange(bool enable, bool seed_manual_from_world) {
   // seed_manual_from_world=false because the saved range_min/range_max are
   // authoritative — world_bounds_ is already populated by attach(), so seeding
   // would overwrite them with the recomputed data range.
+#ifdef PJ_SCENE3D_RHI
+  // The view reports the range it actually coloured with (world-axis or scalar),
+  // so seeding from it freezes exactly the colours on screen.
+  if (seed_manual_from_world) {
+    manual_range_min_ = last_rendered_scalar_range_.first;
+    manual_range_max_ = last_rendered_scalar_range_.second;
+  }
+#else
   const int axis = spatialAxisIndex(color_field_);
   if (axis >= 0) {
     if (seed_manual_from_world) {
@@ -1017,6 +1009,7 @@ void PointCloudLayer::applyAutoRange(bool enable, bool seed_manual_from_world) {
   // Pin the pass to the manual values the layer now holds so the colormap doesn't
   // snap to stale auto-computed bounds, and refresh the panel's spinboxes to match.
   cloud_pass_.setColormapRange(manual_range_min_, manual_range_max_);
+#endif
   emit autoRangeComputed(manual_range_min_, manual_range_max_);
   emit configurationChanged();
   emit repaintRequested();
@@ -1030,7 +1023,7 @@ void PointCloudLayer::setManualRange(float min_value, float max_value) {
   manual_range_max_ = max_value;
   emit configurationChanged();
   if (!auto_range_) {
-    cloud_pass_.setColormapRange(manual_range_min_, manual_range_max_);
+    syncPassStyle();
     emit repaintRequested();
   }
 }
@@ -1087,12 +1080,12 @@ void PointCloudLayer::populateColorFields(const PointCloud& cloud) {
   // path and the pushCloud that follows reads color_type_, so no re-decode is needed
   // (and we avoid the refreshNow() reentrancy setColorType would trigger).
   if (!color_choice_explicit_ && has_color_) {
-    color_type_ = PointcloudRenderPass::ColorType::kRgb;
-    cloud_pass_.setColorType(color_type_);
-  } else if (color_type_ == PointcloudRenderPass::ColorType::kRgb && !has_color_) {
+    color_type_ = PointColorType::kRgb;
+    syncPassStyle();
+  } else if (color_type_ == PointColorType::kRgb && !has_color_) {
     // A restored/explicit RGB mode but this cloud has no colour: degrade to a scalar.
-    color_type_ = PointcloudRenderPass::ColorType::kField;
-    cloud_pass_.setColorType(color_type_);
+    color_type_ = PointColorType::kField;
+    syncPassStyle();
   }
 
   // Preserve an already-chosen field (e.g. one restored by xmlLoadState before the
@@ -1140,11 +1133,59 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id) {
   // RGB-direct mode reads per-point colour from the cloud's colour field instead of a colormap
   // scalar. Fixed-frame (x/y/z) colouring derives colour from the GPU-transformed position
   // (see PointcloudRenderPass::setScalarAxis), so there is no raw scalar to decode for it.
-  const bool rgb_mode = color_type_ == PointcloudRenderPass::ColorType::kRgb && has_color_;
-  const bool colormap = color_type_ == PointcloudRenderPass::ColorType::kField;
+  const bool rgb_mode = color_type_ == PointColorType::kRgb && has_color_;
   const int axis = rgb_mode ? -1 : spatialAxisIndex(color_field_);
   const std::string_view scalar_sv = (rgb_mode || axis >= 0) ? std::string_view{} : std::string_view{color_field_};
   const std::size_t point_count = static_cast<std::size_t>(cloud.width) * static_cast<std::size_t>(cloud.height);
+  if (const QString rejection = cloudAdmissionError(cloud); !rejection.isEmpty()) {
+    failSample(id, rejection);
+    return;
+  }
+#ifdef PJ_SCENE3D_RHI
+  ConvertedPointCloud converted;
+  try {
+    converted = convertCanonical(cloud, scalar_sv, /*extract_rgba=*/rgb_mode);
+  } catch (const std::bad_alloc&) {
+    failSample(id, tr("Not enough memory to convert this point cloud"));
+    return;
+  } catch (const std::exception& error) {
+    failSample(id, tr("Point-cloud conversion failed: %1").arg(QString::fromUtf8(error.what())));
+    return;
+  }
+  const DecodedPointCloud& decoded = converted.cloud;
+  if (point_count != 0 && decoded.positions.empty()) {
+    failSample(id, tr("Malformed point cloud was rejected"));
+    return;
+  }
+  const bool has_scalar = decoded.scalar.size() == decoded.positions.size();
+  const bool has_rgba = decoded.rgba.size() == decoded.positions.size();
+  std::vector<PointVertex> next_vertices;
+  next_vertices.reserve(decoded.positions.size());
+  for (std::size_t index = 0; index < decoded.positions.size(); ++index) {
+    const glm::vec3& position = decoded.positions[index];
+    if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z)) {
+      continue;
+    }
+    next_vertices.push_back(
+        PointVertex{
+            .x = position.x,
+            .y = position.y,
+            .z = position.z,
+            .scalar = has_scalar ? decoded.scalar[index] : 0.0f,
+            .rgba = has_rgba ? decoded.rgba[index] : 0xFFFFFFFFU,
+        });
+  }
+  if (next_vertices.empty()) {
+    failSample(id, tr("Point cloud contains no finite positions"));
+    return;
+  }
+  vertices_ = std::move(next_vertices);
+  ++geometry_revision_;
+  world_bounds_ = converted.bounds.valid ? std::optional<AABB>{converted.bounds} : std::nullopt;
+  automatic_scalar_range_ = has_scalar ? computeScalarRange(decoded.scalar) : std::pair<float, float>{0.0f, 1.0f};
+  range_dirty_ = false;
+#else
+  const bool colormap = color_type_ == PointColorType::kField;
   // RGB-direct takes the zero-copy fast path too when the cloud has a packed (contiguous) rgba
   // field: the wire colour bytes upload verbatim (want_rgba), no CPU extraction. Separate
   // red/green/blue channels (non-contiguous) fall back to convertCanonical's CPU rgba packer.
@@ -1263,6 +1304,8 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id) {
   if (bounds_describe_this_cloud) {
     cloud_pass_.setGeometryBounds(world_bounds_);
   }
+#endif
+  setDataWarning({});
   last_pushed_id_ = id;
   last_pushed_color_field_ = color_field_;
   last_pushed_rgb_ = rgb_mode;
@@ -1272,11 +1315,14 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id) {
 
 void PointCloudLayer::setWorldBounds(std::optional<AABB> bounds) {
   world_bounds_ = bounds;
+#ifndef PJ_SCENE3D_RHI
   // The pass frustum-culls the whole draw against this, so it has to track every
   // update — including the resets that mean "extent unknown, draw it regardless".
   cloud_pass_.setGeometryBounds(std::move(bounds));
+#endif
 }
 
+#ifndef PJ_SCENE3D_RHI
 void PointCloudLayer::onGpuAabb(std::optional<AABB> box) {
   // The async GPU reduction completed (called from the pass's render(), GL thread). An invalid
   // box means the cloud had no finite points -> no bounds, same as the CPU scan.
@@ -1292,6 +1338,7 @@ void PointCloudLayer::onGpuAabb(std::optional<AABB> box) {
   }
   emit repaintRequested();  // re-fits the camera via Scene3DDockWidget::updateSceneBounds
 }
+#endif
 
 bool PointCloudLayer::servedFromMemos(SampleId id) {
   // This sample is now the one the tracker wants — record it on EVERY outcome
@@ -1303,7 +1350,7 @@ bool PointCloudLayer::servedFromMemos(SampleId id) {
   // is "same sample, same color field" — skip the whole parse/convert/upload then.
   // range_dirty_ only matters when auto-range will actually recompute in pushCloud.
   if (id == last_pushed_id_ && color_field_ == last_pushed_color_field_ &&
-      (color_type_ == PointcloudRenderPass::ColorType::kRgb) == last_pushed_rgb_ && !(auto_range_ && range_dirty_)) {
+      (color_type_ == PointColorType::kRgb) == last_pushed_rgb_ && !(auto_range_ && range_dirty_)) {
     return true;
   }
   // Compressed sample already decoded? Re-convert from cache so repaints /
@@ -1313,7 +1360,13 @@ bool PointCloudLayer::servedFromMemos(SampleId id) {
     return true;
   }
   // Known-undecodable sample; the memo holds until a reload swaps the bytes.
-  return id == failed_id_;
+  if (id != failed_id_) {
+    return false;
+  }
+  // Fail closed on a revisit too: never leave another sample's cloud on screen.
+  clearGeometry();
+  setDataWarning(failed_warning_);
+  return true;
 }
 
 void PointCloudLayer::renderAt(int64_t time_ns) {
@@ -1346,6 +1399,7 @@ void PointCloudLayer::renderAt(int64_t time_ns) {
   auto obj = resolveObject(binding, object_type_, resolved->timestamp, resolved->payload);
   if (!obj.has_value()) {
     qCWarning(lcPointCloudLayer) << "renderAt parseObject failed:" << QString::fromStdString(obj.error());
+    failSample(id, tr("Point cloud could not be decoded: %1").arg(QString::fromStdString(obj.error())));
     return;
   }
 
@@ -1358,93 +1412,84 @@ void PointCloudLayer::renderAt(int64_t time_ns) {
 
   const auto* sdk_cloud = obj->object.get<PointCloud>();
   if (sdk_cloud == nullptr) {
+    failSample(id, tr("Point-cloud sample has an unexpected canonical type"));
     return;
   }
   pushCloud(*sdk_cloud, id);
 }
 
-void PointCloudLayer::ensureDecodeWorker() {
-  if (decode_watcher_ == nullptr) {
-    decode_watcher_ = new QFutureWatcher<DecodeResult>(this);
-    connect(decode_watcher_, &QFutureWatcher<DecodeResult>::finished, this, &PointCloudLayer::onDecodeFinished);
-  }
-}
-
 void PointCloudLayer::requestDecode(const CompressedPointCloud& cloud, SampleId id) {
   updateSourceFrame(cloud.frame_id);
   wanted_ = id;  // a late decode of any other sample must not be painted
-  ensureDecodeWorker();
-  if (inflight_ == id) {
-    pending_.reset();  // the running decode is wanted again; drop any superseded sample
+  // Admission before decompression: an over-limit blob never reaches the codec.
+  if (!pointPayloadFits(static_cast<uint64_t>(cloud.data.size()))) {
+    failSample(
+        id, tr("Compressed cloud payload is %1 MiB; the limit is %2 MiB")
+                .arg(QString::number(static_cast<double>(cloud.data.size()) / (1024.0 * 1024.0), 'f', 1))
+                .arg(kSceneLimits.max_point_wire_bytes_per_cloud / (1024ULL * 1024ULL)));
     return;
   }
-  // Gate on inflight_, NOT QFutureWatcher::isRunning(): a future can be finished with
-  // its finished() event still queued, and setFuture() in that window would silently
-  // drop the event (and the decoded result with it). inflight_ is reset only once
-  // onDecodeFinished() actually ran, so the pending queue catches that window too.
-  if (inflight_ != SampleId{}) {
-    pending_ = PendingDecode{cloud, id};  // the shared anchor keeps the blob alive
+  if (const PendingDecode* running = decode_worker_.running(); running != nullptr && running->id == id) {
+    decode_worker_.cancelWaiting();  // the running decode is wanted again
     return;
   }
-  startDecode(cloud, id);
-}
-
-void PointCloudLayer::startDecode(const CompressedPointCloud& cloud, SampleId id) {
-  inflight_ = id;
-  ++start_decode_count_;
-  // Capture the wrapper by value — its BufferAnchor keeps the compressed bytes alive on
-  // the worker. This requires the anchored bytes to be IMMUTABLE, not merely alive:
+  // The copied wrapper's shared anchor keeps the compressed bytes alive on the
+  // worker. This requires the anchored bytes to be IMMUTABLE, not merely alive:
   // every in-tree producer either deep-copies (canonical codec) or anchors a const
-  // ObjectStore buffer, but a zero-copy parser reusing a scratch buffer would race the
-  // worker. The task touches no layer state (decodeCompressedPointCloud is a pure core
-  // function), so it stays safe even if the layer is destroyed mid-decode.
-  CompressedPointCloud snapshot = cloud;
-  decode_watcher_->setFuture(QtConcurrent::run([snapshot = std::move(snapshot), id]() -> DecodeResult {
-    DecodeResult result;
-    result.id = id;
-    // Exception barrier: decodeCompressedPointCloud is barriered internally, but
-    // the residue here (shared_ptr control block, error-string copy) can still
-    // throw under memory pressure. An exception stored in the future would be
-    // rethrown by decode_watcher_->result() ON THE GUI THREAD and terminate the
-    // app — module policy forbids worker exceptions reaching the GUI thread.
-    try {
-      auto decoded = decodeCompressedPointCloud(snapshot);
-      if (decoded.has_value()) {
-        result.cloud = std::make_shared<PointCloud>(std::move(decoded.value()));
-      } else {
-        result.error = QString::fromStdString(decoded.error());
-      }
-    } catch (const std::bad_alloc&) {
-      result.cloud.reset();
-      result.error = u"out of memory finalizing decoded point cloud"_s;  // no-alloc literal
-    } catch (const std::exception& ex) {
-      result.cloud.reset();
-      result.error = QString::fromUtf8(ex.what());
-    } catch (...) {
-      result.cloud.reset();
-      result.error = u"unknown exception decoding point cloud"_s;
-    }
-    return result;
-  }));
+  // ObjectStore buffer, but a zero-copy parser reusing a scratch buffer would race.
+  decode_worker_.request(PendingDecode{cloud, id});
 }
 
-void PointCloudLayer::onDecodeFinished() {
-  const DecodeResult result = decode_watcher_->result();
-  inflight_ = {};
-  // A dataset reload while this sample decoded means the result holds pre-reload
-  // content under a UID that no longer names a live entry: neither the cache nor
-  // the failure memo may keep it (wanted_ was reset too, so it can never paint).
-  // Still fall through to the pending drain below.
-  const bool drop_result = drop_inflight_result_;
-  drop_inflight_result_ = false;
-  // Render this result only if it's still the sample the tracker wants. If the user
-  // scrubbed away while it decoded — even back onto a cached frame — it's stale: cache
-  // it (cheap, useful on scrub-back) but don't paint it over the live frame.
-  const bool is_current = result.id == wanted_;
+PointCloudLayer::DecodeResult PointCloudLayer::decodeCompressed(const PendingDecode& request) {
+  DecodeResult result;
+  result.id = request.id;
+  // Exception barrier: decodeCompressedPointCloud is barriered internally, but the
+  // residue here (shared_ptr control block, error-string copy) can still throw
+  // under memory pressure; module policy forbids worker exceptions reaching the
+  // GUI thread.
+  try {
+#if defined(PJ_TARGET_WASM) && !defined(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS)
+    // This browser build carries no codecs (the dock never offers the type).
+    const PJ::Expected<PointCloud> decoded = PJ::unexpected("compressed point clouds unsupported");
+#else
+    // The limits reach the codec, which rejects an over-limit cloud before
+    // allocating its decoded buffer.
+    auto decoded = decodeCompressedPointCloud(
+        request.cloud, PointCloudDecodeLimits{
+                           .max_points = kSceneLimits.max_points_per_cloud,
+                           .max_decoded_bytes = kSceneLimits.max_point_wire_bytes_per_cloud,
+                       });
+#endif
+    if (decoded.has_value()) {
+      result.cloud = std::make_shared<PointCloud>(std::move(decoded.value()));
+    } else {
+      result.error = QString::fromStdString(decoded.error());
+    }
+  } catch (const std::bad_alloc&) {
+    result.cloud.reset();
+    result.error = u"out of memory finalizing decoded point cloud"_s;  // no-alloc literal
+  } catch (const std::exception& ex) {
+    result.cloud.reset();
+    result.error = QString::fromUtf8(ex.what());
+  } catch (...) {
+    result.cloud.reset();
+    result.error = u"unknown exception decoding point cloud"_s;
+  }
+  return result;
+}
 
-  if (drop_result) {
-    // Discarded pre-reload result: no cache, no failed_id_, no paint.
-  } else if (result.cloud) {
+void PointCloudLayer::onDecodeFinished(DecodeResult result) {
+  // Paint this result only if it's still the sample the tracker wants. If the user
+  // scrubbed away while it decoded — even back onto a cached frame — it's stale: cache
+  // it (cheap, useful on scrub-back) but don't paint it over the live frame. (A
+  // result invalidated by a reload or detach never reaches here.)
+  const bool is_current = result.id == wanted_;
+  // Never cache an over-limit decompression: it would stay pinned in memory.
+  const QString rejection = result.cloud ? cloudAdmissionError(*result.cloud) : QString{};
+  if (!rejection.isEmpty()) {
+    result.cloud.reset();
+  }
+  if (result.cloud) {
     decoded_cache_ = result.cloud;
     decoded_cache_id_ = result.id;
     if (available_color_fields_.isEmpty()) {
@@ -1453,29 +1498,15 @@ void PointCloudLayer::onDecodeFinished() {
     if (is_current) {
       pushCloud(*result.cloud, result.id);
     }
-  } else {
-    failed_id_ = result.id;  // memoize: renderAt won't re-request a sample that can never decode
-    if (is_current) {
-      qCWarning(lcPointCloudLayer) << "compressed point cloud decode failed:" << result.error;
-      // Match the raw path's malformed-cloud behavior (empty convertCanonical):
-      // clear the view rather than leaving the previous sample's points painted
-      // at the wrong tracker time.
-      cloud_pass_.setActiveCloud(std::make_shared<DecodedPointCloud>());
-      setWorldBounds(std::nullopt);
-      last_pushed_id_ = {};
-      last_pushed_color_field_.clear();
-      emit repaintRequested();
-    }
+    return;
   }
-
-  // Drain the latest-wins queue — but only if the queued sample is still the one
-  // the tracker wants; decoding a stale one would evict the wanted cache entry.
-  if (pending_.has_value()) {
-    const PendingDecode next = std::move(*pending_);
-    pending_.reset();
-    if (next.id == wanted_ && next.id != failed_id_) {
-      startDecode(next.cloud, next.id);
-    }
+  // Memoized: renderAt won't re-request a sample that can never decode.
+  failed_id_ = result.id;
+  failed_warning_ =
+      rejection.isEmpty() ? tr("Compressed point cloud could not be decoded: %1").arg(result.error) : rejection;
+  if (is_current) {
+    qCWarning(lcPointCloudLayer) << "compressed point cloud rejected:" << failed_warning_;
+    failSample(result.id, failed_warning_);
   }
 }
 
@@ -1499,20 +1530,107 @@ void PointCloudLayer::onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id) {
   // but the pre-reload caches must still drop their content (memory held by the
   // decode cache, an in-flight decode that must not be painted or memoized) and
   // wanted_ must reset so only post-reload requests are honored.
-  decoded_cache_.reset();
-  decoded_cache_id_ = {};
-  failed_id_ = {};
-  last_pushed_id_ = {};
-  last_pushed_color_field_.clear();
-  pending_.reset();
-  wanted_ = {};
-  if (inflight_ != SampleId{}) {
-    drop_inflight_result_ = true;  // the in-flight worker is decoding pre-reload bytes
-  }
+  invalidateSampleState();
+  budget_.reset();
+  clearGeometry();
+  setDataWarning({});
   // The signal precedes the swap and replaceDataset runs no event loop, so the
   // repaint scheduled here paints after the new bytes are in place.
   tracker_dirty_ = true;
   emit repaintRequested();
+}
+
+void PointCloudLayer::invalidateSampleState() {
+  decoded_cache_.reset();
+  decoded_cache_id_ = {};
+  failed_id_ = {};
+  failed_warning_.clear();
+  last_pushed_id_ = {};
+  last_pushed_color_field_.clear();
+  wanted_ = {};
+  decode_worker_.invalidate();  // queued/running decodes hold content nobody wants any more
+}
+
+void PointCloudLayer::drainPendingUpdate() {
+  // renderAt's own SampleId guard makes this cheap when the active sample is
+  // unchanged; refreshNow() decodes at the latest tracker time.
+  if (visible_ && tracker_dirty_) {
+    tracker_dirty_ = false;
+    refreshNow();
+  }
+}
+
+bool PointCloudLayer::prepareForRender(std::uint64_t remaining_view_vertices) {
+  const std::uint64_t revision_before = geometry_revision_;
+  bool released = false;
+  if (budget_.blocked(remaining_view_vertices, released)) {
+    return false;
+  }
+  if (released) {
+    tracker_dirty_ = true;
+  }
+  drainPendingUpdate();
+  if (static_cast<std::uint64_t>(vertices_.size()) > remaining_view_vertices) {
+    budget_.reject(vertices_.size());
+    setDataWarning(tr("Layer has %1 finite points; only %2 remain in this view's budget")
+                       .arg(QString::number(vertices_.size()), QString::number(remaining_view_vertices)));
+    clearGeometry();
+    last_pushed_id_ = {};  // re-push once the budget frees up
+  }
+  return geometry_revision_ != revision_before;
+}
+
+int PointCloudLayer::scalarAxis() const {
+  return color_type_ == PointColorType::kField ? spatialAxisIndex(color_field_) : -1;
+}
+
+std::pair<float, float> PointCloudLayer::scalarRange(const glm::mat4& fixed_from_source) const {
+  if (!auto_range_) {
+    return {manual_range_min_, manual_range_max_};
+  }
+  const int axis = scalarAxis();
+  if (axis < 0) {
+    return automatic_scalar_range_;
+  }
+  return world_bounds_ ? transformedAabbAxisRange(*world_bounds_, fixed_from_source, axis)
+                       : std::pair<float, float>{0.0f, 1.0f};
+}
+
+void PointCloudLayer::noteRenderedScalarRange(float minimum, float maximum) {
+  if (!auto_range_ || !std::isfinite(minimum) || !std::isfinite(maximum) || minimum > maximum ||
+      last_rendered_scalar_range_ == std::pair<float, float>{minimum, maximum}) {
+    return;
+  }
+  last_rendered_scalar_range_ = {minimum, maximum};
+  emit autoRangeComputed(minimum, maximum);
+}
+
+void PointCloudLayer::failSample(SampleId id, const QString& warning) {
+  failed_id_ = id;
+  failed_warning_ = warning;
+  if (decoded_cache_id_ == id) {
+    decoded_cache_.reset();
+    decoded_cache_id_ = {};
+  }
+  last_pushed_id_ = {};
+  last_pushed_color_field_.clear();
+  clearGeometry();
+  setDataWarning(warning);
+  emit repaintRequested();
+}
+
+void PointCloudLayer::clearGeometry() {
+#ifndef PJ_SCENE3D_RHI
+  // An empty cloud, not none: the pass must stop drawing the previous sample.
+  cloud_pass_.setActiveCloud(std::make_shared<DecodedPointCloud>());
+#endif
+  if (vertices_.empty() && !world_bounds_.has_value()) {
+    return;
+  }
+  // clear() would keep the capacity pinned (~20 MiB for a million points).
+  std::vector<PointVertex>{}.swap(vertices_);
+  setWorldBounds(std::nullopt);
+  ++geometry_revision_;
 }
 
 }  // namespace pj::scene3d

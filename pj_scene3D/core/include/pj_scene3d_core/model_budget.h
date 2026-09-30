@@ -10,8 +10,8 @@
 
 namespace pj::scene3d {
 
-// Mesh/model admission against SceneLimits: bounds decoded model memory and
-// QRhi work. The GL renderer's Assimp path does not use these.
+// Mesh/model admission against SceneLimits: bounds decoded model memory (both
+// renderers) and QRhi work.
 
 [[nodiscard]] constexpr bool modelSourceFits(std::uint64_t bytes, const SceneLimits& limits = kSceneLimits) noexcept {
   return bytes <= limits.max_model_source_bytes;
@@ -54,6 +54,16 @@ namespace pj::scene3d {
     return std::nullopt;
   }
   return total;
+}
+
+// Whether one imported mesh retaining `mesh_bytes` (kSaturated when the estimate
+// overflowed) fits both the per-mesh limit and what is left of the layer's
+// retained-byte budget after `layer_bytes`.
+[[nodiscard]] constexpr bool retainedMeshFits(
+    std::uint64_t mesh_bytes, std::uint64_t layer_bytes, const SceneLimits& limits = kSceneLimits) noexcept {
+  return mesh_bytes <= limits.max_model_retained_bytes_per_mesh &&
+         layer_bytes <= limits.max_model_retained_bytes_per_layer &&
+         mesh_bytes <= limits.max_model_retained_bytes_per_layer - layer_bytes;
 }
 
 [[nodiscard]] constexpr bool tryConsumeModelTexturePixels(

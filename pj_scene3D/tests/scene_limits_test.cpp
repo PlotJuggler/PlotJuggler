@@ -108,5 +108,25 @@ TEST(SceneLimits, DesktopHdrFitsSeveral4kDocks) {
   EXPECT_GE(kDesktopSceneLimits.max_hdr_bytes_per_rhi / k4k, 4U);
 }
 
+TEST(SceneLimits, BudgetLatchHoldsUntilTheRejectedSizeFits) {
+  BudgetLatch latch;
+  bool released = true;
+  EXPECT_FALSE(latch.blocked(0U, released));
+  EXPECT_FALSE(released);
+  latch.reject(100U);
+  EXPECT_TRUE(latch.blocked(99U, released));
+  EXPECT_FALSE(released);
+  EXPECT_FALSE(latch.blocked(100U, released));
+  EXPECT_TRUE(released);
+  EXPECT_FALSE(latch.blocked(0U, released));  // cleared by the release
+  EXPECT_FALSE(released);
+  latch.reject(5U);
+  latch.reset();
+  EXPECT_FALSE(latch.blocked(0U, released));
+  EXPECT_FALSE(released);
+  EXPECT_EQ(saturatedAdd(kSaturated, 1U), kSaturated);
+  EXPECT_EQ(saturatedMultiply(kSaturated, 2U), kSaturated);
+}
+
 }  // namespace
 }  // namespace pj::scene3d

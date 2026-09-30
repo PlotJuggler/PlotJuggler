@@ -17,8 +17,10 @@
 #include "pj_datastore/object_store.hpp"  // PJ::ObjectTopicId, PJ::SequentialUID
 #include "pj_runtime/SessionManager.h"    // PJ::DatasetId
 #include "pj_scene3d_core/grid_map_view.h"
-#include "pj_scene3d_widgets/passes/grid_map_render_pass.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+#ifndef PJ_SCENE3D_RHI
+#include "pj_scene3d_widgets/passes/grid_map_render_pass.h"
+#endif
 #include "pj_widgets/Colormap.h"
 
 class QFormLayout;
@@ -35,6 +37,8 @@ inline constexpr std::string_view kGridMapElevationNone = "<none>";
 // elevation + a color channel, and staged into a GridMapRenderPass ONCE per new
 // sample / selector change. The requested field names are kept apart from the
 // effective ones so a persisted request is honoured again once its field reappears.
+// The QRhi renderer does not draw grid maps yet (QRHI_MIGRATION P3): there the
+// layer keeps its settings, persistence and field list, and its row warns.
 class GridMapLayer : public Scene3DLayer {
   Q_OBJECT
  public:
@@ -45,9 +49,6 @@ class GridMapLayer : public Scene3DLayer {
   [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
   [[nodiscard]] QStringList fallbackFrames() const override;
   [[nodiscard]] QString sourceFrame() const override;
-  [[nodiscard]] QString statusWarning() const override {
-    return status_warning_;
-  }
   [[nodiscard]] uint64_t renderKey(PJ::Timepoint time) const override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
@@ -59,9 +60,11 @@ class GridMapLayer : public Scene3DLayer {
   void setTrackerTime(PJ::Timepoint time) override;
   void setVisible(bool visible) override;
 
+#ifndef PJ_SCENE3D_RHI
   void initializeGL() override;
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
   void releaseGL() override;
+#endif
   [[nodiscard]] std::optional<AABB> worldBounds() const override;
 
   QWidget* createConfigWidget(QWidget* parent) override;
@@ -76,7 +79,7 @@ class GridMapLayer : public Scene3DLayer {
   void setLighting(bool on);
   void setOpacity(double opacity);
 
-#ifdef PJ_SCENE3D_TEST_HOOKS
+#if defined(PJ_SCENE3D_TEST_HOOKS) && !defined(PJ_SCENE3D_RHI)
   void renderAtForTest(int64_t time_ns) {
     renderAt(time_ns);
   }
@@ -114,9 +117,11 @@ class GridMapLayer : public Scene3DLayer {
  private:
   // Decode the first sample at attach to learn the source frame + field list.
   bool bootstrap();
+#ifndef PJ_SCENE3D_RHI
   // Fetch the sample at time_ns, pack the selected fields, stage the upload. Cheap
   // no-op when the same sample + selectors are already staged (the scrub path).
   void renderAt(int64_t time_ns);
+#endif
   // Forget everything learned from the topic's bytes (parse/upload memos, bounds,
   // frame, field list, effective picks, warnings); the persisted requests and
   // display settings survive.
@@ -127,7 +132,6 @@ class GridMapLayer : public Scene3DLayer {
   // Returns false when the grid offers no usable color field.
   bool resolveFields(const PJ::sdk::GridMap& grid);
   void pushDisplayParamsToPass();
-  void setStatusWarning(const QString& reason);
   // Bounds change inside renderAt, i.e. during the paint that follows the dock's
   // bounds union, so a changed extent requests another repaint to re-fit the camera.
   void setBounds(std::optional<AABB> bounds);
@@ -158,7 +162,6 @@ class GridMapLayer : public Scene3DLayer {
   QString fixed_frame_;
   bool tracker_dirty_ = false;
   bool visible_ = true;
-  QString status_warning_;
   int pack_count_ = 0;
 
   // Requested (persisted) vs effective field names.
@@ -182,7 +185,9 @@ class GridMapLayer : public Scene3DLayer {
   bool lighting_ = true;
   double opacity_ = 1.0;
 
+#ifndef PJ_SCENE3D_RHI
   GridMapRenderPass pass_;
+#endif
 };
 
 }  // namespace pj::scene3d

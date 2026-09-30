@@ -11,7 +11,10 @@
 #include <QWidget>
 #include <algorithm>
 #include <any>
+#include <cmath>
+#include <exception>
 #include <glm/glm.hpp>
+#include <new>
 #include <optional>
 
 #include "layer_xml_validation.h"
@@ -19,19 +22,48 @@
 #include "pj_base/time.hpp"  // PJ::toRaw
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_scene3d_core/poses_budget.h"
 #include "pj_scene3d_core/tf/transform.h"
-#include "pj_scene3d_widgets/render_pass.h"     // ViewParams, FrameContext
 #include "pj_scene3d_widgets/resolve_object.h"  // resolveObject, hasCanonical3DCodec
 #include "pj_widgets/ColorPickerWidget.h"
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/ToggleSwitch.h"
+#ifndef PJ_SCENE3D_RHI
+#include "pj_scene3d_widgets/render_pass.h"  // ViewParams, FrameContext
+#endif
 using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 
 namespace {
 Q_LOGGING_CATEGORY(lcPoses, "pj.scene3d.poses_in_frame")
+
+bool finiteInstance(const PoseTriadInstance& instance) {
+  for (int column = 0; column < 4; ++column) {
+    for (int row = 0; row < 4; ++row) {
+      if (!std::isfinite(instance.model[column][row])) {
+        return false;
+      }
+    }
+    if (!std::isfinite(instance.color[column])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void expandInstanceBounds(AABB& bounds, const PoseTriadInstance& instance) {
+  const glm::vec3 origin = glm::vec3(instance.model * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+  const glm::vec3 tip = glm::vec3(instance.model * glm::vec4(1.0f, 0.0f, 0.0f, 1.0f));
+  // The shared unit arrow's widest section is a 0.10-radius cone. Uniform
+  // instance scale makes this conservative in source axes for every rotation.
+  const glm::vec3 padding(0.10f * glm::length(glm::vec3(instance.model[0])));
+  expandAABB(bounds, origin - padding);
+  expandAABB(bounds, origin + padding);
+  expandAABB(bounds, tip - padding);
+  expandAABB(bounds, tip + padding);
+}
 }  // namespace
 
 PosesInFrameLayer::PosesInFrameLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent)
@@ -65,9 +97,12 @@ QString PosesInFrameLayer::sourceFrame() const {
   return QString::fromStdString(source_frame_);
 }
 
+#ifndef PJ_SCENE3D_RHI
 QString PosesInFrameLayer::statusWarning() const {
-  return trail_ != nullptr ? trail_->statusWarning() : QString{};
+  const QString own = Scene3DLayer::statusWarning();
+  return own.isEmpty() && trail_ != nullptr ? trail_->statusWarning() : own;
 }
+#endif
 
 QDomElement PosesInFrameLayer::xmlSaveState(QDomDocument& doc) const {
   QDomElement el = doc.createElement(u"poses_in_frame"_s);
@@ -78,49 +113,70 @@ QDomElement PosesInFrameLayer::xmlSaveState(QDomDocument& doc) const {
   el.setAttribute(u"override_color_value"_s, override_color_.name(QColor::HexRgb));
   // The owned trail persists as a nested payload: its presence IS the enabled
   // flag, and its style is written by the trail itself (one definition).
+#ifndef PJ_SCENE3D_RHI
   if (trail_ != nullptr) {
     el.appendChild(trail_->xmlSaveState(doc));
   }
+#else
+  if (!trail_xml_.documentElement().isNull()) {
+    el.appendChild(doc.importNode(trail_xml_.documentElement(), true));
+  }
+#endif
   return el;
 }
 
-bool PosesInFrameLayer::xmlLoadState(const QDomElement& element) {
+std::optional<PosesInFrameLayer::ParsedSettings> PosesInFrameLayer::parseSettings(const QDomElement& element) {
   if (element.isNull() || element.tagName() != "poses_in_frame"_L1 || !detail::isLeafPayload(element, "trail"_L1)) {
-    return false;
+    return std::nullopt;
   }
-  float restored_size = 0.0f;
-  float restored_opacity = 0.0f;
-  bool restored_x_arrow_only = false;
-  bool restored_override_enabled = false;
-  if (!detail::parseFiniteFloat(element, "gizmo_size", 0.15f, 0.01f, 100.0f, restored_size) ||
-      !detail::parseFiniteFloat(element, "gizmo_opacity", 1.0f, 0.0f, 1.0f, restored_opacity) ||
-      !detail::parseZeroOne(element, "x_arrow_only", false, restored_x_arrow_only) ||
-      !detail::parseZeroOne(element, "override_color", false, restored_override_enabled)) {
-    return false;
+  ParsedSettings settings;
+  if (!detail::parseFiniteFloat(element, "gizmo_size", 0.15f, 0.01f, 100.0f, settings.gizmo_size) ||
+      !detail::parseFiniteFloat(element, "gizmo_opacity", 1.0f, 0.0f, 1.0f, settings.gizmo_opacity) ||
+      !detail::parseZeroOne(element, "x_arrow_only", false, settings.x_arrow_only) ||
+      !detail::parseZeroOne(element, "override_color", false, settings.override_color_enabled)) {
+    return std::nullopt;
   }
-  QColor restored_color;
-  const bool has_override_color = element.hasAttribute(u"override_color_value"_s);
-  if (has_override_color) {
-    restored_color = QColor(element.attribute(u"override_color_value"_s));
-    if (!restored_color.isValid()) {
-      return false;
+  if (element.hasAttribute(u"override_color_value"_s)) {
+    const QColor color(element.attribute(u"override_color_value"_s));
+    if (!color.isValid()) {
+      return std::nullopt;
     }
+    settings.override_color = color;
   }
-  setGizmoSize(restored_size);
-  setGizmoOpacity(restored_opacity);
-  setXArrowOnly(restored_x_arrow_only);
-  setOverrideColorEnabled(restored_override_enabled);
-  if (has_override_color) {
-    setOverrideColor(restored_color);
+  return settings;
+}
+
+bool PosesInFrameLayer::validateXml(const QDomElement& element) {
+  return parseSettings(element).has_value();
+}
+
+bool PosesInFrameLayer::xmlLoadState(const QDomElement& element) {
+  const auto settings = parseSettings(element);
+  if (!settings.has_value()) {
+    return false;
+  }
+  setGizmoSize(settings->gizmo_size);
+  setGizmoOpacity(settings->gizmo_opacity);
+  setXArrowOnly(settings->x_arrow_only);
+  setOverrideColorEnabled(settings->override_color_enabled);
+  if (settings->override_color.has_value()) {
+    setOverrideColor(*settings->override_color);
   }
   // A <trail> child means the trail was on; TrailLayer::xmlLoadState is
   // style-only by contract, which is exactly right here — the SOURCE is this
   // layer's own topic, never something the payload retargets.
   const QDomElement trail_el = element.firstChildElement(u"trail"_s);
+#ifndef PJ_SCENE3D_RHI
   setTrailEnabled(!trail_el.isNull());
   if (trail_ != nullptr && !trail_->xmlLoadState(trail_el)) {
     return false;
   }
+#else
+  trail_xml_ = QDomDocument();
+  if (!trail_el.isNull()) {
+    trail_xml_.appendChild(trail_xml_.importNode(trail_el, true));
+  }
+#endif
   return true;
 }
 
@@ -130,7 +186,6 @@ bool PosesInFrameLayer::attach(const PJ::SceneLayerContext& ctx) {
     qCWarning(lcPoses) << "attach: session is null";
     return false;
   }
-  ctx_ = scene3d_ctx;
   // Accept a parser-backed topic OR a parser-less canonical PosesInFrame topic
   // (a data-source/toolbox that pushed serialized canonical poses, decoded
   // host-side by resolveObject()).
@@ -139,32 +194,72 @@ bool PosesInFrameLayer::attach(const PJ::SceneLayerContext& ctx) {
     qCWarning(lcPoses) << "attach: no parser and no canonical codec for poses topic" << topic_id_.id;
     return false;
   }
+  ctx_ = scene3d_ctx;
   resetReplayState();
+  disconnect(reload_connection_);
+  reload_connection_ = connect(
+      ctx_.session, &PJ::SessionManager::datasetAboutToBeReplaced, this,
+      &PosesInFrameLayer::onDatasetAboutToBeReplaced);
   // Streaming-tolerant: a topic can be attached before its first sample lands
   // (layout restore at stream start, catalog drag). bootstrap() only pre-warms
-  // source_frame_; renderAt() self-heals it, so a failure must NOT drop the layer
+  // source_frame_; updateAt() self-heals it, so a failure must NOT drop the layer
   // (SceneDockWidget::attach discards on false).
   if (!bootstrap()) {
     qCWarning(lcPoses) << "attach: bootstrap deferred for poses topic" << topic_id_.id
                        << "— render will start once a sample arrives";
   }
+#ifndef PJ_SCENE3D_RHI
   syncTrailToCurrentState();
+#endif
   return true;
 }
 
 void PosesInFrameLayer::detach() {
+  disconnect(reload_connection_);
+  reload_connection_ = {};
   resetReplayState();
+  setDataWarning({});
+  requested_time_.reset();
+  tracker_dirty_ = false;
+#ifndef PJ_SCENE3D_RHI
   if (trail_ != nullptr) {
     trail_->detach();
   }
+#endif
 }
 
 void PosesInFrameLayer::resetReplayState() {
-  instances_.clear();
-  pass_.setInstances({});
+  clearGeometry();
   staged_uid_ = {};
   staged_revision_ = -1;
   source_frame_.clear();
+  budget_.reset();
+}
+
+void PosesInFrameLayer::clearGeometry() {
+  const bool had_geometry = !instances_.empty() || source_bounds_.valid;
+  std::vector<PoseTriadInstance>{}.swap(instances_);
+  source_bounds_ = {};
+  if (had_geometry) {
+    ++geometry_revision_;
+  }
+}
+
+void PosesInFrameLayer::markDirty() {
+  tracker_dirty_ = true;
+  budget_.reset();
+}
+
+void PosesInFrameLayer::onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id) {
+  if (ctx_.session == nullptr || ctx_.session->objectStore().descriptor(topic_id_).dataset_id != dataset_id) {
+    return;
+  }
+  clearGeometry();
+  staged_uid_ = {};
+  staged_revision_ = -1;
+  markDirty();
+  setDataWarning({});
+  emit repaintRequested();
 }
 
 void PosesInFrameLayer::updateSourceFrame(const std::string& frame_id) {
@@ -179,7 +274,8 @@ void PosesInFrameLayer::updateSourceFrame(const std::string& frame_id) {
 bool PosesInFrameLayer::bootstrap() {
   PJ::ObjectStore& store = ctx_.session->objectStore();
   auto first = store.at(topic_id_, 0);
-  if (!first.has_value() || first->payload.bytes.empty()) {
+  if (!first.has_value() || first->payload.bytes.empty() ||
+      !posePayloadFits(static_cast<std::uint64_t>(first->payload.bytes.size()))) {
     return false;
   }
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
@@ -196,9 +292,9 @@ bool PosesInFrameLayer::bootstrap() {
   return true;
 }
 
-void PosesInFrameLayer::renderAt(int64_t time_ns) {
+bool PosesInFrameLayer::updateAt(int64_t time_ns) {
   if (ctx_.session == nullptr) {
-    return;
+    return false;
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
   // Scrub coalescing, checked metadata-first (latestEntryIdAt — no payload
@@ -210,61 +306,107 @@ void PosesInFrameLayer::renderAt(int64_t time_ns) {
   };
   const auto entry_id = store.latestEntryIdAt(topic_id_, time_ns);
   if (entry_id.has_value() && already_staged(entry_id->uid)) {
-    return;
+    return false;
   }
   auto entry = entry_id.has_value() ? store.latestAt(topic_id_, time_ns) : std::nullopt;
   if (!entry.has_value() || entry->payload.bytes.empty()) {
     // No sample at/before this time -> show nothing.
-    if (!instances_.empty()) {
-      instances_.clear();
-      pass_.setInstances({});
-    }
+    const bool changed = !instances_.empty() || !dataWarning().isEmpty();
+    clearGeometry();
     staged_uid_ = {};
-    return;
+    setDataWarning({});
+    return changed;
   }
   if (already_staged(entry->sequential_uid)) {
-    return;
+    return false;
+  }
+  // Every exit below stages this sample, so a bad one is not retried per frame.
+  staged_uid_ = entry->sequential_uid;
+  staged_revision_ = style_revision_;
+  const auto fail = [this](QString warning) {
+    clearGeometry();
+    setDataWarning(std::move(warning));
+    return true;
+  };
+  if (!posePayloadFits(static_cast<std::uint64_t>(entry->payload.bytes.size()))) {
+    return fail(tr("Pose payload is %1 MiB; the limit is %2 MiB")
+                    .arg(QString::number(static_cast<double>(entry->payload.bytes.size()) / (1024.0 * 1024.0), 'f', 1))
+                    .arg(kSceneLimits.max_pose_wire_bytes_per_layer / kMiB));
   }
   // Per-use binding fetch (never cached) — a reload re-registers the parser slot.
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
   auto obj = resolveObject(binding, PJ::sdk::BuiltinObjectType::kPosesInFrame, entry->timestamp, entry->payload);
   if (!obj.has_value()) {
-    return;
+    return fail(tr("Pose array could not be decoded: %1").arg(QString::fromStdString(obj.error())));
   }
   const auto* msg = obj->object.get<PJ::sdk::PosesInFrame>();
   if (msg == nullptr) {
-    return;
+    return fail(tr("This layer accepts PosesInFrame samples only"));
   }
   updateSourceFrame(msg->frame_id);
-  instances_ = buildPoseTriadInstances(
-      *msg, PoseTriadStyle{
-                .axis_length = gizmo_size_,
-                .opacity = gizmo_opacity_,
-                .x_arrow_only = x_arrow_only_,
-                .override_color = override_color_enabled_,
-                .color = glm::vec3(override_color_.redF(), override_color_.greenF(), override_color_.blueF()),
-            });
-  pass_.setInstances(instances_);
-  staged_uid_ = entry->sequential_uid;
-  staged_revision_ = style_revision_;
+  if (!poseCountFits(static_cast<std::uint64_t>(msg->poses.size()))) {
+    return fail(tr("Pose array has %1 poses; the limit is %2")
+                    .arg(QString::number(msg->poses.size()), QString::number(kSceneLimits.max_poses_per_layer)));
+  }
+  std::vector<PoseTriadInstance> expanded;
+  try {
+    expanded = buildPoseTriadInstances(
+        *msg, PoseTriadStyle{
+                  .axis_length = gizmo_size_,
+                  .opacity = gizmo_opacity_,
+                  .x_arrow_only = x_arrow_only_,
+                  .override_color = override_color_enabled_,
+                  .color = glm::vec3(override_color_.redF(), override_color_.greenF(), override_color_.blueF()),
+              });
+  } catch (const std::bad_alloc&) {
+    return fail(tr("Not enough memory to expand this pose array"));
+  } catch (const std::exception& error) {
+    return fail(tr("Pose-array expansion failed: %1").arg(QString::fromUtf8(error.what())));
+  }
+  AABB bounds;
+  const auto finite_end = std::remove_if(expanded.begin(), expanded.end(), [&bounds](const PoseTriadInstance& inst) {
+    if (!finiteInstance(inst)) {
+      return true;
+    }
+    expandInstanceBounds(bounds, inst);
+    return false;
+  });
+  const bool had_nonfinite = finite_end != expanded.end();
+  expanded.erase(finite_end, expanded.end());
+  instances_ = std::move(expanded);
+  source_bounds_ = bounds;
+  ++geometry_revision_;
+  if (!msg->poses.empty() && instances_.empty()) {
+    setDataWarning(tr("Pose array contains no finite poses"));
+  } else if (had_nonfinite) {
+    setDataWarning(tr("Non-finite poses were skipped"));
+  } else {
+    setDataWarning({});
+  }
+  return true;
 }
 
 void PosesInFrameLayer::setFixedFrame(const QString& frame) {
-  // The poses are frame-relative; render() re-resolves the fixed frame each paint
-  // via FrameContext, so a change only needs a repaint. The trail is the
-  // exception — it rebuilds its polyline against the fixed frame.
+  // The poses are frame-relative; the renderer re-resolves the fixed frame each
+  // paint, so a change only needs a repaint. The trail is the exception — it
+  // rebuilds its polyline against the fixed frame.
   fixed_frame_ = frame;
+#ifndef PJ_SCENE3D_RHI
   if (trail_ != nullptr) {
     trail_->setFixedFrame(frame);
   }
+#endif
   emit repaintRequested();
 }
 
 void PosesInFrameLayer::setTrackerTime(PJ::Timepoint time) {
-  tracker_dirty_ = true;  // render() reads frame_ctx.time via the tracker_dirty_ path
+  requested_time_ = time;
+  tracker_dirty_ = true;  // drained once per painted frame (see tracker_dirty_)
+#ifndef PJ_SCENE3D_RHI
   if (trail_ != nullptr) {
     trail_->setTrackerTime(time);  // moves the past/future colour split
   }
+#endif
   emit repaintRequested();
 }
 
@@ -273,14 +415,24 @@ void PosesInFrameLayer::setVisible(bool visible) {
     return;
   }
   visible_ = visible;
+  if (!visible_) {
+    // Release the retained arms while hidden; un-hiding re-decodes.
+    clearGeometry();
+    staged_uid_ = {};
+    staged_revision_ = -1;
+    budget_.reset();
+  }
+#ifndef PJ_SCENE3D_RHI
   if (trail_ != nullptr) {
     trail_->setVisible(visible);  // the trail is part of this layer, not a peer
   }
+#endif
   emit visibilityChanged(visible);
   // Catch-up on un-hide is the dock's job (it re-delivers the last tracker time).
   emit repaintRequested();
 }
 
+#ifndef PJ_SCENE3D_RHI
 void PosesInFrameLayer::initializeGL() {
   pass_.initializeGL();
   // The view calls this every paintGL before render(), so a trail enabled later
@@ -307,10 +459,10 @@ void PosesInFrameLayer::render(const ViewParams& view_params, const FrameContext
   if (trail_ != nullptr) {
     trail_->render(view_params, frame_ctx);
   }
-  // Drain a pending tracker move or style edit (one expansion per painted frame).
-  if (tracker_dirty_) {
-    tracker_dirty_ = false;
-    renderAt(PJ::toRaw(frame_ctx.time));
+  drainPendingUpdate();
+  if (pass_revision_ != geometry_revision_) {
+    pass_.setInstances(instances_);
+    pass_revision_ = geometry_revision_;
   }
   if (source_frame_.empty() || instances_.empty()) {
     return;  // nothing decoded yet, or an empty pose set
@@ -321,6 +473,47 @@ void PosesInFrameLayer::render(const ViewParams& view_params, const FrameContext
   }
   pass_.render(view_params, glm::mat4(transform->matrix()));
 }
+#endif
+
+bool PosesInFrameLayer::drainPendingUpdate() {
+  if (!visible_ || !tracker_dirty_ || !requested_time_.has_value()) {
+    return false;
+  }
+  tracker_dirty_ = false;
+  return updateAt(PJ::toRaw(*requested_time_));
+}
+
+std::uint64_t PosesInFrameLayer::renderKey(PJ::Timepoint time) const {
+#ifndef PJ_SCENE3D_RHI
+  if (trail_ != nullptr) {
+    return Scene3DLayer::renderKey(time);
+  }
+#endif
+  const std::uint64_t key =
+      PJ::latestEntryRenderKey(ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_, time);
+  return foldFrameTransformIntoKey(key, ctx_.tf_buffer.get(), fixed_frame_.toStdString(), source_frame_, time);
+}
+
+bool PosesInFrameLayer::prepareForRender(std::uint64_t remaining_view_arms) {
+  bool released = false;
+  if (budget_.blocked(remaining_view_arms, released)) {
+    return false;
+  }
+  if (released) {
+    staged_uid_ = {};
+    staged_revision_ = -1;
+    tracker_dirty_ = true;
+  }
+  const bool changed = drainPendingUpdate();
+  if (static_cast<std::uint64_t>(instances_.size()) <= remaining_view_arms) {
+    return changed;
+  }
+  budget_.reject(instances_.size());
+  setDataWarning(tr("Layer needs %1 pose arrows; only %2 remain in this view's budget")
+                     .arg(QString::number(instances_.size()), QString::number(remaining_view_arms)));
+  clearGeometry();
+  return true;
+}
 
 void PosesInFrameLayer::setGizmoSize(float meters) {
   const float clamped = std::clamp(meters, 0.01f, 100.0f);
@@ -329,7 +522,7 @@ void PosesInFrameLayer::setGizmoSize(float meters) {
   }
   gizmo_size_ = clamped;
   ++style_revision_;
-  tracker_dirty_ = true;  // re-expand the current sample on the next paint
+  markDirty();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -341,7 +534,7 @@ void PosesInFrameLayer::setGizmoOpacity(float opacity) {
   }
   gizmo_opacity_ = clamped;
   ++style_revision_;
-  tracker_dirty_ = true;
+  markDirty();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -352,11 +545,12 @@ void PosesInFrameLayer::setXArrowOnly(bool x_arrow_only) {
   }
   x_arrow_only_ = x_arrow_only;
   ++style_revision_;
-  tracker_dirty_ = true;  // re-expand the current sample (triad <-> single arm)
+  markDirty();
   emit configurationChanged();
   emit repaintRequested();
 }
 
+#ifndef PJ_SCENE3D_RHI
 void PosesInFrameLayer::setTrailEnabled(bool enabled) {
   if (enabled == (trail_ != nullptr)) {
     return;
@@ -394,6 +588,7 @@ void PosesInFrameLayer::syncTrailToCurrentState() {
   }
   trail_->setVisible(visible_);
 }
+#endif
 
 void PosesInFrameLayer::setOverrideColorEnabled(bool enabled) {
   if (override_color_enabled_ == enabled) {
@@ -401,7 +596,7 @@ void PosesInFrameLayer::setOverrideColorEnabled(bool enabled) {
   }
   override_color_enabled_ = enabled;
   ++style_revision_;
-  tracker_dirty_ = true;  // re-expand: per-axis RGB <-> shared override color
+  markDirty();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -414,7 +609,7 @@ void PosesInFrameLayer::setOverrideColor(QColor color) {
   ++style_revision_;
   // Only changes what is drawn while the override is enabled, but bump
   // unconditionally so the next paint reflects it immediately when it is.
-  tracker_dirty_ = true;
+  markDirty();
   emit configurationChanged();
   emit repaintRequested();
 }
@@ -485,6 +680,7 @@ QWidget* PosesInFrameLayer::createConfigWidget(QWidget* parent) {
     setOverrideColorEnabled(true);  // apply now; the toggled-driven call lags the slide animation
   });
 
+#ifndef PJ_SCENE3D_RHI
   // Trail: opt-in toggle, and when on the owned trail's own style rows are
   // appended to THIS form — same label column as the rows above, and the single
   // definition of those controls (TrailLayer::appendStyleRows).
@@ -506,6 +702,7 @@ QWidget* PosesInFrameLayer::createConfigWidget(QWidget* parent) {
     setTrailEnabled(on);
     refresh_trail_rows();
   });
+#endif
 
   return container;
 }

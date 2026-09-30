@@ -157,6 +157,13 @@ TEST(UrlFetcherTest, DestructionDropsInFlightCallback) {
   EXPECT_FALSE(called) << "callback fired after the fetcher was destroyed";
 }
 
+namespace {
+// A Content-Length one byte over the cap, which differs per renderer build.
+QByteArray overCapLength() {
+  return QByteArray::number(pj::scene3d::UrlFetcher::kMaxFetchBytes + 1);
+}
+}  // namespace
+
 // Size cap: a response whose declared Content-Length exceeds kMaxFetchBytes is
 // aborted instead of buffered.
 TEST(UrlFetcherTest, ResponseBeyondSizeCapIsAborted) {
@@ -166,9 +173,9 @@ TEST(UrlFetcherTest, ResponseBeyondSizeCapIsAborted) {
     QTcpSocket* socket = server.nextPendingConnection();
     QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket]() {
       socket->readAll();  // consume the request; the content is irrelevant
-      // 100 MiB declared > the 64 MiB cap: the fetcher must abort on the
+      // One byte over the cap declared: the fetcher must abort on the
       // headers (metaDataChanged) without waiting for the body to stream.
-      socket->write("HTTP/1.1 200 OK\r\nContent-Length: 104857600\r\n\r\n");
+      socket->write("HTTP/1.1 200 OK\r\nContent-Length: " + overCapLength() + "\r\n\r\n");
       socket->write(QByteArray(4096, 'x'));
       socket->flush();
     });
@@ -295,8 +302,9 @@ TEST(UrlFetcherTest, SizeCappedResponseDoesNotPoisonCache) {
     QTcpSocket* socket = server.nextPendingConnection();
     QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket]() {
       socket->readAll();
-      // 100 MiB declared (> 64 MiB cap) but cacheable headers: the fetcher aborts.
-      socket->write("HTTP/1.1 200 OK\r\nCache-Control: max-age=3600\r\nContent-Length: 104857600\r\n\r\n");
+      // Over-cap length declared but cacheable headers: the fetcher aborts.
+      socket->write(
+          "HTTP/1.1 200 OK\r\nCache-Control: max-age=3600\r\nContent-Length: " + overCapLength() + "\r\n\r\n");
       socket->write(QByteArray(4096, 'x'));
       socket->flush();
     });

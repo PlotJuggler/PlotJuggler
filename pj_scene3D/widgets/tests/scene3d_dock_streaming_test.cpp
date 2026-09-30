@@ -35,12 +35,15 @@
 #include "mock_parser_support.h"  // pumpUntil
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
+#include "pj_base/builtin/poses_in_frame.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
+#include "pj_scene3d_widgets/layers/poses_in_frame_layer.h"
+#include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene3d_widgets/transform_service.h"
 using namespace Qt::StringLiterals;
 
@@ -80,6 +83,17 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitTinyCloud(PJ::Timestamp ts, PJ::sdk::Pay
       PJ::sdk::PointField{"z", 8, PJ::sdk::PointField::Datatype::kFloat32, 1}};
   cloud.data = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(k_point), sizeof(k_point));
   return PJ::sdk::ObjectRecord{.ts = ts, .object = cloud};
+}
+
+constexpr std::string_view kPosesSchema = "mock/poses_in_frame";
+
+// One identity pose in frame "map", whatever the payload.
+PJ::Expected<PJ::sdk::ObjectRecord> emitOnePose(PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) {
+  PJ::sdk::PosesInFrame msg;
+  msg.timestamp_ns = ts;
+  msg.frame_id = "map";
+  msg.poses.emplace_back();
+  return PJ::sdk::ObjectRecord{.ts = ts, .object = msg};
 }
 
 // Captures the layer pointers the base hands over on registration —
@@ -144,6 +158,63 @@ TEST(Scene3DDockStreaming, SameStampReplacementCloudPassesRepaintGate) {
   EXPECT_GT(repaint_requests, 0) << "repaint gate swallowed the same-stamp replacement cloud";
   layer->renderAtForTest(100);
   EXPECT_GT(g_cloud_parser_calls.load(), parses_after_first) << "replacement cloud was never decoded";
+}
+
+// A static sample in a moving frame must follow its TF: with the TF overlay hidden
+// and no follow target the view contributes nothing to the repaint gate, so only
+// the layer's renderKey can tell the dock that the world<-map transform moved.
+// Keyed on the sample alone, every tick after the first was swallowed and the
+// poses froze at their first placement.
+TEST(Scene3DDockStreaming, StaticSampleInMovingFramePassesRepaintGate) {
+  constexpr int64_t kSecond = 1'000'000'000;
+  PJ::SessionManager session;
+  pj::scene3d::TransformService transform_service(session);
+  PJ::ObjectStore& store = session.objectStore();
+
+  PJ::ObjectTopicDescriptor desc;
+  desc.dataset_id = 1;
+  desc.topic_name = "/poses";
+  const auto topic_id = store.registerTopic(desc);
+  ASSERT_TRUE(topic_id.has_value());
+  // The one sample in view for the whole test (the later one only widens the range).
+  ASSERT_TRUE(store.pushOwned(*topic_id, 1 * kSecond, std::vector<uint8_t>{0x01}).has_value());
+  ASSERT_TRUE(store.pushOwned(*topic_id, 10 * kSecond, std::vector<uint8_t>{0x01}).has_value());
+  session.registerObjectTopicParser(*topic_id, makeBoundHandle(kPosesSchema, []() noexcept -> void* {
+    return new CountingObjectParser(kPosesSchema, PJ::sdk::BuiltinObjectType::kPosesInFrame, nullptr, &emitOnePose);
+  }));
+
+  ProbeDock dock;
+  dock.setSessionManager(&session);
+  dock.setTransformService(&transform_service);
+  ASSERT_TRUE(dock.addTopic(*topic_id, PJ::sdk::BuiltinObjectType::kPosesInFrame, u"poses"_s));
+  ASSERT_EQ(dock.synced_layers.size(), 1u);
+  auto* layer = dock.synced_layers.front();
+  ASSERT_TRUE(pj::scene3d::test::pumpUntil([&] { return dock.sceneView() != nullptr; }));
+  dock.sceneView()->setAxesVisible(false);
+  dock.sceneView()->setTfConnectionsVisible(false);
+
+  auto buf = transform_service.transformBuffer(/*dataset_id=*/1);
+  ASSERT_NE(buf, nullptr);
+  for (int second = 1; second <= 4; ++second) {
+    pj::scene3d::StampedTransform st;
+    st.stamp = pj::scene3d::TimePoint{std::chrono::nanoseconds(second * kSecond)};
+    st.parent_frame = "world";
+    st.child_frame = "map";
+    st.transform.t = glm::dvec3{static_cast<double>(second), 0.0, 0.0};
+    st.transform.q = glm::dquat{1.0, 0.0, 0.0, 0.0};
+    ASSERT_TRUE(buf->setTransform(st).has_value());
+  }
+  dock.setFixedFrame(u"world"_s);
+
+  int deliveries = 0;
+  const auto connection = QObject::connect(layer, &PJ::ISceneLayer::repaintRequested, [&deliveries] { ++deliveries; });
+  dock.onTrackerTime(1.0);  // the first tick always passes
+  for (const double time : {2.0, 3.0, 4.0}) {
+    const int before = deliveries;
+    dock.onTrackerTime(time);
+    EXPECT_GT(deliveries, before) << "tick at " << time << " s swallowed although world<-map moved";
+  }
+  QObject::disconnect(connection);
 }
 
 TEST(Scene3DDockStreaming, RevalidateWithoutSessionKeepsNeverPopulatedDock) {

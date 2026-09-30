@@ -58,9 +58,12 @@ XML persistence), and live-streaming data path — lives in
 `pj_scene3D/docs/ARCHITECTURE.md`.
 The in-progress migration of both renderers to one QRhi renderer (phases,
 decisions, platform matrix) is tracked in `pj_scene3D/docs/QRHI_MIGRATION.md`.
-`-DPJ_SCENE3D_RHI=ON` builds the QRhi renderer (`widgets/wasm/`) on desktop in
+`-DPJ_SCENE3D_RHI=ON` builds the QRhi view (`widgets/wasm/`) on desktop in
 place of the GL one; its render harness `scene3d_rhi_render_test` needs a real
 X/Wayland server (Xvfb in CI) and runs once per backend (`.opengl.*`, `.vulkan.*`).
+The dock (`src/Scene3DDockWidget.cpp`) and every layer (`src/layers/`) are the
+same in both builds; the QRhi view does not draw trails and grid maps yet (it
+marks their rows "Not rendered by this renderer yet").
 
 ## Decoding boundary (important)
 
@@ -130,9 +133,10 @@ full mechanism.
   scene_entities_decode.h, scene_entities_render.h}`. The codec
   decoders add a PRIVATE `draco` + `cloudini` link (compressed-cloud transcoding only —
   see "Decoding boundary"); the public API stays `glm` / `pj_base` / `nlohmann_json`.
-- `widgets/` — Qt viewer (`SceneViewWidget`, a `QOpenGLWidget` embedded as a
-  direct child of `Scene3DDockWidget`), render passes, layers, and
-  `Scene3DDockWidget` (an `IDataWidget`). Key public headers:
+- `widgets/` — Qt viewer (`SceneViewWidget`: a `QOpenGLWidget`, or with
+  `PJ_SCENE3D_RHI` the `QRhiWidget` in `wasm/`, embedded as a direct child of
+  `Scene3DDockWidget`), render passes, layers, and `Scene3DDockWidget` (an
+  `IDataWidget`, one class for both views). Key public headers:
   `widgets/include/pj_scene3d_widgets/{Scene3DDockWidget.h,
   transform_service.h, scene3d_layer.h, mesh_data.h, mesh_shading_params.h,
   passes/mesh_render_pass.h, layers/robot_model_layer.h,
@@ -228,7 +232,10 @@ The runners are:
   without test hooks. Links Qt Network for the local-server fixtures.
 
 Hooked and plain sources stay in different runners because the test-hook macro
-changes public library class definitions. File-local GoogleTest environments
+changes public library class definitions. `widgets/CMakeLists.txt` registers the
+renderer-agnostic sources (the dock tests, layer tests, XML validation, config
+row spacing) in BOTH builds and the GL-pass, GL-view, trail and grid-map tests
+in the `NOT PJ_SCENE3D_RHI` block. File-local GoogleTest environments
 prepare the Cloudini blob, preserve the fixed-frame settings application name,
 and redirect the model caches to temporary directories. The shared mains keep
 the application on the stack so it dies before Qt Network's exit handlers.
