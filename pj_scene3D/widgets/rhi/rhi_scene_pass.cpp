@@ -5,6 +5,8 @@
 
 #include <rhi/qshader.h>
 
+#include <QElapsedTimer>
+#include <QStringList>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -40,8 +42,25 @@ bool createGraphicsPipeline(QRhiGraphicsPipeline* pipeline) {
   if (injectedPipelineFailure(*pipeline)) {
     return false;
   }
+  const bool log = qEnvironmentVariableIntValue("PJ_SCENE3D_PIPELINE_LOG") == 1;
+  QElapsedTimer timer;
+  if (log) {
+    timer.start();
+  }
 #endif
-  return pipeline->create();
+  const bool created = pipeline->create();
+#ifdef PJ_RHI_TEST_HOOKS
+  if (log) {
+    QStringList shaders;
+    for (auto stage = pipeline->cbeginShaderStages(); stage != pipeline->cendShaderStages(); ++stage) {
+      shaders << PJ::rhiShaderPathForTest(stage->shader()).section(u'/', -1);
+    }
+    qInfo(
+        "PJ_PIPELINE %s samples=%d ms=%.3f", qPrintable(shaders.join(u'+')), pipeline->sampleCount(),
+        static_cast<double>(timer.nsecsElapsed()) / 1.0e6);
+  }
+#endif
+  return created;
 }
 
 QRhiGraphicsPipeline* clonePipelineForRenderPass(
@@ -90,6 +109,30 @@ void ScenePipelineRegistry::add(QRhiGraphicsPipeline* direct) {
   entries_.push_back(Entry{direct});
 }
 
+QRhiGraphicsPipeline* ScenePipelineRegistry::addTemplate(QRhiGraphicsPipeline* direct, const char* part) {
+  if (direct != nullptr) {
+    entries_.push_back(Entry{direct, nullptr, nullptr, part != nullptr ? part : "scene pipelines"});
+  }
+  return direct;
+}
+
+bool ScenePipelineRegistry::createTemplates() {
+  if (deferred_failure_ != nullptr) {
+    return false;  // not retried: the view fails on deferredFailure()
+  }
+  for (Entry& entry : entries_) {
+    if (entry.uncreated_part == nullptr) {
+      continue;
+    }
+    if (!createGraphicsPipeline(entry.direct)) {
+      deferred_failure_ = entry.uncreated_part;
+      return false;
+    }
+    entry.uncreated_part = nullptr;
+  }
+  return true;
+}
+
 void ScenePipelineRegistry::remove(QRhiGraphicsPipeline* direct) {
   const auto existing =
       std::find_if(entries_.begin(), entries_.end(), [direct](const Entry& entry) { return entry.direct == direct; });
@@ -128,6 +171,7 @@ void ScenePipelineRegistry::releaseClones() {
 void ScenePipelineRegistry::clear() {
   releaseClones();
   entries_.clear();
+  deferred_failure_ = nullptr;
 }
 
 bool ScenePipelineRegistry::directsBuiltFor(const QRhiRenderPassDescriptor* render_pass, int sample_count) const {
@@ -199,17 +243,18 @@ AABB transformedBounds(const AABB& source, const glm::dmat4& fixed_from_source, 
 }
 
 bool ensureStaticVertexBuffer(
-    QRhi* owner, QRhiBuffer*& buffer, quint32& capacity, quint32 required_bytes, quint32 minimum_capacity) {
+    QRhi* owner, QRhiBuffer*& buffer, quint32& capacity, quint32 required_bytes, quint32 minimum_capacity,
+    QRhiBuffer::Type type) {
   if (required_bytes == 0) {
     return true;
   }
-  if (buffer != nullptr && capacity >= required_bytes &&
+  if (buffer != nullptr && buffer->type() == type && capacity >= required_bytes &&
       capacity <= std::max<quint32>(required_bytes, minimum_capacity / 2U) * 2U) {
     return true;
   }
   delete buffer;
   capacity = std::max(required_bytes, minimum_capacity);
-  buffer = owner->newBuffer(QRhiBuffer::Static, QRhiBuffer::VertexBuffer, capacity);
+  buffer = owner->newBuffer(type, QRhiBuffer::VertexBuffer, capacity);
   if (!buffer->create()) {
     delete buffer;
     buffer = nullptr;
@@ -270,6 +315,18 @@ QRhiShaderResourceBindings* createBindings(QRhi* owner, std::initializer_list<QR
 }
 
 QRhiGraphicsPipeline* createScenePipeline(const RhiPassSetup& setup, const PipelineDesc& desc) {
+  QRhiGraphicsPipeline* pipeline = newScenePipeline(setup, desc);
+  if (setup.templates != nullptr) {
+    return setup.templates->addTemplate(pipeline, setup.part);
+  }
+  if (pipeline != nullptr && !createGraphicsPipeline(pipeline)) {
+    delete pipeline;
+    return nullptr;
+  }
+  return pipeline;
+}
+
+QRhiGraphicsPipeline* newScenePipeline(const RhiPassSetup& setup, const PipelineDesc& desc) {
   if (setup.rhi == nullptr || !desc.vertex.isValid() || !desc.fragment.isValid() || desc.bindings == nullptr) {
     return nullptr;
   }
@@ -290,10 +347,6 @@ QRhiGraphicsPipeline* createScenePipeline(const RhiPassSetup& setup, const Pipel
   pipeline->setSlopeScaledDepthBias(desc.slope_scaled_depth_bias);
   pipeline->setSampleCount(setup.sample_count);
   pipeline->setRenderPassDescriptor(setup.render_pass);
-  if (!createGraphicsPipeline(pipeline)) {
-    delete pipeline;
-    return nullptr;
-  }
   return pipeline;
 }
 

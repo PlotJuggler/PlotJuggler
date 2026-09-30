@@ -45,6 +45,8 @@
 
 #include "pj_base/builtin/frame_transforms_codec.hpp"
 #include "pj_base/builtin/grid_map_codec.hpp"
+#include "pj_base/builtin/occupancy_grid_codec.hpp"
+#include "pj_base/builtin/occupancy_grid_update_codec.hpp"
 #include "pj_base/builtin/poses_in_frame_codec.hpp"
 #include "pj_base/builtin/scene_entities_codec.hpp"
 #include "pj_base/builtin/voxel_grid_codec.hpp"
@@ -109,9 +111,9 @@ void dumpCounters(const SceneViewWidget& v, const char* name) {
     ids.push_back(QString::number(id));
   }
   const QString line =
-      u"%1 %2 %3 lines=%4 tris=%5 frames=%6 pts=%7/%8 cubes=%9/%10 fits=%11 depth=%12/%13 poses=%14/%15 "
-      u"occ=%16/%17/%18/%19 vox=%20/%21/%22 markers=%23/%24/%25 models=%26/%27/%28 slots=%29,%30,%31,%32,%33 "
-      u"shadow=%34/%35/%36/%37 hdr=%38 ssao=%39 edl=%40 submitted=%41\n"_s
+      u"%1 %2 %3 lines=%4 tris=%5 frames=%6 pts=%7/%8 cubes=%9/%10 depth=%11/%12 poses=%13/%14 "
+      u"occ=%15/%16/%17/%18 vox=%19/%20/%21 markers=%22/%23/%24 models=%25/%26/%27 slots=%28,%29,%30,%31,%32 "
+      u"shadow=%33/%34/%35/%36 hdr=%37 ssao=%38 edl=%39 submitted=%40\n"_s
           .arg(requestedBackend(), QString::fromLatin1(test->name()), QLatin1String(name))
           .arg(v.lastLineVertexCountForTest())
           .arg(v.lastTriangleVertexCountForTest())
@@ -120,7 +122,6 @@ void dumpCounters(const SceneViewWidget& v, const char* name) {
           .arg(v.lastPointVertexCountForTest())
           .arg(v.lastCubeLayerCountForTest())
           .arg(v.lastCubeInstanceCountForTest())
-          .arg(v.cameraFitCountForTest())
           .arg(v.lastDepthLayerCountForTest())
           .arg(v.lastDepthVertexCountForTest())
           .arg(v.lastPoseLayerCountForTest())
@@ -276,8 +277,8 @@ bool showExposed(QWidget& window) {
 // The shared render fixture, all in one frame so no TF is required.
 class RhiScene {
  public:
-  PJ::ObjectTopicId addPoints(const std::vector<glm::vec3>& points) {
-    return fixture_.add("/points", BT::kPointCloud, pj::scene3d::test::serializeCloud(points, kFrame));
+  PJ::ObjectTopicId addPoints(const std::vector<glm::vec3>& points, const std::string& topic = "/points") {
+    return fixture_.add(topic, BT::kPointCloud, pj::scene3d::test::serializeCloud(points, kFrame));
   }
   // Layer opacity forced to 1 (the layer default is translucent), so each
   // cube's own alpha decides opaque vs translucent.
@@ -347,14 +348,45 @@ class RhiScene {
   }
   // A local URDF file robot: its visual is the renderer's shadow caster, and
   // the local TF buffer it brings is what enables shadows.
-  void addRobot(const QByteArray& urdf) {
+  void addRobot(const QByteArray& urdf, const QString& file_name = u"caster.urdf"_s) {
     ASSERT_TRUE(urdf_dir_.isValid());
-    const QString path = urdf_dir_.filePath(u"caster.urdf"_s);
+    const QString path = urdf_dir_.filePath(file_name);
     QFile file(path);
     ASSERT_TRUE(file.open(QIODevice::WriteOnly));
     ASSERT_EQ(file.write(urdf), urdf.size());
     file.close();
     EXPECT_NE(dock()->addRobotModelLayer(path).id, 0U);
+  }
+
+  // An `n` x `n` free (0) occupancy grid of `cell`-metre cells, its corner at
+  // `corner` on the ground, with its "<topic>_updates" sibling registered for
+  // pushOccupancyPatch().
+  PJ::ObjectTopicId addOccupancy(int n, float cell, glm::vec2 corner) {
+    occupancy_updates_ = fixture_.registerTopic("/map_updates", BT::kOccupancyGridUpdate);
+    const std::vector<uint8_t> cells(static_cast<std::size_t>(n) * n, 0);
+    PJ::sdk::OccupancyGrid grid;
+    grid.timestamp_ns = 100;
+    grid.frame_id = kFrame;
+    grid.origin.position = {corner.x, corner.y, 0.0};
+    grid.origin.orientation.w = 1.0;
+    grid.resolution = cell;
+    grid.width = static_cast<uint32_t>(n);
+    grid.height = static_cast<uint32_t>(n);
+    grid.data = PJ::Span<const uint8_t>(cells.data(), cells.size());
+    return fixture_.add("/map", BT::kOccupancyGrid, PJ::serializeOccupancyGrid(grid));
+  }
+  // A `size` x `size` patch of `value` at cell `corner`, stamped `t`.
+  void pushOccupancyPatch(PJ::Timestamp t, glm::ivec2 corner, int size, uint8_t value) {
+    const std::vector<uint8_t> cells(static_cast<std::size_t>(size) * size, value);
+    PJ::sdk::OccupancyGridUpdate update;
+    update.timestamp_ns = t;
+    update.frame_id = kFrame;
+    update.x = corner.x;
+    update.y = corner.y;
+    update.width = static_cast<uint32_t>(size);
+    update.height = static_cast<uint32_t>(size);
+    update.data = PJ::Span<const uint8_t>(cells.data(), cells.size());
+    fixture_.push(occupancy_updates_, t, PJ::serializeOccupancyGridUpdate(update));
   }
 
   // A single-field (elevation) GridMap of `n` x `n` cells in the shared frame.
@@ -403,9 +435,9 @@ class RhiScene {
     return dock()->sceneView();
   }
   // Fixes frame, grid and a deterministic front-above camera. Call after the
-  // layers exist (the view is created lazily). The warm-up frame consumes the
-  // view's one-shot auto-fit to the first layer bounds. With `show` false the
-  // view stays a never-shown widget (one valid grab only, see the top).
+  // layers exist (the view is created lazily), after a warm-up frame. With
+  // `show` false the view stays a never-shown widget (one valid grab only, see
+  // the top).
   void frame(bool show = true) {
     SceneViewWidget* v = view();
     ASSERT_NE(v, nullptr);
@@ -443,6 +475,7 @@ class RhiScene {
  private:
   pj::scene3d::test::Scene3DRenderFixture fixture_;
   QTemporaryDir urdf_dir_;
+  PJ::ObjectTopicId occupancy_updates_;
 };
 
 class Scene3dRhiRenderTest : public ::testing::Test {
@@ -652,6 +685,16 @@ constexpr auto kCasterUrdf = R"(<robot name="caster">
   </link>
 </robot>)";
 
+// A one-link URDF robot: a `side`-metre box centred at `centre` in kFrame, a mesh shadow caster.
+QByteArray boxUrdf(glm::vec3 centre, float side) {
+  return u"<robot name=\"box\"><link name=\"base_link\"><visual><origin xyz=\"%1 %2 %3\"/>"
+         "<geometry><box size=\"%4 %4 %4\"/></geometry></visual></link></robot>"_s.arg(centre.x)
+             .arg(centre.y)
+             .arg(centre.z)
+             .arg(side)
+             .toUtf8();
+}
+
 // The full quality chain runs on a mesh + points + markers scene: HDR, SSAO,
 // EDL and shadows all active (no silent fallback), and the mesh actually casts
 // a shadow on the grid (turning shadows off brightens ground pixels).
@@ -682,32 +725,47 @@ TEST_F(Scene3dRhiRenderTest, QualityStagesActiveAndMeshCastsShadow) {
   EXPECT_GT(darkenedPixels(shadowed, unshadowed), 300) << "enabling shadows darkened no ground pixels";
 }
 
-// A SceneEntities cube lifted off the ground is a shadow caster on its own (no
-// model in the scene): enabling shadows darkens the ground under it.
-TEST_F(Scene3dRhiRenderTest, SceneEntitiesCubeCastsShadow) {
+// Only meshes cast shadows: a URDF box and a SceneEntities cube hang side by
+// side over the ground, and enabling shadows darkens the ground under the box
+// and nowhere under the cube. Markers receive none either: the cube's front
+// face (facing the camera) keeps its colour.
+TEST_F(Scene3dRhiRenderTest, MarkersCastNoShadowMeshesDo) {
   RhiScene scene;
-  scene.bindTransforms();  // before the topic: adding it binds the dataset's TF buffer
-  scene.addEntities({cubeEntity("cube", {0.0F, 0.0F, 1.2F}, 1.0F, {200, 200, 60, 255})});
+  const glm::vec3 box{-1.5F, 0.0F, 1.2F};
+  const glm::vec3 cube{1.5F, 0.0F, 1.2F};
+  scene.addRobot(boxUrdf(box, 1.0F));
+  scene.addEntities({cubeEntity("cube", cube, 1.0F, {200, 200, 60, 255})});
   scene.frame();
   SceneViewWidget* view = scene.view();
+  auto params = view->meshShadingParams();
+  // Nearly straight down: each caster's shadow falls right under it.
+  params.key_light_dir = glm::normalize(glm::vec3(0.1F, -0.2F, 1.0F));
+  view->setMeshShadingParams(params);
   GRAB_OR_SKIP(shadowed, view, "shadows");
-  EXPECT_TRUE(view->lastShadowActiveForTest()) << view->shadowCapabilityErrorForTest().toStdString();
-  EXPECT_EQ(view->lastModelDrawCountForTest(), 0);
-  EXPECT_EQ(view->lastShadowDrawCountForTest(), 1) << "one instanced cube caster range";
+  ASSERT_TRUE(view->lastShadowActiveForTest()) << view->shadowCapabilityErrorForTest().toStdString();
+  EXPECT_EQ(view->lastShadowDrawCountForTest(), 1) << "the box is the only caster";
   EXPECT_EQ(view->lastShadowTriangleCountForTest(), 12);
 
-  auto params = view->meshShadingParams();
   params.shadows_enabled = false;
   view->setMeshShadingParams(params);
   GRAB_OR_SKIP(unshadowed, view, "no_shadows");
   EXPECT_FALSE(view->lastShadowActiveForTest());
-  EXPECT_GT(darkenedPixels(shadowed, unshadowed), 300) << "the cube cast no shadow on the grid";
-  // Markers do not receive shadows: the ground darkened, the cube's front face
-  // (facing the camera) did not.
-  const glm::vec3 front_face{0.0F, -0.5F, 1.2F};
+  const auto darkened_under = [&](glm::vec3 caster) {
+    const QPointF centre = project(*view, {caster.x, caster.y, 0.0F}, shadowed.size());
+    int count = 0;
+    for (int y = int(centre.y()) - 12; y <= int(centre.y()) + 12; ++y) {
+      for (int x = int(centre.x()) - 25; x <= int(centre.x()) + 25; ++x) {
+        count += qGray(unshadowed.pixel(x, y)) - qGray(shadowed.pixel(x, y)) > 12 ? 1 : 0;
+      }
+    }
+    return count;
+  };
+  EXPECT_GT(darkened_under(box), 100) << "the mesh cast no shadow on the grid";
+  EXPECT_EQ(darkened_under(cube), 0) << "the marker cast a shadow";
   EXPECT_EQ(
-      meanColor(shadowed, project(*view, front_face, shadowed.size())),
-      meanColor(unshadowed, project(*view, front_face, unshadowed.size())));
+      meanColor(shadowed, project(*view, cube - glm::vec3(0.0F, 0.5F, 0.0F), shadowed.size())),
+      meanColor(unshadowed, project(*view, cube - glm::vec3(0.0F, 0.5F, 0.0F), unshadowed.size())))
+      << "the marker received a shadow";
 }
 
 // Pixels of `mask` in each image quadrant: {top-left, top-right, bottom-left, bottom-right}.
@@ -756,6 +814,84 @@ constexpr char kMarkedQuadDae[] = R"(<?xml version="1.0" encoding="utf-8"?>
   <scene><instance_visual_scene url="#scene"/></scene>
 </COLLADA>
 )";
+
+#ifdef PJ_RHI_TEST_HOOKS
+// A settled view whose target properties change (the colour-buffer format, a
+// fixed colour-buffer size) renders the new target, with nothing but Qt's own
+// update() (QRhiWidget's setters): the paint skip compares the requested target,
+// not the existing one. So does a resize that keeps a fixed-size target (the
+// overlays follow the logical size). No grab, which would request a frame itself.
+TEST_F(Scene3dRhiRenderTest, TargetPropertyChangesRenderWithoutAnUpdate) {
+  RhiScene scene;
+  scene.addPoints(pointBlock({0.0F, 0.0F, 1.0F}, 1.0F, 4));
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  GRAB_OR_SKIP(settled, view, "target_settled");
+  const auto& t = view->stageTimesForTest();
+  QTest::qWait(100);
+
+  const std::uint64_t before_format = t.full_renders;
+  view->setColorBufferFormat(QRhiWidget::TextureFormat::RGBA16F);
+  EXPECT_TRUE(QTest::qWaitFor([&] { return t.full_renders > before_format; }, 3000))
+      << "a new colour-buffer format was never rendered";
+
+  const std::uint64_t before_size = t.full_renders;
+  view->setFixedColorBufferSize(QSize(200, 150));
+  EXPECT_TRUE(QTest::qWaitFor([&] { return t.full_renders > before_size; }, 3000))
+      << "a fixed colour-buffer size was never rendered";
+  GRAB_OR_SKIP(fixed, view, "target_fixed_size");
+  EXPECT_EQ(fixed.size(), QSize(200, 150));
+
+  QTest::qWait(100);
+  const QSize logical = view->size();
+  const std::uint64_t before_resize = t.full_renders;
+  scene.dock()->setFixedSize(scene.dock()->size() - QSize(100, 80));
+  EXPECT_TRUE(QTest::qWaitFor([&] { return view->size() != logical && t.full_renders > before_resize; }, 3000))
+      << "a resize with a fixed colour-buffer size was never rendered";
+}
+#endif
+
+#ifdef PJ_RHI_TEST_HOOKS
+// The shadow map is kept while every input it is a function of holds: an orbit
+// (the render origin is the camera focal) keeps it, and the frame is identical
+// to one that re-rendered it; a pan (a new render origin) and a new caster
+// render it again.
+TEST_F(Scene3dRhiRenderTest, ShadowMapReusedOnlyWhileItsInputsHold) {
+  RhiScene scene;
+  scene.addRobot(boxUrdf({0.0F, 0.0F, 1.2F}, 1.0F));
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  GRAB_OR_SKIP(first, view, "shadow_reuse_first");
+  ASSERT_TRUE(view->lastShadowActiveForTest()) << view->shadowCapabilityErrorForTest().toStdString();
+  const auto& t = view->stageTimesForTest();
+
+  pj::scene3d::CameraState state = view->camera().state();
+  state.azimuth += glm::radians(20.0F);
+  view->camera().adoptState(state);
+  const std::uint64_t rendered = t.shadow_passes;
+  const std::uint64_t reused = t.shadow_passes_reused;
+  GRAB_OR_SKIP(orbited, view, "shadow_reuse_orbited");
+  EXPECT_EQ(t.shadow_passes, rendered) << "an orbit re-rendered the shadow map";
+  EXPECT_GT(t.shadow_passes_reused, reused);
+  view->setShadowReuseForTest(false);
+  GRAB_OR_SKIP(rerendered, view, "shadow_reuse_rerendered");
+  view->setShadowReuseForTest(true);
+  EXPECT_GT(t.shadow_passes, rendered);
+  EXPECT_EQ(orbited, rerendered) << "the kept shadow map differs from a fresh one";
+
+  state.focal.x += 0.5F;
+  view->camera().adoptState(state);
+  const std::uint64_t before_pan = t.shadow_passes;
+  GRAB_OR_SKIP(panned, view, "shadow_reuse_panned");
+  EXPECT_GT(t.shadow_passes, before_pan) << "a pan kept a shadow map of the old render origin";
+
+  const std::uint64_t before_caster = t.shadow_passes;
+  scene.addRobot(boxUrdf({1.5F, 0.0F, 1.2F}, 0.5F), u"second.urdf"_s);
+  GRAB_OR_SKIP(two_casters, view, "shadow_reuse_two_casters");
+  EXPECT_EQ(view->lastShadowDrawCountForTest(), 2);
+  EXPECT_GT(t.shadow_passes, before_caster) << "a new caster kept the old shadow map";
+}
+#endif
 
 // A textured model whose texture marks one corner: its top-left quadrant is green,
 // the rest red. Standing upright facing the camera (image top = +Z, image left =
@@ -816,15 +952,14 @@ TEST_F(Scene3dRhiRenderTest, OrientationTextureMarkedCornerStaysTopLeft) {
   EXPECT_TRUE(is_red(bottom_right)) << "bottom-right rgb=" << bottom_right.red() << "," << bottom_right.green();
 }
 
-// A cube lifted off the ground under a key light from the left and behind:
-// its shadow must fall right of and in front of the cube, where the light ray
+// A box mesh lifted off the ground under a key light from the left and behind:
+// its shadow must fall right of and in front of the box, where the light ray
 // through the cube's centre meets the ground. A Y-flipped shadow-map lookup (or
 // a flipped depth comparison) moves or loses it.
 TEST_F(Scene3dRhiRenderTest, OrientationShadowFallsAwayFromTheLight) {
   RhiScene scene;
-  scene.bindTransforms();
   const glm::vec3 cube{-1.0F, 0.5F, 1.2F};
-  scene.addEntities({cubeEntity("cube", cube, 0.8F, {200, 200, 60, 255})});
+  scene.addRobot(boxUrdf(cube, 0.8F));
   scene.frame();
   SceneViewWidget* view = scene.view();
   auto params = view->meshShadingParams();
@@ -836,7 +971,8 @@ TEST_F(Scene3dRhiRenderTest, OrientationShadowFallsAwayFromTheLight) {
   view->setMeshShadingParams(params);
   GRAB_OR_SKIP(unshadowed, view, "no_shadows");
 
-  // Pixels the shadow darkened on the ground (the cube itself receives none).
+  // Pixels the shadow darkened on the ground (the box's faces the camera sees
+  // face away from the light, so the shadow does not darken them).
   DiffMask shadow;
   double sx = 0.0;
   double sy = 0.0;
@@ -993,7 +1129,7 @@ TEST_F(Scene3dRhiRenderTest, DepthResolveMatchesTheForcedReplay) {
 TEST_F(Scene3dRhiRenderTest, SurvivesShowResizeReparentAndSiblingDestruction) {
   RhiScene scene;
   const glm::vec3 centre{0.0F, 0.0F, 1.0F};
-  const auto points = pointBlock(centre, 1.0F, 6);
+  const auto points = pointBlock(centre, 2.0F, 12);
   scene.addPoints(points);
   scene.frame(/*show=*/false);
   SceneViewWidget* view = scene.view();
@@ -1040,6 +1176,82 @@ TEST_F(Scene3dRhiRenderTest, SurvivesShowResizeReparentAndSiblingDestruction) {
   EXPECT_NEAR(mask.centroid.y(), expected.y(), no_grid.height() * 0.05);
   EXPECT_EQ(view->rhiBackendNameForTest(), requestedBackend());
 }
+
+#ifdef PJ_RHI_TEST_HOOKS
+// A view hidden and shown again on the same QRhi, its target unchanged (a hidden
+// tab), skips QRhiWidget's synchronous Show paint, offscreen frame included: with
+// nothing changed while hidden it presents the retained frame and renders none,
+// else it draws once, in the repaint the Show schedules. A view resized while
+// hidden draws at its new size; one shown in another top-level (a new QRhi, its
+// resources released) paints normally.
+TEST_F(Scene3dRhiRenderTest, ShowOfAnUnchangedTargetSkipsTheSynchronousPaint) {
+  RhiScene scene;
+  const auto points = pointBlock({0.0F, 0.0F, 1.0F}, 1.0F, 6);
+  const PJ::ObjectTopicId layer = scene.addPoints(points);
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  GRAB_OR_SKIP(shown, view, "shown");
+  ASSERT_EQ(view->lastPointVertexCountForTest(), static_cast<int>(points.size()));
+  int presented = 0;
+  QObject::connect(view, &QRhiWidget::frameSubmitted, view, [&presented] { ++presented; });
+  const auto show_and_present = [&] {
+    const int before = presented;
+    scene.dock()->show();
+    return QTest::qWaitFor([&] { return presented > before; }, 5000);
+  };
+  const auto& t = view->stageTimesForTest();
+  const int adoptions = view->property("pjTestRhiAdoptions").toInt();
+
+  scene.dock()->hide();
+  QApplication::processEvents();
+  const std::uint64_t skipped_unchanged = t.paints_skipped;
+  const std::uint64_t full_unchanged = t.full_renders;
+  ASSERT_TRUE(show_and_present()) << "the retained frame was not presented";
+  QApplication::processEvents();
+  EXPECT_GT(t.paints_skipped, skipped_unchanged) << "the Show paint was not skipped";
+  EXPECT_EQ(t.full_renders, full_unchanged) << "an unchanged view rendered on its Show";
+
+  scene.dock()->hide();
+  QApplication::processEvents();
+  scene.dock()->setLayerVisible(layer, false);  // changed while hidden
+  const std::uint64_t skipped = t.paints_skipped;
+  const std::uint64_t full = t.full_renders;
+  const int builds = t.base_builds;
+  ASSERT_TRUE(show_and_present());
+  EXPECT_GT(t.paints_skipped, skipped) << "the Show paint was not skipped";
+  EXPECT_TRUE(QTest::qWaitFor([&] { return t.full_renders > full; }, 5000))
+      << "no frame drew what changed while hidden";
+  EXPECT_EQ(view->lastPointVertexCountForTest(), 0);
+  EXPECT_EQ(t.base_builds, builds);
+  EXPECT_EQ(view->property("pjTestRhiAdoptions").toInt(), adoptions);
+
+  scene.dock()->hide();
+  QApplication::processEvents();
+  scene.dock()->setLayerVisible(layer, true);
+  scene.dock()->setFixedSize(kViewSize - QSize(100, 80));
+  ASSERT_TRUE(show_and_present());
+  const qreal dpr = view->devicePixelRatio();
+  GRAB_OR_SKIP(resized, view, "resized");
+  EXPECT_EQ(resized.size(), QSize(qRound(view->width() * dpr), qRound(view->height() * dpr)));
+  EXPECT_NE(resized.size(), shown.size());
+  EXPECT_EQ(view->lastPointVertexCountForTest(), static_cast<int>(points.size()));
+
+  scene.dock()->hide();
+  QApplication::processEvents();
+  QWidget other;
+  auto* other_layout = new QVBoxLayout(&other);
+  other_layout->addWidget(scene.dock());
+  other.resize(kViewSize);
+  const std::uint64_t full_before_move = t.full_renders;
+  ASSERT_TRUE(showExposed(other));
+  scene.dock()->show();
+  ASSERT_TRUE(QTest::qWaitFor([&] { return t.full_renders > full_before_move; }, 5000))
+      << "a Show on a new QRhi drew nothing";
+  GRAB_OR_SKIP(moved, view, "moved");
+  EXPECT_GT(view->property("pjTestRhiAdoptions").toInt(), adoptions);
+  EXPECT_EQ(view->lastPointVertexCountForTest(), static_cast<int>(points.size()));
+}
+#endif
 
 // ---- Presentation: corner gizmo, overlays, picking, render scale, tonemaps ----
 // These also run at QT_SCALE_FACTOR=2 (the .opengl_dpr2. ctest pass): every
@@ -1367,6 +1579,53 @@ TEST_F(Scene3dRhiRenderTest, TfFrameTriadDrawsAtFrameOrigin) {
 
 // ---- GridMap, trails, frame context menu ------------------------------------
 
+// The occupancy texture catches up with every change staged while the layer
+// was not drawn. The grid is made unplaceable (an unknown fixed frame) while a
+// patch lands, then placed again as a second patch lands: both must reach the
+// GPU. Then the same for a full refresh (a backward seek) followed by a patch.
+// Each state is compared against the same state uploaded from scratch (a hidden
+// layer drops its texture, and showing it again rebuilds it).
+TEST_F(Scene3dRhiRenderTest, OccupancyTextureCatchesUpAfterSkippedFrames) {
+  RhiScene scene;
+  const PJ::ObjectTopicId grid = scene.addOccupancy(8, 0.5F, {-2.0F, -2.0F});
+  scene.pushOccupancyPatch(200, {0, 0}, 4, 100);  // near-left quadrant occupied
+  scene.pushOccupancyPatch(300, {4, 4}, 4, 100);  // far-right quadrant occupied
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  view->setGridVisible(false);
+  PJ::Scene3DDockWidget* dock = scene.dock();
+  const QString fixed = QString::fromLatin1(kFrame);
+
+  dock->onTrackerTime(100e-9);
+  GRAB_OR_SKIP(base, view, "occupancy_base");
+  dock->setFixedFrame(u"unplaceable"_s);
+  dock->onTrackerTime(200e-9);  // patch A is staged; the layer is not drawn
+  GRAB_OR_SKIP(unplaced, view, "occupancy_unplaced");
+  dock->setFixedFrame(fixed);
+  dock->onTrackerTime(300e-9);  // patch B is staged and drawn
+  GRAB_OR_SKIP(patched, view, "occupancy_patched");
+  dock->setLayerVisible(grid, false);
+  GRAB_OR_SKIP(hidden, view, "occupancy_hidden");
+  dock->setLayerVisible(grid, true);
+  GRAB_OR_SKIP(patched_reference, view, "occupancy_patched_reference");
+  ASSERT_GT(diffMask(base, patched_reference, 20).count, 100) << "the patches changed nothing on screen";
+  EXPECT_EQ(diffMask(patched, patched_reference, 20).count, 0) << "a patch staged while undrawn never reached the GPU";
+
+  dock->setFixedFrame(u"unplaceable"_s);
+  dock->onTrackerTime(100e-9);  // a backward seek: a full refresh is staged; the layer is not drawn
+  GRAB_OR_SKIP(unplaced_refresh, view, "occupancy_unplaced_refresh");
+  dock->setFixedFrame(fixed);
+  dock->onTrackerTime(200e-9);  // patch A on top of the refresh
+  GRAB_OR_SKIP(refreshed, view, "occupancy_refreshed");
+  dock->setLayerVisible(grid, false);
+  GRAB_OR_SKIP(hidden_again, view, "occupancy_hidden_again");
+  dock->setLayerVisible(grid, true);
+  GRAB_OR_SKIP(refreshed_reference, view, "occupancy_refreshed_reference");
+  ASSERT_GT(diffMask(patched_reference, refreshed_reference, 20).count, 50) << "patch B did not go away";
+  EXPECT_EQ(diffMask(refreshed, refreshed_reference, 20).count, 0)
+      << "a full refresh staged while undrawn was cut short by the patch after it";
+}
+
 // A lit heightfield lands where its centre projects and draws the GL pass's
 // procedural vertex count (6 per quad).
 TEST_F(Scene3dRhiRenderTest, GridMapDrawsWhereProjected) {
@@ -1526,6 +1785,98 @@ TEST_F(Scene3dRhiRenderTest, FrameContextMenuPicksFrame) {
   ASSERT_EQ(menu->actions().size(), 3);
   EXPECT_TRUE(menu->actions().front()->text().contains(requested.front()));
   menu->close();
+}
+
+void expectSameCamera(const pj::scene3d::CameraState& a, const pj::scene3d::CameraState& b) {
+  EXPECT_EQ(a.focal, b.focal);
+  EXPECT_EQ(a.radius, b.radius);
+  EXPECT_EQ(a.azimuth, b.azimuth);
+  EXPECT_EQ(a.elevation, b.elevation);
+  EXPECT_EQ(a.ortho_scale, b.ortho_scale);
+}
+
+// Adding, hiding and showing layers never moves the camera, even for data far
+// outside the view.
+TEST_F(Scene3dRhiRenderTest, LayerChangesLeaveTheCameraAlone) {
+  RhiScene scene;
+  scene.addPoints(pointBlock({0.0F, 0.0F, 0.5F}, 0.2F, 2));
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  GRAB_OR_SKIP(before, view, "before");
+  const pj::scene3d::CameraState pinned = view->camera().state();
+
+  const PJ::ObjectTopicId farLayer = scene.addPoints(pointBlock({200.0F, 150.0F, 40.0F}, 5.0F, 2), "/far");
+  GRAB_OR_SKIP(added, view, "added");
+  expectSameCamera(view->camera().state(), pinned);
+
+  scene.dock()->setLayerVisible(farLayer, false);
+  GRAB_OR_SKIP(hidden, view, "hidden");
+  scene.dock()->setLayerVisible(farLayer, true);
+  GRAB_OR_SKIP(shown, view, "shown");
+  expectSameCamera(view->camera().state(), pinned);
+}
+
+// The projection's aspect is the widget's logical width / height, whatever the
+// DPR and render scale make of the framebuffer.
+TEST_F(Scene3dRhiRenderTest, ProjectionUsesTheLogicalAspect) {
+  RhiScene scene;
+  scene.addPoints(pointBlock({0.0F, 0.0F, 0.5F}, 0.2F, 2));
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  scene.dock()->setFixedSize(QSize(401, 263));
+  ASSERT_TRUE(QTest::qWaitFor([&]() { return view->width() < kViewSize.width(); }, 2000));
+  const float logical = static_cast<float>(view->width()) / static_cast<float>(view->height());
+  // A render scale whose rounded framebuffer has a different aspect.
+  const qreal dpr = view->devicePixelRatio();
+  float scale = 0.0F;
+  for (const float candidate : {1.25F, 1.5F, 1.75F, 2.25F, 2.5F, 3.5F}) {
+    const auto side = [&](int logical_px) {
+      return static_cast<float>(std::lround(static_cast<float>(std::lround(logical_px * dpr)) * candidate));
+    };
+    const float framebuffer = side(view->width()) / side(view->height());
+    if (std::abs(framebuffer - logical) > 1.0e-4F * logical) {
+      scale = candidate;
+      break;
+    }
+  }
+  ASSERT_GT(scale, 0.0F) << "no render scale rounds the framebuffer aspect away from the logical one at "
+                         << view->width() << "x" << view->height() << " dpr " << dpr;
+  view->setRenderScale(scale);
+  GRAB_OR_SKIP(image, view, "scaled");
+  ASSERT_TRUE(view->lastHdrActiveForTest()) << "the render scale applies to the HDR chain only";
+
+  const pj::scene3d::ICamera& camera = view->camera();
+  const glm::mat4 expected = camera.projMatrix(logical) * camera.viewMatrixRelativeTo(glm::dvec3(camera.state().focal));
+  const glm::mat4& painted = view->lastViewProjectionForTest();
+  for (int column = 0; column < 4; ++column) {
+    for (int row = 0; row < 4; ++row) {
+      EXPECT_NEAR(painted[column][row], expected[column][row], 1.0e-6F * (1.0F + std::abs(expected[column][row])))
+          << "element [" << column << "][" << row << "]";
+    }
+  }
+}
+
+// Hover and the frame menu pick against the camera of the last painted frame
+// (what is on screen), not a camera moved since.
+TEST_F(Scene3dRhiRenderTest, FramePickUsesTheLastPaintedCamera) {
+  RhiScene scene;
+  scene.addRobot(kOffsetRobotUrdf);
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  view->setGridVisible(false);
+  view->setAxesVisible(true);
+  view->setGizmoSize(1.0F);
+  GRAB_OR_SKIP(painted, view, "painted");
+  const QPointF origin = project(*view, {0.0F, 0.0F, 0.0F}, view->size());
+  ASSERT_TRUE(view->frameAt(origin).has_value());
+
+  auto moved = view->camera().state();
+  moved.focal.x += 3.0F;
+  view->camera().adoptState(moved);  // no frame painted with it yet
+  EXPECT_TRUE(view->frameAt(origin).has_value()) << "picked with a camera that was never painted";
+
+  GRAB_OR_SKIP(repainted, view, "repainted");
+  EXPECT_FALSE(view->frameAt(origin).has_value()) << "the new frame moved the origin away";
 }
 
 }  // namespace

@@ -22,6 +22,7 @@
 
 #include <rhi/qrhi.h>
 
+#include <QCoreApplication>
 #include <QMatrix4x4>
 #include <QString>
 #include <algorithm>
@@ -39,9 +40,11 @@
 #include <vector>
 
 #include "pj_scene3d_core/camera/camera.h"
+#include "pj_scene3d_core/scene_limits.h"
 #include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/rhi_conventions.h"
 #include "pj_widgets/GraphicsApi.h"
+#include "pj_widgets/RhiBlend.h"
 
 namespace pj::scene3d {
 
@@ -61,12 +64,29 @@ enum class DrawClass : std::uint8_t { kOpaque, kTranslucent };
 /// Owns the HDR-colour and depth-replay clones of the view's direct pipelines.
 /// Each family registers the pipelines it creates; resolve() clones one the first
 /// time a ScenePass binds it, once the view has named the clone targets. The
-/// clones copy every state of the source (see clonePipelineForRenderPass), so a
-/// family never builds HDR variants itself.
+/// clones copy the state newScenePipeline() sets (see clonePipelineForRenderPass),
+/// so a family never builds HDR variants itself.
 class ScenePipelineRegistry {
  public:
   /// Registers a direct pipeline (nullptr is ignored; re-adding is a no-op).
   void add(QRhiGraphicsPipeline* direct);
+  /// Registers `direct` configured but not created (newScenePipeline()): its
+  /// clones copy its state, and createTemplates() creates it before a frame
+  /// without the HDR chain binds it, so a GPU that runs the HDR chain never
+  /// builds the programs of its direct pipelines. Returns `direct`. `part` names
+  /// it in deferredFailure().
+  QRhiGraphicsPipeline* addTemplate(QRhiGraphicsPipeline* direct, const char* part);
+  /// The `part` of the first template createTemplates() could not create
+  /// (nullptr: none). The view enters its failure state on it, as for a
+  /// pipeline created up front.
+  [[nodiscard]] const char* deferredFailure() const {
+    return deferred_failure_;
+  }
+  /// Creates every template not created yet: what a frame without the HDR chain
+  /// does before recording, so no pipeline fails half way through its passes and
+  /// kDirect resolves only created pipelines. False, and nothing retried, once
+  /// one could not be created (deferredFailure() names it).
+  bool createTemplates();
   /// Unregisters `direct` and deletes its clones; call before deleting it.
   void remove(QRhiGraphicsPipeline* direct);
   /// The render passes clones target: HDR colour (`hdr`, `hdr_samples`) and depth
@@ -78,8 +98,9 @@ class ScenePipelineRegistry {
   void releaseClones();
   /// releaseClones() and forgets every registration (direct pipelines dying).
   void clear();
-  /// The pipeline `pass` binds for `direct`: `direct` itself for kDirect, else its
-  /// clone, created on this first request. nullptr means "do not draw": always for
+  /// The pipeline `pass` binds for `direct`: `direct` itself for kDirect (a
+  /// template once createTemplates() created it), else its clone, created on
+  /// this first request. nullptr means "do not draw": always for
   /// kDepthReplay when `direct` writes no depth (the depth replay records only
   /// depth-writing coverage, like the GL composite), and when unregistered, without
   /// targets, or when the clone cannot be created (see cloneFailed()).
@@ -97,10 +118,12 @@ class ScenePipelineRegistry {
     QRhiGraphicsPipeline* direct = nullptr;
     QRhiGraphicsPipeline* hdr = nullptr;
     QRhiGraphicsPipeline* depth = nullptr;
+    const char* uncreated_part = nullptr;  ///< a template not created yet (addTemplate())
   };
   // The clones are a cache that resolve() fills, hence mutable.
   mutable std::vector<Entry> entries_;
   mutable bool clone_failed_ = false;
+  const char* deferred_failure_ = nullptr;
   QRhi* rhi_ = nullptr;
   QRhiRenderPassDescriptor* hdr_ = nullptr;
   int hdr_samples_ = 1;
@@ -123,20 +146,6 @@ struct RhiSharedGeometry {
   /// Queues the static uploads once after create().
   void upload(QRhiResourceUpdateBatch* updates);
   void release();
-};
-
-/// The frame's scene bounds as admission builds them, plus the layers whose
-/// placed bounds went into it: the input of the view's camera-fit policy. A
-/// layer is identified by its most-derived address (dynamic_cast<const void*>),
-/// the same key SceneViewWidget::setLayers() hands the policy.
-struct SceneBoundsCollector {
-  AABB bounds;
-  std::vector<const void*> contributors;
-
-  void add(const void* layer, const AABB& layer_bounds) {
-    bounds = unionAABB(bounds, layer_bounds);
-    contributors.push_back(layer);
-  }
 };
 
 /// Places a source frame in the fixed frame at the frame's render time; nullopt
@@ -169,14 +178,16 @@ inline glm::mat4 relativeModel(glm::dmat4 model, const glm::dvec3& origin) {
   return glm::mat4(model);
 }
 
-/// Sizes `buffer` (a Static vertex buffer, filled by uploadStaticBuffer()) for
-/// `required_bytes` with the point pass's rule: reallocates to grow, or to give
-/// back a buffer more than twice max(required_bytes, minimum_capacity / 2), to
-/// max(required_bytes, minimum_capacity); keeps it otherwise. A reallocated
-/// buffer holds nothing (its capacity always changes). Zero bytes keeps any
-/// buffer. False, and `buffer` null, when it cannot be allocated.
+/// Sizes `buffer` (a `type` vertex buffer, Static or Immutable, filled by
+/// uploadStaticBuffer()) for `required_bytes` with the point pass's rule:
+/// reallocates to grow, or to give back a buffer more than twice
+/// max(required_bytes, minimum_capacity / 2), to max(required_bytes,
+/// minimum_capacity), and when its type differs; keeps it otherwise. A reallocated
+/// buffer holds nothing. Zero bytes keeps any buffer. False, and `buffer` null,
+/// when it cannot be allocated.
 bool ensureStaticVertexBuffer(
-    QRhi* owner, QRhiBuffer*& buffer, quint32& capacity, quint32 required_bytes, quint32 minimum_capacity);
+    QRhi* owner, QRhiBuffer*& buffer, quint32& capacity, quint32 required_bytes, quint32 minimum_capacity,
+    QRhiBuffer::Type type = QRhiBuffer::Static);
 
 /// Grows `buffer` (a Dynamic vertex buffer) to hold `required_bytes`, doubling
 /// from max(capacity, minimum_capacity); keeps it when already large enough.
@@ -199,23 +210,24 @@ struct RhiPassSetup {
   QRhiBuffer* annotation_render_mode_uniforms = nullptr;  ///< binding 8 of annotation (tonemap-bypass) draws
   QRhiBuffer* view_uniforms = nullptr;                    ///< binding 0: the camera-relative view-projection (mat4)
   const RhiSharedGeometry* geometry = nullptr;            ///< the view's shared unit meshes
+  /// When set, createScenePipeline() configures without creating and registers
+  /// the result here as a template (ScenePipelineRegistry::addTemplate(),
+  /// named `part`): for families whose every draw binds through resolve().
+  ScenePipelineRegistry* templates = nullptr;
+  const char* part = nullptr;
 };
 
-/// Straight-alpha source-over, the blend of every data-graded scene pipeline.
-inline QRhiGraphicsPipeline::TargetBlend dataAlphaBlend() {
-  QRhiGraphicsPipeline::TargetBlend blend;
-  blend.enable = true;
-  blend.srcColor = QRhiGraphicsPipeline::SrcAlpha;
-  blend.dstColor = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-  blend.srcAlpha = QRhiGraphicsPipeline::One;
-  blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-  return blend;
+/// A pass's user-facing message, translated in the view's context: the view
+/// shows what its families report.
+inline QString tr(const char* text) {
+  return QCoreApplication::translate("pj::scene3d::SceneViewWidget", text);
 }
 
-/// dataAlphaBlend() that adds nothing to destination alpha (the present pass's
-/// data/annotation split): annotations (triads, TF lines) are not graded.
+/// PJ::straightAlphaBlend() (every data-graded scene pipeline's) that adds
+/// nothing to destination alpha (the present pass's data/annotation split):
+/// annotations (triads, TF lines) are not graded.
 inline QRhiGraphicsPipeline::TargetBlend annotationAlphaBlend() {
-  QRhiGraphicsPipeline::TargetBlend blend = dataAlphaBlend();
+  QRhiGraphicsPipeline::TargetBlend blend = PJ::straightAlphaBlend();
   blend.srcAlpha = QRhiGraphicsPipeline::Zero;
   return blend;
 }
@@ -227,8 +239,8 @@ struct PipelineDesc {
   QShader vertex{};
   QShader fragment{};
   QRhiVertexInputLayout input_layout{};
-  QRhiShaderResourceBindings* bindings = nullptr;                             ///< the layout SRB
-  std::optional<QRhiGraphicsPipeline::TargetBlend> blend = dataAlphaBlend();  ///< nullopt: no colour target
+  QRhiShaderResourceBindings* bindings = nullptr;                                     ///< the layout SRB
+  std::optional<QRhiGraphicsPipeline::TargetBlend> blend = PJ::straightAlphaBlend();  ///< nullopt: no colour target
   QRhiGraphicsPipeline::CullMode cull = QRhiGraphicsPipeline::None;
   bool depth_test = true;
   bool depth_write = true;
@@ -237,16 +249,24 @@ struct PipelineDesc {
   float slope_scaled_depth_bias = 0.0F;
   QRhiGraphicsPipeline::Flags flags{};
 };
-/// A created pipeline for `setup`'s render pass and sample count, or nullptr.
+/// A created pipeline for `setup`'s render pass and sample count, or nullptr;
+/// a registered template instead with `setup.templates`.
 QRhiGraphicsPipeline* createScenePipeline(const RhiPassSetup& setup, const PipelineDesc& desc);
+/// The same pipeline configured but not created (no program built): a state
+/// source for clones (ScenePipelineRegistry, clonePipelineForRenderPass) that is
+/// created (createGraphicsPipeline()) before it is bound itself, if ever.
+/// nullptr only for an invalid `desc`.
+QRhiGraphicsPipeline* newScenePipeline(const RhiPassSetup& setup, const PipelineDesc& desc);
 
 /// `pipeline->create()`: every graphics pipeline of the view is created through
 /// it. Builds with tests add fault injection: while the environment variable
 /// PJ_SCENE3D_TEST_FAIL_SHADER holds a suffix of a shader path loadRhiShader()
-/// read (e.g. "trail.frag.qsb"), a pipeline using that shader fails to create.
+/// read (e.g. "trail.frag.qsb"), a pipeline using that shader fails to create;
+/// PJ_SCENE3D_PIPELINE_LOG=1 logs every creation with its shaders and time
+/// ("PJ_PIPELINE", for attributing initialize() and first-use costs).
 bool createGraphicsPipeline(QRhiGraphicsPipeline* pipeline);
 
-/// Per-frame values a family reads in prepare(), after admission and camera fit.
+/// Per-frame values a family reads in prepare(), after admission.
 struct RhiFrameContext {
   QRhi* rhi = nullptr;
   QRhiResourceUpdateBatch* updates = nullptr;
@@ -307,10 +327,53 @@ void adoptLayerList(const std::vector<Layer*>& layers, std::vector<Layer*>& curr
   current = layers;
 }
 
+/// The admission loop of the budgeted families (point, pose, occupancy, voxel):
+/// refills `admitted` for this frame. Per visible layer, in list order: the layer
+/// refreshes against the budget left (prepareForRender(remaining)); one that is
+/// not `drawable` has its GPU state pruned; one whose frame cannot be placed is
+/// skipped and keeps it. Placement first, budget second: only a placed layer
+/// takes its `cost` from the budget, so a temporarily unplaceable one never
+/// reserves capacity ahead of a later layer whose frame resolves. An admitted
+/// layer's `placed_bounds(layer, fixed_from_source)` (nullopt: none) are
+/// unioned into the result, the family's bounds.
+template <typename Layer, typename Map, typename Release, typename Drawable, typename Cost, typename PlacedBounds>
+AABB admitLayers(
+    const std::vector<Layer*>& layers, std::uint64_t budget, const PlaceFn& place,
+    std::vector<PlacedLayer<Layer>>& admitted, Map& layer_gpu, Release&& release, Drawable&& drawable, Cost&& cost,
+    PlacedBounds&& placed_bounds) {
+  admitted.clear();
+  AABB family_bounds;
+  std::uint64_t remaining = budget;
+  for (Layer* layer : layers) {
+    if (layer == nullptr || !layer->visible()) {
+      continue;
+    }
+    layer->prepareForRender(remaining);
+    if (!drawable(layer)) {
+      pruneLayerGpu(layer_gpu, layer, release);
+      continue;
+    }
+    const std::optional<Transform> placed = place(layer->renderFrameId());
+    if (!placed.has_value() || !tryConsumeBudget(cost(layer), remaining)) {
+      continue;
+    }
+    if (const std::optional<AABB> layer_bounds = placed_bounds(layer, *placed); layer_bounds.has_value()) {
+      family_bounds = unionAABB(family_bounds, *layer_bounds);
+    }
+    admitted.push_back({layer, *placed});
+  }
+  return family_bounds;
+}
+
 using PJ::loadRhiShader;
 
 /// A copy of `source` for `render_pass`/`sample_count`; `coverage_alpha_only`
-/// masks colour writes to alpha (the depth replay's coverage).
+/// masks colour writes to alpha (the depth replay's coverage). It copies what
+/// newScenePipeline() sets, plus the front face: flags, topology, shader stages,
+/// vertex input layout, bindings, target blends, cull mode, depth test, write,
+/// op, bias and slope-scaled bias. Anything else (polygon mode, line width,
+/// stencil, depth clamp, patch control points, multiview) keeps Qt's default in
+/// the clone: set it on a registered pipeline only after adding it here.
 QRhiGraphicsPipeline* clonePipelineForRenderPass(
     QRhi* owner, const QRhiGraphicsPipeline* source, QRhiRenderPassDescriptor* render_pass, int sample_count,
     bool coverage_alpha_only = false);

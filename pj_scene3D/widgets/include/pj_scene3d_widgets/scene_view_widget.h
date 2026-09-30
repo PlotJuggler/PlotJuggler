@@ -142,13 +142,6 @@ class SceneViewWidget : public QOpenGLWidget {
   // Latest fixed-frame scene extent; forwarded to the active camera for adaptive
   // near/far and framing.
   void setSceneBounds(const AABB& bounds);
-  // Camera-framing extent of the view's layers: each layer's worldBounds()
-  // placed in the fixed frame through `frame_ctx`; unplaceable layers are skipped.
-  [[nodiscard]] AABB layerSceneBounds(const FrameContext& frame_ctx) const;
-  // The dock restored the camera from a layout. The OpenGL renderer never
-  // auto-fits the camera, so there is nothing to suppress (the QRhi view applies
-  // CameraFitPolicy).
-  void noteCameraRestored() {}
 #ifdef PJ_SCENE3D_TEST_HOOKS
   [[nodiscard]] const AABB& sceneBoundsForTest() const {
     return scene_bounds_;

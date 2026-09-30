@@ -8,8 +8,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
-#include <cstring>
-#include <functional>
 #include <limits>
 #include <utility>
 
@@ -18,12 +16,17 @@
 #include "pj_scene3d_widgets/cube_mesh.h"
 #include "pj_scene3d_widgets/gizmos/arrow_mesh.h"
 #include "pj_scene3d_widgets/layers/scene_entities_layer.h"
-#include "pj_scene3d_widgets/scene_look_defaults.h"
 
 namespace pj::scene3d {
 namespace {
 
 constexpr quint32 kMinimumLayerBufferBytes = 1024U;
+// A layer re-uploaded again within this many prepare() calls keeps its CPU
+// expansion (pan, follow and streams upload about every frame, with the odd
+// unchanged frame between); one idle longer gives it back.
+constexpr std::uint64_t kExpansionRetainFrames = 4U;
+// And so does a view that rendered no frame for this long.
+constexpr int kExpansionRetainIdleMs = 250;
 constexpr std::uint32_t kCubeMesh = 0U;
 constexpr std::uint32_t kSphereMesh = 1U;
 constexpr std::uint32_t kCylinderMesh = 2U;
@@ -42,10 +45,6 @@ constexpr bool fitsBuffers(const SceneLimits& limits) {
 }
 static_assert(fitsBuffers(kBrowserSceneLimits));
 static_assert(fitsBuffers(kDesktopSceneLimits));
-
-QString tr(const char* text) {
-  return QCoreApplication::translate("pj::scene3d::SceneViewWidget", text);
-}
 
 struct UnitMesh {
   std::vector<CubeVertex> vertices;
@@ -200,63 +199,25 @@ const std::array<UnitMesh, 5>& unitMeshes() {
   return meshes;
 }
 
-// Local bounds of each unit mesh, indexed like unitMeshes().
-const std::array<AABB, 5>& unitMeshBounds() {
-  static const std::array<AABB, 5> bounds = [] {
-    std::array<AABB, 5> result{};
-    for (std::size_t index = 0; index < result.size(); ++index) {
-      for (const CubeVertex& vertex : unitMeshes()[index].vertices) {
-        expandAABB(result[index], glm::vec3(vertex.px, vertex.py, vertex.pz));
-      }
-    }
-    return result;
-  }();
-  return bounds;
-}
-
-// Camera-relative bounds of one caster instance: its unit mesh's local box,
-// widened by the cone taper, under the instance model.
-AABB instanceBounds(const MarkerRhiPass::Instance& instance, std::uint32_t mesh) {
-  const AABB& local = unitMeshBounds()[mesh];
-  const float taper = std::max({instance.bottom_scale, instance.top_scale, 1.0F});
-  glm::mat4 model;
-  std::memcpy(&model[0][0], instance.model.data(), sizeof(model));
-  AABB output;
-  for (int corner = 0; corner < 8; ++corner) {
-    const glm::vec3 point{
-        ((corner & 1) != 0 ? local.max.x : local.min.x) * taper,
-        ((corner & 2) != 0 ? local.max.y : local.min.y) * taper,
-        (corner & 4) != 0 ? local.max.z : local.min.z,
-    };
-    const glm::vec3 transformed = glm::vec3(model * glm::vec4(point, 1.0F));
-    if (std::isfinite(transformed.x) && std::isfinite(transformed.y) && std::isfinite(transformed.z)) {
-      expandAABB(output, transformed);
-    }
-  }
-  return output;
-}
-
 // The unit-mesh + per-instance input of the marker shaders: mesh position (0),
-// optionally the mesh normal or edge centre (1), the instance model rows (2-5),
-// optionally its colour (6) and cone taper (7).
-QRhiVertexInputLayout instanceLayout(bool normal, bool color, bool taper) {
+// the mesh normal or edge centre (1), the instance model rows (2-5), its colour
+// (6) and optionally its cone taper (7).
+QRhiVertexInputLayout instanceLayout(bool taper) {
   using Instance = MarkerRhiPass::Instance;
   QRhiVertexInputLayout input;
   input.setBindings({
       QRhiVertexInputBinding(sizeof(CubeVertex)),
       QRhiVertexInputBinding(sizeof(Instance), QRhiVertexInputBinding::PerInstance),
   });
-  std::vector<QRhiVertexInputAttribute> attributes{{0, 0, QRhiVertexInputAttribute::Float3, offsetof(CubeVertex, px)}};
-  if (normal) {
-    attributes.emplace_back(0, 1, QRhiVertexInputAttribute::Float3, offsetof(CubeVertex, nx));
-  }
+  std::vector<QRhiVertexInputAttribute> attributes{
+      {0, 0, QRhiVertexInputAttribute::Float3, offsetof(CubeVertex, px)},
+      {0, 1, QRhiVertexInputAttribute::Float3, offsetof(CubeVertex, nx)},
+  };
   // mat4 rows carry their slice: D3D matches them as TEXCOORD<first>_<slice>.
   for (int row = 0; row < 4; ++row) {
     attributes.emplace_back(1, 2 + row, QRhiVertexInputAttribute::Float4, static_cast<quint32>(16 * row), row);
   }
-  if (color) {
-    attributes.emplace_back(1, 6, QRhiVertexInputAttribute::Float4, offsetof(Instance, r));
-  }
+  attributes.emplace_back(1, 6, QRhiVertexInputAttribute::Float4, offsetof(Instance, r));
   if (taper) {
     attributes.emplace_back(1, 7, QRhiVertexInputAttribute::Float4, offsetof(Instance, bottom_scale));
   }
@@ -281,6 +242,24 @@ AABB transformedMarkerBounds(const MarkerBounds& source, const Transform& fixed_
 }
 
 }  // namespace
+
+MarkerRhiPass::MarkerRhiPass() {
+  expansion_release_timer_.setSingleShot(true);
+  QObject::connect(&expansion_release_timer_, &QTimer::timeout, [this] {
+    if (idle_release_paused_) {
+      return;
+    }
+    // Armed once, not per frame: re-armed for the rest of the spell while frames still come.
+    if (const qint64 idle_ms = last_retaining_prepare_.elapsed(); idle_ms < kExpansionRetainIdleMs) {
+      expansion_release_timer_.start(static_cast<int>(kExpansionRetainIdleMs - idle_ms));
+      return;
+    }
+    for (auto& [layer, gpu] : layer_gpu_) {
+      (void)layer;
+      gpu.cpu.reset();
+    }
+  });
+}
 
 bool MarkerRhiPass::initialize(const RhiPassSetup& setup) {
   QRhi* rhi = setup.rhi;
@@ -314,7 +293,7 @@ bool MarkerRhiPass::initialize(const RhiPassSetup& setup) {
     return false;
   }
 
-  const QRhiVertexInputLayout instance_layout = instanceLayout(true, true, true);
+  const QRhiVertexInputLayout instance_layout = instanceLayout(true);
   QRhiVertexInputLayout stream_layout;
   stream_layout.setBindings({QRhiVertexInputBinding(sizeof(StreamVertex))});
   stream_layout.setAttributes({
@@ -328,57 +307,48 @@ bool MarkerRhiPass::initialize(const RhiPassSetup& setup) {
   const QShader edge_vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/marker_edge.vert.qsb"));
   const auto instanced = [&](QRhiGraphicsPipeline::Topology topology, QRhiGraphicsPipeline::CullMode cull,
                              int depth_bias = 0) {
-    return [&, topology, cull, depth_bias](bool depth_write) {
-      return createScenePipeline(
-          setup, {
-                     .topology = topology,
-                     .vertex = marker_vertex,
-                     .fragment = marker_fragment,
-                     .input_layout = instance_layout,
-                     .bindings = data_bindings_,
-                     .cull = cull,
-                     .depth_write = depth_write,
-                     .depth_bias = depth_bias,
-                     .slope_scaled_depth_bias = static_cast<float>(depth_bias),
-                 });
+    return PipelineDesc{
+        .topology = topology,
+        .vertex = marker_vertex,
+        .fragment = marker_fragment,
+        .input_layout = instance_layout,
+        .bindings = data_bindings_,
+        .cull = cull,
+        .depth_bias = depth_bias,
+        .slope_scaled_depth_bias = static_cast<float>(depth_bias),
     };
-  };
-  const auto edges = [&](bool depth_write) {
-    return createScenePipeline(
-        setup, {
-                   .topology = QRhiGraphicsPipeline::Lines,
-                   .vertex = edge_vertex,
-                   .fragment = marker_fragment,
-                   .input_layout = instanceLayout(true, true, false),
-                   .bindings = edge_bindings_,
-                   .depth_write = depth_write,
-               });
   };
   const auto stream = [&](QRhiGraphicsPipeline::Topology topology) {
-    return [&, topology](bool depth_write) {
-      return createScenePipeline(
-          setup, {
-                     .topology = topology,
-                     .vertex = stream_vertex,
-                     .fragment = stream_fragment,
-                     .input_layout = stream_layout,
-                     .bindings = data_bindings_,
-                     .depth_write = depth_write,
-                 });
+    return PipelineDesc{
+        .topology = topology,
+        .vertex = stream_vertex,
+        .fragment = stream_fragment,
+        .input_layout = stream_layout,
+        .bindings = data_bindings_,
     };
   };
-  // Indexed by Pipeline.
-  const std::array<std::function<QRhiGraphicsPipeline*(bool)>, kPipelineCount> create{
+  // Indexed by Pipeline; each is built without and with depth writes.
+  const std::array<PipelineDesc, kPipelineCount> descs{
       instanced(QRhiGraphicsPipeline::Triangles, QRhiGraphicsPipeline::None),
       instanced(QRhiGraphicsPipeline::Triangles, QRhiGraphicsPipeline::Back),
       instanced(QRhiGraphicsPipeline::Triangles, QRhiGraphicsPipeline::Back, 1),
-      edges,
+      PipelineDesc{
+          .topology = QRhiGraphicsPipeline::Lines,
+          .vertex = edge_vertex,
+          .fragment = marker_fragment,
+          .input_layout = instanceLayout(false),
+          .bindings = edge_bindings_,
+      },
       instanced(QRhiGraphicsPipeline::Lines, QRhiGraphicsPipeline::None),
       stream(QRhiGraphicsPipeline::Lines),
       stream(QRhiGraphicsPipeline::Triangles),
   };
-  for (std::size_t index = 0; index < create.size(); ++index) {
-    pipelines_[index] = {create[index](false), create[index](true)};
+  for (std::size_t index = 0; index < descs.size(); ++index) {
+    PipelineDesc desc = descs[index];
+    desc.depth_write = false;
+    pipelines_[index][0] = createScenePipeline(setup, desc);
+    desc.depth_write = true;
+    pipelines_[index][1] = createScenePipeline(setup, desc);
   }
   if (!ready()) {
     return false;
@@ -439,7 +409,7 @@ const Transform* MarkerRhiPass::placement(const Admitted& admitted, std::uint32_
   return placed.has_value() ? &*placed : nullptr;
 }
 
-void MarkerRhiPass::admit(const PlaceFn& place, SceneBoundsCollector& bounds) {
+void MarkerRhiPass::admit(const PlaceFn& place) {
   admitted_.clear();
   placements_.clear();
   AABB family_bounds;
@@ -464,7 +434,15 @@ void MarkerRhiPass::admit(const PlaceFn& place, SceneBoundsCollector& bounds) {
       }
     }
     const auto placed = [&](std::uint32_t frame_index) { return placement(prepared, frame_index) != nullptr; };
-    const auto count_instances = [&placed](const auto& instances) {
+    // Every item's frame_index indexes geometry.frames: with all of them placed,
+    // every item is.
+    const bool all_placed = std::all_of(
+        placements_.cbegin() + static_cast<std::ptrdiff_t>(prepared.first_frame), placements_.cend(),
+        [](const std::optional<Transform>& placement) { return placement.has_value(); });
+    const auto count_instances = [&placed, all_placed](const auto& instances) {
+      if (all_placed) {
+        return static_cast<std::uint64_t>(instances.size());
+      }
       return static_cast<std::uint64_t>(std::count_if(
           instances.cbegin(), instances.cend(), [&placed](const auto& item) { return placed(item.frame_index); }));
     };
@@ -481,12 +459,12 @@ void MarkerRhiPass::admit(const PlaceFn& place, SceneBoundsCollector& bounds) {
     prepared.instances = *submitted_instances;
     for (const MarkerStreamBatch& batch : geometry.lines) {
       if (placed(batch.frame_index)) {
-        prepared.stream_vertices += batch.vertices.size();
+        prepared.stream_vertices += batch.vertexCount();
       }
     }
     for (const MarkerStreamBatch& batch : geometry.triangles) {
       if (placed(batch.frame_index)) {
-        prepared.stream_vertices += batch.vertices.size() * (layer->wireframe() ? 2U : 1U);
+        prepared.stream_vertices += batch.vertexCount() * (layer->wireframe() ? 2U : 1U);
       }
     }
     if (prepared.instances == 0U && prepared.stream_vertices == 0U) {
@@ -515,76 +493,152 @@ void MarkerRhiPass::admit(const PlaceFn& place, SceneBoundsCollector& bounds) {
     }
     layer->noteRenderSuccess();
     family_bounds = unionAABB(family_bounds, layer_bounds);
-    bounds.add(dynamic_cast<const void*>(layer), layer_bounds);
     admitted_.push_back(prepared);
   }
   last_bounds_ = family_bounds;
 }
 
-void MarkerRhiPass::expandLayer(const MarkerGeometry& geometry, const LayerKey& key, Expansion& out) {
-  out.instances.clear();
-  out.lines.clear();
-  out.triangles.clear();
+namespace {
+
+// A layer key's colour rule: the override (opaque) when set, then the layer opacity.
+glm::vec4 applyColor(const glm::vec4& source, const std::optional<glm::vec3>& override_color, float opacity) {
+  glm::vec4 color = override_color.has_value() ? glm::vec4(*override_color, 1.0F) : source;
+  color.a *= opacity;
+  return color;
+}
+
+// The placement matrix of `frame_index`, or nullptr when unplaced.
+const glm::dmat4* placedFrame(
+    const std::vector<std::optional<glm::dmat4>>& fixed_from_frame, std::uint32_t frame_index) {
+  if (frame_index >= fixed_from_frame.size() || !fixed_from_frame[frame_index].has_value()) {
+    return nullptr;
+  }
+  return &*fixed_from_frame[frame_index];
+}
+
+}  // namespace
+
+quint32 MarkerRhiPass::expandStreams(const MarkerGeometry& geometry, const LayerKey& key, Expansion& out) {
+  const ContentKey& content = key.content;
+  const glm::dvec3& render_origin = key.render_origin;
+  // Places every point of `batch` once (a strip's inner points serve two
+  // segments), with the arithmetic of a per-vertex placement: the double
+  // transform, the double subtraction, then the float narrowing.
+  const auto place = [&](const MarkerStreamBatch& batch) -> bool {
+    const glm::dmat4* fixed_from_frame = placedFrame(out.fixed_from_frame, batch.frame_index);
+    if (fixed_from_frame == nullptr) {
+      return false;
+    }
+    const glm::dmat4 model = *fixed_from_frame * batch.model;
+    out.placed_points.resize(batch.points.size());
+    for (std::size_t index = 0; index < batch.points.size(); ++index) {
+      out.placed_points[index] = glm::vec3(glm::dvec3(model * glm::dvec4(batch.points[index], 1.0)) - render_origin);
+    }
+    return true;
+  };
+  const auto vertex = [&](const MarkerStreamBatch& batch, const glm::vec4& uniform, std::uint32_t point) {
+    const glm::vec3& position = out.placed_points[point];
+    const glm::vec4 color = batch.colors.empty()
+                                ? uniform
+                                : applyColor(markerColor(batch.colors[point]), content.override_color, content.opacity);
+    return StreamVertex{position.x, position.y, position.z, color.r, color.g, color.b, color.a};
+  };
+  const auto placed = [&](const MarkerStreamBatch& batch) {
+    return placedFrame(out.fixed_from_frame, batch.frame_index) != nullptr;
+  };
+  std::size_t line_total = 0;
+  std::size_t triangle_total = 0;
+  for (const MarkerStreamBatch& batch : geometry.lines) {
+    line_total += placed(batch) ? batch.vertexCount() : 0U;
+  }
+  const std::size_t line_count = line_total;
+  for (const MarkerStreamBatch& batch : geometry.triangles) {
+    if (placed(batch)) {
+      (content.wireframe ? line_total : triangle_total) += batch.vertexCount() * (content.wireframe ? 2U : 1U);
+    }
+  }
+  out.lines.resizeForOverwrite(line_total);
+  out.triangles.resizeForOverwrite(triangle_total);
+  StreamVertex* lines = out.lines.data();
+  StreamVertex* triangles = out.triangles.data();
+  for (const MarkerStreamBatch& batch : geometry.lines) {
+    if (place(batch)) {
+      const glm::vec4 uniform = applyColor(batch.color, content.override_color, content.opacity);
+      for (const std::uint32_t point : batch.indices) {
+        *lines++ = vertex(batch, uniform, point);
+      }
+    }
+  }
+  for (const MarkerStreamBatch& batch : geometry.triangles) {
+    if (!place(batch)) {
+      continue;
+    }
+    const glm::vec4 uniform = applyColor(batch.color, content.override_color, content.opacity);
+    if (content.wireframe) {
+      for (std::size_t index = 0; index + 2U < batch.indices.size(); index += 3U) {
+        const StreamVertex a = vertex(batch, uniform, batch.indices[index]);
+        const StreamVertex b = vertex(batch, uniform, batch.indices[index + 1U]);
+        const StreamVertex c = vertex(batch, uniform, batch.indices[index + 2U]);
+        for (const StreamVertex& edge_vertex : {a, b, b, c, c, a}) {
+          *lines++ = edge_vertex;
+        }
+      }
+    } else {
+      for (const std::uint32_t point : batch.indices) {
+        *triangles++ = vertex(batch, uniform, point);
+      }
+    }
+  }
+  return static_cast<quint32>(line_count);
+}
+
+void MarkerRhiPass::expandLayer(const MarkerGeometry& geometry, const LayerKey& key, bool keep_world, Expansion& out) {
+  const ContentKey& content = key.content;
+  out.instance_world.clear();
   out.draws.clear();
-  out.casters.clear();
-  out.caster_bounds = {};
   out.fixed_from_frame.clear();
-  for (const std::optional<Transform>& placement : key.placements) {
+  // Upper bound (unplaced frames add nothing), truncated once the families are in.
+  const auto instance_sources = static_cast<std::size_t>(geometry.instanceCount());
+  out.instances.resizeForOverwrite(instance_sources);
+  if (keep_world) {
+    out.instance_world.reserve(instance_sources);
+  }
+  Instance* const instances = out.instances.data();
+  quint32 instance_count = 0;
+  for (const std::optional<Transform>& placement : content.placements) {
     out.fixed_from_frame.push_back(placement.has_value() ? std::optional(placement->matrix()) : std::nullopt);
   }
   const glm::dvec3& render_origin = key.render_origin;
-  const bool pass_translucent = key.opacity < 0.999F;
-  const auto placed = [&out](std::uint32_t frame_index) -> const glm::dmat4* {
-    if (frame_index >= out.fixed_from_frame.size() || !out.fixed_from_frame[frame_index].has_value()) {
-      return nullptr;
-    }
-    return &*out.fixed_from_frame[frame_index];
-  };
+  const bool pass_translucent = content.opacity < 0.999F;
   const auto add_range = [&](Kind kind, std::uint32_t mesh, quint32 offset, quint32 count, bool cull_back,
                              bool depth_write) {
     out.draws.push_back(
         {nullptr, nullptr, kind, mesh, offset, count, cull_back, depth_write,
          depth_write ? DrawClass::kOpaque : DrawClass::kTranslucent});
   };
-  const auto apply_color = [&key](const glm::vec4& source) {
-    glm::vec4 color = source;
-    if (key.override_color.has_value()) {
-      color = glm::vec4(*key.override_color, 1.0F);
-    }
-    color.a *= key.opacity;
-    return color;
-  };
-  const auto stream_vertex = [&](const glm::dmat4& model, const MarkerStreamVertex& source) {
-    const glm::dvec3 point = glm::dvec3(model * glm::dvec4(source.position, 1.0)) - render_origin;
-    const glm::vec4 color = apply_color(source.color);
-    return StreamVertex{
-        static_cast<float>(point.x),
-        static_cast<float>(point.y),
-        static_cast<float>(point.z),
-        color.r,
-        color.g,
-        color.b,
-        color.a};
-  };
   const auto append_instances = [&](const std::vector<MarkerInstanceSource>& sources) {
-    const quint32 first = static_cast<quint32>(out.instances.size());
+    const quint32 first = instance_count;
     for (const MarkerInstanceSource& source : sources) {
-      const glm::dmat4* fixed_from_frame = placed(source.frame_index);
+      const glm::dmat4* fixed_from_frame = placedFrame(out.fixed_from_frame, source.frame_index);
       if (fixed_from_frame == nullptr) {
         continue;
       }
+      const glm::dmat4 world = *fixed_from_frame * source.model;
       Instance instance;
-      copyMatrix(relativeModel(*fixed_from_frame * source.model, render_origin), instance.model);
-      const glm::vec4 color = apply_color(source.color);
+      copyMatrix(relativeModel(world, render_origin), instance.model);
+      const glm::vec4 color = applyColor(source.color, content.override_color, content.opacity);
       instance.r = color.r;
       instance.g = color.g;
       instance.b = color.b;
       instance.a = color.a;
       instance.bottom_scale = source.bottom_scale;
       instance.top_scale = source.top_scale;
-      out.instances.push_back(instance);
+      instances[instance_count++] = instance;
+      if (keep_world) {
+        out.instance_world.emplace_back(world[3]);
+      }
     }
-    return std::pair{first, static_cast<quint32>(out.instances.size()) - first};
+    return std::pair{first, instance_count - first};
   };
   const auto add_instance_range = [&](std::uint32_t mesh, quint32 offset, quint32 count, bool cull_back,
                                       bool depth_write, bool as_lines) {
@@ -593,26 +647,15 @@ void MarkerRhiPass::expandLayer(const MarkerGeometry& geometry, const LayerKey& 
           as_lines ? Kind::kInstanceLines : Kind::kInstanceTriangles, mesh, offset, count, cull_back, depth_write);
     }
   };
-  // Solid fills cast whatever their opacity, like the layer's model draws.
-  const auto add_caster = [&](std::uint32_t mesh, quint32 offset, quint32 count) {
-    if (!key.cast_shadows || key.wireframe || count == 0U) {
-      return;
-    }
-    out.casters.push_back({nullptr, nullptr, mesh, offset, count});
-    for (quint32 index = offset; index < offset + count; ++index) {
-      out.caster_bounds = unionAABB(out.caster_bounds, instanceBounds(out.instances[index], mesh));
-    }
-  };
 
   // Native family order: cube fill + edge overlay, sphere, cylinder,
   // arrows/axes, user lines, user triangles.
   const auto [cube_offset, cube_count] = append_instances(geometry.cubes);
-  add_caster(kCubeMesh, cube_offset, cube_count);
   bool cubes_translucent = pass_translucent;
   for (quint32 index = 0; index < cube_count; ++index) {
-    cubes_translucent = cubes_translucent || out.instances[cube_offset + index].a < 0.999F;
+    cubes_translucent = cubes_translucent || instances[cube_offset + index].a < 0.999F;
   }
-  if (key.wireframe) {
+  if (content.wireframe) {
     add_instance_range(kCubeMesh, cube_offset, cube_count, false, !pass_translucent, true);
   } else {
     add_instance_range(kCubeMesh, cube_offset, cube_count, true, !cubes_translucent, false);
@@ -626,66 +669,44 @@ void MarkerRhiPass::expandLayer(const MarkerGeometry& geometry, const LayerKey& 
       }
     }
   }
-  const auto append_family = [&](const auto& sources, std::uint32_t mesh, bool cull_back, bool casts) {
+  const auto append_family = [&](const auto& sources, std::uint32_t mesh, bool cull_back) {
     const auto [offset, count] = append_instances(sources);
-    add_instance_range(mesh, offset, count, key.wireframe ? false : cull_back, !pass_translucent, key.wireframe);
-    if (casts) {
-      add_caster(mesh, offset, count);
-    }
+    add_instance_range(
+        mesh, offset, count, content.wireframe ? false : cull_back, !pass_translucent, content.wireframe);
   };
-  append_family(geometry.spheres, kSphereMesh, true, true);
-  append_family(geometry.cylinders, kCylinderMesh, true, true);
-  append_family(geometry.arrows, kArrowMesh, false, true);
-  append_family(geometry.axes, kArrowMesh, false, false);
+  append_family(geometry.spheres, kSphereMesh, true);
+  append_family(geometry.cylinders, kCylinderMesh, true);
+  append_family(geometry.arrows, kArrowMesh, false);
+  append_family(geometry.axes, kArrowMesh, false);
+  out.instances.truncate(instance_count);
 
-  for (const MarkerStreamBatch& batch : geometry.lines) {
-    if (const glm::dmat4* fixed_from_frame = placed(batch.frame_index); fixed_from_frame != nullptr) {
-      const glm::dmat4 model = *fixed_from_frame * batch.model;
-      for (const MarkerStreamVertex& source : batch.vertices) {
-        out.lines.push_back(stream_vertex(model, source));
-      }
-    }
-  }
-  const auto line_count = static_cast<quint32>(out.lines.size());
+  const quint32 line_count = expandStreams(geometry, key, out);
   if (line_count != 0U) {
     add_range(Kind::kStreamLines, 0U, 0U, line_count, false, !pass_translucent);
   }
-
-  if (key.wireframe) {
-    for (const MarkerStreamBatch& batch : geometry.triangles) {
-      const glm::dmat4* fixed_from_frame = placed(batch.frame_index);
-      if (fixed_from_frame == nullptr) {
-        continue;
-      }
-      const glm::dmat4 model = *fixed_from_frame * batch.model;
-      for (std::size_t index = 0; index + 2U < batch.vertices.size(); index += 3U) {
-        const StreamVertex a = stream_vertex(model, batch.vertices[index]);
-        const StreamVertex b = stream_vertex(model, batch.vertices[index + 1U]);
-        const StreamVertex c = stream_vertex(model, batch.vertices[index + 2U]);
-        out.lines.insert(out.lines.end(), {a, b, b, c, c, a});
-      }
-    }
-    const quint32 edge_count = static_cast<quint32>(out.lines.size()) - line_count;
-    if (edge_count != 0U) {
-      add_range(Kind::kStreamLines, 0U, line_count, edge_count, false, !pass_translucent);
-    }
-  } else {
-    for (const MarkerStreamBatch& batch : geometry.triangles) {
-      if (const glm::dmat4* fixed_from_frame = placed(batch.frame_index); fixed_from_frame != nullptr) {
-        const glm::dmat4 model = *fixed_from_frame * batch.model;
-        for (const MarkerStreamVertex& source : batch.vertices) {
-          out.triangles.push_back(stream_vertex(model, source));
-        }
-      }
-    }
-    if (!out.triangles.empty()) {
-      add_range(Kind::kStreamTriangles, 0U, 0U, static_cast<quint32>(out.triangles.size()), false, !pass_translucent);
-    }
+  if (const quint32 edge_count = static_cast<quint32>(out.lines.size()) - line_count; edge_count != 0U) {
+    add_range(Kind::kStreamLines, 0U, line_count, edge_count, false, !pass_translucent);
+  }
+  if (!out.triangles.empty()) {
+    add_range(Kind::kStreamTriangles, 0U, 0U, static_cast<quint32>(out.triangles.size()), false, !pass_translucent);
   }
 }
 
+void MarkerRhiPass::moveOrigin(const MarkerGeometry& geometry, const LayerKey& key, Expansion& out) {
+  const glm::dvec3& render_origin = key.render_origin;
+  Instance* const instances = out.instances.data();
+  for (std::size_t index = 0; index < out.instance_world.size(); ++index) {
+    // relativeModel()'s arithmetic: the double subtraction, then the float narrowing.
+    const glm::dvec3 translation = out.instance_world[index] - render_origin;
+    instances[index].model[12] = static_cast<float>(translation.x);
+    instances[index].model[13] = static_cast<float>(translation.y);
+    instances[index].model[14] = static_cast<float>(translation.z);
+  }
+  (void)expandStreams(geometry, key, out);
+}
+
 bool MarkerRhiPass::uploadLayer(QRhi* rhi, QRhiResourceUpdateBatch* updates, SceneEntitiesLayer* layer, LayerGpu& gpu) {
-  const auto bytes = [](const auto& values) { return static_cast<quint32>(values.size() * sizeof(values.front())); };
+  const auto bytes = [](const auto& values) { return static_cast<quint32>(values.bytes().size()); };
   const auto allocate = [&](QRhiBuffer*& buffer, quint32& capacity, quint32 required, bool stream) {
     if (required == 0U) {
       delete buffer;
@@ -698,33 +719,29 @@ bool MarkerRhiPass::uploadLayer(QRhi* rhi, QRhiResourceUpdateBatch* updates, Sce
     }
     return ensureStaticVertexBuffer(rhi, buffer, capacity, required, kMinimumLayerBufferBytes);
   };
-  if (!allocate(gpu.instances, gpu.instance_capacity, bytes(scratch_.instances), false) ||
-      !allocate(gpu.lines, gpu.line_capacity, bytes(scratch_.lines), true) ||
-      !allocate(gpu.triangles, gpu.triangle_capacity, bytes(scratch_.triangles), true)) {
+  const Expansion& expansion = *gpu.cpu;
+  if (!allocate(gpu.instances, gpu.instance_capacity, bytes(expansion.instances), false) ||
+      !allocate(gpu.lines, gpu.line_capacity, bytes(expansion.lines), true) ||
+      !allocate(gpu.triangles, gpu.triangle_capacity, bytes(expansion.triangles), true)) {
     releaseLayerGpu(gpu);
     return false;
   }
   const auto upload = [&](QRhiBuffer* buffer, const auto& values) {
     if (buffer != nullptr) {
-      updates->uploadStaticBuffer(buffer, 0, bytes(values), values.data());
+      // Shares the bytes, one piece: UploadArray pads them for anv.
+      updates->uploadStaticBuffer(buffer, 0, values.bytes());
     }
   };
-  upload(gpu.instances, scratch_.instances);
-  upload(gpu.lines, scratch_.lines);
-  upload(gpu.triangles, scratch_.triangles);
-  gpu.draws = scratch_.draws;
+  upload(gpu.instances, expansion.instances);
+  upload(gpu.lines, expansion.lines);
+  upload(gpu.triangles, expansion.triangles);
+  gpu.draws = expansion.draws;
   for (Draw& draw : gpu.draws) {
     draw.layer = layer;
     draw.buffer = draw.kind == Kind::kStreamLines       ? gpu.lines
                   : draw.kind == Kind::kStreamTriangles ? gpu.triangles
                                                         : gpu.instances;
   }
-  gpu.casters = scratch_.casters;
-  for (Caster& caster : gpu.casters) {
-    caster.layer = layer;
-    caster.buffer = gpu.instances;
-  }
-  gpu.caster_bounds = scratch_.caster_bounds;
   return true;
 }
 
@@ -735,10 +752,11 @@ void MarkerRhiPass::releaseLayerGpu(LayerGpu& gpu) {
   gpu = {};
 }
 
-void MarkerRhiPass::prepare(const RhiFrameContext& frame, bool cast_shadows) {
+void MarkerRhiPass::prepare(const RhiFrameContext& frame) {
+  if (!ready()) {
+    return;  // never built: no layer of this family since the last release
+  }
   draws_.clear();
-  casters_.clear();
-  caster_bounds_ = {};
   last_layer_count_ = 0;
   last_instance_count_ = 0;
   last_stream_vertex_count_ = 0;
@@ -765,35 +783,46 @@ void MarkerRhiPass::prepare(const RhiFrameContext& frame, bool cast_shadows) {
     LayerGpu& gpu = layer_gpu_[layer];
     gpu.admitted_frame = frame_serial_;
     LayerKey& key = scratch_key_;
-    key.geometry_revision = layer->geometryRevision();
+    ContentKey& content = key.content;
+    content.geometry_revision = layer->geometryRevision();
     key.render_origin = frame.render_origin;
-    key.opacity = layer->opacity();
-    key.override_color.reset();
+    content.opacity = layer->opacity();
+    content.override_color.reset();
     if (layer->colorOverrideEnabled()) {
       const QColor color = layer->overrideColor();
-      key.override_color = glm::vec3(
+      content.override_color = glm::vec3(
           static_cast<float>(color.redF()), static_cast<float>(color.greenF()), static_cast<float>(color.blueF()));
     }
-    key.wireframe = layer->wireframe();
-    key.cast_shadows = cast_shadows;
+    content.wireframe = layer->wireframe();
     const auto first = placements_.cbegin() + static_cast<std::ptrdiff_t>(prepared.first_frame);
-    key.placements.assign(first, first + static_cast<std::ptrdiff_t>(prepared.frame_count));
+    content.placements.assign(first, first + static_cast<std::ptrdiff_t>(prepared.frame_count));
     if (!cache_enabled_ || gpu.key != key) {
-      expandLayer(layer->geometry(), key, scratch_);
+      const bool recurring = gpu.key.has_value() && frame_serial_ - gpu.uploaded_frame <= kExpansionRetainFrames;
+      if (cache_enabled_ && gpu.cpu.has_value() && gpu.key.has_value() && gpu.key->content == content) {
+        moveOrigin(layer->geometry(), key, *gpu.cpu);
+        ++origin_update_count_;
+      } else {
+        if (!gpu.cpu.has_value()) {
+          gpu.cpu.emplace();
+        }
+        expandLayer(layer->geometry(), key, /*keep_world=*/recurring, *gpu.cpu);
+      }
       if (!uploadLayer(rhi, updates, layer, gpu)) {
         continue;
       }
       gpu.key = key;
+      gpu.uploaded_frame = frame_serial_;
       ++layer_rebuild_count_;
+      if (!recurring) {
+        gpu.cpu.reset();
+      }
+    } else if (frame_serial_ - gpu.uploaded_frame > kExpansionRetainFrames) {
+      gpu.cpu.reset();
     }
     if (gpu.draws.empty()) {
       continue;
     }
     draws_.insert(draws_.end(), gpu.draws.cbegin(), gpu.draws.cend());
-    if (cast_shadows && !gpu.casters.empty()) {
-      casters_.insert(casters_.end(), gpu.casters.cbegin(), gpu.casters.cend());
-      caster_bounds_ = unionAABB(caster_bounds_, gpu.caster_bounds);
-    }
     ++last_layer_count_;
     last_instance_count_ += static_cast<int>(prepared.instances);
     last_stream_vertex_count_ += static_cast<int>(prepared.stream_vertices);
@@ -806,6 +835,15 @@ void MarkerRhiPass::prepare(const RhiFrameContext& frame, bool cast_shadows) {
     releaseLayerGpu(entry.second);
     return true;
   });
+  if (std::any_of(
+          layer_gpu_.cbegin(), layer_gpu_.cend(), [](const auto& entry) { return entry.second.cpu.has_value(); })) {
+    last_retaining_prepare_.start();
+    if (!expansion_release_timer_.isActive()) {
+      expansion_release_timer_.start(kExpansionRetainIdleMs);
+    }
+  } else {
+    expansion_release_timer_.stop();
+  }
 }
 
 QRhiGraphicsPipeline* MarkerRhiPass::instancePipeline(const Draw& draw) const {
@@ -872,81 +910,8 @@ bool MarkerRhiPass::submit(
   return true;
 }
 
-bool MarkerRhiPass::ensureShadowPipeline(
-    QRhi* rhi, QRhiRenderPassDescriptor* render_pass, QRhiShaderResourceBindings* bindings) {
-  if (shadow_pipeline_ != nullptr) {
-    return true;
-  }
-  if (render_pass == nullptr) {
-    return false;
-  }
-  // Same caster state as the model casters: two-sided, biased depth.
-  shadow_pipeline_ = createScenePipeline(
-      {rhi, render_pass, 1}, {
-                                 .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/marker_shadow.vert.qsb")),
-                                 .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/shadow.frag.qsb")),
-                                 .input_layout = instanceLayout(false, false, true),
-                                 .bindings = bindings,
-                                 .blend = std::nullopt,
-                                 .depth_bias = static_cast<int>(look::kShadowDepthBiasUnits),
-                                 .slope_scaled_depth_bias = look::kShadowSlopeScaledDepthBias,
-                             });
-  if (shadow_pipeline_ == nullptr) {
-    return false;
-  }
-  shadow_bindings_ = bindings;
-  return true;
-}
-
-void MarkerRhiPass::releaseShadowResources() {
-  delete shadow_pipeline_;
-  shadow_pipeline_ = nullptr;
-  shadow_bindings_ = nullptr;
-}
-
-void MarkerRhiPass::submitShadowCasters(QRhiCommandBuffer* command_buffer, const QRhiViewport& viewport) const {
-  if (shadow_pipeline_ == nullptr || casters_.empty()) {
-    return;
-  }
-  command_buffer->setGraphicsPipeline(shadow_pipeline_);
-  command_buffer->setViewport(viewport);
-  command_buffer->setShaderResources(shadow_bindings_);
-  for (const Caster& caster : casters_) {
-    const MeshGpu& mesh = meshes_[caster.mesh];
-    if (mesh.vertex_buffer == nullptr || mesh.triangle_index_buffer == nullptr || caster.buffer == nullptr) {
-      continue;
-    }
-    const std::array<QRhiCommandBuffer::VertexInput, 2> inputs = {
-        QRhiCommandBuffer::VertexInput(mesh.vertex_buffer, 0),
-        QRhiCommandBuffer::VertexInput(caster.buffer, caster.offset * static_cast<quint32>(sizeof(Instance))),
-    };
-    command_buffer->setVertexInput(
-        0, static_cast<int>(inputs.size()), inputs.data(), mesh.triangle_index_buffer, 0,
-        QRhiCommandBuffer::IndexUInt32);
-    command_buffer->drawIndexed(mesh.triangle_index_count, caster.count);
-  }
-}
-
-void MarkerRhiPass::noteShadowFailure(const QString& error) {
-  SceneEntitiesLayer* noted = nullptr;
-  for (const Caster& caster : casters_) {
-    if (caster.layer != noted) {
-      caster.layer->noteRenderFailure(error);
-      noted = caster.layer;
-    }
-  }
-}
-
-int MarkerRhiPass::lastShadowTriangleCount() const {
-  int triangles = 0;
-  for (const Caster& caster : casters_) {
-    triangles += static_cast<int>(caster.count * (meshes_[caster.mesh].triangle_index_count / 3U));
-  }
-  return triangles;
-}
-
 void MarkerRhiPass::release() {
-  releaseShadowResources();
+  expansion_release_timer_.stop();
   for (MeshGpu& mesh : meshes_) {
     delete mesh.edge_index_buffer;
     delete mesh.triangle_index_buffer;
@@ -976,8 +941,6 @@ void MarkerRhiPass::release() {
   admitted_.clear();
   placements_.clear();
   draws_.clear();
-  casters_.clear();
-  caster_bounds_ = {};
 }
 
 }  // namespace pj::scene3d

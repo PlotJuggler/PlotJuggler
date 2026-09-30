@@ -127,6 +127,7 @@ void DatastoreCurveAdapter::setRectOfInterest(const QRectF& rect) {
   if (visible_t_min_raw_ns_ == next_min && visible_t_max_raw_ns_ == next_max) {
     return;
   }
+  bumpContentRevision();
 
   visible_t_min_raw_ns_ = next_min;
   visible_t_max_raw_ns_ = next_max;
@@ -160,6 +161,7 @@ std::optional<Range<double>> DatastoreCurveAdapter::visibleYRange(Range<double> 
 }
 
 void DatastoreCurveAdapter::onTopicCommitted() {
+  bumpContentRevision();
   data_dirty_ = true;
   window_dirty_ = true;
   full_bounding_rect_valid_ = false;
@@ -167,6 +169,7 @@ void DatastoreCurveAdapter::onTopicCommitted() {
 }
 
 void DatastoreCurveAdapter::onDataCleared() {
+  bumpContentRevision();
   window_samples_.clear();
   window_offset_ = 0;
   window_count_ = 0;
@@ -178,6 +181,7 @@ void DatastoreCurveAdapter::onDataCleared() {
 }
 
 void DatastoreCurveAdapter::onDisplayOffsetChanged() {
+  bumpContentRevision();
   // Samples didn't move — only their display->raw mapping. Clear the offset
   // cache and the bounding rect (its X extent shifts); leave the window flags
   // untouched so we don't pay a re-index. The visible raw window is re-derived

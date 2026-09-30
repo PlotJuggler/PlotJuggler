@@ -24,16 +24,6 @@ constexpr std::size_t kFloatsPerVertex = 7;
 constexpr quint32 kMinimumVertexBytes = 16U * 1024U;
 constexpr auto kStages = QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage;
 
-TrailLayer* trailOf(Scene3DLayer* owner) {
-  if (auto* trail = dynamic_cast<TrailLayer*>(owner); trail != nullptr) {
-    return trail;
-  }
-  if (auto* poses = dynamic_cast<PosesInFrameLayer*>(owner); poses != nullptr) {
-    return poses->trail();
-  }
-  return nullptr;
-}
-
 glm::dvec3 safeNormalize(const glm::dvec3& vector) {
   const double length = glm::length(vector);
   return length > 1e-12 ? vector / length : glm::dvec3(0.0);
@@ -102,19 +92,35 @@ void TrailRhiPass::registerPipelines(ScenePipelineRegistry& registry) const {
 
 void TrailRhiPass::setLayers(const std::vector<Scene3DLayer*>& owners) {
   adoptLayerList(owners, owners_, owner_gpu_, releaseOwnerGpu);
+  owner_kinds_.clear();
+  owner_kinds_.reserve(owners_.size());
+  for (Scene3DLayer* owner : owners_) {
+    owner_kinds_.push_back({dynamic_cast<TrailLayer*>(owner), dynamic_cast<PosesInFrameLayer*>(owner)});
+  }
+}
+
+TrailLayer* TrailRhiPass::trailOf(const OwnerKind& kind) {
+  if (kind.trail != nullptr) {
+    return kind.trail;
+  }
+  return kind.poses != nullptr ? kind.poses->trail() : nullptr;
 }
 
 void TrailRhiPass::prepare(
     const RhiFrameContext& frame, const std::string& fixed_frame, PJ::Timepoint time, const QSize& render_size,
     float render_scale) {
+  if (!ready()) {
+    return;  // never built: no layer of this family since the last release
+  }
   draws_.clear();
   last_trail_count_ = 0;
   last_vertex_count_ = 0;
   if (render_size.isEmpty()) {
     return;
   }
-  for (Scene3DLayer* owner : owners_) {
-    TrailLayer* trail = trailOf(owner);
+  for (std::size_t index = 0; index < owners_.size(); ++index) {
+    Scene3DLayer* owner = owners_[index];
+    TrailLayer* trail = trailOf(owner_kinds_[index]);
     if (trail == nullptr || !trail->visible()) {
       pruneLayerGpu(owner_gpu_, owner, releaseOwnerGpu);
       continue;
@@ -137,7 +143,7 @@ void TrailRhiPass::prepare(
     if (gpu.trail != trail || gpu.uploaded_revision != trail->buildRevision() ||
         gpu.uploaded_origin != frame.render_origin) {
       buildRibbon(points, frame.render_origin, scratch_);
-      frame.updates->uploadStaticBuffer(gpu.vertex_buffer, 0, vertex_bytes, scratch_.data());
+      PJ::uploadStaticBufferInPieces(frame.updates, gpu.vertex_buffer, 0, vertex_bytes, scratch_.data());
       gpu.trail = trail;
       gpu.uploaded_revision = trail->buildRevision();
       gpu.uploaded_origin = frame.render_origin;

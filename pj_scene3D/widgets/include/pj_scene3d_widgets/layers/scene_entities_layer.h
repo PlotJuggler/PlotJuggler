@@ -224,6 +224,15 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   void remoteFetchNoticeChanged(const QString& notice);
 
  private:
+  // A checked "markers" payload (validateXml()).
+  struct ParsedSettings {
+    float opacity = 1.0F;
+    bool color_override = false;
+    bool wireframe = false;
+    std::optional<QColor> override_color;
+  };
+  [[nodiscard]] static std::optional<ParsedSettings> parseSettings(const QDomElement& element);
+
   struct CachedSnapshot {
     std::shared_ptr<const PJ::sdk::SceneEntities> batch;
     std::uint64_t bytes = 0;
@@ -344,7 +353,8 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   QStringList model_frames_;
 
   std::unique_ptr<MeshLoader> mesh_loader_;
-  // Owned so destroying the layer (or resetReplayState) aborts in-flight fetches.
+  // Owned so destroying the layer (or resetReplayState) aborts in-flight fetches;
+  // one retired by abortObsoleteFetches() stays a QObject child until its deferred delete.
   std::unique_ptr<UrlFetcher> url_fetcher_;
   // Fetches (-> their key) and imports in flight, by load generation, superseded
   // ones included; together at most maxConcurrentMeshLoads().

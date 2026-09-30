@@ -576,6 +576,13 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     tests/poses_in_frame_layer_test.cpp
   )
 
+  # The per-view budget latch of every budgeted layer, driven by tracker moves
+  # and prepareForRender() (QRhi): a rejected sample never blocks a later one
+  # that fits.
+  list(APPEND PJ_SCENE3D_WIDGET_TESTS
+    tests/layer_budget_latch_test.cpp
+  )
+
   # Camera "follow a frame": the active camera's pivot tracks a followed frame's
   # origin each tracker tick (Position-only), no-jump on enable, gate-safe render
   # key, and per-dock layout persistence. Drives a bare SceneViewWidget (either
@@ -607,6 +614,12 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     tests/scene3d_dock_persistence_test.cpp
   )
 
+  # The camera's scene bounds the dock pushes to the view: every layer's
+  # worldBounds(), hidden ones included, poses none. No GPU (the view is never shown).
+  list(APPEND PJ_SCENE3D_WIDGET_TESTS
+    tests/scene3d_dock_camera_bounds_test.cpp
+  )
+
   # feat: a newly-created 3D dock defaults its fixed frame to the last one the user
   # picked by hand for the same dataset's TransformBuffer (in-session + cross-restart
   # via TransformService). Drives the dock headless through a mock FrameTransforms
@@ -627,6 +640,13 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
 
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/scene3d_layer_xml_validation_test.cpp
+  )
+
+  # Mouse gestures on a bare SceneViewWidget (both renderers): the drag mapping,
+  # and the self-heal when a right-click context menu's nested QMenu::exec() loop
+  # swallows the mouseRelease (see CLAUDE.md).
+  list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
+    tests/scene_view_widget_mouse_gesture_test.cpp
   )
 
   if(NOT PJ_SCENE3D_RHI)
@@ -711,14 +731,6 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
 
     list(APPEND PJ_SCENE3D_GL_TESTS
       tests/pointcloud_aabb_reducer_test.cpp
-    )
-
-    # Right-click on the 3D view shows a context menu via DockWidget's event filter
-    # (see CLAUDE.md); its QMenu::exec() nested loop can swallow the mouseRelease
-    # that would clear SceneViewWidget's own gesture latch. Drives a bare
-    # SceneViewWidget with synthetic QMouseEvents to pin the self-heal.
-    list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
-      tests/scene_view_widget_mouse_gesture_test.cpp
     )
 
     # Headless TrailLayer unit tests (renderKey coalescing, XML style-only load,
@@ -817,6 +829,13 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     LIBS pj_scene3d_widgets pj_scene_common pj_widgets cloudini::cloudini
     DEFINES PJ_SCENE3D_TEST_HOOKS
   )
+  # The QRhi build's SceneEntities expansion (MarkerGeometry): unexpanded stream
+  # batches, per-segment/per-triangle validation and batch colours. Pure; no GPU.
+  if(PJ_SCENE3D_RHI)
+    list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
+      tests/marker_geometry_test.cpp
+    )
+  endif()
   # WARNINGS: all 11 merged tests carried PJ_WARNING_FLAGS before
   pj_add_test_runner(pj_scene3d_widget_plain_tests
     MAIN gui WARNINGS GL_ROLLBACK

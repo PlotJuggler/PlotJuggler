@@ -901,9 +901,12 @@ if (rectify == 1) {
   letterboxing, and the pixel inspector stay in the camera's native-resolution
   space regardless of CPU-vs-GPU path. The point inspector maps the cursor in
   logical space and reads the source pixel through the map.
-- **Capability handshake:** `MediaViewerWidget::initialize()` probes
-  `isTextureFormatSupported(RG32UI)` (plus successful base-pipeline creation) and
-  calls `MediaSource::setGpuRectificationAvailable(...)`, fanned out through
+- **Capability handshake:** `MediaViewerWidget::initialize()` reports GPU
+  rectification available once the base pipeline exists (its RG32UI placeholder
+  is the LUT's format; `isTextureFormatSupported(RG32UI)` would wrongly exclude
+  WebGL2, since Qt's GLES backend lists 32-bit integer formats from ES 3.1 on
+  though RG32UI is core ES 3.0) and calls
+  `MediaSource::setGpuRectificationAvailable(...)`, fanned out through
   `Composite`/`BorrowedMediaSource` to the `ImagePipelineSource` layers. The
   default is the CPU-correct path until the widget confirms GPU support; a flip
   re-decodes the current frame. Non-rectifying layers bind a 1×1 placeholder LUT

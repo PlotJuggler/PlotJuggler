@@ -22,7 +22,7 @@ if(TARGET pj_scene3d_widgets AND PJ_SCENE3D_RHI)
   target_compile_features(pointcloud_rhi_benchmark PRIVATE cxx_std_20)
   target_compile_options(pointcloud_rhi_benchmark PRIVATE ${PJ_WARNING_FLAGS})
   target_include_directories(pointcloud_rhi_benchmark PRIVATE ../widgets)
-  target_link_libraries(pointcloud_rhi_benchmark PRIVATE pj_scene3d_widgets)
+  target_link_libraries(pointcloud_rhi_benchmark PRIVATE pj_scene3d_widgets pj_bench_probes)
 endif()
 
 if(TARGET pj_scene3d_widgets AND NOT PJ_SCENE3D_RHI)

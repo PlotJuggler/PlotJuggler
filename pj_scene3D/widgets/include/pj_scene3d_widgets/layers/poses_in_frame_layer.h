@@ -219,7 +219,7 @@ class PosesInFrameLayer : public Scene3DLayer {
   // final state.
   bool tracker_dirty_ = false;
   std::optional<PJ::Timepoint> requested_time_;
-  // Arm count that last overflowed the view budget (QRhi).
+  // Arm count and sample that last overflowed the view budget (QRhi).
   BudgetLatch budget_;
 
   // Viewer style baked into the instance buffer; defaults match the TF "Frames"

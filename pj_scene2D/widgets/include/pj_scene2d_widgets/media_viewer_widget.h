@@ -67,7 +67,8 @@ struct MediaViewState {
 /// GPU failure: when the image pipeline, its samplers or its base textures cannot
 /// be created on the current QRhi, the viewer only clears to its background,
 /// emits renderFailed() and renderingWarningChanged() once, and retries on every
-/// later initialize() (a new QRhi or a resized target). An overlay or a frame
+/// later initialize() (a new QRhi or a resized target). A window that gets no
+/// QRhi at all (Qt's own renderFailed()) sets the same warning. An overlay or a frame
 /// texture that fails is dropped, and without the blending pipeline the pixel
 /// layers draw opaque, each with a warning logged once per QRhi; the next
 /// initialize() rebuilds a dropped overlay or blending pipeline. No draw ever
@@ -118,6 +119,13 @@ class MediaViewerWidget : public QRhiWidget {
   [[nodiscard]] std::uint64_t frameUploadCountForTest() const noexcept {
     return frame_upload_count_;
   }
+  /// Label textures rasterized since construction (cache misses); cumulative.
+  [[nodiscard]] std::uint64_t labelRasterizationsForTest() const noexcept {
+    return label_rasterizations_;
+  }
+  [[nodiscard]] std::size_t labelCacheSizeForTest() const noexcept {
+    return text_cache_.size();
+  }
 #endif
 
  signals:
@@ -167,6 +175,9 @@ class MediaViewerWidget : public QRhiWidget {
   // text_draw_items_; called by setMediaSource() (under frame_mutex_) and by
   // releaseResources() (Qt has already stopped rendering).
   void clearTextCache();
+  // Evicts the least recently used labels the last text rebuild did not use
+  // until at most kMaxGlyphCacheEntries remain (or none unused is left).
+  void trimTextCache();
 
   // Selects the YUV→RGB shader path. Values must match the `pixelFormat`
   // uniform contract in shaders/yuv_to_rgb.frag. kNV12 uploads natively as a
@@ -294,6 +305,7 @@ class MediaViewerWidget : public QRhiWidget {
   int max_texture_size_for_test_ = 0;  ///< 0: none
   bool oversize_frame_logged_ = false;
   std::uint64_t frame_upload_count_ = 0;
+  std::uint64_t label_rasterizations_ = 0;
   bool optional_failures_logged_ = false;  ///< An optional part's failure was logged for this QRhi.
 #ifdef PJ_TARGET_WASM
   // Qt/WASM switches the top-level from raster to RHI composition when this
@@ -416,12 +428,15 @@ class MediaViewerWidget : public QRhiWidget {
     QRhiShaderResourceBindings* srb = nullptr;  // Owns its own binding to `tex`.
     int width = 0;
     int height = 0;
+    std::uint64_t last_used = 0;  ///< text_rebuilds_ when a rebuild last drew it
   };
   // Bounded: an annotation stream with ever-new strings (counters, timestamps)
-  // would otherwise grow it forever; it is dropped whole when the text overlay
-  // is rebuilt past kMaxGlyphCacheEntries.
+  // would otherwise grow it forever. After each text rebuild the least recently
+  // used labels are evicted down to kMaxGlyphCacheEntries; the labels that
+  // rebuild drew stay, so a frame with more labels holds just those.
   std::unordered_map<TextKey, TextEntry, TextKeyHash> text_cache_;
   static constexpr std::size_t kMaxGlyphCacheEntries = 512;
+  std::uint64_t text_rebuilds_ = 0;
   // Per-text quad metadata captured at rebuild time, consumed at draw time.
   struct TextDrawItem {
     QRhiShaderResourceBindings* srb;  // pointer borrowed from text_cache_

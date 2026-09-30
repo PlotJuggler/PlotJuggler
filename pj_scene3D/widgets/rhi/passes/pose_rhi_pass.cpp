@@ -87,36 +87,15 @@ QRhiShaderResourceBindings* PoseRhiPass::createLayerBindings(QRhi* rhi, QRhiBuff
       });
 }
 
-void PoseRhiPass::admit(const PlaceFn& place, SceneBoundsCollector& bounds) {
-  admitted_.clear();
-  AABB family_bounds;
-  std::uint64_t remaining_arms = kSceneLimits.max_pose_arms_per_view;
-  for (PosesInFrameLayer* layer : layers_) {
-    if (layer == nullptr || !layer->visible()) {
-      continue;
-    }
-    layer->prepareForRender(remaining_arms);
-    if (layer->instances().empty()) {
-      pruneLayerGpu(layer_gpu_, layer, releaseLayerGpu);
-      continue;
-    }
-    const auto placed = place(layer->renderFrameId());
-    if (!placed.has_value()) {
-      continue;
-    }
-    // Placement first, budget second: a temporarily unplaceable layer must not
-    // reserve capacity and starve a later drawable layer of the same family.
-    if (!tryConsumeBudget(static_cast<std::uint64_t>(layer->instances().size()), remaining_arms)) {
-      continue;
-    }
-    if (const auto source_bounds = layer->sourceBounds(); source_bounds.has_value()) {
-      const AABB placed_bounds = transformedBounds(*source_bounds, *placed);
-      family_bounds = unionAABB(family_bounds, placed_bounds);
-      bounds.add(dynamic_cast<const void*>(layer), placed_bounds);
-    }
-    admitted_.push_back({layer, *placed});
-  }
-  last_bounds_ = family_bounds;
+void PoseRhiPass::admit(const PlaceFn& place) {
+  last_bounds_ = admitLayers(
+      layers_, kSceneLimits.max_pose_arms_per_view, place, admitted_, layer_gpu_, releaseLayerGpu,
+      [](const PosesInFrameLayer* layer) { return !layer->instances().empty(); },
+      [](const PosesInFrameLayer* layer) { return static_cast<std::uint64_t>(layer->instances().size()); },
+      [](const PosesInFrameLayer* layer, const Transform& placed) -> std::optional<AABB> {
+        const auto source_bounds = layer->sourceBounds();
+        return source_bounds.has_value() ? std::optional(transformedBounds(*source_bounds, placed)) : std::nullopt;
+      });
 }
 
 void PoseRhiPass::prepare(
@@ -139,7 +118,7 @@ void PoseRhiPass::prepare(
         continue;
       }
       if (bytes != 0) {
-        frame.updates->uploadStaticBuffer(gpu.instance_buffer, 0, bytes, instances.data());
+        PJ::uploadStaticBufferInPieces(frame.updates, gpu.instance_buffer, 0, bytes, instances.data());
       }
       gpu.instance_count = static_cast<quint32>(instances.size());
       gpu.uploaded_revision = layer->geometryRevision();

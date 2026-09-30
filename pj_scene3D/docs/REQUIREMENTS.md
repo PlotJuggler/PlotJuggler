@@ -62,8 +62,9 @@ pose arrays, occupancy updates, dense voxel grids, grid maps, trails, procedural
 PBR ModelPrimitives, and topic/file/URL URDF robot models. It uses the shared
 camera, fixed/follow, tracker replay, style, and layout contracts while enforcing
 browser-specific decode, retained-memory, texture, model, and network budgets.
-The QRhi/WebGL2 renderer provides mesh and solid-marker shadows and an HDR presentation chain
-with SSAO and mesh-masked EDL; each optional pass fails independently to a live
+The QRhi/WebGL2 renderer provides mesh shadows (robot models and model
+primitives; markers cast none) and an HDR presentation chain with SSAO and
+mesh-masked EDL; each optional pass fails independently to a live
 lower-quality or direct-render path. Browser-selected local model bytes are
 capabilities for the current session and are never persisted as reopenable host
 paths. The desktop application uses the same QRhi renderer on the platform's
@@ -79,7 +80,7 @@ Image+Pinhole (camera frustum + textured near-plane) from the archived master pl
 
 A `CompressedPointCloud` canonical object carries `{timestamp, frame_id, format, data}` where
 `data` is a self-describing codec blob. `pj_scene3D` decodes it into a `PointCloud` and renders it
-through the **same** `PointCloudLayer` and `convertCanonical()` path as a raw cloud — one dual-mode
+through the **same** `PointCloudLayer` and `packPointVertices()` path as a raw cloud — one dual-mode
 layer, no separate widget.
 
 - **Formats:** `cloudini` (header-embedded schema; via `cloudini/1.4.1`) and `draco`

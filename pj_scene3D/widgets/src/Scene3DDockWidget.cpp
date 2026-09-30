@@ -54,6 +54,7 @@
 #include "pj_scene3d_widgets/transform_service.h"
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/RenderingWarningLabel.h"
 #include "pj_widgets/SvgUtil.h"
 #include "urdf_package_resolver.h"
 using namespace Qt::StringLiterals;
@@ -382,7 +383,7 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   });
 
 #ifdef PJ_SCENE3D_RHI
-  rendering_warning_label_ = createRenderingWarningLabel(this, u"scene3dRenderingWarning"_s);
+  rendering_warning_label_ = PJ::createRenderingWarningLabel(this, u"scene3dRenderingWarning"_s);
 #endif
 
   // Forget a removed topic's cached orphan/warning state. pj_app drives its UI
@@ -924,15 +925,30 @@ void Scene3DDockWidget::syncViewLayers(const std::vector<ISceneLayer*>& ordered_
 }
 
 void Scene3DDockWidget::updateSceneBounds() {
-#ifndef PJ_SCENE3D_RHI
   if (view_ == nullptr) {
     return;
   }
+  pj::scene3d::AABB scene;
   static const pj::scene3d::TransformBuffer k_empty_buffer;
   const pj::scene3d::TransformBuffer& tf = tf_buffer_ != nullptr ? *tf_buffer_ : k_empty_buffer;
-  const pj::scene3d::FrameContext frame_ctx{tf, view_->fixedFrame(), PJ::fromRaw(lastTrackerNs().value_or(0))};
-  view_->setSceneBounds(view_->layerSceneBounds(frame_ctx));
-#endif
+  const std::string& fixed = view_->fixedFrame();
+  const PJ::Timepoint time = PJ::fromRaw(lastTrackerNs().value_or(0));
+  for (Scene3DLayer* layer : view_->layers()) {
+    if (layer == nullptr) {
+      continue;
+    }
+    if (const auto bounds = layer->worldBounds(); bounds.has_value()) {
+      std::string source_frame = layer->sourceFrame().toStdString();
+      if (source_frame.empty()) {
+        source_frame = fixed;  // matches DepthCloud's unframed-image fallback
+      }
+      if (const auto fixed_from_source = tf.tryLookupTransform(fixed, source_frame, time); fixed_from_source) {
+        scene = pj::scene3d::unionAABB(
+            scene, pj::scene3d::transformedAABB(glm::mat4(fixed_from_source->matrix()), *bounds));
+      }
+    }
+  }
+  view_->setSceneBounds(scene);
 }
 
 void Scene3DDockWidget::refreshView() {
@@ -2023,7 +2039,6 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
         camera.perspective = *saved.perspective;
       }
       view_->camera().adoptState(camera);
-      view_->noteCameraRestored();
     }
     // Restore the camera follow target (empty = off). Tolerant of older layouts
     // (missing attribute → empty → follow off). A target absent from the current

@@ -13,6 +13,8 @@
 #include <QOpenGLFunctions>
 #include <QPainter>
 #include <QPalette>
+#include <QScopeGuard>
+#include <QScopedValueRollback>
 #include <QWheelEvent>
 #include <QtMath>
 #if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
@@ -21,12 +23,14 @@
 #endif
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -78,6 +82,13 @@ constexpr quint32 kModelUniformBytes = 128U;
 constexpr quint32 kRenderModeUniformBytes = 16U;
 // Cursor pick radius for TF frames, in logical pixels (the GL view's value).
 constexpr float kFramePickRadiusPx = 20.0F;
+
+#ifdef PJ_RHI_TEST_HOOKS
+std::int64_t steadyNowNs() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+#endif
 
 struct alignas(16) ModelUniforms {
   std::array<float, 4> camera_position{};
@@ -301,10 +312,9 @@ void SceneViewWidget::setLayers(const std::vector<Scene3DLayer*>& ordered_layers
   std::vector<ModelRenderable*> models;
   std::vector<GridMapLayer*> grid_maps;
   std::vector<Scene3DLayer*> trail_owners;
-  std::vector<CameraFitPolicy::LayerKey> fit_keys;
+  layers_ = ordered_layers;
   ordered_layers_.clear();
   for (Scene3DLayer* layer : ordered_layers) {
-    fit_keys.push_back(dynamic_cast<const void*>(layer));
     const std::uint32_t topic_id = layer->info().topic_id.id;
     if (auto* point = dynamic_cast<PointRenderable*>(layer); point != nullptr) {
       ordered_layers_.push_back({point, topic_id});
@@ -334,7 +344,6 @@ void SceneViewWidget::setLayers(const std::vector<Scene3DLayer*>& ordered_layers
       trail_owners.push_back(trail);
     }
   }
-  camera_fit_.setLayers(fit_keys);
   point_pass_->setLayers(points);
   pose_pass_->setLayers(poses);
   occupancy_pass_->setLayers(occupancy);
@@ -469,10 +478,6 @@ void SceneViewWidget::resetCamera() {
 void SceneViewWidget::setSceneBounds(const AABB& bounds) {
   scene_bounds_ = bounds;
   camera_->setSceneBounds(bounds);
-}
-
-void SceneViewWidget::noteCameraRestored() {
-  camera_fit_.noteCameraRestored();
 }
 
 int SceneViewWidget::lastPointVertexCountForTest() const {
@@ -631,11 +636,11 @@ AABB SceneViewWidget::lastModelBoundsForTest() const {
 }
 
 int SceneViewWidget::lastShadowDrawCountForTest() const {
-  return model_pass_->lastShadowDrawCount() + marker_pass_->lastShadowDrawCount();
+  return model_pass_->lastShadowDrawCount();
 }
 
 int SceneViewWidget::lastShadowTriangleCountForTest() const {
-  return model_pass_->lastShadowTriangleCount() + marker_pass_->lastShadowTriangleCount();
+  return model_pass_->lastShadowTriangleCount();
 }
 
 void SceneViewWidget::setGridStyle(GridStyle style) {
@@ -728,7 +733,13 @@ void SceneViewWidget::setMeshShadingParams(const MeshShadingParams& params) {
 }
 
 void SceneViewWidget::grabPresentedFrame(std::function<void(const QImage&)> done) {
+  update();  // the presented frame must be a real one (TECHNICAL_NOTES §3)
   PJ::grabPresentedFrame(*this, std::move(done));
+}
+
+void SceneViewWidget::update() {
+  content_changed_ = true;
+  QRhiWidget::update();
 }
 
 void SceneViewWidget::refreshAvailableFrames() {
@@ -891,6 +902,9 @@ void SceneViewWidget::forEachFamily(Visitor&& visitor) const {
 }
 
 void SceneViewWidget::initialize(QRhiCommandBuffer* /*command_buffer*/) {
+  // QRhiWidget calls this whenever it (re)created the render target: no frame
+  // of ours is on it, so the Show skip must not present it.
+  last_frame_request_.reset();
   QRhi* current_rhi = rhi();
   if (current_rhi == nullptr || renderTarget() == nullptr) {
     return;
@@ -915,16 +929,13 @@ void SceneViewWidget::initialize(QRhiCommandBuffer* /*command_buffer*/) {
       return;
     }
   }
-  if (!baseResourcesReady(*current_rhi)) {
-    if (const char* failed_part = createBaseResources(current_rhi); failed_part != nullptr) {
-      releaseResources();
-      setRenderFailure(tr("Scene3D cannot render with %1: its %2 could not be created")
-                           .arg(rhi_backend_name_, QLatin1String(failed_part)));
+  if (!baseResourcesReady() || !familiesReady(*current_rhi)) {
+    if (const char* failed_part = createSceneResources(current_rhi); failed_part != nullptr) {
+      failScene(failed_part);
       return;
     }
     built_target_ = target;
   }
-  setRenderFailure({});
   if (!overlay_pass_->ready() && !overlay_pass_->initialize(passSetup(current_rhi))) {
     overlay_pass_->release();  // retried on the next initialize()
   }
@@ -950,48 +961,129 @@ RhiPassSetup SceneViewWidget::passSetup(QRhi* rhi) const {
       shared_geometry_.get()};
 }
 
-bool SceneViewWidget::baseResourcesReady(QRhi& rhi) const {
+bool SceneViewWidget::baseResourcesReady() const {
   return uniform_buffer_ != nullptr && render_mode_uniform_buffer_ != nullptr &&
          annotation_render_mode_uniform_buffer_ != nullptr && model_uniform_buffer_ != nullptr &&
-         point_pass_->ready() && marker_pass_->ready() && model_pass_->ready() && pose_pass_->ready() &&
-         occupancy_pass_->ready() && grid_pass_->ready() && gridmap_pass_->ready() && trail_pass_->ready() &&
-         (!rhi.isFeatureSupported(QRhi::ThreeDimensionalTextures) || voxel_pass_->ready());
+         shared_geometry_->cube_vertices != nullptr && pose_pass_->ready() && grid_pass_->ready();
 }
 
-const char* SceneViewWidget::createBaseResources(QRhi* rhi) {
-  if (!ensureUniformBuffer(rhi, uniform_buffer_, 64U) ||
-      !ensureUniformBuffer(rhi, render_mode_uniform_buffer_, kRenderModeUniformBytes) ||
-      !ensureUniformBuffer(rhi, annotation_render_mode_uniform_buffer_, kRenderModeUniformBytes) ||
-      !ensureUniformBuffer(rhi, model_uniform_buffer_, kModelUniformBytes)) {
-    return "uniform buffers";
-  }
-  if (!shared_geometry_->create(rhi)) {
-    return "shared meshes";
-  }
-  render_mode_hdr_written_ = -1;
-  const RhiPassSetup setup = passSetup(rhi);
-  const bool three_d_textures = rhi->isFeatureSupported(QRhi::ThreeDimensionalTextures);
-  const std::pair<const char*, std::function<bool()>> families[] = {
-      {"point pipelines", [&] { return point_pass_->initialize(setup); }},
-      {"trail pipelines", [&] { return trail_pass_->initialize(setup); }},
-      {"pose pipelines", [&] { return pose_pass_->initialize(setup); }},
-      {"occupancy pipelines", [&] { return occupancy_pass_->initialize(setup); }},
-      {"voxel pipelines", [&] { return !three_d_textures || voxel_pass_->initialize(setup, max_3d_texture_size_); }},
-      {"marker pipelines", [&] { return marker_pass_->initialize(setup); }},
-      {"model pipelines", [&] { return model_pass_->initialize(setup, model_uniform_buffer_); }},
-      {"grid-map pipelines", [&] { return gridmap_pass_->initialize(setup); }},
-      {"grid pipelines", [&] { return grid_pass_->initialize(setup); }},
-  };
-  for (const auto& [part, initialize_family] : families) {
-    if (!initialize_family()) {
-      return part;
+bool SceneViewWidget::familiesReady(QRhi& rhi) const {
+  bool ready = true;
+  forEachLazyFamily(rhi, [&ready](const auto& family, const char* /*part*/, const auto& /*initialize*/) {
+    ready = ready && family.ready();
+  });
+  return ready;
+}
+
+// The families built on demand, each with what createSceneResources() reports
+// when it fails and how it is built; `visitor` sees only those the view needs
+// now (a layer of theirs is in the view). Voxels need 3D textures.
+template <typename Visitor>
+void SceneViewWidget::forEachLazyFamily(QRhi& rhi, Visitor&& visitor) const {
+  const auto visit = [&visitor](const auto& family, const char* part, const auto& initialize) {
+    if (family.hasLayers()) {
+      visitor(family, part, initialize);
     }
+  };
+  visit(*point_pass_, "point pipelines", [this](const RhiPassSetup& setup) { return point_pass_->initialize(setup); });
+  visit(*trail_pass_, "trail pipelines", [this](const RhiPassSetup& setup) { return trail_pass_->initialize(setup); });
+  visit(*occupancy_pass_, "occupancy pipelines", [this](const RhiPassSetup& setup) {
+    return occupancy_pass_->initialize(setup);
+  });
+  if (rhi.isFeatureSupported(QRhi::ThreeDimensionalTextures)) {
+    visit(*voxel_pass_, "voxel pipelines", [this](const RhiPassSetup& setup) {
+      return voxel_pass_->initialize(setup, max_3d_texture_size_);
+    });
   }
-  // Every direct pipeline the scene passes bind (the grid's shadow receiver
-  // registers itself in ensureShadowResources).
-  grid_pass_->registerPipelines(*pipelines_);
-  forEachFamily([this](const auto& family) { family.registerPipelines(*pipelines_); });
-  return nullptr;
+  visit(
+      *marker_pass_, "marker pipelines", [this](const RhiPassSetup& setup) { return marker_pass_->initialize(setup); });
+  visit(*model_pass_, "model pipelines", [this](const RhiPassSetup& setup) {
+    return model_pass_->initialize(setup, model_uniform_buffer_);
+  });
+  visit(*gridmap_pass_, "grid-map pipelines", [this](const RhiPassSetup& setup) {
+    return gridmap_pass_->initialize(setup);
+  });
+}
+
+const char* SceneViewWidget::createSceneResources(QRhi* rhi) {
+#ifdef PJ_RHI_TEST_HOOKS
+  const std::int64_t build_begin_ns = steadyNowNs();
+  const auto account = qScopeGuard([this, build_begin_ns] {
+    ++stage_times_.base_builds;
+    stage_times_.base_build_ns += steadyNowNs() - build_begin_ns;
+    stage_times_.last_base_build_ms = static_cast<double>(steadyNowNs() - build_begin_ns) / 1.0e6;
+  });
+#endif
+  if (!baseResourcesReady()) {
+    if (!ensureUniformBuffer(rhi, uniform_buffer_, 64U) ||
+        !ensureUniformBuffer(rhi, render_mode_uniform_buffer_, kRenderModeUniformBytes) ||
+        !ensureUniformBuffer(rhi, annotation_render_mode_uniform_buffer_, kRenderModeUniformBytes) ||
+        !ensureUniformBuffer(rhi, model_uniform_buffer_, kModelUniformBytes)) {
+      return "uniform buffers";
+    }
+    if (shared_geometry_->cube_vertices == nullptr && !shared_geometry_->create(rhi)) {
+      return "shared meshes";
+    }
+    render_mode_hdr_written_ = -1;
+    // The grid and the TF triads (the pose pass) draw without any layer. Their
+    // pipelines are templates too (see the families below).
+    RhiPassSetup base_setup = passSetup(rhi);
+    base_setup.templates = pipelines_.get();
+    base_setup.part = "pose pipelines";
+    if (!pose_pass_->ready() && !pose_pass_->initialize(base_setup)) {
+      return base_setup.part;
+    }
+    base_setup.part = "grid pipelines";
+    if (!grid_pass_->ready() && !grid_pass_->initialize(base_setup)) {
+      return base_setup.part;
+    }
+    // The grid's shadow receiver registers itself in ensureShadowResources().
+    grid_pass_->registerPipelines(*pipelines_);
+    pose_pass_->registerPipelines(*pipelines_);
+  }
+  const char* failed_part = nullptr;
+  const bool had_model = model_pass_->ready();
+  forEachLazyFamily(*rhi, [&](const auto& family, const char* part, const auto& initialize) {
+    if (failed_part != nullptr || family.ready()) {
+      return;
+    }
+    // Their pipelines are templates: the HDR chain creates only the clones it
+    // draws with, and the direct ones are created on a direct frame.
+    RhiPassSetup setup = passSetup(rhi);
+    setup.templates = pipelines_.get();
+    setup.part = part;
+    if (!initialize(setup)) {
+      failed_part = part;
+      return;
+    }
+    family.registerPipelines(*pipelines_);
+  });
+  if (model_pass_->ready() != had_model && shadow_texture_ != nullptr) {
+    // The shadow resources hold the model family's caster pipeline: rebuilt with
+    // it on the next shadowed frame.
+    releaseShadowResources(true);
+  }
+  return failed_part;
+}
+
+void SceneViewWidget::keepLastFrameOrClear(QRhiCommandBuffer* command_buffer, QRhiRenderTarget* target) {
+  last_view_projection_ = shown_view_projection_;
+  last_render_origin_ = shown_render_origin_;
+  if (retainsLastFrame()) {
+    return;  // recording nothing into the target keeps its last frame on screen
+  }
+  clearToBackdrop(command_buffer, target);
+}
+
+void SceneViewWidget::clearToBackdrop(QRhiCommandBuffer* command_buffer, QRhiRenderTarget* target) {
+  command_buffer->beginPass(target, sceneThemeColors().backdrop, {1.0F, 0});
+  command_buffer->endPass();
+}
+
+void SceneViewWidget::failScene(const char* failed_part) {
+  releaseResources();
+  setRenderFailure(tr("Scene3D cannot render with %1: its %2 could not be created")
+                       .arg(rhi_backend_name_, QLatin1String(failed_part)));
 }
 
 void SceneViewWidget::setRenderFailure(QString reason, bool emit_failed) {
@@ -1008,15 +1100,14 @@ void SceneViewWidget::setRenderFailure(QString reason, bool emit_failed) {
   }
 }
 
-// What admission decided for one frame: the effective fixed frame (resolved
-// once per frame) and the scene bounds of the placed layers. Filled once by
-// admitFrame(); prepareFrame() reads it and no later step re-admits a layer.
+// What admission decided for one frame: the effective fixed frame, resolved
+// once per frame. Filled once by admitFrame(); prepareFrame() reads it and no
+// later step re-admits a layer.
 struct SceneViewWidget::FrameAdmission {
   std::string fixed_frame;
-  SceneBoundsCollector bounds;
 };
 
-// The frame's camera, after the fit: every matrix is relative to render_origin.
+// The frame's camera: every matrix is relative to render_origin.
 struct SceneViewWidget::FrameView {
   glm::dvec3 render_origin{0.0};
   glm::mat4 projection{1.0F};  // GL clip convention
@@ -1052,10 +1143,26 @@ struct SceneViewWidget::PreparedFrame {
     DrawRef draw;
   };
 
+  // Everything the shadow map's content is a function of: the shadow resources
+  // (a new map is empty), the model casters (a revision that moves whenever
+  // their draws or instance data may have changed), the fitted light and the
+  // render origin the casters are relative to.
+  struct ShadowKey {
+    std::uint64_t resource_generation = 0;
+    std::uint64_t model_casters = 0;
+    glm::mat4 light_view_projection{0.0F};
+    glm::dvec3 render_origin{0.0};
+    bool operator==(const ShadowKey&) const = default;
+  };
+
   bool hdr_active = false;
   bool ssao_active = false;
   bool edl_active = false;
   bool shadow_active = false;
+  ShadowKey shadow_key;
+  // The key of the map the shadow texture holds (nullopt: none). The prepared
+  // frame outlives the frame, so this is last shadowed frame's.
+  std::optional<ShadowKey> rendered_shadow_key;
   QRhiViewport viewport;
   std::vector<SceneDraw> scene_draws;  // logical (dock) order
 };
@@ -1066,18 +1173,35 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   if (current_rhi == nullptr || target == nullptr) {
     return;
   }
-  if (show_paint_pending_ && resource_rhi_ == current_rhi && target->pixelSize() == last_frame_size_) {
-    // Recording nothing keeps the target's last frame on screen.
-    QMetaObject::invokeMethod(this, qOverload<>(&QWidget::update), Qt::QueuedConnection);
+#ifdef PJ_RHI_TEST_HOOKS
+  ++stage_times_.render_calls;
+#endif
+  // The failure state (or resources of another QRhi): no draw may reference them.
+  if (resource_rhi_ != current_rhi || !baseResourcesReady()) {
+    clearToBackdrop(command_buffer, target);
     return;
   }
-  if (resource_rhi_ != current_rhi || !baseResourcesReady(*current_rhi)) {
-    // The failure state (or resources of another QRhi): no draw may reference them.
-    command_buffer->beginPass(target, sceneThemeColors().backdrop, {1.0F, 0});
-    command_buffer->endPass();
+  // A template pipeline that could not be created when a direct frame needed it.
+  if (const char* failed_part = pipelines_->deferredFailure(); failed_part != nullptr) {
+    failScene(failed_part);
+    clearToBackdrop(command_buffer, target);
     return;
   }
+  // A family whose first layer arrived since initialize(): built before any
+  // pass of this frame binds it.
+  if (!familiesReady(*current_rhi)) {
+    if (const char* failed_part = createSceneResources(current_rhi); failed_part != nullptr) {
+      failScene(failed_part);
+      clearToBackdrop(command_buffer, target);
+      return;
+    }
+  }
+  content_changed_ = false;  // an update() from here on marks it again
 
+#ifdef PJ_RHI_TEST_HOOKS
+  stage_times_.render_begin_ns = steadyNowNs();
+  stage_times_.last_gpu_ms = command_buffer->lastCompletedGpuTime() * 1000.0;
+#endif
   if (show_perf_hud_) {
     cpu_timer_.start();
     if (const double gpu_seconds = command_buffer->lastCompletedGpuTime(); gpu_seconds > 0.0) {
@@ -1102,12 +1226,21 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   hdr_stage_.last_active = frame.hdr_active;
   const QSize render_size = frame.hdr_active ? scaled_size : output_size;
 
-  // The frame contract (rhi_scene_pass.h): admit once, fit once, prepare once;
+  // The frame contract (rhi_scene_pass.h): admit once, prepare once;
   // every pass below replays `frame`.
   FrameAdmission admission;
+#ifdef PJ_RHI_TEST_HOOKS
+  stage_times_.targets_ready_ns = steadyNowNs();
+#endif
   admitFrame(current_rhi, admission);
-  applySceneBounds(admission.bounds);
-  const FrameView view = frameView(current_rhi, render_size);
+#ifdef PJ_RHI_TEST_HOOKS
+  stage_times_.admitted_ns = steadyNowNs();
+#endif
+  const FrameView view = frameView(current_rhi);
+  shown_view_projection_ = last_view_projection_;
+  shown_render_origin_ = last_render_origin_;
+  last_view_projection_ = view.projection * view.view;
+  last_render_origin_ = view.render_origin;
   frame.ssao_active = frame.hdr_active && composite_params_.ssao_enabled &&
                       ensureSsaoResources(current_rhi, scaled_size) && view.inverse_projection_valid;
   frame.edl_active = frame.hdr_active && composite_params_.edl_enabled &&
@@ -1119,9 +1252,35 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     cpu_average_.add(static_cast<double>(cpu_timer_.nsecsElapsed()) / 1.0e6);
   }
   prepareOverlays(updates, output_size, admission.fixed_frame);
+#ifdef PJ_RHI_TEST_HOOKS
+  stage_times_.prepared_ns = steadyNowNs();
+#endif
+  // Without the HDR chain the direct pipelines draw: every template is created
+  // before any pass, so a pipeline that cannot be created shows no frame with
+  // its draws missing. The frame's uploads still run; the target keeps its last
+  // frame (or the backdrop), and the next render() enters the failure state.
+  if (!frame.hdr_active && !pipelines_->createTemplates()) {
+    command_buffer->resourceUpdate(updates);
+    keepLastFrameOrClear(command_buffer, target);
+    update();
+#ifdef PJ_RHI_TEST_HOOKS
+    ++stage_times_.frames_withheld;
+#endif
+    return;
+  }
   if (frame.shadow_active) {
-    submitShadowPass(command_buffer, updates);
-    updates = nullptr;
+    // The map is kept across frames: re-rendered only when an input changed
+    // (an orbit of a static scene keeps it; a pan moves the render origin).
+    if (!shadow_reuse_for_test_ || frame.rendered_shadow_key != frame.shadow_key) {
+      submitShadowPass(command_buffer, updates);
+      updates = nullptr;
+      frame.rendered_shadow_key = frame.shadow_key;
+#ifdef PJ_RHI_TEST_HOOKS
+      ++stage_times_.shadow_passes;
+    } else {
+      ++stage_times_.shadow_passes_reused;
+#endif
+    }
   }
 
   // Scene backdrop tracks the active theme (matching the desktop GL view, which
@@ -1158,8 +1317,21 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
       command_buffer->draw(3U);
       command_buffer->endPass();
     }
-    if (frame.edl_active && edl_mesh_mask_render_target_ != nullptr) {
+    // The mask pass preserves the coverage it is begun on: with no model draw it
+    // would change nothing (EDL then treats every pixel as non-mesh anyway).
+    if (frame.edl_active && edl_mesh_mask_render_target_ != nullptr && edl_mesh_mask_triangle_pipeline_ != nullptr &&
+        model_pass_->hasDraws()) {
       submitEdlMeshMask(command_buffer, frame);
+    }
+    if (pipelines_->cloneFailed()) {
+      // A clone could not be created: its draws are missing from the chain.
+      // Present nothing of it; the next frame draws without the HDR chain.
+      keepLastFrameOrClear(command_buffer, target);
+      update();
+#ifdef PJ_RHI_TEST_HOOKS
+      ++stage_times_.frames_withheld;
+#endif
+      return;
     }
     command_buffer->beginPass(target, Qt::transparent, {1.0F, 0});
     command_buffer->setGraphicsPipeline(present_pipeline_);
@@ -1176,57 +1348,100 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   if (pipelines_->cloneFailed()) {
     update();  // the next frame drops HDR
   }
-  last_frame_size_ = output_size;
+  last_frame_request_ = requestedTarget();
+  // A full frame: whatever failed before (a pipeline, no QRhi) works now. Not
+  // cleared in initialize(): pipelines are created as frames draw with them.
+  setRenderFailure({});
+#ifdef PJ_RHI_TEST_HOOKS
+  stage_times_.point_uploads = point_pass_->uploadCountForTest();
+  stage_times_.point_upload_bytes = point_pass_->uploadedBytesForTest();
+  stage_times_.marker_rebuilds = marker_pass_->layerRebuildCountForTest();
+  stage_times_.model_mesh_builds = static_cast<std::uint64_t>(model_pass_->cacheCountersForTest().mesh_builds);
+  stage_times_.render_end_ns = steadyNowNs();
+  ++stage_times_.full_renders;
+  stage_times_.targets_ns += stage_times_.targets_ready_ns - stage_times_.render_begin_ns;
+  stage_times_.admit_ns += stage_times_.admitted_ns - stage_times_.targets_ready_ns;
+  stage_times_.prepare_ns += stage_times_.prepared_ns - stage_times_.admitted_ns;
+  stage_times_.submit_ns += stage_times_.render_end_ns - stage_times_.prepared_ns;
+#endif
 }
 
 bool SceneViewWidget::event(QEvent* event) {
-  show_paint_pending_ = event->type() == QEvent::Show;
-  const bool handled = QRhiWidget::event(event);
-  show_paint_pending_ = false;
-  return handled;
+#ifdef PJ_RHI_TEST_HOOKS
+  if (event->type() == QEvent::Paint) {
+    ++stage_times_.paint_events;
+  }
+#endif
+  if (event->type() != QEvent::Show) {
+    return QRhiWidget::event(event);
+  }
+  // QRhiWidget's Show handling sends its paint event synchronously, back through
+  // this function: the flag holds for the whole Show, nested Paint included.
+  const QScopedValueRollback in_show(show_paint_pending_, true);
+  return QRhiWidget::event(event);
+}
+
+void SceneViewWidget::paintEvent(QPaintEvent* event) {
+  // Qt paints a render-to-texture widget on its own too: synchronously inside a
+  // Show, and in a parent's repaint once an update() reached it while hidden.
+  if ((show_paint_pending_ || !content_changed_) && retainsLastFrame()) {
+#ifdef PJ_RHI_TEST_HOOKS
+    ++stage_times_.paints_skipped;
+#endif
+    // No offscreen frame at all (on Vulkan its end waits on a fence even when
+    // empty): the target keeps the last frame for the top-level to composite.
+    if (content_changed_) {
+      QMetaObject::invokeMethod(this, qOverload<>(&QWidget::update), Qt::QueuedConnection);
+    }
+    return;
+  }
+  QRhiWidget::paintEvent(event);
+}
+
+bool SceneViewWidget::retainsLastFrame() const {
+  // last_frame_request_ is reset by every release (a new top-level or a destroyed
+  // QRhi) and every initialize() (a recreated target), so a set one means the
+  // target holds our last full frame, as that request built it. Comparing it
+  // with the current request catches a resize or a format change QRhiWidget has
+  // not applied yet: setColorBufferFormat(), setFixedColorBufferSize() and a
+  // resize only request a new target, which QRhiWidget builds in the paint this
+  // would skip. A resize or DPR change under a fixed colour-buffer size keeps the
+  // target but moves the overlays, which the logical size and DPR catch.
+  return last_frame_request_.has_value() && *last_frame_request_ == requestedTarget() && rhi() != nullptr &&
+         rhi() == resource_rhi_;
+}
+
+SceneViewWidget::TargetRequest SceneViewWidget::requestedTarget() const {
+  // QRhiWidget's own rule (ensureTexture()): the fixed size, else the widget in device pixels.
+  const QSize fixed = fixedColorBufferSize();
+  const qreal dpr = devicePixelRatio();
+  return {colorBufferFormat(), fixed.isEmpty() ? size() * dpr : fixed, sampleCount(), size(), dpr};
 }
 
 // Frame contract step 1: runs every visible layer's prepareForRender() against
-// the per-view budgets, places it in the fixed frame and collects the scene
-// bounds. The only place a budget is consumed.
+// the per-view budgets and places it in the fixed frame. The only place a
+// budget is consumed.
 void SceneViewWidget::admitFrame(QRhi* rhi, FrameAdmission& admission) {
   admission.fixed_frame = effectiveFixedFrame();
   const std::string& fixed_frame = admission.fixed_frame;
   const PlaceFn place = [this, &fixed_frame](const std::string& source_frame) {
     return resolveFixedFromSource(source_frame, fixed_frame);
   };
-  point_pass_->admit(place, admission.bounds);
-  pose_pass_->admit(place, admission.bounds);
-  occupancy_pass_->admit(place, admission.bounds);
-  gridmap_pass_->admit(place, admission.bounds);
-  voxel_pass_->admit(rhi, place, admission.bounds);
-  marker_pass_->admit(place, admission.bounds);
-  model_pass_->admit(place, shading_params_, shading_params_.shadows_enabled && tf_ != nullptr, admission.bounds);
+  point_pass_->admit(place);
+  pose_pass_->admit(place);
+  occupancy_pass_->admit(place);
+  gridmap_pass_->admit(place);
+  voxel_pass_->admit(rhi, place);
+  marker_pass_->admit(place);
+  model_pass_->admit(place, shading_params_, shading_params_.shadows_enabled && tf_ != nullptr);
 }
 
-// Frame contract step 2, the one scene-bounds + camera-fit policy of this view.
-// Scene bounds = the union of every ADMITTED and PLACED draw this frame: points
-// and depth clouds, poses, occupancy grids, voxels, SceneEntities markers, and
-// model layers whose contributesToSceneBounds() is true (SceneEntities models;
-// robots never, so a moving robot cannot yank the camera). Hidden, unplaceable
-// (orphaned) and over-budget layers contribute nothing; grid maps contribute
-// their placed box, trails nothing (the GL view's rule). The
-// camera then fits per CameraFitPolicy: once per new layer, never over a
-// restored camera.
-void SceneViewWidget::applySceneBounds(const SceneBoundsCollector& bounds) {
-  setSceneBounds(bounds.bounds);
-  if (camera_fit_.takeFit(bounds.contributors, bounds.bounds)) {
-    camera_->fitToBoundingBox(bounds.bounds);
-    ++camera_fit_count_;
-  }
-}
-
-SceneViewWidget::FrameView SceneViewWidget::frameView(QRhi* rhi, const QSize& render_size) const {
+// Frame contract step 2: the camera matrices. The aspect is the logical
+// widget's, whatever the DPR and render scale round the framebuffer to.
+SceneViewWidget::FrameView SceneViewWidget::frameView(QRhi* rhi) const {
   FrameView view;
   view.render_origin = glm::dvec3(camera_->state().focal);
-  const float aspect = render_size.height() > 0
-                           ? static_cast<float>(render_size.width()) / static_cast<float>(render_size.height())
-                           : 1.0F;
+  const float aspect = static_cast<float>(width()) / static_cast<float>(std::max(height(), 1));
   view.projection = camera_->projMatrix(aspect);
   view.view = camera_->viewMatrixRelativeTo(view.render_origin);
   view.clip_correction = rhi->clipSpaceCorrMatrix();
@@ -1265,13 +1480,14 @@ QRhiResourceUpdateBatch* SceneViewWidget::prepareFrame(
   last_line_vertex_count_ = grid_pass_->lastLineVertexCount();
   last_triangle_vertex_count_ = grid_pass_->lastTriangleVertexCount();
   const bool shadows_requested = shading_params_.shadows_enabled && tf_ != nullptr;
-  marker_pass_->prepare(context, shadows_requested);
+  // A family never built (no layer of its kind since the last release) prepares nothing.
+  marker_pass_->prepare(context);
   model_pass_->prepare(context, shading_params_);
 
   if (!shading_params_.shadows_enabled && shadow_texture_ != nullptr) {
     releaseShadowResources(true);
   }
-  AABB render_shadow_bounds = unionAABB(model_pass_->shadowCasterBounds(), marker_pass_->shadowCasterBounds());
+  AABB render_shadow_bounds = model_pass_->shadowCasterBounds();
   if (render_shadow_bounds.valid) {
     render_shadow_bounds = extendAabbToGroundShadow(
         render_shadow_bounds, shading_params_.key_light_dir, static_cast<float>(-render_origin.z));
@@ -1280,8 +1496,7 @@ QRhiResourceUpdateBatch* SceneViewWidget::prepareFrame(
   const ShadowCameraFit shadow_fit =
       fitDirectionalShadowCamera(render_shadow_bounds, shading_params_.key_light_dir, kShadowMapSize);
   last_shadow_fit_valid_ = shadow_fit.valid;
-  const bool shadow_requested =
-      shadows_requested && (model_pass_->hasShadowCasters() || marker_pass_->hasShadowCasters()) && shadow_fit.valid;
+  const bool shadow_requested = shadows_requested && model_pass_->hasShadowCasters() && shadow_fit.valid;
   bool shadow_active = shadow_requested && ensureShadowResources(rhi);
   if (shadow_active && !model_pass_->uploadShadowCasters(context)) {
     shadow_stage_.capability_error = tr("Could not allocate the shadow instance buffer");
@@ -1290,12 +1505,13 @@ QRhiResourceUpdateBatch* SceneViewWidget::prepareFrame(
     shadow_active = false;
   }
   frame.shadow_active = shadow_active;
+  frame.shadow_key = {
+      shadow_stage_.resource_generation, model_pass_->shadowRevision(), shadow_fit.light_view_proj, render_origin};
   shadow_stage_.last_active = shadow_active;
   if (shadow_requested && !shadow_active && !shadow_stage_.capability_error.isEmpty()) {
     if (noted_shadow_failure_ != shadow_stage_.capability_error) {
       noted_shadow_failure_ = shadow_stage_.capability_error;
       model_pass_->noteShadowFailure(shadow_stage_.capability_error);
-      marker_pass_->noteShadowFailure(shadow_stage_.capability_error);
     }
   } else {
     noted_shadow_failure_.clear();
@@ -1412,7 +1628,6 @@ void SceneViewWidget::submitShadowPass(QRhiCommandBuffer* command_buffer, QRhiRe
   command_buffer->beginPass(shadow_render_target_, Qt::transparent, {1.0F, 0}, updates);
   const QRhiViewport viewport(0.0F, 0.0F, static_cast<float>(kShadowMapSize), static_cast<float>(kShadowMapSize));
   model_pass_->submitShadowCasters(command_buffer, viewport);
-  marker_pass_->submitShadowCasters(command_buffer, viewport);
   command_buffer->endPass();
 }
 
@@ -1463,13 +1678,14 @@ void SceneViewWidget::submitEdlMeshMask(QRhiCommandBuffer* command_buffer, const
 
 void SceneViewWidget::releaseResources() {
   PJ::noteRhiRelease(*this, resource_rhi_);
-  last_frame_size_ = {};
+  last_frame_request_.reset();
   releaseShadowResources(false);
   releaseHdrResources();
   forEachFamily([](auto& family) { family.release(); });
   grid_pass_->release();
   overlay_pass_->release();
   frame_->scene_draws.clear();
+  frame_->rendered_shadow_key.reset();
   // After every pipeline that draws the shared cube/arrow meshes.
   shared_geometry_->release();
   delete model_uniform_buffer_;
@@ -1485,9 +1701,11 @@ void SceneViewWidget::releaseResources() {
   shadow_stage_.rejected_size = {};
   noted_shadow_failure_.clear();
   // Preserve an active warning across RHI teardown. Clearing the rejected
-  // size below permits the new RHI to probe again; a successful allocation
+  // sizes below permits the new RHI to probe again; a successful allocation
   // then clears the warning through renderingWarningChanged().
   hdr_stage_.rejected_size = {};
+  ssao_stage_.rejected_size = {};
+  edl_stage_.rejected_size = {};
   shadow_stage_.last_active = false;
   hdr_stage_.last_active = false;
   last_shadow_fit_valid_ = false;
@@ -1501,6 +1719,8 @@ void SceneViewWidget::mousePressEvent(QMouseEvent* event) {
   last_mouse_position_ = event->position().toPoint();
   active_button_ = event->button();
   camera_gesture_changed_ = false;
+  // The hover label stays hidden for the whole gesture; the next button-free move re-picks it.
+  setHoveredFrame(std::nullopt);
   event->accept();
 }
 
@@ -1518,8 +1738,12 @@ void SceneViewWidget::mouseReleaseEvent(QMouseEvent* event) {
 void SceneViewWidget::mouseMoveEvent(QMouseEvent* event) {
   if (active_button_ != Qt::NoButton && !(event->buttons() & active_button_)) {
     // The release went elsewhere (e.g. to the frame context menu's popup, which
-    // grabs the mouse on the press): drop the stale gesture latch.
+    // grabs the mouse on the press): end the stale gesture as its release would.
     active_button_ = Qt::NoButton;
+    if (camera_gesture_changed_) {
+      camera_gesture_changed_ = false;
+      emit presentationChanged();
+    }
   }
   if (active_button_ == Qt::NoButton) {
     setHoveredFrame(frameAt(event->position()));
@@ -1528,23 +1752,27 @@ void SceneViewWidget::mouseMoveEvent(QMouseEvent* event) {
   const float delta_x = static_cast<float>(position.x() - last_mouse_position_.x());
   const float delta_y = static_cast<float>(position.y() - last_mouse_position_.y());
   last_mouse_position_ = position;
-  if (active_button_ == Qt::LeftButton) {
+  const bool shift = (event->modifiers() & Qt::ShiftModifier) != 0;
+  const CameraState before = camera_->state();
+  if (active_button_ == Qt::LeftButton && !shift) {
     camera_->rotate(delta_x, delta_y);
-  } else if (active_button_ == Qt::RightButton || active_button_ == Qt::MiddleButton) {
+  } else if (active_button_ == Qt::MiddleButton || (active_button_ == Qt::LeftButton && shift)) {
     camera_->pan(delta_x, delta_y);
+  } else if (active_button_ == Qt::RightButton) {
+    // Centre-of-view zoom: anchoring each drag delta at the cursor would walk the focal.
+    camera_->zoom(delta_y * 0.01F);
   } else {
     return;
   }
-  camera_gesture_changed_ = true;
+  if (!cameraStatesEqual(before, camera_->state())) {
+    camera_gesture_changed_ = true;
+  }
   update();
   event->accept();
 }
 
 void SceneViewWidget::wheelEvent(QWheelEvent* event) {
   const float ticks = static_cast<float>(event->angleDelta().y()) / 120.0F;
-  if (ticks == 0.0F) {
-    return;
-  }
   const CameraState before = camera_->state();
   camera_->zoomToCursor(ticks, glm::vec2(event->position().x(), event->position().y()), width(), height());
   update();
@@ -1604,11 +1832,9 @@ void SceneViewWidget::setRenderScale(float scale) {
 }
 
 std::optional<glm::vec2> SceneViewWidget::projectToWidget(const glm::dvec3& point) const {
-  const glm::dvec3 origin(camera_->state().focal);
-  const float aspect = static_cast<float>(width()) / static_cast<float>(std::max(height(), 1));
   return projectFrameOrigin(
-      camera_->projMatrix(aspect) * camera_->viewMatrixRelativeTo(origin),
-      glm::vec2(static_cast<float>(width()), static_cast<float>(height())), glm::vec3(point - origin));
+      last_view_projection_, glm::vec2(static_cast<float>(width()), static_cast<float>(height())),
+      glm::vec3(point - last_render_origin_));
 }
 
 std::optional<std::string> SceneViewWidget::frameAt(const QPointF& logical_pos) const {

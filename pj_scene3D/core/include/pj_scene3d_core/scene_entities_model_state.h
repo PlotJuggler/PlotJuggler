@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -82,6 +83,9 @@ class SceneEntitiesModelState {
 
   std::map<std::string, PJ::sdk::SceneEntity> entities_;
   std::map<std::string, std::int64_t> expiry_anchor_ns_;
+  /// Entities with a finite lifetime: dropExpired() runs every playhead tick,
+  /// and with none it has nothing to scan.
+  std::size_t finite_lifetimes_ = 0;
   std::uint64_t retained_bytes_ = 0;
 };
 

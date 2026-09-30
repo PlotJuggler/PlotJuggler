@@ -185,7 +185,7 @@ set(_pj_sdk_url https://github.com/PlotJuggler/plotjuggler_sdk/archive/refs/tags
 # hash in the same commit as any PJ_SDK_VERSION bump in conanfile.txt — a stale
 # hash aborts the download loudly, which is the intended failure mode.
 set(_pj_sdk_url_hash
-    SHA256=b42b3d53f13cd495c3e8a73e5728503b1cc6949c9dd820e164ba449f22349c32)  # v0.34.1
+    SHA256=3c971aa9d0e9c6e55810fc713889e551c0ea2969a29215bc68518319dc74152d)  # v0.35.0
 include(FetchContent)
 # Timestamps on extracted archives. DOWNLOAD_EXTRACT_TIMESTAMP is a CMake 3.24
 # keyword and the sanctioned builder image ships 3.22, where an unrecognised
@@ -218,7 +218,11 @@ if(PJ_SDK_LOCAL_DIR)
   message(STATUS " NOT reproducible — do not use for release artifacts")
   message(STATUS "==================================================================")
   FetchContent_Declare(plotjuggler_sdk SOURCE_DIR "${PJ_SDK_LOCAL_DIR}")
+  # The same Python3 lookup guard as the pinned-release source build below.
+  set(_pj_saved_disable_py3 "${CMAKE_DISABLE_FIND_PACKAGE_Python3}")
+  set(CMAKE_DISABLE_FIND_PACKAGE_Python3 ON)
   FetchContent_MakeAvailable(plotjuggler_sdk)
+  set(CMAKE_DISABLE_FIND_PACKAGE_Python3 "${_pj_saved_disable_py3}")
   set(plotjuggler_sdk_FOUND TRUE)
 elseif(NOT PJ_SDK_FORCE_SOURCE)
   find_package(plotjuggler_sdk CONFIG QUIET)

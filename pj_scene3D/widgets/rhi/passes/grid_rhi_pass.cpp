@@ -106,13 +106,17 @@ bool GridRhiPass::createShadowReceiver(
           QRhiShaderResourceBinding::uniformBuffer(
               8, QRhiShaderResourceBinding::FragmentStage, setup_.render_mode_uniforms),
       });
+  // Built now, never as a template: the receiver is optional, so its failure must
+  // reach the caller's "shadows off" fallback, not fail the grid's templates.
+  RhiPassSetup setup = setup_;
+  setup.templates = nullptr;
   shadow_pipeline_ = createScenePipeline(
-      setup_, {
-                  .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid_cell.vert.qsb")),
-                  .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid_cell_shadow.frag.qsb")),
-                  .input_layout = vertexLayout(),
-                  .bindings = shadow_shader_resources_,
-              });
+      setup, {
+                 .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid_cell.vert.qsb")),
+                 .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid_cell_shadow.frag.qsb")),
+                 .input_layout = vertexLayout(),
+                 .bindings = shadow_shader_resources_,
+             });
   if (shadow_pipeline_ == nullptr) {
     releaseShadowReceiver(registry);
     return false;
@@ -203,7 +207,7 @@ void GridRhiPass::prepare(const RhiFrameContext& frame, bool shadow_active) {
     grid_ready_ = ensureStaticVertexBuffer(frame.rhi, grid_buffer_, grid_capacity_, bytes, kMinimumGridBufferBytes);
     if (grid_ready_) {
       if (bytes != 0) {
-        frame.updates->uploadStaticBuffer(grid_buffer_, 0, bytes, grid_vertices_.data());
+        PJ::uploadStaticBufferInPieces(frame.updates, grid_buffer_, 0, bytes, grid_vertices_.data());
       }
       grid_upload_pending_ = false;
     }

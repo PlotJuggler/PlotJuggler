@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // Layer-level coverage for OccupancyGridLayer's two-topic '<base>_updates'
-// wiring (review M.63): the UID-based store-window traversal that feeds
+// wiring: the UID-based store-window traversal that feeds
 // OccupancyGridReconstructor is cross-checked against an independent
 // cell-by-cell replay at several scrub targets (forward, backward, across
-// epochs). Also regression-covers the retroactive-ingest invalidate path
-// (review H.13: an update ingested behind the already-consumed live edge must
-// still appear on the next forward render) and the base-keyframe parse memo
-// (review M.47: re-rendering an unchanged keyframe must not re-parse it).
+// epochs). Also covers the retroactive-ingest invalidate path (an update
+// ingested behind the already-consumed live edge must still appear on the next
+// forward render) and the base-keyframe parse memo (re-rendering an unchanged
+// keyframe must not re-parse it).
 
 #include <gtest/gtest.h>
 

@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "pj_base/types.hpp"
+#include "pj_plotting/RevisionedSeries.h"
 #include "pj_runtime/CurveDescriptor.h"
 
 namespace PJ {
@@ -19,7 +20,7 @@ namespace PJ {
 class SessionManager;
 struct TopicChunk;
 
-class PointSeriesXY final : public QwtSeriesData<QPointF> {
+class PointSeriesXY final : public QwtSeriesData<QPointF>, public RevisionedSeries {
  public:
   PointSeriesXY(SessionManager* session, CurveDescriptor x_source, CurveDescriptor y_source);
 

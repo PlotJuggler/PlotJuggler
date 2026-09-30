@@ -4,6 +4,7 @@
 #include "pj_plotting/PlotRhiCanvas.h"
 
 #include <pj_widgets/GraphicsApi.h>
+#include <pj_widgets/RhiBlend.h>
 #include <qwt_axis.h>
 #include <qwt_plot.h>
 #include <qwt_plot_curve.h>
@@ -15,6 +16,7 @@
 #include <qwt_series_data.h>
 #include <qwt_symbol.h>
 #include <qwt_text.h>
+#include <qwt_transform.h>
 #include <rhi/qrhi.h>
 
 #include <QByteArray>
@@ -41,15 +43,18 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <span>
 #include <tuple>
+#include <typeinfo>
 #include <utility>
 #include <vector>
 
 #include "pj_plotting/PlotCurve.h"
 #include "pj_plotting/PlotLegend.h"
 #include "pj_plotting/PlotSampleReducer.h"
+#include "pj_plotting/RevisionedSeries.h"
 
 using namespace Qt::StringLiterals;
 
@@ -636,7 +641,10 @@ class GeometryBuilder {
             index > 0 && lower == 0.0 && joined_start != kNone
                 ? joined_start
                 : addPair(from + (delta * lower) - (index == 0 ? direction * cap : QPointF()), offset);
-        const QPointF end = index + 1 == segments ? to + direction * cap : (upper == 1.0 ? to : from + (delta * upper));
+        // A clipped end stays at the canvas edge: an off-canvas `to` can lie
+        // beyond the float range of the clip coordinates.
+        const QPointF end =
+            upper < 1.0 ? from + (delta * upper) : (index + 1 == segments ? to + (direction * cap) : to);
         end_pair = addPair(end, offset);
         addQuad(start_pair, end_pair);
       }
@@ -1934,13 +1942,35 @@ struct PlotGeometry {
   return spans;
 }
 
+// Hashes a scale map's transformation by identity: exact type plus parameters.
+// False for a transformation of any other type (a subclass included), whose
+// mapping cannot be fingerprinted reliably.
+[[nodiscard]] bool hashTransformation(std::uint64_t& key, const QwtTransform* transformation) {
+  if (transformation == nullptr || typeid(*transformation) == typeid(QwtNullTransform)) {
+    hashUInt(key, 0U);
+    return true;
+  }
+  if (typeid(*transformation) == typeid(QwtLogTransform)) {
+    hashUInt(key, 1U);
+    return true;
+  }
+  if (typeid(*transformation) == typeid(QwtPowerTransform)) {
+    // The exponent is private; 2^exponent is strictly monotonic in it.
+    hashUInt(key, 2U);
+    hashDouble(key, transformation->transform(2.0));
+    return true;
+  }
+  return false;
+}
+
 // Slim ENVIRONMENT key: the view state that changes the rendered image without
 // a QwtPlot::replot() (and therefore without a dirty flag set). Semantic
 // changes — data, pens, items, symbols, curve styles — invalidate geometry via
 // the replot() slot instead, so they are deliberately NOT hashed here. The four
 // axis bounds are belt-and-braces: zoomers mutate scale divisions in place, and
-// some paths reach the canvas without a full replot.
-[[nodiscard]] std::uint64_t computeEnvKey(
+// some paths reach the canvas without a full replot. nullopt when an axis uses a
+// transformation hashTransformation() cannot identify: only a rebuild is safe.
+[[nodiscard]] std::optional<std::uint64_t> computeEnvKey(
     const QwtPlot* plot, QSize logical_size, QSize target_size, const QColor& clear_color, const QColor& frame_color) {
   std::uint64_t key = 0xcbf29ce484222325ULL;
   hashUInt(key, static_cast<std::uint64_t>(logical_size.width()));
@@ -1953,6 +1983,24 @@ struct PlotGeometry {
     const QwtScaleDiv& division = plot->axisScaleDiv(axis);
     hashDouble(key, division.lowerBound());
     hashDouble(key, division.upperBound());
+    // The grid's ticks, and the map's transformation (a log axis maps the same
+    // bounds elsewhere): what a replot of unchanged curves may still have moved.
+    // Each list is prefixed by its type and length, so ticks moving between
+    // lists (a major tick becoming a medium one) change the key.
+    for (int tick_type : {QwtScaleDiv::MinorTick, QwtScaleDiv::MediumTick, QwtScaleDiv::MajorTick}) {
+      const QList<double> ticks = division.ticks(tick_type);
+      hashUInt(key, static_cast<std::uint64_t>(tick_type));
+      hashUInt(key, static_cast<std::uint64_t>(ticks.size()));
+      for (double tick : ticks) {
+        hashDouble(key, tick);
+      }
+    }
+    const QwtScaleMap map = plot->canvasMap(axis);
+    hashDouble(key, map.p1());
+    hashDouble(key, map.p2());
+    if (!hashTransformation(key, map.transformation())) {
+      return std::nullopt;
+    }
   }
   return key;
 }
@@ -1963,12 +2011,23 @@ void hashPen(std::uint64_t& key, const QPen& pen) {
   hashUInt(key, static_cast<std::uint64_t>(pen.style()));
 }
 
-// The curve layer's STRUCTURE, which an overlay-only replot must not hide: the
-// grids and curves, their visibility, order, pens, styles and symbols, and each
-// curve's data object and size (a stream grows it). Same-size edits of a
-// series' values are not seen here; they come with a full replot().
-[[nodiscard]] std::uint64_t computeCurveKey(const QwtPlot* plot) {
-  std::uint64_t key = 0xcbf29ce484222325ULL;
+// The curve layer's keys, from one pass over the plot's items.
+struct CurveKeys {
+  // The STRUCTURE, which an overlay-only replot must not hide: the grids and
+  // curves, their visibility, order, pens, brushes, styles and symbols, and each
+  // curve's data object and size (a stream grows it). Same-size edits of a
+  // series' values are not seen here; they come with a full replot().
+  std::uint64_t structure = 0xcbf29ce484222325ULL;
+  // The CONTENT: each renderable curve's RevisionedSeries::contentRevision()
+  // (unique in the process, so it identifies the data object too). nullopt when a
+  // curve's data has no revision (generic Qwt series): its samples may have
+  // changed in place, so only a rebuild is safe.
+  std::optional<std::uint64_t> content = 0xcbf29ce484222325ULL;
+};
+
+[[nodiscard]] CurveKeys computeCurveKeys(const QwtPlot* plot) {
+  CurveKeys keys;
+  std::uint64_t& key = keys.structure;
   for (const QwtPlotItem* item : plot->itemList()) {
     if (const auto* curve = dynamic_cast<const QwtPlotCurve*>(item)) {
       hashUInt(key, reinterpret_cast<std::uintptr_t>(curve));
@@ -1976,24 +2035,51 @@ void hashPen(std::uint64_t& key, const QPen& pen) {
       hashUInt(key, reinterpret_cast<std::uintptr_t>(curve->data()));
       hashUInt(key, curve->dataSize());
       hashPen(key, curve->pen());
+      hashUInt(key, static_cast<std::uint64_t>(curve->brush().style()));
+      hashUInt(key, static_cast<std::uint64_t>(curve->brush().color().rgba()));
       hashUInt(key, static_cast<std::uint64_t>(curve->style()));
-      hashUInt(key, reinterpret_cast<std::uintptr_t>(curve->symbol()));
+      hashUInt(key, static_cast<std::uint64_t>(curve->xAxis()) << 8U | static_cast<std::uint64_t>(curve->yAxis()));
+      hashDouble(key, curve->baseline());
+      hashUInt(key, static_cast<std::uint64_t>(curve->orientation()));
+      hashUInt(key, curve->testCurveAttribute(QwtPlotCurve::Inverted) ? 1U : 0U);
+      if (const QwtSymbol* symbol = curve->symbol(); symbol != nullptr) {
+        hashUInt(key, static_cast<std::uint64_t>(symbol->style()));
+        hashUInt(
+            key, static_cast<std::uint64_t>(symbol->size().width()) << 32U |
+                     static_cast<std::uint32_t>(symbol->size().height()));
+        hashPen(key, symbol->pen());
+        hashUInt(key, static_cast<std::uint64_t>(symbol->brush().color().rgba()));
+        hashUInt(key, static_cast<std::uint64_t>(symbol->brush().style()));
+      } else {
+        hashUInt(key, 0U);
+      }
       if (const auto* plot_curve = dynamic_cast<const PlotCurve*>(curve)) {
         hashDouble(key, plot_curve->dotWidth());
+      }
+      if (keys.content.has_value() && isRenderableCurve(curve)) {
+        if (const auto* series = dynamic_cast<const RevisionedSeries*>(curve->data()); series != nullptr) {
+          hashUInt(*keys.content, series->contentRevision());
+        } else {
+          keys.content.reset();
+        }
       }
     } else if (const auto* grid = dynamic_cast<const QwtPlotGrid*>(item)) {
       hashUInt(key, reinterpret_cast<std::uintptr_t>(grid));
       hashUInt(key, grid->isVisible() ? 1U : 0U);
       hashPen(key, grid->majorPen());
       hashPen(key, grid->minorPen());
+      hashUInt(
+          key, (grid->xEnabled() ? 1U : 0U) | (grid->yEnabled() ? 2U : 0U) | (grid->xMinEnabled() ? 4U : 0U) |
+                   (grid->yMinEnabled() ? 8U : 0U));
     }
   }
-  return key;
+  return keys;
 }
 
-// Grows `buffer` (a Static vertex buffer) to hold `bytes`, doubling, never past
-// `ceiling`. False when the replacement cannot be created; the old buffer stays.
-[[nodiscard]] bool ensureVertexBuffer(
+// Grows `buffer` (a Static buffer of `usage`, vertex by default) to hold `bytes`,
+// doubling, never past `ceiling`. False when the replacement cannot be created;
+// the old buffer stays.
+[[nodiscard]] bool growStaticBuffer(
     QRhi& rhi, QRhiBuffer*& buffer, qsizetype& capacity, qsizetype bytes,
     qsizetype ceiling = std::numeric_limits<qsizetype>::max(),
     QRhiBuffer::UsageFlags usage = QRhiBuffer::VertexBuffer) {
@@ -2051,7 +2137,7 @@ void PlotRhiCanvas::setPlot(QwtPlot* plot) {
   plot_ = plot;
   curves_dirty_ = true;
   overlay_dirty_ = true;
-  env_key_valid_ = false;
+  env_key_.reset();
   content_reported_ = false;
   update();
 }
@@ -2110,7 +2196,7 @@ void PlotRhiCanvas::replot() {
   // Authoritative geometry-invalidation source: QwtPlot::replot() reaches here
   // reflectively on every semantic change (data, pens, items, axes). Mark dirty
   // so the next render() rebuilds instead of reusing the retained buffers.
-  curves_dirty_ = curves_dirty_ || !overlay_only_replot_;
+  replot_requested_ = replot_requested_ || !overlay_only_replot_;
   overlay_dirty_ = true;
   update();
 }
@@ -2167,7 +2253,7 @@ void PlotRhiCanvas::releaseDrawResources() {
   // so the first frame after re-initialize() rebuilds and re-uploads.
   curves_dirty_ = true;
   overlay_dirty_ = true;
-  env_key_valid_ = false;
+  env_key_.reset();
   ready_reported_ = false;
   content_reported_ = false;
   truncation_reported_ = false;
@@ -2236,13 +2322,7 @@ bool PlotRhiCanvas::createPipeline(QRhiCommandBuffer* /*command_buffer*/) {
   pipeline->setTopology(QRhiGraphicsPipeline::Triangles);
   pipeline->setCullMode(QRhiGraphicsPipeline::None);
   pipeline->setSampleCount(sampleCount());
-  QRhiGraphicsPipeline::TargetBlend blend;
-  blend.enable = true;
-  blend.srcColor = QRhiGraphicsPipeline::SrcAlpha;
-  blend.dstColor = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-  blend.srcAlpha = QRhiGraphicsPipeline::One;
-  blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-  pipeline->setTargetBlends({blend});
+  pipeline->setTargetBlends({PJ::straightAlphaBlend()});
   pipeline->setRenderPassDescriptor(color_target_.renderPass());
   if (!createRhiPipeline(*this, *pipeline, "color")) {
     return false;
@@ -2471,7 +2551,7 @@ bool PlotRhiCanvas::rebuildTextLayers(
         text_spans_.push_back({layer.source_item, before, text_vertices_.size() - before});
       }
       bytes = static_cast<qsizetype>(text_vertices_.size() * sizeof(TextVertex));
-      if (!ensureVertexBuffer(*rhi_, text_vertex_buffer_, text_vertex_buffer_capacity_, bytes)) {
+      if (!growStaticBuffer(*rhi_, text_vertex_buffer_, text_vertex_buffer_capacity_, bytes)) {
         drop_text_for_frame(u"failed to allocate the text vertex buffer"_s);
       }
     }
@@ -2529,6 +2609,9 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
   force_pipeline_failure = property("pjWasmForcePipelineFailure").toBool();
 #endif
   // Failed state (no device, pipeline, or render target): a clear-only pass.
+  // Without a render target no pass can be recorded, so the widget's untouched
+  // colour buffer is composited under the opaque failure banner (on desktop the
+  // raster canvas then replaces this one).
   QRhiTextureRenderTarget* render_target = color_target_.target();
   if (force_pipeline_failure || rhi_ == nullptr || pipeline_ == nullptr || render_target == nullptr) {
     if (render_target != nullptr) {
@@ -2555,10 +2638,12 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
   const auto fail_rebuild = [this, command_buffer, render_target, &clear_color]() {
     // A failed allocation/upload must not leave an old text-bearing frame on
     // screen or hand QRhi an unrecorded render callback. Submit a defined clear
-    // and keep the state dirty so a later frame can retry from live Qwt state.
+    // and keep the state dirty. The renderFailed() onset makes a desktop
+    // PlotWidgetBase swap in the raster canvas for good; in the browser, which
+    // keeps this canvas, a later frame retries from live Qwt state.
     command_buffer->beginPass(render_target, clear_color, {1.0F, 0}, nullptr);
     command_buffer->endPass();
-    env_key_valid_ = false;
+    env_key_.reset();
     reportFailure(/*emit_signal=*/true);
   };
 
@@ -2568,9 +2653,14 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
   // rebuilding or re-uploading: compositor refreshes and expose repaints hit
   // neither branch.
   const QColor frame_color = palette().color(QPalette::WindowText);
-  const std::uint64_t env_key = computeEnvKey(plot, size(), target_size, clear_color, frame_color);
-  const std::uint64_t curve_key = computeCurveKey(plot);
-  const bool rebuild_curves = curves_dirty_ || !env_key_valid_ || env_key != env_key_ || curve_key != curve_key_;
+  const std::optional<std::uint64_t> env_key = computeEnvKey(plot, size(), target_size, clear_color, frame_color);
+  const CurveKeys curve_keys = computeCurveKeys(plot);
+  // A full replot reuses the curve layer when every curve's content revision,
+  // the view and the structure are unchanged; a curve without a revision
+  // rebuilds it.
+  const bool rebuild_curves = curves_dirty_ || !env_key.has_value() || env_key != env_key_ ||
+                              curve_keys.structure != curve_key_ ||
+                              (curve_keys.content.has_value() ? curve_keys.content != content_key_ : replot_requested_);
   const bool rebuild_overlay = rebuild_curves || overlay_dirty_;
   const QTransform to_clip = logicalToClip(size(), rhi_->clipSpaceCorrMatrix());
 
@@ -2677,10 +2767,10 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
 
     // Never grow past the frame-wide ceilings: the builder already caps the
     // vertex count there, and a primitive has at most three indices per vertex.
-    if (!ensureVertexBuffer(
+    if (!growStaticBuffer(
             *rhi_, vertex_buffer_, vertex_buffer_capacity_, vertices_.size(),
             static_cast<qsizetype>(kMaxGeometryVertices * sizeof(Vertex))) ||
-        !ensureVertexBuffer(
+        !growStaticBuffer(
             *rhi_, index_buffer_, index_buffer_capacity_, indices_.size(),
             static_cast<qsizetype>(3 * kMaxGeometryVertices * sizeof(quint32)), QRhiBuffer::IndexBuffer)) {
       fail_rebuild();
@@ -2693,10 +2783,10 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
     overlay_indices_.resize(0);
     overlay_spans_ = buildOverlayLayer(overlay_vertices_, overlay_indices_, plot, size(), device_pixel_ratio, to_clip);
     overlay_bytes = overlay_vertices_.size() + overlay_indices_.size();
-    if (!ensureVertexBuffer(
+    if (!growStaticBuffer(
             *rhi_, overlay_vertex_buffer_, overlay_vertex_buffer_capacity_, overlay_vertices_.size(),
             static_cast<qsizetype>(kMaxGeometryVertices * sizeof(Vertex))) ||
-        !ensureVertexBuffer(
+        !growStaticBuffer(
             *rhi_, overlay_index_buffer_, overlay_index_buffer_capacity_, overlay_indices_.size(),
             static_cast<qsizetype>(3 * kMaxGeometryVertices * sizeof(quint32)), QRhiBuffer::IndexBuffer)) {
       fail_rebuild();
@@ -2750,24 +2840,26 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
   }
   if (rebuild_curves) {
     env_key_ = env_key;
-    curve_key_ = curve_key;
-    env_key_valid_ = true;
+    curve_key_ = curve_keys.structure;
+    content_key_ = curve_keys.content;
   }
 
   QRhiResourceUpdateBatch* updates = rhi_->nextResourceUpdateBatch();
   if (rebuild_curves && bytes > 0) {
-    updates->uploadStaticBuffer(vertex_buffer_, 0, vertices_);
-    updates->uploadStaticBuffer(index_buffer_, 0, indices_);
+    // In pieces: anv records a copy with an awkward size slowly.
+    uploadStaticBufferInPieces(updates, vertex_buffer_, 0, vertices_);
+    uploadStaticBufferInPieces(updates, index_buffer_, 0, indices_);
   }
   if (rebuild_overlay && overlay_bytes > 0) {
-    updates->uploadStaticBuffer(overlay_vertex_buffer_, 0, overlay_vertices_);
-    updates->uploadStaticBuffer(overlay_index_buffer_, 0, overlay_indices_);
+    uploadStaticBufferInPieces(updates, overlay_vertex_buffer_, 0, overlay_vertices_);
+    uploadStaticBufferInPieces(updates, overlay_index_buffer_, 0, overlay_indices_);
   }
   if (text_bytes > 0 && text_texture_ != nullptr && !text_upload.isNull()) {
     QRhiTextureSubresourceUploadDescription upload(text_upload);
     upload.setSourceSize(text_upload.size());
     updates->uploadTexture(text_texture_, QRhiTextureUploadDescription({0, 0, upload}));
-    updates->uploadStaticBuffer(text_vertex_buffer_, 0, text_bytes, text_vertices_.data());
+    uploadStaticBufferInPieces(
+        updates, text_vertex_buffer_, 0, static_cast<quint32>(text_bytes), text_vertices_.data());
   }
   command_buffer->beginPass(render_target, clear_color, {1.0F, 0}, updates);
   const QRhiViewport viewport(
@@ -2815,6 +2907,7 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
   // wait for another semantic/view/rebind/lifecycle dirty source instead of
   // rebuilding every frame.
   curves_dirty_ = false;
+  replot_requested_ = false;
   overlay_dirty_ = retry_text_rebuild;
   if (retry_text_rebuild) {
     QTimer::singleShot(100, this, [this]() {

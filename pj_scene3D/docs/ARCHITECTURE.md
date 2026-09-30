@@ -20,9 +20,8 @@ legacy renderer, performance follow-ups, Qt 6.12) is in [QRHI_NEXT.md](./QRHI_NE
 - **One renderer.** `SceneViewWidget` is a `QRhiWidget` (`widgets/rhi/`). It owns
   every GPU resource and draws every layer family, on the platform's native
   graphics API.
-- **A Qt- and GPU-free core** (`core/`): camera models and the camera-fit policy,
-  the TF buffer, frame picking, the shadow camera, point-cloud conversion and
-  codecs, `SceneLimits` and the per-family budgets, trail sampling, and the
+- **A Qt- and GPU-free core** (`core/`): camera models, the TF buffer, frame
+  picking, the shadow camera, point-cloud conversion and codecs, `SceneLimits` and the per-family budgets, trail sampling, and the
   grid-map and voxel views. All of it is unit-tested headless.
 
 `PJ_SCENE3D_RHI` (ON by default, forced ON for WebAssembly) selects the renderer.
@@ -67,19 +66,24 @@ The view is split into:
   shared uniform layouts;
 - `rhi/rhi_scene_pass.h`: the vocabulary every pass shares (below);
 - `rhi/passes/<family>_rhi_pass.{h,cpp}`: one class per family;
-- `rhi/shaders/`: the GLSL sources and their committed `.qsb` packs.
+- `rhi/shaders/`: the GLSL sources and their committed `.qsb` packs; code two
+  shaders share lives in a `.glslinc` they `#include` (`srgb.glslinc`, the sRGB
+  encode; `shadow_sampling.glslinc`, the receivers' shadow-map lookup).
 
 `rhi_scene_pass.h` defines `ScenePass` (direct, HDR colour, depth replay),
 `DrawClass` (opaque, translucent), `ScenePipelineRegistry`, `RhiSharedGeometry`,
-`SceneBoundsCollector`, `RhiPassSetup`, `RhiFrameContext`,
+`RhiPassSetup`, `RhiFrameContext`,
 `PlaceFn`/`PlacedLayer`, and the helpers every family builds with:
 `createScenePipeline(setup, PipelineDesc)`, `createGraphicsPipeline()` (every
 pipeline's `create()`, with the test fault injection), `ensureUniformBuffer`,
 `ensureVertexBuffer` (Dynamic, per-frame data), `ensureStaticVertexBuffer`
 (Static, per-sample data, with a grow/shrink rule), `createBindings`,
-`adoptLayerList`/`pruneLayerGpu` (per-layer GPU state), `findDraws`,
+`adoptLayerList`/`pruneLayerGpu` (per-layer GPU state), `admitLayers` (the
+admission loop of the budgeted families), `findDraws`,
 `relativeModel`/`transformedBounds` (camera-relative placement, the origin
-subtracted in double) and `rhiConventions`.
+subtracted in double), `rhiConventions` and `tr` (pass messages, translated in
+the view's context). The straight-alpha blend is `PJ::straightAlphaBlend()`
+(`pj_widgets/RhiBlend.h`), shared with the plot canvas and the media viewer.
 
 | Scene family | Class | Draws |
 |---|---|---|
@@ -109,35 +113,53 @@ draws, and submits any family's draw through one `std::visit`. Within one layer
 the families submit in `forEachFamily` order, so a pose layer's trail draws under
 its triads and a SceneEntities layer's markers before its models.
 
+**Families are built on demand.** The base (the uniforms, the shared meshes, the
+grid and the pose pass, which the grid and the TF triads need without any layer)
+is built in `initialize()`. Every other family (points, trails, occupancy,
+voxels, markers, models, grid maps) is built only once a layer of its kind is in
+the view (`hasLayers()`): in `initialize()` when it already is, else at the start
+of the first `render()` that has one (`createSceneResources()`, before any pass).
+A family never built has nothing to admit, prepare or draw. Every pipeline is a
+template (below), so building a family costs its layout SRBs and uniforms, not
+programs. Building the model family, the one that casts, drops the shadow
+resources, which the next shadowed frame rebuilds with its caster pipeline;
+without the model family the EDL mesh-mask pipelines are not built and the mask
+pass (which would record nothing) is skipped.
+
 ### Frame contract
 
 `render()` runs these steps once per frame, in order:
 
-1. **Show skip.** A paint caused by a Show on the same QRhi at the same output
-   size records nothing (see "Widget lifecycle and reparenting").
-2. **Failure state.** Without the base resources, clear to the backdrop and stop.
-3. **HDR decision.** `ensureHdrResources()` at the render size (output ×
+1. **Failure state.** Without the base resources, clear to the backdrop and stop.
+2. **HDR decision.** `ensureHdrResources()` at the render size (output ×
    `render_scale`). A pipeline clone that failed last frame rejects HDR for that
    size first.
-4. **Admit** (`admitFrame`). Resolve the effective fixed frame once, then per
-   visible layer: `prepareForRender()` against the remaining per-view budget,
-   fixed-frame placement, and the layer's placed bounds into the frame's
-   `SceneBoundsCollector`. This is the only place a budget is consumed.
-5. **Bounds and camera fit** (`applySceneBounds`), once.
-6. **Camera matrices** (`frameView`), once, relative to the render origin.
-7. **SSAO and EDL decisions:** each needs the HDR chain, its own resources and an
+3. **Admit** (`admitFrame`). Resolve the effective fixed frame once, then per
+   visible layer: `prepareForRender()` against the remaining per-view budget
+   and fixed-frame placement. This is the only place a budget is consumed. The
+   point, pose, occupancy and voxel families share the loop (`admitLayers()`):
+   placement first, budget second, so a layer whose frame cannot be placed this
+   frame reserves nothing ahead of a later one.
+4. **Camera matrices** (`frameView`), once, relative to the render origin, with
+   the logical widget aspect (width / height in logical pixels, whatever the DPR
+   and `render_scale` round the framebuffer to). The view keeps this frame's
+   view-projection and render origin for picking.
+5. **SSAO and EDL decisions:** each needs the HDR chain, its own resources and an
    invertible projection.
-8. **Prepare** (`prepareFrame`). Every family's `prepare()` with one
+6. **Prepare** (`prepareFrame`). Every family's `prepare()` with one
    `RhiFrameContext` (updates, render origin, corrected view-projection, view
    matrix): uploads, instances, uniforms. Then the grid prelude, the shadow
    decision (once the casters are known), and `scene_draws`: every draw in
    logical (dock) order with its `DrawClass`.
-9. **Overlays** (`prepareOverlays`): the corner gizmo and the HUD / hover-label
+7. **Overlays** (`prepareOverlays`): the corner gizmo and the HUD / hover-label
    images.
-10. **Submit.** The shadow pass when active. With HDR: the HDR colour pass, then
-    the coverage pass (the depth replay, or a clear where the chain resolves its
-    depth), SSAO, the EDL mesh mask, and the present pass with the overlays on the
-    output. Without HDR: the direct pass on the output, overlays at its end.
+8. **Submit.** The shadow pass when active. With HDR: the HDR colour pass, then
+   the coverage pass (the depth replay, or a clear where the chain resolves its
+   depth), SSAO, the EDL mesh mask, and the present pass with the overlays on the
+   output. Without HDR: the direct pass on the output, overlays at its end.
+
+A Show whose target still holds the last frame never reaches `render()` (see
+"Widget lifecycle and reparenting").
 
 The shadow pass, the HDR colour pass, the depth replay or the direct pass, and
 the EDL mesh mask all replay the one `PreparedFrame`. None re-admits a layer or
@@ -169,8 +191,32 @@ Each family registers the direct pipelines it creates (the view in
 `GridRhiPass::createShadowReceiver` from `ensureShadowResources`, the families
 through `registerPipelines`). Once the HDR chain exists, the view names the clone
 targets (`setCloneTargets`), and `resolve(direct, pass)` returns the direct
-pipeline, or creates its HDR-colour or depth-replay clone on first use. A clone
-copies every state of its source, so HDR and the depth replay always match the
+pipeline, or creates its HDR-colour or depth-replay clone on first use.
+
+Every scene pipeline but one is registered as a **template**: `createScenePipeline()`
+with `RhiPassSetup::templates` set (the view sets it for the grid, the pose pass
+and every family) configures a pipeline without creating it
+(`newScenePipeline()`) and registers it (`addTemplate()`, with the family's name).
+Clones copy a template's state and are created as HDR frames first draw with
+them; the templates themselves are created only for a frame without the HDR
+chain, all of them before its first pass (`createTemplates()`). So a GPU running
+the HDR chain builds only the clones its frames draw with and never a direct
+program (OpenGL builds a program for every pipeline object, 1–4 ms each on the
+Iris from Qt's program-binary cache); one without it builds the directs of its
+built families on its first frame. The exception is the grid's shadow receiver:
+the shadow stage is optional, so `createShadowReceiver` creates it at once and a
+failure turns shadows off (below) instead of failing the grid's templates.
+
+A pipeline therefore fails when a frame first needs it, never half way through
+a presented frame: a clone that cannot be created (in an HDR frame's passes)
+withholds that frame before the present pass, and a template (in
+`createTemplates()`) before any pass. A withheld frame records its uploads, keeps
+the target's last full frame (`keepLastFrameOrClear()`; the backdrop where the
+target holds none) and requests the next frame, which draws without the HDR chain
+after a clone failure (`rejectHdr`), or enters the failure state after a template
+failure (`deferredFailure()`, named after its family). A clone
+copies the state `newScenePipeline()` sets, plus the front face (the list is in
+`clonePipelineForRenderPass`), so HDR and the depth replay always match the
 direct pipeline. Where the chain resolves its depth, no depth-replay clone is
 ever requested.
 
@@ -209,7 +255,9 @@ resolve off OpenGL) and 84 B with OpenGL's D32FS8 resolve; the depth chain is
 picked before admission, so the charge follows it. It is retained per size, charged against a per-view and a per-QRhi cap
 (`kSceneLimits.max_hdr_bytes_per_view` / `_per_rhi`, shared by every view of a
 top-level), and released on QRhi teardown. HDR, SSAO and EDL each keep a failure
-latch keyed on the render size, so a resize probes the stage again.
+latch keyed on the render size, so a resize probes the stage again, and so does a
+new QRhi (`releaseResources()` clears the latches; the warning stays until the
+stage succeeds).
 
 **Linear light and grading.** Every colour input is linearized before it reaches
 the HDR target: colormaps and per-point colours in the vertex stage, vertex and
@@ -222,7 +270,7 @@ truth. The direct fallback writes display-referred colour without a grade.
 
 **Annotation marker and background bypass.** HDR alpha is a per-pixel
 tonemap-bypass marker, not coverage. Data draws write it with the coverage-union
-blend (`dataAlphaBlend`); annotations (TF triads and lines) add nothing to it
+blend (`PJ::straightAlphaBlend`); annotations (TF triads and lines) add nothing to it
 (`annotationAlphaBlend`), so they present flat and vivid. A pixel with no
 coverage (the background) keeps the exact theme colour, ungraded.
 
@@ -286,10 +334,12 @@ resolution on the output target:
 
 `frameAt(QPointF logical)` is the one picking primitive (the
 hover label and the frame context menu): it projects every resolvable TF frame
-origin with the current camera, camera-relative like the draw, in logical widget
-pixels through `core/tf/frame_picking.h`, and returns the nearest within 20 px;
-nullopt when the triads are hidden. It ignores occlusion and does not depend on
-DPR or `render_scale`. Hover tracking runs in `mouseMoveEvent` while no button is
+origin with the last painted frame's view-projection and render origin, in
+logical widget pixels through `core/tf/frame_picking.h`, and returns the nearest
+within 20 px; nullopt when the triads are hidden. A camera moved since that frame
+does not change the pick until it is painted; before the first frame the
+projection is the identity. It ignores occlusion and does not depend on DPR or
+`render_scale`. Hover tracking runs in `mouseMoveEvent` while no button is
 held and emits `hoveredFrameChanged` (empty on leave). A right-click on a frame
 emits `frameContextMenuRequested`; any other right-click is ignored, so the host
 dock's standard menu appears. The dock shows the frame menu with
@@ -299,25 +349,23 @@ dock's standard menu appears. The dock shows the frame menu with
 
 The key light (`MeshShadingParams::key_light_dir`) casts real-time directional
 shadows. The view owns the 2048² D32F shadow target, its light uniforms and the
-orchestration (`submitShadowPass`); each caster family owns a depth-only
-pipeline built against that target and records its own prepared casters.
+orchestration (`submitShadowPass`); the model family, the one that casts, owns a
+depth-only pipeline built against that target and records its prepared casters.
 
-- **Casters:** model draws (visual robot links, hidden or not, and SceneEntities
-  model primitives; never collisions, which would double-darken the silhouette)
-  and the solid SceneEntities markers (cubes, spheres, cylinders/cones, arrows of
-  non-wireframe layers, whatever their opacity; one instanced draw per primitive
-  kind replaying the layer's colour instances, `marker_shadow.vert` applying the
-  cone taper). Axes, cube edge overlays, lines, triangle lists, points, poses,
+- **Casters:** model draws only: visual robot links, hidden or not, and
+  SceneEntities model primitives; never collisions, which would double-darken
+  the silhouette. SceneEntities markers (every primitive kind), points, poses,
   occupancy, voxels and grid maps do not cast.
-- **Light frustum** (`core/shadow_camera.h`): the union of both families' caster
-  bounds, grown by `extendAabbToGroundShadow` to where the shadow lands on the
-  ground (the floor never casts, so it is otherwise absent from the bounds), then
+- **Light frustum** (`core/shadow_camera.h`): the model casters' bounds, grown
+  by `extendAabbToGroundShadow` to where the shadow lands on the ground (the
+  floor never casts, so it is otherwise absent from the bounds), then
   `fitDirectionalShadowCamera`: bounding-sphere extents (rotation-invariant, no
   resolution pulsing), padded, texel-snapped along a light-only basis so the
   shadow edge does not crawl.
 - **Receivers:** models and the filled-cell grid (`grid_cell_shadow.frag`);
   markers do not receive. Receivers project the world position into light space
-  through a normal-offset bias and take 16 Poisson taps; a position outside the
+  through a normal-offset bias and take 16 Poisson taps (one lookup,
+  `shadow_sampling.glslinc`, for both); a position outside the
   light frustum is lit. The shadow factor multiplies only the key-light term:
   the camera-locked fill and the ambient stay lit, so shadowed surfaces read as
   shaded, not black.
@@ -325,6 +373,12 @@ pipeline built against that target and records its own prepared casters.
   (always true in the app) and a `TransformBuffer` is bound, and there is a caster
   with a valid fit. Layers pose geometry only through TF, so a deleted dataset
   clears the floor shadow with its geometry.
+- **Reuse:** the map is kept across frames and rendered only when its key
+  changed: the shadow resources' generation, the model pass's shadow revision
+  (bumped when it rebuilds its instances), the fitted light view-projection and
+  the render origin. The key is every input of
+  the shadow pass, so a kept map is the one that pass would render: an orbit of
+  a static scene keeps it; a pan or a follow (a new render origin) renders it.
 
 ### Per-family passes and caches
 
@@ -386,22 +440,51 @@ the `pj_widgets` colormap polynomials (`rhi/shaders/colormap.glslinc`, a copy of
 - *Bounds* come from the layer's conversion (`sourceBounds()`) and feed the scene
   bounds and the whole-cloud reject. A `PointRenderable` without them gets a CPU
   scan of its retained vertices, once per geometry revision.
+- *Vertex formats.* A retained cloud is 12-byte xyz records or 16-byte records
+  of xyz plus one 32-bit attribute, the scalar's bits or the packed colour
+  (`PointVertexFormat`, `vertexFormat()`); what a format lacks reads as scalar 0
+  and opaque white, the values the style never reads. The 16-byte layout's
+  pipelines are built with the family; the 12-byte ones (which feed z's bits to
+  the attribute input) on first use. The shaders take the format from the
+  uniforms (`shape.y`) and decode the attribute themselves.
 - *Upload.* The layer hands over its retained cloud as one implicitly shared
-  `QByteArray` of `PointVertex` records (`vertexBytes()`, `pointCount()`); the pass
-  gives it to `uploadStaticBuffer()` by value, so the update batch shares it, and
-  only the backend's own staging copy remains. A layer never writes into an array
-  it has handed out (that would detach it and bring the copy back): every sample
-  builds a fresh one.
+  `QByteArray` (`vertexBytes()`, `pointCount()` records), padded for upload
+  (`PJ::padForUpload()`: past 64 KiB, zeroes up to the next multiple of it), so
+  the upload is one copy of a size Mesa's anv records fast (QRHI_NEXT.md). The
+  update batch shares the array, and only the backend's own staging copy remains.
+  A layer's first upload goes to an `Immutable` buffer, whose staging copy Vulkan
+  frees; its first re-upload reallocates it `Static`, whose staging copy a stream
+  reuses. QRhi's Vulkan backend stages every copy into an Immutable buffer in a
+  full-size buffer of its own, so the array always uploads as one copy. A layer
+  writes into the array only while nothing else holds it (a write to a shared
+  array would detach it and bring the copy back): `packIntoRetained()` rewrites
+  it in place then, and packs into a fresh array otherwise.
+- *Eviction.* Once the pass has enqueued an upload it tells the layer
+  (`onVerticesUploaded()`), and a static point cloud drops its reference to the
+  array: the batch's own reference keeps the bytes alive until the frame is
+  submitted, and the layer keeps the point count, format, bounds, scalar range
+  and revision ("materialization required"). A new QRhi (a float, a redock, a
+  first show in another top-level) re-uploads through `ensureVertexBytes()`,
+  which converts the same sample under the current style again, keeping the
+  revision: from the store entry, or from the decode cache for a compressed
+  sample (a cache that moved on to another sample means an async decode, and the
+  cloud reappears when it lands). A sample that follows the previous one within
+  1 s marks a stream, which keeps its array for the next in-place rewrite and
+  drops it once it has been quiet for 1 s. A style change that needs another
+  layout, or a new sample, converts as usual whether evicted or not. Depth clouds
+  keep their array.
 
 **Markers (`MarkerRhiPass`).** Admission places each SceneEntities layer's frames
 and applies the per-layer and per-view instance and stream budgets.
-`expandLayer()` turns a layer's `MarkerGeometry` (expanded on a worker,
-`marker_geometry.h`) into camera-relative instances (unit cube + twelve-edge
+`expandLayer()` turns a layer's `MarkerGeometry` (built on a worker,
+`marker_geometry.h`: instance sources, and line/triangle batches kept
+unexpanded, each point once with a vertex index list and a per-batch colour
+unless the points' colours differ) into camera-relative instances (unit cube + twelve-edge
 overlay, sphere, cylinder/cone with a per-instance taper, arrow for arrows and
-axes), stream vertices (line lists, triangle lists), draw ranges and shadow
-casters with their bounds. It is a pure function of the layer's `LayerKey`: the
+axes), stream vertices (line lists, triangle lists) and draw ranges; markers cast
+no shadows. It is a pure function of the layer's `LayerKey`: the
 geometry revision, the render origin, the style (opacity, override colour,
-wireframe), shadow casting, and the resolved fixed-from-frame transform of every
+wireframe) and the resolved fixed-from-frame transform of every
 frame the layer references, compared exactly (a marker layer whose frame moves
 under TF bumps no revision); the matrices are built only on a rebuild. Each
 layer's `LayerGpu` keeps its expansion in its own Static instance, line and
@@ -409,11 +492,27 @@ triangle buffers; `prepare()` re-expands and re-uploads only the layers whose ke
 changed. A rebuild allocates all three buffers before it queues any upload, so a
 failed allocation leaves nothing of the layer in the frame's batch: the layer
 draws nothing that frame and retries the next. Orbit, zoom and playback without
-new samples or TF motion reuse every buffer; a pan or a follow step moves the
-render origin and rebuilds (the origin stays on the CPU: TECHNICAL_NOTES,
-"Render origin"). A layer not admitted in a frame gives its buffers back.
-`setMarkerCacheEnabledForTest(false)` rebuilds every layer every frame, the pixel
-reference of `scene3d_rhi_marker_cache_test`.
+new samples or TF motion reuse every buffer. A pan or a follow step moves only the
+render origin (the key's `render_origin`, apart from its `ContentKey`), and the
+vertices stay relative to it on the CPU (TECHNICAL_NOTES, "Render origin"), so the
+layer re-uploads. A layer re-uploaded again within four (`kExpansionRetainFrames`)
+prepares keeps its CPU expansion, with each instance's world translation in
+double: an origin-only change then rewrites the translations (double subtraction,
+then the float narrowing, as `relativeModel()` does) and re-places the stream
+vertices, in the same buffer layout and
+bit-identical to a full expansion. A one-off rebuild drops the expansion right
+after its upload, a recurring one after that many prepares without another or
+after 250 ms without any prepare (a settled view renders no frame). The
+expansion's instance and stream arrays are `QByteArray`s the upload shares with
+the resource batch (no copy); once the batch lets go, a rewrite on a later frame
+reuses the same pages. Each array is padded for upload (`PJ::padForUpload()`),
+so the Vulkan copy stays off anv's slow path for copy sizes with a large prime
+factor while still uploading as one shared piece. Only a kept expansion holds
+the instances' world translations. Its stream vertices come from `MarkerGeometry`'s
+unexpanded batches: each point is placed once (a strip's inner points serve two
+segments) and written through the batch's vertex indices. A layer not admitted in a frame
+gives its buffers back. `setMarkerCacheEnabledForTest(false)` rebuilds every layer
+every frame, the pixel reference of `scene3d_rhi_marker_cache_test`.
 
 The cube fill is depth-biased away from the camera (constant and slope 1) so the
 twelve edges, drawn at the exact depth, win the depth test. The edges replay the
@@ -494,6 +593,10 @@ origin, the gizmo settings or the hovered frame (drawn brighter) change.
 
 **Occupancy (`OccupancyRhiPass`).** One R8 texture per layer plus a shared unit
 quad, with incremental dirty-rectangle uploads for `OccupancyGridUpdate` patches.
+The layer stages one revision per change; a texture takes the dirty rectangles
+only when it holds exactly the previous revision (`dirtyRectsCatchUp()`), and the
+whole grid otherwise: after a frame the layer was not drawn (no TF, over budget),
+or when a new epoch or backward seek is staged, even with a patch after it.
 
 **Voxels (`VoxelRhiPass`).** One packed R32F or RGBA8 3D texture per layer and one
 indexed cube draw with `column*row*slice` instances; the vertex shader derives
@@ -520,16 +623,19 @@ The colour is written unlinearized on every target. A pose-embedded trail draws
 in its pose layer's slot, before the triads. Trails have no per-view budget and
 add nothing to the scene bounds.
 
-### Scene bounds and camera fit
+### Scene bounds
 
-The view owns the scene bounds: each frame, `applySceneBounds` takes the union
-of every admitted and placed draw (`SceneBoundsCollector`), so a hidden,
-orphaned or over-budget layer does not frame the camera. `CameraFitPolicy`
-(`core/camera/camera_fit_policy.h`) fits once per newly added layer, on the first
-frame that layer contributes placed bounds, and never over a camera restored
-from a layout: the dock calls `noteCameraRestored()` after `adoptState`, and fits
-resume only once the layer set is emptied. Only visible layers trigger a fit. A
-value set through `setSceneBounds()` lasts until the next frame.
+The dock owns the camera's scene bounds (`Scene3DDockWidget::updateSceneBounds`):
+the union of every view layer's `worldBounds()` placed in the fixed frame at the
+tracker time, hidden layers included, layers whose source frame does not resolve
+skipped. It recomputes them on every layer-set change (`syncViewLayers`) and on
+every `refreshView()` (tracker ticks and async layer pushes), and hands them to
+the view's `setSceneBounds()`, which forwards them to the active camera for
+adaptive near/far, zoom limits and Fly speed. A hidden point cloud, depth cloud
+or voxel grid releases its retained data but keeps its bounds. The camera is
+never fitted to the bounds: adding, showing or re-adding a layer leaves it where
+it is. The per-family bounds the passes record at admission (`lastBounds()`)
+are test instrumentation only.
 
 ### Failure state and fallbacks
 
@@ -538,25 +644,28 @@ No draw may reference a resource whose `create()` failed. Every `create()` in
 
 | Class | Resources | On failure |
 |---|---|---|
-| Base | the view's four uniform buffers, `RhiSharedGeometry`, and each scene family's `initialize()`: pipelines, layout SRBs, samplers, the voxel LUT, occupancy quad and marker unit meshes | Failure state (below) |
-| Optional stage | the HDR chain (targets, samplers, present SRB and pipeline) and the pipelines' HDR/depth-replay clones; SSAO; the EDL mask target and pipelines; the shadow target, bindings, caster and receiver pipelines, material rebinds; `OverlayRhiPass` (corner gizmo, HUD, hover label) | The stage drops and the view renders without it; one warning (logged when the reason changes, shown in the dock label; shadow errors on the caster rows) |
-| Silent optional | the point-list pipelines | The same pixels another way: quads |
+| Base | the view's four uniform buffers, `RhiSharedGeometry`, and each built scene family's `initialize()` (the grid and pose pass at once, the others on their first layer): layout SRBs, samplers, the voxel LUT, occupancy quad and marker unit meshes; a template pipeline when a direct frame creates it | Failure state (below), the frame that needed it withheld |
+| Optional stage | the HDR chain (targets, samplers, present SRB and pipeline) and the pipelines' HDR/depth-replay clones (the frame that lost one withheld); SSAO; the EDL mask target and pipelines; the shadow target, bindings, caster and receiver pipelines, material rebinds; `OverlayRhiPass` (corner gizmo, HUD, hover label) | The stage drops and the view renders without it; one warning (logged when the reason changes, shown in the dock label; shadow errors on the caster rows) |
+| Silent optional | the point-list pipelines (on a direct frame) | The same pixels another way: quads |
 | Per layer / per frame | per-layer uniforms, SRBs, textures, instance and stream buffers of every family; overlay image textures | That layer's (or image's) draw is skipped this frame; occupancy, voxel, grid-map and model rows note a warning |
 
-**The failure state.** When `createBaseResources()` fails, `initialize()`
-releases everything, and `render()` (which checks `baseResourcesReady()` first)
-only clears the target to the backdrop. `setRenderFailure()` names the part that
-failed ("its trail pipelines could not be created"), puts it first in
+**The failure state.** When `createSceneResources()` fails (in `initialize()`,
+or in `render()` for a family whose first layer came later), or a template
+reported `deferredFailure()`, `failScene()` releases everything, and `render()`
+(which checks `baseResourcesReady()` first) only clears the target to the
+backdrop. `setRenderFailure()` names the part that failed ("its marker pipelines
+could not be created"), puts it first in
 `renderingWarningChanged()` (the dock's `scene3dRenderingWarning` label) and emits
 `QRhiWidget::renderFailed()` once per episode. QRhiWidget runs `initialize()`
 again for a new QRhi (reparent, top-level change) or a new output size, format or
-sample count; each retries the build, and success clears the warning. Overlays
-are retried the same way. QRhiWidget's own `renderFailed()` (no QRhi for the
-window, e.g. another widget pinned it to a different API) sets a "no graphics
+sample count; each retries the build, and the next full frame clears the
+warning (not `initialize()`: the pipelines are created as frames need them).
+Overlays are retried the same way. QRhiWidget's own `renderFailed()` (no QRhi for
+the window, e.g. another widget pinned it to a different API) sets a "no graphics
 device" failure the same way, without a second emission. A clone that
-`ScenePipelineRegistry::resolve()` cannot create skips its draw and sets
-`cloneFailed()`; the next `render()` drops the HDR chain for that output size
-(`rejectHdr`), so the next frame draws directly with every direct pipeline. The
+`ScenePipelineRegistry::resolve()` cannot create sets `cloneFailed()`, and its
+frame is withheld (see "Pipeline registry"); the next `render()` drops the HDR
+chain for that output size (`rejectHdr`), so the next frame draws directly. The
 backend line is logged once per QRhi, not on every retry.
 
 Every layer reports its row warning through `Scene3DLayer::statusWarning()` +
@@ -571,21 +680,40 @@ Test builds inject failures (TECHNICAL_NOTES, "Test hooks").
 ### Widget lifecycle and reparenting
 
 - **A new QRhi rebuilds everything.** Qt calls `releaseResources()` whenever the
-  widget's top-level changes (an ADS float or redock, and an ADS dock-area tab
-  switch, which parks the hidden tab parentless) and `initialize()` on the new
-  QRhi. The view releases every GPU resource and rebuilds it from what the layers
+  widget's top-level changes (an ADS float, redock or move between areas, which
+  passes through a parentless state) and `initialize()` on the new QRhi. An ADS
+  dock-area tab switch does not: our ADS fork keeps the hidden tab parented
+  (TECHNICAL_NOTES, "ADS and window-system quirks"). The view releases every GPU resource and rebuilds it from what the layers
   retain on the CPU: clouds, marker expansions, meshes, volumes and grids stay
   resident for this reason (TECHNICAL_NOTES, "ADS and window-system quirks").
 - **Shader packs are read once per process** (`PJ::loadRhiShader()` in
   `pj_widgets`, a process-wide `QShader` cache shared with the plots and the media
   viewer), so a float or redock deserializes none; the pipelines are
   still rebuilt for the new QRhi.
-- **A Show on the same QRhi keeps every resource.** QRhiWidget re-renders
-  synchronously on every Show. `event()` marks that paint, and `render()` records
-  nothing when the QRhi and the output size are unchanged, so the frame drawn
-  before the hide is composited at once; it queues an update that then renders
-  whatever changed while hidden. This covers a workspace tab (a
-  `TabbedPlotWidget` page) shown again.
+- **A paint with nothing new renders nothing.** Qt paints a render-to-texture
+  widget on its own: synchronously inside every Show (an offscreen frame, which
+  on Vulkan waits on a fence), and in a parent's repaint whenever Qt still
+  holds it dirty (any `update()` that reached it while hidden; an ADS tab
+  switch repaints the area). `SceneViewWidget::update()` marks the content changed
+  and a full frame clears the mark; `paintEvent()` skips the paint entirely while
+  `retainsLastFrame()` (the target holds this view's last full frame, on the live
+  QRhi it was drawn with, at the size and format the paint would render and
+  for the logical size and DPR its overlays were laid out at, which a resize
+  under a fixed colour-buffer size changes alone; every release and every
+  `initialize()`, i.e. every new target, clears that) and
+  either nothing changed or the paint is the Show's, which then queues the frame
+  if something changed while hidden. A hidden ADS tab or workspace tab (a
+  `TabbedPlotWidget` page) shown again therefore composites its last frame at
+  once and renders only if its content changed, like the GL build's
+  `QOpenGLWidget`. `QWidget::update()` is not virtual, so every change must
+  request its frame through a `SceneViewWidget` (the view's setters, the dock,
+  the config panel): a call through a `QWidget` pointer presents the retained
+  frame. `grabPresentedFrame()` marks the content, so its presented frame is a
+  real one. A skipped paint still presents: the window composites the retained
+  texture and Qt emits `frameSubmitted()` for every render-to-texture widget it
+  composited (`endCompose()`), so waiters on that signal see the Show (the tab
+  switch and hide/show benchmarks time it). It is therefore no render count:
+  the benchmarks count idle frames with the view's full renders (test hooks).
 - **Grabs.** `grabPresentedFrame()` (in `pj_widgets`) grabs after the next
   presented frame, never inside `render()`, and never blocks (no nested event
   loop, which the browser cannot run). A never-shown view is grabbed at once, and
@@ -619,7 +747,7 @@ The browser runs the same view, dock and layers. What differs:
   (for example 1 M points per cloud and per view, 256 MiB of HDR chain per view
   and 512 MiB per QRhi, where the desktop allows 50 M / 100 M points and 1 GiB /
   4 GiB). A rejected sample or layer fails closed with a row warning; the view's
-  budgets retry once they free up.
+  budgets retry once they free up, or at once for another sample.
 - **Depth replay.** WebGL2 reports no multisample textures, so the browser always
   replays depth; Qt's GLES backend also does not resolve a second multisample
   colour attachment reliably, which is why the EDL mask is its own pass.
@@ -661,7 +789,11 @@ model-fetch limits) fails closed with a row warning. The per-view budgets are
 applied by the view: each layer's `prepareForRender(remaining_*)` drains its
 pending update first, then checks what it would draw against the remaining
 budget (`BudgetLatch`), so one check covers both new data and a budget shrunk by
-earlier layers.
+earlier layers. A rejection is latched with its candidate: the sample it measured
+(for a depth cloud, also its depth range). The layer stays dropped, without
+re-decoding, while the playhead asks for that candidate and its size still
+exceeds the budget; any other candidate (another sample, a sizing setting) is
+examined on the next frame.
 
 **Workers.** `LatestWinsWorker` (`latest_wins_worker.h`) runs the heavy per-sample
 work: compressed-cloud decode, depth back-projection, SceneEntities batch
@@ -684,7 +816,7 @@ applies TF and the render origin once, at placement.
 The camera is an interchangeable controller over a shared, serializable pose,
 deliberately in `pj_scene3d_core` (Qt- and GPU-free) so the math is headless
 unit-testable (`camera_near_far_test`, `camera_zoom_to_cursor_test`,
-`camera_state_transfer_test`, `camera_follow_test`, `camera_fit_policy_test`).
+`camera_state_transfer_test`, `camera_follow_test`).
 
 - **`ICamera` + `CameraState`** (`core/include/pj_scene3d_core/camera/camera.h`):
   `CameraState` (focal, radius, azimuth, elevation, fov_y, ortho_scale,
@@ -761,9 +893,9 @@ unit-testable (`camera_near_far_test`, `camera_zoom_to_cursor_test`,
   `VoxelGridLayer` and `GridMapLayer` override it. `RobotModelLayer` stays
   bounds-less by design: a robot is posed by the live TF tree the camera already
   frames through the other layers, so adding its links would pull the camera
-  around as joints move. The view unions what it admits each frame (see "Scene
-  bounds and camera fit"); no contributing layer → an invalid AABB → the
-  working-distance fallback for near/far.
+  around as joints move. The dock unions them (see "Scene bounds"); no
+  contributing layer → an invalid AABB → the working-distance fallback for
+  near/far.
 - **Overlay UI.** `Scene3DDockWidget` overlays a `camera_model_combo_` (`{Orbit,
   XYOrbit, Fly, Top-down ortho}`) and a `home_button_` (resets the active model
   to its default view; not fit-to-scene), anchored flush to the top-right edge;
@@ -902,24 +1034,40 @@ A sample's path: resolve (`latestEntryIdAt`, per-use parser binding) → admit
 (`cloudAdmissionError`: point and wire-byte limits; for compressed blobs, before
 decompression, with the decode limits handed to the codec) → decode on the
 `LatestWinsWorker` when compressed (Draco/Cloudini → canonical `sdk::PointCloud`,
-`core/pointcloud_codecs.h`) → `convertCanonical()` → `packFinitePointVertices()`
-→ the retained `PointVertex` array the view reads (`vertexBytes()`), with the
-source-frame AABB and the automatic scalar range from the same conversion pass.
+`core/pointcloud_codecs.h`) → `packPointVertices()` → the retained vertex array
+the view reads (`vertexBytes()`), with the source-frame AABB and the automatic
+scalar range from the same pass.
 
-- **Conversion.** `convertCanonical()` (`core/pointcloud_convert.h`) decodes xyz
-  and the colour scalar of any field datatype into float (`DecodedPointCloud`),
-  accumulating the finite-point bounds; RGB-direct mode extracts a packed `rgba`
-  (or separate `red`/`green`/`blue` channels). `packFinitePointVertices()` then
-  compacts the finite points into fresh 20-byte `PointVertex` records (x, y, z,
-  scalar, rgba). Every rejection (admission, allocation, a malformed cloud, no
-  finite position) clears the cloud and shows a row warning (fail closed).
+- **Conversion.** `packPointVertices()` (`core/pointcloud_convert.h`) reads xyz
+  and the colour scalar of any field datatype straight from the wire into the
+  smallest format the style reads (x, y, z plus the scalar for a colormapped
+  non-spatial field, plus the packed colour for RGB-direct, else xyz alone),
+  keeping only finite points and accumulating their bounds and the scalar range
+  (read even when not stored); RGB-direct mode reads a packed `rgba` (or separate
+  `red`/`green`/`blue` channels). A colour-type or field change that needs another
+  format re-packs the same sample. It validates exactly as `convertCanonical()`
+  (the GL rollback's decoder into `DecodedPointCloud`) and produces the same
+  values. The layer runs it in chunks on the global thread pool, the GUI thread
+  taking chunks too (up to 16 into a fresh array, whose first-touch page faults
+  scale with the threads, 8 when rewriting one), and writes into the retained
+  array in place while nothing
+  shares it: the view's upload batch releases it once the frame is submitted, so a
+  stream of same-sized clouds reuses one allocation and pays no first-touch page
+  faults. Only a batch of over 1 MiB of buffer data releases it: QRhi keeps a
+  smaller batch's data for the batch's reuse, so a cloud under 1 MiB gets a fresh
+  array per sample. The canonical decode is a view of the ObjectStore payload
+  (`deserializePointCloudView()` in `resolveObject()`): nothing is copied before
+  the conversion, so a stream allocates nothing per sample. Every rejection (admission, allocation, a malformed cloud, no finite
+  position) clears the cloud and shows a row warning (fail closed).
 - **Caches and memos.** One successful decoded compressed sample is cached. One
   failed sample is memoized with its warning: revisiting it restores empty
   geometry and the same warning without retrying the codec, while moving to a
   different sample recovers normally. The point and depth layers track the wanted
   sample: they cancel the waiting request when the tracker returns to the running
   or displayed sample, and drop any completion that is not the wanted one. A hidden
-  layer releases its retained cloud.
+  layer releases its retained cloud. The retained cloud keeps its own frame
+  (`renderFrameId()`, where the view places it); a pending compressed sample's
+  frame is only `sourceFrame()` until its points land.
 - **Compressed decode never blocks the UI thread.** Cloudini dimensions/bytes and
   Draco point count plus packed attribute layout are bounded before their
   principal allocations. Decoded caches are per layer, not a global RSS quota.
@@ -1039,8 +1187,8 @@ coloured by depth. Sibling of the 2D depth view: same data, different geometry.
   (payload bytes, declared or PNG-header dimensions); a `LatestWinsWorker` then
   inflates and back-projects it (the Qt-free `depth_backproject.{h,cpp}`,
   `depthToPoints`: positions, per-point depth scalar, AABB and colormap range in one
-  pass) straight into a fresh `PointVertex` array, which the layer retains as its
-  `PointRenderable` data. Stale results are dropped by generation.
+  pass) straight into a fresh array of 16-byte xyz + depth records, which the layer
+  retains as its `PointRenderable` data. Stale results are dropped by generation.
 - **Colour.** Depth is coloured through the shared `PJ::Colormap` (turbo / viridis
   / plasma / grayscale, `pj_widgets/Colormap.h`), the same source of truth as the
   2D depth view and the point-cloud field colouring.
@@ -1180,7 +1328,10 @@ mode does. It renders in every build, the browser included.
   that drops stale completions. SceneEntities and the robot layer keep a superseded
   import counted until its worker finishes (the robot keys imports by generation +
   path and drops the result), so rapid source replacement never runs more than the
-  bound; `MeshImport::take()` copies, since `MeshLoader` shares one cached future per
+  bound. A fetch nobody wants any more is aborted with its fetcher, whose
+  completions a layer never outlives: each layer owns its `UrlFetcher`, and
+  SceneEntities keeps one it retires (deleted later, as it can be inside its own
+  callback) as a QObject child until then. `MeshImport::take()` copies, since `MeshLoader` shares one cached future per
   path. assimp covers STL/DAE/OBJ/glTF. `MeshData` carries UV0 + tangents
   (`aiProcess_CalcTangentSpace`) and a per-`SubMesh` `Material` (glTF 2.0
   metallic-roughness, read via assimp's material abstraction). Each map
@@ -1365,9 +1516,7 @@ configure. It is **frozen**: no feature or fix lands in it, and PR 2 deletes it
   a GL sink beside its QRhi one (`#ifndef PJ_SCENE3D_RHI` blocks), including the
   zero-copy point upload and the GPU AABB reducer. The plots use
   `QwtPlotOpenGLCanvas`, and every GPU widget requests OpenGL.
-- **Behaviour that differs** from the design above: the view does not auto-fit
-  the camera, and the dock pushes its scene bounds (`updateSceneBounds`: every
-  layer's bounds, hidden ones included); markers cast no shadows and draw in layer
+- **Behaviour that differs** from the design above: markers draw in layer
   order; wireframe culls back-facing edges of closed solids; the HDR chain always
   resolves depth; `QOpenGLWidget` recreates its context on every ADS reparent, and
   every pass rebuilds in `initializeGL` (the app never sets

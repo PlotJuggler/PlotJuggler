@@ -172,9 +172,11 @@ a float, a redock and a tab switch on OpenGL and Vulkan.
   is not drawn (its layer is dropped) and a warning is logged once per viewer;
   `setMaxTextureSizeForTest()` lowers the limit so `rhi_dock_lifecycle_test`
   needs no gigabyte image.
-- **Glyph cache.** Text overlays cache one R8 texture per (text, size); past 512
-  entries the cache is dropped whole at the next text rebuild, so a stream of
-  ever-new strings (counters, timestamps) cannot grow it without bound.
+- **Glyph cache.** Text overlays cache one R8 texture per (text, size). After
+  each text rebuild the least recently used labels that rebuild did not draw are
+  evicted down to 512 entries, so a stream of ever-new strings (counters,
+  timestamps) cannot grow it without bound, and a frame with more than 512 labels
+  keeps exactly its own and re-draws them without rasterizing any again.
 - **Shader packs** are read once per process and shared by every viewer and QRhi.
 
 ### GPU failure state
@@ -191,7 +193,10 @@ a failed overlay pipeline or buffer drops that overlay, a failed frame texture
 drops that frame, and without the blending pipeline the pixel layers draw opaque
 through the image pipeline, each with a warning logged once per QRhi. Every
 `initialize()` rebuilds whichever optional part is missing, so a dropped overlay
-or blending pipeline returns with the next new render target.
+or blending pipeline returns with the next new render target. A window that gets
+no QRhi at all (its API differs from the one another widget pinned the window
+to) never reaches `initialize()`: the viewer routes QRhiWidget's own
+`renderFailed()` into the same warning.
 
 A frame's texture uploads go to a resource-update batch of their own, merged into
 the frame's batch only once every texture and binding of the layer exists: a
@@ -884,8 +889,8 @@ chosen at runtime, because the float CPU resample was ~63–68% of process CPU
 - **CPU fallback** (`rectifyFrameFast` + `UndistortMapFast`): a precomputed
   source index + fixed-point bilinear fractions resampled into a reused buffer —
   **bit-for-bit equal** to the float `rectifyFrame` (a unit test asserts zero
-  mismatches) and ~2× faster (34.1 → 16.6 ms/frame at 1920×1280 RGB). Used when
-  the backend can't sample an `RG32UI` LUT.
+  mismatches) and ~2× faster (34.1 → 16.6 ms/frame at 1920×1280 RGB). Used
+  until the widget has built its image pipeline (none: no GPU path at all).
 - **Selection.** A one-time capability handshake
   (`MediaSource::setGpuRectificationAvailable`, probed by the widget in
   `initialize()`, fanned out through `Composite`/`BorrowedMediaSource`) flips the

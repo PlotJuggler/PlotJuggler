@@ -33,6 +33,7 @@
 #endif
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 #include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/RenderingWarningLabel.h"
 #include "pj_widgets/SvgUtil.h"
 using namespace Qt::StringLiterals;
 
@@ -544,7 +545,7 @@ QWidget* Scene2DDockWidget::createSceneView() {
 
   // Below the viewer, not over it: a raster label does not composite reliably on
   // the QRhiWidget's surface. Shown while the viewer cannot render.
-  QLabel* rendering_warning = createRenderingWarningLabel(container, u"scene2dRenderingWarning"_s);
+  QLabel* rendering_warning = PJ::createRenderingWarningLabel(container, u"scene2dRenderingWarning"_s);
   layout->addWidget(rendering_warning);
   connect(
       viewer_, &MediaViewerWidget::renderingWarningChanged, rendering_warning,

@@ -9,6 +9,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLoggingCategory>
+#include <QPointer>
 #include <QSettings>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -32,6 +33,7 @@
 #include "pj_base/time.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/model_budget.h"
+#include "pj_scene3d_core/pose_math.h"
 #include "pj_scene3d_core/scene_entities_budget.h"
 #include "pj_scene3d_core/scene_entities_decode.h"
 #include "pj_scene3d_widgets/resolve_object.h"
@@ -167,30 +169,6 @@ std::uint64_t estimateSnapshotBytes(const PJ::sdk::SceneEntities& snapshot) {
   return bytes;
 }
 
-#ifdef PJ_SCENE3D_RHI
-bool finite(const glm::dmat4& matrix) {
-  for (int column = 0; column < 4; ++column) {
-    for (int row = 0; row < 4; ++row) {
-      if (!std::isfinite(matrix[column][row])) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
-std::optional<glm::dmat4> poseMatrix(const PJ::sdk::Pose& pose) {
-  const glm::dvec3 translation{pose.position.x, pose.position.y, pose.position.z};
-  const glm::dquat orientation{pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z};
-  const double norm = glm::length(orientation);
-  if (!std::isfinite(translation.x) || !std::isfinite(translation.y) || !std::isfinite(translation.z) ||
-      !std::isfinite(norm) || norm < 1e-15) {
-    return std::nullopt;
-  }
-  const glm::dmat4 matrix = glm::translate(glm::dmat4(1.0), translation) * glm::mat4_cast(orientation / norm);
-  return finite(matrix) ? std::optional<glm::dmat4>{matrix} : std::nullopt;
-}
-#endif
 }  // namespace
 
 SceneEntitiesLayer::SceneEntitiesLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent)
@@ -251,35 +229,40 @@ QDomElement SceneEntitiesLayer::xmlSaveState(QDomDocument& doc) const {
   return el;
 }
 
-bool SceneEntitiesLayer::validateXml(const QDomElement& element) {
+std::optional<SceneEntitiesLayer::ParsedSettings> SceneEntitiesLayer::parseSettings(const QDomElement& element) {
   if (element.isNull() || element.tagName() != "markers"_L1 || !detail::isLeafPayload(element)) {
-    return false;
+    return std::nullopt;
   }
-  float opacity = 0.0F;
-  bool color_override = false;
-  bool wireframe = false;
-  return detail::parseFiniteFloat(element, "opacity", 1.0F, 0.0F, 1.0F, opacity) &&
-         detail::parseTrueFalse(element, "color_override", false, color_override) &&
-         detail::parseTrueFalse(element, "wireframe", false, wireframe) &&
-         (!element.hasAttribute(u"override_color"_s) || QColor(element.attribute(u"override_color"_s)).isValid());
+  ParsedSettings settings;
+  if (!detail::parseFiniteFloat(element, "opacity", 1.0F, 0.0F, 1.0F, settings.opacity) ||
+      !detail::parseTrueFalse(element, "color_override", false, settings.color_override) ||
+      !detail::parseTrueFalse(element, "wireframe", false, settings.wireframe)) {
+    return std::nullopt;
+  }
+  if (element.hasAttribute(u"override_color"_s)) {
+    settings.override_color = QColor(element.attribute(u"override_color"_s));
+    if (!settings.override_color->isValid()) {
+      return std::nullopt;
+    }
+  }
+  return settings;
+}
+
+bool SceneEntitiesLayer::validateXml(const QDomElement& element) {
+  return parseSettings(element).has_value();
 }
 
 bool SceneEntitiesLayer::xmlLoadState(const QDomElement& element) {
-  if (!validateXml(element)) {
+  const std::optional<ParsedSettings> settings = parseSettings(element);
+  if (!settings.has_value()) {
     return false;
   }
-  float restored_opacity = 0.0F;
-  bool restored_color_override = false;
-  bool restored_wireframe = false;
-  detail::parseFiniteFloat(element, "opacity", 1.0F, 0.0F, 1.0F, restored_opacity);
-  detail::parseTrueFalse(element, "color_override", false, restored_color_override);
-  detail::parseTrueFalse(element, "wireframe", false, restored_wireframe);
-  setOpacity(restored_opacity);
-  if (element.hasAttribute(u"override_color"_s)) {
-    setOverrideColor(QColor(element.attribute(u"override_color"_s)));
+  setOpacity(settings->opacity);
+  if (settings->override_color.has_value()) {
+    setOverrideColor(*settings->override_color);
   }
-  setColorOverrideEnabled(restored_color_override);
-  setWireframe(restored_wireframe);
+  setColorOverrideEnabled(settings->color_override);
+  setWireframe(settings->wireframe);
   return true;
 }
 
@@ -850,8 +833,11 @@ void SceneEntitiesLayer::abortObsoleteFetches() {
   if (!active_model_fetches_.empty()) {
     // Deferred: this can run inside one of the fetcher's own callbacks. Its
     // destruction aborts the requests; a callback delivered before that finds no
-    // entry in the cleared map and returns.
-    url_fetcher_.release()->deleteLater();
+    // entry in the cleared map and returns. The layer stays its owner until then,
+    // so a layer destroyed first takes the fetcher and its queued completions along.
+    UrlFetcher* obsolete = url_fetcher_.release();
+    obsolete->setParent(this);
+    obsolete->deleteLater();
     active_model_fetches_.clear();
   }
 }
@@ -908,8 +894,11 @@ void SceneEntitiesLayer::pumpModelLoads() {
     const std::string identity = load.identity;
     const std::uint64_t generation = load.generation;
     active_model_fetches_.emplace(generation, key);
-    url_fetcher_->fetch(url, [this, key, identity, generation, hint, url_text](const FetchResult& result) {
-      if (active_model_fetches_.erase(generation) == 0U) {
+    // The fetcher's lifetime (owned by, or parented to, the layer) is the primary
+    // guard; the QPointer is insurance.
+    const QPointer<SceneEntitiesLayer> guard(this);
+    url_fetcher_->fetch(url, [this, guard, key, identity, generation, hint, url_text](const FetchResult& result) {
+      if (guard.isNull() || active_model_fetches_.erase(generation) == 0U) {
         return;
       }
       const auto active = model_loads_.find(key);

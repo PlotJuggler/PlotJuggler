@@ -99,6 +99,15 @@ class Scene3DRenderFixture {
 
   // Registers `topic`, pushes `bytes` as its one object (t = 100 ns) and adds it to the dock.
   PJ::ObjectTopicId add(const std::string& topic, PJ::sdk::BuiltinObjectType type, std::vector<uint8_t> bytes) {
+    const PJ::ObjectTopicId id = registerTopic(topic, type);
+    push(id, 100, std::move(bytes));
+    EXPECT_TRUE(dock_->addTopic(id, type, QString::fromStdString(topic)));
+    return id;
+  }
+
+  // Registers `topic` in the fixture's dataset without adding it to the dock
+  // (a sibling a layer discovers on its own, such as an occupancy grid's _updates).
+  PJ::ObjectTopicId registerTopic(const std::string& topic, PJ::sdk::BuiltinObjectType type) {
     const auto id = session_.objectStore().registerTopic(
         PJ::ObjectTopicDescriptor{
             .dataset_id = dataset_,
@@ -106,12 +115,10 @@ class Scene3DRenderFixture {
             .metadata_json = R"({"builtin_object_type":")" + std::string(PJ::sdk::name(type)) + "\"}",
         });
     EXPECT_TRUE(id.has_value());
-    EXPECT_TRUE(session_.objectStore().pushOwned(*id, 100, std::move(bytes)).has_value());
-    EXPECT_TRUE(dock_->addTopic(*id, type, QString::fromStdString(topic)));
     return *id;
   }
 
-  // Pushes one more object at `t_ns` for a topic add() registered.
+  // Pushes one more object at `t_ns` for a registered topic.
   void push(PJ::ObjectTopicId id, PJ::Timestamp t_ns, std::vector<uint8_t> bytes) {
     EXPECT_TRUE(session_.objectStore().pushOwned(id, t_ns, std::move(bytes)).has_value());
   }

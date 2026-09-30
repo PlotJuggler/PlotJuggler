@@ -11,11 +11,15 @@
 #include <QLoggingCategory>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <bit>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <exception>
 #include <limits>
 #include <memory>
 #include <new>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -141,7 +145,6 @@ void DepthCloudLayer::detach() {
   reload_connection_ = {};
   ts_first_.reset();
   decoded_at_ns_.reset();
-  last_point_count_ = 0;
   world_bounds_.reset();
   intrinsics_cache_.reset();
   ctx_ = {};
@@ -182,9 +185,12 @@ void DepthCloudLayer::setVisible(bool visible) {
 #ifdef PJ_SCENE3D_RHI
   if (!visible_) {
     // A hidden layer releases its retained points; re-showing projects once.
+    // Its bounds stay: a hidden layer still counts in the camera's scene bounds.
+    const std::optional<AABB> bounds = world_bounds_;
     invalidateSample();
     budget_.reset();
     clearGeometry();
+    world_bounds_ = bounds;
   }
 #else
   cloud_pass_.setVisible(visible);
@@ -690,6 +696,23 @@ void DepthCloudLayer::updateSourceFrame(const std::string& frame_id) {
   emit fallbackFramesChanged(fallbackFrames());
 }
 
+std::uint64_t DepthCloudLayer::budgetKey(std::uint64_t sample_uid) const {
+  // The depth range decides which pixels become points.
+  const std::uint64_t range =
+      std::bit_cast<std::uint32_t>(min_depth_m_) | (std::uint64_t{std::bit_cast<std::uint32_t>(max_depth_m_)} << 32U);
+  return (sample_uid * 0x9e3779b97f4a7c15ULL) ^ range;
+}
+
+std::uint64_t DepthCloudLayer::budgetCandidate() const {
+  const PJ::ObjectStore* store = ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr;
+  if (decoded_at_ns_.has_value()) {
+    return budgetKey(PJ::latestEntryRenderKey(store, topic_id_, *decoded_at_ns_));
+  }
+  return budgetKey(
+      ts_first_.has_value() ? PJ::latestEntryRenderKey(store, topic_id_, PJ::fromRaw(*ts_first_))
+                            : PJ::kNoSampleRenderKey);
+}
+
 void DepthCloudLayer::drainPendingUpdate() {
   if (visible_ && tracker_dirty_) {
     tracker_dirty_ = false;
@@ -700,7 +723,7 @@ void DepthCloudLayer::drainPendingUpdate() {
 bool DepthCloudLayer::prepareForRender(std::uint64_t remaining_view_vertices) {
   const std::uint64_t revision_before = geometry_revision_;
   bool released = false;
-  if (budget_.blocked(remaining_view_vertices, released)) {
+  if (budget_.blocked(remaining_view_vertices, [this] { return budgetCandidate(); }, released)) {
     return false;
   }
   if (released) {
@@ -709,7 +732,7 @@ bool DepthCloudLayer::prepareForRender(std::uint64_t remaining_view_vertices) {
   // A projection queued here lands asynchronously and is checked on a later frame.
   drainPendingUpdate();
   if (static_cast<std::uint64_t>(pointCount()) > remaining_view_vertices) {
-    budget_.reject(pointCount());
+    budget_.reject(pointCount(), budgetKey(pushed_.sample.uid.value));
     setDataWarning(tr("DepthCloud has %1 points; only %2 remain in this view's budget")
                        .arg(QString::number(pointCount()), QString::number(remaining_view_vertices)));
     clearGeometry();
@@ -757,18 +780,20 @@ DepthCloudLayer::BackprojectResult DepthCloudLayer::backproject(const Backprojec
       result.error = tr("Depth image contains no valid pixels in the selected range");
       return result;
     }
-    result.vertices = QByteArray(static_cast<qsizetype>(points.size() * sizeof(PointVertex)), Qt::Uninitialized);
-    char* out = result.vertices.data();
-    for (std::size_t index = 0; index < points.size(); ++index) {
-      const PointVertex vertex{
-          .x = points[index].x,
-          .y = points[index].y,
-          .z = points[index].z,
-          .scalar = scalar[index],
-          .rgba = 0xFFFFFFFFU,
-      };
-      std::memcpy(out + index * sizeof(vertex), &vertex, sizeof(vertex));
-    }
+    const auto used = static_cast<qsizetype>(points.size() * sizeof(PointVertex));
+    packIntoRetained(result.vertices, used, [&](std::span<std::byte> out, bool /*reused*/) {
+      for (std::size_t index = 0; index < points.size(); ++index) {
+        const PointVertex vertex{
+            .x = points[index].x,
+            .y = points[index].y,
+            .z = points[index].z,
+            .attribute = std::bit_cast<std::uint32_t>(scalar[index]),
+        };
+        std::memcpy(out.data() + index * sizeof(vertex), &vertex, sizeof(vertex));
+      }
+      return used;
+    });
+    result.point_count = points.size();
     result.scalar_range = {scalar_range.min, scalar_range.max};
   } catch (const std::bad_alloc&) {
     result.vertices = {};
@@ -787,12 +812,12 @@ void DepthCloudLayer::onBackprojectFinished(BackprojectResult result) {
     return;
   }
   pushed_ = result.key;
-  last_point_count_ = static_cast<std::size_t>(result.vertices.size()) / sizeof(PointVertex);
   if (!result.error.isEmpty()) {
     clearGeometry();
     setDataWarning(result.error);
   } else {
     vertex_bytes_ = std::move(result.vertices);
+    point_count_ = result.point_count;
     world_bounds_ = result.bounds.valid ? std::optional<AABB>{result.bounds} : std::nullopt;
     scalar_range_ = result.scalar_range;
     ++geometry_revision_;
@@ -823,8 +848,8 @@ void DepthCloudLayer::onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id) {
 }
 
 void DepthCloudLayer::clearGeometry() {
-  last_point_count_ = 0;
 #ifndef PJ_SCENE3D_RHI
+  last_point_count_ = 0;
   // An empty cloud, not none: the pass must stop drawing the previous sample.
   cloud_pass_.setActiveCloud(std::make_shared<DecodedPointCloud>());
 #endif
@@ -832,6 +857,7 @@ void DepthCloudLayer::clearGeometry() {
     return;
   }
   vertex_bytes_ = QByteArray();
+  point_count_ = 0;
   world_bounds_.reset();
   scalar_range_ = {0.0f, 1.0f};
   ++geometry_revision_;

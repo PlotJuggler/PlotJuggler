@@ -39,10 +39,13 @@ class GridMapRhiPass {
   void registerPipelines(ScenePipelineRegistry& registry) const;
   /// Adopts the view's grid-map layers; drops GPU state of layers that left or are hidden.
   void setLayers(const std::vector<GridMapLayer*>& layers);
+  /// A layer of this family is in the view: the view builds the family (initialize()) only then.
+  [[nodiscard]] bool hasLayers() const {
+    return !layers_.empty();
+  }
 
-  /// Drains each visible layer's pending sample, places it and adds its
-  /// fixed-frame bounds to `bounds`.
-  void admit(const PlaceFn& place, SceneBoundsCollector& bounds);
+  /// Drains each visible layer's pending sample and places it.
+  void admit(const PlaceFn& place);
   /// Uploads changed grids and this frame's uniforms and builds the draws.
   void prepare(const RhiFrameContext& frame, const MeshShadingParams& shading);
   /// The prepared draw of `layer` (none or one).

@@ -23,10 +23,8 @@ For the release notes and the PR description:
 > - **Packagers (conda/RoboStack, distributions):** `-DPJ_SCENE3D_RHI=OFF`
 >   restores the previous OpenGL build for this release only (configure warns); it
 >   is removed in the next one.
-> - **3D view:** the camera fits each newly added layer once (never over a camera
->   restored from a layout); solid markers (cubes, spheres, cylinders, arrows) cast
->   shadows; a translucent layer blends over the layers behind it whatever its
->   position in the layer list; wireframe shows every triangle edge on every
+> - **3D view:** a translucent layer blends over the layers behind it whatever
+>   its position in the layer list; wireframe shows every triangle edge on every
 >   backend; markers draw at the layer's default 0.6 opacity; the grid follows the
 >   light/dark theme; plain URDF primitives are no longer darkened twice.
 > - **Plots:** crisper lines (one sample per pixel with shader anti-aliasing,
@@ -36,10 +34,9 @@ For the release notes and the PR description:
 >   the time at a third of the CPU; GPU memory per plot is 0.69-0.78x.
 > - **Performance:** a 10-million-point cloud renders as fast as before, a layout
 >   of 6 plots and a 3D view takes half the CPU, and many-layer scenes are faster
->   and far lighter (1000 layers: 0.16x the memory). Floating or redocking a large
->   3D view, and a view's first show, are slower than before (1.4-2x), and a
->   large cloud keeps about 20% more memory; these are the next release's
->   performance work.
+>   and far lighter (1000 layers: 0.16x the memory), and a large cloud holds no
+>   more memory than before. Floating a 3D view takes 10-15% longer than
+>   before.
 > - **Floating docks on X11** stay non-native windows: floating a dock no longer
 >   turns the docked area into native child windows.
 
@@ -90,67 +87,113 @@ decides which backend writes them, and drops the `macos-ci.yml` push trigger for
 
 ## P6: performance follow-ups
 
-Each Gate A row signed off as failing for release N (TECHNICAL_NOTES §9; Iris
-Xe, RHI GL vs the GL build), with its candidate fix.
+Gate A (TECHNICAL_NOTES §9; Iris Xe, RHI GL vs the GL build) passes every row;
+what remains is below.
 
-**Cloud stream 300k/frame: wall 8.0 vs 6.0 ms (1.33x, limit 7.2; bimodal
-5.6–8.5).**
+**Float, redock and first show** pass (TECHNICAL_NOTES §9, note ⁶). What a new
+QRhi still costs on OpenGL, for the robot float (62.6 vs 54.2 ms): the new
+top-level and QRhi 12 ms, the HDR chain's targets 12 ms, the first frame's GPU
+work and swap 25 ms. Candidates:
 
-- *Direct point converter.* Convert the wire cloud straight into the
-  `PointVertex` array, skipping the `DecodedPointCloud` intermediate (153 MiB
-  transient for 10M points) and the separate pack, whose fresh 191 MiB array
-  spends most of its ~115 ms in first-touch page faults. No shader or format
-  change. The first step.
-- *Integer zero-copy.* Upload the wire bytes and decode in the vertex stage: the
-  conversion measured 70–81% of decode+upload CPU (about 170–185 ms per 10M
-  sample), and the retained copy would shrink to the wire blob. It needs a vertex
-  layout and shader variant per wire datatype, NaN rejection in the shader, a
-  scalar and packed-colour attribute per field type, a re-bake of every pack and a
-  full golden re-verification. After the direct converter, if the row still fails.
-
-**Cloud 10M static: RSS 448 vs 371 MiB (1.21x). Cubes + lines: RSS 438 vs 301 MiB
-(1.46x).**
-
-- *Drop the retained CPU copy* of uploaded clouds (and marker expansions and
-  meshes). Blocked by the ADS reparent rebuild: every float, redock and dock-area
-  tab switch calls `initialize()` on a new QRhi and re-uploads from the retained
-  data. It needs a re-derive-from-datastore path whose cost fits the reparent
-  row. The direct converter and zero-copy above also cut the transient peak.
-
-**10k markers, pan + follow: GUI CPU 8.6 vs 6.6 ms (1.30x, limit 7.9).**
-
-- *Per-instance translation stream* (the exact fix). Keep each instance's
-  translation, and each stream vertex's position, in a separate per-frame vertex
-  stream recomputed from cached doubles on an origin change; `marker.vert`'s
-  matrix column 3 then comes from that binding, and the shaders are otherwise
-  unchanged. About 16 B/instance of upload per pan frame instead of a full
-  expansion.
-- *Marker origin in the shader*, as the grid does, is not an option as such: a
-  float add of camera-relative doubles is not pixel-identical (TECHNICAL_NOTES,
-  "Render origin").
-
-**50-link robot, TF each frame: wall 3.6 vs 2.2 ms (limit 3.2; bimodal
-1.8–4.2).** Every frame moves every link, so the model instances rebuild each
-frame by design. Profile the bimodality first (both builds show it on OpenGL).
-
-**Dock float / redock: 10M cloud 138.0 / 115.5 vs 93.9 / 85.0 ms (1.47x /
-1.36x); 50-link robot 72.0 / 49.0 vs 36.2 / 26.7 ms (1.99x / 1.84x). First show,
-cloud + robot: 221.1 vs 147.5 ms (1.50x).** A new top-level means a new QRhi, so
-every pipeline and buffer is rebuilt (the shader packs are already cached per
-process). Candidates:
-
-- avoid the rebuild on an ADS dock-area tab switch, which reparents through a
-  parentless state (TECHNICAL_NOTES §5): keep the widget parented in the ADS fork,
-  or recognize a return to the same QRhi;
+- keep a dock parented when ADS moves it to another area of the same window
+  (`removeDockWidget()` → `setDockArea(nullptr)` unparents it first): the same
+  kind of ADS fork change as the dock-area tab switch (TECHNICAL_NOTES §5), so a
+  drag within the window rebuilds nothing;
 - pipeline-cache persistence, if Qt 6.12 lets a `QRhiWidget` set it (see below);
 - precompiled packs (`qsb -c`), which need fxc and the Metal toolchain in a
-  per-platform bake;
-- lazy direct pipelines, which save only pipeline objects (every backend caches
-  compiled shaders per QRhi) and matter on Vulkan.
+  per-platform bake.
 
-**Vulkan 50 x 100k plot: 102.6 ms vs the Qwt GL canvas's 59.3 (1.73x).** Indexed
-geometry left it 9% slower in wall than before at 13% less CPU; the time is
-outside `render()`. Analyse it if Vulkan becomes a default anywhere.
+**Retained CPU copies.** A static point cloud drops its vertex array once
+uploaded and converts it again for a new QRhi (ARCHITECTURE, "Eviction"). Left:
+
+- *The load peak.* The array lives until its upload's frame is submitted: the
+  10M load peaks at 362.7 MiB against the GL build's 257.2 (TECHNICAL_NOTES §9,
+  note ¹).
+- *Depth clouds, marker expansions and meshes* keep their arrays. A depth cloud
+  is at most a few MiB; the other two would need the same re-derive path.
+- *Integer zero-copy.* Uploading the wire bytes and decoding in the vertex stage
+  would skip the conversion (the stream's and the re-derive's), against a vertex
+  layout and shader variant per wire datatype, NaN rejection in the shader, a
+  bounds pass and a full golden re-verification (TECHNICAL_NOTES, "Integer
+  zero-copy analysis").
+
+**Cloud stream process CPU.** The GUI thread passes; the pool spends about 1 ms
+more CPU per 300k frame than a serial conversion (TECHNICAL_NOTES §9, note ²). If
+total CPU becomes the budget, convert serially below 1M points.
+
+**OpenGL keeps a settled frame's uploads.** QRhi's GL backend retains each
+upload's data in the command buffer until the next `beginFrame`, so an idle view
+holds its last frame's uploads (53 MiB after a pan of 1.1M strip points).
+The fix is in Qt (release the retained data once `executeCommandBuffer` has
+run); on our side only an extra frame would release it, which the idle-frame
+rule forbids.
+
+**View lifecycle.** A dock-area tab switch and a hide/show rebuild and render
+nothing (TECHNICAL_NOTES §9, note ⁷). Left:
+
+- *Hidden tabs keep their GPU memory* (about 6.5 MiB per hidden 1260x780 plot on
+  RHI GL, the whole scene for a Scene3D tab). Add a release policy (hidden for
+  minutes, or over a budget) if users keep many heavy tabs.
+- *The content-change mark* (`SceneViewWidget::update()`) sees only requests made
+  through a `SceneViewWidget`; a new path that changes the scene and repaints
+  through a `QWidget` pointer would present the retained frame on the next Show.
+- *The i915 clock policy* differs per configuration (TECHNICAL_NOTES §9, note ⁵),
+  which moves light rows and the first frame after idle (`cold_ms`). Both builds
+  wait only through `DRM_IOCTL_SYNCOBJ_WAIT`; why the boost differs is open.
+- *HDR chain cost.* The 4x multisample RGBA16F scene pass with its resolve and
+  present is most of a GPU-bound frame (cubes: 23.5 ms, 7.0 ms without the chain);
+  SSAO and EDL cost under 0.3 ms. Lowering it (fewer samples, a smaller format) is
+  a quality tradeoff to decide, not an exact optimization.
+
+**Vulkan 50 x 100k plot, full rebuild: 107.1 ms vs RHI GL's 85.2 and the Qwt GL
+canvas's 91.5.** An unchanged replot of datastore curves reuses the curve layer
+(11.4 ms, TECHNICAL_NOTES §9 note ⁸). Of the rebuild's 16 ms over its render()
+CPU (90.9 ms, 9 ms more than OpenGL's recording), all is the wait
+for the GPU in `QRhi::endOffscreenFrame()`: on Vulkan a `QRhiWidget` frame is an
+offscreen frame, which submits and waits for its fence (`drmSyncobjWait`), so wall
+= CPU + GPU, where OpenGL overlaps the GPU with the next frame. Qt's design, not
+ours; reproducer: any `QRhiWidget` with about 20 ms of GPU work per frame, timed
+back to back on Vulkan against OpenGL.
+- *Anv buffer copies (fixed on our side; Mesa 26.0.3).* Mesa's anv records
+  `vkCmdCopyBuffer` by searching the copy's element count for a 2D/3D surface
+  shape on the CPU (an `idiv`-stepping divisor search at libvulkan_intel.so
+  +0x410060 in Ubuntu's 26.0.3-1ubuntu1, no debug symbols published): a count
+  with a large prime factor costs milliseconds per copy. Reproducer: upload a
+  static buffer of 1000003 x 16 bytes through QRhi (one vkCmdCopyBuffer) and time
+  `endOffscreenFrame()` against 1000000 x 16. Arrays the uploader owns are padded
+  past 64 KiB to a 64 KiB multiple (`PJ::padForUpload()`: point and depth clouds,
+  marker expansions) and upload as one copy;
+  `PJ::uploadStaticBufferInPieces()` (pj_widgets) issues the leading 64 KiB
+  multiple and the remainder of an unpadded one (the plot canvas, grid, pose and
+  trail uploads) as two copies into a Static buffer. Model meshes upload into
+  Immutable buffers, one copy each (QRhi's Vulkan backend gives each copy into an
+  Immutable buffer a full-size staging buffer of its own), so a mesh of an awkward
+  size still pays the search once.
+- *Per-curve reuse* (splicing an unchanged curve's retained geometry into a
+  rebuild): not taken. A rebuild happens when data or maps change; live streaming
+  refits the X axis on every ingest (every curve's map moves) and a zoom moves
+  them all, so an unchanged curve with unchanged maps is rare outside file
+  loading. Revisit with a use case (several plots sharing a slowly updated axis).
+
+**Dense large sprites: the tab-switch lattice (215³ = 9.9M spheres of 0.1 m in a
+1 m cube, about 50 px each) takes 400 ms per frame on RHI GL (414 on Vulkan)
+against the GL build's 310.** Attribution (one process each, `mixed_layout_benchmark
+--plots 0 --cloud-side 215`): SSAO and EDL cost nothing measurable; the depth
+resolve is used (a forced replay costs 673 ms); the whole HDR chain is 125 ms
+(275 ms with the direct pass); disabling blending for the opaque draw changes
+nothing. The gap is the sprite geometry: drawn as a point list (one vertex per
+point, `gl_PointSize`, as the GL build does), the same frame takes 311 ms (Vulkan
+301). Options, none pixel-identical:
+- *Point list above 4 px.* Parity with the GL build, but a point is culled whole
+  once its centre leaves the view (the edge pop `kPointListMaxPx` avoids) and
+  sprite rasterization differs from the quads the goldens were matched with.
+- *One triangle per sprite* (the disc's circumscribed triangle, 3 vertices instead
+  of 4): a quarter fewer vertex invocations for 30% more rasterized area; square
+  points would keep quads. The interpolated corner differs by rounding at the disc
+  edge.
+- *Colour only at the provoking vertex* of the quad strip: exact, but the flat
+  varyings come from a different vertex per backend (last on OpenGL, first on
+  Vulkan, D3D and Metal); not tried.
 
 **RTX 4070 measurements.** Gate A was measured on the Iris Xe only; the host
 kernel had no NVIDIA module. Re-run `scene3d_frame_benchmark`

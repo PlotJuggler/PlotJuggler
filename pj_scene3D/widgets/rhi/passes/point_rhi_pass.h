@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "../rhi_scene_pass.h"
+#include "pj_scene3d_core/pointcloud.h"  // PointVertexFormat
 
 namespace pj::scene3d {
 
@@ -35,12 +36,17 @@ class PointRhiPass {
   /// fan, or (small sprites) a point list.
   enum class Geometry : std::uint8_t { kQuad, kFan, kPointList };
 
+  /// The instance buffer layout: 16-byte records (xyz + one 32-bit attribute:
+  /// kXyzScalar, kXyzRgba) or 12-byte xyz (kXyz).
+  enum class Layout : std::uint8_t { kAttribute, kXyz };
+
   struct Draw {
     PointRenderable* layer = nullptr;
     QRhiBuffer* instances = nullptr;
     QRhiShaderResourceBindings* shader_resources = nullptr;
     quint32 instance_count = 0;
     Geometry geometry = Geometry::kQuad;
+    Layout layout = Layout::kAttribute;
     /// kOpaque: every point, or the in-range half; kTranslucent: the faded half.
     DrawClass draw_class = DrawClass::kOpaque;
   };
@@ -56,11 +62,15 @@ class PointRhiPass {
     float pixel_scale = 1.0F;
   };
 
+  /// Binds the view's resources; builds no pipeline: each layout and geometry
+  /// pair is built on first use (prepare()), so a new QRhi pays only for the
+  /// ones its clouds draw with. A pair that cannot be built drops its clouds
+  /// with a warning.
   [[nodiscard]] bool initialize(const RhiPassSetup& setup);
   [[nodiscard]] bool ready() const {
-    return pipelines_[kQuadIndex][0] != nullptr && pipelines_[kQuadIndex][1] != nullptr &&
-           pipelines_[kFanIndex][0] != nullptr && pipelines_[kFanIndex][1] != nullptr;
+    return layout_shader_resources_ != nullptr;
   }
+  /// Registers the built pipelines, and later the lazily built ones, with `registry`.
   void registerPipelines(ScenePipelineRegistry& registry) const;
   /// Lets clouds whose sprites are at most kPointListMaxPx draw as a point list
   /// (gl_PointSize), where the backend has QRhi::VertexShaderPointSize. On by
@@ -69,15 +79,19 @@ class PointRhiPass {
     point_list_enabled_ = enabled;
   }
   [[nodiscard]] bool pointListActive() const {
-    return point_list_enabled_ && pipelines_[kPointListIndex][0] != nullptr &&
-           pipelines_[kPointListIndex][1] != nullptr;
+    return point_list_enabled_ && point_size_supported_;
   }
   /// Adopts the view's point layers; drops GPU state of layers that left or are hidden.
   void setLayers(const std::vector<PointRenderable*>& layers);
+  /// A layer of this family is in the view: the view builds the family (initialize()) only then.
+  [[nodiscard]] bool hasLayers() const {
+    return !layers_.empty();
+  }
 
   /// Runs each visible layer's prepareForRender() against the per-view vertex
-  /// budget, places it, and adds its fixed-frame bounds to `bounds`.
-  void admit(const PlaceFn& place, SceneBoundsCollector& bounds);
+  /// budget, places it, and records the families' fixed-frame bounds
+  /// (lastPointBounds(), lastDepthBounds()).
+  void admit(const PlaceFn& place);
   /// Uploads admitted clouds and uniforms and builds this frame's draws.
   void prepare(const RhiFrameContext& frame, const ViewInputs& view);
   /// The prepared draws of `layer` (none, one, or opaque then faded).
@@ -122,20 +136,34 @@ class PointRhiPass {
   [[nodiscard]] AABB lastDepthBounds() const {
     return last_depth_bounds_;
   }
+#ifdef PJ_RHI_TEST_HOOKS
+  /// Cloud uploads since construction (a new sample, or a rebuild on a new QRhi) and their bytes.
+  [[nodiscard]] std::uint64_t uploadCountForTest() const {
+    return upload_count_;
+  }
+  [[nodiscard]] std::uint64_t uploadedBytesForTest() const {
+    return uploaded_bytes_;
+  }
+#endif
 
  private:
   struct LayerGpu {
     QRhiBuffer* instances = nullptr;
     quint32 capacity = 0;
     quint32 count = 0;
+    PointVertexFormat format = PointVertexFormat::kXyz;  ///< of the uploaded records
+    /// The layer re-uploaded into this buffer: a stream keeps a Static buffer (its
+    /// staging copy is reused), a cloud uploaded once an Immutable one (staging freed).
+    bool streamed = false;
     std::uint64_t uploaded_revision = ~std::uint64_t{0};
     QRhiBuffer* uniforms = nullptr;  ///< two slots: [0] all / in-range, [1] faded
     std::array<QRhiShaderResourceBindings*, 2> shader_resources{};
   };
-  static constexpr std::size_t kQuadIndex = static_cast<std::size_t>(Geometry::kQuad);
-  static constexpr std::size_t kFanIndex = static_cast<std::size_t>(Geometry::kFan);
-  static constexpr std::size_t kPointListIndex = static_cast<std::size_t>(Geometry::kPointList);
 
+  /// Builds `layout`'s opaque pipeline for `geometry`, and its faded one with
+  /// `faded`, unless built; false when one failed (not retried until the next
+  /// initialize()).
+  bool ensurePipelines(Layout layout, Geometry geometry, bool faded);
   /// An SRB over `uniforms` bytes [offset, offset + kPointUniformBytes) and the render mode.
   QRhiShaderResourceBindings* createLayerBindings(QRhi* rhi, QRhiBuffer* uniforms, quint32 offset) const;
   bool ensureLayerGpu(QRhi* rhi, LayerGpu& gpu);
@@ -147,9 +175,15 @@ class PointRhiPass {
   quint32 uniform_stride_ = 0;
   QRhiBuffer* layout_uniforms_ = nullptr;
   QRhiShaderResourceBindings* layout_shader_resources_ = nullptr;
-  /// [Geometry][faded]: faded pipelines skip depth writes. The point-list pair
-  /// exists only with QRhi::VertexShaderPointSize.
-  std::array<std::array<QRhiGraphicsPipeline*, 2>, 3> pipelines_{};
+  /// [Layout][Geometry][faded]: faded pipelines skip depth writes. The point-list
+  /// pairs exist only with QRhi::VertexShaderPointSize.
+  std::array<std::array<std::array<QRhiGraphicsPipeline*, 2>, 3>, 2> pipelines_{};
+  RhiPassSetup setup_;                                 ///< for the pipelines built on first use
+  mutable ScenePipelineRegistry* registry_ = nullptr;  ///< view-owned; set by the const registerPipelines()
+  bool point_size_supported_ = false;
+  /// [Layout][Geometry][faded]: creation was attempted; a failed one is not retried per frame.
+  std::array<std::array<std::array<bool, 2>, 3>, 2> pipelines_attempted_{};
+  bool pipeline_warned_ = false;
   bool point_list_enabled_ = true;
 
   std::vector<PointRenderable*> layers_;
@@ -167,6 +201,10 @@ class PointRhiPass {
   int last_point_list_layer_count_ = 0;
   AABB last_point_bounds_;
   AABB last_depth_bounds_;
+#ifdef PJ_RHI_TEST_HOOKS
+  std::uint64_t upload_count_ = 0;
+  std::uint64_t uploaded_bytes_ = 0;
+#endif
 };
 
 }  // namespace pj::scene3d

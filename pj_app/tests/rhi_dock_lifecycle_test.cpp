@@ -18,11 +18,15 @@
 
 #include <QApplication>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QMainWindow>
 #include <QOpenGLWidget>
 #include <QPointer>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QRhiWidget>
 #include <QScreen>
+#include <QSurfaceFormat>
 #include <QTest>
 #include <QWindow>
 #if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
@@ -32,6 +36,8 @@
 #include <deque>
 #include <memory>
 #include <optional>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "pj_gpu_test_gate.h"  // PJ_SKIP_WITHOUT_GPU
@@ -39,6 +45,8 @@
 #include "support/rhi_dock_test_support.h"
 
 #ifdef PJ_WITH_SCENE2D
+#include "pj_runtime/SessionManager.h"
+#include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 #endif
 
@@ -226,21 +234,113 @@ TEST_F(RhiDockFixture, SplittingAndMovingWithinTheWindowKeepRendering) {
   EXPECT_EQ(red_.stale, 0);
 }
 
-// ADS keeps only the current tab parented: a hidden tab leaves the window, drops
-// its resources, and initializes again when shown.
-TEST_F(RhiDockFixture, HiddenTabsReleaseAndRenderAgainWhenShown) {
+// A dock-area tab switch hides the previous tab but keeps it parented (our ADS
+// patch, pj_scene3D/docs/TECHNICAL_NOTES.md §5): a hidden tab stays in the
+// window with its resources and renders again without a new initialize().
+TEST_F(RhiDockFixture, HiddenTabsKeepTheirResources) {
   auto* blue_dock = new ads::CDockWidget(manager_, u"blue"_s);
   blue_dock->setWidget(new StandInRhiWidget(Qt::blue, blue_), ads::CDockWidget::ForceNoScrollArea);
   manager_->addDockWidgetTabToArea(blue_dock, green_dock_->dockAreaWidget());
   blue_dock->setAsCurrentTab();
   EXPECT_TRUE(rendersColour(rhiWidgetOf(blue_dock), Qt::blue));
-  EXPECT_EQ(green_.live, 0);
-
-  green_dock_->setAsCurrentTab();
-  EXPECT_TRUE(rendersColour(green(), Qt::green));
+  EXPECT_FALSE(green()->isVisible());
+  EXPECT_EQ(green()->window(), window_.get());
   EXPECT_EQ(green_.live, 1);
-  EXPECT_EQ(green_.stale, 0);
+
+  for (int round = 0; round < 3; ++round) {
+    green_dock_->setAsCurrentTab();
+    EXPECT_TRUE(rendersColour(green(), Qt::green));
+    blue_dock->setAsCurrentTab();
+    EXPECT_TRUE(rendersColour(rhiWidgetOf(blue_dock), Qt::blue));
+  }
+  EXPECT_EQ(green_.inits, 1);
+  EXPECT_EQ(green_.releases, 0);
+  EXPECT_EQ(blue_.inits, 1);
+  EXPECT_EQ(blue_.releases, 0);
+  EXPECT_EQ(green_.stale + blue_.stale, 0);
+}
+
+// The ADS operations around kept (hidden, parented) tabs: reordering, closing
+// and reopening a hidden and the current tab, a state save/restore, floating the
+// whole area, moving a hidden tab to another window and destroying a hidden tab. Every tab that is shown renders its
+// colour, none ever meets a new QRhi holding the old one's resources, and none holds more than one.
+TEST_F(RhiDockFixture, OperationsOnKeptTabsKeepRendering) {
+  Lifecycle cyan;
+  auto* blue_dock = new ads::CDockWidget(manager_, u"blue"_s);
+  blue_dock->setWidget(new StandInRhiWidget(Qt::blue, blue_), ads::CDockWidget::ForceNoScrollArea);
+  auto* cyan_dock = new ads::CDockWidget(manager_, u"cyan"_s);
+  cyan_dock->setWidget(new StandInRhiWidget(Qt::cyan, cyan), ads::CDockWidget::ForceNoScrollArea);
+  ads::CDockAreaWidget* area = green_dock_->dockAreaWidget();
+  manager_->addDockWidgetTabToArea(blue_dock, area);
+  manager_->addDockWidgetTabToArea(cyan_dock, area);
+  const std::vector<std::pair<ads::CDockWidget*, QColor>> tabs{
+      {green_dock_, Qt::green}, {blue_dock, Qt::blue}, {cyan_dock, Qt::cyan}};
+  const auto current_renders = [&](const char* where) {
+    for (const auto& [dock, colour] : tabs) {
+      if (dock->isCurrentTab() && !dock->isClosed()) {
+        EXPECT_TRUE(rendersColour(rhiWidgetOf(dock), colour)) << where << ": " << dock->objectName().toStdString();
+      }
+    }
+    for (const Lifecycle* lifecycle : {&green_, &blue_, &cyan}) {
+      EXPECT_EQ(lifecycle->stale, 0) << where;
+      EXPECT_LE(lifecycle->live, 1) << where;
+    }
+  };
+  for (const auto& [dock, colour] : tabs) {
+    dock->setAsCurrentTab();
+    current_renders("first visit");
+  }
+
+  // Dragging the current tab to the front of the bar.
+  ASSERT_TRUE(QMetaObject::invokeMethod(area, "reorderDockWidget", Q_ARG(int, 2), Q_ARG(int, 0)));
+  EXPECT_TRUE(cyan_dock->isCurrentTab());
+  current_renders("reordered");
+
+  blue_dock->toggleView(false);  // a hidden tab
+  current_renders("hidden tab closed");
+  blue_dock->toggleView(true);
+  EXPECT_TRUE(blue_dock->isCurrentTab());
+  current_renders("hidden tab reopened");
+  blue_dock->toggleView(false);  // the current tab
+  current_renders("current tab closed");
+  blue_dock->toggleView(true);
+  current_renders("current tab reopened");
+  EXPECT_EQ(green_.inits + blue_.inits + cyan.inits, 3) << "a tab operation within the window re-initialized";
+
+  // Before any floating window exists: restoring one hides and re-shows it at
+  // once, which Vulkan on Wayland does not survive (TECHNICAL_NOTES §5).
+  const QByteArray state = manager_->saveState();
+  ASSERT_TRUE(manager_->restoreState(state));
+  QApplication::processEvents();
+  current_renders("state restored");
+  EXPECT_TRUE(rendersColour(red(), Qt::red));
+
+  area = green_dock_->dockAreaWidget();  // the restore replaced every area
+  area->setFloating();                   // every tab, kept ones included, moves to the new window
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(blue_dock->window()));
+  EXPECT_NE(green()->window(), window_.get());
+  for (const auto& [dock, colour] : tabs) {
+    dock->setAsCurrentTab();
+    current_renders("area floating");
+  }
+
+  manager_->addDockWidget(ads::RightDockWidgetArea, green_dock_, red_dock_->dockAreaWidget());  // a hidden tab
+  ASSERT_EQ(green()->window(), window_.get());
+  current_renders("hidden tab moved back to the main window");
+  EXPECT_TRUE(rendersColour(green(), Qt::green));
+
+  cyan_dock->setAsCurrentTab();
+  ASSERT_TRUE(rendersColour(rhiWidgetOf(cyan_dock), Qt::cyan));
+  manager_->removeDockWidget(blue_dock);  // hidden behind cyan
+  delete blue_dock;
+  QApplication::processEvents();
   EXPECT_EQ(blue_.live, 0);
+  EXPECT_EQ(blue_.inits, blue_.releases);
+  EXPECT_TRUE(rendersColour(rhiWidgetOf(cyan_dock), Qt::cyan));
+  manager_->removeDockWidget(cyan_dock);
+  delete cyan_dock;  // before `cyan` goes out of scope
+  QApplication::processEvents();
+  EXPECT_EQ(cyan.live, 0);
 }
 
 TEST_F(RhiDockFixture, DestroyingASiblingLeavesTheOthersRendering) {
@@ -296,8 +396,10 @@ TEST_F(RhiDockFixture, ClosingAFloatingWindowAndReopeningTheDockRendersAgain) {
 }
 
 // A floating dock moved to a screen with another device-pixel ratio. Needs two
-// screens with different ratios, e.g. two gnome-shell virtual monitors plus
-// QT_SCREEN_SCALE_FACTORS="1;2"; the whole-suite dpr2 run covers a uniform ratio.
+// screens with different ratios on xcb: a headless mutter's Xwayland with two
+// virtual monitors plus QT_SCREEN_SCALE_FACTORS="1;2" (linux-ci's mixed-DPR
+// step). Skips without them (fails with PJ_REQUIRE_MIXED_DPR=1); a move that does
+// not change the ratio fails. The whole-suite dpr2 run covers a uniform ratio.
 TEST_F(RhiDockFixture, FloatingDockMovedToAScreenWithAnotherPixelRatio) {
   const QList<QScreen*> screens = QGuiApplication::screens();
   QScreen* other = nullptr;
@@ -307,17 +409,21 @@ TEST_F(RhiDockFixture, FloatingDockMovedToAScreenWithAnotherPixelRatio) {
     }
   }
   if (other == nullptr) {
-    GTEST_SKIP() << "needs two screens with different device-pixel ratios";
+    if (qEnvironmentVariableIntValue("PJ_REQUIRE_MIXED_DPR") == 1) {
+      FAIL() << "PJ_REQUIRE_MIXED_DPR=1 but no screen has another device-pixel ratio";
+    }
+    GTEST_SKIP() << "needs two screens with different device-pixel ratios (TECHNICAL_NOTES §8, mixed-DPR lane)";
+  }
+  if (QGuiApplication::platformName() == u"wayland") {
+    GTEST_SKIP() << "the Wayland compositor places windows; run on xcb";
   }
   ASSERT_NO_FATAL_FAILURE(floatDock(red_dock_));
   QWindow* floating = red()->window()->windowHandle();
   ASSERT_NE(floating, nullptr);
   const qreal before = red()->devicePixelRatio();
   floating->setScreen(other);
-  if (!QTest::qWaitFor([&] { return red()->devicePixelRatio() != before; }, 3000)) {
-    GTEST_SKIP() << "the window system kept the window on its screen (" << QGuiApplication::platformName().toStdString()
-                 << ")";
-  }
+  ASSERT_TRUE(QTest::qWaitFor([&] { return red()->devicePixelRatio() != before; }, 3000))
+      << "the window system kept the window on its screen (" << QGuiApplication::platformName().toStdString() << ")";
   const QImage image = presentAndGrab(red());
   ASSERT_FALSE(image.isNull());
   EXPECT_EQ(image.size(), (red()->size() * red()->devicePixelRatio()));
@@ -509,6 +615,119 @@ TEST_F(RhiDockFixture, MediaCompositeUploadsOnlyTheChangedLayer) {
   EXPECT_EQ(viewer->frameUploadCountForTest(), first + 1U);
 }
 
+// More distinct labels than the glyph cache holds (512): the same labels in the
+// next frame are drawn without rasterizing any of them again, and a frame of
+// other labels evicts the unused ones, leaving only what it draws.
+TEST_F(RhiDockFixture, MediaLabelsBeyondTheCacheBoundAreNotRasterizedAgain) {
+  constexpr int kLabels = 600;
+  const auto labelled = [](int first) {
+    PJ::MediaFrame frame = orientationFrame();
+    std::vector<PJ::TextAnnotation>& texts = frame.overlays.front().annotations.front().texts;
+    for (int i = 0; i < kLabels; ++i) {
+      texts.push_back(PJ::TextAnnotation{.position = {2.0, 2.0}, .font_size = 8.0, .text = std::to_string(first + i)});
+    }
+    return frame;
+  };
+  auto source = std::make_unique<QueuedMediaSource>();
+  QueuedMediaSource& queue = *source;
+  media_source_ = std::move(source);
+  queue.push(labelled(0));
+  auto* viewer = new PJ::MediaViewerWidget();
+  viewer->setMediaSource(&queue);
+  auto* dock = new ads::CDockWidget(manager_, u"media"_s);
+  dock->setWidget(viewer, ads::CDockWidget::ForceNoScrollArea);
+  manager_->addDockWidget(ads::BottomDockWidgetArea, dock);
+  ASSERT_FALSE(presentAndGrab(viewer).isNull());
+  const std::uint64_t first = viewer->labelRasterizationsForTest();
+  ASSERT_EQ(first, std::uint64_t{kLabels});
+
+  queue.push(labelled(0));
+  viewer->update();
+  ASSERT_FALSE(presentAndGrab(viewer).isNull());
+  EXPECT_EQ(viewer->labelRasterizationsForTest(), first) << "unchanged labels were rasterized again";
+
+  queue.push(labelled(kLabels));
+  viewer->update();
+  ASSERT_FALSE(presentAndGrab(viewer).isNull());
+  EXPECT_EQ(viewer->labelRasterizationsForTest(), first + kLabels);
+  EXPECT_EQ(viewer->labelCacheSizeForTest(), std::size_t{kLabels}) << "unused labels kept past the bound";
+}
+
+// Records the rectification path the viewer selects for its source.
+class RectifyProbeSource final : public PJ::MediaSource {
+ public:
+  explicit RectifyProbeSource(PJ::MediaFrame frame) : frame_(std::move(frame)) {}
+  void setTimestamp(int64_t /*ts_ns*/) override {}
+  std::optional<PJ::MediaFrame> takeFrame() override {
+    return std::exchange(frame_, std::nullopt);
+  }
+  void setGpuRectificationAvailable(bool available) override {
+    gpu_rectify = available;
+  }
+  std::optional<bool> gpu_rectify;
+
+ private:
+  std::optional<PJ::MediaFrame> frame_;
+};
+
+class ProbingMediaViewer final : public PJ::MediaViewerWidget {
+ public:
+  using PJ::MediaViewerWidget::rhi;
+};
+
+// WebGL2 is OpenGL ES 3.0, where Qt's GLES backend reports no 32-bit integer
+// texture format (it lists them from ES 3.1 on) though the rectification LUT's
+// RG32UI is core ES 3.0. Mesa serves such a context (an ES context capped at
+// 3.0), on which the viewer must still select GPU rectification. The case
+// re-runs itself in a child process, since the GL integration is chosen when
+// the application starts.
+TEST(MediaViewerGlesTest, SelectsGpuRectificationOnOpenGlEs30) {
+  constexpr char kChild[] = "PJ_TEST_GLES30_CHILD";
+  if (!qEnvironmentVariableIsSet(kChild)) {
+    PJ_SKIP_ON_HEADLESS_QPA();
+    if (QGuiApplication::platformName() != u"xcb"_s || PJ::preferredGraphicsApi() != QRhiWidget::Api::OpenGL) {
+      GTEST_SKIP() << "needs Mesa OpenGL ES through xcb";
+    }
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QString::fromLatin1(kChild), u"1"_s);
+    env.insert(u"QT_XCB_GL_INTEGRATION"_s, u"xcb_egl"_s);
+    env.insert(u"MESA_GLES_VERSION_OVERRIDE"_s, u"3.0"_s);
+    QProcess child;
+    child.setProcessEnvironment(env);
+    child.setProcessChannelMode(QProcess::MergedChannels);
+    child.start(QCoreApplication::applicationFilePath(), {u"--gtest_filter=MediaViewerGlesTest.*"_s});
+    ASSERT_TRUE(child.waitForFinished(60000));
+    const QString output = QString::fromLocal8Bit(child.readAll());
+    if (output.contains(u"[  SKIPPED ]"_s)) {
+      GTEST_SKIP() << output.toStdString();
+    }
+    EXPECT_EQ(child.exitCode(), 0) << output.toStdString();
+    EXPECT_TRUE(output.contains(u"[  PASSED  ] 1 test"_s));
+    return;
+  }
+  QSurfaceFormat format = QSurfaceFormat::defaultFormat();
+  format.setRenderableType(QSurfaceFormat::OpenGLES);
+  format.setVersion(3, 0);
+  QSurfaceFormat::setDefaultFormat(format);
+  RectifyProbeSource source(orientationFrame());
+  QWidget window;
+  window.resize(200, 200);
+  auto* layout = new QHBoxLayout(&window);
+  auto* viewer = new ProbingMediaViewer();
+  viewer->setMediaSource(&source);
+  layout->addWidget(viewer);
+  window.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&window));
+  ASSERT_FALSE(presentAndGrab(viewer).isNull()) << "no frame on the OpenGL ES context";
+  QRhi* rhi = viewer->rhi();
+  ASSERT_NE(rhi, nullptr);
+  if (rhi->isTextureFormatSupported(QRhiTexture::RG32UI)) {
+    GTEST_SKIP() << "the context is not capped at OpenGL ES 3.0";
+  }
+  ASSERT_TRUE(source.gpu_rectify.has_value()) << "the viewer selected no rectification path";
+  EXPECT_TRUE(*source.gpu_rectify) << "the viewer rectifies on the CPU";
+}
+
 #endif
 
 // One top-level can composite with only one API. A QOpenGLWidget always asks for
@@ -562,5 +781,37 @@ TEST(MixedApiWindowTest, NonGlRhiWidgetBesideAnOpenGlWidgetFailsWithoutCrashing)
     return message.contains(u"already using another graphics API");
   })) << problems.join(u'\n').toStdString();
 }
+
+#ifdef PJ_WITH_SCENE2D
+// The real media dock joins a window an OpenGL widget pinned to OpenGL, its
+// viewer asking for another API. The viewer never gets a QRhi, so initialize()
+// never runs: Qt's renderFailed() alone must show the dock's rendering warning.
+TEST(MixedApiWindowTest, MediaDockWithoutAQRhiShowsItsWarning) {
+  PJ_SKIP_ON_HEADLESS_QPA();
+  WarningCollector warnings;
+  PJ::SessionManager session;
+  (void)session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "camera", .time_domain_id = 0}, 1);
+  const auto topic = session.objectStore().registerTopic(PJ::ObjectTopicDescriptor{1, "/camera/image", {}});
+  ASSERT_TRUE(topic.has_value());
+  QWidget window;
+  window.resize(400, 300);
+  auto* layout = new QHBoxLayout(&window);
+  layout->addWidget(new ClearingGlWidget());
+  window.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&window));
+
+  auto* dock = new PJ::Scene2DDockWidget();
+  dock->setSessionManager(&session);
+  ASSERT_TRUE(dock->addTopic(*topic, PJ::sdk::BuiltinObjectType::kImage, u"image"_s));  // fronts the viewer
+  auto* viewer = dock->findChild<PJ::MediaViewerWidget*>(u"scene2dMediaViewer"_s);
+  auto* label = dock->findChild<QLabel*>(u"scene2dRenderingWarning"_s);
+  ASSERT_NE(viewer, nullptr);
+  ASSERT_NE(label, nullptr);
+  viewer->setApi(nonGlApi());
+  layout->addWidget(dock);
+  EXPECT_TRUE(QTest::qWaitFor([label] { return label->isVisible(); }, 3000)) << "no rendering warning shown";
+  EXPECT_FALSE(label->text().isEmpty());
+}
+#endif
 
 }  // namespace

@@ -5,12 +5,17 @@
 // Scene3DDockWidget on every backend:
 //
 //  - MarkerRhiPass keeps each layer's expansion in Static buffers keyed on its
-//    geometry revision, style, shadow casting, the render origin and the resolved
+//    geometry revision, style, the render origin and the resolved
 //    TF placement of every frame it references: orbit and zoom rebuild nothing,
 //    a pan rebuilds once, a live layer rebuilds once per new sample, a TF-only move
 //    of a static layer's frame rebuilds it and moves its pixels, and the cached
 //    frames match the uncached path (setMarkerCacheEnabledForTest(false)) pixel
 //    for pixel; a partial buffer-allocation failure drops the layer for one frame;
+//  - a layer re-uploaded within a few frames keeps its expansion, and an
+//    origin-only change (pan, follow) then rewrites only its translations and
+//    stream positions, pixel-identical to the uncached path near the origin and
+//    1e6 m away, for small and large pans and across a TF move; any other layer
+//    drops its expansion after the upload;
 //  - GridRhiPass builds the grid once: panning and playback never rebuild it;
 //    the TF connection lines follow the playhead and the render origin;
 //  - VoxelRhiPass rejects a grid wholly outside the frustum and keeps one that
@@ -21,8 +26,10 @@
 #include <gtest/gtest.h>
 
 #include <QTest>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -52,7 +59,7 @@ double seconds(PJ::Timestamp t) {
   return static_cast<double>(t) / 1.0e9;
 }
 
-PJ::sdk::SceneEntity cubeEntity(const std::string& id, const std::string& frame, glm::vec3 centre, float side) {
+PJ::sdk::SceneEntity cubeEntity(const std::string& id, const std::string& frame, glm::dvec3 centre, float side) {
   PJ::sdk::SceneEntity entity;
   entity.frame_id = frame;
   entity.id = id;
@@ -66,8 +73,8 @@ PJ::sdk::SceneEntity cubeEntity(const std::string& id, const std::string& frame,
 
 // Every marker family: cube (+ edge overlay), sphere, cylinder, arrow, a line
 // strip and a triangle list, around `centre`.
-std::vector<PJ::sdk::SceneEntity> mixedEntities(const std::string& frame, glm::vec3 centre) {
-  PJ::sdk::SceneEntity entity = cubeEntity("mixed", frame, centre + glm::vec3(-1.0F, 0.0F, 0.3F), 0.5F);
+std::vector<PJ::sdk::SceneEntity> mixedEntities(const std::string& frame, glm::dvec3 centre) {
+  PJ::sdk::SceneEntity entity = cubeEntity("mixed", frame, centre + glm::dvec3(-1.0, 0.0, 0.3), 0.5F);
   PJ::sdk::SpherePrimitive sphere;
   sphere.pose.position = {centre.x, centre.y, centre.z + 0.3};
   sphere.size = {0.5, 0.5, 0.5};
@@ -123,8 +130,8 @@ std::vector<uint8_t> serializeEdge(const std::string& child, glm::dvec3 offset, 
   return PJ::serializeFrameTransforms(transforms);
 }
 
-// One dock bound to the fixture's TF service (so the view renders shadows, and
-// markers can sit in a TF child frame), with a pinned camera.
+// One dock bound to the fixture's TF service (so markers can sit in a TF child
+// frame), with a pinned camera.
 class CacheScene {
  public:
   CacheScene() {
@@ -184,7 +191,7 @@ class CacheScene {
     return view()->markerPassForTest();
   }
 
-  // Shows the window at kT0, consumes the one-shot camera fit, then pins a
+  // Shows the window at kT0, presents a warm-up frame, then pins a
   // front-above camera. False when no frame could be presented.
   bool show(bool grid = false) {
     for (int i = 0; i < 20 && view() == nullptr; ++i) {
@@ -334,7 +341,7 @@ TEST_F(Scene3dRhiMarkerCacheTest, TfOnlyMoveOfAStaticLayerRebuildsAndMovesIt) {
   EXPECT_EQ(scene.markers().layerRebuildCountForTest(), rebuilds + 1);
 }
 
-TEST_F(Scene3dRhiMarkerCacheTest, StyleShadowAndVisibilityInvalidate) {
+TEST_F(Scene3dRhiMarkerCacheTest, StyleAndVisibilityInvalidate) {
   CacheScene scene;
   const auto id = scene.addEntities("/markers", mixedEntities(kFrame, {0.0F, 0.0F, 0.0F}));
   SHOW_OR_SKIP(scene);
@@ -358,11 +365,10 @@ TEST_F(Scene3dRhiMarkerCacheTest, StyleShadowAndVisibilityInvalidate) {
   EXPECT_EQ(rebuilt_by([&] { layer->setColorOverrideEnabled(true); }), 1U);
   EXPECT_EQ(rebuilt_by([&] { layer->setWireframe(true); }), 1U);
   EXPECT_EQ(rebuilt_by([&] { layer->setWireframe(false); }), 1U);
-  ASSERT_TRUE(scene.view()->lastShadowActiveForTest());
-  EXPECT_EQ(rebuilt_by([&] { set_shadows(false); }), 1U);
+  // Markers cast no shadows: the shadow toggle is not theirs.
+  EXPECT_EQ(rebuilt_by([&] { set_shadows(false); }), 0U);
+  EXPECT_EQ(rebuilt_by([&] { set_shadows(true); }), 0U);
   EXPECT_EQ(scene.view()->lastShadowDrawCountForTest(), 0);
-  EXPECT_EQ(rebuilt_by([&] { set_shadows(true); }), 1U);
-  EXPECT_GT(scene.view()->lastShadowDrawCountForTest(), 0);
   // A hidden layer gives its buffers back; showing it again rebuilds.
   EXPECT_EQ(rebuilt_by([&] { layer->setVisible(false); }), 0U);
   EXPECT_EQ(scene.view()->lastMarkerLayerCountForTest(), 0);
@@ -384,7 +390,6 @@ TEST_F(Scene3dRhiMarkerCacheTest, CachedFramesMatchTheUncachedPath) {
   scene.addEntities("/child", {cubeEntity("c", "child", {0.0F, -1.5F, 0.6F}, 0.4F)});
   scene.expectLayers(2);
   SHOW_OR_SKIP(scene, /*grid=*/true);
-  ASSERT_TRUE(scene.view()->lastShadowActiveForTest());
   auto& markers = scene.markers();
   const auto both = [&](const char* what, auto move) {
     markers.setMarkerCacheEnabledForTest(true);
@@ -402,6 +407,126 @@ TEST_F(Scene3dRhiMarkerCacheTest, CachedFramesMatchTheUncachedPath) {
   const std::uint64_t rebuilds = markers.layerRebuildCountForTest();
   scene.moveCamera([](auto& camera) { camera.azimuth += 0.3F; });
   EXPECT_EQ(markers.layerRebuildCountForTest(), rebuilds);
+}
+
+// Consecutive pans take the origin-only path. Each such frame (a solid layer and
+// a wireframe one), and a TF move
+// (a full rebuild) between them, matches the uncached path pixel for pixel, around
+// the fixed-frame origin and 1e6 m away from it (where the float render origin
+// only moves in 0.125 m steps, so the small pans there are a few ulps).
+TEST_F(Scene3dRhiMarkerCacheTest, OriginOnlyUpdatesMatchTheUncachedPath) {
+  for (const glm::vec3 base : {glm::vec3(0.0F), glm::vec3(1.5e6F, -2.25e6F, 35.0F)}) {
+    SCOPED_TRACE(base.x);
+    CacheScene scene;
+    const glm::dvec3 child_offset = glm::dvec3(base) + glm::dvec3(0.5, 0.5, 0.0);
+    scene.addEdge("child", {{kT0, child_offset}, {kT0 + kStepNs, child_offset + glm::dvec3(0.3, -0.2, 0.05)}});
+    scene.addEntities("/markers", mixedEntities(kFrame, base));
+    const auto child = scene.addEntities("/child", mixedEntities("child", {0.0F, -1.5F, 0.3F}));
+    scene.expectLayers(2);
+    SHOW_OR_SKIP(scene, /*grid=*/true);
+    // Wireframe: its triangles become stream line edges.
+    scene.markerLayer(child)->setWireframe(true);
+    auto& markers = scene.markers();
+    const glm::vec3 focal = base + glm::vec3(0.0F, 0.0F, 0.3F);
+    const float ulp = std::nextafter(focal.x, std::numeric_limits<float>::infinity()) - focal.x;
+    const float smallPan = std::max(0.01F, 3.0F * ulp);
+    const auto pan = [&](glm::vec3 delta) { return [delta](auto& camera) { camera.focal += delta; }; };
+    // Onto the scene, then one more pan: the layers keep re-uploading.
+    scene.moveCamera([&](auto& camera) { camera.focal = focal; });
+    scene.moveCamera(pan({smallPan, 0.0F, 0.0F}));
+    const auto matches = [&](const char* what, auto move, bool origin_only) {
+      const std::uint64_t updates = markers.originUpdateCountForTest();
+      const QImage cached = scene.moveCamera(move);
+      EXPECT_EQ(markers.originUpdateCountForTest() > updates, origin_only) << what;
+      markers.setMarkerCacheEnabledForTest(false);
+      const QImage uncached = scene.grab();
+      markers.setMarkerCacheEnabledForTest(true);
+      EXPECT_EQ(differingPixels(cached, uncached), 0) << what;
+    };
+    matches("small pan", pan({smallPan, -smallPan, smallPan}), true);
+    matches("small pan back", pan({-smallPan, smallPan, -smallPan}), true);
+    matches("large pan", pan({0.9F, -0.6F, 0.25F}), true);
+    matches("TF move", [&](auto&) { scene.tick(kT0 + kStepNs); }, false);
+    matches("pan after the TF move", pan({-smallPan, 0.0F, smallPan}), true);
+    EXPECT_GT(markers.retainedExpansionCountForTest(), 0);
+  }
+}
+
+// The same markers 1.5e6 m from the fixed-frame origin (at a fractional offset,
+// so float coordinates there are off by up to 6 cm) and near it, each under the
+// same camera-relative view: every vertex is placed in double before the float
+// narrowing, so the two frames match. The cached/uncached A/B above cannot see a
+// precision loss both paths share; this compares against the geometry itself.
+TEST_F(Scene3dRhiMarkerCacheTest, FarFromTheOriginMatchesTheSameSceneNearIt) {
+  const glm::dvec3 far_centre{1.5e6 + 0.0371, -2.25e6 + 0.0613, 0.0};
+  const glm::vec3 far_focal = glm::vec3(far_centre + glm::dvec3(0.37, -0.21, 0.3));
+  // A float-valued translation: the near scene's focal stays exactly representable.
+  const glm::dvec3 shift{far_focal.x, far_focal.y, 0.0};
+  const auto render = [](glm::dvec3 centre, glm::vec3 focal, bool wireframe) {
+    CacheScene scene;
+    const auto id = scene.addEntities("/markers", mixedEntities(kFrame, centre));
+    scene.markerLayer(id)->setWireframe(wireframe);
+    if (!scene.show()) {
+      return QImage();
+    }
+    scene.moveCamera([&](auto& camera) { camera.focal = focal; });
+    return scene.moveCamera([](auto& camera) { camera.focal.z += 0.01F; });  // a pan: the origin-only path
+  };
+  for (const bool wireframe : {false, true}) {
+    // Not named "far"/"near": those collide with the legacy far/near-pointer
+    // macros windows.h (transitively) defines, which MSVC silently expands away.
+    const QImage far_image = render(far_centre, far_focal, wireframe);
+    if (far_image.isNull()) {
+      PJ_SKIP_WITHOUT_GPU("the Scene3D view never presented a frame");
+    }
+    const QImage near_image = render(far_centre - shift, far_focal - glm::vec3(shift), wireframe);
+    // 0 on Mesa (OpenGL, Vulkan); the near/far planes come from the absolute scene
+    // bounds, in float at this range, so a few depth-tie pixels may differ
+    // elsewhere. Placing the stream vertices in float moves 43+ pixels here.
+    EXPECT_LE(differingPixels(far_image, near_image, 60), 8) << (wireframe ? "wireframe" : "solid");
+  }
+}
+
+// Only a layer that keeps re-uploading keeps its CPU expansion: a one-off
+// rebuild gives it back right away, a recurring one a few frames later, or after
+// a short spell without frames.
+TEST_F(Scene3dRhiMarkerCacheTest, ExpansionIsKeptOnlyWhileReuploading) {
+  CacheScene scene;
+  scene.addEntities("/markers", mixedEntities(kFrame, {0.0F, 0.0F, 0.0F}));
+  SHOW_OR_SKIP(scene);
+  auto& markers = scene.markers();
+  const auto settle = [&] {
+    for (int i = 0; i < 8; ++i) {
+      scene.grab();
+    }
+  };
+  settle();
+  EXPECT_EQ(markers.retainedExpansionCountForTest(), 0);
+  // The frame-window checks must not race the wall-clock release: a slow grab
+  // (software GL, a loaded runner) can outlast its 250 ms.
+  markers.setIdleReleasePausedForTest(true);
+  const auto pan = [](auto& camera) { camera.focal.x += 0.2F; };
+  scene.moveCamera(pan);  // one-off
+  EXPECT_EQ(markers.retainedExpansionCountForTest(), 0);
+  scene.moveCamera(pan);  // recurring
+  EXPECT_EQ(markers.retainedExpansionCountForTest(), 1);
+  const std::uint64_t updates = markers.originUpdateCountForTest();
+  scene.moveCamera(pan);
+  EXPECT_EQ(markers.originUpdateCountForTest(), updates + 1);
+  EXPECT_EQ(markers.retainedExpansionCountForTest(), 1);
+  settle();
+  EXPECT_EQ(markers.retainedExpansionCountForTest(), 0);
+
+  // A pan burst, then no frame at all (a settled view renders none): the
+  // wall-clock release gives the expansion back.
+  scene.moveCamera(pan);
+  scene.moveCamera(pan);
+  EXPECT_EQ(markers.retainedExpansionCountForTest(), 1);
+  QTest::qWait(400);
+  EXPECT_EQ(markers.retainedExpansionCountForTest(), 1) << "released while the idle release was paused";
+  markers.setIdleReleasePausedForTest(false);
+  EXPECT_TRUE(QTest::qWaitFor([&] { return markers.retainedExpansionCountForTest() == 0; }, 5000))
+      << "the idle release never gave the expansion back";
 }
 
 // A rebuild whose stream buffers cannot be allocated after its instance buffer

@@ -26,8 +26,6 @@
 #include "pj_scene_common/layer_factory.h"
 #include "pj_scene_common/scene_layer.h"
 
-class QLabel;
-
 namespace PJ {
 
 class SessionManager;
@@ -135,9 +133,6 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
 
  protected:
   enum class DeferredElementKind { kRenderLayer, kConfigTopic };
-  /// A hidden, word-wrapped label in the theme's warning colours, for the reason
-  /// the family's view cannot render. The caller places it and toggles it.
-  [[nodiscard]] static QLabel* createRenderingWarningLabel(QWidget* parent, const QString& object_name);
   /// Registry used by subclasses to register their supported layer types.
   [[nodiscard]] LayerFactory& layerFactory();
   [[nodiscard]] const LayerFactory& layerFactory() const;

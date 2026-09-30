@@ -46,8 +46,8 @@ class PoseRhiPass {
   void setLayers(const std::vector<PosesInFrameLayer*>& layers);
 
   /// Runs each visible layer's prepareForRender() against the per-view arm
-  /// budget, places it, and adds its fixed-frame bounds to `bounds`.
-  void admit(const PlaceFn& place, SceneBoundsCollector& bounds);
+  /// budget, places it, and records the family's fixed-frame bounds (lastBounds()).
+  void admit(const PlaceFn& place);
   /// Uploads admitted layers' instances (when their revision moved) and
   /// uniforms, and this frame's TF triads (fixed-frame arms relative to the
   /// render origin, drawn with an identity fixed_from_source; re-uploaded only

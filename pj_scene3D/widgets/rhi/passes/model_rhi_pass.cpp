@@ -46,10 +46,6 @@ constexpr bool fitsBuffers(const SceneLimits& limits) {
 static_assert(fitsBuffers(kBrowserSceneLimits));
 static_assert(fitsBuffers(kDesktopSceneLimits));
 
-QString tr(const char* text) {
-  return QCoreApplication::translate("pj::scene3d::SceneViewWidget", text);
-}
-
 std::array<const TextureSource*, 5> textureSources(const Material& material) {
   return {
       &material.base_color, &material.metallic_roughness, &material.normal, &material.occlusion, &material.emissive};
@@ -170,8 +166,7 @@ void ModelRhiPass::setLayers(const std::vector<ModelRenderable*>& layers) {
   adoptLayerList(layers, layers_, layer_gpu_, [this](LayerGpu& gpu) { releaseLayerGpu(gpu); });
 }
 
-void ModelRhiPass::admit(
-    const PlaceFn& place, const MeshShadingParams& shading, bool shadows_requested, SceneBoundsCollector& bounds) {
+void ModelRhiPass::admit(const PlaceFn& place, const MeshShadingParams& shading, bool shadows_requested) {
   if (admitted_prepared_) {
     prepared_admitted_.swap(admitted_);
     admitted_prepared_ = false;
@@ -292,7 +287,6 @@ void ModelRhiPass::admit(
     }
     if (layer->contributesToSceneBounds()) {
       family_bounds = unionAABB(family_bounds, layer_bounds);
-      bounds.add(dynamic_cast<const void*>(layer), layer_bounds);
     }
     if (shadow_warning.isEmpty()) {
       asLayer(layer).noteRenderSuccess();
@@ -305,6 +299,9 @@ void ModelRhiPass::admit(
 }
 
 void ModelRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingParams& shading) {
+  if (!ready()) {
+    return;  // never built: no layer of this family since the last release
+  }
   QRhi* rhi = frame.rhi;
   admitted_prepared_ = true;
   bool gpu_changed = false;
@@ -352,6 +349,8 @@ void ModelRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingParams
       continue;
     }
     if (mesh->upload_pending) {
+      // One copy each: the buffers are Immutable, whose every copy QRhi's Vulkan
+      // backend stages in a full-size buffer of its own.
       updates->uploadStaticBuffer(mesh->vertex_buffer, mesh->source->vertices.data());
       updates->uploadStaticBuffer(mesh->triangle_index_buffer, mesh->source->indices.data());
       mesh->upload_pending = false;
@@ -372,6 +371,7 @@ void ModelRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingParams
 }
 
 void ModelRhiPass::buildInstances(QRhi* rhi, const glm::dvec3& render_origin, const MeshShadingParams& shading) {
+  ++shadow_revision_;
   draws_.clear();
   shadow_draws_.clear();
   instances_.clear();

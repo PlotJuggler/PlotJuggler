@@ -9,16 +9,17 @@
 // instanced quads against the point-list fast path, for three clouds: a static
 // one; a changing one, the same array re-uploaded every frame; and a streaming one,
 // a new sample every frame the layer's way: a wire PointCloud (x/y/z of
-// --field-type, a float32 intensity) converted by convertCanonical() and packed
-// into a fresh PointVertex array (packFinitePointVertices()), which the pass
-// uploads shared.
+// --field-type, a float32 intensity) packed the layer's way: packPointVertices()
+// on the thread pool, into the retained PointVertex array (rewritten in place once
+// the upload released it) after the frame began, which the pass uploads shared.
 //
 //   pointcloud_rhi_benchmark [--api opengl|vulkan] [--points N] [--frames F]
 //                            [--shape point|sphere|cube] [--size WxH]
 //                            [--replay on|off] [--field-type u16|u32|f32]
 //
-// Prints the backend + adapter, then per mode the medians of: GPU frame time
-// (QRhi timestamps); the CPU wall of prepare (admit + prepare), of enqueue
+// Prints the backend + adapter, then per mode, after a warm-up (pj_bench::WarmUp),
+// the medians of: GPU frame time (QRhi timestamps); the CPU wall of prepare
+// (admit + prepare), of enqueue
 // (recording the passes) and of endFrame (submission, the backend's uploads and,
 // offscreen, the wait for the GPU) with endFrame's own-thread CPU time; whole-frame
 // wall time; and, for a streaming cloud, the conversion, a strided min/max scan of
@@ -40,17 +41,18 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <ctime>
-#include <fstream>
 #include <limits>
 #include <memory>
 #include <random>
+#include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "pj_base/builtin/point_cloud.hpp"
+#include "pj_bench_probes.h"
 #include "pj_scene3d_core/pointcloud_convert.h"
-#include "pj_scene3d_widgets/layers/pointcloud_layer.h"
+#include "pj_scene3d_widgets/layers/pointcloud_layer.h"  // parallelForOnPool
 #include "pj_scene3d_widgets/point_renderable.h"
 #include "rhi/passes/point_rhi_pass.h"
 #include "rhi/rhi_scene_pass.h"
@@ -154,11 +156,25 @@ class BenchCloud : public PointRenderable {
   void touch() {
     ++revision_;
   }
-  // Converts `wire` the layer's way into a fresh array; the next prepare() uploads it.
+  // Converts `wire` the layer's way; the next prepare() uploads it.
   void convert(const PJ::sdk::PointCloud& wire) {
-    const pj::scene3d::ConvertedPointCloud converted = pj::scene3d::convertCanonical(wire, "intensity");
-    bytes_ = pj::scene3d::packFinitePointVertices(converted.cloud);
-    bounds_ = converted.bounds;
+    // kField by "intensity": the layer stores the scalar (16-byte records).
+    const std::optional<pj::scene3d::PointVertexPlan> plan =
+        pj::scene3d::planPointVertices(wire, "intensity", false, true);
+    if (!plan.has_value()) {
+      return;
+    }
+    format_ = plan->format;
+    pj::scene3d::PackedPointVertices packed;
+    pj::scene3d::packIntoRetained(
+        bytes_, static_cast<qsizetype>(plan->maxBytes()), [&](std::span<std::byte> out, bool reused) {
+          packed = pj::scene3d::packPointVertices(
+              wire, *plan, out, pj::scene3d::parallelForOnPool,
+              reused ? pj::scene3d::kMaxPackChunks : pj::scene3d::kMaxFreshPackChunks);
+          return static_cast<qsizetype>(packed.count * pj::scene3d::pointVertexStride(packed.format));
+        });
+    count_ = packed.count;
+    bounds_ = packed.bounds;
     ++revision_;
   }
   bool prepareForRender(std::uint64_t /*remaining*/) override {
@@ -166,6 +182,12 @@ class BenchCloud : public PointRenderable {
   }
   [[nodiscard]] const QByteArray& vertexBytes() const override {
     return bytes_;
+  }
+  [[nodiscard]] pj::scene3d::PointVertexFormat vertexFormat() const override {
+    return format_;
+  }
+  [[nodiscard]] std::size_t pointCount() const override {
+    return count_;
   }
   [[nodiscard]] std::uint64_t geometryRevision() const override {
     return revision_;
@@ -216,6 +238,8 @@ class BenchCloud : public PointRenderable {
 
  private:
   QByteArray bytes_;
+  std::size_t count_ = 0;
+  pj::scene3d::PointVertexFormat format_ = pj::scene3d::PointVertexFormat::kXyzScalar;
   AABB bounds_;
   std::uint64_t revision_ = 0;
   std::string frame_ = "map";
@@ -271,38 +295,11 @@ struct Targets {
 };
 
 double median(std::vector<double> values) {
-  if (values.empty()) {
-    return 0.0;
-  }
-  std::sort(values.begin(), values.end());
-  return values[values.size() / 2];
-}
-
-// This thread's CPU time: endFrame's wall includes the offscreen wait for the GPU.
-double threadCpuMs() {
-#ifdef CLOCK_THREAD_CPUTIME_ID
-  timespec now{};
-  clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now);
-  return static_cast<double>(now.tv_sec) * 1e3 + static_cast<double>(now.tv_nsec) / 1e6;
-#else
-  return 0.0;
-#endif
+  return pj_bench::stats(std::move(values)).median;
 }
 
 double elapsedMs(const QElapsedTimer& timer) {
   return static_cast<double>(timer.nsecsElapsed()) / 1e6;
-}
-
-// VmHWM, where the platform reports it (Linux); 0 elsewhere.
-double peakRssMib() {
-  std::ifstream status("/proc/self/status");
-  std::string line;
-  while (std::getline(status, line)) {
-    if (line.rfind("VmHWM:", 0) == 0) {
-      return std::stod(line.substr(6)) / 1024.0;
-    }
-  }
-  return 0.0;
 }
 
 struct Result {
@@ -367,30 +364,36 @@ Result run(
   std::vector<double> scan;
   std::vector<double> latency;
   cloud.convert(wire.cloud);
-  for (int frame = 0; frame < frames + 3; ++frame) {
+  // Warm-up (pipeline compilation, the first upload, the GPU clock ramp) until
+  // pj_bench::WarmUp settles, then `frames` measured frames.
+  pj_bench::WarmUp warm_up;
+  bool warming = true;
+  for (int measured = 0; measured < frames;) {
     QElapsedTimer latency_timer;
     latency_timer.start();
-    double convert_ms = 0.0;
-    if (mode == Mode::kStreaming) {
-      cloud.convert(wire.cloud);
-      convert_ms = elapsedMs(latency_timer);
-    } else if (mode == Mode::kChanging) {
-      cloud.touch();
-    }
     QElapsedTimer frame_timer;
     frame_timer.start();
     QRhiCommandBuffer* command_buffer = nullptr;
     if (rhi->beginOffscreenFrame(&command_buffer) != QRhi::FrameOpSuccess) {
       break;
     }
+    // Converted inside the frame, as the view's layers are (the previous frame's
+    // upload has released the array by now), and timed apart from it.
+    double convert_ms = 0.0;
+    if (mode == Mode::kStreaming) {
+      QElapsedTimer convert_timer;
+      convert_timer.start();
+      cloud.convert(wire.cloud);
+      convert_ms = elapsedMs(convert_timer);
+    } else if (mode == Mode::kChanging) {
+      cloud.touch();
+    }
     QRhiResourceUpdateBatch* updates = rhi->nextResourceUpdateBatch();
     const std::array<std::int32_t, 4> render_mode_flags{1, 0, 0, 0};
     updates->updateDynamicBuffer(render_mode, 0, 16, render_mode_flags.data());
     QElapsedTimer prepare_timer;
     prepare_timer.start();
-    pj::scene3d::SceneBoundsCollector bounds;
-    pass.admit(
-        [](const std::string&) { return std::optional<pj::scene3d::Transform>(pj::scene3d::Transform{}); }, bounds);
+    pass.admit([](const std::string&) { return std::optional<pj::scene3d::Transform>(pj::scene3d::Transform{}); });
     pass.prepare({rhi, updates, glm::dvec3(0.0), view_projection, view}, {projection, size, 1.0F});
     const double prepare_ms = elapsedMs(prepare_timer);
     QElapsedTimer enqueue_timer;
@@ -411,9 +414,10 @@ Result run(
     const double enqueue_ms = elapsedMs(enqueue_timer);
     QElapsedTimer end_frame_timer;
     end_frame_timer.start();
-    const double end_frame_cpu_start = threadCpuMs();
+    // CPU apart: endFrame's wall includes the offscreen wait for the GPU.
+    const double end_frame_cpu_start = pj_bench::threadCpuMs();
     rhi->endOffscreenFrame();
-    const double end_frame_cpu_ms = threadCpuMs() - end_frame_cpu_start;
+    const double end_frame_cpu_ms = pj_bench::threadCpuMs() - end_frame_cpu_start;
     const double end_frame_ms = elapsedMs(end_frame_timer);
     const double frame_ms = elapsedMs(frame_timer);
     const double latency_ms = elapsedMs(latency_timer);
@@ -427,13 +431,16 @@ Result run(
         std::fprintf(stderr, "empty scan\n");
       }
     }
-    if (frame >= 3) {  // warm-up: pipeline compilation, first upload
+    if (warming) {
+      warming = !warm_up.done(frame_ms);
+    } else {
+      ++measured;
       gpu.push_back(command_buffer->lastCompletedGpuTime() * 1000.0);
       prepare.push_back(prepare_ms);
       enqueue.push_back(enqueue_ms);
       end_frame.push_back(end_frame_ms);
       end_frame_cpu.push_back(end_frame_cpu_ms);
-      frame_times.push_back(frame_ms);
+      frame_times.push_back(frame_ms - convert_ms);  // the frame without the conversion
       convert.push_back(convert_ms);
       scan.push_back(scan_ms);
       latency.push_back(latency_ms);
@@ -550,7 +557,7 @@ int main(int argc, char** argv) {
       std::fflush(stdout);
     }
   }
-  std::printf("peak RSS %.0f MiB\n", peakRssMib());
+  std::printf("peak RSS %s MiB\n", pj_bench::fmt(pj_bench::peakRssMib(), 0).constData());
   targets.release();
   return 0;
 }

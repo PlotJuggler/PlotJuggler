@@ -18,7 +18,6 @@
 
 #include "pj_base/time.hpp"
 #include "pj_scene3d_core/camera/camera.h"
-#include "pj_scene3d_core/camera/camera_fit_policy.h"
 #include "pj_scene3d_core/poses_in_frame_render.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/mesh_shading_params.h"
@@ -69,7 +68,6 @@ class PointRhiPass;
 class ScenePipelineRegistry;
 struct RhiPassSetup;
 struct RhiSharedGeometry;
-struct SceneBoundsCollector;
 enum class ScenePass;
 
 // QRhi implementation of the public SceneViewWidget contract (the browser view,
@@ -120,14 +118,15 @@ class SceneViewWidget : public QRhiWidget {
     return camera_model_;
   }
   void resetCamera();
-  // Owns the scene bounds in this renderer: every frame it unions what it draws
-  // (see applySceneBounds) and fits the camera per CameraFitPolicy. A value set
-  // here lasts only until the next frame.
+  // Latest fixed-frame scene extent; forwarded to the active camera for adaptive
+  // near/far and framing. The dock owns it (Scene3DDockWidget::updateSceneBounds);
+  // the camera is never fitted to it automatically.
   void setSceneBounds(const AABB& bounds);
-  // The dock restored the camera from a layout: no automatic fit overrides it
-  // (CameraFitPolicy::noteCameraRestored).
-  void noteCameraRestored();
   void setLayers(const std::vector<Scene3DLayer*>& ordered_layers);
+  // The layers of the last setLayers(), in logical order.
+  [[nodiscard]] const std::vector<Scene3DLayer*>& layers() const {
+    return layers_;
+  }
 
   void setGridStyle(GridStyle style);
   [[nodiscard]] GridStyle gridStyle() const {
@@ -197,7 +196,9 @@ class SceneViewWidget : public QRhiWidget {
   // the TF frame whose origin projects within 20 logical pixels of `logical_pos`
   // (widget coordinates, independent of DPR and render scale), nearest first;
   // nullopt when the frame triads are hidden, there is no TF buffer or nothing
-  // is close enough. Uses the current camera, so it is valid before any frame.
+  // is close enough. Projects with the last painted frame's camera, so a pick
+  // matches the image on screen even after the camera moved; before the first
+  // frame that is the identity projection.
   [[nodiscard]] std::optional<std::string> frameAt(const QPointF& logical_pos) const;
   // The frame under the cursor, tracked while no mouse button is held; see
   // hoveredFrameChanged.
@@ -219,6 +220,15 @@ class SceneViewWidget : public QRhiWidget {
   // Never blocks: no nested event loop, which Qt for WebAssembly cannot run.
   void grabPresentedFrame(std::function<void(const QImage&)> done);
 
+  // Requests a frame and marks the content changed since the last one, which a
+  // hidden view's next Show then renders (paintEvent()); a Show with nothing
+  // changed presents the retained frame and renders nothing. QWidget::update()
+  // is not virtual: every change must reach this one through a SceneViewWidget
+  // (the view's own setters, the dock, the config panel), since a call through a
+  // QWidget pointer only requests a repaint.
+  using QRhiWidget::update;
+  void update();
+
   // Observation-only browser acceptance seams.  They report the last submitted
   // product frame; no test method mutates the camera, TF buffer, or renderer.
   [[nodiscard]] int lastLineVertexCountForTest() const {
@@ -238,8 +248,12 @@ class SceneViewWidget : public QRhiWidget {
   [[nodiscard]] int lastCubeSpriteLayerCountForTest() const;
   // Point layers drawn as a point list (not quads) last frame.
   [[nodiscard]] int lastPointListLayerCountForTest() const;
-  [[nodiscard]] int cameraFitCountForTest() const {
-    return camera_fit_count_;
+  [[nodiscard]] const AABB& sceneBoundsForTest() const {
+    return scene_bounds_;
+  }
+  // proj * view of the last painted frame, relative to its render origin (GL clip convention).
+  [[nodiscard]] const glm::mat4& lastViewProjectionForTest() const {
+    return last_view_projection_;
   }
   [[nodiscard]] AABB lastPointBoundsForTest() const;
   [[nodiscard]] int lastDepthLayerCountForTest() const;
@@ -332,6 +346,12 @@ class SceneViewWidget : public QRhiWidget {
   /// Keeps the depth replay where the depth-resolve fast path is available
   /// (rebuilds the HDR chain).
   void setForceDepthReplayForTest(bool force);
+  /// Renders the shadow map every shadowed frame, even when the retained one is
+  /// exact (on by default: reuse).
+  void setShadowReuseForTest(bool reuse) {
+    shadow_reuse_for_test_ = reuse;
+    update();
+  }
   /// The live HDR chain resolves its multisample depth instead of replaying the scene.
   [[nodiscard]] bool depthResolveActiveForTest() const {
     return hdr_depth_resolve_ && hdr_stage_.last_active;
@@ -392,6 +412,54 @@ class SceneViewWidget : public QRhiWidget {
   [[nodiscard]] const std::array<QRect, 3>& lastOverlayRectsForTest() const {
     return last_overlay_rects_;
   }
+#ifdef PJ_RHI_TEST_HOOKS
+  /// Stage stamps of the last render() and the cost of every initialize() that
+  /// built the base resources, for scene3d_frame_benchmark's stage split. Stamps
+  /// are std::chrono::steady_clock nanoseconds, 0 until set. On OpenGL the
+  /// recorded commands and their buffer uploads execute after render_end_ns, in
+  /// the top-level's QRhi::endFrame().
+  struct StageTimesForTest {
+    std::int64_t render_begin_ns = 0;
+    std::int64_t targets_ready_ns = 0;  // the HDR chain's targets and pipelines exist (built on a resize or new QRhi)
+    std::int64_t admitted_ns = 0;       // admitFrame(): layer prepareForRender() (sync decode and pack), placement
+    std::int64_t prepared_ns = 0;       // prepareFrame() and the overlays: CPU streams, upload enqueue, uniforms
+    std::int64_t render_end_ns = 0;     // every pass recorded (Vulkan copies uploads to staging here)
+    // GPU time of the last completed frame of this widget's command buffer, ms;
+    // 0 unless the QRhi has timestamps (QSG_RHI_PROFILE=1 for a QRhiWidget).
+    double last_gpu_ms = 0.0;
+    int base_builds = 0;              // initialize() calls that built the base resources (a new QRhi or target)
+    double last_base_build_ms = 0.0;  // uniforms, shared meshes and every family's pipelines
+    // Cumulative upload work, as of render_end_ns: point-cloud uploads and their
+    // bytes, marker layer rebuilds (expansion and upload), model mesh builds.
+    std::uint64_t point_uploads = 0;
+    std::uint64_t point_upload_bytes = 0;
+    std::uint64_t marker_rebuilds = 0;
+    std::uint64_t model_mesh_builds = 0;
+    // Cumulative callbacks, so a lifecycle operation (float, redock, show, tab
+    // switch) counts every one it ran, not just the last: paint events received,
+    // the paints skipped (no offscreen frame, paintEvent()), render() calls and
+    // those that drew a full frame.
+    std::uint64_t paint_events = 0;
+    std::uint64_t paints_skipped = 0;
+    std::uint64_t render_calls = 0;
+    std::uint64_t full_renders = 0;
+    // Shadowed frames that rendered the shadow map, and those that kept it.
+    std::uint64_t shadow_passes = 0;
+    std::uint64_t shadow_passes_reused = 0;
+    // Frames withheld because a pipeline could not be created (keepLastFrameOrClear()).
+    std::uint64_t frames_withheld = 0;
+    // Cumulative ns of the full renders' stages (the spans between the stamps
+    // above) and of every base build.
+    std::int64_t targets_ns = 0;
+    std::int64_t admit_ns = 0;
+    std::int64_t prepare_ns = 0;
+    std::int64_t submit_ns = 0;
+    std::int64_t base_build_ns = 0;
+  };
+  [[nodiscard]] const StageTimesForTest& stageTimesForTest() const {
+    return stage_times_;
+  }
+#endif
 
  signals:
   void framesChanged(const QList<FrameRow>& frames);
@@ -412,11 +480,16 @@ class SceneViewWidget : public QRhiWidget {
   void mouseMoveEvent(QMouseEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
   void changeEvent(QEvent* event) override;
-  // A Show on the same QRhi at the same size (a hidden workspace tab shown again)
-  // presents the frame drawn before the hide at once, instead of QRhiWidget's
-  // synchronous full re-render; the frame that follows picks up what changed while
-  // hidden. An ADS dock-area tab switch reparents instead: a new initialize().
+  // Marks the Show scope for paintEvent() (QRhiWidget paints synchronously inside it).
   bool event(QEvent* event) override;
+  // Skips a paint, offscreen frame included, while the target holds the last
+  // full frame (on the same live QRhi, at the size and format the paint would
+  // render) and either nothing changed since (update()) or the paint is the one
+  // QRhiWidget sends synchronously inside a Show; that one queues the frame when
+  // something changed while hidden. So a hidden tab shown again composites its
+  // last frame at once and renders only what changed. A paint after a release,
+  // a resize or a target change always renders.
+  void paintEvent(QPaintEvent* event) override;
   // Clears the hover label when the cursor leaves the view.
   void leaveEvent(QEvent* event) override;
   // 'P' toggles the perf HUD.
@@ -439,8 +512,8 @@ class SceneViewWidget : public QRhiWidget {
   // The follow frame in the effective fixed frame at `time`; nullopt when there
   // is no follow frame, no TF or no transform.
   [[nodiscard]] std::optional<Transform> followTransform(PJ::Timepoint time) const;
-  // Where the fixed-frame `point` lands in logical widget pixels (current camera,
-  // camera-relative like the drawn frame); nullopt when behind the camera.
+  // Where the fixed-frame `point` lands in logical widget pixels through the last
+  // painted frame's camera; nullopt when behind it.
   [[nodiscard]] std::optional<glm::vec2> projectToWidget(const glm::dvec3& point) const;
   using OrderedLayer = std::variant<
       PointRenderable*, PosesInFrameLayer*, OccupancyGridLayer*, VoxelGridLayer*, SceneEntitiesLayer*, ModelRenderable*,
@@ -452,19 +525,50 @@ class SceneViewWidget : public QRhiWidget {
 
   // What every family's initialize() binds from this view on `rhi`.
   [[nodiscard]] RhiPassSetup passSetup(QRhi* rhi) const;
-  // Every resource the scene families draw with exists (the overlays are optional).
-  [[nodiscard]] bool baseResourcesReady(QRhi& rhi) const;
-  // Creates the base resources on `rhi`; the name of the part that failed, or
-  // nullptr. A failure leaves them partly built: releaseResources() next.
-  [[nodiscard]] const char* createBaseResources(QRhi* rhi);
+  // The resources every frame binds exist: the uniforms, the shared meshes, and
+  // the families that draw without a layer (the grid, the TF triads' pose pass).
+  [[nodiscard]] bool baseResourcesReady() const;
+  // Every family that has a layer in the view is built. The others are not: a
+  // family's pipelines cost a program each (tens of ms per new QRhi on OpenGL)
+  // and most scenes use two or three families.
+  [[nodiscard]] bool familiesReady(QRhi& rhi) const;
+  template <typename Visitor>
+  void forEachLazyFamily(QRhi& rhi, Visitor&& visitor) const;
+  // The render target holds this view's last full frame, on the live QRhi it was
+  // drawn with, at the size and format the next paint would render.
+  [[nodiscard]] bool retainsLastFrame() const;
+  // The target QRhiWidget's next paint builds (its format, size and samples),
+  // and the logical size and DPR the overlays are laid out for: a fixed
+  // colour-buffer size keeps the target across a resize, not the overlays.
+  struct TargetRequest {
+    TextureFormat format = TextureFormat::RGBA8;
+    QSize pixel_size;
+    int samples = 1;
+    QSize logical_size;
+    qreal dpr = 1.0;
+    bool operator==(const TargetRequest&) const = default;
+  };
+  [[nodiscard]] TargetRequest requestedTarget() const;
+  // Creates what is missing on `rhi`: the base resources, then each family with
+  // a layer, registering its pipelines. The name of the part that failed, or
+  // nullptr; a failure leaves them partly built: failScene() next. Runs in
+  // initialize(), and in render() for a family whose first layer came later.
+  [[nodiscard]] const char* createSceneResources(QRhi* rhi);
+  // releaseResources() and the failure state for `failed_part`: only the
+  // backdrop draws until the next initialize() (a new target or QRhi) retries.
+  void failScene(const char* failed_part);
+  // A frame that lost a pipeline is not presented: the target keeps the last
+  // full frame where it holds one, else it is cleared to the backdrop.
+  void keepLastFrameOrClear(QRhiCommandBuffer* command_buffer, QRhiRenderTarget* target);
+  // An empty pass cleared to the theme backdrop: a frame that draws nothing.
+  void clearToBackdrop(QRhiCommandBuffer* command_buffer, QRhiRenderTarget* target);
   // Enters (non-empty `reason`) or leaves the failure state; see the class
   // comment. `emit_failed` false when echoing QRhiWidget's own renderFailed().
   void setRenderFailure(QString reason, bool emit_failed = true);
 
   // Frame contract steps, once per render() in this order.
   void admitFrame(QRhi* rhi, FrameAdmission& admission);
-  void applySceneBounds(const SceneBoundsCollector& bounds);
-  [[nodiscard]] FrameView frameView(QRhi* rhi, const QSize& render_size) const;
+  [[nodiscard]] FrameView frameView(QRhi* rhi) const;
   QRhiResourceUpdateBatch* prepareFrame(
       QRhi* rhi, const QSize& render_size, const FrameView& view, const FrameAdmission& admission,
       PreparedFrame& frame);
@@ -496,6 +600,9 @@ class SceneViewWidget : public QRhiWidget {
   bool ensureSsaoResources(QRhi* owner, const QSize& size);
   void releaseSsaoTargetResources();
   void releaseSsaoResources();
+  // The EDL mesh-mask pipelines, from the model family's state; true without
+  // the model family (nothing to mask).
+  bool createEdlMaskPipelines(QRhi* owner);
   bool ensureEdlResources(QRhi* owner, const QSize& size);
   void releaseEdlTargetResources();
   void releaseEdlResources();
@@ -515,7 +622,15 @@ class SceneViewWidget : public QRhiWidget {
   std::unique_ptr<ICamera> camera_{std::make_unique<OrbitCamera>()};
   CameraModel camera_model_ = CameraModel::kOrbit;
   AABB scene_bounds_{};
-  CameraFitPolicy camera_fit_;
+  // proj * view of the last painted frame, relative to last_render_origin_: what
+  // frame picking projects with, so a pick matches the image on screen. Identity
+  // and the world origin until the first frame.
+  glm::mat4 last_view_projection_{1.0F};
+  glm::dvec3 last_render_origin_{0.0};
+  // The pair above as it was before the frame in flight: a withheld frame
+  // (keepLastFrameOrClear) restores it, since its image never reaches the screen.
+  glm::mat4 shown_view_projection_{1.0F};
+  glm::dvec3 shown_render_origin_{0.0};
 
   GridStyle grid_style_ = GridStyle::kLines;
   float grid_extent_m_ = 10.0F;
@@ -567,6 +682,7 @@ class SceneViewWidget : public QRhiWidget {
   QRhiTextureRenderTarget* hdr_depth_render_target_ = nullptr;
   bool hdr_depth_resolve_ = false;  ///< the chain resolves depth (QRhi::ResolveDepthStencil)
   bool force_depth_replay_for_test_ = false;
+  bool shadow_reuse_for_test_ = true;
   QRhiTextureRenderTarget* ssao_raw_render_target_ = nullptr;
   QRhiTextureRenderTarget* edl_mesh_mask_render_target_ = nullptr;
   QRhiRenderPassDescriptor* hdr_render_pass_descriptor_ = nullptr;
@@ -587,6 +703,7 @@ class SceneViewWidget : public QRhiWidget {
   int last_line_vertex_count_ = 0;
   int last_triangle_vertex_count_ = 0;
   int last_resolved_frame_count_ = 0;
+  std::vector<Scene3DLayer*> layers_;
   std::vector<OrderedLayerEntry> ordered_layers_;
   std::vector<std::uint32_t> last_submitted_layer_ids_;
   // Reused across frames: the prepared frame and the per-slot "submitted" marks.
@@ -594,7 +711,6 @@ class SceneViewWidget : public QRhiWidget {
   std::vector<char> submitted_slots_;
 
   std::unique_ptr<PointRhiPass> point_pass_;
-  int camera_fit_count_ = 0;
 
   // Pose triads plus the TF "Frames" gizmos, drawn as solid instanced arrow
   // triads (the desktop look) with the pose pipeline and arrow mesh.
@@ -632,8 +748,10 @@ class SceneViewWidget : public QRhiWidget {
 
   std::unique_ptr<MarkerRhiPass> marker_pass_;
   std::unique_ptr<ModelRhiPass> model_pass_;
-  bool show_paint_pending_ = false;  // inside QRhiWidget's Show handling (event())
-  QSize last_frame_size_;            // output size of the last full frame; empty: none since the release
+  bool show_paint_pending_ = false;  // inside a Show event (event()), nested paint included
+  bool content_changed_ = true;      // update() since the last full frame
+  // requestedTarget() when the last full frame drew; empty: none on this target.
+  std::optional<TargetRequest> last_frame_request_;
   bool last_shadow_fit_valid_ = false;
   int shadow_map_size_ = 0;
   AABB last_shadow_bounds_;
@@ -674,6 +792,9 @@ class SceneViewWidget : public QRhiWidget {
   float render_scale_ = 1.0F;
   bool show_perf_hud_ = false;
   QElapsedTimer cpu_timer_;
+#ifdef PJ_RHI_TEST_HOOKS
+  StageTimesForTest stage_times_;
+#endif
   MovingAverage cpu_average_;
   MovingAverage gpu_average_;
   // Overlay images are re-rasterised only when their content changes, so the

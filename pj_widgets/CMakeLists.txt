@@ -32,6 +32,7 @@ add_library(pj_widgets STATIC
     src/RangeSlider.cpp
     src/RasterFrame.cpp
     src/RecentFilesMenu.cpp
+    src/RenderingWarningLabel.cpp
     src/ScrubberBase.cpp
     src/SectionHeaderBand.cpp
     src/SideDrawer.cpp
@@ -78,6 +79,8 @@ add_library(pj_widgets STATIC
     include/pj_widgets/RangeSlider.h
     include/pj_widgets/RasterFrame.h
     include/pj_widgets/RecentFilesMenu.h
+    include/pj_widgets/RenderingWarningLabel.h
+    include/pj_widgets/RhiBlend.h
     include/pj_widgets/ScrubberBase.h
     include/pj_widgets/SectionHeaderBand.h
     include/pj_widgets/StateColors.h

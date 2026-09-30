@@ -17,8 +17,18 @@ layout(std140, binding = 0) uniform PointUniforms {
     float pixel_scale;       // render pixels per output pixel
     float clip_y_up;         // sign of screen-up in corrected clip y
     ivec4 modes;             // x: colour mode (0 field, 1 solid, 2 rgb), y: colormap, z: invert, w: axis or -1
-    ivec4 shape;             // x: 0 point (px size), 1 sphere, 2 cube LOD sprite
+    ivec4 shape;             // x: 0 point (px size), 1 sphere, 2 cube LOD sprite; y: vertex format (0 xyz, 1 +scalar, 2 +rgba)
 };
+
+// A point's attribute as shape.y (PointVertexFormat) stores it: the scalar's bits
+// (1) or a packed RGBA8 colour (2); the other decodes to 0.0 / opaque white. The
+// 12-byte layout feeds z's bits, which kXyz ignores.
+void decodePointAttribute(uint bits, out float scalar, out vec4 color) {
+    scalar = shape.y == 1 ? uintBitsToFloat(bits) : 0.0;
+    // Spelled out: unpackUnorm4x8 is missing from GLSL ES 300 and GLSL 330.
+    uvec4 channels = uvec4(bits, bits >> 8u, bits >> 16u, bits >> 24u) & 0xFFu;
+    color = shape.y == 2 ? vec4(channels) / 255.0 : vec4(1.0);
+}
 
 layout(std140, binding = 8) uniform RenderMode {
     ivec4 render_mode;  // x: 1 when writing the linear-light HDR target

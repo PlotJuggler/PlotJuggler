@@ -11,6 +11,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "pj_scene3d_core/pose_math.h"
 #include "pj_scene3d_core/scene_limits.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
 
@@ -28,21 +29,11 @@ struct alignas(16) OccupancyUniforms {
 };
 static_assert(sizeof(OccupancyUniforms) == kOccupancyUniformBytes);
 
-QString tr(const char* text) {
-  return QCoreApplication::translate("pj::scene3d::SceneViewWidget", text);
-}
-
-Transform sourceFromGrid(const ReconstructedGrid& grid) {
-  const auto& p = grid.origin.position;
-  const auto& q = grid.origin.orientation;
-  return {glm::dvec3(p.x, p.y, p.z), glm::normalize(glm::dquat(q.w, q.x, q.y, q.z))};
-}
-
 AABB occupancyBoundsInFixed(const ReconstructedGrid& grid, const Transform& fixed_from_source) {
   if (grid.empty() || grid.width == 0U || grid.height == 0U || grid.resolution <= 0.0) {
     return {};
   }
-  const Transform fixed_from_grid = fixed_from_source * sourceFromGrid(grid);
+  const Transform fixed_from_grid = fixed_from_source * poseTransform(grid.origin);
   const double width = grid.resolution * static_cast<double>(grid.width);
   const double height = grid.resolution * static_cast<double>(grid.height);
   AABB bounds;
@@ -109,41 +100,23 @@ void OccupancyRhiPass::setLayers(const std::vector<OccupancyGridLayer*>& layers)
   adoptLayerList(layers, layers_, layer_gpu_, releaseLayerGpu);
 }
 
-void OccupancyRhiPass::admit(const PlaceFn& place, SceneBoundsCollector& bounds) {
-  admitted_.clear();
-  AABB family_bounds;
-  std::uint64_t remaining_cells = kSceneLimits.max_occupancy_cells_per_view;
-  for (OccupancyGridLayer* layer : layers_) {
-    if (layer == nullptr || !layer->visible()) {
-      continue;
-    }
-    layer->prepareForRender(remaining_cells);
-    const ReconstructedGrid& grid = layer->grid();
-    if (grid.empty()) {
-      pruneLayerGpu(layer_gpu_, layer, releaseLayerGpu);
-      continue;
-    }
-    const auto placed = place(layer->renderFrameId());
-    if (!placed.has_value()) {
-      continue;
-    }
-    // Placement first, budget second: a temporarily unplaceable layer must not
-    // reserve capacity and starve a later drawable layer of the same family.
-    const std::uint64_t cells = static_cast<std::uint64_t>(grid.width) * grid.height;
-    if (!tryConsumeBudget(cells, remaining_cells)) {
-      continue;
-    }
-    const AABB layer_bounds = occupancyBoundsInFixed(grid, *placed);
-    if (layer_bounds.valid) {
-      family_bounds = unionAABB(family_bounds, layer_bounds);
-      bounds.add(dynamic_cast<const void*>(layer), layer_bounds);
-    }
-    admitted_.push_back({layer, *placed});
-  }
-  last_bounds_ = family_bounds;
+void OccupancyRhiPass::admit(const PlaceFn& place) {
+  last_bounds_ = admitLayers(
+      layers_, kSceneLimits.max_occupancy_cells_per_view, place, admitted_, layer_gpu_, releaseLayerGpu,
+      [](const OccupancyGridLayer* layer) { return !layer->grid().empty(); },
+      [](const OccupancyGridLayer* layer) {
+        return static_cast<std::uint64_t>(layer->grid().width) * layer->grid().height;
+      },
+      [](const OccupancyGridLayer* layer, const Transform& placed) -> std::optional<AABB> {
+        const AABB layer_bounds = occupancyBoundsInFixed(layer->grid(), placed);
+        return layer_bounds.valid ? std::optional(layer_bounds) : std::nullopt;
+      });
 }
 
 void OccupancyRhiPass::prepare(const RhiFrameContext& frame) {
+  if (!ready()) {
+    return;  // never built: no layer of this family since the last release
+  }
   draws_.clear();
   draws_.reserve(admitted_.size());
   last_layer_count_ = 0;
@@ -161,7 +134,7 @@ void OccupancyRhiPass::prepare(const RhiFrameContext& frame) {
     }
     const ReconstructedGrid& grid = layer->grid();
     if (gpu.uploaded_revision != layer->textureRevision()) {
-      const bool full_upload = texture_recreated || layer->fullUploadPending();
+      const bool full_upload = texture_recreated || !layer->dirtyRectsCatchUp(gpu.uploaded_revision);
       if (full_upload) {
         QRhiTextureSubresourceUploadDescription description(grid.cells.data(), static_cast<quint32>(grid.cells.size()));
         description.setSourceSize(QSize(static_cast<int>(grid.width), static_cast<int>(grid.height)));
@@ -190,7 +163,7 @@ void OccupancyRhiPass::prepare(const RhiFrameContext& frame) {
     }
 
     const glm::dmat4 fixed_from_grid = glm::scale(
-        admitted.fixed_from_source.matrix() * sourceFromGrid(grid).matrix(),
+        admitted.fixed_from_source.matrix() * poseTransform(grid.origin).matrix(),
         glm::dvec3(
             grid.resolution * static_cast<double>(grid.width), grid.resolution * static_cast<double>(grid.height),
             1.0));

@@ -1,6 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 #version 440
+#extension GL_GOOGLE_include_directive : require
 
 // The corner axis gizmo, drawn on the display-referred output after
 // presentation (pose.vert supplies the view-space normal). The desktop GL
@@ -11,11 +12,7 @@ layout(location = 0) in vec3 view_normal;
 layout(location = 1) in vec4 arrow_color;
 layout(location = 0) out vec4 fragment_color;
 
-vec3 linearToSrgb(vec3 color) {
-    vec3 low = color * 12.92;
-    vec3 high = 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
-    return mix(high, low, lessThanEqual(color, vec3(0.0031308)));
-}
+#include "srgb.glslinc"
 
 void main() {
     const vec3 light_direction = normalize(vec3(0.30, 0.55, 0.80));
