@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #version 440
 
-// Edge antialiasing and dashes for PlotRhiCanvas geometry (see PlotRhiVertex).
+// Edge antialiasing and dashes for PlotRhiCanvas geometry (see plot_rhi::Vertex).
 // v_across runs from -1 to 1 across a stroke or a box and from 0 to 1 from a
 // fan's centre to its rim; it reaches 1 half a device pixel outside the true
 // edge, so the coverage ramp spans one device pixel centred on it.

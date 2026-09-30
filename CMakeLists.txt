@@ -80,8 +80,8 @@ set(PJ_BUILD_TESTS ${_PJ_BUILD_TESTS_DEFAULT} CACHE BOOL "Build foundation (SDK 
 unset(_PJ_BUILD_TESTS_DEFAULT)
 option(PJ_BUILD_DEMOS "Build the pj_scene3D standalone benchmarks" ON)
 # The GPU widgets' test-only fault injection and QRhi lifecycle counters
-# (pj_widgets/GraphicsApi.h: rhiTestFault, noteRhiAdoption). Release builds
-# configure PJ_BUILD_TESTS=OFF, so shipped binaries carry none of it.
+# (pj_widgets/RhiTestHooks.h). Release builds configure PJ_BUILD_TESTS=OFF, so
+# shipped binaries carry none of it.
 if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_compile_definitions(PJ_RHI_TEST_HOOKS)
 endif()
@@ -145,8 +145,9 @@ if(EMSCRIPTEN)
         Core Gui GuiPrivate Widgets Concurrent Network Xml Svg SvgWidgets PrintSupport ShaderTools)
 else()
     set(PJ_QT_REQUIRED_VERSION ${PJ_QT_VERSION})
-    # OpenGLWidgets is for Qwt only (3rdparty/qwt): its desktop library carries
-    # QwtPlotOpenGLCanvas, which PJ4 never instantiates, and pixi's prebuilt Qwt links it.
+    # OpenGLWidgets: no PJ4 code links it outside the display tests (pj_scene3D's
+    # runners take the target from here), but Qt6UiTools (pj_dialog_host) depends
+    # on it, so the kit, the app and its packages need it regardless.
     find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS Core Gui Widgets Network OpenGLWidgets Xml Svg SvgWidgets)
     # Header-only process and frame probes (cmake/test_mains/pj_bench_probes.h) of
     # every frame benchmark, with or without tests.

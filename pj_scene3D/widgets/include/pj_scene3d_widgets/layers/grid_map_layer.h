@@ -44,6 +44,9 @@ class GridMapLayer : public Scene3DLayer {
   [[nodiscard]] PJ::SceneLayerInfo info() const override;
   [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
   [[nodiscard]] QStringList fallbackFrames() const override;
+  [[nodiscard]] SceneContributions sceneContributions() override {
+    return {.grid_map = this};
+  }
   [[nodiscard]] QString sourceFrame() const override;
   [[nodiscard]] uint64_t renderKey(PJ::Timepoint time) const override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
@@ -70,7 +73,7 @@ class GridMapLayer : public Scene3DLayer {
     return staged_revision_;
   }
   // The last decoded sample's frame id (empty before the first sample).
-  [[nodiscard]] const std::string& renderFrameId() const {
+  [[nodiscard]] const std::string& renderFrameId() const override {
     return source_frame_;
   }
   // Display params as set (the persisted values).

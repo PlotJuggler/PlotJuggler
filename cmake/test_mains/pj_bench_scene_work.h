@@ -10,6 +10,7 @@
 
 #include "pj_bench_probes.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
+#include "scene_view_test_access.h"
 
 namespace pj_bench {
 
@@ -41,7 +42,7 @@ struct SceneViewWork {
 inline SceneViewWork viewWork([[maybe_unused]] const pj::scene3d::SceneViewWidget& view) {
   SceneViewWork work;
 #ifdef PJ_RHI_TEST_HOOKS
-  const auto& t = view.stageTimesForTest();
+  const auto& t = pj::scene3d::SceneViewTestAccess::stageTimes(view);
   const auto ms = [](std::int64_t ns) { return static_cast<double>(ns) / 1.0e6; };
   work.adoptions = view.property("pjTestRhiAdoptions").toDouble();
   work.inits = static_cast<double>(t.base_builds);
@@ -66,7 +67,7 @@ inline SceneViewWork viewWork([[maybe_unused]] const pj::scene3d::SceneViewWidge
 inline std::uint64_t viewRenders(
     [[maybe_unused]] const pj::scene3d::SceneViewWidget& view, [[maybe_unused]] const FrameCounter& counter) {
 #ifdef PJ_RHI_TEST_HOOKS
-  return static_cast<std::uint64_t>(view.stageTimesForTest().full_renders);
+  return static_cast<std::uint64_t>(pj::scene3d::SceneViewTestAccess::stageTimes(view).full_renders);
 #else
   return counter.count();
 #endif

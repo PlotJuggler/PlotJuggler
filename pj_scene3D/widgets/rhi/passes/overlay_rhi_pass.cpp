@@ -98,16 +98,18 @@ bool OverlayRhiPass::initialize(const RhiPassSetup& setup, qreal dpr) {
   premultiplied.srcColor = QRhiGraphicsPipeline::One;
   premultiplied.srcAlpha = QRhiGraphicsPipeline::Zero;
   premultiplied.dstAlpha = QRhiGraphicsPipeline::One;
-  image_pipeline_ = createScenePipeline(
-      setup, {
-                 .topology = QRhiGraphicsPipeline::TriangleStrip,
-                 .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/overlay.vert.qsb")),
-                 .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/overlay.frag.qsb")),
-                 .bindings = image_layout_shader_resources_,
-                 .blend = premultiplied,
-                 .depth_test = false,
-                 .depth_write = false,
-             });
+  image_pipeline_ = createPipeline(
+      rhi,
+      {
+          .topology = QRhiGraphicsPipeline::TriangleStrip,
+          .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/overlay.vert.qsb")),
+          .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/overlay.frag.qsb")),
+          .bindings = image_layout_shader_resources_,
+          .blend = premultiplied,
+          .depth_test = false,
+          .depth_write = false,
+      },
+      setup.pipelines->directRenderPass(), setup.pipelines->directSampleCount());
   if (image_pipeline_ == nullptr) {
     return false;
   }
@@ -152,10 +154,7 @@ bool OverlayRhiPass::createGizmoTarget(const RhiPassSetup& setup, const QSize& s
     created = gizmo.target->create();
   }
   if (created) {
-    RhiPassSetup target_setup = setup;
-    target_setup.render_pass = gizmo.render_pass;
-    target_setup.sample_count = samples;
-    gizmo.pipeline = createScenePipeline(target_setup, gizmo_desc);
+    gizmo.pipeline = createPipeline(rhi, gizmo_desc, gizmo.render_pass, samples);
     created = gizmo.pipeline != nullptr && ensureUniformBuffer(rhi, gizmo.quad.uniform_buffer, kImageUniformBytes);
   }
   if (created) {
@@ -194,7 +193,7 @@ bool OverlayRhiPass::resizeGizmoTarget(const QSize& size) {
 void OverlayRhiPass::releaseGizmoTarget() {
   GizmoTarget& gizmo = gizmo_target_;
   releaseImage(gizmo.quad);
-  delete gizmo.pipeline;
+  gizmo.pipeline.reset();
   delete gizmo.target;
   delete gizmo.render_pass;
   delete gizmo.depth;
@@ -311,7 +310,7 @@ QRhiResourceUpdateBatch* OverlayRhiPass::submitGizmoTarget(
   }
   const auto size = static_cast<float>(gizmo.queued->size);
   command_buffer->beginPass(gizmo.target, Qt::transparent, {1.0F, 0}, updates);
-  command_buffer->setGraphicsPipeline(gizmo.pipeline);
+  command_buffer->setGraphicsPipeline(gizmo.pipeline.get());
   command_buffer->setViewport(QRhiViewport(0.0F, 0.0F, size, size));
   command_buffer->setShaderResources(gizmo_shader_resources_);
   const std::array<QRhiCommandBuffer::VertexInput, 2> inputs = {
@@ -333,7 +332,7 @@ void OverlayRhiPass::submit(QRhiCommandBuffer* command_buffer) const {
     return;
   }
   const auto draw = [&](const ImageGpu& gpu) {
-    command_buffer->setGraphicsPipeline(image_pipeline_);
+    command_buffer->setGraphicsPipeline(image_pipeline_.get());
     command_buffer->setViewport(output_viewport_);
     command_buffer->setShaderResources(gpu.shader_resources);
     command_buffer->draw(4U);
@@ -360,7 +359,7 @@ void OverlayRhiPass::release() {
   for (ImageGpu& gpu : images_) {
     releaseImage(gpu);
   }
-  delete image_pipeline_;
+  image_pipeline_.reset();
   delete image_layout_shader_resources_;
   delete image_layout_texture_;
   delete image_layout_uniform_buffer_;
@@ -370,7 +369,6 @@ void OverlayRhiPass::release() {
   delete gizmo_arrow_indices_;
   delete gizmo_arrow_vertices_;
   delete gizmo_uniform_buffer_;
-  image_pipeline_ = nullptr;
   image_layout_shader_resources_ = nullptr;
   image_layout_texture_ = nullptr;
   image_layout_uniform_buffer_ = nullptr;

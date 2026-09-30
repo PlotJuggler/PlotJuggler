@@ -23,21 +23,12 @@
 #include <memory>
 #include <utility>
 
+#include "pj_widgets/RhiTestHooks.h"
+
 namespace PJ {
 namespace {
 
 Q_LOGGING_CATEGORY(lcGraphics, "pj.graphics")
-
-#ifdef PJ_RHI_TEST_HOOKS
-void incrementProperty(QObject& object, const char* name) {
-  object.setProperty(name, object.property(name).toInt() + 1);
-}
-
-QHash<QShader, QString>& loadedShaderPaths() {
-  static QHash<QShader, QString> paths;
-  return paths;
-}
-#endif
 
 // Whether Qt can create a QRhi for `api` here, as the window's backing store
 // would. Creates and drops a context or device (Metal only checks for one):
@@ -152,40 +143,28 @@ void logGraphicsBackend(QWidget& widget, QRhi* rhi) {
 }
 
 void noteRhiAdoption(QRhiWidget& widget, const QRhi* held, QRhi* rhi) {
-#ifdef PJ_RHI_TEST_HOOKS
   // Adoptions minus releases is the number of QRhis the widget holds resources
   // on; "stale" is a new QRhi met while another one's resources were still held.
   if (held != nullptr && held != rhi) {
-    incrementProperty(widget, "pjTestRhiStale");
+    rhiTestCount(widget, "pjTestRhiStale");
   }
-  incrementProperty(widget, "pjTestRhiAdoptions");
-#else
-  Q_UNUSED(held);
-#endif
+  rhiTestCount(widget, "pjTestRhiAdoptions");
   logGraphicsBackend(widget, rhi);
 }
 
-void noteRhiRelease([[maybe_unused]] QRhiWidget& widget, [[maybe_unused]] const QRhi* held) {
-#ifdef PJ_RHI_TEST_HOOKS
+void noteRhiRelease(QRhiWidget& widget, const QRhi* held) {
   if (held != nullptr) {
-    incrementProperty(widget, "pjTestRhiReleases");
+    rhiTestCount(widget, "pjTestRhiReleases");
   }
-#endif
-}
-
-bool rhiTestFault([[maybe_unused]] const QObject& owner, [[maybe_unused]] const char* name) {
-#ifdef PJ_RHI_TEST_HOOKS
-  return owner.property("pjTestFailPipeline").toString() == QLatin1StringView(name);
-#else
-  return false;
-#endif
 }
 
 bool createRhiPipeline(QObject& owner, QRhiGraphicsPipeline& pipeline, const char* name) {
-#ifdef PJ_RHI_TEST_HOOKS
-  incrementProperty(owner, "pjTestPipelineAttempts");
-#endif
-  return !rhiTestFault(owner, name) && pipeline.create();
+  rhiTestCount(owner, "pjTestPipelineAttempts");
+  return !rhiTestFault(owner, name) && createRhiPipeline(pipeline);
+}
+
+bool createRhiPipeline(QRhiGraphicsPipeline& pipeline) {
+  return !rhiTestShaderFault(pipeline) && pipeline.create();
 }
 
 RhiTargetKey RhiTargetKey::of(const QRhiRenderTarget& target, int sample_count) {
@@ -222,18 +201,10 @@ QShader loadRhiShader(const QString& path) {
     qCWarning(lcGraphics) << "Invalid shader pack" << path;
     return {};
   }
-#ifdef PJ_RHI_TEST_HOOKS
-  loadedShaderPaths().insert(shader, path);
-#endif
+  rhiTestNoteShaderPath(shader, path);
   loaded.insert(path, shader);
   return shader;
 }
-
-#ifdef PJ_RHI_TEST_HOOKS
-QString rhiShaderPathForTest(const QShader& shader) {
-  return loadedShaderPaths().value(shader);
-}
-#endif
 
 RhiColorTarget::~RhiColorTarget() {
   release();

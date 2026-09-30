@@ -2,14 +2,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include <QByteArray>
 #include <QColor>
 #include <QMetaObject>
 #include <QString>
 #include <QStringList>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <map>
 #include <memory>
 #include <optional>
@@ -31,9 +29,7 @@ class QWidget;
 
 namespace pj::scene3d {
 
-class MeshImport;
-class MeshLoader;
-class UrlFetcher;
+class MeshLoadQueue;
 
 // Concrete Scene3DLayer for a single visualization_msgs/MarkerArray-equivalent
 // topic (canonical sdk::SceneEntities, type kSceneEntities). Two primitive
@@ -46,8 +42,8 @@ class UrlFetcher;
 // - **Models** (ModelPrimitive, embedded glTF bytes or a file/http URL): all
 //   batches up to the tracker time are replayed into an id-keyed entity state
 //   (SceneEntitiesModelState: replace-by-id, deletions, lifetime expiry), and
-//   the models' bytes load asynchronously a few at a time (fetch, then import off
-//   the GUI thread; one in the browser, see maxConcurrentMeshLoads), each
+//   the models' bytes load asynchronously through a MeshLoadQueue, a few at a
+//   time (fetch, then import off the GUI thread; one in the browser), each
 //   admitted against kSceneLimits' model budgets as it lands. Imported meshes are
 //   retained as MeshData and exposed with frame-local ModelDrawCalls through
 //   ModelRenderable (the view applies TF).
@@ -75,6 +71,9 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
   // The marker batch's source frame plus every distinct model-entity frame.
   [[nodiscard]] QStringList fallbackFrames() const override;
+  [[nodiscard]] SceneContributions sceneContributions() override {
+    return {.markers = this, .models = this};
+  }
   // Frame of the latest selected marker batch (first entity's frame_id).
   [[nodiscard]] QString sourceFrame() const override;
   // Persist / restore the viewer-side display overrides (tag "markers").
@@ -154,11 +153,8 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
     return *this;
   }
 
-  // Model imports started whose completion has not been processed yet: an upper
-  // bound on the imports still running on the pool.
-  [[nodiscard]] std::uint64_t modelImportsOutstandingForTest() const {
-    return model_import_starts_ - model_import_settles_;
-  }
+  // Model imports whose worker has not finished yet, superseded ones included.
+  [[nodiscard]] std::size_t modelImportsOutstandingForTest() const;
   // Re-selects the marker batch when live samples arrived since the last tick;
   // called by the view before it reads geometry(). Returns true when the
   // geometry changed synchronously (cleared).
@@ -215,26 +211,16 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
 
   // One model primitive's load record, keyed by "topic:entity:index". Its
   // identity is the source signature (content hash / URL), so a re-published
-  // model with new bytes replaces the record; `generation` is never reused, so
-  // a stale fetch/import completion cannot alias a newer record.
+  // model with new bytes replaces the record and cancels its queue job.
   struct ModelLoad {
-    enum class Phase { kWaiting, kFetching, kImporting, kReady, kFailed, kBlocked };
+    enum class Phase { kLoading, kReady, kFailed, kBlocked };
 
     std::string identity;
     QString source_label;
     QString error;
-    std::uint64_t generation = 0;
-    Phase phase = Phase::kWaiting;
+    std::uint64_t job = 0;  // MeshLoadQueue job while kLoading
+    Phase phase = Phase::kLoading;
     bool fetch_failed = false;
-  };
-
-  // A waiting load in the pump queue. `generation` matches its ModelLoad while
-  // that record is current; a superseded entry is skipped when popped.
-  struct QueuedModelLoad {
-    std::string key;
-    std::string entity_id;
-    std::size_t model_index = 0;
-    std::uint64_t generation = 0;
   };
 
   enum class MarkerPick { kUnchanged, kNoSample, kRejected, kBatch };
@@ -270,18 +256,13 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   // Reconcile load records with the live entities (drop records and meshes of
   // gone models, add records for new/changed ones) and pump the load queue.
   void syncModelSources();
-  void startModelLoad(const std::string& key, const PJ::sdk::ModelPrimitive& primitive, QueuedModelLoad queued);
-  // Aborts the in-flight fetches once none of them is still wanted (they share
-  // one fetcher, so they can only be aborted together).
-  void abortObsoleteFetches();
-  // Start queued loads while fewer than maxConcurrentMeshLoads() run. Superseded
-  // fetches and imports count until they settle (their results are discarded),
-  // so replacing sources never runs more than the bound at once.
-  void pumpModelLoads();
-  bool startModelImport(
-      const std::string& key, const std::string& identity, std::uint64_t generation, const QByteArray& bytes,
-      const QString& format_hint);
-  void finishModelImport(const std::string& key, const std::string& identity, std::uint64_t generation);
+  // Admission: a new or changed source is recorded, then refused (no source,
+  // oversized embedded bytes, remote fetch not allowed) or queued.
+  void startModelLoad(
+      const std::string& key, const std::string& entity_id, std::size_t model_index,
+      const PJ::sdk::ModelPrimitive& primitive);
+  // A queued load of the current record settled: admit it against the budget.
+  void admitModel(const std::string& key, MeshData mesh, bool fetch_failed);
   // Renderer sink for an admitted mesh / a dropped one.
   void storeModelMesh(const std::string& key, MeshData mesh, std::uint64_t bytes);
   void releaseModelMesh(const std::string& key);
@@ -325,22 +306,13 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   std::uint64_t snapshot_cache_bytes_ = 0;
   QStringList model_frames_;
 
-  std::unique_ptr<MeshLoader> mesh_loader_;
-  // Owned so destroying the layer (or resetReplayState) aborts in-flight fetches;
-  // one retired by abortObsoleteFetches() stays a QObject child until its deferred delete.
-  std::unique_ptr<UrlFetcher> url_fetcher_;
-  // Fetches (-> their key) and imports in flight, by load generation, superseded
-  // ones included; together at most maxConcurrentMeshLoads().
-  std::unordered_map<std::uint64_t, std::string> active_model_fetches_;
-  std::unordered_map<std::uint64_t, std::unique_ptr<MeshImport>> active_model_imports_;
-  std::deque<QueuedModelLoad> model_load_queue_;
+  // Owned so destroying the layer aborts in-flight fetches and drops pending
+  // completions.
+  std::unique_ptr<MeshLoadQueue> model_queue_;
   std::unordered_map<std::string, ModelLoad> model_loads_;
   // Retained estimate of each admitted mesh; the key set is the ready set.
   std::unordered_map<std::string, std::uint64_t> model_mesh_bytes_;
   std::uint64_t model_retained_bytes_ = 0;
-  std::uint64_t next_model_load_generation_ = 1;
-  std::uint64_t model_import_starts_ = 0;
-  std::uint64_t model_import_settles_ = 0;
 
   QString batch_warning_;        // marker batch admission / decode
   QString model_state_warning_;  // model snapshot fold (budget, decode, lost batch)

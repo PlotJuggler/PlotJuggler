@@ -24,6 +24,7 @@
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/GraphicsApi.h"
 #include "pj_widgets/RhiBlend.h"
+#include "pj_widgets/RhiTestHooks.h"
 using namespace Qt::StringLiterals;
 
 void pjMediaQtInitResources() {

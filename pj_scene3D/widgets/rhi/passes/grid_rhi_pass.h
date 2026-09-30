@@ -46,23 +46,26 @@ class GridRhiPass {
     bool operator==(const Settings&) const = default;
   };
 
-  /// Creates the line/triangle pipelines; false leaves the pass unusable.
+  /// Registers the line/triangle pipelines; false leaves the pass unusable.
   [[nodiscard]] bool initialize(const RhiPassSetup& setup);
   [[nodiscard]] bool ready() const {
     return line_pipeline_ != nullptr && triangle_pipeline_ != nullptr && connection_line_pipeline_ != nullptr;
   }
-  void registerPipelines(ScenePipelineRegistry& registry) const;
 
   /// The shadow-receiving grid pipeline, sampling the view's shadow map with the
-  /// view's lighting uniforms. Built with the shadow stage, released before it.
-  /// Created at once even when the grid's other pipelines are templates: false
-  /// when it cannot be, which the caller answers by turning shadows off.
+  /// view's lighting uniforms. Registered with the shadow stage, released before
+  /// it; false only for an incomplete registration. Optional: a GPU that cannot
+  /// build it draws the cells unshadowed, then shadowReceiverFailed(), which the
+  /// caller answers by turning shadows off.
   [[nodiscard]] bool createShadowReceiver(
       QRhiBuffer* lighting_uniforms, QRhiTexture* shadow_map, QRhiSampler* shadow_sampler,
       ScenePipelineRegistry& registry);
   void releaseShadowReceiver(ScenePipelineRegistry& registry);
   [[nodiscard]] bool shadowReceiverReady() const {
     return shadow_pipeline_ != nullptr;
+  }
+  [[nodiscard]] bool shadowReceiverFailed(const ScenePipelineRegistry& registry) const {
+    return registry.optionalFailed(shadow_pipeline_);
   }
 
   /// Rebuilds the grid and the connection vertices whose inputs (including `tf`'s
@@ -132,12 +135,12 @@ class GridRhiPass {
   QRhiShaderResourceBindings* shader_resources_ = nullptr;
   QRhiShaderResourceBindings* annotation_shader_resources_ = nullptr;
   QRhiShaderResourceBindings* shadow_shader_resources_ = nullptr;
-  QRhiGraphicsPipeline* line_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* triangle_pipeline_ = nullptr;
-  // The line pipeline with the annotation alpha blend: its HDR clone draws the
+  const ScenePipeline* line_pipeline_ = nullptr;
+  const ScenePipeline* triangle_pipeline_ = nullptr;
+  // The line pipeline with the annotation alpha blend: its HDR variant draws the
   // connections (the direct pass and depth replay use line_pipeline_'s).
-  QRhiGraphicsPipeline* connection_line_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* shadow_pipeline_ = nullptr;
+  const ScenePipeline* connection_line_pipeline_ = nullptr;
+  const ScenePipeline* shadow_pipeline_ = nullptr;
   // binding 3 of grid.vert/grid_cell.*: the grid's offset and line parameters,
   // and a zero offset for the connections
   QRhiBuffer* origin_offset_uniforms_ = nullptr;

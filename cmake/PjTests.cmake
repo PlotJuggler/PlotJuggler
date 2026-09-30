@@ -109,9 +109,9 @@ function(pj_add_test_runner target)
     if(R_WORKING_DIRECTORY)
         list(APPEND discover_args WORKING_DIRECTORY "${R_WORKING_DIRECTORY}")
     endif()
-    # PRE_TEST: discovery runs at ctest time, inside the same environment the
-    # tests get (xvfb / offscreen), so a GUI runner never has to start a
-    # QApplication at build time. Discovery only lists cases; it constructs
-    # no windows.
+    # PRE_TEST: discovery runs at ctest time, not right after the link. POST_BUILD
+    # would execute every runner at build time, on Windows without the Qt/FFmpeg
+    # DLLs on PATH. Discovery is lazy, so parallel ctest invocations on one freshly
+    # rebuilt tree race on it (scripts/perf/gate_par.sh discovers once first).
     gtest_discover_tests(${target} ${discover_args})
 endfunction()

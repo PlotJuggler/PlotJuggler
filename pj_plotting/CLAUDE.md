@@ -103,6 +103,15 @@ Keep these porting and rendering constraints in mind:
 
 ## PlotRhiCanvas
 
+- **Files** (`widget/src/`, private to the module, namespace `PJ::plot_rhi`):
+  `PlotRhiGeometry.{h,cpp}` builds the geometry layers (clipping, strokes,
+  dashes, symbols, grids, curves, markers, the frame) and the curve layer's
+  cache keys, and holds the frame budgets; `PlotRhiTextAtlas.{h,cpp}` records,
+  caches, rasterises and packs the text layers; `PlotRhiCanvas.cpp` owns the
+  widget lifecycle, the rebuild decisions, the GPU resources and uploads, the
+  draw submission and failure reporting. The public header carries no
+  implementation types: the retained layers' bookkeeping sits behind one
+  `plot_rhi::RetainedLayers` pointer.
 - **Backends.** Shaders are committed multi-backend packs
   (`widget/shaders/*.qsb`, baked by `widget/shaders/bake.sh <qsb>`: GLSL ES 300,
   GLSL 120/150/330/440, HLSL 50, MSL 12, SPIR-V); desktop kits ship no `qsb`, and
@@ -111,7 +120,7 @@ Keep these porting and rendering constraints in mind:
   (the Vulkan y flip) into the CPU vertex transform. Atlas uv (0,0) is the first
   uploaded row on every backend. Set the viewport after binding each pipeline:
   Vulkan draws nothing otherwise.
-- **Budgets** (`PlotRhiCanvas.cpp`, work in device pixels): the reducer keeps up to
+- **Budgets** (`PlotRhiGeometry.h`, work in device pixels): the reducer keeps up to
   4 extrema per device-pixel column (floor 2048 samples). Desktop gives every
   curve that density and caps a frame at 8M vertices (16 B each: 128 MB, plus
   up to three 4 B indices per vertex); the browser splits one density budget
@@ -129,7 +138,7 @@ Keep these porting and rendering constraints in mind:
   owns (`setAutoRenderTarget(false)`, `PJ::RhiColorTarget`: no depth-stencil; 4 B
   per device pixel). Every
   stroke, fan, ring and box reaches half a device pixel past its true edge and
-  carries its position across (`PlotRhiVertex::aux`); `plot_color.frag` ramps
+  carries its position across (`plot_rhi::Vertex::aux`); `plot_color.frag` ramps
   coverage over that one device pixel from screen-space derivatives. Strokes
   under one device pixel are drawn one pixel wide at proportionally lower alpha,
   as Qt's antialiased raster does. Horizontal and vertical `addLine()` lines (grid,

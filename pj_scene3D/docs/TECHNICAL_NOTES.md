@@ -78,7 +78,7 @@ Linux CI floor step caps Mesa at 3.3 (`MESA_GL_VERSION_OVERRIDE=3.3`,
   register. OpenGL, Vulkan and Metal match by location and hide it. Rule: every
   pack's varyings are contiguous from location 0 (a declared, unused input is
   enough), so a fragment shader's inputs are a prefix of its vertex shader's
-  outputs. `wasm_shader_constants_test` checks it from each pack's reflection.
+  outputs. `scene3d_shader_constants_test` checks it from each pack's reflection.
 - **D3D11 needs `matrixSlice` on unrolled `mat4` vertex inputs:** SPIR-V Cross
   names them `TEXCOORD<first>_<row>`, and without the slice the input layout fails
   (`E_INVALIDARG`). OpenGL, Vulkan and Metal ignore it.
@@ -108,7 +108,7 @@ Linux CI floor step caps Mesa at 3.3 (`MESA_GL_VERSION_OVERRIDE=3.3`,
 | The OpenGL depth resolve blits depth and stencil together, attaching the textures as both, so a stencil-less D32F framebuffer is incomplete and the resolved depth stays unwritten | OpenGL resolves D32FS8 |
 | The OpenGL backend reports `QRhi::MultisampleTexture` from GL 3.0 (GLES 3.1) but allocates with `glTexStorage2DMultisample`, core only from GL 4.3: on a 4.1 context the entry point is null and `create()` crashes | The depth resolve also requires GL 4.3, GLES 3.1 or `GL_ARB_texture_storage_multisample` (`canCreateMultisampleTextures()`); other contexts replay |
 | The widget backing store probes Metal and gives up without the OpenGL fallback its comment promises | `preferredGraphicsApi()` probes Metal itself (§1) |
-| QRhiWidget paints synchronously inside every Show (an offscreen frame; on Vulkan a fence wait), even on the same QRhi at the same size, the paint dispatching back through `event()`; and an `update()` on a hidden render-to-texture widget sets `renderToTextureReallyDirty`, so a later repaint of its parent (an ADS tab switch) paints it again | `event()` marks the Show scope with a scoped flag (the nested paint keeps it) and `paintEvent()` skips QRhiWidget's paint while the target holds the last frame; a frame follows only if the content changed (`SceneViewWidget::update()`) (ARCHITECTURE, "Widget lifecycle") |
+| QRhiWidget paints synchronously inside every Show (an offscreen frame; on Vulkan a fence wait), even on the same QRhi at the same size, the paint dispatching back through `event()`; and an `update()` on a hidden render-to-texture widget sets `renderToTextureReallyDirty`, so a later repaint of its parent (an ADS tab switch) paints it again | `event()` marks the Show scope with a scoped flag (the nested paint keeps it) and `paintEvent()` skips QRhiWidget's paint while the target holds the last frame; a frame follows only if the content changed (`SceneViewWidget::invalidateContent()`) (ARCHITECTURE, "Widget lifecycle") |
 | The backing store creates the widget's QRhi (`QPlatformBackingStoreRhiConfig` carries only the API and the debug layer), so `EnablePipelineCacheDataSave` cannot be set and `setPipelineCacheData()` would come after Qt's own pipelines | None: pipeline-cache persistence is unreachable through `QRhiWidget`. OpenGL already persists program binaries through Qt's shader disk cache |
 | Without a console (ctest, CI), Qt logs to `OutputDebugString` on Windows and to os_log on macOS | The native lanes set `QT_FORCE_STDERR_LOGGING=1` so the backend lines reach the test log |
 
@@ -139,7 +139,7 @@ the DPR 2 passes set `QT_SCALE_FACTOR` through `ENVIRONMENT_MODIFICATION`.
 | Marker instances | A per-layer Static cache keyed on the resolved placements; the render origin stays on the CPU, and an origin-only change of a recurring layer rewrites only the translations from cached world doubles | See "Render origin" |
 | Grid | Built once at the fixed-frame origin; the origin offset added in the shader | Exact (see "Render origin") |
 | Output sample count | 1 when the HDR chain can run, 4 otherwise, chosen once per QRhi | A per-frame switch rebuilds every resource bound to the target (and broke the missing-HDR-variant fallback) |
-| Families on demand, template pipelines | A family is built with its first layer; every pipeline is created only as drawn (HDR clones), the direct ones before a direct frame's first pass; a pipeline that cannot be created withholds its frame (the last frame stays), then the failure state or the direct fallback | OpenGL builds a program per pipeline object even for a shader seen before (Qt's program-binary cache still calls `glProgramBinary`, 1–4 ms each on the Iris), so every unused pipeline cost a new QRhi (a float, redock, first show) its time: 50 pipelines and 78 ms at the cloud + robot first show before, 18 and 25 ms after. Vulkan's pipeline cache makes each well under 1 ms. `PJ_SCENE3D_PIPELINE_LOG=1` (test builds) logs each creation |
+| Families on demand, pipelines built as drawn | A family is built with its first layer; its registered pipelines are created only as drawn (HDR variants), the direct ones before a direct frame's first pass; a pipeline that cannot be created withholds its frame (the last frame stays), then the failure state or the direct fallback | OpenGL builds a program per pipeline object even for a shader seen before (Qt's program-binary cache still calls `glProgramBinary`, 1–4 ms each on the Iris), so every unused pipeline cost a new QRhi (a float, redock, first show) its time: 50 pipelines and 78 ms at the cloud + robot first show before, 18 and 25 ms after. Vulkan's pipeline cache makes each well under 1 ms |
 | GPU timing | `QRhi::EnableTimestamps` + `lastCompletedGpuTime` | Frame-level only; enough for the HUD |
 | Colormaps | The `pj_widgets` polynomials, in-shader | One source with the plots and the 2D depth view |
 | Shader packs | Committed `.qsb`, `--glsl "300 es,330,440" --hlsl 50 --msl 12` + SPIR-V, hash-checked in the WASM configure | Desktop Qt kits install no `qsb`; GLSL 330 keeps the macOS GL 4.1 fallback possible |
@@ -323,8 +323,8 @@ Per-backend allowances and measurements:
 | OpenGL (llvmpipe), another Mesa (CI's 23.x) | the tolerances above | foreground diff 0.028 (not re-run against the current images) |
 | OpenGL (Iris, Mesa 26) | none | foreground diff 0.001, coverage within 0.1% and mean colour 0 outside `shape_spheres_small` (coverage only: per-pixel 0.013, coverage 0.997) |
 | Vulkan (lavapipe, Iris) | none | foreground diff 0.082 (`field_viridis_cubes`), per-pixel 0.075 (`shape_cubes_subpixel`); line grids 15% of their foreground (hence the coverage mode) |
-| D3D11 (WARP) | line scenes (grid, marker edges, line strips): coverage 0.12, foreground diff 0.2 | neighbourhood 0.019 (`field_viridis_cubes`), per-pixel 0.074 (`shape_cubes_subpixel`), point-cloud coverage within 0.6%; line grids 1.19x the golden's pixels (not re-run against the current images) |
-| Metal (paravirtual) | none | the D3D11 bands on the point clouds; line grids 0.94x (not re-run against the current images) |
+| D3D11 (WARP) | line scenes (grid, marker edges, line strips): coverage 0.12, foreground diff 0.2 | neighbourhood 0.019 (`field_viridis_cubes`), per-pixel 0.074 (`shape_cubes_subpixel`), point-cloud coverage within 0.6%; line grids 1.19x the golden's pixels (measured against the previous images; the current ones pass) |
+| Metal (paravirtual) | none | the D3D11 bands on the point clouds; line grids 0.94x (measured against the previous images; the current ones pass) |
 | All, line grids | coverage 0.08 (0.25 on D3D11/WARP) | Iris GL 1.002, lavapipe 0.989, Iris Vulkan 0.990, Metal 0.937, WARP 1.194 of the golden's pixels |
 | Apple software GL | not run | sphere imposters ~10% larger, soft point sprites: coverage up to 19%, mean colour up to 58 |
 | Coverage modes, spatial | line-grid centroid 6 px | Mesa 26 on llvmpipe, lavapipe, Iris GL and Iris Vulkan: tiles 0.047, tile colour 4 (9 on `shape_spheres_small`, whose colour is not checked), centroid 0.06 on the clouds and 2.0 on the line grids of the y-down backends (their mirrored MSAA keeps more of one line slope), bounding box 0, strays 0; D3D11, Metal and CI's Mesa 23 not measured |
@@ -387,18 +387,24 @@ lane sets it. A render case whose canvas initialized a backend and then failed
 fails instead of skipping.
 
 **Test hooks.** Builds with tests define `PJ_RHI_TEST_HOOKS` (root CMake,
-test-enabled desktop builds; release builds configure `PJ_BUILD_TESTS=OFF`):
+test-enabled desktop builds; release builds configure `PJ_BUILD_TESTS=OFF`).
+The named fault injection and the QRhi counters of every GPU widget live in
+`pj_widgets/RhiTestHooks.h`:
 
-- `PJ_SCENE3D_TEST_FAIL_SHADER=<suffix>` fails every pipeline whose shader path
-  ends with it (`createGraphicsPipeline()`);
+- `PJ_RHI_TEST_FAIL_SHADER=<suffix>` fails every pipeline whose shader path
+  ends with it (Scene3D's `createPipeline()`, and `createRhiPipeline()`
+  for the plot canvas and the media viewer);
 - the `pjTestFailPipeline` dynamic property fails a named pipeline of the plot
-  canvas or the media viewer, and `pjTestPipelineAttempts` counts attempts;
+  canvas or the media viewer, and `pjTestPipelineAttempts` counts attempts; on
+  the Scene3D view it fails an allocation part way through a quality stage
+  (`shadow target`, `hdr attachments`, `ssao target`, `edl target`), which
+  `scene3d_rhi_failure_test` drops and recovers stage by stage;
 - `pjTestRhiAdoptions` / `pjTestRhiReleases` / `pjTestRhiStale` count QRhi
   adoptions (`PJ::noteRhiAdoption()`), which `rhi_mixed_dock_test` checks across
   dock moves: every float and redock re-initializes the moved widget, and no
   widget meets a new QRhi before releasing the old one's resources;
-- `setForceDepthReplayForTest()` keeps the depth replay where the chain would
-  resolve depth; `scene3d_frame_benchmark`'s `DepthReplayOnOff` times the two;
+- `SceneViewTestAccess::setForceDepthReplay()` keeps the depth replay where the
+  chain would resolve depth; `scene3d_frame_benchmark`'s `DepthReplayOnOff` times the two;
 - `MarkerRhiPass::setIdleReleasePausedForTest()` holds kept marker expansions
   through idle spells (the 250 ms wall-clock release), so the frame-window
   checks of `ExpansionIsKeptOnlyWhileReuploading` cannot race a slow grab;
@@ -406,6 +412,18 @@ test-enabled desktop builds; release builds configure `PJ_BUILD_TESTS=OFF`):
 - `QT_RHI_LEAK_CHECK` catches resources left on a dying QRhi on Vulkan, D3D11
   and Metal; on OpenGL uniform buffers are CPU-side and untracked, hence the
   counters.
+
+**View test access.** The view has no test API of its own: the tests, the
+benchmarks and the browser acceptance probes reach its internals through
+`SceneViewTestAccess` (`widgets/testing/`, target `pj_scene3d_widgets_testing`,
+a friend of the view): the view's own last-frame counters, the passes
+themselves (`pointPass()`, `markerPass()`, ...: each family's counters and
+bounds), each quality stage's state (`stage()`), the built families and the
+pipeline registry (`builtFamilies()`, `pipelineCounts()`: what stays unbuilt),
+and the overrides (`forceStageFallback()`, the depth replay,
+`discardShadowMap()`). It is independent of `PJ_RHI_TEST_HOOKS` (the WASM acceptance
+build has tests off), and the app never links it. Its stage times alone need
+the hooks.
 
 **Display runners in parallel.** Every CI lane runs ctest serially under xvfb.
 A local `ctest -j` of the display runners on one Wayland compositor (a headless
@@ -655,11 +673,12 @@ tree interleaved in every round is the less noisy comparison. Every round under
 from a round is missing; the idle row needs every idle-reporting case. Each tree
 builds `scene3d_frame_benchmark`, `plot_canvas_benchmark` and
 `mixed_layout_benchmark` (`PJ_BUILD_DEMOS=ON`). Run it under the machine's build
-lock (no compile may overlap a round); `--first-round K --rounds 1` runs one
+lock, `scripts/perf/build_slot.sh` (no compile may overlap a round); `--first-round K --rounds 1` runs one
 round at a time into the same `--out`, so builds can run between rounds. A round
 whose load average stands out is rerun, not averaged in. Start the display
-outside the lock and pass `--keep-display`: a compositor started under `flock`
-inherits the lock and holds it after the run.
+outside the lock and pass `--keep-display`: a compositor started under a plain
+`flock` (without the `-o` that `build_slot.sh` passes) inherits the lock and
+holds it after the run.
 
 Every per-frame benchmark (`scene3d_frame_benchmark`, the mixed layout, the
 plots) warms up with `pj_bench::WarmUp`: at least 250 ms of frames, the last 5
@@ -700,8 +719,7 @@ What the benchmarks report besides wall, CPU and memory:
 `scene3d_frame_benchmark` has attribution switches, not for the gate:
 `QSG_RHI_PROFILE=1` reports `gpu_ms` (QRhi timestamps, which slow the frame),
 `PJ_S3D_BENCH_NO_HDR=1` forces the direct pass, `PJ_S3D_BENCH_NO_SHADOWS=1` turns
-shadows off and `PJ_S3D_BENCH_NO_SSAO=1` / `PJ_S3D_BENCH_NO_EDL=1` those stages;
-the test builds' `PJ_SCENE3D_PIPELINE_LOG=1` logs every pipeline creation.
+shadows off and `PJ_S3D_BENCH_NO_SSAO=1` / `PJ_S3D_BENCH_NO_EDL=1` those stages.
 
 ## 10. Known gaps
 

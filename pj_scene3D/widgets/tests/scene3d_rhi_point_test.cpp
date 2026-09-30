@@ -13,7 +13,9 @@
 //    them (the translucent half draws without depth writes), and opacity 0 culls;
 //  - signed 8-bit extrema keep their sign;
 //  - quads crossing the frustum edge keep their visible part, and a cube whose
-//    centre is off screen still draws what pokes in.
+//    centre is off screen still draws what pokes in;
+//  - the pipeline registry the passes register with builds every variant from
+//    the whole description, and reports each failure with its severity.
 //
 // Needs a real display like the render harness (see scene3d_render_test_support.h).
 
@@ -22,7 +24,6 @@
 
 #include <QDomDocument>
 #include <QOffscreenSurface>
-#include <QScopeGuard>
 #include <QTest>
 #include <algorithm>
 #include <cstring>
@@ -34,9 +35,11 @@
 #include <vector>
 
 #include "../rhi/passes/point_rhi_pass.h"
+#include "../rhi/scene_view_widget_rhi_quality_p.h"
 #include "pj_scene3d_widgets/point_renderable.h"
 #include "pj_widgets/GraphicsApi.h"
 #include "scene3d_render_test_support.h"
+#include "scene_view_test_access.h"
 // Qt declares the Vulkan QRhi types only where the Vulkan headers exist (not in a
 // Windows build without the Vulkan SDK), whatever QT_CONFIG(vulkan) says.
 #if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
@@ -52,9 +55,11 @@ using namespace Qt::StringLiterals;
 
 namespace {
 
+using pj::scene3d::SceneViewTestAccess;
 using pj::scene3d::SceneViewWidget;
 using pj::scene3d::test::channelDeltaSum;
 using pj::scene3d::test::ExtraField;
+using pj::scene3d::test::PipelineFault;
 using Attrs = std::map<QString, QString>;
 using DT = PJ::sdk::PointField::Datatype;
 
@@ -211,7 +216,7 @@ TEST_F(Scene3dRhiPointTest, FanPicksFacesPerCubeAndShadesThree) {
   scene.add({{-2.2F, 0.0F, 0.0F}, {2.2F, 0.0F, 0.0F}}, solid(u"cube"_s, u"size_meters"_s, u"1"_s));
   VIEW_OR_SKIP(view, scene.frame(frontCamera(5.0F, 0.6F)));
   const QImage image = grab(*view);
-  EXPECT_EQ(view->lastCubeSpriteLayerCountForTest(), 0) << "1 m cubes must draw as fans";
+  EXPECT_EQ(SceneViewTestAccess::pointPass(*view).lastCubeSpriteLayerCount(), 0) << "1 m cubes must draw as fans";
   const QImage empty = emptyScene(scene, *view);
   const auto pixels = covered(image, empty);
   const int mid = image.width() / 2;
@@ -251,12 +256,13 @@ TEST_F(Scene3dRhiPointTest, SubPixelCubeCloudBecomesColouredSprites) {
   scene.add(lattice, solid(u"cube"_s, u"size_meters"_s, u"0.004"_s));
   VIEW_OR_SKIP(view, scene.frame(frontCamera(14.0F, 0.0F)));
   const QImage far_image = grab(*view);
-  EXPECT_EQ(view->lastCubeSpriteLayerCountForTest(), 1) << "a sub-pixel cloud must draw as LOD sprites";
+  EXPECT_EQ(SceneViewTestAccess::pointPass(*view).lastCubeSpriteLayerCount(), 1)
+      << "a sub-pixel cloud must draw as LOD sprites";
   // Small sprites use the point list where the backend has QRhi::VertexShaderPointSize
   // (every backend but Direct3D), and stay quads elsewhere.
   const auto api = PJ::preferredGraphicsApi();
   const bool point_size = api != QRhiWidget::Api::Direct3D11 && api != QRhiWidget::Api::Direct3D12;
-  EXPECT_EQ(view->lastPointListLayerCountForTest(), point_size ? 1 : 0);
+  EXPECT_EQ(SceneViewTestAccess::pointPass(*view).lastPointListLayerCount(), point_size ? 1 : 0);
   const QImage empty = emptyScene(scene, *view);
   auto pixels = covered(far_image, empty);
   EXPECT_GT(pixels.size(), lattice.size() * 3 / 4) << "sprites lost: fewer lit pixels than cubes";
@@ -273,33 +279,69 @@ TEST_F(Scene3dRhiPointTest, SubPixelCubeCloudBecomesColouredSprites) {
 
   view->camera().adoptState(frontCamera(0.9F, 0.0F));
   grab(*view);
-  EXPECT_EQ(view->lastCubeSpriteLayerCountForTest(), 0) << "a near cloud must keep its fans";
+  EXPECT_EQ(SceneViewTestAccess::pointPass(*view).lastCubeSpriteLayerCount(), 0) << "a near cloud must keep its fans";
 }
 
-// A GPU that cannot build the point-list pipeline draws the same small sprites
-// as quads (the point list is optional): no failure state, no missing frame.
-TEST_F(Scene3dRhiPointTest, PointListFailureFallsBackToQuads) {
-  qputenv("PJ_SCENE3D_TEST_FAIL_SHADER", "/point_list.frag.qsb");
-  const auto clear_fault = qScopeGuard([] { qunsetenv("PJ_SCENE3D_TEST_FAIL_SHADER"); });
-  PointScene scene;
-  int failures = 0;
+// A 20 x 20 lattice whose cube sprites, seen from frontCamera(14, 0), are small
+// enough for the point list.
+std::vector<glm::vec3> spriteLattice() {
   std::vector<glm::vec3> lattice;
   for (int j = 0; j < 20; ++j) {
     for (int i = 0; i < 20; ++i) {
       lattice.emplace_back(0.25F * (static_cast<float>(i) - 9.5F), 0.0F, 0.25F * (static_cast<float>(j) - 9.5F));
     }
   }
+  return lattice;
+}
+
+// A GPU that cannot build the point-list pipeline draws the same small sprites
+// as quads (the point list is optional): no failure state, no missing frame.
+TEST_F(Scene3dRhiPointTest, PointListFailureFallsBackToQuads) {
+  PipelineFault fault("/point_list.frag.qsb");
+  PointScene scene;
+  int failures = 0;
+  const std::vector<glm::vec3> lattice = spriteLattice();
   scene.add(lattice, solid(u"cube"_s, u"size_meters"_s, u"0.004"_s));
   VIEW_OR_SKIP(view, scene.frame(frontCamera(14.0F, 0.0F)));
   QObject::connect(view, &QRhiWidget::renderFailed, view, [&failures] { ++failures; });
   const QImage image = grab(*view);
-  EXPECT_EQ(view->lastCubeSpriteLayerCountForTest(), 1);
-  EXPECT_EQ(view->lastPointListLayerCountForTest(), 0) << "a failed point list still drew";
-  EXPECT_GT(view->lastPointVertexCountForTest() + view->lastCubeInstanceCountForTest(), 0);
+  EXPECT_EQ(SceneViewTestAccess::pointPass(*view).lastCubeSpriteLayerCount(), 1);
+  EXPECT_EQ(SceneViewTestAccess::pointPass(*view).lastPointListLayerCount(), 0) << "a failed point list still drew";
+  EXPECT_GT(
+      SceneViewTestAccess::pointPass(*view).lastPointVertexCount() +
+          SceneViewTestAccess::pointPass(*view).lastCubeInstanceCount(),
+      0);
   const QImage empty = emptyScene(scene, *view);
   EXPECT_GT(covered(image, empty).size(), lattice.size() * 3 / 4) << "the quads did not draw the sprites";
   EXPECT_EQ(failures, 0);
-  EXPECT_TRUE(view->renderingWarningForTest().isEmpty()) << view->renderingWarningForTest().toStdString();
+  EXPECT_TRUE(view->renderingWarning().isEmpty()) << view->renderingWarning().toStdString();
+}
+
+// With the HDR chain the point list binds its HDR variant: that failure falls
+// back to quads too, on the frame it happens, and keeps the chain up.
+TEST_F(Scene3dRhiPointTest, PointListHdrVariantFailureKeepsTheHdrChain) {
+  const std::vector<glm::vec3> lattice = spriteLattice();
+  {
+    PointScene probe;
+    probe.add(lattice, solid(u"cube"_s, u"size_meters"_s, u"0.004"_s));
+    VIEW_OR_SKIP(view, probe.frame(frontCamera(14.0F, 0.0F)));
+    if (!SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active) {
+      GTEST_SKIP() << "no HDR chain on this GPU";
+    }
+  }
+  PipelineFault fault("/point_list.frag.qsb");
+  PointScene scene;
+  scene.add(lattice, solid(u"cube"_s, u"size_meters"_s, u"0.004"_s));
+  VIEW_OR_SKIP(view, scene.frame(frontCamera(14.0F, 0.0F)));
+  const QImage image = grab(*view);
+  EXPECT_TRUE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active)
+      << "a failed optional variant dropped the HDR chain";
+  EXPECT_EQ(SceneViewTestAccess::stageTimes(*view).frames_withheld, 0U);
+  EXPECT_EQ(SceneViewTestAccess::pipelineCounts(*view).directs, 0) << "an HDR frame built a direct pipeline";
+  EXPECT_EQ(SceneViewTestAccess::pointPass(*view).lastPointListLayerCount(), 0) << "a failed point list still drew";
+  const QImage empty = emptyScene(scene, *view);
+  EXPECT_GT(covered(image, empty).size(), lattice.size() * 3 / 4) << "the quads did not draw the sprites";
+  EXPECT_TRUE(view->renderingWarning().isEmpty()) << view->renderingWarning().toStdString();
 }
 
 // Perspective: a sphere twice as far covers less. Orthographic: spheres at any
@@ -430,7 +472,7 @@ TEST_F(Scene3dRhiPointTest, GeometryCrossingTheFrustumEdgeKeepsItsVisiblePart) {
   scene.add({{half_width + 0.3F, 0.0F, 0.0F}}, solid(u"cube"_s, u"size_meters"_s, u"1"_s));
   VIEW_OR_SKIP(view, scene.frame(camera));
   const QImage image = grab(*view);
-  EXPECT_EQ(view->lastPointListLayerCountForTest(), 0) << "30 px points must draw as quads";
+  EXPECT_EQ(SceneViewTestAccess::pointPass(*view).lastPointListLayerCount(), 0) << "30 px points must draw as quads";
   const QImage empty = emptyScene(scene, *view);
   int left_edge = 0;
   int right_edge = 0;
@@ -668,8 +710,23 @@ class OffscreenRhi {
   QRhi* rhi() {
     return rhi_.get();
   }
+  QRhiRenderPassDescriptor* renderPass() {
+    return pass_descriptor_.get();
+  }
+  QRhiBuffer* renderMode() {
+    return render_mode_.get();
+  }
   pj::scene3d::RhiPassSetup setup() {
-    return {rhi_.get(), pass_descriptor_.get(), 1, render_mode_.get()};
+    registry_.setDirectTarget(rhi_.get(), pass_descriptor_.get(), 1);
+    return {
+        .rhi = rhi_.get(),
+        .render_mode_uniforms = render_mode_.get(),
+        .pipelines = &registry_,
+        .part = "point pipelines"};
+  }
+  // Deletes the pipelines the pass registered, before its release().
+  void releasePipelines() {
+    registry_.clear();
   }
   // One frame of the view's contract: admit, prepare, then an empty pass that
   // consumes the uploads.
@@ -696,6 +753,8 @@ class OffscreenRhi {
   std::unique_ptr<QRhiBuffer> render_mode_;
   std::unique_ptr<QRhiTextureRenderTarget> target_;
   std::unique_ptr<QRhiRenderPassDescriptor> pass_descriptor_;
+  // Declared after the QRhi: its pipelines die first.
+  pj::scene3d::ScenePipelineRegistry registry_;
 };
 
 std::vector<pj::scene3d::PointVertex> box(glm::vec3 minimum, glm::vec3 maximum) {
@@ -736,11 +795,165 @@ TEST_F(Scene3dRhiPointTest, CloudBoundsFollowEachSampleAndReuploadAfterRelease) 
   cloud.set(box(second.first, second.second));
   expect_frame(second, "second sample");
 
+  offscreen.releasePipelines();
   pass.release();
   ASSERT_TRUE(pass.initialize(offscreen.setup()));
   pass.setLayers({&cloud});
   expect_frame(second, "after release()");
+  offscreen.releasePipelines();
   pass.release();
+}
+
+// Every variant is built from the registered description (not copied from
+// another pipeline), so no state is lost on the way to the HDR chain; the depth
+// replay's differs only in its alpha-only colour writes. Nothing is created at
+// registration, and each failure keeps its severity: a required pipeline fails
+// the scene, a variant only the HDR chain, an optional one nothing.
+TEST_F(Scene3dRhiPointTest, RegistryBuildsVariantsFromTheWholeDescription) {
+  OffscreenRhi offscreen;
+  if (offscreen.rhi() == nullptr) {
+    PJ_SKIP_WITHOUT_GPU("no QRhi for " << qPrintable(qEnvironmentVariable("PJ_GRAPHICS_API")));
+  }
+  QRhi* rhi = offscreen.rhi();
+  std::unique_ptr<QRhiBuffer> view_uniforms(rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 64));
+  ASSERT_TRUE(view_uniforms->create());
+  std::unique_ptr<QRhiShaderResourceBindings> bindings(
+      pj::scene3d::createBindings(
+          rhi,
+          {
+              QRhiShaderResourceBinding::uniformBuffer(0, QRhiShaderResourceBinding::VertexStage, view_uniforms.get()),
+              QRhiShaderResourceBinding::uniformBuffer(
+                  8, QRhiShaderResourceBinding::FragmentStage, offscreen.renderMode()),
+          }));
+  ASSERT_NE(bindings, nullptr);
+  QRhiVertexInputLayout layout;
+  layout.setBindings({QRhiVertexInputBinding(7 * sizeof(float))});
+  layout.setAttributes({
+      QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, 0),
+      QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float4, 3 * sizeof(float)),
+  });
+  const pj::scene3d::PipelineDesc desc{
+      .topology = QRhiGraphicsPipeline::Lines,
+      .vertex = pj::scene3d::loadRhiShader(u":/scene3d_rhi/scene.vert.qsb"_s),
+      .fragment = pj::scene3d::loadRhiShader(u":/scene3d_rhi/scene.frag.qsb"_s),
+      .input_layout = layout,
+      .bindings = bindings.get(),
+      .cull = QRhiGraphicsPipeline::Back,
+      .depth_op = QRhiGraphicsPipeline::Less,
+      .depth_bias = 3,
+      .slope_scaled_depth_bias = 2.0F,
+  };
+  using Counts = pj::scene3d::ScenePipelineRegistry::Counts;
+  using Severity = pj::scene3d::PipelineFailure::Severity;
+  using pj::scene3d::ScenePass;
+  pj::scene3d::ScenePipelineRegistry registry;
+  registry.setDirectTarget(rhi, offscreen.renderPass(), 1);
+  registry.setVariantTargets(offscreen.renderPass(), 1, offscreen.renderPass());
+  const pj::scene3d::ScenePipeline* lines = registry.add(desc, "test pipelines");
+  ASSERT_NE(lines, nullptr);
+  pj::scene3d::PipelineDesc no_depth_write = desc;
+  no_depth_write.depth_write = false;
+  const pj::scene3d::ScenePipeline* translucent = registry.add(no_depth_write, "test pipelines");
+  EXPECT_EQ(registry.counts(), (Counts{2, 0, 0})) << "registering built a pipeline";
+  EXPECT_EQ(registry.resolve(lines, ScenePass::kDirect), nullptr) << "a direct variant before createDirects()";
+
+  const auto expect_state = [&](const QRhiGraphicsPipeline* pipeline, QRhiGraphicsPipeline::ColorMask writes) {
+    ASSERT_NE(pipeline, nullptr);
+    EXPECT_EQ(pipeline->topology(), desc.topology);
+    EXPECT_EQ(pipeline->cullMode(), desc.cull);
+    EXPECT_EQ(pipeline->depthOp(), desc.depth_op);
+    EXPECT_EQ(pipeline->depthBias(), desc.depth_bias);
+    EXPECT_EQ(pipeline->slopeScaledDepthBias(), desc.slope_scaled_depth_bias);
+    EXPECT_TRUE(pipeline->hasDepthTest() && pipeline->hasDepthWrite());
+    EXPECT_EQ(pipeline->shaderResourceBindings(), desc.bindings);
+    ASSERT_EQ(pipeline->cendTargetBlends() - pipeline->cbeginTargetBlends(), 1);
+    const QRhiGraphicsPipeline::TargetBlend& blend = *pipeline->cbeginTargetBlends();
+    EXPECT_EQ(blend.enable, desc.blend->enable);
+    EXPECT_EQ(blend.srcColor, desc.blend->srcColor);
+    EXPECT_EQ(blend.dstAlpha, desc.blend->dstAlpha);
+    EXPECT_EQ(blend.colorWrite, writes);
+  };
+  expect_state(registry.resolve(lines, ScenePass::kHdrColor), desc.blend->colorWrite);
+  expect_state(registry.resolve(lines, ScenePass::kDepthReplay), QRhiGraphicsPipeline::A);
+  EXPECT_EQ(registry.resolve(translucent, ScenePass::kDepthReplay), nullptr)
+      << "the depth replay drew a pipeline that writes no depth";
+  EXPECT_EQ(registry.counts(), (Counts{2, 0, 2})) << "a variant nothing resolved was built";
+  EXPECT_FALSE(registry.failure().has_value());
+
+  {
+    PipelineFault fault("/scene.frag.qsb");
+    // Optional: nothing latched; it resolves to nullptr and its family falls back.
+    const pj::scene3d::ScenePipeline* optional = registry.add(desc, "test pipelines", /*optional=*/true);
+    ASSERT_NE(optional, nullptr);
+    EXPECT_EQ(registry.resolve(optional, ScenePass::kHdrColor), nullptr);
+    EXPECT_TRUE(registry.optionalFailed(optional));
+    EXPECT_FALSE(registry.failure().has_value());
+    registry.remove(optional);
+    // A variant: the HDR chain's failure, gone with the variants.
+    EXPECT_EQ(registry.resolve(translucent, ScenePass::kHdrColor), nullptr);
+    ASSERT_TRUE(registry.failure().has_value());
+    EXPECT_EQ(registry.failure()->severity, Severity::kHdrVariant);
+    // Latched: that frame is withheld, so no later bind compiles (or binds) a variant.
+    fault.clear();
+    EXPECT_EQ(registry.resolve(translucent, ScenePass::kHdrColor), nullptr) << "a latched failure retried a compile";
+    EXPECT_EQ(registry.resolve(lines, ScenePass::kDepthReplay), nullptr);
+    EXPECT_EQ(registry.counts().hdr_variants, 2);
+    PipelineFault again("/scene.frag.qsb");
+    registry.releaseVariants();
+    EXPECT_FALSE(registry.failure().has_value());
+    // Required: the scene's failure, named after its part, until clear().
+    EXPECT_FALSE(registry.createDirects());
+    ASSERT_TRUE(registry.failure().has_value());
+    EXPECT_EQ(registry.failure()->severity, Severity::kRequired);
+    EXPECT_STREQ(registry.failure()->part, "test pipelines");
+    registry.releaseVariants();
+    EXPECT_TRUE(registry.failure().has_value()) << "a required failure went with the variants";
+  }
+  EXPECT_FALSE(registry.createDirects()) << "a required failure is not retried";
+  registry.clear();
+  EXPECT_FALSE(registry.failure().has_value());
+  EXPECT_EQ(registry.counts(), Counts{});
+
+  registry.setDirectTarget(rhi, offscreen.renderPass(), 1);
+  lines = registry.add(desc, "test pipelines");
+  ASSERT_TRUE(registry.createDirects());
+  EXPECT_EQ(registry.counts(), (Counts{1, 1, 0}));
+  expect_state(registry.resolve(lines, ScenePass::kDirect), desc.blend->colorWrite);
+  const pj::scene3d::ScenePipeline* optional = registry.add(desc, "test pipelines", /*optional=*/true);
+  EXPECT_EQ(registry.resolve(optional, ScenePass::kDirect), nullptr) << "an optional pipeline was created at once";
+  {
+    PipelineFault fault("/scene.frag.qsb");
+    EXPECT_TRUE(registry.createDirects()) << "an optional direct failed the scene";
+  }
+  EXPECT_TRUE(registry.optionalFailed(optional));
+  EXPECT_FALSE(registry.optionalFailed(lines));
+  EXPECT_FALSE(registry.failure().has_value());
+  EXPECT_TRUE(registry.createDirects()) << "a failed optional pipeline was retried";
+  EXPECT_EQ(registry.resolve(optional, ScenePass::kDirect), nullptr);
+  registry.clear();
+}
+
+// The HDR chain's share of its QRhi's byte cap goes with its targets, however
+// they are released: nothing else has to give the charge back.
+TEST_F(Scene3dRhiPointTest, HdrTargetsGiveTheirByteChargeBack) {
+  OffscreenRhi offscreen;
+  if (offscreen.rhi() == nullptr) {
+    PJ_SKIP_WITHOUT_GPU("no QRhi for " << qPrintable(qEnvironmentVariable("PJ_GRAPHICS_API")));
+  }
+  QRhi* rhi = offscreen.rhi();
+  using pj::scene3d::HdrResources;
+  const std::uint64_t others = HdrResources::chargedBytes(rhi);
+  HdrResources first;
+  HdrResources second;
+  first.charge(rhi, 1000U);
+  second.charge(rhi, 24U);
+  EXPECT_EQ(HdrResources::chargedBytes(rhi), others + 1024U);
+  first.releaseTargets();
+  EXPECT_EQ(HdrResources::chargedBytes(rhi), others + 24U);
+  first.charge(rhi, 8U);
+  second.release();
+  first.release();
+  EXPECT_EQ(HdrResources::chargedBytes(rhi), others);
 }
 
 }  // namespace

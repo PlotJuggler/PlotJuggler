@@ -63,13 +63,14 @@ bool GridRhiPass::initialize(const RhiPassSetup& setup) {
                QRhiShaderResourceBinding::uniformBuffer(
                    8, QRhiShaderResourceBinding::FragmentStage, setup.annotation_render_mode_uniforms),
            });
-  triangle_pipeline_ = createScenePipeline(
-      setup, {
-                 .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid_cell.vert.qsb")),
-                 .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid_cell.frag.qsb")),
-                 .input_layout = vertexLayout(),
-                 .bindings = shader_resources_,
-             });
+  triangle_pipeline_ = setup.pipelines->add(
+      {
+          .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid_cell.vert.qsb")),
+          .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid_cell.frag.qsb")),
+          .input_layout = vertexLayout(),
+          .bindings = shader_resources_,
+      },
+      setup.part);
   PipelineDesc desc{
       .topology = QRhiGraphicsPipeline::Lines,
       .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid.vert.qsb")),
@@ -77,16 +78,10 @@ bool GridRhiPass::initialize(const RhiPassSetup& setup) {
       .input_layout = vertexLayout(),
       .bindings = shader_resources_,
   };
-  line_pipeline_ = createScenePipeline(setup, desc);
+  line_pipeline_ = setup.pipelines->add(desc, setup.part);
   desc.blend = annotationAlphaBlend();
-  connection_line_pipeline_ = createScenePipeline(setup, desc);
+  connection_line_pipeline_ = setup.pipelines->add(desc, setup.part);
   return ready();
-}
-
-void GridRhiPass::registerPipelines(ScenePipelineRegistry& registry) const {
-  registry.add(line_pipeline_);
-  registry.add(triangle_pipeline_);
-  registry.add(connection_line_pipeline_);
 }
 
 bool GridRhiPass::createShadowReceiver(
@@ -109,28 +104,25 @@ bool GridRhiPass::createShadowReceiver(
           QRhiShaderResourceBinding::uniformBuffer(
               8, QRhiShaderResourceBinding::FragmentStage, setup_.render_mode_uniforms),
       });
-  // Built now, never as a template: the receiver is optional, so its failure must
-  // reach the caller's "shadows off" fallback, not fail the grid's templates.
-  RhiPassSetup setup = setup_;
-  setup.templates = nullptr;
-  shadow_pipeline_ = createScenePipeline(
-      setup, {
-                 .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid_cell.vert.qsb")),
-                 .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid_cell_shadow.frag.qsb")),
-                 .input_layout = vertexLayout(),
-                 .bindings = shadow_shader_resources_,
-             });
+  // Optional: a GPU that cannot build it draws the cells unshadowed, and the
+  // view turns shadows off (shadowReceiverFailed()), instead of failing the scene.
+  shadow_pipeline_ = registry.add(
+      {
+          .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid_cell.vert.qsb")),
+          .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid_cell_shadow.frag.qsb")),
+          .input_layout = vertexLayout(),
+          .bindings = shadow_shader_resources_,
+      },
+      setup_.part, /*optional=*/true);
   if (shadow_pipeline_ == nullptr) {
     releaseShadowReceiver(registry);
     return false;
   }
-  registry.add(shadow_pipeline_);
   return true;
 }
 
 void GridRhiPass::releaseShadowReceiver(ScenePipelineRegistry& registry) {
   registry.remove(shadow_pipeline_);
-  delete shadow_pipeline_;
   delete shadow_shader_resources_;
   shadow_pipeline_ = nullptr;
   shadow_shader_resources_ = nullptr;
@@ -229,10 +221,13 @@ void GridRhiPass::submit(
   if (!ready()) {
     return;
   }
-  const auto draw = [&](QRhiGraphicsPipeline* direct, QRhiShaderResourceBindings* resources, QRhiBuffer* buffer,
+  const auto draw = [&](const ScenePipeline* registered, QRhiShaderResourceBindings* resources, QRhiBuffer* buffer,
                         quint32 first, quint32 count) {
-    QRhiGraphicsPipeline* pipeline = registry.resolve(direct, pass);
-    if (pipeline == nullptr || buffer == nullptr || count == 0U) {
+    if (buffer == nullptr || count == 0U) {
+      return;  // before resolve(): an empty part (the cells of the line style) builds no variant
+    }
+    QRhiGraphicsPipeline* pipeline = registry.resolve(registered, pass);
+    if (pipeline == nullptr) {
       return;
     }
     command_buffer->setGraphicsPipeline(pipeline);
@@ -243,9 +238,11 @@ void GridRhiPass::submit(
     command_buffer->draw(count);
   };
   if (grid_ready_) {
+    const bool shadowed =
+        receive_shadow_ && grid_cell_vertex_count_ != 0U && registry.resolve(shadow_pipeline_, pass) != nullptr;
     draw(
-        receive_shadow_ ? shadow_pipeline_ : triangle_pipeline_,
-        receive_shadow_ ? shadow_shader_resources_ : shader_resources_, grid_buffer_, 0U, grid_cell_vertex_count_);
+        shadowed ? shadow_pipeline_ : triangle_pipeline_, shadowed ? shadow_shader_resources_ : shader_resources_,
+        grid_buffer_, 0U, grid_cell_vertex_count_);
     draw(line_pipeline_, shader_resources_, grid_buffer_, grid_cell_vertex_count_, grid_line_vertex_count_);
   }
   // Only the HDR target carries the data/annotation split in its alpha: the
@@ -258,11 +255,7 @@ void GridRhiPass::submit(
 }
 
 void GridRhiPass::release() {
-  delete shadow_pipeline_;
   delete shadow_shader_resources_;
-  delete connection_line_pipeline_;
-  delete line_pipeline_;
-  delete triangle_pipeline_;
   delete annotation_shader_resources_;
   delete shader_resources_;
   delete grid_buffer_;

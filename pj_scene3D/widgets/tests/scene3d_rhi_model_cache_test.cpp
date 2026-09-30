@@ -33,13 +33,16 @@
 #include <utility>
 #include <vector>
 
+#include "../rhi/passes/marker_rhi_pass.h"
 #include "../rhi/passes/model_rhi_pass.h"
+#include "../rhi/scene_view_widget_rhi_quality_p.h"
 #include "fake_model_layer.h"
 #include "pj_base/builtin/scene_entities_codec.hpp"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/model_renderable.h"
 #include "pj_widgets/GraphicsApi.h"
 #include "scene3d_render_test_support.h"
+#include "scene_view_test_access.h"
 
 using namespace Qt::StringLiterals;
 
@@ -47,6 +50,7 @@ namespace {
 
 using pj::scene3d::MeshData;
 using pj::scene3d::ModelRhiPass;
+using pj::scene3d::SceneViewTestAccess;
 using pj::scene3d::SceneViewWidget;
 using pj::scene3d::test::FakeModelLayer;
 using pj::scene3d::test::grab;
@@ -167,7 +171,7 @@ class ModelView {
     return *view_;
   }
   [[nodiscard]] const ModelRhiPass::CacheCounters& counters() const {
-    return view_->modelPassForTest().cacheCountersForTest();
+    return SceneViewTestAccess::modelPass(*view_).cacheCountersForTest();
   }
 
  private:
@@ -221,7 +225,7 @@ TEST_F(Scene3dRhiModelCacheTest, MeshesArrivingOneByOneBuildOnce) {
         {0.3 * (i % 10) - 1.5, 0.3 * (i / 10), 0.2});
     GRAB_OR_SKIP(image, scene.view());
   }
-  EXPECT_EQ(scene.view().lastModelDrawCountForTest(), 50);
+  EXPECT_EQ(SceneViewTestAccess::modelPass(scene.view()).lastDrawCount(), 50);
   EXPECT_EQ(scene.counters().mesh_builds - before, 50);
   ++layer.revision;  // nothing changed: nothing rebuilt
   GRAB_OR_SKIP(same, scene.view());
@@ -245,7 +249,7 @@ TEST_F(Scene3dRhiModelCacheTest, SameKeyReloadRebuildsOnlyThatMesh) {
   layer.erase("left");
   GRAB_OR_SKIP(erased, scene.view());
   EXPECT_EQ(scene.counters().mesh_builds, builds + 1);
-  EXPECT_EQ(scene.view().lastModelDrawCountForTest(), 1);
+  EXPECT_EQ(SceneViewTestAccess::modelPass(scene.view()).lastDrawCount(), 1);
   EXPECT_NE(reloaded, erased);
 }
 
@@ -263,9 +267,9 @@ TEST_F(Scene3dRhiModelCacheTest, TexturesAreSharedAcrossMeshesAndLayers) {
   ModelView scene;
   SKIP_UNLESS(scene.show({&first, &second}));
   GRAB_OR_SKIP(image, scene.view());
-  EXPECT_EQ(scene.view().lastModelTextureSlotCountsForTest()[0], 4);
+  EXPECT_EQ(SceneViewTestAccess::modelPass(scene.view()).lastTextureSlotCounts()[0], 4);
   EXPECT_EQ(scene.counters().texture_decodes, 2);
-  EXPECT_EQ(scene.view().modelPassForTest().cachedTextureCountForTest(), 2);
+  EXPECT_EQ(SceneViewTestAccess::modelPass(scene.view()).cachedTextureCountForTest(), 2);
   // Replace every textured mesh (a layer without draws keeps its GPU state).
   first.erase("a");
   first.erase("b");
@@ -274,7 +278,7 @@ TEST_F(Scene3dRhiModelCacheTest, TexturesAreSharedAcrossMeshesAndLayers) {
   second.erase("d");
   second.put("f", cube(0.6F, solid({0.5F, 0.5F, 0.5F, 1.0F})), {1.0, 0.0, 0.5});
   GRAB_OR_SKIP(untextured, scene.view());
-  EXPECT_EQ(scene.view().modelPassForTest().cachedTextureCountForTest(), 0);
+  EXPECT_EQ(SceneViewTestAccess::modelPass(scene.view()).cachedTextureCountForTest(), 0);
 }
 
 // Edge lists are built on the first wireframe draw, once per mesh; toggling back
@@ -307,7 +311,8 @@ TEST_F(Scene3dRhiModelCacheTest, OrbitAndZoomSkipInstanceUploads) {
   ModelView scene;
   SKIP_UNLESS(scene.show({&layer}));
   GRAB_OR_SKIP(settled, scene.view());
-  ASSERT_TRUE(scene.view().lastShadowActiveForTest()) << scene.view().shadowCapabilityErrorForTest().toStdString();
+  ASSERT_TRUE(SceneViewTestAccess::stage(scene.view(), SceneViewTestAccess::Stage::kShadow).last_active)
+      << SceneViewTestAccess::stage(scene.view(), SceneViewTestAccess::Stage::kShadow).capability_error.toStdString();
   const ModelRhiPass::CacheCounters before = scene.counters();
   scene.setCamera(-60.0F, 6.0F);
   GRAB_OR_SKIP(orbited, scene.view());
@@ -328,19 +333,20 @@ TEST_F(Scene3dRhiModelCacheTest, ShadowToggleRebindsKeptMeshes) {
   ModelView scene;
   SKIP_UNLESS(scene.show({&layer}));
   GRAB_OR_SKIP(shadowed, scene.view());
-  ASSERT_TRUE(scene.view().lastShadowActiveForTest()) << scene.view().shadowCapabilityErrorForTest().toStdString();
+  ASSERT_TRUE(SceneViewTestAccess::stage(scene.view(), SceneViewTestAccess::Stage::kShadow).last_active)
+      << SceneViewTestAccess::stage(scene.view(), SceneViewTestAccess::Stage::kShadow).capability_error.toStdString();
   const int builds = scene.counters().mesh_builds;
   scene.setShadows(false);
   GRAB_OR_SKIP(unshadowed, scene.view());
   EXPECT_NE(shadowed, unshadowed);
   scene.setShadows(true);
   GRAB_OR_SKIP(shadowed_again, scene.view());
-  EXPECT_TRUE(scene.view().lastShadowActiveForTest());
+  EXPECT_TRUE(SceneViewTestAccess::stage(scene.view(), SceneViewTestAccess::Stage::kShadow).last_active);
   EXPECT_EQ(shadowed, shadowed_again);
   layer.put("small", cube(0.3F, solid({0.2F, 0.2F, 0.9F, 1.0F})), {1.2, 0.0, 0.3});  // a bump that keeps "box"
   GRAB_OR_SKIP(grown, scene.view());
   EXPECT_EQ(scene.counters().mesh_builds, builds + 1);
-  EXPECT_EQ(scene.view().lastModelDrawCountForTest(), 2);
+  EXPECT_EQ(SceneViewTestAccess::modelPass(scene.view()).lastDrawCount(), 2);
 }
 
 constexpr auto kMoverUrdf = R"(<robot name="mover">
@@ -373,21 +379,22 @@ TEST_F(Scene3dRhiModelCacheTest, TfOnlyLinkMoveRefreshesInstances) {
   SceneViewWidget& view = *fixture.dock()->sceneView();
   fixture.dock()->onTrackerTime(100e-9);
   GRAB_OR_SKIP(at_100, view);
-  ASSERT_EQ(view.lastModelDrawCountForTest(), 1);
-  ASSERT_TRUE(view.lastShadowActiveForTest()) << view.shadowCapabilityErrorForTest().toStdString();
+  ASSERT_EQ(SceneViewTestAccess::modelPass(view).lastDrawCount(), 1);
+  ASSERT_TRUE(SceneViewTestAccess::stage(view, SceneViewTestAccess::Stage::kShadow).last_active)
+      << SceneViewTestAccess::stage(view, SceneViewTestAccess::Stage::kShadow).capability_error.toStdString();
   const std::uint64_t revision = robot->modelRevision();
-  const ModelRhiPass::CacheCounters before = view.modelPassForTest().cacheCountersForTest();
-  const pj::scene3d::AABB bounds_100 = view.lastShadowBoundsForTest();
+  const ModelRhiPass::CacheCounters before = SceneViewTestAccess::modelPass(view).cacheCountersForTest();
+  const pj::scene3d::AABB bounds_100 = SceneViewTestAccess::lastShadowBounds(view);
 
   fixture.dock()->onTrackerTime(200e-9);
   GRAB_OR_SKIP(at_200, view);
-  const ModelRhiPass::CacheCounters& after = view.modelPassForTest().cacheCountersForTest();
+  const ModelRhiPass::CacheCounters& after = SceneViewTestAccess::modelPass(view).cacheCountersForTest();
   EXPECT_EQ(robot->modelRevision(), revision) << "the premise: a TF-only move bumps no revision";
   EXPECT_EQ(after.mesh_builds, before.mesh_builds);
   EXPECT_EQ(after.instance_uploads, before.instance_uploads + 1);
   EXPECT_EQ(after.shadow_instance_uploads, before.shadow_instance_uploads + 1);
   EXPECT_GT(pj::scene3d::test::differingPixels(at_100, at_200, 60), 200) << "the moved link kept its old pixels";
-  const pj::scene3d::AABB bounds_200 = view.lastShadowBoundsForTest();
+  const pj::scene3d::AABB bounds_200 = SceneViewTestAccess::lastShadowBounds(view);
   ASSERT_TRUE(bounds_100.valid && bounds_200.valid);
   EXPECT_GT(bounds_200.max.x, bounds_100.max.x + 1.0F) << "the shadow caster bounds stayed with the old pose";
 }
@@ -419,20 +426,71 @@ TEST_F(Scene3dRhiModelCacheTest, PoseOnlyGlbBatchBuildsNothing) {
   SKIP_UNLESS(showDock(fixture));
   SceneViewWidget& view = *fixture.dock()->sceneView();
   fixture.dock()->onTrackerTime(100e-9);
-  for (int attempt = 0; attempt < 200 && view.lastModelTextureSlotCountsForTest()[0] == 0; ++attempt) {
+  for (int attempt = 0; attempt < 200 && SceneViewTestAccess::modelPass(view).lastTextureSlotCounts()[0] == 0;
+       ++attempt) {
     QTest::qWait(20);  // the model imports off the GUI thread
     GRAB_OR_SKIP(loading, view);
   }
-  ASSERT_GT(view.lastModelTextureSlotCountsForTest()[0], 0) << "the textured GLB never loaded";
+  ASSERT_GT(SceneViewTestAccess::modelPass(view).lastTextureSlotCounts()[0], 0) << "the textured GLB never loaded";
   GRAB_OR_SKIP(at_100, view);
-  const ModelRhiPass::CacheCounters before = view.modelPassForTest().cacheCountersForTest();
+  const ModelRhiPass::CacheCounters before = SceneViewTestAccess::modelPass(view).cacheCountersForTest();
   fixture.dock()->onTrackerTime(200e-9);
   GRAB_OR_SKIP(at_200, view);
-  const ModelRhiPass::CacheCounters& after = view.modelPassForTest().cacheCountersForTest();
+  const ModelRhiPass::CacheCounters& after = SceneViewTestAccess::modelPass(view).cacheCountersForTest();
   EXPECT_EQ(after.mesh_builds, before.mesh_builds);
   EXPECT_EQ(after.texture_decodes, before.texture_decodes);
   EXPECT_GT(after.instance_uploads, before.instance_uploads);
   EXPECT_NE(at_100, at_200);
+}
+
+// One SceneEntities layer registers two families (markers and models): both
+// draw under its one logical slot, beside another family's layer, and its
+// removal takes both away while the other layer keeps drawing.
+TEST_F(Scene3dRhiModelCacheTest, SceneEntitiesContributeMarkersAndModelsInOneSlot) {
+  QFile glb(QStringLiteral(PJ_SCENE3D_FIXTURES_DIR "/meshes/embedded_base.glb"));
+  ASSERT_TRUE(glb.open(QIODevice::ReadOnly)) << glb.fileName().toStdString();
+  const QByteArray bytes = glb.readAll();
+  PJ::sdk::ModelPrimitive model;
+  model.pose.position = {1.0, 0.0, 0.8};
+  model.pose.orientation.w = 1.0;
+  model.scale = {1.0, 1.0, 1.0};
+  model.media_type = "model/gltf-binary";
+  model.data.assign(bytes.cbegin(), bytes.cend());
+  PJ::sdk::CubePrimitive cube;
+  cube.pose.position = {-1.0, 0.0, 0.5};
+  cube.pose.orientation.w = 1.0;
+  cube.size = {0.5, 0.5, 0.5};
+  cube.color = {200, 60, 60, 255};
+  PJ::sdk::SceneEntity entity;
+  entity.id = "both";
+  entity.frame_id = "base_link";
+  entity.models.push_back(std::move(model));
+  entity.cubes.push_back(cube);
+  PJ::sdk::SceneEntities scene;
+  scene.entities.push_back(std::move(entity));
+
+  pj::scene3d::test::Scene3DRenderFixture fixture;
+  const auto points = fixture.add(
+      "/points", BT::kPointCloud,
+      pj::scene3d::test::serializeCloud({{0.0F, -1.0F, 0.2F}, {0.0F, 1.0F, 0.2F}}, "base_link"));
+  const auto entities = fixture.add("/entities", BT::kSceneEntities, PJ::serializeSceneEntities(scene));
+  SKIP_UNLESS(showDock(fixture));
+  SceneViewWidget& view = *fixture.dock()->sceneView();
+  fixture.dock()->onTrackerTime(100e-9);
+  for (int attempt = 0; attempt < 200 && SceneViewTestAccess::modelPass(view).lastDrawCount() == 0; ++attempt) {
+    QTest::qWait(20);  // the model imports off the GUI thread
+    GRAB_OR_SKIP(loading, view);
+  }
+  GRAB_OR_SKIP(both, view);
+  EXPECT_EQ(SceneViewTestAccess::modelPass(view).lastDrawCount(), 1);
+  EXPECT_EQ(SceneViewTestAccess::markerPass(view).lastInstanceCount(), 2) << "the cube's fill and edges";
+  EXPECT_EQ(SceneViewTestAccess::lastSubmittedLayerIds(view), (std::vector<std::uint32_t>{points.id, entities.id}));
+
+  fixture.dock()->removeTopic(entities);
+  GRAB_OR_SKIP(points_only, view);
+  EXPECT_EQ(SceneViewTestAccess::modelPass(view).lastDrawCount(), 0);
+  EXPECT_EQ(SceneViewTestAccess::markerPass(view).lastInstanceCount(), 0);
+  EXPECT_EQ(SceneViewTestAccess::lastSubmittedLayerIds(view), (std::vector<std::uint32_t>{points.id}));
 }
 
 // The frames of a scene with meshes, a texture, translucency, TF motion,
@@ -445,7 +503,7 @@ std::vector<QImage> renderSteps(bool caches) {
   plain.put("b", cube(0.5F, solid({0.2F, 0.8F, 0.3F, 0.6F})), {0.0, 0.5, 0.4});
   textured_layer.put("t", cube(0.6F, textured("checker")), {1.0, -0.3, 0.6});
   ModelView scene;
-  scene.view().modelPassForTest().setCachesEnabledForTest(caches);
+  SceneViewTestAccess::modelPass(scene.view()).setCachesEnabledForTest(caches);
   if (!scene.show({&plain, &textured_layer})) {
     return images;
   }

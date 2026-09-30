@@ -118,6 +118,37 @@ bool ModelRhiPass::drawIsTranslucent(ModelDrawGroup group, float alpha, float al
   return group == ModelDrawGroup::kCollision || alpha < 0.999F || alpha_mode > 1.5F;
 }
 
+PipelineDesc ModelRhiPass::meshDesc() const {
+  QRhiVertexInputLayout layout;
+  layout.setBindings({
+      QRhiVertexInputBinding(sizeof(pj::scene3d::Vertex)),
+      QRhiVertexInputBinding(sizeof(Instance), QRhiVertexInputBinding::PerInstance),
+  });
+  layout.setAttributes({
+      QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, offsetof(pj::scene3d::Vertex, position)),
+      QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float3, offsetof(pj::scene3d::Vertex, normal)),
+      QRhiVertexInputAttribute(0, 2, QRhiVertexInputAttribute::Float4, offsetof(pj::scene3d::Vertex, color)),
+      QRhiVertexInputAttribute(0, 3, QRhiVertexInputAttribute::Float2, offsetof(pj::scene3d::Vertex, uv)),
+      QRhiVertexInputAttribute(0, 4, QRhiVertexInputAttribute::Float4, offsetof(pj::scene3d::Vertex, tangent)),
+      // mat4 rows carry their slice: D3D matches them as TEXCOORD<first>_<slice>.
+      QRhiVertexInputAttribute(1, 5, QRhiVertexInputAttribute::Float4, 0U, 0),
+      QRhiVertexInputAttribute(1, 6, QRhiVertexInputAttribute::Float4, 16U, 1),
+      QRhiVertexInputAttribute(1, 7, QRhiVertexInputAttribute::Float4, 32U, 2),
+      QRhiVertexInputAttribute(1, 8, QRhiVertexInputAttribute::Float4, 48U, 3),
+      QRhiVertexInputAttribute(1, 9, QRhiVertexInputAttribute::Float4, 64U),
+      QRhiVertexInputAttribute(1, 10, QRhiVertexInputAttribute::Float4, 80U),
+      QRhiVertexInputAttribute(1, 11, QRhiVertexInputAttribute::Float4, 96U),
+      QRhiVertexInputAttribute(1, 12, QRhiVertexInputAttribute::Float4, 112U),
+      QRhiVertexInputAttribute(1, 13, QRhiVertexInputAttribute::Float4, 128U),
+  });
+  return PipelineDesc{
+      .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/model.vert.qsb")),
+      .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/model.frag.qsb")),
+      .input_layout = layout,
+      .bindings = layout_bindings_,
+  };
+}
+
 bool ModelRhiPass::initialize(const RhiPassSetup& setup, QRhiBuffer* lighting_uniforms) {
   QRhi* rhi = setup.rhi;
   if (rhi == nullptr || setup.view_uniforms == nullptr || lighting_uniforms == nullptr) {
@@ -142,54 +173,20 @@ bool ModelRhiPass::initialize(const RhiPassSetup& setup, QRhiBuffer* lighting_un
   white_texel.setSourceSize(QSize(1, 1));
   setup.updates->uploadTexture(white_texture_, QRhiTextureUploadDescription({0, 0, white_texel}));
 
-  QRhiVertexInputLayout layout;
-  layout.setBindings({
-      QRhiVertexInputBinding(sizeof(pj::scene3d::Vertex)),
-      QRhiVertexInputBinding(sizeof(Instance), QRhiVertexInputBinding::PerInstance),
-  });
-  layout.setAttributes({
-      QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, offsetof(pj::scene3d::Vertex, position)),
-      QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float3, offsetof(pj::scene3d::Vertex, normal)),
-      QRhiVertexInputAttribute(0, 2, QRhiVertexInputAttribute::Float4, offsetof(pj::scene3d::Vertex, color)),
-      QRhiVertexInputAttribute(0, 3, QRhiVertexInputAttribute::Float2, offsetof(pj::scene3d::Vertex, uv)),
-      QRhiVertexInputAttribute(0, 4, QRhiVertexInputAttribute::Float4, offsetof(pj::scene3d::Vertex, tangent)),
-      // mat4 rows carry their slice: D3D matches them as TEXCOORD<first>_<slice>.
-      QRhiVertexInputAttribute(1, 5, QRhiVertexInputAttribute::Float4, 0U, 0),
-      QRhiVertexInputAttribute(1, 6, QRhiVertexInputAttribute::Float4, 16U, 1),
-      QRhiVertexInputAttribute(1, 7, QRhiVertexInputAttribute::Float4, 32U, 2),
-      QRhiVertexInputAttribute(1, 8, QRhiVertexInputAttribute::Float4, 48U, 3),
-      QRhiVertexInputAttribute(1, 9, QRhiVertexInputAttribute::Float4, 64U),
-      QRhiVertexInputAttribute(1, 10, QRhiVertexInputAttribute::Float4, 80U),
-      QRhiVertexInputAttribute(1, 11, QRhiVertexInputAttribute::Float4, 96U),
-      QRhiVertexInputAttribute(1, 12, QRhiVertexInputAttribute::Float4, 112U),
-      QRhiVertexInputAttribute(1, 13, QRhiVertexInputAttribute::Float4, 128U),
-  });
-  PipelineDesc desc{
-      .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/model.vert.qsb")),
-      .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/model.frag.qsb")),
-      .input_layout = layout,
-      .bindings = layout_bindings_,
-  };
-  triangle_pipeline_ = createScenePipeline(setup, desc);
+  PipelineDesc desc = meshDesc();
+  triangle_pipeline_ = setup.pipelines->add(desc, setup.part);
   desc.topology = QRhiGraphicsPipeline::Lines;
-  line_pipeline_ = createScenePipeline(setup, desc);
+  line_pipeline_ = setup.pipelines->add(desc, setup.part);
   desc.depth_write = false;
-  line_no_depth_pipeline_ = createScenePipeline(setup, desc);
+  line_no_depth_pipeline_ = setup.pipelines->add(desc, setup.part);
   desc.topology = QRhiGraphicsPipeline::Triangles;
-  triangle_no_depth_pipeline_ = createScenePipeline(setup, desc);
+  triangle_no_depth_pipeline_ = setup.pipelines->add(desc, setup.part);
   return ready();
 }
 
 bool ModelRhiPass::ready() const {
   return triangle_pipeline_ != nullptr && triangle_no_depth_pipeline_ != nullptr && line_pipeline_ != nullptr &&
          line_no_depth_pipeline_ != nullptr && layout_bindings_ != nullptr;
-}
-
-void ModelRhiPass::registerPipelines(ScenePipelineRegistry& registry) const {
-  for (QRhiGraphicsPipeline* pipeline :
-       {triangle_pipeline_, triangle_no_depth_pipeline_, line_pipeline_, line_no_depth_pipeline_}) {
-    registry.add(pipeline);
-  }
 }
 
 void ModelRhiPass::setLayers(const std::vector<ModelRenderable*>& layers) {
@@ -533,8 +530,8 @@ bool ModelRhiPass::submit(
     return false;
   }
   const bool depth_write = draw.draw_class == DrawClass::kOpaque;
-  QRhiGraphicsPipeline* direct = draw.lines ? (depth_write ? line_pipeline_ : line_no_depth_pipeline_)
-                                            : (depth_write ? triangle_pipeline_ : triangle_no_depth_pipeline_);
+  const ScenePipeline* direct = draw.lines ? (depth_write ? line_pipeline_ : line_no_depth_pipeline_)
+                                           : (depth_write ? triangle_pipeline_ : triangle_no_depth_pipeline_);
   QRhiGraphicsPipeline* pipeline = registry.resolve(direct, pass);
   QRhiBuffer* index_buffer = draw.lines ? draw.mesh->edge_index_buffer : draw.mesh->triangle_index_buffer;
   if (pipeline == nullptr || draw.mesh->vertex_buffer == nullptr || index_buffer == nullptr ||
@@ -576,16 +573,18 @@ bool ModelRhiPass::ensureShadowPipeline(
       QRhiVertexInputAttribute(1, 7, QRhiVertexInputAttribute::Float4, 32U, 2),
       QRhiVertexInputAttribute(1, 8, QRhiVertexInputAttribute::Float4, 48U, 3),
   });
-  shadow_pipeline_ = createScenePipeline(
-      {rhi, render_pass, 1}, {
-                                 .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/shadow.vert.qsb")),
-                                 .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/shadow.frag.qsb")),
-                                 .input_layout = layout,
-                                 .bindings = bindings,
-                                 .blend = std::nullopt,
-                                 .depth_bias = static_cast<int>(look::kShadowDepthBiasUnits),
-                                 .slope_scaled_depth_bias = look::kShadowSlopeScaledDepthBias,
-                             });
+  shadow_pipeline_ = createPipeline(
+      rhi,
+      {
+          .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/shadow.vert.qsb")),
+          .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/shadow.frag.qsb")),
+          .input_layout = layout,
+          .bindings = bindings,
+          .blend = std::nullopt,
+          .depth_bias = static_cast<int>(look::kShadowDepthBiasUnits),
+          .slope_scaled_depth_bias = look::kShadowSlopeScaledDepthBias,
+      },
+      render_pass, 1);
   if (shadow_pipeline_ == nullptr) {
     return false;
   }
@@ -594,9 +593,8 @@ bool ModelRhiPass::ensureShadowPipeline(
 }
 
 void ModelRhiPass::releaseShadowResources() {
-  delete shadow_pipeline_;
+  shadow_pipeline_.reset();
   delete shadow_instance_buffer_;
-  shadow_pipeline_ = nullptr;
   shadow_bindings_ = nullptr;
   shadow_instance_buffer_ = nullptr;
   shadow_instance_capacity_ = 0;
@@ -606,7 +604,7 @@ void ModelRhiPass::submitShadowCasters(QRhiCommandBuffer* command_buffer, const 
   if (shadow_pipeline_ == nullptr || shadow_instance_buffer_ == nullptr) {
     return;
   }
-  command_buffer->setGraphicsPipeline(shadow_pipeline_);
+  command_buffer->setGraphicsPipeline(shadow_pipeline_.get());
   command_buffer->setViewport(viewport);
   command_buffer->setShaderResources(shadow_bindings_);
   for (const ShadowDraw& draw : shadow_draws_) {
@@ -658,14 +656,52 @@ void ModelRhiPass::noteShadowFailure(const QString& error) {
   }
 }
 
-void ModelRhiPass::submitMeshMask(
-    QRhiCommandBuffer* command_buffer, QRhiGraphicsPipeline* triangle_pipeline, QRhiGraphicsPipeline* line_pipeline,
-    const QRhiViewport& viewport) const {
+bool ModelRhiPass::ensureMeshMaskPipelines(QRhi* rhi, QRhiRenderPassDescriptor* render_pass, bool depth_resolve) {
+  if (meshMaskReady()) {
+    return true;
+  }
+  if (!ready()) {
+    return false;
+  }
+  // The colour pipelines' topology, vertex input, bindings and culling, drawn
+  // red-only without blending, depth tested against the scene depth without
+  // writing it.
+  PipelineDesc desc = meshDesc();
+  desc.fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/mesh_mask.frag.qsb"));
+  QRhiGraphicsPipeline::TargetBlend mask_blend;
+  mask_blend.enable = false;
+  mask_blend.colorWrite = QRhiGraphicsPipeline::R;
+  desc.blend = mask_blend;
+  desc.depth_test = true;
+  desc.depth_write = false;
+  desc.depth_op = QRhiGraphicsPipeline::LessOrEqual;
+  // A resolved depth holds one sample of the 4x pattern, off the pixel centre
+  // where the mask rasterizes: pull the mask up to a pixel's slope closer so a
+  // sloped mesh still passes against its own depth.
+  const int resolve_bias = depth_resolve ? -1 : 0;
+  desc.depth_bias += resolve_bias;
+  desc.slope_scaled_depth_bias += static_cast<float>(resolve_bias);
+  if (mask_triangle_pipeline_ == nullptr) {
+    mask_triangle_pipeline_ = createPipeline(rhi, desc, render_pass, 1);
+  }
+  desc.topology = QRhiGraphicsPipeline::Lines;
+  if (mask_line_pipeline_ == nullptr) {
+    mask_line_pipeline_ = createPipeline(rhi, desc, render_pass, 1);
+  }
+  return meshMaskReady();
+}
+
+void ModelRhiPass::releaseMeshMaskPipelines() {
+  mask_line_pipeline_.reset();
+  mask_triangle_pipeline_.reset();
+}
+
+void ModelRhiPass::submitMeshMask(QRhiCommandBuffer* command_buffer, const QRhiViewport& viewport) const {
   for (const Draw& draw : draws_) {
     if (draw.mesh == nullptr || draw.material == nullptr || draw.index_count == 0U) {
       continue;
     }
-    QRhiGraphicsPipeline* pipeline = draw.lines ? line_pipeline : triangle_pipeline;
+    QRhiGraphicsPipeline* pipeline = draw.lines ? mask_line_pipeline_.get() : mask_triangle_pipeline_.get();
     QRhiBuffer* index_buffer = draw.lines ? draw.mesh->edge_index_buffer : draw.mesh->triangle_index_buffer;
     if (pipeline == nullptr || draw.mesh->vertex_buffer == nullptr || index_buffer == nullptr ||
         draw.material->shader_resources == nullptr || instance_buffer_ == nullptr) {
@@ -1055,11 +1091,11 @@ void ModelRhiPass::release() {
   admitted_prepared_ = false;
   instances_valid_ = false;
   shadow_upload_pending_ = false;
-  for (QRhiGraphicsPipeline** pipeline :
-       {&line_no_depth_pipeline_, &line_pipeline_, &triangle_no_depth_pipeline_, &triangle_pipeline_}) {
-    delete *pipeline;
-    *pipeline = nullptr;
-  }
+  releaseMeshMaskPipelines();
+  line_no_depth_pipeline_ = nullptr;
+  line_pipeline_ = nullptr;
+  triangle_no_depth_pipeline_ = nullptr;
+  triangle_pipeline_ = nullptr;
   delete layout_bindings_;
   delete sampler_;
   delete white_texture_;

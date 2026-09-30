@@ -125,7 +125,7 @@ inline constexpr glm::vec3 kHudTriadZ{0.40f, 0.55f, 1.00f};
 namespace pj::scene3d {
 
 // Composite/look knobs of a view's present pass (read every frame, so call the
-// view's update() after changing them).
+// view's invalidateContent() after changing them).
 struct CompositeParams {
   int tonemap_mode = look::kTonemapMode;  // 0 None, 1 ACES, 2 AgX, 3 Khronos PBR Neutral
   float exposure = look::kExposure;

@@ -490,6 +490,24 @@ TEST(DepthImageLayer, XmlRoundTripPreservesColormapInvertAndRange) {
   EXPECT_FLOAT_EQ(out.attribute(u"far_m"_s).toFloat(), 7.0f);
 }
 
+TEST(DepthImageLayer, XmlColormapFallbacks) {
+  PJ::DepthImageLayer layer(PJ::ObjectTopicId{1}, PJ::sdk::BuiltinObjectType::kImage, u"depth"_s);
+  QDomDocument doc;
+  QDomElement plasma = doc.createElement(u"scene2d_layer"_s);
+  plasma.setAttribute(u"colormap"_s, u"plasma"_s);
+  ASSERT_TRUE(layer.xmlLoadState(plasma));
+
+  // A missing attribute keeps the current colormap.
+  ASSERT_TRUE(layer.xmlLoadState(doc.createElement(u"scene2d_layer"_s)));
+  EXPECT_EQ(layer.xmlSaveState(doc).attribute(u"colormap"_s), u"plasma"_s);
+
+  // An unknown token (e.g. a legacy "jet" layout) loads as turbo instead of failing.
+  QDomElement jet = doc.createElement(u"scene2d_layer"_s);
+  jet.setAttribute(u"colormap"_s, u"jet"_s);
+  ASSERT_TRUE(layer.xmlLoadState(jet));
+  EXPECT_EQ(layer.xmlSaveState(doc).attribute(u"colormap"_s), u"turbo"_s);
+}
+
 TEST(ImageLayer, XmlRoundTripPreservesRectifyEnabled) {
   // The rectify override is the user-facing half of the feature: turn it off, save the
   // layout, reopen -> the override must survive. Pin the save/load symmetry so a

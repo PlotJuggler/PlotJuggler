@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <glm/mat3x3.hpp>
 #include <glm/mat4x4.hpp>
+#include <memory>
 #include <optional>
 
 #include "../rhi_scene_pass.h"
@@ -35,15 +36,16 @@ class OverlayRhiPass {
     QPointF top_left;  ///< logical widget pixels
   };
 
-  /// `setup.render_pass`/`sample_count` must describe the output render target;
-  /// `dpr` (output pixels per logical pixel) sizes the gizmo's target.
+  /// Draws on the registry's direct target (the output render target, set by
+  /// ScenePipelineRegistry::setDirectTarget()); `dpr` (output pixels per logical
+  /// pixel) sizes the gizmo's target.
   [[nodiscard]] bool initialize(const RhiPassSetup& setup, qreal dpr);
   [[nodiscard]] bool ready() const {
     return image_pipeline_ != nullptr;
   }
   /// The pipeline drawing on the output satisfies pipelineBuiltFor(render_pass, sample_count).
   [[nodiscard]] bool builtFor(const QRhiRenderPassDescriptor* render_pass, int sample_count) const {
-    return pipelineBuiltFor(image_pipeline_, render_pass, sample_count);
+    return pipelineBuiltFor(image_pipeline_.get(), render_pass, sample_count);
   }
 
   /// Uploads this frame's overlays into `updates`. `view` is the camera's view
@@ -99,7 +101,7 @@ class OverlayRhiPass {
     QRhiRenderBuffer* depth = nullptr;
     QRhiTextureRenderTarget* target = nullptr;
     QRhiRenderPassDescriptor* render_pass = nullptr;
-    QRhiGraphicsPipeline* pipeline = nullptr;
+    std::unique_ptr<QRhiGraphicsPipeline> pipeline;
     ImageGpu quad;                   ///< the gizmo's texture, drawn with the image pipeline
     std::optional<GizmoKey> drawn;   ///< what quad.texture holds (nullopt: nothing)
     std::optional<GizmoKey> queued;  ///< prepared this frame, for submitGizmoTarget() to record
@@ -125,7 +127,7 @@ class OverlayRhiPass {
   QRhiShaderResourceBindings* image_layout_shader_resources_ = nullptr;
   QRhiBuffer* image_layout_uniform_buffer_ = nullptr;
   QRhiTexture* image_layout_texture_ = nullptr;
-  QRhiGraphicsPipeline* image_pipeline_ = nullptr;
+  std::unique_ptr<QRhiGraphicsPipeline> image_pipeline_;
   std::array<ImageGpu, kSlotCount> images_{};
   GizmoTarget gizmo_target_;
   QRhiViewport output_viewport_;

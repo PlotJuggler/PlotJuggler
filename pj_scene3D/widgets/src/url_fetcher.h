@@ -17,6 +17,12 @@
 
 namespace pj::scene3d {
 
+// An http(s) URL: the only sources UrlFetcher reaches the network for.
+[[nodiscard]] inline bool isNetworkUrl(const QUrl& url) {
+  const QString scheme = url.scheme();
+  return scheme == QLatin1StringView("http") || scheme == QLatin1StringView("https");
+}
+
 // Outcome of one UrlFetcher::fetch. `bytes` is meaningful only when `ok`.
 struct FetchResult {
   bool ok{false};

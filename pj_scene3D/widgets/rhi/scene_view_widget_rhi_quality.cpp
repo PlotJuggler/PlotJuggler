@@ -21,11 +21,19 @@
 #include "pj_scene3d_widgets/grid_geometry.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
+#include "pj_widgets/RhiTestHooks.h"
 #include "rhi_scene_pass.h"
 #include "scene_view_widget_rhi_quality_p.h"
 
 namespace pj::scene3d {
 namespace {
+
+// The capability error of a stage held down by SceneViewTestAccess::forceStageFallback():
+// a test override, never shown to a user, so untranslated. The browser
+// acceptance specs match its wording.
+QString forcedOffReason(const char* stage) {
+  return QStringLiteral("%1 rendering disabled by the browser acceptance override").arg(QLatin1StringView(stage));
+}
 
 // Where QRhi resolves multisample depth (ResolveDepthStencil with multisample
 // textures: OpenGL 4.3+, Vulkan, Metal), the HDR pass resolves its D32F into the
@@ -72,67 +80,107 @@ bool canCreateMultisampleTextures(QRhi& rhi) {
 
 }  // namespace
 
-void SceneViewWidget::setForceHdrFallbackForTest(bool force) {
-  if (hdr_stage_.force_fallback_for_test == force) {
-    return;
-  }
-  hdr_stage_.force_fallback_for_test = force;
-  hdr_stage_.rejected_size = {};
-  if (force) {
-    releaseHdrResources();
-  }
-  update();
+std::uint64_t HdrResources::chargedBytes(QRhi* rhi) {
+  const auto iterator = hdr_bytes_by_rhi.find(rhi);
+  return iterator != hdr_bytes_by_rhi.end() ? iterator->second : 0U;
 }
 
-void SceneViewWidget::setForceDepthReplayForTest(bool force) {
-  if (force_depth_replay_for_test_ == force) {
-    return;
+void HdrResources::charge(QRhi* rhi, std::uint64_t bytes) {
+  Q_ASSERT(allocated_bytes == 0U);  // releaseTargets() gave the previous charge back
+  if (hdr_bytes_by_rhi.find(rhi) == hdr_bytes_by_rhi.end()) {
+    // The aggregate is keyed by a raw QRhi pointer that the allocator can
+    // reuse: purge the entry when the QRhi itself dies so a widget whose
+    // releaseResources() was skipped cannot poison a successor at the same
+    // address with phantom bytes.
+    rhi->addCleanupCallback(&hdr_bytes_by_rhi, [](QRhi* dying) { hdr_bytes_by_rhi.erase(dying); });
   }
-  force_depth_replay_for_test_ = force;
-  releaseHdrResources();  // the chains differ in their render-pass descriptors
-  update();
+  hdr_bytes_by_rhi[rhi] += bytes;
+  charged_rhi = rhi;
+  allocated_bytes = bytes;
 }
 
-void SceneViewWidget::setForceShadowFallbackForTest(bool force) {
-  if (shadow_stage_.force_fallback_for_test == force) {
-    return;
+void HdrResources::releaseTargets() {
+  present_bindings.reset();
+  depth_target.reset();
+  target.reset();
+  msaa_color.reset();
+  msaa_depth.reset();
+  msaa_depth_texture.reset();
+  resolve_color.reset();
+  resolve_depth.reset();
+  resolve_coverage.reset();
+  size = {};
+  state.last_active = false;
+  if (charged_rhi != nullptr && allocated_bytes != 0U) {
+    if (auto iterator = hdr_bytes_by_rhi.find(charged_rhi); iterator != hdr_bytes_by_rhi.end()) {
+      iterator->second = iterator->second > allocated_bytes ? iterator->second - allocated_bytes : 0U;
+      if (iterator->second == 0U) {
+        hdr_bytes_by_rhi.erase(iterator);
+      }
+    }
   }
-  shadow_stage_.force_fallback_for_test = force;
-  shadow_stage_.capability_error.clear();
-  shadow_stage_.rejected_size = {};
-  if (force) {
-    releaseShadowResources(true);
-  }
-  update();
+  charged_rhi = nullptr;
+  allocated_bytes = 0U;
 }
 
-void SceneViewWidget::setForceSsaoFallbackForTest(bool force) {
-  if (ssao_stage_.force_fallback_for_test == force) {
-    return;
+QualityStageState& SceneViewWidget::stageState(QualityStage stage) const {
+  switch (stage) {
+    case QualityStage::kHdr:
+      return hdr_->state;
+    case QualityStage::kSsao:
+      return ssao_->state;
+    case QualityStage::kEdl:
+      return edl_->state;
+    case QualityStage::kShadow:
+      break;
   }
-  ssao_stage_.force_fallback_for_test = force;
-  ssao_stage_.rejected_size = {};
-  if (force) {
-    releaseSsaoResources();
-  }
-  update();
+  return shadow_->state;
 }
 
-void SceneViewWidget::setForceEdlFallbackForTest(bool force) {
-  if (edl_stage_.force_fallback_for_test == force) {
+void SceneViewWidget::forceStageFallback(QualityStage stage, bool force) {
+  QualityStageState& state = stageState(stage);
+  if (state.forced_off == force) {
     return;
   }
-  edl_stage_.force_fallback_for_test = force;
-  edl_stage_.rejected_size = {};
-  if (force) {
-    releaseEdlResources();
+  state.forced_off = force;
+  state.rejected_size = {};
+  if (stage == QualityStage::kShadow) {
+    state.capability_error.clear();
   }
-  update();
+  if (force) {
+    switch (stage) {
+      case QualityStage::kHdr:
+        releaseHdrResources();
+        break;
+      case QualityStage::kSsao:
+        ssao_->release();
+        break;
+      case QualityStage::kEdl:
+        releaseEdlResources();
+        break;
+      case QualityStage::kShadow:
+        releaseShadowResources(true);
+        break;
+    }
+  }
+  invalidateContent();
 }
 
 bool SceneViewWidget::ensureShadowResources(QRhi* owner) {
-  if (shadow_texture_ != nullptr && shadow_render_target_ != nullptr && grid_pass_->shadowReceiverReady() &&
-      shadow_shader_resources_ != nullptr) {
+  ShadowResources& shadow = *shadow_;
+  const auto fail = [this](QString reason) {
+    shadow_->state.capability_error = std::move(reason);
+    shadow_->state.rejected_size = renderTarget() != nullptr ? renderTarget()->pixelSize() : QSize{};
+    qWarning("SceneViewWidget QRhi shadows unavailable: %s", qPrintable(shadow_->state.capability_error));
+    releaseShadowResources(true);
+    return false;
+  };
+  // Known once a frame bound it: that frame drew the cells unshadowed.
+  if (grid_pass_->shadowReceiverFailed(*pipelines_)) {
+    return fail(tr("Could not create the shadow receiver pipeline"));
+  }
+  if (shadow.texture != nullptr && shadow.target != nullptr && grid_pass_->shadowReceiverReady() &&
+      shadow.bindings != nullptr) {
     return true;
   }
   if (owner == nullptr || renderTarget() == nullptr || uniform_buffer_ == nullptr || model_uniform_buffer_ == nullptr) {
@@ -140,18 +188,11 @@ bool SceneViewWidget::ensureShadowResources(QRhi* owner) {
   }
   // A failure blocks retries only while the output size is unchanged — a
   // resize re-probes, mirroring the HDR/SSAO/EDL rejected-size recovery.
-  if (shadow_stage_.blockedFor(renderTarget()->pixelSize())) {
+  if (shadow_->state.blockedFor(renderTarget()->pixelSize())) {
     return false;
   }
-  const auto fail = [this](QString reason) {
-    shadow_stage_.capability_error = std::move(reason);
-    shadow_stage_.rejected_size = renderTarget() != nullptr ? renderTarget()->pixelSize() : QSize{};
-    qWarning("SceneViewWidget QRhi shadows unavailable: %s", qPrintable(shadow_stage_.capability_error));
-    releaseShadowResources(true);
-    return false;
-  };
-  if (shadow_stage_.force_fallback_for_test) {
-    return fail(tr("Shadow rendering disabled by the browser acceptance override"));
+  if (shadow_->state.forced_off) {
+    return fail(forcedOffReason("Shadow"));
   }
   const int maximum_texture_size = owner->resourceLimit(QRhi::TextureSizeMax);
   if (maximum_texture_size < kShadowMapSize) {
@@ -162,164 +203,83 @@ bool SceneViewWidget::ensureShadowResources(QRhi* owner) {
     return fail(tr("This GPU does not support sampled D32F render targets"));
   }
 
-  shadow_texture_ =
-      owner->newTexture(QRhiTexture::D32F, QSize(kShadowMapSize, kShadowMapSize), 1, QRhiTexture::RenderTarget);
-  if (shadow_texture_ == nullptr || !shadow_texture_->create()) {
+  shadow.texture.reset(
+      owner->newTexture(QRhiTexture::D32F, QSize(kShadowMapSize, kShadowMapSize), 1, QRhiTexture::RenderTarget));
+  if (shadow.texture == nullptr || !shadow.texture->create()) {
     return fail(tr("Could not allocate the shadow depth texture"));
   }
   QRhiTextureRenderTargetDescription target_description;
-  target_description.setDepthTexture(shadow_texture_);
-  shadow_render_target_ = owner->newTextureRenderTarget(target_description);
-  shadow_render_pass_descriptor_ = shadow_render_target_->newCompatibleRenderPassDescriptor();
-  shadow_render_target_->setRenderPassDescriptor(shadow_render_pass_descriptor_);
-  if (!shadow_render_target_->create()) {
+  target_description.setDepthTexture(shadow.texture.get());
+  shadow.target.reset(owner->newTextureRenderTarget(target_description));
+  shadow.render_pass.reset(shadow.target->newCompatibleRenderPassDescriptor());
+  shadow.target->setRenderPassDescriptor(shadow.render_pass.get());
+  if (PJ::rhiTestFault(*this, "shadow target") || !shadow.target->create()) {
     return fail(tr("Could not create the shadow render target"));
   }
 
-  shadow_sampler_ = owner->newSampler(
+  shadow.sampler.reset(owner->newSampler(
       QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None, QRhiSampler::ClampToEdge,
-      QRhiSampler::ClampToEdge);
-  shadow_uniform_buffer_ = owner->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, kShadowUniformBytes);
-  if (shadow_sampler_ == nullptr || shadow_uniform_buffer_ == nullptr || !shadow_sampler_->create() ||
-      !shadow_uniform_buffer_->create()) {
+      QRhiSampler::ClampToEdge));
+  shadow.uniforms.reset(owner->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, kShadowUniformBytes));
+  if (shadow.sampler == nullptr || shadow.uniforms == nullptr || !shadow.sampler->create() ||
+      !shadow.uniforms->create()) {
     return fail(tr("Could not allocate the shadow bindings"));
   }
-  shadow_shader_resources_ = owner->newShaderResourceBindings();
-  shadow_shader_resources_->setBindings({
-      QRhiShaderResourceBinding::uniformBuffer(0, QRhiShaderResourceBinding::VertexStage, shadow_uniform_buffer_),
-  });
-  if (!shadow_shader_resources_->create()) {
+  shadow.bindings.reset(createBindings(
+      owner,
+      {QRhiShaderResourceBinding::uniformBuffer(0, QRhiShaderResourceBinding::VertexStage, shadow.uniforms.get())}));
+  if (shadow.bindings == nullptr) {
     return fail(tr("Could not create the shadow resource bindings"));
   }
 
   // The caster pipeline of the model family, the one family that casts, once
   // built (createSceneResources() drops these resources when it is built later).
   if (model_pass_->ready() &&
-      !model_pass_->ensureShadowPipeline(owner, shadow_render_pass_descriptor_, shadow_shader_resources_)) {
+      !model_pass_->ensureShadowPipeline(owner, shadow.render_pass.get(), shadow.bindings.get())) {
     return fail(tr("Could not create the shadow depth pipeline"));
   }
 
-  if (!grid_pass_->createShadowReceiver(model_uniform_buffer_, shadow_texture_, shadow_sampler_, *pipelines_) ||
-      (model_pass_->ready() && !model_pass_->setShadowMap(owner, shadow_texture_, shadow_sampler_))) {
+  if (!grid_pass_->createShadowReceiver(
+          model_uniform_buffer_, shadow.texture.get(), shadow.sampler.get(), *pipelines_) ||
+      (model_pass_->ready() && !model_pass_->setShadowMap(owner, shadow.texture.get(), shadow.sampler.get()))) {
     return fail(tr("Could not create the shadow receiver pipeline"));
   }
-  shadow_map_size_ = kShadowMapSize;
-  shadow_stage_.capability_error.clear();
-  ++shadow_stage_.resource_generation;
+  shadow_->state.capability_error.clear();
+  ++shadow_->state.resource_generation;
   return true;
 }
 
 void SceneViewWidget::releaseShadowResources(bool restore_model_bindings) {
+  // What binds the map first: the grid's receiver, the model pass's caster
+  // pipeline and its materials (rebound to white, or dropped).
   grid_pass_->releaseShadowReceiver(*pipelines_);
   model_pass_->releaseShadowResources();
-  delete shadow_shader_resources_;
-  shadow_shader_resources_ = nullptr;
-
-  QRhiTexture* released_texture = shadow_texture_;
-  QRhiSampler* released_sampler = shadow_sampler_;
-  shadow_texture_ = nullptr;
-  shadow_sampler_ = nullptr;
   model_pass_->clearShadowMap(resource_rhi_, restore_model_bindings);
-
-  delete shadow_render_target_;
-  delete shadow_render_pass_descriptor_;
-  delete shadow_uniform_buffer_;
-  delete released_sampler;
-  delete released_texture;
-  shadow_render_target_ = nullptr;
-  shadow_render_pass_descriptor_ = nullptr;
-  shadow_uniform_buffer_ = nullptr;
-  shadow_map_size_ = 0;
-  shadow_stage_.last_active = false;
+  shadow_->release();
 }
 
 void SceneViewWidget::releaseHdrTargetResources() {
-  // The present SRB owns references to both resolved textures. Destroy it
-  // before the target and attachments. Pipelines (present included) only
-  // retain the compatible render-pass descriptor and survive a size-only
-  // rebuild, which binds a new layout-compatible SRB.
-  releaseSsaoTargetResources();
-  releaseEdlTargetResources();
-  delete present_shader_resources_;
-  delete hdr_depth_render_target_;
-  delete hdr_render_target_;
-  delete hdr_msaa_color_;
-  delete hdr_msaa_depth_;
-  delete hdr_msaa_depth_texture_;
-  delete hdr_resolve_color_;
-  delete hdr_resolve_depth_;
-  delete hdr_resolve_coverage_;
-  present_shader_resources_ = nullptr;
-  hdr_depth_render_target_ = nullptr;
-  hdr_render_target_ = nullptr;
-  hdr_msaa_color_ = nullptr;
-  hdr_msaa_depth_ = nullptr;
-  hdr_msaa_depth_texture_ = nullptr;
-  hdr_resolve_color_ = nullptr;
-  hdr_resolve_depth_ = nullptr;
-  hdr_resolve_coverage_ = nullptr;
-  hdr_render_size_ = {};
-  hdr_stage_.last_active = false;
-
-  if (resource_rhi_ != nullptr && hdr_allocated_bytes_ != 0U) {
-    auto iterator = hdr_bytes_by_rhi.find(resource_rhi_);
-    if (iterator != hdr_bytes_by_rhi.end()) {
-      iterator->second = iterator->second > hdr_allocated_bytes_ ? iterator->second - hdr_allocated_bytes_ : 0U;
-      if (iterator->second == 0U) {
-        hdr_bytes_by_rhi.erase(iterator);
-      }
-    }
-  }
-  hdr_allocated_bytes_ = 0U;
-}
-
-void SceneViewWidget::releaseSsaoTargetResources() {
-  // The SRB retains replay depth: destroy every size-bound reference before the
-  // HDR attachments. The pipeline only retains the SRB layout and the view-owned
-  // descriptor, so it survives until releaseSsaoResources().
-  delete ssao_shader_resources_;
-  delete ssao_raw_render_target_;
-  ssao_shader_resources_ = nullptr;
-  ssao_raw_render_target_ = nullptr;
-  ssao_stage_.last_active = false;
-}
-
-void SceneViewWidget::releaseSsaoResources() {
-  releaseSsaoTargetResources();
-  delete ssao_pipeline_;
-  ssao_pipeline_ = nullptr;
-  delete ssao_render_pass_descriptor_;
-  ssao_render_pass_descriptor_ = nullptr;
-}
-
-void SceneViewWidget::releaseEdlTargetResources() {
-  delete edl_mesh_mask_render_target_;
-  edl_mesh_mask_render_target_ = nullptr;
-  edl_stage_.last_active = false;
+  // SSAO's bindings and target and EDL's target reference the HDR attachments.
+  ssao_->releaseTargets();
+  edl_->releaseTargets();
+  hdr_->releaseTargets();
 }
 
 void SceneViewWidget::releaseEdlResources() {
-  // The pipelines retain the compatible render-pass descriptor and the target
-  // retains the shared HDR replay attachments. Destroy those references before
-  // the core HDR chain can release either dependency.
-  delete edl_mesh_mask_triangle_pipeline_;
-  delete edl_mesh_mask_line_pipeline_;
-  edl_mesh_mask_triangle_pipeline_ = nullptr;
-  edl_mesh_mask_line_pipeline_ = nullptr;
-  releaseEdlTargetResources();
-  delete edl_mesh_mask_render_pass_descriptor_;
-  edl_mesh_mask_render_pass_descriptor_ = nullptr;
+  // The model pass's mask pipelines target the mask's render-pass descriptor.
+  model_pass_->releaseMeshMaskPipelines();
+  edl_->release();
 }
 
 void SceneViewWidget::updateRenderingWarning() {
   // SSAO/EDL are probed only while the HDR chain runs, so their stored errors
   // go stale the moment HDR is down — suppress them until HDR is live again.
-  const QString warning = render_failure_.failed()                  ? render_failure_.reason()
-                          : !hdr_stage_.capability_error.isEmpty()  ? hdr_stage_.capability_error
-                          : !overlay_failure_.isEmpty()             ? overlay_failure_
-                          : !hdr_stage_.last_active                 ? QString{}
-                          : !ssao_stage_.capability_error.isEmpty() ? ssao_stage_.capability_error
-                                                                    : edl_stage_.capability_error;
+  const QString warning = render_failure_.failed()                   ? render_failure_.reason()
+                          : !hdr_->state.capability_error.isEmpty()  ? hdr_->state.capability_error
+                          : !overlay_failure_.isEmpty()              ? overlay_failure_
+                          : !hdr_->state.last_active                 ? QString{}
+                          : !ssao_->state.capability_error.isEmpty() ? ssao_->state.capability_error
+                                                                     : edl_->state.capability_error;
   if (warning == rendering_warning_) {
     return;
   }
@@ -328,226 +288,175 @@ void SceneViewWidget::updateRenderingWarning() {
 }
 
 void SceneViewWidget::releaseHdrResources() {
-  // Pipelines reference the HDR render-pass descriptor; release all of them
-  // before the descriptor and all SRBs before their textures.
-  releaseSsaoResources();
+  // SSAO, EDL and the registry's HDR variants bind the chain's render passes
+  // and attachments: released first.
+  ssao_->release();
   releaseEdlResources();
-  pipelines_->releaseClones();
-  delete present_pipeline_;
-  present_pipeline_ = nullptr;
-  releaseHdrTargetResources();
-  delete composite_uniform_buffer_;
-  delete hdr_coverage_sampler_;
-  delete hdr_color_sampler_;
-  delete hdr_depth_render_pass_descriptor_;
-  delete hdr_render_pass_descriptor_;
-  composite_uniform_buffer_ = nullptr;
-  hdr_coverage_sampler_ = nullptr;
-  hdr_color_sampler_ = nullptr;
-  hdr_depth_render_pass_descriptor_ = nullptr;
-  hdr_render_pass_descriptor_ = nullptr;
+  pipelines_->releaseVariants();
+  hdr_->release();
 }
 
 bool SceneViewWidget::ensureSsaoResources(QRhi* owner, const QSize& size) {
   if (owner == nullptr || !size.isValid() || size.isEmpty()) {
     return false;
   }
-  if (ssao_raw_render_target_ != nullptr && ssao_pipeline_ != nullptr && ssao_shader_resources_ != nullptr &&
+  SsaoResources& ssao = *ssao_;
+  if (ssao.target != nullptr && ssao.pipeline != nullptr && ssao.bindings != nullptr &&
       ssao_uniform_buffer_ != nullptr) {
     return true;
   }
-  if (ssao_stage_.blockedFor(size)) {
+  if (ssao_->state.blockedFor(size)) {
     return false;
   }
 
   const auto fail = [this, &size](QString reason) {
-    releaseSsaoResources();
-    ssao_stage_.rejected_size = size;
-    const bool changed = ssao_stage_.capability_error != reason;
-    ssao_stage_.capability_error = std::move(reason);
+    ssao_->release();
+    ssao_->state.rejected_size = size;
+    const bool changed = ssao_->state.capability_error != reason;
+    ssao_->state.capability_error = std::move(reason);
     if (changed) {
-      qWarning("SceneViewWidget QRhi SSAO unavailable: %s", qPrintable(ssao_stage_.capability_error));
+      qWarning("SceneViewWidget QRhi SSAO unavailable: %s", qPrintable(ssao_->state.capability_error));
     }
     updateRenderingWarning();
     return false;
   };
 
-  if (ssao_stage_.force_fallback_for_test) {
-    return fail(tr("SSAO rendering disabled by the browser acceptance override"));
+  if (ssao_->state.forced_off) {
+    return fail(forcedOffReason("SSAO"));
   }
-  if (hdr_resolve_coverage_ == nullptr || hdr_resolve_depth_ == nullptr || hdr_coverage_sampler_ == nullptr) {
+  if (hdr_->resolve_coverage == nullptr || hdr_->resolve_depth == nullptr || hdr_->coverage_sampler == nullptr) {
     return fail(tr("The HDR depth replay is not ready for SSAO"));
   }
 
   QRhiTextureRenderTargetDescription description;
-  description.setColorAttachments({QRhiColorAttachment(hdr_resolve_coverage_)});
-  ssao_raw_render_target_ = owner->newTextureRenderTarget(description, QRhiTextureRenderTarget::PreserveColorContents);
-  if (ssao_render_pass_descriptor_ == nullptr) {
-    ssao_render_pass_descriptor_ = ssao_raw_render_target_->newCompatibleRenderPassDescriptor();
+  description.setColorAttachments({QRhiColorAttachment(hdr_->resolve_coverage.get())});
+  ssao.target.reset(owner->newTextureRenderTarget(description, QRhiTextureRenderTarget::PreserveColorContents));
+  if (ssao.render_pass == nullptr) {
+    ssao.render_pass.reset(ssao.target->newCompatibleRenderPassDescriptor());
   }
-  ssao_raw_render_target_->setRenderPassDescriptor(ssao_render_pass_descriptor_);
-  if (!ssao_raw_render_target_->create()) {
+  ssao.target->setRenderPassDescriptor(ssao.render_pass.get());
+  if (PJ::rhiTestFault(*this, "ssao target") || !ssao.target->create()) {
     return fail(tr("Could not preserve the replay coverage for SSAO"));
   }
 
-  ssao_shader_resources_ = owner->newShaderResourceBindings();
-  ssao_shader_resources_->setBindings({
-      QRhiShaderResourceBinding::uniformBuffer(0, QRhiShaderResourceBinding::FragmentStage, ssao_uniform_buffer_),
-      QRhiShaderResourceBinding::sampledTexture(
-          1, QRhiShaderResourceBinding::FragmentStage, hdr_resolve_depth_, hdr_coverage_sampler_),
-  });
-  if (!ssao_shader_resources_->create()) {
+  ssao.bindings.reset(createBindings(
+      owner,
+      {
+          QRhiShaderResourceBinding::uniformBuffer(0, QRhiShaderResourceBinding::FragmentStage, ssao_uniform_buffer_),
+          QRhiShaderResourceBinding::sampledTexture(
+              1, QRhiShaderResourceBinding::FragmentStage, hdr_->resolve_depth.get(), hdr_->coverage_sampler.get()),
+      }));
+  if (ssao.bindings == nullptr) {
     return fail(tr("Could not create the SSAO bindings"));
   }
 
-  if (ssao_pipeline_ != nullptr) {
-    ssao_pipeline_->setShaderResourceBindings(ssao_shader_resources_);
+  if (ssao.pipeline != nullptr) {
+    ssao.pipeline->setShaderResourceBindings(ssao.bindings.get());
   } else {
     QRhiGraphicsPipeline::TargetBlend raw_ao_write;
     raw_ao_write.colorWrite = QRhiGraphicsPipeline::G;
-    ssao_pipeline_ = createScenePipeline(
-        {owner, ssao_render_pass_descriptor_, 1},
+    ssao.pipeline = createPipeline(
+        owner,
         {
             .vertex = loadRhiShader(presentVertexShaderPath(*owner)),
             .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/ssao.frag.qsb")),
-            .bindings = ssao_shader_resources_,
+            .bindings = ssao.bindings.get(),
             .blend = raw_ao_write,
             .depth_test = false,
             .depth_write = false,
-        });
-    if (ssao_pipeline_ == nullptr) {
+        },
+        ssao.render_pass.get(), 1);
+    if (ssao.pipeline == nullptr) {
       return fail(tr("Could not create the SSAO pipeline"));
     }
   }
 
-  ssao_stage_.rejected_size = {};
-  if (!ssao_stage_.capability_error.isEmpty()) {
-    ssao_stage_.capability_error.clear();
+  ssao_->state.rejected_size = {};
+  if (!ssao_->state.capability_error.isEmpty()) {
+    ssao_->state.capability_error.clear();
     updateRenderingWarning();
   }
-  ++ssao_stage_.resource_generation;
+  ++ssao_->state.resource_generation;
   return true;
-}
-
-bool SceneViewWidget::createEdlMaskPipelines(QRhi* owner) {
-  if (!model_pass_->ready()) {
-    return true;
-  }
-  const QShader vertex_shader = loadRhiShader(QStringLiteral(":/scene3d_rhi/model.vert.qsb"));
-  const QShader fragment_shader = loadRhiShader(QStringLiteral(":/scene3d_rhi/mesh_mask.frag.qsb"));
-  if (!vertex_shader.isValid() || !fragment_shader.isValid()) {
-    return false;
-  }
-  const auto create_pipeline = [owner, this, &vertex_shader, &fragment_shader](
-                                   QRhiGraphicsPipeline*& destination, const QRhiGraphicsPipeline* source) {
-    if (destination != nullptr) {
-      return true;
-    }
-    destination = owner->newGraphicsPipeline();
-    destination->setTopology(source->topology());
-    destination->setShaderStages({
-        {QRhiShaderStage::Vertex, vertex_shader},
-        {QRhiShaderStage::Fragment, fragment_shader},
-    });
-    destination->setVertexInputLayout(source->vertexInputLayout());
-    destination->setShaderResourceBindings(model_pass_->layoutBindings());
-    QRhiGraphicsPipeline::TargetBlend mask_blend;
-    mask_blend.enable = false;
-    mask_blend.colorWrite = QRhiGraphicsPipeline::R;
-    destination->setTargetBlends({mask_blend});
-    destination->setCullMode(source->cullMode());
-    destination->setFrontFace(source->frontFace());
-    destination->setDepthTest(true);
-    destination->setDepthWrite(false);
-    destination->setDepthOp(QRhiGraphicsPipeline::LessOrEqual);
-    // A resolved depth holds one sample of the 4x pattern, off the pixel centre
-    // where the mask rasterizes: pull the mask up to a pixel's slope closer so a
-    // sloped mesh still passes against its own depth.
-    const int resolve_bias = hdr_depth_resolve_ ? -1 : 0;
-    destination->setDepthBias(source->depthBias() + resolve_bias);
-    destination->setSlopeScaledDepthBias(source->slopeScaledDepthBias() + static_cast<float>(resolve_bias));
-    destination->setSampleCount(1);
-    destination->setRenderPassDescriptor(edl_mesh_mask_render_pass_descriptor_);
-    return createGraphicsPipeline(destination);
-  };
-  return create_pipeline(edl_mesh_mask_triangle_pipeline_, model_pass_->trianglePipeline()) &&
-         create_pipeline(edl_mesh_mask_line_pipeline_, model_pass_->linePipeline());
 }
 
 bool SceneViewWidget::ensureEdlResources(QRhi* owner, const QSize& size) {
   if (owner == nullptr || !size.isValid() || size.isEmpty()) {
     return false;
   }
-  // The mesh mask needs the model family's pipelines; without it (no model
-  // layer) the mask pass would record nothing, and is skipped.
+  EdlResources& edl = *edl_;
+  // The mesh mask needs the model family; without it (no model layer) the mask
+  // pass would record nothing, and is skipped.
   const bool masks_meshes = model_pass_->ready();
-  if (edl_mesh_mask_render_target_ != nullptr &&
-      (!masks_meshes || (edl_mesh_mask_triangle_pipeline_ != nullptr && edl_mesh_mask_line_pipeline_ != nullptr))) {
+  if (edl.target != nullptr && (!masks_meshes || model_pass_->meshMaskReady())) {
     return true;
   }
-  if (edl_stage_.blockedFor(size)) {
+  if (edl_->state.blockedFor(size)) {
     return false;
   }
 
   const auto fail = [this, &size](QString reason) {
     releaseEdlResources();
-    edl_stage_.rejected_size = size;
-    const bool changed = edl_stage_.capability_error != reason;
-    edl_stage_.capability_error = std::move(reason);
+    edl_->state.rejected_size = size;
+    const bool changed = edl_->state.capability_error != reason;
+    edl_->state.capability_error = std::move(reason);
     if (changed) {
-      qWarning("SceneViewWidget QRhi EDL unavailable: %s", qPrintable(edl_stage_.capability_error));
+      qWarning("SceneViewWidget QRhi EDL unavailable: %s", qPrintable(edl_->state.capability_error));
     }
     updateRenderingWarning();
     return false;
   };
 
-  if (edl_stage_.force_fallback_for_test) {
-    return fail(tr("EDL rendering disabled by the browser acceptance override"));
+  if (edl_->state.forced_off) {
+    return fail(forcedOffReason("EDL"));
   }
-  if (hdr_resolve_coverage_ == nullptr || hdr_resolve_depth_ == nullptr ||
-      (masks_meshes && (model_pass_->trianglePipeline() == nullptr || model_pass_->linePipeline() == nullptr ||
-                        model_pass_->layoutBindings() == nullptr))) {
+  if (hdr_->resolve_coverage == nullptr || hdr_->resolve_depth == nullptr) {
     return fail(tr("The HDR depth replay is not ready for EDL"));
   }
-  if (edl_mesh_mask_render_target_ != nullptr) {
+  // The view supplies the mask's target and depth chain; the model pass builds
+  // its own mask pipelines for them.
+  const auto create_mask_pipelines = [&] {
+    return !masks_meshes || model_pass_->ensureMeshMaskPipelines(owner, edl.render_pass.get(), hdr_->depth_resolve);
+  };
+  if (edl.target != nullptr) {
     // Built before the model family was: only the mask pipelines are missing.
-    return createEdlMaskPipelines(owner) || fail(tr("Could not create the EDL mesh-mask pipelines"));
+    return create_mask_pipelines() || fail(tr("Could not create the EDL mesh-mask pipelines"));
   }
 
   QRhiTextureRenderTargetDescription description;
-  description.setColorAttachments({QRhiColorAttachment(hdr_resolve_coverage_)});
-  description.setDepthTexture(hdr_resolve_depth_);
-  edl_mesh_mask_render_target_ = owner->newTextureRenderTarget(
+  description.setColorAttachments({QRhiColorAttachment(hdr_->resolve_coverage.get())});
+  description.setDepthTexture(hdr_->resolve_depth.get());
+  edl.target.reset(owner->newTextureRenderTarget(
       description,
-      QRhiTextureRenderTarget::PreserveColorContents | QRhiTextureRenderTarget::PreserveDepthStencilContents);
-  if (edl_mesh_mask_render_pass_descriptor_ == nullptr) {
-    edl_mesh_mask_render_pass_descriptor_ = edl_mesh_mask_render_target_->newCompatibleRenderPassDescriptor();
+      QRhiTextureRenderTarget::PreserveColorContents | QRhiTextureRenderTarget::PreserveDepthStencilContents));
+  if (edl.render_pass == nullptr) {
+    edl.render_pass.reset(edl.target->newCompatibleRenderPassDescriptor());
   }
-  edl_mesh_mask_render_target_->setRenderPassDescriptor(edl_mesh_mask_render_pass_descriptor_);
-  if (!edl_mesh_mask_render_target_->create()) {
+  edl.target->setRenderPassDescriptor(edl.render_pass.get());
+  if (PJ::rhiTestFault(*this, "edl target") || !edl.target->create()) {
     return fail(tr("Could not preserve the depth replay for the EDL mesh mask"));
   }
 
-  if (!createEdlMaskPipelines(owner)) {
+  if (!create_mask_pipelines()) {
     return fail(tr("Could not create the EDL mesh-mask pipelines"));
   }
 
-  edl_stage_.rejected_size = {};
-  if (!edl_stage_.capability_error.isEmpty()) {
-    edl_stage_.capability_error.clear();
+  edl_->state.rejected_size = {};
+  if (!edl_->state.capability_error.isEmpty()) {
+    edl_->state.capability_error.clear();
     updateRenderingWarning();
   }
-  ++edl_stage_.resource_generation;
+  ++edl_->state.resource_generation;
   return true;
 }
 
 bool SceneViewWidget::rejectHdr(const QSize& size, QString reason) {
   releaseHdrResources();
-  hdr_stage_.rejected_size = size;
-  const bool changed = hdr_stage_.capability_error != reason;
-  hdr_stage_.capability_error = std::move(reason);
+  hdr_->state.rejected_size = size;
+  const bool changed = hdr_->state.capability_error != reason;
+  hdr_->state.capability_error = std::move(reason);
   if (changed) {
-    qWarning("SceneViewWidget QRhi HDR unavailable: %s", qPrintable(hdr_stage_.capability_error));
+    qWarning("SceneViewWidget QRhi HDR unavailable: %s", qPrintable(hdr_->state.capability_error));
   }
   updateRenderingWarning();
   return false;
@@ -570,18 +479,19 @@ bool SceneViewWidget::ensureHdrResources(QRhi* owner, const QSize& size) {
   if (owner == nullptr || !size.isValid() || size.isEmpty()) {
     return false;
   }
-  if (hdr_render_target_ != nullptr && hdr_depth_render_target_ != nullptr && hdr_render_size_ == size &&
-      present_shader_resources_ != nullptr && present_pipeline_ != nullptr) {
+  HdrResources& hdr = *hdr_;
+  if (hdr.target != nullptr && hdr.depth_target != nullptr && hdr.size == size && hdr.present_bindings != nullptr &&
+      hdr.present_pipeline != nullptr) {
     return true;
   }
-  if (hdr_stage_.blockedFor(size)) {
+  if (hdr_->state.blockedFor(size)) {
     return false;
   }
 
   const auto fail = [this, &size](QString reason) { return rejectHdr(size, std::move(reason)); };
 
-  if (hdr_stage_.force_fallback_for_test) {
-    return fail(tr("HDR rendering disabled by the browser acceptance override"));
+  if (hdr_->state.forced_off) {
+    return fail(forcedOffReason("HDR"));
   }
   if (QString unsupported = hdrUnsupportedReason(*owner); !unsupported.isEmpty()) {
     return fail(std::move(unsupported));
@@ -613,25 +523,24 @@ bool SceneViewWidget::ensureHdrResources(QRhi* owner, const QSize& size) {
                     .arg((bytes + 1024U * 1024U - 1U) / (1024U * 1024U))
                     .arg(kMaxHdrBytesPerView / (1024U * 1024U)));
   }
-  const auto aggregate_iterator = hdr_bytes_by_rhi.find(owner);
-  const std::uint64_t aggregate = aggregate_iterator != hdr_bytes_by_rhi.end() ? aggregate_iterator->second : 0U;
-  const std::uint64_t aggregate_without_this = aggregate > hdr_allocated_bytes_ ? aggregate - hdr_allocated_bytes_ : 0U;
+  const std::uint64_t aggregate = HdrResources::chargedBytes(owner);
+  const std::uint64_t aggregate_without_this = aggregate > hdr.allocated_bytes ? aggregate - hdr.allocated_bytes : 0U;
   if (bytes > kMaxHdrBytesPerRhi - std::min(aggregate_without_this, kMaxHdrBytesPerRhi)) {
     return fail(tr("Live Scene3D HDR views would exceed their shared %1 MiB GPU limit")
                     .arg(kMaxHdrBytesPerRhi / (1024U * 1024U)));
   }
 
   releaseHdrTargetResources();
-  if (hdr_color_sampler_ == nullptr) {
-    hdr_color_sampler_ = owner->newSampler(
+  if (hdr.color_sampler == nullptr) {
+    hdr.color_sampler.reset(owner->newSampler(
         QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::None, QRhiSampler::ClampToEdge,
-        QRhiSampler::ClampToEdge);
-    hdr_coverage_sampler_ = owner->newSampler(
+        QRhiSampler::ClampToEdge));
+    hdr.coverage_sampler.reset(owner->newSampler(
         QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None, QRhiSampler::ClampToEdge,
-        QRhiSampler::ClampToEdge);
-    composite_uniform_buffer_ =
-        owner->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, kCompositeUniformBytes);
-    if (!hdr_color_sampler_->create() || !hdr_coverage_sampler_->create() || !composite_uniform_buffer_->create()) {
+        QRhiSampler::ClampToEdge));
+    hdr.composite_uniforms.reset(
+        owner->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, kCompositeUniformBytes));
+    if (!hdr.color_sampler->create() || !hdr.coverage_sampler->create() || !hdr.composite_uniforms->create()) {
       return fail(tr("Could not allocate the HDR presentation bindings"));
     }
   }
@@ -640,116 +549,112 @@ bool SceneViewWidget::ensureHdrResources(QRhi* owner, const QSize& size) {
   // WebGL2 exposes the former in configurations where multisample textures are
   // unavailable. The backing-format hints are required so the resolves have
   // matching RGBA16F/D32F storage rather than QRhi's usual RGBA8/depth default.
-  hdr_msaa_color_ = owner->newRenderBuffer(QRhiRenderBuffer::Color, size, kHdrSampleCount, {}, QRhiTexture::RGBA16F);
+  hdr.msaa_color.reset(
+      owner->newRenderBuffer(QRhiRenderBuffer::Color, size, kHdrSampleCount, {}, QRhiTexture::RGBA16F));
   // The depth resolve needs a multisample depth texture; the replay a renderbuffer.
-  hdr_depth_resolve_ = depth_resolve;
-  hdr_resolve_color_ = owner->newTexture(QRhiTexture::RGBA16F, size, 1, QRhiTexture::RenderTarget);
-  hdr_resolve_depth_ = owner->newTexture(depth_format, size, 1, QRhiTexture::RenderTarget);
-  hdr_resolve_coverage_ = owner->newTexture(QRhiTexture::RGBA8, size, 1, QRhiTexture::RenderTarget);
-  if (!hdr_msaa_color_->create() || !hdr_resolve_color_->create() || !hdr_resolve_depth_->create() ||
-      !hdr_resolve_coverage_->create()) {
+  hdr.depth_resolve = depth_resolve;
+  hdr.resolve_color.reset(owner->newTexture(QRhiTexture::RGBA16F, size, 1, QRhiTexture::RenderTarget));
+  hdr.resolve_depth.reset(owner->newTexture(depth_format, size, 1, QRhiTexture::RenderTarget));
+  hdr.resolve_coverage.reset(owner->newTexture(QRhiTexture::RGBA8, size, 1, QRhiTexture::RenderTarget));
+  if (!hdr.msaa_color->create() || !hdr.resolve_color->create() || !hdr.resolve_depth->create() ||
+      !hdr.resolve_coverage->create()) {
     return fail(tr("Could not allocate the HDR color and depth-replay chain"));
   }
-  if (hdr_depth_resolve_) {
-    hdr_msaa_depth_texture_ = owner->newTexture(depth_format, size, kHdrSampleCount, QRhiTexture::RenderTarget);
+  if (hdr.depth_resolve) {
+    hdr.msaa_depth_texture.reset(owner->newTexture(depth_format, size, kHdrSampleCount, QRhiTexture::RenderTarget));
   } else {
-    hdr_msaa_depth_ =
-        owner->newRenderBuffer(QRhiRenderBuffer::DepthStencil, size, kHdrSampleCount, {}, QRhiTexture::D32F);
+    hdr.msaa_depth.reset(
+        owner->newRenderBuffer(QRhiRenderBuffer::DepthStencil, size, kHdrSampleCount, {}, QRhiTexture::D32F));
   }
-  if (hdr_depth_resolve_ ? !hdr_msaa_depth_texture_->create() : !hdr_msaa_depth_->create()) {
+  if (PJ::rhiTestFault(*this, "hdr attachments") ||
+      (hdr.depth_resolve ? !hdr.msaa_depth_texture->create() : !hdr.msaa_depth->create())) {
     return fail(tr("Could not allocate the HDR color and depth-replay chain"));
   }
 
-  QRhiColorAttachment color_attachment(hdr_msaa_color_);
-  color_attachment.setResolveTexture(hdr_resolve_color_);
+  QRhiColorAttachment color_attachment(hdr.msaa_color.get());
+  color_attachment.setResolveTexture(hdr.resolve_color.get());
   QRhiTextureRenderTargetDescription description;
   description.setColorAttachments({color_attachment});
-  if (hdr_depth_resolve_) {
-    description.setDepthTexture(hdr_msaa_depth_texture_);
-    description.setDepthResolveTexture(hdr_resolve_depth_);
+  if (hdr.depth_resolve) {
+    description.setDepthTexture(hdr.msaa_depth_texture.get());
+    description.setDepthResolveTexture(hdr.resolve_depth.get());
   } else {
-    description.setDepthStencilBuffer(hdr_msaa_depth_);
+    description.setDepthStencilBuffer(hdr.msaa_depth.get());
   }
-  hdr_render_target_ = owner->newTextureRenderTarget(description);
-  if (hdr_render_pass_descriptor_ == nullptr) {
-    hdr_render_pass_descriptor_ = hdr_render_target_->newCompatibleRenderPassDescriptor();
+  hdr.target.reset(owner->newTextureRenderTarget(description));
+  if (hdr.render_pass == nullptr) {
+    hdr.render_pass.reset(hdr.target->newCompatibleRenderPassDescriptor());
   }
-  hdr_render_target_->setRenderPassDescriptor(hdr_render_pass_descriptor_);
-  if (!hdr_render_target_->create()) {
+  hdr.target->setRenderPassDescriptor(hdr.render_pass.get());
+  if (!hdr.target->create()) {
     return fail(tr("Could not create the multisample HDR color target and resolve"));
   }
 
   QRhiTextureRenderTargetDescription depth_description;
-  depth_description.setColorAttachments({QRhiColorAttachment(hdr_resolve_coverage_)});
-  if (!hdr_depth_resolve_) {
-    depth_description.setDepthTexture(hdr_resolve_depth_);
+  depth_description.setColorAttachments({QRhiColorAttachment(hdr.resolve_coverage.get())});
+  if (!hdr.depth_resolve) {
+    depth_description.setDepthTexture(hdr.resolve_depth.get());
   }
-  hdr_depth_render_target_ = owner->newTextureRenderTarget(depth_description);
-  if (hdr_depth_render_pass_descriptor_ == nullptr) {
-    hdr_depth_render_pass_descriptor_ = hdr_depth_render_target_->newCompatibleRenderPassDescriptor();
+  hdr.depth_target.reset(owner->newTextureRenderTarget(depth_description));
+  if (hdr.depth_render_pass == nullptr) {
+    hdr.depth_render_pass.reset(hdr.depth_target->newCompatibleRenderPassDescriptor());
   }
-  hdr_depth_render_target_->setRenderPassDescriptor(hdr_depth_render_pass_descriptor_);
-  if (!hdr_depth_render_target_->create()) {
+  hdr.depth_target->setRenderPassDescriptor(hdr.depth_render_pass.get());
+  if (!hdr.depth_target->create()) {
     return fail(tr("Could not create the single-sample coverage/depth replay target"));
   }
 
-  present_shader_resources_ = owner->newShaderResourceBindings();
-  present_shader_resources_->setBindings({
-      QRhiShaderResourceBinding::uniformBuffer(0, QRhiShaderResourceBinding::FragmentStage, composite_uniform_buffer_),
-      QRhiShaderResourceBinding::sampledTexture(
-          1, QRhiShaderResourceBinding::FragmentStage, hdr_resolve_color_, hdr_color_sampler_),
-      QRhiShaderResourceBinding::sampledTexture(
-          2, QRhiShaderResourceBinding::FragmentStage, hdr_resolve_coverage_, hdr_coverage_sampler_),
-      QRhiShaderResourceBinding::sampledTexture(
-          3, QRhiShaderResourceBinding::FragmentStage, hdr_resolve_depth_, hdr_coverage_sampler_),
-  });
-  if (!present_shader_resources_->create()) {
+  hdr.present_bindings.reset(createBindings(
+      owner,
+      {
+          QRhiShaderResourceBinding::uniformBuffer(
+              0, QRhiShaderResourceBinding::FragmentStage, hdr.composite_uniforms.get()),
+          QRhiShaderResourceBinding::sampledTexture(
+              1, QRhiShaderResourceBinding::FragmentStage, hdr.resolve_color.get(), hdr.color_sampler.get()),
+          QRhiShaderResourceBinding::sampledTexture(
+              2, QRhiShaderResourceBinding::FragmentStage, hdr.resolve_coverage.get(), hdr.coverage_sampler.get()),
+          QRhiShaderResourceBinding::sampledTexture(
+              3, QRhiShaderResourceBinding::FragmentStage, hdr.resolve_depth.get(), hdr.coverage_sampler.get()),
+      }));
+  if (hdr.present_bindings == nullptr) {
     return fail(tr("Could not create the HDR presentation bindings"));
   }
 
   // QRhiWidget keeps its render-pass descriptor across resizes; a new one
   // (format/sample-count change) needs a new pipeline.
-  if (present_pipeline_ != nullptr &&
-      present_pipeline_->renderPassDescriptor() != renderTarget()->renderPassDescriptor()) {
-    delete present_pipeline_;
-    present_pipeline_ = nullptr;
+  if (hdr.present_pipeline != nullptr &&
+      hdr.present_pipeline->renderPassDescriptor() != renderTarget()->renderPassDescriptor()) {
+    hdr.present_pipeline.reset();
   }
-  if (present_pipeline_ != nullptr) {
-    present_pipeline_->setShaderResourceBindings(present_shader_resources_);
+  if (hdr.present_pipeline != nullptr) {
+    hdr.present_pipeline->setShaderResourceBindings(hdr.present_bindings.get());
   } else {
-    present_pipeline_ = createScenePipeline(
-        {owner, renderTarget()->renderPassDescriptor(), sampleCount()},
+    hdr.present_pipeline = createPipeline(
+        owner,
         {
             .vertex = loadRhiShader(presentVertexShaderPath(*owner)),
             .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/present.frag.qsb")),
-            .bindings = present_shader_resources_,
+            .bindings = hdr.present_bindings.get(),
             .blend = std::nullopt,
             .depth_test = false,
             .depth_write = false,
-        });
-    if (present_pipeline_ == nullptr) {
+        },
+        renderTarget()->renderPassDescriptor(), sampleCount());
+    if (hdr.present_pipeline == nullptr) {
       return fail(tr("Could not create the HDR presentation pipeline"));
     }
   }
-  // The scene pipelines' HDR and depth-replay clones are built on first use.
-  pipelines_->setCloneTargets(owner, hdr_render_pass_descriptor_, kHdrSampleCount, hdr_depth_render_pass_descriptor_);
+  // The scene pipelines' HDR and depth-replay variants are built on first use.
+  pipelines_->setVariantTargets(hdr.render_pass.get(), kHdrSampleCount, hdr.depth_render_pass.get());
 
-  hdr_render_size_ = size;
-  hdr_allocated_bytes_ = bytes;
-  if (hdr_bytes_by_rhi.find(owner) == hdr_bytes_by_rhi.end()) {
-    // The aggregate is keyed by a raw QRhi pointer that the allocator can
-    // reuse: purge the entry when the QRhi itself dies so a widget whose
-    // releaseResources() was skipped cannot poison a successor at the same
-    // address with phantom bytes.
-    owner->addCleanupCallback(&hdr_bytes_by_rhi, [](QRhi* dying) { hdr_bytes_by_rhi.erase(dying); });
-  }
-  hdr_bytes_by_rhi[owner] = aggregate_without_this + bytes;
-  hdr_stage_.rejected_size = {};
-  if (!hdr_stage_.capability_error.isEmpty()) {
-    hdr_stage_.capability_error.clear();
+  hdr.size = size;
+  hdr.charge(owner, bytes);
+  hdr_->state.rejected_size = {};
+  if (!hdr_->state.capability_error.isEmpty()) {
+    hdr_->state.capability_error.clear();
     updateRenderingWarning();
   }
-  ++hdr_stage_.resource_generation;
+  ++hdr_->state.resource_generation;
   return true;
 }
 

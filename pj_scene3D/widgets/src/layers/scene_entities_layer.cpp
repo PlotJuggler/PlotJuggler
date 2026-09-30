@@ -9,7 +9,6 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLoggingCategory>
-#include <QPointer>
 #include <QSettings>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -29,7 +28,7 @@
 
 #include "layer_xml_validation.h"
 #include "mesh_import.h"
-#include "mesh_loader.h"
+#include "mesh_load_queue.h"
 #include "pj_base/time.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/model_budget.h"
@@ -166,7 +165,7 @@ SceneEntitiesLayer::SceneEntitiesLayer(PJ::ObjectTopicId topic_id, QString displ
     : Scene3DLayer(parent),
       topic_id_(topic_id),
       display_name_(std::move(display_name)),
-      mesh_loader_(std::make_unique<MeshLoader>()) {}
+      model_queue_(std::make_unique<MeshLoadQueue>(this)) {}
 
 SceneEntitiesLayer::~SceneEntitiesLayer() = default;
 
@@ -314,11 +313,8 @@ void SceneEntitiesLayer::resetReplayState() {
   snapshot_cache_bytes_ = 0;
   model_frames_.clear();
   setSourceFrame({});
-  // Aborts in-flight model fetches; running imports keep their slots until they
-  // settle, and their results are dropped (no record matches them any more).
-  url_fetcher_.reset();
-  active_model_fetches_.clear();
-  model_load_queue_.clear();
+  // Running imports keep their slots until they settle; their results are dropped.
+  model_queue_->cancelAll();
   model_loads_.clear();
   while (!model_mesh_bytes_.empty()) {
     releaseModelMesh(std::string(model_mesh_bytes_.begin()->first));  // a copy: the call erases the entry
@@ -638,236 +634,141 @@ void SceneEntitiesLayer::updateModelFrames() {
 }
 
 void SceneEntitiesLayer::syncModelSources() {
-  std::unordered_map<std::string, QueuedModelLoad> desired;
+  struct Desired {
+    std::string entity_id;
+    std::size_t model_index = 0;
+  };
+  std::unordered_map<std::string, Desired> desired;
   for (const auto& [entity_id, entity] : model_state_.entities()) {
     for (std::size_t index = 0; index < entity.models.size(); ++index) {
-      desired.emplace(
-          meshKey(topic_id_, entity_id, index),
-          QueuedModelLoad{.key = {}, .entity_id = entity_id, .model_index = index, .generation = 0});
+      desired.emplace(meshKey(topic_id_, entity_id, index), Desired{.entity_id = entity_id, .model_index = index});
     }
   }
   for (auto iterator = model_loads_.begin(); iterator != model_loads_.end();) {
     if (!desired.contains(iterator->first)) {
-      std::erase_if(model_load_queue_, [&](const QueuedModelLoad& queued) { return queued.key == iterator->first; });
+      model_queue_->cancel(iterator->second.job);
       releaseModelMesh(iterator->first);
       iterator = model_loads_.erase(iterator);
     } else {
       ++iterator;
     }
   }
-  for (auto& [key, queued] : desired) {
-    const PJ::sdk::ModelPrimitive& primitive = model_state_.entities().at(queued.entity_id).models[queued.model_index];
-    startModelLoad(key, primitive, std::move(queued));
+  for (const auto& [key, wanted] : desired) {
+    startModelLoad(
+        key, wanted.entity_id, wanted.model_index,
+        model_state_.entities().at(wanted.entity_id).models[wanted.model_index]);
   }
   refreshModelDrawCalls();
-  pumpModelLoads();
+  model_queue_->pump();
+  updateRemoteFetchNotice();
 }
 
 void SceneEntitiesLayer::startModelLoad(
-    const std::string& key, const PJ::sdk::ModelPrimitive& primitive, QueuedModelLoad queued) {
+    const std::string& key, const std::string& entity_id, std::size_t model_index,
+    const PJ::sdk::ModelPrimitive& primitive) {
   const std::string source_signature = sourceSignature(primitive);
   const std::string identity = source_signature.empty() ? "invalid" : source_signature;
-  if (const auto existing = model_loads_.find(key);
-      existing != model_loads_.end() && existing->second.identity == identity) {
-    return;  // loaded, loading, fetching, or recorded as blocked/failed
+  const auto existing = model_loads_.find(key);
+  if (existing != model_loads_.end()) {
+    if (existing->second.identity == identity) {
+      return;  // loaded, loading, or recorded as blocked/failed
+    }
+    // Same key, new source bytes: blank its mesh until the reload lands; only the
+    // newest source loads.
+    model_queue_->cancel(existing->second.job);
   }
-  // Same key, new source bytes: blank its mesh until the reload lands; only the
-  // newest source waits in the queue.
-  std::erase_if(model_load_queue_, [&key](const QueuedModelLoad& pending) { return pending.key == key; });
   releaseModelMesh(key);
   ModelLoad& load = model_loads_[key];
   load = {};
   load.identity = identity;
-  load.generation = next_model_load_generation_++;
   load.source_label = !primitive.data.empty() ? tr("(embedded model)") : QString::fromStdString(primitive.url);
   if (source_signature.empty()) {
     load.error = tr("model has neither embedded data nor a URL");
     load.phase = ModelLoad::Phase::kFailed;
     return;
   }
-  queued.key = key;
-  queued.generation = load.generation;
-  model_load_queue_.push_back(std::move(queued));
-}
-
-void SceneEntitiesLayer::abortObsoleteFetches() {
-  for (const auto& [generation, key] : active_model_fetches_) {
-    const auto load = model_loads_.find(key);
-    if (load != model_loads_.end() && load->second.generation == generation) {
-      return;  // still wanted: the obsolete ones complete and are ignored
-    }
+  if (static_cast<std::uint64_t>(primitive.data.size()) > kSceneLimits.max_model_source_bytes) {
+    load.error =
+        tr("model source exceeds the %1 MiB limit").arg(kSceneLimits.max_model_source_bytes / (1024ULL * 1024ULL));
+    load.phase = ModelLoad::Phase::kFailed;
+    return;
   }
-  if (!active_model_fetches_.empty()) {
-    // Deferred: this can run inside one of the fetcher's own callbacks. Its
-    // destruction aborts the requests; a callback delivered before that finds no
-    // entry in the cleared map and returns. The layer stays its owner until then,
-    // so a layer destroyed first takes the fetcher and its queued completions along.
-    UrlFetcher* obsolete = url_fetcher_.release();
-    obsolete->setParent(this);
-    obsolete->deleteLater();
-    active_model_fetches_.clear();
-  }
-}
-
-void SceneEntitiesLayer::pumpModelLoads() {
-  abortObsoleteFetches();
-  while (active_model_fetches_.size() + active_model_imports_.size() < maxConcurrentMeshLoads() &&
-         !model_load_queue_.empty()) {
-    const QueuedModelLoad next = std::move(model_load_queue_.front());
-    model_load_queue_.pop_front();
-    auto current = model_loads_.find(next.key);
-    if (current == model_loads_.end() || current->second.generation != next.generation ||
-        current->second.phase != ModelLoad::Phase::kWaiting) {
-      continue;  // superseded or dropped since it was queued
-    }
-    // syncModelSources drops a record together with its entity; stay defensive.
-    const auto entity = model_state_.entities().find(next.entity_id);
-    if (entity == model_state_.entities().end() || next.model_index >= entity->second.models.size()) {
-      continue;
-    }
-    const PJ::sdk::ModelPrimitive& primitive = entity->second.models[next.model_index];
-    ModelLoad& load = current->second;
-    const QString hint = hintFromMediaType(primitive.media_type, primitive.url);
-    if (!primitive.data.empty()) {
-      if (static_cast<std::uint64_t>(primitive.data.size()) > kSceneLimits.max_model_source_bytes) {
-        load.error =
-            tr("model source exceeds the %1 MiB limit").arg(kSceneLimits.max_model_source_bytes / (1024ULL * 1024ULL));
-        load.phase = ModelLoad::Phase::kFailed;
-        continue;
-      }
-      const QByteArray bytes(
-          reinterpret_cast<const char*>(primitive.data.data()), static_cast<qsizetype>(primitive.data.size()));
-      startModelImport(next.key, load.identity, load.generation, bytes, hint);
-      continue;
-    }
-
-    const QString url_text = QString::fromStdString(primitive.url);
-    const QUrl url(url_text);
+  if (primitive.data.empty()) {
+    const QUrl url(QString::fromStdString(primitive.url));
     // Local sources (bare paths / file:// URLs) stay ungated: reading the
-    // user's disk is not network egress.
-    const bool remote = url.scheme() == "http"_L1 || url.scheme() == "https"_L1;
+    // user's disk is not network egress. Fetched bytes are capped by UrlFetcher.
+    const bool remote = isNetworkUrl(url);
     if (remote && !remoteModelFetchAllowed()) {
       // Decided once per (key, signature), never re-checked per tick.
       load.phase = ModelLoad::Phase::kBlocked;
-      qCWarning(lcSceneEntitiesLayer) << "blocked remote model fetch for" << url_text
+      qCWarning(lcSceneEntitiesLayer) << "blocked remote model fetch for" << url.toString()
                                       << "- enable pj_scene3d/allow_remote_model_fetch to allow";
-      continue;
+      return;
     }
-    if (url_fetcher_ == nullptr) {
-      url_fetcher_ = std::make_unique<UrlFetcher>();
-    }
-    load.phase = ModelLoad::Phase::kFetching;
-    const std::string key = next.key;
-    const std::string identity = load.identity;
-    const std::uint64_t generation = load.generation;
-    active_model_fetches_.emplace(generation, key);
-    // The fetcher's lifetime (owned by, or parented to, the layer) is the primary
-    // guard; the QPointer is insurance.
-    const QPointer<SceneEntitiesLayer> guard(this);
-    url_fetcher_->fetch(url, [this, guard, key, identity, generation, hint, url_text](const FetchResult& result) {
-      if (guard.isNull() || active_model_fetches_.erase(generation) == 0U) {
-        return;
-      }
-      const auto active = model_loads_.find(key);
-      if (active == model_loads_.end() || active->second.generation != generation) {
-        pumpModelLoads();  // superseded: its slot is free now
-        return;
-      }
-      if (!result.ok) {
-        qCWarning(lcSceneEntitiesLayer) << "ModelPrimitive fetch failed for" << url_text << ":" << result.error;
-        active->second.phase = ModelLoad::Phase::kFailed;
-        active->second.fetch_failed = true;
-        active->second.error = result.error;
-        emit repaintRequested();
-      } else if (static_cast<std::uint64_t>(result.bytes.size()) > kSceneLimits.max_model_source_bytes) {
-        active->second.phase = ModelLoad::Phase::kFailed;
-        active->second.error =
-            tr("model source exceeds the %1 MiB limit").arg(kSceneLimits.max_model_source_bytes / (1024ULL * 1024ULL));
-      } else {
-        startModelImport(key, identity, generation, result.bytes, hint);
-      }
-      pumpModelLoads();
-    });
   }
-  updateRemoteFetchNotice();
+  // Resolved when the job gets a slot, so waiting jobs hold no copy of the bytes.
+  load.job = model_queue_->enqueue(
+      [this, entity_id, model_index]() -> std::optional<MeshLoadQueue::Source> {
+        const auto entity = model_state_.entities().find(entity_id);
+        if (entity == model_state_.entities().end() || model_index >= entity->second.models.size()) {
+          return std::nullopt;  // syncModelSources cancels a gone model's job; stay defensive
+        }
+        const PJ::sdk::ModelPrimitive& model = entity->second.models[model_index];
+        MeshLoadQueue::Source source;
+        source.format_hint = hintFromMediaType(model.media_type, model.url);
+        if (!model.data.empty()) {
+          source.kind = MeshLoadQueue::Source::Kind::kBytes;
+          source.bytes =
+              QByteArray(reinterpret_cast<const char*>(model.data.data()), static_cast<qsizetype>(model.data.size()));
+        } else {
+          source.kind = MeshLoadQueue::Source::Kind::kUrl;
+          source.location = QString::fromStdString(model.url);
+        }
+        return source;
+      },
+      [this, key](MeshLoadQueue::Outcome outcome) { admitModel(key, std::move(outcome.mesh), outcome.fetch_failed); });
 }
 
-bool SceneEntitiesLayer::startModelImport(
-    const std::string& key, const std::string& identity, std::uint64_t generation, const QByteArray& bytes,
-    const QString& format_hint) {
-  auto current = model_loads_.find(key);
-  if (current == model_loads_.end() || current->second.identity != identity ||
-      current->second.generation != generation || active_model_imports_.contains(generation)) {
-    return false;
+void SceneEntitiesLayer::admitModel(const std::string& key, MeshData mesh, bool fetch_failed) {
+  const auto current = model_loads_.find(key);
+  if (current == model_loads_.end()) {
+    return;
   }
-  try {
-    // The completion requests its own repaint (finishModelImport), so a landed
-    // mesh shows without waiting for an unrelated paint.
-    active_model_imports_.emplace(
-        generation, std::make_unique<MeshImport>(
-                        mesh_loader_->loadFromMemory(bytes, format_hint), this, [this, key, identity, generation]() {
-                          ++model_import_settles_;
-                          finishModelImport(key, identity, generation);
-                        }));
-    ++model_import_starts_;
-    current->second.phase = ModelLoad::Phase::kImporting;
-    return true;
-  } catch (const std::exception& error) {
-    current->second.error = tr("could not start model import: %1").arg(QString::fromUtf8(error.what()));
-  } catch (...) {
-    current->second.error = tr("could not start model import");
+  ModelLoad& load = current->second;
+  QString error;
+  if (!mesh.ok) {
+    error = std::move(mesh.error);
+  } else {
+    const std::uint64_t retained = estimateRetainedMeshBytes(mesh);
+    if (!retainedMeshFits(retained, model_retained_bytes_)) {
+      error = tr("model would exceed the %1 MiB layer memory limit")
+                  .arg(kSceneLimits.max_model_retained_bytes_per_layer / (1024ULL * 1024ULL));
+    } else {
+      try {
+        storeModelMesh(key, std::move(mesh), retained);
+      } catch (const std::exception& exception) {
+        error = tr("could not retain model: %1").arg(QString::fromUtf8(exception.what()));
+      }
+    }
   }
-  active_model_imports_.erase(generation);
-  current->second.phase = ModelLoad::Phase::kFailed;
+  if (error.isEmpty()) {
+    load.error.clear();
+    load.phase = ModelLoad::Phase::kReady;
+  } else {
+    qCWarning(lcSceneEntitiesLayer) << (fetch_failed ? "ModelPrimitive fetch failed for" : "model import failed for")
+                                    << load.source_label << ":" << error;
+    load.phase = ModelLoad::Phase::kFailed;
+    load.fetch_failed = fetch_failed;
+    load.error = std::move(error);
+  }
+  // The settle requests its own repaint, so a landed mesh shows without waiting
+  // for an unrelated paint.
   updateRemoteFetchNotice();
   emit repaintRequested();
-  return false;
 }
 
-void SceneEntitiesLayer::finishModelImport(
-    const std::string& key, const std::string& identity, std::uint64_t generation) {
-  const auto job = active_model_imports_.find(generation);
-  if (job == active_model_imports_.end()) {
-    return;
-  }
-  const std::unique_ptr<MeshImport> completed = std::move(job->second);
-  active_model_imports_.erase(job);
-  auto current = model_loads_.find(key);
-  if (current == model_loads_.end() || current->second.identity != identity ||
-      current->second.generation != generation) {
-    pumpModelLoads();  // superseded: discard the result, its slot is free now
-    return;
-  }
-  MeshData data = completed->take();
-  const auto fail = [this, &current](QString error) {
-    qCWarning(lcSceneEntitiesLayer) << "model import failed for" << current->second.source_label << ":" << error;
-    current->second.phase = ModelLoad::Phase::kFailed;
-    current->second.error = std::move(error);
-    updateRemoteFetchNotice();
-    emit repaintRequested();
-    pumpModelLoads();
-  };
-  if (!data.ok) {
-    fail(data.error.isEmpty() ? tr("mesh contains no renderable geometry") : std::move(data.error));
-    return;
-  }
-  const std::uint64_t retained = estimateRetainedMeshBytes(data);
-  if (!retainedMeshFits(retained, model_retained_bytes_)) {
-    fail(tr("model would exceed the %1 MiB layer memory limit")
-             .arg(kSceneLimits.max_model_retained_bytes_per_layer / (1024ULL * 1024ULL)));
-    return;
-  }
-  try {
-    storeModelMesh(key, std::move(data), retained);
-  } catch (const std::exception& error) {
-    fail(tr("could not retain model: %1").arg(QString::fromUtf8(error.what())));
-    return;
-  }
-  current->second.error.clear();
-  current->second.phase = ModelLoad::Phase::kReady;
-  updateRemoteFetchNotice();
-  emit repaintRequested();
-  pumpModelLoads();
+std::size_t SceneEntitiesLayer::modelImportsOutstandingForTest() const {
+  return model_queue_->importsRunning();
 }
 
 void SceneEntitiesLayer::storeModelMesh(const std::string& key, MeshData mesh, std::uint64_t bytes) {

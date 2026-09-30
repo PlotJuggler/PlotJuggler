@@ -74,6 +74,9 @@ class FakeModelLayer final : public Scene3DLayer, public ModelRenderable {
   Scene3DLayer& modelLayer() override {
     return *this;
   }
+  pj::scene3d::SceneContributions sceneContributions() override {
+    return {.models = this};
+  }
   QStringList fallbackFrames() const override {
     return {};
   }

@@ -170,7 +170,8 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// clear operation.
   virtual void syncViewLayers(const std::vector<ISceneLayer*>& ordered_layers) = 0;
 
-  /// Requests a view repaint after layer state changes.
+  /// Invalidates the view's content after layer state changes (a family view
+  /// that retains its last frame must re-render, not just repaint).
   virtual void refreshView();
 
   /// Per-tick render fingerprint of scene content drawn by the VIEW itself rather

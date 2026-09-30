@@ -149,7 +149,14 @@ comes from the conversion itself.
   `widgets/include/pj_scene3d_widgets/{Scene3DDockWidget.h,
   scene_view_widget.h, scene3d_layer.h, point_renderable.h,
   model_renderable.h, transform_service.h, mesh_data.h, mesh_shading_params.h,
-  layers/robot_model_layer.h, layers/scene_entities_layer.h}`. A right-click on
+  layers/robot_model_layer.h, layers/scene_entities_layer.h}`. Each layer
+  registers the scene families it draws through once
+  (`Scene3DLayer::sceneContributions()`, a `SceneContributions` of typed
+  interfaces); the view never classifies layers per frame. What the view
+  draws changes only through `SceneViewWidget::invalidateContent()`; a plain
+  `update()` repaints the retained frame. Tests, benchmarks and the browser
+  acceptance probes read the view's internals through `widgets/testing/`
+  (`SceneViewTestAccess`, TECHNICAL_NOTES.md "View test access"). A right-click on
   the view off a TF frame delivers a native `QContextMenuEvent` that the host
   `DockWidget`'s event filter catches, so the 3D scene gets the same standard menu
   (Split Horizontally/Vertically, Clear) as other widgets; a right-click on a
@@ -243,12 +250,13 @@ These tests keep their own executables and `add_test` registrations:
 
 - `transform_service_test`: its debug thread-affinity death test forks and aborts
   in the child process.
-- `wasm_shader_constants_test`: uniquely defines `PJ_WASM_SHADER_DIR`; it checks
-  the shared shader constants and every pack's varyings.
+- `scene3d_shader_constants_test`: uniquely defines `PJ_SCENE3D_SHADER_DIR`; it
+  reads the shader sources and packs as data and checks the shared cube GLSL (and
+  `cube_mesh.h`'s C++ mirrors of it), the colormap copy and every pack's varyings.
 
 Run the module in the builder image with `ctest --test-dir build
 --output-on-failure -R
-'^(pj_scene3d_.*|pointcloud_golden_test\..*|scene3d_rhi_.*|scene3d_frame_benchmark\..*|transform_service_test|wasm_shader_constants_test)$'`
+'^(pj_scene3d_.*|pointcloud_golden_test\..*|scene3d_rhi_.*|scene3d_frame_benchmark\..*|transform_service_test|scene3d_shader_constants_test)$'`
 (under a display for the QRhi runners). Filter just the discovered runners with
 `-R '^pj_scene3d_'`, or run the complete CMake registry with `ctest --test-dir
 build --output-on-failure`. With `PJ_BUILD_DEMOS` the build compiles

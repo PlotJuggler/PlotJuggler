@@ -75,35 +75,37 @@ bool TrailRhiPass::initialize(const RhiPassSetup& setup) {
       QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float3, 3U * sizeof(float)),
       QRhiVertexInputAttribute(0, 2, QRhiVertexInputAttribute::Float, 6U * sizeof(float)),
   });
-  pipeline_ = createScenePipeline(
-      setup, {
-                 .topology = QRhiGraphicsPipeline::TriangleStrip,
-                 .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/trail.vert.qsb")),
-                 .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/trail.frag.qsb")),
-                 .input_layout = layout,
-                 .bindings = layout_resources_,
-             });
+  pipeline_ = setup.pipelines->add(
+      {
+          .topology = QRhiGraphicsPipeline::TriangleStrip,
+          .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/trail.vert.qsb")),
+          .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/trail.frag.qsb")),
+          .input_layout = layout,
+          .bindings = layout_resources_,
+      },
+      setup.part);
   return pipeline_ != nullptr;
 }
 
-void TrailRhiPass::registerPipelines(ScenePipelineRegistry& registry) const {
-  registry.add(pipeline_);
+void TrailRhiPass::setLayers(const std::vector<Owner>& owners) {
+  // adoptLayerList() for registered owners: an owner's GPU state goes when it
+  // leaves (a hidden trail's is pruned in prepare()).
+  std::erase_if(owner_gpu_, [&owners](auto& entry) {
+    const bool gone = std::none_of(
+        owners.cbegin(), owners.cend(), [&entry](const Owner& owner) { return owner.layer == entry.first; });
+    if (gone) {
+      releaseOwnerGpu(entry.second);
+    }
+    return gone;
+  });
+  owners_ = owners;
 }
 
-void TrailRhiPass::setLayers(const std::vector<Scene3DLayer*>& owners) {
-  adoptLayerList(owners, owners_, owner_gpu_, releaseOwnerGpu);
-  owner_kinds_.clear();
-  owner_kinds_.reserve(owners_.size());
-  for (Scene3DLayer* owner : owners_) {
-    owner_kinds_.push_back({dynamic_cast<TrailLayer*>(owner), dynamic_cast<PosesInFrameLayer*>(owner)});
+TrailLayer* TrailRhiPass::trailOf(const Owner& owner) {
+  if (owner.trail != nullptr) {
+    return owner.trail;
   }
-}
-
-TrailLayer* TrailRhiPass::trailOf(const OwnerKind& kind) {
-  if (kind.trail != nullptr) {
-    return kind.trail;
-  }
-  return kind.poses != nullptr ? kind.poses->trail() : nullptr;
+  return owner.poses != nullptr ? owner.poses->trail() : nullptr;
 }
 
 void TrailRhiPass::prepare(
@@ -118,9 +120,9 @@ void TrailRhiPass::prepare(
   if (render_size.isEmpty()) {
     return;
   }
-  for (std::size_t index = 0; index < owners_.size(); ++index) {
-    Scene3DLayer* owner = owners_[index];
-    TrailLayer* trail = trailOf(owner_kinds_[index]);
+  for (const Owner& entry : owners_) {
+    Scene3DLayer* owner = entry.layer;
+    TrailLayer* trail = trailOf(entry);
     if (trail == nullptr || !trail->visible()) {
       pruneLayerGpu(owner_gpu_, owner, releaseOwnerGpu);
       continue;
@@ -248,7 +250,6 @@ void TrailRhiPass::release() {
   }
   owner_gpu_.clear();
   draws_.clear();
-  delete pipeline_;
   delete layout_resources_;
   delete layout_uniform_buffer_;
   pipeline_ = nullptr;

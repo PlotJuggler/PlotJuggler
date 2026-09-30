@@ -36,11 +36,29 @@
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene3d_widgets/transform_service.h"
+#include "pj_widgets/RhiTestHooks.h"
 
 namespace pj::scene3d::test {
 
 // Runs before main(); see pjPreferRealDisplayQpa().
 inline const bool kRealDisplayPlatform = pjPreferRealDisplayQpa();
+
+// Arms the shader-named fault injection (PJ::kRhiTestFailShaderEnv) for `shader`,
+// a shader path suffix, until clear() or destruction.
+class PipelineFault {
+ public:
+  explicit PipelineFault(const char* shader) {
+    qputenv(PJ::kRhiTestFailShaderEnv, shader);
+  }
+  ~PipelineFault() {
+    clear();
+  }
+  PipelineFault(const PipelineFault&) = delete;
+  PipelineFault& operator=(const PipelineFault&) = delete;
+  void clear() {
+    qunsetenv(PJ::kRhiTestFailShaderEnv);
+  }
+};
 
 // One extra per-point field written after xyz; `write` fills point i's bytes.
 struct ExtraField {

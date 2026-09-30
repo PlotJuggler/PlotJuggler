@@ -36,8 +36,10 @@ The main window wears the **system** title bar by default and `TitleBar` is just
 - `src/` — top-level shell sources and root `.ui` files (`MainWindow.ui`, `PreferencesDialog.ui`, `TitleBar.ui`).
 - `src/ui/` — embedded shell sub-widgets: left-panel widgets (`CurveListPanel`, `LeftPanel`), the bell's `DiagnosticsDialog`, the bottom timeline strip (`TimelineWidget`), and the right-sidepanel scene config panels (`Scene2DConfigPanel`, `Scene3DConfigPanel`).
 - `tests/wasm_acceptance_probes.inc` — acceptance-build-only observation and
-  input bridge, included behind `PJ_WASM_ENABLE_INGRESS_PROBE`; it is never part
-  of desktop or production WASM behavior.
+  input bridge, included behind `PJ_WASM_ENABLE_INGRESS_PROBE` (with the plot
+  readback probes, `MainWindow::installWasmPlotAcceptanceProbes()`); it is never
+  part of desktop or production WASM behavior. `tests/wasm_scene3d_acceptance_probes.cpp`
+  is its Scene3D counterpart, reading the view through `SceneViewTestAccess`.
 
 `pj_app` has no `docs/` folder by design — the shell's intent is "wire the services to the widgets," and the wiring is best read directly from `MainWindow.cpp` and `main.cpp`.
 

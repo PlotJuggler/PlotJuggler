@@ -26,8 +26,11 @@
 #include "pj_bench_probes.h"
 #include "pj_scene3d_widgets/rhi_conventions.h"
 #include "scene3d_render_test_support.h"
+#include "scene_view_test_access.h"
 
 namespace {
+
+using pj::scene3d::SceneViewTestAccess;
 
 // The 3D-texture limit `rhi`'s driver reports; 0 when this build cannot ask.
 int driverMax3dTextureSize(QRhi& rhi) {
@@ -72,7 +75,7 @@ TEST(Scene3dRhiPlatformTest, Max3dTextureSizeIsTheBackendLimit) {
   }
   QRhi* rhi = pj_bench::rhiOf(*view);
   ASSERT_NE(rhi, nullptr);
-  const int limit = view->max3DTextureSizeForTest();
+  const int limit = SceneViewTestAccess::max3DTextureSize(*view);
   switch (rhi->backend()) {
     case QRhi::D3D11:
     case QRhi::D3D12:

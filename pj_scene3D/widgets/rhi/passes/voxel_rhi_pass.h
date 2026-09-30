@@ -32,14 +32,13 @@ class VoxelRhiPass {
     DrawClass draw_class = DrawClass::kOpaque;  ///< translucent below full layer opacity
   };
 
-  /// Creates the pipeline and the colormap LUT (binding 2); draws the setup's
+  /// Registers the pipeline and creates the colormap LUT (binding 2); draws the setup's
   /// unit cube. `max_3d_texture_size` is the backend's per-dimension 3D texture
   /// limit.
   [[nodiscard]] bool initialize(const RhiPassSetup& setup, int max_3d_texture_size);
   [[nodiscard]] bool ready() const {
     return pipeline_ != nullptr;
   }
-  void registerPipelines(ScenePipelineRegistry& registry) const;
   /// Adopts the view's voxel layers; drops GPU state of layers that left or are hidden.
   void setLayers(const std::vector<VoxelGridLayer*>& layers);
   /// A layer of this family is in the view: the view builds the family (initialize()) only then.
@@ -107,7 +106,7 @@ class VoxelRhiPass {
   QRhiTexture* layout_texture_ = nullptr;
   QRhiSampler* sampler_ = nullptr;
   QRhiShaderResourceBindings* layout_shader_resources_ = nullptr;
-  QRhiGraphicsPipeline* pipeline_ = nullptr;
+  const ScenePipeline* pipeline_ = nullptr;
 
   std::vector<VoxelGridLayer*> layers_;
   std::unordered_map<VoxelGridLayer*, LayerGpu> layer_gpu_;

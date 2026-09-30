@@ -62,17 +62,15 @@ class PointRhiPass {
     float pixel_scale = 1.0F;
   };
 
-  /// Binds the view's resources; builds no pipeline: each layout and geometry
-  /// pair is built on first use (prepare()), so a new QRhi pays only for the
-  /// ones its clouds draw with. A pair that cannot be built drops its clouds
-  /// with a warning.
+  /// Binds the view's resources; registers no pipeline: each layout and
+  /// geometry pair is registered with the setup's registry on first use
+  /// (prepare()), so a new QRhi pays only for the ones its clouds draw with. A
+  /// point list that cannot be created falls back to quads; a quad or fan pair
+  /// that cannot be registered drops its clouds with a warning.
   [[nodiscard]] bool initialize(const RhiPassSetup& setup);
   [[nodiscard]] bool ready() const {
     return layout_shader_resources_ != nullptr;
   }
-  /// Registers the built pipelines with `registry`. The ones built later
-  /// register with RhiPassSetup::templates, the registry the view passes here.
-  void registerPipelines(ScenePipelineRegistry& registry) const;
   /// Lets clouds whose sprites are at most kPointListMaxPx draw as a point list
   /// (gl_PointSize), where the backend has QRhi::VertexShaderPointSize. On by
   /// default; the benchmark turns it off to time the quads alone.
@@ -161,10 +159,12 @@ class PointRhiPass {
     std::array<QRhiShaderResourceBindings*, 2> shader_resources{};
   };
 
-  /// Builds `layout`'s opaque pipeline for `geometry`, and its faded one with
-  /// `faded`, unless built; false when one failed (not retried until the next
-  /// initialize()).
+  /// Registers `layout`'s opaque pipeline for `geometry`, and its faded one with
+  /// `faded`, unless registered; false when one could not be (not retried until
+  /// the next initialize()).
   bool ensurePipelines(Layout layout, Geometry geometry, bool faded);
+  /// A registered point-list pipeline of `layout` could not be built on this GPU.
+  [[nodiscard]] bool pointListFailed(Layout layout, bool faded) const;
   /// An SRB over `uniforms` bytes [offset, offset + kPointUniformBytes) and the render mode.
   QRhiShaderResourceBindings* createLayerBindings(QRhi* rhi, QRhiBuffer* uniforms, quint32 offset) const;
   bool ensureLayerGpu(QRhi* rhi, LayerGpu& gpu);
@@ -178,9 +178,10 @@ class PointRhiPass {
   QRhiShaderResourceBindings* layout_shader_resources_ = nullptr;
   /// [Layout][Geometry][faded]: faded pipelines skip depth writes. The point-list
   /// pairs exist only with QRhi::VertexShaderPointSize.
-  std::array<std::array<std::array<QRhiGraphicsPipeline*, 2>, 3>, 2> pipelines_{};
-  /// For the pipelines built on first use, which register with its `templates`.
-  RhiPassSetup setup_;
+  std::array<std::array<std::array<const ScenePipeline*, 2>, 3>, 2> pipelines_{};
+  /// The view's registry the pairs register with on first use, and their part.
+  ScenePipelineRegistry* registry_ = nullptr;
+  const char* part_ = nullptr;
   bool point_size_supported_ = false;
   /// [Layout][Geometry][faded]: creation was attempted; a failed one is not retried per frame.
   std::array<std::array<std::array<bool, 2>, 3>, 2> pipelines_attempted_{};

@@ -14,8 +14,8 @@
 // scene-pass mode below, the EDL mesh mask and the shadow pass replay those
 // prepared draws; none of them re-admits a layer or consumes a budget again.
 //
-// Every scene family exposes the same shape: initialize(RhiPassSetup),
-// registerPipelines(registry), setLayers(layers), admit(place, bounds),
+// Every scene family exposes the same shape: initialize(RhiPassSetup) (which
+// registers its pipelines), setLayers(layers), admit(place, bounds),
 // prepare(RhiFrameContext, ...), drawsFor(layer) (a span of Draws, each with a
 // draw_class), submit(command_buffer, draw, ScenePass, registry, viewport) and
 // release().
@@ -33,6 +33,7 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <initializer_list>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -63,71 +64,141 @@ enum class ScenePass {
 /// order-independent transparency: translucent draws are not depth-sorted.
 enum class DrawClass : std::uint8_t { kOpaque, kTranslucent };
 
-/// Owns the HDR-colour and depth-replay clones of the view's direct pipelines.
-/// Each family registers the pipelines it creates; resolve() clones one the first
-/// time a ScenePass binds it, once the view has named the clone targets. The
-/// clones copy the state newScenePipeline() sets (see clonePipelineForRenderPass),
-/// so a family never builds HDR variants itself.
+/// The state of one pipeline; the defaults are the scene's (data blend, depth
+/// test and write, LessOrEqual, no culling). A scene pipeline's description is
+/// kept (ScenePipelineRegistry), and every variant of it is built from it, so a
+/// state set here reaches the direct pipeline and its HDR and depth-replay variants alike.
+struct PipelineDesc {
+  QRhiGraphicsPipeline::Topology topology = QRhiGraphicsPipeline::Triangles;
+  QShader vertex{};
+  QShader fragment{};
+  QRhiVertexInputLayout input_layout{};
+  QRhiShaderResourceBindings* bindings = nullptr;                                     ///< the layout SRB
+  std::optional<QRhiGraphicsPipeline::TargetBlend> blend = PJ::straightAlphaBlend();  ///< nullopt: no colour target
+  QRhiGraphicsPipeline::CullMode cull = QRhiGraphicsPipeline::None;
+  bool depth_test = true;
+  bool depth_write = true;
+  QRhiGraphicsPipeline::CompareOp depth_op = QRhiGraphicsPipeline::LessOrEqual;
+  int depth_bias = 0;
+  float slope_scaled_depth_bias = 0.0F;
+  QRhiGraphicsPipeline::Flags flags{};
+};
+
+/// `desc` built and created for `render_pass` with `sample_count` samples: the
+/// one route every graphics pipeline of the view takes (the scene pipelines and
+/// their variants, the quality stages', the overlays'). nullptr for an
+/// incomplete `desc` or when it cannot be created. So the shader-named fault
+/// injection (rhiTestShaderFault(), pj_widgets/RhiTestHooks.h; e.g.
+/// PJ_RHI_TEST_FAIL_SHADER=trail.frag.qsb) fails any of them.
+std::unique_ptr<QRhiGraphicsPipeline> createPipeline(
+    QRhi* rhi, const PipelineDesc& desc, QRhiRenderPassDescriptor* render_pass, int sample_count);
+
+/// A scene pipeline that could not be created, and how far that reaches. An
+/// optional pipeline (ScenePipelineRegistry::add(..., optional)) is no failure:
+/// its family draws the same thing another way.
+struct PipelineFailure {
+  enum class Severity : std::uint8_t {
+    kRequired,    ///< a built family's own pipeline: the view's failure state, named `part`
+    kHdrVariant,  ///< an HDR-colour or depth-replay variant: the HDR chain drops, the scene draws directly
+  };
+  Severity severity = Severity::kRequired;
+  const char* part = nullptr;  ///< the family that registered it
+};
+
+/// One registered scene pipeline: its description and the variants built from
+/// it. Owned by ScenePipelineRegistry; families keep the handle and resolve() it.
+struct ScenePipeline;
+
+/// The one owner of the scene pipelines (every family's, the grid's and the TF
+/// triads'): it keeps each description and builds its variants from it on
+/// demand, the direct one for the widget's target and the HDR-colour and
+/// depth-replay ones for the HDR chain's. Nothing is built at registration
+/// (add()): a GPU running the HDR chain builds only the variants its frames
+/// bind, and one without it builds the direct ones before its first frame
+/// (createDirects()). Families hold handles, never pipelines.
 class ScenePipelineRegistry {
  public:
-  /// Registers a direct pipeline (nullptr is ignored; re-adding is a no-op).
-  void add(QRhiGraphicsPipeline* direct);
-  /// Registers `direct` configured but not created (newScenePipeline()): its
-  /// clones copy its state, and createTemplates() creates it before a frame
-  /// without the HDR chain binds it, so a GPU that runs the HDR chain never
-  /// builds the programs of its direct pipelines. Returns `direct`. `part` names
-  /// it in deferredFailure().
-  QRhiGraphicsPipeline* addTemplate(QRhiGraphicsPipeline* direct, const char* part);
-  /// The `part` of the first template createTemplates() could not create
-  /// (nullptr: none). The view enters its failure state on it, as for a
-  /// pipeline created up front.
-  [[nodiscard]] const char* deferredFailure() const {
-    return deferred_failure_;
+  ScenePipelineRegistry();
+  ~ScenePipelineRegistry();
+  ScenePipelineRegistry(const ScenePipelineRegistry&) = delete;
+  ScenePipelineRegistry& operator=(const ScenePipelineRegistry&) = delete;
+
+  /// The target the direct variants draw into (the widget's render target),
+  /// until clear(): createDirects() builds for it (add() builds nothing). The view's other pipelines on that target
+  /// (the overlays) read it back (directRenderPass(), directSampleCount()).
+  void setDirectTarget(QRhi* rhi, QRhiRenderPassDescriptor* render_pass, int sample_count);
+  [[nodiscard]] QRhiRenderPassDescriptor* directRenderPass() const {
+    return direct_;
   }
-  /// Creates every template not created yet: what a frame without the HDR chain
-  /// does before recording, so no pipeline fails half way through its passes and
-  /// kDirect resolves only created pipelines. False, and nothing retried, once
-  /// one could not be created (deferredFailure() names it).
-  bool createTemplates();
-  /// Unregisters `direct` and deletes its clones; call before deleting it.
-  void remove(QRhiGraphicsPipeline* direct);
-  /// The render passes clones target: HDR colour (`hdr`, `hdr_samples`) and depth
-  /// replay (`depth`, one sample, alpha-only writes). New targets drop every
-  /// clone first.
-  void setCloneTargets(QRhi* rhi, QRhiRenderPassDescriptor* hdr, int hdr_samples, QRhiRenderPassDescriptor* depth);
-  /// Deletes every clone and forgets the targets; keeps the registrations (the
-  /// HDR chain went down).
-  void releaseClones();
-  /// releaseClones() and forgets every registration (direct pipelines dying).
+  [[nodiscard]] int directSampleCount() const {
+    return direct_samples_;
+  }
+  /// Registers `desc` as a pipeline of `part` and builds nothing: its direct
+  /// variant is created by createDirects(), its HDR variants when a frame first
+  /// binds them. nullptr only for an incomplete `desc` (a shader pack that could
+  /// not be read, no layout SRB). An `optional` pipeline's failure latches
+  /// nothing: it only marks the pipeline optionalFailed(), whose family then
+  /// draws the same thing another way (the point list as quads, the grid's
+  /// cells unshadowed).
+  const ScenePipeline* add(const PipelineDesc& desc, const char* part, bool optional = false);
+  /// True once a variant of the optional `pipeline` could not be created; it
+  /// resolves to nullptr from then on (nullptr ignored).
+  [[nodiscard]] bool optionalFailed(const ScenePipeline* pipeline) const;
+  /// Deletes `pipeline` and its variants (nullptr ignored).
+  void remove(const ScenePipeline* pipeline);
+  /// Creates every direct variant not created yet: what a frame without the HDR
+  /// chain does before recording, so no pipeline fails half way through its
+  /// passes. False, and nothing retried, once a required one could not be
+  /// created (failure() is then kRequired and names its part).
+  bool createDirects();
+  /// The failure latched since the registrations (kRequired, until clear()) or
+  /// since the variants were last released (kHdrVariant); nullopt: none.
+  [[nodiscard]] const std::optional<PipelineFailure>& failure() const {
+    return failure_;
+  }
+  /// The render passes the HDR variants target, on the direct target's QRhi:
+  /// HDR colour (`hdr`, `hdr_samples`) and depth replay (`depth`, one sample,
+  /// alpha-only writes). New targets drop every variant first.
+  void setVariantTargets(QRhiRenderPassDescriptor* hdr, int hdr_samples, QRhiRenderPassDescriptor* depth);
+  /// Deletes every HDR variant and forgets their targets; keeps the
+  /// registrations and the direct variants (the HDR chain went down).
+  void releaseVariants();
+  /// Deletes every pipeline and forgets every registration and target (the
+  /// resources they bind are going away).
   void clear();
-  /// The pipeline `pass` binds for `direct`: `direct` itself for kDirect (a
-  /// template once createTemplates() created it), else its clone, created on
-  /// this first request. nullptr means "do not draw": always for
-  /// kDepthReplay when `direct` writes no depth (the depth replay records only
-  /// depth-writing coverage), and when unregistered, without
-  /// targets, or when the clone cannot be created (see cloneFailed()).
-  [[nodiscard]] QRhiGraphicsPipeline* resolve(QRhiGraphicsPipeline* direct, ScenePass pass) const;
-  /// A clone could not be created since the clones were last released: its draw
-  /// went missing from an HDR pass, so the view must drop the HDR chain.
-  [[nodiscard]] bool cloneFailed() const {
-    return clone_failed_;
-  }
-  /// Every direct pipeline satisfies pipelineBuiltFor(render_pass, sample_count).
+  /// The pipeline `pass` binds for `pipeline`: its direct variant for kDirect
+  /// (once created), else its HDR variant, created on this first request.
+  /// nullptr means "do not draw": always for kDepthReplay when the description
+  /// writes no depth (the depth replay records only depth-writing coverage), and
+  /// when not created yet, without targets, or when the variant cannot be
+  /// created (failure() is then kHdrVariant, unless the pipeline is optional:
+  /// see add()). While a failure is latched no HDR
+  /// variant is created or returned (that frame is withheld anyway): a
+  /// kHdrVariant latch clears in releaseVariants(), a kRequired one in clear().
+  [[nodiscard]] QRhiGraphicsPipeline* resolve(const ScenePipeline* pipeline, ScenePass pass) const;
+  /// Every created direct variant satisfies pipelineBuiltFor(render_pass, sample_count).
   [[nodiscard]] bool directsBuiltFor(const QRhiRenderPassDescriptor* render_pass, int sample_count) const;
 
- private:
-  struct Entry {
-    QRhiGraphicsPipeline* direct = nullptr;
-    QRhiGraphicsPipeline* hdr = nullptr;
-    QRhiGraphicsPipeline* depth = nullptr;
-    const char* uncreated_part = nullptr;  ///< a template not created yet (addTemplate())
+  /// Registrations and created variants (test and benchmark instrumentation).
+  struct Counts {
+    int registered = 0;
+    int directs = 0;
+    int hdr_variants = 0;  ///< HDR-colour and depth-replay
+    bool operator==(const Counts&) const = default;
   };
-  // The clones are a cache that resolve() fills, hence mutable.
-  mutable std::vector<Entry> entries_;
-  mutable bool clone_failed_ = false;
-  const char* deferred_failure_ = nullptr;
+  [[nodiscard]] Counts counts() const;
+
+ private:
+  [[nodiscard]] std::unique_ptr<QRhiGraphicsPipeline> createVariant(
+      const ScenePipeline& pipeline, ScenePass pass) const;
+
+  std::vector<std::unique_ptr<ScenePipeline>> pipelines_;
+  // resolve() fills the variant cache and may latch a variant failure, hence mutable.
+  mutable std::optional<PipelineFailure> failure_;
   QRhi* rhi_ = nullptr;
-  QRhiRenderPassDescriptor* hdr_ = nullptr;
+  QRhiRenderPassDescriptor* direct_ = nullptr;
+  int direct_samples_ = 1;
+  QRhiRenderPassDescriptor* hdr_ = nullptr;  ///< nullptr: no variant targets
   int hdr_samples_ = 1;
   QRhiRenderPassDescriptor* depth_ = nullptr;
 };
@@ -211,8 +282,6 @@ QRhiShaderResourceBindings* createBindings(QRhi* owner, std::initializer_list<QR
 /// releaseResources().
 struct RhiPassSetup {
   QRhi* rhi = nullptr;
-  QRhiRenderPassDescriptor* render_pass = nullptr;  ///< direct pipelines target this
-  int sample_count = 1;
   QRhiBuffer* render_mode_uniforms = nullptr;             ///< binding 8 of every data-graded draw
   QRhiBuffer* annotation_render_mode_uniforms = nullptr;  ///< binding 8 of annotation (tonemap-bypass) draws
   QRhiBuffer* view_uniforms = nullptr;                    ///< binding 0: the camera-relative view-projection (mat4)
@@ -222,10 +291,10 @@ struct RhiPassSetup {
   /// view submits it before any draw, or discards it when a family fails to
   /// build. Valid only during initialize().
   QRhiResourceUpdateBatch* updates = nullptr;
-  /// When set, createScenePipeline() configures without creating and registers
-  /// the result here as a template (ScenePipelineRegistry::addTemplate(),
-  /// named `part`): for families whose every draw binds through resolve().
-  ScenePipelineRegistry* templates = nullptr;
+  /// The owner of the family's scene pipelines: it registers each description
+  /// there (add(), named `part`) and keeps the handles. It holds the widget's
+  /// render target (ScenePipelineRegistry::setDirectTarget()).
+  ScenePipelineRegistry* pipelines = nullptr;
   const char* part = nullptr;
 };
 
@@ -243,40 +312,6 @@ inline QRhiGraphicsPipeline::TargetBlend annotationAlphaBlend() {
   blend.srcAlpha = QRhiGraphicsPipeline::Zero;
   return blend;
 }
-
-/// The state of one pipeline; the defaults are the scene's (data blend, depth
-/// test and write, LessOrEqual, no culling).
-struct PipelineDesc {
-  QRhiGraphicsPipeline::Topology topology = QRhiGraphicsPipeline::Triangles;
-  QShader vertex{};
-  QShader fragment{};
-  QRhiVertexInputLayout input_layout{};
-  QRhiShaderResourceBindings* bindings = nullptr;                                     ///< the layout SRB
-  std::optional<QRhiGraphicsPipeline::TargetBlend> blend = PJ::straightAlphaBlend();  ///< nullopt: no colour target
-  QRhiGraphicsPipeline::CullMode cull = QRhiGraphicsPipeline::None;
-  bool depth_test = true;
-  bool depth_write = true;
-  QRhiGraphicsPipeline::CompareOp depth_op = QRhiGraphicsPipeline::LessOrEqual;
-  int depth_bias = 0;
-  float slope_scaled_depth_bias = 0.0F;
-  QRhiGraphicsPipeline::Flags flags{};
-};
-/// A created pipeline for `setup`'s render pass and sample count, or nullptr;
-/// a registered template instead with `setup.templates`.
-QRhiGraphicsPipeline* createScenePipeline(const RhiPassSetup& setup, const PipelineDesc& desc);
-/// The same pipeline configured but not created (no program built): a state
-/// source for clones (ScenePipelineRegistry, clonePipelineForRenderPass) that is
-/// created (createGraphicsPipeline()) before it is bound itself, if ever.
-/// nullptr only for an invalid `desc`.
-QRhiGraphicsPipeline* newScenePipeline(const RhiPassSetup& setup, const PipelineDesc& desc);
-
-/// `pipeline->create()`: every graphics pipeline of the view is created through
-/// it. Builds with tests add fault injection: while the environment variable
-/// PJ_SCENE3D_TEST_FAIL_SHADER holds a suffix of a shader path loadRhiShader()
-/// read (e.g. "trail.frag.qsb"), a pipeline using that shader fails to create;
-/// PJ_SCENE3D_PIPELINE_LOG=1 logs every creation with its shaders and time
-/// ("PJ_PIPELINE", for attributing initialize() and first-use costs).
-bool createGraphicsPipeline(QRhiGraphicsPipeline* pipeline);
 
 /// Per-frame values a family reads in prepare(), after admission.
 struct RhiFrameContext {
@@ -318,19 +353,16 @@ void pruneLayerGpu(Map& gpu, const typename Map::key_type& layer, Release&& rele
   }
 }
 
-/// Every family's setLayers(): releases the GPU state of layers that left the
-/// list or are hidden (layers without visible(), the trail owners, only when they
-/// leave), then adopts the new list. The families key their caches by layer
+/// The families' setLayers(): releases the GPU state of layers that left the
+/// list or are hidden, then adopts the new list. The families key their caches by layer
 /// address and revision; this is what keeps a layer created at a freed layer's
 /// address from meeting a stale entry: the dock syncs a layer out of the view's
 /// list (SceneDockWidget::removeTopic(), clearLayers()) before destroying it.
 template <typename Layer, typename Map, typename Release>
 void adoptLayerList(const std::vector<Layer*>& layers, std::vector<Layer*>& current, Map& gpu, Release&& release) {
   std::erase_if(gpu, [&](auto& entry) {
-    bool drop = std::find(layers.cbegin(), layers.cend(), entry.first) == layers.cend();
-    if constexpr (requires { entry.first->visible(); }) {
-      drop = drop || !entry.first->visible();
-    }
+    const bool drop =
+        std::find(layers.cbegin(), layers.cend(), entry.first) == layers.cend() || !entry.first->visible();
     if (drop) {
       detail::releaseGpu(entry.first, entry.second, release);
     }
@@ -378,17 +410,6 @@ AABB admitLayers(
 }
 
 using PJ::loadRhiShader;
-
-/// A copy of `source` for `render_pass`/`sample_count`; `coverage_alpha_only`
-/// masks colour writes to alpha (the depth replay's coverage). It copies what
-/// newScenePipeline() sets, plus the front face: flags, topology, shader stages,
-/// vertex input layout, bindings, target blends, cull mode, depth test, write,
-/// op, bias and slope-scaled bias. Anything else (polygon mode, line width,
-/// stencil, depth clamp, patch control points, multiview) keeps Qt's default in
-/// the clone: set it on a registered pipeline only after adding it here.
-QRhiGraphicsPipeline* clonePipelineForRenderPass(
-    QRhi* owner, const QRhiGraphicsPipeline* source, QRhiRenderPassDescriptor* render_pass, int sample_count,
-    bool coverage_alpha_only = false);
 
 /// True when `pipeline` (nullptr counts as true) was built for `render_pass` with
 /// `sample_count` samples. Compares the descriptor by address only: a stale

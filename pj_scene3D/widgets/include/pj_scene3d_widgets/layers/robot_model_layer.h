@@ -7,17 +7,15 @@
 #include <QMap>
 #include <QString>
 #include <QStringList>
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <glm/glm.hpp>
-#include <map>
 #include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "pj_datastore/object_store.hpp"
@@ -31,11 +29,9 @@ class QWidget;
 
 namespace pj::scene3d {
 
-class MeshImport;
-class MeshLoader;
+class MeshLoadQueue;
 class TransformBuffer;
 class UrdfPackageResolver;
-class UrlFetcher;
 
 // Scene3DLayer that renders a robot's URDF (links, primitive geometry, and
 // async-loaded meshes) posed by the live TF tree.
@@ -53,17 +49,16 @@ class UrlFetcher;
 //   - kUrl:   a URL fetched ASYNCHRONOUSLY (file/http/https on desktop, http(s)
 //     in the browser); the model is applied when the bytes land.
 //
-// Coordinate contract. The layer's CPU model is TF-free: one LinkDraw per link
-// geometry, holding the prefixed link frame plus the link-local <origin> and
-// scale, exposed as ModelDrawCalls (frame_id + origin × scale); the view applies
-// TF(fixed <- link), exactly once. URDF fixed joints the data
+// Coordinate contract. The layer's CPU model is TF-free: one ModelDrawCall per
+// link geometry, holding the prefixed link frame plus the link-local
+// <origin> × scale; the view applies TF(fixed <- link), exactly once. URDF fixed joints the data
 // never publishes are bridged into the TF buffer (see ensureStaticBridges).
 //
-// Meshes load a few at a time (one in the browser; see maxConcurrentMeshLoads):
+// Meshes load through a MeshLoadQueue, a few at a time (one in the browser):
 // URL meshes are fetched, then imported off the GUI thread, and each result is
 // admitted against kSceneLimits' retained-byte budgets as it lands. A source
-// switch bumps a generation that drops every stale completion; a superseded
-// import keeps its concurrency slot until its worker finishes.
+// switch cancels every queued and running load, so no stale completion lands;
+// a superseded import keeps its concurrency slot until its worker finishes.
 //
 // Parser lifetime (kTopic): parsers are deliberately NOT cached; every decode
 // resolves a fresh ParserBinding through ctx_.session.
@@ -91,6 +86,9 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   [[nodiscard]] PJ::SceneLayerInfo info() const override;
   [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
   [[nodiscard]] QStringList fallbackFrames() const override;
+  [[nodiscard]] SceneContributions sceneContributions() override {
+    return {.models = this};
+  }
   [[nodiscard]] QString sourceFrame() const override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
@@ -205,12 +203,11 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
     return *this;
   }
 
-#ifdef PJ_SCENE3D_TEST_HOOKS
   // Mesh imports started whose worker has not finished yet (superseded ones
   // included): what actually runs on the pool.
-  [[nodiscard]] std::size_t meshImportsOutstandingForTest() const {
-    return active_imports_.size();
-  }
+  [[nodiscard]] std::size_t meshImportsOutstandingForTest() const;
+
+#ifdef PJ_SCENE3D_TEST_HOOKS
   // Injects the fixed-joint TF bridges into `tf` (the buffer the layer renders
   // against). Inline: test hooks are compiled only into the test TU, never the library.
   void ensureStaticBridgesForTest(TransformBuffer& tf) {
@@ -219,19 +216,17 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   // Draw-group sizes of the TF-free model — lets a test assert which group
   // (visuals vs collision) a link's geometry landed in.
   [[nodiscard]] int visualDrawCountForTest() const {
-    int count = 0;
-    for (const LinkDraw& draw : link_draws_) {
-      count += draw.collision ? 0 : 1;
-    }
-    return count;
+    return static_cast<int>(model_draw_calls_.size()) - collisionDrawCountForTest();
   }
   [[nodiscard]] int collisionDrawCountForTest() const {
-    return static_cast<int>(link_draws_.size()) - visualDrawCountForTest();
+    return static_cast<int>(std::count_if(model_draw_calls_.begin(), model_draw_calls_.end(), [](const auto& call) {
+      return call.group == ModelDrawGroup::kCollision;
+    }));
   }
   [[nodiscard]] glm::vec4 firstCollisionDrawColorForTest() const {
-    for (const LinkDraw& draw : link_draws_) {
-      if (draw.collision) {
-        return draw.color;
+    for (const ModelDrawCall& call : model_draw_calls_) {
+      if (call.group == ModelDrawGroup::kCollision) {
+        return call.override_color;
       }
     }
     return glm::vec4(0.0f);
@@ -262,31 +257,9 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   };
   [[nodiscard]] static std::optional<ParsedSettings> parseSettings(const QDomElement& element);
 
-  // One geometry of one link, TF-free: the model the view draws from.
-  struct LinkDraw {
-    enum class Shape : std::uint8_t { kBox, kCylinder, kSphere, kMesh, kPlaceholder };
-    std::string frame_id;    // prefixed link frame (the TF child to pose it by)
-    glm::dmat4 origin{1.0};  // the geometry's <origin> in the link frame
-    glm::dvec3 scale{1.0};   // primitive dimensions, or the mesh scale
-    Shape shape = Shape::kPlaceholder;
-    std::string mesh_path;  // resolved path of a loaded mesh (kMesh only)
-    // Colour the geometry is drawn in when `explicit_color` (URDF material,
-    // collision tint or placeholder magenta); otherwise the mesh's own material.
-    glm::vec4 color{1.0F};
-    bool explicit_color = false;
-    bool collision = false;  // collision draw group
-  };
-  struct MeshTask {
-    std::string key;
-    QString source;
-    QString format_hint;
-    bool is_url = false;
-    std::uint64_t generation = 0;
-  };
-
-  // Rebuild link_draws_ (and the QRhi ModelDrawCalls) from the model, display
-  // mode and loaded meshes. TF-independent: runs only when those change.
-  void rebuildLinkDraws();
+  // Rebuild the ModelDrawCalls from the model, display mode and loaded meshes.
+  // TF-independent: runs only when those change.
+  void rebuildDrawCalls();
   // Recompute static_bridges_ from the current model_, with frame_prefix_ applied
   // to each parent/child frame. Called when the model loads or the prefix changes.
   void rebuildStaticBridges();
@@ -304,9 +277,8 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   bool applyRobotDescription(
       const QString& text, const QString& format, const QString& label, const QString& urdf_dir, bool source_is_url);
   void queueMeshLoads();
-  void pumpMeshLoads();
-  void startMeshImport(MeshTask task, QByteArray bytes = {});
-  void finishMeshImport(const std::string& key, std::uint64_t generation);
+  // A mesh load of the current source settled: admit it against the budget.
+  void admitMesh(const std::string& key, MeshData mesh);
   // A mesh load settled (loaded or failed): refresh draws, counters, status.
   void onMeshLoadSettled();
   [[nodiscard]] bool meshReady(const std::string& key) const;
@@ -362,27 +334,19 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   int total_mesh_count_{0};
   int unresolved_mesh_count_{0};
   int loaded_mesh_count_{0};
-  std::vector<LinkDraw> link_draws_;
 
   std::unique_ptr<UrdfPackageResolver> owned_resolver_;
   UrdfPackageResolver* resolver_{nullptr};
-  std::unique_ptr<MeshLoader> mesh_loader_;
-  // Owned by the layer: destroying it (or a source switch) aborts in-flight
-  // URDF/mesh fetches and drops their callbacks.
-  std::unique_ptr<UrlFetcher> url_fetcher_;
-  std::deque<MeshTask> mesh_queue_;
-  // In-flight URL fetches (keyed by resolved mesh path) and imports (keyed by
-  // load generation + path, superseded ones included until their worker
-  // finishes); together at most maxConcurrentMeshLoads().
-  std::unordered_set<std::string> active_fetches_;
-  std::map<std::pair<std::uint64_t, std::string>, std::unique_ptr<MeshImport>> active_imports_;
+  // Fetches the URDF and loads the meshes; destroying it (or a source switch)
+  // aborts in-flight fetches and drops their callbacks.
+  std::unique_ptr<MeshLoadQueue> mesh_queue_;
   std::unordered_map<std::string, QString> mesh_errors_;
   // Retained estimate of each admitted mesh, keyed by resolved path; the key
   // set is the ready set.
   std::unordered_map<std::string, std::uint64_t> mesh_bytes_;
   std::uint64_t mesh_retained_bytes_{0};
-  // Bumped by every source (re)load and detach; fetch/import completions from an
-  // older generation are dropped.
+  // Bumped by every source (re)load and detach; a URDF fetch or deferred reload
+  // from an older generation is dropped.
   std::uint64_t load_generation_{0};
 
   // What the view reads (ModelRenderable).

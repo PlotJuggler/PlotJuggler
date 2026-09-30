@@ -5,12 +5,11 @@
 
 namespace PJ {
 
-/// QwtPlotCurve with an optional batched dots pass over the Lines style — the
-/// PJ4 home of PJ3's patched-Qwt "LinesAndDots" drawing. Dots are one widened-pen
-/// drawDots() batch, not per-point symbols: on the OpenGL paint engine every
-/// symbol blit costs a QPixmap-to-QImage conversion plus a texture upload
-/// (fresh cacheKey each call), and every symbol path costs CPU triangulation,
-/// so per-point QPainter calls collapse the replot rate on dense curves.
+/// QwtPlotCurve with an optional dots pass over the Lines style — the PJ4 home of
+/// PJ3's patched-Qwt "LinesAndDots" drawing. drawCurve() paints it only on the
+/// QPainter canvases (the raster QwtPlotCanvas: GPU canvas disabled, or the
+/// fallback after a GPU failure); PlotRhiCanvas never calls drawCurve(), it
+/// reads dotWidth() and builds the same square dots as geometry.
 class PlotCurve : public QwtPlotCurve {
  public:
   explicit PlotCurve(const QString& title);

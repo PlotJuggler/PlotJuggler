@@ -82,6 +82,9 @@ class TrailLayer : public Scene3DLayer {
   [[nodiscard]] PJ::SceneLayerInfo info() const override;
   [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
   [[nodiscard]] QStringList fallbackFrames() const override;
+  [[nodiscard]] SceneContributions sceneContributions() override {
+    return {.trail = this};
+  }
   [[nodiscard]] QString sourceFrame() const override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   // Applies STYLE only (colors/thickness/visibility) — a family paste (PR #204

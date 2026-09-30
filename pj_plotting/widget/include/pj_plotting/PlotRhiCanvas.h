@@ -3,19 +3,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QByteArray>
-#include <QHash>
 #include <QImage>
-#include <QList>
 #include <QPointF>
 #include <QPointer>
-#include <QRectF>
 #include <QRhiWidget>
 #include <QSize>
 #include <QString>
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -36,43 +33,9 @@ class QwtPlot;
 
 namespace PJ {
 
-// Interleaved geometry vertex (16 B), laid out to match the vertex input
-// attributes wired in createPipeline: Float2 clip-space position, UNormByte4
-// straight-alpha RGBA, and UNormByte4 coverage inputs for plot_color.frag:
-// the position across the primitive (-1..1 as 0..255), the style code, and a
-// 16-bit second coordinate (high, low byte): a dashed stroke's path distance in
-// 64ths of a pen width, or a box's second axis. Lives here only so the
-// canvas can name it.
-struct PlotRhiVertex {
-  float x = 0.0F;
-  float y = 0.0F;
-  std::array<std::uint8_t, 4> rgba{};
-  std::array<std::uint8_t, 4> aux{};
-};
-
-// A rasterised text layer (tight CPU raster and its logical rectangle), reused
-// while the item's recorded drawing is unchanged; a null image records a layer
-// that drew nothing. Lives here only so the cache can be a canvas member.
-struct PlotRhiTextCacheEntry {
-  QImage image;
-  QRectF logical_rect;
-  qsizetype alpha_pixels = 0;
-};
-
-// One plot item's range in a layer: indices in a geometry layer, vertices in the
-// text layer (item null for the frame).
-struct PlotRhiItemSpan {
-  const void* item = nullptr;
-  std::size_t first = 0;
-  std::size_t count = 0;
-};
-
-struct PlotRhiTextVertex {
-  float x = 0.0F;
-  float y = 0.0F;
-  float u = 0.0F;
-  float v = 0.0F;
-};
+namespace plot_rhi {
+struct RetainedLayers;
+}
 
 // QRhi plot canvas, the GPU plot canvas on desktop and in the browser. Qwt
 // continues to own axes, data, and interaction state; this widget translates
@@ -173,16 +136,6 @@ class PlotRhiCanvas final : public QRhiWidget {
   void releaseResources() override;
 
  private:
-  // The vertex buffer a draw reads: grid+curves+frame, markers, or text.
-  enum class Layer : std::uint8_t { Curves, Overlay, Text };
-
-  // An index range of a geometry layer, a vertex range of the text layer.
-  struct DrawBatch {
-    Layer layer = Layer::Curves;
-    std::uint32_t first = 0;
-    std::uint32_t count = 0;
-  };
-
   bool createPipeline(QRhiCommandBuffer* command_buffer);
   // Every GPU resource but the render target, plus the per-context state.
   void releaseDrawResources();
@@ -207,37 +160,16 @@ class PlotRhiCanvas final : public QRhiWidget {
   QRhiBuffer* overlay_index_buffer_ = nullptr;
   QRhiBuffer* text_vertex_buffer_ = nullptr;
 
-  // PlotRhiVertex and quint32 index arrays, built in place and handed to
+  // plot_rhi::Vertex and quint32 index arrays, built in place and handed to
   // uploadStaticBuffer() by implicit sharing (no copy of tens of MB); their
   // allocations are reused across frames.
   QByteArray vertices_;
   QByteArray indices_;
   QByteArray overlay_vertices_;
   QByteArray overlay_indices_;
-  std::vector<PlotRhiTextVertex> text_vertices_;
-  // Per-item spans of the last build of each layer; the frame's span is kept
-  // apart because it draws over everything.
-  std::vector<PlotRhiItemSpan> curve_spans_;
-  std::vector<PlotRhiItemSpan> overlay_spans_;
-  std::vector<PlotRhiItemSpan> text_spans_;
-  PlotRhiItemSpan frame_span_;
-  // Retained native item order across the three buffers. A marker draws its
-  // line/symbol geometry and then its label before the next same-Z marker,
-  // matching Qwt rather than flattening every label above all markers.
-  std::vector<DrawBatch> draw_batches_;
-  // Text layers of the last text build, keyed by their recorded drawing (a
-  // QPicture of the item's paint, its bounds and the dpr). Dropped with the GPU
-  // resources.
-  QHash<QByteArray, PlotRhiTextCacheEntry> text_cache_;
-  // What the uploaded atlas and text quads were built from: an equal signature
-  // (canvas size, truncation, the layer keys in draw order) reuses them.
-  struct TextSignature {
-    QSize canvas;
-    bool truncated = false;
-    QList<QByteArray> layer_keys;
-    bool operator==(const TextSignature&) const = default;
-  };
-  TextSignature text_signature_;
+  // Item spans, draw batches, text quads and the text cache: the retained
+  // layers' bookkeeping, whose types are private to the implementation.
+  std::unique_ptr<plot_rhi::RetainedLayers> layers_;
   // Desktop only: one curve's samples mapped to canvas pixels (its visible
   // range for an x-sorted solid curve, else all of it; 16 B per sample), reused
   // across curves; released after a rebuild that grew it past a small cap.

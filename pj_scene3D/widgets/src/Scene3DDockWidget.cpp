@@ -85,13 +85,15 @@ using pj::scene3d::VoxelGridLayer;
 // layer's embedded trail), else nullptr. One lookup so every trail-wide fan-out
 // — notably the TF-buffer re-bind — reaches both flavors.
 pj::scene3d::TrailLayer* trailOf(ISceneLayer* layer) {
-  if (auto* trail = dynamic_cast<pj::scene3d::TrailLayer*>(layer); trail != nullptr) {
-    return trail;
+  auto* scene_layer = dynamic_cast<Scene3DLayer*>(layer);
+  if (scene_layer == nullptr) {
+    return nullptr;
   }
-  if (const auto* poses = dynamic_cast<const PosesInFrameLayer*>(layer); poses != nullptr) {
-    return poses->trail();
+  const pj::scene3d::SceneContributions contributes = scene_layer->sceneContributions();
+  if (contributes.trail != nullptr) {
+    return contributes.trail;
   }
-  return nullptr;
+  return contributes.poses != nullptr ? contributes.poses->trail() : nullptr;
 }
 
 // Stable enum <-> on-disk-name table for the camera model, persisted in the
@@ -356,7 +358,7 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   connect(camera_model_combo_, &QComboBox::currentIndexChanged, this, [this](int index) {
     if (view_ != nullptr && index >= 0) {
       view_->setCameraModel(static_cast<pj::scene3d::SceneViewWidget::CameraModel>(index));
-      view_->update();
+      view_->invalidateContent();
     }
   });
 
@@ -447,7 +449,7 @@ void Scene3DDockWidget::onDatasetTransformsReady(DatasetId dataset_id) {
   // the current playhead so the scene fills in as the file loads, not only at the
   // end.
   onTrackerTime(last_tracker_display_);
-  view_->update();
+  view_->invalidateContent();
 }
 
 void Scene3DDockWidget::setSessionManager(SessionManager* session) {
@@ -961,7 +963,7 @@ void Scene3DDockWidget::refreshView() {
   // Async pushes can arrive with no tracker tick (paused), so the camera's scene
   // bounds must refresh too. O(layers), cheap.
   updateSceneBounds();
-  view_->update();
+  view_->invalidateContent();
 }
 
 uint64_t Scene3DDockWidget::viewRenderKey(PJ::Timepoint time) const {
@@ -1258,7 +1260,7 @@ void Scene3DDockWidget::applyResolvedFixedFrame(const QString& frame) {
   // here (L.83). currentFixedFrame() must already read the new frame before this:
   // view_->setFixedFrame above made it so.
   reconcileViewLayers();
-  view_->update();
+  view_->invalidateContent();
   emit currentFixedFrameChanged(frame);
   refreshFrameOverlayCombo();
 }
@@ -2083,7 +2085,7 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
       }
       view_->setMeshShadingParams(shading);
     }
-    view_->update();
+    view_->invalidateContent();
   }
 
   const auto infos = layers();

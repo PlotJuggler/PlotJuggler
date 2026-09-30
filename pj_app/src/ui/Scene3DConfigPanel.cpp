@@ -699,7 +699,7 @@ void Scene3DConfigPanel::applySceneControlsTo(Scene3DDockWidget* dock) {
   shading.mesh_opacity = static_cast<float>(mesh_opacity_->value());
   shading.collisions_visible = collision_eye_->isChecked();
   shading.collision_opacity = static_cast<float>(collision_opacity_->value());
-  view->update();
+  view->invalidateContent();
 }
 
 void Scene3DConfigPanel::loadControlsFromDock(Scene3DDockWidget* dock) {

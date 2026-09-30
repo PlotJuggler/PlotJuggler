@@ -81,19 +81,16 @@ bool VoxelRhiPass::initialize(const RhiPassSetup& setup, int max_3d_texture_size
       QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, offsetof(CubeVertex, px)),
       QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float3, offsetof(CubeVertex, nx)),
   });
-  pipeline_ = createScenePipeline(
-      setup, {
-                 .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/voxel.vert.qsb")),
-                 .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/voxel.frag.qsb")),
-                 .input_layout = layout,
-                 .bindings = layout_shader_resources_,
-                 .cull = QRhiGraphicsPipeline::Back,
-             });
+  pipeline_ = setup.pipelines->add(
+      {
+          .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/voxel.vert.qsb")),
+          .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/voxel.frag.qsb")),
+          .input_layout = layout,
+          .bindings = layout_shader_resources_,
+          .cull = QRhiGraphicsPipeline::Back,
+      },
+      setup.part);
   return pipeline_ != nullptr;
-}
-
-void VoxelRhiPass::registerPipelines(ScenePipelineRegistry& registry) const {
-  registry.add(pipeline_);
 }
 
 void VoxelRhiPass::setLayers(const std::vector<VoxelGridLayer*>& layers) {
@@ -314,7 +311,6 @@ void VoxelRhiPass::release() {
   layer_gpu_.clear();
   admitted_.clear();
   draws_.clear();
-  delete pipeline_;
   delete layout_shader_resources_;
   delete layout_uniform_buffer_;
   delete sampler_;

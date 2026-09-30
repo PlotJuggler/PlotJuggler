@@ -24,9 +24,11 @@ app like PJ4.
 
 PJ4 is a **Qt Widgets** desktop app. It links Widgets, Core, Gui, Network, Xml,
 Svg/SvgWidgets, Concurrent, UiTools, and **GuiPrivate** (private headers —
-version-sensitive). OpenGLWidgets comes in through Qwt only (its desktop library
-carries the unused `QwtPlotOpenGLCanvas`); no PJ4 code uses `QOpenGLWidget` outside
-tests. It does **not** use QML / Qt Quick / Qt Quick 3D, and **not** Qt Multimedia
+version-sensitive). No PJ4 code uses `QOpenGLWidget` outside display tests, and
+the Qwt build leaves out `QwtPlotOpenGLCanvas`; OpenGLWidgets is still a required
+kit module and ships with the app, because `Qt6UiTools` depends on it (and the
+pixi path's prebuilt Qwt links it, see `3rdparty/qwt/README.PJ4.md`).
+It does **not** use QML / Qt Quick / Qt Quick 3D, and **not** Qt Multimedia
 (video goes through FFmpeg directly).
 
 Graphics — important: **every GPU widget goes through Qt's RHI**: the `pj_scene2D` `MediaViewerWidget`, the

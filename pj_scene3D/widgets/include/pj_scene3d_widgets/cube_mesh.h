@@ -6,18 +6,13 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <string_view>
 
-// kCubeLightingGlsl / kCubeEdgeGlsl, generated from shaders/cube/*.glslinc — the same
-// files the shaders #include, so the C++ mirrors below can be checked against them.
-// Edit the .glslinc, never the generated header.
-#include "pj_scene3d_widgets/cube_shader_sources.h"
-
-// Shared unit-cube geometry + the C++ mirrors of the GLSL helpers for every instanced-cube
-// pass (the point-cloud "cube" shape and the voxel grid). Keeping the mesh and its
-// vertex-attrib contract (location 0 = position, location 1 = outward normal) in
-// one place means the two passes can't drift, and both draw an identically-edged
-// cube ("unify the cube").
+// Shared unit-cube geometry + the C++ mirrors of the GLSL helpers (shaders/cube/*.glslinc,
+// which the shaders #include; scene3d_shader_constants_test checks the mirrors against
+// them) for every instanced-cube pass (the point-cloud "cube" shape and the voxel grid).
+// Keeping the mesh and its vertex-attrib contract (location 0 = position, location 1 =
+// outward normal) in one place means the two passes can't drift, and both draw an
+// identically-edged cube ("unify the cube").
 //
 // Two geometries live here, for two different cost profiles:
 //
@@ -26,15 +21,15 @@
 //     that the geometry cost is irrelevant (voxel grids: one instance per voxel,
 //     but the shader discards most of them before the corner math).
 //
-//   kCubeFanIndices + cubeFanGlsl() — an attributeless 7-vertex hexagon fan
+//   kCubeFanIndices + cube_fan.glslinc — an attributeless 7-vertex hexagon fan
 //     covering only the 3 camera-facing faces. A closed opaque cube never shows
 //     the other three, so this is pixel-equivalent at 1/3.4 the vertex
 //     invocations and half the triangles. Use it for high-instance-count passes
 //     (point clouds).
 //
 // Below a couple of pixels even the fan is more geometry than the result can show,
-// so kCubeSpriteGlsl degrades a cube to a single area- and brightness-matched point
-// sprite. Its constants are tied to kCubeLightingGlsl / kCubeEdgeGlsl on purpose —
+// so cube_sprite.glslinc degrades a cube to a single area- and brightness-matched point
+// sprite. Its constants are tied to cube_lighting.glslinc / cube_edge.glslinc on purpose —
 // the whole point is that crossing the threshold changes nothing on screen.
 
 namespace pj::scene3d {
@@ -148,10 +143,10 @@ inline constexpr float kCubeSrgbGamma = 2.2f;
   return total;
 }
 
-// The value kCubeSpriteGlsl hard-codes, mirrored for the test that checks the two agree.
+// The value cube_sprite.glslinc hard-codes, mirrored for the test that checks the two agree.
 inline constexpr float kCubeEdgeMeanScale = 0.887f;
 
-// kSphereDiscShading from kCubeLightingGlsl, mirrored for the test that re-derives it.
+// kSphereDiscShading from cube_point_color.glslinc, mirrored for the test that re-derives it.
 inline constexpr float kSphereDiscShading = 0.702f;
 
 // Mean of the shared Lambert (ambient 0.35, diffuse 0.65, key light (0.4, 0.5, 0.8))

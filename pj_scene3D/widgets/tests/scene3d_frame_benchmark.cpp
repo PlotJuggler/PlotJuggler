@@ -84,6 +84,10 @@
 #include <string>
 #include <vector>
 
+#include "../rhi/passes/marker_rhi_pass.h"
+#include "../rhi/passes/model_rhi_pass.h"
+#include "../rhi/passes/point_rhi_pass.h"
+#include "../rhi/scene_view_widget_rhi_quality_p.h"
 #include "pj_base/builtin/frame_transforms.hpp"
 #include "pj_base/builtin/frame_transforms_codec.hpp"
 #include "pj_base/builtin/scene_entities.hpp"
@@ -91,10 +95,12 @@
 #include "pj_bench_probes.h"
 #include "pj_bench_scene_work.h"
 #include "scene3d_render_test_support.h"
+#include "scene_view_test_access.h"
 
 namespace {
 
 using BT = PJ::sdk::BuiltinObjectType;
+using pj::scene3d::SceneViewTestAccess;
 using pj::scene3d::SceneViewWidget;
 
 constexpr char kFrame[] = "map";
@@ -276,7 +282,8 @@ class SceneBench {
     }
     counter_ = std::make_unique<pj_bench::FrameCounter>(&view());
     if (qEnvironmentVariableIntValue("PJ_S3D_BENCH_NO_HDR") == 1) {
-      view().setForceHdrFallbackForTest(true);  // attribution runs: the direct pass, no HDR chain
+      SceneViewTestAccess::forceStageFallback(
+          view(), SceneViewTestAccess::Stage::kHdr, true);  // attribution runs: the direct pass, no HDR chain
     }
     if (qEnvironmentVariableIntValue("PJ_S3D_BENCH_NO_SSAO") == 1) {
       view().compositeParams().ssao_enabled = false;
@@ -362,7 +369,7 @@ class SceneBench {
         [&] {
           step();
           requested_ns = pj_bench::steadyNs();
-          view().update();
+          view().invalidateContent();
         },
         [&](const Sample& measured, const SceneViewWork& /*before*/) {
           return stagesSince(measured.begin_ns, requested_ns);
@@ -598,7 +605,7 @@ class SceneBench {
     Stages stages;
     stages.fill(-1.0);
     const SceneViewWork now = pj_bench::viewWork(view());
-    const auto& t = view().stageTimesForTest();
+    const auto& t = SceneViewTestAccess::stageTimes(view());
     const std::int64_t finished_ns = counter_->lastFinishedNs();
     if (now.full_renders <= before.full_renders || sample.wall_ms < 0.0 || finished_ns < t.render_end_ns) {
       return stages;
@@ -615,7 +622,7 @@ class SceneBench {
     return stages;
   }
   [[nodiscard]] double lastGpuMs() {
-    const double ms = view().stageTimesForTest().last_gpu_ms;
+    const double ms = SceneViewTestAccess::stageTimes(view()).last_gpu_ms;
     return ms > 0.0 ? ms : -1.0;
   }
   // The stage split of the frame finished last, requested at `requested_ns`
@@ -623,7 +630,7 @@ class SceneBench {
   Stages stagesSince(std::int64_t begin_ns, std::int64_t requested_ns) {
     Stages stages;
     stages.fill(-1.0);
-    const auto& t = view().stageTimesForTest();
+    const auto& t = SceneViewTestAccess::stageTimes(view());
     const std::int64_t finished_ns = counter_->lastFinishedNs();
     if (t.render_begin_ns < requested_ns || t.render_end_ns < t.render_begin_ns || finished_ns < t.render_end_ns) {
       return stages;  // no render() of this request reached the stamps (the Show skip, a failure)
@@ -685,23 +692,24 @@ struct Workload {
 
 void expectDrawn(SceneViewWidget& view, Workload workload) {
   if (workload.points) {
-    EXPECT_GT(view.lastPointVertexCountForTest(), 0) << "no point cloud drawn";
+    EXPECT_GT(SceneViewTestAccess::pointPass(view).lastPointVertexCount(), 0) << "no point cloud drawn";
   }
   if (workload.markers) {
-    EXPECT_GT(view.lastMarkerInstanceCountForTest(), 0) << "no marker drawn";
+    EXPECT_GT(SceneViewTestAccess::markerPass(view).lastInstanceCount(), 0) << "no marker drawn";
   }
   if (workload.models) {
-    EXPECT_GT(view.lastModelDrawCountForTest(), 0) << "no model drawn";
+    EXPECT_GT(SceneViewTestAccess::modelPass(view).lastDrawCount(), 0) << "no model drawn";
   }
 }
 
 // What the last frame drew, so a run that silently drew nothing shows up.
 std::string drawn(SceneViewWidget& view) {
-  return "points=" + std::to_string(view.lastPointVertexCountForTest()) +
-         " markers=" + std::to_string(view.lastMarkerInstanceCountForTest()) +
-         " models=" + std::to_string(view.lastModelDrawCountForTest()) +
-         " hdr=" + std::to_string(static_cast<int>(view.lastHdrActiveForTest())) +
-         " shadow_draws=" + std::to_string(view.lastShadowDrawCountForTest());
+  return "points=" + std::to_string(SceneViewTestAccess::pointPass(view).lastPointVertexCount()) +
+         " markers=" + std::to_string(SceneViewTestAccess::markerPass(view).lastInstanceCount()) +
+         " models=" + std::to_string(SceneViewTestAccess::modelPass(view).lastDrawCount()) + " hdr=" +
+         std::to_string(
+             static_cast<int>(SceneViewTestAccess::stage(view, SceneViewTestAccess::Stage::kHdr).last_active)) +
+         " shadow_draws=" + std::to_string(SceneViewTestAccess::modelPass(view).lastShadowDrawCount());
 }
 
 class Scene3dFrameBenchmark : public ::testing::Test {
@@ -789,7 +797,7 @@ TEST_F(Scene3dFrameBenchmark, CubesAndLinesOrbit) {
   SHOW_OR_SKIP(bench);
   ASSERT_NO_FATAL_FAILURE(bench.drive(benchFrames(), [&](int k) { bench.orbit(k); }));
   expectDrawn(bench.view(), {.markers = true});
-  EXPECT_GT(bench.view().lastMarkerStreamVertexCountForTest(), 0) << "no line strip drawn";
+  EXPECT_GT(SceneViewTestAccess::markerPass(bench.view()).lastStreamVertexCount(), 0) << "no line strip drawn";
   bench.report("cubes_lines_orbit", drawn(bench.view()));
 }
 
@@ -893,7 +901,7 @@ void runLayers(const char* name, long long count) {
   SHOW_OR_SKIP(bench);
   ASSERT_NO_FATAL_FAILURE(bench.drive(benchFrames(), [&](int k) { bench.orbit(k); }));
   expectDrawn(bench.view(), {.points = true});
-  EXPECT_EQ(bench.view().lastPointLayerCountForTest(), count) << "a cloud layer was not drawn";
+  EXPECT_EQ(SceneViewTestAccess::pointPass(bench.view()).lastPointLayerCount(), count) << "a cloud layer was not drawn";
   bench.report(name, "layers=" + std::to_string(count) + " " + drawn(bench.view()));
 }
 TEST_F(Scene3dFrameBenchmark, Layers10) {
@@ -948,7 +956,7 @@ TEST_F(Scene3dFrameBenchmark, FirstShow) {
 }
 
 // The HDR chain's depth replay (every draw re-submitted into the single-sample
-// depth target, forced by setForceDepthReplayForTest()) against the default
+// depth target, forced by SceneViewTestAccess::setForceDepthReplay()) against the default
 // chain (the multisample depth resolve where the backend has one; the replay
 // elsewhere), in alternating blocks on one large cloud.
 TEST_F(Scene3dFrameBenchmark, DepthReplayOnOff) {
@@ -961,12 +969,12 @@ TEST_F(Scene3dFrameBenchmark, DepthReplayOnOff) {
   bool resolves = false;
   for (int round = 0; round < 4; ++round) {
     const bool forced = round % 2 == 0;
-    bench.view().setForceDepthReplayForTest(forced);
+    SceneViewTestAccess::setForceDepthReplay(bench.view(), forced);
     ASSERT_NO_FATAL_FAILURE(bench.drive(frames, [&](int k) { bench.orbit(k); }));
     (forced ? replay : chain).push_back(pj_bench::stats(bench.lastWallMs()).median);
-    resolves = resolves || bench.view().depthResolveActiveForTest();
+    resolves = resolves || SceneViewTestAccess::depthResolveActive(bench.view());
   }
-  bench.view().setForceDepthReplayForTest(false);
+  SceneViewTestAccess::setForceDepthReplay(bench.view(), false);
   expectDrawn(bench.view(), {.points = true});
   bench.report(
       "depth_replay", "replay_ms=" + std::to_string(pj_bench::stats(replay).median) +
