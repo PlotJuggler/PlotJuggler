@@ -420,7 +420,7 @@ class PlotWindow {
 class PlotRhiRenderTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    PJ::PlotWidgetBase::setOpenGlDisabledOverride(false);
+    PJ::PlotWidgetBase::setGpuCanvasDisabledOverride(false);
   }
 
   // Common plot setup: no grid, no legend, fixed 0..10 axes.

@@ -31,7 +31,7 @@ void main() {
     if (valid_flag < 0.5) {
         discard;
     }
-    // The GL pass's in-shader polynomials, not a LUT.
+    // In-shader polynomials, not a LUT.
     vec3 base = sampleColormap(int(gm.color_params.z), colormap_t);
     if (rm.render_mode.x != 0) {
         base = pow(max(base, vec3(0.0)), vec3(2.2));

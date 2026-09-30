@@ -4,7 +4,7 @@
 
 // Screen-space ribbon: each polyline point arrives as two vertices carrying the
 // point's tangent and a +/-1 side; the offset is half the width in pixels,
-// perpendicular to the tangent's screen projection (the GL TrailRenderPass).
+// perpendicular to the tangent's screen projection.
 layout(std140, binding = 0) uniform TrailUniforms {
     mat4 view_projection;  // clip-corrected, camera-relative
     vec4 color;            // rgb: the half's colour

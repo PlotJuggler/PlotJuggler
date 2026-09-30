@@ -13,8 +13,8 @@
 //    frame survives even when zero layers restore (view_ otherwise null).
 //
 // These exercise the dock through its public surface against a real
-// SessionManager/DataEngine/ObjectStore + TransformService. Either view (GL or
-// QRhi) defers all GPU work until it is first shown, so constructing it
+// SessionManager/DataEngine/ObjectStore + TransformService. The view defers all
+// GPU work until it is first shown, so constructing it
 // headless (offscreen platform, never shown) is safe and touches no context.
 
 #include <gtest/gtest.h>

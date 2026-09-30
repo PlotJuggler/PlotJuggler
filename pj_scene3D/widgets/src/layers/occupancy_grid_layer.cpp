@@ -199,7 +199,7 @@ bool OccupancyGridLayer::bootstrap() {
   PJ::ObjectStore& store = ctx_.session->objectStore();
   auto first = store.at(topic_id_, 0);
   if (!first.has_value() || first->payload.bytes.empty() ||
-      !occupancyPayloadFits(static_cast<std::uint64_t>(first->payload.bytes.size()))) {
+      static_cast<std::uint64_t>(first->payload.bytes.size()) > kSceneLimits.max_occupancy_wire_bytes) {
     return false;
   }
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
@@ -315,7 +315,7 @@ bool OccupancyGridLayer::updateAt(int64_t time_ns) {
     if (memoized_base(entry->sequential_uid)) {
       return BaseSample{*base_cache_, base_cache_uid_.value};
     }
-    if (!occupancyPayloadFits(static_cast<std::uint64_t>(entry->payload.bytes.size()))) {
+    if (static_cast<std::uint64_t>(entry->payload.bytes.size()) > kSceneLimits.max_occupancy_wire_bytes) {
       rejection = tr("Occupancy-grid payload is %1 MiB; the limit is %2 MiB")
                       .arg(
                           QString::number(static_cast<double>(entry->payload.bytes.size()) / (1024.0 * 1024.0), 'f', 1),
@@ -393,7 +393,7 @@ bool OccupancyGridLayer::updateAt(int64_t time_ns) {
       if (!entry.has_value() || entry->payload.bytes.empty()) {
         continue;  // evicted between the snapshot and the resolve, or empty payload
       }
-      if (!occupancyPayloadFits(static_cast<std::uint64_t>(entry->payload.bytes.size()))) {
+      if (static_cast<std::uint64_t>(entry->payload.bytes.size()) > kSceneLimits.max_occupancy_wire_bytes) {
         rejection = tr("Occupancy update payload exceeds the %1 MiB sample limit")
                         .arg(kSceneLimits.max_occupancy_wire_bytes / kMiB);
         return {};
@@ -418,7 +418,7 @@ bool OccupancyGridLayer::updateAt(int64_t time_ns) {
         continue;
       }
       const std::uint64_t window_limit = kSceneLimits.max_occupancy_update_window_bytes;
-      if (!occupancyUpdateWindowFits(declared) || declared > window_limit - update_window_bytes) {
+      if (declared > kSceneLimits.max_occupancy_update_window_bytes || declared > window_limit - update_window_bytes) {
         rejection = tr("Occupancy updates in this seek window exceed the %1 MiB limit").arg(window_limit / kMiB);
         return {};
       }
@@ -516,9 +516,8 @@ void OccupancyGridLayer::setVisible(bool visible) {
     return;
   }
   visible_ = visible;
-#ifdef PJ_SCENE3D_RHI
-  // The QRhi view drops its GPU copy of a hidden grid, so un-hiding rebuilds
-  // it from the base keyframe; the GL pass keeps its texture across a hide.
+  // The view drops its GPU copy of a hidden grid, so un-hiding rebuilds it
+  // from the base keyframe.
   if (!visible_) {
     budget_.reset();
     stageEmpty();
@@ -528,38 +527,11 @@ void OccupancyGridLayer::setVisible(bool visible) {
     base_cache_uid_ = {};
     tracker_dirty_ = true;
   }
-#endif
   emit visibilityChanged(visible);
   // Catch-up on un-hide is the dock's job: SceneDockWidget::setLayerVisible
   // re-delivers the last tracker time, marking tracker_dirty_ for the next paint.
   emit repaintRequested();
 }
-
-#ifndef PJ_SCENE3D_RHI
-void OccupancyGridLayer::initializeGL() {
-  grid_pass_.initializeGL();
-}
-
-void OccupancyGridLayer::releaseGL() {
-  grid_pass_.releaseGL();
-}
-
-void OccupancyGridLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
-  if (!visible_) {
-    return;
-  }
-  drainPendingUpdate();
-  if (!grid_staged_) {
-    grid_pass_.clearGrid();
-  } else if (pass_revision_ != texture_revision_) {
-    grid_pass_.setGrid(reconstructor_.grid(), !dirtyRectsCatchUp(pass_revision_), dirty_rects_);
-  }
-  pass_revision_ = texture_revision_;
-  grid_pass_.setColorScheme(color_scheme_);
-  grid_pass_.setOpacity(opacity_);
-  grid_pass_.render(view_params, frame_ctx);
-}
-#endif
 
 bool OccupancyGridLayer::drainPendingUpdate() {
   // One reconstruction per painted frame; the reconstructor's incremental path

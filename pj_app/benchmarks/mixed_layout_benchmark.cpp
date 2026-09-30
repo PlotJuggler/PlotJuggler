@@ -1,8 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Frame cost of plots beside a Scene3D view in one dock manager, in both builds
-// (Gate A "mixed", pj_scene3D/docs/TECHNICAL_NOTES.md §9): the layout of mixed_layout_fixture.h during
+// Frame cost of plots beside a Scene3D view in one dock manager (Gate A
+// "mixed", pj_scene3D/docs/TECHNICAL_NOTES.md §9): the layout of mixed_layout_fixture.h during
 // playback, where every frame moves the tracker of every plot (a replot each)
 // and orbits the Scene3D camera, then waits until all of them finished a frame.
 //
@@ -15,9 +15,9 @@
 // frame after idle as cold_ms, GUI-thread CPU per frame, RSS and its peak, GPU
 // memory, idle frames of the settled layout: the Scene3D view's full renders
 // where the build counts them, else its finished frames, plus the plot canvases'
-// finished frames). The QRhi backend follows
-// PJ_GRAPHICS_API. Needs a real display. Both builds draw the same scene through
-// the same camera; --dump saves the Scene3D view's last frame to check that.
+// finished frames). The QRhi backend follows PJ_GRAPHICS_API. Needs a real
+// display. Every run draws the same scene through the same camera; --dump saves
+// the Scene3D view's last frame to check that.
 //
 // --tab-switch N instead tabs the Scene3D dock with every plot in one ADS dock
 // area, shows each plot tab once, then switches between the Scene3D tab and the
@@ -28,7 +28,7 @@
 // first finished frame (tab_ms, with [min, max]) and to the plot's (plot_tab_ms),
 // and per switch back to Scene3D its QRhi adoptions, base builds (init_ms),
 // upload work, paint events, render() calls, skipped paints and full renders, and
-// the time of those renders (render_ms; QRhi build with PJ_RHI_TEST_HOOKS; n/a
+// the time of those renders (render_ms; builds with PJ_RHI_TEST_HOOKS; n/a
 // otherwise), and the
 // switches' span in CLOCK_MONOTONIC ns (window_ns; MIXED_TAB_SPANS lists each
 // switch's, plot and Scene3D alternating) to cut a perf profile.
@@ -50,11 +50,6 @@
 #include "pj_plotting/PlotWidget.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
-
-#ifndef PJ_SCENE3D_RHI
-#include <QOpenGLContext>
-#include <QOpenGLFunctions>
-#endif
 
 using namespace Qt::StringLiterals;
 
@@ -113,7 +108,7 @@ int runTabSwitches(
     add(to_scene.skips, before.skips, after.skips);
     add(to_scene.full_renders, before.full_renders, after.full_renders);
     add(to_scene_render_ms, before.renderMs(), after.renderMs());
-#if defined(PJ_SCENE3D_RHI) && defined(PJ_RHI_TEST_HOOKS)
+#ifdef PJ_RHI_TEST_HOOKS
     if (viewWork(view).inits > before.inits) {
       init_ms.push_back(view.stageTimesForTest().last_base_build_ms);
     }
@@ -136,13 +131,8 @@ int runTabSwitches(
       "MIXED_TAB build=%s backend=%s switches=%d tabs=%zu cloud_points=%d tab_ms=%.2f tab_min=%.2f tab_max=%.2f "
       "plot_tab_ms=%.2f adoptions=%s inits=%s init_ms=%s uploads=%s upload_mib=%s paints=%s renders=%s skips=%s "
       "full_renders=%s render_ms=%s rss_mib=%s gpu_drm_mib=%s window_ns=%lld-%lld\n",
-#ifdef PJ_SCENE3D_RHI
-      "rhi", qPrintable(view.rhiBackendNameForTest()),
-#else
-      "gl", "OpenGL",
-#endif
-      switches, plot_docks.size() + 1, cloud_points, scene.median, scene.min, scene.max,
-      pj_bench::stats(plot_ms).median, per_switch(start.adoptions, end.adoptions).constData(),
+      "rhi", qPrintable(view.rhiBackendName()), switches, plot_docks.size() + 1, cloud_points, scene.median, scene.min,
+      scene.max, pj_bench::stats(plot_ms).median, per_switch(start.adoptions, end.adoptions).constData(),
       per_switch(start.inits, end.inits).constData(),
       init_ms.empty() ? "n/a" : QByteArray::number(pj_bench::stats(init_ms).median, 'f', 2).constData(),
       per_switch(start.uploads, end.uploads).constData(), per_switch(start.upload_mib, end.upload_mib).constData(),
@@ -322,23 +312,11 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-#ifdef PJ_SCENE3D_RHI
   const char* build = "rhi";
   QRhi* rhi = pj_bench::rhiOf(*view);
-  const QString backend = view->rhiBackendNameForTest();
+  const QString backend = view->rhiBackendName();
   const QString device = rhi != nullptr ? QString::fromUtf8(rhi->driverInfo().deviceName) : QString();
   const double vma = pj_bench::rhiAllocatorMib(rhi);
-#else
-  const char* build = "gl";
-  const QString backend = u"OpenGL"_s;
-  QString device;
-  view->makeCurrent();
-  if (QOpenGLContext* context = view->context(); context != nullptr) {
-    device = QString::fromLatin1(reinterpret_cast<const char*>(context->functions()->glGetString(GL_RENDERER)));
-  }
-  view->doneCurrent();
-  const double vma = -1.0;
-#endif
   const pj_bench::Stats stats = pj_bench::stats(wall);
   std::printf(
       "MIXED_BENCH build=%s backend=%s device=\"%s\" plots=%d curves=%d samples=%d cloud_points=%d frames=%d "

@@ -26,19 +26,14 @@
 #include "pj_scene3d_widgets/layer_style.h"
 #include "pj_scene3d_widgets/point_renderable.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
-#ifndef PJ_SCENE3D_RHI
-#include "pj_scene3d_widgets/passes/pointcloud_render_pass.h"
-#endif
 
 class QWidget;
 
 namespace pj::scene3d {
 
-#ifdef PJ_SCENE3D_RHI
 // A packPointVertices() ParallelFor on the global thread pool, the one the layer
 // converts with; the calling thread runs chunks too while it waits.
 void parallelForOnPool(std::size_t count, const std::function<void(std::size_t)>& body);
-#endif
 
 // First concrete Scene3DLayer: a single sensor_msgs/PointCloud2 topic.
 //
@@ -47,11 +42,8 @@ void parallelForOnPool(std::size_t count, const std::function<void(std::size_t)>
 // decoded on the Qt thread pool and pushed when the result lands. The mode is
 // derived per-sample from the parsed object, never latched.
 //
-// Decode, the async worker, kSceneLimits admission (per-cloud limits, decode
-// limits before decompression; fail-closed with a status warning), persistence
-// and the config widget are shared by both renderers; only the sink differs. GL
-// build: the layer owns a PointcloudRenderPass and uploads to it (zero-copy when
-// the wire layout allows). QRhi build (PJ_SCENE3D_RHI): the layer converts to
+// Every sample is admitted against kSceneLimits (per-cloud limits, decode limits
+// before decompression; fail-closed with a status warning). The layer converts to
 // source-frame PointVertex data that the view reads through PointRenderable,
 // under the view's vertex budget, and drops a static cloud's array once it is
 // uploaded (re-converting it for a new QRhi).
@@ -91,11 +83,6 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   [[nodiscard]] uint64_t renderKey(PJ::Timepoint time) const override;
   void setVisible(bool visible) override;
 
-#ifndef PJ_SCENE3D_RHI
-  void initializeGL() override;
-  void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
-  void releaseGL() override;
-#endif
   // Source-frame extent of the decoded cloud, recomputed on each decode in
   // renderAt(). nullopt until the first cloud is decoded.
   [[nodiscard]] std::optional<AABB> worldBounds() const override {
@@ -195,7 +182,7 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
     return static_cast<int>(decode_worker_.offMainCompletions());
   }
 
-  // PointRenderable (read by the QRhi view; the GL build keeps these empty).
+  // PointRenderable (read by the view).
   // prepareForRender() drains a pending tracker move (one decode per painted
   // frame) and enforces the view's aggregate vertex budget: an over-budget cloud
   // is dropped with a warning and retried once the budget frees up.
@@ -212,7 +199,6 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   [[nodiscard]] std::uint64_t geometryRevision() const override {
     return geometry_revision_;
   }
-#ifdef PJ_SCENE3D_RHI
   // A static cloud (no new sample within kStreamingWindow before it) drops its
   // array as soon as it is uploaded; a stream keeps it for the in-place rewrite
   // until it has been quiet for that long.
@@ -222,7 +208,6 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   [[nodiscard]] bool verticesEvictedForTest() const {
     return evicted();
   }
-#endif
 #endif
   [[nodiscard]] const std::string& renderFrameId() const override {
     return geometry_frame_;
@@ -254,13 +239,6 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   [[nodiscard]] std::optional<int64_t> lastPushedStampForTest() const {
     return last_pushed_id_ == SampleId{} ? std::nullopt : std::optional<int64_t>{last_pushed_id_.timestamp};
   }
-#ifndef PJ_SCENE3D_RHI
-  // True when the render pass holds a zero-copy fast cloud (vs the CloudVertex fallback) — lets a
-  // test assert an eligible cloud (incl. packed-rgba RGB-direct) actually took the fast path.
-  [[nodiscard]] bool activeCloudIsFastForTest() const {
-    return cloud_pass_.activeCloudIsFastForTest();
-  }
-#endif
 #endif
 
  signals:
@@ -313,13 +291,13 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   // Decode the first sample once at attach so we know available fields,
   // source frame, and time range before render is called.
   bool bootstrap();
-  // Decode + push the cloud at time_ns into the render pass. No-op when
+  // Decode + push the cloud at time_ns into the retained vertices. No-op when
   // we don't have a parser or when the store has no sample at/before
-  // time_ns. Skips all work when the pass already holds exactly that
+  // time_ns. Skips all work when the layer already holds exactly that
   // sample with the current color field (the common tracker tick).
   void renderAt(int64_t time_ns);
   // Decode at the playhead when a tracker move is pending (once per painted
-  // frame, by GL render() or prepareForRender()).
+  // frame, by prepareForRender()).
   void drainPendingUpdate();
   // The budget_ candidate the playhead asks for: the UID of its sample.
   [[nodiscard]] std::uint64_t budgetCandidate() const;
@@ -341,8 +319,8 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   // releases its retained cloud.
   void invalidateSampleState();
 
-  // Convert a canonical PointCloud (raw, or freshly decompressed) into the render
-  // struct and push it to the pass. The single point where a cloud reaches the GPU,
+  // Convert a canonical PointCloud (raw, or freshly decompressed) into the retained
+  // vertices. The single point where a cloud reaches the GPU,
   // shared by the raw and compressed paths. `id` identifies the pushed sample for
   // the redundant-push skip in renderAt(). `rederive` (QRhi): `id` is the pushed
   // sample, materialized again for an upload (rederivePushedSample()); the push
@@ -350,7 +328,6 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   // frame that asked for it is being prepared).
   void pushCloud(const PJ::sdk::PointCloud& cloud, SampleId id, bool rederive = false);
 
-#ifdef PJ_SCENE3D_RHI
   // Drops the uploaded retained array (evicted()); the metadata stays.
   void evictVertices();
   // A static cloud's uploaded array was dropped: point_count_, vertex_format_,
@@ -366,33 +343,16 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   // (off the UI thread) lands; a sample the store no longer has clears it and lets
   // the next frame decode at the playhead.
   void rederivePushedSample();
-#endif
 
   // Fail-closed outcome for sample `id`: clears the drawn cloud, shows `warning`
   // on the layer row, and memoizes the failure so the sample is not re-decoded
   // until a reload (or re-show) resets the memos.
   void failSample(SampleId id, const QString& warning);
-  // Drops the drawn cloud (the pass's, or the retained vertices) and its bounds.
+  // Drops the retained vertices and their bounds.
   void clearGeometry();
-  // Pushes the style state into the GL pass (a no-op for QRhi, whose view reads
-  // the getters every frame). Every style setter ends here.
-  void syncPassStyle();
-  // Whether the vertices carry the colormap scalar. QRhi: only for a colormapped
+  // Whether the vertices carry the colormap scalar: only for a colormapped
   // non-spatial field (colour, range cull and fade read it; no other style does).
-  // GL: in every mode but RGB-direct.
   [[nodiscard]] bool storesScalar() const;
-
-#ifndef PJ_SCENE3D_RHI
-  // Receives an async GPU AABB reduction from the render pass (GL thread). Updates
-  // world_bounds_ (+ the spatial-axis colormap range) and requests a repaint so the
-  // camera scene-fit picks up the new extent. Wired as the pass bounds callback.
-  void onGpuAabb(std::optional<AABB> box);
-#endif
-
-  // The single writer of world_bounds_: it also hands the extent to the render pass,
-  // which frustum-culls the whole cloud with it. Assigning the member directly would
-  // leave the pass testing a stale box, so don't.
-  void setWorldBounds(std::optional<AABB> bounds);
 
   // Track a (possibly changing) source frame_id; notify the dock/panel on change.
   void updateSourceFrame(const std::string& frame_id);
@@ -517,12 +477,11 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   // reload swaps this topic's store bytes (see onDatasetAboutToBeReplaced).
   QMetaObject::Connection reload_connection_;
 
-  // QRhi sink (empty in the GL build).
+  // What the view reads (PointRenderable).
   QByteArray vertex_bytes_;  // vertex_format_ records: finite points of the active cloud, source frame
   PointVertexFormat vertex_format_ = PointVertexFormat::kXyz;  // layout of vertex_bytes_
   std::size_t point_count_ = 0;                                // records in vertex_bytes_ (the rest is padding)
   std::uint64_t geometry_revision_ = 0;
-#ifdef PJ_SCENE3D_RHI
   // A new sample followed the previous one within kStreamingWindow: the uploaded
   // array stays for the next sample's in-place rewrite, and evict_timer_ drops it
   // once the stream has been quiet for that long.
@@ -531,16 +490,12 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   std::uint64_t uploaded_revision_ = ~std::uint64_t{0};  // last onVerticesUploaded()
   QElapsedTimer last_stream_upload_;                     // restarted by every upload while streaming_
   QTimer evict_timer_;
-#endif
   // Auto range of the active cloud's non-spatial scalar (spatial axes derive it
   // from world_bounds_ under the live transform instead).
   std::pair<float, float> automatic_scalar_range_{0.0f, 1.0f};
   std::pair<float, float> last_rendered_scalar_range_{0.0f, 1.0f};
   // Point count and sample of a cloud dropped for the view budget.
   BudgetLatch budget_;
-#ifndef PJ_SCENE3D_RHI
-  PointcloudRenderPass cloud_pass_;
-#endif
 
   LatestWinsWorker<PendingDecode, DecodeResult> decode_worker_{
       this, &PointCloudLayer::decodeCompressed, [this](DecodeResult result) { onDecodeFinished(std::move(result)); }};

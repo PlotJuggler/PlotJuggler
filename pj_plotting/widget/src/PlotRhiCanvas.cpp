@@ -3,6 +3,7 @@
 
 #include "pj_plotting/PlotRhiCanvas.h"
 
+#include <pj_widgets/Fnv1a.h>
 #include <pj_widgets/GraphicsApi.h>
 #include <pj_widgets/RhiBlend.h>
 #include <qwt_axis.h>
@@ -146,17 +147,14 @@ constexpr std::size_t kPlannedCurveVertices = (kMaxFrameVertices * 3) / 4;
   return to_ndc * correction;
 }
 
-// Fold a double into a running FNV-1a-style fingerprint via its raw bit
-// pattern, so equal plots hash equal without touching the payload arrays twice.
+// Fold a double into a running FNV-1a fingerprint via its raw bit pattern, so
+// equal plots hash equal without touching the payload arrays twice.
 void hashDouble(std::uint64_t& state, double value) {
-  std::uint64_t bits = 0;
-  static_assert(sizeof(bits) == sizeof(value));
-  std::memcpy(&bits, &value, sizeof(bits));
-  state = (state ^ bits) * 0x100000001b3ULL;
+  state = PJ::fnv1aMixBits(state, value);
 }
 
 void hashUInt(std::uint64_t& state, std::uint64_t value) {
-  state = (state ^ value) * 0x100000001b3ULL;
+  state = PJ::fnv1aMix(state, value);
 }
 
 // QRhi's own name ("OpenGL", "Vulkan", "D3D11", "Metal"), except in the
@@ -1972,7 +1970,7 @@ struct PlotGeometry {
 // transformation hashTransformation() cannot identify: only a rebuild is safe.
 [[nodiscard]] std::optional<std::uint64_t> computeEnvKey(
     const QwtPlot* plot, QSize logical_size, QSize target_size, const QColor& clear_color, const QColor& frame_color) {
-  std::uint64_t key = 0xcbf29ce484222325ULL;
+  std::uint64_t key = PJ::kFnv1aOffsetBasis;
   hashUInt(key, static_cast<std::uint64_t>(logical_size.width()));
   hashUInt(key, static_cast<std::uint64_t>(logical_size.height()));
   hashUInt(key, static_cast<std::uint64_t>(target_size.width()));
@@ -2017,12 +2015,12 @@ struct CurveKeys {
   // curves, their visibility, order, pens, brushes, styles and symbols, and each
   // curve's data object and size (a stream grows it). Same-size edits of a
   // series' values are not seen here; they come with a full replot().
-  std::uint64_t structure = 0xcbf29ce484222325ULL;
+  std::uint64_t structure = PJ::kFnv1aOffsetBasis;
   // The CONTENT: each renderable curve's RevisionedSeries::contentRevision()
   // (unique in the process, so it identifies the data object too). nullopt when a
   // curve's data has no revision (generic Qwt series): its samples may have
   // changed in place, so only a rebuild is safe.
-  std::optional<std::uint64_t> content = 0xcbf29ce484222325ULL;
+  std::optional<std::uint64_t> content = PJ::kFnv1aOffsetBasis;
 };
 
 [[nodiscard]] CurveKeys computeCurveKeys(const QwtPlot* plot) {
@@ -2719,7 +2717,7 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
     if (first_curve != nullptr && first_curve->dataSize() > 0) {
       const QPointF first = first_curve->sample(0);
       const QPointF last = first_curve->sample(first_curve->dataSize() - 1);
-      std::uint64_t fingerprint = 0xcbf29ce484222325ULL;
+      std::uint64_t fingerprint = PJ::kFnv1aOffsetBasis;
       hashUInt(fingerprint, static_cast<std::uint64_t>(first_curve->dataSize()));
       hashDouble(fingerprint, first.x());
       hashDouble(fingerprint, first.y());

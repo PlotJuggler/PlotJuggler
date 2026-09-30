@@ -160,9 +160,9 @@ TEST(CubeMeshTest, FanTilesExactlyTheThreeCameraFacingFaces) {
 
 // kCubeEdgeMeanScale is what keeps a LOD sprite as bright as the cube it replaces, and it
 // is DERIVED from the edge band's width, its darkening strength and the sRGB gamma. Edit
-// any of those and the constant is silently wrong. pointcloud_cube_lod_gl_test measures
-// the consequence end to end, but it needs GL >= 4.5 and self-skips on Windows CI — so
-// this pure-math check is the one that runs everywhere.
+// any of those and the constant is silently wrong. scene3d_rhi_point_test measures the
+// consequence end to end, but only where a GPU is available — so this pure-math check is
+// the one that runs everywhere.
 TEST(CubeEdgeMeanScaleTest, MatchesTheIntegralOfItsOwnConstants) {
   EXPECT_NEAR(pj::scene3d::cubeEdgeMeanScale(), pj::scene3d::kCubeEdgeMeanScale, 5e-4)
       << "kCubeEdgeMeanScale no longer matches an integration of kCubeEdgeWidth / "

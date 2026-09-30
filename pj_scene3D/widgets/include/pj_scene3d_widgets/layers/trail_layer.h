@@ -19,9 +19,6 @@
 #include "pj_scene3d_core/trail_sampling.h"
 #include "pj_scene3d_widgets/latest_wins_worker.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
-#ifndef PJ_SCENE3D_RHI
-#include "pj_scene3d_widgets/passes/trail_render_pass.h"
-#endif
 
 class QFormLayout;
 class QWidget;
@@ -99,12 +96,6 @@ class TrailLayer : public Scene3DLayer {
   void setTrackerTime(PJ::Timepoint time) override;
   [[nodiscard]] uint64_t renderKey(PJ::Timepoint time) const override;
   void setVisible(bool visible) override;
-
-#ifndef PJ_SCENE3D_RHI
-  void initializeGL() override;
-  void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
-  void releaseGL() override;
-#endif
 
   QWidget* createConfigWidget(QWidget* parent) override;
   // Appends this trail's style rows (thickness, past/future colour + eye) to an
@@ -216,7 +207,7 @@ class TrailLayer : public Scene3DLayer {
   TrailSource source_;
   QString display_name_;
   Scene3DLayerContext ctx_;
-  std::string fixed_frame_;  // adopted from the FrameContext on first render / dock fan-out
+  std::string fixed_frame_;  // adopted by syncFixedFrame() on the first painted frame
   bool visible_ = true;
 
   // Parallel arrays (same length): stamps_ is the binary-search target for the
@@ -240,10 +231,6 @@ class TrailLayer : public Scene3DLayer {
   // Decode failures of the last pose rebuild: distinguishes "no data yet"
   // from "data arrived but could not be decoded" in the row warning.
   std::size_t last_pose_decode_failures_ = 0;
-
-#ifndef PJ_SCENE3D_RHI
-  TrailRenderPass pass_;
-#endif
 };
 
 }  // namespace pj::scene3d

@@ -19,7 +19,8 @@ struct SceneLimits {
   std::uint64_t max_points_per_cloud;
   std::uint64_t max_point_wire_bytes_per_cloud;
   std::uint64_t max_point_vertices_per_view;
-  // PosesInFrame: every pose expands to three triad arms.
+  // PosesInFrame: every pose expands to three 80-byte triad arms, so 300k arms are
+  // about 24 MiB of CPU staging plus 24 MiB of QRhi instance buffer.
   std::uint64_t max_poses_per_layer;
   std::uint64_t max_pose_wire_bytes_per_layer;
   std::uint64_t max_pose_arms_per_view;

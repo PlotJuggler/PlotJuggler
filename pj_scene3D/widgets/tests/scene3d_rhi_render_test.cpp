@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Headless render harness for the QRhi Scene3D renderer (PJ_SCENE3D_RHI).
+// Headless render harness for the QRhi Scene3D renderer.
 //
 // QRhiWidget::grabFramebuffer() renders a frame synchronously on a QPA with
 // RHI-based rendering (xcb, wayland); the `offscreen` QPA has none, so this
@@ -35,15 +35,16 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
-#include "pj_base/builtin/frame_transforms_codec.hpp"
 #include "pj_base/builtin/grid_map_codec.hpp"
 #include "pj_base/builtin/occupancy_grid_codec.hpp"
 #include "pj_base/builtin/occupancy_grid_update_codec.hpp"
@@ -65,6 +66,10 @@ namespace {
 using BT = PJ::sdk::BuiltinObjectType;
 using pj::scene3d::SceneViewWidget;
 using pj::scene3d::test::channelDeltaSum;
+using pj::scene3d::test::countPixels;
+using pj::scene3d::test::differingPixels;
+using pj::scene3d::test::gizmoRect;
+using pj::scene3d::test::maxChannelDelta;
 
 // Logs the backend + driver per view (runs once the shared main's QApplication exists).
 struct GraphicsLog : ::testing::Environment {
@@ -202,11 +207,13 @@ DiffMask diffMask(const QImage& a, const QImage& b, int threshold = 60) {
   return mask;
 }
 
-// Pixels that got darker by more than `threshold` luminance levels from `lit` to `shaded`.
-int darkenedPixels(const QImage& shaded, const QImage& lit, int threshold = 12) {
+// Pixels in `area` (the whole image when empty) that got darker by more than
+// `threshold` luminance levels from `lit` to `shaded`.
+int darkenedPixels(const QImage& shaded, const QImage& lit, int threshold = 12, QRect area = {}) {
+  area = area.isEmpty() ? shaded.rect() : area.intersected(shaded.rect());
   int count = 0;
-  for (int y = 0; y < shaded.height(); ++y) {
-    for (int x = 0; x < shaded.width(); ++x) {
+  for (int y = area.top(); y <= area.bottom(); ++y) {
+    for (int x = area.left(); x <= area.right(); ++x) {
       count += qGray(lit.pixel(x, y)) - qGray(shaded.pixel(x, y)) > threshold ? 1 : 0;
     }
   }
@@ -324,17 +331,13 @@ class RhiScene {
     return id;
   }
   // A one-edge TF tree: `child` at `offset` from kFrame.
-  void addTf(const std::string& child, glm::vec3 offset) {
-    PJ::sdk::FrameTransforms transforms;
-    PJ::sdk::FrameTransform edge;
-    edge.timestamp = 100;
-    edge.parent_frame_id = kFrame;
-    edge.child_frame_id = child;
-    edge.translation = {offset.x, offset.y, offset.z};
-    edge.rotation.w = 1.0;
-    transforms.transforms.push_back(edge);
+  void addTf(const std::string& child, glm::dvec3 offset) {
+    addTf({{child, offset}});
+  }
+  // A one-level TF tree: each child at its offset from kFrame.
+  void addTf(const std::vector<std::pair<std::string, glm::dvec3>>& children) {
     dock()->setTransformService(&fixture_.transforms());
-    fixture_.add("/tf", BT::kFrameTransforms, PJ::serializeFrameTransforms(transforms));
+    fixture_.add("/tf", BT::kFrameTransforms, pj::scene3d::test::serializeTfEdges(kFrame, children, 100));
     fixture_.transforms().ingestFrameTransformsForDataset(fixture_.dataset());
   }
   // Through the persisted state: layer setters are private to their UI.
@@ -499,7 +502,7 @@ TEST_F(Scene3dRhiRenderTest, BackendMatchesRequestAndImageSize) {
   SceneViewWidget* view = scene.view();
   GRAB_OR_SKIP(image, view, "frame");
 
-  EXPECT_EQ(view->rhiBackendNameForTest(), requestedBackend());
+  EXPECT_EQ(view->rhiBackendName(), requestedBackend());
   const qreal dpr = view->devicePixelRatio();
   EXPECT_EQ(image.size(), QSize(qRound(view->width() * dpr), qRound(view->height() * dpr)));
   EXPECT_EQ(view->size(), kViewSize);
@@ -752,13 +755,7 @@ TEST_F(Scene3dRhiRenderTest, MarkersCastNoShadowMeshesDo) {
   EXPECT_FALSE(view->lastShadowActiveForTest());
   const auto darkened_under = [&](glm::vec3 caster) {
     const QPointF centre = project(*view, {caster.x, caster.y, 0.0F}, shadowed.size());
-    int count = 0;
-    for (int y = int(centre.y()) - 12; y <= int(centre.y()) + 12; ++y) {
-      for (int x = int(centre.x()) - 25; x <= int(centre.x()) + 25; ++x) {
-        count += qGray(unshadowed.pixel(x, y)) - qGray(shadowed.pixel(x, y)) > 12 ? 1 : 0;
-      }
-    }
-    return count;
+    return darkenedPixels(shadowed, unshadowed, 12, QRect(int(centre.x()) - 25, int(centre.y()) - 12, 51, 25));
   };
   EXPECT_GT(darkened_under(box), 100) << "the mesh cast no shadow on the grid";
   EXPECT_EQ(darkened_under(cube), 0) << "the marker cast a shadow";
@@ -766,6 +763,46 @@ TEST_F(Scene3dRhiRenderTest, MarkersCastNoShadowMeshesDo) {
       meanColor(shadowed, project(*view, cube - glm::vec3(0.0F, 0.5F, 0.0F), shadowed.size())),
       meanColor(unshadowed, project(*view, cube - glm::vec3(0.0F, 0.5F, 0.0F), unshadowed.size())))
       << "the marker received a shadow";
+}
+
+// Removing the data drops the floor shadow of a model that outlives it: a
+// dataset unload clears the view's transform buffer
+// (Scene3DDockWidget::resetTransformBindingIfDatasetGone), but a surviving
+// caster layer (a URDF robot here, which keeps its own buffer) still holds its
+// geometry. With no buffer nothing may cast: the ground under the box turns as
+// bright as with shadows off, with shadows still enabled.
+TEST_F(Scene3dRhiRenderTest, FloorShadowClearsWhenDataRemoved) {
+  RhiScene scene;
+  const glm::vec3 box{0.0F, 0.0F, 1.2F};
+  scene.addRobot(boxUrdf(box, 1.0F));
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  auto params = view->meshShadingParams();
+  params.key_light_dir = glm::normalize(glm::vec3(0.1F, -0.2F, 1.0F));  // the shadow falls right under the box
+  view->setMeshShadingParams(params);
+  // Ground pixels under the box darker in `shaded` than in `lit`.
+  const auto darkened_under_box = [&](const QImage& shaded, const QImage& lit) {
+    const QPointF centre = project(*view, {box.x, box.y, 0.0F}, shaded.size());
+    const int dpr = qRound(view->devicePixelRatio());
+    return darkenedPixels(
+        shaded, lit, 12, QRect(int(centre.x()) - 25 * dpr, int(centre.y()) - 12 * dpr, 50 * dpr + 1, 24 * dpr + 1));
+  };
+
+  params.shadows_enabled = false;
+  view->setMeshShadingParams(params);
+  GRAB_OR_SKIP(unshadowed, view, "shadows_off");
+  params.shadows_enabled = true;
+  view->setMeshShadingParams(params);
+  GRAB_OR_SKIP(shadowed, view, "bound");
+  ASSERT_TRUE(view->lastShadowActiveForTest()) << view->shadowCapabilityErrorForTest().toStdString();
+  ASSERT_GT(darkened_under_box(shadowed, unshadowed), 100) << "the box cast no floor shadow; the test would be vacuous";
+
+  view->setTransformBuffer(nullptr);
+  GRAB_OR_SKIP(unbound, view, "unbound");
+  EXPECT_GT(view->lastModelDrawCountForTest(), 0) << "the caster layer no longer draws; the test would be vacuous";
+  EXPECT_FALSE(view->lastShadowActiveForTest()) << "the shadow pass ran without a transform buffer";
+  EXPECT_EQ(view->lastShadowDrawCountForTest(), 0);
+  EXPECT_EQ(darkened_under_box(unbound, unshadowed), 0) << "the floor shadow outlived the transform buffer";
 }
 
 // Pixels of `mask` in each image quadrant: {top-left, top-right, bottom-left, bottom-right}.
@@ -1033,13 +1070,8 @@ TEST_F(Scene3dRhiRenderTest, OrientationSsaoAndEdlStayWithTheirContent) {
   ASSERT_GT(ssao.count, 30) << "SSAO darkened nothing";
   // AO hugs the crease: normals facing away from the camera (a flipped v sign)
   // occlude every flat face instead.
-  int covered = 0;
   const QRgb background = neither.pixel(neither.width() - 1, 0);
-  for (int y = 0; y < neither.height(); ++y) {
-    for (int x = 0; x < neither.width(); ++x) {
-      covered += channelDeltaSum(neither.pixel(x, y), background) > 6 ? 1 : 0;
-    }
-  }
+  const int covered = countPixels(neither, [&](QRgb pixel) { return channelDeltaSum(pixel, background) > 6; });
   EXPECT_LT(ssao.count * 8, covered) << "SSAO darkened flat faces: normals flipped?";
   ASSERT_GT(edl.count, 30) << "EDL darkened nothing";
   for (std::size_t quadrant = 1; quadrant < 4; ++quadrant) {
@@ -1049,7 +1081,7 @@ TEST_F(Scene3dRhiRenderTest, OrientationSsaoAndEdlStayWithTheirContent) {
 }
 
 // A draw that writes no depth (here a translucent cube) leaves no coverage in
-// the depth replay, like the GL composite that finds the background by depth:
+// the depth replay, where the background is found by depth:
 // where it tints only the background the present pass keeps that pixel
 // ungraded, so the tonemap cannot change it. Over an opaque cube the same glass
 // is graded.
@@ -1174,7 +1206,7 @@ TEST_F(Scene3dRhiRenderTest, SurvivesShowResizeReparentAndSiblingDestruction) {
   const QPointF expected = project(*view, centre, no_grid.size());
   EXPECT_NEAR(mask.centroid.x(), expected.x(), no_grid.width() * 0.05);
   EXPECT_NEAR(mask.centroid.y(), expected.y(), no_grid.height() * 0.05);
-  EXPECT_EQ(view->rhiBackendNameForTest(), requestedBackend());
+  EXPECT_EQ(view->rhiBackendName(), requestedBackend());
 }
 
 #ifdef PJ_RHI_TEST_HOOKS
@@ -1275,19 +1307,15 @@ constexpr auto kOffsetRobotUrdf = R"(<robot name="offset">
   </joint>
 </robot>)";
 
-// The corner gizmo's output rectangle: 80 logical pixels, bottom-right.
-QRect gizmoRect(const SceneViewWidget& view, const QImage& image) {
-  const int size = static_cast<int>(80.0 * image.height() / view.height());
-  return {image.width() - size, image.height() - size, size, size};
-}
-
 void sendMouseMove(SceneViewWidget* view, QPointF logical) {
   QMouseEvent move(QEvent::MouseMove, logical, view->mapToGlobal(logical), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
   QApplication::sendEvent(view, &move);
 }
 
 // The world axis gizmo sits in the bottom-right corner, follows the camera
-// rotation and never draws outside its 80-logical-pixel square.
+// rotation and never draws outside its 80-logical-pixel square. Its own pass
+// runs only when its rotation changed: a pan or a still frame re-composites the
+// image it holds.
 TEST_F(Scene3dRhiRenderTest, PresentationCornerGizmoFollowsCamera) {
   RhiScene scene;
   const PJ::ObjectTopicId topic = scene.addPoints(pointBlock({0.0F, 0.0F, 0.5F}, 0.2F, 2));
@@ -1296,29 +1324,86 @@ TEST_F(Scene3dRhiRenderTest, PresentationCornerGizmoFollowsCamera) {
   view->setGridVisible(false);
   scene.dock()->setLayerVisible(topic, false);
   GRAB_OR_SKIP(front, view, "front");
+  const auto gizmo_passes = [view] { return view->overlayPassForTest().gizmoPassCountForTest(); };
+  const std::uint64_t passes = gizmo_passes();
+  const std::uint64_t renders = view->stageTimesForTest().full_renders;
   auto state = view->camera().state();
+  state.focal += glm::vec3(0.3F, -0.2F, 0.1F);
+  view->camera().adoptState(state);
+  GRAB_OR_SKIP(panned, view, "panned");
+  ASSERT_GT(view->stageTimesForTest().full_renders, renders);
+  EXPECT_EQ(gizmo_passes(), passes) << "an unchanged rotation redrew the gizmo";
+  EXPECT_EQ(differingPixels(panned.copy(gizmoRect(*view, panned)), front.copy(gizmoRect(*view, front))), 0)
+      << "the kept gizmo image changed";
   state.azimuth += glm::radians(90.0F);
   view->camera().adoptState(state);
   GRAB_OR_SKIP(side, view, "side");
+  EXPECT_GT(gizmo_passes(), passes);
 
   const QRect rect = gizmoRect(*view, front);
   const DiffMask mask = diffMask(front, side);
   ASSERT_GT(mask.count, 50) << "the gizmo did not follow the camera";
   EXPECT_EQ(mask.count_in(rect), mask.count) << "overlay drawn outside the gizmo corner";
   // Eye on -Y: X (red) points right, Z (blue) up, both clearly visible.
-  int red = 0;
-  int blue = 0;
-  for (int y = rect.top(); y <= rect.bottom(); ++y) {
-    for (int x = rect.left(); x <= rect.right(); ++x) {
-      const QRgb px = front.pixel(x, y);
-      red += qRed(px) > qGreen(px) + 80 && qRed(px) > qBlue(px) + 80 ? 1 : 0;
-      blue += qBlue(px) > qRed(px) + 60 && qBlue(px) > qGreen(px) + 30 ? 1 : 0;
-    }
-  }
-  EXPECT_GT(red, 20);
-  EXPECT_GT(blue, 20);
+  EXPECT_GT(
+      countPixels(front, [](QRgb px) { return qRed(px) > qGreen(px) + 80 && qRed(px) > qBlue(px) + 80; }, rect), 20);
+  EXPECT_GT(
+      countPixels(front, [](QRgb px) { return qBlue(px) > qRed(px) + 60 && qBlue(px) > qGreen(px) + 30; }, rect), 20);
   const QColor red_arm = meanColor(front, rect.center() + QPoint(rect.width() / 4, 0), 1);
   EXPECT_GT(red_arm.red(), red_arm.green() + 80) << "red arm not to the right of the gizmo centre";
+}
+
+// The corner gizmo is anti-aliased like the scene (4x MSAA), also on the
+// single-sample output of the HDR chain: along its silhouette, pixels that
+// only partly cover an arm blend towards the backdrop. Aliased edges leave every
+// silhouette pixel at a full arm colour.
+TEST_F(Scene3dRhiRenderTest, PresentationCornerGizmoIsAntiAliased) {
+  RhiScene scene;
+  const PJ::ObjectTopicId topic = scene.addPoints(pointBlock({0.0F, 0.0F, 0.5F}, 0.2F, 2));
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  view->setGridVisible(false);
+  scene.dock()->setLayerVisible(topic, false);
+  auto state = view->camera().state();
+  state.azimuth += glm::radians(35.0F);  // every arm diagonal on screen
+  state.elevation = glm::radians(25.0F);
+  view->camera().adoptState(state);
+  GRAB_OR_SKIP(image, view, "gizmo");
+
+  const QRect rect = gizmoRect(*view, image);
+  const QRgb backdrop = image.pixel(rect.topLeft());
+  const auto contrast = [&](int x, int y) { return maxChannelDelta(image.pixel(x, y), backdrop); };
+  constexpr int kBackdrop = 4;  // off the backdrop by at most this: background
+  const auto touches_backdrop = [&](int x, int y) {
+    for (int dy = -1; dy <= 1; ++dy) {
+      for (int dx = -1; dx <= 1; ++dx) {
+        if (rect.contains(x + dx, y + dy) && contrast(x + dx, y + dy) <= kBackdrop) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  std::vector<int> interior;
+  std::vector<int> silhouette;
+  for (int y = rect.top(); y <= rect.bottom(); ++y) {
+    for (int x = rect.left(); x <= rect.right(); ++x) {
+      const int c = contrast(x, y);
+      if (c > kBackdrop) {
+        (touches_backdrop(x, y) ? silhouette : interior).push_back(c);
+      }
+    }
+  }
+  ASSERT_GT(interior.size(), 50U) << "no gizmo drawn";
+  ASSERT_GT(silhouette.size(), 50U);
+  std::ranges::nth_element(interior, interior.begin() + static_cast<std::ptrdiff_t>(interior.size() / 2));
+  const int arm_contrast = interior[interior.size() / 2];
+  // Under 60% of the arms' typical contrast: a pixel the arm covers only partly
+  // (a fully covered one, shading included, stays above 70%).
+  const auto partial = std::ranges::count_if(silhouette, [&](int c) { return 5 * c < 3 * arm_contrast; });
+  EXPECT_GT(static_cast<double>(partial), 0.25 * static_cast<double>(silhouette.size()))
+      << partial << " of " << silhouette.size() << " silhouette pixels partly covered (arm contrast " << arm_contrast
+      << ")";
 }
 
 // The hover label (and its ring) and the perf HUD are texture quads over the
@@ -1358,7 +1443,7 @@ TEST_F(Scene3dRhiRenderTest, PresentationHoverLabelAndPerfHud) {
   const DiffMask label_mask = diffMask(plain, labelled, 30);
   EXPECT_GT(label_mask.count_in(label), label.width() * label.height() / 10) << "label not drawn";
   // Outside the overlay rectangles only the hovered frame's triad changes: it
-  // brightens, as the GL AxisRenderPass highlight does.
+  // brightens.
   const QRgb background = plain.pixel(4, 4);
   int stray = 0;
   int brightened = 0;
@@ -1499,8 +1584,7 @@ TEST_F(Scene3dRhiRenderTest, PresentationTonemapModes) {
   EXPECT_GT(arm_colour.red(), arm_colour.green() + 80) << "the X arm is not where it was projected";
 }
 
-// Re-expresses voxel_grid_render_pass_gl_test on the QRhi renderer: in one
-// instanced draw, a voxel whose value passes the (default non-zero) predicate
+// In one instanced draw, a voxel whose value passes the (default non-zero) predicate
 // rasterizes where the camera projects it, and a culled voxel between two drawn
 // ones rasterizes nothing.
 TEST_F(Scene3dRhiRenderTest, VoxelPredicateDrawsAndCulls) {
@@ -1577,6 +1661,61 @@ TEST_F(Scene3dRhiRenderTest, TfFrameTriadDrawsAtFrameOrigin) {
   EXPECT_GT(mask.count_in(QRect(int(x_tip.x()) - 4, int(x_tip.y()) - 4, 9, 9)), 0) << "+X arm tip not drawn";
 }
 
+// Magenta pixels: red and blue both well above green, as the TF parent-connection
+// lines draw (look::kTfConnectionColor, outside the tonemap). Nothing else in a
+// scene without grid, axes or visible layers qualifies: the backdrop is neutral.
+int magentaPixels(const QImage& image) {
+  return countPixels(image, [](QRgb c) {
+    return qRed(c) > 100 && qBlue(c) > 100 && qRed(c) - qGreen(c) > 50 && qBlue(c) - qGreen(c) > 50;
+  });
+}
+
+// The TF parent-connection lines follow their visibility toggle both ways, and
+// keep doing so after the dock moves to another top-level (a new QRhi, the
+// view's resources released and rebuilt).
+TEST_F(Scene3dRhiRenderTest, MagentaLinesAppearOnlyWhenVisible) {
+  RhiScene scene;
+  // A star of children around kFrame, which the camera frames at the centre.
+  scene.addTf(
+      {{"child_0", {1.0F, 0.0F, 0.0F}},
+       {"child_1", {-1.0F, 0.0F, 0.0F}},
+       {"child_2", {0.0F, 1.0F, 0.0F}},
+       {"child_3", {0.0F, -1.0F, 0.0F}},
+       {"child_4", {0.7F, 0.7F, 0.5F}},
+       {"child_5", {-0.7F, -0.7F, 0.5F}},
+       {"child_6", {0.7F, -0.7F, 1.0F}},
+       {"child_7", {-0.7F, 0.7F, 1.0F}}});
+  const PJ::ObjectTopicId points = scene.addPoints(pointBlock({0.0F, 0.0F, 0.5F}, 0.2F, 2));  // creates the view
+  scene.frame();
+  scene.dock()->onTrackerTime(100e-9);  // at the TF stamp: the children resolve
+  scene.dock()->setLayerVisible(points, false);
+  SceneViewWidget* view = scene.view();
+  view->setGridVisible(false);
+
+  view->setTfConnectionsVisible(false);
+  GRAB_OR_SKIP(hidden, view, "tf_lines_hidden");
+  view->setTfConnectionsVisible(true);
+  GRAB_OR_SKIP(shown, view, "tf_lines_shown");
+  view->setTfConnectionsVisible(false);
+  GRAB_OR_SKIP(hidden_again, view, "tf_lines_hidden_again");
+  EXPECT_EQ(magentaPixels(hidden), 0) << "magenta pixels with the connections hidden";
+  EXPECT_GT(magentaPixels(shown), 30) << "no parent-connection lines with the connections shown";
+  EXPECT_EQ(magentaPixels(hidden_again), 0) << "the lines lingered after hiding them";
+
+  QWidget second;
+  auto* layout = new QVBoxLayout(&second);
+  layout->setContentsMargins(0, 0, 0, 0);
+  layout->addWidget(scene.dock());
+  second.resize(kViewSize);
+  ASSERT_TRUE(showExposed(second));
+  view->setTfConnectionsVisible(true);
+  GRAB_OR_SKIP(reparented_shown, view, "tf_lines_reparented_shown");
+  view->setTfConnectionsVisible(false);
+  GRAB_OR_SKIP(reparented_hidden, view, "tf_lines_reparented_hidden");
+  EXPECT_GT(magentaPixels(reparented_shown), 30) << "the lines vanished after the reparent";
+  EXPECT_EQ(magentaPixels(reparented_hidden), 0) << "the lines ignore visibility after the reparent";
+}
+
 // ---- GridMap, trails, frame context menu ------------------------------------
 
 // The occupancy texture catches up with every change staged while the layer
@@ -1626,8 +1765,8 @@ TEST_F(Scene3dRhiRenderTest, OccupancyTextureCatchesUpAfterSkippedFrames) {
       << "a full refresh staged while undrawn was cut short by the patch after it";
 }
 
-// A lit heightfield lands where its centre projects and draws the GL pass's
-// procedural vertex count (6 per quad).
+// A lit heightfield lands where its centre projects and draws the procedural
+// vertex count (6 per quad).
 TEST_F(Scene3dRhiRenderTest, GridMapDrawsWhereProjected) {
   RhiScene scene;
   constexpr int kCells = 8;
@@ -1787,14 +1926,6 @@ TEST_F(Scene3dRhiRenderTest, FrameContextMenuPicksFrame) {
   menu->close();
 }
 
-void expectSameCamera(const pj::scene3d::CameraState& a, const pj::scene3d::CameraState& b) {
-  EXPECT_EQ(a.focal, b.focal);
-  EXPECT_EQ(a.radius, b.radius);
-  EXPECT_EQ(a.azimuth, b.azimuth);
-  EXPECT_EQ(a.elevation, b.elevation);
-  EXPECT_EQ(a.ortho_scale, b.ortho_scale);
-}
-
 // Adding, hiding and showing layers never moves the camera, even for data far
 // outside the view.
 TEST_F(Scene3dRhiRenderTest, LayerChangesLeaveTheCameraAlone) {
@@ -1807,13 +1938,13 @@ TEST_F(Scene3dRhiRenderTest, LayerChangesLeaveTheCameraAlone) {
 
   const PJ::ObjectTopicId farLayer = scene.addPoints(pointBlock({200.0F, 150.0F, 40.0F}, 5.0F, 2), "/far");
   GRAB_OR_SKIP(added, view, "added");
-  expectSameCamera(view->camera().state(), pinned);
+  EXPECT_EQ(view->camera().state(), pinned);
 
   scene.dock()->setLayerVisible(farLayer, false);
   GRAB_OR_SKIP(hidden, view, "hidden");
   scene.dock()->setLayerVisible(farLayer, true);
   GRAB_OR_SKIP(shown, view, "shown");
-  expectSameCamera(view->camera().state(), pinned);
+  EXPECT_EQ(view->camera().state(), pinned);
 }
 
 // The projection's aspect is the widget's logical width / height, whatever the

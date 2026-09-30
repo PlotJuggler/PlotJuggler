@@ -3,8 +3,8 @@
 
 // Model-path tests for SceneEntitiesLayer (ModelPrimitive / glTF meshes):
 // stateful entity replay (replace-by-id, deletions, lifetime expiry) and the
-// TF × pose × scale draw-call composition. The marker path is GL-rendered and
-// covered by scene_entities_decode_test at the core layer.
+// TF × pose × scale draw-call composition. The marker path is covered by
+// marker_geometry_test and the render harness.
 
 #include <gtest/gtest.h>
 
@@ -39,7 +39,6 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/layers/scene_entities_layer.h"
-#include "pj_scene3d_widgets/render_pass.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -828,63 +827,7 @@ TEST(SceneEntitiesLayerModelTest, RapidModelReplacementStaysWithinImportBound) {
       << "superseded imports never settled";
 }
 
-#ifndef PJ_SCENE3D_RHI
-// The GL marker pass draws with the layer's overrides from construction: a
-// fresh layer is 0.6-translucent, and a restored 0.6 (a no-op setter) keeps it.
-TEST(SceneEntitiesLayerModelTest, MarkerPassStartsWithTheLayerDefaultOpacity) {
-  pj::scene3d::SceneEntitiesLayer layer(PJ::ObjectTopicId{1}, u"/scene_entities"_s);
-  EXPECT_FLOAT_EQ(layer.opacity(), 0.6F);
-  EXPECT_FLOAT_EQ(layer.markerPassOverridesForTest().opacity, 0.6F);
-  layer.setOpacity(0.6F);
-  EXPECT_FLOAT_EQ(layer.markerPassOverridesForTest().opacity, 0.6F);
-  layer.setOpacity(1.0F);
-  EXPECT_FLOAT_EQ(layer.markerPassOverridesForTest().opacity, 1.0F);
-}
-
-TEST(SceneEntitiesLayerModelTest, FrameCompositionAppliesTfPrimitivePoseAndScale) {
-  PJ::SessionManager session;
-  const PJ::ObjectTopicId topic_id = registerTopic(session);
-  registerParser(session, topic_id);
-
-  PJ::sdk::SceneEntity entity = makeEntity("car", 10, "base_link");
-  auto& primitive = entity.models.front();
-  primitive.pose.position = {.x = 1.0, .y = 2.0, .z = 3.0};
-  const double half_angle = std::numbers::pi / 4.0;
-  primitive.pose.orientation = {.x = 0.0, .y = 0.0, .z = std::sin(half_angle), .w = std::cos(half_angle)};
-  primitive.scale = {.x = 2.0, .y = 3.0, .z = 4.0};
-  primitive.override_color = true;
-  primitive.color = {.r = 25, .g = 51, .b = 76, .a = 102};
-  pushSceneEntities(session, topic_id, 10, batchWithEntities({entity}));
-
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
-  const auto ctx = makeContext(session);
-  ASSERT_TRUE(ctx.tf_buffer->setTransform(
-      pj::scene3d::StampedTransform{
-          .stamp = PJ::fromRaw(0),
-          .parent_frame = "world",
-          .child_frame = "base_link",
-          .transform = pj::scene3d::Transform({10.0, 20.0, 30.0}, {1.0, 0.0, 0.0, 0.0}),
-      }));
-  ASSERT_TRUE(layer.attach(ctx));
-  layer.setTrackerTime(PJ::fromRaw(10));
-
-  const std::string fixed_frame = "world";
-  const pj::scene3d::FrameContext frame_ctx{*ctx.tf_buffer, fixed_frame, PJ::fromRaw(10)};
-  const auto draws = layer.modelDrawCallsForFrame(frame_ctx);
-
-  ASSERT_EQ(draws.size(), 1u);
-  const glm::mat4 expected = glm::mat4(ctx.tf_buffer->lookupTransform("world", "base_link", PJ::fromRaw(10)).matrix()) *
-                             poseToMat4(primitive.pose) * glm::scale(glm::mat4(1.0f), glm::vec3(2.0f, 3.0f, 4.0f));
-  expectMatrixNear(draws.front().model, expected);
-  EXPECT_EQ(draws.front().kind, pj::scene3d::MeshRenderPass::GeometryKind::kMesh);
-  EXPECT_FALSE(draws.front().use_vertex_color);
-  EXPECT_NEAR(draws.front().color.r, 25.0f / 255.0f, 1e-6f);
-  EXPECT_NEAR(draws.front().color.g, 51.0f / 255.0f, 1e-6f);
-  EXPECT_NEAR(draws.front().color.b, 76.0f / 255.0f, 1e-6f);
-  EXPECT_NEAR(draws.front().color.a, 102.0f / 255.0f, 1e-6f);
-}
-#else
-// QRhi build: the layer hands the view a FRAME-LOCAL draw (frame_id + pose ×
+// The layer hands the view a FRAME-LOCAL draw (frame_id + pose ×
 // scale); the view applies TF. Applying TF here too would double-transform.
 TEST(SceneEntitiesLayerModelTest, ModelDrawCallIsFrameLocalPoseAndScale) {
   PJ::SessionManager session;
@@ -922,7 +865,6 @@ TEST(SceneEntitiesLayerModelTest, ModelDrawCallIsFrameLocalPoseAndScale) {
   EXPECT_NEAR(draws.front().override_color.r, 25.0f / 255.0f, 1e-6f);
   EXPECT_NEAR(draws.front().override_color.a, 102.0f / 255.0f, 1e-6f);
 }
-#endif
 
 // H.8: a DATA-SUPPLIED http(s) model URL must not be fetched without the
 // explicit opt-in (QSettings pj_scene3d/allow_remote_model_fetch, default off):

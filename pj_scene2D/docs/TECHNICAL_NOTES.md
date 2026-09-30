@@ -98,35 +98,21 @@ packs. Configuration therefore fails if a source and blob diverge or a pack is
 rebaked with the wrong target set. A general `qt6_add_shaders` migration remains
 deferred work tracked as F-009.
 
-### QRhiWidget Multi-Instance Lifecycle (Qt 6.8)
+### QRhiWidget in a window first shown without one
 
-Qt 6.8 `QRhiWidget` has a critical initialization requirement: the
-top-level window's backing store must be RHI-capable from its first
-`show()`. If no `QRhiWidget` exists as a child when the window is
-first shown, Qt creates a regular (non-RHI) backing store. Any
-`QRhiWidget` added dynamically after that point will **never** get an
-RHI instance — `rhi()` returns null permanently, producing continuous
-"QRhiWidget: No QRhi" errors.
+A top-level first shown with no `QRhiWidget` gets a raster backing store. When a
+`QRhiWidget` joins it later (a media or Scene3D dock added to a window whose
+plots use the raster canvas), Qt 6.11 switches the window to QRhi composition,
+on desktop and in the browser; no zero-size bootstrap widget is needed.
+`rhi_mixed_dock_test`'s `RhiMixedLateDockFixture` covers it: every GPU dock
+added after a raster-only first show renders.
 
-**Workaround**: add a zero-size bootstrap `QRhiWidget` in the window's
-constructor, before `show()`:
-
-```cpp
-// Forces Qt to create an RHI-backed backing store for this window.
-auto* bootstrap = new MediaViewerWidget(parent);
-bootstrap->setMaximumSize(0, 0);
-layout->addWidget(bootstrap);
-```
-
-Dynamically added `QRhiWidget` instances will then initialize
-successfully.
-
-That workaround is **native-only**. Qt/WASM must not create a zero-size WebGL
+The browser adds its own ordering. Qt/WASM must not create a zero-size WebGL
 surface before a browser file picker: the context can be lost during the picker
 round trip, after which Emscripten's context-attribute path may dereference a
-null result. The measured browser lifecycle is instead:
+null result. The measured browser lifecycle is:
 
-1. omit both the top-level and per-dock zero-size Scene2D bootstraps;
+1. create no GPU widget before the first real viewer;
 2. construct the real `MediaViewerWidget` parentless, so its constructor calls
    `setApi(PJ::preferredGraphicsApi())` (OpenGL/WebGL2) before `QStackedWidget`
    adds it to the visible hierarchy;
@@ -143,8 +129,8 @@ required to catch uninitialized black raster regions after the compositor switch
 
 ### Backends and reparenting
 
-The viewer requests `PJ::preferredGraphicsApi()`: OpenGL in the GL build, the
-platform's native API (D3D11, Metal, OpenGL on Linux) in the QRhi build. Its
+The viewer requests `PJ::preferredGraphicsApi()`: the platform's native API
+(D3D11, Metal, OpenGL on Linux). Its
 shaders are baked for every backend. The view matrix is built in GL clip space,
 which QRhi scissors also use; the shaders receive `clipSpaceCorrMatrix() * view`,
 so Vulkan's y-down clip space does not flip the image.

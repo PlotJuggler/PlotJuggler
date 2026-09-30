@@ -504,52 +504,6 @@ TEST(RobotModelLayerTest, UnresolvedPackageMeshIsCountedForPlaceholderRendering)
   EXPECT_TRUE(layer.statusText().contains("packages unresolved"_L1));
 }
 
-#ifndef PJ_SCENE3D_RHI
-// M.48: render() memoizes the per-link DrawCall lists and rebuilds them only
-// when their inputs change. This asserts the geometry invalidation set: every
-// geometry-affecting call must re-flag the cache. The render-origin dependency
-// introduced by camera-relative rendering is covered separately below.
-// render() itself (which clears the flag) needs a GL context the harness lacks,
-// so we clear the flag manually via the test hook before each call.
-TEST(RobotModelLayerTest, DrawCacheInvalidationSetIsExhaustive) {
-  PJ::SessionManager session;
-  const PJ::ObjectTopicId topic_id = registerTopic(session);
-  registerParser(session, topic_id, urdfParserVtable());
-  pushWireBytes(session, topic_id);
-
-  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
-  const auto ctx = makeContext(session);
-  ASSERT_TRUE(layer.attach(ctx));
-  ASSERT_NE(layer.robotModel(), nullptr);
-  // attach() -> loadFromCurrentSource()/applyRobotDescription() leave the cache
-  // dirty so the first render() builds it.
-  EXPECT_TRUE(layer.drawsDirtyForTest());
-
-  // Each geometry-affecting call must re-set the flag after a (simulated) render.
-  const auto expect_dirties = [&](const char* what, auto&& mutate) {
-    layer.clearDrawsDirtyForTest();
-    mutate();
-    EXPECT_TRUE(layer.drawsDirtyForTest()) << what << " did not invalidate the draw cache";
-  };
-
-  expect_dirties("setTrackerTime", [&]() { layer.setTrackerTime(PJ::fromRaw(123)); });
-  expect_dirties("setFixedFrame", [&]() { layer.setFixedFrame(u"map"_s); });
-  expect_dirties("setFramePrefix", [&]() { layer.setFramePrefix(u"robotA/"_s); });
-  expect_dirties("setDisplayMode", [&]() { layer.setDisplayMode(pj::scene3d::RobotModelLayer::DisplayMode::kVisual); });
-  expect_dirties("setFallbackColor", [&]() { layer.setFallbackColor(QColor(10, 20, 30)); });
-
-  // setVisible(false) must NOT touch the flag (the cache is simply not consumed
-  // while hidden); setVisible(true) must, since TF may have advanced meanwhile.
-  layer.clearDrawsDirtyForTest();
-  layer.setVisible(false);
-  EXPECT_FALSE(layer.drawsDirtyForTest()) << "hiding the layer should not dirty the cache";
-  layer.setVisible(true);
-  EXPECT_TRUE(layer.drawsDirtyForTest()) << "un-hiding the layer must dirty the cache";
-
-  expect_dirties("detach", [&]() { layer.detach(); });
-}
-#endif  // !PJ_SCENE3D_RHI
-
 // Regression: a finished async URDF mesh load must itself request the repaint
 // that consumes it (QFutureWatcher -> pollMeshLoads). The app paints strictly on
 // demand, so before the fix the result was only drained inside render() and the
@@ -1056,10 +1010,10 @@ void seedSceneChild(pj::scene3d::TransformBuffer& buf, const std::string& child)
 }
 
 // The DROID gripper bug: the layer must bridge the URDF's fixed joints into the
-// buffer it actually RENDERS against (frame_ctx.tf — the dock's live buffer), not
-// the ctx_ snapshot captured at attach (which can be null/stale). Drive the draw
-// rebuild with a live buffer distinct from the attach-time context to prove the
-// render buffer is the one bridged.
+// buffer it actually RENDERS against (the dock's live buffer), not the ctx_
+// snapshot captured at attach (which can be null/stale). Bridge a live buffer
+// distinct from the attach-time context to prove the render buffer is the one
+// bridged.
 TEST(RobotModelLayerTest, FixedJointBridgeReconnectsChildFrameInRenderBuffer) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -1072,15 +1026,13 @@ TEST(RobotModelLayerTest, FixedJointBridgeReconnectsChildFrameInRenderBuffer) {
   ASSERT_NE(layer.robotModel(), nullptr);
   ASSERT_EQ(layer.robotModel()->joints.size(), 1u);
 
-  // The live render buffer the dock feeds via frame_ctx — a distinct object that
+  // The live render buffer the dock renders against — a distinct object that
   // publishes base_link under scene but never the fixed-joint child gripper_base.
   pj::scene3d::TransformBuffer live;
   seedSceneChild(live, "base_link");
   EXPECT_FALSE(live.tryLookupTransform("scene", "gripper_base", PJ::fromRaw(2000)).has_value());
 
-  const std::string fixed_frame = "scene";
-  const pj::scene3d::FrameContext frame_ctx{live, fixed_frame, PJ::fromRaw(2000)};
-  layer.rebuildDrawCacheForTest(frame_ctx);
+  layer.ensureStaticBridgesForTest(live);
 
   const auto tf = live.tryLookupTransform("scene", "gripper_base", PJ::fromRaw(2000));
   ASSERT_TRUE(tf.has_value()) << "fixed-joint mount must be bridged into the LIVE render buffer";
@@ -1104,54 +1056,12 @@ TEST(RobotModelLayerTest, FixedJointBridgeAppliesFramePrefix) {
   pj::scene3d::TransformBuffer live;
   seedSceneChild(live, "robot1/base_link");
 
-  const std::string fixed_frame = "scene";
-  const pj::scene3d::FrameContext frame_ctx{live, fixed_frame, PJ::fromRaw(2000)};
-  layer.rebuildDrawCacheForTest(frame_ctx);
+  layer.ensureStaticBridgesForTest(live);
 
   const auto tf = live.tryLookupTransform("scene", "robot1/gripper_base", PJ::fromRaw(2000));
   ASSERT_TRUE(tf.has_value()) << "prefixed bridge frame should resolve in the render buffer";
   EXPECT_NEAR(tf->t.z, 0.1, 1e-9);
 }
-
-#ifndef PJ_SCENE3D_RHI
-// Camera-relative rendering made RobotModelLayer's cached DrawCall matrices
-// render-origin dependent: FrameContext::lookup subtracts the camera focal before
-// the float downcast. A stopped-playback camera pan/zoom changes that origin
-// without changing tracker time, so the cache must rebuild or URDF meshes stay in
-// the old render space while pointclouds/TF gizmos use the new one.
-TEST(RobotModelLayerTest, DrawCacheInvalidatesWhenRenderOriginChanges) {
-  PJ::SessionManager session;
-  const PJ::ObjectTopicId topic_id = registerTopic(session);
-  registerParser(session, topic_id, urdfParserVtable());
-  pushWireBytes(session, topic_id);
-
-  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
-  const auto ctx = makeContext(session);
-  ASSERT_TRUE(layer.attach(ctx));
-  ASSERT_NE(layer.robotModel(), nullptr);
-
-  pj::scene3d::TransformBuffer live;
-  seedSceneChild(live, "base_link");
-
-  const std::string fixed_frame = "scene";
-  const pj::scene3d::FrameContext origin_zero{live, fixed_frame, PJ::fromRaw(2000), glm::dvec3{0.0, 0.0, 0.0}};
-  layer.rebuildDrawCacheForTest(origin_zero);
-  layer.clearDrawsDirtyForTest();
-  ASSERT_EQ(layer.visualDrawCountForTest(), 1);
-  EXPECT_FALSE(layer.drawCacheNeedsRebuildForTest(origin_zero));
-  EXPECT_NEAR(layer.firstVisualDrawTranslationForTest().x, 0.0f, 1e-5f);
-
-  const pj::scene3d::FrameContext origin_shifted{live, fixed_frame, PJ::fromRaw(2000), glm::dvec3{3.0, 0.0, 0.0}};
-  EXPECT_TRUE(layer.drawCacheNeedsRebuildForTest(origin_shifted))
-      << "render-origin changes must invalidate render-space mesh matrices";
-
-  layer.rebuildDrawCacheForTest(origin_shifted);
-  layer.clearDrawsDirtyForTest();
-  EXPECT_FALSE(layer.drawCacheNeedsRebuildForTest(origin_shifted));
-  EXPECT_NEAR(layer.firstVisualDrawTranslationForTest().x, -3.0f, 1e-5f)
-      << "draw cache should be rebuilt in the new camera-relative space";
-}
-#endif  // !PJ_SCENE3D_RHI
 
 // kAuto in a MIXED model: a collision-only sublink (the self-collision capsules)
 // must land in the COLLISION draw group so the Collision toggle/opacity hides it —
@@ -1168,11 +1078,9 @@ TEST(RobotModelLayerTest, AutoModeCollisionOnlyLinkRendersInCollisionGroupWhenMo
   ASSERT_NE(layer.robotModel(), nullptr);
 
   pj::scene3d::TransformBuffer live;
-  seedSceneChild(live, "body");  // the fixed joint body->body_sc is bridged by the rebuild
+  seedSceneChild(live, "body");  // the fixed joint body->body_sc is bridged
 
-  const std::string fixed_frame = "scene";
-  const pj::scene3d::FrameContext frame_ctx{live, fixed_frame, PJ::fromRaw(2000)};
-  layer.rebuildDrawCacheForTest(frame_ctx);
+  layer.ensureStaticBridgesForTest(live);
 
   EXPECT_EQ(layer.visualDrawCountForTest(), 1) << "the body's <visual> box";
   EXPECT_EQ(layer.collisionDrawCountForTest(), 1) << "body_sc collision sphere must be in the collision group";
@@ -1200,17 +1108,14 @@ TEST(RobotModelLayerTest, AutoModeAllCollisionModelPromotesToVisuals) {
   pj::scene3d::TransformBuffer live;
   seedSceneChild(live, "solid");
 
-  const std::string fixed_frame = "scene";
-  const pj::scene3d::FrameContext frame_ctx{live, fixed_frame, PJ::fromRaw(2000)};
-  layer.rebuildDrawCacheForTest(frame_ctx);
+  layer.ensureStaticBridgesForTest(live);
 
   EXPECT_EQ(layer.visualDrawCountForTest(), 1) << "collision-only model promoted to visuals";
   EXPECT_EQ(layer.collisionDrawCountForTest(), 0);
 }
 
 // Coordinate contract: the layer's model is link-local (prefixed link frame +
-// <origin> × scale) and TF is applied exactly once, by whichever renderer draws
-// it — the GL cache composes TF × origin × scale, the QRhi view receives the
+// <origin> × scale) and TF is applied exactly once: the view receives the
 // untransformed ModelDrawCall and applies TF itself.
 TEST(RobotModelLayerTest, DrawsKeepLinkLocalGeometryAndApplyTfOnce) {
   pj::scene3d::RobotModelLayer layer(PJ::ObjectTopicId{}, u"robot"_s);
@@ -1235,12 +1140,9 @@ TEST(RobotModelLayerTest, DrawsKeepLinkLocalGeometryAndApplyTfOnce) {
   tf.child_frame = "robot1/base_link";
   tf.transform = pj::scene3d::Transform{glm::dvec3(5, 0, 0), glm::dquat(1, 0, 0, 0)};
   ASSERT_TRUE(live.setTransform(tf).has_value());
-  const std::string fixed_frame = "scene";
-  const pj::scene3d::FrameContext frame_ctx{live, fixed_frame, PJ::fromRaw(2000)};
-  layer.rebuildDrawCacheForTest(frame_ctx);
+  layer.ensureStaticBridgesForTest(live);
   EXPECT_EQ(layer.visualDrawCountForTest(), 1);
 
-#ifdef PJ_SCENE3D_RHI
   const auto& draws = layer.modelDrawCalls();
   ASSERT_EQ(draws.size(), 1u);
   EXPECT_EQ(draws.front().frame_id, "robot1/base_link");
@@ -1249,9 +1151,6 @@ TEST(RobotModelLayerTest, DrawsKeepLinkLocalGeometryAndApplyTfOnce) {
   EXPECT_NEAR(draws.front().model[3].x, 1.0, 1e-12) << "TF must not be baked into the link-local draw";
   EXPECT_NEAR(draws.front().model[0].x, 2.0, 1e-12);
   EXPECT_NEAR(draws.front().model[2].z, 4.0, 1e-12);
-#else
-  EXPECT_NEAR(layer.firstVisualDrawTranslationForTest().x, 6.0f, 1e-5f) << "TF x <origin> composed once";
-#endif
 }
 
 // A source switch while mesh imports run must not stack imports: superseded

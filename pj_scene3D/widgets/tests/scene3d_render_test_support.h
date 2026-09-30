@@ -3,8 +3,8 @@
 #pragma once
 
 // Shared scaffolding for the tests that render a real Scene3DDockWidget and
-// read back pixels (scene3d_rhi_render_test, pointcloud_golden_test). Builds
-// against both renderers. Header-only; each consumer is its own runner.
+// read back pixels (scene3d_rhi_render_test, pointcloud_golden_test, ...).
+// Header-only; each consumer is its own runner.
 
 #include <gtest/gtest.h>
 
@@ -12,6 +12,7 @@
 #include <QEventLoop>
 #include <QImage>
 #include <QPointer>
+#include <QRect>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <algorithm>
@@ -24,7 +25,9 @@
 #include <utility>
 #include <vector>
 
+#include "../rhi/passes/overlay_rhi_pass.h"
 #include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/builtin/frame_transforms_codec.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_base/builtin/point_cloud_codec.hpp"
 #include "pj_datastore/object_store.hpp"
@@ -79,6 +82,23 @@ inline std::vector<uint8_t> serializeCloud(
   cloud.data = PJ::Span<const uint8_t>(bytes.data(), bytes.size());
   cloud.timestamp_ns = 100;
   return PJ::serializePointCloud(cloud);
+}
+
+// Serialized canonical FrameTransforms stamped `t_ns`: each child at its
+// translation from `parent`, identity rotation.
+inline std::vector<uint8_t> serializeTfEdges(
+    const std::string& parent, const std::vector<std::pair<std::string, glm::dvec3>>& children, PJ::Timestamp t_ns) {
+  PJ::sdk::FrameTransforms transforms;
+  for (const auto& [child, offset] : children) {
+    PJ::sdk::FrameTransform edge;
+    edge.timestamp = t_ns;
+    edge.parent_frame_id = parent;
+    edge.child_frame_id = child;
+    edge.translation = {offset.x, offset.y, offset.z};
+    edge.rotation.w = 1.0;
+    transforms.transforms.push_back(edge);
+  }
+  return PJ::serializeFrameTransforms(transforms);
 }
 
 // A Scene3D dock on a real SessionManager/ObjectStore, inside a top-level
@@ -153,8 +173,8 @@ inline QImage grab(pj::scene3d::SceneViewWidget& view) {
   return pjWaitForGrab([&view](auto done) { view.grabPresentedFrame(std::move(done)); });
 }
 
-// Grabs until two consecutive frames match: the GL renderer's async GPU AABB
-// lands a frame or two late and nudges the adaptive near/far.
+// Grabs until two consecutive frames match, so a frame still settling (queued
+// layer work, adaptive near/far) is not compared.
 inline QImage grabStable(pj::scene3d::SceneViewWidget& view) {
   QImage previous = grab(view);
   for (int i = 0; i < 12; ++i) {
@@ -190,6 +210,25 @@ inline int differingPixels(const QImage& a, const QImage& b, int threshold = 0) 
 // max(|dR|, |dG|, |dB|): the per-channel tolerance a golden comparison applies.
 inline int maxChannelDelta(QRgb a, QRgb b) {
   return std::max({std::abs(qRed(a) - qRed(b)), std::abs(qGreen(a) - qGreen(b)), std::abs(qBlue(a) - qBlue(b))});
+}
+
+// Pixels of `image` in `area` (the whole image when empty) whose colour satisfies `match`.
+inline int countPixels(const QImage& image, const std::function<bool(QRgb)>& match, QRect area = {}) {
+  area = area.isEmpty() ? image.rect() : area.intersected(image.rect());
+  int count = 0;
+  for (int y = area.top(); y <= area.bottom(); ++y) {
+    for (int x = area.left(); x <= area.right(); ++x) {
+      count += match(image.pixel(x, y)) ? 1 : 0;
+    }
+  }
+  return count;
+}
+
+// The corner gizmo's rectangle in a frame of `view` grabbed as `image`: its
+// logical footprint scaled to the image, bottom-right.
+inline QRect gizmoRect(const QWidget& view, const QImage& image) {
+  const int size = pj::scene3d::OverlayRhiPass::kGizmoSizePx * image.height() / view.height();
+  return {image.width() - size, image.height() - size, size, size};
 }
 
 }  // namespace pj::scene3d::test

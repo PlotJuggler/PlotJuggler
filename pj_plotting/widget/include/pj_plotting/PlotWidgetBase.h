@@ -75,13 +75,13 @@ class PlotWidgetBase : public QWidget {
   // on this widget's per-instance nextColor() counter.
   [[nodiscard]] static QColor paletteColor(int index);
 
-  // Session-wide override for the OpenGL-canvas choice. When set true (from the
+  // Session-wide override for the GPU-canvas choice. When set true (from the
   // --disable-opengl CLI flag in main.cpp), every plot constructed afterwards
   // uses the software raster canvas regardless of the Preferences::use_opengl
   // setting — without modifying that saved preference. The override is inactive
   // by default (so the saved preference decides); intended to be set once at
   // startup, before any plot is constructed.
-  static void setOpenGlDisabledOverride(bool disabled);
+  static void setGpuCanvasDisabledOverride(bool disabled);
 
   virtual void resetZoom();
   [[nodiscard]] virtual Range<double> getVisualizationRangeX() const;

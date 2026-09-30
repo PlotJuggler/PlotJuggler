@@ -8,8 +8,7 @@
 namespace pj::scene3d {
 
 // Tessellation parameters for a solid arrow pointing along +X in model space
-// (tail at the origin). Mirrors ArrowGizmo::Params; kept as its own plain struct
-// so this low-level mesh builder has no dependency back on the gizmo class.
+// (tail at the origin).
 struct ArrowMeshParams {
   float length = 1.0f;  // origin -> tip (cylinder + cone)
   float shaft_radius = 0.08f;
@@ -25,9 +24,8 @@ struct ArrowMeshData {
 };
 
 // Build the solid arrow mesh (cylinder shaft + cone head + back cap), the single
-// source of truth shared by ArrowGizmo (per-draw uniform path) and
-// PosesRenderPass (instanced path). Pure CPU geometry — no GL, no current context
-// required. The per-section normal derivation is documented inline in the .cpp.
+// source of truth for every arrow the view draws (markers, frame and pose triads).
+// Pure CPU geometry — no GPU required. The per-section normal derivation is documented inline in the .cpp.
 [[nodiscard]] ArrowMeshData buildArrowMesh(const ArrowMeshParams& params);
 
 }  // namespace pj::scene3d

@@ -27,18 +27,11 @@ TEST(GraphicsApiTest, RejectsUnknownNames) {
   EXPECT_EQ(parseGraphicsApi(QStringLiteral("null")), std::nullopt);
 }
 
-TEST(GraphicsApiTest, RhiWidgetBuildsUseTheNativeApi) {
-  EXPECT_EQ(nativeGraphicsApi(GraphicsPlatform::Windows, true), Api::Direct3D11);
-  EXPECT_EQ(nativeGraphicsApi(GraphicsPlatform::MacOS, true), Api::Metal);
-  EXPECT_EQ(nativeGraphicsApi(GraphicsPlatform::Linux, true), Api::OpenGL);
-  EXPECT_EQ(nativeGraphicsApi(GraphicsPlatform::Wasm, true), Api::OpenGL);
-}
-
-TEST(GraphicsApiTest, OpenGlWidgetBuildsStayOnOpenGlEverywhere) {
-  for (const auto platform :
-       {GraphicsPlatform::Windows, GraphicsPlatform::MacOS, GraphicsPlatform::Linux, GraphicsPlatform::Wasm}) {
-    EXPECT_EQ(nativeGraphicsApi(platform, false), Api::OpenGL);
-  }
+TEST(GraphicsApiTest, EachPlatformUsesItsNativeApi) {
+  EXPECT_EQ(nativeGraphicsApi(GraphicsPlatform::Windows), Api::Direct3D11);
+  EXPECT_EQ(nativeGraphicsApi(GraphicsPlatform::MacOS), Api::Metal);
+  EXPECT_EQ(nativeGraphicsApi(GraphicsPlatform::Linux), Api::OpenGL);
+  EXPECT_EQ(nativeGraphicsApi(GraphicsPlatform::Wasm), Api::OpenGL);
 }
 
 TEST(GraphicsApiTest, FailureLatchReportsEachOnsetOnce) {
@@ -58,7 +51,7 @@ TEST(GraphicsApiTest, FailureLatchReportsEachOnsetOnce) {
 TEST(GraphicsApiTest, PreferredApiFollowsTheBuildPolicyOnThisHost) {
   // Each ctest case is its own process, so this is the first (caching) call.
   qunsetenv("PJ_GRAPHICS_API");
-  constexpr Api kNative = nativeGraphicsApi(currentGraphicsPlatform(), kRhiWidgetsBuild);
+  constexpr Api kNative = nativeGraphicsApi(currentGraphicsPlatform());
   const Api preferred = preferredGraphicsApi();
   // Metal falls back to OpenGL on a Mac without a Metal device.
   EXPECT_TRUE(preferred == kNative || (kNative == Api::Metal && preferred == Api::OpenGL))
@@ -69,7 +62,7 @@ TEST(GraphicsApiTest, AnOverrideThatCannotStartFallsBackToTheBuildPolicy) {
   // Each ctest case is its own process, so this is the first (caching) call.
   // Metal has no Qt backend off Apple platforms, D3D11 none off Windows.
   qputenv("PJ_GRAPHICS_API", currentGraphicsPlatform() == GraphicsPlatform::MacOS ? "d3d11" : "metal");
-  constexpr Api kNative = nativeGraphicsApi(currentGraphicsPlatform(), kRhiWidgetsBuild);
+  constexpr Api kNative = nativeGraphicsApi(currentGraphicsPlatform());
   const Api preferred = preferredGraphicsApi();
   qunsetenv("PJ_GRAPHICS_API");
   EXPECT_TRUE(preferred == kNative || (kNative == Api::Metal && preferred == Api::OpenGL))

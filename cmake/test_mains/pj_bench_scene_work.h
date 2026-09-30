@@ -15,7 +15,7 @@ namespace pj_bench {
 
 /// Cumulative work of a Scene3D view: QRhi adoptions, base builds, uploads,
 /// callbacks and its full renders' stage sums (ms). Every field is negative where
-/// the build has no counters (the GL build, or no PJ_RHI_TEST_HOOKS), so a
+/// the build has no counters (no PJ_RHI_TEST_HOOKS), so a
 /// difference of two snapshots is 0 there.
 struct SceneViewWork {
   double adoptions = -1.0;
@@ -40,7 +40,7 @@ struct SceneViewWork {
 
 inline SceneViewWork viewWork([[maybe_unused]] const pj::scene3d::SceneViewWidget& view) {
   SceneViewWork work;
-#if defined(PJ_SCENE3D_RHI) && defined(PJ_RHI_TEST_HOOKS)
+#ifdef PJ_RHI_TEST_HOOKS
   const auto& t = view.stageTimesForTest();
   const auto ms = [](std::int64_t ns) { return static_cast<double>(ns) / 1.0e6; };
   work.adoptions = view.property("pjTestRhiAdoptions").toDouble();
@@ -65,7 +65,7 @@ inline SceneViewWork viewWork([[maybe_unused]] const pj::scene3d::SceneViewWidge
 /// only composites the retained texture, which the full renders leave out.
 inline std::uint64_t viewRenders(
     [[maybe_unused]] const pj::scene3d::SceneViewWidget& view, [[maybe_unused]] const FrameCounter& counter) {
-#if defined(PJ_SCENE3D_RHI) && defined(PJ_RHI_TEST_HOOKS)
+#ifdef PJ_RHI_TEST_HOOKS
   return static_cast<std::uint64_t>(view.stageTimesForTest().full_renders);
 #else
   return counter.count();

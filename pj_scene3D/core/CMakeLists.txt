@@ -97,9 +97,6 @@ if(PJ_BUILD_TESTS)
     ../tests/depth_backproject_test.cpp
     ../tests/pointcloud_convert_test.cpp
     ../tests/pointcloud_budget_test.cpp
-    ../tests/pointcloud_fast_path_predicate_test.cpp
-    ../tests/pointcloud_bounds_scan_equivalence_test.cpp
-    ../tests/aabb_gpu_key_test.cpp
     ../tests/aabb_axis_range_test.cpp
     ../tests/frame_picking_test.cpp
     ../tests/camera_near_far_test.cpp
@@ -110,7 +107,6 @@ if(PJ_BUILD_TESTS)
     ../tests/poses_budget_test.cpp
     ../tests/model_budget_test.cpp
     ../tests/scene_entities_budget_test.cpp
-    ../tests/scene_entities_decode_test.cpp
     ../tests/scene_entities_model_state_test.cpp
     ../tests/frustum_cull_test.cpp
     ../tests/cube_draw_policy_test.cpp
@@ -128,7 +124,6 @@ if(PJ_BUILD_TESTS)
   )
   # pointcloud_codecs_test drives the Draco + Cloudini *encoders* directly to build
   # fixtures, so it links them explicitly (pj_scene3d_core links them PRIVATE).
-  # WARNINGS: all 34 merged tests carried PJ_WARNING_FLAGS before
   pj_add_test_runner(pj_scene3d_core_tests
     MAIN core WARNINGS
     SOURCES ${PJ_SCENE3D_CORE_TESTS} ../tests/pointcloud_codecs_test.cpp

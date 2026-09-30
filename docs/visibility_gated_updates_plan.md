@@ -21,9 +21,9 @@ During playback and streaming, per-tick work is delivered to docks the user
 **cannot see** — plots on an inactive plot tab, and docks hidden behind a
 maximized ("fullscreen") dock. Each wasted tick costs a Qwt `replot()` (plot) or
 a layer-advance + `refreshView()` and, for 2D, an eager off-thread image decode
-(scene). The window-compositing tax that dominated profiling is addressed
-separately by removing `rhi_bootstrap`; this work removes the *per-widget* waste
-behind it.
+(scene). The window-compositing tax that dominated profiling came from the
+zero-size `rhi_bootstrap` widget, which is gone; this work removes the
+*per-widget* waste behind it.
 
 ## Two delivery seams (both must be gated)
 
@@ -114,5 +114,4 @@ let `isVisible()` (true for an on-screen floating window) drive the gate.
 ## Why this is a separate PR
 Larger surface (pj_app host + pj_plotting + pj_scene_common + scene2D/3D), a
 latent floating-dock enumeration bug to fix alongside, and a new `showEvent`
-re-seed contract — each with corner cases worth their own review. The
-`rhi_bootstrap` removal is independent and ships first.
+re-seed contract — each with corner cases worth their own review.

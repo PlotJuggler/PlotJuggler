@@ -51,18 +51,6 @@ std::array<const TextureSource*, 5> textureSources(const Material& material) {
       &material.base_color, &material.metallic_roughness, &material.normal, &material.occlusion, &material.emissive};
 }
 
-constexpr bool textureIsSrgb(std::size_t slot) {
-  return slot == kBaseColorSlot || slot == kEmissiveSlot;
-}
-
-// Unkeyed sources share by address: an entry exists only while a mesh holding
-// the source's MeshData references it, so the address cannot be reused meanwhile.
-ModelRhiPass::TextureKey textureKey(const TextureSource& texture, std::size_t slot) {
-  std::string key =
-      !texture.key.empty() ? texture.key : "@" + std::to_string(reinterpret_cast<std::uintptr_t>(&texture));
-  return {std::move(key), textureIsSrgb(slot)};
-}
-
 bool materialUsesPbrPath(const Material& material) {
   const bool has_emissive =
       material.emissive_factor.r != 0.0F || material.emissive_factor.g != 0.0F || material.emissive_factor.b != 0.0F;
@@ -73,13 +61,21 @@ bool materialUsesPbrPath(const Material& material) {
          });
 }
 
-// The layer behind a ModelRenderable (every implementer is a Scene3DLayer),
-// which carries the renderer part of its row warning.
-Scene3DLayer& asLayer(ModelRenderable* model) {
-  return *dynamic_cast<Scene3DLayer*>(model);
+}  // namespace
+
+bool ModelRhiPass::textureIsSrgb(std::size_t slot) {
+  return slot == kBaseColorSlot || slot == kEmissiveSlot;
 }
 
-AABB meshBounds(const MeshData& mesh) {
+// Unkeyed sources share by address: an entry exists only while a mesh holding
+// the source's MeshData references it, so the address cannot be reused meanwhile.
+ModelRhiPass::TextureKey ModelRhiPass::textureKey(const TextureSource& texture, std::size_t slot) {
+  std::string key =
+      !texture.key.empty() ? texture.key : "@" + std::to_string(reinterpret_cast<std::uintptr_t>(&texture));
+  return {std::move(key), textureIsSrgb(slot)};
+}
+
+AABB ModelRhiPass::meshBounds(const MeshData& mesh) {
   AABB output;
   for (const auto& vertex : mesh.vertices) {
     if (std::isfinite(vertex.position.x) && std::isfinite(vertex.position.y) && std::isfinite(vertex.position.z)) {
@@ -89,7 +85,38 @@ AABB meshBounds(const MeshData& mesh) {
   return output;
 }
 
-}  // namespace
+bool ModelRhiPass::drawsInColorPass(ModelDrawGroup group, const MeshShadingParams& shading) {
+  return (group != ModelDrawGroup::kVisual || (shading.meshes_visible && shading.mesh_opacity > 0.0F)) &&
+         (group != ModelDrawGroup::kCollision || (shading.collisions_visible && shading.collision_opacity > 0.0F));
+}
+
+bool ModelRhiPass::castsShadow(ModelDrawGroup group, bool shadows_requested) {
+  return shadows_requested && group != ModelDrawGroup::kCollision;
+}
+
+float ModelRhiPass::drawOpacity(float layer_opacity, ModelDrawGroup group, const MeshShadingParams& shading) {
+  if (group == ModelDrawGroup::kVisual) {
+    return layer_opacity * shading.mesh_opacity;
+  }
+  if (group == ModelDrawGroup::kCollision) {
+    return layer_opacity * shading.collision_opacity;
+  }
+  return layer_opacity;
+}
+
+float ModelRhiPass::shaderAlphaMode(const Material& material, bool material_applies) {
+  if (!material_applies) {
+    return 0.0F;
+  }
+  if (material.alpha_mode == AlphaMode::kMask) {
+    return 1.0F;
+  }
+  return material.alpha_mode == AlphaMode::kBlend ? 2.0F : 0.0F;
+}
+
+bool ModelRhiPass::drawIsTranslucent(ModelDrawGroup group, float alpha, float alpha_mode) {
+  return group == ModelDrawGroup::kCollision || alpha < 0.999F || alpha_mode > 1.5F;
+}
 
 bool ModelRhiPass::initialize(const RhiPassSetup& setup, QRhiBuffer* lighting_uniforms) {
   QRhi* rhi = setup.rhi;
@@ -110,7 +137,10 @@ bool ModelRhiPass::initialize(const RhiPassSetup& setup, QRhiBuffer* lighting_un
   if (layout_bindings_ == nullptr) {
     return false;
   }
-  white_upload_pending_ = true;
+  static constexpr std::array<std::uint8_t, 4> white{255U, 255U, 255U, 255U};
+  QRhiTextureSubresourceUploadDescription white_texel(white.data(), static_cast<quint32>(white.size()));
+  white_texel.setSourceSize(QSize(1, 1));
+  setup.updates->uploadTexture(white_texture_, QRhiTextureUploadDescription({0, 0, white_texel}));
 
   QRhiVertexInputLayout layout;
   layout.setBindings({
@@ -198,13 +228,8 @@ void ModelRhiPass::admit(const PlaceFn& place, const MeshShadingParams& shading,
     const std::vector<ModelDrawCall>& draw_calls = layer->modelDrawCalls();
     for (std::size_t draw_index = 0; draw_index < draw_calls.size(); ++draw_index) {
       const ModelDrawCall& draw = draw_calls[draw_index];
-      const bool color_requested =
-          (draw.group != ModelDrawGroup::kVisual || (shading.meshes_visible && shading.mesh_opacity > 0.0F)) &&
-          (draw.group != ModelDrawGroup::kCollision ||
-           (shading.collisions_visible && shading.collision_opacity > 0.0F));
-      // Native casts SceneEntities model primitives and RobotModel visuals. A
-      // hidden Robot visual still casts there; collisions never do.
-      const bool shadow_requested = shadows_requested && draw.group != ModelDrawGroup::kCollision;
+      const bool color_requested = drawsInColorPass(draw.group, shading);
+      const bool shadow_requested = castsShadow(draw.group, shadows_requested);
       if (!color_requested && !shadow_requested) {
         continue;
       }
@@ -256,15 +281,16 @@ void ModelRhiPass::admit(const PlaceFn& place, const MeshShadingParams& shading,
     }
     if (prepared.draws > kSceneLimits.max_model_draws_per_layer ||
         prepared.triangles > kSceneLimits.max_model_triangles_per_layer) {
-      asLayer(layer).noteRenderFailure(tr("Models need %1 draws and %2 triangles; the layer limits are %3 and %4")
-                                           .arg(
-                                               QString::number(prepared.draws), QString::number(prepared.triangles),
-                                               QString::number(kSceneLimits.max_model_draws_per_layer),
-                                               QString::number(kSceneLimits.max_model_triangles_per_layer)));
+      layer->modelLayer().noteRenderFailure(tr("Models need %1 draws and %2 triangles; the layer limits are %3 and %4")
+                                                .arg(
+                                                    QString::number(prepared.draws),
+                                                    QString::number(prepared.triangles),
+                                                    QString::number(kSceneLimits.max_model_draws_per_layer),
+                                                    QString::number(kSceneLimits.max_model_triangles_per_layer)));
       continue;
     }
     if (has_color && !tryConsumeModels(prepared.draws, prepared.triangles, remaining_draws, remaining_triangles)) {
-      asLayer(layer).noteRenderFailure(
+      layer->modelLayer().noteRenderFailure(
           tr("Models need %1 draws and %2 triangles; the remaining view budget is %3 and %4")
               .arg(
                   QString::number(prepared.draws), QString::number(prepared.triangles),
@@ -289,9 +315,9 @@ void ModelRhiPass::admit(const PlaceFn& place, const MeshShadingParams& shading,
       family_bounds = unionAABB(family_bounds, layer_bounds);
     }
     if (shadow_warning.isEmpty()) {
-      asLayer(layer).noteRenderSuccess();
+      layer->modelLayer().noteRenderSuccess();
     } else {
-      asLayer(layer).noteRenderFailure(shadow_warning);
+      layer->modelLayer().noteRenderFailure(shadow_warning);
     }
     admitted_.push_back(std::move(prepared));
   }
@@ -335,13 +361,6 @@ void ModelRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingParams
     // leaves every frame slot holding the last write.
     updates->updateDynamicBuffer(instance_buffer_, 0, instance_bytes, instances_.data());
     ++counters_.instance_uploads;
-  }
-  if (white_upload_pending_ && white_texture_ != nullptr) {
-    static constexpr std::array<std::uint8_t, 4> white{255U, 255U, 255U, 255U};
-    QRhiTextureSubresourceUploadDescription description(white.data(), static_cast<quint32>(white.size()));
-    description.setSourceSize(QSize(1, 1));
-    updates->uploadTexture(white_texture_, QRhiTextureUploadDescription({0, 0, description}));
-    white_upload_pending_ = false;
   }
   // The batch copies the bytes: the edge list's CPU copy can go right after.
   for (MeshGpu* mesh : pending_uploads_) {
@@ -407,7 +426,7 @@ void ModelRhiPass::buildInstances(QRhi* rhi, const glm::dvec3& render_origin, co
       MeshGpu& mesh = *gpu_mesh;
       const bool lines = prepared.wireframe;
       if (lines && !ensureEdges(rhi, mesh)) {
-        asLayer(layer).noteRenderFailure(tr("Could not allocate a model wireframe buffer"));
+        layer->modelLayer().noteRenderFailure(tr("Could not allocate a model wireframe buffer"));
         edges_failed = true;
         continue;
       }
@@ -430,20 +449,9 @@ void ModelRhiPass::buildInstances(QRhi* rhi, const glm::dvec3& render_origin, co
           tint.b = static_cast<float>(override.blueF());
           use_material = false;
         }
-        float opacity = prepared.opacity;
-        if (draw.group == ModelDrawGroup::kVisual) {
-          opacity *= shading.mesh_opacity;
-        } else if (draw.group == ModelDrawGroup::kCollision) {
-          opacity *= shading.collision_opacity;
-        }
-        tint.a *= opacity;
+        tint.a *= drawOpacity(prepared.opacity, draw.group, shading);
         const bool use_texture = material_gpu.textures[kBaseColorSlot].present && (pbr_active || use_material);
-        float alpha_mode = 0.0F;
-        if ((pbr_active || use_material) && material.alpha_mode == AlphaMode::kMask) {
-          alpha_mode = 1.0F;
-        } else if ((pbr_active || use_material) && material.alpha_mode == AlphaMode::kBlend) {
-          alpha_mode = 2.0F;
-        }
+        const float alpha_mode = shaderAlphaMode(material, pbr_active || use_material);
         Instance instance;
         copyMatrix(narrowed, instance.model);
         instance.tint = {tint.r, tint.g, tint.b, tint.a};
@@ -467,7 +475,7 @@ void ModelRhiPass::buildInstances(QRhi* rhi, const glm::dvec3& render_origin, co
         instances_.push_back(instance);
         const quint32 index_offset = lines ? mesh.edge_offsets[index] : static_cast<quint32>(submesh.index_offset);
         const quint32 index_count = lines ? mesh.edge_counts[index] : static_cast<quint32>(submesh.index_count);
-        const bool translucent = draw.group == ModelDrawGroup::kCollision || tint.a < 0.999F || alpha_mode > 1.5F;
+        const bool translucent = drawIsTranslucent(draw.group, tint.a, alpha_mode);
         draws_.push_back(
             Draw{
                 layer, &mesh, &material_gpu, instance_offset, index_offset, index_count, lines,
@@ -645,7 +653,7 @@ void ModelRhiPass::clearShadowMap(QRhi* rhi, bool restore_bindings) {
 void ModelRhiPass::noteShadowFailure(const QString& error) {
   for (const Admitted& prepared : admitted_) {
     if (prepared.layer != nullptr && prepared.casts) {
-      asLayer(prepared.layer).noteRenderFailure(error);
+      prepared.layer->modelLayer().noteRenderFailure(error);
     }
   }
 }
@@ -786,7 +794,7 @@ bool ModelRhiPass::ensureLayerGpu(QRhi* rhi, ModelRenderable* layer, LayerGpu& g
     remaining_layer_pixels -= std::min(remaining_layer_pixels, mesh.texture_pixels);
   }
   const auto fail = [&](const char* reason) {
-    asLayer(layer).noteRenderFailure(tr(reason));
+    layer->modelLayer().noteRenderFailure(tr(reason));
     releaseLayerGpu(gpu);
     return false;
   };
@@ -1061,7 +1069,6 @@ void ModelRhiPass::release() {
   white_texture_ = nullptr;
   instance_buffer_ = nullptr;
   instance_capacity_ = 0;
-  white_upload_pending_ = false;
   shadow_texture_ = nullptr;
   shadow_sampler_ = nullptr;
   view_uniforms_ = nullptr;

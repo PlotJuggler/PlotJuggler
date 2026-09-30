@@ -9,10 +9,9 @@
 #include <glm/vec4.hpp>
 
 // Single source of truth for the 3D scene's default LOOK parameters — the values
-// that MeshShadingParams, CompositeParams, SsaoPass and EdlPass bake as their
-// defaults and that the scene3d_mesh_viewer demo seeds its look-dev controls
-// from. Keeping them here (instead of duplicated literals) means the application
-// and the demo can never drift apart: change a default once and both follow.
+// that MeshShadingParams, CompositeParams and the SSAO/EDL stages bake as their
+// defaults. Keeping them here (instead of duplicated literals) means a default
+// changes in one place.
 //
 // These are the User's 2026-06-13 look-dev picks. Pure C++ (glm + <cmath>), no
 // Qt, so it is includable from every layer that needs a default.
@@ -44,7 +43,7 @@ inline constexpr float kCollisionOpacity = 0.4f;
 // collision hulls visually distinct from the visual meshes.
 inline constexpr glm::vec4 kCollisionDefaultColor{1.0f, 0.5f, 0.1f, 1.0f};
 
-// ---- GridMap heightfield shading (GridMapRenderPass) ----
+// ---- GridMap heightfield shading (GridMapRhiPass) ----
 // Lambert weights scaled by the view's ambient / direct / fill knobs, tuned so a
 // flat, top-lit map sits near the cube passes' brightness. The ambient weight is
 // doubled relative to the cubes' because the heightfield has no AO term.
@@ -59,7 +58,7 @@ inline constexpr float kSaturation = 1.3f;  // post-tonemap saturation boost
 inline constexpr float kAoStrength = 1.0f;  // SSAO blend into the composite
 inline constexpr float kEdlFloor = 0.3f;    // EDL darkens toward floor*color
 
-// ---- Screen-space passes (SsaoPass / EdlPass) ----
+// ---- Screen-space passes (SSAO / EDL) ----
 inline constexpr float kSsaoRadiusM = 0.4f;  // SSAO sample radius (metres)
 inline constexpr float kSsaoPower = 1.0f;    // SSAO contrast exponent
 inline constexpr float kEdlStrength = 1.0f;  // EDL response strength
@@ -79,8 +78,7 @@ inline constexpr float kEdlMaxGap = 0.02f;
 inline constexpr float kShadowSoftnessTexels = 4.0f;
 // Slope-scaled depth bias applied while rendering casters so their stored depth
 // is pushed away from the light — kills self-shadowing acne. Paired with the
-// receiver-side world normal offset below; conservative defaults shared by the
-// native GL pass and the browser QRhi pipeline.
+// receiver-side world normal offset below; conservative defaults.
 inline constexpr float kShadowSlopeScaledDepthBias = 2.0f;
 inline constexpr float kShadowDepthBiasUnits = 4.0f;
 // Receiver-side normal offset in shadow-texel units (scaled by
@@ -90,8 +88,6 @@ inline constexpr float kShadowNormalOffsetTexels = 1.5f;
 inline constexpr float kSsaoBias = 0.025f;
 
 // ---- Scene geometry colors (grid / frame axes / TF connections) ----
-// Shared by the native GL passes and the QRhi passes so the two backends cannot
-// drift apart.
 
 /// The ground grid's colours, display-referred (sRGB-encoded, like the theme
 /// tokens they come from): blends of the scene backdrop toward its foreground.
@@ -105,8 +101,7 @@ struct GridColors {
 
 /// Grid colours for a theme's backdrop and foreground (display-referred 0..1):
 /// lines at 0.35 of the way to the foreground, tiles at 0.10 and 0.24, so the
-/// lines read clearly on top of the fill. Double math: the GL view linearizes
-/// these on the CPU, and its pixels must not move by a rounding step.
+/// lines read clearly on top of the fill.
 inline GridColors gridColors(const glm::dvec3& backdrop, const glm::dvec3& foreground) {
   const auto blend = [&](double fraction) { return backdrop * (1.0 - fraction) + foreground * fraction; };
   return {blend(0.35), blend(0.10), blend(0.24)};
@@ -129,8 +124,8 @@ inline constexpr glm::vec3 kHudTriadZ{0.40f, 0.55f, 1.00f};
 
 namespace pj::scene3d {
 
-// Composite/look knobs of a view's present pass (both renderers; read every
-// frame, so call the view's update() after changing them).
+// Composite/look knobs of a view's present pass (read every frame, so call the
+// view's update() after changing them).
 struct CompositeParams {
   int tonemap_mode = look::kTonemapMode;  // 0 None, 1 ACES, 2 AgX, 3 Khronos PBR Neutral
   float exposure = look::kExposure;

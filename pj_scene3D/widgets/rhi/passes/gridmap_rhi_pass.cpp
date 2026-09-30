@@ -31,7 +31,7 @@ struct alignas(16) GridMapUniforms {
 constexpr quint32 kUniformBytes = sizeof(GridMapUniforms);
 static_assert(kUniformBytes == 304U);
 
-// The staged grid has quads and a complete payload (the GL pass's setGrid check).
+// The staged grid has quads and a complete payload.
 bool drawable(const GridMapUpload& grid) {
   const std::uint64_t cells = static_cast<std::uint64_t>(grid.column_count) * grid.row_count;
   const bool have_elevation = grid.elevation.size() == cells;
@@ -84,7 +84,7 @@ bool GridMapRhiPass::initialize(const RhiPassSetup& setup) {
       .bindings = layout_shader_resources_,  // procedural: gl_VertexIndex only, no vertex input
   };
   opaque_pipeline_ = createScenePipeline(setup, desc);
-  desc.depth_write = false;  // depth test only, like the GL pass
+  desc.depth_write = false;  // depth test only
   translucent_pipeline_ = createScenePipeline(setup, desc);
   return ready();
 }

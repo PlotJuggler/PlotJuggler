@@ -300,8 +300,8 @@ TEST(MeshLoaderTest, EmbeddedGlbExtractsBaseColorTextureAndPbrFactors) {
 
 // The W19i fixture carries all five glTF metallic-roughness material maps in
 // one GLB. Each must remain an inline encoded capability with a stable content
-// key so both the native and QRhi renderers can apply their slot-specific color
-// space without reopening a path.
+// key so the renderer can apply its slot-specific color space without reopening
+// a path.
 TEST(MeshLoaderTest, EmbeddedPbrGlbExtractsAllFiveMaterialMaps) {
   MeshLoader loader;
   const QByteArray bytes = readFixtureBytes("embedded_pbr.glb");
@@ -366,7 +366,7 @@ TEST(MeshLoaderTest, EmbeddedNeutralGlbIsAMapFreeOpaqueControl) {
 
 // The embedded-texture cache key is a content hash, so re-loading the same bytes
 // yields the same key — this is what lets the renderer's per-context texture
-// cache survive GL-context recreation and dedup identical embedded images.
+// cache survive a QRhi recreation and dedup identical embedded images.
 TEST(MeshLoaderTest, EmbeddedTextureKeyIsStableAcrossLoads) {
   MeshLoader loader;
   const QByteArray bytes = readFixtureBytes("embedded_base.glb");

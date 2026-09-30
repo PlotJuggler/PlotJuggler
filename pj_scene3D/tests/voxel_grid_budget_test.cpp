@@ -24,11 +24,6 @@ TEST(VoxelGridBudget, DimensionsRejectDegenerateAndOverflowingProducts) {
       std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max(), 2, kBrowserSceneLimits));
 }
 
-TEST(VoxelGridBudget, PayloadBoundaryIsInclusive) {
-  EXPECT_TRUE(voxelPayloadFits(kBrowserSceneLimits.max_voxel_wire_bytes, kBrowserSceneLimits));
-  EXPECT_FALSE(voxelPayloadFits(kBrowserSceneLimits.max_voxel_wire_bytes + 1U, kBrowserSceneLimits));
-}
-
 TEST(VoxelGridBudget, AggregateConsumptionCannotUnderflow) {
   std::uint64_t remaining = 10;
   EXPECT_FALSE(tryConsumeBudget(11, remaining));

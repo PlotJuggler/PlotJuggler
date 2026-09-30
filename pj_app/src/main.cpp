@@ -50,7 +50,6 @@
 #include "pj_datastore/data_processor.hpp"
 #include "pj_datastore/processor_detail.hpp"
 #include "pj_plotting/PlotWidgetBase.h"
-#include "pj_plotting/RasterTextEngine.h"
 #ifndef PJ_TARGET_WASM
 #include "pj_runtime/PluginRuntimeCatalog.h"
 #include "pj_scripting/filter_catalogue.h"
@@ -223,25 +222,6 @@ int main(int argc, char* argv[]) {
   // and the underline-mnemonic decoration.
   QApplication::setStyle(new PJ::Style(u"Fusion"_s));
 
-  // NOTE: we deliberately do NOT set Qt::AA_ShareOpenGLContexts. It was once set
-  // so a 3D scene's GL resources would survive a QOpenGLWidget context
-  // recreation on ADS reparent — but it put every SceneViewWidget's context into
-  // a single share group, and destroying one view's context (closing/splitting a
-  // 3D dock) corrupted the VAO/FBO state of the sibling views still on screen
-  // (a glBindVertexArray(non-gen name) flood + the map texture vanishing in the
-  // surviving view). With each view's GL context fully independent, tearing one
-  // down can no longer touch the others. The original "survive a context
-  // recreation" concern is handled instead inside pj_scene3D: every render pass
-  // and layer implements releaseGL(), and SceneViewWidget rebuilds its GL state
-  // in initializeGL() — so a recreated context self-heals rather than relying on
-  // a process-wide share group.
-
-  // GL-safe on-canvas text (legend/tracker): must run before ANY QwtText is
-  // constructed — Qwt deletes the engines this replaces while existing
-  // QwtText objects still hold raw pointers to them. See RasterTextEngine.h.
-  PJ::installRasterTextEngines();
-
-#ifdef PJ_RHI_WIDGETS
   // ADS calls winId() on every floating dock container, a window parented to the
   // dock manager, and by default Qt then makes all the manager's children native:
   // the docked area becomes a native child window. Under Vulkan on Wayland that
@@ -256,7 +236,6 @@ int main(int argc, char* argv[]) {
   core_format.setVersion(4, 1);
   core_format.setProfile(QSurfaceFormat::CoreProfile);
   QSurfaceFormat::setDefaultFormat(core_format);
-#endif
 #endif
   QApplication app(argc, argv);
   // Fixes (and logs) the graphics API, with its Metal-to-OpenGL fallback, before
@@ -353,12 +332,12 @@ int main(int argc, char* argv[]) {
   const QCommandLineOption debug_mode_option(
       u"debug-mode"_s, u"Reveal developer-only preferences and tooling that are hidden in normal runs."_s);
   parser.addOption(debug_mode_option);
-  const QCommandLineOption disable_opengl_option(
+  const QCommandLineOption disable_gpu_canvas_option(
       u"disable-opengl"_s,
       QStringLiteral(
           "Force plots onto the software raster canvas for this session, overriding the saved GPU canvas "
           "preference (does not change it)."));
-  parser.addOption(disable_opengl_option);
+  parser.addOption(disable_gpu_canvas_option);
   // Headless 3D capture for verification: after --screenshot-delay ms (enough for an
   // async --layout load + a couple seconds of --autoplay to pose the robot), grab the
   // first SceneViewWidget's framebuffer to a PNG and quit. GNOME Wayland blocks
@@ -430,9 +409,9 @@ int main(int argc, char* argv[]) {
   // reads it to decide whether to show the chrome-metric scrubbers).
   PJ::setDebugMode(parser.isSet(debug_mode_option));
 
-  // Session-only OpenGL override: applied before any plot is constructed so the
+  // Session-only GPU-canvas override: applied before any plot is constructed so the
   // first plot already honours it. Leaves Preferences::use_opengl untouched.
-  PJ::PlotWidgetBase::setOpenGlDisabledOverride(parser.isSet(disable_opengl_option));
+  PJ::PlotWidgetBase::setGpuCanvasDisabledOverride(parser.isSet(disable_gpu_canvas_option));
 
   // Dev preview (disabled, kept for future tweaks): render the configured splash
   // to a PNG and exit — lets us inspect the "serious" splash without launching
@@ -615,16 +594,11 @@ int main(int argc, char* argv[]) {
       if (views.isEmpty()) {
         std::fprintf(stderr, "[screenshot] no 3D SceneViewWidget found\n");
       } else {
-        // Renders a fresh frame on either renderer, possibly after returning to
-        // the event loop (see grabPresentedFrame()).
+        // Renders a fresh frame, possibly after returning to the event loop
+        // (see grabPresentedFrame()).
         pj::scene3d::SceneViewWidget* view = views.first();
         view->grabPresentedFrame([path, view](const QImage& img) {
-#ifdef PJ_SCENE3D_RHI
-          std::printf("[screenshot] graphics backend: %s\n", qPrintable(view->rhiBackendNameForTest()));
-#else
-          Q_UNUSED(view);
-          std::printf("[screenshot] graphics backend: OpenGL\n");
-#endif
+          std::printf("[screenshot] graphics backend: %s\n", qPrintable(view->rhiBackendName()));
           const QImage rgb = img.convertToFormat(QImage::Format_RGB32);
           const QRgb first = rgb.isNull() ? 0 : rgb.pixel(0, 0);
           bool blank = true;

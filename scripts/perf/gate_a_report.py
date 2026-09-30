@@ -2,32 +2,45 @@
 # SPDX-License-Identifier: MPL-2.0
 """Gate A table from a scripts/perf/gate_a.sh run directory.
 
-    gate_a_report.py DIR [--self-test]
+    gate_a_report.py DIR [--baseline RUN_DIR] [--self-test]
 
 Reads DIR/raw/<round>/<config>__<case>.log, takes each metric's per-run value
 (the benchmark's own median of its frames), and writes DIR/gate_a.md: the median
-of the rounds with [min-max], the RHI GL / GL ratio and the verdict under the
-Gate A rules (pj_scene3D/docs/TECHNICAL_NOTES.md §9):
+of the rounds with [min-max], the candidate / reference ratio and the verdict
+under the Gate A rules (pj_scene3D/docs/TECHNICAL_NOTES.md §9):
 
-  time (wall, GUI CPU):  RHI <= max(1.2 x GL, GL + 1 ms)
-  memory (RSS, GPU):     RHI <= 1.10 x GL
+  time (wall, GUI CPU):  RHI <= max(1.2 x REF, REF + 1 ms)
+  memory (RSS, GPU):     RHI <= 1.10 x REF
   absolute budgets:      the row's own limit (a 16.7 ms streaming plot, ...)
   idle frames:           0
 
-Verdicts are on RHI GL (Linux's native backend); RHI VK is for reference.
+The candidate is config rhi_gl (Linux's native backend); rhi_vk is for
+reference. The reference REF is RUN_DIR's rhi_gl runs (a frozen baseline run)
+or, without --baseline, DIR's config base (a baseline tree measured in the same
+rounds). A gated row is also "**regressed**" when, over at least 3 complete
+rounds each, every candidate round is worse than every
+baseline round (min > max) and the median by more than 2%: a reproducible
+regression the broad ratios above would let through.
+
 A row is "pass" only when every gated measurement exists in every round (any
-config's round directory counts), from runs that exited cleanly (gate_a.sh
-appends each run's exit status to its log): a missing or failed run makes it
-"incomplete", unless a measurement that does exist already fails the row. The
-idle row needs every case of IDLE_CASES in every round.
+config's round directory of the same run counts), from runs that exited cleanly
+(gate_a.sh appends each run's exit status to its log): a missing or failed run
+makes it "incomplete", unless a measurement that does exist already fails the
+row. The idle row needs every case of IDLE_CASES in every round.
 """
 
+import argparse
 import pathlib
 import shlex
 import statistics
-import sys
+from typing import NamedTuple
 
-CONFIGS = ("gl", "rhi_gl", "rhi_vk")
+
+class Reference(NamedTuple):
+    """Where the reference column comes from: `runs` (a load()) and its config."""
+    runs: dict
+    config: str
+    label: str
 
 
 def parse_line(line):
@@ -95,16 +108,16 @@ def fmt(m, spread=False, digits=1):
     return text
 
 
-def time_ok(gl, rhi):
-    return rhi <= max(1.2 * gl, gl + 1.0)
+def time_ok(ref, rhi):
+    return rhi <= max(1.2 * ref, ref + 1.0)
 
 
-def mem_ok(gl, rhi):
-    return rhi <= 1.10 * gl
+def mem_ok(ref, rhi):
+    return rhi <= 1.10 * ref
 
 
 # Each row: (label, [(case, key, rule)], note). rule: "time", "mem", ("max", limit),
-# "zero", or None (reported, not gated). Plot rows: config gl is Qwt's GL canvas.
+# or None (reported, not gated); the idle row is "idle".
 ROWS = [
     ("Cloud 10M static: wall / CPU ms", [("CloudStatic", "wall_ms", "time"), ("CloudStatic", "cpu_ms", "time")]),
     ("Cloud 10M static: RSS MiB", [("CloudStatic", "rss_mib", "mem")]),
@@ -151,16 +164,33 @@ def complete(measured):
     return measured is not None and measured[3] == 0
 
 
-def verdict_of(runs, cells):
-    """(ratio text, verdict) of one row, judged on RHI GL: pass, **fail** or incomplete."""
+# A regression against a QRhi baseline must show in every one of at least this
+# many rounds on both sides, and move the median by more than REGRESSION_MARGIN.
+REGRESSION_ROUNDS = 3
+REGRESSION_MARGIN = 0.02
+
+
+def reproducibly_worse(ref, runs, base, rhi):
+    """Every candidate round is worse than every baseline round (min > max), over
+    complete runs of REGRESSION_ROUNDS or more, by more than the margin: outside
+    measurement noise, where the broad Gate A ratios would still pass."""
+    enough = min(len(rounds_of(ref.runs)), len(rounds_of(runs))) >= REGRESSION_ROUNDS
+    return (enough and complete(base) and complete(rhi) and rhi[1] > base[2] and
+            rhi[0] > (1.0 + REGRESSION_MARGIN) * base[0])
+
+
+def verdict_of(ref, runs, cells):
+    """(ratio text, verdict) of one row, judged on the candidate's rhi_gl against
+    `ref`: pass, **fail**, **regressed** or incomplete."""
     ratios = []
     failed = False
+    regressed = False
     incomplete = False
     for case, key, rule in cells:
-        gl = metric(runs, "gl", case, key)
+        base = metric(ref.runs, ref.config, case, key)
         rhi = metric(runs, "rhi_gl", case, key)
         if rule is None:  # reported, not gated
-            ratios.append(f"{rhi[0] / gl[0]:.2f}x" if rhi and gl and gl[0] else "–")
+            ratios.append(f"{rhi[0] / base[0]:.2f}x" if rhi and base and base[0] else "–")
             continue
         if rhi is None:
             ratios.append("–")
@@ -170,19 +200,23 @@ def verdict_of(runs, cells):
         if isinstance(rule, tuple):
             ok = rhi[0] <= rule[1]
             ratios.append(f"limit {rule[1]:g}")
-        elif gl is None or not gl[0]:
+        elif base is None or not base[0]:
             ratios.append("–")
             incomplete = True
             continue
         else:
-            incomplete = incomplete or not complete(gl)
-            ok = time_ok(gl[0], rhi[0]) if rule == "time" else mem_ok(gl[0], rhi[0])
-            text = f"{rhi[0] / gl[0]:.2f}x"
+            incomplete = incomplete or not complete(base)
+            ok = time_ok(base[0], rhi[0]) if rule == "time" else mem_ok(base[0], rhi[0])
+            text = f"{rhi[0] / base[0]:.2f}x"
             if rule == "time" and not ok:
-                text += f" (limit {max(1.2 * gl[0], gl[0] + 1.0):.1f})"
+                text += f" (limit {max(1.2 * base[0], base[0] + 1.0):.1f})"
+            if reproducibly_worse(ref, runs, base, rhi):
+                regressed = True
+                text += " (every round worse)"
             ratios.append(text)
         failed = failed or not ok
-    return " / ".join(ratios), "**fail**" if failed else "incomplete" if incomplete else "pass"
+    verdict = "**fail**" if failed else "**regressed**" if regressed else "incomplete" if incomplete else "pass"
+    return " / ".join(ratios), verdict
 
 
 # The cases whose benchmark reports idle_frames (scene3d_frame_benchmark, the mixed layout).
@@ -190,51 +224,71 @@ IDLE_CASES = ("CloudStatic", "CloudStream", "CubesAndLinesOrbit", "MarkersPanFol
               "Layers10", "Layers100", "Layers1000", "DockMovesCloud", "DockMovesRobot", "FirstShow", "mixed")
 
 
-def idle_row(runs):
-    """The worst idle_frames per config; RHI GL fails on any non-zero, and is
+def worst_idle(runs, config):
+    """(worst idle_frames of `config` over IDLE_CASES and rounds or None, whether any is missing)."""
+    worst = None
+    missing = False
+    for case in IDLE_CASES:
+        results = runs.get((config, case), {})
+        for rnd in rounds_of(runs):
+            result = results.get(rnd)
+            if result is None or "idle_frames" not in result:
+                missing = True
+                continue
+            worst = max(worst or 0, int(result["idle_frames"]))
+    return worst, missing
+
+
+def columns(ref, runs):
+    """The table's (runs, config) per column: the reference, the candidate on OpenGL, on Vulkan."""
+    return {"ref": (ref.runs, ref.config), "rhi_gl": (runs, "rhi_gl"), "rhi_vk": (runs, "rhi_vk")}
+
+
+def idle_row(ref, runs):
+    """The worst idle_frames per column; rhi_gl fails on any non-zero, and is
     incomplete unless every case of IDLE_CASES reported in every round."""
-    rounds = rounds_of(runs)
     cells = {}
-    incomplete = not rounds
-    for config in CONFIGS:
-        worst = None
-        for case in IDLE_CASES:
-            results = runs.get((config, case), {})
-            for rnd in rounds:
-                result = results.get(rnd)
-                if result is None or "idle_frames" not in result:
-                    incomplete = incomplete or config == "rhi_gl"
-                    continue
-                worst = max(worst or 0, int(result["idle_frames"]))
-        cells[config] = "–" if worst is None else str(worst)
+    for column, (column_runs, config) in columns(ref, runs).items():
+        worst, missing = worst_idle(column_runs, config)
+        cells[column] = "–" if worst is None else str(worst)
+        if column == "rhi_gl":
+            incomplete = missing or not rounds_of(runs)
     if cells["rhi_gl"] not in ("0", "–"):
         return cells, "**fail**"
     return cells, "incomplete" if incomplete or cells["rhi_gl"] == "–" else "pass"
 
 
-def report(out_dir):
+def reference_of(runs, baseline_dir):
+    """The reference column: a baseline run directory's rhi_gl, else this run's base."""
+    if baseline_dir is not None:
+        return Reference(load(baseline_dir), "rhi_gl", f"Baseline ({baseline_dir.name})")
+    return Reference(runs, "base", "Baseline")
+
+
+def report(out_dir, baseline_dir=None):
     runs = load(out_dir)
+    ref = reference_of(runs, baseline_dir)
     lines = [
-        "| Row | GL build | RHI GL | Ratio (RHI GL) | Verdict | RHI VK |",
+        f"| Row | {ref.label} | RHI GL | Ratio (RHI GL) | Verdict | RHI VK |",
         "|---|---|---|---|---|---|",
     ]
     for label, cells in ROWS:
         if cells == "idle":
-            values, verdict = idle_row(runs)
-            lines.append(f"| {label} | {values['gl']} | {values['rhi_gl']} | – | {verdict} | {values['rhi_vk']} |")
+            values, verdict = idle_row(ref, runs)
+            lines.append(f"| {label} | {values['ref']} | {values['rhi_gl']} | – | {verdict} | {values['rhi_vk']} |")
             continue
-        columns = {}
-        for config in CONFIGS:
-            columns[config] = " / ".join(
-                fmt(metric(runs, config, case, key), spread=True) for case, key, _rule in cells)
-        ratio, verdict = verdict_of(runs, cells)
+        values = {
+            column: " / ".join(fmt(metric(column_runs, config, case, key), spread=True) for case, key, _rule in cells)
+            for column, (column_runs, config) in columns(ref, runs).items()
+        }
+        ratio, verdict = verdict_of(ref, runs, cells)
         lines.append(
-            f"| {label} | {columns['gl']} | {columns['rhi_gl']} | {ratio} | {verdict} | {columns['rhi_vk']} |")
+            f"| {label} | {values['ref']} | {values['rhi_gl']} | {ratio} | {verdict} | {values['rhi_vk']} |")
     meta = out_dir / "meta.txt"
     header = meta.read_text() if meta.exists() else ""
     rounds = len(rounds_of(runs))
     text = (f"# Gate A\n\n```\n{header}```\n\nMedian of {rounds} rounds, [min–max] where the spread "
-            "exceeds 10%. Plot rows: GL build = Qwt's GL canvas.\n\n" + "\n".join(lines) + "\n")
+            f"exceeds 10%. Reference: {ref.label}, {len(rounds_of(ref.runs))} rounds.\n\n" + "\n".join(lines) + "\n")
     (out_dir / "gate_a.md").write_text(text)
     print(text)
 
@@ -248,45 +302,75 @@ def self_test():
     def by_round(*results):  # {round: result}, rounds numbered from 1
         return {str(i + 1): result for i, result in enumerate(results)}
 
-    runs = {("gl", "c"): by_round({"k": "1"}, {"k": "3"}, None), ("rhi_gl", "c"): by_round({"k": "4"})}
-    assert metric(runs, "gl", "c", "k") == (2.0, 1.0, 3.0, 1)
+    def verdict(runs, cells):  # judged against this run's base
+        return verdict_of(Reference(runs, "base", "base"), runs, cells)[1]
+
+    runs = {("base", "c"): by_round({"k": "1"}, {"k": "3"}, None), ("rhi_gl", "c"): by_round({"k": "4"})}
+    assert metric(runs, "base", "c", "k") == (2.0, 1.0, 3.0, 1)
     assert metric(runs, "rhi_gl", "c", "k") == (4.0, 4.0, 4.0, 2)  # rounds 2 and 3 never ran
-    assert verdict_of(runs, [("c", "k", "time")])[1] == "**fail**"  # a real failure wins
-    good = {("gl", "c"): by_round({"k": "10"}, {"k": "10"}), ("rhi_gl", "c"): by_round({"k": "11"}, {"k": "11"})}
-    assert verdict_of(good, [("c", "k", "time")])[1] == "pass"
-    assert verdict_of({}, [("c", "k", "time")])[1] == "incomplete"  # nothing ran
-    no_rhi = {("gl", "c"): by_round({"k": "10"}), ("rhi_gl", "c"): by_round(None, None)}
-    assert verdict_of(no_rhi, [("c", "k", "time")])[1] == "incomplete"  # every RHI run failed
-    mixed = {("gl", "c"): by_round({"k": "10"}, {"k": "10"}), ("rhi_gl", "c"): by_round({"k": "10"}, None)}
-    assert verdict_of(mixed, [("c", "k", "time")])[1] == "incomplete"  # a pass beside a failed run
-    one_rhi_round = {("gl", "c"): by_round(*[{"k": "10"}] * 5), ("rhi_gl", "c"): by_round({"k": "10"})}
-    assert verdict_of(one_rhi_round, [("c", "k", "time")])[1] == "incomplete"  # 4 RHI rounds missing
-    one_gl_round = {("gl", "c"): by_round({"k": "10"}), ("rhi_gl", "c"): by_round(*[{"k": "10"}] * 5)}
-    assert verdict_of(one_gl_round, [("c", "k", "time")])[1] == "incomplete"  # 4 baseline rounds missing
+    assert verdict(runs, [("c", "k", "time")]) == "**fail**"  # a real failure wins
+    good = {("base", "c"): by_round({"k": "10"}, {"k": "10"}), ("rhi_gl", "c"): by_round({"k": "11"}, {"k": "11"})}
+    assert verdict(good, [("c", "k", "time")]) == "pass"
+    assert verdict({}, [("c", "k", "time")]) == "incomplete"  # nothing ran
+    no_rhi = {("base", "c"): by_round({"k": "10"}), ("rhi_gl", "c"): by_round(None, None)}
+    assert verdict(no_rhi, [("c", "k", "time")]) == "incomplete"  # every RHI run failed
+    mixed = {("base", "c"): by_round({"k": "10"}, {"k": "10"}), ("rhi_gl", "c"): by_round({"k": "10"}, None)}
+    assert verdict(mixed, [("c", "k", "time")]) == "incomplete"  # a pass beside a failed run
+    one_rhi_round = {("base", "c"): by_round(*[{"k": "10"}] * 5), ("rhi_gl", "c"): by_round({"k": "10"})}
+    assert verdict(one_rhi_round, [("c", "k", "time")]) == "incomplete"  # 4 RHI rounds missing
+    one_base_round = {("base", "c"): by_round({"k": "10"}), ("rhi_gl", "c"): by_round(*[{"k": "10"}] * 5)}
+    assert verdict(one_base_round, [("c", "k", "time")]) == "incomplete"  # 4 baseline rounds missing
     no_base = {("rhi_gl", "c"): by_round({"k": "1"})}
-    assert verdict_of(no_base, [("c", "k", "time")])[1] == "incomplete"  # no GL baseline
-    assert verdict_of(no_base, [("c", "k", ("max", 2.0))])[1] == "pass"  # absolute limits need none
-    assert verdict_of({("gl", "c"): by_round({"k": "1"})}, [("c", "k", None)])[1] == "pass"  # not gated
+    assert verdict(no_base, [("c", "k", "time")]) == "incomplete"  # no reference
+    assert verdict(no_base, [("c", "k", ("max", 2.0))]) == "pass"  # absolute limits need none
+    assert verdict({("base", "c"): by_round({"k": "1"})}, [("c", "k", None)]) == "pass"  # not gated
+    # Within the broad ratio but worse in every round: a regression.
+    def rounds(*values):
+        return by_round(*[{"k": str(v)} for v in values])
+
+    base = {("base", "c"): rounds(10, 10.2, 10.1), ("rhi_gl", "c"): rounds(10.5, 11, 10.6)}
+    assert verdict(base, [("c", "k", "time")]) == "**regressed**"
+    noisy = {("base", "c"): rounds(10, 11, 10), ("rhi_gl", "c"): rounds(10.5, 11, 10.6)}
+    assert verdict(noisy, [("c", "k", "time")]) == "pass"  # overlapping rounds: noise
+    two = {("base", "c"): rounds(10, 10.2), ("rhi_gl", "c"): rounds(10.5, 11)}
+    assert verdict(two, [("c", "k", "time")]) == "pass"  # too few rounds to tell
+    tiny = {("base", "c"): rounds(245.7, 245.7, 245.7), ("rhi_gl", "c"): rounds(245.8, 245.8, 245.8)}
+    assert verdict(tiny, [("c", "k", "mem")]) == "pass"  # within the margin
     idle = {("rhi_gl", case): by_round({"idle_frames": "0"}, {"idle_frames": "0"}) for case in IDLE_CASES}
-    assert idle_row({})[1] == "incomplete"
-    assert idle_row(idle)[1] == "pass"
-    assert idle_row({("rhi_gl", "mixed"): by_round({"idle_frames": "0"})})[1] == "incomplete"  # other cases missing
-    assert idle_row({**idle, ("rhi_gl", "mixed"): by_round({"idle_frames": "0"})})[1] == "incomplete"  # a round
-    assert idle_row({**idle, ("rhi_gl", "mixed"): by_round({"idle_frames": "0"}, None)})[1] == "incomplete"
-    assert idle_row({**idle, ("rhi_gl", "mixed"): by_round({"idle_frames": "2"}, None)})[1] == "**fail**"
+    def idle_verdict(runs):
+        return idle_row(Reference(runs, "base", "base"), runs)[1]
+    assert idle_verdict({}) == "incomplete"
+    assert idle_verdict(idle) == "pass"
+    assert idle_verdict({("rhi_gl", "mixed"): by_round({"idle_frames": "0"})}) == "incomplete"  # other cases missing
+    assert idle_verdict({**idle, ("rhi_gl", "mixed"): by_round({"idle_frames": "0"})}) == "incomplete"  # a round
+    assert idle_verdict({**idle, ("rhi_gl", "mixed"): by_round({"idle_frames": "0"}, None)}) == "incomplete"
+    assert idle_verdict({**idle, ("rhi_gl", "mixed"): by_round({"idle_frames": "2"}, None)}) == "**fail**"
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         raw = pathlib.Path(tmp) / "raw" / "1"
         raw.mkdir(parents=True)
         (raw / "rhi_gl__c.log").write_text("S3D_BENCH k=1\nGATE_RUN_EXIT=134\n")
-        (raw / "gl__c.log").write_text("S3D_BENCH k=1\nGATE_RUN_EXIT=0\n")
+        (raw / "base__c.log").write_text("S3D_BENCH k=1\nGATE_RUN_EXIT=0\n")
         loaded = load(pathlib.Path(tmp))
-        assert loaded[("rhi_gl", "c")] == {"1": None} and loaded[("gl", "c")] == {"1": {"k": "1"}}
+        assert loaded[("rhi_gl", "c")] == {"1": None} and loaded[("base", "c")] == {"1": {"k": "1"}}
+        # A baseline run directory: its rhi_gl runs, over its own rounds.
+        (raw.parent / "2").mkdir()
+        (raw.parent / "2" / "rhi_gl__c.log").write_text("S3D_BENCH k=3\nGATE_RUN_EXIT=0\n")
+        ref = reference_of({("rhi_gl", "c"): by_round({"k": "1"})}, pathlib.Path(tmp))
+        assert ref.config == "rhi_gl" and metric(ref.runs, ref.config, "c", "k") == (3.0, 3.0, 3.0, 1)
+        assert reference_of({("base", "c"): {}}, None).config == "base"
     print("self-test ok")
 
 
 if __name__ == "__main__":
-    if "--self-test" in sys.argv:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("dir", nargs="?", type=pathlib.Path)
+    parser.add_argument("--baseline", type=pathlib.Path, help="a frozen gate_a.sh run whose rhi_gl is the reference")
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+    if args.self_test:
         self_test()
+    elif args.dir is None:
+        parser.error("DIR is required")
     else:
-        report(pathlib.Path(sys.argv[1]))
+        report(args.dir, args.baseline)

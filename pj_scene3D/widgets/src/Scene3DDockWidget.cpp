@@ -47,7 +47,6 @@
 #include "pj_scene3d_widgets/layers/trail_layer.h"
 #include "pj_scene3d_widgets/layers/voxel_grid_layer.h"
 #include "pj_scene3d_widgets/object_topic_metadata.h"
-#include "pj_scene3d_widgets/render_pass.h"
 #include "pj_scene3d_widgets/resolve_object.h"
 #include "pj_scene3d_widgets/scene_state_xml.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
@@ -346,7 +345,7 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   // Camera-model selector + Home button — same styled overlay control as the
   // fixed-frame combo (a pj_widgets ComboBox), anchored top-right just left of
   // the orientation gizmo. Children of `this` (NOT view_) so they layer above
-  // the QOpenGLWidget without fighting ADS's native-window flags. addItems()
+  // the view without fighting ADS's native-window flags. addItems()
   // before connect() avoids a spurious callback into a not-yet-constructed view
   // during the ctor.
   camera_model_combo_ = new ComboBox(this);
@@ -382,9 +381,7 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
     }
   });
 
-#ifdef PJ_SCENE3D_RHI
   rendering_warning_label_ = PJ::createRenderingWarningLabel(this, u"scene3dRenderingWarning"_s);
-#endif
 
   // Forget a removed topic's cached orphan/warning state. pj_app drives its UI
   // off the base SceneDockWidget layer* signals directly, so no relay is needed.
@@ -401,12 +398,11 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
 }
 
 Scene3DDockWidget::~Scene3DDockWidget() {
-  // Release the view's layer references — and their GL resources — while this
-  // concrete class is still alive: clearLayers() reconciles the view through
-  // syncViewLayers(), which the base destructor can no longer dispatch to us.
-  // Without this, SceneViewWidget::layers_ would dangle over the destroyed
-  // layers and releaseGlResources()/setLayers() would dereference freed
-  // memory (and the layers' GL objects would die without a current context).
+  // Release the view's layer references while this concrete class is still
+  // alive: clearLayers() reconciles the view through syncViewLayers(), which the
+  // base destructor can no longer dispatch to us. Without this,
+  // SceneViewWidget::layers_ would dangle over the destroyed layers and the
+  // view's teardown would dereference freed memory.
   clearLayers();
 }
 
@@ -799,7 +795,7 @@ void Scene3DDockWidget::onTrackerTime(double time) {
   // the layers, and — only when the visible scene would actually differ at this
   // time — calls refreshView() (below), which pushes the render time into the view.
   // When nothing moved the base returns without painting, so a 60 Hz playhead over
-  // <10 Hz data (or a static pose) no longer repaints the GL view every tick. The
+  // <10 Hz data (or a static pose) no longer repaints the view every tick. The
   // view's setTrackerTime/bounds therefore live in refreshView(), not here, so they
   // are gated together with the repaint.
   SceneDockWidget::onTrackerTime(time);
@@ -823,13 +819,11 @@ QWidget* Scene3DDockWidget::createSceneView() {
     view_->setCameraModel(static_cast<SceneViewWidget::CameraModel>(camera_model_combo_->currentIndex()));
   }
   connect(view_, &pj::scene3d::SceneViewWidget::framesChanged, this, &Scene3DDockWidget::onAvailableFrames);
-#ifdef PJ_SCENE3D_RHI
   connect(view_, &SceneViewWidget::renderingWarningChanged, this, [this](const QString& warning) {
     rendering_warning_label_->setText(warning);
     rendering_warning_label_->setVisible(!warning.isEmpty());
     layoutFrameOverlayCombo();
   });
-#endif
   // Right-click on a frame gizmo: the view picks the frame (hover machinery)
   // and the dock owns the menu — trail creation plus two one-click conveniences
   // over existing dock APIs. Empty-space right-clicks never reach here (the
@@ -1404,7 +1398,6 @@ void Scene3DDockWidget::layoutFrameOverlayCombo() {
     camera_model_combo_->setGeometry(left_x, top_y, cam_w, cam_h);
     camera_model_combo_->raise();
   }
-#ifdef PJ_SCENE3D_RHI
   if (rendering_warning_label_->isVisible()) {
     const int warning_w = std::max(120, view_->width() - 2 * kMargin);
     const int warning_h = rendering_warning_label_->heightForWidth(warning_w);
@@ -1412,7 +1405,6 @@ void Scene3DDockWidget::layoutFrameOverlayCombo() {
         view_origin.x() + kMargin, view_origin.y() + view_->height() - kMargin - warning_h, warning_w, warning_h);
     rendering_warning_label_->raise();
   }
-#endif
 }
 
 void Scene3DDockWidget::resizeEvent(QResizeEvent* event) {

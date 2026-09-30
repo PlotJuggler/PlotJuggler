@@ -37,7 +37,7 @@ class LegendTextDiagnosticsEnvironment : public ::testing::Environment {
       if (suite->should_run() && std::string_view(suite->name()) == "LegendTextDiagnostics") {
         // Must be set before the first legend paint: PlotLegend reads it once (static).
         qputenv("PJ_PLOT_TEXT_DEBUG", "1");
-        // Force the raster canvas so the test needs no GL context; QwtPlotRenderer
+        // Force the raster canvas so the test needs no GPU; QwtPlotRenderer
         // draws via QPainter regardless, exercising the same drawLegendData path.
         QSettings().setValue(u"Preferences::use_opengl"_s, false);
         return;
@@ -90,7 +90,7 @@ class TestablePlotWidget : public PJ::PlotWidget {
 // A legend paint with the env var set must emit a "[PJ_PLOT_TEXT_DEBUG] legend"
 // line naming the entry's title and failure flags. QwtPlotRenderer draws the
 // in-canvas legend item synchronously, so this does not depend on paint-event
-// timing or the (GL) canvas backing store.
+// timing or the (GPU) canvas backing store.
 TEST(LegendTextDiagnostics, FiresOnLegendPaint) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);

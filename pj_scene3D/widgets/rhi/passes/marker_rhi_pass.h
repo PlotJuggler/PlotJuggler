@@ -91,11 +91,11 @@ class MarkerUploadArray {
 /// without any frame (the view renders nothing while settled). The layer's model
 /// primitives belong to ModelRhiPass. Per frame the view calls admit() (once),
 /// prepare() (once), then submit() per ScenePass for each draw. Markers cast no
-/// shadows (as on GL); the layer's model primitives do, through ModelRhiPass.
+/// shadows; the layer's model primitives do, through ModelRhiPass.
 class MarkerRhiPass {
  public:
   /// kCubeEdges: the cube fill's instance range again, drawn as the twelve box
-  /// edges by marker_edge.vert (facing-dependent colour, as on GL).
+  /// edges by marker_edge.vert (facing-dependent colour).
   enum class Kind : std::uint8_t { kInstanceTriangles, kInstanceLines, kCubeEdges, kStreamTriangles, kStreamLines };
 
   /// One prepared range of a layer: `offset`/`count` index `buffer`, the layer's
@@ -139,7 +139,7 @@ class MarkerRhiPass {
   /// frame. A layer whose buffers cannot be allocated has
   /// no draws this frame and retries the next.
   void prepare(const RhiFrameContext& frame);
-  /// The prepared ranges of `layer` in native family order.
+  /// The prepared ranges of `layer`, in submission order.
   [[nodiscard]] std::span<const Draw> drawsFor(const SceneEntitiesLayer* layer) const {
     return findDraws(draws_, layer);
   }
@@ -321,7 +321,7 @@ class MarkerRhiPass {
   enum Pipeline : std::uint8_t {
     kTrianglePipeline,
     kTriangleCullPipeline,
-    // The cube fill, depth-biased away from the camera (GL's glPolygonOffset(1, 1))
+    // The cube fill, depth-biased away from the camera (a polygon offset of 1, 1)
     // so its edges, drawn at the exact depth, win the depth test.
     kCubeFillPipeline,
     kEdgePipeline,
@@ -333,7 +333,6 @@ class MarkerRhiPass {
   /// [pipeline][depth_write]
   std::array<std::array<QRhiGraphicsPipeline*, 2>, kPipelineCount> pipelines_{};
   std::array<MeshGpu, 5> meshes_{};
-  bool mesh_upload_pending_ = false;
 
   std::vector<SceneEntitiesLayer*> layers_;
   std::unordered_map<SceneEntitiesLayer*, LayerGpu> layer_gpu_;

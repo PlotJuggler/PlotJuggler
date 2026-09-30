@@ -1029,7 +1029,7 @@ TEST(SceneDockWidgetTest, ViewRenderKeyChangeRepaintsDespiteStableLayers) {
 // concrete view off the old layers (a sync with an empty order) BEFORE any of
 // them is destroyed: a view holding raw layer pointers (e.g. the 3D
 // SceneViewWidget's layer list) otherwise dereferences freed layers when it
-// reconciles, and the layers' GL resources die without a release hook.
+// reconciles, and never releases the GPU state it holds for them.
 TEST(SceneDockWidgetTest, ClearLayersRepointsViewBeforeDestroyingLayers) {
   FakeSceneDock dock;
   ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"a"_s));

@@ -90,8 +90,8 @@ TEST(SceneLimits, TypeBoundCheckRejectsOverflow) {
 
 TEST(SceneLimits, DesktopAdmitsLargeRoboticsData) {
   // Aggregated lidar map of tens of millions of points.
-  EXPECT_TRUE(pointCountFits(40'000'000U, kDesktopSceneLimits));
-  EXPECT_FALSE(pointCountFits(40'000'000U, kBrowserSceneLimits));
+  EXPECT_LE(40'000'000U, kDesktopSceneLimits.max_points_per_cloud);
+  EXPECT_GT(40'000'000U, kBrowserSceneLimits.max_points_per_cloud);
   std::uint64_t pixels = 0;
   EXPECT_TRUE(depthDimensionsFit(3840U, 2160U, pixels, kDesktopSceneLimits));
   EXPECT_TRUE(occupancyDimensionsFit(8192U, 8192U, kDesktopSceneLimits));

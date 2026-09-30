@@ -19,9 +19,6 @@
 #include "pj_scene3d_core/scene_limits.h"
 #include "pj_scene3d_widgets/layer_style.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
-#ifndef PJ_SCENE3D_RHI
-#include "pj_scene3d_widgets/passes/occupancy_grid_render_pass.h"
-#endif
 
 class QWidget;
 
@@ -32,10 +29,9 @@ namespace pj::scene3d {
 // tick it asks OccupancyGridReconstructor for the grid as displayed at that
 // time (base keyframe + applicable deltas, correct under back-and-forth
 // scrubbing) and stages it as a texture upload plan: full, or only the dirty
-// rects of an incremental step. The GL build feeds that plan to an
-// OccupancyGridRenderPass from render(); the QRhi build's SceneViewWidget reads
-// it through prepareForRender()/grid()/dirtyRects().
-// Every sample is admitted against kSceneLimits in both builds.
+// rects of an incremental step, which the view reads through
+// prepareForRender()/grid()/dirtyRects(). Every sample is admitted against
+// kSceneLimits.
 class OccupancyGridLayer : public Scene3DLayer {
   Q_OBJECT
  public:
@@ -56,11 +52,6 @@ class OccupancyGridLayer : public Scene3DLayer {
   void setTrackerTime(PJ::Timepoint time) override;
   void setVisible(bool visible) override;
 
-#ifndef PJ_SCENE3D_RHI
-  void initializeGL() override;
-  void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
-  void releaseGL() override;
-#endif
   // Coalesces repaints to base/update arrivals (see the definition).
   [[nodiscard]] std::uint64_t renderKey(PJ::Timepoint time) const override;
 
@@ -137,8 +128,7 @@ class OccupancyGridLayer : public Scene3DLayer {
   // Decode the first base sample at attach to learn the source frame + time
   // range before render is called.
   bool bootstrap();
-  // Reconstruct the grid at time_ns and stage its upload plan (the CPU
-  // preparation both renderers share). An undecodable base or an over-limit
+  // Reconstruct the grid at time_ns and stage its upload plan. An undecodable base or an over-limit
   // sample fails closed: no grid plus a statusWarning(). Returns true when the
   // staged plan or the warning changed.
   bool updateAt(int64_t time_ns);
@@ -146,7 +136,7 @@ class OccupancyGridLayer : public Scene3DLayer {
   void stageEmpty();
   void updateSourceFrame(const std::string& frame);
   // Reconstruct at requested_time_ when a tracker move is pending (once per
-  // painted frame, by GL render() or prepareForRender()). Returns updateAt's.
+  // painted frame, by prepareForRender()). Returns updateAt's.
   bool drainPendingUpdate();
   void onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id);
   // Drop the base-keyframe memo, the updates-topic cursor, and all reconstructor
@@ -213,10 +203,6 @@ class OccupancyGridLayer : public Scene3DLayer {
   OccupancyGridReconstructor reconstructor_{kSceneLimits.occupancy_snapshot_budget_bytes};
   // Cell count and base keyframe that last overflowed the view budget (QRhi).
   BudgetLatch budget_;
-#ifndef PJ_SCENE3D_RHI
-  OccupancyGridRenderPass grid_pass_;
-  std::uint64_t pass_revision_ = 0;  // texture_revision_ last handed to grid_pass_
-#endif
 };
 
 }  // namespace pj::scene3d

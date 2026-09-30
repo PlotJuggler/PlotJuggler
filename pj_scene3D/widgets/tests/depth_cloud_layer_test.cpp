@@ -35,12 +35,10 @@ namespace {
 
 using namespace pj::scene3d::test;
 
-// The QRhi build back-projects on the thread pool: wait for the queued result
-// before asserting on it. A no-op in the GL build, which projects synchronously.
-void settle([[maybe_unused]] pj::scene3d::DepthCloudLayer& layer) {
-#ifdef PJ_SCENE3D_RHI
+// The layer back-projects on the thread pool: wait for the queued result before
+// asserting on it.
+void settle(pj::scene3d::DepthCloudLayer& layer) {
   ASSERT_TRUE(pumpUntil([&] { return !layer.decodeInFlightForTest(); }, std::chrono::seconds(10)));
-#endif
 }
 
 constexpr std::string_view kDepthSchema = "mock/depth_image";
@@ -544,7 +542,6 @@ struct DepthRig {
   pj::scene3d::Scene3DLayerContext ctx;
 };
 
-#ifdef PJ_SCENE3D_RHI
 // Holds every back-projection on the worker until released; releases on scope
 // exit so no worker is left blocked.
 struct ProjectionGate {
@@ -559,15 +556,11 @@ struct ProjectionGate {
   }
   std::shared_ptr<QSemaphore> hold = std::make_shared<QSemaphore>(0);
 };
-#endif
 
 // Projecting 200 with 300 queued behind it, the tracker returns to 200: the
 // running projection is wanted again, so the queued 300 must not start and paint
 // over it while the playhead sits on 200.
 TEST(DepthCloudLayer, ReturnToRunningProjectionDropsQueuedSample) {
-#ifndef PJ_SCENE3D_RHI
-  GTEST_SKIP() << "the GL build projects synchronously";
-#else
   DepthRig rig({100, 200, 300});
   pj::scene3d::DepthCloudLayer layer(rig.depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(rig.ctx));
@@ -583,15 +576,11 @@ TEST(DepthCloudLayer, ReturnToRunningProjectionDropsQueuedSample) {
   QCoreApplication::processEvents();
   settle(layer);
   EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{200}) << "the abandoned queued sample was painted";
-#endif
 }
 
 // Projecting 200 while 100 is displayed, the tracker returns to 100: the running
 // projection is obsolete and its result must not replace the displayed sample.
 TEST(DepthCloudLayer, ReturnToDisplayedSampleDiscardsRunningProjection) {
-#ifndef PJ_SCENE3D_RHI
-  GTEST_SKIP() << "the GL build projects synchronously";
-#else
   DepthRig rig({100, 200});
   pj::scene3d::DepthCloudLayer layer(rig.depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(rig.ctx));
@@ -604,7 +593,6 @@ TEST(DepthCloudLayer, ReturnToDisplayedSampleDiscardsRunningProjection) {
   gate.release();
   settle(layer);
   EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100}) << "an obsolete projection was painted";
-#endif
 }
 
 // A dataset replacement swaps the bytes under the stable topic id: the drawn
@@ -617,14 +605,10 @@ TEST(DepthCloudLayer, DatasetReplacementDropsGeometryAndProjections) {
   settle(layer);
   ASSERT_EQ(layer.lastPointCountForTest(), 4U);
 
-#ifdef PJ_SCENE3D_RHI
   ProjectionGate gate(layer);
   layer.renderAtForTest(200);  // an old-bytes projection still running at the swap
-#endif
   emit rig.session.datasetAboutToBeReplaced(rig.session.objectStore().descriptor(rig.depth).dataset_id);
-#ifdef PJ_SCENE3D_RHI
   gate.release();
-#endif
   settle(layer);
   EXPECT_EQ(layer.lastPointCountForTest(), 0U) << "the replaced dataset's cloud is still drawn";
   EXPECT_EQ(layer.lastPushedStampForTest(), std::nullopt) << "a pre-replacement projection landed";

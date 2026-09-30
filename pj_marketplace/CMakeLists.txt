@@ -188,7 +188,6 @@ if(PJ_BUILD_TESTS)
     # through the install pipeline.
     # artifact_store_test — the content-addressed store primitives. Builds its ZIP
     # fixtures with libarchive directly, so it links it in addition to the library.
-    # WARNINGS: all 6 merged tests carried PJ_WARNING_FLAGS before
     pj_add_test_runner(pj_marketplace_tests MAIN gui WARNINGS
         SOURCES
             tests/download_manager_test.cpp

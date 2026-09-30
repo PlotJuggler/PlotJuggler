@@ -744,7 +744,6 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/ingest_progress_controller_test.cpp)
 
-    # WARNINGS: all 22 merged tests carried PJ_WARNING_FLAGS before
     pj_add_test_runner(pj_app_gui_tests
         MAIN gui WARNINGS
         SOURCES ${PJ_APP_GUI_TEST_SOURCES} tests/support/gui_test_env.cpp
@@ -756,9 +755,9 @@ if(PJ_BUILD_TESTS)
 
     # QRhiWidgets in ADS docks across float/redock, split, sibling destruction,
     # floating-window close and DPR changes, plus the mixed-API negative case.
-    # QRhi builds only; needs a real display (skips on offscreen). Runs on every
+    # Needs a real display (skips on offscreen). Runs on every
     # backend of the platform plus OpenGL at DPR 2 (RHI_BACKENDS, cmake/PjTests.cmake).
-    if(PJ_SCENE3D_RHI AND NOT EMSCRIPTEN)
+    if(NOT EMSCRIPTEN)
         find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS OpenGLWidgets)
         pj_add_test_runner(rhi_dock_lifecycle_test
             MAIN gui WARNINGS RHI_BACKENDS DPR2
@@ -795,8 +794,7 @@ if(PJ_BUILD_TESTS)
 endif()
 
 # The mixed-layout fixture (tests/mixed_layout_fixture.h): a plot, a Scene3D view
-# and a media viewer in one dock manager, through public APIs only, so it builds
-# in the GL and the QRhi build. EXCLUDE_FROM_ALL: built for its consumers only,
+# and a media viewer in one dock manager, through public APIs only. EXCLUDE_FROM_ALL: built for its consumers only,
 # rhi_mixed_dock_test above and mixed_layout_benchmark below.
 if(NOT EMSCRIPTEN AND TARGET pj_scene2d_widgets AND TARGET pj_scene3d_widgets)
     add_library(pj_mixed_layout_fixture STATIC EXCLUDE_FROM_ALL

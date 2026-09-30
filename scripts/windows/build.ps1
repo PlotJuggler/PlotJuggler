@@ -41,9 +41,7 @@ Examples:
 
 The same settings are accepted as PJ_BUILD_TESTS, PJ_BUILD_DEMOS,
 PJ_BUILD_WIDGET_DEMOS, PJ_BUILD_MARKETPLACE_APP and PJ_BUILD_TARGET environment
-variables; an option always wins over the variable. PJ_SCENE3D_RHI=OFF builds
-the legacy OpenGL Scene3D renderer and plot canvas (default ON: QRhi on D3D11;
-the GL build is kept for one release). PJ_VERSION overrides the
+variables; an option always wins over the variable. PJ_VERSION overrides the
 app version and PJ_INSTALLATION the packaging channel (default: source).
 PJ_DRY_RUN=1 prints the build directory, target, Conan and CMake command lines
 without building.
@@ -174,10 +172,6 @@ if (-not $PJ_BUILD_DEMOS) { $PJ_BUILD_DEMOS = 'ON' }
 if (-not $PJ_BUILD_WIDGET_DEMOS) { $PJ_BUILD_WIDGET_DEMOS = $PJ_BUILD_TESTS }
 if (-not $PJ_BUILD_MARKETPLACE_APP) { $PJ_BUILD_MARKETPLACE_APP = $PJ_BUILD_TESTS }
 if (-not $PJ_BUILD_TARGET) { $PJ_BUILD_TARGET = 'all' }
-# Passed on every configure: option() keeps a cached value, so a tree first
-# configured with the old OFF default would otherwise stay on the GL renderer.
-$PJ_SCENE3D_RHI = $env:PJ_SCENE3D_RHI
-if (-not $PJ_SCENE3D_RHI) { $PJ_SCENE3D_RHI = 'ON' }
 
 $PjVersion = $PjVersions['PJ_APP_VERSION']
 if ($env:PJ_VERSION) { $PjVersion = $env:PJ_VERSION }
@@ -247,7 +241,6 @@ if (Get-Command sccache.exe -ErrorAction SilentlyContinue) {
   $cmakeArgs += '-DCMAKE_C_COMPILER_LAUNCHER=sccache', '-DCMAKE_CXX_COMPILER_LAUNCHER=sccache'
 }
 $cmakeArgs += @(
-  "-DPJ_SCENE3D_RHI=$PJ_SCENE3D_RHI",
   "-DPJ_BUILD_TESTS=$PJ_BUILD_TESTS",
   "-DPJ_BUILD_DEMOS=$PJ_BUILD_DEMOS",
   "-DPJ_BUILD_WIDGET_DEMOS=$PJ_BUILD_WIDGET_DEMOS",

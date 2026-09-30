@@ -13,6 +13,8 @@
 #include <QCoreApplication>
 #include <QString>
 #include <atomic>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <string_view>
 #include <utility>
@@ -33,6 +35,8 @@ namespace {
 using namespace pj::scene3d::test;
 
 constexpr std::string_view kSchema = "mock/occupancy_grid";
+// The per-frame hook the renderer drives, given all the view's cell budget.
+constexpr std::uint64_t kNoBudget = std::numeric_limits<std::uint64_t>::max();
 
 std::atomic<int> g_first_parser_calls{0};
 std::atomic<int> g_second_parser_calls{0};
@@ -92,7 +96,7 @@ TEST(OccupancyGridLayerRebind, ReloadSwapsParserWithoutTouchingStaleOne) {
 
   const int stale_calls_before = g_first_parser_calls.load();
   layer.setTrackerTime(PJ::fromRaw(100));
-  layer.renderAtForTest(100);
+  layer.prepareForRender(kNoBudget);
 
   EXPECT_EQ(g_first_parser_calls.load(), stale_calls_before)
       << "layer called the replaced (freed-in-production) parser after the reload swap";
@@ -130,18 +134,18 @@ TEST(OccupancyGridLayerStreamingAttach, AttachSucceedsBeforeFirstSampleAndSelfHe
   ASSERT_TRUE(layer.attach(ctx)) << "attach must tolerate an empty store and keep the layer";
   EXPECT_EQ(g_streaming_parser_calls.load(), 0) << "bootstrap on an empty store must not parse anything";
 
-  // A render before any sample is a no-op (empty reconstruction), not a crash.
+  // A frame before any sample is a no-op (empty reconstruction), not a crash.
   layer.setTrackerTime(PJ::fromRaw(100));
-  layer.renderAtForTest(100);
-  EXPECT_TRUE(layer.reconstructedGridForTest().empty());
+  layer.prepareForRender(kNoBudget);
+  EXPECT_TRUE(layer.grid().empty());
 
-  // First sample arrives post-attach: the layer self-heals on the next render.
+  // First sample arrives post-attach: the layer self-heals on the next frame.
   ASSERT_TRUE(store.pushOwned(*topic_id, 100, std::vector<uint8_t>{0x01}).has_value());
   layer.setTrackerTime(PJ::fromRaw(100));
-  layer.renderAtForTest(100);
+  layer.prepareForRender(kNoBudget);
 
   EXPECT_GE(g_streaming_parser_calls.load(), 1) << "layer did not decode the first sample after it arrived";
-  const auto& grid = layer.reconstructedGridForTest();
+  const auto& grid = layer.grid();
   EXPECT_FALSE(grid.empty());
   EXPECT_EQ(grid.frame_id, "map");
 }

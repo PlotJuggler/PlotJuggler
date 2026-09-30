@@ -42,6 +42,14 @@ TEST(RhiConventionsTest, D3dAndMetalFlipV) {
   EXPECT_EQ(toTexture(kD3dOrMetal, {1.0F, -1.0F, 1.0F}), QVector3D(1.0F, 1.0F, 1.0F));
 }
 
+// A quad showing a render-target texture flips it only on OpenGL, where the
+// framebuffer's row 0 is its bottom row.
+TEST(RhiConventionsTest, OnlyOpenGlRenderTargetsAreBottomUp) {
+  EXPECT_TRUE(renderTargetIsBottomUp(kOpenGl));
+  EXPECT_FALSE(renderTargetIsBottomUp(kVulkan));
+  EXPECT_FALSE(renderTargetIsBottomUp(kD3dOrMetal));
+}
+
 // The inverse is what SSAO/EDL use to rebuild clip space from (uv, depth).
 TEST(RhiConventionsTest, InverseRoundTrips) {
   for (const RhiConventions& conventions : {kOpenGl, kVulkan, kD3dOrMetal}) {

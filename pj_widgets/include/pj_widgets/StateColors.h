@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <string_view>
 
+#include "pj_widgets/Fnv1a.h"
+
 namespace PJ {
 
 /// Plain 8-bit RGB triple so the palette + hash stay usable without QtGui
@@ -42,13 +44,7 @@ inline constexpr std::array<StateRgb, 10> kStatePalette = {{
 /// maps to the same color everywhere in the app, with zero configuration.
 /// Distinct values CAN collide (10 buckets); that is accepted for v1.
 [[nodiscard]] constexpr std::size_t stateColorIndex(std::string_view value) noexcept {
-  // FNV-1a 64-bit.
-  uint64_t hash = 0xcbf29ce484222325ULL;
-  for (const char ch : value) {
-    hash ^= static_cast<uint8_t>(ch);
-    hash *= 0x100000001b3ULL;
-  }
-  return static_cast<std::size_t>(hash % kStatePalette.size());
+  return static_cast<std::size_t>(fnv1a(value) % kStatePalette.size());
 }
 
 /// The palette color for a state value (Qt-free form).

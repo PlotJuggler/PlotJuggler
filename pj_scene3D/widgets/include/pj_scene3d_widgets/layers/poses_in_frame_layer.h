@@ -22,9 +22,6 @@
 #include "pj_scene3d_core/scene_limits.h"           // BudgetLatch
 #include "pj_scene3d_widgets/layers/trail_layer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
-#ifndef PJ_SCENE3D_RHI
-#include "pj_scene3d_widgets/passes/poses_render_pass.h"
-#endif
 
 class QWidget;
 
@@ -33,10 +30,8 @@ namespace pj::scene3d {
 // Scene3DLayer for a PJ.PosesInFrame topic (geometry_msgs/PoseArray equivalent,
 // kPosesInFrame). At each tracker tick it decodes the pose set valid at that time
 // and expands every pose into a coordinate-axis triad (buildPoseTriadInstances).
-// The expansion (updateAt) is renderer-independent; the GL build hands the arms to
-// a GPU-instanced PosesRenderPass from render(), the QRhi build's SceneViewWidget
-// reads them through prepareForRender()/instances(). Either way an AMCL-scale pose
-// cloud stays one draw call. The single shared frame_id is resolved to the fixed
+// SceneViewWidget reads the arms through prepareForRender()/instances() and draws
+// them instanced, so an AMCL-scale pose cloud stays one draw call. The single shared frame_id is resolved to the fixed
 // frame at render time.
 //
 // The per-layer params (arrow length, opacity, X-arrow-only, and a color
@@ -68,11 +63,6 @@ class PosesInFrameLayer : public Scene3DLayer {
   void setTrackerTime(PJ::Timepoint time) override;
   void setVisible(bool visible) override;
 
-#ifndef PJ_SCENE3D_RHI
-  void initializeGL() override;
-  void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
-  void releaseGL() override;
-#endif
   // Coalesces repaints to sample changes, except while the owned trail is on:
   // its past/future split moves with every tick.
   [[nodiscard]] std::uint64_t renderKey(PJ::Timepoint time) const override;
@@ -152,8 +142,8 @@ class PosesInFrameLayer : public Scene3DLayer {
   }
 
 #ifdef PJ_SCENE3D_TEST_HOOKS
-  // Decode + expand at a chosen time with no GL context (the dock normally drives
-  // this from render() at the tracker time).
+  // Decode + expand at a chosen time without a view (the view normally drives
+  // this from prepareForRender() at the tracker time).
   void renderAtForTest(int64_t time_ns) {
     updateAt(time_ns);
   }
@@ -176,8 +166,7 @@ class PosesInFrameLayer : public Scene3DLayer {
   [[nodiscard]] static std::optional<ParsedSettings> parseSettings(const QDomElement& element);
   // Decode the first sample at attach to learn the source frame before render.
   bool bootstrap();
-  // Decode the sample valid at time_ns and expand it into instances_ (the CPU
-  // preparation both renderers share). No-ops when the same sample is already
+  // Decode the sample valid at time_ns and expand it into instances_. No-ops when the same sample is already
   // staged with the current style. A bad sample fails closed: no geometry plus a
   // statusWarning(). Returns true when instances_ or the warning changed.
   bool updateAt(int64_t time_ns);
@@ -190,7 +179,7 @@ class PosesInFrameLayer : public Scene3DLayer {
   // Re-expand the current sample on the next prepare (style edit, reload).
   void markDirty();
   // Apply a pending tracker move or style edit at requested_time_ (once per
-  // painted frame, by GL render() or prepareForRender()). Returns updateAt's.
+  // painted frame, by prepareForRender()). Returns updateAt's.
   bool drainPendingUpdate();
   void onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id);
   // Track the (possibly changing) source frame_id; notify the dock on change.
@@ -240,11 +229,6 @@ class PosesInFrameLayer : public Scene3DLayer {
   std::vector<PoseTriadInstance> instances_;  // last expansion (frame-local; TF applied at draw)
   AABB source_bounds_;
   std::uint64_t geometry_revision_ = 0;
-
-#ifndef PJ_SCENE3D_RHI
-  PosesRenderPass pass_;
-  std::uint64_t pass_revision_ = 0;  // geometry_revision_ last handed to pass_
-#endif
 
   // Owned outright (no QObject parent) so destruction is deterministic and the
   // dock never sees it as a layer. Null when the trail is disabled.

@@ -3,7 +3,7 @@
 #version 440
 
 // The twelve box edges of a cube marker (MarkerRhiPass), replaying the cube
-// fill's instances. As the GL MarkerRenderPass edge shader: an edge with a
+// fill's instances. An edge with a
 // camera-facing adjacent face is the fill colour darkened, a self-occluded one
 // blends halfway back to the fill colour; both opaque.
 

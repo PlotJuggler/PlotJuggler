@@ -1,19 +1,18 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Frame budgets of the Scene3D view, in both builds (Gate A, TECHNICAL_NOTES §9). Each
+// Frame budgets of the Scene3D view (Gate A, TECHNICAL_NOTES §9). Each
 // case builds a real Scene3DDockWidget scene through public APIs, drives frames
 // and prints one line:
 //
-//   S3D_BENCH case=<name> build=gl|rhi backend=<API> device="<adapter>" frames=N
+//   S3D_BENCH case=<name> build=rhi backend=<API> device="<adapter>" frames=N
 //     wall_ms=<median per frame> wall_min wall_p90 wall_max cpu_ms=<GUI-thread
 //     CPU per frame, mean> cpu_p50 cpu_p90 faults=<minor page faults per frame,
 //     median> ingest_ms ingest_cpu_ms rss_mib hwm_mib gpu_drm_mib gpu_vma_mib
 //     idle_frames first_show_ms cpu_mhz cold_ms warmup_frames warmup_ms gpu_mhz
 //     window_ns=<begin>-<end> [stages_ms=...] [case extras]
 //
-// wall is request-to-finished-frame (QRhiWidget::frameSubmitted / the GL
-// view's frameSwapped); frames are driven back to back, so a GPU-bound case
+// wall is request-to-finished-frame (QRhiWidget::frameSubmitted); frames are driven back to back, so a GPU-bound case
 // reports its throughput. The measured frames follow a time-based warm-up
 // (pj_bench::WarmUp: at least 250 ms, 5 steady frames and a settled GPU clock,
 // at most 120 frames; warmup_frames, warmup_ms, and gpu_mhz at its end); cold_ms is the first
@@ -26,20 +25,19 @@
 // show() (Linux). gpu_drm_mib: the DRM driver's per-process total (Linux fdinfo;
 // n/a on software rasterizers and the NVIDIA driver); gpu_vma_mib: the
 // top-level QRhi's allocator (Vulkan). idle_frames: frames the settled view
-// still rendered in 1 s, which the QRhi build requires to be 0: its full
-// render() calls (test hooks), not frameSubmitted, which Qt also emits when it
-// only composites the retained texture (a repaint elsewhere in the window); the
-// GL build counts frameSwapped. cpu_mhz: the
+// still rendered in 1 s, required to be 0: its full render() calls (test
+// hooks), not frameSubmitted, which Qt also emits when it only composites the
+// retained texture (a repaint elsewhere in the window). cpu_mhz: the
 // mean scaling_cur_freq at the report. window_ns: the measured span in
 // CLOCK_MONOTONIC ns, to cut a `perf record -k CLOCK_MONOTONIC` profile to it.
 //
-// QRhi build only: QSG_RHI_PROFILE=1 adds gpu_ms (the view's GPU time per frame,
+// QSG_RHI_PROFILE=1 adds gpu_ms (the view's GPU time per frame,
 // QRhi timestamps; the profiling itself slows the frame), PJ_S3D_BENCH_NO_HDR=1
 // forces the direct pass (no HDR chain), PJ_S3D_BENCH_NO_SHADOWS=1 turns
 // shadows off and PJ_S3D_BENCH_NO_SSAO=1 / PJ_S3D_BENCH_NO_EDL=1 those stages,
 // all for attributing a GPU-bound frame, not for Gate A.
 //
-// stages_ms (QRhi build with PJ_RHI_TEST_HOOKS): per-frame medians of step (the
+// stages_ms (with PJ_RHI_TEST_HOOKS): per-frame medians of step (the
 // case's own work before update()), sched (update() to render()), targets (HDR
 // chain), admit (layers' prepareForRender(): synchronous decode and pack,
 // placement), prepare (streams, upload enqueue, uniforms), submit (pass
@@ -59,11 +57,11 @@
 // LINE_VERTICES, MARKERS, LINKS, FRAMES, MOVES); PJ_S3D_BENCH_DUMP_DIR=<dir>
 // saves each case's final frame there, PJ_S3D_BENCH_CSV_DIR=<dir> its
 // per-frame samples with their spans (<case>_<build>.csv). Needs a real display; skips on
-// the offscreen QPA. The QRhi build registers it per backend (PJ_GRAPHICS_API).
+// the offscreen QPA. It is registered per backend (PJ_GRAPHICS_API).
 //
 // As a ctest smoke it asserts no timing, only that each case did its work: the
-// cloud, markers or model drawn in its last frame (QRhi build: the view's draw
-// counters; the GL view has none) and, for the animated cases, that the data
+// cloud, markers or model drawn in its last frame (the view's draw counters)
+// and, for the animated cases, that the data
 // advanced (a new cloud uploaded every frame, the followed frame moved, the
 // robot's pose changed the image).
 
@@ -86,13 +84,6 @@
 #include <string>
 #include <vector>
 
-#ifndef PJ_SCENE3D_RHI
-#include <QOffscreenSurface>
-#include <QOpenGLContext>
-#include <QOpenGLFunctions>
-#include <QSurfaceFormat>
-#endif
-
 #include "pj_base/builtin/frame_transforms.hpp"
 #include "pj_base/builtin/frame_transforms_codec.hpp"
 #include "pj_base/builtin/scene_entities.hpp"
@@ -109,11 +100,7 @@ using pj::scene3d::SceneViewWidget;
 constexpr char kFrame[] = "map";
 constexpr PJ::Timestamp kStepNs = 10'000'000;  // data time per driven frame
 
-#ifdef PJ_SCENE3D_RHI
 constexpr char kBuild[] = "rhi";
-#else
-constexpr char kBuild[] = "gl";
-#endif
 
 bool fullSizes() {
   return qEnvironmentVariableIntValue("PJ_S3D_BENCH_FULL") == 1;
@@ -219,8 +206,7 @@ using pj_bench::SceneViewWork;
 // One Scene3D dock on a real session, the numbers of one case, and its report.
 class SceneBench {
  public:
-  // Binds the session TF service first, as the app does: the GL renderer
-  // draws nothing without a transform buffer, even in the fixed frame.
+  // Binds the session TF service first, as the app does.
   SceneBench() {
     fixture_.window().resize(1200, 700);
     fixture_.dock()->setTransformService(&fixture_.transforms());
@@ -243,8 +229,8 @@ class SceneBench {
   [[nodiscard]] std::uint64_t renders() {
     return counter_ == nullptr ? 0 : pj_bench::viewRenders(view(), *counter_);
   }
-  // The fewest uploads of any sample of the last drive(); 0 where the build has
-  // no counters (the GL build).
+  // The fewest uploads of any sample of the last drive(); 0 without the
+  // counters (no PJ_RHI_TEST_HOOKS).
   [[nodiscard]] double minUploads() const {
     double least = samples_.empty() ? 0.0 : samples_.front().uploads;
     for (const Sample& sample : samples_) {
@@ -289,7 +275,6 @@ class SceneBench {
       return false;
     }
     counter_ = std::make_unique<pj_bench::FrameCounter>(&view());
-#ifdef PJ_SCENE3D_RHI
     if (qEnvironmentVariableIntValue("PJ_S3D_BENCH_NO_HDR") == 1) {
       view().setForceHdrFallbackForTest(true);  // attribution runs: the direct pass, no HDR chain
     }
@@ -304,7 +289,6 @@ class SceneBench {
       params.shadows_enabled = false;
       view().setMeshShadingParams(params);
     }
-#endif
     dock().setFixedFrame(QString::fromLatin1(kFrame));
     dock().onTrackerTime(100.0e-9);  // every scene starts at t = 100 ns
     pj_bench::resetPeakRss();
@@ -429,7 +413,7 @@ class SceneBench {
   // Float (reparent to a new top-level), redock and tab-switch (hide, then
   // show) the dock `moves` times, each timed to its first finished frame; the
   // medians as "float_ms=.. redock_ms=.. tab_ms=..", then each move's first
-  // frame split into stages ("float_stages_ms=..", QRhi build).
+  // frame split into stages ("float_stages_ms=..").
   std::string dockMoves(int moves) {
     std::array<std::vector<Sample>, 3> kinds;  // float, redock, tab
     PJ::Scene3DDockWidget* moved = &dock();
@@ -487,7 +471,7 @@ class SceneBench {
   }
 
   // Prints the case line: the last drive()'s numbers, the probes, then `extra`,
-  // after counting the settled view's idle frames (asserted 0 in the QRhi build).
+  // after counting the settled view's idle frames (asserted 0).
   void report(const char* name, const std::string& extra = {}) {
     if (const QString dir = qEnvironmentVariable("PJ_S3D_BENCH_DUMP_DIR"); !dir.isEmpty()) {
       pj::scene3d::test::grab(view()).save(
@@ -501,21 +485,10 @@ class SceneBench {
       cpu_mean += sample.cpu_ms / static_cast<double>(samples_.size());
     }
     writeCsv(name);
-#ifdef PJ_SCENE3D_RHI
     QRhi* rhi = pj_bench::rhiOf(view());
     const double vma = pj_bench::rhiAllocatorMib(rhi);
-    const QString backend = view().rhiBackendNameForTest();
+    const QString backend = view().rhiBackendName();
     const QString device = rhi != nullptr ? QString::fromUtf8(rhi->driverInfo().deviceName) : QString();
-#else
-    const double vma = -1.0;
-    const QString backend = QStringLiteral("OpenGL");
-    QString device;
-    view().makeCurrent();
-    if (QOpenGLContext* context = view().context(); context != nullptr) {
-      device = QString::fromLatin1(reinterpret_cast<const char*>(context->functions()->glGetString(GL_RENDERER)));
-    }
-    view().doneCurrent();
-#endif
     std::string stages = stagesField("stages_ms", samples_);
     if (!samples_.empty() && samples_.front().gpu_mhz >= 0.0) {
       const pj_bench::Stats mhz = pj_bench::stats(column(samples_, &Sample::gpu_mhz));
@@ -540,9 +513,7 @@ class SceneBench {
         static_cast<long long>(window_begin_ns_), static_cast<long long>(window_end_ns_), stages.c_str(),
         extra.empty() ? "" : " ", extra.c_str());
     std::fflush(stdout);
-#ifdef PJ_SCENE3D_RHI
     EXPECT_EQ(idle_frames, 0U) << "a settled, unchanged view kept rendering";
-#endif
   }
 
  private:
@@ -561,7 +532,7 @@ class SceneBench {
     return pj_bench::fmt(value, decimals).toStdString();
   }
   // " <name>=step:..,sched:..,.." of the per-stage medians over `samples`, or
-  // nothing where the view has no stage stamps (the GL build).
+  // nothing where the view has no stage stamps (no PJ_RHI_TEST_HOOKS).
   static std::string stagesField(const char* name, const std::vector<Sample>& samples) {
     if (samples.empty() || samples.front().stages[kPresent] < 0.0) {
       return {};
@@ -618,7 +589,7 @@ class SceneBench {
     sample.skips = now.skips - before.skips;
   }
 
-#if defined(PJ_SCENE3D_RHI) && defined(PJ_RHI_TEST_HOOKS)
+#ifdef PJ_RHI_TEST_HOOKS
   // The split of a lifecycle operation (`sample`, work counted from `before`):
   // the stage sums of its full renders, present from the last one to the
   // finished frame, init its base builds, sched the rest of its wall (init
@@ -712,7 +683,6 @@ struct Workload {
   bool models = false;
 };
 
-#ifdef PJ_SCENE3D_RHI
 void expectDrawn(SceneViewWidget& view, Workload workload) {
   if (workload.points) {
     EXPECT_GT(view.lastPointVertexCountForTest(), 0) << "no point cloud drawn";
@@ -733,32 +703,11 @@ std::string drawn(SceneViewWidget& view) {
          " hdr=" + std::to_string(static_cast<int>(view.lastHdrActiveForTest())) +
          " shadow_draws=" + std::to_string(view.lastShadowDrawCountForTest());
 }
-#else
-// The GL view has no draw counters.
-void expectDrawn(SceneViewWidget& /*view*/, Workload /*workload*/) {}
-std::string drawn(SceneViewWidget& /*view*/) {
-  return {};
-}
-#endif
 
 class Scene3dFrameBenchmark : public ::testing::Test {
  protected:
   void SetUp() override {
     PJ_SKIP_ON_HEADLESS_QPA();
-#ifndef PJ_SCENE3D_RHI
-    // The GL view's shaders are #version 450: below a driver-reported GL 4.5 it
-    // presents frames that draw nothing, so pixel checks would be meaningless.
-    QSurfaceFormat format;
-    format.setVersion(4, 5);
-    format.setProfile(QSurfaceFormat::CoreProfile);
-    QOffscreenSurface surface;
-    QOpenGLContext context;
-    context.setFormat(format);
-    if (auto why = gl45ContextUnavailable(surface, context)) {
-      PJ_SKIP_WITHOUT_GPU(*why);
-    }
-    context.doneCurrent();
-#endif
   }
 };
 
@@ -795,9 +744,7 @@ TEST_F(Scene3dFrameBenchmark, CloudStream) {
       benchFrames(), [&](int k) { bench.dock().onTrackerTime(static_cast<double>(time_of(k)) / 1.0e9); },
       [&](int k) { bench.fixture().push(id, time_of(k), clouds[static_cast<std::size_t>(k % 2)]); }));
   expectDrawn(bench.view(), {.points = true});
-#ifdef PJ_SCENE3D_RHI
   EXPECT_GE(bench.minUploads(), 1.0) << "a measured frame did not upload its new cloud";
-#endif
   bench.report("cloud_stream", drawn(bench.view()));
 }
 
@@ -842,9 +789,7 @@ TEST_F(Scene3dFrameBenchmark, CubesAndLinesOrbit) {
   SHOW_OR_SKIP(bench);
   ASSERT_NO_FATAL_FAILURE(bench.drive(benchFrames(), [&](int k) { bench.orbit(k); }));
   expectDrawn(bench.view(), {.markers = true});
-#ifdef PJ_SCENE3D_RHI
   EXPECT_GT(bench.view().lastMarkerStreamVertexCountForTest(), 0) << "no line strip drawn";
-#endif
   bench.report("cubes_lines_orbit", drawn(bench.view()));
 }
 
@@ -948,9 +893,7 @@ void runLayers(const char* name, long long count) {
   SHOW_OR_SKIP(bench);
   ASSERT_NO_FATAL_FAILURE(bench.drive(benchFrames(), [&](int k) { bench.orbit(k); }));
   expectDrawn(bench.view(), {.points = true});
-#ifdef PJ_SCENE3D_RHI
   EXPECT_EQ(bench.view().lastPointLayerCountForTest(), count) << "a cloud layer was not drawn";
-#endif
   bench.report(name, "layers=" + std::to_string(count) + " " + drawn(bench.view()));
 }
 TEST_F(Scene3dFrameBenchmark, Layers10) {
@@ -998,20 +941,16 @@ TEST_F(Scene3dFrameBenchmark, FirstShow) {
   SHOW_OR_SKIP(bench);
   expectDrawn(bench.view(), {.points = true, .models = true});
   std::string extra = drawn(bench.view()) + bench.firstFrameStages();
-#ifdef PJ_SCENE3D_RHI
   if (QRhi* rhi = pj_bench::rhiOf(bench.view()); rhi != nullptr) {
     extra += " pipeline_ms=" + std::to_string(rhi->statistics().totalPipelineCreationTime);
   }
-#endif
   bench.report("first_show", extra);
 }
 
-#ifdef PJ_SCENE3D_RHI
 // The HDR chain's depth replay (every draw re-submitted into the single-sample
 // depth target, forced by setForceDepthReplayForTest()) against the default
 // chain (the multisample depth resolve where the backend has one; the replay
-// elsewhere), in alternating blocks on one large cloud. The GL renderer has
-// neither.
+// elsewhere), in alternating blocks on one large cloud.
 TEST_F(Scene3dFrameBenchmark, DepthReplayOnOff) {
   SceneBench bench;
   bench.fixture().add("/points", BT::kPointCloud, randomCloud(cloudPoints(), 1));
@@ -1034,6 +973,5 @@ TEST_F(Scene3dFrameBenchmark, DepthReplayOnOff) {
                           " default_ms=" + std::to_string(pj_bench::stats(chain).median) +
                           " resolves=" + std::to_string(static_cast<int>(resolves)) + " " + drawn(bench.view()));
 }
-#endif
 
 }  // namespace

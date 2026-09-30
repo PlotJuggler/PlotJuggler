@@ -64,20 +64,16 @@ A one-click "Open in 3D view" curve-list action is a planned convenience.
   limits and budgets, the measurements behind specific choices, golden-image rules
   and per-backend allowances, test registration and CI lanes, the performance
   baseline and the known gaps.
-- [`docs/QRHI_NEXT.md`](./docs/QRHI_NEXT.md) — the work that remains: deleting the
-  legacy GL renderer (PR 2), the P6 performance follow-ups, the Qt 6.12 upgrade,
-  and the release notes of the release that made QRhi the default. The migration
+- [`docs/QRHI_NEXT.md`](./docs/QRHI_NEXT.md) — the work that remains: the golden
+  writer transition, the P6 performance follow-ups, the Qt 6.12 upgrade, and the
+  release notes of the release that made QRhi the default. The migration
   itself is archived in [`docs/archive/QRHI_MIGRATION.md`](../docs/archive/QRHI_MIGRATION.md).
 
-The default build (`PJ_SCENE3D_RHI=ON`) is the QRhi view (`widgets/rhi/`: the view,
-its pass vocabulary and frame contract in `rhi_scene_pass.h`, one class per family
-under `rhi/passes/`, shaders and their committed `.qsb` packs under
-`rhi/shaders/`). The dock (`widgets/src/Scene3DDockWidget.cpp`) and every layer
-(`widgets/src/layers/`) serve it; the layers own no GPU resource.
-`-DPJ_SCENE3D_RHI=OFF` restores the legacy GL view (`src/scene_view_widget.cpp`,
-`src/passes/`, `src/gl/`) for one release, with a configure warning. It is
-frozen: never add features or fixes there (ARCHITECTURE.md, "Appendix: Legacy
-OpenGL renderer").
+The renderer is the QRhi view (`widgets/rhi/`: the view, its pass vocabulary and
+frame contract in `rhi_scene_pass.h`, one class per family under `rhi/passes/`,
+shaders and their committed `.qsb` packs under `rhi/shaders/`), on the desktop
+and in the browser. The dock (`widgets/src/Scene3DDockWidget.cpp`) and every
+layer (`widgets/src/layers/`) serve it; the layers own no GPU resource.
 
 ## Decoding boundary (important)
 
@@ -139,7 +135,7 @@ comes from the conversion itself.
 - `core/` — pure geometry/scene logic, **no Qt or GL**. The TF buffer + frame
   hierarchy, the SE(3) `Transform`, the `OccupancyGridReconstructor` (stateful
   time-travel over an `OccupancyGrid` base plus incremental `OccupancyGridUpdate`
-  patches), and the `PointVertex` / `DecodedPointCloud` (GL rollback) render structs. Links only `glm`,
+  patches), and the `PointVertex` / `DecodedPointCloud` render structs. Links only `glm`,
   `pj_base`, `nlohmann_json`. Key headers:
   `core/include/pj_scene3d_core/{tf/tf_buffer.h, tf/transform.h,
   tf/frame_picking.h, occupancy_grid_reconstructor.h, pointcloud.h, pointcloud_codecs.h,
@@ -151,7 +147,7 @@ comes from the conversion itself.
   embedded as a direct child of `Scene3DDockWidget`), the render passes, the
   layers, and `Scene3DDockWidget` (an `IDataWidget`). Key public headers:
   `widgets/include/pj_scene3d_widgets/{Scene3DDockWidget.h,
-  scene_view_widget_rhi.h, scene3d_layer.h, point_renderable.h,
+  scene_view_widget.h, scene3d_layer.h, point_renderable.h,
   model_renderable.h, transform_service.h, mesh_data.h, mesh_shading_params.h,
   layers/robot_model_layer.h, layers/scene_entities_layer.h}`. A right-click on
   the view off a TF frame delivers a native `QContextMenuEvent` that the host
@@ -224,14 +220,9 @@ The runners are:
 - `pj_scene3d_widget_fixture_tests`: tests sharing `PJ_SCENE3D_FIXTURES_DIR`, with
   test hooks (`robot_model_layer_test` among them). Links Qt Network for the
   local-server fixtures.
-- `pj_scene3d_gl_tests` (legacy GL build only): raw offscreen GL passes, using the
-  shared GL 4.5 `QGuiApplication` main.
 
 Hooked and plain sources stay in different runners because the test-hook macro
-changes public library class definitions. `widgets/CMakeLists.txt` registers the
-renderer-agnostic sources (the dock tests, layer tests, XML validation, config
-row spacing) in both builds, and the GL-pass, GL-view, trail and grid-map tests in
-the `NOT PJ_SCENE3D_RHI` block. File-local GoogleTest environments prepare the
+changes public library class definitions. File-local GoogleTest environments prepare the
 Cloudini blob, preserve the fixed-frame settings application name, and redirect
 the model caches to temporary directories. The shared mains keep the application
 on the stack so it dies before Qt Network's exit handlers.
@@ -242,12 +233,11 @@ The QRhi display runners register one pass per backend of the platform
 `scene3d_rhi_point_test`, `scene3d_rhi_failure_test`,
 `scene3d_rhi_marker_cache_test`, `scene3d_rhi_model_cache_test`,
 `scene3d_rhi_platform_test`, and `pointcloud_golden_test` (the golden corpus,
-`widgets/tests/fixtures/golden/pointcloud/README.md`, comparing against GL-made
-goldens). They need a real display (Xvfb in Linux CI; they skip on `offscreen`,
-and fail instead under `PJ_REQUIRE_GPU_TESTS=1`). `pointcloud_golden_test` and
-`scene3d_frame_benchmark` (frame budgets, a smoke at its default sizes) also build
-in the GL build. TECHNICAL_NOTES.md §7-8 has the golden rules, the test hooks and
-the CI lanes.
+`widgets/tests/fixtures/golden/pointcloud/README.md`, comparing against goldens
+the QRhi OpenGL writer made on llvmpipe), and `scene3d_frame_benchmark` (frame budgets, a smoke at its default
+sizes). They need a real display (Xvfb in Linux CI; they skip on `offscreen`,
+and fail instead under `PJ_REQUIRE_GPU_TESTS=1`). TECHNICAL_NOTES.md §7-8 has
+the golden rules, the test hooks and the CI lanes.
 
 These tests keep their own executables and `add_test` registrations:
 
@@ -255,24 +245,14 @@ These tests keep their own executables and `add_test` registrations:
   in the child process.
 - `wasm_shader_constants_test`: uniquely defines `PJ_WASM_SHADER_DIR`; it checks
   the shared shader constants and every pack's varyings.
-- `hud_overlay_gl_test`, `tf_connections_gl_test`, `shadow_persistence_gl_test`
-  (legacy GL build only): need the default GL format before constructing a
-  `QApplication` to host a `SceneViewWidget`.
 
 Run the module in the builder image with `ctest --test-dir build
 --output-on-failure -R
 '^(pj_scene3d_.*|pointcloud_golden_test\..*|scene3d_rhi_.*|scene3d_frame_benchmark\..*|transform_service_test|wasm_shader_constants_test)$'`
 (under a display for the QRhi runners). Filter just the discovered runners with
 `-R '^pj_scene3d_'`, or run the complete CMake registry with `ctest --test-dir
-build --output-on-failure`. With `PJ_BUILD_DEMOS` the QRhi build compiles
-`pointcloud_convert_benchmark` and `pointcloud_rhi_benchmark`; the other demos
-(`scene3d_mesh_viewer`, the marker and pose galleries, the AABB and shape
-benchmarks) build only in the legacy GL build.
-
-The legacy GL build's GL cases require a real GL ≥ 4.5 context (llvmpipe under
-`xvfb` on CI) and self-skip below it, through `PJ_SKIP_WITHOUT_GPU`
-(`cmake/test_mains/pj_gpu_test_gate.h`), which turns the skip into a failure under
-`PJ_REQUIRE_GPU_TESTS=1`.
+build --output-on-failure`. With `PJ_BUILD_DEMOS` the build compiles
+`pointcloud_convert_benchmark` and `pointcloud_rhi_benchmark`.
 
 Make sure that all the markdown files in this folder are updated, if necessary.
 

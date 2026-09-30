@@ -23,9 +23,6 @@
 #include "pj_scene3d_widgets/layer_style.h"
 #include "pj_scene3d_widgets/point_renderable.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
-#ifndef PJ_SCENE3D_RHI
-#include "pj_scene3d_widgets/passes/pointcloud_render_pass.h"
-#endif
 
 class QWidget;
 
@@ -39,7 +36,7 @@ namespace pj::scene3d {
 // Scene3D layer that renders a depth image as a back-projected point cloud (the
 // "DepthCloud" visualization). Each depth pixel is unprojected through the pinhole
 // intrinsics into a 3D point in the camera optical frame; the cloud is drawn
-// through the SAME PointcloudRenderPass the PointCloudLayer uses.
+// by the same point pass as a PointCloudLayer's.
 //
 // Input type: kImage. In PJ4 depth arrives as sdk::Image with a depth `encoding`
 // (16UC1 / 32FC1 / compressedDepth) — there is no kDepthImage producer (the parser
@@ -47,14 +44,11 @@ namespace pj::scene3d {
 // carries `frame_id` (placement); intrinsics come from a CameraInfo topic matched
 // by frame_id. compressedDepth payloads are PNG-decoded via QImage in the layer.
 //
-// POC scope: CPU back-projection via depthToPoints() feeding the existing pass,
+// POC scope: CPU back-projection via depthToPoints() feeding the point pass,
 // colored by depth. A GPU attributeless pass + aligned RGB-D coloring are planned
 // follow-ups behind this same layer.
 //
-// Sample resolution, the CameraInfo join, kSceneLimits admission (before any
-// decode), persistence and the config widget are shared by both renderers. GL
-// build: back-projection runs synchronously and feeds the layer's own
-// PointcloudRenderPass. QRhi build (PJ_SCENE3D_RHI): the PNG inflate +
+// kSceneLimits admission happens before any decode. The PNG inflate and the
 // back-projection run on the Qt thread pool (latest wins, stale results dropped),
 // and the result is retained as PointVertex data the view reads through
 // PointRenderable.
@@ -81,11 +75,6 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
   void setTrackerTime(PJ::Timepoint time) override;
   void setVisible(bool visible) override;
 
-#ifndef PJ_SCENE3D_RHI
-  void initializeGL() override;
-  void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
-  void releaseGL() override;
-#endif
   [[nodiscard]] std::optional<AABB> worldBounds() const override {
     return world_bounds_;
   }
@@ -113,7 +102,7 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
   // Full validation of a <depthcloud> payload without mutating any layer.
   [[nodiscard]] static bool validateXml(const QDomElement& element);
 
-  // PointRenderable (read by the QRhi view; the GL build keeps these empty).
+  // PointRenderable (read by the view).
   // prepareForRender() drains a pending tracker move (queuing an off-thread
   // back-projection) and enforces the view's aggregate vertex budget.
   bool prepareForRender(std::uint64_t remaining_view_vertices) override;
@@ -193,11 +182,7 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
     return pushed_.sample == SampleId{} ? std::nullopt : std::optional<int64_t>{pushed_.sample.timestamp};
   }
   [[nodiscard]] std::size_t lastPointCountForTest() const {
-#ifdef PJ_SCENE3D_RHI
     return point_count_;
-#else
-    return last_point_count_;
-#endif
   }
   [[nodiscard]] QString sourceFrameForTest() const {
     return QString::fromStdString(source_frame_);
@@ -264,7 +249,7 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
     std::pair<float, float> scalar_range{0.0f, 1.0f};
     QString error;  // non-empty: the sample renders nothing and warns
   };
-  // The QRhi sink's worker job (the GL build projects inline in renderAt).
+  // The worker job.
   [[nodiscard]] static BackprojectResult backproject(const BackprojectRequest& request);
   void onBackprojectFinished(BackprojectResult result);
   // kSceneLimits admission of a depth image before any decode; empty when it fits.
@@ -280,18 +265,15 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
   [[nodiscard]] SampleId memoCamera() const {
     return intrinsics_cache_.has_value() ? intrinsics_cache_->camera_sample : SampleId{};
   }
-  // Drops the drawn cloud (the pass's, or the retained vertices) and its bounds.
+  // Drops the retained vertices and their bounds.
   void clearGeometry();
   // The source frame, or the fixed frame for a frame-less image.
   void updateRenderFrame();
-  // Pushes the style state into the GL pass (a no-op for QRhi, whose view reads
-  // the getters every frame).
-  void syncPassStyle();
 
   void renderAt(int64_t time_ns);
   void refreshNow();
   // Project at the playhead when a tracker move is pending (once per painted
-  // frame, by GL render() or prepareForRender()).
+  // frame, by prepareForRender()).
   void drainPendingUpdate();
   // budget_ candidates: a depth sample's UID under the current depth range, and
   // the one the playhead asks for.
@@ -347,14 +329,11 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
 
   ProjectionKey pushed_;  // drawn (or memoized as rejected)
   // What the playhead wants shown: a projection finishing with any other key is
-  // obsolete and dropped (QRhi; the GL build projects inline).
+  // obsolete and dropped.
   ProjectionKey wanted_;
-#ifndef PJ_SCENE3D_RHI
-  std::size_t last_point_count_ = 0;  // points of the cloud handed to the GL pass
-#endif
   std::optional<IntrinsicsCache> intrinsics_cache_;
 
-  // QRhi sink (empty in the GL build).
+  // What the view reads (PointRenderable).
   QByteArray vertex_bytes_;      // PointVertex records: finite back-projected points, camera frame
   std::size_t point_count_ = 0;  // records in vertex_bytes_ (the rest is padding)
   std::uint64_t geometry_revision_ = 0;
@@ -362,9 +341,6 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
   std::string render_frame_;
   // Point count and candidate of a cloud dropped for the view budget.
   BudgetLatch budget_;
-#ifndef PJ_SCENE3D_RHI
-  PointcloudRenderPass cloud_pass_;
-#endif
 
   LatestWinsWorker<BackprojectRequest, BackprojectResult> backproject_worker_{
       this, &DepthCloudLayer::backproject,

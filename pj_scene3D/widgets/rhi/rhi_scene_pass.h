@@ -48,6 +48,8 @@
 
 namespace pj::scene3d {
 
+struct ArrowMeshData;
+
 /// The scene passes that replay the prepared draw list with different targets.
 enum class ScenePass {
   kDirect,       ///< straight into the widget's render target (no HDR chain)
@@ -102,7 +104,7 @@ class ScenePipelineRegistry {
   /// template once createTemplates() created it), else its clone, created on
   /// this first request. nullptr means "do not draw": always for
   /// kDepthReplay when `direct` writes no depth (the depth replay records only
-  /// depth-writing coverage, like the GL composite), and when unregistered, without
+  /// depth-writing coverage), and when unregistered, without
   /// targets, or when the clone cannot be created (see cloneFailed()).
   [[nodiscard]] QRhiGraphicsPipeline* resolve(QRhiGraphicsPipeline* direct, ScenePass pass) const;
   /// A clone could not be created since the clones were last released: its draw
@@ -137,14 +139,13 @@ struct RhiSharedGeometry {
   QRhiBuffer* cube_vertices = nullptr;     ///< kCubeVertices: voxels
   QRhiBuffer* cube_indices = nullptr;      ///< kCubeIndices, uint16
   QRhiBuffer* cube_fan_indices = nullptr;  ///< kCubeFanIndices, uint16: point cubes
-  QRhiBuffer* arrow_vertices = nullptr;    ///< unit pose arrow: pose triads, TF triads, corner gizmo
+  QRhiBuffer* arrow_vertices = nullptr;    ///< unit pose arrow: pose triads, TF triads
   QRhiBuffer* arrow_indices = nullptr;     ///< uint32
   quint32 arrow_index_count = 0;
-  bool upload_pending = false;
 
-  bool create(QRhi* rhi);
-  /// Queues the static uploads once after create().
-  void upload(QRhiResourceUpdateBatch* updates);
+  /// Creates the meshes and records their contents into `updates`, which must
+  /// be submitted before they are drawn.
+  bool create(QRhi* rhi, QRhiResourceUpdateBatch* updates);
   void release();
 };
 
@@ -197,6 +198,12 @@ bool ensureVertexBuffer(
 /// Creates `buffer` as a `bytes`-sized Dynamic uniform buffer when it is null;
 /// false (and `buffer` null) when it cannot be created.
 bool ensureUniformBuffer(QRhi* owner, QRhiBuffer*& buffer, quint32 bytes);
+/// Creates `vertices` and `indices` as Immutable buffers holding `mesh` and,
+/// once both exist, records their contents into `updates`. False, with nothing
+/// recorded, when either cannot be created (the caller's release() deletes what was).
+bool createStaticMesh(
+    QRhi* rhi, QRhiResourceUpdateBatch* updates, const ArrowMeshData& mesh, QRhiBuffer*& vertices,
+    QRhiBuffer*& indices);
 /// A created SRB holding `bindings`, or nullptr when it cannot be created.
 QRhiShaderResourceBindings* createBindings(QRhi* owner, std::initializer_list<QRhiShaderResourceBinding> bindings);
 
@@ -210,6 +217,11 @@ struct RhiPassSetup {
   QRhiBuffer* annotation_render_mode_uniforms = nullptr;  ///< binding 8 of annotation (tonemap-bypass) draws
   QRhiBuffer* view_uniforms = nullptr;                    ///< binding 0: the camera-relative view-projection (mat4)
   const RhiSharedGeometry* geometry = nullptr;            ///< the view's shared unit meshes
+  /// Takes the constant contents of the resources initialize() creates (unit
+  /// meshes, lookup textures), recorded once there instead of on a frame. The
+  /// view submits it before any draw, or discards it when a family fails to
+  /// build. Valid only during initialize().
+  QRhiResourceUpdateBatch* updates = nullptr;
   /// When set, createScenePipeline() configures without creating and registers
   /// the result here as a template (ScenePipelineRegistry::addTemplate(),
   /// named `part`): for families whose every draw binds through resolve().

@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
   if (::testing::GTEST_FLAG(list_tests)) {
     return RUN_ALL_TESTS();
   }
-#if defined(Q_OS_MACOS) && defined(PJ_RHI_WIDGETS)
+#ifdef Q_OS_MACOS
   // As pj_app's main(): an OpenGL QRhi on macOS needs a core-profile context.
   QSurfaceFormat core_format = QSurfaceFormat::defaultFormat();
   core_format.setVersion(4, 1);

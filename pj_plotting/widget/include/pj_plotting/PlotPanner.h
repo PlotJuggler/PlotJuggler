@@ -18,12 +18,10 @@ class PlotPanner : public QwtPlotPanner {
   void rescaled(QRectF rect);
 
  protected:
-#ifdef PJ_RHI_WIDGETS
   // Qwt's QWidget::grab path does not capture QRhiWidget content. Read back the
   // authoritative QRhi framebuffer once when a pan begins so its transient drag
   // image contains the rendered plot instead of black pixels.
   QPixmap grab() const override;
-#endif
   void widgetMousePressEvent(QMouseEvent* event) override;
   void widgetMouseReleaseEvent(QMouseEvent* event) override;
 

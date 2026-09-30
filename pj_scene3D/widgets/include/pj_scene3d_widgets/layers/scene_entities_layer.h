@@ -21,16 +21,11 @@
 #include "pj_datastore/sequential_uid.hpp"
 #include "pj_scene3d_core/scene_entities_model_state.h"
 #include "pj_scene3d_core/scene_entities_render.h"
+#include "pj_scene3d_widgets/latest_wins_worker.h"
+#include "pj_scene3d_widgets/marker_geometry.h"
 #include "pj_scene3d_widgets/mesh_data.h"
 #include "pj_scene3d_widgets/model_renderable.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
-#ifdef PJ_SCENE3D_RHI
-#include "pj_scene3d_widgets/latest_wins_worker.h"
-#include "pj_scene3d_widgets/marker_geometry.h"
-#else
-#include "pj_scene3d_widgets/passes/marker_render_pass.h"
-#include "pj_scene3d_widgets/passes/mesh_render_pass.h"
-#endif
 
 class QWidget;
 
@@ -41,22 +36,19 @@ class MeshLoader;
 class UrlFetcher;
 
 // Concrete Scene3DLayer for a single visualization_msgs/MarkerArray-equivalent
-// topic (canonical sdk::SceneEntities, type kSceneEntities), shared by both
-// renderers. Two primitive families:
+// topic (canonical sdk::SceneEntities, type kSceneEntities). Two primitive
+// families:
 //
 // - **Markers** (cube/sphere/cylinder/arrow/line/triangle primitives): the
-//   latest batch at/before the tracker time (stateless). Selection, payload
-//   admission and parsing are shared; the sink differs. GL build: the batch is
-//   decoded into the layer's MarkerRenderPass. QRhi build: the batch is expanded
-//   into MarkerGeometry on a worker thread (latest wins, stale results dropped
+//   latest batch at/before the tracker time (stateless), expanded into
+//   MarkerGeometry on a worker thread (latest wins, stale results dropped
 //   by generation), which the view reads through geometry().
 // - **Models** (ModelPrimitive, embedded glTF bytes or a file/http URL): all
 //   batches up to the tracker time are replayed into an id-keyed entity state
 //   (SceneEntitiesModelState: replace-by-id, deletions, lifetime expiry), and
 //   the models' bytes load asynchronously a few at a time (fetch, then import off
 //   the GUI thread; one in the browser, see maxConcurrentMeshLoads), each
-//   admitted against kSceneLimits' model budgets as it lands. GL build:
-//   imported meshes go to the layer's MeshRenderPass. QRhi build: they are
+//   admitted against kSceneLimits' model budgets as it lands. Imported meshes are
 //   retained as MeshData and exposed with frame-local ModelDrawCalls through
 //   ModelRenderable (the view applies TF).
 //   DATA-SUPPLIED http(s) model URLs are policy-gated behind the QSettings bool
@@ -102,21 +94,6 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   void setTrackerTime(PJ::Timepoint time) override;
   void setVisible(bool visible) override;
 
-#ifndef PJ_SCENE3D_RHI
-  // GL lifecycle for both passes (per-context resources; see module CLAUDE.md).
-  void initializeGL() override;
-  // Draw markers, then model primitives.
-  void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
-  void releaseGL() override;
-  // Model meshes cast shadows; marker primitives do not. Both hooks operate on
-  // modelDrawCallsForFrame only.
-  [[nodiscard]] std::optional<AABB> meshShadowBounds(const FrameContext& frame_ctx) override;
-  void renderShadowCasters(const glm::mat4& light_view_proj, const FrameContext& frame_ctx) override;
-  // World-space mesh draw calls for a frame (fixed-frame TF × entity pose × scale,
-  // camera-relative through frame_ctx.lookup). Tests and diagnostics use it too.
-  [[nodiscard]] std::vector<MeshRenderPass::DrawCall> modelDrawCallsForFrame(const FrameContext& frame_ctx) const;
-#endif
-
   // Opacity / color-override / wireframe controls bound to this instance.
   QWidget* createConfigWidget(QWidget* parent) override;
 
@@ -153,7 +130,7 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
     return remote_fetch_notice_;
   }
 
-  // ModelRenderable (read by the QRhi view; empty in the GL build):
+  // ModelRenderable (read by the view):
   // frame-local draws (frame_id + pose × scale), no TF applied.
   [[nodiscard]] const std::vector<ModelDrawCall>& modelDrawCalls() const override {
     return model_draw_calls_;
@@ -173,18 +150,15 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   [[nodiscard]] bool contributesToSceneBounds() const override {
     return true;
   }
+  [[nodiscard]] Scene3DLayer& modelLayer() override {
+    return *this;
+  }
 
   // Model imports started whose completion has not been processed yet: an upper
   // bound on the imports still running on the pool.
   [[nodiscard]] std::uint64_t modelImportsOutstandingForTest() const {
     return model_import_starts_ - model_import_settles_;
   }
-#ifndef PJ_SCENE3D_RHI
-  /// The overrides the GL marker pass draws with.
-  [[nodiscard]] const MarkerDisplayOverrides& markerPassOverridesForTest() const {
-    return pass_.overrides();
-  }
-#else
   // Re-selects the marker batch when live samples arrived since the last tick;
   // called by the view before it reads geometry(). Returns true when the
   // geometry changed synchronously (cleared).
@@ -217,7 +191,6 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   [[nodiscard]] std::uint64_t decodeOffMainCompletionsForTest() const {
     return decode_worker_.offMainCompletions();
   }
-#endif
 
  signals:
   // remoteFetchNotice() changed (possibly back to empty).
@@ -374,12 +347,11 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   QString model_draw_warning_;   // QRhi model draw admission (refreshModelDrawCalls)
   QString remote_fetch_notice_;
 
-  // QRhi sink (empty in the GL build).
+  // What the view reads (ModelRenderable, geometry()).
   std::unordered_map<std::string, std::shared_ptr<const MeshData>> model_meshes_;
   std::vector<ModelDrawCall> model_draw_calls_;
   std::uint64_t model_revision_ = 0;
 
-#ifdef PJ_SCENE3D_RHI
   struct DecodeRequest {
     std::shared_ptr<const PJ::sdk::SceneEntities> scene;
     PJ::SequentialUID uid;
@@ -406,10 +378,6 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   std::uint64_t geometry_revision_ = 0;
   LatestWinsWorker<DecodeRequest, DecodeResult> decode_worker_{
       this, &SceneEntitiesLayer::expandBatch, [this](DecodeResult result) { onDecodeFinished(std::move(result)); }};
-#else
-  MarkerRenderPass pass_;
-  std::unique_ptr<MeshRenderPass> mesh_pass_;
-#endif
 };
 
 }  // namespace pj::scene3d

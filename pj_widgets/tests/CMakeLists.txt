@@ -2,7 +2,6 @@ find_package(Qt6 REQUIRED COMPONENTS Test)
 
 # Each discovered case runs in its own process, keeping widget state isolated
 # while sharing the static module and resource objects in one executable.
-# WARNINGS: all 32 merged tests carried PJ_WARNING_FLAGS before
 pj_add_test_runner(pj_widgets_tests
     MAIN gui WARNINGS
     SOURCES

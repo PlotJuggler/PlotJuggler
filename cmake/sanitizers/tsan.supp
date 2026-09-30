@@ -111,7 +111,7 @@ race_top:qobjectdefs_impl.h
 race:QtConcurrent::StoredFunctionCall<pj::scene3d::MeshLoader::load
 race:QtConcurrent::StoredFunctionCall<pj::scene3d::PointCloudLayer::startDecode
 race:QtConcurrent::StoredFunctionCall<pj::scene3d::TrailLayer::startRebuild
-# LatestWinsWorker (the QRhi build's point, depth, scene-entity and trail
+# LatestWinsWorker (the point, depth, scene-entity and trail
 # decode workers): the task and its captures, first read on the worker; and the
 # stored result, cleared by ~QFutureInterface on the GUI thread after the worker
 # reported it. Both hand-offs are ordered inside libQt6Core (the thread pool's

@@ -36,7 +36,6 @@
 
 #include "../rhi/passes/grid_rhi_pass.h"
 #include "../rhi/passes/marker_rhi_pass.h"
-#include "pj_base/builtin/frame_transforms_codec.hpp"
 #include "pj_base/builtin/scene_entities_codec.hpp"
 #include "pj_base/builtin/voxel_grid_codec.hpp"
 #include "pj_scene3d_widgets/layers/scene_entities_layer.h"
@@ -49,6 +48,7 @@ namespace {
 using BT = PJ::sdk::BuiltinObjectType;
 using pj::scene3d::SceneViewWidget;
 using pj::scene3d::test::differingPixels;
+using pj::scene3d::test::serializeTfEdges;
 
 constexpr char kFrame[] = "map";
 constexpr QSize kViewSize{400, 300};
@@ -118,18 +118,6 @@ std::vector<uint8_t> serializeEntities(std::vector<PJ::sdk::SceneEntity> entitie
   return PJ::serializeSceneEntities(scene);
 }
 
-std::vector<uint8_t> serializeEdge(const std::string& child, glm::dvec3 offset, PJ::Timestamp t) {
-  PJ::sdk::FrameTransforms transforms;
-  PJ::sdk::FrameTransform edge;
-  edge.timestamp = t;
-  edge.parent_frame_id = kFrame;
-  edge.child_frame_id = child;
-  edge.translation = {offset.x, offset.y, offset.z};
-  edge.rotation.w = 1.0;
-  transforms.transforms.push_back(edge);
-  return PJ::serializeFrameTransforms(transforms);
-}
-
 // One dock bound to the fixture's TF service (so markers can sit in a TF child
 // frame), with a pinned camera.
 class CacheScene {
@@ -147,9 +135,10 @@ class CacheScene {
   }
   // `child` under kFrame at each (time, offset); the first time must be kT0.
   void addEdge(const std::string& child, const std::vector<std::pair<PJ::Timestamp, glm::dvec3>>& poses) {
-    const auto id = fixture_.add("/tf_" + child, BT::kFrameTransforms, serializeEdge(child, poses.front().second, kT0));
+    const auto id = fixture_.add(
+        "/tf_" + child, BT::kFrameTransforms, serializeTfEdges(kFrame, {{child, poses.front().second}}, kT0));
     for (std::size_t i = 1; i < poses.size(); ++i) {
-      fixture_.push(id, poses[i].first, serializeEdge(child, poses[i].second, poses[i].first));
+      fixture_.push(id, poses[i].first, serializeTfEdges(kFrame, {{child, poses[i].second}}, poses[i].first));
     }
     fixture_.transforms().ingestFrameTransformsForDataset(fixture_.dataset());
   }

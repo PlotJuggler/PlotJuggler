@@ -43,10 +43,9 @@ void packIntoRetained(QByteArray& retained, qsizetype max_bytes, Pack&& pack) {
   PJ::padForUpload(retained, used);
 }
 
-// Non-owning QRhi renderer contract for point-like layers. QObject ownership,
+// Non-owning renderer contract for point-like layers. QObject ownership,
 // decoding, persistence, and warnings remain in each concrete ISceneLayer; this
-// interface only lets the QRhi view share one bounded vertex/GPU path. The
-// layers implement it in both builds; the GL build never reads it.
+// interface only lets the view share one bounded vertex/GPU path.
 class PointRenderable {
  public:
   virtual ~PointRenderable() = default;

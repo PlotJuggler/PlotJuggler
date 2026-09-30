@@ -510,18 +510,6 @@ QWidget* Scene2DDockWidget::createSceneView() {
       PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
   layout->setSpacing(PJ::theme::space(PJ::theme::Space::None));
 
-  // Forces native Qt 6.8 to create an RHI-backed window backing store before
-  // first show(); dynamically added QRhiWidgets otherwise never get a QRhi.
-  // The browser must instead let the first real, nonzero viewer trigger Qt's
-  // dynamic raster-to-RHI switch. A zero-size WebGL surface can lose its
-  // context across a cold browser picker. See TECHNICAL_NOTES.md.
-#ifndef PJ_TARGET_WASM
-  bootstrap_ = new MediaViewerWidget(container);
-  bootstrap_->setObjectName(u"scene2dRhiBootstrap"_s);
-  bootstrap_->setMaximumSize(0, 0);
-  layout->addWidget(bootstrap_);
-#endif
-
   // Page 0 = empty-state placeholder, page 1 = GPU viewer. A stack (rather than
   // an overlay) keeps the raster placeholder off the QRhiWidget's surface, where
   // it would not composite reliably.

@@ -34,7 +34,7 @@
 #include <vector>
 
 #include "../rhi/passes/model_rhi_pass.h"
-#include "pj_base/builtin/frame_transforms_codec.hpp"
+#include "fake_model_layer.h"
 #include "pj_base/builtin/scene_entities_codec.hpp"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/model_renderable.h"
@@ -48,7 +48,9 @@ namespace {
 using pj::scene3d::MeshData;
 using pj::scene3d::ModelRhiPass;
 using pj::scene3d::SceneViewWidget;
+using pj::scene3d::test::FakeModelLayer;
 using pj::scene3d::test::grab;
+using pj::scene3d::test::serializeTfEdges;
 using BT = PJ::sdk::BuiltinObjectType;
 
 constexpr QSize kViewSize{240, 180};
@@ -104,90 +106,6 @@ std::shared_ptr<pj::scene3d::Material> textured(const std::string& key) {
   material->base_color.key = key;
   return material;
 }
-
-// A model layer driven directly by the test, as a RobotModelLayer or
-// SceneEntitiesLayer feeds the view: meshes by key, one draw each in kLink.
-class FakeModelLayer final : public pj::scene3d::Scene3DLayer, public pj::scene3d::ModelRenderable {
- public:
-  // Publishes (or replaces) `key` and bumps the revision; a new key's draw goes at `at`.
-  void put(const std::string& key, MeshData mesh, glm::dvec3 at = glm::dvec3(0.0)) {
-    if (!meshes_.contains(key)) {
-      draws_.push_back({.mesh_key = key, .frame_id = kLink, .model = glm::translate(glm::dmat4(1.0), at)});
-    }
-    meshes_[key] = std::make_shared<const MeshData>(std::move(mesh));
-    ++revision_;
-  }
-  void erase(const std::string& key) {
-    meshes_.erase(key);
-    std::erase_if(draws_, [&](const pj::scene3d::ModelDrawCall& draw) { return draw.mesh_key == key; });
-    ++revision_;
-  }
-  void bumpRevision() {
-    ++revision_;
-  }
-  void setWireframe(bool on) {
-    wireframe_ = on;
-  }
-
-  const std::vector<pj::scene3d::ModelDrawCall>& modelDrawCalls() const override {
-    return draws_;
-  }
-  const std::unordered_map<std::string, std::shared_ptr<const MeshData>>& modelMeshes() const override {
-    return meshes_;
-  }
-  std::uint64_t modelRevision() const override {
-    return revision_;
-  }
-  bool visible() const override {
-    return true;
-  }
-  float opacity() const override {
-    return 1.0F;
-  }
-  bool colorOverrideEnabled() const override {
-    return false;
-  }
-  QColor overrideColor() const override {
-    return {};
-  }
-  bool wireframe() const override {
-    return wireframe_;
-  }
-  const std::string& renderFrameId() const override {
-    return frame_;
-  }
-  bool contributesToSceneBounds() const override {
-    return true;
-  }
-  QStringList fallbackFrames() const override {
-    return {};
-  }
-  QString sourceFrame() const override {
-    return {};
-  }
-  PJ::SceneLayerInfo info() const override {
-    return {};
-  }
-  PJ::Range<PJ::Timepoint> timeRange() const override {
-    return PJ::liveTopicTimeRange(nullptr, PJ::ObjectTopicId{1});
-  }
-  bool attach(const PJ::SceneLayerContext& /*ctx*/) override {
-    return true;
-  }
-  void detach() override {}
-  void setTrackerTime(PJ::Timepoint /*time*/) override {}
-  void setVisible(bool /*visible*/) override {}
-  QWidget* createConfigWidget(QWidget* /*parent*/) override {
-    return nullptr;
-  }
-
- private:
-  std::unordered_map<std::string, std::shared_ptr<const MeshData>> meshes_;
-  std::vector<pj::scene3d::ModelDrawCall> draws_;
-  std::uint64_t revision_ = 1;
-  bool wireframe_ = false;
-  std::string frame_ = kLink;
-};
 
 void fixCamera(SceneViewWidget& view, glm::vec3 focal, float azimuth_deg, float radius) {
   pj::scene3d::CameraState state;
@@ -293,7 +211,7 @@ class Scene3dRhiModelCacheTest : public ::testing::Test {
 // 50 meshes arriving one per frame, each arrival a revision bump, build 50 GPU
 // meshes, not 1 + 2 + ... + 50.
 TEST_F(Scene3dRhiModelCacheTest, MeshesArrivingOneByOneBuildOnce) {
-  FakeModelLayer layer;
+  FakeModelLayer layer{kLink};
   ModelView scene;
   SKIP_UNLESS(scene.show({&layer}));
   const int before = scene.counters().mesh_builds;
@@ -305,7 +223,7 @@ TEST_F(Scene3dRhiModelCacheTest, MeshesArrivingOneByOneBuildOnce) {
   }
   EXPECT_EQ(scene.view().lastModelDrawCountForTest(), 50);
   EXPECT_EQ(scene.counters().mesh_builds - before, 50);
-  layer.bumpRevision();  // nothing changed: nothing rebuilt
+  ++layer.revision;  // nothing changed: nothing rebuilt
   GRAB_OR_SKIP(same, scene.view());
   EXPECT_EQ(scene.counters().mesh_builds - before, 50);
 }
@@ -313,7 +231,7 @@ TEST_F(Scene3dRhiModelCacheTest, MeshesArrivingOneByOneBuildOnce) {
 // A same-key reload with a new MeshData rebuilds that mesh only, and draws it;
 // a removed key drops its draw.
 TEST_F(Scene3dRhiModelCacheTest, SameKeyReloadRebuildsOnlyThatMesh) {
-  FakeModelLayer layer;
+  FakeModelLayer layer{kLink};
   layer.put("left", cube(0.8F, solid({0.9F, 0.2F, 0.2F, 1.0F})), {-1.2, 0.0, 0.5});
   layer.put("right", cube(0.8F, solid({0.2F, 0.9F, 0.2F, 1.0F})), {1.2, 0.0, 0.5});
   ModelView scene;
@@ -334,8 +252,8 @@ TEST_F(Scene3dRhiModelCacheTest, SameKeyReloadRebuildsOnlyThatMesh) {
 // One decode and one GPU texture per content key and colour space, shared by
 // meshes and layers of the view, and freed with the last mesh using it.
 TEST_F(Scene3dRhiModelCacheTest, TexturesAreSharedAcrossMeshesAndLayers) {
-  FakeModelLayer first;
-  FakeModelLayer second;
+  FakeModelLayer first{kLink};
+  FakeModelLayer second{kLink};
   first.put("a", cube(0.6F, textured("checker")), {-1.0, 0.0, 0.5});
   first.put("b", cube(0.6F, textured("checker")), {0.0, 0.0, 0.5});
   second.put("c", cube(0.6F, textured("checker")), {1.0, 0.0, 0.5});
@@ -362,20 +280,20 @@ TEST_F(Scene3dRhiModelCacheTest, TexturesAreSharedAcrossMeshesAndLayers) {
 // Edge lists are built on the first wireframe draw, once per mesh; toggling back
 // and forth reproduces both looks exactly.
 TEST_F(Scene3dRhiModelCacheTest, WireframeEdgesBuildOnFirstUse) {
-  FakeModelLayer layer;
+  FakeModelLayer layer{kLink};
   layer.put("box", cube(1.0F, solid({0.9F, 0.6F, 0.1F, 1.0F})), {0.0, 0.0, 0.8});
   ModelView scene;
   SKIP_UNLESS(scene.show({&layer}));
   GRAB_OR_SKIP(solid_image, scene.view());
   EXPECT_EQ(scene.counters().edge_builds, 0);
-  layer.setWireframe(true);
+  layer.wireframe_on = true;
   GRAB_OR_SKIP(wire_image, scene.view());
   EXPECT_EQ(scene.counters().edge_builds, 1);
   EXPECT_NE(solid_image, wire_image);
-  layer.setWireframe(false);
+  layer.wireframe_on = false;
   GRAB_OR_SKIP(solid_again, scene.view());
   EXPECT_EQ(solid_image, solid_again);
-  layer.setWireframe(true);
+  layer.wireframe_on = true;
   GRAB_OR_SKIP(wire_again, scene.view());
   EXPECT_EQ(wire_image, wire_again);
   EXPECT_EQ(scene.counters().edge_builds, 1);
@@ -384,7 +302,7 @@ TEST_F(Scene3dRhiModelCacheTest, WireframeEdgesBuildOnFirstUse) {
 // Orbit and zoom keep the render origin and every placement: no instance upload.
 // A pose change is one.
 TEST_F(Scene3dRhiModelCacheTest, OrbitAndZoomSkipInstanceUploads) {
-  FakeModelLayer layer;
+  FakeModelLayer layer{kLink};
   layer.put("box", cube(0.8F, solid({0.9F, 0.6F, 0.1F, 1.0F})), {0.0, 0.0, 1.0});
   ModelView scene;
   SKIP_UNLESS(scene.show({&layer}));
@@ -405,7 +323,7 @@ TEST_F(Scene3dRhiModelCacheTest, OrbitAndZoomSkipInstanceUploads) {
 // Shadows off and on again rebind the kept meshes' materials to the new shadow
 // map: no mesh rebuilt, and the shadowed frame comes back exactly.
 TEST_F(Scene3dRhiModelCacheTest, ShadowToggleRebindsKeptMeshes) {
-  FakeModelLayer layer;
+  FakeModelLayer layer{kLink};
   layer.put("box", cube(0.8F, textured("checker")), {0.0, 0.0, 1.2});
   ModelView scene;
   SKIP_UNLESS(scene.show({&layer}));
@@ -431,26 +349,15 @@ constexpr auto kMoverUrdf = R"(<robot name="mover">
   <joint name="swing" type="continuous"><parent link="base_link"/><child link="arm"/><axis xyz="0 0 1"/></joint>
 </robot>)";
 
-std::vector<uint8_t> armTf(double x, PJ::Timestamp t) {
-  PJ::sdk::FrameTransforms transforms;
-  PJ::sdk::FrameTransform edge;
-  edge.timestamp = t;
-  edge.parent_frame_id = "base_link";
-  edge.child_frame_id = "arm";
-  edge.translation = {x, 0.0, 0.0};
-  edge.rotation.w = 1.0;
-  transforms.transforms.push_back(edge);
-  return PJ::serializeFrameTransforms(transforms);
-}
-
 // A RobotModelLayer link moved only by TF keeps modelRevision() and every GPU
 // mesh, but its colour and shadow instances are re-uploaded: its pixels and the
 // shadow caster bounds follow the link.
 TEST_F(Scene3dRhiModelCacheTest, TfOnlyLinkMoveRefreshesInstances) {
   pj::scene3d::test::Scene3DRenderFixture fixture;
   fixture.dock()->setTransformService(&fixture.transforms());
-  const auto tf = fixture.add("/tf", BT::kFrameTransforms, armTf(-1.0, 100));
-  fixture.push(tf, 200, armTf(1.0, 200));
+  const auto tf =
+      fixture.add("/tf", BT::kFrameTransforms, serializeTfEdges("base_link", {{"arm", {-1.0, 0.0, 0.0}}}, 100));
+  fixture.push(tf, 200, serializeTfEdges("base_link", {{"arm", {1.0, 0.0, 0.0}}}, 200));
   fixture.transforms().ingestFrameTransformsForDataset(fixture.dataset());
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
@@ -532,8 +439,8 @@ TEST_F(Scene3dRhiModelCacheTest, PoseOnlyGlbBatchBuildsNothing) {
 // wireframe and shadow changes, with or without the caches.
 std::vector<QImage> renderSteps(bool caches) {
   std::vector<QImage> images;
-  FakeModelLayer plain;
-  FakeModelLayer textured_layer;
+  FakeModelLayer plain{kLink};
+  FakeModelLayer textured_layer{kLink};
   plain.put("a", cube(0.7F, solid({0.9F, 0.3F, 0.2F, 1.0F})), {-1.0, 0.0, 0.8});
   plain.put("b", cube(0.5F, solid({0.2F, 0.8F, 0.3F, 0.6F})), {0.0, 0.5, 0.4});
   textured_layer.put("t", cube(0.6F, textured("checker")), {1.0, -0.3, 0.6});
@@ -547,7 +454,7 @@ std::vector<QImage> renderSteps(bool caches) {
       [&] { scene.setCamera(-70.0F, 8.0F); },
       [&] { scene.view().setTrackerTime(PJ::fromRaw(200)); },
       [&] { plain.put("c", cube(0.4F, solid({0.3F, 0.3F, 0.9F, 1.0F})), {0.5, -1.0, 0.3}); },
-      [&] { textured_layer.setWireframe(true); },
+      [&] { textured_layer.wireframe_on = true; },
       [&] { plain.put("a", cube(0.9F, solid({0.9F, 0.9F, 0.2F, 1.0F}))); },
       [&] { scene.setShadows(false); },
       [&] {

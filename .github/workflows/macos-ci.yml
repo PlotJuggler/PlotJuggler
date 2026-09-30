@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 #
-# macOS arm64 lane, in the QRhi build (-DPJ_SCENE3D_RHI=ON, pj_scene3D/docs/TECHNICAL_NOTES.md, CI lanes).
+# macOS arm64 lane (pj_scene3D/docs/TECHNICAL_NOTES.md, CI lanes).
 # Probes Metal first (device, then a presented drawable), builds everything
 # through Conan, runs the QRhi display tests on Metal and then on OpenGL (the
 # Metal fallback, a 4.1 core context) with the native `cocoa` QPA, failing
@@ -13,8 +13,7 @@ on:
     branches: [main, development]
     types: [opened, synchronize, reopened, ready_for_review]
   push:
-    # TEMP until macos-ci.yml is on main; removed once it lands there.
-    branches: [main, development, 'feat/qrhi-**']
+    branches: [main, development]
   workflow_dispatch:
     inputs:
       runner:
@@ -247,7 +246,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             "-DCMAKE_PREFIX_PATH=${PWD}/.qt/${PJ_QT_VERSION}/macos" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DPJ_BUILD_DEMOS=OFF -DPJ_SCENE3D_RHI=ON
+            -DPJ_BUILD_DEMOS=OFF
           # -k 0: one run lists every compile error.
           cmake --build build --parallel -- -k 0
 

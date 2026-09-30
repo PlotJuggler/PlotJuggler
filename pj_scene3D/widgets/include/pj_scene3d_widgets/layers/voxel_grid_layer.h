@@ -20,9 +20,6 @@
 #include "pj_scene3d_core/voxel_grid_view.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #include "pj_widgets/Colormap.h"
-#ifndef PJ_SCENE3D_RHI
-#include "pj_scene3d_widgets/passes/voxel_grid_render_pass.h"
-#endif
 
 class QWidget;
 
@@ -31,9 +28,8 @@ namespace pj::scene3d {
 // Scene3DLayer for an sdk::VoxelGrid topic. On each tracker tick it fetches the
 // grid valid at that time and packs the selected field into a dense volume (ONCE
 // per new grid / field change — re-scrubbing a seen grid does zero per-voxel CPU
-// work). The GL build moves that volume into a VoxelGridRenderPass from render();
-// the QRhi build retains it for SceneViewWidget (prepareForRender(),
-// scalarVolume()/rgbaVolume()). Both expand it to GPU-instanced cubes. The draw
+// work) and retains it for SceneViewWidget (prepareForRender(),
+// scalarVolume()/rgbaVolume()), which expands it to GPU-instanced cubes. The draw
 // predicate, colormap, range and opacity are viewer-side display settings
 // persisted in the layout XML.
 class VoxelGridLayer : public Scene3DLayer {
@@ -56,11 +52,6 @@ class VoxelGridLayer : public Scene3DLayer {
   void setTrackerTime(PJ::Timepoint time) override;
   void setVisible(bool visible) override;
 
-#ifndef PJ_SCENE3D_RHI
-  void initializeGL() override;
-  void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
-  void releaseGL() override;
-#endif
   // Coalesces repaints to sample changes.
   [[nodiscard]] std::uint64_t renderKey(PJ::Timepoint time) const override;
 
@@ -76,8 +67,7 @@ class VoxelGridLayer : public Scene3DLayer {
     return sourceBounds();
   }
 
-  // The packed volume of the current grid (in the GL build it is moved into the
-  // pass, so these read empty there). textureRevision() bumps on every change.
+  // The packed volume of the current grid. textureRevision() bumps on every change.
   [[nodiscard]] const std::vector<float>& scalarVolume() const {
     return scalar_volume_;
   }
@@ -134,7 +124,6 @@ class VoxelGridLayer : public Scene3DLayer {
     return static_cast<float>(manual_hi_);
   }
   // The colormap range: the scalar volume's finite min/max, or the manual one.
-  // The automatic range is QRhi-only (the GL pass derives its own).
   [[nodiscard]] std::pair<float, float> colorRange() const {
     return auto_range_ ? automatic_range_ : std::pair<float, float>{rangeMinimum(), rangeMaximum()};
   }
@@ -162,30 +151,16 @@ class VoxelGridLayer : public Scene3DLayer {
 #ifdef PJ_SCENE3D_TEST_HOOKS
   void renderAtForTest(int64_t time_ns) {
     updateAt(time_ns);
-#ifndef PJ_SCENE3D_RHI
-    syncPass();
-#endif
   }
   [[nodiscard]] QString resolvedFieldForTest() const {
     return QString::fromStdString(resolved_field_name_);
   }
-#ifndef PJ_SCENE3D_RHI
-  [[nodiscard]] bool hasGridForTest() const {
-    return cached_grid_.has_value();
-  }
-  // Whether the render pass currently holds a staged grid (vs. cleared) — distinct
-  // from the layer's parse memo; used to pin the back-scrub re-stage regression.
-  [[nodiscard]] bool passHasStagedGridForTest() const {
-    return pass_.hasStagedGridForTest();
-  }
-#else
   [[nodiscard]] bool hasGridForTest() const {
     return hasVolume();
   }
   [[nodiscard]] bool passHasStagedGridForTest() const {
     return hasVolume();
   }
-#endif
 #endif
 
  private:
@@ -202,22 +177,17 @@ class VoxelGridLayer : public Scene3DLayer {
   [[nodiscard]] static std::optional<ParsedSettings> parseSettings(const QDomElement& element);
   // Decode the first sample at attach to learn the source frame + default field.
   bool bootstrap();
-  // Fetch the grid at time_ns and pack the selected field into the volume (the
-  // CPU preparation both renderers share). No-ops cheaply when the same
+  // Fetch the grid at time_ns and pack the selected field into the volume. No-ops
+  // cheaply when the same
   // grid+field is already packed (the scrub path). A grid that cannot be shown
   // fails closed: no volume plus a statusWarning(). Returns true when the volume
   // or the warning changed.
   bool updateAt(int64_t time_ns);
-#ifndef PJ_SCENE3D_RHI
-  // Hand a newly packed volume (or its absence) to the pass.
-  void syncPass();
-  void pushDisplayParamsToPass();
-#endif
   // Drop the parse memo + upload bookkeeping; called on attach/detach (a dataset
   // replace mints fresh UIDs, so a stale grid must never be served).
   void resetStreamingState();
   // Re-pack at requested_time_ when a tracker move or field change is pending
-  // (once per painted frame, by GL render() or prepareForRender()).
+  // (once per painted frame, by prepareForRender()).
   bool drainPendingUpdate();
   // Resolve which field to display for `grid`, honouring active_field_name_ and
   // falling back to chooseDefaultField. Updates resolved_field_name_ + value_kind_.
@@ -274,17 +244,6 @@ class VoxelGridLayer : public Scene3DLayer {
   double manual_hi_ = 1.0;
   PJ::Colormap colormap_ = PJ::Colormap::kTurbo;
   double opacity_ = 1.0;
-
-#ifndef PJ_SCENE3D_RHI
-  // Parse memo: the last decoded grid keyed by its store entry's SequentialUID, so
-  // a field change re-packs without re-parsing. The copy's anchor keeps the
-  // (possibly zero-copy) cell bytes alive. The QRhi build skips it: the browser
-  // heap keeps only the packed volume.
-  PJ::SequentialUID cached_grid_uid_{};
-  std::optional<PJ::sdk::VoxelGrid> cached_grid_;
-  VoxelGridRenderPass pass_;
-  std::uint64_t pass_revision_ = 0;  // texture_revision_ last handed to pass_
-#endif
 };
 
 }  // namespace pj::scene3d

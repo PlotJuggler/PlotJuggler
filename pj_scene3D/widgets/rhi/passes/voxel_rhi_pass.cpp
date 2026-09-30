@@ -70,7 +70,10 @@ bool VoxelRhiPass::initialize(const RhiPassSetup& setup, int max_3d_texture_size
       !sampler_->create()) {
     return false;
   }
-  colormap_upload_pending_ = true;
+  static const std::vector<std::uint8_t> colormap_lut = PJ::buildColormapLut();
+  QRhiTextureSubresourceUploadDescription colormap(colormap_lut.data(), static_cast<quint32>(colormap_lut.size()));
+  colormap.setSourceSize(QSize(PJ::kColormapLutWidth, PJ::kColormapCount));
+  setup.updates->uploadTexture(colormap_texture_, QRhiTextureUploadDescription({0, 0, colormap}));
   layout_shader_resources_ = createLayerBindings(rhi, layout_uniform_buffer_, layout_texture_);
   QRhiVertexInputLayout layout;
   layout.setBindings({QRhiVertexInputBinding(sizeof(CubeVertex))});
@@ -125,13 +128,6 @@ void VoxelRhiPass::prepare(const RhiFrameContext& frame) {
   draws_.clear();
   last_layer_count_ = 0;
   last_voxel_count_ = 0;
-  if (colormap_upload_pending_) {
-    static const std::vector<std::uint8_t> colormap_lut = PJ::buildColormapLut();
-    QRhiTextureSubresourceUploadDescription description(colormap_lut.data(), static_cast<quint32>(colormap_lut.size()));
-    description.setSourceSize(QSize(PJ::kColormapLutWidth, PJ::kColormapCount));
-    frame.updates->uploadTexture(colormap_texture_, QRhiTextureUploadDescription({0, 0, description}));
-    colormap_upload_pending_ = false;
-  }
   for (const auto& admitted : admitted_) {
     VoxelGridLayer* layer = admitted.layer;
     LayerGpu& gpu = layer_gpu_[layer];
@@ -166,7 +162,7 @@ void VoxelRhiPass::prepare(const RhiFrameContext& frame) {
     const glm::vec3 cell_size = layer->cellSize();
     const glm::mat4 fixed_from_grid =
         relativeModel(admitted.fixed_from_source.matrix() * source_from_grid.matrix(), frame.render_origin);
-    // The GL pass's whole-grid frustum reject, from the shared policy: voxel
+    // Whole-grid frustum reject, from the shared policy: voxel
     // centres, inflated by half the largest cell side. The clip-space-corrected
     // view-projection only loosens the near plane (0..w depth), never over-culls.
     CubeCloudView cloud_view;
@@ -333,7 +329,6 @@ void VoxelRhiPass::release() {
   render_mode_uniforms_ = nullptr;
   colormap_texture_ = nullptr;
   colormap_sampler_ = nullptr;
-  colormap_upload_pending_ = false;
   geometry_ = nullptr;
   max_3d_texture_size_ = 0;
 }

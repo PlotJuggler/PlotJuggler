@@ -2,7 +2,7 @@ if(EMSCRIPTEN)
     # ShaderTools: the host qsb that verifies the committed shader packs.
     find_package(Qt6 REQUIRED COMPONENTS Core Gui GuiPrivate Widgets Xml ShaderTools)
 else()
-    find_package(Qt6 REQUIRED COMPONENTS Core Gui GuiPrivate Widgets OpenGLWidgets Xml)
+    find_package(Qt6 REQUIRED COMPONENTS Core Gui GuiPrivate Widgets Xml)
 endif()
 
 add_library(pj_plotting STATIC
@@ -23,12 +23,12 @@ add_library(pj_plotting STATIC
     src/MarkerPainter.cpp
     src/PlotMarkersItem.cpp
     src/PlotPanner.cpp
+    src/PlotRhiCanvas.cpp
     src/PlotSampleReducer.cpp
     src/PlotScaleDraw.cpp
     src/PlotWidget.cpp
     src/PlotWidgetBase.cpp
     src/PlotZoomer.cpp
-    src/RasterTextEngine.cpp
     src/StateTransitionsController.cpp
     src/StateTransitionsDockWidget.cpp
     src/TabbedPlotWidget.cpp
@@ -50,12 +50,12 @@ add_library(pj_plotting STATIC
     include/pj_plotting/MarkerPainter.h
     include/pj_plotting/PlotMarkersItem.h
     include/pj_plotting/PlotPanner.h
+    include/pj_plotting/PlotRhiCanvas.h
     include/pj_plotting/PlotSampleReducer.h
     include/pj_plotting/PlotScaleDraw.h
     include/pj_plotting/PlotWidget.h
     include/pj_plotting/PlotWidgetBase.h
     include/pj_plotting/PlotZoomer.h
-    include/pj_plotting/RasterTextEngine.h
     include/pj_plotting/StateTransitionsController.h
     include/pj_plotting/StateTransitionsDockWidget.h
     include/pj_plotting/TabbedPlotWidget.h
@@ -86,16 +86,8 @@ target_link_libraries(pj_plotting PUBLIC
     pj_datastore  # DataProcessor (applyBatch preview) — formerly pj_proc
 )
 
-# PlotRhiCanvas replaces the OpenGL canvas wherever every GPU widget is a
-# QRhiWidget (PJ_RHI_WIDGETS): the desktop QRhi build and the browser.
-if(EMSCRIPTEN OR PJ_SCENE3D_RHI)
-  target_sources(pj_plotting PRIVATE
-    src/PlotRhiCanvas.cpp
-    include/pj_plotting/PlotRhiCanvas.h
-    shaders/pj_plot_rhi_shaders.qrc
-  )
-  target_link_libraries(pj_plotting PRIVATE Qt6::GuiPrivate)
-endif()
+target_sources(pj_plotting PRIVATE shaders/pj_plot_rhi_shaders.qrc)
+target_link_libraries(pj_plotting PRIVATE Qt6::GuiPrivate)
 
 if(EMSCRIPTEN)
   if(PJ_WASM_ENABLE_INGRESS_PROBE)
@@ -134,6 +126,4 @@ if(EMSCRIPTEN)
   unset(_pj_plot_shader_verify_dir)
   unset(_pj_plot_source)
   unset(_pj_plot_sources)
-else()
-  target_link_libraries(pj_plotting PUBLIC Qt6::OpenGLWidgets)
 endif()

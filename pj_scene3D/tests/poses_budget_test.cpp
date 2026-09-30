@@ -1,19 +1,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include "pj_scene3d_core/poses_budget.h"
-
 #include <gtest/gtest.h>
+
+#include "pj_scene3d_core/scene_limits.h"
 
 namespace pj::scene3d {
 namespace {
-
-TEST(PosesBrowserBudget, LayerLimitsAcceptTheirExactBoundaryOnly) {
-  EXPECT_TRUE(poseCountFits(kBrowserSceneLimits.max_poses_per_layer, kBrowserSceneLimits));
-  EXPECT_FALSE(poseCountFits(kBrowserSceneLimits.max_poses_per_layer + 1U, kBrowserSceneLimits));
-  EXPECT_TRUE(posePayloadFits(kBrowserSceneLimits.max_pose_wire_bytes_per_layer, kBrowserSceneLimits));
-  EXPECT_FALSE(posePayloadFits(kBrowserSceneLimits.max_pose_wire_bytes_per_layer + 1U, kBrowserSceneLimits));
-}
 
 TEST(PosesBrowserBudget, ViewArmBudgetAggregatesWithoutUnsignedUnderflow) {
   std::uint64_t remaining = kBrowserSceneLimits.max_pose_arms_per_view;

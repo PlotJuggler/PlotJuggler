@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MPL-2.0
 # Gate A performance run (pj_scene3D/docs/TECHNICAL_NOTES.md §9): the frame
-# benchmarks of a QRhi tree and a legacy GL tree, B's method. Builds nothing.
+# benchmarks of a candidate tree against a frozen baseline, B's method. Builds
+# nothing.
 #
-#   scripts/perf/gate_a.sh --rhi build --gl build-gl [--out DIR] [--rounds 5]
-#       [--frames 30] [--display :96] [--only REGEX] [--no-vulkan] [--keep-display]
-#       [--first-round K]
+#   scripts/perf/gate_a.sh --candidate build [--baseline TREE | --baseline-run DIR]
+#       [--out DIR] [--rounds 5] [--frames 30] [--display :96] [--only REGEX]
+#       [--no-vulkan] [--keep-display] [--first-round K]
 #
-# --rhi: a QRhi tree (default configuration) with scene3d_frame_benchmark,
-#   plot_canvas_benchmark and mixed_layout_benchmark built;
-# --gl: a GL rollback tree (-DPJ_SCENE3D_RHI=OFF -DPJ_BUILD_DEMOS=ON) with
-#   scene3d_frame_benchmark and mixed_layout_benchmark built.
+# --candidate: the tree under test, with scene3d_frame_benchmark,
+#   plot_canvas_benchmark and mixed_layout_benchmark built (PJ_BUILD_DEMOS=ON);
+#   measured on OpenGL (config rhi_gl, the verdicts) and Vulkan (rhi_vk).
+# --baseline: a baseline tree with the same three benchmarks, measured on OpenGL
+#   (config base) interleaved with the candidate in every round: the least noisy
+#   comparison.
+# --baseline-run: instead, an earlier gate_a.sh run directory whose rhi_gl runs
+#   are the frozen baseline (e.g. the final P6 run); only the candidate runs.
+# Neither: the report compares nothing and gates only the absolute limits.
 #
 # Method: a private headless GNOME Shell with a rootful Xwayland on --display
 # (xcb: the Wayland QPA pins every frame to the compositor's 60 Hz callback),
@@ -18,9 +24,9 @@
 # its own process, the configurations interleaved within each of --rounds
 # rounds. Every run's output lands in DIR/raw/<round>/<config>__<case>.log,
 # ending with its exit status (GATE_RUN_EXIT=<n>);
-# gate_a_report.py DIR then writes DIR/gate_a.md (median [min–max] of the
-# rounds, Gate A verdicts). --only keeps the cases whose "<config>__<case>"
-# matches the regex; --no-vulkan drops the RHI Vulkan configuration.
+# gate_a_report.py DIR [--baseline RUN] then writes DIR/gate_a.md (median
+# [min–max] of the rounds, Gate A verdicts against the baseline). --only keeps
+# the cases whose "<config>__<case>" matches the regex; --no-vulkan drops rhi_vk.
 # --first-round K numbers the rounds from K, so one --out can collect rounds run
 # one at a time (each under the build lock, letting builds run in between).
 #
@@ -31,11 +37,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-RHI_TREE="" GL_TREE="" OUT="" FIRST_ROUND=1 ROUNDS=5 FRAMES=30 DISPLAY_ID=":96" ONLY="" VULKAN=1 KEEP_DISPLAY=0
+CAND_TREE="" BASE_TREE="" BASE_RUN="" OUT="" FIRST_ROUND=1 ROUNDS=5 FRAMES=30 DISPLAY_ID=":96" ONLY="" VULKAN=1 KEEP_DISPLAY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --rhi) RHI_TREE="$(realpath "$2")"; shift 2 ;;
-    --gl) GL_TREE="$(realpath "$2")"; shift 2 ;;
+    --candidate) CAND_TREE="$(realpath "$2")"; shift 2 ;;
+    --baseline) BASE_TREE="$(realpath "$2")"; shift 2 ;;
+    --baseline-run) BASE_RUN="$(realpath "$2")"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --rounds) ROUNDS="$2"; shift 2 ;;
     --first-round) FIRST_ROUND="$2"; shift 2 ;;
@@ -44,24 +51,31 @@ while [[ $# -gt 0 ]]; do
     --only) ONLY="$2"; shift 2 ;;
     --no-vulkan) VULKAN=0; shift ;;
     --keep-display) KEEP_DISPLAY=1; shift ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
-[[ -n "$RHI_TREE" && -n "$GL_TREE" ]] || { echo "--rhi and --gl are required" >&2; exit 2; }
+[[ -n "$CAND_TREE" ]] || { echo "--candidate is required" >&2; exit 2; }
+[[ -z "$BASE_TREE" || -z "$BASE_RUN" ]] || { echo "--baseline and --baseline-run are exclusive" >&2; exit 2; }
+[[ -z "$BASE_RUN" || -d "$BASE_RUN/raw" ]] || { echo "not a gate_a.sh run directory: $BASE_RUN" >&2; exit 2; }
 OUT="${OUT:-$ROOT/build/gate_a_$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "$OUT/raw"
 
 bin() {  # bin <tree> <name>: the built executable, or empty
   find "$1" -type f -name "$2" -perm -u+x 2>/dev/null | head -n 1
 }
-RHI_S3D="$(bin "$RHI_TREE" scene3d_frame_benchmark)"
-RHI_PLOT="$(bin "$RHI_TREE" plot_canvas_benchmark)"
-RHI_MIXED="$(bin "$RHI_TREE" mixed_layout_benchmark)"
-GL_S3D="$(bin "$GL_TREE" scene3d_frame_benchmark)"
-GL_MIXED="$(bin "$GL_TREE" mixed_layout_benchmark)"
-for exe in RHI_S3D RHI_PLOT RHI_MIXED GL_S3D GL_MIXED; do
-  [[ -n "${!exe}" ]] || { echo "missing executable: $exe (build it first)" >&2; exit 2; }
+declare -A S3D PLOT MIXED  # per config: the executables of its tree
+configs=(rhi_gl)
+[[ "$VULKAN" == 1 ]] && configs+=(rhi_vk)
+[[ -n "$BASE_TREE" ]] && configs=(base "${configs[@]}")
+for cfg in "${configs[@]}"; do
+  tree="$CAND_TREE"; [[ "$cfg" == base ]] && tree="$BASE_TREE"
+  S3D[$cfg]="$(bin "$tree" scene3d_frame_benchmark)"
+  PLOT[$cfg]="$(bin "$tree" plot_canvas_benchmark)"
+  MIXED[$cfg]="$(bin "$tree" mixed_layout_benchmark)"
+  for exe in "${S3D[$cfg]}" "${PLOT[$cfg]}" "${MIXED[$cfg]}"; do
+    [[ -n "$exe" ]] || { echo "$tree lacks a benchmark (build them with PJ_BUILD_DEMOS=ON)" >&2; exit 2; }
+  done
 done
 
 # --- the display: headless GNOME Shell + rootful Xwayland ----------------------
@@ -97,39 +111,32 @@ if [[ ! -S "/tmp/.X11-unix/X${DISPLAY_NUM}" ]]; then
 fi
 
 # --- the cases -------------------------------------------------------------------
-# One "<config> <case> <command...>" per line; configs: gl (GL tree), rhi_gl and
-# rhi_vk (QRhi tree on OpenGL / Vulkan). Plot rows compare the RHI canvas with
-# Qwt's GL canvas (config gl), both from the QRhi tree.
+# One "<config> <case> <command...>" per line; configs: base (the baseline tree on
+# OpenGL), rhi_gl and rhi_vk (the candidate on OpenGL / Vulkan).
 CASES=()
 add() { CASES+=("$*"); }
-scene_configs=(gl rhi_gl)
-[[ "$VULKAN" == 1 ]] && scene_configs+=(rhi_vk)
 for c in CloudStatic CloudStream CubesAndLinesOrbit MarkersPanFollow RobotTfAnimated Layers10 Layers100 \
          Layers1000 DockMovesCloud DockMovesRobot FirstShow; do
-  for cfg in "${scene_configs[@]}"; do
-    exe="$RHI_S3D"; [[ "$cfg" == gl ]] && exe="$GL_S3D"
-    add "$cfg" "$c" "$exe" "--gtest_filter=Scene3dFrameBenchmark.$c"
+  for cfg in "${configs[@]}"; do
+    add "$cfg" "$c" "${S3D[$cfg]}" "--gtest_filter=Scene3dFrameBenchmark.$c"
   done
 done
-for cfg in "${scene_configs[@]}"; do  # the 10M cloud's GPU memory at DPR 2
-  exe="$RHI_S3D"; [[ "$cfg" == gl ]] && exe="$GL_S3D"
-  add "$cfg" CloudStaticDpr2 env QT_SCALE_FACTOR=2 "$exe" --gtest_filter=Scene3dFrameBenchmark.CloudStatic
+for cfg in "${configs[@]}"; do  # the 10M cloud's GPU memory at DPR 2
+  add "$cfg" CloudStaticDpr2 env QT_SCALE_FACTOR=2 "${S3D[$cfg]}" --gtest_filter=Scene3dFrameBenchmark.CloudStatic
 done
 for p in dashed many_curves tracker_only streaming static_1m static_1m_dpr2; do
-  for cfg in "${scene_configs[@]}"; do
-    canvas=rhi; [[ "$cfg" == gl ]] && canvas=gl
+  for cfg in "${configs[@]}"; do
     if [[ "$p" == static_1m_dpr2 ]]; then
-      add "$cfg" "plot_$p" env QT_SCALE_FACTOR=2 "$RHI_PLOT" --canvas "$canvas" --case static_1m --frames "$FRAMES"
+      add "$cfg" "plot_$p" env QT_SCALE_FACTOR=2 "${PLOT[$cfg]}" --canvas rhi --case static_1m --frames "$FRAMES"
     else
-      add "$cfg" "plot_$p" "$RHI_PLOT" --canvas "$canvas" --case "$p" --frames "$FRAMES"
+      add "$cfg" "plot_$p" "${PLOT[$cfg]}" --canvas rhi --case "$p" --frames "$FRAMES"
     fi
   done
 done
-for cfg in "${scene_configs[@]}"; do
-  exe="$RHI_MIXED"; [[ "$cfg" == gl ]] && exe="$GL_MIXED"
-  add "$cfg" mixed "$exe" --frames "$FRAMES"
+for cfg in "${configs[@]}"; do
+  add "$cfg" mixed "${MIXED[$cfg]}" --frames "$FRAMES"
   # An ADS dock-area tab switch of a 9.9M-point cloud (215^3) and a plot.
-  add "$cfg" tab_switch "$exe" --plots 1 --cloud-side 215 --tab-switch 10
+  add "$cfg" tab_switch "${MIXED[$cfg]}" --plots 1 --cloud-side 215 --tab-switch 10
 done
 
 run_env=(env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_ID" QT_QPA_PLATFORM=xcb vblank_mode=0
@@ -141,11 +148,17 @@ run_env=(env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_ID" QT_QPA_PLATFORM=xcb vblank
   echo "host: $(uname -r); $(nproc) CPUs; governor $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo n/a)"
   echo "power: $(cat /sys/class/power_supply/AC*/online 2>/dev/null | head -n 1 || echo n/a) (1 = AC)"
   echo "load: $(cat /proc/loadavg)"
-  echo "rhi tree: $RHI_TREE ($(git -C "$RHI_TREE/.." rev-parse --short HEAD 2>/dev/null || echo ?))"
-  echo "gl tree: $GL_TREE"
+  echo "candidate tree: $CAND_TREE ($(git -C "$CAND_TREE/.." rev-parse --short HEAD 2>/dev/null || echo ?))"
+  if [[ -n "$BASE_TREE" ]]; then
+    echo "baseline tree: $BASE_TREE ($(git -C "$BASE_TREE/.." rev-parse --short HEAD 2>/dev/null || echo ?))"
+  elif [[ -n "$BASE_RUN" ]]; then
+    echo "baseline run: $BASE_RUN"
+  else
+    echo "baseline: none"
+  fi
   echo "display: $DISPLAY_ID; rounds $ROUNDS; frames $FRAMES"
 } >>"$OUT/meta.txt"
-tail -n 7 "$OUT/meta.txt"
+tail -n 8 "$OUT/meta.txt"
 
 total=0
 for round in $(seq "$FIRST_ROUND" $((FIRST_ROUND + ROUNDS - 1))); do
@@ -167,4 +180,4 @@ for round in $(seq "$FIRST_ROUND" $((FIRST_ROUND + ROUNDS - 1))); do
   echo "round $round done ($total runs, load $(cut -d' ' -f1-3 /proc/loadavg))"
 done
 
-python3 "$ROOT/scripts/perf/gate_a_report.py" "$OUT"
+python3 "$ROOT/scripts/perf/gate_a_report.py" "$OUT" ${BASE_RUN:+--baseline "$BASE_RUN"}

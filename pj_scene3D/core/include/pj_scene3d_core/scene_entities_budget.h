@@ -15,21 +15,11 @@ namespace pj::scene3d {
 // has subtracted its render origin. The two independent view budgets prevent a
 // marker-heavy topic from allocating unbounded CPU staging and QRhi buffers.
 
-[[nodiscard]] constexpr bool markerWirePayloadFits(
-    std::uint64_t bytes, const SceneLimits& limits = kSceneLimits) noexcept {
-  return bytes <= limits.max_marker_wire_bytes;
-}
-
 [[nodiscard]] constexpr bool markerLayerCountsFit(
     std::uint64_t instances, std::uint64_t stream_vertices, std::uint64_t frames,
     const SceneLimits& limits = kSceneLimits) noexcept {
   return instances <= limits.max_marker_instances_per_layer &&
          stream_vertices <= limits.max_marker_stream_vertices_per_layer && frames <= limits.max_marker_frames_per_layer;
-}
-
-[[nodiscard]] constexpr bool markerRetainedBytesFit(
-    std::uint64_t bytes, const SceneLimits& limits = kSceneLimits) noexcept {
-  return bytes <= limits.max_marker_retained_bytes_per_layer;
 }
 
 // Solid cubes submit one fill instance. Normal (non-wireframe) rendering also

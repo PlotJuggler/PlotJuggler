@@ -398,8 +398,8 @@ class MediaViewerWidget : public QRhiWidget {
   // ----- Outline pipeline (Triangles): all line/circle strokes. -----
   // Each segment is expanded CPU-side (overlay_geometry::appendLineStrokes) to a
   // quad whose width scales with zoom but is floored at 1px on screen so edges
-  // never vanish. Replaces the old native GL_LINES path, which gave only 1 px and
-  // could be guard-band culled when zoomed far in.
+  // never vanish. Line primitives would give only 1 px and could be guard-band
+  // culled when zoomed far in.
   OverlayPipeline thick_overlay_;
 
   // ----- Text pipeline (Triangles, textured quads with QPainter masks) -----

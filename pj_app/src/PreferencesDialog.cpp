@@ -216,7 +216,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   //  - Frameless window (Appearance): default off (the system frame);
   //    MainWindow reads the key once at construction, so it applies on the
   //    next launch. Hidden where the platform leaves no choice.
-  //  - OpenGL (Appearance): default on; PlotWidgetBase reads the key when a plot
+  //  - GPU canvas (Appearance): default on; PlotWidgetBase reads the key when a plot
   //    is constructed (applies to newly created plots). --disable-opengl can
   //    force it off for a session without touching this saved value.
   ui_->scrubberFloatPrecision->setRange(1, 6);

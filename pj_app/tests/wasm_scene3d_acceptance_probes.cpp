@@ -27,6 +27,7 @@
 #include "pj_scene3d_widgets/layers/scene_entities_layer.h"
 #include "pj_scene3d_widgets/layers/voxel_grid_layer.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
+#include "pj_widgets/Fnv1a.h"
 #include "pj_widgets/LayerListView.h"
 #include "pj_widgets/RealSlider.h"
 #include "ui/Scene3DConfigPanel.h"
@@ -51,12 +52,12 @@ QRect geometryRelativeTo(PJ::MainWindow* main_window, QWidget* control) {
 }
 
 std::pair<quint64, quint64> framebufferDigest(const QImage& image) {
-  quint64 hash = 1469598103934665603ULL;
+  quint64 hash = PJ::kFnv1aOffsetBasis;
   quint64 rgb_sum = 0;
   for (int y = 0; y < image.height(); ++y) {
     for (int x = 0; x < image.width(); ++x) {
       const QRgb pixel = image.pixel(x, y);
-      hash = (hash ^ pixel) * 1099511628211ULL;
+      hash = PJ::fnv1aMix(hash, pixel);
       rgb_sum += static_cast<quint64>(qRed(pixel) + qGreen(pixel) + qBlue(pixel));
     }
   }

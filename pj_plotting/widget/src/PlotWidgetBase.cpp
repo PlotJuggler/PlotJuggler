@@ -10,13 +10,6 @@
 #include <qwt_plot_grid.h>
 #include <qwt_plot_layout.h>
 #include <qwt_plot_marker.h>
-
-#include "pj_plotting/PlotCurve.h"
-#ifdef PJ_RHI_WIDGETS
-#include "pj_plotting/PlotRhiCanvas.h"
-#else
-#include <qwt_plot_opengl_canvas.h>
-#endif
 #include <qwt_scale_engine.h>
 #include <qwt_scale_map.h>
 #include <qwt_scale_widget.h>
@@ -42,9 +35,11 @@
 #include <utility>
 
 #include "pj_plotting/DatastoreCurveAdapter.h"
+#include "pj_plotting/PlotCurve.h"
 #include "pj_plotting/PlotLegend.h"
 #include "pj_plotting/PlotMagnifier.h"
 #include "pj_plotting/PlotPanner.h"
+#include "pj_plotting/PlotRhiCanvas.h"
 #include "pj_plotting/PlotScaleDraw.h"
 #include "pj_plotting/PlotZoomer.h"
 #include "pj_widgets/FrameworkTokens.h"
@@ -84,10 +79,10 @@ namespace {
   return canvas;
 }
 
-// Session-wide override for the OpenGL canvas choice, set by
-// PlotWidgetBase::setOpenGlDisabledOverride (the --disable-opengl CLI flag).
+// Session-wide override for the GPU canvas choice, set by
+// PlotWidgetBase::setGpuCanvasDisabledOverride (the --disable-opengl CLI flag).
 // Read once per plot at construction; only written at startup.
-bool g_opengl_disabled_override = false;
+bool g_gpu_canvas_disabled_override = false;
 
 }  // namespace
 
@@ -230,46 +225,26 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
   // is applied after construction or toggled at runtime.
   const QColor canvas_bg = dataBackdropForCurrentTheme();
 
-  QWidget* abs_canvas = nullptr;
   // The browser has no raster canvas; on desktop the "GPU canvas" preference and
   // --disable-opengl select it.
 #ifdef PJ_TARGET_WASM
   const bool gpu_canvas = true;
 #else
-  const bool gpu_canvas = !g_opengl_disabled_override && QSettings().value("Preferences::use_opengl", true).toBool();
+  const bool gpu_canvas =
+      !g_gpu_canvas_disabled_override && QSettings().value("Preferences::use_opengl", true).toBool();
 #endif
-#ifdef PJ_RHI_WIDGETS
-  // Every GPU widget is a QRhiWidget in this build: a QOpenGLWidget canvas
-  // would pin its whole top-level window to OpenGL (and QOpenGLWidget cannot
-  // provide its context-sharing contract on WebGL).
   PlotRhiCanvas* rhi_canvas = nullptr;
+  QWidget* canvas = nullptr;
   if (gpu_canvas) {
     rhi_canvas = new PlotRhiCanvas();
     rhi_canvas->setPalette(canvas_bg);
-    abs_canvas = rhi_canvas;
+    canvas = rhi_canvas;
+  } else {
+    canvas = newRasterCanvas(canvas_bg);
   }
-#else
-  if (gpu_canvas) {
-    auto* canvas = new QwtPlotOpenGLCanvas();
-    // Drop Qwt's own backing-store FBO: it is a persistent-content GL resource
-    // that outlives context recreation (ADS float/re-dock) and GPU resets, and
-    // QOpenGLWidget's internal FBO already restores content on re-expose. Its
-    // only saving was skipping a redraw on rare non-replot repaints (focus
-    // activation); without it every canvas paint re-renders from live state.
-    canvas->setPaintAttribute(QwtPlotOpenGLCanvas::BackingStore, false);
-    canvas->setFrameStyle(QFrame::Box | QFrame::Plain);
-    canvas->setLineWidth(1);
-    canvas->setPalette(canvas_bg);
-    abs_canvas = canvas;
-  }
-#endif
-  if (abs_canvas == nullptr) {
-    abs_canvas = newRasterCanvas(canvas_bg);
-  }
-  abs_canvas->setObjectName("qwtCanvas");
+  canvas->setObjectName("qwtCanvas");
 
-  plot_ = new QwtPlotPimpl(this, abs_canvas, on_view_resized, on_event);
-#ifdef PJ_RHI_WIDGETS
+  plot_ = new QwtPlotPimpl(this, canvas, on_view_resized, on_event);
   // The canvas is constructed before the plot exists (QwtPlot adopts its canvas
   // during its own ctor), so bind the source plot now instead of resolving it
   // from parentWidget() on every frame.
@@ -282,7 +257,6 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
     connect(rhi_canvas, &QRhiWidget::renderFailed, this, &PlotWidgetBase::fallBackToRasterCanvas, Qt::QueuedConnection);
 #endif
   }
-#endif
 
   auto* layout = new QHBoxLayout(this);
   layout->setContentsMargins(
@@ -584,11 +558,9 @@ void PlotWidgetBase::setLegendSize(int size) {
 
 void PlotWidgetBase::setLegendAlignment(Qt::Alignment alignment) {
   plot_->legend->setAlignmentInCanvas(alignment);
-#ifdef PJ_RHI_WIDGETS
   // The retained QRhi buffers need an explicit dirty signal after the item
-  // mutation. Preserve the native Qwt repaint behavior exactly as before.
+  // mutation.
   replot();
-#endif
 }
 
 void PlotWidgetBase::setLegendVisible(bool visible) {
@@ -734,14 +706,12 @@ void PlotWidgetBase::replot() {
 }
 
 void PlotWidgetBase::replotOverlays() {
-#ifdef PJ_RHI_WIDGETS
   if (auto* canvas = qobject_cast<PlotRhiCanvas*>(plot_->canvas()); canvas != nullptr) {
     canvas->setOverlayOnlyReplot(true);
     replot();
     canvas->setOverlayOnlyReplot(false);
     return;
   }
-#endif
   replot();
 }
 
@@ -812,8 +782,8 @@ QColor PlotWidgetBase::paletteColor(int index) {
   return colorFromIndex(index);
 }
 
-void PlotWidgetBase::setOpenGlDisabledOverride(bool disabled) {
-  g_opengl_disabled_override = disabled;
+void PlotWidgetBase::setGpuCanvasDisabledOverride(bool disabled) {
+  g_gpu_canvas_disabled_override = disabled;
 }
 
 QWidget* PlotWidgetBase::canvasWidget() const {

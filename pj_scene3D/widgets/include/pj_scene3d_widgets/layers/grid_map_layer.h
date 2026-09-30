@@ -18,9 +18,6 @@
 #include "pj_runtime/SessionManager.h"    // PJ::DatasetId
 #include "pj_scene3d_core/grid_map_view.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
-#ifndef PJ_SCENE3D_RHI
-#include "pj_scene3d_widgets/passes/grid_map_render_pass.h"
-#endif
 #include "pj_widgets/Colormap.h"
 
 class QFormLayout;
@@ -34,10 +31,10 @@ inline constexpr std::string_view kGridMapElevationNone = "<none>";
 
 // Scene3DLayer for an sdk::GridMap topic: the sample at-or-before the tracker time
 // is resolved (parser or canonical codec), validated, de-interleaved into an
-// elevation + a color channel, and staged into a GridMapRenderPass ONCE per new
-// sample / selector change. The requested field names are kept apart from the
-// effective ones so a persisted request is honoured again once its field reappears.
-// The QRhi view reads the staged grid through prepareForRender()/stagedGrid().
+// elevation + a color channel, and staged ONCE per new sample / selector change;
+// the view reads the staged grid through prepareForRender()/stagedGrid(). The
+// requested field names are kept apart from the effective ones so a persisted
+// request is honoured again once its field reappears.
 class GridMapLayer : public Scene3DLayer {
   Q_OBJECT
  public:
@@ -59,14 +56,8 @@ class GridMapLayer : public Scene3DLayer {
   void setTrackerTime(PJ::Timepoint time) override;
   void setVisible(bool visible) override;
 
-#ifndef PJ_SCENE3D_RHI
-  void initializeGL() override;
-  void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
-  void releaseGL() override;
-#endif
   [[nodiscard]] std::optional<AABB> worldBounds() const override;
 
-#ifdef PJ_SCENE3D_RHI
   // QRhi view hook, called once per frame for a visible layer: decodes and packs
   // the sample at the last tracker time when a tracker move or selector change is
   // pending. The result is stagedGrid(); stagedRevision() bumps on every change.
@@ -78,7 +69,6 @@ class GridMapLayer : public Scene3DLayer {
   [[nodiscard]] std::uint64_t stagedRevision() const {
     return staged_revision_;
   }
-#endif
   // The last decoded sample's frame id (empty before the first sample).
   [[nodiscard]] const std::string& renderFrameId() const {
     return source_frame_;
@@ -115,7 +105,7 @@ class GridMapLayer : public Scene3DLayer {
   void setLighting(bool on);
   void setOpacity(double opacity);
 
-#if defined(PJ_SCENE3D_TEST_HOOKS) && !defined(PJ_SCENE3D_RHI)
+#ifdef PJ_SCENE3D_TEST_HOOKS
   void renderAtForTest(int64_t time_ns) {
     renderAt(time_ns);
   }
@@ -129,10 +119,12 @@ class GridMapLayer : public Scene3DLayer {
     return cached_grid_.has_value();
   }
   [[nodiscard]] bool passHasStagedGridForTest() const {
-    return pass_.hasStagedGridForTest();
+    return staged_grid_.has_value();
   }
+  // An empty upload when nothing is staged (a reset optional holds no arrays).
   [[nodiscard]] const GridMapUpload& stagedGridForTest() const {
-    return pass_.stagedGridForTest();
+    static const GridMapUpload kNone;
+    return staged_grid_.has_value() ? *staged_grid_ : kNone;
   }
   [[nodiscard]] int packCountForTest() const {
     return pack_count_;
@@ -156,7 +148,7 @@ class GridMapLayer : public Scene3DLayer {
   // Fetch the sample at time_ns, pack the selected fields, stage the upload. Cheap
   // no-op when the same sample + selectors are already staged (the scrub path).
   void renderAt(int64_t time_ns);
-  // Hand a packed grid to the renderer (GL: the pass; QRhi: stagedGrid()).
+  // Hand a packed grid to the view (stagedGrid()).
   void stageGrid(GridMapUpload upload);
   void clearStagedGrid();
   // Forget everything learned from the topic's bytes (parse/upload memos, bounds,
@@ -222,13 +214,9 @@ class GridMapLayer : public Scene3DLayer {
   bool lighting_ = true;
   double opacity_ = 1.0;
 
-#ifndef PJ_SCENE3D_RHI
-  GridMapRenderPass pass_;
-#else
   std::optional<GridMapUpload> staged_grid_;
   std::uint64_t staged_revision_ = 0;
   std::optional<PJ::Timepoint> requested_time_;  // the last tracker time, drained by prepareForRender()
-#endif
 };
 
 }  // namespace pj::scene3d

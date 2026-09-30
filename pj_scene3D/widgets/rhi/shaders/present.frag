@@ -29,9 +29,8 @@ vec3 aces(vec3 color) {
 }
 
 // AgX: adapted from three.js tonemapping_pars_fragment (MIT; Filament/Sobotka
-// derived). Neutral: Khronos PBR Neutral (Apache-2.0, via three.js). The
-// desktop GL composite carries the same code; full license texts:
-// pj_scene3D/THIRDPARTY.md.
+// derived). Neutral: Khronos PBR Neutral (Apache-2.0, via three.js). Full
+// license texts: pj_scene3D/THIRDPARTY.md.
 vec3 agxContrast(vec3 x) {
     vec3 x2 = x * x;
     vec3 x4 = x2 * x2;

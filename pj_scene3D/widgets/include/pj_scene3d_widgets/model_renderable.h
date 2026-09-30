@@ -15,6 +15,8 @@
 
 namespace pj::scene3d {
 
+class Scene3DLayer;
+
 // View-level visibility/opacity applies only to robot visual and collision
 // groups. Independent model draws (SceneEntities ModelPrimitive) retain their
 // layer's own presentation controls.
@@ -36,7 +38,6 @@ struct ModelDrawCall {
 // published MeshData is immutable: change a mesh by storing a new shared_ptr
 // under its key. A bump rebuilds the GPU state only of keys whose pointer
 // changed, so keeping the pointer of an unchanged mesh avoids its re-upload.
-// Implementers are Scene3DLayers, which carry the renderer warning.
 class ModelRenderable {
  public:
   virtual ~ModelRenderable() = default;
@@ -52,6 +53,9 @@ class ModelRenderable {
   // Root frame of the model draws; see PointRenderable::renderFrameId().
   [[nodiscard]] virtual const std::string& renderFrameId() const = 0;
   [[nodiscard]] virtual bool contributesToSceneBounds() const = 0;
+  // The layer this is (every implementer is a Scene3DLayer), which carries the
+  // renderer part of its row warning.
+  [[nodiscard]] virtual Scene3DLayer& modelLayer() = 0;
 };
 
 }  // namespace pj::scene3d

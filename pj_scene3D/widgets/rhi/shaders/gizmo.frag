@@ -4,10 +4,8 @@
 #extension GL_GOOGLE_include_directive : require
 
 // The corner axis gizmo, drawn on the display-referred output after
-// presentation (pose.vert supplies the view-space normal). The desktop GL
-// renderer writes the same lit colour to its linear HDR target as
-// pow(lit, 2.2) and presents it ungraded through the sRGB encode; this shader
-// reproduces that encode directly.
+// presentation (pose.vert supplies the view-space normal). The lit colour is
+// sRGB-encoded here directly, matching the ungraded present path.
 layout(location = 0) in vec3 view_normal;
 layout(location = 1) in vec4 arrow_color;
 layout(location = 0) out vec4 fragment_color;

@@ -18,16 +18,15 @@
 #include "passes/model_rhi_pass.h"
 #include "pj_scene3d_core/scene_limits.h"
 #include "pj_scene3d_core/shadow_camera.h"
-#include "pj_scene3d_widgets/passes/grid_geometry.h"
+#include "pj_scene3d_widgets/grid_geometry.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
-#include "pj_scene3d_widgets/scene_view_widget_rhi.h"
+#include "pj_scene3d_widgets/scene_view_widget.h"
 #include "rhi_scene_pass.h"
 #include "scene_view_widget_rhi_quality_p.h"
 
 namespace pj::scene3d {
 namespace {
 
-constexpr int kHdrSampleCount = 4;
 // Where QRhi resolves multisample depth (ResolveDepthStencil with multisample
 // textures: OpenGL 4.3+, Vulkan, Metal), the HDR pass resolves its D32F into the
 // single-sample depth texture and present derives coverage from it. Elsewhere
@@ -289,9 +288,7 @@ void SceneViewWidget::releaseSsaoResources() {
   releaseSsaoTargetResources();
   delete ssao_pipeline_;
   ssao_pipeline_ = nullptr;
-  delete ssao_uniform_buffer_;
   delete ssao_render_pass_descriptor_;
-  ssao_uniform_buffer_ = nullptr;
   ssao_render_pass_descriptor_ = nullptr;
 }
 
@@ -380,14 +377,6 @@ bool SceneViewWidget::ensureSsaoResources(QRhi* owner, const QSize& size) {
   }
   if (hdr_resolve_coverage_ == nullptr || hdr_resolve_depth_ == nullptr || hdr_coverage_sampler_ == nullptr) {
     return fail(tr("The HDR depth replay is not ready for SSAO"));
-  }
-
-  if (ssao_uniform_buffer_ == nullptr) {
-    ssao_uniform_buffer_ = owner->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, kSsaoUniformBytes);
-    if (!ssao_uniform_buffer_->create()) {
-      return fail(tr("Could not allocate the SSAO kernel buffer"));
-    }
-    ssao_kernel_pending_ = true;
   }
 
   QRhiTextureRenderTargetDescription description;

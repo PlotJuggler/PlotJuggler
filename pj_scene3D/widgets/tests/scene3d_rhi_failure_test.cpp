@@ -200,7 +200,7 @@ TEST_F(Scene3dRhiFailureTest, BasePipelineFailureClearsWarnsAndRecovers) {
   QImage failed;
   for (int frame = 0; frame < 10 && scene.failures == 0; ++frame) {
     failed = grab(*view);
-    if (failed.isNull() || view->rhiBackendNameForTest().isEmpty()) {
+    if (failed.isNull() || view->rhiBackendName().isEmpty()) {
       PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
     }
     EXPECT_TRUE(uniform(failed)) << "frame " << frame << " drew more than the backdrop";
@@ -242,7 +242,7 @@ TEST_F(Scene3dRhiFailureTest, FamilyBuiltOnDemandFailsAndRecovers) {
   SceneViewWidget* view = scene.view();
   ASSERT_TRUE(scene.show());
   const QImage points = grab(*view);
-  if (points.isNull() || view->rhiBackendNameForTest().isEmpty()) {
+  if (points.isNull() || view->rhiBackendName().isEmpty()) {
     PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
   }
   ASSERT_FALSE(uniform(points));
@@ -277,7 +277,7 @@ TEST_F(Scene3dRhiFailureTest, BaseTemplateFailsOnTheFirstDirectFrame) {
   SceneViewWidget* view = scene.view();
   ASSERT_TRUE(scene.show());
   const QImage hdr = grab(*view);
-  if (hdr.isNull() || view->rhiBackendNameForTest().isEmpty()) {
+  if (hdr.isNull() || view->rhiBackendName().isEmpty()) {
     PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
   }
   if (!view->lastHdrActiveForTest()) {
@@ -312,7 +312,7 @@ TEST_F(Scene3dRhiFailureTest, WithheldFrameKeepsThePickCamera) {
   SceneViewWidget* view = scene.view();
   ASSERT_TRUE(scene.show());
   const QImage hdr = grab(*view);
-  if (hdr.isNull() || view->rhiBackendNameForTest().isEmpty()) {
+  if (hdr.isNull() || view->rhiBackendName().isEmpty()) {
     PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
   }
   if (!view->lastHdrActiveForTest()) {
@@ -341,7 +341,7 @@ TEST_F(Scene3dRhiFailureTest, ShadowReceiverFailureTurnsShadowsOff) {
   SceneViewWidget* view = scene.view();
   view->setGridStyle(SceneViewWidget::GridStyle::kFilledCells);  // the cells receive the shadow
   ASSERT_TRUE(scene.show());
-  if (grab(*view).isNull() || view->rhiBackendNameForTest().isEmpty()) {
+  if (grab(*view).isNull() || view->rhiBackendName().isEmpty()) {
     PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
   }
   ASSERT_TRUE(scene.renderUntil([&] {
@@ -375,7 +375,7 @@ void checkStageRetriesOnANewQRhi(
   scene.addRobot();  // EDL's mesh mask exists only with a model family
   SceneViewWidget* view = scene.view();
   ASSERT_TRUE(scene.show());
-  if (grab(*view).isNull() || view->rhiBackendNameForTest().isEmpty()) {
+  if (grab(*view).isNull() || view->rhiBackendName().isEmpty()) {
     PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
   }
   if (!view->lastHdrActiveForTest()) {
@@ -444,7 +444,7 @@ TEST_F(Scene3dRhiFailureTest, RetriesLogTheBackendOncePerQRhi) {
   FailureScene scene;
   SceneViewWidget* view = scene.view();
   ASSERT_TRUE(scene.show());
-  if (grab(*view).isNull() || view->rhiBackendNameForTest().isEmpty()) {
+  if (grab(*view).isNull() || view->rhiBackendName().isEmpty()) {
     PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
   }
   ASSERT_TRUE(scene.renderUntil([&] { return scene.failures > 0; }));
@@ -466,7 +466,7 @@ TEST_F(Scene3dRhiFailureTest, FailureAfterRecoveryRecoversInANewWindow) {
   FailureScene scene;
   SceneViewWidget* view = scene.view();
   ASSERT_TRUE(scene.show());
-  if (grab(*view).isNull() || view->rhiBackendNameForTest().isEmpty()) {
+  if (grab(*view).isNull() || view->rhiBackendName().isEmpty()) {
     PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
   }
   ASSERT_TRUE(scene.renderUntil([&] { return scene.failures > 0; }));

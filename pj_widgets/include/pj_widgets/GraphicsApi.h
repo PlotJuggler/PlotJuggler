@@ -30,14 +30,6 @@ namespace PJ {
 /// opengl, vulkan, metal, d3d11, d3d12). nullopt for anything else.
 [[nodiscard]] std::optional<QRhiWidget::Api> parseGraphicsApi(QStringView name);
 
-/// Every GPU widget of this build is a `QRhiWidget` (`PJ_RHI_WIDGETS`: the QRhi
-/// desktop build and WebAssembly); see nativeGraphicsApi().
-#ifdef PJ_RHI_WIDGETS
-inline constexpr bool kRhiWidgetsBuild = true;
-#else
-inline constexpr bool kRhiWidgetsBuild = false;
-#endif
-
 /// Platform families the graphics-API policy distinguishes. A value rather than
 /// `#ifdef`s so every platform's policy is testable from any host.
 enum class GraphicsPlatform { Linux, Windows, MacOS, Wasm };
@@ -56,15 +48,11 @@ enum class GraphicsPlatform { Linux, Windows, MacOS, Wasm };
 #endif
 }
 
-/// The API a build uses when nothing overrides it. `rhi_widgets` says every GPU
-/// widget of the build is a `QRhiWidget` (kRhiWidgetsBuild); only then can a
-/// window leave OpenGL, because a `QOpenGLWidget` pins its whole top-level to it.
-/// With `rhi_widgets`: D3D11 on Windows (always present, WARP without a driver),
-/// Metal on macOS (GL is capped at 4.1 there), OpenGL on Linux and WebGL2.
-[[nodiscard]] constexpr QRhiWidget::Api nativeGraphicsApi(GraphicsPlatform platform, bool rhi_widgets) {
-  if (!rhi_widgets) {
-    return QRhiWidget::Api::OpenGL;
-  }
+/// The API a platform uses when nothing overrides it: D3D11 on Windows (always
+/// present, WARP without a driver), Metal on macOS (GL is capped at 4.1 there),
+/// OpenGL on Linux and WebGL2. Every GPU widget is a `QRhiWidget`, so no
+/// `QOpenGLWidget` pins a window to OpenGL.
+[[nodiscard]] constexpr QRhiWidget::Api nativeGraphicsApi(GraphicsPlatform platform) {
   switch (platform) {
     case GraphicsPlatform::Windows:
       return QRhiWidget::Api::Direct3D11;
@@ -86,8 +74,7 @@ enum class GraphicsPlatform { Linux, Windows, MacOS, Wasm };
 /// nothing, and a `QOpenGLWidget` always asks for OpenGL. Every GPU widget therefore
 /// requests this one value; floating docks are separate top-levels under the same rule.
 ///
-/// It is `nativeGraphicsApi()` for this build: the platform's native API with
-/// `PJ_RHI_WIDGETS`, OpenGL otherwise. `PJ_GRAPHICS_API` overrides it for
+/// It is `nativeGraphicsApi()` for this platform. `PJ_GRAPHICS_API` overrides it for
 /// diagnostics; an override other than that default is probed by creating a
 /// throwaway QRhi, and one that cannot start falls back to the default with a
 /// warning. When Metal cannot start (a VM without a Metal device; Qt does not

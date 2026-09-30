@@ -21,7 +21,6 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/object_topic_metadata.h"
-#include "pj_scene3d_widgets/render_pass.h"
 #include "pj_scene3d_widgets/resolve_object.h"
 #include "pj_widgets/ColorPickerWidget.h"
 #include "pj_widgets/DoubleScrubber.h"
@@ -33,12 +32,6 @@ namespace pj::scene3d {
 
 namespace {
 Q_LOGGING_CATEGORY(lcTrail, "pj.scene3d.trail")
-
-#ifndef PJ_SCENE3D_RHI
-glm::vec3 toVec3(const QColor& color) {
-  return glm::vec3(color.redF(), color.greenF(), color.blueF());
-}
-#endif
 
 QString datasetSource(PJ::SessionManager& session, PJ::DatasetId dataset_id) {
   const PJ::DatasetInfo* info = session.dataEngine().getDataset(dataset_id);
@@ -204,7 +197,7 @@ TrailLayer::XmlLoadResult TrailLayer::xmlLoadStateResult(const QDomElement& elem
   display_name_ = source_.kind == TrailSource::Kind::kTfFrame ? tr("Trail: %1").arg(source_.frame)
                                                               : tr("Trail: topic %1").arg(source_.topic.id);
   emit infoChanged();  // the Topics row was created before the source was known
-  requestRebuild();    // no-op until a fixed frame is known; render() self-heals
+  requestRebuild();    // no-op until a fixed frame is known; syncFixedFrame() self-heals
   return XmlLoadResult::kRestored;
 }
 
@@ -254,12 +247,9 @@ bool TrailLayer::attach(const PJ::SceneLayerContext& ctx) {
   }
   stamps_.clear();
   points_.clear();
-#ifndef PJ_SCENE3D_RHI
-  pass_.setPoints({});
-#endif
   ++build_revision_;
-  // fixed_frame_ stays empty: the first render() adopts it from the
-  // FrameContext (authoritative) and triggers the initial rebuild.
+  // fixed_frame_ stays empty: the view's first syncFixedFrame() adopts it
+  // (authoritative) and triggers the initial rebuild.
   return true;
 }
 
@@ -267,9 +257,6 @@ void TrailLayer::detach() {
   rebuild_worker_.invalidate();  // orphan any in-flight rebuild result
   stamps_.clear();
   points_.clear();
-#ifndef PJ_SCENE3D_RHI
-  pass_.setPoints({});
-#endif
   ++build_revision_;
   setDataWarning({});
 }
@@ -282,28 +269,25 @@ void TrailLayer::setTransformBuffer(std::shared_ptr<TransformBuffer> tf_buffer) 
   rebuild_worker_.invalidate();  // orphan any in-flight build against the old buffer
   stamps_.clear();
   points_.clear();
-#ifndef PJ_SCENE3D_RHI
-  pass_.setPoints({});
-#endif
   ++build_revision_;
   if (ctx_.tf_buffer == nullptr) {
     setDataWarning(tr("waiting for TF"));
   } else {
     setDataWarning({});  // definitive state comes from the next adoptPolyline
-    startRebuild();      // no-op until the first render adopts the fixed frame
+    startRebuild();      // no-op until the first syncFixedFrame() adopts the fixed frame
   }
   emit repaintRequested();
 }
 
 void TrailLayer::setFixedFrame(const QString& frame) {
-  // render() adopts the authoritative fixed frame from the FrameContext and
+  // The view's syncFixedFrame() adopts the authoritative fixed frame and
   // rebuilds there; a repaint is all that is needed to kick that path.
   Q_UNUSED(frame);
   emit repaintRequested();
 }
 
 void TrailLayer::setTrackerTime(PJ::Timepoint time) {
-  // The split position is derived from frame_ctx.time at render, so the tick
+  // The split position is derived from the view's time at render, so the tick
   // itself only drives the live-append probe.
   Q_UNUSED(time);
   maybeAppendLiveSamples();
@@ -318,28 +302,6 @@ void TrailLayer::setVisible(bool visible) {
   emit visibilityChanged(visible);
   emit repaintRequested();
 }
-
-#ifndef PJ_SCENE3D_RHI
-void TrailLayer::initializeGL() {
-  pass_.initializeGL();
-}
-
-void TrailLayer::releaseGL() {
-  pass_.releaseGL();
-}
-
-void TrailLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
-  if (!visible_) {
-    return;
-  }
-  if (!syncFixedFrame(frame_ctx.fixed_frame)) {
-    return;
-  }
-  pass_.render(
-      view_params, frame_ctx.render_origin, pastCount(frame_ctx.time), toVec3(past_color_), toVec3(future_color_),
-      thickness_px_, past_visible_, future_visible_);
-}
-#endif
 
 bool TrailLayer::syncFixedFrame(const std::string& fixed_frame) {
   // Adopt + rebuild; draw from the next paint on.
@@ -442,9 +404,6 @@ void TrailLayer::adoptPolyline(TrailPolyline polyline) {
     stamps_.push_back(point.t);
     points_.push_back(point.pos);
   }
-#ifndef PJ_SCENE3D_RHI
-  pass_.setPoints(points_);
-#endif
   ++build_revision_;
   if (ctx_.tf_buffer != nullptr) {
     last_seen_tf_revision_ = ctx_.tf_buffer->revision();
@@ -480,9 +439,6 @@ void TrailLayer::appendTail(TrailPolyline tail) {
     stamps_.erase(stamps_.begin(), stamps_.begin() + drop);
     points_.erase(points_.begin(), points_.begin() + drop);
   }
-#ifndef PJ_SCENE3D_RHI
-  pass_.setPoints(points_);
-#endif
   ++build_revision_;
   setDataWarning({});
   emit repaintRequested();

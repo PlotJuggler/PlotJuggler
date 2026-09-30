@@ -8,6 +8,8 @@
 // a QRhiWidget and a frame counter for any GPU widget. Every probe that the
 // platform cannot answer returns a negative value, printed as "n/a".
 
+#include <rhi/qrhi.h>
+
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QDir>
@@ -21,11 +23,6 @@
 #include <QString>
 #include <QWidget>
 #include <QWindow>
-#ifdef PJ_RHI_WIDGETS
-#include <rhi/qrhi.h>
-#else
-#include <QOpenGLWidget>  // the GL build's GPU widgets; the QRhi build's need not link QtOpenGLWidgets
-#endif
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -272,7 +269,6 @@ inline double drmTotalMib() {
 #endif
 }
 
-#ifdef PJ_RHI_WIDGETS
 /// The QRhi `widget` renders with (its top-level's). QRhiWidget::rhi() is
 /// protected; a member pointer named through a subclass that re-publishes it
 /// reads it without touching the widget's own type.
@@ -297,27 +293,20 @@ inline double rhiAllocatorMib(QRhi* rhi) {
   }
   return stats.blockCount == 0 ? -1.0 : static_cast<double>(stats.usedBytes) / (1024.0 * 1024.0);
 }
-#endif
 
 /// "12.3" or "n/a" for a negative probe.
 inline QByteArray fmt(double value, int decimals = 1) {
   return value < 0.0 ? QByteArray("n/a") : QByteArray::number(value, 'f', decimals);
 }
 
-/// Counts the frames a GPU widget finished: QRhiWidget::frameSubmitted, or in
-/// the GL build QOpenGLWidget::frameSwapped, and stamps the last one
-/// (steadyNs()). Anything else (a raster widget) never counts; see valid().
+/// Counts the frames a GPU widget finished (QRhiWidget::frameSubmitted) and
+/// stamps the last one (steadyNs()). Anything else (a raster widget) never counts; see valid().
 class FrameCounter {
  public:
   explicit FrameCounter(QWidget* widget) {
     if (auto* rhi_widget = qobject_cast<QRhiWidget*>(widget); rhi_widget != nullptr) {
       connection_ = QObject::connect(rhi_widget, &QRhiWidget::frameSubmitted, [this] { finish(); });
     }
-#ifndef PJ_RHI_WIDGETS
-    if (auto* gl_widget = qobject_cast<QOpenGLWidget*>(widget); gl_widget != nullptr) {
-      connection_ = QObject::connect(gl_widget, &QOpenGLWidget::frameSwapped, [this] { finish(); });
-    }
-#endif
   }
   ~FrameCounter() {
     QObject::disconnect(connection_);

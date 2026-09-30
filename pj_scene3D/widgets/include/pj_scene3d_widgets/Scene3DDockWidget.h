@@ -44,8 +44,7 @@ namespace PJ {
 
 class ComboBox;
 
-// Dock content for 3D scene topics, one class for both renderers (the OpenGL
-// view, or the QRhi one with PJ_SCENE3D_RHI) and every platform. Generic layer
+// Dock content for 3D scene topics, on every platform. Generic layer
 // lifetime, ordering, visibility, tracker-time dispatch, and XML layer
 // persistence live in SceneDockWidget; this subclass owns 3D-only state: the
 // view, the per-dataset TF buffer, the fixed-frame overlay, fallback frames, and
@@ -63,7 +62,7 @@ class Scene3DDockWidget : public SceneDockWidget {
 
   void setTransformService(pj::scene3d::TransformService* service);
 
-  // The owned GL view, for the app's scene-controls panel (grid/gizmo/look
+  // The owned view, for the app's scene-controls panel (grid/gizmo/look
   // setters live on SceneViewWidget). Null until the dock realizes its view.
   [[nodiscard]] pj::scene3d::SceneViewWidget* sceneView() {
     return view_;
@@ -130,7 +129,7 @@ class Scene3DDockWidget : public SceneDockWidget {
 #ifdef PJ_SCENE3D_TEST_HOOKS
   // The dataset the dock's TF buffer is currently bound to (0 = unbound), and
   // whether a TF buffer is bound at all. Lets tests assert the M.17 rebind/reset
-  // logic without spinning the GL view up.
+  // logic without spinning the view up.
   [[nodiscard]] DatasetId boundDatasetIdForTest() const {
     return dataset_id_;
   }
@@ -139,8 +138,8 @@ class Scene3DDockWidget : public SceneDockWidget {
   }
   // The last tracker instant forwarded to the layers/view (raw ns), already
   // converted display->absolute and clamped. Lets tests assert the "Use time
-  // offset" shift is recovered for a layer-less (TF-only) dock without an
-  // OpenGL view; reaches the protected base accessor.
+  // offset" shift is recovered for a layer-less (TF-only) dock without a
+  // view; reaches the protected base accessor.
   [[nodiscard]] std::optional<int64_t> lastTrackerNsForTest() const {
     return lastTrackerNs();
   }
@@ -364,16 +363,14 @@ class Scene3DDockWidget : public SceneDockWidget {
   std::vector<std::string> fallback_frames_;
   FixedFrameMode fixed_frame_mode_ = FixedFrameMode::kAutoRoot;
   ComboBox* frame_overlay_combo_ = nullptr;
-  // Top-right overlay controls (children of `this`, not the QOpenGLWidget — z-order):
+  // Top-right overlay controls (children of `this`, not the view — z-order):
   // the camera-model selector and a Home (reset-to-default-view) button, anchored
   // to the left of the orientation gizmo.
   ComboBox* camera_model_combo_ = nullptr;
   QToolButton* home_button_ = nullptr;
-#ifdef PJ_SCENE3D_RHI
-  // Bottom overlay for the QRhi view's renderingWarningChanged (a quality stage
-  // or budget the renderer had to drop). The OpenGL view has no such fallbacks.
+  // Bottom overlay for the view's renderingWarningChanged (a quality stage or
+  // budget the renderer had to drop).
   QLabel* rendering_warning_label_ = nullptr;
-#endif
 
   /// Cached per-topic orphan/warning state (keyed by topicKey), so
   /// recomputeOrphanStates() only emits layerWarningChanged when a layer's

@@ -30,7 +30,6 @@
 #include "pj_scene3d_widgets/scene3d_layer.h"
 using namespace Qt::StringLiterals;
 
-#ifdef PJ_SCENE3D_RHI
 namespace {
 
 using namespace pj::scene3d::test;
@@ -263,4 +262,3 @@ TEST(LayerBudgetLatch, OccupancyGridDrawsALaterSampleThatFits) {
 }
 
 }  // namespace
-#endif

@@ -7,6 +7,7 @@
 #include <QImage>
 #include <QString>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -232,6 +233,36 @@ class ModelRhiPass {
     bool edge_upload_pending = false;
   };
 
+  // ---- Draw policy: pure, GPU-free, and the one rule admit() and prepare() apply.
+  // Texture slots are in Material order: base colour, metallic-roughness, normal,
+  // occlusion, emissive.
+
+  /// Whether `slot` samples as sRGB: only colour data (base colour, emissive); the
+  /// data maps must read their channels verbatim.
+  [[nodiscard]] static bool textureIsSrgb(std::size_t slot);
+  /// The texture-cache key of `texture` bound at `slot`: its content key plus its
+  /// colour space, so one image serving a colour slot and a data slot is two
+  /// entries. An unkeyed source keys by its address.
+  [[nodiscard]] static TextureKey textureKey(const TextureSource& texture, std::size_t slot);
+  /// Model-space bounds of the finite vertices; invalid for a mesh without any.
+  [[nodiscard]] static AABB meshBounds(const MeshData& mesh);
+  /// Whether a draw of `group` is drawn in the colour pass: robot visuals and
+  /// collisions follow the view's eye toggles and opacities, independent draws
+  /// (SceneEntities models) neither.
+  [[nodiscard]] static bool drawsInColorPass(ModelDrawGroup group, const MeshShadingParams& shading);
+  /// Whether a draw of `group` casts into a requested shadow map: a hidden robot
+  /// visual still does, a collision never.
+  [[nodiscard]] static bool castsShadow(ModelDrawGroup group, bool shadows_requested);
+  /// The layer opacity scaled by the view's opacity for `group`.
+  [[nodiscard]] static float drawOpacity(float layer_opacity, ModelDrawGroup group, const MeshShadingParams& shading);
+  /// The shader's alpha mode, 0 opaque, 1 mask, 2 blend. `material_applies` is
+  /// false when the draw ignores its material (an override colour without PBR
+  /// inputs): the draw is then opaque whatever the material says.
+  [[nodiscard]] static float shaderAlphaMode(const Material& material, bool material_applies);
+  /// Translucent draws skip depth writes and draw after the opaque ones:
+  /// collisions, a final alpha below 1 and blend materials.
+  [[nodiscard]] static bool drawIsTranslucent(ModelDrawGroup group, float alpha, float alpha_mode);
+
  private:
   struct LayerGpu {
     std::unordered_map<std::string, MeshGpu> meshes;
@@ -313,7 +344,6 @@ class ModelRhiPass {
   QRhiGraphicsPipeline* line_no_depth_pipeline_ = nullptr;
   QRhiBuffer* instance_buffer_ = nullptr;
   quint32 instance_capacity_ = 0;
-  bool white_upload_pending_ = false;
   QRhiGraphicsPipeline* shadow_pipeline_ = nullptr;
   QRhiShaderResourceBindings* shadow_bindings_ = nullptr;  // view-owned
   QRhiBuffer* shadow_instance_buffer_ = nullptr;

@@ -376,23 +376,15 @@ void GridMapLayer::renderAt(int64_t time_ns) {
 }
 
 void GridMapLayer::stageGrid(GridMapUpload upload) {
-#ifndef PJ_SCENE3D_RHI
-  pass_.setGrid(std::move(upload));
-#else
   staged_grid_ = std::move(upload);
   ++staged_revision_;
-#endif
 }
 
 void GridMapLayer::clearStagedGrid() {
-#ifndef PJ_SCENE3D_RHI
-  pass_.clearGrid();
-#else
   if (staged_grid_.has_value()) {
     staged_grid_.reset();  // the channels can be 2 x 64 MiB: release them, not just a flag
     ++staged_revision_;
   }
-#endif
 }
 
 void GridMapLayer::setFixedFrame(const QString& frame) {
@@ -415,11 +407,7 @@ void GridMapLayer::setBounds(std::optional<AABB> bounds) {
 }
 
 void GridMapLayer::setTrackerTime(PJ::Timepoint time) {
-#ifdef PJ_SCENE3D_RHI
   requested_time_ = time;
-#else
-  Q_UNUSED(time);  // render() reads frame_ctx.time via the tracker_dirty_ path
-#endif
   tracker_dirty_ = true;
   emit repaintRequested();
 }
@@ -434,32 +422,6 @@ void GridMapLayer::setVisible(bool visible) {
   emit repaintRequested();
 }
 
-#ifndef PJ_SCENE3D_RHI
-void GridMapLayer::initializeGL() {
-  pass_.initializeGL();
-}
-
-void GridMapLayer::releaseGL() {
-  pass_.releaseGL();
-}
-
-void GridMapLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
-  if (!visible_) {
-    return;
-  }
-  if (tracker_dirty_) {
-    tracker_dirty_ = false;
-    renderAt(PJ::toRaw(frame_ctx.time));
-  }
-  pass_.render(view_params, frame_ctx);
-  if (const auto& why = pass_.rejection(); why.has_value()) {
-    setDataWarning(*why);  // a GL-limit verdict, known only once the upload was attempted
-    setBounds(std::nullopt);
-  }
-}
-#endif
-
-#ifdef PJ_SCENE3D_RHI
 void GridMapLayer::prepareForRender() {
   if (!visible_ || !tracker_dirty_ || !requested_time_.has_value()) {
     return;
@@ -467,7 +429,6 @@ void GridMapLayer::prepareForRender() {
   tracker_dirty_ = false;
   renderAt(PJ::toRaw(*requested_time_));
 }
-#endif
 
 std::optional<AABB> GridMapLayer::worldBounds() const {
   if (!bounds_.has_value() || !bounds_->valid) {
@@ -476,16 +437,7 @@ std::optional<AABB> GridMapLayer::worldBounds() const {
   return bounds_;
 }
 
-void GridMapLayer::pushDisplayParamsToPass() {
-#ifndef PJ_SCENE3D_RHI
-  pass_.setAutoRange(auto_range_);
-  pass_.setManualRange(static_cast<float>(manual_lo_), static_cast<float>(manual_hi_));
-  pass_.setColormap(colormap_);
-  pass_.setLighting(lighting_);
-  pass_.setOpacity(static_cast<float>(opacity_));
-  pass_.setVisible(visible_);
-#endif
-}
+void GridMapLayer::pushDisplayParamsToPass() {}
 
 void GridMapLayer::setElevationField(const QString& field_name) {
   const std::string next = field_name.toStdString();

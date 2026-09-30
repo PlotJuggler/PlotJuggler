@@ -70,7 +70,8 @@ class PointRhiPass {
   [[nodiscard]] bool ready() const {
     return layout_shader_resources_ != nullptr;
   }
-  /// Registers the built pipelines, and later the lazily built ones, with `registry`.
+  /// Registers the built pipelines with `registry`. The ones built later
+  /// register with RhiPassSetup::templates, the registry the view passes here.
   void registerPipelines(ScenePipelineRegistry& registry) const;
   /// Lets clouds whose sprites are at most kPointListMaxPx draw as a point list
   /// (gl_PointSize), where the backend has QRhi::VertexShaderPointSize. On by
@@ -178,8 +179,8 @@ class PointRhiPass {
   /// [Layout][Geometry][faded]: faded pipelines skip depth writes. The point-list
   /// pairs exist only with QRhi::VertexShaderPointSize.
   std::array<std::array<std::array<QRhiGraphicsPipeline*, 2>, 3>, 2> pipelines_{};
-  RhiPassSetup setup_;                                 ///< for the pipelines built on first use
-  mutable ScenePipelineRegistry* registry_ = nullptr;  ///< view-owned; set by the const registerPipelines()
+  /// For the pipelines built on first use, which register with its `templates`.
+  RhiPassSetup setup_;
   bool point_size_supported_ = false;
   /// [Layout][Geometry][faded]: creation was attempted; a failed one is not retried per frame.
   std::array<std::array<std::array<bool, 2>, 3>, 2> pipelines_attempted_{};

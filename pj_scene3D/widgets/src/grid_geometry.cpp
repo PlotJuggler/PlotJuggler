@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include "pj_scene3d_widgets/passes/grid_geometry.h"
+#include "pj_scene3d_widgets/grid_geometry.h"
 
 namespace pj::scene3d {
 
@@ -27,9 +27,8 @@ std::vector<GridVertex> buildCheckerboardCells(float extent_m, int divisions) {
   vertices.reserve(static_cast<std::size_t>(divisions) * divisions * 6U);
   for (int i = 0; i < divisions; ++i) {
     for (int j = 0; j < divisions; ++j) {
-      // Every cell is emitted; parity selects which of the two tile tones the
-      // native shader uses. The WASM QRhi path resolves the same parity on the
-      // CPU while appending vertices, giving a full checkerboard in both paths.
+      // Every cell is emitted; its parity selects one of the two tile tones,
+      // which the grid pass resolves on the CPU while appending vertices.
       const float x0 = -half + static_cast<float>(i) * cell;
       const float y0 = -half + static_cast<float>(j) * cell;
       const float x1 = x0 + cell;

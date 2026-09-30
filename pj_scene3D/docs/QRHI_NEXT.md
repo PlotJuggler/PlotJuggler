@@ -20,9 +20,6 @@ For the release notes and the PR description:
 >   forces WARP on Windows; `LIBGL_ALWAYS_SOFTWARE=1` forces Mesa's software
 >   renderer on Linux. For plots only, Preferences → "GPU canvas" off (or
 >   `--disable-opengl`) gives the raster canvas. The 3D view has no CPU renderer.
-> - **Packagers (conda/RoboStack, distributions):** `-DPJ_SCENE3D_RHI=OFF`
->   restores the previous OpenGL build for this release only (configure warns); it
->   is removed in the next one.
 > - **3D view:** a translucent layer blends over the layers behind it whatever
 >   its position in the layer list; wireframe shows every triangle edge on every
 >   backend; markers draw at the layer's default 0.6 opacity; the grid follows the
@@ -40,58 +37,23 @@ For the release notes and the PR description:
 > - **Floating docks on X11** stay non-native windows: floating a dock no longer
 >   turns the docked area into native child windows.
 
-## PR 2 (release N+1): delete the GL renderer
+## Golden writer
 
-PR 2 lands after one release with no rollback. Preconditions:
+The golden corpus (`pointcloud_golden_test`, TECHNICAL_NOTES §7) compares against
+images `PJ_UPDATE_POINTCLOUD_GOLDENS=1` wrote from QRhi OpenGL on llvmpipe (the
+writer refuses every other backend and driver). Left:
 
-- [ ] QRhi twins of `MagentaLinesAppearOnlyWhenVisible` and
-  `FloorShadowClearsWhenDataRemoved` as harness cases, each with a mutation
-  check.
-- [ ] `hud_overlay_test`, `trail_layer_test`, `occupancy_grid_layer_rebind_test`,
-  `scene_view_widget_mouse_gesture_test` and `grid_map_layer_test` moved to the
-  shared runners (they build only in the GL block today).
-- [ ] CPU twins of the model-pass tests.
-- [ ] A final GL vs QRhi A/B (`scene3d_frame_benchmark` and the other Gate A
-  tools, TECHNICAL_NOTES §9).
-
-Then PR 2 deletes:
-
-- the GL Scene3D renderer: `widgets/src/scene_view_widget.cpp`,
-  `widgets/src/passes/`, `widgets/src/gl/`, `SceneHdrFbo`, the GL-only block of
-  `widgets/CMakeLists.txt`, every layer's `#ifndef PJ_SCENE3D_RHI` sink, the GL
-  branch of `scene3d_frame_benchmark` and
-  `mixed_layout_benchmark`;
-- `pj_test_main_gl.cpp` and the GL demos (`mesh_viewer.cpp`,
-  `marker_gallery_demo.cpp`, `poses_gallery_demo.cpp`,
-  `pointcloud_aabb_benchmark.cpp`, `pointcloud_shape_benchmark.cpp`: port or drop
-  each);
-- the `QwtPlotOpenGLCanvas` branch of `PlotWidgetBase.cpp`,
-  `raster_text_gl_test.cpp` and `plot_canvas_context_recreation_gl_test.cpp`;
-- the GL text wrapper: `RasterTextEngine.{h,cpp}` and its CMake entries,
-  `raster_text_engine_test.cpp`, `installRasterTextEngines` and its include in
-  `main.cpp`;
-- the bootstrap widgets (`rhi_bootstrap` in `MainWindow`, `scene2dRhiBootstrap`
-  in `Scene2DDockWidget`), if `rhi_dock_lifecycle_test` passes without them;
-- the `PJ_SCENE3D_RHI` option and `PJ_RHI_WIDGETS` (and the explicit flag in
-  `build.sh` / `build.ps1`);
-- the `build-gl` tree in `linux-ci.yml`, the Windows `gl` lane, and
-  `pj_gl_rollback_test()` / `GL_ROLLBACK` in `cmake/PjTests.cmake`;
-- the legacy appendix of ARCHITECTURE.md, the GL rows of the module docs
-  (`pj_scene3D/CLAUDE.md`, `pj_plotting/CLAUDE.md`, the root `CLAUDE.md`), and
-  this section.
-
-PR 2 also enables `PJ_UPDATE_POINTCLOUD_GOLDENS` in the QRhi build (the goldens
-stay GL-made until then, because release N's GL lane checks them per pixel),
-decides which backend writes them, and drops the `macos-ci.yml` push trigger for
-`feat/qrhi-**`.
+- [ ] Re-run the D3D11 (WARP) and Metal comparisons against the current images
+  (Mesa 26 llvmpipe, lavapipe, Iris GL and Iris Vulkan pass) and refresh their
+  measured rows in TECHNICAL_NOTES §7.
 
 ## P6: performance follow-ups
 
-Gate A (TECHNICAL_NOTES §9; Iris Xe, RHI GL vs the GL build) passes every row;
+Gate A (TECHNICAL_NOTES §9: the Iris Xe baseline every change is gated against);
 what remains is below.
 
 **Float, redock and first show** pass (TECHNICAL_NOTES §9, note ⁶). What a new
-QRhi still costs on OpenGL, for the robot float (62.6 vs 54.2 ms): the new
+QRhi still costs on OpenGL, for the robot float (62.6 ms): the new
 top-level and QRhi 12 ms, the HDR chain's targets 12 ms, the first frame's GPU
 work and swap 25 ms. Candidates:
 
@@ -107,8 +69,7 @@ work and swap 25 ms. Candidates:
 uploaded and converts it again for a new QRhi (ARCHITECTURE, "Eviction"). Left:
 
 - *The load peak.* The array lives until its upload's frame is submitted: the
-  10M load peaks at 362.7 MiB against the GL build's 257.2 (TECHNICAL_NOTES §9,
-  note ¹).
+  10M load peaks at 362.7 MiB, 247.2 once settled (TECHNICAL_NOTES §9, note ¹).
 - *Depth clouds, marker expansions and meshes* keep their arrays. A depth cloud
   is at most a few MiB; the other two would need the same re-derive path.
 - *Integer zero-copy.* Uploading the wire bytes and decoding in the vertex stage
@@ -138,15 +99,14 @@ nothing (TECHNICAL_NOTES §9, note ⁷). Left:
   through a `SceneViewWidget`; a new path that changes the scene and repaints
   through a `QWidget` pointer would present the retained frame on the next Show.
 - *The i915 clock policy* differs per configuration (TECHNICAL_NOTES §9, note ⁵),
-  which moves light rows and the first frame after idle (`cold_ms`). Both builds
-  wait only through `DRM_IOCTL_SYNCOBJ_WAIT`; why the boost differs is open.
+  which moves light rows and the first frame after idle (`cold_ms`); why the boost
+  differs is open.
 - *HDR chain cost.* The 4x multisample RGBA16F scene pass with its resolve and
   present is most of a GPU-bound frame (cubes: 23.5 ms, 7.0 ms without the chain);
   SSAO and EDL cost under 0.3 ms. Lowering it (fewer samples, a smaller format) is
   a quality tradeoff to decide, not an exact optimization.
 
-**Vulkan 50 x 100k plot, full rebuild: 107.1 ms vs RHI GL's 85.2 and the Qwt GL
-canvas's 91.5.** An unchanged replot of datastore curves reuses the curve layer
+**Vulkan 50 x 100k plot, full rebuild: 107.1 ms vs RHI GL's 85.2.** An unchanged replot of datastore curves reuses the curve layer
 (11.4 ms, TECHNICAL_NOTES §9 note ⁸). Of the rebuild's 16 ms over its render()
 CPU (90.9 ms, 9 ms more than OpenGL's recording), all is the wait
 for the GPU in `QRhi::endOffscreenFrame()`: on Vulkan a `QRhiWidget` frame is an
@@ -176,15 +136,14 @@ back to back on Vulkan against OpenGL.
   loading. Revisit with a use case (several plots sharing a slowly updated axis).
 
 **Dense large sprites: the tab-switch lattice (215³ = 9.9M spheres of 0.1 m in a
-1 m cube, about 50 px each) takes 400 ms per frame on RHI GL (414 on Vulkan)
-against the GL build's 310.** Attribution (one process each, `mixed_layout_benchmark
+1 m cube, about 50 px each) takes 400 ms per frame on RHI GL (414 on Vulkan).**
+Attribution (one process each, `mixed_layout_benchmark
 --plots 0 --cloud-side 215`): SSAO and EDL cost nothing measurable; the depth
 resolve is used (a forced replay costs 673 ms); the whole HDR chain is 125 ms
 (275 ms with the direct pass); disabling blending for the opaque draw changes
 nothing. The gap is the sprite geometry: drawn as a point list (one vertex per
-point, `gl_PointSize`, as the GL build does), the same frame takes 311 ms (Vulkan
-301). Options, none pixel-identical:
-- *Point list above 4 px.* Parity with the GL build, but a point is culled whole
+point, `gl_PointSize`), the same frame takes 311 ms (Vulkan 301). Options, none pixel-identical:
+- *Point list above 4 px.* The fastest, but a point is culled whole
   once its centre leaves the view (the edge pop `kPointListMaxPx` avoids) and
   sprite rasterization differs from the quads the goldens were matched with.
 - *One triangle per sprite* (the disc's circumscribed triangle, 3 vertices instead
@@ -208,8 +167,8 @@ Deferred with a trigger, not failing any row:
   count) and `ScenePipelineRegistry::resolve` (a scan per draw): when the
   1000-layer case exceeds 1 ms or 10% of `prepareFrame` CPU. A finger index needs a
   `draws[hint-1].layer != layer` check.
-- *Large sprites* above 4 px are quads, 1.2x the GL build's point sprites:
-  revisit with a use case that draws many large sprites.
+- *Large sprites* above 4 px are quads, about 1.3x a point list's frame (the
+  lattice above): revisit with a use case that draws many large sprites.
 - *Runtime HDR refusal* draws without MSAA: revisit if users hit the HDR byte
   limits.
 
@@ -249,5 +208,3 @@ compatibility guarantee, so the upgrade is one change across every channel:
 - **ADS on Wayland.** Floating docks hide on every backend (TECHNICAL_NOTES §5);
   the fix belongs in the ADS fork, and filing it upstream is the maintainer's
   call.
-- **The legacy GL 4.1 branch.** `feat/scene3d-gl41` (the GL renderer ported to GL
-  4.1) is not merged; deleting the remote branch is the maintainer's call.

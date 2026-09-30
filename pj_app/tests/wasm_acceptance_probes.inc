@@ -8,6 +8,7 @@
 
 #include <functional>
 
+#include "pj_scene2d_widgets/media_viewer_widget.h"
 #include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
 
