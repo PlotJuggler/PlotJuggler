@@ -269,6 +269,20 @@ class MainWindow : public QMainWindow {
   // The built-in registry URL — the Preferences editor's placeholder.
   [[nodiscard]] static QString defaultRegistryUrl();
 
+  // Preferences key (bool) that opts in to PlotJuggler's own window frame
+  // instead of the system's. Read once at construction, so a change applies
+  // on the next launch.
+  static constexpr QLatin1StringView kCustomTitleBarKey{"Preferences::custom_title_bar"};
+
+  // Whether the user gets a choice of frame on this platform. False on macOS
+  // (the platform's window controls are not ours to imitate) and in the
+  // browser (see usesCustomFrame); the Preferences toggle is hidden there.
+  [[nodiscard]] static bool customFrameSelectable();
+
+  // Whether a new MainWindow draws its own frameless frame: the saved
+  // preference where selectable, always in the browser, never elsewhere.
+  [[nodiscard]] static bool usesCustomFrame();
+
  public slots:
   // Apply-only: clamp, update chrome_metrics_, broadcast chromeMetricsChanged.
   // These do NOT write QSettings — persistence is deferred to
@@ -1179,15 +1193,16 @@ class MainWindow : public QMainWindow {
   // resizes.
   void resizeEvent(QResizeEvent* event) override;
 
-  // Frameless-window edge resize: catches mouse events on ourselves or
-  // any descendant widget, updates the cursor near edges, and starts a
-  // system-resize on press.
+  // Frameless-window edge resize (custom frame only): catches mouse events on
+  // ourselves or any descendant widget, updates the cursor near edges, and
+  // starts a system-resize on press.
   bool eventFilter(QObject* watched, QEvent* event) override;
 
   // Paints a 1-px border flush with the window edge. Self-painted via
   // PJ::theme:: token accessors — FrameworkTokens.h is built for exactly this
-  // case (a top-level widget QSS can't reach). No-op while maximized/
-  // fullscreen, where the window fills the screen and has no edge to outline.
+  // case (a top-level widget QSS can't reach). Custom frame only (the system
+  // frame draws its own edge); no-op while maximized/fullscreen, where the
+  // window fills the screen and has no edge to outline.
   void paintEvent(QPaintEvent* event) override;
 
  private:
@@ -1431,6 +1446,8 @@ class MainWindow : public QMainWindow {
   QStringList* layout_issue_capture_ = nullptr;
   std::unique_ptr<Theme> theme_;
   TitleBar* title_bar_ = nullptr;
+  // Fixed for the window's lifetime: the native window is created frameless or not.
+  const bool custom_frame_ = usesCustomFrame();
   // Non-modal load progress strip parked in the title bar's center region (owned
   // by title_bar_ once injected). Shown after a short delay so quick loads don't
   // flash it; hidden a moment after the load queue drains.

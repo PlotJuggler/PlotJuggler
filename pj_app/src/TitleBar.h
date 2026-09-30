@@ -16,11 +16,13 @@ class TitleBar;
 
 namespace PJ {
 
-// Custom title bar for a frameless QMainWindow. Hosts the app icon and
-// a traditional QMenuBar (File / Toolbox / Help) on the left, and the
-// relocated panel toggles, the notification bell and minimize /
-// maximize / close on the right. Empty regions act as the system-move
-// handle; double-click on empty regions toggles maximize.
+// The main window's top row: a traditional QMenuBar (File / Toolbox / Help)
+// on the left, and the relocated panel toggles and the notification bell on
+// the right. By default the window manager draws the real title bar and this
+// is a plain in-window toolbar row. In custom-frame mode (a frameless
+// QMainWindow) it is the title bar itself: it also hosts the app icon and
+// minimize / maximize / close, and its empty regions act as the system-move
+// handle, with double-click toggling maximize.
 class TitleBar : public QWidget {
   Q_OBJECT
  public:
@@ -46,14 +48,19 @@ class TitleBar : public QWidget {
   // horizontally centered between two stretches. Passing nullptr clears it and
   // leaves the stretches, so the bar looks identical to having no center widget.
   // The caller owns the widget's lifetime (on replacement/clear it is reparented
-  // out, not deleted). The empty center area stays a window-drag handle, because
-  // centerContainer is transparent for mouse events.
+  // out, not deleted). In custom-frame mode the empty center area stays a
+  // window-drag handle: isOnMoveHandle counts the opaque centerContainer as one.
   void setCenterWidget(QWidget* widget);
 
   // Paint the bell in the theme's status-error colour while errors have
   // been recorded that the user has not yet opened the diagnostics view
   // for; plain glyph otherwise. The owner decides what "seen" means.
   void setUnseenError(bool unseen);
+
+  // System frame: the window manager already provides the icon, the window
+  // controls and the drag / double-click-maximize handle, so the bar hides them
+  // and gives up the handle. Custom (the constructed state) is the reverse.
+  void setSystemFrame(bool system_frame);
 
   // Shows/hides the magenta "Update" affordance sitting left of the bell.
   // count > 0 reveals the button and sets its tooltip to the pluralized
@@ -100,6 +107,7 @@ class TitleBar : public QWidget {
   QMenu* help_menu_ = nullptr;
   // Stored so applyIcons() re-tints the bell on a theme change.
   bool unseen_error_ = false;
+  bool system_frame_ = false;
 
   // Chrome metrics broadcast from MainWindow::chromeMetricsChanged.
   ChromeMetrics chrome_metrics_;

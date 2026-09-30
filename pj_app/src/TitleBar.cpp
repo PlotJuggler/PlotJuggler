@@ -30,10 +30,11 @@ TitleBar::TitleBar(QWidget* parent) : QWidget(parent), ui_(new Ui::TitleBar) {
 
   ui_->setupUi(this);
   // The center region replaces the old horizontalSpacer; its empty area is a
-  // window-drag handle (see isOnMoveHandle). The container stays OPAQUE so an
-  // interactive center widget (setCenterWidget — e.g. the ingest stop buttons)
-  // receives its own clicks: WA_TransparentForMouseEvents here would make
-  // childAt() skip the whole subtree, routing button clicks to the drag handler.
+  // window-drag handle in custom-frame mode (see isOnMoveHandle). The container
+  // stays OPAQUE so an interactive center widget (setCenterWidget — e.g. the
+  // ingest stop buttons) receives its own clicks: WA_TransparentForMouseEvents
+  // here would make childAt() skip the whole subtree, routing button clicks to
+  // the drag handler.
   // Hard-pin so QMainWindow::setMenuWidget can't size us via sizeHint
   // and leave a ghost strip of titlebar-background gray below the
   // buttons.
@@ -51,7 +52,7 @@ TitleBar::TitleBar(QWidget* parent) : QWidget(parent), ui_(new Ui::TitleBar) {
   // `QWidget { background: transparent }` rule that otherwise wins for
   // popups when QSS is delivered via qApp->setStyleSheet).
   // setNativeMenuBar(false) forces in-window rendering even on desktops
-  // with a global menu bar — the menubar is part of our custom chrome,
+  // with a global menu bar — the menubar is part of our in-window chrome,
   // not the platform's.
   file_menu_ = new QMenu(tr("&File"), this);
   toolbox_menu_ = new QMenu(tr("&Toolbox"), this);
@@ -76,13 +77,7 @@ TitleBar::TitleBar(QWidget* parent) : QWidget(parent), ui_(new Ui::TitleBar) {
     }
   });
 
-#ifdef PJ_TARGET_WASM
-  // A browser tab has no host window to minimize/maximize/close — the tab's own
-  // chrome owns that — so the window controls are meaningless here. Hide them.
-  ui_->buttonMinimize->hide();
-  ui_->buttonMaximize->hide();
-  ui_->buttonClose->hide();
-#endif
+  setSystemFrame(false);
 }
 
 TitleBar::~TitleBar() {
@@ -129,6 +124,19 @@ void TitleBar::setCenterWidget(QWidget* widget) {
     // stretch 0, so the widget keeps its compact size and the spacers center it.
     ui_->centerLayout->insertWidget(1, widget, /*stretch=*/0);
     applyIconMetrics();  // size the widget's tool buttons to match the chrome icons
+  }
+}
+
+void TitleBar::setSystemFrame(bool system_frame) {
+  system_frame_ = system_frame;
+  ui_->appIcon->setHidden(system_frame);
+#ifdef PJ_TARGET_WASM
+  constexpr bool kBrowserTab = true;  // the tab's own chrome owns minimize/maximize/close
+#else
+  constexpr bool kBrowserTab = false;
+#endif
+  for (QAbstractButton* button : {ui_->buttonMinimize, ui_->buttonMaximize, ui_->buttonClose}) {
+    button->setHidden(system_frame || kBrowserTab);
   }
 }
 
@@ -259,6 +267,9 @@ void TitleBar::onMaximizeClicked() {
 }
 
 bool TitleBar::isOnMoveHandle(const QPoint& pos) const {
+  if (system_frame_) {
+    return false;  // the window manager's own title bar moves and maximizes the window
+  }
   // Drag on raw bar background, the non-interactive app icon, and the empty
   // center region (the opaque centerContainer or the center widget's own area).
   // A click landing on an interactive child — a tool button, the menubar, the

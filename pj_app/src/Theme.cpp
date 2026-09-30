@@ -10,6 +10,7 @@
 #include <QPalette>
 #include <QSettings>
 #include <QStringList>
+#include <QStyleHints>
 #include <map>
 #include <utility>
 
@@ -158,6 +159,10 @@ Theme::Theme(QObject* parent) : QObject(parent), name_(QSettings().value(kThemeS
   rebuildQss();
 }
 
+Qt::ColorScheme Theme::colorScheme() const {
+  return name_ == u"light"_s ? Qt::ColorScheme::Light : Qt::ColorScheme::Dark;
+}
+
 QString Theme::currentTheme() const {
   return name_;
 }
@@ -182,6 +187,12 @@ void Theme::setTheme(const QString& name) {
 }
 
 void Theme::rebuildQss() {
+  // The system title bar is drawn by the platform, not by QSS, so the app's own
+  // light/dark choice reaches it only through Qt's color scheme (honoured on
+  // Windows and macOS; a Linux window manager keeps drawing its own frame).
+  if (qGuiApp != nullptr) {  // no GUI application in some tests
+    QGuiApplication::styleHints()->setColorScheme(colorScheme());
+  }
   const QString path = resourcePathFor(name_);
   QFile file(path);
   if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {

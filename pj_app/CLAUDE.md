@@ -27,6 +27,10 @@ If you're tempted to add a class here that could be reused by another Qt app, mo
 
 Per root CLAUDE.md: **prefer `.ui` files** over programmatic widget construction. `pj_app/CMakeLists.txt` uses `AUTOUIC`. Drop to hand-written `QWidget` subclasses only for genuinely dynamic construction (plugin-driven widgets) or when explicitly requested.
 
+## Window frame
+
+The main window wears the **system** title bar by default and `TitleBar` is just the toolbar row under it. `Preferences::custom_title_bar` (read at startup, so it applies on the next launch) opts in to a frameless window whose `TitleBar` *is* the frame — the only mode that runs the edge-resize filter and paints the 1-px border. The platform rule lives in `MainWindow::usesCustomFrame()`: WebAssembly always custom (a browser tab has no window manager), macOS always system, Linux and Windows follow the preference. `PJ::Dialog` and `MessageBox` keep their own chrome either way. `Theme` requests the matching Qt color scheme on every switch, so a platform-drawn title bar follows the app's light/dark on Windows and macOS; a Linux window manager keeps its own.
+
 ## Layout
 
 - `src/` — top-level shell sources and root `.ui` files (`MainWindow.ui`, `PreferencesDialog.ui`, `TitleBar.ui`).

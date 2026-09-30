@@ -213,6 +213,9 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   //    next redraw.
   //  - Curve-colour sequence (Plotting): global = one continuous colour sequence
   //    across all plots; per plot = the sequence restarts within each plot.
+  //  - Frameless window (Appearance): default off (the system frame);
+  //    MainWindow reads the key once at construction, so it applies on the
+  //    next launch. Hidden where the platform leaves no choice.
   //  - OpenGL (Appearance): default on; PlotWidgetBase reads the key when a plot
   //    is constructed (applies to newly created plots). --disable-opengl can
   //    force it off for a session without touching this saved value.
@@ -227,6 +230,9 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     ui_->openglToggle->setChecked(
         settings.value(u"Preferences::use_opengl"_s, true).toBool(),
         /*animate=*/false);
+    ui_->customTitleBarToggle->setChecked(
+        settings.value(MainWindow::kCustomTitleBarKey, false).toBool(),
+        /*animate=*/false);
     ui_->checkUpdatesToggle->setChecked(
         settings.value(u"Preferences::check_updates_on_startup"_s, true).toBool(),
         /*animate=*/false);
@@ -235,6 +241,10 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
         /*animate=*/false);
     ui_->splashMode->setSelectedIndex(
         settings.value(kSplashModeKey, kSplashModeMemes).toString() == kSplashModeSerious ? 1 : 0);
+    if (!MainWindow::customFrameSelectable()) {
+      ui_->labelCustomTitleBar->hide();
+      ui_->customTitleBarToggle->hide();
+    }
 #ifdef PJ_TARGET_WASM
     // Neither startup network call exists in the browser build (see main.cpp):
     // a tab cannot self-update, and it is a page view rather than an installed
@@ -550,6 +560,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     QSettings settings;
     settings.setValue(u"Preferences::precision"_s, ui_->scrubberFloatPrecision->value());
     settings.setValue(u"Preferences::use_opengl"_s, ui_->openglToggle->isChecked());
+    settings.setValue(MainWindow::kCustomTitleBarKey, ui_->customTitleBarToggle->isChecked());
     settings.setValue(u"Preferences::check_updates_on_startup"_s, ui_->checkUpdatesToggle->isChecked());
     settings.setValue(u"Preferences::send_anonymous_stats"_s, ui_->telemetryToggle->isChecked());
     settings.setValue(u"Preferences::curve_color_global"_s, ui_->curveColorMode->selectedIndex() == 0);

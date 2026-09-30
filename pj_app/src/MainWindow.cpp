@@ -575,6 +575,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         kLayoutSpacingRange.clamp(s.value(QString::fromLatin1(kLayoutSpacingKey), kLayoutSpacingDefault).toInt());
   }
 
+  // Custom frame (opt-in): drop the WM-drawn chrome so our TitleBar can own
+  // the top of the window; edge resize is the application-level event filter
+  // installed below. Otherwise the window manager draws the title bar and
+  // TitleBar is just the toolbar row under it.
+  setWindowFlag(Qt::FramelessWindowHint, custom_frame_);
+  setMouseTracking(custom_frame_);
+
   ui_->setupUi(this);
 
   // Hard-zero contents margins on the central widget and every
@@ -590,7 +597,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // dock panels) are laid out inside contentsRect and are painted after
   // paintEvent() runs, so without this reservation they'd sit flush with
   // the window edge and paint over the border on every side they touch.
-  const int chrome_border_width = PJ::theme::stroke(theme::Stroke::Hairline);
+  // (Custom frame only: the system frame draws its own edge, so zero there.)
+  const int chrome_border_width = custom_frame_ ? PJ::theme::stroke(theme::Stroke::Hairline) : 0;
   setContentsMargins(chrome_border_width, chrome_border_width, chrome_border_width, chrome_border_width);
   ui_->centralWidget->setContentsMargins(
       PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
@@ -694,15 +702,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // the splitter handle low enough to clip the playback controls.
   ui_->timelineWidget->setMinimumHeight(ui_->timelineWidget->sizeHint().height());
 
-  // Frameless window: drop the WM-drawn chrome so our TitleBar can own
-  // the top of the window. Edge resize is implemented via an
-  // application-level event filter installed below.
-  setWindowFlag(Qt::FramelessWindowHint, true);
-  setMouseTracking(true);
-
   // The TitleBar owns the QMenuBar's popup menus; we just push actions
   // into them.
   title_bar_ = new TitleBar(this);
+  title_bar_->setSystemFrame(!custom_frame_);
   connect(title_bar_, &TitleBar::notificationsClicked, this, [this]() {
     if (diagnostics_dialog_ == nullptr) {
       diagnostics_dialog_ = new DiagnosticsDialog(diagnostic_history_, this);
@@ -3543,8 +3546,8 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
 
 void MainWindow::paintEvent(QPaintEvent* event) {
   QMainWindow::paintEvent(event);
-  if (isMaximized() || isFullScreen()) {
-    return;  // The window fills the screen — no edge to outline.
+  if (!custom_frame_ || isMaximized() || isFullScreen()) {
+    return;  // The system frame outlines itself; a maximized window has no edge.
   }
 
   const theme::Theme t = theme::appTheme();
@@ -3658,6 +3661,22 @@ void MainWindow::setRegistryUrlSetting(const QString& url) {
   if (!marketplace_panel_.isNull()) {
     marketplace_panel_->setRegistryUrl(effectiveRegistryUrl());
   }
+#endif
+}
+
+bool MainWindow::customFrameSelectable() {
+#if defined(PJ_TARGET_WASM) || defined(Q_OS_MACOS)
+  return false;
+#else
+  return true;
+#endif
+}
+
+bool MainWindow::usesCustomFrame() {
+#ifdef PJ_TARGET_WASM
+  return true;  // a browser tab has no window manager to supply a frame
+#else
+  return customFrameSelectable() && QSettings().value(kCustomTitleBarKey, false).toBool();
 #endif
 }
 
@@ -7342,7 +7361,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     }
     return false;
   }
-  if (type != QEvent::MouseMove && type != QEvent::MouseButtonPress) {
+  if (!custom_frame_ || (type != QEvent::MouseMove && type != QEvent::MouseButtonPress)) {
     return false;
   }
   // Only act on mouse events that target a widget in this window.

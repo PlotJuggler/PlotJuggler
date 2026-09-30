@@ -414,6 +414,12 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_custom_series_test.cpp)
 
+    # Window frame: the system title bar by default, the frameless custom one
+    # only when Preferences -> Appearance opts in (bar contents, the double-click
+    # seam, MainWindow flags and the toggle's persistence).
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_frame_test.cpp)
+
     # Viewport re-frame after a layout's timeline offsets settle: sync leg (FIX 1)
     # and the progressive-drain pending-timeline seam (FIX 2).
     list(APPEND PJ_APP_GUI_TEST_SOURCES
