@@ -11,6 +11,7 @@
 #include "LayoutXml.h"
 #include "PendingDisplayBinder.h"
 #include "pj_datastore/engine.hpp"
+#include "pj_plotting/DatastoreCurveAdapter.h"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/PointSeriesXY.h"
 #include "pj_plotting/StateTransitionsDockWidget.h"
@@ -300,6 +301,27 @@ void TopicDemandController::disownPreviewHistory(DatasetId dataset_id, const QSt
   }
   std::sort(topic_ids.begin(), topic_ids.end());
   topic_ids.erase(std::unique(topic_ids.begin(), topic_ids.end()), topic_ids.end());
+  // curveListChanged may have already populated plot caches from the preview.
+  // Drop them synchronously before freeing chunks; no paint or event-loop turn
+  // may intervene between invalidation and eviction.
+  for (const auto& [plot, topics] : plot_topics_) {
+    static_cast<void>(topics);
+    for (const auto& info : plot->curveList()) {
+      if (info.curve == nullptr) {
+        continue;
+      }
+      if (auto* xy = dynamic_cast<PointSeriesXY*>(info.curve->data())) {
+        if (std::binary_search(topic_ids.begin(), topic_ids.end(), xy->xSource().topic_id) ||
+            std::binary_search(topic_ids.begin(), topic_ids.end(), xy->ySource().topic_id)) {
+          xy->onDataCleared();
+        }
+      } else if (auto* adapter = dynamic_cast<DatastoreCurveAdapter*>(info.curve->data())) {
+        if (std::binary_search(topic_ids.begin(), topic_ids.end(), adapter->source().topic_id)) {
+          adapter->onDataCleared();
+        }
+      }
+    }
+  }
   for (const TopicId topic_id : topic_ids) {
     engine_.evictTopicHistory(topic_id);
   }

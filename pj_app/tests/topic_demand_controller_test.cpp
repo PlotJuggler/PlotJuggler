@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <gtest/gtest.h>
+#include <qwt_plot_curve.h>
 
 #include <QApplication>
 #include <QEventLoop>
@@ -647,6 +648,78 @@ TEST_F(TopicDemandControllerTest, PreviewSampleIsDisownedWhenTopicGainsRealRefer
   // The discovered FIELDS survive the disown (columns stay registered).
   catalog.rebuildFromDatastore();
   EXPECT_TRUE(catalog.itemDescriptor(key).has_value());
+}
+
+TEST_F(TopicDemandControllerTest, XyPlotDropsPreviewCacheBeforeHistoryIsDisowned) {
+  auto& session = app_session_->sessionManager();
+  auto& catalog = app_session_->catalogModel();
+  catalog.setPerTopicPauseCapable(dataset_id_, true);
+  catalog.setAdvertisedTopics(
+      dataset_id_, {PJ::AdvertisedTopic{u"/x"_s, PJ::sdk::BuiltinObjectType::kNone},
+                    PJ::AdvertisedTopic{u"/y"_s, PJ::sdk::BuiltinObjectType::kNone}});
+  const QString x_key = addScalarTopic(*app_session_, dataset_id_, "/x");
+  const QString y_key = addScalarTopic(*app_session_, dataset_id_, "/y");
+  ASSERT_FALSE(x_key.isEmpty());
+  ASSERT_FALSE(y_key.isEmpty());
+
+  PJ::PlotWidget plot(&session, &catalog);
+  plot.setModeXY(true);
+  controller_->registerPlot(&plot);
+  // curveListChanged computes bounds before demand removes the preview chunks.
+  // addCurveXY then immediately reads the series again while resetting trackers.
+  auto* info = plot.addCurveXY(x_key, y_key, u"live xy"_s);
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->curve->dataSize(), 0U);
+
+  auto writer = session.dataEngine().createWriter();
+  const auto x = catalog.curveDescriptor(x_key);
+  const auto y = catalog.curveDescriptor(y_key);
+  ASSERT_TRUE(x.has_value());
+  ASSERT_TRUE(y.has_value());
+  for (const auto& source : {*x, *y}) {
+    ASSERT_TRUE(writer.bindTopicWriter(source.topic_id).has_value());
+    ASSERT_TRUE(writer.beginRow(source.topic_id, 300).has_value());
+    writer.set(source.topic_id, source.column_index, 42.0);
+    ASSERT_TRUE(writer.finishRow(source.topic_id).has_value());
+  }
+  EXPECT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  ASSERT_EQ(info->curve->dataSize(), 1U);
+  EXPECT_EQ(info->curve->sample(0), QPointF(42.0, 42.0));
+}
+
+TEST_F(TopicDemandControllerTest, SameTopicXyPreviewResumesWithFreshSamples) {
+  auto& session = app_session_->sessionManager();
+  auto& catalog = app_session_->catalogModel();
+  catalog.setPerTopicPauseCapable(dataset_id_, true);
+  catalog.setAdvertisedTopics(dataset_id_, {PJ::AdvertisedTopic{u"/xy"_s, PJ::sdk::BuiltinObjectType::kNone}});
+  auto writer = session.dataEngine().createWriter();
+  const auto topic = writer.registerTopic(dataset_id_, PJ::TopicDescriptor{.name = "/xy"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(writer.ensureColumn(*topic, "x", PJ::PrimitiveType::kFloat64).has_value());
+  ASSERT_TRUE(writer.ensureColumn(*topic, "y", PJ::PrimitiveType::kFloat64).has_value());
+  ASSERT_TRUE(writer.beginRow(*topic, 100).has_value());
+  writer.set(*topic, 0, 1.0);
+  writer.set(*topic, 1, 2.0);
+  ASSERT_TRUE(writer.finishRow(*topic).has_value());
+  EXPECT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  const auto x = PJ::resolveSeriesPath(catalog, PJ::layout_xml::SeriesPath{u"/xy"_s, u"x"_s});
+  const auto y = PJ::resolveSeriesPath(catalog, PJ::layout_xml::SeriesPath{u"/xy"_s, u"y"_s});
+  ASSERT_TRUE(x.has_value());
+  ASSERT_TRUE(y.has_value());
+
+  PJ::PlotWidget plot(&session, &catalog);
+  plot.setModeXY(true);
+  controller_->registerPlot(&plot);
+  auto* info = plot.addCurveXY(*x, *y, u"same topic"_s);
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->curve->dataSize(), 0U);
+  ASSERT_TRUE(writer.beginRow(*topic, 200).has_value());
+  writer.set(*topic, 0, 3.0);
+  writer.set(*topic, 1, 4.0);
+  ASSERT_TRUE(writer.finishRow(*topic).has_value());
+  EXPECT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  ASSERT_EQ(info->curve->dataSize(), 1U);
+  EXPECT_EQ(info->curve->sample(0), QPointF(3.0, 4.0));
 }
 
 TEST_F(TopicDemandControllerTest, RealHoldArrivingDuringPreviewCancelsTheDisown) {
