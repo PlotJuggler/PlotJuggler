@@ -97,12 +97,10 @@ QString PosesInFrameLayer::sourceFrame() const {
   return QString::fromStdString(source_frame_);
 }
 
-#ifndef PJ_SCENE3D_RHI
 QString PosesInFrameLayer::statusWarning() const {
   const QString own = Scene3DLayer::statusWarning();
   return own.isEmpty() && trail_ != nullptr ? trail_->statusWarning() : own;
 }
-#endif
 
 QDomElement PosesInFrameLayer::xmlSaveState(QDomDocument& doc) const {
   QDomElement el = doc.createElement(u"poses_in_frame"_s);
@@ -113,15 +111,9 @@ QDomElement PosesInFrameLayer::xmlSaveState(QDomDocument& doc) const {
   el.setAttribute(u"override_color_value"_s, override_color_.name(QColor::HexRgb));
   // The owned trail persists as a nested payload: its presence IS the enabled
   // flag, and its style is written by the trail itself (one definition).
-#ifndef PJ_SCENE3D_RHI
   if (trail_ != nullptr) {
     el.appendChild(trail_->xmlSaveState(doc));
   }
-#else
-  if (!trail_xml_.documentElement().isNull()) {
-    el.appendChild(doc.importNode(trail_xml_.documentElement(), true));
-  }
-#endif
   return el;
 }
 
@@ -166,17 +158,10 @@ bool PosesInFrameLayer::xmlLoadState(const QDomElement& element) {
   // style-only by contract, which is exactly right here — the SOURCE is this
   // layer's own topic, never something the payload retargets.
   const QDomElement trail_el = element.firstChildElement(u"trail"_s);
-#ifndef PJ_SCENE3D_RHI
   setTrailEnabled(!trail_el.isNull());
   if (trail_ != nullptr && !trail_->xmlLoadState(trail_el)) {
     return false;
   }
-#else
-  trail_xml_ = QDomDocument();
-  if (!trail_el.isNull()) {
-    trail_xml_.appendChild(trail_xml_.importNode(trail_el, true));
-  }
-#endif
   return true;
 }
 
@@ -208,9 +193,7 @@ bool PosesInFrameLayer::attach(const PJ::SceneLayerContext& ctx) {
     qCWarning(lcPoses) << "attach: bootstrap deferred for poses topic" << topic_id_.id
                        << "— render will start once a sample arrives";
   }
-#ifndef PJ_SCENE3D_RHI
   syncTrailToCurrentState();
-#endif
   return true;
 }
 
@@ -221,11 +204,9 @@ void PosesInFrameLayer::detach() {
   setDataWarning({});
   requested_time_.reset();
   tracker_dirty_ = false;
-#ifndef PJ_SCENE3D_RHI
   if (trail_ != nullptr) {
     trail_->detach();
   }
-#endif
 }
 
 void PosesInFrameLayer::resetReplayState() {
@@ -391,22 +372,18 @@ void PosesInFrameLayer::setFixedFrame(const QString& frame) {
   // paint, so a change only needs a repaint. The trail is the exception — it
   // rebuilds its polyline against the fixed frame.
   fixed_frame_ = frame;
-#ifndef PJ_SCENE3D_RHI
   if (trail_ != nullptr) {
     trail_->setFixedFrame(frame);
   }
-#endif
   emit repaintRequested();
 }
 
 void PosesInFrameLayer::setTrackerTime(PJ::Timepoint time) {
   requested_time_ = time;
   tracker_dirty_ = true;  // drained once per painted frame (see tracker_dirty_)
-#ifndef PJ_SCENE3D_RHI
   if (trail_ != nullptr) {
     trail_->setTrackerTime(time);  // moves the past/future colour split
   }
-#endif
   emit repaintRequested();
 }
 
@@ -422,11 +399,9 @@ void PosesInFrameLayer::setVisible(bool visible) {
     staged_revision_ = -1;
     budget_.reset();
   }
-#ifndef PJ_SCENE3D_RHI
   if (trail_ != nullptr) {
     trail_->setVisible(visible);  // the trail is part of this layer, not a peer
   }
-#endif
   emit visibilityChanged(visible);
   // Catch-up on un-hide is the dock's job (it re-delivers the last tracker time).
   emit repaintRequested();
@@ -484,11 +459,9 @@ bool PosesInFrameLayer::drainPendingUpdate() {
 }
 
 std::uint64_t PosesInFrameLayer::renderKey(PJ::Timepoint time) const {
-#ifndef PJ_SCENE3D_RHI
   if (trail_ != nullptr) {
     return Scene3DLayer::renderKey(time);
   }
-#endif
   const std::uint64_t key =
       PJ::latestEntryRenderKey(ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_, time);
   return foldFrameTransformIntoKey(key, ctx_.tf_buffer.get(), fixed_frame_.toStdString(), source_frame_, time);
@@ -550,7 +523,6 @@ void PosesInFrameLayer::setXArrowOnly(bool x_arrow_only) {
   emit repaintRequested();
 }
 
-#ifndef PJ_SCENE3D_RHI
 void PosesInFrameLayer::setTrailEnabled(bool enabled) {
   if (enabled == (trail_ != nullptr)) {
     return;
@@ -588,7 +560,6 @@ void PosesInFrameLayer::syncTrailToCurrentState() {
   }
   trail_->setVisible(visible_);
 }
-#endif
 
 void PosesInFrameLayer::setOverrideColorEnabled(bool enabled) {
   if (override_color_enabled_ == enabled) {
@@ -680,7 +651,6 @@ QWidget* PosesInFrameLayer::createConfigWidget(QWidget* parent) {
     setOverrideColorEnabled(true);  // apply now; the toggled-driven call lags the slide animation
   });
 
-#ifndef PJ_SCENE3D_RHI
   // Trail: opt-in toggle, and when on the owned trail's own style rows are
   // appended to THIS form — same label column as the rows above, and the single
   // definition of those controls (TrailLayer::appendStyleRows).
@@ -702,7 +672,6 @@ QWidget* PosesInFrameLayer::createConfigWidget(QWidget* parent) {
     setTrailEnabled(on);
     refresh_trail_rows();
   });
-#endif
 
   return container;
 }

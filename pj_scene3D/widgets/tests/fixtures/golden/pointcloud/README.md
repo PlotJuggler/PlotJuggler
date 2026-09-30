@@ -3,15 +3,16 @@
 Reference renders for `pointcloud_golden_test`
 (`pj_scene3D/widgets/tests/pointcloud_golden_test.cpp`), captured from the
 **OpenGL** Scene3D renderer on Mesa llvmpipe (the CI renderer). They guard
-point-cloud rendering in the GL build and are the parity target for the QRhi
-renderer (`docs/QRHI_MIGRATION.md`, P3).
+point-cloud rendering in the GL build and hold the QRhi renderer to the same
+images on OpenGL and Vulkan (`docs/QRHI_MIGRATION.md`, P3; ctest runs the QRhi
+build's cases once per backend, `pointcloud_golden_test.opengl.*` / `.vulkan.*`).
 
 Every scene: 256x256 view at DPR 1, light theme (white application palette),
 grid/TF axes/TF lines off, default look (tonemap, SSAO, EDL, MSAA), orbit camera
 focal (0,0,0), radius 4 m, azimuth 0.6 rad, elevation 0.6 rad, 45° fov. Clouds
 are canonical `sdk::PointCloud` blobs in frame `map` (float32 xyz first, so the
-zero-copy fast path applies unless noted). The bottom-right 80x80 px (the GL
-axis gizmo) is excluded from comparisons.
+zero-copy fast path applies unless noted). The bottom-right 80x80 px hold the
+corner axis gizmo, which both renderers draw and every comparison includes.
 
 | Scene | Content |
 |---|---|
@@ -19,8 +20,8 @@ axis gizmo) is excluded from comparisons.
 | `shape_spheres_large` | 8x8 wavy lattice, 0.16 m spheres, solid colour |
 | `shape_cubes_large` | 8x8 wavy lattice, 0.16 m cubes (hexagon fan), solid colour |
 | `shape_points_1px` | 120x120 dense wavy lattice, 1 px points |
-| `shape_spheres_small` | 120x120 dense lattice, 2 cm spheres (~1.5 px). Below ~1 px llvmpipe rounds sprites up while NVIDIA covers a sample fraction, so no golden can pin it |
-| `shape_cubes_subpixel` | 120x120 dense lattice, 3 mm cubes (~0.3 px). The sprite LOD is off by default, so this is the fan; it becomes the LOD check once the LOD is on |
+| `shape_spheres_small` | 120x120 dense lattice, 2 cm spheres (~1.5 px): below 2 px spheres draw as flat discs at the disc-mean shade. Coverage-only: the discs' rasterized size still varies by driver (Mesa 23 draws them smaller than Mesa 26) |
+| `shape_cubes_subpixel` | 120x120 dense lattice, 3 mm cubes (~0.3 px): the whole-cloud LOD draws them as 1 px sprites |
 | `color_rgb_packed` / `color_rgba_packed` | 16x16 lattice, packed uint32 `rgb` / `rgba` field (RGB-direct fast path), 10 px points |
 | `color_rgb_channels` | same colours as separate uint8 `red`/`green`/`blue` fields (CPU fallback) |
 | `color_rgb_cubes` | packed `rgb` on 0.1 m cubes |
@@ -36,22 +37,33 @@ axis gizmo) is excluded from comparisons.
 
 ## Comparison
 
-A pixel differs when any channel is off by more than 16. A scene fails when
-more than 3% of pixels differ, when its non-background pixel count moves by more
-than 5%, or when the mean colour of its covered pixels moves by more than 12 in
-any channel. Calibration (llvmpipe goldens vs an NVIDIA GPU): every differing
-pixel sits on a silhouette; worst case 1.8% differing, coverage within 1.3%,
-mean colour within 9 (`shape_spheres_small`). A swapped colormap, shape or colour
-mode moves the mean colour by 17-229.
+A pixel differs when it is off its golden pixel by more than 16 in some
+channel. A scene fails when more than 3% of pixels differ, when its
+non-background pixel count moves by more than 5%, or when the mean colour of
+its covered pixels moves by more than 12 in any channel. Calibration (llvmpipe
+goldens vs an NVIDIA GPU): every differing pixel sits on a silhouette; worst
+case 1.8% differing per pixel, coverage within 1.3%, mean colour within 9. A
+swapped colormap, shape or colour mode moves the mean colour by 17-229. The GL
+build on llvmpipe reproduces the goldens exactly (0.0000).
+
+The QRhi build (`PJ_SCENE3D_RHI=ON`) only relaxes the per-pixel rule: there a
+pixel differs when every golden pixel in its 3x3 neighbourhood is off by more
+than 16, so edge and sub-pixel coverage that moved by less than a pixel does
+not count, and the 3% limit applies to that count. This is what lets the QRhi
+Vulkan backend (lavapipe) share the GL goldens: its framebuffer is y-down where
+llvmpipe's GL target is y-up, so the same 4x MSAA sample pattern lands mirrored
+on the scene. Diagonal silhouettes, cube edge bands and 1 px points then
+resolve differently (up to 8% of pixels per pixel, at most 2% with the rule)
+while every surface interior is identical. So that the neighbourhood allowance
+cannot hide a gross regression such as a whole-scene one-pixel shift, the QRhi
+build also fails a scene when more than max(3 x 3%, 10%) = 10% of its pixels
+are off their own golden pixel (the log's "per-pixel" value); the worst
+legitimate value measured is 8% (Vulkan on lavapipe, `shape_cubes_subpixel`).
 
 Weaker checks, where pixels depend on the driver rather than on our rendering:
-- `field_turbo_spheres` and `large_1m_points`: coverage and mean colour. Sphere
-  impostor shading follows the sprite's rounded point size, which differs
-  between Mesa releases (CI's 23.x differs from 26.x on ~10% of pixels).
-- `shape_spheres_small` (~1.5 px spheres): coverage only. Their shading is
-  driver-dependent (NVIDIA MSAA nearly erases them; Mesa 23 shifts their mean
-  colour by ~80). Planned fix: draw spheres below ~2 px as flat discs (QRhi
-  migration P3), then restore the full check.
+`field_turbo_spheres` and `large_1m_points`: coverage and mean colour. Sphere
+impostor shading follows the sprite's rounded point size, which differs between
+Mesa releases (CI's 23.x differs from 26.x on ~10% of pixels).
 
 On failure the test writes `<scene>_actual.png` and `<scene>_diff.png`
 (magenta = differing) into `$PJ_POINTCLOUD_GOLDEN_OUT`, default the working

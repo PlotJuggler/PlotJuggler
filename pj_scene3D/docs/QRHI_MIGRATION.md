@@ -1,10 +1,11 @@
 # Scene3D QRhi migration plan
 
-Status: **P0 merged (#670); P1 in review (#672); P2 done, in review**. Branch `feat/qrhi-p2` (stacked on `feat/qrhi-p1`).
+Status: **P0 merged (#670); P1 (#672), P2 (#673) and P3 in review**. Branch `feat/qrhi-p3` (stacked on `feat/qrhi-p2`).
 
 Goal: one QRhi-based 3D renderer for every target — Linux, Windows, macOS
 arm64 and WebAssembly — replacing both the desktop `QOpenGLWidget` renderer
-(`widgets/src/`) and the separate browser renderer (`widgets/wasm/`).
+(`widgets/src/`) and the separate browser renderer (`widgets/rhi/`, named
+`widgets/wasm/` until P3).
 
 ## Why
 
@@ -51,7 +52,7 @@ arm64 and WebAssembly — replacing both the desktop `QOpenGLWidget` renderer
    renderer's quint32 buffer and int counter bounds.
 7. **Shader tooling**: desktop Qt kits install no `qsb`, so packs stay
    committed and are verified only in the WASM configure. P0 baked the Scene3D
-   packs for every backend (`wasm/shaders/bake.sh`) and dropped the separate
+   packs for every backend (`rhi/shaders/bake.sh`) and dropped the separate
    WASM Qt pin: WASM and desktop both use `PJ_QT_VERSION`.
 8. QRhi (`<rhi/qrhi.h>`) has no cross-minor compatibility guarantee: every
    channel (including conda `qt6-main`) stays pinned to 6.11.*.
@@ -79,13 +80,13 @@ arm64 and WebAssembly — replacing both the desktop `QOpenGLWidget` renderer
 
 | Problem | Decision |
 |---|---|
-| `gl_PointSize` absent on D3D | Instanced camera-facing quads on every backend |
+| `gl_PointSize` absent on D3D | Instanced camera-facing quads on every backend; a point list where `QRhi::VertexShaderPointSize` exists and a cloud's sprites stay at most 4 px (quads measured ~2x slower for many small points, P3 stream A) |
 | Non-float scalar vertex fields | 16/32-bit: `UShort`/`SShort`/`UInt`/`SInt` inputs (gated on `IntAttributes`) + `float()` in the shader; 8-bit: `UNormByte`, de-normalised (and sign-fixed) in the shader. Keeps the zero-copy upload |
 | MSAA depth resolve (never on D3D) | The WASM single-sample depth/mask replay everywhere; `ResolveDepthStencil` as a later fast path |
 | Mesh-mask MRT | WASM's separate mask pass |
 | GL NDC / Y conventions | Folded into CPU matrices: `clipToTextureMatrix()` (`rhi_conventions.h`) maps corrected clip space to render-target texture space (u, v, stored depth), so shaders never remap. The fullscreen triangle has a second `-DPJ_FLIP_Y` bake for D3D/Metal (kept over `gl_FragCoord` UVs, which assume input and output textures of equal size — false once `render_scale` lands). SSAO normals take `textureVSign()` |
-| Compute AABB | Only where `QRhi::Compute`; existing CPU fallback otherwise |
-| Wireframe markers | `NonFillPolygonMode` where available; edge lines otherwise |
+| Compute AABB | Only where `QRhi::Compute`; existing CPU fallback otherwise. Compute packs bake GLSL ES 310 / GLSL 430 (no ES 300) |
+| Wireframe markers | Edge lines everywhere (already built; `NonFillPolygonMode` would split WebGL from desktop for a cosmetic gain) |
 | QPainter HUD / hover label | Upload the existing CPU-rasterised `QImage` as a texture quad |
 | GPU timing | `QRhi::EnableTimestamps` + `lastCompletedGpuTime` (frame-level only) |
 | Colormaps | Desktop polynomials from `pj_widgets` (one source with the plots) |
@@ -200,28 +201,91 @@ RHI-desktop and WASM builds green:
   than P1's 22/28.
 
 Deferred from P2:
-- P3: one owner for scene bounds + camera fit (today the GL view gets them
-  from the dock, the QRhi view owns its own); rename `widgets/wasm/` to
-  `widgets/rhi/` (it is the desktop QRhi view too).
+- P3: one owner for scene bounds + camera fit; rename `widgets/wasm/` to
+  `widgets/rhi/` (it is the desktop QRhi view too). Both done in S0.
 - P5 (performance): drop the RHI CPU copies of data already uploaded, convert
   clouds straight to `PointVertex` (no intermediate `DecodedPointCloud`), and
   share primitive meshes (URDF box/cylinder/sphere) across layers.
 
 **P3 — Passes + parity (3–4 weeks).**
-- Split the monolith into passes. Port GridMap, Trail (standalone, the pose
-  layer's embedded one, the "Create Trail" row and the frame right-click menu,
-  which needs frame picking in the QRhi view), cube hexagon fan /
-  sprite LOD / colour hoist, compute AABB (gated), axis corner gizmo (then drop
-  the golden test's `kGizmoRect` exclusion), HUD, hover
-  label, `render_scale`, AgX/Neutral tonemaps.
-- Exit: corpus screenshots match GL within tolerance; GL pass tests re-expressed
-  as QRhi offscreen tests. Point clouds: all 28 scenes of
-  `widgets/tests/fixtures/golden/pointcloud/` (goldens captured from the GL
-  renderer in P1, enabled in the RHI build) pass. At P1 the RHI renderer failed
-  6: `shape_cubes_subpixel` (hexagon fan / sprite LOD), `color_rgb_cubes`,
-  `field_viridis_cubes`, `depth_two_clouds` (cube edges and shading),
-  `field_outside_range_translucent`, `field_outside_range_cubes` (faded
-  out-of-range colour/blend).
+Sequence (agreed with the pre-phase Codex check and an architecture map):
+- S0 (serial foundation): rename `widgets/wasm/` → `widgets/rhi/`; a pipeline
+  registry replacing the hard-coded HDR/depth-replay clone lists; view-owned
+  shared geometry (cube mesh, pose/arrow mesh); the frame contract — prepare
+  and admit once per frame, then reuse the prepared draws for direct, HDR,
+  depth replay, mesh mask and shadow; opaque/translucent draw classification
+  (opaque first, stable logical order within each phase — not order-independent
+  transparency); one scene-bounds + camera-fit policy; extract occupancy as the
+  pattern proof. Gate: per-scene golden metrics unchanged on OpenGL and Vulkan,
+  harness 12/12, Playwright 45/45, `last_*_count_` test counters unchanged.
+  Done (ARCHITECTURE.md → "WebAssembly product backend" has the as-built
+  design): `widgets/rhi/` with the qrc prefix `:/scene3d_rhi/`;
+  `rhi_scene_pass.h` (`ScenePass`, `DrawClass`, `ScenePipelineRegistry`,
+  `RhiSharedGeometry`, `SceneBoundsCollector`, the frame-contract comment);
+  `render()` split into `admitFrame` → `applySceneBounds` → `prepareFrame` →
+  `submitShadowPass` / `submitScenePass` / `submitEdlMeshMask` over one
+  `PreparedFrame`; a logical-order `scene_draws` list submitted opaque phase
+  then translucent phase (replacing the per-family cursor walk);
+  `CameraFitPolicy` (core) applied by the QRhi view, with the dock's
+  `noteCameraRestored()` — the QRhi view no longer refits over a restored
+  camera; the GL view keeps its no-auto-fit behaviour until P5 removes it;
+  `rhi/passes/occupancy_rhi_pass.{h,cpp}` as the pattern. Golden images and
+  harness images pixel-identical to the pre-S0 build on OpenGL and Vulkan;
+  counters identical. New harness case: a translucent layer first in the dock
+  still blends over the opaque one behind it (fails without the phase order).
+- Then four parallel streams on the pass structure:
+  - points: hexagon fan, sub-pixel sprite LOD, colour hoist, two-partition
+    faded out-of-range draw, spheres below ~2 px as flat discs (restore
+    `shape_spheres_small`'s full check), instanced quads with a 10M-point
+    benchmark gate (keep a gated point fast path only if measured), compute
+    AABB gated on `QRhi::Compute` (compute shaders get their own bake profile).
+    Done (stream A, ARCHITECTURE.md → "Point family in the QRhi renderer"):
+    `rhi/passes/point_rhi_pass.{h,cpp}` + `point_aabb_reducer.{h,cpp}`; goldens
+    28/28 on OpenGL and Vulkan (were 22 and 20), registered in ctest per backend
+    and in the Linux CI QRhi step; GL goldens 28/28 with one re-captured golden
+    (`shape_spheres_small`: the GL pass draws sub-2-px spheres as flat discs too);
+    the GL point tests re-expressed as `scene3d_rhi_point_test` (7 cases per
+    backend). Details and numbers below;
+  - voxels + poses (and TF triads) extraction;
+  - markers + models extraction, SceneEntities cube shadows;
+    done: `rhi/passes/marker_rhi_pass` (own instance + stream buffers and
+    pipelines) and `rhi/passes/model_rhi_pass` (meshes, materials, EDL mask
+    replay, caster pipeline); the view keeps the shadow target and orchestrates
+    the shadow pass and EDL mask. Pixel-identical on OpenGL and Vulkan before the
+    new casters; solid markers (cube, sphere, cylinder, arrow) then cast
+    (`marker_shadow.vert`), harness `SceneEntitiesCubeCastsShadow`;
+  - grid/axes extraction, axis corner gizmo (then drop the golden test's
+    `kGizmoRect` exclusion), HUD + hover label as texture quads, `render_scale`,
+    AgX/Neutral tonemaps, and the frame-picking primitive (one owner).
+- Then GridMap + Trail (standalone + pose-embedded), "Create Trail" row and the
+  frame right-click menu (asynchronous popup; no `QMenu::exec()` in WASM).
+  Done: `rhi/passes/gridmap_rhi_pass` (procedural heightfield, two R32F
+  textures, the GL colormap polynomials via `colormap.glslinc`) and `rhi/passes/trail_rhi_pass` (the GL
+  ribbon; a pose-embedded trail draws in its pose layer's slot). The pose
+  layer owns its trail in every build (the verbatim `<trail>` XML fallback is
+  gone), the "Create Trail" row is in every build, and the dock shows the frame
+  menu with `popup()` in both builds. The browser trail assertion now expects
+  the restored pose trail to draw (`trails=` counters in the data probe).
+- Integration: the RHI goldens enabled in ctest (28/28 on OpenGL and Vulkan);
+  the two browser assertions that encode P2 gaps (shadow draws == model draws,
+  ignored trails) updated deliberately.
+- `/simplify` wave 2 on the pass structure: one family contract
+  (`initialize(RhiPassSetup)`, `registerPipelines`, `setLayers`, `admit`,
+  `prepare(RhiFrameContext, ...)`, `drawsFor` spans with a per-draw
+  `draw_class`, `submit`, `release`), shared pipeline/binding/layer-GPU helpers in
+  `rhi_scene_pass.h`, lazy HDR/depth-replay clones, the colormap LUT owned by the
+  voxel pass and the cube fan in `RhiSharedGeometry`, prelude geometry rebuilt
+  only when its inputs change. Goldens, harness images and counters identical on
+  OpenGL and Vulkan (ARCHITECTURE.md → "Frame contract").
+- Zero-copy integer scalar uploads stay in P5: the integer-field goldens already
+  pass through the CPU conversion; removing the copy is a layer/API performance
+  change.
+- Exit: all 28 point-cloud goldens pass on the RHI renderer (P1 baseline 22/28:
+  `shape_cubes_subpixel`, `color_rgb_cubes`, `field_viridis_cubes`,
+  `depth_two_clouds` — missing hexagon fan / LOD / colour hoist;
+  `field_outside_range_translucent`, `field_outside_range_cubes` — missing
+  two-partition draw); GL pass tests re-expressed as QRhi offscreen tests;
+  WASM Playwright green.
 
 **P4 — Plots and backend switch (2–4 weeks).**
 - `PlotRhiCanvas` on desktop: multi-backend shaders, item audit, desktop
@@ -229,14 +293,77 @@ Deferred from P2:
   stays as fallback.
 - Flip Windows to D3D11, macOS to Metal; floating-dock matrix (float/redock,
   split, sibling destruction, mixed-DPI moves).
+- Decide the offscreen orientation: render every offscreen target in GL
+  orientation on all backends (winding, texture-space matrices, present flip)
+  so y-down backends (Vulkan, D3D, Metal) put MSAA samples where the GL goldens
+  do, or keep the golden test's 3x3 neighbourhood rule with its per-pixel
+  ceiling (P3 stream A kept the rule; the change is renderer-wide).
+- Generalise the depth-replay skip that the faded point half has to every draw
+  that writes no depth (translucent markers and models, occupancy, translucent
+  voxels): they leave no coverage in the GL composite either. A behaviour change
+  against today's QRhi output, so it needs golden runs (P4 or P5).
 - Exit: required backend CI lanes green on all three desktop OSes.
 
 **P5 — Performance and cut-over (1–2 weeks).**
 - Frame-time/memory budgets met; RHI default; legacy GL renderer kept one
   release behind the option, then `gl/`, GL passes and `QOpenGLWidget` deleted.
 - Package smoke tests: AppImage, .deb, IFW, conda/RoboStack, browsers.
+- Marker and model instances are rebuilt and re-uploaded every frame because
+  the render origin is baked into them; move the origin into the view uniform so
+  an unchanged layer keeps its uploaded instances.
+- `drawsFor` searches the frame's draws linearly per logical slot (O(L²) in the
+  layer count), and `ScenePipelineRegistry::resolve` scans its entries per draw;
+  index both when layer counts make it measurable.
 
 Total: **~11–17 weeks**; plot parity is the least certain part.
+
+### P3 stream A (points): results
+
+Golden metrics (differing-pixel fraction with the neighbourhood rule / plain
+per-pixel, llvmpipe and lavapipe, Mesa 26.0.3): OpenGL 28/28, worst
+`shape_cubes_subpixel` 0.0122 / 0.0348; Vulkan 28/28, worst `field_viridis_cubes`
+0.0197 / 0.0648 and `color_rgb_cubes` 0.0161 / 0.0619. Before: OpenGL 22/28,
+Vulkan 20/28. What closed them: the fan with centroid local coordinates and the
+LOD (cube scenes), the colour hoist, and the faded half's two-partition draw
+that also skips the depth replay (see ARCHITECTURE.md). Why Vulkan had two
+extra failures (`shape_cubes_large`, `shape_points_1px`) and still differs per
+pixel: lavapipe's framebuffer is y-down where llvmpipe's GL render target is
+y-up, so the same 4x MSAA sample pattern lands mirrored on the scene. Diagonal
+silhouettes, the cube edge bands and 1 px points resolve differently (up to 8%
+of pixels) while interiors are identical: horizontal-edge-only content (8 px
+field points) differs on 0.4%, no integer pixel shift explains the rest. In the QRhi
+build the golden comparison now ignores a pixel that matches any golden pixel
+in its 3x3 neighbourhood (README of the corpus), with a per-pixel ceiling of
+max(3 x 3%, 10%) so the allowance cannot hide a gross regression; the GL build
+keeps the plain per-pixel check (0.0000 on llvmpipe). Rendering every offscreen target in GL orientation on all
+backends would remove the difference at the source; that is a renderer-wide
+convention change (winding, texture-space matrices, present flip) for the
+integration step, not a points change.
+
+Point-size benchmark (`demos/pointcloud_rhi_benchmark`, PJ_BUILD_DEMOS in the
+QRhi build): 10M 2 px points at 1920x1080, the colour pass into 4x RGBA16F + the
+single-sample depth replay (the SSAO/EDL full-screen passes cost the same for
+every topology), median GPU time from QRhi timestamps:
+
+| GPU / API | quads | point list | quads, cloud re-uploaded each frame | point list, re-uploaded |
+|---|---|---|---|---|
+| RTX 4070 Laptop, Vulkan | 14.8 ms | 6.8 ms | 36.9 ms | 29.3 ms |
+| RTX 4070 Laptop, OpenGL | 13.6 ms | 7.6 ms | 40.5 ms | 93.2 ms |
+| Iris Xe (RPL-P), Vulkan | 90.9 ms | 49.2 ms | 96.4 ms | 63.3 ms |
+| Iris Xe (RPL-P), OpenGL | 82.8 ms | 44.2 ms | 82.2 ms | 81.0 ms |
+| llvmpipe, OpenGL | 9016 ms | 7806 ms | 8957 ms | 5752 ms |
+| lavapipe, Vulkan | 18087 ms | 13951 ms | 15475 ms | 11763 ms |
+
+Quads cost 1.8-2.2x the point list on the GPUs (1.2-1.6x on the software
+rasterizers), above the 1.5x gate, so small sprites
+(at most 4 px, where the per-vertex cost dominates) keep a point-list path on
+backends with `QRhi::VertexShaderPointSize`; larger sprites stay quads (fill
+bound either way, and they keep their visible part at the frustum edge). CPU:
+`prepare()` is ~0.01 ms for a static cloud; a changed 10M cloud spends
+100-130 ms copying its 191 MiB into the update batch (the layer's conversion
+comes on top, P5). GPU memory (Vulkan, VMA): 479 MiB with the static cloud and
+the 1080p targets, 670 MiB while re-uploading (staging). The software rows ran on
+a machine loaded by three parallel builds (1.2-1.6x there).
 
 ## Findings
 
@@ -250,14 +377,26 @@ Total: **~11–17 weeks**; plot parity is the least certain part.
   sharing an SRB can draw with an older camera. The harness presents one real
   frame before each grab. App-side grabs (`MainWindow` screenshot export,
   `PlotPanner`) must do the same once they run on desktop QRhi (P4).
-- **RHI renderer parity gaps (P3):** translucent layers are not sorted after
-  opaque ones (the GL marker pass has the same limit); only model meshes cast
-  shadows, not SceneEntities cubes.
+- **Marker shadows:** the GL `MarkerRenderPass` casts no shadows at all (only
+  `MeshRenderPass` models do). The QRhi renderer's solid SceneEntities markers
+  (cubes, spheres, cylinders, arrows) cast since P3 — parity-plus, not parity.
+  (Translucent draws follow every opaque one in the QRhi renderer — S0; the GL
+  marker pass still draws in layer order.)
+- **Wireframe markers:** the QRhi renderer already draws wireframe as triangle
+  edge lines on every backend, so `NonFillPolygonMode` was not adopted. The
+  remaining look difference from GL (which culls back-facing wire edges of
+  closed solids and keeps the cube edge overlay) is cosmetic.
 - **Tiny spheres are driver-dependent** in the GL renderer: below one pixel
   they nearly vanish on NVIDIA MSAA (coverage ~0.19 of llvmpipe's), and ~1.5 px
   spheres shade very differently on Mesa 23 vs 26 (mean colour off by ~80).
-  P3: draw spheres below ~2 px as flat discs, then give `shape_spheres_small`
-  its full golden check back.
+  Both renderers now draw spheres below 2 px as flat discs at the disc-mean
+  shade, and `shape_spheres_small` has its full golden check back (P3 stream A).
+- **MSAA orientation differs per backend:** a y-down framebuffer (Vulkan, D3D,
+  Metal) puts the 4x sample pattern mirrored on the scene relative to GL's y-up
+  render targets, so sub-pixel coverage and diagonal silhouettes differ from the
+  GL goldens even on the same Mesa rasterizer (P3 stream A results). The
+  QRhi build's golden test tolerates it with a 3x3 neighbourhood rule plus a
+  10% per-pixel ceiling; a renderer-wide orientation change is a P4 item.
 - The RHI harness needs a real X or Wayland server; locally, an occluded window
   never presents, so run it under Xvfb or a headless compositor.
 
@@ -308,3 +447,4 @@ Actual wall-clock time, to calibrate the estimates above.
 | P0 | 2026-09-23 21:51 CEST | 2026-09-23 23:40 CEST | ~1 h 50 min | Plan estimate was 1–2 engineer-weeks. Wall-clock with parallel agents; ~45 min of it was WASM builds + Playwright. Non-GL backends verified only by unit tests and reviews, not by rendering. |
 | P1 | 2026-09-24 05:46 CEST | 2026-09-24 07:13 CEST | ~1 h 27 min | Plan estimate ≈2 weeks. Three parallel streams (limits, harness, goldens). First real renders on OpenGL and Vulkan (GPU + llvmpipe/lavapipe); found two Qt 6.11.1 grab bugs, no renderer bug. Cross-build point-cloud goldens: 22/28 on QRhi. |
 | P2 | 2026-09-24 13:33 CEST | 2026-09-24 18:23 CEST | ~4 h 50 min | Plan estimate 2–3 weeks. Stacked on P1 (#672). Steps B/C/D as three parallel streams, then E; ~12k lines of forks deleted. Reviews found 5 real bugs (TF-only repaint freeze, depth wrong-sample and dataset-replace races, stale robot model, in-flight bound bypass), all fixed with regression tests. |
+| P3 | 2026-09-24 20:33 CEST | 2026-09-25 06:45 CEST | ~6 h 30 min active (10 h 12 min wall-clock, incl. a ~3 h 40 min account rate-limit pause) | Plan estimate 3–4 weeks. Stacked on P2 (#673). S0 foundation serial, then five parallel streams (points; voxels + poses; markers + models; grid/gizmo/HUD/picking; GridMap + Trail + frame menu), merged one by one with pixel-exact checks. Point-cloud goldens 22/28 → 28/28 on OpenGL and Vulkan. Two /simplify waves (−409 lines, one pass contract). Reviews found 3 real bugs (edge-sprite frustum reject, unculled fan back faces, pipelines kept across sample-count/format changes) plus a latent D3D storage-view overread in the GPU AABB reducer; all fixed with regression tests. |

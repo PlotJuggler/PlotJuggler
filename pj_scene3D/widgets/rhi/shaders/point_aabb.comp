@@ -1,0 +1,71 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+#version 440
+// Min/max of a point instance buffer's xyz (PointVertex: 5 words, xyz first), the
+// GPU half of the point-cloud bounds (point_aabb_reducer.h). The point count comes
+// from a uniform, not data.length(): D3D backends may view the storage buffer to its
+// end whatever the binding size, and the buffer outgrows the cloud. Float min/max go through
+// the order-preserving key of pj_scene3d_core/aabb_gpu_key.h (keep in lockstep).
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly buffer PointData { uint data[]; };
+layout(std430, binding = 1) buffer Result { uint result[]; };  // min keys xyz, max keys xyz, finite count
+layout(std140, binding = 2) uniform Params { uint point_count; };
+
+const uint kStrideWords = 5u;
+// Always dispatched as kGroups workgroups (HLSL has no gl_NumWorkGroups); each
+// invocation strides over the cloud.
+const uint kGroups = 1024u;
+
+uint floatToOrderedKey(float v) {
+    uint bits = floatBitsToUint(v);
+    uint mask = (bits & 0x80000000u) != 0u ? 0xFFFFFFFFu : 0x80000000u;
+    return bits ^ mask;
+}
+
+bool isFiniteVec(vec3 p) {
+    return !(any(isnan(p)) || any(isinf(p)));
+}
+
+shared vec3 s_lo[256];
+shared vec3 s_hi[256];
+shared uint s_fin[256];
+
+void main() {
+    vec3 lo = vec3(uintBitsToFloat(0x7F800000u));  // +inf
+    vec3 hi = vec3(uintBitsToFloat(0xFF800000u));  // -inf
+    uint fin = 0u;
+    uint count = point_count;
+    uint total = kGroups * 256u;
+    for (uint i = gl_GlobalInvocationID.x; i < count; i += total) {
+        uint base = i * kStrideWords;
+        vec3 p = vec3(uintBitsToFloat(data[base]), uintBitsToFloat(data[base + 1u]), uintBitsToFloat(data[base + 2u]));
+        if (isFiniteVec(p)) {
+            lo = min(lo, p);
+            hi = max(hi, p);
+            fin += 1u;
+        }
+    }
+    uint lid = gl_LocalInvocationID.x;
+    s_lo[lid] = lo;
+    s_hi[lid] = hi;
+    s_fin[lid] = fin;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (lid < stride) {
+            s_lo[lid] = min(s_lo[lid], s_lo[lid + stride]);
+            s_hi[lid] = max(s_hi[lid], s_hi[lid + stride]);
+            s_fin[lid] += s_fin[lid + stride];
+        }
+        barrier();
+    }
+    if (lid == 0u && s_fin[0] > 0u) {
+        atomicMin(result[0], floatToOrderedKey(s_lo[0].x));
+        atomicMin(result[1], floatToOrderedKey(s_lo[0].y));
+        atomicMin(result[2], floatToOrderedKey(s_lo[0].z));
+        atomicMax(result[3], floatToOrderedKey(s_hi[0].x));
+        atomicMax(result[4], floatToOrderedKey(s_hi[0].y));
+        atomicMax(result[5], floatToOrderedKey(s_hi[0].z));
+        atomicAdd(result[6], s_fin[0]);
+    }
+}

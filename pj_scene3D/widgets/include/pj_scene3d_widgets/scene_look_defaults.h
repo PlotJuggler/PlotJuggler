@@ -94,11 +94,34 @@ inline constexpr float kSsaoBias = 0.025f;
 inline constexpr glm::vec3 kGridLineColor{0.35f, 0.35f, 0.35f};
 inline constexpr glm::vec3 kGridCellToneA{0.30f, 0.30f, 0.30f};
 inline constexpr glm::vec3 kGridCellToneB{0.42f, 0.42f, 0.42f};
+// Luminance gain on the hovered frame's triad colours, so the highlighted gizmo
+// reads brighter than its neighbours (clamped to 1; it feeds the HDR pipeline).
+inline constexpr float kHighlightGain = 1.8f;
 // Slightly desaturated R/G/B so adjacent frames don't clash visually with the
 // HUD overlay (which uses the saturated triplets).
 inline constexpr glm::vec3 kAxisTriadX{0.95f, 0.30f, 0.30f};
 inline constexpr glm::vec3 kAxisTriadY{0.30f, 0.85f, 0.30f};
 inline constexpr glm::vec3 kAxisTriadZ{0.35f, 0.50f, 1.00f};
 inline constexpr glm::vec3 kTfConnectionColor{1.0f, 0.0f, 1.0f};  // magenta
+// The saturated R/G/B of the corner orientation gizmo (the HUD triad).
+inline constexpr glm::vec3 kHudTriadX{1.00f, 0.30f, 0.30f};
+inline constexpr glm::vec3 kHudTriadY{0.35f, 0.85f, 0.35f};
+inline constexpr glm::vec3 kHudTriadZ{0.40f, 0.55f, 1.00f};
 
 }  // namespace pj::scene3d::look
+
+namespace pj::scene3d {
+
+// Composite/look knobs of a view's present pass (both renderers; read every
+// frame, so call the view's update() after changing them).
+struct CompositeParams {
+  int tonemap_mode = look::kTonemapMode;  // 0 None, 1 ACES, 2 AgX, 3 Khronos PBR Neutral
+  float exposure = look::kExposure;
+  float saturation = look::kSaturation;  // post-tonemap; data pixels only
+  float ao_strength = look::kAoStrength;
+  bool ssao_enabled = true;
+  bool edl_enabled = true;
+  float edl_floor = look::kEdlFloor;  // EDL darkens toward floor*color (0 = old black; 1 = off)
+};
+
+}  // namespace pj::scene3d

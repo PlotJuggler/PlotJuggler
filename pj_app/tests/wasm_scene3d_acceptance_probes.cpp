@@ -317,7 +317,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_scene3d_foundation() {
       qInfo(
           "PJ_WASM_SCENE3D_DATA sequence=%llu index=%lld "
           "points=%d,%d,%d,%llu,%llu,%llu,%d compressed=%d "
-          "depth=%d,%d,%llu,%llu,%llu,%d poses=%d,%d occupancy=%d,%d,%d,%d voxels=%d,%d,%d,%d "
+          "depth=%d,%d,%llu,%llu,%llu,%d poses=%d,%d occupancy=%d,%d,%d,%d voxels=%d,%d,%d,%d trails=%d,%d "
           "order=%s submitted=%s list=%d,%d,%dx%d rows=%s toggle=%d,%d,%dx%d right_visible=%d warnings=%s",
           static_cast<unsigned long long>(current_sequence), static_cast<long long>(index), point_layers,
           view != nullptr ? view->lastPointLayerCountForTest() : 0,
@@ -332,7 +332,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_scene3d_foundation() {
           view != nullptr ? view->occupancyPartialUploadCountForTest() : 0, voxel_layers,
           view != nullptr ? view->lastVoxelCountForTest() : 0,
           view != nullptr ? view->voxelFullUploadCountForTest() : 0,
-          view != nullptr ? view->max3DTextureSizeForTest() : 0,
+          view != nullptr ? view->max3DTextureSizeForTest() : 0, view != nullptr ? view->lastTrailCountForTest() : 0,
+          view != nullptr ? view->lastTrailVertexCountForTest() : 0,
           QUrl::toPercentEncoding(ui_order.join(u',')).constData(),
           QUrl::toPercentEncoding(submitted_order.join(u',')).constData(), list_geometry.x(), list_geometry.y(),
           list_geometry.width(), list_geometry.height(), QUrl::toPercentEncoding(row_centers.join(u',')).constData(),

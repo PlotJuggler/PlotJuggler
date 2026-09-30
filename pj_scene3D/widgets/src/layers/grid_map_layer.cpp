@@ -168,9 +168,7 @@ bool GridMapLayer::attach(const PJ::SceneLayerContext& ctx) {
 void GridMapLayer::detach() {
   disconnect(reload_connection_);
   reload_connection_ = {};
-#ifndef PJ_SCENE3D_RHI
-  pass_.clearGrid();
-#endif
+  clearStagedGrid();
   resetStreamingState();
   ctx_ = {};
 }
@@ -198,9 +196,7 @@ void GridMapLayer::onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id) {
   }
   // The topic id survives the swap but every UID is minted fresh: a stale memo
   // must never serve the old bytes.
-#ifndef PJ_SCENE3D_RHI
-  pass_.clearGrid();
-#endif
+  clearStagedGrid();
   resetStreamingState();
   tracker_dirty_ = true;
   emit repaintRequested();
@@ -282,7 +278,6 @@ bool GridMapLayer::resolveFields(const PJ::sdk::GridMap& grid) {
   return color != nullptr;
 }
 
-#ifndef PJ_SCENE3D_RHI
 void GridMapLayer::renderAt(int64_t time_ns) {
   if (ctx_.session == nullptr) {
     return;
@@ -299,7 +294,7 @@ void GridMapLayer::renderAt(int64_t time_ns) {
   if (!entry.has_value() || entry->payload.bytes.empty()) {
     // Before the first sample (or in a gap): clear AND forget the upload memo, so a
     // back-scrub onto the same entry re-stages instead of hitting the fast path.
-    pass_.clearGrid();
+    clearStagedGrid();
     uploaded_uid_ = {};
     setBounds(std::nullopt);
     setDataWarning(QString());  // the resolve memo keeps its own warning for the back-scrub
@@ -312,7 +307,7 @@ void GridMapLayer::renderAt(int64_t time_ns) {
   // A refused sample is remembered like a staged one so it is not retried every tick.
   const auto bail = [&](const QString& why) {
     setDataWarning(why);
-    pass_.clearGrid();
+    clearStagedGrid();
     setBounds(std::nullopt);
     remember_upload();
   };
@@ -375,11 +370,30 @@ void GridMapLayer::renderAt(int64_t time_ns) {
   }
   upload.color_range = last_auto_range_;
   setBounds(gridMapBounds(grid, resolved_elevation_.empty() ? std::nullopt : std::optional{elevation_range}));
-  pass_.setGrid(std::move(upload));
+  stageGrid(std::move(upload));
   ++pack_count_;
   remember_upload();
 }
+
+void GridMapLayer::stageGrid(GridMapUpload upload) {
+#ifndef PJ_SCENE3D_RHI
+  pass_.setGrid(std::move(upload));
+#else
+  staged_grid_ = std::move(upload);
+  ++staged_revision_;
 #endif
+}
+
+void GridMapLayer::clearStagedGrid() {
+#ifndef PJ_SCENE3D_RHI
+  pass_.clearGrid();
+#else
+  if (staged_grid_.has_value()) {
+    staged_grid_.reset();  // the channels can be 2 x 64 MiB: release them, not just a flag
+    ++staged_revision_;
+  }
+#endif
+}
 
 void GridMapLayer::setFixedFrame(const QString& frame) {
   if (fixed_frame_ == frame) {
@@ -401,7 +415,11 @@ void GridMapLayer::setBounds(std::optional<AABB> bounds) {
 }
 
 void GridMapLayer::setTrackerTime(PJ::Timepoint time) {
+#ifdef PJ_SCENE3D_RHI
+  requested_time_ = time;
+#else
   Q_UNUSED(time);  // render() reads frame_ctx.time via the tracker_dirty_ path
+#endif
   tracker_dirty_ = true;
   emit repaintRequested();
 }
@@ -438,6 +456,16 @@ void GridMapLayer::render(const ViewParams& view_params, const FrameContext& fra
     setDataWarning(*why);  // a GL-limit verdict, known only once the upload was attempted
     setBounds(std::nullopt);
   }
+}
+#endif
+
+#ifdef PJ_SCENE3D_RHI
+void GridMapLayer::prepareForRender() {
+  if (!visible_ || !tracker_dirty_ || !requested_time_.has_value()) {
+    return;
+  }
+  tracker_dirty_ = false;
+  renderAt(PJ::toRaw(*requested_time_));
 }
 #endif
 

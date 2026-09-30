@@ -64,8 +64,7 @@ struct TrailSource {
 // Not topic-id-backed: the dock registers it under a synthetic local id
 // (info().object_type == kNone) and persists it with role="trail" — see
 // Scene3DDockWidget::addTrailLayer / restoreTrailElement.
-// The QRhi renderer does not draw trails yet (QRHI_MIGRATION P3): there the
-// layer keeps its source, style and persistence, and its row warns.
+// The QRhi view reads the polyline through syncFixedFrame()/points()/pastCount().
 class TrailLayer : public Scene3DLayer {
   Q_OBJECT
  public:
@@ -146,6 +145,23 @@ class TrailLayer : public Scene3DLayer {
   [[nodiscard]] QColor futureColor() const {
     return future_color_;
   }
+  [[nodiscard]] bool visible() const {
+    return visible_;
+  }
+
+  // Renderer hook, once per painted frame: adopts the view's fixed frame (the
+  // authoritative one; attach can precede the dock's fan-out). On a change it
+  // requests a rebuild and returns false: points() are stale for this frame.
+  bool syncFixedFrame(const std::string& fixed_frame);
+  // The polyline in the fixed frame (absolute, double) and its change counter.
+  [[nodiscard]] const std::vector<glm::dvec3>& points() const {
+    return points_;
+  }
+  [[nodiscard]] uint64_t buildRevision() const {
+    return build_revision_;
+  }
+  // Number of points stamped at or before `time`: [0, pastCount) is the past half.
+  [[nodiscard]] std::size_t pastCount(PJ::Timepoint time) const;
 
 #ifdef PJ_SCENE3D_TEST_HOOKS
   // Bind a TF buffer without a session/dock (attach() is bypassed).
@@ -171,7 +187,6 @@ class TrailLayer : public Scene3DLayer {
 #endif
 
  private:
-  [[nodiscard]] std::size_t pastCount(PJ::Timepoint time) const;
   // Shared style application (xmlLoadState + the tail of xmlLoadStateResult).
   bool loadStyle(const QDomElement& element);
   void adoptPolyline(TrailPolyline polyline);

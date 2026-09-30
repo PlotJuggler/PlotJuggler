@@ -1257,11 +1257,7 @@ TEST(Scene3DDockPersistence, PoseTrailBuildsPolylineFromDecodedMessages) {
   // pose lands identity-transformed (no TF needed) — full decode path headless.
   trail->rebuildNowForTest(u"odom"_s);
   EXPECT_EQ(trail->pointCountForTest(), 2U);
-#ifdef PJ_SCENE3D_RHI
-  EXPECT_EQ(trail->statusWarning(), u"Not rendered by this renderer yet"_s);
-#else
   EXPECT_TRUE(trail->statusWarning().isEmpty());
-#endif
   EXPECT_EQ(PJ::toRaw(trail->timeRange().min), 100);
   EXPECT_EQ(PJ::toRaw(trail->timeRange().max), 200);
 }
@@ -1313,9 +1309,6 @@ TEST(Scene3DDockPersistence, TfTrailRemovedWhenItsDatasetUnloads) {
   EXPECT_TRUE(dock.layers().empty()) << "the TF trail must be removed with its dataset";
 }
 
-// The pose layer owns a trail only where trails are drawn (the QRhi build keeps
-// the nested <trail> verbatim instead; scene3d_layer_xml_validation_test).
-#ifndef PJ_SCENE3D_RHI
 TEST(Scene3DDockPersistence, PoseLayerOwnsEmbeddedTrailInsteadOfAddingALayer) {
   PJ::SessionManager session;
   pj::scene3d::TransformService transform_service(session);
@@ -1373,7 +1366,6 @@ TEST(Scene3DDockPersistence, PoseLayerOwnsEmbeddedTrailInsteadOfAddingALayer) {
   const QDomElement off_state = restored->xmlSaveState(off_doc);
   EXPECT_TRUE(off_state.firstChildElement(u"trail"_s).isNull());
 }
-#endif  // PJ_SCENE3D_RHI
 
 TEST(Scene3DDockPersistence, TrailRestoreRejectsMalformedElements) {
   PJ::SessionManager session;
