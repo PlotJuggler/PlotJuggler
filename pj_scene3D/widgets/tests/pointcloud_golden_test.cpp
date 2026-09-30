@@ -1,14 +1,17 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Point-cloud rendering regression corpus: small deterministic scenes rendered
-// through the real Scene3DDockWidget and compared against golden PNGs captured
-// from the OpenGL renderer (fixtures/golden/pointcloud/, see its README).
+// Rendering regression corpus: small deterministic scenes rendered through the
+// real Scene3DDockWidget and compared against golden PNGs captured from the
+// OpenGL renderer (fixtures/golden/pointcloud/, see its README): point clouds,
+// plus a scene corpus (`scene_*`) for the ground grid in both themes and styles,
+// SceneEntities markers and a URDF robot.
 //
 // The same source builds against both renderers (PJ_SCENE3D_RHI selects the
 // QRhi one) and touches only the API both docks share: canonical PointCloud
 // blobs in the ObjectStore, addTopic, the layer's <pointcloud> XML payload,
-// onTrackerTime, sceneView()->camera() and grabPresentedFrame(). In the GL build
+// onTrackerTime, sceneView()->camera() and grabPresentedFrame() (and, for the
+// scene corpus, SceneEntities blobs, local URDF files and the view's grid setters). In the GL build
 // it is a regression test; in the QRhi build it holds that renderer to the same
 // goldens on each backend (PJ_GRAPHICS_API=opengl|vulkan|d3d11|metal).
 //
@@ -26,10 +29,12 @@
 #include <QApplication>
 #include <QDir>
 #include <QDomDocument>
+#include <QFile>
 #include <QImage>
 #include <QPalette>
 #include <QString>
 #include <QSurfaceFormat>
+#include <QTemporaryDir>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -38,10 +43,13 @@
 #include <functional>
 #include <glm/glm.hpp>
 #include <map>
+#include <optional>
 #include <ostream>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "pj_base/builtin/scene_entities_codec.hpp"
 #include "pj_base/sdk/platform.hpp"
 #include "pj_scene3d_core/camera/camera.h"
 #include "scene3d_render_test_support.h"
@@ -73,11 +81,15 @@ using pj::scene3d::test::maxChannelDelta;
 
 // Light theme: the backdrop and anything theme-derived follow the application
 // palette's Window lightness.
+void setWindowColour(const QColor& colour) {
+  QPalette pal = QApplication::palette();
+  pal.setColor(QPalette::Window, colour);
+  QApplication::setPalette(pal);
+}
+
 struct LightPalette : ::testing::Environment {
   void SetUp() override {
-    QPalette pal = QApplication::palette();
-    pal.setColor(QPalette::Window, QColor(255, 255, 255));
-    QApplication::setPalette(pal);
+    setWindowColour(QColor(255, 255, 255));
   }
 };
 [[maybe_unused]] const auto* const kLightPalette = ::testing::AddGlobalTestEnvironment(new LightPalette);
@@ -543,71 +555,108 @@ QString outPath(const std::string& name, const char* suffix) {
   *os << scene.name;
 }
 
-class PointCloudGolden : public ::testing::TestWithParam<Scene> {};
-
-TEST_P(PointCloudGolden, MatchesGolden) {
-  const Scene& scene = GetParam();
-  PJ_SKIP_ON_HEADLESS_QPA();
-
-  pj::scene3d::test::Scene3DRenderFixture fixture;
-  PJ::Scene3DDockWidget& dock = *fixture.dock();
-  dock.setTransformService(&fixture.transforms());
-  // The view is created by a queued call; pin its size before the first show so
-  // the window manager never has to resize a mapped window. The dock itself
-  // has a larger minimum width (its overlay controls).
-  for (int i = 0; i < 20 && dock.sceneView() == nullptr; ++i) {
-    QApplication::processEvents();
-  }
-  auto* view = dock.sceneView();
-  ASSERT_NE(view, nullptr);
-  view->setFixedSize(kViewSize, kViewSize);
-  fixture.window().show();
-  QApplication::processEvents();
-  ASSERT_EQ(view->size(), QSize(kViewSize, kViewSize));
-  ASSERT_EQ(view->devicePixelRatioF(), 1.0) << "goldens are captured at DPR 1";
-#ifndef PJ_SCENE3D_RHI
-  if (!pj::scene3d::test::haveGl(*view)) {
-    PJ_SKIP_WITHOUT_GPU("no usable OpenGL context");
-  }
-  const auto gl_version = pj::scene3d::test::liveGlVersion(*view);
-  if (gl_version < std::pair<int, int>(4, 5)) {
-    PJ_SKIP_WITHOUT_GPU("GL " << gl_version.first << "." << gl_version.second << " below 4.5");
-  }
-#endif
-  view->setGridVisible(false);
-  view->setAxesVisible(false);
-  view->setTfConnectionsVisible(false);
-
-  for (std::size_t i = 0; i < scene.layers.size(); ++i) {
-    const CloudSpec cloud = scene.layers[i].cloud();
-    const auto topic = fixture.add(
-        "/cloud" + std::to_string(i), PJ::sdk::BuiltinObjectType::kPointCloud,
-        pj::scene3d::test::serializeCloud(cloud.positions, "map", cloud.fields));
-    PJ::ISceneLayer* layer = dock.layerFor(topic);
-    ASSERT_NE(layer, nullptr);
-    QDomDocument doc;
-    QDomElement payload = doc.createElement(u"pointcloud"_s);
-    for (const auto& [key, value] : scene.layers[i].attrs) {
-      payload.setAttribute(key, value);
+// A shown 256x256 view on its own fixture, ready for a scene.
+class GoldenView {
+ public:
+  GoldenView() : dock_(*fixture_.dock()) {
+    dock_.setTransformService(&fixture_.transforms());
+    // The view is created by a queued call; pin its size before the first show so
+    // the window manager never has to resize a mapped window. The dock itself
+    // has a larger minimum width (its overlay controls).
+    for (int i = 0; i < 20 && dock_.sceneView() == nullptr; ++i) {
+      QApplication::processEvents();
     }
-    ASSERT_TRUE(layer->xmlLoadState(payload)) << "invalid <pointcloud> attributes";
+    view_ = dock_.sceneView();
   }
-  dock.setFixedFrame(u"map"_s);
-  dock.onTrackerTime(0.0);
+
+  // Shows the view with grid, axes and TF lines off. False (with a failure or a
+  // skip recorded) when it cannot render.
+  [[nodiscard]] bool show() {
+    if (view_ == nullptr) {
+      ADD_FAILURE() << "no scene view";
+      return false;
+    }
+    view_->setFixedSize(kViewSize, kViewSize);
+    fixture_.window().show();
+    QApplication::processEvents();
+    EXPECT_EQ(view_->size(), QSize(kViewSize, kViewSize));
+    EXPECT_EQ(view_->devicePixelRatioF(), 1.0) << "goldens are captured at DPR 1";
+#ifndef PJ_SCENE3D_RHI
+    if (!pj::scene3d::test::haveGl(*view_)) {
+      skip_reason_ = "no usable OpenGL context";
+      return false;
+    }
+    const auto gl_version = pj::scene3d::test::liveGlVersion(*view_);
+    if (gl_version < std::pair<int, int>(4, 5)) {
+      skip_reason_ = "GL " + std::to_string(gl_version.first) + "." + std::to_string(gl_version.second) + " below 4.5";
+      return false;
+    }
+#endif
+    view_->setGridVisible(false);
+    view_->setAxesVisible(false);
+    view_->setTfConnectionsVisible(false);
+    return true;
+  }
+  [[nodiscard]] const std::string& skipReason() const {
+    return skip_reason_;
+  }
 
   // The QRhi view fits the camera to each new layer on its first frames; let
-  // that happen, then pin the camera.
-  for (int i = 0; i < 3; ++i) {
-    pj::scene3d::test::grab(*view);
+  // that happen, then pin the camera and grab.
+  QImage render(const pj::scene3d::CameraState& camera) {
+    for (int i = 0; i < 3; ++i) {
+      pj::scene3d::test::grab(*view_);
+    }
+    view_->camera().adoptState(camera);
+    return pj::scene3d::test::grabStable(*view_);
   }
-  view->camera().adoptState(scene.camera);
-  const QImage actual = pj::scene3d::test::grabStable(*view);
-  ASSERT_EQ(actual.size(), QSize(kViewSize, kViewSize));
 
-  const QString golden_file = goldenPath(scene.name);
+  pj::scene3d::test::Scene3DRenderFixture& fixture() {
+    return fixture_;
+  }
+  PJ::Scene3DDockWidget& dock() {
+    return dock_;
+  }
+  pj::scene3d::SceneViewWidget& view() {
+    return *view_;
+  }
+
+ private:
+  pj::scene3d::test::Scene3DRenderFixture fixture_;
+  PJ::Scene3DDockWidget& dock_;
+  pj::scene3d::SceneViewWidget* view_ = nullptr;
+  std::string skip_reason_;
+};
+
+#define SHOW_OR_SKIP(golden_view)                      \
+  if (!(golden_view).show()) {                         \
+    if (!(golden_view).skipReason().empty()) {         \
+      PJ_SKIP_WITHOUT_GPU((golden_view).skipReason()); \
+    }                                                  \
+    return;                                            \
+  }
+
+// The defaults, widened on D3D11 for scenes with 1 px lines (grid, marker edges,
+// line strips): WARP rasterizes them wider than Mesa (coverage up to 1.094 and a
+// foreground diff up to 0.153 against the GL golden; fills match). OpenGL, Vulkan
+// and Metal stay within the defaults.
+Tolerance lineSceneTolerance() {
+  Tolerance tol;
+#if defined(PJ_SCENE3D_RHI) && defined(Q_OS_WIN)
+  tol.coverage = 0.12;
+  tol.max_fg_diff_frac = 0.2;
+#endif
+  return tol;
+}
+
+// Writes `actual` as the golden in the GL build with PJ_UPDATE_POINTCLOUD_GOLDENS=1,
+// otherwise compares it with the golden under the scene's checks and tolerances.
+void expectMatchesGolden(const std::string& name, const QImage& actual, Scene::Check check, const Tolerance& tol = {}) {
+  ASSERT_EQ(actual.size(), QSize(kViewSize, kViewSize));
+  const QString golden_file = goldenPath(name);
   if (PJ::sdk::getEnv("PJ_UPDATE_POINTCLOUD_GOLDENS") == "1") {
 #ifdef PJ_SCENE3D_RHI
-    FAIL() << "goldens come from the OpenGL renderer; regenerate them in the default build";
+    FAIL() << "goldens come from the OpenGL renderer; regenerate them in the GL build (-DPJ_SCENE3D_RHI=OFF)";
 #else
     ASSERT_TRUE(actual.save(golden_file)) << golden_file.toStdString();
     GTEST_SKIP() << "golden written: " << golden_file.toStdString();
@@ -619,15 +668,14 @@ TEST_P(PointCloudGolden, MatchesGolden) {
                                 << " (run with PJ_UPDATE_POINTCLOUD_GOLDENS=1 in the GL build)";
   ASSERT_EQ(golden.size(), actual.size());
 
-  const Tolerance tol;
   const Stats stats = compare(actual, golden, tol);
   std::printf(
       "[golden] %-34s diff %.4f (per-pixel %.4f)  coverage %.4f  mean colour %d  fg-diff %.4f (<= %.2f)  strays %d "
       "(<= %d)\n",
-      scene.name.c_str(), stats.diff_frac, stats.plain_diff_frac, stats.coverage_ratio, stats.mean_color_delta,
+      name.c_str(), stats.diff_frac, stats.plain_diff_frac, stats.coverage_ratio, stats.mean_color_delta,
       stats.fg_diff_frac, tol.max_fg_diff_frac, stats.background_strays, tol.max_background_strays);
-  const bool check_colour = scene.check != Scene::Check::kCoverage;
-  const bool check_pixels = scene.check == Scene::Check::kFull;
+  const bool check_colour = check != Scene::Check::kCoverage;
+  const bool check_pixels = check == Scene::Check::kFull;
   const bool coverage_ok = std::abs(stats.coverage_ratio - 1.0) <= tol.coverage &&
                            (!check_colour || stats.mean_color_delta <= tol.mean_color);
   const bool pixels_ok = !check_pixels || (stats.diff_frac <= tol.max_diff_frac &&
@@ -635,8 +683,8 @@ TEST_P(PointCloudGolden, MatchesGolden) {
                                            stats.fg_diff_frac <= tol.max_fg_diff_frac &&
                                            stats.background_strays <= tol.max_background_strays);
   if (!coverage_ok || !pixels_ok || PJ::sdk::getEnv("PJ_POINTCLOUD_GOLDEN_DUMP_ALL") == "1") {
-    actual.save(outPath(scene.name, "_actual.png"));
-    stats.diff.save(outPath(scene.name, "_diff.png"));
+    actual.save(outPath(name, "_actual.png"));
+    stats.diff.save(outPath(name, "_diff.png"));
   }
   EXPECT_LE(std::abs(stats.coverage_ratio - 1.0), tol.coverage) << "non-background pixel count vs golden";
   if (check_colour) {
@@ -655,8 +703,256 @@ TEST_P(PointCloudGolden, MatchesGolden) {
   }
 }
 
+class PointCloudGolden : public ::testing::TestWithParam<Scene> {};
+
+TEST_P(PointCloudGolden, MatchesGolden) {
+  const Scene& scene = GetParam();
+  PJ_SKIP_ON_HEADLESS_QPA();
+
+  GoldenView golden_view;
+  SHOW_OR_SKIP(golden_view);
+  PJ::Scene3DDockWidget& dock = golden_view.dock();
+  for (std::size_t i = 0; i < scene.layers.size(); ++i) {
+    const CloudSpec cloud = scene.layers[i].cloud();
+    const auto topic = golden_view.fixture().add(
+        "/cloud" + std::to_string(i), PJ::sdk::BuiltinObjectType::kPointCloud,
+        pj::scene3d::test::serializeCloud(cloud.positions, "map", cloud.fields));
+    PJ::ISceneLayer* layer = dock.layerFor(topic);
+    ASSERT_NE(layer, nullptr);
+    QDomDocument doc;
+    QDomElement payload = doc.createElement(u"pointcloud"_s);
+    for (const auto& [key, value] : scene.layers[i].attrs) {
+      payload.setAttribute(key, value);
+    }
+    ASSERT_TRUE(layer->xmlLoadState(payload)) << "invalid <pointcloud> attributes";
+  }
+  dock.setFixedFrame(u"map"_s);
+  dock.onTrackerTime(0.0);
+  expectMatchesGolden(scene.name, golden_view.render(scene.camera), scene.check);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     Corpus, PointCloudGolden, ::testing::ValuesIn(corpus()),
     [](const ::testing::TestParamInfo<Scene>& param_info) { return param_info.param.name; });
+
+// ---- Scene corpus --------------------------------------------------------
+
+// The camera of the scene corpus: lower than the clouds' so the far grid edge
+// stays below the top-left corner, which every comparison takes as background.
+pj::scene3d::CameraState sceneCamera() {
+  pj::scene3d::CameraState cam = defaultCamera();
+  cam.radius = 6.0f;
+  cam.elevation = 0.45f;
+  return cam;
+}
+
+// Restores the light palette when a dark-theme scene ends.
+struct DarkTheme {
+  DarkTheme() {
+    setWindowColour(QColor(32, 32, 32));
+  }
+  ~DarkTheme() {
+    setWindowColour(QColor(255, 255, 255));
+  }
+  DarkTheme(const DarkTheme&) = delete;
+  DarkTheme& operator=(const DarkTheme&) = delete;
+};
+
+struct GridScene {
+  std::string name;
+  pj::scene3d::SceneViewWidget::GridStyle style;
+  bool dark;
+  int divisions = 10;
+};
+
+class GridGolden : public ::testing::TestWithParam<GridScene> {};
+
+[[maybe_unused]] void PrintTo(const GridScene& scene, std::ostream* os) {
+  *os << scene.name;
+}
+
+// The ground grid alone (10 divisions, 5 for the odd case: its cells start
+// half a cell off the origin), its colours from the theme. The filled
+// grid is 3 m so the corner gizmo sits on the backdrop: the GL view draws the
+// filled grid darker under the gizmo's square, the QRhi view (gizmo drawn after
+// presentation) does not. The line grid (default 10 m) is all 1 px edges,
+// which a y-down backend's mirrored MSAA pattern resolves differently (up to 18%
+// of its foreground on lavapipe), so it checks coverage and mean colour only.
+TEST_P(GridGolden, MatchesGolden) {
+  const GridScene& scene = GetParam();
+  PJ_SKIP_ON_HEADLESS_QPA();
+  std::optional<DarkTheme> dark;
+  if (scene.dark) {
+    dark.emplace();
+  }
+  GoldenView golden_view;
+  SHOW_OR_SKIP(golden_view);
+  golden_view.view().setGridStyle(scene.style);
+  if (scene.style == pj::scene3d::SceneViewWidget::GridStyle::kFilledCells) {
+    golden_view.view().setGridExtentMetres(3.0f);
+  }
+  golden_view.view().setGridDivisions(scene.divisions);
+  golden_view.view().setGridVisible(true);
+  const bool lines = scene.style == pj::scene3d::SceneViewWidget::GridStyle::kLines;
+  // 1 px lines: each backend rasterizes its own share of them (of the GL
+  // golden's pixels: llvmpipe 0.994, lavapipe 0.982, Metal 0.937, WARP 1.194).
+  Tolerance tol;
+  if (lines) {
+#if defined(PJ_SCENE3D_RHI) && defined(Q_OS_WIN)
+    tol.coverage = 0.25;
+#else
+    tol.coverage = 0.08;
+#endif
+  }
+  expectMatchesGolden(
+      scene.name, golden_view.render(sceneCamera()), lines ? Scene::Check::kCoverageColour : Scene::Check::kFull, tol);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Scenes, GridGolden,
+    ::testing::Values(
+        GridScene{"scene_grid_lines_light", pj::scene3d::SceneViewWidget::GridStyle::kLines, false},
+        GridScene{"scene_grid_lines_dark", pj::scene3d::SceneViewWidget::GridStyle::kLines, true},
+        GridScene{"scene_grid_filled_light", pj::scene3d::SceneViewWidget::GridStyle::kFilledCells, false},
+        GridScene{"scene_grid_filled_dark", pj::scene3d::SceneViewWidget::GridStyle::kFilledCells, true},
+        GridScene{"scene_grid_filled_odd", pj::scene3d::SceneViewWidget::GridStyle::kFilledCells, false, 5}),
+    [](const ::testing::TestParamInfo<GridScene>& param_info) { return param_info.param.name; });
+
+PJ::sdk::SceneEntities markerScene() {
+  PJ::sdk::SceneEntity entity;
+  entity.frame_id = "map";
+  entity.id = "markers";
+  const std::array<PJ::sdk::ColorRGBA, 3> colours = {{{220, 60, 40, 255}, {40, 160, 220, 255}, {240, 200, 40, 255}}};
+  for (int i = 0; i < 3; ++i) {
+    PJ::sdk::CubePrimitive cube;
+    cube.pose.position = {-1.0 + static_cast<double>(i), 0.2 * static_cast<double>(i), 0.4};
+    const double half_angle = 0.3 * static_cast<double>(i);
+    cube.pose.orientation = {.x = 0.0, .y = 0.0, .z = std::sin(half_angle), .w = std::cos(half_angle)};
+    cube.size = {0.6, 0.6, 0.8};
+    cube.color = colours[static_cast<std::size_t>(i)];
+    entity.cubes.push_back(cube);
+  }
+  for (int strip = 0; strip < 2; ++strip) {
+    PJ::sdk::LinePrimitive line;
+    line.thickness = 0.02;
+    line.color = strip == 0 ? PJ::sdk::ColorRGBA{30, 140, 60, 255} : PJ::sdk::ColorRGBA{160, 40, 200, 255};
+    for (int v = 0; v <= 24; ++v) {
+      const double angle = 0.25 * static_cast<double>(v);
+      const double radius = 1.4 + 0.3 * static_cast<double>(strip);
+      line.points.push_back({radius * std::cos(angle), radius * std::sin(angle), 0.05 * static_cast<double>(v)});
+    }
+    entity.lines.push_back(std::move(line));
+  }
+  PJ::sdk::SceneEntities scene;
+  scene.entities.push_back(std::move(entity));
+  return scene;
+}
+
+struct MarkerScene {
+  std::string name;
+  const char* opacity;  // nullptr: the layer default
+};
+
+[[maybe_unused]] void PrintTo(const MarkerScene& scene, std::ostream* os) {
+  *os << scene.name;
+}
+
+class MarkerGolden : public ::testing::TestWithParam<MarkerScene> {};
+
+// SceneEntities cubes (fill + edge overlay) and line strips, at the layer's
+// default opacity and fully opaque.
+TEST_P(MarkerGolden, MatchesGolden) {
+  const MarkerScene& scene = GetParam();
+  PJ_SKIP_ON_HEADLESS_QPA();
+  GoldenView golden_view;
+  SHOW_OR_SKIP(golden_view);
+  const auto topic = golden_view.fixture().add(
+      "/markers", PJ::sdk::BuiltinObjectType::kSceneEntities, PJ::serializeSceneEntities(markerScene()));
+  if (scene.opacity != nullptr) {
+    PJ::ISceneLayer* layer = golden_view.dock().layerFor(topic);
+    ASSERT_NE(layer, nullptr);
+    QDomDocument doc;
+    QDomElement state = layer->xmlSaveState(doc);
+    state.setAttribute(u"opacity"_s, QString::fromLatin1(scene.opacity));
+    ASSERT_TRUE(layer->xmlLoadState(state));
+  }
+  golden_view.dock().setFixedFrame(u"map"_s);
+  golden_view.dock().onTrackerTime(0.0);
+  expectMatchesGolden(scene.name, golden_view.render(sceneCamera()), Scene::Check::kFull, lineSceneTolerance());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Scenes, MarkerGolden,
+    ::testing::Values(MarkerScene{"scene_markers_default", nullptr}, MarkerScene{"scene_markers_opaque", "1"}),
+    [](const ::testing::TestParamInfo<MarkerScene>& param_info) { return param_info.param.name; });
+
+// A 1 m ASCII STL cube centred on its origin.
+QByteArray stlCube() {
+  QByteArray stl = "solid cube\n";
+  const auto facet = [&stl](const glm::vec3& normal, const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
+    stl += QByteArray("facet normal ") + QByteArray::number(normal.x) + ' ' + QByteArray::number(normal.y) + ' ' +
+           QByteArray::number(normal.z) + "\n outer loop\n";
+    for (const glm::vec3& v : {a, b, c}) {
+      stl += QByteArray("  vertex ") + QByteArray::number(v.x) + ' ' + QByteArray::number(v.y) + ' ' +
+             QByteArray::number(v.z) + '\n';
+    }
+    stl += " endloop\nendfacet\n";
+  };
+  for (int axis = 0; axis < 3; ++axis) {
+    for (const float sign : {-1.0F, 1.0F}) {
+      glm::vec3 normal(0.0F);
+      normal[axis] = sign;
+      glm::vec3 u(0.0F);
+      glm::vec3 v(0.0F);
+      u[(axis + 1) % 3] = 0.5F;
+      v[(axis + 2) % 3] = 0.5F;
+      if (sign < 0.0F) {
+        std::swap(u, v);  // counter-clockwise seen from outside
+      }
+      const glm::vec3 centre = 0.5F * normal;
+      facet(normal, centre - u - v, centre + u - v, centre + u + v);
+      facet(normal, centre - u - v, centre + u + v, centre - u + v);
+    }
+  }
+  return stl + "endsolid cube\n";
+}
+
+// A URDF robot of the three primitives without a material plus an STL link,
+// lit, over the line grid.
+TEST(SceneGolden, RobotPrimitivesAndMesh) {
+  PJ_SKIP_ON_HEADLESS_QPA();
+  GoldenView golden_view;
+  SHOW_OR_SKIP(golden_view);
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  QFile mesh(dir.filePath(u"cube.stl"_s));
+  ASSERT_TRUE(mesh.open(QIODevice::WriteOnly));
+  mesh.write(stlCube());
+  mesh.close();
+  const QByteArray urdf = R"(<robot name="golden">
+  <link name="base_link">
+    <visual><origin xyz="-1.1 0 0.3"/><geometry><box size="0.6 0.6 0.6"/></geometry></visual>
+    <visual><origin xyz="-0.2 0.6 0.4"/><geometry><cylinder radius="0.3" length="0.8"/></geometry></visual>
+    <visual><origin xyz="0.6 -0.4 0.35"/><geometry><sphere radius="0.35"/></geometry></visual>
+  </link>
+  <link name="mesh_link">
+    <visual><geometry><mesh filename="cube.stl" scale="0.5 0.5 0.5"/></geometry></visual>
+  </link>
+  <joint name="mesh_joint" type="fixed">
+    <parent link="base_link"/><child link="mesh_link"/><origin xyz="1.2 0.6 0.25" rpy="0 0 0.5"/>
+  </joint>
+</robot>)";
+  const QString path = dir.filePath(u"golden.urdf"_s);
+  QFile file(path);
+  ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+  ASSERT_EQ(file.write(urdf), urdf.size());
+  file.close();
+  ASSERT_NE(golden_view.dock().addRobotModelLayer(path).id, 0U);
+  golden_view.view().setGridVisible(true);
+  golden_view.dock().setFixedFrame(u"base_link"_s);
+  golden_view.dock().onTrackerTime(0.0);
+  expectMatchesGolden(
+      "scene_robot_primitives", golden_view.render(sceneCamera()), Scene::Check::kFull, lineSceneTolerance());
+}
 
 }  // namespace

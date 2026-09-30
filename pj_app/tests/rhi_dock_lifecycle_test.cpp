@@ -29,6 +29,7 @@
 #include <QVulkanInstance>
 #endif
 #include <algorithm>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -133,7 +134,7 @@ class RhiDockFixture : public ::testing::Test {
     manager_ = new ads::CDockManager(window_.get());
     // On Wayland, ADS's stays-on-top emulation calls setWindowFlag() on every
     // visible floating container when the main window's activation changes, which
-    // hides it (QRHI_MIGRATION.md Findings); a floated dock can then vanish
+    // hides it (pj_scene3D/docs/TECHNICAL_NOTES.md, ADS quirks); a floated dock can then vanish
     // mid-test. Not what these tests are about.
     window_->removeEventFilter(manager_);
     red_dock_ = addStandIn(u"red"_s, Qt::red, red_, ads::LeftDockWidgetArea);
@@ -275,7 +276,7 @@ TEST_F(RhiDockFixture, ClosingAFloatingWindowAndReopeningTheDockRendersAgain) {
   }));
   // Reopen only after the compositor has applied the unmap. Within a frame of a
   // Vulkan present (Mesa's FIFO queues it) the new mapping is a Wayland protocol
-  // error that drops the connection; see QRHI_MIGRATION.md Findings.
+  // error that drops the connection; see pj_scene3D/docs/TECHNICAL_NOTES.md, ADS quirks.
   QTest::qWait(100);
   EXPECT_TRUE(red_dock_->isClosed());
 
@@ -431,6 +432,83 @@ TEST_F(RhiDockFixture, FrameWhoseBindingsFailIsDroppedWithItsUploads) {
           5000))
       << "the retained frame did not draw on the new QRhi";
 }
+// Hands out queued frames, one per takeFrame().
+class QueuedMediaSource final : public PJ::MediaSource {
+ public:
+  void push(PJ::MediaFrame frame) {
+    frames_.push_back(std::move(frame));
+  }
+  void setTimestamp(int64_t /*ts_ns*/) override {}
+  std::optional<PJ::MediaFrame> takeFrame() override {
+    if (frames_.empty()) {
+      return std::nullopt;
+    }
+    PJ::MediaFrame frame = std::move(frames_.front());
+    frames_.pop_front();
+    return frame;
+  }
+
+ private:
+  std::deque<PJ::MediaFrame> frames_;
+};
+
+// A frame above the GPU's texture limit (lowered for the test: the real one
+// needs an image of gigabytes) is not drawn; one within it draws.
+TEST_F(RhiDockFixture, MediaFrameAboveTheTextureLimitIsNotDrawn) {
+  auto source = std::make_unique<QueuedMediaSource>();
+  QueuedMediaSource& queue = *source;
+  media_source_ = std::move(source);
+  auto* viewer = new PJ::MediaViewerWidget();
+  viewer->setMaxTextureSizeForTest(32);  // orientationFrame() is 64 x 64
+  queue.push(orientationFrame());
+  viewer->setMediaSource(&queue);
+  auto* dock = new ads::CDockWidget(manager_, u"media"_s);
+  dock->setWidget(viewer, ads::CDockWidget::ForceNoScrollArea);
+  manager_->addDockWidget(ads::BottomDockWidgetArea, dock);
+
+  const QImage rejected = presentAndGrab(viewer);
+  ASSERT_FALSE(rejected.isNull());
+  EXPECT_TRUE(colourNear(rejected.pixel(rejected.width() / 2, rejected.height() / 5), viewer->clearColor()))
+      << "the oversize frame drew";
+
+  viewer->setMaxTextureSizeForTest(64);
+  queue.push(orientationFrame());
+  viewer->update();
+  expectOrientationFrame(viewer, "within the limit");
+}
+
+// A composite whose one layer changed re-uploads that layer only: the other
+// brings the very pixel buffer its textures already hold.
+TEST_F(RhiDockFixture, MediaCompositeUploadsOnlyTheChangedLayer) {
+  auto source = std::make_unique<QueuedMediaSource>();
+  QueuedMediaSource& queue = *source;
+  media_source_ = std::move(source);
+  const PJ::DecodedFrame image = *orientationFrame().base;
+  const auto composite = [&image](const PJ::DecodedFrame& top) {
+    PJ::MediaFrame frame;
+    frame.pixel_layers = {PJ::PixelLayer{.frame = image}, PJ::PixelLayer{.frame = top, .opacity = 0.5F}};
+    return frame;
+  };
+  PJ::DecodedFrame top = image;
+  top.pixels = std::make_shared<std::vector<uint8_t>>(*image.pixels);
+  queue.push(composite(top));
+  auto* viewer = new PJ::MediaViewerWidget();
+  viewer->setMediaSource(&queue);
+  auto* dock = new ads::CDockWidget(manager_, u"media"_s);
+  dock->setWidget(viewer, ads::CDockWidget::ForceNoScrollArea);
+  manager_->addDockWidget(ads::BottomDockWidgetArea, dock);
+  ASSERT_FALSE(presentAndGrab(viewer).isNull());
+  const std::uint64_t first = viewer->frameUploadCountForTest();
+  EXPECT_EQ(first, 2U);
+
+  PJ::DecodedFrame next_top = image;
+  next_top.pixels = std::make_shared<std::vector<uint8_t>>(*image.pixels);
+  queue.push(composite(next_top));
+  viewer->update();
+  ASSERT_FALSE(presentAndGrab(viewer).isNull());
+  EXPECT_EQ(viewer->frameUploadCountForTest(), first + 1U);
+}
+
 #endif
 
 // One top-level can composite with only one API. A QOpenGLWidget always asks for

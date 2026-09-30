@@ -1090,9 +1090,11 @@ WasmPixelBounds findWasmBlendedColor(const QImage& image, const QColor& color, c
   return result;
 }
 
+// By default the whole image but its outer 2 device pixels: the canvas's 1 px
+// frame (the palette's WindowText, up to DPR 2) is not text.
 WasmPixelBounds findWasmDarkPixels(const QImage& image, QRect search_rect = {}) {
   WasmPixelBounds result{.min_x = image.width(), .min_y = image.height()};
-  search_rect = search_rect.isValid() ? search_rect.intersected(image.rect()) : image.rect();
+  search_rect = search_rect.isValid() ? search_rect.intersected(image.rect()) : image.rect().adjusted(2, 2, -2, -2);
   for (int y = search_rect.top(); y <= search_rect.bottom(); ++y) {
     for (int x = search_rect.left(); x <= search_rect.right(); ++x) {
       const QColor pixel = image.pixelColor(x, y);

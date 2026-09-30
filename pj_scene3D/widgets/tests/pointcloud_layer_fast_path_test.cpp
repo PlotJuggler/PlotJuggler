@@ -145,8 +145,10 @@ TEST(PointCloudLayerFastPath, RgbCloudTakesFastPath) {
   layer.setColorType(pj::scene3d::PointColorType::kRgb);
   layer.renderAtForTest(100);
 #ifdef PJ_SCENE3D_RHI
-  ASSERT_EQ(layer.vertices().size(), 1U);
-  EXPECT_EQ(layer.vertices()[0].rgba, 0xff302010U) << "packed-rgba colour was not carried verbatim";
+  ASSERT_EQ(layer.pointCount(), 1U);
+  pj::scene3d::PointVertex vertex;
+  std::memcpy(&vertex, layer.vertexBytes().constData(), sizeof(vertex));
+  EXPECT_EQ(vertex.rgba, 0xff302010U) << "packed-rgba colour was not carried verbatim";
 #else
   EXPECT_TRUE(layer.activeCloudIsFastForTest()) << "packed-rgba RGB cloud did not take the fast path";
 #endif

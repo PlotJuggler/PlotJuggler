@@ -10,7 +10,8 @@ The `build/AppDir` this produces is also the payload of the Debian package — s
 artifacts, so check that side too when changing what gets bundled.
 
 `smoke_test.sh` runs the finished AppImage on a machine that did not build it
-(`--selftest-python` + a GUI startup under Xvfb) — release CI runs it in the
+(`--selftest-python`, a GUI startup under Xvfb and the
+[render check](../README.md#render-check)) — release CI runs it in the
 same clean containers as `packaging/deb/smoke_test.sh`, right after it, so the runtime
 libraries come from the `.deb`'s `Depends`. See the header comment for
 standalone use.

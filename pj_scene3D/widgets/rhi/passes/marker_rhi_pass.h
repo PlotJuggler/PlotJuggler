@@ -6,8 +6,11 @@
 #include <QString>
 #include <array>
 #include <cstdint>
+#include <glm/mat4x4.hpp>
+#include <glm/vec3.hpp>
 #include <optional>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 #include "../rhi_scene_pass.h"
@@ -15,24 +18,32 @@
 namespace pj::scene3d {
 
 class SceneEntitiesLayer;
+struct MarkerGeometry;
 
 /// The SceneEntities marker family of the QRhi view: instanced unit primitives
 /// (cube + its edge overlay, sphere, cylinder/cone, arrow/axes) and the
-/// expanded line/triangle stream batches, each layer's geometry expanded into
-/// per-frame instance and stream buffers this pass owns. The layer's model
-/// primitives belong to ModelRhiPass. Per frame the view calls admit() (once),
-/// prepare() (once), then submit() per ScenePass for each draw, and
-/// submitShadowCasters() into its shadow pass. Solid cubes, spheres, cylinders
-/// and arrows of non-wireframe layers cast shadows (the GL MarkerRenderPass
-/// casts none); axes, edge overlays, lines and triangle lists never do.
+/// expanded line/triangle stream batches. Each admitted layer owns Static
+/// instance and stream buffers (LayerGpu), rebuilt only when its LayerKey
+/// changes: geometry revision, style, shadow casting, the render origin and the
+/// resolved placement of every frame it references (a TF-only move bumps no
+/// revision). Orbit, zoom and playback without new samples or TF motion reuse the
+/// buffers; pan and follow move the render origin and rebuild (vertices stay
+/// camera-relative, subtracted in double, for pixel parity). The layer's model primitives belong to ModelRhiPass. Per
+/// frame the view calls admit() (once), prepare() (once), then submit() per ScenePass for each draw, and
+/// submitShadowCasters() into its shadow pass. Solid cubes, spheres, cylinders and arrows of non-wireframe layers cast
+/// shadows (the GL MarkerRenderPass casts none); axes, edge overlays, lines and triangle lists never do.
 class MarkerRhiPass {
  public:
-  enum class Kind : std::uint8_t { kInstanceTriangles, kInstanceLines, kStreamTriangles, kStreamLines };
+  /// kCubeEdges: the cube fill's instance range again, drawn as the twelve box
+  /// edges by marker_edge.vert (facing-dependent colour, as on GL).
+  enum class Kind : std::uint8_t { kInstanceTriangles, kInstanceLines, kCubeEdges, kStreamTriangles, kStreamLines };
 
-  /// One prepared range of a layer: `offset`/`count` index the instance buffer
-  /// (instanced kinds, `mesh` selects the unit mesh) or the stream buffer.
+  /// One prepared range of a layer: `offset`/`count` index `buffer`, the layer's
+  /// instance buffer (instanced kinds, `mesh` selects the unit mesh) or one of
+  /// its stream buffers.
   struct Draw {
     SceneEntitiesLayer* layer = nullptr;
+    QRhiBuffer* buffer = nullptr;
     Kind kind = Kind::kInstanceTriangles;
     std::uint32_t mesh = 0;
     quint32 offset = 0;
@@ -50,15 +61,17 @@ class MarkerRhiPass {
   [[nodiscard]] bool initialize(const RhiPassSetup& setup);
   [[nodiscard]] bool ready() const;
   void registerPipelines(ScenePipelineRegistry& registry) const;
+  /// Adopts the view's marker layers; drops GPU state of layers that left or are hidden.
   void setLayers(const std::vector<SceneEntitiesLayer*>& layers);
 
   /// Runs each visible layer's prepareForRender(), places its frames, applies
   /// the per-layer and per-view instance/stream budgets (row warnings on
   /// rejection) and adds its fixed-frame bounds to `bounds`.
   void admit(const PlaceFn& place, SceneBoundsCollector& bounds);
-  /// Expands the admitted layers into camera-relative instances and stream
-  /// vertices and uploads them (and the unit meshes once); when a buffer cannot
-  /// grow the frame has no marker draws. `cast_shadows` also collects the
+  /// Rebuilds and uploads the admitted layers whose LayerKey changed (and the
+  /// unit meshes once) and releases the GPU state of layers not admitted this
+  /// frame. A layer whose buffers cannot be allocated has
+  /// no draws this frame and retries the next. `cast_shadows` also collects the
   /// shadow-caster ranges and their bounds.
   void prepare(const RhiFrameContext& frame, bool cast_shadows = false);
   /// The prepared ranges of `layer` in native family order.
@@ -104,6 +117,22 @@ class MarkerRhiPass {
   [[nodiscard]] AABB lastBounds() const {
     return last_bounds_;
   }
+#ifdef PJ_RHI_TEST_HOOKS
+  /// Layer rebuilds (expansion + upload) since initialization; cumulative.
+  [[nodiscard]] std::uint64_t layerRebuildCountForTest() const {
+    return layer_rebuild_count_;
+  }
+  /// False rebuilds every admitted layer every frame (the uncached path, for
+  /// pixel A/B tests).
+  void setMarkerCacheEnabledForTest(bool enabled) {
+    cache_enabled_ = enabled;
+  }
+  /// True fails every stream (line/triangle) buffer allocation of a rebuild,
+  /// after its instance buffer was allocated: a partial allocation failure.
+  void setFailStreamAllocationForTest(bool fail) {
+    fail_stream_allocation_ = fail;
+  }
+#endif
 
   /// One instanced primitive: 96 bytes, the marker.vert per-instance layout.
   struct Instance {
@@ -129,6 +158,61 @@ class MarkerRhiPass {
   };
 
  private:
+  /// Everything a layer's expansion depends on. The placements are the
+  /// fixed-from-frame transforms of the layer's frames (nullopt: unplaced),
+  /// compared exactly.
+  struct LayerKey {
+    std::uint64_t geometry_revision = 0;
+    glm::dvec3 render_origin{0.0};
+    float opacity = 1.0F;
+    std::optional<glm::vec3> override_color;
+    bool wireframe = false;
+    bool cast_shadows = false;
+    std::vector<std::optional<Transform>> placements;
+
+    bool operator==(const LayerKey&) const = default;
+  };
+  struct Caster {
+    SceneEntitiesLayer* layer = nullptr;
+    QRhiBuffer* buffer = nullptr;
+    std::uint32_t mesh = 0;
+    quint32 offset = 0;
+    quint32 count = 0;
+  };
+  /// One layer's expansion; also the reusable scratch of expandLayer().
+  struct Expansion {
+    std::vector<std::optional<glm::dmat4>> fixed_from_frame;  ///< the key's placements as matrices
+    std::vector<Instance> instances;
+    std::vector<StreamVertex> lines;
+    std::vector<StreamVertex> triangles;
+    std::vector<Draw> draws;  ///< buffer unset: offsets index the vectors above
+    std::vector<Caster> casters;
+    AABB caster_bounds;  ///< relative to the key's render origin
+  };
+  struct LayerGpu {
+    std::optional<LayerKey> key;  ///< the key of the uploaded expansion; empty: none yet
+    QRhiBuffer* instances = nullptr;
+    QRhiBuffer* lines = nullptr;
+    QRhiBuffer* triangles = nullptr;
+    quint32 instance_capacity = 0;
+    quint32 line_capacity = 0;
+    quint32 triangle_capacity = 0;
+    std::vector<Draw> draws;
+    std::vector<Caster> casters;
+    AABB caster_bounds;
+    std::uint64_t admitted_frame = 0;  ///< the prepare() that last admitted the layer
+  };
+
+  /// Expands `geometry` as `key` describes it into `out` (cleared first): a pure
+  /// function of its arguments, vertices relative to key.render_origin.
+  static void expandLayer(const MarkerGeometry& geometry, const LayerKey& key, Expansion& out);
+  /// Uploads scratch_ into `gpu`'s buffers and adopts its draws; false (and `gpu`
+  /// released) when a buffer cannot be allocated. Every buffer is allocated
+  /// before the first upload is queued, so a failure leaves nothing of `gpu` in
+  /// `updates`.
+  bool uploadLayer(QRhi* rhi, QRhiResourceUpdateBatch* updates, SceneEntitiesLayer* layer, LayerGpu& gpu);
+  static void releaseLayerGpu(LayerGpu& gpu);
+
   struct MeshGpu {
     QRhiBuffer* vertex_buffer = nullptr;
     QRhiBuffer* triangle_index_buffer = nullptr;
@@ -143,13 +227,6 @@ class MarkerRhiPass {
     std::uint64_t instances = 0;
     std::uint64_t stream_vertices = 0;
   };
-  struct Caster {
-    SceneEntitiesLayer* layer = nullptr;
-    std::uint32_t mesh = 0;
-    quint32 offset = 0;
-    quint32 count = 0;
-  };
-
   QRhiGraphicsPipeline* instancePipeline(const Draw& draw) const;
 
   /// The placement of `frame_index` of `admitted`, or nullptr when unplaced.
@@ -157,34 +234,39 @@ class MarkerRhiPass {
 
   QRhiShaderResourceBindings* data_bindings_ = nullptr;
   QRhiShaderResourceBindings* annotation_bindings_ = nullptr;
-  QRhiGraphicsPipeline* triangle_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* triangle_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* triangle_cull_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* triangle_cull_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* line_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* line_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* stream_line_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* stream_line_no_depth_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* stream_triangle_pipeline_ = nullptr;
-  QRhiGraphicsPipeline* stream_triangle_no_depth_pipeline_ = nullptr;
+  QRhiShaderResourceBindings* edge_bindings_ = nullptr;  ///< data_bindings_ plus camera_view_uniforms_
+  QRhiBuffer* camera_view_uniforms_ = nullptr;           ///< binding 4 of marker_edge.vert, written per frame
+  /// The direct pipelines; each has a depth-writing and a no-depth-write variant.
+  enum Pipeline : std::uint8_t {
+    kTrianglePipeline,
+    kTriangleCullPipeline,
+    // The cube fill, depth-biased away from the camera (GL's glPolygonOffset(1, 1))
+    // so its edges, drawn at the exact depth, win the depth test.
+    kCubeFillPipeline,
+    kEdgePipeline,
+    kLinePipeline,
+    kStreamLinePipeline,
+    kStreamTrianglePipeline,
+    kPipelineCount,
+  };
+  /// [pipeline][depth_write]
+  std::array<std::array<QRhiGraphicsPipeline*, 2>, kPipelineCount> pipelines_{};
   std::array<MeshGpu, 5> meshes_{};
   bool mesh_upload_pending_ = false;
-  QRhiBuffer* instance_buffer_ = nullptr;
-  QRhiBuffer* line_buffer_ = nullptr;
-  QRhiBuffer* triangle_buffer_ = nullptr;
-  quint32 instance_capacity_ = 0;
-  quint32 line_capacity_ = 0;
-  quint32 triangle_capacity_ = 0;
 
   std::vector<SceneEntitiesLayer*> layers_;
+  std::unordered_map<SceneEntitiesLayer*, LayerGpu> layer_gpu_;
   std::vector<Admitted> admitted_;
   std::vector<std::optional<Transform>> placements_;  ///< every admitted layer's frames, contiguous per layer
   std::vector<Draw> draws_;                           ///< contiguous per layer, in admission order
-  std::vector<Instance> instances_;
-  std::vector<StreamVertex> line_vertices_;
-  std::vector<StreamVertex> triangle_vertices_;
   std::vector<Caster> casters_;
   AABB caster_bounds_;
+  LayerKey scratch_key_;
+  Expansion scratch_;
+  bool cache_enabled_ = true;            // test hook
+  bool fail_stream_allocation_ = false;  // test hook
+  std::uint64_t frame_serial_ = 0;
+  std::uint64_t layer_rebuild_count_ = 0;
   QRhiGraphicsPipeline* shadow_pipeline_ = nullptr;
   QRhiShaderResourceBindings* shadow_bindings_ = nullptr;  // view-owned
 

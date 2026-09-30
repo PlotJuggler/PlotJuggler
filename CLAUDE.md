@@ -15,7 +15,7 @@ header. The `plotjuggler_sdk` Conan package is a separate repo with its own lice
 
 ## Architecture
 
-Current module boundaries and dependency rules are documented below; each module's `CLAUDE.md` and `docs/` describe its implementation. The original [master plan](./docs/archive/PJ4_PLAN.md) is retired and retained only as historical context. Ongoing recording and source-cache work is tracked in [RECORDING_AND_CACHING.md](./docs/RECORDING_AND_CACHING.md) and [session_recorder_design.md](./docs/session_recorder_design.md).
+Current module boundaries and dependency rules are documented below; each module's `CLAUDE.md` and `docs/` describe its implementation. The original [master plan](./docs/archive/PJ4_PLAN.md) and the completed [QRhi migration plan](./docs/archive/QRHI_MIGRATION.md) are retired and retained only as historical context; the renderer's remaining work is in [QRHI_NEXT.md](./pj_scene3D/docs/QRHI_NEXT.md). Ongoing recording and source-cache work is tracked in [RECORDING_AND_CACHING.md](./docs/RECORDING_AND_CACHING.md) and [session_recorder_design.md](./docs/session_recorder_design.md).
 
 Top-level layout:
 
@@ -25,7 +25,7 @@ PJ4/
 ├── pj_datastore/            # Level 0 columnar store + ObjectStore + DerivedEngine
 ├── pj_scene_common/         # backend-agnostic layered scene dock framework, shared by the scene widget families
 ├── pj_scene2D/              # 2D scene widget family: core logic, Qt widgets, tools, tests
-├── pj_scene3D/              # 3D scene widget family: TF, pointclouds, occupancy grids, URDF/mesh, markers; HDR/SSAO/EDL pipeline + OpenGL widgets, demos
+├── pj_scene3D/              # 3D scene widget family: TF, pointclouds, occupancy grids, URDF/mesh, markers; QRhi renderer (HDR/SSAO/EDL, shadows) + widgets, demos
 ├── pj_marketplace/          # extension install/manage
 ├── pj_dialog_host/          # Qt host for plugin-provided dialogs
 ├── pj_scripting/            # Luau filter engine: self-describing filter classes for Data Processors
@@ -57,7 +57,7 @@ When adding files, use the owning module rather than creating new top-level fold
 - `pj_marketplace/`: extension registry, download, install/manage services, and marketplace UI.
 - `pj_dialog_host/`: Qt host/binding for plugin-provided dialogs. General app dialogs stay in `pj_app`; reusable dialog controls stay in `pj_widgets`.
 - `pj_scripting/`: Luau filter engine for Data Processors — self-describing `.luau` filter classes behind a language-agnostic `ScriptEngine` seam (Python out-of-process is a future drop-in). It layers Luau onto the `PJ::proc::DataProcessor` base owned by `pj_datastore`. Do not place scripting code under `pj_app` or widget modules unless it is strictly UI/editor code.
-- `pj_scene3D/`: 3D scene widget family (robotics viz): TF, pointclouds, occupancy grids, URDF/mesh, markers. Independent 3D logic in `core/`, OpenGL widgets in `widgets/`, tests in `tests/`, standalone dev demos in `demos/` (built whenever the `pj_scene3d_widgets` target exists, i.e. on a default build). Do not add 3D rendering code elsewhere.
+- `pj_scene3D/`: 3D scene widget family (robotics viz): TF, pointclouds, occupancy grids, URDF/mesh, markers. Independent 3D logic in `core/`, the QRhi view, its passes and the layers in `widgets/`, tests in `tests/`, standalone dev demos and benchmarks in `demos/` (with `PJ_BUILD_DEMOS`; the QRhi build compiles the benchmarks, the GL demos build only in the legacy GL build). Do not add 3D rendering code elsewhere, and none to the frozen legacy GL renderer (`widgets/src/scene_view_widget.cpp`, `src/passes/`, `src/gl/`).
 - `resources/`: shared app resources registered in `resources.qrc`; module-local test/demo assets should live with that module.
 - `3rdparty/`: vendored source dependencies added via CMake `add_subdirectory`, plus `3rdparty/retro/` — the GPLv2/shareware license + source-offer compliance artifacts shipped alongside the separately-licensed `pj-raster-helper` (the root `CMakeLists.txt` installs these next to the helper binary). Conan/system dependencies do not belong here.
 - `raster/`: `helper/` is the standalone GPL-2.0 `pj-raster-helper` executable that links vendored doomgeneric; `ipc/` is its header-only, Qt-free MPL-2.0 wire contract, also consumed by `pj_widgets`. PlotJuggler consumes only the contract; it never links the helper or engine.
@@ -104,7 +104,7 @@ Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`.
 | `pj_scene_common` | [pj_scene_common/CLAUDE.md](./pj_scene_common/CLAUDE.md) | — |
 | `pj_scene2D` | [pj_scene2D/CLAUDE.md](./pj_scene2D/CLAUDE.md) | [docs/](./pj_scene2D/docs) — REQUIREMENTS, ARCHITECTURE, TECHNICAL_NOTES |
 | `pj_marketplace` | [pj_marketplace/CLAUDE.md](./pj_marketplace/CLAUDE.md) | [docs/](./pj_marketplace/docs) — REQUIREMENTS, ARCHITECTURE, USER_MANUAL, marketplace-spec |
-| `pj_scene3D` | [pj_scene3D/CLAUDE.md](./pj_scene3D/CLAUDE.md) | [docs/](./pj_scene3D/docs) — REQUIREMENTS, [ARCHITECTURE](./pj_scene3D/docs/ARCHITECTURE.md) (rendering pipeline, cameras, URDF/mesh) |
+| `pj_scene3D` | [pj_scene3D/CLAUDE.md](./pj_scene3D/CLAUDE.md) | [docs/](./pj_scene3D/docs) — REQUIREMENTS, [ARCHITECTURE](./pj_scene3D/docs/ARCHITECTURE.md) (QRhi renderer, layers, cameras, URDF/mesh), [TECHNICAL_NOTES](./pj_scene3D/docs/TECHNICAL_NOTES.md) (backend quirks, Qt bugs, limits, goldens, CI lanes), [QRHI_NEXT](./pj_scene3D/docs/QRHI_NEXT.md) (GL deletion, P6 performance, Qt 6.12) |
 | `pj_datastore` | [pj_datastore/CLAUDE.md](./pj_datastore/CLAUDE.md) | [docs/](./pj_datastore/docs) — REQUIREMENTS, ARCHITECTURE, USER_GUIDE, OBJECT_STORE_DESIGN |
 | `pj_scripting` | [pj_scripting/CLAUDE.md](./pj_scripting/CLAUDE.md) | [docs/](./pj_scripting/docs) — FILTER_CLASS |
 | `plotjuggler_sdk` (Conan package) | [github.com/PlotJuggler/plotjuggler_sdk](https://github.com/PlotJuggler/plotjuggler_sdk) | the SDK repo owns its own `CLAUDE.md` + `docs/` tree |
@@ -140,6 +140,7 @@ The "wholesale lift" strategy for plot widgets (see `pj_plotting/CLAUDE.md`) mea
 - **Qt 6.11.1** (required; pinned by [`versions.env`](./versions.env)). Install via [`./scripts/install_qt6.sh`](./scripts/install_qt6.sh) on Linux, [`scripts/windows/install_qt6.ps1`](./scripts/windows/install_qt6.ps1) on Windows (the `msvc2022_64` kit). See [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) for what changed since 6.8 (new APIs past most training cutoffs, deprecations, build floors).
 - **CMake + Conan**. CMake is the build driver; Conan provides external non-vendored dependencies.
 - **C++20**.
+- **Renderer: QRhi by default.** `PJ_SCENE3D_RHI` defaults to ON: Scene3D, the plot canvas (`PlotRhiCanvas`) and the Scene2D media viewer render through QRhi on the platform's native API. `-DPJ_SCENE3D_RHI=OFF` (or `PJ_SCENE3D_RHI=OFF ./build.sh`) restores the legacy OpenGL build for one release and warns at configure time. `build.sh` and `build.bat` pass the flag on every configure, so an old tree's cached OFF never survives.
 - **Linux and Windows are both required shipped targets**; macOS is not yet, but `macos-ci.yml` builds and tests every PR on macOS arm64 (AppleClang, QRhi build with Scene3D on Metal). Keep the code portable (AppleClang's `-Wunused-const-variable` / `-Wunused-lambda-capture` catch platform-conditional code GCC accepts; macOS temp dirs sit behind the `/var -> /private/var` symlink, so tests must compare canonical paths) — no Linux-only APIs or POSIX-specific paths in module code; gate anything platform-specific behind the usual CMake / `#ifdef` guards. Licensing note for Windows: conda-forge ships no LGPL FFmpeg for win-64, so pixi-based Windows artifacts must use the local `recipes/ffmpeg` package (the Conan path builds its own LGPL-trimmed FFmpeg on all platforms). Windows runtime packaging (windeployqt + bundling the FFmpeg/Qt DLLs `pj_app` needs) is in scope: the Conan `windows-ci.yml` resolves DLLs via `PATH` at test time, which is not a shippable layout.
 
 ### Sanitizer lanes
@@ -343,16 +344,18 @@ Session recording is a **runtime capability**, not a build flag: `RecordingServi
 
 The 3D widget family ships as `pj_scene3D` (built and wired into `pj_app` via `Scene3DDockWidget`): TF, pointclouds, occupancy grids, axis/grid render passes, SceneEntities/markers, pluggable camera models, URDF/mesh robot models, the HDR/tonemap/SSAO/EDL rendering pipeline, live/streaming TF+object ingest (`TransformService` + `driveVisibleLayersToLiveEdge`), and per-use parser bindings (`parse_locked.h`) — see `pj_scene3D/docs/ARCHITECTURE.md` for the as-built design, `pj_scene3D/docs/REQUIREMENTS.md` for scope.
 
-Scene3D has two views behind the same `SceneViewWidget` name, chosen at
-compile time by `PJ_SCENE3D_RHI`: the `QOpenGLWidget`/OpenGL renderer (desktop
-default) and the `QRhiWidget` renderer (always on for WebAssembly, opt-in on
-desktop, where it is being grown to replace the GL one — see
-`pj_scene3D/docs/QRHI_MIGRATION.md`). The dock and the layers are one set shared
-by both. `PJ_SCENE3D_RHI` selects the renderer;
-browser policy (file picking, bounded loading) stays on `PJ_TARGET_WASM`. Do not pull native GL passes, Assimp/network
-model code, or codecs into the browser merely to expose grid/TF. Browser shader
-packs are GLSL ES 300 and must be reproducibly rebuilt with the pinned host
-`qsb` and hash-checked at configure time. Every new static archive in the
+Scene3D renders through one QRhi view (`widgets/rhi/`, the default build and the
+only one in the browser) on the platform's native API: OpenGL on Linux, D3D11 on
+Windows, Metal on macOS, WebGL2 in the browser. `-DPJ_SCENE3D_RHI=OFF` still
+builds the legacy `QOpenGLWidget` renderer (and the `QwtPlotOpenGLCanvas` plots)
+for one release as the rollback; it is frozen, and its removal is planned in
+`pj_scene3D/docs/QRHI_NEXT.md`. The dock and the layers are one set shared by
+both. `PJ_SCENE3D_RHI` selects the renderer; browser policy (file picking,
+bounded loading) stays on `PJ_TARGET_WASM`. Do not pull Assimp/network
+model code, or codecs into the browser merely to expose grid/TF. Shader packs
+are committed `.qsb` files baked for every backend (GLSL ES 300 for the browser)
+and must be reproducibly rebuilt with the pinned host `qsb`; the WASM configure
+hash-checks them. Every new static archive in the
 monolithic WASM executable also needs an ABI/process-global-symbol collision
 audit; a successful link alone did not catch the prior Qt/libjpeg collision.
 

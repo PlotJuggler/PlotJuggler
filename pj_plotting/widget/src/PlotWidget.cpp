@@ -1156,11 +1156,11 @@ void PlotWidget::setTrackerPosition(double display_time_sec) {
         info.marker->setVisible(false);
       }
     }
-    replot();
+    replotOverlays();
     return;
   }
   tracker_->setPosition(QPointF(display_time_sec, 0.0));
-  replot();
+  replotOverlays();
 }
 
 void PlotWidget::onChangeCurveColor(const QString& curve_name, QColor new_color) {

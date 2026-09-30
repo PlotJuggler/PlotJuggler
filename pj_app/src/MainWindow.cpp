@@ -119,6 +119,8 @@
 #include "TitleBar.h"
 #include "ToolboxHostWiring.h"
 #include "TopicDemandController.h"
+#include "pj_base/builtin/image.hpp"
+#include "pj_base/builtin/image_codec.hpp"
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_base/dataset.hpp"
 #include "pj_base/types.hpp"
@@ -2362,6 +2364,35 @@ bool MainWindow::populateTestData() {
   const std::vector<TopicId> changed_topics = session_->sessionManager().commitChunks(writer.flushAll());
   if (changed_topics.empty()) {
     qCWarning(lcMain) << "test data commit produced no datastore changes";
+    return false;
+  }
+
+  // One image, so a media viewer has something to render (the packaging smokes'
+  // fixture layout, packaging/smoke/, shows it in a Scene2D view).
+  constexpr uint32_t kImageSide = 64;
+  std::vector<uint8_t> pixels(static_cast<size_t>(kImageSide) * kImageSide * 4);
+  for (uint32_t y = 0; y < kImageSide; ++y) {
+    for (uint32_t x = 0; x < kImageSide; ++x) {
+      uint8_t* px = pixels.data() + ((static_cast<size_t>(y) * kImageSide) + x) * 4;
+      px[0] = static_cast<uint8_t>(x * 4);
+      px[1] = static_cast<uint8_t>(y * 4);
+      px[2] = 128;
+      px[3] = 255;
+    }
+  }
+  sdk::Image image;
+  image.width = kImageSide;
+  image.height = kImageSide;
+  image.encoding = "rgba8";
+  image.data = Span<const uint8_t>(pixels.data(), pixels.size());
+  ObjectStore& objects = session_->sessionManager().objectStore();
+  const auto image_topic = objects.registerTopic(
+      ObjectTopicDescriptor{
+          .dataset_id = *dataset_or,
+          .topic_name = "test/image",
+          .metadata_json = R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
+  if (!image_topic.has_value() || !objects.pushOwned(*image_topic, 0, serializeImage(image)).has_value()) {
+    qCWarning(lcMain) << "test image topic could not be written";
     return false;
   }
   session_->catalogModel().rebuildFromDatastore();

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 #
-# macOS arm64 lane, in the QRhi build (-DPJ_SCENE3D_RHI=ON, pj_scene3D/docs/QRHI_MIGRATION.md).
+# macOS arm64 lane, in the QRhi build (-DPJ_SCENE3D_RHI=ON, pj_scene3D/docs/TECHNICAL_NOTES.md, CI lanes).
 # Probes Metal first (device, then a presented drawable), builds everything
 # through Conan, runs the QRhi display tests on Metal and then on OpenGL (the
 # Metal fallback, a 4.1 core context) with the native `cocoa` QPA, failing
@@ -13,7 +13,7 @@ on:
     branches: [main, development]
     types: [opened, synchronize, reopened, ready_for_review]
   push:
-    # TEMP until macos-ci.yml is on main; removed at the P5 cut-over.
+    # TEMP until macos-ci.yml is on main; removed once it lands there.
     branches: [main, development, 'feat/qrhi-**']
   workflow_dispatch:
     inputs:
@@ -281,7 +281,8 @@ jobs:
           mkdir -p "$PJ_POINTCLOUD_GOLDEN_OUT"
           log="${RUNNER_TEMP}/qrhi-metal-ctest.log"
           ctest --test-dir build -V --timeout 120 -L qrhi-metal 2>&1 | tee "$log" || status=$?
-          bash scripts/ci/check_qrhi_backend.sh "$log" 'Metal, '
+          # Every view on Metal, and at least one plot canvas among them.
+          bash scripts/ci/check_qrhi_backend.sh "$log" 'Metal, ' Metal
           exit "${status:-0}"
 
       - name: Test the QRhi renderer (OpenGL)
@@ -291,9 +292,10 @@ jobs:
         # Apple's software renderer, whose rasterization differs from the Mesa
         # goldens (point sprites and sphere impostors) and which is 10-40x slower.
         # Hence no pointcloud goldens, no sub-pixel sprite colour check (its 1 px
-        # sprites resolve to ~15% coverage there), and no DPR 2 mixed-dock pass
-        # (every float recompiles the whole pipeline set at 4x the pixels; Linux
-        # runs it). pj_scene3D/docs/QRHI_MIGRATION.md, "macOS OpenGL fallback".
+        # sprites resolve to ~15% coverage there), no odd-cell-edge grid line check
+        # (its 1 px analytic line loses the same coverage), and no DPR 2 mixed-dock
+        # pass (every float recompiles the whole pipeline set at 4x the pixels;
+        # Linux runs it). pj_scene3D/docs/TECHNICAL_NOTES.md, "macOS OpenGL fallback".
         if: always() && steps.build.outcome == 'success'
         shell: bash
         env:
@@ -307,10 +309,43 @@ jobs:
           mkdir -p "$PJ_POINTCLOUD_GOLDEN_OUT"
           log="${RUNNER_TEMP}/qrhi-opengl-ctest.log"
           ctest --test-dir build -V --timeout 120 -L qrhi-opengl \
-            -E '^pointcloud_golden_test\.|SubPixelCubeCloudBecomesColouredSprites|^rhi_mixed_dock_test\.opengl_dpr2\.' \
+            -E '^pointcloud_golden_test\.|SubPixelCubeCloudBecomesColouredSprites|FilledGridLinesFollowOddCellEdges|^rhi_mixed_dock_test\.opengl_dpr2\.' \
             2>&1 | tee "$log" || status=$?
-          bash scripts/ci/check_qrhi_backend.sh "$log" 'OpenGL, '
+          bash scripts/ci/check_qrhi_backend.sh "$log" 'OpenGL, ' OpenGL
           exit "${status:-0}"
+
+      - name: Backtrace the failed QRhi cases
+        # A segfaulting test leaves only "Segmentation fault" in the ctest log: rerun
+        # the first failed cases of the two QRhi steps under lldb, on the backend
+        # (and scale) their ctest name carries, for every thread's stack.
+        if: failure() && steps.build.outcome == 'success'
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: cocoa
+          PJ_REQUIRE_GPU_TESTS: "1"
+          QT_FORCE_STDERR_LOGGING: "1"
+        run: |
+          failed=$(cat "${RUNNER_TEMP}"/qrhi-*-ctest.log 2>/dev/null |
+            sed -n '/The following tests FAILED:/,$p' | grep -oE '[0-9]+ - [^ ]+' | awk '{print $3}' | sort -u | head -n 3 || true)
+          for name in $failed; do
+            # <runner>.<backend>.<Suite>.<Case>
+            runner=${name%%.*}
+            rest=${name#*.}
+            backend=${rest%%.*}
+            rest=${rest#*.}
+            scale=1
+            if [[ $backend == opengl_dpr2 ]]; then
+              backend=opengl
+              scale=2
+            fi
+            exe=$(find build -type f -name "$runner" -perm -u+x | head -n 1)
+            [[ -n $exe ]] || continue
+            echo "::group::lldb $name"
+            PJ_GRAPHICS_API=$backend QT_SCALE_FACTOR=$scale \
+              lldb --batch -o run -k "thread backtrace all" -k quit -- "$exe" --gtest_filter="$rest" 2>&1 |
+              head -n 400 || true
+            echo "::endgroup::"
+          done
 
       - name: Test (unit)
         # Plain serial ctest like the other lanes: the GUI test main's `offscreen`

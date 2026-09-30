@@ -5,8 +5,6 @@
 
 #include <rhi/qshader.h>
 
-#include <QFile>
-#include <QHash>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -19,17 +17,11 @@ namespace pj::scene3d {
 namespace {
 
 #ifdef PJ_RHI_TEST_HOOKS
-// Where each loaded shader came from, so the fault injection can name it.
-QHash<QShader, QString>& loadedShaderPaths() {
-  static QHash<QShader, QString> paths;
-  return paths;
-}
-
 bool injectedPipelineFailure(const QRhiGraphicsPipeline& pipeline) {
   const QString shader = qEnvironmentVariable("PJ_SCENE3D_TEST_FAIL_SHADER");
   return !shader.isEmpty() &&
          std::any_of(pipeline.cbeginShaderStages(), pipeline.cendShaderStages(), [&](const QRhiShaderStage& stage) {
-           return loadedShaderPaths().value(stage.shader()).endsWith(shader);
+           return PJ::rhiShaderPathForTest(stage.shader()).endsWith(shader);
          });
 }
 #endif
@@ -42,19 +34,6 @@ const ArrowMeshData& unitPoseArrowMesh() {
 }
 
 }  // namespace
-
-QShader loadRhiShader(const QString& path) {
-  QFile file(path);
-  if (!file.open(QIODevice::ReadOnly)) {
-    qWarning("SceneViewWidget QRhi: failed to open shader %s", qPrintable(path));
-    return {};
-  }
-  QShader shader = QShader::fromSerialized(file.readAll());
-#ifdef PJ_RHI_TEST_HOOKS
-  loadedShaderPaths().insert(shader, path);
-#endif
-  return shader;
-}
 
 bool createGraphicsPipeline(QRhiGraphicsPipeline* pipeline) {
 #ifdef PJ_RHI_TEST_HOOKS
@@ -217,6 +196,27 @@ AABB transformedBounds(const AABB& source, const Transform& fixed_from_source, c
 AABB transformedBounds(const AABB& source, const glm::dmat4& fixed_from_source, const glm::dvec3& origin) {
   return placedCorners(
       source, origin, [&](const glm::dvec3& point) { return glm::dvec3(fixed_from_source * glm::dvec4(point, 1.0)); });
+}
+
+bool ensureStaticVertexBuffer(
+    QRhi* owner, QRhiBuffer*& buffer, quint32& capacity, quint32 required_bytes, quint32 minimum_capacity) {
+  if (required_bytes == 0) {
+    return true;
+  }
+  if (buffer != nullptr && capacity >= required_bytes &&
+      capacity <= std::max<quint32>(required_bytes, minimum_capacity / 2U) * 2U) {
+    return true;
+  }
+  delete buffer;
+  capacity = std::max(required_bytes, minimum_capacity);
+  buffer = owner->newBuffer(QRhiBuffer::Static, QRhiBuffer::VertexBuffer, capacity);
+  if (!buffer->create()) {
+    delete buffer;
+    buffer = nullptr;
+    capacity = 0;
+    return false;
+  }
+  return true;
 }
 
 bool ensureVertexBuffer(

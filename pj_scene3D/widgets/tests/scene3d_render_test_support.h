@@ -165,6 +165,21 @@ inline int channelDeltaSum(QRgb a, QRgb b) {
   return std::abs(qRed(a) - qRed(b)) + std::abs(qGreen(a) - qGreen(b)) + std::abs(qBlue(a) - qBlue(b));
 }
 
+// Pixels whose channelDeltaSum() between `a` and `b` exceeds `threshold`; every
+// pixel when the sizes differ.
+inline int differingPixels(const QImage& a, const QImage& b, int threshold = 0) {
+  if (a.size() != b.size()) {
+    return a.width() * a.height();
+  }
+  int count = 0;
+  for (int y = 0; y < a.height(); ++y) {
+    for (int x = 0; x < a.width(); ++x) {
+      count += channelDeltaSum(a.pixel(x, y), b.pixel(x, y)) > threshold ? 1 : 0;
+    }
+  }
+  return count;
+}
+
 // max(|dR|, |dG|, |dB|): the per-channel tolerance a golden comparison applies.
 inline int maxChannelDelta(QRgb a, QRgb b) {
   return std::max({std::abs(qRed(a) - qRed(b)), std::abs(qGreen(a) - qGreen(b)), std::abs(qBlue(a) - qBlue(b))});

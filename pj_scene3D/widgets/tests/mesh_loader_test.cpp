@@ -6,6 +6,7 @@
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
@@ -13,6 +14,7 @@
 #include <QObject>
 #include <QString>
 #include <QTemporaryDir>
+#include <QThread>
 #include <array>
 #include <cmath>
 #include <glm/glm.hpp>
@@ -127,8 +129,13 @@ TEST(MeshLoaderTest, CachedLoadServesEveryImport) {
   const auto import_once = [&]() -> MeshData {
     bool done = false;
     MeshImport job(loader.load(path), &context, [&done] { done = true; });
-    for (int spin = 0; !done && spin < 1000; ++spin) {
+    // processEvents() returns at once when idle: bound the wait by time, since
+    // the import runs on a worker (slow under the sanitizers).
+    QElapsedTimer timer;
+    timer.start();
+    while (!done && timer.elapsed() < 10000) {
       QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+      QThread::msleep(1);
     }
     EXPECT_TRUE(done);
     return job.take();

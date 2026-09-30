@@ -62,7 +62,8 @@ These tests retain their standalone executable and ctest entry:
   a DPR change, plus the mixed-API negative case. It needs a real display (it
   skips on `offscreen`) and is registered on every backend of the platform plus
   `.opengl_dpr2.` (`RHI_BACKENDS DPR2` in `cmake/PjTests.cmake`). Its setup mirrors `main()`'s
-  `AA_DontCreateNativeWidgetSiblings`; see `pj_scene3D/docs/QRHI_MIGRATION.md`.
+  `AA_DontCreateNativeWidgetSiblings`; see `pj_scene3D/docs/TECHNICAL_NOTES.md`
+  §5 (ADS and window-system quirks).
 - `rhi_mixed_dock_test` (QRhi build only): the same matrix with the real widgets
   in one dock manager (a `PlotWidget`, a Scene3D point cloud, a Scene2D image),
   each checked for its own content at its pixel size, no QRhi warning, no
@@ -70,7 +71,10 @@ These tests retain their standalone executable and ctest entry:
   test-hook lifecycle counters, a re-initialize on every float and redock and
   never resources on two QRhis at once; plus the media viewer's
   failure state beside them. Registered like `rhi_dock_lifecycle_test`. Both
-  share `tests/support/rhi_dock_test_support.h`.
+  share `tests/support/rhi_dock_test_support.h`. Its widgets and their data come
+  from `tests/mixed_layout_fixture.h` (`pj_mixed_layout_fixture`, public APIs
+  only, so it builds in the GL build too), which the `mixed_layout_benchmark`
+  demo (`benchmarks/`, `PJ_BUILD_DEMOS`) also uses.
 
 - `main_window_layout_exit_test`: the last case leaves an import parked for
   destructor-time shutdown, so suite ordering and teardown are part of the test.

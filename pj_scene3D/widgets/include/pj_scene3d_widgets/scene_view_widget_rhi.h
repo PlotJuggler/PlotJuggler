@@ -275,6 +275,16 @@ class SceneViewWidget : public QRhiWidget {
   [[nodiscard]] int lastModelTriangleCountForTest() const;
   [[nodiscard]] std::array<int, 5> lastModelTextureSlotCountsForTest() const;
   [[nodiscard]] AABB lastModelBoundsForTest() const;
+  // The marker, model and grid passes themselves, for their cache tests. Never null.
+  [[nodiscard]] MarkerRhiPass& markerPassForTest() const {
+    return *marker_pass_;
+  }
+  [[nodiscard]] GridRhiPass& gridPassForTest() const {
+    return *grid_pass_;
+  }
+  [[nodiscard]] ModelRhiPass& modelPassForTest() const {
+    return *model_pass_;
+  }
   [[nodiscard]] bool lastShadowActiveForTest() const {
     return shadow_stage_.last_active;
   }
@@ -319,6 +329,13 @@ class SceneViewWidget : public QRhiWidget {
     return hdr_stage_.resource_generation;
   }
   void setForceHdrFallbackForTest(bool force);
+  /// Keeps the depth replay where the depth-resolve fast path is available
+  /// (rebuilds the HDR chain).
+  void setForceDepthReplayForTest(bool force);
+  /// The live HDR chain resolves its multisample depth instead of replaying the scene.
+  [[nodiscard]] bool depthResolveActiveForTest() const {
+    return hdr_depth_resolve_ && hdr_stage_.last_active;
+  }
   [[nodiscard]] bool lastSsaoActiveForTest() const {
     return ssao_stage_.last_active;
   }
@@ -395,6 +412,11 @@ class SceneViewWidget : public QRhiWidget {
   void mouseMoveEvent(QMouseEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
   void changeEvent(QEvent* event) override;
+  // A Show on the same QRhi at the same size (a hidden workspace tab shown again)
+  // presents the frame drawn before the hide at once, instead of QRhiWidget's
+  // synchronous full re-render; the frame that follows picks up what changed while
+  // hidden. An ADS dock-area tab switch reparents instead: a new initialize().
+  bool event(QEvent* event) override;
   // Clears the hover label when the cursor leaves the view.
   void leaveEvent(QEvent* event) override;
   // 'P' toggles the perf HUD.
@@ -463,6 +485,9 @@ class SceneViewWidget : public QRhiWidget {
   bool ensureShadowResources(QRhi* owner);
   void releaseShadowResources(bool restore_model_bindings);
   bool ensureHdrResources(QRhi* owner, const QSize& size);
+  // Why `rhi` can never run the HDR chain; empty when it can (the chain may still
+  // be refused at runtime: size, budget, a missing pipeline variant).
+  [[nodiscard]] static QString hdrUnsupportedReason(QRhi& rhi);
   void releaseHdrTargetResources();
   void releaseHdrResources();
   // Drops the HDR chain for output `size` (a resize re-probes) with `reason` as
@@ -530,12 +555,18 @@ class SceneViewWidget : public QRhiWidget {
   QRhiBuffer* shadow_uniform_buffer_ = nullptr;
   QRhiShaderResourceBindings* shadow_shader_resources_ = nullptr;
   QRhiRenderBuffer* hdr_msaa_color_ = nullptr;
-  QRhiRenderBuffer* hdr_msaa_depth_ = nullptr;
+  QRhiRenderBuffer* hdr_msaa_depth_ = nullptr;     ///< the depth replay's chain
+  QRhiTexture* hdr_msaa_depth_texture_ = nullptr;  ///< the depth-resolve chain's
   QRhiTexture* hdr_resolve_color_ = nullptr;
   QRhiTexture* hdr_resolve_depth_ = nullptr;
   QRhiTexture* hdr_resolve_coverage_ = nullptr;
   QRhiTextureRenderTarget* hdr_render_target_ = nullptr;
+  // The pass that fills hdr_resolve_coverage_ before SSAO and the EDL mask: the
+  // depth replay (coverage + depth), or on the depth-resolve chain a clear of the
+  // coverage alone (the HDR pass resolved the depth, present reads coverage from it).
   QRhiTextureRenderTarget* hdr_depth_render_target_ = nullptr;
+  bool hdr_depth_resolve_ = false;  ///< the chain resolves depth (QRhi::ResolveDepthStencil)
+  bool force_depth_replay_for_test_ = false;
   QRhiTextureRenderTarget* ssao_raw_render_target_ = nullptr;
   QRhiTextureRenderTarget* edl_mesh_mask_render_target_ = nullptr;
   QRhiRenderPassDescriptor* hdr_render_pass_descriptor_ = nullptr;
@@ -601,6 +632,8 @@ class SceneViewWidget : public QRhiWidget {
 
   std::unique_ptr<MarkerRhiPass> marker_pass_;
   std::unique_ptr<ModelRhiPass> model_pass_;
+  bool show_paint_pending_ = false;  // inside QRhiWidget's Show handling (event())
+  QSize last_frame_size_;            // output size of the last full frame; empty: none since the release
   bool last_shadow_fit_valid_ = false;
   int shadow_map_size_ = 0;
   AABB last_shadow_bounds_;

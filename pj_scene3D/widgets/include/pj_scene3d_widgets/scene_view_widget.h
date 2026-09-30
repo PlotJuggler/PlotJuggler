@@ -13,6 +13,7 @@
 #include <QOpenGLWidget>
 #include <QPoint>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>

@@ -15,6 +15,10 @@ class QRhi;
 class QRhiGraphicsPipeline;
 class QRhiRenderPassDescriptor;
 class QRhiRenderTarget;
+class QRhiRenderBuffer;
+class QRhiTexture;
+class QRhiTextureRenderTarget;
+class QShader;
 
 namespace PJ {
 
@@ -143,6 +147,51 @@ class RhiFailureLatch {
 
  private:
   QString reason_;
+};
+
+/// The .qsb pack at `path` (a resource), read once per process and shared by
+/// every widget and QRhi; invalid (and logged) when it cannot be read. GUI thread only.
+[[nodiscard]] QShader loadRhiShader(const QString& path);
+
+#ifdef PJ_RHI_TEST_HOOKS
+/// The path loadRhiShader() read `shader` from (empty for any other shader), so
+/// fault injection can name a pipeline by its shaders.
+[[nodiscard]] QString rhiShaderPathForTest(const QShader& shader);
+#endif
+
+/// A colour-only render target over a QRhiWidget's own colour buffer, for a
+/// widget with autoRenderTarget off (no depth-stencil). Its render pass
+/// descriptor survives rebuilds while compatible, so pipelines built on it
+/// survive resizes.
+class RhiColorTarget {
+ public:
+  RhiColorTarget() = default;
+  ~RhiColorTarget();
+  RhiColorTarget(const RhiColorTarget&) = delete;
+  RhiColorTarget& operator=(const RhiColorTarget&) = delete;
+
+  /// Makes the target current for a QRhiWidget's colour buffer on `rhi`: its
+  /// colorTexture() `texture`, else its msaaColorBuffer() `msaa` resolving into
+  /// its resolveTexture() `resolve` (the widget passes its own, which are
+  /// protected). `refresh` re-creates it on a buffer the widget may have
+  /// rebuilt in place (from initialize(): a resize or a format change);
+  /// otherwise only a missing or replaced attachment rebuilds it. False when
+  /// there is no colour buffer or the target cannot be created (the target is
+  /// then dropped).
+  bool ensure(QRhi& rhi, QRhiTexture* texture, QRhiRenderBuffer* msaa, QRhiTexture* resolve, bool refresh);
+  [[nodiscard]] QRhiTextureRenderTarget* target() const noexcept {
+    return target_;
+  }
+  [[nodiscard]] QRhiRenderPassDescriptor* renderPass() const noexcept {
+    return render_pass_;
+  }
+  /// Deletes the target and its descriptor (before the QRhi goes away).
+  void release();
+
+ private:
+  QRhiTextureRenderTarget* target_ = nullptr;
+  QRhiRenderPassDescriptor* render_pass_ = nullptr;
+  const void* attachment_ = nullptr;
 };
 
 /// Delivers the next frame `widget` presents, read back as an image (null after

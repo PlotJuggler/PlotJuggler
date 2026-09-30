@@ -21,6 +21,8 @@ layout(std140, binding = 8) uniform RenderMode {
     ivec4 render_mode;  // x: 1 when writing the linear-light HDR target
 };
 
+// Unused here (mesh_mask.frag reads it), but declared: D3D11 links the stages
+// by register, so dropping location 0 would shift every input below.
 layout(location = 0) in vec4 model_color;
 layout(location = 1) in vec3 model_normal;
 layout(location = 2) in vec2 model_uv;
@@ -115,27 +117,6 @@ vec3 linearToSrgb(vec3 color) {
 }
 
 void main() {
-    // Preserve W19g/W19h's exact simple-lighting path for genuinely legacy
-    // materials. PBR factors or any texture select the parity path below.
-    if (model_pbr_factors.z < 0.5) {
-        vec4 color = model_color;
-        if (model_params.x > 0.5) {
-            color *= texture(base_color_map, model_uv);
-        }
-        if (model_params.y > 0.5 && model_params.y < 1.5 && color.a < model_params.z) {
-            discard;
-        }
-        vec3 normal = normalize(model_normal);
-        vec3 light = normalize(vec3(0.35, -0.45, 0.82));
-        float diffuse = max(dot(normal, light), 0.0) * shadowFactor(model_position, normal, light);
-        if (render_mode.x != 0) {
-            color.rgb = pow(max(color.rgb, vec3(0.0)), vec3(2.2));
-        }
-        color.rgb *= 0.35 + 0.65 * diffuse;
-        fragment_color = color;
-        return;
-    }
-
     vec3 base_rgb;
     float base_alpha;
     if (model_params.w > 0.5) {

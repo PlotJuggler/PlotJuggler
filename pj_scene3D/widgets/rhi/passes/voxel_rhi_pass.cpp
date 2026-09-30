@@ -9,7 +9,9 @@
 #include <array>
 #include <cstddef>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/type_ptr.hpp>
 
+#include "pj_scene3d_core/cube_draw_policy.h"
 #include "pj_scene3d_core/scene_limits.h"
 #include "pj_scene3d_widgets/cube_mesh.h"
 #include "pj_scene3d_widgets/layers/voxel_grid_layer.h"
@@ -182,12 +184,28 @@ void VoxelRhiPass::prepare(const RhiFrameContext& frame) {
     const Transform source_from_grid(glm::dvec3(p.x, p.y, p.z), glm::normalize(glm::dquat(q.w, q.x, q.y, q.z)));
 
     const glm::vec3 cell_size = layer->cellSize();
+    const glm::mat4 fixed_from_grid =
+        relativeModel(admitted.fixed_from_source.matrix() * source_from_grid.matrix(), frame.render_origin);
+    // The GL pass's whole-grid frustum reject, from the shared policy: voxel
+    // centres, inflated by half the largest cell side. The clip-space-corrected
+    // view-projection only loosens the near plane (0..w depth), never over-culls.
+    CubeCloudView cloud_view;
+    const glm::vec3 grid_extent = glm::vec3(
+                                      static_cast<float>(layer->columnCount()), static_cast<float>(layer->rowCount()),
+                                      static_cast<float>(layer->sliceCount())) *
+                                  cell_size;
+    cloud_view.centre_bounds = AABB{cell_size * 0.5F, grid_extent - cell_size * 0.5F, true};
+    cloud_view.clip_from_cloud = glm::make_mat4(frame.view_projection.constData()) * fixed_from_grid;
+    cloud_view.cube_size_m = std::max({cell_size.x, cell_size.y, cell_size.z});
+    constexpr CubeDrawCapabilities kSolidOnly{/*sprite=*/false, /*fan=*/false, /*solid=*/true};
+    if (chooseCubeDrawMode(cloud_view, kSolidOnly) == CubeDrawMode::kSkip) {
+      continue;
+    }
+
     const auto [color_minimum, color_maximum] = layer->colorRange();
     VoxelUniforms uniforms;
     copyMatrix(frame.view_projection, uniforms.view_projection);
-    copyMatrix(
-        relativeModel(admitted.fixed_from_source.matrix() * source_from_grid.matrix(), frame.render_origin),
-        uniforms.fixed_from_grid);
+    copyMatrix(fixed_from_grid, uniforms.fixed_from_grid);
     copyMatrix(frame.view, uniforms.view);
     uniforms.cell_size_opacity = {cell_size.x, cell_size.y, cell_size.z, layer->opacity()};
     uniforms.dims_kind = {

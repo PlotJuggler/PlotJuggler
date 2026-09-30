@@ -17,7 +17,7 @@ pj_plotting  ──►  pj_plotting_core  ──►  pj_datastore + pj_base
 | Subdir | Contents | Role |
 |---|---|---|
 | `core/` | `DatastoreCurveAdapter`, `FilteredCurveAdapter`, `PointSeriesXY`, `StateSeriesAdapter`, `PlotXml.h` | Bridges PJ3-style `QwtSeriesData<QPointF>` consumers to `pj_datastore::DataReader`. `StateSeriesAdapter` is the discrete-series counterpart: a full-rebuild RLE reader (`rangeQuery` + per-type label formatting — `readString` copied out inside the cursor, integers in decimal via the exact int64/uint64 reads, whole-number floats as integers (a fractional value reads as null), bool via `readBool` as "true"/"false"; equal-timestamp last-write-wins, null = gap, trailing run open) feeding the State Transitions strip. `FilteredCurveAdapter` is a lazy `DatastoreCurveAdapter` subclass that serves the output of a `proc::DataProcessor` (the Filter Editor before/after preview, refreshed on the streaming commit path). `PlotXml.h` is the shared plot-XML vocabulary (`x_basis` range markers, the `pending_intent` keep-alive predicate, the `<marker_scope scope=…>` attribute + its two persisted values; the value↔`MarkerScope` mapping is `PlotWidget.cpp`'s own) consumed by both this module and the app-side layout passes. No Qt Widgets. |
-| `widget/` | `PlotWidgetBase`, `PlotWidget`, `PlotDocker`, `TabbedPlotWidget`, `PlotZoomer`, `PlotPanner`, `PlotMagnifier`, `CurveTracker`, `PlotLegend`, `PlotFocusOverlay`, `PlotScaleDraw`, `DockWidget`, `DockToolbar`, `CurveEditor`, `FilterEditorPanel`, `ParameterForm`, `StateTransitionsController`, `StateTransitionsDockWidget`, `PlotRhiCanvas` | The Qt/Qwt widgets, ported from PJ3's `plotjuggler_app/`. `TabbedPlotWidget::forEachDocker`/`findDocker` enumerate the PlotDocker tabs in one pass over the tab vector — the shell and `pj_app`'s `PluginPlotTabsController` use them instead of index loops over `dockerCount()`/`dockerAt()` (each a linear scan). Wherever `PJ_RHI_WIDGETS` is defined (the desktop QRhi build, `PJ_SCENE3D_RHI=ON`, and WebAssembly) `widget/` also compiles `PlotRhiCanvas` — a QRhi canvas (any backend: OpenGL, Vulkan, D3D11/12, Metal, WebGL) that renders the visible Qwt curves, grid and markers as bounded triangle geometry and rasterises everything else (legend, marker labels, `PlotMarkersItem`, any unknown `QwtPlotItem`) with the item's own QPainter drawing into one texture atlas; `PlotWidgetBase` picks it in place of `QwtPlotOpenGLCanvas` (Qwt still owns axes/data/interaction). On desktop the `Preferences::use_opengl` preference (shown as "GPU canvas") and `--disable-opengl` select the raster `QwtPlotCanvas` instead; the browser always uses the RHI canvas. The GL build (`PJ_SCENE3D_RHI=OFF`) is unchanged: `QwtPlotOpenGLCanvas`, raster fallback. See "PlotRhiCanvas" below. `PlotMarkersItem` is the marker overlay: for every `(dataset, topic)` target `PlotWidget::markerTargets()` yields it draws the union of the topic's **family** in the ObjectStore (`markerTopicsOf` — the bare topic plus one `#<owner>` topic per generator), each object topic once per paint (two datasets on one plot share the same all-datasets topic) with a per-topic decode cache keyed on the entry uid; the `__all__` family lives on `kAllDatasetsMarkerDataset` in the display frame, so it is mapped through the global time origin only, never a dataset's alignment offset — and a per-series target reads that shared home too, since a scope=all rule may publish under a series key (`markerTargetTopics`, the resolver exposed as the test seam). In `PJ_RHI_WIDGETS` builds `PlotPanner` snapshots that canvas through `grabFramebuffer()` for its transient drag image because `QWidget::grab()` cannot capture QRhi content; the GL build keeps Qwt's native panner grab path. `CurveEditor` keeps a pinned footer under the curve list (1-px separator, hidden when empty) with up to two marker-scope rows per dataset shown on the plot — "Dataset markers" (`sdk::kGlobalMarkerTopic`, `__global__`) and "Global markers" (`PJ::kAllDatasetsMarkerTopic`, `__all__`) — each shown only when its topic family has a member (`PlotWidget::markerScopeRows()`, the ordered (dataset, scope) set the plot keeps current on `curveListChanged`/`markersChanged` by asking `publishedMarkerScopes(store, dataset)` (`pj_runtime/MarkerTopics.h`) per plotted dataset — the runtime, not the plot, owns the scope→topic naming; `datasetMarkerScopesChanged` announces a row appearing/disappearing, `markerScopeVisibilityChanged` a single toggle flip, so a visibility click re-checks one row instead of rebuilding them); a row's toggle hides/shows only that dataset's scope (`PlotWidget::setDatasetMarkerScopeVisible`), independent of every curve's own `show_markers` flag and of the dataset's other scope, and round-trips through a `<marker_scope dataset_id dataset_source scope visible>` child of `<plot>` in the plot XML (`PlotWidget::saveHiddenMarkerScopes`/`loadHiddenMarkerScopes`; written only when hidden — an absent child means visible on load; `scope` is required, an absent/unrecognized value drops the entry; `pj_app`'s layout identity passes stamp/strip its `dataset_path` like a curve's; an entry whose dataset is not loaded at load time is parked as a pending saved identity — visible meanwhile, still serialized by intermediate snapshots — and `PlotWidget::resolvePendingMarkerScopes()`, called by `pj_app`'s `PendingDisplayBinder::flush` for each plot it bound curves on, moves it into the hidden set under the possibly reminted live id). |
+| `widget/` | `PlotWidgetBase`, `PlotWidget`, `PlotDocker`, `TabbedPlotWidget`, `PlotZoomer`, `PlotPanner`, `PlotMagnifier`, `CurveTracker`, `PlotLegend`, `PlotFocusOverlay`, `PlotScaleDraw`, `DockWidget`, `DockToolbar`, `CurveEditor`, `FilterEditorPanel`, `ParameterForm`, `StateTransitionsController`, `StateTransitionsDockWidget`, `PlotRhiCanvas` | The Qt/Qwt widgets, ported from PJ3's `plotjuggler_app/`. `TabbedPlotWidget::forEachDocker`/`findDocker` enumerate the PlotDocker tabs in one pass over the tab vector — the shell and `pj_app`'s `PluginPlotTabsController` use them instead of index loops over `dockerCount()`/`dockerAt()` (each a linear scan). Wherever `PJ_RHI_WIDGETS` is defined (the default desktop build, `PJ_SCENE3D_RHI=ON`, and WebAssembly) `widget/` also compiles `PlotRhiCanvas`, the default plot canvas — a QRhi canvas (any backend: OpenGL, Vulkan, D3D11/12, Metal, WebGL) that renders the visible Qwt curves, grid and markers as bounded triangle geometry and rasterises everything else (legend, marker labels, `PlotMarkersItem`, any unknown `QwtPlotItem`) with the item's own QPainter drawing into one texture atlas; `PlotWidgetBase` picks it in place of `QwtPlotOpenGLCanvas` (Qwt still owns axes/data/interaction). On desktop the `Preferences::use_opengl` preference (shown as "GPU canvas") and `--disable-opengl` select the raster `QwtPlotCanvas` instead; the browser always uses the RHI canvas. The legacy GL build (`PJ_SCENE3D_RHI=OFF`, kept for one release) keeps `QwtPlotOpenGLCanvas` with the raster fallback. See "PlotRhiCanvas" below. `PlotMarkersItem` is the marker overlay: for every `(dataset, topic)` target `PlotWidget::markerTargets()` yields it draws the union of the topic's **family** in the ObjectStore (`markerTopicsOf` — the bare topic plus one `#<owner>` topic per generator), each object topic once per paint (two datasets on one plot share the same all-datasets topic) with a per-topic decode cache keyed on the entry uid; the `__all__` family lives on `kAllDatasetsMarkerDataset` in the display frame, so it is mapped through the global time origin only, never a dataset's alignment offset — and a per-series target reads that shared home too, since a scope=all rule may publish under a series key (`markerTargetTopics`, the resolver exposed as the test seam). In `PJ_RHI_WIDGETS` builds `PlotPanner` snapshots that canvas through `grabFramebuffer()` for its transient drag image because `QWidget::grab()` cannot capture QRhi content; the GL build keeps Qwt's native panner grab path. `CurveEditor` keeps a pinned footer under the curve list (1-px separator, hidden when empty) with up to two marker-scope rows per dataset shown on the plot — "Dataset markers" (`sdk::kGlobalMarkerTopic`, `__global__`) and "Global markers" (`PJ::kAllDatasetsMarkerTopic`, `__all__`) — each shown only when its topic family has a member (`PlotWidget::markerScopeRows()`, the ordered (dataset, scope) set the plot keeps current on `curveListChanged`/`markersChanged` by asking `publishedMarkerScopes(store, dataset)` (`pj_runtime/MarkerTopics.h`) per plotted dataset — the runtime, not the plot, owns the scope→topic naming; `datasetMarkerScopesChanged` announces a row appearing/disappearing, `markerScopeVisibilityChanged` a single toggle flip, so a visibility click re-checks one row instead of rebuilding them); a row's toggle hides/shows only that dataset's scope (`PlotWidget::setDatasetMarkerScopeVisible`), independent of every curve's own `show_markers` flag and of the dataset's other scope, and round-trips through a `<marker_scope dataset_id dataset_source scope visible>` child of `<plot>` in the plot XML (`PlotWidget::saveHiddenMarkerScopes`/`loadHiddenMarkerScopes`; written only when hidden — an absent child means visible on load; `scope` is required, an absent/unrecognized value drops the entry; `pj_app`'s layout identity passes stamp/strip its `dataset_path` like a curve's; an entry whose dataset is not loaded at load time is parked as a pending saved identity — visible meanwhile, still serialized by intermediate snapshots — and `PlotWidget::resolvePendingMarkerScopes()`, called by `pj_app`'s `PendingDisplayBinder::flush` for each plot it bound curves on, moves it into the hidden set under the possibly reminted live id). |
 | `tests/` | gtest runners and standalone GL regressions | Core adapters, plotting widgets, docking, filters, and rendering tests. |
 
 ## Tests and benchmarks
@@ -36,18 +36,28 @@ platform choice needed for real GL coverage. Their ctest names remain
 
 `plot_rhi_render_test` (QRhi build only) renders each item kind through a real
 `PlotRhiCanvas` and compares the presented frame with Qwt's own QPainter
-rendering of the same canvas (`QwtPlot::drawCanvas`): curves, overlapping
-translucent curves, dashes, every supported symbol, Lines and Dots, marker
-line/symbol/label, the legend, `PlotMarkersItem`, a reparent to a new top-level +
-resize + sample-count change, and the panner grab. Each comparison checks the
-foreground colours (every pixel non-background in either image must be within 48
-per channel of a reference pixel in its 3x3 neighbourhood), missing and extra
-geometry both ways, and an exactly-clear background away from the reference's
-geometry. The reference is drawn with Qwt's whole-pixel snapping off
-(`QwtPainter::setRoundingAlignment(false)`): the canvas keeps mapped coordinates
-exact, where Qwt on screen rounds them, so a 1 px line can sit half a pixel off
-Qwt's own canvas. A long-series case checks the canvas keeps no mapped copy of the series
-between frames (`retainedSampleScratchBytes()`). Its failure cases make a named
+rendering of the same canvas (its items drawn as `QwtPlot::drawItems` does):
+curves, overlapping translucent curves, dashes, every supported symbol, Lines and
+Dots, marker line/symbol/label, the legend, `PlotMarkersItem`, a reparent to a
+new top-level + resize + sample-count change, and the panner grab. Each
+comparison checks the foreground colours (at least 98% of the pixels
+non-background in either image must be within 48 per channel of a reference
+pixel in its 3x3 neighbourhood), missing and extra geometry both ways, and an
+exactly-clear background away from the reference's geometry. The reference snaps
+the grid and markers to whole pixels as Qwt does on screen
+(`QwtPainter::roundingAlignment()`) and draws curves unsnapped, as the canvas
+does. Further cases pin the rendering down: grid and marker lines on whole
+device pixels with Qt's cosmetic cadence (dotted 1 on / 2 off, dashed 4 on /
+2 off) and the 1 px frame; the edge coverage ramp (each device column of a wide
+sloped line holds its exact coverage, within 0.25 px, with at most two partial
+pixels per edge); every dashed style, cosmetic and 2 px wide, against Qwt's
+dashes; a tracker move that rebuilds neither the curve layer nor the legend's
+raster (`curveLayerBuildsForTest()`, `textLayerRasterizationsForTest()`); a
+labelled marker replaced by an identical one that keeps its label; an XY curve
+doubling back past its start at full stroke width; and the colour-only
+one-sample target (`renderTargetBytesPerPixel()`). A long-series case checks the
+canvas keeps no mapped copy of the series between frames
+(`retainedSampleScratchBytes()`). Its failure cases make a named
 pipeline fail through the `pjTestFailPipeline` dynamic property and count
 pipeline builds through `pjTestPipelineAttempts` (both only under
 `PJ_RHI_TEST_HOOKS`, defined in test-enabled desktop builds, with the `pjTestRhi*`
@@ -64,9 +74,14 @@ below exist only in the GL build.
 
 `adapter_streaming_benchmark` is built with `PJ_BUILD_DEMOS`, independently of
 `PJ_BUILD_TESTS`. With `PJ_BUILD_DEMOS` in the QRhi build,
-`plot_canvas_benchmark --canvas rhi|gl|raster --case NAME` measures one canvas's
-frame cost (CPU, GPU, wall) on the static/streaming/zoom-pan/many-curves/dashed
-workloads; results are in `pj_scene3D/docs/QRHI_MIGRATION.md` (P4 plot canvas).
+`plot_canvas_benchmark --canvas rhi|gl|raster --case NAME` measures a canvas's
+frame cost (CPU, wall, the vertices built, the process's DRM GPU memory) on the
+static/streaming/zoom-pan/many-curves/dashed/tracker-only workloads; `--samples`,
+`--plots K`, `--grid`, `--legend` and `--msaa N` vary the scene, and `--gpu`
+adds GPU time (timestamp queries, which cost CPU). The current numbers against
+the Qwt GL canvas are in `pj_scene3D/docs/TECHNICAL_NOTES.md` §9 (the performance
+baseline); the per-change measurements are archived in
+`docs/archive/QRHI_MIGRATION.md` (P4 plot canvas, P5 B and P5 PL).
 
 ## Port strategy (per root CLAUDE.md "Porting policy")
 
@@ -92,7 +107,7 @@ Keep these porting and rendering constraints in mind:
 - **Native window inside ADS**: do **not** propose making `QwtPlotOpenGLCanvas` a `WA_NativeWindow` inside Qt-Advanced-Docking — the native-flag conflict breaks layout.
 - **Qwt is external and never patched** (`3rdparty/qwt/README.PJ4.md`: FetchContent of the pinned release, or the conda-forge package under `PJ_SYSTEM_QWT`): the PJ3-era in-tree Qwt patches are realized here instead — `PlotScaleDraw` (fixed-notation tick labels, installed on every axis by `QwtPlotPimpl`) and the "Lines and Dots" style (`PlotCurve::drawCurve`: Lines plus one batched, pixel-weeded `drawDots` pass — per-point QPainter calls are pathological on the OpenGL paint engine; `PlotRhiCanvas` reads `PlotCurve::dotWidth()` and draws the same square dots as geometry). Do not reintroduce patches under `3rdparty/qwt/src`.
 - **On-canvas text goes through `RasterTextEngine`** (`widget/include/pj_plotting/RasterTextEngine.h`, installed at app startup): the GL canvas's glyph atlas does not survive GPU resets or context recreation, so legend/tracker text is CPU-rasterized and re-uploaded per draw. Do not draw canvas text with raw `QPainter::drawText`, and do not cache the rasterized images — a resident GL texture is exactly what a GPU reset blanks.
-- **The QRhi canvas follows the same reset contract**: it asks Qwt to draw each visible legend/label into a tight DPR-scaled CPU raster, packs those temporary images into one upload, and drops the texture, bindings, pipeline, and text buffer in `releaseResources()`. Keep text changes on the canvas dirty/replot path; never retain the CPU rasters or let a QRhi text resource survive context teardown.
+- **The QRhi canvas follows the same reset contract**: it records each visible legend/label/raster item's QPainter drawing into a `QPicture`, rasterises it into a tight DPR-scaled CPU image, packs the images into one atlas upload, and drops the texture, bindings, pipeline, text buffer and the text cache in `releaseResources()`. The CPU rasters are cached only while their recorded drawing (every command, font, colour and position), raster rectangle and dpr are unchanged, so a tracker move re-rasterises its value box and nothing else; never let a QRhi text resource survive context teardown.
 
 ## PlotRhiCanvas
 
@@ -106,10 +121,52 @@ Keep these porting and rendering constraints in mind:
   Vulkan draws nothing otherwise.
 - **Budgets** (`PlotRhiCanvas.cpp`, work in device pixels): the reducer keeps up to
   4 extrema per device-pixel column (floor 2048 samples). Desktop gives every
-  curve that density and caps a frame at 8M vertices (12 B each: 96 MB); the browser splits
-  one density budget across all curves and caps at 1M vertices (12 MB, 32-bit
-  heap). Per-curve vertex shares and the rollback-and-halve retry keep a curve
-  from committing a partial prefix; a limit hit logs once per onset.
+  curve that density and caps a frame at 8M vertices (16 B each: 128 MB, plus
+  up to three 4 B indices per vertex); the browser splits one density budget
+  across all curves and caps at 1M vertices (16 MB, 32-bit heap). Per-curve
+  vertex shares and the rollback-and-halve retry keep a curve from committing a
+  partial prefix; a limit hit logs once per onset. The geometry layers are
+  indexed (`drawIndexed`, 32-bit indices): a solid polyline is one strip of
+  corner pairs shared by consecutive quads and their bevels (the bevel adds
+  only its join point: 5 vertices and 9 indices per turning segment, 2 and 6
+  on a straight join; a collinear reversal starts a pair of its own, its normal
+  flipped), with the same triangles as separate quads; fans, rings,
+  boxes and dashed quads share their corners too. The arrays are built in `QByteArray`s
+  handed to `uploadStaticBuffer()` by implicit sharing (no copy).
+- **Antialiasing.** One sample per pixel into a colour-only target the canvas
+  owns (`setAutoRenderTarget(false)`, `PJ::RhiColorTarget`: no depth-stencil; 4 B
+  per device pixel). Every
+  stroke, fan, ring and box reaches half a device pixel past its true edge and
+  carries its position across (`PlotRhiVertex::aux`); `plot_color.frag` ramps
+  coverage over that one device pixel from screen-space derivatives. Strokes
+  under one device pixel are drawn one pixel wide at proportionally lower alpha,
+  as Qt's antialiased raster does. Horizontal and vertical `addLine()` lines (grid,
+  marker lines, sticks, symbol strokes) and the Rect/Cross/HLine/VLine symbols sit
+  on whole pixels like Qwt's (`snapToPixels()`: the logical coordinate rounded,
+  then centred on its device pixel for an odd device width, on a pixel edge for
+  an even one); curves keep exact
+  coordinates. `setSampleCount(n > 1)` still works (an MSAA colour buffer and its
+  resolve, still no depth-stencil), for comparisons only.
+- **Dashes** are cut in the fragment shader from the path distance carried per
+  vertex (16 bits, 1/64 pen width; a clipped segment longer than 960 pen widths
+  is split into several quads), so a dashed segment is one quad. Qt's patterns
+  (Dash 4/2, Dot 1/2, DashDot, DashDotDot, in pen widths): a cosmetic pen's pattern
+  is sampled per pixel with no caps, as `QCosmeticStroker` does; a wide pen's
+  square caps lengthen every dash by half the width, antialiased. The phase
+  follows the source path through the reducer; a turn gets its bevel only where
+  a dash runs through it. Custom dash patterns draw solid.
+- **Dirty layers.** Three retained vertex buffers: grid + curves + frame, the
+  overlay (every `QwtPlotMarker`: the tracker, hover and ride-along markers), and
+  text. `replot()` dirties both geometry layers; inside
+  `setOverlayOnlyReplot(true)` (what `PlotWidgetBase::replotOverlays()`, and so
+  `PlotWidget::setTrackerPosition()`, wraps around one replot) only the overlay.
+  The curve layer is rebuilt anyway when the view (size, dpr, axis bounds, clear
+  or frame colour) or its structure (items, visibility, pens, styles, data object
+  and size) changed. Any geometry rebuild regathers the text layers, reusing the
+  cached rasters, and re-uploads the atlas only when the layer set changed (the
+  canvas size, the truncation and the layer keys in draw order); a reused atlas
+  still re-owns its quads to this build's items, so an identical replacement item
+  keeps its text.
 - **Items.** Geometry: `QwtPlotCurve` (Lines, Sticks, Steps, Dots, PlotCurve's
   Lines-and-Dots square dots), `QwtPlotGrid`, `QwtPlotMarker` lines/symbols;
   symbols Ellipse, Rect, Diamond, the four triangles, Hexagon, Cross, XCross,
@@ -121,12 +178,15 @@ Keep these porting and rendering constraints in mind:
   `Fitted` curves (unfitted). PJ4 produces none of these: every curve style
   (`applyStyleToCurve`, the six layout-XML `style` values) sets no symbol, brush,
   `UserCurve` or `Fitted`; every marker symbol is an `Ellipse`; the SDK has no
-  curve-style API; the dialog chart preview is its own raster `QwtPlot`. The GL
-  canvas's 1-px frame is not drawn.
-- **Lifecycle.** Pipelines are rebuilt when the QRhi, the render pass
-  descriptor (address or `serializedFormat()`) or the sample count changes, and
-  `render()` re-checks it (a grab of a hidden widget brings a QRhi without
-  `initialize()`). `grabPresentedFrame()` grabs after the next presented frame;
+  curve-style API; the dialog chart preview is its own raster `QwtPlot`. The
+  1 px canvas frame (the Qwt canvases' `QFrame::Box | Plain` in the palette's
+  WindowText) is drawn over every item.
+- **Lifecycle.** `initialize()` (re)creates the render target on the widget's
+  current colour buffer on every call (a resize rebuilds that buffer in place),
+  keeping the render pass descriptor while it stays compatible. Pipelines are
+  rebuilt when the QRhi, the render pass descriptor (address or
+  `serializedFormat()`) or the sample count changes, and `render()` re-checks the
+  QRhi (a grab of a hidden widget brings a QRhi without `initialize()`). `grabPresentedFrame()` grabs after the next presented frame;
   the panner uses the synchronous `grabFramebuffer()` (no uniforms, so the Qt
   6.11.1 grab-only stale-uniform issue does not apply).
 - **Failure.** A pipeline or vertex buffer `create()` failure puts the canvas in

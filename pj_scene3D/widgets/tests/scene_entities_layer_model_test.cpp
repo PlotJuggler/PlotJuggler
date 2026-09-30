@@ -829,6 +829,18 @@ TEST(SceneEntitiesLayerModelTest, RapidModelReplacementStaysWithinImportBound) {
 }
 
 #ifndef PJ_SCENE3D_RHI
+// The GL marker pass draws with the layer's overrides from construction: a
+// fresh layer is 0.6-translucent, and a restored 0.6 (a no-op setter) keeps it.
+TEST(SceneEntitiesLayerModelTest, MarkerPassStartsWithTheLayerDefaultOpacity) {
+  pj::scene3d::SceneEntitiesLayer layer(PJ::ObjectTopicId{1}, u"/scene_entities"_s);
+  EXPECT_FLOAT_EQ(layer.opacity(), 0.6F);
+  EXPECT_FLOAT_EQ(layer.markerPassOverridesForTest().opacity, 0.6F);
+  layer.setOpacity(0.6F);
+  EXPECT_FLOAT_EQ(layer.markerPassOverridesForTest().opacity, 0.6F);
+  layer.setOpacity(1.0F);
+  EXPECT_FLOAT_EQ(layer.markerPassOverridesForTest().opacity, 1.0F);
+}
+
 TEST(SceneEntitiesLayerModelTest, FrameCompositionAppliesTfPrimitivePoseAndScale) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);

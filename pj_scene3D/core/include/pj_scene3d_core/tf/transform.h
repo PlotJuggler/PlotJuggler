@@ -53,6 +53,9 @@ struct Transform {
     m[3] = glm::dvec4(t, 1.0);
     return m;
   }
+
+  /// Exact (bitwise-value) equality: a cache key, not a tolerance test.
+  bool operator==(const Transform&) const = default;
 };
 
 struct StampedTransform {

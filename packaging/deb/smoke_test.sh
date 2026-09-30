@@ -3,9 +3,11 @@
 # Install the built .deb in a clean distro image and prove it actually runs.
 #
 # Meant to be run INSIDE a bare container, with the directory holding the .deb
-# mounted at /pkg:
+# mounted at /pkg and this repository's packaging/ at /packaging (the render
+# check lives in packaging/smoke/):
 #
-#   docker run --rm -v "$PWD/deb:/pkg:ro" ubuntu:22.04 sh /pkg/smoke_test.sh
+#   docker run --rm -v "$PWD/deb:/pkg:ro" -v "$PWD/packaging:/packaging:ro" \
+#     ubuntu:22.04 sh /packaging/deb/smoke_test.sh
 #
 # This is the only check in the Linux release flow that exercises the package on
 # a machine without build dependencies. `apt install` succeeding proves the
@@ -104,7 +106,9 @@ plotjuggler4 --selftest-python
 # QApplication needs a real X server. Xvfb provides one without a GPU or a seat,
 # and exercises the shipped code path rather than a substitute platform plugin.
 echo "--- GUI startup under Xvfb ---"
-apt-get install -y -qq xvfb >/dev/null
+# Mesa's DRI drivers give Xvfb's GLX the software rasterizer (llvmpipe) the
+# render check below draws with; a user's machine has its own GPU driver.
+apt-get install -y -qq xvfb libgl1-mesa-dri >/dev/null
 set +e
 xvfb-run -a --server-args="-screen 0 1280x800x24" \
   timeout 25 plotjuggler4 --test-data --nosplash >"${WORK}/gui.log" 2>&1
@@ -118,6 +122,12 @@ else
   tail -60 "${WORK}/gui.log"
   exit 1
 fi
+
+# Startup alone does not prove drawing: open the fixture layout and require
+# every plot, the Scene3D view and the media viewer to render through QRhi.
+echo "--- render check under Xvfb ---"
+xvfb-run -a --server-args="-screen 0 1280x800x24" \
+  sh "$(dirname "$0")/../smoke/render_check.sh" plotjuggler4
 
 echo "--- removal ---"
 apt-get remove -y -qq plotjuggler4 >/dev/null

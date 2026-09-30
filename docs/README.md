@@ -29,6 +29,7 @@ Examples of what belongs here:
 | [`BUILDING.md`](./BUILDING.md) | Guide | Build prerequisites, Linux/Windows setup, tests, and links to packaging and browser build instructions. |
 | [Packaging guides](../packaging/README.md) | Guide | AppImage and Docker builds, Debian packages, and Windows installers. |
 | `archive/PJ4_PLAN.md` | Retired | Original master plan; current architecture lives in root and module `CLAUDE.md` / `docs/`. Ongoing recording and cache work lives in the documents below. |
+| `archive/QRHI_MIGRATION.md` | Retired | The completed QRhi migration of Scene3D, the plots and the media viewer (phases P0–P5, per-stream measurements, the Gate A sign-off). The as-built design is in `pj_scene3D/docs/ARCHITECTURE.md` and `TECHNICAL_NOTES.md`; the remaining work in `pj_scene3D/docs/QRHI_NEXT.md`. |
 | `research/mosaico_canonical_objects.md` | Reference | Mosaico canonical-object ingestion, decoding, and rendering across the datastore and scene modules. |
 | `QT_NOTES.md` | Reference | **Qt 6.11.1 baseline.** Features new since 6.8 (likely past most models' training cutoff), deprecations, and build/platform floors. Read before using an unfamiliar Qt API or reaching for a 6.8-era workaround. |
 | `TELEMETRY.md` | Reference | The anonymous launch ping: exact field list (the privacy contract, enforced by `telemetry_ping_test`), opt-out, and where it's implemented. Update together with any payload change. |

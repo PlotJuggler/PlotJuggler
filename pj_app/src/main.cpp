@@ -316,7 +316,7 @@ int main(int argc, char* argv[]) {
   parser.addHelpOption();
   parser.addVersionOption();
   const QCommandLineOption test_data_option(
-      u"test-data"_s, u"Populate the datastore with generated sin/cos samples."_s);
+      u"test-data"_s, u"Populate the datastore with generated sin/cos samples and one image."_s);
   parser.addOption(test_data_option);
   const QCommandLineOption plugin_dir_option(
       u"plugin-dir"_s, u"Override the directory where extensions are discovered and managed."_s, u"path"_s);

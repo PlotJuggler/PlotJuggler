@@ -30,6 +30,13 @@ class QWidget;
 
 namespace pj::scene3d {
 
+struct DecodedPointCloud;
+
+// The finite points of `decoded` as a fresh PointVertex array (see
+// PointRenderable::vertexBytes()), with its scalar and packed colour where it
+// carries them. Empty when no point is finite.
+[[nodiscard]] QByteArray packFinitePointVertices(const DecodedPointCloud& decoded);
+
 // First concrete Scene3DLayer: a single sensor_msgs/PointCloud2 topic.
 //
 // Dual-mode: the topic may carry raw PointCloud objects (converted and pushed
@@ -189,8 +196,8 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   // frame) and enforces the view's aggregate vertex budget: an over-budget cloud
   // is dropped with a warning and retried once the budget frees up.
   bool prepareForRender(std::uint64_t remaining_view_vertices) override;
-  [[nodiscard]] const std::vector<PointVertex>& vertices() const override {
-    return vertices_;
+  [[nodiscard]] const QByteArray& vertexBytes() const override {
+    return vertex_bytes_;
   }
   [[nodiscard]] std::uint64_t geometryRevision() const override {
     return geometry_revision_;
@@ -457,7 +464,7 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   QMetaObject::Connection reload_connection_;
 
   // QRhi sink (empty in the GL build).
-  std::vector<PointVertex> vertices_;  // finite points of the active cloud, source frame
+  QByteArray vertex_bytes_;  // PointVertex records: finite points of the active cloud, source frame
   std::uint64_t geometry_revision_ = 0;
   // Auto range of the active cloud's non-spatial scalar (spatial axes derive it
   // from world_bounds_ under the live transform instead).

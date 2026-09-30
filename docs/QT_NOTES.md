@@ -27,12 +27,18 @@ OpenGLWidgets, Svg/SvgWidgets, Concurrent, UiTools, Charts, and **GuiPrivate**
 (private headers — version-sensitive). It does **not** use QML / Qt Quick /
 Qt Quick 3D, and **not** Qt Multimedia (video goes through FFmpeg directly).
 
-Graphics split — important:
-- **`pj_scene2D`** `MediaViewerWidget` is a **`QRhiWidget`** → it *does* go through
-  Qt's RHI. QRhi changes can matter here.
-- **`pj_scene3D`** renders with **raw `QOpenGLWidget`** (its own HDR FBO / SSAO /
-  EDL / AgX passes), **not** QRhi. QRhi additions are latent for scene3D unless we
-  ever port it.
+Graphics — important: **every GPU widget goes through Qt's RHI** in the default
+build (`PJ_SCENE3D_RHI=ON`): the `pj_scene2D` `MediaViewerWidget`, the
+`pj_scene3D` view (its own HDR / SSAO / EDL / AgX passes on `QRhiWidget`) and the
+plot canvas (`PlotRhiCanvas`), on the native API (OpenGL on Linux, D3D11 on
+Windows, Metal on macOS, WebGL2 in the browser). QRhi changes matter to all
+three, and `<rhi/qrhi.h>` has no cross-minor compatibility guarantee, so every
+channel stays on the pinned minor. The legacy `QOpenGLWidget` Scene3D renderer
+and `QwtPlotOpenGLCanvas` remain behind `-DPJ_SCENE3D_RHI=OFF` for one release.
+Qt 6.11 specifics the QRhi code works around (grab-only frames, the OpenGL
+depth resolve and multisample textures, the Metal fallback, `QRhiWidget` pipeline
+caches) are in `pj_scene3D/docs/TECHNICAL_NOTES.md` §3; the 6.12 upgrade
+checklist is in `pj_scene3D/docs/QRHI_NEXT.md`.
 
 ## New APIs worth reaching for (added 6.9–6.11)
 
@@ -78,7 +84,7 @@ Prefer these over hand-rolled equivalents. Names are exact.
 - Per-request TCP keep-alive on `QNetworkRequest` (6.11; default idle close after
   2 min); `QSslCertificate::fromFile()` (6.10).
 
-**QRhi** (matters for `pj_scene2D`'s `QRhiWidget`, not scene3D)
+**QRhi** (matters for every GPU widget: Scene3D, Scene2D, the plot canvas)
 - D3D11/12 vblank watcher thread → lower CPU/latency (6.9); integer & depth
   texture formats (6.9); `QRhi::enumerateAdapters()` (6.10). Mostly Windows-side
   but the RHI path is shared.
@@ -139,8 +145,8 @@ before the first namespace/code.
 QML / Qt Quick / Qt Quick 3D (incl. SSGI/SSR/motion vectors), Qt Multimedia &
 the PipeWire backend, Qt WebEngine, Qt Canvas Painter, FlexboxLayout, Lottie /
 VectorImage, Qt Graphs (the Charts/DataViz successor), Qt XR. These dominate the
-6.9–6.12 headlines but touch nothing in PJ4 (pure Widgets + raw OpenGL + Qwt +
-FFmpeg). scene3D's photorealism is hand-written OpenGL, *not* Qt Quick 3D.
+6.9–6.12 headlines but touch nothing in PJ4 (pure Widgets + QRhi + Qwt +
+FFmpeg). scene3D's photorealism is hand-written QRhi passes, *not* Qt Quick 3D.
 
 ## See also
 

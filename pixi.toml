@@ -108,7 +108,9 @@ sccache = "0.16.*"               # MSVC cache + native GHA backend (see activati
 # preserve MSVC's own /FS synchronization for concurrent writers to one shared
 # PDB, so a parallel build hits C1041 "cannot open program database" without
 # this. Inert on Linux (these are MSVC-only CMake variables).
-configure = "cmake -G Ninja -S . -B build-pixi -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH=\"$CONDA_PREFIX;$CONDA_PREFIX/Library\" -DPJ_SYSTEM_QWT=ON -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+# -DPJ_SCENE3D_RHI=ON is explicit, as in build.sh: an existing build-pixi cache
+# keeps whatever value it was configured with, the option's default aside.
+configure = "cmake -G Ninja -S . -B build-pixi -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH=\"$CONDA_PREFIX;$CONDA_PREFIX/Library\" -DPJ_SYSTEM_QWT=ON -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DPJ_SCENE3D_RHI=ON"
 build = { cmd = "cmake --build build-pixi --parallel", depends-on = ["configure"] }
 # --timeout 120 bounds any single test (a GL test under software rendering /
 # llvmpipe can stall) so a hang fails fast instead of holding the runner — the
@@ -119,7 +121,7 @@ test = { cmd = "ctest --test-dir build-pixi --output-on-failure --timeout 120", 
 # -DPJ_SYSTEM_QWT=ON (no conda qwt on Windows — see the qwt comment in
 # [target.linux-64.dependencies]); qwt is FetchContent-built statically.
 [target.win-64.tasks]
-configure = "cmake -G Ninja -S . -B build-pixi -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH=\"$CONDA_PREFIX;$CONDA_PREFIX/Library\" -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+configure = "cmake -G Ninja -S . -B build-pixi -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH=\"$CONDA_PREFIX;$CONDA_PREFIX/Library\" -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DPJ_SCENE3D_RHI=ON"
 
 # ccache speeds up the GCC toolchain (linux). CMake reads these env vars to
 # seed CMAKE_<LANG>_COMPILER_LAUNCHER.

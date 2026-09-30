@@ -148,6 +148,10 @@ class PlotWidgetBase : public QWidget {
 
  public slots:
   void replot();
+  // replot() after a change to markers only (the tracker, ride-along markers):
+  // the GPU canvas keeps its grid and curve geometry. Any other change needs
+  // replot().
+  void replotOverlays();
   virtual void removeAllCurves();
 
  signals:

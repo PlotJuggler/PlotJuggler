@@ -3,10 +3,12 @@
 
 #include "point_rhi_pass.h"
 
+#include <QtGlobal>
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <limits>
 
 #include "pj_scene3d_core/cube_draw_policy.h"
@@ -107,8 +109,6 @@ bool PointRhiPass::initialize(const RhiPassSetup& setup) {
   // CCW-outward, cube_mesh.h).
   create_pair(
       Geometry::kFan, QRhiGraphicsPipeline::Triangles, QStringLiteral("cube"), layout, QRhiGraphicsPipeline::Back);
-  // Optional: without compute (WebGL2, GL < 4.3) every layer keeps CPU bounds.
-  (void)aabb_reducer_.initialize(rhi);
   if (rhi->isFeatureSupported(QRhi::VertexShaderPointSize)) {
     create_pair(Geometry::kPointList, QRhiGraphicsPipeline::Points, QStringLiteral("point_list"), list_layout);
   }
@@ -123,43 +123,11 @@ void PointRhiPass::registerPipelines(ScenePipelineRegistry& registry) const {
 }
 
 void PointRhiPass::setLayers(const std::vector<PointRenderable*>& layers) {
-  adoptLayerList(
-      layers, layers_, layer_gpu_, [this](PointRenderable* layer, LayerGpu& gpu) { dropLayerGpu(layer, gpu); });
-}
-
-void PointRhiPass::dropLayerGpu(PointRenderable* layer, LayerGpu& gpu) {
-  aabb_reducer_.forget(layer);
-  releaseLayerGpu(gpu);
-}
-
-std::optional<AABB> PointRhiPass::boundsOf(const PointRenderable* layer, const LayerGpu& gpu, bool current_only) {
-  if (auto bounds = layer->sourceBounds(); bounds.has_value()) {
-    return bounds;
-  }
-  if (gpu.gpu_bounds_revision.has_value() && gpu.gpu_bounds.valid &&
-      (!current_only || *gpu.gpu_bounds_revision == layer->geometryRevision())) {
-    return gpu.gpu_bounds;
-  }
-  return std::nullopt;
-}
-
-// A result replaces the held box only when it describes a newer sample: a
-// reduction that lands late never rolls the bounds back.
-void PointRhiPass::adoptGpuBounds() {
-  for (const PointAabbReducer::Result& result : aabb_reducer_.takeResults()) {
-    auto* layer = static_cast<PointRenderable*>(const_cast<void*>(result.key));
-    if (const auto gpu = layer_gpu_.find(layer);
-        gpu != layer_gpu_.end() &&
-        (!gpu->second.gpu_bounds_revision.has_value() || result.revision > *gpu->second.gpu_bounds_revision)) {
-      gpu->second.gpu_bounds = result.bounds;
-      gpu->second.gpu_bounds_revision = result.revision;
-    }
-  }
+  adoptLayerList(layers, layers_, layer_gpu_, releaseLayerGpu);
 }
 
 void PointRhiPass::admit(const PlaceFn& place, SceneBoundsCollector& bounds) {
   admitted_.clear();
-  adoptGpuBounds();
   AABB point_bounds;
   AABB depth_bounds;
   std::uint64_t remaining_vertices = kSceneLimits.max_point_vertices_per_view;
@@ -168,8 +136,8 @@ void PointRhiPass::admit(const PlaceFn& place, SceneBoundsCollector& bounds) {
       continue;
     }
     layer->prepareForRender(remaining_vertices);
-    if (layer->vertices().empty()) {
-      pruneLayerGpu(layer_gpu_, layer, [this](PointRenderable* dropped, LayerGpu& gpu) { dropLayerGpu(dropped, gpu); });
+    if (layer->pointCount() == 0) {
+      pruneLayerGpu(layer_gpu_, layer, releaseLayerGpu);
       continue;
     }
     const auto placed = place(layer->renderFrameId());
@@ -178,12 +146,12 @@ void PointRhiPass::admit(const PlaceFn& place, SceneBoundsCollector& bounds) {
     }
     // Placement first, budget second: a temporarily unplaceable layer must not
     // reserve capacity ahead of a later layer whose frame resolves this frame.
-    if (!tryConsumeBudget(static_cast<std::uint64_t>(layer->vertices().size()), remaining_vertices)) {
+    if (!tryConsumeBudget(static_cast<std::uint64_t>(layer->pointCount()), remaining_vertices)) {
       continue;  // prepareForRender() normally clears this; keep subtraction fail-closed.
     }
-    const auto gpu = layer_gpu_.find(layer);
-    const auto source_bounds =
-        gpu != layer_gpu_.end() ? boundsOf(layer, gpu->second, /*current_only=*/false) : layer->sourceBounds();
+    const std::optional<AABB> source_bounds = layer->sourceBounds();
+    // Every conversion bounds the finite points it keeps: a non-empty cloud has bounds.
+    Q_ASSERT(source_bounds.has_value());
     if (source_bounds.has_value()) {
       const AABB placed_bounds = transformedBounds(*source_bounds, *placed);
       AABB& family_bounds = layer->isDepthCloud() ? depth_bounds : point_bounds;
@@ -206,7 +174,6 @@ void PointRhiPass::prepare(const RhiFrameContext& frame, const ViewInputs& view)
   last_cube_instance_count_ = 0;
   last_cube_sprite_layer_count_ = 0;
   last_point_list_layer_count_ = 0;
-  gpu_bounds_pending_ = false;
   const float device_width = static_cast<float>(std::max(view.device_size.width(), 1));
   const float device_height = static_cast<float>(std::max(view.device_size.height(), 1));
   const float dpr = std::max(view.device_pixel_ratio, 1.0F);
@@ -222,12 +189,7 @@ void PointRhiPass::prepare(const RhiFrameContext& frame, const ViewInputs& view)
     if (!ensureLayerGpu(frame.rhi, gpu) || !uploadInstances(frame.rhi, frame.updates, layer, gpu) || gpu.count == 0) {
       continue;
     }
-    const std::optional<AABB> source_bounds = boundsOf(layer, gpu, /*current_only=*/true);
-    if (!layer->sourceBounds().has_value() && gpu.gpu_bounds_revision != gpu.uploaded_revision &&
-        aabb_reducer_.available()) {
-      aabb_reducer_.request(layer, gpu.uploaded_revision, gpu.instances, gpu.count);
-      gpu_bounds_pending_ = true;
-    }
+    const std::optional<AABB> source_bounds = layer->sourceBounds();
     const PointShape shape = layer->shape();
     const bool cube = shape == PointShape::kCube;
     if (layer->isDepthCloud()) {
@@ -388,39 +350,24 @@ bool PointRhiPass::ensureLayerGpu(QRhi* rhi, LayerGpu& gpu) {
 }
 
 // Static, not Dynamic: a cloud changes per sample, not per frame, and a Dynamic
-// buffer keeps one host-visible copy per frame in flight.
+// buffer keeps one host-visible copy per frame in flight. The batch shares the
+// layer's array instead of copying it; only the backend's staging copy remains.
 bool PointRhiPass::uploadInstances(QRhi* rhi, QRhiResourceUpdateBatch* updates, PointRenderable* layer, LayerGpu& gpu) {
   if (gpu.uploaded_revision == layer->geometryRevision()) {
     return true;
   }
-  const auto& vertices = layer->vertices();
-  const std::uint64_t bytes = static_cast<std::uint64_t>(vertices.size()) * sizeof(PointVertex);
-  if (bytes > std::numeric_limits<quint32>::max()) {
+  const QByteArray& bytes = layer->vertexBytes();
+  if (static_cast<std::uint64_t>(bytes.size()) > std::numeric_limits<quint32>::max()) {
     return false;
   }
-  const auto required = static_cast<quint32>(bytes);
-  // Reallocate to grow, or to give back a buffer more than twice the cloud.
-  if (gpu.instances == nullptr || gpu.capacity < required ||
-      gpu.capacity > std::max<quint32>(required, kMinimumInstanceBytes / 2U) * 2U) {
-    delete gpu.instances;
-    gpu.capacity = std::max(required, kMinimumInstanceBytes);
-    // Storage usage lets the bounds reduction read the cloud where it already is.
-    const QRhiBuffer::UsageFlags usage =
-        aabb_reducer_.available() ? QRhiBuffer::UsageFlags(QRhiBuffer::VertexBuffer | QRhiBuffer::StorageBuffer)
-                                  : QRhiBuffer::UsageFlags(QRhiBuffer::VertexBuffer);
-    gpu.instances = rhi->newBuffer(QRhiBuffer::Static, usage, gpu.capacity);
-    if (!gpu.instances->create()) {
-      delete gpu.instances;
-      gpu.instances = nullptr;
-      gpu.capacity = 0;
-      gpu.count = 0;
-      return false;
-    }
+  // Admission drops empty clouds, so `bytes` is never empty here.
+  if (!ensureStaticVertexBuffer(
+          rhi, gpu.instances, gpu.capacity, static_cast<quint32>(bytes.size()), kMinimumInstanceBytes)) {
+    gpu.count = 0;
+    return false;
   }
-  if (required != 0U) {
-    updates->uploadStaticBuffer(gpu.instances, 0, required, vertices.data());
-  }
-  gpu.count = static_cast<quint32>(vertices.size());
+  updates->uploadStaticBuffer(gpu.instances, 0, bytes);
+  gpu.count = static_cast<quint32>(layer->pointCount());
   gpu.uploaded_revision = layer->geometryRevision();
   return true;
 }
@@ -435,8 +382,6 @@ void PointRhiPass::releaseLayerGpu(LayerGpu& gpu) {
 }
 
 void PointRhiPass::release() {
-  aabb_reducer_.release();
-  gpu_bounds_pending_ = false;
   for (auto& [layer, gpu] : layer_gpu_) {
     (void)layer;
     releaseLayerGpu(gpu);

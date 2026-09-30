@@ -80,17 +80,15 @@ set(PJ_BUILD_TESTS ${_PJ_BUILD_TESTS_DEFAULT} CACHE BOOL "Build foundation (SDK 
 unset(_PJ_BUILD_TESTS_DEFAULT)
 option(PJ_BUILD_DEMOS "Build the pj_scene3D standalone dev demos" ON)
 # Scene3D renderer: QRhi (Vulkan/D3D/Metal/OpenGL; the only one in the browser)
-# or the OpenGL one. Both define the same classes, so a build has exactly one.
-# See pj_scene3D/docs/QRHI_MIGRATION.md.
-option(PJ_SCENE3D_RHI "Build Scene3D with the QRhi renderer instead of the OpenGL one" OFF)
+# or the legacy OpenGL one. Both define the same classes, so a build has exactly
+# one. OFF also selects the QwtPlotOpenGLCanvas plots; it is kept for one release
+# as the rollback and is then deleted. See pj_scene3D/docs/QRHI_NEXT.md.
+option(PJ_SCENE3D_RHI "Build Scene3D with the QRhi renderer instead of the OpenGL one" ON)
 if(EMSCRIPTEN)
     set(PJ_SCENE3D_RHI ON)
-endif()
-# In a QRhi build every GPU widget (plot canvas, Scene3D, Scene2D media) is a
-# QRhiWidget, so a top-level window can use the platform's native graphics API;
-# a QOpenGLWidget anywhere in a window would pin it to OpenGL.
-if(PJ_SCENE3D_RHI)
-    add_compile_definitions(PJ_RHI_WIDGETS)
+elseif(NOT PJ_SCENE3D_RHI)
+    message(WARNING "PJ_SCENE3D_RHI=OFF builds the legacy OpenGL Scene3D renderer and plot "
+                    "canvas. It is deprecated, kept for one release as a rollback, and will be removed.")
 endif()
 # The GPU widgets' test-only fault injection and QRhi lifecycle counters
 # (pj_widgets/GraphicsApi.h: rhiTestFault, noteRhiAdoption). Release builds
@@ -159,6 +157,12 @@ if(EMSCRIPTEN)
 else()
     set(PJ_QT_REQUIRED_VERSION ${PJ_QT_VERSION})
     find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS Core Gui Widgets Network OpenGLWidgets Xml Svg SvgWidgets)
+    # Header-only process and frame probes (cmake/test_mains/pj_bench_probes.h) of
+    # every frame benchmark, with or without tests.
+    find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS GuiPrivate)
+    add_library(pj_bench_probes INTERFACE)
+    target_include_directories(pj_bench_probes INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/test_mains")
+    target_link_libraries(pj_bench_probes INTERFACE Qt6::Widgets Qt6::GuiPrivate)
 endif()
 find_package(fmt REQUIRED)
 

@@ -65,6 +65,14 @@ The first build may also compile missing dependencies.
 Rerun `./build.sh` for incremental builds. To omit the test suite, use
 `./build.sh --skip-test`; other options are listed by `./build.sh --help`.
 
+The default build renders Scene3D, the plots and the media viewer through QRhi
+(`PJ_SCENE3D_RHI=ON`): OpenGL on Linux, D3D11 on Windows, Metal on macOS;
+`PJ_GRAPHICS_API=opengl|vulkan|d3d11|d3d12|metal` overrides the API at run time.
+For one release, `PJ_SCENE3D_RHI=OFF ./build.sh` (or `-DPJ_SCENE3D_RHI=OFF` on a
+manual configure) still builds the legacy OpenGL renderer, which needs OpenGL
+4.5; CMake warns when it is selected. The scripts pass the flag on every
+configure, so switching back needs no clean tree.
+
 File loaders, streamers and toolboxes are distributed separately. Open
 **File → Marketplace** to install them after launching your source build.
 See [pj-official-plugins](https://github.com/PlotJuggler/pj-official-plugins)
@@ -85,11 +93,14 @@ under a virtual display, use the same command as Linux CI:
 xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120
 ```
 
-GL-backed tests self-skip when there is no usable GL context or the driver's GL
-version is below 4.5 — expected on a plain headless run, but Linux CI's xvfb +
-Mesa llvmpipe lane is supposed to have GL 4.5. Set `PJ_REQUIRE_GPU_TESTS=1` (as
-that CI lane does) to turn those skips into hard failures instead, so a broken
-GL stack can't go quietly green there.
+GPU-backed tests self-skip when there is no usable graphics backend (the QRhi
+display runners under `offscreen`, or GL below 4.5 in the legacy build) —
+expected on a plain headless run, but Linux CI's xvfb + Mesa llvmpipe/lavapipe
+lane is supposed to have both. Set `PJ_REQUIRE_GPU_TESTS=1` (as that CI lane
+does) to turn those skips into hard failures instead, so a broken stack can't go
+quietly green there. The QRhi display runners register one pass per backend
+(`<runner>.opengl.*`, `.vulkan.*`, labels `qrhi-<backend>`); the Vulkan passes
+need `VK_ICD_FILENAMES` pointing at a Vulkan driver such as lavapipe.
 
 ## Windows setup
 

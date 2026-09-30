@@ -96,7 +96,7 @@ class WarningCollector {
 }
 
 // Presents one real frame (the OpenGL QRhi's grab-only frames reuse stale state,
-// see QRHI_MIGRATION.md Findings), then grabs. Null when nothing was presented.
+// see pj_scene3D/docs/TECHNICAL_NOTES.md, Qt bugs), then grabs. Null when nothing was presented.
 [[nodiscard]] inline QImage presentAndGrab(QRhiWidget* widget) {
   int submitted = 0;
   const auto connection = QObject::connect(widget, &QRhiWidget::frameSubmitted, [&submitted] { ++submitted; });

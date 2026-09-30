@@ -155,6 +155,28 @@ QRhi. The viewer keeps its last frame and annotations on the CPU and re-uploads
 both. `rhi_dock_lifecycle_test` (pj_app) checks orientation and overlays across
 a float, a redock and a tab switch on OpenGL and Vulkan.
 
+### Render target, uploads and limits
+
+- **Colour-only target.** Nothing in the viewer depth-tests, so it turns
+  `autoRenderTarget` off and builds its own `QRhiTextureRenderTarget` over
+  `colorTexture()` in `initialize()` (`PJ::RhiColorTarget`: rebuilt on a resize,
+  its render-pass descriptor kept so the pipelines survive): QRhiWidget's automatic target would
+  add a depth-stencil renderbuffer of 4 B/px that nothing uses.
+- **Unchanged layers upload nothing.** Each texture layer keeps the
+  `shared_ptr` of the pixel buffer its textures hold. A frame (or a composite's
+  layer) that brings the same buffer only refreshes its per-frame state (opacity,
+  depth range, colour matrix); holding the reference keeps a new buffer from
+  reusing the address meanwhile. A re-created texture (size, format, filter) or a
+  new QRhi always uploads. Producers hand out a fresh buffer per decoded frame.
+- **Texture size limit.** A frame wider or taller than `QRhi::TextureSizeMax`
+  is not drawn (its layer is dropped) and a warning is logged once per viewer;
+  `setMaxTextureSizeForTest()` lowers the limit so `rhi_dock_lifecycle_test`
+  needs no gigabyte image.
+- **Glyph cache.** Text overlays cache one R8 texture per (text, size); past 512
+  entries the cache is dropped whole at the next text rebuild, so a stream of
+  ever-new strings (counters, timestamps) cannot grow it without bound.
+- **Shader packs** are read once per process and shared by every viewer and QRhi.
+
 ### GPU failure state
 
 No draw may reference a resource whose `create()` failed (D3D11 crashes in
@@ -853,15 +875,17 @@ chosen at runtime, because the float CPU resample was ~63–68% of process CPU
 - **GPU path (default when available).** The decode worker leaves the frame RAW
   and attaches the cached `shared_ptr<const UndistortMap>` to
   `DecodedFrame::rectify_map`. `MediaViewerWidget` rectifies in the image
-  fragment shader via an `RGBA32F` remap LUT (`undistortMapToNormalizedRG`,
-  NEAREST, +0.5 half-texel) — one extra texture lookup per pixel, and the upload
+  fragment shader via a remap LUT (`undistortMapToNormalizedRG`, +0.5
+  half-texel). Qt 6.11's QRhi has no `RG32F`, so the two float UVs go up as their
+  bits in an `RG32UI` texture (8 B/px) and the
+  shader reads them texel-exact (`texelFetch`, then `uintBitsToFloat`) — one extra texture lookup per pixel, and the upload
   shrinks to the raw frame size. Works for YUV420P too (the shader remaps the UV,
   then samples the planes).
 - **CPU fallback** (`rectifyFrameFast` + `UndistortMapFast`): a precomputed
   source index + fixed-point bilinear fractions resampled into a reused buffer —
   **bit-for-bit equal** to the float `rectifyFrame` (a unit test asserts zero
   mismatches) and ~2× faster (34.1 → 16.6 ms/frame at 1920×1280 RGB). Used when
-  the backend can't sample an `RGBA32F` LUT.
+  the backend can't sample an `RG32UI` LUT.
 - **Selection.** A one-time capability handshake
   (`MediaSource::setGpuRectificationAvailable`, probed by the widget in
   `initialize()`, fanned out through `Composite`/`BorrowedMediaSource`) flips the

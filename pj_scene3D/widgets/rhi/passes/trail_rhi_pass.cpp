@@ -21,7 +21,7 @@ struct alignas(16) TrailUniforms {
 constexpr quint32 kUniformBytes = sizeof(TrailUniforms);
 // Position, tangent, side: 7 floats per strip vertex, two vertices per point.
 constexpr std::size_t kFloatsPerVertex = 7;
-constexpr quint32 kInitialVertexBytes = 16U * 1024U;
+constexpr quint32 kMinimumVertexBytes = 16U * 1024U;
 constexpr auto kStages = QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage;
 
 TrailLayer* trailOf(Scene3DLayer* owner) {
@@ -137,7 +137,7 @@ void TrailRhiPass::prepare(
     if (gpu.trail != trail || gpu.uploaded_revision != trail->buildRevision() ||
         gpu.uploaded_origin != frame.render_origin) {
       buildRibbon(points, frame.render_origin, scratch_);
-      frame.updates->updateDynamicBuffer(gpu.vertex_buffer, 0, vertex_bytes, scratch_.data());
+      frame.updates->uploadStaticBuffer(gpu.vertex_buffer, 0, vertex_bytes, scratch_.data());
       gpu.trail = trail;
       gpu.uploaded_revision = trail->buildRevision();
       gpu.uploaded_origin = frame.render_origin;
@@ -203,7 +203,7 @@ bool TrailRhiPass::submit(
 
 bool TrailRhiPass::ensureOwnerGpu(QRhi* rhi, OwnerGpu& gpu, quint32 vertex_bytes) {
   const quint32 previous_capacity = gpu.vertex_capacity;
-  if (!ensureVertexBuffer(rhi, gpu.vertex_buffer, gpu.vertex_capacity, vertex_bytes, kInitialVertexBytes)) {
+  if (!ensureStaticVertexBuffer(rhi, gpu.vertex_buffer, gpu.vertex_capacity, vertex_bytes, kMinimumVertexBytes)) {
     releaseOwnerGpu(gpu);
     return false;
   }

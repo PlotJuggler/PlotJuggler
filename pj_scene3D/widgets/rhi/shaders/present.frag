@@ -6,7 +6,7 @@ layout(std140, binding = 0) uniform CompositeUniforms {
     vec4 composite_params;  // exposure, saturation, background coverage threshold, EDL floor
     mat4 inverse_projection;  // texture space (u, v, stored depth) -> view space
     vec4 edl_params;        // strength, radius in pixels, maximum neighbour gap, enabled
-    vec4 ssao_params;       // AO strength, enabled, unused, unused
+    vec4 ssao_params;       // AO strength, enabled, coverage from depth (the depth-resolve chain), unused
     vec4 grade_params;      // tonemap mode (0 None, 1 ACES, 2 AgX, 3 Neutral), unused x3
 };
 
@@ -136,7 +136,10 @@ float ssaoShade(vec2 uv) {
 
 void main() {
     vec4 scene = texture(scene_color, texture_uv);
-    float coverage = texture(scene_coverage, texture_uv).a;
+    // The depth-resolve chain has no replay coverage: a covered pixel is one a
+    // depth-writing draw reached, as the replay's alpha records.
+    float coverage = ssao_params.z > 0.5 ? (texture(scene_depth, texture_uv).r < 1.0 ? 1.0 : 0.0)
+                                         : texture(scene_coverage, texture_uv).a;
     vec3 hdr = scene.rgb * composite_params.x;
     hdr *= mix(1.0, ssaoShade(texture_uv), ssao_params.x);
     hdr *= mix(composite_params.w, 1.0, edlShade(texture_uv));

@@ -881,17 +881,19 @@ the output UV through a per-camera lookup texture before sampling:
 
 ```glsl
 if (rectify == 1) {
-    vec2 s = texture(remap_tex, v_uv).rg;   // RGBA32F LUT, NEAREST
+    vec2 s = uintBitsToFloat(texelFetch(remap_tex, texel, 0).rg);  // RG32UI LUT, texel-exact
     if (s.x < 0.0) { fragColor = vec4(0,0,0,1); return; }  // OOB sentinel
     uv = s;                                  // sample the image at the source coord
 }
 ```
 
-- The LUT (`remap_tex`, SRB binding 4) is `out_w × out_h` RGBA32F, built once per
-  camera by `undistortMapToNormalizedRG` and cached on the layer (keyed by map
-  identity). `.rg` is the normalized source coordinate with a +0.5 half-texel
-  offset so the LINEAR image fetch reproduces the CPU bilinear; the LUT itself is
-  sampled NEAREST so each output pixel gets its exact precomputed source coord.
+- The LUT (`remap_tex`, SRB binding 4, a `usampler2D`) is `out_w × out_h` RG32UI
+  holding the bits of two floats (QRhi has no RG32F), built once per camera by
+  `undistortMapToNormalizedRG` and cached on the layer (keyed by map identity).
+  `.rg` is the normalized source coordinate with a +0.5 half-texel offset so the
+  LINEAR image fetch reproduces the CPU bilinear; the LUT itself is fetched
+  texel-exact (`texel` = the output UV times the LUT size, clamped) so each output
+  pixel gets its exact precomputed source coord.
 - **Logical-size decouple:** on the GPU path the *uploaded* texture is the small
   RAW frame, but the widget reports the *logical* size as the map's
   `out_width/out_height`. `tex_width_`/`tex_height_`/`frame_aspect_` and the
@@ -900,7 +902,7 @@ if (rectify == 1) {
   space regardless of CPU-vs-GPU path. The point inspector maps the cursor in
   logical space and reads the source pixel through the map.
 - **Capability handshake:** `MediaViewerWidget::initialize()` probes
-  `isTextureFormatSupported(RGBA32F)` (plus successful base-pipeline creation) and
+  `isTextureFormatSupported(RG32UI)` (plus successful base-pipeline creation) and
   calls `MediaSource::setGpuRectificationAvailable(...)`, fanned out through
   `Composite`/`BorrowedMediaSource` to the `ImagePipelineSource` layers. The
   default is the CPU-correct path until the widget confirms GPU support; a flip
@@ -923,18 +925,17 @@ gl_Position = vec4(view_matrix * vec3(in_position, 1.0), 1.0);
 The transform is updated on mouse events and stored as widget state.
 No pixel reprocessing — transformation is free on the GPU.
 
-### 7.4 Software fallback
+### 7.4 No GPU, no hardware decode
 
-When `QRhi` reports no suitable GPU backend, or when the platform
-lacks GPU support:
+Decoding and rendering degrade separately:
 
-1. Decoder falls back to software decode (guaranteed by
-   `FfmpegDecoder`'s fallback logic).
-2. CPU-side YUV→RGB conversion via sws_scale or manual matrix
-   multiply.
-3. Upload RGB pixels to a `QImage` and render via `QPainter`.
-
-Acceptable degradation; the UX remains functional.
+1. **Decode.** Without a usable hardware decoder, `FfmpegDecoder` falls back to
+   software decode (guaranteed by its fallback logic).
+2. **Render.** There is no CPU renderer. A GPU-less machine still gets a QRhi
+   (WARP on Windows, Mesa's software rasterizer on Linux). When the viewer's QRhi
+   or its base pipelines cannot be created, it enters its failure state: it clears
+   to the background and `Scene2DDockWidget` shows the reason in a label below it
+   (TECHNICAL_NOTES.md → "GPU failure state").
 
 ---
 

@@ -633,7 +633,10 @@ void RobotModelLayer::rebuildLinkDraws() {
     call.frame_id = draw.frame_id;
     call.model = glm::scale(draw.origin, draw.scale);
     call.group = draw.collision ? ModelDrawGroup::kCollision : ModelDrawGroup::kVisual;
-    call.use_material = !draw.explicit_color;
+    // Primitives and the placeholder carry the draw's colour alone (their unit
+    // meshes' material and vertex colours would apply it a second time); only a
+    // mesh without an explicit URDF colour shows its own materials, as on GL.
+    call.use_material = draw.shape == LinkDraw::Shape::kMesh && !draw.explicit_color;
     call.override_color = draw.color;
     switch (draw.shape) {
       case LinkDraw::Shape::kBox:

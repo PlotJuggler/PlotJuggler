@@ -133,7 +133,7 @@ inline constexpr SceneLimits kBrowserSceneLimits{
 // maps of tens of millions of points, 16k occupancy maps, multi-million
 // triangle robots) but not unlimited: every per-view total stays below the
 // renderer's quint32 buffer sizes and int statistics counters (static_asserts
-// below and in scene_view_widget_rhi.h). Largest single buffers: 100M points x
+// below and in scene_view_widget_rhi.cpp). Largest single buffers: 100M points x
 // 20 B = 2 GB, 20M marker vertices x 28 B = 560 MB. HDR: 3840x2160 x 64 B =
 // 506 MiB, so 1 GiB per view fits one 5K view and 4 GiB per QRhi eight 4K
 // docks. Model node depth stays at 256: it bounds recursion, not memory.
@@ -196,7 +196,7 @@ inline constexpr SceneLimits kSceneLimits = kDesktopSceneLimits;
 // Type bounds the renderer relies on, independent of vertex layouts: per-view
 // totals feed int statistics counters, per-layer texel/index counts feed
 // quint32 upload sizes and QSize ints. Layout-dependent byte bounds are checked
-// next to the vertex structs in scene_view_widget_rhi.h.
+// in the SceneViewWidget constructor (scene_view_widget_rhi.cpp).
 [[nodiscard]] constexpr bool sceneLimitsFitRendererTypes(const SceneLimits& limits) noexcept {
   constexpr auto kIntMax = static_cast<std::uint64_t>(std::numeric_limits<int>::max());
   constexpr std::uint64_t kU32Max = std::numeric_limits<std::uint32_t>::max();

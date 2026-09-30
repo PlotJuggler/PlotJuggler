@@ -14,6 +14,7 @@
 #include <QShowEvent>
 #endif
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -109,6 +110,16 @@ class MediaViewerWidget : public QRhiWidget {
   void setPointInspectorEnabled(bool enabled);
   [[nodiscard]] bool pointInspectorEnabled() const noexcept;
 
+#ifdef PJ_RHI_TEST_HOOKS
+  /// Lowers the frame-size limit below the backend's TextureSizeMax (0 restores
+  /// it), so a test can exercise the rejection without a huge image.
+  void setMaxTextureSizeForTest(int pixels);
+  /// Frame texture uploads queued since construction; cumulative.
+  [[nodiscard]] std::uint64_t frameUploadCountForTest() const noexcept {
+    return frame_upload_count_;
+  }
+#endif
+
  signals:
   /// Non-empty while the viewer cannot render (see the class comment); empty
   /// once a later initialize() recovers. Emitted on changes only.
@@ -141,7 +152,6 @@ class MediaViewerWidget : public QRhiWidget {
   void refreshPointInspector();
   void schedulePointInspectorRefresh();
   void hidePointInspector();
-  static QShader loadShader(const QString& path);
   // Builds the samplers, placeholder and base texture layer and the image
   // pipeline; false leaves partially created resources for releaseResources().
   [[nodiscard]] bool createBaseResources(const QShader& vert, const QShader& frag);
@@ -183,7 +193,7 @@ class MediaViewerWidget : public QRhiWidget {
     QRhiTexture* tex_y = nullptr;
     QRhiTexture* tex_u = nullptr;
     QRhiTexture* tex_v = nullptr;
-    QRhiTexture* tex_remap = nullptr;  ///< RGBA32F rectification LUT (.rg = source UV); null -> bind placeholder.
+    QRhiTexture* tex_remap = nullptr;  ///< RG32UI rectification LUT (float bits of the source UV); null -> placeholder.
     QRhiBuffer* uniform_buf = nullptr;
     QRhiShaderResourceBindings* srb = nullptr;
     int width = 0;   ///< Uploaded texture width = SOURCE (raw) width on the GPU-rectify path.
@@ -211,6 +221,10 @@ class MediaViewerWidget : public QRhiWidget {
     MagFilter mag_filter = MagFilter::kLinear;
     // A (re)create failed during this upload: uploadLayerFrame() destroys the layer.
     bool dropped = false;
+    // The pixel buffer the textures hold. A frame that brings the same buffer
+    // (another layer of a composite changed) uploads nothing; holding the
+    // reference keeps a new buffer from reusing its address meanwhile.
+    std::shared_ptr<std::vector<uint8_t>> uploaded_pixels;
   };
 
   struct OverlayPipeline {
@@ -230,7 +244,7 @@ class MediaViewerWidget : public QRhiWidget {
   bool ensureTextureLayer(TextureLayerResources& layer);
   bool uploadDecodedFrameToTexture(
       const DecodedFrame& frame, TextureLayerResources& layer, QRhiResourceUpdateBatch* updates);
-  // Build/upload (once per map) the RGBA32F rectification LUT for `map` into
+  // Build/upload (once per map) the RG32UI rectification LUT for `map` into
   // layer.tex_remap, rebinding the layer's SRB to it, and set layer.rectify=1.
   // The GPU then undistorts at draw time. Returns false on allocation failure.
   bool ensureRemapTexture(TextureLayerResources& layer, const UndistortMap& map, QRhiResourceUpdateBatch* updates);
@@ -272,6 +286,14 @@ class MediaViewerWidget : public QRhiWidget {
 
   // Pipeline for YUV→RGB shader (video frames)
   QRhi* rhi_cached_ = nullptr;  ///< The QRhi whose resources this viewer holds; null after releaseResources().
+  // A colour-only target over colorTexture() (autoRenderTarget is off: nothing
+  // here depth-tests, so QRhiWidget's depth-stencil would be 4 B/px for nothing).
+  // The descriptor outlives resizes, so the pipelines do too.
+  PJ::RhiColorTarget color_target_;
+  int max_texture_size_ = 0;           ///< the backend's TextureSizeMax, read in initialize()
+  int max_texture_size_for_test_ = 0;  ///< 0: none
+  bool oversize_frame_logged_ = false;
+  std::uint64_t frame_upload_count_ = 0;
   bool optional_failures_logged_ = false;  ///< An optional part's failure was logged for this QRhi.
 #ifdef PJ_TARGET_WASM
   // Qt/WASM switches the top-level from raster to RHI composition when this
@@ -290,10 +312,10 @@ class MediaViewerWidget : public QRhiWidget {
   // exact precomputed source coord (LINEAR would interpolate across the
   // out-of-bounds sentinel and smear the border).
   QRhiSampler* remap_sampler_ = nullptr;
-  // 1x1 RGBA32F placeholder bound at SRB slot 4 for layers that don't rectify, so
+  // 1x1 RG32UI placeholder bound at SRB slot 4 for layers that don't rectify, so
   // every texture-layer pipeline shares one SRB layout.
   QRhiTexture* remap_placeholder_tex_ = nullptr;
-  // True once initialize() confirms the backend can sample an RGBA32F LUT; gates
+  // True once initialize() confirms the backend can sample an RG32UI LUT; gates
   // whether the source is told to defer rectification to the GPU.
   std::atomic_bool gpu_rectify_supported_{false};
   TextureLayerResources base_texture_;
@@ -395,7 +417,11 @@ class MediaViewerWidget : public QRhiWidget {
     int width = 0;
     int height = 0;
   };
+  // Bounded: an annotation stream with ever-new strings (counters, timestamps)
+  // would otherwise grow it forever; it is dropped whole when the text overlay
+  // is rebuilt past kMaxGlyphCacheEntries.
   std::unordered_map<TextKey, TextEntry, TextKeyHash> text_cache_;
+  static constexpr std::size_t kMaxGlyphCacheEntries = 512;
   // Per-text quad metadata captured at rebuild time, consumed at draw time.
   struct TextDrawItem {
     QRhiShaderResourceBindings* srb;  // pointer borrowed from text_cache_

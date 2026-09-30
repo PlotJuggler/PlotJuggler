@@ -5,6 +5,9 @@
 layout(binding = 1) uniform sampler2D base_color_map;
 
 layout(location = 0) in vec4 model_color;
+// Unused, but declared: D3D11 links the stages by register, so skipping
+// model.vert's location 1 would read the UV from the normal's register.
+layout(location = 1) in vec3 model_normal;
 layout(location = 2) in vec2 model_uv;
 layout(location = 3) flat in vec4 model_params;
 

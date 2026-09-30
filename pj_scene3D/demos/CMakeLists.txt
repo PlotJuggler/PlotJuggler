@@ -4,9 +4,19 @@
 
 set(CMAKE_AUTOMOC ON)
 
+# Qt/GL-free benchmark for the canonical point-cloud conversion and retained
+# vertex assembly, in either renderer build, so the million-point memory/time
+# evidence stays reproducible.
+if(TARGET pj_scene3d_core)
+  add_executable(pointcloud_convert_benchmark pointcloud_convert_benchmark.cpp)
+  target_compile_features(pointcloud_convert_benchmark PRIVATE cxx_std_20)
+  target_compile_options(pointcloud_convert_benchmark PRIVATE ${PJ_WARNING_FLAGS})
+  target_link_libraries(pointcloud_convert_benchmark PRIVATE pj_scene3d_core)
+endif()
+
 # GPU/CPU benchmark of the QRhi point pass (instanced quads vs the point-list fast
-# path, static vs re-uploaded clouds) on an offscreen QRhi. QRHI_MIGRATION.md has
-# the numbers it produced.
+# path, static vs re-uploaded clouds) on an offscreen QRhi. Its numbers are in
+# pj_scene3D/docs/TECHNICAL_NOTES.md, rationale.
 if(TARGET pj_scene3d_widgets AND PJ_SCENE3D_RHI)
   add_executable(pointcloud_rhi_benchmark pointcloud_rhi_benchmark.cpp)
   target_compile_features(pointcloud_rhi_benchmark PRIVATE cxx_std_20)
@@ -56,12 +66,4 @@ if(TARGET pj_scene3d_widgets AND NOT PJ_SCENE3D_RHI)
   target_compile_features(pointcloud_shape_benchmark PRIVATE cxx_std_20)
   target_compile_options(pointcloud_shape_benchmark PRIVATE ${PJ_WARNING_FLAGS})
   target_link_libraries(pointcloud_shape_benchmark PRIVATE pj_scene3d_widgets pj_scene3d_core Qt6::Gui)
-
-  # Qt/GL-free benchmark for the canonical conversion + WASM-style retained
-  # vertex assembly used by W14. It is part of the ordinary desktop build so
-  # the million-point memory/time evidence stays reproducible.
-  add_executable(pointcloud_convert_benchmark pointcloud_convert_benchmark.cpp)
-  target_compile_features(pointcloud_convert_benchmark PRIVATE cxx_std_20)
-  target_compile_options(pointcloud_convert_benchmark PRIVATE ${PJ_WARNING_FLAGS})
-  target_link_libraries(pointcloud_convert_benchmark PRIVATE pj_scene3d_core)
 endif()

@@ -11,23 +11,23 @@ split-colored screen-space ribbon. A TF trail is a standalone layer; a pose
 trail is instead OWNED by its `PosesInFrameLayer` (a "Trail" toggle in that
 layer's settings, no Topics row of its own) — see ARCHITECTURE.md →
 "Trail layer"), and grid maps (`GridMapLayer`: an `sdk::GridMap` drawn as a lit,
-colormapped heightfield from procedural `gl_VertexID` geometry — see
+colormapped heightfield from procedural vertex-index geometry — see
 ARCHITECTURE.md → "Grid-map layer")); `PosesInFrame` array-as-path rendering and
 laserscans remain future work. Sibling widget family to `pj_scene2D`.
 
 `VoxelGridLayer` consumes `sdk::VoxelGrid` (SDK ≥ 0.10.0): a dense 3D lattice
 whose per-voxel value is generic via `fields` (occupancy/cost/ESDF/semantic, or a
 direct RGBA channel). The dense→cubes expansion happens entirely on the GPU —
-`VoxelGridRenderPass` uploads the selected field as a 3D texture and issues ONE
-`glDrawElementsInstanced` over a unit cube (`column*row*slice` instances); the
-vertex shader derives each voxel from `gl_InstanceID`, `texelFetch`es its value,
-evaluates the viewer-side draw predicate (which the schema does NOT encode), and
+`VoxelRhiPass` uploads the selected field as a 3D texture and issues ONE instanced
+draw over a unit cube (`column*row*slice` instances); the vertex shader derives
+each voxel from `gl_InstanceID`, `texelFetch`es its value, evaluates the
+viewer-side draw predicate (which the schema does NOT encode), and
 degenerate-clips culled voxels. So the CPU / draw-call cost is independent of voxel
-count (one instanced draw; the GPU vertex shader still runs once per voxel) and a
-re-scrub to a cached grid re-uploads nothing. The Qt-free coordinate/value math
+count (the GPU vertex shader still runs once per voxel) and a re-scrub to a cached
+grid re-uploads nothing. The Qt-free coordinate/value math
 (`core/voxel_grid_view.{h,cpp}`, `core/voxel_grid_value.{h,cpp}`) is unit-tested.
-A GPU compute-shader compaction path (`glDrawElementsIndirect` over only the
-accepted voxels, GL ≥ 4.3) is a documented follow-up for very large dense grids.
+A GPU compaction path (an indirect draw over only the accepted voxels) is a
+documented follow-up for very large dense grids.
 
 Depth images arrive as `sdk::Image` with a depth `encoding` (there is no
 `kDepthImage` producer — the parser can't distinguish depth from color at
@@ -39,8 +39,9 @@ the dock gates topics by peeking the first sample's `encoding`
 no match `resolveIntrinsics` falls back to a lone `CameraInfo` only when
 unambiguous (a single camera, or a frame-less image) and otherwise refuses rather
 than pair the wrong camera. The back-projection math is the Qt-free core
-`depth_backproject.{h,cpp}`; the POC feeds the result through the existing
-`PointcloudRenderPass` (a GPU attributeless pass is a planned follow-up).
+`depth_backproject.{h,cpp}`; a worker writes the points straight into the
+`PointVertex` array the layer hands the view as a `PointRenderable`, drawn by the
+same point pass as a raw cloud.
 
 Drag-drop: because depth and color share `kImage`, an empty-placeholder drop of
 *any* image opens the **2D** viewer (host policy in `pj_app`); a depth image
@@ -48,24 +49,35 @@ reaches a 3D dock by being dropped onto an existing one (`addTopic`'s encoding
 gate absorbs depth, refuses color) or via the 3D family switch on an empty dock.
 A one-click "Open in 3D view" curve-list action is a planned convenience.
 
-The detailed set of requirements and goals lives in `pj_scene3D/docs/REQUIREMENTS.md`;
-read it before changing this module's scope or behavior.
-The as-built design — rendering pipeline (HDR/tonemap/SSAO/EDL), URDF/mesh
-subsystem, `package://` asset resolution, scene-controls bindings, camera
-system (four pluggable models, adaptive near/far, zoom-to-cursor, Position-only
-frame-follow via the `ICamera::followShift` seam + `SceneViewWidget::applyFollow`,
-XML persistence), and live-streaming data path — lives in
-`pj_scene3D/docs/ARCHITECTURE.md`.
-The in-progress migration of both renderers to one QRhi renderer (phases,
-decisions, platform matrix) is tracked in `pj_scene3D/docs/QRHI_MIGRATION.md`.
-`-DPJ_SCENE3D_RHI=ON` builds the QRhi view (`widgets/rhi/`: the view, its
-pass vocabulary and frame contract in `rhi_scene_pass.h`, one class per family
-under `rhi/passes/`, shaders under `rhi/shaders/`) on desktop in place of the GL
-one; its render harness `scene3d_rhi_render_test` needs a real display (Xvfb
-in Linux CI) and runs on every backend of the platform (`RHI_BACKENDS` in
-`cmake/PjTests.cmake`).
-The dock (`src/Scene3DDockWidget.cpp`) and every layer (`src/layers/`) are the
-same in both builds, and both views draw every layer family.
+## Documentation
+
+- [`docs/REQUIREMENTS.md`](./docs/REQUIREMENTS.md) — scope and goals; read it
+  before changing this module's scope or behaviour.
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — the as-built design: the
+  QRhi renderer (pass structure, frame contract, pipeline registry, render targets
+  and quality stages, shadows, per-family passes and caches, failure state,
+  widget lifecycle, WebAssembly differences), the layers and their render
+  contract, the camera system, the URDF/mesh subsystem, `package://` asset
+  resolution, the live-streaming data path and the scene-controls panel.
+- [`docs/TECHNICAL_NOTES.md`](./docs/TECHNICAL_NOTES.md) — what the design works
+  around: backend conventions, Qt 6.11.1 bugs and workarounds, ADS/Wayland quirks,
+  limits and budgets, the measurements behind specific choices, golden-image rules
+  and per-backend allowances, test registration and CI lanes, the performance
+  baseline and the known gaps.
+- [`docs/QRHI_NEXT.md`](./docs/QRHI_NEXT.md) — the work that remains: deleting the
+  legacy GL renderer (PR 2), the P6 performance follow-ups, the Qt 6.12 upgrade,
+  and the release notes of the release that made QRhi the default. The migration
+  itself is archived in [`docs/archive/QRHI_MIGRATION.md`](../docs/archive/QRHI_MIGRATION.md).
+
+The default build (`PJ_SCENE3D_RHI=ON`) is the QRhi view (`widgets/rhi/`: the view,
+its pass vocabulary and frame contract in `rhi_scene_pass.h`, one class per family
+under `rhi/passes/`, shaders and their committed `.qsb` packs under
+`rhi/shaders/`). The dock (`widgets/src/Scene3DDockWidget.cpp`) and every layer
+(`widgets/src/layers/`) serve it; the layers own no GPU resource.
+`-DPJ_SCENE3D_RHI=OFF` restores the legacy GL view (`src/scene_view_widget.cpp`,
+`src/passes/`, `src/gl/`) for one release, with a configure warning. It is
+frozen: never add features or fixes there (ARCHITECTURE.md, "Appendix: Legacy
+OpenGL renderer").
 
 ## Decoding boundary (important)
 
@@ -95,8 +107,8 @@ Turning it into a canonical `PointCloud` is canonical→canonical *transcoding*,
 transport/CDR parsing, so it lives here: `core/pointcloud_codecs.{h,cpp}`
 (`decodeCompressedPointCloud()`), with `draco` + `cloudini` linked **PRIVATE** into
 `pj_scene3d_core` — the same shape as `pj_scene2d_core` decoding JPEG/PNG. The decode is
-CPU-heavy, so `PointCloudLayer` runs it on the Qt thread pool (`QtConcurrent` +
-`QFutureWatcher`, latest-wins coalescing) and never blocks the UI; the decoded
+CPU-heavy, so `PointCloudLayer` runs it on the Qt thread pool (`LatestWinsWorker`:
+one job in flight, the newest request waiting) and never blocks the UI; the decoded
 `PointCloud` then flows through the **same** `convertCanonical()` path as a raw cloud.
 Notes: Cloudini `INT64`/`UINT64` fields have no PJ datatype and are dropped; Draco field
 names are recovered from Draco attribute metadata when present (Foxglove /
@@ -105,25 +117,21 @@ attribute type; plain `zstd_point_cloud_transport` is out of scope (its blob isn
 self-describing). This is the *only* codec in the module — the no-`nanocdr`/CDR rule
 still holds for everything else.
 
-`PointCloudLayer` has a zero-copy fast path (verbatim wire upload for contiguous-float32
-xyz, plus a packed-`rgba` RGB-direct variant) beside the `convertCanonical`/`CloudVertex`
-fallback, still consuming `sdk::PointCloud` (canonical-in / render-structs-out boundary
-intact — no wire decode added). Its `kCube` shape draws only the three camera-facing faces,
-as an attributeless 7-vertex / 18-index hexagon fan around each cube's near corner
-(`cube_mesh.h`) — pixel-equivalent to the full solid for opaque cubes at a third of the
-vertex invocations and half the triangles — and degrades a cloud whose cubes are all
-sub-pixel to area- and brightness-matched point sprites (a whole-cloud switch gated on the
-AABB, because a *per-instance* split measures slower than no LOD at all). The face-choice,
-face-normal, MSAA and LOD-matching pitfalls that shape has are spelled out in
-`docs/ARCHITECTURE.md` → "Cube shape: the hexagon fan"; read it before touching that
-shader. The QRhi view ports all of it (plus flat discs for sub-2-px spheres, a
-point-list fast path for small sprites and the faded out-of-range two-partition draw)
-in `widgets/rhi/passes/point_rhi_pass.{h,cpp}` — see `docs/ARCHITECTURE.md` →
-"Point family in the QRhi renderer". On the bounds-only paths the geometry AABB that fits the
-camera is computed by an **async GPU compute reduction** (`PointcloudAabbReducer`: the CPU
-seeds the first sample, then drops the scan once the pass reports `gpuAabbAvailable()`),
-so the per-sample bounds cost leaves the GUI thread — see `docs/ARCHITECTURE.md` for the
-full mechanism.
+`PointCloudLayer` converts every cloud with `convertCanonical()` and packs the
+finite points into an implicitly shared `PointVertex` array (still consuming
+`sdk::PointCloud`: canonical-in / render-structs-out, no wire decode added). Its
+`kCube` shape draws only the three camera-facing faces, as an attributeless
+7-vertex / 18-index hexagon fan around each cube's near corner (`cube_mesh.h`) —
+pixel-equivalent to the full solid for opaque cubes at a third of the vertex
+invocations and half the triangles — and degrades a cloud whose cubes are all
+sub-pixel to area- and brightness-matched sprites (a whole-cloud switch gated on
+the AABB, because a *per-instance* split measures slower than no LOD at all). The
+face-choice, face-normal, MSAA and LOD-matching pitfalls are spelled out in
+`docs/ARCHITECTURE.md` → "Cube shape: the hexagon fan"; read it before touching
+that shader. `widgets/rhi/passes/point_rhi_pass.{h,cpp}` draws it all (plus flat
+discs for sub-2-px spheres, a point-list path for small sprites and the faded
+out-of-range two-partition draw); the geometry AABB that fits the camera comes
+from the conversion itself.
 
 ## Layout
 
@@ -138,54 +146,32 @@ full mechanism.
   scene_entities_decode.h, scene_entities_render.h}`. The codec
   decoders add a PRIVATE `draco` + `cloudini` link (compressed-cloud transcoding only —
   see "Decoding boundary"); the public API stays `glm` / `pj_base` / `nlohmann_json`.
-- `widgets/` — Qt viewer (`SceneViewWidget`: a `QOpenGLWidget`, or with
-  `PJ_SCENE3D_RHI` the `QRhiWidget` in `rhi/`, embedded as a direct child of
-  `Scene3DDockWidget`), render passes, layers, and `Scene3DDockWidget` (an
-  `IDataWidget`, one class for both views). Key public headers:
+- `widgets/` — the Qt viewer (`SceneViewWidget`, a `QRhiWidget` in `rhi/`,
+  embedded as a direct child of `Scene3DDockWidget`), the render passes, the
+  layers, and `Scene3DDockWidget` (an `IDataWidget`). Key public headers:
   `widgets/include/pj_scene3d_widgets/{Scene3DDockWidget.h,
-  transform_service.h, scene3d_layer.h, mesh_data.h, mesh_shading_params.h,
-  passes/mesh_render_pass.h, layers/robot_model_layer.h,
-  layers/scene_entities_layer.h}`. A right-click on the view delivers a
-  native `QContextMenuEvent` that the host `DockWidget`'s event filter catches,
-  so the 3D scene gets the same standard menu (Split Horizontally/Vertically,
-  Clear) as other widgets with no view-side context-menu code. *Landing
-  incrementally.*
-  - **GL context lifecycle (don't regress this):** the app deliberately does NOT
-    set `Qt::AA_ShareOpenGLContexts` (see `pj_app/src/main.cpp`) — a process-wide
-    share group let one 3D view's teardown corrupt sibling views' VAO/FBO state
-    (a `glBindVertexArray(non-gen name)` flood + the map texture vanishing). Each
-    view's GL context is therefore independent, which means a `QOpenGLWidget`
-    *recreates* its context when ADS reparents the dock (dock/float/split). VAOs
-    and FBOs are per-context (never shared). Mesh textures are also
-    per-context: `MeshRenderPass::releaseGL()` clears its `Texture2D` cache under
-    the dying context and lazily reuploads path-keyed or embedded textures after
-    recreation.
-    Every `IRenderPass`/`Scene3DLayer` (and `ArrowGizmo`) implements
-    `releaseGL()`; `SceneViewWidget` calls it from the dying context's
-    `aboutToBeDestroyed` and rebuilds in `initializeGL`, so a recreated context
-    self-heals instead of binding stale handles or going blank.
-    **The one GL resource the widget cannot rebuild is Qt's own:** `QPainter`
-    text painted directly on the view caches glyphs in a per-context atlas that
-    does NOT survive this recreation (notably on layout restore), so the text
-    renders doubled/garbled while vector fills stay correct. The 2D overlays
-    (perf HUD, TF hover label) therefore CPU-rasterize their text into a `QImage`
-    and `drawImage()` it (`hud_overlay.h::renderHudPanel`) — a glyph-atlas-free
-    textured-quad blit. Never paint HUD/overlay text with `QPainter` glyphs on
-    the GL view; rasterize-then-blit instead. Since Phase 0A
-    the scene renders into `SceneHdrFbo` (a multisample RGBA16F+DEPTH32F chain
-    at a fixed sample count — `kDefaultMsaaSamples`, independent of the context's
-    negotiated samples, which are 0 once composited in an ADS dock — resolved to
-    single-sample and presented via a fullscreen passthrough into
-    `defaultFramebufferObject()`).
-    The chain and the present program are per-context like everything else:
-    released in `releaseGlResources()`, lazily rebuilt after recreation.
+  scene_view_widget_rhi.h, scene3d_layer.h, point_renderable.h,
+  model_renderable.h, transform_service.h, mesh_data.h, mesh_shading_params.h,
+  layers/robot_model_layer.h, layers/scene_entities_layer.h}`. A right-click on
+  the view off a TF frame delivers a native `QContextMenuEvent` that the host
+  `DockWidget`'s event filter catches, so the 3D scene gets the same standard menu
+  (Split Horizontally/Vertically, Clear) as other widgets; a right-click on a
+  frame opens the dock's frame menu.
+  - **QRhi lifecycle (don't regress this):** Qt calls `releaseResources()` and
+    then `initialize()` on a new QRhi whenever the view changes top-level — an ADS
+    float, redock or dock-area tab switch. Every GPU resource is rebuilt there from
+    the CPU data the layers retain, and no draw may reference a resource whose
+    `create()` failed (ARCHITECTURE.md → "Failure state and fallbacks", "Widget
+    lifecycle and reparenting"). Overlay text (perf HUD, TF hover label) is
+    CPU-rasterized into a `QImage` (`hud_overlay.h::renderHudPanel`) and drawn as a
+    texture quad: never paint overlay text with `QPainter` glyphs on the view.
   - Scene-wide look controls live on `SceneViewWidget` setters +
     `CompositeParams` + `mesh_shading_params.h`. `pj_app`'s `Scene3DConfigPanel`
     drives grid style/size/divisions/visibility, gizmo size/opacity/visibility,
     mesh/collision opacity/visibility, and the Model/URDF selector (persisted in
-    QSettings under `pj_scene3d/scene_controls/*`). The phases-0B/D/B knobs
+    QSettings under `pj_scene3d/scene_controls/*`). The look knobs
     (tonemap/exposure/saturation/SSAO/EDL) are runtime APIs with baked defaults
-    — no app UI; the mesh_viewer demo exposes them for look-dev.
+    (`scene_look_defaults.h`) and no app UI.
   - The **last fixed frame the user picked by hand for a dataset** is remembered by
     `TransformService` (one `TransformBuffer` per dataset, so the natural home): a
     newly-created 3D dock defaults to it via `Scene3DDockWidget::resolveAutoFixedFrame`
@@ -199,10 +185,11 @@ full mechanism.
     also covers DAE/OBJ/FBX): base-color/metallic-roughness/normal/occlusion/
     emissive maps + factors + alpha mode. Each `TextureSource` is EITHER an
     external file path OR inline bytes (embedded glTF/GLB `*N` images, still
-    PNG/JPEG-encoded), keyed by content hash. `MeshRenderPass` decodes both
+    PNG/JPEG-encoded), keyed by content hash. `ModelRhiPass` decodes both
     (`QImage::fromData` for embedded), uploads color/emissive sRGB and data maps
-    (MR/normal/AO) linear, caches per-context by key plus texture color space,
-    and does full metalness-workflow shading + normal mapping + emissive. Visual
+    (MR/normal/AO) linear, shares each texture across the view's meshes by key
+    plus texture color space, and does full metalness-workflow shading + normal
+    mapping + emissive. Visual
     draws are split into opaque and best-effort translucent buckets (layer
     opacity, override alpha, or glTF `BLEND`; no depth sort). Sources
     without PBR (STL, procedural primitives) fall back to the scene-wide
@@ -227,63 +214,67 @@ The runners are:
 - `pj_scene3d_core_tests`: geometry, transforms, and canonical-object decoding;
   uses the shared `QCoreApplication` main.
 - `pj_scene3d_widget_tests`: tests with `PJ_SCENE3D_TEST_HOOKS`, using the shared
-  `QApplication` main. The context-recreation cases request their own offscreen
-  GL surface format.
-- `pj_scene3d_gl_tests`: raw offscreen GL passes, using the shared GL 4.5
-  `QGuiApplication` main.
+  `QApplication` main.
 - `pj_scene3d_widget_plain_tests`: widget and logic tests without test hooks;
   links `pj_resources` for theme-dependent config-widget checks.
-- `pj_scene3d_widget_fixture_tests`: tests sharing `PJ_SCENE3D_FIXTURES_DIR`,
-  without test hooks. Links Qt Network for the local-server fixtures.
+- `pj_scene3d_widget_fixture_tests`: tests sharing `PJ_SCENE3D_FIXTURES_DIR`, with
+  test hooks (`robot_model_layer_test` among them). Links Qt Network for the
+  local-server fixtures.
+- `pj_scene3d_gl_tests` (legacy GL build only): raw offscreen GL passes, using the
+  shared GL 4.5 `QGuiApplication` main.
 
 Hooked and plain sources stay in different runners because the test-hook macro
 changes public library class definitions. `widgets/CMakeLists.txt` registers the
 renderer-agnostic sources (the dock tests, layer tests, XML validation, config
-row spacing) in BOTH builds and the GL-pass, GL-view, trail and grid-map tests
-in the `NOT PJ_SCENE3D_RHI` block. File-local GoogleTest environments
-prepare the Cloudini blob, preserve the fixed-frame settings application name,
-and redirect the model caches to temporary directories. The shared mains keep
-the application on the stack so it dies before Qt Network's exit handlers.
+row spacing) in both builds, and the GL-pass, GL-view, trail and grid-map tests in
+the `NOT PJ_SCENE3D_RHI` block. File-local GoogleTest environments prepare the
+Cloudini blob, preserve the fixed-frame settings application name, and redirect
+the model caches to temporary directories. The shared mains keep the application
+on the stack so it dies before Qt Network's exit handlers.
 
-`pointcloud_golden_test` is its own `pj_add_test_runner` runner: the point-cloud
-golden-image corpus (`widgets/tests/fixtures/golden/pointcloud/README.md`), built
-by BOTH renderers through the docks' shared API, all comparing against the GL
-goldens. One ctest entry per scene (`pointcloud_golden_test.*`); the
-`PJ_SCENE3D_RHI` build registers each scene on every backend of the platform
-(`RHI_BACKENDS`), like the render
-harness, `scene3d_rhi_point_test` (the QRhi point-pass behaviour tests) and
-`scene3d_rhi_failure_test`.
+The QRhi display runners register one pass per backend of the platform
+(`RHI_BACKENDS` in `cmake/PjTests.cmake`, `<runner>.<backend>.*`, label
+`qrhi-<backend>`): `scene3d_rhi_render_test` (the render harness),
+`scene3d_rhi_point_test`, `scene3d_rhi_failure_test`,
+`scene3d_rhi_marker_cache_test`, `scene3d_rhi_model_cache_test`,
+`scene3d_rhi_platform_test`, and `pointcloud_golden_test` (the golden corpus,
+`widgets/tests/fixtures/golden/pointcloud/README.md`, comparing against GL-made
+goldens). They need a real display (Xvfb in Linux CI; they skip on `offscreen`,
+and fail instead under `PJ_REQUIRE_GPU_TESTS=1`). `pointcloud_golden_test` and
+`scene3d_frame_benchmark` (frame budgets, a smoke at its default sizes) also build
+in the GL build. TECHNICAL_NOTES.md §7-8 has the golden rules, the test hooks and
+the CI lanes.
 
 These tests keep their own executables and `add_test` registrations:
 
 - `transform_service_test`: its debug thread-affinity death test forks and aborts
   in the child process.
-- `hud_overlay_gl_test`, `tf_connections_gl_test`, `shadow_persistence_gl_test`:
-  need the default GL format before constructing a `QApplication` to host a
-  `SceneViewWidget`; the shared GL main constructs a `QGuiApplication`. The HUD
-  and TF tests also preserve their deterministic white application palettes.
-- `robot_model_layer_test`: uniquely combines the fixture-path definition and
-  test hooks.
-- `wasm_shader_constants_test`: uniquely defines `PJ_WASM_SHADER_DIR`.
+- `wasm_shader_constants_test`: uniquely defines `PJ_WASM_SHADER_DIR`; it checks
+  the shared shader constants and every pack's varyings.
+- `hud_overlay_gl_test`, `tf_connections_gl_test`, `shadow_persistence_gl_test`
+  (legacy GL build only): need the default GL format before constructing a
+  `QApplication` to host a `SceneViewWidget`.
 
 Run the module in the builder image with `ctest --test-dir build
 --output-on-failure -R
-'^(pj_scene3d_.*|pointcloud_golden_test\..*|transform_service_test|hud_overlay_gl_test|tf_connections_gl_test|shadow_persistence_gl_test|robot_model_layer_test|wasm_shader_constants_test)$'`.
-Filter just the discovered runners with `-R '^pj_scene3d_'`, or run the complete
-CMake registry with `ctest --test-dir build --output-on-failure`.
-The three demos and three benchmarks remain executables gated by `PJ_BUILD_DEMOS`.
+'^(pj_scene3d_.*|pointcloud_golden_test\..*|scene3d_rhi_.*|scene3d_frame_benchmark\..*|transform_service_test|wasm_shader_constants_test)$'`
+(under a display for the QRhi runners). Filter just the discovered runners with
+`-R '^pj_scene3d_'`, or run the complete CMake registry with `ctest --test-dir
+build --output-on-failure`. With `PJ_BUILD_DEMOS` the QRhi build compiles
+`pointcloud_convert_benchmark` and `pointcloud_rhi_benchmark`; the other demos
+(`scene3d_mesh_viewer`, the marker and pose galleries, the AABB and shape
+benchmarks) build only in the legacy GL build.
 
-GL-backed cases (the GL runner, retained GL widget tests, and context-recreation cases)
-require a real GL ≥ 4.5 context (llvmpipe under `xvfb` on CI) and **self-skip below
-GL 4.5** — Windows software GL is only GL 3.0 / GLSL 1.30, so a `#version 450`
-shader test cannot run there. Skip through `PJ_SKIP_WITHOUT_GPU`
-(`cmake/test_mains/pj_gpu_test_gate.h`), which turns the skip into a failure
-under `PJ_REQUIRE_GPU_TESTS=1` (the Linux CI lane).
+The legacy GL build's GL cases require a real GL ≥ 4.5 context (llvmpipe under
+`xvfb` on CI) and self-skip below it, through `PJ_SKIP_WITHOUT_GPU`
+(`cmake/test_mains/pj_gpu_test_gate.h`), which turns the skip into a failure under
+`PJ_REQUIRE_GPU_TESTS=1`.
 
 Make sure that all the markdown files in this folder are updated, if necessary.
 
-Lessons learned should be saved too, in particular after long debugging
-sections where we struggle to find the correct solution.
+Save lessons learned to memory, not to these docs (they describe the current
+state only), in particular after long debugging sessions where the correct
+solution was hard to find.
 
 # Test-driven verification
 

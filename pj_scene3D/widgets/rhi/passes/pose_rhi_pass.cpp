@@ -130,21 +130,16 @@ void PoseRhiPass::prepare(
     if (!ensureLayerGpu(frame.rhi, gpu)) {
       continue;
     }
+    // Static: poses change per sample, not per frame.
     if (gpu.uploaded_revision != layer->geometryRevision()) {
       const auto& instances = layer->instances();
       const quint32 bytes = static_cast<quint32>(instances.size() * sizeof(PoseTriadInstance));
-      const std::uint64_t shrink_threshold = std::max<std::uint64_t>(static_cast<std::uint64_t>(bytes) * 2U, 1024U);
-      if (gpu.instance_buffer != nullptr && gpu.instance_capacity > shrink_threshold) {
-        delete gpu.instance_buffer;
-        gpu.instance_buffer = nullptr;
-        gpu.instance_capacity = 0;
-      }
-      if (bytes != 0 && !ensureVertexBuffer(frame.rhi, gpu.instance_buffer, gpu.instance_capacity, bytes, bytes)) {
+      if (!ensureStaticVertexBuffer(frame.rhi, gpu.instance_buffer, gpu.instance_capacity, bytes, 1024U)) {
         gpu.instance_count = 0;
         continue;
       }
       if (bytes != 0) {
-        frame.updates->updateDynamicBuffer(gpu.instance_buffer, 0, bytes, instances.data());
+        frame.updates->uploadStaticBuffer(gpu.instance_buffer, 0, bytes, instances.data());
       }
       gpu.instance_count = static_cast<quint32>(instances.size());
       gpu.uploaded_revision = layer->geometryRevision();

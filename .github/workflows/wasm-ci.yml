@@ -32,6 +32,7 @@ on:
       - 'scripts/*wasm*'
       - '.github/workflows/wasm-ci.yml'
       - 'pj_app/**'
+      - 'pj_plotting/**'
       - 'pj_widgets/**'
       - 'pj_scene2D/**'
       - 'pj_scene3D/**'
