@@ -77,3 +77,12 @@ Per root CLAUDE.md: **prefer `.ui` files**. `AUTOUIC` is on. Search path is `src
 `raster_stream_view_test` stays a separate executable and ctest entry (`RasterStreamView`) because it checks the external helper process's lifetime and uses its own `PJ_STUB_HELPER_PATH` definition. `raster_stub_helper` remains its protocol peer; the target-file path removes any need for sibling-file lookup or a fixed runtime output directory. No test in this module requires a real GL context (`RasterTextGlTest` belongs to `pj_plotting`).
 
 `pj_widgets` has no `docs/` folder — each widget's intent fits in its header doc-comment.
+
+## XY drag gesture
+
+Selecting two scalar curves and Ctrl-dragging with the left button creates an XY
+plot. The gesture avoids the right-button topic context menu used by streaming
+sources. A Ctrl-click without a drag still toggles the selected row; its toggle
+is deferred when pressing an already-selected pair. Plain left-drag continues to
+add curves, and legacy right-drag remains accepted where no menu intercepts it.
+The existing XY drop dialog still chooses the axis order.

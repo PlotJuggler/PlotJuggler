@@ -308,6 +308,8 @@ CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
   // could only track hover while a button was held.
   viewport()->setMouseTracking(true);
 
+  setToolTip(
+      tr("Drag curves onto a plot. To create an XY plot, select two curves and Ctrl-drag with the left mouse button."));
   setColumnCount(2);
   setHeaderLabels({tr("Name"), tr("Value")});
   setItemDelegate(new CurveTreeItemDelegate(this));
@@ -2064,6 +2066,8 @@ void CurveTreeView::mousePressEvent(QMouseEvent* event) {
   drag_curve_names_.clear();
   drag_catalog_keys_.clear();
   suppress_next_release_ = false;
+  pending_ctrl_click_ = false;
+  drag_modifiers_ = event->modifiers();
   drag_button_ = Qt::NoButton;
   not_draggable_reason_.reset();
   QTreeWidgetItem* const item = itemAt(event->pos());
@@ -2097,6 +2101,16 @@ void CurveTreeView::mousePressEvent(QMouseEvent* event) {
       const QString item_catalog_key = catalogKeyForItem(item);
       if (!item_catalog_key.isEmpty()) {
         drag_catalog_keys_.push_back(item_catalog_key);
+      }
+      // Ctrl-click toggles selection, but Ctrl-drag creates XY from the selected
+      // pair. Defer the toggle until release so starting the drag cannot remove
+      // its source curve. A new Ctrl-click on an unselected row still selects it.
+      if (event->button() == Qt::LeftButton && event->modifiers() == Qt::ControlModifier && item->isSelected() &&
+          selectedCurveNamesForDrag().size() == 2) {
+        pending_ctrl_click_ = true;
+        drag_curve_names_ = selectedCurveNamesForDrag();
+        event->accept();
+        return;
       }
       if (item->isSelected() && !(event->modifiers() & selection_modifiers)) {
         drag_curve_names_ = selectedCurveNamesForDrag();
@@ -2181,6 +2195,10 @@ void CurveTreeView::mouseMoveEvent(QMouseEvent* event) {
 
   QStringList skipped_keys;
   QMimeData* mime_data = createDragMimeData(drag_button_, &skipped_keys);
+  if (pending_ctrl_click_) {
+    pending_ctrl_click_ = false;
+    suppress_next_release_ = true;
+  }
   drag_button_ = Qt::NoButton;
   drag_curve_names_.clear();
   drag_catalog_keys_.clear();
@@ -2364,11 +2382,12 @@ QMimeData* CurveTreeView::createDragMimeData(Qt::MouseButton button, QStringList
   }
   catalog_keys.removeDuplicates();
 
-  // Left-button drag → add curve(s) to a plot; right-button drag of exactly two
-  // curves → XY scatter plot. Anything else is not a drag we initiate.
-  const bool left_add = button == Qt::LeftButton;
+  // Ctrl+left drag creates XY without competing with topic context menus.
+  // Retain right-drag for existing workflows; plain left-drag adds curves.
+  const bool ctrl_xy = button == Qt::LeftButton && drag_modifiers_ == Qt::ControlModifier && names.size() == 2;
+  const bool left_add = button == Qt::LeftButton && !ctrl_xy;
   const bool right_xy = button == Qt::RightButton && names.size() == 2;
-  if ((!left_add && !right_xy) || (names.empty() && catalog_keys.empty())) {
+  if ((!left_add && !right_xy && !ctrl_xy) || (names.empty() && catalog_keys.empty())) {
     return nullptr;
   }
 
@@ -2385,13 +2404,22 @@ QMimeData* CurveTreeView::createDragMimeData(Qt::MouseButton button, QStringList
   }
   if (left_add && !names.empty()) {
     mime_data->setData(u"curveslist/add_curve"_s, encoded);
-  } else if (right_xy) {
+  } else if (right_xy || ctrl_xy) {
     mime_data->setData(newXyAxisMimeType(), encoded);
   }
   return mime_data;
 }
 
 void CurveTreeView::mouseReleaseEvent(QMouseEvent* event) {
+  if (pending_ctrl_click_ && event->button() == Qt::LeftButton) {
+    pending_ctrl_click_ = false;
+    const QPointF pos(drag_start_pos_);
+    QMouseEvent press(
+        QEvent::MouseButtonPress, pos, pos, viewport()->mapToGlobal(drag_start_pos_), Qt::LeftButton, Qt::LeftButton,
+        drag_modifiers_);
+    QTreeWidget::mousePressEvent(&press);
+  }
+
 #ifdef PJ_TARGET_WASM
   if (in_wasm_drop_) {
     event->accept();
