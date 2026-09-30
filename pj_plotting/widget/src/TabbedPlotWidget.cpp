@@ -475,7 +475,6 @@ QWidget* TabbedPlotWidget::takeWidgetTab(QWidget* content) {
   tabs_bar_layout_->removeWidget(frame);
   frame->deleteLater();
   content->hide();
-  content->setParent(nullptr);
   content->setSizePolicy(original_policy);
   updateSelectionStyle();
   emit currentTabChanged(qobject_cast<PlotDocker*>(stack_->currentWidget()));

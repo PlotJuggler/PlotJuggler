@@ -242,5 +242,33 @@ TEST(DataProcessorsRuntimeHostTest, ConfigEchoesHistoryExemptBit) {
   EXPECT_NE(plain_recipe->find("\"history_exempt\":false"), std::string::npos) << *plain_recipe;
 }
 
+// A persistent create over a large history returns after its first slice and
+// finishes from the event loop; the ephemeral preview stays synchronous because
+// its caller reads the whole output right back.
+TEST(DataProcessorsRuntimeHostTest, PersistentCreateIsTimeSlicedAndEphemeralIsSynchronous) {
+  constexpr std::size_t kRows = 200'000;
+  Fixture fx;
+  fx.seed("speed", std::vector<double>(kRows, 1.0));
+  DataProcessorsRuntimeHost bridge(fx.service, "pluginA");
+  sdk::DataProcessorsHostView view(bridge.raw());
+
+  const std::string_view inputs[] = {"speed"};
+  const std::string_view preview_outputs[] = {"preview"};
+  ASSERT_TRUE(view.createEphemeralTransform(
+      "negate", PJ::Span<const std::string_view>(inputs), PJ::Span<const std::string_view>(preview_outputs), kNegate,
+      "{}"));
+  EXPECT_FALSE(fx.service.materializationPending());
+  ASSERT_TRUE(view.remove("negate"));
+
+  const auto status = createNegate(view, "negate", "speed", "speed/out");
+  ASSERT_TRUE(status) << status.error();
+  EXPECT_TRUE(fx.service.materializationPending());
+  const TopicId out = fx.service.transformRecipes().front().output_topic_ids.front();
+  EXPECT_LT(readValues(fx.engine, out).size(), kRows);
+
+  while (!fx.service.stepMaterialization()) {}
+  EXPECT_EQ(readValues(fx.engine, out), std::vector<double>(kRows, -1.0));
+}
+
 }  // namespace
 }  // namespace PJ

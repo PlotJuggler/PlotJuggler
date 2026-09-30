@@ -11,29 +11,50 @@ function point(x, y) {
   return { x: Number(x), y: Number(y) };
 }
 
-async function requestStreamingState(page, consoleMessages) {
-  const previous = consoleMessages.filter(message => message.includes('PJ_WASM_STREAM_STATE sequence=')).length;
-  await page.evaluate(() => window.pjWasmReportStreamingStateProbe());
-  await expect.poll(
-    () => consoleMessages.filter(message => message.includes('PJ_WASM_STREAM_STATE sequence=')).length,
-    { timeout: 10000 },
-  ).toBeGreaterThan(previous);
+const STREAM_REPORT_MARKERS = [
+  'PJ_WASM_STREAM_STATE sequence=',
+  'PJ_WASM_STREAM_CONTROLS sequence=',
+  'PJ_WASM_STREAM_TREE sequence=',
+  'PJ_WASM_STREAM_CURVE sequence=',
+];
 
-  const stateMessage = consoleMessages.filter(
-    message => message.includes('PJ_WASM_STREAM_STATE sequence='),
-  ).at(-1) || '';
+// One probe call prints four console lines tagged with the same sequence.
+// Firefox occasionally never delivers one of them (seen on the P8 build too:
+// a main-thread line lost while the streamer worker logs at the same moment);
+// the app stays responsive and the next call reports normally. A report whose
+// four lines do not all arrive is requested again, so one lost console line
+// cannot fail the test; the state checks themselves are unchanged.
+async function awaitStreamingReport(page, consoleMessages) {
+  let report;
+  await expect(async () => {
+    const first = consoleMessages.length;
+    await page.evaluate(() => window.pjWasmReportStreamingStateProbe());
+    await expect.poll(() => {
+      const bySequence = new Map();
+      for (const message of consoleMessages.slice(first)) {
+        const marker = STREAM_REPORT_MARKERS.find(candidate => message.includes(candidate));
+        const sequence = marker && message.match(/sequence=(\d+) /);
+        if (sequence) {
+          bySequence.set(sequence[1], (bySequence.get(sequence[1]) || new Map()).set(marker, message));
+        }
+      }
+      const complete = [...bySequence].find(([, lines]) => lines.size === STREAM_REPORT_MARKERS.length);
+      report = complete && { sequence: Number(complete[0]), lines: complete[1] };
+      return report !== undefined;
+    }, { timeout: 3500 }).toBe(true);
+  }, 'streaming state probe produced no complete report').toPass({ timeout: 12000 });
+  return report;
+}
+
+async function requestStreamingState(page, consoleMessages) {
+  const report = await awaitStreamingReport(page, consoleMessages);
+  const stateMessage = report.lines.get('PJ_WASM_STREAM_STATE sequence=');
   const state = stateMessage.match(
     /sequence=(\d+) sources=(\d+) source_b64=([^ ]*) active=(\d+) datasets=(\d+) catalog=(\d+) paused=(\d+) playing=(\d+) range=([^,]+),([^ ]+) current=([^ ]+)/,
   );
   expect(state, `unparseable stream state: ${stateMessage}`).not.toBeNull();
-  const sequence = Number(state[1]);
-
-  const messageFor = marker => consoleMessages.filter(
-    message => message.includes(marker) && message.includes(`sequence=${sequence} `),
-  ).at(-1) || '';
-  await expect.poll(() => messageFor('PJ_WASM_STREAM_CONTROLS sequence='), { timeout: 10000 }).not.toBe('');
-  await expect.poll(() => messageFor('PJ_WASM_STREAM_TREE sequence='), { timeout: 10000 }).not.toBe('');
-  await expect.poll(() => messageFor('PJ_WASM_STREAM_CURVE sequence='), { timeout: 10000 }).not.toBe('');
+  const sequence = report.sequence;
+  const messageFor = marker => report.lines.get(marker);
 
   const controlsMessage = messageFor('PJ_WASM_STREAM_CONTROLS sequence=');
   const controls = controlsMessage.match(

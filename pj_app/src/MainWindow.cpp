@@ -929,32 +929,42 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // overlay use, so a generator yields the same markers in GUI and CI.
   session_->sessionManager().markerService().setResolver(
       [this](PJ::DatasetId dataset, const std::string& key) -> std::optional<PJ::MarkerService::ResolvedSeries> {
-        const PJ::DataReader reader = session_->sessionManager().createReader();
-        for (const PJ::CatalogItem& item : session_->catalogModel().items()) {
+        // items() returns by value: keep it alive while `scalar` points into it.
+        const auto items = session_->catalogModel().items();
+        const PJ::ScalarFieldPayload* scalar = nullptr;
+        for (const PJ::CatalogItem& item : items) {
           if (item.dataset_id != dataset) {
             continue;
           }
-          const PJ::ScalarFieldPayload* scalar = markerSeriesField(item, key);
-          if (scalar == nullptr) {
-            continue;
+          scalar = markerSeriesField(item, key);
+          if (scalar != nullptr) {
+            break;
           }
-          PJ::Expected<PJ::SeriesReader> series = reader.series(scalar->topic_id, scalar->column_index);
-          if (!series.has_value()) {
-            return std::nullopt;
-          }
-          PJ::MarkerService::ResolvedSeries out;
-          const std::size_t n = series->size();
-          out.timestamps.reserve(n);
-          out.values.reserve(n);
-          for (std::size_t i = 0; i < n; ++i) {
-            if (const std::optional<PJ::SeriesSample> s = series->sampleAt(i)) {
-              out.timestamps.push_back(static_cast<double>(s->timestamp));
-              out.values.push_back(s->value);
-            }
-          }
-          return out;
         }
-        return std::nullopt;
+        if (scalar == nullptr) {
+          return std::nullopt;
+        }
+        const PJ::TopicId topic_id = scalar->topic_id;
+        const std::size_t column_index = scalar->column_index;
+        // A generator reads the whole series, so a transform output still replaying in
+        // slices is completed first. That notifies: `scalar` is not used past it.
+        session_->sessionManager().dataEngine().awaitCompleteSeries(topic_id);
+        const PJ::DataReader reader = session_->sessionManager().createReader();
+        PJ::Expected<PJ::SeriesReader> series = reader.series(topic_id, column_index);
+        if (!series.has_value()) {
+          return std::nullopt;
+        }
+        PJ::MarkerService::ResolvedSeries out;
+        const std::size_t n = series->size();
+        out.timestamps.reserve(n);
+        out.values.reserve(n);
+        for (std::size_t i = 0; i < n; ++i) {
+          if (const std::optional<PJ::SeriesSample> s = series->sampleAt(i)) {
+            out.timestamps.push_back(static_cast<double>(s->timestamp));
+            out.values.push_back(s->value);
+          }
+        }
+        return out;
       });
   // For `all_datasets` (global-across-all) generators: list every loaded dataset.
   session_->sessionManager().markerService().setDatasetLister(
@@ -2457,8 +2467,11 @@ void MainWindow::wasmProbeReportFilterResult() const {
 }
 
 void MainWindow::wasmProbeReportToolboxTransformResult() const {
-  const auto recipes = session_->sessionManager().dataProcessorService().transformRecipes();
-  qInfo("PJ_WASM_TOOLBOX_TRANSFORMS count=%llu", static_cast<unsigned long long>(recipes.size()));
+  const DataProcessorService& processors = session_->sessionManager().dataProcessorService();
+  const auto recipes = processors.transformRecipes();
+  qInfo(
+      "PJ_WASM_TOOLBOX_TRANSFORMS count=%llu materializing=%d", static_cast<unsigned long long>(recipes.size()),
+      processors.materializationPending() ? 1 : 0);
 
   auto* custom = findChild<QTreeWidget*>(u"customView"_s);
   for (const DataProcessorService::TransformRecipe& recipe : recipes) {
@@ -2746,10 +2759,7 @@ void MainWindow::onOpenMarketplace() {
   // a tab) cannot fire this against a stale pointer.
   connect(wrapped.container, &QObject::destroyed, mkt, &QObject::deleteLater);
 
-  if (!presentPanel(wrapped.container)) {
-    wrapped.container->deleteLater();
-    return;
-  }
+  presentPanel(wrapped.container);
   // QPointer, so the re-activation guard above sees empty slots again as soon
   // as the controller (and its container) go — no explicit clearing on any of
   // the exit paths.
@@ -3684,12 +3694,7 @@ void MainWindow::openFilterEditor(std::vector<CurveDescriptor> sources, PlotWidg
     emitDiagnostic(DiagnosticLevel::kWarning, "Filter", "apply", message);
   });
 
-  if (!presentPanel(panel)) {
-    // Another chart-area panel (e.g. a toolbox) is already open.
-    emitDiagnostic(DiagnosticLevel::kWarning, "Filter", "panel", tr("Close the open panel before applying a filter"));
-    panel->deleteLater();
-    return;
-  }
+  presentPanel(panel);
   filter_editor_origin_ = origin;  // the preview mirrors this plot's grid/style/width
   syncFilterEditorPreviewDisplay();
 }
@@ -9231,89 +9236,31 @@ MainWindow::WrappedToolboxPanel MainWindow::wrapToolboxPanel(
   return {.container = container, .apply_chrome = apply_chrome};
 }
 
-bool MainWindow::presentPanel(QWidget* panel) {
-  if (panel == nullptr) {
-    return false;
-  }
+void MainWindow::presentPanel(QWidget* panel) {
+  Q_ASSERT(panel);
   // A panel is already presented: dismiss it so launching a new toolbox/panel
   // replaces the open one instead of refusing.
   dismissTakeoverPanel();
 
-  // The chart area (ui_->tabbedPlotWidget) lives as a direct child of a
-  // QSplitter in MainWindow.ui. Swap the panel into the chart's splitter slot
-  // and remember the slot so restoreCentralArea() can put the chart back.
-  QWidget* chart = ui_->tabbedPlotWidget;
-  panel_parent_ = chart->parentWidget();
-  auto* splitter = qobject_cast<QSplitter*>(panel_parent_);
-  if (splitter == nullptr) {
-    qWarning("MainWindow::presentPanel: tabbedPlotWidget is not in a QSplitter");
-    panel_parent_ = nullptr;
-    return false;
-  }
-  panel_layout_index_ = splitter->indexOf(chart);
-  if (panel_layout_index_ < 0) {
-    qWarning("MainWindow::presentPanel: chart not in splitter");
-    panel_parent_ = nullptr;
-    return false;
-  }
-  // Swap the panel into the chart's exact splitter slot via replaceWidget so the
-  // pane count stays constant and the saved size list still lines up (an
-  // insert+hide would leave N+1 panes against an N-entry size list). replaceWidget
-  // hands the chart back to us, reparented out of the splitter; keep it hidden so
-  // restoreCentralArea can swap it back into the same slot.
-  const QList<int> saved_sizes = splitter->sizes();
-  QWidget* removed = splitter->replaceWidget(panel_layout_index_, panel);
-  if (removed != chart) {
-    qWarning("MainWindow::presentPanel: unexpected widget at chart slot; aborting swap");
-    if (removed != nullptr) {
-      splitter->replaceWidget(panel_layout_index_, removed);
-    }
-    panel_parent_ = nullptr;
-    panel_layout_index_ = -1;
-    return false;
-  }
-  chart->hide();
-  panel->show();
-  // The incoming panel inherits the chart's role as the pane that absorbs every
-  // width change, not just its slot. Without this the sidebar starts growing
-  // again the moment the window is resized with a panel open — replaceWidget
-  // carries no stretch factor over from the widget it displaced.
-  splitter->setStretchFactor(panel_layout_index_, 1);
-  splitter->setSizes(saved_sizes);
+  ui_->centralAreaStack->addWidget(panel);
+  ui_->centralAreaStack->setCurrentWidget(panel);
   current_panel_ = panel;
-  return true;
 }
 
 QWidget* MainWindow::releaseCentralPanel() {
   if (current_panel_ == nullptr) {
     return nullptr;
   }
-  auto* splitter = qobject_cast<QSplitter*>(panel_parent_);
-  if (splitter == nullptr || panel_layout_index_ < 0) {
-    qWarning("MainWindow::releaseCentralPanel: panel_parent_ is no longer a splitter; chart not restored to slot");
-    ui_->tabbedPlotWidget->show();
-  } else {
-    // Swap the chart back into its slot; replaceWidget removes the panel and
-    // hands it back reparented out of the splitter.
-    const QList<int> saved_sizes = splitter->sizes();
-    splitter->replaceWidget(panel_layout_index_, ui_->tabbedPlotWidget);
-    // Show the chart before restoring the sizes: a hidden pane is left out of
-    // the splitter's layout, so sizes applied while the chart is still hidden
-    // are recomputed the instant it appears — and the sidebar keeps the slack.
-    ui_->tabbedPlotWidget->show();
-    splitter->setSizes(saved_sizes);
-  }
   QWidget* released = current_panel_;
+  ui_->centralAreaStack->setCurrentWidget(ui_->tabbedPlotWidget);
+  ui_->centralAreaStack->removeWidget(released);
   released->hide();
-  released->setParent(nullptr);
   current_panel_ = nullptr;
   filter_editor_origin_ = nullptr;  // no Filter Editor preview to drive once the panel is gone
   // The engine (when this was a toolbox panel) is owned by whoever tore the
   // panel down (the onCloseRequested handler, presentPanel's replace path, or
   // the migrate gesture); here we only drop our non-owning reference.
   current_panel_engine_ = nullptr;
-  panel_layout_index_ = -1;
-  panel_parent_ = nullptr;
   return released;
 }
 
@@ -9403,10 +9350,7 @@ void MainWindow::openEmbeddedConsole() {
 #else
   auto* view = new RasterStreamView(this);
   view->setKeyTranslator(&engineKeyForQtKey);
-  if (!presentPanel(view)) {
-    view->deleteLater();
-    return;
-  }
+  presentPanel(view);
   connect(view, &RasterStreamView::sessionEnded, this, [this]() { restoreCentralArea(); });
   const QString dir = QCoreApplication::applicationDirPath() + u"/3rdparty/retro/"_s;
   QString helper = QStandardPaths::findExecutable(u"pj-raster-helper"_s, {dir});
@@ -9973,10 +9917,8 @@ void MainWindow::launchToolbox(
               },
           .on_float =
               [this, plugin_id]() { withToolbox(plugin_id, [](ToolboxPresenter& shown) { shown.moveToFloating(); }); },
-          .on_dock =
-              [this, plugin_id]() {
-                withToolbox(plugin_id, [](ToolboxPresenter& shown) { shown.moveToDockOrTab(); });
-              }},
+          .on_dock = [this,
+                      plugin_id]() { withToolbox(plugin_id, [](ToolboxPresenter& shown) { shown.moveToDock(); }); }},
       /*persist_key=*/plugin_id);
   ToolboxPresenter& presenter = registerToolbox(
       plugin_id, ToolboxPresenter::Spec{
@@ -9997,10 +9939,8 @@ void MainWindow::launchToolbox(
 
   if (target == ToolboxLaunchTarget::kPinnedTab) {
     presenter.moveToTab(/*transient=*/false);
-  } else if (!presenter.moveToDock()) {
-    report_error(source, tr("Cannot show '%1': another panel is already open").arg(source));
-    teardownToolbox(plugin_id, ToolboxPresenter::Teardown::kDeferred);
-    return;
+  } else {
+    presenter.moveToDock();
   }
   schedulePanelPreviewSync();
 }

@@ -233,5 +233,11 @@ through the registry (`takeoverToolbox()`), and the banner's close button is
 `ToolboxPresenter::requestClose()` — tab close through the strip's busy-job
 confirmation, floating through the window, a busy takeover folds into a
 transient tab. Replacing another busy takeover folds that panel before showing
-the incoming one. If docking cannot claim the chart slot, the live panel
-remains available as a tab.
+the incoming one. The docked panel is a page of the `centralAreaStack`
+(`MainWindow.ui`) that holds the chart, so docking never fails and the chart
+never leaves the window. A move reparents the container once, at its
+destination (`addWidgetTab`, the floating `PJ::Dialog`, the stack): releasing it
+from a presentation (`releaseCentralPanel`, `ToolboxPresenter::release`,
+`TabbedPlotWidget::takeWidgetTab`) leaves its parent alone, and a teardown
+deletes it in place, because every reparent re-polishes the whole widget tree
+against the app stylesheet (~180 ms for a toolbox panel in a browser).

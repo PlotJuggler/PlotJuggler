@@ -18,6 +18,7 @@
 #include "pj_datastore/reader.hpp"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/CurveColorRegistry.h"
+#include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/PlaybackEngine.h"
@@ -51,8 +52,10 @@ AppSession::AppSession(QString extensions_dir, DiagnosticSink sink, StaticPlugin
       catalog_model_(std::make_unique<CatalogModel>(session_manager_.get())),
       topic_demand_tracker_(std::make_unique<TopicDemandTracker>()),
       extension_catalog_(
-          std::make_unique<ExtensionCatalogService>(
-              std::move(extensions_dir), std::move(sink), std::move(static_plugins))) {
+          std::make_unique<ExtensionCatalogService>(std::move(extensions_dir), sink, std::move(static_plugins))) {
+  // A transform replay that fails after its create returned reports here, the
+  // same notifications the create error itself would have reached.
+  session_manager_->dataProcessorService().setDiagnosticSink(std::move(sink));
   // Forget remembered curve colors whenever the catalog empties (data cleared
   // or replaced), matching PJ3's per-PlotData COLOR_HINT lifetime so reopening
   // fresh data restarts palette rotation from the first color. The registry is

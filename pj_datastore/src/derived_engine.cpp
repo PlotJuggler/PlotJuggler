@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <functional>
 #include <limits>
 #include <queue>
@@ -264,6 +265,14 @@ struct DerivedNode {
   // because transforms have a strict ascending-timestamp contract.
   PJ::Timestamp siso_last_ts = std::numeric_limits<PJ::Timestamp>::min();  // SISO: last input ts fed
   PJ::ChunkId mimo_last_chunk_id = 0;                                      // MIMO: last input chunk considered
+  // SISO: a chunk a time-sliced step stopped inside (0 = none), and its first unfed row. It
+  // is newer than last_processed_chunk_id, so the per-chunk path resumes it at resume_row.
+  // A node with one is *deferred*: materializeStep()'s until its replay catches up, so the
+  // scheduling passes skip it.
+  PJ::ChunkId resume_chunk_id = 0;
+  uint32_t resume_row = 0;
+  // Error of this node's own last run (empty after a successful one); see DerivedEngine::nodeError().
+  std::string error;
 
   // Reusable decode buffers (avoid per-row allocation)
   VarValue in_val_buf = 0.0;           // SISO input
@@ -777,7 +786,21 @@ void DerivedEngine::onSourceCommitted(PJ::Span<const PJ::TopicId> changed_topics
 // run_node_incremental (private helper)
 // ---------------------------------------------------------------------------
 
-static PJ::Status runSisoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& engine, DerivedNode& node) {
+using SteadyTimePoint = std::chrono::steady_clock::time_point;
+
+// Samples fed between two clock reads of a time-sliced step: bounds the overshoot to a few
+// calculate() calls while keeping clock reads (a JS call in the browser) off the per-row path.
+constexpr uint32_t kRowsPerDeadlineCheck = 16;
+
+static bool isDeferred(const DerivedNode& node) {
+  return node.resume_chunk_id != 0;
+}
+
+// Feed the node's unprocessed input rows to its op and commit the output. With a `deadline`
+// the per-chunk path stops at the first clock check past it, leaving resume_chunk_id/row
+// for the next call (the node is then deferred).
+static PJ::Status runSisoIncremental(
+    DerivedEngineImpl& /*impl*/, DataEngine& engine, DerivedNode& node, const SteadyTimePoint* deadline = nullptr) {
   const TopicStorage* in_storage = engine.getTopicStorage(node.siso_input_topic_id);
   if (!in_storage) {
     return PJ::unexpected(fmt::format("run_siso_incremental: input topic {} not found", node.siso_input_topic_id));
@@ -788,6 +811,8 @@ static PJ::Status runSisoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& en
   DataWriter writer = engine.createWriter();
   PJ::TopicId out_tid = node.output_topic_ids[0];
   PJ::ChunkId max_seen = node.last_processed_chunk_id;
+  PJ::ChunkId resume_chunk_id = 0;
+  uint32_t resume_row = 0;
   bool wrote_any = false;
   PJ::Timestamp out_ts = 0;
   PJ::Status status = PJ::okStatus();
@@ -833,7 +858,7 @@ static PJ::Status runSisoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& en
     }
   };
 
-  if (node.last_processed_chunk_id == 0) {
+  if (node.last_processed_chunk_id == 0 && node.resume_chunk_id == 0 && deadline == nullptr) {
     // Fresh node or post-reset replay: input chunks may overlap in time
     // (out-of-order ingest), so feed rows through the merge cursor to honour
     // the transform's ascending-timestamp contract.
@@ -843,17 +868,29 @@ static PJ::Status runSisoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& en
     rangeQuery(all_chunks, std::numeric_limits<PJ::Timestamp>::min(), std::numeric_limits<PJ::Timestamp>::max())
         .forEach([&feed_row](const SampleRow& row) { feed_row(*row.chunk, row.row_index); });
   } else {
-    // Incremental: the scheduler verified the unprocessed chunks are
-    // time-ordered (it resets + replays otherwise), so commit order is
-    // ascending and per-chunk iteration is safe.
+    // Incremental, or a time-sliced replay: the caller verified the unprocessed
+    // chunks are time-ordered (it resets + replays otherwise), so commit order is
+    // ascending and per-chunk iteration feeds the rows in the merge cursor's order
+    // (its timestamp ties also go to the earlier chunk).
+    uint32_t rows_fed = 0;
     for (const TopicChunk& chunk : all_chunks) {
       if (chunk.id <= node.last_processed_chunk_id) {
         continue;
       }
-      max_seen = std::max(max_seen, chunk.id);
-      for (uint32_t i = 0; i < chunk.stats.row_count; ++i) {
-        feed_row(chunk, i);
+      uint32_t row = chunk.id == node.resume_chunk_id ? node.resume_row : 0;
+      for (; row < chunk.stats.row_count; ++row) {
+        if (deadline != nullptr && ++rows_fed % kRowsPerDeadlineCheck == 0 &&
+            std::chrono::steady_clock::now() >= *deadline) {
+          break;
+        }
+        feed_row(chunk, row);
       }
+      if (row < chunk.stats.row_count) {
+        resume_chunk_id = chunk.id;
+        resume_row = row;
+        break;
+      }
+      max_seen = std::max(max_seen, chunk.id);
     }
   }
 
@@ -866,8 +903,10 @@ static PJ::Status runSisoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& en
   // discards the staged rows cleanly (no rollback API needed). On a post-reset replay the
   // caller (recomputeNodeSelfOnly) puts the pre-replay output back on this error. Advance the
   // watermark so a sticky-failed node is not re-run every commit.
+  node.last_processed_chunk_id = max_seen;
+  node.resume_chunk_id = resume_chunk_id;
+  node.resume_row = resume_row;
   if (node.siso_op && node.siso_op->failed()) {
-    node.last_processed_chunk_id = max_seen;
     return PJ::unexpected(node.siso_op->error());
   }
   if (wrote_any) {
@@ -875,7 +914,6 @@ static PJ::Status runSisoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& en
     engine.commitChunksLocked(
         std::move(chunks));  // caller (scheduleActiveLocked/recomputeBatchLocked) holds lockEngine()
   }
-  node.last_processed_chunk_id = max_seen;
   return PJ::okStatus();
 }
 
@@ -1098,7 +1136,9 @@ static bool nodeInputRegressed(DataEngine& engine, const DerivedNode& node) {
       if (chunk.id <= node.last_processed_chunk_id || chunk.stats.row_count == 0) {
         continue;
       }
-      if (chunk.stats.t_min < watermark) {
+      // A chunk a time-sliced step stopped inside was checked when its first rows were fed;
+      // its remaining rows sort after them.
+      if (chunk.id != node.resume_chunk_id && chunk.stats.t_min < watermark) {
         return true;
       }
       watermark = std::max(watermark, chunk.stats.t_max);
@@ -1180,47 +1220,12 @@ PJ::Status DerivedEngine::scheduleActiveLocked(const std::unordered_set<PJ::Node
       continue;
     }
 
-    auto& node = impl_->nodes.at(node_id);
-    if (!node.dirty) {
-      continue;
+    const DerivedNode& node = impl_->nodes.at(node_id);
+    if (!node.dirty || isDeferred(node)) {
+      continue;  // a deferred node is materializeStep()'s until its replay catches up
     }
-
-    PJ::Status s = PJ::okStatus();
-    if (node.needs_full_recompute || nodeInputRegressed(engine_, node)) {
-      // Either a previous recompute rolled this node's output back while resetting its
-      // watermarks (the incremental path would replay history ON TOP of those rows), or
-      // late out-of-order input landed behind the watermark (which would break the
-      // transform's ascending-timestamp contract). Both call for a reset + full replay.
-      s = recomputeBatchLocked(node_id);  // already holding engine_.lockEngine()
-    } else if (!node.is_mimo) {
-      s = runSisoIncremental(*impl_, engine_, node);
-    } else {
-      s = runMimoIncremental(*impl_, engine_, node);
-    }
-
-    // Processed even on failure, so a sticky-failed node does not re-run (and block
-    // healthy nodes) every commit; new input re-dirties it through onSourceCommitted. A
-    // failed recompute's rollback stays durable regardless: needs_full_recompute (not
-    // dirty) is what keeps such a node off the appending incremental path.
-    node.dirty = false;
-    if (!s.has_value()) {
-      // Surface the failure via the returned Status, but keep running the other
-      // nodes. The failed node's downstream is left as-is (its input is bad).
-      if (first_error.has_value()) {
-        first_error = std::move(s);  // remember only the first
-      }
-      continue;
-    }
-
-    // Propagate dirty to downstream nodes
-    auto dit = impl_->downstream_of.find(node_id);
-    if (dit != impl_->downstream_of.end()) {
-      for (PJ::NodeId downstream : dit->second) {
-        auto dnit = impl_->nodes.find(downstream);
-        if (dnit != impl_->nodes.end()) {
-          dnit.value().dirty = true;
-        }
-      }
+    if (PJ::Status s = runNodeLocked(node_id, nullptr); !s.has_value() && first_error.has_value()) {
+      first_error = std::move(s);
     }
   }
 
@@ -1329,6 +1334,8 @@ static PJ::Status recomputeNodeSelfOnly(DerivedEngineImpl& impl, DataEngine& eng
   node.dirty = true;
   node.needs_full_recompute = true;
   node.last_processed_chunk_id = 0;
+  node.resume_chunk_id = 0;
+  node.resume_row = 0;
   node.siso_last_ts = std::numeric_limits<PJ::Timestamp>::min();
   if (node.is_mimo) {
     node.mimo_last_ts = std::numeric_limits<PJ::Timestamp>::min();
@@ -1344,12 +1351,102 @@ static PJ::Status recomputeNodeSelfOnly(DerivedEngineImpl& impl, DataEngine& eng
   }
 
   if (!s.has_value()) {
+    node.error = s.error();
     return s;  // ~DetachedOutputGuard restores the pre-call output
   }
   detached_outputs.dismiss();
   node.dirty = false;
   node.needs_full_recompute = false;
+  node.error.clear();
   return PJ::okStatus();
+}
+
+static void markDownstreamDirty(DerivedEngineImpl& impl, PJ::NodeId node_id) {
+  if (auto dit = impl.downstream_of.find(node_id); dit != impl.downstream_of.end()) {
+    for (PJ::NodeId downstream : dit->second) {
+      if (auto dnit = impl.nodes.find(downstream); dnit != impl.nodes.end()) {
+        dnit.value().dirty = true;
+      }
+    }
+  }
+}
+
+PJ::Status DerivedEngine::runNodeLocked(PJ::NodeId node_id, const SteadyTimePoint* deadline) {
+  DerivedNode& node = impl_->nodes.at(node_id);
+  PJ::Status s = PJ::okStatus();
+  const bool full_recompute = node.needs_full_recompute || nodeInputRegressed(engine_, node);
+  if (full_recompute) {
+    // Either a previous recompute rolled this node's output back while resetting its
+    // watermarks (the incremental path would replay history ON TOP of those rows), or
+    // late out-of-order input landed behind the watermark (which would break the
+    // transform's ascending-timestamp contract). Both call for a reset + full replay.
+    // ponytail: the merge cursor cannot stop midway, so a time-sliced step replays it in
+    // one go; slice it if large out-of-order creates show up.
+    s = recomputeBatchLocked(node_id);  // already holding engine_.lockEngine()
+  } else if (!node.is_mimo) {
+    s = runSisoIncremental(*impl_, engine_, node, deadline);
+  } else {
+    // ponytail: the MIMO join gathers every pending row up front, so it ignores the
+    // deadline; slice it (bounded gather horizon) if large multi-input creates show up.
+    s = runMimoIncremental(*impl_, engine_, node);
+  }
+
+  // Processed even on failure, so a sticky-failed node does not re-run (and block
+  // healthy nodes) every commit; new input re-dirties it through onSourceCommitted. A
+  // failed recompute's rollback stays durable regardless: needs_full_recompute (not
+  // dirty) is what keeps such a node off the appending incremental path.
+  node.dirty = false;
+  if (!s.has_value()) {
+    // A failed node gives up its replay: the chunk a step stopped inside counts as
+    // consumed, like the rest of a sticky failure's input, so the node is not deferred.
+    // Its downstream is left as-is (its input is bad).
+    if (isDeferred(node)) {
+      node.last_processed_chunk_id = std::max(node.last_processed_chunk_id, node.resume_chunk_id);
+      node.resume_chunk_id = 0;
+      node.resume_row = 0;
+    }
+    // A recompute recorded each cascaded node's own outcome, and its status may be a
+    // downstream node's failure: this node's output can be complete.
+    if (!full_recompute) {
+      node.error = s.error();
+    }
+    return s;
+  }
+  node.error.clear();
+  markDownstreamDirty(*impl_, node_id);
+  return s;
+}
+
+PJ::Expected<bool> DerivedEngine::materializeStep(PJ::NodeId node_id, std::chrono::nanoseconds budget) {
+  const SteadyTimePoint deadline = std::chrono::steady_clock::now() + budget;
+  auto lock = engine_.lockEngine();
+  auto it = impl_->nodes.find(node_id);
+  if (it == impl_->nodes.end()) {
+    return PJ::unexpected(fmt::format("materialize_step: node {} not found", node_id));
+  }
+  if (!it->second.dirty && !isDeferred(it->second)) {
+    return true;  // caught up (or processed and failed): same as a scheduling pass skipping it
+  }
+  if (PJ::Status s = runNodeLocked(node_id, &deadline); !s.has_value()) {
+    return PJ::unexpected(s.error());
+  }
+  return !isDeferred(impl_->nodes.at(node_id));
+}
+
+std::vector<PJ::NodeId> DerivedEngine::deferredNodes() const {
+  std::vector<PJ::NodeId> deferred;
+  for (const auto& [id, node] : impl_->nodes) {
+    if (isDeferred(node)) {
+      deferred.push_back(id);
+    }
+  }
+  std::sort(deferred.begin(), deferred.end());
+  return deferred;
+}
+
+std::string DerivedEngine::nodeError(PJ::NodeId node_id) const {
+  const auto it = impl_->nodes.find(node_id);
+  return it != impl_->nodes.end() ? it->second.error : std::string{};
 }
 
 PJ::Status DerivedEngine::recomputeBatch(PJ::NodeId node_id) {
@@ -1573,6 +1670,8 @@ PJ::Status DerivedEngine::restoreInputBindingState(PJ::NodeId node_id, const Inp
   // must replay in full rather than append a second copy of its history on the next pass.
   binding_node.needs_full_recompute = true;
   binding_node.last_processed_chunk_id = 0;
+  binding_node.resume_chunk_id = 0;
+  binding_node.resume_row = 0;
   binding_node.siso_last_ts = std::numeric_limits<PJ::Timestamp>::min();
   binding_node.mimo_last_ts = std::numeric_limits<PJ::Timestamp>::min();
   binding_node.mimo_last_chunk_id = 0;

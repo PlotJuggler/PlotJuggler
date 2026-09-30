@@ -2,6 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -13,9 +14,12 @@
 #include <utility>
 #include <vector>
 
+#include "pj_base/diagnostic_sink.hpp"
 #include "pj_base/expected.hpp"
 #include "pj_base/types.hpp"
 #include "pj_runtime/HistoryScope.h"
+
+class QTimer;
 
 namespace PJ {
 
@@ -48,6 +52,17 @@ class FilterCatalogue;
 /// `removeTransform`) only from that one thread — no internal locking needed.
 class DataProcessorService {
  public:
+  /// Wall time one materialization tick may take: half a 60 Hz frame. In a
+  /// browser Qt shares the page's main thread and the zero-timer between two
+  /// ticks is a clamped nested setTimeout (measured ~5-6 ms after a busy tick in
+  /// Chromium and Firefox), so a tick cycle is ~13-14 ms and input and paint run
+  /// in the gap. A 10 ms budget stalled Firefox's page timers for ~100 ms once
+  /// per replay, so the browser keeps 8 ms too.
+  static constexpr std::chrono::milliseconds kMaterializationSliceBudget{8};
+  /// Least interval between two announcements of a growing replay's rows (about
+  /// 15 Hz): each one makes every plot showing the output re-read it.
+  static constexpr std::chrono::milliseconds kMaterializationNotifyInterval{66};
+
   /// A filter applied to one input topic: the engine node id plus the
   /// materialized output topic it produced.
   struct FilterHandle {
@@ -284,10 +299,46 @@ class DataProcessorService {
   /// `history_exempt` marks the installed recipe immune to undo/redo (see
   /// `TransformRecipe::history_exempt`); trailing so every existing positional call
   /// site (which stops at `input_column_index`) keeps compiling unchanged.
+  ///
+  /// A NEW persistent key replays the committed input history time-sliced: only the
+  /// first `kMaterializationSliceBudget` slice runs inside the call (so a script
+  /// failing on its first rows is still rejected), the rest from a zero-timer on
+  /// the calling thread (see `stepMaterialization`), so the event loop keeps turning
+  /// while a large history replays. The recipe and its output topic exist on return
+  /// and the output grows in time order until it equals a synchronous replay's. An
+  /// ephemeral create and an in-place replacement replay synchronously.
   [[nodiscard]] Expected<TransformRecipe> upsertTransform(
       std::string_view plugin_id, std::string_view id, std::vector<std::string> inputs,
       std::vector<std::string> outputs, std::string_view script, std::string_view params_json, bool ephemeral = false,
       std::size_t input_column_index = 0, bool history_exempt = false);
+
+  /// One tick of the pending time-sliced replays (`DerivedEngine::deferredNodes`,
+  /// oldest first) for about `budget` of wall time; processors chained on a growing
+  /// output follow it within the same budget. The new rows are announced through
+  /// `SessionManager::notifyIngest` at most every `kMaterializationNotifyInterval`,
+  /// and at once when a replay completes or fails. Returns true when none is
+  /// pending afterwards. Removing, editing or recomputing a transform ends its
+  /// replay by itself. The service's zero-timer calls this; tests may too.
+  /// [main-thread]
+  bool stepMaterialization(std::chrono::nanoseconds budget = kMaterializationSliceBudget);
+
+  /// Completes now the pending replays whose output — or the output of a processor
+  /// chained on it — is `read`, for a reader that must not see a partial series.
+  /// Installed as the engine's `DataEngine::awaitCompleteSeries` barrier, which
+  /// whole-series readers (toolbox snapshot reads, marker generator inputs) call.
+  /// [main-thread]
+  void finishPendingMaterialization(TopicId read);
+
+  /// Where transform failures are reported: every transform whose node fails in a
+  /// scheduling pass (a streaming commit, a replay tick, a chained processor) is
+  /// reported once as an error `Diagnostic` keyed by its transform key, and again
+  /// only after it recovered. Without a sink the failure is only logged.
+  void setDiagnosticSink(DiagnosticSink sink) {
+    diagnostic_sink_ = std::move(sink);
+  }
+
+  /// True while a time-sliced replay has input left.
+  [[nodiscard]] bool materializationPending() const;
 
   /// Validate a transform script WITHOUT installing anything: compile it with the
   /// backend for `language` ("luau" today; other values are rejected until their
@@ -410,7 +461,23 @@ class DataProcessorService {
  private:
   /// Shared upsert/restore install path (see `upsertTransform`). Fills the runtime
   /// fields of `recipe` and stores it on success.
-  [[nodiscard]] Expected<TransformRecipe> installTransform(TransformRecipe recipe);
+  /// `time_sliced`: a new node replays only its first slice here (see upsertTransform).
+  [[nodiscard]] Expected<TransformRecipe> installTransform(TransformRecipe recipe, bool time_sliced = false);
+  /// Starts the zero-timer that drives stepMaterialization() (a no-op without a Qt
+  /// application: tests then step by hand).
+  void armMaterializationTimer();
+  /// `node`'s output topics followed by those of every processor chained on them;
+  /// `dependents` (optional) receives the chained processors' node ids, oldest first.
+  [[nodiscard]] std::vector<TopicId> outputsWithDependents(
+      NodeId node, std::vector<NodeId>* dependents = nullptr) const;
+  /// Announces the outputs grown since the last announcement.
+  void announceGrownOutputs();
+  /// Reports each transform that failed since the last call (see setDiagnosticSink)
+  /// and forgets the ones that recovered or were removed. Called around every
+  /// scheduling pass, so a recovery by an edit between passes re-arms the report.
+  void reportTransformFailures();
+  /// Make `DataEngine::awaitCompleteSeries` finish a pending replay of that topic.
+  void installCompleteReadBarrier();
   [[nodiscard]] Status removeFilterOnly(NodeId node_id);
   [[nodiscard]] Status removeTransformOnly(std::string_view namespaced_key);
   /// Resolve a topic NAME to (topic id, dataset id) by scanning the engine — there
@@ -482,6 +549,13 @@ class DataProcessorService {
   std::unordered_map<TopicId, FilterRecipe> recipes_;                   ///< output topic id -> live recipe
   std::unordered_map<std::string, TransformRecipe> transform_recipes_;  ///< "<plugin>/<id>" -> live transform
   std::shared_ptr<scripting::FilterCatalogue> filter_catalogue_;        ///< optional Luau filter source
+  DiagnosticSink diagnostic_sink_;                                      ///< receives transform failures; may be empty
+  std::unordered_set<std::string> reported_failures_;                   ///< keys of failed transforms already reported
+  std::unordered_set<TopicId> unannounced_outputs_;                     ///< replay outputs grown since the last notify
+  std::chrono::steady_clock::time_point last_announcement_{};
+  /// Zero-interval timer driving stepMaterialization(); created on first use. Declared
+  /// after derived_ so it dies first and can never fire into a destroyed engine.
+  std::unique_ptr<QTimer> materialize_timer_;
 };
 
 }  // namespace PJ

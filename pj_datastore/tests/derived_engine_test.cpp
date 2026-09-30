@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -1892,6 +1893,29 @@ TEST(DerivedEngineTest, SisoLateInputCommitTriggersFullRecompute) {
   }
 }
 
+// A late commit fully recomputes A and cascades into B. When only B fails, the error
+// is B's: A's rebuilt output is complete, so A must not report B's failure.
+TEST(DerivedEngineTest, LateInputRecomputeRecordsADownstreamFailureOnTheFailingNodeOnly) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
+  PJ::NodeId a = *derived.addSisoTransform(src, "a", ds, std::make_unique<IdentityTransform>());
+  PJ::NodeId b =
+      *derived.addSisoTransform(derived.outputTopics(a)[0], "b", ds, std::make_unique<FailAfterNTransform>(5));
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  ASSERT_TRUE(derived.nodeError(b).empty());
+
+  appendRow(engine, src, 2'500'000'000LL, 100.0);  // behind A's watermark: full recompute of A, then B
+  notify(derived, {src});
+  EXPECT_FALSE(derived.scheduleAll().has_value());
+
+  EXPECT_EQ(collectValues(engine, derived.outputTopics(a)[0]).size(), 6u);
+  EXPECT_TRUE(derived.nodeError(a).empty()) << derived.nodeError(a);
+  EXPECT_EQ(derived.nodeError(b), "FailAfterNTransform: boom");
+}
+
 TEST(MimoTransformTest, MimoLateInputCommitTriggersFullRecompute) {
   DataEngine engine;
   DerivedEngine derived(engine);
@@ -2061,6 +2085,329 @@ TEST(DerivedEngineRetentionTest, ReplayHonoursTheInputRetentionFloor) {
     const auto rows = collectRows(engine, derived.outputTopics(node)[0]);
     ASSERT_EQ(rows.size(), 3U) << "node " << node;
     EXPECT_EQ(rows.front().first, 2 * kSec) << "node " << node;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Time-sliced materialization (materializeStep)
+// ---------------------------------------------------------------------------
+
+// Running sum — stateful, so a slice boundary that dropped, repeated or reordered a
+// row changes every later value. Busy-waits `spin` per sample to give the replay a
+// deterministic wall-time cost; sticky-fails after `fail_after` samples when set.
+class SlowRunningSumTransform : public ISISOTransform {
+ public:
+  explicit SlowRunningSumTransform(std::chrono::microseconds spin = {}, int fail_after = -1)
+      : spin_(spin), fail_after_(fail_after) {}
+  void reset() override {
+    sum_ = 0.0;
+    seen_ = 0;
+    failed_ = false;
+  }
+  bool calculate(PJ::Timestamp time, const VarValue& input, PJ::Timestamp& out_time, VarValue& out_value) override {
+    const auto until = std::chrono::steady_clock::now() + spin_;
+    while (std::chrono::steady_clock::now() < until) {}
+    if (fail_after_ >= 0 && seen_ >= fail_after_) {
+      failed_ = true;
+      return false;
+    }
+    ++seen_;
+    sum_ += std::get<double>(input);
+    out_time = time;
+    out_value = sum_;
+    return true;
+  }
+  [[nodiscard]] bool failed() const override {
+    return failed_;
+  }
+  [[nodiscard]] const std::string& error() const override {
+    static const std::string kErr = "SlowRunningSumTransform: boom";
+    return kErr;
+  }
+
+ private:
+  std::chrono::microseconds spin_;
+  int fail_after_;
+  double sum_ = 0.0;
+  int seen_ = 0;
+  bool failed_ = false;
+};
+
+constexpr std::chrono::microseconds kSlowRow{20};
+constexpr std::chrono::milliseconds kStepBudget{5};
+
+struct StepLog {
+  int steps = 0;
+  std::chrono::nanoseconds longest{0};
+};
+
+// Step `node` until it reports done; records the step count and the longest step.
+static StepLog materializeFully(DerivedEngine& derived, PJ::NodeId node, std::chrono::nanoseconds budget) {
+  StepLog log;
+  for (int guard = 0; guard < 100000; ++guard) {
+    const auto start = std::chrono::steady_clock::now();
+    auto done = derived.materializeStep(node, budget);
+    log.longest = std::max<std::chrono::nanoseconds>(log.longest, std::chrono::steady_clock::now() - start);
+    ++log.steps;
+    EXPECT_TRUE(done.has_value()) << done.error();
+    if (!done.has_value() || *done) {
+      break;
+    }
+  }
+  return log;
+}
+
+// Synchronous reference: a fresh running-sum node over `input`, run by scheduleAll().
+static std::vector<std::pair<PJ::Timestamp, double>> synchronousRunningSum(
+    DataEngine& engine, DerivedEngine& derived, PJ::TopicId input, PJ::DatasetId ds, const std::string& name) {
+  auto node = derived.addSisoTransform(input, name, ds, std::make_unique<SlowRunningSumTransform>());
+  EXPECT_TRUE(node.has_value());
+  EXPECT_TRUE(derived.scheduleAll().has_value());
+  return collectRows(engine, derived.outputTopics(*node)[0]);
+}
+
+TEST(DerivedEngineTimeSliceTest, StepsStayWithinBudgetAndMatchSynchronousReplay) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 4000);  // four 1024-row chunks
+  auto node = derived.addSisoTransform(src, "sliced", ds, std::make_unique<SlowRunningSumTransform>(kSlowRow));
+  ASSERT_TRUE(node.has_value());
+  const PJ::TopicId out = derived.outputTopics(*node)[0];
+
+  auto first = derived.materializeStep(*node, kStepBudget);
+  ASSERT_TRUE(first.has_value());
+  EXPECT_FALSE(*first);
+  const std::size_t after_first = collectRows(engine, out).size();
+  EXPECT_GT(after_first, 0u);
+  EXPECT_LT(after_first, 4000u);
+  EXPECT_EQ(derived.deferredNodes(), std::vector<PJ::NodeId>{*node});
+
+  // A deferred node is the stepper's: a scheduling pass leaves it untouched.
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  EXPECT_EQ(collectRows(engine, out).size(), after_first);
+
+  const StepLog log = materializeFully(derived, *node, kStepBudget);
+  // 4000 rows x 20 us = 80 ms of work in 5 ms steps.
+  EXPECT_GE(log.steps + 1, 8);
+  EXPECT_LT(log.longest, 3 * kStepBudget);
+  EXPECT_EQ(collectRows(engine, out), synchronousRunningSum(engine, derived, src, ds, "sync"));
+  EXPECT_TRUE(derived.deferredNodes().empty());
+
+  auto again = derived.materializeStep(*node, kStepBudget);
+  ASSERT_TRUE(again.has_value());
+  EXPECT_TRUE(*again);
+}
+
+TEST(DerivedEngineTimeSliceTest, InOrderAppendsDuringReplayAreConsumed) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 3000);
+  auto node = derived.addSisoTransform(src, "sliced", ds, std::make_unique<SlowRunningSumTransform>(kSlowRow));
+  ASSERT_TRUE(node.has_value());
+  auto first = derived.materializeStep(*node, kStepBudget);
+  ASSERT_TRUE(first.has_value());
+  ASSERT_FALSE(*first);
+
+  appendLinearRows(engine, src, 1.0, 500, 3000);
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  materializeFully(derived, *node, kStepBudget);
+
+  const auto rows = collectRows(engine, derived.outputTopics(*node)[0]);
+  EXPECT_EQ(rows.size(), 3500u);
+  EXPECT_EQ(rows, synchronousRunningSum(engine, derived, src, ds, "sync"));
+}
+
+TEST(DerivedEngineTimeSliceTest, OutOfOrderAppendDuringReplayReplaysInFull) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 3000, /*step_ns=*/2);
+  auto node = derived.addSisoTransform(src, "sliced", ds, std::make_unique<SlowRunningSumTransform>(kSlowRow));
+  ASSERT_TRUE(node.has_value());
+  auto first = derived.materializeStep(*node, kStepBudget);
+  ASSERT_TRUE(first.has_value());
+  ASSERT_FALSE(*first);
+
+  // Odd timestamps interleave with the committed even ones: late input.
+  DataWriter writer = engine.createWriter();
+  for (int i = 0; i < 100; ++i) {
+    ASSERT_TRUE(writer.beginRow(src, 2 * i + 1).has_value());
+    writer.set(src, 0, 1000.0 + i);
+    ASSERT_TRUE(writer.finishRow(src).has_value());
+  }
+  engine.commitChunks(writer.flushAll());
+  notify(derived, {src});
+
+  materializeFully(derived, *node, kStepBudget);
+  const auto rows = collectRows(engine, derived.outputTopics(*node)[0]);
+  EXPECT_EQ(rows.size(), 3100u);
+  EXPECT_EQ(rows, synchronousRunningSum(engine, derived, src, ds, "sync"));
+}
+
+TEST(DerivedEngineTimeSliceTest, RemovedNodeEndsTheReplay) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 3000);
+  auto node = derived.addSisoTransform(src, "sliced", ds, std::make_unique<SlowRunningSumTransform>(kSlowRow));
+  ASSERT_TRUE(node.has_value());
+  auto first = derived.materializeStep(*node, kStepBudget);
+  ASSERT_TRUE(first.has_value());
+  ASSERT_FALSE(*first);
+
+  ASSERT_TRUE(derived.removeNode(*node).has_value());
+  EXPECT_FALSE(derived.materializeStep(*node, kStepBudget).has_value());
+  // The name is free again and a new node over the same input replays normally.
+  EXPECT_EQ(synchronousRunningSum(engine, derived, src, ds, "sliced").size(), 3000u);
+}
+
+TEST(DerivedEngineTimeSliceTest, ReplaceDuringReplayFinishesWithTheNewOperator) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 3000);
+  auto node = derived.addSisoTransform(src, "sliced", ds, std::make_unique<SlowRunningSumTransform>(kSlowRow));
+  ASSERT_TRUE(node.has_value());
+  auto first = derived.materializeStep(*node, kStepBudget);
+  ASSERT_TRUE(first.has_value());
+  ASSERT_FALSE(*first);
+
+  ASSERT_TRUE(derived.replaceSisoTransform(*node, std::make_unique<ScaleByTwoTransform>()).has_value());
+  auto done = derived.materializeStep(*node, kStepBudget);
+  ASSERT_TRUE(done.has_value());
+  EXPECT_TRUE(*done);
+  const std::vector<double> values = collectValues(engine, derived.outputTopics(*node)[0]);
+  ASSERT_EQ(values.size(), 3000u);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    EXPECT_DOUBLE_EQ(values[i], 2.0 * static_cast<double>(i));
+  }
+}
+
+TEST(DerivedEngineTimeSliceTest, ReplacedInputDataDuringReplayMatchesASynchronousNode) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::DatasetId out_ds = makeDataset(engine, "derived");
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 3000);
+  auto sync_node = derived.addSisoTransform(src, "sync", out_ds, std::make_unique<SlowRunningSumTransform>());
+  ASSERT_TRUE(sync_node.has_value());
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  auto node = derived.addSisoTransform(src, "sliced", out_ds, std::make_unique<SlowRunningSumTransform>(kSlowRow));
+  ASSERT_TRUE(node.has_value());
+  auto first = derived.materializeStep(*node, kStepBudget);
+  ASSERT_TRUE(first.has_value());
+  ASSERT_FALSE(*first);
+
+  // Reload: the input's chunks are freed and new data (different values) lands.
+  engine.clearDatasetChunks(ds);
+  appendLinearRows(engine, src, 3.0, 2000, 0);
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  materializeFully(derived, *node, kStepBudget);
+
+  const auto rows = collectRows(engine, derived.outputTopics(*node)[0]);
+  EXPECT_EQ(rows.size(), 2000u);
+  EXPECT_EQ(rows, collectRows(engine, derived.outputTopics(*sync_node)[0]));
+}
+
+TEST(DerivedEngineTimeSliceTest, FailingStepEndsTheReplayWithAnError) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 3000);
+  auto node = derived.addSisoTransform(
+      src, "sliced", ds, std::make_unique<SlowRunningSumTransform>(kSlowRow, /*fail_after=*/2500));
+  ASSERT_TRUE(node.has_value());
+  bool failed = false;
+  for (int step = 0; step < 100000 && !failed; ++step) {
+    auto done = derived.materializeStep(*node, kStepBudget);
+    failed = !done.has_value();
+    if (done.has_value() && *done) {
+      break;
+    }
+  }
+  EXPECT_TRUE(failed);
+  // No longer deferred: the next pass is an ordinary (quiet) one.
+  EXPECT_TRUE(derived.deferredNodes().empty());
+  EXPECT_EQ(derived.nodeError(*node), "SlowRunningSumTransform: boom");
+  auto after = derived.materializeStep(*node, kStepBudget);
+  ASSERT_TRUE(after.has_value());
+  EXPECT_TRUE(*after);
+  EXPECT_LT(collectRows(engine, derived.outputTopics(*node)[0]).size(), 2500u);
+
+  // The error stays with the node while its op is failed, and a successful replay clears it.
+  appendLinearRows(engine, src, 1.0, 10, 3000);
+  notify(derived, {src});
+  EXPECT_FALSE(derived.scheduleAll().has_value());
+  EXPECT_EQ(derived.nodeError(*node), "SlowRunningSumTransform: boom");
+  ASSERT_TRUE(derived.replaceSisoTransform(*node, std::make_unique<ScaleByTwoTransform>()).has_value());
+  EXPECT_TRUE(derived.nodeError(*node).empty());
+}
+
+// deferredNodes() is the one list of pending replays: creation order, and a node
+// leaves it as soon as anything ends its replay — here a reload's binding restore,
+// which queues a full replay for the next scheduling pass instead.
+TEST(DerivedEngineTimeSliceTest, DeferredNodesListPendingReplaysInCreationOrder) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 3000);
+  auto first = derived.addSisoTransform(src, "first", ds, std::make_unique<SlowRunningSumTransform>(kSlowRow));
+  auto second = derived.addSisoTransform(src, "second", ds, std::make_unique<SlowRunningSumTransform>(kSlowRow));
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(second.has_value());
+  EXPECT_TRUE(derived.deferredNodes().empty());
+  auto second_step = derived.materializeStep(*second, kStepBudget);
+  auto first_step = derived.materializeStep(*first, kStepBudget);
+  ASSERT_TRUE(second_step.has_value() && first_step.has_value());
+  ASSERT_FALSE(*second_step || *first_step);
+  EXPECT_EQ(derived.deferredNodes(), (std::vector<PJ::NodeId>{*first, *second}));
+
+  auto binding = derived.inputBindingState(*first);
+  ASSERT_TRUE(binding.has_value());
+  ASSERT_TRUE(derived.restoreInputBindingState(*first, *binding).has_value());
+  EXPECT_EQ(derived.deferredNodes(), std::vector<PJ::NodeId>{*second});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  materializeFully(derived, *second, kStepBudget);
+  EXPECT_TRUE(derived.deferredNodes().empty());
+
+  const auto reference = synchronousRunningSum(engine, derived, src, ds, "sync");
+  EXPECT_EQ(collectRows(engine, derived.outputTopics(*first)[0]), reference);
+  EXPECT_EQ(collectRows(engine, derived.outputTopics(*second)[0]), reference);
+}
+
+TEST(DerivedEngineTimeSliceTest, DownstreamNodeFollowsTheGrowingOutput) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 3000);
+  auto node = derived.addSisoTransform(src, "sliced", ds, std::make_unique<SlowRunningSumTransform>(kSlowRow));
+  ASSERT_TRUE(node.has_value());
+  auto first = derived.materializeStep(*node, kStepBudget);
+  ASSERT_TRUE(first.has_value());
+  ASSERT_FALSE(*first);
+  auto child =
+      derived.addSisoTransform(derived.outputTopics(*node)[0], "child", ds, std::make_unique<ScaleByTwoTransform>());
+  ASSERT_TRUE(child.has_value());
+  for (int guard = 0; guard < 100000; ++guard) {
+    auto done = derived.materializeStep(*node, kStepBudget);
+    ASSERT_TRUE(done.has_value());
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+    if (*done) {
+      break;
+    }
+  }
+  const auto parent_rows = collectRows(engine, derived.outputTopics(*node)[0]);
+  const auto child_rows = collectRows(engine, derived.outputTopics(*child)[0]);
+  ASSERT_EQ(child_rows.size(), 3000u);
+  ASSERT_EQ(parent_rows.size(), 3000u);
+  for (std::size_t i = 0; i < child_rows.size(); ++i) {
+    EXPECT_EQ(child_rows[i].first, parent_rows[i].first);
+    EXPECT_DOUBLE_EQ(child_rows[i].second, 2.0 * parent_rows[i].second);
   }
 }
 

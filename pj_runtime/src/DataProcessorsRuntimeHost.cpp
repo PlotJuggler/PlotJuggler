@@ -79,6 +79,9 @@ bool DataProcessorsRuntimeHost::onCreate(
     }
     const bool ephemeral = (flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL) != 0;
     const bool history_exempt = (flags & PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT) != 0;
+    // A persistent create returns after its first slice and replays the rest of the
+    // history from the event loop; an ephemeral preview stays synchronous (its caller
+    // reads the whole output right back). See upsertTransform.
     auto result = self.service_.upsertTransform(
         self.plugin_id_, sdk::toStringView(id), std::move(input_names), std::move(output_names),
         sdk::toStringView(script), sdk::toStringView(params_json), ephemeral, /*input_column_index=*/0, history_exempt);

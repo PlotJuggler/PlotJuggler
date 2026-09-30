@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 const { test, expect } = require('@playwright/test');
 const { waitForQtApp } = require('./support/app');
+const { nativePickerType } = require('./support/browser');
 const { clickActiveDialogButton } = require('./support/dialogs');
 const { base64Fixture } = require('./support/fixtures');
 const { openFileChooser } = require('./support/pickers');
@@ -77,8 +78,9 @@ function makeLargeCsv(rowCount = 1_000_000) {
   return Buffer.from(rows.join(''));
 }
 
-test('browser picker falls back under cross-origin isolation without removing the native API', async ({ page }) => {
+test('browser picker falls back under cross-origin isolation without removing the native API', async ({ page, browserName }) => {
   test.setTimeout(90000);
+  const nativePicker = nativePickerType(browserName);
   const errors = [];
   const consoleMessages = [];
   page.on('pageerror', error => errors.push(String(error)));
@@ -89,7 +91,7 @@ test('browser picker falls back under cross-origin isolation without removing th
   await expect.poll(() => page.evaluate(() => crossOriginIsolated)).toBe(true);
   await expect.poll(
     () => page.evaluate(() => typeof window.showOpenFilePicker),
-  ).toBe('function');
+  ).toBe(nativePicker);
 
   const screen = await page.locator('#screen').boundingBox();
   expect(screen).not.toBeNull();
@@ -105,7 +107,7 @@ test('browser picker falls back under cross-origin isolation without removing th
     { timeout: 10000 },
   ).toContain('bytes=5 sum=15');
 
-  expect(await page.evaluate(() => typeof window.showOpenFilePicker)).toBe('function');
+  expect(await page.evaluate(() => typeof window.showOpenFilePicker)).toBe(nativePicker);
   expect(errors).toEqual([]);
 });
 

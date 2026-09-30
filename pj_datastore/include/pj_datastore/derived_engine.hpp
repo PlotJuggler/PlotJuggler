@@ -2,6 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <string>
@@ -222,6 +223,36 @@ class DerivedEngine {
   // visible in the UI to implement display-lazy scheduling.
   PJ::Status scheduleActive(const std::unordered_set<PJ::NodeId>& active_nodes);
 
+  /// Time-sliced catch-up: advance one node over its not-yet-processed input for
+  /// about `budget` of wall time, commit what it produced, and return. True once
+  /// the node has consumed every committed input row, false while work remains.
+  ///
+  /// A step that leaves work behind makes the node *deferred* (see deferredNodes()):
+  /// scheduleAll() and scheduleActive() skip it, so the caller owns it until a step
+  /// returns true or an error, or the node is removed/replaced/recomputed (each of
+  /// which finishes or drops the replay). Input committed meanwhile is consumed by
+  /// later steps; each step's rows are committed at once, so readers see the output
+  /// grow in time order, and the final output equals the synchronous replay's. A
+  /// node that is neither dirty nor deferred (a scheduling pass would skip it,
+  /// including one whose op already failed) reports true at once.
+  ///
+  /// The clock is read every few samples, so a step overshoots `budget` by at most
+  /// a handful of calculate() calls. Only a SISO node over time-ordered input is
+  /// sliced; a MIMO node, input whose chunks overlap in time, or a node awaiting a
+  /// full recompute finishes in one (unbounded) step. On success, downstream nodes
+  /// are marked dirty so the next pass (or a step of theirs) carries them along.
+  [[nodiscard]] PJ::Expected<bool> materializeStep(PJ::NodeId node_id, std::chrono::nanoseconds budget);
+
+  /// The deferred nodes (a materializeStep() stopped inside their input), in
+  /// creation order: node ids are monotonic, so a producer precedes its consumers.
+  [[nodiscard]] std::vector<PJ::NodeId> deferredNodes() const;
+
+  /// The error of the node's own last run by any scheduling pass, step or recompute;
+  /// empty while it succeeds (or for an unknown node). A failure downstream of it in
+  /// a recompute cascade is recorded on the failing node only. A sticky-failed op keeps
+  /// reporting it until a successful replay (e.g. after its op is replaced).
+  [[nodiscard]] std::string nodeError(PJ::NodeId node_id) const;
+
   // Full history recompute: clear output, reset transform, replay all input.
   PJ::Status recomputeBatch(PJ::NodeId node_id);
 
@@ -263,6 +294,12 @@ class DerivedEngine {
   PJ::Status scheduleActiveLocked(const std::unordered_set<PJ::NodeId>& active_nodes);
   PJ::Status recomputeBatchLocked(PJ::NodeId node_id);
   PJ::Status recomputeBatchLocked(PJ::Span<const PJ::NodeId> root_node_ids);
+  /// One scheduling step of a node, shared by the scheduling passes and
+  /// materializeStep(): a reset + full replay when its output or input needs one,
+  /// else the incremental path, which stops at `deadline` (null: run to the end).
+  /// A failed node counts as processed and is not deferred; a successful one marks
+  /// its downstream nodes dirty.
+  PJ::Status runNodeLocked(PJ::NodeId node_id, const std::chrono::steady_clock::time_point* deadline);
   /// Shared rollback contract for in-place node mutations: replay the mutated
   /// node's graph; on failure run `revert` and replay again, composing
   /// "<op>: <err>; rollback failed: <err2>" if even the rollback replay fails.

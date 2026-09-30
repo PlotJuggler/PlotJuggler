@@ -97,10 +97,12 @@ TEST(TabbedWidgetTab, TakeWidgetTabPreservesLiveContentWithoutClosingOrChangingH
     return false;
   });
 
+  QWidget* page_parent = content->parentWidget();
+  ASSERT_NE(page_parent, nullptr);
   EXPECT_EQ(tabbed.takeWidgetTab(content), content.data());
   EXPECT_EQ(tabbed.tabCount(), 1);
   EXPECT_EQ(tabbed.currentTab(), tabbed.dockerAt(0));
-  EXPECT_EQ(content->parentWidget(), nullptr);
+  EXPECT_EQ(content->parentWidget(), page_parent) << "left for its destination to reparent, once";
   EXPECT_TRUE(content->isHidden());
   QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
   ASSERT_FALSE(content.isNull());
