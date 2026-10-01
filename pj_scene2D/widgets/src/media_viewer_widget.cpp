@@ -194,6 +194,8 @@ namespace {
 // pj_scene2d_core/overlay_geometry.h so it can be unit-tested; only the
 // Qt/QRhi-specific helpers below remain here.
 
+// The output pixels the image quad covers under `view` (GL clip space). QRhi
+// scissors put y = 0 at the bottom, like clip space, on every backend.
 QRhiScissor imageScissor(const QMatrix4x4& view, const QSize& output_size) {
   if (output_size.width() <= 0 || output_size.height() <= 0) {
     return QRhiScissor(0, 0, 0, 0);
@@ -233,8 +235,8 @@ QRhiScissor imageScissor(const QMatrix4x4& view, const QSize& output_size) {
   const auto height = static_cast<float>(output_size.height());
   const int x0 = std::max(0, static_cast<int>(std::floor((min_x * 0.5f + 0.5f) * width)));
   const int x1 = std::min(output_size.width(), static_cast<int>(std::ceil((max_x * 0.5f + 0.5f) * width)));
-  const int y0 = std::max(0, static_cast<int>(std::floor((1.0f - max_y) * 0.5f * height)));
-  const int y1 = std::min(output_size.height(), static_cast<int>(std::ceil((1.0f - min_y) * 0.5f * height)));
+  const int y0 = std::max(0, static_cast<int>(std::floor((min_y * 0.5f + 0.5f) * height)));
+  const int y1 = std::min(output_size.height(), static_cast<int>(std::ceil((max_y * 0.5f + 0.5f) * height)));
   return QRhiScissor(x0, y0, std::max(0, x1 - x0), std::max(0, y1 - y0));
 }
 
@@ -1058,11 +1060,12 @@ void MediaViewerWidget::createOptionalResources(QRhi* r, const QShader& vert, co
   }
 
   // ----- Marker / overlay shaders + shared uniform -----
-  // scene_lines shaders drive the thick (Triangles) outline pipeline below; the
-  // uniform buffer (view + frame size) is shared by every overlay pipeline.
+  // The scene_lines shaders (position + colour) drive both the point quads and the
+  // thick (Triangles) outline pipeline below; the uniform buffer (view + frame
+  // size) is shared by every overlay pipeline.
   QShader marker_vert;
   QShader marker_frag;
-  if (marker_uniform_buf_ == nullptr || thick_overlay_.pipeline == nullptr) {
+  if (marker_uniform_buf_ == nullptr || thick_overlay_.pipeline == nullptr || points_overlay_.pipeline == nullptr) {
     marker_vert = PJ::loadRhiShader(QStringLiteral(":/shaders/scene_lines.vert.qsb"));
     marker_frag = PJ::loadRhiShader(QStringLiteral(":/shaders/scene_lines.frag.qsb"));
     if (!marker_vert.isValid() || !marker_frag.isValid()) {
@@ -1083,21 +1086,15 @@ void MediaViewerWidget::createOptionalResources(QRhi* r, const QShader& vert, co
 
   // ----- kPoints quad pipeline -----
   // Solid-fill triangles, shares marker_uniform_buf_ but has its own SRB and VBO.
-  if (points_overlay_.pipeline == nullptr) {
-    const QShader quads_vert = PJ::loadRhiShader(QStringLiteral(":/shaders/scene_quads.vert.qsb"));
-    const QShader quads_frag = PJ::loadRhiShader(QStringLiteral(":/shaders/scene_quads.frag.qsb"));
-    if (!quads_vert.isValid() || !quads_frag.isValid()) {
-      warning("scene_quads shaders not loaded; kPoints disabled");
-    } else {
-      destroyOverlayPipeline(points_overlay_);
-      rebuilt = createOverlayVbo(points_overlay_, 64 * 1024) && createUniformOverlaySrb(points_overlay_) &&
-                createOverlayGraphicsPipeline(
-                    points_overlay_, quads_vert, quads_frag, QRhiGraphicsPipeline::Triangles, colorVertexInputLayout(),
-                    "points", warn);
-    }
+  if (marker_vert.isValid() && marker_frag.isValid() && points_overlay_.pipeline == nullptr) {
+    destroyOverlayPipeline(points_overlay_);
+    rebuilt = createOverlayVbo(points_overlay_, 64 * 1024) && createUniformOverlaySrb(points_overlay_) &&
+              createOverlayGraphicsPipeline(
+                  points_overlay_, marker_vert, marker_frag, QRhiGraphicsPipeline::Triangles, colorVertexInputLayout(),
+                  "points", warn);
   }
 
-  // ----- Outline pipeline (Triangles, reuses scene_lines shaders) -----
+  // ----- Outline pipeline (Triangles) -----
   // All line/circle outlines render here. Each segment is expanded CPU-side
   // (overlay_geometry::appendLineStrokes) into a cosmetic-width quad — same vertex
   // layout as the fills (vec2 pos + vec4 color, stride 24), Triangles topology.

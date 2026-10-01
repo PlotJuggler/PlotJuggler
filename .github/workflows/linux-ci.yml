@@ -291,7 +291,8 @@ jobs:
       - name: Test the QRhi renderer at the OpenGL floor (3.3 core)
         # Every pack's lowest desktop GLSL is 330, and Qt's GL backend never picks
         # a GLSL above the context's: Mesa capped to OpenGL 3.3 runs the render
-        # harness and the dock lifecycle, whose media viewer draws its 330 pack.
+        # harness, the dock lifecycle and the media viewer's pixel checks, which
+        # draw the viewer's 330 image pack and 150 overlay packs.
         env:
           PJ_REQUIRE_GPU_TESTS: "1"
           MESA_GL_VERSION_OVERRIDE: "3.3"
@@ -299,7 +300,7 @@ jobs:
           PJ_RHI_TEST_DUMP_DIR: ${{ runner.temp }}/rhi-dump-gl33
         run: |
           xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120 --no-tests=error \
-            -R '^(scene3d_rhi_render_test|rhi_dock_lifecycle_test)\.opengl\.'
+            -R '^(scene3d_rhi_render_test|rhi_dock_lifecycle_test|media_viewer_render_test)\.opengl\.'
 
       - name: Test floating docks moved to a screen of another pixel ratio
         # Needs two screens with different device-pixel ratios, which xvfb cannot

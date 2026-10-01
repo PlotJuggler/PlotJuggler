@@ -91,7 +91,7 @@ handles per-frame `kVideoFrame` streaming topics (parser-mode
 |-----------|-----------|------|
 | `MediaViewerWidget` | `media_viewer_widget.h` | `QRhiWidget` subclass: GPU rendering via colorspace-aware YUV->RGB fragment shader (3 R8 textures for YUV420P, R8+RG8 for NV12; matrix from `buildYuvMatrix`), per-layer magnification filter, zoom/pan, RGB DecodedFrame path, GPU lens-rectification (§7.2), and `MediaSource` polling via `setMediaSource()` + `setTimestamp()` (§7) |
 | YUV shaders | `shaders/yuv_to_rgb.{vert,frag}` | colorspace-aware YUV420P/NV12->RGB conversion (BT.601/709 + limited/full range via the per-frame `colorMatrix`); RGBA passthrough; native Mono8 (R8 expand) / BGRA (RGBA8 swizzle) paths; depth colormap (`pixelFormat == 5`: R32F depth in `y_tex`, normalized by near/far and looked up in the colormap LUT in `u_tex`); optional remap-LUT rectification (binding 4) — see §7.2 |
-| Overlay shaders | `shaders/scene_lines.{vert,frag}`, `shaders/scene_quads.{vert,frag}`, `shaders/scene_text.{vert,frag}` | Annotation overlay pipelines (§7.1): triangle strokes (scale-with-1px-floor), solid fills, textured text quads |
+| Overlay shaders | `shaders/scene_lines.{vert,frag}`, `shaders/scene_text.{vert,frag}` | Annotation overlay pipelines (§7.1): `scene_lines` draws both the triangle strokes (scale-with-1px-floor) and the solid fills, each in its own pipeline; `scene_text` draws the textured text quads |
 
 The Qt layer is thin — it owns the GPU surface and polls the
 `MediaSource`'s `takeFrame()` at render rate. All decode logic,

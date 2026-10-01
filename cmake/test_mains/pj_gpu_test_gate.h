@@ -12,11 +12,12 @@
 // stack cannot make such a lane go quietly green. Unset (local dev, and
 // platforms with no GPU such as Windows CI), behaviour is unchanged: a plain
 // skip. Available to every MAIN gui runner of pj_add_test_runner (PjTests.cmake).
-// The display-test helpers at the end (real QPA, headless skip, grab wait,
-// backend name) serve the QRhi display runners.
+// The display-test helpers at the end (real QPA, headless skip, grab waits,
+// colour comparison, backend name) serve the QRhi display runners.
 
 #include <gtest/gtest.h>
 
+#include <QColor>
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QGuiApplication>
@@ -25,6 +26,7 @@
 #include <QRhiWidget>
 #include <QString>
 #include <QTimer>
+#include <cstdlib>
 #include <functional>
 #include <string>
 
@@ -104,6 +106,30 @@ inline QImage pjWaitForGrab(
     loop.exec();
   }
   return image.convertToFormat(QImage::Format_RGB32);
+}
+
+// Presents one real frame of `widget`, then grabs it: the OpenGL QRhi's grab-only
+// frames reuse stale state (pj_scene3D/docs/TECHNICAL_NOTES.md, Qt bugs). Null when
+// nothing was presented within 5 s.
+[[nodiscard]] inline QImage pjPresentAndGrab(QRhiWidget* widget) {
+  bool presented = false;
+  QEventLoop loop;
+  QTimer::singleShot(5000, &loop, &QEventLoop::quit);
+  const auto connection = QObject::connect(widget, &QRhiWidget::frameSubmitted, &loop, [&presented, &loop] {
+    presented = true;
+    loop.quit();
+  });
+  widget->update();
+  loop.exec();
+  QObject::disconnect(connection);
+  return presented ? widget->grabFramebuffer() : QImage();
+}
+
+// True when every channel of `actual` is within `tolerance` of `expected`.
+[[nodiscard]] inline bool pjColourNear(QRgb actual, const QColor& expected, int tolerance) {
+  return std::abs(qRed(actual) - expected.red()) <= tolerance &&
+         std::abs(qGreen(actual) - expected.green()) <= tolerance &&
+         std::abs(qBlue(actual) - expected.blue()) <= tolerance;
 }
 
 // QRhi::backendName() of the backend `api` requests (pass PJ::preferredGraphicsApi():

@@ -41,10 +41,39 @@ YuvColorSpace mapColorSpace(AVColorSpace cs, int height) noexcept {
   }
 }
 
-// MPEG (studio/limited) is the default for video; only an explicit JPEG/PC tag
-// means full range.
-YuvColorRange mapColorRange(AVColorRange r) noexcept {
-  return (r == AVCOL_RANGE_JPEG) ? YuvColorRange::kFull : YuvColorRange::kLimited;
+// MPEG (studio/limited) is the default for video; an explicit JPEG/PC tag, or one
+// of the deprecated YUVJ pixel formats some decoders still emit, means full range.
+YuvColorRange mapColorRange(AVColorRange range, AVPixelFormat format) noexcept {
+  switch (format) {
+    case AV_PIX_FMT_YUVJ420P:
+    case AV_PIX_FMT_YUVJ422P:
+    case AV_PIX_FMT_YUVJ444P:
+    case AV_PIX_FMT_YUVJ440P:
+    case AV_PIX_FMT_YUVJ411P:
+      return YuvColorRange::kFull;
+    default:
+      return (range == AVCOL_RANGE_JPEG) ? YuvColorRange::kFull : YuvColorRange::kLimited;
+  }
+}
+
+// Has `context` read and write samples of the same range, so sws_scale only
+// repacks. By default it squeezes a YUVJ (full-range) source into a limited
+// one, while the frame keeps its full-range tag for the GPU matrix.
+void keepRange(SwsContext* context, bool full_range) {
+  int* inverse_table = nullptr;
+  int source_range = 0;
+  int* table = nullptr;
+  int destination_range = 0;
+  int brightness = 0;
+  int contrast = 0;
+  int saturation = 0;
+  if (sws_getColorspaceDetails(
+          context, &inverse_table, &source_range, &table, &destination_range, &brightness, &contrast, &saturation) <
+      0) {
+    return;
+  }
+  const int range = full_range ? 1 : 0;
+  sws_setColorspaceDetails(context, inverse_table, range, table, range, brightness, contrast, saturation);
 }
 
 // Open an FFmpeg hardware-device context for `type`, or nullptr if none works.
@@ -401,12 +430,13 @@ Expected<DecodedFrame> FfmpegDecoder::avFrameToDecodedFrame(AVFrame* frame) {
   auto src_fmt = static_cast<AVPixelFormat>(sw_frame->format);
 
   // Carry the codec-signalled colorimetry so the GPU builds the right YUV→RGB
-  // matrix (BT.601 vs BT.709) and range scale (limited vs full). Previously this
-  // was dropped and the shader hardcoded full-range BT.709, washing out / hue-
-  // shifting limited-range and SD content. sws_scale below only repacks the pixel
-  // layout, so these tags stay valid for the converted output too.
-  const YuvColorSpace color_space = mapColorSpace(sw_frame->colorspace, h);
-  const YuvColorRange color_range = mapColorRange(sw_frame->color_range);
+  // matrix (BT.601 vs BT.709) and range scale (limited vs full). Read it from the
+  // decoded frame: a hardware download fills `sw_frame` with pixels, not frame
+  // properties. sws_scale below only repacks the pixel layout (keepRange), so these
+  // tags stay valid for the converted output too.
+  const YuvColorSpace color_space = mapColorSpace(frame->colorspace, h);
+  const YuvColorRange color_range = mapColorRange(frame->color_range, src_fmt);
+  const bool full_range = color_range == YuvColorRange::kFull;
 
   // Output YUV420P — no color conversion on CPU. The GPU shader applies the
   // YUV→RGB matrix selected from color_space/color_range above.
@@ -487,14 +517,19 @@ Expected<DecodedFrame> FfmpegDecoder::avFrameToDecodedFrame(AVFrame* frame) {
   }
 
   // Any other format (P010, YUV422, etc.) — convert to YUV420P via sws_scale
-  if (sws_ctx_ == nullptr || w != sws_src_w_ || h != sws_src_h_ || static_cast<int>(src_fmt) != sws_src_fmt_) {
+  if (sws_ctx_ == nullptr || w != sws_src_w_ || h != sws_src_h_ || static_cast<int>(src_fmt) != sws_src_fmt_ ||
+      full_range != sws_full_range_) {
     if (sws_ctx_ != nullptr) {
       sws_freeContext(sws_ctx_);
     }
     sws_ctx_ = sws_getContext(w, h, src_fmt, w, h, AV_PIX_FMT_YUV420P, SWS_BILINEAR, nullptr, nullptr, nullptr);
+    if (sws_ctx_ != nullptr) {
+      keepRange(sws_ctx_, full_range);
+    }
     sws_src_w_ = w;
     sws_src_h_ = h;
     sws_src_fmt_ = static_cast<int>(src_fmt);
+    sws_full_range_ = full_range;
   }
 
   if (sws_ctx_ == nullptr) {

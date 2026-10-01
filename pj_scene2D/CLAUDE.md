@@ -15,7 +15,11 @@ Core tests are grouped into the `pj_scene2d_core_tests` and
 per case. The source-directory runner uses the repository root for video fixtures.
 `mcap_integration_test` and `dual_store_test` stay separate because both define
 `MCAP_IMPLEMENTATION`; `ffmpeg_decoder_test` stays separate to preserve its ctest
-`LSAN_OPTIONS` environment.
+`LSAN_OPTIONS` environment. The viewer's pixel checks (YUV/NV12 colour matrices,
+BGRA, depth colormap, rectification, overlays, scissoring) are
+`media_viewer_render_test`, a QRhi display runner registered once per backend of
+the platform; it skips under `test.sh`'s `offscreen` QPA and runs in the CI
+display lanes.
 
 **Depth images** arrive as `sdk::Image` with a depth `encoding` (16UC1 / 32FC1 /
 compressedDepth) — there is no `kDepthImage` producer. `Scene2DDockWidget` peeks a

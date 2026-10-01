@@ -1896,6 +1896,16 @@ TEST(ObjectStoreReviewTest, SeededPushToUnknownTopicDoesNotTouchThePool) {
 // fetch_ctx_destroy that queries its host. Dropping it under a store or series
 // lock would self-deadlock (or be UB on the shared_mutex).
 struct ReentrantOnDestroy {
+  // make_shared cannot aggregate-initialize on Xcode 15's AppleClang (no C++20
+  // parenthesized aggregate init), and a temporary to copy from would run the
+  // destructor this test counts.
+  ReentrantOnDestroy(ObjectStore* store_in, ObjectTopicId probe_in, std::atomic<int>* destroyed_in)
+      : store(store_in), probe(probe_in), destroyed(destroyed_in) {}
+  ReentrantOnDestroy(const ReentrantOnDestroy&) = delete;
+  ReentrantOnDestroy& operator=(const ReentrantOnDestroy&) = delete;
+  ReentrantOnDestroy(ReentrantOnDestroy&&) = delete;
+  ReentrantOnDestroy& operator=(ReentrantOnDestroy&&) = delete;
+
   ObjectStore* store;
   ObjectTopicId probe;
   std::atomic<int>* destroyed;

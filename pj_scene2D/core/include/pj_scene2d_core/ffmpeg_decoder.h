@@ -127,6 +127,7 @@ class FfmpegDecoder {
   int sws_src_w_ = 0;
   int sws_src_h_ = 0;
   int sws_src_fmt_ = -1;
+  bool sws_full_range_ = false;  ///< Range sws_ctx_ keeps on both sides; part of its cache key.
 };
 
 }  // namespace PJ

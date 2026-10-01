@@ -30,17 +30,8 @@ QMediaPlayer is unsuitable for PlotJuggler's needs:
 | No low-latency streaming | RTSP has 2-3s latency; no native SRT |
 | No external clock sync | Cannot tie playback to an external timeline |
 
-A custom decode pipeline is required.
-
-### QAbstractVideoBuffer (Public Again in 6.8)
-
-Qt 6.8 made `QAbstractVideoBuffer` public (it was private in 6.0-6.7). This is
-the bridge between a custom decode pipeline and Qt's rendering:
-
-- Three virtuals: `format()`, `map()`, `unmap()`
-- `QVideoFrame(std::unique_ptr<QAbstractVideoBuffer>)` takes ownership
-- CPU-accessible buffers only via the public API
-- True GPU texture passthrough requires `QHwVideoBuffer` (private/internal)
+A custom decode pipeline is required. PJ4 does not use Qt Multimedia at all:
+FFmpeg frames go straight into the viewer's own QRhi textures.
 
 ### QRhiWidget — Primary Render Path
 
@@ -61,12 +52,15 @@ the bridge between a custom decode pipeline and Qt's rendering:
   4x4 (range scale/offset folded into the constant column), so the shader is
   unchanged across all combinations; BT.709 + full range reproduces the historical
   hardcoded matrix bit-for-bit. See §5 "Colorimetry was dropped" for the bug this
-  fixed.
-- Backward-compatible QImage (RGB) path kept for image viewers
+  fixed. A deprecated YUVJ pixel format counts as full range, and the decoder's
+  swscale repack keeps the source range (`keepRange`): by default swscale squeezes
+  a full-range YUVJ frame to limited range while the frame stays tagged full.
+- RGB/BGR, Mono8 and depth frames take their own texture paths through the
+  same pipeline (`TexturePathFormat` in `media_viewer_widget.cpp`)
 - Zoom (mouse wheel) and pan (mouse drag) via view transform matrix in
   vertex shader — zero CPU-side pixel processing
-- Optional zero-copy: import HW-decoded GPU surfaces directly as QRhi
-  textures via `QRhiTexture::createFrom({nativeHandle, 0})`
+- Hardware-decoded frames are downloaded to system memory and uploaded like
+  software frames; see "GPU Zero-Copy Path" (§3) for the import that is not built
 
 ### Shader Toolchain
 
@@ -74,29 +68,28 @@ The widget consumes offline-compiled Qt shader blobs (`*.qsb`) through
 `QShader::fromSerialized()`. `shaders/shaders.qrc` embeds the `.qsb` files;
 the neighboring `.vert` / `.frag` files are reference inputs. Editing GLSL
 sources has no runtime or build effect until the matching `.qsb` file is
-regenerated with Qt's `qsb` tool from the `qtshadertools` module. The W11 WASM
-port bakes every pack with Qt 6.11's host tool. The overlay packs retain their
-existing GLSL targets and add WebGL2:
+regenerated with Qt's `qsb` tool from the `qtshadertools` module. Re-bake every
+pack with `shaders/bake.sh`, using the `qsb` of the pinned Qt (pack bytes depend
+on its version; desktop Qt kits do not ship one, a full Qt or the WASM kit does):
 
 ```bash
-qsb --glsl "100 es,120,150,300 es" --hlsl 50 --msl 12 \
-  -o shaders/<overlay-name>.qsb shaders/<overlay-name>
+widgets/shaders/bake.sh /path/to/qsb
 ```
 
-The image pass bakes WebGL2, GLSL 330 (an OpenGL 3.3 context, or the macOS
-4.1 core context of the Metal-to-OpenGL fallback) and GLSL 440:
+The script is the single source of the targets, following the dialect policy in
+`cmake/PjQsb.cmake`. The image pass (`yuv_to_rgb`) bakes WebGL2, GLSL 330 (an
+OpenGL 3.3 context, or the macOS 4.1 core context of the Metal-to-OpenGL
+fallback) and GLSL 440. The overlay packs (`scene_lines`, `scene_text`) bake
+GLSL 100 es, 120, 150 and 300 es; a 3.3 or 4.1 core context uses 150. All carry
+HLSL 50, MSL 12 and SPIR-V. One pair of overlay shaders serves both the point
+quads and the outlines: they differ only in the geometry the CPU builds.
 
-```bash
-qsb --glsl "300 es,330,440" --hlsl 50 --msl 12 \
-  -o shaders/yuv_to_rgb.<stage>.qsb shaders/yuv_to_rgb.<stage>
-```
-
-Both commands retain the desktop GLSL/HLSL/MSL variants and add GLSL ES 300
-for WebGL2. In an Emscripten configuration, `widgets/CMakeLists.txt` repeats that
-command into the build tree and compares SHA-256 hashes with the committed
-packs. Configuration therefore fails if a source and blob diverge or a pack is
-rebaked with the wrong target set. A general `qt6_add_shaders` migration remains
-deferred work tracked as F-009.
+In an Emscripten configuration, `widgets/CMakeLists.txt` re-runs `bake.sh` into
+the build tree and compares SHA-256 hashes with the committed packs, so
+configuration fails if a source and blob diverge, a pack is missing, or one is
+rebaked with the wrong target set. `media_viewer_render_test` draws every pack on
+each backend of the platform (and at the OpenGL 3.3 floor in Linux CI). A general
+`qt6_add_shaders` migration remains deferred work tracked as F-009.
 
 ### QRhiWidget in a window first shown without one
 
@@ -230,30 +223,6 @@ contract. Desktop continues to use its independently packaged dependencies.
 - At the end of `initialize()`, call `update()` if a frame is pending
   — otherwise the first frame set before init completes is lost.
 
-### QVideoSink Threading
-
-- `QVideoSink::setVideoFrame()` is thread-safe (internal `QMutex`)
-- Each call replaces the previous frame (no buffering/queue)
-- No built-in frame pacing — implement PTS-based timing externally
-- Decode on worker thread, push to UI thread via `setVideoFrame()`
-
-### Pixel Format Mapping
-
-Key `AVPixelFormat` to Qt mappings (Qt handles YUV-to-RGB conversion
-automatically in the renderer):
-
-| FFmpeg `AVPixelFormat` | Qt `QVideoFrameFormat::PixelFormat` |
-|---|---|
-| `AV_PIX_FMT_NV12` | `Format_NV12` |
-| `AV_PIX_FMT_YUV420P` | `Format_YUV420P` |
-| `AV_PIX_FMT_YUV422P` | `Format_YUV422P` |
-| `AV_PIX_FMT_P010` | `Format_P010` |
-| `AV_PIX_FMT_RGBA` | `Format_RGBA8888` |
-| `AV_PIX_FMT_BGRA` | `Format_BGRA8888` |
-
-Keep frames in YUV420P (1.5 bytes/pixel) rather than RGBA (4 bytes/pixel) —
-Qt handles conversion in the renderer.
-
 ---
 
 ## 2. Codec Details
@@ -361,15 +330,20 @@ deliberately do **not** pre-query `vaQueryConfigProfiles`.
 
 ### GPU Zero-Copy Path
 
-The ideal path avoids GPU-to-CPU-to-GPU round-trips:
+Not built. `FfmpegDecoder::avFrameToDecodedFrame` downloads every hardware frame
+to system memory (`av_hwframe_transfer_data`, ~0.5-2 ms per 1080p frame) and the
+viewer uploads it like a software frame, which is acceptable for typical
+robotics resolutions. The download fills a fresh frame with pixels only, not
+frame properties, so the decoder reads the colour tags from the decoded frame
+(`ffmpeg_decoder_test`'s `DecodedFrameKeepsTheSignalledColourTags`).
+
+A zero-copy import would skip the round trip, at the cost of interop code and
+synchronization for each backend:
 
 1. HW decoder produces frames on GPU (VAAPI surface, D3D11 texture, etc.)
 2. Export as DMA-BUF (Linux) or shared texture handle (Windows/macOS)
 3. Import into QRhi as `QRhiTexture` via `createFrom()`
 4. Render directly — no pixel copy
-
-Fallback: transfer GPU frames to CPU (~0.5-2ms per 1080p frame), then upload
-to QRhi texture. This is acceptable for typical robotics resolutions.
 
 ---
 

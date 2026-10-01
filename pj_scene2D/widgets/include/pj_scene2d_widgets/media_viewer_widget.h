@@ -446,7 +446,7 @@ class MediaViewerWidget : public QRhiWidget {
 
   // Uniform layout for marker pipeline (std140). frameSize is vec4 (only .xy
   // used) instead of vec2 to dodge a std140 alignment quirk in the OpenGL
-  // backend; see scene_lines.vert for context.
+  // backend.
   struct alignas(16) MarkerUbo {
     float view[16];
     float frame_size[4];

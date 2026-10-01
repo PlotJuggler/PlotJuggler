@@ -25,7 +25,7 @@
 #include <utility>
 #include <vector>
 
-#include "pj_gpu_test_gate.h"  // pjPreferRealDisplayQpa, PJ_SKIP_ON_HEADLESS_QPA, pjWaitForGrab
+#include "pj_gpu_test_gate.h"  // pjPreferRealDisplayQpa, PJ_SKIP_ON_HEADLESS_QPA, grab/colour helpers
 
 #ifdef PJ_WITH_SCENE2D
 #include "pj_scene2d_core/media_source.h"
@@ -88,25 +88,12 @@ class WarningCollector {
   QStringList messages_;
 };
 
-[[nodiscard]] inline bool colourNear(QRgb actual, QColor expected) {
-  constexpr int kTolerance = 8;
-  return std::abs(qRed(actual) - expected.red()) <= kTolerance &&
-         std::abs(qGreen(actual) - expected.green()) <= kTolerance &&
-         std::abs(qBlue(actual) - expected.blue()) <= kTolerance;
+[[nodiscard]] inline bool colourNear(QRgb actual, const QColor& expected) {
+  return pjColourNear(actual, expected, 8);
 }
 
-// Presents one real frame (the OpenGL QRhi's grab-only frames reuse stale state,
-// see pj_scene3D/docs/TECHNICAL_NOTES.md, Qt bugs), then grabs. Null when nothing was presented.
 [[nodiscard]] inline QImage presentAndGrab(QRhiWidget* widget) {
-  int submitted = 0;
-  const auto connection = QObject::connect(widget, &QRhiWidget::frameSubmitted, [&submitted] { ++submitted; });
-  widget->update();
-  const bool presented = QTest::qWaitFor([&] { return submitted > 0; }, 5000);
-  QObject::disconnect(connection);
-  if (!presented) {
-    return {};
-  }
-  return widget->grabFramebuffer();
+  return pjPresentAndGrab(widget);
 }
 
 /// Floats `dock` into its own top-level and waits until that window is exposed.
