@@ -2013,6 +2013,13 @@ void MainWindow::loadPluginState(const QDomElement& root)
     {
       toolboxes().at(plugin_name)->xmlLoadState(plugin_elem);
     }
+    const auto parser =
+        std::find_if(_parser_factories.begin(), _parser_factories.end(),
+                     [&](const auto& entry) { return plugin_name == entry.second->name(); });
+    if (parser != _parser_factories.end())
+    {
+      parser->second->xmlLoadState(plugin_elem);
+    }
     if (statePublishers().find(plugin_name) != statePublishers().end())
     {
       StatePublisherPtr publisher = statePublishers().at(plugin_name);
@@ -2042,6 +2049,14 @@ QDomElement MainWindow::savePluginState(QDomDocument& doc)
   AddPlugins(dataStreamers());
   AddPlugins(toolboxes());
   AddPlugins(statePublishers());
+
+  // A factory can provide several encodings; save its configuration once.
+  std::map<QString, ParserFactoryPtr> parser_plugins;
+  for (const auto& [encoding, parser] : _parser_factories)
+  {
+    parser_plugins.emplace(parser->name(), parser);
+  }
+  AddPlugins(parser_plugins);
 
   for (auto& it : statePublishers())
   {

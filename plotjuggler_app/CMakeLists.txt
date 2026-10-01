@@ -212,3 +212,9 @@ elseif(COMPILING_WITH_AMENT)
 else()
   install(TARGETS plotjuggler DESTINATION bin)
 endif()
+
+if(BUILD_TESTING)
+  add_executable(test_nlohmann_layout tests/nlohmann_layout_probe.cpp nlohmann_parsers.cpp)
+  target_link_libraries(test_nlohmann_layout PRIVATE ${QT_LINK_LIBRARIES} plotjuggler_base
+                                                   nlohmann_json::nlohmann_json fmt::fmt)
+endif()
