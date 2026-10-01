@@ -324,6 +324,19 @@ MainWindow::MainWindow(const QCommandLineParser& commandline_parser, QWidget* pa
 
   loadAllPlugins(plugin_extra_folders);
 
+  // builtin messageParsers
+  auto json_parser = std::make_shared<JSON_ParserFactory>();
+  _parser_factories.insert({ json_parser->encoding(), json_parser });
+
+  auto cbor_parser = std::make_shared<CBOR_ParserFactory>();
+  _parser_factories.insert({ cbor_parser->encoding(), cbor_parser });
+
+  auto bson_parser = std::make_shared<BSON_ParserFactory>();
+  _parser_factories.insert({ bson_parser->encoding(), bson_parser });
+
+  auto msgpack = std::make_shared<MessagePack_ParserFactory>();
+  _parser_factories.insert({ msgpack->encoding(), msgpack });
+
   //------------------------------------
 
   _undo_timer.start();
@@ -462,19 +475,6 @@ MainWindow::MainWindow(const QCommandLineParser& commandline_parser, QWidget* pa
     theme = "light";
   }
   loadStyleSheet(tr(":/resources/stylesheet_%1.qss").arg(theme));
-
-  // builtin messageParsers
-  auto json_parser = std::make_shared<JSON_ParserFactory>();
-  _parser_factories.insert({ json_parser->encoding(), json_parser });
-
-  auto cbor_parser = std::make_shared<CBOR_ParserFactory>();
-  _parser_factories.insert({ cbor_parser->encoding(), cbor_parser });
-
-  auto bson_parser = std::make_shared<BSON_ParserFactory>();
-  _parser_factories.insert({ bson_parser->encoding(), bson_parser });
-
-  auto msgpack = std::make_shared<MessagePack_ParserFactory>();
-  _parser_factories.insert({ msgpack->encoding(), msgpack });
 
   if (!_default_streamer.isEmpty())
   {
