@@ -3778,6 +3778,7 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   // range. seedStreamingPlaybackFromDrop is a no-op unless a stream is active and is
   // one-shot per session, so file-curve drops and later stream drops are harmless.
   connect(plot, &PlotWidget::curvesDropped, this, &MainWindow::seedStreamingPlaybackFromDrop, Qt::UniqueConnection);
+  connect(plot, &PlotWidget::curvesDropped, this, &MainWindow::onPlotCurvesDropped, Qt::UniqueConnection);
   connect(plot, &PlotWidget::filterEditorRequested, this, &MainWindow::openFilterEditor, Qt::UniqueConnection);
   connect(
       plot, &PlotWidget::pendingCurveIntentsChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild,
@@ -4069,6 +4070,22 @@ void MainWindow::applyDots(PlotWidget* plot) {
   const auto to = dots_ ? PlotWidgetBase::kLinesAndDots : PlotWidgetBase::kLines;
   if (plot->defaultCurveStyle() == from) {
     plot->setDefaultStyle(to);
+  }
+}
+
+void MainWindow::onPlotCurvesDropped(bool was_empty) {
+  auto* plot = qobject_cast<PlotWidget*>(sender());
+  if (!was_empty || plot == nullptr || !button_link_->isChecked() || plot->isEmpty() || plot->isXYPlot()) {
+    return;
+  }
+  std::optional<QRectF> linked_range;
+  forEachPlot([&](PlotWidget* peer) {
+    if (!linked_range && peer != plot && !peer->isEmpty() && !peer->isXYPlot() && peer->isZoomLinkEnabled()) {
+      linked_range = peer->currentBoundingRect();
+    }
+  });
+  if (linked_range) {
+    plot->setVisibleXRange(linked_range->left(), linked_range->right());
   }
 }
 

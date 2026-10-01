@@ -212,7 +212,8 @@ class PlotWidget : public PlotWidgetBase {
   void rectChanged(PlotWidget* modified, QRectF rect);
   void undoableChange();
   void trackerMoved(QPointF point);
-  void curvesDropped();
+  /// A successful curve drop; was_empty identifies the first curves in this plot.
+  void curvesDropped(bool was_empty);
   void statusMessageRequested(QString message);
   /// The serialized unresolved-curve set changed and binder registrations must
   /// be rebuilt from the plot's current XML state.

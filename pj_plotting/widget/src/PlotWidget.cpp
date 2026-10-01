@@ -1651,7 +1651,7 @@ void PlotWidget::onDropEvent(QDropEvent* event) {
           }
           return;
         }
-        emit curvesDropped();
+        emit curvesDropped(was_empty);
         if (was_empty) {
           zoomOut(true);
         } else {
@@ -1673,12 +1673,12 @@ void PlotWidget::onDropEvent(QDropEvent* event) {
 
   if (curves_changed) {
     event->acceptProposedAction();
-    emit curvesDropped();
     if (was_empty) {
-      zoomOut(true);
+      zoomOut(false);
     } else {
       replot();
     }
+    emit curvesDropped(was_empty);
     emit undoableChange();
   }
   dragging_ = {};

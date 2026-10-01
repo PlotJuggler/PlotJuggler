@@ -508,6 +508,7 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
     // no curveDescriptor, so a drop of only string fields must NOT convert a
     // placeholder into a blank, curveless plot.
     PlotWidget* plot = nullptr;
+    const bool was_empty = plotWidget() == nullptr || plotWidget()->isEmpty();
     bool changed = false;
     for (const QString& key : keys) {
       if (!catalog_->curveDescriptor(key).has_value()) {
@@ -527,7 +528,8 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
       return;
     }
     if (changed) {
-      plot->zoomOut(true);
+      plot->zoomOut(false);
+      emit plot->curvesDropped(was_empty);
       emit undoableChange();
     }
     focusSelf();
