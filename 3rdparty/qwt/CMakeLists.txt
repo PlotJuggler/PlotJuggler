@@ -79,8 +79,13 @@ set(pj_qwt_fetch_extra "")
 if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
     list(APPEND pj_qwt_fetch_extra DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 endif()
+# URLs are tried in order. The downloads.sourceforge.net redirector is behind
+# Cloudflare and intermittently answers 522 to CI runners; master.dl is
+# SourceForge's master file host, reached without that redirect hop. URL_HASH
+# verifies whichever one answers.
 FetchContent_Declare(qwt_upstream
     URL https://downloads.sourceforge.net/project/qwt/qwt/6.3.0/qwt-6.3.0.tar.bz2
+        https://master.dl.sourceforge.net/project/qwt/qwt/6.3.0/qwt-6.3.0.tar.bz2
     URL_HASH SHA256=dcb085896c28aaec5518cbc08c0ee2b4e60ada7ac929d82639f6189851a6129a
     ${pj_qwt_fetch_extra}
 )

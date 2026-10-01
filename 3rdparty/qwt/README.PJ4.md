@@ -6,7 +6,9 @@ No Qwt sources live in this repo. The `plotjuggler_qwt` target in
 - **Default (Conan / `./build.sh` path)**: CMake `FetchContent` downloads the
   **official Qwt 6.3.0 release, unmodified**, at configure time and compiles
   the plot-widget subset as a static library.
-  - Source: <https://downloads.sourceforge.net/project/qwt/qwt/6.3.0/qwt-6.3.0.tar.bz2>
+  - Source: <https://downloads.sourceforge.net/project/qwt/qwt/6.3.0/qwt-6.3.0.tar.bz2>,
+    falling back to <https://master.dl.sourceforge.net/project/qwt/qwt/6.3.0/qwt-6.3.0.tar.bz2>
+    when the redirector fails
   - Tarball SHA-256: `dcb085896c28aaec5518cbc08c0ee2b4e60ada7ac929d82639f6189851a6129a`
   - The download is cached per build tree; a fully offline first configure can
     point `FETCHCONTENT_SOURCE_DIR_QWT_UPSTREAM` at a pre-extracted tarball.
@@ -31,6 +33,6 @@ PJ trees carried as in-tree Qwt patches lives in the application:
   `QwtPlotCurve::Lines` plus one batched, pixel-weeded `drawDots` pass
   (on WASM, an explicit `QwtSymbol` that `PlotRhiCanvas` renders as geometry).
 
-To upgrade Qwt: bump the URL + SHA-256 in `CMakeLists.txt`, re-check the
+To upgrade Qwt: bump both URLs + the SHA-256 in `CMakeLists.txt`, re-check the
 source list against upstream's `src/src.pri`, and align the conda-forge
 version pin in `pixi.toml`.
