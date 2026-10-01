@@ -4,8 +4,12 @@
 #include "pj_plotting/PlotMagnifier.h"
 
 #include <qwt_scale_map.h>
+#include <qwt_scale_widget.h>
 
+#include <QApplication>
+#include <QKeyEvent>
 #include <QMouseEvent>
+#include <QPointer>
 #include <QWheelEvent>
 #include <algorithm>
 #include <limits>
@@ -14,7 +18,72 @@
 
 namespace PJ {
 
-PlotMagnifier::PlotMagnifier(QWidget* canvas) : QwtPlotMagnifier(canvas) {
+// Key events go to the focused canvas while wheel events go to the hovered one.
+// Observe keys across plots in this window, without consuming them or watching
+// wheel events here (Qwt must receive each wheel exactly once).
+class PlotAxisKeyState final : public QObject {
+ public:
+  PlotAxisKeyState(QWidget* canvas, QObject* owner) : QObject(owner), canvas_(canvas) {
+    qApp->installEventFilter(this);
+  }
+
+  PlotMagnifier::AxisMode mode() const {
+    if (x_ == y_) {
+      return PlotMagnifier::kBothAxes;
+    }
+    return x_ ? PlotMagnifier::kXAxis : PlotMagnifier::kYAxis;
+  }
+
+ protected:
+  bool eventFilter(QObject* watched, QEvent* event) override {
+    if (!canvas_) {
+      return false;
+    }
+    if (event->type() == QEvent::ApplicationDeactivate ||
+        (event->type() == QEvent::WindowDeactivate && watched == canvas_->window())) {
+      x_ = y_ = false;
+    }
+    auto* widget = qobject_cast<QWidget*>(watched);
+    if (widget == nullptr) {
+      return false;
+    }
+    if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease) {
+      return false;
+    }
+    auto* key = static_cast<QKeyEvent*>(event);
+    if (key->isAutoRepeat() || (key->key() != Qt::Key_X && key->key() != Qt::Key_Y)) {
+      return false;
+    }
+    bool& held = key->key() == Qt::Key_X ? x_ : y_;
+    if (event->type() == QEvent::KeyRelease) {
+      held = false;
+      return false;
+    }
+    if (widget->window() != canvas_->window() || widget->testAttribute(Qt::WA_InputMethodEnabled) ||
+        (key->modifiers() != Qt::NoModifier && key->modifiers() != Qt::ShiftModifier)) {
+      return false;
+    }
+    // Only a plot surface can start the gesture, never a text editor or toolbar.
+    for (QWidget* parent = widget; parent != nullptr; parent = parent->parentWidget()) {
+      if (auto* source_plot = qobject_cast<QwtPlot*>(parent)) {
+        // Do not arm on a key propagated from an editor into its parent plot.
+        if (widget == source_plot->canvas() || qobject_cast<QwtScaleWidget*>(widget) != nullptr) {
+          held = true;
+        }
+        break;
+      }
+    }
+    return false;
+  }
+
+ private:
+  QPointer<QWidget> canvas_;
+  bool x_ = false;
+  bool y_ = false;
+};
+
+PlotMagnifier::PlotMagnifier(QWidget* canvas)
+    : QwtPlotMagnifier(canvas), axis_keys_(new PlotAxisKeyState(canvas, this)) {
   for (int axis_id = 0; axis_id < QwtPlot::axisCnt; ++axis_id) {
     lower_bounds_[axis_id] = std::numeric_limits<double>::lowest();
     upper_bounds_[axis_id] = std::numeric_limits<double>::max();
@@ -136,7 +205,12 @@ QPointF PlotMagnifier::invTransform(QPoint pos) {
 
 void PlotMagnifier::widgetWheelEvent(QWheelEvent* event) {
   mouse_position_ = invTransform(event->position().toPoint());
+  const AxisMode previous = default_mode_;
+  if (axis_key_zoom_enabled_ && default_mode_ == kBothAxes) {
+    default_mode_ = axis_keys_->mode();
+  }
   QwtPlotMagnifier::widgetWheelEvent(event);
+  default_mode_ = previous;
 }
 
 void PlotMagnifier::widgetMousePressEvent(QMouseEvent* event) {

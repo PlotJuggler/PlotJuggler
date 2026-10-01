@@ -12,12 +12,17 @@
 #include <qwt_scale_div.h>
 
 #include <QApplication>
+#include <QKeyEvent>
+#include <QLineEdit>
 #include <QRectF>
 #include <QWheelEvent>
 #include <QtGlobal>
 #include <cmath>
 
 #include "pj_plotting/PlotMagnifier.h"
+#include "pj_plotting/PlotWidget.h"
+#include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/SessionManager.h"
 
 namespace {
 
@@ -207,4 +212,134 @@ TEST(PlotMagnifierClamp, BoundsCannotUndercutFloor) {
   // this to ~1 ns (half the floor), which this bound comfortably rejects.
   EXPECT_GT(last_rect.right() - last_rect.left(), 1.9e-9)
       << "a tight bound must not shave the clamped window below the 2 ns floor";
+}
+
+namespace {
+void axisKey(QWidget* receiver, QEvent::Type type, int key, bool repeat = false) {
+  QKeyEvent event(type, key, Qt::NoModifier, {}, repeat);
+  QApplication::sendEvent(receiver, &event);
+}
+void axisWheel(QwtPlot& plot) {
+  auto* canvas = plot.canvas();
+  const QPointF pos(canvas->rect().center());
+  QWheelEvent wheel(
+      pos, canvas->mapToGlobal(pos.toPoint()), {}, QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase,
+      false);
+  QApplication::sendEvent(canvas, &wheel);
+}
+double axisWidth(QwtPlot& plot, int axis) {
+  plot.updateAxes();
+  return plot.axisScaleDiv(axis).range();
+}
+}  // namespace
+
+TEST(PlotAxisKeys, XOnlyZoomAndReleaseRestoresBothAxes) {
+  MagnifierFixture fx;
+  axisKey(fx.plot.canvas(), QEvent::KeyPress, Qt::Key_X);
+  axisWheel(fx.plot);
+  EXPECT_NE(axisWidth(fx.plot, QwtPlot::xBottom), 1.0);
+  EXPECT_DOUBLE_EQ(axisWidth(fx.plot, QwtPlot::yLeft), 2.0);
+  axisKey(fx.plot.canvas(), QEvent::KeyRelease, Qt::Key_X);
+  axisWheel(fx.plot);
+  EXPECT_NE(axisWidth(fx.plot, QwtPlot::yLeft), 2.0);
+}
+
+TEST(PlotAxisKeys, YOnlyZoomAndAutoRepeatReleaseKeepsRestriction) {
+  MagnifierFixture fx;
+  axisKey(fx.plot.canvas(), QEvent::KeyPress, Qt::Key_Y);
+  axisKey(fx.plot.canvas(), QEvent::KeyRelease, Qt::Key_Y, true);
+  axisWheel(fx.plot);
+  EXPECT_DOUBLE_EQ(axisWidth(fx.plot, QwtPlot::xBottom), 1.0);
+  EXPECT_NE(axisWidth(fx.plot, QwtPlot::yLeft), 2.0);
+  axisKey(fx.plot.canvas(), QEvent::KeyRelease, Qt::Key_Y);
+}
+
+TEST(PlotAxisKeys, WheelTargetsHoveredPlotInSameWindowNotFocusedPlot) {
+  QWidget window;
+  QwtPlot focused(&window), hovered(&window);
+  PJ::PlotMagnifier first(focused.canvas()), second(hovered.canvas());
+  for (auto* plot : {&focused, &hovered}) {
+    plot->setAxisScale(QwtPlot::xBottom, 0.0, 1.0);
+    plot->setAxisScale(QwtPlot::yLeft, -1.0, 1.0);
+    plot->replot();
+  }
+  axisKey(focused.canvas(), QEvent::KeyPress, Qt::Key_X);
+  axisWheel(hovered);
+  EXPECT_DOUBLE_EQ(axisWidth(focused, QwtPlot::xBottom), 1.0);
+  EXPECT_NE(axisWidth(hovered, QwtPlot::xBottom), 1.0);
+  EXPECT_DOUBLE_EQ(axisWidth(hovered, QwtPlot::yLeft), 2.0);
+  axisKey(focused.canvas(), QEvent::KeyRelease, Qt::Key_X);
+}
+
+TEST(PlotAxisKeys, TextInputAndOtherWindowsDoNotArmAxisRestriction) {
+  MagnifierFixture fx;
+  QLineEdit edit(&fx.plot);
+  axisKey(&edit, QEvent::KeyPress, Qt::Key_X);
+  axisWheel(fx.plot);
+  EXPECT_NE(axisWidth(fx.plot, QwtPlot::yLeft), 2.0);
+  MagnifierFixture other;
+  axisKey(fx.plot.canvas(), QEvent::KeyPress, Qt::Key_Y);
+  axisWheel(other.plot);
+  EXPECT_NE(axisWidth(other.plot, QwtPlot::xBottom), 1.0);
+  axisKey(fx.plot.canvas(), QEvent::KeyRelease, Qt::Key_Y);
+}
+
+TEST(PlotAxisKeys, DeactivationClearsHeldKey) {
+  MagnifierFixture fx;
+  axisKey(fx.plot.canvas(), QEvent::KeyPress, Qt::Key_X);
+  QEvent deactivate(QEvent::ApplicationDeactivate);
+  QApplication::sendEvent(qApp, &deactivate);
+  axisWheel(fx.plot);
+  EXPECT_NE(axisWidth(fx.plot, QwtPlot::yLeft), 2.0);
+}
+
+TEST(PlotAxisKeys, BothKeysAndReleasingOneSelectsRemainingAxis) {
+  MagnifierFixture fx;
+  axisKey(fx.plot.canvas(), QEvent::KeyPress, Qt::Key_X);
+  axisKey(fx.plot.canvas(), QEvent::KeyPress, Qt::Key_Y);
+  axisWheel(fx.plot);
+  const double x = axisWidth(fx.plot, QwtPlot::xBottom);
+  const double y = axisWidth(fx.plot, QwtPlot::yLeft);
+  EXPECT_NE(x, 1.0);
+  EXPECT_NE(y, 2.0);
+  axisKey(fx.plot.canvas(), QEvent::KeyRelease, Qt::Key_X);
+  axisWheel(fx.plot);
+  EXPECT_DOUBLE_EQ(axisWidth(fx.plot, QwtPlot::xBottom), x);
+  EXPECT_NE(axisWidth(fx.plot, QwtPlot::yLeft), y);
+  axisKey(fx.plot.canvas(), QEvent::KeyRelease, Qt::Key_Y);
+}
+
+// Exercise the production canvas event filter too: it sets the default wheel
+// mode on every event and must not erase the held key or defeat the XY 1:1 lock.
+TEST(PlotAxisKeys, PlotWidgetCanvasHonorsAxisKeysAndXYAspectLock) {
+  PJ::PlotWidgetBase::setOpenGlDisabledOverride(true);
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotWidget widget(&session, &catalog);
+  PJ::PlotWidgetBase::setOpenGlDisabledOverride(false);
+  auto* plot = widget.findChild<QwtPlot*>();
+  ASSERT_NE(plot, nullptr);
+  const auto reset = [&] {
+    plot->setAxisScale(QwtPlot::xBottom, 0.0, 10.0);
+    plot->setAxisScale(QwtPlot::yLeft, -1.0, 1.0);
+    plot->replot();
+  };
+  reset();
+  axisKey(plot->canvas(), QEvent::KeyPress, Qt::Key_X);
+  axisWheel(*plot);
+  EXPECT_NE(axisWidth(*plot, QwtPlot::xBottom), 10.0);
+  EXPECT_DOUBLE_EQ(axisWidth(*plot, QwtPlot::yLeft), 2.0);
+  axisKey(plot->canvas(), QEvent::KeyRelease, Qt::Key_X);
+  widget.setModeXY(true);
+  widget.setKeepRatioXY(true);
+  reset();
+  axisKey(plot->canvas(), QEvent::KeyPress, Qt::Key_X);
+  axisWheel(*plot);
+  EXPECT_NE(axisWidth(*plot, QwtPlot::xBottom), 10.0);
+  EXPECT_NE(axisWidth(*plot, QwtPlot::yLeft), 2.0);
+  widget.setKeepRatioXY(false);
+  reset();
+  axisWheel(*plot);
+  EXPECT_DOUBLE_EQ(axisWidth(*plot, QwtPlot::yLeft), 2.0);
+  axisKey(plot->canvas(), QEvent::KeyRelease, Qt::Key_X);
 }

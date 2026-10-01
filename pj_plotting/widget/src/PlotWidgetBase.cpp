@@ -844,6 +844,7 @@ bool PlotWidgetBase::eventFilter(QObject* obj, QEvent* event) {
   if (event->type() == QEvent::Wheel) {
     auto* wheel_event = static_cast<QWheelEvent*>(event);
     magnifier()->setDefaultMode(PlotMagnifier::kBothAxes);
+    magnifier()->setAxisKeyZoomEnabled(!(isXYPlot() && keepRatioXY()));
 
     const bool ctrl_modifier = wheel_event->modifiers() == Qt::ControlModifier;
     const QRectF legend_rect = legend()->geometry(plot_->canvas()->rect());
