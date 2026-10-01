@@ -2,7 +2,7 @@
 
 [← Back to the README](../README.md)
 
-PJ4 uses **C++20, CMake and Conan 2**, with Qt pinned in
+PJ4 uses **C++20, CMake 3.22+ and Conan 2**, with Qt pinned in
 [`versions.env`](../versions.env). The commands below follow the repository's
 Linux build scripts; the Windows entry points follow them, and packaging
 references are at the end.
@@ -23,12 +23,11 @@ sudo apt-get install -y \
   libva-dev libdrm-dev xvfb zstd
 ```
 
-Clone the repository with its submodules. The PJ4 source repository is currently
-private, so this requires a GitHub account with access:
+Clone the public PJ4 branch with its submodules. `main` contains PJ3:
 
 ```bash
-git clone --recurse-submodules https://github.com/PlotJuggler/PJ4.git
-cd PJ4
+git clone --branch main-4.x --recurse-submodules https://github.com/PlotJuggler/PlotJuggler.git
+cd PlotJuggler
 ```
 
 For an existing checkout, run `git submodule update --init --recursive`.
@@ -69,6 +68,66 @@ File loaders, streamers and toolboxes are distributed separately. Open
 **File → Marketplace** to install them after launching your source build.
 See [pj-official-plugins](https://github.com/PlotJuggler/pj-official-plugins)
 to build plugins yourself.
+
+## Direct CMake builds and offline preparation
+
+`build.sh` is optional. After the Linux setup above, resolve dependencies and
+configure CMake directly while network access is available:
+
+```bash
+./scripts/install_qt6.sh
+./scripts/configure_conan_remote.sh
+conan install . --output-folder=build --build=missing \
+  --lockfile=conan.lock --lockfile-partial \
+  -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+  -r plotjuggler-conan -r conancenter
+source versions.env
+cmake -S . -B build -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_PREFIX_PATH="$PWD/.qt/$PJ_QT_VERSION/gcc_64" \
+  -DPJ_BUILD_TESTS=OFF
+```
+
+The Conan recipe and lockfile list the library dependencies; Qt is installed
+separately. The configure step also populates `build/_deps` with Qwt source.
+With tests enabled, it additionally fetches the pinned SDK source for test
+fixtures. Conan may compile missing dependency binaries during preparation;
+the application has not been built yet.
+
+Retain the checkout and initialized submodules, `.qt`, the Conan cache
+(`conan config home`), and `build`, including its generated toolchain and
+`_deps`. On the same machine, build without network access:
+
+```bash
+cmake -S . -B build -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+cmake --build build --target pj_app --parallel
+```
+
+To regenerate the Conan toolchain from the prepared cache, repeat `conan install`
+with `--no-remote --build=never` in place of the two `-r` options and
+`--build=missing`. Cache preparation must use the same source revision, profiles,
+compiler, architecture and build options as the offline build. Generated CMake
+and Conan files contain absolute paths; a transferred build needs regeneration
+and local source overrides such as `FETCHCONTENT_SOURCE_DIR_QWT_UPSTREAM` and,
+when needed, `FETCHCONTENT_SOURCE_DIR_PLOTJUGGLER_SDK`.
+
+## Notes for PJ3 package maintainers
+
+- PJ4's executable is `plotjuggler4`; its application target is `pj_app`.
+  The core application uses plain CMake, independently of ROS. ROS integration
+  is distributed with the separate official plugins.
+- PJ3's Qt5 plugin binaries cannot be loaded by PJ4. Port plugins to the
+  [plugin SDK](https://github.com/PlotJuggler/plotjuggler_sdk) and follow the
+  [official-plugin porting guide](https://github.com/PlotJuggler/pj-official-plugins/blob/main/porting_guide.md).
+  Install compatible extensions through **File → Marketplace**.
+- PJ4 filters use a different contract from PJ3 custom Lua functions; see
+  [Filter Class Contract](../pj_scripting/docs/FILTER_CLASS.md#5-differences-from-pj3-lua_custom_function-intentional).
+  Keep original PJ3 layouts and scripts when validating a migrated analysis.
+- Packaging and runtime-library deployment are separate from compiling the
+  application. Follow the [packaging guides](../packaging/README.md), including
+  the [Debian installation layout](../packaging/deb/README.md#layout), rather than
+  expecting `cmake --install` to install the desktop application and its runtime.
 
 ## Run tests
 
