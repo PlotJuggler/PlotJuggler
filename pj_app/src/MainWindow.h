@@ -501,6 +501,8 @@ class MainWindow : public QMainWindow {
   // panel is a FilterEditorPanel. Called on open and from the viz-toolbar handlers.
   void syncFilterEditorPreviewDisplay();
 
+  /// Inherit the linked time range after a curve drop has fitted the receiving plot.
+  void onPlotCurvesDropped(bool was_empty);
   // Mirrors X zoom to linked plots.
   void onPlotZoomChanged(PlotWidget* modified, QRectF rect);
   // Linked-zoom feed from a State Transitions strip: fan its visible window's X
