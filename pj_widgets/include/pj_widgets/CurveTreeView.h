@@ -27,7 +27,7 @@ class HeaderResizePolicy;
 
 // Hierarchical tree of curves with two columns (name, value-at-tracker).
 // Drag source emits "curveslist/add_curve" (left drag) or
-// "curveslist/new_XY_axis" (right drag of exactly two curves).
+// "curveslist/new_XY_axis" (Ctrl+left drag of exactly two curves; legacy right drag is also accepted).
 class CurveTreeView : public QTreeWidget {
   Q_OBJECT
  public:
@@ -111,7 +111,7 @@ class CurveTreeView : public QTreeWidget {
   }
 
   [[nodiscard]] static QString catalogItemsMimeType();
-  // Mime format set on a right-drag of exactly two curves — the "create XY plot"
+  // Mime format set on a Ctrl+left drag (or legacy right drag) of exactly two curves — the "create XY plot"
   // gesture. Present alongside catalogItemsMimeType() so drop sites can detect it.
   [[nodiscard]] static QString newXyAxisMimeType();
   [[nodiscard]] static QByteArray encodeCatalogKeys(const QStringList& keys);
@@ -571,6 +571,8 @@ class CurveTreeView : public QTreeWidget {
   std::vector<QString> drag_curve_names_;
   QStringList drag_catalog_keys_;
   bool suppress_next_release_ = false;
+  Qt::KeyboardModifiers drag_modifiers_ = Qt::NoModifier;
+  bool pending_ctrl_click_ = false;
   // One-shot dragAttemptedOnNotDraggableRow state, armed (with the row's tooltip as the
   // reason) by a left press on a not-draggable object row and consumed by the
   // first past-threshold move of that gesture. Shares drag_start_pos_ with the

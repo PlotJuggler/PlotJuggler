@@ -2241,3 +2241,77 @@ TEST(CurveTreeViewTest, EmptyTypeFilterShowsMessageChildAndKeepsDatasetVisible) 
   ASSERT_NE(pc, nullptr);
   EXPECT_FALSE(pc->isHidden());
 }
+
+// Ctrl-click keeps its selection meaning; Ctrl-drag of the same pair must
+// instead preserve both curves and create XY without opening a topic menu.
+TEST(CurveTreeViewTest, CtrlDragSelectedPairPreservesSelectionAndCreatesXY) {
+  TestCurveTreeView view;
+  view.addCurve(u"topic/x"_s);
+  view.addCurve(u"topic/y"_s);
+  view.expandAll();
+  view.resize(500, 300);
+  view.show();
+  QApplication::processEvents();
+  auto* group = view.topLevelItem(0);
+  auto* x = findChild(group, u"x"_s);
+  auto* y = findChild(group, u"y"_s);
+  ASSERT_NE(x, nullptr);
+  ASSERT_NE(y, nullptr);
+  x->setSelected(true);
+  y->setSelected(true);
+  const QPointF pos(view.visualItemRect(x).center());
+  QMouseEvent press(
+      QEvent::MouseButtonPress, pos, pos, view.viewport()->mapToGlobal(pos.toPoint()), Qt::LeftButton, Qt::LeftButton,
+      Qt::ControlModifier);
+  view.mousePressEvent(&press);
+  EXPECT_TRUE(x->isSelected());
+  EXPECT_TRUE(y->isSelected());
+  std::unique_ptr<QMimeData> payload(view.createDragMimeData(Qt::LeftButton));
+  ASSERT_NE(payload, nullptr);
+  EXPECT_TRUE(payload->hasFormat(PJ::CurveTreeView::newXyAxisMimeType()));
+  EXPECT_FALSE(payload->hasFormat(u"curveslist/add_curve"_s));
+  EXPECT_EQ(PJ::CurveTreeView::decodeCatalogKeys(payload.get()).size(), 2);
+  // With no move past the threshold, it is still an ordinary Ctrl-click.
+  QMouseEvent release(
+      QEvent::MouseButtonRelease, pos, pos, view.viewport()->mapToGlobal(pos.toPoint()), Qt::LeftButton, Qt::NoButton,
+      Qt::ControlModifier);
+  view.mouseReleaseEvent(&release);
+  EXPECT_FALSE(x->isSelected());
+  EXPECT_TRUE(y->isSelected());
+}
+
+TEST(CurveTreeViewTest, CtrlSelectingSecondCurveCanStartXYAndPlainDragRemainsNormal) {
+  TestCurveTreeView view;
+  view.addCurve(u"topic/x"_s);
+  view.addCurve(u"topic/y"_s);
+  view.expandAll();
+  view.resize(500, 300);
+  view.show();
+  QApplication::processEvents();
+  auto* group = view.topLevelItem(0);
+  auto* x = findChild(group, u"x"_s);
+  auto* y = findChild(group, u"y"_s);
+  ASSERT_NE(x, nullptr);
+  ASSERT_NE(y, nullptr);
+  x->setSelected(true);
+  const QPointF pos(view.visualItemRect(y).center());
+  QMouseEvent press(
+      QEvent::MouseButtonPress, pos, pos, view.viewport()->mapToGlobal(pos.toPoint()), Qt::LeftButton, Qt::LeftButton,
+      Qt::ControlModifier);
+  view.mousePressEvent(&press);
+  EXPECT_TRUE(x->isSelected());
+  EXPECT_TRUE(y->isSelected());
+  std::unique_ptr<QMimeData> xy(view.createDragMimeData(Qt::LeftButton));
+  ASSERT_NE(xy, nullptr);
+  EXPECT_TRUE(xy->hasFormat(PJ::CurveTreeView::newXyAxisMimeType()));
+  QMouseEvent release(
+      QEvent::MouseButtonRelease, pos, pos, view.viewport()->mapToGlobal(pos.toPoint()), Qt::LeftButton, Qt::NoButton,
+      Qt::ControlModifier);
+  view.mouseReleaseEvent(&release);
+  sendMousePress(view, pos.toPoint());
+  std::unique_ptr<QMimeData> normal(view.createDragMimeData(Qt::LeftButton));
+  ASSERT_NE(normal, nullptr);
+  EXPECT_TRUE(normal->hasFormat(u"curveslist/add_curve"_s));
+  EXPECT_FALSE(normal->hasFormat(PJ::CurveTreeView::newXyAxisMimeType()));
+  sendMouseRelease(view, pos.toPoint());
+}
