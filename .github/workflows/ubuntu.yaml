@@ -34,6 +34,10 @@ jobs:
       - name: Sync repository
         uses: actions/checkout@v6
 
+      - name: Refresh apt metadata
+        # The cache action resolves exact versions from these indexes.
+        run: sudo apt-get update
+
       - name: Cache apt packages
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:

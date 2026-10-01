@@ -21,6 +21,23 @@ jobs:
           packages: software-properties-common python3 python3-dev qtbase5-dev libqt5svg5-dev libqt5websockets5-dev libqt5opengl5-dev libqt5x11extras5-dev libprotoc-dev libzmq3-dev liblz4-dev libzstd-dev libmosquitto-dev
           version: 1.0
 
+      # setup-ros looks up the latest ros-apt-source release with an
+      # unauthenticated GitHub API call; when the runner's shared IP is rate
+      # limited the version comes back empty and the .deb download 404s.
+      # Install the source here with the job token so setup-ros finds the ROS
+      # repo already configured and skips its own lookup.
+      - name: Configure ROS apt source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eo pipefail
+          version=$(gh api repos/ros-infrastructure/ros-apt-source/releases/latest --jq .tag_name)
+          codename=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME}}")
+          curl --fail --location --retry 3 --retry-delay 2 -o /tmp/ros2-apt-source.deb \
+            "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${version}/ros2-apt-source_${version}.${codename}_all.deb"
+          sudo dpkg -i /tmp/ros2-apt-source.deb
+          sudo apt-get update
+
       # Set up ROS
       - uses: ros-tooling/setup-ros@v0.7
         with:
