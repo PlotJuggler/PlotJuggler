@@ -1,0 +1,39 @@
+name: Changed since last nightly
+
+# Reusable gate for scheduled workflows: reports whether the default branch has
+# moved since the caller's previous scheduled run, so a quiet night costs one
+# GitHub-hosted minute instead of a full Depot build. Compares against the
+# previous scheduled run (not "commits in the last 24 h"), so a missed night is
+# never silently skipped, and a red night is not rebuilt until something lands.
+# Fails open: if the lookup errors, the caller builds.
+on:
+  workflow_call:
+    outputs:
+      changed:
+        description: "'true' when the caller should build"
+        value: ${{ jobs.check.outputs.changed }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # GITHUB_RUN_ID is the caller's run, so its workflow_id identifies the
+          # caller. Cancelled runs never finished a build, so they don't count.
+          api="repos/${GITHUB_REPOSITORY}/actions"
+          prev=$(
+            wf=$(gh api "${api}/runs/${GITHUB_RUN_ID}" --jq .workflow_id) &&
+            gh api "${api}/workflows/${wf}/runs?event=schedule&branch=${GITHUB_REF_NAME}&per_page=10" \
+              --jq "[.workflow_runs[] | select(.id != ${GITHUB_RUN_ID} and .conclusion != \"cancelled\")][0].head_sha // \"\""
+          ) || prev=""
+          changed=true
+          [[ "${prev}" == "${GITHUB_SHA}" ]] && changed=false
+          echo "previous scheduled run: ${prev:-none}; HEAD: ${GITHUB_SHA}; changed=${changed}"
+          echo "changed=${changed}" >> "${GITHUB_OUTPUT}"

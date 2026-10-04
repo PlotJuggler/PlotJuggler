@@ -8,12 +8,13 @@
 # tests.
 name: macOS CI
 
+# Nightly on the default branch (skipped when it has not moved) and on demand,
+# never per PR: a run takes ~32 min on a GitHub-hosted macOS runner at about
+# $2. Start it by hand (`gh workflow run "macOS CI" --ref <branch>`) before
+# merging a change to the QRhi/Metal paths.
 on:
-  pull_request:
-    branches: [main, development]
-    types: [opened, synchronize, reopened, ready_for_review]
-  push:
-    branches: [main, development]
+  schedule:
+    - cron: "0 1 * * *"
   workflow_dispatch:
     inputs:
       runner:
@@ -27,8 +28,17 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changed:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/main-changed.yml
+    permissions:
+      actions: read
+
   qrhi-metal:
-    if: github.event.pull_request.draft == false
+    needs: changed
+    # !cancelled(): on manual runs the gate is skipped, which would otherwise
+    # skip this job too.
+    if: ${{ !cancelled() && (github.event_name != 'schedule' || needs.changed.outputs.changed == 'true') }}
     # GitHub-hosted Apple silicon (M1, 3 cores, 7 GB, paravirtual Metal GPU).
     # depot-macos-14 (M2, 8 cores) waited 40 min in the queue for a runner
     # (Depot macOS capacity is not elastic), so it is a manual choice only.
