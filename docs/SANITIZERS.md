@@ -64,10 +64,11 @@ environment; Conan paths embedded by a container build need that container at
 test time too.
 
 CI runs the three lanes as one matrix job in `.github/workflows/sanitizers.yml`,
-off the pull-request path: nightly, on every push to `main`, and on manual
+off the pull-request path: nightly on the default branch, skipped when it has
+not moved since the previous nightly run (`main-changed.yml`), and on manual
 dispatch. It uses the same `depot-ubuntu-22.04-4` runner as `linux-ci.yml`,
 restoring its Qt and Conan caches; each lane has its own ccache key so
-instrumented objects cannot seed another lane.
+instrumented objects cannot seed another lane, and only nightly runs save it.
 
 Modern host kernels can give sanitizer runtimes an incompatible address-space
 layout, causing startup aborts before any test runs. The sanitizer CI job

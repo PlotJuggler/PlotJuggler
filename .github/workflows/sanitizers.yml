@@ -1,13 +1,12 @@
 name: Sanitizers
 
 # Instrumented lanes are slow (the whole suite under TSan runs ~10x slower), so
-# they stay off the pull-request path: nightly on main, on every push to main,
-# and on demand. See docs/SANITIZERS.md and ./build.sh --sanitize.
+# they stay off the pull-request path: nightly on the default branch (skipped
+# when it has not moved) and on demand. See docs/SANITIZERS.md and
+# ./build.sh --sanitize.
 on:
   schedule:
     - cron: "0 3 * * *"
-  push:
-    branches: [main, main-4.x]
   workflow_dispatch:
 
 concurrency:
@@ -15,7 +14,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  changed:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/main-changed.yml
+    permissions:
+      actions: read
+
   sanitize:
+    needs: changed
+    # !cancelled(): on manual runs the gate is skipped, which would otherwise
+    # skip this job too.
+    if: ${{ !cancelled() && (github.event_name != 'schedule' || needs.changed.outputs.changed == 'true') }}
     name: ${{ matrix.lane }}
     runs-on: depot-ubuntu-22.04-4
     timeout-minutes: 120
@@ -173,7 +182,10 @@ jobs:
         run: ./test.sh --sanitize asan --timeout 120
 
       - name: Save ccache
-        if: always() && steps.ccache_restore.outputs.cache-hit != 'true'
+        # Scheduled runs only: the SHA-keyed entry is never an exact hit, so
+        # every saving run writes a new blob of up to max_size per lane into
+        # per-GB-month billed Depot Cache storage. Manual runs restore only.
+        if: always() && github.event_name == 'schedule' && steps.ccache_restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ~/.cache/ccache

@@ -10,17 +10,17 @@ on:
   pull_request:
     branches: [main, main-4.x, development]
     types: [opened, synchronize, reopened, ready_for_review]
-    # Path-filtered: most PRs touch neither the manifest nor the recipes, and
-    # the Conan workflows already compile every C++ change. A pixi-only
-    # breakage from a plain source change surfaces on the push-to-main run.
+    # Path-filtered to the pixi packaging inputs: the Conan workflows already
+    # compile and test every C++ change on the PR. A pixi-only breakage from a
+    # source or CMake change surfaces on the nightly run.
     paths:
       - pixi.toml
       - recipes/**
-      - "**/CMakeLists.txt"
-      - cmake/**
       - .github/workflows/pixi-ci.yml
-  push:
-    branches: [main, main-4.x, development]
+  # Nightly on the default branch rather than on every push: this leg validates
+  # the conda-forge packaging path, which plain source changes rarely break.
+  schedule:
+    - cron: "0 2 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -28,7 +28,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changed:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/main-changed.yml
+    permissions:
+      actions: read
+
   build:
+    needs: changed
+    # !cancelled(): on PR and manual runs the gate is skipped, which would
+    # otherwise skip this job too.
+    if: ${{ !cancelled() && (github.event_name != 'schedule' || needs.changed.outputs.changed == 'true') }}
     # No draft gate: the paths filter above already limits PR runs to
     # packaging-relevant changes, and recipe work (the MSVC ffmpeg above all)
     # can only be validated in CI — drafts included.
@@ -160,7 +170,7 @@ jobs:
       # Linux keeps its compact ccache archive. Windows shares its sccache
       # object store with windows-ci.yml and windows-release.yml through
       # Depot Cache. On Depot runners actions/cache is Depot-backed (not the
-      # shared 10 GB GitHub quota), so PR runs save as well as restore.
+      # shared 10 GB GitHub quota).
       - name: Restore compiler objects (Linux)
         if: runner.os == 'Linux'
         id: ccache_restore
@@ -176,11 +186,11 @@ jobs:
         run: pixi run build
 
       - name: Save compiler objects (Linux)
-        # push-to-main only: the key carries the SHA (cache keys are immutable),
-        # so every saving run wrote a new blob that nothing ever deletes, into
-        # per-GB-month billed Depot Cache storage. PR runs still restore via the
-        # prefix restore-keys above. See linux-ci.yml's "Save ccache".
-        if: always() && runner.os == 'Linux' && github.event_name == 'push' && steps.ccache_restore.outputs.cache-hit != 'true'
+        # Scheduled runs only: the key carries the SHA (cache keys are
+        # immutable), so every saving run writes a new blob that nothing ever
+        # deletes, into per-GB-month billed Depot Cache storage. PR runs still
+        # restore via the prefix restore-keys above. See linux-ci.yml's "Save ccache".
+        if: always() && runner.os == 'Linux' && github.event_name == 'schedule' && steps.ccache_restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ${{ env.CCACHE_DIR }}

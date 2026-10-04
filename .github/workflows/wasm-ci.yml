@@ -1,8 +1,7 @@
-# On-demand check for the WebAssembly platform. Manually triggered
-# (workflow_dispatch) — the wasm build is expensive and most PRs don't touch
-# it, so run it deliberately from the Actions tab (or `gh workflow run
-# "WASM CI" --ref <branch>`) when working on wasm-relevant changes, before
-# merging one, or when cutting a release. Two configurations of the same
+# WebAssembly platform check: nightly on the default branch (skipped when it has
+# not moved), on PRs that touch the browser build itself, and on demand from the
+# Actions tab (or `gh workflow run "WASM CI" --ref <branch>`) before merging a
+# risky shared-code change or cutting a release. Two configurations of the same
 # sources prove the advertised feature matrix:
 #
 #   1. Production MVP — Scene2D/Scene3D OFF, probes OFF: the app must
@@ -19,8 +18,9 @@ name: WASM CI
 on:
   workflow_dispatch:
   # Wasm breakage is invisible to the standard PR checks (native CI stays green
-  # when shared code calls a native-only API), so run on PRs that can plausibly
-  # affect the browser build. Not a required check; ~20-30 min on warm caches.
+  # when shared code calls a native-only API). Shared-code changes are caught by
+  # the nightly run; PRs run it only when they touch the browser build itself.
+  # Not a required check; ~20 min on warm caches.
   pull_request:
     paths:
       - '**/wasm/**'
@@ -31,20 +31,25 @@ on:
       # directory — carries the wasm token.
       - 'scripts/*wasm*'
       - '.github/workflows/wasm-ci.yml'
-      - 'pj_app/**'
-      - 'pj_widgets/**'
-      - 'pj_scene2D/**'
-      - 'pj_scene3D/**'
-      - 'pj_scene_common/**'
-      - 'pj_runtime/**'
-      - 'conanfile.txt'
+  schedule:
+    - cron: "0 4 * * *"
 
 concurrency:
   group: wasm-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  changed:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/main-changed.yml
+    permissions:
+      actions: read
+
   wasm:
+    needs: changed
+    # !cancelled(): on PR and manual runs the gate is skipped, which would
+    # otherwise skip this job too.
+    if: ${{ !cancelled() && (github.event_name != 'schedule' || needs.changed.outputs.changed == 'true') }}
     runs-on: depot-ubuntu-22.04-4
     # Generous first-run ceiling (cold Qt+emsdk+ccache); warm runs are expected
     # in the 20-30 minute band. Tighten once real timings accumulate.
