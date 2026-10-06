@@ -29,7 +29,7 @@ Public headers live under `include/pj_plugins/host_qt/` — the namespace mirror
 | `panel_engine.hpp` | Hosts a long-lived interactive panel built from a plugin's typed-dialog UI. Sibling of `dialog_engine.hpp`: same .ui loader/binding/tick-and-diff, but returns a bare `QWidget*` via `openPanel()` (no modal `exec()`) and is closed by plugin-initiated `requestClose("<reason>")`. A hidden panel root (e.g. a toolbox pinned into a non-current central tab) ticks at 1/10 rate — plugin logic keeps advancing while the invisible UI mostly skips poll+diff — with a queued catch-up tick on Show. |
 | `widget_binding.hpp` | Per-widget event/data binding plumbing. |
 | `pj_ui_loader.hpp` | `QUiLoader` subclass (`PjUiLoader`) that teaches `QUiLoader` to instantiate host-provided custom widgets (RangeSlider, DateRangePicker, CredentialsEditor, MarkerTimeline) from plugin `.ui` files; shared by both the dialog and panel engines. |
-| `chart_preview_widget.hpp` | Embedded chart widget used by toolboxes (e.g. FFT preview). Qwt-based (no Qt Charts dependency). |
+| `chart_preview_widget.hpp` | Light embedded chart used by toolboxes (e.g. FFT preview). Qwt-based (no Qt Charts dependency). Interaction is off until `setZoomEnabled(true)` (the `chart_zoom_enabled` key), which turns on the rubber-band zoom, wheel zoom (zoom-out stops at the fitted extent), live pan with middle-drag or Ctrl+left-drag, and the background grid, and emits `viewChanged`. `widget_binding` builds it only when the frame carries `chart_markers` or the panel has no session/catalog; otherwise a `chart_series` frame renders with the full `PlotWidget`. |
 | `drop_event_filter.hpp` | Event filter that turns Qt drops into SDK drag-drop events. |
 
 ## `.ui` dynamic-property contracts

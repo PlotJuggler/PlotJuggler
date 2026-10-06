@@ -71,6 +71,7 @@ if(PJ_BUILD_TESTS)
             ${plotjuggler_sdk_SOURCE_DIR}/pj_plugins/dialog_protocol/examples/mock_dialog.cpp
             tests/widget_binding_test.cpp
             tests/combo_rules_test.cpp
+            tests/chart_preview_widget_test.cpp
         LIBS pj_dialog_engine_qt plotjuggler_sdk::plugin_sdk Qt6::Test
     )
     set_target_properties(pj_dialog_host_tests PROPERTIES AUTOMOC ON)
