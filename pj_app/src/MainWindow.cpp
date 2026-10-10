@@ -713,8 +713,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   action_open_data_->setShortcut(QKeySequence::Open);
   file_menu->addSeparator();
   // Desktop retains its path-based layout dialogs. WASM exposes W9's
-  // content-based layout open/download actions; Preferences remains omitted
-  // until its nested dialog flow has a browser-safe continuation.
+  // content-based layout open/download actions.
 #ifndef PJ_TARGET_WASM
   action_load_layout_ = file_menu->addAction(tr("Load Layout..."), this, &MainWindow::onLoadLayout);
   action_save_layout_ = file_menu->addAction(tr("Save Layout..."), this, &MainWindow::onSaveLayout);
@@ -732,6 +731,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   action_save_source_layout_->setObjectName(u"actionSaveSourceLayout"_s);
   action_save_source_layout_->setEnabled(false);
   ui_->actionMarketplace->setVisible(false);
+  file_menu->addSeparator();
+  action_preferences_ = file_menu->addAction(tr("Preferences..."), this, &MainWindow::onShowPreferencesDialog);
+  action_preferences_->setObjectName(u"actionPreferences"_s);
 #endif
   file_menu->addSeparator();
   file_menu->addAction(ui_->actionExit);
@@ -744,10 +746,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // (rebuilt on aboutToShow; managing extensions happens in the
   // Marketplace, reached from the File menu).
   QMenu* help_menu = title_bar_->helpMenu();
-#ifndef PJ_TARGET_WASM
-  // AboutDialog::exec() blocks on a nested event loop, unusable on wasm.
-  // Async port deferred to W8.
   help_menu->addAction(tr("About PlotJuggler..."), this, &MainWindow::onShowAboutDialog);
+#ifndef PJ_TARGET_WASM
   // A browser tab cannot install a release, and the check itself cannot
   // succeed there (the GitHub API refuses the cross-origin request), so the
   // action would only ever toast a failure.
@@ -1040,26 +1040,26 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       syncCustomSeriesPanel();
       return;
     }
-    if (!confirmAndRemoveDependentTransforms({output->topic_id})) {
-      return;
-    }
-    auto& dp = session_->sessionManager().dataProcessorService();
-    bool removed = false;
-    for (const auto& recipe : dp.transformRecipes()) {
-      const bool owns = std::find(recipe.output_topic_ids.begin(), recipe.output_topic_ids.end(), output->topic_id) !=
-                        recipe.output_topic_ids.end();
-      if (owns) {
-        removed = dp.removeTransform(recipe.key).has_value();
-        break;
+    const TopicId output_topic = output->topic_id;
+    confirmAndRemoveDependentTransforms({output_topic}, [this, output_topic]() {
+      auto& dp = session_->sessionManager().dataProcessorService();
+      bool removed = false;
+      for (const auto& recipe : dp.transformRecipes()) {
+        const bool owns = std::find(recipe.output_topic_ids.begin(), recipe.output_topic_ids.end(), output_topic) !=
+                          recipe.output_topic_ids.end();
+        if (owns) {
+          removed = dp.removeTransform(recipe.key).has_value();
+          break;
+        }
       }
-    }
-    if (!removed) {
-      syncCustomSeriesPanel();
-      return;
-    }
-    // The rebuild retires the output topic, so itemsRemoved fires synchronously and
-    // the panel drops the row on its own.
-    session_->catalogModel().rebuildFromDatastore();
+      if (!removed) {
+        syncCustomSeriesPanel();
+        return;
+      }
+      // The rebuild retires the output topic, so itemsRemoved fires synchronously and
+      // the panel drops the row on its own.
+      session_->catalogModel().rebuildFromDatastore();
+    });
   });
   connect(ui_->curveListPanel, &CurveListPanel::clearAllCurvesRequested, this, [this]() {
     if (streaming_manager_ != nullptr && streaming_manager_->hasActiveSession()) {
@@ -3011,11 +3011,13 @@ void MainWindow::onFileLoaded(
 #endif
 }
 
-bool MainWindow::confirmAndRemoveDependentTransforms(const std::vector<TopicId>& removed_topics) {
+void MainWindow::confirmAndRemoveDependentTransforms(
+    const std::vector<TopicId>& removed_topics, std::function<void()> proceed) {
   auto& dp = session_->sessionManager().dataProcessorService();
   const std::vector<TopicId> outputs = dp.dependentProcessorOutputs(removed_topics);
   if (outputs.empty()) {
-    return true;  // nothing depends on it — proceed
+    proceed();  // nothing depends on it
+    return;
   }
   const std::unordered_set<TopicId> dependent_outputs(outputs.begin(), outputs.end());
 
@@ -3035,24 +3037,28 @@ bool MainWindow::confirmAndRemoveDependentTransforms(const std::vector<TopicId>&
   if (names.isEmpty()) {
     names << tr("%n derived series", nullptr, static_cast<int>(dependent_outputs.size()));
   }
-  const int choice = MessageBox::question(
+  MessageBox::questionAsync(
       this, tr("Delete derived series?"),
       tr("These derived series depend on what you are deleting and will also be removed:\n\n• %1")
           .arg(names.join(u"\n• "_s)),
-      {{tr("Delete"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}});
-  if (choice != 0) {
-    return false;  // user cancelled — leave everything intact
-  }
-  for (const QString& key : dependent_curve_keys) {
-    ui_->curveListPanel->removeCustomCurve(key);
-  }
-  if (const Status removed = dp.removeProcessorsDependingOn(removed_topics); !removed.has_value()) {
-    emitDiagnostic(
-        DiagnosticLevel::kError, "Processors", "dependent-remove-failed", QString::fromStdString(removed.error()));
-    return false;
-  }
-  session_->catalogModel().rebuildFromDatastore();
-  return true;
+      {{tr("Delete"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}},
+      [this, removed_topics, dependent_curve_keys, proceed = std::move(proceed)](int choice, bool) {
+        if (choice != 0) {
+          return;  // user cancelled — leave everything intact
+        }
+        for (const QString& key : dependent_curve_keys) {
+          ui_->curveListPanel->removeCustomCurve(key);
+        }
+        auto& processors = session_->sessionManager().dataProcessorService();
+        if (const Status removed = processors.removeProcessorsDependingOn(removed_topics); !removed.has_value()) {
+          emitDiagnostic(
+              DiagnosticLevel::kError, "Processors", "dependent-remove-failed",
+              QString::fromStdString(removed.error()));
+          return;
+        }
+        session_->catalogModel().rebuildFromDatastore();
+        proceed();
+      });
 }
 
 void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
@@ -3095,49 +3101,46 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
     return;
   }
   // Cascade to derived series that depend on the trashed ones (warn + remove).
-  {
-    std::vector<TopicId> removed_topics;
-    for (const QString& key : keys) {
-      if (const auto d = catalog.curveDescriptor(key)) {
-        removed_topics.push_back(d->topic_id);
-      }
-    }
-    if (!confirmAndRemoveDependentTransforms(removed_topics)) {
-      return;  // user cancelled
-    }
-  }
-
-  // Evict the trashed object topics before mutating the catalog, so the
-  // itemsRemoved subscription's revalidateObjects() (which checks the
-  // ObjectStore, not the catalog) drops their 2D layers. Scalar keys are ignored
-  // here (engine is append-only).
-  std::vector<ObjectTopicId> trashed_objects;
+  std::vector<TopicId> removed_topics;
   for (const QString& key : keys) {
-    if (const auto item = catalog.itemDescriptor(key); item.has_value()) {
-      forEachSceneDock([&item](SceneDockWidget* scene_dock) {
-        scene_dock->discardPendingRestoresForTopic(item->dataset_id, item->topic_name);
-      });
-      if (const ObjectTopicPayload* obj = asObjectTopic(*item)) {
-        trashed_objects.push_back(obj->object_topic_id);
-      }
+    if (const auto d = catalog.curveDescriptor(key)) {
+      removed_topics.push_back(d->topic_id);
     }
   }
-  session_->sessionManager().evictObjectTopics(trashed_objects);
-  catalog.removeItems(std::vector<QString>(keys.begin(), keys.end()));
-  if (pending_binder_ != nullptr) {
-    static_cast<void>(pending_binder_->flush({}));
-  }
-  // Shrink the playback range to the surviving visible data right away,
-  // rather than only on the next load — unless a streaming dataset exists:
-  // the slider is then scoped to the active stream (see the streaming range
-  // wiring in the constructor) and a catalog-wide recompute would stomp it.
-  if (active_streaming_dataset_id_ == 0) {
-    session_->seedPlaybackFromSession();
-  }
-  resetUndoHistory();
+  confirmAndRemoveDependentTransforms(removed_topics, [this, keys]() {
+    CatalogModel& model = session_->catalogModel();
+    // Evict the trashed object topics before mutating the catalog, so the
+    // itemsRemoved subscription's revalidateObjects() (which checks the
+    // ObjectStore, not the catalog) drops their 2D layers. Scalar keys are ignored
+    // here (engine is append-only).
+    std::vector<ObjectTopicId> trashed_objects;
+    for (const QString& key : keys) {
+      if (const auto item = model.itemDescriptor(key); item.has_value()) {
+        forEachSceneDock([&item](SceneDockWidget* scene_dock) {
+          scene_dock->discardPendingRestoresForTopic(item->dataset_id, item->topic_name);
+        });
+        if (const ObjectTopicPayload* obj = asObjectTopic(*item)) {
+          trashed_objects.push_back(obj->object_topic_id);
+        }
+      }
+    }
+    session_->sessionManager().evictObjectTopics(trashed_objects);
+    model.removeItems(std::vector<QString>(keys.begin(), keys.end()));
+    if (pending_binder_ != nullptr) {
+      static_cast<void>(pending_binder_->flush({}));
+    }
+    // Shrink the playback range to the surviving visible data right away,
+    // rather than only on the next load — unless a streaming dataset exists:
+    // the slider is then scoped to the active stream (see the streaming range
+    // wiring in the constructor) and a catalog-wide recompute would stomp it.
+    if (active_streaming_dataset_id_ == 0) {
+      session_->seedPlaybackFromSession();
+    }
+    resetUndoHistory();
 #ifdef PJ_TARGET_WASM
-  updateBrowserLayoutActions();
+    updateBrowserLayoutActions();
 #endif
+  });
 }
 
 void MainWindow::removeDatasetData(DatasetId dataset_id) {
@@ -3199,40 +3202,38 @@ void MainWindow::onRemoveDatasetsRequested(const QList<DatasetId>& dataset_ids) 
   } else {
     message = tr("Are you sure you want to remove these %1 datasets and their data?").arg(dataset_ids.size());
   }
-  const int choice = MessageBox::question(
+  MessageBox::questionAsync(
       this, dataset_ids.size() == 1 ? tr("Remove dataset") : tr("Remove datasets"), message,
-      {{tr("Remove"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}});
-  if (choice != 0) {
-    return;  // Cancel / Esc
-  }
-
-  // Cascade to derived series whose input lives in any of these datasets (their
-  // output is typically in another dataset, so removeDataset alone would orphan
-  // them). Warn + remove those transforms and their Custom Series entries; abort
-  // the whole removal on cancel. No-op when nothing depends on the removed data.
-  {
-    std::vector<TopicId> removed_topics;
-    for (const DatasetId dataset_id : dataset_ids) {
-      const std::vector<TopicId> dataset_topics = session_->sessionManager().dataEngine().listTopics(dataset_id);
-      removed_topics.insert(removed_topics.end(), dataset_topics.begin(), dataset_topics.end());
-    }
-    if (!confirmAndRemoveDependentTransforms(removed_topics)) {
-      return;  // user cancelled
-    }
-  }
-
-  for (const DatasetId id : dataset_ids) {
-    removeDatasetData(id);
-  }
-  // A confirmed removal changes the data universe under the playhead, so halt
-  // playback and shrink the range to the survivors (or reset to empty when none
-  // remain) — unless a live stream is active, where the slider stays scoped to
-  // the tip and follow-live keeps running. Reset undo once.
-  if (active_streaming_dataset_id_ == 0) {
-    session_->playbackEngine().pause();
-    session_->seedPlaybackFromSession();
-  }
-  resetUndoHistory();
+      {{tr("Remove"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}},
+      [this, dataset_ids](int choice, bool) {
+        if (choice != 0) {
+          return;  // Cancel / Esc
+        }
+        // Cascade to derived series whose input lives in any of these datasets
+        // (their output is typically in another dataset, so removeDataset alone
+        // would orphan them). Warn + remove those transforms and their Custom
+        // Series entries; abort the whole removal on cancel. No-op when nothing
+        // depends on the removed data.
+        std::vector<TopicId> removed_topics;
+        for (const DatasetId dataset_id : dataset_ids) {
+          const std::vector<TopicId> dataset_topics = session_->sessionManager().dataEngine().listTopics(dataset_id);
+          removed_topics.insert(removed_topics.end(), dataset_topics.begin(), dataset_topics.end());
+        }
+        confirmAndRemoveDependentTransforms(removed_topics, [this, dataset_ids]() {
+          for (const DatasetId id : dataset_ids) {
+            removeDatasetData(id);
+          }
+          // A confirmed removal changes the data universe under the playhead, so
+          // halt playback and shrink the range to the survivors (or reset to empty
+          // when none remain) — unless a live stream is active, where the slider
+          // stays scoped to the tip and follow-live keeps running. Reset undo once.
+          if (active_streaming_dataset_id_ == 0) {
+            session_->playbackEngine().pause();
+            session_->seedPlaybackFromSession();
+          }
+          resetUndoHistory();
+        });
+      });
 }
 
 void MainWindow::onMergeDatasetsRequested(const QList<DatasetId>& dataset_ids) {
@@ -3243,26 +3244,36 @@ void MainWindow::onMergeDatasetsRequested(const QList<DatasetId>& dataset_ids) {
   }
   // confirmAndMergeDatasets shows the shared destructive-merge warning and gates on
   // ≥2 data-bearing datasets; mark the surviving anchor on the Source Timeline.
-  if (const auto anchor = confirmAndMergeDatasets(this, *session_, ids)) {
+  confirmAndMergeDatasets(this, *session_, ids, [this](DatasetId anchor) {
     if (source_timeline_controller_ != nullptr) {
-      source_timeline_controller_->markDatasetMerged(*anchor);
+      source_timeline_controller_->markDatasetMerged(anchor);
     }
 #ifdef PJ_TARGET_WASM
     // A merge result cannot be recreated by replaying one browser file. Remove
     // its save-ledger entry so the single-source action cannot claim otherwise.
     if (browser_layout_runtime_ != nullptr) {
-      browser_layout_runtime_->sources.remove(file_loader_->sourcePathForDataset(*anchor));
+      browser_layout_runtime_->sources.remove(file_loader_->sourcePathForDataset(anchor));
     }
     updateBrowserLayoutActions();
 #endif
-  }
+  });
 }
 
 void MainWindow::onShowPreferencesDialog() {
+#ifdef PJ_TARGET_WASM
+  // No nested event loop in the Asyncify-free browser build: the dialog owns
+  // itself and commits through its own accepted/rejected handlers.
+  auto* dlg = new PreferencesDialog(*theme_, this);
+  dlg->setAttribute(Qt::WA_DeleteOnClose);
+  dlg->setChromeMetrics(chrome_metrics_);
+  bindRecordingPreferences(*dlg);
+  dlg->open();
+#else
   PreferencesDialog dlg(*theme_, this);
   dlg.setChromeMetrics(chrome_metrics_);
   bindRecordingPreferences(dlg);
   dlg.exec();
+#endif
 }
 
 void MainWindow::bindRecordingPreferences(PreferencesDialog& dialog) {
@@ -3279,9 +3290,16 @@ void MainWindow::bindRecordingPreferences(PreferencesDialog& dialog) {
 }
 
 void MainWindow::onShowAboutDialog() {
+#ifdef PJ_TARGET_WASM
+  auto* dialog = new AboutDialog(this);
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
+  dialog->setChromeMetrics(chrome_metrics_);
+  dialog->open();
+#else
   AboutDialog dialog(this);
   dialog.setChromeMetrics(chrome_metrics_);
   dialog.exec();
+#endif
 }
 
 void MainWindow::showToast(const QString& message, const QPixmap& icon) {
@@ -9329,19 +9347,34 @@ void MainWindow::stopHostWork(ToolboxRuntimeHost* host) {
 }
 
 bool MainWindow::confirmCancelRunningJob(const QString& label) {
+  // Desktop's prompt is modal, so the continuation has run by the time this
+  // returns. The browser cannot block; its callers use the async form.
+  bool confirmed = false;
+  confirmCancelRunningJobAsync(label, [&confirmed]() { confirmed = true; });
+  return confirmed;
+}
+
+void MainWindow::confirmCancelRunningJobAsync(const QString& label, std::function<void()> on_confirmed) {
   if (confirm_running_job_) {
-    return confirm_running_job_(label);
+    if (confirm_running_job_(label)) {
+      on_confirmed();
+    }
+    return;
   }
   // No default button: closing here cancels a transfer the user may have been
   // waiting on for minutes, so an accidental Enter must not do it. Esc /
   // dismiss keeps downloading.
-  constexpr int kCancelAndClose = 0;
-  const int choice = MessageBox::question(
+  static constexpr int kCancelAndClose = 0;
+  MessageBox::questionAsync(
       this, label.isEmpty() ? tr("Cancel download?") : label, tr("A download is in progress. Cancel it and close?"),
       // "&&" so Qt renders a literal ampersand instead of eating it as a mnemonic.
       {{tr("Cancel download && close"), MessageBox::kDestructiveRole},
-       {tr("Keep downloading"), MessageBox::kCancelRole}});
-  return choice == kCancelAndClose;
+       {tr("Keep downloading"), MessageBox::kCancelRole}},
+      [on_confirmed = std::move(on_confirmed)](int choice, bool) {
+        if (choice == kCancelAndClose) {
+          on_confirmed();
+        }
+      });
 }
 
 void MainWindow::openEmbeddedConsole() {
@@ -10068,7 +10101,13 @@ bool MainWindow::restorePinnedToolboxes(const QDomElement& root, MissingCurvePol
     // raise the confirmation modal. Its resolution is the same as a decline —
     // the live panels and their jobs are retained, the layout's pinned set is
     // not applied — reported through the diagnostic sink.
-    if (policy == MissingCurvePolicy::kRetainAndDiagnose) {
+    // The browser cannot ask mid-restore (no modal loop), so it resolves the
+    // same way.
+    bool can_prompt = policy != MissingCurvePolicy::kRetainAndDiagnose;
+#ifdef PJ_TARGET_WASM
+    can_prompt = false;
+#endif
+    if (!can_prompt) {
       reportLayoutRestoreIssue(
           policy, "pinned-toolbox-busy",
           tr("Layout restore kept the current pinned panels: '%1' has a job still running.").arg(busy_label));

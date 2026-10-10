@@ -1,11 +1,17 @@
 function(pj_scene2d_find_ffmpeg out_found out_targets out_source)
-  # Video is a separate WASM work package. Do not let a host package or an
-  # accidental sysroot installation leak native FFmpeg into the still-image
-  # Scene2D configuration.
+  # The browser only ever links the cross-compiled archives from
+  # cmake/PjWasmFfmpeg.cmake (PJ_WASM_WITH_VIDEO); never let a host package or a
+  # sysroot installation leak native FFmpeg into the WASM graph.
   if(EMSCRIPTEN)
-    set(${out_found} FALSE PARENT_SCOPE)
-    set(${out_targets} "" PARENT_SCOPE)
-    set(${out_source} "" PARENT_SCOPE)
+    if(TARGET ffmpeg::avcodec AND TARGET ffmpeg::avutil AND TARGET ffmpeg::swscale)
+      set(${out_found} TRUE PARENT_SCOPE)
+      set(${out_targets} ffmpeg::avcodec ffmpeg::swscale ffmpeg::avutil PARENT_SCOPE)
+      set(${out_source} "cross-compiled WASM archives" PARENT_SCOPE)
+    else()
+      set(${out_found} FALSE PARENT_SCOPE)
+      set(${out_targets} "" PARENT_SCOPE)
+      set(${out_source} "" PARENT_SCOPE)
+    endif()
     return()
   endif()
 

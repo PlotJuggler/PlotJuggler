@@ -7,8 +7,7 @@ find_package(nlohmann_json REQUIRED)
 
 if(EMSCRIPTEN)
   # Expose only the backend-neutral slice used by the product QRhi view and its
-  # layers (grid-map and trail layers included: they persist in the browser,
-  # though nothing draws them yet). Compressed canonical clouds add only the existing transcoder when
+  # layers. Compressed canonical clouds add only the existing transcoder when
   # their explicit browser dependency option is enabled. The native branch
   # below is unchanged.
   set(_pj_scene3d_core_sources

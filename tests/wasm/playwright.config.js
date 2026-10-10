@@ -15,6 +15,7 @@ module.exports = defineConfig({
     'scene3d_quality.spec.js',
     'editors.spec.js',
     'streaming.spec.js',
+    'dialogs.spec.js',
   ],
   // No project name in snapshot paths: both browsers compare against one
   // committed baseline set.

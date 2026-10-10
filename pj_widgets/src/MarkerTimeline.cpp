@@ -13,6 +13,8 @@
 #include <QToolTip>
 #include <algorithm>
 
+#include "pj_widgets/OwnedMenu.h"
+
 namespace PJ {
 
 namespace {
@@ -350,11 +352,10 @@ void MarkerTimeline::contextMenuEvent(QContextMenuEvent* event) {
   if (id == 0 || grab == Grab::kNone) {
     return;
   }
-  QMenu menu(this);
-  QAction* del = menu.addAction(tr("Delete marker"));
-  if (menu.exec(event->globalPos()) == del) {
-    deleteMark(id);
-  }
+  auto* menu = new QMenu(this);
+  connect(
+      menu->addAction(tr("Delete marker")), &QAction::triggered, this, [this, mark_id = id]() { deleteMark(mark_id); });
+  showOwnedMenu(menu, event->globalPos());
 }
 
 void MarkerTimeline::leaveEvent(QEvent*) {

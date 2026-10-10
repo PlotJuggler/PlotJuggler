@@ -58,6 +58,11 @@ struct PanelEngine::Impl {
   std::function<void()> request_owner_close;  // bound to PanelEngine::close in openPanel
   Stats stats;
   bool closed = false;
+#ifdef PJ_TARGET_WASM
+  // Context for a non-blocking sub-dialog's completion: destroyed with this
+  // Impl, so a sub-dialog that outlives the engine never calls back into it.
+  std::unique_ptr<QObject> sub_dialog_context = std::make_unique<QObject>();
+#endif
   // Theme the panel's icons were last applied for; a change triggers a full
   // re-apply (see PanelEngine::eventFilter).
   QString applied_theme;
@@ -325,57 +330,74 @@ struct PanelEngine::Impl {
               combo, &QComboBox::currentIndexChanged, sub_dialog, [sub_dialog](int) { sub_dialog->adjustSize(); },
               Qt::QueuedConnection);
         }
-        // exec() spins a nested modal event loop. Pause our tick timer for its
-        // duration so a timer-driven applyAndDiff() can't re-enter on the same
-        // Impl while the sub-dialog is open — a re-entrant tick could observe a
-        // __request_close and tear us down (and delete sub_dialog) underneath
-        // the suspended outer call. Resume only if we weren't closed meanwhile.
+        // Pause our tick timer while the sub-dialog is up so a timer-driven
+        // applyAndDiff() can't re-enter on the same Impl meanwhile — a
+        // re-entrant tick could observe a __request_close and tear us down (and
+        // delete sub_dialog) underneath the suspended outer call. Resume only if
+        // we weren't closed meanwhile.
         const bool timer_was_active = (tick_timer != nullptr) && tick_timer->isActive();
         if (timer_was_active) {
           tick_timer->stop();
         }
-        const int dlg_result = sub_dialog->exec();
-        if (timer_was_active && !closed && tick_timer != nullptr) {
-          tick_timer->start();
-        }
-        // When the user clicks OK, harvest the values the user typed
-        // into the sub-dialog's inputs and surface them to the plugin
-        // through the existing event channels. Plugins that want
-        // user input from a sub-dialog override `onTextChanged` /
-        // `onClicked` for the dialog's widget names (each must have
-        // an objectName set in the .ui), then handle the synthetic
-        // `subDialogAccepted` click as the "OK was pressed, commit
-        // changes" signal. Without this loop, the values typed into
-        // the sub-dialog are dropped on the floor.
-        if (dlg_result == QDialog::Accepted) {
-          for (auto* line_edit : sub_dialog->findChildren<QLineEdit*>()) {
-            const QString name = line_edit->objectName();
-            if (name.isEmpty() || name.startsWith("qt_"_L1)) {
-              continue;
-            }
-            nlohmann::json ev = {{"text", line_edit->text().toStdString()}};
-            (void)handle.sendEvent(name.toStdString(), ev.dump());
+        const auto finish = [this, sub_dialog, timer_was_active](int dlg_result) {
+          if (timer_was_active && !closed && tick_timer != nullptr) {
+            tick_timer->start();
           }
-          for (auto* check_box : sub_dialog->findChildren<QCheckBox*>()) {
-            const QString name = check_box->objectName();
-            if (name.isEmpty() || name.startsWith("qt_"_L1)) {
-              continue;
+          // When the user clicks OK, harvest the values the user typed
+          // into the sub-dialog's inputs and surface them to the plugin
+          // through the existing event channels. Plugins that want
+          // user input from a sub-dialog override `onTextChanged` /
+          // `onClicked` for the dialog's widget names (each must have
+          // an objectName set in the .ui), then handle the synthetic
+          // `subDialogAccepted` click as the "OK was pressed, commit
+          // changes" signal. Without this loop, the values typed into
+          // the sub-dialog are dropped on the floor.
+          if (dlg_result == QDialog::Accepted) {
+            for (auto* line_edit : sub_dialog->findChildren<QLineEdit*>()) {
+              const QString name = line_edit->objectName();
+              if (name.isEmpty() || name.startsWith("qt_"_L1)) {
+                continue;
+              }
+              nlohmann::json ev = {{"text", line_edit->text().toStdString()}};
+              (void)handle.sendEvent(name.toStdString(), ev.dump());
             }
-            nlohmann::json ev = {{"checked", check_box->isChecked()}};
-            (void)handle.sendEvent(name.toStdString(), ev.dump());
-          }
-          for (auto* combo_box : sub_dialog->findChildren<QComboBox*>()) {
-            const QString name = combo_box->objectName();
-            if (name.isEmpty() || name.startsWith("qt_"_L1)) {
-              continue;
+            for (auto* check_box : sub_dialog->findChildren<QCheckBox*>()) {
+              const QString name = check_box->objectName();
+              if (name.isEmpty() || name.startsWith("qt_"_L1)) {
+                continue;
+              }
+              nlohmann::json ev = {{"checked", check_box->isChecked()}};
+              (void)handle.sendEvent(name.toStdString(), ev.dump());
             }
-            nlohmann::json ev = {
-                {"current_text", combo_box->currentText().toStdString()}, {"current_index", combo_box->currentIndex()}};
-            (void)handle.sendEvent(name.toStdString(), ev.dump());
+            for (auto* combo_box : sub_dialog->findChildren<QComboBox*>()) {
+              const QString name = combo_box->objectName();
+              if (name.isEmpty() || name.startsWith("qt_"_L1)) {
+                continue;
+              }
+              nlohmann::json ev = {
+                  {"current_text", combo_box->currentText().toStdString()},
+                  {"current_index", combo_box->currentIndex()}};
+              (void)handle.sendEvent(name.toStdString(), ev.dump());
+            }
+            (void)handle.sendEvent("subDialogAccepted", R"({"clicked":true})");
           }
-          (void)handle.sendEvent("subDialogAccepted", R"({"clicked":true})");
-        }
+        };
+#ifdef PJ_TARGET_WASM
+        // The Asyncify-free browser build cannot nest exec()'s modal loop: open
+        // non-blocking and harvest when the user answers, unless the engine
+        // closed meanwhile.
+        QObject::connect(
+            sub_dialog, &QDialog::finished, sub_dialog_context.get(), [this, sub_dialog, finish](int dlg_result) {
+              if (!closed) {
+                finish(dlg_result);
+              }
+              sub_dialog->deleteLater();
+            });
+        sub_dialog->open();
+#else
+        finish(sub_dialog->exec());
         delete sub_dialog;
+#endif
       }
     }
 

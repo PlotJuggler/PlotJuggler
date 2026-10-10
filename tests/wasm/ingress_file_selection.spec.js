@@ -19,14 +19,15 @@ async function csvDialogControlGeometry(page, consoleMessages) {
     entry => entry.includes('PJ_WASM_CSV_DIALOG_CONTROLS delimiter='),
   ).at(-1) || '';
   const match = message.match(
-    /delimiter=(-?\d+),(-?\d+) semicolon=(-?\d+),(-?\d+) select=(-?\d+),(-?\d+) time=(-?\d+),(-?\d+)/,
+    /delimiter=(-?\d+),(-?\d+) enabled=(\d) auto=(-?\d+),(-?\d+) checked=(\d) mode=(-?\d+),(-?\d+) mode_index=(\d+) item1=(-?\d+),(-?\d+) time=(-?\d+),(-?\d+)/,
   );
   expect(match, `unparseable CSV-dialog control geometry: ${message}`).not.toBeNull();
   return {
-    delimiter: { x: Number(match[1]), y: Number(match[2]) },
-    semicolon: { x: Number(match[3]), y: Number(match[4]) },
-    select: { x: Number(match[5]), y: Number(match[6]) },
-    time: { x: Number(match[7]), y: Number(match[8]) },
+    delimiter: { x: Number(match[1]), y: Number(match[2]), enabled: match[3] === '1' },
+    autoDelimiter: { x: Number(match[4]), y: Number(match[5]), checked: match[6] === '1' },
+    mode: { x: Number(match[7]), y: Number(match[8]), index: Number(match[9]) },
+    item1: { x: Number(match[10]), y: Number(match[11]) },
+    time: { x: Number(match[12]), y: Number(match[13]) },
   };
 }
 
@@ -225,21 +226,24 @@ test('official CSV plugin applies delimiter and time-column choices', async ({ p
   });
   await page.waitForTimeout(750);
 
-  // Select semicolon in the delimiter combo, then select `time` as the X axis.
-  // The controls live in Qt's canvas; sample their current geometry because the
-  // canonical host title bar changes the embedded plugin's origin.
+  // An unambiguous semicolon file is auto-detected: the dialog locks the
+  // delimiter (auto-detection on, combo disabled) and the imported series names
+  // below prove it was applied. Then switch the Time Axis mode to "Selected
+  // Column" and pick `time`. The controls live in Qt's canvas; sample their
+  // current geometry because the canonical host title bar changes the embedded
+  // plugin's origin.
   let controls = await csvDialogControlGeometry(page, consoleMessages);
-  await page.mouse.click(screen.x + controls.delimiter.x, screen.y + controls.delimiter.y);
+  expect(controls.autoDelimiter.checked).toBe(true);
+  expect(controls.delimiter.enabled).toBe(false);
+  controls = await csvDialogControlGeometry(page, consoleMessages);
+  await page.mouse.click(screen.x + controls.mode.x, screen.y + controls.mode.y);
   await page.waitForTimeout(250);
   controls = await csvDialogControlGeometry(page, consoleMessages);
-  expect(controls.semicolon.x).toBeGreaterThanOrEqual(0);
-  expect(controls.semicolon.y).toBeGreaterThanOrEqual(0);
-  await page.mouse.click(screen.x + controls.semicolon.x, screen.y + controls.semicolon.y);
+  expect(controls.item1.x).toBeGreaterThanOrEqual(0);
+  await page.mouse.click(screen.x + controls.item1.x, screen.y + controls.item1.y);
   await page.waitForTimeout(500);
   controls = await csvDialogControlGeometry(page, consoleMessages);
-  await page.mouse.click(screen.x + controls.select.x, screen.y + controls.select.y);
-  await page.waitForTimeout(500);
-  controls = await csvDialogControlGeometry(page, consoleMessages);
+  expect(controls.mode.index).toBe(1);
   expect(controls.time.x).toBeGreaterThanOrEqual(0);
   expect(controls.time.y).toBeGreaterThanOrEqual(0);
   await page.mouse.click(screen.x + controls.time.x, screen.y + controls.time.y);

@@ -6,7 +6,9 @@
 #include <QList>
 #include <QString>
 #include <QStringList>
+#include <functional>
 #include <initializer_list>
+#include <vector>
 
 class QCheckBox;
 class QEvent;
@@ -73,8 +75,8 @@ class MessageBox : public QDialog {
   [[nodiscard]] int clickedIndex() const;
 
   // --- Static convenience helpers ---
-  // Single-OK informational variants — kept signature-compatible with the
-  // pre-existing API so call sites in pj_app keep compiling.
+  // Single-OK informational variants. Modal on desktop; in the browser they
+  // open non-blocking and return at once, since nothing waits on the answer.
   static void information(QWidget* parent, const QString& title, const QString& text);
   static void warning(QWidget* parent, const QString& title, const QString& text);
   static void critical(QWidget* parent, const QString& title, const QString& text);
@@ -85,6 +87,18 @@ class MessageBox : public QDialog {
   static int question(
       QWidget* parent, const QString& title, const QString& text, std::initializer_list<ButtonSpec> buttons,
       bool* dont_show_again = nullptr);
+
+  // Continuation form of question(): `on_done(choice, dont_show_again)` receives
+  // the clicked index (or -1 on reject) and the checkbox state, which is only
+  // shown when `show_dont_show_again` is set. On desktop the dialog is modal and
+  // `on_done` runs before this returns; in the browser, whose Asyncify-free
+  // build cannot run exec()'s nested event loop, the dialog opens
+  // non-blocking and `on_done` runs once the user answers. Callers must not
+  // rely on either ordering, and anything `on_done` captures must outlive the
+  // dialog (it is parented to `parent`, so capture `parent` itself safely).
+  static void questionAsync(
+      QWidget* parent, const QString& title, const QString& text, std::vector<ButtonSpec> buttons,
+      std::function<void(int choice, bool dont_show_again)> on_done, bool show_dont_show_again = false);
 
  protected:
   void keyPressEvent(QKeyEvent* event) override;

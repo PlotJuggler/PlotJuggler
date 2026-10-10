@@ -347,8 +347,9 @@ The 3D widget family ships as `pj_scene3D` (built and wired into `pj_app` via `S
 Scene3D renders through one QRhi view (`widgets/rhi/`, on desktop and in the
 browser) on the platform's native API: OpenGL on Linux, D3D11 on Windows, Metal
 on macOS, WebGL2 in the browser. Browser policy (file picking, bounded loading)
-stays on `PJ_TARGET_WASM`. Do not pull Assimp/network
-model code, or codecs into the browser merely to expose grid/TF. Shader packs
+stays on `PJ_TARGET_WASM`. Scene2D and Scene3D are on by default in the browser
+build (`PJ_WASM_WITH_SCENE2D`/`PJ_WASM_WITH_SCENE3D`); their bounded Assimp and
+point-cloud codec graph enters only through those options. Shader packs
 are committed `.qsb` files baked for every backend (GLSL ES 300 for the browser)
 and must be reproducibly rebuilt with the pinned host `qsb`; the WASM configure
 hash-checks them. Every new static archive in the

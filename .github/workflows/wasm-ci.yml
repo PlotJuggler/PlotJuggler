@@ -5,9 +5,9 @@
 # merging one, or when cutting a release. Two configurations of the same
 # sources prove the advertised feature matrix:
 #
-#   1. Production MVP — Scene2D/Scene3D OFF, probes OFF: the app must
-#      configure, build, package deterministically, and pass the deployment
-#      contract + cold threaded Chromium boot.
+#   1. Production — the shipped defaults (Scene2D/Scene3D ON), probes OFF:
+#      the app must configure, build, package deterministically, and pass the
+#      deployment contract + cold threaded Chromium boot.
 #   2. Acceptance — Scene2D/Scene3D ON, ingress probe ON: the retained QRhi
 #      capability probe and functional browser suite run against the same
 #      source graph used by the packaged application, in Chromium (wasm-chromium
@@ -82,7 +82,9 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ccache ninja-build python3-pip
+          sudo apt-get install -y --no-install-recommends ccache ninja-build python3-pip make pkg-config
+          # Scene2D video cross-compiles dav1d, whose build system is meson.
+          python3 -m pip install --user meson
           # Runtime libraries for the desktop host Qt tools (qsb bakes the QRhi
           # shaders offline and transitively links the full Qt GUI stack, even
           # headless). The lean runner ships none of these, so qsb would die at
@@ -150,12 +152,15 @@ jobs:
           ccache --set-config=base_dir="${GITHUB_WORKSPACE}"
           ccache --zero-stats
 
-      - name: Build production MVP (Scene2D/Scene3D off, probes off)
+      - name: Build production package (shipped defaults, probes off)
         shell: bash
         run: |
           set -euo pipefail
           source .emsdk/emsdk_env.sh >/dev/null
-          cmake -S . -B build-wasm-mvp -G Ninja \
+          # Scene2D's find_package(ZLIB 1.3.1 EXACT) resolves against Emscripten's
+          # lazily materialized sysroot zlib port; build it before configuring.
+          embuilder build zlib
+          cmake -S . -B build-wasm-prod -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="${PWD}/.qt-wasm/${PJ_QT_VERSION}/wasm_multithread/lib/cmake/Qt6/qt.toolchain.cmake" \
             -DQT_HOST_PATH="${PWD}/.qt-wasm/${PJ_QT_VERSION}/gcc_64" \
             -DCMAKE_BUILD_TYPE=Release \
@@ -163,21 +168,19 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DPJ_BUILD_TESTS=OFF \
             -DPJ_BUILD_DEMOS=OFF \
-            -DPJ_WASM_ENABLE_INGRESS_PROBE=OFF \
-            -DPJ_WASM_WITH_SCENE2D=OFF \
-            -DPJ_WASM_WITH_SCENE3D=OFF
-          cmake --build build-wasm-mvp --target pj_app --parallel 4
+            -DPJ_WASM_ENABLE_INGRESS_PROBE=OFF
+          cmake --build build-wasm-prod --target pj_app --parallel 4
 
-      - name: Package MVP and verify packaging scripts
+      - name: Package production build and verify packaging scripts
         shell: bash
         run: |
           set -euo pipefail
           npm --prefix tests/wasm run test:package
           node scripts/package_wasm.mjs \
-            --source build-wasm-mvp/pj_app --output build-wasm-mvp/deploy
+            --source build-wasm-prod/pj_app --output build-wasm-prod/deploy
           node scripts/package_wasm.mjs \
-            --source build-wasm-mvp/pj_app --output build-wasm-mvp/deploy-b
-          diff -qr build-wasm-mvp/deploy build-wasm-mvp/deploy-b
+            --source build-wasm-prod/pj_app --output build-wasm-prod/deploy-b
+          diff -qr build-wasm-prod/deploy build-wasm-prod/deploy-b
 
       - name: Cache Playwright browsers
         uses: actions/cache@v5
@@ -191,10 +194,10 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      - name: Deployment contract and cold threaded boot (MVP package)
+      - name: Deployment contract and cold threaded boot (production package)
         working-directory: tests/wasm
         env:
-          PJ_WASM_PACKAGE_DIR: ${{ github.workspace }}/build-wasm-mvp/deploy
+          PJ_WASM_PACKAGE_DIR: ${{ github.workspace }}/build-wasm-prod/deploy
         run: npm run test:deployment
 
       - name: Build acceptance configuration (Scene2D/Scene3D on, ingress probe on)
@@ -202,10 +205,6 @@ jobs:
         run: |
           set -euo pipefail
           source .emsdk/emsdk_env.sh >/dev/null
-          # Scene2D's find_package(ZLIB 1.3.1 EXACT) resolves against Emscripten's
-          # sysroot zlib port, which is lazily materialized. Build it before the
-          # configure so a cold emsdk cache doesn't fail at find_package time.
-          embuilder build zlib
           cmake -S . -B build-wasm-probe -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="${PWD}/.qt-wasm/${PJ_QT_VERSION}/wasm_multithread/lib/cmake/Qt6/qt.toolchain.cmake" \
             -DQT_HOST_PATH="${PWD}/.qt-wasm/${PJ_QT_VERSION}/gcc_64" \

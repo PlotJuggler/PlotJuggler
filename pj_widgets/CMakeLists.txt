@@ -27,6 +27,7 @@ add_library(pj_widgets STATIC
     src/LayerListView.cpp
     src/MarkerTimeline.cpp
     src/MessageBox.cpp
+    src/OwnedMenu.cpp
     src/Search.cpp
     src/ProgressBar.cpp
     src/ProgressDialog.cpp

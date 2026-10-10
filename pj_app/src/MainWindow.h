@@ -366,12 +366,13 @@ class MainWindow : public QMainWindow {
   // Removes selected catalog entries from the curve/object tree.
   void onCatalogTrashRequested(QStringList keys, bool covers_all);
 
-  // Before deleting `removed_names` (topic/"topic/field" names), find every derived
-  // series (transform) that depends on them transitively, warn the user, and — if
-  // confirmed — remove those transforms and their Custom Series entries. Returns
-  // true to proceed with the deletion, false if the user cancelled. No-op + true
-  // when nothing depends on the removed series.
-  bool confirmAndRemoveDependentTransforms(const std::vector<TopicId>& removed_topics);
+  // Before deleting `removed_topics`, find every derived series (transform) that
+  // depends on them transitively, warn the user, and — if confirmed — remove those
+  // transforms and their Custom Series entries, then run `proceed`. `proceed` runs
+  // at once when nothing depends on the removed series, and never on cancel or a
+  // failed removal. It may run after this returns (the browser prompt is
+  // non-blocking), so it must re-validate anything that could change meanwhile.
+  void confirmAndRemoveDependentTransforms(const std::vector<TopicId>& removed_topics, std::function<void()> proceed);
 
   // Removes the selected datasets (curve tree "Remove"): shows one
   // combined confirmation, then erases each. Widget sync is signal-driven.
@@ -1249,6 +1250,10 @@ class MainWindow : public QMainWindow {
   // false keeps both. Runs a modal event loop, so callers must re-validate any
   // iterator or pointer they held across it. `label` names the surface.
   bool confirmCancelRunningJob(const QString& label);
+  // Non-blocking form for the browser, whose Asyncify-free build cannot run a
+  // modal loop: `on_confirmed` runs only if the user chose to cancel, possibly
+  // after this returns, so it must re-find anything it acts on.
+  void confirmCancelRunningJobAsync(const QString& label, std::function<void()> on_confirmed);
 
   // Work-in-flight query and cooperative cancel for one panel's host. Both go
   // through `host_work_in_flight_` / `stop_host_work_` when set, which is how a

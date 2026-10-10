@@ -133,8 +133,20 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // navLayout (added in .ui) pushes the rows to the top.
   auto* nav_layout = qobject_cast<QVBoxLayout*>(ui_->navContainer->layout());
   std::vector<QString> nav_names{
-      tr("Appearance"), tr("Plotting"), tr("Scene 2D"), tr("Scene 3D"), tr("Plugins"),
+      tr("Appearance"),
+      tr("Plotting"),
+      tr("Scene 2D"),
+      tr("Scene 3D"),
   };
+#ifdef PJ_TARGET_WASM
+  // The browser loads only its built-in plugins and has no marketplace, so the
+  // page's folders and registry would govern nothing. It precedes Recording in
+  // the stack, which the browser never shows either, so row indices still
+  // match page indices.
+  ui_->pagePlugins->hide();
+#else
+  nav_names.push_back(tr("Plugins"));
+#endif
   if (RecordingService::isSupported()) {
     nav_names.push_back(tr("Recording"));
   } else {
@@ -253,6 +265,9 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     ui_->checkUpdatesToggle->hide();
     ui_->labelTelemetry->hide();
     ui_->telemetryToggle->hide();
+    // The browser has no raster canvas: plots always render through WebGL.
+    ui_->labelOpenGL->hide();
+    ui_->openglToggle->hide();
 #endif
   }
 

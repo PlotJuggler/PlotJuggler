@@ -15,6 +15,7 @@ pj_wasm_require_official_plugin_sources(_pj_protobuf_dir parser_protobuf
         foxglove_pointcloud_codec.cpp foxglove_pointcloud_codec.hpp
         foxglove_object_codecs.cpp foxglove_object_codecs.hpp
         foxglove_voxelgrid_codec.cpp foxglove_voxelgrid_codec.hpp
+        foxglove_grid_codec.cpp foxglove_grid_codec.hpp
         manifest.json protobuf_parser_options.ui)
 set(_pj_common_dir "${PJ_OFFICIAL_PLUGINS_SOURCE_DIR}/common")
 
@@ -29,7 +30,8 @@ add_library(pj_wasm_protobuf_parser STATIC
     "${_pj_protobuf_dir}/protobuf_parser.cpp"
     "${_pj_protobuf_dir}/foxglove_pointcloud_codec.cpp"
     "${_pj_protobuf_dir}/foxglove_object_codecs.cpp"
-    "${_pj_protobuf_dir}/foxglove_voxelgrid_codec.cpp")
+    "${_pj_protobuf_dir}/foxglove_voxelgrid_codec.cpp"
+    "${_pj_protobuf_dir}/foxglove_grid_codec.cpp")
 target_compile_features(pj_wasm_protobuf_parser PRIVATE cxx_std_20)
 target_include_directories(pj_wasm_protobuf_parser PRIVATE "${_pj_protobuf_dir}")
 target_link_libraries(pj_wasm_protobuf_parser PRIVATE
@@ -37,8 +39,8 @@ target_link_libraries(pj_wasm_protobuf_parser PRIVATE
     protobuf::libprotobuf
     nlohmann_json::nlohmann_json
     pj_wasm_base64
-    pj_wasm_array_policy
     pj_wasm_laser_scan
+    pj_wasm_grid_map
     pj_wasm_pointcloud_color)
 
 pj_embed_manifest(pj_wasm_protobuf_parser

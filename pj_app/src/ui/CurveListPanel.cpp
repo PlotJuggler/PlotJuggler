@@ -39,6 +39,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/TopicDemandTracker.h"
 #include "pj_widgets/CurveTreeView.h"
+#include "pj_widgets/OwnedMenu.h"
 #include "pj_widgets/Search.h"
 #include "pj_widgets/SvgUtil.h"
 #include "scene_object_classification.h"
@@ -844,11 +845,11 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
   // pattern as the "Remove all Datasets" item in the datasets popup — so each item
   // carries a themed leading icon and the destructive ones paint in the shared
   // ${purple} via the central `QMenu#PJMenu QPushButton[destructive="true"]` rule.
-  QMenu menu(this);
-  menu.setObjectName(u"PJMenu"_s);
+  auto* menu = new QMenu(this);
+  menu->setObjectName(u"PJMenu"_s);
   const QString theme = currentTheme();
   const auto add_item = [&](const QString& icon, const QString& text, bool destructive, bool enabled) {
-    QPushButton* button = addMenuButton(&menu, icon, theme, text);
+    QPushButton* button = addMenuButton(menu, icon, theme, text);
     button->setEnabled(enabled);
     if (destructive) {
       button->setProperty("destructive", true);
@@ -870,46 +871,23 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
   QPushButton* remove_button =
       add_item(u":/resources/svg/trash.svg"_s, tr("Remove"), /*destructive=*/true, /*enabled=*/true);
 
-  // QWidgetAction buttons don't dismiss the menu on click — close it ourselves and
-  // record the choice (exec blocks, so capturing by reference is safe).
-  bool do_info = false;
-  bool do_merge = false;
-  bool do_reload = false;
-  bool do_replace = false;
-  bool do_remove = false;
-  connect(info_button, &QPushButton::clicked, &menu, [&]() {
-    do_info = true;
-    menu.close();
-  });
-  connect(merge_button, &QPushButton::clicked, &menu, [&]() {
-    do_merge = true;
-    menu.close();
-  });
-  connect(reload_button, &QPushButton::clicked, &menu, [&]() {
-    do_reload = true;
-    menu.close();
-  });
-  connect(replace_button, &QPushButton::clicked, &menu, [&]() {
-    do_replace = true;
-    menu.close();
-  });
-  connect(remove_button, &QPushButton::clicked, &menu, [&]() {
-    do_remove = true;
-    menu.close();
-  });
+  // QWidgetAction buttons don't dismiss the menu on click — close it ourselves,
+  // then act from a queued call so the request lands after the menu is gone
+  // (on desktop, after its modal loop has returned).
+  const auto on_click = [this, menu](QPushButton* button, auto action) {
+    connect(button, &QPushButton::clicked, menu, [this, menu, action]() {
+      menu->close();
+      QTimer::singleShot(0, this, action);
+    });
+  };
+  const DatasetId first = dataset_ids.front();
+  on_click(info_button, [this, first]() { emit datasetInfoRequested(first); });
+  on_click(merge_button, [this, dataset_ids]() { emit mergeDatasetsRequested(dataset_ids); });
+  on_click(reload_button, [this, first]() { emit reloadDatasetRequested(first); });
+  on_click(replace_button, [this, first]() { emit replaceDatasetRequested(first); });
+  on_click(remove_button, [this, dataset_ids]() { emit removeDatasetsRequested(dataset_ids); });
 
-  menu.exec(tree_view_->viewport()->mapToGlobal(pos));
-  if (do_info) {
-    emit datasetInfoRequested(dataset_ids.front());
-  } else if (do_merge) {
-    emit mergeDatasetsRequested(dataset_ids);
-  } else if (do_reload) {
-    emit reloadDatasetRequested(dataset_ids.front());
-  } else if (do_replace) {
-    emit replaceDatasetRequested(dataset_ids.front());
-  } else if (do_remove) {
-    emit removeDatasetsRequested(dataset_ids);
-  }
+  showOwnedMenu(menu, tree_view_->viewport()->mapToGlobal(pos));
 }
 
 void CurveListPanel::showTopicContextMenu(QTreeWidgetItem* clicked, const QPoint& pos) {
@@ -939,21 +917,22 @@ void CurveListPanel::showTopicContextMenu(QTreeWidgetItem* clicked, const QPoint
   // ::setTopicForced): "Stop forced streaming" only drops the forced hold — it
   // can never pause a topic something still displays.
   const bool forced = tracker_->isTopicForced(item->dataset_id, item->topic_name);
-  QMenu menu(this);
-  menu.setObjectName(u"PJMenu"_s);
+  auto* menu = new QMenu(this);
+  menu->setObjectName(u"PJMenu"_s);
   QPushButton* button = addMenuButton(
-      &menu, u":/resources/svg/cast.svg"_s, currentTheme(),
+      menu, u":/resources/svg/cast.svg"_s, currentTheme(),
       forced ? tr("Stop forced streaming") : tr("Force topic streaming"));
 
-  bool toggle = false;
-  connect(button, &QPushButton::clicked, &menu, [&]() {
-    toggle = true;
-    menu.close();
-  });
-  menu.exec(tree_view_->viewport()->mapToGlobal(pos));
-  if (toggle) {
-    tracker_->setTopicForced(item->dataset_id, item->topic_name, !forced);
-  }
+  connect(
+      button, &QPushButton::clicked, menu,
+      [this, menu, dataset_id = item->dataset_id, topic_name = item->topic_name, forced]() {
+        menu->close();
+        // tracker_ is re-read: the panel can be rebound while the menu is open.
+        if (tracker_ != nullptr) {
+          tracker_->setTopicForced(dataset_id, topic_name, !forced);
+        }
+      });
+  showOwnedMenu(menu, tree_view_->viewport()->mapToGlobal(pos));
 }
 
 void CurveListPanel::onCatalogItemsAdded(const std::vector<CatalogItem>& items) {

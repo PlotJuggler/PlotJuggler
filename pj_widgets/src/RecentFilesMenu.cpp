@@ -49,8 +49,10 @@ void RecentFilesMenu::clear() {
 }
 
 void RecentFilesMenu::popupAt(QPoint global_pos) {
+  // Non-blocking: every entry acts through a signal, and an Asyncify-free
+  // browser build cannot run the nested event loop exec() needs.
   if (!menu_->isEmpty()) {
-    menu_->exec(global_pos);
+    menu_->popup(global_pos);
   }
 }
 

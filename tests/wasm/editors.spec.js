@@ -518,11 +518,11 @@ test('Transform Editor creates a large exact Luau series while the browser main 
   ).toBe(true);
   const ghost = editor.previews.find(preview => preview.title === 'toolbox-values/temp');
   const transformed = editor.previews.find(preview => preview.title === 'toolbox-square');
+  // The input "ghost" and the transformed preview are told apart by colour,
+  // not dash style, so only their data is asserted here.
   expect(ghost).toBeDefined();
-  expect(ghost.dashed).toBe(true);
   expect(ghost.samples).toBe(2000);
   expect(transformed).toBeDefined();
-  expect(transformed.dashed).toBe(false);
   expect(transformed.samples).toBe(2000);
   expect(transformed.first).toBe(12);
 

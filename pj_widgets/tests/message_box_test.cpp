@@ -10,8 +10,11 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QFontMetrics>
 #include <QLabel>
+#include <QPushButton>
+#include <QTimer>
 
 #include "pj_widgets/MessageBox.h"
 using namespace Qt::StringLiterals;
@@ -64,6 +67,32 @@ TEST(MessageBoxTest, ShortBodyAlsoFits) {
   ASSERT_GT(body->width(), 0);
   EXPECT_GE(body->height(), body->heightForWidth(body->width()));
   dlg.close();
+}
+
+// Desktop runs questionAsync modally: the continuation has the clicked index
+// and checkbox state before the call returns, so converted call sites keep
+// their synchronous ordering there.
+TEST(MessageBoxTest, QuestionAsyncAnswersBeforeReturningOnDesktop) {
+  QTimer::singleShot(0, []() {
+    auto* box = qobject_cast<PJ::MessageBox*>(QApplication::activeModalWidget());
+    ASSERT_NE(box, nullptr);
+    box->findChild<QCheckBox*>()->setChecked(true);
+    const auto buttons = box->findChildren<QPushButton*>(u"pjMessageBoxButton"_s);
+    ASSERT_EQ(buttons.size(), 2);
+    buttons[1]->click();
+  });
+  int choice = -2;
+  bool dont_show_again = false;
+  PJ::MessageBox::questionAsync(
+      nullptr, u"Title"_s, u"Body"_s,
+      {{u"Remove"_s, PJ::MessageBox::kDestructiveRole}, {u"Keep"_s, PJ::MessageBox::kCancelRole}},
+      [&](int answer, bool checked) {
+        choice = answer;
+        dont_show_again = checked;
+      },
+      /*show_dont_show_again=*/true);
+  EXPECT_EQ(choice, 1);
+  EXPECT_TRUE(dont_show_again);
 }
 
 }  // namespace

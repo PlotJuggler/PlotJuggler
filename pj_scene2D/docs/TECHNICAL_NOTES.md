@@ -208,6 +208,21 @@ TurboJPEG with `WITH_JPEG8=ON`. Matching only the library versions is
 insufficient here: the C ABI selected by the build option is the load-bearing
 contract. Desktop continues to use its independently packaged dependencies.
 
+### Video decode in the WASM module
+
+The browser has no native hardware-decode API that FFmpeg can drive, so its
+`FfmpegDecoder` is software-only. `cmake/PjWasmFfmpeg.cmake`
+(`PJ_WASM_WITH_VIDEO`, on with Scene2D) cross-compiles the desktop's FFmpeg
+release and dav1d into static archives with the same LGPL decode-only
+allowlist (`--disable-gpl --disable-nonfree --disable-autodetect`, decoders
+h264/hevc/mjpeg/av1/libdav1d), plus `-pthread` so libavcodec's frame threads run
+on Emscripten workers. It omits libavformat (the core decodes elementary
+streams; only its desktop tests demux MP4), assembly (it targets native CPUs)
+and every hwaccel. The archives are imported as `ffmpeg::avcodec` / `avutil` /
+`swscale`, the names the desktop graph provides, so `pj_scene2d_core` and the
+`VideoLayer` build unchanged. Configuring needs `meson` (dav1d), GNU `make` and
+`pkg-config` on the host.
+
 **Additional lifecycle rules**:
 
 - Override `releaseResources()` (Qt virtual) to delete all QRhi
@@ -304,6 +319,7 @@ CompressedVideo, live streams):
 | Linux | VAAPI → CUDA/NVDEC → software |
 | Windows | D3D11VA → software |
 | macOS | VideoToolbox → software |
+| Browser (WASM) | software only |
 
 ### Device Selection
 

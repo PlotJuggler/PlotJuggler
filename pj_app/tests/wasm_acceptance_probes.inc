@@ -6,6 +6,8 @@
 // Keeping it out of the shell source makes the production ownership boundary
 // explicit while preserving same-translation-unit access to probe helpers.
 
+#include <QCheckBox>
+#include <qwt_plot.h>
 #include <functional>
 
 #include "pj_scene2d_widgets/media_viewer_widget.h"
@@ -298,6 +300,10 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_dialog_buttons() {
       cancel != nullptr && cancel->isEnabled() ? 1 : 0);
 }
 
+// Geometry of the CSV import dialog's delimiter and time-axis controls. The
+// time-axis mode is a combo docked in the "Time Axis" section header; `item1`
+// is the second row of whichever combo popup is open (semicolon in the
+// delimiter list, "Selected Column" in the mode list).
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_csv_dialog_controls() {
   PJ::MainWindow* main_window = nullptr;
   for (QWidget* widget : QApplication::topLevelWidgets()) {
@@ -308,38 +314,40 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_csv_dialog_controls() {
   }
   QWidget* dialog = QApplication::activeModalWidget();
   auto* delimiter = dialog != nullptr ? dialog->findChild<QComboBox*>(u"comboBox"_s) : nullptr;
-  auto* select_column = dialog != nullptr ? dialog->findChild<QRadioButton*>(u"radioButtonSelect"_s) : nullptr;
+  auto* auto_delimiter = dialog != nullptr ? dialog->findChild<QCheckBox*>(u"checkBoxAutoDelim"_s) : nullptr;
+  auto* mode = dialog != nullptr ? dialog->findChild<QComboBox*>(u"timeAxisModeCombo"_s) : nullptr;
   auto* columns = dialog != nullptr ? dialog->findChild<QListWidget*>(u"listWidgetSeries"_s) : nullptr;
-  QListWidgetItem* time_item = nullptr;
-  if (columns != nullptr) {
-    const auto matches = columns->findItems(u"time"_s, Qt::MatchExactly);
-    time_item = matches.empty() ? nullptr : matches.front();
-  }
-  if (main_window == nullptr || delimiter == nullptr || select_column == nullptr || columns == nullptr) {
+  if (main_window == nullptr || delimiter == nullptr || auto_delimiter == nullptr || mode == nullptr ||
+      columns == nullptr) {
     qWarning("PJ_WASM_CSV_DIALOG_CONTROLS_FAILED incomplete active dialog");
     return;
   }
   const auto center = [main_window](QWidget* widget) {
     return main_window->mapFromGlobal(widget->mapToGlobal(widget->rect().center()));
   };
-  const QPoint delimiter_center = center(delimiter);
-  const QPoint select_center = center(select_column);
-  QPoint semicolon_center(-1, -1);
-  if (QAbstractItemView* popup = delimiter->view();
-      popup != nullptr && popup->isVisible() && delimiter->model()->rowCount() > 1) {
-    const QModelIndex semicolon = delimiter->model()->index(1, delimiter->modelColumn());
-    semicolon_center =
-        main_window->mapFromGlobal(popup->viewport()->mapToGlobal(popup->visualRect(semicolon).center()));
+  QPoint item1_center(-1, -1);
+  for (QComboBox* combo : {delimiter, mode}) {
+    QAbstractItemView* popup = combo->view();
+    if (popup != nullptr && popup->isVisible() && combo->model()->rowCount() > 1) {
+      const QModelIndex item = combo->model()->index(1, combo->modelColumn());
+      item1_center = main_window->mapFromGlobal(popup->viewport()->mapToGlobal(popup->visualRect(item).center()));
+    }
   }
   QPoint time_center(-1, -1);
-  if (time_item != nullptr) {
-    time_center =
-        main_window->mapFromGlobal(columns->viewport()->mapToGlobal(columns->visualItemRect(time_item).center()));
+  const auto matches = columns->findItems(u"time"_s, Qt::MatchExactly);
+  if (!matches.empty() && columns->isEnabled()) {
+    time_center = main_window->mapFromGlobal(
+        columns->viewport()->mapToGlobal(columns->visualItemRect(matches.front()).center()));
   }
+  const QPoint delimiter_center = center(delimiter);
+  const QPoint auto_center = center(auto_delimiter);
+  const QPoint mode_center = center(mode);
   qInfo(
-      "PJ_WASM_CSV_DIALOG_CONTROLS delimiter=%d,%d semicolon=%d,%d select=%d,%d time=%d,%d", delimiter_center.x(),
-      delimiter_center.y(), semicolon_center.x(), semicolon_center.y(), select_center.x(), select_center.y(),
-      time_center.x(), time_center.y());
+      "PJ_WASM_CSV_DIALOG_CONTROLS delimiter=%d,%d enabled=%d auto=%d,%d checked=%d mode=%d,%d mode_index=%d "
+      "item1=%d,%d time=%d,%d",
+      delimiter_center.x(), delimiter_center.y(), delimiter->isEnabled() ? 1 : 0, auto_center.x(), auto_center.y(),
+      auto_delimiter->isChecked() ? 1 : 0, mode_center.x(), mode_center.y(), mode->currentIndex(), item1_center.x(),
+      item1_center.y(), time_center.x(), time_center.y());
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_ingest_controls() {
@@ -701,9 +709,13 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_transform_editor() {
   const QPoint name_center = center(name);
   const QPoint function_center = center(function);
   const QPoint create_center = center(create);
+  // The host renders a plugin chart as a PlotWidget or a ChartPreviewWidget;
+  // both are Qwt plots, so read the curves off whichever QwtPlot the frame holds.
   auto* preview_frame = open ? panel->findChild<QFrame*>(u"framePlotPreview"_s) : nullptr;
-  auto* preview = preview_frame != nullptr ? preview_frame->findChild<PJ::PlotWidget*>() : nullptr;
-  const int preview_curves = preview != nullptr ? static_cast<int>(preview->curveList().size()) : 0;
+  auto* preview = preview_frame != nullptr ? preview_frame->findChild<QwtPlot*>() : nullptr;
+  const QwtPlotItemList preview_items =
+      preview != nullptr ? preview->itemList(QwtPlotItem::Rtti_PlotCurve) : QwtPlotItemList{};
+  const int preview_curves = static_cast<int>(preview_items.size());
   qInfo(
       "PJ_WASM_TRANSFORM_EDITOR open=%d add=%d,%d source=%d,%d drop=%d,%d name=%d,%d function=%d,%d "
       "create=%d,%d create_enabled=%d source_rows=%d preview_curves=%d",
@@ -732,21 +744,19 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_transform_editor() {
       terminal_b64.constData(), stats.tick_count, stats.event_count, stats.diff_apply_count,
       panel_timer != nullptr && panel_timer->isActive() ? 1 : 0, dialogs_b64.constData());
 
-  if (preview == nullptr) {
-    return;
-  }
-  for (const PJ::PlotWidgetBase::CurveInfo& info : preview->curveList()) {
-    if (info.curve == nullptr || info.curve->data() == nullptr) {
+  for (const QwtPlotItem* item : preview_items) {
+    const auto* curve = dynamic_cast<const QwtPlotCurve*>(item);
+    if (curve == nullptr || curve->data() == nullptr) {
       continue;
     }
-    const auto* data = info.curve->data();
+    const auto* data = curve->data();
     const std::size_t count = data->size();
     const double first = count > 0 ? data->sample(0).y() : 0.0;
     const double last = count > 0 ? data->sample(count - 1).y() : 0.0;
-    const QByteArray title = info.curve->title().text().toUtf8().toBase64();
+    const QByteArray title = curve->title().text().toUtf8().toBase64();
     qInfo(
         "PJ_WASM_TRANSFORM_PREVIEW title_b64=%s samples=%llu first=%.17g last=%.17g dashed=%d", title.constData(),
-        static_cast<unsigned long long>(count), first, last, info.curve->pen().style() == Qt::DashLine ? 1 : 0);
+        static_cast<unsigned long long>(count), first, last, curve->pen().style() == Qt::DashLine ? 1 : 0);
   }
 }
 
@@ -1457,6 +1467,80 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_placeholder_icons() {
       transitions.x(), transitions.y(), scene2d.x(), scene2d.y(), scene3d.x(), scene3d.y());
 }
 
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_preferences_action() {
+  reportWasmMenuAction(u"Preferences..."_s, "preferences");
+}
+
+// Reports every visible push button inside an open popup menu (the curve
+// tree's dataset menu builds its items as QWidgetAction buttons, which carry no
+// QAction label for reportWasmMenuAction to match).
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_menu_buttons() {
+  int count = 0;
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    auto* menu = qobject_cast<QMenu*>(widget);
+    if (menu == nullptr || !menu->isVisible()) {
+      continue;
+    }
+    for (QPushButton* button : menu->findChildren<QPushButton*>()) {
+      if (!button->isVisible()) {
+        continue;
+      }
+      const QPoint center = button->mapToGlobal(button->rect().center());
+      qInfo(
+          "PJ_WASM_MENU_BUTTON label=%s enabled=%d center=%d,%d", qPrintable(button->text()),
+          button->isEnabled() ? 1 : 0, center.x(), center.y());
+      ++count;
+    }
+  }
+  qInfo("PJ_WASM_MENU_BUTTONS_DONE count=%d", count);
+}
+
+// Reports the open MessageBox (title + every button), whether it was shown
+// modally or through the browser's non-blocking open().
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_message_box() {
+  PJ::MessageBox* box = qobject_cast<PJ::MessageBox*>(QApplication::activeModalWidget());
+  if (box == nullptr) {
+    for (QWidget* widget : QApplication::topLevelWidgets()) {
+      if (auto* candidate = qobject_cast<PJ::MessageBox*>(widget); candidate != nullptr && candidate->isVisible()) {
+        box = candidate;
+        break;
+      }
+    }
+  }
+  if (box == nullptr) {
+    qInfo("PJ_WASM_MESSAGE_BOX_DONE present=0 title= count=0");
+    return;
+  }
+  auto* title = box->findChild<QLabel*>(u"pjMessageBoxTitle"_s);
+  int count = 0;
+  for (auto* button : box->findChildren<QPushButton*>(u"pjMessageBoxButton"_s)) {
+    const QPoint center = button->mapToGlobal(button->rect().center());
+    qInfo("PJ_WASM_MESSAGE_BOX_BUTTON label=%s center=%d,%d", qPrintable(button->text()), center.x(), center.y());
+    ++count;
+  }
+  qInfo(
+      "PJ_WASM_MESSAGE_BOX_DONE present=1 title=%s count=%d", title != nullptr ? qPrintable(title->text()) : "", count);
+}
+
+// Reports whether Preferences is open, where its OK button is, and the plot
+// precision it would commit.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_preferences_dialog() {
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    auto* dialog = qobject_cast<PJ::PreferencesDialog*>(widget);
+    if (dialog == nullptr || !dialog->isVisible()) {
+      continue;
+    }
+    auto* ok = dialog->findChild<QPushButton*>(u"buttonOk"_s);
+    auto* plugins = dialog->findChild<QWidget*>(u"pagePlugins"_s);
+    const QPoint center = ok != nullptr ? ok->mapToGlobal(ok->rect().center()) : QPoint(-1, -1);
+    qInfo(
+        "PJ_WASM_PREFERENCES visible=1 ok=%d,%d plugins_page=%d", center.x(), center.y(),
+        plugins != nullptr && plugins->isVisibleTo(dialog) ? 1 : 0);
+    return;
+  }
+  qInfo("PJ_WASM_PREFERENCES visible=0 ok=-1,-1 plugins_page=0");
+}
+
 // clang-format off
 EM_JS(void, pj_wasm_install_browser_test_probes, (), {
   globalThis.pjWasmOpenLoadProbe = () => Module._pj_wasm_test_open_load();
@@ -1475,6 +1559,10 @@ EM_JS(void, pj_wasm_install_browser_test_probes, (), {
   globalThis.pjWasmReportSourceLayoutDecisionProbe = () => Module._pj_wasm_test_report_source_layout_decision();
   globalThis.pjWasmSupersedeSourceLayoutPickerProbe = () => Module._pj_wasm_test_supersede_source_layout_picker();
   globalThis.pjWasmReportDialogButtonsProbe = () => Module._pj_wasm_test_report_dialog_buttons();
+  globalThis.pjWasmReportPreferencesActionProbe = () => Module._pj_wasm_test_report_preferences_action();
+  globalThis.pjWasmReportMenuButtonsProbe = () => Module._pj_wasm_test_report_menu_buttons();
+  globalThis.pjWasmReportMessageBoxProbe = () => Module._pj_wasm_test_report_message_box();
+  globalThis.pjWasmReportPreferencesDialogProbe = () => Module._pj_wasm_test_report_preferences_dialog();
   globalThis.pjWasmReportCsvDialogControlsProbe = () => Module._pj_wasm_test_report_csv_dialog_controls();
   globalThis.pjWasmReportIngestControlsProbe = () => Module._pj_wasm_test_report_ingest_controls();
   globalThis.pjWasmReportLayoutSnapshotProbe = () => Module._pj_wasm_test_report_layout_snapshot();
