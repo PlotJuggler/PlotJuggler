@@ -1,0 +1,773 @@
+# Derived objects: scenario catalog
+
+Every use case and corner case that the prototype's tests encode, made explicit. The point
+is that no slice of the carve (see [CARVING.md](CARVING.md)) drops a scenario silently.
+Each scenario is either ported, changed by a named decision, or deliberately deferred.
+
+- **Source.** Branch `feat/derived-objects-editor-host` (PJ4 #697, #698 and #699), compared
+  with its merge base on `release-4.1` (`d0138b922`).
+- **Scope.** Every test case in a test file the stack added or moved, plus every test case
+  the stack added or changed in an existing file: 794 test cases (see
+  [Coverage check](#coverage-check)).
+- **Rows.** One per scenario. Near-duplicates (Luau and Python twins, fixtures run twice)
+  share a row. "Expected behaviour" is what the prototype's test asserts today.
+- **Decision references.**
+  - D-numbers are in [REQUIREMENTS.md](REQUIREMENTS.md).
+  - N-numbers and P-numbers point at the review notes and the proposals page.
+    [ARCHITECTURE.md](ARCHITECTURE.md) holds the resulting design: N1 §14, N3/N5 §12,
+    N6 §11, N7 §9, N8 §15, N9 §8, N10 §13.
+
+## How to use it while carving
+
+1. Before cutting a slice, list the rows in the areas it touches.
+2. For each row, the slice does one of three things, and writes it in the row's last
+   column:
+   - **ported:** `slice N: <TestName>`;
+   - **changed:** `slice N per <decision>: <NewTestName>`;
+   - **deferred:** `deferred: <reason>`.
+3. A `keep*` row ports the expectation but rewrites the assertion against the replacement
+   machinery.
+4. A `blocked` row waits for the decision it names.
+5. When a slice closes a [gap](#gaps), it adds a row for it and moves the gap here.
+
+## Status legend
+
+| Status | Meaning |
+|---|---|
+| `keep` | Port the test as is (renames aside). |
+| `keep*` | The scenario is unchanged, but the test asserts on machinery a decision replaces (mostly store entry counts, which N7 turns into `ResultHistory`/`frameAt`). Port the expectation and rewrite the assertion. |
+| **changes: X** | Expected behaviour changes under decision X. The new expectation follows the dash. |
+| **removed: X** | Decision X deletes the machinery the test pins. |
+| **blocked: X** | Waits for decision X (an SDK host-contract item). |
+| **decided here** | Was unclear in the draft; resolved by a decision recorded in this file (the reason follows). |
+
+Decisions referenced: **D30** (newest completed result wins, one running and one pending request per node, supersede only on meaning change, display only moves forward, lag indicator, D6 clearing unchanged); **N7** (pull instead of materialization, *pending a spike*: every `N7` status is conditional; if the spike picks "materialize plus ring" instead, the MAT refusal rows change to "the ring evicts the oldest publication, never refuses" and the `keep*` rows go back to `keep`); **N8** (series stay on on-demand, demand-gated, union clock); **N9** (OnDemandService split, structure only: no row changes status because of it); **N10** (one life-cycle protocol, generators keep topics on restore, persistence leaves MainWindow); **N1** (Python compile once per revision, read-only allowed modules); **N6** (decoding in the worker, native ops release the GIL); **N3/N5** (repeated identical TF samples not stored); **D7** (one dataset per node); **D10** (number outputs of object functions can be series); **D25/D26/D27** from the spec.
+
+## Summary
+
+336 scenario rows covering 794 TESTs; 46 [gaps](#gaps). Non-`keep` rows are where the carve must change or drop a test. The summary counts are the draft's. All twelve `unclear` rows have since been resolved: three are decided here, three are changed by P3 or N7, and the six once blocked on the SDK host contract follow its decisions of 2026-10-13.
+
+| Area | Rows | keep | keep* | changes | removed | unclear |
+|---|---|---|---|---|---|---|
+| [REC](#rec) Recipe authoring & validation | 8 | 5 | 0 | 0 | 0 | 3 |
+| [CUR](#cur) Cursor evaluation & display | 13 | 8 | 4 | 1 | 0 | 0 |
+| [DEM](#dem) Demand gating | 6 | 5 | 0 | 0 | 0 | 1 |
+| [ASY](#asy) Async scheduling & cancellation (D30) | 13 | 10 | 1 | 2 | 0 | 0 |
+| [CACHE](#cache) Cache identity & invalidation | 11 | 11 | 0 | 0 | 0 | 0 |
+| [PUB](#pub) Topic lifecycle & publication | 3 | 2 | 1 | 0 | 0 | 0 |
+| [MAT](#mat) Materialization window, ceilings, bundles (N7) | 6 | 0 | 0 | 0 | 6 | 0 |
+| [PIN](#pin) Pinned findings (D26) | 9 | 3 | 3 | 3 | 0 | 0 |
+| [DAG](#dag) DAG chains | 11 | 8 | 1 | 1 | 0 | 1 |
+| [SER](#ser) Series mode (D10 / N8) | 17 | 5 | 0 | 12 | 0 | 0 |
+| [STR](#str) Streaming & live edge | 7 | 4 | 1 | 0 | 2 | 0 |
+| [DS](#ds) Datasets (reload / merge / remove / epoch) | 3 | 3 | 0 | 0 | 0 | 0 |
+| [LAY](#lay) Layout restore & undo/history (N10) | 17 | 15 | 0 | 1 | 0 | 1 |
+| [OWN](#own) Previews / ephemerals & ownership | 13 | 13 | 0 | 0 | 0 | 0 |
+| [EVAL](#eval) Explicit evaluations (instant / window) & reports | 5 | 5 | 0 | 0 | 0 | 0 |
+| [ABI](#abi) Plugin ABI (data processors v2, evaluations, catalog v2, plot/scene tabs, dialogs) | 42 | 36 | 1 | 0 | 1 | 4 |
+| [LUA](#lua) Scripting: Luau | 14 | 14 | 0 | 0 | 0 | 0 |
+| [PY](#py) Scripting: Python & sandbox (N1 / N6) | 7 | 5 | 2 | 0 | 0 | 0 |
+| [MED](#med) Media (image / depth / video) | 25 | 25 | 0 | 0 | 0 | 0 |
+| [SCN](#scn) Scene layers 3D / 2D | 16 | 9 | 2 | 4 | 1 | 0 |
+| [TFL](#tfl) TF lookups & TF service | 12 | 12 | 0 | 0 | 0 | 0 |
+| [BUD](#bud) Budgets & limits | 23 | 20 | 0 | 2 | 0 | 1 |
+| [CON](#con) Concurrency / threading | 15 | 15 | 0 | 0 | 0 | 0 |
+| [BAT](#bat) Batch engine (markers) | 10 | 10 | 0 | 0 | 0 | 0 |
+| [INC](#inc) Incremental engine | 1 | 1 | 0 | 0 | 0 | 0 |
+| [STO](#sto) ObjectStore primitives | 3 | 1 | 0 | 0 | 2 | 0 |
+| [UI](#ui) App UI (Custom Topics panel, embedded views, misc) | 15 | 14 | 0 | 0 | 0 | 1 |
+| [PERF](#perf) Performance benches | 4 | 2 | 0 | 2 | 0 | 0 |
+| [MECH](#mech) Mechanical renames / moves (slice 1) | 7 | 7 | 0 | 0 | 0 | 0 |
+| **Total** | **336** | **268** | **16** | **28** | **12** | **12** |
+
+<a id="rec"></a>
+## REC: Recipe authoring & validation
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| REC-01 | Upsert registers typed derived topics, returns out_topics; edit keeps topic ids | 4 out_topics; topics flagged derived w/ builtin_object_type metadata; recipeJson has kind on_demand+output_types; re-upsert same ids, revision 2 | `on_demand_service_test.cpp`: OnDemandServiceTest.UpsertRegistersDerivedTopicsAndReturnsOutTopics | keep | N7 keeps one lazy store entry per topic so catalog stays |
+| REC-02 | Bad recipes rejected at upsert | rejects python-language w/ Luau src, duplicate outputs, ':' in output name, self-input, unknown input, same topic names in 2 datasets (ambiguous) | `on_demand_service_test.cpp`: OnDemandServiceTest.RejectsBadRecipes | keep | D7: ambiguity -> "one dataset per node"; candidate single `dataset` field (open) |
+| REC-03 | Object input type with no field table rejected | OccupancyGrid input -> "input 'grid' has type ... scripts cannot read yet"; nothing installed | `on_demand_service_test.cpp`: OnDemandServiceTest.UpsertRejectsAnObjectInputScriptsCannotReadYet | keep |  |
+| REC-04 | INFER_OUTPUTS: transient eval learns outputs; installed recipe still needs declared outputs | transient: outputs sorted by name w/ types; no outputs w/o flag -> "at least one"; installed+flag+no outputs rejected; installed+flag+outputs evaluates normally | `on_demand_service_test.cpp`: OnDemandServiceTest.{InferredOutputsOfATransientEvaluation, NoDeclaredOutputsWithoutInferFlagIsRejected, InstalledRecipeStillNeedsOutputsEvenWithInferFlag, InstalledRecipeWithInferFlagEvaluatesAndPublishesAsUsual} | **changes: P3 `INFER_OUTPUTS` folded** — a transient evaluation with no declared outputs infers them without a flag (`NoDeclaredOutputsWithoutInferFlagIsRejected` inverts); an installed recipe still needs declared outputs |  |
+| REC-05 | Dataset-qualified inputs bind that dataset, keep alias; mixing datasets rejected | "s:cloud" -> n=3 under alias 's:cloud'; adding "other:cloud" rejected | `on_demand_service_test.cpp`: OnDemandServiceTest.QualifiedInputsBindTheSelectedDatasetAndPreserveAliases | keep | D7 rule; single `dataset` field proposal would replace qualification |
+| REC-06 | Output spec "name:type" parsing | number/string/kPointCloud/kSceneEntities ok, whitespace trimmed; missing type, 2 colons, empty name, unknown/kNone type, inner space, empty type rejected | `object_script_test.cpp`: ObjectScript.ParseOutputSpecAcceptsAndRejects | keep |  |
+| REC-07 | Inferred output binding (INFER_OUTPUTS) naming rules | scalar->value; object->value:type; keyed sorted; positional value/value_2/text/cloud; mixed/empty error; unavailable->unknown; boolean rejected naming output; declared stays strict; strict mode needs table | `object_script_test.cpp`: ObjectScriptInferred.{NonTableNumberIsValue, ObjectIsValueOfItsType, KeyedTableIsSortedByName, PositionalNamesByType, MixedAndEmptyAreErrors, UnavailableIsUnknown, UnsupportedValueNamesOutputAndType, DeclaredOutputsStayStrict, StrictBindingUnchanged} | **changes: P3 `INFER_OUTPUTS` folded** — the naming rules keep; for on-demand recipes lenient binding is the only binding, so `DeclaredOutputsStayStrict` / `StrictBindingUnchanged` become "a scalar binds to the single output, a positional return by order, a keyed one by name; an undeclared key and a missing output stay errors" |  |
+| REC-08 | Python twins: inferred output naming | as Luau; plus empty list/None errors ("NoneType") | `python_object_script_test.cpp`: PythonObjectScriptInferred.{NonTableNumberIsValue, ObjectIsValueOfItsType, KeyedTableIsSortedByName, PositionalNamesByType, EmptyAndBadShapesAreErrors, UnavailableIsUnknown, UnsupportedValueNamesOutputAndType, DeclaredOutputsStayStrict, StrictBindingUnchanged} | **changes: P3 `INFER_OUTPUTS` folded** — as REC-07 |  |
+
+<a id="cur"></a>
+## CUR: Cursor evaluation & display
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| CUR-01 | Object outputs stamped at newest resolved input, not requested t | eval@12 -> stamp 10s, 1 entry; @14 cache hit, no new entry; @16 (threshold changed @15) recompute stamp 15 | `on_demand_service_test.cpp`: OnDemandServiceTest.ObjectOutputsAreStampedAtTheirInputsNotAtTheRequestedTime | keep* | N7: entry counts -> ResultHistory entries |
+| CUR-02 | Each input resolved at-or-before t independently (D5) | provenance cloud@20, threshold@15; max_z/report values; witness SceneEntities = deleteAll + 1 entity stamped t | `on_demand_service_test.cpp`: OnDemandServiceTest.EvaluateAtResolvesInputsAtOrBefore | keep |  |
+| CUR-03 | Seek back and forth reuses cache | 20->5->20: third is from_cache, same values; 2 store entries per topic | `on_demand_service_test.cpp`: OnDemandServiceTest.SeekBackAndForthReusesCacheAndDedupes | keep* | N7: store-entry counts -> ResultHistory entries |
+| CUR-04 | Scalar side input change recomputes without new object | threshold push @19 -> new result, cloud uid unchanged, new derived entry | `on_demand_service_test.cpp`: OnDemandServiceTest.ScalarSideInputChangeUpdatesWithoutNewCloud | keep |  |
+| CUR-05 | Unavailable number output -> object outputs empty (D25) | max_z unavailable; cropped empty cloud; witness = deleteAll, no entities; recovers when available | `on_demand_service_test.cpp`: OnDemandServiceTest.UnavailableOutputPublishesEmptyObject | keep | N7: empty result held in history, not store |
+| CUR-06 | Missing required input -> no run, clear (D6) | evaluateAt before first cloud errors naming 'cloud'; 0 entries | `on_demand_service_test.cpp`: OnDemandServiceTest.MissingInputAtTimeIsNoRun | keep |  |
+| CUR-07 | Derived topics never move dataset display range | eval @100s leaves datasetDisplayRange unchanged | `on_demand_service_test.cpp`: OnDemandServiceTest.DerivedTopicsDoNotMoveDatasetBounds | keep | N7: structural; declared range from inputs still TODO |
+| CUR-08 | Readiness gate: derivedTopicPresentable/Warning | non-derived always presentable; never-requested presentable; missing input -> not presentable + "missing input..." warning; ready -> presentable | `on_demand_service_test.cpp`: OnDemandServiceTest.DerivedTopicPresentableTracksReadiness | **changes: N7, D30** — readiness + warning come from frameAt(), presentable/warning API goes; a pending node stays presentable (shows previous result) |  |
+| CUR-09 | Script error -> empty objects in last frame (D6) | error text surfaced; cropped empty cloud w/ last frame_id base_link stamped t; witness deleteAll | `on_demand_service_test.cpp`: OnDemandServiceTest.ScriptErrorPublishesEmptyObjectsInTheLastFrame | keep | N7: error result in history (frame id retained) |
+| CUR-10 | Playhead move evaluates every demanded recipe at that instant; revisit is cached | upsert publishes nothing; seek 20 -> 1 entry; seek 5 -> 2; back to 20 no republish | `on_demand_cursor_follow_test.cpp`: OnDemandCursorFollowTest.MovingThePlayheadMaterializesEveryRecipeAtThatInstant | keep* | N7: entries -> history; docks read frameAt |
+| CUR-11 | Cursor before first input publishes nothing, no throw | 0 entries | `on_demand_cursor_follow_test.cpp`: OnDemandCursorFollowTest.AnInstantBeforeTheFirstInputPublishesNothingAndDoesNotThrow | keep | D6 |
+| CUR-12 | Upsert at parked cursor with prior demand evaluates without a tick | demanded-before-install recipe publishes at 20s | `on_demand_cursor_follow_test.cpp`: OnDemandCursorFollowTest.UpsertAtAParkedCursorEvaluatesWithoutATick | keep |  |
+| CUR-13 | Editing a demanded recipe re-evaluates at parked cursor | edit clears output (0), then 1 entry at 20s | `on_demand_cursor_follow_test.cpp`: OnDemandCursorFollowTest.EditingADemandedRecipeReEvaluatesWithoutATick | keep* | N7: "clears" = history purge on new revision |
+
+<a id="dem"></a>
+## DEM: Demand gating
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| DEM-01 | Only demanded recipes follow the playhead | undemanded crop2 gets 0 entries | `on_demand_cursor_follow_test.cpp`: OnDemandCursorFollowTest.OnlyDemandedRecipesFollowThePlayhead | keep |  |
+| DEM-02 | Demand arriving at stationary cursor evaluates now | addReference -> 1 entry at 20s with no seek | `on_demand_cursor_follow_test.cpp`: OnDemandCursorFollowTest.DemandArrivingAtAStationaryCursorEvaluatesNow | keep |  |
+| DEM-03 | Demand leaving cancels the queued request | blocked mailbox; removeReference -> nothing published, kIdle | `on_demand_cursor_follow_test.cpp`: OnDemandCursorFollowTest.DemandLeavingCancelsThePendingRequest | **decided here** — when demand leaves, the pending (not started) request is dropped; a running run completes and its result enters the history without being displayed (D30: completed work is never thrown away) |  |
+| DEM-04 | refresh/refreshAll ignore brake and demand; undemanded stays stale; demand arrival runs stale generator | refreshAll inline -> 9; undemanded stale until refresh; demandChanged runs without ingest | `batch_engine_test.cpp`: BatchEngineTest.{RefreshAllIgnoresTheBrake, NoDemandLeavesTheGeneratorStale, DemandChangedRunsAStaleGeneratorWithoutAnIngest} | keep |  |
+| DEM-05 | Scene layer reference reaches the on-demand demand set (AppSession tracker) | addReference -> isDemanded; removeReference -> not | `app_session_test.cpp`: AppSessionTest.SceneLayerReferenceReachesTheOnDemandDemandSet | keep | N8 reuses this tracker for series demand |
+| DEM-06 | Embedded scene view in a plugin panel: ticked, attach registers demand, bogus kind null, dies with its frame | parent=frame; demand emitted for attached topic; missing topic error; tick list pruned after delete | `main_window_plugin_views_test.cpp`: MainWindowPluginViewsTest.EmbeddedSceneViewAttachesTicksAndDiesWithItsFrame | keep |  |
+
+<a id="asy"></a>
+## ASY: Async scheduling & cancellation (D30)
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| ASY-01 | requestAt goes pending then ready (demand required) | kPending, 0 entries before drain; kReady + 1 entry after | `on_demand_service_test.cpp`: OnDemandServiceTest.RequestAtGoesPendingThenReady | keep | D30: state from newest request stays kPending; nothing earlier to show here |
+| ASY-02 | Late result of removed recipe leaves no state | remove mid-flight -> no state; re-install doesn't inherit | `on_demand_service_test.cpp`: OnDemandServiceTest.LateResultOfARemovedRecipeLeavesNoState | keep | D30: removal supersedes |
+| ASY-03 | Mid-flight recipe edit discards stale result | 0 entries; state not stuck pending | `on_demand_service_test.cpp`: OnDemandServiceTest.StaleRevisionResultIsDiscarded | keep | D30: meaning change supersedes |
+| ASY-04 | Mid-flight epoch bump (reload) discards result | 0 entries | `on_demand_service_test.cpp`: OnDemandServiceTest.StaleEpochResultIsDiscarded | keep | D30 epoch |
+| ASY-05 | Two recipes on one tick (one consumer) both publish | each topic 1 entry | `on_demand_service_test.cpp`: OnDemandServiceTest.TwoRecipesOnOneTickBothPublish | keep | D30 per-node scheduler makes it structural |
+| ASY-06 | Cache hit publishes inline, no task | re-request same t: queued=running=0, kReady | `on_demand_service_test.cpp`: OnDemandServiceTest.CachedResultPublishesInlineWithoutATask | keep* | N7: hit served via frameAt, no task |
+| ASY-07 | Missing input sets state without a task | kMissingInput, detail names cloud, no task | `on_demand_service_test.cpp`: OnDemandServiceTest.MissingInputSetsStateWithoutATask | keep | D6 |
+| ASY-08 | Concurrent requests at different instants (clock-observing) don't share a run | two consumers 12/13 -> both cached under own key with own t | `on_demand_service_test.cpp`: OnDemandClockObservation.ConcurrentRequestsAtDifferentInstantsDoNotShareARun | keep | D30: 13 s may wait in the pending slot; must never be served the 12 s run |
+| ASY-09 | Seek during compute supersedes playhead request; settles on last instant | not stuck pending; entry at 5s; later seek ready | `on_demand_cursor_follow_test.cpp`: OnDemandCursorFollowTest.SeekDuringComputeSupersedesThePlayheadRequest | **changes: D30** — no cancel: 20s run finishes and may show; pending slot -> 5s; display only forward |  |
+| ASY-10 | Brake coalesces changes within a period into one run seeing the last change | 3 changes @20 Hz -> 1 resolve; value 3 | `batch_engine_test.cpp`: BatchEngineTest.ChangeMarksStaleAndTheBrakeCoalescesRuns | keep |  |
+| ASY-11 | Change during a run triggers a follow-up run with newest data | final marker value 2; stale cleared | `batch_engine_test.cpp`: BatchEngineTest.ChangeDuringARunTriggersAFollowUpRun | **changes: D30** — run #1 (value 1) must ALSO publish; stale flag kept until newest covered |  |
+| ASY-12 | Pending completion cannot overwrite an edited binding | edit after refresh -> only 'new' label | `batch_engine_test.cpp`: BatchEngineTest.PendingCompletionCannotOverwriteEditedBinding | keep | recipe change supersedes (D30) |
+| ASY-13 | Repeated refresh stages one latest pending snapshot | 12 refreshes -> 1 capture, <=1 queued; final 12; reservation released | `batch_engine_test.cpp`: BatchEngineTest.RepeatedRefreshStagesOnlyOneLatestPendingSnapshot | keep | already D30 shape (1 running + 1 pending) |
+
+<a id="cache"></a>
+## CACHE: Cache identity & invalidation
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| CACHE-01 | Epoch bump invalidates cache | 2nd eval after bump not from_cache | `on_demand_service_test.cpp`: OnDemandServiceTest.EpochInvalidatesTheCache | keep |  |
+| CACHE-02 | Input-clock mode: pj.tf.now = input stamp, never observes query clock | query_time=false -> 13s cache hit, same t; query_time=true -> miss, differs | `on_demand_service_test.cpp`: OnDemandServiceTest.InputClockModeCannotObserveTheQueryClock; OnDemandClockObservation.InputClockModeNeverObserves | keep |  |
+| CACHE-03 | Unobserved query clock reuses one result across instants | 30 instants in [10,15) -> 1 run, 1 publish, 1 entry | `on_demand_service_test.cpp`: OnDemandClockObservation.UnobservedClockReusesAcrossInstants | keep |  |
+| CACHE-04 | Reading the clock keys per instant; old instant stays cached | 12 vs 13 differ; back to 12 hit | `on_demand_service_test.cpp`: OnDemandClockObservation.ReadingTheClockKeysPerInstant | keep |  |
+| CACHE-05 | TF lookup with explicit time does not observe clock | 21/22 -> hit, x=20 | `on_demand_service_test.cpp`: OnDemandClockObservation.LookupWithAnExplicitTimeDoesNotObserveTheClock | keep |  |
+| CACHE-06 | Per-run observation: non-observing branch stays timeless | small-cloud branch hits across instants; observing branch per instant; timeless entry survives | `on_demand_service_test.cpp`: OnDemandClockObservation.ObservationInOneBranchKeepsTimelessEntriesForOtherInputs | keep |  |
+| CACHE-07 | Script-level clock observation flags | reading pj.tf.now / lookup without time marks clock; explicit time or no tf use doesn't; only taken branch records | `object_script_test.cpp`: ObjectScript.{ReadingTfNowMarksTheClockObserved, LookupWithoutTimeMarksTheClockObserved, LookupWithExplicitTimeDoesNotMarkIt, ScriptWithoutTfLeavesTheFlagFalse, ObservationInsideABranchIsRecordedOnlyWhenTaken} | keep | N1 rec 2: flags via per-call thread data |
+| CACHE-08 | Script-level TF observation flags | lookup (any time) and frames() mark TF; empty tree still observed; clock/plain scripts don't | `object_script_test.cpp`: ObjectScript.{TfLookupMarksTheTfObserved, TfFramesMarksTheTfObserved, QueryingAnEmptyTreeStillObservesIt, ClockAndPlainScriptsDoNotObserveTheTf} | keep |  |
+| CACHE-09 | Python twins: clock/TF observation flags | as Luau twins | `python_object_script_test.cpp`: PythonObjectScript.{ReadingTfNowMarksTheClockObserved, LookupWithoutTimeMarksTheClockObserved, LookupWithExplicitTimeDoesNotMarkIt, ScriptWithoutTfLeavesTheFlagFalse, TfLookupMarksTheTfObserved, TfFramesMarksTheTfObserved, QueryingAnEmptyTreeStillObservesIt, ClockAndPlainScriptsDoNotObserveTheTf, ObservationInsideABranchIsRecordedOnlyWhenTaken} | keep |  |
+| CACHE-10 | Decoded image cache key = epoch+node+uid+representation; LRU; oversized not retained | 1 decode then 5 after each key change; <=64 B; in-flight readers survive eviction; LRU decode count 3; tiny cache retains 0 | `script_media_test.cpp`: ScriptMediaTest.{CacheKeysIncludeEpochUidRepresentationAndNode, DecodedCacheEvictsLeastRecentlyUsedAndDoesNotRetainOversizedFrames} | keep | N6: cache must be worker-safe once decode leaves GUI |
+| CACHE-11 | Video dependency records requested instant and actual PTS | dependency {topic 7, requested, presentation = instant-3} | `script_media_test.cpp`: ScriptMediaTest.VideoRecordsActualPresentationTimeAndRequestedInstant | keep | N9 observed-dependency list |
+
+<a id="pub"></a>
+## PUB: Topic lifecycle & publication
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| PUB-01 | Edit drops previous revision's entries, keeps topic id; remove retires topic | re-upsert: same id, 0 entries, rev 2; remove: 0 entries, topic gone, evaluateAt fails | `on_demand_service_test.cpp`: OnDemandServiceTest.ReupsertAndRemoveClearPreviousEntries | keep* | N7: edit purges the node history; remove retires topic |
+| PUB-02 | Remove retires object topics (announced once); edit keeps them | setOnTopicsRetired fires once per removal; failed remove fires nothing | `on_demand_service_test.cpp`: OnDemandServiceTest.RemovalRetiresObjectTopicsButEditKeepsThem | keep |  |
+| PUB-03 | Edit dropping an output retires only that topic | witness retired, cropped keeps id, 1 announcement | `on_demand_service_test.cpp`: OnDemandServiceTest.EditRetiresTopicsOfDroppedOutputsAndKeepsTheRest | keep |  |
+
+<a id="mat"></a>
+## MAT: Materialization window, ceilings, bundles (N7)
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| MAT-01 | Materialization window ±30 s trims far entries; cache revisits republish | entries >= sec-30, <=7; far jump trims to 1; revisit 95s republishes (2) | `on_demand_service_test.cpp`: OnDemandServiceTest.MaterializationWindowTrimsFarEntriesAndRepublishesCachedRevisits | **removed: N7** — no store window; history bound by bytes |  |
+| MAT-02 | Per-topic entry ceiling reclaims outside window but refuses dense window | max_published_entries=2: 3rd in-window eval FAILS; far eval reclaims | `on_demand_service_test.cpp`: OnDemandServiceTest.CeilingReclaimsOutsideWindowButRefusesDenseWindow | **removed: N7** — the ~17 Hz refusal; gap: LiveEdgeNeverRefuses |  |
+| MAT-03 | Per-topic byte budget refuses oversized payload, reclaims outside window | 1-cloud budget: oversize refused; in-window 2nd refused; far eval reclaims | `on_demand_service_test.cpp`: OnDemandServiceTest.MaterializedByteBudgetChecksNewPayloadAndReclaimsOutsideWindow | **removed: N7** — byte bound moves to ResultHistory, evicts never refuses |  |
+| MAT-04 | Window arithmetic saturates at Timestamp limits | window=max; evals at min+1, 20s, max: no overflow, first=20s | `on_demand_service_test.cpp`: OnDemandServiceTest.MaterializationWindowSaturatesAtTimestampLimits | **removed: N7** — keep overflow-safety idea for history distance |  |
+| MAT-05 | Multi-output bundle publication is all-or-nothing, keeps generation | oversize 2nd result refused: both outputs keep previous entry + same publication_generation | `on_demand_service_test.cpp`: OnDemandServiceTest.BundlePublicationFailurePreservesAllPreviousOutputsAndGeneration | **removed: N7** — atomic by construction (history holds bundle); generation protocol dropped |  |
+| MAT-06 | Same-stamp replacement and external eviction leave no stale dedup | same-stamp new cloud replaces (1 entry, new uid); evictWhere all -> re-eval republishes | `on_demand_service_test.cpp`: OnDemandServiceTest.SameStampReplacementAndExternalEvictionDoNotLeaveStaleDedup | **removed: N7** — dedup ledger gone; keep same-stamp-replacement idea in history |  |
+
+<a id="pin"></a>
+## PIN: Pinned findings (D26)
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| PIN-01 | dismiss / dismissAll(owner) retire finding topics | dismiss one; dismissAll owner-scoped; other owner untouched | `on_demand_service_test.cpp`: OnDemandServiceTest.DismissAndDismissAllRetireFindingTopics | keep |  |
+| PIN-02 | Pinned recipe evaluates at pin on upsert, ignores cursor; refreshPinned re-evals at pin on data change | 1 entry at 20s on upsert; requestAt(100s) keeps pinned_t; refresh unchanged=cache hit; data change replaces snapshot | `on_demand_service_test.cpp`: OnDemandServiceTest.PinnedRecipeMaterializesOnUpsertAndIgnoresTheCursor | **changes: N7/D26** — finding visible at any instant (today only at/after stamp) |  |
+| PIN-03 | Findings accounting counts pinned bytes | pinned_nodes=1, materialized_bytes>0, recipeJson memory_bytes; other owner 0 | `on_demand_service_test.cpp`: OnDemandServiceTest.FindingsAccountingCountsPinnedBytes | keep* | N7: bytes counted from the pinned history entry |
+| PIN-04 | Pinned nodes never trimmed; dismiss only pinned; dismissAll owner-scoped | pinned entry kept at 10s after eval @1000s; dismiss(live)/dismiss(missing) fail; dismissAll(owner) removes own pins only, bytes 0 | `on_demand_service_test.cpp`: OnDemandServiceTest.PinnedNodesAreNeverTrimmedAndDismissAllIsOwnerScoped | **changes: N7/D26** — pinned = one history result visible at any t; never trimmed by construction |  |
+| PIN-05 | Pinned recipes not followed by playhead; evaluated on upsert and refresh only | 1 entry at 20s on upsert; seeks never touch; refreshPinnedDerived replaces at pin (3 points) | `on_demand_cursor_follow_test.cpp`: OnDemandCursorFollowTest.{PinnedRecipesAreNotFollowed, PinnedRecipeIsEvaluatedOnUpsertAndRefreshOnly} | **changes: N7/D26** — visible at any instant |  |
+| PIN-06 | config of pinned node reports findings (count, bytes) | findings.pinned 1, bytes == accounting | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.ConfigOfPinnedNodeReportsFindings | keep* | N7: bytes from history |
+| PIN-07 | Pinned recipe re-evaluates at its pin on restore, catching up data that arrived after save | pinned_t 10s kept; derivedTopicStates row pinned_t; 3 points from 8s sample | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.PinnedRecipeRematerializesAtItsPinOnRestore | keep* | N7: read the pin via frameAt; refresh step moves into the protocol finish() (N10) |
+| PIN-08 | Dismissing a finding removes its row everywhere with no shell call | panel empty, topic gone, catalog gone | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.DismissingAFindingRemovesItsRowEverywhere | keep |  |
+| PIN-09 | Pinned row tooltip shows pin in display seconds | "Pinned at 12.345 s", no "ns", row text = id | `curve_list_panel_test.cpp`: CurveListPanelTest.PinnedRowTooltipShowsDisplaySeconds | keep | D26 "labelled by computation time" |
+
+<a id="dag"></a>
+## DAG: DAG chains
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| DAG-01 | Chain evaluates upstream first; missing leaf input propagates; cached resolved objects | grandchild@1s errors 'cloud'; @20 count 2, resolved 20s; @21 cache hit; recipeJson upstream=[source] | `on_demand_service_test.cpp`: OnDemandServiceTest.ChainedNodesEvaluateUpstreamFirstAndCacheResolvedObjects | keep | N7: inline upstream object, no store round trip |
+| DAG-02 | Instant evaluation of a reader leaves upstream's cursor state/entries untouched | evaluateInstant(child) at 5/10 correct counts; upstream entries, uid, state unchanged | `on_demand_service_test.cpp`: OnDemandServiceTest.InstantEvaluationOfAReaderLeavesItsUpstreamUntouched | keep |  |
+| DAG-03 | Cycle / own-output rejected without touching graph; detach removes old edge | cycle error "cycle"; source rev unchanged; self-ref rejected; replacing child w/ raw recipe lets former cycle install | `on_demand_service_test.cpp`: OnDemandServiceTest.CycleAndOwnOutputRejectionLeaveExistingGraphUntouched | keep |  |
+| DAG-04 | Upstream edit invalidates all downstream caches and in-flight generations | downstream entries 0 right after edit; result recomputed count 1 | `on_demand_service_test.cpp`: OnDemandServiceTest.UpstreamEditInvalidatesEveryDownstreamCacheAndWorkerGeneration | keep* | D30 meaning change supersedes; comment relies on series replays re-materializing (N8 demand gating changes that) |
+| DAG-05 | Removed upstream -> consumers missing input "removed"; relink by name on reinstall; renamed output -> "no longer provides" | kMissingInput detail 'removed'; reinstall works; output rename breaks child | `on_demand_service_test.cpp`: OnDemandServiceTest.RemovedUpstreamInvalidatesTransitiveConsumersAndRelinksByName | keep |  |
+| DAG-06 | Upstream unavailable/error propagate; valid empty object still runs (D25) | unavailable -> child missing input w/ reason; error text propagates; empty cloud -> count 0, kEmpty | `on_demand_service_test.cpp`: OnDemandServiceTest.UpstreamUnavailableAndErrorsPropagateButValidEmptyObjectsRun | keep |  |
+| DAG-07 | Downstream demand propagates to ancestors; async stages upstream synchronously | setDemand(grandchild) demands source+child; requestAt publishes child inline, grandchild pending->ready; clearing demand clears | `on_demand_service_test.cpp`: OnDemandServiceTest.DownstreamDemandPropagatesAndAsyncStagesUpstreamSynchronously | **changes: N7 (if pull)** — the upstream result lands in the upstream's history and is passed inline; there is no store entry to assert. Whether the whole chain runs in one worker task is decided while designing slice 6a. |  |
+| DAG-08 | Chained WINDOW uses raw leaf grid, no materialization | candidates 4 (cloud 5/10/20 + threshold 15); child topic never registered | `on_demand_service_test.cpp`: OnDemandServiceTest.ChainedWindowUsesRawLeafGridBeforeAnyMaterialization | keep |  |
+| DAG-09 | Live ingest reaches demanded descendants | child topic range end = 30s after ingest | `on_demand_service_test.cpp`: OnDemandServiceTest.ChainedLiveIngestReachesDemandedDescendants | keep |  |
+| DAG-10 | dependentsOf walks readers transitively | crop -> {branch, mid, tail}; unrelated/unknown empty | `on_demand_service_test.cpp`: OnDemandServiceTest.DependentsOfWalksReadersTransitively | keep |  |
+| DAG-11 | Pinned upstream contributes its pinned stamp to WINDOW grid | window before pin: candidates 2, stops kError missing input; from pin: 1 candidate count 3; after pin resolves finding @10 | `on_demand_service_test.cpp`: OnDemandServiceTest.PinnedUpstreamContributesItsMaterializedWindowGrid | **changes: N7/D26** — if pinned visible at any t, window before the pin may resolve it (decide) |  |
+
+<a id="ser"></a>
+## SER: Series mode (D10 / N8)
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| SER-01 | Ephemeral config carries series progress report | series.complete, rows 3, failed 0 polled via recipeOf | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.EphemeralConfigCarriesTheSeriesReport | **changes: N8** — series only computes while displayed/requested; an ephemeral trial must count as "requested" |  |
+| SER-02 | Series replay writes one row per clock entry into a DataEngine topic named like the recipe | rows at 5/10/20 = 2,3,3; columns {n}; topic name = key; recipeJson series{rows,failed,complete,topic} | `on_demand_series_test.cpp`: OnDemandSeriesTest.ReplayWritesOneRowPerClockEntry | **changes: N8** — replay starts only when the series is displayed/requested; GridRunner column sink |  |
+| SER-03 | Script error / unavailable entries leave gaps; job completes | rows 1, failed 2, first_error mentions unavailable/three or boom | `on_demand_series_test.cpp`: OnDemandSeriesTest.FailingAndUnavailableEntriesLeaveGaps | **changes: N8** — demand-gated trigger only |  |
+| SER-04 | Missing side input before its first sample is a gap; grid starts at an entry | rows 3, failed 1 "missing input"; first row 5s | `on_demand_series_test.cpp`: OnDemandSeriesTest.MissingSideInputBeforeItsFirstSampleIsAGap | **changes: N8** — trigger only |  |
+| SER-05 | Live append adds rows after the watermark only (all new entries) | 2 entries in one tick -> 2 rows; empty tick adds nothing | `on_demand_series_test.cpp`: OnDemandSeriesTest.LiveAppendAddsRowsAfterTheWatermarkOnly | **changes: N8** — append only while demanded |  |
+| SER-06 | Edit truncates and replays on same topic; new column set -> new topic | same topic emptied immediately then replayed x10; renamed output retires old topic | `on_demand_series_test.cpp`: OnDemandSeriesTest.EditTruncatesAndReplaysOnTheSameTopic | **changes: N8** — replay after edit only if demanded |  |
+| SER-07 | Epoch bump (reload) truncates and replays | rows 0 at once, then 4 incl. new 40s entry | `on_demand_series_test.cpp`: OnDemandSeriesTest.EpochBumpReplays | **changes: N8** — truncate + replay after reload only while the series is displayed or requested |  |
+| SER-08 | Remove retires series topic (announced); queued step of dead node no-op | topic gone, announced, status gone, no rows written later | `on_demand_series_test.cpp`: OnDemandSeriesTest.RemoveRetiresTheTopic | keep |  |
+| SER-09 | Progress (done/total), stopSeries keeps rows, refresh replays | start announced; progress_known -> total 203; stop announced, rows kept, nothing more written; refreshPinned replays to 203 | `on_demand_series_test.cpp`: OnDemandSeriesTest.ProgressStopKeepsRowsAndRefreshReplays | **changes: N8** — refresh = explicit request; stop button kept |  |
+| SER-10 | Series over a chained recipe leaves upstream untouched | rows 2,3,3; upstream entries/state unchanged | `on_demand_series_test.cpp`: OnDemandSeriesTest.ChainedSeriesLeavesTheUpstreamUntouched | keep | N7: inline upstream |
+| SER-11 | Number output out_topic = "<owner>/<id>/<name>" series key | "owner/ser/n" == topic name + column | `on_demand_series_test.cpp`: OnDemandSeriesTest.UpsertReturnsTheSeriesKeyForNumberOutputs | keep | D10 |
+| SER-12 | Foreign topic with the same name refuses the upsert | "already exists"; nothing installed | `on_demand_series_test.cpp`: OnDemandSeriesTest.ForeignTopicWithTheSameNameRefusesTheUpsert | keep |  |
+| SER-13 | Pinned recipe gets no series | no status, no topic, no "series" in json | `on_demand_series_test.cpp`: OnDemandSeriesTest.PinnedRecipeGetsNoSeries | keep |  |
+| SER-14 | Mixed recipe: series replay computes objects but publishes them only at cursor | max_z rows 0.3/0.4/1.2; cropped 0 entries until evaluateAt | `on_demand_series_test.cpp`: OnDemandSeriesTest.MixedRecipePublishesObjectsAtTheCursorOnly | **changes: N8** — replay only on demand; N7: cursor path writes history |  |
+| SER-15 | Ephemeral series hidden from Datasets catalog but readable via ABI catalog snapshot; persistent listed | seriesTopics(true) has it; catalog has no row; toolbox catalogSnapshot+readSeries 2 rows; persistent listed | `on_demand_series_test.cpp`: OnDemandSeriesTest.EphemeralSeriesIsHiddenFromTheCatalogButReadableByPlugins | **changes: N8** — must be demanded/requested to compute |  |
+| SER-16 | Series topic is a Custom Topics row (owned, deletable, undoable) | row "points/n", not in Datasets, edit enabled; delete retires topic; undo brings recipe + replays | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.SeriesRowListsInCustomTopicsAndDeleteRemovesTheRecipe | **changes: N8** — listing/replay only once demanded or requested |  |
+| SER-17 | Series replay progress bar on row; stop keeps rows; refresh replays; completed bar lingers then retires; foreign series row not deletable | kLoading, cancellable, not discardable; stop -> stopped, rows kept; refreshPinnedDerived replays to 601; kCompleted then gone; assistant row delete refused | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.{SeriesReplayShowsProgressAndStopKeepsRows, CompletedSeriesRetiresItsBar, SeriesRowOfAnotherPluginCannotBeDeleted} | **changes: N8** — progress only for demanded/requested replays |  |
+
+<a id="str"></a>
+## STR: Streaming & live edge
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| STR-01 | Derived topic inherits first object input's retention; re-applied on demand | outputs copy cloud retention at upsert; later change inert until applyInputRetention | `on_demand_service_test.cpp`: OnDemandServiceTest.DerivedTopicInheritsInputRetention | **removed: N7** — inherited retention deleted; history bounded by bytes/cursor distance |  |
+| STR-02 | Live ingest evaluates once per new stamp; pinned untouched | new cloud -> 1 entry; same-stamp re-notify coalesces; new stamp -> 2; pinned requested_t unchanged | `on_demand_service_test.cpp`: OnDemandServiceTest.LiveIngestEvaluatesOncePerNewStamp | keep* | N7: counts -> history; D30: live edge never cancel-per-tick |
+| STR-03 | Retention follows first input through DAG and producer recreation | 3-level chain copies cloud retention; re-apply; recreated producer w/ alternate first -> alternate budget | `on_demand_service_test.cpp`: OnDemandServiceTest.RetentionFollowsFirstInputThroughDAGAndProducerRecreation | **removed: N7** — inherited retention deleted |  |
+| STR-04 | Streaming poll re-runs only over topics that changed since last take (scalar) | sorted unique changed set; second take empty; later write in next take | `data_source_runtime_host_changed_topics_test.cpp`: DataSourceRuntimeHostChangedTopicsTest.{ReportsOnlyTopicsWrittenSinceLastTake, SecondTakeWithNoWritesIsEmpty, WriteAfterTakeAppearsInNextTake} | keep | slice 4 "50 ms poll fix" |
+| STR-05 | Changed object topics tracked separately for onLiveIngest | only pushed object topics; drained; scalar and object trackers independent | `data_source_runtime_host_changed_topics_test.cpp`: DataSourceRuntimeHostChangedTopicsTest.TakeChangedObjectTopicsReportsOnlyPushedTopics | keep |  |
+| STR-06 | Transform recipe JSON reports retention gaps; output replays only retained data | gaps [] then [{9s,10s}]; 10 output values (no dup) | `data_processor_service_test.cpp`: DataProcessorServiceTest.RecipeJsonCarriesGaps | keep | slice 4 |
+| STR-07 | Source/parser object write hosts track changed topics for live ingest (drained) | 2 topics from 3 pushes; drained; parser host 1 topic | `plugin_data_host_object_test.cpp`: PluginDataHostObjectTest.{SourceTakeChangedTopicsTracksPushedTopicsAndDrains, ParserTakeChangedTopicsTracksPushedTopic} | keep |  |
+
+<a id="ds"></a>
+## DS: Datasets (reload / merge / remove / epoch)
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| DS-01 | [pre-existing, rename only] Merge remaps/concats marker recipes and topics | merge remaps consumed recipes to anchor, concatenates+shifts topics, adopts foreign blob once, collapses same-id recipes; remove after merge retires all; shared global set untouched; drop-for-dataset keeps global | `batch_engine_test.cpp`: BatchEngineTest.{MergeRemapsConsumedRecipesOntoTheAnchor, DropRecipesForDatasetKeepsGlobalGenerators, MergeMarkerTopicsConcatenatesAndShifts, MergeAdoptsAnchorForeignBlobAndShiftsSourcesOnce, MergeCollapsesSameIdRecipesOntoTheAnchor, RemoveAfterMergeRetiresEveryTopicTheIdOwns, MergeLeavesTheSharedGlobalSetAlone} | keep |  |
+| DS-02 | refreshAll(ds) targets that dataset's binding | ds1 keeps 1, ds2 gets 9 | `batch_engine_test.cpp`: BatchEngineTest.RefreshAllTargetsTheRequestedDatasetBinding | keep |  |
+| DS-03 | Reload and dataset removal invalidate pending delivery | reload recompute publishes 7; clear+remove topic mid-flight -> no resurrection | `batch_engine_test.cpp`: BatchEngineTest.ReloadAndDatasetRemovalInvalidatePendingDelivery | keep | epoch/removal supersede |
+
+<a id="lay"></a>
+## LAY: Layout restore & undo/history (N10)
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| LAY-01 | Restore sweeps once: reclaimed topics keep ids, rest retired | clear alone retires nothing; re-upserted keeps id; one announcement; nothing unclaimed -> none | `on_demand_service_test.cpp`: OnDemandServiceTest.{SweepAfterClearKeepsClaimedTopicsAndRetiresTheRest, RestoreWithEmptyReinstallRetiresUnclaimedTopics} | keep | N10: moves into common restore protocol |
+| LAY-02 | Restore intent: kHistory spares history-exempt; kReplace clears all | exempt survives kHistory; kReplace clears exempt | `on_demand_service_test.cpp`: OnDemandServiceTest.RestoreRecipesHonoursHistoryIntent | keep | N10 protocol (hasHistoryExempt) |
+| LAY-03 | unchangedRecipeKeys compares field by field, ignores revision; excludes exempt in kHistory | equal snapshot -> unchanged; params change -> changed; exempt excluded for kHistory | `on_demand_service_test.cpp`: OnDemandServiceTest.UnchangedRecipeKeysMatchFieldByField | keep | N10 unchanged(wanted) |
+| LAY-04 | History exemption protects transitive raw and derived ancestors | exemptDependentsOf(cloud / crop) non-empty; unrelated empty | `on_demand_service_test.cpp`: OnDemandServiceTest.HistoryExemptionProtectsTransitiveRawAndDerivedAncestors | keep | N10 exemptDependentsOf unified |
+| LAY-05 | Restore re-upsert of same key+columns keeps series TopicId; unclaimed series retired; other columns retire parked topic | adopt keeps id; sweep retires + announces; renamed columns -> new topic, old retired | `on_demand_series_test.cpp`: OnDemandSeriesTest.{ClearThenUpsertSameKeyKeepsTheSeriesTopicId, SweepRetiresAnUnclaimedSeries, ClearThenUpsertWithOtherColumnsRetiresTheParkedTopic} | keep | N10 protocol |
+| LAY-06 | Marker generator window round-trips through layout restore | restored [100,100] window -> 1 marker at 100; recipe.window kept | `main_window_marker_generator_restore_test.cpp`: MainWindowMarkerGeneratorRestoreTest.WindowRoundTripsThroughLayoutRestore | keep | N10: layout XML moves to pj_runtime, format unchanged |
+| LAY-07 | Unchanged recipe survives a full workspace round trip with the same object topic id (and series topic) | layout has <on_demand owner_plugin=...>; restored by key, same inputs/outputs/dataset; same ObjectTopicId + series TopicId | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.UnchangedRecipeSurvivesFullWorkspaceRoundTripWithSameTopicId | **changes: N8** — series status/topic may not exist until the series is displayed or requested; object topic id survival unchanged (N10 already keeps unchanged on-demand nodes) |  |
+| LAY-08 | infer_outputs persisted; missing attribute (older layout) loads false and counts as a change | xml infer_outputs="1"; restored true; stripped -> false | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.InferOutputsRoundTripsAndDefaultsToFalse | **changes: P3 `INFER_OUTPUTS` folded** — the attribute is no longer written; a layout that still carries it loads and ignores it, and does not count as a change |  |
+| LAY-09 | Restore orders on-demand recipes by dependency regardless of XML order | downstream before upstream in XML still restores; pinned downstream 2 points | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.OnDemandRestoreOrdersByDependency | keep | N10 dependency-ordered restore across engines |
+| LAY-10 | Cyclic recipes diagnosed without dropping independent ones | parse -> incomplete, only 'independent' wanted; 3 "cyclic" diagnostics | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.CyclesAreDiagnosedWithoutDroppingIndependentRecipes | keep |  |
+| LAY-11 | History cannot remove the producer of a protected (exempt) on-demand consumer | empty snapshot rejected with "protected"; both kept; unchanged snapshot ok | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.HistoryCannotRemoveProducerOfProtectedOnDemandConsumer | keep | N10 exemptDependentsOf |
+| LAY-12 | Deleting an ordinary editor recipe retires topic, row and bound scene layer; undo/redo restore/remove all | gone from service/panel/catalog/Datasets, layer gone; undo returns recipe, topic, row, layer; redo removes again | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.DeleteOfOrdinaryRecipeRetiresTopicAndIsUndoable | keep | N10 |
+| LAY-13 | Undo of an unrelated step leaves an exempt recipe and its scene layer intact (same topic id) | exempt + layer kept, same id | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.UndoLeavesExemptRecipeAndItsSceneLayerIntact | keep |  |
+| LAY-14 | Deleting an exempt recipe is not resurrected by undo/redo of unrelated steps | exempt stays gone across undo/redo | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.DeleteOfExemptRecipeIsNotResurrectedByUndoRedo | keep |  |
+| LAY-15 | Restore itself fills Custom Topics (no announcement needed) | panel shows owner/crop/cropped after restore | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.RestoreFillsCustomTopics | keep |  |
+| LAY-16 | Owned plugin scene view survives full layout round trip (exempt, rebuilt as scene, topic kept) | owner_plugin in xml; restored found by (plugin, id), history-exempt, scene3d widget, 1 layer | `main_window_plugin_views_test.cpp`: MainWindowPluginViewsTest.PluginSceneViewsSurviveLayoutRoundTrip | keep |  |
+| LAY-17 | on_demand inputs get dataset_path stamped; volatile ids stripped on save; generic layout strips qualifiers | known id -> path; unknown id stripped; generic removes id/source/path | `layout_xml_test.cpp`: DatasetSourcePath.OnDemandInputsAreStampedAndStripped | keep | D7: per-input qualification vs single dataset field (open) |
+
+<a id="own"></a>
+## OWN: Previews / ephemerals & ownership
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| OWN-01 | Ephemeral preview survives restore (both intents); owner close ends it | preview survives; removeEphemeralsOf(owner) removes | `on_demand_service_test.cpp`: OnDemandServiceTest.EphemeralRecipeSurvivesClearRecipes | keep | N10 protocol |
+| OWN-02 | Ephemeral hidden from list, config answers owner | list empty; recipeOf("probe") ok; evaluable | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.EphemeralRecipeIsHiddenFromListButConfigAnswersTheOwner | keep |  |
+| OWN-03 | [pre-existing, rename only] Ephemeral marker preview + history exemption | preview publishes/removes; predicate clear spares exempt; finds exempt generator depending on removed processor output | `batch_engine_test.cpp`: BatchEngineTest.{EphemeralPreviewPublishesAndRemoves, PredicateClearRemovesOnlyNonExemptGenerators, FindsExemptGeneratorDependingOnRemovedProcessorOutput} | keep | N10 protocol |
+| OWN-04 | Removed pending preview cannot resurrect its topic | refresh then remove -> no owner topic, reservedBytes 0 | `batch_engine_test.cpp`: BatchEngineTest.RemovedPendingPreviewCannotResurrectItsTopic | keep | removal supersedes |
+| OWN-05 | Plugin removes its own EPHEMERAL preview of any kind through kind-less remove (real backends) | on_demand: recipe+topic gone; markers: binding gone; transform: removed | `data_processors_kind_router_test.cpp`: DataProcessorsKindRouterRealBackendsTest.{RemovesAnEphemeralOnDemandRecipe, RemovesAnEphemeralMarkersRecipe, RemovesAnEphemeralTransformRecipe} | keep | N10 one ownership path |
+| OWN-06 | list hides ephemerals; config answers the owner (real router) | recipeOf ok; absent fails; list empty | `data_processors_kind_router_test.cpp`: DataProcessorsKindRouterRealBackendsTest.ListHidesEphemeralRecipesButConfigAnswersTheOwner | keep |  |
+| OWN-07 | Ephemeral preview topic stays resolvable in catalog but reported hidden | ephemeralPreviewKeys has preview, not persistent/raw; removal clears | `catalog_model_test.cpp`: CatalogModelTest.EphemeralPreviewTopicIsReportedNotHidden | keep |  |
+| OWN-08 | SessionManager::removeEphemeralsOf(owner) ends only that owner's previews | a's preview gone, a's persistent kept, b's preview kept | `data_processor_ephemeral_abi_visibility_test.cpp`: EphemeralTransformAbiVisibilityTest.SessionManagerRemoveEphemeralsOfEndsOnlyThatOwnersPreviews | keep | N10 aggregator seed |
+| OWN-09 | Ephemeral transform survives clearTransforms (both intents); owner close ends it | preview listed after clear; persisted cleared; removeEphemeralTransformsOf ends it | `data_processor_service_transform_test.cpp`: DataProcessorTransformTest.EphemeralTransformSurvivesClearTransforms | keep | N10; stack REMOVED ClearForPluginRemovesOnlyThatPlugin (clearTransformsForPlugin gone) |
+| OWN-10 | Markers preview via EPHEMERAL flag: hidden from list, config answers owner | list empty; recipeOf ok | `markers_runtime_host_test.cpp`: MarkersRuntimeHostTest.PreviewViaEphemeralFlagPublishesAndIsEphemeral | keep |  |
+| OWN-11 | Closing a toolbox removes its EPHEMERAL recipes in all three engines; others survive; no preview topic in catalog | tbx preview gone (on-demand/transform/marker); tbx persistent + other's preview kept | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.ClosingAToolboxRemovesItsEphemeralRecipesInEveryService | keep | N10 removeEphemeralsOf unified |
+| OWN-12 | Undo/redo keep an open panel's previews in every engine | on-demand/transform/marker previews survive undo+redo; persisted state still undone | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.UndoKeepsAnOpenPanelsPreviewsInEveryEngine | keep | N10 |
+| OWN-13 | Remove all datasets ends every preview (open panel's or orphan) | previews of tbx and closed owner gone; tbx transform previews gone | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.RemoveAllDatasetsEndsTheOpenPanelsPreviews | keep |  |
+
+<a id="eval"></a>
+## EVAL: Explicit evaluations (instant / window) & reports
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| EVAL-01 | WINDOW grid = union of input change instants | candidates {0,5,10,15,20}=5, coverage start/end | `on_demand_service_test.cpp`: OnDemandServiceTest.WindowGridIsTheUnionOfInputChangeInstants | keep | N8/N9: GridRunner shared with series |
+| EVAL-02 | WINDOW stops on time budget | max_millis=0 -> evaluated 1, incomplete, Stopped::kBudgetTime | `on_demand_service_test.cpp`: OnDemandServiceTest.WindowStopsOnTimeBudget | keep | internal budget type (6a) vs ABI struct |
+| EVAL-03 | Empty crop reports status "empty" + summary | report status empty, summary.points 0 | `on_demand_service_test.cpp`: OnDemandServiceTest.EmptyStatusForAnEmptyCrop | keep | poll report schema trim open (#202) |
+| EVAL-04 | WINDOW reports leading gaps before retention | no gap from 5s; [0,5) gap; after evictBefore gap [0,20); window at retained start no gap | `on_demand_service_test.cpp`: OnDemandServiceTest.WindowReportsGapsBeforeRetention | keep |  |
+| EVAL-05 | Object summaries for reports + isEmptyObject (valid-empty status) | PointCloud points+bounds (no bounds when empty); SceneEntities counts + unique frame_ids, clear-only = empty; ImageAnnotations primitive counts; FrameTransforms counts + unique parents; unknown type -> type only | `object_summary_test.cpp`: ObjectSummaryTest.{PointCloudCountsAndBounds, EmptyPointCloudHasNoBoundsKey, SceneEntitiesCountsAndFrameIds, ImageAnnotationsCountsPrimitiveLists, FrameTransformsCountsAndParents, UnrecognizedTypeSummarizesAsTypeOnly} | keep | poll report schema trim open (#202) |
+
+<a id="abi"></a>
+## ABI: Plugin ABI (data processors v2, evaluations, catalog v2, plot/scene tabs, dialogs)
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| ABI-01 | create on_demand returns typed out_topics; key namespaced per plugin | 4 topics: objects -> derived store topics, number -> "<owner>/<id>/<name>", string bare; topicsChanged once; service key "pluginA/crop" | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.CreateReturnsTypedOutTopicsAndRegistersDerivedTopics | keep | number-output naming listed as regression-risk item; D10 series |
+| ABI-02 | list / config / remove round trip | list strips namespace; recipeOf has kind+output_types; remove; second remove fails | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.ListConfigRemoveRoundTrip | keep |  |
+| ABI-03 | Rejects wrong kind, unknown language, untyped output, reserved flag bits | "unknown data processor kind"; language error lists luau+python; untyped 'max_z' named; "pj.data_processors.v1: reserved flag bits set" once; nothing installed | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.RejectsWrongKindLanguageOutputsAndFlags | keep | error domain prefix check |
+| ABI-04 | Python language accepted end to end over ABI | create(..."python"...) works; evaluateAt has report | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.PythonRecipeIsAccepted | keep |  |
+| ABI-05 | validateScript routes by kind+language | luau ok; syntax error fails; python with Luau src fails; markers kind w/ on_demand script fails | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.ValidateScriptRoutesByKind | keep | N1: validate compiles once per revision |
+| ABI-06 | createV2 typed outputs; instant_ns pins and materializes on create | 4 topics; number named even w/o series; 1 entry at 20s | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.CreateV2TypedOutputsAndInstantMaterializeAtThePin | keep* | N7: entry = the lazy current-result entry; D26 visibility in PIN rows |
+| ABI-07 | submit instant on installed node -> bundle JSON | pending -> completed; stamp_ns 20s; cropped summary.points | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.SubmitInstantOnInstalledNodeReturnsBundleJson | keep | explicit evaluations outside D30 |
+| ABI-08 | submit window on ephemeral recipe: coverage + stops on eval budget, publishes nothing | evaluated 2, incomplete, stopped budget_evaluations; no topic | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.SubmitWindowOnEphemeralRecipeReportsCoverageAndStopsOnBudget | keep |  |
+| ABI-09 | INFER_OUTPUTS over ABI | ephemeral+infer: outputs listed, no topic; without infer: FAILED "at least one"; createV2+infer binds declared, bare installed rejected; unknown bit beside infer rejected | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.{SubmitWithInferFlagAndNoOutputsReportsInferredOutputs, SubmitWithoutInferFlagAndNoOutputsIsStillRejected, CreateV2WithInferFlagBindsDeclaredOutputsAndPublishes, UnknownFlagBitIsStillRejectedBesideInfer} | **changes: P3 `INFER_OUTPUTS` folded** — a submit with no outputs reports the inferred outputs without a flag; `createV2` with declared outputs binds leniently; the former bit is an unknown bit and is rejected |  |
+| ABI-10 | submit with script requires EPHEMERAL flag | error mentions EPHEMERAL | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.SubmitWithoutEphemeralFlagIsRejected | keep |  |
+| ABI-11 | Handle hygiene: unknown poll / double release rejected | poll(12345) fails; 2nd release fails | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.{PollUnknownHandleIsRejected, ReleaseTwiceIsRejected} | keep |  |
+| ABI-12 | struct_size read-prefix: larger request accepted; unknown flag bit refused | padded request ok; extra bit "reserved flag" | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.RequestLargerThanHostIsAcceptedWhenFlagsAreKnown | keep | slice 8: KindRouter must check struct_size before reading kind |
+| ABI-13 | Budget struct below v1 layout rejected; larger accepted | short struct -> "budget"; padded ok | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.BudgetBelowTheV1LayoutIsRejectedAndALargerOneAccepted | keep |  |
+| ABI-14 | Report coverage.error when stopped on script error; absent when clean | stopped "error", coverage.error has "boom"; clean has no key | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.ReportCarriesCoverageErrorWhenStoppedOnError | **changes: P3** — FAILED carries the same report shape as an error stop (`coverage.stopped == "error"` plus `coverage.error`); `CANCELLED` is reserved |  |
+| ABI-15 | Failed evaluation reason kept up to 1024 chars | 128 < len <= 1024 | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.FailedEvaluationErrorIsTruncatedAt1024NotAt128 | keep |  |
+| ABI-16 | Reserved fields in request/output structs rejected | request.reserved=1 -> "reserved"; output.reserved -> "reserved bits" | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.{ReservedBitsAreRejected, OutputReservedBitsAreRejected} | keep |  |
+| ABI-17 | Released pending evaluation never runs or publishes | release while pending -> poll fails, nothing running, no topic | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.ReleasedPendingWorkNeverRunsOrPublishes | keep |  |
+| ABI-18 | Replacing installed node invalidates pending report | poll FAILED with "replaced" | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.InstalledReplacementInvalidatesPendingReport | keep | meaning change supersedes (matches D30) |
+| ABI-19 | config exposes readiness state and requested time | state idle -> ready; requested_ns 20s | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.ConfigExposesReadinessAndRequestedTime | keep | D30: state/requested_ns = newest request; a shown-result stamp or lag field is not decided |
+| ABI-20 | [pre-existing] Router create/remove/list/collision across markers+transforms (now constructed with ownership probes) | routes by kind; cross-kind id collision rejected; remove to owner; list union; duplicate ids surfaced; service-name clash fails | `data_processors_kind_router_test.cpp`: DataProcessorsKindRouterTest.{CreateRoutesByKind, RejectsCrossKindIdCollision, RemoveRoutesToOwningBackend, ListUnionsBothBackends, ListSurfacesDuplicateIdsCreatedBehindTheRouter, RegisterServicesFailsWhenTheServiceNameIsTaken} | keep | mechanical ctor change (probes) only |
+| ABI-21 | on_demand kind routes to third backend incl. validate/config/remove (kind-less slots resolve owner) | id only in on_demand backend; validate only there; config+remove resolved by owner | `data_processors_kind_router_test.cpp`: DataProcessorsKindRouterTest.OnDemandKindRoutesToThirdBackend | keep |  |
+| ABI-22 | on_demand without a bound backend gets the unknown-kind rejection | error mentions kind; nothing created | `data_processors_kind_router_test.cpp`: DataProcessorsKindRouterTest.OnDemandKindWithoutBackendIsRejected | keep |  |
+| ABI-23 | list unions three backends; id collision guarded pairwise across three | {m1,t1,od1}; 'shared' collisions both directions | `data_processors_kind_router_test.cpp`: DataProcessorsKindRouterTest.{ListUnionsThreeBackends, IdCollisionAcrossThreeBackends} | keep |  |
+| ABI-24 | create_v2 routes by kind | m1->markers, t1->transforms | `data_processors_kind_router_test.cpp`: DataProcessorsKindRouterTest.CreateV2RoutesByKind | keep | slice 8 fix: check struct_size BEFORE reading request->kind (no test yet) |
+| ABI-25 | submit/poll/release go through router-owned handles | on_demand gets eval; poll COMPLETED json; unknown handle fails; release clears; double release fails | `data_processors_kind_router_test.cpp`: DataProcessorsKindRouterTest.SubmitPollReleaseRouteThroughRouterHandles | keep |  |
+| ABI-26 | Unbound backends skipped cleanly (no null vtable deref) | transforms only: markers kind rejected "kind"; on_demand falls to transforms rejection; validate markers rejected | `data_processors_kind_router_test.cpp`: DataProcessorsKindRouterTest.UnboundBackendsAreSkipped | keep |  |
+| ABI-27 | Refusals carry PJ_ERROR_CODE_REJECTED; null ctx still explains | code REJECTED; non-empty message with null ctx | `data_processors_kind_router_test.cpp`: DataProcessorsKindRouterTest.RefusalsCarryTheRejectedCodeAndNullCtxFillsTheError | keep |  |
+| ABI-28 | Host without scene workspace leaves scene tail slots null; hasSceneTabs reflects wiring | create_tab_v2/attach/detach/focus null, create_tab set; hasSceneTabs false/true | `plot_tabs_runtime_host_test.cpp`: PlotTabsRuntimeHostTest.UnwiredSceneCallbacksLeaveTheTailSlotsNull | **changes: P3** — each slot is filled when implemented (not all-or-nothing); a kind the host cannot serve is rejected with an error naming it; `hasSceneTabs()` is removed |  |
+| ABI-29 | v1 create still forwards to createTab; createTabV2 forwards kind (3d/plot/2d) + title | v1 -> create only; v2 -> create_v2 with kind/title | `plot_tabs_runtime_host_test.cpp`: PlotTabsRuntimeHostTest.{V1CreateStillForwardsToCreateTab, CreateV2ForwardsKindAndTitle} | keep |  |
+| ABI-30 | createTabV2 rejects id with '/', unknown/empty kind, empty ids before callbacks | no callback reached | `plot_tabs_runtime_host_test.cpp`: PlotTabsRuntimeHostTest.{CreateV2IdWithSlashIsRejectedBeforeCallbacks, CreateV2UnknownKindIsRejected, SceneSlotsRejectEmptyIdBeforeTheCallback} | keep |  |
+| ABI-31 | Scene tab config JSON borrowed until next call | tab_config returns shell json | `plot_tabs_runtime_host_test.cpp`: PlotTabsRuntimeHostTest.SceneTabConfigIsBorrowedUntilNextCall | keep |  |
+| ABI-32 | attach/detach topic forward dataset_source (empty = unique across datasets); focus forwards | calls recorded with source; empty legal | `plot_tabs_runtime_host_test.cpp`: PlotTabsRuntimeHostTest.{AttachDetachForwardDatasetSource, FocusForwards} | keep | D7: empty source ambiguity |
+| ABI-33 | Scene callback failure surfaces message | "boom" in error; attach/detach/focus fail | `plot_tabs_runtime_host_test.cpp`: PlotTabsRuntimeHostTest.SceneCallbackFailureSurfacesMessage | keep |  |
+| ABI-34 | Transform host: createV2 falls back to legacy create; submit on transform rejected; list hides ephemeral, config/owns sees it | createV2 untyped output -> negated values; submit -> "on-demand evaluation" error; list {negate}; owns(probe) | `data_processors_runtime_host_test.cpp`: DataProcessorsRuntimeHostTest.{CreateV2FallsBackToLegacyCreate, SubmitOnTransformIsRejected, ListHidesEphemeralTransformsButConfigAnswersTheOwner} | keep |  |
+| ABI-35 | Transform survives bridge destruction; session close clears | teardown via clearAllTransforms (was clearTransformsForPlugin) | `data_processors_runtime_host_test.cpp`: DataProcessorsRuntimeHostTest.TransformSurvivesBridgeDestruction | keep | mechanical (API rename) |
+| ABI-36 | Plugin read: bundle generation exposed as dynamic read metadata, not registration schema | topicMetadata has pj_bundle_generation; descriptor json unchanged; plain push removes key | `plugin_data_host_object_read_test.cpp`: ToolboxObjectReadHostTest.BundleGenerationIsDynamicReadMetadataNotRegistrationSchema | **removed: N7** — "catalog v2 without the generation key" (slice 8) |  |
+| ABI-37 | Catalog snapshot v2: object topics with dataset, type, count, range; empty -> zero range; release frees; v1 unchanged | name/type/source/count 2/range 5-20 s, reserved 0; empty count 0 range 0; ASan-clean release; v1 scalars only | `plugin_data_host_catalog_v2_test.cpp`: PluginDataHostCatalogV2Test.{ObjectTopicsCarryDatasetTypeCountAndRange, EmptyTopicHasZeroRange, ReleaseFreesState, V1SnapshotIsUnchanged} | keep | slice 8; N7: derived topic count/range = lazy entry? decide what catalog reports for derived topics |
+| ABI-38 | Plugin scene tabs (pj.plot_tabs v2): create 3d view, attach/detach canonical topic, config, focus, close | config has kind 3d + topic + type; re-attach ok; detach absent fails; close removes | `main_window_plugin_views_test.cpp`: MainWindowPluginViewsTest.PluginSceneViewsCreateAttachDetachClose | keep | slice 8 |
+| ABI-39 | Plot and scene tabs share one id namespace per plugin; wrong-kind ops name the right slot | reuse id across kinds closes old tab; same kind renames; v1 create -> plot; errors "is a 3d scene tab: use attach_topic/detach_topic" / "is a plot tab: use add_curve" | `main_window_plugin_views_test.cpp`: MainWindowPluginViewsTest.{PlotAndSceneTabsShareOneIdNamespacePerPlugin, AddCurveOnSceneTabIsRejected} | keep |  |
+| ABI-40 | clear on scene tab detaches every topic, keeps tab; plot-tab config unchanged (no kind key); 2d view accepts video topic | 2 layers -> 0, same docker; plot config lacks "kind"; video config kVideoFrame | `main_window_plugin_views_test.cpp`: MainWindowPluginViewsTest.{ClearOnSceneTabDetachesEverything, TabConfigOfPlotTabIsUnchanged, PluginSceneViewAcceptsVideo} | keep |  |
+| ABI-41 | Headless descriptor-provider session gets routed pj.data_processors (on_demand validate works); teardown ends provider's previews | validate on_demand luau ok; destroyed once; provider's ephemeral transform gone, persistent kept | `headless_descriptor_provider_session_test.cpp`: HeadlessDescriptorProviderSessionTest.{DataProcessorsServiceIsRoutedByKind, TeardownEndsTheProvidersEphemeralPreviews} | keep | N10: hosts assembled once for GUI and headless (removes KEEP IN SYNC) |
+| ABI-42 | Dialog/panel host_info announces EMBEDS_SCENE_VIEWS only when an embedded-view host is wired | dialog: capability 0, sdk_version set; panel: 0 without host, set with host | `dialog_engine_test.cpp`: DialogEngineTest.HostInfoIsDeliveredWithoutTheSceneViewCapability<br>`panel_engine_test.cpp`: PanelEngineTest.HostInfoAnnouncesSceneViewsOnlyWithAnEmbeddedViewHost | keep | the capability gate is unchanged; the single `scene_view` key (P3, 2026-10-13) changes only the dialog payload (slice 13) |
+
+<a id="lua"></a>
+## LUA: Scripting: Luau
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| LUA-01 | Cloud natives: count/bounds/extreme_point; crop_box keeps whole records; organized cloud honours row_step | count 3, min/max x, ep 1-based index; crop -> 2 pts compact dense, intensity kept; organized ep index 4 at row_step offset | `object_script_test.cpp`: ObjectScript.{CountBoundsExtremeOnSyntheticCloud, CropBoxPreservesWholeRecords, OrganizedCloudHonoursRowStep} | keep |  |
+| LUA-02 | Malformed cloud layouts rejected | data smaller than layout -> error; big-endian -> error | `object_script_test.cpp`: ObjectScript.{InvalidLayoutIsAnError, BigEndianIsRejected} | keep |  |
+| LUA-03 | Empty crop -> count 0 + pj.unavailable(reason) (D25) | count 0; max_z Unavailable "no finite points in region" | `object_script_test.cpp`: ObjectScript.EmptyCropYieldsZeroCountAndUnavailable | keep |  |
+| LUA-04 | Reference crop+measure+witness script happy path (US1+US5) | max_z 1.0, report "2 points; max z 1.00", witness SceneEntities | `object_script_test.cpp`: ObjectScript.ReferenceScriptHappyPath | keep |  |
+| LUA-05 | pj.annotations builder: primitives, empty finish, image_topic required, invalid geometry rejected | line_loop/circle/text with colours, timestamp 0; empty ok; missing image_topic error; bad line_list/unknown type/NaN/neg diameter/text background rejected | `object_script_test.cpp`: ObjectScript.{AnnotationsBuilderProducesPrimitives, AnnotationsRequireImageTopic, EmptyAnnotationsFinishToNoPrimitives, AnnotationsRejectInvalidGeometryAndUnsupportedBackground} | keep |  |
+| LUA-06 | pj.scene builder: snapshot idiom (deleteAll + entity), all primitives, bad args rejected (D27) | deletions kAll; entity id/frame; empty branch = clear only; sphere/text/cube/line_strip; alpha default 255; NaN center/empty id/font 0/color 300 rejected naming field | `object_script_test.cpp`: ObjectScript.{SceneBuilderProducesSnapshotIdiom, SceneBuilderChainsAllPrimitives, SceneBuilderRejectsBadArgs} | keep |  |
+| LUA-07 | Object field access incl. exact int64 timestamps; objects read-only; raw buffer hidden | frame_id, fields[1].name, is_dense; 2^53+1 exact via pj.int64; diff_s; write -> "read-only"; .data -> "raw buffer" | `object_script_test.cpp`: ObjectScript.{FieldAccess, ReadOnlyObjects, RawBufferNotExposed} | keep | lazy list access in binder (slice 5 fix) must keep these |
+| LUA-08 | Output contract: missing / wrong-type / extra outputs are errors | "'foo' missing"; "must be a number"; "unexpected output 'bar'" | `object_script_test.cpp`: ObjectScript.{MissingDeclaredOutputIsError, WrongOutputTypeIsError, ExtraOutputIsError} | keep | lenient binding still rejects an undeclared key (P3, 2026-10-13) |
+| LUA-09 | Globals do not leak between runs (D2) | second run sees x=1 | `object_script_test.cpp`: ObjectScript.GlobalsDoNotLeakBetweenRuns | keep | N1 rec 2 (one state per worker + sandboxthread) must still pass |
+| LUA-10 | validate rejects syntax errors | valid ok; garbage fails | `object_script_test.cpp`: ObjectScript.ValidateRejectsSyntaxError | keep |  |
+| LUA-11 | xyz_points iterator skips NaN | n 2, sumx 4 | `object_script_test.cpp`: ObjectScript.XyzPointsIteratorSkipsNaN | keep |  |
+| LUA-12 | params JSON visible incl. nested/bool | -2.5, 3, 1 | `object_script_test.cpp`: ObjectScript.ParamsJsonIsVisible | keep |  |
+| LUA-13 | cloud:transform(tf) applies rigid motion and reframes | yaw90+t(10,0,0): (10,1,0),(9,0,0),(10,0,1); frame "map" | `object_script_test.cpp`: ObjectScript.CloudTransformAppliesRigidMotion | keep |  |
+| LUA-14 | Sandbox determinism: math.random reseeded per run; no os/clock exposed | two runs equal; os == nil | `object_script_test.cpp`: ObjectScript.{SandboxRandomIsDeterministicAcrossRuns, SandboxExposesNoClock} | keep | N1 rec 2: shared state must keep determinism (randomseed per call) |
+
+<a id="py"></a>
+## PY: Scripting: Python & sandbox (N1 / N6)
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| PY-01 | Python recipe runs on the single Python lane | pending->ready; count=3; two submitPython on different mailboxes same thread | `on_demand_service_test.cpp`: OnDemandServiceTest.PythonRecipeEvaluatesOnThePythonLane | keep |  |
+| PY-02 | Python twins of Luau builders/reference script | annotations primitives; image_topic required / opaque background rejected; reference happy path; annotations count | `python_object_script_test.cpp`: PythonObjectScript.{AnnotationsBuilderProducesPrimitives, AnnotationsRequireImageTopicAndRejectOpaqueBackground, ReferenceScriptHappyPathPython, AnnotationsCountSumsPointsOverAllEntries} | keep |  |
+| PY-03 | Sandbox: dunder access rejected pre-run; open unavailable; subprocess import blocked; getattr dunder escape blocked; os via statistics.random._os denied by audit hook; statistics/json still import | "dunder"; open fails; "not available"; "getattr"; victim file survives; mean+json = 5 | `python_object_script_test.cpp`: PythonObjectScript.{DunderAccessRejectedBeforeRun, OpenIsNotAvailable, AuditHookBlocksSubprocess, GetattrDunderEscapeIsUnavailable, OsReachedThroughAllowedModuleIsDeniedByAuditHook, StatisticsAndJsonStillImport} | keep | N1 read-only module copies are additive; known bypasses (statistics.sys, json.codecs.builtins) untested, see Gaps |
+| PY-04 | Module globals do not leak between runs (D2) | second script can't see first's global | `python_object_script_test.cpp`: PythonObjectScript.GlobalsDoNotLeakBetweenRuns | keep* | N1: compile once per revision + fresh dict per call must still pass |
+| PY-05 | int64 fields are Python ints; raw buffer not exposed | isinstance int, exact; .data -> "raw buffer" | `python_object_script_test.cpp`: PythonObjectScript.{Int64FieldsArePythonInts, BufferFieldIsNotExposed} | keep |  |
+| PY-06 | Python validate: missing evaluate / syntax error rejected; message names the script; reference accepted | missing evaluate fails; syntax fails with "<string>, line", no "At:"/ast.py/.conan2 | `python_object_script_test.cpp`: PythonObjectScript.{ValidateRejectsMissingEvaluate, ValidateRejectsSyntaxError, SyntaxErrorMessageNamesTheScriptNotTheInterpreter, ValidateAcceptsReferenceScript} | keep* | N1: validate becomes the once-per-revision check+compile |
+| PY-07 | Shared sandbox applies to Python transform classes too | open denied by audit hook; getattr dunder escape fails instance; dunder rejected at inspect; os via statistics.random._os denied | `python_engine_test.cpp`: PythonEngine.{OpenIsDeniedByTheSharedAuditHook, GetattrDunderEscapeIsUnavailable, DunderAttributeIsRejectedBeforeRun, OsReachedThroughAllowedModuleIsDeniedByAuditHook} | keep | N1 read-only allowed modules apply here too |
+
+<a id="med"></a>
+## MED: Media (image / depth / video)
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| MED-01 | Decoded frame cache: one decode per (uid, representation) per eval | two decode() same image -> 1 call; new image -> 1 more | `on_demand_service_test.cpp`: OnDemandServiceTest.DecodedFrameCacheIsBoundedAndKeyedByRepresentation | keep | name says bounded; body only checks dedup |
+| MED-02 | Depth decode keeps pairing + payload time (Luau & Python) | 1 decode; annotations image_topic "depth", timestamp = payload 3s (not entry 5s) | `on_demand_service_test.cpp`: OnDemandServiceTest.CanonicalDepthDecodePreservesPairingAndPayloadTime | keep | N6: decode moves to worker |
+| MED-03 | Dataset-qualified image input annotates with bare store topic name | "s:depth" input; ann/bare image_topic "depth"; all stamped payload time | `on_demand_service_test.cpp`: OnDemandServiceTest.DatasetQualifiedImageInputAnnotatesWithTheStoreTopicName | keep | D7: if single `dataset` field lands, qualification goes away |
+| MED-04 | Video PTS and source content revision join the cache key | different cursor in same bucket misses; exact repeat hits; other PTS bucket misses; content revision bump misses | `on_demand_service_test.cpp`: OnDemandServiceTest.VideoPtsIsPartOfTheCacheKey | keep | N9: video as observed-dependency entry |
+| MED-05 | Derived image topics declare canonical image codec | kImage metadata image_codec pj_image_v1; cloud has none | `on_demand_service_test.cpp`: OnDemandServiceTest.DerivedImageTopicsDeclareTheCanonicalImageCodec | keep |  |
+| MED-06 | ImageAnnotations output stamped at input, topic marked snapshot | stamp 15s; metadata snapshot=true; image_topic kept | `on_demand_service_test.cpp`: OnDemandServiceTest.ImageAnnotationsOutputIsStampedAndMarkedSnapshot | keep |  |
+| MED-07 | Video frame_at queries observed by the worker join the cache key and republish | future frame appears/disappears -> miss + republished overlay text; absent vs pts 0 distinct; absence turning into availability before publish -> "stale result" error then OK; cursor-relative query misses per instant | `on_demand_media_cache_test.cpp`: OnDemandMediaCacheTest.ActualVideoQueriesInvalidateCacheAndRepublishObjects | keep | N9: video dependency entry; "stale result" retry semantics vs D30 to check |
+| MED-08 | Annotation pairing keeps image time when newer scalar inputs drive the stamp | stamp/entry 15s (threshold), annotations.timestamp = image time (0 or 10s), image_topic "image"; builder & threshold paths | `on_demand_media_cache_test.cpp`: OnDemandMediaCacheTest.AnnotationPairingKeepsImageTimeAcrossNewerScalarInputs | keep |  |
+| MED-09 | Depth + CameraInfo -> point cloud through real codec (Luau & Python) | 2x2 cloud, frame "optical", last point (2,2,4), not dense | `scene_image_decoder_test.cpp`: SceneImageDecoder.DepthRecipeUsesRealCodecAndCameraThroughBothScriptBinders | keep | N6: decode in worker |
+| MED-10 | Canonical depth threshold keeps pairing (image_topic, payload stamp) in both languages | image_topic depth, timestamp 123 (payload) | `scene_image_decoder_test.cpp`: SceneImageDecoder.CanonicalDepthThresholdKeepsPairingInBothLanguages | keep |  |
+| MED-11 | Raw decode honours stride, channel order, bounds; uint16 big-endian and float32 preserved | bgr8 stride 4 -> rgb samples; bad stride/huge height fail; mono16 BE 4660/65535; 32FC1 1.25 | `scene_image_decoder_test.cpp`: SceneImageDecoder.{HonorsRawStrideChannelOrderAndBounds, PreservesUint16AndFloat32Samples} | keep |  |
+| MED-12 | PNG decoded without display normalization; unsupported/corrupt rejected | 1px red -> 255,0,0, representation png; qoi / empty png fail | `scene_image_decoder_test.cpp`: SceneImageDecoder.{DecodesKnownPngWithoutDisplayNormalization, RejectsUnsupportedAndCorruptPayloads} | keep |  |
+| MED-13 | Video source clear() forgets indexes/decoded frames when topic ids are reused | after clear + reused id, PTS offset reflected; reorder-gap clamp; frame at new PTS | `scene_video_frame_source_test.cpp`: SceneVideoFrameSourceTest.ClearForgetsIndexesAndDecodedFramesWhenTopicIdsAreReused | keep |  |
+| MED-14 | Repeated and backward seeks return full frames at their presentation time (B-frames) | late/early/late frames exact PTS, rgb8, identical bytes, row_step*height | `scene_video_frame_source_test.cpp`: SceneVideoFrameSourceTest.RepeatedAndBackwardSeeksReturnFullFramesAtTheirPresentationTime | keep |  |
+| MED-15 | Luau image API: representation, decode w/o decoder -> unavailable, threshold -> annotations, count, crop/pixel agree, too many points -> unavailable | "raw:mono8"; "no image decoder"; 3 pts > 8; count 3/3; pixel 5; 600k matches -> Unavailable | `object_script_test.cpp`: ObjectScript.{ImageRepresentationIsReported, DecodeWithoutDecoderIsUnavailable, ThresholdProducesAnnotations, AnnotationsCountSumsPointsOverAllEntries, CropAndPixelAgree, TooManyPointsIsUnavailable} | keep |  |
+| MED-16 | Video frames carry distinct annotation pairing through the binder; per-invocation sink | frame_at(13/23) -> stamps 10/20; builder pairs 10; dynamic_images null after | `object_script_test.cpp`: ObjectScript.VideoFramesCarryDistinctAnnotationPairingThroughTheBinder | keep |  |
+| MED-17 | Parser depth image: to_point_cloud for 16UC1/mono16/32FC1 (decode once), mono8 unavailable | z 1.0 (mm->m) or 1000 for 32FC1; frame optical; stamp 42 | `object_script_test.cpp`: ObjectScript.ParserDepthImageSupportsProjectionAndRejectsOrdinaryImages | keep |  |
+| MED-18 | Python twins: video pairing, parser depth projection, aggregate native budget | as Luau twins | `python_object_script_test.cpp`: PythonObjectScript.{VideoFramesCarryDistinctAnnotationPairingThroughTheBinder, ParserDepthImageSupportsProjectionAndRejectsOrdinaryImages, AggregateNativeCloudBudgetRejectsRetainedSecondOutput} | keep |  |
+| MED-19 | Depth unprojection: mm -> organized metric cloud; step; point cap; bad K | 2x2, frame optical, not dense, p3=(2,2,4), zero depth NaN; step 2 -> 1x1; max_points 1 fails; K[0]=0 fails | `depth_ops_test.cpp`: DepthOps.UnprojectsMillimetersIntoOrganizedMetricCloud | keep |  |
+| MED-20 | Native image ops: crop keeps pairing + original coords; threshold limits all-or-nothing; gray/stats ignore NaN; malformed bounds/cancel rejected | crop pixel 5, threshold points at original coords, topic/stamp kept; "too many points" no partial; gray luma; stats min/max/mean; bad crop/huge dims/cancel fail | `image_ops_test.cpp`: ImageOps.{CropRetainsPairingAndOriginalCoordinates, ThresholdLimitsAreAppliedToMatchesWithoutPartialResults, GrayStatsAndInvalidPixels, RejectsMalformedStorageBoundsAndCancelledWork} | keep |  |
+| MED-21 | Decode without injected codec fails explicitly | decodeScriptImage(nullptr host) fails | `script_media_test.cpp`: ScriptMediaTest.DecodeWithoutInjectedCodecFailsExplicitly | keep |  |
+| MED-22 | Dynamic video images keep exact pairing, bypass packet-uid cache, bounded retention | frames 13/23 -> stamps 10/20, 2 decodes, cache 0; ambiguous builder falls back to input stamp 99; over-retention refused | `script_media_test.cpp`: ScriptMediaTest.DynamicVideoImagesPreserveExactPairingAndBypassPacketUidCache | keep |  |
+| MED-23 | 2D pairing: annotations shown only when paired with the delivered image (topic + cadence), cached annotation rechecked after decode; parser annotations unpaired | before image: hidden + warning; pts within one cadence -> shown, warning cleared; +1 ns -> hidden; empty image_topic always shown | `composite_media_source_test.cpp`: CompositeMediaSource.PairingUsesDeliveredPixelsAndRechecksCachedAnnotations | keep | N7: pairing check must read the derived source |
+| MED-24 | Scene2D dock pairs canonical annotations with delivered image; republish at same instant clears stale or mismatched | 1 circle overlay, no warning; new snapshot w/ other stamp or wrong topic -> overlays empty + warning | `scene2d_dock_widget_test.cpp`: Scene2DDockWidget.CanonicalAnnotationsArePairedWithDeliveredImage | keep | plain canonical store topic; for an on-demand topic the same pairing must read frameAt (N7) |
+| MED-25 | Streaming video identity: late/equal-DTS packets enter presentation index without rescans; replacement/eviction change content identity; same DTS+PTS replacement returns new pixels | presentationAt 100/150/125; no rescans on unchanged poll; contentIdentity content+rewrite change; decodeAt new pixels then stable | `streaming_video_decoder_test.cpp`: StreamingVideoIdentity.{LateAndEqualDtsPacketsEnterPresentationIndex, ReplacementAndEvictionInvalidateContentWithoutNewTimestamp, SameDtsAndPtsReplacementReturnsNewPixels} | keep | N7 keeps video identity code (evictWhere used here!) |
+
+<a id="scn"></a>
+## SCN: Scene layers 3D / 2D
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| SCN-01 | Parser-less canonical SceneEntities / PointCloud topic attaches and renders | addTopic ok; 2 entities; cloud stamp 100 | `scene3d_dock_derived_topics_test.cpp`: Scene3DDockDerivedTopics.{ParserlessSceneEntitiesTopicAttaches, PointCloudDerivedTopicRendersParserless} | keep | store topics stay under N7 (recorded/incremental republish); parser-less SceneEntities acceptance is a regression-risk item |
+| SCN-02 | Same-stamp republish replaces the entity set through the dock's render-key gate | repaint requested at same display time; set {c} replaces {a,b} | `scene3d_dock_derived_topics_test.cpp`: Scene3DDockDerivedTopics.SameStampReplacementReplacesSet | keep | plain store topic; unaffected by N7 |
+| SCN-03 | Backward-inserted snapshot shown at-or-before cursor | seek 5 -> y, 20 -> x, 12 -> y | `scene3d_dock_derived_topics_test.cpp`: Scene3DDockDerivedTopics.BackwardSeekShowsSnapshotAtThatTime | keep |  |
+| SCN-04 | End-to-end: evaluate with no scene open, drag outputs into dock, seek, threshold change re-renders | cloud stamp 20, 1 entity; seek 5 follows; cached revisit same render key; threshold change -> new key, higher max_z | `scene3d_dock_derived_topics_test.cpp`: Scene3DDockDerivedTopics.OnDemandOutputsRenderThroughTheDock | keep* | N7: layers read frameAt; same visible expectations |
+| SCN-05 | Pending derived topic renders nothing (no warning) | after 5s geometry, requestAt(20) pending -> lastPushedStamp nullopt; no warning | `scene3d_dock_derived_topics_test.cpp`: Scene3DDockDerivedTopics.PendingDerivedTopicRendersNothing | **changes: D30** — INVERTED: pending keeps newest result at-or-before cursor (5s geometry) + lag indicator |  |
+| SCN-06 | Publish signal refreshes dock at its tracker time without a new tick | pending tick renders 0; after drain 1 entity with no further tick | `scene3d_dock_derived_topics_test.cpp`: Scene3DDockDerivedTopics.PublishedSignalRefreshesTheDockAtItsTrackerTime | keep* | N7: refresh on history publication, not a store signal |
+| SCN-07 | Pending resets SceneEntities replay state only on the hidden edge | 3 pending ticks -> 1 reset; ready -> no reset; new pending -> 2nd reset | `scene3d_dock_derived_topics_test.cpp`: Scene3DDockDerivedTopics.PendingDerivedTopicResetsReplayOnce | **removed: D30** — pending no longer hides the layer; replace with "lag shown, no reset while pending" |  |
+| SCN-08 | Initial framing fits immediate or delayed content once; user input / restored camera cancel the pending fit | focal z ~105, radius >5, fixed frame lidar (not remembered); later content doesn't refit; mouse press or xmlLoadState keeps camera | `scene3d_dock_derived_topics_test.cpp`: Scene3DDockInitialFraming.{FitsImmediateAndDelayedContentOnlyOnce, UserInputAndRestoredCameraCancelPendingFit} | keep | "framing" in slice 7 |
+| SCN-09 | SceneEntity lifetime expires without a new sample | lifetime 5 ns: visible at 100, gone at 106 | `scene3d_dock_derived_topics_test.cpp`: Scene3DDockDerivedTopics.SceneEntityLifetimeAdvancesWithoutANewSample | keep |  |
+| SCN-10 | Publication budget failure hides retained geometry with an error warning, recovers | at ceiling (512) eval fails -> kError, store keeps old bytes; layers show nothing + "error: " warning set by state change (not render); pixels = hidden scene; recovery at 100s clears warning, new key | `scene3d_dock_derived_topics_test.cpp`: Scene3DDockDerivedTopics.PublicationBudgetFailureHidesRetainedGeometryAndRecovers | **changes: N7** — ceiling refusal disappears; keep "error -> hide + warning set by state change, recover" with another error source |  |
+| SCN-11 | 2D composite: not-ready derived overlay is dropped while the image stays; publication at same cursor invalidates only that layer | pending -> replaces_layers, base kept, overlays empty; invalidateLayer + ready -> overlay back, 1 invalidate | `composite_media_source_test.cpp`: CompositeMediaSourceTest.PendingDerivedLayerDropsRetainedOverlayWithoutDroppingQuietImage | **changes: D30** — pending keeps newest overlay at-or-before cursor (+ lag); setLayerReady gate replaced by frameAt (N7) |  |
+| SCN-12 | 2D composite: a suppressed-only image emits an explicit empty stack | not ready -> replaces_layers + empty frame once | `composite_media_source_test.cpp`: CompositeMediaSourceTest.SuppressedOnlyImageEmitsAnExplicitEmptyStack | **changes: D30** — applies to error/missing (D6) only, not pending |  |
+| SCN-13 | 2D pipeline source: new result supersedes an undelivered clear; decode failure clears old result | clear then invalidate+same t -> fresh overlay; bad bytes at 2000 -> empty overlay | `scene_pipeline_source_test.cpp`: ScenePipelineSourceTest.NewResultSupersedesAnUndeliveredClearAndDecodeFailureClearsOldResult | keep | "display only forward" analogue |
+| SCN-14 | Cursor set before any layer seeds a new layer at the raw cursor instant (derived topic with no entries; or topic with entries) | layer tracker time = offset + 0.5 s, not first frame | `scene_common_test.cpp`: SceneDockWidgetTest.{CursorBeforeAnyLayerSeedsAnEmptyTopicAtTheRawInstant, CursorBeforeAnyLayerSeedsATopicWithEntriesAtTheCursorNotTheFirstFrame} | keep | declared range from inputs (N7) is the related unfixed clamp |
+| SCN-15 | Layer warning parts join data/readiness/annotation in order, report only real changes | combined text ordering; set returns change flag | `scene_common_test.cpp`: SceneWarningPartsTest.JoinsNonEmptyPartsInOrderAndReportsOnlyRealChanges | keep | D30 lag indicator: decide whether it is a warning part or separate |
+| SCN-16 | Initial content framing armed by user drops, not by layout restore | drop on empty placeholder arms; first topic into empty 3D view arms; restored dock not armed | `main_window_scene3d_drop_framing_test.cpp`: MainWindowScene3dDropFramingTest.{DropOnEmptyPlaceholderArmsFraming, FirstTopicDroppedIntoEmptyViewArmsFraming, LayoutRestoreDoesNotArmFraming} | keep | slice 7 framing |
+
+<a id="tfl"></a>
+## TFL: TF lookups & TF service
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| TFL-01 | Unobserved TF: recipe not reading pj.tf survives TF revision bump | rev bump -> from_cache, no republish, 1 entry | `on_demand_service_test.cpp`: OnDemandTfObservation.UnobservedTfSurvivesARevisionBump | keep | N3/N5: repeated TF samples not stored -> fewer bumps |
+| TFL-02 | Observed TF keys the cache by revision (lookup or frames()) | explicit-time lookup: same rev reuses across instants; bump recomputes; old rev entry still hit; pj.tf.frames() also observes | `on_demand_service_test.cpp`: OnDemandTfObservation.{ObservedTfRecomputesOnARevisionBump, FramesListingObservesTheTree} | keep | N9: one observed-dependency list (R5) |
+| TFL-03 | No TF snapshot is itself observed | "no tf snapshot" result; snapshot appearing (rev 0) -> recompute | `on_demand_service_test.cpp`: OnDemandTfObservation.AnEmptyTreeIsStillObserved | keep |  |
+| TFL-04 | Python recipe follows TF observation rule | via requestAt: reads_tf -> 2 publishes after bump, else 1; ready | `on_demand_service_test.cpp`: OnDemandTfObservation.PythonRecipeFollowsTheSameRule | keep |  |
+| TFL-05 | Clock x TF observation compose; clock-only ignores TF revision | lookup at pj.tf.now keyed by instant AND rev; clock-only keyed by instant only | `on_demand_service_test.cpp`: OnDemandTfObservation.{ClockAndTfObservationCompose, ClockOnlyRecipeIgnoresTfRevision} | keep |  |
+| TFL-06 | Static cloud + moving TF: query-time lookup must not reuse earlier pose | query_time recipe lookup at now: @40 gets x=40 (no stale cache) | `on_demand_service_test.cpp`: DerivedAudit.StaticCloudMovingTfMustNotReuseEarlierPose | keep | audit regression |
+| TFL-07 | TF snapshot frozen while live buffer mutates; shared per revision | old snapshot keeps rev + old lookup; fresh sees new; same rev -> same instance; new rev -> new instance | `transform_service_lookup_test.cpp`: TransformServiceLookup.{SnapshotIsImmutableWhileTheBufferMutates, SnapshotIsSharedPerRevision} | keep | N5 R1/R4 (own snapshot type, no in-place rewrite) may change internals |
+| TFL-08 | TF buffers follow dataset lifecycle inside SessionManager (remove clears in place; refill stages then swaps + notifies) | removeDataset empties shared buffer; refill keeps active until commit, then new buffer + 1 ready signal | `session_manager_test.cpp`: SessionManagerTransformServiceTest.TransformServiceFollowsDatasetLifecycle | keep | N3 root-cause fix |
+| TFL-09 | [pre-existing, mechanical] TF ingest tap/drain equivalence, replacing-load generations, concurrency (service now owned by SessionManager, tap always active) | unchanged expectations; Abort...Rebuilds uses a separate never-activated instance | `transform_service_test.cpp`: TransformService.{TapVsDrainEquivalence, ActiveTapMakesIncrementalDrainAZeroResolveNoOp, ExplicitRebuildWithTapActiveMatchesTapBuiltBuffer, TapAndDrainAccountForMalformedEdgesIdentically, TapOutOfOrderEdgeLandsAtItsOwnStamp, ConcurrentTapProducersKeepDatasetsIsolated, CommitReplacingLoadPublishesOnlyStagingGeneration, AbortReplacingLoadPreservesTapBufferAndRebuildsInactiveBuffer, TapRoutingChangesOnlyAtGenerationBoundaries, RepeatedBeginReplacesUnfinishedStagingGeneration, AbortWithoutBeginIsNoOp, ConcurrentTapWriterAndBufferReaderStayCoherent, WorkerTapCanOverlapGuiExplicitRebuild} | keep | slice 1 move (N3); remaining 23 tests in file moved verbatim |
+| TFL-10 | Reload (replacing load) invalidates frozen TF snapshot | after commit, new snapshot sees f2 not f1 | `transform_service_test.cpp`: DerivedTfAudit.ReplacementMustInvalidateFrozenSnapshot | keep | audit regression |
+| TFL-11 | Retention change invalidates new snapshots without mutating old ones | new rev differs, drops old sample; old snapshot unchanged | `transform_service_test.cpp`: DerivedTfAudit.RetentionInvalidatesNewSnapshotsWithoutMutatingOldOnes | keep | N5 R4 |
+| TFL-12 | pj.tf.lookup returns transform or reason; pj.tf.now = requested instant; no snapshot -> "no tf snapshot" | translation/rotation/target_frame; unknown frame -> "unknown source frame"; now exact int64; no host: frames empty, now 0 | `object_script_test.cpp`: ObjectScript.{TfLookupReturnsTransformOrReason, TfNowIsTheRequestedInstant, NoSnapshotYieldsReason, NowReadsTheSameValueAsBefore} | keep |  |
+
+<a id="bud"></a>
+## BUD: Budgets & limits
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| BUD-01 | Pinned per-owner cap | 3rd pin of owner rejected; re-upsert existing pin not counted | `on_demand_service_test.cpp`: OnDemandServiceTest.PinnedPerOwnerCapIsEnforced | keep |  |
+| BUD-02 | Node cache bytes bounded | cache_bytes_total=1 -> re-eval not from_cache | `on_demand_service_test.cpp`: OnDemandServiceTest.CacheBytesAreBounded | **changes: N7** — ResultHistory bounded in bytes, evicts the result farthest from the last requested t, never refuses |  |
+| BUD-03 | Staged input budget refuses oversized request | staged_bytes_max=1 -> kError "staged input budget", no task, 0 entries | `on_demand_service_test.cpp`: OnDemandServiceTest.StagedBudgetRefusesOversizedRequest | **decided here** — the staged budget counts the payload bytes captured at staging (known without decoding); decoded objects are accounted in the worker's memory budget (N6) |  |
+| BUD-04 | Burst at in-flight ceiling defers newest instead of failing | 3 requests, room for 1: pending, then kReady requested_t=20 | `on_demand_service_test.cpp`: OnDemandServiceTest.StagedBudgetDefersTheNewestRequestInsteadOfFailing | **changes: D30** — one running + one pending (latest t): 10 s request dropped from the slot, 5 s result also shown; final ready at 20 s unchanged |  |
+| BUD-05 | One reservation per evaluation, not per output | two 2-object-output recipes both submitted at once, both ready | `on_demand_service_test.cpp`: OnDemandServiceTest.ReservationIsOneBudgetPerEvaluationNotPerOutput | keep |  |
+| BUD-06 | Request larger than ceiling alone is terminal error | kError "staged input budget" | `on_demand_service_test.cpp`: OnDemandServiceTest.RequestLargerThanTheCeilingAloneIsStillAnError | keep |  |
+| BUD-07 | Pending evaluation handles bounded (64); release restores capacity | 65th submit fails; after release ok | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.PendingReportsHaveBoundedHandlesAndReleaseRestoresCapacity | keep |  |
+| BUD-08 | Report incl. coverage fits max_report_bytes | json <= 512, completed, stopped budget_report | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.CompleteReportIncludingCoverageFitsRequestedBytes | keep |  |
+| BUD-09 | Output reservation refuses before worker allocation | undrained_bytes_max=1 -> report stopped budget_bytes, no bundles, nothing ran | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.OutputReservationRefusesWorkBeforeWorkerAllocation | keep |  |
+| BUD-10 | Inferred outputs reserve one budget like declared list | both complete within one budget + 16 MiB | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.InferredOutputsReserveOneBudgetLikeTheDeclaredList | keep |  |
+| BUD-11 | Batch admission bounds all bindings, rejects oversize inputs before capture | bounded resolver remaining=128; reserved <= limit; rejection -> 0 reserved, stays stale, nothing queued | `batch_engine_test.cpp`: BatchEngineTest.AdmissionBoundsAllBindingsAndRejectsOversizedInputsBeforeCapture | keep |  |
+| BUD-12 | Image decode refuses float expansion over memory budget before touching pixels | 2048² mono8 vs 1 MiB -> "byte limit", budget used 0 | `scene_image_decoder_test.cpp`: SceneImageDecoder.RejectsFloatExpansionBeforeReadingUnbackedPixels | keep |  |
+| BUD-13 | Fuel budget trips hostile loop; byte budget trips huge crop | "budget"; "byte budget" at 8 MiB | `object_script_test.cpp`: ObjectScript.{FuelTripsOnHostileLoop, ByteBudgetTripsOnHugeCrop} | keep | N1 rec 2: re-arm caps per call |
+| BUD-14 | OOM error names the script limit | "script memory limit (8 MB) exceeded" | `object_script_test.cpp`: ObjectScript.OutOfMemoryNamesTheScriptLimit | keep |  |
+| BUD-15 | Aggregate native cloud budget counts retained outputs | one 327k crop ok at 8 MiB; two retained -> "memory budget" | `object_script_test.cpp`: ObjectScript.AggregateNativeCloudBudgetRejectsRetainedSecondOutput | keep |  |
+| BUD-16 | Python allocator cap wrapper forwards foreign blocks and shares the native budget | free/realloc of pre-cap blocks ok; charged realloc counts; over-budget malloc/realloc null, data intact; budget 0 after | `python_object_script_test.cpp`: PythonObjectScript.AllocationWrapperForwardsForeignBlocksAndSharesNativeBudget | keep |  |
+| BUD-17 | Python memory cap -> MemoryError named | "script memory limit (4 MB) exceeded" | `python_object_script_test.cpp`: PythonObjectScript.AllocatorCapRaisesMemoryError | keep |  |
+| BUD-18 | Python watchdog: loop -> TimeoutError; caught timeout still fails; never interrupts a native call | TimeoutError; "time budget"; 1M crop completes (count 1) or TimeoutError after it | `python_object_script_test.cpp`: PythonObjectScript.{WatchdogRaisesTimeout, CaughtTimeoutStillFailsTheEvaluation, WatchdogDoesNotInterruptANativeCall} | keep | N6: native ops release the GIL; re-verify watchdog/GIL interplay (no deadlock) |
+| BUD-19 | Python transform per-call time budget: loop fails sticky; normal calls don't trip; timeout can't be swallowed; no stale timeout leaks to next instance; top-level loop aborts inspect | TimeoutError <2 s, sticky; 20k calls ok; "time budget"; sibling ok x1000; inspect TimeoutError | `python_engine_test.cpp`: PythonEngine.{InfiniteLoopInCalculateFailsWithinBudget, CallsWithinBudgetDoNotTrip, ScriptCannotSwallowTheTimeout, NoStaleTimeoutLeaksIntoTheNextInstance, InfiniteLoopAtModuleTopLevelAbortsInspect} | keep | GUI-thread Python vs worker GIL contention (N6) untested |
+| BUD-20 | Python transform memory hog fails only that instance | MemoryError on hog; sibling still calculates | `python_engine_test.cpp`: PythonEngine.MemoryHogFailsTheInstanceAndSiblingSurvives | keep |  |
+| BUD-21 | Marker engine native output byte ceiling | 1000 markers or 2 KiB label over 1 KiB -> empty + "byte ceiling" | `marker_engine_test.cpp`: MarkerEngine.NativeOutputByteCeilingRejectsManyMarkersAndLargeLabels | keep |  |
+| BUD-22 | Image op memory accounting: annotation snapshot reserves before deep copy; aliases charge once; cancelled allocation releases reservation | finish fails without extra charge; crop charges 768 KiB, gray alias no extra, second crop refused; release -> 0 | `image_ops_test.cpp`: ImageOps.{AnnotationSnapshotReservesBeforeDeepCopy, AggregateLiveBudgetReleasesAndAliasesChargeOnce, CancelledNativeAllocationReleasesReservation} | keep |  |
+| BUD-23 | Cached pixels leased per evaluation; aliases release together; over-budget lease refused | budget 16 charged once for two aliases; released after scope; 15-byte budget refuses | `script_media_test.cpp`: ScriptMediaTest.CachedPixelsLeasePerEvaluationAndAliasesReleaseTogether | keep |  |
+
+<a id="con"></a>
+## CON: Concurrency / threading
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| CON-01 | Release after dispatch leaves shared pool usable | release mid-flight; next submit completes | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.ReleaseAfterDispatchLeavesSharedPoolUsable | keep |  |
+| CON-02 | One task per mailbox at a time, in submission order | order [1,2] across consumers | `engine_pool_test.cpp`: EnginePoolTest.OneTaskPerMailboxRunsInOrder | keep |  |
+| CON-03 | Identical work coalesces: runs once, publishes to every subscriber (queued or already running) | compute 1, publish 2; joined run never re-computes | `engine_pool_test.cpp`: EnginePoolTest.{CoalescedRequestsRunOnceAndPublishToEverySubscriber, RequestArrivingWhileRunningJoinsIt} | keep |  |
+| CON-04 | cancel(consumer, mailbox) drops queued, flags in-flight; burst releases superseded queued runs early; only newest queued survives | in-flight sees token, publish(cancelled); queued never computes; burst of 5 -> 4 cancelled before slow ends, 1 live | `engine_pool_test.cpp`: EnginePoolTest.{CancelDropsQueuedAndMarksInFlightCancelled, CancelReleasesSupersededQueuedRunsWhileAnotherRuns} | keep | D30: on-demand stops cancelling per tick; cancel kept for meaning change/removal; pool's newest-queued-wins = the pending slot |
+| CON-05 | Cancel scoped to mailbox | cancel on node-b leaves node-a live | `engine_pool_test.cpp`: EnginePoolTest.SupersededByAnotherMailboxIsNotCancelled | keep |  |
+| CON-06 | publish runs on owning (GUI) thread; drain bounded at 32/pass | publish thread == owner; 40 results -> 2 drains | `engine_pool_test.cpp`: EnginePoolTest.{PublishRunsOnTheOwningThread, DrainIsBounded} | keep |  |
+| CON-07 | Destructor waits for in-flight workers | compute finished after scope | `engine_pool_test.cpp`: EnginePoolTest.DestructorWaitsForWorkers | keep |  |
+| CON-08 | unregisterConsumer cancels running work and retires the consumer | running sees cancel, publish cancelled; later submit never runs, cancelled | `engine_pool_test.cpp`: EnginePoolTest.UnregisterCancelsFirstSubmissionAndRetiresConsumer | keep |  |
+| CON-09 | Cancel after compute but before drain delivers cancelled, keeps newer inline state | cancel/unregister -> publish(cancelled), GUI state 2 kept | `engine_pool_test.cpp`: EnginePoolTest.CancellationAfterComputeBeforeDrainPreservesNewerInlineState | keep | relevant to D30 "display only moves forward" |
+| CON-10 | Late cancel of one coalesced subscriber leaves the other independent | 1 compute; first cancelled, second live | `engine_pool_test.cpp`: EnginePoolTest.LateCancellationKeepsCoalescedSubscribersIndependent | keep |  |
+| CON-11 | Session destruction disconnects services before the pool | no crash on reset with generator | `batch_engine_test.cpp`: BatchEngineTest.SessionDestructionDisconnectsServicesBeforeThePool | keep |  |
+| CON-12 | Batch staging on GUI thread, script compute on pool worker | resolver on GUI; compute thread != GUI | `batch_engine_test.cpp`: BatchEngineTest.ScriptRunsOffTheGuiThread | keep |  |
+| CON-13 | Topic invalidation retires an in-flight index without blocking/destroying it | concurrent presentationAt returns "video source generation changed"; next call ok | `scene_video_frame_source_test.cpp`: SceneVideoFrameSourceTest.InvalidationRetiresInFlightIndexWithoutBlockingOrDestroyingIt | keep |  |
+| CON-14 | Session teardown cancels and joins workers before destroying pinned dataset resources | worker sees cancel with resource alive; not published; resource freed after | `session_manager_test.cpp`: SessionManagerWorkerLifetimeTest.CancelsAndJoinsBeforeDestroyingDatasetResources | keep |  |
+| CON-15 | Native ops honour the cancel token | pre-set cancel on 2M crop -> "cancelled" | `object_script_test.cpp`: ObjectScript.NativeOpsHonourTheCancelToken | keep | slice 5 defect 19: Luau interpreter itself must also poll cancel (no test) |
+
+<a id="bat"></a>
+## BAT: Batch engine (markers)
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| BAT-01 | [pre-existing, rename only] Run/publish basics and upsert validation | run+publish markers; no resolver -> fails (no empty set); script error not registered; committed id rejects preview prefix; owner separator rejected; declared names enumerated once; input count / flag mismatch rejected | `batch_engine_test.cpp`: BatchEngineTest.{RunsScriptAndPublishesMarkers, WithoutAResolverTheRunFailsInsteadOfPublishingAnEmptySet, ScriptErrorReturnsMessageAndDoesNotRegister, CommittedGeneratorRejectsPreviewPrefix, UpsertRejectsTheOwnerSeparatorInIdsAndOutputs, DeclaredNamesAreEnumeratedOnceEachAndReadTheirOwnSeries, UpsertRejectsADeclaredInputCountMismatch, UpsertRejectsABindingWhoseFlagsDifferFromItsSiblings} | keep | slice 1 rename (DeclaredNames… only reformatted) |
+| BAT-02 | Input change marks generator stale; run is scheduled (tests force refresh) | recomputeForChangedInputs returns generator id (was owner topic) and marks stale; refresh runs now; other generators' parts kept | `batch_engine_test.cpp`: BatchEngineTest.{RecomputeMatchesChangedKeyAndRemoveDrops, RecomputeOneGeneratorKeepsOthersPart, ScopedRecomputeOfGlobalRuleRepublishesTheSharedSet, MergeThenRecomputeOneGeneratorKeepsOthers, GlobalRuleIsStoredInTheDisplayFrame, GlobalRuleGrowsWhenAContributorLoadsLater} | keep | modified pre-existing tests: sync recompute -> stale+refresh (slice 3) |
+| BAT-03 | [pre-existing, rename only] Ownership family, retarget and tombstones | two generators on one topic own separate object topics; retarget drops own part + tombstones old output; in-place keeps published; direct write is a family member; removing persistent generator tombstones; scoped recompute ignores other bindings | `batch_engine_test.cpp`: BatchEngineTest.{TwoGeneratorsOnOneTopicOwnTheirOwnObjectTopics, UpsertRetargetDropsOnlyOwnPart, DirectWriteIsAnotherFamilyMember, UpsertRetargetTombstonesThePreviousOutput, UpsertInPlaceKeepsItsOutputPublished, RemovePersistentGeneratorTombstonesOutput, ScopedRecomputeIgnoresGeneratorsBoundElsewhere} | keep | batch tombstones stay (N7 only drops on-demand machinery) |
+| BAT-04 | [pre-existing, rename only] Dataset / all_datasets / global scopes and contributors | global/all published once on shared dataset; normalization; scope coexistence; per-dataset rules independent; reapply replaces; remove retires on every dataset; global unions contributors, grows/shrinks, clears when none; reach-new-datasets reruns; late catalog contributor joins; refill rollback recompute; timeline drag republishes nothing; scope change replaces id | `batch_engine_test.cpp`: BatchEngineTest.{GlobalAllDatasetsPublishesOnceOnTheSharedDataset, AllDatasetsOutputNormalizesGlobalToAll, AllTopicOnDatasetBoundRecipeIsRejected, DatasetAndAllScopesCoexistOnOneDataset, DatasetRuleOnSecondDatasetKeepsTheFirst, ReapplyOnSameDatasetReplaces, RemoveRetiresTheIdOnEveryDataset, GlobalRuleIsPublishedOnceOnTheSharedDataset, GlobalRuleUnionsEveryContributor, GlobalRuleWithNoInputsAnywhereIsRejected, BoundRuleWithMissingInputStillErrors, ADatasetLoadedLaterWithoutTheInputsNeedsNoCopy, ChangingScopeReplacesTheWholeId, RemovingAContributorShrinksTheGlobalSetOnSurvivors, RemovingTheLastContributorClearsTheGlobalSetEverywhere, ReachNewDatasetsRerunsGlobalRulesForANewContributor, ReachNewDatasetsRerunsWhenAContributorAppearsUnderTheSameRoster, RecomputeWithNoContributorLeftClearsTheSharedSet, ANewlyCatalogedContributorJoinsTheGlobalSet, RefillRollbackRecomputesTheSharedSet, ASourceTimelineDragRepublishesNoMarkerSet} | keep | D7 applies to on-demand nodes; batch global scope is pre-existing |
+| BAT-05 | Generator window clips staged series; empty window -> empty set (not error) | window [20,40] -> 21 markers; [200,300] -> empty | `batch_engine_test.cpp`: BatchEngineTest.{WindowClipsTheStagedSeries, EmptyWindowPublishesAnEmptySet} | keep | slice 8 "marker time window" |
+| BAT-06 | coverageOf reports actually staged range | absent before run; =window bounds; absent for empty window; tracks resolver trimming across runs (50..99) | `batch_engine_test.cpp`: BatchEngineTest.{CoverageOfReportsTheActuallyStagedRange, CoverageOfIsAbsentWhenTheWindowHasNoSamples, CoverageOfTracksWhatTheResolverActuallyReturnedAcrossRuns} | keep |  |
+| BAT-07 | Upsert runs synchronously inline (first run on GUI) | pool idle; markers published immediately | `batch_engine_test.cpp`: BatchEngineTest.UpsertStaysSynchronous | keep | N6 item 5: first run on GUI by design |
+| BAT-08 | Manual mode only marks stale until refresh; switching to automatic runs dirty once | manual: stale after 150 ms, old value; refresh -> 42; auto switch -> 7 | `batch_engine_test.cpp`: BatchEngineTest.{ManualModeNeverRunsUntilRefresh, SwitchingToAutomaticRunsEverythingDirtyOnce} | keep |  |
+| BAT-09 | [pre-existing, mechanical MarkerService->BatchEngine] Markers ABI host create/remove/scopes/qualifiers/flags/config | unchanged expectations | `markers_runtime_host_test.cpp`: MarkersRuntimeHostTest.{PluginCreateRunsPublishesAndNamespaces, ActiveDatasetErrorFailsTheCreate, CallbackNormalizedKeysAreWhatTheServiceStores, RemoveUnknownErrors, PerPluginIsolation, NoActiveDatasetRejected, ScopeAllPublishesAcrossDatasets, DatasetAndGlobalScopeRulesCoexistOverTheAbi, DatasetScopeRuleOnEachDatasetKeepsBoth, ScopeAllWithBareInputInTwoDatasetsIsNotAmbiguous, ScopeAllWithZeroInputsSucceeds, ScriptCanReadTheQualifiedInputNameItDeclared, ReservedFlagBitIsRejected, ConfigEchoesHistoryExemptBit, ConfigKeepsAUniqueBareInputBare, ConfigQualifiesAnInputOnceItsBareNameIsAmbiguous, ScopeAllRejectsARecognizedDatasetQualifier, ScopeAllKeepsAColonNameThatMatchesNoSource} | keep | slice 1 rename |
+| BAT-10 | createV2 with window installs clipped generator; config reports staged coverage; start>end rejected | window [2,3] -> 2 markers; coverage_ns {1,4}; [40,20] -> "window" error, nothing installed | `markers_runtime_host_test.cpp`: MarkersRuntimeHostTest.{CreateV2WithWindowInstallsAClippedGenerator, ConfigReportsTheStagedCoverage, CreateV2WindowStartAfterEndIsRejected} | keep | slice 8 marker time window |
+
+<a id="inc"></a>
+## INC: Incremental engine
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| INC-01 | Incremental node falling behind retention skips to live, records the gap; file datasets never gap; gap replay never resurrects rows below the floor (SISO + MIMO) | gap {9s,10s}, output = chunk B only, no extra gap; file: 60 rows, no gaps; floor 15s -> gap {9,15}, 5 rows >=15s | `incremental_engine_test.cpp`: IncrementalEngineTest.{FallingBehindRetentionSkipsToLiveAndRecordsTheGap, FileDatasetNeverGaps, GapReplayDoesNotResurrectRowsBelowTheFloor} | keep | slice 4 |
+
+<a id="sto"></a>
+## STO: ObjectStore primitives
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| STO-01 | Same-stamp republish: newest wins (strictly larger uid), both entries counted; backward insert keeps at-or-before semantics | 0xB0 wins with larger uid; latestAt(12)->older backward entry; nothing before earliest; range sorted; triple newest wins | `object_store_duplicate_stamp_test.cpp`: ObjectStoreDuplicateStampTest.{SameStampNewestWins, BackwardInsertKeepsAtOrBefore, SameStampAfterBackwardInsert, DuplicateStampTripleNewestWins} | keep | used by batch + layers regardless of N7 |
+| STO-02 | ObjectStore::evictWhere: non-prefix eviction keeps order/uids, no-op cases, warm-cache invalidation, lazy read can't repopulate, concurrent readers safe, destroys after locks released | survivors keep uids + drain order; unrelated eviction keeps warm cache; evicted lazy read leaves nothing; TSan-clean; reentrant destructor no deadlock | `object_store_evict_where_test.cpp`: ObjectStoreEvictWhereTest.{EvictWhereKeepsOrderAndUids, EvictWhereNoMatchIsNoOp, EvictWhereUnknownTopicIsNoOp, EvictWhereInvalidatesWarmCache, EvictedLazyReadCannotRepopulateWarmCache, EvictWhereUnderConcurrentReaders}<br>`object_store_test.cpp`: ObjectStoreReviewTest.EvictWhereDestroysEntriesAfterTheLocksRelease | **removed: N7** — unless another consumer keeps it (StreamingVideoIdentity + on-demand tests call it; decide) |  |
+| STO-03 | Multi-topic bundle transaction + publication_generation: all-or-nothing on validation/staging failure, ceilings, prune-only, generation invalidated by other mutations, cross-call reader coherence, deferred destruction | failed bundle keeps every prior entry+generation; ceilings fail after staging; prune keeps uid; plain push/evict/detach resets generation; readers see matched pairs | `object_store_test.cpp`: ObjectStoreReviewTest.PushOwnedBundleDestroysRetiredEntriesAfterTheLocksRelease; ObjectStoreBundleTest.{ValidationAndStagingExceptionsPreserveEveryPriorEntry, PruneOnlyPreservesCachedEntryIdentityAndCanEmptyTopics, RawMetadataIdentitySurvivesAndOtherMutationsInvalidateGeneration, CrossCallReadersDetectPublicationsThatInterleaveTheirReads} | **removed: N7** — bundle transaction + generation dropped before SDK ships it |  |
+
+<a id="ui"></a>
+## UI: App UI (Custom Topics panel, embedded views, misc)
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| UI-01 | Toolbox manifest badge/name labels; custom_topics_editor toolbox discovery | badge falls back to name then id; editor id empty/declared/stable among two | `extension_catalog_parser_routes_test.cpp`: ExtensionCatalogToolboxLabels.{BadgeFallsBackToNameThenId, CustomTopicsEditorIsTheDeclaringToolbox}<br>`plugin_runtime_catalog_test.cpp`: PluginCatalogTest.RuntimeCatalogStaticToolboxCarriesManifestBadge | keep | custom_topics_editor declaration key may change (SDK open: manifest capabilities tag); behaviour stays |
+| UI-02 | Custom Topics lists persistent (incl. pinned) recipe topics, removed from Datasets; ephemeral preview in neither but catalog-resolvable; removal clears | names crop+pin; not in Datasets; preview only in ephemeralPreviewKeys; gone after remove | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.CustomTopicsListsPersistentRecipesOnly | keep |  |
+| UI-03 | Edit pencil only for the declaring editor's rows; foreign rows read-only with tooltip | assistant row disabled "Created by assistant; read-only"; editor row enabled | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.EditIsEnabledOnlyForTransformEditorRows | keep | declaration key may change (SDK open: custom_topics_editor -> manifest capabilities tag); behaviour stays |
+| UI-04 | Delete refuses another plugin's recipe / transform; no declared editor -> nothing deletable; editor's own transform deletable | foreign recipe kept; foreign transform kept; no editor -> kept; editor -> deleted | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.{DeleteOfAnotherPluginsRecipeIsRefused, DeleteOfAnotherPluginsTransformIsRefused} | keep |  |
+| UI-05 | "+" button and edit exist only while a toolbox declares custom_topics_editor | editor id cleared -> + hidden, edit disabled | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.NoDeclaredEditorHidesPlusAndMakesRowsReadOnly | keep | declaration key may change (SDK open: capabilities tag); behaviour stays |
+| UI-06 | Custom Topics rows flat, named by recipe (id or id/output), external owner badged, tooltip names dataset | 4 top-level rows; names lidar_top_crop, pair/left, pair/right, mine; badge for assistant; tooltip "dataset run.mcap" | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.CustomTopicsRowsAreFlatNamedByRecipe | keep |  |
+| UI-07 | Custom Topics object rows: draggable with family icon, readiness glyph + reason in tooltip, owner-gated edit | derived topic leaves Datasets; drag + icon; kPending glyph, tooltip "computing"; assistant row read-only, editor row editable | `curve_list_panel_test.cpp`: CurveListPanelTest.CustomTopicsObjectRowDragsShowsGlyphAndGatesEdit | **decided here** — the row glyph follows the node state; "computing while an older result is shown" uses the computing glyph, with the lag in the tooltip |  |
+| UI-08 | Custom Topics rows flat, named, badged (badge is presentation only; owner id fallback) | 4 top-level rows, no children; names; badge "AI" not in text/key; tooltip creator + dataset; bare panel badge = plugin id | `curve_list_panel_test.cpp`: CurveListPanelTest.CustomTopicsRowsAreFlatNamedAndBadged | keep |  |
+| UI-09 | Read-only rows disable edit and delete (incl. mixed selection) | foreign row: edit+Delete disabled with tooltip, click emits nothing; editor row deletes; select-all disables | `curve_list_panel_test.cpp`: CurveListPanelTest.ReadOnlyRowsDisableEditAndDelete | keep |  |
+| UI-10 | "+" add button follows the declared editor | hidden by default; shown with editor id; hidden when cleared | `curve_list_panel_test.cpp`: CurveListPanelTest.AddButtonFollowsTheDeclaredEditor | keep | declaration key may change (SDK open: capabilities tag); behaviour stays |
+| UI-11 | Plugin creating an owned tab folds its own takeover panel and shows the tab; touching existing tab or another plugin's tab does not | new tab -> folded + current; rename/focus existing -> takeover stays; other plugin -> stays | `toolbox_panel_fold_test.cpp`: ToolboxPanelFoldTest.{PluginCreatingOwnedTabFoldsItsTakeoverAndShowsTheTab, PluginTouchingExistingOwnedTabDoesNotFoldTakeover, OtherPluginCreatingTabLeavesTakeoverInPlace} | keep | incidental UX |
+| UI-12 | Embedded scene view in plugin widget data: create once, reconcile topics by diff, kind change recreates, clear deletes, failed attach neither retried nor detached, no host frame untouched, chart frames unaffected | call logs as listed (create:3d, attach/detach diffs, one pjEmbeddedView) | `widget_binding_test.cpp`: WidgetBindingEmbeddedView.{CreatesOnceAndReconcilesTopics, KindChangeRecreatesAndReattaches, ClearDeletesTheView, FailedAttachIsNotRetriedNorDetached, WithoutHostFrameIsUntouched, ChartFrameUnaffected} | keep | slice 8 (embedded views) |
+| UI-13 | Radio table with hidden header fills the viewport; hidden-header resize policy keeps total | column sum == viewport width across resizes/added columns; only fill column absorbs | `dialog_engine_test.cpp`: TableBinding.RadioTableWithHiddenHeaderFillsViewport<br>`header_resize_policy_test.cpp`: HeaderResizePolicy.{HiddenHeaderFillsTheViewportAfterAResize, HiddenHeaderGrowingAColumnKeepsTheTotal} | keep | incidental UI (editor panel) |
+| UI-14 | Owner watermark stays inside object widget / plot canvas | mark inside content for generic object widget and plot | `plot_focus_overlay_test.cpp`: PlotFocusOverlay.{OwnerWatermarkCoversGenericObjectWidget, OwnerWatermarkRemainsInsidePlotCanvas} | keep | incidental |
+| UI-15 | Derived topic readiness glyphs on topic node, survive rebuild, full-set replace; repeated identical readiness causes no model churn, tooltip kept | pending/error glyphs, ready = no glyph; rebuild restamps; omitted path cleared; 100 identical sets -> 0 dataChanged | `curve_tree_view_test.cpp`: CurveTreeViewTest.{DerivedTopicGlyphsLandOnTheTopicNodeAndSurviveRebuild, RepeatedDerivedReadinessKeepsErrorTooltipWithoutModelChurn} | keep | widget mechanics; error text example "materialized-bytes ceiling reached" disappears with N7 |
+
+<a id="perf"></a>
+## PERF: Performance benches
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| PERF-01 | Cold vs warm evaluateAt latency report | prints medians; warm from_cache | `on_demand_service_test.cpp`: OnDemandServiceTest.LatencyReport | keep | informational, no threshold |
+| PERF-02 | 5-min streaming bench: retention + memory plateau (env-gated) | PJ_STREAM_BENCH: 10 Hz live; raw/derived <=51 entries, <=8 MiB; logs RSS | `on_demand_service_test.cpp`: DerivedStreamingBench.FiveMinuteRetentionAndMemoryPlateau | **changes: N7** — derived bounds become history bounds; skipped by default |  |
+| PERF-03 | Series replay over 400×24k-pt clouds: worst GUI turn (target <=8 ms) | PJ_BENCH-gated; rows 400 | `on_demand_series_test.cpp`: OnDemandSeriesBench.ReplayOver400Clouds | **changes: N8/N6** — decode in worker + batch entries per task; re-baseline |  |
+| PERF-04 | GUI-freeze bench: transform over 500k-row log, marker rule over long series, on-demand cold/warm | prints upsert medians + worst 10 ms heartbeat lateness; warm/other-instant from_cache asserted | `engine_freeze_bench_test.cpp`: EngineFreezeBench.{ApplyTransformOverLongLog, ApplyMarkerRuleOverLongSeries, OnDemandColdAndWarm} | keep | slice 2 baseline measured on OLD engines before 3/4/6a |
+
+<a id="mech"></a>
+## MECH: Mechanical renames / moves (slice 1)
+
+| ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
+|---|---|---|---|---|---|
+| MECH-01 | [mechanical, pj_tf / TransformService move] Scene3D tests switched pj::scene3d::{TransformService,TransformBuffer,StampedTransform,FrameRow} -> PJ::TransformService / pj::tf::* | unchanged expectations | `grid_map_layer_test.cpp`: GridMapLayer.DockTransformsSourceBoundsIntoFixedFrame<br>`occupancy_grid_layer_updates_test.cpp`: OccupancyGridLayerUpdatesTest.RenderKeyFollowsSourceFrameTransform<br>`pointcloud_layer_cache_test.cpp`: PointCloudLayerRenderKey.FoldsFixedFromSourceTransform<br>`robot_model_layer_test.cpp`: RobotModelLayerTest.{FixedJointBridgeReconnectsChildFrameInRenderBuffer, FixedJointBridgeAppliesFramePrefix, AutoModeCollisionOnlyLinkRendersInCollisionGroupWhenModelHasVisuals, AutoModeAllCollisionModelPromotesToVisuals, DrawsKeepLinkLocalGeometryAndApplyTfOnce}<br>`scene3d_dock_depth_gate_test.cpp`: Scene3DDockDepthGate.{AcceptsDepthEncodedImageAsDepthCloud, RefusesColorImage}<br>`scene3d_dock_fixed_frame_test.cpp`: Scene3DDockFixedFrame.{NewDockSeedsRememberedFrameWhenPresent, NewDockFallsBackToHeuristicWhenRememberedAbsent, SecondDockInheritsFirstDocksManualChoice, AutoRootRestoreUsesSavedResolvedFrame, ExplicitRestoreDoesNotRewriteRememberedFrame}<br>`scene3d_dock_streaming_test.cpp`: Scene3DDockStreaming.{SameStampReplacementCloudPassesRepaintGate, StaticSampleInMovingFramePassesRepaintGate, EmptyDockSurvivesRevalidateUntilItHasHeldContent, TfOnlyDockSurvivesRevalidateUntilTopicEvicted, RebindsToSecondDatasetAfterFirstRemoved, TfOnlyDockTrackerTimeRecoversAbsoluteOffset, TfOnlyDockTrackerTimeToggleOffIsRawSeconds, FrameListReflectsBufferGrowthWhilePaused}<br>`scene3d_follow_test.cpp`: Scene3DFollow.DockFollowFrameRoundTripsThroughLayout<br>`scene_entities_layer_model_test.cpp`: SceneEntitiesLayerModelTest.ModelDrawCallIsFrameLocalPoseAndScale<br>`voxel_grid_layer_test.cpp`: VoxelGridLayer.RenderKeyFollowsSourceFrameTransform | keep | slice 1 |
+| MECH-02 | [mechanical, TransformService move] Scene3D persistence tests | unchanged expectations | `scene3d_dock_persistence_test.cpp`: Scene3DDockStrictXmlTest.RejectsInvalidFixedFrameAndCameraMetadataBeforeMutation; Scene3DDockPersistence.{GenericLayerResolvesUniqueTopicAndType, GenericLayerRejectsAmbiguousTopicAndType, GenericConfigResolvesUniqueTopicAndType, GenericConfigRejectsAmbiguousTopicAndType, ConfigTopicRoundTripsAndResolvesBySource, ConfigTopicUnresolvedWhenDatasetMissing, ExplicitFixedFrameSurvivesZeroLayerRestore, DepthCloudLayerRestoresBeforeFirstSample, RepeatedLoadRebindsTransformDatasetAndEmptyStateClearsIt, QualifiedConfigRejectsKnownLiveObjectTypeMismatch, QualifiedLayerRejectsKnownLiveObjectTypeMismatch, RejectsTopicFromSecondDataset, MalformedLayerPayloadFailsAndPreservesLiveScene, MalformedConfigPayloadFailsAndPreservesExistingBinding, DeferredLayerReturnsToItsSavedDrawOrder, DeferredMalformedLayerIsRemovedAndConsumedWhenTopicArrives, BrowserSavedLocalFileRobotRestoresFromPathNatively, DeferredNestedRobotTopicMaterializesWithoutDuplicateLocalLayer, DeferredNestedRobotWrongTypeIsPermanentRestoreFailure, RejectedClipboardReplayPreservesPriorPendingQueue, WorkspaceSignalTracksPresentationAndLayerConfigButNotXmlRestore, TfTrailRoundTripsThroughXml, PoseTrailDefersUntilTopicLoadsThenMaterializes, PoseTrailBuildsPolylineFromDecodedMessages, PoseTrailPrunesWithItsSourceTopicButTfTrailSurvives, TfTrailRemovedWhenItsDatasetUnloads, PoseLayerOwnsEmbeddedTrailInsteadOfAddingALayer, TrailRestoreRejectsMalformedElements} | keep | slice 1; RejectsTopicFromSecondDataset relates to D7 (warning -> refusal proposal) |
+| MECH-03 | [rename only DerivedEngine -> IncrementalEngine] rest of incremental_engine_test (74 TESTs, bodies identical after rename) + 2 elsewhere | unchanged | `incremental_engine_test.cpp`: Appendix A1 (74 TESTs)<br>`processor_siso_adapter_test.cpp`: ProcessorSisoAdapterTest.AbsoluteRunsThroughEngineAndMaterializesOutput<br>`engine_thread_safety_test.cpp`: EngineThreadSafety.TypeRegistryRegisterDuringWorkerWriteNoRace | keep | slice 1 |
+| MECH-04 | [mechanical] Custom Series -> Custom Topics panel rename (customTopicNames/syncCustomTopicsPanel) | unchanged expectations | `main_window_custom_series_test.cpp`: MainWindowCustomSeriesTest.{RestoredTransformIsListed, WithdrawnTransformLeavesNoRow, CatalogRemovalAlonePrunesTheRow, ClearedCatalogEmptiesCustomSeries} | keep | #698 user-visible rename (regression-risk list) |
+| MECH-05 | [mechanical] MarkerService -> BatchEngine type / "Custom Topics" wording in history tests | unchanged expectations | `main_window_history_exempt_test.cpp`: MainWindowHistoryExemptFixture.{ExemptTransformRoundTripsThroughFullNotHistoryScope, FullReplaceDropsReplacedTransformFromCustomSeries, ExemptMarkerRoundTripsThroughFullNotHistoryScope, UndoRejectsExemptMarkerDependencyWithoutMovingHistory, UndoDoesNotOverwriteLiveExemptMarkerUnderSameId, UnrelatedUndoWithExemptMarkerDependentKeepsProducerAndAdvancesHistory}<br>`main_window_history_test.cpp`: MainWindowHistoryFixture.UndoOfASourceTimelineDragKeepsGlobalMarkersAtTheirDisplayInstant<br>`main_window_marker_generator_restore_test.cpp`: MainWindowMarkerGeneratorRestoreTest.RestoresGeneratorBySourceWhenIdsSwap | keep | N10 moves these restore paths out of MainWindow |
+| MECH-06 | [moved verbatim] Remaining transform_service_test TESTs (file moved pj_scene3D/widgets -> pj_runtime) | unchanged | `transform_service_test.cpp`: Appendix A2 (23 TESTs) | keep | slice 1 (N3 move) |
+| MECH-07 | [moved, namespace only] TF buffer tests (pj_scene3D -> pj_tf, pj::scene3d -> pj::tf) | unchanged | `tf_buffer_test.cpp`: Appendix A3 (30 TESTs)<br>`tf_buffer_hierarchy_test.cpp`: Appendix A4 (13 TESTs) | keep | slice 1 (pj_tf extraction); N5 repeat-skip extends TransformBufferTest.RevisionBumpsOnMutationNotOnReject (see Gaps) |
+
+<a id="gaps"></a>
+## Gaps
+
+Scenarios the spec or the decisions imply that no test covers today. Suggested names are placeholders.
+
+| ID | Decision | Missing scenario | Suggested test |
+|---|---|---|---|
+| GAP-01 | D26 | Pinned finding visible at any instant, including before its stamp (finding at 12.4 s visible when scrubbing to 5 s), labelled by computation time | `ResultHistory`: `PinnedFrameVisibleAtAnyInstant`; plus a 3D dock scrub test |
+| GAP-02 | D30 | A script slower than the cursor tick keeps publishing during continuous playback (never starves; today cancel-per-tick drops every run) | `NodeScheduler`: `SlowScriptStillPublishesWhileCursorMoves` |
+| GAP-03 | D30 | One running + one pending request per node; the pending slot holds only the latest time (N cursor moves during a run -> at most 2 runs) | `NodeScheduler`: `PendingSlotKeepsOnlyTheLatestTime` |
+| GAP-04 | D30 | Display only moves forward: an older request completing after a newer one never replaces the shown result | `OlderCompletionNeverReplacesNewerResult` |
+| GAP-05 | D30 | While computing, the layer shows the newest result at-or-before the cursor with lag = cursor - result stamp; exact hit has lag 0; lag indicator appears in the scene dock and clears when the cursor stops | `FrameAtReturnsNewestAtOrBeforeCursorWithLag`, `ExactHitHasZeroLag`, a dock lag-indicator test (replaces SCN pending rows) |
+| GAP-06 | D30 | A time-only change never cancels the running run; only recipe/params/epoch/removal supersede (positive test of the time-only case) | `TimeOnlyChangeDoesNotCancelTheRunningRun` |
+| GAP-07 | D30 / D6 | Missing input or a script error clears the display immediately even when an earlier valid result exists (interaction with "show previous while pending") | `MissingInputClearsEvenWithPreviousResult` |
+| GAP-08 | D30 (batch) | Under constant streaming change every valid batch run publishes (markers never freeze); the stale flag clears only when the newest input is covered | `StreamingMarkersKeepPublishingUnderConstantChange` |
+| GAP-09 | D30 | Demand leaving while a run is in flight: whether the running result still publishes (DEM row is `unclear`; decide, then test) | extend `DemandLeavingCancelsThePendingRequest` |
+| GAP-10 | N7 | Live edge never refuses: a 100 Hz input for longer than 30 s keeps the derived topic publishing (today a test encodes the refusal) | `LiveEdgeNeverRefusesAt100Hz` |
+| GAP-11 | N7 | History bounded in bytes evicts the result farthest from the cursor; backward-seek hit rate at 30 Hz under 128 MiB is not worse (spike metric) | `HistoryBoundedByBytesEvictsFarthestFromCursor` |
+| GAP-12 | N7 | The lazy store entry serializes only on the first plugin read; `readLatestAt` of a derived topic returns the current result | `LazyEntrySerializesOnFirstReadOnly` |
+| GAP-13 | N7 | A chain takes the upstream decoded object inline, with no store round trip | `DownstreamTakesUpstreamInlineWithoutStoreRoundTrip` |
+| GAP-14 | N7 | Const aliasing: an object a layer holds is unchanged by a later publication or eviction | `HeldFrameSurvivesPublicationAndEviction` |
+| GAP-15 | N7 | Declared range from the inputs: a dock whose only layer is derived does not clamp the cursor to the materialized span (no one-tick heal) | scene_common / 3D dock test |
+| GAP-16 | N8 | Series demand gating: no replay at install; replay starts when the series is displayed (topic demand tracker) or explicitly requested; editing or reloading an undemanded series does no work | `SeriesReplaysOnlyWhileDemanded` |
+| GAP-17 | N8 | Series clock = union of all object inputs' entry stamps: two object inputs at 10 Hz and 30 Hz give rows at the union (no test has two object inputs) | `SeriesClockIsUnionOfObjectInputs` |
+| GAP-18 | N8 / N6 | Series decoding in the worker with several entries per task; cursor requests are not starved behind background replays | priority test + `OnDemandSeriesBench` re-baseline |
+| GAP-19 | N10 | An unchanged marker generator keeps its topics across restore (test-first behaviour change; today it gets new topics) | `UnchangedGeneratorKeepsTopicsOnRestore` |
+| GAP-20 | N10 | One dependency-ordered restore across engines (an on-demand recipe or generator reading a transform output), run in `pj_runtime` without `MainWindow`; layout format unchanged on round trip | `DerivedRestoreOrdersAcrossEngines` |
+| GAP-21 | N10 | GUI and headless sessions get the same derived runtime hosts (removes the "KEEP IN SYNC" copy) | parity test on the assembled hosts |
+| GAP-22 | N1 | Python module mutation isolation: `math.pi = 3` in one call is not visible in the next | `PythonModuleMutationDoesNotLeak` |
+| GAP-23 | N1 | Python script checked and compiled once per recipe revision; re-upsert recompiles | compile-count test |
+| GAP-24 | Python sandbox | Known bypasses `statistics.sys` and `json.codecs.builtins` (exec/compile audit events) are denied; trust model still open in the spec | two sandbox tests next to `OsReachedThroughAllowedModuleIsDeniedByAuditHook` |
+| GAP-25 | N6 | Native ops release the GIL: GUI-thread Python work (transform `calculate`, validation) progresses while the Python lane runs a long native crop | `NativeOpReleasesTheGil` |
+| GAP-26 | N6 | Input decoding in the worker: GUI time per `requestAt` independent of input size (260k-point cloud, 1080p image), measured before and after | bench + a "decode not on the calling thread" probe |
+| GAP-27 | Slice 5 (defect 19) | The Luau interpreter itself honours the cancel token (a pure-Lua loop is cancelled, not only native ops) | `LuauLoopHonoursTheCancelToken` |
+| GAP-28 | N3 / N5 | A repeated identical TF sample is not stored: no revision bump, TF-observing cached results stay valid; randomized lookup equivalence against insert-everything | `RepeatTfSampleIsNotStored`; extend `TransformBufferTest.RevisionBumpsOnMutationNotOnReject` with same-stamp-same-value |
+| GAP-29 | TF clock mixing (N4) | A recipe in input-clock vs query-clock mode whose TF comes from a merged/offset source (`payload_stamp_shift`) or carries header vs receive stamps: `pj.tf.now` lookups use the same time base as the inputs | `TfLookupUsesTheInputsTimeBaseAcrossMergeShift` |
+| GAP-30 | D25 | Downstream gating only on the unavailable output: a child reading an available sibling output of the same upstream still runs | `SiblingOutputStillFlowsWhenOneIsUnavailable` |
+| GAP-31 | D7 | The 3D dock refuses (not warns about) a topic from another dataset; the optional typed dataset id on the v2 request (decided 2026-10-13) makes mixed inputs unrepresentable | dock test + request-shape test |
+| GAP-32 | Datasets | On-demand dataset removal mid-flight (not reload) drops the result, clears state, retires topics; dataset merge into an anchor remaps on-demand inputs and re-evaluates pins (batch has merge tests, on-demand none) | `DatasetRemovalMidFlightLeavesNoState`, `MergeRemapsOnDemandRecipes` |
+| GAP-33 | D19 / D22 | Evaluations, pins and display never move the playhead | `EvaluationNeverMovesTheCursor` |
+| GAP-34 | Slice 8 | `DataProcessorsKindRouter` rejects a request whose `struct_size` is too small before reading `kind` | `KindRouterChecksStructSizeFirst` |
+| GAP-35 | D18 | Browser (WASM) build of derived layers and on-demand evaluation: no test (N7 spike plans screenshot checks) | wasm smoke + screenshots |
+| GAP-36 | N10 | The prototype deleted `DataProcessorTransformTest.ClearForPluginRemovesOnlyThatPlugin` and `clearTransformsForPlugin`. Decide in slice L whether uninstalling a plugin removes its persistent recipes, or only its previews (`removeEphemeralsOf`). | life-cycle protocol test |
+| GAP-37 | D30 | A 90 ms Luau function during playback shows the newest earlier result with its lag, never a blank layer. Write it first, failing against the prototype. | `SlowLuauDuringPlaybackShowsLaggedResult` |
+| GAP-38 | N1 (Luau) | A call that writes a global table or the string metatable leaves nothing the next call can see. Required before adopting one Luau state per worker. | `LuauCallCannotLeakSharedState` |
+| GAP-39 | N10 | Real layouts restore unchanged: files saved by a `release-4.1` build (slice L) and by the prototype (slice 6b), not only test-generated ones | `RestoresLayoutSavedByRelease41`, `RestoresLayoutSavedByPrototype` |
+| GAP-40 | N8 | A dropped series computes the visible range first; an uncomputed series shows "not computed" or "computing N%"; an assistant query counts as explicit demand | `SeriesComputesVisibleRangeFirst`, `UncomputedSeriesSaysSo`, `AssistantQueryIsExplicitDemand` |
+| GAP-41 | §9 | One global byte budget: with many nodes, eviction takes the result farthest from the cursor across nodes, never a node's displayed result, and never refuses | `GlobalBudgetEvictsFarthestAcrossNodes` |
+| GAP-42 | §6 | An output declared with a type no binder can produce (for example an occupancy grid) is rejected | `UnproducibleOutputTypeIsRejected` |
+| GAP-43 | §13 (slice M) | Marker topics carry their metadata; the overlay finds a series' markers through it; a direct write to a 0.35 marker name is stamped at registration; on-demand-only logic ignores marker topics | `MarkerTopicsCarryMetadata`, `LegacyMarkerNameIsStampedAtRegistration`, `OnDemandRefillIgnoresMarkerTopics` |
+| GAP-44 | P3 | A known but unservable tab kind is rejected with an error naming it; each plot-tab tail slot is present on its own | `KnownUnservableKindIsRejectedByName` |
+| GAP-45 | P3 | A topic the host cannot attach to a dialog scene view is reported to the plugin | `SceneViewAttachFailureReachesPlugin` |
+| GAP-46 | TF R6 | With log time different from header stamps: the cursor and the query use the entry clock, and an object is placed at its own header stamp | `LookupUsesEntryClockAndPlacesByHeaderStamp` |
+
+Note on `ObjectStore::evictWhere`: outside `ObjectStore` itself, only tests call it. If the N7 spike chooses pull, it goes together with the rows marked `removed: N7`.
+
+<a id="coverage-check"></a>
+## Coverage check
+
+- **TESTs in scope: 794.** Found with `git diff -M --name-status d0138b922 origin/feat/derived-objects-editor-host -- '*test*'` and a TEST/TEST_F parser comparing each body with the merge base (after normalizing the `DerivedEngine`->`IncrementalEngine` and `MarkerService`->`BatchEngine` renames).
+  - 366 in files the stack added; 231 in files it moved or renamed (`incremental_engine_test.cpp` 77, `batch_engine_test.cpp` 73, `transform_service_test.cpp` 38, `pj_tf/tests/*` 43); 197 added or modified in existing files.
+- **TESTs listed in a row: 794. Unmapped: 0.** The 140 rename-only or moved-verbatim TESTs are listed by name in [Appendix A](#appendix-a) and referenced from MECH rows.
+- **Counts against the brief:** on_demand_service 92, on_demand_runtime_host 32, on_demand_series 18, on_demand_cursor_follow 10, engine_pool 12, data_processors_kind_router 18 (12 new + 6 modified), object_script 63, python_object_script 43, scene3d_dock_derived_topics 12, main_window_on_demand_restore 24: all match.
+- **Deleted by the stack (not mapped):** `data_processor_service_transform_test.cpp: DataProcessorTransformTest.ClearForPluginRemovesOnlyThatPlugin`, with `clearTransformsForPlugin` itself (now `clearAllTransforms`). Decide whether plugin uninstall still needs a per-plugin clear.
+- **Parser false positive, excluded:** `widget_binding_test.cpp: WidgetBindingMarkdown.PluginShapedTailRewritePreservesReaderAnchorAndSelection` looked modified only because new TESTs were appended after it; the diff removes no line.
+- **Touched without any TEST change** (includes, usings, comments only): `pj_scene3D/tests/{robot_model_bridges,tf_connections,trail_sampling}_test.cpp`, `pj_scene3D/widgets/tests/{model_rhi_policy,scene3d_rhi_model_cache,scene3d_rhi_point,trail_layer}_test.cpp`, `pj_plotting/tests/{curve_editor,plot_widget}_global_markers_test.cpp`, `pj_dialog_host/tests/mock_panel_plugin.cpp`.
+- **Non-TEST test files changed:** `on_demand_test_support.h` (shared fixture and reference recipe), `fake_transform_snapshot.h`, `mock_parser_support.h`, `scene3d_render_test_support.h`, `mixed_layout_fixture.h`, `host_info_capture.hpp`, `mock_panel_plugin.hpp`, `pj_plotting/tests/CMakeLists.txt`, `pj_scene2D/testdata/README.md`, `tests/wasm/fixtures/generate_ros2_depth_cloud.py`.
+- Benches skipped by default (`PJ_BENCH` / `PJ_STREAM_BENCH`): PERF-02, PERF-03, PERF-04.
+
+<details><summary>TESTs in scope per file</summary>
+
+| File | TESTs in scope | Basis |
+|---|---|---|
+| `pj_app/tests/curve_list_panel_test.cpp` | 5 | added + modified TESTs |
+| `pj_app/tests/headless_descriptor_provider_session_test.cpp` | 2 | added + modified TESTs |
+| `pj_app/tests/layout_xml_test.cpp` | 1 | added + modified TESTs |
+| `pj_app/tests/main_window_custom_series_test.cpp` | 4 | added + modified TESTs |
+| `pj_app/tests/main_window_history_exempt_test.cpp` | 6 | added + modified TESTs |
+| `pj_app/tests/main_window_history_test.cpp` | 1 | added + modified TESTs |
+| `pj_app/tests/main_window_marker_generator_restore_test.cpp` | 2 | added + modified TESTs |
+| `pj_app/tests/main_window_on_demand_restore_test.cpp` | 24 | new file |
+| `pj_app/tests/main_window_plugin_views_test.cpp` | 8 | added + modified TESTs |
+| `pj_app/tests/main_window_scene3d_drop_framing_test.cpp` | 3 | new file |
+| `pj_app/tests/toolbox_panel_fold_test.cpp` | 3 | added + modified TESTs |
+| `pj_datastore/tests/engine_thread_safety_test.cpp` | 1 | added + modified TESTs |
+| `pj_datastore/tests/incremental_engine_test.cpp` | 77 | moved/renamed file |
+| `pj_datastore/tests/object_store_duplicate_stamp_test.cpp` | 4 | new file |
+| `pj_datastore/tests/object_store_evict_where_test.cpp` | 6 | new file |
+| `pj_datastore/tests/object_store_test.cpp` | 6 | added + modified TESTs |
+| `pj_datastore/tests/plugin_data_host_catalog_v2_test.cpp` | 4 | new file |
+| `pj_datastore/tests/plugin_data_host_object_read_test.cpp` | 1 | added + modified TESTs |
+| `pj_datastore/tests/plugin_data_host_object_test.cpp` | 2 | added + modified TESTs |
+| `pj_datastore/tests/processor_siso_adapter_test.cpp` | 1 | added + modified TESTs |
+| `pj_dialog_host/tests/dialog_engine_test.cpp` | 2 | added + modified TESTs |
+| `pj_dialog_host/tests/panel_engine_test.cpp` | 1 | added + modified TESTs |
+| `pj_dialog_host/tests/widget_binding_test.cpp` | 6 | added + modified TESTs |
+| `pj_plotting/tests/plot_focus_overlay_test.cpp` | 2 | new file |
+| `pj_runtime/tests/app_session_test.cpp` | 1 | added + modified TESTs |
+| `pj_runtime/tests/batch_engine_test.cpp` | 73 | moved/renamed file |
+| `pj_runtime/tests/catalog_model_test.cpp` | 1 | added + modified TESTs |
+| `pj_runtime/tests/data_processor_ephemeral_abi_visibility_test.cpp` | 1 | added + modified TESTs |
+| `pj_runtime/tests/data_processor_service_test.cpp` | 1 | added + modified TESTs |
+| `pj_runtime/tests/data_processor_service_transform_test.cpp` | 1 | added + modified TESTs |
+| `pj_runtime/tests/data_processors_kind_router_test.cpp` | 18 | added + modified TESTs |
+| `pj_runtime/tests/data_processors_runtime_host_test.cpp` | 4 | added + modified TESTs |
+| `pj_runtime/tests/data_source_runtime_host_changed_topics_test.cpp` | 4 | new file |
+| `pj_runtime/tests/engine_freeze_bench_test.cpp` | 3 | new file |
+| `pj_runtime/tests/engine_pool_test.cpp` | 12 | new file |
+| `pj_runtime/tests/extension_catalog_parser_routes_test.cpp` | 2 | added + modified TESTs |
+| `pj_runtime/tests/markers_runtime_host_test.cpp` | 22 | added + modified TESTs |
+| `pj_runtime/tests/on_demand_cursor_follow_test.cpp` | 10 | new file |
+| `pj_runtime/tests/on_demand_media_cache_test.cpp` | 2 | new file |
+| `pj_runtime/tests/on_demand_runtime_host_test.cpp` | 32 | new file |
+| `pj_runtime/tests/on_demand_series_test.cpp` | 18 | new file |
+| `pj_runtime/tests/on_demand_service_test.cpp` | 92 | new file |
+| `pj_runtime/tests/plot_tabs_runtime_host_test.cpp` | 10 | added + modified TESTs |
+| `pj_runtime/tests/plugin_runtime_catalog_test.cpp` | 1 | added + modified TESTs |
+| `pj_runtime/tests/scene_image_decoder_test.cpp` | 7 | new file |
+| `pj_runtime/tests/scene_video_frame_source_test.cpp` | 3 | new file |
+| `pj_runtime/tests/session_manager_test.cpp` | 2 | added + modified TESTs |
+| `pj_runtime/tests/transform_service_lookup_test.cpp` | 2 | new file |
+| `pj_runtime/tests/transform_service_test.cpp` | 38 | moved/renamed file |
+| `pj_scene2D/tests/composite_media_source_test.cpp` | 3 | added + modified TESTs |
+| `pj_scene2D/tests/scene2d_dock_widget_test.cpp` | 1 | added + modified TESTs |
+| `pj_scene2D/tests/scene_pipeline_source_test.cpp` | 1 | added + modified TESTs |
+| `pj_scene2D/tests/streaming_video_decoder_test.cpp` | 3 | added + modified TESTs |
+| `pj_scene3D/widgets/tests/grid_map_layer_test.cpp` | 1 | added + modified TESTs |
+| `pj_scene3D/widgets/tests/occupancy_grid_layer_updates_test.cpp` | 1 | added + modified TESTs |
+| `pj_scene3D/widgets/tests/pointcloud_layer_cache_test.cpp` | 1 | added + modified TESTs |
+| `pj_scene3D/widgets/tests/robot_model_layer_test.cpp` | 5 | added + modified TESTs |
+| `pj_scene3D/widgets/tests/scene3d_dock_depth_gate_test.cpp` | 2 | added + modified TESTs |
+| `pj_scene3D/widgets/tests/scene3d_dock_derived_topics_test.cpp` | 12 | new file |
+| `pj_scene3D/widgets/tests/scene3d_dock_fixed_frame_test.cpp` | 5 | added + modified TESTs |
+| `pj_scene3D/widgets/tests/scene3d_dock_persistence_test.cpp` | 29 | added + modified TESTs |
+| `pj_scene3D/widgets/tests/scene3d_dock_streaming_test.cpp` | 8 | added + modified TESTs |
+| `pj_scene3D/widgets/tests/scene3d_follow_test.cpp` | 1 | added + modified TESTs |
+| `pj_scene3D/widgets/tests/scene_entities_layer_model_test.cpp` | 1 | added + modified TESTs |
+| `pj_scene3D/widgets/tests/voxel_grid_layer_test.cpp` | 1 | added + modified TESTs |
+| `pj_scene_common/tests/scene_common_test.cpp` | 3 | added + modified TESTs |
+| `pj_scripting/tests/depth_ops_test.cpp` | 1 | new file |
+| `pj_scripting/tests/image_ops_test.cpp` | 7 | new file |
+| `pj_scripting/tests/marker_engine_test.cpp` | 1 | added + modified TESTs |
+| `pj_scripting/tests/object_script_test.cpp` | 63 | new file |
+| `pj_scripting/tests/object_summary_test.cpp` | 6 | new file |
+| `pj_scripting/tests/python_engine_test.cpp` | 10 | added + modified TESTs |
+| `pj_scripting/tests/python_object_script_test.cpp` | 43 | new file |
+| `pj_scripting/tests/script_media_test.cpp` | 6 | new file |
+| `pj_tf/tests/tf_buffer_hierarchy_test.cpp` | 13 | moved/renamed file |
+| `pj_tf/tests/tf_buffer_test.cpp` | 30 | moved/renamed file |
+| `pj_widgets/tests/curve_tree_view_test.cpp` | 2 | added + modified TESTs |
+| `pj_widgets/tests/header_resize_policy_test.cpp` | 2 | added + modified TESTs |
+
+</details>
+
+<a id="appendix-a"></a>
+## Appendix A: rename-only and moved-verbatim TESTs
+
+**A1. `pj_datastore/tests/incremental_engine_test.cpp` (renamed from `derived_engine_test.cpp`; bodies identical after `DerivedEngine`->`IncrementalEngine`), MECH row: 74 TESTs.**
+
+- `DerivativeTransformTest`: CorrectDerivative_ConstantRate, OutputKind_IsFloat64, Reset_ClearsState, SkipsFirstRow, ZeroDt_DoesNotDivideByZero
+- `IncrementalEngine`: Uint64PrecisionRoundTrip
+- `IncrementalEngineFieldSelectTest`: InputBindingState_RejectsInvalidRequests, InputBindingState_SisoResolveRestoreAndReplay, PartialFailure_DoesNotCommitTruncatedOutput, ReplaceSisoTransform_FailureRestoresPreviousOutput, ReplaceSisoTransform_InPlaceRecompute, ReplaceSisoTransform_RecomputesDownstreamChain, ReplaceSisoTransform_RejectsBadNode, SisoBindsSelectedColumn, SisoColumnOutOfRange_Fails, SisoDefaultColumnIsZero
+- `IncrementalEngineNullInputTest`: MimoSkipsJoinsWithANullInput, SisoSkipsNullInputCells
+- `IncrementalEngineRetentionTest`: ReplayHonoursTheInputRetentionFloor
+- `IncrementalEngineTest`: AddTransform_CreatesOutputTopic, AddTransform_DuplicateOutputName_Fails, AddTransform_NoCommittedChunks_Succeeds, AddTransform_UnknownInputTopic_Fails, CommitCycle_ReturnValueDrivesNotify, DirtyPropagation_Chain, DirtyPropagation_SourceChanged, FailedRecomputeRollback_LaterSchedulePassReplacesOutputInsteadOfAppending, LateInputRecomputeRecordsADownstreamFailureOnTheFailingNodeOnly, Parity_SingleChunk, Parity_ThreeChunks, Parity_TwoChunks_CrossBoundary, RecomputeBatch_ClearsAndRegenerates, RecomputeBatch_MultipleRootsRecomputesDiamondOnceInTopologicalOrder, RecomputeBatch_StickyFailureRestoresPriorOutputValues, RecomputeBatch_SuccessReplacesOutputRatherThanAppending, RecomputeBatch_ThrowingTransformRestoresPriorOutputAndReplaysOnce, SameNamedTopicsInDifferentDatasetsStayDependencyIsolated, Schedule_Chain_BothNodesRun, Schedule_Lazy_SkipsInactiveNode, Schedule_ProducesCorrectDerivative, Schedule_SecondCallNoNewChunks_NoOp, SisoLateInputCommitTriggersFullRecompute, TopologicalOrder_Chain_ABOrder, TopologicalOrder_Fork, TopologicalOrder_SingleNode
+- `IncrementalEngineTimeSliceTest`: DeferredNodesListPendingReplaysInCreationOrder, DownstreamNodeFollowsTheGrowingOutput, FailingStepEndsTheReplayWithAnError, InOrderAppendsDuringReplayAreConsumed, OutOfOrderAppendDuringReplayReplaysInFull, RemovedNodeEndsTheReplay, ReplaceDuringReplayFinishesWithTheNewOperator, ReplacedInputDataDuringReplayMatchesASynchronousNode, StepsStayWithinBudgetAndMatchSynchronousReplay
+- `MimoTransformTest`: AddMimo_CreatesOutputTopic, AddMimo_DuplicateOutputName_Fails, AddMimo_MultipleOutputTopics, AddMimo_UnknownInputTopic_Fails, ChainedSisoThenMimo, DuplicateTimestamp_ProducesOneOutputRow, InputBindingState_MimoResolveAndRestore, JoinSemantics_NoCommonTimestamps_NoOutput, JoinSemantics_OnlyMatchingTimestamps, MidStreamColumn_OldChunkNotOutOfBounds, MimoLateInputCommitTriggersFullRecompute, Parity_IncrementalMatchesBatch_MultipleChunks, Parity_IncrementalMatchesBatch_SingleChunk, Parity_StaggeredChunks_IncrementalMatchesBatch, PartialNotify_DoesNotAdvanceWatermark, Schedule_IncrementalTwoChunks, Schedule_ProducesCorrectSum, StatefulTransform_RecomputeBatchCallsReset, TopologicalOrder_MimoComesAfterSiso, WrongOutputKindsCount_Fails
+
+**A2. `pj_runtime/tests/transform_service_test.cpp` (moved from `pj_scene3D/widgets/tests/`; these TESTs unchanged), MECH row: 23 TESTs.**
+
+- `TransformService`: BareServiceIncrementalIngestRemainsActive, BulkIngestResolvesAcrossStampRange, EqualTimestampLateAppendNotLost, EvictionContinuity, ExplicitRebuildRejectsWorkerThreadInDebug, FailedLazyFetchIsSkippedAndNotRetried, FailedNewestEntryDoesNotBlockClassification, FanOutSiblingsSamePathStayDistinct, IncrementalEqualsBulk, InvalidateClearsBufferInPlace, InvalidateForgetsSessionRememberedFrame, LiveWindowDropsOldKeepsNewAndStatic, MergeShiftMovesCanonicalTfInTime, NonTfTopicClassifiedOnce, OutOfOrderEdgeIsIngestedAtItsOwnTime, PathlessNamedSourcePersistsByNameAlone, RedundantIngestIsNoOp, RememberedFixedFramePersistsAcrossSessionsBySource, RemembersFixedFramePerDatasetInSession, ReparentConflictDropsOneEdgeContinues, SameNameDifferentPathDoesNotShareRememberedFrame, SourcelessDatasetIsSessionOnly, TransientProbeFailureNotBlacklisted
+
+**A3. `pj_tf/tests/tf_buffer_test.cpp` (moved from `pj_scene3D/tests/`, namespace only): 30 TESTs.**
+
+- `TransformBufferChainSampleTimes`: ClipsToWindowAndDeduplicates, CrossBranchMeetsAtCommonAncestor, DegenerateWindowOnAnExactStampKeepsIt, DisconnectedUnknownOrIdenticalIsEmpty, TargetSideChainContributesStamps, UnionsEveryEdgeOnThePath
+- `TransformBufferTest`: AreConnectedReportsReachability, CyclicTreeDoesNotHang, DefaultWindowEvictsHistoryAfterBulkIngest, EmptyFrameNameRejected, FiniteWindowPinsMostRecentSample, GetAllFramesOutParamMatchesAndClears, Introspection, KeepAllRetainsFullHistoryAfterBulkIngest, NaNQuaternionRejected, NamespacedStaticResolvesWithoutTopicHint, NonFiniteTranslationRejected, QuaternionNormalize, ReparentingIsRejected, RepublishedStaticUsesNearestPrevious, RevisionBumpsOnMutationNotOnReject, SelfParentIgnored, SetCacheWindowKeepsStaticEdge, SetCacheWindowTrimsButKeepsLastSample, SingleSampleHoldsForward, StoppedDynamicKeepsResolvingUnderFiniteWindow, TreeWalkComposition, TryLookupNoThrow, ZOHBoundary, ZeroQuaternionRejected
+
+**A4. `pj_tf/tests/tf_buffer_hierarchy_test.cpp` (moved from `pj_scene3D/tests/`, namespace only): 13 TESTs.**
+
+- `TfBufferHierarchy`: CaseCollidingSiblingsBothAppear, ChildrenAtSameDepthAreAlphabetical, DisconnectedForestsKeepBothRootsAtDepthZero, EmptyBufferReturnsEmptyVector, FlatWalkIsCycleSafe, MixedCaseSiblingsSortCaseInsensitively, ParentCycleStillSurfacesAllFrames, SingleEdgeProducesRootAndChild
+- `TfBufferHierarchyJson`: ChildrenAlphabeticalAtEachDepth, DeepChainTerminates, DisconnectedForestsAppearAsTwoTopLevelEntries, EmptyBufferReturnsEmptyArray, SingleEdgeNestsChild
