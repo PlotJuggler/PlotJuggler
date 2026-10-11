@@ -137,7 +137,7 @@ The "wholesale lift" strategy for plot widgets (see `pj_plotting/CLAUDE.md`) mea
 
 ## Build
 
-- **Qt 6.11.1** (required; pinned by [`versions.env`](./versions.env)). Install via [`./scripts/install_qt6.sh`](./scripts/install_qt6.sh) on Linux, [`scripts/windows/install_qt6.ps1`](./scripts/windows/install_qt6.ps1) on Windows (the `msvc2022_64` kit). See [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) for what changed since 6.8 (new APIs past most training cutoffs, deprecations, build floors).
+- **Qt 6.12.0** (required; pinned by [`versions.env`](./versions.env)). Install via [`./scripts/install_qt6.sh`](./scripts/install_qt6.sh) on Linux, [`scripts/windows/install_qt6.ps1`](./scripts/windows/install_qt6.ps1) on Windows (the `msvc2022_64` kit). See [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) for what changed since 6.8 (new APIs past most training cutoffs, deprecations, build floors).
 - **CMake + Conan**. CMake is the build driver; Conan provides external non-vendored dependencies.
 - **C++20**.
 - **Renderer: QRhi.** Scene3D, the plot canvas (`PlotRhiCanvas`) and the Scene2D media viewer render through QRhi on the platform's native API; `PJ_GRAPHICS_API` overrides it at run time. There is no other GPU renderer to select at configure time.
@@ -161,8 +161,9 @@ Explicitly vendored (do not take from Conan or system packages):
 
 **Qwt is external, not vendored** (special case): `3rdparty/qwt/` holds only the
 CMake glue — the default build `FetchContent`s the official 6.3.0 release tarball
-(SHA-256 pinned) and compiles it unmodified; the pixi path links conda-forge's
-prebuilt `qwt` via `-DPJ_SYSTEM_QWT=ON`. Never patch Qwt sources — PJ-specific
+(SHA-256 pinned) and compiles it unmodified on every path, pixi included
+(`-DPJ_SYSTEM_QWT=ON` can link conda-forge's prebuilt `qwt` once it is built
+against the pinned `qt6-main`). Never patch Qwt sources — PJ-specific
 behavior that PJ3 carried as in-tree Qwt patches lives in the app instead: axis
 tick-label formatting in `pj_plotting`'s `PlotScaleDraw` (twin in
 `pj_dialog_host`'s chart preview), and the "Lines and Dots" curve style in
@@ -194,7 +195,7 @@ still installs Qt inline because the Linux installer uses the `gcc_64` build.
 > **Versioning rule — never hardcode a version.** `PJ_APP_VERSION` (app version),
 > `PJ_QT_VERSION` (Qt), and `PJ_APPIMAGE_ARCH` (AppImage arch) live **only** in
 > [`versions.env`](./versions.env); always read them from there rather than
-> writing a literal (`3.999.0`, `6.11.1`, `x86_64`) anywhere. How each consumer
+> writing a literal (`3.999.0`, `6.12.0`, `x86_64`) anywhere. How each consumer
 > reads it: bash scripts `source "<anchor>/versions.env"` by absolute path; the
 > Windows PowerShell scripts under `scripts/windows/` parse its `KEY=VALUE` lines
 > themselves (`PjWindowsCommon.ps1`); CMake

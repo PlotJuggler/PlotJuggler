@@ -36,7 +36,7 @@
   pj_app.exe under RelWithDebInfo/ (preferred) then Release/.
 
 .PARAMETER QtDir
-  Qt kit dir that owns windeployqt.exe, e.g. C:\Qt\6.11.1\msvc2022_64.
+  Qt kit dir that owns windeployqt.exe, e.g. C:\Qt\6.12.0\msvc2022_64.
   If empty, windeployqt is taken from PATH.
 
 .PARAMETER IfwDir
@@ -99,7 +99,7 @@
 
 .NOTES
   Host requirements:
-    - Qt 6.11.1 msvc2022_64 (windeployqt.exe) -- auto-found in .qt when present
+    - Qt 6.12.0 msvc2022_64 (windeployqt.exe) -- auto-found in .qt when present
     - Qt Installer Framework tools (binarycreator.exe) -- install via the Qt
       Maintenance Tool, or:  aqt install-tool --outputdir .qt windows desktop tools_ifw
     - A populated Conan cache from the PJ4 build (FFmpeg + CPython DLLs)
@@ -179,12 +179,13 @@ function Resolve-Exe([string]$name, [string]$hintDir) {
 # Default -QtDir to the aqt layout inside the repo (.qt) when present, so a machine
 # that installed Qt via scripts/install_qt6.sh / aqt needs no -QtDir.
 if (-not $QtDir) {
-  $qtGuess = Join-Path $repoRoot ".qt\6.11.1\msvc2022_64"
+  $pjQtVersion = (Select-String -Path (Join-Path $repoRoot "versions.env") -Pattern '^PJ_QT_VERSION=(.+)$').Matches[0].Groups[1].Value.Trim()
+  $qtGuess = Join-Path $repoRoot ".qt\$pjQtVersion\msvc2022_64"
   if (Test-Path (Join-Path $qtGuess "bin\windeployqt.exe")) { $QtDir = $qtGuess; Info "auto-detected Qt: $QtDir" }
 }
 $qtBinDir = if ($QtDir) { Join-Path $QtDir "bin" } else { "" }
 $windeployqt = Resolve-Exe "windeployqt.exe" $qtBinDir
-if (-not $windeployqt) { Die "windeployqt.exe not found. Pass -QtDir <kit> (e.g. .qt\6.11.1\msvc2022_64 or C:\Qt\6.11.1\msvc2022_64) or add it to PATH." }
+if (-not $windeployqt) { Die "windeployqt.exe not found. Pass -QtDir <kit> (e.g. .qt\6.12.0\msvc2022_64 or C:\Qt\6.12.0\msvc2022_64) or add it to PATH." }
 Info "windeployqt : $windeployqt"
 
 # binarycreator and repogen ship in the same IFW bin directory, so one search
@@ -194,7 +195,7 @@ function Resolve-IfwTool([string]$name) {
   if ($found) { return $found }
   # Search the usual IFW-tool locations. aqt lays them under <aqt-base>\Tools\
   # QtInstallerFramework, where <aqt-base> is two levels above the kit dir
-  # (e.g. .qt\6.11.1\msvc2022_64 -> .qt); the Qt online installer uses C:\Qt\Tools.
+  # (e.g. .qt\6.12.0\msvc2022_64 -> .qt); the Qt online installer uses C:\Qt\Tools.
   $ifwRoots = @()
   if ($QtDir) {
     $aqtBase = Split-Path -Parent (Split-Path -Parent $QtDir)

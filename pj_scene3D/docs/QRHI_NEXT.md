@@ -175,15 +175,16 @@ Deferred with a trigger, not failing any row:
 
 ## P6: Qt 6.12
 
-Qt 6.12 is the next LTS (`docs/QT_NOTES.md`). QRhi has no cross-minor
+Qt 6.12 is the pinned LTS (`docs/QT_NOTES.md`). QRhi has no cross-minor
 compatibility guarantee, so the upgrade is one change across every channel:
 
-- [ ] Bump `PJ_QT_VERSION` in `versions.env` (Windows CI installs Qt inline:
-  check it follows), and the `qt6-main` pin in `pixi.toml`.
-- [ ] Re-bake every `.qsb` pack with 6.12's `qsb`: `pj_scene3D/widgets/rhi/shaders/bake.sh`,
-  `pj_plotting/widget/shaders/bake.sh` and the Scene2D packs (the `qsb` commands
-  in `pj_scene2D/docs/TECHNICAL_NOTES.md`, "Shader Toolchain"). The WASM
-  configure fails on any byte difference until they match.
+- [x] `PJ_QT_VERSION` in `versions.env`, the `qt6-main` pin in `pixi.toml` (Windows,
+  macOS and WASM CI read `versions.env`), and `PJ_EMSCRIPTEN_VERSION`.
+- [x] Every `.qsb` pack re-baked with 6.12.0's `qsb`: the bytes are identical to the
+  6.11.1 packs, so none changed. The WASM configure still hash-checks them; re-bake
+  with `pj_scene3D/widgets/rhi/shaders/bake.sh`, `pj_plotting/widget/shaders/bake.sh`,
+  the Scene2D packs (`pj_scene2D/docs/TECHNICAL_NOTES.md`, "Shader Toolchain") and
+  the capability probe whenever a shader changes.
 - [ ] Re-test the two grab workarounds before removing either: the never-shown
   `grabFramebuffer()` that works once, and the OpenGL stale uniforms in grab-only
   frames (`grabPresentedFrame()` presents a real frame first). Keep each until a

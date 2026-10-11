@@ -8,7 +8,7 @@ name: Pixi CI
 
 on:
   pull_request:
-    branches: [main, main-4.x, development]
+    branches: [main, main-4.x, development, 'release-*']
     types: [opened, synchronize, reopened, ready_for_review]
     # Path-filtered: most PRs touch neither the manifest nor the recipes, and
     # the Conan workflows already compile every C++ change. A pixi-only
@@ -20,7 +20,7 @@ on:
       - cmake/**
       - .github/workflows/pixi-ci.yml
   push:
-    branches: [main, main-4.x, development]
+    branches: [main, main-4.x, development, 'release-*']
   workflow_dispatch:
 
 concurrency:
@@ -72,7 +72,7 @@ jobs:
         with:
           submodules: recursive
 
-      # Persists pixi's downloaded package archives (~2.1 GB: Qt 6.11.1, the
+      # Persists pixi's downloaded package archives (~2.1 GB: Qt 6.12.0, the
       # compiler, every conda-forge library) across runs. There's no committed
       # multi-platform pixi.lock to key setup-pixi's own cache on yet (blocked
       # on the win-64 gap packages needing to exist first to generate one, see

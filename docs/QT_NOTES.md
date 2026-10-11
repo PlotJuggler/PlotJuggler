@@ -1,24 +1,22 @@
 # Qt version notes (for AI agents and humans)
 
 **PJ4 builds against the Qt version pinned in [`../versions.env`](../versions.env)
-(currently 6.11.1).** Install it with [`../scripts/install_qt6.sh`](../scripts/install_qt6.sh).
+(currently 6.12.0).** Install it with [`../scripts/install_qt6.sh`](../scripts/install_qt6.sh).
 
-> **Read this if your training data predates ~2025.** Qt 6.9, 6.10 and 6.11
+> **Read this if your training data predates ~2025.** Qt 6.9, 6.10, 6.11 and 6.12
 > shipped *after* the knowledge cutoff of most current models. If you "know" PJ4
 > is on Qt 6.8, that is stale — this file is the delta. Don't reach for a 6.8-era
 > workaround for something later Qt fixed, and don't assume an API you don't
 > recognize doesn't exist. When unsure about a Qt symbol, check the installed
 > headers under `.qt/<PJ_QT_VERSION>/gcc_64/include/` rather than guessing from memory.
 
-## Why 6.11 (a non-LTS) and not 6.12 LTS
+## Why 6.12 (LTS)
 
-We want the newest stable features now. 6.11.1 (released 2026-05-13) is the
-latest stable; 6.11.2 isn't out until ~Aug 2026. The next **LTS** is **6.12**
-(Qt's LTS cadence is now every 4th minor / ~2 years from 6.8 on, with 5 years of
-support) — beta as of mid-2026, final ~autumn 2026. **Plan: ride 6.11.x now, then
-settle on 6.12 LTS when it ships.** Qt 6 guarantees source/binary compatibility
-across the whole 6.x series, so 6.8 → 6.11 → 6.12 is low-risk for a pure-Widgets
-app like PJ4.
+6.12.0 is the LTS: Qt's cadence is every 4th minor (~2 years from 6.8 on), with 5
+years of support. Every channel moves together: `PJ_QT_VERSION` in `versions.env`, the
+`qt6-main` pin in `pixi.toml`, and `PJ_EMSCRIPTEN_VERSION` (the 6.12 WebAssembly kit
+targets Emscripten 5.0.5). Qt 6 keeps source/binary compatibility across the 6.x
+series, but `<rhi/qrhi.h>` has no cross-minor guarantee, so a channel never mixes minors.
 
 ## What PJ4 actually uses (so you can judge relevance)
 
@@ -37,7 +35,7 @@ plot canvas (`PlotRhiCanvas`), on the native API (OpenGL on Linux, D3D11 on
 Windows, Metal on macOS, WebGL2 in the browser). QRhi changes matter to all
 three, and `<rhi/qrhi.h>` has no cross-minor compatibility guarantee, so every
 channel stays on the pinned minor.
-Qt 6.11 specifics the QRhi code works around (grab-only frames, the OpenGL
+The Qt 6.11 behaviours the QRhi code works around (grab-only frames, the OpenGL
 depth resolve and multisample textures, the Metal fallback, `QRhiWidget` pipeline
 caches) are in `pj_scene3D/docs/TECHNICAL_NOTES.md` §3; the 6.12 upgrade
 checklist is in `pj_scene3D/docs/QRHI_NEXT.md`.

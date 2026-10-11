@@ -8,11 +8,15 @@
 # tests.
 name: macOS CI
 
-# Nightly on the default branch (skipped when it has not moved) and on demand,
-# never per PR: a run takes ~32 min on a GitHub-hosted macOS runner at about
-# $2. Start it by hand (`gh workflow run "macOS CI" --ref <branch>`) before
-# merging a change to the QRhi/Metal paths.
+# Nightly on the default branch (skipped when it has not moved), on every PR into
+# a release-* branch, on PRs into other branches that touch what can break the
+# Metal/QRhi lane (see the `gate` job), and on demand. A run takes ~32 min on a
+# GitHub-hosted macOS runner at about $2. Start it by hand
+# (`gh workflow run "macOS CI" --ref <branch>`) before merging a change to the
+# QRhi/Metal paths the gate does not list.
 on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   schedule:
     - cron: "0 1 * * *"
   workflow_dispatch:
@@ -34,11 +38,46 @@ jobs:
     permissions:
       actions: read
 
+  gate:
+    # PRs into release-* always build. Other PRs build only when they touch the
+    # toolchain pins, build system, vendored code or the widget/render code the
+    # Metal and OpenGL QRhi tests cover. Fails open: if the file list cannot be
+    # read, the PR builds.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      build: ${{ steps.gate.outputs.build }}
+    steps:
+      - id: gate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.base_ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          build=true
+          if [[ "${BASE_REF}" != release-* ]]; then
+            if files=$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/files" --jq '.[].filename'); then
+              build=false
+              pattern='^(versions\.env|conanfile\.txt|conan\.lock|CMakeLists\.txt|cmake/|3rdparty/|pj_scene3D/|pj_scene2D/widgets/|pj_plotting/widget/|pj_widgets/|pj_scene_common/|pj_app/CMakeLists\.txt|pj_app/tests/rhi_|scripts/ci/|\.github/workflows/macos-ci\.yml)'
+              if grep -Eq "${pattern}" <<<"${files}"; then build=true; fi
+            fi
+          fi
+          echo "base=${BASE_REF}; build=${build}"
+          echo "build=${build}" >> "${GITHUB_OUTPUT}"
+
   qrhi-metal:
-    needs: changed
-    # !cancelled(): on manual runs the gate is skipped, which would otherwise
-    # skip this job too.
-    if: ${{ !cancelled() && (github.event_name != 'schedule' || needs.changed.outputs.changed == 'true') }}
+    needs: [changed, gate]
+    # !cancelled(): on manual runs the two gates are skipped, which would
+    # otherwise skip this job too.
+    if: >-
+      ${{ !cancelled()
+      && (github.event_name != 'schedule' || needs.changed.outputs.changed == 'true')
+      && (github.event_name != 'pull_request' || needs.gate.outputs.build == 'true') }}
     # GitHub-hosted Apple silicon (M1, 3 cores, 7 GB, paravirtual Metal GPU).
     # depot-macos-14 (M2, 8 cores) waited 40 min in the queue for a runner
     # (Depot macOS capacity is not elastic), so it is a manual choice only.
@@ -203,6 +242,7 @@ jobs:
           key: ccache-macos-arm64-${{ github.ref_name }}-${{ github.sha }}
           restore-keys: |
             ccache-macos-arm64-${{ github.ref_name }}-
+            ccache-macos-arm64-${{ github.base_ref }}-
             ccache-macos-arm64-main-
 
       - name: Set ccache limits
@@ -262,7 +302,7 @@ jobs:
 
       - name: Save ccache
         # always(): a failed build's objects are still valid. Not from PR runs
-        # (each save is a new SHA-keyed blob); PRs restore main's.
+        # (each save is a new SHA-keyed blob); PRs restore their base branch's or main's.
         if: always() && github.event_name != 'pull_request' && steps.ccache_restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
@@ -305,7 +345,10 @@ jobs:
         # (its 1 px analytic line loses the same coverage), no frame-identity check
         # across a shadow toggle (not reproducible frame to frame there), and no DPR 2 mixed-dock
         # pass (every float recompiles the whole pipeline set at 4x the pixels;
-        # Linux runs it). pj_scene3D/docs/TECHNICAL_NOTES.md, "macOS OpenGL fallback".
+        # Linux runs it). Pull requests also skip the DPR 2 render variants, the frame
+        # benchmarks and three slow cases that check renderer logic rather than the
+        # backend (Linux runs all of them); the scheduled and manual runs run them.
+        # pj_scene3D/docs/TECHNICAL_NOTES.md, "macOS OpenGL fallback".
         if: always() && steps.build.outcome == 'success'
         shell: bash
         env:
@@ -318,8 +361,12 @@ jobs:
         run: |
           mkdir -p "$PJ_POINTCLOUD_GOLDEN_OUT"
           log="${RUNNER_TEMP}/qrhi-opengl-ctest.log"
-          ctest --test-dir build -V --timeout 120 -L qrhi-opengl \
-            -E '^pointcloud_golden_test\.|SubPixelCubeCloudBecomesColouredSprites|FilledGridLinesFollowOddCellEdges|ShadowToggleRebindsKeptMeshes|^rhi_mixed_dock_test\.opengl_dpr2\.' \
+          exclude='^pointcloud_golden_test\.|SubPixelCubeCloudBecomesColouredSprites|FilledGridLinesFollowOddCellEdges|ShadowToggleRebindsKeptMeshes|^rhi_mixed_dock_test\.opengl_dpr2\.'
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            # Pull requests run a lighter pass; nightly and manual runs run it all.
+            exclude+='|\.opengl_dpr2\.|^scene3d_frame_benchmark\.|PresentationRenderScaleSupersamples|MeshesArrivingOneByOneBuildOnce|CachedFramesMatchUncachedPixelForPixel'
+          fi
+          ctest --test-dir build -V --timeout 120 -L qrhi-opengl -E "${exclude}" \
             2>&1 | tee "$log" || status=$?
           bash scripts/ci/check_qrhi_backend.sh "$log" 'OpenGL, ' OpenGL
           exit "${status:-0}"
@@ -365,6 +412,25 @@ jobs:
         if: always() && steps.build.outcome == 'success'
         shell: bash
         run: ctest --test-dir build --output-on-failure --timeout 120 -LE qrhi
+
+      - name: Slowest QRhi cases
+        # The OpenGL fallback runs on Apple's software renderer and dominates the
+        # lane: list where its time goes (job summary and log). Last in the job so
+        # the listing is in the tail of the log, after the long unit-test output.
+        if: always() && steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          for backend in metal opengl; do
+            log="${RUNNER_TEMP}/qrhi-${backend}-ctest.log"
+            [[ -f "${log}" ]] || continue
+            {
+              echo "### Slowest QRhi cases (${backend})"
+              echo '```'
+              awk '/Test +#[0-9]+:/ && / sec$/ {print $(NF-1), $0}' "${log}" | sort -rn | head -n 15 | cut -d' ' -f2-
+              awk '/Test +#[0-9]+:/ && / sec$/ {t += $(NF-1)} END {printf "total %.0f s in tests\n", t}' "${log}"
+              echo '```'
+            } | tee -a "${GITHUB_STEP_SUMMARY}"
+          done
 
       - name: Upload QRhi Metal failure images
         if: failure()

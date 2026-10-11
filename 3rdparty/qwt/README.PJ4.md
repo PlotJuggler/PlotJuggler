@@ -16,8 +16,8 @@ No Qwt sources live in this repo. The `plotjuggler_qwt` target in
     point `FETCHCONTENT_SOURCE_DIR_QWT_UPSTREAM` at a pre-extracted tarball.
 - **`-DPJ_SYSTEM_QWT=ON` (pixi / conda path, Linux only)**: links the
   environment's prebuilt shared `qwt` package (conda-forge, built against the
-  same `qt6-main` the env provides). The pixi `configure` task sets this on
-  linux-64. That library is the full upstream build, OpenGL canvas included,
+  same `qt6-main` the env provides). No pixi task sets it while conda-forge has no
+  qwt build for the pinned `qt6-main` minor (pixi uses the FetchContent build). That library is the full upstream build, OpenGL canvas included,
   so this path still links `Qt6::OpenGL` and `Qt6::OpenGLWidgets`. On
   Windows the option is a hard error: conda-forge's qwt is a DLL, and MSVC
   duplicates the `QwtSeriesData<QPointF>` template members between `qwt.dll`

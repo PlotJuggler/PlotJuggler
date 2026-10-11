@@ -64,7 +64,7 @@ Read in this order:
 
 - [`docs/REQUIREMENTS.md`](./docs/REQUIREMENTS.md) — the WHAT: scope, use cases, functional requirements, module contract.
 - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — the HOW: module structure, data flow, scrub architecture, codec pipeline, threading model, key invariants.
-- [`docs/TECHNICAL_NOTES.md`](./docs/TECHNICAL_NOTES.md) — domain background: Qt 6.11.1/QRhi specifics, codec caveats, HW-accel matrices, lessons learned.
+- [`docs/TECHNICAL_NOTES.md`](./docs/TECHNICAL_NOTES.md) — domain background: Qt 6.12.0/QRhi specifics, codec caveats, HW-accel matrices, lessons learned.
 - [`../plotjuggler_sdk/docs/builtin_type.md`](../plotjuggler_sdk/docs/builtin_type.md) — canonical builtin-type catalog (the SDK owns all canonical scene/object schemas: Image, DepthImage, VideoFrame, PointCloud, OccupancyGrid, SceneEntities, FrameTransforms, ImageAnnotations, etc.).
 
 ## Key headers

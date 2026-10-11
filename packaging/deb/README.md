@@ -28,7 +28,7 @@ and Conan runtime is installed under `/opt/plotjuggler4`, with only a launcher
 in `/usr/bin` plus a desktop entry and icon. `lintian` reports bundled
 libraries; that is inherent, not a defect to fix.
 
-A distro-native package is not achievable: `versions.env` pins Qt 6.11.1 and no
+A distro-native package is not achievable: `versions.env` pins Qt 6.12.0 and no
 Ubuntu release ships it, and much of the Conan graph (mcap, cloudini, nanoarrow,
 nanocdr, backward-cpp) is not packaged by Debian at all.
 

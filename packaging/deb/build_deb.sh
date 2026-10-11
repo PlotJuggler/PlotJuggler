@@ -13,7 +13,7 @@
 #
 # The package is a BUNDLED ("vendor") .deb in the Chrome / VS Code mould —
 # everything under /opt/plotjuggler4 plus a wrapper in /usr/bin. A distro-native
-# package is impossible: PJ4 pins Qt 6.11.1 (no Ubuntu ships it) and much of the
+# package is impossible: PJ4 pins Qt 6.12.0 (no Ubuntu ships it) and much of the
 # Conan graph is not packaged by Debian at all. See
 # docs/plans/2026-08-03-debian-packaging.md.
 #

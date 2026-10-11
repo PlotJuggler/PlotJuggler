@@ -23,7 +23,7 @@ pj_scene2d_widgets  ──►  pj_scene2d_core  ──►  pj_base
      │                  ├──►  turbojpeg
      │                  └──►  libpng
      │
-     ├──►  Qt 6.11.1 (Widgets, Gui, GuiPrivate — QRhi via Gui's private headers)
+     ├──►  Qt 6.12.0 (Widgets, Gui, GuiPrivate — QRhi via Gui's private headers)
      ├──►  pj_runtime           (IDataWidget contract, PlaybackEngine driver)
      ├──►  pj_scene_common      (SceneDockWidget/ISceneLayer base; backend-agnostic layered scene dock framework)
      ├──►  pj_widgets           (shared Colormap.h LUT/enum for the GPU depth colormap)
@@ -808,7 +808,7 @@ and 4.
 
 ### 7.1 QRhiWidget — five pipelines
 
-`MediaViewerWidget` subclasses `QRhiWidget` (Qt 6.11.1), which abstracts
+`MediaViewerWidget` subclasses `QRhiWidget` (Qt 6.12.0), which abstracts
 over Vulkan, Metal, D3D11, and OpenGL at runtime. The widget owns five
 QRhi graphics pipelines that share the same `viewTransform` UBO so
 zoom/pan/rotation apply uniformly:

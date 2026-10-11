@@ -326,6 +326,11 @@ set(BUILD_STATIC ON CACHE BOOL "" FORCE)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(3rdparty/Qt-Advanced-Docking)
 add_library(qt_advanced_docking ALIAS qtadvanceddocking-qt6)
+# Qt 6.12 deprecates Q_ENUMS, which the fork's ads_globals.h still uses; as a
+# system include its warnings stay out of our -Werror targets.
+get_target_property(_pj_ads_includes qtadvanceddocking-qt6 INTERFACE_INCLUDE_DIRECTORIES)
+set_target_properties(qtadvanceddocking-qt6 PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_pj_ads_includes}")
+unset(_pj_ads_includes)
 # Target options follow the directory-inherited sanitizer flags on the command
 # line, so -fno-sanitize=all wins for this library only. See PJ_SANITIZE_QT_ADS.
 if(PJ_SANITIZERS_ACTIVE AND NOT PJ_SANITIZE_QT_ADS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

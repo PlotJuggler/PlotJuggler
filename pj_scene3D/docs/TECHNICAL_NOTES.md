@@ -489,7 +489,12 @@ it leaves out what measures Apple's software renderer rather than ours, namely t
 point-cloud goldens, the sub-pixel sprite colour check (1 px sprites resolve to
 ~15% coverage there), the odd-cell-edge grid line check (its 1 px analytic line
 loses the same coverage there) and the DPR 2 mixed-dock pass (every float
-recompiles the pipeline set at 4x the pixels; Linux runs it). The PR lane runs on
+recompiles the pipeline set at 4x the pixels; Linux runs it). Pull requests also
+skip the `opengl_dpr2` render variants, the `scene3d_frame_benchmark` cases and three
+slow renderer-logic cases (`PresentationRenderScaleSupersamples`,
+`MeshesArrivingOneByOneBuildOnce`, `CachedFramesMatchUncachedPixelForPixel`); the
+nightly and manual runs run the whole step, and Linux runs all of them on every PR.
+The PR lane runs on
 GitHub's `macos-14`, because Depot's macOS capacity is not elastic (a job queued
 40 min); Depot stays a `workflow_dispatch` choice.
 

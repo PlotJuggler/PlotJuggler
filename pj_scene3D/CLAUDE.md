@@ -60,7 +60,7 @@ A one-click "Open in 3D view" curve-list action is a planned convenience.
   contract, the camera system, the URDF/mesh subsystem, `package://` asset
   resolution, the live-streaming data path and the scene-controls panel.
 - [`docs/TECHNICAL_NOTES.md`](./docs/TECHNICAL_NOTES.md) — what the design works
-  around: backend conventions, Qt 6.11.1 bugs and workarounds, ADS/Wayland quirks,
+  around: backend conventions, Qt 6.12.0 bugs and workarounds, ADS/Wayland quirks,
   limits and budgets, the measurements behind specific choices, golden-image rules
   and per-backend allowances, test registration and CI lanes, the performance
   baseline and the known gaps.

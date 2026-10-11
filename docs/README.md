@@ -3,7 +3,7 @@
 This folder is for **cross-cutting documentation only** — material that doesn't fit inside any single module's `docs/` folder.
 
 > **Qt toolchain:** PJ4 builds against the Qt version pinned in
-> [`../versions.env`](../versions.env) (currently **Qt 6.11.1**). Install it with
+> [`../versions.env`](../versions.env) (currently **Qt 6.12.0**). Install it with
 > [`../scripts/install_qt6.sh`](../scripts/install_qt6.sh). See
 > [`QT_NOTES.md`](./QT_NOTES.md) for what changed since 6.8.
 
@@ -31,7 +31,7 @@ Examples of what belongs here:
 | `archive/PJ4_PLAN.md` | Retired | Original master plan; current architecture lives in root and module `CLAUDE.md` / `docs/`. Ongoing recording and cache work lives in the documents below. |
 | `archive/QRHI_MIGRATION.md` | Retired | The completed QRhi migration of Scene3D, the plots and the media viewer (phases P0–P5, per-stream measurements, the Gate A sign-off and the final Gate A run against the GL renderer). The as-built design is in `pj_scene3D/docs/ARCHITECTURE.md` and `TECHNICAL_NOTES.md`; the remaining work in `pj_scene3D/docs/QRHI_NEXT.md`. |
 | `research/mosaico_canonical_objects.md` | Reference | Mosaico canonical-object ingestion, decoding, and rendering across the datastore and scene modules. |
-| `QT_NOTES.md` | Reference | **Qt 6.11.1 baseline.** Features new since 6.8 (likely past most models' training cutoff), deprecations, and build/platform floors. Read before using an unfamiliar Qt API or reaching for a 6.8-era workaround. |
+| `QT_NOTES.md` | Reference | **Qt 6.12.0 baseline.** Features new since 6.8 (likely past most models' training cutoff), deprecations, and build/platform floors. Read before using an unfamiliar Qt API or reaching for a 6.8-era workaround. |
 | `TELEMETRY.md` | Reference | The anonymous launch ping: exact field list (the privacy contract, enforced by `telemetry_ping_test`), opt-out, and where it's implemented. Update together with any payload change. |
 | `WASM_DEPLOYMENT.md` | Reference | Build, deterministic packaging, cross-origin isolation, compression negotiation, MIME, and cache requirements for the threaded browser application. |
 | `update_channels_design.md` | Design (delivered) | **How a release reaches an already-installed machine.** Why the apt repository and the Windows update repository are hosted on Cloudflare R2 rather than a metered package service, the publish orderings that keep index and payload consistent, accepted trade-offs (signing key in CI, no delta updates), and what is verified versus merely reviewed. |

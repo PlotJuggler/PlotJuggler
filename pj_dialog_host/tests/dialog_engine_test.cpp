@@ -9,6 +9,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QElapsedTimer>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
@@ -832,7 +833,13 @@ TEST_F(DialogEngineTest, SubDialogDoesNotStackAcrossTicks) {
   QDialog* main_dialog = visibleDialog();
   ASSERT_NE(main_dialog, nullptr);
 
-  // Let a burst of ticks fire. Each would open a sub-dialog without the guard.
+  // Wait for the first sub-dialog (a loaded runner may not tick within a fixed
+  // delay), then let a burst of ticks fire. Each would open another without the guard.
+  QElapsedTimer wait_clock;
+  wait_clock.start();
+  while (visibleDialogCount() < 2 && wait_clock.elapsed() < 2000) {
+    QTest::qWait(5);
+  }
   QTest::qWait(50);
 
   // One main dialog + exactly one sub-dialog = 2 visible dialogs (never growing).

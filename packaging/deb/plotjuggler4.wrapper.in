@@ -53,7 +53,7 @@ if [ -z "${GRPC_DEFAULT_SSL_ROOTS_FILE_PATH:-}" ]; then
 fi
 
 # An IBus input-context module loaded from a system or older Qt segfaults under
-# the bundled Qt 6.11 (the same reason run.sh unsets it for dev runs).
+# the bundled Qt 6.12 (the same reason run.sh unsets it for dev runs).
 unset QT_IM_MODULE
 
 exec "${PJ_PREFIX}/bin/plotjuggler4" "$@"
