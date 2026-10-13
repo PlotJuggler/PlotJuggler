@@ -957,17 +957,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           if (!series.has_value()) {
             return std::nullopt;
           }
-          PJ::MarkerService::ResolvedSeries out;
-          const std::size_t n = series->size();
-          out.timestamps.reserve(n);
-          out.values.reserve(n);
-          for (std::size_t i = 0; i < n; ++i) {
-            if (const std::optional<PJ::SeriesSample> s = series->sampleAt(i)) {
-              out.timestamps.push_back(static_cast<double>(s->timestamp));
-              out.values.push_back(s->value);
-            }
-          }
-          return out;
+          return PJ::readResolvedSeries(*series);
         }
         return std::nullopt;
       });

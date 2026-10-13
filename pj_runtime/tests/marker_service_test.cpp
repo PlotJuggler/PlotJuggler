@@ -10,8 +10,10 @@
 
 #include <QObject>
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <optional>
 #include <set>
@@ -22,8 +24,10 @@
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_base/builtin/plot_markers_codec.hpp"
 #include "pj_base/types.hpp"
+#include "pj_datastore/chunk.hpp"
 #include "pj_datastore/merge_result.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_datastore/query.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/MarkerService.h"
@@ -969,6 +973,65 @@ TEST(MarkerServiceTest, UpsertRejectsADeclaredInputCountMismatch) {
   ASSERT_FALSE(rejected.has_value());
   EXPECT_NE(rejected.error().find("declared"), std::string::npos) << rejected.error();
   EXPECT_TRUE(service.recipes().empty());
+}
+
+// A one-column chunk of consecutive rows t_start, t_start+step, ...; the value is the
+// row's timestamp + 0.5 (distinct from the timestamp, so a swapped column is caught),
+// and rows listed in `null_rows` carry a null value.
+PJ::TopicChunk makeSeriesChunk(
+    PJ::Timestamp t_start, std::uint32_t rows, PJ::Timestamp step, const std::set<std::uint32_t>& null_rows = {}) {
+  PJ::TopicChunkBuilder builder(1, 1, {{0, PJ::PrimitiveType::kFloat64, "value"}}, rows);
+  for (std::uint32_t row = 0; row < rows; ++row) {
+    const PJ::Timestamp timestamp = t_start + static_cast<PJ::Timestamp>(row) * step;
+    builder.beginRow(timestamp);
+    if (null_rows.contains(row)) {
+      builder.setNull(0);
+    } else {
+      builder.set(0, static_cast<double>(timestamp) + 0.5);
+    }
+    builder.finishRow();
+  }
+  return builder.seal();
+}
+
+TEST(ReadResolvedSeriesTest, CopiesMultiChunkSeriesSkippingNullsAndSubFloorRows) {
+  // Chunk order is deliberately reversed to pin time-ordered output, not chunk order.
+  std::deque<PJ::TopicChunk> chunks;
+  chunks.push_back(makeSeriesChunk(200, 10, 10));       // t = 200..290
+  chunks.push_back(makeSeriesChunk(100, 10, 10, {0}));  // t = 100..190, null at t=100
+  chunks.push_back(makeSeriesChunk(0, 10, 10, {3}));    // t = 0..90, null at t=30
+  const PJ::SeriesReader reader(chunks, /*column_index=*/0, /*retention_floor=*/50);
+
+  const MarkerService::ResolvedSeries out = PJ::readResolvedSeries(reader);
+
+  std::vector<double> expected_timestamps;
+  std::vector<double> expected_values;
+  for (PJ::Timestamp timestamp = 50; timestamp < 300; timestamp += 10) {
+    if (timestamp != 100) {
+      expected_timestamps.push_back(static_cast<double>(timestamp));
+      expected_values.push_back(static_cast<double>(timestamp) + 0.5);
+    }
+  }
+  EXPECT_EQ(out.timestamps, expected_timestamps);
+  EXPECT_EQ(out.values, expected_values);
+}
+
+TEST(ReadResolvedSeriesTest, CopiesAHugeSeriesInLinearTime) {
+  constexpr std::uint32_t kChunks = 5;
+  constexpr std::uint32_t kRowsPerChunk = 10'000;
+  std::deque<PJ::TopicChunk> chunks;
+  for (std::uint32_t chunk = 0; chunk < kChunks; ++chunk) {
+    chunks.push_back(makeSeriesChunk(static_cast<PJ::Timestamp>(chunk) * kRowsPerChunk, kRowsPerChunk, 1));
+  }
+  const PJ::SeriesReader reader(chunks, /*column_index=*/0);
+
+  const auto start = std::chrono::steady_clock::now();
+  const MarkerService::ResolvedSeries out = PJ::readResolvedSeries(reader);
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+
+  ASSERT_EQ(out.timestamps.size(), std::size_t{kChunks} * kRowsPerChunk);
+  EXPECT_DOUBLE_EQ(out.timestamps.back(), static_cast<double>(kChunks * kRowsPerChunk - 1));
+  EXPECT_LT(elapsed.count(), 500) << "copy took " << elapsed.count() << " ms";
 }
 
 }  // namespace

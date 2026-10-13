@@ -15,6 +15,7 @@
 #include "pj_base/builtin/plot_markers.hpp"        // sdk::PlotMarker(s), markerObjectTopicName, kPreviewMarkerTopic
 #include "pj_base/builtin/plot_markers_codec.hpp"  // serializePlotMarkers, deserializePlotMarkers
 #include "pj_datastore/object_store.hpp"
+#include "pj_datastore/query.hpp"
 #include "pj_runtime/MarkerTopics.h"     // isMarkerObjectTopic, markerOwnerTopicName, kAllDatasetsMarkerDataset
 #include "pj_scripting/marker_engine.h"  // scripting::SeriesView/SeriesProvider, runMarkerScript
 
@@ -603,6 +604,19 @@ MarkerService::GeneratorRecipe* MarkerService::findBinding(const GeneratorRecipe
     return bindingDataset(binding) == bindingDataset(recipe);
   });
   return match == it->second.end() ? nullptr : &*match;
+}
+
+MarkerService::ResolvedSeries readResolvedSeries(const SeriesReader& series) {
+  MarkerService::ResolvedSeries out;
+  const std::size_t sample_count = series.size();
+  out.timestamps.reserve(sample_count);
+  out.values.reserve(sample_count);
+  series.samples(Range<Timestamp>{std::numeric_limits<Timestamp>::min(), std::numeric_limits<Timestamp>::max()})
+      .forEach([&out](const SeriesSample& sample) {
+        out.timestamps.push_back(static_cast<double>(sample.timestamp));
+        out.values.push_back(sample.value);
+      });
+  return out;
 }
 
 }  // namespace PJ
