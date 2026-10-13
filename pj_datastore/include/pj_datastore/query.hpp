@@ -222,7 +222,9 @@ class SeriesReader {
   /// True when the virtual series contains no samples.
   [[nodiscard]] bool empty() const;
 
-  /// Return the sample at a virtual series index.
+  /// Return the sample at a virtual series index. O(n) per call: it scans rows from
+  /// the first chunk, so never call it in a loop over indices (O(n^2)); iterate with
+  /// samples(range) instead.
   [[nodiscard]] std::optional<SeriesSample> sampleAt(std::size_t index) const;
 
   /// Return the virtual series index of the latest sample at or before `t`.

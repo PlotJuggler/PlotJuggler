@@ -19,6 +19,7 @@
 namespace PJ {
 
 class ObjectStore;
+class SeriesReader;    // pj_datastore/query.hpp; by reference only in readResolvedSeries
 struct ObjectTopicId;  // pj_datastore/object_store.hpp; by value only in a private declaration below
 
 /// Output shape of a data processor (the `kind` discriminator of `pj.data_processors.v1`).
@@ -334,5 +335,12 @@ class MarkerService {
   DisplayOffsetResolver display_offset_resolver_;
   std::map<std::string, GeneratorBindings> recipes_;  ///< id → per-dataset bindings (incl. ephemeral); invariant 2
 };
+
+/// Copy a stored scalar series (retention floor applied, null rows skipped) into the
+/// resolver's `ResolvedSeries` form: timestamps as ns doubles, in time order (the
+/// engine assumes sorted input, which chunk order alone does not guarantee after
+/// out-of-order ingest). One O(n) pass — never `sampleAt(i)` in a loop: the shell's
+/// catalog-backed resolver calls this on the GUI thread under the engine lock.
+[[nodiscard]] MarkerService::ResolvedSeries readResolvedSeries(const SeriesReader& series);
 
 }  // namespace PJ
