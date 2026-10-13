@@ -61,6 +61,7 @@
 #include "pj_runtime/DataSourceRuntimeHost.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/TsanAnnotations.h"
 #include "pj_runtime/parse_locked.h"
 #ifdef PJ_WITH_SCENE3D
 #include "pj_runtime/TransformService.h"
@@ -74,47 +75,10 @@
 #ifdef PJ_WASM_ENABLE_MCAP_PROBE_PARSER
 #include "../tests/wasm_mcap_probe_topics.h"
 #endif
-#if defined(__SANITIZE_THREAD__)
-#define PJ_FILE_LOADER_TSAN 1
-#elif defined(__has_feature)
-#if __has_feature(thread_sanitizer)
-#define PJ_FILE_LOADER_TSAN 1
-#endif
-#endif
-#ifdef PJ_FILE_LOADER_TSAN
-#include <sanitizer/tsan_interface.h>
-#endif
 
 using namespace Qt::StringLiterals;
 
 namespace PJ {
-
-namespace {
-
-// ThreadSanitizer cannot see QThread::wait(), a futex inside prebuilt Qt, so it
-// reports every GUI-thread access after a join against the worker's earlier
-// accesses to the same load state. The worker releases a token on the FileLoader
-// after its last such access; the GUI thread acquires it once wait() returns,
-// which makes the ordering the join already guarantees visible to TSan. An
-// acquire whose worker never released merges only an older clock. Both are
-// no-ops outside a TSan build.
-void tsanWorkerHandOff(FileLoader* loader) {
-#ifdef PJ_FILE_LOADER_TSAN
-  __tsan_release(loader);
-#else
-  static_cast<void>(loader);
-#endif
-}
-
-void tsanWorkerJoined(FileLoader* loader) {
-#ifdef PJ_FILE_LOADER_TSAN
-  __tsan_acquire(loader);
-#else
-  static_cast<void>(loader);
-#endif
-}
-
-}  // namespace
 
 // Rendezvous between an import worker parked in the synchronous message-box ABI
 // and the GUI thread that answers it. Deliberately NOT FileLoader state: the
@@ -2267,7 +2231,13 @@ void FileLoader::runIngestOnWorker(std::uint64_t generation) {
   if (!status) {
     ctx_->start_error = QString::fromStdString(status.error());
   }
-  tsanWorkerHandOff(this);  // the worker's last access to shared load state
+  // ThreadSanitizer cannot see QThread::wait(), a futex inside prebuilt Qt, so it
+  // reports every GUI-thread access after a join against the worker's earlier
+  // accesses to the same load state. The worker releases a token on the FileLoader
+  // after its last such access; the GUI thread acquires it once wait() returns
+  // (onWorkerFinished and the shutdown join), which makes the ordering the join
+  // already guarantees visible to TSan.
+  tsan::release(this);
   QMetaObject::invokeMethod(this, [this, generation]() { onWorkerFinished(generation); }, Qt::QueuedConnection);
 }
 
@@ -2277,7 +2247,7 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
   }
   if (worker_) {
     worker_->wait();  // the worker posted us as its last act, so this returns promptly
-    tsanWorkerJoined(this);
+    tsan::acquire(this);
     worker_.reset();
   }
 
@@ -2773,7 +2743,7 @@ void FileLoader::joinForShutdown() {
   }
   if (worker_) {
     worker_->wait();
-    tsanWorkerJoined(this);
+    tsan::acquire(this);
     worker_.reset();
   }
   // onWorkerFinished / the fan-out continuation will not run after this

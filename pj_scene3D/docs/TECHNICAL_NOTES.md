@@ -425,9 +425,10 @@ and the overrides (`forceStageFallback()`, the depth replay,
 build has tests off), and the app never links it. Its stage times alone need
 the hooks.
 
-**Display runners in parallel.** Every CI lane runs ctest serially under xvfb.
-A local `ctest -j` of the display runners on one Wayland compositor (a headless
-GNOME Shell) lets the tests' windows cover each other, and the compositor sends
+**Display runners in parallel.** Every CI lane runs the display runners (label
+`qrhi`) serially; only the rest of the suite runs under `ctest -j`. A local
+`ctest -j` of the display runners on one Wayland compositor (a headless GNOME
+Shell) lets the tests' windows cover each other, and the compositor sends
 no frame callbacks to a covered surface: a `grabPresentedFrame()` then times out
 ("presented no frame to grab (occluded window?)"). `rhi_mixed_dock_test` fails
 this way in about 3 of 4 parallel runs, and in none with one compositor per

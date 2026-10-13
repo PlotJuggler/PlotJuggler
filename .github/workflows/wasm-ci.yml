@@ -22,7 +22,9 @@ on:
   # Wasm breakage is invisible to the standard PR checks (native CI stays green
   # when shared code calls a native-only API), so run on PRs that can plausibly
   # affect the browser build. Not a required check; ~20-30 min on warm caches.
+  # Drafts wait: marking one ready runs it.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '**/wasm/**'
       - 'tests/wasm/**'
@@ -48,6 +50,7 @@ concurrency:
 
 jobs:
   wasm:
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: depot-ubuntu-22.04-4
     # Generous first-run ceiling (cold Qt+emsdk+ccache); warm runs are expected
     # in the 20-30 minute band. Tighten once real timings accumulate.

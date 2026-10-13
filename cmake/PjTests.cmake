@@ -43,12 +43,18 @@ function(pj_add_test_runner target)
     target_link_libraries(${target} PRIVATE ${R_LIBS} GTest::gtest)
     # "plain" deliberately falls through linking no Qt target: an else() branch
     # here is what silently gave every runner a Qt dependency.
+    set(lock)
     if(R_MAIN STREQUAL "core")
         target_link_libraries(${target} PRIVATE Qt6::Core)
     elseif(R_MAIN STREQUAL "gui")
         # pj_gpu_test_gate.h: PJ_SKIP_WITHOUT_GPU and the display-test helpers.
         target_include_directories(${target} PRIVATE "${PJ_TEST_MAINS_DIR}")
         target_link_libraries(${target} PRIVATE Qt6::Widgets plotjuggler_sdk::base)
+        # Every case of a gui runner shares one test-mode config dir (named after
+        # the runner), which the main clears and the extension store locks with a
+        # non-waiting lease: under `ctest -j` they must not overlap. Cases of
+        # different runners still run in parallel.
+        set(lock RESOURCE_LOCK ${target})
     endif()
     if(R_DEFINES)
         target_compile_definitions(${target} PRIVATE ${R_DEFINES})
@@ -82,7 +88,7 @@ function(pj_add_test_runner target)
             gtest_discover_tests(${target}
                 TEST_PREFIX "${target}.${api}."
                 DISCOVERY_MODE PRE_TEST
-                PROPERTIES TIMEOUT ${timeout} LABELS "qrhi-${api}" ENVIRONMENT "PJ_GRAPHICS_API=${api}")
+                PROPERTIES TIMEOUT ${timeout} LABELS "qrhi-${api}" ENVIRONMENT "PJ_GRAPHICS_API=${api}" ${lock})
         endforeach()
         if(R_DPR2 AND "opengl" IN_LIST backends)
             set(filter)
@@ -94,7 +100,7 @@ function(pj_add_test_runner target)
                 ${filter}
                 DISCOVERY_MODE PRE_TEST
                 PROPERTIES TIMEOUT ${opengl_timeout} LABELS "qrhi-opengl" ENVIRONMENT "PJ_GRAPHICS_API=opengl"
-                           ENVIRONMENT_MODIFICATION "QT_SCALE_FACTOR=set:2")
+                           ENVIRONMENT_MODIFICATION "QT_SCALE_FACTOR=set:2" ${lock})
         endif()
         if(NOT TARGET pj_qrhi_tests)
             add_custom_target(pj_qrhi_tests)
@@ -105,7 +111,7 @@ function(pj_add_test_runner target)
     set(discover_args
         TEST_PREFIX "${R_PREFIX}"
         DISCOVERY_MODE PRE_TEST
-        PROPERTIES TIMEOUT ${R_TIMEOUT} ${R_PROPERTIES})
+        PROPERTIES TIMEOUT ${R_TIMEOUT} ${lock} ${R_PROPERTIES})
     if(R_WORKING_DIRECTORY)
         list(APPEND discover_args WORKING_DIRECTORY "${R_WORKING_DIRECTORY}")
     endif()

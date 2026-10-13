@@ -40,7 +40,7 @@ The `SDK` column says what a slice needs from the SDK:
 | 1 | The engine renames, no behaviour change (no aliases) | 0 | none | none | in review |
 | 1t | `pj_tf` extraction and the `TransformService` move to `pj_runtime`; TF R2 (fixed-frame memory to the scene side) and R3 (refuse a topic from another dataset, test-first) | 1 | none | none | in review |
 | 1b | Two timestamps per TF sample (ARCHITECTURE §12 R6) | 1 | none | Test-first, with a fixture whose log time differs from its header stamps, and a simulated-time fixture. Visual check on the nuScenes cameras. | planned |
-| 2 | `EnginePool` plus the GUI-freeze benchmark. Baseline measured on the old engines. | 1 | none | none | planned |
+| 2 | `EnginePool` plus the GUI-freeze benchmark. Baseline measured on the old engines. | 1 | none | none | in review |
 | 3 | `BatchEngine` off the GUI thread: reload brake, modes, windows | 2 | none | D30 for batch: publish every valid run, keep the stale flag; markers keep updating while streaming | planned |
 | M | Marker topics described by metadata (ARCHITECTURE §13): recognition and routing read metadata; names unchanged; a 0.35 direct-write name is stamped at registration | 3 | none | On-demand-only logic tests the `pj_derived` value. The metadata key names are host constants until the host-contract minor adds them to the SDK, with the typed `scope`. | planned |
 | 4 | Incremental replay off the GUI thread, streaming semantics, the 50 ms poll fix | 2 | none | none | planned |

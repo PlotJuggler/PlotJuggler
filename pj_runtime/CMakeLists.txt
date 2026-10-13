@@ -20,6 +20,7 @@ add_library(pj_runtime STATIC
     src/DataProcessorsRuntimeHost.cpp
     src/DataSourceRuntimeHost.cpp
     src/BatchEngine.cpp
+    src/EnginePool.cpp
     src/MarkerTopics.cpp
     src/MarkersRuntimeHost.cpp
     src/ObjectIngestTap.cpp
@@ -56,6 +57,8 @@ add_library(pj_runtime STATIC
     include/pj_runtime/SourceCacheStore.h
     include/pj_runtime/IDataWidget.h
     include/pj_runtime/BatchEngine.h
+    include/pj_runtime/EnginePool.h
+    include/pj_runtime/TsanAnnotations.h
     include/pj_runtime/MarkersRuntimeHost.h
     include/pj_runtime/ObjectIngestTap.h
     include/pj_runtime/PlaybackControlHost.h
@@ -142,6 +145,12 @@ if(PJ_BUILD_TESTS)
         tests/source_cache_store_test.cpp
         tests/object_ingest_tap_test.cpp
         tests/time_test.cpp
+        # EnginePool: compute off the GUI thread, bounded GUI-thread drain, run
+        # tokens, the Python lane, destruction.
+        tests/engine_pool_test.cpp
+        # PJ_BENCH-gated: prints the GUI-thread stall of applying a transform or a
+        # marker rule over a long series (docs/derived_objects/ARCHITECTURE.md §19).
+        tests/engine_freeze_bench_test.cpp
         # M1: re-prove the streaming gate through a Luau LuaSisoTransform
         tests/data_processor_service_test.cpp
         # links the shared marker engine (runMarkerScript) the service drives
@@ -397,6 +406,9 @@ if(PJ_BUILD_TESTS)
             PJ_MOCK_DATA_SOURCE_NEWER_SDK_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_newer_sdk_plugin>"
             PJ_MOCK_TOOLBOX_PLUGIN_PATH="$<TARGET_FILE:mock_toolbox_plugin>"
     )
+    # pj_bench_stats.h: the Qt-free thread clock and statistics of the engine
+    # freeze bench (pj_bench_probes would pull Qt Widgets into this core runner).
+    target_include_directories(pj_runtime_tests PRIVATE "${PJ_TEST_MAINS_DIR}")
     set_target_properties(pj_runtime_tests PROPERTIES AUTOMOC ON)
     add_dependencies(pj_runtime_tests
         runtime_host_object_parser_plugin streaming_caching_parser_plugin

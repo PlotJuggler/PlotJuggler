@@ -4,6 +4,11 @@ on:
   pull_request:
     branches: [main, main-4.x, development, 'release-*']
     types: [opened, synchronize, reopened, ready_for_review]
+    # Nothing here builds or tests these.
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'packaging/**'
   push:
     branches: [main, main-4.x, development, 'release-*']
   workflow_dispatch:
@@ -15,7 +20,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # pre-commit runs once per PR cycle, from linux-ci.yml.
+  # pre-commit runs once per PR cycle, from pre-commit.yml.
   build:
     if: github.event.pull_request.draft == false
     # The unit suite, then every QRhi display runner (RHI_BACKENDS in
@@ -377,7 +382,8 @@ jobs:
           # --timeout kills any single test after 2 min so a deadlocked test
           # fails loudly with its name in the log instead of stalling the job.
           # The QRhi display runners (label qrhi) run in the D3D11 step below.
-          ctest --test-dir build --build-config RelWithDebInfo --output-on-failure --timeout 120 -LE qrhi
+          ctest --test-dir build --build-config RelWithDebInfo --output-on-failure --timeout 120 -LE qrhi \
+            -j "${NUMBER_OF_PROCESSORS}"
 
       - name: Test the QRhi display runners on D3D11 (WARP)
         shell: bash

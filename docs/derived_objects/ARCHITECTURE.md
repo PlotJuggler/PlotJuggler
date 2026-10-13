@@ -270,13 +270,37 @@ transaction, the generation, the second readiness channel and the D26 gap.
 
 ## 11. Scheduling and execution
 
-**Status: Built** (the pool) and **Decided** (the queue, worker decoding, GIL release).
-The chain-in-one-task item is proposed.
+**Status: Built (slice 2)** (the pool) and **Decided** (the queue, worker decoding, GIL
+release). The chain-in-one-task item is proposed.
 
-- **`EnginePool`:** a dedicated, bounded (`max(1, ideal/2)`), low-priority pool. One
-  mailbox per node. Publication happens only in a GUI-thread drain, at most 32 per pass. A
-  separate single-thread Python lane serves the GIL. In the browser it runs on Web Workers.
-- **The queue per node** follows invariant 1.
+- **`EnginePool`** (`pj_runtime/include/pj_runtime/EnginePool.h`) runs ready tasks. It keeps
+  no per-node state: no mailboxes, no coalescing, no supersede by generation.
+  - A task is a `compute` (worker thread, its captured inputs only) and a `publish` (GUI
+    thread).
+  - The shared lane is a dedicated pool bounded to `max(1, ideal/2)` threads. The Python
+    lane is one separate thread, since the GIL serializes Python anyway. In the browser
+    both run on Web Workers.
+  - Both lanes request `QThread::LowPriority`. Qt ignores thread priorities on Linux (its
+    documentation says so; threads stay SCHED_OTHER), so there the bound on the shared
+    lane, half the cores, is what keeps the GUI thread responsive.
+  - `submit` returns a cancel token, which the consumer keeps to cancel the run when its
+    meaning changes. Cancellation is cooperative (`compute` polls the token), and is
+    reserved for that: a cancelled run still publishes, even when its compute had finished.
+  - Every run publishes exactly once with an `Outcome`: `kCompleted`, `kCancelled` (wins
+    over `kFailed`) or `kFailed` (`compute` threw; `error` carries `what()`, and the worker
+    and the pool survive). `publish` runs some time after `submit`, also after a cancel,
+    so it must not capture a raw pointer to an object that may be gone (`QPointer` or a
+    weak guard).
+  - Publication happens only in a GUI-thread drain, at most 32 per pass, then the event
+    loop turns. A drain pops one result at a time, so a `publish` that pumps events (or
+    calls `waitIdle`) sees the rest as pending, in order, and one that destroys the pool
+    ends the drain.
+  - Destroying the pool cancels every token, waits for the running computes and calls no
+    `publish`.
+- **The queue per node** follows invariant 1 and belongs to the consumer (`BatchEngine` in
+  slice 3, `NodeScheduler` in slice 6a), not to the pool. The pending slot holds a request,
+  not a task: inputs are captured on the GUI thread only when a run can start, so a burst of
+  refreshes costs one capture. The consumer submits only when the node has no run in flight.
 - **The in-flight memory budget** reserves the staged inputs plus one VM ceiling per
   evaluation. A request that does not fit waits.
 - **GUI-thread work still to move:**
@@ -457,11 +481,24 @@ Under pull, a derived topic exposes only its current result through object reads
 
 ## 19. Measurements
 
-These come from the prototype. The machine and method are described in the prototype's
-design document.
+These come from the prototype, whose design document describes the machine and method,
+except the two slice 2 rows. Those are measured on this stack, before slices 3-4, by
+`EngineFreezeBench` (`pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`), from
+the call until the result is complete, as two different metrics:
+- **GUI-thread CPU time**, as the longest single stretch (the call or one event-loop
+  pass) and the total. It cannot see a GUI thread waiting on a lock or preempted.
+- **Worst wall-clock stall**: the greatest lateness, beyond its 1 ms period, of a heartbeat
+  timer on the GUI thread, i.e. the longest the GUI could not run a timer. For the transform
+  it exceeds the CPU slice because the first event-loop pass runs a replay slice (8 ms)
+  before the timer can fire, right after the 8.3 ms call.
+
+Each value is the median of three runs, each the median of five applications; i7-13700H,
+Linux, RelWithDebInfo.
 
 | Measurement | Value |
 |---|---|
+| GUI freeze before slices 3-4 (slice 2): transform over 500k rows | GUI-thread CPU time: 8.3 ms max slice / 494 ms total. Worst wall-clock stall: 15.0 ms |
+| GUI freeze before slices 3-4 (slice 2): marker rule over 500k rows | GUI-thread CPU time: 193 ms max slice / 193 ms total. Worst wall-clock stall: 192 ms |
 | GUI freeze: new transform over 500k rows | 1,613 ms → 8.3 ms per slice |
 | On-demand evaluation, 260k-point cloud | 4-5 ms cold; under 0.01 ms warm |
 | Streaming: 5 min of 10 Hz, 2048-point clouds | Bounded plateau of entries and bytes |

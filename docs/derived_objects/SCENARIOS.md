@@ -45,7 +45,7 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 
 ## Summary
 
-339 scenario rows covering 794 TESTs; 47 [gaps](#gaps). Non-`keep` rows are where the carve must change or drop a test. The summary counts are the draft's. All twelve `unclear` rows have since been resolved: three are decided here, three are changed by P3 or N7, and the six once blocked on the SDK host contract follow its decisions of 2026-10-13.
+339 scenario rows covering 794 TESTs; 47 [gaps](#gaps). Non-`keep` rows are where the carve must change or drop a test. The summary counts are the draft's, except CON, which slice 2 updated. All twelve `unclear` rows have since been resolved: three are decided here, three are changed by P3 or N7, and the six once blocked on the SDK host contract follow its decisions of 2026-10-13.
 
 | Area | Rows | keep | keep* | changes | removed | unclear |
 |---|---|---|---|---|---|---|
@@ -71,14 +71,14 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 | [SCN](#scn) Scene layers 3D / 2D | 17 | 10 | 2 | 4 | 1 | 0 |
 | [TFL](#tfl) TF lookups & TF service | 13 | 13 | 0 | 0 | 0 | 0 |
 | [BUD](#bud) Budgets & limits | 23 | 20 | 0 | 2 | 0 | 1 |
-| [CON](#con) Concurrency / threading | 15 | 15 | 0 | 0 | 0 | 0 |
+| [CON](#con) Concurrency / threading | 15 | 10 | 0 | 1 | 4 | 0 |
 | [BAT](#bat) Batch engine (markers) | 10 | 10 | 0 | 0 | 0 | 0 |
 | [INC](#inc) Incremental engine | 1 | 1 | 0 | 0 | 0 | 0 |
 | [STO](#sto) ObjectStore primitives | 3 | 1 | 0 | 0 | 2 | 0 |
 | [UI](#ui) App UI (Custom Topics panel, embedded views, misc) | 15 | 14 | 0 | 0 | 0 | 1 |
 | [PERF](#perf) Performance benches | 4 | 2 | 0 | 2 | 0 | 0 |
 | [MECH](#mech) Mechanical renames / moves (slices 1, 1t) | 8 | 8 | 0 | 0 | 0 | 0 |
-| **Total** | **339** | **271** | **16** | **28** | **12** | **12** |
+| **Total** | **339** | **266** | **16** | **29** | **16** | **12** |
 
 <a id="rec"></a>
 ## REC: Recipe authoring & validation
@@ -501,15 +501,15 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 | ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
 |---|---|---|---|---|---|
 | CON-01 | Release after dispatch leaves shared pool usable | release mid-flight; next submit completes | `on_demand_runtime_host_test.cpp`: OnDemandRuntimeHostTest.ReleaseAfterDispatchLeavesSharedPoolUsable | keep |  |
-| CON-02 | One task per mailbox at a time, in submission order | order [1,2] across consumers | `engine_pool_test.cpp`: EnginePoolTest.OneTaskPerMailboxRunsInOrder | keep |  |
-| CON-03 | Identical work coalesces: runs once, publishes to every subscriber (queued or already running) | compute 1, publish 2; joined run never re-computes | `engine_pool_test.cpp`: EnginePoolTest.{CoalescedRequestsRunOnceAndPublishToEverySubscriber, RequestArrivingWhileRunningJoinsIt} | keep |  |
-| CON-04 | cancel(consumer, mailbox) drops queued, flags in-flight; burst releases superseded queued runs early; only newest queued survives | in-flight sees token, publish(cancelled); queued never computes; burst of 5 -> 4 cancelled before slow ends, 1 live | `engine_pool_test.cpp`: EnginePoolTest.{CancelDropsQueuedAndMarksInFlightCancelled, CancelReleasesSupersededQueuedRunsWhileAnotherRuns} | keep | D30: on-demand stops cancelling per tick; cancel kept for meaning change/removal; pool's newest-queued-wins = the pending slot |
-| CON-05 | Cancel scoped to mailbox | cancel on node-b leaves node-a live | `engine_pool_test.cpp`: EnginePoolTest.SupersededByAnotherMailboxIsNotCancelled | keep |  |
-| CON-06 | publish runs on owning (GUI) thread; drain bounded at 32/pass | publish thread == owner; 40 results -> 2 drains | `engine_pool_test.cpp`: EnginePoolTest.{PublishRunsOnTheOwningThread, DrainIsBounded} | keep |  |
-| CON-07 | Destructor waits for in-flight workers | compute finished after scope | `engine_pool_test.cpp`: EnginePoolTest.DestructorWaitsForWorkers | keep |  |
-| CON-08 | unregisterConsumer cancels running work and retires the consumer | running sees cancel, publish cancelled; later submit never runs, cancelled | `engine_pool_test.cpp`: EnginePoolTest.UnregisterCancelsFirstSubmissionAndRetiresConsumer | keep |  |
-| CON-09 | Cancel after compute but before drain delivers cancelled, keeps newer inline state | cancel/unregister -> publish(cancelled), GUI state 2 kept | `engine_pool_test.cpp`: EnginePoolTest.CancellationAfterComputeBeforeDrainPreservesNewerInlineState | keep | relevant to D30 "display only moves forward" |
-| CON-10 | Late cancel of one coalesced subscriber leaves the other independent | 1 compute; first cancelled, second live | `engine_pool_test.cpp`: EnginePoolTest.LateCancellationKeepsCoalescedSubscribersIndependent | keep |  |
+| CON-02 | One task per mailbox at a time, in submission order | order [1,2] across consumers | `engine_pool_test.cpp`: EnginePoolTest.OneTaskPerMailboxRunsInOrder | **removed: D30** | The pool has no mailboxes: one running run per node is the consumer's (slice 3, 6a). |
+| CON-03 | Identical work coalesces: runs once, publishes to every subscriber (queued or already running) | compute 1, publish 2; joined run never re-computes | `engine_pool_test.cpp`: EnginePoolTest.{CoalescedRequestsRunOnceAndPublishToEverySubscriber, RequestArrivingWhileRunningJoinsIt} | **removed: D30** | No coalescing: the consumer's single pending request per node replaces it. |
+| CON-04 | cancel(consumer, mailbox) drops queued, flags in-flight; burst releases superseded queued runs early; only newest queued survives | in-flight sees token, publish(cancelled); queued never computes; burst of 5 -> 4 cancelled before slow ends, 1 live | `engine_pool_test.cpp`: EnginePoolTest.{CancelDropsQueuedAndMarksInFlightCancelled, CancelReleasesSupersededQueuedRunsWhileAnotherRuns} | **changes: D30** — cancel is per run, through the token `submit` returns: the running compute sees it and publishes cancelled; a run cancelled before it starts skips its compute. The pool queues nothing, so the queued and burst halves leave with it. | slice 2 per D30: EnginePoolTest.{CancelledRunStopsEarlyAndPublishesCancelled, CancelledBeforeStartSkipsComputeAndLeavesOtherRunsAlone}. CancelReleasesSupersededQueuedRunsWhileAnotherRuns removed: D30 (the pending slot is the consumer's). |
+| CON-05 | Cancel scoped to mailbox | cancel on node-b leaves node-a live | `engine_pool_test.cpp`: EnginePoolTest.SupersededByAnotherMailboxIsNotCancelled | keep | slice 2: EnginePoolTest.CancelledBeforeStartSkipsComputeAndLeavesOtherRunsAlone (the scope is one run, not a mailbox). |
+| CON-06 | publish runs on owning (GUI) thread; drain bounded at 32/pass | publish thread == owner; 40 results -> 2 drains | `engine_pool_test.cpp`: EnginePoolTest.{PublishRunsOnTheOwningThread, DrainIsBounded} | keep | slice 2: EnginePoolTest.{PublishRunsOnTheConstructingThreadAndComputeOffIt, DrainPublishesAtMost32PerPass} (100 results drain as 32/32/32/4). New in slice 2: EnginePoolTest.{PythonLaneIsOneThreadAndDoesNotBlockTheSharedLane, PublishMaySubmitTheNextRun, WaitIdleReturnsWithNothingOutstanding, WaitIdleInsideAPublishReturnsOnceTheOtherRunsArePublished, PublishThatDestroysThePoolAbandonsTheRemainingResults, ThrowingComputePublishesFailedAndThePoolKeepsWorking, CancelWinsOverFailed}. |
+| CON-07 | Destructor waits for in-flight workers | compute finished after scope | `engine_pool_test.cpp`: EnginePoolTest.DestructorWaitsForWorkers | keep | slice 2: EnginePoolTest.DestructorCancelsAndWaitsForWorkersWithoutPublishing (also: the running compute is cancelled, a waiting result is never published, closures die on the GUI thread). |
+| CON-08 | unregisterConsumer cancels running work and retires the consumer | running sees cancel, publish cancelled; later submit never runs, cancelled | `engine_pool_test.cpp`: EnginePoolTest.UnregisterCancelsFirstSubmissionAndRetiresConsumer | **removed: D30** | The pool has no consumer identities: a consumer cancels the token of its one run. |
+| CON-09 | Cancel after compute but before drain delivers cancelled, keeps newer inline state | cancel/unregister -> publish(cancelled), GUI state 2 kept | `engine_pool_test.cpp`: EnginePoolTest.CancellationAfterComputeBeforeDrainPreservesNewerInlineState | keep | slice 2: EnginePoolTest.CancelAfterComputeBeforeDrainPublishesCancelled (the unregister variant left with consumer identities). |
+| CON-10 | Late cancel of one coalesced subscriber leaves the other independent | 1 compute; first cancelled, second live | `engine_pool_test.cpp`: EnginePoolTest.LateCancellationKeepsCoalescedSubscribersIndependent | **removed: D30** | No coalesced subscribers. |
 | CON-11 | Session destruction disconnects services before the pool | no crash on reset with generator | `batch_engine_test.cpp`: BatchEngineTest.SessionDestructionDisconnectsServicesBeforeThePool | keep |  |
 | CON-12 | Batch staging on GUI thread, script compute on pool worker | resolver on GUI; compute thread != GUI | `batch_engine_test.cpp`: BatchEngineTest.ScriptRunsOffTheGuiThread | keep |  |
 | CON-13 | Topic invalidation retires an in-flight index without blocking/destroying it | concurrent presentationAt returns "video source generation changed"; next call ok | `scene_video_frame_source_test.cpp`: SceneVideoFrameSourceTest.InvalidationRetiresInFlightIndexWithoutBlockingOrDestroyingIt | keep |  |
@@ -577,7 +577,7 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 | PERF-01 | Cold vs warm evaluateAt latency report | prints medians; warm from_cache | `on_demand_service_test.cpp`: OnDemandServiceTest.LatencyReport | keep | informational, no threshold |
 | PERF-02 | 5-min streaming bench: retention + memory plateau (env-gated) | PJ_STREAM_BENCH: 10 Hz live; raw/derived <=51 entries, <=8 MiB; logs RSS | `on_demand_service_test.cpp`: DerivedStreamingBench.FiveMinuteRetentionAndMemoryPlateau | **changes: N7** — derived bounds become history bounds; skipped by default |  |
 | PERF-03 | Series replay over 400×24k-pt clouds: worst GUI turn (target <=8 ms) | PJ_BENCH-gated; rows 400 | `on_demand_series_test.cpp`: OnDemandSeriesBench.ReplayOver400Clouds | **changes: N8/N6** — decode in worker + batch entries per task; re-baseline |  |
-| PERF-04 | GUI-freeze bench: transform over 500k-row log, marker rule over long series, on-demand cold/warm | prints upsert medians + worst 10 ms heartbeat lateness; warm/other-instant from_cache asserted | `engine_freeze_bench_test.cpp`: EngineFreezeBench.{ApplyTransformOverLongLog, ApplyMarkerRuleOverLongSeries, OnDemandColdAndWarm} | keep | slice 2 baseline measured on OLD engines before 3/4/6a |
+| PERF-04 | GUI-freeze bench: transform over 500k-row log, marker rule over long series, on-demand cold/warm | prints upsert medians + worst 10 ms heartbeat lateness; warm/other-instant from_cache asserted | `engine_freeze_bench_test.cpp`: EngineFreezeBench.{ApplyTransformOverLongLog, ApplyMarkerRuleOverLongSeries, OnDemandColdAndWarm} | keep | slice 2: EngineFreezeBench.{ApplyTransformOverLongLog, ApplyMarkerRuleOverLongSeries}, now printing the GUI thread's longest CPU stretch and total CPU time, plus the worst wall-clock stall from a 1 ms heartbeat (baseline in ARCHITECTURE §19). OnDemandColdAndWarm deferred: slice 6a (no OnDemandService before it). |
 
 <a id="mech"></a>
 ## MECH: Mechanical renames / moves (slices 1 and 1t)

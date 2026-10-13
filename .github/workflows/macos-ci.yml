@@ -39,11 +39,11 @@ jobs:
       actions: read
 
   gate:
-    # PRs into release-* always build. Other PRs build only when they touch the
-    # toolchain pins, build system, vendored code or the widget/render code the
-    # Metal and OpenGL QRhi tests cover. Fails open: if the file list cannot be
-    # read, the PR builds.
-    if: github.event_name == 'pull_request'
+    # Draft PRs never build; ready PRs into release-* always do. Other PRs build
+    # only when they touch the toolchain pins, build system, vendored code or the
+    # widget/render code the Metal and OpenGL QRhi tests cover. Fails open: if
+    # the file list cannot be read, the PR builds.
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -405,13 +405,12 @@ jobs:
           done
 
       - name: Test (unit)
-        # Plain serial ctest like the other lanes: the GUI test main's `offscreen`
+        # Parallel ctest like the other lanes: the GUI test main's `offscreen`
         # default, and GPU-gated tests (GL 4.5 ones cannot run on macOS) skip.
-        # Serial because the GUI runners share one per-runner config dir, so
-        # parallel cases contend for its extension-store lock.
+        # Cases of one GUI runner never overlap (RESOURCE_LOCK, cmake/PjTests.cmake).
         if: always() && steps.build.outcome == 'success'
         shell: bash
-        run: ctest --test-dir build --output-on-failure --timeout 120 -LE qrhi
+        run: ctest --test-dir build --output-on-failure --timeout 120 -LE qrhi -j "$(sysctl -n hw.ncpu)"
 
       - name: Slowest QRhi cases
         # The OpenGL fallback runs on Apple's software renderer and dominates the

@@ -202,9 +202,10 @@ counts, not only the first per test process:
 GCC 11's runtime added double-lock reports on every timed condition-variable
 wait, because it has no `pthread_cond_clockwait` interceptor; Clang 22 reports
 none. Where the hand-off is a join on a worker PJ4 owns, the code tells TSan
-about it instead of suppressing: `FileLoader` calls `__tsan_release` as its
-ingest worker's last access to shared state and `__tsan_acquire` after each
-`QThread::wait()`, compiled only under TSan.
+about it instead of suppressing: `FileLoader` and `EnginePool` use
+`PJ::tsan::release/acquire` (`pj_runtime/TsanAnnotations.h`) to pair the two sides
+(a worker's last access with the `QThread::wait()` return; a task's submission
+with its start on a `QThreadPool` thread), compiled only under TSan.
 
 Read `cmake/sanitizers/tsan.supp` before adding an entry. Each `called_from_lib`
 must resolve to exactly ONE loaded library, and a pattern that matches several
