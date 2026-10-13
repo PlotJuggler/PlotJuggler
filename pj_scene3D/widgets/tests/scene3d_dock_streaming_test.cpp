@@ -38,13 +38,13 @@
 #include "pj_base/builtin/poses_in_frame.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_core/tf/transform.h"
+#include "pj_runtime/TransformService.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/layers/poses_in_frame_layer.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
-#include "pj_scene3d_widgets/transform_service.h"
+#include "pj_tf/tf_buffer.h"
+#include "pj_tf/transform.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -120,7 +120,7 @@ class ProbeDock : public PJ::Scene3DDockWidget {
 TEST(Scene3DDockStreaming, SameStampReplacementCloudPassesRepaintGate) {
   g_cloud_parser_calls.store(0);
   PJ::SessionManager session;
-  pj::scene3d::TransformService transform_service(session);
+  PJ::TransformService transform_service(session);
   PJ::ObjectStore& store = session.objectStore();
 
   PJ::ObjectTopicDescriptor desc;
@@ -168,7 +168,7 @@ TEST(Scene3DDockStreaming, SameStampReplacementCloudPassesRepaintGate) {
 TEST(Scene3DDockStreaming, StaticSampleInMovingFramePassesRepaintGate) {
   constexpr int64_t kSecond = 1'000'000'000;
   PJ::SessionManager session;
-  pj::scene3d::TransformService transform_service(session);
+  PJ::TransformService transform_service(session);
   PJ::ObjectStore& store = session.objectStore();
 
   PJ::ObjectTopicDescriptor desc;
@@ -196,8 +196,8 @@ TEST(Scene3DDockStreaming, StaticSampleInMovingFramePassesRepaintGate) {
   auto buf = transform_service.transformBuffer(/*dataset_id=*/1);
   ASSERT_NE(buf, nullptr);
   for (int second = 1; second <= 4; ++second) {
-    pj::scene3d::StampedTransform st;
-    st.stamp = pj::scene3d::TimePoint{std::chrono::nanoseconds(second * kSecond)};
+    pj::tf::StampedTransform st;
+    st.stamp = pj::tf::TimePoint{std::chrono::nanoseconds(second * kSecond)};
     st.parent_frame = "world";
     st.child_frame = "map";
     st.transform.t = glm::dvec3{static_cast<double>(second), 0.0, 0.0};
@@ -226,7 +226,7 @@ TEST(Scene3DDockStreaming, RevalidateWithoutSessionKeepsNeverPopulatedDock) {
 
 TEST(Scene3DDockStreaming, EmptyDockSurvivesRevalidateUntilItHasHeldContent) {
   PJ::SessionManager session;
-  pj::scene3d::TransformService transform_service(session);
+  PJ::TransformService transform_service(session);
 
   PJ::Scene3DDockWidget dock;
   dock.setSessionManager(&session);
@@ -249,7 +249,7 @@ TEST(Scene3DDockStreaming, EmptyDockSurvivesRevalidateUntilItHasHeldContent) {
 
 TEST(Scene3DDockStreaming, TfOnlyDockSurvivesRevalidateUntilTopicEvicted) {
   PJ::SessionManager session;
-  pj::scene3d::TransformService transform_service(session);
+  PJ::TransformService transform_service(session);
   PJ::ObjectStore& store = session.objectStore();
 
   const auto tf_topic = registerTfTopic(store, /*dataset_id=*/1, "/tf");
@@ -278,7 +278,7 @@ TEST(Scene3DDockStreaming, TfOnlyDockSurvivesRevalidateUntilTopicEvicted) {
 
 TEST(Scene3DDockStreaming, RebindsToSecondDatasetAfterFirstRemoved) {
   PJ::SessionManager session;
-  pj::scene3d::TransformService transform_service(session);
+  PJ::TransformService transform_service(session);
   PJ::ObjectStore& store = session.objectStore();
 
   const auto tf_a = registerTfTopic(store, /*dataset_id=*/1, "/tf");
@@ -315,7 +315,7 @@ TEST(Scene3DDockStreaming, TfOnlyDockTrackerTimeRecoversAbsoluteOffset) {
   static constexpr int64_t kBaseNs = 1'700'000'000'000'000'000LL;  // ~2023-11 in epoch ns
 
   PJ::SessionManager session;
-  pj::scene3d::TransformService transform_service(session);
+  PJ::TransformService transform_service(session);
   PJ::ObjectStore& store = session.objectStore();
 
   // Object-only source, but with its own DataEngine dataset + TimeDomain (mirrors
@@ -365,7 +365,7 @@ TEST(Scene3DDockStreaming, TfOnlyDockTrackerTimeToggleOffIsRawSeconds) {
   static constexpr int64_t kBaseNs = 1'700'000'000'000'000'000LL;
 
   PJ::SessionManager session;
-  pj::scene3d::TransformService transform_service(session);
+  PJ::TransformService transform_service(session);
   PJ::ObjectStore& store = session.objectStore();
 
   PJ::ObjectTopicDescriptor desc;
@@ -397,7 +397,7 @@ TEST(Scene3DDockStreaming, TfOnlyDockTrackerTimeToggleOffIsRawSeconds) {
 // user pressed play.
 TEST(Scene3DDockStreaming, FrameListReflectsBufferGrowthWhilePaused) {
   PJ::SessionManager session;
-  pj::scene3d::TransformService transform_service(session);
+  PJ::TransformService transform_service(session);
   const auto tf_topic = registerTfTopic(session.objectStore(), /*dataset_id=*/1, "/tf");
 
   PJ::Scene3DDockWidget dock;
@@ -414,8 +414,8 @@ TEST(Scene3DDockStreaming, FrameListReflectsBufferGrowthWhilePaused) {
   auto buf = transform_service.transformBuffer(/*dataset_id=*/1);
   ASSERT_NE(buf, nullptr);
   const auto add_edge = [&](const char* parent, const char* child) {
-    pj::scene3d::StampedTransform st;
-    st.stamp = pj::scene3d::TimePoint{std::chrono::nanoseconds(100)};
+    pj::tf::StampedTransform st;
+    st.stamp = pj::tf::TimePoint{std::chrono::nanoseconds(100)};
     st.parent_frame = parent;
     st.child_frame = child;
     st.transform.t = glm::dvec3{0.0};
@@ -429,9 +429,9 @@ TEST(Scene3DDockStreaming, FrameListReflectsBufferGrowthWhilePaused) {
   // playhead does NOT move.
   transform_service.ingestFrameTransformsForDataset(/*dataset_id=*/1);
 
-  const QList<pj::scene3d::FrameRow> frames = dock.availableFrames();
+  const QList<pj::tf::FrameRow> frames = dock.availableFrames();
   const auto has = [&](const char* name) {
-    return std::any_of(frames.begin(), frames.end(), [&](const pj::scene3d::FrameRow& r) { return r.name == name; });
+    return std::any_of(frames.begin(), frames.end(), [&](const pj::tf::FrameRow& r) { return r.name == name; });
   };
   EXPECT_TRUE(has("map")) << "the whole TF tree must list without pressing play";
   EXPECT_TRUE(has("odom"));

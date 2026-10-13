@@ -62,11 +62,13 @@ class MainWindow;
 
 #ifdef PJ_WITH_SCENE3D
 namespace pj::scene3d {
-class TransformService;
+class FixedFrameMemory;
 }  // namespace pj::scene3d
 #endif
 
 namespace PJ {
+
+class TransformService;
 
 class AppSession;
 struct CatalogItem;
@@ -1393,11 +1395,12 @@ class MainWindow : public QMainWindow {
   // Bridges progressive ingest signals from SessionManager to CurveTreeView
   // via CurveListPanel. Maintains linger/flash timers and ghost-row lifetime.
   std::unique_ptr<IngestProgressController> ingest_progress_controller_;
-  // Owns the per-dataset 3D TF buffers + load-time ingest. Lives here in the
-  // shell (not pj_runtime) so the runtime stays domain-neutral. Declared after
-  // session_ so it is destroyed first (it holds a reference into session_).
+  // Owns the per-dataset TF buffers + load-time ingest. Declared after session_
+  // so it is destroyed first (it holds a reference into session_).
 #ifdef PJ_WITH_SCENE3D
-  std::unique_ptr<pj::scene3d::TransformService> transform_service_;
+  std::unique_ptr<PJ::TransformService> transform_service_;
+  // The 3D docks' shared "last manual fixed frame" preference.
+  std::unique_ptr<pj::scene3d::FixedFrameMemory> fixed_frame_memory_;
 #endif
   std::unique_ptr<FileLoader> file_loader_;
   std::unique_ptr<StreamingSourceManager> streaming_manager_;

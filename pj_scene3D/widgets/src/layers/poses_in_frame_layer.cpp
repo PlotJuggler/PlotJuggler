@@ -23,8 +23,8 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/scene_limits.h"
-#include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/resolve_object.h"  // resolveObject, hasCanonical3DCodec
+#include "pj_tf/transform.h"
 #include "pj_widgets/ColorPickerWidget.h"
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/FrameworkTokens.h"

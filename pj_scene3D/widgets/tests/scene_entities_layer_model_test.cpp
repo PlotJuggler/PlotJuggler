@@ -37,8 +37,8 @@
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/layers/scene_entities_layer.h"
+#include "pj_tf/tf_buffer.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -84,7 +84,7 @@ void registerParser(PJ::SessionManager& session, PJ::ObjectTopicId topic_id) {
 pj::scene3d::Scene3DLayerContext makeContext(PJ::SessionManager& session) {
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  ctx.tf_buffer = std::make_shared<pj::scene3d::TransformBuffer>(pj::scene3d::TransformBuffer::kKeepAll);
+  ctx.tf_buffer = std::make_shared<pj::tf::TransformBuffer>(pj::tf::TransformBuffer::kKeepAll);
   return ctx;
 }
 
@@ -847,11 +847,11 @@ TEST(SceneEntitiesLayerModelTest, ModelDrawCallIsFrameLocalPoseAndScale) {
   pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(ctx.tf_buffer->setTransform(
-      pj::scene3d::StampedTransform{
+      pj::tf::StampedTransform{
           .stamp = PJ::fromRaw(0),
           .parent_frame = "world",
           .child_frame = "base_link",
-          .transform = pj::scene3d::Transform({10.0, 20.0, 30.0}, {1.0, 0.0, 0.0, 0.0}),
+          .transform = pj::tf::Transform({10.0, 20.0, 30.0}, {1.0, 0.0, 0.0, 0.0}),
       }));
   ASSERT_TRUE(layer.attach(ctx));
   layer.setTrackerTime(PJ::fromRaw(10));

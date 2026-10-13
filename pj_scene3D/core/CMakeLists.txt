@@ -1,5 +1,6 @@
 # ---------------------------------------------------------------------------
-# pj_scene3d_core - geometry/scene core, no Qt or GL dependency
+# pj_scene3d_core - geometry/scene core, no Qt or GL dependency. TF types
+# (Transform/TransformBuffer) come from the pj_tf leaf.
 # ---------------------------------------------------------------------------
 
 find_package(glm REQUIRED)
@@ -22,7 +23,6 @@ if(EMSCRIPTEN)
     src/scene_entities_decode.cpp
     src/scene_entities_model_state.cpp
     src/shadow_camera.cpp
-    src/tf/tf_buffer.cpp
     src/tf/tf_connections.cpp
     src/trail_sampling.cpp
     src/version.cpp
@@ -39,7 +39,7 @@ if(EMSCRIPTEN)
     ${PJ_WARNING_FLAGS}
   )
   target_link_libraries(pj_scene3d_core
-    PUBLIC glm::glm plotjuggler_sdk::base nlohmann_json::nlohmann_json
+    PUBLIC glm::glm plotjuggler_sdk::base nlohmann_json::nlohmann_json pj_tf
   )
   if(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS)
     if(NOT TARGET draco::draco OR NOT TARGET cloudini::cloudini)
@@ -70,7 +70,6 @@ add_library(pj_scene3d_core STATIC
   src/scene_entities_decode.cpp
   src/scene_entities_model_state.cpp
   src/shadow_camera.cpp
-  src/tf/tf_buffer.cpp
   src/tf/tf_connections.cpp
   src/trail_sampling.cpp
   src/version.cpp
@@ -84,7 +83,7 @@ target_compile_options(pj_scene3d_core PRIVATE
   ${PJ_WARNING_FLAGS}
 )
 target_link_libraries(pj_scene3d_core
-  PUBLIC glm::glm plotjuggler_sdk::base nlohmann_json::nlohmann_json
+  PUBLIC glm::glm plotjuggler_sdk::base nlohmann_json::nlohmann_json pj_tf
   PRIVATE draco::draco cloudini::cloudini
 )
 
@@ -110,8 +109,6 @@ if(PJ_BUILD_TESTS)
     ../tests/frustum_cull_test.cpp
     ../tests/cube_draw_policy_test.cpp
     ../tests/shadow_camera_test.cpp
-    ../tests/tf_buffer_test.cpp
-    ../tests/tf_buffer_hierarchy_test.cpp
     ../tests/tf_connections_test.cpp
     ../tests/trail_sampling_test.cpp
     ../tests/robot_model_bridges_test.cpp

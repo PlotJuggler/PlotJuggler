@@ -21,10 +21,10 @@
 
 #include "../rhi/passes/model_rhi_pass.h"
 #include "fake_model_layer.h"
-#include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/model_renderable.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
+#include "pj_tf/transform.h"
 
 namespace pj::scene3d {
 namespace {

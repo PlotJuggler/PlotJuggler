@@ -1068,7 +1068,7 @@ void Scene3DConfigPanel::bindDock(Scene3DDockWidget* dock) {
   connect(dock, &SceneDockWidget::layerVisibilityChanged, this, &Scene3DConfigPanel::onLayerVisibilityChanged);
   connect(dock, &SceneDockWidget::layerWarningChanged, this, &Scene3DConfigPanel::onLayerWarningChanged);
   // Keep the follow combo in step with the dock's frame set and follow target.
-  connect(dock, &Scene3DDockWidget::availableFramesChanged, this, [this](const QList<pj::scene3d::FrameRow>&) {
+  connect(dock, &Scene3DDockWidget::availableFramesChanged, this, [this](const QList<pj::tf::FrameRow>&) {
     populateFollowCombo();
     populateTrailCombo();
   });

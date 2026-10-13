@@ -33,12 +33,12 @@
 #include "pj_base/builtin/grid_map_codec.hpp"
 #include "pj_base/time.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_core/tf/transform.h"
+#include "pj_runtime/TransformService.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
-#include "pj_scene3d_widgets/transform_service.h"
+#include "pj_tf/tf_buffer.h"
+#include "pj_tf/transform.h"
 #include "pj_widgets/DoubleScrubber.h"
 using namespace Qt::StringLiterals;
 
@@ -262,9 +262,9 @@ TEST(GridMapLayer, DockTransformsSourceBoundsIntoFixedFrame) {
   ASSERT_TRUE(session.objectStore().pushOwned(topic_id, 100, std::vector<uint8_t>{0x01}).has_value());
   registerGridParser(session, topic_id);
 
-  pj::scene3d::TransformService transform_service(session);
+  PJ::TransformService transform_service(session);
   const auto tf_buffer = transform_service.transformBuffer(1);
-  pj::scene3d::StampedTransform fixed_from_map;
+  pj::tf::StampedTransform fixed_from_map;
   fixed_from_map.stamp = PJ::fromRaw(100);
   fixed_from_map.parent_frame = "world";
   fixed_from_map.child_frame = "map";

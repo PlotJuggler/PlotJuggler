@@ -14,7 +14,7 @@
 #include "pj_base/builtin/poses_in_frame_codec.hpp"
 #include "pj_base/builtin/scene_entities_codec.hpp"
 #include "pj_base/builtin/voxel_grid_codec.hpp"
-#include "pj_scene3d_widgets/parse_locked.h"  // parseLocked
+#include "pj_runtime/parse_locked.h"  // parseLocked
 
 namespace pj::scene3d {
 namespace {

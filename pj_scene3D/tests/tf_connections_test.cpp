@@ -9,11 +9,14 @@
 #include <string>
 #include <vector>
 
-#include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_core/tf/transform.h"
+#include "pj_tf/tf_buffer.h"
+#include "pj_tf/transform.h"
 
 namespace pj::scene3d {
 namespace {
+
+using pj::tf::StampedTransform;
+using pj::tf::Transform;
 
 using namespace std::chrono_literals;
 

@@ -295,7 +295,7 @@ The chain-in-one-task item is proposed.
 **Status: Built** (the per-dataset service). R1-R4 and R6 are decided and R10 is built
 (slice T); the rest are proposed or conditional.
 
-- **`pj_tf`** is a Qt-free leaf library. `TransformBuffer` keeps a forest of edges with a
+- **`pj_tf`** (Built, slice 1t) is a Qt-free leaf library. `TransformBuffer` keeps a forest of edges with a
   timestamped sample history per edge and zero-order-hold lookups.
 - **`TransformService`** (`pj_runtime`) owns one buffer per dataset and the ingest tap,
   which is active from startup. `SessionManager`'s remove, merge and reload paths call its
@@ -305,8 +305,8 @@ The chain-in-one-task item is proposed.
 | # | Change | Status |
 |---|---|---|
 | R1 | Move the immutable snapshot type into `pj_tf`; drop the scripting-side interface and adapter | Decided |
-| R2 | Move the fixed-frame memory (a 3D-view preference) out of `TransformService` to the scene side | Decided |
-| R3 | A 3D dock refuses a topic from another dataset, instead of warning | Decided (follows D7) |
+| R2 | Move the fixed-frame memory (a 3D-view preference) out of `TransformService` to the scene side (`FixedFrameMemory` in `pj_scene3d_widgets`) | Built (slice 1t) |
+| R3 | A 3D dock refuses a topic from another dataset, instead of warning | Built (slice 1t; follows D7) |
 | R4 | Replace a buffer as a whole object instead of rewriting it in place; seal complete file buffers, so snapshots share them without copying | Decided |
 | R5 | Report which edges and samples a lookup used, for the cache dependency | Proposed; measure after R10, which already removes most spurious revision bumps |
 | R6 | TF clock contract. The buffer is keyed by header stamps, while lookups use the dataset's entry clock. Fix: two timestamps per sample (header and entry). The cursor and the query time use the entry clock; placing an object uses its own stamp in the header clock. On the nuScenes recording (log time), log time minus header stamp is 0 ms on the lidar, 0-40 ms on the front camera and -37 to +48 ms on `/tf`: the lidar hid the mismatch. | Decided 2026-10-13 (slice 1b). Test-first with a fixture whose log time differs from its header stamps; confirm visually on the nuScenes cameras. |

@@ -18,9 +18,9 @@
 #include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/TransformService.h"
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
-#include "pj_scene3d_widgets/transform_service.h"
 
 namespace pj_mixed_layout {
 
@@ -70,7 +70,7 @@ class MixedLayout {
  private:
   PJ::SessionManager session_;
   PJ::CatalogModel catalog_{&session_};
-  pj::scene3d::TransformService transforms_{session_};
+  PJ::TransformService transforms_{session_};
   std::unique_ptr<QMainWindow> window_;
   ads::CDockManager* manager_ = nullptr;  // owned by window_
 };

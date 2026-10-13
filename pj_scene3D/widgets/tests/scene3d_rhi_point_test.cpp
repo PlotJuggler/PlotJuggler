@@ -734,7 +734,7 @@ class OffscreenRhi {
     QRhiCommandBuffer* command_buffer = nullptr;
     ASSERT_EQ(rhi_->beginOffscreenFrame(&command_buffer), QRhi::FrameOpSuccess);
     QRhiResourceUpdateBatch* updates = rhi_->nextResourceUpdateBatch();
-    pass.admit([](const std::string&) { return std::optional<pj::scene3d::Transform>(pj::scene3d::Transform{}); });
+    pass.admit([](const std::string&) { return std::optional<pj::tf::Transform>(pj::tf::Transform{}); });
     pass.prepare({rhi_.get(), updates, glm::dvec3(0.0), QMatrix4x4()}, {glm::mat4(1.0F), QSize(64, 64), 1.0F});
     command_buffer->beginPass(target_.get(), Qt::black, {1.0F, 0}, updates);
     command_buffer->endPass();

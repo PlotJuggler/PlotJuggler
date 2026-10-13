@@ -296,6 +296,12 @@ if(PJ_ENABLE_MSAN)
     return()
 endif()
 
+# pj_tf: the TF frame tree (Transform/TransformBuffer), a Qt-free leaf linked by
+# both pj_scene3d_core and pj_runtime. After the MSan cut because it needs glm,
+# which that lane's closure does not carry; before pj_scene3D and pj_runtime so
+# its target exists for both.
+add_subdirectory(pj_tf)
+
 # pj_scripting: Luau filter engine for Data Processors (self-describing filter
 # classes). Depends on pj_datastore (added above) + Conan Luau. See its CLAUDE.md.
 if(NOT EMSCRIPTEN OR PJ_WASM_WITH_LUAU)

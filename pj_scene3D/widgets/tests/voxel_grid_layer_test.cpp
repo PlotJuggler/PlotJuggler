@@ -27,9 +27,9 @@
 #include "pj_base/builtin/voxel_grid.hpp"
 #include "pj_base/time.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+#include "pj_tf/tf_buffer.h"
+#include "pj_tf/transform.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -73,9 +73,9 @@ void registerVoxelParser(PJ::SessionManager& session, PJ::ObjectTopicId topic_id
 }
 
 // Pushes world<-map as a pure +x translation at `stamp_ns`.
-void pushWorldFromMap(pj::scene3d::TransformBuffer& buffer, int64_t stamp_ns, double x) {
-  pj::scene3d::StampedTransform st;
-  st.stamp = pj::scene3d::TimePoint{std::chrono::nanoseconds(stamp_ns)};
+void pushWorldFromMap(pj::tf::TransformBuffer& buffer, int64_t stamp_ns, double x) {
+  pj::tf::StampedTransform st;
+  st.stamp = pj::tf::TimePoint{std::chrono::nanoseconds(stamp_ns)};
   st.parent_frame = "world";
   st.child_frame = "map";
   st.transform.t = glm::dvec3{x, 0.0, 0.0};
@@ -93,7 +93,7 @@ TEST(VoxelGridLayer, RenderKeyFollowsSourceFrameTransform) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  ctx.tf_buffer = std::make_shared<pj::scene3d::TransformBuffer>(pj::scene3d::TransformBuffer::kKeepAll);
+  ctx.tf_buffer = std::make_shared<pj::tf::TransformBuffer>(pj::tf::TransformBuffer::kKeepAll);
   pj::scene3d::VoxelGridLayer layer(topic_id, u"voxels"_s);
   ASSERT_TRUE(layer.attach(ctx));
   layer.setFixedFrame(u"world"_s);

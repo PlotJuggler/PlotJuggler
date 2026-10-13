@@ -8,7 +8,7 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 
-namespace pj::scene3d {
+namespace PJ {
 
 // Decode one object through a topic's MessageParser, holding the binding's
 // per-topic mutex for the parseObject call.
@@ -36,4 +36,4 @@ inline auto parseLocked(
   return binding.parser->parseObject(ts, payload);
 }
 
-}  // namespace pj::scene3d
+}  // namespace PJ

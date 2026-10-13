@@ -187,8 +187,9 @@
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #endif
 #ifdef PJ_WITH_SCENE3D
+#include "pj_runtime/TransformService.h"
+#include "pj_scene3d_widgets/FixedFrameMemory.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
-#include "pj_scene3d_widgets/transform_service.h"
 #endif
 #include "pj_scene_common/scene_dock_widget.h"
 #include "pj_widgets/CoalescingTrigger.h"
@@ -553,12 +554,12 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 #ifdef PJ_TARGET_WASM
   browser_layout_runtime_ = std::make_unique<BrowserLayoutRuntime>();
 #endif
-  // The 3D transform service owns the per-dataset TF buffers + load-time
-  // ingest. It lives in the shell (not pj_runtime) so the runtime stays
-  // domain-neutral; it reads only SessionManager's neutral surface.
+  // The transform service owns the per-dataset TF buffers + load-time ingest;
+  // the fixed-frame memory is the 3D docks' view preference layered on top.
 #ifdef PJ_WITH_SCENE3D
-  transform_service_ = std::make_unique<pj::scene3d::TransformService>(session_->sessionManager());
+  transform_service_ = std::make_unique<PJ::TransformService>(session_->sessionManager());
   transform_service_->activateIngestTap();
+  fixed_frame_memory_ = std::make_unique<pj::scene3d::FixedFrameMemory>(session_->sessionManager());
 #endif
   // Pull saved icon metrics before setupUi so the literals we feed into
   // build*Toolbar() pick up the correct values on first paint. Widgets
@@ -2000,9 +2001,11 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
   if (kind == "scene3d"_L1) {
     auto* widget = new Scene3DDockWidget(parent);
     connect(widget, &SceneDockWidget::pendingRestoresChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild);
+    connect(widget, &SceneDockWidget::topicRefused, this, [this](const QString& reason) { showToast(reason); });
     connect(widget, &SceneDockWidget::workspaceChanged, &scene_undo_debounce_, qOverload<>(&QTimer::start));
     widget->setSessionManager(&session_->sessionManager());
     widget->setTransformService(transform_service_.get());
+    widget->setFixedFrameMemory(fixed_frame_memory_.get());
     widget->setSettings(app_settings_.get());
     topic_demand_controller_->registerSceneDock(widget);
     // Seed the resolver's per-source remembered-roots map + auto search roots
@@ -2033,6 +2036,7 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
   if (kind == "scene2d"_L1) {
     auto* widget = new Scene2DDockWidget(parent);
     connect(widget, &SceneDockWidget::pendingRestoresChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild);
+    connect(widget, &SceneDockWidget::topicRefused, this, [this](const QString& reason) { showToast(reason); });
     connect(widget, &SceneDockWidget::workspaceChanged, &scene_undo_debounce_, qOverload<>(&QTimer::start));
     widget->setSessionManager(&session_->sessionManager());
     topic_demand_controller_->registerSceneDock(widget);

@@ -63,7 +63,7 @@ jobs:
           if [[ "${BASE_REF}" != release-* ]]; then
             if files=$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/files" --jq '.[].filename'); then
               build=false
-              pattern='^(versions\.env|conanfile\.txt|conan\.lock|CMakeLists\.txt|cmake/|3rdparty/|pj_scene3D/|pj_scene2D/widgets/|pj_plotting/widget/|pj_widgets/|pj_scene_common/|pj_app/CMakeLists\.txt|pj_app/tests/rhi_|scripts/ci/|\.github/workflows/macos-ci\.yml)'
+              pattern='^(versions\.env|conanfile\.txt|conan\.lock|CMakeLists\.txt|cmake/|3rdparty/|pj_scene3D/|pj_tf/|pj_runtime/.*(TransformService|transform_service|parse_locked)|pj_scene2D/widgets/|pj_plotting/widget/|pj_widgets/|pj_scene_common/|pj_app/CMakeLists\.txt|pj_app/tests/rhi_|scripts/ci/|\.github/workflows/macos-ci\.yml)'
               if grep -Eq "${pattern}" <<<"${files}"; then build=true; fi
             fi
           fi

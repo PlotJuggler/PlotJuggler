@@ -39,6 +39,7 @@ add_library(pj_runtime STATIC
     src/TelemetryPing.cpp
     src/ToolboxRuntimeHost.cpp
     src/TopicDemandTracker.cpp
+    src/TransformService.cpp
     src/UpdateChecker.cpp
     src/ViewportRuntimeHost.cpp
     include/pj_runtime/AppSession.h
@@ -73,6 +74,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/TelemetryPing.h
     include/pj_runtime/ToolboxRuntimeHost.h
     include/pj_runtime/TopicDemandTracker.h
+    include/pj_runtime/TransformService.h
     include/pj_runtime/UpdateChecker.h
     include/pj_runtime/UpdateVersion.h
     include/pj_runtime/ViewportRuntimeHost.h
@@ -102,6 +104,9 @@ target_link_libraries(pj_runtime PUBLIC
     Qt6::Network
     Qt6::Xml
     pj_datastore
+    # TransformService.h owns the per-dataset pj::tf::TransformBuffer forest;
+    # pj_tf's public glm types reach it transitively through this link.
+    pj_tf
     $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:pj_marketplace>
     plotjuggler_sdk::plugin_host
     nlohmann_json::nlohmann_json
@@ -237,6 +242,22 @@ if(PJ_BUILD_TESTS)
     )
     add_test(NAME recorder_test COMMAND recorder_test)
     set_tests_properties(recorder_test PROPERTIES TIMEOUT 60)
+
+    # Keep this executable separate: its debug thread-affinity death test forks
+    # and deliberately aborts in the child process.
+    # H.20: full coverage for TransformService's incremental UID-keyed TF ingest —
+    # the heart of PR #174 (live + scrubbable streaming TF) and the bulk file path.
+    # Pure logic against a SessionManager + a mock FrameTransforms parser; no GL,
+    # no widgets. Custom main (QCoreApplication for the QObject service).
+    add_executable(transform_service_test
+        tests/transform_service_test.cpp
+    )
+    target_link_libraries(transform_service_test PRIVATE
+        pj_runtime
+        GTest::gtest
+    )
+    target_compile_options(transform_service_test PRIVATE ${PJ_WARNING_FLAGS})
+    add_test(NAME transform_service_test COMMAND transform_service_test)
 
     add_library(runtime_host_object_parser_plugin SHARED
         tests/runtime_host_object_parser_plugin.cpp

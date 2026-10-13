@@ -33,10 +33,10 @@
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+#include "pj_tf/tf_buffer.h"
+#include "pj_tf/transform.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -144,9 +144,9 @@ std::optional<RefGrid> refReplay(const std::vector<RefBase>& bases, std::vector<
 }
 
 // Pushes world<-map as a pure +x translation at `stamp_ns`.
-void pushWorldFromMap(pj::scene3d::TransformBuffer& buffer, int64_t stamp_ns, double x) {
-  pj::scene3d::StampedTransform st;
-  st.stamp = pj::scene3d::TimePoint{std::chrono::nanoseconds(stamp_ns)};
+void pushWorldFromMap(pj::tf::TransformBuffer& buffer, int64_t stamp_ns, double x) {
+  pj::tf::StampedTransform st;
+  st.stamp = pj::tf::TimePoint{std::chrono::nanoseconds(stamp_ns)};
   st.parent_frame = "world";
   st.child_frame = "map";
   st.transform.t = glm::dvec3{x, 0.0, 0.0};
@@ -462,7 +462,7 @@ TEST_F(OccupancyGridLayerUpdatesTest, RenderKeyFollowsSourceFrameTransform) {
   pushBase(100, 4, 4, 0);
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  ctx.tf_buffer = std::make_shared<pj::scene3d::TransformBuffer>(pj::scene3d::TransformBuffer::kKeepAll);
+  ctx.tf_buffer = std::make_shared<pj::tf::TransformBuffer>(pj::tf::TransformBuffer::kKeepAll);
   pj::scene3d::OccupancyGridLayer layer(base_topic_, u"map"_s);
   ASSERT_TRUE(layer.attach(ctx));
   layer.setFixedFrame(u"world"_s);

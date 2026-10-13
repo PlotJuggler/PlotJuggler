@@ -132,23 +132,25 @@ comes from the conversion itself.
 
 ## Layout
 
-- `core/` — pure geometry/scene logic, **no Qt or GL**. The TF buffer + frame
-  hierarchy, the SE(3) `Transform`, the `OccupancyGridReconstructor` (stateful
+- `core/` — pure geometry/scene logic, **no Qt or GL**. TF types (`pj::tf::Transform`,
+  `pj::tf::TransformBuffer`, frame hierarchy) come from the leaf `pj_tf` module, not
+  from this tree. `core/` itself owns the `OccupancyGridReconstructor` (stateful
   time-travel over an `OccupancyGrid` base plus incremental `OccupancyGridUpdate`
-  patches), and the `PointVertex` / `DecodedPointCloud` render structs. Links only `glm`,
-  `pj_base`, `nlohmann_json`. Key headers:
-  `core/include/pj_scene3d_core/{tf/tf_buffer.h, tf/transform.h,
-  tf/frame_picking.h, occupancy_grid_reconstructor.h, pointcloud.h, pointcloud_codecs.h,
+  patches) and the `PointVertex` / `DecodedPointCloud` render structs. Links `glm`,
+  `pj_base`, `nlohmann_json`, `pj_tf`. Key headers:
+  `core/include/pj_scene3d_core/{tf/frame_picking.h, tf/tf_connections.h,
+  occupancy_grid_reconstructor.h, pointcloud.h, pointcloud_codecs.h,
   camera/camera.h, camera/camera_math.h, robot_model.h,
-  scene_entities_decode.h, scene_entities_render.h}`. The codec
+  scene_entities_decode.h, scene_entities_render.h}`; TF types are reached via
+  `pj_tf/{tf_buffer.h, transform.h}`. The codec
   decoders add a PRIVATE `draco` + `cloudini` link (compressed-cloud transcoding only —
-  see "Decoding boundary"); the public API stays `glm` / `pj_base` / `nlohmann_json`.
+  see "Decoding boundary"); the public API stays `glm` / `pj_base` / `nlohmann_json` / `pj_tf`.
 - `widgets/` — the Qt viewer (`SceneViewWidget`, a `QRhiWidget` in `rhi/`,
   embedded as a direct child of `Scene3DDockWidget`), the render passes, the
   layers, and `Scene3DDockWidget` (an `IDataWidget`). Key public headers:
   `widgets/include/pj_scene3d_widgets/{Scene3DDockWidget.h,
   scene_view_widget.h, scene3d_layer.h, point_renderable.h,
-  model_renderable.h, transform_service.h, mesh_data.h, mesh_shading_params.h,
+  model_renderable.h, FixedFrameMemory.h, mesh_data.h, mesh_shading_params.h,
   layers/robot_model_layer.h, layers/scene_entities_layer.h}`. Each layer
   registers the scene families it draws through once
   (`Scene3DLayer::sceneContributions()`, a `SceneContributions` of typed
@@ -180,13 +182,24 @@ comes from the conversion itself.
     (tonemap/exposure/saturation/SSAO/EDL) are runtime APIs with baked defaults
     (`scene_look_defaults.h`) and no app UI.
   - The **last fixed frame the user picked by hand for a dataset** is remembered by
-    `TransformService` (one `TransformBuffer` per dataset, so the natural home): a
-    newly-created 3D dock defaults to it via `Scene3DDockWidget::resolveAutoFixedFrame`
-    instead of the `map`/`world`/`odom` heuristic. In-session it is keyed by
-    `DatasetId` (shared by sibling docks); across restarts it persists in QSettings
-    under `pj_scene3d/fixed_frame_by_source`, keyed by the dataset's source path +
-    `source_name` (name alone for a pathless source).
+    `FixedFrameMemory` (a view preference, so it lives here and not in `pj_runtime`'s
+    `TransformService`; `pj_app` owns one and hands it to every dock through
+    `Scene3DDockWidget::setFixedFrameMemory`): a newly-created 3D dock defaults to it
+    via `Scene3DDockWidget::resolveAutoFixedFrame` instead of the `map`/`world`/`odom`
+    heuristic. In-session it is keyed by `DatasetId` and lives for the session
+    (shared by sibling docks; dataset ids are never reused, and the remembered frame
+    is re-checked against the live tree); across restarts it persists in
+    QSettings under `pj_scene3d/fixed_frame_by_source`, keyed by the dataset's source
+    path + `source_name` (name alone for a pathless source).
     See `docs/REQUIREMENTS.md` §5 / §10.
+  - **One dataset per dock.** A 3D dock has one TF tree and one display clock, so it
+    refuses a topic from a dataset other than the one it shows (`SceneDockWidget`
+    returns `kRejected` and emits `topicRefused` with the reason; `pj_app` shows it as
+    a toast). A saved layout that mixes datasets still loads: the foreign element is
+    refused with the same reason and the restore is not marked failed. The dock can
+    bind another dataset once its current dataset's topics are gone. TF itself is
+    owned by `pj_runtime`'s `TransformService`, which the dock reaches through
+    `setTransformService`.
   - `MeshData` carries per-vertex UV0 + tangents plus a per-`SubMesh` `Material`
     (glTF 2.0 metallic-roughness, read via assimp's material abstraction so it
     also covers DAE/OBJ/FBX): base-color/metallic-roughness/normal/occlusion/
@@ -246,17 +259,15 @@ sizes). They need a real display (Xvfb in Linux CI; they skip on `offscreen`,
 and fail instead under `PJ_REQUIRE_GPU_TESTS=1`). TECHNICAL_NOTES.md §7-8 has
 the golden rules, the test hooks and the CI lanes.
 
-These tests keep their own executables and `add_test` registrations:
+This test keeps its own executable and `add_test` registration:
 
-- `transform_service_test`: its debug thread-affinity death test forks and aborts
-  in the child process.
 - `scene3d_shader_constants_test`: uniquely defines `PJ_SCENE3D_SHADER_DIR`; it
   reads the shader sources and packs as data and checks the shared cube GLSL (and
   `cube_mesh.h`'s C++ mirrors of it), the colormap copy and every pack's varyings.
 
 Run the module in the builder image with `ctest --test-dir build
 --output-on-failure -R
-'^(pj_scene3d_.*|pointcloud_golden_test\..*|scene3d_rhi_.*|scene3d_frame_benchmark\..*|transform_service_test|scene3d_shader_constants_test)$'`
+'^(pj_scene3d_.*|pointcloud_golden_test\..*|scene3d_rhi_.*|scene3d_frame_benchmark\..*|scene3d_shader_constants_test)$'`
 (under a display for the QRhi runners). Filter just the discovered runners with
 `-R '^pj_scene3d_'`, or run the complete CMake registry with `ctest --test-dir
 build --output-on-failure`. With `PJ_BUILD_DEMOS` the build compiles

@@ -396,7 +396,7 @@ Result run(
     updates->updateDynamicBuffer(render_mode, 0, 16, render_mode_flags.data());
     QElapsedTimer prepare_timer;
     prepare_timer.start();
-    pass.admit([](const std::string&) { return std::optional<pj::scene3d::Transform>(pj::scene3d::Transform{}); });
+    pass.admit([](const std::string&) { return std::optional<pj::tf::Transform>(pj::tf::Transform{}); });
     pass.prepare({rhi, updates, glm::dvec3(0.0), view_projection, view}, {projection, size, 1.0F});
     const double prepare_ms = elapsedMs(prepare_timer);
     if (!registry.createDirects()) {

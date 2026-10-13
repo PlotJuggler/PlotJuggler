@@ -39,6 +39,7 @@ on:
       - 'pj_scene3D/**'
       - 'pj_scene_common/**'
       - 'pj_runtime/**'
+      - 'pj_tf/**'
       - 'conanfile.txt'
 
 concurrency:

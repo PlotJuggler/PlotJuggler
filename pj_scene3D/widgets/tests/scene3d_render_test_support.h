@@ -33,9 +33,9 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_gpu_test_gate.h"  // PJ_SKIP_WITHOUT_GPU
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/TransformService.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
-#include "pj_scene3d_widgets/transform_service.h"
 #include "pj_widgets/RhiTestHooks.h"
 
 namespace pj::scene3d::test {
@@ -173,13 +173,13 @@ class Scene3DRenderFixture {
     return dataset_;
   }
   // Not wired by default: connect it with dock()->setTransformService().
-  pj::scene3d::TransformService& transforms() {
+  PJ::TransformService& transforms() {
     return transforms_;
   }
 
  private:
   PJ::SessionManager session_;
-  pj::scene3d::TransformService transforms_;
+  PJ::TransformService transforms_;
   PJ::DatasetId dataset_ = 0;
   QWidget window_;
   QPointer<PJ::Scene3DDockWidget> dock_;

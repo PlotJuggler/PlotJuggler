@@ -1,12 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include "pj_scene3d_widgets/transform_service.h"
+#include "pj_runtime/TransformService.h"
 
 #include <QLoggingCategory>
-#include <QSettings>
 #include <QThread>
-#include <QUrl>
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -14,28 +12,34 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <memory>
+#include <mutex>
+#include <utility>
 #include <vector>
 
 #include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/builtin/builtin_object_codec.hpp"
 #include "pj_base/builtin/frame_transforms.hpp"
 #include "pj_base/dataset.hpp"
+#include "pj_base/expected.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+#include "pj_runtime/CatalogModel.h"  // objectTypeFromMetadata
 #include "pj_runtime/SessionManager.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_core/tf/transform.h"
-#include "pj_scene3d_widgets/object_topic_metadata.h"  // builtinObjectTypeFor
-#include "pj_scene3d_widgets/parse_locked.h"
-#include "pj_scene3d_widgets/resolve_object.h"  // resolveObject, hasCanonical3DCodec
+#include "pj_runtime/parse_locked.h"
+#include "pj_tf/tf_buffer.h"
+#include "pj_tf/transform.h"
 
-namespace pj::scene3d {
+namespace PJ {
 
 namespace {
-Q_LOGGING_CATEGORY(lcTransformService, "pj.scene3d.transform_service")
 
-// QSettings group for the cross-restart "last manual fixed frame" store, keyed by
-// dataset source name. Mirrors the "pj_scene3d/scene_controls" convention.
-constexpr char kFixedFrameBySourceGroup[] = "pj_scene3d/fixed_frame_by_source";
+using pj::tf::SetTransformError;
+using pj::tf::StampedTransform;
+using pj::tf::TimePoint;
+using pj::tf::TransformBuffer;
+
+Q_LOGGING_CATEGORY(lcTransformService, "pj.runtime.transform_service")
 
 struct IngestStats {
   std::size_t ingested = 0;
@@ -49,6 +53,24 @@ struct IngestStats {
   std::size_t failed_fetch = 0;
 };
 
+// Decode one FrameTransforms object entry: parser bound -> the topic's objects
+// are parser-decoded messages; no parser bound -> the bytes are a serialized
+// canonical FrameTransforms blob (a data-source/toolbox that pushed one
+// directly). pj_runtime must never depend on pj_scene3D, so this is not
+// pj_scene3D's resolveObject().
+Expected<PJ::sdk::ObjectRecord> resolveFrameTransforms(
+    const PJ::SessionManager::ParserBinding& binding, PJ::Timestamp ts, const PJ::sdk::PayloadView& payload) {
+  if (binding) {
+    return parseLocked(binding, ts, payload);
+  }
+  auto decoded = deserializeBuiltinObject(
+      PJ::sdk::BuiltinObjectType::kFrameTransforms, payload.bytes.data(), payload.bytes.size());
+  if (!decoded) {
+    return unexpected(std::move(decoded).error());
+  }
+  return PJ::sdk::ObjectRecord{.ts = std::nullopt, .object = std::move(*decoded)};
+}
+
 // Decode one object entry already known to belong to a FrameTransforms topic and
 // push each of its edges into the buffer. A malformed edge (reparent conflict /
 // self-loop / invalid frame data) is a recoverable data error in a real bag:
@@ -56,10 +78,7 @@ struct IngestStats {
 void ingestEntry(
     PJ::Timestamp store_ts, const PJ::sdk::PayloadView& payload, PJ::Timestamp payload_stamp_shift,
     const PJ::SessionManager::ParserBinding& parser_binding, TransformBuffer& tf_buffer, IngestStats& stats) {
-  // The topic is already classified as FrameTransforms. resolveObject() decodes
-  // it via the MessageParser when one is bound, or via the canonical codec when
-  // not (a data-source/toolbox that pushed serialized canonical transforms).
-  auto obj = resolveObject(parser_binding, PJ::sdk::BuiltinObjectType::kFrameTransforms, store_ts, payload);
+  auto obj = resolveFrameTransforms(parser_binding, store_ts, payload);
   if (!obj.has_value()) {
     return;
   }
@@ -179,9 +198,6 @@ void TransformService::rebuildFromStore(PJ::DatasetId dataset_id) {
 
 void TransformService::invalidateDataset(PJ::DatasetId dataset_id) {
   Q_ASSERT(QThread::currentThread() == thread());
-  // Drop the in-session remembered fixed frame for this dataset; the persisted
-  // QSettings copy (if any) is the cross-restart memory and stays put.
-  remembered_fixed_frames_.erase(dataset_id);
   resetDrainState(dataset_id);
   std::shared_ptr<TransformBuffer> active;
   {
@@ -220,7 +236,6 @@ void TransformService::invalidateAll() {
   Q_ASSERT(QThread::currentThread() == thread());
   tf_cursors_.clear();
   non_tf_topics_.clear();
-  remembered_fixed_frames_.clear();
   std::vector<std::shared_ptr<TransformBuffer>> buffers;
   {
     std::lock_guard lock(tap_mutex_);
@@ -293,59 +308,6 @@ void TransformService::abortReplacingLoad(PJ::DatasetId dataset_id) {
   rebuildFromStore(dataset_id);
 }
 
-QString TransformService::datasetSourceKey(PJ::DatasetId dataset_id) const {
-  const PJ::DatasetInfo* info = session_.dataEngine().getDataset(dataset_id);
-  if (info == nullptr || info->source_name.empty()) {
-    return {};
-  }
-  // Qualify the name with the source path: two same-named files in different
-  // folders must not share a remembered frame, and fan-out members (same path,
-  // distinct names) must stay distinct — so the key needs both parts. Each part
-  // is percent-encoded so a '/' can't be misread as a QSettings group separator;
-  // '|' never survives the encoding, making it an unambiguous joiner. A pathless
-  // source (e.g. a live stream with a stable name) keys by name alone.
-  const QString name = QString::fromUtf8(QUrl::toPercentEncoding(QString::fromStdString(info->source_name)));
-  const QString path = session_.datasetSourcePath(dataset_id);
-  if (path.isEmpty()) {
-    return name;
-  }
-  return QString::fromUtf8(QUrl::toPercentEncoding(path)) + u'|' + name;
-}
-
-void TransformService::rememberFixedFrame(PJ::DatasetId dataset_id, const QString& frame) {
-  Q_ASSERT(QThread::currentThread() == thread());
-  if (frame.isEmpty()) {
-    return;
-  }
-  remembered_fixed_frames_[dataset_id] = frame;
-  const QString key = datasetSourceKey(dataset_id);
-  if (key.isEmpty()) {
-    return;  // no stable cross-session identity (e.g. an unnamed live stream)
-  }
-  QSettings settings;
-  settings.beginGroup(QLatin1String(kFixedFrameBySourceGroup));
-  settings.setValue(key, frame);
-}
-
-QString TransformService::rememberedFixedFrame(PJ::DatasetId dataset_id) {
-  Q_ASSERT(QThread::currentThread() == thread());
-  if (auto it = remembered_fixed_frames_.find(dataset_id); it != remembered_fixed_frames_.end()) {
-    return it->second;
-  }
-  // First lookup this session: fall back to the cross-restart store, keyed by the
-  // dataset's source name. Memoize the result (hit OR miss) so the hot seeding path
-  // does not re-read QSettings on every frame-tree change.
-  QString frame;
-  const QString key = datasetSourceKey(dataset_id);
-  if (!key.isEmpty()) {
-    QSettings settings;
-    settings.beginGroup(QLatin1String(kFixedFrameBySourceGroup));
-    frame = settings.value(key).toString();
-  }
-  remembered_fixed_frames_[dataset_id] = frame;
-  return frame;
-}
-
 void TransformService::ingestFrameTransformsForDataset(PJ::DatasetId dataset_id) {
   Q_ASSERT(QThread::currentThread() == thread());
   if (tap_active_) {
@@ -414,7 +376,7 @@ bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
         // topic's builtin_object_type metadata is authoritative — classify by
         // metadata, no decode needed (a data-source/toolbox canonical producer,
         // e.g. the Mosaico cloud toolbox).
-        const PJ::sdk::BuiltinObjectType type = builtinObjectTypeFor(object_store.descriptor(topic_id));
+        const PJ::sdk::BuiltinObjectType type = objectTypeFromMetadata(object_store.descriptor(topic_id).metadata_json);
         if (type == PJ::sdk::BuiltinObjectType::kNone) {
           continue;  // not classifiable yet (e.g. a parser topic mid-bind) — retry next tick
         }
@@ -487,4 +449,4 @@ bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
   return stats.ingested != 0;
 }
 
-}  // namespace pj::scene3d
+}  // namespace PJ

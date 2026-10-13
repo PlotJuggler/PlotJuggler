@@ -9,10 +9,9 @@
 
 #include "pj_base/time.hpp"  // PJ::Timepoint (absolute spine)
 
-namespace pj::scene3d {
+namespace pj::tf {
 
-// An ABSOLUTE frame stamp: the scene3d spelling of PJ::Timepoint. The absolute
-// time spine now lives in pj_base/time.hpp, so pj_scene3d_core aliases it
+// An ABSOLUTE frame stamp: the pj_tf spelling of PJ::Timepoint, aliased
 // directly instead of re-declaring a structurally-identical shadow. Being a
 // time_point (not a bare Duration) keeps it un-mixable: TimePoint - TimePoint is
 // a Duration, TimePoint + TimePoint won't compile.
@@ -65,4 +64,4 @@ struct StampedTransform {
   Transform transform;
 };
 
-}  // namespace pj::scene3d
+}  // namespace pj::tf

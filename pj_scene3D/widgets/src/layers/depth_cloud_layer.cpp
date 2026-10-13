@@ -30,11 +30,11 @@
 #include "pj_base/time.hpp"  // PJ::fromRaw, PJ::toRaw
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/parse_locked.h"
 #include "pj_scene3d_core/camera/camera.h"  // AABB, expandAABB
 #include "pj_scene3d_core/pointcloud.h"     // PointVertex
 #include "pj_scene3d_core/pointcloud_budget.h"
 #include "pj_scene3d_widgets/object_topic_metadata.h"
-#include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_scene3d_widgets/retained_upload.h"
 #include "pj_widgets/Colormap.h"
 #include "pj_widgets/ComboBox.h"

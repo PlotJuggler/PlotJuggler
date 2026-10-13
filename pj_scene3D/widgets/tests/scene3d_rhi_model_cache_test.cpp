@@ -38,8 +38,8 @@
 #include "../rhi/scene_view_widget_rhi_quality_p.h"
 #include "fake_model_layer.h"
 #include "pj_base/builtin/scene_entities_codec.hpp"
-#include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/model_renderable.h"
+#include "pj_tf/tf_buffer.h"
 #include "pj_widgets/GraphicsApi.h"
 #include "scene3d_render_test_support.h"
 #include "scene_view_test_access.h"
@@ -132,13 +132,13 @@ void settle(SceneViewWidget& view) {
 // at x = 1.5 at t = 200 (tracker at 100), with shadows on (the default).
 class ModelView {
  public:
-  ModelView() : tf_(std::make_shared<pj::scene3d::TransformBuffer>(pj::scene3d::TransformBuffer::kKeepAll)) {
+  ModelView() : tf_(std::make_shared<pj::tf::TransformBuffer>(pj::tf::TransformBuffer::kKeepAll)) {
     auto* layout = new QVBoxLayout(&window_);
     layout->setContentsMargins(0, 0, 0, 0);
     view_ = new SceneViewWidget(&window_);
     layout->addWidget(view_);
     for (const auto& [t, x] : {std::pair{100, 0.0}, std::pair{200, 1.5}}) {
-      const pj::scene3d::Transform link({x, 0.0, 0.0}, glm::dquat(1.0, 0.0, 0.0, 0.0));
+      const pj::tf::Transform link({x, 0.0, 0.0}, glm::dquat(1.0, 0.0, 0.0, 0.0));
       EXPECT_TRUE(tf_->setTransform({PJ::fromRaw(t), kWorld, kLink, link}).has_value());
     }
     view_->setTransformBuffer(tf_);
@@ -177,7 +177,7 @@ class ModelView {
  private:
   QWidget window_;
   SceneViewWidget* view_ = nullptr;
-  std::shared_ptr<pj::scene3d::TransformBuffer> tf_;
+  std::shared_ptr<pj::tf::TransformBuffer> tf_;
 };
 
 // Shows the fixture's dock in base_link with a fixed camera; false when it never got exposed.

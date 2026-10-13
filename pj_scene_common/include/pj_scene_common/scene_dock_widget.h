@@ -130,6 +130,11 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   void pendingRestoresChanged();
   /// Emitted for committed, persistent user mutations, never during restore.
   void workspaceChanged();
+  /// Emitted when the dock refuses a topic the user (or a saved layout) asked it to
+  /// show, with the reason in user-facing words. Every refusal that is not a plain
+  /// "unsupported type" reports here, so the shell can surface it instead of
+  /// dropping the topic silently.
+  void topicRefused(const QString& reason);
 
  protected:
   enum class DeferredElementKind { kRenderLayer, kConfigTopic };
@@ -260,6 +265,14 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// NOT re-implement the never-populated short-circuit.
   virtual bool pruneEvictedObjects();
 
+  /// Refuses `topic_id` when its dataset differs from the one this dock already
+  /// shows: reports the reason through topicRefused (once per event-loop turn, so a
+  /// multi-topic drop or a mixed layout yields one toast) and returns true. A dock
+  /// has one display clock, so arrival order must not silently decide whose wins.
+  /// An unknown topic or an empty dock never refuses. Restore paths use it too,
+  /// dropping the foreign element instead of failing the restore.
+  bool refuseForeignTopic(ObjectTopicId topic_id);
+
   /// Inserts an already-constructed layer under `topic_id`, running the same
   /// attach/wire/register/notify pipeline addLayer() uses after factory
   /// creation. For family-owned layers that never flow through the
@@ -316,6 +329,11 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// to conflate ("layer created" vs "consumed as a scene-config topic").
   enum class AddOutcome { kLayerAdded, kConsumedAsConfig, kRejected };
 
+  /// Refuses a topic of `incoming_dataset` when `bound_dataset` is already shown:
+  /// logs and emits topicRefused (coalesced per event-loop turn) and returns true.
+  /// A zero on either side means "no dataset yet" and never refuses.
+  bool refuseForeignDataset(DatasetId incoming_dataset, DatasetId bound_dataset);
+
   /// Removes matching queue entries and emits pendingRestoresChanged once.
   void erasePendingRestoresIf(const std::function<bool(const PendingRestoreElement&)>& predicate);
 
@@ -364,6 +382,8 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   // distinguishable from a never-populated one.
   bool ever_had_content_ = false;
   bool restoring_state_ = false;
+  // Set by the first refusal of an event-loop turn; cleared by a zero-delay timer.
+  bool refusal_reported_ = false;
   uint64_t restore_failure_count_ = 0;
 
   // Per-tick repaint coalescing (see onTrackerTime). last_render_key_ is the

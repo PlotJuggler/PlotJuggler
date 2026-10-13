@@ -26,8 +26,8 @@
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_core/tf/transform.h"
+#include "pj_tf/tf_buffer.h"
+#include "pj_tf/transform.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -425,7 +425,7 @@ void registerParser(PJ::SessionManager& session, PJ::ObjectTopicId topic_id, con
 pj::scene3d::Scene3DLayerContext makeContext(PJ::SessionManager& session) {
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  ctx.tf_buffer = std::make_shared<pj::scene3d::TransformBuffer>();
+  ctx.tf_buffer = std::make_shared<pj::tf::TransformBuffer>();
   return ctx;
 }
 
@@ -1001,12 +1001,12 @@ TEST(RobotModelLayerTest, DuplicateRawSourceDoesNotSelectFirstDatasetAfterIdRemi
 }
 
 // Seed "scene -> child" (identity) into a buffer.
-void seedSceneChild(pj::scene3d::TransformBuffer& buf, const std::string& child) {
-  pj::scene3d::StampedTransform tf;
+void seedSceneChild(pj::tf::TransformBuffer& buf, const std::string& child) {
+  pj::tf::StampedTransform tf;
   tf.stamp = PJ::fromRaw(1000);
   tf.parent_frame = "scene";
   tf.child_frame = child;
-  tf.transform = pj::scene3d::Transform{glm::dvec3(0, 0, 0), glm::dquat(1, 0, 0, 0)};
+  tf.transform = pj::tf::Transform{glm::dvec3(0, 0, 0), glm::dquat(1, 0, 0, 0)};
   ASSERT_TRUE(buf.setTransform(tf).has_value());
 }
 
@@ -1029,7 +1029,7 @@ TEST(RobotModelLayerTest, FixedJointBridgeReconnectsChildFrameInRenderBuffer) {
 
   // The live render buffer the dock renders against — a distinct object that
   // publishes base_link under scene but never the fixed-joint child gripper_base.
-  pj::scene3d::TransformBuffer live;
+  pj::tf::TransformBuffer live;
   seedSceneChild(live, "base_link");
   EXPECT_FALSE(live.tryLookupTransform("scene", "gripper_base", PJ::fromRaw(2000)).has_value());
 
@@ -1054,7 +1054,7 @@ TEST(RobotModelLayerTest, FixedJointBridgeAppliesFramePrefix) {
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_NE(layer.robotModel(), nullptr);
 
-  pj::scene3d::TransformBuffer live;
+  pj::tf::TransformBuffer live;
   seedSceneChild(live, "robot1/base_link");
 
   layer.ensureStaticBridgesForTest(live);
@@ -1078,7 +1078,7 @@ TEST(RobotModelLayerTest, AutoModeCollisionOnlyLinkRendersInCollisionGroupWhenMo
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_NE(layer.robotModel(), nullptr);
 
-  pj::scene3d::TransformBuffer live;
+  pj::tf::TransformBuffer live;
   seedSceneChild(live, "body");  // the fixed joint body->body_sc is bridged
 
   layer.ensureStaticBridgesForTest(live);
@@ -1106,7 +1106,7 @@ TEST(RobotModelLayerTest, AutoModeAllCollisionModelPromotesToVisuals) {
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_NE(layer.robotModel(), nullptr);
 
-  pj::scene3d::TransformBuffer live;
+  pj::tf::TransformBuffer live;
   seedSceneChild(live, "solid");
 
   layer.ensureStaticBridgesForTest(live);
@@ -1134,12 +1134,12 @@ TEST(RobotModelLayerTest, DrawsKeepLinkLocalGeometryAndApplyTfOnce) {
   ASSERT_NE(layer.robotModel(), nullptr) << layer.statusText().toStdString();
   EXPECT_EQ(layer.sourceFrame(), u"robot1/base_link"_s);
 
-  pj::scene3d::TransformBuffer live;
-  pj::scene3d::StampedTransform tf;
+  pj::tf::TransformBuffer live;
+  pj::tf::StampedTransform tf;
   tf.stamp = PJ::fromRaw(1000);
   tf.parent_frame = "scene";
   tf.child_frame = "robot1/base_link";
-  tf.transform = pj::scene3d::Transform{glm::dvec3(5, 0, 0), glm::dquat(1, 0, 0, 0)};
+  tf.transform = pj::tf::Transform{glm::dvec3(5, 0, 0), glm::dquat(1, 0, 0, 0)};
   ASSERT_TRUE(live.setTransform(tf).has_value());
   layer.ensureStaticBridgesForTest(live);
   EXPECT_EQ(layer.visualDrawCountForTest(), 1);

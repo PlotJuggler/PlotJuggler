@@ -6,11 +6,16 @@
 #include <string>
 #include <vector>
 
-#include "pj_scene3d_core/tf/transform.h"  // TimePoint
+#include "pj_tf/transform.h"  // TimePoint
+
+namespace pj::tf {
+class TransformBuffer;
+}  // namespace pj::tf
 
 namespace pj::scene3d {
 
-class TransformBuffer;
+using pj::tf::TimePoint;
+using pj::tf::TransformBuffer;
 
 // One drawn TF parent-connection edge: the world-space origins (expressed in the
 // fixed frame) of a child frame and its parent. Endpoints are float — GL-ready

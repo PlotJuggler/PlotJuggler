@@ -169,7 +169,7 @@ The two sources differ in how a trail is created, and therefore in what owns it:
 
 **Phase 1 subset**: per-widget **fixed-frame dropdown** + a **camera "Follow frame" picker** (the "Camera" section atop the scene-controls panel). Follow is **Position-only** so far: the active camera's anchor tracks the chosen frame's origin (in the fixed frame) each tracker tick, so the view pans to keep the frame in place while orbit/zoom stay world-referenced ("None" = off). A **recenter button** beside the picker snaps the camera onto the followed frame on demand (the on-demand counterpart to the no-jump-on-enable policy). The remaining follow modes (**Heading** = + yaw, **Pose** = + full orientation) and the separate display-frame + RViz-style Frames panel are Phase 2+. Both dropdowns list the **whole TF buffer** (every frame ever ingested, time-independent — `getFrameHierarchy()` takes no time argument) and are refreshed as transforms are folded in (on `datasetTransformsReady` / live ingest), so the tree fills in during a file load **without needing to press play**.
 
-A **newly-created** widget does not blindly default to the `map`/`world`/`odom`/… heuristic root: if the user has already picked a fixed frame by hand for the same dataset's `TransformBuffer`, the new widget defaults to that remembered frame (when it is still present in the tree), falling back to the heuristic otherwise. The choice is shared in-session across sibling widgets on the dataset and persisted across restarts (see §10). It stays an *auto-mode* preference — picking it does not flip the widget to explicit, so it still self-heals if the frame later disappears. `TransformService::rememberFixedFrame`/`rememberedFixedFrame` own the memory; `Scene3DDockWidget::resolveAutoFixedFrame` consumes it.
+A **newly-created** widget does not blindly default to the `map`/`world`/`odom`/… heuristic root: if the user has already picked a fixed frame by hand for the same dataset's `TransformBuffer`, the new widget defaults to that remembered frame (when it is still present in the tree), falling back to the heuristic otherwise. The choice is shared in-session across sibling widgets on the dataset and persisted across restarts (see §10). It stays an *auto-mode* preference — picking it does not flip the widget to explicit, so it still self-heals if the frame later disappears. `FixedFrameMemory` (`pj_scene3d_widgets`; a view preference, not TF data) owns the memory; `Scene3DDockWidget::resolveAutoFixedFrame` consumes it.
 
 ## 6. Camera & interaction
 
@@ -218,11 +218,16 @@ This matches the pattern `pj_scene2D` already uses for video playback.
 
 The TF buffer is the central runtime data structure that makes scrub-replay work for 3D data. Its requirements:
 
-- **Per-dataset**: one `TransformBuffer` per loaded dataset. Ownership lives in
-  `TransformService` (`pj_scene3d_widgets`), not in `pj_runtime::SessionManager` — the
-  runtime must stay domain-neutral and must not depend on 3D-specific types.
+- **Per-dataset**: one `TransformBuffer` per loaded dataset. The type lives in the Qt-free
+  `pj_tf` leaf (`pj::tf`); ownership lives in `PJ::TransformService` (`pj_runtime`), because
+  the buffer follows the data's life cycle, which is the runtime's. The runtime stays
+  domain-neutral: it depends on `pj_tf`, never on `pj_scene3D`.
   `TransformService` exposes the buffer as a `shared_ptr` so every 3D dock attached to the
   same dataset shares the already-populated buffer without re-walking the store.
+- **One dataset per dock.** A 3D dock binds the TF buffer of the first dataset it shows and
+  refuses a topic from any other dataset, with a reason the shell shows the user (a toast); a
+  saved layout that mixes datasets still loads and refuses the foreign element the same way.
+  The dock can bind another dataset once its current dataset's topics are gone.
 - **PJ4-native** at the type level: not coupled to ROS message types. DataSource plugins
   decode wire formats into canonical `FrameTransforms` objects and publish them to the
   `ObjectStore`; `TransformService` consumes those objects.
@@ -242,7 +247,7 @@ The TF buffer is the central runtime data structure that makes scrub-replay work
 
 ### Behavioral contract
 
-Behavioral contract of `TransformBuffer` (`core/include/pj_scene3d_core/tf/tf_buffer.h`):
+Behavioral contract of `TransformBuffer` (`pj_tf/include/pj_tf/tf_buffer.h`):
 
 - **`T_target_from_source` convention** (same as ROS tf2): `lookupTransform(target, source, t)` returns the transform `T` such that `p_target = T * p_source`.
 - **Tree, not DAG**: each child frame has exactly one parent. Two forms of malformed input are rejected: a reparent conflict (child already claimed under a different parent) returns `SetTransformError::ReparentConflict`; a self-loop edge (child == parent) returns `SetTransformError::SelfLoop` to prevent `chainToRoot` from hanging on corrupt TF data. Both are non-throwing — a bulk ingest continues past dropped edges.
@@ -301,7 +306,7 @@ Third-party drawable type registration by plugins. Out of v1 scope. Built-in dra
 
 ## 14. TF prototype adaptation summary
 
-The TF prototype has been promoted into `pj_scene3D/core/include/pj_scene3d_core/tf/` as the `TransformBuffer` class (`tf/tf_buffer.h`, `tf/transform.h`) — single source of truth, no wrapper layer. The edits applied during promotion were:
+The TF prototype has been promoted into the `pj_tf` module as the `TransformBuffer` class (`pj_tf/tf_buffer.h`, `pj_tf/transform.h`) — single source of truth, no wrapper layer. The edits applied during promotion were:
 
 1. **`sampleAt` rewritten to zero-order hold** (nearest sample at or before `t`), replacing the prototype's lerp+slerp interpolation. The free-function `interpolate()` becomes unused inside the buffer (may be deleted or kept exposed as a free utility).
 2. **`TimePoint` retyped** from `std::chrono::steady_clock::time_point` to a replay-time-friendly type compatible with `PlaybackEngine`'s tracker time. (Final concrete type chosen at integration time.)

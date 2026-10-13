@@ -46,9 +46,9 @@
 #include "pj_scene3d_core/pointcloud_codecs.h"
 #include "pj_scene3d_core/pointcloud_convert.h"  // planPointVertices, packPointVertices
 #include "pj_scene3d_core/scene_limits.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"       // source->fixed lookup for world-axis range
 #include "pj_scene3d_widgets/resolve_object.h"  // resolveObject, hasCanonical3DCodec
 #include "pj_scene3d_widgets/retained_upload.h"
+#include "pj_tf/tf_buffer.h"  // source->fixed lookup for world-axis range
 #include "pj_widgets/CheckButton.h"
 #include "pj_widgets/ColorPickerWidget.h"
 #include "pj_widgets/Colormap.h"

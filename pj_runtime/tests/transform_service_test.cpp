@@ -22,13 +22,9 @@
 //   (j) live window (H.11): an over-window edge drops old samples but the newest
 //       resolves; a single-sample (static-like) edge still resolves at late stamps
 
-#include "pj_scene3d_widgets/transform_service.h"
-
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
-#include <QSettings>
-#include <QStandardPaths>
 #include <QString>
 #include <algorithm>
 #include <atomic>
@@ -53,14 +49,14 @@
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
-using namespace Qt::StringLiterals;
+#include "pj_runtime/TransformService.h"
+#include "pj_tf/tf_buffer.h"
 
 namespace {
 
-using pj::scene3d::TimePoint;
-using pj::scene3d::TransformBuffer;
-using pj::scene3d::TransformService;
+using PJ::TransformService;
+using pj::tf::TimePoint;
+using pj::tf::TransformBuffer;
 
 constexpr std::string_view kTfSchema = "mock/frame_transforms";
 constexpr std::string_view kGridSchema = "mock/occupancy_grid";
@@ -1298,157 +1294,10 @@ TEST(TransformService, LiveWindowDropsOldKeepsNewAndStatic) {
   EXPECT_TRUE(resolves(*buffer, "f0", "f2", 300)) << "static+dynamic compose at the live edge";
 }
 
-// -----------------------------------------------------------------------------
-// Per-dataset remembered fixed frame: a newly-created 3D dock defaults to the
-// last fixed frame the user manually picked for the same TransformBuffer
-// (in-session by DatasetId, cross-restart by the dataset's source path + name).
-// -----------------------------------------------------------------------------
-
-constexpr char kFixedFrameGroup[] = "pj_scene3d/fixed_frame_by_source";
-
-// Wipe the persisted store so a prior run can't mask a RED or leak across tests.
-void clearPersistedFixedFrames() {
-  QSettings settings;
-  settings.beginGroup(QLatin1String(kFixedFrameGroup));
-  settings.remove(QString());
-}
-
-// (k) In-session: a remembered frame round-trips; a different dataset has none.
-TEST(TransformService, RemembersFixedFramePerDatasetInSession) {
-  PJ::SessionManager session;
-  TransformService service(session);
-  service.rememberFixedFrame(/*dataset_id=*/7, u"odom"_s);
-  EXPECT_EQ(service.rememberedFixedFrame(7), u"odom"_s);
-  EXPECT_EQ(service.rememberedFixedFrame(8), QString()) << "a different dataset has no remembered frame";
-}
-
-// (l) Cross-session: the choice persists keyed by the dataset's source path + name,
-//     so a fresh service (a restart) with a NEW DatasetId for the SAME file resolves it.
-TEST(TransformService, RememberedFixedFramePersistsAcrossSessionsBySource) {
-  clearPersistedFixedFrames();
-  PJ::SessionManager session_a;
-  const auto id_a =
-      session_a.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot_log.mcap", .time_domain_id = 0});
-  ASSERT_TRUE(id_a.has_value());
-  session_a.setDatasetSourcePath(*id_a, u"/data/run_a/robot_log.mcap"_s);
-  {
-    TransformService service_a(session_a);
-    service_a.rememberFixedFrame(*id_a, u"map"_s);
-  }
-
-  // A separate session/service with its own empty in-session cache stands in for an
-  // app restart; the same file is now a DIFFERENT DatasetId but the SAME source.
-  PJ::SessionManager session_b;
-  const auto id_b =
-      session_b.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot_log.mcap", .time_domain_id = 0});
-  ASSERT_TRUE(id_b.has_value());
-  session_b.setDatasetSourcePath(*id_b, u"/data/run_a/robot_log.mcap"_s);
-  TransformService service_b(session_b);
-  EXPECT_EQ(service_b.rememberedFixedFrame(*id_b), u"map"_s)
-      << "the manual choice must persist across sessions, keyed by source identity (not the DatasetId)";
-}
-
-// (l2) Two files sharing a basename in different folders must NOT share a
-//      remembered frame — name-only keying was the epic's identity bug class.
-TEST(TransformService, SameNameDifferentPathDoesNotShareRememberedFrame) {
-  clearPersistedFixedFrames();
-  PJ::SessionManager session;
-  const auto id_a =
-      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot_log.mcap", .time_domain_id = 0});
-  const auto id_b =
-      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot_log.mcap", .time_domain_id = 0});
-  ASSERT_TRUE(id_a.has_value());
-  ASSERT_TRUE(id_b.has_value());
-  session.setDatasetSourcePath(*id_a, u"/data/run_a/robot_log.mcap"_s);
-  session.setDatasetSourcePath(*id_b, u"/data/run_b/robot_log.mcap"_s);
-  {
-    TransformService service(session);
-    service.rememberFixedFrame(*id_a, u"odom"_s);
-  }
-  TransformService fresh(session);  // empty in-session cache -> both resolve via QSettings
-  EXPECT_EQ(fresh.rememberedFixedFrame(*id_a), u"odom"_s);
-  EXPECT_EQ(fresh.rememberedFixedFrame(*id_b), QString())
-      << "a same-named file in a different folder must not inherit the other's frame";
-}
-
-// (l3) Fan-out members share the file path but carry distinct source names; the
-//      composite key must keep their remembered frames separate.
-TEST(TransformService, FanOutSiblingsSamePathStayDistinct) {
-  clearPersistedFixedFrames();
-  PJ::SessionManager session;
-  const auto id_a =
-      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "member_a", .time_domain_id = 0});
-  const auto id_b =
-      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "member_b", .time_domain_id = 0});
-  ASSERT_TRUE(id_a.has_value());
-  ASSERT_TRUE(id_b.has_value());
-  session.setDatasetSourcePath(*id_a, u"/data/bundle.mcap"_s);
-  session.setDatasetSourcePath(*id_b, u"/data/bundle.mcap"_s);
-  {
-    TransformService service(session);
-    service.rememberFixedFrame(*id_a, u"base_link"_s);
-  }
-  TransformService fresh(session);
-  EXPECT_EQ(fresh.rememberedFixedFrame(*id_a), u"base_link"_s);
-  EXPECT_EQ(fresh.rememberedFixedFrame(*id_b), QString())
-      << "fan-out siblings share a path but must not share a remembered frame";
-}
-
-// (l4) A pathless source with a stable name (e.g. a live stream) still persists
-//      by name alone.
-TEST(TransformService, PathlessNamedSourcePersistsByNameAlone) {
-  clearPersistedFixedFrames();
-  PJ::SessionManager session_a;
-  const auto id_a =
-      session_a.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "ros2_stream", .time_domain_id = 0});
-  ASSERT_TRUE(id_a.has_value());
-  {
-    TransformService service_a(session_a);
-    service_a.rememberFixedFrame(*id_a, u"map"_s);
-  }
-  PJ::SessionManager session_b;
-  const auto id_b =
-      session_b.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "ros2_stream", .time_domain_id = 0});
-  ASSERT_TRUE(id_b.has_value());
-  TransformService service_b(session_b);
-  EXPECT_EQ(service_b.rememberedFixedFrame(*id_b), u"map"_s)
-      << "a named but pathless source must keep its cross-restart memory";
-}
-
-// (m) A dataset with no stable source name is remembered for this session only.
-TEST(TransformService, SourcelessDatasetIsSessionOnly) {
-  PJ::SessionManager session;
-  {
-    TransformService service_a(session);
-    service_a.rememberFixedFrame(/*dataset_id=*/424242, u"odom"_s);  // no engine dataset -> no source
-    EXPECT_EQ(service_a.rememberedFixedFrame(424242), u"odom"_s) << "remembered within the session";
-  }
-  TransformService service_b(session);  // fresh in-session cache == a restart
-  EXPECT_EQ(service_b.rememberedFixedFrame(424242), QString())
-      << "a source-less dataset must not persist across sessions";
-}
-
-// (n) invalidateDataset forgets the in-session choice (the persisted copy, when one
-//     exists, is the cross-restart memory and is left intact — covered by (l)).
-TEST(TransformService, InvalidateForgetsSessionRememberedFrame) {
-  PJ::SessionManager session;
-  TransformService service(session);
-  service.rememberFixedFrame(/*dataset_id=*/9, u"odom"_s);  // source-less -> session only
-  EXPECT_EQ(service.rememberedFixedFrame(9), u"odom"_s);
-  service.invalidateDataset(9);
-  EXPECT_EQ(service.rememberedFixedFrame(9), QString()) << "invalidate must drop the in-session remembered frame";
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
   QCoreApplication app(argc, argv);
-  QCoreApplication::setOrganizationName(u"PlotJugglerTest"_s);
-  QCoreApplication::setApplicationName(u"transform_service_test"_s);
-  // Redirect QSettings to a throwaway test location so the cross-restart
-  // persistence tests never touch the developer's real PlotJuggler config.
-  QStandardPaths::setTestModeEnabled(true);
-  QSettings().clear();
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

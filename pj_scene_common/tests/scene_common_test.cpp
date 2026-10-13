@@ -3,8 +3,10 @@
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
 #include <QDomDocument>
 #include <QString>
+#include <QStringList>
 #include <QWidget>
 #include <QtGlobal>
 #include <algorithm>
@@ -607,6 +609,90 @@ TEST(SceneDockWidgetTest, RejectsCrossDatasetLayersUntilPerLayerTimeDomainsExist
   EXPECT_FALSE(dock.addTopic(*topic_b, PJ::sdk::BuiltinObjectType::kPointCloud, u"B"_s));
 }
 
+// A saved layout that mixed datasets still loads: the first dataset's element
+// restores, the foreign one is dropped with a visible reason, and the restore is
+// not marked as failed.
+TEST(SceneDockWidgetTest, RestoreDropsForeignDatasetLayerWithAVisibleReasonAndNoFailure) {
+  PJ::SessionManager session;
+  const auto dataset_a = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  const auto dataset_b = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "b.mcap"});
+  ASSERT_TRUE(dataset_a.has_value());
+  ASSERT_TRUE(dataset_b.has_value());
+  for (const PJ::DatasetId dataset : {*dataset_a, *dataset_b}) {
+    ASSERT_TRUE(session.objectStore()
+                    .registerTopic(
+                        PJ::ObjectTopicDescriptor{
+                            .dataset_id = dataset,
+                            .topic_name = "/cloud",
+                            .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+                        })
+                    .has_value());
+  }
+  QDomDocument document;
+  QDomElement state = document.createElement(u"scene"_s);
+  const auto append_layer = [&](PJ::DatasetId dataset, const QString& source) {
+    QDomElement layer = document.createElement(u"layer"_s);
+    layer.setAttribute(u"dataset_id"_s, QString::number(dataset));
+    layer.setAttribute(u"dataset_source"_s, source);
+    layer.setAttribute(u"topic_name"_s, u"/cloud"_s);
+    layer.setAttribute(u"object_type"_s, u"kPointCloud"_s);
+    state.appendChild(layer);
+  };
+  append_layer(*dataset_a, u"a.mcap"_s);
+  append_layer(*dataset_b, u"b.mcap"_s);
+
+  FakeSceneDock dock;
+  dock.setSessionManager(&session);
+  QStringList reasons;
+  QObject::connect(
+      &dock, &PJ::SceneDockWidget::topicRefused, [&reasons](const QString& reason) { reasons.push_back(reason); });
+
+  EXPECT_TRUE(dock.xmlLoadState(state)) << "a mixed-dataset layout must still load";
+  EXPECT_FALSE(dock.workspaceRestoreFailed());
+  EXPECT_EQ(dock.layers().size(), 1U) << "only the first dataset's layer restores";
+  ASSERT_EQ(reasons.size(), 1) << "the dropped element is reported, never silently lost";
+  EXPECT_TRUE(reasons.front().contains(u"a.mcap"_s)) << reasons.front().toStdString();
+  EXPECT_TRUE(reasons.front().contains(u"b.mcap"_s)) << reasons.front().toStdString();
+}
+
+// Several refusals in one burst (a multi-select drop, a mixed layout) produce one
+// report; once the event loop has turned, the next refusal reports again.
+TEST(SceneDockWidgetTest, RefusalsInOneBurstEmitTopicRefusedOnce) {
+  PJ::SessionManager session;
+  const auto dataset_a = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  const auto dataset_b = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "b.mcap"});
+  ASSERT_TRUE(dataset_a.has_value());
+  ASSERT_TRUE(dataset_b.has_value());
+  const auto register_cloud = [&session](PJ::DatasetId dataset, const char* name) {
+    return session.objectStore().registerTopic(
+        PJ::ObjectTopicDescriptor{
+            .dataset_id = dataset,
+            .topic_name = name,
+            .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+        });
+  };
+  const auto topic_a = register_cloud(*dataset_a, "/cloud");
+  const auto foreign_1 = register_cloud(*dataset_b, "/cloud_1");
+  const auto foreign_2 = register_cloud(*dataset_b, "/cloud_2");
+  const auto foreign_3 = register_cloud(*dataset_b, "/cloud_3");
+  ASSERT_TRUE(topic_a.has_value() && foreign_1.has_value() && foreign_2.has_value() && foreign_3.has_value());
+
+  FakeSceneDock dock;
+  dock.setSessionManager(&session);
+  int refusals = 0;
+  QObject::connect(&dock, &PJ::SceneDockWidget::topicRefused, [&refusals](const QString&) { ++refusals; });
+  ASSERT_TRUE(dock.addTopic(*topic_a, PJ::sdk::BuiltinObjectType::kPointCloud, u"A"_s));
+
+  EXPECT_FALSE(dock.addTopic(*foreign_1, PJ::sdk::BuiltinObjectType::kPointCloud, u"B1"_s));
+  EXPECT_FALSE(dock.addTopic(*foreign_2, PJ::sdk::BuiltinObjectType::kPointCloud, u"B2"_s));
+  EXPECT_FALSE(dock.addTopic(*foreign_3, PJ::sdk::BuiltinObjectType::kPointCloud, u"B3"_s));
+  EXPECT_EQ(refusals, 1) << "one burst, one report";
+
+  QCoreApplication::processEvents();
+  EXPECT_FALSE(dock.addTopic(*foreign_1, PJ::sdk::BuiltinObjectType::kPointCloud, u"B1"_s));
+  EXPECT_EQ(refusals, 2) << "a refusal after the burst reports again";
+}
+
 TEST(SceneDockWidgetTest, QualifiedRestoreRejectsKnownLiveObjectTypeMismatch) {
   PJ::SessionManager session;
   const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
@@ -726,9 +812,15 @@ TEST(SceneDockWidgetTest, DeferredIntentRejectsUnsupportedAndSecondDatasetBefore
   ASSERT_TRUE(dataset_b.has_value());
   FakeSceneDock dock;
   dock.setSessionManager(&session);
+  QStringList reasons;
+  QObject::connect(
+      &dock, &PJ::SceneDockWidget::topicRefused, [&reasons](const QString& reason) { reasons.push_back(reason); });
   EXPECT_FALSE(dock.deferTopicIntent(*dataset_a, u"/image"_s, PJ::sdk::BuiltinObjectType::kImage, u"Image"_s));
   EXPECT_TRUE(dock.deferTopicIntent(*dataset_a, u"/cloud_a"_s, PJ::sdk::BuiltinObjectType::kPointCloud, u"A"_s));
+  EXPECT_TRUE(reasons.isEmpty()) << "an unsupported type or the first dataset is not a dataset refusal";
   EXPECT_FALSE(dock.deferTopicIntent(*dataset_b, u"/cloud_b"_s, PJ::sdk::BuiltinObjectType::kPointCloud, u"B"_s));
+  ASSERT_EQ(reasons.size(), 1) << "the foreign dataset refusal is reported, never silent";
+  EXPECT_TRUE(reasons.front().contains(u"dataset b"_s)) << reasons.front().toStdString();
   ASSERT_EQ(dock.pendingRestoreDemands().size(), 1U);
 }
 

@@ -23,9 +23,13 @@
 class QFormLayout;
 class QWidget;
 
+namespace pj::tf {
+class TransformBuffer;
+}  // namespace pj::tf
+
 namespace pj::scene3d {
 
-class TransformBuffer;
+using pj::tf::TransformBuffer;
 
 // What a TrailLayer tracks. kTfFrame trails need only the dock's TF buffer;
 // kPoseTopic trails read the topic's messages (first pose each) AND the TF

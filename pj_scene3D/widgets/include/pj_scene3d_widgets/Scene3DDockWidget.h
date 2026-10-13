@@ -20,10 +20,10 @@
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_datastore/object_store.hpp"
-#include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #include "pj_scene_common/scene_dock_widget.h"
 #include "pj_scene_common/scene_layer.h"
+#include "pj_tf/tf_buffer.h"
 
 class QLabel;
 class QResizeEvent;
@@ -32,9 +32,9 @@ class QToolButton;
 class QWidget;
 
 namespace pj::scene3d {
+class FixedFrameMemory;
 class Scene3DLayer;
 class SceneViewWidget;
-class TransformService;
 class UrdfPackageResolver;
 struct TrailSource;
 class TrailLayer;
@@ -43,6 +43,7 @@ class TrailLayer;
 namespace PJ {
 
 class ComboBox;
+class TransformService;
 
 // Dock content for 3D scene topics, on every platform. Generic layer
 // lifetime, ordering, visibility, tracker-time dispatch, and XML layer
@@ -60,7 +61,13 @@ class Scene3DDockWidget : public SceneDockWidget {
   // messages into the TF buffer (see reconnectLiveSamples). Must call the base.
   void setSessionManager(SessionManager* session) override;
 
-  void setTransformService(pj::scene3d::TransformService* service);
+  void setTransformService(PJ::TransformService* service);
+
+  // Optional: without it the dock neither records nor seeds from the user's
+  // manual fixed-frame choice. Not owned; must outlive the dock.
+  void setFixedFrameMemory(pj::scene3d::FixedFrameMemory* memory) {
+    fixed_frame_memory_ = memory;
+  }
 
   // The owned view, for the app's scene-controls panel (grid/gizmo/look
   // setters live on SceneViewWidget). Null until the dock realizes its view.
@@ -94,7 +101,7 @@ class Scene3DDockWidget : public SceneDockWidget {
 
   enum class FixedFrameMode { kAutoRoot, kExplicit };
 
-  [[nodiscard]] QList<pj::scene3d::FrameRow> availableFrames() const {
+  [[nodiscard]] QList<pj::tf::FrameRow> availableFrames() const {
     return available_frames_;
   }
   [[nodiscard]] QString currentFixedFrame() const;
@@ -175,7 +182,7 @@ class Scene3DDockWidget : public SceneDockWidget {
   void recenterOnFollowFrame();
 
  signals:
-  void availableFramesChanged(const QList<pj::scene3d::FrameRow>& frames);
+  void availableFramesChanged(const QList<pj::tf::FrameRow>& frames);
   void currentFixedFrameChanged(const QString& frame);
   void fixedFrameModeChanged(bool is_auto_root);
   void followFrameChanged(const QString& frame);
@@ -212,7 +219,7 @@ class Scene3DDockWidget : public SceneDockWidget {
   void resizeEvent(QResizeEvent* event) override;
 
  private slots:
-  void onAvailableFrames(const QList<pj::scene3d::FrameRow>& frames);
+  void onAvailableFrames(const QList<pj::tf::FrameRow>& frames);
   // TransformService::datasetTransformsReady handler. A dataset's TF buffer can
   // be filled AFTER this dock already bound (and read) it empty — the cloud
   // toolbox ingests /tf post-download, unlike the file-open path which ingests
@@ -223,6 +230,8 @@ class Scene3DDockWidget : public SceneDockWidget {
   void onDatasetTransformsReady(DatasetId dataset_id);
 
  private:
+  // kConsumed: a valid element the dock deliberately dropped (a foreign dataset's
+  // topic, already reported through topicRefused); the restore carries on.
   enum class ElementRestoreResult { kRestored, kConsumed, kDeferred, kInvalid };
   // Shared body of addTopic(). enforce_image_gate runs the kImage depth-encoding
   // gate (firstSampleIsDepthEncoded) — true for interactive adds (drop / family
@@ -290,12 +299,12 @@ class Scene3DDockWidget : public SceneDockWidget {
   void applyRestoredFixedFrame(FixedFrameMode mode, const QString& frame);
   void resetDatasetBindingForRestore();
   // The fixed frame to adopt in auto mode: the dataset's remembered manual choice
-  // (TransformService::rememberedFixedFrame) when it is still present in `frames`,
+  // (FixedFrameMemory::remembered) when it is still present in `frames`,
   // else the map/world/odom heuristic (pickFixedFrame). This is what makes a
   // freshly-created dock default to the last frame the user picked by hand for the
   // same TransformBuffer. Read-only w.r.t. the memory — seeding never records, so
   // there is no feedback loop with the setFixedFrame() recording path.
-  [[nodiscard]] QString resolveAutoFixedFrame(const QList<pj::scene3d::FrameRow>& frames) const;
+  [[nodiscard]] QString resolveAutoFixedFrame(const QList<pj::tf::FrameRow>& frames) const;
   void refreshFrameOverlayCombo();
   void onOverlayFramePicked(int index);
   void layoutFrameOverlayCombo();
@@ -320,9 +329,10 @@ class Scene3DDockWidget : public SceneDockWidget {
   [[nodiscard]] bool isLocalLayerId(ObjectTopicId topic_id) const;
   ObjectTopicId allocateLocalLayerId();
 
-  pj::scene3d::TransformService* transform_service_ = nullptr;
+  PJ::TransformService* transform_service_ = nullptr;
+  pj::scene3d::FixedFrameMemory* fixed_frame_memory_ = nullptr;
   pj::scene3d::SceneViewWidget* view_ = nullptr;
-  std::shared_ptr<pj::scene3d::TransformBuffer> tf_buffer_;
+  std::shared_ptr<pj::tf::TransformBuffer> tf_buffer_;
   // tf_buffer_ is ensureLocalTransformBuffer()'s private buffer, not a dataset's.
   bool tf_buffer_is_local_ = false;
   // Dataset that owns tf_buffer_, cached when the buffer is first bound so the
@@ -359,7 +369,7 @@ class Scene3DDockWidget : public SceneDockWidget {
   std::unordered_map<int64_t, int> restored_layer_orders_;
   bool xml_rollback_in_progress_ = false;
 
-  QList<pj::scene3d::FrameRow> available_frames_;
+  QList<pj::tf::FrameRow> available_frames_;
   std::vector<std::string> fallback_frames_;
   FixedFrameMode fixed_frame_mode_ = FixedFrameMode::kAutoRoot;
   ComboBox* frame_overlay_combo_ = nullptr;

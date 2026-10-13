@@ -34,10 +34,10 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+#include "pj_tf/tf_buffer.h"
+#include "pj_tf/transform.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -217,20 +217,20 @@ TEST(PointCloudLayerRenderKey, FoldsFixedFromSourceTransform) {
                                     }));
 
   // world←lidar at two stamps with DIFFERENT translations (same orientation).
-  auto tf = std::make_shared<pj::scene3d::TransformBuffer>(pj::scene3d::TransformBuffer::kKeepAll);
+  auto tf = std::make_shared<pj::tf::TransformBuffer>(pj::tf::TransformBuffer::kKeepAll);
   ASSERT_TRUE(tf->setTransform(
-                    pj::scene3d::StampedTransform{
+                    pj::tf::StampedTransform{
                         .stamp = PJ::fromRaw(100),
                         .parent_frame = "world",
                         .child_frame = "lidar",
-                        .transform = pj::scene3d::Transform(glm::dvec3{1.0, 0.0, 0.0}, glm::dquat{1, 0, 0, 0})})
+                        .transform = pj::tf::Transform(glm::dvec3{1.0, 0.0, 0.0}, glm::dquat{1, 0, 0, 0})})
                   .has_value());
   ASSERT_TRUE(tf->setTransform(
-                    pj::scene3d::StampedTransform{
+                    pj::tf::StampedTransform{
                         .stamp = PJ::fromRaw(200),
                         .parent_frame = "world",
                         .child_frame = "lidar",
-                        .transform = pj::scene3d::Transform(glm::dvec3{9.0, 0.0, 0.0}, glm::dquat{1, 0, 0, 0})})
+                        .transform = pj::tf::Transform(glm::dvec3{9.0, 0.0, 0.0}, glm::dquat{1, 0, 0, 0})})
                   .has_value());
 
   pj::scene3d::Scene3DLayerContext ctx;

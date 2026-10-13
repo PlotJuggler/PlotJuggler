@@ -100,7 +100,7 @@ add_library(pj_scene3d_widgets STATIC
   src/url_fetcher.cpp
   src/urdf_parser.cpp
   src/urdf_package_resolver.cpp
-  src/transform_service.cpp
+  src/FixedFrameMemory.cpp
   src/object_topic_metadata.cpp
   src/resolve_object.cpp
   src/scene_state_xml.cpp
@@ -127,7 +127,7 @@ add_library(pj_scene3d_widgets STATIC
   include/pj_scene3d_widgets/layers/grid_map_layer.h
   include/pj_scene3d_widgets/marker_geometry.h
   include/pj_scene3d_widgets/gizmos/arrow_mesh.h
-  include/pj_scene3d_widgets/transform_service.h
+  include/pj_scene3d_widgets/FixedFrameMemory.h
   include/pj_scene3d_widgets/object_topic_metadata.h
   include/pj_scene3d_widgets/resolve_object.h
   rhi/shaders/scene3d_rhi_shaders.qrc
@@ -261,21 +261,11 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     tests/rhi_conventions_test.cpp
   )
 
-  # Keep this executable separate: its debug thread-affinity death test forks
-  # and deliberately aborts in the child process.
-  # H.20: full coverage for TransformService's incremental UID-keyed TF ingest —
-  # the heart of PR #174 (live + scrubbable streaming TF) and the bulk file path.
-  # Pure logic against a SessionManager + a mock FrameTransforms parser; no GL,
-  # no widgets. Custom main (QCoreApplication for the QObject service).
-  add_executable(transform_service_test
-    tests/transform_service_test.cpp
+  # FixedFrameMemory: the per-dataset manual fixed-frame preference (session cache,
+  # QSettings persistence by source identity). No GL.
+  list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
+    tests/fixed_frame_memory_test.cpp
   )
-  target_link_libraries(transform_service_test PRIVATE
-    pj_scene3d_widgets
-    GTest::gtest
-  )
-  target_compile_options(transform_service_test PRIVATE ${PJ_WARNING_FLAGS})
-  add_test(NAME transform_service_test COMMAND transform_service_test)
 
   # resolveObject() canonical fallback: with no MessageParser bound, decode a
   # serialized pj_base blob via the canonical codec (the parser-less / toolbox

@@ -27,16 +27,13 @@ class QThread;
 class QDialog;
 QT_END_NAMESPACE
 
-namespace pj::scene3d {
-class TransformService;
-}  // namespace pj::scene3d
-
 namespace PJ::sdk {
 class ObjectIngestPolicyResolver;
 }  // namespace PJ::sdk
 
 namespace PJ {
 
+class TransformService;
 class CatalogModel;
 class BrowserFileStore;
 class DataSourceRuntimeHost;
@@ -263,11 +260,10 @@ class FileLoader : public QObject {
   // BEFORE tearing down the session/datastore; also invoked by the destructor.
   void joinForShutdown();
 
-  // 3D TF ingest is triggered at load time through this service (owned by the
-  // app shell, not the domain-neutral runtime). When unset, TF ingest is
-  // skipped — non-3D builds simply never set it.
+  // TF ingest is triggered at load time through this service (owned by the app
+  // shell). When unset, TF ingest is skipped — non-3D builds simply never set it.
 #ifdef PJ_WITH_SCENE3D
-  void setTransformService(pj::scene3d::TransformService* service) {
+  void setTransformService(PJ::TransformService* service) {
     transform_service_ = service;
   }
 #endif
@@ -493,7 +489,7 @@ class FileLoader : public QObject {
   QHash<QString, QString> browser_content_sha256_;
 #endif
 #ifdef PJ_WITH_SCENE3D
-  pj::scene3d::TransformService* transform_service_ = nullptr;
+  PJ::TransformService* transform_service_ = nullptr;
 #endif
 
   // --- Sequential async load queue (single-instance loads run on a worker) ---

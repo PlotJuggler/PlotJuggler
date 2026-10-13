@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QObject>
-#include <QString>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -16,21 +15,21 @@
 #include "pj_datastore/sequential_uid.hpp"
 #include "pj_runtime/ObjectIngestTap.h"
 
-namespace PJ {
-class SessionManager;
-}  // namespace PJ
-
-namespace pj::scene3d {
-
+namespace pj::tf {
 class TransformBuffer;
+}  // namespace pj::tf
 
-// Owns the per-dataset 3D transform buffers and the load-time TF ingest.
+namespace PJ {
+
+class SessionManager;
+
+// Owns the per-dataset TF buffers and the load-time TF ingest.
 //
-// This deliberately lives in the 3D widget family rather than in
-// pj_runtime: SessionManager (the shared, domain-neutral runtime) must not
-// depend on 3D-specific types like TransformBuffer. The service reaches the
-// data it needs through SessionManager's neutral surface only: ingestTaps(),
-// objectStore(), and parserBindingForObjectTopic().
+// Ownership follows the data's life cycle, which is the runtime's: the tree is
+// built from a topic at load, rebuilt after a dataset merge, cleared on reload
+// and trimmed by streaming retention. The service reaches the data it needs
+// through SessionManager's neutral surface only: ingestTaps(), objectStore(),
+// and parserBindingForObjectTopic(); pj_runtime never depends on pj_scene3D.
 //
 // One active TransformBuffer per dataset is shared by every attached 3D dock;
 // an in-place reload may also own one private staging generation. Per
@@ -54,7 +53,7 @@ class TransformService : public QObject {
 
   // Returns the dataset's TransformBuffer, lazily creating it on first access.
   // The buffer is thread-safe for concurrent ingest writes + render reads.
-  [[nodiscard]] std::shared_ptr<TransformBuffer> transformBuffer(PJ::DatasetId dataset_id);
+  [[nodiscard]] std::shared_ptr<pj::tf::TransformBuffer> transformBuffer(PJ::DatasetId dataset_id);
 
   // Explicit ObjectStore rebuild used after a destructive dataset merge. With
   // the tap active it clears the active buffer and cursor state, then cold-drains
@@ -102,28 +101,6 @@ class TransformService : public QObject {
   /// An inactive-tap service rebuilds from the restored ObjectStore history.
   void abortReplacingLoad(PJ::DatasetId dataset_id);
 
-  // Remember `frame` as the fixed frame the user manually chose for `dataset_id`,
-  // so a NEWLY-created 3D dock bound to the same TransformBuffer defaults to it
-  // instead of the map/world/odom heuristic (see Scene3DDockWidget). Writes two
-  // tiers: an in-session cache keyed by DatasetId (shared instantly by sibling
-  // docks on the same dataset) and a cross-restart record in QSettings keyed by
-  // the dataset's source path + name (the same identity pair layout restore
-  // matches datasets by — name alone would let two same-named files in
-  // different folders share a frame). A dataset with no source name (e.g. an
-  // unnamed live stream) is remembered for this session only. An empty `frame`
-  // is ignored. GUI-thread only.
-  void rememberFixedFrame(PJ::DatasetId dataset_id, const QString& frame);
-
-  // The remembered manual fixed frame for `dataset_id`, or empty if none. Checks
-  // the in-session cache first, then falls back to the persisted QSettings record
-  // (looked up by the dataset's source path + name), memoizing the result — hit OR miss —
-  // so the hot onAvailableFrames seeding path does not re-read QSettings on every
-  // frame-tree change. Callers MUST still confirm the frame exists in the live TF
-  // tree before using it: a remembered frame can be absent from a different
-  // recording of the same source. Mutates the memo cache, hence non-const.
-  // GUI-thread only.
-  [[nodiscard]] QString rememberedFixedFrame(PJ::DatasetId dataset_id);
-
   // Incremental, UID-keyed ObjectStore ingest for a service with no active tap.
   // With the tap active this returns false immediately because the pushing worker
   // already updated the buffer. GUI-thread only.
@@ -154,20 +131,13 @@ class TransformService : public QObject {
   // Returns the active or staging target for the worker tap, creating a
   // kKeepAll active buffer on first use. Thread-safe internal counterpart of
   // the GUI-affine transformBuffer().
-  [[nodiscard]] std::shared_ptr<TransformBuffer> transformBufferForTap(PJ::DatasetId dataset_id);
+  [[nodiscard]] std::shared_ptr<pj::tf::TransformBuffer> transformBufferForTap(PJ::DatasetId dataset_id);
 
   // Drops only the drain cursor/classification state for one dataset.
   void resetDrainState(PJ::DatasetId dataset_id);
 
   // Restores the active buffer from durable ObjectStore entries.
   void rebuildFromStore(PJ::DatasetId dataset_id);
-
-  // The cross-restart QSettings key for `dataset_id`: its SessionManager source
-  // path joined with its DataEngine source_name (name alone for a pathless
-  // source), each percent-encoded so a path can't be misread as a settings group
-  // separator. Empty when the dataset is unknown or has no source name (then the
-  // remembered frame is session-only). GUI-thread only.
-  [[nodiscard]] QString datasetSourceKey(PJ::DatasetId dataset_id) const;
 
   // Per-topic ingest cursor: the SequentialUID of the last entry drained into the
   // buffer. A UID is stable across front-eviction and per-topic SPARSE (UID
@@ -184,15 +154,15 @@ class TransformService : public QObject {
   };
 
   struct BufferSlot {
-    std::shared_ptr<TransformBuffer> active;
-    std::shared_ptr<TransformBuffer> staging;
+    std::shared_ptr<pj::tf::TransformBuffer> active;
+    std::shared_ptr<pj::tf::TransformBuffer> staging;
     std::chrono::nanoseconds cache_window = std::chrono::nanoseconds::max();
     bool replacement_in_progress = false;
   };
 
   // Returns the active buffer, creating it from the slot policy. Caller holds
   // tap_mutex_.
-  [[nodiscard]] std::shared_ptr<TransformBuffer> ensureActiveLocked(BufferSlot& slot);
+  [[nodiscard]] std::shared_ptr<pj::tf::TransformBuffer> ensureActiveLocked(BufferSlot& slot);
 
   PJ::SessionManager& session_;
   mutable std::mutex tap_mutex_;
@@ -204,15 +174,8 @@ class TransformService : public QObject {
   // streaming tick.
   std::unordered_map<uint32_t, TfCursor> tf_cursors_;
   std::unordered_set<uint32_t> non_tf_topics_;
-  // Last manual fixed-frame choice per dataset, for the current session. Also the
-  // memo for rememberedFixedFrame's QSettings fallback: a present key (value may be
-  // empty) means "already looked up". Keyed by the session-local DatasetId so
-  // sibling docks share without a settings round-trip; invalidateDataset drops the
-  // entry while the persisted QSettings copy survives (that is the cross-restart
-  // memory). See rememberFixedFrame / rememberedFixedFrame.
-  std::unordered_map<PJ::DatasetId, QString> remembered_fixed_frames_;
   std::optional<PJ::ObjectIngestTapRegistry::TapLease> tap_lease_;
   bool tap_active_ = false;
 };
 
-}  // namespace pj::scene3d
+}  // namespace PJ

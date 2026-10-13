@@ -86,14 +86,8 @@ SceneDockWidget::AddOutcome SceneDockWidget::addLayer(
   if (layers_.find(key) != layers_.end()) {
     return AddOutcome::kRejected;
   }
-  if (session_ != nullptr) {
-    const DatasetId bound_dataset = representativeDatasetId();
-    const DatasetId incoming_dataset = session_->objectStore().descriptor(topic_id).dataset_id;
-    if (bound_dataset != 0 && incoming_dataset != 0 && incoming_dataset != bound_dataset) {
-      // The dock currently has one display-time conversion. Arrival order must
-      // not silently decide which dataset's clock is applied to every layer.
-      return AddOutcome::kRejected;
-    }
+  if (refuseForeignTopic(topic_id)) {
+    return AddOutcome::kRejected;
   }
   if (handleSceneConfigTopic(topic_id, object_type, title)) {
     ever_had_content_ = true;
@@ -223,6 +217,9 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
     markWorkspaceRestoreFailed();
     return true;
   }
+  if (refuseForeignTopic(*topic_id_opt)) {
+    return true;
+  }
   if (addLayer(*topic_id_opt, *object_type_opt, display_name) != AddOutcome::kLayerAdded) {
     markWorkspaceRestoreFailed();
     return true;
@@ -282,15 +279,14 @@ bool SceneDockWidget::deferTopicIntent(
       !acceptsDeferredObjectType(object_type)) {
     return false;
   }
-  const DatasetId bound_dataset = representativeDatasetId();
-  if (bound_dataset != 0 && bound_dataset != dataset_id) {
+  if (refuseForeignDataset(dataset_id, representativeDatasetId())) {
     return false;
   }
   for (const PendingRestoreElement& pending : pending_restore_elements_) {
     bool pending_id_ok = false;
     const qulonglong pending_id =
         pending.document.documentElement().attribute(u"dataset_id"_s).toULongLong(&pending_id_ok);
-    if (pending_id_ok && pending_id != 0 && pending_id != dataset_id) {
+    if (pending_id_ok && pending_id != 0 && refuseForeignDataset(dataset_id, static_cast<DatasetId>(pending_id))) {
       return false;
     }
   }
@@ -842,6 +838,29 @@ QString SceneDockWidget::datasetSourceName(const SessionManager* session, Datase
   }
   const PJ::DatasetInfo* info = const_cast<SessionManager*>(session)->dataEngine().getDataset(dataset_id);
   return info != nullptr ? QString::fromStdString(info->source_name) : QString();
+}
+
+bool SceneDockWidget::refuseForeignTopic(ObjectTopicId topic_id) {
+  return session_ != nullptr &&
+         refuseForeignDataset(session_->objectStore().descriptor(topic_id).dataset_id, representativeDatasetId());
+}
+
+bool SceneDockWidget::refuseForeignDataset(DatasetId incoming_dataset, DatasetId bound_dataset) {
+  if (bound_dataset == 0 || incoming_dataset == 0 || incoming_dataset == bound_dataset) {
+    return false;
+  }
+  const auto label = [this](DatasetId dataset_id) {
+    const QString name = datasetSourceName(session_, dataset_id);
+    return name.isEmpty() ? tr("#%1").arg(dataset_id) : name;
+  };
+  const QString reason = tr("This view shows dataset %1; a topic from dataset %2 cannot be added to it.")
+                             .arg(label(bound_dataset), label(incoming_dataset));
+  qCWarning(lcSceneDock).noquote() << "topic refused:" << reason;
+  if (!std::exchange(refusal_reported_, true)) {
+    emit topicRefused(reason);
+    QTimer::singleShot(0, this, [this] { refusal_reported_ = false; });
+  }
+  return true;
 }
 
 std::optional<DatasetId> SceneDockWidget::resolveObjectDataset(

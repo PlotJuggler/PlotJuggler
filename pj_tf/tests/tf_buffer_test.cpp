@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include "pj_scene3d_core/tf/tf_buffer.h"
+#include "pj_tf/tf_buffer.h"
 
 #include <gtest/gtest.h>
 
@@ -22,12 +22,12 @@
 namespace PJ {
 namespace {
 
-using pj::scene3d::Duration;
-using pj::scene3d::SetTransformError;
-using pj::scene3d::StampedTransform;
-using pj::scene3d::TimePoint;
-using pj::scene3d::Transform;
-using pj::scene3d::TransformBuffer;
+using pj::tf::Duration;
+using pj::tf::SetTransformError;
+using pj::tf::StampedTransform;
+using pj::tf::TimePoint;
+using pj::tf::Transform;
+using pj::tf::TransformBuffer;
 using namespace std::chrono_literals;
 
 constexpr double kTolerance = 1e-9;

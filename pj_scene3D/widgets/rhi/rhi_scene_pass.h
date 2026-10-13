@@ -42,12 +42,14 @@
 
 #include "pj_scene3d_core/camera/camera.h"
 #include "pj_scene3d_core/scene_limits.h"
-#include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/rhi_conventions.h"
+#include "pj_tf/transform.h"
 #include "pj_widgets/GraphicsApi.h"
 #include "pj_widgets/RhiBlend.h"
 
 namespace pj::scene3d {
+
+using pj::tf::Transform;
 
 struct ArrowMeshData;
 

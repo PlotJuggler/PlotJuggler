@@ -8,9 +8,11 @@
 #include <optional>
 
 #include "pj_base/builtin/frame_transforms.hpp"  // sdk::Pose
-#include "pj_scene3d_core/tf/transform.h"
+#include "pj_tf/transform.h"
 
 namespace pj::scene3d {
+
+using pj::tf::Transform;
 
 // True when a wire pose can place geometry: finite position and a finite,
 // non-degenerate quaternion (any norm; consumers normalize).

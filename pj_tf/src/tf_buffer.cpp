@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include "pj_scene3d_core/tf/tf_buffer.h"
+#include "pj_tf/tf_buffer.h"
 
 #include <algorithm>
 #include <cctype>
@@ -15,7 +15,7 @@
 #include <unordered_set>
 #include <utility>
 
-namespace pj::scene3d {
+namespace pj::tf {
 
 // EdgeHistory and ParentLink are defined in tf_buffer.h (required complete by
 // std::unordered_map on GCC 11's libstdc++).
@@ -543,4 +543,4 @@ bool frameNameLess(std::string_view a, std::string_view b) noexcept {
   });
 }
 
-}  // namespace pj::scene3d
+}  // namespace pj::tf

@@ -36,7 +36,8 @@
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
+#include "pj_runtime/TransformService.h"
+#include "pj_scene3d_widgets/FixedFrameMemory.h"
 #include "pj_scene3d_widgets/layers/depth_cloud_layer.h"
 #include "pj_scene3d_widgets/layers/grid_map_layer.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
@@ -50,7 +51,7 @@
 #include "pj_scene3d_widgets/resolve_object.h"
 #include "pj_scene3d_widgets/scene_state_xml.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
-#include "pj_scene3d_widgets/transform_service.h"
+#include "pj_tf/tf_buffer.h"
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/RenderingWarningLabel.h"
@@ -64,7 +65,6 @@ namespace {
 Q_LOGGING_CATEGORY(lcScene3DDock, "pj.scene3d.dock")
 
 using pj::scene3d::DepthCloudLayer;
-using pj::scene3d::FrameRow;
 using pj::scene3d::GridMapLayer;
 using pj::scene3d::OccupancyGridLayer;
 using pj::scene3d::PointCloudLayer;
@@ -80,6 +80,7 @@ using pj::scene3d::SceneViewWidget;
 using pj::scene3d::validateCameraState;
 using pj::scene3d::ValidatedCameraState;
 using pj::scene3d::VoxelGridLayer;
+using pj::tf::FrameRow;
 
 // The TrailLayer a scene layer IS (a standalone TF-frame trail) or OWNS (a pose
 // layer's embedded trail), else nullptr. One lookup so every trail-wide fan-out
@@ -408,7 +409,7 @@ Scene3DDockWidget::~Scene3DDockWidget() {
   clearLayers();
 }
 
-void Scene3DDockWidget::setTransformService(pj::scene3d::TransformService* service) {
+void Scene3DDockWidget::setTransformService(PJ::TransformService* service) {
   if (tf_ready_conn_) {
     QObject::disconnect(tf_ready_conn_);
     tf_ready_conn_ = {};
@@ -422,7 +423,7 @@ void Scene3DDockWidget::setTransformService(pj::scene3d::TransformService* servi
   // refresh cached frame/orphan state or rebind before refreshing.
   if (transform_service_ != nullptr) {
     tf_ready_conn_ = connect(
-        transform_service_, &pj::scene3d::TransformService::datasetTransformsReady, this,
+        transform_service_, &PJ::TransformService::datasetTransformsReady, this,
         &Scene3DDockWidget::onDatasetTransformsReady, Qt::UniqueConnection);
   }
 }
@@ -433,7 +434,7 @@ void Scene3DDockWidget::onDatasetTransformsReady(DatasetId dataset_id) {
   if (view_ == nullptr || transform_service_ == nullptr || tf_buffer_ == nullptr || dataset_id != dataset_id_) {
     return;
   }
-  const std::shared_ptr<pj::scene3d::TransformBuffer> ready_buffer = transform_service_->transformBuffer(dataset_id);
+  const std::shared_ptr<pj::tf::TransformBuffer> ready_buffer = transform_service_->transformBuffer(dataset_id);
   if (tf_buffer_ != ready_buffer) {
     tf_buffer_ = ready_buffer;
     tf_buffer_is_local_ = false;
@@ -607,12 +608,6 @@ bool Scene3DDockWidget::addTopicImpl(
   if (object_type == sdk::BuiltinObjectType::kFrameTransforms && config_topics_.contains(topic_id.id)) {
     return true;
   }
-  if (!isLocalLayerId(topic_id) && dataset_id_ != 0) {
-    const DatasetId incoming_dataset = sessionManager()->objectStore().descriptor(topic_id).dataset_id;
-    if (incoming_dataset != 0 && incoming_dataset != dataset_id_) {
-      return false;
-    }
-  }
   if (!handlesObjectType(object_type)) {
     qCWarning(lcScene3DDock) << "addTopic: unsupported object_type" << static_cast<int>(object_type);
     return false;
@@ -622,8 +617,9 @@ bool Scene3DDockWidget::addTopicImpl(
   // restore path (enforce_image_gate=false): a saved DepthCloud layer was already
   // validated as depth when created, and its first sample may not be loaded yet at
   // restore time — gating on an absent sample would silently drop the layer (C1).
+  // The dataset check comes first: a foreign topic is reported, not probed.
   if (enforce_image_gate && object_type == sdk::BuiltinObjectType::kImage &&
-      !firstSampleIsDepthEncoded(*sessionManager(), topic_id)) {
+      (refuseForeignTopic(topic_id) || !firstSampleIsDepthEncoded(*sessionManager(), topic_id))) {
     return false;
   }
 
@@ -925,8 +921,8 @@ void Scene3DDockWidget::updateSceneBounds() {
     return;
   }
   pj::scene3d::AABB scene;
-  static const pj::scene3d::TransformBuffer k_empty_buffer;
-  const pj::scene3d::TransformBuffer& tf = tf_buffer_ != nullptr ? *tf_buffer_ : k_empty_buffer;
+  static const pj::tf::TransformBuffer k_empty_buffer;
+  const pj::tf::TransformBuffer& tf = tf_buffer_ != nullptr ? *tf_buffer_ : k_empty_buffer;
   const std::string& fixed = view_->fixedFrame();
   const PJ::Timepoint time = PJ::fromRaw(lastTrackerNs().value_or(0));
   for (Scene3DLayer* layer : view_->layers()) {
@@ -999,16 +995,11 @@ void Scene3DDockWidget::prepareTransformBufferForTopic(ObjectTopicId topic_id) {
   scene_topic_datasets_[topic_id.id] = dataset_id;
 
   if (tf_buffer_ != nullptr && !tf_buffer_is_local_) {
-    // Already bound. Mixing a second dataset's topics into one 3D dock would
-    // resolve B's frames against A's TF tree — silently wrong. Warn loudly and
-    // keep the existing binding rather than rebinding underneath live layers.
-    // The reset-on-removal path lets a genuine rebind happen once dataset A's
-    // topics are gone (tf_buffer_ goes back to null first).
-    if (dataset_id != dataset_id_) {
-      qCWarning(lcScene3DDock) << "prepareTransformBufferForTopic: topic from dataset" << dataset_id
-                               << "added to a 3D dock already bound to dataset" << dataset_id_
-                               << "- its frames will resolve against the wrong TF tree";
-    }
+    // Already bound. A topic from another dataset never gets here: the base add
+    // refuses it (SceneDockWidget::refuseForeignTopic), so B's frames cannot
+    // resolve against A's TF tree. The reset-on-removal path lets a genuine
+    // rebind happen once dataset A's topics are gone (tf_buffer_ goes back to
+    // null first).
     return;
   }
   dataset_id_ = dataset_id;  // cached for the live-samples TF ingest slot
@@ -1078,7 +1069,7 @@ void Scene3DDockWidget::ensureLocalTransformBuffer() {
   if (tf_buffer_ != nullptr) {
     return;
   }
-  tf_buffer_ = std::make_shared<pj::scene3d::TransformBuffer>();
+  tf_buffer_ = std::make_shared<pj::tf::TransformBuffer>();
   tf_buffer_is_local_ = true;
   if (view_ != nullptr) {
     view_->setTransformBuffer(tf_buffer_);
@@ -1135,7 +1126,7 @@ void Scene3DDockWidget::onAvailableFrames(const QList<FrameRow>& frames) {
     }
   }
   std::sort(clusters.begin(), clusters.end(), [](const QList<FrameRow>& a, const QList<FrameRow>& b) {
-    return pj::scene3d::frameNameLess(a.first().name, b.first().name);
+    return pj::tf::frameNameLess(a.first().name, b.first().name);
   });
 
   QList<FrameRow> effective;
@@ -1162,8 +1153,8 @@ QString Scene3DDockWidget::resolveAutoFixedFrame(const QList<FrameRow>& frames) 
   // Prefer the frame the user last picked by hand for this dataset's TransformBuffer
   // (shared across docks, persisted across restarts), but only when it still exists
   // in this dock's tree — a different recording of the same source may lack it.
-  if (transform_service_ != nullptr && dataset_id_ != 0) {
-    const QString remembered = transform_service_->rememberedFixedFrame(dataset_id_);
+  if (fixed_frame_memory_ != nullptr && dataset_id_ != 0) {
+    const QString remembered = fixed_frame_memory_->remembered(dataset_id_);
     if (!remembered.isEmpty() && framesContain(frames, remembered)) {
       return remembered;
     }
@@ -1220,8 +1211,8 @@ void Scene3DDockWidget::setFixedFrame(const QString& frame) {
   // Remember this explicit pick so a NEWLY-created dock on the same dataset's
   // TransformBuffer defaults to it (resolveAutoFixedFrame). dataset_id_ is 0 for a
   // not-yet-bound or local-only dock — nothing to key the memory by, so skip.
-  if (transform_service_ != nullptr && dataset_id_ != 0) {
-    transform_service_->rememberFixedFrame(dataset_id_, frame);
+  if (fixed_frame_memory_ != nullptr && dataset_id_ != 0) {
+    fixed_frame_memory_->remember(dataset_id_, frame);
   }
   if (mode_flipped || frame_changed) {
     notifyWorkspaceChanged();
@@ -1558,6 +1549,11 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreLayerElement(
   if (layerFor(topic_id) != nullptr) {
     return ElementRestoreResult::kInvalid;
   }
+  // A layout that mixed datasets still loads: the first dataset wins, a foreign
+  // element is dropped with a visible reason (not a failed restore).
+  if (refuseForeignTopic(topic_id)) {
+    return ElementRestoreResult::kConsumed;
+  }
   const QString previous_title = windowTitle();
   if (!addTopicImpl(topic_id, *object_type_opt, display_name, /*enforce_image_gate=*/false)) {
     if (local_layer) {
@@ -1749,6 +1745,9 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreConfigTopicEle
       pj::scene3d::builtinObjectTypeFor(sessionManager()->objectStore().descriptor(*topic_id_opt));
   if (live_type != sdk::BuiltinObjectType::kNone && live_type != *object_type_opt) {
     return ElementRestoreResult::kInvalid;
+  }
+  if (refuseForeignTopic(*topic_id_opt)) {
+    return ElementRestoreResult::kConsumed;
   }
   if (!addTopic(*topic_id_opt, *object_type_opt, topic_name) || !config_topics_.contains(topic_id_opt->id)) {
     return ElementRestoreResult::kInvalid;

@@ -20,17 +20,23 @@
 
 #include "pj_datastore/object_store.hpp"
 #include "pj_scene3d_core/robot_model.h"
-#include "pj_scene3d_core/tf/transform.h"  // StampedTransform (cached fixed-joint bridges)
 #include "pj_scene3d_widgets/mesh_data.h"
 #include "pj_scene3d_widgets/model_renderable.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+#include "pj_tf/transform.h"  // StampedTransform (cached fixed-joint bridges)
 
 class QWidget;
 
+namespace pj::tf {
+class TransformBuffer;
+}  // namespace pj::tf
+
 namespace pj::scene3d {
 
+using pj::tf::StampedTransform;
+using pj::tf::TransformBuffer;
+
 class MeshLoadQueue;
-class TransformBuffer;
 class UrdfPackageResolver;
 
 // Scene3DLayer that renders a robot's URDF (links, primitive geometry, and

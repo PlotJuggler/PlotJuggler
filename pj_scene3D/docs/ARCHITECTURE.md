@@ -20,8 +20,8 @@ follow-ups, Qt 6.12) is in [QRHI_NEXT.md](./QRHI_NEXT.md).
 - **One renderer.** `SceneViewWidget` is a `QRhiWidget` (`widgets/rhi/`). It owns
   every GPU resource and draws every layer family, on the platform's native
   graphics API.
-- **A Qt- and GPU-free core** (`core/`): camera models, the TF buffer, frame
-  picking, the shadow camera, point-cloud conversion and codecs, `SceneLimits` and the per-family budgets, trail sampling, and the
+- **A Qt- and GPU-free core** (`core/`): camera models, frame picking and
+  connection lines over the `pj_tf` TF buffer, the shadow camera, point-cloud conversion and codecs, `SceneLimits` and the per-family budgets, trail sampling, and the
   grid-map and voxel views. All of it is unit-tested headless.
 
 The desktop and the browser build the same view; browser policy (file picking,
@@ -1425,7 +1425,7 @@ mode does. It renders in every build, the browser included.
 ## Streaming / live-data path
 
 TF, point clouds and markers ingest live as well as from a file. The application
-activates `TransformService`'s session-wide `FrameTransforms` ingest tap before
+activates `PJ::TransformService`'s (`pj_runtime`) session-wide `FrameTransforms` ingest tap before
 constructing any runtime host. After scalar parsing, the source host invokes that
 tap synchronously with the payload view it already owns. The callback resolves the
 topic's current `SessionManager` parser binding, decodes under `parseLocked`, folds
@@ -1451,10 +1451,12 @@ the `samplesIngested` connection:
   so a multi-topic layer like OccupancyGrid + its `_updates` sibling does not
   freeze at its last keyframe).
 
-`TransformService` is a `widgets/`-level wrapper over the Qt-free core
+`TransformService` is a `pj_runtime` service over the Qt-free `pj_tf`
 `TransformBuffer`. It owns no parser handle: each tap or rebuild resolves the
 topic's binding through `SessionManager::parserBindingForObjectTopic` and decodes
-under `parseLocked` (per use, never cached). Streaming uses a finite cache window
+under the binding's mutex (per use, never cached), or with the canonical codec when
+no parser is bound; it carries its own small copy of that parser-or-canonical split
+because `pj_runtime` cannot use this module's `resolveObject`. Streaming uses a finite cache window
 (default 10 s); file buffers keep the full history.
 
 An in-place file reload calls `beginReplacingLoad` before its worker starts, so
@@ -1471,7 +1473,7 @@ paths never call it while the tap is active.
 
 ### Object decode: parser-decoded vs canonical blob
 
-Every object consumer (the layers above + `TransformService`) decodes a store
+Every object consumer in this module (the layers above) decodes a store
 entry through one seam, `pj_scene3d_widgets/resolve_object.h::resolveObject`,
 which picks the path by whether the topic has a bound `MessageParser`:
 

@@ -28,8 +28,8 @@
 #include "pj_base/builtin/image.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/TransformService.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
-#include "pj_scene3d_widgets/transform_service.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -72,7 +72,7 @@ PJ::ObjectTopicId registerImageTopic(PJ::ObjectStore& store, const std::string& 
 
 TEST(Scene3DDockDepthGate, AcceptsDepthEncodedImageAsDepthCloud) {
   PJ::SessionManager session;
-  pj::scene3d::TransformService transform_service(session);
+  PJ::TransformService transform_service(session);
   PJ::ObjectStore& store = session.objectStore();
 
   const PJ::ObjectTopicId depth = registerImageTopic(store, "/cam/depth/image");
@@ -93,7 +93,7 @@ TEST(Scene3DDockDepthGate, AcceptsDepthEncodedImageAsDepthCloud) {
 
 TEST(Scene3DDockDepthGate, RefusesColorImage) {
   PJ::SessionManager session;
-  pj::scene3d::TransformService transform_service(session);
+  PJ::TransformService transform_service(session);
   PJ::ObjectStore& store = session.objectStore();
 
   const PJ::ObjectTopicId color = registerImageTopic(store, "/cam/color/image");

@@ -47,7 +47,7 @@ then call `parseLocked(...)`.
 
 Relevant code:
 
-- `pj_scene3D/widgets/include/pj_scene3d_widgets/parse_locked.h`
+- `pj_runtime/include/pj_runtime/parse_locked.h`
 - `pj_runtime/src/DataSourceRuntimeHost.cpp`, `cbEnsureParserBinding(...)`
 - `pj_runtime/src/DataSourceRuntimeHost.cpp`, `cbPushMessage(...)`
 
@@ -526,8 +526,8 @@ layers.
 
 Relevant code:
 
-- `pj_scene3D/widgets/src/transform_service.cpp`
-- `pj_scene3D/core/include/pj_scene3d_core/tf/tf_buffer.h`
+- `pj_runtime/src/TransformService.cpp`
+- `pj_tf/include/pj_tf/tf_buffer.h`
 
 For parser-less Mosaico canonical topics, `TransformService` classifies the
 topic by metadata:

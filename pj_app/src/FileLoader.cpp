@@ -61,8 +61,9 @@
 #include "pj_runtime/DataSourceRuntimeHost.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/parse_locked.h"
 #ifdef PJ_WITH_SCENE3D
-#include "pj_scene3d_widgets/transform_service.h"
+#include "pj_runtime/TransformService.h"
 #endif
 #include "pj_widgets/Dialog.h"
 #include "pj_widgets/FileDialog.h"
@@ -427,13 +428,7 @@ void probeObjectDecoding(SessionManager& session, ObjectStore& object_store, Dat
       continue;
     }
 
-    PJ::Expected<PJ::sdk::ObjectRecord> record = PJ::unexpected(std::string("parser not invoked"));
-    if (binding.mutex) {
-      std::lock_guard<std::mutex> lock(*binding.mutex);
-      record = binding.parser->parseObject(resolved->timestamp, resolved->payload);
-    } else {
-      record = binding.parser->parseObject(resolved->timestamp, resolved->payload);
-    }
+    auto record = PJ::parseLocked(binding, resolved->timestamp, resolved->payload);
     if (!record) {
       qCWarning(lcFileLoader).noquote() << marker + u"_FAILED"_s << u"topic=%1"_s.arg(topic)
                                         << u"entries=%1"_s.arg(entry_count)

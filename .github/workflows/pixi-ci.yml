@@ -219,7 +219,7 @@ jobs:
         shell: bash
         run: |
           fail=0
-          for m in pj_datastore pj_runtime pj_scripting \
+          for m in pj_datastore pj_runtime pj_scripting pj_tf \
                    pj_scene3D/core pj_scene2D/core pj_scene_common; do
             echo "::group::ctest ${m}"
             pixi run ctest --test-dir "build-pixi/${m}" --output-on-failure --timeout 120 || fail=1

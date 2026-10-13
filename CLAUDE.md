@@ -23,6 +23,7 @@ Top-level layout:
 PJ4/
 ├── 3rdparty/                # vendored CMake deps + GPLv2/shareware compliance payload for the standalone raster helper
 ├── pj_datastore/            # Level 0 columnar store + ObjectStore + IncrementalEngine
+├── pj_tf/                   # Qt-free TF frame tree (Transform, TransformBuffer) shared by scene core and runtime
 ├── pj_scene_common/         # backend-agnostic layered scene dock framework, shared by the scene widget families
 ├── pj_scene2D/              # 2D scene widget family: core logic, Qt widgets, tools, tests
 ├── pj_scene3D/              # 3D scene widget family: TF, pointclouds, occupancy grids, URDF/mesh, markers; QRhi renderer (HDR/SSAO/EDL, shadows) + widgets, benchmarks
@@ -48,7 +49,8 @@ When adding files, use the owning module rather than creating new top-level fold
 
 - `plotjuggler_sdk` (external, not in this tree): the plugin **SDK** (`pj_base`, `pj_plugins`), consumed as the `plotjuggler_sdk/<version>` Conan package pinned in `conanfile.txt` and linked as `plotjuggler_sdk::base` / `::plugin_sdk` / `::plugin_host`. Canonical object schemas (`Image`, `DepthImage`, `ImageAnnotations`, `PointCloud`, `FrameTransforms`) and their codecs live under its `pj_base/builtin/`. SDK changes happen in the [plotjuggler_sdk repo](https://github.com/PlotJuggler/plotjuggler_sdk), then a release + pin bump here.
 - `pj_datastore/`: Level 0 columnar storage engine — `DataEngine` + `ObjectStore` + `IncrementalEngine` + the host-side C-ABI write bridges. Also owns the **data-processor execution substrate** (`PJ::proc::DataProcessor` base + `ProcessorSisoAdapter`, which runs a processor as a `IncrementalEngine` node, co-located here with the `ISISOTransform` interface it adapts to; the base stays Qt-free and Luau-free, so `pj_scripting` layers Luau on top). App-internal (plugins never link it; they reach storage through the `pj_base` C ABI). Pure C++20, no Qt; depends only on `pj_base`. Logic in `src/`, public headers in `include/pj_datastore/`, tests in `tests/`, docs in `docs/`. Licensed MPL-2.0.
-- `pj_runtime/`: app runtime services and contracts: session/data lifecycle, catalog, playback, extension catalog, future workspace/transform/toolbox services. No concrete widgets and no `Qt6::Widgets` link.
+- `pj_tf/`: the TF frame tree (`pj::tf::Transform`, `StampedTransform`, `TransformBuffer`): a static, Qt-free leaf linking only `glm`, `plotjuggler_sdk::base` and `nlohmann_json`. Both `pj_scene3d_core` (geometry math) and `pj_runtime` (`TransformService`, which owns one buffer per dataset) link it. Ownership, ingest and Qt signals stay in `pj_runtime`; rendering and view state stay in `pj_scene3D`.
+- `pj_runtime/`: app runtime services and contracts: session/data lifecycle, catalog, playback, extension catalog, `TransformService` (per-dataset TF buffers and ingest), future workspace/toolbox services. No concrete widgets and no `Qt6::Widgets` link.
 - `pj_app/`: executable shell only: `MainWindow`, menus/toolbars/status bar, app dialogs, and wiring between runtime services and concrete widgets. Do not put reusable controls or business logic here.
 - `pj_widgets/`: reusable Qt widgets and UI helpers that could be used by another Qt app. Depends only on Qt and the C++ standard library; no dependencies on `pj_runtime`, `pj_app`, or other PJ modules. Includes the reusable `Timeline` control (`Timeline.{h,cpp}`) — the multi-track Source Timeline that edits per-source `display_offset`: a Qt-free `TimelineScene` math class plus a runtime-agnostic `Timeline` QWidget, both plain-typed; the `SourceTimelineController` that binds it to `pj_runtime` lives in `pj_app`.
 - `pj_scene_common/`: backend-agnostic layered scene dock framework (`scene_layer.h`, `layer_factory.h`, `scene_dock_widget.h`) shared by the 2D/3D scene widget families. Rendering-specific view state stays in those families, not here.
@@ -98,6 +100,7 @@ Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`.
 |---|---|---|
 | `pj_app` | [pj_app/CLAUDE.md](./pj_app/CLAUDE.md) | — |
 | `pj_runtime` | [pj_runtime/CLAUDE.md](./pj_runtime/CLAUDE.md) | — |
+| `pj_tf` | [pj_tf/CLAUDE.md](./pj_tf/CLAUDE.md) | — |
 | `pj_widgets` | [pj_widgets/CLAUDE.md](./pj_widgets/CLAUDE.md) | — |
 | `pj_plotting` | [pj_plotting/CLAUDE.md](./pj_plotting/CLAUDE.md) | — |
 | `pj_dialog_host` | [pj_dialog_host/CLAUDE.md](./pj_dialog_host/CLAUDE.md) | — |
@@ -343,7 +346,7 @@ Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/red
 
 Session recording is a **runtime capability**, not a build flag: `RecordingService::isSupported()` says whether this build has a sink to record into, and every Record affordance follows it. Only the sink is platform-bound — the MCAP file writer is compiled on desktop only, while `Recorder`/`RecordingService` build everywhere (a browser sink is a later milestone, see the design doc). Each Record press creates one batch folder in the Preferences → Recording folder, `pj_<UTC timestamp>/`, holding ONE MCAP file per recorded source, named after that source and written straight into its final name; every file of one press shares a `capture_id`. A recording without a summary section is one that was not stopped cleanly, and it still opens (readers scan it linearly, `mcap recover` rebuilds its index). The write-queue budget is per source, so recording N sources may hold N times it in flight. See [`docs/session_recorder_design.md`](./docs/session_recorder_design.md).
 
-The 3D widget family ships as `pj_scene3D` (built and wired into `pj_app` via `Scene3DDockWidget`): TF, pointclouds, occupancy grids, axis/grid render passes, SceneEntities/markers, pluggable camera models, URDF/mesh robot models, the HDR/tonemap/SSAO/EDL rendering pipeline, live/streaming TF+object ingest (`TransformService` + `driveVisibleLayersToLiveEdge`), and per-use parser bindings (`parse_locked.h`) — see `pj_scene3D/docs/ARCHITECTURE.md` for the as-built design, `pj_scene3D/docs/REQUIREMENTS.md` for scope.
+The 3D widget family ships as `pj_scene3D` (built and wired into `pj_app` via `Scene3DDockWidget`): TF, pointclouds, occupancy grids, axis/grid render passes, SceneEntities/markers, pluggable camera models, URDF/mesh robot models, the HDR/tonemap/SSAO/EDL rendering pipeline, live/streaming TF+object ingest (`PJ::TransformService` in `pj_runtime` + `driveVisibleLayersToLiveEdge`), and per-use parser bindings (`pj_runtime/parse_locked.h`) — see `pj_scene3D/docs/ARCHITECTURE.md` for the as-built design, `pj_scene3D/docs/REQUIREMENTS.md` for scope.
 
 Scene3D renders through one QRhi view (`widgets/rhi/`, on desktop and in the
 browser) on the platform's native API: OpenGL on Linux, D3D11 on Windows, Metal

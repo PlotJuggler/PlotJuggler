@@ -18,11 +18,11 @@
 #include "pj_base/time.hpp"
 #include "pj_scene3d_core/camera/camera.h"
 #include "pj_scene3d_core/poses_in_frame_render.h"
-#include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/grid_geometry.h"
 #include "pj_scene3d_widgets/mesh_shading_params.h"
 #include "pj_scene3d_widgets/moving_average.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
+#include "pj_tf/tf_buffer.h"
 #include "pj_widgets/GraphicsApi.h"
 
 class QEvent;
@@ -44,6 +44,10 @@ class QRhiRenderTarget;
 class QRhiResourceUpdateBatch;
 
 namespace pj::scene3d {
+
+using pj::tf::FrameRow;
+using pj::tf::Transform;
+using pj::tf::TransformBuffer;
 
 class Scene3DLayer;
 class OccupancyRhiPass;

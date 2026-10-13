@@ -25,9 +25,13 @@ namespace PJ {
 class SessionManager;
 }  // namespace PJ
 
+namespace pj::tf {
+class TransformBuffer;
+}  // namespace pj::tf
+
 namespace pj::scene3d {
 
-class TransformBuffer;
+using pj::tf::TransformBuffer;
 class PointRenderable;
 class ModelRenderable;
 class PosesInFrameLayer;

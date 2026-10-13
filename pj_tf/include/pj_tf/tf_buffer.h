@@ -19,9 +19,9 @@
 
 #include "pj_base/expected.hpp"
 #include "pj_base/time.hpp"
-#include "pj_scene3d_core/tf/transform.h"
+#include "pj_tf/transform.h"
 
-namespace pj::scene3d {
+namespace pj::tf {
 
 using Duration = PJ::Duration;
 
@@ -281,4 +281,4 @@ class TransformBuffer {
       const std::string& target, const std::string& source, TimePoint stamp) const;
 };
 
-}  // namespace pj::scene3d
+}  // namespace pj::tf

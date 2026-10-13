@@ -21,8 +21,8 @@
 #include "pj_base/builtin/grid_map_codec.hpp"    // validateGridMap
 #include "pj_base/time.hpp"                      // PJ::toRaw
 #include "pj_scene3d_core/pointcloud_convert.h"  // findField
-#include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/resolve_object.h"
+#include "pj_tf/tf_buffer.h"
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/FrameworkTokens.h"

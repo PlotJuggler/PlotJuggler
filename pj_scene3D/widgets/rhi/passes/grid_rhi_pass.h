@@ -17,8 +17,6 @@
 
 namespace pj::scene3d {
 
-class TransformBuffer;
-
 /// The view's prelude family: the ground grid (lines, or filled cells with the
 /// lines drawn analytically in the cell shader, which receive the mesh shadow)
 /// and the TF parent-connection lines. Drawn before
