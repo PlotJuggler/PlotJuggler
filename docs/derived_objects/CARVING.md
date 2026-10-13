@@ -36,7 +36,7 @@ The `SDK` column says what a slice needs from the SDK:
 | # | Slice | Depends on | SDK | Folded-in decisions and fixes | Status |
 |---|---|---|---|---|---|
 | 0 | These documents: requirements, architecture, scenarios, tracker | none | none | none | in review |
-| T | Independent: do not store repeated identical TF samples (`TransformBuffer`, still in `pj_scene3D` on `release-4.1`) | none | none | ARCHITECTURE §12 R10. Equal means bit-equal. | planned |
+| T | Independent: do not store repeated identical TF samples (`TransformBuffer`, still in `pj_scene3D` on `release-4.1`) | none | none | ARCHITECTURE §12 R10. Equal means exactly equal, component by component (no tolerance). | in review |
 | 1 | The prototype's engine renames (names kept) plus the `pj_tf` extraction. Behaviour-neutral. | 0 | none | Remove the rename leftovers: the `MarkerService` alias, `markerService()`, stale comments, the `CLAUDE.md` mentions. TF R1 (snapshot type in `pj_tf`), R2 (fixed-frame memory to the scene side), R3 (refuse a topic from another dataset). | planned |
 | 1b | Two timestamps per TF sample (ARCHITECTURE §12 R6) | 1 | none | Test-first, with a fixture whose log time differs from its header stamps, and a simulated-time fixture. Visual check on the nuScenes cameras. | planned |
 | 2 | `EnginePool` plus the GUI-freeze benchmark. Baseline measured on the old engines. | 1 | none | none | planned |

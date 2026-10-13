@@ -79,24 +79,41 @@ PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const Stampe
   // however namespaced — is simply a single-sample history that holds for all
   // later query times, so static-ness never has to be inferred from a topic name.
   const Transform normalized{tf.transform.t, glm::normalize(tf.transform.q)};
-  auto& samples = link.history.samples;
-  if (samples.empty() || tf.stamp > samples.back().first) {
-    samples.emplace_back(tf.stamp, normalized);
+  auto& history = link.history;
+  auto& samples = history.samples;
+  const bool first_sample = samples.empty();
+  bool changed = true;
+  if (first_sample || tf.stamp > samples.back().first) {
+    // Exact under zero-order hold for in-order arrival. Accepted trade-off: an
+    // out-of-order sample landing inside a run of skipped repeats keeps its value
+    // until the next stored sample, where the full history would have returned the
+    // repeated value again (rare; exact handling would need the skipped stamps).
+    changed = first_sample || samples.back().second != normalized;
+    if (changed) {
+      samples.emplace_back(tf.stamp, normalized);
+    }
   } else {
     auto it = std::lower_bound(samples.begin(), samples.end(), tf.stamp, EdgeHistory::lessStamp);
     if (it != samples.end() && it->first == tf.stamp) {
+      changed = it->second != normalized;
       it->second = normalized;
     } else {
       samples.insert(it, {tf.stamp, normalized});
     }
   }
 
-  evictEdgeLocked(samples);
-  ++revision_;
+  history.newest_stamp = first_sample ? tf.stamp : std::max(history.newest_stamp, tf.stamp);
+  // A skipped repeat still advances newest_stamp and can evict, which changes what
+  // lookups resolve, so eviction alone also counts as a change.
+  const bool evicted = evictEdgeLocked(history);
+  if (changed || evicted) {
+    ++revision_;
+  }
   return {};
 }
 
-void TransformBuffer::evictEdgeLocked(std::deque<EdgeHistory::Sample>& samples) const {
+bool TransformBuffer::evictEdgeLocked(EdgeHistory& history) const {
+  auto& samples = history.samples;
   // kKeepAll disables eviction: bulk-ingested bounded sources (a loaded file)
   // feed the whole recording up front, so a rolling window would trim every
   // edge to its tail and break lookups earlier in the timeline. Under a finite
@@ -107,13 +124,20 @@ void TransformBuffer::evictEdgeLocked(std::deque<EdgeHistory::Sample>& samples) 
   // persistence to every edge uniformly. (The current cutoff is per-edge-relative
   // so the guard is presently belt-and-suspenders, but it pins the invariant
   // should eviction ever switch to a global clock.)
+  //
+  // The front goes only once its successor is at or before the cutoff: the newest
+  // sample at or before the cutoff holds the value valid there, and with repeats
+  // skipped it may be far older than the cutoff.
   if (samples.empty() || cache_window_ >= kKeepAll) {
-    return;
+    return false;
   }
-  const auto cutoff = samples.back().first - cache_window_;
-  while (samples.size() > 1 && samples.front().first < cutoff) {
+  const auto cutoff = history.newest_stamp - cache_window_;
+  bool evicted = false;
+  while (samples.size() > 1 && samples[1].first <= cutoff) {
     samples.pop_front();
+    evicted = true;
   }
+  return evicted;
 }
 
 std::optional<Transform> TransformBuffer::sampleAt(const EdgeHistory& h, TimePoint t) {
@@ -275,17 +299,16 @@ std::optional<TimePoint> TransformBuffer::latestCommonTime(const std::string& ta
     return std::nullopt;
   }
 
-  // Newest time bounded by every multi-sample edge up to the common ancestor.
-  // Single-sample edges (the static case) and empty histories hold for all time,
-  // so they impose no upper bound.
+  // Newest time bounded by every edge that received more than one stamp. Edges
+  // published at a single stamp (the static case) hold for all time, so they
+  // impose no upper bound.
   auto walk = [](const std::vector<ChainHop>& chain, std::size_t k, std::optional<TimePoint>& acc) {
     for (std::size_t i = 0; i < k; ++i) {
       const auto& edge = chain[i].link->history;
-      if (edge.samples.size() <= 1) {
+      if (!edge.receivedMultipleStamps()) {
         continue;
       }
-      const auto latest = edge.samples.back().first;
-      acc = acc ? std::min(*acc, latest) : latest;
+      acc = acc ? std::min(*acc, edge.newest_stamp) : edge.newest_stamp;
     }
   };
 
@@ -369,7 +392,7 @@ std::optional<TimePoint> TransformBuffer::getLatestSample(const std::string& chi
   if (history.samples.empty()) {
     return std::nullopt;
   }
-  return history.samples.back().first;
+  return history.newest_stamp;
 }
 
 void TransformBuffer::clear() {
@@ -387,7 +410,7 @@ void TransformBuffer::setCacheWindow(Duration window) {
   // stay resolvable. Not a content change for change-detection purposes (the set
   // of resolvable times only shrinks at the tail), so revision_ is left alone.
   for (auto& [child, link] : parents_) {
-    evictEdgeLocked(link.history.samples);
+    evictEdgeLocked(link.history);
   }
 }
 

@@ -1019,7 +1019,8 @@ topic's first pose) across the whole loaded time range as a screen-space ribbon
 REQUIREMENTS §3b for the behavioural contract; the mechanics:
 
 - **Sampling grid = the chain's own stamps.** `TransformBuffer::chainSampleTimes`
-  unions every edge's sample stamps along the connecting path (both chains to the
+  unions every edge's stored sample stamps (a repeat of the previous value is not
+  stored) along the connecting path (both chains to the
   common ancestor), so a statically-mounted child (lidar on base_link) trails with
   the motion higher up the chain. The pure build functions
   (`core/trail_sampling.{h,cpp}`: `decimateEvenly` — even index decimation,

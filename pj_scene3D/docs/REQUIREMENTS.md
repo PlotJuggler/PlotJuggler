@@ -125,8 +125,8 @@ primitives are 1 px wide on most backends), and each half has its own eye toggle
 independently. Colors, thickness, and the two visibility flags all persist per-trail. Two sources:
 
 - **TF frame** — any frame in the TF tree, sampled at the connecting chain's own update stamps
-  (`TransformBuffer::chainSampleTimes`), so a statically-mounted child still trails with its
-  moving ancestors.
+  (`TransformBuffer::chainSampleTimes`: the stamps at which an edge's value changed), so a
+  statically-mounted child still trails with its moving ancestors.
 - **Pose topic** — a `kPosesInFrame` topic, one point per message (the **first** pose only),
   each transformed into the fixed frame at that message's own timestamp.
 
@@ -258,6 +258,8 @@ Behavioral contract of `TransformBuffer` (`core/include/pj_scene3d_core/tf/tf_bu
   at recording start, so this slice never occurs during normal scrub replay.
 
   This is a deliberate departure from tf2's default linear interpolation. The ZOH semantic answers "what was the system's belief at time *t*?" rather than "what would a smooth interpolation of the recorded data look like at time *t*?". For scrub replay over recorded data, the first question is the correct one — the system never actually held an interpolated pose.
+
+  **Repeated identical samples are not stored.** An in-order sample that is newer than the edge's last stored sample and exactly equal to it (component-wise, no tolerance) is dropped: under ZOH it adds nothing, and `revision()` does not bump unless the repeat evicts something. The edge still records the newest stamp it received, which is what `getLatestSample` returns and what bounds `latestCommonTime` and the streaming eviction cutoff. Eviction keeps the newest sample at or before the cutoff (it holds the value valid there, however old), so a fixed joint republished at 100 Hz keeps resolving across the whole window as if every repeat had been kept. An out-of-order sample landing inside a run of skipped repeats keeps its value until the next stored sample, where the full history would have returned the repeated value again (accepted: rare, and exact handling would need the skipped stamps).
 
 - **Thread-safe**: concurrent writers (ingest thread) and readers (render thread + future Frames panel) must be supported without external locking.
 - **Introspection**: callers must be able to enumerate all known frames, query the parent of any frame, and query the latest sample stamp for any edge. This is what the future Frames panel and the per-widget fixed-frame dropdown consume.

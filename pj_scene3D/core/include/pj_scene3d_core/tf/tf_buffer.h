@@ -82,8 +82,13 @@ class TransformBuffer {
   explicit TransformBuffer(Duration cache_window = std::chrono::seconds(10));
   ~TransformBuffer();
 
-  // Insert or replace the edge for `tf.child_frame`. Returns the rejected-edge
-  // reason instead of throwing, so a malformed edge in a bulk feed drops one
+  // Insert or replace the edge for `tf.child_frame`. A newer sample exactly equal
+  // (component-wise, no tolerance) to the edge's last stored one is not stored:
+  // zero-order hold makes it redundant. The edge still records its stamp (see
+  // getLatestSample), which advances the eviction cutoff, so the repeat bumps
+  // revision() only if that evicts something.
+  //
+  // Returns the rejected-edge reason instead of throwing, so a malformed edge in a bulk feed drops one
   // edge rather than aborting the whole load. There is no static/dynamic flag: a
   // transform published once (/tf_static, however it is namespaced) is just a
   // single-sample history that resolves at every later time via nearest-previous.
@@ -110,9 +115,9 @@ class TransformBuffer {
   // than latestCommonTime for callers that only need reachability.
   [[nodiscard]] bool areConnected(const std::string& target, const std::string& source) const;
 
-  // Newest time at which every edge between the two frames has a sample
-  // (single-sample edges hold for all time, so they impose no bound). nullopt if
-  // the frames are disconnected. CONTRACT SURPRISE: when the connecting path is
+  // Newest time at which every edge between the two frames has a sample (see
+  // getLatestSample; edges published at a single stamp hold for all time, so they
+  // impose no bound). nullopt if the frames are disconnected. CONTRACT SURPRISE: when the connecting path is
   // made up *entirely* of single-sample edges (the all-static case), the result
   // is an ENGAGED TimePoint{} (the Unix epoch sentinel), meaning "connected and
   // valid at any time at or after the newest single-sample stamp on the path" —
@@ -122,10 +127,9 @@ class TransformBuffer {
   // areConnected() instead.
   [[nodiscard]] std::optional<TimePoint> latestCommonTime(const std::string& target, const std::string& source) const;
 
-  // Union of every edge's sample stamps along the connecting path between
-  // `target` and `source` (both chains up to their common ancestor), clipped to
-  // [lo, hi] inclusive, sorted ascending and deduplicated into `out` (cleared
-  // first). Empty when either frame is unknown, the two are disconnected
+  // Union of every edge's stored sample stamps (a repeat of the previous value is not stored) along the connecting path
+  // between `target` and `source` (both chains up to their common ancestor), clipped to [lo, hi] inclusive, sorted
+  // ascending and deduplicated into `out` (cleared first). Empty when either frame is unknown, the two are disconnected
   // (same reachability rule as tryLookupTransform), or target == source.
   // This is the natural sampling grid for a motion trail: a frame whose own
   // edge is static still moves whenever an edge higher up the chain does.
@@ -140,6 +144,7 @@ class TransformBuffer {
   // by-value overload, which now delegates here.
   void getAllFrames(std::vector<std::string>& out) const;
   [[nodiscard]] std::optional<std::string> getParent(const std::string& child) const;
+  // Newest stamp the edge received, including repeats setTransform skipped.
   [[nodiscard]] std::optional<TimePoint> getLatestSample(const std::string& child) const;
 
   // Depth-annotated DFS pre-order of the TF forest. Roots and same-parent
@@ -162,12 +167,14 @@ class TransformBuffer {
   void setCacheWindow(Duration window);
   [[nodiscard]] Duration cacheWindow() const;
 
-  // Monotonic change-detection token: bumps under the write lock on every
-  // successful setTransform insert/replace and in clear(). Lets a caller gate
-  // expensive recomputation (orphan state, hierarchy) on "did the buffer change
-  // since I last looked?" without diffing. A bump does NOT imply connectivity
-  // changed (an in-place sample replace bumps it too) — it is strictly "any
-  // mutation since".
+  // Monotonic change-detection token: bumps under the write lock on every change
+  // to the stored samples or to what lookups resolve — an insert, a replace with a
+  // different value, an eviction during setTransform, and clear(). A skipped repeat
+  // that evicts nothing does not bump, although getLatestSample / latestCommonTime
+  // can advance without one; setCacheWindow does not bump either. Lets a caller
+  // gate expensive recomputation (orphan state, hierarchy) on "did the buffer
+  // change since I last looked?" without diffing. A bump does NOT imply
+  // connectivity changed (an in-place sample replace bumps it too).
   [[nodiscard]] uint64_t revision() const noexcept;
 
   void clear();
@@ -181,6 +188,13 @@ class TransformBuffer {
     using Sample = std::pair<TimePoint, Transform>;
 
     std::deque<Sample> samples;
+    // Newest stamp received, including repeats setTransform skipped; may exceed samples.back().first.
+    TimePoint newest_stamp{};
+
+    // True once the edge has received a stamp later than its oldest stored one.
+    bool receivedMultipleStamps() const {
+      return !samples.empty() && newest_stamp > samples.front().first;
+    }
 
     static bool lessStamp(const Sample& sample, TimePoint stamp) {
       return sample.first < stamp;
@@ -236,8 +250,9 @@ class TransformBuffer {
   std::unordered_map<std::string, ParentLink> parents_;
   mutable std::shared_mutex parents_mutex_;
   Duration cache_window_;
-  // Bumped on every successful mutation (see revision()); guarded by
-  // parents_mutex_ (write side under unique_lock, read side under shared_lock).
+  // Bumped on every change to stored samples or to what lookups resolve (see
+  // revision()); guarded by parents_mutex_ (write side under unique_lock, read
+  // side under shared_lock).
   uint64_t revision_ = 0;
 
   static std::optional<Transform> sampleAt(const EdgeHistory& h, TimePoint t);
@@ -256,10 +271,12 @@ class TransformBuffer {
   // a frame with no reachable root, so callers DFS the roots first, then any
   // not-yet-visited frame at depth 0 to surface cycle members too.
   ForestIndex buildForestIndexLocked() const;
-  // Trim `samples` to cache_window_ in place: drop any sample older than
-  // (newest stamp - cache_window_) while always keeping at least the last one.
-  // No-op when cache_window_ == kKeepAll. Caller holds the unique_lock.
-  void evictEdgeLocked(std::deque<EdgeHistory::Sample>& samples) const;
+  // Trim the edge's samples to cache_window_ in place, relative to the newest
+  // received stamp: keeps the newest sample at or before the cutoff (it holds the
+  // value valid there, however old it is) and everything after, and always at least
+  // the last sample. No-op when cache_window_ == kKeepAll. Returns whether it
+  // dropped anything. Caller holds the unique_lock.
+  bool evictEdgeLocked(EdgeHistory& history) const;
   PJ::Expected<Transform, LookupError> lookupTransformImpl(
       const std::string& target, const std::string& source, TimePoint stamp) const;
 };

@@ -5,10 +5,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <limits>
+#include <optional>
+#include <random>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -172,18 +176,22 @@ TEST(TransformBufferTest, StoppedDynamicKeepsResolvingUnderFiniteWindow) {
 
 // Under a finite window, a time jump much larger than the window evicts stale
 // samples, but the most recent one is pinned (samples.size() > 1 guard): the edge
-// is never emptied, so lookups at/after the jump resolve. Scrubbing back below the
-// retained tail orphans — the inherent cost of a finite window, absent under kKeepAll.
+// is never emptied, so lookups at/after the jump resolve. The newest sample at or
+// before the cutoff (50ns) is kept because it holds the value valid there; scrubbing
+// back below it orphans — the inherent cost of a finite window, absent under kKeepAll.
 TEST(TransformBufferTest, FiniteWindowPinsMostRecentSample) {
   TransformBuffer buffer(10ns);
   (void)buffer.setTransform(makeStamped("map", "odom", tp(0ns), makeTranslation(0.0)));
+  (void)buffer.setTransform(makeStamped("map", "odom", tp(50ns), makeTranslation(50.0)));
   (void)buffer.setTransform(makeStamped("map", "odom", tp(100ns), makeTranslation(100.0)));  // jump >> window
 
   // Most recent sample pinned and resolving...
   ASSERT_TRUE(buffer.tryLookupTransform("map", "odom", tp(200ns)).has_value());
   expectTranslation(buffer.lookupTransform("map", "odom", tp(200ns)), 100.0);
+  // ...the sample spanning the cutoff (90ns) still answers between its stamp and the jump...
+  expectTranslation(buffer.lookupTransform("map", "odom", tp(75ns)), 50.0);
   // ...older sample evicted: a scrub back below the retained tail has no value.
-  EXPECT_FALSE(buffer.tryLookupTransform("map", "odom", tp(50ns)).has_value());
+  EXPECT_FALSE(buffer.tryLookupTransform("map", "odom", tp(25ns)).has_value());
 }
 
 TEST(TransformBufferTest, Introspection) {
@@ -295,12 +303,13 @@ TEST(TransformBufferTest, SelfParentIgnored) {
 // trims each dynamic edge to its tail so lookups before [t_end - window] fail.
 TEST(TransformBufferTest, DefaultWindowEvictsHistoryAfterBulkIngest) {
   TransformBuffer buffer;  // default 10s window
-  const std::array<TimePoint, 4> stamps{tp(0s), tp(5s), tp(11s), tp(12s)};
+  const std::array<TimePoint, 5> stamps{tp(0s), tp(1s), tp(5s), tp(11s), tp(12s)};
   for (const TimePoint stamp : stamps) {
     (void)buffer.setTransform(makeStamped("map", "odom", stamp, makeTranslationFromStamp(stamp)));
   }
-  // cutoff = 12s - 10s = 2s, so the 0s sample is evicted: a lookup at 1s fails...
-  EXPECT_FALSE(buffer.tryLookupTransform("map", "odom", tp(1s)).has_value());
+  // cutoff = 12s - 10s = 2s: the 1s sample spans it and is kept, the 0s sample is
+  // evicted, so a lookup at 0.5s fails...
+  EXPECT_FALSE(buffer.tryLookupTransform("map", "odom", tp(500ms)).has_value());
   // ...while the retained tail still resolves.
   EXPECT_TRUE(buffer.tryLookupTransform("map", "odom", tp(11s)).has_value());
 }
@@ -402,18 +411,20 @@ TEST(TransformBufferTest, AreConnectedReportsReachability) {
 // always keeping the last sample per edge so recent lookups still succeed.
 TEST(TransformBufferTest, SetCacheWindowTrimsButKeepsLastSample) {
   TransformBuffer buffer(TransformBuffer::kKeepAll);
-  const std::array<TimePoint, 4> stamps{tp(0s), tp(5s), tp(11s), tp(12s)};
+  const std::array<TimePoint, 5> stamps{tp(0s), tp(1s), tp(5s), tp(11s), tp(12s)};
   for (const TimePoint stamp : stamps) {
     (void)buffer.setTransform(makeStamped("map", "odom", stamp, makeTranslationFromStamp(stamp)));
   }
   // Under kKeepAll the full history is present: an early lookup resolves.
-  ASSERT_TRUE(buffer.tryLookupTransform("map", "odom", tp(1s)).has_value());
+  ASSERT_TRUE(buffer.tryLookupTransform("map", "odom", tp(500ms)).has_value());
 
   buffer.setCacheWindow(10s);
   EXPECT_EQ(buffer.cacheWindow(), Duration(10s));
 
-  // cutoff = 12s - 10s = 2s, so the 0s sample is evicted retroactively.
-  EXPECT_FALSE(buffer.tryLookupTransform("map", "odom", tp(1s)).has_value());
+  // cutoff = 12s - 10s = 2s: the 1s sample spans it and is kept, so the 0s sample
+  // is evicted retroactively.
+  EXPECT_FALSE(buffer.tryLookupTransform("map", "odom", tp(500ms)).has_value());
+  EXPECT_TRUE(buffer.tryLookupTransform("map", "odom", tp(1s)).has_value());
   // The retained tail (and so any recent stamp) still resolves.
   EXPECT_TRUE(buffer.tryLookupTransform("map", "odom", tp(11s)).has_value());
   EXPECT_TRUE(buffer.tryLookupTransform("map", "odom", tp(12s)).has_value());
@@ -431,8 +442,9 @@ TEST(TransformBufferTest, SetCacheWindowKeepsStaticEdge) {
   expectTranslation(buffer.lookupTransform("base_link", "camera", distant_future), 0.5);
 }
 
-// revision() bumps on every successful insert/replace and on clear(), but NOT on
+// revision() bumps on every insert, different-value replace and clear(), but NOT on
 // a rejected edge — it is a change-detection token for callers gating recompute.
+// (Skipped repeats and eviction: see TransformBufferDedup.)
 TEST(TransformBufferTest, RevisionBumpsOnMutationNotOnReject) {
   TransformBuffer buffer;
   const uint64_t initial = buffer.revision();
@@ -553,6 +565,305 @@ TEST(TransformBufferChainSampleTimes, DisconnectedUnknownOrIdenticalIsEmpty) {
   // target == source: zero hops -> no motion -> no trail stamps.
   buffer.chainSampleTimes("base", "base", tp(0ns), tp(100ns), stamps);
   EXPECT_TRUE(stamps.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate-sample dedup: an in-order sample exactly equal (component by component,
+// no tolerance) to the edge's last stored value is not stored (zero-order hold makes
+// it redundant), but the edge still remembers the newest stamp it received so
+// latest-sample / latestCommonTime / the eviction cutoff behave as if every sample
+// had been kept, and eviction keeps the value valid at the cutoff.
+// ---------------------------------------------------------------------------
+
+std::vector<int64_t> chainTimes(const TransformBuffer& buffer, const std::string& target, const std::string& source) {
+  std::vector<TimePoint> stamps;
+  buffer.chainSampleTimes(target, source, tp(-std::chrono::hours(1)), tp(std::chrono::hours(1)), stamps);
+  return rawStamps(stamps);
+}
+
+TEST(TransformBufferDedup, RepeatedIdenticalSampleIsNotStored) {
+  TransformBuffer buffer(TransformBuffer::kKeepAll);
+  const auto value = makeTranslation(1.0, 2.0, 3.0);
+  ASSERT_TRUE(buffer.setTransform(makeStamped("world", "A", tp(10ns), value)).has_value());
+  const uint64_t after_first = buffer.revision();
+  for (const TimePoint stamp : {tp(20ns), tp(30ns)}) {
+    ASSERT_TRUE(buffer.setTransform(makeStamped("world", "A", stamp, value)).has_value());
+  }
+
+  EXPECT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{10}));
+  EXPECT_EQ(buffer.revision(), after_first);
+  EXPECT_EQ(buffer.getLatestSample("A"), tp(30ns));
+  for (const TimePoint stamp : {tp(10ns), tp(20ns), tp(30ns), tp(1'000ns)}) {
+    const auto result = buffer.tryLookupTransform("world", "A", stamp);
+    ASSERT_TRUE(result.has_value());
+    expectTranslation(*result, 1.0, 2.0, 3.0);
+  }
+  EXPECT_FALSE(buffer.tryLookupTransform("world", "A", tp(5ns)).has_value());
+
+  // An older stamp with a new value is stored but never moves the newest stamp back.
+  ASSERT_TRUE(buffer.setTransform(makeStamped("world", "A", tp(25ns), makeTranslation(2.0))).has_value());
+  EXPECT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{10, 25}));
+  EXPECT_EQ(buffer.getLatestSample("A"), tp(30ns));
+}
+
+TEST(TransformBufferDedup, ChangedValueAfterRepeatsIsStored) {
+  TransformBuffer buffer(TransformBuffer::kKeepAll);
+  const auto value_a = makeTranslation(1.0);
+  const auto value_b = makeTranslation(2.0);
+  (void)buffer.setTransform(makeStamped("world", "A", tp(10ns), value_a));
+  (void)buffer.setTransform(makeStamped("world", "A", tp(20ns), value_a));
+  const uint64_t before_change = buffer.revision();
+  (void)buffer.setTransform(makeStamped("world", "A", tp(30ns), value_b));
+
+  EXPECT_GT(buffer.revision(), before_change);
+  EXPECT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{10, 30}));
+  expectTranslation(buffer.lookupTransform("world", "A", tp(20ns)), 1.0);
+  expectTranslation(buffer.lookupTransform("world", "A", tp(29ns)), 1.0);
+  expectTranslation(buffer.lookupTransform("world", "A", tp(30ns)), 2.0);
+}
+
+// No tolerance: a one-ulp difference is a different value and must be stored.
+TEST(TransformBufferDedup, OneUlpDifferenceIsStored) {
+  TransformBuffer buffer(TransformBuffer::kKeepAll);
+  const double base = 1.0;
+  const double one_ulp_up = std::nextafter(base, std::numeric_limits<double>::infinity());
+  ASSERT_NE(base, one_ulp_up);
+  (void)buffer.setTransform(makeStamped("world", "A", tp(10ns), makeTranslation(base, 2.0, 3.0)));
+  (void)buffer.setTransform(makeStamped("world", "A", tp(20ns), makeTranslation(one_ulp_up, 2.0, 3.0)));
+
+  EXPECT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{10, 20}));
+  EXPECT_EQ(buffer.lookupTransform("world", "A", tp(20ns)).t.x, one_ulp_up);
+}
+
+TEST(TransformBufferDedup, SameStampSameValueIsANoOp) {
+  TransformBuffer buffer(TransformBuffer::kKeepAll);
+  const auto value_a = makeTranslation(1.0);
+  const auto value_b = makeTranslation(2.0);
+  (void)buffer.setTransform(makeStamped("world", "A", tp(10ns), value_a));
+  (void)buffer.setTransform(makeStamped("world", "A", tp(20ns), value_b));
+  const uint64_t baseline = buffer.revision();
+
+  // Equal stamp, equal value: both at the tail and strictly inside the history.
+  EXPECT_TRUE(buffer.setTransform(makeStamped("world", "A", tp(20ns), value_b)).has_value());
+  EXPECT_TRUE(buffer.setTransform(makeStamped("world", "A", tp(10ns), value_a)).has_value());
+  EXPECT_EQ(buffer.revision(), baseline);
+
+  // Equal stamp, different value still replaces in place and bumps.
+  EXPECT_TRUE(buffer.setTransform(makeStamped("world", "A", tp(10ns), value_b)).has_value());
+  EXPECT_GT(buffer.revision(), baseline);
+  expectTranslation(buffer.lookupTransform("world", "A", tp(10ns)), 2.0);
+}
+
+// A republished-identical edge bounds latestCommonTime by the newest stamp it
+// received, exactly as if every repeat had been stored; an edge published at a
+// single stamp still imposes no bound.
+TEST(TransformBufferDedup, LatestCommonTimeIsUnchangedByRepeats) {
+  TransformBuffer buffer(TransformBuffer::kKeepAll);
+  const auto fixed_value = makeTranslation(1.0);
+  for (const TimePoint stamp : {tp(10ns), tp(20ns), tp(30ns)}) {
+    (void)buffer.setTransform(makeStamped("world", "fixed", stamp, fixed_value));
+  }
+  for (int step = 1; step <= 5; ++step) {
+    (void)buffer.setTransform(
+        makeStamped("world", "moving", tp(std::chrono::nanoseconds(step * 10)), makeTranslation(step)));
+  }
+  (void)buffer.setTransform(makeStamped("world", "once", tp(10ns), makeTranslation(7.0)));
+
+  EXPECT_EQ(buffer.latestCommonTime("fixed", "moving"), tp(30ns));
+  EXPECT_EQ(buffer.latestCommonTime("once", "moving"), tp(50ns));
+  EXPECT_EQ(buffer.latestCommonTime("once", "world"), TimePoint{});
+}
+
+// The eviction cutoff is (newest RECEIVED stamp - window), so a skipped repeat
+// ages out old samples exactly as a stored one would, and never empties the edge.
+TEST(TransformBufferDedup, EvictionCutoffFollowsNewestReceivedStamp) {
+  TransformBuffer buffer(10s);
+  const auto value_a = makeTranslation(1.0);
+  const auto value_b = makeTranslation(2.0);
+  (void)buffer.setTransform(makeStamped("world", "A", tp(0s), value_a));
+  (void)buffer.setTransform(makeStamped("world", "A", tp(5s), value_b));
+  ASSERT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{0, 5'000'000'000}));
+
+  (void)buffer.setTransform(makeStamped("world", "A", tp(20s), value_b));  // skipped; cutoff = 10s
+
+  EXPECT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{5'000'000'000}));
+  EXPECT_FALSE(buffer.tryLookupTransform("world", "A", tp(1s)).has_value());
+  expectTranslation(buffer.lookupTransform("world", "A", tp(20s)), 2.0);
+
+  // A lone stored sample is pinned however far the repeats advance.
+  (void)buffer.setTransform(makeStamped("world", "B", tp(0s), value_a));
+  (void)buffer.setTransform(makeStamped("world", "B", tp(100s), value_a));
+  expectTranslation(buffer.lookupTransform("world", "B", tp(50s)), 1.0);
+  EXPECT_EQ(buffer.getLatestSample("B"), tp(100s));
+}
+
+// A run of skipped repeats longer than the window must not evict the value that
+// holds across the cutoff: only the NEWEST sample at or before the cutoff is kept.
+TEST(TransformBufferDedup, RepeatsLongerThanTheWindowKeepTheSpanningValue) {
+  TransformBuffer buffer(10s);
+  const auto value_a = makeTranslation(1.0);
+  const auto value_b = makeTranslation(2.0);
+  (void)buffer.setTransform(makeStamped("world", "A", tp(0s), value_a));
+  for (int second = 1; second < 20; ++second) {
+    (void)buffer.setTransform(makeStamped("world", "A", tp(std::chrono::seconds(second)), value_a));  // skipped
+  }
+  (void)buffer.setTransform(makeStamped("world", "A", tp(20s), value_b));  // cutoff = 10s
+
+  EXPECT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{0, 20'000'000'000}));
+  for (const TimePoint stamp : {tp(5s), tp(10s), tp(15s), tp(19s)}) {
+    const auto result = buffer.tryLookupTransform("world", "A", stamp);
+    ASSERT_TRUE(result.has_value()) << "query at " << stamp.time_since_epoch().count();
+    expectTranslation(*result, 1.0);
+  }
+  expectTranslation(buffer.lookupTransform("world", "A", tp(20s)), 2.0);
+
+  // The spanning sample goes the moment its successor is at or before the cutoff.
+  (void)buffer.setTransform(makeStamped("world", "A", tp(25s), value_b));  // cutoff = 15s: kept
+  EXPECT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{0, 20'000'000'000}));
+  (void)buffer.setTransform(makeStamped("world", "A", tp(30s), value_b));  // cutoff = 20s: successor on it
+  EXPECT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{20'000'000'000}));
+  EXPECT_FALSE(buffer.tryLookupTransform("world", "A", tp(15s)).has_value());
+  expectTranslation(buffer.lookupTransform("world", "A", tp(20s)), 2.0);
+}
+
+// A skipped repeat can evict, which changes what lookups resolve: it must bump the
+// revision exactly then, and not when it evicts nothing.
+TEST(TransformBufferDedup, SkippedRepeatThatEvictsBumpsRevision) {
+  TransformBuffer buffer(5s);
+  const auto value_a = makeTranslation(1.0);
+  const auto value_b = makeTranslation(2.0);
+  (void)buffer.setTransform(makeStamped("world", "A", tp(0s), value_a));
+  (void)buffer.setTransform(makeStamped("world", "A", tp(5s), value_b));
+  ASSERT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{0, 5'000'000'000}));
+  expectTranslation(buffer.lookupTransform("world", "A", tp(3s)), 1.0);
+
+  const uint64_t before_repeat = buffer.revision();
+  (void)buffer.setTransform(makeStamped("world", "A", tp(6s), value_b));  // cutoff = 1s: nothing evicted
+  EXPECT_EQ(buffer.revision(), before_repeat);
+  EXPECT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{0, 5'000'000'000}));
+
+  (void)buffer.setTransform(makeStamped("world", "A", tp(12s), value_b));  // cutoff = 7s: A evicted
+  EXPECT_GT(buffer.revision(), before_repeat);
+  EXPECT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{5'000'000'000}));
+  EXPECT_FALSE(buffer.tryLookupTransform("world", "A", tp(3s)).has_value());
+
+  const uint64_t after_eviction = buffer.revision();
+  (void)buffer.setTransform(makeStamped("world", "A", tp(13s), value_b));  // lone sample: nothing to evict
+  EXPECT_EQ(buffer.revision(), after_eviction);
+}
+
+// Reference model: zero-order hold over the FULL, unfiltered per-edge sample list.
+struct RawEdge {
+  std::string parent;
+  std::string child;
+  std::vector<std::pair<TimePoint, Transform>> samples;  // ascending stamps, as fed
+
+  std::optional<Transform> holdAt(TimePoint stamp) const {
+    std::optional<Transform> held;
+    for (const auto& [sample_stamp, value] : samples) {
+      if (sample_stamp <= stamp) {
+        held = value;
+      }
+    }
+    return held;
+  }
+};
+
+// world <- last edge: the chain's edges composed, each held at `stamp`.
+std::optional<Transform> composeHeld(const std::vector<RawEdge>& edges, TimePoint stamp) {
+  Transform composed = Transform::identity();
+  for (std::size_t edge_index = edges.size(); edge_index-- > 0;) {
+    const auto held = edges[edge_index].holdAt(stamp);
+    if (!held) {
+      return std::nullopt;
+    }
+    composed = (*held) * composed;
+  }
+  return composed;
+}
+
+// Feeds random repeat-heavy 3-edge chains and compares every lookup in the buffer's
+// guaranteed range against zero-order hold over the unfiltered samples. kKeepAll
+// guarantees the whole timeline; a finite window guarantees t >= newest - window.
+void expectLookupsMatchUnfilteredHold(Duration window) {
+  const std::array<Transform, 4> palette{
+      makeTranslation(0.0), makeTranslation(1.0, -2.0, 0.5),
+      Transform{{3.0, 0.0, 1.0}, glm::normalize(glm::dquat{0.9, 0.1, 0.2, 0.3})},
+      Transform{{-1.0, 4.0, 2.0}, glm::normalize(glm::dquat{0.5, -0.5, 0.5, 0.5})}};
+  constexpr int kSamplesPerEdge = 300;
+  const std::array<std::pair<const char*, const char*>, 3> topology{{{"world", "a"}, {"a", "b"}, {"b", "c"}}};
+  const bool keep_all = window >= TransformBuffer::kKeepAll;
+
+  for (const uint32_t seed : {1U, 2U, 3U, 7U, 42U}) {
+    SCOPED_TRACE("seed " + std::to_string(seed));
+    std::mt19937 rng(seed);
+    auto roll = [&rng](uint32_t bound) { return static_cast<uint32_t>(rng() % bound); };
+
+    std::vector<RawEdge> edges;
+    for (const auto& [parent, child] : topology) {
+      edges.push_back(RawEdge{parent, child, {}});
+    }
+    std::vector<int64_t> clock(edges.size(), 0);
+    std::vector<Transform> current(edges.size(), palette[0]);
+    TransformBuffer buffer(window);
+
+    // Random queries in [first_ns, last_ns], each compared with the unfiltered hold.
+    auto expectMatchesReference = [&](int64_t first_ns, int64_t last_ns, int query_count) {
+      for (int query = 0; query < query_count; ++query) {
+        const TimePoint stamp =
+            tp(std::chrono::nanoseconds(
+                first_ns + static_cast<int64_t>(roll(static_cast<uint32_t>(last_ns - first_ns + 1)))));
+        const auto expected = composeHeld(edges, stamp);
+        const auto actual = buffer.tryLookupTransform("world", "c", stamp);
+        ASSERT_EQ(actual.has_value(), expected.has_value()) << "query at " << stamp.time_since_epoch().count();
+        if (actual && expected) {
+          expectTranslation(*actual, expected->t.x, expected->t.y, expected->t.z);
+          EXPECT_NEAR(glm::dot(actual->q, expected->q), 1.0, kTolerance);
+        }
+      }
+    };
+
+    for (int step = 0; step < kSamplesPerEdge; ++step) {
+      for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        clock[edge_index] += 1 + roll(10);
+        if (roll(10) < 3) {  // ~70% of samples repeat the previous value
+          current[edge_index] = palette[roll(static_cast<uint32_t>(palette.size()))];
+        }
+        auto& edge = edges[edge_index];
+        const TimePoint stamp = tp(std::chrono::nanoseconds(clock[edge_index]));
+        edge.samples.emplace_back(stamp, current[edge_index]);
+        ASSERT_TRUE(buffer.setTransform(makeStamped(edge.parent, edge.child, stamp, current[edge_index])).has_value());
+      }
+      if (!keep_all) {
+        // Streaming: the range [newest - window, now] must stay exact after every write.
+        const int64_t newest = *std::max_element(clock.begin(), clock.end());
+        expectMatchesReference(newest - window.count(), newest + 5, 6);
+        if (::testing::Test::HasFailure()) {
+          return;
+        }
+      }
+    }
+
+    const int64_t newest = *std::max_element(clock.begin(), clock.end());
+    if (keep_all) {
+      expectMatchesReference(-5, newest + 20, 600);
+    } else {
+      expectMatchesReference(newest - window.count(), newest + 20, 100);
+    }
+    if (::testing::Test::HasFailure()) {
+      return;
+    }
+  }
+}
+
+TEST(TransformBufferDedup, MatchesUnfilteredZeroOrderHoldReference) {
+  expectLookupsMatchUnfilteredHold(TransformBuffer::kKeepAll);
+}
+
+// Repeat runs longer than the window are routine here (~70% repeats, ~3.5 samples
+// per window): eviction must keep the value valid at every cutoff.
+TEST(TransformBufferDedup, MatchesUnfilteredZeroOrderHoldReferenceUnderFiniteWindow) {
+  expectLookupsMatchUnfilteredHold(20ns);
 }
 
 }  // namespace

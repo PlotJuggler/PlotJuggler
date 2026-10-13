@@ -292,8 +292,8 @@ The chain-in-one-task item is proposed.
 
 ## 12. TF
 
-**Status: Built** (the per-dataset service). R1-R4, R6 and R10 are decided; the rest are
-proposed or conditional.
+**Status: Built** (the per-dataset service). R1-R4 and R6 are decided and R10 is built
+(slice T); the rest are proposed or conditional.
 
 - **`pj_tf`** is a Qt-free leaf library. `TransformBuffer` keeps a forest of edges with a
   timestamped sample history per edge and zero-order-hold lookups.
@@ -313,7 +313,7 @@ proposed or conditional.
 | R7 | Frames published once are valid before their first stamp | Verify first |
 | R8 | Chunked copy-on-write edge storage | Only if measured |
 | R9 | Split the ingest pipeline out of `TransformService` | Later |
-| R10 | Do not store a sample bit-equal to its predecessor. Exact under the zero-order hold; skips the revision bump. Equal means bit-equal: a tolerance would change the user's data. | Decided, as an independent PR |
+| R10 | Do not store a sample equal to its predecessor. Exact under the zero-order hold; skips the revision bump unless the repeat evicts something. Equal means exactly equal, component by component (no tolerance): a tolerance would change the user's data. Each edge still records the newest stamp it received, so the latest sample, `latestCommonTime` and the eviction cutoff are unchanged. Eviction keeps the newest sample at or before the cutoff, which holds the value valid there, so a run of repeats longer than the window never loses its value. | Built (slice T) |
 
 ## 13. Life cycle of recipes and results
 

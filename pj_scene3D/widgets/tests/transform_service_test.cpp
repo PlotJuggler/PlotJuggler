@@ -100,7 +100,10 @@ std::vector<uint8_t> edgePayload(uint8_t parent_index, uint8_t child_index) {
   return payload;
 }
 
-PJ::sdk::FrameTransforms decodeFrameTransforms(PJ::Timestamp entry_ts, const PJ::sdk::PayloadView& payload) {
+// `vary_translation` makes the translation depend on the entry timestamp, so
+// consecutive entries on one edge differ (the buffer does not store a repeat).
+PJ::sdk::FrameTransforms decodeFrameTransforms(
+    PJ::Timestamp entry_ts, const PJ::sdk::PayloadView& payload, bool vary_translation = false) {
   PJ::sdk::FrameTransforms result;
   const auto& bytes = payload.bytes;
   for (std::size_t offset = 0; offset + kEdgeRecordBytes <= bytes.size(); offset += kEdgeRecordBytes) {
@@ -115,7 +118,7 @@ PJ::sdk::FrameTransforms decodeFrameTransforms(PJ::Timestamp entry_ts, const PJ:
     edge.timestamp = entry_ts + stamp_offset_ns;
     edge.parent_frame_id = frameName(parent_index);
     edge.child_frame_id = frameName(child_index);
-    edge.translation = {1.0, 2.0, 3.0};
+    edge.translation = {1.0 + (vary_translation ? static_cast<double>(entry_ts) : 0.0), 2.0, 3.0};
     edge.rotation = {0.0, 0.0, 0.0, 1.0};  // identity (w=1) — a valid unit quaternion
     result.transforms.push_back(std::move(edge));
   }
@@ -128,13 +131,13 @@ PJ::sdk::FrameTransforms decodeFrameTransforms(PJ::Timestamp entry_ts, const PJ:
 // covers the transient-probe-failure path (M.34).
 class CountingTfParser : public PJ::MessageParserPluginBase {
  public:
-  CountingTfParser(std::atomic<int>* counter, std::atomic<bool>* fail_first) {
+  CountingTfParser(std::atomic<int>* counter, std::atomic<bool>* fail_first, bool vary_translation = false) {
     registerSchemaHandler(
         kTfSchema,
         PJ::sdk::SchemaHandler{
             .object_type = PJ::sdk::BuiltinObjectType::kFrameTransforms,
             .parse_scalars = {},
-            .parse_object = [counter, fail_first](
+            .parse_object = [counter, fail_first, vary_translation](
                                 PJ::Timestamp ts, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
               if (counter != nullptr) {
                 counter->fetch_add(1);
@@ -142,7 +145,7 @@ class CountingTfParser : public PJ::MessageParserPluginBase {
               if (fail_first != nullptr && fail_first->exchange(false)) {
                 return PJ::unexpected(std::string("forced transient parse failure"));
               }
-              return PJ::sdk::ObjectRecord{.ts = ts, .object = decodeFrameTransforms(ts, payload)};
+              return PJ::sdk::ObjectRecord{.ts = ts, .object = decodeFrameTransforms(ts, payload, vary_translation)};
             },
         });
   }
@@ -1259,8 +1262,10 @@ TEST(TransformService, LiveWindowDropsOldKeepsNewAndStatic) {
   const auto dynamic_topic = registerTopic(store, /*dataset_id=*/1, "/tf");
   const auto static_topic = registerTopic(store, /*dataset_id=*/1, "/tf_static");
 
+  // The dynamic edge's translation changes with every stamp: an identical repeat
+  // would not be stored, and the window must have distinct samples to drop.
   session.registerObjectTopicParser(dynamic_topic, makeBoundHandle(kTfSchema, []() noexcept -> void* {
-                                      return new CountingTfParser(nullptr, nullptr);
+                                      return new CountingTfParser(nullptr, nullptr, /*vary_translation=*/true);
                                     }));
   session.registerObjectTopicParser(static_topic, makeBoundHandle(kTfSchema, []() noexcept -> void* {
                                       return new CountingTfParser(nullptr, nullptr);
@@ -1284,6 +1289,8 @@ TEST(TransformService, LiveWindowDropsOldKeepsNewAndStatic) {
   // no longer resolves on that edge, but the newest does.
   EXPECT_FALSE(resolves(*buffer, "f1", "f2", 100)) << "an over-window-old dynamic sample must have been evicted";
   EXPECT_TRUE(resolves(*buffer, "f1", "f2", 300)) << "the newest dynamic sample must resolve";
+  // The sample spanning the cutoff (250) is kept: it holds the value until the next one.
+  EXPECT_TRUE(resolves(*buffer, "f1", "f2", 260)) << "the sample valid at the cutoff must be retained";
 
   // The single-sample static edge resolves at a late stamp (always-keep-last).
   EXPECT_TRUE(resolves(*buffer, "f0", "f1", 300)) << "a single-sample (static) edge must resolve at late stamps";

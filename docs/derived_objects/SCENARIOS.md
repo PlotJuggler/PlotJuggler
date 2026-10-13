@@ -45,7 +45,7 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 
 ## Summary
 
-336 scenario rows covering 794 TESTs; 46 [gaps](#gaps). Non-`keep` rows are where the carve must change or drop a test. The summary counts are the draft's. All twelve `unclear` rows have since been resolved: three are decided here, three are changed by P3 or N7, and the six once blocked on the SDK host contract follow its decisions of 2026-10-13.
+337 scenario rows covering 794 TESTs; 45 [gaps](#gaps). Non-`keep` rows are where the carve must change or drop a test. The summary counts are the draft's. All twelve `unclear` rows have since been resolved: three are decided here, three are changed by P3 or N7, and the six once blocked on the SDK host contract follow its decisions of 2026-10-13.
 
 | Area | Rows | keep | keep* | changes | removed | unclear |
 |---|---|---|---|---|---|---|
@@ -69,7 +69,7 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 | [PY](#py) Scripting: Python & sandbox (N1 / N6) | 7 | 5 | 2 | 0 | 0 | 0 |
 | [MED](#med) Media (image / depth / video) | 25 | 25 | 0 | 0 | 0 | 0 |
 | [SCN](#scn) Scene layers 3D / 2D | 16 | 9 | 2 | 4 | 1 | 0 |
-| [TFL](#tfl) TF lookups & TF service | 12 | 12 | 0 | 0 | 0 | 0 |
+| [TFL](#tfl) TF lookups & TF service | 13 | 13 | 0 | 0 | 0 | 0 |
 | [BUD](#bud) Budgets & limits | 23 | 20 | 0 | 2 | 0 | 1 |
 | [CON](#con) Concurrency / threading | 15 | 15 | 0 | 0 | 0 | 0 |
 | [BAT](#bat) Batch engine (markers) | 10 | 10 | 0 | 0 | 0 | 0 |
@@ -78,7 +78,7 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 | [UI](#ui) App UI (Custom Topics panel, embedded views, misc) | 15 | 14 | 0 | 0 | 0 | 1 |
 | [PERF](#perf) Performance benches | 4 | 2 | 0 | 2 | 0 | 0 |
 | [MECH](#mech) Mechanical renames / moves (slice 1) | 7 | 7 | 0 | 0 | 0 | 0 |
-| **Total** | **336** | **268** | **16** | **28** | **12** | **12** |
+| **Total** | **337** | **269** | **16** | **28** | **12** | **12** |
 
 <a id="rec"></a>
 ## REC: Recipe authoring & validation
@@ -463,6 +463,7 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 | TFL-10 | Reload (replacing load) invalidates frozen TF snapshot | after commit, new snapshot sees f2 not f1 | `transform_service_test.cpp`: DerivedTfAudit.ReplacementMustInvalidateFrozenSnapshot | keep | audit regression |
 | TFL-11 | Retention change invalidates new snapshots without mutating old ones | new rev differs, drops old sample; old snapshot unchanged | `transform_service_test.cpp`: DerivedTfAudit.RetentionInvalidatesNewSnapshotsWithoutMutatingOldOnes | keep | N5 R4 |
 | TFL-12 | pj.tf.lookup returns transform or reason; pj.tf.now = requested instant; no snapshot -> "no tf snapshot" | translation/rotation/target_frame; unknown frame -> "unknown source frame"; now exact int64; no host: frames empty, now 0 | `object_script_test.cpp`: ObjectScript.{TfLookupReturnsTransformOrReason, TfNowIsTheRequestedInstant, NoSnapshotYieldsReason, NowReadsTheSameValueAsBefore} | keep |  |
+| TFL-13 | A repeated identical TF sample is not stored (slice T, closes GAP-28) | in-order sample exactly equal, component by component (no tolerance), to the edge's last stored value: not stored, no revision bump unless the repeat evicts something, success returned; one ulp apart is stored; same stamp + same value is a no-op; the edge still reports its newest received stamp (`getLatestSample`), bounds `latestCommonTime` as before (a single-stamp edge stays unbounded) and drives the eviction cutoff; eviction keeps the newest sample at or before the cutoff, so repeats longer than the window keep the spanning value; lookups equal zero-order hold over the unfiltered samples (5 seeds, 3-edge chain, kKeepAll and a 20 ns window) | `tf_buffer_test.cpp`: TransformBufferDedup.{RepeatedIdenticalSampleIsNotStored, ChangedValueAfterRepeatsIsStored, OneUlpDifferenceIsStored, SameStampSameValueIsANoOp, LatestCommonTimeIsUnchangedByRepeats, EvictionCutoffFollowsNewestReceivedStamp, RepeatsLongerThanTheWindowKeepTheSpanningValue, SkippedRepeatThatEvictsBumpsRevision, MatchesUnfilteredZeroOrderHoldReference, MatchesUnfilteredZeroOrderHoldReferenceUnderFiniteWindow} | keep | slice T; an out-of-order sample landing inside a run of skipped repeats keeps its value until the next stored sample, where the full history would have returned the repeated value again (accepted) |
 
 <a id="bud"></a>
 ## BUD: Budgets & limits
@@ -588,7 +589,7 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 | MECH-04 | [mechanical] Custom Series -> Custom Topics panel rename (customTopicNames/syncCustomTopicsPanel) | unchanged expectations | `main_window_custom_series_test.cpp`: MainWindowCustomSeriesTest.{RestoredTransformIsListed, WithdrawnTransformLeavesNoRow, CatalogRemovalAlonePrunesTheRow, ClearedCatalogEmptiesCustomSeries} | keep | #698 user-visible rename (regression-risk list) |
 | MECH-05 | [mechanical] MarkerService -> BatchEngine type / "Custom Topics" wording in history tests | unchanged expectations | `main_window_history_exempt_test.cpp`: MainWindowHistoryExemptFixture.{ExemptTransformRoundTripsThroughFullNotHistoryScope, FullReplaceDropsReplacedTransformFromCustomSeries, ExemptMarkerRoundTripsThroughFullNotHistoryScope, UndoRejectsExemptMarkerDependencyWithoutMovingHistory, UndoDoesNotOverwriteLiveExemptMarkerUnderSameId, UnrelatedUndoWithExemptMarkerDependentKeepsProducerAndAdvancesHistory}<br>`main_window_history_test.cpp`: MainWindowHistoryFixture.UndoOfASourceTimelineDragKeepsGlobalMarkersAtTheirDisplayInstant<br>`main_window_marker_generator_restore_test.cpp`: MainWindowMarkerGeneratorRestoreTest.RestoresGeneratorBySourceWhenIdsSwap | keep | N10 moves these restore paths out of MainWindow |
 | MECH-06 | [moved verbatim] Remaining transform_service_test TESTs (file moved pj_scene3D/widgets -> pj_runtime) | unchanged | `transform_service_test.cpp`: Appendix A2 (23 TESTs) | keep | slice 1 (N3 move) |
-| MECH-07 | [moved, namespace only] TF buffer tests (pj_scene3D -> pj_tf, pj::scene3d -> pj::tf) | unchanged | `tf_buffer_test.cpp`: Appendix A3 (30 TESTs)<br>`tf_buffer_hierarchy_test.cpp`: Appendix A4 (13 TESTs) | keep | slice 1 (pj_tf extraction); N5 repeat-skip extends TransformBufferTest.RevisionBumpsOnMutationNotOnReject (see Gaps) |
+| MECH-07 | [moved, namespace only] TF buffer tests (pj_scene3D -> pj_tf, pj::scene3d -> pj::tf) | unchanged | `tf_buffer_test.cpp`: Appendix A3 (30 TESTs)<br>`tf_buffer_hierarchy_test.cpp`: Appendix A4 (13 TESTs) | keep | slice 1 (pj_tf extraction); N5 repeat-skip is covered by TFL-13 |
 
 <a id="gaps"></a>
 ## Gaps
@@ -624,7 +625,6 @@ Scenarios the spec or the decisions imply that no test covers today. Suggested n
 | GAP-25 | N6 | Native ops release the GIL: GUI-thread Python work (transform `calculate`, validation) progresses while the Python lane runs a long native crop | `NativeOpReleasesTheGil` |
 | GAP-26 | N6 | Input decoding in the worker: GUI time per `requestAt` independent of input size (260k-point cloud, 1080p image), measured before and after | bench + a "decode not on the calling thread" probe |
 | GAP-27 | Slice 5 (defect 19) | The Luau interpreter itself honours the cancel token (a pure-Lua loop is cancelled, not only native ops) | `LuauLoopHonoursTheCancelToken` |
-| GAP-28 | N3 / N5 | A repeated identical TF sample is not stored: no revision bump, TF-observing cached results stay valid; randomized lookup equivalence against insert-everything | `RepeatTfSampleIsNotStored`; extend `TransformBufferTest.RevisionBumpsOnMutationNotOnReject` with same-stamp-same-value |
 | GAP-29 | TF clock mixing (N4) | A recipe in input-clock vs query-clock mode whose TF comes from a merged/offset source (`payload_stamp_shift`) or carries header vs receive stamps: `pj.tf.now` lookups use the same time base as the inputs | `TfLookupUsesTheInputsTimeBaseAcrossMergeShift` |
 | GAP-30 | D25 | Downstream gating only on the unavailable output: a child reading an available sibling output of the same upstream still runs | `SiblingOutputStillFlowsWhenOneIsUnavailable` |
 | GAP-31 | D7 | The 3D dock refuses (not warns about) a topic from another dataset; the optional typed dataset id on the v2 request (decided 2026-10-13) makes mixed inputs unrepresentable | dock test + request-shape test |
