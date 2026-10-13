@@ -3,7 +3,7 @@
 #
 # Dual-mode:
 #  - IN-TREE (PJ4 app): builds pj_scripting_core (the Luau engine + whole-series
-#    marker analysis) AND pj_scripting (the SISO DataProcessor/DerivedEngine
+#    marker analysis) AND pj_scripting (the SISO DataProcessor/IncrementalEngine
 #    adapter) AND the tests.
 #  - STANDALONE (Conan, `conan create`): builds ONLY pj_scripting_core against the
 #    Conan plotjuggler_sdk::base + Luau + kissfft, and installs it. The SDK-only
@@ -174,8 +174,8 @@ if(_PJS_STANDALONE)
   return()
 endif()
 
-# --- pj_scripting: the DataProcessor/DerivedEngine adapter (in-tree only) ------
-# The SISO streaming path that couples the engine to pj_datastore's DerivedEngine.
+# --- pj_scripting: the DataProcessor/IncrementalEngine adapter (in-tree only) ------
+# The SISO streaming path that couples the engine to pj_datastore's IncrementalEngine.
 # Marker analysis does NOT use this; it stays out of the shareable core.
 # Luau lives in pj_scripting_core (linked PUBLIC below); python is desktop-only.
 set(PJ_SCRIPTING_SOURCES

@@ -24,7 +24,7 @@ struct ObjectTopicId;  // pj_datastore/object_store.hpp; by value only in a priv
 
 /// Output shape of a data processor (the `kind` discriminator of `pj.data_processors.v1`).
 /// Only "markers" (objects → ObjectStore) is handled by THIS engine. "transform"
-/// (per-sample timeseries → DerivedEngine) is routed to the DerivedEngine bridge owned
+/// (per-sample timeseries → IncrementalEngine) is routed to the IncrementalEngine bridge owned
 /// by the transform-editor work, not here.
 enum class GeneratorKind {
   kMarkers,  ///< emits a discrete PlotMarkers set into the ObjectStore
@@ -36,7 +36,7 @@ enum class GeneratorKind {
 ///
 /// Engine boundary (invariant): this is the OBJECT engine — it writes ONLY to the
 /// `ObjectStore`, never the `DataEngine`. Timeseries outputs come from transform
-/// generators (`kind=transform`) routed to the `DerivedEngine`, NOT from here.
+/// generators (`kind=transform`) routed to the `IncrementalEngine`, NOT from here.
 ///
 /// Host-driven model: a generator is pure DATA — a Luau script + input series keys +
 /// output topic + params. Nothing executable crosses any boundary; THIS service owns
@@ -67,7 +67,7 @@ enum class GeneratorKind {
 ///    on every plot at the same display instant, so a Source Timeline drag costs no
 ///    republish. `reachNewDatasets` re-runs it when the dataset roster grows and
 ///    `clearGeneratorsForDataset` when a contributor goes.
-class MarkerService {
+class BatchEngine {
  public:
   /// Samples of one resolved input series: timestamps in nanoseconds + values.
   struct ResolvedSeries {
@@ -110,7 +110,7 @@ class MarkerService {
   };
 
   /// `object_store` and the data the `resolver` reads from must outlive this service.
-  MarkerService(ObjectStore& object_store, SeriesResolver resolver);
+  BatchEngine(ObjectStore& object_store, SeriesResolver resolver);
 
   /// Replace the series resolver (the shell injects the catalog-backed resolver
   /// after construction, since `SessionManager` builds this before the catalog exists).
@@ -341,6 +341,6 @@ class MarkerService {
 /// engine assumes sorted input, which chunk order alone does not guarantee after
 /// out-of-order ingest). One O(n) pass — never `sampleAt(i)` in a loop: the shell's
 /// catalog-backed resolver calls this on the GUI thread under the engine lock.
-[[nodiscard]] MarkerService::ResolvedSeries readResolvedSeries(const SeriesReader& series);
+[[nodiscard]] BatchEngine::ResolvedSeries readResolvedSeries(const SeriesReader& series);
 
 }  // namespace PJ

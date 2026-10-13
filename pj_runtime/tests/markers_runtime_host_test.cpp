@@ -1,10 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// MarkersRuntimeHost bridges the pj.data_processors.v1 C ABI to MarkerService. These tests
+// MarkersRuntimeHost bridges the pj.data_processors.v1 C ABI to BatchEngine. These tests
 // drive it exactly as a plugin would — through the SDK's DataProcessorsHostView over the
 // host's raw fat pointer — proving the full host-driven chain: ABI create_data_processor →
-// trampoline → MarkerService → engine → ObjectStore, plus per-plugin id namespacing,
+// trampoline → BatchEngine → engine → ObjectStore, plus per-plugin id namespacing,
 // list (plugin-local ids), config round-trip, and remove.
 
 #include <gtest/gtest.h>
@@ -23,27 +23,27 @@
 #include "pj_base/span.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/DatasetQualifiedName.h"
-#include "pj_runtime/MarkerService.h"
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/MarkersRuntimeHost.h"
 
 namespace {
 
+using PJ::BatchEngine;
 using PJ::kAllDatasetsMarkerDataset;
-using PJ::MarkerService;
 using PJ::MarkersRuntimeHost;
 using PJ::test::markerFamily;
 using PJ::test::readMarkerUnion;
 
 constexpr PJ::DatasetId kDataset = 1;
 
-MarkerService::SeriesResolver rampResolver() {
-  return [](PJ::DatasetId, const std::string& key) -> std::optional<MarkerService::ResolvedSeries> {
+BatchEngine::SeriesResolver rampResolver() {
+  return [](PJ::DatasetId, const std::string& key) -> std::optional<BatchEngine::ResolvedSeries> {
     if (key != "in") {
       return std::nullopt;
     }
-    MarkerService::ResolvedSeries s;
+    BatchEngine::ResolvedSeries s;
     for (std::size_t i = 0; i < 5; ++i) {
       s.timestamps.push_back(static_cast<double>(i));
       s.values.push_back(static_cast<double>(i));
@@ -88,7 +88,7 @@ std::function<PJ::Expected<PJ::DatasetId>(std::vector<std::string>&, std::vector
 
 TEST(MarkersRuntimeHostTest, PluginCreateRunsPublishesAndNamespaces) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(
       service, "anomaly",
       [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
@@ -131,7 +131,7 @@ TEST(MarkersRuntimeHostTest, PluginCreateRunsPublishesAndNamespaces) {
 // name), and the keys it normalizes are what the service stores.
 TEST(MarkersRuntimeHostTest, ActiveDatasetErrorFailsTheCreate) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(
       service, "anomaly", [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> {
         return PJ::unexpected("input 'in' exists in several datasets");
@@ -148,7 +148,7 @@ TEST(MarkersRuntimeHostTest, ActiveDatasetErrorFailsTheCreate) {
 
 TEST(MarkersRuntimeHostTest, CallbackNormalizedKeysAreWhatTheServiceStores) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(
       service, "anomaly",
       [](std::vector<std::string>& inputs, std::vector<std::string>& outputs) -> PJ::Expected<PJ::DatasetId> {
@@ -175,7 +175,7 @@ TEST(MarkersRuntimeHostTest, CallbackNormalizedKeysAreWhatTheServiceStores) {
 
 TEST(MarkersRuntimeHostTest, RemoveUnknownErrors) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(
       service, "anomaly",
       [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
@@ -187,7 +187,7 @@ TEST(MarkersRuntimeHostTest, RemoveUnknownErrors) {
 // Two plugins never see each other's generators (per-plugin id isolation).
 TEST(MarkersRuntimeHostTest, PerPluginIsolation) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost host_a(
       service, "plugA",
       [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
@@ -213,7 +213,7 @@ TEST(MarkersRuntimeHostTest, PerPluginIsolation) {
 // the invalid dataset 0.
 TEST(MarkersRuntimeHostTest, NoActiveDatasetRejected) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(
       service, "anomaly", [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> {
         return PJ::DatasetId{0};
@@ -228,7 +228,7 @@ TEST(MarkersRuntimeHostTest, NoActiveDatasetRejected) {
 // the ALL-DATASETS key — the "__global__" the plugin sent is normalized host-side.
 TEST(MarkersRuntimeHostTest, ScopeAllPublishesAcrossDatasets) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   MarkersRuntimeHost bridge(
       service, "anomaly",
@@ -253,7 +253,7 @@ TEST(MarkersRuntimeHostTest, ScopeAllPublishesAcrossDatasets) {
 // guards against left one of the two rules silently unpublished.
 TEST(MarkersRuntimeHostTest, DatasetAndGlobalScopeRulesCoexistOverTheAbi) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   MarkersRuntimeHost bridge(
       service, "anomaly",
@@ -284,7 +284,7 @@ TEST(MarkersRuntimeHostTest, DatasetAndGlobalScopeRulesCoexistOverTheAbi) {
 // the auto-named preview topic, readable in the store, excluded from recipes()).
 TEST(MarkersRuntimeHostTest, PreviewViaEphemeralFlagPublishesAndIsEphemeral) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(
       service, "anomaly",
       [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
@@ -311,7 +311,7 @@ TEST(MarkersRuntimeHostTest, PreviewViaEphemeralFlagPublishesAndIsEphemeral) {
 // first, and the ABI surface (list/remove) must still see one plugin-local id.
 TEST(MarkersRuntimeHostTest, DatasetScopeRuleOnEachDatasetKeepsBoth) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   PJ::DatasetId active = 1;
   MarkersRuntimeHost bridge(
       service, "anomaly",
@@ -349,7 +349,7 @@ TEST(MarkersRuntimeHostTest, DatasetScopeRuleOnEachDatasetKeepsBoth) {
 // ambiguous although scope=all evaluates every dataset separately.
 TEST(MarkersRuntimeHostTest, ScopeAllWithBareInputInTwoDatasetsIsNotAmbiguous) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   MarkersRuntimeHost bridge(service, "anomaly", realResolverOverTwoDatasets());
   PJ::sdk::DataProcessorsHostView view(bridge.raw());
@@ -366,7 +366,7 @@ TEST(MarkersRuntimeHostTest, ScopeAllWithBareInputInTwoDatasetsIsNotAmbiguous) {
 // generator fail with "none of the generator's inputs matches a loaded series".
 TEST(MarkersRuntimeHostTest, ScopeAllWithZeroInputsSucceeds) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   MarkersRuntimeHost bridge(service, "anomaly", realResolverOverTwoDatasets());
   PJ::sdk::DataProcessorsHostView view(bridge.raw());
@@ -382,7 +382,7 @@ TEST(MarkersRuntimeHostTest, ScopeAllWithZeroInputsSucceeds) {
 // is kept verbatim, so series("b:in") — the name the plugin declared — is nil.
 TEST(MarkersRuntimeHostTest, ScriptCanReadTheQualifiedInputNameItDeclared) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(service, "anomaly", realResolverOverTwoDatasets());
   PJ::sdk::DataProcessorsHostView view(bridge.raw());
 
@@ -399,7 +399,7 @@ TEST(MarkersRuntimeHostTest, ScriptCanReadTheQualifiedInputNameItDeclared) {
 // any PJ_DATA_PROCESSOR_FLAG_*.
 TEST(MarkersRuntimeHostTest, ReservedFlagBitIsRejected) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(
       service, "anomaly",
       [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
@@ -418,7 +418,7 @@ TEST(MarkersRuntimeHostTest, ReservedFlagBitIsRejected) {
 // exemption request took.
 TEST(MarkersRuntimeHostTest, ConfigEchoesHistoryExemptBit) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   MarkersRuntimeHost bridge(
       service, "anomaly",
       [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
@@ -444,7 +444,7 @@ TEST(MarkersRuntimeHostTest, ConfigEchoesHistoryExemptBit) {
 // valid address for no reason.
 TEST(MarkersRuntimeHostTest, ConfigKeepsAUniqueBareInputBare) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   const SharedCatalog items = std::make_shared<std::vector<PJ::CatalogItem>>();
   items->push_back(catalogRow(1, "in"));
   MarkersRuntimeHost bridge(service, "anomaly", realResolverOver(items), sourceNameOf);
@@ -461,7 +461,7 @@ TEST(MarkersRuntimeHostTest, ConfigKeepsAUniqueBareInputBare) {
 // resubmits; read-back qualifies it with the bound dataset's source.
 TEST(MarkersRuntimeHostTest, ConfigQualifiesAnInputOnceItsBareNameIsAmbiguous) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   const SharedCatalog items = std::make_shared<std::vector<PJ::CatalogItem>>();
   items->push_back(catalogRow(1, "in"));
   MarkersRuntimeHost bridge(service, "anomaly", realResolverOver(items), sourceNameOf);
@@ -480,7 +480,7 @@ TEST(MarkersRuntimeHostTest, ConfigQualifiesAnInputOnceItsBareNameIsAmbiguous) {
 // key that resolves nowhere.
 TEST(MarkersRuntimeHostTest, ScopeAllRejectsARecognizedDatasetQualifier) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver());
+  BatchEngine service(store, rampResolver());
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   MarkersRuntimeHost bridge(service, "anomaly", realResolverOverTwoDatasets(), sourceNameOf);
   PJ::sdk::DataProcessorsHostView view(bridge.raw());
@@ -499,7 +499,7 @@ TEST(MarkersRuntimeHostTest, ScopeAllRejectsARecognizedDatasetQualifier) {
 // nowhere is rejected by the service.
 TEST(MarkersRuntimeHostTest, ScopeAllKeepsAColonNameThatMatchesNoSource) {
   PJ::ObjectStore store;
-  MarkerService service(
+  BatchEngine service(
       store, [](PJ::DatasetId, const std::string& key) { return rampResolver()(1, key == "zz:in" ? "in" : key); });
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   MarkersRuntimeHost bridge(service, "anomaly", realResolverOverTwoDatasets(), sourceNameOf);

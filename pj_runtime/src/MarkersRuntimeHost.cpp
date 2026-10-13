@@ -37,7 +37,7 @@ bool parseKind(std::string_view kind, GeneratorKind& out) {
 }  // namespace
 
 MarkersRuntimeHost::MarkersRuntimeHost(
-    MarkerService& service, std::string plugin_id,
+    BatchEngine& service, std::string plugin_id,
     std::function<Expected<DatasetId>(std::vector<std::string>& inputs, std::vector<std::string>& outputs)>
         active_dataset,
     std::function<std::optional<std::string>(DatasetId)> source_name_of)
@@ -85,7 +85,7 @@ bool MarkersRuntimeHost::onCreate(
     PJ_string_view_t params_json, uint32_t flags, PJ_string_view_t* out_topics, uint64_t out_topics_capacity,
     uint64_t* out_topics_count, PJ_error_t* out_error) noexcept {
   return guarded<MarkersRuntimeHost>(ctx, out_error, kDomain, [&](MarkersRuntimeHost& self) {
-    MarkerService::GeneratorRecipe recipe;
+    BatchEngine::GeneratorRecipe recipe;
     recipe.id = self.makeKey(sdk::toStringView(id));
     if (!parseKind(sdk::toStringView(kind), recipe.kind)) {
       return reject(out_error, kDomain, "unknown generator kind '" + std::string(sdk::toStringView(kind)) + "'");
@@ -191,11 +191,11 @@ bool MarkersRuntimeHost::onList(
 bool MarkersRuntimeHost::onConfig(
     void* ctx, PJ_string_view_t id, PJ_string_view_t* out_recipe_json, PJ_error_t* out_error) noexcept {
   return guarded<MarkersRuntimeHost>(ctx, out_error, kDomain, [&](MarkersRuntimeHost& self) {
-    const MarkerService::GeneratorRecipe* first = self.service_.firstBinding(self.makeKey(sdk::toStringView(id)));
+    const BatchEngine::GeneratorRecipe* first = self.service_.firstBinding(self.makeKey(sdk::toStringView(id)));
     if (first == nullptr || first->ephemeral) {
       return reject(out_error, kDomain, "unknown generator id");
     }
-    const MarkerService::GeneratorRecipe& recipe = *first;
+    const BatchEngine::GeneratorRecipe& recipe = *first;
     nlohmann::json json;
     json["kind"] = "markers";
     json["language"] = recipe.language;

@@ -23,8 +23,8 @@
 #include "pj_base/builtin/plot_markers_codec.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/AppSession.h"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
-#include "pj_runtime/MarkerService.h"
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/SessionManager.h"
 
@@ -177,7 +177,7 @@ TEST(MainWindowMarkerGeneratorRestoreTest, RestoresGeneratorBySourceWhenIdsSwap)
 
   EXPECT_TRUE(PJ::MainWindowMarkerGeneratorTestPeer::restoreDataProcessors(window, doc.documentElement()));
 
-  const std::vector<PJ::MarkerService::GeneratorRecipe> recipes = app.sessionManager().markerService().recipes();
+  const std::vector<PJ::BatchEngine::GeneratorRecipe> recipes = app.sessionManager().batchEngine().recipes();
   ASSERT_EQ(recipes.size(), 1U);
   EXPECT_EQ(recipes.front().dataset_id, dataset_b);
   EXPECT_TRUE(publishedMarkers(app, dataset_b).has_value());

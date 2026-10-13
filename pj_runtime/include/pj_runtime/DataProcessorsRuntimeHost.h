@@ -17,7 +17,7 @@ class ServiceRegistryBuilder;
 /// Host-side bridge that exposes the unified `pj.data_processors.v1` SDK service to
 /// ONE plugin and delegates to a `DataProcessorService`. This bridge serves only
 /// kind="transform" (per-sample numeric series materialized into the DataEngine via
-/// the DerivedEngine) — kind="markers" is routed to a separate bridge
+/// the IncrementalEngine) — kind="markers" is routed to a separate bridge
 /// (`MarkersRuntimeHost`), so anything else is rejected.
 ///
 /// DATA-ONLY: it marshals the C ABI (only strings cross) into transform

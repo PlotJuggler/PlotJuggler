@@ -59,7 +59,7 @@ QString scopeTopicName(PJ::MarkerScope scope) {
 
 // Registers `scope`'s bare marker object topic where the overlay reads it for
 // `dataset_id` (the dataset itself, or the shared dataset for the ALL-DATASETS
-// scope) the same way MarkerService::publishMarkerSet does (that method is
+// scope) the same way BatchEngine::publishMarkerSet does (that method is
 // private; this mirrors its ObjectStore calls). Notification is kept separate
 // (publishScopeTopic) so tests can pin when PlotWidget observes a new topic.
 void registerScopeTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, PJ::MarkerScope scope) {

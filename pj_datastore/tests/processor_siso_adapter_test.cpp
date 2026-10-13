@@ -87,10 +87,10 @@ std::vector<double> readValues(PJ::DataEngine& engine, PJ::TopicId tid) {
 }
 
 // The keystone: a DataProcessor, wrapped by the adapter, installed as a real
-// DerivedEngine node, materializes a correct filtered output topic.
+// IncrementalEngine node, materializes a correct filtered output topic.
 TEST(ProcessorSisoAdapterTest, AbsoluteRunsThroughEngineAndMaterializesOutput) {
   PJ::DataEngine engine;
-  PJ::DerivedEngine derived(engine);
+  PJ::IncrementalEngine derived(engine);
   const PJ::DatasetId ds = *engine.createDataset(PJ::DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
   const PJ::TopicId src = writeScalarTopic(engine, ds, {{0, -1.0}, {1'000'000'000LL, 2.0}, {2'000'000'000LL, -3.0}});
 

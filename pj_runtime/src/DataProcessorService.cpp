@@ -21,8 +21,8 @@
 
 #include "pj_base/type_tree.hpp"
 #include "pj_datastore/data_processor.hpp"
-#include "pj_datastore/derived_engine.hpp"
 #include "pj_datastore/engine.hpp"
+#include "pj_datastore/incremental_engine.hpp"
 #include "pj_datastore/processor_siso_adapter.hpp"
 #include "pj_datastore/sample.hpp"
 #include "pj_datastore/topic_storage.hpp"
@@ -66,12 +66,12 @@ std::string normalizedFieldPath(std::string path);
 }  // namespace
 
 DataProcessorService::DataProcessorService(DataEngine& engine)
-    : engine_(engine), derived_(std::make_unique<DerivedEngine>(engine)) {
+    : engine_(engine), derived_(std::make_unique<IncrementalEngine>(engine)) {
   installCompleteReadBarrier();
 }
 
 DataProcessorService::DataProcessorService(SessionManager& session)
-    : engine_(session.dataEngine()), session_(&session), derived_(std::make_unique<DerivedEngine>(engine_)) {
+    : engine_(session.dataEngine()), session_(&session), derived_(std::make_unique<IncrementalEngine>(engine_)) {
   installCompleteReadBarrier();
 }
 
@@ -377,8 +377,8 @@ Expected<std::vector<TopicId>> DataProcessorService::rebindAndRecomputeForReplac
   const std::unordered_set<TopicId> replaced(replaced_inputs.begin(), replaced_inputs.end());
   struct BindingChange {
     NodeId node_id = 0;
-    DerivedEngine::InputBindingState prior;
-    DerivedEngine::InputBindingState desired;
+    IncrementalEngine::InputBindingState prior;
+    IncrementalEngine::InputBindingState desired;
     std::optional<TopicId> filter_output;
     std::string transform_key;
   };

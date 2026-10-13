@@ -127,7 +127,7 @@ class DataEngine {
   // Commit cycle: commit sealed chunks, enforce retention
   /// Commit flushed chunks into topic storage.
   /// Returns the deduplicated set of topic IDs that received at least one new chunk.
-  /// Pass the return value directly to DerivedEngine::onSourceCommitted():
+  /// Pass the return value directly to IncrementalEngine::onSourceCommitted():
   ///   derived.onSourceCommitted(engine.commitChunks(writer.flushAll()));
   std::vector<PJ::TopicId> commitChunks(std::vector<std::pair<PJ::TopicId, TopicChunk>> chunks);
 

@@ -122,7 +122,7 @@ class TopicStorage {
   [[nodiscard]] const std::deque<TopicChunk>& sealedChunks() const noexcept;
 
   /// Store column layout for schema_id==0 topics (populated at writer registration time).
-  /// Allows derived engine and fresh writers to resolve the layout without a committed chunk.
+  /// Allows incremental engine and fresh writers to resolve the layout without a committed chunk.
   void setColumnDescriptors(std::vector<ColumnDescriptor> descs) noexcept;
 
   /// Inline column layout (non-empty for schema_id==0 topics after the first writer is created).

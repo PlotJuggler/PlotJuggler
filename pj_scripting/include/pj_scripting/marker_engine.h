@@ -7,7 +7,7 @@
 // the WHOLE series at once (random access: size/at/atTime), can look back AND
 // forward, and emits PlotMarkers (events, regions, value bands) instead of a
 // derived sample per input. This is what the Anomaly Detector needs and what the
-// per-sample DerivedEngine model cannot express (FFT, regions, lookahead).
+// per-sample IncrementalEngine model cannot express (FFT, regions, lookahead).
 //
 // The engine is host-agnostic: the caller supplies a SeriesProvider over its own
 // data (the GUI toolbox's live series, or the headless runner's loaded file), and

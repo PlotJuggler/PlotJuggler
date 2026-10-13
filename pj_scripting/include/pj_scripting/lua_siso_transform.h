@@ -16,7 +16,7 @@ namespace PJ::scripting {
 
 /// A self-describing script filter installed as a host-internal
 /// `PJ::proc::DataProcessor`, so the existing `ProcessorSisoAdapter` wraps it as a
-/// `DerivedEngine` node with ZERO new streaming plumbing — and the eager
+/// `IncrementalEngine` node with ZERO new streaming plumbing — and the eager
 /// integral-eviction gate re-proves through it unchanged.
 ///
 /// TIME CONTRACT (critical): the script sees `t` = SECONDS SINCE SESSION START,

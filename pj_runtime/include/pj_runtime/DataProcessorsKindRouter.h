@@ -16,7 +16,7 @@ class ServiceRegistryBuilder;
 /// Registers the ONE `pj.data_processors.v1` service a plugin sees and routes each
 /// call to the backend bridge that owns its `kind`: "markers" →
 /// `MarkersRuntimeHost` (object engine / ObjectStore), everything else →
-/// `DataProcessorsRuntimeHost` (transform engine / DerivedEngine, which rejects
+/// `DataProcessorsRuntimeHost` (transform engine / IncrementalEngine, which rejects
 /// unknown kinds itself).
 ///
 /// Why this exists: the service registry rejects duplicate names, so the two

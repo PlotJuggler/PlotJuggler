@@ -175,7 +175,7 @@ TEST(DataProcessorsKindRouterTest, ListUnionsBothBackends) {
   EXPECT_EQ(std::set<std::string>(ids.begin(), ids.end()), (std::set<std::string>{"m1", "t1"}));
 }
 
-// Layout restore writes to MarkerService and DataProcessorService directly, bypassing
+// Layout restore writes to BatchEngine and DataProcessorService directly, bypassing
 // the router, so onCreate's cross-kind rejection never sees a hand-edited layout that
 // carries one id as both a <transform> and a <generator>. This pins what the router
 // does with that state: the id is listed twice, and kind-less ops resolve to the

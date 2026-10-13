@@ -24,7 +24,7 @@ class QTimer;
 namespace PJ {
 
 class DataEngine;
-class DerivedEngine;
+class IncrementalEngine;
 class SessionManager;
 namespace proc {
 class DataProcessor;
@@ -34,9 +34,9 @@ class FilterCatalogue;
 }
 
 /// Host service that applies "Data Processors" (filters / transforms) to
-/// datastore topics by running them as EAGER `pj_datastore::DerivedEngine` nodes
+/// datastore topics by running them as EAGER `pj_datastore::IncrementalEngine` nodes
 /// (a `PJ::proc::ProcessorSisoAdapter` wraps each native processor). Owns one
-/// `DerivedEngine` bound to the session's `DataEngine`.
+/// `IncrementalEngine` bound to the session's `DataEngine`.
 ///
 /// v1 scope (filters-first, file data): `applyFilter` registers a node, runs the
 /// processor over all currently-committed input rows, and materializes a new
@@ -118,7 +118,7 @@ class DataProcessorService {
   };
 
   /// A plugin-created TRANSFORM: a named, owner-tagged, session-persisted node,
-  /// distinct from a per-curve `FilterRecipe`. It shares the eager `DerivedEngine`
+  /// distinct from a per-curve `FilterRecipe`. It shares the eager `IncrementalEngine`
   /// substrate but is keyed by a namespaced `"<plugin_id>/<id>"` key and carries
   /// its script payload + bindings BY VALUE, so it round-trips through a
   /// session/workspace recipe and replays on load WITHOUT the originating plugin
@@ -143,7 +143,7 @@ class DataProcessorService {
     /// Exact input identities captured after a successful initial resolution.
     /// Empty means a legacy name-only recipe.
     std::vector<TransformInputBinding> input_bindings;
-    /// Ephemeral (preview) node: a real `DerivedEngine` node like any other, but
+    /// Ephemeral (preview) node: a real `IncrementalEngine` node like any other, but
     /// excluded from `transformRecipes()` so it never persists to a layout. The
     /// caller also keeps its output topics out of the catalog (does not rebuild),
     /// so a live preview leaves no trace once `removeTransform`d. Not persisted.
@@ -312,7 +312,7 @@ class DataProcessorService {
       std::vector<std::string> outputs, std::string_view script, std::string_view params_json, bool ephemeral = false,
       std::size_t input_column_index = 0, bool history_exempt = false);
 
-  /// One tick of the pending time-sliced replays (`DerivedEngine::deferredNodes`,
+  /// One tick of the pending time-sliced replays (`IncrementalEngine::deferredNodes`,
   /// oldest first) for about `budget` of wall time; processors chained on a growing
   /// output follow it within the same budget. The new rows are announced through
   /// `SessionManager::notifyIngest` at most every `kMaterializationNotifyInterval`,
@@ -454,7 +454,7 @@ class DataProcessorService {
   /// for how the ABI bridge maps a plugin's per-id calls onto stored transforms.
   [[nodiscard]] static std::string makeTransformKey(std::string_view plugin_id, std::string_view id);
 
-  [[nodiscard]] DerivedEngine& derivedEngine() noexcept {
+  [[nodiscard]] IncrementalEngine& incrementalEngine() noexcept {
     return *derived_;
   }
 
@@ -545,7 +545,7 @@ class DataProcessorService {
 
   DataEngine& engine_;  ///< engine derived_ writes into; needed to retire orphaned filter outputs on clear
   SessionManager* session_ = nullptr;  ///< production identity resolver; null only in engine-level tests
-  std::unique_ptr<DerivedEngine> derived_;
+  std::unique_ptr<IncrementalEngine> derived_;
   std::unordered_map<TopicId, FilterRecipe> recipes_;                   ///< output topic id -> live recipe
   std::unordered_map<std::string, TransformRecipe> transform_recipes_;  ///< "<plugin>/<id>" -> live transform
   std::shared_ptr<scripting::FilterCatalogue> filter_catalogue_;        ///< optional Luau filter source

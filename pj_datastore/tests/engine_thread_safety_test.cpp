@@ -24,8 +24,8 @@
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/builtin_transforms.hpp"
-#include "pj_datastore/derived_engine.hpp"
 #include "pj_datastore/engine.hpp"
+#include "pj_datastore/incremental_engine.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/plugin_data_host.hpp"
 #include "pj_datastore/query.hpp"
@@ -414,7 +414,7 @@ TEST(EngineThreadSafety, TypeRegistryRegisterDuringWorkerWriteNoRace) {
   const auto wtopic = *writer.ensureTopic("wt");
   const auto wfield = *writer.ensureField(wtopic, "v", PrimitiveType::kFloat64);
   const TopicId base = makeTopic(engine, source.id, "base", 256);  // derived-node input
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
 
   std::atomic<bool> stop{false};
   std::thread worker([&]() {

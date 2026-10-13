@@ -251,5 +251,5 @@ sticky-failure behaviour are identical to SISO.
 - Schema/types: `pj_scripting/include/pj_scripting/filter_class.h` (`ParamSpec`, `FilterClass`).
 - Engine seam: `pj_scripting/include/pj_scripting/script_engine.h` (`ScriptEngine`, `FilterInstance`, `makeLuauEngine`).
 - Luau binding: `pj_scripting/src/luau_engine.cpp` (hand-written — NOT sol2; Luau headers are C++-linkage, `lua_ref` does not pop).
-- Engine node: `pj_scripting/include/pj_scripting/lua_siso_transform.h` (`LuaSisoTransform : PJ::proc::DataProcessor`, the data-processor base in `pj_datastore`; the existing `ProcessorSisoAdapter` installs it as a `DerivedEngine` node).
+- Engine node: `pj_scripting/include/pj_scripting/lua_siso_transform.h` (`LuaSisoTransform : PJ::proc::DataProcessor`, the data-processor base in `pj_datastore`; the existing `ProcessorSisoAdapter` installs it as a `IncrementalEngine` node).
 - The generated panel (`ParameterForm`) is built in `pj_plotting/widget` (M4).

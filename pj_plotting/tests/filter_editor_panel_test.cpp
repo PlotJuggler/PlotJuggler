@@ -216,7 +216,7 @@ TEST(FilterEditorPanelTest, ApplyAfterApplyToAllMaterializesEverySource) {
 }
 
 // Bug: a materialized filter output is a single-column topic whose column is the
-// generic "value" (derived_engine.cpp). The source list must label it by its topic
+// generic "value" (incremental_engine.cpp). The source list must label it by its topic
 // name (the alias), not the meaningless "value" column.
 TEST(FilterEditorPanelTest, SourceListLabelsValueColumnByTopicName) {
   PJ::SessionManager session;

@@ -120,7 +120,7 @@ add_library(pj_datastore STATIC
   src/reader.cpp
   src/engine.cpp
   src/arrow_import.cpp
-  src/derived_engine.cpp
+  src/incremental_engine.cpp
   src/builtin_transforms.cpp
   src/plugin_data_host.cpp
   src/colormap_registry.cpp
@@ -130,7 +130,7 @@ add_library(pj_datastore STATIC
   src/object_store.cpp
   src/resident_payload_pool.cpp
   # Data-processor execution substrate (the DataProcessor base + ProcessorSisoAdapter
-  # that runs a processor as a DerivedEngine node — moved here from the retired pj_proc
+  # that runs a processor as an IncrementalEngine node — moved here from the retired pj_proc
   # module; lives WITH the ISISOTransform interface it adapts to).
   src/data_processor.cpp
   src/processor_siso_adapter.cpp
@@ -174,7 +174,7 @@ if(PJ_BUILD_TESTS)
     tests/series_reader_test.cpp
     tests/engine_integration_test.cpp
     tests/out_of_order_ingest_test.cpp
-    tests/derived_engine_test.cpp
+    tests/incremental_engine_test.cpp
     tests/array_expansion_test.cpp
     tests/regression_test.cpp
     tests/sequential_uid_test.cpp

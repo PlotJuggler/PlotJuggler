@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include "pj_datastore/derived_engine.hpp"
+#include "pj_datastore/incremental_engine.hpp"
 
 #include <gtest/gtest.h>
 
@@ -87,7 +87,7 @@ static std::vector<double> collectValues(DataEngine& engine, PJ::TopicId topic_i
 }
 
 // Wrapper: on_source_committed from an initializer list (std::span can't take {}).
-static void notify(DerivedEngine& derived, std::initializer_list<PJ::TopicId> topics) {
+static void notify(IncrementalEngine& derived, std::initializer_list<PJ::TopicId> topics) {
   std::vector<PJ::TopicId> v(topics);
   derived.onSourceCommitted(v);
 }
@@ -168,9 +168,9 @@ TEST(DerivativeTransformTest, OutputKind_IsFloat64) {
 // add_siso_transform
 // ---------------------------------------------------------------------------
 
-TEST(DerivedEngineTest, AddTransform_CreatesOutputTopic) {
+TEST(IncrementalEngineTest, AddTransform_CreatesOutputTopic) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
@@ -184,9 +184,9 @@ TEST(DerivedEngineTest, AddTransform_CreatesOutputTopic) {
   EXPECT_NE(engine.getTopicStorage(out_topics[0]), nullptr);
 }
 
-TEST(DerivedEngineTest, AddTransform_DuplicateOutputName_Fails) {
+TEST(IncrementalEngineTest, AddTransform_DuplicateOutputName_Fails) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
@@ -196,9 +196,9 @@ TEST(DerivedEngineTest, AddTransform_DuplicateOutputName_Fails) {
   EXPECT_FALSE(r.has_value());
 }
 
-TEST(DerivedEngineTest, AddTransform_UnknownInputTopic_Fails) {
+TEST(IncrementalEngineTest, AddTransform_UnknownInputTopic_Fails) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   auto r = derived.addSisoTransform(9999u, "deriv", ds, std::make_unique<DerivativeTransform>());
@@ -310,9 +310,9 @@ static PJ::TopicId make_three_column_topic(DataEngine& engine, PJ::DatasetId ds,
   return tid;
 }
 
-TEST(DerivedEngineFieldSelectTest, SisoBindsSelectedColumn) {
+TEST(IncrementalEngineFieldSelectTest, SisoBindsSelectedColumn) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
   PJ::TopicId tid = make_three_column_topic(engine, ds, 5);
 
@@ -329,9 +329,9 @@ TEST(DerivedEngineFieldSelectTest, SisoBindsSelectedColumn) {
   }
 }
 
-TEST(DerivedEngineFieldSelectTest, SisoColumnOutOfRange_Fails) {
+TEST(IncrementalEngineFieldSelectTest, SisoColumnOutOfRange_Fails) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
   PJ::TopicId tid = make_three_column_topic(engine, ds, 3);
 
@@ -340,10 +340,10 @@ TEST(DerivedEngineFieldSelectTest, SisoColumnOutOfRange_Fails) {
   EXPECT_FALSE(r.has_value());
 }
 
-TEST(DerivedEngineFieldSelectTest, SisoDefaultColumnIsZero) {
+TEST(IncrementalEngineFieldSelectTest, SisoDefaultColumnIsZero) {
   // Existing call sites pass no column index → must still bind column 0.
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
   PJ::TopicId tid = make_three_column_topic(engine, ds, 4);
 
@@ -358,9 +358,9 @@ TEST(DerivedEngineFieldSelectTest, SisoDefaultColumnIsZero) {
   }
 }
 
-TEST(DerivedEngineFieldSelectTest, InputBindingState_SisoResolveRestoreAndReplay) {
+TEST(IncrementalEngineFieldSelectTest, InputBindingState_SisoResolveRestoreAndReplay) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId dataset = makeDataset(engine);
   PJ::TopicId input_topic = make_three_column_topic(engine, dataset, 4);
 
@@ -386,9 +386,9 @@ TEST(DerivedEngineFieldSelectTest, InputBindingState_SisoResolveRestoreAndReplay
   EXPECT_EQ(collectValues(engine, derived.outputTopics(*node)[0]), (std::vector<double>{200, 201, 202, 203}));
 }
 
-TEST(DerivedEngineFieldSelectTest, InputBindingState_RejectsInvalidRequests) {
+TEST(IncrementalEngineFieldSelectTest, InputBindingState_RejectsInvalidRequests) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId dataset = makeDataset(engine);
   PJ::TopicId input_topic = make_three_column_topic(engine, dataset, 1);
   auto node = derived.addSisoTransform(input_topic, "selected", dataset, std::make_unique<IdentityTransform>());
@@ -398,13 +398,13 @@ TEST(DerivedEngineFieldSelectTest, InputBindingState_RejectsInvalidRequests) {
   EXPECT_FALSE(derived.resolvedInputBindingState(9999u, {0}).has_value());
   EXPECT_FALSE(derived.resolvedInputBindingState(*node, {}).has_value());
   EXPECT_FALSE(derived.resolvedInputBindingState(*node, {3}).has_value());
-  EXPECT_FALSE(derived.restoreInputBindingState(*node, DerivedEngine::InputBindingState{}).has_value());
-  EXPECT_FALSE(derived.restoreInputBindingState(9999u, DerivedEngine::InputBindingState{}).has_value());
+  EXPECT_FALSE(derived.restoreInputBindingState(*node, IncrementalEngine::InputBindingState{}).has_value());
+  EXPECT_FALSE(derived.restoreInputBindingState(9999u, IncrementalEngine::InputBindingState{}).has_value());
 }
 
-TEST(DerivedEngineFieldSelectTest, ReplaceSisoTransform_InPlaceRecompute) {
+TEST(IncrementalEngineFieldSelectTest, ReplaceSisoTransform_InPlaceRecompute) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
   PJ::TopicId tid = make_three_column_topic(engine, ds, 5);
 
@@ -432,9 +432,9 @@ TEST(DerivedEngineFieldSelectTest, ReplaceSisoTransform_InPlaceRecompute) {
 
 // [b] A filter that errors mid-stream must NOT commit its truncated prefix as if it were
 // valid data: a batch that ends in failure is dropped entirely (Status carries the error).
-TEST(DerivedEngineFieldSelectTest, PartialFailure_DoesNotCommitTruncatedOutput) {
+TEST(IncrementalEngineFieldSelectTest, PartialFailure_DoesNotCommitTruncatedOutput) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
   PJ::TopicId tid = make_three_column_topic(engine, ds, 5);  // col0 = {0,1,2,3,4}
 
@@ -447,9 +447,9 @@ TEST(DerivedEngineFieldSelectTest, PartialFailure_DoesNotCommitTruncatedOutput) 
 
 // An in-place op swap is transactional. A failed candidate must not leave either
 // its truncated prefix or an empty graph: the known-good op and output are replayed.
-TEST(DerivedEngineFieldSelectTest, ReplaceSisoTransform_FailureRestoresPreviousOutput) {
+TEST(IncrementalEngineFieldSelectTest, ReplaceSisoTransform_FailureRestoresPreviousOutput) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
   PJ::TopicId tid = make_three_column_topic(engine, ds, 5);
 
@@ -465,9 +465,9 @@ TEST(DerivedEngineFieldSelectTest, ReplaceSisoTransform_FailureRestoresPreviousO
 
 // [a] Editing a filter that feeds another filter must refresh the whole downstream chain,
 // not just the edited node. x -> A -> B; swap A's op and assert B reflects the new A output.
-TEST(DerivedEngineFieldSelectTest, ReplaceSisoTransform_RecomputesDownstreamChain) {
+TEST(IncrementalEngineFieldSelectTest, ReplaceSisoTransform_RecomputesDownstreamChain) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
   PJ::TopicId x = make_three_column_topic(engine, ds, 5);  // col0 = {0,1,2,3,4}
 
@@ -489,9 +489,9 @@ TEST(DerivedEngineFieldSelectTest, ReplaceSisoTransform_RecomputesDownstreamChai
   EXPECT_EQ(collectValues(engine, b_out).size(), 5u);  // exact N — guards a future incremental-append regression
 }
 
-TEST(DerivedEngineFieldSelectTest, ReplaceSisoTransform_RejectsBadNode) {
+TEST(IncrementalEngineFieldSelectTest, ReplaceSisoTransform_RejectsBadNode) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   EXPECT_FALSE(derived.replaceSisoTransform(9999u, std::make_unique<IdentityTransform>()).has_value());
 }
 
@@ -499,9 +499,9 @@ TEST(DerivedEngineFieldSelectTest, ReplaceSisoTransform_RejectsBadNode) {
 // topological_order
 // ---------------------------------------------------------------------------
 
-TEST(DerivedEngineTest, TopologicalOrder_SingleNode) {
+TEST(IncrementalEngineTest, TopologicalOrder_SingleNode) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
@@ -511,10 +511,10 @@ TEST(DerivedEngineTest, TopologicalOrder_SingleNode) {
   EXPECT_EQ(order[0], n);
 }
 
-TEST(DerivedEngineTest, TopologicalOrder_Chain_ABOrder) {
+TEST(IncrementalEngineTest, TopologicalOrder_Chain_ABOrder) {
   // A → B: output of A is input of B. Order must be [A, B].
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 10);
@@ -528,10 +528,10 @@ TEST(DerivedEngineTest, TopologicalOrder_Chain_ABOrder) {
   EXPECT_EQ(order[1], b);
 }
 
-TEST(DerivedEngineTest, TopologicalOrder_Fork) {
+TEST(IncrementalEngineTest, TopologicalOrder_Fork) {
   // A → B and A → C: A must appear before both B and C.
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 10);
@@ -552,9 +552,9 @@ TEST(DerivedEngineTest, TopologicalOrder_Fork) {
 // on_source_committed / dirty propagation
 // ---------------------------------------------------------------------------
 
-TEST(DerivedEngineTest, DirtyPropagation_SourceChanged) {
+TEST(IncrementalEngineTest, DirtyPropagation_SourceChanged) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
@@ -575,11 +575,11 @@ TEST(DerivedEngineTest, DirtyPropagation_SourceChanged) {
   EXPECT_GT(after, before);
 }
 
-TEST(DerivedEngineTest, DirtyPropagation_Chain) {
+TEST(IncrementalEngineTest, DirtyPropagation_Chain) {
   // A → B: committing source dirtifies A; schedule runs A and dirtifies B;
   // subsequent schedule runs B.
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 10);
@@ -599,10 +599,10 @@ TEST(DerivedEngineTest, DirtyPropagation_Chain) {
 // schedule (incremental)
 // ---------------------------------------------------------------------------
 
-TEST(DerivedEngineTest, Schedule_ProducesCorrectDerivative) {
+TEST(IncrementalEngineTest, Schedule_ProducesCorrectDerivative) {
   // slope=2.0, step=1s, 11 rows → derivative is always 2.0 (10 rows output)
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = makeLinearTopic(engine, ds, 2.0, 11);
@@ -617,9 +617,9 @@ TEST(DerivedEngineTest, Schedule_ProducesCorrectDerivative) {
   }
 }
 
-TEST(DerivedEngineTest, Schedule_SecondCallNoNewChunks_NoOp) {
+TEST(IncrementalEngineTest, Schedule_SecondCallNoNewChunks_NoOp) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
@@ -635,10 +635,10 @@ TEST(DerivedEngineTest, Schedule_SecondCallNoNewChunks_NoOp) {
   EXPECT_EQ(count1, count2);
 }
 
-TEST(DerivedEngineTest, Schedule_Lazy_SkipsInactiveNode) {
+TEST(IncrementalEngineTest, Schedule_Lazy_SkipsInactiveNode) {
   // Two independent source nodes. schedule({a}) should not run b.
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src1 = makeLinearTopic(engine, ds, 1.0, 5);
@@ -658,9 +658,9 @@ TEST(DerivedEngineTest, Schedule_Lazy_SkipsInactiveNode) {
   EXPECT_TRUE(b_vals.empty());   // B was skipped
 }
 
-TEST(DerivedEngineTest, Schedule_Chain_BothNodesRun) {
+TEST(IncrementalEngineTest, Schedule_Chain_BothNodesRun) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 12);
@@ -687,9 +687,9 @@ TEST(DerivedEngineTest, Schedule_Chain_BothNodesRun) {
 // recompute_batch
 // ---------------------------------------------------------------------------
 
-TEST(DerivedEngineTest, RecomputeBatch_ClearsAndRegenerates) {
+TEST(IncrementalEngineTest, RecomputeBatch_ClearsAndRegenerates) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 6);
@@ -712,9 +712,9 @@ TEST(DerivedEngineTest, RecomputeBatch_ClearsAndRegenerates) {
 
 // A successful recompute REPLACES the output rather than appending to it: growing the input
 // and recomputing must yield exactly the new row count, not old-plus-new.
-TEST(DerivedEngineTest, RecomputeBatch_SuccessReplacesOutputRatherThanAppending) {
+TEST(IncrementalEngineTest, RecomputeBatch_SuccessReplacesOutputRatherThanAppending) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
@@ -735,9 +735,9 @@ TEST(DerivedEngineTest, RecomputeBatch_SuccessReplacesOutputRatherThanAppending)
 // regardless of input, e.g. a broken Luau filter) must not empty out output that was correct
 // going into the failed recompute. recomputeBatch's contract is that a failed replay leaves a
 // node's output exactly as it was before the call.
-TEST(DerivedEngineTest, RecomputeBatch_StickyFailureRestoresPriorOutputValues) {
+TEST(IncrementalEngineTest, RecomputeBatch_StickyFailureRestoresPriorOutputValues) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
@@ -791,9 +791,9 @@ class ThrowAfterNTransform : public ISISOTransform {
 // The failure guarantee must hold for an EXCEPTION out of calculate(), not just for an error
 // Status: the detached output is owned by a guard whose destructor runs while unwinding.
 // Without it the prior chunks die with the stack frame and the topic stays empty forever.
-TEST(DerivedEngineTest, RecomputeBatch_ThrowingTransformRestoresPriorOutputAndReplaysOnce) {
+TEST(IncrementalEngineTest, RecomputeBatch_ThrowingTransformRestoresPriorOutputAndReplaysOnce) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
@@ -824,9 +824,9 @@ TEST(DerivedEngineTest, RecomputeBatch_ThrowingTransformRestoresPriorOutputAndRe
   EXPECT_EQ(collectValues(engine, out_tid), (std::vector<double>{0, 1, 2, 3, 4, 5, 6}));
 }
 
-TEST(DerivedEngineTest, RecomputeBatch_MultipleRootsRecomputesDiamondOnceInTopologicalOrder) {
+TEST(IncrementalEngineTest, RecomputeBatch_MultipleRootsRecomputesDiamondOnceInTopologicalOrder) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId dataset = makeDataset(engine);
   PJ::TopicId source = makeLinearTopic(engine, dataset, 1.0, 4);
   std::vector<std::string> reset_trace;
@@ -875,9 +875,9 @@ TEST(DerivedEngineTest, RecomputeBatch_MultipleRootsRecomputesDiamondOnceInTopol
   EXPECT_EQ(collectValues(engine, derived.outputTopics(node_d)[0]), (std::vector<double>{0, 2, 4, 6}));
 }
 
-TEST(DerivedEngineTest, SameNamedTopicsInDifferentDatasetsStayDependencyIsolated) {
+TEST(IncrementalEngineTest, SameNamedTopicsInDifferentDatasetsStayDependencyIsolated) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId first_dataset = makeDataset(engine, "first");
   PJ::DatasetId second_dataset = makeDataset(engine, "second");
   PJ::TopicId first_source = makeLinearTopic(engine, first_dataset, 1.0, 5);
@@ -907,9 +907,9 @@ TEST(DerivedEngineTest, SameNamedTopicsInDifferentDatasetsStayDependencyIsolated
 // Parity: incremental == batch
 // ---------------------------------------------------------------------------
 
-TEST(DerivedEngineTest, Parity_SingleChunk) {
+TEST(IncrementalEngineTest, Parity_SingleChunk) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = makeLinearTopic(engine, ds, 3.0, 11);
@@ -927,11 +927,11 @@ TEST(DerivedEngineTest, Parity_SingleChunk) {
   }
 }
 
-TEST(DerivedEngineTest, Parity_TwoChunks_CrossBoundary) {
+TEST(IncrementalEngineTest, Parity_TwoChunks_CrossBoundary) {
   // The cross-chunk boundary row is the key correctness test: state must carry
   // over naturally in the incremental path.
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   // Chunk 1: 20 rows (forces auto-chunk at 1024 capacity — but step_ns large enough
@@ -958,9 +958,9 @@ TEST(DerivedEngineTest, Parity_TwoChunks_CrossBoundary) {
   }
 }
 
-TEST(DerivedEngineTest, Parity_ThreeChunks) {
+TEST(IncrementalEngineTest, Parity_ThreeChunks) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = makeLinearTopic(engine, ds, 5.0, 10);
@@ -989,9 +989,9 @@ TEST(DerivedEngineTest, Parity_ThreeChunks) {
 
 // commit_chunks returns deduplicated changed topic IDs usable directly with
 // on_source_committed — the streaming frame-loop pattern.
-TEST(DerivedEngineTest, CommitCycle_ReturnValueDrivesNotify) {
+TEST(IncrementalEngineTest, CommitCycle_ReturnValueDrivesNotify) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   DataWriter writer = engine.createWriter();
@@ -1031,9 +1031,9 @@ TEST(DerivedEngineTest, CommitCycle_ReturnValueDrivesNotify) {
 // Regression: add_siso_transform must work on a series created via
 // register_scalar_series even when no chunk has been committed yet
 // (fewer rows than max_chunk_rows, or no flush/commit called at all).
-TEST(DerivedEngineTest, AddTransform_NoCommittedChunks_Succeeds) {
+TEST(IncrementalEngineTest, AddTransform_NoCommittedChunks_Succeeds) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   // Create a topic with a few rows but do NOT commit any chunks.
@@ -1138,9 +1138,9 @@ class LatchedFailureSumMimoTransform : public IMIMOTransform {
 // incremental path APPENDS, so an ordinary scheduling pass afterwards would replay the whole
 // history on top of the rolled-back rows and double them. Such a node must stay on the full
 // (output-replacing) recompute path until a replay finally succeeds.
-TEST(DerivedEngineTest, FailedRecomputeRollback_LaterSchedulePassReplacesOutputInsteadOfAppending) {
+TEST(IncrementalEngineTest, FailedRecomputeRollback_LaterSchedulePassReplacesOutputInsteadOfAppending) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = make_three_column_topic(engine, ds, 5);
@@ -1168,7 +1168,7 @@ TEST(DerivedEngineTest, FailedRecomputeRollback_LaterSchedulePassReplacesOutputI
 
 TEST(MimoTransformTest, InputBindingState_MimoResolveAndRestore) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId dataset = makeDataset(engine);
   PJ::TopicId input_topic = make_three_column_topic(engine, dataset, 3);
   auto node = derived.addMimoTransform(
@@ -1208,7 +1208,7 @@ static std::vector<std::pair<PJ::Timestamp, double>> collectRowsCol(
 
 TEST(MimoTransformTest, AddMimo_CreatesOutputTopic) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 5);
@@ -1226,7 +1226,7 @@ TEST(MimoTransformTest, AddMimo_CreatesOutputTopic) {
 
 TEST(MimoTransformTest, AddMimo_UnknownInputTopic_Fails) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   auto r = derived.addMimoTransform({9999u}, {"out"}, ds, std::make_unique<SumMimoTransform>());
@@ -1235,7 +1235,7 @@ TEST(MimoTransformTest, AddMimo_UnknownInputTopic_Fails) {
 
 TEST(MimoTransformTest, AddMimo_DuplicateOutputName_Fails) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 5);
@@ -1249,7 +1249,7 @@ TEST(MimoTransformTest, AddMimo_DuplicateOutputName_Fails) {
 
 TEST(MimoTransformTest, AddMimo_MultipleOutputTopics) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 5);
@@ -1271,7 +1271,7 @@ TEST(MimoTransformTest, JoinSemantics_OnlyMatchingTimestamps) {
   // Sum at t=0: 0+0=0, t=2: 2+4=6, t=4: 4+8=12
   // t=1 and t=3 are in A but not B → no output row.
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   // Topic A: t = 0,1,2,3,4 s, value = i seconds
@@ -1314,7 +1314,7 @@ TEST(MimoTransformTest, JoinSemantics_OnlyMatchingTimestamps) {
 TEST(MimoTransformTest, JoinSemantics_NoCommonTimestamps_NoOutput) {
   // A: t=0,1 s;  B: t=2,3 s → no overlap → no output rows
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId ta;
@@ -1354,7 +1354,7 @@ TEST(MimoTransformTest, Schedule_ProducesCorrectSum) {
   // Two topics with the same timestamps (0,1,2,...,9 seconds).
   // A[i] = 1.0 * i, B[i] = 2.0 * i. Sum[i] = 3.0 * i.
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 10);
@@ -1377,7 +1377,7 @@ TEST(MimoTransformTest, Schedule_ProducesCorrectSum) {
 
 TEST(MimoTransformTest, Schedule_IncrementalTwoChunks) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 10);
@@ -1408,7 +1408,7 @@ TEST(MimoTransformTest, Schedule_IncrementalTwoChunks) {
 
 TEST(MimoTransformTest, Parity_IncrementalMatchesBatch_SingleChunk) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 10);
@@ -1434,7 +1434,7 @@ TEST(MimoTransformTest, Parity_IncrementalMatchesBatch_SingleChunk) {
 
 TEST(MimoTransformTest, Parity_IncrementalMatchesBatch_MultipleChunks) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 10);
@@ -1474,7 +1474,7 @@ TEST(MimoTransformTest, ChainedSisoThenMimo) {
   // src2: y = 3*t → dy/dt = 3.0
   // MIMO sum = 5.0 for each output row.
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src1 = makeLinearTopic(engine, ds, 2.0, 11);
@@ -1512,7 +1512,7 @@ TEST(MimoTransformTest, DuplicateTimestamp_ProducesOneOutputRow) {
   // Expected join at t=0,5,10 → 3 output rows.
   // Bug: without dedup, joined_ts=[0,5,5,10] → 4 output rows, t=5 appears twice.
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId ta;
@@ -1564,7 +1564,7 @@ TEST(MimoTransformTest, Parity_StaggeredChunks_IncrementalMatchesBatch) {
   // Chunk 2: A commits t=10..14 (5 rows), B commits t=10,12,14 (3 rows, even only)
   // Expected joins: t=0,2,4,6,8,10,12,14 (8 rows)
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   // Register both topics upfront
@@ -1647,7 +1647,7 @@ class AccumulatingSumMimoTransform : public IMIMOTransform {
 
 TEST(MimoTransformTest, StatefulTransform_RecomputeBatchCallsReset) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 5);
@@ -1681,7 +1681,7 @@ TEST(MimoTransformTest, StatefulTransform_RecomputeBatchCallsReset) {
 // The watermark must NOT advance, so future data from the other input can match.
 TEST(MimoTransformTest, PartialNotify_DoesNotAdvanceWatermark) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   // Register both topics; initially only commit data for t1
@@ -1739,7 +1739,7 @@ class WrongOutputKindsMimoTransform : public IMIMOTransform {
 
 TEST(MimoTransformTest, WrongOutputKindsCount_Fails) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 5);
@@ -1751,7 +1751,7 @@ TEST(MimoTransformTest, WrongOutputKindsCount_Fails) {
 TEST(MimoTransformTest, TopologicalOrder_MimoComesAfterSiso) {
   // n1: src→d1, n2: src→d2, n_mimo: (d1,d2)→sum. Order: n1,n2 before n_mimo.
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
@@ -1790,7 +1790,7 @@ class Uint64IdentityTransform : public ISISOTransform {
   }
 };
 
-TEST(DerivedEngine, Uint64PrecisionRoundTrip) {
+TEST(IncrementalEngine, Uint64PrecisionRoundTrip) {
   DataEngine engine;
   auto ds = makeDataset(engine);
 
@@ -1817,7 +1817,7 @@ TEST(DerivedEngine, Uint64PrecisionRoundTrip) {
   engine.commitChunks(writer.flushAll());
 
   // Register identity transform: kUint64 → kUint64
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   auto node_or = derived.addSisoTransform(src_tid, "u64_out", ds, std::make_unique<Uint64IdentityTransform>());
   ASSERT_TRUE(node_or.has_value());
 
@@ -1861,9 +1861,9 @@ static void appendRow(DataEngine& engine, PJ::TopicId topic_id, PJ::Timestamp ts
   engine.commitChunks(writer.flushAll());
 }
 
-TEST(DerivedEngineTest, SisoLateInputCommitTriggersFullRecompute) {
+TEST(IncrementalEngineTest, SisoLateInputCommitTriggersFullRecompute) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   // Rows at t = 0..4 s on a slope-2 line: derivative is 2.0 everywhere.
@@ -1895,9 +1895,9 @@ TEST(DerivedEngineTest, SisoLateInputCommitTriggersFullRecompute) {
 
 // A late commit fully recomputes A and cascades into B. When only B fails, the error
 // is B's: A's rebuilt output is complete, so A must not report B's failure.
-TEST(DerivedEngineTest, LateInputRecomputeRecordsADownstreamFailureOnTheFailingNodeOnly) {
+TEST(IncrementalEngineTest, LateInputRecomputeRecordsADownstreamFailureOnTheFailingNodeOnly) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
   PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
   PJ::NodeId a = *derived.addSisoTransform(src, "a", ds, std::make_unique<IdentityTransform>());
@@ -1918,7 +1918,7 @@ TEST(DerivedEngineTest, LateInputRecomputeRecordsADownstreamFailureOnTheFailingN
 
 TEST(MimoTransformTest, MimoLateInputCommitTriggersFullRecompute) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   // Matching timestamps t = 0..4 s on both inputs; sum = 3t.
@@ -1957,12 +1957,12 @@ TEST(MimoTransformTest, MimoLateInputCommitTriggersFullRecompute) {
 // sealed with 1 column; a 2nd column is added later (ensureColumn); the MIMO reads
 // column index 1. When the join processes a timestamp that maps to the OLD chunk (only
 // 1 column), the MIMO decode path reads columns[1] OUT OF BOUNDS (the SISO path guards
-// this at derived_engine.cpp; the MIMO path did not). Run under AddressSanitizer:
+// this at incremental_engine.cpp; the MIMO path did not). Run under AddressSanitizer:
 // before the fix this trips a heap-buffer-overflow; after the fix the old-chunk rows
 // are skipped and it completes cleanly.
 TEST(MimoTransformTest, MidStreamColumn_OldChunkNotOutOfBounds) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
 
   // Input A: schemaless topic; column "a" first (chunk with 1 column), then "b" added
@@ -2036,9 +2036,9 @@ static PJ::TopicId makeXyTopicWithNullX(DataEngine& engine, PJ::DatasetId ds) {
   return tid;
 }
 
-TEST(DerivedEngineNullInputTest, SisoSkipsNullInputCells) {
+TEST(IncrementalEngineNullInputTest, SisoSkipsNullInputCells) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
   PJ::TopicId tid = makeXyTopicWithNullX(engine, ds);
 
@@ -2051,9 +2051,9 @@ TEST(DerivedEngineNullInputTest, SisoSkipsNullInputCells) {
   EXPECT_EQ(rows, expected);  // no fabricated 0.0 at 1001
 }
 
-TEST(DerivedEngineNullInputTest, MimoSkipsJoinsWithANullInput) {
+TEST(IncrementalEngineNullInputTest, MimoSkipsJoinsWithANullInput) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
   PJ::TopicId tid = makeXyTopicWithNullX(engine, ds);
 
@@ -2066,9 +2066,9 @@ TEST(DerivedEngineNullInputTest, MimoSkipsJoinsWithANullInput) {
   EXPECT_EQ(rows, expected);
 }
 
-TEST(DerivedEngineRetentionTest, ReplayHonoursTheInputRetentionFloor) {
+TEST(IncrementalEngineRetentionTest, ReplayHonoursTheInputRetentionFloor) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
   constexpr PJ::Timestamp kSec = 1'000'000'000LL;
   PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 5);  // one chunk, t = 0..4 s
@@ -2142,7 +2142,7 @@ struct StepLog {
 };
 
 // Step `node` until it reports done; records the step count and the longest step.
-static StepLog materializeFully(DerivedEngine& derived, PJ::NodeId node, std::chrono::nanoseconds budget) {
+static StepLog materializeFully(IncrementalEngine& derived, PJ::NodeId node, std::chrono::nanoseconds budget) {
   StepLog log;
   for (int guard = 0; guard < 100000; ++guard) {
     const auto start = std::chrono::steady_clock::now();
@@ -2159,16 +2159,16 @@ static StepLog materializeFully(DerivedEngine& derived, PJ::NodeId node, std::ch
 
 // Synchronous reference: a fresh running-sum node over `input`, run by scheduleAll().
 static std::vector<std::pair<PJ::Timestamp, double>> synchronousRunningSum(
-    DataEngine& engine, DerivedEngine& derived, PJ::TopicId input, PJ::DatasetId ds, const std::string& name) {
+    DataEngine& engine, IncrementalEngine& derived, PJ::TopicId input, PJ::DatasetId ds, const std::string& name) {
   auto node = derived.addSisoTransform(input, name, ds, std::make_unique<SlowRunningSumTransform>());
   EXPECT_TRUE(node.has_value());
   EXPECT_TRUE(derived.scheduleAll().has_value());
   return collectRows(engine, derived.outputTopics(*node)[0]);
 }
 
-TEST(DerivedEngineTimeSliceTest, StepsStayWithinBudgetAndMatchSynchronousReplay) {
+TEST(IncrementalEngineTimeSliceTest, StepsStayWithinBudgetAndMatchSynchronousReplay) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   const PJ::DatasetId ds = makeDataset(engine);
   const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 4000);  // four 1024-row chunks
   auto node = derived.addSisoTransform(src, "sliced", ds, std::make_unique<SlowRunningSumTransform>(kSlowRow));
@@ -2200,9 +2200,9 @@ TEST(DerivedEngineTimeSliceTest, StepsStayWithinBudgetAndMatchSynchronousReplay)
   EXPECT_TRUE(*again);
 }
 
-TEST(DerivedEngineTimeSliceTest, InOrderAppendsDuringReplayAreConsumed) {
+TEST(IncrementalEngineTimeSliceTest, InOrderAppendsDuringReplayAreConsumed) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   const PJ::DatasetId ds = makeDataset(engine);
   const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 3000);
   auto node = derived.addSisoTransform(src, "sliced", ds, std::make_unique<SlowRunningSumTransform>(kSlowRow));
@@ -2221,9 +2221,9 @@ TEST(DerivedEngineTimeSliceTest, InOrderAppendsDuringReplayAreConsumed) {
   EXPECT_EQ(rows, synchronousRunningSum(engine, derived, src, ds, "sync"));
 }
 
-TEST(DerivedEngineTimeSliceTest, OutOfOrderAppendDuringReplayReplaysInFull) {
+TEST(IncrementalEngineTimeSliceTest, OutOfOrderAppendDuringReplayReplaysInFull) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   const PJ::DatasetId ds = makeDataset(engine);
   const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 3000, /*step_ns=*/2);
   auto node = derived.addSisoTransform(src, "sliced", ds, std::make_unique<SlowRunningSumTransform>(kSlowRow));
@@ -2248,9 +2248,9 @@ TEST(DerivedEngineTimeSliceTest, OutOfOrderAppendDuringReplayReplaysInFull) {
   EXPECT_EQ(rows, synchronousRunningSum(engine, derived, src, ds, "sync"));
 }
 
-TEST(DerivedEngineTimeSliceTest, RemovedNodeEndsTheReplay) {
+TEST(IncrementalEngineTimeSliceTest, RemovedNodeEndsTheReplay) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   const PJ::DatasetId ds = makeDataset(engine);
   const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 3000);
   auto node = derived.addSisoTransform(src, "sliced", ds, std::make_unique<SlowRunningSumTransform>(kSlowRow));
@@ -2265,9 +2265,9 @@ TEST(DerivedEngineTimeSliceTest, RemovedNodeEndsTheReplay) {
   EXPECT_EQ(synchronousRunningSum(engine, derived, src, ds, "sliced").size(), 3000u);
 }
 
-TEST(DerivedEngineTimeSliceTest, ReplaceDuringReplayFinishesWithTheNewOperator) {
+TEST(IncrementalEngineTimeSliceTest, ReplaceDuringReplayFinishesWithTheNewOperator) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   const PJ::DatasetId ds = makeDataset(engine);
   const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 3000);
   auto node = derived.addSisoTransform(src, "sliced", ds, std::make_unique<SlowRunningSumTransform>(kSlowRow));
@@ -2287,9 +2287,9 @@ TEST(DerivedEngineTimeSliceTest, ReplaceDuringReplayFinishesWithTheNewOperator) 
   }
 }
 
-TEST(DerivedEngineTimeSliceTest, ReplacedInputDataDuringReplayMatchesASynchronousNode) {
+TEST(IncrementalEngineTimeSliceTest, ReplacedInputDataDuringReplayMatchesASynchronousNode) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   const PJ::DatasetId ds = makeDataset(engine);
   const PJ::DatasetId out_ds = makeDataset(engine, "derived");
   const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 3000);
@@ -2314,9 +2314,9 @@ TEST(DerivedEngineTimeSliceTest, ReplacedInputDataDuringReplayMatchesASynchronou
   EXPECT_EQ(rows, collectRows(engine, derived.outputTopics(*sync_node)[0]));
 }
 
-TEST(DerivedEngineTimeSliceTest, FailingStepEndsTheReplayWithAnError) {
+TEST(IncrementalEngineTimeSliceTest, FailingStepEndsTheReplayWithAnError) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   const PJ::DatasetId ds = makeDataset(engine);
   const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 3000);
   auto node = derived.addSisoTransform(
@@ -2351,9 +2351,9 @@ TEST(DerivedEngineTimeSliceTest, FailingStepEndsTheReplayWithAnError) {
 // deferredNodes() is the one list of pending replays: creation order, and a node
 // leaves it as soon as anything ends its replay — here a reload's binding restore,
 // which queues a full replay for the next scheduling pass instead.
-TEST(DerivedEngineTimeSliceTest, DeferredNodesListPendingReplaysInCreationOrder) {
+TEST(IncrementalEngineTimeSliceTest, DeferredNodesListPendingReplaysInCreationOrder) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   const PJ::DatasetId ds = makeDataset(engine);
   const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 3000);
   auto first = derived.addSisoTransform(src, "first", ds, std::make_unique<SlowRunningSumTransform>(kSlowRow));
@@ -2380,9 +2380,9 @@ TEST(DerivedEngineTimeSliceTest, DeferredNodesListPendingReplaysInCreationOrder)
   EXPECT_EQ(collectRows(engine, derived.outputTopics(*second)[0]), reference);
 }
 
-TEST(DerivedEngineTimeSliceTest, DownstreamNodeFollowsTheGrowingOutput) {
+TEST(IncrementalEngineTimeSliceTest, DownstreamNodeFollowsTheGrowingOutput) {
   DataEngine engine;
-  DerivedEngine derived(engine);
+  IncrementalEngine derived(engine);
   const PJ::DatasetId ds = makeDataset(engine);
   const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 3000);
   auto node = derived.addSisoTransform(src, "sliced", ds, std::make_unique<SlowRunningSumTransform>(kSlowRow));

@@ -40,7 +40,7 @@ Licensed MPL-2.0.
   user-override dir + marketplace install are DEFERRED.
 - `lua_siso_transform.h` — `LuaSisoTransform`, a `PJ::proc::DataProcessor` whose
   `calculateNextPoint` runs a Luau filter class via the `ProcessorSisoAdapter` as an
-  eager `pj_datastore::DerivedEngine` node.
+  eager `pj_datastore::IncrementalEngine` node.
 - `sandbox.h` — `BudgetLimits` (the per-VM sandbox/watchdog budget).
 
 ## Contract / gotchas

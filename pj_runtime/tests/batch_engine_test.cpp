@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// MarkerService backs the unified pj.data_processors.v1 service (kind=markers — the object
+// BatchEngine backs the unified pj.data_processors.v1 service (kind=markers — the object
 // engine). These tests drive it against a synthetic resolver + a real ObjectStore —
 // no SDK service, no catalog — proving the host-driven execution path end to end:
 // resolve → run engine → serialize → publish to ObjectStore → read back.
@@ -29,17 +29,17 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/query.hpp"
 #include "pj_datastore/writer.hpp"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
-#include "pj_runtime/MarkerService.h"
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
 
 namespace {
 
+using PJ::BatchEngine;
 using PJ::GeneratorKind;
 using PJ::kAllDatasetsMarkerDataset;
-using PJ::MarkerService;
 using PJ::test::markerFamily;
 using PJ::test::ownerPublishUid;
 using PJ::test::ownerTombstoned;
@@ -47,12 +47,12 @@ using PJ::test::ownerTombstoned;
 constexpr PJ::DatasetId kDataset = 1;
 
 // A resolver backed by one synthetic ramp series "in": t = i ns, v = i, i in [0,n).
-MarkerService::SeriesResolver rampResolver(std::size_t n) {
-  return [n](PJ::DatasetId, const std::string& key) -> std::optional<MarkerService::ResolvedSeries> {
+BatchEngine::SeriesResolver rampResolver(std::size_t n) {
+  return [n](PJ::DatasetId, const std::string& key) -> std::optional<BatchEngine::ResolvedSeries> {
     if (key != "in") {
       return std::nullopt;
     }
-    MarkerService::ResolvedSeries s;
+    BatchEngine::ResolvedSeries s;
     for (std::size_t i = 0; i < n; ++i) {
       s.timestamps.push_back(static_cast<double>(i));
       s.values.push_back(static_cast<double>(i));
@@ -63,9 +63,9 @@ MarkerService::SeriesResolver rampResolver(std::size_t n) {
 
 // rampResolver(5), but only on the datasets in `datasets` — the all_datasets cases
 // need "the rule's series exists on some datasets, not others".
-MarkerService::SeriesResolver resolverOn(std::set<PJ::DatasetId> datasets) {
+BatchEngine::SeriesResolver resolverOn(std::set<PJ::DatasetId> datasets) {
   return [datasets, ramp = rampResolver(5)](
-             PJ::DatasetId dataset, const std::string& key) -> std::optional<MarkerService::ResolvedSeries> {
+             PJ::DatasetId dataset, const std::string& key) -> std::optional<BatchEngine::ResolvedSeries> {
     return datasets.contains(dataset) ? ramp(dataset, key) : std::nullopt;
   };
 }
@@ -77,8 +77,8 @@ PJ::sdk::PlotMarkers readPublished(PJ::ObjectStore& store, PJ::DatasetId dataset
 }
 
 // A kind=markers generator with a single output topic key.
-MarkerService::GeneratorRecipe markerRecipe(std::string id, std::string output, std::string script) {
-  MarkerService::GeneratorRecipe r;
+BatchEngine::GeneratorRecipe markerRecipe(std::string id, std::string output, std::string script) {
+  BatchEngine::GeneratorRecipe r;
   r.id = std::move(id);
   r.kind = GeneratorKind::kMarkers;
   r.dataset_id = kDataset;
@@ -89,9 +89,9 @@ MarkerService::GeneratorRecipe markerRecipe(std::string id, std::string output, 
 }
 
 // The host resolves the input series, runs the script, and publishes its markers.
-TEST(MarkerServiceTest, RunsScriptAndPublishesMarkers) {
+TEST(BatchEngineTest, RunsScriptAndPublishesMarkers) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(10));
+  BatchEngine service(store, rampResolver(10));
 
   auto recipe = markerRecipe("plug/gen1", "in", R"(
     local s = series("in")
@@ -114,9 +114,9 @@ TEST(MarkerServiceTest, RunsScriptAndPublishesMarkers) {
 // generator's inputs are all absent and its script hits a nil series. That must surface
 // as a plain error, never as a silently-empty marker set: the shell decides what to do
 // with it, and an empty set would read as "the rule found nothing".
-TEST(MarkerServiceTest, WithoutAResolverTheRunFailsInsteadOfPublishingAnEmptySet) {
+TEST(BatchEngineTest, WithoutAResolverTheRunFailsInsteadOfPublishingAnEmptySet) {
   PJ::ObjectStore store;
-  MarkerService service(store, MarkerService::SeriesResolver{});
+  BatchEngine service(store, BatchEngine::SeriesResolver{});
 
   auto recipe = markerRecipe("plug/no_resolver", "in", R"(
     local s = series("in")
@@ -129,9 +129,9 @@ TEST(MarkerServiceTest, WithoutAResolverTheRunFailsInsteadOfPublishingAnEmptySet
   EXPECT_TRUE(service.recipes().empty());
 }
 
-TEST(MarkerServiceTest, ScriptErrorReturnsMessageAndDoesNotRegister) {
+TEST(BatchEngineTest, ScriptErrorReturnsMessageAndDoesNotRegister) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   auto recipe = markerRecipe("plug/bad", "__global__", "this is not valid lua %%%");
   const PJ::Expected<std::vector<std::string>> res = service.upsertGenerator(recipe);
@@ -141,15 +141,15 @@ TEST(MarkerServiceTest, ScriptErrorReturnsMessageAndDoesNotRegister) {
 
 // recomputeForChangedInputs re-runs only generators that read a changed key; an
 // unrelated change is a no-op. removeGenerator drops the recipe.
-TEST(MarkerServiceTest, RecomputeMatchesChangedKeyAndRemoveDrops) {
+TEST(BatchEngineTest, RecomputeMatchesChangedKeyAndRemoveDrops) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(8));
+  BatchEngine service(store, rampResolver(8));
 
   ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", "createMarker(0.0)\n")).has_value());
 
-  EXPECT_TRUE(service.recomputeForChangedInputs({"other"}, MarkerService::kAnyDataset).empty());
+  EXPECT_TRUE(service.recomputeForChangedInputs({"other"}, BatchEngine::kAnyDataset).empty());
 
-  const std::vector<std::string> affected = service.recomputeForChangedInputs({"in"}, MarkerService::kAnyDataset);
+  const std::vector<std::string> affected = service.recomputeForChangedInputs({"in"}, BatchEngine::kAnyDataset);
   ASSERT_EQ(affected.size(), 1u);
   EXPECT_EQ(affected[0], PJ::markerOwnerTopicName("in", "plug/gen"));
 
@@ -160,9 +160,9 @@ TEST(MarkerServiceTest, RecomputeMatchesChangedKeyAndRemoveDrops) {
 
 // The "__preview__/" namespace is reserved: a committed (non-ephemeral) marker
 // generator targeting it is rejected.
-TEST(MarkerServiceTest, CommittedGeneratorRejectsPreviewPrefix) {
+TEST(BatchEngineTest, CommittedGeneratorRejectsPreviewPrefix) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   auto recipe = markerRecipe("plug/x", "__preview__/sneaky", "createMarker(0.0)\n");
   EXPECT_FALSE(service.upsertGenerator(recipe).has_value());
@@ -172,9 +172,9 @@ TEST(MarkerServiceTest, CommittedGeneratorRejectsPreviewPrefix) {
 // A global-across-all generator publishes ONCE, on the dataset-independent home of
 // the ALL-DATASETS key — the "__global__" it sent is normalized host-side — and
 // never copies its set onto the datasets it reads from.
-TEST(MarkerServiceTest, GlobalAllDatasetsPublishesOnceOnTheSharedDataset) {
+TEST(BatchEngineTest, GlobalAllDatasetsPublishesOnceOnTheSharedDataset) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
 
   auto recipe = markerRecipe("plug/g", std::string(PJ::sdk::kGlobalMarkerTopic), "createMarker(0.0)\n");
@@ -192,9 +192,9 @@ TEST(MarkerServiceTest, GlobalAllDatasetsPublishesOnceOnTheSharedDataset) {
 
 // all_datasets flips a "__global__" output to the ALL-DATASETS key; the physical
 // object topic and the persisted recipe both reflect the rewritten key.
-TEST(MarkerServiceTest, AllDatasetsOutputNormalizesGlobalToAll) {
+TEST(BatchEngineTest, AllDatasetsOutputNormalizesGlobalToAll) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{kDataset}; });
 
   auto recipe = markerRecipe("plug/g", std::string(PJ::sdk::kGlobalMarkerTopic), "createMarker(0.0)\n");
@@ -206,9 +206,9 @@ TEST(MarkerServiceTest, AllDatasetsOutputNormalizesGlobalToAll) {
 
 // A dataset-bound recipe (all_datasets false) may never target the reserved
 // ALL-DATASETS key — that key's ownership is exclusively all_datasets generators.
-TEST(MarkerServiceTest, AllTopicOnDatasetBoundRecipeIsRejected) {
+TEST(BatchEngineTest, AllTopicOnDatasetBoundRecipeIsRejected) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   auto recipe = markerRecipe("plug/g", std::string(PJ::kAllDatasetsMarkerTopic), "createMarker(0.0)\n");
   EXPECT_FALSE(service.upsertGenerator(recipe).has_value());
@@ -217,9 +217,9 @@ TEST(MarkerServiceTest, AllTopicOnDatasetBoundRecipeIsRejected) {
 
 // A Dataset-scope rule and a Global-scope rule can target the same dataset without
 // colliding: they normalize to different object topics ("__global__" vs "__all__").
-TEST(MarkerServiceTest, DatasetAndAllScopesCoexistOnOneDataset) {
+TEST(BatchEngineTest, DatasetAndAllScopesCoexistOnOneDataset) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
 
   auto dataset_scope = markerRecipe("rule/__global__", std::string(PJ::sdk::kGlobalMarkerTopic), "createMarker(0.0)\n");
@@ -239,9 +239,9 @@ TEST(MarkerServiceTest, DatasetAndAllScopesCoexistOnOneDataset) {
 // Two generators on one marker topic each own their own object topic: the plot
 // draws both sets, and retiring one tombstones only its topic — the other's is
 // not even republished.
-TEST(MarkerServiceTest, TwoGeneratorsOnOneTopicOwnTheirOwnObjectTopics) {
+TEST(BatchEngineTest, TwoGeneratorsOnOneTopicOwnTheirOwnObjectTopics) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/a", "shared", "createMarker(0.0)\n")).has_value());
   ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/b", "shared", "createMarker(1.0)\n")).has_value());
@@ -262,21 +262,21 @@ TEST(MarkerServiceTest, TwoGeneratorsOnOneTopicOwnTheirOwnObjectTopics) {
 
 // A recompute rewrites only the re-run generator's own part of a shared target —
 // the other owner's part is neither dropped nor duplicated.
-TEST(MarkerServiceTest, RecomputeOneGeneratorKeepsOthersPart) {
+TEST(BatchEngineTest, RecomputeOneGeneratorKeepsOthersPart) {
   PJ::ObjectStore store;
-  MarkerService::SeriesResolver resolver = [](PJ::DatasetId,
-                                              const std::string& key) -> std::optional<MarkerService::ResolvedSeries> {
+  BatchEngine::SeriesResolver resolver = [](PJ::DatasetId,
+                                            const std::string& key) -> std::optional<BatchEngine::ResolvedSeries> {
     if (key != "in" && key != "other") {
       return std::nullopt;
     }
-    MarkerService::ResolvedSeries s;
+    BatchEngine::ResolvedSeries s;
     for (std::size_t i = 0; i < 5; ++i) {
       s.timestamps.push_back(static_cast<double>(i));
       s.values.push_back(static_cast<double>(i));
     }
     return s;
   };
-  MarkerService service(store, resolver);
+  BatchEngine service(store, resolver);
 
   auto in_recipe = markerRecipe("plug/in", "shared", "createMarker(0.0)\n");
   in_recipe.inputs = {"in"};
@@ -296,9 +296,9 @@ TEST(MarkerServiceTest, RecomputeOneGeneratorKeepsOthersPart) {
 
 // A retarget must drop only the retargeted generator's own part of the old
 // target, never a sibling owner's part still publishing there.
-TEST(MarkerServiceTest, UpsertRetargetDropsOnlyOwnPart) {
+TEST(BatchEngineTest, UpsertRetargetDropsOnlyOwnPart) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/a", "old", "createMarker(0.0)\n")).has_value());
   ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/b", "old", "createMarker(1.0)\n")).has_value());
@@ -313,9 +313,9 @@ TEST(MarkerServiceTest, UpsertRetargetDropsOnlyOwnPart) {
 // A blob pushed directly to the bare marker object topic (a toolbox write, no
 // owning generator) is simply another member of the family: a generator on the
 // same key draws beside it, never rewrites it, and its removal leaves it alone.
-TEST(MarkerServiceTest, DirectWriteIsAnotherFamilyMember) {
+TEST(BatchEngineTest, DirectWriteIsAnotherFamilyMember) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   PJ::sdk::PlotMarkers foreign;
   PJ::sdk::PlotMarker fm;
@@ -341,9 +341,9 @@ TEST(MarkerServiceTest, DirectWriteIsAnotherFamilyMember) {
 
 // Retargeting a live generator's output must not strand the old topic: nothing else
 // ever names it again, so it would keep drawing a stale set forever.
-TEST(MarkerServiceTest, UpsertRetargetTombstonesThePreviousOutput) {
+TEST(BatchEngineTest, UpsertRetargetTombstonesThePreviousOutput) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "old", "createMarker(0.0)\n")).has_value());
   ASSERT_FALSE(readPublished(store, kDataset, "old").markers.empty());
@@ -358,9 +358,9 @@ TEST(MarkerServiceTest, UpsertRetargetTombstonesThePreviousOutput) {
 
 // An unchanged upsert must NOT tombstone its own fresh output — the overlap between
 // the previous and the new publish targets is exactly what the run just rewrote.
-TEST(MarkerServiceTest, UpsertInPlaceKeepsItsOutputPublished) {
+TEST(BatchEngineTest, UpsertInPlaceKeepsItsOutputPublished) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", "createMarker(0.0)\n")).has_value());
   ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", "createMarker(1.0)\n")).has_value());
@@ -372,9 +372,9 @@ TEST(MarkerServiceTest, UpsertInPlaceKeepsItsOutputPublished) {
 // recipe keeps naming a dataset that no longer exists: the merged blob stays on screen
 // (nothing overwrites it) but the rule is dead, and the next recompute publishes an
 // empty set onto a phantom topic instead of refreshing the anchor.
-TEST(MarkerServiceTest, MergeRemapsConsumedRecipesOntoTheAnchor) {
+TEST(BatchEngineTest, MergeRemapsConsumedRecipesOntoTheAnchor) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   constexpr PJ::DatasetId kAnchor = 1;
   constexpr PJ::DatasetId kConsumed = 2;
@@ -396,9 +396,9 @@ TEST(MarkerServiceTest, MergeRemapsConsumedRecipesOntoTheAnchor) {
 // Removing a dataset takes its object topics with it, but a recipe naming the dead id
 // would re-register a phantom topic on the next recompute. Session-scoped
 // (all_datasets) generators are deliberately kept — they outlive any one dataset.
-TEST(MarkerServiceTest, DropRecipesForDatasetKeepsGlobalGenerators) {
+TEST(BatchEngineTest, DropRecipesForDatasetKeepsGlobalGenerators) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{kDataset}; });
 
   ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/bound", "in", "createMarker(0.0)\n")).has_value());
@@ -409,7 +409,7 @@ TEST(MarkerServiceTest, DropRecipesForDatasetKeepsGlobalGenerators) {
 
   service.clearGeneratorsForDataset(kDataset);
 
-  const std::vector<MarkerService::GeneratorRecipe> left = service.recipes();
+  const std::vector<BatchEngine::GeneratorRecipe> left = service.recipes();
   ASSERT_EQ(left.size(), 1u) << "the dataset-bound recipe is gone";
   EXPECT_EQ(left.front().id, "plug/global");
   EXPECT_TRUE(left.front().all_datasets);
@@ -417,9 +417,9 @@ TEST(MarkerServiceTest, DropRecipesForDatasetKeepsGlobalGenerators) {
 
 // A recompute names the dataset whose data moved. An all_datasets generator's set
 // is one shared union, so a contributor's change republishes that one topic.
-TEST(MarkerServiceTest, ScopedRecomputeOfGlobalRuleRepublishesTheSharedSet) {
+TEST(BatchEngineTest, ScopedRecomputeOfGlobalRuleRepublishesTheSharedSet) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
 
   auto recipe = markerRecipe("plug/g", std::string(PJ::sdk::kGlobalMarkerTopic), "createMarker(0.0)\n");
@@ -440,9 +440,9 @@ TEST(MarkerServiceTest, ScopedRecomputeOfGlobalRuleRepublishesTheSharedSet) {
 // The same attribution applies to per-dataset generators: `changed` carries bare topic
 // names, and two datasets routinely share them, so without the scope a stream tick on
 // one dataset would re-run a generator bound to the other.
-TEST(MarkerServiceTest, ScopedRecomputeIgnoresGeneratorsBoundElsewhere) {
+TEST(BatchEngineTest, ScopedRecomputeIgnoresGeneratorsBoundElsewhere) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   auto recipe = markerRecipe("plug/gen", "in", "createMarker(0.0)\n");  // bound to kDataset (1)
   ASSERT_TRUE(service.upsertGenerator(recipe).has_value());
@@ -450,16 +450,16 @@ TEST(MarkerServiceTest, ScopedRecomputeIgnoresGeneratorsBoundElsewhere) {
   // A change on dataset 2 names the same series key, but this generator reads dataset 1.
   EXPECT_TRUE(service.recomputeForChangedInputs({"in"}, /*scope=*/2).empty());
   // Unscoped, the caller cannot attribute the change, so the name match still wins.
-  EXPECT_FALSE(service.recomputeForChangedInputs({"in"}, MarkerService::kAnyDataset).empty());
+  EXPECT_FALSE(service.recomputeForChangedInputs({"in"}, BatchEngine::kAnyDataset).empty());
 }
 
 // An ephemeral preview is published but excluded from recipes() (never persisted);
 // remove() tears it down. Preview is now just create(ephemeral) + remove.
-TEST(MarkerServiceTest, EphemeralPreviewPublishesAndRemoves) {
+TEST(BatchEngineTest, EphemeralPreviewPublishesAndRemoves) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(6));
+  BatchEngine service(store, rampResolver(6));
 
-  MarkerService::GeneratorRecipe recipe;
+  BatchEngine::GeneratorRecipe recipe;
   recipe.id = "plug/__preview__";
   recipe.kind = GeneratorKind::kMarkers;
   recipe.dataset_id = kDataset;
@@ -482,9 +482,9 @@ TEST(MarkerServiceTest, EphemeralPreviewPublishesAndRemoves) {
 // H3: removing a PERSISTENT generator tombstones its output — the topic survives
 // but decodes to an empty set (so a later merge/reload reads live-but-empty, not
 // stale), unlike an ephemeral preview whose throwaway topic is removed outright.
-TEST(MarkerServiceTest, RemovePersistentGeneratorTombstonesOutput) {
+TEST(BatchEngineTest, RemovePersistentGeneratorTombstonesOutput) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(10));
+  BatchEngine service(store, rampResolver(10));
 
   auto recipe = markerRecipe("plug/gen", "in", R"(
     local s = series("in")
@@ -504,9 +504,9 @@ TEST(MarkerServiceTest, RemovePersistentGeneratorTombstonesOutput) {
 // generators a history restore has authority over, leaving a history_exempt one
 // (and any ephemeral preview) untouched — clearAllGenerators is the same
 // predicate always removing.
-TEST(MarkerServiceTest, PredicateClearRemovesOnlyNonExemptGenerators) {
+TEST(BatchEngineTest, PredicateClearRemovesOnlyNonExemptGenerators) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(4));
+  BatchEngine service(store, rampResolver(4));
 
   auto plain = markerRecipe("plug/plain", "plain_out", "createMarker(0.0)\n");
   ASSERT_TRUE(service.upsertGenerator(plain).has_value());
@@ -523,13 +523,13 @@ TEST(MarkerServiceTest, PredicateClearRemovesOnlyNonExemptGenerators) {
   EXPECT_TRUE(recipes.front().history_exempt);
 }
 
-TEST(MarkerServiceTest, FindsExemptGeneratorDependingOnRemovedProcessorOutput) {
+TEST(BatchEngineTest, FindsExemptGeneratorDependingOnRemovedProcessorOutput) {
   PJ::ObjectStore store;
-  MarkerService service(store, [](PJ::DatasetId, const std::string&) {
-    MarkerService::ResolvedSeries series;
+  BatchEngine service(store, [](PJ::DatasetId, const std::string&) {
+    BatchEngine::ResolvedSeries series;
     series.timestamps = {0.0};
     series.values = {1.0};
-    return std::optional<MarkerService::ResolvedSeries>{std::move(series)};
+    return std::optional<BatchEngine::ResolvedSeries>{std::move(series)};
   });
 
   auto plain = markerRecipe("user/plain", "plain_markers", "createMarker(0.0)\n");
@@ -549,9 +549,9 @@ TEST(MarkerServiceTest, FindsExemptGeneratorDependingOnRemovedProcessorOutput) {
 // N1: markers merge set-aware — the anchor's set plus each source's set shifted
 // onto the anchor clock, republished as one blob, and the source topics dropped.
 // (This is what markers opt out of the generic ObjectStore fold to do.)
-TEST(MarkerServiceTest, MergeMarkerTopicsConcatenatesAndShifts) {
+TEST(BatchEngineTest, MergeMarkerTopicsConcatenatesAndShifts) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(10));
+  BatchEngine service(store, rampResolver(10));
 
   // A single event marker on `dataset` at time `t`, on the "in" marker topic.
   const auto publish = [&store](PJ::DatasetId dataset, PJ::Timestamp t) {
@@ -589,9 +589,9 @@ TEST(MarkerServiceTest, MergeMarkerTopicsConcatenatesAndShifts) {
 // target, or the moved-in source part would look like "already has parts" to the
 // anchor step and get shifted a second time. The anchor's blob is unshifted; the
 // source's cached part is shifted by raw_shift_ns exactly once.
-TEST(MarkerServiceTest, MergeAdoptsAnchorForeignBlobAndShiftsSourcesOnce) {
+TEST(BatchEngineTest, MergeAdoptsAnchorForeignBlobAndShiftsSourcesOnce) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   constexpr PJ::DatasetId kAnchor = 1;
   constexpr PJ::DatasetId kSource = 2;
@@ -628,21 +628,21 @@ TEST(MarkerServiceTest, MergeAdoptsAnchorForeignBlobAndShiftsSourcesOnce) {
 // After a merge + remap, a re-run generator replaces only its OWN part of the
 // shared target; a sibling generator's part (folded in by the merge, on the
 // shifted clock) is left untouched.
-TEST(MarkerServiceTest, MergeThenRecomputeOneGeneratorKeepsOthers) {
+TEST(BatchEngineTest, MergeThenRecomputeOneGeneratorKeepsOthers) {
   PJ::ObjectStore store;
-  MarkerService::SeriesResolver resolver = [](PJ::DatasetId,
-                                              const std::string& key) -> std::optional<MarkerService::ResolvedSeries> {
+  BatchEngine::SeriesResolver resolver = [](PJ::DatasetId,
+                                            const std::string& key) -> std::optional<BatchEngine::ResolvedSeries> {
     if (key != "in" && key != "other") {
       return std::nullopt;
     }
-    MarkerService::ResolvedSeries s;
+    BatchEngine::ResolvedSeries s;
     for (std::size_t i = 0; i < 5; ++i) {
       s.timestamps.push_back(static_cast<double>(i));
       s.values.push_back(static_cast<double>(i));
     }
     return s;
   };
-  MarkerService service(store, resolver);
+  BatchEngine service(store, resolver);
 
   constexpr PJ::DatasetId kAnchor = 1;
   constexpr PJ::DatasetId kSource = 2;
@@ -680,9 +680,9 @@ TEST(MarkerServiceTest, MergeThenRecomputeOneGeneratorKeepsOthers) {
 // A dataset-bound id is keyed by (id, dataset): the same id applied to a SECOND
 // dataset is a new binding, not a replacement — dropParts must never touch the
 // first dataset's part just because a same-id recipe landed elsewhere.
-TEST(MarkerServiceTest, DatasetRuleOnSecondDatasetKeepsTheFirst) {
+TEST(BatchEngineTest, DatasetRuleOnSecondDatasetKeepsTheFirst) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   auto on_first = markerRecipe("plug/r", "in", "createMarker(0.0)\n");
   on_first.dataset_id = 1;
@@ -698,9 +698,9 @@ TEST(MarkerServiceTest, DatasetRuleOnSecondDatasetKeepsTheFirst) {
 }
 
 // Re-applying the SAME id on the SAME dataset is the ordinary replace, unchanged.
-TEST(MarkerServiceTest, ReapplyOnSameDatasetReplaces) {
+TEST(BatchEngineTest, ReapplyOnSameDatasetReplaces) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   auto first = markerRecipe("plug/r", "in", "createMarker(0.0)\n");
   first.dataset_id = 1;
@@ -715,9 +715,9 @@ TEST(MarkerServiceTest, ReapplyOnSameDatasetReplaces) {
 }
 
 // removeGenerator retires an id on EVERY dataset it is bound to, not just one.
-TEST(MarkerServiceTest, RemoveRetiresTheIdOnEveryDataset) {
+TEST(BatchEngineTest, RemoveRetiresTheIdOnEveryDataset) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   auto on_first = markerRecipe("plug/r", "in", "createMarker(0.0)\n");
   on_first.dataset_id = 1;
@@ -738,9 +738,9 @@ TEST(MarkerServiceTest, RemoveRetiresTheIdOnEveryDataset) {
 // bound to the anchor: the anchor's OWN binding survives (its parts already carry
 // the source's folded-in content under the shared owner id), and the consumed
 // dataset's binding — now redundant — is dropped rather than colliding.
-TEST(MarkerServiceTest, MergeCollapsesSameIdRecipesOntoTheAnchor) {
+TEST(BatchEngineTest, MergeCollapsesSameIdRecipesOntoTheAnchor) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   auto on_anchor = markerRecipe("plug/r", "in", "createMarker(0.0)\n");
   on_anchor.dataset_id = 1;
@@ -765,9 +765,9 @@ TEST(MarkerServiceTest, MergeCollapsesSameIdRecipesOntoTheAnchor) {
 // A merge moves a consumed binding's topic onto the anchor and drops the binding
 // (the anchor's own wins), so the surviving recipe no longer names that output:
 // retiring the id must still find every topic it owns.
-TEST(MarkerServiceTest, RemoveAfterMergeRetiresEveryTopicTheIdOwns) {
+TEST(BatchEngineTest, RemoveAfterMergeRetiresEveryTopicTheIdOwns) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   auto on_anchor = markerRecipe("plug/r", "x", "createMarker(0.0)\n");
   on_anchor.dataset_id = 1;
@@ -786,7 +786,7 @@ TEST(MarkerServiceTest, RemoveAfterMergeRetiresEveryTopicTheIdOwns) {
 }
 
 // A Global-scope rule that reads the series "in": t = 0 on every dataset that has it.
-MarkerService::GeneratorRecipe globalRuleReadingIn() {
+BatchEngine::GeneratorRecipe globalRuleReadingIn() {
   auto recipe = markerRecipe("plug/g", std::string(PJ::sdk::kGlobalMarkerTopic), R"(
     local s = series("in")
     createMarker(s:at(0).t)
@@ -798,9 +798,9 @@ MarkerService::GeneratorRecipe globalRuleReadingIn() {
 // Scope says where markers are DRAWN: an all_datasets rule reads from the datasets
 // that have its series, and its set lives once on the shared dataset — the overlay
 // draws that one topic on every plot, including one whose dataset lacks the series.
-TEST(MarkerServiceTest, GlobalRuleIsPublishedOnceOnTheSharedDataset) {
+TEST(BatchEngineTest, GlobalRuleIsPublishedOnceOnTheSharedDataset) {
   PJ::ObjectStore store;
-  MarkerService service(store, resolverOn({1}));
+  BatchEngine service(store, resolverOn({1}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
 
   const PJ::Expected<std::vector<std::string>> ok = service.upsertGenerator(globalRuleReadingIn());
@@ -814,9 +814,9 @@ TEST(MarkerServiceTest, GlobalRuleIsPublishedOnceOnTheSharedDataset) {
 }
 
 // The set is the UNION of every contributing dataset's run.
-TEST(MarkerServiceTest, GlobalRuleUnionsEveryContributor) {
+TEST(BatchEngineTest, GlobalRuleUnionsEveryContributor) {
   PJ::ObjectStore store;
-  MarkerService service(store, resolverOn({1, 3}));
+  BatchEngine service(store, resolverOn({1, 3}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2, 3}; });
 
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
@@ -827,9 +827,9 @@ TEST(MarkerServiceTest, GlobalRuleUnionsEveryContributor) {
 
 // An all_datasets recipe whose series exists on NO loaded dataset has nothing to
 // compute: rejected, nothing published, nothing stored.
-TEST(MarkerServiceTest, GlobalRuleWithNoInputsAnywhereIsRejected) {
+TEST(BatchEngineTest, GlobalRuleWithNoInputsAnywhereIsRejected) {
   PJ::ObjectStore store;
-  MarkerService service(store, resolverOn({}));
+  BatchEngine service(store, resolverOn({}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
 
   const PJ::Expected<std::vector<std::string>> res = service.upsertGenerator(globalRuleReadingIn());
@@ -840,9 +840,9 @@ TEST(MarkerServiceTest, GlobalRuleWithNoInputsAnywhereIsRejected) {
 
 // A dataset-bound recipe never skips: a missing input on ITS dataset is a plain
 // user error.
-TEST(MarkerServiceTest, BoundRuleWithMissingInputStillErrors) {
+TEST(BatchEngineTest, BoundRuleWithMissingInputStillErrors) {
   PJ::ObjectStore store;
-  MarkerService service(store, resolverOn({}));
+  BatchEngine service(store, resolverOn({}));
 
   auto recipe = markerRecipe("plug/g", "in", R"(
     local s = series("in")
@@ -858,9 +858,9 @@ TEST(MarkerServiceTest, BoundRuleWithMissingInputStillErrors) {
 // rule reads, needs no work at all: the set lives once on the shared dataset, so an
 // unrelated recompute republishes nothing and the roster hook re-runs the rule once
 // (it cannot know the newcomer has no inputs without running) with no duplication.
-TEST(MarkerServiceTest, ADatasetLoadedLaterWithoutTheInputsNeedsNoCopy) {
+TEST(BatchEngineTest, ADatasetLoadedLaterWithoutTheInputsNeedsNoCopy) {
   PJ::ObjectStore store;
-  MarkerService service(store, resolverOn({1}));
+  BatchEngine service(store, resolverOn({1}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1}; });
 
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
@@ -872,7 +872,7 @@ TEST(MarkerServiceTest, ADatasetLoadedLaterWithoutTheInputsNeedsNoCopy) {
   // Dataset 2 loads after the rule was applied, without the series the rule reads.
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
 
-  EXPECT_TRUE(service.recomputeForChangedInputs({"/unrelated"}, MarkerService::kAnyDataset).empty());
+  EXPECT_TRUE(service.recomputeForChangedInputs({"/unrelated"}, BatchEngine::kAnyDataset).empty());
   EXPECT_EQ(ownerPublishUid(store, kAllDatasetsMarkerDataset, all_topic, "plug/g"), before) << "nothing to copy";
   EXPECT_TRUE(markerFamily(store, 2, all_topic).empty());
 
@@ -883,9 +883,9 @@ TEST(MarkerServiceTest, ADatasetLoadedLaterWithoutTheInputsNeedsNoCopy) {
 // A Global set is stored in the DISPLAY frame (raw − the contributor's alignment
 // offset), so a marker found on a dataset with another clock sits at the same
 // display instant as one found on an aligned dataset, with no per-dataset copy.
-TEST(MarkerServiceTest, GlobalRuleIsStoredInTheDisplayFrame) {
+TEST(BatchEngineTest, GlobalRuleIsStoredInTheDisplayFrame) {
   PJ::ObjectStore store;
-  MarkerService service(store, resolverOn({1}));
+  BatchEngine service(store, resolverOn({1}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   // display = raw − offset: dataset 1's clock runs 10 ns ahead of the display frame.
   service.setDisplayOffsetResolver([](PJ::DatasetId dataset) { return dataset == 1 ? PJ::Timestamp{10} : 0; });
@@ -914,9 +914,9 @@ TEST(MarkerServiceTest, GlobalRuleIsStoredInTheDisplayFrame) {
 
 // A dataset loaded later WITH the series is a new contributor: its topics arrive in a
 // `changed` batch, the union is recomputed and grows on every dataset.
-TEST(MarkerServiceTest, GlobalRuleGrowsWhenAContributorLoadsLater) {
+TEST(BatchEngineTest, GlobalRuleGrowsWhenAContributorLoadsLater) {
   PJ::ObjectStore store;
-  MarkerService service(store, resolverOn({1}));
+  BatchEngine service(store, resolverOn({1}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
 
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
@@ -934,18 +934,17 @@ TEST(MarkerServiceTest, GlobalRuleGrowsWhenAContributorLoadsLater) {
 // With declared (qualified) names, the script enumerates each series once under
 // the spelling it declared, and each name reads its own series — even when a
 // declared name equals another input's bare key ("s:x" is both).
-TEST(MarkerServiceTest, DeclaredNamesAreEnumeratedOnceEachAndReadTheirOwnSeries) {
+TEST(BatchEngineTest, DeclaredNamesAreEnumeratedOnceEachAndReadTheirOwnSeries) {
   PJ::ObjectStore store;
-  MarkerService service(
-      store, [](PJ::DatasetId, const std::string& key) -> std::optional<MarkerService::ResolvedSeries> {
-        if (key != "x" && key != "s:x") {
-          return std::nullopt;
-        }
-        MarkerService::ResolvedSeries s;
-        s.timestamps = {0.0};
-        s.values = {key == "x" ? 1.0 : 2.0};
-        return s;
-      });
+  BatchEngine service(store, [](PJ::DatasetId, const std::string& key) -> std::optional<BatchEngine::ResolvedSeries> {
+    if (key != "x" && key != "s:x") {
+      return std::nullopt;
+    }
+    BatchEngine::ResolvedSeries s;
+    s.timestamps = {0.0};
+    s.values = {key == "x" ? 1.0 : 2.0};
+    return s;
+  });
   auto recipe = markerRecipe("plug/gen", "out", R"(
     local names = GetSeriesNames()
     assert(#names == 2, "expected 2 names, got " .. #names)
@@ -964,9 +963,9 @@ TEST(MarkerServiceTest, DeclaredNamesAreEnumeratedOnceEachAndReadTheirOwnSeries)
 
 // `declared_inputs` is parallel to `inputs`; a mismatched length is refused at the
 // service boundary (the transform path guards its binding count the same way).
-TEST(MarkerServiceTest, UpsertRejectsADeclaredInputCountMismatch) {
+TEST(BatchEngineTest, UpsertRejectsADeclaredInputCountMismatch) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(3));
+  BatchEngine service(store, rampResolver(3));
   auto recipe = markerRecipe("plug/gen", "out", "createMarker(0.0)\n");
   recipe.declared_inputs = {"in", "extra"};
   const PJ::Expected<std::vector<std::string>> rejected = service.upsertGenerator(recipe);
@@ -1002,7 +1001,7 @@ TEST(ReadResolvedSeriesTest, CopiesMultiChunkSeriesSkippingNullsAndSubFloorRows)
   chunks.push_back(makeSeriesChunk(0, 10, 10, {3}));    // t = 0..90, null at t=30
   const PJ::SeriesReader reader(chunks, /*column_index=*/0, /*retention_floor=*/50);
 
-  const MarkerService::ResolvedSeries out = PJ::readResolvedSeries(reader);
+  const BatchEngine::ResolvedSeries out = PJ::readResolvedSeries(reader);
 
   std::vector<double> expected_timestamps;
   std::vector<double> expected_values;
@@ -1026,7 +1025,7 @@ TEST(ReadResolvedSeriesTest, CopiesAHugeSeriesInLinearTime) {
   const PJ::SeriesReader reader(chunks, /*column_index=*/0);
 
   const auto start = std::chrono::steady_clock::now();
-  const MarkerService::ResolvedSeries out = PJ::readResolvedSeries(reader);
+  const BatchEngine::ResolvedSeries out = PJ::readResolvedSeries(reader);
   const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
 
   ASSERT_EQ(out.timestamps.size(), std::size_t{kChunks} * kRowsPerChunk);
@@ -1039,9 +1038,9 @@ TEST(ReadResolvedSeriesTest, CopiesAHugeSeriesInLinearTime) {
 // history_exempt and ephemeral are per-id properties (clearGenerators, removeGenerator
 // and generatorIds all read the first binding), so a sibling binding that disagrees
 // would let an undo delete an exempt rule, or a replay skip a plain one.
-TEST(MarkerServiceTest, UpsertRejectsABindingWhoseFlagsDifferFromItsSiblings) {
+TEST(BatchEngineTest, UpsertRejectsABindingWhoseFlagsDifferFromItsSiblings) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   auto plain = markerRecipe("plug/rule", "in", "createMarker(0.0)\n");  // bound to dataset 1
   ASSERT_TRUE(service.upsertGenerator(plain).has_value());
@@ -1067,9 +1066,9 @@ TEST(MarkerServiceTest, UpsertRejectsABindingWhoseFlagsDifferFromItsSiblings) {
 
 // A change of scope is a change of rule: the id is replaced whole (old bindings and
 // their outputs retired), never left owning a Dataset-scope and a Global output at once.
-TEST(MarkerServiceTest, ChangingScopeReplacesTheWholeId) {
+TEST(BatchEngineTest, ChangingScopeReplacesTheWholeId) {
   PJ::ObjectStore store;
-  MarkerService service(store, resolverOn({1, 2}));
+  BatchEngine service(store, resolverOn({1, 2}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   const std::string dataset_topic(PJ::sdk::kGlobalMarkerTopic);
   const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
@@ -1098,9 +1097,9 @@ TEST(MarkerServiceTest, ChangingScopeReplacesTheWholeId) {
 
 // Removing a contributing dataset shrinks the shared set on the survivors — the
 // removal is the only event that will ever prompt that recompute.
-TEST(MarkerServiceTest, RemovingAContributorShrinksTheGlobalSetOnSurvivors) {
+TEST(BatchEngineTest, RemovingAContributorShrinksTheGlobalSetOnSurvivors) {
   PJ::ObjectStore store;
-  MarkerService service(store, resolverOn({1, 2}));
+  BatchEngine service(store, resolverOn({1, 2}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
   const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
@@ -1117,9 +1116,9 @@ TEST(MarkerServiceTest, RemovingAContributorShrinksTheGlobalSetOnSurvivors) {
 
 // With no contributor left there is nothing to draw: the rule's parts are cleared on
 // every dataset (the rule itself survives — a contributor loaded later revives it).
-TEST(MarkerServiceTest, RemovingTheLastContributorClearsTheGlobalSetEverywhere) {
+TEST(BatchEngineTest, RemovingTheLastContributorClearsTheGlobalSetEverywhere) {
   PJ::ObjectStore store;
-  MarkerService service(store, resolverOn({1}));
+  BatchEngine service(store, resolverOn({1}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
   const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
@@ -1137,9 +1136,9 @@ TEST(MarkerServiceTest, RemovingTheLastContributorClearsTheGlobalSetEverywhere) 
 
 // A Global set lives on the shared dataset, which no merge ever folds: the merge
 // leaves it alone — neither concatenated with itself nor republished.
-TEST(MarkerServiceTest, MergeLeavesTheSharedGlobalSetAlone) {
+TEST(BatchEngineTest, MergeLeavesTheSharedGlobalSetAlone) {
   PJ::ObjectStore store;
-  MarkerService service(store, resolverOn({1}));
+  BatchEngine service(store, resolverOn({1}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
   const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
@@ -1156,9 +1155,9 @@ TEST(MarkerServiceTest, MergeLeavesTheSharedGlobalSetAlone) {
 
 // The hook a dataset's catalog publication fires: a newly listed dataset may be a
 // new contributor, so every Global rule is re-run over the grown roster — once.
-TEST(MarkerServiceTest, ReachNewDatasetsRerunsGlobalRulesForANewContributor) {
+TEST(BatchEngineTest, ReachNewDatasetsRerunsGlobalRulesForANewContributor) {
   PJ::ObjectStore store;
-  MarkerService service(store, resolverOn({1, 2}));
+  BatchEngine service(store, resolverOn({1, 2}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1}; });
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
   const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
@@ -1172,9 +1171,9 @@ TEST(MarkerServiceTest, ReachNewDatasetsRerunsGlobalRulesForANewContributor) {
 // The catalog grows topic by topic: a dataset already listed may only now expose the
 // series a Global rule reads, so the hook re-runs on every catalog addition rather
 // than on a dataset-roster change.
-TEST(MarkerServiceTest, ReachNewDatasetsRerunsWhenAContributorAppearsUnderTheSameRoster) {
+TEST(BatchEngineTest, ReachNewDatasetsRerunsWhenAContributorAppearsUnderTheSameRoster) {
   PJ::ObjectStore store;
-  MarkerService service(store, resolverOn({1}));
+  BatchEngine service(store, resolverOn({1}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
   const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
@@ -1188,9 +1187,9 @@ TEST(MarkerServiceTest, ReachNewDatasetsRerunsWhenAContributorAppearsUnderTheSam
 // A recompute that finds no contributor left for an existing Global rule (the last
 // one was replaced by data without its inputs) empties the set instead of leaving
 // the stale findings on screen; only the initial upsert treats it as an error.
-TEST(MarkerServiceTest, RecomputeWithNoContributorLeftClearsTheSharedSet) {
+TEST(BatchEngineTest, RecomputeWithNoContributorLeftClearsTheSharedSet) {
   PJ::ObjectStore store;
-  MarkerService service(store, resolverOn({1}));
+  BatchEngine service(store, resolverOn({1}));
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1}; });
   ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
   const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
@@ -1205,9 +1204,9 @@ TEST(MarkerServiceTest, RecomputeWithNoContributorLeftClearsTheSharedSet) {
 
 // The owner separator is reserved: an id or output key carrying it would make two
 // different (key, owner) pairs spell the same object topic.
-TEST(MarkerServiceTest, UpsertRejectsTheOwnerSeparatorInIdsAndOutputs) {
+TEST(BatchEngineTest, UpsertRejectsTheOwnerSeparatorInIdsAndOutputs) {
   PJ::ObjectStore store;
-  MarkerService service(store, rampResolver(5));
+  BatchEngine service(store, rampResolver(5));
 
   EXPECT_FALSE(service.upsertGenerator(markerRecipe("plug/a#b", "in", "createMarker(0.0)\n")).has_value());
   EXPECT_FALSE(service.upsertGenerator(markerRecipe("plug/a", "in#x", "createMarker(0.0)\n")).has_value());
@@ -1218,10 +1217,10 @@ TEST(MarkerServiceTest, UpsertRejectsTheOwnerSeparatorInIdsAndOutputs) {
 // Production ordering: a dataset's commit recompute runs BEFORE the catalog (the
 // dataset lister and the series resolver) publishes it, so no recompute ever sees
 // the new dataset — the catalog publication itself must re-run every Global rule.
-TEST(MarkerServiceTest, ANewlyCatalogedContributorJoinsTheGlobalSet) {
+TEST(BatchEngineTest, ANewlyCatalogedContributorJoinsTheGlobalSet) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
-  MarkerService& service = session.markerService();
+  BatchEngine& service = session.batchEngine();
   service.setDatasetLister([&catalog] { return catalog.datasetIds(); });
 
   const auto commit_scalar = [&session](PJ::DatasetId dataset, std::string_view topic) {
@@ -1254,10 +1253,10 @@ TEST(MarkerServiceTest, ANewlyCatalogedContributorJoinsTheGlobalSet) {
 // A refill publishes markers for the data it attempted; a rollback restores the
 // dataset but the shared set lives outside it, so the rollback must re-run the
 // generators over the restored data.
-TEST(MarkerServiceTest, RefillRollbackRecomputesTheSharedSet) {
+TEST(BatchEngineTest, RefillRollbackRecomputesTheSharedSet) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
-  MarkerService& service = session.markerService();
+  BatchEngine& service = session.batchEngine();
   service.setDatasetLister([&catalog] { return catalog.datasetIds(); });
 
   const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
@@ -1277,11 +1276,11 @@ TEST(MarkerServiceTest, RefillRollbackRecomputesTheSharedSet) {
   {
     PJ::RefillGuard guard = session.beginRefill(*dataset);
     // The attempted refill's series starts at t = 5 where the original started at 0.
-    service.setResolver([](PJ::DatasetId, const std::string& key) -> std::optional<MarkerService::ResolvedSeries> {
+    service.setResolver([](PJ::DatasetId, const std::string& key) -> std::optional<BatchEngine::ResolvedSeries> {
       if (key != "in") {
         return std::nullopt;
       }
-      MarkerService::ResolvedSeries series;
+      BatchEngine::ResolvedSeries series;
       series.timestamps = {5.0};
       series.values = {0.0};
       return series;
@@ -1300,10 +1299,10 @@ TEST(MarkerServiceTest, RefillRollbackRecomputesTheSharedSet) {
 // A Source Timeline drag moves a dataset's display offset. A Global set is stored in
 // the display frame and read there, so the drag republishes nothing: no serialize,
 // no markersChanged, the shared topic keeps its entry.
-TEST(MarkerServiceTest, ASourceTimelineDragRepublishesNoMarkerSet) {
+TEST(BatchEngineTest, ASourceTimelineDragRepublishesNoMarkerSet) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
-  MarkerService& service = session.markerService();
+  BatchEngine& service = session.batchEngine();
   service.setDatasetLister([&catalog] { return catalog.datasetIds(); });
 
   const auto domain = session.dataEngine().createTimeDomain("a");

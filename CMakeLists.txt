@@ -278,7 +278,7 @@ endif()
 if(NOT EMSCRIPTEN)
     add_subdirectory(resources)
 endif()
-# pj_datastore: columnar store + DerivedEngine + the data-processor execution
+# pj_datastore: columnar store + IncrementalEngine + the data-processor execution
 # substrate (DataProcessor base + ProcessorSisoAdapter, formerly pj_proc).
 add_subdirectory(pj_datastore)
 

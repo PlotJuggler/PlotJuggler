@@ -1,7 +1,7 @@
 # pj_datastore Architecture
 
 > **Scope:** this document covers the **scalar `DataEngine` path** — the columnar
-> store, encoding, queries, and `DerivedEngine`. The library also compiles three
+> store, encoding, queries, and `IncrementalEngine`. The library also compiles three
 > first-class components documented elsewhere or summarized below: the opaque-blob
 > **`ObjectStore`** (its own doc, [`OBJECT_STORE_DESIGN.md`](./OBJECT_STORE_DESIGN.md)),
 > the **`ColorMapRegistry`** + its C-ABI host (§3 *Color Map Layer*), and the
@@ -136,7 +136,7 @@ Encoding selection in `TopicChunkBuilder::seal()`:
 
 ### Derived Layer
 
-**`DerivedEngine`** — Manages a transform DAG. Uses pimpl (`DerivedEngineImpl`). Key operations:
+**`IncrementalEngine`** — Manages a transform DAG. Uses pimpl (`IncrementalEngineImpl`). Key operations:
 
 - `addSisoTransform()` — registers a single-input/single-output node. Input must be a single-column topic. Creates an output scalar topic. Returns `NodeId`.
 - `addMimoTransform()` — registers a multi-input/multi-output node. All inputs must be single-column. Creates N output topics.
@@ -196,7 +196,7 @@ For the swap to be transparent to plugins that **cache** `TopicHandle`/`FieldHan
 4. `finishRow()` pads unset columns with null, updates per-column stats
 5. If builder is full (`rowCount >= max_chunk_rows`): `autoSeal()` seals builder, moves `TopicChunk` to `pending_chunks_`
 6. Host calls `flushPending()` -> `DataWriter::flushAll()` seals remaining builders -> `DataEngine::commitChunks()` appends to `TopicStorage`
-7. Chunks are now visible to readers and derived engine
+7. Chunks are now visible to readers and incremental engine
 
 ### Bulk Ingest
 
@@ -223,8 +223,8 @@ For the swap to be transparent to plugins that **cache** `TopicHandle`/`FieldHan
 ### Derived Scheduling
 
 1. `engine.commitChunks()` returns changed topic IDs
-2. Caller invokes `derivedEngine.onSourceCommitted(changed_topics)` -> marks dependent nodes dirty
-3. `derivedEngine.scheduleAll()` processes dirty nodes in topological order
+2. Caller invokes `incrementalEngine.onSourceCommitted(changed_topics)` -> marks dependent nodes dirty
+3. `incrementalEngine.scheduleAll()` processes dirty nodes in topological order
 4. For each dirty SISO node: iterate new input chunks (id > `last_processed_chunk_id`), read each row, call `transform.calculate()`, write output via `beginRow`/`set`/`finishRow`, flush + commit
 5. For each dirty MIMO node: iterate primary input's new chunks, for each timestamp check all other inputs via `latestAt()`, call `transform.calculate()` only when all inputs have matching timestamps
 
@@ -242,7 +242,7 @@ For the swap to be transparent to plugins that **cache** `TopicHandle`/`FieldHan
 ## 6. Threading Model
 
 `DataEngine` is guarded by one `std::recursive_mutex` (`Impl::mutex_`). The store
-has exactly one reader thread (the Qt GUI: plot/catalog reads + `DerivedEngine`
+has exactly one reader thread (the Qt GUI: plot/catalog reads + `IncrementalEngine`
 recompute) and one-or-more ingest worker threads, so an exclusive lock is
 equivalent to a reader-writer lock here and simpler. EVERY engine access — read or
 write, on any thread — holds the lock via `lockEngine()`. `DataWriter` accumulates
@@ -277,7 +277,7 @@ Coordinated mechanisms:
    builder mutations serialize against GUI reads. (`TopicStorage` has no internal
    lock; the engine lock is its mutual exclusion.) `TypeRegistry` likewise has no
    internal lock and is covered by the engine lock — every `lookup`/`registerOrGet`
-   site (`DerivedEngine::addSisoTransform`/`addMimoTransform`, the write host, the
+   site (`IncrementalEngine::addSisoTransform`/`addMimoTransform`, the write host, the
    reader) holds `lockEngine()`. The GUI bypass readers
    `CatalogModel::rebuildFromDatastore` / `PointSeriesXY` take it too.
 4. **Append vs. free/move asymmetry.** `commitChunks` only `push_back`s, so a
@@ -307,7 +307,7 @@ mutex this is an efficiency detail, not a deadlock guard.
 | `latestAt` | GUI | `lockEngine()`; value materialized before release |
 | `getTopicStorage` (raw ptr) | any | none — caller must hold `lockEngine()` for the pointer's lifetime |
 | `clearDatasetChunks`/`retireTopic`/`flushTo`/`replaceDatasetFrom`/`enforceRetention` | GUI only | `lockEngine()` + drop-cached-pointers drain first |
-| `DerivedEngine` recompute / `addSisoTransform`/`addMimoTransform` | GUI | `lockEngine()` across the read-modify-write |
+| `IncrementalEngine` recompute / `addSisoTransform`/`addMimoTransform` | GUI | `lockEngine()` across the read-modify-write |
 
 The `ObjectStore` half has its own independent `std::shared_mutex` (see
 `docs/OBJECT_STORE_DESIGN.md`); the two stores' locks are independent and must
@@ -347,7 +347,7 @@ ThreadSanitizer (`./build.sh --tsan`, and the Linux CI `tsan` job).
 | `query_test` | `RangeCursor`, `latestAt`, edge cases |
 | `series_reader_test` | `SeriesReader`, `SeriesCursor`, series sample bounds/lookups |
 | `engine_integration_test` | Full `DataEngine` + `DataWriter` + `DataReader` round-trip |
-| `derived_engine_test` | SISO/MIMO transforms, topological order, incremental + batch recompute |
+| `incremental_engine_test` | SISO/MIMO transforms, topological order, incremental + batch recompute |
 | `array_expansion_test` | `expandArray`, clamping, cross-builder expansion |
 | `regression_test` | Bug-specific regression cases |
 | `sequential_uid_test` | `SequentialUID` allocation |
@@ -358,7 +358,7 @@ ThreadSanitizer (`./build.sh --tsan`, and the Linux CI `tsan` job).
 | `streaming_mirror_test` | streaming two-engine `flushTo`/`setTarget` mirror |
 | `sample_test` | `Sample` value type |
 | `data_processor_test` | `PJ::proc::DataProcessor` base |
-| `processor_siso_adapter_test` | `ProcessorSisoAdapter` (processor as DerivedEngine node) |
+| `processor_siso_adapter_test` | `ProcessorSisoAdapter` (processor as IncrementalEngine node) |
 | `arrow_import_test` | Arrow IPC schema parsing and batch import |
 | `arrow_stream_round_trip_test` | v4 Arrow C Data Interface round-trip (Phase 1b) |
 

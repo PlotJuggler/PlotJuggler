@@ -3,7 +3,7 @@
 
 // M4.2 Task 4 — the DataProcessorService *transform* API (plugin-created,
 // named, owned, persisted nodes), distinct from the per-curve filter path.
-// Transforms share the eager DerivedEngine substrate but live in their own
+// Transforms share the eager IncrementalEngine substrate but live in their own
 // recipe map keyed by "<plugin_id>/<id>".
 
 #include <gtest/gtest.h>
@@ -23,13 +23,13 @@
 #include "pj_base/dataset.hpp"
 #include "pj_base/type_tree.hpp"
 #include "pj_base/types.hpp"
-#include "pj_datastore/derived_engine.hpp"
 #include "pj_datastore/engine.hpp"
+#include "pj_datastore/incremental_engine.hpp"
 #include "pj_datastore/query.hpp"
 #include "pj_datastore/topic_storage.hpp"
 #include "pj_datastore/writer.hpp"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/DataProcessorService.h"
-#include "pj_runtime/MarkerService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scripting/filter_catalogue.h"
 #include "pj_scripting/script_engine.h"
@@ -275,7 +275,7 @@ TEST(DataProcessorTransformTest, RemoveFilterRejectsTransformNodeId) {
   ASSERT_TRUE(recipe.has_value()) << recipe.error();
 
   EXPECT_FALSE(fx.service.removeFilter(recipe->node_id).has_value());
-  EXPECT_TRUE(fx.service.derivedEngine().hasNode(recipe->node_id));
+  EXPECT_TRUE(fx.service.incrementalEngine().hasNode(recipe->node_id));
   EXPECT_TRUE(fx.listed(recipe->output_topic_ids.front()));
 }
 
@@ -330,8 +330,8 @@ TEST(DataProcessorTransformTest, ReplacingUpstreamPreservesAndRecomputesExactTop
   ASSERT_TRUE(replaced.has_value()) << replaced.error();
   EXPECT_EQ(replaced->node_id, parent->node_id);
   EXPECT_EQ(replaced->output_topic_ids, parent->output_topic_ids);
-  EXPECT_TRUE(fx.service.derivedEngine().hasNode(child->node_id));
-  EXPECT_TRUE(fx.service.derivedEngine().hasNode(filtered->node_id));
+  EXPECT_TRUE(fx.service.incrementalEngine().hasNode(child->node_id));
+  EXPECT_TRUE(fx.service.incrementalEngine().hasNode(filtered->node_id));
   EXPECT_EQ(readValues(fx.engine, parent->output_topic_ids.front()), (std::vector<double>{10.0, 20.0}));
   EXPECT_EQ(readValues(fx.engine, child->output_topic_ids.front()), (std::vector<double>{-10.0, -20.0}));
   EXPECT_EQ(readValues(fx.engine, filtered->output_topic_id), (std::vector<double>{-20.0, -40.0}));
@@ -349,8 +349,8 @@ TEST(DataProcessorTransformTest, FailedCompatibleReplacementRollsBackRootAndDepe
   const auto failed = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kNegateBoom, "{}");
   ASSERT_FALSE(failed.has_value());
   EXPECT_EQ(fx.service.transformRecipes().size(), 2u);
-  EXPECT_TRUE(fx.service.derivedEngine().hasNode(parent->node_id));
-  EXPECT_TRUE(fx.service.derivedEngine().hasNode(child->node_id));
+  EXPECT_TRUE(fx.service.incrementalEngine().hasNode(parent->node_id));
+  EXPECT_TRUE(fx.service.incrementalEngine().hasNode(child->node_id));
   EXPECT_EQ(readValues(fx.engine, parent->output_topic_ids.front()), (std::vector<double>{-1.0, -2.0}));
   EXPECT_EQ(readValues(fx.engine, child->output_topic_ids.front()), (std::vector<double>{1.0, 2.0}));
 }
@@ -367,8 +367,8 @@ TEST(DataProcessorTransformTest, StructuralReplacementIsRejectedWithoutMutatingG
   const auto rejected = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"renamed"}, kTimes10, "{}");
   ASSERT_FALSE(rejected.has_value());
   EXPECT_EQ(fx.service.transformRecipes().size(), 2u);
-  EXPECT_TRUE(fx.service.derivedEngine().hasNode(parent->node_id));
-  EXPECT_TRUE(fx.service.derivedEngine().hasNode(child->node_id));
+  EXPECT_TRUE(fx.service.incrementalEngine().hasNode(parent->node_id));
+  EXPECT_TRUE(fx.service.incrementalEngine().hasNode(child->node_id));
   EXPECT_EQ(readValues(fx.engine, parent->output_topic_ids.front()), (std::vector<double>{-1.0, -2.0}));
   EXPECT_EQ(readValues(fx.engine, child->output_topic_ids.front()), (std::vector<double>{1.0, 2.0}));
 }
@@ -1049,14 +1049,14 @@ TEST(DataProcessorTransformTest, StrandPreflightSeesGroupedTransformOutputTopic)
   const auto grouped = fx.service.upsertTransform("pluginA", "split", {"speed"}, {"rpy:a,b"}, kSplit, "{}");
   ASSERT_TRUE(grouped.has_value()) << grouped.error();
 
-  MarkerService& markers = fx.session.markerService();
+  BatchEngine& markers = fx.session.batchEngine();
   markers.setResolver([](DatasetId, const std::string&) {
-    MarkerService::ResolvedSeries series;
+    BatchEngine::ResolvedSeries series;
     series.timestamps = {0.0};
     series.values = {1.0};
-    return std::optional<MarkerService::ResolvedSeries>{std::move(series)};
+    return std::optional<BatchEngine::ResolvedSeries>{std::move(series)};
   });
-  MarkerService::GeneratorRecipe exempt;
+  BatchEngine::GeneratorRecipe exempt;
   exempt.id = "assistant/exempt";
   exempt.kind = GeneratorKind::kMarkers;
   exempt.dataset_id = fx.ds;
@@ -1438,7 +1438,7 @@ TEST(DataProcessorTimeSliceTest, ChainedProcessorFollowsWithinTheBudget) {
   ASSERT_TRUE(parent.has_value()) << parent.error();
   auto child = createAccumulator(fx.service, "slow", "acc_out", "slow_out", 1.0, false, /*extra_work=*/200);
   ASSERT_TRUE(child.has_value()) << child.error();
-  ASSERT_EQ(fx.service.derivedEngine().deferredNodes(), std::vector<NodeId>{parent->node_id});
+  ASSERT_EQ(fx.service.incrementalEngine().deferredNodes(), std::vector<NodeId>{parent->node_id});
 
   const SliceLog log = stepUntilDone(fx.service);
   EXPECT_LT(log.longest, 4 * DataProcessorService::kMaterializationSliceBudget);
@@ -1460,11 +1460,11 @@ TEST(DataProcessorTimeSliceTest, FinishPendingCompletesOnlyTheReplayBehindTheRea
   ASSERT_TRUE(fx.service.materializationPending());
 
   fx.service.finishPendingMaterialization(fx.input);  // not a replay output
-  const std::vector<NodeId> pending = fx.service.derivedEngine().deferredNodes();
+  const std::vector<NodeId> pending = fx.service.incrementalEngine().deferredNodes();
   EXPECT_NE(std::find(pending.begin(), pending.end(), first->node_id), pending.end());
 
   fx.engine.awaitCompleteSeries(chained->output_topic_ids.front());
-  const std::vector<NodeId> left = fx.service.derivedEngine().deferredNodes();
+  const std::vector<NodeId> left = fx.service.incrementalEngine().deferredNodes();
   EXPECT_EQ(left, std::vector<NodeId>{second->node_id});
   EXPECT_EQ(readRows(fx.engine, first->output_topic_ids.front()), synchronousAccumulator(fx, "x"));
   EXPECT_EQ(readRows(fx.engine, chained->output_topic_ids.front()), synchronousAccumulator(fx, "first_out"));
@@ -1480,13 +1480,13 @@ TEST(DataProcessorTimeSliceTest, CompleteReadFromAnotherThreadLeavesTheReplayPen
   auto sliced = createAccumulator(fx.service, "acc", "x", "acc_out");
   ASSERT_TRUE(sliced.has_value()) << sliced.error();
   ASSERT_TRUE(fx.service.materializationPending());
-  const std::vector<NodeId> pending = fx.service.derivedEngine().deferredNodes();
+  const std::vector<NodeId> pending = fx.service.incrementalEngine().deferredNodes();
 
   std::thread reader([&fx, out = sliced->output_topic_ids.front()] { fx.engine.awaitCompleteSeries(out); });
   reader.join();
 
   EXPECT_TRUE(fx.service.materializationPending());
-  EXPECT_EQ(fx.service.derivedEngine().deferredNodes(), pending);
+  EXPECT_EQ(fx.service.incrementalEngine().deferredNodes(), pending);
   fx.engine.awaitCompleteSeries(sliced->output_topic_ids.front());  // the GUI thread still completes it
   EXPECT_FALSE(fx.service.materializationPending());
 }
@@ -1502,13 +1502,13 @@ TEST(DataProcessorTimeSliceTest, MarkerGeneratorReadsTheCompleteOutput) {
   // Stand-in for the shell's catalog resolver (MainWindow): the complete-read
   // barrier, then the rows it hands the generator.
   std::size_t rows_seen = 0;
-  fx.session.markerService().setResolver(
-      [&](DatasetId, const std::string& key) -> std::optional<MarkerService::ResolvedSeries> {
+  fx.session.batchEngine().setResolver(
+      [&](DatasetId, const std::string& key) -> std::optional<BatchEngine::ResolvedSeries> {
         if (key != "acc_out/value") {
           return std::nullopt;
         }
         fx.engine.awaitCompleteSeries(out);
-        MarkerService::ResolvedSeries resolved;
+        BatchEngine::ResolvedSeries resolved;
         for (const auto& [ts, value] : readRows(fx.engine, out)) {
           resolved.timestamps.push_back(static_cast<double>(ts));
           resolved.values.push_back(value);
@@ -1516,14 +1516,14 @@ TEST(DataProcessorTimeSliceTest, MarkerGeneratorReadsTheCompleteOutput) {
         rows_seen = resolved.values.size();
         return resolved;
       });
-  MarkerService::GeneratorRecipe recipe;
+  BatchEngine::GeneratorRecipe recipe;
   recipe.id = "p/gen";
   recipe.kind = GeneratorKind::kMarkers;
   recipe.dataset_id = fx.ds;
   recipe.inputs = {"acc_out/value"};
   recipe.outputs = {"acc_markers"};
   recipe.script = "local s = series(\"acc_out/value\")\ncreateMarker(s:at(0).t, s:at(0).v, {label=\"first\"})\n";
-  ASSERT_TRUE(fx.session.markerService().upsertGenerator(recipe).has_value());
+  ASSERT_TRUE(fx.session.batchEngine().upsertGenerator(recipe).has_value());
 
   EXPECT_EQ(rows_seen, kLargeRows);
   EXPECT_FALSE(fx.service.materializationPending());

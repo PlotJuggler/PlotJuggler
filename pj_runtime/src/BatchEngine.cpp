@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include "pj_runtime/MarkerService.h"
+#include "pj_runtime/BatchEngine.h"
 
 #include <algorithm>
 #include <iterator>
@@ -27,14 +27,14 @@ namespace {
 /// by the returned map for the duration of the script run (the provider hands out
 /// pointers into it).
 std::unordered_map<std::string, scripting::SeriesView> materializeInputs(
-    const MarkerService::SeriesResolver& resolver, DatasetId dataset_id, const std::vector<std::string>& inputs) {
+    const BatchEngine::SeriesResolver& resolver, DatasetId dataset_id, const std::vector<std::string>& inputs) {
   std::unordered_map<std::string, scripting::SeriesView> views;
   views.reserve(inputs.size());
   if (!resolver) {
     return views;
   }
   for (const std::string& key : inputs) {
-    std::optional<MarkerService::ResolvedSeries> resolved = resolver(dataset_id, key);
+    std::optional<BatchEngine::ResolvedSeries> resolved = resolver(dataset_id, key);
     if (!resolved.has_value()) {
       continue;  // unknown key → absent; the script's series(key) sees no data
     }
@@ -102,26 +102,26 @@ bool seriesKeyBelongsToTopic(const std::string& key, const std::string& topic) {
 
 }  // namespace
 
-MarkerService::MarkerService(ObjectStore& object_store, SeriesResolver resolver)
+BatchEngine::BatchEngine(ObjectStore& object_store, SeriesResolver resolver)
     : object_store_(object_store), resolver_(std::move(resolver)) {}
 
-void MarkerService::setResolver(SeriesResolver resolver) {
+void BatchEngine::setResolver(SeriesResolver resolver) {
   resolver_ = std::move(resolver);
 }
 
-void MarkerService::setDatasetLister(DatasetLister lister) {
+void BatchEngine::setDatasetLister(DatasetLister lister) {
   dataset_lister_ = std::move(lister);
 }
 
-void MarkerService::setDisplayOffsetResolver(DisplayOffsetResolver resolver) {
+void BatchEngine::setDisplayOffsetResolver(DisplayOffsetResolver resolver) {
   display_offset_resolver_ = std::move(resolver);
 }
 
-Timestamp MarkerService::displayOffsetOf(DatasetId dataset) const {
+Timestamp BatchEngine::displayOffsetOf(DatasetId dataset) const {
   return display_offset_resolver_ ? display_offset_resolver_(dataset) : Timestamp{0};
 }
 
-std::vector<std::string> MarkerService::reachNewDatasets() {
+std::vector<std::string> BatchEngine::reachNewDatasets() {
   std::vector<std::string> affected;
   for (const GeneratorRecipe& recipe : allRecipes()) {
     if (recipe.all_datasets) {
@@ -131,12 +131,11 @@ std::vector<std::string> MarkerService::reachNewDatasets() {
   return affected;
 }
 
-std::vector<DatasetId> MarkerService::loadedDatasets() const {
+std::vector<DatasetId> BatchEngine::loadedDatasets() const {
   return dataset_lister_ ? dataset_lister_() : std::vector<DatasetId>{};
 }
 
-Status MarkerService::validateScript(
-    GeneratorKind /*kind*/, std::string_view language, const std::string& script) const {
+Status BatchEngine::validateScript(GeneratorKind /*kind*/, std::string_view language, const std::string& script) const {
   if (Status s = checkLanguage(language); !s.has_value()) {
     return s;
   }
@@ -149,7 +148,7 @@ Status MarkerService::validateScript(
 
 // ---- kind=markers ----------------------------------------------------------
 
-Expected<std::optional<sdk::PlotMarkers>> MarkerService::evaluateMarkers(
+Expected<std::optional<sdk::PlotMarkers>> BatchEngine::evaluateMarkers(
     const GeneratorRecipe& recipe, DatasetId dataset_id) {
   std::unordered_map<std::string, scripting::SeriesView> views =
       materializeInputs(resolver_, dataset_id, recipe.inputs);
@@ -167,7 +166,7 @@ Expected<std::optional<sdk::PlotMarkers>> MarkerService::evaluateMarkers(
   return std::optional<sdk::PlotMarkers>{std::move(set)};
 }
 
-Expected<std::vector<std::string>> MarkerService::runMarkers(const GeneratorRecipe& recipe) {
+Expected<std::vector<std::string>> BatchEngine::runMarkers(const GeneratorRecipe& recipe) {
   Expected<std::optional<sdk::PlotMarkers>> set =
       recipe.all_datasets ? computeShared(recipe) : evaluateMarkers(recipe, recipe.dataset_id);
   if (!set.has_value()) {
@@ -183,7 +182,7 @@ Expected<std::vector<std::string>> MarkerService::runMarkers(const GeneratorReci
   return std::vector<std::string>{target.second};
 }
 
-Expected<std::optional<sdk::PlotMarkers>> MarkerService::computeShared(const GeneratorRecipe& recipe) {
+Expected<std::optional<sdk::PlotMarkers>> BatchEngine::computeShared(const GeneratorRecipe& recipe) {
   // Any script error aborts before publishing: a partial union would silently
   // misrepresent the rule on every dataset it is drawn on.
   sdk::PlotMarkers shared;
@@ -206,7 +205,7 @@ Expected<std::optional<sdk::PlotMarkers>> MarkerService::computeShared(const Gen
   return std::optional<sdk::PlotMarkers>{std::move(shared)};
 }
 
-void MarkerService::republishShared(const GeneratorRecipe& recipe, std::vector<std::string>& affected) {
+void BatchEngine::republishShared(const GeneratorRecipe& recipe, std::vector<std::string>& affected) {
   Expected<std::optional<sdk::PlotMarkers>> shared = computeShared(recipe);
   if (!shared.has_value()) {
     return;
@@ -224,7 +223,7 @@ void MarkerService::republishShared(const GeneratorRecipe& recipe, std::vector<s
 
 // ---- routing + lifecycle ---------------------------------------------------
 
-Expected<std::vector<std::string>> MarkerService::runAndPublish(const GeneratorRecipe& recipe) {
+Expected<std::vector<std::string>> BatchEngine::runAndPublish(const GeneratorRecipe& recipe) {
   switch (recipe.kind) {
     case GeneratorKind::kMarkers:
       return runMarkers(recipe);
@@ -232,7 +231,7 @@ Expected<std::vector<std::string>> MarkerService::runAndPublish(const GeneratorR
   return unexpected("unknown generator kind");
 }
 
-void MarkerService::runAndAccumulate(const GeneratorRecipe& recipe, std::vector<std::string>& affected) {
+void BatchEngine::runAndAccumulate(const GeneratorRecipe& recipe, std::vector<std::string>& affected) {
   if (Expected<std::vector<std::string>> resolved = runAndPublish(recipe); resolved.has_value()) {
     for (std::string& topic : *resolved) {
       affected.push_back(std::move(topic));
@@ -240,7 +239,7 @@ void MarkerService::runAndAccumulate(const GeneratorRecipe& recipe, std::vector<
   }
 }
 
-Expected<std::vector<std::string>> MarkerService::upsertGenerator(GeneratorRecipe recipe) {
+Expected<std::vector<std::string>> BatchEngine::upsertGenerator(GeneratorRecipe recipe) {
   if (Status s = checkLanguage(recipe.language); !s.has_value()) {
     return unexpected(s.error());
   }
@@ -318,7 +317,7 @@ Expected<std::vector<std::string>> MarkerService::upsertGenerator(GeneratorRecip
   return resolved;
 }
 
-Status MarkerService::publishMarkerSet(
+Status BatchEngine::publishMarkerSet(
     DatasetId dataset_id, const std::string& object_topic_name, const sdk::PlotMarkers& set) {
   ObjectTopicId topic_id;
   if (const std::optional<ObjectTopicId> existing = object_store_.findTopic(dataset_id, object_topic_name)) {
@@ -336,7 +335,7 @@ Status MarkerService::publishMarkerSet(
   return object_store_.pushOwned(topic_id, Timestamp{0}, serializePlotMarkers(set));
 }
 
-void MarkerService::publishEmptyMarkers(DatasetId dataset_id, const std::string& object_topic_name) {
+void BatchEngine::publishEmptyMarkers(DatasetId dataset_id, const std::string& object_topic_name) {
   // The tombstone must NOT register a topic that was never published — so this uses
   // findTopic directly rather than publishMarkerSet (which registers on a miss).
   const std::optional<ObjectTopicId> topic_id = object_store_.findTopic(dataset_id, object_topic_name);
@@ -346,7 +345,7 @@ void MarkerService::publishEmptyMarkers(DatasetId dataset_id, const std::string&
   (void)object_store_.pushOwned(*topic_id, Timestamp{0}, serializePlotMarkers(sdk::PlotMarkers{}));
 }
 
-sdk::PlotMarkers MarkerService::storedMarkers(ObjectTopicId topic_id, Timestamp shift) const {
+sdk::PlotMarkers BatchEngine::storedMarkers(ObjectTopicId topic_id, Timestamp shift) const {
   const std::optional<ResolvedObjectEntry> entry =
       object_store_.latestAt(topic_id, std::numeric_limits<Timestamp>::max());
   if (!entry.has_value() || entry->payload.bytes.empty()) {
@@ -360,13 +359,13 @@ sdk::PlotMarkers MarkerService::storedMarkers(ObjectTopicId topic_id, Timestamp 
   return std::move(*decoded);
 }
 
-MarkerService::PublishTarget MarkerService::publishTarget(const GeneratorRecipe& recipe) {
+BatchEngine::PublishTarget BatchEngine::publishTarget(const GeneratorRecipe& recipe) {
   return PublishTarget{
       recipe.all_datasets ? kAllDatasetsMarkerDataset : recipe.dataset_id,
       markerOwnerTopicName(recipe.outputs.front(), recipe.id)};
 }
 
-void MarkerService::retireTarget(const PublishTarget& target, bool ephemeral, const PublishTarget* keep) {
+void BatchEngine::retireTarget(const PublishTarget& target, bool ephemeral, const PublishTarget* keep) {
   if (keep != nullptr && *keep == target) {
     return;
   }
@@ -379,7 +378,7 @@ void MarkerService::retireTarget(const PublishTarget& target, bool ephemeral, co
   }
 }
 
-void MarkerService::retireOwnedTopics(std::string_view id, bool ephemeral, const PublishTarget* keep) {
+void BatchEngine::retireOwnedTopics(std::string_view id, bool ephemeral, const PublishTarget* keep) {
   std::string suffix(1, kMarkerOwnerSeparator);
   suffix.append(id);
   for (const ObjectTopicId topic_id : object_store_.listTopics()) {
@@ -390,7 +389,7 @@ void MarkerService::retireOwnedTopics(std::string_view id, bool ephemeral, const
   }
 }
 
-Status MarkerService::removeGenerator(std::string_view id) {
+Status BatchEngine::removeGenerator(std::string_view id) {
   const auto it = recipes_.find(std::string(id));
   if (it == recipes_.end()) {
     return unexpected("unknown generator id");
@@ -400,7 +399,7 @@ Status MarkerService::removeGenerator(std::string_view id) {
   return okStatus();
 }
 
-void MarkerService::remapGeneratorsToAnchor(DatasetId anchor, const std::vector<DatasetId>& consumed) {
+void BatchEngine::remapGeneratorsToAnchor(DatasetId anchor, const std::vector<DatasetId>& consumed) {
   const auto is_consumed = [&consumed](const GeneratorRecipe& recipe) {
     return !recipe.all_datasets && std::find(consumed.begin(), consumed.end(), recipe.dataset_id) != consumed.end();
   };
@@ -426,7 +425,7 @@ void MarkerService::remapGeneratorsToAnchor(DatasetId anchor, const std::vector<
   }
 }
 
-std::vector<std::string> MarkerService::clearGeneratorsForDataset(DatasetId dataset) {
+std::vector<std::string> BatchEngine::clearGeneratorsForDataset(DatasetId dataset) {
   for (auto& [id, bindings] : recipes_) {
     std::erase_if(bindings, [dataset](const GeneratorRecipe& recipe) {
       return !recipe.all_datasets && recipe.dataset_id == dataset;
@@ -446,7 +445,7 @@ std::vector<std::string> MarkerService::clearGeneratorsForDataset(DatasetId data
   return affected;
 }
 
-std::vector<std::string> MarkerService::recomputeForChangedInputs(
+std::vector<std::string> BatchEngine::recomputeForChangedInputs(
     const std::vector<std::string>& changed, DatasetId scope) {
   std::vector<std::string> affected;
   for (const GeneratorRecipe& recipe : allRecipes()) {
@@ -474,7 +473,7 @@ std::vector<std::string> MarkerService::recomputeForChangedInputs(
   return affected;
 }
 
-std::vector<std::string> MarkerService::exemptDependentsOf(const std::vector<std::string>& removed_inputs) const {
+std::vector<std::string> BatchEngine::exemptDependentsOf(const std::vector<std::string>& removed_inputs) const {
   std::vector<std::string> outputs;
   for (const GeneratorRecipe& recipe : allRecipes()) {
     if (recipe.ephemeral || !recipe.history_exempt) {
@@ -499,12 +498,12 @@ std::vector<std::string> MarkerService::exemptDependentsOf(const std::vector<std
   return outputs;
 }
 
-bool MarkerService::hasHistoryExemptGenerators() const {
+bool BatchEngine::hasHistoryExemptGenerators() const {
   const auto recipes = allRecipes();
   return std::any_of(recipes.begin(), recipes.end(), [](const GeneratorRecipe& r) { return r.history_exempt; });
 }
 
-void MarkerService::clearGenerators(RestoreIntent intent) {
+void BatchEngine::clearGenerators(RestoreIntent intent) {
   const bool keep_history_exempt = intent == RestoreIntent::kHistory;
   // ephemeral / history_exempt are per-id properties, so the first binding decides.
   std::vector<std::string> ids;
@@ -519,18 +518,18 @@ void MarkerService::clearGenerators(RestoreIntent intent) {
   }
 }
 
-void MarkerService::clearAllGenerators() {
+void BatchEngine::clearAllGenerators() {
   clearGenerators(RestoreIntent::kReplace);
 }
 
-std::vector<std::string> MarkerService::recomputeForDataset(DatasetId dataset) {
+std::vector<std::string> BatchEngine::recomputeForDataset(DatasetId dataset) {
   // Whole-dataset recompute == "everything changed, scoped to this dataset": an empty
   // `changed` re-runs every recipe bound here, plus every all_datasets recipe (its
   // shared set may have this dataset as a contributor).
   return recomputeForChangedInputs(/*changed=*/{}, dataset);
 }
 
-std::vector<std::string> MarkerService::mergeMarkerTopics(
+std::vector<std::string> BatchEngine::mergeMarkerTopics(
     DatasetId anchor, const std::vector<DatasetMergeSource>& sources) {
   // Anchor topic names touched by this merge, republished once each in sorted order.
   std::set<std::string> touched;
@@ -558,7 +557,7 @@ std::vector<std::string> MarkerService::mergeMarkerTopics(
   return {touched.begin(), touched.end()};
 }
 
-std::vector<MarkerService::GeneratorRecipe> MarkerService::recipes() const {
+std::vector<BatchEngine::GeneratorRecipe> BatchEngine::recipes() const {
   std::vector<GeneratorRecipe> out;
   for (const GeneratorRecipe& recipe : allRecipes()) {
     if (!recipe.ephemeral) {
@@ -568,7 +567,7 @@ std::vector<MarkerService::GeneratorRecipe> MarkerService::recipes() const {
   return out;
 }
 
-std::vector<std::string> MarkerService::generatorIds() const {
+std::vector<std::string> BatchEngine::generatorIds() const {
   std::vector<std::string> ids;
   for (const auto& [id, bindings] : recipes_) {
     if (!bindings.front().ephemeral) {
@@ -578,12 +577,12 @@ std::vector<std::string> MarkerService::generatorIds() const {
   return ids;
 }
 
-const MarkerService::GeneratorRecipe* MarkerService::firstBinding(std::string_view id) const {
+const BatchEngine::GeneratorRecipe* BatchEngine::firstBinding(std::string_view id) const {
   const auto it = recipes_.find(std::string(id));
   return it == recipes_.end() ? nullptr : &it->second.front();
 }
 
-std::vector<std::reference_wrapper<const MarkerService::GeneratorRecipe>> MarkerService::allRecipes() const {
+std::vector<std::reference_wrapper<const BatchEngine::GeneratorRecipe>> BatchEngine::allRecipes() const {
   std::vector<std::reference_wrapper<const GeneratorRecipe>> out;
   for (const auto& [id, bindings] : recipes_) {
     out.insert(out.end(), bindings.begin(), bindings.end());
@@ -591,11 +590,11 @@ std::vector<std::reference_wrapper<const MarkerService::GeneratorRecipe>> Marker
   return out;
 }
 
-DatasetId MarkerService::bindingDataset(const GeneratorRecipe& recipe) {
+DatasetId BatchEngine::bindingDataset(const GeneratorRecipe& recipe) {
   return (recipe.all_datasets || recipe.ephemeral) ? kAnyDataset : recipe.dataset_id;
 }
 
-MarkerService::GeneratorRecipe* MarkerService::findBinding(const GeneratorRecipe& recipe) {
+BatchEngine::GeneratorRecipe* BatchEngine::findBinding(const GeneratorRecipe& recipe) {
   const auto it = recipes_.find(recipe.id);
   if (it == recipes_.end()) {
     return nullptr;
@@ -606,8 +605,8 @@ MarkerService::GeneratorRecipe* MarkerService::findBinding(const GeneratorRecipe
   return match == it->second.end() ? nullptr : &*match;
 }
 
-MarkerService::ResolvedSeries readResolvedSeries(const SeriesReader& series) {
-  MarkerService::ResolvedSeries out;
+BatchEngine::ResolvedSeries readResolvedSeries(const SeriesReader& series) {
+  BatchEngine::ResolvedSeries out;
   const std::size_t sample_count = series.size();
   out.timestamps.reserve(sample_count);
   out.values.reserve(sample_count);

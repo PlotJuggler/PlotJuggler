@@ -28,9 +28,9 @@
 #include "pj_plotting/PlotWidgetBase.h"
 #include "pj_plotting/TabbedPlotWidget.h"
 #include "pj_runtime/AppSession.h"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
-#include "pj_runtime/MarkerService.h"
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
@@ -783,7 +783,7 @@ TEST_F(MainWindowHistoryFixture, UndoOfASourceTimelineDragKeepsGlobalMarkersAtTh
   ASSERT_NE(a, 0U);
   ASSERT_NE(b, 0U);
   constexpr std::string_view kRule = "test/global-rule";
-  PJ::MarkerService::GeneratorRecipe recipe;
+  PJ::BatchEngine::GeneratorRecipe recipe;
   recipe.id = std::string(kRule);
   recipe.all_datasets = true;
   recipe.inputs = {"/sensor/value"};
@@ -792,7 +792,7 @@ TEST_F(MainWindowHistoryFixture, UndoOfASourceTimelineDragKeepsGlobalMarkersAtTh
     local s = series("/sensor/value")
     for i = 0, s:size() - 1 do createMarker(s:at(i).t) end
   )";
-  const auto inserted = session.markerService().upsertGenerator(recipe);
+  const auto inserted = session.batchEngine().upsertGenerator(recipe);
   ASSERT_TRUE(inserted.has_value()) << (inserted.has_value() ? std::string{} : inserted.error());
   // Both datasets are aligned, so each contributes its two samples at their raw instants.
   const std::vector<PJ::Timestamp> baseline{100 * kSecond, 100 * kSecond, 110 * kSecond, 110 * kSecond};

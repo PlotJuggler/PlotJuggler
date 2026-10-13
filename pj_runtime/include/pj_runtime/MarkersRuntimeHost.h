@@ -12,15 +12,15 @@
 #include "pj_base/expected.hpp"
 #include "pj_base/plugin_data_api.h"
 #include "pj_base/types.hpp"
-#include "pj_runtime/MarkerService.h"
+#include "pj_runtime/BatchEngine.h"
 
 namespace PJ {
 
 class ServiceRegistryBuilder;
 
 /// Host-side bridge that exposes the unified `pj.data_processors.v1` SDK service to a
-/// plugin and delegates to `MarkerService` (the object engine; this bridge serves only
-/// kind="markers" — kind="transform" is routed to the DerivedEngine bridge, owned by
+/// plugin and delegates to `BatchEngine` (the object engine; this bridge serves only
+/// kind="markers" — kind="transform" is routed to the IncrementalEngine bridge, owned by
 /// the transform-editor work).
 /// Implements the C ABI vtable (trampolines recover `this` from ctx), namespaces
 /// every node id under the calling plugin (so list/remove/config only ever
@@ -28,7 +28,7 @@ class ServiceRegistryBuilder;
 /// dataset the host says is active.
 ///
 /// Lifetime: the bridge is independent of the nodes it created — destroying it
-/// tears down only this object; the nodes keep living in `MarkerService` (the
+/// tears down only this object; the nodes keep living in `BatchEngine` (the
 /// host owns the script + runtime), so a plugin DSO unload never kills a running
 /// node. `service` must outlive this host. Not movable: the vtable fat pointer
 /// stores `this`.
@@ -54,7 +54,7 @@ class MarkersRuntimeHost {
   /// echo as declared. Both `service` and whatever the callbacks read must
   /// outlive this.
   MarkersRuntimeHost(
-      MarkerService& service, std::string plugin_id,
+      BatchEngine& service, std::string plugin_id,
       std::function<Expected<DatasetId>(std::vector<std::string>& inputs, std::vector<std::string>& outputs)>
           active_dataset,
       std::function<std::optional<std::string>(DatasetId)> source_name_of = {});
@@ -82,7 +82,7 @@ class MarkersRuntimeHost {
   static bool onList(
       void* ctx, PJ_string_view_t* out_ids, uint64_t capacity, uint64_t* out_count, PJ_error_t* out_error) noexcept;
   /// A plugin-local id may be bound to several datasets; this reports its
-  /// first-applied binding (`MarkerService::firstBinding`).
+  /// first-applied binding (`BatchEngine::firstBinding`).
   static bool onConfig(
       void* ctx, PJ_string_view_t id, PJ_string_view_t* out_recipe_json, PJ_error_t* out_error) noexcept;
   static bool onValidate(
@@ -95,7 +95,7 @@ class MarkersRuntimeHost {
   /// empty without `source_name_of`.
   [[nodiscard]] std::vector<std::string> loadedSourceNames() const;
 
-  MarkerService& service_;
+  BatchEngine& service_;
   std::string plugin_id_;
   std::function<Expected<DatasetId>(std::vector<std::string>& inputs, std::vector<std::string>& outputs)>
       active_dataset_;

@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include "pj_datastore/derived_engine.hpp"
+#include "pj_datastore/incremental_engine.hpp"
 
 #include <fmt/format.h>
 #include <tsl/robin_map.h>
@@ -243,7 +243,7 @@ struct DerivedNode {
   std::unique_ptr<IMIMOTransform> mimo_op;
   // When true, the M calculate() results are written as M named columns of a SINGLE
   // output topic (output_topic_ids[0]); when false, each result is its own scalar
-  // topic. See DerivedEngine::addMimoTransform's output_topic_group.
+  // topic. See IncrementalEngine::addMimoTransform's output_topic_group.
   bool mimo_grouped = false;
 
   // Common
@@ -271,7 +271,7 @@ struct DerivedNode {
   // scheduling passes skip it.
   PJ::ChunkId resume_chunk_id = 0;
   uint32_t resume_row = 0;
-  // Error of this node's own last run (empty after a successful one); see DerivedEngine::nodeError().
+  // Error of this node's own last run (empty after a successful one); see IncrementalEngine::nodeError().
   std::string error;
 
   // Reusable decode buffers (avoid per-row allocation)
@@ -289,7 +289,7 @@ struct DatasetNameHash {
   }
 };
 
-struct DerivedEngineImpl {
+struct IncrementalEngineImpl {
   tsl::robin_map<PJ::NodeId, DerivedNode> nodes;
 
   // downstream_of[N] = list of nodes whose inputs include an output of N
@@ -306,12 +306,13 @@ struct DerivedEngineImpl {
 };
 
 // ---------------------------------------------------------------------------
-// DerivedEngine — constructor / destructor
+// IncrementalEngine — constructor / destructor
 // ---------------------------------------------------------------------------
 
-DerivedEngine::DerivedEngine(DataEngine& engine) : engine_(engine), impl_(std::make_unique<DerivedEngineImpl>()) {}
+IncrementalEngine::IncrementalEngine(DataEngine& engine)
+    : engine_(engine), impl_(std::make_unique<IncrementalEngineImpl>()) {}
 
-DerivedEngine::~DerivedEngine() = default;
+IncrementalEngine::~IncrementalEngine() = default;
 
 // ---------------------------------------------------------------------------
 // Cycle detection (DFS)
@@ -319,7 +320,7 @@ DerivedEngine::~DerivedEngine() = default;
 // Returns an error string if adding a node with `input_topics → output_topics`
 // would create a cycle. Otherwise returns empty string.
 static std::string checkCycle(
-    const DerivedEngineImpl& impl, const std::vector<PJ::TopicId>& input_topics,
+    const IncrementalEngineImpl& impl, const std::vector<PJ::TopicId>& input_topics,
     const std::vector<PJ::TopicId>& output_topics) {
   tsl::robin_set<PJ::TopicId> outputs(output_topics.begin(), output_topics.end());
 
@@ -363,7 +364,7 @@ static std::string checkCycle(
 // add_siso_transform
 // ---------------------------------------------------------------------------
 
-PJ::Expected<PJ::NodeId> DerivedEngine::addSisoTransform(
+PJ::Expected<PJ::NodeId> IncrementalEngine::addSisoTransform(
     PJ::TopicId input_topic_id, std::string output_topic_name, PJ::DatasetId output_dataset_id,
     std::unique_ptr<ISISOTransform> op, std::size_t input_column_index) {
   // Atomic against worker ingest: the input getTopicStorage() read, the
@@ -464,7 +465,7 @@ PJ::Expected<PJ::NodeId> DerivedEngine::addSisoTransform(
 // add_mimo_transform
 // ---------------------------------------------------------------------------
 
-PJ::Expected<PJ::NodeId> DerivedEngine::addMimoTransform(
+PJ::Expected<PJ::NodeId> IncrementalEngine::addMimoTransform(
     std::vector<PJ::TopicId> input_topic_ids, std::vector<std::string> output_topic_names,
     PJ::DatasetId output_dataset_id, std::unique_ptr<IMIMOTransform> op, std::vector<std::size_t> input_columns,
     std::string output_topic_group) {
@@ -654,7 +655,7 @@ PJ::Expected<PJ::NodeId> DerivedEngine::addMimoTransform(
 // Node management
 // ---------------------------------------------------------------------------
 
-PJ::Status DerivedEngine::removeNode(PJ::NodeId id) {
+PJ::Status IncrementalEngine::removeNode(PJ::NodeId id) {
   auto it = impl_->nodes.find(id);
   if (it == impl_->nodes.end()) {
     return PJ::unexpected(fmt::format("remove_node: node {} not found", id));
@@ -691,11 +692,11 @@ PJ::Status DerivedEngine::removeNode(PJ::NodeId id) {
   return PJ::okStatus();
 }
 
-bool DerivedEngine::hasNode(PJ::NodeId id) const noexcept {
+bool IncrementalEngine::hasNode(PJ::NodeId id) const noexcept {
   return impl_->nodes.contains(id);
 }
 
-std::vector<PJ::TopicId> DerivedEngine::outputTopics(PJ::NodeId id) const {
+std::vector<PJ::TopicId> IncrementalEngine::outputTopics(PJ::NodeId id) const {
   auto it = impl_->nodes.find(id);
   if (it == impl_->nodes.end()) {
     return {};
@@ -707,7 +708,7 @@ std::vector<PJ::TopicId> DerivedEngine::outputTopics(PJ::NodeId id) const {
 // topological_order — Kahn's algorithm
 // ---------------------------------------------------------------------------
 
-std::vector<PJ::NodeId> DerivedEngine::topologicalOrder() const {
+std::vector<PJ::NodeId> IncrementalEngine::topologicalOrder() const {
   tsl::robin_map<PJ::NodeId, int> in_degree;
   for (const auto& [id, _] : impl_->nodes) {
     in_degree[id] = 0;
@@ -767,7 +768,7 @@ std::vector<PJ::NodeId> DerivedEngine::topologicalOrder() const {
 // on_source_committed
 // ---------------------------------------------------------------------------
 
-void DerivedEngine::onSourceCommitted(PJ::Span<const PJ::TopicId> changed_topics) {
+void IncrementalEngine::onSourceCommitted(PJ::Span<const PJ::TopicId> changed_topics) {
   for (PJ::TopicId tid : changed_topics) {
     auto it = impl_->topic_to_nodes.find(tid);
     if (it == impl_->topic_to_nodes.end()) {
@@ -800,7 +801,7 @@ static bool isDeferred(const DerivedNode& node) {
 // the per-chunk path stops at the first clock check past it, leaving resume_chunk_id/row
 // for the next call (the node is then deferred).
 static PJ::Status runSisoIncremental(
-    DerivedEngineImpl& /*impl*/, DataEngine& engine, DerivedNode& node, const SteadyTimePoint* deadline = nullptr) {
+    IncrementalEngineImpl& /*impl*/, DataEngine& engine, DerivedNode& node, const SteadyTimePoint* deadline = nullptr) {
   const TopicStorage* in_storage = engine.getTopicStorage(node.siso_input_topic_id);
   if (!in_storage) {
     return PJ::unexpected(fmt::format("run_siso_incremental: input topic {} not found", node.siso_input_topic_id));
@@ -921,7 +922,7 @@ static PJ::Status runSisoIncremental(
 // run_mimo_incremental
 // ---------------------------------------------------------------------------
 
-static PJ::Status runMimoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& engine, DerivedNode& node) {
+static PJ::Status runMimoIncremental(IncrementalEngineImpl& /*impl*/, DataEngine& engine, DerivedNode& node) {
   const std::size_t num_inputs = node.mimo_input_topic_ids.size();
   if (num_inputs == 0) {
     return PJ::okStatus();
@@ -1165,21 +1166,21 @@ static bool nodeInputRegressed(DataEngine& engine, const DerivedNode& node) {
 // scheduleAll / scheduleActive
 // ---------------------------------------------------------------------------
 
-PJ::Status DerivedEngine::scheduleAll() {
+PJ::Status IncrementalEngine::scheduleAll() {
   return scheduleActive({});
 }
 
-PJ::Status DerivedEngine::scheduleActive(const std::unordered_set<PJ::NodeId>& active_nodes) {
+PJ::Status IncrementalEngine::scheduleActive(const std::unordered_set<PJ::NodeId>& active_nodes) {
   // Hold the engine exclusively for the whole pass: the leaf run/regress/batch
   // helpers read source chunks and commit derived outputs via NON-locking engine
   // ops, so one unique lock makes the recompute atomic against the streaming
-  // worker (DerivedEngine runs only on the GUI thread, so this blocks only the
+  // worker (IncrementalEngine runs only on the GUI thread, so this blocks only the
   // worker, briefly). See engine.hpp lockEngine() / commitChunksLocked().
   auto lock = engine_.lockEngine();
   return scheduleActiveLocked(active_nodes);
 }
 
-PJ::Status DerivedEngine::scheduleActiveLocked(const std::unordered_set<PJ::NodeId>& active_nodes) {
+PJ::Status IncrementalEngine::scheduleActiveLocked(const std::unordered_set<PJ::NodeId>& active_nodes) {
   auto order = topologicalOrder();
 
   // Compute the set of nodes to consider (active_nodes ∪ their transitive upstream deps).
@@ -1305,7 +1306,7 @@ class DetachedOutputGuard {
 // A non-successful exit also leaves the node dirty and flagged needs_full_recompute, because
 // the watermarks were reset while the output was rolled back to the pre-call rows: only
 // another full replay can reconcile the two (see DerivedNode::needs_full_recompute).
-static PJ::Status recomputeNodeSelfOnly(DerivedEngineImpl& impl, DataEngine& engine, DerivedNode& node) {
+static PJ::Status recomputeNodeSelfOnly(IncrementalEngineImpl& impl, DataEngine& engine, DerivedNode& node) {
   // 1. Detach each output topic's current chunks aside instead of clearing them, so any
   //    early exit below can undo the replay.
   DetachedOutputGuard detached_outputs(node.output_topic_ids.size());
@@ -1361,7 +1362,7 @@ static PJ::Status recomputeNodeSelfOnly(DerivedEngineImpl& impl, DataEngine& eng
   return PJ::okStatus();
 }
 
-static void markDownstreamDirty(DerivedEngineImpl& impl, PJ::NodeId node_id) {
+static void markDownstreamDirty(IncrementalEngineImpl& impl, PJ::NodeId node_id) {
   if (auto dit = impl.downstream_of.find(node_id); dit != impl.downstream_of.end()) {
     for (PJ::NodeId downstream : dit->second) {
       if (auto dnit = impl.nodes.find(downstream); dnit != impl.nodes.end()) {
@@ -1371,7 +1372,7 @@ static void markDownstreamDirty(DerivedEngineImpl& impl, PJ::NodeId node_id) {
   }
 }
 
-PJ::Status DerivedEngine::runNodeLocked(PJ::NodeId node_id, const SteadyTimePoint* deadline) {
+PJ::Status IncrementalEngine::runNodeLocked(PJ::NodeId node_id, const SteadyTimePoint* deadline) {
   DerivedNode& node = impl_->nodes.at(node_id);
   PJ::Status s = PJ::okStatus();
   const bool full_recompute = node.needs_full_recompute || nodeInputRegressed(engine_, node);
@@ -1417,7 +1418,7 @@ PJ::Status DerivedEngine::runNodeLocked(PJ::NodeId node_id, const SteadyTimePoin
   return s;
 }
 
-PJ::Expected<bool> DerivedEngine::materializeStep(PJ::NodeId node_id, std::chrono::nanoseconds budget) {
+PJ::Expected<bool> IncrementalEngine::materializeStep(PJ::NodeId node_id, std::chrono::nanoseconds budget) {
   const SteadyTimePoint deadline = std::chrono::steady_clock::now() + budget;
   auto lock = engine_.lockEngine();
   auto it = impl_->nodes.find(node_id);
@@ -1433,7 +1434,7 @@ PJ::Expected<bool> DerivedEngine::materializeStep(PJ::NodeId node_id, std::chron
   return !isDeferred(impl_->nodes.at(node_id));
 }
 
-std::vector<PJ::NodeId> DerivedEngine::deferredNodes() const {
+std::vector<PJ::NodeId> IncrementalEngine::deferredNodes() const {
   std::vector<PJ::NodeId> deferred;
   for (const auto& [id, node] : impl_->nodes) {
     if (isDeferred(node)) {
@@ -1444,17 +1445,17 @@ std::vector<PJ::NodeId> DerivedEngine::deferredNodes() const {
   return deferred;
 }
 
-std::string DerivedEngine::nodeError(PJ::NodeId node_id) const {
+std::string IncrementalEngine::nodeError(PJ::NodeId node_id) const {
   const auto it = impl_->nodes.find(node_id);
   return it != impl_->nodes.end() ? it->second.error : std::string{};
 }
 
-PJ::Status DerivedEngine::recomputeBatch(PJ::NodeId node_id) {
+PJ::Status IncrementalEngine::recomputeBatch(PJ::NodeId node_id) {
   auto lock = engine_.lockEngine();  // exclusive for the whole clear+replay cascade
   return recomputeBatchLocked(node_id);
 }
 
-PJ::Status DerivedEngine::recomputeBatch(PJ::Span<const PJ::NodeId> root_node_ids) {
+PJ::Status IncrementalEngine::recomputeBatch(PJ::Span<const PJ::NodeId> root_node_ids) {
   auto lock = engine_.lockEngine();
   return recomputeBatchLocked(root_node_ids);
 }
@@ -1462,7 +1463,7 @@ PJ::Status DerivedEngine::recomputeBatch(PJ::Span<const PJ::NodeId> root_node_id
 // Transitive downstream set over the node graph; seeds join the result only
 // when include_seeds (the single-root cascade wants strictly-downstream).
 static tsl::robin_set<PJ::NodeId> downstreamClosure(
-    const DerivedEngineImpl& impl, PJ::Span<const PJ::NodeId> seeds, bool include_seeds) {
+    const IncrementalEngineImpl& impl, PJ::Span<const PJ::NodeId> seeds, bool include_seeds) {
   tsl::robin_set<PJ::NodeId> reachable;
   std::queue<PJ::NodeId> pending;
   for (const PJ::NodeId seed : seeds) {
@@ -1491,7 +1492,7 @@ static tsl::robin_set<PJ::NodeId> downstreamClosure(
 // scheduleActive's resilience: keeps replaying the rest of the set and returns
 // only the first error.
 static PJ::Status replayNodes(
-    DerivedEngineImpl& impl, DataEngine& engine, const std::vector<PJ::NodeId>& topo_order,
+    IncrementalEngineImpl& impl, DataEngine& engine, const std::vector<PJ::NodeId>& topo_order,
     const tsl::robin_set<PJ::NodeId>& nodes) {
   PJ::Status first_error = PJ::okStatus();
   for (const PJ::NodeId node_id : topo_order) {
@@ -1506,7 +1507,7 @@ static PJ::Status replayNodes(
   return first_error;
 }
 
-PJ::Status DerivedEngine::recomputeBatchLocked(PJ::Span<const PJ::NodeId> root_node_ids) {
+PJ::Status IncrementalEngine::recomputeBatchLocked(PJ::Span<const PJ::NodeId> root_node_ids) {
   for (const PJ::NodeId root_node_id : root_node_ids) {
     if (!impl_->nodes.contains(root_node_id)) {
       return PJ::unexpected(fmt::format("recompute_batch: node {} not found", root_node_id));
@@ -1516,7 +1517,7 @@ PJ::Status DerivedEngine::recomputeBatchLocked(PJ::Span<const PJ::NodeId> root_n
       *impl_, engine_, topologicalOrder(), downstreamClosure(*impl_, root_node_ids, /*include_seeds=*/true));
 }
 
-PJ::Status DerivedEngine::recomputeBatchLocked(PJ::NodeId node_id) {
+PJ::Status IncrementalEngine::recomputeBatchLocked(PJ::NodeId node_id) {
   auto it = impl_->nodes.find(node_id);
   if (it == impl_->nodes.end()) {
     return PJ::unexpected(fmt::format("recompute_batch: node {} not found", node_id));
@@ -1544,7 +1545,7 @@ PJ::Status DerivedEngine::recomputeBatchLocked(PJ::NodeId node_id) {
 // replace_siso_transform
 // ---------------------------------------------------------------------------
 
-PJ::Status DerivedEngine::replaceSisoTransform(PJ::NodeId node_id, std::unique_ptr<ISISOTransform> op) {
+PJ::Status IncrementalEngine::replaceSisoTransform(PJ::NodeId node_id, std::unique_ptr<ISISOTransform> op) {
   if (!op) {
     return PJ::unexpected("replace_siso_transform: null transform op");
   }
@@ -1563,7 +1564,7 @@ PJ::Status DerivedEngine::replaceSisoTransform(PJ::NodeId node_id, std::unique_p
       node_id, "replace_siso_transform", [&node, &old_op]() { node.siso_op = std::move(old_op); });
 }
 
-PJ::Status DerivedEngine::replaceMimoTransform(PJ::NodeId node_id, std::unique_ptr<IMIMOTransform> op) {
+PJ::Status IncrementalEngine::replaceMimoTransform(PJ::NodeId node_id, std::unique_ptr<IMIMOTransform> op) {
   if (!op) {
     return PJ::unexpected("replace_mimo_transform: null transform op");
   }
@@ -1582,7 +1583,7 @@ PJ::Status DerivedEngine::replaceMimoTransform(PJ::NodeId node_id, std::unique_p
       node_id, "replace_mimo_transform", [&node, &old_op]() { node.mimo_op = std::move(old_op); });
 }
 
-PJ::Status DerivedEngine::recomputeOrRevertLocked(
+PJ::Status IncrementalEngine::recomputeOrRevertLocked(
     PJ::NodeId node_id, std::string_view op_name, const std::function<void()>& revert) {
   PJ::Status applied = recomputeBatchLocked(node_id);
   if (applied.has_value()) {
@@ -1600,7 +1601,7 @@ PJ::Status DerivedEngine::recomputeOrRevertLocked(
   return PJ::unexpected(apply_error);
 }
 
-PJ::Expected<DerivedEngine::InputBindingState> DerivedEngine::inputBindingState(PJ::NodeId node_id) const {
+PJ::Expected<IncrementalEngine::InputBindingState> IncrementalEngine::inputBindingState(PJ::NodeId node_id) const {
   auto lock = engine_.lockEngine();
   const auto node = impl_->nodes.find(node_id);
   if (node == impl_->nodes.end()) {
@@ -1612,7 +1613,7 @@ PJ::Expected<DerivedEngine::InputBindingState> DerivedEngine::inputBindingState(
   return InputBindingState{.columns = {node->second.siso_input_column_index}, .kinds = {node->second.siso_input_kind}};
 }
 
-PJ::Expected<DerivedEngine::InputBindingState> DerivedEngine::resolvedInputBindingState(
+PJ::Expected<IncrementalEngine::InputBindingState> IncrementalEngine::resolvedInputBindingState(
     PJ::NodeId node_id, const std::vector<std::size_t>& columns) const {
   auto lock = engine_.lockEngine();
   const auto node = impl_->nodes.find(node_id);
@@ -1646,7 +1647,7 @@ PJ::Expected<DerivedEngine::InputBindingState> DerivedEngine::resolvedInputBindi
   return InputBindingState{.columns = columns, .kinds = std::move(kinds)};
 }
 
-PJ::Status DerivedEngine::restoreInputBindingState(PJ::NodeId node_id, const InputBindingState& state) {
+PJ::Status IncrementalEngine::restoreInputBindingState(PJ::NodeId node_id, const InputBindingState& state) {
   auto lock = engine_.lockEngine();
   auto node = impl_->nodes.find(node_id);
   if (node == impl_->nodes.end()) {

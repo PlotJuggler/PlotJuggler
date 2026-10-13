@@ -25,9 +25,9 @@
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/TabbedPlotWidget.h"
 #include "pj_runtime/AppSession.h"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
-#include "pj_runtime/MarkerService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_widgets/CurveTreeView.h"
 #include "ui/CurveListPanel.h"
@@ -53,8 +53,8 @@ class MainWindowHistoryExemptTestPeer {
     return window.session_->sessionManager().dataProcessorService();
   }
 
-  [[nodiscard]] static MarkerService& markers(MainWindow& window) {
-    return window.session_->sessionManager().markerService();
+  [[nodiscard]] static BatchEngine& markers(MainWindow& window) {
+    return window.session_->sessionManager().batchEngine();
   }
 
   [[nodiscard]] static TabbedPlotWidget& tabs(MainWindow& window) {
@@ -500,13 +500,13 @@ TEST_F(MainWindowHistoryExemptFixture, HistoryRestoreRejectsWhenExemptDependentW
 TEST_F(MainWindowHistoryExemptFixture, ExemptMarkerRoundTripsThroughFullNotHistoryScope) {
   PJ::MainWindow& window = mainWindow();
   PJ::AppSession& app_session = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
-  PJ::MarkerService& markers = PJ::MainWindowHistoryExemptTestPeer::markers(window);
+  PJ::BatchEngine& markers = PJ::MainWindowHistoryExemptTestPeer::markers(window);
 
   const PJ::DatasetId dataset = pj_test::createDataset(app_session, "exempt-marker-roundtrip", true);
   ASSERT_NE(dataset, 0U);
   ASSERT_NE(pj_test::addScalarTopic(app_session, dataset, "/marker_input"), 0U);
 
-  PJ::MarkerService::GeneratorRecipe recipe;
+  PJ::BatchEngine::GeneratorRecipe recipe;
   recipe.id = "assistant-test/marker";
   recipe.dataset_id = dataset;
   recipe.inputs = {"/marker_input"};
@@ -545,7 +545,7 @@ TEST_F(MainWindowHistoryExemptFixture, UndoRejectsExemptMarkerDependencyWithoutM
   PJ::MainWindow& window = mainWindow();
   PJ::AppSession& app_session = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
   PJ::DataProcessorService& processors = PJ::MainWindowHistoryExemptTestPeer::processors(window);
-  PJ::MarkerService& markers = PJ::MainWindowHistoryExemptTestPeer::markers(window);
+  PJ::BatchEngine& markers = PJ::MainWindowHistoryExemptTestPeer::markers(window);
 
   const PJ::DatasetId dataset = pj_test::createDataset(app_session, "exempt-marker-dependency", true);
   ASSERT_NE(dataset, 0U);
@@ -558,7 +558,7 @@ TEST_F(MainWindowHistoryExemptFixture, UndoRejectsExemptMarkerDependencyWithoutM
   ASSERT_TRUE(user_transform.has_value()) << user_transform.error();
   app_session.catalogModel().rebuildFromDatastore();
 
-  PJ::MarkerService::GeneratorRecipe marker;
+  PJ::BatchEngine::GeneratorRecipe marker;
   marker.id = "assistant-test/dependent-marker";
   marker.dataset_id = user_transform->dataset_id;
   marker.inputs = {"marker_source_derived/value"};
@@ -791,17 +791,17 @@ TEST_F(MainWindowHistoryExemptFixture, UndoDoesNotOverwriteLiveExemptTransformUn
   EXPECT_EQ(it->script, kTimes10Script) << "the live exempt script must survive an unrelated undo";
 }
 
-// Regression [Codex #4], marker mirror: the same overwrite through MarkerService::upsertGenerator.
+// Regression [Codex #4], marker mirror: the same overwrite through BatchEngine::upsertGenerator.
 TEST_F(MainWindowHistoryExemptFixture, UndoDoesNotOverwriteLiveExemptMarkerUnderSameId) {
   PJ::MainWindow& window = mainWindow();
   PJ::AppSession& app_session = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
-  PJ::MarkerService& markers = PJ::MainWindowHistoryExemptTestPeer::markers(window);
+  PJ::BatchEngine& markers = PJ::MainWindowHistoryExemptTestPeer::markers(window);
 
   const PJ::DatasetId dataset = pj_test::createDataset(app_session, "exempt-marker-same-id", /*own_time_domain=*/true);
   ASSERT_NE(dataset, 0U);
   ASSERT_NE(pj_test::addScalarTopic(app_session, dataset, "/marker_input"), 0U);
 
-  PJ::MarkerService::GeneratorRecipe recipe;
+  PJ::BatchEngine::GeneratorRecipe recipe;
   recipe.id = "user-plugin/marker";
   recipe.dataset_id = dataset;
   recipe.inputs = {"/marker_input"};
@@ -1194,7 +1194,7 @@ TEST_F(MainWindowHistoryExemptFixture, UnrelatedUndoWithExemptMarkerDependentKee
   const auto producer = service.upsertTransform("user", "negate", {"/x"}, {"U"}, kNegateScript, "{}");
   ASSERT_TRUE(producer) << producer.error();
   app.catalogModel().rebuildFromDatastore();
-  PJ::MarkerService::GeneratorRecipe marker;
+  PJ::BatchEngine::GeneratorRecipe marker;
   marker.id = "assistant/marker";
   marker.dataset_id = producer->dataset_id;
   marker.inputs = {"U/value"};

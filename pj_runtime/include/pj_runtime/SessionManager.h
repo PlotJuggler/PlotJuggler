@@ -31,7 +31,7 @@ namespace PJ {
 
 class MessageParserPluginBase;
 class DataProcessorService;
-class MarkerService;
+class BatchEngine;
 class RefillGuard;
 
 /// Result of resolving a persisted dataset identity against the live session.
@@ -167,19 +167,19 @@ class SessionManager : public QObject {
   }
 
   // The session's data-processor service (filters/transforms run as eager
-  // DerivedEngine nodes over this session's DataEngine). Plot widgets reach it
+  // IncrementalEngine nodes over this session's DataEngine). Plot widgets reach it
   // through the SessionManager pointer they already hold — the same "not threaded
   // through widget constructors" access pattern as curveColorRegistry above.
   [[nodiscard]] DataProcessorService& dataProcessorService() noexcept {
     return *processor_service_;
   }
 
-  // The session's whole-series marker service (host-driven PlotMarkers generators
+  // The session's whole-series batch engine (host-driven PlotMarkers generators
   // run via pj_scripting and published to the ObjectStore). The marker sibling of
   // dataProcessorService; the shell injects its series resolver after the catalog
   // exists (see setResolver).
-  [[nodiscard]] MarkerService& markerService() noexcept {
-    return *marker_service_;
+  [[nodiscard]] BatchEngine& batchEngine() noexcept {
+    return *batch_engine_;
   }
 
   [[nodiscard]] DataReader createReader() const;
@@ -804,12 +804,12 @@ class SessionManager : public QObject {
   // unmoved. 0 matches the neutral "no data / offset off" origin.
   Timestamp last_notified_global_reference_ = 0;
   // Owns the session's filter/transform engine; constructed in the ctor body
-  // after data_engine_ is alive (it binds a DerivedEngine to data_engine_).
+  // after data_engine_ is alive (it binds an IncrementalEngine to data_engine_).
   std::unique_ptr<DataProcessorService> processor_service_;
   // Owns the session's whole-series marker generators (host-driven PlotMarkers);
   // constructed in the ctor after object_store_/data_engine_. Its series resolver
   // is injected by the shell once the catalog exists (setResolver).
-  std::unique_ptr<MarkerService> marker_service_;
+  std::unique_ptr<BatchEngine> batch_engine_;
   // Per-object-topic parser slots. WRITTEN from the streaming worker thread (the
   // registrar callback fires when a plugin discovers/replaces a topic mid-stream)
   // and READ from the GUI thread on every render tick (each scene3D layer +

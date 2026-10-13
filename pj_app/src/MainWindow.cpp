@@ -157,6 +157,7 @@
 #include "pj_plugins/host_qt/panel_engine.hpp"
 #include "pj_plugins/host_qt/widget_binding.hpp"
 #include "pj_runtime/AppSession.h"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/DataProcessorsKindRouter.h"
@@ -165,7 +166,6 @@
 #include "pj_runtime/DiagnosticHistory.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/IObjectViewer.h"
-#include "pj_runtime/MarkerService.h"
 #include "pj_runtime/MarkersRuntimeHost.h"
 #include "pj_runtime/PlaybackControlHost.h"
 #include "pj_runtime/PlaybackEngine.h"
@@ -927,8 +927,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // once here rather than per toolbox launch. The resolver maps an input key
   // (markerSeriesKey) to its samples using the same naming the producer and the
   // overlay use, so a generator yields the same markers in GUI and CI.
-  session_->sessionManager().markerService().setResolver(
-      [this](PJ::DatasetId dataset, const std::string& key) -> std::optional<PJ::MarkerService::ResolvedSeries> {
+  session_->sessionManager().batchEngine().setResolver(
+      [this](PJ::DatasetId dataset, const std::string& key) -> std::optional<PJ::BatchEngine::ResolvedSeries> {
         // items() returns by value: keep it alive while `scalar` points into it.
         const auto items = session_->catalogModel().items();
         const PJ::ScalarFieldPayload* scalar = nullptr;
@@ -957,8 +957,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         return PJ::readResolvedSeries(*series);
       });
   // For `all_datasets` (global-across-all) generators: list every loaded dataset.
-  session_->sessionManager().markerService().setDatasetLister(
-      [this]() { return session_->catalogModel().datasetIds(); });
+  session_->sessionManager().batchEngine().setDatasetLister([this]() { return session_->catalogModel().datasetIds(); });
 
   // Keep data widgets coherent with catalog removals, whoever triggers them.
   // Each widget prunes its OWN pieces against the live catalog/store. One pass
@@ -1064,7 +1063,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     // lastLoadedSource for the quick-reload path (#99).
     // An all_datasets generator is bound to the session, not to a dataset, so
     // removeDataset() below would leave it alive to publish onto whatever loads next.
-    session_->sessionManager().markerService().clearAllGenerators();
+    session_->sessionManager().batchEngine().clearAllGenerators();
     session_->sessionManager().clearAllObjects();
     // TF buffers derive from the just-evicted objects; drop them with the data.
 #ifdef PJ_WITH_SCENE3D
@@ -3067,7 +3066,7 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
     // subscription sees them gone and resets 2D viewers (symmetric with the
     // "Remove all Datasets" path). Keep lastLoadedSource for reload.
     // Session-scoped all_datasets generators go too — see the sibling wipe path.
-    session_->sessionManager().markerService().clearAllGenerators();
+    session_->sessionManager().batchEngine().clearAllGenerators();
     session_->sessionManager().clearAllObjects();
     // TF buffers derive from the just-evicted objects; drop them with the data.
 #ifdef PJ_WITH_SCENE3D
@@ -6692,11 +6691,11 @@ QDomElement MainWindow::saveDataProcessors(QDomDocument& doc, SnapshotScope scop
   }
 
   // Marker generators (kind=markers of pj.data_processors.v1): whole-series object
-  // generators run by MarkerService. Persisted like transforms — script + inputs
+  // generators run by BatchEngine. Persisted like transforms — script + inputs
   // BY VALUE so they replay on load without the originating plugin. Dataset identity
   // is stamped for cross-session rebind (mirrors the <processor> qualifiers); an
   // all_datasets generator has no single dataset, so it stamps none.
-  for (const auto& recipe : session_->sessionManager().markerService().recipes()) {
+  for (const auto& recipe : session_->sessionManager().batchEngine().recipes()) {
     // Marker generators use the same history scope as transforms.
     if (scope == SnapshotScope::kHistory && recipe.history_exempt) {
       continue;
@@ -6956,14 +6955,14 @@ bool MainWindow::checkDataProcessorDependencies(const QDomElement& root, Restore
     return true;
   }
   auto& service = session_->sessionManager().dataProcessorService();
-  MarkerService& marker_service = session_->sessionManager().markerService();
+  BatchEngine& batch_engine = session_->sessionManager().batchEngine();
   // Reject before the first clear if what this restore removes — each filter and
   // each non-exempt transform the snapshot drops or changes, plus everything the
   // removal cascades into — would strand an exempt transform or marker generator.
   // Removal cascades between filters and transforms, so checking after the first
   // clear would be too late. Nothing below mutates the session: this is a query
   // over the same parse restoreDataProcessors repeats to actually apply it.
-  if (!service.hasHistoryExemptTransforms() && !marker_service.hasHistoryExemptGenerators()) {
+  if (!service.hasHistoryExemptTransforms() && !batch_engine.hasHistoryExemptGenerators()) {
     return true;
   }
   const QDomElement element = root.firstChildElement(u"data_processors"_s);
@@ -6981,7 +6980,7 @@ bool MainWindow::checkDataProcessorDependencies(const QDomElement& root, Restore
   const DataProcessorService::HistoryRemovalImpact impact =
       service.historyRemovalImpact(unchanged_keys, unchanged_filters);
   std::vector<std::string> blocked = impact.exempt_transform_names;
-  const std::vector<std::string> blocked_markers = marker_service.exemptDependentsOf(impact.removed_output_names);
+  const std::vector<std::string> blocked_markers = batch_engine.exemptDependentsOf(impact.removed_output_names);
   blocked.insert(blocked.end(), blocked_markers.begin(), blocked_markers.end());
   std::sort(blocked.begin(), blocked.end());
   blocked.erase(std::unique(blocked.begin(), blocked.end()), blocked.end());
@@ -7007,7 +7006,7 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent in
     return false;
   }
   auto& service = session_->sessionManager().dataProcessorService();
-  MarkerService& marker_service = session_->sessionManager().markerService();
+  BatchEngine& batch_engine = session_->sessionManager().batchEngine();
 
   // Parse the snapshot's filters and transforms first and decide which live ones
   // it leaves unchanged: those stay live with their output TopicIds, so curves
@@ -7054,12 +7053,12 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent in
   // upsertGenerator publishes to the store without announcing it. The toolbox's
   // onDataChanged sends the same notification; this replay must do so too, once,
   // after the catalog rebuild below.
-  const std::size_t generators_before = marker_service.recipes().size();
+  const std::size_t generators_before = batch_engine.recipes().size();
   bool any_generator_restored = false;
-  marker_service.clearGenerators(intent);
+  batch_engine.clearGenerators(intent);
   std::unordered_set<std::string> live_exempt_generators;
   if (keep_exempt) {
-    for (const auto& live : marker_service.recipes()) {
+    for (const auto& live : batch_engine.recipes()) {
       if (live.history_exempt) {
         live_exempt_generators.insert(live.id);
       }
@@ -7067,7 +7066,7 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent in
   }
   for (QDomElement gen = element.firstChildElement(u"generator"_s); !gen.isNull();
        gen = gen.nextSiblingElement(u"generator"_s)) {
-    MarkerService::GeneratorRecipe recipe;
+    BatchEngine::GeneratorRecipe recipe;
     recipe.id = gen.attribute(u"id"_s).toStdString();
     recipe.history_exempt = gen.attribute(u"history_exempt"_s) == u"1"_s;
     // Mirrors the transform loop: history has no authority over an exempt
@@ -7126,7 +7125,7 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent in
           tr("Could not restore marker generator '%1': %2").arg(QString::fromStdString(recipe.id), gen_parse_error));
       continue;
     }
-    if (const auto restored = marker_service.upsertGenerator(recipe); !restored.has_value()) {
+    if (const auto restored = batch_engine.upsertGenerator(recipe); !restored.has_value()) {
       emitDiagnostic(
           DiagnosticLevel::kWarning, "Layout", "generator-restore-failed",
           tr("Could not restore marker generator '%1': %2")
@@ -7136,7 +7135,7 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent in
     }
   }
   session_->catalogModel().rebuildFromDatastore();
-  if (any_generator_restored || marker_service.recipes().size() != generators_before) {
+  if (any_generator_restored || batch_engine.recipes().size() != generators_before) {
     session_->sessionManager().notifyMarkersChanged();
   }
   // A null <data_processors> reaches here with every clearAll* done and nothing
@@ -9428,7 +9427,7 @@ struct ToolboxPanelSession {
     promotion_host.reset();
     builder.reset();       // drops the service views into host + the routed bridges first
     dp_router.reset();     // holds fat pointers into markers_host + dp_host, so goes before them
-    markers_host.reset();  // bridge only; the generators live on in MarkerService
+    markers_host.reset();  // bridge only; the generators live on in BatchEngine
     dp_host.reset();
     // Pure adapters over session-owned services (PlaybackEngine) and
     // MainWindow-capturing lambdas — both outlive every ToolboxPanelSession.
@@ -9668,7 +9667,7 @@ std::shared_ptr<ToolboxPanelSession> MainWindow::buildToolboxPanelSession(
     return src.has_value() ? std::optional<std::string>(src->toStdString()) : std::nullopt;
   };
   session->markers_host = std::make_unique<MarkersRuntimeHost>(
-      session_->sessionManager().markerService(), plugin_id.toStdString(),
+      session_->sessionManager().batchEngine(), plugin_id.toStdString(),
       [this, source_name_of](
           std::vector<std::string>& inputs, std::vector<std::string>& outputs) -> PJ::Expected<PJ::DatasetId> {
         // Bind the generator to the dataset its keys name (qualified keys pick it

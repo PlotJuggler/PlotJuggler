@@ -19,7 +19,7 @@ add_library(pj_runtime STATIC
     src/DataProcessorsKindRouter.cpp
     src/DataProcessorsRuntimeHost.cpp
     src/DataSourceRuntimeHost.cpp
-    src/MarkerService.cpp
+    src/BatchEngine.cpp
     src/MarkerTopics.cpp
     src/MarkersRuntimeHost.cpp
     src/ObjectIngestTap.cpp
@@ -54,7 +54,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/PluginRuntimeCatalog.h
     include/pj_runtime/SourceCacheStore.h
     include/pj_runtime/IDataWidget.h
-    include/pj_runtime/MarkerService.h
+    include/pj_runtime/BatchEngine.h
     include/pj_runtime/MarkersRuntimeHost.h
     include/pj_runtime/ObjectIngestTap.h
     include/pj_runtime/PlaybackControlHost.h
@@ -140,7 +140,7 @@ if(PJ_BUILD_TESTS)
         # M1: re-prove the streaming gate through a Luau LuaSisoTransform
         tests/data_processor_service_test.cpp
         # links the shared marker engine (runMarkerScript) the service drives
-        tests/marker_service_test.cpp
+        tests/batch_engine_test.cpp
         # links the shared marker engine the service drives
         tests/markers_runtime_host_test.cpp
         tests/data_processors_kind_router_test.cpp

@@ -16,7 +16,7 @@ namespace PJ {
 /// The single host-side predicate every consumer of ObjectStore topics uses to
 /// treat marker snapshots as reserved internal state — excluded from dataset
 /// time-bounds, the curve tree, playback focus, refill pruning, and the generic
-/// dataset-merge fold (markers are merged set-aware by the marker service, not
+/// dataset-merge fold (markers are merged set-aware by the batch engine, not
 /// folded as opaque object entries, because they publish at a sentinel timestamp
 /// with single-entry retention). Centralizes what was an inline
 /// starts_with(sdk::kMarkerObjectTopicPrefix) scattered across those consumers.
@@ -31,7 +31,7 @@ namespace PJ {
 /// publishes its set once, on `kAllDatasetsMarkerDataset`, and every plot draws it;
 /// UI row "Global markers" — the two rules a producer offers, per-dataset and
 /// all-datasets). Producers keep sending "__global__" + {"scope":"all"};
-/// MarkerService::upsertGenerator rewrites the key host-side.
+/// BatchEngine::upsertGenerator rewrites the key host-side.
 inline constexpr std::string_view kAllDatasetsMarkerTopic = "__all__";
 
 /// Dataset-independent home of every ALL-DATASETS marker topic. An all_datasets set
@@ -46,7 +46,7 @@ inline constexpr DatasetId kAllDatasetsMarkerDataset = 0;
 /// `__markers__/<key>#<owner>`. A marker topic is a FAMILY of object topics — the
 /// bare name (a direct write, no owner) plus one per generator — and a plot draws
 /// their union, so two generators on one key never clobber each other and retiring
-/// one touches only its own topic. Reserved: `MarkerService::upsertGenerator`
+/// one touches only its own topic. Reserved: `BatchEngine::upsertGenerator`
 /// refuses an id or key containing it, since `a` + `r#s` and `a#r` + `s` would
 /// spell one topic.
 inline constexpr char kMarkerOwnerSeparator = '#';

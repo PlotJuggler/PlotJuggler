@@ -622,7 +622,7 @@ void StreamingSourceManager::workerLoop(DatasetId dataset_id) {
           // node must consume every sample before it ages out of the window. On
           // the UI thread here, serialized with the Filter Editor's own
           // apply/update and with the retention trim just below. While paused the
-          // writes land in the secondary engine (no DerivedEngine); the resume
+          // writes land in the secondary engine (no IncrementalEngine); the resume
           // catch-up advances the whole buffered tail before re-trimming.
           if (!paused_) {
             const auto filter_inputs = session_manager_.createReader().listTopics(dataset_id);
@@ -650,7 +650,7 @@ void StreamingSourceManager::workerLoop(DatasetId dataset_id) {
           // The streaming write host commits straight to the engine, bypassing
           // SessionManager::commitChunks, so this is the live-data marker recompute
           // hook (cheap no-op when no generators exist). Paused writes land in the
-          // secondary engine with no DerivedEngine, matching the filter-advance gate.
+          // secondary engine with no IncrementalEngine, matching the filter-advance gate.
           if (!paused_) {
             session_manager_.recomputeMarkersForChanged(topic_ids, dataset_id);
           }

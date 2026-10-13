@@ -27,8 +27,8 @@
 
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/DataProcessorService.h"
-#include "pj_runtime/MarkerService.h"
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_scripting/filter_catalogue.h"
 #include "pj_scripting/script_engine.h"
@@ -45,7 +45,7 @@ Q_LOGGING_CATEGORY(lcCancel, "pj.runtime.ingest.cancel", QtWarningMsg)
 // How long a producer may take to honour a stop before we say so.
 constexpr int kStopWatchdogMs = 2000;
 
-// Topic names of the `changed` topics — passed to MarkerService::recomputeForChangedInputs
+// Topic names of the `changed` topics — passed to BatchEngine::recomputeForChangedInputs
 // so only generators whose input series key ("topic/field") starts with a changed topic
 // re-run, instead of re-running every generator on every commit. Accepts std::vector or
 // QVector<TopicId>.
@@ -104,7 +104,7 @@ SessionManager::SessionManager(QObject* parent)
   object_store_.setResidentPayloadPool(resident_payload_pool_);
 
   // data_engine_ is already alive (member init precedes the ctor body), so the
-  // processor service can bind its DerivedEngine to it.
+  // processor service can bind its IncrementalEngine to it.
   processor_service_ = std::make_unique<DataProcessorService>(*this);
 
   // Whole-series object generators publish markers into object_store_ (the object
@@ -113,12 +113,12 @@ SessionManager::SessionManager(QObject* parent)
   // only covers the window before that. It must stay a window: a generator restored
   // from a saved layout runs the moment it is re-created, so a shell that injected
   // late would silently run every restored rule against no data.
-  marker_service_ = std::make_unique<MarkerService>(
-      object_store_, [](DatasetId, const std::string&) { return std::optional<MarkerService::ResolvedSeries>{}; });
+  batch_engine_ = std::make_unique<BatchEngine>(
+      object_store_, [](DatasetId, const std::string&) { return std::optional<BatchEngine::ResolvedSeries>{}; });
   // An all-datasets set is stored once in the display frame, so each contributor's
   // run is shifted by its alignment offset; only that shift matters
   // (globalTimeReference is uniform and cancels out).
-  marker_service_->setDisplayOffsetResolver(
+  batch_engine_->setDisplayOffsetResolver(
       [this](DatasetId dataset_id) { return static_cast<Timestamp>(sourceDisplayOffset(dataset_id).value.count()); });
 
   // Install the bundled Luau filter catalogue so applied/restored filters resolve
@@ -927,15 +927,15 @@ void RefillGuard::commit() {
 }
 
 void SessionManager::publishSharedMarkersToNewDatasets() {
-  if (marker_service_ && marker_service_->hasGenerators() && !marker_service_->reachNewDatasets().empty()) {
+  if (batch_engine_ && batch_engine_->hasGenerators() && !batch_engine_->reachNewDatasets().empty()) {
     notifyMarkersChanged();
   }
 }
 
 void SessionManager::recomputeMarkersForChanged(const std::vector<TopicId>& changed, DatasetId scope) {
   // Gated by hasGenerators() so the common (no-generator) path is a single bool check.
-  if (marker_service_ && marker_service_->hasGenerators() &&
-      !marker_service_->recomputeForChangedInputs(changedTopicNames(createReader(), changed), scope).empty()) {
+  if (batch_engine_ && batch_engine_->hasGenerators() &&
+      !batch_engine_->recomputeForChangedInputs(changedTopicNames(createReader(), changed), scope).empty()) {
     notifyMarkersChanged();
   }
 }
@@ -949,8 +949,8 @@ Status RefillGuard::recomputeProcessors() {
   // every generator bound to this dataset rather than matching changed names.
   // pruneVanishedTopics exempts marker topics, so the republished set lands on a
   // topic that survived the refill.
-  if (session_->marker_service_ && session_->marker_service_->hasGenerators() &&
-      !session_->marker_service_->recomputeForDataset(dataset_id_).empty()) {
+  if (session_->batch_engine_ && session_->batch_engine_->hasGenerators() &&
+      !session_->batch_engine_->recomputeForDataset(dataset_id_).empty()) {
     session_->notifyMarkersChanged();
   }
   if (replaced_source_topic_ids_.empty()) {
@@ -1054,8 +1054,7 @@ void RefillGuard::rollback() {
   // (g) Markers published during the refill described the attempted data, and the
   // shared all-datasets set lives outside this dataset's snapshot: re-run over the
   // restored data. Runs before (f) only in source order — the two are independent.
-  if (session_->markerService().hasGenerators() &&
-      !session_->markerService().recomputeForDataset(dataset_id_).empty()) {
+  if (session_->batchEngine().hasGenerators() && !session_->batchEngine().recomputeForDataset(dataset_id_).empty()) {
     session_->notifyMarkersChanged();
   }
   // (f) A failed tentative replay may have reset stateful operator internals.
@@ -1147,8 +1146,7 @@ void SessionManager::replaceDataset(
   // (4b) A replace swaps the dataset's data wholesale and may rename or drop the
   // inputs a generator read, so re-run every generator bound to this dataset (not
   // just those whose changed-input names still match) and repaint if any set changed.
-  if (marker_service_ && marker_service_->hasGenerators() &&
-      !marker_service_->recomputeForDataset(primary_id).empty()) {
+  if (batch_engine_ && batch_engine_->hasGenerators() && !batch_engine_->recomputeForDataset(primary_id).empty()) {
     notifyMarkersChanged();
   }
 
@@ -1198,7 +1196,7 @@ std::optional<DatasetMergeReport> SessionManager::mergeDatasets(
   // (3) Fold the object topics the same way, EXCEPT marker sets: those are
   // single-entry supersede topics at a sentinel timestamp, so the generic
   // interleave+retention fold would keep only one dataset's set (and strand it on
-  // the wrong clock). MarkerService merges them set-aware right after (3b), while
+  // the wrong clock). BatchEngine merges them set-aware right after (3b), while
   // the source datasets still hold their marker topics. This shares the scalar
   // merge's structural validation, so it cannot fail once the scalar merge above
   // succeeded on the same inputs.
@@ -1223,14 +1221,14 @@ std::optional<DatasetMergeReport> SessionManager::mergeDatasets(
   // (3b) Merge the marker sets set-aware (concatenate + shift onto the anchor
   // clock), before the sources are dropped from the catalog. Runs regardless of
   // live generators — markers may outlive the recipe that produced them.
-  if (marker_service_) {
-    marker_service_->mergeMarkerTopics(anchor, sources);
+  if (batch_engine_) {
+    batch_engine_->mergeMarkerTopics(anchor, sources);
     // The sources leave the catalog right after this call, so a generator still bound
     // to one would resolve zero inputs from here on and quietly stop producing. Its
     // data now lives in the anchor — move the rule with it. Driven by the engine's own
     // record of what it folded, not by the request, so a source the engine declined to
     // consume keeps its generator.
-    marker_service_->remapGeneratorsToAnchor(anchor, report.consumed_datasets);
+    batch_engine_->remapGeneratorsToAnchor(anchor, report.consumed_datasets);
   }
 
   // (4) Re-index adapters against the rebuilt anchor topics.
@@ -1406,7 +1404,7 @@ void SessionManager::removeDataset(DatasetId dataset_id) {
   // A generator bound to this dataset outlives its data otherwise: the object topics
   // go with the dataset, but the recipe keeps naming the dead id, so the next
   // recompute resolves nothing and re-registers a phantom marker topic under it.
-  if (marker_service_ && !marker_service_->clearGeneratorsForDataset(dataset_id).empty()) {
+  if (batch_engine_ && !batch_engine_->clearGeneratorsForDataset(dataset_id).empty()) {
     notifyMarkersChanged();
   }
   // The engine no longer holds this dataset; drop its pinned earliest-sample and

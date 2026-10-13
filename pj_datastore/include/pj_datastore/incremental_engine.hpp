@@ -20,8 +20,8 @@ namespace PJ {
 
 class DataEngine;
 
-/// Implementation struct — defined in derived_engine.cpp, hidden from callers.
-struct DerivedEngineImpl;
+/// Implementation struct — defined in incremental_engine.cpp, hidden from callers.
+struct IncrementalEngineImpl;
 
 // ---------------------------------------------------------------------------
 // VarValue — universal column value type for transform I/O
@@ -49,7 +49,7 @@ class ISISOTransform {
  public:
   virtual ~ISISOTransform() = default;
 
-  /// Clear all accumulated state. Called by DerivedEngine before batch recompute.
+  /// Clear all accumulated state. Called by IncrementalEngine before batch recompute.
   /// After reset(), the next calculate() call must behave as if no data has
   /// been seen (same as a freshly constructed instance).
   virtual void reset() {}
@@ -100,7 +100,7 @@ class IMIMOTransform {
  public:
   virtual ~IMIMOTransform() = default;
 
-  /// Clear all accumulated state. Called by DerivedEngine before batch recompute.
+  /// Clear all accumulated state. Called by IncrementalEngine before batch recompute.
   virtual void reset() {}
 
   /// Declare output StorageKind for each output topic.
@@ -135,9 +135,9 @@ class IMIMOTransform {
 };
 
 // ---------------------------------------------------------------------------
-// DerivedEngine
+// IncrementalEngine
 // ---------------------------------------------------------------------------
-class DerivedEngine {
+class IncrementalEngine {
  public:
   /// Captured input-column metadata for one node. Kinds are stored with the
   /// columns because a reload can replace the schema behind a stable TopicId.
@@ -146,10 +146,10 @@ class DerivedEngine {
     std::vector<StorageKind> kinds;
   };
 
-  explicit DerivedEngine(DataEngine& engine);
-  ~DerivedEngine();
-  DerivedEngine(const DerivedEngine&) = delete;
-  DerivedEngine& operator=(const DerivedEngine&) = delete;
+  explicit IncrementalEngine(DataEngine& engine);
+  ~IncrementalEngine();
+  IncrementalEngine(const IncrementalEngine&) = delete;
+  IncrementalEngine& operator=(const IncrementalEngine&) = delete;
 
   // ---- SISO ----------------------------------------------------------------
   // Creates one scalar output topic (StorageKind from op->outputKind()).
@@ -307,7 +307,7 @@ class DerivedEngine {
 
   DataEngine& engine_;
   PJ::NodeId next_node_id_ = 1;
-  std::unique_ptr<DerivedEngineImpl> impl_;
+  std::unique_ptr<IncrementalEngineImpl> impl_;
 };
 
 }  // namespace PJ

@@ -57,7 +57,7 @@ namespace {
 // falling back to the opaque catalog key only when those are empty.
 //
 // A materialized filter output is a single-column topic whose column is the
-// generic "value" (derived_engine.cpp:413) — its identity lives in the topic name
+// generic "value" (incremental_engine.cpp:413) — its identity lives in the topic name
 // (the alias, e.g. "/angular_velocity/y[Absolute]"), so a bare "value" field is
 // skipped in favour of the topic name rather than shown verbatim.
 QString readableName(const CurveDescriptor& descriptor) {
