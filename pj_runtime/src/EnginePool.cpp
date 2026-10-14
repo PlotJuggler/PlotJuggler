@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "pj_runtime/EnginePool.h"
 
-#include <QCoreApplication>
+#include <QEventLoop>
 #include <QPointer>
 #include <QRunnable>
 #include <QThread>
@@ -158,9 +158,22 @@ std::size_t EnginePool::pendingPublishes() const {
 }
 
 void EnginePool::waitIdle() {
-  while (outstanding_ > 0) {
-    QCoreApplication::processEvents(QEventLoop::WaitForMoreEvents);
+  if (outstanding_ == 0) {
+    return;
   }
+  // Not a processEvents(WaitForMoreEvents) loop: on Windows one pass can run the last
+  // drain from its posted-event delivery and then block with nothing left to wake it.
+  // quit() interrupts the dispatcher, so the pass that ran that drain returns instead.
+  QEventLoop loop;
+  connect(this, &EnginePool::drained, &loop, [this, &loop] {
+    if (outstanding_ == 0) {
+      loop.quit();
+    }
+  });
+  // Re-checked after every exit: work may have been submitted meanwhile, and a nested
+  // waitIdle's final drain also quits this loop. exec() clears the exit request; -1 means
+  // the application is exiting.
+  while (outstanding_ > 0 && loop.exec() == 0) {}
 }
 
 }  // namespace PJ

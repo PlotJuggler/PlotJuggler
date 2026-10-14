@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QAbstractEventDispatcher>
 #include <QCoreApplication>
 #include <QObject>
 #include <atomic>
@@ -297,6 +298,81 @@ TEST(EnginePoolTest, PublishMaySubmitTheNextRun) {
   pool.waitIdle();
 
   EXPECT_EQ(published, (std::vector<int>{1, 2}));
+}
+
+// The result is posted only once the GUI thread is about to block inside waitIdle, so the
+// posted drain is the only wake-up the wait gets.
+TEST(EnginePoolTest, WaitIdleReturnsWhenTheResultIsPostedWhileItBlocks) {
+  std::atomic<bool> blocking{false};
+  EnginePool pool;
+  QObject::connect(
+      QAbstractEventDispatcher::instance(), &QAbstractEventDispatcher::aboutToBlock, &pool, [&] { blocking = true; },
+      Qt::DirectConnection);
+  std::atomic<bool> saw_blocking{false};
+  int publishes = 0;
+
+  pool.submit({
+      .compute = [&](const Token&) { saw_blocking = spinUntil([&] { return blocking.load(); }); },
+      .publish = [&](const Outcome&) { ++publishes; },
+  });
+  const Watchdog watchdog("waitIdle, result posted while it blocks");
+  pool.waitIdle();
+
+  EXPECT_TRUE(saw_blocking) << "the GUI thread never blocked, so the posted drain was not the only wake-up";
+  EXPECT_EQ(publishes, 1);
+}
+
+// A publish that waits for another task and then submits more work: the inner wait's final
+// drain must not end the outer wait, which still has the new task outstanding.
+TEST(EnginePoolTest, WaitIdleCoversWorkSubmittedAfterANestedWaitIdle) {
+  std::atomic<bool> last_submitted{false};
+  std::atomic<bool> blocking{false};
+  std::atomic<bool> outer_returned{false};
+  EnginePool pool;
+  QObject::connect(
+      QAbstractEventDispatcher::instance(), &QAbstractEventDispatcher::aboutToBlock, &pool,
+      [&] {
+        if (last_submitted) {
+          blocking = true;
+        }
+      },
+      Qt::DirectConnection);
+  Gate release_inner;
+  bool last_published = false;
+
+  pool.submit({
+      .compute = [&](const Token&) { EXPECT_TRUE(release_inner.wait()); },
+      .publish = [](const Outcome&) {},
+  });
+  // The one-thread Python lane keeps this run clear of the shared lane's blocked one.
+  pool.submit(
+      {
+          .compute = [](const Token&) {},
+          .publish =
+              [&](const Outcome&) {
+                release_inner.open();
+                pool.waitIdle();
+                // Held until the outer wait blocks again, or returns early (the failure).
+                pool.submit({
+                    .compute =
+                        [&](const Token&) {
+                          static_cast<void>(spinUntil([&] { return blocking.load() || outer_returned.load(); }));
+                        },
+                    .publish = [&](const Outcome&) { last_published = true; },
+                });
+                last_submitted = true;
+              },
+      },
+      EnginePool::Lane::kPython);
+  {
+    const Watchdog watchdog("waitIdle, nested wait followed by new work");
+    pool.waitIdle();
+  }
+  const bool published_before_return = last_published;
+  outer_returned = true;
+  pool.waitIdle();  // failing case: lets the held run finish before the pool is destroyed
+
+  EXPECT_TRUE(published_before_return) << "the outer waitIdle returned with the last task outstanding";
 }
 
 TEST(EnginePoolTest, WaitIdleReturnsWithNothingOutstanding) {

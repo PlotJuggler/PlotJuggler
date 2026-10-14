@@ -106,10 +106,11 @@ class EnginePool : public QObject {
   /// Test seam: runs whose compute is done and whose `publish` waits for a drain pass.
   [[nodiscard]] std::size_t pendingPublishes() const;
 
-  /// Pumps the event loop until every submitted task was published, those submitted
+  /// Runs a nested event loop until every submitted task was published, those submitted
   /// meanwhile included. May be called from inside a `publish` (the run being
   /// published no longer counts). Needs a QCoreApplication. Never call it holding a
-  /// lock that a `publish` takes, and do not destroy the pool while it waits.
+  /// lock that a `publish` takes, and do not destroy the pool while it waits. Returns
+  /// early, with work outstanding, once the application is exiting.
   void waitIdle();
 
  signals:
