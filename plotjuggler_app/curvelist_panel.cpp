@@ -313,20 +313,16 @@ void CurveListPanel::refreshValues()
     return num_text + " ";
   };
 
-  auto GetValue = [&](const std::string& name) -> QString {
+  auto GetRawValue = [&](const std::string& name) -> std::optional<double> {
+    auto it = _plot_data.numeric.find(name);
+    if (it != _plot_data.numeric.end())
     {
-      auto it = _plot_data.numeric.find(name);
-      if (it != _plot_data.numeric.end())
-      {
-        auto& plot_data = it->second;
-        auto val = plot_data.getYfromX(_tracker_time);
-        if (val)
-        {
-          return FormattedNumber(val.value());
-        }
-      }
+      return it->second.getYfromX(_tracker_time);
     }
+    return std::nullopt;
+  };
 
+  auto GetStringValue = [&](const std::string& name) -> QString {
     {
       auto it = _plot_data.strings.find(name);
       if (it != _plot_data.strings.end())
@@ -373,8 +369,19 @@ void CurveListPanel::refreshValues()
 
         if (!is2ndColumnHidden())
         {
-          QString str_value = GetValue(curve_name.toStdString());
-          cell->setText(1, str_value);
+          const std::string std_name = curve_name.toStdString();
+          auto rawValue = GetRawValue(std_name);
+          if(rawValue)
+          {
+            cell->setData(1, CustomRoles::RawValue, QVariant(rawValue.value()));
+            cell->setText(1, FormattedNumber(rawValue.value()));
+          }
+          else //No numeric value, get the display string.
+          {
+            QString string_value = GetStringValue(std_name);
+            cell->setData(1, CustomRoles::RawValue, QVariant(string_value));
+            cell->setText(1, string_value);
+          }
         }
       }
     };
