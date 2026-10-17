@@ -2,9 +2,9 @@
 
 **What this is.** This is the design the derived-objects work is being delivered toward,
 on `release-4.1`, as a stack of small pull requests (see [CARVING.md](CARVING.md)). It
-folds in the decisions taken on 2026-10-10, and the prototype author's review of them on
-2026-10-13. A functional prototype exists: pull requests
-#697, #698 and #699, the reference implementation, at branch
+folds in the decisions taken on 2026-10-10, the prototype author's review of them on
+2026-10-13, and the ring decision of 2026-10-14 (§9). A functional prototype exists: pull
+requests #697, #698 and #699, the reference implementation, at branch
 `feat/derived-objects-editor-host`. Where the prototype and this document differ, **this
 document is the target**.
 
@@ -170,20 +170,21 @@ The TF clock question is in §12.
 
 ## 8. The on-demand pipeline
 
-**Status: Decided.** The structure is decided. Pull (§9) awaits its spike.
+**Status: Decided.**
 
 `OnDemandService` is a thin facade over concrete classes, with no single-implementation
 interfaces. It starts with the public API that `SessionManager` and the plugin hosts use
-today, and is transitional: each consumer moves to the component it needs (a layer to
-`ResultHistory` through `frameAt`, the Custom Topics panel to `RecipeGraph`). The facade
-keeps only the orchestration that spans components: install, remove and restore.
+today, and is transitional: each consumer moves to the component it needs (a layer reads its
+content from the store and its state from `NodeScheduler`, the Custom Topics panel moves to
+`RecipeGraph`). The facade keeps only the orchestration that spans components: install,
+remove and restore.
 
 | Component | Responsibility |
 |---|---|
 | `RecipeGraph` | Recipes, bindings, the DAG and cycle rejection, validation, ownership, previews, findings, dependents. Pure logic, no Qt. |
 | `InputStager` | Resolves inputs at `t` on the GUI thread and captures payload views (shared-pointer copies). It does not decode. |
-| `ResultHistory` | Per node: ordered results, the cache identity, byte bounds, and the read used by consumers (§9). |
-| `NodeScheduler` | Per node: one running run plus one pending request, demand, the in-flight budget, submission to `EnginePool`, supersede on meaning change (invariant 1). |
+| `ResultHistory` | Per node: the compute cache. Results keyed by cache identity (§10), ordered by stamp and sized by time span. A miss checks the store first (§9). |
+| `NodeScheduler` | Per node: one running run plus one pending request, demand, the in-flight budget, submission to `EnginePool`, supersede on meaning change (invariant 1), and the node state that layers read (computing, missing input, error). |
 | `GridRunner` | The per-instant loop shared by window evaluations and series, with a report sink and a column sink (§15). |
 
 Data flow for one cursor request:
@@ -193,69 +194,85 @@ cursor / live edge ──► NodeScheduler ──► InputStager (GUI: resolve, 
                                               │
                                    EnginePool worker: decode, run script, stamp
                                               │
-                                   GUI drain ──► ResultHistory.insert ──► consumers read
+                                   GUI drain ──► ResultHistory + store write ──► consumers read the store
 ```
 
 **Chains.** A downstream node takes its upstream's decoded result inline, with no round
 trip through the store. **Proposed:** compute a whole chain in one worker task, instead of
 staging upstream nodes synchronously on the GUI thread. If adopted, two conditions hold:
-- Each intermediate result lands in its node's history, so an upstream node that is also
-  displayed, or read by another node, does not run twice.
+- Each intermediate result lands in its node's `ResultHistory` and in the store, so an
+  upstream node that is also displayed, or read by another node, does not run twice.
 - The budget and cancellation cover the whole chain, and the report names the node where
   it stopped.
 
 ## 9. Where results live
 
-**Status: Spike.** The target is pull with one lazy store entry. The fallback is a ring
-window.
+**Status: Decided** (N7, 2026-10-14). The pull-versus-ring spike ended after step 0 and a
+paper check of D26. Pull is rejected and the ring is the target.
 
-**Target (pull).**
-- **History.** `ResultHistory` keeps each node's results ordered by stamp.
-- **One global byte budget covers every node's results.** Today the compute cache has a
+**Target (ring).**
+- **Results keep being written into the ObjectStore.** Each derived topic's window is a
+  ring: it evicts instead of refusing publication. Nothing is refused, so a node never
+  goes to error or hides its layer because of a ceiling.
+- **One global byte budget covers every derived topic.** Today the compute cache has a
   global budget, but the store's ceilings are per topic: 55 derived topics could hold about
   7 GB. When the budget is full, the result farthest from its dataset's cursor is evicted,
   across all nodes. Nothing is refused. Each node's displayed result (the newest at or
   before the cursor) is never evicted; that is the per-node floor.
-- **A pinned node holds one result.** It counts against the budget, is exempt from
-  eviction, and is bounded by the per-owner pin cap.
-- **One read, `frameAt(topic, t)`.**
-  - It is const, runs on the GUI thread, and never starts work. Requests come from the
-    follow loop and from live ingest.
-  - It returns the state, the newest result at or before `t` (a shared, immutable decoded
-    object), its stamp, its identity (used as render key), whether it is an exact hit (lag
-    0), and the error detail.
-  - Readiness, the lag indicator and warnings all come from this one call.
-- **Pinned findings (D26)** are returned at any `t`, so they stay visible while scrubbing.
-- **The store keeps one lazy entry per derived output topic** (`pushLazy`). The bytes are
-  serialized only when a plugin reads them, then memoized.
-  - Plugin reads, the catalog, drag and drop, layouts and the Custom Topics panel work
-    unchanged.
-  - A derived topic exposes only its current result through the object-read service.
-    Other instants go through evaluations.
-- **Objects are stamped once, in the worker.** Nothing is serialized on the GUI thread
-  unless a plugin reads.
+- **Readers see a derived topic like any store topic:** the newest entry at or before `t`.
+  Plugin reads, the catalog, drag and drop, layouts and the Custom Topics panel work
+  unchanged. A derived topic exposes the results in its window to plugin reads at any `t`.
+- **The state of a node** (computing, missing input, error) comes from the node, not from
+  the store (invariant 1). The lag is the cursor minus the stamp of the entry read.
+- **Findings (D26).**
+  - A pinned node writes its single entry at a fixed early store timestamp. The payload
+    keeps its real stamp, and scene placement uses the payload stamp.
+  - Every at-or-before read then returns the finding at any `t`, with no reader change and
+    no datastore change. Plot markers already work this way (`Timestamp{0}`, one entry).
+  - It counts against the budget, is exempt from eviction and is bounded by the
+    per-owner pin cap.
+  - The computation-time label comes from the recipe's pinned time, not from the store.
+  - A finding ignores a model entity's finite lifetime (otherwise it would count from the
+    fixed timestamp). The dock's time-range clamp and the live-edge fold skip findings.
+  - **Accepted consequence:** a plugin reading a finding through the object-read service
+    sees the fixed timestamp in `out_timestamp`. The real one is in the payload.
+  - **Revisit if** a generic store read must report a finding's real computation time: a
+    plugin's `out_timestamp`, a TF lookup at the finding's own stamp in a moving frame, or
+    lifetimes counted from the real stamp. The fallback is a datastore "latched" flag (the
+    first entry is returned for earlier `t`), but `rangeByTime` and `maxUidAtOrBefore` do
+    not honour it, so it pushes work into the readers.
+- **The declared range:** a derived layer's time range comes from its inputs' range, not
+  from what has been computed.
 
-Both options need the **declared range:** a derived layer's time range comes from its
-inputs' range, not from what has been computed.
+**Requirements for slice 6a** (from step 0):
+1. Byte estimates never serialize. Size inputs and outputs from the decoded object (for
+   example point count times stride). Today the input estimate serializes the 2.88 MB scan:
+   2.4 ms median and 13.5 ms worst per result, on the GUI thread.
+2. A compute-cache miss checks the store first. 37-48% of backward-seek recomputes were
+   already stored, and were then discarded as duplicates.
+3. The per-node compute cache is sized by time span, not entry count. With 8 entries it had
+   a 0% hit rate on a 1.5 s jog.
+4. Publication is never refused (see the target).
+5. A lazy input entry's chunk decode (3.2 MiB of LZ4, 2.2 ms) moves off the GUI thread,
+   with the rest of the decoding in the worker.
 
-**Fallback (ring).** Keep writing results into the store, with the window as a ring that
-evicts the oldest entry instead of refusing publication, under the same global budget. This keeps the bundle
-transaction, the generation, the second readiness channel and the D26 gap.
+**Evidence.**
+- **Step 0** measured today's GUI-thread publication cost on a Waymo recording (prototype
+  766b20eeb). Stamp, serialize, store write and ledger cost at most 0.16 ms per result for
+  small objects, and 0.4-0.85 ms for a 1.5 MB point cloud: about 0.4-0.9% of GUI time at
+  10 Hz. The large GUI costs were prototype debt that does not depend on the model
+  (requirements 1-3 and 5).
+- **The D26 paper check.** The gap under store publication is the at-or-before read
+  (`latestAt` returns nothing for `t` before the finding's stamp), not retention: pinned
+  entries are already exempt from the window trim. The fixed early timestamp closes it in
+  about 15-25 production lines.
+- **The kill criterion** (the cost is negligible and D26 is accepted another way) is met.
 
-**The spike.**
-- Step 0: measure today's GUI-thread publication cost.
-- Then build pull in a throwaway branch: the point-cloud and scene-entities layers, one
-  Scene2D source (to validate the injected reader), D26, chains.
-- List every reader of the output types a script can produce (§6): the 3D and 2D layers,
-  and whatever consumes a derived frame-transforms output, which the prototype publishes
-  into the store.
-- Pass when: the demo recipes render the same; the paint rate stays at or below 60 Hz;
-  D26 holds; the GUI time per publication drops; the backward-seek hit rate is no worse; the
-  net line count is negative.
-- Kill when: the layer integration needs invasive changes; or the cost is negligible
-  **and** D26 is accepted another way.
-- **Order.** The spike is the first build-heavy work, because slice 6a builds
-  `ResultHistory` one way or the other.
+**Rejected: pull** (layers read from the evaluator through `frameAt`, with one lazy store
+entry per derived topic). Its D26 handling is about 5 lines, but only after every layer
+moves onto an injected reader, and it needs the same fixed timestamp for plugin reads and
+the same lifetime rule. With the publication cost negligible, it buys nothing the ring does
+not.
 
 ## 10. Cache identity
 
@@ -320,9 +337,10 @@ is proposed.
   evaluation. A request that does not fit waits. Not built for batch yet: the prototype's
   batch admission needs the marker script's result ceiling in `pj_scripting` (slice 5).
 - **GUI-thread work still to move:**
-  - input decoding moves to the worker (decided);
+  - input decoding moves to the worker (decided), including a lazy input entry's chunk
+    decode;
   - a chain runs in one worker task (proposed; decided while designing slice 6a);
-  - publication serialization disappears with pull;
+  - byte estimates read the decoded object and never serialize (§9);
   - the batch staging copy, and TF snapshot copies (§12), get measured first. The batch
     re-run over 500k rows now costs the GUI thread 15 ms at most per pass (§19), nearly
     all of it the resolver's copy of the series (staging alone: 13-16 ms).
@@ -468,9 +486,9 @@ time" rule of `pj_scene3D/docs/REQUIREMENTS.md` §4 for the layers in the second
   - The runtime hosts are assembled once, for the GUI and headless sessions.
 - **Live output.** A derived `SceneEntities` or `ImageAnnotations` topic publishes complete
   snapshots and is marked as a snapshot stream (D27).
-- **Findings.** A finding is a pinned, history-exempt recipe. It is re-evaluated on layout
-  restore (D23). `dismiss` and `dismissAll(owner)` remove findings. A repeated question
-  replaces its previous finding.
+- **Findings.** A finding is a pinned, history-exempt recipe. Its store entry sits at a
+  fixed early timestamp (§9). It is re-evaluated on layout restore (D23). `dismiss` and
+  `dismissAll(owner)` remove findings. A repeated question replaces its previous finding.
 - **Previews** belong to the plugin instance that created them. Closing its panel, wiping
   the data or ending a headless session removes them. Undo and layout loads do not.
 - **History exemption.** Undo and redo have no authority over a history-exempt node.
@@ -633,18 +651,19 @@ proposed (N1, N2).
 
 ## 17. Scene integration
 
-**Status: Built.** It changes with §9 and D30.
+**Status: Built.** It changes with D30 and with findings (§9).
 
 - **3D and 2D layers** render derived topics.
-  - With pull, the point-cloud and scene-entities layers, the Scene2D pipeline sources and
-    every other layer for a type a script can produce (§6) read through `frameAt` (one
-    branch each). The separate readiness gates disappear.
-  - Scene2D core stays runtime-free, through an injected reader.
+  - They read a derived topic from the store like any other topic: the newest entry at or
+    before the cursor.
+  - A layer's readiness gate applies to missing input and error only (D6). A pending node
+    keeps showing its newest result, with the lag (D30).
+  - Scene2D core stays runtime-free: a derived topic reaches it as a store topic.
+  - The dock's time-range clamp and the live-edge fold skip findings (§9).
 - **The lag indicator (D30)** appears on the layer row, with the number (for example
   "behind 0.4 s"), and in the scene dock. It is what makes showing an older result
-  acceptable. It also tells
-  the user that the function needs attention. "Why is it empty" warnings come from the same
-  state.
+  acceptable. It also tells the user that the function needs attention. "Why is it empty"
+  warnings come from the node's state.
 - **The Scene2D pairing check** (annotation `image_topic` plus cadence) applies to derived
   annotations too.
 - **Scene tabs** are kinds of `pj.plot_tabs.v1` tabs. **Dialog-embedded scene views** give a
@@ -677,7 +696,9 @@ contract decisions were settled on 2026-10-13 (§5 and below).
   `{"scope":"all"}`. v1 keeps accepting those.
 - The capability-detection rule is stated once, in `plugin_data_api.h`.
 
-Under pull, a derived topic exposes only its current result through object reads (§9).
+Under the ring, a derived topic exposes the results in its window to object reads at any
+`t`. A finding reports its fixed store timestamp in `out_timestamp`; the real stamp is in the
+payload (§9).
 
 ## 19. Measurements
 
@@ -714,7 +735,6 @@ Linux, RelWithDebInfo.
 
 ## 20. Open items and spikes
 
-- **The pull spike** (§9), before slice 6a.
 - **Python in the browser** (§14), after the Python slice.
 - **TF:** verify static frames on a real bag (R7). R6 is decided.
 - **SDK:** decided to split.

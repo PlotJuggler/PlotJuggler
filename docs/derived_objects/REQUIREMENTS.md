@@ -200,7 +200,7 @@ discussion. The planning notebook and the review notes, on the planning branch, 
 | API coverage | Exact initial builtin binding set, compressed-cloud normalization and zero-source functions. Required examples do not imply complete bindings for every builtin in the first release. D24 requires incremental Scene2D extension, not full 2D coverage in v1. |
 | Future 2D semantics | Pixel representations and access presets, raw/rectified coordinates, annotation/image pairing, calibration updates and video presentation-time selection. Record constraints now; defer detailed APIs until the corresponding stories enter scope. |
 | User/AI presentation | The prototype implements attach, remove and focus as scene tabs in `pj.plot_tabs.v1` (SDK 0.36.0). Still open: result ownership and replacement, provenance, persistence and undo behaviour. |
-| Implementation/performance | D30 settles scheduling and cancellation. The prototype writes results into the ObjectStore; a pull design (layers read from the evaluator) is proposed, pending a spike (ARCHITECTURE.md). One global byte budget bounds all on-demand results (ARCHITECTURE.md §9). Still open: native allocation accounting and representative workload targets. |
+| Implementation/performance | D30 settles scheduling and cancellation. Results stay in the ObjectStore, and each derived topic's window is a ring that evicts and never refuses (decided 2026-10-14; ARCHITECTURE.md §9). One global byte budget bounds all on-demand results (ARCHITECTURE.md §9). Still open: native allocation accounting and representative workload targets. |
 
 The prototype's measurements (GUI-thread freeze, evaluation cost, streaming plateau) are
 summarized in ARCHITECTURE.md. No delivery-time estimate exists.
