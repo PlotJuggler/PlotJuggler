@@ -493,6 +493,15 @@ the protocol in slice 6b. The rest is **Built**.
   - A snapshot entry the parse could not resolve (a dataset not loaded, an ambiguous
     one) is reported before the keep check, so a kept id does not swallow its other
     binding's diagnostic.
+  - A generator that names no dataset (a generic layout strips its `dataset_id`,
+    `dataset_source` and `dataset_path`, as it does a curve's) is not bound by the parse:
+    its inputs may be outputs of transforms the same restore installs. The parse flags it
+    (`WantedGenerator::bind_by_inputs`) and the restore binds it after the catalog
+    rebuild to the one loaded dataset whose catalog carries every input literally
+    (`markerSeriesField`, no qualifier parsing); none or several leave it unbound and
+    reported. With no dataset to compare, its rule is never kept. Of two bindings of one
+    id that resolve to the same dataset the first is created; a second with different
+    persisted settings is reported, an identical one coalesces.
   - A processor output that changes marks the marker rules reading it stale (built,
     slice L2): `DataProcessorService::setOutputsChangedSink` hands the
     topic names and their dataset to `SessionManager`, which calls

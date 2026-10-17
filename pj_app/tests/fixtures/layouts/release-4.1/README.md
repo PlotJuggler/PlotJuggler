@@ -39,7 +39,9 @@ Not producible on release-4.1, so not in the fixtures: a generator window
 (`SceneDockWidget::addLayer` already refuses a second dataset there).
 
 As released, a generator's `dataset_path` is absolute in every file, the generic
-layout included (later fixed by making it relocatable like the other qualifiers).
+layout included. Later builds make it relocatable like the other qualifiers and strip
+a generator's dataset qualifiers from a generic layout, so the generic resave check
+expects the fixture with that strip applied.
 
 ## Regenerating
 

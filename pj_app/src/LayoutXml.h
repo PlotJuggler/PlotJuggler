@@ -235,12 +235,13 @@ using SeriesKeyResolver = std::function<std::optional<QString>(const SeriesPath&
 // Converts a saved workspace document into a portable generic layout by removing
 // the exact dataset hints: dataset_id / dataset_source / dataset_path (and their
 // x_/y_ XY variants) from plotted TS/XY curves, input_dataset_* from
-// data-processor <processor> inputs, dataset_* from scene-dock <layer> /
+// data-processor <processor> inputs, dataset_* from <transform> inputs, marker
+// <generator>s, hidden <marker_scope> rows and scene-dock <layer> /
 // <config_topic> elements, and source_dataset_* from <robot_model> / <trail>. The
-// topic+field (or topic+type) identity remains and binds at apply time only when
-// unique in the loaded data — the scene loaders implement the same unique-only
-// fallback as plots and processors. Undo snapshots and source-bound layouts keep
-// their qualifiers.
+// topic+field (or topic+type; a generator's input series) identity remains and
+// binds at apply time only when unique in the loaded data — the scene loaders
+// implement the same unique-only fallback as plots and processors. Undo
+// snapshots and source-bound layouts keep their qualifiers.
 void removeDatasetQualifiersForGenericLayout(QDomDocument& doc);
 
 // Maps a serialized DatasetId to its FileLoader-known full source path (empty for
@@ -249,10 +250,12 @@ void removeDatasetQualifiersForGenericLayout(QDomDocument& doc);
 using DatasetPathLookup = std::function<QString(std::uint32_t)>;
 
 // Adds the FileLoader-known full-path companion (`*_dataset_path`) next to every
-// persisted `*_dataset_id` on plotted TS/XY curves and data-processor <processor>
-// inputs. Scene docks are NOT visited — their xmlSaveState stamps the dataset_path
-// companion itself when the dataset has a source path. A dataset
-// the lookup can't place keeps its id/source qualifier unchanged.
+// persisted `*_dataset_id` on plotted TS/XY curves, data-processor <processor> and
+// <transform> inputs, marker <generator>s and hidden <marker_scope> rows. A path the
+// element already carries is overwritten. Scene docks are NOT visited — their
+// xmlSaveState stamps the dataset_path companion itself when the dataset has a
+// source path. A dataset the lookup can't place keeps its id/source qualifier
+// unchanged.
 void stampDatasetSourcePaths(QDomDocument& doc, const DatasetPathLookup& lookup);
 
 // Makes a document safe to persist outside the live session. A non-zero numeric
@@ -260,8 +263,8 @@ void stampDatasetSourcePaths(QDomDocument& doc, const DatasetPathLookup& lookup)
 // so a later session cannot accept a coincidentally reminted id merely because a
 // basename-like source label also matches. Path-qualified ids and zero-valued
 // local-scene ids are left intact; the retained source label may still rebind
-// when unique. Scoped to plot curves and <processor> inputs (same reason as
-// stampDatasetSourcePaths); scene ids survive so restored scene layers keep binding.
+// when unique. Scoped to the elements stampDatasetSourcePaths stamps; scene ids
+// survive so restored scene layers keep binding.
 void removeUnvalidatedDatasetIds(QDomDocument& doc);
 
 // Resolves relative `*_dataset_path` qualifiers against the layout file's

@@ -391,21 +391,35 @@ constexpr std::array<DatasetIdentityAttributes, 3> kCurveIdentityAttributes{{
 constexpr DatasetIdentityAttributes kProcessorInputIdentityAttributes{
     "input_dataset_id", "input_dataset_source", "input_dataset_path"};
 constexpr DatasetIdentityAttributes kTransformInputIdentityAttributes{"dataset_id", "dataset_source", "dataset_path"};
+// A dataset-bound <generator> (an all_datasets one carries no dataset_id and is skipped).
+constexpr DatasetIdentityAttributes kGeneratorIdentityAttributes{"dataset_id", "dataset_source", "dataset_path"};
 constexpr DatasetIdentityAttributes kMarkerScopeIdentityAttributes{"dataset_id", "dataset_source", "dataset_path"};
 constexpr DatasetIdentityAttributes kSceneIdentityAttributes{"dataset_id", "dataset_source", "dataset_path"};
 constexpr DatasetIdentityAttributes kSourceIdentityAttributes{
     "source_dataset_id", "source_dataset_source", "source_dataset_path"};
 
+// Visits every `tag` element in the document.
+template <typename Fn>
+void forEachTagged(QDomDocument& doc, const QString& tag, Fn&& fn) {
+  const QDomNodeList nodes = doc.elementsByTagName(tag);
+  for (int index = 0; index < nodes.size(); ++index) {
+    QDomElement element = nodes.at(index).toElement();
+    if (!element.isNull()) {
+      fn(element);
+    }
+  }
+}
+
 // Visits every <processor> that is a descendant of <data_processors>.
 template <typename Fn>
 void forEachProcessor(QDomDocument& doc, Fn&& fn) {
-  const QDomNodeList processors = doc.elementsByTagName(u"processor"_s);
-  for (int index = 0; index < processors.size(); ++index) {
-    QDomElement processor = processors.at(index).toElement();
-    if (!processor.isNull()) {
-      fn(processor);
-    }
-  }
+  forEachTagged(doc, u"processor"_s, std::forward<Fn>(fn));
+}
+
+// Visits every marker <generator> that is a descendant of <data_processors>.
+template <typename Fn>
+void forEachGenerator(QDomDocument& doc, Fn&& fn) {
+  forEachTagged(doc, u"generator"_s, std::forward<Fn>(fn));
 }
 
 template <typename Fn>
@@ -459,6 +473,7 @@ void removeDatasetQualifiersForGenericLayout(QDomDocument& doc) {
       doc, [&strip_pair](QDomElement& processor) { strip_pair(processor, kProcessorInputIdentityAttributes); });
   forEachTransformInput(
       doc, [&strip_pair](QDomElement& input) { strip_pair(input, kTransformInputIdentityAttributes); });
+  forEachGenerator(doc, [&strip_pair](QDomElement& gen) { strip_pair(gen, kGeneratorIdentityAttributes); });
   forEachMarkerScope(doc, [&strip_pair](QDomElement scope) { strip_pair(scope, kMarkerScopeIdentityAttributes); });
   forEachElement(doc, [&strip_pair](QDomElement& element) {
     if (element.tagName() == "layer"_L1 || element.tagName() == "config_topic"_L1) {
@@ -518,6 +533,7 @@ void stampDatasetSourcePaths(QDomDocument& doc, const DatasetPathLookup& lookup)
   });
   forEachTransformInput(
       doc, [&lookup](QDomElement& input) { stampIdentityPair(input, kTransformInputIdentityAttributes, lookup); });
+  forEachGenerator(doc, [&lookup](QDomElement& gen) { stampIdentityPair(gen, kGeneratorIdentityAttributes, lookup); });
   forEachMarkerScope(
       doc, [&lookup](QDomElement scope) { stampIdentityPair(scope, kMarkerScopeIdentityAttributes, lookup); });
 }
@@ -532,6 +548,7 @@ void removeUnvalidatedDatasetIds(QDomDocument& doc) {
       doc, [](QDomElement& processor) { stripUnvalidatedIdentityPair(processor, kProcessorInputIdentityAttributes); });
   forEachTransformInput(
       doc, [](QDomElement& input) { stripUnvalidatedIdentityPair(input, kTransformInputIdentityAttributes); });
+  forEachGenerator(doc, [](QDomElement& gen) { stripUnvalidatedIdentityPair(gen, kGeneratorIdentityAttributes); });
   forEachMarkerScope(
       doc, [](QDomElement scope) { stripUnvalidatedIdentityPair(scope, kMarkerScopeIdentityAttributes); });
 }

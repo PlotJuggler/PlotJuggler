@@ -43,6 +43,10 @@ struct WantedFilter {
 struct WantedGenerator {
   BatchEngine::GeneratorRecipe recipe;
   QString parse_error;
+  /// The entry names no dataset (a generic layout; never `all_datasets`), so
+  /// `recipe.dataset_id` is not set yet: the restore binds it to the one loaded dataset
+  /// carrying every input, after its transforms exist, since an input may be one's output.
+  bool bind_by_inputs = false;
 };
 
 /// What a <data_processors> block wants live. Parsing only queries the session, so a
@@ -113,7 +117,10 @@ class DerivedObjects {
   /// filters, transforms) and installed upstream to downstream: filters and transforms
   /// in rounds, then each generator with the bounded create (`CreateWait::kBounded`):
   /// a slow rule draws nothing until its run publishes, and its failure after the
-  /// budget is reported by the engine (`errorOf`, the diagnostic sink), not here.
+  /// budget is reported by the engine (`errorOf`, the diagnostic sink), not here. A
+  /// generator naming no dataset (`WantedGenerator::bind_by_inputs`) is never kept and
+  /// binds then, through the refreshed catalog; a later binding of one id resolved onto
+  /// the same dataset is dropped, and reported when its recipe differs.
   /// History never touches a live exempt recipe. Ends with a catalog rebuild and, when
   /// the generator set changed, one `markersChanged`. A generator that cannot be
   /// restored is reported but does not fail the restore. Run `refusal` first for

@@ -25,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+#include "LayoutXml.h"
 #include "MainWindow.h"
 #include "dataset_test_helpers.h"
 #include "pj_base/builtin/point_cloud.hpp"
@@ -363,14 +364,22 @@ class MainWindowRelease41LayoutTest : public ::testing::Test {
   }
 
   // Saving the restored session again writes the fixture's <data_processors> block,
-  // modulo attribute order and the reminted dataset ids.
+  // modulo attribute order and the reminted dataset ids. A generic resave also strips
+  // the dataset qualifiers release-4.1 left on its generic layout's generators.
   void expectResavedProcessorsMatch(const QString& fixture, bool include_data_source) const {
     const QString resaved = QDir(work_dir_.path()).filePath(u"layouts/resaved.pj4.xml"_s);
     Peer::saveLayout(*window_, resaved, include_data_source);
     const std::map<QString, QString> saved_id_of{
         {QString::number(dataset_a_), u"1"_s}, {QString::number(dataset_b_), u"2"_s}};
     const std::map<QString, QString> identity{{u"1"_s, u"1"_s}, {u"2"_s, u"2"_s}};
-    const std::vector<QString> saved_by_release41 = processorEntries(relocatedFixture(fixture), identity);
+    QByteArray expected = relocatedFixture(fixture);
+    if (!include_data_source) {
+      QDomDocument doc;
+      ASSERT_TRUE(static_cast<bool>(doc.setContent(expected)));
+      PJ::layout_xml::removeDatasetQualifiersForGenericLayout(doc);
+      expected = doc.toByteArray();
+    }
+    const std::vector<QString> saved_by_release41 = processorEntries(expected, identity);
     ASSERT_EQ(saved_by_release41.size(), 10U) << "2 filters, 3 transforms, 5 generators";
     EXPECT_EQ(processorEntries(readFile(resaved), saved_id_of), saved_by_release41);
   }
@@ -421,7 +430,7 @@ TEST_F(MainWindowRelease41LayoutTest, RestoresGenericLayoutSavedByRelease41) {
   loadFixture(u"generic.pj4.xml"_s);
 
   // Generic: no saved offsets, and series bind only where topic+field is unique;
-  // the generators kept their absolute dataset paths, as release-4.1 wrote them.
+  // the generators still carry the absolute dataset paths release-4.1 wrote, and bind by them.
   expectRecipesRestored();
   expectMarkersDrawn();
   const PJ::PlotWidget* second = plotInTab(u"fixture-derived"_s);

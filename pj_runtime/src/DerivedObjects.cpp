@@ -8,11 +8,14 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <set>
+#include <tuple>
 #include <utility>
 
 #include "SeriesKey.h"
 #include "pj_datastore/data_processor.hpp"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/DatasetQualifiedName.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/XmlCdata.h"
 
@@ -75,6 +78,37 @@ void orderTransformsByDependency(std::vector<PJ::DataProcessorService::Transform
 std::optional<CurveDescriptor> resolveSavedSeries(const CatalogModel& catalog, const SavedSeriesPath& path) {
   const std::optional<QString> key = catalog.resolveCurveKey(path);
   return key.has_value() ? catalog.curveDescriptor(*key) : std::nullopt;
+}
+
+// The loaded datasets whose catalog carries every key of `inputs` as a series. Keys are read
+// literally: a persisted generator input is a bare key, so a colon in it is part of the name,
+// never a `dataset_source:` qualifier.
+std::vector<DatasetId> datasetsCarryingInputs(const CatalogModel& catalog, const std::vector<std::string>& inputs) {
+  std::map<DatasetId, std::set<std::size_t>> carried;  // dataset -> indices of the inputs it carries
+  for (const CatalogItem& item : catalog.items()) {
+    for (std::size_t index = 0; index < inputs.size(); ++index) {
+      if (markerSeriesField(item, inputs[index]) != nullptr) {
+        carried[item.dataset_id].insert(index);
+      }
+    }
+  }
+  std::vector<DatasetId> carriers;
+  for (const auto& [dataset, indices] : carried) {
+    if (indices.size() == inputs.size()) {
+      carriers.push_back(dataset);
+    }
+  }
+  return carriers;
+}
+
+// Whether two recipes agree on every field `DerivedObjects::save` persists for a generator.
+bool samePersistedGenerator(const BatchEngine::GeneratorRecipe& lhs, const BatchEngine::GeneratorRecipe& rhs) {
+  const auto persisted = [](const BatchEngine::GeneratorRecipe& recipe) {
+    return std::tie(
+        recipe.id, recipe.history_exempt, recipe.language, recipe.all_datasets, recipe.dataset_id, recipe.window,
+        recipe.inputs, recipe.declared_inputs, recipe.outputs, recipe.params_json, recipe.script);
+  };
+  return persisted(lhs) == persisted(rhs);
 }
 
 }  // namespace
@@ -445,6 +479,9 @@ std::vector<WantedGenerator> DerivedObjects::parseWantedGenerators(const QDomEle
     recipe.kind = GeneratorKind::kMarkers;
     recipe.language = gen.attribute(u"language"_s, u"luau"_s).toStdString();
     recipe.all_datasets = gen.attribute(u"all_datasets"_s) == u"1"_s;
+    // An empty qualifier carries no information: save writes one only when it has a value.
+    entry.bind_by_inputs = !recipe.all_datasets && !gen.hasAttribute(u"dataset_id"_s) &&
+                           gen.attribute(u"dataset_source"_s).isEmpty() && gen.attribute(u"dataset_path"_s).isEmpty();
     QString& gen_parse_error = entry.parse_error;
     if (!recipe.all_datasets) {
       bool ok = false;
@@ -587,11 +624,17 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
     }
     std::vector<BatchEngine::GeneratorRecipe> wanted_generators;
     for (const WantedGenerator& wanted : snapshot.generators) {
-      if (wanted.parse_error.isEmpty()) {
+      if (wanted.parse_error.isEmpty() && !wanted.bind_by_inputs) {
         wanted_generators.push_back(wanted.recipe);
       }
     }
     keep_generators = batch_engine.unchangedGeneratorIds(wanted_generators, intent, replaced_outputs);
+    // A binding with no dataset yet has nothing to compare, so its rule is re-created.
+    for (const WantedGenerator& wanted : snapshot.generators) {
+      if (wanted.bind_by_inputs) {
+        keep_generators.erase(wanted.recipe.id);
+      }
+    }
   }
 
   // 2. Clear downstream to upstream what the snapshot drops or changes; a kept filter
@@ -606,23 +649,40 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
   service.clearTransforms(intent, keep.transform_keys);
 
   // 3. Install upstream to downstream: filters and transforms in rounds, then the
-  //    generators, which resolve their inputs by name through the catalog, so it lists
-  //    the outputs just created first (marker topics are not catalog items, so the
-  //    generators leave it as it is). upsertGenerator re-creates AND runs each in one
-  //    call. Every restore waits a bounded time for a rule: an unchanged one is not
-  //    touched at all, so only a changed or new rule's markers arrive later
-  //    (markersPublished).
+  //    generators, which resolve their inputs by name through the catalog (and, naming
+  //    no dataset, pick their dataset through it), so it lists the outputs just created
+  //    first (marker topics are not catalog items, so the generators leave it as it
+  //    is). upsertGenerator re-creates AND runs each in one call. Every restore waits a
+  //    bounded time for a rule: an unchanged one is not touched at all, so only a
+  //    changed or new rule's markers arrive later (markersPublished).
   const bool processors_restored =
       repairDataProcessors(snapshot.filters, snapshot.transforms, live_exempt_keys, report.diagnostics);
   catalog_.rebuildIfChanged();
   bool any_generator_restored = false;
-  for (const WantedGenerator& wanted : snapshot.generators) {
-    const BatchEngine::GeneratorRecipe& recipe = wanted.recipe;
+  // BatchEngine holds one binding per (id, dataset): a snapshot whose bindings of one rule
+  // resolve to the same dataset must not let a later one silently replace an earlier.
+  std::map<std::pair<std::string, DatasetId>, const BatchEngine::GeneratorRecipe*> restored_bindings;
+  for (WantedGenerator& wanted : snapshot.generators) {
+    BatchEngine::GeneratorRecipe& recipe = wanted.recipe;
     // Mirrors the transform loop: history has no authority over an exempt
     // generator, whether the document flags it or a live exempt one holds its id.
     const BatchEngine::GeneratorRecipe* live = batch_engine.firstBinding(recipe.id);
     if (history && (recipe.history_exempt || (live != nullptr && live->history_exempt))) {
       continue;
+    }
+    // A generic layout names no dataset: the generator takes the one loaded dataset that
+    // carries its inputs, and stays unbound rather than guess between several.
+    if (wanted.bind_by_inputs && wanted.parse_error.isEmpty()) {
+      const std::vector<DatasetId> carriers = datasetsCarryingInputs(catalog_, recipe.inputs);
+      if (carriers.size() == 1) {
+        recipe.dataset_id = carriers.front();
+      } else if (carriers.empty()) {
+        wanted.parse_error = tr("no loaded dataset carries its input series");
+      } else {
+        wanted.parse_error =
+            tr("its input series are carried by several loaded recordings; load only the one it was made for, or "
+               "re-apply the rule");
+      }
     }
     // A generator that cannot be restored is reported and skipped, but does NOT fail
     // the restore: unlike a filter or transform, it publishes only overlay decoration
@@ -640,6 +700,17 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
     if (keep_generators.count(recipe.id) != 0) {
       continue;
     }
+    const auto binding_key = std::make_pair(recipe.id, recipe.dataset_id);
+    if (const auto earlier = restored_bindings.find(binding_key); earlier != restored_bindings.end()) {
+      if (!samePersistedGenerator(*earlier->second, recipe)) {
+        report.diagnostics.push_back(
+            {"generator-restore-failed",
+             tr("Could not restore marker generator '%1': another binding of this rule, saved with different "
+                "settings, resolves to the same dataset; only the first is kept")
+                 .arg(QString::fromStdString(recipe.id))});
+      }
+      continue;
+    }
     if (const auto restored = batch_engine.upsertGenerator(recipe, BatchEngine::CreateWait::kBounded);
         !restored.has_value()) {
       report.diagnostics.push_back(
@@ -648,6 +719,7 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
                .arg(QString::fromStdString(recipe.id), QString::fromStdString(restored.error()))});
     } else {
       any_generator_restored = true;
+      restored_bindings.emplace(binding_key, &recipe);
     }
   }
 

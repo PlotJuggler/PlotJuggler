@@ -442,6 +442,11 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_marker_generator_restore_test.cpp)
 
+    # Generators and transform inputs carry their dataset like a curve: a
+    # layout-relative path in a source-bound layout, nothing in a generic one.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_layout_dataset_paths_test.cpp)
+
     # The Custom Series list is derived from DataProcessorService, not accumulated
     # from plugin announcements — the paths that announce nothing are a layout
     # restore and a withdrawal through the data-processors ABI.

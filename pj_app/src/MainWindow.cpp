@@ -258,9 +258,13 @@ void checkGroupButton(QButtonGroup* group, int id) {
 // the data reference. A relative path counts as a "subpath" only when Qt's
 // relativeFilePath did NOT emit a "../" prefix or the literal ".." path; the
 // simpler `!rel.startsWith("..")` check would misclassify legitimate filenames
-// like "..foo" or "..bar/data.csv" as escaping the dir.
+// like "..foo" or "..bar/data.csv" as escaping the dir. Both sides compare
+// canonically, the form the session stores source paths in: a layout reached
+// through a symlinked folder (macOS /var -> /private/var) still contains its data.
 [[nodiscard]] QString relocatableSubpath(const QString& absolute_path, const QDir& layout_dir) {
-  const QString relative = layout_dir.relativeFilePath(absolute_path);
+  const QString canonical_dir = layout_dir.canonicalPath();
+  const QDir base(canonical_dir.isEmpty() ? layout_dir.absolutePath() : canonical_dir);
+  const QString relative = base.relativeFilePath(SessionManager::normalizedSourcePath(absolute_path));
   const bool is_subpath = relative != ".."_L1 && !relative.startsWith("../"_L1);
   return is_subpath ? relative : absolute_path;
 }
