@@ -289,13 +289,15 @@ class BatchEngine : public QObject {
   enum class CreateWait {
     /// The run computes on the calling thread and is published before the create
     /// returns, so every failure is returned. Plugin creates need it: a released
-    /// plugin reads the markers right after `create_data_processor` returns.
+    /// plugin reads the markers right after `create_data_processor` returns. An undo or
+    /// redo (`DerivedObjects::restore` under `kHistory`) uses it too, since the user
+    /// expects the previous markers back, not a blank set while the run finishes.
     kToCompletion,
     /// The run computes on the pool while the calling thread waits at most
     /// `kCreateBudget`; a run still going then carries on as the binding's scheduled
-    /// run. Without a pool it behaves as `kToCompletion`. Every restore uses it
-    /// (`DerivedObjects::restore`, a layout load or an undo): it leaves an unchanged
-    /// rule as it is drawn, and nobody reads a changed rule's markers right away.
+    /// run. Without a pool it behaves as `kToCompletion`. A layout load uses it
+    /// (`DerivedObjects::restore` under `kReplace`, the progressive drain included):
+    /// nobody reads a rule's markers right away, and a slow one draws progressively.
     kBounded,
   };
 
@@ -397,7 +399,8 @@ class BatchEngine : public QObject {
   /// whose last published run used a contributor's display offset that has moved since
   /// (invariant 3: the set is stored in the display frame), that has a run in flight
   /// (it staged under offsets that may have moved since; re-creating it cancels the
-  /// run), or that never published.
+  /// run), or that never published. A rule whose last run failed is kept like any other:
+  /// its error, drawn markers and coverage stay as they were.
   [[nodiscard]] std::unordered_set<std::string> unchangedGeneratorIds(
       const std::vector<GeneratorRecipe>& wanted, RestoreIntent intent,
       const std::vector<std::string>& removed_upstream) const;

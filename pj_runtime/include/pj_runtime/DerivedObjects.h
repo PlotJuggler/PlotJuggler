@@ -115,16 +115,16 @@ class DerivedObjects {
   /// live as they are (output TopicIds, a generator's topic, published set, run state
   /// and coverage). Then the rest is cleared downstream to upstream (generators,
   /// filters, transforms) and installed upstream to downstream: filters and transforms
-  /// in rounds, then each generator with the bounded create (`CreateWait::kBounded`):
-  /// a slow rule draws nothing until its run publishes, and its failure after the
-  /// budget is reported by the engine (`errorOf`, the diagnostic sink), not here. A
-  /// generator naming no dataset (`WantedGenerator::bind_by_inputs`) is never kept and
-  /// binds then, through the refreshed catalog; a later binding of one id resolved onto
-  /// the same dataset is dropped, and reported when its recipe differs.
-  /// History never touches a live exempt recipe. Ends with a catalog rebuild and, when
-  /// the generator set changed, one `markersChanged`. A generator that cannot be
-  /// restored is reported but does not fail the restore. Run `refusal` first for
-  /// `kHistory`.
+  /// in rounds, then each generator. A layout load creates it with the bounded create
+  /// (`CreateWait::kBounded`): a slow rule draws nothing until its run publishes, and its
+  /// failure after the budget is reported by the engine (`errorOf`, the diagnostic
+  /// sink), not here. An undo or redo runs it to completion. A generator naming no
+  /// dataset (`WantedGenerator::bind_by_inputs`) is never kept and binds then, through
+  /// the refreshed catalog; a later binding of one id resolved onto the same dataset is
+  /// dropped, and reported when its recipe differs. History never touches a live exempt
+  /// recipe. Ends with a catalog rebuild and, when the generator set changed, one
+  /// `markersChanged`. A generator that cannot be restored is reported but does not fail
+  /// the restore. Run `refusal` first for `kHistory`.
   [[nodiscard]] DerivedRestoreReport restore(DerivedSnapshot snapshot);
 
  private:

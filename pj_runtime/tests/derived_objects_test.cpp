@@ -264,29 +264,42 @@ TEST(DerivedObjectsTest, RoundTripKeepsTheLayoutFormat) {
   EXPECT_EQ(savedBlock(target.derived()), first_save);
 }
 
+// One marker per /imu sample, from the rule `tool/rule` on the fixture's dataset.
+BatchEngine::GeneratorRecipe imuRule(DatasetId dataset) {
+  BatchEngine::GeneratorRecipe rule;
+  rule.id = "tool/rule";
+  rule.dataset_id = dataset;
+  rule.inputs = {"/imu/value"};
+  rule.outputs = {"imu_markers"};
+  rule.script = markerPerSample("/imu/value");
+  return rule;
+}
+
+// `imuRule` that also reads /flag and fails once it exists, brought to its failed state:
+// the first run's markers stay drawn.
+BatchEngine::GeneratorRecipe ruleInError(Session& fixture) {
+  BatchEngine& engine = fixture.session().batchEngine();
+  BatchEngine::GeneratorRecipe rule = imuRule(fixture.dataset());
+  rule.inputs.push_back("/flag/value");
+  rule.script = "local flag = series(\"/flag/value\")\nif flag ~= nil then error(\"flagged\") end\n" + rule.script;
+  EXPECT_TRUE(engine.upsertGenerator(rule).has_value());
+  fixture.addTopic("/flag");
+  engine.refresh(rule.id);
+  test::pumpUntil([&] { return !engine.isRunning(rule.id); });
+  EXPECT_FALSE(engine.errorOf(rule.id).empty()) << "the last run failed";
+  return rule;
+}
+
 // A restore whose snapshot describes a live marker rule unchanged leaves it alone,
 // under either intent: the same object topic and published entry (no tombstone, no
-// republish), no run, and its run state (here the error of its last run) and
-// coverage kept.
+// republish), no run, and its coverage kept.
 TEST(DerivedObjectsTest, UnchangedGeneratorKeepsItsTopicAndEntryAcrossRestore) {
   for (const RestoreIntent intent : {RestoreIntent::kReplace, RestoreIntent::kHistory}) {
     SCOPED_TRACE(intent == RestoreIntent::kReplace ? "kReplace" : "kHistory");
     Session fixture;
     BatchEngine& engine = fixture.session().batchEngine();
-    BatchEngine::GeneratorRecipe rule;
-    rule.id = "tool/rule";
-    rule.dataset_id = fixture.dataset();
-    rule.inputs = {"/imu/value", "/flag/value"};
-    rule.outputs = {"imu_markers"};
-    // Draws one marker per /imu sample, and fails once /flag exists.
-    rule.script = "local flag = series(\"/flag/value\")\nif flag ~= nil then error(\"flagged\") end\n" +
-                  markerPerSample("/imu/value");
+    const BatchEngine::GeneratorRecipe rule = imuRule(fixture.dataset());
     ASSERT_TRUE(engine.upsertGenerator(rule).has_value());
-    fixture.addTopic("/flag");
-    engine.refresh(rule.id);
-    test::pumpUntil([&] { return !engine.isRunning(rule.id); });
-    const std::string error = engine.errorOf(rule.id);
-    ASSERT_FALSE(error.empty()) << "the last run failed; the first run's markers stay drawn";
     const auto coverage = engine.coverageOf(rule.id);
     ASSERT_TRUE(coverage.has_value());
     const ObjectStore& store = fixture.session().objectStore();
@@ -307,9 +320,46 @@ TEST(DerivedObjectsTest, UnchangedGeneratorKeepsItsTopicAndEntryAcrossRestore) {
     EXPECT_EQ(test::ownerPublishUid(store, fixture.dataset(), "imu_markers", rule.id), entry)
         << "neither tombstoned nor republished";
     EXPECT_EQ(fixture.markerValues("imu_markers"), (std::vector<double>{-2.0, -1.0, 0.0, 1.0, 2.0}));
-    EXPECT_EQ(engine.errorOf(rule.id), error);
     EXPECT_EQ(engine.coverageOf(rule.id), coverage);
   }
+}
+
+// A restore whose snapshot describes a rule unchanged keeps it as it was even when its
+// last run failed: its error, its drawn markers and its coverage stay, and it does not
+// run.
+void expectRestoreKeepsARuleInError(RestoreIntent intent) {
+  Session fixture;
+  BatchEngine& engine = fixture.session().batchEngine();
+  const BatchEngine::GeneratorRecipe rule = ruleInError(fixture);
+  const std::string error = engine.errorOf(rule.id);
+  const auto coverage = engine.coverageOf(rule.id);
+  ASSERT_TRUE(coverage.has_value());
+  const std::optional<std::uint64_t> entry =
+      test::ownerPublishUid(fixture.session().objectStore(), fixture.dataset(), "imu_markers", rule.id);
+  ASSERT_TRUE(entry.has_value());
+
+  std::atomic<int> computes{0};
+  BatchEngine::setComputeThreadProbeForTest([&computes](QThread*) { ++computes; });
+  restoreCleanly(fixture.derived(), snapshotOf(fixture.derived(), intent), intent);
+  test::pumpFor(50);
+  BatchEngine::setComputeThreadProbeForTest({});
+
+  EXPECT_EQ(computes.load(), 0);
+  EXPECT_EQ(test::ownerPublishUid(fixture.session().objectStore(), fixture.dataset(), "imu_markers", rule.id), entry);
+  EXPECT_EQ(fixture.markerValues("imu_markers"), (std::vector<double>{-2.0, -1.0, 0.0, 1.0, 2.0}));
+  EXPECT_EQ(engine.errorOf(rule.id), error);
+  EXPECT_EQ(engine.coverageOf(rule.id), coverage);
+}
+
+// An undo restores what the user saw, the error included.
+TEST(DerivedObjectsTest, HistoryRestoreKeepsARuleInErrorAsItWas) {
+  expectRestoreKeepsARuleInError(RestoreIntent::kHistory);
+}
+
+// A layout load (any kReplace restore, a workspace rollback included) describes the rule
+// just as unchanged, so it neither deletes nor re-runs a rule in error.
+TEST(DerivedObjectsTest, LayoutLoadKeepsARuleInErrorAsItWas) {
+  expectRestoreKeepsARuleInError(RestoreIntent::kReplace);
 }
 
 // A rule the snapshot describes unchanged still runs again when the transform it

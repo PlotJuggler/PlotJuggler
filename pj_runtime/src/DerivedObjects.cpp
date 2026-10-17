@@ -596,10 +596,12 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
   // 1. What stays live, upstream to downstream. A kept filter or transform keeps its
   //    output TopicId, so curves bound to it (e.g. in a preserved history-exempt tab,
   //    which no history snapshot describes) survive an unrelated undo. A kept generator
-  //    keeps its topic, its published set and its run state, so an undo costs no
-  //    re-run, but only while nothing it reads is replaced: a removed output (a kept
-  //    processor reading a removed output falls with it) or one this restore creates,
-  //    which every transform it installs does, a reinstalled key's new names included.
+  //    (its bindings equal the snapshot's and nothing it reads is replaced) keeps its
+  //    topic, published set, run state and coverage, so a restore costs it no re-run.
+  //    Replaced means a removed output (a kept processor reading a removed output falls
+  //    with it) or one this restore creates, which every transform it installs does, a
+  //    reinstalled key's new names included. An all-datasets rule also needs a published
+  //    set in the current display frame and no run in flight.
   const KeepSets keep = keepSets(snapshot);
   std::unordered_set<std::string> live_exempt_keys;
   for (const auto& live : service.transformRecipes()) {
@@ -652,12 +654,15 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
   //    generators, which resolve their inputs by name through the catalog (and, naming
   //    no dataset, pick their dataset through it), so it lists the outputs just created
   //    first (marker topics are not catalog items, so the generators leave it as it
-  //    is). upsertGenerator re-creates AND runs each in one call. Every restore waits a
-  //    bounded time for a rule: an unchanged one is not touched at all, so only a
-  //    changed or new rule's markers arrive later (markersPublished).
+  //    is). upsertGenerator re-creates AND runs each in one call. A kept rule is not
+  //    touched at all. A layout load waits a bounded time for a changed or new one,
+  //    whose markers arrive later (markersPublished); an undo restores what the user
+  //    saw, so it runs a changed rule to completion.
   const bool processors_restored =
       repairDataProcessors(snapshot.filters, snapshot.transforms, live_exempt_keys, report.diagnostics);
   catalog_.rebuildIfChanged();
+  const BatchEngine::CreateWait create_wait =
+      history ? BatchEngine::CreateWait::kToCompletion : BatchEngine::CreateWait::kBounded;
   bool any_generator_restored = false;
   // BatchEngine holds one binding per (id, dataset): a snapshot whose bindings of one rule
   // resolve to the same dataset must not let a later one silently replace an earlier.
@@ -711,8 +716,7 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
       }
       continue;
     }
-    if (const auto restored = batch_engine.upsertGenerator(recipe, BatchEngine::CreateWait::kBounded);
-        !restored.has_value()) {
+    if (const auto restored = batch_engine.upsertGenerator(recipe, create_wait); !restored.has_value()) {
       report.diagnostics.push_back(
           {"generator-restore-failed",
            tr("Could not restore marker generator '%1': %2")

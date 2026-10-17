@@ -214,7 +214,7 @@ Custom Series panel is re-derived after every restore. `applyWorkspace` parses
 once and uses that snapshot for the preflight (before the timeline offsets
 move) and for the restore; the progressive drain's teardown applies an empty
 snapshot. An undo leaves a marker rule it does not change as it is drawn, and
-creates a changed one with the bounded create, like a layout load. The restore fixtures in `tests/fixtures/layouts/release-4.1/` are
+runs a changed one to completion (a layout load creates it with the bounded create). The restore fixtures in `tests/fixtures/layouts/release-4.1/` are
 layouts written by a release-4.1 build (`MainWindowRelease41LayoutTest`).
 
 ## Toolbox presentation

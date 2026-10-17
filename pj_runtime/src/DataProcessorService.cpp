@@ -92,7 +92,9 @@ Expected<DataProcessorService::FilterHandle> DataProcessorService::applyFilter(
     return PJ::unexpected("DataProcessorService: null processor");
   }
   if (readsAPreview({input_topic_id})) {
-    return PJ::unexpected("DataProcessorService: a filter cannot read the output of a preview (ephemeral) transform");
+    return PJ::unexpected(
+        "DataProcessorService: a filter cannot read the output of a preview (ephemeral) transform, which ends with "
+        "its panel. Create that transform as a persistent one first.");
   }
 
   // Shared so the host could later keep its own handle (preview/reconfigure);
@@ -1047,7 +1049,8 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
   }
   if (!recipe.ephemeral && readsAPreview(input_topic_ids)) {
     return PJ::unexpected(
-        "pj.data_processors: a persistent transform cannot read the output of a preview (ephemeral) transform");
+        "pj.data_processors: a persistent transform cannot read the output of a preview (ephemeral) transform, "
+        "which ends with its panel. Create the transform it reads as a persistent one first.");
   }
 
   std::vector<TransformInputBinding> canonical_bindings;

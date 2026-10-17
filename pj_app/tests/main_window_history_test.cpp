@@ -204,8 +204,9 @@ std::vector<PJ::Timestamp> allDatasetsMarkerTimes(PJ::AppSession& app, std::stri
 
 // For one test: the production create budget, and every marker run computed on the
 // pool held until release() (a synchronous run on the GUI thread passes). Counts
-// every compute, held or not. The destructor releases and waits for the held runs to
-// publish before the probe goes.
+// every compute, held or not. The destructor releases and waits for the held computes
+// to return and their runs to publish before the probe goes, since a cancelled run's
+// compute is held on the pool although no binding is running.
 class HeldMarkerComputes {
  public:
   explicit HeldMarkerComputes(PJ::BatchEngine& engine)
@@ -213,14 +214,16 @@ class HeldMarkerComputes {
     QThread* const gui = QThread::currentThread();
     PJ::BatchEngine::setComputeThreadProbeForTest([this, gui](QThread* thread) {
       ++computes_;
+      ++holding_;
       for (int waited_ms = 0; thread != gui && !released_.load() && waited_ms < 5000; ++waited_ms) {
         QThread::msleep(1);
       }
+      --holding_;
     });
   }
   ~HeldMarkerComputes() {
     release();
-    static_cast<void>(QTest::qWaitFor([this] { return engine_.runningIds().empty(); }, 5000));
+    static_cast<void>(QTest::qWaitFor([this] { return idle() && engine_.runningIds().empty(); }, 5000));
     PJ::BatchEngine::setComputeThreadProbeForTest({});
     PJ::BatchEngine::setCreateBudgetForTest(previous_budget_);
   }
@@ -235,11 +238,17 @@ class HeldMarkerComputes {
     return computes_.load();
   }
 
+  // Whether no compute is inside the probe (held or about to be).
+  [[nodiscard]] bool idle() const {
+    return holding_.load() == 0;
+  }
+
  private:
   PJ::BatchEngine& engine_;
   std::chrono::milliseconds previous_budget_;
   std::atomic<bool> released_{false};
   std::atomic<int> computes_{0};
+  std::atomic<int> holding_{0};
 };
 
 QString catalogKeyForTopic(PJ::CatalogModel& catalog, PJ::TopicId topic_id) {
@@ -873,7 +882,8 @@ TEST_F(MainWindowHistoryFixture, UndoOfASourceTimelineDragKeepsGlobalMarkersAtTh
 
 // A run staged at a dragged offset is still computing when an undo restores the
 // offset: the undo re-creates the all-datasets rule, which cancels that run, so the
-// set is drawn in the restored frame once the computes are released.
+// set is drawn in the restored frame when the undo returns and the cancelled run's
+// result never lands.
 TEST_F(MainWindowHistoryFixture, UndoOfADragDuringAGlobalRunDrawsTheRestoredFrame) {
   constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
   PJ::MainWindow& window = mainWindow();
@@ -906,9 +916,11 @@ TEST_F(MainWindowHistoryFixture, UndoOfADragDuringAGlobalRunDrawsTheRestoredFram
   ASSERT_TRUE(engine.isRunning(kRule)) << "the refresh staged a's samples 20 s earlier";
   PJ::MainWindowHistoryTestPeer::undo(window);
   ASSERT_EQ(session.sourceDisplayOffset(a).value.count(), 0);
+  EXPECT_EQ(allDatasetsMarkerTimes(app, kRule), baseline) << "drawn in the restored frame when the undo returns";
 
   held.release();
-  EXPECT_TRUE(QTest::qWaitFor([&] { return !engine.isRunning(kRule); }, 5000));
+  EXPECT_TRUE(QTest::qWaitFor([&] { return held.idle() && !engine.isRunning(kRule); }, 5000));
+  QTest::qWait(50);  // the cancelled run's publish would land here
   EXPECT_EQ(allDatasetsMarkerTimes(app, kRule), baseline);
 }
 
@@ -975,10 +987,11 @@ TEST_F(MainWindowHistoryFixture, UndoOfAnotherStepLeavesASlowRuleDrawnAndRunsNot
   EXPECT_EQ(pj_test::markerTimes(app, a, output, recipe.id), baseline);
 }
 
-// An undo that changes a rule replays it with the bounded create of a layout load:
-// it returns while the slow run computes, the rule installed and drawing nothing,
-// and the run's later publish draws the snapshot's markers.
-TEST_F(MainWindowHistoryFixture, UndoThatChangesASlowRuleReturnsWithinTheBudget) {
+// An undo that changes a rule runs it to completion before it returns, however slow
+// the run: the user expects the previous markers back, not a blank set while it
+// computes. The run is computed on the GUI thread, so the held pool computes never
+// delay it.
+TEST_F(MainWindowHistoryFixture, UndoThatChangesASlowRuleDrawsItsRestoredMarkersWhenItReturns) {
   constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
   PJ::MainWindow& window = mainWindow();
   PJ::AppSession& app = PJ::MainWindowHistoryTestPeer::appSession(window);
@@ -996,16 +1009,13 @@ TEST_F(MainWindowHistoryFixture, UndoThatChangesASlowRuleReturnsWithinTheBudget)
   ASSERT_EQ(pj_test::markerTimes(app, a, output, recipe.id), std::vector<PJ::Timestamp>{100 * kSecond});
   PJ::MainWindowHistoryTestPeer::recordDiscreteState(window);
 
-  HeldMarkerComputes held(engine);
+  const HeldMarkerComputes held(engine);
   PJ::MainWindowHistoryTestPeer::undo(window);
-  EXPECT_TRUE(engine.isRunning(recipe.id)) << "the undo did not wait for the slow run";
+  EXPECT_EQ(held.computes(), 1) << "the changed rule ran once";
+  EXPECT_FALSE(engine.isRunning(recipe.id)) << "the undo waited for the run";
   ASSERT_NE(engine.firstBinding(recipe.id), nullptr);
   EXPECT_EQ(engine.firstBinding(recipe.id)->script, recipe.script) << "the snapshot's rule is installed";
-  EXPECT_TRUE(pj_test::markerTimes(app, a, output, recipe.id).empty()) << "nothing is drawn until the run publishes";
-
-  held.release();
-  EXPECT_TRUE(QTest::qWaitFor([&] { return pj_test::markerTimes(app, a, output, recipe.id) == baseline; }, 5000))
-      << "the run's publish draws the snapshot's markers";
+  EXPECT_EQ(pj_test::markerTimes(app, a, output, recipe.id), baseline) << "its markers are drawn when the undo returns";
 }
 
 TEST_F(MainWindowHistoryFixture, ProgressiveDrainRestoresOffsetsGlobalMarkersAndHiddenScopeRows) {

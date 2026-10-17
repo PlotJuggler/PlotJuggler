@@ -1091,9 +1091,13 @@ TEST(DataProcessorTransformTest, PersistentRecipesCannotReadAPreviewOutput) {
       fx.service.upsertTransform("assistant", "negate", {"preview_out"}, {"kept_out"}, kNegate, "{}");
   ASSERT_FALSE(transform.has_value()) << "a persistent transform reading a preview";
   EXPECT_NE(transform.error().find("preview"), std::string::npos) << transform.error();
+  EXPECT_NE(transform.error().find("as a persistent one first"), std::string::npos)
+      << "the message says what to do: " << transform.error();
   const auto filter = fx.service.applyFilter(preview->output_topic_ids.front(), fx.ds, "scale", "preview_scaled");
   ASSERT_FALSE(filter.has_value()) << "a filter on a preview";
   EXPECT_NE(filter.error().find("preview"), std::string::npos) << filter.error();
+  EXPECT_NE(filter.error().find("as a persistent one first"), std::string::npos)
+      << "the message says what to do: " << filter.error();
   ASSERT_TRUE(fx.service
                   .upsertTransform(
                       "chain", "negate", {"preview_out"}, {"chained_preview"}, kNegate, "{}",

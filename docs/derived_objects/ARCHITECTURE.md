@@ -329,8 +329,8 @@ is proposed.
     runs one pool drain publishes refresh the plots once. A bound rule is demanded when
     its dataset is; an all-datasets rule when one of its contributors is. A display
     reference wakes the brake (`TopicDemandTracker::referenceDemandChanged`), so does an
-    active-set change. A restore's create (a layout load or an undo) waits at most
-    8 ms for its first run; a plugin's create runs to completion (§13). The whole-dataset recomputes (reload,
+    active-set change. A layout load's create waits at most 8 ms for its first run; an
+    undo's or redo's, like a plugin's, runs to completion (§13). The whole-dataset recomputes (reload,
     rollback, dataset removal) stay synchronous and record a failure like a scheduled
     run.
 - **The in-flight memory budget** reserves the staged inputs plus one VM ceiling per
@@ -592,25 +592,28 @@ the protocol in slice 6b. The rest is **Built**.
   dataset. After a merge, the anchor's bindings and every all-datasets rule are marked
   stale and re-run over the merged data.
 - **Creating a marker rule** (built, slice 3; decided 2026-10-13, narrowed to layout
-  loads the same day). The create compiles the script and stages its inputs on the GUI
-  thread.
+  loads the same day and kept 2026-10-17 after slice L2). The create compiles the script
+  and stages its inputs on the GUI thread.
   The caller chooses how long the first run holds it (`BatchEngine::CreateWait`):
   - **To completion** (the default): the run computes on the GUI thread and is drawn,
     or its failure returned, when the create returns. Plugin creates through
     `MarkersRuntimeHost`, ephemeral or not, use it: released plugins read the markers
     right after `create_data_processor` returns (the anomaly detector's preview caches
     them until its input changes; the assistant reads them back), and the 0.35 contract
-    says the host "compiles script, runs it over inputs".
-  - **Bounded**: every restore (`DerivedObjects::restore`): a layout load, including
-    the progressive drain, and an undo or redo (built, slice L2, once a restore left
-    unchanged rules as they are drawn). The run computes on the pool while the GUI
-    thread waits at most `BatchEngine::kCreateBudget`, 8 ms. The precedent is a
-    transform's first replay slice (`kMaterializationSliceBudget`, §11): the create
-    blocks the GUI about half a frame on top of staging, however long the rule runs.
-    Only a changed or new rule is created at all; nothing reads its markers right
-    away, so a slow one draws nothing until its run publishes. Its markers and
-    marker-scope rows arrive with the later `markersPublished`, and a hidden scope
-    saved in the layout stays hidden.
+    says the host "compiles script, runs it over inputs". An undo or redo
+    (`DerivedObjects::restore` under `kHistory`) uses it too: the user expects the
+    previous markers back, not a blank set while the run finishes. With slice L2 an
+    undo creates only the rules it changed, the unchanged ones stay drawn, so the
+    blocking is rare.
+  - **Bounded**: a layout load (`DerivedObjects::restore` under `kReplace`), including
+    the progressive drain. The run computes on the pool while the GUI thread waits at
+    most `BatchEngine::kCreateBudget`, 8 ms. The precedent is a transform's first
+    replay slice (`kMaterializationSliceBudget`, §11): the create blocks the GUI about
+    half a frame on top of staging, however long the rule runs. Only a changed or new
+    rule is created at all; nothing reads its markers right away, so
+    a slow one draws nothing until its run publishes. Its markers and marker-scope rows
+    arrive with the later `markersPublished`, and a hidden scope saved in the layout
+    stays hidden.
   - Finished within the budget: a failure is returned to the caller and nothing changes
     (the previous revision and its markers stay); a success is drawn when the create
     returns.
@@ -833,7 +836,7 @@ Linux, RelWithDebInfo.
 | GUI freeze before slices 3-4 (slice 2): transform over 500k rows | GUI-thread CPU time: 8.3 ms max slice / 494 ms total. Worst wall-clock stall: 15.0 ms |
 | GUI freeze before slices 3-4 (slice 2): marker rule over 500k rows | GUI-thread CPU time: 193 ms max slice / 193 ms total. Worst wall-clock stall: 192 ms |
 | GUI freeze after slice 3: marker rule re-run after an input change (the brake, through the production resolver; `RerunMarkerRuleOverLongSeries`), 500k rows | 193 ms (synchronous before) → GUI-thread CPU time: 14.8 ms max slice / 26.1 ms total. Worst wall-clock stall: 13.8 ms |
-| After slice 3, a layout load creating a marker rule over 500k rows (`upsertGenerator` with `CreateWait::kBounded`: compile and stage, then wait at most `kCreateBudget` = 8 ms; a longer run publishes from a drain, included; since slice L2 an undo creates the same way, and plugin creates run to completion, at the synchronous cost): the heavy rule, 10 `math.sin` per sample (`ApplyMarkerRuleOverLongSeries`, in-memory resolver, so staging is a vector copy) | Synchronous create: 197 ms max slice / 197 ms total, stall 196 ms → bounded: GUI-thread CPU time: 8.0 ms max slice / 13.8 ms total. Worst wall-clock stall: 8.6 ms |
+| After slice 3, a layout load creating a marker rule over 500k rows (`upsertGenerator` with `CreateWait::kBounded`: compile and stage, then wait at most `kCreateBudget` = 8 ms; a longer run publishes from a drain, included; an undo's or redo's create and a plugin's run to completion, at the synchronous cost): the heavy rule, 10 `math.sin` per sample (`ApplyMarkerRuleOverLongSeries`, in-memory resolver, so staging is a vector copy) | Synchronous create: 197 ms max slice / 197 ms total, stall 196 ms → bounded: GUI-thread CPU time: 8.0 ms max slice / 13.8 ms total. Worst wall-clock stall: 8.6 ms |
 | … the trivial threshold rule (`ApplyTrivialMarkerRuleOverLongSeries`, production resolver): the fixed part every rule pays, staging plus reading each sample once | Synchronous create: 102 ms / 102 ms, stall 101 ms → bounded: GUI-thread CPU time: 15.5 ms max slice / 25.0 ms total (the drain's publication of its ~22k markers included). Worst wall-clock stall: 22.6 ms (staging plus the budget) |
 | … staging alone (`StageMarkerInputOverLongSeries`: the production resolver copies 500k rows, the script only looks the series up) | GUI-thread CPU time: 15.7 ms max slice / 15.7 ms total. Worst wall-clock stall: 14.9 ms (13.3 / 13.3 / 12.3 ms in an earlier series of runs) |
 | The marker-input copy before slice 3's range cursor (`sampleAt` per row rescans from row 0) | 25k / 50k / 100k rows: 4.5 s / 17.8 s / 71 s (quadratic; about 30 min at 500k) → the cursor: 0.7 / 1.4 / 2.6 ms |
