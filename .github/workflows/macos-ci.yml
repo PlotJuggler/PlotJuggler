@@ -9,7 +9,8 @@
 name: macOS CI
 
 # Nightly on the default branch (skipped when it has not moved), on every PR into
-# a release-* branch, on PRs into other branches that touch what can break the
+# a release-* branch (none while the repo variable PJ_CI_RELEASE_PR_LITE is
+# 'true'), on PRs into other branches that touch what can break the
 # Metal/QRhi lane (see the `gate` job), and on demand. A run takes ~32 min on a
 # GitHub-hosted macOS runner at about $2. Start it by hand
 # (`gh workflow run "macOS CI" --ref <branch>`) before merging a change to the
@@ -39,7 +40,8 @@ jobs:
       actions: read
 
   gate:
-    # Draft PRs never build; ready PRs into release-* always do. Other PRs build
+    # Draft PRs never build; ready PRs into release-* always do, except while the
+    # repo variable PJ_CI_RELEASE_PR_LITE is 'true' (then never). Other PRs build
     # only when they touch the toolchain pins, build system, vendored code or the
     # widget/render code the Metal and OpenGL QRhi tests cover. Fails open: if
     # the file list cannot be read, the PR builds.
@@ -56,6 +58,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BASE_REF: ${{ github.base_ref }}
+          RELEASE_PR_LITE: ${{ vars.PJ_CI_RELEASE_PR_LITE }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
@@ -67,6 +70,7 @@ jobs:
               if grep -Eq "${pattern}" <<<"${files}"; then build=true; fi
             fi
           fi
+          if [[ "${BASE_REF}" == release-* && "${RELEASE_PR_LITE}" == true ]]; then build=false; fi
           echo "base=${BASE_REF}; build=${build}"
           echo "build=${build}" >> "${GITHUB_OUTPUT}"
 

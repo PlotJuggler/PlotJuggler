@@ -280,7 +280,10 @@ jobs:
 
   wasm-chromium:
     # The acceptance package of the wasm job, in Chromium (SwiftShader WebGL).
+    # Skipped, like wasm-firefox, on PRs into release-* while the repo variable
+    # PJ_CI_RELEASE_PR_LITE is 'true'; the wasm build itself still runs.
     needs: wasm
+    if: ${{ !(github.event_name == 'pull_request' && startsWith(github.base_ref, 'release-') && vars.PJ_CI_RELEASE_PR_LITE == 'true') }}
     runs-on: depot-ubuntu-22.04-4
     timeout-minutes: 60
     env:
@@ -338,6 +341,7 @@ jobs:
     # SwiftShader: WebGL comes from Mesa's llvmpipe on the GPU-less runner,
     # and headless Firefox gets no WebGL at all without a display (Xvfb).
     needs: wasm
+    if: ${{ !(github.event_name == 'pull_request' && startsWith(github.base_ref, 'release-') && vars.PJ_CI_RELEASE_PR_LITE == 'true') }}
     runs-on: depot-ubuntu-22.04-4
     timeout-minutes: 60
     env:

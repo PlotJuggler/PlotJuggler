@@ -33,6 +33,8 @@ jobs:
     # packaging-relevant changes, and recipe work (the MSVC ffmpeg above all)
     # can only be validated in CI — drafts included.
     name: pixi-build (${{ matrix.name }})
+    # Skipped on PRs into release-* while the repo variable PJ_CI_RELEASE_PR_LITE is 'true'.
+    if: ${{ !(github.event_name == 'pull_request' && startsWith(github.base_ref, 'release-') && vars.PJ_CI_RELEASE_PR_LITE == 'true') }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
