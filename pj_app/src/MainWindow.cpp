@@ -2068,6 +2068,12 @@ MainWindow::~MainWindow() {
   if (current_panel_ != nullptr) {
     delete releaseCentralPanel();
   }
+  // Plot and scene docks are QObject children: the base-class child sweep
+  // would destroy them only after session_ has unloaded the plugin libraries
+  // they may still depend on (a Scene2D video layer keeps parser-owned records
+  // and a decode thread). ~ads::CDockManager deletes its docks in place.
+  plugin_plot_tabs_.reset();  // its tab-strip reference must not outlive the strip
+  delete ui_->tabbedPlotWidget;
   // Break the widget-owned pointers to services before session_ destroys
   // the engine — guarantees no late signal dereferences a dead pointer.
   ui_->timelineWidget->setPlaybackEngine(nullptr);
