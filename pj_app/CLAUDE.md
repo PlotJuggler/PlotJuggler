@@ -205,14 +205,16 @@ optional tail slot preserves existing callers. See the SDK's
 The `<data_processors>` block (filters, transforms, marker generators) is saved
 and restored by `pj_runtime`'s `DerivedObjects` (see `pj_runtime/CLAUDE.md`).
 `MainWindow` saves through `derivedObjects().save(...)` and keeps a thin wrapper for
-the restore — `restoreDataProcessors` = `parseDataProcessors` +
-`checkDataProcessorDependencies` (the `kHistory` preflight) + `applyDataProcessors` —
-and owns what is UI: each diagnostic is reported (`reportDerived`) under source
+the restore — `restoreDataProcessors` = `derivedObjects().parse(root, intent)` +
+`checkDataProcessorDependencies` (the `kHistory` preflight) + `applyDataProcessors`,
+the snapshot carrying its intent — and owns what is UI: each diagnostic (the parse's
+and the restore's, in one report) is reported (`reportDerived`) under source
 "Layout" (so `layout_issue_capture_` sees it), and the
 Custom Series panel is re-derived after every restore. `applyWorkspace` parses
 once and uses that snapshot for the preflight (before the timeline offsets
 move) and for the restore; the progressive drain's teardown applies an empty
-snapshot. The restore fixtures in `tests/fixtures/layouts/release-4.1/` are
+snapshot. An undo leaves a marker rule it does not change as it is drawn, and
+creates a changed one with the bounded create, like a layout load. The restore fixtures in `tests/fixtures/layouts/release-4.1/` are
 layouts written by a release-4.1 build (`MainWindowRelease41LayoutTest`).
 
 ## Toolbox presentation
@@ -223,12 +225,20 @@ the plugin session that keeps host services and plugin instance alive, and
 the presentation it currently has — takeover (chart area), tab, or floating
 `PJ::Dialog`. `MainWindow::toolboxes_` is the single registry, one presenter
 per plugin id across every presentation; `launchToolbox` builds the session
-(`buildToolboxPanelSession`, mirrored by `HeadlessDescriptorProviderSession`),
+(`buildToolboxPanelSession`; the derived-data hosts come from `pj_runtime`'s
+`DerivedRuntimeHosts`, which `HeadlessDescriptorProviderSession` builds too, and the
+other provider services from `ToolboxHostWiring.h`),
 wraps the panel, registers the presenter and calls `moveToDock`/`moveToTab`.
 `moveToDock`/`moveToTab`/`moveToFloating` release the container from wherever it
 is and attach it elsewhere; `teardown(kDeferred|kImmediate)` is the one exit,
 reached only through `MainWindow::teardownToolbox`, which extracts the registry
-entry FIRST so any callback landing mid-teardown finds nothing. Tab close,
+entry FIRST so any callback landing mid-teardown finds nothing. The session dying
+with the presenter ends the previews that panel's plugin instance created
+(`DerivedRuntimeHosts`' destructor passes its bridges' previews to
+`SessionManager::removeEphemerals`: ephemeral transforms and marker rules, after the
+plugin handle is gone; the headless provider session does the same for its own, so
+ending it leaves an open panel's previews of the same plugin); its persistent
+recipes are user data and stay. Tab close,
 window `finished`, engine close requests and banner hooks all look the presenter
 up by id rather than capturing it. `~MainWindow` calls `teardownAllToolboxes()`
 (every presentation, synchronous) before the members die; a layout restore

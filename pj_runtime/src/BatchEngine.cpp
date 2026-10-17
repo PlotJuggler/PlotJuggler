@@ -20,8 +20,11 @@
 #include <optional>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
+#include "SeriesKey.h"
+#include "TextCompare.h"
 #include "pj_base/builtin/plot_markers.hpp"        // sdk::PlotMarker(s), markerObjectTopicName, kPreviewMarkerTopic
 #include "pj_base/builtin/plot_markers_codec.hpp"  // serializePlotMarkers, deserializePlotMarkers
 #include "pj_datastore/object_store.hpp"
@@ -126,12 +129,19 @@ void shiftMarkers(std::vector<sdk::PlotMarker>& markers, Timestamp shift) {
   }
 }
 
-/// A marker series key identifies either a topic itself or a field below it.
-/// Requiring the slash boundary avoids treating similarly prefixed topics as
-/// the same input (for example, `imu` and `imu_raw`).
-bool seriesKeyBelongsToTopic(const std::string& key, const std::string& topic) {
-  return key == topic ||
-         (key.size() > topic.size() && key.compare(0, topic.size(), topic) == 0 && key[topic.size()] == '/');
+/// Whether `recipe` reads a series rooted at one of the topics `names`.
+bool readsAnyTopicOf(const BatchEngine::GeneratorRecipe& recipe, const std::vector<std::string>& names) {
+  return std::any_of(recipe.inputs.begin(), recipe.inputs.end(), [&names](const std::string& input) {
+    return std::any_of(
+        names.begin(), names.end(), [&input](const std::string& name) { return seriesKeyBelongsToTopic(input, name); });
+  });
+}
+
+/// Whether a restore under `intent` has authority over the id whose first binding is
+/// `first`: previews are never the restore's, and `kHistory` leaves the exempt ones.
+/// `ephemeral` / `history_exempt` are per-id properties, so the first binding decides.
+bool inAuthority(const BatchEngine::GeneratorRecipe& first, RestoreIntent intent) {
+  return !first.ephemeral && !(intent == RestoreIntent::kHistory && first.history_exempt);
 }
 
 }  // namespace
@@ -303,8 +313,8 @@ std::optional<std::pair<Timestamp, Timestamp>> BatchEngine::coverageOf(std::stri
   if (recipe == nullptr) {
     return std::nullopt;
   }
-  const auto it = coverage_.find(bindingKey(*recipe));
-  return it == coverage_.end() ? std::nullopt : it->second;
+  const auto it = published_.find(bindingKey(*recipe));
+  return it == published_.end() ? std::nullopt : it->second.coverage;
 }
 
 void BatchEngine::setComputeThreadProbeForTest(std::function<void(QThread*)> probe) {
@@ -424,7 +434,14 @@ Status BatchEngine::publishRun(const StagedRun& staged, std::optional<sdk::PlotM
       !pushed.has_value()) {
     return pushed;
   }
-  coverage_[bindingKey(staged.recipe)] = staged.coverage_ns;
+  PublishedRun& published = published_[bindingKey(staged.recipe)];
+  published.coverage = staged.coverage_ns;
+  published.display_shifts.clear();
+  if (staged.recipe.all_datasets) {
+    for (const StagedContribution& contribution : staged.contributions) {
+      published.display_shifts.emplace_back(contribution.dataset_id, contribution.display_shift);
+    }
+  }
   return okStatus();
 }
 
@@ -881,7 +898,7 @@ Status BatchEngine::removeGenerator(std::string_view id) {
   cancelRunsOf(id);
   retireOwnedTopics(id, it->second.front().ephemeral);
   recipes_.erase(it);
-  std::erase_if(coverage_, [id](const auto& entry) { return entry.first.first == id; });
+  std::erase_if(published_, [id](const auto& entry) { return entry.first.first == id; });
   return okStatus();
 }
 
@@ -946,7 +963,7 @@ std::vector<std::string> BatchEngine::clearGeneratorsForDataset(DatasetId datase
     for (const GeneratorRecipe& recipe : bindings) {
       if (bound_here(recipe)) {
         cancelRun(bindingKey(recipe));
-        coverage_.erase(bindingKey(recipe));
+        published_.erase(bindingKey(recipe));
       }
     }
     std::erase_if(bindings, bound_here);
@@ -974,12 +991,7 @@ std::vector<std::string> BatchEngine::recomputeForChangedInputs(
     if (scope != kAnyDataset && !recipe.all_datasets && recipe.dataset_id != scope) {
       continue;
     }
-    const bool matched =
-        changed.empty() || std::any_of(recipe.inputs.begin(), recipe.inputs.end(), [&changed](const std::string& in) {
-          return std::any_of(
-              changed.begin(), changed.end(), [&in](const std::string& prefix) { return in.rfind(prefix, 0) == 0; });
-        });
-    if (!matched) {
+    if (!changed.empty() && !readsAnyTopicOf(recipe, changed)) {
       continue;
     }
     // An all_datasets recipe's set is shared, so a change on one contributing
@@ -998,15 +1010,7 @@ std::vector<std::string> BatchEngine::recomputeForChangedInputs(
 std::vector<std::string> BatchEngine::exemptDependentsOf(const std::vector<std::string>& removed_inputs) const {
   std::vector<std::string> outputs;
   for (const GeneratorRecipe& recipe : allRecipes()) {
-    if (recipe.ephemeral || !recipe.history_exempt) {
-      continue;
-    }
-    const bool depends = std::any_of(recipe.inputs.begin(), recipe.inputs.end(), [&](const std::string& input) {
-      return std::any_of(removed_inputs.begin(), removed_inputs.end(), [&](const std::string& removed) {
-        return !removed.empty() && seriesKeyBelongsToTopic(input, removed);
-      });
-    });
-    if (!depends) {
+    if (recipe.ephemeral || !recipe.history_exempt || !readsAnyTopicOf(recipe, removed_inputs)) {
       continue;
     }
     if (recipe.outputs.empty()) {
@@ -1025,19 +1029,82 @@ bool BatchEngine::hasHistoryExemptGenerators() const {
   return std::any_of(recipes.begin(), recipes.end(), [](const GeneratorRecipe& r) { return r.history_exempt; });
 }
 
-void BatchEngine::clearGenerators(RestoreIntent intent) {
-  const bool keep_history_exempt = intent == RestoreIntent::kHistory;
-  // ephemeral / history_exempt are per-id properties, so the first binding decides.
+std::unordered_set<std::string> BatchEngine::unchangedGeneratorIds(
+    const std::vector<GeneratorRecipe>& wanted, RestoreIntent intent,
+    const std::vector<std::string>& removed_upstream) const {
+  const auto same = [](const GeneratorRecipe& live, const GeneratorRecipe& snapshot) {
+    // An all_datasets recipe's dataset_id means nothing and is not persisted.
+    return live.kind == snapshot.kind && live.language == snapshot.language &&
+           live.all_datasets == snapshot.all_datasets && live.inputs == snapshot.inputs &&
+           live.declared_inputs == snapshot.declared_inputs && live.outputs == snapshot.outputs &&
+           sameTextIgnoringLineEndings(live.script, snapshot.script) &&
+           sameTextIgnoringLineEndings(live.params_json, snapshot.params_json) && live.window == snapshot.window &&
+           live.history_exempt == snapshot.history_exempt;
+  };
+  // Invariant 3: the shared set was published in the display frame of its run. A run in
+  // flight staged under offsets the restore may have moved since, and a set never
+  // published has no frame to compare: both count as moved.
+  const auto display_frame_moved = [this](const GeneratorRecipe& recipe) {
+    if (!recipe.all_datasets) {
+      return false;
+    }
+    const auto published = published_.find(bindingKey(recipe));
+    if (published == published_.end() || isRunning(recipe.id)) {
+      return true;
+    }
+    return std::any_of(
+        published->second.display_shifts.begin(), published->second.display_shifts.end(),
+        [this](const auto& entry) { return entry.second != -displayOffsetOf(entry.first); });
+  };
+  std::unordered_set<std::string> unchanged;
+  for (const auto& [id, bindings] : recipes_) {
+    if (!inAuthority(bindings.front(), intent)) {
+      continue;
+    }
+    const auto wanted_count =
+        std::count_if(wanted.begin(), wanted.end(), [&id](const GeneratorRecipe& recipe) { return recipe.id == id; });
+    const bool all_same = static_cast<std::size_t>(wanted_count) == bindings.size() &&
+                          std::all_of(bindings.begin(), bindings.end(), [&](const GeneratorRecipe& live) {
+                            const auto snapshot =
+                                std::find_if(wanted.begin(), wanted.end(), [&](const GeneratorRecipe& candidate) {
+                                  return candidate.id == id && bindingDataset(candidate) == bindingDataset(live);
+                                });
+                            return snapshot != wanted.end() && same(live, *snapshot) &&
+                                   !readsAnyTopicOf(live, removed_upstream) && !display_frame_moved(live);
+                          });
+    if (all_same) {
+      unchanged.insert(id);
+    }
+  }
+  return unchanged;
+}
+
+void BatchEngine::clearGenerators(RestoreIntent intent, const std::unordered_set<std::string>& keep) {
   std::vector<std::string> ids;
   for (const auto& [id, bindings] : recipes_) {
-    const GeneratorRecipe& recipe = bindings.front();
-    if (!recipe.ephemeral && !(keep_history_exempt && recipe.history_exempt)) {
+    if (inAuthority(bindings.front(), intent) && keep.count(id) == 0) {
       ids.push_back(id);
     }
   }
   for (const std::string& id : ids) {
     (void)removeGenerator(id);
   }
+}
+
+std::string BatchEngine::ownerPrefix(std::string_view owner_plugin) {
+  std::string prefix(owner_plugin);
+  prefix.push_back('/');
+  return prefix;
+}
+
+bool BatchEngine::removeEphemerals(const std::unordered_set<std::string>& ids) {
+  bool removed = false;
+  for (const std::string& id : ids) {
+    if (const GeneratorRecipe* first = firstBinding(id); first != nullptr && first->ephemeral) {
+      removed = removeGenerator(id).has_value() || removed;
+    }
+  }
+  return removed;
 }
 
 void BatchEngine::clearAllGenerators() {
@@ -1099,6 +1166,16 @@ std::vector<BatchEngine::GeneratorRecipe> BatchEngine::recipes() const {
     }
   }
   return out;
+}
+
+std::size_t BatchEngine::persistentBindingCount() const {
+  std::size_t count = 0;
+  for (const auto& [id, bindings] : recipes_) {
+    if (!bindings.front().ephemeral) {
+      count += bindings.size();
+    }
+  }
+  return count;
 }
 
 std::vector<std::string> BatchEngine::generatorIds() const {

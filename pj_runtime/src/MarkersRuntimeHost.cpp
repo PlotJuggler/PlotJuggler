@@ -73,10 +73,7 @@ std::vector<std::string> MarkersRuntimeHost::loadedSourceNames() const {
 }
 
 std::string MarkersRuntimeHost::makeKey(std::string_view local_id) const {
-  std::string key = plugin_id_;
-  key.push_back('/');
-  key.append(local_id);
-  return key;
+  return BatchEngine::ownerPrefix(plugin_id_).append(local_id);
 }
 
 bool MarkersRuntimeHost::onCreate(
@@ -145,10 +142,15 @@ bool MarkersRuntimeHost::onCreate(
     }
     // To completion, ephemeral or not: released plugins read the markers right after
     // create returns (a preview caches them until its input changes).
+    const bool preview = recipe.ephemeral;
+    std::string key = recipe.id;
     Expected<std::vector<std::string>> resolved =
         self.service_.upsertGenerator(std::move(recipe), BatchEngine::CreateWait::kToCompletion);
     if (!resolved.has_value()) {
       return reject(out_error, kDomain, resolved.error());
+    }
+    if (preview) {
+      self.previews_.insert(std::move(key));
     }
     self.create_topics_storage_ = std::move(*resolved);
     if (out_topics_count != nullptr) {
@@ -166,14 +168,19 @@ bool MarkersRuntimeHost::onCreate(
 
 bool MarkersRuntimeHost::onRemove(void* ctx, PJ_string_view_t id, PJ_error_t* out_error) noexcept {
   return guarded<MarkersRuntimeHost>(ctx, out_error, kDomain, [&](MarkersRuntimeHost& self) {
-    return finish(out_error, kDomain, self.service_.removeGenerator(self.makeKey(sdk::toStringView(id))));
+    const std::string key = self.makeKey(sdk::toStringView(id));
+    const Status removed = self.service_.removeGenerator(key);
+    if (removed.has_value()) {
+      self.previews_.erase(key);
+    }
+    return finish(out_error, kDomain, removed);
   });
 }
 
 bool MarkersRuntimeHost::onList(
     void* ctx, PJ_string_view_t* out_ids, uint64_t capacity, uint64_t* out_count, PJ_error_t* out_error) noexcept {
   return guarded<MarkersRuntimeHost>(ctx, out_error, kDomain, [&](MarkersRuntimeHost& self) {
-    const std::string prefix = self.plugin_id_ + "/";
+    const std::string prefix = BatchEngine::ownerPrefix(self.plugin_id_);
     self.list_storage_.clear();
     for (const std::string& generator_id : self.service_.generatorIds()) {
       if (generator_id.size() > prefix.size() && generator_id.compare(0, prefix.size(), prefix) == 0) {

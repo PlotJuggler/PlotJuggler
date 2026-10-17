@@ -32,6 +32,7 @@
 #include "pj_datastore/writer.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/SessionManager.h"
 using namespace Qt::StringLiterals;
@@ -1887,4 +1888,55 @@ TEST(SessionManagerTimeTest, DisplayTimeForSourceHonoursCurrentOffsetAndRejectsU
   const auto display = session.displayTimeForSource(*dataset, 5'000'000'000LL);
   ASSERT_TRUE(display.has_value());
   EXPECT_DOUBLE_EQ(display->value, 3.0);
+}
+
+// A preview belongs to the plugin instance that made it (OWN-08): ending the previews
+// an instance lists removes those ephemeral transforms and marker rules in both
+// engines and repaints once. A persistent or unknown id in the list is skipped, and an
+// unlisted preview stays.
+TEST(SessionManagerTest, RemoveEphemeralsEndsOnlyTheListedPreviews) {
+  PJ::SessionManager session;
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run.mcap"});
+  ASSERT_TRUE(dataset.has_value());
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto handle = writer.registerScalarSeries(*dataset, "/sensor", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value());
+  writer.appendScalar(*handle, 100, 1.0);
+  ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+
+  struct Recipe {
+    std::string owner;
+    std::string id;
+    bool ephemeral;
+  };
+  const std::vector<Recipe> recipes{{"a", "preview", true}, {"a", "kept", false}, {"b", "preview", true}};
+  for (const Recipe& recipe : recipes) {
+    const std::string script = "-- pj-script: luau\nreturn { id=\"" + recipe.id + "\", name=\"" + recipe.id +
+                               "\", output=\"same\",\n"
+                               "  create = function(p) return { calculate = function(t, v) return v end } end }\n";
+    ASSERT_TRUE(
+        session.dataProcessorService()
+            .upsertTransform(
+                recipe.owner, recipe.id, {"/sensor"}, {recipe.owner + "_" + recipe.id}, script, "{}", recipe.ephemeral)
+            .has_value());
+    PJ::BatchEngine::GeneratorRecipe rule;
+    rule.id = recipe.owner + "/" + recipe.id;
+    rule.dataset_id = *dataset;
+    if (!recipe.ephemeral) {
+      rule.outputs = {std::string(PJ::sdk::kGlobalMarkerTopic)};
+    }
+    rule.script = "createMarker(100)";
+    rule.ephemeral = recipe.ephemeral;
+    ASSERT_TRUE(session.batchEngine().upsertGenerator(rule).has_value());
+  }
+  QSignalSpy markers_changed(&session, &PJ::SessionManager::markersChanged);
+
+  session.removeEphemerals({"a/preview", "a/kept", "a/gone"}, {"a/preview", "a/kept", "a/gone"});
+
+  EXPECT_EQ(session.dataProcessorService().transformIdsForPlugin("a"), std::vector<std::string>{"kept"});
+  EXPECT_EQ(session.dataProcessorService().transformIdsForPlugin("b"), std::vector<std::string>{"preview"});
+  EXPECT_EQ(session.batchEngine().firstBinding("a/preview"), nullptr);
+  EXPECT_NE(session.batchEngine().firstBinding("a/kept"), nullptr);
+  EXPECT_NE(session.batchEngine().firstBinding("b/preview"), nullptr);
+  EXPECT_EQ(markers_changed.count(), 1) << "the removed preview's markers are repainted away once";
 }

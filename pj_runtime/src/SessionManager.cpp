@@ -108,6 +108,14 @@ SessionManager::SessionManager(QObject* parent)
   batch_engine_->setPool(engine_pool_.get());
   // A scheduled run lands after the change that asked for it was announced.
   connect(batch_engine_.get(), &BatchEngine::markersPublished, this, &SessionManager::notifyMarkersChanged);
+  // A transform's output changed (an edit, a finished replay, a removal): the marker
+  // rules reading it describe the old series. A restore's own changes name only
+  // outputs it replaces, so they never touch a rule the restore keeps.
+  processor_service_->setOutputsChangedSink([this](const std::vector<std::string>& names, DatasetId dataset) {
+    if (batch_engine_ && batch_engine_->hasGenerators()) {
+      (void)batch_engine_->recomputeForChangedInputs(names, dataset);
+    }
+  });
   // An all-datasets set is stored once in the display frame, so each contributor's
   // run is shifted by its alignment offset; only that shift matters
   // (globalTimeReference is uniform and cancels out).
@@ -922,6 +930,14 @@ void RefillGuard::commit() {
   }
 }
 
+void SessionManager::removeEphemerals(
+    const std::unordered_set<std::string>& transform_keys, const std::unordered_set<std::string>& generator_ids) {
+  processor_service_->removeEphemerals(transform_keys);
+  if (batch_engine_->removeEphemerals(generator_ids)) {
+    notifyMarkersChanged();
+  }
+}
+
 void SessionManager::publishSharedMarkersToNewDatasets() {
   if (batch_engine_ && batch_engine_->hasGenerators()) {
     batch_engine_->reachNewDatasets();
@@ -966,6 +982,17 @@ Status RefillGuard::recomputeProcessors() {
   if (session_ == nullptr) {
     return PJ::okStatus();
   }
+  // Processors first: a marker rule reading a transform output must run over the
+  // recomputed output, not the emptied one.
+  if (!replaced_source_topic_ids_.empty()) {
+    auto outputs = session_->dataProcessorService().rebindAndRecomputeForReplacedSources(replaced_source_topic_ids_);
+    if (!outputs.has_value()) {
+      return PJ::unexpected(outputs.error());
+    }
+    if (!outputs->empty()) {
+      session_->notifyIngest(QVector<TopicId>(outputs->begin(), outputs->end()), /*live=*/false);
+    }
+  }
   // Markers are whole-series generators: a reload swaps the dataset's data
   // wholesale (and may rename or drop the inputs a generator read), so re-run
   // every generator bound to this dataset rather than matching changed names.
@@ -974,16 +1001,6 @@ Status RefillGuard::recomputeProcessors() {
   if (session_->batch_engine_ && session_->batch_engine_->hasGenerators() &&
       !session_->batch_engine_->recomputeForDataset(dataset_id_).empty()) {
     session_->notifyMarkersChanged();
-  }
-  if (replaced_source_topic_ids_.empty()) {
-    return PJ::okStatus();
-  }
-  auto outputs = session_->dataProcessorService().rebindAndRecomputeForReplacedSources(replaced_source_topic_ids_);
-  if (!outputs.has_value()) {
-    return PJ::unexpected(outputs.error());
-  }
-  if (!outputs->empty()) {
-    session_->notifyIngest(QVector<TopicId>(outputs->begin(), outputs->end()), /*live=*/false);
   }
   return PJ::okStatus();
 }

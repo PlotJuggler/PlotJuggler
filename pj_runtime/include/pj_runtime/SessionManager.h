@@ -12,6 +12,7 @@
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -146,6 +147,13 @@ class SessionManager : public QObject {
   void notifyMarkersChanged() {
     emit markersChanged();
   }
+  // Ends the previews among `transform_keys` (ephemeral transforms) and
+  // `generator_ids` (ephemeral marker rules), repainting the overlays once if a marker
+  // preview went; a gone or persistent one is skipped. A preview belongs to the plugin
+  // instance that made it: `DerivedRuntimeHosts` passes the ones its bridges created
+  // and still hold when that instance ends. Persistent recipes are the user's data.
+  void removeEphemerals(
+      const std::unordered_set<std::string>& transform_keys, const std::unordered_set<std::string>& generator_ids);
   // A dataset just became listed (the catalog published it): mark every
   // all-datasets marker rule stale for the batch engine's brake, since the newcomer
   // may contribute. Wired by CatalogModel; the commit recompute runs before the
@@ -899,7 +907,9 @@ class RefillGuard {
   /// Keep the refilled data: drop the snapshot so the destructor no longer rolls back.
   void commit();
   /// Replay processor outputs after the final raw flush and before vanished-topic
-  /// pruning. Failure leaves the transaction live for destructor rollback.
+  /// pruning, then re-run the dataset's marker rules over them (the replay does not
+  /// fire the outputs-changed sink: the rules run once, after it). Failure leaves
+  /// the transaction live for destructor rollback.
   [[nodiscard]] Status recomputeProcessors();
   /// Retire prior topics that VANISHED from the reloaded file (codex #2): a prior
   /// scalar/object topic still empty after the refill is one the new file no longer

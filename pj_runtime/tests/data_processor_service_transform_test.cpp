@@ -14,12 +14,16 @@
 #include <limits>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <unordered_set>
 #include <vector>
 
+#include "event_pump_test_utils.h"
+#include "marker_test_utils.h"
+#include "pj_base/builtin/plot_markers.hpp"
 #include "pj_base/dataset.hpp"
 #include "pj_base/type_tree.hpp"
 #include "pj_base/types.hpp"
@@ -824,23 +828,6 @@ TEST(DataProcessorTransformTest, DuplicateTopicNameInsideOneDatasetIsReportedAmb
   EXPECT_NE(rec.error().find("ambiguous"), std::string::npos) << rec.error();
 }
 
-TEST(DataProcessorTransformTest, ClearForPluginRemovesOnlyThatPlugin) {
-  Fixture fx;
-  fx.seed("speed", {1.0});
-  // Same user_id under two plugins -> distinct keys "pluginA/negate" / "pluginB/negate"
-  // (the transform id must match the script's class id, kNegate's "negate").
-  ASSERT_TRUE(fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"a/out"}, kNegate, "{}").has_value());
-  const auto b = fx.service.upsertTransform("pluginB", "negate", {"speed"}, {"b/out"}, kNegate, "{}");
-  ASSERT_TRUE(b.has_value()) << b.error();
-
-  fx.service.clearTransformsForPlugin("pluginA");
-
-  EXPECT_TRUE(fx.service.transformIdsForPlugin("pluginA").empty());
-  ASSERT_EQ(fx.service.transformIdsForPlugin("pluginB").size(), 1u);
-  EXPECT_EQ(fx.service.transformIdsForPlugin("pluginB").front(), "negate");
-  EXPECT_TRUE(fx.listed(b->output_topic_ids.front()));  // B untouched
-}
-
 TEST(DataProcessorTransformTest, MissingBackendDiagnosesNotDrops) {
   Fixture fx;
   fx.seed("speed", {1.0});
@@ -1039,8 +1026,8 @@ TEST(DataProcessorTransformTest, ExemptDependentsOfEmptyWhenNoExemptDependent) {
   EXPECT_TRUE(fx.service.exemptDependentsOf(removable).empty());
 }
 
-// Regression [Codex #6]: liveNonExemptOutputNames() reports the grouped
-// DECLARATION "rpy:a,b", not the materialized topic "rpy", so an exempt marker
+// Regression [Codex #6]: removalImpact() reports the grouped DECLARATION
+// "rpy:a,b", not the materialized topic "rpy", so an exempt marker
 // generator reading "rpy/a" is not found as a dependent and undo can strand it.
 TEST(DataProcessorTransformTest, StrandPreflightSeesGroupedTransformOutputTopic) {
   Fixture fx;
@@ -1066,9 +1053,97 @@ TEST(DataProcessorTransformTest, StrandPreflightSeesGroupedTransformOutputTopic)
   exempt.history_exempt = true;
   ASSERT_TRUE(markers.upsertGenerator(exempt).has_value());
 
-  const std::vector<std::string> removed = fx.service.liveNonExemptOutputNames();
+  const std::vector<std::string> removed =
+      fx.service.removalImpact(RestoreIntent::kHistory, {}, {}).removed_output_names;
   EXPECT_EQ(markers.exemptDependentsOf(removed), std::vector<std::string>{"exempt_markers"})
       << "removable outputs reported as: " << (removed.empty() ? std::string("<none>") : removed.front());
+}
+
+// Only a single structured entry "topic:f1,f2" is grouped into one topic; every other
+// output, colon or not, is its own topic under its declared name.
+TEST(DataProcessorTransformTest, MaterializedTopicNamesFollowTheGroupedOutputRule) {
+  DataProcessorService::TransformRecipe recipe;
+  recipe.outputs = {"rpy:roll,pitch"};
+  EXPECT_EQ(DataProcessorService::materializedTopicNames(recipe), std::vector<std::string>{"rpy"});
+
+  recipe.outputs = {"speed", "a:b"};
+  EXPECT_EQ(DataProcessorService::materializedTopicNames(recipe), (std::vector<std::string>{"speed", "a:b"}));
+
+  recipe.outputs = {"a:"};
+  EXPECT_EQ(DataProcessorService::materializedTopicNames(recipe), std::vector<std::string>{"a:"});
+}
+
+// A preview ends with the panel that made it and takes what reads it along, so a
+// persistent recipe may not read a preview's output: the create is refused, another
+// preview may, and ending the preview leaves every persistent recipe in place.
+TEST(DataProcessorTransformTest, PersistentRecipesCannotReadAPreviewOutput) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  auto catalogue = std::make_shared<scripting::FilterCatalogue>(scripting::makeLuauEngine());
+  ASSERT_TRUE(catalogue->addBundledSource(kScale, "test").has_value());
+  fx.service.setFilterCatalogue(std::move(catalogue));
+  ASSERT_TRUE(fx.service.upsertTransform("user", "negate", {"speed"}, {"user_out"}, kNegate, "{}").has_value());
+  const auto preview =
+      fx.service.upsertTransform("panel", "negate", {"speed"}, {"preview_out"}, kNegate, "{}", /*ephemeral=*/true);
+  ASSERT_TRUE(preview.has_value()) << preview.error();
+
+  const auto transform =
+      fx.service.upsertTransform("assistant", "negate", {"preview_out"}, {"kept_out"}, kNegate, "{}");
+  ASSERT_FALSE(transform.has_value()) << "a persistent transform reading a preview";
+  EXPECT_NE(transform.error().find("preview"), std::string::npos) << transform.error();
+  const auto filter = fx.service.applyFilter(preview->output_topic_ids.front(), fx.ds, "scale", "preview_scaled");
+  ASSERT_FALSE(filter.has_value()) << "a filter on a preview";
+  EXPECT_NE(filter.error().find("preview"), std::string::npos) << filter.error();
+  ASSERT_TRUE(fx.service
+                  .upsertTransform(
+                      "chain", "negate", {"preview_out"}, {"chained_preview"}, kNegate, "{}",
+                      /*ephemeral=*/true)
+                  .has_value())
+      << "a preview may read a preview";
+
+  ASSERT_TRUE(fx.service.removeTransform(preview->key).has_value());
+  const std::vector<DataProcessorService::TransformRecipe> persistent = fx.service.transformRecipes();
+  ASSERT_EQ(persistent.size(), 1u);
+  EXPECT_EQ(persistent.front().key, "user/negate");
+  EXPECT_TRUE(fx.service.recipes().empty());
+}
+
+// A marker rule on dataset `dataset` reading the series `topic`/value. It needs no
+// sample: it draws one fixed marker.
+BatchEngine::GeneratorRecipe ruleReading(DatasetId dataset, const std::string& topic) {
+  BatchEngine::GeneratorRecipe recipe;
+  recipe.id = "p/rule";
+  recipe.dataset_id = dataset;
+  recipe.inputs = {topic + "/value"};
+  recipe.outputs = {"rule_markers"};
+  recipe.script = "createMarker(0.0)\n";
+  return recipe;
+}
+
+// Editing a transform in place, or removing it, marks the marker rules reading its
+// output stale: their markers describe the old series. A rule reading another
+// series is left alone.
+TEST(DataProcessorTransformTest, EditingOrRemovingATransformMarksTheRulesReadingItStale) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  BatchEngine& markers = fx.session.batchEngine();
+  markers.setMode(BatchEngine::Mode::kManual);
+  ASSERT_TRUE(fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"neg"}, kNegate, "{}").has_value());
+  ASSERT_TRUE(markers.upsertGenerator(ruleReading(fx.ds, "neg")).has_value());
+  BatchEngine::GeneratorRecipe other = ruleReading(fx.ds, "speed");
+  other.id = "p/other";
+  ASSERT_TRUE(markers.upsertGenerator(other).has_value());
+  ASSERT_FALSE(markers.isStale("p/rule"));
+
+  ASSERT_TRUE(fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"neg"}, kTimes10, "{}").has_value());
+  EXPECT_TRUE(markers.isStale("p/rule")) << "an in-place edit";
+  EXPECT_FALSE(markers.isStale("p/other"));
+
+  ASSERT_TRUE(markers.upsertGenerator(ruleReading(fx.ds, "neg")).has_value());
+  ASSERT_FALSE(markers.isStale("p/rule"));
+  ASSERT_TRUE(fx.service.removeTransform("pluginA/negate").has_value());
+  EXPECT_TRUE(markers.isStale("p/rule")) << "a removal";
+  EXPECT_FALSE(markers.isStale("p/other"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1527,6 +1602,150 @@ TEST(DataProcessorTimeSliceTest, MarkerGeneratorReadsTheCompleteOutput) {
 
   EXPECT_EQ(rows_seen, kLargeRows);
   EXPECT_FALSE(fx.service.materializationPending());
+}
+
+// A time-sliced create marks the rules reading its output stale once, when the
+// replay completes: not on the partial output nor on a replay tick, and not again
+// on a later idle tick.
+TEST(DataProcessorTimeSliceTest, CompletedReplayMarksTheRulesReadingItStaleOnce) {
+  Fixture fx;
+  fx.seed("x", largeInput());
+  BatchEngine& markers = fx.session.batchEngine();
+  markers.setMode(BatchEngine::Mode::kManual);
+  ASSERT_TRUE(markers.upsertGenerator(ruleReading(fx.ds, "acc_out")).has_value());
+  ASSERT_TRUE(createAccumulator(fx.service, "acc", "x", "acc_out").has_value());
+  ASSERT_TRUE(fx.service.materializationPending());
+  EXPECT_FALSE(markers.isStale("p/rule")) << "the partial output";
+
+  bool stale_during_replay = false;
+  while (!fx.service.stepMaterialization()) {
+    stale_during_replay = stale_during_replay || markers.isStale("p/rule");
+  }
+  EXPECT_FALSE(stale_during_replay);
+  EXPECT_TRUE(markers.isStale("p/rule")) << "the completed output";
+
+  ASSERT_TRUE(markers.upsertGenerator(ruleReading(fx.ds, "acc_out")).has_value());
+  EXPECT_TRUE(fx.service.stepMaterialization());
+  EXPECT_FALSE(markers.isStale("p/rule"));
+}
+
+// In automatic mode the brake re-runs a rule over the transform it reads, once
+// that transform was edited in place.
+TEST(DataProcessorTransformTest, AutomaticModeReRunsARuleOverAnEditedTransform) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  const auto created = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"neg"}, kNegate, "{}");
+  ASSERT_TRUE(created.has_value()) << created.error();
+  const TopicId output = created->output_topic_ids.front();
+  BatchEngine& markers = fx.session.batchEngine();
+  markers.setResolver(
+      [&](DatasetId, const std::string& key, const BatchEngine::Window&) -> std::optional<BatchEngine::ResolvedSeries> {
+        if (key != "neg/value") {
+          return std::nullopt;
+        }
+        BatchEngine::ResolvedSeries resolved;
+        for (const auto& [timestamp, value] : readRows(fx.engine, output)) {
+          resolved.timestamps.push_back(static_cast<double>(timestamp));
+          resolved.values.push_back(value);
+        }
+        return resolved;
+      });
+  BatchEngine::GeneratorRecipe rule = ruleReading(fx.ds, "neg");
+  rule.script = "local s = series(\"neg/value\")\ncreateMarker(s:at(0).t, s:at(0).v, {label=\"first\"})\n";
+  ASSERT_TRUE(markers.upsertGenerator(rule).has_value());
+  const auto first_value = [&]() -> std::optional<double> {
+    const sdk::PlotMarkers set = test::readMarkerUnion(fx.session.objectStore(), fx.ds, "rule_markers");
+    return set.markers.empty() ? std::nullopt : std::optional<double>(set.markers.front().value_low);
+  };
+  ASSERT_EQ(first_value(), -1.0);
+
+  ASSERT_TRUE(fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"neg"}, kTimes10, "{}").has_value());
+  test::pumpUntil([&] { return first_value() == 10.0; });
+  EXPECT_EQ(first_value(), 10.0);
+}
+
+// A filter output is a series a marker rule can read, so applying, editing in place
+// and removing the filter mark the rules reading it stale. A rule reading another
+// series is left alone.
+TEST(DataProcessorTransformTest, ApplyingEditingOrRemovingAFilterMarksTheRulesReadingItStale) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  auto catalogue = std::make_shared<scripting::FilterCatalogue>(scripting::makeLuauEngine());
+  ASSERT_TRUE(catalogue->addBundledSource(kScale, "test").has_value());
+  fx.service.setFilterCatalogue(catalogue);
+  BatchEngine& markers = fx.session.batchEngine();
+  markers.setMode(BatchEngine::Mode::kManual);
+  ASSERT_TRUE(markers.upsertGenerator(ruleReading(fx.ds, "scaled")).has_value());
+  BatchEngine::GeneratorRecipe other = ruleReading(fx.ds, "speed");
+  other.id = "p/other";
+  ASSERT_TRUE(markers.upsertGenerator(other).has_value());
+  ASSERT_FALSE(markers.isStale("p/rule"));
+
+  const auto filter = fx.service.applyFilter(fx.input, fx.ds, "scale", "scaled");
+  ASSERT_TRUE(filter.has_value()) << filter.error();
+  EXPECT_TRUE(markers.isStale("p/rule")) << "applying the filter";
+  EXPECT_FALSE(markers.isStale("p/other"));
+
+  ASSERT_TRUE(markers.upsertGenerator(ruleReading(fx.ds, "scaled")).has_value());
+  ASSERT_FALSE(markers.isStale("p/rule"));
+  auto edited = catalogue->makeProcessor("scale", "{}");
+  ASSERT_TRUE(edited.has_value());
+  ASSERT_TRUE(
+      fx.service.updateFilter(filter->node_id, std::shared_ptr<proc::DataProcessor>(std::move(*edited))).has_value());
+  EXPECT_TRUE(markers.isStale("p/rule")) << "an in-place edit";
+  EXPECT_FALSE(markers.isStale("p/other"));
+
+  ASSERT_TRUE(markers.upsertGenerator(ruleReading(fx.ds, "scaled")).has_value());
+  ASSERT_FALSE(markers.isStale("p/rule"));
+  ASSERT_TRUE(fx.service.removeFilter(filter->node_id).has_value());
+  EXPECT_TRUE(markers.isStale("p/rule")) << "removing the filter";
+  EXPECT_FALSE(markers.isStale("p/other"));
+}
+
+// A reload swaps the dataset's raw data and recomputes the transforms over it; a rule
+// reading a transform output ends with the markers of the NEW output, not of the
+// output the reload replaced.
+TEST(DataProcessorTransformTest, ReloadRunsARuleOverTheRecomputedTransformOutput) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  const auto created = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"neg"}, kTimes10, "{}");
+  ASSERT_TRUE(created.has_value()) << created.error();
+  const TopicId output = created->output_topic_ids.front();
+  BatchEngine& markers = fx.session.batchEngine();
+  markers.setResolver(
+      [&](DatasetId, const std::string& key, const BatchEngine::Window&) -> std::optional<BatchEngine::ResolvedSeries> {
+        if (key != "neg/value") {
+          return std::nullopt;
+        }
+        BatchEngine::ResolvedSeries resolved;
+        for (const auto& [timestamp, value] : readRows(fx.engine, output)) {
+          resolved.timestamps.push_back(static_cast<double>(timestamp));
+          resolved.values.push_back(value);
+        }
+        return resolved;
+      });
+  BatchEngine::GeneratorRecipe rule = ruleReading(fx.ds, "neg");
+  rule.script = "local s = series(\"neg/value\")\ncreateMarker(s:at(0).t, s:at(0).v, {label=\"first\"})\n";
+  ASSERT_TRUE(markers.upsertGenerator(rule).has_value());
+  const auto first_value = [&]() -> std::optional<double> {
+    const sdk::PlotMarkers set = test::readMarkerUnion(fx.session.objectStore(), fx.ds, "rule_markers");
+    return set.markers.empty() ? std::nullopt : std::optional<double>(set.markers.front().value_low);
+  };
+  ASSERT_EQ(first_value(), 10.0);
+
+  {
+    RefillGuard guard = fx.session.beginRefill(fx.ds);
+    DataWriter writer = fx.engine.createWriter();
+    writer.appendScalar(ScalarSeriesHandle{fx.input, 0}, 0, 5.0);
+    writer.appendScalar(ScalarSeriesHandle{fx.input, 0}, 1'000'000'000LL, 6.0);
+    ASSERT_FALSE(
+        fx.engine.commitChunks(writer.flushAll()).empty());  // the loader bypasses SessionManager::commitChunks
+    ASSERT_TRUE(guard.recomputeProcessors().has_value());
+    guard.pruneVanishedTopics();
+    guard.commit();
+  }
+
+  EXPECT_EQ(first_value(), 50.0);
 }
 
 }  // namespace

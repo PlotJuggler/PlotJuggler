@@ -1057,27 +1057,24 @@ class MainWindow : public QMainWindow {
 
   // Thin wrappers over `DerivedObjects` (pj_runtime), which owns the derived-recipe
   // layout persistence (`save` writes the <data_processors> block of a snapshot,
-  // `restore` replays it). `restoreDataProcessors` = `parseDataProcessors` +
-  // `checkDataProcessorDependencies` + `applyDataProcessors`; `out_reason`, when
-  // non-null, is cleared on entry and set only when a `kHistory` restore is refused.
+  // `parse` reads it for an intent, `restore` replays it). `restoreDataProcessors` =
+  // `parse` + `checkDataProcessorDependencies` + `applyDataProcessors`; `out_reason`,
+  // when non-null, is cleared on entry and set only when a `kHistory` restore is refused.
   [[nodiscard]] bool restoreDataProcessors(
       const QDomElement& root, RestoreIntent intent = RestoreIntent::kReplace, QString* out_reason = nullptr);
 
   [[nodiscard]] DerivedObjects derivedObjects() const;
   // Reports each derived-recipe diagnostic as a "Layout" warning.
   void reportDerived(const std::vector<DerivedDiagnostic>& diagnostics);
-  // Parses the <data_processors> child of `root` and reports the entries it dropped.
-  [[nodiscard]] DerivedSnapshot parseDataProcessors(const QDomElement& root, RestoreIntent intent);
-  // The read-only preflight a `kHistory` restore runs before its first clear: false
-  // (reported, and the reason in `out_reason`) when removing the snapshot's
-  // non-exempt processors would strand an exempt transform or marker generator.
-  // `applyWorkspace` runs it before applyTimelineOffsets so a refusal never has to
-  // undo a moved offset.
-  [[nodiscard]] bool checkDataProcessorDependencies(
-      const DerivedSnapshot& snapshot, RestoreIntent intent, QString* out_reason = nullptr);
-  // Restores `snapshot`, reports what failed and re-derives the Custom Series list.
-  // An empty snapshot clears every recipe history has authority over.
-  [[nodiscard]] bool applyDataProcessors(DerivedSnapshot snapshot, RestoreIntent intent);
+  // The read-only preflight a `kHistory` snapshot's restore runs before its first
+  // clear: false (reported, and the reason in `out_reason`) when removing the
+  // snapshot's non-exempt processors would strand an exempt transform or marker
+  // generator. `applyWorkspace` runs it before applyTimelineOffsets so a refusal never
+  // has to undo a moved offset.
+  [[nodiscard]] bool checkDataProcessorDependencies(const DerivedSnapshot& snapshot, QString* out_reason = nullptr);
+  // Restores `snapshot` under its intent, reports its parse and apply warnings and
+  // re-derives the Custom Series list. The default (empty) snapshot clears every recipe.
+  [[nodiscard]] bool applyDataProcessors(DerivedSnapshot snapshot);
 
   // Re-derives the Custom Series list from the live transform recipes and hands
   // the whole set to the panel.
@@ -1256,8 +1253,9 @@ class MainWindow : public QMainWindow {
 
   // Builds the host-service assembly + plugin handle a launched toolbox binds
   // to (null after reporting the failure through `report_error`). Kept apart
-  // from launchToolbox so the presentation logic reads on its own; the block
-  // is mirrored by HeadlessDescriptorProviderSession::create.
+  // from launchToolbox so the presentation logic reads on its own; the
+  // provider services it shares with HeadlessDescriptorProviderSession::create
+  // are built the same way there.
   std::shared_ptr<ToolboxPanelSession> buildToolboxPanelSession(
       const RuntimeToolboxPlugin& toolbox, const QString& plugin_id, const QString& source,
       const std::function<void(const QString&, const QString&)>& report_error);

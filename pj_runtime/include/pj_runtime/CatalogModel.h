@@ -414,6 +414,15 @@ class CatalogModel : public QObject {
   void setPerTopicPauseCapable(DatasetId dataset_id, bool capable);
   [[nodiscard]] bool isPerTopicPauseCapable(DatasetId dataset_id) const;
 
+  // The samplesIngested gate (connected to SessionManager::samplesIngested in place
+  // of a direct rebuildFromDatastore): runs a full rebuild ONLY when the catalog's
+  // content fingerprint changed since the last rebuild. During a load most ingest
+  // batches add rows, not new datasets/topics/columns, so this skips the
+  // (allocation-heavy) full rebuild on the common path while staying fully
+  // synchronous. A created or retired topic always moves the fingerprint, so it
+  // also serves a caller that may have changed no topics (an unchanged restore).
+  void rebuildIfChanged();
+
  public slots:
   void rebuildFromDatastore();
 
@@ -433,14 +442,6 @@ class CatalogModel : public QObject {
   void itemsChanged(const QStringList& keys);
 
  private:
-  // Connected to SessionManager::samplesIngested in place of a direct
-  // rebuildFromDatastore: runs a full rebuild ONLY when the catalog's content
-  // fingerprint changed since the last rebuild. During a load most ingest
-  // batches add rows, not new datasets/topics/columns, so this skips the
-  // (allocation-heavy) full rebuild on the common path while staying fully
-  // synchronous — explicit rebuildFromDatastore() callers are unaffected.
-  void rebuildIfChanged();
-
   // The actual full rebuild body. rebuildFromDatastore() wraps this and refreshes
   // the cached fingerprint, so every rebuild (gated or explicit) leaves the gate
   // in sync.

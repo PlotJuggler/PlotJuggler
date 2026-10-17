@@ -179,6 +179,40 @@ TEST(BatchEngineTest, RecomputeMatchesChangedKeyAndRemoveDrops) {
   EXPECT_TRUE(service.recipes().empty());
 }
 
+// A changed topic marks the rules reading a series rooted at it: the topic itself or
+// a field below a slash. `in` is not `in_raw`, so that rule does not re-run.
+TEST(BatchEngineTest, ChangedTopicMatchesOnTheSlashBoundary) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(8));
+  service.setMode(BatchEngine::Mode::kManual);
+  auto recipe = markerRecipe("plug/gen", "in", "createMarker(0.0)\n");
+  recipe.inputs = {"in_raw/x"};
+  ASSERT_TRUE(service.upsertGenerator(recipe).has_value());
+
+  EXPECT_TRUE(service.recomputeForChangedInputs({"in"}, BatchEngine::kAnyDataset).empty());
+  EXPECT_FALSE(service.isStale("plug/gen"));
+
+  EXPECT_EQ(
+      service.recomputeForChangedInputs({"in_raw"}, BatchEngine::kAnyDataset), std::vector<std::string>{"plug/gen"});
+  EXPECT_TRUE(service.isStale("plug/gen"));
+}
+
+// persistentBindingCount counts what recipes() would list: previews are not bindings
+// of the layout.
+TEST(BatchEngineTest, PersistentBindingCountIgnoresPreviews) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(8));
+  EXPECT_EQ(service.persistentBindingCount(), 0u);
+
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", "createMarker(0.0)\n")).has_value());
+  auto preview = markerRecipe("plug/preview", "in", "createMarker(0.0)\n");
+  preview.ephemeral = true;
+  ASSERT_TRUE(service.upsertGenerator(preview).has_value());
+
+  EXPECT_EQ(service.persistentBindingCount(), 1u);
+  EXPECT_EQ(service.persistentBindingCount(), service.recipes().size());
+}
+
 // The "__preview__/" namespace is reserved: a committed (non-ephemeral) marker
 // generator targeting it is rejected.
 TEST(BatchEngineTest, CommittedGeneratorRejectsPreviewPrefix) {

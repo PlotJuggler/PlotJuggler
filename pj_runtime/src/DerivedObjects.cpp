@@ -10,6 +10,7 @@
 #include <memory>
 #include <utility>
 
+#include "SeriesKey.h"
 #include "pj_datastore/data_processor.hpp"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
@@ -28,9 +29,9 @@ namespace {
 /// members in document order at the end.
 void orderTransformsByDependency(std::vector<PJ::DataProcessorService::TransformRecipe>& recipes) {
   const auto produces = [](const PJ::DataProcessorService::TransformRecipe& recipe, const std::string& input) {
-    return std::any_of(recipe.outputs.begin(), recipe.outputs.end(), [&input](const std::string& output) {
-      const std::string topic = output.substr(0, output.find(':'));  // "rpy:a,b" materializes topic "rpy"
-      return input == topic || input.starts_with(topic + '/');
+    const std::vector<std::string> topics = PJ::DataProcessorService::materializedTopicNames(recipe);
+    return std::any_of(topics.begin(), topics.end(), [&input](const std::string& topic) {
+      return PJ::seriesKeyBelongsToTopic(input, topic);
     });
   };
   // ponytail: O(n^3) passes over a handful of transforms; Kahn's algorithm if layouts grow large.
@@ -229,7 +230,7 @@ QDomElement DerivedObjects::save(QDomDocument& doc, SnapshotScope scope) const {
 }
 
 std::vector<DataProcessorService::TransformRecipe> DerivedObjects::parseWantedTransforms(
-    const QDomElement& element, bool keep_exempt, DerivedSnapshot& snapshot) const {
+    const QDomElement& element, bool skip_exempt, std::vector<DerivedDiagnostic>& diagnostics) const {
   std::vector<DataProcessorService::TransformRecipe> wanted_transforms;
   for (QDomElement transform = element.firstChildElement(u"transform"_s); !transform.isNull();
        transform = transform.nextSiblingElement(u"transform"_s)) {
@@ -242,7 +243,7 @@ std::vector<DataProcessorService::TransformRecipe> DerivedObjects::parseWantedTr
     // Defensive: a kHistory document never carries an exempt entry by
     // construction (save omits them), but history still has no
     // authority to replay one if it somehow did (e.g. a hand-edited snapshot).
-    if (keep_exempt && recipe.history_exempt) {
+    if (skip_exempt && recipe.history_exempt) {
       continue;
     }
     recipe.backend = transform.attribute(u"backend"_s, u"luau"_s).toStdString();
@@ -308,10 +309,9 @@ std::vector<DataProcessorService::TransformRecipe> DerivedObjects::parseWantedTr
     }
     recipe.script = directCdataText(transform.firstChildElement(u"script"_s)).toStdString();
     if (!transform_parse_error.isEmpty()) {
-      snapshot.diagnostics.push_back(
+      diagnostics.push_back(
           {"transform-restore-failed",
            tr("Could not restore transform '%1': %2").arg(QString::fromStdString(recipe.key), transform_parse_error)});
-      snapshot.complete = false;
       continue;
     }
     wanted_transforms.push_back(std::move(recipe));
@@ -493,14 +493,16 @@ std::vector<WantedGenerator> DerivedObjects::parseWantedGenerators(const QDomEle
 
 DerivedSnapshot DerivedObjects::parse(const QDomElement& root, RestoreIntent intent) const {
   DerivedSnapshot snapshot;
+  snapshot.intent = intent;
   const QDomElement element = root.firstChildElement(u"data_processors"_s);
   snapshot.filters = parseWantedFilters(element);
-  snapshot.transforms = parseWantedTransforms(element, intent == RestoreIntent::kHistory, snapshot);
+  snapshot.transforms =
+      parseWantedTransforms(element, /*skip_exempt=*/intent == RestoreIntent::kHistory, snapshot.diagnostics);
   snapshot.generators = parseWantedGenerators(element);
   return snapshot;
 }
 
-DerivedObjects::KeepSets DerivedObjects::keepSets(const DerivedSnapshot& snapshot, RestoreIntent intent) const {
+DerivedObjects::KeepSets DerivedObjects::keepSets(const DerivedSnapshot& snapshot) const {
   auto& service = session_.dataProcessorService();
   std::vector<DataProcessorService::PersistedFilter> persisted_filters;
   persisted_filters.reserve(snapshot.filters.size());
@@ -508,11 +510,12 @@ DerivedObjects::KeepSets DerivedObjects::keepSets(const DerivedSnapshot& snapsho
     persisted_filters.push_back(wanted.persisted);
   }
   return {
-      service.unchangedFilterOutputs(persisted_filters), service.unchangedTransformKeys(snapshot.transforms, intent)};
+      service.unchangedFilterOutputs(persisted_filters),
+      service.unchangedTransformKeys(snapshot.transforms, snapshot.intent)};
 }
 
-std::optional<QString> DerivedObjects::refusal(const DerivedSnapshot& snapshot, RestoreIntent intent) const {
-  if (intent != RestoreIntent::kHistory) {
+std::optional<QString> DerivedObjects::refusal(const DerivedSnapshot& snapshot) const {
+  if (snapshot.intent != RestoreIntent::kHistory) {
     return std::nullopt;
   }
   auto& service = session_.dataProcessorService();
@@ -525,9 +528,9 @@ std::optional<QString> DerivedObjects::refusal(const DerivedSnapshot& snapshot, 
   if (!service.hasHistoryExemptTransforms() && !batch_engine.hasHistoryExemptGenerators()) {
     return std::nullopt;
   }
-  const KeepSets keep = keepSets(snapshot, intent);
-  const DataProcessorService::HistoryRemovalImpact impact =
-      service.historyRemovalImpact(keep.transform_keys, keep.filter_outputs);
+  const KeepSets keep = keepSets(snapshot);
+  const DataProcessorService::RemovalImpact impact =
+      service.removalImpact(RestoreIntent::kHistory, keep.transform_keys, keep.filter_outputs);
   std::vector<std::string> blocked = impact.exempt_transform_names;
   const std::vector<std::string> blocked_markers = batch_engine.exemptDependentsOf(impact.removed_output_names);
   blocked.insert(blocked.end(), blocked_markers.begin(), blocked_markers.end());
@@ -544,72 +547,81 @@ std::optional<QString> DerivedObjects::refusal(const DerivedSnapshot& snapshot, 
   return tr("Cannot undo: protected outputs would lose an input this step removes: %1").arg(names.join(u", "_s));
 }
 
-DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot, RestoreIntent intent) {
+DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
   auto& service = session_.dataProcessorService();
   BatchEngine& batch_engine = session_.batchEngine();
+  const RestoreIntent intent = snapshot.intent;
+  const bool history = intent == RestoreIntent::kHistory;
   DerivedRestoreReport report;
+  const bool parsed_all = snapshot.diagnostics.empty();
+  report.diagnostics = std::move(snapshot.diagnostics);
 
-  // The snapshot's filters and transforms are parsed first so the restore can decide
-  // which live ones it leaves unchanged: those stay live with their output TopicIds,
-  // so curves bound to them (e.g. in a preserved history-exempt tab, which no history
-  // snapshot describes) survive an unrelated undo. The same sets define what the
-  // clears further down count as removed.
-  const bool keep_exempt = intent == RestoreIntent::kHistory;
-  bool restored_all = snapshot.complete;
-  std::vector<WantedFilter>& wanted_filters = snapshot.filters;
-  const std::vector<DataProcessorService::TransformRecipe>& wanted_transforms = snapshot.transforms;
-  const KeepSets keep = keepSets(snapshot, intent);
+  // 1. What stays live, upstream to downstream. A kept filter or transform keeps its
+  //    output TopicId, so curves bound to it (e.g. in a preserved history-exempt tab,
+  //    which no history snapshot describes) survive an unrelated undo. A kept generator
+  //    keeps its topic, its published set and its run state, so an undo costs no
+  //    re-run, but only while nothing it reads is replaced: a removed output (a kept
+  //    processor reading a removed output falls with it) or one this restore creates,
+  //    which every transform it installs does, a reinstalled key's new names included.
+  const KeepSets keep = keepSets(snapshot);
   std::unordered_set<std::string> live_exempt_keys;
   for (const auto& live : service.transformRecipes()) {
-    if (keep_exempt && live.history_exempt) {
+    if (history && live.history_exempt) {
       live_exempt_keys.insert(live.key);
     }
   }
+  std::unordered_set<std::string> keep_generators;
+  if (batch_engine.hasGenerators()) {
+    std::vector<std::string> replaced_outputs =
+        service.removalImpact(intent, keep.transform_keys, keep.filter_outputs).removed_output_names;
+    for (const WantedFilter& wanted : snapshot.filters) {
+      if (!service.isFilterLive(wanted.persisted.dataset_id, wanted.persisted.output_name)) {
+        replaced_outputs.push_back(wanted.persisted.output_name);
+      }
+    }
+    for (const auto& recipe : snapshot.transforms) {
+      if (keep.transform_keys.count(recipe.key) == 0 && live_exempt_keys.count(recipe.key) == 0) {
+        const std::vector<std::string> topics = DataProcessorService::materializedTopicNames(recipe);
+        replaced_outputs.insert(replaced_outputs.end(), topics.begin(), topics.end());
+      }
+    }
+    std::vector<BatchEngine::GeneratorRecipe> wanted_generators;
+    for (const WantedGenerator& wanted : snapshot.generators) {
+      if (wanted.parse_error.isEmpty()) {
+        wanted_generators.push_back(wanted.recipe);
+      }
+    }
+    keep_generators = batch_engine.unchangedGeneratorIds(wanted_generators, intent, replaced_outputs);
+  }
 
-  // Drop the filters and the transforms the snapshot lacks or changes; a kept
-  // entry reading a removed output falls with it and is re-created below. A
-  // snapshot with NO <data_processors> clears everything; the rebuild at the end
-  // MUST run on every path so the retired outputs leave the catalog. Replacement
-  // may drop every transform; history never touches the exempt ones, after the
-  // caller's refusal check.
+  // 2. Clear downstream to upstream what the snapshot drops or changes; a kept filter
+  //    or transform reading a removed output falls with it and is re-created below. A
+  //    snapshot with NO <data_processors> clears everything; the catalog rebuild below
+  //    MUST run on every path so the retired outputs leave the catalog. Replacement may
+  //    drop every recipe; history never touches the exempt ones, after the caller's
+  //    refusal check.
+  const std::size_t generators_before = batch_engine.persistentBindingCount();
+  batch_engine.clearGenerators(intent, keep_generators);
   service.clearAllFilters(keep.filter_outputs);
   service.clearTransforms(intent, keep.transform_keys);
 
-  restored_all =
-      repairDataProcessors(wanted_filters, wanted_transforms, live_exempt_keys, report.diagnostics) && restored_all;
-
-  // Marker generators: clear + replay, same as transforms. Done after them so a
-  // generator reading a transform/filter output resolves it by name. upsertGenerator
-  // re-creates AND re-runs each in one call, so no separate recompute is needed.
-  // Replacement clears every generator; history clears only the non-exempt ones,
-  // after the caller's refusal check.
-  //
-  // A layout load waits a bounded time for each rule: nothing reads its markers right
-  // away, and a slow rule publishes later (markersPublished). A history restore runs
-  // each to completion: it tombstoned the rule just above, so a bounded create would
-  // make a slow rule's markers blink on every undo.
-  //
-  // upsertGenerator publishes to the store without announcing it. The toolbox's
-  // onDataChanged sends the same notification; this replay must do so too, once,
-  // after the catalog rebuild below.
-  const BatchEngine::CreateWait create_wait =
-      intent == RestoreIntent::kReplace ? BatchEngine::CreateWait::kBounded : BatchEngine::CreateWait::kToCompletion;
-  const std::size_t generators_before = batch_engine.recipes().size();
+  // 3. Install upstream to downstream: filters and transforms in rounds, then the
+  //    generators, which resolve their inputs by name through the catalog, so it lists
+  //    the outputs just created first (marker topics are not catalog items, so the
+  //    generators leave it as it is). upsertGenerator re-creates AND runs each in one
+  //    call. Every restore waits a bounded time for a rule: an unchanged one is not
+  //    touched at all, so only a changed or new rule's markers arrive later
+  //    (markersPublished).
+  const bool processors_restored =
+      repairDataProcessors(snapshot.filters, snapshot.transforms, live_exempt_keys, report.diagnostics);
+  catalog_.rebuildIfChanged();
   bool any_generator_restored = false;
-  batch_engine.clearGenerators(intent);
-  std::unordered_set<std::string> live_exempt_generators;
-  if (keep_exempt) {
-    for (const auto& live : batch_engine.recipes()) {
-      if (live.history_exempt) {
-        live_exempt_generators.insert(live.id);
-      }
-    }
-  }
   for (const WantedGenerator& wanted : snapshot.generators) {
     const BatchEngine::GeneratorRecipe& recipe = wanted.recipe;
     // Mirrors the transform loop: history has no authority over an exempt
     // generator, whether the document flags it or a live exempt one holds its id.
-    if (keep_exempt && (recipe.history_exempt || live_exempt_generators.count(recipe.id) != 0)) {
+    const BatchEngine::GeneratorRecipe* live = batch_engine.firstBinding(recipe.id);
+    if (history && (recipe.history_exempt || (live != nullptr && live->history_exempt))) {
       continue;
     }
     // A generator that cannot be restored is reported and skipped, but does NOT fail
@@ -618,13 +630,18 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot, RestoreIn
     // costs the user the whole workspace (applyWorkspace rolls back) to save a set of
     // annotations, and a rule whose input series is legitimately absent in the data
     // this layout was reopened against is an ordinary outcome, not a corrupt layout.
+    // Reported before the keep check: the id's other binding may be the one kept.
     if (!wanted.parse_error.isEmpty()) {
       report.diagnostics.push_back(
           {"generator-restore-failed", tr("Could not restore marker generator '%1': %2")
                                            .arg(QString::fromStdString(recipe.id), wanted.parse_error)});
       continue;
     }
-    if (const auto restored = batch_engine.upsertGenerator(recipe, create_wait); !restored.has_value()) {
+    if (keep_generators.count(recipe.id) != 0) {
+      continue;
+    }
+    if (const auto restored = batch_engine.upsertGenerator(recipe, BatchEngine::CreateWait::kBounded);
+        !restored.has_value()) {
       report.diagnostics.push_back(
           {"generator-restore-failed",
            tr("Could not restore marker generator '%1': %2")
@@ -633,11 +650,14 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot, RestoreIn
       any_generator_restored = true;
     }
   }
-  catalog_.rebuildFromDatastore();
-  if (any_generator_restored || batch_engine.recipes().size() != generators_before) {
+
+  // 4. Finish. upsertGenerator publishes to the store without announcing it; the
+  //    toolbox's onDataChanged sends the same notification, so this restore does too,
+  //    once.
+  if (any_generator_restored || batch_engine.persistentBindingCount() != generators_before) {
     session_.notifyMarkersChanged();
   }
-  report.restored_all = restored_all;
+  report.restored_all = parsed_all && processors_restored;
   return report;
 }
 

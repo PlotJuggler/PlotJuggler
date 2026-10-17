@@ -88,6 +88,9 @@ bool DataProcessorsRuntimeHost::onCreate(
     if (!result.has_value()) {
       return reject(out_error, kDomain, result.error());
     }
+    if (ephemeral) {
+      self.previews_.insert(result->key);
+    }
     // Resolved output topic names back to the plugin via the count-then-fill
     // convention. Owned snapshot in member storage; the returned views point into it
     // and stay valid until the next call on this vtable (the ABI contract).
@@ -108,7 +111,11 @@ bool DataProcessorsRuntimeHost::onCreate(
 bool DataProcessorsRuntimeHost::onRemove(void* ctx, PJ_string_view_t id, PJ_error_t* out_error) noexcept {
   return guarded<DataProcessorsRuntimeHost>(ctx, out_error, kDomain, [&](DataProcessorsRuntimeHost& self) {
     const std::string key = DataProcessorService::makeTransformKey(self.plugin_id_, sdk::toStringView(id));
-    return finish(out_error, kDomain, self.service_.removeTransform(key));
+    const Status removed = self.service_.removeTransform(key);
+    if (removed.has_value()) {
+      self.previews_.erase(key);
+    }
+    return finish(out_error, kDomain, removed);
   });
 }
 

@@ -950,7 +950,9 @@ TEST(DataProcessorServiceTest, UnchangedFilterOutputsMatchOnlyIdenticalPersisted
 
   // The keep set feeds both the removal view and the clear.
   EXPECT_EQ(service.liveNonExemptNodeIds({}, {kept->output_topic_id}), std::vector<NodeId>{dropped->node_id});
-  EXPECT_EQ(service.liveNonExemptOutputNames({}, {kept->output_topic_id}), std::vector<std::string>{"y[Scale]"});
+  EXPECT_EQ(
+      service.removalImpact(RestoreIntent::kHistory, {}, {kept->output_topic_id}).removed_output_names,
+      std::vector<std::string>{"y[Scale]"});
   service.clearAllFilters({kept->output_topic_id});
   ASSERT_EQ(service.recipes().size(), 1u);
   EXPECT_EQ(service.recipes().front().output_topic_id, kept->output_topic_id);
@@ -1079,9 +1081,12 @@ TEST(DataProcessorServiceTest, LiveNonExemptOutputNamesIncludeCascadedDependents
   const auto tail = service.applyFilter(head->output_topic_id, ds, "scale", "tail");
   ASSERT_TRUE(tail.has_value()) << tail.error();
 
-  EXPECT_EQ(service.liveNonExemptOutputNames({}, {tail->output_topic_id}), (std::vector<std::string>{"head", "tail"}));
-  EXPECT_EQ(service.liveNonExemptOutputNames({}, {head->output_topic_id}), (std::vector<std::string>{"tail"}));
-  EXPECT_TRUE(service.liveNonExemptOutputNames({}, {head->output_topic_id, tail->output_topic_id}).empty());
+  const auto removed_names = [&service](const std::unordered_set<TopicId>& keep_filter_outputs) {
+    return service.removalImpact(RestoreIntent::kHistory, {}, keep_filter_outputs).removed_output_names;
+  };
+  EXPECT_EQ(removed_names({tail->output_topic_id}), (std::vector<std::string>{"head", "tail"}));
+  EXPECT_EQ(removed_names({head->output_topic_id}), (std::vector<std::string>{"tail"}));
+  EXPECT_TRUE(removed_names({head->output_topic_id, tail->output_topic_id}).empty());
 }
 
 }  // namespace

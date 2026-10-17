@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #include "pj_base/expected.hpp"
@@ -30,8 +31,9 @@ class ServiceRegistryBuilder;
 /// Lifetime: the bridge is independent of the nodes it created — destroying it
 /// tears down only this object; the nodes keep living in `BatchEngine` (the
 /// host owns the script + runtime), so a plugin DSO unload never kills a running
-/// node. `service` must outlive this host. Not movable: the vtable fat pointer
-/// stores `this`.
+/// node. It records the previews it created (`previews()`), which its owner
+/// (`DerivedRuntimeHosts`) ends with the plugin instance. `service` must outlive
+/// this host. Not movable: the vtable fat pointer stores `this`.
 ///
 /// NOTE: the class/file name is kept as `MarkersRuntimeHost` to bound churn; it
 /// bridges the kind="markers" path of the unified data-processors service. A rename is
@@ -72,6 +74,13 @@ class MarkersRuntimeHost {
     return data_processors_;
   }
 
+  /// The namespaced ids of the previews (ephemeral rules) created through this bridge
+  /// and not removed through it. One may since have gone another way, or been
+  /// replaced by a persistent rule: `BatchEngine::removeEphemerals` skips those.
+  [[nodiscard]] const std::unordered_set<std::string>& previews() const noexcept {
+    return previews_;
+  }
+
  private:
   static bool onCreate(
       void* ctx, PJ_string_view_t id, PJ_string_view_t kind, PJ_string_view_t language, const PJ_string_view_t* inputs,
@@ -89,7 +98,7 @@ class MarkersRuntimeHost {
       void* ctx, PJ_string_view_t kind, PJ_string_view_t language, PJ_string_view_t script,
       PJ_string_view_t params_json, PJ_error_t* out_error) noexcept;
 
-  /// Namespaced storage key for a plugin-local id: `plugin_id_ + "/" + local`.
+  /// Namespaced storage key for a plugin-local id: `BatchEngine::ownerPrefix(plugin_id_) + local`.
   [[nodiscard]] std::string makeKey(std::string_view local_id) const;
   /// Raw source names of the service's loaded datasets (the qualifier vocabulary);
   /// empty without `source_name_of`.
@@ -105,6 +114,7 @@ class MarkersRuntimeHost {
   std::vector<std::string> list_storage_;           ///< backs onList's borrowed views until the next call
   std::string config_storage_;                      ///< backs onConfig's borrowed view until the next call
   std::vector<std::string> create_topics_storage_;  ///< backs onCreate's borrowed out_topics until the next call
+  std::unordered_set<std::string> previews_;        ///< see previews()
 };
 
 }  // namespace PJ

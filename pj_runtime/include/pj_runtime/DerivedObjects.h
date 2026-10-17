@@ -46,21 +46,27 @@ struct WantedGenerator {
 };
 
 /// What a <data_processors> block wants live. Parsing only queries the session, so a
-/// snapshot can drive a refusal before anything is cleared.
+/// snapshot can drive a refusal before anything is cleared. The default (empty,
+/// `kReplace`) snapshot wants nothing: restoring it clears every recipe.
 struct DerivedSnapshot {
+  /// The authority it was parsed for, which its refusal and restore apply: a
+  /// `kHistory` parse skips exempt entries, so it must never drive a `kReplace` restore.
+  RestoreIntent intent = RestoreIntent::kReplace;
   std::vector<WantedFilter> filters;
   /// Producers before dependents (`orderTransformsByDependency`).
   std::vector<DataProcessorService::TransformRecipe> transforms;
   std::vector<WantedGenerator> generators;
-  /// Transform entries that failed to parse (reported once, then dropped).
+  /// Transform entries that failed to parse and were dropped: the restore reports
+  /// them first and does not count as complete.
   std::vector<DerivedDiagnostic> diagnostics;
-  /// False when a transform entry was dropped: the restore then reports failure.
-  bool complete = true;
 };
 
 struct DerivedRestoreReport {
+  /// False when a filter or transform entry was not restored (it failed to parse or
+  /// to install). A marker generator that failed is reported but does not count.
   bool restored_all = true;
-  /// Apply failures, in the order they happened.
+  /// Every warning: the snapshot's parse warnings, then the apply failures in the
+  /// order they happened.
   std::vector<DerivedDiagnostic> diagnostics;
 };
 
@@ -87,25 +93,32 @@ class DerivedObjects {
   /// those entries outright (see `SnapshotScope`).
   [[nodiscard]] QDomElement save(QDomDocument& doc, SnapshotScope scope) const;
 
-  /// Parses the <data_processors> child of `root` (a missing one wants nothing).
-  /// Under `kHistory` it skips entries flagged `history_exempt="1"`: history has no
-  /// authority to replay one. Query-only.
+  /// Parses the <data_processors> child of `root` (a missing one wants nothing) for a
+  /// restore with `intent`. Under `kHistory` it skips entries flagged
+  /// `history_exempt="1"`: history has no authority to replay one. Query-only.
   [[nodiscard]] DerivedSnapshot parse(const QDomElement& root, RestoreIntent intent) const;
 
   /// The reason a `kHistory` restore of `snapshot` must be refused before anything is
   /// cleared: removing its non-exempt processors would strand an exempt transform or
   /// marker generator. nullopt outside `kHistory`, when nothing exempt is live, or when
   /// nothing would strand. Query-only.
-  [[nodiscard]] std::optional<QString> refusal(const DerivedSnapshot& snapshot, RestoreIntent intent) const;
+  [[nodiscard]] std::optional<QString> refusal(const DerivedSnapshot& snapshot) const;
 
-  /// Makes the live recipes what `snapshot` wants. Unchanged filters and transforms
-  /// stay live under their output TopicIds; the rest are cleared and re-created in
-  /// rounds, then the generators are cleared and replayed (a layout load, `kReplace`,
-  /// waits a bounded time for each; a history restore runs each to completion). History
-  /// never touches a live exempt recipe. Ends with a catalog rebuild and, when the
-  /// generator set changed, one `markersChanged`. A generator that cannot be restored is
-  /// reported but does not fail the restore. Run `refusal` first for `kHistory`.
-  [[nodiscard]] DerivedRestoreReport restore(DerivedSnapshot snapshot, RestoreIntent intent);
+  /// Makes the live recipes what `snapshot` wants, under its intent. First the
+  /// unchanged sets, upstream to downstream: filters and transforms whose recipe the
+  /// snapshot does not change, then generators likewise unless they read an output
+  /// this restore removes or creates (`BatchEngine::unchangedGeneratorIds`). Those stay
+  /// live as they are (output TopicIds, a generator's topic, published set, run state
+  /// and coverage). Then the rest is cleared downstream to upstream (generators,
+  /// filters, transforms) and installed upstream to downstream: filters and transforms
+  /// in rounds, then each generator with the bounded create (`CreateWait::kBounded`):
+  /// a slow rule draws nothing until its run publishes, and its failure after the
+  /// budget is reported by the engine (`errorOf`, the diagnostic sink), not here.
+  /// History never touches a live exempt recipe. Ends with a catalog rebuild and, when
+  /// the generator set changed, one `markersChanged`. A generator that cannot be
+  /// restored is reported but does not fail the restore. Run `refusal` first for
+  /// `kHistory`.
+  [[nodiscard]] DerivedRestoreReport restore(DerivedSnapshot snapshot);
 
  private:
   // What a restore of a snapshot leaves live: the filters (by output TopicId) and the
@@ -114,12 +127,13 @@ class DerivedObjects {
     std::unordered_set<TopicId> filter_outputs;
     std::unordered_set<std::string> transform_keys;
   };
-  [[nodiscard]] KeepSets keepSets(const DerivedSnapshot& snapshot, RestoreIntent intent) const;
+  [[nodiscard]] KeepSets keepSets(const DerivedSnapshot& snapshot) const;
 
-  // Parses every <transform> under `element`, resolving persisted dataset identities.
-  // An entry that fails to parse is reported into `snapshot` and dropped.
+  // Parses every <transform> under `element`, resolving persisted dataset identities
+  // and skipping the history-exempt entries when `skip_exempt`. An entry that fails to
+  // parse is reported into `diagnostics` and dropped.
   [[nodiscard]] std::vector<DataProcessorService::TransformRecipe> parseWantedTransforms(
-      const QDomElement& element, bool keep_exempt, DerivedSnapshot& snapshot) const;
+      const QDomElement& element, bool skip_exempt, std::vector<DerivedDiagnostic>& diagnostics) const;
   // Parses every <processor> under `element`, resolving each input once so
   // `unchangedFilterOutputs` can match live filters; an unresolved input is not an
   // error yet.

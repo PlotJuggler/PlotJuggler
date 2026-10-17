@@ -159,14 +159,11 @@
 #include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
-#include "pj_runtime/DataProcessorsKindRouter.h"
-#include "pj_runtime/DataProcessorsRuntimeHost.h"
-#include "pj_runtime/DatasetQualifiedName.h"
 #include "pj_runtime/DerivedObjects.h"
+#include "pj_runtime/DerivedRuntimeHosts.h"
 #include "pj_runtime/DiagnosticHistory.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/IObjectViewer.h"
-#include "pj_runtime/MarkersRuntimeHost.h"
 #include "pj_runtime/PlaybackControlHost.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/PlotTabsRuntimeHost.h"
@@ -5887,7 +5884,7 @@ void MainWindow::beginProgressiveLayoutRestore(QDomDocument doc, const QString& 
     QScopedValueRollback guard(applying_state_, true);
     // FileLoader is still producing topics. Tear down the previous graph now,
     // but replay nothing until queueDrained, when missing inputs are meaningful.
-    static_cast<void>(applyDataProcessors(DerivedSnapshot{}, RestoreIntent::kReplace));
+    static_cast<void>(applyDataProcessors(DerivedSnapshot{}));
     // rebindCurvesToLoadedDatasets rewrites doc in place; its unresolved-paths
     // return is not needed here because the progressive binder reports them at
     // drain.
@@ -6569,11 +6566,11 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
 }
 
 bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent intent, QString* out_reason) {
-  DerivedSnapshot snapshot = parseDataProcessors(root, intent);
-  if (!checkDataProcessorDependencies(snapshot, intent, out_reason)) {
+  DerivedSnapshot snapshot = derivedObjects().parse(root, intent);
+  if (!checkDataProcessorDependencies(snapshot, out_reason)) {
     return false;
   }
-  return applyDataProcessors(std::move(snapshot), intent);
+  return applyDataProcessors(std::move(snapshot));
 }
 
 DerivedObjects MainWindow::derivedObjects() const {
@@ -6586,18 +6583,11 @@ void MainWindow::reportDerived(const std::vector<DerivedDiagnostic>& diagnostics
   }
 }
 
-DerivedSnapshot MainWindow::parseDataProcessors(const QDomElement& root, RestoreIntent intent) {
-  DerivedSnapshot snapshot = derivedObjects().parse(root, intent);
-  reportDerived(snapshot.diagnostics);
-  return snapshot;
-}
-
-bool MainWindow::checkDataProcessorDependencies(
-    const DerivedSnapshot& snapshot, RestoreIntent intent, QString* out_reason) {
+bool MainWindow::checkDataProcessorDependencies(const DerivedSnapshot& snapshot, QString* out_reason) {
   if (out_reason != nullptr) {
     out_reason->clear();
   }
-  const std::optional<QString> reason = derivedObjects().refusal(snapshot, intent);
+  const std::optional<QString> reason = derivedObjects().refusal(snapshot);
   if (!reason.has_value()) {
     return true;
   }
@@ -6608,8 +6598,8 @@ bool MainWindow::checkDataProcessorDependencies(
   return false;
 }
 
-bool MainWindow::applyDataProcessors(DerivedSnapshot snapshot, RestoreIntent intent) {
-  const DerivedRestoreReport report = derivedObjects().restore(std::move(snapshot), intent);
+bool MainWindow::applyDataProcessors(DerivedSnapshot snapshot) {
+  const DerivedRestoreReport report = derivedObjects().restore(std::move(snapshot));
   reportDerived(report.diagnostics);
   // An empty snapshot reaches here with every recipe cleared and nothing replayed,
   // so this empties the panel — which is what the teardown pass of a progressive
@@ -6975,8 +6965,8 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
   // 1. Preflight (read-only): reject before anything mutates if dropping this
   //    snapshot's processors would strand an exempt transform or marker generator.
   //    The one parse also drives step 3.
-  DerivedSnapshot processors = parseDataProcessors(root, intent);
-  if (!checkDataProcessorDependencies(processors, intent, out_reason)) {
+  DerivedSnapshot processors = derivedObjects().parse(root, intent);
+  if (!checkDataProcessorDependencies(processors, out_reason)) {
     return RestoreResult::kFailed;
   }
   // 2. Move each track's display offset to its saved value.
@@ -6990,7 +6980,7 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
   // 3. Recreate the snapshot's filters and replay its generators, so each derived
   //    output topic is in the catalog and its plotted (derived) curve resolves like
   //    any other curve, and a marker generator recomputes under the offset above.
-  if (!applyDataProcessors(std::move(processors), intent)) {
+  if (!applyDataProcessors(std::move(processors))) {
     return RestoreResult::kFailed;
   }
   // 4. Rebind every curve's stable topic+field to a concrete catalog key.
@@ -8868,9 +8858,7 @@ struct ToolboxPanelSession {
   std::unique_ptr<QSettingsBackend> settings;
   std::unique_ptr<ServiceRegistryBuilder> builder;
   std::unique_ptr<ToolboxRuntimeHost> host;
-  std::unique_ptr<MarkersRuntimeHost> markers_host;
-  std::unique_ptr<DataProcessorsRuntimeHost> dp_host;
-  std::unique_ptr<DataProcessorsKindRouter> dp_router;
+  std::unique_ptr<DerivedRuntimeHosts> derived_hosts;
   std::unique_ptr<SourcePromotionHost> promotion_host;
   std::unique_ptr<PlaybackControlHost> playback_host;
   std::unique_ptr<ViewportRuntimeHost> viewport_host;
@@ -8887,23 +8875,21 @@ struct ToolboxPanelSession {
   // and the safe synchronous shutting_down_ rejection, not a
   // use-after-free. Then the plugin (handle), which persists its state
   // through the settings backend in its destructor; only now the promotion
-  // host; then the service views (builder) into host/dp_host/settings,
-  // then the bridge + host. dp_host holds only an external
-  // DataProcessorService& (session-owned, outlives this), so it just has
-  // to outlive the builder views into it; host holds a SettingsBackend&,
-  // so settings goes last. This survives a future member reorder; the
-  // implicit reverse-declaration destruction that follows only resets
-  // already-null pointers.
+  // host; then the service views (builder) into host/derived_hosts/settings,
+  // then the bridges + host. derived_hosts holds only references to
+  // session-owned engines (which outlive this), so it just has to outlive the
+  // builder views into it and follow the handle (it ends the plugin's previews,
+  // which no plugin call may re-create); host holds a SettingsBackend&, so
+  // settings goes last. This survives a future member reorder; the implicit
+  // reverse-declaration destruction that follows only resets already-null pointers.
   ~ToolboxPanelSession() {
     if (promotion_host != nullptr) {
       promotion_host->shutdown();
     }
     handle.reset();
     promotion_host.reset();
-    builder.reset();       // drops the service views into host + the routed bridges first
-    dp_router.reset();     // holds fat pointers into markers_host + dp_host, so goes before them
-    markers_host.reset();  // bridge only; the generators live on in BatchEngine
-    dp_host.reset();
+    builder.reset();        // drops the service views into host + the routed bridges first
+    derived_hosts.reset();  // ends this plugin's previews; its persistent recipes live on in the engines
     // Pure adapters over session-owned services (PlaybackEngine) and
     // MainWindow-capturing lambdas — both outlive every ToolboxPanelSession.
     playback_host.reset();
@@ -8920,12 +8906,11 @@ struct ToolboxPanelSession {
 std::shared_ptr<ToolboxPanelSession> MainWindow::buildToolboxPanelSession(
     const RuntimeToolboxPlugin& toolbox, const QString& plugin_id, const QString& source,
     const std::function<void(const QString&, const QString&)>& report_error) {
-  // KEEP IN SYNC: HeadlessDescriptorProviderSession::create mirrors this
-  // whole service-assembly block for the dialog-free layout-import path (a
-  // provider plugin must see an identical host environment headless vs
-  // interactive). Any service newly registered here — or any change to the
-  // callbacks' host-side semantics — must be applied there too; the
-  // verbatim-shared snippets live in ToolboxHostWiring.h.
+  // HeadlessDescriptorProviderSession::create binds a provider plugin to the services
+  // a provider uses, for the dialog-free layout-import path: the toolbox host,
+  // DerivedRuntimeHosts and source promotion. Those are built the same way in both
+  // places (ToolboxHostWiring.h holds the shared snippets); keep a change to their
+  // host-side semantics in step there.
   auto session = std::make_shared<ToolboxPanelSession>();
   session->settings = std::make_unique<QSettingsBackend>();
   session->builder = std::make_unique<ServiceRegistryBuilder>();
@@ -9132,40 +9117,12 @@ std::shared_ptr<ToolboxPanelSession> MainWindow::buildToolboxPanelSession(
     return nullptr;
   }
 
-  // Host-driven data processors (pj.data_processors.v1, kind=markers): expose the marker
-  // service so a toolbox can submit whole-series generators the HOST runs + recomputes
-  // (the anomaly-detector path) instead of executing the script in-process. The service's
-  // catalog-backed resolver/lister are installed once at construction, not here — see
-  // the MainWindow constructor.
-  const auto source_name_of = [this](PJ::DatasetId id) -> std::optional<std::string> {
-    const std::optional<QString> src = session_->catalogModel().datasetSourceName(id);
-    return src.has_value() ? std::optional<std::string>(src->toStdString()) : std::nullopt;
-  };
-  session->markers_host = std::make_unique<MarkersRuntimeHost>(
-      session_->sessionManager().batchEngine(), plugin_id.toStdString(),
-      [this, source_name_of](
-          std::vector<std::string>& inputs, std::vector<std::string>& outputs) -> PJ::Expected<PJ::DatasetId> {
-        // Bind the generator to the dataset its keys name (qualified keys pick it
-        // explicitly and are normalized to bare form); an unqualified input that
-        // exists in several datasets is refused with the qualified candidates —
-        // landing on the first-loaded dataset silently stranded generators on the
-        // wrong data. Policy lives in pj_runtime so it is testable and stays in
-        // step with the series resolver the MainWindow constructor installs.
-        std::vector<PJ::DatasetId> datasets;
-        for (const auto& [id, label] : session_->catalogModel().datasets()) {
-          datasets.push_back(id);
-        }
-        return PJ::resolveMarkerDataset(inputs, outputs, session_->catalogModel().items(), datasets, source_name_of);
-      },
-      source_name_of);
-  session->dp_host = std::make_unique<DataProcessorsRuntimeHost>(
-      session_->sessionManager().dataProcessorService(), plugin_id.toStdString());
-  // ONE pj.data_processors.v1 registration, routed by kind: the registry rejects
-  // duplicate names, so registering both bridges directly would silently drop the
-  // second one and break that kind's toolboxes.
-  session->dp_router =
-      std::make_unique<DataProcessorsKindRouter>(session->markers_host->raw(), session->dp_host->raw());
-  if (auto status = session->dp_router->registerServices(*session->builder); !status) {
+  // Host-driven data processors (pj.data_processors.v1): transforms and marker rules
+  // the HOST runs and recomputes, so a toolbox submits them by data instead of
+  // executing the script in-process. Assembled with the headless session's.
+  session->derived_hosts = std::make_unique<DerivedRuntimeHosts>(
+      session_->sessionManager(), session_->catalogModel(), plugin_id.toStdString());
+  if (auto status = session->derived_hosts->registerServices(*session->builder); !status) {
     report_error(
         source, tr("Failed to publish data-processor services for '%1': %2")
                     .arg(source, QString::fromStdString(status.error())));

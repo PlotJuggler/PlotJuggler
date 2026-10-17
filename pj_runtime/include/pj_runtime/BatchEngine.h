@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -292,7 +293,9 @@ class BatchEngine : public QObject {
     kToCompletion,
     /// The run computes on the pool while the calling thread waits at most
     /// `kCreateBudget`; a run still going then carries on as the binding's scheduled
-    /// run. Without a pool it behaves as `kToCompletion`.
+    /// run. Without a pool it behaves as `kToCompletion`. Every restore uses it
+    /// (`DerivedObjects::restore`, a layout load or an undo): it leaves an unchanged
+    /// rule as it is drawn, and nobody reads a changed rule's markers right away.
     kBounded,
   };
 
@@ -320,8 +323,9 @@ class BatchEngine : public QObject {
   Status removeGenerator(std::string_view id);
 
   /// Marks stale every generator whose input is affected by a change and arms the
-  /// brake; nothing runs here. An input is affected when one of its series keys
-  /// STARTS WITH a `changed` entry; an EMPTY `changed` affects ALL. Returns the
+  /// brake; nothing runs here. An input is affected when one of its series keys is
+  /// rooted at a `changed` topic (the topic itself or a field below a slash: `imu`
+  /// does not affect `imu_raw/x`); an EMPTY `changed` affects ALL. Returns the
   /// affected generator ids. A re-run whose script errors keeps the last set, and
   /// an `all_datasets` one left without any contributor is emptied.
   ///
@@ -366,6 +370,9 @@ class BatchEngine : public QObject {
   /// EPHEMERAL previews are excluded.
   [[nodiscard]] std::vector<GeneratorRecipe> recipes() const;
 
+  /// `recipes().size()` without the copies.
+  [[nodiscard]] std::size_t persistentBindingCount() const;
+
   /// Every PERSISTENT generator id, each once regardless of how many datasets it
   /// is bound to — the plugin ABI's `list()` vocabulary.
   [[nodiscard]] std::vector<std::string> generatorIds() const;
@@ -375,25 +382,50 @@ class BatchEngine : public QObject {
   [[nodiscard]] const GeneratorRecipe* firstBinding(std::string_view id) const;
 
   /// Output names of persistent history-exempt generators reading a series rooted
-  /// at one of `removed_inputs` (the topic itself or a slash-bounded field below it
-  /// — stricter than `recomputeForChangedInputs`'s raw prefix match, which would
-  /// also hit `imu_raw/x` for `imu` and reject a restore that strands nothing).
+  /// at one of `removed_inputs` (the topic itself or a slash-bounded field below it).
   [[nodiscard]] std::vector<std::string> exemptDependentsOf(const std::vector<std::string>& removed_inputs) const;
 
-  /// Remove every PERSISTENT generator (tombstoning its output); ephemeral
-  /// previews are always left untouched. `RestoreIntent::kHistory` reconciles
-  /// only the non-exempt generators and leaves the `history_exempt` ones live;
-  /// `kReplace` removes all.
-  void clearGenerators(RestoreIntent intent);
+  /// Ids of the live generators a restore to `wanted` (a snapshot's recipes, dataset
+  /// identities resolved) may leave as they are, so they keep their object topic, their
+  /// published set, their run state and their coverage. Per id: each persistent binding
+  /// equals the wanted binding on the same dataset (`bindingDataset`) on every field a
+  /// layout carries (script and params compared ignoring line endings), and neither
+  /// side has another binding. Never listed: an id outside the intent's authority (an
+  /// exempt one under `kHistory`, which no history restore touches anyway); one reading
+  /// a series rooted at a name in `removed_upstream` (the outputs the restore removes or
+  /// creates, so the published set describes data that is gone); an `all_datasets` one
+  /// whose last published run used a contributor's display offset that has moved since
+  /// (invariant 3: the set is stored in the display frame), that has a run in flight
+  /// (it staged under offsets that may have moved since; re-creating it cancels the
+  /// run), or that never published.
+  [[nodiscard]] std::unordered_set<std::string> unchangedGeneratorIds(
+      const std::vector<GeneratorRecipe>& wanted, RestoreIntent intent,
+      const std::vector<std::string>& removed_upstream) const;
+
+  /// Remove every PERSISTENT generator (tombstoning its output) except the ids in
+  /// `keep`; ephemeral previews are always left untouched. `RestoreIntent::kHistory`
+  /// reconciles only the non-exempt generators and leaves the `history_exempt` ones
+  /// live; `kReplace` removes all.
+  void clearGenerators(RestoreIntent intent, const std::unordered_set<std::string>& keep = {});
   /// Whether any live generator is `history_exempt` (cheap gate for the
   /// history-restore dependency preflight).
   [[nodiscard]] bool hasHistoryExemptGenerators() const;
 
   /// `clearGenerators(RestoreIntent::kReplace)` — every PERSISTENT
-  /// generator at once; ephemeral previews are left untouched. The clear half of
-  /// the clear-all + replay a layout restore runs (mirrors
+  /// generator at once; ephemeral previews are left untouched (mirrors
   /// DataProcessorService::clearAllTransforms).
   void clearAllGenerators();
+
+  /// The prefix of every generator id `owner_plugin` creates (`"<owner_plugin>/<local id>"`):
+  /// the namespace `MarkersRuntimeHost` mints ids in.
+  [[nodiscard]] static std::string ownerPrefix(std::string_view owner_plugin);
+
+  /// Remove the EPHEMERAL (preview) generators among `ids` and their preview topics;
+  /// an id that is gone or persistent is skipped. A preview belongs to the plugin
+  /// instance that made it: `DerivedRuntimeHosts` passes the ones its bridge created
+  /// when the instance ends. Persistent generators are the user's data. Returns
+  /// whether anything was removed.
+  bool removeEphemerals(const std::unordered_set<std::string>& ids);
 
   /// Cancels the runs in flight of every binding that reads `dataset` (bound to it, or
   /// `all_datasets`): none of them is published, and their scheduling state is
@@ -495,7 +527,8 @@ class BatchEngine : public QObject {
 
   /// GUI thread: publishes `computed` to `staged.recipe`'s target, or tombstones it
   /// when `nullopt` (an `all_datasets` rule without contributors), and records the
-  /// staged range as the binding's coverage (`coverageOf`) once that succeeded.
+  /// staged range (`coverageOf`) and each contribution's display shift as the
+  /// binding's last published run once that succeeded.
   [[nodiscard]] Status publishRun(const StagedRun& staged, std::optional<sdk::PlotMarkers> computed);
 
   /// The whole-dataset recompute of one binding, synchronously on the calling thread:
@@ -593,8 +626,14 @@ class BatchEngine : public QObject {
   QTimer brake_;
   QElapsedTimer since_last_run_;  ///< restarted when the brake fires
   std::map<BindingKey, RunState> runs_;
-  /// The last published run's staged range per binding (`coverageOf`).
-  std::map<BindingKey, std::optional<std::pair<Timestamp, Timestamp>>> coverage_;
+  /// What a binding's last published run staged.
+  struct PublishedRun {
+    std::optional<std::pair<Timestamp, Timestamp>> coverage;  ///< `coverageOf`
+    /// The display shift each contributor's run used; recorded for `all_datasets` rules only,
+    /// whose shared set is stored in the display frame (invariant 3).
+    std::vector<std::pair<DatasetId, Timestamp>> display_shifts;
+  };
+  std::map<BindingKey, PublishedRun> published_;
   /// A `markersPublished` / `runningChanged` is queued and not yet delivered.
   bool markers_published_queued_ = false;
   bool running_changed_queued_ = false;

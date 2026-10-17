@@ -20,7 +20,7 @@
 namespace PJ {
 
 class CatalogModel;
-class DataProcessorsRuntimeHost;
+class DerivedRuntimeHosts;
 class ExtensionCatalogService;
 class FileLoader;
 class QSettingsBackend;
@@ -37,7 +37,7 @@ class ToolboxRuntimeHost;
 //
 // create() finds the provider toolbox by its STABLE MANIFEST ID in the
 // plugin catalog, assembles the SAME host-service set the interactive path
-// binds (ToolboxRuntimeHost + DataProcessorsRuntimeHost + the per-instance
+// binds (ToolboxRuntimeHost + DerivedRuntimeHosts + the per-instance
 // SourcePromotionHost, all registered strictly before bind()), creates and
 // binds one plugin instance, and resolves its "pj.descriptor_import.v1"
 // extension — so a provider plugin sees an IDENTICAL host environment
@@ -77,7 +77,8 @@ class ToolboxRuntimeHost;
 //       callbacks, which reaches plugin code — the instance/DSO must still
 //       be alive);
 //   (3) releases the plugin handle (instance destroy, DSO unpin);
-//   (4) tears down builder, dp-host, runtime host, settings — the same
+//   (4) tears down builder, derived hosts (which end the provider's previews;
+//       its persistent rules stay), runtime host, settings — the same
 //       relative order as MainWindow's ~ToolboxPanelSession.
 // Teardown consequence of the queued-only marshal: a queued-but-undelivered
 // terminal metacall is purged by ~QObject. That is legal ONLY because step
@@ -185,13 +186,13 @@ class HeadlessDescriptorProviderSession : public QObject {
 
   // Owner block mirroring MainWindow's ToolboxPanelSession. The destructor makes
   // the load-bearing teardown order EXPLICIT (jobs -> promotion_host_ ->
-  // handle_ -> builder_ -> dp_host_ -> host_ -> settings_); the implicit
+  // handle_ -> builder_ -> derived_hosts_ -> host_ -> settings_); the implicit
   // reverse-declaration destruction that follows only resets already-null
   // pointers, so a future member reorder cannot silently break it.
   std::unique_ptr<QSettingsBackend> settings_;
   std::unique_ptr<ServiceRegistryBuilder> builder_;
   std::unique_ptr<ToolboxRuntimeHost> host_;
-  std::unique_ptr<DataProcessorsRuntimeHost> dp_host_;
+  std::unique_ptr<DerivedRuntimeHosts> derived_hosts_;
   std::unique_ptr<SourcePromotionHost> promotion_host_;
   std::unique_ptr<ToolboxHandle> handle_;
 

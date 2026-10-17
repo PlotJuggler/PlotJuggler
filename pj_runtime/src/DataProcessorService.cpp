@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -20,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "TextCompare.h"
 #include "pj_base/type_tree.hpp"
 #include "pj_datastore/data_processor.hpp"
 #include "pj_datastore/engine.hpp"
@@ -38,30 +40,6 @@
 namespace PJ {
 
 namespace {
-/// Text equality that reads "\r\n" as "\n": a script or filter source read from
-/// a Windows checkout carries CRLF, while its layout-snapshot copy went through
-/// XML end-of-line normalization and carries LF. Neither is the identity of the
-/// processor. A '\r' not followed by '\n' is data (a long string can hold one)
-/// and stays significant. Compares in place — the stored text stays byte-identical.
-bool sameTextIgnoringLineEndings(std::string_view lhs, std::string_view rhs) {
-  const auto skip_crlf_prefix = [](std::string_view text, std::size_t pos) {
-    return pos + 1 < text.size() && text[pos] == '\r' && text[pos + 1] == '\n' ? pos + 1 : pos;
-  };
-  std::size_t left = 0;
-  std::size_t right = 0;
-  while (left < lhs.size() && right < rhs.size()) {
-    if (lhs[left] != rhs[right]) {
-      left = skip_crlf_prefix(lhs, left);
-      right = skip_crlf_prefix(rhs, right);
-      if (lhs[left] != rhs[right]) {
-        return false;
-      }
-    }
-    ++left;
-    ++right;
-  }
-  return left == lhs.size() && right == rhs.size();
-}
 std::vector<std::string> inputFieldPaths(const DataEngine& engine, const TopicStorage& storage);
 std::string normalizedFieldPath(std::string path);
 }  // namespace
@@ -112,6 +90,9 @@ Expected<DataProcessorService::FilterHandle> DataProcessorService::applyFilter(
     std::string output_name, std::size_t input_column_index) {
   if (!processor) {
     return PJ::unexpected("DataProcessorService: null processor");
+  }
+  if (readsAPreview({input_topic_id})) {
+    return PJ::unexpected("DataProcessorService: a filter cannot read the output of a preview (ephemeral) transform");
   }
 
   // Shared so the host could later keep its own handle (preview/reconfigure);
@@ -173,6 +154,7 @@ Expected<DataProcessorService::FilterHandle> DataProcessorService::applyFilter(
     recipe.filter_source = lua->sourceText();
   }
   recipes_[recipe.output_topic_id] = std::move(recipe);
+  announceChangedOutputs(outputs);
 
   return FilterHandle{*node, outputs.front(), dataset_id, std::move(output_name)};
 }
@@ -185,6 +167,7 @@ Status DataProcessorService::removeFilter(NodeId node_id) {
     if (Status removed_dependents = removeProcessorsDependingOn({output_topic_id}); !removed_dependents.has_value()) {
       return removed_dependents;
     }
+    announceChangedOutputs({output_topic_id});
     return removeFilterOnly(node_id);
   }
   return PJ::unexpected("DataProcessorService: filter node " + std::to_string(node_id) + " not found");
@@ -567,6 +550,7 @@ Status DataProcessorService::updateFilter(NodeId node_id, std::shared_ptr<proc::
       break;
     }
   }
+  announceChangedOutputs(outputsWithDependents(node_id));
   return PJ::okStatus();
 }
 
@@ -931,6 +915,13 @@ std::pair<std::string, std::vector<std::string>> parseGroupedOutput(const std::v
 
 }  // namespace
 
+std::vector<std::string> DataProcessorService::materializedTopicNames(const TransformRecipe& recipe) {
+  if (auto group = parseGroupedOutput(recipe.outputs); !group.first.empty()) {
+    return {std::move(group.first)};
+  }
+  return recipe.outputs;
+}
+
 Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTransform(
     TransformRecipe recipe, bool time_sliced) {
   // 1. Shape: N inputs -> M outputs (SISO is the 1->1 case). Field-level binding
@@ -1054,6 +1045,10 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
   if (!had_persisted_bindings && recipe.inputs.size() == 1 && recipe.input_column_index != 0) {
     input_columns.front() = recipe.input_column_index;
   }
+  if (!recipe.ephemeral && readsAPreview(input_topic_ids)) {
+    return PJ::unexpected(
+        "pj.data_processors: a persistent transform cannot read the output of a preview (ephemeral) transform");
+  }
 
   std::vector<TransformInputBinding> canonical_bindings;
   canonical_bindings.reserve(input_topic_ids.size());
@@ -1157,6 +1152,7 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
     recipe.node_id = old.node_id;
     recipe.output_topic_ids = old.output_topic_ids;
     existing->second = recipe;
+    announceChangedOutputs(outputsWithDependents(recipe.node_id));
     return recipe;
   }
   // 7. Install the eager node and run it over the committed input(s).
@@ -1204,7 +1200,9 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
   recipe.output_topic_ids = outputs;
   transform_recipes_[recipe.key] = recipe;
   if (replay_pending) {
-    armMaterializationTimer();
+    armMaterializationTimer();  // announced when the replay ends
+  } else {
+    announceChangedOutputs(outputs);
   }
   return recipe;
 }
@@ -1236,7 +1234,7 @@ bool DataProcessorService::stepMaterialization(std::chrono::nanoseconds budget) 
         deadline - std::chrono::steady_clock::now(), std::chrono::nanoseconds::zero());
   };
   reportTransformFailures();
-  bool replay_ended = false;
+  std::vector<TopicId> ended_outputs;
   for (const NodeId node : derived_->deferredNodes()) {
     if (remaining() == std::chrono::nanoseconds::zero()) {
       break;
@@ -1244,7 +1242,9 @@ bool DataProcessorService::stepMaterialization(std::chrono::nanoseconds budget) 
     std::vector<NodeId> chained;
     const std::vector<TopicId> outputs = outputsWithDependents(node, &chained);
     const Expected<bool> done = derived_->materializeStep(node, remaining());
-    replay_ended = replay_ended || !done.has_value() || *done;
+    if (!done.has_value() || *done) {
+      ended_outputs.insert(ended_outputs.end(), outputs.begin(), outputs.end());
+    }
     // Processors chained on the growing output follow it within the same budget. One
     // the budget leaves behind is deferred itself and continues on a later tick.
     for (const NodeId dependent : chained) {
@@ -1254,35 +1254,38 @@ bool DataProcessorService::stepMaterialization(std::chrono::nanoseconds budget) 
   }
   reportTransformFailures();
   const bool idle = !materializationPending();
-  if (replay_ended || idle || std::chrono::steady_clock::now() - last_announcement_ >= kMaterializationNotifyInterval) {
+  if (!ended_outputs.empty() || idle ||
+      std::chrono::steady_clock::now() - last_announcement_ >= kMaterializationNotifyInterval) {
     announceGrownOutputs();
   }
+  announceChangedOutputs(ended_outputs);
   return idle;
 }
 
 void DataProcessorService::finishPendingMaterialization(TopicId read) {
   // A step's budget only bounds its wall time, so an unbounded one runs to completion.
   constexpr std::chrono::hours kUnbounded{24};
-  bool finished = false;
+  std::vector<TopicId> finished;
   for (const NodeId node : derived_->deferredNodes()) {
     std::vector<NodeId> chained;
     const std::vector<TopicId> outputs = outputsWithDependents(node, &chained);
     if (std::find(outputs.begin(), outputs.end(), read) == outputs.end()) {
       continue;
     }
-    if (!finished) {
+    if (finished.empty()) {
       reportTransformFailures();
-      finished = true;
     }
     (void)derived_->materializeStep(node, kUnbounded);
     for (const NodeId dependent : chained) {
       (void)derived_->materializeStep(dependent, kUnbounded);
     }
     unannounced_outputs_.insert(outputs.begin(), outputs.end());
+    finished.insert(finished.end(), outputs.begin(), outputs.end());
   }
-  if (finished) {
+  if (!finished.empty()) {
     reportTransformFailures();
     announceGrownOutputs();
+    announceChangedOutputs(finished);
   }
 }
 
@@ -1312,6 +1315,29 @@ void DataProcessorService::announceGrownOutputs() {
   if (session_ != nullptr && !grown.isEmpty()) {
     session_->notifyIngest(std::move(grown), /*live=*/false);
   }
+}
+
+void DataProcessorService::announceChangedOutputs(const std::vector<TopicId>& outputs) const {
+  if (!outputs_changed_sink_ || outputs.empty()) {
+    return;
+  }
+  std::map<DatasetId, std::vector<std::string>> names;
+  {
+    const auto engine_lock = engine_.lockEngine();
+    for (const TopicId output : outputs) {
+      if (const TopicStorage* storage = engine_.getTopicStorage(output)) {
+        names[storage->descriptor().dataset_id].push_back(storage->descriptor().name);
+      }
+    }
+  }
+  for (const auto& [dataset, dataset_names] : names) {
+    outputs_changed_sink_(dataset_names, dataset);
+  }
+}
+
+bool DataProcessorService::readsAPreview(const std::vector<TopicId>& inputs) const {
+  const std::unordered_set<TopicId> previews = ephemeralOutputTopics();
+  return std::any_of(inputs.begin(), inputs.end(), [&previews](TopicId input) { return previews.count(input) != 0; });
 }
 
 void DataProcessorService::reportTransformFailures() {
@@ -1362,6 +1388,7 @@ Status DataProcessorService::removeTransform(std::string_view namespaced_key) {
   if (it == transform_recipes_.end()) {
     return PJ::unexpected("pj.data_processors: unknown transform '" + std::string(namespaced_key) + "'");
   }
+  announceChangedOutputs(it->second.output_topic_ids);
   if (Status removed_dependents = removeProcessorsDependingOn(it->second.output_topic_ids);
       !removed_dependents.has_value()) {
     return removed_dependents;
@@ -1461,11 +1488,12 @@ std::vector<std::string> DataProcessorService::exemptTransformsDependingOn(
   return exempt_output_names;
 }
 
-DataProcessorService::HistoryRemovalImpact DataProcessorService::historyRemovalImpact(
-    const std::unordered_set<std::string>& keep_keys, const std::unordered_set<TopicId>& keep_filter_outputs) const {
-  HistoryRemovalImpact impact;
+DataProcessorService::RemovalImpact DataProcessorService::removalImpact(
+    RestoreIntent intent, const std::unordered_set<std::string>& keep_keys,
+    const std::unordered_set<TopicId>& keep_filter_outputs) const {
+  RemovalImpact impact;
   std::unordered_set<TopicId> affected =
-      std::move(removalSet(keep_keys, keep_filter_outputs, /*keep_history_exempt=*/true).outputs);
+      std::move(removalSet(keep_keys, keep_filter_outputs, intent == RestoreIntent::kHistory).outputs);
   impact.exempt_transform_names = exemptTransformsDependingOn(affected);
   // Names come from the materialized topics, not the recipe declarations: a grouped
   // output "rpy:a,b" materializes ONE topic named "rpy", which is what a marker
@@ -1482,11 +1510,6 @@ DataProcessorService::HistoryRemovalImpact DataProcessorService::historyRemovalI
       std::unique(impact.removed_output_names.begin(), impact.removed_output_names.end()),
       impact.removed_output_names.end());
   return impact;
-}
-
-std::vector<std::string> DataProcessorService::liveNonExemptOutputNames(
-    const std::unordered_set<std::string>& keep_keys, const std::unordered_set<TopicId>& keep_filter_outputs) const {
-  return historyRemovalImpact(keep_keys, keep_filter_outputs).removed_output_names;
 }
 
 std::vector<std::string> DataProcessorService::exemptDependentsOf(const std::vector<NodeId>& nodes) const {
@@ -1515,14 +1538,19 @@ Status DataProcessorService::removeProcessorsDependingOn(const std::vector<Topic
 
   std::unordered_set<TopicId> affected(input_topics.begin(), input_topics.end());
   std::vector<Dependent> dependents;
+  std::vector<TopicId> dependent_outputs;
   forEachDependentProcessor(
       affected, /*include_ephemeral_transforms=*/true,
-      [&dependents](TopicId, const FilterRecipe& recipe) {
+      [&dependents, &dependent_outputs](TopicId output, const FilterRecipe& recipe) {
         dependents.push_back(Dependent{.kind = Dependent::Kind::kFilter, .filter_node = recipe.node_id});
+        dependent_outputs.push_back(output);
       },
-      [&dependents](const std::string& key, const TransformRecipe&) {
+      [&dependents, &dependent_outputs](const std::string& key, const TransformRecipe& recipe) {
         dependents.push_back(Dependent{.kind = Dependent::Kind::kTransform, .transform_key = key});
+        dependent_outputs.insert(
+            dependent_outputs.end(), recipe.output_topic_ids.begin(), recipe.output_topic_ids.end());
       });
+  announceChangedOutputs(dependent_outputs);
 
   // The visitor discovers parents before children (a processor is visited only
   // after one of its inputs joined the affected set), so reverse order removes
@@ -1537,15 +1565,12 @@ Status DataProcessorService::removeProcessorsDependingOn(const std::vector<Topic
   return PJ::okStatus();
 }
 
-void DataProcessorService::clearTransformsForPlugin(std::string_view plugin_id) {
-  std::vector<std::string> keys;
-  for (const auto& [key, recipe] : transform_recipes_) {
-    if (recipe.owner_plugin == plugin_id) {
-      keys.push_back(key);
+void DataProcessorService::removeEphemerals(const std::unordered_set<std::string>& keys) {
+  for (const std::string& key : keys) {
+    // An earlier removal may have cascaded into this one.
+    if (const auto it = transform_recipes_.find(key); it != transform_recipes_.end() && it->second.ephemeral) {
+      (void)removeTransform(key);
     }
-  }
-  for (const auto& key : keys) {
-    (void)removeTransform(key);
   }
 }
 

@@ -166,7 +166,8 @@ class DataProcessorService {
   /// `dataset_id`, then running it over all committed input rows. The column
   /// index selects one field of a multi-column topic (e.g. `/imu/.../x`).
   /// Returns the handle, or an error string (unknown id / engine rejection /
-  /// empty output / column out of range).
+  /// empty output / column out of range / a preview transform's output as input,
+  /// since a filter is persistent).
   [[nodiscard]] Expected<FilterHandle> applyFilter(
       TopicId input_topic_id, DatasetId dataset_id, std::string_view processor_id, std::string output_name,
       std::size_t input_column_index = 0);
@@ -300,6 +301,9 @@ class DataProcessorService {
   /// `TransformRecipe::history_exempt`); trailing so every existing positional call
   /// site (which stops at `input_column_index`) keeps compiling unchanged.
   ///
+  /// A persistent transform reading an ephemeral one's output is refused: the
+  /// preview's removal would cascade into it. Another preview may read it.
+  ///
   /// A NEW persistent key replays the committed input history time-sliced: only the
   /// first `kMaterializationSliceBudget` slice runs inside the call (so a script
   /// failing on its first rows is still rejected), the rest from a zero-timer on
@@ -337,6 +341,19 @@ class DataProcessorService {
     diagnostic_sink_ = std::move(sink);
   }
 
+  /// Receives the topic names of processor outputs (transform or filter) whose rows
+  /// changed, with the dataset they live in (never an empty list). Called when an
+  /// upsert, a filter apply, an in-place edit or a restore leaves an output complete,
+  /// when a time-sliced replay ends (not on its partial output), and before a removal
+  /// (cascade included); the processors chained on an edited or replayed output are
+  /// named too. A reload's rebind does not call it: `RefillGuard::recomputeProcessors`
+  /// runs the marker rules itself afterwards. `SessionManager` marks the marker rules
+  /// reading the names stale. [main-thread]
+  using OutputsChangedSink = std::function<void(const std::vector<std::string>& names, DatasetId dataset)>;
+  void setOutputsChangedSink(OutputsChangedSink sink) {
+    outputs_changed_sink_ = std::move(sink);
+  }
+
   /// True while a time-sliced replay has input left.
   [[nodiscard]] bool materializationPending() const;
 
@@ -369,26 +386,25 @@ class DataProcessorService {
       const std::unordered_set<std::string>& keep_keys = {},
       const std::unordered_set<TopicId>& keep_filter_outputs = {}) const;
 
-  /// What a history restore with these keep sets would take down, computed in one
-  /// dependency walk from the removal set of `liveNonExemptNodeIds(...)`.
-  struct HistoryRemovalImpact {
+  /// What a restore with these keep sets would take down, computed in one
+  /// dependency walk from the processors its clears remove: the filters outside
+  /// `keep_filter_outputs` and the transforms outside `keep_keys`, sparing the
+  /// history-exempt ones only under `RestoreIntent::kHistory` (`kReplace` removes them).
+  struct RemovalImpact {
     /// Output names of every history-exempt transform the removal cascades into
-    /// (sorted, unique). Non-empty means the restore must be rejected.
+    /// (sorted, unique). Non-empty under `kHistory` means the restore must be rejected.
     std::vector<std::string> exempt_transform_names;
     /// Materialized output topic names of every processor removed, directly or by
     /// cascade (a kept filter or transform reading a removed output falls with it,
     /// and is re-created under a new TopicId). A grouped declaration `"t:a,b"`
     /// reports its single topic `"t"`. Marker generators declare dependencies by
-    /// series name, so this is the view their preflight matches against.
+    /// series name, so this is the view their preflight and their unchanged check
+    /// match against.
     std::vector<std::string> removed_output_names;
   };
-  [[nodiscard]] HistoryRemovalImpact historyRemovalImpact(
-      const std::unordered_set<std::string>& keep_keys, const std::unordered_set<TopicId>& keep_filter_outputs) const;
-
-  /// `historyRemovalImpact(...).removed_output_names`.
-  [[nodiscard]] std::vector<std::string> liveNonExemptOutputNames(
-      const std::unordered_set<std::string>& keep_keys = {},
-      const std::unordered_set<TopicId>& keep_filter_outputs = {}) const;
+  [[nodiscard]] RemovalImpact removalImpact(
+      RestoreIntent intent, const std::unordered_set<std::string>& keep_keys,
+      const std::unordered_set<TopicId>& keep_filter_outputs) const;
 
   /// Output names of every history-exempt TRANSFORM transitively depending on any
   /// of `nodes`. Empty means removing `nodes` would strand nothing exempt. The
@@ -401,10 +417,11 @@ class DataProcessorService {
   /// downstream processor and retiring all affected outputs. Unknown key = error.
   Status removeTransform(std::string_view namespaced_key);
 
-  /// Tear down every transform owned by `plugin_id` (plugin uninstall). Does NOT
-  /// run on ordinary DSO unload — the host owns the script, so a transform
-  /// survives unload (the bridge object dies, the node lives on).
-  void clearTransformsForPlugin(std::string_view plugin_id);
+  /// Remove the EPHEMERAL (preview) transforms among `keys`, cascading like
+  /// `removeTransform`; a key that is gone or persistent is skipped. A preview belongs
+  /// to the plugin instance that made it: `DerivedRuntimeHosts` passes the ones its
+  /// bridge created when the instance ends. Persistent transforms are the user's data.
+  void removeEphemerals(const std::unordered_set<std::string>& keys);
 
   /// `clearTransforms(RestoreIntent::kReplace)` — tear down every
   /// transform at once (session close / reconcile primitive for a full restore).
@@ -458,6 +475,11 @@ class DataProcessorService {
   /// for how the ABI bridge maps a plugin's per-id calls onto stored transforms.
   [[nodiscard]] static std::string makeTransformKey(std::string_view plugin_id, std::string_view id);
 
+  /// The topic names `recipe`'s outputs materialize: a grouped declaration `"t:a,b"` is
+  /// ONE topic `"t"`, any other output is its own scalar topic under its declared name.
+  /// What a series key of a downstream processor or marker rule is rooted at.
+  [[nodiscard]] static std::vector<std::string> materializedTopicNames(const TransformRecipe& recipe);
+
   [[nodiscard]] IncrementalEngine& incrementalEngine() noexcept {
     return *derived_;
   }
@@ -476,6 +498,11 @@ class DataProcessorService {
       NodeId node, std::vector<NodeId>* dependents = nullptr) const;
   /// Announces the outputs grown since the last announcement.
   void announceGrownOutputs();
+  /// Hands `outputs`' names, grouped by dataset, to the outputs-changed sink.
+  void announceChangedOutputs(const std::vector<TopicId>& outputs) const;
+  /// Whether one of `inputs` is a preview transform's output. A preview's removal
+  /// cascades into what reads it, so a persistent recipe may not.
+  [[nodiscard]] bool readsAPreview(const std::vector<TopicId>& inputs) const;
   /// Reports each transform that failed since the last call (see setDiagnosticSink)
   /// and forgets the ones that recovered or were removed. Called around every
   /// scheduling pass, so a recovery by an edit between passes re-arms the report.
@@ -554,6 +581,7 @@ class DataProcessorService {
   std::unordered_map<std::string, TransformRecipe> transform_recipes_;  ///< "<plugin>/<id>" -> live transform
   std::shared_ptr<scripting::FilterCatalogue> filter_catalogue_;        ///< optional Luau filter source
   DiagnosticSink diagnostic_sink_;                                      ///< receives transform failures; may be empty
+  OutputsChangedSink outputs_changed_sink_;                             ///< may be empty
   std::unordered_set<std::string> reported_failures_;                   ///< keys of failed transforms already reported
   std::unordered_set<TopicId> unannounced_outputs_;                     ///< replay outputs grown since the last notify
   std::chrono::steady_clock::time_point last_announcement_{};

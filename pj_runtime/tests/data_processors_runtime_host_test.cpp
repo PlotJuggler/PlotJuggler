@@ -160,8 +160,8 @@ TEST(DataProcessorsRuntimeHostTest, TransformSurvivesBridgeDestruction) {
   EXPECT_EQ(fx.service.transformRecipes().size(), 1u);
   EXPECT_EQ(readValues(fx.engine, out), (std::vector<double>{1.0, -2.0}));
 
-  // Explicit teardown (plugin uninstall / session close) still removes it.
-  fx.service.clearTransformsForPlugin("pluginA");
+  // Explicit teardown (session close) still removes it.
+  fx.service.clearAllTransforms();
   EXPECT_TRUE(fx.service.transformRecipes().empty());
 }
 

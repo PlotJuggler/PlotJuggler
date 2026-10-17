@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "pj_base/expected.hpp"
@@ -32,8 +33,9 @@ class ServiceRegistryBuilder;
 /// LIFETIME — the bridge is INDEPENDENT of the transforms it creates. Destroying
 /// it (the ordinary case on plugin DSO unload) tears down only this object; the
 /// transform nodes KEEP RUNNING because the host owns the script + VM. Transforms
-/// are torn down only by an explicit `remove` or `DataProcessorService::
-/// clearTransformsForPlugin` (uninstall) / `clearAllTransforms` (session close).
+/// are torn down only by an explicit `remove`, `clearAllTransforms` (session close)
+/// or, for a preview this bridge created, the end of its plugin instance:
+/// `DerivedRuntimeHosts` (the owner of this bridge) removes its `previews()`.
 /// Not movable: the vtable fat pointer stores `this`.
 class DataProcessorsRuntimeHost {
  public:
@@ -55,6 +57,13 @@ class DataProcessorsRuntimeHost {
   /// The raw C-ABI fat pointer (for direct wiring / tests).
   [[nodiscard]] PJ_data_processors_host_t raw() const noexcept {
     return raw_;
+  }
+
+  /// The namespaced keys of the previews (ephemeral transforms) created through this
+  /// bridge and not removed through it. One may since have gone another way (a
+  /// cascade): `DataProcessorService::removeEphemerals` skips it.
+  [[nodiscard]] const std::unordered_set<std::string>& previews() const noexcept {
+    return previews_;
   }
 
  private:
@@ -81,6 +90,7 @@ class DataProcessorsRuntimeHost {
   std::vector<std::string> list_storage_;
   std::string config_storage_;
   std::vector<std::string> create_topics_storage_;  ///< backs onCreate's borrowed out_topics until the next call
+  std::unordered_set<std::string> previews_;        ///< see previews()
 };
 
 }  // namespace PJ
