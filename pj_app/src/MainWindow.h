@@ -37,8 +37,7 @@
 #include "pj_base/time.hpp"      // PJ::Timepoint — the frame-invariant absolute instant the reference line stores
 #include "pj_base/types.hpp"
 #include "pj_plotting/CurveTracker.h"
-#include "pj_runtime/CurveDescriptor.h"       // openFilterEditor takes std::vector<CurveDescriptor> by value
-#include "pj_runtime/DataProcessorService.h"  // parseWantedTransforms returns TransformRecipes by value
+#include "pj_runtime/CurveDescriptor.h"  // openFilterEditor takes std::vector<CurveDescriptor> by value
 #include "pj_runtime/HistoryScope.h"
 #include "pj_runtime/RecordingService.h"  // CaptureResult / SourceRecordingStart — recording slot parameters
 #include "pj_runtime/SessionManager.h"
@@ -72,7 +71,10 @@ class TransformService;
 
 class AppSession;
 struct CatalogItem;
+struct DerivedDiagnostic;
+struct DerivedSnapshot;
 class CurveEditor;
+class DerivedObjects;
 class DiagnosticHistory;
 class DiagnosticsDialog;
 class DockWidget;
@@ -136,6 +138,7 @@ class MainWindow : public QMainWindow {
   friend class MainWindowMarkerGeneratorTestPeer;
   friend class MainWindowHistoryExemptTestPeer;
   friend class MainWindowCustomSeriesTestPeer;
+  friend class MainWindowRelease41LayoutTestPeer;
   friend class ToolboxPanelFoldTestPeer;
   friend class ToolboxPresenter;
 
@@ -939,7 +942,7 @@ class MainWindow : public QMainWindow {
   // Snapshots carry stable topic/field paths, not per-load keys, so one
   // survives an intervening data reload. Callers run it under applying_state_ as needed.
   // `out_reason`, when non-null, receives the one-sentence rejection reason from
-  // a `kHistory` intent's exempt-dependency check (see `restoreDataProcessors`);
+  // a `kHistory` intent's exempt-dependency check (see `checkDataProcessorDependencies`);
   // untouched on every other outcome.
   [[nodiscard]] RestoreResult restoreWorkspaceState(
       QDomDocument& doc, MissingCurvePolicy policy, const CapturedWorkspace* rollback_to = nullptr,
@@ -1052,79 +1055,29 @@ class MainWindow : public QMainWindow {
   // (see saveChromeState).
   void restoreChromeState(const QDomElement& element);
 
-  // Serializes the DataProcessorService snapshot into a <data_processors> block:
-  // per-curve filters as <processor> entries (INPUT stored as a stable
-  // (topic, field) path so it rebinds on reload) and plugin-created transforms as
-  // <transform> entries (script + bindings carried by value, inputs/outputs by
-  // name). Restore re-applies each filter onto the target dataset BEFORE curve-key
-  // rebinding, so the materialized output topics are in the catalog and the
-  // filtered curves resolve like any other curve, then replays the transforms.
-  // `scope == kFull` tags a history-exempt <transform>/<generator> with
-  // `history_exempt="1"` so it round-trips through a layout file; `kHistory`
-  // omits those entries outright (see `SnapshotScope`).
-  [[nodiscard]] QDomElement saveDataProcessors(QDomDocument& doc, SnapshotScope scope) const;
-  // Resolves each saved filter's input against whichever loaded dataset holds it
-  // (first match in load order, mirroring rebindCurvesToLoadedDatasets), so a
-  // multi-file layout restores each filter against its own source.
-  //
-  // A history restore first rejects outright — leaving everything untouched and
-  // naming the exempt output in `out_reason` — if removing
-  // this snapshot's non-exempt processors would strand an exempt dependent;
-  // otherwise it clears only the non-exempt filters/transforms/generators and
-  // defensively skips any document entry marked `history_exempt="1"`.
-  // `kReplace` clears and recreates the complete set. `out_reason`, when
-  // non-null, is cleared on entry and set only on the history rejection path.
+  // Thin wrappers over `DerivedObjects` (pj_runtime), which owns the derived-recipe
+  // layout persistence (`save` writes the <data_processors> block of a snapshot,
+  // `restore` replays it). `restoreDataProcessors` = `parseDataProcessors` +
+  // `checkDataProcessorDependencies` + `applyDataProcessors`; `out_reason`, when
+  // non-null, is cleared on entry and set only when a `kHistory` restore is refused.
   [[nodiscard]] bool restoreDataProcessors(
       const QDomElement& root, RestoreIntent intent = RestoreIntent::kReplace, QString* out_reason = nullptr);
 
-  // The read-only preflight `restoreDataProcessors` runs before its first clear:
-  // true outside `kHistory` or when nothing exempt is live; otherwise parses `root`
-  // and reports whether removing its non-exempt processors would strand an exempt
-  // transform or marker generator, WITHOUT mutating any participant. `applyWorkspace`
-  // calls it before applyTimelineOffsets so a refusal never has to undo a moved
-  // offset; `restoreDataProcessors` calls the same helper for its other callers.
-  // `out_reason`, when non-null, is cleared on entry and set only on refusal.
+  [[nodiscard]] DerivedObjects derivedObjects() const;
+  // Reports each derived-recipe diagnostic as a "Layout" warning.
+  void reportDerived(const std::vector<DerivedDiagnostic>& diagnostics);
+  // Parses the <data_processors> child of `root` and reports the entries it dropped.
+  [[nodiscard]] DerivedSnapshot parseDataProcessors(const QDomElement& root, RestoreIntent intent);
+  // The read-only preflight a `kHistory` restore runs before its first clear: false
+  // (reported, and the reason in `out_reason`) when removing the snapshot's
+  // non-exempt processors would strand an exempt transform or marker generator.
+  // `applyWorkspace` runs it before applyTimelineOffsets so a refusal never has to
+  // undo a moved offset.
   [[nodiscard]] bool checkDataProcessorDependencies(
-      const QDomElement& root, RestoreIntent intent, QString* out_reason = nullptr);
-
-  // Parses every <transform> under `element` (a <data_processors> node) into the
-  // recipes the snapshot wants live, resolving persisted dataset identities against
-  // the current session. Skips entries flagged `history_exempt="1"` when
-  // `keep_exempt` (history has no authority to replay one); an entry that fails to
-  // parse is reported, dropped, and clears `*restored_all`. Query-only: nothing in
-  // the session mutates, so the result can drive a rejection preflight.
-  [[nodiscard]] std::vector<DataProcessorService::TransformRecipe> parseWantedTransforms(
-      const QDomElement& element, bool keep_exempt, bool* restored_all);
-
-  // One <processor> entry of a snapshot: the input path as persisted plus the
-  // service-side description with that input resolved against the current
-  // catalog (input fields zero while it does not resolve). The path is kept
-  // because the restore re-resolves it each round: the input may be an output
-  // that only a later step of the same restore creates.
-  struct WantedFilter {
-    layout_xml::SeriesPath input;
-    DataProcessorService::PersistedFilter persisted;
-  };
-
-  // Parses every <processor> under `element` into the filters the snapshot wants
-  // live, resolving each input once so `unchangedFilterOutputs` can match live
-  // filters; an unresolved input is not an error yet. Query-only, like
-  // `parseWantedTransforms`.
-  [[nodiscard]] std::vector<WantedFilter> parseWantedFilters(const QDomElement& element) const;
-
-  // Re-creates every wanted filter and transform that is not live, in rounds:
-  // filters first, each input re-resolved through the catalog (rebuilt so an
-  // output the previous round minted resolves), then transforms, which resolve
-  // by name. A round can only create the entries whose inputs exist, so a chain
-  // of N alternating links takes up to N rounds; the loop stops as soon as a
-  // round creates nothing. History has no authority over a live exempt transform
-  // (`live_exempt_keys`), even when the snapshot carries its key. Each entry
-  // that is still not live at the end is reported once; returns whether every
-  // entry was restored.
-  [[nodiscard]] bool repairDataProcessors(
-      std::vector<WantedFilter>& wanted_filters,
-      const std::vector<DataProcessorService::TransformRecipe>& wanted_transforms,
-      const std::unordered_set<std::string>& live_exempt_keys);
+      const DerivedSnapshot& snapshot, RestoreIntent intent, QString* out_reason = nullptr);
+  // Restores `snapshot`, reports what failed and re-derives the Custom Series list.
+  // An empty snapshot clears every recipe history has authority over.
+  [[nodiscard]] bool applyDataProcessors(DerivedSnapshot snapshot, RestoreIntent intent);
 
   // Re-derives the Custom Series list from the live transform recipes and hands
   // the whole set to the panel.

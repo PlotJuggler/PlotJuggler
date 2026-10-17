@@ -14,6 +14,7 @@
 #include <cstdint>
 
 #include "LayoutXml.h"
+#include "pj_runtime/XmlCdata.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -25,7 +26,7 @@ using PJ::layout_xml::DataSourceRef;
 QString roundTripJson(const QString& input) {
   QDomDocument doc;
   QDomElement plugin = doc.createElement(u"plugin"_s);
-  PJ::layout_xml::appendJsonAsCdata(doc, plugin, input);
+  PJ::appendJsonAsCdata(doc, plugin, input);
   doc.appendChild(plugin);
 
   // Round-trip through serialize -> reparse to confirm the document
@@ -87,9 +88,9 @@ TEST(AppendJsonAsCdata, RoundTripsUnicodeAndAngleBrackets) {
 
 QDomElement buildProcessorWithSource(QDomDocument& doc, const QString& params, const QString& source) {
   QDomElement processor = doc.createElement(u"processor"_s);
-  PJ::layout_xml::appendJsonAsCdata(doc, processor, params);  // params: a direct CDATA child
+  PJ::appendJsonAsCdata(doc, processor, params);  // params: a direct CDATA child
   QDomElement src = doc.createElement(u"source_fallback"_s);
-  PJ::layout_xml::appendJsonAsCdata(doc, src, source);
+  PJ::appendJsonAsCdata(doc, src, source);
   processor.appendChild(src);  // source: nested inside a child element
   doc.appendChild(processor);
   return processor;
@@ -101,7 +102,7 @@ TEST(DirectCdataText, ReadsOwnPayloadIgnoringChildElement) {
   const QString source = u"return { id='scale', create=function(p) end }"_s;
   QDomElement processor = buildProcessorWithSource(doc, params, source);
 
-  EXPECT_EQ(PJ::layout_xml::directCdataText(processor), params);
+  EXPECT_EQ(PJ::directCdataText(processor), params);
   EXPECT_EQ(processor.firstChildElement(u"source_fallback"_s).text(), source);
   // Document the gotcha being guarded against: text() recurses and merges both.
   EXPECT_EQ(processor.text(), params + source);
@@ -116,7 +117,7 @@ TEST(DirectCdataText, SurvivesSerializeReparseWithClosingCdata) {
   QDomDocument reparsed;
   ASSERT_TRUE(reparsed.setContent(doc.toByteArray(2)));
   const QDomElement processor = reparsed.documentElement();
-  EXPECT_EQ(PJ::layout_xml::directCdataText(processor), params);
+  EXPECT_EQ(PJ::directCdataText(processor), params);
   EXPECT_EQ(processor.firstChildElement(u"source_fallback"_s).text(), source);
 }
 
@@ -124,10 +125,10 @@ TEST(DirectCdataText, EmptyWhenNoDirectCdata) {
   QDomDocument doc;
   QDomElement processor = doc.createElement(u"processor"_s);
   QDomElement src = doc.createElement(u"source_fallback"_s);
-  PJ::layout_xml::appendJsonAsCdata(doc, src, u"source-only"_s);
+  PJ::appendJsonAsCdata(doc, src, u"source-only"_s);
   processor.appendChild(src);
   doc.appendChild(processor);
-  EXPECT_TRUE(PJ::layout_xml::directCdataText(processor).isEmpty());
+  EXPECT_TRUE(PJ::directCdataText(processor).isEmpty());
 }
 
 // ---------- extractDataSource ----------------------------------------------
@@ -148,7 +149,7 @@ QDomDocument buildDataSourceDoc(
   if (!plugin_id.isEmpty()) {
     QDomElement plugin = doc.createElement(u"plugin"_s);
     plugin.setAttribute(u"ID"_s, plugin_id);
-    PJ::layout_xml::appendJsonAsCdata(doc, plugin, plugin_json);
+    PJ::appendJsonAsCdata(doc, plugin, plugin_json);
     file_info.appendChild(plugin);
   }
   wrapper.appendChild(file_info);
@@ -167,7 +168,7 @@ void appendFileInfo(
   if (!plugin_id.isEmpty()) {
     QDomElement plugin = doc.createElement(u"plugin"_s);
     plugin.setAttribute(u"ID"_s, plugin_id);
-    PJ::layout_xml::appendJsonAsCdata(doc, plugin, plugin_json);
+    PJ::appendJsonAsCdata(doc, plugin, plugin_json);
     file_info.appendChild(plugin);
   }
   wrapper.appendChild(file_info);
@@ -330,7 +331,7 @@ void appendMaterialize(QDomDocument& doc, const QString& provider, const QString
   QDomElement materialize = doc.createElement(u"materialize"_s);
   materialize.setAttribute(u"provider"_s, provider);
   materialize.setAttribute(u"identity"_s, identity);
-  PJ::layout_xml::appendJsonAsCdata(doc, materialize, descriptor);
+  PJ::appendJsonAsCdata(doc, materialize, descriptor);
   file_info.appendChild(materialize);
 }
 

@@ -63,7 +63,7 @@ constexpr const char* kSeriesKey = "sensor/value";
 constexpr const char* kGeneratorId = "toolbox-anomaly-detector/rule/sensor";
 
 // A layout carrying one marker generator over `series_key`, shaped exactly as
-// MainWindow::saveDataProcessors writes it. `window`, when set, adds the
+// DerivedObjects::save writes it. `window`, when set, adds the
 // `window_start_ns`/`window_end_ns` attributes (raw ns, inclusive).
 QDomDocument layoutWithGenerator(
     PJ::DatasetId dataset_id, const QString& source_name, const QString& script,

@@ -35,6 +35,7 @@
 #include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/XmlCdata.h"
 #include "pj_widgets/IngestProgressWidget.h"
 
 namespace PJ {
@@ -297,7 +298,7 @@ using pj_fake_import::kProviderId;
   QDomElement materialize = doc.createElement(QStringLiteral("materialize"));
   materialize.setAttribute(QStringLiteral("provider"), provider);
   materialize.setAttribute(QStringLiteral("identity"), QStringLiteral("id-1"));
-  PJ::layout_xml::appendJsonAsCdata(doc, materialize, descriptor);
+  PJ::appendJsonAsCdata(doc, materialize, descriptor);
   file_info.appendChild(materialize);
   wrapper.appendChild(file_info);
   root.appendChild(wrapper);

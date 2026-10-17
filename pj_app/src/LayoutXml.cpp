@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "pj_plotting/PlotXml.h"
+#include "pj_runtime/XmlCdata.h"
 
 using namespace Qt::StringLiterals;
 
@@ -46,32 +47,6 @@ QString ensureLayoutExtension(const QString& path) {
 
 bool containsEphemeralBrowserPath(const QByteArray& serialized) {
   return serialized.contains("pj-upload://") || serialized.contains("/pj_uploads");
-}
-
-void appendJsonAsCdata(QDomDocument& doc, QDomElement& parent, const QString& json) {
-  // Indices kept as qsizetype to avoid narrowing on -Werror builds; Qt 6's
-  // QString APIs return qsizetype throughout.
-  qsizetype start = 0;
-  while (true) {
-    const qsizetype hit = json.indexOf("]]>"_L1, start);
-    if (hit < 0) {
-      parent.appendChild(doc.createCDATASection(json.mid(start)));
-      return;
-    }
-    // End this section AFTER "]]" so the next section begins with ">".
-    parent.appendChild(doc.createCDATASection(json.mid(start, hit + 2 - start)));
-    start = hit + 2;
-  }
-}
-
-QString directCdataText(const QDomElement& element) {
-  QString out;
-  for (QDomNode n = element.firstChild(); !n.isNull(); n = n.nextSibling()) {
-    if (n.isCDATASection() || n.isText()) {
-      out += n.nodeValue();  // child *elements* (e.g. <source_fallback>) are skipped
-    }
-  }
-  return out;
 }
 
 QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layout_dir) {

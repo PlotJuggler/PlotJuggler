@@ -344,9 +344,12 @@ if(PJ_BUILD_TESTS)
         LIBS Qt6::Widgets Qt6::Xml
     )
     set_target_properties(pj_app_unit_tests PROPERTIES AUTOMOC ON)
+    # pj_runtime's include tree only for the header-only XmlCdata.h and
+    # SavedSeriesPath.h LayoutXml uses; the runner does not link pj_runtime.
     target_include_directories(pj_app_unit_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/raster/ipc
+        ${CMAKE_SOURCE_DIR}/pj_runtime/include
     )
 
     # Guards the meme splash pool against its two silent failure modes: a meme
@@ -444,6 +447,13 @@ if(PJ_BUILD_TESTS)
     # restore and a withdrawal through the data-processors ABI.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_custom_series_test.cpp)
+
+    # Layouts saved by a release-4.1 build restore through the real load paths and
+    # save back to the same <data_processors> block.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_release41_layout_test.cpp)
+    set_source_files_properties(tests/main_window_release41_layout_test.cpp PROPERTIES
+        COMPILE_DEFINITIONS PJ_RELEASE41_LAYOUT_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/layouts/release-4.1")
 
     # Window frame: the system title bar by default, the frameless custom one
     # only when Preferences -> Appearance opts in (bar contents, the double-click

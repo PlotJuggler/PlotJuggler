@@ -124,7 +124,6 @@
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_base/dataset.hpp"
 #include "pj_base/types.hpp"
-#include "pj_datastore/data_processor.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/reader.hpp"
@@ -163,6 +162,7 @@
 #include "pj_runtime/DataProcessorsKindRouter.h"
 #include "pj_runtime/DataProcessorsRuntimeHost.h"
 #include "pj_runtime/DatasetQualifiedName.h"
+#include "pj_runtime/DerivedObjects.h"
 #include "pj_runtime/DiagnosticHistory.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/IObjectViewer.h"
@@ -183,6 +183,7 @@
 #include "pj_runtime/TopicDemandTracker.h"
 #include "pj_runtime/UpdateChecker.h"
 #include "pj_runtime/ViewportRuntimeHost.h"
+#include "pj_runtime/XmlCdata.h"
 #ifdef PJ_WITH_SCENE2D
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #endif
@@ -441,51 +442,6 @@ inline constexpr std::array<std::pair<const char*, double>, 4> kWidthButtonSpecs
     {"globalWidth3_0", 3.0},
 }};
 
-/// Producers before dependents, document order otherwise: restore resolves
-/// transform inputs by name, so a dependent replayed before its producer fails.
-/// Used for both persisting and replaying, so a saved file is already ordered
-/// and an older unordered one still loads. A cycle (never installable) keeps its
-/// members in document order at the end.
-void orderTransformsByDependency(std::vector<PJ::DataProcessorService::TransformRecipe>& recipes) {
-  const auto produces = [](const PJ::DataProcessorService::TransformRecipe& recipe, const std::string& input) {
-    return std::any_of(recipe.outputs.begin(), recipe.outputs.end(), [&input](const std::string& output) {
-      const std::string topic = output.substr(0, output.find(':'));  // "rpy:a,b" materializes topic "rpy"
-      return input == topic || input.starts_with(topic + '/');
-    });
-  };
-  // ponytail: O(n^3) passes over a handful of transforms; Kahn's algorithm if layouts grow large.
-  std::vector<PJ::DataProcessorService::TransformRecipe> ordered;
-  ordered.reserve(recipes.size());
-  std::vector<bool> placed(recipes.size(), false);
-  for (bool progress = true; progress;) {
-    progress = false;
-    for (std::size_t index = 0; index < recipes.size(); ++index) {
-      if (placed[index]) {
-        continue;
-      }
-      const bool ready =
-          std::all_of(recipes[index].inputs.begin(), recipes[index].inputs.end(), [&](const std::string& input) {
-            for (std::size_t other = 0; other < recipes.size(); ++other) {
-              if (other != index && !placed[other] && produces(recipes[other], input)) {
-                return false;
-              }
-            }
-            return true;
-          });
-      if (ready) {
-        placed[index] = true;
-        ordered.push_back(std::move(recipes[index]));
-        progress = true;
-      }
-    }
-  }
-  for (std::size_t index = 0; index < recipes.size(); ++index) {
-    if (!placed[index]) {
-      ordered.push_back(std::move(recipes[index]));
-    }
-  }
-  recipes = std::move(ordered);
-}
 }  // namespace
 
 #ifdef PJ_TARGET_WASM
@@ -2344,7 +2300,7 @@ std::optional<QDomDocument> MainWindow::browserSourceLayoutDocument(QString& err
       plugin.setAttribute(u"filepath_mode"_s, u"source"_s);
       const std::string logical_config =
           detail::rewriteReplayFilepaths(record.plugin_config_json.toStdString(), logical_path);
-      layout_xml::appendJsonAsCdata(doc, plugin, QString::fromStdString(logical_config));
+      appendJsonAsCdata(doc, plugin, QString::fromStdString(logical_config));
       file_info.appendChild(plugin);
     }
     wrapper.appendChild(file_info);
@@ -5931,7 +5887,7 @@ void MainWindow::beginProgressiveLayoutRestore(QDomDocument doc, const QString& 
     QScopedValueRollback guard(applying_state_, true);
     // FileLoader is still producing topics. Tear down the previous graph now,
     // but replay nothing until queueDrained, when missing inputs are meaningful.
-    static_cast<void>(restoreDataProcessors(QDomElement{}));
+    static_cast<void>(applyDataProcessors(DerivedSnapshot{}, RestoreIntent::kReplace));
     // rebindCurvesToLoadedDatasets rewrites doc in place; its unresolved-paths
     // return is not needed here because the progressive binder reports them at
     // drain.
@@ -6612,570 +6568,54 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
   emitDiagnostic(DiagnosticLevel::kInfo, "Layout", "saved", tr("Saved layout: %1").arg(QFileInfo(path).fileName()));
 }
 
-QDomElement MainWindow::saveDataProcessors(QDomDocument& doc, SnapshotScope scope) const {
-  QDomElement element = doc.createElement(u"data_processors"_s);
-  for (const auto& recipe : session_->sessionManager().dataProcessorService().recipes()) {
-    // Resolve the input column to a stable (topic, field) path so it rebinds on
-    // reload exactly like a plotted curve.
-    const QString input_key = u"dataset:%1/topic:%2/column:%3"_s.arg(recipe.dataset_id)
-                                  .arg(recipe.input_topic_id)
-                                  .arg(recipe.input_column_index);
-    const std::optional<CurveDescriptor> input_desc = session_->catalogModel().curveDescriptor(input_key);
-    if (!input_desc.has_value()) {
-      continue;  // input field is gone; nothing to persist
-    }
-    QDomElement processor = doc.createElement(u"processor"_s);
-    processor.setAttribute(u"input_topic"_s, input_desc->topic_name);
-    processor.setAttribute(u"input_field"_s, input_desc->field_path);
-    // Dataset qualifiers so the input rebinds to its own source dataset on restore,
-    // never a same-topic sibling (first-match was part of the reported undo bug).
-    // input_dataset_path is stamped by stampDatasetSourcePaths at layout-file save.
-    processor.setAttribute(u"input_dataset_id"_s, QString::number(recipe.dataset_id));
-    if (const auto source = session_->catalogModel().datasetSourceName(recipe.dataset_id); source.has_value()) {
-      processor.setAttribute(u"input_dataset_source"_s, *source);
-    }
-    processor.setAttribute(u"processor_id"_s, QString::fromStdString(recipe.processor_id));
-    processor.setAttribute(u"output_name"_s, QString::fromStdString(recipe.output_name));
-    if (recipe.processor) {
-      layout_xml::appendJsonAsCdata(doc, processor, QString::fromStdString(recipe.processor->saveParams()));
-    }
-    // Embed the filter's Luau source so the layout reopens on a machine without
-    // this filter installed (resolved by restore's source_fallback leg). A named
-    // child element, NOT a second direct CDATA child — restore reads params via
-    // directCdataText, which ignores child elements. Empty for native C++ builtins.
-    if (!recipe.filter_source.empty()) {
-      QDomElement source_el = doc.createElement(u"source_fallback"_s);
-      layout_xml::appendJsonAsCdata(doc, source_el, QString::fromStdString(recipe.filter_source));
-      processor.appendChild(source_el);
-    }
-    element.appendChild(processor);
+bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent intent, QString* out_reason) {
+  DerivedSnapshot snapshot = parseDataProcessors(root, intent);
+  if (!checkDataProcessorDependencies(snapshot, intent, out_reason)) {
+    return false;
   }
-  // Plugin-created transforms (pj.data_processors.v1): named, owner-tagged nodes
-  // that carry their script + bindings BY VALUE, so they replay on load WITHOUT the
-  // originating plugin (needed only for re-editing). Persisted in the same snapshot
-  // block as the per-curve filters above; restore re-installs them via
-  // DataProcessorService::restoreTransform. Inputs/outputs are topic NAMES (the
-  // engine resolves them on restore), so no (topic, field) rebinding is needed here.
-  std::vector<DataProcessorService::TransformRecipe> transforms =
-      session_->sessionManager().dataProcessorService().transformRecipes();
-  orderTransformsByDependency(transforms);
-  for (const auto& recipe : transforms) {
-    // History snapshots omit entries the restore has no authority to replay.
-    if (scope == SnapshotScope::kHistory && recipe.history_exempt) {
-      continue;
-    }
-    QDomElement transform = doc.createElement(u"transform"_s);
-    transform.setAttribute(u"owner_plugin"_s, QString::fromStdString(recipe.owner_plugin));
-    transform.setAttribute(u"id"_s, QString::fromStdString(recipe.user_id));
-    if (recipe.history_exempt) {
-      transform.setAttribute(u"history_exempt"_s, u"1"_s);
-    }
-    transform.setAttribute(u"backend"_s, QString::fromStdString(recipe.backend));
-    transform.setAttribute(u"api_version"_s, QString::fromStdString(recipe.api_version));
-    if (!recipe.backend_version.empty()) {
-      transform.setAttribute(u"backend_version"_s, QString::fromStdString(recipe.backend_version));
-    }
-    for (std::size_t index = 0; index < recipe.inputs.size(); ++index) {
-      const std::string& input_name = recipe.inputs[index];
-      QDomElement in = doc.createElement(u"input"_s);
-      in.setAttribute(u"name"_s, QString::fromStdString(input_name));
-      if (index < recipe.input_bindings.size()) {
-        const auto& binding = recipe.input_bindings[index];
-        in.setAttribute(u"dataset_id"_s, QString::number(binding.dataset_id));
-        in.setAttribute(u"dataset_source"_s, QString::fromStdString(binding.dataset_source));
-        in.setAttribute(u"topic"_s, QString::fromStdString(binding.topic_name));
-        in.setAttribute(u"field"_s, QString::fromStdString(binding.field_path));
-        in.setAttribute(u"column"_s, QString::number(static_cast<qulonglong>(binding.column_index)));
-      }
-      transform.appendChild(in);
-    }
-    for (const auto& output_name : recipe.outputs) {
-      QDomElement out = doc.createElement(u"output"_s);
-      out.setAttribute(u"name"_s, QString::fromStdString(output_name));
-      transform.appendChild(out);
-    }
-    // params (create(params), JSON) and script (the full backend payload, Luau today)
-    // each get their own CDATA child so restore reads them back independently.
-    if (!recipe.params_json.empty()) {
-      QDomElement params = doc.createElement(u"params"_s);
-      layout_xml::appendJsonAsCdata(doc, params, QString::fromStdString(recipe.params_json));
-      transform.appendChild(params);
-    }
-    QDomElement script = doc.createElement(u"script"_s);
-    layout_xml::appendJsonAsCdata(doc, script, QString::fromStdString(recipe.script));
-    transform.appendChild(script);
-    element.appendChild(transform);
-  }
-
-  // Marker generators (kind=markers of pj.data_processors.v1): whole-series object
-  // generators run by BatchEngine. Persisted like transforms — script + inputs
-  // BY VALUE so they replay on load without the originating plugin. Dataset identity
-  // is stamped for cross-session rebind (mirrors the <processor> qualifiers); an
-  // all_datasets generator has no single dataset, so it stamps none.
-  for (const auto& recipe : session_->sessionManager().batchEngine().recipes()) {
-    // Marker generators use the same history scope as transforms.
-    if (scope == SnapshotScope::kHistory && recipe.history_exempt) {
-      continue;
-    }
-    QDomElement gen = doc.createElement(u"generator"_s);
-    gen.setAttribute(u"id"_s, QString::fromStdString(recipe.id));
-    if (recipe.history_exempt) {
-      gen.setAttribute(u"history_exempt"_s, u"1"_s);
-    }
-    gen.setAttribute(u"language"_s, QString::fromStdString(recipe.language));
-    gen.setAttribute(u"all_datasets"_s, recipe.all_datasets ? u"1"_s : u"0"_s);
-    if (!recipe.all_datasets) {
-      gen.setAttribute(u"dataset_id"_s, QString::number(recipe.dataset_id));
-      if (const auto source = session_->catalogModel().datasetSourceName(recipe.dataset_id); source.has_value()) {
-        gen.setAttribute(u"dataset_source"_s, *source);
-      }
-      gen.setAttribute(u"dataset_path"_s, session_->sessionManager().datasetSourcePath(recipe.dataset_id));
-    }
-    if (recipe.window.has_value()) {
-      gen.setAttribute(u"window_start_ns"_s, QString::number(recipe.window->first));
-      gen.setAttribute(u"window_end_ns"_s, QString::number(recipe.window->second));
-    }
-    for (std::size_t index = 0; index < recipe.inputs.size(); ++index) {
-      QDomElement in = doc.createElement(u"input"_s);
-      in.setAttribute(u"name"_s, QString::fromStdString(recipe.inputs[index]));
-      if (index < recipe.declared_inputs.size()) {
-        in.setAttribute(u"declared"_s, QString::fromStdString(recipe.declared_inputs[index]));
-      }
-      gen.appendChild(in);
-    }
-    for (const auto& output_name : recipe.outputs) {
-      QDomElement out = doc.createElement(u"output"_s);
-      out.setAttribute(u"name"_s, QString::fromStdString(output_name));
-      gen.appendChild(out);
-    }
-    if (!recipe.params_json.empty()) {
-      QDomElement params = doc.createElement(u"params"_s);
-      layout_xml::appendJsonAsCdata(doc, params, QString::fromStdString(recipe.params_json));
-      gen.appendChild(params);
-    }
-    QDomElement gen_script = doc.createElement(u"script"_s);
-    layout_xml::appendJsonAsCdata(doc, gen_script, QString::fromStdString(recipe.script));
-    gen.appendChild(gen_script);
-    element.appendChild(gen);
-  }
-  return element;
+  return applyDataProcessors(std::move(snapshot), intent);
 }
 
-std::vector<DataProcessorService::TransformRecipe> MainWindow::parseWantedTransforms(
-    const QDomElement& element, bool keep_exempt, bool* restored_all) {
-  std::vector<DataProcessorService::TransformRecipe> wanted_transforms;
-  for (QDomElement transform = element.firstChildElement(u"transform"_s); !transform.isNull();
-       transform = transform.nextSiblingElement(u"transform"_s)) {
-    DataProcessorService::TransformRecipe recipe;
-    QString transform_parse_error;
-    recipe.owner_plugin = transform.attribute(u"owner_plugin"_s).toStdString();
-    recipe.user_id = transform.attribute(u"id"_s).toStdString();
-    recipe.key = DataProcessorService::makeTransformKey(recipe.owner_plugin, recipe.user_id);
-    recipe.history_exempt = transform.attribute(u"history_exempt"_s) == u"1"_s;
-    // Defensive: a kHistory document never carries an exempt entry by
-    // construction (saveDataProcessors omits them), but history still has no
-    // authority to replay one if it somehow did (e.g. a hand-edited snapshot).
-    if (keep_exempt && recipe.history_exempt) {
-      continue;
-    }
-    recipe.backend = transform.attribute(u"backend"_s, u"luau"_s).toStdString();
-    recipe.api_version = transform.attribute(u"api_version"_s, u"1"_s).toStdString();
-    recipe.backend_version = transform.attribute(u"backend_version"_s).toStdString();
-    std::vector<DataProcessorService::TransformInputBinding> parsed_bindings;
-    bool has_persisted_binding = false;
-    for (QDomElement in = transform.firstChildElement(u"input"_s); !in.isNull();
-         in = in.nextSiblingElement(u"input"_s)) {
-      recipe.inputs.push_back(in.attribute(u"name"_s).toStdString());
-      DataProcessorService::TransformInputBinding binding;
-      const bool has_binding = in.hasAttribute(u"dataset_id"_s) || in.hasAttribute(u"dataset_source"_s) ||
-                               in.hasAttribute(u"dataset_path"_s) || in.hasAttribute(u"topic"_s) ||
-                               in.hasAttribute(u"field"_s) || in.hasAttribute(u"column"_s);
-      has_persisted_binding = has_persisted_binding || has_binding;
-      if (in.hasAttribute(u"dataset_id"_s)) {
-        bool ok = false;
-        const qulonglong raw = in.attribute(u"dataset_id"_s).toULongLong(&ok);
-        if (ok && raw <= std::numeric_limits<DatasetId>::max()) {
-          binding.dataset_id = static_cast<DatasetId>(raw);
-        } else {
-          transform_parse_error = tr("invalid input dataset id");
-        }
-      }
-      binding.dataset_source = in.attribute(u"dataset_source"_s).toStdString();
-      binding.topic_name = in.attribute(u"topic"_s).toStdString();
-      binding.field_path = in.attribute(u"field"_s).toStdString();
-      const QString saved_dataset_path = in.attribute(u"dataset_path"_s);
-      if (!saved_dataset_path.isEmpty()) {
-        const DatasetIdentityResolution resolved = session_->sessionManager().resolveDatasetIdentity(
-            binding.dataset_id, QString::fromStdString(binding.dataset_source), saved_dataset_path);
-        if (resolved.id.has_value()) {
-          binding.dataset_id = *resolved.id;
-          if (const DatasetInfo* live = session_->sessionManager().dataEngine().getDataset(*resolved.id)) {
-            binding.dataset_source = live->source_name;
-          }
-        } else {
-          transform_parse_error =
-              resolved.ambiguous ? tr("ambiguous input dataset path") : tr("input dataset path is not loaded");
-        }
-      }
-      if (in.hasAttribute(u"column"_s)) {
-        bool ok = false;
-        const qulonglong raw = in.attribute(u"column"_s).toULongLong(&ok);
-        if (ok && raw <= std::numeric_limits<std::size_t>::max()) {
-          binding.column_index = static_cast<std::size_t>(raw);
-        } else {
-          transform_parse_error = tr("invalid input column");
-        }
-      }
-      parsed_bindings.push_back(std::move(binding));
-    }
-    if (has_persisted_binding) {
-      recipe.input_bindings = std::move(parsed_bindings);
-    }
-    for (QDomElement out = transform.firstChildElement(u"output"_s); !out.isNull();
-         out = out.nextSiblingElement(u"output"_s)) {
-      recipe.outputs.push_back(out.attribute(u"name"_s).toStdString());
-    }
-    recipe.params_json = layout_xml::directCdataText(transform.firstChildElement(u"params"_s)).toStdString();
-    if (recipe.params_json.empty()) {
-      recipe.params_json = "{}";
-    }
-    recipe.script = layout_xml::directCdataText(transform.firstChildElement(u"script"_s)).toStdString();
-    if (!transform_parse_error.isEmpty()) {
-      emitDiagnostic(
-          DiagnosticLevel::kWarning, "Layout", "transform-restore-failed",
-          tr("Could not restore transform '%1': %2").arg(QString::fromStdString(recipe.key), transform_parse_error));
-      *restored_all = false;
-      continue;
-    }
-    wanted_transforms.push_back(std::move(recipe));
-  }
-  orderTransformsByDependency(wanted_transforms);  // older layouts were written unordered
-  return wanted_transforms;
+DerivedObjects MainWindow::derivedObjects() const {
+  return DerivedObjects(session_->sessionManager(), session_->catalogModel());
 }
 
-std::vector<MainWindow::WantedFilter> MainWindow::parseWantedFilters(const QDomElement& element) const {
-  std::vector<WantedFilter> wanted;
-  // A null <data_processors> yields a null firstChildElement, so this loop runs
-  // zero times and the snapshot wants no filter at all.
-  for (QDomElement processor = element.firstChildElement(u"processor"_s); !processor.isNull();
-       processor = processor.nextSiblingElement(u"processor"_s)) {
-    WantedFilter entry;
-    entry.input = layout_xml::SeriesPath{
-        processor.attribute(u"input_topic"_s), processor.attribute(u"input_field"_s),
-        static_cast<DatasetId>(processor.attribute(u"input_dataset_id"_s).toUInt()),
-        processor.attribute(u"input_dataset_source"_s), processor.attribute(u"input_dataset_path"_s)};
-    if (const std::optional<CurveDescriptor> input_desc =
-            resolveSeriesDescriptor(session_->catalogModel(), entry.input);
-        input_desc.has_value()) {
-      entry.persisted.input_topic_id = input_desc->topic_id;
-      entry.persisted.dataset_id = input_desc->dataset_id;
-      entry.persisted.input_column_index = input_desc->column_index;
-    }
-    entry.persisted.processor_id = processor.attribute(u"processor_id"_s).toStdString();
-    // Params are the <processor>'s OWN direct CDATA — directCdataText ignores the
-    // <source_fallback> child (QDomElement::text() would recurse and merge them).
-    const QString params = layout_xml::directCdataText(processor);
-    entry.persisted.params_json = params.isEmpty() ? std::string("{}") : params.toStdString();
-    entry.persisted.filter_source = processor.firstChildElement(u"source_fallback"_s).text().toStdString();
-    entry.persisted.output_name = processor.attribute(u"output_name"_s).toStdString();
-    wanted.push_back(std::move(entry));
+void MainWindow::reportDerived(const std::vector<DerivedDiagnostic>& diagnostics) {
+  for (const DerivedDiagnostic& diagnostic : diagnostics) {
+    emitDiagnostic(DiagnosticLevel::kWarning, "Layout", diagnostic.id, diagnostic.message);
   }
-  return wanted;
 }
 
-bool MainWindow::repairDataProcessors(
-    std::vector<WantedFilter>& wanted_filters,
-    const std::vector<DataProcessorService::TransformRecipe>& wanted_transforms,
-    const std::unordered_set<std::string>& live_exempt_keys) {
-  auto& service = session_->sessionManager().dataProcessorService();
-  const auto is_live = [&service](const WantedFilter& wanted) {
-    return wanted.persisted.input_topic_id != 0 &&
-           service.isFilterLive(wanted.persisted.dataset_id, wanted.persisted.output_name);
-  };
-  // A failure is recorded per snapshot entry (its identity may not resolve yet)
-  // and reported once at the end: an entry whose input only a later round
-  // creates legitimately fails until then.
-  std::map<std::size_t, QString> filter_failures;
-  std::map<std::string, QString> transform_failures;
-  for (bool progress = true; progress;) {
-    progress = false;
-    if (std::any_of(
-            wanted_filters.begin(), wanted_filters.end(), [&](const auto& wanted) { return !is_live(wanted); })) {
-      session_->catalogModel().rebuildFromDatastore();
-    }
-    for (std::size_t index = 0; index < wanted_filters.size(); ++index) {
-      WantedFilter& wanted = wanted_filters[index];
-      if (is_live(wanted)) {
-        continue;
-      }
-      DataProcessorService::PersistedFilter& persisted = wanted.persisted;
-      const std::optional<CurveDescriptor> input_desc = resolveSeriesDescriptor(session_->catalogModel(), wanted.input);
-      if (!input_desc.has_value()) {
-        persisted.input_topic_id = 0;
-        filter_failures[index] =
-            tr("Layout filter on '%1/%2' has no matching data; skipping.").arg(wanted.input.topic, wanted.input.field);
-        continue;
-      }
-      persisted.input_topic_id = input_desc->topic_id;
-      persisted.dataset_id = input_desc->dataset_id;
-      persisted.input_column_index = input_desc->column_index;
-      if (service.isFilterLive(persisted.dataset_id, persisted.output_name)) {
-        filter_failures.erase(index);  // resolved onto a filter already live (kept, or a duplicate)
-        continue;
-      }
-      // Resolve order: live catalogue → embedded source → transitional C++ builtin.
-      std::unique_ptr<proc::DataProcessor> built =
-          service.makeRestoredProcessor(persisted.processor_id, persisted.params_json, persisted.filter_source);
-      if (!built) {
-        filter_failures[index] = tr("Layout filter '%1' is unknown to this PlotJuggler; skipping.")
-                                     .arg(QString::fromStdString(persisted.processor_id));
-        continue;
-      }
-      const auto applied = service.applyFilter(
-          persisted.input_topic_id, persisted.dataset_id, std::move(built), persisted.output_name,
-          persisted.input_column_index);
-      if (applied.has_value()) {
-        filter_failures.erase(index);
-        progress = true;
-      } else {
-        filter_failures[index] =
-            tr("Could not restore filter '%1': %2")
-                .arg(QString::fromStdString(persisted.output_name), QString::fromStdString(applied.error()));
-      }
-    }
-    for (const auto& recipe : wanted_transforms) {
-      if (live_exempt_keys.count(recipe.key) != 0 || service.isTransformLive(recipe.key)) {
-        continue;
-      }
-      if (const auto restored = service.restoreTransform(recipe); restored.has_value()) {
-        transform_failures.erase(recipe.key);
-        progress = true;
-      } else {
-        transform_failures[recipe.key] =
-            tr("Could not restore transform '%1': %2")
-                .arg(QString::fromStdString(recipe.key), QString::fromStdString(restored.error()));
-      }
-    }
-  }
-  const auto report = [this](const auto& failures, const char* diagnostic_id) {
-    for (const auto& [key, reason] : failures) {
-      emitDiagnostic(DiagnosticLevel::kWarning, "Layout", diagnostic_id, reason);
-    }
-    return failures.empty();
-  };
-  const bool filters_restored = report(filter_failures, "processor-restore-failed");
-  const bool transforms_restored = report(transform_failures, "transform-restore-failed");
-  return filters_restored && transforms_restored;
+DerivedSnapshot MainWindow::parseDataProcessors(const QDomElement& root, RestoreIntent intent) {
+  DerivedSnapshot snapshot = derivedObjects().parse(root, intent);
+  reportDerived(snapshot.diagnostics);
+  return snapshot;
 }
 
-bool MainWindow::checkDataProcessorDependencies(const QDomElement& root, RestoreIntent intent, QString* out_reason) {
+bool MainWindow::checkDataProcessorDependencies(
+    const DerivedSnapshot& snapshot, RestoreIntent intent, QString* out_reason) {
   if (out_reason != nullptr) {
     out_reason->clear();
   }
-  if (intent != RestoreIntent::kHistory) {
+  const std::optional<QString> reason = derivedObjects().refusal(snapshot, intent);
+  if (!reason.has_value()) {
     return true;
   }
-  auto& service = session_->sessionManager().dataProcessorService();
-  BatchEngine& batch_engine = session_->sessionManager().batchEngine();
-  // Reject before the first clear if what this restore removes — each filter and
-  // each non-exempt transform the snapshot drops or changes, plus everything the
-  // removal cascades into — would strand an exempt transform or marker generator.
-  // Removal cascades between filters and transforms, so checking after the first
-  // clear would be too late. Nothing below mutates the session: this is a query
-  // over the same parse restoreDataProcessors repeats to actually apply it.
-  if (!service.hasHistoryExemptTransforms() && !batch_engine.hasHistoryExemptGenerators()) {
-    return true;
-  }
-  const QDomElement element = root.firstChildElement(u"data_processors"_s);
-  bool restored_all = true;
-  const std::vector<WantedFilter> wanted_filters = parseWantedFilters(element);
-  const std::vector<DataProcessorService::TransformRecipe> wanted_transforms =
-      parseWantedTransforms(element, /*keep_exempt=*/true, &restored_all);
-  std::vector<DataProcessorService::PersistedFilter> persisted_filters;
-  persisted_filters.reserve(wanted_filters.size());
-  for (const WantedFilter& wanted : wanted_filters) {
-    persisted_filters.push_back(wanted.persisted);
-  }
-  const std::unordered_set<TopicId> unchanged_filters = service.unchangedFilterOutputs(persisted_filters);
-  const std::unordered_set<std::string> unchanged_keys = service.unchangedTransformKeys(wanted_transforms, intent);
-  const DataProcessorService::HistoryRemovalImpact impact =
-      service.historyRemovalImpact(unchanged_keys, unchanged_filters);
-  std::vector<std::string> blocked = impact.exempt_transform_names;
-  const std::vector<std::string> blocked_markers = batch_engine.exemptDependentsOf(impact.removed_output_names);
-  blocked.insert(blocked.end(), blocked_markers.begin(), blocked_markers.end());
-  std::sort(blocked.begin(), blocked.end());
-  blocked.erase(std::unique(blocked.begin(), blocked.end()), blocked.end());
-  if (blocked.empty()) {
-    return true;
-  }
-  QStringList names;
-  names.reserve(static_cast<int>(blocked.size()));
-  for (const std::string& name : blocked) {
-    names.push_back(QString::fromStdString(name));
-  }
-  const QString reason =
-      tr("Cannot undo: protected outputs would lose an input this step removes: %1").arg(names.join(u", "_s));
   if (out_reason != nullptr) {
-    *out_reason = reason;
+    *out_reason = *reason;
   }
-  emitDiagnostic(DiagnosticLevel::kWarning, "Layout", "history-exempt-blocked", reason);
+  emitDiagnostic(DiagnosticLevel::kWarning, "Layout", "history-exempt-blocked", *reason);
   return false;
 }
 
-bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent intent, QString* out_reason) {
-  if (!checkDataProcessorDependencies(root, intent, out_reason)) {
-    return false;
-  }
-  auto& service = session_->sessionManager().dataProcessorService();
-  BatchEngine& batch_engine = session_->sessionManager().batchEngine();
-
-  // Parse the snapshot's filters and transforms first and decide which live ones
-  // it leaves unchanged: those stay live with their output TopicIds, so curves
-  // bound to them (e.g. in a preserved history-exempt tab, which no history
-  // snapshot describes) survive an unrelated undo. The same sets define what the
-  // clears further down count as removed.
-  const QDomElement element = root.firstChildElement(u"data_processors"_s);
-  const bool keep_exempt = intent == RestoreIntent::kHistory;
-  bool restored_all = true;
-  std::vector<WantedFilter> wanted_filters = parseWantedFilters(element);
-  std::vector<DataProcessorService::TransformRecipe> wanted_transforms =
-      parseWantedTransforms(element, keep_exempt, &restored_all);
-  std::vector<DataProcessorService::PersistedFilter> persisted_filters;
-  persisted_filters.reserve(wanted_filters.size());
-  for (const WantedFilter& wanted : wanted_filters) {
-    persisted_filters.push_back(wanted.persisted);
-  }
-  const std::unordered_set<TopicId> unchanged_filters = service.unchangedFilterOutputs(persisted_filters);
-  const std::unordered_set<std::string> unchanged_keys = service.unchangedTransformKeys(wanted_transforms, intent);
-  std::unordered_set<std::string> live_exempt_keys;
-  for (const auto& live : service.transformRecipes()) {
-    if (keep_exempt && live.history_exempt) {
-      live_exempt_keys.insert(live.key);
-    }
-  }
-
-  // Drop the filters and the transforms the snapshot lacks or changes; a kept
-  // entry reading a removed output falls with it and is re-created below. A
-  // snapshot with NO <data_processors> clears everything; the rebuild at the end
-  // MUST run on every path so the retired outputs leave the catalog. Replacement
-  // may drop every transform; history never touches the exempt ones, after the
-  // preflight above.
-  service.clearAllFilters(unchanged_filters);
-  service.clearTransforms(intent, unchanged_keys);
-
-  restored_all = repairDataProcessors(wanted_filters, wanted_transforms, live_exempt_keys) && restored_all;
-
-  // Marker generators: clear + replay, same as transforms. Done after them so a
-  // generator reading a transform/filter output resolves it by name. upsertGenerator
-  // re-creates AND re-runs each in one call, so no separate recompute is needed.
-  // Replacement clears every generator; history clears only the non-exempt ones,
-  // after the dependency preflight above.
-  //
-  // A layout load waits a bounded time for each rule: nothing reads its markers right
-  // away, and a slow rule publishes later (markersPublished). A history restore runs
-  // each to completion: it tombstoned the rule just above, so a bounded create would
-  // make a slow rule's markers blink on every undo.
-  //
-  // upsertGenerator publishes to the store without announcing it. The toolbox's
-  // onDataChanged sends the same notification; this replay must do so too, once,
-  // after the catalog rebuild below.
-  const BatchEngine::CreateWait create_wait =
-      intent == RestoreIntent::kReplace ? BatchEngine::CreateWait::kBounded : BatchEngine::CreateWait::kToCompletion;
-  const std::size_t generators_before = batch_engine.recipes().size();
-  bool any_generator_restored = false;
-  batch_engine.clearGenerators(intent);
-  std::unordered_set<std::string> live_exempt_generators;
-  if (keep_exempt) {
-    for (const auto& live : batch_engine.recipes()) {
-      if (live.history_exempt) {
-        live_exempt_generators.insert(live.id);
-      }
-    }
-  }
-  for (QDomElement gen = element.firstChildElement(u"generator"_s); !gen.isNull();
-       gen = gen.nextSiblingElement(u"generator"_s)) {
-    BatchEngine::GeneratorRecipe recipe;
-    recipe.id = gen.attribute(u"id"_s).toStdString();
-    recipe.history_exempt = gen.attribute(u"history_exempt"_s) == u"1"_s;
-    // Mirrors the transform loop: history has no authority over an exempt
-    // generator, whether the document flags it or a live exempt one holds its id.
-    if (keep_exempt && (recipe.history_exempt || live_exempt_generators.count(recipe.id) != 0)) {
-      continue;
-    }
-    recipe.kind = GeneratorKind::kMarkers;
-    recipe.language = gen.attribute(u"language"_s, u"luau"_s).toStdString();
-    recipe.all_datasets = gen.attribute(u"all_datasets"_s) == u"1"_s;
-    QString gen_parse_error;
-    if (!recipe.all_datasets) {
-      bool ok = false;
-      const qulonglong raw = gen.attribute(u"dataset_id"_s).toULongLong(&ok);
-      if (ok && raw <= std::numeric_limits<DatasetId>::max()) {
-        recipe.dataset_id = static_cast<DatasetId>(raw);
-      }
-      const QString saved_source = gen.attribute(u"dataset_source"_s);
-      const QString saved_path = gen.attribute(u"dataset_path"_s);
-      // Ids are minted by load order, so a saved id is trusted only while its
-      // portable qualifiers (source label, path) still agree; a bare id stays as is.
-      if (!saved_source.isEmpty() || !saved_path.isEmpty()) {
-        const DatasetIdentityResolution resolved =
-            session_->sessionManager().resolveDatasetIdentity(recipe.dataset_id, saved_source, saved_path);
-        if (resolved.id.has_value()) {
-          recipe.dataset_id = *resolved.id;
-        } else {
-          gen_parse_error = resolved.ambiguous ? tr("ambiguous dataset identity") : tr("dataset is not loaded");
-        }
-      }
-    }
-    // Raw ns, inclusive; no attributes means no window.
-    if (gen.hasAttribute(u"window_start_ns"_s) && gen.hasAttribute(u"window_end_ns"_s)) {
-      recipe.window = std::pair<Timestamp, Timestamp>{
-          gen.attribute(u"window_start_ns"_s).toLongLong(), gen.attribute(u"window_end_ns"_s).toLongLong()};
-    }
-    bool any_declared = false;
-    for (QDomElement in = gen.firstChildElement(u"input"_s); !in.isNull(); in = in.nextSiblingElement(u"input"_s)) {
-      recipe.inputs.push_back(in.attribute(u"name"_s).toStdString());
-      recipe.declared_inputs.push_back(in.attribute(u"declared"_s, in.attribute(u"name"_s)).toStdString());
-      any_declared = any_declared || in.hasAttribute(u"declared"_s);
-    }
-    if (!any_declared) {
-      recipe.declared_inputs.clear();
-    }
-    for (QDomElement out = gen.firstChildElement(u"output"_s); !out.isNull();
-         out = out.nextSiblingElement(u"output"_s)) {
-      recipe.outputs.push_back(out.attribute(u"name"_s).toStdString());
-    }
-    recipe.params_json = layout_xml::directCdataText(gen.firstChildElement(u"params"_s)).toStdString();
-    recipe.script = layout_xml::directCdataText(gen.firstChildElement(u"script"_s)).toStdString();
-    // A generator that cannot be restored is reported and skipped, but does NOT fail
-    // the restore: unlike a filter or transform, it publishes only overlay decoration
-    // — no topic that a curve, a plot or a scene binds to. Failing the restore here
-    // costs the user the whole workspace (applyWorkspace rolls back) to save a set of
-    // annotations, and a rule whose input series is legitimately absent in the data
-    // this layout was reopened against is an ordinary outcome, not a corrupt layout.
-    if (!gen_parse_error.isEmpty()) {
-      emitDiagnostic(
-          DiagnosticLevel::kWarning, "Layout", "generator-restore-failed",
-          tr("Could not restore marker generator '%1': %2").arg(QString::fromStdString(recipe.id), gen_parse_error));
-      continue;
-    }
-    if (const auto restored = batch_engine.upsertGenerator(recipe, create_wait); !restored.has_value()) {
-      emitDiagnostic(
-          DiagnosticLevel::kWarning, "Layout", "generator-restore-failed",
-          tr("Could not restore marker generator '%1': %2")
-              .arg(QString::fromStdString(recipe.id), QString::fromStdString(restored.error())));
-    } else {
-      any_generator_restored = true;
-    }
-  }
-  session_->catalogModel().rebuildFromDatastore();
-  if (any_generator_restored || batch_engine.recipes().size() != generators_before) {
-    session_->sessionManager().notifyMarkersChanged();
-  }
-  // A null <data_processors> reaches here with every clearAll* done and nothing
-  // replayed, so this empties the panel — which is what the teardown pass of a
-  // progressive restore wants.
+bool MainWindow::applyDataProcessors(DerivedSnapshot snapshot, RestoreIntent intent) {
+  const DerivedRestoreReport report = derivedObjects().restore(std::move(snapshot), intent);
+  reportDerived(report.diagnostics);
+  // An empty snapshot reaches here with every recipe cleared and nothing replayed,
+  // so this empties the panel — which is what the teardown pass of a progressive
+  // restore wants.
   syncCustomSeriesPanel();
-  return restored_all;
+  return report.restored_all;
 }
 
 void MainWindow::syncCustomSeriesPanel() {
@@ -7307,7 +6747,7 @@ QList<layout_xml::SeriesPath> MainWindow::rebindCurvesToLoadedDatasets(QDomDocum
   // undo/redo restore so both bind curves identically; returns the paths no
   // loaded dataset could provide (the caller decides whether to prompt).
   return layout_xml::rebindCurveKeys(
-      doc, [this](const layout_xml::SeriesPath& p) { return resolveSeriesPath(session_->catalogModel(), p); });
+      doc, [this](const layout_xml::SeriesPath& p) { return session_->catalogModel().resolveCurveKey(p); });
 }
 
 MainWindow::TimelineChromeState MainWindow::captureTimelineChrome() const {
@@ -7534,7 +6974,9 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
   // pre-restore one, so offsets move BEFORE the processor replay.
   // 1. Preflight (read-only): reject before anything mutates if dropping this
   //    snapshot's processors would strand an exempt transform or marker generator.
-  if (!checkDataProcessorDependencies(root, intent, out_reason)) {
+  //    The one parse also drives step 3.
+  DerivedSnapshot processors = parseDataProcessors(root, intent);
+  if (!checkDataProcessorDependencies(processors, intent, out_reason)) {
     return RestoreResult::kFailed;
   }
   // 2. Move each track's display offset to its saved value.
@@ -7548,7 +6990,7 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
   // 3. Recreate the snapshot's filters and replay its generators, so each derived
   //    output topic is in the catalog and its plotted (derived) curve resolves like
   //    any other curve, and a marker generator recomputes under the offset above.
-  if (!restoreDataProcessors(root, intent, out_reason)) {
+  if (!applyDataProcessors(std::move(processors), intent)) {
     return RestoreResult::kFailed;
   }
   // 4. Rebind every curve's stable topic+field to a concrete catalog key.
@@ -7869,7 +7311,7 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
       // appendJsonAsCdata splits across multiple CDATA sections when the JSON
       // contains a literal "]]>" sequence (otherwise it'd terminate the
       // CDATA early and corrupt the layout file).
-      layout_xml::appendJsonAsCdata(doc, plugin, src.plugin_config_json);
+      appendJsonAsCdata(doc, plugin, src.plugin_config_json);
       file_info.appendChild(plugin);
     }
 
@@ -7891,7 +7333,7 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
       QDomElement materialize = doc.createElement(u"materialize"_s);
       materialize.setAttribute(u"provider"_s, record->provider_id);
       materialize.setAttribute(u"identity"_s, record->source_identity);
-      layout_xml::appendJsonAsCdata(doc, materialize, record->descriptor_json);
+      appendJsonAsCdata(doc, materialize, record->descriptor_json);
       file_info.appendChild(materialize);
       break;
     }
@@ -8390,7 +7832,7 @@ QDomDocument MainWindow::xmlSaveState(SnapshotScope scope) const {
   // used by undo/redo (not just layout save). Without this, undoing across a filter's
   // creation drops its derived curve (its output topic is never recreated on restore).
   // saveLayoutToPath therefore no longer appends this separately.
-  root.appendChild(saveDataProcessors(doc, scope));
+  root.appendChild(derivedObjects().save(doc, scope));
   return doc;
 }
 
@@ -10055,7 +9497,7 @@ QDomElement MainWindow::savePinnedToolboxes(QDomDocument& doc) const {
     if (const QString config = toolbox.saveConfig(); !config.isEmpty()) {
       // CDATA (with ]]> splitting), matching every other plugin-JSON-in-
       // layout site — a plain text node entity-escapes on each round trip.
-      layout_xml::appendJsonAsCdata(doc, element, config);
+      appendJsonAsCdata(doc, element, config);
     }
     root.appendChild(element);
   };
@@ -10167,8 +9609,7 @@ bool MainWindow::restorePinnedToolboxes(const QDomElement& root, MissingCurvePol
     // QDomElement::text(): the latter recurses into any future child
     // elements).
     launchToolbox(
-        plugin_id, layout_xml::directCdataText(element), ToolboxLaunchTarget::kPinnedTab,
-        element.attribute(u"tab_name"_s));
+        plugin_id, directCdataText(element), ToolboxLaunchTarget::kPinnedTab, element.attribute(u"tab_name"_s));
   }
   return true;
 }

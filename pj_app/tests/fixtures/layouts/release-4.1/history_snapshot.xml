@@ -1,0 +1,691 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<root format="PlotJuggler" pj4_version="4">
+  <tabbed_widget id="" name="main" parent="main_window">
+    <Tab containers="1" id="cfc0843f-5acf-4f17-93e1-b06ad515d83f" tab_name="tab1">
+      <Container>
+        <DockSplitter count="1" orientation="-" sizes="1.00000000">
+          <DockArea id="d2eb52a2-addd-40a8-9605-85456027edc8" name="...">
+            <plot id="6d35d874-8ba5-4b08-be8b-524f0a218d95" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
+              <range bottom="-10.500000" left="2.500000" left_ns="2500000000" right="3.500000" right_ns="3500000000" top="10.500000" x_basis="absolute"/>
+              <curve color="#1f77b4" dataset_id="1" dataset_source="fixture-a.mcap" field="value" markers_visible="true" topic="imu_abs" visible="true"/>
+              <curve color="#d62728" dataset_id="1" dataset_source="fixture-a.mcap" field="value" markers_visible="true" topic="t1_scaled" visible="true"/>
+              <curve color="#1ac938" dataset_id="1" dataset_source="fixture-a.mcap" field="value" markers_visible="true" topic="t2_negated" visible="true"/>
+              <curve color="#ff7f0e" dataset_id="1" dataset_source="fixture-a.mcap" field="value" markers_visible="true" topic="/sensor" visible="true"/>
+            </plot>
+          </DockArea>
+        </DockSplitter>
+      </Container>
+    </Tab>
+    <Tab containers="1" id="81a49be0-5477-43a9-96af-4f0504bb23eb" tab_name="fixture-derived">
+      <Container>
+        <DockSplitter count="1" orientation="-" sizes="1.00000000">
+          <DockArea id="2f048d7e-dd6a-49f9-a9ba-921ccb51ff3f" name="...">
+            <plot id="9ef84b31-2879-4241-9557-3ede93c4b614" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
+              <range bottom="-6.400000" left="2.500000" left_ns="2500000000" right="3.500000" right_ns="3500000000" top="10.400000" x_basis="absolute"/>
+              <curve color="#f14cc1" dataset_id="1" dataset_source="fixture-a.mcap" field="value" markers_visible="true" topic="t1_abs" visible="true"/>
+              <curve color="#9467bd" dataset_id="2" dataset_source="fixture-b.mcap" field="value" markers_visible="true" topic="t3_exempt" visible="true"/>
+              <curve color="#17becf" dataset_id="2" dataset_source="fixture-b.mcap" field="value" markers_visible="true" topic="/sensor" visible="true"/>
+              <marker_scope dataset_id="2" dataset_source="fixture-b.mcap" scope="global" visible="false"/>
+            </plot>
+          </DockArea>
+        </DockSplitter>
+      </Container>
+    </Tab>
+    <Tab containers="1" id="06e336e8-3205-4df0-a56c-3199b0e192d8" tab_name="fixture-scene">
+      <Container>
+        <DockSplitter count="1" orientation="-" sizes="1.00000000">
+          <DockArea id="23197c7d-8f2f-4f50-9716-69f6f36eeb66" name="...">
+            <scene3d camera_model="orbit" camera_state="{&quot;azimuth&quot;:0.0,&quot;elevation&quot;:0.5235987901687622,&quot;focal&quot;:[0.0,0.0,0.0],&quot;fov_y&quot;:0.7853981852531433,&quot;ortho_scale&quot;:5.0,&quot;perspective&quot;:true,&quot;radius&quot;:5.0}" fixed_frame="map" fixed_frame_mode="auto_root" follow_frame="" version="1">
+              <layer dataset_id="1" dataset_path="/pj-fixtures/data/fixture-a.mcap" dataset_source="fixture-a.mcap" display_name="points" object_type="kPointCloud" order="0" topic_name="/points" visible="true">
+                <pointcloud auto_range="true" color_choice_explicit="false" color_field="x" color_type="auto" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="1" range_min="0" shape="sphere" size_meters="0.02" size_pixels="2" solid_color="#ff0000"/>
+              </layer>
+              <scene_controls axes_visible="true" collision_opacity="0.40000001" collisions_visible="true" gizmo_opacity="1" gizmo_size_m="0.15000001" grid_divisions="10" grid_extent_m="10" grid_style="0" grid_visible="true" mesh_opacity="1" meshes_visible="true" tf_parent_lines="true"/>
+            </scene3d>
+          </DockArea>
+        </DockSplitter>
+      </Container>
+    </Tab>
+    <currentTabIndex index="2"/>
+  </tabbed_widget>
+  <data_processors>
+    <processor input_dataset_id="1" input_dataset_source="fixture-a.mcap" input_field="value" input_topic="t1_scaled" output_name="t1_abs" processor_id="absolute"><![CDATA[{}]]><source_fallback><![CDATA[-- pj-filter: luau
+-- SPDX-License-Identifier: MPL-2.0
+--
+-- The 12 PJ4 built-in data filters as ONE self-describing multi-class resource.
+-- The module returns a LIST of class tables; the host registers each. The IDs are
+-- the canonical builtin ids (so old layouts resolve). Behavior is golden-tested in
+-- pj_scripting/tests/builtin_golden_test.cpp (the C++ builtins that were the
+-- original parity oracle were retired once the Luau twins matched them).
+--
+-- Each filter is an idiomatic Luau CLASS: a table holding the descriptor metadata
+-- plus the shared methods, with `Class.__index = Class`; `Class.create(params)`
+-- returns `setmetatable(state, Class)`, and `:calculate`/`:reset` operate on `self`.
+-- The host resolves the methods through the metatable and binds `self` per call.
+--
+-- TIME CONTRACT: calculate(self, t, v) receives t = SECONDS SINCE SESSION START
+-- (the host rebases the int64-ns spine before the double cast); returning (t_out, v)
+-- emits at an explicit time. See pj_scripting/docs/FILTER_CLASS.md.
+
+local function clampWindow(w)
+  w = math.floor(w or 1)
+  if w < 1 then return 1 end
+  return w
+end
+
+-- none: pass the value through unchanged. output mirrors the input kind.
+local None = { id = "none", name = "None", description = "Pass-through (no change).", output = "same" }
+None.__index = None
+function None.create(_) return setmetatable({}, None) end
+function None:calculate(_, v) return v end
+
+-- absolute: |v|. mirrors the input kind (|int64| stays int64 in C++; the Luau
+-- twin emits double, exact below 2^53 — documented in the parity test).
+local Absolute = { id = "absolute", name = "Absolute", description = "Absolute value |y|.", output = "same" }
+Absolute.__index = Absolute
+function Absolute.create(_) return setmetatable({}, Absolute) end
+function Absolute:calculate(_, v) return math.abs(v) end
+
+-- scale: affine value_scale*y + value_offset, with a rigid time shift.
+local Scale = {
+  id = "scale", name = "Scale", description = "Affine scale + offset, with a time shift.",
+  parameters = {
+    { name = "value_scale",  type = "number", default = 1.0, label = "Scale" },
+    { name = "value_offset", type = "number", default = 0.0, label = "Offset" },
+    { name = "time_offset_sec", type = "number", default = 0.0, label = "Time offset", unit = "s" },
+  },
+}
+Scale.__index = Scale
+function Scale.create(p)
+  return setmetatable({ k = p.value_scale, b = p.value_offset, dt = p.time_offset_sec }, Scale)
+end
+function Scale:calculate(t, v) return t + self.dt, self.k * v + self.b end
+
+-- derivative: dv/dt. first sample suppressed; dt==0 -> 0 (finite).
+local Derivative = {
+  id = "derivative", name = "Derivative", description = "Rate of change dv/dt.",
+  parameters = {
+    { name = "use_custom_dt", type = "boolean", default = false, label = "Use fixed Δt" },
+    { name = "custom_dt", type = "number", default = 1.0, label = "Fixed Δt", unit = "s", min = 1e-9,
+      visible_when = { param = "use_custom_dt", equals = true } },
+  },
+}
+Derivative.__index = Derivative
+function Derivative.create(p)
+  return setmetatable(
+    { use_custom = p.use_custom_dt, fixed = p.custom_dt, has_prev = false, pt = 0.0, pv = 0.0 }, Derivative)
+end
+function Derivative:reset() self.has_prev = false end
+function Derivative:calculate(t, v)
+  if not self.has_prev then self.has_prev, self.pt, self.pv = true, t, v; return nil end
+  local dt = self.use_custom and self.fixed or (t - self.pt)
+  local d = (dt ~= 0.0) and (v - self.pv) / dt or 0.0
+  self.pt, self.pv = t, v
+  return d
+end
+
+-- integral: running trapezoidal area. first sample suppressed.
+local Integral = {
+  id = "integral", name = "Integral", description = "Running trapezoidal integral of y over time.",
+  parameters = {
+    { name = "use_custom_dt", type = "boolean", default = false, label = "Use fixed Δt" },
+    { name = "custom_dt", type = "number", default = 1.0, label = "Fixed Δt", unit = "s", min = 1e-9,
+      visible_when = { param = "use_custom_dt", equals = true } },
+  },
+}
+Integral.__index = Integral
+function Integral.create(p)
+  return setmetatable(
+    { use_custom = p.use_custom_dt, fixed = p.custom_dt, acc = 0.0, has_prev = false, pt = 0.0, pv = 0.0 }, Integral)
+end
+function Integral:reset() self.acc, self.has_prev = 0.0, false end
+function Integral:calculate(t, v)
+  if not self.has_prev then self.has_prev, self.pt, self.pv = true, t, v; return nil end
+  local dt = self.use_custom and self.fixed or (t - self.pt)
+  self.acc = self.acc + (v + self.pv) * dt / 2.0
+  self.pt, self.pv = t, v
+  return self.acc
+end
+
+-- moving_average: boxcar over `window`, PJ3 "pad-with-current" quirk (divide by
+-- the full window, missing slots padded with the current value). Optional
+-- de-phase: center the output timestamp on the buffered span.
+local MovingAverage = {
+  id = "moving_average", name = "Moving Average", description = "Boxcar moving average.",
+  parameters = {
+    { name = "window", type = "integer", default = 100, min = 1, label = "Window" },
+    { name = "compensate_time_offset", type = "boolean", default = false, label = "Center timestamp" },
+  },
+}
+MovingAverage.__index = MovingAverage
+function MovingAverage.create(p)
+  return setmetatable({ window = p.window, compensate = p.compensate_time_offset, bt = {}, bv = {} }, MovingAverage)
+end
+function MovingAverage:reset() self.bt, self.bv = {}, {} end
+function MovingAverage:calculate(t, v)
+  local w = clampWindow(self.window)
+  local bt, bv = self.bt, self.bv
+  bt[#bt + 1] = t; bv[#bv + 1] = v
+  while #bt > w do table.remove(bt, 1); table.remove(bv, 1) end
+  local total = v * (w - #bv)
+  for i = 1, #bv do total = total + bv[i] end
+  local avg = total / w
+  if self.compensate and #bt > 1 then
+    return bt[1] + (bt[#bt] - bt[1]) / 2, avg
+  end
+  return avg
+end
+
+-- moving_rms: sqrt(mean of squares) over `window`, pad-with-current.
+local MovingRms = {
+  id = "moving_rms", name = "Moving Root Mean Squared", description = "Moving RMS over a window.",
+  parameters = { { name = "window", type = "integer", default = 100, min = 1, label = "Window" } },
+}
+MovingRms.__index = MovingRms
+function MovingRms.create(p) return setmetatable({ window = p.window, buf = {} }, MovingRms) end
+function MovingRms:reset() self.buf = {} end
+function MovingRms:calculate(_, v)
+  local w = clampWindow(self.window)
+  local buf = self.buf
+  buf[#buf + 1] = v
+  while #buf > w do table.remove(buf, 1) end
+  local total = (v * v) * (w - #buf)
+  for i = 1, #buf do total = total + buf[i] * buf[i] end
+  return math.sqrt(total / w)
+end
+
+-- moving_variance: variance (or stdev) over `window`, pad-with-current.
+local MovingVariance = {
+  id = "moving_variance", name = "Moving Variance / Stdev", description = "Moving variance or standard deviation.",
+  parameters = {
+    { name = "window", type = "integer", default = 100, min = 1, label = "Window" },
+    { name = "std_dev", type = "boolean", default = false, label = "Standard deviation" },
+  },
+}
+MovingVariance.__index = MovingVariance
+function MovingVariance.create(p) return setmetatable({ window = p.window, want_std = p.std_dev, buf = {} }, MovingVariance) end
+function MovingVariance:reset() self.buf = {} end
+function MovingVariance:calculate(_, v)
+  local w = clampWindow(self.window)
+  local buf = self.buf
+  buf[#buf + 1] = v
+  while #buf > w do table.remove(buf, 1) end
+  local pad = w - #buf
+  local total = v * pad
+  for i = 1, #buf do total = total + buf[i] end
+  local avg = total / w
+  local total_sqr = (v - avg) * (v - avg) * pad
+  for i = 1, #buf do local d = buf[i] - avg; total_sqr = total_sqr + d * d end
+  local var = total_sqr / w
+  return self.want_std and math.sqrt(var) or var
+end
+
+-- outlier_removal: drop a one-sample spike (PJ3 4-sample ring). Emits the
+-- PREVIOUS sample (one-sample delay) or suppresses; value passed through.
+local function isOutlier(factor, y0, y1, y2, y3)
+  local d1, d2 = y1 - y2, y2 - y3
+  if d1 * d2 < 0 then
+    local d0 = y0 - y1
+    local jump = math.max(math.abs(d1), math.abs(d2))
+    local ratio = (d0 == 0.0) and math.huge or (jump / math.abs(d0))
+    if ratio > factor then return true end
+  end
+  return false
+end
+
+local OutlierRemoval = {
+  id = "outlier_removal", name = "Outlier Removal", description = "Drop single-sample spikes.",
+  output = "same",
+  parameters = { { name = "outlier_factor", type = "number", default = 100.0, min = 0.0, label = "Factor" } },
+}
+OutlierRemoval.__index = OutlierRemoval
+function OutlierRemoval.create(p) return setmetatable({ factor = p.outlier_factor, rt = {}, rv = {} }, OutlierRemoval) end
+function OutlierRemoval:reset() self.rt, self.rv = {}, {} end
+function OutlierRemoval:calculate(t, v)
+  local rt, rv = self.rt, self.rv
+  rt[#rt + 1] = t; rv[#rv + 1] = v
+  while #rt > 4 do table.remove(rt, 1); table.remove(rv, 1) end
+  if #rt < 4 then return t, v end                 -- not enough look-back: pass through
+  if isOutlier(self.factor, rv[1], rv[2], rv[3], rv[4]) then return nil end
+  return rt[3], rv[3]                             -- emit the previous sample (i-1)
+end
+
+-- samples_counter: how many samples fall in the trailing `samples_ms` window.
+local SamplesCounter = {
+  id = "samples_counter", name = "Samples Counter", description = "Count of samples in a trailing time window.",
+  output = "int64",
+  parameters = { { name = "samples_ms", type = "number", default = 1000.0, min = 0.0, label = "Window", unit = "ms" } },
+}
+SamplesCounter.__index = SamplesCounter
+-- Head-pointer ring (live window is buf[head..tail]) so front-eviction is O(1)
+-- amortized rather than O(n) table.remove — the window can be large.
+function SamplesCounter.create(p) return setmetatable({ samples_ms = p.samples_ms, buf = {}, head = 1, tail = 0 }, SamplesCounter) end
+function SamplesCounter:reset() self.buf, self.head, self.tail = {}, 1, 0 end
+function SamplesCounter:calculate(t, _)
+  local window_s = (self.samples_ms > 0.0) and (self.samples_ms * 1e-3) or 0.0
+  local buf = self.buf
+  local head, tail = self.head, self.tail
+  tail = tail + 1
+  buf[tail] = t
+  local min_t = t - window_s
+  while head <= tail and buf[head] < min_t do
+    buf[head] = nil
+    head = head + 1
+  end
+  if head > 4096 then  -- compact so the array can't grow unbounded over a long stream
+    local n = 0
+    for i = head, tail do n = n + 1; buf[n] = buf[i]; buf[i] = nil end
+    head, tail = 1, n
+  end
+  self.head, self.tail = head, tail
+  return tail - head + 1
+end
+
+-- binary_filter: 0/1 predicate. binary_op is the int index of the comparison
+-- (kept identical to the C++ enum for layout round-trip): 0== 1< 2<= 3> 4>= 5range.
+local BinaryFilter = {
+  id = "binary_filter", name = "Binary Filter", description = "Boolean 0/1 predicate over the value.",
+  output = "int64",
+  parameters = {
+    { name = "binary_op", type = "enum", default = 3, label = "Comparison",
+      values = {
+        { value = 0, label = "== a" }, { value = 1, label = "< a" }, { value = 2, label = "<= a" },
+        { value = 3, label = "> a" },  { value = 4, label = ">= a" }, { value = 5, label = "in [a, b]" },
+      } },
+    { name = "binary_a", type = "number", default = 0.0, label = "Threshold a" },
+    { name = "binary_b", type = "number", default = 0.0, label = "Threshold b",
+      visible_when = { param = "binary_op", equals = 5 } },
+    { name = "binary_tol", type = "number", default = 1e-9, label = "Tolerance (==)",
+      visible_when = { param = "binary_op", equals = 0 } },
+  },
+}
+BinaryFilter.__index = BinaryFilter
+function BinaryFilter.create(p)
+  local op = math.floor(tonumber(p.binary_op) or 3)  -- tolerate a string-typed enum value
+  return setmetatable({ op = op, a = p.binary_a, b = p.binary_b, tol = p.binary_tol }, BinaryFilter)
+end
+function BinaryFilter:calculate(_, v)
+  local op, a, b, tol = self.op, self.a, self.b, self.tol
+  local pass
+  if op == 0 then pass = math.abs(v - a) <= tol
+  elseif op == 1 then pass = v < a
+  elseif op == 2 then pass = v <= a
+  elseif op == 3 then pass = v > a
+  elseif op == 4 then pass = v >= a
+  elseif op == 5 then pass = (a <= v) and (v <= b)
+  else pass = false end
+  return pass and 1 or 0
+end
+
+-- time_since_previous: gap to the previous sample, in SECONDS (double). first
+-- sample suppressed. (t is seconds-since-start, so the gap is a plain difference —
+-- double preserves sub-second deltas that an int64 output would truncate to 0.)
+local TimeSincePrevious = {
+  id = "time_since_previous", name = "Time Since Previous", description = "Δt between consecutive samples (seconds).",
+  output = "double",
+}
+TimeSincePrevious.__index = TimeSincePrevious
+function TimeSincePrevious.create(_) return setmetatable({ has_prev = false, pt = 0.0 }, TimeSincePrevious) end
+function TimeSincePrevious:reset() self.has_prev = false end
+function TimeSincePrevious:calculate(t, _)
+  if not self.has_prev then self.has_prev, self.pt = true, t; return nil end
+  local delta_sec = (t - self.pt)
+  self.pt = t
+  return delta_sec
+end
+
+return {
+  None, Absolute, Scale, Derivative, Integral, MovingAverage,
+  MovingRms, MovingVariance, OutlierRemoval, SamplesCounter,
+  BinaryFilter, TimeSincePrevious,
+}
+]]></source_fallback>
+    </processor>
+    <processor input_dataset_id="1" input_dataset_source="fixture-a.mcap" input_field="value" input_topic="/imu" output_name="imu_abs" processor_id="absolute"><![CDATA[{}]]><source_fallback><![CDATA[-- pj-filter: luau
+-- SPDX-License-Identifier: MPL-2.0
+--
+-- The 12 PJ4 built-in data filters as ONE self-describing multi-class resource.
+-- The module returns a LIST of class tables; the host registers each. The IDs are
+-- the canonical builtin ids (so old layouts resolve). Behavior is golden-tested in
+-- pj_scripting/tests/builtin_golden_test.cpp (the C++ builtins that were the
+-- original parity oracle were retired once the Luau twins matched them).
+--
+-- Each filter is an idiomatic Luau CLASS: a table holding the descriptor metadata
+-- plus the shared methods, with `Class.__index = Class`; `Class.create(params)`
+-- returns `setmetatable(state, Class)`, and `:calculate`/`:reset` operate on `self`.
+-- The host resolves the methods through the metatable and binds `self` per call.
+--
+-- TIME CONTRACT: calculate(self, t, v) receives t = SECONDS SINCE SESSION START
+-- (the host rebases the int64-ns spine before the double cast); returning (t_out, v)
+-- emits at an explicit time. See pj_scripting/docs/FILTER_CLASS.md.
+
+local function clampWindow(w)
+  w = math.floor(w or 1)
+  if w < 1 then return 1 end
+  return w
+end
+
+-- none: pass the value through unchanged. output mirrors the input kind.
+local None = { id = "none", name = "None", description = "Pass-through (no change).", output = "same" }
+None.__index = None
+function None.create(_) return setmetatable({}, None) end
+function None:calculate(_, v) return v end
+
+-- absolute: |v|. mirrors the input kind (|int64| stays int64 in C++; the Luau
+-- twin emits double, exact below 2^53 — documented in the parity test).
+local Absolute = { id = "absolute", name = "Absolute", description = "Absolute value |y|.", output = "same" }
+Absolute.__index = Absolute
+function Absolute.create(_) return setmetatable({}, Absolute) end
+function Absolute:calculate(_, v) return math.abs(v) end
+
+-- scale: affine value_scale*y + value_offset, with a rigid time shift.
+local Scale = {
+  id = "scale", name = "Scale", description = "Affine scale + offset, with a time shift.",
+  parameters = {
+    { name = "value_scale",  type = "number", default = 1.0, label = "Scale" },
+    { name = "value_offset", type = "number", default = 0.0, label = "Offset" },
+    { name = "time_offset_sec", type = "number", default = 0.0, label = "Time offset", unit = "s" },
+  },
+}
+Scale.__index = Scale
+function Scale.create(p)
+  return setmetatable({ k = p.value_scale, b = p.value_offset, dt = p.time_offset_sec }, Scale)
+end
+function Scale:calculate(t, v) return t + self.dt, self.k * v + self.b end
+
+-- derivative: dv/dt. first sample suppressed; dt==0 -> 0 (finite).
+local Derivative = {
+  id = "derivative", name = "Derivative", description = "Rate of change dv/dt.",
+  parameters = {
+    { name = "use_custom_dt", type = "boolean", default = false, label = "Use fixed Δt" },
+    { name = "custom_dt", type = "number", default = 1.0, label = "Fixed Δt", unit = "s", min = 1e-9,
+      visible_when = { param = "use_custom_dt", equals = true } },
+  },
+}
+Derivative.__index = Derivative
+function Derivative.create(p)
+  return setmetatable(
+    { use_custom = p.use_custom_dt, fixed = p.custom_dt, has_prev = false, pt = 0.0, pv = 0.0 }, Derivative)
+end
+function Derivative:reset() self.has_prev = false end
+function Derivative:calculate(t, v)
+  if not self.has_prev then self.has_prev, self.pt, self.pv = true, t, v; return nil end
+  local dt = self.use_custom and self.fixed or (t - self.pt)
+  local d = (dt ~= 0.0) and (v - self.pv) / dt or 0.0
+  self.pt, self.pv = t, v
+  return d
+end
+
+-- integral: running trapezoidal area. first sample suppressed.
+local Integral = {
+  id = "integral", name = "Integral", description = "Running trapezoidal integral of y over time.",
+  parameters = {
+    { name = "use_custom_dt", type = "boolean", default = false, label = "Use fixed Δt" },
+    { name = "custom_dt", type = "number", default = 1.0, label = "Fixed Δt", unit = "s", min = 1e-9,
+      visible_when = { param = "use_custom_dt", equals = true } },
+  },
+}
+Integral.__index = Integral
+function Integral.create(p)
+  return setmetatable(
+    { use_custom = p.use_custom_dt, fixed = p.custom_dt, acc = 0.0, has_prev = false, pt = 0.0, pv = 0.0 }, Integral)
+end
+function Integral:reset() self.acc, self.has_prev = 0.0, false end
+function Integral:calculate(t, v)
+  if not self.has_prev then self.has_prev, self.pt, self.pv = true, t, v; return nil end
+  local dt = self.use_custom and self.fixed or (t - self.pt)
+  self.acc = self.acc + (v + self.pv) * dt / 2.0
+  self.pt, self.pv = t, v
+  return self.acc
+end
+
+-- moving_average: boxcar over `window`, PJ3 "pad-with-current" quirk (divide by
+-- the full window, missing slots padded with the current value). Optional
+-- de-phase: center the output timestamp on the buffered span.
+local MovingAverage = {
+  id = "moving_average", name = "Moving Average", description = "Boxcar moving average.",
+  parameters = {
+    { name = "window", type = "integer", default = 100, min = 1, label = "Window" },
+    { name = "compensate_time_offset", type = "boolean", default = false, label = "Center timestamp" },
+  },
+}
+MovingAverage.__index = MovingAverage
+function MovingAverage.create(p)
+  return setmetatable({ window = p.window, compensate = p.compensate_time_offset, bt = {}, bv = {} }, MovingAverage)
+end
+function MovingAverage:reset() self.bt, self.bv = {}, {} end
+function MovingAverage:calculate(t, v)
+  local w = clampWindow(self.window)
+  local bt, bv = self.bt, self.bv
+  bt[#bt + 1] = t; bv[#bv + 1] = v
+  while #bt > w do table.remove(bt, 1); table.remove(bv, 1) end
+  local total = v * (w - #bv)
+  for i = 1, #bv do total = total + bv[i] end
+  local avg = total / w
+  if self.compensate and #bt > 1 then
+    return bt[1] + (bt[#bt] - bt[1]) / 2, avg
+  end
+  return avg
+end
+
+-- moving_rms: sqrt(mean of squares) over `window`, pad-with-current.
+local MovingRms = {
+  id = "moving_rms", name = "Moving Root Mean Squared", description = "Moving RMS over a window.",
+  parameters = { { name = "window", type = "integer", default = 100, min = 1, label = "Window" } },
+}
+MovingRms.__index = MovingRms
+function MovingRms.create(p) return setmetatable({ window = p.window, buf = {} }, MovingRms) end
+function MovingRms:reset() self.buf = {} end
+function MovingRms:calculate(_, v)
+  local w = clampWindow(self.window)
+  local buf = self.buf
+  buf[#buf + 1] = v
+  while #buf > w do table.remove(buf, 1) end
+  local total = (v * v) * (w - #buf)
+  for i = 1, #buf do total = total + buf[i] * buf[i] end
+  return math.sqrt(total / w)
+end
+
+-- moving_variance: variance (or stdev) over `window`, pad-with-current.
+local MovingVariance = {
+  id = "moving_variance", name = "Moving Variance / Stdev", description = "Moving variance or standard deviation.",
+  parameters = {
+    { name = "window", type = "integer", default = 100, min = 1, label = "Window" },
+    { name = "std_dev", type = "boolean", default = false, label = "Standard deviation" },
+  },
+}
+MovingVariance.__index = MovingVariance
+function MovingVariance.create(p) return setmetatable({ window = p.window, want_std = p.std_dev, buf = {} }, MovingVariance) end
+function MovingVariance:reset() self.buf = {} end
+function MovingVariance:calculate(_, v)
+  local w = clampWindow(self.window)
+  local buf = self.buf
+  buf[#buf + 1] = v
+  while #buf > w do table.remove(buf, 1) end
+  local pad = w - #buf
+  local total = v * pad
+  for i = 1, #buf do total = total + buf[i] end
+  local avg = total / w
+  local total_sqr = (v - avg) * (v - avg) * pad
+  for i = 1, #buf do local d = buf[i] - avg; total_sqr = total_sqr + d * d end
+  local var = total_sqr / w
+  return self.want_std and math.sqrt(var) or var
+end
+
+-- outlier_removal: drop a one-sample spike (PJ3 4-sample ring). Emits the
+-- PREVIOUS sample (one-sample delay) or suppresses; value passed through.
+local function isOutlier(factor, y0, y1, y2, y3)
+  local d1, d2 = y1 - y2, y2 - y3
+  if d1 * d2 < 0 then
+    local d0 = y0 - y1
+    local jump = math.max(math.abs(d1), math.abs(d2))
+    local ratio = (d0 == 0.0) and math.huge or (jump / math.abs(d0))
+    if ratio > factor then return true end
+  end
+  return false
+end
+
+local OutlierRemoval = {
+  id = "outlier_removal", name = "Outlier Removal", description = "Drop single-sample spikes.",
+  output = "same",
+  parameters = { { name = "outlier_factor", type = "number", default = 100.0, min = 0.0, label = "Factor" } },
+}
+OutlierRemoval.__index = OutlierRemoval
+function OutlierRemoval.create(p) return setmetatable({ factor = p.outlier_factor, rt = {}, rv = {} }, OutlierRemoval) end
+function OutlierRemoval:reset() self.rt, self.rv = {}, {} end
+function OutlierRemoval:calculate(t, v)
+  local rt, rv = self.rt, self.rv
+  rt[#rt + 1] = t; rv[#rv + 1] = v
+  while #rt > 4 do table.remove(rt, 1); table.remove(rv, 1) end
+  if #rt < 4 then return t, v end                 -- not enough look-back: pass through
+  if isOutlier(self.factor, rv[1], rv[2], rv[3], rv[4]) then return nil end
+  return rt[3], rv[3]                             -- emit the previous sample (i-1)
+end
+
+-- samples_counter: how many samples fall in the trailing `samples_ms` window.
+local SamplesCounter = {
+  id = "samples_counter", name = "Samples Counter", description = "Count of samples in a trailing time window.",
+  output = "int64",
+  parameters = { { name = "samples_ms", type = "number", default = 1000.0, min = 0.0, label = "Window", unit = "ms" } },
+}
+SamplesCounter.__index = SamplesCounter
+-- Head-pointer ring (live window is buf[head..tail]) so front-eviction is O(1)
+-- amortized rather than O(n) table.remove — the window can be large.
+function SamplesCounter.create(p) return setmetatable({ samples_ms = p.samples_ms, buf = {}, head = 1, tail = 0 }, SamplesCounter) end
+function SamplesCounter:reset() self.buf, self.head, self.tail = {}, 1, 0 end
+function SamplesCounter:calculate(t, _)
+  local window_s = (self.samples_ms > 0.0) and (self.samples_ms * 1e-3) or 0.0
+  local buf = self.buf
+  local head, tail = self.head, self.tail
+  tail = tail + 1
+  buf[tail] = t
+  local min_t = t - window_s
+  while head <= tail and buf[head] < min_t do
+    buf[head] = nil
+    head = head + 1
+  end
+  if head > 4096 then  -- compact so the array can't grow unbounded over a long stream
+    local n = 0
+    for i = head, tail do n = n + 1; buf[n] = buf[i]; buf[i] = nil end
+    head, tail = 1, n
+  end
+  self.head, self.tail = head, tail
+  return tail - head + 1
+end
+
+-- binary_filter: 0/1 predicate. binary_op is the int index of the comparison
+-- (kept identical to the C++ enum for layout round-trip): 0== 1< 2<= 3> 4>= 5range.
+local BinaryFilter = {
+  id = "binary_filter", name = "Binary Filter", description = "Boolean 0/1 predicate over the value.",
+  output = "int64",
+  parameters = {
+    { name = "binary_op", type = "enum", default = 3, label = "Comparison",
+      values = {
+        { value = 0, label = "== a" }, { value = 1, label = "< a" }, { value = 2, label = "<= a" },
+        { value = 3, label = "> a" },  { value = 4, label = ">= a" }, { value = 5, label = "in [a, b]" },
+      } },
+    { name = "binary_a", type = "number", default = 0.0, label = "Threshold a" },
+    { name = "binary_b", type = "number", default = 0.0, label = "Threshold b",
+      visible_when = { param = "binary_op", equals = 5 } },
+    { name = "binary_tol", type = "number", default = 1e-9, label = "Tolerance (==)",
+      visible_when = { param = "binary_op", equals = 0 } },
+  },
+}
+BinaryFilter.__index = BinaryFilter
+function BinaryFilter.create(p)
+  local op = math.floor(tonumber(p.binary_op) or 3)  -- tolerate a string-typed enum value
+  return setmetatable({ op = op, a = p.binary_a, b = p.binary_b, tol = p.binary_tol }, BinaryFilter)
+end
+function BinaryFilter:calculate(_, v)
+  local op, a, b, tol = self.op, self.a, self.b, self.tol
+  local pass
+  if op == 0 then pass = math.abs(v - a) <= tol
+  elseif op == 1 then pass = v < a
+  elseif op == 2 then pass = v <= a
+  elseif op == 3 then pass = v > a
+  elseif op == 4 then pass = v >= a
+  elseif op == 5 then pass = (a <= v) and (v <= b)
+  else pass = false end
+  return pass and 1 or 0
+end
+
+-- time_since_previous: gap to the previous sample, in SECONDS (double). first
+-- sample suppressed. (t is seconds-since-start, so the gap is a plain difference —
+-- double preserves sub-second deltas that an int64 output would truncate to 0.)
+local TimeSincePrevious = {
+  id = "time_since_previous", name = "Time Since Previous", description = "Δt between consecutive samples (seconds).",
+  output = "double",
+}
+TimeSincePrevious.__index = TimeSincePrevious
+function TimeSincePrevious.create(_) return setmetatable({ has_prev = false, pt = 0.0 }, TimeSincePrevious) end
+function TimeSincePrevious:reset() self.has_prev = false end
+function TimeSincePrevious:calculate(t, _)
+  if not self.has_prev then self.has_prev, self.pt = true, t; return nil end
+  local delta_sec = (t - self.pt)
+  self.pt = t
+  return delta_sec
+end
+
+return {
+  None, Absolute, Scale, Derivative, Integral, MovingAverage,
+  MovingRms, MovingVariance, OutlierRemoval, SamplesCounter,
+  BinaryFilter, TimeSincePrevious,
+}
+]]></source_fallback>
+    </processor>
+    <transform api_version="1" backend="luau" id="t1" owner_plugin="fixture-toolbox">
+      <input column="0" dataset_id="1" dataset_source="fixture-a.mcap" field="value" name="/imu" topic="/imu"/>
+      <output name="t1_scaled"/>
+      <params><![CDATA[{"gain":10}]]></params>
+      <script><![CDATA[-- pj-script: luau
+return { id="t1", name="t1", output="same",
+  create = function(p) return { calculate = function(t, v) return v * 10.0 end } end }
+]]></script>
+    </transform>
+    <transform api_version="1" backend="luau" id="t2" owner_plugin="fixture-toolbox">
+      <input column="0" dataset_id="1" dataset_source="fixture-a.mcap" field="value" name="t1_scaled" topic="t1_scaled"/>
+      <output name="t2_negated"/>
+      <params><![CDATA[{}]]></params>
+      <script><![CDATA[-- pj-script: luau
+return { id="t2", name="t2", output="same",
+  create = function(p) return { calculate = function(t, v) return -v end } end }
+]]></script>
+    </transform>
+    <generator all_datasets="0" dataset_id="1" dataset_path="/pj-fixtures/data/fixture-a.mcap" dataset_source="fixture-a.mcap" id="fixture-toolbox/rule/a-sensor" language="luau">
+      <input name="/sensor/value"/>
+      <output name="a_sensor_markers"/>
+      <params><![CDATA[{"threshold":1.5}]]></params>
+      <script><![CDATA[local s = series("/sensor/value")
+if s ~= nil then
+  for i = 0, s:size() - 1 do createMarker(s:at(i).t) end
+end
+]]></script>
+    </generator>
+    <generator all_datasets="1" id="fixture-toolbox/rule/all" language="luau">
+      <input name="/sensor/value"/>
+      <output name="__all__"/>
+      <script><![CDATA[local s = series("/sensor/value")
+if s ~= nil then
+  for i = 0, s:size() - 1 do createMarker(s:at(i).t) end
+end
+]]></script>
+    </generator>
+    <generator all_datasets="0" dataset_id="1" dataset_path="/pj-fixtures/data/fixture-a.mcap" dataset_source="fixture-a.mcap" id="fixture-toolbox/rule/declared" language="luau">
+      <input declared="fixture-a.mcap:/sensor/value" name="/sensor/value"/>
+      <output name="declared_markers"/>
+      <script><![CDATA[local s = series("fixture-a.mcap:/sensor/value")
+if s ~= nil then
+  for i = 0, s:size() - 1 do createMarker(s:at(i).t) end
+end
+]]></script>
+    </generator>
+    <generator all_datasets="0" dataset_id="1" dataset_path="/pj-fixtures/data/fixture-a.mcap" dataset_source="fixture-a.mcap" id="fixture-toolbox/rule/t1" language="luau">
+      <input name="t1_scaled/value"/>
+      <output name="t1_markers"/>
+      <script><![CDATA[local s = series("t1_scaled/value")
+if s ~= nil then
+  for i = 0, s:size() - 1 do createMarker(s:at(i).t) end
+end
+]]></script>
+    </generator>
+  </data_processors>
+</root>

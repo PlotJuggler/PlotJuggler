@@ -61,8 +61,7 @@ QString addScalarTopic(PJ::AppSession& app_session, DatasetId dataset_id, std::s
     return {};
   }
   app_session.catalogModel().rebuildFromDatastore();
-  const auto key = PJ::resolveSeriesPath(
-      app_session.catalogModel(),
+  const auto key = app_session.catalogModel().resolveCurveKey(
       PJ::layout_xml::SeriesPath{
           QString::fromUtf8(topic_name.data(), static_cast<int>(topic_name.size())), u"value"_s});
   return key.value_or(QString());
@@ -99,7 +98,7 @@ QString addRawScalarTopic(PJ::AppSession& app_session, DatasetId dataset_id, con
     return {};
   }
   app_session.catalogModel().rebuildFromDatastore();
-  const auto key = PJ::resolveSeriesPath(app_session.catalogModel(), PJ::layout_xml::SeriesPath{topic_name, QString()});
+  const auto key = app_session.catalogModel().resolveCurveKey(PJ::layout_xml::SeriesPath{topic_name, QString()});
   return key.value_or(QString());
 }
 
@@ -298,7 +297,7 @@ TEST_F(TopicDemandControllerTest, DerivedFilterOutputReferencesSourceNotOutput) 
   app_session_->catalogModel().rebuildFromDatastore();
 
   const auto output_key =
-      PJ::resolveSeriesPath(app_session_->catalogModel(), PJ::layout_xml::SeriesPath{u"speed[Absolute]"_s, u"value"_s});
+      app_session_->catalogModel().resolveCurveKey(PJ::layout_xml::SeriesPath{u"speed[Absolute]"_s, u"value"_s});
   ASSERT_TRUE(output_key.has_value());
 
   PJ::PlotWidget plot(&app_session_->sessionManager(), &app_session_->catalogModel());

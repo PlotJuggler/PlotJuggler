@@ -19,6 +19,7 @@
 #include "pj_base/type_tree.hpp"  // PrimitiveType
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/CurveDescriptor.h"
+#include "pj_runtime/SavedSeriesPath.h"
 #include "pj_runtime/SessionManager.h"  // DatasetIdentityResolution (returned by value below)
 
 namespace PJ {
@@ -329,6 +330,9 @@ class CatalogModel : public QObject {
   [[nodiscard]] std::optional<QString> resolveCurveKey(
       DatasetId saved_id, const QString& saved_source, const QString& saved_path, const QString& topic,
       const QString& field, SeriesCapability capability = SeriesCapability::kPlottable) const;
+  // The same resolution for an identity held as one value (a parsed layout entry).
+  [[nodiscard]] std::optional<QString> resolveCurveKey(
+      const SavedSeriesPath& path, SeriesCapability capability = SeriesCapability::kPlottable) const;
 
   // Resolves the same persisted (id, raw-source, full-path) identity used by
   // scene widgets (delegates to SessionManager::resolveDatasetIdentity — see

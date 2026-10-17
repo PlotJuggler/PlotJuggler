@@ -547,6 +547,10 @@ std::optional<QString> CatalogModel::datasetSourceName(DatasetId dataset_id) con
   return QString::fromStdString(dataset->source_name);
 }
 
+std::optional<QString> CatalogModel::resolveCurveKey(const SavedSeriesPath& path, SeriesCapability capability) const {
+  return resolveCurveKey(path.dataset_id, path.dataset_source, path.dataset_path, path.topic, path.field, capability);
+}
+
 std::optional<QString> CatalogModel::resolveCurveKey(
     DatasetId saved_id, const QString& saved_source, const QString& saved_path, const QString& topic,
     const QString& field, SeriesCapability capability) const {

@@ -6,7 +6,7 @@
 // curve by its stable (topic, field) path plus dataset qualifiers (dataset_id
 // + dataset_source, written by PlotWidget::xmlSaveState), and the restore path
 // (MainWindow::rebindCurvesToLoadedDatasets -> layout_xml::rebindCurveKeys ->
-// PJ::resolveSeriesPath) re-resolves that qualified path against the loaded
+// CatalogModel::resolveCurveKey) re-resolves that qualified path against the loaded
 // datasets. Rebinding must keep every curve on the dataset it was plotted
 // from — not collapse all of them onto the first dataset in load order,
 // which silently swaps the plotted data (and its display offset) on every
@@ -46,7 +46,7 @@ QString keyInDataset(PJ::CatalogModel& catalog, PJ::DatasetId dataset_id, const 
 // Runs the snapshot-restore rebind exactly like MainWindow::rebindCurvesToLoadedDatasets.
 QList<SeriesPath> rebind(QDomDocument& doc, PJ::CatalogModel& catalog) {
   return PJ::layout_xml::rebindCurveKeys(
-      doc, [&catalog](const SeriesPath& path) { return PJ::resolveSeriesPath(catalog, path); });
+      doc, [&catalog](const SeriesPath& path) { return catalog.resolveCurveKey(path); });
 }
 
 // Serializes `plot` into a fresh snapshot document, like MainWindow::xmlSaveState.
@@ -68,7 +68,7 @@ QDomElement firstCurve(const QDomDocument& doc) {
 // and rebound while a first dataset with the same topic is also loaded, must
 // resolve back to the second dataset's key. xmlSaveState stamps dataset_id +
 // dataset_source (the raw source label) on the curve, so the exact-id branch
-// of resolveSeriesPath pins the rebind to dataset 2.
+// of resolveCurveKey pins the rebind to dataset 2.
 TEST(MultiDatasetRebind, TimeSeriesCurveStaysOnItsDataset) {
   PJ::AppSession app_session;
   const PJ::DatasetId run1 = createDataset(app_session, "run1");
@@ -136,7 +136,7 @@ TEST(MultiDatasetRebind, XyCurveStaysOnItsDataset) {
 // A qualified curve whose saved dataset id is gone (e.g. the layout was
 // reopened in a fresh session) must still resolve when the raw source label
 // (dataset_source) names exactly ONE loaded dataset — the source-fallback leg
-// of resolveSeriesPath / SessionManager::resolveDatasetIdentity.
+// of resolveCurveKey / SessionManager::resolveDatasetIdentity.
 TEST(MultiDatasetRebind, GoneDatasetFallsBackToUniqueSameSourceCandidate) {
   PJ::AppSession app_session;
   const PJ::DatasetId run2 = createDataset(app_session, "run2");

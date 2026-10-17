@@ -29,6 +29,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/XmlCdata.h"
 #include "pj_widgets/CurveTreeView.h"
 #include "ui/CurveListPanel.h"
 
@@ -200,7 +201,7 @@ QDomElement addUnresolvableProcessor(QDomDocument& doc) {
   processor.setAttribute(u"input_dataset_source"_s, u"missing-processor-source"_s);
   processor.setAttribute(u"processor_id"_s, u"absolute"_s);
   processor.setAttribute(u"output_name"_s, u"missing[Absolute]"_s);
-  PJ::layout_xml::appendJsonAsCdata(doc, processor, u"{}"_s);
+  PJ::appendJsonAsCdata(doc, processor, u"{}"_s);
   processors.appendChild(processor);
   return processor;
 }

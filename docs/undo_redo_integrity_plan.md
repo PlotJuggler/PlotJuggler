@@ -17,7 +17,7 @@ onto the first. Root cause: a workspace snapshot identifies each curve by a
 dataset-agnostic `(topic, field)` pair (`SeriesPath`,
 `pj_app/src/LayoutXml.h`), and every restore re-resolves that pair against the
 loaded datasets taking the **first match in load order**
-(`resolveSeriesPath`, `pj_app/src/PendingDisplayBinder.cpp`). The curve then
+(then `resolveSeriesPath`, now `CatalogModel::resolveCurveKey`). The curve then
 renders the other dataset's samples at the other dataset's display offset — a
 jump in time that presents as "timeline alignment broke after undo".
 

@@ -47,6 +47,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/SourceCacheStore.h"
 #include "pj_runtime/SourceCaptureService.h"
+#include "pj_runtime/XmlCdata.h"
 #include "support/fake_import_provider.h"
 #include "support/loader_test_support.h"
 using namespace Qt::StringLiterals;
@@ -147,13 +148,13 @@ struct SourceSpec {
     QDomElement plugin = doc.createElement(u"plugin"_s);
     plugin.setAttribute(u"ID"_s, spec.plugin_name);
     plugin.setAttribute(u"manifest_id"_s, spec.plugin_manifest);
-    PJ::layout_xml::appendJsonAsCdata(doc, plugin, u"{}"_s);
+    PJ::appendJsonAsCdata(doc, plugin, u"{}"_s);
     file_info.appendChild(plugin);
     if (!spec.descriptor.isEmpty()) {
       QDomElement materialize = doc.createElement(u"materialize"_s);
       materialize.setAttribute(u"provider"_s, spec.provider);
       materialize.setAttribute(u"identity"_s, spec.identity);
-      PJ::layout_xml::appendJsonAsCdata(doc, materialize, spec.descriptor);
+      PJ::appendJsonAsCdata(doc, materialize, spec.descriptor);
       file_info.appendChild(materialize);
     }
     wrapper.appendChild(file_info);

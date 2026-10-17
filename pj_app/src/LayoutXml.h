@@ -15,6 +15,8 @@
 #include <utility>
 #include <vector>
 
+#include "pj_runtime/SavedSeriesPath.h"
+
 namespace PJ::layout_xml {
 
 // Canonical layout-file extension, leading dot included. Double extension
@@ -140,20 +142,6 @@ struct DataSourceRef {
          !ref.materialize_descriptor_json.isEmpty();
 }
 
-// CDATA sections cannot contain "]]>"; QDomDocument::createCDATASection
-// does not escape it. Splits the payload across adjacent CDATA sections
-// at each "]]>" boundary so QDomElement::text() concatenates them back
-// transparently on read.
-void appendJsonAsCdata(QDomDocument& doc, QDomElement& parent, const QString& json);
-
-// Concatenates ONLY the direct CDATA/text child nodes of `element`, skipping any
-// nested child *elements*. QDomElement::text() recurses the entire subtree, so an
-// element that holds its own CDATA payload alongside a child element with its own
-// CDATA (e.g. a <processor> carrying params-CDATA plus a <source_fallback> child
-// holding the filter's Luau source) cannot read its own payload via text()
-// without the child's leaking in. This reads the element's own payload only.
-[[nodiscard]] QString directCdataText(const QDomElement& element);
-
 // Reads every <previouslyLoaded_Datafiles>/<fileInfo> and its optional
 // <plugin> child, one DataSourceRef per file in document order. Each
 // serialized_path is the raw filename attribute. resolved_path is absolute for
@@ -205,34 +193,14 @@ struct SourceTimelineViewState {
 // (CurveDescriptor::name); topic and field stay separate because PJ4 field
 // paths can themselves contain '/'. The explicit constructor keeps existing
 // two-argument brace-initializations compiling.
-struct SeriesPath {
+struct SeriesPath : SavedSeriesPath {
   SeriesPath(
       QString topic_in = {}, QString field_in = {}, std::uint32_t dataset_id_in = 0, QString dataset_source_in = {},
       QString dataset_path_in = {})
-      : topic(std::move(topic_in)),
-        field(std::move(field_in)),
-        dataset_id(dataset_id_in),
-        dataset_source(std::move(dataset_source_in)),
-        dataset_path(std::move(dataset_path_in)) {}
+      : SavedSeriesPath{
+            std::move(topic_in), std::move(field_in), dataset_id_in, std::move(dataset_source_in),
+            std::move(dataset_path_in)} {}
 
-  QString topic;
-  QString field;
-  // Exact in-session hint for undo/redo (0 = unqualified). A resolver must
-  // reject ambiguity rather than silently pick the first dataset exposing the
-  // same topic/field.
-  std::uint32_t dataset_id = 0;
-  // Portable raw source label (DatasetInfo::source_name), usable for layout
-  // reload after ids are reminted.
-  QString dataset_source;
-  // Full file identity stamped by FileLoader at layout-file save. Unlike
-  // dataset_source (often a basename/display label), it distinguishes same-named
-  // files in different directories and guards a coincidentally reminted id.
-  QString dataset_path;
-
-  [[nodiscard]] bool operator==(const SeriesPath& other) const {
-    return topic == other.topic && field == other.field && dataset_id == other.dataset_id &&
-           dataset_source == other.dataset_source && dataset_path == other.dataset_path;
-  }
   // Human-readable form for missing-curve lists: "topic/field".
   [[nodiscard]] QString display() const;
 };

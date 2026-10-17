@@ -39,6 +39,7 @@
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+#include "pj_runtime/XmlCdata.h"
 #include "pj_widgets/Timeline.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
 #include "support/gui_test_env.h"
@@ -255,7 +256,7 @@ QDomElement addSavedAbsoluteProcessor(
   processor.setAttribute(u"input_dataset_source"_s, source_name);
   processor.setAttribute(u"processor_id"_s, u"absolute"_s);
   processor.setAttribute(u"output_name"_s, topic_name + u"[Absolute]"_s);
-  PJ::layout_xml::appendJsonAsCdata(doc, processor, u"{}"_s);
+  PJ::appendJsonAsCdata(doc, processor, u"{}"_s);
   processors.appendChild(processor);
   return processor;
 }

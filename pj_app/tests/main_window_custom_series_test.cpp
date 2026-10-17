@@ -20,6 +20,7 @@
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/DerivedObjects.h"
 #include "pj_runtime/SessionManager.h"
 #include "ui/CurveListPanel.h"
 
@@ -38,7 +39,7 @@ class MainWindowCustomSeriesTestPeer {
   }
 
   [[nodiscard]] static QDomElement saveDataProcessors(MainWindow& window, QDomDocument& doc) {
-    return window.saveDataProcessors(doc, SnapshotScope::kFull);
+    return window.derivedObjects().save(doc, SnapshotScope::kFull);
   }
 
   // The production hook every recipe-set change goes through.

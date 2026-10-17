@@ -79,6 +79,7 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/XmlCdata.h"
 #include "support/layout_import_gui_support.h"
 #include "support/loader_test_support.h"
 
@@ -326,7 +327,7 @@ class MainWindowLayoutImportE2ETest : public ::testing::Test {
     QDomElement materialize = doc.createElement(QStringLiteral("materialize"));
     materialize.setAttribute(QStringLiteral("provider"), QLatin1String(kProviderId));
     materialize.setAttribute(QStringLiteral("identity"), vec.identity);
-    PJ::layout_xml::appendJsonAsCdata(doc, materialize, vec.canonical);
+    PJ::appendJsonAsCdata(doc, materialize, vec.canonical);
     file_info.appendChild(materialize);
     wrapper.appendChild(file_info);
     root.appendChild(wrapper);

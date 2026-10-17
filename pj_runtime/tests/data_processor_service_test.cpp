@@ -875,7 +875,7 @@ TEST(DataProcessorServiceTest, ReconcileRoundTripRecreatesFilterFromParams) {
   EXPECT_DOUBLE_EQ(before[0], 6.0);   // 2 * 3
   EXPECT_DOUBLE_EQ(before[1], 12.0);  // 4 * 3
 
-  // Capture the recipe the way saveDataProcessors serializes it.
+  // Capture the recipe the way DerivedObjects::save serializes it.
   const auto* recipe = service.filterConfig(applied->output_topic_id);
   ASSERT_NE(recipe, nullptr);
   const std::string id = recipe->processor_id;

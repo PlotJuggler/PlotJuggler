@@ -184,13 +184,13 @@ load. Viewport operations reach only the dockers whose
 duplicate visible titles and renaming do not affect addressing. Owned tabs
 persist in full layouts with `owner_plugin`/`tab_id` metadata and remain live
 across history restores; so do their curves bound to a filter or transform
-output the snapshot leaves unchanged, because `restoreDataProcessors` reconciles
-both by persisted identity (filters by `output_name`, transforms by key) and
-keeps the unchanged ones live under their TopicIds. Everything else — changed
-entries, and kept ones cascaded out by a replaced input — is re-created by
-`repairDataProcessors` in rounds (filters with their inputs re-resolved through
-a rebuilt catalog, then transforms) until a round creates nothing; apply
-failures are reported once, after the last round. The watermark is the owning toolbox's display name
+output the snapshot leaves unchanged, because the derived-recipe restore
+reconciles both by persisted identity (filters by `output_name`, transforms by
+key) and keeps the unchanged ones live under their TopicIds. Everything else —
+changed entries, and kept ones cascaded out by a replaced input — is re-created
+in rounds (filters with their inputs re-resolved through a rebuilt catalog, then
+transforms) until a round creates nothing; apply failures are reported once,
+after the last round. The watermark is the owning toolbox's display name
 (`toolboxBadge`); a tab whose owner is not in the catalog says so instead.
 
 `displayTimeForSource` validates a live catalog source handle and uses its current
@@ -199,6 +199,21 @@ failures are reported once, after the last round. The watermark is the owning to
 dataset. Prefer the SDK's `toDisplayTimeForSource` when topic names repeat. Its
 optional tail slot preserves existing callers. See the SDK's
 `pj_plugins/docs/toolbox-guide.md` for plugin examples and error handling.
+
+## Derived-recipe persistence
+
+The `<data_processors>` block (filters, transforms, marker generators) is saved
+and restored by `pj_runtime`'s `DerivedObjects` (see `pj_runtime/CLAUDE.md`).
+`MainWindow` saves through `derivedObjects().save(...)` and keeps a thin wrapper for
+the restore — `restoreDataProcessors` = `parseDataProcessors` +
+`checkDataProcessorDependencies` (the `kHistory` preflight) + `applyDataProcessors` —
+and owns what is UI: each diagnostic is reported (`reportDerived`) under source
+"Layout" (so `layout_issue_capture_` sees it), and the
+Custom Series panel is re-derived after every restore. `applyWorkspace` parses
+once and uses that snapshot for the preflight (before the timeline offsets
+move) and for the restore; the progressive drain's teardown applies an empty
+snapshot. The restore fixtures in `tests/fixtures/layouts/release-4.1/` are
+layouts written by a release-4.1 build (`MainWindowRelease41LayoutTest`).
 
 ## Toolbox presentation
 

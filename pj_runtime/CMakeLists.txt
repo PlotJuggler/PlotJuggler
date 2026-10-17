@@ -16,6 +16,7 @@ add_library(pj_runtime STATIC
     src/CurveColorRegistry.cpp
     src/DataProcessorService.cpp
     src/DatasetQualifiedName.cpp
+    src/DerivedObjects.cpp
     src/DataProcessorsKindRouter.cpp
     src/DataProcessorsRuntimeHost.cpp
     src/DataSourceRuntimeHost.cpp
@@ -157,6 +158,8 @@ if(PJ_BUILD_TESTS)
         tests/batch_engine_test.cpp
         # Marker topics are recognized and routed by their metadata, never by name.
         tests/marker_topics_test.cpp
+        # Derived-recipe layout persistence restores across the engines without MainWindow.
+        tests/derived_objects_test.cpp
         # links the shared marker engine the service drives
         tests/markers_runtime_host_test.cpp
         tests/data_processors_kind_router_test.cpp

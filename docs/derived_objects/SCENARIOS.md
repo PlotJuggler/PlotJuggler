@@ -45,7 +45,7 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 
 ## Summary
 
-344 scenario rows covering 794 TESTs; 47 [gaps](#gaps). Non-`keep` rows are where the carve must change or drop a test. The table counts the rows of this file by status (a script, slice 4). The draft's twelve `unclear` rows have all been resolved, so that column is gone: three are `decided here`, three are changed by P3 or N7, and the six once blocked on the SDK host contract follow its decisions of 2026-10-13. Later slices changed the table so: slice 1b added TFL-14 (keep) and closed GAP-46; slice 3 recorded its outcome in the notes of the batch rows (DEM, ASY, DS, OWN, BUD, CON, BAT, LAY, PERF) and changed BAT-07 (decided 2026-10-13: a create waits a bounded time for its first run; narrowed the same day to layout loads); slice M added PUB-04, BAT-11 and STO-04 (keep) and closed GAP-43; slice 4 recorded its outcome in the notes of STR-04 to STR-07 and INC-01 and changed STR-04 to `removed` (the changed-topic feed it pinned is not carved); slice L3 added SCN-18 (keep) and closed GAP-48. The ring decision (N7, 2026-10-14) restored the rows that pull had removed (MAT, STO-02, STO-03, ABI-36), settled most `keep*` rows as `keep`, and added GAP-49 to GAP-51.
+345 scenario rows covering 794 TESTs; 46 [gaps](#gaps). Non-`keep` rows are where the carve must change or drop a test. The table counts the rows of this file by status (a script, slice 4). The draft's twelve `unclear` rows have all been resolved, so that column is gone: three are `decided here`, three are changed by P3 or N7, and the six once blocked on the SDK host contract follow its decisions of 2026-10-13. Later slices changed the table so: slice 1b added TFL-14 (keep) and closed GAP-46; slice 3 recorded its outcome in the notes of the batch rows (DEM, ASY, DS, OWN, BUD, CON, BAT, LAY, PERF) and changed BAT-07 (decided 2026-10-13: a create waits a bounded time for its first run; narrowed the same day to layout loads); slice M added PUB-04, BAT-11 and STO-04 (keep) and closed GAP-43; slice 4 recorded its outcome in the notes of STR-04 to STR-07 and INC-01 and changed STR-04 to `removed` (the changed-topic feed it pinned is not carved); slice L3 added SCN-18 (keep) and closed GAP-48; slice L1 added LAY-18 (keep) and closed GAP-20. The ring decision (N7, 2026-10-14) restored the rows that pull had removed (MAT, STO-02, STO-03, ABI-36), settled most `keep*` rows as `keep`, and added GAP-49 to GAP-51.
 
 | Area | Rows | keep | keep* | changes | removed | decided here |
 |---|---|---|---|---|---|---|
@@ -61,7 +61,7 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 | [SER](#ser) Series mode (D10 / N8) | 17 | 5 | 0 | 12 | 0 | 0 |
 | [STR](#str) Streaming & live edge | 7 | 4 | 0 | 0 | 3 | 0 |
 | [DS](#ds) Datasets (reload / merge / remove / epoch) | 3 | 3 | 0 | 0 | 0 | 0 |
-| [LAY](#lay) Layout restore & undo/history (N10) | 17 | 15 | 0 | 2 | 0 | 0 |
+| [LAY](#lay) Layout restore & undo/history (N10) | 18 | 16 | 0 | 2 | 0 | 0 |
 | [OWN](#own) Previews / ephemerals & ownership | 13 | 13 | 0 | 0 | 0 | 0 |
 | [EVAL](#eval) Explicit evaluations (instant / window) & reports | 5 | 5 | 0 | 0 | 0 | 0 |
 | [ABI](#abi) Plugin ABI (data processors v2, evaluations, catalog v2, plot/scene tabs, dialogs) | 42 | 39 | 0 | 3 | 0 | 0 |
@@ -78,7 +78,7 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 | [UI](#ui) App UI (Custom Topics panel, embedded views, misc) | 15 | 14 | 0 | 0 | 0 | 1 |
 | [PERF](#perf) Performance benches | 4 | 2 | 0 | 2 | 0 | 0 |
 | [MECH](#mech) Mechanical renames / moves (slices 1, 1t) | 8 | 8 | 0 | 0 | 0 | 0 |
-| **Total** | **344** | **290** | **3** | **40** | **8** | **3** |
+| **Total** | **345** | **291** | **3** | **40** | **8** | **3** |
 
 <a id="rec"></a>
 ## REC: Recipe authoring & validation
@@ -282,6 +282,7 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 | LAY-15 | Restore itself fills Custom Topics (no announcement needed) | panel shows owner/crop/cropped after restore | `main_window_on_demand_restore_test.cpp`: MainWindowOnDemandRestoreTest.RestoreFillsCustomTopics | keep |  |
 | LAY-16 | Owned plugin scene view survives full layout round trip (exempt, rebuilt as scene, topic kept) | owner_plugin in xml; restored found by (plugin, id), history-exempt, scene3d widget, 1 layer | `main_window_plugin_views_test.cpp`: MainWindowPluginViewsTest.PluginSceneViewsSurviveLayoutRoundTrip | keep |  |
 | LAY-17 | on_demand inputs get dataset_path stamped; volatile ids stripped on save; generic layout strips qualifiers | known id -> path; unknown id stripped; generic removes id/source/path | `layout_xml_test.cpp`: DatasetSourcePath.OnDemandInputsAreStampedAndStripped | keep | D7: per-input qualification vs single dataset field (open) |
+| LAY-18 | One dependency-ordered restore across engines, in `pj_runtime` without `MainWindow`; layout format unchanged on round trip; layouts saved by release-4.1 restore (GAP-20) | a generator placed in the document before the transform it reads, and a filter on that transform's output placed before it too, all restore through `DerivedObjects` alone and the rule reads the transform's output; save -> restore into a fresh session -> save writes the same block byte for byte (filter source, transform bindings and params, exempt transform, generator window, declared input, params, exemption); release-4.1 source-bound, generic and history files restore through the real load paths (recipe set, dataset binding by path with reminted ids, declared input, exempt flags, outputs in the catalog, curves bound, markers drawn, hidden scope hidden, offsets applied, re-save same `<data_processors>` modulo attribute order and ids) | `derived_objects_test.cpp`: DerivedObjectsTest.{DerivedRestoreOrdersAcrossEngines, RoundTripKeepsTheLayoutFormat}<br>`main_window_release41_layout_test.cpp`: MainWindowRelease41LayoutTest.{RestoresLayoutSavedByRelease41, RestoresGenericLayoutSavedByRelease41, RestoresHistorySnapshotSavedByRelease41} | keep | slice L1: a pure move of the persistence into `DerivedObjects` (today's order: filters and transforms in rounds, then generators; today's create wait). The fixtures are in `pj_app/tests/fixtures/layouts/release-4.1/`; a generator window and a mixed-dataset scene dock are not producible on release-4.1. As released, a generator's `dataset_path` is absolute, the generic layout included; it still restores when the files are where they were. On-demand joins the restore in slice 6b |
 
 <a id="own"></a>
 ## OWN: Previews / ephemerals & ownership
@@ -624,7 +625,6 @@ Scenarios the spec or the decisions imply that no test covers today. Suggested n
 | GAP-17 | N8 | Series clock = union of all object inputs' entry stamps: two object inputs at 10 Hz and 30 Hz give rows at the union (no test has two object inputs) | `SeriesClockIsUnionOfObjectInputs` |
 | GAP-18 | N8 / N6 | Series decoding in the worker with several entries per task; cursor requests are not starved behind background replays | priority test + `OnDemandSeriesBench` re-baseline |
 | GAP-19 | N10 | An unchanged marker generator keeps its topics across restore (test-first behaviour change; today it gets new topics) | `UnchangedGeneratorKeepsTopicsOnRestore` |
-| GAP-20 | N10 | One dependency-ordered restore across engines (an on-demand recipe or generator reading a transform output), run in `pj_runtime` without `MainWindow`; layout format unchanged on round trip | `DerivedRestoreOrdersAcrossEngines` |
 | GAP-21 | N10 | GUI and headless sessions get the same derived runtime hosts (removes the "KEEP IN SYNC" copy) | parity test on the assembled hosts |
 | GAP-22 | N1 | Python module mutation isolation: `math.pi = 3` in one call is not visible in the next | `PythonModuleMutationDoesNotLeak` |
 | GAP-23 | N1 | Python script checked and compiled once per recipe revision; re-upsert recompiles | compile-count test |
