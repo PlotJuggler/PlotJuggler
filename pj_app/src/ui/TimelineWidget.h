@@ -69,6 +69,10 @@ class TimelineWidget : public QWidget {
   // both stay in lockstep).
   void applyEngineTime(double t);
 
+  // Reapplies the step in seconds after the slider range/resolution changes.
+  // Empty ranges are skipped; steps larger than the range reach its endpoint.
+  void applySliderStep();
+
   // Enables/disables the transport controls from range_empty_ + seek_locked_:
   // an empty (no-data) range disables play/loop/slider entirely; otherwise the
   // slider is additionally gated by the streaming seek-lock.

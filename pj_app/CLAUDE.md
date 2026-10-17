@@ -43,6 +43,12 @@ The main window wears the **system** title bar by default and `TitleBar` is just
 
 ## Tests
 
+`TopicDemandController` invalidates the matching XY and time-series caches in
+registered plots synchronously before evicting preview history on first real
+topic demand. Bounds calculation can populate those caches inside
+`curveListChanged`, before the demand callback runs. Cache invalidation must
+not paint or process events before the chunks are evicted.
+
 `pj_app_gui_tests` links `pj_app_shell` and `pj_resources` for GUI scenarios and
 runtime-backed controller/binder tests. `pj_app_unit_tests` compiles the Qt-only
 helpers directly. Both use `pj_add_test_runner` with the shared GUI main;

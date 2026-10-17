@@ -737,7 +737,8 @@ if(PJ_BUILD_TESTS)
     # Binds the Source Timeline widget to the runtime; the regression test pins that
     # the bars track data growth (samplesIngested), not just new catalog topics.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
-        tests/source_timeline_controller_test.cpp)
+        tests/source_timeline_controller_test.cpp
+        tests/timeline_widget_test.cpp)
 
     # Reuse the shell's controller objects and meta-objects for timer and
     # progress-row tests, alongside the other runtime-backed GUI cases.

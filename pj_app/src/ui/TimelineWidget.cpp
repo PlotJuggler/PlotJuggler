@@ -14,6 +14,7 @@
 #include <QSvgRenderer>
 #include <Qt>
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 #include "pj_runtime/PlaybackEngine.h"
@@ -123,6 +124,7 @@ void TimelineWidget::onEngineRangeChanged(double min, double max) {
   const int steps = static_cast<int>(std::clamp<int64_t>(raw_steps, 1, kMaxSliderSteps));
   updating_from_engine_ = true;
   ui_->timeSlider->setLimits(min, max, steps);
+  applySliderStep();
   updating_from_engine_ = false;
   // A collapsed range (max <= min) means no scrubbable data: disable the whole
   // transport so a dead slider can't be dragged over nothing.
@@ -257,6 +259,15 @@ void TimelineWidget::onStepChanged(double value) {
     return;
   }
   engine_->setStep(value);
+  applySliderStep();
+}
+
+void TimelineWidget::applySliderStep() {
+  const double range = ui_->timeSlider->getMaximum() - ui_->timeSlider->getMinimum();
+  const double step = ui_->playbackStep->value();
+  if (range > 0.0 && std::isfinite(step)) {
+    ui_->timeSlider->setRealStepValue(std::min(step, range));
+  }
 }
 
 void TimelineWidget::onStylesheetChanged(QString theme) {

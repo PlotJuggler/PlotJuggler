@@ -3,6 +3,11 @@
 
 #include <gtest/gtest.h>
 
+#include <QAbstractButton>
+#include <QDataStream>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
 #include <QPointer>
 #include <QTemporaryDir>
 #include <memory>
@@ -26,6 +31,82 @@ class MainWindowPluginViewsTestPeer {
  public:
   [[nodiscard]] static PluginPlotTabsController& pluginTabs(MainWindow& window) {
     return *window.plugin_plot_tabs_;
+  }
+
+  static void checkNewPlotLinkedZoom(MainWindow& window) {
+    auto& app = *window.session_;
+    app.sessionManager().setUseTimeOffset(false);
+    const auto dataset = pj_test::createDataset(app, "linked-zoom", true);
+    ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/signal", 0, 10'000'000'000), 0U);
+    const auto key = app.catalogModel().resolveCurveKey(0, u"linked-zoom"_s, {}, u"/signal"_s, u"value"_s);
+    ASSERT_TRUE(key);
+    auto* tabs = window.findChild<TabbedPlotWidget*>();
+    auto* docker = tabs->addTab(u"Linked zoom"_s);
+    auto* source_dock = docker->plotAt(0);
+    auto* source = source_dock->ensurePlotWidget();
+    ASSERT_NE(source->addCurve(*key), nullptr);
+    source->setZoomRectangle(QRectF(2.0, 8.0, 2.0, -10.0), false);
+    const auto original = source->currentBoundingRect();
+    auto* link = window.findChild<QAbstractButton*>(u"buttonLink"_s);
+    ASSERT_NE(link, nullptr);
+    link->setChecked(true);
+
+    auto* target_dock = source_dock->splitVertical();
+    ASSERT_NE(target_dock, nullptr);
+    ASSERT_TRUE(
+        QMetaObject::invokeMethod(
+            target_dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{*key})));
+    auto* target = target_dock->plotWidget();
+    ASSERT_NE(target, nullptr);
+    EXPECT_DOUBLE_EQ(target->currentBoundingRect().left(), 2.0);
+    EXPECT_DOUBLE_EQ(target->currentBoundingRect().right(), 4.0);
+    EXPECT_EQ(source->currentBoundingRect(), original);
+
+    auto* canvas_dock = target_dock->splitVertical();
+    ASSERT_NE(canvas_dock, nullptr);
+    auto* canvas = canvas_dock->ensurePlotWidget();
+    const auto drop_curve = [](PlotWidget* plot, const QString& curve_key) {
+      QMimeData mime;
+      QByteArray encoded;
+      QDataStream stream(&encoded, QIODevice::WriteOnly);
+      stream << curve_key;
+      mime.setData(u"curveslist/add_curve"_s, encoded);
+      QDragEnterEvent enter(QPoint(1, 1), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+      if (!QMetaObject::invokeMethod(plot, "onDragEnterEvent", Qt::DirectConnection, Q_ARG(QDragEnterEvent*, &enter)) ||
+          !enter.isAccepted()) {
+        return false;
+      }
+      QDropEvent drop(QPointF(1, 1), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+      return QMetaObject::invokeMethod(plot, "onDropEvent", Qt::DirectConnection, Q_ARG(QDropEvent*, &drop)) &&
+             drop.isAccepted();
+    };
+    ASSERT_TRUE(drop_curve(canvas, *key));
+    EXPECT_DOUBLE_EQ(canvas->currentBoundingRect().left(), 2.0);
+    EXPECT_DOUBLE_EQ(canvas->currentBoundingRect().right(), 4.0);
+    EXPECT_EQ(source->currentBoundingRect(), original);
+
+    ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/other", 0, 10'000'000'000), 0U);
+    const auto other = app.catalogModel().resolveCurveKey(0, u"linked-zoom"_s, {}, u"/other"_s, u"value"_s);
+    ASSERT_TRUE(other);
+    link->setChecked(false);
+    canvas->setZoomRectangle(QRectF(6.0, 8.0, 2.0, -10.0), false);
+    link->setChecked(true);
+    ASSERT_TRUE(drop_curve(canvas, *other));
+    EXPECT_DOUBLE_EQ(canvas->currentBoundingRect().left(), 6.0);
+    EXPECT_DOUBLE_EQ(canvas->currentBoundingRect().right(), 8.0);
+    EXPECT_EQ(source->currentBoundingRect(), original);
+
+    link->setChecked(false);
+    auto* unlinked_dock = target_dock->splitVertical();
+    ASSERT_NE(unlinked_dock, nullptr);
+    ASSERT_TRUE(
+        QMetaObject::invokeMethod(
+            unlinked_dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{*key})));
+    auto* unlinked = unlinked_dock->plotWidget();
+    ASSERT_NE(unlinked, nullptr);
+    EXPECT_LE(unlinked->currentBoundingRect().left(), 0.0);
+    EXPECT_GE(unlinked->currentBoundingRect().right(), 10.0);
+    EXPECT_EQ(source->currentBoundingRect(), original);
   }
 
   static void checkViewportIsolation(MainWindow& window) {
@@ -237,6 +318,10 @@ class MainWindowPluginViewsTest : public ::testing::Test {
 
 TEST_F(MainWindowPluginViewsTest, StableTabIdsAndExplicitSourceOffsets) {
   PJ::MainWindowPluginViewsTestPeer::check(*window_);
+}
+
+TEST_F(MainWindowPluginViewsTest, NewPlotInheritsLinkedTimeRangeWithoutChangingPeers) {
+  PJ::MainWindowPluginViewsTestPeer::checkNewPlotLinkedZoom(*window_);
 }
 
 // Claim: time-range zoom preserves Y and both zoom operations leave user and other-plugin plots untouched.

@@ -1,0 +1,37 @@
+name: Nix
+
+# The flake is community-maintained: it is checked on demand (Actions → Nix →
+# Run workflow) and on pull requests that touch it, never on every pull request.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - flake.nix
+      - flake.lock
+      - packaging/nix/**
+      - .github/workflows/nix.yml
+
+jobs:
+  build:
+    runs-on: depot-ubuntu-22.04-4
+    # A cold Nix store builds FFmpeg, Luau and the app from source.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+
+    steps:
+      # Full history: Nix rejects a shallow Git checkout as a flake source.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: Build the package and run its smoke checks
+        run: nix flake check --print-build-logs
+
+      - name: Embedded Python self-test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: nix run . -- --selftest-python
