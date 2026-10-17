@@ -543,8 +543,9 @@ struct DialogEngine::AsyncRunner {
       Q_UNUSED(target_memo)
       qWarning("DialogEngine: no browser content picker was provided for this plugin file request");
 #else
+      const FilePickerStart start = filePickerStart(view, widget_name);
       QString path = PJ::FileDialog::getOpenFileName(
-          dialog, QString::fromStdString(title), QString(), QString::fromStdString(filter));
+          dialog, QString::fromStdString(title), start.dir, QString::fromStdString(filter), start.name);
       if (!path.isEmpty()) {
         apply_selected_path(path.toStdString());
       }
@@ -566,7 +567,8 @@ struct DialogEngine::AsyncRunner {
       qWarning("DialogEngine: plugin folder pickers are unavailable on WebAssembly");
 #else
       auto title = view.folderPickerTitle(widget_name).value_or("Select Folder");
-      QString path = PJ::FileDialog::getExistingDirectory(dialog, QString::fromStdString(title));
+      QString path = PJ::FileDialog::getExistingDirectory(
+          dialog, QString::fromStdString(title), filePickerStart(view, widget_name).dir);
       if (!path.isEmpty()) {
         if (handle->sendEvent(widget_name, PJ::WidgetEventBuilder::folderSelected(path.toStdString()))) {
           std::string raw = handle->widget_data();
@@ -603,9 +605,10 @@ struct DialogEngine::AsyncRunner {
       auto filter = view.filePickerFilter(widget_name).value_or("");
       auto title = view.filePickerTitle(widget_name).value_or("Save File");
       auto suffix = view.saveFilePickerDefaultSuffix(widget_name).value_or("");
+      const FilePickerStart start = filePickerStart(view, widget_name);
       QString path = PJ::FileDialog::getSaveFileName(
-          dialog, QString::fromStdString(title), QString(), QString::fromStdString(filter),
-          QString::fromStdString(suffix));
+          dialog, QString::fromStdString(title), start.dir, QString::fromStdString(filter),
+          QString::fromStdString(suffix), start.name);
       if (!path.isEmpty()) {
         if (handle->sendEvent(widget_name, PJ::WidgetEventBuilder::fileSelected(path.toStdString()))) {
           std::string raw = handle->widget_data();

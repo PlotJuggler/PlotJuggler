@@ -38,14 +38,18 @@ class FileDialog : public Dialog {
   [[nodiscard]] QString selectedFile() const;
 
   // Drop-in replacements for QFileDialog::getOpenFileName / getSaveFileName.
-  static QString getOpenFileName(QWidget* parent, const QString& caption, const QString& dir, const QString& filter);
+  // A non-empty `selected_name` (a bare file name) is filled in as the
+  // suggestion, the way QFileDialog pre-selects a `dir` that names a file.
+  static QString getOpenFileName(
+      QWidget* parent, const QString& caption, const QString& dir, const QString& filter,
+      const QString& selected_name = QString());
   // Multi-select open (QFileDialog::ExistingFiles). Returns every chosen path,
   // empty on cancel.
   static QStringList getOpenFileNames(
       QWidget* parent, const QString& caption, const QString& dir, const QString& filter);
   static QString getSaveFileName(
       QWidget* parent, const QString& caption, const QString& dir, const QString& filter,
-      const QString& default_suffix = QString());
+      const QString& default_suffix = QString(), const QString& selected_name = QString());
   // Drop-in replacement for QFileDialog::getExistingDirectory (Directory mode +
   // ShowDirsOnly). Returns the chosen directory, empty on cancel.
   static QString getExistingDirectory(QWidget* parent, const QString& caption, const QString& dir = QString());

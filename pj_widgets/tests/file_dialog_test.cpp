@@ -7,6 +7,7 @@
 #include <QCheckBox>
 #include <QDir>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QTemporaryDir>
 #include <QTimer>
 
@@ -67,6 +68,31 @@ TEST_F(FileDialogTest, GetSaveFileNameWithOptionsCancelReturnsEmpty) {
   EXPECT_TRUE(result.path.isEmpty());
   ASSERT_EQ(result.option_states.size(), 1u);
   EXPECT_TRUE(result.option_states[0]);  // defaults preserved on cancel
+}
+
+// selected_name is filled in inside `dir`, the suggestion a plugin's structured
+// picker asks for. Compared canonically: macOS temp dirs sit behind a
+// /var -> /private/var symlink.
+TEST_F(FileDialogTest, GetSaveFileNameFillsInSelectedName) {
+  QTemporaryDir temp;
+  ASSERT_TRUE(temp.isValid());
+  QString shown;
+  QTimer::singleShot(0, [&shown] {
+    QWidget* active = QApplication::activeModalWidget();
+    ASSERT_NE(active, nullptr);
+    auto* file_dialog = active->findChild<QFileDialog*>();
+    ASSERT_NE(file_dialog, nullptr);
+    shown = file_dialog->selectedFiles().value(0);
+    QMetaObject::invokeMethod(file_dialog, "reject", Qt::QueuedConnection);
+  });
+
+  const QString path = PJ::FileDialog::getSaveFileName(
+      nullptr, u"Save"_s, temp.path(), u"HTML (*.html)"_s, u"html"_s, u"FT0017-AV.html"_s);
+
+  EXPECT_TRUE(path.isEmpty());
+  const QFileInfo info(shown);
+  EXPECT_EQ(info.dir().canonicalPath(), QDir(temp.path()).canonicalPath());
+  EXPECT_EQ(info.fileName(), u"FT0017-AV.html"_s);
 }
 
 }  // namespace

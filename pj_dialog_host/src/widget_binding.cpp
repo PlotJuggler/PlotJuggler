@@ -170,6 +170,18 @@ QString resolveNamedIconPath(std::string_view icon_name) {
   return {};
 }
 
+FilePickerStart filePickerStart(const WidgetDataView& view, std::string_view name) {
+  std::string error;
+  const auto options = view.filePickerOptions(name, &error);
+  if (!options) {
+    if (!error.empty()) {
+      qWarning("WidgetBinding: ignoring the file picker options of '%s': %s", std::string(name).c_str(), error.c_str());
+    }
+    return {};
+  }
+  return {QString::fromStdString(options->initial_directory), QString::fromStdString(options->suggested_name)};
+}
+
 namespace {
 
 // Human-readable nanosecond duration: "42s", "12m 30s", "3h 45m", "2d 5h 30m".

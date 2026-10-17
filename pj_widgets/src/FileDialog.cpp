@@ -156,7 +156,7 @@ QString FileDialog::selectedFile() const {
 }
 
 QString FileDialog::getOpenFileName(
-    QWidget* parent, const QString& caption, const QString& dir, const QString& filter) {
+    QWidget* parent, const QString& caption, const QString& dir, const QString& filter, const QString& selected_name) {
   FileDialog dlg(parent);
   if (!caption.isEmpty()) {
     dlg.setDialogTitle(caption);
@@ -168,6 +168,9 @@ QString FileDialog::getOpenFileName(
   }
   if (!filter.isEmpty()) {
     dlg.setNameFilter(filter);
+  }
+  if (!selected_name.isEmpty()) {
+    dlg.selectFile(selected_name);
   }
   if (dlg.exec() != QDialog::Accepted) {
     return {};
@@ -213,7 +216,8 @@ QString FileDialog::getExistingDirectory(QWidget* parent, const QString& caption
 }
 
 QString FileDialog::getSaveFileName(
-    QWidget* parent, const QString& caption, const QString& dir, const QString& filter, const QString& default_suffix) {
+    QWidget* parent, const QString& caption, const QString& dir, const QString& filter, const QString& default_suffix,
+    const QString& selected_name) {
   FileDialog dlg(parent);
   if (!caption.isEmpty()) {
     dlg.setDialogTitle(caption);
@@ -228,6 +232,9 @@ QString FileDialog::getSaveFileName(
   }
   if (!default_suffix.isEmpty()) {
     dlg.setDefaultSuffix(default_suffix);
+  }
+  if (!selected_name.isEmpty()) {
+    dlg.selectFile(selected_name);
   }
   if (dlg.exec() != QDialog::Accepted) {
     return {};

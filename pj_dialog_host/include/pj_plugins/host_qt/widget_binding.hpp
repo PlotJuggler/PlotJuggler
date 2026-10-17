@@ -33,6 +33,16 @@ using WidgetEventCallback = std::function<void(const std::string& widget_name, c
 /// source of truth so it can be unit-tested without constructing a dialog.
 QString resolveNamedIconPath(std::string_view icon_name);
 
+/// Where a plugin picker opens: a structured picker's initial_directory and
+/// suggested_name, kept apart so FileDialog never has to stat a path to tell
+/// them apart. Both empty for a legacy picker, and for a structured one that
+/// fails validation (logged), so the dialog keeps its default folder.
+struct FilePickerStart {
+  QString dir;
+  QString name;
+};
+FilePickerStart filePickerStart(const WidgetDataView& view, std::string_view name);
+
 class AppSession;
 class CatalogModel;
 

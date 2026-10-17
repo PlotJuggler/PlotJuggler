@@ -2859,4 +2859,29 @@ TEST(WidgetBindingTableDelta, UpdateCellsRewritesSortKeyNotJustText) {
   EXPECT_EQ(columnTexts(tw, 1), (std::vector<std::string>{"100", "200"}));
 }
 
+// A structured picker's initial_directory and suggested_name reach the file
+// dialog (GitHub #1453); a legacy or invalid picker leaves both empty.
+TEST(WidgetBindingFilePicker, StartComesFromStructuredOptions) {
+  PJ::FilePickerOptions save;
+  save.mode = PJ::FilePickerMode::SaveFile;
+  save.initial_directory = "/data/test";
+  save.suggested_name = "FT0017-AV.html";
+  PJ::FilePickerOptions invalid = save;
+  invalid.filters = {{"", "HTML", {"*.html"}}};  // an empty filter id fails validation
+
+  PJ::WidgetData wd;
+  wd.setFilePicker("save", "Save", save);
+  wd.setFilePicker("invalid", "Save", invalid);
+  wd.setFilePicker("legacy", "Open", "CSV (*.csv)", "Open");
+  const PJ::WidgetDataView view(wd.toJson());
+
+  const PJ::FilePickerStart start = PJ::filePickerStart(view, "save");
+  EXPECT_EQ(start.dir, u"/data/test"_s);
+  EXPECT_EQ(start.name, u"FT0017-AV.html"_s);
+  for (const char* name : {"invalid", "legacy"}) {
+    const PJ::FilePickerStart none = PJ::filePickerStart(view, name);
+    EXPECT_TRUE(none.dir.isEmpty() && none.name.isEmpty()) << name;
+  }
+}
+
 #include "widget_binding_test.moc"
