@@ -443,6 +443,18 @@ TEST(GridMapLayer, CanonicalCodecRouteStagesTheSameUpload) {
   EXPECT_FLOAT_EQ(bounds->max.z, 11.0f);
 }
 
+// TF R6: the layer reports the grid's own header stamp, which the view places it
+// at, not the store (log) time it was found at.
+TEST(GridMapLayer, RenderStampIsTheGridsOwnHeaderStamp) {
+  Rig rig;
+  ASSERT_TRUE(rig.session.objectStore()
+                  .pushOwned(rig.topic_id, /*logged=*/1000, PJ::serializeGridMap(makeGrid(960)))
+                  .has_value());
+  ASSERT_TRUE(rig.layer.attach(rig.ctx));
+  rig.layer.renderAtForTest(1000);
+  EXPECT_EQ(rig.layer.renderStamp(), PJ::fromRaw(960));
+}
+
 // Parser route: the parser does not validate, so the layer's validateGridMap()
 // call is what refuses the layout.
 TEST(GridMapLayer, ParserGridFailingValidationSurfacesWarningAndClears) {

@@ -10,12 +10,15 @@
 #include <string>
 #include <utility>
 
+#include "pj_base/time.hpp"
 #include "pj_scene3d_core/camera/camera.h"
 #include "pj_scene3d_core/pointcloud.h"  // PointVertex
 #include "pj_scene3d_widgets/layer_style.h"
 #include "pj_widgets/Colormap.h"
 
 namespace pj::scene3d {
+
+struct PlacementHold;
 
 // Non-owning renderer contract for point-like layers. QObject ownership,
 // decoding, persistence, and warnings remain in each concrete ISceneLayer; this
@@ -53,6 +56,15 @@ class PointRenderable {
   // Frame the vertices are expressed in (empty until data arrives). Distinct from
   // Scene3DLayer::sourceFrame() (a QString for the dock) so one class can implement both.
   [[nodiscard]] virtual const std::string& renderFrameId() const = 0;
+  /// The cloud's own stamp on the TF header clock, or nullopt to place it at the
+  /// cursor; see Scene3DLayer::renderStamp().
+  [[nodiscard]] virtual std::optional<PJ::Timepoint> renderStamp() const {
+    return std::nullopt;
+  }
+  /// The hold the view places the cloud with; see Scene3DLayer::placementHold().
+  [[nodiscard]] virtual PlacementHold* placementHold() const {
+    return nullptr;
+  }
   /// The finite extent of vertexBytes() in renderFrameId(); set whenever the cloud
   /// is non-empty (the point pass asserts it and does not scan).
   [[nodiscard]] virtual std::optional<AABB> sourceBounds() const = 0;

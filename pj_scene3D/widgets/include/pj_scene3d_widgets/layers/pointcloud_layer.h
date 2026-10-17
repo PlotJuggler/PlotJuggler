@@ -215,6 +215,12 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   [[nodiscard]] const std::string& renderFrameId() const override {
     return geometry_frame_;
   }
+  [[nodiscard]] std::optional<PJ::Timepoint> renderStamp() const override {
+    return geometry_stamp_;
+  }
+  [[nodiscard]] PlacementHold* placementHold() const override {
+    return Scene3DLayer::placementHold();
+  }
   [[nodiscard]] std::optional<AABB> sourceBounds() const override {
     return world_bounds_;
   }
@@ -408,6 +414,8 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   std::string source_frame_;
   // The frame of the committed geometry, which the view places it in.
   std::string geometry_frame_;
+  // The committed cloud's own stamp on the TF header clock (objectStamp()).
+  std::optional<PJ::Timepoint> geometry_stamp_;
   QString fixed_frame_;
   // The latest tracker time pushed to this layer; the Timepoint the cached VBO
   // was (re)decoded at. Used by refreshNow() to re-decode at the current playhead.

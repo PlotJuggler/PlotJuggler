@@ -555,7 +555,9 @@ std::uint64_t OccupancyGridLayer::renderKey(PJ::Timepoint time) const {
     const std::uint64_t update_uid = store->maxUidAtOrBefore(*updates_topic_, PJ::toRaw(time)).value;
     key ^= update_uid + 0x9e3779b97f4a7c15ULL + (key << 6U) + (key >> 2U);
   }
-  return foldFrameTransformIntoKey(key, ctx_.tf_buffer.get(), fixed_frame_, source_frame_, time);
+  // Cursor-placed (entry clock): the drawn grid is a keyframe plus later patches,
+  // with no single stamp to place it at.
+  return foldFrameTransformIntoKey(key, ctx_.tf_buffer.get(), fixed_frame_, source_frame_, std::nullopt, time, nullptr);
 }
 
 bool OccupancyGridLayer::prepareForRender(std::uint64_t remaining_view_cells) {

@@ -47,6 +47,7 @@
 #include "pj_scene3d_core/scene_limits.h"
 #include "pj_scene3d_core/shadow_camera.h"
 #include "pj_scene3d_core/tf/frame_picking.h"
+#include "pj_scene3d_core/tf/object_placement.h"
 #include "pj_scene3d_widgets/hud_overlay.h"
 #include "pj_scene3d_widgets/layers/grid_map_layer.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
@@ -413,7 +414,7 @@ std::optional<Transform> SceneViewWidget::followTransform(PJ::Timepoint time) co
   if (follow_frame_.empty() || tf_ == nullptr || fixed.empty()) {
     return std::nullopt;
   }
-  const auto transform = tf_->tryLookupTransform(fixed, follow_frame_, time);
+  const auto transform = tf_->tryLookupTransform(fixed, follow_frame_, time, pj::tf::Clock::kEntry);
   return transform ? std::optional<Transform>(*transform) : std::nullopt;
 }
 
@@ -422,7 +423,7 @@ void SceneViewWidget::applyFollow() {
   if (follow_frame_.empty() || tf_ == nullptr || fixed.empty()) {
     return;
   }
-  const auto transform = tf_->tryLookupTransform(fixed, follow_frame_, render_time_);
+  const auto transform = tf_->tryLookupTransform(fixed, follow_frame_, render_time_, pj::tf::Clock::kEntry);
   if (!transform) {
     follow_seeded_ = false;
     return;
@@ -623,26 +624,22 @@ void SceneViewWidget::refreshAvailableFrames() {
   }
 }
 
-// Places a layer's source frame in the fixed frame at render_time_: identity
-// when the frames match, nullopt when either frame is empty or TF cannot
-// resolve the pair this frame — the caller skips the layer without consuming
-// its per-view budget.
+// Places a layer's source frame in the fixed frame (placeObject(): at the object's
+// own stamp, else at render_time_, with the layer's hold); nullopt when either frame
+// is empty or TF cannot resolve the pair this frame — the caller skips the layer
+// without consuming its per-view budget. Even a frame equal to the fixed one goes
+// through placeObject(): a stamped object in a moving fixed frame stays where it was
+// captured, as the dock's scene bounds and the layer's render key place it.
 std::optional<Transform> SceneViewWidget::resolveFixedFromSource(
-    const std::string& source_frame, const std::string& fixed_frame) const {
+    const std::string& source_frame, const std::string& fixed_frame, std::optional<PJ::Timepoint> object_stamp,
+    PlacementHold* hold) const {
   if (source_frame.empty() || fixed_frame.empty()) {
     return std::nullopt;
   }
-  if (source_frame == fixed_frame) {
-    return Transform{};
-  }
   if (tf_ == nullptr) {
-    return std::nullopt;
+    return source_frame == fixed_frame ? std::optional<Transform>(Transform{}) : std::nullopt;
   }
-  const auto transform = tf_->tryLookupTransform(fixed_frame, source_frame, render_time_);
-  if (!transform.has_value()) {
-    return std::nullopt;
-  }
-  return *transform;
+  return placeObject(*tf_, fixed_frame, source_frame, object_stamp, render_time_, hold);
 }
 
 uint64_t SceneViewWidget::tfRenderKey(PJ::Timepoint time) const {
@@ -654,7 +651,7 @@ uint64_t SceneViewWidget::tfRenderKey(PJ::Timepoint time) const {
   uint64_t combined = 0;
   for (const std::string& frame : tf_render_key_frames_) {
     uint64_t hash = std::hash<std::string>{}(frame);
-    if (const auto transform = tf_->tryLookupTransform(fixed, frame, time); transform) {
+    if (const auto transform = tf_->tryLookupTransform(fixed, frame, time, pj::tf::Clock::kEntry); transform) {
       hash = foldTransformIntoKey(hash, transform->matrix());
     } else {
       hash ^= 0xD15C0FFEEULL;
@@ -715,7 +712,7 @@ void SceneViewWidget::buildTfTriads(const glm::dvec3& render_origin, const std::
   std::pair<std::size_t, std::size_t> hovered_arms{0, 0};
   tf_->getAllFrames(tf_triad_frames_);
   for (const std::string& frame : tf_triad_frames_) {
-    const auto transform = tf_->tryLookupTransform(fixed_frame, frame, render_time_);
+    const auto transform = tf_->tryLookupTransform(fixed_frame, frame, render_time_, pj::tf::Clock::kEntry);
     if (!transform) {
       continue;
     }
@@ -965,13 +962,6 @@ void SceneViewWidget::setRenderFailure(QString reason, bool emit_failed) {
     }
   }
 }
-
-// What admission decided for one frame: the effective fixed frame, resolved
-// once per frame. Filled once by admitFrame(); prepareFrame() reads it and no
-// later step re-admits a layer.
-struct SceneViewWidget::FrameAdmission {
-  std::string fixed_frame;
-};
 
 // The frame's camera: every matrix is relative to render_origin.
 struct SceneViewWidget::FrameView {
@@ -1291,8 +1281,10 @@ SceneViewWidget::TargetRequest SceneViewWidget::requestedTarget() const {
 void SceneViewWidget::admitFrame(QRhi* rhi, FrameAdmission& admission) {
   admission.fixed_frame = effectiveFixedFrame();
   const std::string& fixed_frame = admission.fixed_frame;
-  const PlaceFn place = [this, &fixed_frame](const std::string& source_frame) {
-    return resolveFixedFromSource(source_frame, fixed_frame);
+  const PlaceFn place = [this, &fixed_frame](
+                            const std::string& source_frame, std::optional<PJ::Timepoint> object_stamp,
+                            PlacementHold* hold) {
+    return resolveFixedFromSource(source_frame, fixed_frame, object_stamp, hold);
   };
   point_pass_->admit(place);
   pose_pass_->admit(place);
@@ -1707,7 +1699,7 @@ std::optional<std::string> SceneViewWidget::frameAt(const QPointF& logical_pos) 
   pick_points_.clear();
   for (const std::string& frame : pick_frames_) {
     std::optional<glm::vec2> projected;
-    if (const auto transform = tf_->tryLookupTransform(fixed, frame, render_time_); transform) {
+    if (const auto transform = tf_->tryLookupTransform(fixed, frame, render_time_, pj::tf::Clock::kEntry); transform) {
       projected = projectToWidget(transform->t);
     }
     pick_points_.push_back(projected.value_or(glm::vec2(-1.0e6F)));
@@ -1772,7 +1764,9 @@ void SceneViewWidget::prepareOverlays(
   if (hovered_frame_.has_value() && axes_visible_ && tf_ != nullptr && !fixed_frame.empty()) {
     // Re-project the live origin so the label follows streaming TF and the camera.
     std::optional<glm::vec2> anchor;
-    if (const auto transform = tf_->tryLookupTransform(fixed_frame, *hovered_frame_, render_time_); transform) {
+    if (const auto transform =
+            tf_->tryLookupTransform(fixed_frame, *hovered_frame_, render_time_, pj::tf::Clock::kEntry);
+        transform) {
       anchor = projectToWidget(transform->t);
     }
     if (anchor.has_value()) {

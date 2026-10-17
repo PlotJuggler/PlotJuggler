@@ -37,7 +37,9 @@
 #include "mock_parser_support.h"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/compressed_point_cloud.hpp"
+#include "pj_base/builtin/compressed_point_cloud_codec.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
+#include "pj_datastore/merge_result.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
@@ -156,6 +158,29 @@ struct Harness {
 void drainDecode(pj::scene3d::PointCloudLayer& layer) {
   const bool settled = pumpUntil([&layer] { return !layer.decodeInFlightForTest(); }, std::chrono::seconds(10));
   ASSERT_TRUE(settled) << "compressed decode chain never settled";
+}
+
+// TF R6: attach() starts decoding a time-shifted merge's first compressed cloud, and
+// its own renderAt finds that decode running. The decoded cloud must still carry its
+// stamp on the dataset clock, as a raw cloud does (pointcloud_layer_cache_test).
+TEST(PointCloudLayerCoalescing, BootstrapDecodeCarriesTheMergeShiftedStamp) {
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  (void)registerObjectTopic(session, "/anchor", /*dataset_id=*/1);
+  const PJ::ObjectTopicId topic_id = registerObjectTopic(session, "/cloud", /*dataset_id=*/2);
+  ASSERT_TRUE(
+      store.pushOwned(topic_id, /*logged=*/1000, PJ::serializeCompressedPointCloud(wrapValid(960))).has_value());
+  constexpr PJ::Timestamp kShift = 5000;
+  ASSERT_TRUE(store.mergeDatasets(/*anchor_id=*/1, {PJ::DatasetMergeSource{.dataset_id = 2, .raw_shift_ns = kShift}})
+                  .has_value());
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session;
+  pj::scene3d::PointCloudLayer layer(topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kCompressedPointCloud);
+  ASSERT_TRUE(layer.attach(ctx));
+  drainDecode(layer);
+  ASSERT_EQ(layer.renderFrameId(), "lidar");
+  EXPECT_EQ(layer.renderStamp(), PJ::fromRaw(960 + kShift));
 }
 
 // (a) Three rapid requests A,B,C while A is inflight collapse B: pending_ holds

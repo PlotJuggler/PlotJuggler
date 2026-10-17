@@ -142,6 +142,15 @@ class SceneViewTestAccess {
   // The mask target and the model pass's mask pipelines exist.
   [[nodiscard]] static bool edlResourcesReady(const SceneViewWidget& view);
 
+  // ---- Placement without a display ----
+  // Frame contract step 1 (every family's layers admitted and placed) and the TF
+  // triads, at the view's tracker time, without a QRhi: what render() places.
+  static void admitFrame(SceneViewWidget& view);
+  // The TF triad arms admitFrame() or the last render built, relative to the render origin.
+  [[nodiscard]] static const std::vector<PoseTriadInstance>& tfTriads(const SceneViewWidget& view) {
+    return view.tf_triad_instances_;
+  }
+
   // ---- Test overrides ----
   // Holds `stage` down as a failure would (its capability error names the
   // override; the browser acceptance specs match it), or lets it build again.

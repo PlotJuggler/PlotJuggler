@@ -89,6 +89,9 @@ class PosesInFrameLayer : public Scene3DLayer {
   [[nodiscard]] const std::string& renderFrameId() const override {
     return source_frame_;
   }
+  [[nodiscard]] std::optional<PJ::Timepoint> renderStamp() const override {
+    return render_stamp_;
+  }
   [[nodiscard]] bool visible() const {
     return visible_;
   }
@@ -202,6 +205,7 @@ class PosesInFrameLayer : public Scene3DLayer {
   // re-registers the topic's parser slot can never leave a dangling pointer.
 
   std::string source_frame_;
+  std::optional<PJ::Timepoint> render_stamp_;  // objectStamp() of the staged sample
   // Last fixed frame pushed by the dock: renderKey folds fixed<-source, and a
   // trail enabled later rebuilds against it (the gizmos re-resolve per paint).
   QString fixed_frame_;

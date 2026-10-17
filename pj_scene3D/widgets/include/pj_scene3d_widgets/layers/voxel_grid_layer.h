@@ -108,6 +108,9 @@ class VoxelGridLayer : public Scene3DLayer {
   [[nodiscard]] const std::string& renderFrameId() const override {
     return source_frame_;
   }
+  [[nodiscard]] std::optional<PJ::Timepoint> renderStamp() const override {
+    return render_stamp_;
+  }
   [[nodiscard]] std::optional<AABB> sourceBounds() const {
     return source_bounds_.valid ? std::optional<AABB>{source_bounds_} : std::nullopt;
   }
@@ -214,7 +217,8 @@ class VoxelGridLayer : public Scene3DLayer {
   std::string uploaded_field_setting_{"\x01"};  // sentinel != any real "" / name
 
   std::string source_frame_;
-  std::string fixed_frame_;  // the dock's; renderKey folds fixed<-source
+  std::optional<PJ::Timepoint> render_stamp_;  // objectStamp() of the staged sample
+  std::string fixed_frame_;                    // the dock's; renderKey folds fixed<-source
   // Set by setTrackerTime / a field change; drained once per painted frame.
   bool tracker_dirty_ = false;
   std::optional<PJ::Timepoint> requested_time_;

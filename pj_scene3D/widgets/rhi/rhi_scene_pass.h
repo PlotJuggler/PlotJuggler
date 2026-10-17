@@ -52,6 +52,7 @@ namespace pj::scene3d {
 using pj::tf::Transform;
 
 struct ArrowMeshData;
+struct PlacementHold;
 
 /// The scene passes that replay the prepared draw list with different targets.
 enum class ScenePass {
@@ -222,10 +223,12 @@ struct RhiSharedGeometry {
   void release();
 };
 
-/// Places a source frame in the fixed frame at the frame's render time; nullopt
-/// when it cannot be placed this frame (the family then skips the layer without
-/// consuming its budget).
-using PlaceFn = std::function<std::optional<Transform>(const std::string& source_frame)>;
+/// Places a source frame in the fixed frame (placeObject()): a stamped object at its
+/// own stamp, else at the frame's render time (the cursor), with the layer's
+/// placement hold (nullable); nullopt when it cannot be placed this frame (the
+/// family then skips the layer without consuming its budget).
+using PlaceFn = std::function<std::optional<Transform>(
+    const std::string& source_frame, std::optional<PJ::Timepoint> object_stamp, PlacementHold* hold)>;
 
 /// An admitted layer and its placement, the record admit() hands prepare().
 template <typename Layer>
@@ -399,7 +402,7 @@ AABB admitLayers(
       pruneLayerGpu(layer_gpu, layer, release);
       continue;
     }
-    const std::optional<Transform> placed = place(layer->renderFrameId());
+    const std::optional<Transform> placed = place(layer->renderFrameId(), layer->renderStamp(), layer->placementHold());
     if (!placed.has_value() || !tryConsumeBudget(cost(layer), remaining)) {
       continue;
     }

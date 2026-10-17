@@ -234,7 +234,9 @@ void ModelRhiPass::admit(const PlaceFn& place, const MeshShadingParams& shading,
       if (mesh == layer->modelMeshes().end() || mesh->second == nullptr || !mesh->second->ok || draw.frame_id.empty()) {
         continue;
       }
-      const auto placed = place(draw.frame_id);
+      // Cursor-placed (entry clock): a robot model's links ARE TF frames, and
+      // scene-entity models follow the marker rule.
+      const auto placed = place(draw.frame_id, std::nullopt, nullptr);
       if (!placed.has_value()) {
         continue;
       }

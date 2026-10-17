@@ -1031,11 +1031,11 @@ TEST(RobotModelLayerTest, FixedJointBridgeReconnectsChildFrameInRenderBuffer) {
   // publishes base_link under scene but never the fixed-joint child gripper_base.
   pj::tf::TransformBuffer live;
   seedSceneChild(live, "base_link");
-  EXPECT_FALSE(live.tryLookupTransform("scene", "gripper_base", PJ::fromRaw(2000)).has_value());
+  EXPECT_FALSE(live.tryLookupTransform("scene", "gripper_base", PJ::fromRaw(2000), pj::tf::Clock::kHeader).has_value());
 
   layer.ensureStaticBridgesForTest(live);
 
-  const auto tf = live.tryLookupTransform("scene", "gripper_base", PJ::fromRaw(2000));
+  const auto tf = live.tryLookupTransform("scene", "gripper_base", PJ::fromRaw(2000), pj::tf::Clock::kHeader);
   ASSERT_TRUE(tf.has_value()) << "fixed-joint mount must be bridged into the LIVE render buffer";
   EXPECT_NEAR(tf->t.z, 0.1, 1e-9);
 }
@@ -1059,7 +1059,7 @@ TEST(RobotModelLayerTest, FixedJointBridgeAppliesFramePrefix) {
 
   layer.ensureStaticBridgesForTest(live);
 
-  const auto tf = live.tryLookupTransform("scene", "robot1/gripper_base", PJ::fromRaw(2000));
+  const auto tf = live.tryLookupTransform("scene", "robot1/gripper_base", PJ::fromRaw(2000), pj::tf::Clock::kHeader);
   ASSERT_TRUE(tf.has_value()) << "prefixed bridge frame should resolve in the render buffer";
   EXPECT_NEAR(tf->t.z, 0.1, 1e-9);
 }

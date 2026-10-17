@@ -64,7 +64,8 @@ ModelDrawCall drawOf(ModelDrawGroup group, glm::dvec3 translation) {
 }
 
 // "map" sits 5 m above the fixed frame; nothing else can be placed.
-std::optional<Transform> placeMap(const std::string& source_frame) {
+std::optional<Transform> placeMap(
+    const std::string& source_frame, std::optional<PJ::Timepoint> /*object_stamp*/, PlacementHold* /*hold*/) {
   if (source_frame != "map") {
     return std::nullopt;
   }

@@ -21,6 +21,7 @@
 #include "pj_base/builtin/grid_map_codec.hpp"    // validateGridMap
 #include "pj_base/time.hpp"                      // PJ::toRaw
 #include "pj_scene3d_core/pointcloud_convert.h"  // findField
+#include "pj_scene3d_core/tf/object_placement.h"
 #include "pj_scene3d_widgets/resolve_object.h"
 #include "pj_tf/tf_buffer.h"
 #include "pj_widgets/ComboBox.h"
@@ -92,7 +93,8 @@ uint64_t GridMapLayer::renderKey(PJ::Timepoint time) const {
   uint64_t key =
       0x9e3779b97f4a7c15ULL ^
       PJ::latestEntryRenderKey(ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_, time);
-  return foldFrameTransformIntoKey(key, ctx_.tf_buffer.get(), fixed_frame_.toStdString(), source_frame_, time);
+  return foldFrameTransformIntoKey(
+      key, ctx_.tf_buffer.get(), fixed_frame_.toStdString(), source_frame_, render_stamp_, time, placementHold());
 }
 
 QDomElement GridMapLayer::xmlSaveState(QDomDocument& doc) const {
@@ -330,6 +332,7 @@ void GridMapLayer::renderAt(int64_t time_ns) {
     cached_grid_uid_ = entry->sequential_uid;
   }
   const PJ::sdk::GridMap& grid = *cached_grid_;
+  render_stamp_ = objectStamp(grid.timestamp_ns, entry->payload_stamp_shift);
 
   if (grid.frame_id != source_frame_) {
     source_frame_ = grid.frame_id;

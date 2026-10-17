@@ -46,6 +46,7 @@
 #include "pj_scene3d_core/pointcloud_codecs.h"
 #include "pj_scene3d_core/pointcloud_convert.h"  // planPointVertices, packPointVertices
 #include "pj_scene3d_core/scene_limits.h"
+#include "pj_scene3d_core/tf/object_placement.h"
 #include "pj_scene3d_widgets/resolve_object.h"  // resolveObject, hasCanonical3DCodec
 #include "pj_scene3d_widgets/retained_upload.h"
 #include "pj_tf/tf_buffer.h"  // source->fixed lookup for world-axis range
@@ -154,6 +155,22 @@ QString toggleButtonQss(PJ::theme::Theme active_theme) {
       .arg(qssColor(PJ::theme::interaction(PJ::theme::Variant::Accent, PJ::theme::State::Nominal, active_theme)))
       .arg(qssColor(PJ::theme::interaction(PJ::theme::Variant::Accent, PJ::theme::State::Hovered, active_theme)))
       .arg(qssColor(PJ::theme::interaction(PJ::theme::Variant::Accent, PJ::theme::State::Checked, active_theme)));
+}
+
+// Moves a freshly decoded cloud's own stamp onto the dataset clock, as TF ingest
+// moves transform stamps: a time-shifted merge leaves payload stamps unshifted.
+// Done once at decode (the record is still its single owner), so the async
+// decode, the decode cache and every re-push carry it. An unstamped cloud stays 0.
+void shiftStampToDatasetClock(PJ::sdk::BuiltinObject& object, PJ::Timestamp payload_stamp_shift) {
+  PJ::Timestamp* stamp = nullptr;
+  if (auto* cloud = object.get<PointCloud>(); cloud != nullptr) {
+    stamp = &cloud->timestamp_ns;
+  } else if (auto* compressed = object.get<CompressedPointCloud>(); compressed != nullptr) {
+    stamp = &compressed->timestamp_ns;
+  }
+  if (stamp != nullptr && *stamp != 0) {
+    *stamp += payload_stamp_shift;
+  }
 }
 
 }  // namespace
@@ -430,7 +447,8 @@ uint64_t PointCloudLayer::renderKey(PJ::Timepoint time) const {
   // Fixed←source transform (zero-order hold, so it is constant between TF samples —
   // that is what lets a 60 Hz playhead coalesce down to the TF update rate). Folding
   // the matrix also captures colour-by-axis recolouring, a pure function of it.
-  return foldFrameTransformIntoKey(key, ctx_.tf_buffer.get(), fixed_frame_.toStdString(), source_frame_, time);
+  return foldFrameTransformIntoKey(
+      key, ctx_.tf_buffer.get(), fixed_frame_.toStdString(), source_frame_, geometry_stamp_, time, placementHold());
 }
 
 void PointCloudLayer::setVisible(bool visible) {
@@ -988,6 +1006,7 @@ bool PointCloudLayer::bootstrap() {
     qCWarning(lcPointCloudLayer) << "bootstrap parseObject failed:" << QString::fromStdString(obj.error());
     return false;
   }
+  shiftStampToDatasetClock(obj->object, first->payload_stamp_shift);
   // Compressed topic (Draco / Cloudini): the wrapper gives frame_id without a
   // decode, but the field list needs one. Decode the first sample asynchronously so
   // attach never blocks the UI — fields populate when the result lands.
@@ -1061,8 +1080,9 @@ std::optional<std::pair<float, float>> PointCloudLayer::currentWorldAxisRange(in
   if (!world_bounds_ || ctx_.tf_buffer == nullptr || !decoded_at_ns_) {
     return std::nullopt;
   }
-  // fixed<-source at the tracker time — the same transform the render pass applies.
-  const auto tf = ctx_.tf_buffer->tryLookupTransform(fixed_frame_.toStdString(), geometry_frame_, *decoded_at_ns_);
+  // The same placement the render pass applies.
+  const auto tf = placeObject(
+      *ctx_.tf_buffer, fixed_frame_.toStdString(), geometry_frame_, geometry_stamp_, *decoded_at_ns_, placementHold());
   if (!tf) {
     return std::nullopt;
   }
@@ -1128,6 +1148,7 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id, [[maybe_un
   setDataWarning({});
   last_pushed_id_ = id;
   geometry_frame_ = cloud.frame_id;
+  geometry_stamp_ = objectStamp(cloud.timestamp_ns, /*payload_stamp_shift=*/0);  // shifted at decode
   last_pushed_color_field_ = color_field_;
   last_pushed_rgb_ = rgb_mode;
   last_pushed_scalar_ = storesScalar();
@@ -1202,6 +1223,7 @@ void PointCloudLayer::renderAt(int64_t time_ns) {
     failSample(id, tr("Point cloud could not be decoded: %1").arg(QString::fromStdString(obj.error())));
     return;
   }
+  shiftStampToDatasetClock(obj->object, resolved->payload_stamp_shift);
 
   // The mode is derived per-sample rather than latched at bootstrap, so a topic
   // whose first sample arrives only after attach (failed bootstrap) still renders.
@@ -1446,6 +1468,7 @@ void PointCloudLayer::rederivePushedSample() {
     failSample(id, tr("Point cloud could not be decoded: %1").arg(QString::fromStdString(obj.error())));
     return;
   }
+  shiftStampToDatasetClock(obj->object, resolved->payload_stamp_shift);
   if (const auto* cpc = obj->object.get<CompressedPointCloud>()) {
     // The decode cache holds another sample: decode off the UI thread, and the
     // cloud reappears when it lands (unless the tracker already wants another).

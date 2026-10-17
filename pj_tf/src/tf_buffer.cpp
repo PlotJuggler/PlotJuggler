@@ -37,6 +37,10 @@ bool isFinite(const glm::dquat& q) {
 }  // namespace
 
 PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const StampedTransform& tf) {
+  return setTransform(tf, tf.stamp);
+}
+
+PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const StampedTransform& tf, TimePoint entry_time) {
   std::unique_lock lock(parents_mutex_);
 
   // Validate the wire data BEFORE the structural checks (and before
@@ -82,34 +86,60 @@ PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const Stampe
   auto& history = link.history;
   auto& samples = history.samples;
   const bool first_sample = samples.empty();
+  // A fresh sample enters with no entry key; knownBy() then sets it and restores the
+  // suffix minimum over the earlier samples.
+  constexpr TimePoint kNotYetKnown = TimePoint::max();
   bool changed = true;
-  if (first_sample || tf.stamp > samples.back().first) {
-    // Exact under zero-order hold for in-order arrival. Accepted trade-off: an
-    // out-of-order sample landing inside a run of skipped repeats keeps its value
-    // until the next stored sample, where the full history would have returned the
-    // repeated value again (rare; exact handling would need the skipped stamps).
-    changed = first_sample || samples.back().second != normalized;
-    if (changed) {
-      samples.emplace_back(tf.stamp, normalized);
+  if (first_sample || tf.stamp > samples.back().stamp) {
+    // Exact under zero-order hold for in-order arrival, in both clocks: a skipped
+    // repeat's entry time is folded into the stored sample it repeats. Accepted
+    // trade-off: an out-of-order sample landing inside a run of skipped repeats
+    // keeps its value until the next stored sample, where the full history would
+    // have returned the repeated value again (rare; exact handling would need the
+    // skipped stamps).
+    if (!first_sample && samples.back().value == normalized) {
+      changed = knownBy(samples, samples.size() - 1, entry_time);
+    } else {
+      samples.push_back({tf.stamp, kNotYetKnown, normalized});
+      (void)knownBy(samples, samples.size() - 1, entry_time);
     }
   } else {
-    auto it = std::lower_bound(samples.begin(), samples.end(), tf.stamp, EdgeHistory::lessStamp);
-    if (it != samples.end() && it->first == tf.stamp) {
-      changed = it->second != normalized;
-      it->second = normalized;
+    // Not past the back, so `it` is a stored sample (same stamp or the next newer).
+    auto it = std::lower_bound(samples.begin(), samples.end(), tf.stamp, EdgeHistory::KeyLess{Clock::kHeader});
+    const auto index = static_cast<std::size_t>(it - samples.begin());
+    if (it->stamp == tf.stamp) {
+      // Same stamp: the new value applies from the sample's earliest entry key on
+      // (the entry clock cannot hold two values for one stamp).
+      changed = it->value != normalized;
+      it->value = normalized;
+      changed = knownBy(samples, index, entry_time) || changed;
     } else {
-      samples.insert(it, {tf.stamp, normalized});
+      // `it` is the next-newer sample, which bounds the new key (suffix minimum).
+      const TimePoint key = std::min(entry_time, it->entry);
+      samples.insert(it, {tf.stamp, kNotYetKnown, normalized});
+      (void)knownBy(samples, index, key);
     }
   }
 
   history.newest_stamp = first_sample ? tf.stamp : std::max(history.newest_stamp, tf.stamp);
-  // A skipped repeat still advances newest_stamp and can evict, which changes what
-  // lookups resolve, so eviction alone also counts as a change.
+  history.newest_entry = first_sample ? entry_time : std::max(history.newest_entry, entry_time);
+  // A skipped repeat still advances the newest stamp and entry time and can evict,
+  // which changes what lookups resolve, so eviction alone also counts as a change.
   const bool evicted = evictEdgeLocked(history);
   if (changed || evicted) {
     ++revision_;
   }
   return {};
+}
+
+bool TransformBuffer::knownBy(std::deque<EdgeHistory::Sample>& samples, std::size_t index, TimePoint entry_time) {
+  bool lowered = false;
+  // Earlier keys are non-decreasing, so the walk stops at the first one already known.
+  for (std::size_t position = index + 1; position-- > 0 && samples[position].entry > entry_time;) {
+    samples[position].entry = entry_time;
+    lowered = true;
+  }
+  return lowered;
 }
 
 bool TransformBuffer::evictEdgeLocked(EdgeHistory& history) const {
@@ -125,34 +155,38 @@ bool TransformBuffer::evictEdgeLocked(EdgeHistory& history) const {
   // so the guard is presently belt-and-suspenders, but it pins the invariant
   // should eviction ever switch to a global clock.)
   //
-  // The front goes only once its successor is at or before the cutoff: the newest
-  // sample at or before the cutoff holds the value valid there, and with repeats
-  // skipped it may be far older than the cutoff.
+  // The front goes only once its successor is at or before the cutoff in BOTH
+  // clocks: the newest sample at or before a clock's cutoff holds the value valid
+  // there, and with repeats skipped it may be far older than the cutoff. The entry
+  // cutoff keeps the cursor's live window (the store retains by entry time); the
+  // header cutoff keeps recent objects' own stamps resolvable.
   if (samples.empty() || cache_window_ >= kKeepAll) {
     return false;
   }
-  const auto cutoff = history.newest_stamp - cache_window_;
+  const auto header_cutoff = history.newest_stamp - cache_window_;
+  const auto entry_cutoff = history.newest_entry - cache_window_;
   bool evicted = false;
-  while (samples.size() > 1 && samples[1].first <= cutoff) {
+  while (samples.size() > 1 && samples[1].stamp <= header_cutoff && samples[1].entry <= entry_cutoff) {
     samples.pop_front();
     evicted = true;
   }
   return evicted;
 }
 
-std::optional<Transform> TransformBuffer::sampleAt(const EdgeHistory& h, TimePoint t) {
+std::optional<Transform> TransformBuffer::sampleAt(const EdgeHistory& h, TimePoint t, Clock clock) {
   if (h.samples.empty()) {
     return std::nullopt;
   }
-  // Nearest-previous (zero-order hold): the newest sample at or before `t`. A
-  // single-sample edge therefore resolves at every t >= its stamp. A query
-  // strictly before the first sample has no value yet (the frame had not been
-  // announced at that time) -> nullopt.
-  auto hi = std::upper_bound(h.samples.begin(), h.samples.end(), t, EdgeHistory::stampLess);
+  // Nearest-previous (zero-order hold) in `clock`: the last sample whose key is at
+  // or before `t` (both keys are non-decreasing along the deque). A single-sample
+  // edge therefore resolves at every t >= its key. A query strictly before the
+  // first key has no value yet (the frame had not been announced, or had not
+  // arrived, at that time) -> nullopt.
+  auto hi = std::upper_bound(h.samples.begin(), h.samples.end(), t, EdgeHistory::KeyLess{clock});
   if (hi == h.samples.begin()) {
     return std::nullopt;
   }
-  return std::prev(hi)->second;
+  return std::prev(hi)->value;
 }
 
 void TransformBuffer::chainToRoot(const std::string& frame, std::vector<ChainHop>& out) const {
@@ -207,7 +241,7 @@ bool TransformBuffer::isKnownFrame(const std::string& frame) const {
 }
 
 PJ::Expected<Transform, LookupError> TransformBuffer::lookupTransformImpl(
-    const std::string& target, const std::string& source, TimePoint stamp) const {
+    const std::string& target, const std::string& source, TimePoint stamp, Clock clock) const {
   if (target == source) {
     return Transform::identity();
   }
@@ -238,7 +272,7 @@ PJ::Expected<Transform, LookupError> TransformBuffer::lookupTransformImpl(
   // common ancestor carries a non-null edge (only the root hop is null).
   Transform t_common_from_source = Transform::identity();
   for (std::size_t i = 0; i < meet.src_k; ++i) {
-    const auto sample = sampleAt(src_chain[i].link->history, stamp);
+    const auto sample = sampleAt(src_chain[i].link->history, stamp, clock);
     if (!sample) {
       return PJ::unexpected(LookupError::kNoSampleAtTime);
     }
@@ -247,7 +281,7 @@ PJ::Expected<Transform, LookupError> TransformBuffer::lookupTransformImpl(
 
   Transform t_common_from_target = Transform::identity();
   for (std::size_t i = 0; i < meet.tgt_k; ++i) {
-    const auto sample = sampleAt(tgt_chain[i].link->history, stamp);
+    const auto sample = sampleAt(tgt_chain[i].link->history, stamp, clock);
     if (!sample) {
       return PJ::unexpected(LookupError::kNoSampleAtTime);
     }
@@ -258,10 +292,10 @@ PJ::Expected<Transform, LookupError> TransformBuffer::lookupTransformImpl(
 }
 
 Transform TransformBuffer::lookupTransform(
-    const std::string& target, const std::string& source, TimePoint stamp) const {
+    const std::string& target, const std::string& source, TimePoint stamp, Clock clock) const {
   // Thin wrapper: delegate to the non-throwing accessor (which takes the lock)
   // and surface the LookupError as a message for tf2-style callers.
-  auto result = tryLookupTransform(target, source, stamp);
+  auto result = tryLookupTransform(target, source, stamp, clock);
   if (!result) {
     throw std::runtime_error("pj_scene3d: no transform from '" + source + "' to '" + target + "' at requested time");
   }
@@ -269,9 +303,9 @@ Transform TransformBuffer::lookupTransform(
 }
 
 PJ::Expected<Transform, LookupError> TransformBuffer::tryLookupTransform(
-    const std::string& target, const std::string& source, TimePoint stamp) const {
+    const std::string& target, const std::string& source, TimePoint stamp, Clock clock) const {
   std::shared_lock lock(parents_mutex_);
-  return lookupTransformImpl(target, source, stamp);
+  return lookupTransformImpl(target, source, stamp, clock);
 }
 
 bool TransformBuffer::areConnected(const std::string& target, const std::string& source) const {
@@ -286,7 +320,15 @@ bool TransformBuffer::areConnected(const std::string& target, const std::string&
   return findCommonAncestor(src_chain, tgt_chain).found;
 }
 
-std::optional<TimePoint> TransformBuffer::latestCommonTime(const std::string& target, const std::string& source) const {
+std::string TransformBuffer::rootOf(const std::string& frame) const {
+  std::shared_lock lock(parents_mutex_);
+  static thread_local std::vector<ChainHop> chain;
+  chainToRoot(frame, chain);
+  return chain.back().frame;
+}
+
+std::optional<TimePoint> TransformBuffer::latestCommonTime(
+    const std::string& target, const std::string& source, Clock clock) const {
   std::shared_lock lock(parents_mutex_);
 
   static thread_local std::vector<ChainHop> tgt_chain;
@@ -302,13 +344,14 @@ std::optional<TimePoint> TransformBuffer::latestCommonTime(const std::string& ta
   // Newest time bounded by every edge that received more than one stamp. Edges
   // published at a single stamp (the static case) hold for all time, so they
   // impose no upper bound.
-  auto walk = [](const std::vector<ChainHop>& chain, std::size_t k, std::optional<TimePoint>& acc) {
+  auto walk = [clock](const std::vector<ChainHop>& chain, std::size_t k, std::optional<TimePoint>& acc) {
     for (std::size_t i = 0; i < k; ++i) {
       const auto& edge = chain[i].link->history;
       if (!edge.receivedMultipleStamps()) {
         continue;
       }
-      acc = acc ? std::min(*acc, edge.newest_stamp) : edge.newest_stamp;
+      const TimePoint newest = clock == Clock::kHeader ? edge.newest_stamp : edge.newest_entry;
+      acc = acc ? std::min(*acc, newest) : newest;
     }
   };
 
@@ -319,7 +362,7 @@ std::optional<TimePoint> TransformBuffer::latestCommonTime(const std::string& ta
 }
 
 void TransformBuffer::chainSampleTimes(
-    const std::string& target, const std::string& source, TimePoint lo, TimePoint hi,
+    const std::string& target, const std::string& source, TimePoint lo, TimePoint hi, Clock clock,
     std::vector<TimePoint>& out) const {
   out.clear();
   if (lo > hi) {
@@ -334,13 +377,13 @@ void TransformBuffer::chainSampleTimes(
   if (!meet.found) {
     return;
   }
-  const auto append_edge_stamps = [&out, lo, hi](const std::vector<ChainHop>& chain, std::size_t hops) {
+  const auto append_edge_stamps = [&out, lo, hi, clock](const std::vector<ChainHop>& chain, std::size_t hops) {
     for (std::size_t hop = 0; hop < hops; ++hop) {
       const auto& samples = chain[hop].link->history.samples;
-      auto first = std::lower_bound(samples.begin(), samples.end(), lo, EdgeHistory::lessStamp);
-      const auto last = std::upper_bound(samples.begin(), samples.end(), hi, EdgeHistory::stampLess);
+      auto first = std::lower_bound(samples.begin(), samples.end(), lo, EdgeHistory::KeyLess{clock});
+      const auto last = std::upper_bound(samples.begin(), samples.end(), hi, EdgeHistory::KeyLess{clock});
       for (; first != last; ++first) {
-        out.push_back(first->first);
+        out.push_back(EdgeHistory::key(*first, clock));
       }
     }
   };

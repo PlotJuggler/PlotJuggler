@@ -125,6 +125,12 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
   [[nodiscard]] const std::string& renderFrameId() const override {
     return render_frame_;
   }
+  [[nodiscard]] std::optional<PJ::Timepoint> renderStamp() const override {
+    return render_stamp_;
+  }
+  [[nodiscard]] PlacementHold* placementHold() const override {
+    return Scene3DLayer::placementHold();
+  }
   [[nodiscard]] std::optional<AABB> sourceBounds() const override {
     return world_bounds_;
   }
@@ -243,6 +249,7 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
     ProjectionKey key;
     float min_depth_m = 0.0f;
     float max_depth_m = 0.0f;
+    std::optional<PJ::Timepoint> stamp;  // the image's objectStamp(), handed back with the result
   };
   struct BackprojectResult {
     ProjectionKey key;
@@ -251,6 +258,7 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
     AABB bounds;
     std::pair<float, float> scalar_range{0.0f, 1.0f};
     QString error;  // non-empty: the sample renders nothing and warns
+    std::optional<PJ::Timepoint> stamp;
   };
   // The worker job.
   [[nodiscard]] static BackprojectResult backproject(const BackprojectRequest& request);
@@ -342,6 +350,7 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
   std::uint64_t geometry_revision_ = 0;
   std::pair<float, float> scalar_range_{0.0f, 1.0f};
   std::string render_frame_;
+  std::optional<PJ::Timepoint> render_stamp_;  // objectStamp() of the drawn depth image
   // Point count and candidate of a cloud dropped for the view budget.
   BudgetLatch budget_;
 

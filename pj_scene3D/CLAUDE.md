@@ -139,6 +139,7 @@ comes from the conversion itself.
   patches) and the `PointVertex` / `DecodedPointCloud` render structs. Links `glm`,
   `pj_base`, `nlohmann_json`, `pj_tf`. Key headers:
   `core/include/pj_scene3d_core/{tf/frame_picking.h, tf/tf_connections.h,
+  tf/object_placement.h,
   occupancy_grid_reconstructor.h, pointcloud.h, pointcloud_codecs.h,
   camera/camera.h, camera/camera_math.h, robot_model.h,
   scene_entities_decode.h, scene_entities_render.h}`; TF types are reached via

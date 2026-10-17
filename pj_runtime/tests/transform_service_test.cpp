@@ -55,6 +55,7 @@
 namespace {
 
 using PJ::TransformService;
+using pj::tf::Clock;
 using pj::tf::TimePoint;
 using pj::tf::TransformBuffer;
 
@@ -263,9 +264,12 @@ std::vector<std::string> sortedFrames(const TransformBuffer& buffer) {
 
 // True iff a lookup at `stamp` for child<-its-known-parent succeeds. Looks up the
 // child relative to the world root (frame "f0" in every fixture below), so the
-// whole composed chain must be resolvable.
-bool resolves(const TransformBuffer& buffer, const std::string& target, const std::string& source, int64_t stamp_ns) {
-  return buffer.tryLookupTransform(target, source, TimePoint{std::chrono::nanoseconds(stamp_ns)}).has_value();
+// whole composed chain must be resolvable. Fixtures stamp their edges at the entry
+// time unless a test says otherwise, so the clock matters only where it is passed.
+bool resolves(
+    const TransformBuffer& buffer, const std::string& target, const std::string& source, int64_t stamp_ns,
+    Clock clock = Clock::kHeader) {
+  return buffer.tryLookupTransform(target, source, TimePoint{std::chrono::nanoseconds(stamp_ns)}, clock).has_value();
 }
 
 // -----------------------------------------------------------------------------
@@ -353,6 +357,9 @@ TEST(TransformService, MergeShiftMovesCanonicalTfInTime) {
   EXPECT_TRUE(resolves(*buffer, "f0", "f2", kT0 + kShift)) << "shifted source edge must resolve at the shifted time";
   EXPECT_FALSE(resolves(*buffer, "f0", "f2", kT0))
       << "shifted source edge must NOT resolve at its pre-shift time (the merge shift must reach the inner stamp)";
+  // The entry clock is the store's, which the merge shifts too.
+  EXPECT_TRUE(resolves(*buffer, "f0", "f2", kT0 + kShift, Clock::kEntry));
+  EXPECT_FALSE(resolves(*buffer, "f0", "f2", kT0, Clock::kEntry));
 }
 
 // -----------------------------------------------------------------------------
@@ -473,8 +480,8 @@ TEST(TransformService, TapVsDrainEquivalence) {
   for (const Message& message : messages) {
     for (const auto& [target, source] : pairs) {
       const TimePoint stamp{std::chrono::nanoseconds(message.stamp)};
-      const auto drained = drain_buffer->tryLookupTransform(target, source, stamp);
-      const auto tapped = tap_buffer->tryLookupTransform(target, source, stamp);
+      const auto drained = drain_buffer->tryLookupTransform(target, source, stamp, Clock::kHeader);
+      const auto tapped = tap_buffer->tryLookupTransform(target, source, stamp, Clock::kHeader);
       ASSERT_EQ(drained.has_value(), tapped.has_value()) << target << "<-" << source << " at " << message.stamp;
       if (drained.has_value()) {
         EXPECT_EQ(drained->t, tapped->t);
@@ -577,7 +584,7 @@ TEST(TransformService, ExplicitRebuildWithTapActiveMatchesTapBuiltBuffer) {
   service.activateIngestTap();
   invokeTfTap(session, topic, /*dataset_id=*/1, 100, payload);
   const auto buffer = service.transformBuffer(1);
-  const auto before = buffer->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(100)});
+  const auto before = buffer->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(100)}, Clock::kHeader);
   ASSERT_TRUE(before.has_value());
   const std::vector<std::string> frames_before = sortedFrames(*buffer);
 
@@ -586,7 +593,7 @@ TEST(TransformService, ExplicitRebuildWithTapActiveMatchesTapBuiltBuffer) {
   EXPECT_EQ(fetch_calls, 2);
   EXPECT_EQ(service.transformBuffer(1), buffer) << "explicit rebuilds preserve the active shared buffer identity";
   EXPECT_EQ(sortedFrames(*buffer), frames_before);
-  const auto after = buffer->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(100)});
+  const auto after = buffer->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(100)}, Clock::kHeader);
   ASSERT_TRUE(after.has_value());
   EXPECT_EQ(after->t, before->t);
   EXPECT_EQ(after->q, before->q);
@@ -638,6 +645,36 @@ TEST(TransformService, TapOutOfOrderEdgeLandsAtItsOwnStamp) {
   EXPECT_TRUE(resolves(*buffer, "f0", "f3", 200));
   EXPECT_TRUE(resolves(*buffer, "f0", "f2", 300));
   EXPECT_EQ(sortedFrames(*buffer), (std::vector<std::string>{"f0", "f1", "f2", "f3"}));
+}
+
+// TF R6: the ingest stores each transform's own header stamp AND the entry time of
+// the message that carried it, on the drain and the tap paths alike. The edge is
+// stamped 40 ms before its store (log) time.
+TEST(TransformService, IngestStoresHeaderStampAndEntryTime) {
+  constexpr PJ::Timestamp kLogged = 1'000'000'000;
+  constexpr int32_t kHeaderLead = -40'000'000;
+  constexpr PJ::Timestamp kStamp = kLogged + kHeaderLead;
+  std::vector<uint8_t> payload;
+  appendEdge(payload, /*parent=*/0, /*child=*/1, kHeaderLead);
+
+  PJ::SessionManager drain_session;
+  const auto drain_topic = registerMockTfTopic(drain_session, /*dataset_id=*/1, "/tf");
+  ASSERT_TRUE(drain_session.objectStore().pushOwned(drain_topic, kLogged, std::vector<uint8_t>(payload)).has_value());
+  TransformService drain_service(drain_session);
+  drain_service.ingestFrameTransformsForDataset(/*dataset_id=*/1);
+
+  PJ::SessionManager tap_session;
+  const auto tap_topic = registerMockTfTopic(tap_session, /*dataset_id=*/1, "/tf");
+  TransformService tap_service(tap_session);
+  tap_service.activateIngestTap();
+  invokeTfTap(tap_session, tap_topic, /*dataset_id=*/1, kLogged, payload);
+
+  for (const auto& buffer : {drain_service.transformBuffer(1), tap_service.transformBuffer(1)}) {
+    EXPECT_TRUE(resolves(*buffer, "f0", "f1", kStamp, Clock::kHeader));
+    EXPECT_FALSE(resolves(*buffer, "f0", "f1", kStamp - 1, Clock::kHeader));
+    EXPECT_FALSE(resolves(*buffer, "f0", "f1", kLogged - 1, Clock::kEntry)) << "not logged yet";
+    EXPECT_TRUE(resolves(*buffer, "f0", "f1", kLogged, Clock::kEntry));
+  }
 }
 
 TEST(TransformService, ConcurrentTapProducersKeepDatasetsIsolated) {
@@ -699,7 +736,8 @@ TEST(TransformService, AbortReplacingLoadPreservesTapBufferAndRebuildsInactiveBu
     service.activateIngestTap();
     invokeTfTap(session, topic, 1, 100, edgePayload(/*parent=*/0, /*child=*/1));
     const auto active = service.transformBuffer(1);
-    const auto before = active->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(100)});
+    const auto before =
+        active->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(100)}, Clock::kHeader);
     ASSERT_TRUE(before.has_value());
 
     service.beginReplacingLoad(1);
@@ -707,7 +745,7 @@ TEST(TransformService, AbortReplacingLoadPreservesTapBufferAndRebuildsInactiveBu
     service.abortReplacingLoad(1);
 
     EXPECT_EQ(service.transformBuffer(1), active);
-    const auto after = active->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(100)});
+    const auto after = active->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(100)}, Clock::kHeader);
     ASSERT_TRUE(after.has_value());
     EXPECT_EQ(after->t, before->t);
     EXPECT_EQ(after->q, before->q);
@@ -836,7 +874,7 @@ TEST(TransformService, ConcurrentTapWriterAndBufferReaderStayCoherent) {
       if (!frames.empty() && frames != std::vector<std::string>{"f0", "f1"}) {
         incoherent.store(true);
       }
-      (void)buffer->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(2500)});
+      (void)buffer->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(2500)}, Clock::kHeader);
     }
   });
   producer.join();
@@ -1027,8 +1065,10 @@ TEST(TransformService, IncrementalEqualsBulk) {
   // Lookups must agree at every published stamp (the dynamic edge has a distinct
   // sample at each), proving the incremental path reconstructed the same history.
   for (const int64_t stamp : stamps) {
-    const auto bulk_tf = bulk_buffer->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(stamp)});
-    const auto inc_tf = inc_buffer->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(stamp)});
+    const auto bulk_tf =
+        bulk_buffer->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(stamp)}, Clock::kHeader);
+    const auto inc_tf =
+        inc_buffer->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(stamp)}, Clock::kHeader);
     ASSERT_TRUE(bulk_tf.has_value()) << "bulk lookup at " << stamp;
     ASSERT_TRUE(inc_tf.has_value()) << "incremental lookup at " << stamp;
     EXPECT_EQ(bulk_tf->t, inc_tf->t);

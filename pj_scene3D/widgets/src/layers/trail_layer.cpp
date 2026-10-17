@@ -19,6 +19,7 @@
 #include "pj_base/builtin/poses_in_frame.hpp"
 #include "pj_base/time.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_scene3d_core/tf/object_placement.h"
 #include "pj_scene3d_widgets/object_topic_metadata.h"
 #include "pj_scene3d_widgets/resolve_object.h"
 #include "pj_tf/tf_buffer.h"
@@ -497,7 +498,8 @@ std::optional<PoseTrailSample> TrailLayer::decodePoseSample(
   // v1 contract: the FIRST pose only (one trail point per message).
   const auto& pose = message->poses.front();
   return PoseTrailSample{
-      PJ::fromRaw(entry->timestamp), glm::dvec3(pose.position.x, pose.position.y, pose.position.z), message->frame_id};
+      PJ::fromRaw(entry->timestamp), glm::dvec3(pose.position.x, pose.position.y, pose.position.z), message->frame_id,
+      objectStamp(message->timestamp_ns, entry->payload_stamp_shift)};
 }
 
 void TrailLayer::maybeAppendLiveSamples() {

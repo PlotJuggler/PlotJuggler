@@ -76,6 +76,9 @@ class GridMapLayer : public Scene3DLayer {
   [[nodiscard]] const std::string& renderFrameId() const override {
     return source_frame_;
   }
+  [[nodiscard]] std::optional<PJ::Timepoint> renderStamp() const override {
+    return render_stamp_;
+  }
   // Display params as set (the persisted values).
   [[nodiscard]] PJ::Colormap colormap() const {
     return colormap_;
@@ -191,6 +194,7 @@ class GridMapLayer : public Scene3DLayer {
   PJ::SequentialUID uploaded_uid_{};
 
   std::string source_frame_;
+  std::optional<PJ::Timepoint> render_stamp_;  // objectStamp() of the staged sample
   QString fixed_frame_;
   bool tracker_dirty_ = false;
   bool visible_ = true;

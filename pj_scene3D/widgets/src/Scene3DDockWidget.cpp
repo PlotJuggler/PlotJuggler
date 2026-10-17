@@ -37,6 +37,7 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/TransformService.h"
+#include "pj_scene3d_core/tf/object_placement.h"
 #include "pj_scene3d_widgets/FixedFrameMemory.h"
 #include "pj_scene3d_widgets/layers/depth_cloud_layer.h"
 #include "pj_scene3d_widgets/layers/grid_map_layer.h"
@@ -934,7 +935,10 @@ void Scene3DDockWidget::updateSceneBounds() {
       if (source_frame.empty()) {
         source_frame = fixed;  // matches DepthCloud's unframed-image fallback
       }
-      if (const auto fixed_from_source = tf.tryLookupTransform(fixed, source_frame, time); fixed_from_source) {
+      // Placed as the view places it (at the object's own stamp, else the cursor).
+      if (const auto fixed_from_source =
+              pj::scene3d::placeObject(tf, fixed, source_frame, layer->renderStamp(), time, layer->placementHold());
+          fixed_from_source) {
         scene = pj::scene3d::unionAABB(
             scene, pj::scene3d::transformedAABB(glm::mat4(fixed_from_source->matrix()), *bounds));
       }

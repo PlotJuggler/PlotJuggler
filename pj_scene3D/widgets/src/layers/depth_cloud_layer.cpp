@@ -34,6 +34,7 @@
 #include "pj_scene3d_core/camera/camera.h"  // AABB, expandAABB
 #include "pj_scene3d_core/pointcloud.h"     // PointVertex
 #include "pj_scene3d_core/pointcloud_budget.h"
+#include "pj_scene3d_core/tf/object_placement.h"
 #include "pj_scene3d_widgets/object_topic_metadata.h"
 #include "pj_scene3d_widgets/retained_upload.h"
 #include "pj_widgets/Colormap.h"
@@ -612,6 +613,7 @@ void DepthCloudLayer::renderAt(int64_t time_ns) {
           .key = key,
           .min_depth_m = min_depth_m_,
           .max_depth_m = max_depth_m_,
+          .stamp = objectStamp(image->timestamp_ns, resolved->payload_stamp_shift),
       });
 }
 
@@ -699,6 +701,7 @@ QString DepthCloudLayer::admissionError(const Image& image) {
 DepthCloudLayer::BackprojectResult DepthCloudLayer::backproject(const BackprojectRequest& request) {
   BackprojectResult result;
   result.key = request.key;
+  result.stamp = request.stamp;
   // Keep every exception inside the worker: it must never reach the UI thread.
   try {
     std::vector<uint8_t> scratch;
@@ -757,6 +760,7 @@ void DepthCloudLayer::onBackprojectFinished(BackprojectResult result) {
     point_count_ = result.point_count;
     world_bounds_ = result.bounds.valid ? std::optional<AABB>{result.bounds} : std::nullopt;
     scalar_range_ = result.scalar_range;
+    render_stamp_ = result.stamp;
     ++geometry_revision_;
     setDataWarning({});
   }

@@ -146,7 +146,12 @@ pass (which would record nothing) is skipped.
    for that size first.
 3. **Admit** (`admitFrame`). Resolve the effective fixed frame once, then per
    visible layer: `prepareForRender()` against the remaining per-view budget
-   and fixed-frame placement. This is the only place a budget is consumed. The
+   and fixed-frame placement (`PlaceFn(frame, renderStamp(), placementHold())`: a
+   layer drawing one stamped object at its own stamp in the TF header clock,
+   composed through the tree's root with the fixed frame at the tracker time, and
+   everything else at the tracker time in the entry clock; `placeObject()`, TF R6).
+   This is the only
+   place a budget is consumed. The
    point, pose, occupancy and voxel families share the loop (`admitLayers()`):
    placement first, budget second, so a layer whose frame cannot be placed this
    frame reserves nothing ahead of a later one.
@@ -681,8 +686,9 @@ add nothing to the scene bounds.
 ### Scene bounds
 
 The dock owns the camera's scene bounds (`Scene3DDockWidget::updateSceneBounds`):
-the union of every view layer's `worldBounds()` placed in the fixed frame at the
-tracker time, hidden layers included, layers whose source frame does not resolve
+the union of every view layer's `worldBounds()` placed in the fixed frame as the
+view places the layer (`placeObject()` with the layer's placement hold: its own
+stamp, else the tracker time), hidden layers included, layers whose source frame does not resolve
 skipped. It recomputes them on every layer-set change (`syncViewLayers`) and on
 every `refreshView()` (tracker ticks and async layer pushes), and hands them to
 the view's `setSceneBounds()`, which forwards them to the active camera for
@@ -866,8 +872,9 @@ discards the running result. A worker captures only owned bytes, so it may drain
 safely after its layer is gone.
 
 **Repaint keys.** Each layer's `renderKey` (sample identity ⊕ the fixed←source
-transform, `foldFrameTransformIntoKey`, so a static sample in a moving frame still
-repaints) feeds the dock's repaint coalescing (see "Repaint coalescing & autoplay").
+transform, `foldFrameTransformIntoKey`, placed as the view places the layer, so a
+static sample in a moving frame still repaints) feeds the dock's repaint
+coalescing (see "Repaint coalescing & autoplay").
 
 **Coordinate contract.** A layer's CPU data is TF-free: source-frame points,
 frame-local instances, link-local model draws with their frame id. The view
@@ -1018,8 +1025,9 @@ topic's first pose) across the whole loaded time range as a screen-space ribbon
 (triangle strip) in the fixed frame, split-coloured at the tracker time. See
 REQUIREMENTS §3b for the behavioural contract; the mechanics:
 
-- **Sampling grid = the chain's own stamps.** `TransformBuffer::chainSampleTimes`
-  unions every edge's stored sample stamps (a repeat of the previous value is not
+- **Sampling grid = the chain's own update times.** `TransformBuffer::chainSampleTimes`
+  in the entry clock (the cursor's, so the trail's head meets the frame's triad)
+  unions every edge's stored sample times (a repeat of the previous value is not
   stored) along the connecting path (both chains to the
   common ancestor), so a statically-mounted child (lidar on base_link) trails with
   the motion higher up the chain. The pure build functions
@@ -1309,8 +1317,9 @@ mode does. It renders in every build, the browser included.
   GLSL; `lo/hi` are the finite min/max of the colour channel (auto) or the manual
   range. A degenerate range (`hi == lo`, or no finite sample) paints the LUT
   midpoint; a NaN colour value on a valid triangle maps to the LUT low end.
-- **Placement** is `TF(fixed <- frame_id at the CURRENT tracker time) * origin`,
-  resolved per frame like the occupancy grid. `worldBounds()` is a source-frame box
+- **Placement** is `TF(fixed <- frame_id) * origin`, with the transform placed at
+  the grid's own stamp (`placeObject()`: through the tree's root, the header clock;
+  the tracker time when unstamped), resolved per frame. `worldBounds()` is a source-frame box
   (the local extent times the origin pose, z from the finite elevation range),
   never the fixed-frame transform.
 - **Lifecycle** follows `PointCloudLayer`: the topic attaches with a parser OR the

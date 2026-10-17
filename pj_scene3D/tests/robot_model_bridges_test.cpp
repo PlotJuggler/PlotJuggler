@@ -82,7 +82,7 @@ TEST(RobotModelBridges, InjectReconnectsDisconnectedGripperSubtree) {
   setEdge(buf, "scene", "panda_link7", t);
   setEdge(buf, "robotiq_85_base_link", "left_inner_knuckle", t, {0.01, 0, 0.07});
 
-  EXPECT_FALSE(buf.tryLookupTransform("scene", "left_inner_knuckle", t).has_value())
+  EXPECT_FALSE(buf.tryLookupTransform("scene", "left_inner_knuckle", t, pj::tf::Clock::kHeader).has_value())
       << "precondition: gripper subtree must start disconnected";
 
   RobotModel model;
@@ -92,7 +92,7 @@ TEST(RobotModelBridges, InjectReconnectsDisconnectedGripperSubtree) {
   const int injected = injectMissingStaticTransforms(buf, fixedJointStaticTransforms(model));
   EXPECT_EQ(injected, 2);
 
-  EXPECT_TRUE(buf.tryLookupTransform("scene", "left_inner_knuckle", t).has_value())
+  EXPECT_TRUE(buf.tryLookupTransform("scene", "left_inner_knuckle", t, pj::tf::Clock::kHeader).has_value())
       << "gripper subtree should resolve into scene after bridging";
 }
 
@@ -111,7 +111,7 @@ TEST(RobotModelBridges, InjectNeverOverridesRealTf) {
   EXPECT_EQ(injected, 0) << "guard must skip a child the data already owns";
   EXPECT_EQ(buf.getParent("b").value_or(""), "data_parent");
 
-  const auto tf = buf.tryLookupTransform("scene", "b", t);
+  const auto tf = buf.tryLookupTransform("scene", "b", t, pj::tf::Clock::kHeader);
   ASSERT_TRUE(tf.has_value());
   EXPECT_DOUBLE_EQ(tf->t.x, 5.0) << "real edge translation must survive, not the bridge's";
 }

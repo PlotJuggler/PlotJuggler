@@ -23,6 +23,7 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/scene_limits.h"
+#include "pj_scene3d_core/tf/object_placement.h"
 #include "pj_scene3d_widgets/resolve_object.h"  // resolveObject, hasCanonical3DCodec
 #include "pj_tf/transform.h"
 #include "pj_widgets/ColorPickerWidget.h"
@@ -322,6 +323,7 @@ bool PosesInFrameLayer::updateAt(int64_t time_ns) {
     return fail(tr("This layer accepts PosesInFrame samples only"));
   }
   updateSourceFrame(msg->frame_id);
+  render_stamp_ = objectStamp(msg->timestamp_ns, entry->payload_stamp_shift);
   if (static_cast<std::uint64_t>(msg->poses.size()) > kSceneLimits.max_poses_per_layer) {
     return fail(tr("Pose array has %1 poses; the limit is %2")
                     .arg(QString::number(msg->poses.size()), QString::number(kSceneLimits.max_poses_per_layer)));
@@ -418,7 +420,8 @@ std::uint64_t PosesInFrameLayer::renderKey(PJ::Timepoint time) const {
   }
   const std::uint64_t key =
       PJ::latestEntryRenderKey(ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_, time);
-  return foldFrameTransformIntoKey(key, ctx_.tf_buffer.get(), fixed_frame_.toStdString(), source_frame_, time);
+  return foldFrameTransformIntoKey(
+      key, ctx_.tf_buffer.get(), fixed_frame_.toStdString(), source_frame_, render_stamp_, time, placementHold());
 }
 
 bool PosesInFrameLayer::prepareForRender(std::uint64_t remaining_view_arms) {

@@ -32,6 +32,7 @@ class TransformBuffer;
 namespace pj::scene3d {
 
 using pj::tf::TransformBuffer;
+struct PlacementHold;
 class PointRenderable;
 class ModelRenderable;
 class PosesInFrameLayer;
@@ -74,13 +75,15 @@ template <typename T>
   return key;
 }
 
-// Folds the fixed<-source transform at `time` into a sample key, the second half
-// of every frame-placed layer's renderKey (sample identity + transform). An
-// unresolved lookup folds nothing, so resolving or losing the transform changes
-// the key too. Without it a static sample in a moving frame never repaints.
+// Folds the fixed<-source transform the view places the layer with (placeObject():
+// the object's own stamp, else the cursor `time`, with the layer's `hold`) into a
+// sample key, the second half of every frame-placed layer's renderKey (sample
+// identity + transform). An unresolved lookup folds nothing, so resolving or losing
+// the transform changes the key too. Without it a static sample in a moving frame
+// never repaints.
 [[nodiscard]] uint64_t foldFrameTransformIntoKey(
     uint64_t key, const TransformBuffer* tf_buffer, const std::string& fixed_frame, const std::string& source_frame,
-    PJ::Timepoint time);
+    std::optional<PJ::Timepoint> object_stamp, PJ::Timepoint time, PlacementHold* hold);
 
 // Widget-global services every 3D layer needs at attach time. Scene3DDockWidget
 // always passes this concrete context to Scene3DLayer instances; concrete layers
@@ -130,6 +133,22 @@ class Scene3DLayer : public PJ::ISceneLayer {
   // arrives, and for a trail (its points are already in the fixed frame). One
   // override also implements PointRenderable's and ModelRenderable's.
   [[nodiscard]] virtual const std::string& renderFrameId() const;
+
+  // The rendered object's own stamp on the TF header clock (objectStamp()), or
+  // nullopt when it has none: the view then places the layer at the cursor in the
+  // entry clock (placeObject()). Overridden by layers that draw one stamped
+  // object; one override also implements PointRenderable's.
+  [[nodiscard]] virtual std::optional<PJ::Timepoint> renderStamp() const {
+    return std::nullopt;
+  }
+
+  // What placeObject() keeps for this layer's stamped object, so a TF sample evicted
+  // under it does not move it. The view, the dock's scene bounds and renderKey()
+  // all place the layer with it, so they agree. Virtual only so that a layer that is
+  // also a PointRenderable overrides both with one function; it returns this one.
+  [[nodiscard]] virtual PlacementHold* placementHold() const {
+    return placement_hold_.get();
+  }
 
   // Source-frame extent of this layer's geometry, or nullopt when
   // the layer reports no bounds (no data decoded yet, or a bounds-less layer
@@ -187,6 +206,7 @@ class Scene3DLayer : public PJ::ISceneLayer {
  private:
   void updateWarning();
 
+  std::unique_ptr<PlacementHold> placement_hold_;  // never null
   QString data_warning_;
   QString render_warning_;
   QString warning_;  // data_warning_ + render_warning_, cached for statusWarning()

@@ -21,6 +21,7 @@
 #include "pj_base/builtin/frame_transforms.hpp"
 #include "pj_base/dataset.hpp"
 #include "pj_base/expected.hpp"
+#include "pj_base/time.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
@@ -72,9 +73,10 @@ Expected<PJ::sdk::ObjectRecord> resolveFrameTransforms(
 }
 
 // Decode one object entry already known to belong to a FrameTransforms topic and
-// push each of its edges into the buffer. A malformed edge (reparent conflict /
-// self-loop / invalid frame data) is a recoverable data error in a real bag:
-// count it and keep going rather than aborting.
+// push each of its edges into the buffer, with the entry's store timestamp as
+// their entry time (TF R6: lookups at the cursor read that clock). A malformed
+// edge (reparent conflict / self-loop / invalid frame data) is a recoverable data
+// error in a real bag: count it and keep going rather than aborting.
 void ingestEntry(
     PJ::Timestamp store_ts, const PJ::sdk::PayloadView& payload, PJ::Timestamp payload_stamp_shift,
     const PJ::SessionManager::ParserBinding& parser_binding, TransformBuffer& tf_buffer, IngestStats& stats) {
@@ -92,12 +94,12 @@ void ingestEntry(
     // never rewrites. A time-shifted dataset merge records the slide in
     // payload_stamp_shift; add it so a merged source's frames land on the anchor's
     // clock (it is 0 for unmerged data, so the common path is unchanged).
-    st.stamp = TimePoint{std::chrono::nanoseconds(t.timestamp + payload_stamp_shift)};
+    st.stamp = PJ::fromRaw(t.timestamp + payload_stamp_shift);
     st.parent_frame = t.parent_frame_id;
     st.child_frame = t.child_frame_id;
     st.transform.t = glm::dvec3{t.translation.x, t.translation.y, t.translation.z};
     st.transform.q = glm::dquat{t.rotation.w, t.rotation.x, t.rotation.y, t.rotation.z};
-    const auto result = tf_buffer.setTransform(st);
+    const auto result = tf_buffer.setTransform(st, PJ::fromRaw(store_ts));
     if (result.has_value()) {
       ++stats.ingested;
       continue;

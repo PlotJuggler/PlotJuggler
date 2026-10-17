@@ -163,8 +163,8 @@ header-only 0.36.0:
 - **The result's stamp** is the newest resolved input timestamp.
 - **The query clock** (`pj.tf.now` and the default lookup instant) enters a result's
   identity only when the run observed it.
-- **TF lookups are a zero-order hold:** the newest sample at or before `t`, with no
-  interpolation.
+- **TF lookups are a zero-order hold** in the lookup's clock (entry or header, §12): the
+  newest sample at or before `t`, with no interpolation.
 
 The TF clock question is in §12.
 
@@ -334,8 +334,8 @@ is proposed.
 
 ## 12. TF
 
-**Status: Built** (the per-dataset service). R1-R4 and R6 are decided and R10 is built
-(slice T); the rest are proposed or conditional.
+**Status: Built** (the per-dataset service). R1-R4 are decided, R6 is built (slice 1b) and
+R10 is built (slice T); the rest are proposed or conditional.
 
 - **`pj_tf`** (Built, slice 1t) is a Qt-free leaf library. `TransformBuffer` keeps a forest of edges with a
   timestamped sample history per edge and zero-order-hold lookups.
@@ -351,11 +351,78 @@ is proposed.
 | R3 | A 3D dock refuses a topic from another dataset, instead of warning | Built (slice 1t; follows D7) |
 | R4 | Replace a buffer as a whole object instead of rewriting it in place; seal complete file buffers, so snapshots share them without copying | Decided |
 | R5 | Report which edges and samples a lookup used, for the cache dependency | Proposed; measure after R10, which already removes most spurious revision bumps |
-| R6 | TF clock contract. The buffer is keyed by header stamps, while lookups use the dataset's entry clock. Fix: two timestamps per sample (header and entry). The cursor and the query time use the entry clock; placing an object uses its own stamp in the header clock. On the nuScenes recording (log time), log time minus header stamp is 0 ms on the lidar, 0-40 ms on the front camera and -37 to +48 ms on `/tf`: the lidar hid the mismatch. | Decided 2026-10-13 (slice 1b). Test-first with a fixture whose log time differs from its header stamps; confirm visually on the nuScenes cameras. |
+| R6 | TF clock contract. The buffer was keyed by header stamps, while lookups used the dataset's entry clock. Fix: two timestamps per sample (header and entry). The cursor and the query time use the entry clock; placing an object uses its own stamp in the header clock. On the nuScenes recording (log time), log time minus header stamp is 0 ms on the lidar, 0-40 ms on the front camera and -37 to +48 ms on `/tf`: the lidar hid the mismatch. See [the two clocks](#the-two-clocks-r6) below. | Built (slice 1b). Decided 2026-10-13. Visual confirmation on the nuScenes cameras pending. |
 | R7 | Frames published once are valid before their first stamp | Verify first |
 | R8 | Chunked copy-on-write edge storage | Only if measured |
 | R9 | Split the ingest pipeline out of `TransformService` | Later |
 | R10 | Do not store a sample equal to its predecessor. Exact under the zero-order hold; skips the revision bump unless the repeat evicts something. Equal means exactly equal, component by component (no tolerance): a tolerance would change the user's data. Each edge still records the newest stamp it received, so the latest sample, `latestCommonTime` and the eviction cutoff are unchanged. Eviction keeps the newest sample at or before the cutoff, which holds the value valid there, so a run of repeats longer than the window never loses its value. | Built (slice T) |
+
+### The two clocks (R6)
+
+Each TF sample keeps its header stamp and its entry time: the store timestamp of the message
+that carried it, already on the dataset clock after a merge. Every lookup names its clock
+(`pj::tf::Clock`).
+
+- **Entry clock:** per edge, the newest-stamped sample that had arrived by `t` ("what the
+  recording knew at t"). The cursor and query times are in this clock.
+- **Header clock:** per edge, the newest sample stamped at or before `t` ("where the frame
+  was when this was measured"). An object placed at its own stamp reads this clock.
+- **Equal clocks:** when header == entry for every sample (simulated-time logs, bags logged
+  with header stamps), both clocks give the results the header-keyed buffer gave.
+- **Storage:** one deque sorted by stamp. Each sample's entry key is the earliest entry time by
+  which it or a later-stamped sample had arrived (a suffix minimum), so both keys are sorted
+  and one binary search serves either clock: 72 bytes per sample instead of 64.
+- **R10 stays exact in both clocks:** a skipped repeat's entry time is folded into the sample
+  it repeats. The out-of-order trade-off of R10 applies to both clocks alike.
+- **Eviction** drops a sample only when neither clock's live window (newest stamp or entry
+  time minus the window) still needs it. `latestCommonTime` and `chainSampleTimes` take a
+  clock too; `getLatestSample` reports the header stamp.
+- **Object placement** is one rule, `placeObject()` (`pj_scene3d_core/tf/object_placement.h`),
+  composed through the root of the tree that holds both frames:
+  `fixed <- source = (fixed <- root, entry clock, at the cursor) * (root <- source, header
+  clock, at the object's stamp)`. The stamp is the object's own stamp plus its entry's
+  `payload_stamp_shift`. A stamped object therefore stays where it was captured in the world
+  even when the fixed frame moves (a body frame such as `base_link`): a map-frame plan or
+  voxel map stays put and a scan stays where it was taken, both moving in the view as the
+  body moves. This holds for an object in the fixed frame itself too. With the root as the
+  fixed frame the rule is the header-clock lookup at the stamp.
+- **Fallback to the cursor** (`fixed <- source` in the entry clock): an unstamped object
+  (stamp 0), a stamp before the first TF sample on the chain, or a stamp more than
+  `kMaxStampPastTf` (1 s) past the newest header-clock sample on the chain. Live TF lags the
+  data a little, so a stamp just past it holds the last sample; data stamped in wall time
+  against TF in simulated time would otherwise freeze at one pose.
+- **Placement hold:** each layer keeps the last `root <- source` it placed its object with
+  (`PlacementHold`, keyed by root, source frame and stamp). In live streaming the object store
+  can keep a stopped sensor's last object longer than the TF window keeps the transform at
+  its stamp; once that sample is evicted, the same stamp's lookup fails and the hold is
+  reused, still composed with `fixed <- root` at the cursor, so the object does not jump to
+  the cursor. The view, the dock's scene bounds and the layer's render key all place a layer
+  with its hold, so they agree.
+- **Known limits.** (1) A same-stamp replace shows the new value from that stamp's earliest
+  entry time: header 100 logged at 110 as v1 and at 300 as v2 reads v2 at 200, before v2
+  arrived, because the buffer keeps one value per stamp. The arrival-order reference test
+  pins this. (2) A static transform stamped before its log time resolves in the entry clock
+  only from its log time, so TF triads and cursor-placed layers can be missing at the start
+  of a file. Revisit (with R7) if users report an empty first frame.
+
+Every consumer and its clock:
+
+| Consumer | Clock | Why |
+|---|---|---|
+| 3D view: TF triads, connection lines, hover label, frame picking, follow camera, TF render key | Entry, at the cursor | They show where each frame is at the cursor. |
+| Point cloud, depth cloud, pose array and its trail, voxel grid, grid map | Header at the object's own stamp for `root <- source`; entry at the cursor for `fixed <- root` (a pose-trail point: at its own store timestamp); entry at the cursor as the fallback | An object sits where its frame was when it was measured, as in RViz, and stays there in the world when the fixed frame moves. |
+| Occupancy grid | Entry, at the cursor | The drawn grid is a keyframe plus later patches, with no single stamp. |
+| Scene entities (markers and their models) | Entry, at the cursor | Entities carry their own stamps and `frame_locked`; honouring both is a follow-up. |
+| Robot model links | Entry, at the cursor | The links are TF frames. |
+| TF frame trail | Entry (`chainSampleTimes` and its lookups) | The trail is split at the cursor and its head meets the frame's triad. |
+| Camera scene bounds, layer render keys, point-cloud axis range | The layer's own placement, with its placement hold | They must match what is drawn. |
+| Frame list, fixed-frame combo, orphan check | None | `getFrameHierarchy` and `areConnected` take no time. |
+| Scripts (`pj.tf`, slice 5) | Entry by default; header for an object-placement helper | Not built yet. |
+
+With header-stamp placement a stamped object in a moving frame stays where it was measured
+until its next sample, instead of moving with the frame at the cursor. This holds even when
+the two clocks coincide, and it replaces the "all layers are frame-locked at the tracker
+time" rule of `pj_scene3D/docs/REQUIREMENTS.md` §4 for the layers in the second row.
 
 ## 13. Life cycle of recipes and results
 

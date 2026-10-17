@@ -25,6 +25,7 @@
 #include "pj_scene3d_core/grid_map_view.h"       // finiteRange
 #include "pj_scene3d_core/pointcloud_convert.h"  // findField (shared field lookup)
 #include "pj_scene3d_core/pose_math.h"
+#include "pj_scene3d_core/tf/object_placement.h"
 #include "pj_scene3d_core/voxel_grid_budget.h"
 #include "pj_scene3d_widgets/resolve_object.h"
 #include "pj_widgets/ComboBox.h"
@@ -328,6 +329,7 @@ bool VoxelGridLayer::updateAt(int64_t time_ns) {
   }
 
   updateSourceFrame(grid->frame_id);
+  render_stamp_ = objectStamp(grid->timestamp_ns, entry->payload_stamp_shift);
   populateFields(*grid);
 
   // Untrusted wire dims: a corrupt grid can declare far more voxels than its
@@ -434,7 +436,8 @@ bool VoxelGridLayer::drainPendingUpdate() {
 std::uint64_t VoxelGridLayer::renderKey(PJ::Timepoint time) const {
   const std::uint64_t key =
       PJ::latestEntryRenderKey(ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_, time);
-  return foldFrameTransformIntoKey(key, ctx_.tf_buffer.get(), fixed_frame_, source_frame_, time);
+  return foldFrameTransformIntoKey(
+      key, ctx_.tf_buffer.get(), fixed_frame_, source_frame_, render_stamp_, time, placementHold());
 }
 
 bool VoxelGridLayer::prepareForRender(std::uint64_t remaining_view_voxels) {

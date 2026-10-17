@@ -418,6 +418,13 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     tests/scene3d_follow_test.cpp
   )
 
+  # TF R6 wiring of a bare SceneViewWidget, admitted without a display
+  # (SceneViewTestAccess::admitFrame()): a stamped layer is placed at its own stamp
+  # with its placement hold, the TF triads at the cursor in the entry clock.
+  list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
+    tests/scene_view_placement_test.cpp
+  )
+
   # Scene3DDockWidget: persistence, TF binding, fixed frame, and the layers'
   # XML/config surfaces. The view needs no GPU until it is shown.
 
@@ -523,7 +530,7 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
   pj_add_test_runner(pj_scene3d_widget_plain_tests
     MAIN gui WARNINGS
     SOURCES ${PJ_SCENE3D_WIDGET_PLAIN_TESTS}
-    LIBS pj_scene3d_widgets pj_scene_common pj_widgets pj_resources glm::glm Qt6::Network
+    LIBS pj_scene3d_widgets pj_scene3d_widgets_testing pj_scene_common pj_widgets pj_resources glm::glm Qt6::Network
   )
   # These tests stand up in-process QTcpServer endpoints / talk Qt networking
   # directly; pj_scene3d_widgets links Qt6::Network only PRIVATEly.

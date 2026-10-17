@@ -64,6 +64,7 @@ class ScenePipelineRegistry;
 class SceneViewTestAccess;
 struct EdlResources;
 struct HdrResources;
+struct PlacementHold;
 struct QualityStageState;
 struct RhiPassSetup;
 struct RhiSharedGeometry;
@@ -342,16 +343,22 @@ class SceneViewWidget : public QRhiWidget {
   };
 #endif
 
-  // Per-frame state of the frame contract (rhi/rhi_scene_pass.h), defined in
-  // the .cpp: what admission decided, the frame's camera matrices, and the
-  // prepared draws every pass replays.
-  struct FrameAdmission;
+  // Per-frame state of the frame contract (rhi/rhi_scene_pass.h): what admission
+  // decided (here, so SceneViewTestAccess can run admission without a QRhi), and,
+  // defined in the .cpp, the frame's camera matrices and the prepared draws every
+  // pass replays.
+  // The effective fixed frame, resolved once per frame. Filled once by
+  // admitFrame(); prepareFrame() reads it and no later step re-admits a layer.
+  struct FrameAdmission {
+    std::string fixed_frame;
+  };
   struct FrameView;
   struct PreparedFrame;
 
   // Shared placement step of the per-family render loops; see the definition.
   [[nodiscard]] std::optional<Transform> resolveFixedFromSource(
-      const std::string& source_frame, const std::string& fixed_frame) const;
+      const std::string& source_frame, const std::string& fixed_frame, std::optional<PJ::Timepoint> object_stamp,
+      PlacementHold* hold) const;
   // The follow frame in the effective fixed frame at `time`; nullopt when there
   // is no follow frame, no TF or no transform.
   [[nodiscard]] std::optional<Transform> followTransform(PJ::Timepoint time) const;
@@ -455,6 +462,8 @@ class SceneViewWidget : public QRhiWidget {
   void emitPresentationIfChanged(const CameraState& before);
 
   std::shared_ptr<TransformBuffer> tf_;
+  // The cursor, in the entry clock (Clock::kEntry); a layer's object is placed at its own stamp instead
+  // (resolveFixedFromSource()).
   PJ::Timepoint render_time_{};
   std::string fixed_frame_;
   std::string follow_frame_;

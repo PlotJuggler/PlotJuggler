@@ -426,7 +426,10 @@ void MarkerRhiPass::admit(const PlaceFn& place) {
     Admitted prepared{.layer = layer, .first_frame = placements_.size(), .frame_count = geometry.frames.size()};
     AABB layer_bounds;
     for (std::size_t index = 0; index < geometry.frames.size(); ++index) {
-      const std::optional<Transform>& placed = placements_.emplace_back(place(geometry.frames[index]));
+      // Cursor-placed (entry clock): entities carry their own stamps and frame_locked,
+      // which header-clock placement would have to honour per entity.
+      const std::optional<Transform>& placed =
+          placements_.emplace_back(place(geometry.frames[index], std::nullopt, nullptr));
       if (placed.has_value() && index < geometry.frame_bounds.size()) {
         layer_bounds = unionAABB(layer_bounds, transformedMarkerBounds(geometry.frame_bounds[index], *placed));
       }

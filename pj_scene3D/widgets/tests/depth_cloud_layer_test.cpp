@@ -26,6 +26,7 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/camera_info.hpp"
 #include "pj_base/builtin/image.hpp"
+#include "pj_base/time.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
@@ -201,6 +202,7 @@ TEST(DepthCloudLayer, BackProjects32FC1UsingCameraInfoIntrinsics) {
   EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
   EXPECT_EQ(layer.lastPointCountForTest(), 4U);
   EXPECT_EQ(layer.sourceFrameForTest(), u"cam"_s);
+  EXPECT_EQ(layer.renderStamp(), PJ::fromRaw(100)) << "the drawn image's own stamp (TF R6)";
 }
 
 // RealSense compressedDepth arrives as a BARE PNG (no signature). toDepthView must

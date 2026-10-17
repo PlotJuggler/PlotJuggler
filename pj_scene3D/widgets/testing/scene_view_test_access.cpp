@@ -20,6 +20,12 @@
 
 namespace pj::scene3d {
 
+void SceneViewTestAccess::admitFrame(SceneViewWidget& view) {
+  SceneViewWidget::FrameAdmission admission;
+  view.admitFrame(nullptr, admission);
+  view.buildTfTriads(glm::dvec3(0.0), admission.fixed_frame);
+}
+
 bool SceneViewTestAccess::pipelinesBuiltForTarget(const SceneViewWidget& view) {
   const QRhiRenderTarget* target = view.renderTarget();
   if (target == nullptr) {

@@ -105,7 +105,7 @@ void GridMapRhiPass::admit(const PlaceFn& place) {
       pruneLayerGpu(layer_gpu_, layer, releaseLayerGpu);
       continue;
     }
-    const auto placed = place(grid->frame_id);
+    const auto placed = place(grid->frame_id, layer->renderStamp(), layer->placementHold());
     if (!placed.has_value()) {
       continue;
     }
