@@ -15,7 +15,9 @@
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_datastore/query.hpp"
 #include "pj_datastore/reader.hpp"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/CurveColorRegistry.h"
 #include "pj_runtime/DataProcessorService.h"
@@ -55,7 +57,7 @@ AppSession::AppSession(QString extensions_dir, DiagnosticSink sink, StaticPlugin
           std::make_unique<ExtensionCatalogService>(std::move(extensions_dir), sink, std::move(static_plugins))) {
   // A transform replay that fails after its create returned reports here, the
   // same notifications the create error itself would have reached.
-  session_manager_->dataProcessorService().setDiagnosticSink(std::move(sink));
+  session_manager_->dataProcessorService().setDiagnosticSink(sink);
   // Forget remembered curve colors whenever the catalog empties (data cleared
   // or replaced), matching PJ3's per-PlotData COLOR_HINT lifetime so reopening
   // fresh data restarts palette rotation from the first color. The registry is
@@ -67,6 +69,47 @@ AppSession::AppSession(QString extensions_dir, DiagnosticSink sink, StaticPlugin
     session_manager_->curveColorRegistry().clear();
     resetPlaybackToEmpty();
   });
+  // Marker generators read their inputs through the catalog. This is session state,
+  // not panel state: a layout restores generators before any toolbox exists. A key
+  // names a series the way the producer and the overlay do (markerSeriesKey), so a
+  // generator yields the same markers in the GUI and headless.
+  BatchEngine& batch_engine = session_manager_->batchEngine();
+  // A marker rule's scheduled run that fails reaches the same notifications.
+  batch_engine.setDiagnosticSink(std::move(sink));
+  batch_engine.setResolver(
+      [this](
+          DatasetId dataset, const std::string& key,
+          const BatchEngine::Window& window) -> std::optional<BatchEngine::ResolvedSeries> {
+        const std::optional<ScalarFieldPayload> scalar = catalog_model_->findScalarForMarkerKey(dataset, key);
+        if (!scalar.has_value()) {
+          return std::nullopt;
+        }
+        // A generator reads the whole series, so a transform output still replaying in
+        // slices is completed first.
+        session_manager_->dataEngine().awaitCompleteSeries(scalar->topic_id);
+        const DataReader reader = session_manager_->createReader();
+        Expected<SeriesReader> series = reader.series(scalar->topic_id, scalar->column_index);
+        if (!series.has_value()) {
+          return std::nullopt;
+        }
+        return readResolvedSeries(*series, window);
+      });
+  // For `all_datasets` generators: every loaded dataset.
+  batch_engine.setDatasetLister([this] { return catalog_model_->datasetIds(); });
+  // Marker rules re-run automatically only on a dataset something consumes: a
+  // demand-capable stream while a widget displays one of its topics, any other
+  // dataset (a file, a stream that sends everything) always.
+  batch_engine.setDemandPredicate([this](DatasetId dataset_id) {
+    return !catalog_model_->isPerTopicPauseCapable(dataset_id) || topic_demand_tracker_->hasAnyReference(dataset_id);
+  });
+  // A display reference is the demand; an active-set change also covers a stream that
+  // stopped (no longer pause-capable, so demanded from then on).
+  QObject::connect(
+      topic_demand_tracker_.get(), &TopicDemandTracker::referenceDemandChanged, &batch_engine,
+      &BatchEngine::demandChanged);
+  QObject::connect(
+      topic_demand_tracker_.get(), &TopicDemandTracker::activeTopicsChanged, &batch_engine,
+      &BatchEngine::demandChanged);
 }
 
 AppSession::~AppSession() {

@@ -9,20 +9,30 @@
 #include <gtest/gtest.h>
 
 #include <QObject>
+#include <QThread>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <limits>
+#include <map>
+#include <memory>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "batch_engine_test_utils.h"
+#include "event_pump_test_utils.h"
 #include "marker_test_utils.h"
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_base/builtin/plot_markers_codec.hpp"
+#include "pj_base/diagnostic_sink.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/chunk.hpp"
 #include "pj_datastore/merge_result.hpp"
@@ -31,6 +41,7 @@
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/EnginePool.h"
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
@@ -43,12 +54,17 @@ using PJ::kAllDatasetsMarkerDataset;
 using PJ::test::markerFamily;
 using PJ::test::ownerPublishUid;
 using PJ::test::ownerTombstoned;
+using PJ::test::pumpFor;
+using PJ::test::pumpUntil;
+using PJ::test::ScopedComputeProbe;
+using PJ::test::ScopedCreateBudget;
 
 constexpr PJ::DatasetId kDataset = 1;
 
 // A resolver backed by one synthetic ramp series "in": t = i ns, v = i, i in [0,n).
 BatchEngine::SeriesResolver rampResolver(std::size_t n) {
-  return [n](PJ::DatasetId, const std::string& key) -> std::optional<BatchEngine::ResolvedSeries> {
+  return [n](PJ::DatasetId, const std::string& key,
+             const BatchEngine::Window&) -> std::optional<BatchEngine::ResolvedSeries> {
     if (key != "in") {
       return std::nullopt;
     }
@@ -65,8 +81,9 @@ BatchEngine::SeriesResolver rampResolver(std::size_t n) {
 // need "the rule's series exists on some datasets, not others".
 BatchEngine::SeriesResolver resolverOn(std::set<PJ::DatasetId> datasets) {
   return [datasets, ramp = rampResolver(5)](
-             PJ::DatasetId dataset, const std::string& key) -> std::optional<BatchEngine::ResolvedSeries> {
-    return datasets.contains(dataset) ? ramp(dataset, key) : std::nullopt;
+             PJ::DatasetId dataset, const std::string& key,
+             const BatchEngine::Window& window) -> std::optional<BatchEngine::ResolvedSeries> {
+    return datasets.contains(dataset) ? ramp(dataset, key, window) : std::nullopt;
   };
 }
 
@@ -139,19 +156,23 @@ TEST(BatchEngineTest, ScriptErrorReturnsMessageAndDoesNotRegister) {
   EXPECT_TRUE(service.recipes().empty());
 }
 
-// recomputeForChangedInputs re-runs only generators that read a changed key; an
-// unrelated change is a no-op. removeGenerator drops the recipe.
+// recomputeForChangedInputs marks stale only the generators that read a changed
+// key (it runs nothing, and returns the affected ids); an unrelated change is a
+// no-op. removeGenerator drops the recipe and its staleness.
 TEST(BatchEngineTest, RecomputeMatchesChangedKeyAndRemoveDrops) {
   PJ::ObjectStore store;
   BatchEngine service(store, rampResolver(8));
+  service.setMode(BatchEngine::Mode::kManual);  // isolate the marking from the brake
 
   ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", "createMarker(0.0)\n")).has_value());
 
   EXPECT_TRUE(service.recomputeForChangedInputs({"other"}, BatchEngine::kAnyDataset).empty());
+  EXPECT_FALSE(service.isStale("plug/gen"));
 
   const std::vector<std::string> affected = service.recomputeForChangedInputs({"in"}, BatchEngine::kAnyDataset);
   ASSERT_EQ(affected.size(), 1u);
-  EXPECT_EQ(affected[0], PJ::markerOwnerTopicName("in", "plug/gen"));
+  EXPECT_EQ(affected[0], "plug/gen");
+  EXPECT_TRUE(service.isStale("plug/gen"));
 
   EXPECT_TRUE(service.removeGenerator("plug/gen").has_value());
   EXPECT_FALSE(service.removeGenerator("plug/gen").has_value());
@@ -264,8 +285,8 @@ TEST(BatchEngineTest, TwoGeneratorsOnOneTopicOwnTheirOwnObjectTopics) {
 // the other owner's part is neither dropped nor duplicated.
 TEST(BatchEngineTest, RecomputeOneGeneratorKeepsOthersPart) {
   PJ::ObjectStore store;
-  BatchEngine::SeriesResolver resolver = [](PJ::DatasetId,
-                                            const std::string& key) -> std::optional<BatchEngine::ResolvedSeries> {
+  BatchEngine::SeriesResolver resolver = [](PJ::DatasetId, const std::string& key,
+                                            const BatchEngine::Window&) -> std::optional<BatchEngine::ResolvedSeries> {
     if (key != "in" && key != "other") {
       return std::nullopt;
     }
@@ -290,6 +311,8 @@ TEST(BatchEngineTest, RecomputeOneGeneratorKeepsOthersPart) {
 
   const std::vector<std::string> affected = service.recomputeForChangedInputs({"in"}, kDataset);
   ASSERT_EQ(affected.size(), 1u);
+  EXPECT_EQ(affected[0], "plug/in");
+  service.refresh("plug/in");  // force the marked-stale run now (ignores brake/demand)
   EXPECT_EQ(readPublished(store, kDataset, "shared").markers.size(), 2u)
       << "the 'in' owner's part is replaced, not appended";
 }
@@ -433,6 +456,7 @@ TEST(BatchEngineTest, ScopedRecomputeOfGlobalRuleRepublishesTheSharedSet) {
   // Dataset 1 ingested; dataset 2 sat still — but the set is shared, so a contributor's
   // change is everyone's change.
   EXPECT_FALSE(service.recomputeForChangedInputs({"in"}, /*scope=*/1).empty());
+  service.refresh("plug/g");  // force the marked-stale run now (ignores brake/demand)
   EXPECT_NE(ownerPublishUid(store, kAllDatasetsMarkerDataset, all_topic, "plug/g"), before)
       << "the shared set is republished";
 }
@@ -525,7 +549,7 @@ TEST(BatchEngineTest, PredicateClearRemovesOnlyNonExemptGenerators) {
 
 TEST(BatchEngineTest, FindsExemptGeneratorDependingOnRemovedProcessorOutput) {
   PJ::ObjectStore store;
-  BatchEngine service(store, [](PJ::DatasetId, const std::string&) {
+  BatchEngine service(store, [](PJ::DatasetId, const std::string&, const BatchEngine::Window&) {
     BatchEngine::ResolvedSeries series;
     series.timestamps = {0.0};
     series.values = {1.0};
@@ -630,8 +654,8 @@ TEST(BatchEngineTest, MergeAdoptsAnchorForeignBlobAndShiftsSourcesOnce) {
 // shifted clock) is left untouched.
 TEST(BatchEngineTest, MergeThenRecomputeOneGeneratorKeepsOthers) {
   PJ::ObjectStore store;
-  BatchEngine::SeriesResolver resolver = [](PJ::DatasetId,
-                                            const std::string& key) -> std::optional<BatchEngine::ResolvedSeries> {
+  BatchEngine::SeriesResolver resolver = [](PJ::DatasetId, const std::string& key,
+                                            const BatchEngine::Window&) -> std::optional<BatchEngine::ResolvedSeries> {
     if (key != "in" && key != "other") {
       return std::nullopt;
     }
@@ -664,7 +688,9 @@ TEST(BatchEngineTest, MergeThenRecomputeOneGeneratorKeepsOthers) {
   const std::optional<std::uint64_t> b_uid = ownerPublishUid(store, kAnchor, "shared", "plug/b");
 
   const std::vector<std::string> affected = service.recomputeForChangedInputs({"in"}, kAnchor);
-  ASSERT_EQ(affected.size(), 1u) << "only A ('in') re-runs";
+  ASSERT_EQ(affected.size(), 1u) << "only A ('in') is marked dirty";
+  EXPECT_EQ(affected[0], "plug/a");
+  service.refresh("plug/a");  // force the marked-stale run now (ignores brake/demand)
   EXPECT_EQ(ownerPublishUid(store, kAnchor, "shared", "plug/b"), b_uid) << "B's topic is not republished";
 
   const PJ::sdk::PlotMarkers merged = readPublished(store, kAnchor, "shared");
@@ -854,6 +880,116 @@ TEST(BatchEngineTest, BoundRuleWithMissingInputStillErrors) {
   EXPECT_TRUE(service.recipes().empty());
 }
 
+// A marker per staged sample, at its time and value: what a run saw is what it drew.
+BatchEngine::GeneratorRecipe rampMarkerRecipe(std::string id) {
+  return markerRecipe(std::move(id), "in", R"(
+    local s = series("in")
+    for i = 0, s:size() - 1 do
+      local p = s:at(i)
+      createMarker(p.t, p.v)
+    end
+  )");
+}
+
+// GeneratorRecipe::window clips the staged series to [start, end] (raw ns,
+// inclusive) before the rule runs, and coverageOf reports that staged range.
+TEST(BatchEngineTest, WindowClipsTheStagedSeriesAndCoverageReportsIt) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(100));
+  EXPECT_FALSE(service.coverageOf("plug/windowed").has_value()) << "never run yet";
+
+  auto recipe = rampMarkerRecipe("plug/windowed");
+  recipe.window = std::pair<PJ::Timestamp, PJ::Timestamp>{20, 40};
+  const PJ::Expected<std::vector<std::string>> ok = service.upsertGenerator(recipe);
+  ASSERT_TRUE(ok.has_value()) << (ok.has_value() ? std::string{} : ok.error());
+
+  const PJ::sdk::PlotMarkers set = readPublished(store, kDataset, "in");
+  ASSERT_EQ(set.markers.size(), 21u) << "indices 20..40 inclusive";
+  EXPECT_EQ(set.markers.front().t_start, 20);
+  EXPECT_EQ(set.markers.back().t_start, 40);
+  const auto coverage = service.coverageOf("plug/windowed");
+  ASSERT_TRUE(coverage.has_value());
+  EXPECT_EQ(coverage->first, 20);
+  EXPECT_EQ(coverage->second, 40);
+}
+
+// A window with no samples inside it is not an error: the rule runs over an empty
+// series (a script error stays reserved for a genuinely absent/nil input) and
+// publishes an empty set. It staged nothing, so coverageOf stays absent, distinct
+// from a window whose staged range happens to equal its own bounds.
+TEST(BatchEngineTest, EmptyWindowPublishesAnEmptySetAndNoCoverage) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(100));
+
+  auto recipe = rampMarkerRecipe("plug/empty_window");
+  recipe.window = std::pair<PJ::Timestamp, PJ::Timestamp>{200, 300};
+  const PJ::Expected<std::vector<std::string>> ok = service.upsertGenerator(recipe);
+  ASSERT_TRUE(ok.has_value()) << (ok.has_value() ? std::string{} : ok.error());
+
+  EXPECT_TRUE(readPublished(store, kDataset, "in").markers.empty());
+  EXPECT_FALSE(service.coverageOf("plug/empty_window").has_value());
+}
+
+// stageRun asks the resolver for the recipe's window, so the production resolver
+// copies only that range; a resolver that ignores it is still clipped (above).
+TEST(BatchEngineTest, TheResolverIsAskedForTheRecipeWindow) {
+  PJ::ObjectStore store;
+  std::vector<BatchEngine::Window> asked;
+  BatchEngine service(
+      store,
+      [&asked, ramp = rampResolver(100)](
+          PJ::DatasetId dataset, const std::string& key,
+          const BatchEngine::Window& window) -> std::optional<BatchEngine::ResolvedSeries> {
+        asked.push_back(window);
+        return ramp(dataset, key, window);
+      });
+  auto recipe = rampMarkerRecipe("plug/asked");
+  ASSERT_TRUE(service.upsertGenerator(recipe).has_value());
+  recipe.window = std::pair<PJ::Timestamp, PJ::Timestamp>{20, 40};
+  ASSERT_TRUE(service.upsertGenerator(recipe).has_value());
+  EXPECT_EQ(asked, (std::vector<BatchEngine::Window>{std::nullopt, recipe.window}));
+}
+
+// Without any recipe.window, coverageOf still tracks what the resolver actually
+// returned on the most recent run — standing in for a streaming input whose
+// retention trimmed its head between two runs; no separate retention query needed
+// (see StagedRun::coverage_ns's doc-comment).
+TEST(BatchEngineTest, CoverageOfTracksWhatTheResolverActuallyReturnedAcrossRuns) {
+  PJ::ObjectStore store;
+  bool trimmed = false;
+  BatchEngine::SeriesResolver resolver = [&trimmed](
+                                             PJ::DatasetId, const std::string& key,
+                                             const BatchEngine::Window&) -> std::optional<BatchEngine::ResolvedSeries> {
+    if (key != "in") {
+      return std::nullopt;
+    }
+    BatchEngine::ResolvedSeries s;
+    const int start = trimmed ? 50 : 0;
+    for (int i = start; i < 100; ++i) {
+      s.timestamps.push_back(static_cast<double>(i));
+      s.values.push_back(static_cast<double>(i));
+    }
+    return s;
+  };
+  BatchEngine service(store, resolver);
+
+  ASSERT_TRUE(service.upsertGenerator(rampMarkerRecipe("plug/shrinking_cov")).has_value());
+  {
+    const auto coverage = service.coverageOf("plug/shrinking_cov");
+    ASSERT_TRUE(coverage.has_value());
+    EXPECT_EQ(coverage->first, 0);
+    EXPECT_EQ(coverage->second, 99);
+  }
+
+  trimmed = true;
+  service.refresh("plug/shrinking_cov");  // no pool installed: runs synchronously
+
+  const auto coverage = service.coverageOf("plug/shrinking_cov");
+  ASSERT_TRUE(coverage.has_value());
+  EXPECT_EQ(coverage->first, 50);
+  EXPECT_EQ(coverage->second, 99);
+}
+
 // A dataset loaded AFTER an all_datasets recipe was applied, without the series the
 // rule reads, needs no work at all: the set lives once on the shared dataset, so an
 // unrelated recompute republishes nothing and the roster hook re-runs the rule once
@@ -876,7 +1012,9 @@ TEST(BatchEngineTest, ADatasetLoadedLaterWithoutTheInputsNeedsNoCopy) {
   EXPECT_EQ(ownerPublishUid(store, kAllDatasetsMarkerDataset, all_topic, "plug/g"), before) << "nothing to copy";
   EXPECT_TRUE(markerFamily(store, 2, all_topic).empty());
 
-  EXPECT_EQ(service.reachNewDatasets().size(), 1u) << "the catalog grew: the rule is re-run";
+  service.reachNewDatasets();
+  EXPECT_TRUE(service.isStale("plug/g")) << "the catalog grew: the rule is re-run";
+  pumpUntil([&] { return !service.isStale("plug/g"); });
   EXPECT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 1u) << "no duplication";
 }
 
@@ -904,6 +1042,7 @@ TEST(BatchEngineTest, GlobalRuleIsStoredInTheDisplayFrame) {
     return dataset == 1 ? PJ::Timestamp{10} : dataset == 3 ? PJ::Timestamp{-5} : 0;
   });
   EXPECT_FALSE(service.recomputeForChangedInputs({"in"}, /*scope=*/3).empty());
+  service.refresh("plug/g");  // force the marked-stale run now (ignores brake/demand)
   std::vector<PJ::Timestamp> times;
   for (const auto& marker : readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers) {
     times.push_back(marker.t_start);
@@ -928,6 +1067,7 @@ TEST(BatchEngineTest, GlobalRuleGrowsWhenAContributorLoadsLater) {
   service.setResolver(resolverOn({1, 3}));
 
   EXPECT_FALSE(service.recomputeForChangedInputs({"in"}, /*scope=*/3).empty());
+  service.refresh("plug/g");  // force the marked-stale run now (ignores brake/demand)
   EXPECT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 2u);
 }
 
@@ -936,15 +1076,18 @@ TEST(BatchEngineTest, GlobalRuleGrowsWhenAContributorLoadsLater) {
 // declared name equals another input's bare key ("s:x" is both).
 TEST(BatchEngineTest, DeclaredNamesAreEnumeratedOnceEachAndReadTheirOwnSeries) {
   PJ::ObjectStore store;
-  BatchEngine service(store, [](PJ::DatasetId, const std::string& key) -> std::optional<BatchEngine::ResolvedSeries> {
-    if (key != "x" && key != "s:x") {
-      return std::nullopt;
-    }
-    BatchEngine::ResolvedSeries s;
-    s.timestamps = {0.0};
-    s.values = {key == "x" ? 1.0 : 2.0};
-    return s;
-  });
+  BatchEngine service(
+      store,
+      [](PJ::DatasetId, const std::string& key,
+         const BatchEngine::Window&) -> std::optional<BatchEngine::ResolvedSeries> {
+        if (key != "x" && key != "s:x") {
+          return std::nullopt;
+        }
+        BatchEngine::ResolvedSeries s;
+        s.timestamps = {0.0};
+        s.values = {key == "x" ? 1.0 : 2.0};
+        return s;
+      });
   auto recipe = markerRecipe("plug/gen", "out", R"(
     local names = GetSeriesNames()
     assert(#names == 2, "expected 2 names, got " .. #names)
@@ -1164,7 +1307,8 @@ TEST(BatchEngineTest, ReachNewDatasetsRerunsGlobalRulesForANewContributor) {
   ASSERT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 1u);
 
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
-  EXPECT_EQ(service.reachNewDatasets().size(), 1u);
+  service.reachNewDatasets();
+  pumpUntil([&] { return !service.isStale("plug/g"); });
   EXPECT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 2u);
 }
 
@@ -1180,8 +1324,36 @@ TEST(BatchEngineTest, ReachNewDatasetsRerunsWhenAContributorAppearsUnderTheSameR
   ASSERT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 1u);
 
   service.setResolver(resolverOn({1, 2}));  // dataset 2's series just reached the catalog
-  EXPECT_EQ(service.reachNewDatasets().size(), 1u);
+  service.reachNewDatasets();
+  pumpUntil([&] { return !service.isStale("plug/g"); });
   EXPECT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 2u);
+}
+
+// The catalog grows on every progressive-load flush and every new streaming topic,
+// so the roster hook only marks the Global rules stale: the brake coalesces a burst
+// of additions into one run, and nothing runs inside the hook.
+TEST(BatchEngineTest, ReachNewDatasetsLeavesTheRunToTheBrake) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, resolverOn({1, 2}));
+  service.setReloadHz(20.0);  // 50 ms period
+  service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1}; });
+  ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
+  const std::string all_topic(PJ::kAllDatasetsMarkerTopic);
+  int runs = 0;
+  QObject::connect(&service, &BatchEngine::markersPublished, [&runs] { ++runs; });
+
+  service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
+  for (int addition = 0; addition < 3; ++addition) {
+    (void)service.reachNewDatasets();
+  }
+  EXPECT_TRUE(service.isStale("plug/g")) << "marked, not run";
+  EXPECT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 1u) << "nothing ran yet";
+
+  pumpUntil([&] { return runs > 0; });
+  pumpFor(100);
+  EXPECT_FALSE(service.isStale("plug/g"));
+  EXPECT_EQ(readPublished(store, kAllDatasetsMarkerDataset, all_topic).markers.size(), 2u);
+  EXPECT_EQ(runs, 1) << "three additions, one run";
 }
 
 // A recompute that finds no contributor left for an existing Global rule (the last
@@ -1214,6 +1386,16 @@ TEST(BatchEngineTest, UpsertRejectsTheOwnerSeparatorInIdsAndOutputs) {
   EXPECT_TRUE(store.listTopics().empty()) << "rejected before publishing";
 }
 
+// The session owns the pool its batch engine submits to: tearing both down with a
+// generator installed must not touch a destroyed pool or engine.
+TEST(BatchEngineTest, SessionDestructionDisconnectsServicesBeforeThePool) {
+  auto session = std::make_unique<PJ::SessionManager>();
+  session->batchEngine().setResolver(rampResolver(5));
+  ASSERT_TRUE(
+      session->batchEngine().upsertGenerator(markerRecipe("plug/gen", "in", "createMarker(0.0)\n")).has_value());
+  session.reset();
+}
+
 // Production ordering: a dataset's commit recompute runs BEFORE the catalog (the
 // dataset lister and the series resolver) publishes it, so no recompute ever sees
 // the new dataset — the catalog publication itself must re-run every Global rule.
@@ -1244,6 +1426,7 @@ TEST(BatchEngineTest, ANewlyCatalogedContributorJoinsTheGlobalSet) {
   int repaints = 0;
   QObject::connect(&session, &PJ::SessionManager::markersChanged, [&repaints] { ++repaints; });
   commit_scalar(*second, "/imu/x");  // the second dataset reaches the catalog
+  pumpUntil([&] { return repaints > 0; });
 
   EXPECT_EQ(readPublished(session.objectStore(), kAllDatasetsMarkerDataset, all_topic).markers.size(), 2u)
       << "the newcomer's contribution joins the shared set";
@@ -1276,15 +1459,17 @@ TEST(BatchEngineTest, RefillRollbackRecomputesTheSharedSet) {
   {
     PJ::RefillGuard guard = session.beginRefill(*dataset);
     // The attempted refill's series starts at t = 5 where the original started at 0.
-    service.setResolver([](PJ::DatasetId, const std::string& key) -> std::optional<BatchEngine::ResolvedSeries> {
-      if (key != "in") {
-        return std::nullopt;
-      }
-      BatchEngine::ResolvedSeries series;
-      series.timestamps = {5.0};
-      series.values = {0.0};
-      return series;
-    });
+    service.setResolver(
+        [](PJ::DatasetId, const std::string& key,
+           const BatchEngine::Window&) -> std::optional<BatchEngine::ResolvedSeries> {
+          if (key != "in") {
+            return std::nullopt;
+          }
+          BatchEngine::ResolvedSeries series;
+          series.timestamps = {5.0};
+          series.values = {0.0};
+          return series;
+        });
     ASSERT_FALSE(service.recomputeForDataset(*dataset).empty());  // what the refill's recompute does
     ASSERT_EQ(readPublished(session.objectStore(), kAllDatasetsMarkerDataset, all_topic).markers.front().t_start, 5);
     service.setResolver(resolverOn({*dataset}));  // what the restored data resolves to
@@ -1333,4 +1518,907 @@ TEST(BatchEngineTest, ASourceTimelineDragRepublishesNoMarkerSet) {
   ASSERT_EQ(drags, 1) << "the drag applied";
   EXPECT_EQ(repaints, 0) << "a drag is not a marker change";
   EXPECT_EQ(ownerPublishUid(session.objectStore(), kAllDatasetsMarkerDataset, all_topic, "plug/g"), before);
+}
+
+// ---- scheduled runs: staging, the brake, modes, demand, D30 ------------------
+
+namespace {
+
+// A resolver over one mutable value, so a test can simulate successive "changes"
+// by writing `value` before calling recomputeForChangedInputs. The script under
+// test reads it back via `createMarker(s:at(0).v, s:at(0).v)`, so the published
+// marker's t_start IS the value the run was staged against.
+BatchEngine::SeriesResolver mutableValueResolver(std::atomic<int>& value) {
+  return [&value](
+             PJ::DatasetId, const std::string& key,
+             const BatchEngine::Window&) -> std::optional<BatchEngine::ResolvedSeries> {
+    if (key != "in") {
+      return std::nullopt;
+    }
+    BatchEngine::ResolvedSeries s;
+    s.timestamps = {0.0};
+    s.values = {static_cast<double>(value.load())};
+    return s;
+  };
+}
+
+constexpr const char* kMutableValueScript = "local s = series(\"in\")\ncreateMarker(s:at(0).v, s:at(0).v)\n";
+
+}  // namespace
+
+// A bounded create computes its first run on the pool while the GUI thread waits for
+// it, up to the create budget: a fast rule's markers are drawn when the create returns.
+TEST(BatchEngineTest, AFastCreateIsVisibleWhenItReturns) {
+  const ScopedCreateBudget budget(PJ::test::kGenerousCreateBudget);
+  std::atomic<QThread*> compute_thread{nullptr};
+  const ScopedComputeProbe probe([&compute_thread](QThread* thread) { compute_thread = thread; });
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+
+  ASSERT_TRUE(
+      service.upsertGenerator(markerRecipe("plug/gen", "in", "createMarker(0.0)\n"), BatchEngine::CreateWait::kBounded)
+          .has_value());
+
+  EXPECT_FALSE(readPublished(store, kDataset, "in").markers.empty()) << "published before the create returned";
+  ASSERT_NE(compute_thread.load(), nullptr);
+  EXPECT_NE(compute_thread.load(), QThread::currentThread()) << "computed on the pool; the GUI thread only waited";
+}
+
+// A first run that fails within the budget fails the create transactionally: the
+// previous revision of the rule and its markers stay, and nothing else is published.
+TEST(BatchEngineTest, AFirstRunErrorFailsTheCreateAndKeepsThePreviousRule) {
+  const ScopedCreateBudget budget(PJ::test::kGenerousCreateBudget);
+  std::atomic<QThread*> compute_thread{nullptr};
+  const ScopedComputeProbe probe([&compute_thread](QThread* thread) { compute_thread = thread; });
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", "createMarker(0, 1, {label='v1'})\n")));
+  compute_thread = nullptr;
+
+  const PJ::Expected<std::vector<std::string>> failed = service.upsertGenerator(
+      markerRecipe("plug/gen", "in", "local s = series(\"in\")\nerror(\"bad sample \" .. s:at(0).v)\n"),
+      BatchEngine::CreateWait::kBounded);
+  ASSERT_FALSE(failed.has_value());
+  EXPECT_NE(failed.error().find("bad sample"), std::string::npos) << failed.error();
+  ASSERT_NE(compute_thread.load(), nullptr);
+  EXPECT_NE(compute_thread.load(), QThread::currentThread()) << "the failing run ran on the pool";
+
+  pool.waitIdle();  // the failed run's pool publish must not land either
+  ASSERT_EQ(service.recipes().size(), 1u);
+  EXPECT_NE(service.recipes().front().script.find("v1"), std::string::npos) << "the previous revision stays";
+  const PJ::sdk::PlotMarkers drawn = readPublished(store, kDataset, "in");
+  ASSERT_EQ(drawn.markers.size(), 1u);
+  EXPECT_EQ(drawn.markers.front().label, "v1");
+  EXPECT_FALSE(service.isStale("plug/gen"));
+}
+
+// A first run that outlives the create budget does not hold the GUI thread: the
+// create returns once the budget is spent with the rule installed, and the run
+// publishes through the pool's drain.
+TEST(BatchEngineTest, CreateReturnsBeforeASlowFirstRunWhichPublishesLater) {
+  const ScopedCreateBudget budget(BatchEngine::kCreateBudget);
+  std::atomic<bool> released{false};
+  const ScopedComputeProbe probe([&released](QThread*) {
+    for (int waited_ms = 0; !released.load() && waited_ms < 2000; ++waited_ms) {
+      QThread::msleep(1);
+    }
+  });
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  int announcements = 0;
+  QObject::connect(&service, &BatchEngine::markersPublished, [&announcements] { ++announcements; });
+
+  ASSERT_TRUE(
+      service.upsertGenerator(markerRecipe("plug/slow", "in", "createMarker(0.0)\n"), BatchEngine::CreateWait::kBounded)
+          .has_value());
+  EXPECT_TRUE(readPublished(store, kDataset, "in").markers.empty()) << "the first run is still computing";
+  EXPECT_EQ(service.recipes().size(), 1u) << "the rule is installed";
+
+  released = true;
+  pumpUntil([&announcements] { return announcements > 0; });
+  EXPECT_EQ(readPublished(store, kDataset, "in").markers.size(), 1u) << "published by the drain";
+  EXPECT_FALSE(service.isStale("plug/slow"));
+}
+
+// A first run that fails after the budget is not a create error: it is reported
+// like any scheduled run's failure, through errorOf.
+TEST(BatchEngineTest, AFirstRunFailingAfterTheBudgetIsReportedNotReturned) {
+  const ScopedCreateBudget budget(BatchEngine::kCreateBudget);
+  std::atomic<bool> released{false};
+  const ScopedComputeProbe probe([&released](QThread*) {
+    for (int waited_ms = 0; !released.load() && waited_ms < 2000; ++waited_ms) {
+      QThread::msleep(1);
+    }
+  });
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  std::vector<PJ::Diagnostic> reported;
+  service.setDiagnosticSink([&reported](const PJ::Diagnostic& diagnostic) { reported.push_back(diagnostic); });
+
+  const PJ::Expected<std::vector<std::string>> created = service.upsertGenerator(
+      markerRecipe("plug/late", "in", "error(\"late failure\")\n"), BatchEngine::CreateWait::kBounded);
+  ASSERT_TRUE(created.has_value()) << "a failure after the budget is not a create error";
+  released = true;
+  pumpUntil([&service] { return !service.errorOf("plug/late").empty(); });
+  EXPECT_NE(service.errorOf("plug/late").find("late failure"), std::string::npos) << service.errorOf("plug/late");
+  EXPECT_TRUE(service.isStale("plug/late"));
+
+  // The bell names the rule and the next step, once per distinct error.
+  ASSERT_EQ(reported.size(), 1u);
+  EXPECT_EQ(reported.front().level, PJ::DiagnosticLevel::kError);
+  EXPECT_NE(reported.front().message.find("Marker rule 'plug/late' failed: "), std::string::npos)
+      << reported.front().message;
+  EXPECT_NE(reported.front().message.find("late failure"), std::string::npos) << reported.front().message;
+  EXPECT_NE(
+      reported.front().message.find("Any previous markers are kept; fix the rule and apply it again."),
+      std::string::npos)
+      << reported.front().message;
+  service.refresh("plug/late");
+  pool.waitIdle();
+  EXPECT_EQ(reported.size(), 1u) << "the same error again is not reported twice";
+}
+
+// The running state follows each scheduled run: set when it is submitted, cleared
+// when it publishes, is cancelled or fails, and announced through runningChanged.
+TEST(BatchEngineTest, RunningStateFollowsEachRun) {
+  std::atomic<bool> released{true};
+  const ScopedComputeProbe probe([&released](QThread*) {
+    for (int waited_ms = 0; !released.load() && waited_ms < 5000; ++waited_ms) {
+      QThread::msleep(1);
+    }
+  });
+  PJ::ObjectStore store;
+  std::atomic<int> value{1};
+  BatchEngine service(store, mutableValueResolver(value));
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  service.setMode(BatchEngine::Mode::kManual);
+  const std::string failing_script =
+      "local s = series(\"in\")\nif s:at(0).v >= 5 then error(\"value too big\") end\ncreateMarker(0.0)\n";
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", failing_script)).has_value());
+  EXPECT_FALSE(service.isRunning("plug/gen")) << "the create's run finished within its budget";
+  int announced = 0;
+  QObject::connect(&service, &BatchEngine::runningChanged, [&announced] { ++announced; });
+
+  released = false;
+  service.refresh("plug/gen");
+  EXPECT_TRUE(service.isRunning("plug/gen"));
+  EXPECT_EQ(service.runningIds(), std::vector<std::string>{"plug/gen"});
+  released = true;
+  pool.waitIdle();
+  EXPECT_FALSE(service.isRunning("plug/gen")) << "published";
+  EXPECT_TRUE(service.runningIds().empty());
+
+  released = false;
+  value = 5;
+  service.refresh("plug/gen");
+  EXPECT_TRUE(service.isRunning("plug/gen"));
+  released = true;
+  pool.waitIdle();
+  EXPECT_FALSE(service.isRunning("plug/gen")) << "failed";
+  EXPECT_FALSE(service.errorOf("plug/gen").empty());
+
+  released = false;
+  service.refresh("plug/gen");
+  EXPECT_TRUE(service.isRunning("plug/gen"));
+  ASSERT_TRUE(service.removeGenerator("plug/gen").has_value());
+  EXPECT_FALSE(service.isRunning("plug/gen")) << "cancelled";
+  released = true;
+  pool.waitIdle();
+  pumpFor(20);
+  EXPECT_GE(announced, 3) << "every transition is announced";
+}
+
+// 3 changes inside one brake period coalesce into exactly 1 run, and that run
+// sees the LAST change (not an intermediate one).
+TEST(BatchEngineTest, ChangeMarksStaleAndTheBrakeCoalescesRuns) {
+  PJ::ObjectStore store;
+  std::atomic<int> value{0};
+  std::atomic<int> resolve_count{0};
+  BatchEngine::SeriesResolver counting_resolver =
+      [&](PJ::DatasetId dataset, const std::string& key,
+          const BatchEngine::Window& window) -> std::optional<BatchEngine::ResolvedSeries> {
+    ++resolve_count;
+    return mutableValueResolver(value)(dataset, key, window);
+  };
+  BatchEngine service(store, counting_resolver);
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  service.setReloadHz(20.0);  // 50 ms period
+
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", kMutableValueScript)).has_value());
+  resolve_count = 0;  // ignore the upsert's own synchronous run
+
+  for (const int v : {1, 2, 3}) {
+    value.store(v);
+    (void)service.recomputeForChangedInputs({"in"}, kDataset);
+  }
+  ASSERT_TRUE(service.isStale("plug/gen"));
+
+  pumpUntil([&] { return !service.isStale("plug/gen"); });
+  EXPECT_FALSE(service.isStale("plug/gen"));
+  EXPECT_EQ(resolve_count.load(), 1) << "3 changes within one period → exactly 1 run";
+  EXPECT_EQ(readPublished(store, kDataset, "in").markers.front().t_start, 3) << "the run saw the last change";
+}
+
+// D30: a run whose inputs change while it computes is still published (the display
+// moves forward), and the generator stays stale until one follow-up run, with the
+// newest inputs, is published too.
+TEST(BatchEngineTest, ChangeDuringARunPublishesItAndRerunsWithTheNewestInputs) {
+  // Run N blocks in its compute until `released` reaches N (at most 5 s, so a failed
+  // assertion cannot hang the pool's destructor).
+  std::atomic<int> entered{0};
+  std::atomic<int> released{1};  // the upsert's inline run passes
+  const ScopedComputeProbe probe([&](QThread*) {
+    const int run = ++entered;
+    for (int waited_ms = 0; released.load() < run && waited_ms < 5000; ++waited_ms) {
+      QThread::msleep(1);
+    }
+  });
+  PJ::ObjectStore store;
+  std::atomic<int> value{0};
+  BatchEngine service(store, mutableValueResolver(value));
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  service.setReloadHz(20.0);  // 50 ms period
+
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", kMutableValueScript)).has_value());
+  ASSERT_EQ(entered.exchange(0), 1) << "the upsert ran inline, through the probe";
+  released = 0;
+  std::vector<PJ::Timestamp> published;
+  QObject::connect(&service, &BatchEngine::markersPublished, [&] {
+    published.push_back(readPublished(store, kDataset, "in").markers.front().t_start);
+  });
+
+  value.store(1);
+  (void)service.recomputeForChangedInputs({"in"}, kDataset);
+  pumpUntil([&] { return entered.load() == 1; });
+  ASSERT_EQ(entered.load(), 1) << "run #1 is blocked mid-compute";
+
+  value.store(2);  // a change while run #1 computes
+  (void)service.recomputeForChangedInputs({"in"}, kDataset);
+  released = 1;
+  pumpUntil([&] { return !published.empty(); });
+  ASSERT_EQ(published, std::vector<PJ::Timestamp>{1}) << "run #1 is published although its inputs changed";
+  EXPECT_TRUE(service.isStale("plug/gen")) << "a newer change is not shown yet";
+
+  released = 2;
+  pumpUntil([&] { return published.size() == 2; }, 5000);
+  EXPECT_FALSE(service.isStale("plug/gen"));
+  EXPECT_EQ(published, (std::vector<PJ::Timestamp>{1, 2})) << "one follow-up run, with the newest inputs";
+  EXPECT_EQ(entered.load(), 2);
+}
+
+// D30: inputs that change faster than the rule runs never freeze the markers. Every
+// completed run is published while the stream goes on, and once it stops the
+// display converges to the newest inputs.
+TEST(BatchEngineTest, MarkersKeepUpdatingWhileInputsKeepChanging) {
+  const ScopedComputeProbe probe([](QThread*) { QThread::msleep(30); });  // slower than the stream
+  PJ::ObjectStore store;
+  std::atomic<int> value{0};
+  BatchEngine service(store, mutableValueResolver(value));
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  service.setReloadHz(20.0);  // 50 ms period
+
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", kMutableValueScript)).has_value());
+  int published = 0;
+  QObject::connect(&service, &BatchEngine::markersPublished, [&published] { ++published; });
+
+  // About 600 ms of a stream ticking every 10 ms: every run sees its inputs change.
+  for (int tick = 1; tick <= 60; ++tick) {
+    value.store(tick);
+    (void)service.recomputeForChangedInputs({"in"}, kDataset);
+    pumpFor(10);
+  }
+  EXPECT_GE(published, 3) << "completed runs keep publishing while the inputs keep changing";
+
+  pumpUntil([&] { return !service.isStale("plug/gen"); });
+  EXPECT_FALSE(service.isStale("plug/gen"));
+  EXPECT_EQ(readPublished(store, kDataset, "in").markers.front().t_start, 60) << "converged to the newest inputs";
+}
+
+// A session runs its scheduled rules on its own pool, off the GUI thread, and a run
+// that lands later repaints the overlays (markersChanged), which nothing else would.
+TEST(BatchEngineTest, ASessionRunsScheduledRulesOnItsPoolAndRepaints) {
+  std::atomic<QThread*> compute_thread{nullptr};
+  const ScopedComputeProbe probe([&compute_thread](QThread* thread) { compute_thread = thread; });
+  PJ::SessionManager session;
+  BatchEngine& service = session.batchEngine();
+  service.setResolver(rampResolver(5));
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", "createMarker(0.0)\n")).has_value());
+  int repaints = 0;
+  QObject::connect(&session, &PJ::SessionManager::markersChanged, [&repaints] { ++repaints; });
+  compute_thread = nullptr;  // forget the upsert's inline run
+
+  service.refresh("plug/gen");
+  pumpUntil([&] { return repaints > 0; });
+
+  EXPECT_FALSE(service.isStale("plug/gen"));
+  ASSERT_NE(compute_thread.load(), nullptr);
+  EXPECT_NE(compute_thread.load(), QThread::currentThread()) << "the session installs its pool";
+  EXPECT_EQ(repaints, 1);
+}
+
+// A scheduled run that fails, by a script error or by a compute that throws, keeps
+// the last published set; the generator stays stale and reports why until a run
+// succeeds.
+TEST(BatchEngineTest, AFailedScheduledRunKeepsTheLastSetAndReportsItsError) {
+  std::atomic<bool> throw_in_compute{false};
+  const ScopedComputeProbe probe([&throw_in_compute](QThread*) {
+    if (throw_in_compute.load()) {
+      throw std::runtime_error("compute threw");
+    }
+  });
+  PJ::ObjectStore store;
+  std::atomic<int> value{1};
+  BatchEngine service(store, mutableValueResolver(value));
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  service.setMode(BatchEngine::Mode::kManual);
+  ASSERT_TRUE(service
+                  .upsertGenerator(markerRecipe(
+                      "plug/gen", "in",
+                      "local s = series(\"in\")\n"
+                      "if s:at(0).v >= 5 then error(\"value too big\") end\n"
+                      "createMarker(s:at(0).v, s:at(0).v)\n"))
+                  .has_value());
+  EXPECT_TRUE(service.errorOf("plug/gen").empty());
+
+  value = 5;
+  (void)service.recomputeForChangedInputs({"in"}, kDataset);
+  service.refresh("plug/gen");
+  pool.waitIdle();
+  EXPECT_EQ(readPublished(store, kDataset, "in").markers.front().t_start, 1) << "the last set stays";
+  EXPECT_TRUE(service.isStale("plug/gen"));
+  EXPECT_NE(service.errorOf("plug/gen").find("value too big"), std::string::npos) << service.errorOf("plug/gen");
+
+  value = 2;
+  throw_in_compute = true;
+  (void)service.recomputeForChangedInputs({"in"}, kDataset);
+  service.refresh("plug/gen");
+  pool.waitIdle();
+  EXPECT_EQ(readPublished(store, kDataset, "in").markers.front().t_start, 1) << "the last set stays";
+  EXPECT_TRUE(service.isStale("plug/gen"));
+  EXPECT_NE(service.errorOf("plug/gen").find("compute threw"), std::string::npos) << service.errorOf("plug/gen");
+
+  throw_in_compute = false;
+  service.refresh("plug/gen");
+  pool.waitIdle();
+  EXPECT_EQ(readPublished(store, kDataset, "in").markers.front().t_start, 2);
+  EXPECT_FALSE(service.isStale("plug/gen"));
+  EXPECT_TRUE(service.errorOf("plug/gen").empty()) << "a successful run clears the error";
+}
+
+// Manual mode only marks a generator stale; nothing runs it until refresh.
+TEST(BatchEngineTest, ManualModeNeverRunsUntilRefresh) {
+  PJ::ObjectStore store;
+  std::atomic<int> value{0};
+  BatchEngine service(store, mutableValueResolver(value));
+  service.setMode(BatchEngine::Mode::kManual);
+  service.setReloadHz(20.0);  // would fire in 50 ms under Automatic — proves Manual never schedules it
+
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", kMutableValueScript)).has_value());
+  EXPECT_EQ(readPublished(store, kDataset, "in").markers.front().t_start, 0);
+
+  value.store(42);
+  ASSERT_EQ(service.recomputeForChangedInputs({"in"}, kDataset).size(), 1u);
+  EXPECT_TRUE(service.isStale("plug/gen"));
+
+  pumpFor(150);  // well past the brake period under Automatic mode
+  EXPECT_TRUE(service.isStale("plug/gen")) << "Manual never schedules a run";
+  EXPECT_EQ(readPublished(store, kDataset, "in").markers.front().t_start, 0) << "still the pre-change value";
+
+  service.refresh("plug/gen");
+  EXPECT_FALSE(service.isStale("plug/gen"));
+  EXPECT_EQ(readPublished(store, kDataset, "in").markers.front().t_start, 42);
+}
+
+// Switching Manual → Automatic runs everything currently dirty once, with no
+// further change needed to arm it.
+TEST(BatchEngineTest, SwitchingToAutomaticRunsEverythingDirtyOnce) {
+  PJ::ObjectStore store;
+  std::atomic<int> value{0};
+  BatchEngine service(store, mutableValueResolver(value));
+  service.setMode(BatchEngine::Mode::kManual);
+  service.setReloadHz(20.0);
+
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", kMutableValueScript)).has_value());
+
+  value.store(7);
+  ASSERT_EQ(service.recomputeForChangedInputs({"in"}, kDataset).size(), 1u);
+  ASSERT_TRUE(service.isStale("plug/gen"));
+
+  service.setMode(BatchEngine::Mode::kAutomatic);
+  pumpUntil([&] { return !service.isStale("plug/gen"); });
+  EXPECT_FALSE(service.isStale("plug/gen"));
+  EXPECT_EQ(readPublished(store, kDataset, "in").markers.front().t_start, 7);
+}
+
+// refresh/refreshAll run right now, ignoring both the brake's rate limit and the
+// demand gate.
+TEST(BatchEngineTest, RefreshAllIgnoresTheBrake) {
+  PJ::ObjectStore store;
+  std::atomic<int> value{0};
+  BatchEngine service(store, mutableValueResolver(value));
+  service.setReloadHz(0.2);                                         // 5 s period — refreshAll must not wait for it
+  service.setDemandPredicate([](PJ::DatasetId) { return false; });  // and must ignore demand too
+
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", kMutableValueScript)).has_value());
+
+  value.store(9);
+  ASSERT_EQ(service.recomputeForChangedInputs({"in"}, kDataset).size(), 1u);
+  ASSERT_TRUE(service.isStale("plug/gen"));
+
+  service.refreshAll(kDataset);  // no pool installed → inline, synchronous
+  EXPECT_FALSE(service.isStale("plug/gen"));
+  EXPECT_EQ(readPublished(store, kDataset, "in").markers.front().t_start, 9);
+}
+
+// A generator bound to an undemanded dataset stays stale forever — the brake
+// never runs it — but refresh (which ignores demand) still can.
+TEST(BatchEngineTest, NoDemandLeavesTheGeneratorStale) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+  service.setReloadHz(20.0);                                        // 50 ms period
+  service.setDemandPredicate([](PJ::DatasetId) { return false; });  // nothing is ever demanded
+
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", "createMarker(0.0)\n")).has_value());
+
+  ASSERT_EQ(service.recomputeForChangedInputs({"in"}, kDataset).size(), 1u);
+  ASSERT_TRUE(service.isStale("plug/gen"));
+
+  pumpFor(150);
+  EXPECT_TRUE(service.isStale("plug/gen")) << "undemanded — stays stale, never auto-runs";
+
+  service.refresh("plug/gen");
+  EXPECT_FALSE(service.isStale("plug/gen"));
+}
+
+// A stale generator whose dataset becomes demanded after the last ingest must run
+// when the demand is announced, not at the next change of its inputs.
+TEST(BatchEngineTest, DemandChangedRunsAStaleGeneratorWithoutAnIngest) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+  service.setReloadHz(20.0);  // 50 ms period
+  std::atomic<bool> demanded{false};
+  service.setDemandPredicate([&demanded](PJ::DatasetId) { return demanded.load(); });
+
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", "createMarker(0.0)\n")).has_value());
+  ASSERT_EQ(service.recomputeForChangedInputs({"in"}, kDataset).size(), 1u);
+
+  pumpUntil([&] { return !service.isStale("plug/gen"); }, 200);
+  ASSERT_TRUE(service.isStale("plug/gen")) << "undemanded — the brake never runs it";
+
+  demanded = true;
+  service.demandChanged();
+  pumpUntil([&] { return !service.isStale("plug/gen"); });
+  EXPECT_FALSE(service.isStale("plug/gen")) << "demand arrived — runs with no further ingest";
+}
+
+// stageRun's resolver call runs on the calling (GUI) thread; computeRun's script
+// execution runs on a pool worker thread.
+TEST(BatchEngineTest, ScriptRunsOffTheGuiThread) {
+  std::atomic<QThread*> compute_thread{nullptr};
+  const ScopedComputeProbe probe([&compute_thread](QThread* thread) { compute_thread = thread; });
+  PJ::ObjectStore store;
+  QThread* const gui_thread = QThread::currentThread();
+  std::atomic<bool> resolver_ran_off_gui{false};
+  BatchEngine::SeriesResolver resolver = [&](PJ::DatasetId, const std::string& key,
+                                             const BatchEngine::Window&) -> std::optional<BatchEngine::ResolvedSeries> {
+    if (key != "in") {
+      return std::nullopt;
+    }
+    if (QThread::currentThread() != gui_thread) {
+      resolver_ran_off_gui = true;
+    }
+    BatchEngine::ResolvedSeries s;
+    s.timestamps = {0.0};
+    s.values = {1.0};
+    return s;
+  };
+  BatchEngine service(store, resolver);
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  service.setReloadHz(20.0);
+
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", kMutableValueScript)).has_value());
+  compute_thread = nullptr;  // forget the upsert's inline run
+
+  ASSERT_EQ(service.recomputeForChangedInputs({"in"}, kDataset).size(), 1u);
+  pumpUntil([&] { return !service.isStale("plug/gen"); });
+
+  EXPECT_FALSE(resolver_ran_off_gui.load()) << "stageRun's resolver call runs on the GUI (calling) thread";
+  ASSERT_NE(compute_thread.load(), nullptr);
+  EXPECT_NE(compute_thread.load(), gui_thread) << "computeRun executes on a pool worker thread";
+}
+
+TEST(BatchEngineTest, RemovedPendingPreviewCannotResurrectItsTopic) {
+  PJ::ObjectStore store;
+  PJ::EnginePool pool;
+  BatchEngine service(store, rampResolver(1));
+  service.setPool(&pool);
+  service.setMode(BatchEngine::Mode::kManual);
+  auto recipe = markerRecipe("audit/pending", "in", "createMarker(0, 1)");
+  recipe.ephemeral = true;
+  ASSERT_TRUE(service.upsertGenerator(recipe));
+  service.refresh(recipe.id);
+  ASSERT_TRUE(service.removeGenerator(recipe.id));
+  pool.waitIdle();
+  EXPECT_FALSE(store.findTopic(kDataset, PJ::markerOwnerTopicName("in", recipe.id)));
+}
+
+TEST(BatchEngineTest, PendingCompletionCannotOverwriteEditedBinding) {
+  PJ::ObjectStore store;
+  PJ::EnginePool pool;
+  BatchEngine service(store, rampResolver(1));
+  service.setPool(&pool);
+  auto recipe = markerRecipe("audit/edit", "in", "createMarker(0, 1, {label='old'})");
+  ASSERT_TRUE(service.upsertGenerator(recipe));
+  service.refresh(recipe.id);
+  recipe.script = "createMarker(0, 2, {label='new'})";
+  ASSERT_TRUE(service.upsertGenerator(recipe));
+  pool.waitIdle();
+  const auto markers = readPublished(store, kDataset, "in");
+  ASSERT_EQ(markers.markers.size(), 1u);
+  EXPECT_EQ(markers.markers.front().label, "new");
+}
+
+TEST(BatchEngineTest, RefreshAllTargetsTheRequestedDatasetBinding) {
+  PJ::ObjectStore store;
+  PJ::EnginePool pool;
+  std::atomic<int> value{1};
+  BatchEngine service(store, mutableValueResolver(value));
+  service.setPool(&pool);
+  service.setMode(BatchEngine::Mode::kManual);
+  auto recipe = markerRecipe("audit/binding", "in", kMutableValueScript);
+  ASSERT_TRUE(service.upsertGenerator(recipe));
+  recipe.dataset_id = 2;
+  ASSERT_TRUE(service.upsertGenerator(recipe));
+  value = 9;
+  (void)service.recomputeForChangedInputs({"in"}, 2);
+  service.refreshAll(2);
+  pool.waitIdle();
+  EXPECT_DOUBLE_EQ(readPublished(store, 1, "in").markers.front().value_low, 1);
+  EXPECT_DOUBLE_EQ(readPublished(store, 2, "in").markers.front().value_low, 9);
+  EXPECT_FALSE(service.isStale(recipe.id));
+}
+
+TEST(BatchEngineTest, RepeatedRefreshStagesOnlyOneLatestPendingSnapshot) {
+  PJ::ObjectStore store;
+  PJ::EnginePool pool;
+  std::atomic<int> value{0};
+  int captures = 0;
+  BatchEngine service(store, [&](PJ::DatasetId dataset, const std::string& key, const BatchEngine::Window& window) {
+    ++captures;
+    return mutableValueResolver(value)(dataset, key, window);
+  });
+  service.setPool(&pool);
+  service.setMode(BatchEngine::Mode::kManual);
+  auto recipe = markerRecipe("audit/bounded", "in", kMutableValueScript);
+  ASSERT_TRUE(service.upsertGenerator(recipe));
+  captures = 0;
+  for (int i = 1; i <= 12; ++i) {
+    value = i;
+    (void)service.recomputeForChangedInputs({"in"}, kDataset);
+    service.refresh(recipe.id);
+  }
+  EXPECT_EQ(captures, 1) << "one run in flight; the other refreshes leave one pending request";
+  pool.waitIdle();
+  EXPECT_EQ(captures, 2) << "the pending request captures once, when the run ends";
+  EXPECT_DOUBLE_EQ(readPublished(store, kDataset, "in").markers.front().value_low, 12);
+  EXPECT_FALSE(service.isStale(recipe.id));
+}
+
+TEST(BatchEngineTest, ReloadAndDatasetRemovalInvalidatePendingDelivery) {
+  PJ::ObjectStore store;
+  PJ::EnginePool pool;
+  std::atomic<int> value{1};
+  BatchEngine service(store, mutableValueResolver(value));
+  service.setPool(&pool);
+  auto recipe = markerRecipe("audit/reload", "in", kMutableValueScript);
+  ASSERT_TRUE(service.upsertGenerator(recipe));
+  service.refresh(recipe.id);
+  value = 7;
+  EXPECT_FALSE(service.recomputeForDataset(kDataset).empty());
+  pool.waitIdle();
+  EXPECT_DOUBLE_EQ(readPublished(store, kDataset, "in").markers.front().value_low, 7);
+  service.refresh(recipe.id);
+  (void)service.clearGeneratorsForDataset(kDataset);
+  const auto topic = store.findTopic(kDataset, PJ::markerOwnerTopicName("in", recipe.id));
+  ASSERT_TRUE(topic);
+  store.removeTopic(*topic);
+  pool.waitIdle();
+  EXPECT_FALSE(store.findTopic(kDataset, PJ::markerOwnerTopicName("in", recipe.id)));
+}
+
+// A streaming tick reports every topic of its dataset. A rule whose input did not
+// move since the last tick is not marked stale, so it does not re-run every period.
+TEST(BatchEngineTest, ATickWhoseInputDidNotMoveSchedulesNoRun) {
+  PJ::SessionManager session;
+  BatchEngine& service = session.batchEngine();
+  service.setResolver(rampResolver(5));
+  service.setReloadHz(20.0);  // 50 ms period
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "stream"});
+  ASSERT_TRUE(dataset.has_value());
+  auto recipe = markerRecipe("plug/gen", "in", "createMarker(0.0)\n");
+  recipe.dataset_id = *dataset;
+  ASSERT_TRUE(service.upsertGenerator(recipe).has_value());
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto handle = writer.registerScalarSeries(*dataset, "in", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value()) << handle.error();
+  writer.appendScalar(*handle, 100, 1.0);
+  ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  ASSERT_TRUE(service.isStale("plug/gen")) << "the input moved";
+  pumpUntil([&] { return !service.isStale("plug/gen"); });
+  ASSERT_FALSE(service.isStale("plug/gen"));
+
+  const auto tick = [&] { session.recomputeMarkersForChanged(session.createReader().listTopics(*dataset), *dataset); };
+  tick();
+  EXPECT_FALSE(service.isStale("plug/gen")) << "nothing moved since the last run";
+
+  // A streaming write host commits straight to the engine; only the tick reports it.
+  writer.appendScalar(*handle, 200, 2.0);
+  ASSERT_FALSE(session.dataEngine().commitChunks(writer.flushAll()).empty());
+  tick();
+  EXPECT_TRUE(service.isStale("plug/gen")) << "the input moved";
+}
+
+// The runs of a burst land in one pool drain, and the plots refresh once for it:
+// markersPublished is announced once per drain, not once per run.
+TEST(BatchEngineTest, RunsPublishedInOneDrainAnnounceOnce) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  service.setMode(BatchEngine::Mode::kManual);
+  constexpr std::size_t kRuns = 4;
+  for (std::size_t run = 0; run < kRuns; ++run) {
+    const std::string id = "plug/gen" + std::to_string(run);
+    ASSERT_TRUE(service.upsertGenerator(markerRecipe(id, "in", "createMarker(0.0)\n")).has_value());
+  }
+  pool.waitIdle();  // the creates' own runs leave a (dropped) publish in the pool
+  int announcements = 0;
+  QObject::connect(&service, &BatchEngine::markersPublished, [&announcements] { ++announcements; });
+
+  service.refreshAll(kDataset);
+  // Every compute finishes before the event loop runs the pool's (single) drain.
+  for (int waited_ms = 0; pool.pendingPublishes() < kRuns && waited_ms < 5000; ++waited_ms) {
+    QThread::msleep(1);
+  }
+  ASSERT_EQ(pool.pendingPublishes(), kRuns);
+  pool.waitIdle();
+  pumpFor(50);
+  EXPECT_TRUE(service.staleIds().empty());
+  EXPECT_EQ(announcements, 1);
+}
+
+// The rule that fails once its input value reaches 5 (mutableValueResolver).
+constexpr const char* kFailsFromFiveScript =
+    "local s = series(\"in\")\nif s:at(0).v >= 5 then error(\"value too big\") end\ncreateMarker(0.0)\n";
+
+// A merge concatenates every consumed set onto the anchor's topic. A run staged before
+// it, of the anchor's binding or of an all-datasets rule, would publish over that
+// concatenation from the pre-merge data: the merge cancels it, and the anchor's and the
+// global rules re-run over the merged data instead.
+TEST(BatchEngineTest, AMergeCancelsTheRunsStagedBeforeItAndMarksTheSurvivorsStale) {
+  std::atomic<bool> released{false};
+  const ScopedComputeProbe probe(PJ::test::holdPoolComputesUntil(released));
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+  service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  service.setMode(BatchEngine::Mode::kManual);
+  auto on_anchor = markerRecipe("plug/r", "in", "createMarker(0.0)\n");
+  on_anchor.dataset_id = 1;
+  ASSERT_TRUE(service.upsertGenerator(on_anchor).has_value());
+  auto on_source = markerRecipe("plug/r", "in", "createMarker(1.0)\n");
+  on_source.dataset_id = 2;
+  ASSERT_TRUE(service.upsertGenerator(on_source).has_value());
+  ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
+  service.refresh("plug/r");
+  service.refresh("plug/g");
+  ASSERT_TRUE(service.isRunning("plug/r"));
+  ASSERT_TRUE(service.isRunning("plug/g"));
+
+  service.mergeMarkerTopics(1, {PJ::DatasetMergeSource{.dataset_id = 2, .raw_shift_ns = 1000}});
+  service.remapGeneratorsToAnchor(1, {2});
+  EXPECT_FALSE(service.isRunning("plug/r")) << "cancelled at the merge";
+  EXPECT_FALSE(service.isRunning("plug/g")) << "cancelled at the merge";
+  released = true;
+  pool.waitIdle();
+
+  EXPECT_EQ(readPublished(store, 1, "in").markers.size(), 2u) << "the concatenation stays until the re-run";
+  EXPECT_TRUE(service.isStale("plug/r")) << "the anchor re-runs over the merged data";
+  EXPECT_TRUE(service.isStale("plug/g")) << "the global rule re-runs over the merged data";
+}
+
+// A reload detaches the dataset's markers while it refills. A run staged from the old
+// data must not publish into the partially refilled dataset: the refill cancels it, and
+// the refill's own synchronous recompute (commit or rollback) is the next run.
+TEST(BatchEngineTest, BeginningARefillCancelsTheDatasetsRunInFlight) {
+  std::atomic<bool> released{false};
+  const ScopedComputeProbe probe(PJ::test::holdPoolComputesUntil(released));
+  PJ::EnginePool pool;
+  PJ::SessionManager session;
+  BatchEngine& service = session.batchEngine();
+  service.setResolver(rampResolver(5));
+  service.setPool(&pool);
+  service.setMode(BatchEngine::Mode::kManual);
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "file"});
+  ASSERT_TRUE(dataset.has_value());
+  auto recipe = markerRecipe("plug/gen", "in", "createMarker(0.0)\n");
+  recipe.dataset_id = *dataset;
+  ASSERT_TRUE(service.upsertGenerator(recipe).has_value());
+  service.refresh("plug/gen");
+  ASSERT_TRUE(service.isRunning("plug/gen"));
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(*dataset);
+    EXPECT_FALSE(service.isRunning("plug/gen")) << "cancelled when the refill began";
+    released = true;
+    pool.waitIdle();
+    EXPECT_TRUE(readPublished(session.objectStore(), *dataset, "in").markers.empty())
+        << "nothing computed from the old data lands in the refilling dataset";
+  }
+  EXPECT_EQ(readPublished(session.objectStore(), *dataset, "in").markers.size(), 1u)
+      << "the rollback's recompute republished";
+}
+
+// Retention can hide the oldest samples of a quiet stream without moving its newest
+// timestamp or its stored row count: the tick must still report the input as changed.
+TEST(BatchEngineTest, ATickAfterRetentionHidSamplesOfAQuietTopicMarksItsRulesStale) {
+  PJ::SessionManager session;
+  BatchEngine& service = session.batchEngine();
+  service.setResolver(rampResolver(5));
+  service.setPool(nullptr);
+  service.setMode(BatchEngine::Mode::kManual);
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "stream"});
+  ASSERT_TRUE(dataset.has_value());
+  auto recipe = markerRecipe("plug/gen", "in", "createMarker(0.0)\n");
+  recipe.dataset_id = *dataset;
+  ASSERT_TRUE(service.upsertGenerator(recipe).has_value());
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto handle = writer.registerScalarSeries(*dataset, "in", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value()) << handle.error();
+  for (const PJ::Timestamp t : {100, 200, 300}) {
+    writer.appendScalar(*handle, t, 1.0);
+  }
+  ASSERT_FALSE(session.dataEngine().commitChunks(writer.flushAll()).empty());
+  const auto tick = [&] { session.recomputeMarkersForChanged(session.createReader().listTopics(*dataset), *dataset); };
+  tick();
+  service.refresh("plug/gen");
+  ASSERT_FALSE(service.isStale("plug/gen"));
+  tick();
+  ASSERT_FALSE(service.isStale("plug/gen")) << "nothing moved";
+
+  // The floor rises to 150 inside the one chunk: the newest sample and the row count stay.
+  session.dataEngine().enforceRetention(150, *dataset);
+  tick();
+  EXPECT_TRUE(service.isStale("plug/gen")) << "the sample at 100 is gone from the series";
+}
+
+// Demand of an all-datasets rule is the demand of the datasets that contribute to it:
+// one whose only contributors are undemanded streams does not run on a brake pass, and
+// runs once one of them is displayed.
+TEST(BatchEngineTest, AGlobalRuleRunsOnABrakePassOnlyWhenAContributorIsDemanded) {
+  PJ::ObjectStore store;
+  // "in" lives only on the streams 2 and 3; the file 1 carries "other".
+  const BatchEngine::SeriesResolver ramp = rampResolver(5);
+  BatchEngine service(
+      store,
+      [ramp](PJ::DatasetId dataset, const std::string& key, const BatchEngine::Window& window)
+          -> std::optional<BatchEngine::ResolvedSeries> {
+        const bool present = (key == "in" && (dataset == 2 || dataset == 3)) || (key == "other" && dataset == 1);
+        return present ? ramp(dataset, "in", window) : std::nullopt;
+      });
+  service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2, 3}; });
+  bool stream_displayed = false;
+  // AppSession's predicate: a stream counts once displayed, any other dataset always.
+  service.setDemandPredicate(
+      [&stream_displayed](PJ::DatasetId dataset) { return stream_displayed || (dataset != 2 && dataset != 3); });
+  service.setReloadHz(20.0);  // 50 ms period
+  ASSERT_TRUE(service.upsertGenerator(globalRuleReadingIn()).has_value());
+  auto on_file = markerRecipe("plug/file", "other", "createMarker(0.0)\n");
+  on_file.inputs = {"other"};
+  ASSERT_TRUE(service.upsertGenerator(on_file).has_value());
+
+  (void)service.recomputeForChangedInputs({}, BatchEngine::kAnyDataset);
+  pumpUntil([&service] { return !service.isStale("plug/file"); });
+  ASSERT_FALSE(service.isStale("plug/file")) << "the brake pass ran";
+  EXPECT_TRUE(service.isStale("plug/g")) << "no contributor of the global rule is displayed";
+
+  stream_displayed = true;
+  service.demandChanged();
+  pumpUntil([&service] { return !service.isStale("plug/g"); });
+  EXPECT_FALSE(service.isStale("plug/g")) << "a contributor is displayed";
+}
+
+// Manual mode waits for Refresh: switching to it stops a brake that was already armed.
+TEST(BatchEngineTest, SwitchingToManualStopsAnArmedBrake) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+  service.setReloadHz(20.0);  // 50 ms period
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", "createMarker(0.0)\n")).has_value());
+  ASSERT_EQ(service.recomputeForChangedInputs({"in"}, kDataset).size(), 1u);  // arms the brake
+
+  service.setMode(BatchEngine::Mode::kManual);
+  pumpFor(200);
+  EXPECT_TRUE(service.isStale("plug/gen")) << "manual mode runs nothing until Refresh";
+}
+
+// A failed binding stays stale, but a brake pass armed by another rule's change does
+// not resubmit it: it runs again once its own inputs change.
+TEST(BatchEngineTest, AFailedRuleIsNotRerunByAnUnrelatedBrakePass) {
+  PJ::ObjectStore store;
+  std::atomic<int> value{1};
+  std::map<std::string, int> resolves;
+  const BatchEngine::SeriesResolver mutable_in = mutableValueResolver(value);
+  const BatchEngine::SeriesResolver ramp = rampResolver(5);
+  BatchEngine service(
+      store,
+      [&](PJ::DatasetId dataset, const std::string& key,
+          const BatchEngine::Window& window) -> std::optional<BatchEngine::ResolvedSeries> {
+        ++resolves[key];
+        return key == "in" ? mutable_in(dataset, key, window) : ramp(dataset, "in", window);
+      });
+  service.setReloadHz(20.0);  // 50 ms period
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/failing", "in", kFailsFromFiveScript)).has_value());
+  auto other = markerRecipe("plug/other", "other", "createMarker(0.0)\n");
+  other.inputs = {"other"};
+  ASSERT_TRUE(service.upsertGenerator(other).has_value());
+
+  value = 5;
+  (void)service.recomputeForChangedInputs({"in"}, kDataset);
+  pumpUntil([&service] { return !service.errorOf("plug/failing").empty(); });
+  ASSERT_FALSE(service.errorOf("plug/failing").empty());
+  const int failing_runs = resolves["in"];
+
+  (void)service.recomputeForChangedInputs({"other"}, kDataset);
+  pumpUntil([&service] { return !service.isStale("plug/other"); });
+  ASSERT_FALSE(service.isStale("plug/other")) << "the unrelated brake pass ran";
+  EXPECT_EQ(resolves["in"], failing_runs) << "the failed rule was not resubmitted";
+  EXPECT_TRUE(service.isStale("plug/failing"));
+
+  value = 1;
+  (void)service.recomputeForChangedInputs({"in"}, kDataset);
+  pumpUntil([&service] { return !service.isStale("plug/failing"); });
+  EXPECT_FALSE(service.isStale("plug/failing")) << "its own input changed";
+  EXPECT_TRUE(service.errorOf("plug/failing").empty());
+}
+
+// A reload that breaks a rule records the failure like any scheduled run: errorOf (the
+// config "error" key) says why, the binding stays stale and the bell hears it once.
+TEST(BatchEngineTest, AReloadThatBreaksARuleRecordsAndReportsItsError) {
+  PJ::ObjectStore store;
+  std::atomic<int> value{1};
+  BatchEngine service(store, mutableValueResolver(value));
+  service.setMode(BatchEngine::Mode::kManual);
+  std::vector<PJ::Diagnostic> reported;
+  service.setDiagnosticSink([&reported](const PJ::Diagnostic& diagnostic) { reported.push_back(diagnostic); });
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", kFailsFromFiveScript)).has_value());
+
+  value = 5;
+  EXPECT_TRUE(service.recomputeForDataset(kDataset).empty());
+  EXPECT_NE(service.errorOf("plug/gen").find("value too big"), std::string::npos) << service.errorOf("plug/gen");
+  EXPECT_TRUE(service.isStale("plug/gen"));
+  ASSERT_EQ(reported.size(), 1u);
+  EXPECT_NE(reported.front().message.find("Marker rule 'plug/gen' failed: "), std::string::npos)
+      << reported.front().message;
+  EXPECT_NE(
+      reported.front().message.find("Any previous markers are kept; fix the rule and apply it again."),
+      std::string::npos)
+      << reported.front().message;
+
+  (void)service.recomputeForDataset(kDataset);
+  EXPECT_EQ(reported.size(), 1u) << "the same error is reported once";
 }

@@ -73,6 +73,10 @@ class TopicDemandTracker : public QObject {
   // sorted and de-duplicated. Empty vector for an unknown dataset.
   [[nodiscard]] std::vector<QString> activeTopics(DatasetId dataset_id) const;
 
+  // True while a widget displays any of the dataset's topics. Unlike activeTopics,
+  // the infrastructure and forced tiers do not count.
+  [[nodiscard]] bool hasAnyReference(DatasetId dataset_id) const;
+
  signals:
   // Emitted whenever a dataset's active-topic set changes. `active_topics` is
   // the complete current set (sorted, de-duplicated), not a delta. A slot may
@@ -87,6 +91,11 @@ class TopicDemandTracker : public QObject {
   // already active through a display reference — UI badging must hear about
   // that case too.
   void forcedTopicsChanged(DatasetId dataset_id);
+  // Emitted whenever hasAnyReference(dataset_id) flips. Distinct from
+  // activeTopicsChanged, which stays silent when a topic already streaming
+  // through the infrastructure or forced tier gets displayed: the batch
+  // engine's demand gate must hear about that case too.
+  void referenceDemandChanged(DatasetId dataset_id);
 
  private:
   struct DatasetState {

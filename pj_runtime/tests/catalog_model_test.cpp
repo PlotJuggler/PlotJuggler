@@ -7,9 +7,11 @@
 #include <QString>
 #include <QStringList>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "pj_base/builtin/plot_markers.hpp"
 #include "pj_base/type_tree.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
@@ -50,6 +52,27 @@ TEST(CatalogModelTest, TopicLookupRejectsDuplicateDatasets) {
   catalog.removeDataset(*first, /*tombstone=*/false);
   session.dataEngine().removeDataset(*first);
   EXPECT_EQ(catalog.datasetForTopic(u"/speed"_s), *second);
+}
+
+// The marker-input lookup: a series key resolves to its scalar field within the
+// dataset asked for, never in another dataset carrying the same topic.
+TEST(CatalogModelTest, FindScalarForMarkerKeyLooksInOneDataset) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  const auto first = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  const auto second = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "b.mcap"});
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(second);
+  const PJ::TopicId speed = addScalarTopic(session, *first, "/speed");
+  ASSERT_NE(speed, 0u);
+  const std::string key = PJ::sdk::markerSeriesKey("/speed", "value");
+
+  const std::optional<PJ::ScalarFieldPayload> found = catalog.findScalarForMarkerKey(*first, key);
+  ASSERT_TRUE(found.has_value());
+  EXPECT_EQ(found->topic_id, speed);
+  EXPECT_FALSE(catalog.findScalarForMarkerKey(*second, key).has_value()) << "not in that dataset";
+  EXPECT_FALSE(catalog.findScalarForMarkerKey(*first, "/speed").has_value()) << "a topic is not a series";
+  EXPECT_FALSE(catalog.findScalarForMarkerKey(*first, "/speed/val").has_value());
 }
 
 TEST(CatalogModelTest, KeepsDuplicateDatasetTopicsVisibleUnderDatasetRoot) {

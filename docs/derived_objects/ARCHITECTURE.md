@@ -270,8 +270,9 @@ transaction, the generation, the second readiness channel and the D26 gap.
 
 ## 11. Scheduling and execution
 
-**Status: Built (slice 2)** (the pool) and **Decided** (the queue, worker decoding, GIL
-release). The chain-in-one-task item is proposed.
+**Status: Built (slice 2)** (the pool), **Built (slice 3)** (the batch queue per node) and
+**Decided** (the on-demand queue, worker decoding, GIL release). The chain-in-one-task item
+is proposed.
 
 - **`EnginePool`** (`pj_runtime/include/pj_runtime/EnginePool.h`) runs ready tasks. It keeps
   no per-node state: no mailboxes, no coalescing, no supersede by generation.
@@ -301,13 +302,30 @@ release). The chain-in-one-task item is proposed.
   slice 3, `NodeScheduler` in slice 6a), not to the pool. The pending slot holds a request,
   not a task: inputs are captured on the GUI thread only when a run can start, so a burst of
   refreshes costs one capture. The consumer submits only when the node has no run in flight.
+  - **Batch (built, slice 3).** Per generator binding: one run in flight and at most one
+    pending `refresh`; the full result policy is the `BatchEngine.h` class comment. An
+    input change, or a catalog addition for an all-datasets rule, only marks the binding
+    stale (a streaming tick reports only the topics whose last timestamp, row count,
+    retention floor or content generation moved); the brake (one single-shot timer at the
+    reload rate, 2 Hz by default; Manual mode stops it) submits the stale, demanded
+    bindings with no run in flight that did not fail on their current inputs, and the
+    runs one pool drain publishes refresh the plots once. A bound rule is demanded when
+    its dataset is; an all-datasets rule when one of its contributors is. A display
+    reference wakes the brake (`TopicDemandTracker::referenceDemandChanged`), so does an
+    active-set change. A layout load's create waits at most 8 ms for its first run;
+    every other create runs to completion (§13). The whole-dataset recomputes (reload,
+    rollback, dataset removal) stay synchronous and record a failure like a scheduled
+    run.
 - **The in-flight memory budget** reserves the staged inputs plus one VM ceiling per
-  evaluation. A request that does not fit waits.
+  evaluation. A request that does not fit waits. Not built for batch yet: the prototype's
+  batch admission needs the marker script's result ceiling in `pj_scripting` (slice 5).
 - **GUI-thread work still to move:**
   - input decoding moves to the worker (decided);
   - a chain runs in one worker task (proposed; decided while designing slice 6a);
   - publication serialization disappears with pull;
-  - the batch staging copy, and TF snapshot copies (§12), get measured first.
+  - the batch staging copy, and TF snapshot copies (§12), get measured first. The batch
+    re-run over 500k rows now costs the GUI thread 15 ms at most per pass (§19), nearly
+    all of it the resolver's copy of the series (staging alone: 13-16 ms).
 - **Incremental engine.** Its per-ingest cycle runs on the GUI thread under `lockEngine`,
   and the first replay runs in 8 ms slices. Moving it to the pool is later work, after
   measurement.
@@ -373,6 +391,51 @@ release). The chain-in-one-task item is proposed.
 - **Previews** belong to the plugin instance that created them. Closing its panel, wiping
   the data or ending a headless session removes them. Undo and layout loads do not.
 - **History exemption.** Undo and redo have no authority over a history-exempt node.
+- **Batch cancellation** (built, slice 3). A batch run in flight is cancelled, and never
+  published, when its generator is upserted again, rescoped or removed, or when its
+  dataset is reloaded (at the start of the refill), merged (as the anchor or merged
+  away) or removed; an all-datasets run is cancelled whenever one of those happens to any
+  dataset. After a merge, the anchor's bindings and every all-datasets rule are marked
+  stale and re-run over the merged data.
+- **Creating a marker rule** (built, slice 3; decided 2026-10-13, narrowed to layout
+  loads the same day). The create compiles the script and stages its inputs on the GUI
+  thread.
+  The caller chooses how long the first run holds it (`BatchEngine::CreateWait`):
+  - **To completion** (the default): the run computes on the GUI thread and is drawn,
+    or its failure returned, when the create returns. Plugin creates through
+    `MarkersRuntimeHost`, ephemeral or not, use it: released plugins read the markers
+    right after `create_data_processor` returns (the anomaly detector's preview caches
+    them until its input changes; the assistant reads them back), and the 0.35 contract
+    says the host "compiles script, runs it over inputs". History restores use it too:
+    an undo tombstones and recreates every non-exempt rule, so a bounded create would
+    make a slow rule's markers blink on every undo.
+  - **Bounded**: only a layout load (`RestoreIntent::kReplace` in
+    `MainWindow::restoreDataProcessors`, including the progressive drain). The run
+    computes on the pool while the GUI thread waits at most `BatchEngine::kCreateBudget`,
+    8 ms. The precedent is a transform's first replay slice
+    (`kMaterializationSliceBudget`, §11): the create blocks the GUI about half a frame on
+    top of staging, however long the rule runs. Nothing reads a restored rule's markers
+    right away; they and their marker-scope rows arrive with the later
+    `markersPublished`, and a hidden scope saved in the layout stays hidden.
+  - Finished within the budget: a failure is returned to the caller and nothing changes
+    (the previous revision and its markers stay); a success is drawn when the create
+    returns.
+  - Still running: the rule is installed and the create returns. The run publishes
+    through the pool like a scheduled one. Meanwhile it is visible: `isRunning`, the
+    config key `computing`, and a status-bar line after 300 ms (the interim for slice 7's
+    plot indicator). A failure after the budget keeps the previous markers and is
+    reported, not returned: `errorOf`, the config key `error`, and once per distinct
+    error a notification naming the rule and the next step ("Any previous markers are
+    kept; fix the rule and apply it again.").
+  - The status-bar line, the notification and the config keys apply to every
+    asynchronous run: a brake or refresh re-run and a bounded layout-load create.
+  - The whole-dataset recompute (reload, rollback, replace) stays synchronous: its
+    callers repaint from the topics it returns, and a rollback must leave no marker
+    computed from the rolled-back data. A rule it breaks is recorded like a failed
+    scheduled run (`errorOf`, `error`, one notification), and stays stale.
+  - Later: a non-blocking create for plugins is an opt-in flag on the v2 create (slice
+    8); history restores can use the bounded create once they keep unchanged generators
+    live (slice L).
 
 ## 14. Scripting languages
 
@@ -428,7 +491,10 @@ proposed (N1, N2).
   ingest tick (`onLiveIngest`).
 - **The incremental engine** skips to the live edge when it falls behind retention, and
   records the gap.
-- **Batch** recomputes behind the reload brake.
+- **Batch** (built, slice 3) recomputes behind the reload brake, off the GUI thread, only
+  for a dataset something displays (a demand-capable stream counts while a widget shows
+  one of its topics). Every completed run is published, so markers keep updating while
+  the stream outruns the rule. Resuming a paused stream marks its generators stale.
 - **Coverage gaps** are reported in evaluation reports.
 
 ## 17. Scene integration
@@ -482,7 +548,7 @@ Under pull, a derived topic exposes only its current result through object reads
 ## 19. Measurements
 
 These come from the prototype, whose design document describes the machine and method,
-except the two slice 2 rows. Those are measured on this stack, before slices 3-4, by
+except the slice 2 and slice 3 rows. Those are measured on this stack by
 `EngineFreezeBench` (`pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`), from
 the call until the result is complete, as two different metrics:
 - **GUI-thread CPU time**, as the longest single stretch (the call or one event-loop
@@ -499,6 +565,11 @@ Linux, RelWithDebInfo.
 |---|---|
 | GUI freeze before slices 3-4 (slice 2): transform over 500k rows | GUI-thread CPU time: 8.3 ms max slice / 494 ms total. Worst wall-clock stall: 15.0 ms |
 | GUI freeze before slices 3-4 (slice 2): marker rule over 500k rows | GUI-thread CPU time: 193 ms max slice / 193 ms total. Worst wall-clock stall: 192 ms |
+| GUI freeze after slice 3: marker rule re-run after an input change (the brake, through the production resolver; `RerunMarkerRuleOverLongSeries`), 500k rows | 193 ms (synchronous before) → GUI-thread CPU time: 14.8 ms max slice / 26.1 ms total. Worst wall-clock stall: 13.8 ms |
+| After slice 3, a layout load creating a marker rule over 500k rows (`upsertGenerator` with `CreateWait::kBounded`: compile and stage, then wait at most `kCreateBudget` = 8 ms; a longer run publishes from a drain, included; plugin and history creates run to completion, at the synchronous cost): the heavy rule, 10 `math.sin` per sample (`ApplyMarkerRuleOverLongSeries`, in-memory resolver, so staging is a vector copy) | Synchronous create: 197 ms max slice / 197 ms total, stall 196 ms → bounded: GUI-thread CPU time: 8.0 ms max slice / 13.8 ms total. Worst wall-clock stall: 8.6 ms |
+| … the trivial threshold rule (`ApplyTrivialMarkerRuleOverLongSeries`, production resolver): the fixed part every rule pays, staging plus reading each sample once | Synchronous create: 102 ms / 102 ms, stall 101 ms → bounded: GUI-thread CPU time: 15.5 ms max slice / 25.0 ms total (the drain's publication of its ~22k markers included). Worst wall-clock stall: 22.6 ms (staging plus the budget) |
+| … staging alone (`StageMarkerInputOverLongSeries`: the production resolver copies 500k rows, the script only looks the series up) | GUI-thread CPU time: 15.7 ms max slice / 15.7 ms total. Worst wall-clock stall: 14.9 ms (13.3 / 13.3 / 12.3 ms in an earlier series of runs) |
+| The marker-input copy before slice 3's range cursor (`sampleAt` per row rescans from row 0) | 25k / 50k / 100k rows: 4.5 s / 17.8 s / 71 s (quadratic; about 30 min at 500k) → the cursor: 0.7 / 1.4 / 2.6 ms |
 | GUI freeze: new transform over 500k rows | 1,613 ms → 8.3 ms per slice |
 | On-demand evaluation, 260k-point cloud | 4-5 ms cold; under 0.01 ms warm |
 | Streaming: 5 min of 10 Hz, 2048-point clouds | Bounded plateau of entries and bytes |

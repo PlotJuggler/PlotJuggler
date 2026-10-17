@@ -6,11 +6,13 @@
 #include <QString>
 #include <QVector>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -32,6 +34,7 @@ namespace PJ {
 class MessageParserPluginBase;
 class DataProcessorService;
 class BatchEngine;
+class EnginePool;
 class RefillGuard;
 
 /// Result of resolving a persisted dataset identity against the live session.
@@ -144,10 +147,10 @@ class SessionManager : public QObject {
   void notifyMarkersChanged() {
     emit markersChanged();
   }
-  // A dataset just became listed (the catalog published it): re-run every
-  // all-datasets marker rule, since the newcomer may contribute. Wired by
-  // CatalogModel; the commit recompute runs before the catalog rebuild, so it can
-  // never see a new dataset itself.
+  // A dataset just became listed (the catalog published it): mark every
+  // all-datasets marker rule stale for the batch engine's brake, since the newcomer
+  // may contribute. Wired by CatalogModel; the commit recompute runs before the
+  // catalog rebuild, so it can never see a new dataset itself.
   void publishSharedMarkersToNewDatasets();
 
   // The session-wide budget for ingest-seeded object payload residency (see
@@ -176,7 +179,7 @@ class SessionManager : public QObject {
 
   // The session's whole-series batch engine (host-driven PlotMarkers generators
   // run via pj_scripting and published to the ObjectStore). The marker sibling of
-  // dataProcessorService; the shell injects its series resolver after the catalog
+  // dataProcessorService; AppSession injects its series resolver once the catalog
   // exists (see setResolver).
   [[nodiscard]] BatchEngine& batchEngine() noexcept {
     return *batch_engine_;
@@ -488,10 +491,13 @@ class SessionManager : public QObject {
   // commit(). Runs NO event loop until commit/rollback.
   [[nodiscard]] RefillGuard beginRefill(PJ::DatasetId dataset_id);
 
-  /// Re-run the marker generators whose inputs are among `changed` and repaint
-  /// overlays if any set was republished. The shared hook for every path that
-  /// commits new samples to existing inputs (file commit, streaming tick). Cheap
-  /// no-op when no generators exist. `changed` are TopicIds resolved to names here.
+  /// Mark stale the marker generators whose inputs are among `changed`; the batch
+  /// engine re-runs them off the GUI thread behind its brake, and each published
+  /// burst repaints the overlays (`markersChanged`). The shared hook for every path
+  /// that commits new samples to existing inputs (file commit, streaming tick). Cheap
+  /// no-op when no generators exist. `changed` are TopicIds resolved to names here;
+  /// one whose (last timestamp, row count) has not moved since the last call is
+  /// dropped, since a streaming tick reports every topic of its dataset.
   /// `scope` is the dataset whose data actually moved; it bounds an `all_datasets`
   /// generator to that dataset instead of re-running it over every loaded one. Pass 0
   /// only when the change cannot be attributed to a single dataset.
@@ -806,10 +812,18 @@ class SessionManager : public QObject {
   // Owns the session's filter/transform engine; constructed in the ctor body
   // after data_engine_ is alive (it binds an IncrementalEngine to data_engine_).
   std::unique_ptr<DataProcessorService> processor_service_;
+  // The workers the derived-data engines run scripts on. Declared before the engines
+  // so it is destroyed after them: each engine cancels its runs, then the pool joins.
+  std::unique_ptr<EnginePool> engine_pool_;
   // Owns the session's whole-series marker generators (host-driven PlotMarkers);
   // constructed in the ctor after object_store_/data_engine_. Its series resolver
-  // is injected by the shell once the catalog exists (setResolver).
+  // is injected by AppSession once the catalog exists (setResolver).
   std::unique_ptr<BatchEngine> batch_engine_;
+  // Per topic, the (time_range_max, total_row_count, retention floor, series
+  // generation) recomputeMarkersForChanged last saw: a topic whose stamp did not move
+  // is not reported as a changed input.
+  using MarkerInputStamp = std::tuple<Timestamp, uint64_t, Timestamp, uint64_t>;
+  std::unordered_map<TopicId, MarkerInputStamp> marker_input_extents_;
   // Per-object-topic parser slots. WRITTEN from the streaming worker thread (the
   // registrar callback fires when a plugin discovers/replaces a topic mid-stream)
   // and READ from the GUI thread on every render tick (each scene3D layer +

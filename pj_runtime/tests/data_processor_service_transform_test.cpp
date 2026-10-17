@@ -1050,7 +1050,7 @@ TEST(DataProcessorTransformTest, StrandPreflightSeesGroupedTransformOutputTopic)
   ASSERT_TRUE(grouped.has_value()) << grouped.error();
 
   BatchEngine& markers = fx.session.batchEngine();
-  markers.setResolver([](DatasetId, const std::string&) {
+  markers.setResolver([](DatasetId, const std::string&, const BatchEngine::Window&) {
     BatchEngine::ResolvedSeries series;
     series.timestamps = {0.0};
     series.values = {1.0};
@@ -1499,11 +1499,11 @@ TEST(DataProcessorTimeSliceTest, MarkerGeneratorReadsTheCompleteOutput) {
   ASSERT_TRUE(fx.service.materializationPending());
   const TopicId out = sliced->output_topic_ids.front();
 
-  // Stand-in for the shell's catalog resolver (MainWindow): the complete-read
+  // Stand-in for the session's catalog resolver (AppSession): the complete-read
   // barrier, then the rows it hands the generator.
   std::size_t rows_seen = 0;
   fx.session.batchEngine().setResolver(
-      [&](DatasetId, const std::string& key) -> std::optional<BatchEngine::ResolvedSeries> {
+      [&](DatasetId, const std::string& key, const BatchEngine::Window&) -> std::optional<BatchEngine::ResolvedSeries> {
         if (key != "acc_out/value") {
           return std::nullopt;
         }

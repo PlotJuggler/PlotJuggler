@@ -10,8 +10,12 @@
 #include <QSignalBlocker>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QTest>
+#include <QThread>
 #include <QTimer>
 #include <QToolButton>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <limits>
 #include <memory>
@@ -193,6 +197,39 @@ PJ::DatasetId addScalarDataset(
 std::vector<PJ::Timestamp> allDatasetsMarkerTimes(PJ::AppSession& app, std::string_view owner) {
   return pj_test::markerTimes(app, PJ::kAllDatasetsMarkerDataset, PJ::kAllDatasetsMarkerTopic, owner);
 }
+
+// For one test: the production create budget, and every marker run computed on the
+// pool held until release() (a synchronous run on the GUI thread passes). The
+// destructor releases and waits for the held runs to publish before the probe goes.
+class HeldMarkerComputes {
+ public:
+  explicit HeldMarkerComputes(PJ::BatchEngine& engine)
+      : engine_(engine), previous_budget_(PJ::BatchEngine::setCreateBudgetForTest(PJ::BatchEngine::kCreateBudget)) {
+    QThread* const gui = QThread::currentThread();
+    PJ::BatchEngine::setComputeThreadProbeForTest([this, gui](QThread* thread) {
+      for (int waited_ms = 0; thread != gui && !released_.load() && waited_ms < 5000; ++waited_ms) {
+        QThread::msleep(1);
+      }
+    });
+  }
+  ~HeldMarkerComputes() {
+    release();
+    static_cast<void>(QTest::qWaitFor([this] { return engine_.runningIds().empty(); }, 5000));
+    PJ::BatchEngine::setComputeThreadProbeForTest({});
+    PJ::BatchEngine::setCreateBudgetForTest(previous_budget_);
+  }
+  HeldMarkerComputes(const HeldMarkerComputes&) = delete;
+  HeldMarkerComputes& operator=(const HeldMarkerComputes&) = delete;
+
+  void release() {
+    released_ = true;
+  }
+
+ private:
+  PJ::BatchEngine& engine_;
+  std::chrono::milliseconds previous_budget_;
+  std::atomic<bool> released_{false};
+};
 
 QString catalogKeyForTopic(PJ::CatalogModel& catalog, PJ::TopicId topic_id) {
   for (const auto& curve : catalog.curves()) {
@@ -823,6 +860,40 @@ TEST_F(MainWindowHistoryFixture, UndoOfASourceTimelineDragKeepsGlobalMarkersAtTh
   EXPECT_EQ(allDatasetsMarkerTimes(app, kRule), redone);
 }
 
+// A history restore tombstones and recreates every rule it replays, so it runs each
+// to completion: with the bounded create of a layout load, a slow rule's markers
+// would be missing when the undo returns, and blink on every undo.
+TEST_F(MainWindowHistoryFixture, UndoReplaysASlowMarkerRuleBeforeItReturns) {
+  constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
+  PJ::MainWindow& window = mainWindow();
+  PJ::AppSession& app = PJ::MainWindowHistoryTestPeer::appSession(window);
+  PJ::SessionManager& session = app.sessionManager();
+  const PJ::DatasetId a = addScalarDataset(app, "a", "/sensor", 100 * kSecond, 110 * kSecond);
+  ASSERT_NE(a, 0U);
+  constexpr std::string_view kRule = "test/slow-rule";
+  PJ::BatchEngine::GeneratorRecipe recipe;
+  recipe.id = std::string(kRule);
+  recipe.all_datasets = true;
+  recipe.inputs = {"/sensor/value"};
+  recipe.outputs = {std::string(PJ::kAllDatasetsMarkerTopic)};
+  recipe.script = R"(
+    local s = series("/sensor/value")
+    for i = 0, s:size() - 1 do createMarker(s:at(i).t) end
+  )";
+  const auto inserted = session.batchEngine().upsertGenerator(recipe);
+  ASSERT_TRUE(inserted.has_value()) << (inserted.has_value() ? std::string{} : inserted.error());
+  const std::vector<PJ::Timestamp> baseline{100 * kSecond, 110 * kSecond};
+  ASSERT_EQ(allDatasetsMarkerTimes(app, kRule), baseline);
+  PJ::MainWindowHistoryTestPeer::resetHistory(window);
+  session.setDisplayOffset(a, PJ::DisplayOffset{PJ::Duration{20 * kSecond}});
+  PJ::MainWindowHistoryTestPeer::recordDiscreteState(window);
+
+  const HeldMarkerComputes held(session.batchEngine());
+  PJ::MainWindowHistoryTestPeer::undo(window);
+  EXPECT_EQ(session.sourceDisplayOffset(a).value.count(), 0);
+  EXPECT_EQ(allDatasetsMarkerTimes(app, kRule), baseline) << "the replayed rule is drawn when the undo returns";
+}
+
 TEST_F(MainWindowHistoryFixture, ProgressiveDrainRestoresOffsetsGlobalMarkersAndHiddenScopeRows) {
   constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
   QTemporaryDir source_dir;
@@ -905,13 +976,21 @@ TEST_F(MainWindowHistoryFixture, ProgressiveDrainRestoresOffsetsGlobalMarkersAnd
   EXPECT_EQ(session.sourceDisplayOffset(a).value.count(), 0);
   session.setDatasetSourcePath(a, source_a);
   session.setDatasetSourcePath(b, source_b);
+  // A layout load does not wait for a slow rule: it returns with the run in flight,
+  // and the markers and their scope row arrive with the run's later publish.
+  HeldMarkerComputes held(session.batchEngine());
   PJ::MainWindowHistoryTestPeer::drainProgressiveRestore(window);
   EXPECT_FALSE(PJ::MainWindowHistoryTestPeer::progressiveRestoreInFlight(window));
   EXPECT_EQ(session.sourceDisplayOffset(a).value.count(), 20 * kSecond);
+  EXPECT_TRUE(allDatasetsMarkerTimes(app, "test/progressive-global").empty()) << "the run is still computing";
   plot = ensureCurrentPlot(window);
   ASSERT_NE(plot, nullptr);
-  EXPECT_FALSE(plot->markerScopeRows().empty());
-  EXPECT_FALSE(plot->datasetMarkerScopeVisible(a, PJ::MarkerScope::kAllDatasets));
+  EXPECT_TRUE(plot->markerScopeRows().empty()) << "nothing is published yet";
+
+  held.release();
+  EXPECT_TRUE(QTest::qWaitFor([&plot] { return !plot->markerScopeRows().empty(); }, 5000))
+      << "the late publish brings the scope row";
+  EXPECT_FALSE(plot->datasetMarkerScopeVisible(a, PJ::MarkerScope::kAllDatasets)) << "the saved hidden scope survives";
   // Only a carries /sensor; replayed under its restored 20 s offset, raw 100/200 sit at 80/180.
   EXPECT_EQ(
       allDatasetsMarkerTimes(app, "test/progressive-global"),

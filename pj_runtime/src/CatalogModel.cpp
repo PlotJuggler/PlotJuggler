@@ -30,6 +30,7 @@
 #include "pj_datastore/reader.hpp"
 #include "pj_datastore/topic_storage.hpp"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/DatasetQualifiedName.h"  // markerSeriesField
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
@@ -317,6 +318,26 @@ std::vector<CatalogItem> CatalogModel::items() const {
   }
   std::sort(items.begin(), items.end(), catalogItemLess);
   return items;
+}
+
+std::optional<ScalarFieldPayload> CatalogModel::findScalarForMarkerKey(
+    DatasetId dataset, const std::string& key) const {
+  const QString key_text = QString::fromStdString(key);
+  const CatalogItem* first = nullptr;
+  const ScalarFieldPayload* found = nullptr;
+  for (const auto& [item_key, item] : impl_->items) {
+    (void)item_key;
+    // A series key starts with its topic name: reject cheaply before building strings.
+    if (item.dataset_id != dataset || !key_text.startsWith(item.topic_name)) {
+      continue;
+    }
+    if (const ScalarFieldPayload* scalar = markerSeriesField(item, key);
+        scalar != nullptr && (first == nullptr || catalogItemLess(item, *first))) {
+      first = &item;
+      found = scalar;
+    }
+  }
+  return found == nullptr ? std::nullopt : std::optional<ScalarFieldPayload>(*found);
 }
 
 DatasetId CatalogModel::datasetForTopic(const QString& topic_name) const {

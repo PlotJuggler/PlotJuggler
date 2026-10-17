@@ -300,6 +300,9 @@ void StreamingSourceManager::onPauseToggled(bool paused) {
   for (const auto& [streaming_dataset_id, _catchup_sess] : sessions_) {
     const auto filter_inputs = session_manager_.createReader().listTopics(streaming_dataset_id);
     (void)session_manager_.dataProcessorService().advanceOnCommit(filter_inputs);
+    // A marker rule whose inputs changed only during the pause would keep drawing
+    // pre-pause data: mark it stale, and the batch engine's brake re-runs it.
+    session_manager_.recomputeMarkersForChanged(filter_inputs, streaming_dataset_id);
   }
   // DataEngine::flushTo moves chunks without trimming; re-trim the merged primary
   // to the window (objects are already trimmed by ObjectStore::flushTo). Scope the
@@ -646,11 +649,12 @@ void StreamingSourceManager::workerLoop(DatasetId dataset_id) {
           for (const TopicId id : topic_ids) {
             ids.push_back(id);
           }
-          // Re-run whole-series marker generators over the freshly committed samples.
-          // The streaming write host commits straight to the engine, bypassing
-          // SessionManager::commitChunks, so this is the live-data marker recompute
-          // hook (cheap no-op when no generators exist). Paused writes land in the
-          // secondary engine with no IncrementalEngine, matching the filter-advance gate.
+          // Mark stale the whole-series marker generators whose inputs moved (the
+          // session drops the listed topics that did not). The streaming write host
+          // commits straight to the engine, bypassing SessionManager::commitChunks, so
+          // this is the live-data marker recompute hook (cheap no-op when no
+          // generators exist). Paused writes land in the secondary engine with no
+          // IncrementalEngine, matching the filter-advance gate.
           if (!paused_) {
             session_manager_.recomputeMarkersForChanged(topic_ids, dataset_id);
           }

@@ -3,10 +3,15 @@
 //
 // EngineFreezeBench: how long the GUI thread is blocked when a whole-series
 // computation is applied: a Luau transform over a long log (IncrementalEngine,
-// via DataProcessorService::upsertTransform) and a marker rule over a long series
-// (BatchEngine::upsertGenerator). Each case applies five fresh recipes and prints
-// the medians of three numbers, measured from the call until its result is
-// complete (a sliced replay finishing from the event loop included):
+// via DataProcessorService::upsertTransform), marker rules over a long series
+// (BatchEngine::upsertGenerator, the bounded wait of a layout load) and a rule's re-run after its
+// input changed (the brake, off the GUI thread). The marker creates split the cost:
+// staging alone (the resolver's copy), a trivial threshold rule (staging plus the
+// per-sample binding every rule pays) and the heavy rule (adding 10 math.sin per
+// sample). Each case applies five fresh recipes (the re-run: re-runs one rule five
+// times) and prints the medians of three numbers, measured from the call until its
+// result is complete (a sliced replay or a scheduled run finishing from the event
+// loop included):
 //   - GUI-thread CPU time, max_slice: the longest stretch the event loop could not
 //     turn (the call itself, or one event-loop pass);
 //   - GUI-thread CPU time, total: the sum of those stretches;
@@ -22,6 +27,7 @@
 
 #include <QCoreApplication>
 #include <QEventLoop>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <algorithm>
 #include <chrono>
@@ -34,13 +40,16 @@
 #include <string>
 #include <vector>
 
+#include "batch_engine_test_utils.h"
 #include "pj_base/dataset.hpp"
 #include "pj_base/sdk/platform.hpp"
 #include "pj_base/types.hpp"
 #include "pj_bench_stats.h"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/writer.hpp"
+#include "pj_runtime/AppSession.h"
 #include "pj_runtime/BatchEngine.h"
+#include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/SessionManager.h"
 
@@ -136,34 +145,50 @@ constexpr int kBenchSeconds = 5000;
 constexpr std::size_t kBenchRows = static_cast<std::size_t>(kBenchHz) * static_cast<std::size_t>(kBenchSeconds);
 constexpr std::size_t kBenchChunkRows = 50'000;
 
-// One dataset holding one float64 column "a" at 100 Hz for 5000 s (500 000 rows),
-// committed in 50k-row chunks. `a`'s samples are kept alongside for the marker
-// case's resolver, so that case times the script, not a second storage read.
-struct BenchDataset {
-  SessionManager session;
+// One dataset of `session` holding one float64 column "a" at 100 Hz for 5000 s
+// (500 000 rows), committed in 50k-row chunks. The samples are kept alongside for
+// the create case's resolver, so that case times the script, not a storage read.
+struct BenchSeries {
   DatasetId ds = 0;
-  std::vector<double> a_timestamps_ns;
-  std::vector<double> a_values;
+  std::vector<double> timestamps_ns;
+  std::vector<double> values;
 
-  BenchDataset() {
+  explicit BenchSeries(SessionManager& session) {
     DataEngine& engine = session.dataEngine();
     ds = *engine.createDataset(DatasetDescriptor{.source_name = "bench", .time_domain_id = 0});
     DataWriter writer = engine.createWriter();
     const auto handle = *writer.registerScalarSeries(ds, "a", NumericType::kFloat64);
-    a_timestamps_ns.reserve(kBenchRows);
-    a_values.reserve(kBenchRows);
+    timestamps_ns.reserve(kBenchRows);
+    values.reserve(kBenchRows);
     constexpr Timestamp kStepNs = 1'000'000'000LL / kBenchHz;
     for (std::size_t row = 0; row < kBenchRows; ++row) {
       const Timestamp stamp = static_cast<Timestamp>(row) * kStepNs;
       const double value = std::sin(static_cast<double>(row) * 0.01);
       writer.appendScalar(handle, stamp, value);
-      a_timestamps_ns.push_back(static_cast<double>(stamp));
-      a_values.push_back(value);
+      timestamps_ns.push_back(static_cast<double>(stamp));
+      values.push_back(value);
       if ((row + 1) % kBenchChunkRows == 0) {
         static_cast<void>(session.commitChunks(writer.flushAll()));
       }
     }
     static_cast<void>(session.commitChunks(writer.flushAll()));
+  }
+};
+
+struct BenchDataset {
+  SessionManager session;
+  BenchSeries a{session};
+};
+
+// The series in a whole AppSession, cataloged, so a marker rule reads it through the
+// resolver the app runs (AppSession installs it), as the series key "a/value".
+struct BenchAppDataset {
+  QTemporaryDir extensions_dir;
+  AppSession app{extensions_dir.path()};
+  BenchSeries a{app.sessionManager()};
+
+  BenchAppDataset() {
+    app.catalogModel().rebuildFromDatastore();
   }
 };
 
@@ -180,12 +205,12 @@ std::string heavyTransformScript(const std::string& id) {
          "  end } end }\n";
 }
 
-// A marker rule scanning the whole series with 10 `math.sin` calls per sample and
+// A marker rule scanning the series `key` with 10 `math.sin` calls per sample and
 // marking every sample above 0.99. The whole scan runs under ONE script fuel
 // budget (pj_scripting/sandbox.h), unlike the transform's per-sample `calculate`,
 // hence 10 calls per sample instead of 50.
-constexpr const char* kMarkerRuleScript = R"LUAU(
-  local s = series("a")
+std::string markerRuleScript(const std::string& key) {
+  return "local s = series(\"" + key + "\")\n" + R"LUAU(
   for i = 0, s:size() - 1 do
     local pt = s:at(i)
     local acc = 0
@@ -197,6 +222,44 @@ constexpr const char* kMarkerRuleScript = R"LUAU(
     end
   end
 )LUAU";
+}
+
+// The fixed part of every marker rule: a threshold over the series `key`, reading
+// each sample once and marking the ones above 0.99, with no other work per sample.
+std::string trivialMarkerRuleScript(const std::string& key) {
+  return "local s = series(\"" + key + "\")\n" + R"LUAU(
+  for i = 0, s:size() - 1 do
+    local pt = s:at(i)
+    if pt.v > 0.99 then
+      createPointMarker(pt.t, pt.v, {label="hi"})
+    end
+  end
+)LUAU";
+}
+
+// Creates `script` five times as a rule over "a/value", read through the resolver
+// AppSession installs, and reports the medians as `name`.
+void benchCreateThroughTheAppResolver(const char* name, const std::string& script) {
+  const PJ::test::ScopedCreateBudget budget(BatchEngine::kCreateBudget);
+  BenchAppDataset fx;
+  BatchEngine& batch = fx.app.sessionManager().batchEngine();
+  std::vector<GuiCost> costs;
+  for (int iteration = 0; iteration < kIterations; ++iteration) {
+    BatchEngine::GeneratorRecipe recipe;
+    recipe.id = std::string("bench/") + name + std::to_string(iteration);
+    recipe.dataset_id = fx.a.ds;
+    recipe.inputs = {"a/value"};
+    recipe.outputs = {"bench_markers"};
+    recipe.script = script;
+    costs.push_back(measureGuiCost(
+        [&] {
+          const auto result = batch.upsertGenerator(recipe, BatchEngine::CreateWait::kBounded);
+          ASSERT_TRUE(result.has_value()) << result.error();
+        },
+        [&] { return !batch.isRunning(recipe.id); }));
+  }
+  report(name, costs);
+}
 
 TEST(EngineFreezeBench, ApplyTransformOverLongLog) {
   if (!PJ::sdk::getEnv("PJ_BENCH")) {
@@ -222,30 +285,78 @@ TEST(EngineFreezeBench, ApplyMarkerRuleOverLongSeries) {
   if (!PJ::sdk::getEnv("PJ_BENCH")) {
     GTEST_SKIP() << "set PJ_BENCH=1";
   }
+  const PJ::test::ScopedCreateBudget budget(BatchEngine::kCreateBudget);
   BenchDataset fx;
   BatchEngine& batch = fx.session.batchEngine();
-  batch.setResolver([&fx](DatasetId dataset, const std::string& key) -> std::optional<BatchEngine::ResolvedSeries> {
-    if (dataset != fx.ds || key != "a") {
-      return std::nullopt;
-    }
-    return BatchEngine::ResolvedSeries{.timestamps = fx.a_timestamps_ns, .values = fx.a_values};
-  });
+  batch.setResolver(
+      [&fx](
+          DatasetId dataset, const std::string& key,
+          const BatchEngine::Window&) -> std::optional<BatchEngine::ResolvedSeries> {
+        if (dataset != fx.a.ds || key != "a") {
+          return std::nullopt;
+        }
+        return BatchEngine::ResolvedSeries{.timestamps = fx.a.timestamps_ns, .values = fx.a.values};
+      });
   std::vector<GuiCost> costs;
   for (int iteration = 0; iteration < kIterations; ++iteration) {
     BatchEngine::GeneratorRecipe recipe;
     recipe.id = "bench/m" + std::to_string(iteration);
-    recipe.dataset_id = fx.ds;
+    recipe.dataset_id = fx.a.ds;
     recipe.inputs = {"a"};
     recipe.outputs = {"bench_markers"};
-    recipe.script = kMarkerRuleScript;
+    recipe.script = markerRuleScript("a");
+    // The bounded create (a layout load's) waits kCreateBudget for the run, which then
+    // publishes from a drain: the result is complete once it no longer runs.
     costs.push_back(measureGuiCost(
         [&] {
-          const auto result = batch.upsertGenerator(recipe);
+          const auto result = batch.upsertGenerator(recipe, BatchEngine::CreateWait::kBounded);
           ASSERT_TRUE(result.has_value()) << result.error();
         },
-        [] { return true; }));
+        [&] { return !batch.isRunning(recipe.id); }));
   }
   report("ApplyMarkerRuleOverLongSeries", costs);
+}
+
+// Staging alone: the resolver copies the 500k rows, and the script only looks the
+// series up (no per-sample binding).
+TEST(EngineFreezeBench, StageMarkerInputOverLongSeries) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  benchCreateThroughTheAppResolver(
+      "StageMarkerInputOverLongSeries", "local s = series(\"a/value\")\nlocal n = s:size()\n");
+}
+
+// The fixed overhead every marker rule pays: staging plus reading each sample once.
+TEST(EngineFreezeBench, ApplyTrivialMarkerRuleOverLongSeries) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  benchCreateThroughTheAppResolver("ApplyTrivialMarkerRuleOverLongSeries", trivialMarkerRuleScript("a/value"));
+}
+
+TEST(EngineFreezeBench, RerunMarkerRuleOverLongSeries) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  BenchAppDataset fx;
+  BatchEngine& batch = fx.app.sessionManager().batchEngine();
+  batch.setReloadHz(BatchEngine::kMaxReloadHz);
+  BatchEngine::GeneratorRecipe recipe;
+  recipe.id = "bench/rerun";
+  recipe.dataset_id = fx.a.ds;
+  recipe.inputs = {"a/value"};
+  recipe.outputs = {"bench_markers"};
+  recipe.script = markerRuleScript("a/value");
+  const auto created = batch.upsertGenerator(recipe);
+  ASSERT_TRUE(created.has_value()) << created.error();
+  std::vector<GuiCost> costs;
+  for (int iteration = 0; iteration < kIterations; ++iteration) {
+    costs.push_back(measureGuiCost(
+        [&] { ASSERT_FALSE(batch.recomputeForChangedInputs({"a"}, fx.a.ds).empty()); },
+        [&] { return batch.staleIds().empty(); }));
+  }
+  report("RerunMarkerRuleOverLongSeries", costs);
 }
 
 }  // namespace

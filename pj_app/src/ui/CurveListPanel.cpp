@@ -868,6 +868,10 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
   QPushButton* reload_button = add_item(u":/resources/svg/replay.svg"_s, tr("Reload"), false, single_file_backed);
   QPushButton* replace_button =
       add_item(u":/resources/svg/compare_arrows.svg"_s, tr("Replace"), false, single_file_backed);
+  // Always enabled: a dataset without marker rules makes it a no-op, and Manual mode
+  // has no other way to run a stale rule.
+  QPushButton* refresh_derived_button =
+      add_item(u":/resources/svg/refresh.svg"_s, tr("Refresh derived"), false, /*enabled=*/true);
   QPushButton* remove_button =
       add_item(u":/resources/svg/trash.svg"_s, tr("Remove"), /*destructive=*/true, /*enabled=*/true);
 
@@ -885,6 +889,7 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
   on_click(merge_button, [this, dataset_ids]() { emit mergeDatasetsRequested(dataset_ids); });
   on_click(reload_button, [this, first]() { emit reloadDatasetRequested(first); });
   on_click(replace_button, [this, first]() { emit replaceDatasetRequested(first); });
+  on_click(refresh_derived_button, [this, dataset_ids]() { emit refreshDerivedRequested(dataset_ids); });
   on_click(remove_button, [this, dataset_ids]() { emit removeDatasetsRequested(dataset_ids); });
 
   showOwnedMenu(menu, tree_view_->viewport()->mapToGlobal(pos));

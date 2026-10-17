@@ -9,6 +9,8 @@
 
 #include <gtest/gtest.h>
 
+#include <QThread>
+#include <atomic>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -16,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "batch_engine_test_utils.h"
 #include "marker_test_utils.h"
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_base/builtin/plot_markers_codec.hpp"
@@ -25,6 +28,7 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/DatasetQualifiedName.h"
+#include "pj_runtime/EnginePool.h"
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/MarkersRuntimeHost.h"
 
@@ -39,7 +43,8 @@ using PJ::test::readMarkerUnion;
 constexpr PJ::DatasetId kDataset = 1;
 
 BatchEngine::SeriesResolver rampResolver() {
-  return [](PJ::DatasetId, const std::string& key) -> std::optional<BatchEngine::ResolvedSeries> {
+  return [](PJ::DatasetId, const std::string& key,
+            const BatchEngine::Window&) -> std::optional<BatchEngine::ResolvedSeries> {
     if (key != "in") {
       return std::nullopt;
     }
@@ -499,8 +504,9 @@ TEST(MarkersRuntimeHostTest, ScopeAllRejectsARecognizedDatasetQualifier) {
 // nowhere is rejected by the service.
 TEST(MarkersRuntimeHostTest, ScopeAllKeepsAColonNameThatMatchesNoSource) {
   PJ::ObjectStore store;
-  BatchEngine service(
-      store, [](PJ::DatasetId, const std::string& key) { return rampResolver()(1, key == "zz:in" ? "in" : key); });
+  BatchEngine service(store, [](PJ::DatasetId, const std::string& key, const BatchEngine::Window& window) {
+    return rampResolver()(1, key == "zz:in" ? "in" : key, window);
+  });
   service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
   MarkersRuntimeHost bridge(service, "anomaly", realResolverOverTwoDatasets(), sourceNameOf);
   PJ::sdk::DataProcessorsHostView view(bridge.raw());
@@ -512,6 +518,92 @@ TEST(MarkersRuntimeHostTest, ScopeAllKeepsAColonNameThatMatchesNoSource) {
   ASSERT_TRUE(created) << created.error();
   ASSERT_EQ(service.recipes().size(), 1u);
   EXPECT_EQ(service.recipes().front().inputs, (std::vector<std::string>{"zz:in"}));
+}
+
+// config tells a plugin what its rule is doing: "computing" while a run is in flight,
+// and "error" (only then) when the last run failed, so a late failure is actionable.
+TEST(MarkersRuntimeHostTest, ConfigReportsComputingAndTheLastError) {
+  std::atomic<bool> released{true};
+  const PJ::test::ScopedComputeProbe probe([&released](QThread*) {
+    for (int waited_ms = 0; !released.load() && waited_ms < 5000; ++waited_ms) {
+      QThread::msleep(1);
+    }
+  });
+  std::atomic<int> value{1};
+  PJ::ObjectStore store;
+  BatchEngine service(
+      store,
+      [&value](PJ::DatasetId, const std::string& key, const BatchEngine::Window&)
+          -> std::optional<BatchEngine::ResolvedSeries> {
+        if (key != "in") {
+          return std::nullopt;
+        }
+        return BatchEngine::ResolvedSeries{.timestamps = {0.0}, .values = {static_cast<double>(value.load())}};
+      });
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  service.setMode(BatchEngine::Mode::kManual);
+  MarkersRuntimeHost bridge(
+      service, "anomaly",
+      [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+  const std::string_view inputs[] = {"in"};
+  ASSERT_TRUE(view.createMarkers(
+      "gen", PJ::Span<const std::string_view>(inputs), "in",
+      "local s = series(\"in\")\nif s:at(0).v >= 5 then error(\"value too big\") end\ncreateMarker(0.0)\n", "{}"));
+  pool.waitIdle();
+  const auto config = [&view] {
+    const PJ::Expected<std::string> recipe = view.recipeOf("gen");
+    return recipe.has_value() ? *recipe : recipe.error();
+  };
+  EXPECT_NE(config().find("\"computing\":false"), std::string::npos) << config();
+
+  released = false;
+  service.refresh("anomaly/gen");
+  EXPECT_NE(config().find("\"computing\":true"), std::string::npos) << config();
+  released = true;
+  pool.waitIdle();
+  EXPECT_NE(config().find("\"computing\":false"), std::string::npos) << config();
+  EXPECT_EQ(config().find("\"error\""), std::string::npos) << "no failure, no error key: " << config();
+
+  value = 5;
+  service.refresh("anomaly/gen");
+  pool.waitIdle();
+  EXPECT_NE(config().find("\"error\":"), std::string::npos) << config();
+  EXPECT_NE(config().find("value too big"), std::string::npos) << config();
+}
+
+// Released plugins read a rule's markers right after create returns (the anomaly
+// detector's preview caches them until its input changes), so a create through the
+// plugin ABI runs to completion, ephemeral or persistent, whatever the create budget
+// and however long the run: the markers are readable when it returns.
+TEST(MarkersRuntimeHostTest, CreateReturnsWithTheRunsMarkersPublished) {
+  const PJ::test::ScopedCreateBudget budget(BatchEngine::kCreateBudget);
+  std::atomic<bool> released{false};
+  const PJ::test::ScopedComputeProbe probe(PJ::test::holdPoolComputesUntil(released));
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver());
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  MarkersRuntimeHost bridge(
+      service, "anomaly",
+      [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+  const std::string_view inputs[] = {"in"};
+
+  const PJ::Expected<std::vector<std::string>> persistent =
+      view.createMarkers("gen", PJ::Span<const std::string_view>(inputs), "in", "createMarker(0.0)\n", "{}");
+  ASSERT_TRUE(persistent) << persistent.error();
+  EXPECT_EQ(readMarkerUnion(store, kDataset, "in").markers.size(), 1u) << "published before the create returned";
+
+  const PJ::Expected<std::vector<std::string>> preview = view.createMarkers(
+      "__preview__", PJ::Span<const std::string_view>(inputs), /*output=*/"", "createMarker(0.0)\n", "{}",
+      PJ_DATA_PROCESSOR_FLAG_EPHEMERAL);
+  ASSERT_TRUE(preview) << preview.error();
+  ASSERT_EQ(preview->size(), 1u);
+  EXPECT_EQ(readMarkerUnion(store, kDataset, preview->front()).markers.size(), 1u)
+      << "the preview's markers are readable when the create returns";
+  released = true;
 }
 
 }  // namespace

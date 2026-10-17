@@ -922,43 +922,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   wireIngestProgress(
       session_->sessionManager(), session_->catalogModel(), *ingest_progress_controller_, *ui_->curveListPanel, this);
 
-  // Marker generators read their inputs through these two catalog-backed callbacks.
-  // They are SESSION state, not panel state: a generator can also arrive from a saved
-  // layout, which is replayed before any toolbox panel exists, so they are installed
-  // once here rather than per toolbox launch. The resolver maps an input key
-  // (markerSeriesKey) to its samples using the same naming the producer and the
-  // overlay use, so a generator yields the same markers in GUI and CI.
-  session_->sessionManager().batchEngine().setResolver(
-      [this](PJ::DatasetId dataset, const std::string& key) -> std::optional<PJ::BatchEngine::ResolvedSeries> {
-        // items() returns by value: keep it alive while `scalar` points into it.
-        const auto items = session_->catalogModel().items();
-        const PJ::ScalarFieldPayload* scalar = nullptr;
-        for (const PJ::CatalogItem& item : items) {
-          if (item.dataset_id != dataset) {
-            continue;
-          }
-          scalar = markerSeriesField(item, key);
-          if (scalar != nullptr) {
-            break;
-          }
-        }
-        if (scalar == nullptr) {
-          return std::nullopt;
-        }
-        const PJ::TopicId topic_id = scalar->topic_id;
-        const std::size_t column_index = scalar->column_index;
-        // A generator reads the whole series, so a transform output still replaying in
-        // slices is completed first. That notifies: `scalar` is not used past it.
-        session_->sessionManager().dataEngine().awaitCompleteSeries(topic_id);
-        const PJ::DataReader reader = session_->sessionManager().createReader();
-        PJ::Expected<PJ::SeriesReader> series = reader.series(topic_id, column_index);
-        if (!series.has_value()) {
-          return std::nullopt;
-        }
-        return PJ::readResolvedSeries(*series);
-      });
-  // For `all_datasets` (global-across-all) generators: list every loaded dataset.
-  session_->sessionManager().batchEngine().setDatasetLister([this]() { return session_->catalogModel().datasetIds(); });
+  applyDerivedBatchPreferences();
+  wireMarkerComputingStatus();
 
   // Keep data widgets coherent with catalog removals, whoever triggers them.
   // Each widget prunes its OWN pieces against the live catalog/store. One pass
@@ -990,6 +955,11 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   });
   connect(ui_->curveListPanel, &CurveListPanel::removeDatasetsRequested, this, &MainWindow::onRemoveDatasetsRequested);
   connect(ui_->curveListPanel, &CurveListPanel::mergeDatasetsRequested, this, &MainWindow::onMergeDatasetsRequested);
+  connect(ui_->curveListPanel, &CurveListPanel::refreshDerivedRequested, this, [this](const QList<DatasetId>& ids) {
+    for (const DatasetId dataset_id : ids) {
+      session_->sessionManager().batchEngine().refreshAll(dataset_id);
+    }
+  });
   // The "+" in Custom Series opens the Transform Editor — now provided by the
   // toolbox plugin (the native panel was retired). Launch it like any toolbox.
   connect(ui_->curveListPanel, &CurveListPanel::createCustomSeriesRequested, this, [this]() {
@@ -2698,6 +2668,7 @@ void MainWindow::onOpenMarketplace() {
       PreferencesDialog prefs(*theme_, this);
       prefs.setChromeMetrics(chrome_metrics_);
       bindRecordingPreferences(prefs);
+      bindDerivedBatchPreferences(prefs);
       prefs.showPage(PreferencesDialog::kPluginsPage);
       prefs.exec();
     });
@@ -3260,11 +3231,13 @@ void MainWindow::onShowPreferencesDialog() {
   dlg->setAttribute(Qt::WA_DeleteOnClose);
   dlg->setChromeMetrics(chrome_metrics_);
   bindRecordingPreferences(*dlg);
+  bindDerivedBatchPreferences(*dlg);
   dlg->open();
 #else
   PreferencesDialog dlg(*theme_, this);
   dlg.setChromeMetrics(chrome_metrics_);
   bindRecordingPreferences(dlg);
+  bindDerivedBatchPreferences(dlg);
   dlg.exec();
 #endif
 }
@@ -3280,6 +3253,46 @@ void MainWindow::bindRecordingPreferences(PreferencesDialog& dialog) {
     }
 #endif
   });
+}
+
+void MainWindow::applyDerivedBatchPreferences() {
+  session_->sessionManager().batchEngine().setSettings(BatchEngine::loadSettings());
+}
+
+void MainWindow::wireMarkerComputingStatus() {
+  BatchEngine* batch_engine = &session_->sessionManager().batchEngine();
+  auto* delay = new QTimer(this);
+  delay->setSingleShot(true);
+  delay->setInterval(300);  // a quick run never flickers the status bar
+  // The message this put up, empty when none: another message replacing it stays.
+  auto shown = std::make_shared<QString>();
+  const auto show = [this, batch_engine, shown] {
+    const std::vector<std::string> running = batch_engine->runningIds();
+    if (running.empty()) {
+      return;
+    }
+    *shown = running.size() == 1 ? tr("Computing markers for '%1'…").arg(QString::fromStdString(running.front()))
+                                 : tr("Computing markers for %1 rules…").arg(running.size());
+    statusBar()->showMessage(*shown);
+  };
+  connect(delay, &QTimer::timeout, this, show);
+  connect(batch_engine, &BatchEngine::runningChanged, this, [this, batch_engine, delay, shown, show]() {
+    if (batch_engine->runningIds().empty()) {
+      delay->stop();
+      if (!shown->isEmpty() && statusBar()->currentMessage() == *shown) {
+        statusBar()->clearMessage();
+      }
+      shown->clear();
+    } else if (!shown->isEmpty()) {
+      show();  // the set changed while shown
+    } else if (!delay->isActive()) {
+      delay->start();
+    }
+  });
+}
+
+void MainWindow::bindDerivedBatchPreferences(PreferencesDialog& dialog) {
+  connect(&dialog, &PreferencesDialog::derivedBatchSettingsChanged, this, &MainWindow::applyDerivedBatchPreferences);
 }
 
 void MainWindow::onShowAboutDialog() {
@@ -6718,6 +6731,10 @@ QDomElement MainWindow::saveDataProcessors(QDomDocument& doc, SnapshotScope scop
       }
       gen.setAttribute(u"dataset_path"_s, session_->sessionManager().datasetSourcePath(recipe.dataset_id));
     }
+    if (recipe.window.has_value()) {
+      gen.setAttribute(u"window_start_ns"_s, QString::number(recipe.window->first));
+      gen.setAttribute(u"window_end_ns"_s, QString::number(recipe.window->second));
+    }
     for (std::size_t index = 0; index < recipe.inputs.size(); ++index) {
       QDomElement in = doc.createElement(u"input"_s);
       in.setAttribute(u"name"_s, QString::fromStdString(recipe.inputs[index]));
@@ -7054,9 +7071,16 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent in
   // Replacement clears every generator; history clears only the non-exempt ones,
   // after the dependency preflight above.
   //
+  // A layout load waits a bounded time for each rule: nothing reads its markers right
+  // away, and a slow rule publishes later (markersPublished). A history restore runs
+  // each to completion: it tombstoned the rule just above, so a bounded create would
+  // make a slow rule's markers blink on every undo.
+  //
   // upsertGenerator publishes to the store without announcing it. The toolbox's
   // onDataChanged sends the same notification; this replay must do so too, once,
   // after the catalog rebuild below.
+  const BatchEngine::CreateWait create_wait =
+      intent == RestoreIntent::kReplace ? BatchEngine::CreateWait::kBounded : BatchEngine::CreateWait::kToCompletion;
   const std::size_t generators_before = batch_engine.recipes().size();
   bool any_generator_restored = false;
   batch_engine.clearGenerators(intent);
@@ -7102,6 +7126,11 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent in
         }
       }
     }
+    // Raw ns, inclusive; no attributes means no window.
+    if (gen.hasAttribute(u"window_start_ns"_s) && gen.hasAttribute(u"window_end_ns"_s)) {
+      recipe.window = std::pair<Timestamp, Timestamp>{
+          gen.attribute(u"window_start_ns"_s).toLongLong(), gen.attribute(u"window_end_ns"_s).toLongLong()};
+    }
     bool any_declared = false;
     for (QDomElement in = gen.firstChildElement(u"input"_s); !in.isNull(); in = in.nextSiblingElement(u"input"_s)) {
       recipe.inputs.push_back(in.attribute(u"name"_s).toStdString());
@@ -7129,7 +7158,7 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent in
           tr("Could not restore marker generator '%1': %2").arg(QString::fromStdString(recipe.id), gen_parse_error));
       continue;
     }
-    if (const auto restored = batch_engine.upsertGenerator(recipe); !restored.has_value()) {
+    if (const auto restored = batch_engine.upsertGenerator(recipe, create_wait); !restored.has_value()) {
       emitDiagnostic(
           DiagnosticLevel::kWarning, "Layout", "generator-restore-failed",
           tr("Could not restore marker generator '%1': %2")

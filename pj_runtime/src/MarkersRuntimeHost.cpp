@@ -143,7 +143,10 @@ bool MarkersRuntimeHost::onCreate(
     if (!recipe.all_datasets && recipe.dataset_id == 0) {
       return reject(out_error, kDomain, "no active dataset to attach the generator to");
     }
-    Expected<std::vector<std::string>> resolved = self.service_.upsertGenerator(std::move(recipe));
+    // To completion, ephemeral or not: released plugins read the markers right after
+    // create returns (a preview caches them until its input changes).
+    Expected<std::vector<std::string>> resolved =
+        self.service_.upsertGenerator(std::move(recipe), BatchEngine::CreateWait::kToCompletion);
     if (!resolved.has_value()) {
       return reject(out_error, kDomain, resolved.error());
     }
@@ -227,6 +230,12 @@ bool MarkersRuntimeHost::onConfig(
     nlohmann::json params = recipe.params_json.empty() ? nlohmann::json::object()
                                                        : nlohmann::json::parse(recipe.params_json, nullptr, false);
     json["params"] = params.is_discarded() ? nlohmann::json::object() : params;
+    // What the rule is doing now: a run in flight, and why the last one failed (its
+    // previous markers are still drawn). Additive keys: older plugins ignore them.
+    json["computing"] = self.service_.isRunning(recipe.id);
+    if (const std::string error = self.service_.errorOf(recipe.id); !error.empty()) {
+      json["error"] = error;
+    }
     self.config_storage_ = json.dump();
     if (out_recipe_json != nullptr) {
       *out_recipe_json = sdk::toAbiString(self.config_storage_);

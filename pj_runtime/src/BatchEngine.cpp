@@ -3,10 +3,20 @@
 
 #include "pj_runtime/BatchEngine.h"
 
+#include <QLoggingCategory>
+#include <QMetaObject>
+#include <QPointer>
+#include <QSettings>
+#include <QThread>
 #include <algorithm>
+#include <cmath>
+#include <condition_variable>
+#include <exception>
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <unordered_map>
@@ -23,27 +33,51 @@ namespace PJ {
 
 namespace {
 
-/// Materialize each input series key via the resolver into engine views, kept alive
-/// by the returned map for the duration of the script run (the provider hands out
-/// pointers into it).
-std::unordered_map<std::string, scripting::SeriesView> materializeInputs(
-    const BatchEngine::SeriesResolver& resolver, DatasetId dataset_id, const std::vector<std::string>& inputs) {
-  std::unordered_map<std::string, scripting::SeriesView> views;
-  views.reserve(inputs.size());
-  if (!resolver) {
-    return views;
-  }
-  for (const std::string& key : inputs) {
-    std::optional<BatchEngine::ResolvedSeries> resolved = resolver(dataset_id, key);
-    if (!resolved.has_value()) {
-      continue;  // unknown key → absent; the script's series(key) sees no data
+Q_LOGGING_CATEGORY(lcBatchEngine, "pj.runtime.batch_engine")
+
+constexpr const char* kModeKey = "Preferences::derived_batch_mode";
+constexpr const char* kReloadHzKey = "Preferences::derived_batch_reload_hz";
+constexpr const char* kManualMode = "manual";
+constexpr const char* kAutomaticMode = "automatic";
+
+/// Clips `series` in place to `[start, end]` (raw ns, inclusive); its timestamps are
+/// sorted. An empty result is valid. A safety net: the resolver already copied only
+/// the window, unless it ignores it.
+void clipToWindow(BatchEngine::ResolvedSeries& series, Timestamp start, Timestamp end) {
+  const auto begin = series.timestamps.begin();
+  const auto lower = std::distance(begin, std::lower_bound(begin, series.timestamps.end(), static_cast<double>(start)));
+  const auto upper = std::distance(begin, std::upper_bound(begin, series.timestamps.end(), static_cast<double>(end)));
+  series.timestamps.erase(begin + upper, series.timestamps.end());
+  series.timestamps.erase(series.timestamps.begin(), series.timestamps.begin() + lower);
+  series.values.erase(series.values.begin() + upper, series.values.end());
+  series.values.erase(series.values.begin(), series.values.begin() + lower);
+}
+
+/// Widens `range` to cover the first and last sample of every series in `inputs`.
+void widenCoverage(
+    std::optional<std::pair<Timestamp, Timestamp>>& range,
+    const std::unordered_map<std::string, BatchEngine::ResolvedSeries>& inputs) {
+  for (const auto& [key, series] : inputs) {
+    if (series.timestamps.empty()) {
+      continue;
     }
-    scripting::SeriesView view;
-    view.timestamps = std::move(resolved->timestamps);
-    view.values = std::move(resolved->values);
-    views.emplace(key, std::move(view));
+    const auto first = static_cast<Timestamp>(series.timestamps.front());
+    const auto last = static_cast<Timestamp>(series.timestamps.back());
+    range = range.has_value() ? std::pair{std::min(range->first, first), std::max(range->second, last)}
+                              : std::pair{first, last};
   }
-  return views;
+}
+
+/// The hook `setComputeThreadProbeForTest` installs.
+std::function<void(QThread*)>& computeThreadProbe() {
+  static std::function<void(QThread*)> probe;
+  return probe;
+}
+
+/// `kCreateBudget`, unless `setCreateBudgetForTest` replaced it.
+std::chrono::milliseconds& createBudget() {
+  static std::chrono::milliseconds budget = BatchEngine::kCreateBudget;
+  return budget;
 }
 
 /// `declared` (parallel to `bare`, or empty) is the spelling the script wrote each
@@ -102,8 +136,28 @@ bool seriesKeyBelongsToTopic(const std::string& key, const std::string& topic) {
 
 }  // namespace
 
+struct BatchEngine::RunResult {
+  std::mutex mutex;
+  std::condition_variable finished_cv;
+  bool finished = false;  ///< the compute returned or threw: `value` is final
+  bool consumed = false;  ///< GUI thread: the create path took `value`; the publish drops it
+  Expected<std::optional<sdk::PlotMarkers>> value = unexpected(std::string("not run"));
+};
+
 BatchEngine::BatchEngine(ObjectStore& object_store, SeriesResolver resolver)
-    : object_store_(object_store), resolver_(std::move(resolver)) {}
+    : object_store_(object_store), resolver_(std::move(resolver)) {
+  brake_.setSingleShot(true);
+  connect(&brake_, &QTimer::timeout, this, &BatchEngine::onBrakeFired);
+  since_last_run_.start();
+}
+
+BatchEngine::~BatchEngine() {
+  for (const auto& [key, state] : runs_) {
+    if (state.running.has_value()) {
+      state.running->cancel();
+    }
+  }
+}
 
 void BatchEngine::setResolver(SeriesResolver resolver) {
   resolver_ = std::move(resolver);
@@ -117,18 +171,161 @@ void BatchEngine::setDisplayOffsetResolver(DisplayOffsetResolver resolver) {
   display_offset_resolver_ = std::move(resolver);
 }
 
+void BatchEngine::setPool(EnginePool* pool) {
+  if (pool == pool_) {
+    return;
+  }
+  bool cancelled = false;
+  for (auto& [key, state] : runs_) {
+    if (state.running.has_value()) {
+      state.running->cancel();
+      state.running.reset();
+      cancelled = true;
+    }
+    state.pending = false;
+  }
+  pool_ = pool;
+  if (cancelled) {
+    queueSignal(running_changed_queued_, &BatchEngine::runningChanged);
+  }
+}
+
+void BatchEngine::setDemandPredicate(DemandPredicate predicate) {
+  demand_predicate_ = std::move(predicate);
+}
+
+void BatchEngine::demandChanged() {
+  scheduleDirty();
+}
+
+void BatchEngine::setMode(Mode mode) {
+  mode_ = mode;
+  if (mode_ == Mode::kManual) {
+    brake_.stop();
+  }
+  scheduleDirty();
+}
+
+void BatchEngine::setReloadHz(double hz) {
+  reload_hz_ = std::clamp(hz, kMinReloadHz, kMaxReloadHz);
+}
+
+BatchEngine::Settings BatchEngine::loadSettings() {
+  QSettings store;
+  Settings loaded;
+  if (store.value(QString::fromLatin1(kModeKey)).toString() == QLatin1String(kManualMode)) {
+    loaded.mode = Mode::kManual;
+  }
+  const double hz = store.value(QString::fromLatin1(kReloadHzKey), kDefaultReloadHz).toDouble();
+  loaded.reload_hz = std::isfinite(hz) ? std::clamp(hz, kMinReloadHz, kMaxReloadHz) : kDefaultReloadHz;
+  return loaded;
+}
+
+void BatchEngine::saveSettings(const Settings& settings) {
+  QSettings store;
+  store.setValue(
+      QString::fromLatin1(kModeKey),
+      QString::fromLatin1(settings.mode == Mode::kManual ? kManualMode : kAutomaticMode));
+  store.setValue(QString::fromLatin1(kReloadHzKey), settings.reload_hz);
+}
+
+void BatchEngine::setSettings(const Settings& settings) {
+  setReloadHz(settings.reload_hz);
+  setMode(settings.mode);
+}
+
+std::chrono::milliseconds BatchEngine::setCreateBudgetForTest(std::chrono::milliseconds budget) {
+  return std::exchange(createBudget(), budget);
+}
+
+void BatchEngine::setDiagnosticSink(DiagnosticSink sink) {
+  diagnostic_sink_ = std::move(sink);
+}
+
+bool BatchEngine::isRunning(std::string_view id) const {
+  return std::any_of(runs_.begin(), runs_.end(), [id](const auto& entry) {
+    return entry.first.first == id && entry.second.running.has_value();
+  });
+}
+
+std::vector<std::string> BatchEngine::runningIds() const {
+  std::set<std::string> ids;
+  for (const auto& [key, state] : runs_) {
+    if (state.running.has_value()) {
+      ids.insert(key.first);
+    }
+  }
+  return {ids.begin(), ids.end()};
+}
+
+void BatchEngine::refresh(std::string_view id) {
+  for (const GeneratorRecipe& recipe : allRecipes()) {
+    if (recipe.id == id) {
+      submitRun(recipe);
+    }
+  }
+}
+
+void BatchEngine::refreshAll(DatasetId dataset) {
+  for (const GeneratorRecipe& recipe : allRecipes()) {
+    if (recipe.all_datasets || recipe.dataset_id == dataset) {
+      submitRun(recipe);
+    }
+  }
+}
+
+bool BatchEngine::isStale(std::string_view id) const {
+  return std::any_of(
+      runs_.begin(), runs_.end(), [id](const auto& entry) { return entry.first.first == id && entry.second.stale; });
+}
+
+std::vector<std::string> BatchEngine::staleIds() const {
+  std::set<std::string> ids;
+  for (const auto& [key, state] : runs_) {
+    if (state.stale) {
+      ids.insert(key.first);
+    }
+  }
+  return {ids.begin(), ids.end()};
+}
+
+std::string BatchEngine::errorOf(std::string_view id) const {
+  for (const auto& [key, state] : runs_) {
+    if (key.first == id && !state.error.empty()) {
+      return state.error;
+    }
+  }
+  return {};
+}
+
+std::optional<std::pair<Timestamp, Timestamp>> BatchEngine::coverageOf(std::string_view id) const {
+  const GeneratorRecipe* recipe = firstBinding(id);
+  if (recipe == nullptr) {
+    return std::nullopt;
+  }
+  const auto it = coverage_.find(bindingKey(*recipe));
+  return it == coverage_.end() ? std::nullopt : it->second;
+}
+
+void BatchEngine::setComputeThreadProbeForTest(std::function<void(QThread*)> probe) {
+  computeThreadProbe() = std::move(probe);
+}
+
 Timestamp BatchEngine::displayOffsetOf(DatasetId dataset) const {
   return display_offset_resolver_ ? display_offset_resolver_(dataset) : Timestamp{0};
 }
 
-std::vector<std::string> BatchEngine::reachNewDatasets() {
-  std::vector<std::string> affected;
+void BatchEngine::reachNewDatasets() {
+  bool marked = false;
   for (const GeneratorRecipe& recipe : allRecipes()) {
     if (recipe.all_datasets) {
-      republishShared(recipe, affected);
+      markStale(recipe);
+      marked = true;
     }
   }
-  return affected;
+  if (marked) {
+    scheduleDirty();
+  }
 }
 
 std::vector<DatasetId> BatchEngine::loadedDatasets() const {
@@ -146,100 +343,322 @@ Status BatchEngine::validateScript(GeneratorKind /*kind*/, std::string_view lang
   return okStatus();
 }
 
-// ---- kind=markers ----------------------------------------------------------
+// ---- kind=markers: stage (GUI) / compute (worker) / publish (GUI) -----------
 
-Expected<std::optional<sdk::PlotMarkers>> BatchEngine::evaluateMarkers(
-    const GeneratorRecipe& recipe, DatasetId dataset_id) {
-  std::unordered_map<std::string, scripting::SeriesView> views =
-      materializeInputs(resolver_, dataset_id, recipe.inputs);
-  if (recipe.all_datasets && !recipe.inputs.empty() && views.empty()) {
-    return std::optional<sdk::PlotMarkers>{};  // not one of this rule's datasets
+BatchEngine::StagedRun BatchEngine::stageRun(const GeneratorRecipe& recipe) const {
+  StagedRun staged;
+  staged.recipe = recipe;
+  const auto stage = [&](DatasetId dataset_id) {
+    StagedContribution contribution;
+    contribution.dataset_id = dataset_id;
+    for (const std::string& key : recipe.inputs) {
+      if (contribution.inputs.contains(key) || !resolver_) {
+        continue;
+      }
+      if (std::optional<ResolvedSeries> series = resolver_(dataset_id, key, recipe.window)) {
+        if (recipe.window.has_value()) {
+          clipToWindow(*series, recipe.window->first, recipe.window->second);
+        }
+        contribution.inputs.emplace(key, std::move(*series));
+      }
+    }
+    return contribution;
+  };
+  if (!recipe.all_datasets) {
+    staged.contributions.push_back(stage(recipe.dataset_id));
+  } else {
+    for (const DatasetId dataset_id : loadedDatasets()) {
+      StagedContribution contribution = stage(dataset_id);
+      if (!recipe.inputs.empty() && contribution.inputs.empty()) {
+        continue;  // not one of this rule's datasets
+      }
+      contribution.display_shift = -displayOffsetOf(dataset_id);
+      staged.contributions.push_back(std::move(contribution));
+    }
   }
-  scripting::SeriesProvider provider = buildProvider(views, recipe.inputs, recipe.declared_inputs);
-
-  std::string err;
-  sdk::PlotMarkers set;
-  set.markers = scripting::runMarkerScript(recipe.script, provider, &err);
-  if (!err.empty()) {
-    return unexpected(err);
+  for (const StagedContribution& contribution : staged.contributions) {
+    widenCoverage(staged.coverage_ns, contribution.inputs);
   }
-  return std::optional<sdk::PlotMarkers>{std::move(set)};
+  return staged;
 }
 
-Expected<std::vector<std::string>> BatchEngine::runMarkers(const GeneratorRecipe& recipe) {
-  Expected<std::optional<sdk::PlotMarkers>> set =
-      recipe.all_datasets ? computeShared(recipe) : evaluateMarkers(recipe, recipe.dataset_id);
-  if (!set.has_value()) {
-    return unexpected(set.error());
-  }
-  if (!set->has_value()) {
-    return unexpected("none of the inputs exist in any loaded dataset");
-  }
-  const PublishTarget target = publishTarget(recipe);
-  if (Status pushed = publishMarkerSet(target.first, target.second, **set); !pushed.has_value()) {
-    return unexpected(pushed.error());
-  }
-  return std::vector<std::string>{target.second};
-}
-
-Expected<std::optional<sdk::PlotMarkers>> BatchEngine::computeShared(const GeneratorRecipe& recipe) {
+Expected<std::optional<sdk::PlotMarkers>> BatchEngine::computeRun(
+    StagedRun& staged, const EnginePool::CancelToken* cancel) {
   // Any script error aborts before publishing: a partial union would silently
   // misrepresent the rule on every dataset it is drawn on.
-  sdk::PlotMarkers shared;
-  bool contributed = false;
-  for (const DatasetId dataset_id : loadedDatasets()) {
-    Expected<std::optional<sdk::PlotMarkers>> run = evaluateMarkers(recipe, dataset_id);
-    if (!run.has_value()) {
-      return unexpected(run.error());
-    }
-    if (!run->has_value()) {
-      continue;
-    }
-    contributed = true;
-    shiftMarkers((*run)->markers, -displayOffsetOf(dataset_id));
-    shared.markers.insert(shared.markers.end(), (*run)->markers.begin(), (*run)->markers.end());
-  }
-  if (!contributed) {
+  if (staged.contributions.empty()) {
     return std::optional<sdk::PlotMarkers>{};
+  }
+  sdk::PlotMarkers shared;
+  for (StagedContribution& contribution : staged.contributions) {
+    if (cancel != nullptr && cancel->cancelled()) {
+      return unexpected("cancelled");
+    }
+    if (const auto& probe = computeThreadProbe(); probe) {
+      probe(QThread::currentThread());
+    }
+    std::unordered_map<std::string, scripting::SeriesView> views;
+    for (auto& [key, series] : contribution.inputs) {
+      views.emplace(key, scripting::SeriesView{std::move(series.timestamps), std::move(series.values)});
+    }
+    const scripting::SeriesProvider provider =
+        buildProvider(views, staged.recipe.inputs, staged.recipe.declared_inputs);
+    std::string err;
+    std::vector<sdk::PlotMarker> markers = scripting::runMarkerScript(staged.recipe.script, provider, &err);
+    if (!err.empty()) {
+      return unexpected(err);
+    }
+    shiftMarkers(markers, contribution.display_shift);
+    shared.markers.insert(
+        shared.markers.end(), std::make_move_iterator(markers.begin()), std::make_move_iterator(markers.end()));
   }
   return std::optional<sdk::PlotMarkers>{std::move(shared)};
 }
 
-void BatchEngine::republishShared(const GeneratorRecipe& recipe, std::vector<std::string>& affected) {
-  Expected<std::optional<sdk::PlotMarkers>> shared = computeShared(recipe);
-  if (!shared.has_value()) {
+Status BatchEngine::publishRun(const StagedRun& staged, std::optional<sdk::PlotMarkers> computed) {
+  const PublishTarget target = publishTarget(staged.recipe);
+  if (!computed.has_value()) {
+    publishEmptyMarkers(target.first, target.second);
+  } else if (Status pushed = publishMarkerSet(target.first, target.second, *computed); !pushed.has_value()) {
+    return pushed;
+  }
+  coverage_[bindingKey(staged.recipe)] = staged.coverage_ns;
+  return okStatus();
+}
+
+void BatchEngine::rerunNow(const GeneratorRecipe& recipe, std::vector<std::string>& affected) {
+  const BindingKey key = bindingKey(recipe);
+  // Kept across the cancel, so the same failure again is not reported twice.
+  const auto previous = runs_.find(key);
+  std::string previous_error = previous == runs_.end() ? std::string{} : previous->second.error;
+  cancelRun(key);
+  StagedRun staged = stageRun(recipe);
+  Expected<std::optional<sdk::PlotMarkers>> computed = computeRun(staged, /*cancel=*/nullptr);
+  const Status published =
+      computed.has_value() ? publishRun(staged, std::move(*computed)) : Status(unexpected(computed.error()));
+  if (published.has_value()) {
+    affected.push_back(publishTarget(recipe).second);
     return;
   }
-  const PublishTarget target = publishTarget(recipe);
-  if (shared->has_value()) {
-    if (!publishMarkerSet(target.first, target.second, **shared).has_value()) {
+  RunState& state = runs_[key];
+  state.error = std::move(previous_error);
+  recordFailure(key, state.change_seq, published.error());
+}
+
+// ---- scheduled runs (D30) ---------------------------------------------------
+
+void BatchEngine::markStale(const GeneratorRecipe& recipe) {
+  RunState& state = runs_[bindingKey(recipe)];
+  ++state.change_seq;
+  state.stale = true;
+}
+
+void BatchEngine::submitRun(const GeneratorRecipe& recipe) {
+  const BindingKey key = bindingKey(recipe);
+  RunState& state = runs_[key];
+  if (state.running.has_value()) {
+    state.pending = true;  // the one pending request: it captures when the run ends
+    return;
+  }
+  state.stale = true;
+  const uint64_t staged_seq = state.change_seq;
+  auto staged = std::make_shared<StagedRun>(stageRun(recipe));
+  queueSignal(running_changed_queued_, &BatchEngine::runningChanged);
+  if (pool_ != nullptr) {
+    state.running = startRun(key, staged, staged_seq, std::make_shared<RunResult>());
+    return;
+  }
+  state.running = EnginePool::CancelToken{};  // inline: never cancelled
+  finishRun(key, *staged, staged_seq, computeRun(*staged, /*cancel=*/nullptr));
+}
+
+EnginePool::CancelToken BatchEngine::startRun(
+    const BindingKey& key, std::shared_ptr<StagedRun> staged, uint64_t staged_seq, std::shared_ptr<RunResult> result) {
+  using OutcomeStatus = EnginePool::Outcome::Status;
+  EnginePool::Task task;
+  // The compute catches what the script throws so the create path, which waits on
+  // `finished`, learns the outcome too; the pool would only tell the publish.
+  task.compute = [staged, result](const EnginePool::CancelToken& token) {
+    Expected<std::optional<sdk::PlotMarkers>> value = unexpected(std::string("unknown exception"));
+    try {
+      value = computeRun(*staged, &token);
+    } catch (const std::exception& error) {
+      value = unexpected(std::string(error.what()));
+    } catch (...) {  // NOLINT(bugprone-empty-catch): `value` already says so
+    }
+    const std::lock_guard<std::mutex> lock(result->mutex);
+    result->value = std::move(value);
+    result->finished = true;
+    result->finished_cv.notify_all();
+  };
+  // A cancelled run's canceller already reset the binding; the publish also runs
+  // after this engine is gone, hence the guard.
+  task.publish = [guard = QPointer<BatchEngine>(this), key, staged, staged_seq,
+                  result](const EnginePool::Outcome& outcome) {
+    if (guard == nullptr || outcome.status == OutcomeStatus::kCancelled) {
       return;
     }
-  } else {
-    publishEmptyMarkers(target.first, target.second);
+    Expected<std::optional<sdk::PlotMarkers>> value = unexpected(outcome.error);
+    {
+      const std::lock_guard<std::mutex> lock(result->mutex);
+      if (result->consumed) {
+        return;
+      }
+      if (outcome.status != OutcomeStatus::kFailed) {
+        value = std::move(result->value);
+      }
+    }
+    guard->finishRun(key, *staged, staged_seq, std::move(value));
+  };
+  return pool_->submit(std::move(task));
+}
+
+void BatchEngine::finishRun(
+    const BindingKey& key, const StagedRun& staged, uint64_t staged_seq,
+    Expected<std::optional<sdk::PlotMarkers>> result) {
+  const auto it = runs_.find(key);
+  if (it == runs_.end()) {
+    return;
   }
-  affected.push_back(target.second);
+  RunState& state = it->second;
+  state.running.reset();
+  // D30: a completed run is published even when its inputs changed meanwhile.
+  const Status published =
+      result.has_value() ? publishRun(staged, std::move(*result)) : Status(unexpected(result.error()));
+  const bool inputs_changed = state.change_seq != staged_seq;
+  if (published.has_value()) {
+    state.stale = inputs_changed;
+    state.error.clear();
+    state.failed_seq.reset();
+  } else {
+    recordFailure(key, staged_seq, published.error());
+  }
+  if (std::exchange(state.pending, false)) {
+    if (const GeneratorRecipe* recipe = bindingOf(key)) {
+      submitRun(*recipe);
+    }
+  } else if (inputs_changed) {
+    scheduleDirty();  // the newest inputs run at the brake's pace
+  }
+  // One plot refresh per burst: the runs of one pool drain share this queued emit.
+  if (published.has_value()) {
+    queueSignal(markers_published_queued_, &BatchEngine::markersPublished);
+  }
+  queueSignal(running_changed_queued_, &BatchEngine::runningChanged);
+}
+
+void BatchEngine::recordFailure(const BindingKey& key, uint64_t staged_seq, const std::string& error) {
+  // The last set stays drawn; say why once per cause.
+  RunState& state = runs_[key];
+  state.stale = true;
+  state.failed_seq = staged_seq;
+  if (error == state.error) {
+    return;
+  }
+  state.error = error;
+  // A first create, or one that moved the rule to another target, has no previous set.
+  const std::string message = "Marker rule '" + key.first + "' failed: " + error +
+                              ". Any previous markers are kept; fix the rule and apply it again.";
+  if (diagnostic_sink_) {
+    diagnostic_sink_(
+        Diagnostic{.level = DiagnosticLevel::kError, .source = "Data Processors", .id = key.first, .message = message});
+  } else {
+    qCWarning(lcBatchEngine).noquote() << QString::fromStdString(message);
+  }
+}
+
+void BatchEngine::cancelRun(const BindingKey& key) {
+  const auto it = runs_.find(key);
+  if (it == runs_.end()) {
+    return;
+  }
+  const bool was_running = it->second.running.has_value();
+  if (was_running) {
+    it->second.running->cancel();
+  }
+  runs_.erase(it);
+  if (was_running) {
+    queueSignal(running_changed_queued_, &BatchEngine::runningChanged);
+  }
+}
+
+void BatchEngine::cancelRunsOf(std::string_view id) {
+  std::vector<BindingKey> keys;
+  for (const auto& [key, state] : runs_) {
+    if (key.first == id) {
+      keys.push_back(key);
+    }
+  }
+  for (const BindingKey& key : keys) {
+    cancelRun(key);
+  }
+}
+
+void BatchEngine::scheduleDirty() {
+  if (mode_ == Mode::kManual || brake_.isActive()) {
+    return;  // an armed brake already covers every change within its period
+  }
+  const auto period_ms = static_cast<qint64>(1000.0 / reload_hz_);
+  brake_.start(static_cast<int>(std::max<qint64>(0, period_ms - since_last_run_.elapsed())));
+}
+
+void BatchEngine::queueSignal(bool& queued, void (BatchEngine::*signal)()) {
+  if (std::exchange(queued, true)) {
+    return;
+  }
+  QMetaObject::invokeMethod(
+      this,
+      [this, &queued, signal] {
+        queued = false;
+        (this->*signal)();
+      },
+      Qt::QueuedConnection);
+}
+
+bool BatchEngine::isDemanded(const GeneratorRecipe& recipe) const {
+  if (!demand_predicate_) {
+    return true;
+  }
+  if (!recipe.all_datasets) {
+    return demand_predicate_(recipe.dataset_id);
+  }
+  // The probe window holds at most the samples at the end of time: it asks whether a
+  // dataset carries the input without copying its series.
+  const Window probe = std::pair{std::numeric_limits<Timestamp>::max(), std::numeric_limits<Timestamp>::max()};
+  const auto contributes = [&](DatasetId dataset) {
+    return recipe.inputs.empty() ||
+           std::any_of(recipe.inputs.begin(), recipe.inputs.end(), [&](const std::string& key) {
+             return resolver_ && resolver_(dataset, key, probe).has_value();
+           });
+  };
+  const std::vector<DatasetId> datasets = loadedDatasets();
+  return std::any_of(datasets.begin(), datasets.end(), [&](DatasetId dataset) {
+    return demand_predicate_(dataset) && contributes(dataset);
+  });
+}
+
+void BatchEngine::onBrakeFired() {
+  if (mode_ == Mode::kManual) {
+    return;
+  }
+  since_last_run_.restart();
+  for (const GeneratorRecipe& recipe : allRecipes()) {
+    const auto state = runs_.find(bindingKey(recipe));
+    // A run in flight reschedules itself when it ends (finishRun); a failed binding
+    // waits for its inputs to change.
+    if (state == runs_.end() || !state->second.stale || state->second.running.has_value() ||
+        state->second.failed_seq == state->second.change_seq) {
+      continue;
+    }
+    if (isDemanded(recipe)) {
+      submitRun(recipe);
+    }
+  }
 }
 
 // ---- routing + lifecycle ---------------------------------------------------
 
-Expected<std::vector<std::string>> BatchEngine::runAndPublish(const GeneratorRecipe& recipe) {
-  switch (recipe.kind) {
-    case GeneratorKind::kMarkers:
-      return runMarkers(recipe);
-  }
-  return unexpected("unknown generator kind");
-}
-
-void BatchEngine::runAndAccumulate(const GeneratorRecipe& recipe, std::vector<std::string>& affected) {
-  if (Expected<std::vector<std::string>> resolved = runAndPublish(recipe); resolved.has_value()) {
-    for (std::string& topic : *resolved) {
-      affected.push_back(std::move(topic));
-    }
-  }
-}
-
-Expected<std::vector<std::string>> BatchEngine::upsertGenerator(GeneratorRecipe recipe) {
+Expected<std::vector<std::string>> BatchEngine::upsertGenerator(GeneratorRecipe recipe, CreateWait wait) {
   if (Status s = checkLanguage(recipe.language); !s.has_value()) {
     return unexpected(s.error());
   }
@@ -294,10 +713,46 @@ Expected<std::vector<std::string>> BatchEngine::upsertGenerator(GeneratorRecipe 
     }
   }
 
-  Expected<std::vector<std::string>> resolved = runAndPublish(recipe);
-  if (!resolved.has_value()) {
-    return resolved;  // leave any prior published output + recipe untouched
+  // The first run: compiled and staged here, then computed here or, bounded, on the
+  // pool while this thread waits at most the create budget. Any failure known by
+  // then leaves the prior output and recipe untouched.
+  if (std::string error; !scripting::validateScript(recipe.script, &error)) {
+    return unexpected(error);
   }
+  const BindingKey key = bindingKey(recipe);
+  auto staged = std::make_shared<StagedRun>(stageRun(recipe));
+  if (staged->contributions.empty()) {
+    return unexpected("none of the inputs exist in any loaded dataset");
+  }
+  std::optional<EnginePool::CancelToken> late_run;
+  Expected<std::optional<sdk::PlotMarkers>> computed = unexpected(std::string("not run"));
+  if (pool_ == nullptr || wait == CreateWait::kToCompletion) {
+    computed = computeRun(*staged, /*cancel=*/nullptr);
+  } else {
+    // staged_seq 0: the binding's run state starts afresh below (cancelRun).
+    const auto result = std::make_shared<RunResult>();
+    const EnginePool::CancelToken token = startRun(key, staged, /*staged_seq=*/0, result);
+    std::unique_lock<std::mutex> lock(result->mutex);
+    if (result->finished_cv.wait_for(lock, createBudget(), [&result] { return result->finished; })) {
+      result->consumed = true;
+      computed = std::move(result->value);
+    } else {
+      late_run = token;
+    }
+  }
+  if (!late_run.has_value()) {
+    if (!computed.has_value()) {
+      return unexpected(computed.error());
+    }
+    if (Status pushed = publishRun(*staged, std::move(*computed)); !pushed.has_value()) {
+      return unexpected(pushed.error());
+    }
+  }
+  // A new revision changes the binding's meaning: a run of the old one must not land.
+  if (scope_changed) {
+    cancelRunsOf(recipe.id);
+  }
+  cancelRun(key);
 
   // The previous revision's topic would otherwise keep drawing a set nothing ever
   // revisits: retire it unless this run just rewrote it (same dataset, same key).
@@ -306,15 +761,22 @@ Expected<std::vector<std::string>> BatchEngine::upsertGenerator(GeneratorRecipe 
     // The rule moved between Dataset and Global scope: every old output goes.
     retireOwnedTopics(recipe.id, existing->second.front().ephemeral, &fresh);
     recipes_.erase(existing);
-  } else if (const GeneratorRecipe* replaced = findBinding(recipe)) {
+  } else if (const GeneratorRecipe* replaced = bindingOf(key)) {
     retireTarget(publishTarget(*replaced), replaced->ephemeral, &fresh);
   }
-  if (GeneratorRecipe* replaced = findBinding(recipe)) {
+  if (GeneratorRecipe* replaced = bindingOf(key)) {
     *replaced = std::move(recipe);
   } else {
     recipes_[recipe.id].push_back(std::move(recipe));
   }
-  return resolved;
+  if (late_run.has_value()) {
+    // Past the budget the first run carries on as this binding's scheduled run.
+    RunState& state = runs_[key];
+    state.running = *late_run;
+    state.stale = true;
+    queueSignal(running_changed_queued_, &BatchEngine::runningChanged);
+  }
+  return std::vector<std::string>{fresh.second};
 }
 
 Status BatchEngine::publishMarkerSet(
@@ -394,16 +856,38 @@ Status BatchEngine::removeGenerator(std::string_view id) {
   if (it == recipes_.end()) {
     return unexpected("unknown generator id");
   }
+  cancelRunsOf(id);
   retireOwnedTopics(id, it->second.front().ephemeral);
   recipes_.erase(it);
+  std::erase_if(coverage_, [id](const auto& entry) { return entry.first.first == id; });
   return okStatus();
 }
 
+void BatchEngine::cancelRunsOn(DatasetId dataset) {
+  for (const GeneratorRecipe& recipe : allRecipes()) {
+    const BindingKey key = bindingKey(recipe);
+    const auto state = runs_.find(key);
+    if ((recipe.all_datasets || recipe.dataset_id == dataset) && state != runs_.end() &&
+        state->second.running.has_value()) {
+      cancelRun(key);
+    }
+  }
+}
+
 void BatchEngine::remapGeneratorsToAnchor(DatasetId anchor, const std::vector<DatasetId>& consumed) {
+  // A run staged before the merge would publish over mergeMarkerTopics' concatenation.
+  cancelRunsOn(anchor);
   const auto is_consumed = [&consumed](const GeneratorRecipe& recipe) {
     return !recipe.all_datasets && std::find(consumed.begin(), consumed.end(), recipe.dataset_id) != consumed.end();
   };
   for (auto& [id, bindings] : recipes_) {
+    // A consumed dataset's topics are dropped after this call: a run of a consumed
+    // binding must not publish (and so resurrect) them.
+    for (const GeneratorRecipe& recipe : bindings) {
+      if (is_consumed(recipe)) {
+        cancelRun(bindingKey(recipe));
+      }
+    }
     // Collision rule (see the header): the anchor's own binding wins. mergeMarkerTopics
     // runs before this call (SessionManager::mergeDatasets, (3b)) and already moved
     // every consumed output onto the anchor's topic of this id, so retiring the
@@ -423,13 +907,27 @@ void BatchEngine::remapGeneratorsToAnchor(DatasetId anchor, const std::vector<Da
     first->dataset_id = anchor;
     bindings.erase(std::remove_if(std::next(first), bindings.end(), is_consumed), bindings.end());
   }
+  // The survivors that read the merged data re-run over it.
+  for (const GeneratorRecipe& recipe : allRecipes()) {
+    if (recipe.all_datasets || recipe.dataset_id == anchor) {
+      markStale(recipe);
+    }
+  }
+  scheduleDirty();
 }
 
 std::vector<std::string> BatchEngine::clearGeneratorsForDataset(DatasetId dataset) {
+  const auto bound_here = [dataset](const GeneratorRecipe& recipe) {
+    return !recipe.all_datasets && recipe.dataset_id == dataset;
+  };
   for (auto& [id, bindings] : recipes_) {
-    std::erase_if(bindings, [dataset](const GeneratorRecipe& recipe) {
-      return !recipe.all_datasets && recipe.dataset_id == dataset;
-    });
+    for (const GeneratorRecipe& recipe : bindings) {
+      if (bound_here(recipe)) {
+        cancelRun(bindingKey(recipe));
+        coverage_.erase(bindingKey(recipe));
+      }
+    }
+    std::erase_if(bindings, bound_here);
   }
   std::erase_if(recipes_, [](const auto& entry) { return entry.second.empty(); });
 
@@ -439,7 +937,7 @@ std::vector<std::string> BatchEngine::clearGeneratorsForDataset(DatasetId datase
   std::vector<std::string> affected;
   for (const GeneratorRecipe& recipe : allRecipes()) {
     if (recipe.all_datasets) {
-      republishShared(recipe, affected);
+      rerunNow(recipe, affected);
     }
   }
   return affected;
@@ -449,26 +947,28 @@ std::vector<std::string> BatchEngine::recomputeForChangedInputs(
     const std::vector<std::string>& changed, DatasetId scope) {
   std::vector<std::string> affected;
   for (const GeneratorRecipe& recipe : allRecipes()) {
-    // Topic names are not unique across datasets, so the name test alone would re-run
+    // Topic names are not unique across datasets, so the name test alone would mark
     // a generator bound to a dataset that never changed.
     if (scope != kAnyDataset && !recipe.all_datasets && recipe.dataset_id != scope) {
       continue;
     }
-    const bool rerun =
+    const bool matched =
         changed.empty() || std::any_of(recipe.inputs.begin(), recipe.inputs.end(), [&changed](const std::string& in) {
           return std::any_of(
               changed.begin(), changed.end(), [&in](const std::string& prefix) { return in.rfind(prefix, 0) == 0; });
         });
-    if (!rerun) {
+    if (!matched) {
       continue;
     }
     // An all_datasets recipe's set is shared, so a change on one contributing
     // dataset re-runs the whole union — `scope` only attributes the change.
-    if (recipe.all_datasets) {
-      republishShared(recipe, affected);
-    } else {
-      runAndAccumulate(recipe, affected);
-    }
+    markStale(recipe);
+    affected.push_back(recipe.id);
+  }
+  std::sort(affected.begin(), affected.end());
+  affected.erase(std::unique(affected.begin(), affected.end()), affected.end());
+  if (!affected.empty()) {
+    scheduleDirty();
   }
   return affected;
 }
@@ -523,10 +1023,16 @@ void BatchEngine::clearAllGenerators() {
 }
 
 std::vector<std::string> BatchEngine::recomputeForDataset(DatasetId dataset) {
-  // Whole-dataset recompute == "everything changed, scoped to this dataset": an empty
-  // `changed` re-runs every recipe bound here, plus every all_datasets recipe (its
-  // shared set may have this dataset as a contributor).
-  return recomputeForChangedInputs(/*changed=*/{}, dataset);
+  // Every recipe bound here, plus every all_datasets recipe (its shared set may have
+  // this dataset as a contributor), run now: a reload or restore must be complete
+  // when this returns.
+  std::vector<std::string> affected;
+  for (const GeneratorRecipe& recipe : allRecipes()) {
+    if (recipe.all_datasets || recipe.dataset_id == dataset) {
+      rerunNow(recipe, affected);
+    }
+  }
+  return affected;
 }
 
 std::vector<std::string> BatchEngine::mergeMarkerTopics(
@@ -590,31 +1096,39 @@ std::vector<std::reference_wrapper<const BatchEngine::GeneratorRecipe>> BatchEng
   return out;
 }
 
-DatasetId BatchEngine::bindingDataset(const GeneratorRecipe& recipe) {
-  return (recipe.all_datasets || recipe.ephemeral) ? kAnyDataset : recipe.dataset_id;
+BatchEngine::BindingKey BatchEngine::bindingKey(const GeneratorRecipe& recipe) {
+  return {recipe.id, bindingDataset(recipe)};
 }
 
-BatchEngine::GeneratorRecipe* BatchEngine::findBinding(const GeneratorRecipe& recipe) {
-  const auto it = recipes_.find(recipe.id);
+BatchEngine::GeneratorRecipe* BatchEngine::bindingOf(const BindingKey& key) {
+  const auto it = recipes_.find(key.first);
   if (it == recipes_.end()) {
     return nullptr;
   }
-  const auto match = std::find_if(it->second.begin(), it->second.end(), [&recipe](const GeneratorRecipe& binding) {
-    return bindingDataset(binding) == bindingDataset(recipe);
+  const auto match = std::find_if(it->second.begin(), it->second.end(), [&key](const GeneratorRecipe& binding) {
+    return bindingDataset(binding) == key.second;
   });
   return match == it->second.end() ? nullptr : &*match;
 }
 
-BatchEngine::ResolvedSeries readResolvedSeries(const SeriesReader& series) {
+DatasetId BatchEngine::bindingDataset(const GeneratorRecipe& recipe) {
+  return (recipe.all_datasets || recipe.ephemeral) ? kAnyDataset : recipe.dataset_id;
+}
+
+BatchEngine::ResolvedSeries readResolvedSeries(const SeriesReader& series, const BatchEngine::Window& window) {
+  const Range<Timestamp> range = window.has_value() ? Range<Timestamp>{.min = window->first, .max = window->second}
+                                                    : Range<Timestamp>{
+                                                          .min = std::numeric_limits<Timestamp>::min(),
+                                                          .max = std::numeric_limits<Timestamp>::max()};
   BatchEngine::ResolvedSeries out;
-  const std::size_t sample_count = series.size();
-  out.timestamps.reserve(sample_count);
-  out.values.reserve(sample_count);
-  series.samples(Range<Timestamp>{std::numeric_limits<Timestamp>::min(), std::numeric_limits<Timestamp>::max()})
-      .forEach([&out](const SeriesSample& sample) {
-        out.timestamps.push_back(static_cast<double>(sample.timestamp));
-        out.values.push_back(sample.value);
-      });
+  if (!window.has_value()) {  // a window may keep far fewer samples than the series holds
+    out.timestamps.reserve(series.size());
+    out.values.reserve(series.size());
+  }
+  series.samples(range).forEach([&out](const SeriesSample& sample) {
+    out.timestamps.push_back(static_cast<double>(sample.timestamp));
+    out.values.push_back(sample.value);
+  });
   return out;
 }
 

@@ -131,6 +131,9 @@ class CurveListPanel : public QWidget {
   // The user chose "Merge" on a multi-dataset selection (≥2). MainWindow shows the
   // shared destructive-merge confirmation and performs the merge.
   void mergeDatasetsRequested(const QList<DatasetId>& dataset_ids);
+  // The user chose "Refresh derived": run the selected datasets' marker rules now,
+  // whatever the batch mode and reload rate.
+  void refreshDerivedRequested(const QList<DatasetId>& dataset_ids);
   // The user chose "Reload" on a single file-backed dataset: reload it from its
   // recorded source (per-dataset variant of the global reload).
   void reloadDatasetRequested(DatasetId dataset_id);

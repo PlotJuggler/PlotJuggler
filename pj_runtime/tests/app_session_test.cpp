@@ -6,11 +6,16 @@
 #include <QFile>
 #include <QTemporaryDir>
 #include <algorithm>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
+#include "event_pump_test_utils.h"
+#include "marker_test_utils.h"
+#include "pj_base/builtin/plot_markers.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/query.hpp"
 #include "pj_datastore/reader.hpp"
@@ -18,11 +23,13 @@
 #include "pj_datastore/writer.hpp"
 #include "pj_marketplace/extension_manager.hpp"
 #include "pj_runtime/AppSession.h"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/CurveColorRegistry.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/TopicDemandTracker.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -979,6 +986,132 @@ TEST(AppSessionTest, RecomputeRangeMovesRangeButNeverCurrentTime) {
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, -2.0);
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 8.0);
   EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 4.0);  // unchanged: no snap
+}
+
+// Automatic marker runs follow demand: a generator on a demand-capable streaming
+// dataset stays stale while nothing displays that dataset, and runs as soon as a
+// display reference arrives, with no further ingest.
+TEST(AppSessionTest, MarkerRulesRunWhenTheirStreamingDatasetBecomesDemanded) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  constexpr PJ::DatasetId kStream = 7;
+  session.catalogModel().setPerTopicPauseCapable(kStream, true);
+  PJ::BatchEngine& engine = session.sessionManager().batchEngine();
+  engine.setResolver(
+      [](PJ::DatasetId, const std::string& key,
+         const PJ::BatchEngine::Window&) -> std::optional<PJ::BatchEngine::ResolvedSeries> {
+        if (key != "in") {
+          return std::nullopt;
+        }
+        return PJ::BatchEngine::ResolvedSeries{.timestamps = {0.0}, .values = {1.0}};
+      });
+  engine.setReloadHz(20.0);  // 50 ms period
+  PJ::BatchEngine::GeneratorRecipe recipe;
+  recipe.id = "plug/gen";
+  recipe.dataset_id = kStream;
+  recipe.inputs = {"in"};
+  recipe.outputs = {"in"};
+  recipe.script = "createMarker(0.0)\n";
+  ASSERT_TRUE(engine.upsertGenerator(recipe).has_value());
+  ASSERT_EQ(engine.recomputeForChangedInputs({"in"}, kStream).size(), 1u);
+
+  PJ::test::pumpFor(200);
+  EXPECT_TRUE(engine.isStale("plug/gen")) << "nothing displays the stream";
+
+  session.topicDemandTracker().addReference(kStream, u"in"_s);
+  PJ::test::pumpUntil([&engine] { return !engine.isStale("plug/gen"); });
+  EXPECT_FALSE(engine.isStale("plug/gen")) << "a display reference arrived";
+}
+
+// A display reference on a topic that already streams (forced, or infrastructure)
+// leaves the active set unchanged, yet it is what makes the dataset demanded: the
+// stale rule must wake on it.
+TEST(AppSessionTest, MarkerRulesWakeWhenAnAlreadyActiveTopicGetsDisplayed) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  constexpr PJ::DatasetId kStream = 7;
+  session.catalogModel().setPerTopicPauseCapable(kStream, true);
+  PJ::BatchEngine& engine = session.sessionManager().batchEngine();
+  engine.setResolver(
+      [](PJ::DatasetId, const std::string& key,
+         const PJ::BatchEngine::Window&) -> std::optional<PJ::BatchEngine::ResolvedSeries> {
+        if (key != "in") {
+          return std::nullopt;
+        }
+        return PJ::BatchEngine::ResolvedSeries{.timestamps = {0.0}, .values = {1.0}};
+      });
+  engine.setReloadHz(20.0);  // 50 ms period
+  PJ::BatchEngine::GeneratorRecipe recipe;
+  recipe.id = "plug/gen";
+  recipe.dataset_id = kStream;
+  recipe.inputs = {"in"};
+  recipe.outputs = {"in"};
+  recipe.script = "createMarker(0.0)\n";
+  ASSERT_TRUE(engine.upsertGenerator(recipe).has_value());
+  session.topicDemandTracker().setTopicForced(kStream, u"in"_s, true);
+  ASSERT_EQ(engine.recomputeForChangedInputs({"in"}, kStream).size(), 1u);
+  PJ::test::pumpFor(200);
+  ASSERT_TRUE(engine.isStale("plug/gen")) << "forced streaming is not a display";
+
+  session.topicDemandTracker().addReference(kStream, u"in"_s);
+  PJ::test::pumpUntil([&engine] { return !engine.isStale("plug/gen"); });
+  EXPECT_FALSE(engine.isStale("plug/gen")) << "the topic is displayed now";
+}
+
+// The marker-input resolver AppSession installs reads a series across its chunks in
+// time order, as the plots do, and only the recipe's window when it has one.
+TEST(AppSessionTest, MarkerResolverReadsAMultiChunkSeriesAndItsWindow) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  PJ::SessionManager& manager = session.sessionManager();
+  const auto dataset = manager.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(dataset.has_value());
+  PJ::DataWriter writer = manager.dataEngine().createWriter();
+  auto handle = writer.registerScalarSeries(*dataset, "/sig", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value()) << handle.error();
+  constexpr int kChunks = 3;
+  constexpr int kRowsPerChunk = 10;
+  for (int chunk = 0; chunk < kChunks; ++chunk) {
+    for (int row = 0; row < kRowsPerChunk; ++row) {
+      const int sample = chunk * kRowsPerChunk + row;
+      writer.appendScalar(*handle, sample, sample * 0.5);
+    }
+    ASSERT_FALSE(manager.commitChunks(writer.flushAll()).empty());
+  }
+  session.catalogModel().rebuildFromDatastore();
+
+  PJ::BatchEngine::GeneratorRecipe recipe;
+  recipe.id = "plug/every";
+  recipe.dataset_id = *dataset;
+  recipe.inputs = {PJ::sdk::markerSeriesKey("/sig", "value")};
+  recipe.outputs = {"marks"};
+  recipe.script = R"(
+    local s = series("/sig/value")
+    for i = 0, s:size() - 1 do
+      local p = s:at(i)
+      createMarker(p.t, p.v)
+    end
+  )";
+  const auto expect_samples = [&](int first, int last) {
+    const auto markers = PJ::test::readMarkerUnion(manager.objectStore(), *dataset, "marks").markers;
+    ASSERT_EQ(markers.size(), static_cast<std::size_t>(last - first + 1));
+    for (int sample = first; sample <= last; ++sample) {
+      EXPECT_EQ(markers[sample - first].t_start, sample);
+      EXPECT_DOUBLE_EQ(markers[sample - first].value_low, sample * 0.5);
+    }
+  };
+
+  const auto whole = manager.batchEngine().upsertGenerator(recipe);
+  ASSERT_TRUE(whole.has_value()) << whole.error();
+  expect_samples(0, kChunks * kRowsPerChunk - 1);
+
+  recipe.window = std::pair<PJ::Timestamp, PJ::Timestamp>{5, 24};  // spans all three chunks
+  const auto windowed = manager.batchEngine().upsertGenerator(recipe);
+  ASSERT_TRUE(windowed.has_value()) << windowed.error();
+  expect_samples(5, 24);
 }
 
 }  // namespace

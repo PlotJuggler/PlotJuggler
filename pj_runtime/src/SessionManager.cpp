@@ -29,6 +29,7 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/EnginePool.h"
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_scripting/filter_catalogue.h"
 #include "pj_scripting/script_engine.h"
@@ -45,20 +46,6 @@ Q_LOGGING_CATEGORY(lcCancel, "pj.runtime.ingest.cancel", QtWarningMsg)
 // How long a producer may take to honour a stop before we say so.
 constexpr int kStopWatchdogMs = 2000;
 
-// Topic names of the `changed` topics — passed to BatchEngine::recomputeForChangedInputs
-// so only generators whose input series key ("topic/field") starts with a changed topic
-// re-run, instead of re-running every generator on every commit. Accepts std::vector or
-// QVector<TopicId>.
-template <typename Container>
-std::vector<std::string> changedTopicNames(const DataReader& reader, const Container& changed) {
-  std::vector<std::string> names;
-  for (const TopicId id : changed) {
-    if (const std::optional<TopicMetadata> md = reader.getMetadata(id); md.has_value()) {
-      names.push_back(md->name);
-    }
-  }
-  return names;
-}
 }  // namespace
 
 QString SessionManager::normalizedSourcePath(const QString& path) {
@@ -108,13 +95,19 @@ SessionManager::SessionManager(QObject* parent)
   processor_service_ = std::make_unique<DataProcessorService>(*this);
 
   // Whole-series object generators publish markers into object_store_ (the object
-  // engine never touches data_engine_). The real series resolver is injected by the
-  // shell once the catalog exists (setResolver); this stub, which resolves nothing,
-  // only covers the window before that. It must stay a window: a generator restored
-  // from a saved layout runs the moment it is re-created, so a shell that injected
-  // late would silently run every restored rule against no data.
-  batch_engine_ = std::make_unique<BatchEngine>(
-      object_store_, [](DatasetId, const std::string&) { return std::optional<BatchEngine::ResolvedSeries>{}; });
+  // engine never touches data_engine_). The real series resolver is injected by
+  // AppSession once the catalog exists (setResolver); this stub, which resolves
+  // nothing, only covers the window before that. It must stay a window: a generator
+  // restored from a saved layout runs the moment it is re-created, so a resolver
+  // injected late would silently run every restored rule against no data.
+  batch_engine_ =
+      std::make_unique<BatchEngine>(object_store_, [](DatasetId, const std::string&, const BatchEngine::Window&) {
+        return std::optional<BatchEngine::ResolvedSeries>{};
+      });
+  engine_pool_ = std::make_unique<EnginePool>();
+  batch_engine_->setPool(engine_pool_.get());
+  // A scheduled run lands after the change that asked for it was announced.
+  connect(batch_engine_.get(), &BatchEngine::markersPublished, this, &SessionManager::notifyMarkersChanged);
   // An all-datasets set is stored once in the display frame, so each contributor's
   // run is shifted by its alignment offset; only that shift matters
   // (globalTimeReference is uniform and cancels out).
@@ -853,6 +846,9 @@ RefillGuard::RefillGuard(SessionManager& session, DatasetId dataset_id) : sessio
   // can put back the parser that wrote the bytes it restores.
   object_parser_snapshot_ = session.snapshotObjectTopicParsers(prior_object_topic_ids_);
 
+  // (0) A marker run staged from the old data would publish into the refilling
+  //     dataset; the refill's own recompute (commit or rollback) is its next run.
+  session.batchEngine().cancelRunsOn(dataset_id);
   // (1) Adapters drop cached TopicChunk* before any deque is moved (same ordering
   //     as replaceDataset).
   session.notifyDatasetAboutToBeReplaced(dataset_id);
@@ -927,16 +923,39 @@ void RefillGuard::commit() {
 }
 
 void SessionManager::publishSharedMarkersToNewDatasets() {
-  if (batch_engine_ && batch_engine_->hasGenerators() && !batch_engine_->reachNewDatasets().empty()) {
-    notifyMarkersChanged();
+  if (batch_engine_ && batch_engine_->hasGenerators()) {
+    batch_engine_->reachNewDatasets();
   }
 }
 
 void SessionManager::recomputeMarkersForChanged(const std::vector<TopicId>& changed, DatasetId scope) {
   // Gated by hasGenerators() so the common (no-generator) path is a single bool check.
-  if (batch_engine_ && batch_engine_->hasGenerators() &&
-      !batch_engine_->recomputeForChangedInputs(changedTopicNames(createReader(), changed), scope).empty()) {
-    notifyMarkersChanged();
+  if (!batch_engine_ || !batch_engine_->hasGenerators()) {
+    return;
+  }
+  std::vector<std::string> moved;
+  {
+    const auto lock = data_engine_.lockEngine();
+    for (const TopicId id : changed) {
+      const TopicStorage* storage = data_engine_.getTopicStorage(id);
+      if (storage == nullptr) {
+        continue;
+      }
+      const TopicMetadata metadata = storage->metadata();
+      // Retention can hide samples without moving the newest one or the stored rows,
+      // and an out-of-order write or a restore only bumps the generation.
+      const MarkerInputStamp stamp{
+          metadata.time_range_max, metadata.total_row_count, storage->retentionFloor(), storage->seriesGeneration()};
+      const auto [seen, first_time] = marker_input_extents_.try_emplace(id, stamp);
+      if (!first_time && std::exchange(seen->second, stamp) == stamp) {
+        continue;  // a streaming tick lists every topic of its dataset; this one did not move
+      }
+      moved.push_back(metadata.name);
+    }
+  }
+  // Never pass an empty list: recomputeForChangedInputs reads it as "every input".
+  if (!moved.empty()) {
+    (void)batch_engine_->recomputeForChangedInputs(moved, scope);
   }
 }
 

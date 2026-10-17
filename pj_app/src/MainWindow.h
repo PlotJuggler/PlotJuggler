@@ -587,6 +587,17 @@ class MainWindow : public QMainWindow {
   // Preferences dialog this window opens.
   void bindRecordingPreferences(PreferencesDialog& dialog);
 
+  // Pushes the derived-markers mode and reload rate the Preferences Plotting page
+  // persists to the batch engine: at startup, and on OK of every Preferences dialog
+  // this window opens (bindDerivedBatchPreferences).
+  void applyDerivedBatchPreferences();
+  void bindDerivedBatchPreferences(PreferencesDialog& dialog);
+
+  // Shows "Computing markers for ..." in the status bar while a marker rule has been
+  // running for more than 300 ms (BatchEngine::runningChanged), and clears it when
+  // nothing runs. Interim: a plot-level computing/lag indicator is slice 7's.
+  void wireMarkerComputingStatus();
+
   // Reloads a recorded source through its plugin + config (dialog skipped when
   // both are known). Shared by the global Reload button and the per-dataset
   // context-menu reload.
