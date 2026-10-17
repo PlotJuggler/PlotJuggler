@@ -93,6 +93,91 @@ TEST(DataProcessorServiceTest, AppliesAbsoluteFilterAndMaterializesOutput) {
   EXPECT_DOUBLE_EQ(vals[2], 3.0);
 }
 
+// A transform that falls behind its input's retention window
+// (IncrementalEngine::gaps) surfaces the gap in its recipe JSON.
+TEST(DataProcessorServiceTest, RecipeJsonCarriesGaps) {
+  DataEngine engine;
+  DataProcessorService service(engine);
+  const DatasetId ds = *engine.createDataset(DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
+
+  DataWriter writer = engine.createWriter();
+  auto handle = writer.registerScalarSeries(ds, "speed", NumericType::kFloat64);
+  const TopicId src = handle->topic_id;
+  for (int i = 0; i < 10; ++i) {
+    writer.appendScalar(*handle, static_cast<Timestamp>(i) * 1'000'000'000LL, static_cast<double>(i));
+  }
+  engine.commitChunks(writer.flushAll());  // chunk A: ts 0..9s
+
+  const auto rec =
+      service.upsertTransform("pluginA", "negate", {"speed"}, {"speed_negated"}, kNegateTransformSrc, "{}");
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto before = service.transformRecipeJson("pluginA/negate");
+  ASSERT_TRUE(before.has_value());
+  EXPECT_TRUE(nlohmann::json::parse(*before).at("gaps").empty());
+
+  // Chunks B (ts 10..19s) and C (ts 20..29s), separate flushes. Nothing advances the
+  // transform over them before retention evicts A (consumed) and B (never seen) — a
+  // genuine "fell behind" gap.
+  for (int block = 1; block <= 2; ++block) {
+    for (int i = block * 10; i < block * 10 + 10; ++i) {
+      writer.appendScalar(*handle, static_cast<Timestamp>(i) * 1'000'000'000LL, static_cast<double>(i));
+    }
+    engine.commitChunks(writer.flushAll());
+  }
+  engine.enforceRetention(9'000'000'000LL, ds);
+  (void)service.advanceOnCommit({src});
+
+  const auto after = service.transformRecipeJson("pluginA/negate");
+  ASSERT_TRUE(after.has_value());
+  const nlohmann::json gaps = nlohmann::json::parse(*after).at("gaps");
+  ASSERT_EQ(gaps.size(), 1u);
+  EXPECT_EQ(gaps[0].at("from_ns").get<int64_t>(), 9'000'000'000LL);
+  EXPECT_EQ(gaps[0].at("to_ns").get<int64_t>(), 20'000'000'000LL);
+
+  // The transform's own output was reset and replayed only over what's still
+  // retained (chunk C), not a duplicate of chunk A's already-committed output.
+  const auto vals = readValues(engine, rec->output_topic_ids[0]);
+  EXPECT_EQ(vals.size(), 10u);
+}
+
+// A node that consumed input but fed no sample (a column of nulls) has no start to
+// report for its gap: the JSON says null, not a sentinel timestamp.
+TEST(DataProcessorServiceTest, RecipeJsonReportsAGapFromNothingFedAsNull) {
+  DataEngine engine;
+  DataProcessorService service(engine);
+  const DatasetId ds = *engine.createDataset(DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
+
+  DataWriter writer = engine.createWriter();
+  auto handle = writer.registerScalarSeries(ds, "speed", NumericType::kFloat64);
+  const TopicId src = handle->topic_id;
+  for (int i = 0; i < 10; ++i) {
+    ASSERT_TRUE(writer.beginRow(src, static_cast<Timestamp>(i) * 1'000'000'000LL).has_value());  // value left null
+    ASSERT_TRUE(writer.finishRow(src).has_value());
+  }
+  engine.commitChunks(writer.flushAll());  // chunk A: ts 0..9s, all null
+
+  const auto rec =
+      service.upsertTransform("pluginA", "negate", {"speed"}, {"speed_negated"}, kNegateTransformSrc, "{}");
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  for (int block = 1; block <= 2; ++block) {
+    for (int i = block * 10; i < block * 10 + 10; ++i) {
+      writer.appendScalar(*handle, static_cast<Timestamp>(i) * 1'000'000'000LL, static_cast<double>(i));
+    }
+    engine.commitChunks(writer.flushAll());
+  }
+  engine.enforceRetention(9'000'000'000LL, ds);
+  (void)service.advanceOnCommit({src});
+
+  const auto json = service.transformRecipeJson("pluginA/negate");
+  ASSERT_TRUE(json.has_value());
+  const nlohmann::json gaps = nlohmann::json::parse(*json).at("gaps");
+  ASSERT_EQ(gaps.size(), 1u);
+  EXPECT_TRUE(gaps[0].at("from_ns").is_null());
+  EXPECT_EQ(gaps[0].at("to_ns").get<int64_t>(), 20'000'000'000LL);
+}
+
 TEST(DataProcessorServiceTest, SourceTopicsForOutputResolvesFilterInput) {
   // Demand-tracking support (M5): a displayed filter OUTPUT must resolve back to
   // its source topic so TopicDemandTracker keeps the input subscribed.

@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "pj_base/dataset.hpp"
@@ -2409,6 +2410,754 @@ TEST(IncrementalEngineTimeSliceTest, DownstreamNodeFollowsTheGrowingOutput) {
     EXPECT_EQ(child_rows[i].first, parent_rows[i].first);
     EXPECT_DOUBLE_EQ(child_rows[i].second, 2.0 * parent_rows[i].second);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Retention gaps
+// ---------------------------------------------------------------------------
+
+TEST(IncrementalEngineTest, FallingBehindRetentionSkipsToLiveAndRecordsTheGap) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+
+  // Chunk A: ts 0..9s (10 rows, one flush -> one sealed chunk).
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 10);
+  PJ::NodeId node = *derived.addSisoTransform(src, "id", ds, std::make_unique<IdentityTransform>());
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  EXPECT_TRUE(derived.gaps(node).empty());
+  {
+    const auto rows = collectRows(engine, derived.outputTopics(node)[0]);
+    ASSERT_EQ(rows.size(), 10u);
+    EXPECT_EQ(rows.back().first, 9'000'000'000LL);  // watermark now at 9s
+  }
+
+  // Chunks B (10..19s) and C (20..29s), each a SEPARATE flush. Nothing schedules the
+  // node in between; retention then evicts A (which the node consumed) and B (which it
+  // never saw): t_max(29s) - window(9s) = keep_min 20s. B's rows are lost to the node, so
+  // it records a gap from its watermark (9s) to the first retained timestamp (20s, C's
+  // own start, so no chunk straddles the cutoff).
+  appendLinearRows(engine, src, 1.0, 10, 10);
+  appendLinearRows(engine, src, 1.0, 10, 20);
+  notify(derived, {src});
+  engine.enforceRetention(9'000'000'000LL, ds);
+
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  const auto gaps = derived.gaps(node);
+  ASSERT_EQ(gaps.size(), 1u);
+  EXPECT_EQ(gaps[0].from, 9'000'000'000LL);
+  EXPECT_EQ(gaps[0].to, 20'000'000'000LL);
+
+  // The op was reset and replayed only over what's still retained (chunk C) —
+  // not a duplicate of chunk A's already-committed output.
+  const auto rows = collectRows(engine, derived.outputTopics(node)[0]);
+  ASSERT_EQ(rows.size(), 10u);
+  EXPECT_EQ(rows.front().first, 20'000'000'000LL);
+  EXPECT_EQ(rows.back().first, 29'000'000'000LL);
+
+  // A further schedule with nothing new and no further eviction records no
+  // additional gap.
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  EXPECT_EQ(derived.gaps(node).size(), 1u);
+}
+
+TEST(IncrementalEngineTest, FileDatasetNeverGaps) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 10);
+  PJ::NodeId node = *derived.addSisoTransform(src, "id", ds, std::make_unique<IdentityTransform>());
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  EXPECT_TRUE(derived.gaps(node).empty());
+
+  // A file dataset never calls DataEngine::enforceRetention: more data
+  // arrives, the node stays caught up, and no retention floor is ever raised
+  // underneath it — so it can never satisfy the "fell behind retention" check.
+  appendLinearRows(engine, src, 1.0, 50, 10);
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  EXPECT_TRUE(derived.gaps(node).empty());
+
+  const auto rows = collectRows(engine, derived.outputTopics(node)[0]);
+  EXPECT_EQ(rows.size(), 60u);  // every row processed incrementally, none skipped
+}
+
+TEST(IncrementalEngineTest, GapReplayDoesNotResurrectRowsBelowTheFloor) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+
+  // Chunk A: ts 0..9s (10 rows, one flush -> one sealed chunk).
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 10);
+  PJ::NodeId siso = *derived.addSisoTransform(src, "id", ds, std::make_unique<IdentityTransform>());
+  // A MIMO node over two copies of the same topic (default input_columns is
+  // column 0 for every input), so the same "fell behind" gap logic is covered
+  // for stageMimoRowsScan too.
+  PJ::NodeId mimo = *derived.addMimoTransform({src, src}, {"sum"}, ds, std::make_unique<SumMimoTransform>());
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  for (const PJ::NodeId node : {siso, mimo}) {
+    EXPECT_TRUE(derived.gaps(node).empty()) << "node " << node;
+    const auto rows = collectRows(engine, derived.outputTopics(node)[0]);
+    ASSERT_EQ(rows.size(), 10u) << "node " << node;
+    EXPECT_EQ(rows.back().first, 9'000'000'000LL) << "node " << node;  // watermark now at 9s
+  }
+
+  // Chunk B: ts 10..19s, a SEPARATE flush -> a separate sealed chunk. Neither
+  // node is scheduled against it before retention runs. The window is chosen
+  // so the cutoff falls INSIDE chunk B, not at its start: t_max(19s) -
+  // window(4s) = keep_min 15s. Chunk A is evicted wholesale (t_max 9s < 15s),
+  // but chunk B (10..19s) straddles 15s and stays physically whole, with rows
+  // 10..14s hidden below the retention floor though still physically present.
+  appendLinearRows(engine, src, 1.0, 10, 10);
+  notify(derived, {src});
+  engine.enforceRetention(4'000'000'000LL, ds);
+  ASSERT_EQ(engine.getTopicStorage(src)->retentionFloor(), 15'000'000'000LL);
+
+  // Both nodes fell behind (watermark 9s < first-retained 15s), forcing a full replay.
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  for (const PJ::NodeId node : {siso, mimo}) {
+    const auto gaps = derived.gaps(node);
+    ASSERT_EQ(gaps.size(), 1u) << "node " << node;
+    EXPECT_EQ(gaps[0].from, 9'000'000'000LL) << "node " << node;
+    EXPECT_EQ(gaps[0].to, 15'000'000'000LL) << "node " << node;
+
+    // The replay must not resurrect the logically evicted rows 10..14s that
+    // are still physically in chunk B: exactly rows 15..19s (5 rows) survive.
+    const auto rows = collectRows(engine, derived.outputTopics(node)[0]);
+    ASSERT_EQ(rows.size(), 5u) << "node " << node;
+    for (const auto& row : rows) {
+      EXPECT_GE(row.first, 15'000'000'000LL) << "node " << node;
+    }
+    EXPECT_EQ(rows.front().first, 15'000'000'000LL) << "node " << node;
+    EXPECT_EQ(rows.back().first, 19'000'000'000LL) << "node " << node;
+  }
+}
+
+// Counts resets: the engine resets an op only to replay its node from scratch.
+class ResetCountingSumMimoTransform : public SumMimoTransform {
+ public:
+  explicit ResetCountingSumMimoTransform(int& resets) : resets_(resets) {}
+
+  void reset() override {
+    ++resets_;
+  }
+
+ private:
+  int& resets_;
+};
+
+constexpr PJ::Timestamp kOneSecond = 1'000'000'000LL;
+
+// A MIMO node joins on exact timestamps, so its join watermark stays at the start of
+// time while an input has no rows, or while the inputs never coincide. That is not
+// retention eviction: no gap, and no replay of the node.
+TEST(IncrementalEngineTest, MimoNodeWithAnInputThatNeverReceivesRowsNeverGaps) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  DataWriter writer = engine.createWriter();
+  const auto live = *writer.registerScalarSeries(ds, "live", PJ::NumericType::kFloat64);
+  const auto idle = *writer.registerScalarSeries(ds, "idle", PJ::NumericType::kFloat64);
+  int resets = 0;
+  const PJ::NodeId node = *derived.addMimoTransform(
+      {live.topic_id, idle.topic_id}, {"sum"}, ds, std::make_unique<ResetCountingSumMimoTransform>(resets));
+
+  for (int tick = 0; tick < 5; ++tick) {
+    writer.appendScalar(live, tick * kOneSecond, 1.0);
+    engine.commitChunks(writer.flushAll());
+    notify(derived, {live.topic_id});
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+  }
+
+  EXPECT_TRUE(derived.gaps(node).empty());
+  EXPECT_EQ(resets, 0);
+  EXPECT_TRUE(collectRows(engine, derived.outputTopics(node)[0]).empty());
+}
+
+TEST(IncrementalEngineTest, MimoNodeOverSparseInputsNeverGapsAndJoinsOnce) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  DataWriter writer = engine.createWriter();
+  const auto first = *writer.registerScalarSeries(ds, "first", PJ::NumericType::kFloat64);
+  const auto second = *writer.registerScalarSeries(ds, "second", PJ::NumericType::kFloat64);
+  int resets = 0;
+  const PJ::NodeId node = *derived.addMimoTransform(
+      {first.topic_id, second.topic_id}, {"sum"}, ds, std::make_unique<ResetCountingSumMimoTransform>(resets));
+
+  // The inputs interleave without ever sharing a timestamp, then meet once at 10 s.
+  for (int tick = 0; tick < 5; ++tick) {
+    writer.appendScalar(first, 2 * tick * kOneSecond, 1.0);
+    writer.appendScalar(second, (2 * tick + 1) * kOneSecond, 2.0);
+    engine.commitChunks(writer.flushAll());
+    notify(derived, {first.topic_id, second.topic_id});
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+  }
+  writer.appendScalar(first, 10 * kOneSecond, 1.0);
+  writer.appendScalar(second, 10 * kOneSecond, 2.0);
+  engine.commitChunks(writer.flushAll());
+  notify(derived, {first.topic_id, second.topic_id});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  EXPECT_TRUE(derived.gaps(node).empty());
+  EXPECT_EQ(resets, 0);
+  const auto rows = collectRows(engine, derived.outputTopics(node)[0]);
+  ASSERT_EQ(rows.size(), 1u);
+  EXPECT_EQ(rows[0].first, 10 * kOneSecond);
+  EXPECT_DOUBLE_EQ(rows[0].second, 3.0);
+}
+
+// Null cells are no samples, so a column that has only ever held nulls leaves the
+// node's feed watermark at the start of time while its chunks are all consumed.
+TEST(IncrementalEngineTest, SisoNodeOverAnAllNullColumnNeverGaps) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  DataWriter writer = engine.createWriter();
+  const auto series = *writer.registerScalarSeries(ds, "sparse", PJ::NumericType::kFloat64);
+  std::vector<std::string> reset_trace;
+  const PJ::NodeId node = *derived.addSisoTransform(
+      series.topic_id, "id", ds, std::make_unique<ResetTracingIdentityTransform>("id", reset_trace));
+
+  for (int tick = 0; tick < 5; ++tick) {
+    ASSERT_TRUE(writer.beginRow(series.topic_id, tick * kOneSecond).has_value());  // column left null
+    ASSERT_TRUE(writer.finishRow(series.topic_id).has_value());
+    engine.commitChunks(writer.flushAll());
+    notify(derived, {series.topic_id});
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+  }
+  writer.appendScalar(series, 5 * kOneSecond, 7.0);
+  engine.commitChunks(writer.flushAll());
+  notify(derived, {series.topic_id});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  EXPECT_TRUE(derived.gaps(node).empty());
+  EXPECT_TRUE(reset_trace.empty());
+  const auto rows = collectRows(engine, derived.outputTopics(node)[0]);
+  ASSERT_EQ(rows.size(), 1u);
+  EXPECT_EQ(rows[0].first, 5 * kOneSecond);
+}
+
+// Retention that only drops chunks the node already consumed loses it nothing, even
+// while a newer chunk is waiting: the node keeps its output and continues in place.
+TEST(IncrementalEngineTest, EvictingOnlyChunksTheNodeConsumedIsNoGap) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 10);  // chunk A: 0..9 s
+  std::vector<std::string> reset_trace;
+  const PJ::NodeId node =
+      *derived.addSisoTransform(src, "id", ds, std::make_unique<ResetTracingIdentityTransform>("id", reset_trace));
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  appendLinearRows(engine, src, 1.0, 10, 10);  // chunk B: 10..19 s, not yet consumed
+  notify(derived, {src});
+  engine.enforceRetention(9 * kOneSecond, ds);  // keep_min 10 s: A is gone, B is whole
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  EXPECT_TRUE(derived.gaps(node).empty());
+  EXPECT_TRUE(reset_trace.empty());
+  EXPECT_EQ(collectRows(engine, derived.outputTopics(node)[0]).size(), 20u);
+}
+
+// Input evicted down to nothing before the node ran is still a gap, and a single one:
+// the node has accounted for the eviction once it has replayed what is retained.
+TEST(IncrementalEngineTest, InputEvictedEntirelyBeforeTheNodeRanRecordsOneGap) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 10);  // chunk A: 0..9 s
+  const PJ::NodeId node = *derived.addSisoTransform(src, "id", ds, std::make_unique<IdentityTransform>());
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  appendLinearRows(engine, src, 1.0, 10, 10);  // chunk B: 10..19 s, never consumed
+  engine.evictTopicHistory(src);
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  const auto gaps = derived.gaps(node);
+  ASSERT_EQ(gaps.size(), 1u);
+  EXPECT_EQ(gaps[0].from, 9 * kOneSecond);
+  EXPECT_EQ(gaps[0].to, 19 * kOneSecond + 1);  // nothing is retained: the gap runs to the retention floor
+
+  appendLinearRows(engine, src, 1.0, 5, 20);
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  EXPECT_EQ(derived.gaps(node).size(), 1u);
+  EXPECT_EQ(collectRows(engine, derived.outputTopics(node)[0]).size(), 5u);
+}
+
+// ---------------------------------------------------------------------------
+// Retention gaps: failed nodes, time-sliced nodes, pause/resume, bookkeeping
+// ---------------------------------------------------------------------------
+
+// A latched-failure MIMO sum that also counts the replays the engine gives it.
+class ResetCountingLatchedFailureSumMimoTransform : public LatchedFailureSumMimoTransform {
+ public:
+  explicit ResetCountingLatchedFailureSumMimoTransform(int& resets) : resets_(resets) {}
+
+  void reset() override {
+    ++resets_;
+  }
+
+ private:
+  int& resets_;
+};
+
+// A failed node consumes nothing, so input that keeps arriving while retention passes
+// its frozen watermark is not "input it never saw": a gap would replay a node that
+// fails again, on every tick.
+TEST(IncrementalEngineTest, StickyFailedMimoNodeNeverGapsAsRetentionPassesItsWatermark) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  DataWriter writer = engine.createWriter();
+  const auto first = *writer.registerScalarSeries(ds, "first", PJ::NumericType::kFloat64);
+  const auto second = *writer.registerScalarSeries(ds, "second", PJ::NumericType::kFloat64);
+  int resets = 0;
+  auto op = std::make_unique<ResetCountingLatchedFailureSumMimoTransform>(resets);
+  ResetCountingLatchedFailureSumMimoTransform* failing = op.get();
+  const PJ::NodeId node = *derived.addMimoTransform({first.topic_id, second.topic_id}, {"sum"}, ds, std::move(op));
+
+  for (int tick = 0; tick < 9; ++tick) {
+    writer.appendScalar(first, tick * kOneSecond, 1.0);
+    writer.appendScalar(second, tick * kOneSecond, 2.0);
+    engine.commitChunks(writer.flushAll());
+    notify(derived, {first.topic_id, second.topic_id});
+    if (tick == 1) {
+      failing->fail();
+    }
+    const bool scheduled = derived.scheduleAll().has_value();
+    EXPECT_EQ(scheduled, tick < 1) << "tick " << tick;
+    engine.enforceRetention(kOneSecond, ds);
+  }
+
+  EXPECT_TRUE(derived.gaps(node).empty());
+  EXPECT_EQ(resets, 0);
+  EXPECT_FALSE(derived.nodeError(node).empty());
+}
+
+// The values of a running sum over the consecutive integers [first_value, last_value].
+static std::vector<double> runningSums(int first_value, int last_value) {
+  std::vector<double> sums;
+  double total = 0.0;
+  for (int value = first_value; value <= last_value; ++value) {
+    total += value;
+    sums.push_back(total);
+  }
+  return sums;
+}
+
+// One time-sliced step with no time to spend: feeds 15 rows (the clock is read at the
+// 16th) and leaves the node deferred inside whatever chunk it reached.
+static void stepOnce(IncrementalEngine& derived, PJ::NodeId node) {
+  const auto done = derived.materializeStep(node, std::chrono::nanoseconds{0});
+  ASSERT_TRUE(done.has_value()) << done.error();
+  ASSERT_FALSE(*done);
+}
+
+// A node that fed only part of its first chunk has completed no chunk (watermark 0).
+// When retention drops that chunk, the rows it had not fed are lost: a gap, and the
+// accumulator must not carry on across the hole.
+TEST(IncrementalEngineTimeSliceTest, ResumeChunkDroppedBeforeItWasFinishedRecordsTheGapAndRestartsTheAccumulator) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 40);  // one chunk: 0..39 s
+  const auto node = derived.addSisoTransform(src, "sum", ds, std::make_unique<SlowRunningSumTransform>());
+  ASSERT_TRUE(node.has_value());
+  stepOnce(derived, *node);  // fed 0..14 s
+
+  appendLinearRows(engine, src, 1.0, 10, 40);  // 40..49 s
+  notify(derived, {src});
+  engine.enforceRetention(9 * kOneSecond, ds);  // keep_min 40 s: the chunk the step stopped inside is gone
+  materializeFully(derived, *node, std::chrono::milliseconds{100});
+
+  const auto gaps = derived.gaps(*node);
+  ASSERT_EQ(gaps.size(), 1u);
+  EXPECT_EQ(gaps[0].from, 14 * kOneSecond);
+  EXPECT_EQ(gaps[0].to, 40 * kOneSecond);
+  EXPECT_EQ(collectValues(engine, derived.outputTopics(*node)[0]), runningSums(40, 49));
+}
+
+// The floor cutting into the rows the node has not fed yet loses them just the same,
+// though their chunk stays.
+TEST(IncrementalEngineTimeSliceTest, FloorCuttingTheUnfedRowsOfTheResumeChunkRecordsTheGap) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 40);  // one chunk: 0..39 s
+  const auto node = derived.addSisoTransform(src, "sum", ds, std::make_unique<SlowRunningSumTransform>());
+  ASSERT_TRUE(node.has_value());
+  stepOnce(derived, *node);  // fed 0..14 s
+
+  appendLinearRows(engine, src, 1.0, 10, 40);  // 40..49 s
+  notify(derived, {src});
+  engine.enforceRetention(29 * kOneSecond, ds);  // floor 20 s: rows 15..19 s of the resume chunk are hidden
+  materializeFully(derived, *node, std::chrono::milliseconds{100});
+
+  const auto gaps = derived.gaps(*node);
+  ASSERT_EQ(gaps.size(), 1u);
+  EXPECT_EQ(gaps[0].from, 14 * kOneSecond);
+  EXPECT_EQ(gaps[0].to, 20 * kOneSecond);
+  EXPECT_EQ(collectValues(engine, derived.outputTopics(*node)[0]), runningSums(20, 49));
+}
+
+// The floor cutting only the rows the node has already fed loses it nothing: it
+// carries on from where it stopped, accumulator intact.
+TEST(IncrementalEngineTimeSliceTest, FloorCuttingOnlyTheFedPrefixOfTheResumeChunkIsNoGap) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 10);  // chunk A: 0..9 s
+  appendLinearRows(engine, src, 1.0, 10, 10);                    // chunk B: 10..19 s
+  const auto node = derived.addSisoTransform(src, "sum", ds, std::make_unique<SlowRunningSumTransform>());
+  ASSERT_TRUE(node.has_value());
+  stepOnce(derived, *node);  // fed A and 10..14 s of B
+
+  appendLinearRows(engine, src, 1.0, 10, 20);  // chunk C: 20..29 s
+  notify(derived, {src});
+  engine.enforceRetention(17 * kOneSecond, ds);  // floor 12 s: A is gone, B's fed prefix is hidden
+  ASSERT_EQ(engine.getTopicStorage(src)->retentionFloor(), 12 * kOneSecond);
+  materializeFully(derived, *node, std::chrono::milliseconds{100});
+
+  EXPECT_TRUE(derived.gaps(*node).empty());
+  EXPECT_EQ(collectValues(engine, derived.outputTopics(*node)[0]), runningSums(0, 29));
+}
+
+// The staging engine a paused stream writes into: the primary's dataset and topic
+// name, with chunks of its own.
+struct PauseTail {
+  explicit PauseTail(PJ::DatasetId dataset_id) : dataset(dataset_id) {
+    EXPECT_TRUE(engine.createDataset(PJ::DatasetDescriptor{.source_name = "test", .time_domain_id = 0}, dataset_id)
+                    .has_value());
+    handle = *writer.registerScalarSeries(dataset_id, "src", PJ::NumericType::kFloat64);
+  }
+
+  /// Commits rows [first_row, first_row + rows) at one second apart as one chunk.
+  void append(int first_row, int rows) {
+    for (int row = first_row; row < first_row + rows; ++row) {
+      writer.appendScalar(handle, row * kOneSecond, static_cast<double>(row));
+    }
+    engine.commitChunks(writer.flushAll());
+  }
+
+  PJ::DatasetId dataset;
+  DataEngine engine;
+  DataWriter writer{engine.createWriter()};
+  PJ::ScalarSeriesHandle handle{};
+};
+
+// A pause longer than the window ends with the tail buffer trimmed: the rows it lost
+// are rows the node never saw, so resuming is the "fell behind retention" case, not a
+// seamless continuation across the hole.
+TEST(IncrementalEngineTest, ResumeAfterAPauseLongerThanTheWindowRecordsOneGapAndReplaysTheRetainedRows) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 10);  // 0..9 s, consumed before the pause
+  const PJ::NodeId node = *derived.addSisoTransform(src, "id", ds, std::make_unique<IdentityTransform>());
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  PauseTail tail(ds);
+  tail.append(10, 10);
+  tail.append(20, 10);
+  tail.engine.enforceRetention(9 * kOneSecond, ds);  // keep_min 20 s: 10..19 s were never fed
+  ASSERT_TRUE(tail.engine.flushTo(engine).has_value());
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  const auto gaps = derived.gaps(node);
+  ASSERT_EQ(gaps.size(), 1u);
+  EXPECT_EQ(gaps[0].from, 9 * kOneSecond);
+  EXPECT_EQ(gaps[0].to, 20 * kOneSecond);
+  const auto rows = collectRows(engine, derived.outputTopics(node)[0]);
+  ASSERT_EQ(rows.size(), 10u);
+  EXPECT_EQ(rows.front().first, 20 * kOneSecond);
+  EXPECT_EQ(rows.back().first, 29 * kOneSecond);
+}
+
+// A chunk the tail's floor cuts into stays physically whole; its sub-floor rows must
+// stay hidden once it is merged into the primary.
+TEST(IncrementalEngineTest, ResumeKeepsTheTailFloorSoSubFloorRowsStayHidden) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 10);  // 0..9 s
+
+  PauseTail tail(ds);
+  tail.append(10, 10);
+  tail.append(20, 10);
+  tail.engine.enforceRetention(14 * kOneSecond, ds);  // floor 15 s: the 10..19 s chunk is cut, not dropped
+  ASSERT_TRUE(tail.engine.flushTo(engine).has_value());
+
+  const TopicStorage* storage = engine.getTopicStorage(src);
+  EXPECT_EQ(storage->retentionFloor(), 15 * kOneSecond);
+  EXPECT_EQ(storage->timeMin(), 15 * kOneSecond);
+  const PJ::NodeId node = *derived.addSisoTransform(src, "id", ds, std::make_unique<IdentityTransform>());
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  const auto rows = collectRows(engine, derived.outputTopics(node)[0]);
+  ASSERT_EQ(rows.size(), 15u);
+  EXPECT_EQ(rows.front().first, 15 * kOneSecond);
+}
+
+// Retention that only ever cuts into the front chunk the node already consumed is the
+// steady state of a stream that keeps up, tick after tick: no gap, no replay.
+TEST(IncrementalEngineTest, SteadyStreamingThroughAConsumedStraddledFrontChunkNeverGaps) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 10);
+  std::vector<std::string> siso_resets;
+  int mimo_resets = 0;
+  const PJ::NodeId siso =
+      *derived.addSisoTransform(src, "id", ds, std::make_unique<ResetTracingIdentityTransform>("id", siso_resets));
+  const PJ::NodeId mimo =
+      *derived.addMimoTransform({src, src}, {"sum"}, ds, std::make_unique<ResetCountingSumMimoTransform>(mimo_resets));
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  for (int tick = 1; tick <= 30; ++tick) {
+    appendLinearRows(engine, src, 1.0, 10, 10 * tick);
+    notify(derived, {src});
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+    engine.enforceRetention(25 * kOneSecond, ds);  // the cutoff lands inside a chunk, every tick
+  }
+
+  for (const PJ::NodeId node : {siso, mimo}) {
+    EXPECT_TRUE(derived.gaps(node).empty()) << "node " << node;
+    const auto rows = collectRows(engine, derived.outputTopics(node)[0]);
+    ASSERT_FALSE(rows.empty()) << "node " << node;
+    EXPECT_EQ(rows.back().first, 309 * kOneSecond) << "node " << node;  // kept up with the newest row
+  }
+  EXPECT_TRUE(siso_resets.empty());
+  EXPECT_EQ(mimo_resets, 0);
+}
+
+// The gap list is a diagnostic trail: the newest 16, oldest dropped.
+TEST(IncrementalEngineTest, OnlyTheSixteenNewestGapsAreKept) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 10);  // 0..9 s
+  const PJ::NodeId node = *derived.addSisoTransform(src, "id", ds, std::make_unique<IdentityTransform>());
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  for (int round = 1; round <= 17; ++round) {
+    appendLinearRows(engine, src, 1.0, 5, 10 * round);      // never fed: retention drops it
+    appendLinearRows(engine, src, 1.0, 5, 10 * round + 5);  // the retained tail
+    notify(derived, {src});
+    engine.enforceRetention(4 * kOneSecond, ds);
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+  }
+
+  const auto gaps = derived.gaps(node);
+  ASSERT_EQ(gaps.size(), 16u);
+  EXPECT_EQ(gaps.front().from, 19 * kOneSecond);  // round 2: round 1's gap was dropped
+  EXPECT_EQ(gaps.front().to, 25 * kOneSecond);
+  EXPECT_EQ(gaps.back().from, 169 * kOneSecond);  // round 17
+  EXPECT_EQ(gaps.back().to, 175 * kOneSecond);
+}
+
+// ---------------------------------------------------------------------------
+// Idle nodes: a pass where nothing new arrived does not run them
+// ---------------------------------------------------------------------------
+
+// The engine asks an op whether it failed once or more on every run of its node, so the
+// number of failed() calls grows exactly when the node runs.
+class RunCountingIdentityTransform : public IdentityTransform {
+ public:
+  explicit RunCountingIdentityTransform(int& failed_queries) : failed_queries_(failed_queries) {}
+
+  [[nodiscard]] bool failed() const override {
+    ++failed_queries_;
+    return false;
+  }
+
+ private:
+  int& failed_queries_;
+};
+
+class RunCountingSumMimoTransform : public SumMimoTransform {
+ public:
+  explicit RunCountingSumMimoTransform(int& failed_queries) : failed_queries_(failed_queries) {}
+
+  [[nodiscard]] bool failed() const override {
+    ++failed_queries_;
+    return false;
+  }
+
+ private:
+  int& failed_queries_;
+};
+
+// A streaming tick announces every topic although only some received rows. A node whose
+// inputs hold no chunk beyond its watermark must cost nothing, however many chunks the
+// inputs retain; one new row brings it, and the node chained behind it, back.
+TEST(IncrementalEngineTest, NodesWithNothingNewAreNotRunByAnIdlePass) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
+  for (int chunk = 1; chunk < 60; ++chunk) {
+    appendLinearRows(engine, src, 1.0, 5, 5 * chunk);
+  }
+  int siso_queries = 0;
+  int chained_queries = 0;
+  int mimo_queries = 0;
+  const PJ::NodeId siso =
+      *derived.addSisoTransform(src, "siso", ds, std::make_unique<RunCountingIdentityTransform>(siso_queries));
+  const PJ::TopicId siso_out = derived.outputTopics(siso)[0];
+  const PJ::NodeId chained = *derived.addSisoTransform(
+      siso_out, "chained", ds, std::make_unique<RunCountingIdentityTransform>(chained_queries));
+  const PJ::NodeId mimo =
+      *derived.addMimoTransform({src, src}, {"sum"}, ds, std::make_unique<RunCountingSumMimoTransform>(mimo_queries));
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  ASSERT_EQ(collectRows(engine, derived.outputTopics(chained)[0]).size(), 300u);
+  ASSERT_GT(siso_queries, 0);
+  ASSERT_GT(chained_queries, 0);
+  ASSERT_GT(mimo_queries, 0);
+  const int siso_before = siso_queries;
+  const int chained_before = chained_queries;
+  const int mimo_before = mimo_queries;
+
+  for (int tick = 0; tick < 10; ++tick) {
+    notify(derived, {src, siso_out});
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+  }
+  EXPECT_EQ(siso_queries, siso_before);
+  EXPECT_EQ(chained_queries, chained_before);
+  EXPECT_EQ(mimo_queries, mimo_before);
+
+  appendLinearRows(engine, src, 1.0, 5, 300);
+  notify(derived, {src, siso_out});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  EXPECT_GT(siso_queries, siso_before);
+  EXPECT_GT(chained_queries, chained_before);
+  EXPECT_GT(mimo_queries, mimo_before);
+  EXPECT_EQ(collectRows(engine, derived.outputTopics(chained)[0]).size(), 305u);
+  EXPECT_EQ(collectRows(engine, derived.outputTopics(mimo)[0]).size(), 305u);
+}
+
+// The node did nothing for a while; a row behind its watermark is still late input and
+// still replays it in time order.
+TEST(IncrementalEngineTest, LateWriteIntoAnIdleNodeStillReplaysIt) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 2.0, 5);
+  std::vector<std::string> siso_resets;
+  int mimo_resets = 0;
+  const PJ::NodeId siso =
+      *derived.addSisoTransform(src, "deriv", ds, std::make_unique<ResetTracingIdentityTransform>("id", siso_resets));
+  const PJ::NodeId mimo =
+      *derived.addMimoTransform({src, src}, {"sum"}, ds, std::make_unique<ResetCountingSumMimoTransform>(mimo_resets));
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  for (int tick = 0; tick < 5; ++tick) {
+    notify(derived, {src});
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+  }
+  ASSERT_TRUE(siso_resets.empty());
+  ASSERT_EQ(mimo_resets, 0);
+
+  appendRow(engine, src, 2'500'000'000LL, 100.0);  // behind both watermarks
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  EXPECT_EQ(siso_resets.size(), 1u);
+  EXPECT_EQ(mimo_resets, 1);
+  for (const PJ::NodeId node : {siso, mimo}) {
+    const auto rows = collectRows(engine, derived.outputTopics(node)[0]);
+    ASSERT_EQ(rows.size(), 6u) << "node " << node;
+    EXPECT_EQ(rows[3].first, 2'500'000'000LL) << "node " << node;
+  }
+}
+
+// A reloaded input is emptied and written again. Chunk ids come from one process-wide
+// counter, so the refill sits above the node's watermark and cannot be mistaken for
+// data it consumed.
+TEST(IncrementalEngineTest, ClearedAndRefilledInputIsRecomputed) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
+  const PJ::NodeId siso = *derived.addSisoTransform(src, "id", ds, std::make_unique<IdentityTransform>());
+  const PJ::NodeId mimo = *derived.addMimoTransform({src, src}, {"sum"}, ds, std::make_unique<SumMimoTransform>());
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  for (int tick = 0; tick < 3; ++tick) {
+    notify(derived, {src});
+    ASSERT_TRUE(derived.scheduleAll().has_value());
+  }
+
+  engine.clearDatasetChunks(ds);
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());  // nothing to read: the outputs stay as they were
+  appendLinearRows(engine, src, 3.0, 3, 0);
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  EXPECT_EQ(collectValues(engine, derived.outputTopics(siso)[0]), (std::vector<double>{0.0, 3.0, 6.0}));
+  EXPECT_EQ(collectValues(engine, derived.outputTopics(mimo)[0]), (std::vector<double>{0.0, 6.0, 12.0}));
+}
+
+// A chunk is sealed when it fills but reaches its topic only when its writer flushes, so
+// a chunk of one input can be committed after a newer-numbered chunk of another input.
+// The join must still see it.
+TEST(IncrementalEngineTest, MimoNodeSeesAChunkCommittedAfterAnotherInputsNewerChunk) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  DataWriter writer_first = engine.createWriter();
+  DataWriter writer_second = engine.createWriter();
+  const auto first = *writer_first.registerScalarSeries(ds, "first", PJ::NumericType::kFloat64);
+  const auto second = *writer_second.registerScalarSeries(ds, "second", PJ::NumericType::kFloat64);
+  const PJ::NodeId node =
+      *derived.addMimoTransform({first.topic_id, second.topic_id}, {"sum"}, ds, std::make_unique<SumMimoTransform>());
+  for (int row = 0; row < 5; ++row) {
+    writer_first.appendScalar(first, row * kOneSecond, 1.0);
+    writer_second.appendScalar(second, row * kOneSecond, 2.0);
+  }
+  auto first_chunks = writer_first.flushAll();  // sealed first, so numbered lower, but not committed yet
+  engine.commitChunks(writer_second.flushAll());
+  notify(derived, {second.topic_id});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  ASSERT_TRUE(collectRows(engine, derived.outputTopics(node)[0]).empty());
+
+  engine.commitChunks(std::move(first_chunks));
+  notify(derived, {first.topic_id});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  EXPECT_EQ(collectValues(engine, derived.outputTopics(node)[0]), (std::vector<double>(5, 3.0)));
+}
+
+// A failed node keeps answering with its error on an idle pass, as it always did.
+TEST(IncrementalEngineTest, StickyFailedNodeStillReportsItsErrorOnAnIdlePass) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  const PJ::DatasetId ds = makeDataset(engine);
+  const PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
+  const PJ::NodeId siso = *derived.addSisoTransform(src, "fails", ds, std::make_unique<FailAfterNTransform>(2));
+  notify(derived, {src});
+  ASSERT_FALSE(derived.scheduleAll().has_value());
+  ASSERT_EQ(derived.nodeError(siso), "FailAfterNTransform: boom");
+
+  notify(derived, {src});
+  EXPECT_FALSE(derived.scheduleAll().has_value());
+  EXPECT_EQ(derived.nodeError(siso), "FailAfterNTransform: boom");
 }
 
 }  // namespace

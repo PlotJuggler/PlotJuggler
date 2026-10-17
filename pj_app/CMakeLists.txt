@@ -406,6 +406,12 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/streaming_pause_target_test.cpp)
 
+    # One streaming poll tick through the extracted ingestTickForTests seam: eager
+    # processors advance over every topic of the dataset and the ingest
+    # announcement names them all.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/streaming_ingest_tick_test.cpp)
+
     # Curve-list drag policy: an object topic no view can display (CameraInfo,
     # ...) must be drag-inert with a "why" tooltip; displayable ones keep
     # dragging.

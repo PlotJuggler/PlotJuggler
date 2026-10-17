@@ -188,6 +188,7 @@ class DataEngine {
       std::deque<TopicChunk> chunks;
       std::vector<ColumnDescriptor> column_descriptors;
       PJ::Timestamp retention_floor = kNoRetentionFloor;  // NOT 0 — see chunk.hpp
+      PJ::ChunkId evicted_through_chunk_id = 0;
       uint32_t max_observed_array_length = 0;
       uint32_t truncated_sample_count = 0;
       std::unordered_map<std::string, uint32_t> array_expansion_counts;
@@ -225,6 +226,12 @@ class DataEngine {
   /// `std::move` (column buffers/value arrays are pointer moves). Schema
   /// compatibility is the caller's responsibility — typically dst is kept in
   /// lockstep with the source via parallel registration at startup.
+  ///
+  /// A source that was retention-trimmed hands its trim over: each dst topic's
+  /// retention floor rises to the source's, and its evicted-through chunk id
+  /// (TopicStorage::evictedThroughChunkId) covers the source's, so rows trimmed
+  /// before the flush stay hidden and an incremental consumer that never saw them
+  /// records the gap. The source topics are left with no floor.
   PJ::Status flushTo(DataEngine& dst);
 
   /// In-place REPLACE of dataset `primary_id`'s data with the data ingested into
@@ -326,10 +333,10 @@ class DataEngine {
   }
 
  private:
-  // Move src's sealed chunks into dst, re-stamping each chunk's topic_id to
-  // dst's id. Shared by flushTo (append between mirrored topics) and
-  // replaceDatasetFrom (after dst is cleared). Needs friend access to
-  // TopicStorage::sealed_chunks_.
+  // Move src's sealed chunks, retention floor and evicted-through id into dst,
+  // re-stamping each chunk's topic_id to dst's id. Shared by flushTo (append
+  // between mirrored topics) and replaceDatasetFrom (after dst is cleared). Needs
+  // friend access to TopicStorage's private state.
   static void adoptChunksFrom(TopicStorage& dst, TopicStorage& src);
 
   // Lock-assuming variants: the caller already holds impl_->mutex_ (unique for

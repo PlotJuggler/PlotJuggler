@@ -419,8 +419,12 @@ class DataProcessorService {
   [[nodiscard]] std::vector<std::string> transformIdsForPlugin(std::string_view plugin_id) const;
 
   /// A transform's recipe as
-  /// `{"inputs":[…],"outputs":[…],"params":{…},"backend":…,"history_exempt":…}`
-  /// for the ABI `config` slot (re-edit/probe). `nullopt` if the key is unknown.
+  /// `{"inputs":[…],"outputs":[…],"params":{…},"backend":…,"history_exempt":…,`
+  /// `"gaps":[{"from_ns":…,"to_ns":…}]}` for the ABI `config` slot (re-edit/probe).
+  /// `gaps` are the retention gaps `IncrementalEngine::gaps` recorded for the
+  /// node (oldest first, at most 16): ranges of input evicted before it consumed
+  /// it (`from_ns` is null for a node that had fed nothing yet).
+  /// `nullopt` if the key is unknown.
   [[nodiscard]] std::optional<std::string> transformRecipeJson(std::string_view namespaced_key) const;
 
   /// Snapshot of every live transform recipe (unspecified order) — for layout save.

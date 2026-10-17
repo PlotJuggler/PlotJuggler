@@ -213,7 +213,8 @@ class IncrementalEngine {
   void onSourceCommitted(PJ::Span<const PJ::TopicId> changed_topics);
 
   // ---- Scheduling ----------------------------------------------------------
-  // Run all dirty nodes in topological order (incremental path).
+  // Run all dirty nodes in topological order (incremental path). A dirty node whose
+  // inputs hold no chunk beyond its watermark is skipped without reading them.
   // Use for file/batch playback and tests. Equivalent to passing every
   // registered node to scheduleActive().
   PJ::Status scheduleAll();
@@ -252,6 +253,25 @@ class IncrementalEngine {
   /// a recompute cascade is recorded on the failing node only. A sticky-failed op keeps
   /// reporting it until a successful replay (e.g. after its op is replaced).
   [[nodiscard]] std::string nodeError(PJ::NodeId node_id) const;
+
+  /// Input rows a node never consumed were evicted by retention (a straddling chunk's
+  /// sub-floor rows count): the node resets and replays only what is retained, from `to`
+  /// on. `from` is the node's feed watermark, the last input timestamp it processed
+  /// (Timestamp::min when it had fed nothing: unbounded below); `to` is the first
+  /// retained timestamp of the input it fell behind on (the retention floor when nothing
+  /// is retained). Eviction of rows the node already consumed is no gap, nor is an
+  /// input without retention (a file dataset). A time-sliced node stopped inside a chunk
+  /// has consumed that chunk's rows up to its resume row only. A node whose op failed
+  /// consumes nothing, but input arriving for it counts as consumed.
+  struct Gap {
+    PJ::Timestamp from = 0;
+    PJ::Timestamp to = 0;
+  };
+
+  /// The retention gaps recorded for `node_id`, oldest first, bounded to the most
+  /// recent 16 (a diagnostic trail, not an audit log). Empty for an unknown node or
+  /// one that never gapped. Like nodeError(), does not take lockEngine() itself.
+  [[nodiscard]] std::vector<Gap> gaps(PJ::NodeId node_id) const;
 
   // Full history recompute: clear output, reset transform, replay all input.
   PJ::Status recomputeBatch(PJ::NodeId node_id);
@@ -298,7 +318,8 @@ class IncrementalEngine {
   /// materializeStep(): a reset + full replay when its output or input needs one,
   /// else the incremental path, which stops at `deadline` (null: run to the end).
   /// A failed node counts as processed and is not deferred; a successful one marks
-  /// its downstream nodes dirty.
+  /// its downstream nodes dirty. A node with no input chunk beyond its watermark (and
+  /// nothing pending) returns at once, leaving its downstream alone.
   PJ::Status runNodeLocked(PJ::NodeId node_id, const std::chrono::steady_clock::time_point* deadline);
   /// Shared rollback contract for in-place node mutations: replay the mutated
   /// node's graph; on failure run `revert` and replay again, composing

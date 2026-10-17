@@ -118,6 +118,8 @@ service addresses that source by afterwards — and its `attach` reports `false`
 tap could be installed, which fails (and rolls back) the whole capture. Display names are display names: they
 may repeat, because every source writes its own file and `RecordingService` names those files.
 
+`StreamingSourceManager::onIngestTick` is the GUI half of one 50 ms poll cycle (`ingestTickForTests` drives it): eager processors advance over every topic of the dataset (skipped while paused), then retention trims, then the marker recompute and the ingest announcement run, also over every topic. See `docs/derived_objects/ARCHITECTURE.md` §16.
+
 One Record press records every eligible source into one batch folder, one file each, so a stream that ends
 mid-capture must NOT stop the capture: the `streamStopped` handler forwards
 `RecordingService::onSourceEnded(dataset_id, reason)`, which finalizes that one file and leaves the rest

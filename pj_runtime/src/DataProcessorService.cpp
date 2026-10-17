@@ -10,6 +10,7 @@
 #include <QtDebug>
 #include <algorithm>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -1595,6 +1596,14 @@ std::optional<std::string> DataProcessorService::transformRecipeJson(std::string
   // params is structured; embed it as an object (fall back to {} on malformed input).
   nlohmann::json params = nlohmann::json::parse(recipe.params_json, nullptr, /*allow_exceptions=*/false);
   doc["params"] = params.is_discarded() ? nlohmann::json::object() : params;
+  // Input the node never consumed was evicted before it ran; always empty over a
+  // file dataset. A node that had fed nothing has no start to report: null.
+  nlohmann::json gaps = nlohmann::json::array();
+  for (const IncrementalEngine::Gap& gap : derived_->gaps(recipe.node_id)) {
+    const bool fed_nothing = gap.from == std::numeric_limits<Timestamp>::min();
+    gaps.push_back({{"from_ns", fed_nothing ? nlohmann::json(nullptr) : nlohmann::json(gap.from)}, {"to_ns", gap.to}});
+  }
+  doc["gaps"] = std::move(gaps);
   return doc.dump();
 }
 

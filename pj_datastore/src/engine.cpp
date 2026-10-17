@@ -423,6 +423,7 @@ DataEngine::DatasetChunkSnapshot DataEngine::detachDatasetChunks(DatasetId datas
     topic_snapshot.chunks = std::move(storage->sealed_chunks_);
     topic_snapshot.column_descriptors = storage->column_descriptors_;
     topic_snapshot.retention_floor = storage->retention_floor_;
+    topic_snapshot.evicted_through_chunk_id = storage->evicted_through_chunk_id_;
     topic_snapshot.max_observed_array_length = storage->max_observed_array_length_;
     topic_snapshot.truncated_sample_count = storage->truncated_sample_count_;
     topic_snapshot.array_expansion_counts = storage->array_expansion_counts_;
@@ -465,6 +466,7 @@ void DataEngine::reattachDatasetChunks(DatasetId dataset_id, DatasetChunkSnapsho
     storage->invalidateChunkAggregate();
     storage->column_descriptors_ = std::move(topic_snapshot.column_descriptors);
     storage->retention_floor_ = topic_snapshot.retention_floor;
+    storage->evicted_through_chunk_id_ = topic_snapshot.evicted_through_chunk_id;
     storage->max_observed_array_length_ = topic_snapshot.max_observed_array_length;
     storage->truncated_sample_count_ = topic_snapshot.truncated_sample_count;
     storage->array_expansion_counts_ = std::move(topic_snapshot.array_expansion_counts);
@@ -511,10 +513,9 @@ Status DataEngine::flushTo(DataEngine& dst) {
           "flushTo: destination has no topic '" + src_storage.descriptor().name + "' for dataset " +
           std::to_string(src_storage.descriptor().dataset_id));
     }
-    // The source is a staging engine that is never retention-evicted, so its
-    // timeMin() is the physical minimum (no retention-floor clamp in play). The
-    // flushTo contract assumes the source carries no floor; if it ever did, the
-    // clamped timeMin() could let physically-older source rows past this check.
+    // The source's timeMin() is its first VISIBLE row: a paused stream trims its
+    // staging engine, and rows under that floor are not flushed into view (the
+    // floor travels with the chunks, see adoptChunksFrom).
     if (!dst_storage->empty() && src_storage.timeMin() < dst_storage->timeMax()) {
       return PJ::unexpected("flushTo: monotonicity violation for topic '" + src_storage.descriptor().name + "'");
     }
@@ -546,6 +547,14 @@ void DataEngine::adoptChunksFrom(TopicStorage& dst, TopicStorage& src) {
     dst.sealed_chunks_.push_back(std::move(chunk));
   }
   dst.invalidateChunkAggregate();
+  // What src's retention hid or dropped stays hidden and dropped: its floor keeps a
+  // straddling chunk's sub-floor rows invisible, and its evicted-through id lets a
+  // consumer that never saw the dropped rows notice. src is left as an empty,
+  // never-trimmed storage.
+  dst.retention_floor_ = std::max(dst.retention_floor_, src.retention_floor_);
+  dst.evicted_through_chunk_id_ = std::max(dst.evicted_through_chunk_id_, src.evicted_through_chunk_id_);
+  src.retention_floor_ = kNoRetentionFloor;
+  src.evicted_through_chunk_id_ = 0;
   // Both sides changed content outside appendSealedChunk's in-order test (the
   // flushTo boundary even permits an equal timestamp), so incremental sample
   // caches on either storage must rebuild.

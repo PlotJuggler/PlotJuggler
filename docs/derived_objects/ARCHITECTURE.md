@@ -567,13 +567,64 @@ proposed (N1, N2).
 
 ## 16. Streaming
 
-**Status: Built.**
+**Status: Built (slice 4)**, except the on-demand live edge (slice 6a).
 
 - **Retention** is per source.
-- **On-demand at the live edge** requests the newest changed-topic timestamp once per
-  ingest tick (`onLiveIngest`).
-- **The incremental engine** skips to the live edge when it falls behind retention, and
-  records the gap.
+- **A poll tick runs the consumers in the streaming correctness order** (built, slice 4):
+  eager processors advance, then retention trims, then the ingest is announced.
+  - Processors advance over **every topic of the dataset**, not over the topics the write
+    hosts committed to this tick. A changed-topic feed was built and dropped (decided with
+    the slice 4 reviews): a queued tick that advanced only its own topics still trimmed every
+    topic, so rows a later poll committed to another topic could be evicted unconsumed;
+    rows written outside the poll's write hosts (a toolbox commits straight to the engine,
+    the terminal `flushAll()` runs after the last tick) never reached it; and what it saved
+    was small at the default buffer.
+  - **The idle-node gate** (built) is what keeps that advance cheap. An idle node used to
+    scan its inputs' retained chunks on every tick, so an advance with nothing new cost, at
+    500 topics, 20 filters and 3 two-input transforms (§19), 76 µs at a 60 s buffer and
+    2.7 ms at 10 min. `IncrementalEngine` now skips a node, in time linear in its inputs,
+    unless an input's newest chunk id (evicted chunks included) is above the node's chunk
+    watermark; a MIMO node compares each input with that input's own newest id, since its
+    node-wide watermark is a maximum and a chunk sealed earlier than another input's can be
+    committed after it. It is safe because input becomes new to a node only as a committed
+    chunk, and every such chunk (an append, a late or out-of-order write, a cleared and
+    refilled topic) is numbered from one global counter, above the watermark; retention
+    raises the evicted-through id, so a gap is still seen. A node with a failure to report,
+    a replay pending or a time-sliced replay unfinished is never skipped. An advance with
+    nothing new now costs about 1.5 µs per tick at every buffer length.
+  - The marker recompute receives every topic too: the per-topic stamp filter inside it
+    (newest timestamp, row count, retention floor, series generation) is what sees a
+    retention-only change on a quiet topic. That filter, not a changed set, is what ended
+    the poll passing every topic to the marker recompute (slice 3).
+  - The ingest announcement (`SessionManager::notifyIngest`) names every topic: the
+    processors write their outputs through the engine, so no write host reports them, and a
+    retention trim moves topics that received no row. It is never skipped when nothing
+    changed, because its `live` flag alone drives the object-only docks.
+  - While paused, writes land in the secondary engine and no processor advances. Resuming
+    catches up every topic over the whole paused tail before the re-trim.
+- **On-demand at the live edge** (slice 6a) needs to know which object topics changed per
+  ingest tick (`onLiveIngest`). Its object-topic tracker (`takeChangedObjectTopics`) is
+  carved with it, designed for that consumer.
+- **The incremental engine** records a gap when retention takes input rows it never
+  consumed. `TopicStorage::evictBefore` records the highest chunk id it dropped or cut rows
+  from (`evictedThroughChunkId`), and a node has a gap iff that id is above its chunk
+  watermark; timestamps are not compared, so an all-null column, an input without rows or
+  inputs that never share a timestamp are no gap. The node then resets and replays only what
+  is still retained, instead of folding rows that are gone, and keeps the last 16 gaps as
+  `[feed watermark, first retained timestamp)`. They show as `gaps: [{from_ns, to_ns}]` in
+  the transform's config (`from_ns` is null for a node that had fed nothing). Evicting only
+  chunks the node already consumed is no gap, and a node over a file dataset never gaps,
+  since nothing evicts a file topic.
+  - A time-sliced node stopped inside a chunk has consumed that chunk up to its resume row:
+    the chunk dropped, or the floor reaching the first unfed row, is a gap; the floor cutting
+    only the fed prefix is not.
+  - A node whose op failed consumes nothing, but input that arrives for it counts as
+    consumed, as for a failed single-input node, or retention would pass its frozen
+    watermark and read as a gap, replaying a node that fails again, on every tick.
+  - A pause longer than the window is the same case: `DataEngine::flushTo` hands the paused
+    tail's retention floor and evicted-through id to the primary, so a node that had not seen
+    the trimmed rows records one gap on resume, replays the retained window (an integral
+    restarts) and a straddling chunk's sub-floor rows stay hidden.
 - **Batch** (built, slice 3) recomputes behind the reload brake, off the GUI thread, only
   for a dataset something displays (a demand-capable stream counts while a widget shows
   one of its topics). Every completed run is published, so markers keep updating while
@@ -659,6 +710,7 @@ Linux, RelWithDebInfo.
 | Per-call setup: Luau | about 86 µs per call (fresh VM) |
 | Per-call setup: Python | 73 µs (4-line script) to 1.2 ms (43-line script), re-parsing every call |
 | TF snapshot copy | 0.26 ms (5 s window) to 248 ms and 691 MB (1 h file) |
+| Streaming poll, processors advancing over every topic with nothing new (slice 4): 500 topics, 20 single-input filters + 3 two-input transforms, one 5-row chunk per 50 ms tick on the 23 inputs; median of 400 calls, from a throwaway benchmark that is not kept | Buffer 5 s (100 chunks per input): 6.2 µs (max 11). 15 s: 12.5 µs. 60 s: 76 µs (max 89). 150 s: 215 µs. 5 min: 707 µs. 10 min (12,000 chunks): 2.7 ms (max 3.7). With the idle-node gate (§16): 1.5 µs at 100, 300, 1,200, 3,000 and 6,000 chunks (max 2.3 to 6.2) and 1.6 µs at 12,000 (max 7.2), flat |
 
 ## 20. Open items and spikes
 

@@ -45,11 +45,11 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 
 ## Summary
 
-343 scenario rows covering 794 TESTs; 45 [gaps](#gaps). Non-`keep` rows are where the carve must change or drop a test. The summary counts are the draft's, except CON and TFL, which slices 2 and 1b updated; slice 3 recorded its outcome in the notes of the batch rows (DEM, ASY, DS, OWN, BUD, CON, BAT, LAY, PERF) and changed one status, BAT-07 (decided 2026-10-13: a create waits a bounded time for its first run; narrowed the same day to layout loads), which the BAT and Total rows count. Slice M added PUB-04, BAT-11 and STO-04 (keep) and closed GAP-43. All twelve `unclear` rows have since been resolved: three are decided here, three are changed by P3 or N7, and the six once blocked on the SDK host contract follow its decisions of 2026-10-13.
+343 scenario rows covering 794 TESTs; 45 [gaps](#gaps). Non-`keep` rows are where the carve must change or drop a test. The table counts the rows of this file by status (a script, slice 4). The draft's twelve `unclear` rows have all been resolved, so that column is gone: three are `decided here`, three are changed by P3 or N7, and the six once blocked on the SDK host contract follow its decisions of 2026-10-13. Later slices changed the table so: slice 1b added TFL-14 (keep) and closed GAP-46; slice 3 recorded its outcome in the notes of the batch rows (DEM, ASY, DS, OWN, BUD, CON, BAT, LAY, PERF) and changed BAT-07 (decided 2026-10-13: a create waits a bounded time for its first run; narrowed the same day to layout loads); slice M added PUB-04, BAT-11 and STO-04 (keep) and closed GAP-43; slice 4 recorded its outcome in the notes of STR-04 to STR-07 and INC-01 and changed STR-04 to `removed` (the changed-topic feed it pinned is not carved).
 
-| Area | Rows | keep | keep* | changes | removed | unclear |
+| Area | Rows | keep | keep* | changes | removed | decided here |
 |---|---|---|---|---|---|---|
-| [REC](#rec) Recipe authoring & validation | 8 | 5 | 0 | 0 | 0 | 3 |
+| [REC](#rec) Recipe authoring & validation | 8 | 5 | 0 | 3 | 0 | 0 |
 | [CUR](#cur) Cursor evaluation & display | 13 | 8 | 4 | 1 | 0 | 0 |
 | [DEM](#dem) Demand gating | 6 | 5 | 0 | 0 | 0 | 1 |
 | [ASY](#asy) Async scheduling & cancellation (D30) | 13 | 10 | 1 | 2 | 0 | 0 |
@@ -57,14 +57,14 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 | [PUB](#pub) Topic lifecycle & publication | 4 | 3 | 1 | 0 | 0 | 0 |
 | [MAT](#mat) Materialization window, ceilings, bundles (N7) | 6 | 0 | 0 | 0 | 6 | 0 |
 | [PIN](#pin) Pinned findings (D26) | 9 | 3 | 3 | 3 | 0 | 0 |
-| [DAG](#dag) DAG chains | 11 | 8 | 1 | 1 | 0 | 1 |
+| [DAG](#dag) DAG chains | 11 | 8 | 1 | 2 | 0 | 0 |
 | [SER](#ser) Series mode (D10 / N8) | 17 | 5 | 0 | 12 | 0 | 0 |
-| [STR](#str) Streaming & live edge | 7 | 4 | 1 | 0 | 2 | 0 |
+| [STR](#str) Streaming & live edge | 7 | 3 | 1 | 0 | 3 | 0 |
 | [DS](#ds) Datasets (reload / merge / remove / epoch) | 3 | 3 | 0 | 0 | 0 | 0 |
-| [LAY](#lay) Layout restore & undo/history (N10) | 17 | 15 | 0 | 1 | 0 | 1 |
+| [LAY](#lay) Layout restore & undo/history (N10) | 17 | 15 | 0 | 2 | 0 | 0 |
 | [OWN](#own) Previews / ephemerals & ownership | 13 | 13 | 0 | 0 | 0 | 0 |
 | [EVAL](#eval) Explicit evaluations (instant / window) & reports | 5 | 5 | 0 | 0 | 0 | 0 |
-| [ABI](#abi) Plugin ABI (data processors v2, evaluations, catalog v2, plot/scene tabs, dialogs) | 42 | 36 | 1 | 0 | 1 | 4 |
+| [ABI](#abi) Plugin ABI (data processors v2, evaluations, catalog v2, plot/scene tabs, dialogs) | 42 | 37 | 1 | 3 | 1 | 0 |
 | [LUA](#lua) Scripting: Luau | 14 | 14 | 0 | 0 | 0 | 0 |
 | [PY](#py) Scripting: Python & sandbox (N1 / N6) | 7 | 5 | 2 | 0 | 0 | 0 |
 | [MED](#med) Media (image / depth / video) | 25 | 25 | 0 | 0 | 0 | 0 |
@@ -78,7 +78,7 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 | [UI](#ui) App UI (Custom Topics panel, embedded views, misc) | 15 | 14 | 0 | 0 | 0 | 1 |
 | [PERF](#perf) Performance benches | 4 | 2 | 0 | 2 | 0 | 0 |
 | [MECH](#mech) Mechanical renames / moves (slices 1, 1t) | 8 | 8 | 0 | 0 | 0 | 0 |
-| **Total** | **343** | **269** | **16** | **30** | **16** | **12** |
+| **Total** | **343** | **269** | **16** | **38** | **17** | **3** |
 
 <a id="rec"></a>
 ## REC: Recipe authoring & validation
@@ -246,10 +246,10 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 | STR-01 | Derived topic inherits first object input's retention; re-applied on demand | outputs copy cloud retention at upsert; later change inert until applyInputRetention | `on_demand_service_test.cpp`: OnDemandServiceTest.DerivedTopicInheritsInputRetention | **removed: N7** — inherited retention deleted; history bounded by bytes/cursor distance |  |
 | STR-02 | Live ingest evaluates once per new stamp; pinned untouched | new cloud -> 1 entry; same-stamp re-notify coalesces; new stamp -> 2; pinned requested_t unchanged | `on_demand_service_test.cpp`: OnDemandServiceTest.LiveIngestEvaluatesOncePerNewStamp | keep* | N7: counts -> history; D30: live edge never cancel-per-tick |
 | STR-03 | Retention follows first input through DAG and producer recreation | 3-level chain copies cloud retention; re-apply; recreated producer w/ alternate first -> alternate budget | `on_demand_service_test.cpp`: OnDemandServiceTest.RetentionFollowsFirstInputThroughDAGAndProducerRecreation | **removed: N7** — inherited retention deleted |  |
-| STR-04 | Streaming poll re-runs only over topics that changed since last take (scalar) | sorted unique changed set; second take empty; later write in next take | `data_source_runtime_host_changed_topics_test.cpp`: DataSourceRuntimeHostChangedTopicsTest.{ReportsOnlyTopicsWrittenSinceLastTake, SecondTakeWithNoWritesIsEmpty, WriteAfterTakeAppearsInNextTake} | keep | slice 4 "50 ms poll fix" |
-| STR-05 | Changed object topics tracked separately for onLiveIngest | only pushed object topics; drained; scalar and object trackers independent | `data_source_runtime_host_changed_topics_test.cpp`: DataSourceRuntimeHostChangedTopicsTest.TakeChangedObjectTopicsReportsOnlyPushedTopics | keep |  |
-| STR-06 | Transform recipe JSON reports retention gaps; output replays only retained data | gaps [] then [{9s,10s}]; 10 output values (no dup) | `data_processor_service_test.cpp`: DataProcessorServiceTest.RecipeJsonCarriesGaps | keep | slice 4 |
-| STR-07 | Source/parser object write hosts track changed topics for live ingest (drained) | 2 topics from 3 pushes; drained; parser host 1 topic | `plugin_data_host_object_test.cpp`: PluginDataHostObjectTest.{SourceTakeChangedTopicsTracksPushedTopicsAndDrains, ParserTakeChangedTopicsTracksPushedTopic} | keep |  |
+| STR-04 | Streaming poll re-runs only over topics that changed since last take (scalar) | sorted unique changed set; second take empty; later write in next take | `data_source_runtime_host_changed_topics_test.cpp`: DataSourceRuntimeHostChangedTopicsTest.{ReportsOnlyTopicsWrittenSinceLastTake, SecondTakeWithNoWritesIsEmpty, WriteAfterTakeAppearsInNextTake} | **removed: slice 4 measurement** | Not carved: a per-tick changed-topic feed was built in slice 4 and dropped after review. A queued tick that advanced only its own topics still trimmed every topic, so rows a later poll committed elsewhere could be evicted unconsumed; toolbox writes and the terminal flush never reached it; and an advance over every topic with nothing new is cheap (about 1.5 µs per tick at any buffer, because the engine skips an idle node from its inputs' newest chunk ids; ARCHITECTURE §16, §19). The poll defect it targeted is fixed by slice 3's marker stamp filter. The tick now advances every topic again: `streaming_ingest_tick_test.cpp`: StreamingIngestTickTest.{ATickAdvancesProcessorsOverEveryTopicOfTheDataset, ATickWithNothingNewLeavesTheOutputsAlone, TheIngestAnnouncementNamesEveryTopicOfTheDataset, APausedTickAdvancesNoProcessor} |
+| STR-05 | Changed object topics tracked separately for onLiveIngest | only pushed object topics; drained; scalar and object trackers independent | `data_source_runtime_host_changed_topics_test.cpp`: DataSourceRuntimeHostChangedTopicsTest.TakeChangedObjectTopicsReportsOnlyPushedTopics | keep | deferred: slice 6a. Object-topic tracking (`takeChangedObjectTopics`) has no consumer before on-demand live ingest |
+| STR-06 | Transform recipe JSON reports retention gaps; output replays only retained data | gaps [] then [{9s,20s}]; 10 output values (no dup) | `data_processor_service_test.cpp`: DataProcessorServiceTest.RecipeJsonCarriesGaps | keep | slice 4: ported; the test now evicts a chunk the transform never saw (see INC-01). Also DataProcessorServiceTest.RecipeJsonReportsAGapFromNothingFedAsNull (`from_ns` is null for a node that had fed nothing). The engine side is INC-01 |
+| STR-07 | Source/parser object write hosts track changed topics for live ingest (drained) | 2 topics from 3 pushes; drained; parser host 1 topic | `plugin_data_host_object_test.cpp`: PluginDataHostObjectTest.{SourceTakeChangedTopicsTracksPushedTopicsAndDrains, ParserTakeChangedTopicsTracksPushedTopic} | keep | deferred: slice 6a, with STR-05. The scalar feed they were modeled on is not carved (STR-04) |
 
 <a id="ds"></a>
 ## DS: Datasets (reload / merge / remove / epoch)
@@ -540,7 +540,7 @@ Decisions referenced: **D30** (newest completed result wins, one running and one
 
 | ID | Scenario | Expected behaviour (prototype) | Test(s) | Status vs decisions | Notes |
 |---|---|---|---|---|---|
-| INC-01 | Incremental node falling behind retention skips to live, records the gap; file datasets never gap; gap replay never resurrects rows below the floor (SISO + MIMO) | gap {9s,10s}, output = chunk B only, no extra gap; file: 60 rows, no gaps; floor 15s -> gap {9,15}, 5 rows >=15s | `incremental_engine_test.cpp`: IncrementalEngineTest.{FallingBehindRetentionSkipsToLiveAndRecordsTheGap, FileDatasetNeverGaps, GapReplayDoesNotResurrectRowsBelowTheFloor} | keep | slice 4 |
+| INC-01 | Incremental node falling behind retention skips to live, records the gap; file datasets never gap; gap replay never resurrects rows below the floor (SISO + MIMO) | gap {9s,20s}, output = last chunk only, no extra gap; file: 60 rows, no gaps; floor 15s -> gap {9,15}, 5 rows >=15s | `incremental_engine_test.cpp`: IncrementalEngineTest.{FallingBehindRetentionSkipsToLiveAndRecordsTheGap, FileDatasetNeverGaps, GapReplayDoesNotResurrectRowsBelowTheFloor} | keep | slice 4: ported. The gap is detected from the chunk ids retention evicted, not from timestamps, so the first test now evicts a chunk the node never consumed; evicting only consumed chunks is no gap. Also `IncrementalEngineTest.{EvictingOnlyChunksTheNodeConsumedIsNoGap, InputEvictedEntirelyBeforeTheNodeRanRecordsOneGap, MimoNodeWithAnInputThatNeverReceivesRowsNeverGaps, MimoNodeOverSparseInputsNeverGapsAndJoinsOnce, SisoNodeOverAnAllNullColumnNeverGaps}` `TopicStorageTest.EvictedThroughChunkIdCoversDroppedAndStraddlingChunks`; the slice 4 review fixes: `IncrementalEngineTest.{StickyFailedMimoNodeNeverGapsAsRetentionPassesItsWatermark, ResumeAfterAPauseLongerThanTheWindowRecordsOneGapAndReplaysTheRetainedRows, ResumeKeepsTheTailFloorSoSubFloorRowsStayHidden, SteadyStreamingThroughAConsumedStraddledFrontChunkNeverGaps, OnlyTheSixteenNewestGapsAreKept}` and `IncrementalEngineTimeSliceTest.{ResumeChunkDroppedBeforeItWasFinishedRecordsTheGapAndRestartsTheAccumulator, FloorCuttingTheUnfedRowsOfTheResumeChunkRecordsTheGap, FloorCuttingOnlyTheFedPrefixOfTheResumeChunkIsNoGap}` |
 
 <a id="sto"></a>
 ## STO: ObjectStore primitives
