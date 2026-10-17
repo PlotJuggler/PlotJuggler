@@ -55,6 +55,17 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   [[nodiscard]] QStringList unresolvedBlockingPendingRestores() const;
   virtual void clearPendingRestores();
   void clearBlockingPendingRestores();
+
+  /// Ends a restore: closes the dataset choice of a layout that mixed datasets, then makes
+  /// the last retryPendingRestores. A dock shows ONE dataset and the first saved element's
+  /// dataset wins, so until it resolves no other saved dataset binds (load order never
+  /// decides). If none was chosen by now, the dataset the dock shows wins, else the first
+  /// saved dataset that resolves; the pending elements of every other saved dataset are
+  /// dropped with a visible reason (topicRefused), without counting as a failed restore,
+  /// while the winner's own stay pending until their topics arrive. With nothing loaded
+  /// there is no winner and the first dataset to resolve afterwards wins. The shell calls it
+  /// after its whole load; DockWidget after a paste or family switch.
+  void finishRestore() override;
   /// Base<->family payload convention: attributes named `dataset_id` /
   /// `source_dataset_id` anywhere in a deferred payload are dataset
   /// references — discardPendingRestoresFor* honors exactly these.
@@ -248,6 +259,37 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   [[nodiscard]] std::optional<DatasetId> resolveObjectDataset(
       DatasetId saved_id, const QString& saved_source, const QString& saved_path, const QString& topic_name) const;
 
+  /// Notes the distinct datasets a saved scene state names, in document order, so
+  /// datasetForSavedElement can make the first one win. Family xmlLoadState overrides
+  /// call it once per load, right after clearing the previous pending queue. Only
+  /// <layer>/<config_topic> children that carry a dataset identity (a non-zero id, a
+  /// source or a path) and a topic name count.
+  void recordSavedDatasets(const QDomElement& state);
+
+  /// xmlLoadState of `element`, with the saved datasets recorded from `authored` instead:
+  /// the layout as the user's file wrote it, for a family that fills in the identities of
+  /// unqualified elements first (those name no dataset, so they must not join the order).
+  bool loadSavedState(const QDomElement& element, const QDomElement& authored);
+
+  /// True when a saved element names its dataset (by id, source or path).
+  [[nodiscard]] static bool hasDatasetIdentity(const QDomElement& element);
+
+  /// How a saved element binds to a live dataset during a restore.
+  struct SavedElementDataset {
+    /// The live dataset, or empty while the element must stay pending.
+    std::optional<DatasetId> dataset;
+    /// The element belongs to a dataset other than the restore's choice: it is consumed
+    /// (dropped, reported through topicRefused) instead of restored or failed.
+    bool refused = false;
+  };
+
+  /// resolveObjectDataset for a saved <layer>/<config_topic> restore. In a layout naming
+  /// several datasets, no element of a later dataset binds before the first saved dataset
+  /// has resolved; once it has, it is the dock's dataset and elements of any other are
+  /// refused. Runtime pending intents and layouts naming one dataset resolve as before.
+  /// The element's dataset_id must be well-formed (callers reject it before binding).
+  [[nodiscard]] SavedElementDataset datasetForSavedElement(const QDomElement& element);
+
   /// The dataset whose display-offset represents this dock's time domain when
   /// onTrackerTime() recovers the absolute tracker instant. The base scans render
   /// layers and returns the first non-zero dataset_id (else 0). Subclasses that own
@@ -297,8 +339,29 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
     QString topic_name;
   };
 
+  /// One dataset a saved scene state names.
+  struct SavedDataset {
+    DatasetId id = 0;
+    QString source;
+    QString path;
+    /// A topic the state names in this dataset; disambiguates a same-file remint when the
+    /// dataset is resolved without a specific element at hand. Not part of the identity.
+    QString topic_name;
+
+    /// Same dataset: id, source and path agree.
+    [[nodiscard]] bool operator==(const SavedDataset& other) const {
+      return id == other.id && source == other.source && path == other.path;
+    }
+    /// How the saved state called it, for messages: source, else path, else "#id".
+    [[nodiscard]] QString label() const;
+  };
+
+  /// What a rollback must hand back: the pending queue and the dataset choice still open
+  /// (empty once settled). Without the choice, re-loading the previous state would arm a
+  /// gate that no settle follows.
   struct PendingRestoreSnapshot {
     std::vector<PendingRestoreElement> elements;
+    std::vector<SavedDataset> saved_datasets;
     uint64_t restore_failure_count = 0;
     bool ever_had_content = false;
   };
@@ -333,6 +396,23 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// logs and emits topicRefused (coalesced per event-loop turn) and returns true.
   /// A zero on either side means "no dataset yet" and never refuses.
   bool refuseForeignDataset(DatasetId incoming_dataset, DatasetId bound_dataset);
+
+  /// Logs and emits topicRefused (coalesced per event-loop turn) for a topic of the
+  /// dataset labelled `incoming_label` that the dock showing `bound_label` cannot take.
+  void reportForeignDataset(const QString& bound_label, const QString& incoming_label);
+
+  /// Source label of a live dataset, "#id" when unnamed.
+  [[nodiscard]] QString datasetLabel(DatasetId dataset_id) const;
+
+  /// The dataset a saved element names, or nullopt when its dataset_id is malformed. An
+  /// absent dataset_id reads as 0 ("by source/path only").
+  [[nodiscard]] static std::optional<SavedDataset> savedDatasetOf(const QDomElement& element);
+
+  /// Closes the restore's dataset choice (see finishRestore): the dataset the dock shows
+  /// wins, else the first saved dataset that is loaded. Drops the pending elements of the
+  /// losing saved datasets; the winner's own stay pending, whether or not their topic has
+  /// arrived.
+  void settleRestoreDataset();
 
   /// Removes matching queue entries and emits pendingRestoresChanged once.
   void erasePendingRestoresIf(const std::function<bool(const PendingRestoreElement&)>& predicate);
@@ -374,6 +454,9 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   LayerFactory factory_;
   SessionManager* session_ = nullptr;
   ObjectDatasetResolver object_dataset_resolver_;
+  // Datasets named by the layout being restored, in document order (recordSavedDatasets);
+  // the first wins. Dropped by settleRestoreDataset.
+  std::vector<SavedDataset> saved_datasets_;
   std::optional<PJ::Timepoint> last_tracker_;
   QWidget* scene_view_ = nullptr;
   std::unordered_map<int64_t, bool> layer_visibility_cache_;

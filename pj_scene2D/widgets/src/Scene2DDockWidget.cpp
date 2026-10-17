@@ -392,7 +392,7 @@ bool Scene2DDockWidget::xmlLoadState(const QDomElement& element) {
 
   auto restore_guard = beginWorkspaceRestore();
   primeRestoreLayerKinds(restore_element);
-  const bool loaded = SceneDockWidget::xmlLoadState(restore_element);
+  const bool loaded = loadSavedState(restore_element, element);
   restore_image_layer_kinds_.clear();
   if (!loaded) {
     if (!rollback()) {

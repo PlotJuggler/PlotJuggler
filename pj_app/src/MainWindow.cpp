@@ -6104,10 +6104,10 @@ void MainWindow::schedulePendingDisplayBindingRebuild() {
 }
 
 MainWindow::SceneRestoreVerdict MainWindow::settleSceneRestores() {
-  // One final retry so a deferred element whose identity became resolvable is
-  // validated now, then fold every dock's verdict. Aggregation lives here —
-  // a dock cannot see its siblings.
-  retryPendingSceneRestores({});
+  // Each dock closes its dataset choice and makes one final retry, so a deferred element
+  // whose identity became resolvable is validated now; then fold every dock's verdict.
+  // Aggregation lives here — a dock cannot see its siblings.
+  forEachSceneDock([](SceneDockWidget* scene_dock) { scene_dock->finishRestore(); });
   SceneRestoreVerdict verdict;
   forEachSceneDock([&verdict](SceneDockWidget* scene_dock) {
     verdict.failed = verdict.failed || scene_dock->workspaceRestoreFailed();

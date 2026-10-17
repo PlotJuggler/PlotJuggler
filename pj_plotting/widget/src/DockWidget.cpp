@@ -753,6 +753,7 @@ void DockWidget::pasteObjectWidgetFromClipboard() {
       object_widget_awaiting_first_topic_ &&
       (!element.firstChildElement(u"layer"_s).isNull() || !element.firstChildElement(u"config_topic"_s).isNull());
   if (object_widget_->xmlLoadState(element)) {
+    object_widget_->finishRestore();
     if (seeds_empty_click_created_widget) {
       object_widget_awaiting_first_topic_ = false;
       emit firstObjectTopicAdded();
@@ -801,6 +802,7 @@ void DockWidget::pastePlaceholderWidgetFromClipboard() {
     setPlaceholderWidget();
     return;
   }
+  object_widget_->finishRestore();
   object_widget_awaiting_first_topic_ = !seeded;
   if (seeded) {
     emit firstObjectTopicAdded();

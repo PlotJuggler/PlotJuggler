@@ -827,8 +827,9 @@ class MainWindow : public QMainWindow {
   void rebuildPendingDisplayBindings(const QDomDocument& doc);
   /// Coalesces plot-owned intent changes into one binder rebuild on the event loop.
   void schedulePendingDisplayBindingRebuild();
-  /// One post-restore settlement of every scene dock: final pending retry,
-  /// then the folded verdict (permanent failure / unresolved BLOCKING topics).
+  /// One post-restore settlement of every scene dock: dataset choice, final
+  /// pending retry, then the folded verdict (permanent failure / unresolved
+  /// BLOCKING topics).
   struct SceneRestoreVerdict {
     bool failed = false;
     QStringList blocking_topics;

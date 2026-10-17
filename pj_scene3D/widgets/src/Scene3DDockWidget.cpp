@@ -1602,16 +1602,14 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreLayerElement(
 
 Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::resolveSavedTopicRef(
     const QDomElement& el, QString* deferred_topic_name, sdk::BuiltinObjectType expected_type,
-    std::optional<ObjectTopicId>& out_topic) const {
+    std::optional<ObjectTopicId>& out_topic) {
   out_topic.reset();
   const QString topic_name = el.attribute(u"topic_name"_s);
   if (topic_name.isEmpty()) {
     return ElementRestoreResult::kInvalid;
   }
   std::optional<ObjectTopicId> topic_id_opt;
-  const bool qualified =
-      el.hasAttribute(u"dataset_id"_s) || el.hasAttribute(u"dataset_source"_s) || el.hasAttribute(u"dataset_path"_s);
-  if (!qualified) {
+  if (!hasDatasetIdentity(el)) {
     const auto generic =
         pj::scene3d::resolveUniqueObjectTopic(sessionManager()->objectStore(), topic_name.toStdString(), expected_type);
     if (generic.ambiguous) {
@@ -1625,11 +1623,12 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::resolveSavedTopicRef(
         (!dataset_ok || dataset_value == 0 || dataset_value > std::numeric_limits<uint32_t>::max())) {
       return ElementRestoreResult::kInvalid;
     }
-    const DatasetId saved_id = el.hasAttribute(u"dataset_id"_s) ? static_cast<DatasetId>(dataset_value) : 0;
-    const auto dataset_id_opt =
-        resolveObjectDataset(saved_id, el.attribute(u"dataset_source"_s), el.attribute(u"dataset_path"_s), topic_name);
-    if (dataset_id_opt.has_value()) {
-      topic_id_opt = sessionManager()->objectStore().findTopic(*dataset_id_opt, topic_name.toStdString());
+    const SavedElementDataset binding = datasetForSavedElement(el);
+    if (binding.refused) {
+      return ElementRestoreResult::kConsumed;
+    }
+    if (binding.dataset.has_value()) {
+      topic_id_opt = sessionManager()->objectStore().findTopic(*binding.dataset, topic_name.toStdString());
     }
   }
   if (!topic_id_opt.has_value()) {
@@ -1709,51 +1708,20 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreConfigTopicEle
   if (sessionManager() == nullptr) {
     return ElementRestoreResult::kDeferred;
   }
-  const QString topic_name = config_el.attribute(u"topic_name"_s);
-  if (topic_name.isEmpty()) {
-    return ElementRestoreResult::kInvalid;
-  }
-  const QString object_type_str = config_el.attribute(u"object_type"_s);
-  const auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
+  const auto object_type_opt = sdk::parseBuiltinObjectType(config_el.attribute(u"object_type"_s).toStdString());
   if (!object_type_opt.has_value() || *object_type_opt != sdk::BuiltinObjectType::kFrameTransforms) {
     return ElementRestoreResult::kInvalid;
   }
   std::optional<ObjectTopicId> topic_id_opt;
-  const bool qualified = config_el.hasAttribute(u"dataset_id"_s) || config_el.hasAttribute(u"dataset_source"_s) ||
-                         config_el.hasAttribute(u"dataset_path"_s);
-  if (!qualified) {
-    const auto generic = pj::scene3d::resolveUniqueObjectTopic(
-        sessionManager()->objectStore(), topic_name.toStdString(), *object_type_opt);
-    if (generic.ambiguous) {
-      return ElementRestoreResult::kInvalid;
-    }
-    topic_id_opt = generic.topic_id;
-  } else {
-    bool dataset_ok = false;
-    const qulonglong dataset_value = config_el.attribute(u"dataset_id"_s).toULongLong(&dataset_ok);
-    if (config_el.hasAttribute(u"dataset_id"_s) &&
-        (!dataset_ok || dataset_value == 0 || dataset_value > std::numeric_limits<uint32_t>::max())) {
-      return ElementRestoreResult::kInvalid;
-    }
-    const DatasetId saved_id = config_el.hasAttribute(u"dataset_id"_s) ? static_cast<DatasetId>(dataset_value) : 0;
-    const auto dataset_id_opt = resolveObjectDataset(
-        saved_id, config_el.attribute(u"dataset_source"_s), config_el.attribute(u"dataset_path"_s), topic_name);
-    if (dataset_id_opt.has_value()) {
-      topic_id_opt = sessionManager()->objectStore().findTopic(*dataset_id_opt, topic_name.toStdString());
-    }
-  }
-  if (!topic_id_opt.has_value()) {
-    return ElementRestoreResult::kDeferred;
-  }
-  const sdk::BuiltinObjectType live_type =
-      pj::scene3d::builtinObjectTypeFor(sessionManager()->objectStore().descriptor(*topic_id_opt));
-  if (live_type != sdk::BuiltinObjectType::kNone && live_type != *object_type_opt) {
-    return ElementRestoreResult::kInvalid;
+  const ElementRestoreResult resolved = resolveSavedTopicRef(config_el, nullptr, *object_type_opt, topic_id_opt);
+  if (resolved != ElementRestoreResult::kRestored) {
+    return resolved;
   }
   if (refuseForeignTopic(*topic_id_opt)) {
     return ElementRestoreResult::kConsumed;
   }
-  if (!addTopic(*topic_id_opt, *object_type_opt, topic_name) || !config_topics_.contains(topic_id_opt->id)) {
+  if (!addTopic(*topic_id_opt, *object_type_opt, config_el.attribute(u"topic_name"_s)) ||
+      !config_topics_.contains(topic_id_opt->id)) {
     return ElementRestoreResult::kInvalid;
   }
   return ElementRestoreResult::kRestored;
@@ -1938,6 +1906,7 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
   local_layer_ids_.clear();
   restored_layer_orders_.clear();
   resetDatasetBindingForRestore();
+  recordSavedDatasets(element);
   int unresolved_topics = 0;
   bool invalid_state = false;
   if (sessionManager() != nullptr) {

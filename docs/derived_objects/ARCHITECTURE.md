@@ -664,6 +664,26 @@ proposed (N1, N2).
   "behind 0.4 s"), and in the scene dock. It is what makes showing an older result
   acceptable. It also tells the user that the function needs attention. "Why is it empty"
   warnings come from the node's state.
+- **A dock shows one dataset.** A topic of another dataset is refused with a visible
+  reason. A saved layout that mixed datasets restores the same way whatever the load order:
+  the dataset of the first saved element wins. No element of a later dataset binds before
+  it resolves, and the restore's last step (`IDataWidget::finishRestore`: the shell after a
+  layout load, the dock after a paste) picks the winner when the first never arrived: the
+  dataset the dock already shows, else the first saved dataset that is loaded. The winner's
+  own pending elements stay pending (their topics may still arrive); the pending elements
+  of the other saved datasets are dropped with the reason. With nothing loaded at settle,
+  the first dataset to resolve afterwards wins. Elements that name no dataset (a Scene2D
+  generic layer, whose live dataset the dock fills in before the shared restore) join no
+  order, and a rejected paste hands the choice back with the pending queue. Known limits:
+  - Two loaded datasets with the same source and path (one file loaded twice, or a single
+    dataset reopened as a fan-out) are told apart only by a topic-name tiebreak, and the
+    saved ids no longer match. A saved dataset whose recorded topic is in both, or in
+    neither, resolves ambiguously, so the load order can still choose.
+  - A dock state that names one live dataset with two different attribute sets (for
+    example a stale pending element without `dataset_path` next to a live layer with it)
+    is read as two saved datasets, that is, as mixed.
+  - The payload sources of robot-model and trail layers (the robot-description selector,
+    a pose trail's topic) stay outside the gate (GAP-47).
 - **The Scene2D pairing check** (annotation `image_topic` plus cadence) applies to derived
   annotations too.
 - **Scene tabs** are kinds of `pj.plot_tabs.v1` tabs. **Dialog-embedded scene views** give a

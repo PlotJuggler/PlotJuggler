@@ -20,6 +20,7 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QCoreApplication>
 #include <QDomDocument>
 #include <QDomElement>
 #include <QFile>
@@ -28,8 +29,10 @@
 #include <QString>
 #include <QTemporaryDir>
 #include <QWheelEvent>
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -886,6 +889,135 @@ TEST(Scene3DDockPersistence, RestoreRefusesTheForeignDatasetConfigTopicWithAVisi
     EXPECT_EQ(config.attribute(u"dataset_id"_s).toUInt(), a.dataset_id);
   }
   EXPECT_EQ(config_count, 1);
+}
+
+namespace {
+
+// A 3D dock holding a saved layout that mixes datasets: dataset A's TF config topic comes
+// first, then dataset B's depth layer. A dataset "arrives" only once the test loads it
+// (the injected resolver stands in for the shell's progressive load).
+class MixedTfDepthLayout {
+ public:
+  MixedTfDepthLayout() {
+    dataset_a_ = registerTfDataset(session_, "a.dat", "/tf_a");
+    dataset_b_ = registerDepthDataset(session_, "b.dat", "/depth_b", /*push_sample=*/true);
+
+    state_ = document_.createElement(u"scene3d"_s);
+    state_.setAttribute(u"version"_s, u"1"_s);
+    QDomElement config = document_.createElement(u"config_topic"_s);
+    config.setAttribute(u"dataset_id"_s, QString::number(dataset_a_.dataset_id));
+    config.setAttribute(u"dataset_source"_s, u"a.dat"_s);
+    config.setAttribute(u"topic_name"_s, u"/tf_a"_s);
+    config.setAttribute(u"object_type"_s, u"kFrameTransforms"_s);
+    state_.appendChild(config);
+    QDomElement layer = document_.createElement(u"layer"_s);
+    layer.setAttribute(u"object_type"_s, u"kImage"_s);
+    layer.setAttribute(u"display_name"_s, u"/depth_b"_s);
+    layer.setAttribute(u"dataset_id"_s, QString::number(dataset_b_.dataset_id));
+    layer.setAttribute(u"dataset_source"_s, u"b.dat"_s);
+    layer.setAttribute(u"topic_name"_s, u"/depth_b"_s);
+    state_.appendChild(layer);
+    document_.appendChild(state_);
+
+    dock_.setSessionManager(&session_);
+    dock_.setTransformService(&transform_service_);
+    dock_.setObjectDatasetResolver(
+        [this](PJ::DatasetId saved_id, const QString&, const QString&, const QString&) -> std::optional<PJ::DatasetId> {
+          if (std::find(loaded_.begin(), loaded_.end(), saved_id) == loaded_.end()) {
+            return std::nullopt;
+          }
+          return saved_id;
+        });
+    QObject::connect(
+        &dock_, &PJ::SceneDockWidget::topicRefused, [this](const QString& reason) { reasons_.push_back(reason); });
+  }
+
+  void load(const DatasetTopic& dataset) {
+    loaded_.push_back(dataset.dataset_id);
+  }
+
+  [[nodiscard]] const QDomElement& state() const {
+    return state_;
+  }
+
+  PJ::Scene3DDockWidget& dock() {
+    return dock_;
+  }
+
+  [[nodiscard]] const QStringList& reasons() const {
+    return reasons_;
+  }
+
+  [[nodiscard]] const DatasetTopic& datasetA() const {
+    return dataset_a_;
+  }
+
+  [[nodiscard]] const DatasetTopic& datasetB() const {
+    return dataset_b_;
+  }
+
+ private:
+  PJ::SessionManager session_;
+  PJ::TransformService transform_service_{session_};
+  QDomDocument document_;
+  QDomElement state_;
+  DatasetTopic dataset_a_;
+  DatasetTopic dataset_b_;
+  PJ::Scene3DDockWidget dock_;
+  std::vector<PJ::DatasetId> loaded_;
+  QStringList reasons_;
+};
+
+}  // namespace
+
+// GAP-48: the first saved element decides the dock's dataset. Here it is dataset A's
+// TF config topic, listed before dataset B's depth layer; B is the only dataset loaded
+// when the layout is applied, yet A wins as soon as it arrives.
+TEST(Scene3DDockPersistence, MixedLayoutKeepsTheFirstSavedDatasetWhenItIsATfConfigTopic) {
+  MixedTfDepthLayout layout;
+  PJ::Scene3DDockWidget& dock = layout.dock();
+  layout.load(layout.datasetB());
+
+  ASSERT_TRUE(dock.xmlLoadState(layout.state()));
+  QCoreApplication::processEvents();
+  EXPECT_TRUE(dock.layers().empty()) << "B's layer must wait for the first saved dataset";
+
+  layout.load(layout.datasetA());
+  dock.retryPendingRestores({});
+  QCoreApplication::processEvents();
+  dock.finishRestore();
+  QCoreApplication::processEvents();
+
+  EXPECT_TRUE(dock.layers().empty()) << "B is refused once A is the dock's dataset";
+  EXPECT_EQ(dock.boundDatasetIdForTest(), layout.datasetA().dataset_id);
+  EXPECT_TRUE(dock.hasTransformBufferForTest());
+  EXPECT_FALSE(dock.workspaceRestoreFailed());
+  EXPECT_TRUE(dock.unresolvedBlockingPendingRestores().isEmpty());
+  ASSERT_EQ(layout.reasons().size(), 1) << "the dropped layer is reported, never silently lost";
+  EXPECT_TRUE(layout.reasons().front().contains(u"a.dat"_s)) << layout.reasons().front().toStdString();
+  EXPECT_TRUE(layout.reasons().front().contains(u"b.dat"_s)) << layout.reasons().front().toStdString();
+}
+
+// The first saved dataset (A, a TF config topic) never arrives: at settle the next saved
+// dataset that is loaded (B) wins and A's pending config topic is dropped with a reason.
+TEST(Scene3DDockPersistence, MixedLayoutFallsBackToTheNextLoadedSavedDatasetInA3DDock) {
+  MixedTfDepthLayout layout;
+  PJ::Scene3DDockWidget& dock = layout.dock();
+  layout.load(layout.datasetB());
+
+  ASSERT_TRUE(dock.xmlLoadState(layout.state()));
+  QCoreApplication::processEvents();
+  EXPECT_TRUE(dock.layers().empty());
+  dock.finishRestore();
+  QCoreApplication::processEvents();
+
+  EXPECT_EQ(dock.layers().size(), 1U);
+  EXPECT_EQ(dock.boundDatasetIdForTest(), layout.datasetB().dataset_id);
+  EXPECT_FALSE(dock.workspaceRestoreFailed());
+  EXPECT_TRUE(dock.unresolvedBlockingPendingRestores().isEmpty());
+  ASSERT_EQ(layout.reasons().size(), 1);
+  EXPECT_TRUE(layout.reasons().front().contains(u"a.dat"_s)) << layout.reasons().front().toStdString();
+  EXPECT_TRUE(layout.reasons().front().contains(u"b.dat"_s)) << layout.reasons().front().toStdString();
 }
 
 TEST(Scene3DDockPersistence, MalformedLayerPayloadFailsAndPreservesLiveScene) {

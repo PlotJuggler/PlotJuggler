@@ -252,12 +252,13 @@ class Scene3DDockWidget : public SceneDockWidget {
   // (interactive addTrailLayer, restore's unconfigured layer).
   ObjectTopicId addTrailLayerImpl(ObjectTopicId topic_id, std::unique_ptr<pj::scene3d::TrailLayer> layer);
   // Saved-topic resolution ladder shared by restoreLayerElement and
-  // restoreTrailElement: reads topic_name/dataset_* attributes off `el` and
+  // restoreConfigTopicElement: reads topic_name/dataset_* attributes off `el` and
   // yields the live topic id (kRestored), a deferral (kDeferred, with the
-  // topic name for the pending queue), or kInvalid.
+  // topic name for the pending queue), kConsumed (the element's dataset lost the
+  // restore's dataset choice), or kInvalid.
   [[nodiscard]] ElementRestoreResult resolveSavedTopicRef(
       const QDomElement& el, QString* deferred_topic_name, sdk::BuiltinObjectType expected_type,
-      std::optional<ObjectTopicId>& out_topic) const;
+      std::optional<ObjectTopicId>& out_topic);
   [[nodiscard]] ElementRestoreResult restoreConfigTopicElement(const QDomElement& config_el);
   void applyRestoredLayerOrder();
   // Per-element restore hook the base SceneDockWidget's shared pending-retry loop calls:

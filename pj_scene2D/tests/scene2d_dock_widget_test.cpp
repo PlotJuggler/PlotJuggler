@@ -452,6 +452,42 @@ TEST(Scene2DDockWidget, GenericLayoutRejectsAmbiguousCompatibleTopicsWithoutRepl
   EXPECT_EQ(dock.layerFor(second_match), nullptr);
 }
 
+// Generic (unqualified) layers get their live dataset written in before the shared restore runs,
+// but the layout never named a dataset for them: they must not join the saved-dataset order and
+// wait behind a qualified layer whose dataset has not loaded.
+TEST(Scene2DDockWidget, GenericLayersAreNotHeldBehindAnUnresolvedQualifiedDataset) {
+  static const std::string kImageMetadata = R"({"builtin_object_type":"kImage"})";
+
+  PJ::SessionManager session;
+  const auto unqualified = registerTopic(session, 2, "/camera/unqualified", kImageMetadata);
+  const auto zero_id = registerTopic(session, 2, "/camera/zero_id", kImageMetadata);
+
+  QDomDocument doc;
+  QDomElement layout = doc.createElement(u"scene2d"_s);
+  const auto append_layer = [&doc, &layout](const QString& topic) {
+    QDomElement layer = doc.createElement(u"layer"_s);
+    layer.setAttribute(u"topic_name"_s, topic);
+    layer.setAttribute(u"object_type"_s, u"kImage"_s);
+    layer.setAttribute(u"layer_kind"_s, u"image"_s);
+    layout.appendChild(layer);
+    return layer;
+  };
+  QDomElement ghost = append_layer(u"/camera/ghost"_s);
+  ghost.setAttribute(u"dataset_id"_s, u"7"_s);
+  ghost.setAttribute(u"dataset_source"_s, u"ghost.mcap"_s);
+  append_layer(u"/camera/unqualified"_s);
+  append_layer(u"/camera/zero_id"_s).setAttribute(u"dataset_id"_s, u"0"_s);
+
+  PJ::Scene2DDockWidget dock;
+  dock.setSessionManager(&session);
+  ASSERT_TRUE(dock.xmlLoadState(layout));
+
+  EXPECT_NE(dock.layerFor(unqualified), nullptr);
+  EXPECT_NE(dock.layerFor(zero_id), nullptr);
+  EXPECT_EQ(dock.unresolvedBlockingPendingRestores().join(u',').toStdString(), "/camera/ghost");
+  EXPECT_FALSE(dock.workspaceRestoreFailed());
+}
+
 TEST(Scene2DDockWidget, CommittedViewerInteractionNotifiesWorkspaceExactlyOnce) {
   QDomDocument doc;
   QDomElement root = doc.createElement(u"scene2d"_s);

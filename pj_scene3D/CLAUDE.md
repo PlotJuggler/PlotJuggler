@@ -196,8 +196,10 @@ comes from the conversion itself.
   - **One dataset per dock.** A 3D dock has one TF tree and one display clock, so it
     refuses a topic from a dataset other than the one it shows (`SceneDockWidget`
     returns `kRejected` and emits `topicRefused` with the reason; `pj_app` shows it as
-    a toast). A saved layout that mixes datasets still loads: the foreign element is
-    refused with the same reason and the restore is not marked failed. The dock can
+    a toast). A saved layout that mixes datasets still loads: the first saved element's
+    dataset wins whatever the load order (`SceneDockWidget::datasetForSavedElement`,
+    `finishRestore`; layers and `config_topic` elements alike), and the foreign
+    elements are refused with the same reason without marking the restore failed. The dock can
     bind another dataset once its current dataset's topics are gone. TF itself is
     owned by `pj_runtime`'s `TransformService`, which the dock reaches through
     `setTransformService`.

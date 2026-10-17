@@ -33,6 +33,11 @@ Q_LOGGING_CATEGORY(lcSceneDock, "pj.scene.dock")
   return QString::fromLatin1(name.data(), static_cast<qsizetype>(name.size()));
 }
 
+/// A runtime pending intent (advertised topic, no data yet), as opposed to a saved element.
+[[nodiscard]] bool isPendingIntent(const QDomElement& element) {
+  return element.attribute(u"pending_intent"_s) == "true"_L1;
+}
+
 }  // namespace
 
 SceneDockWidget::SceneDockWidget(QWidget* parent) : QWidget(parent) {
@@ -184,15 +189,10 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
     return false;
   }
 
-  bool dataset_ok = false;
-  const auto dataset_value = layer_el.attribute(u"dataset_id"_s).toULongLong(&dataset_ok);
-  if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
+  if (!layer_el.hasAttribute(u"dataset_id"_s) || !savedDatasetOf(layer_el).has_value()) {
     markWorkspaceRestoreFailed();
     return true;
   }
-  const auto saved_id = static_cast<DatasetId>(dataset_value);
-  const QString saved_source = layer_el.attribute(u"dataset_source"_s);
-  const QString saved_path = layer_el.attribute(u"dataset_path"_s);
   const QString topic_name = layer_el.attribute(u"topic_name"_s);
   const QString object_type_str = layer_el.attribute(u"object_type"_s);
   const QString display_name = layer_el.attribute(u"display_name"_s);
@@ -203,11 +203,14 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
     markWorkspaceRestoreFailed();
     return true;
   }
-  const auto dataset_id_opt = resolveObjectDataset(saved_id, saved_source, saved_path, topic_name);
-  if (!dataset_id_opt.has_value()) {
+  const SavedElementDataset binding = datasetForSavedElement(layer_el);
+  if (binding.refused) {
+    return true;
+  }
+  if (!binding.dataset.has_value()) {
     return false;
   }
-  const auto topic_id_opt = session_->objectStore().findTopic(*dataset_id_opt, topic_name.toStdString());
+  const auto topic_id_opt = session_->objectStore().findTopic(*binding.dataset, topic_name.toStdString());
   if (!topic_id_opt.has_value()) {
     return false;
   }
@@ -588,6 +591,10 @@ QDomElement SceneDockWidget::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
+  return loadSavedState(element, element);
+}
+
+bool SceneDockWidget::loadSavedState(const QDomElement& element, const QDomElement& authored) {
   if (element.isNull() || element.tagName() != xmlTag()) {
     return false;
   }
@@ -613,6 +620,7 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
   resetWorkspaceRestoreStatus();
   clearPendingRestores();
   clearLayers();
+  recordSavedDatasets(authored);
   if (session_ == nullptr) {
     syncViewLayers();
     refreshView();
@@ -693,7 +701,7 @@ QStringList SceneDockWidget::unresolvedPendingRestores() const {
 QStringList SceneDockWidget::unresolvedBlockingPendingRestores() const {
   QStringList unresolved;
   for (const PendingRestoreElement& pending : pending_restore_elements_) {
-    if (pending.document.documentElement().attribute(u"pending_intent"_s) == "true"_L1) {
+    if (isPendingIntent(pending.document.documentElement())) {
       continue;
     }
     if (!pending.topic_name.isEmpty()) {
@@ -737,9 +745,8 @@ std::vector<SceneDockWidget::PendingRestoreDemand> SceneDockWidget::pendingResto
 }
 
 void SceneDockWidget::clearBlockingPendingRestores() {
-  erasePendingRestoresIf([](const PendingRestoreElement& pending) {
-    return pending.document.documentElement().attribute(u"pending_intent"_s) != "true"_L1;
-  });
+  erasePendingRestoresIf(
+      [](const PendingRestoreElement& pending) { return !isPendingIntent(pending.document.documentElement()); });
 }
 
 void SceneDockWidget::erasePendingRestoresIf(const std::function<bool(const PendingRestoreElement&)>& predicate) {
@@ -793,6 +800,7 @@ void SceneDockWidget::appendPendingRestoreElements(QDomDocument& doc, QDomElemen
 SceneDockWidget::PendingRestoreSnapshot SceneDockWidget::capturePendingRestoreState() const {
   PendingRestoreSnapshot snapshot;
   snapshot.elements = pending_restore_elements_;  // QDomDocument handles are implicitly shared — cheap copies
+  snapshot.saved_datasets = saved_datasets_;
   snapshot.restore_failure_count = restore_failure_count_;
   snapshot.ever_had_content = ever_had_content_;
   return snapshot;
@@ -800,6 +808,7 @@ SceneDockWidget::PendingRestoreSnapshot SceneDockWidget::capturePendingRestoreSt
 
 void SceneDockWidget::restorePendingRestoreState(const PendingRestoreSnapshot& snapshot) {
   pending_restore_elements_ = snapshot.elements;
+  saved_datasets_ = snapshot.saved_datasets;
   restore_failure_count_ = snapshot.restore_failure_count;
   ever_had_content_ = snapshot.ever_had_content;
 }
@@ -849,18 +858,141 @@ bool SceneDockWidget::refuseForeignDataset(DatasetId incoming_dataset, DatasetId
   if (bound_dataset == 0 || incoming_dataset == 0 || incoming_dataset == bound_dataset) {
     return false;
   }
-  const auto label = [this](DatasetId dataset_id) {
-    const QString name = datasetSourceName(session_, dataset_id);
-    return name.isEmpty() ? tr("#%1").arg(dataset_id) : name;
-  };
-  const QString reason = tr("This view shows dataset %1; a topic from dataset %2 cannot be added to it.")
-                             .arg(label(bound_dataset), label(incoming_dataset));
+  reportForeignDataset(datasetLabel(bound_dataset), datasetLabel(incoming_dataset));
+  return true;
+}
+
+void SceneDockWidget::reportForeignDataset(const QString& bound_label, const QString& incoming_label) {
+  const QString reason =
+      tr("This view shows dataset %1; a topic from dataset %2 cannot be added to it.").arg(bound_label, incoming_label);
   qCWarning(lcSceneDock).noquote() << "topic refused:" << reason;
   if (!std::exchange(refusal_reported_, true)) {
     emit topicRefused(reason);
     QTimer::singleShot(0, this, [this] { refusal_reported_ = false; });
   }
-  return true;
+}
+
+QString SceneDockWidget::datasetLabel(DatasetId dataset_id) const {
+  const QString name = datasetSourceName(session_, dataset_id);
+  return name.isEmpty() ? tr("#%1").arg(dataset_id) : name;
+}
+
+bool SceneDockWidget::hasDatasetIdentity(const QDomElement& element) {
+  return element.hasAttribute(u"dataset_id"_s) || element.hasAttribute(u"dataset_source"_s) ||
+         element.hasAttribute(u"dataset_path"_s);
+}
+
+QString SceneDockWidget::SavedDataset::label() const {
+  return !source.isEmpty() ? source : !path.isEmpty() ? path : tr("#%1").arg(id);
+}
+
+std::optional<SceneDockWidget::SavedDataset> SceneDockWidget::savedDatasetOf(const QDomElement& element) {
+  DatasetId id = 0;
+  if (element.hasAttribute(u"dataset_id"_s)) {
+    bool id_ok = false;
+    const qulonglong raw_id = element.attribute(u"dataset_id"_s).toULongLong(&id_ok);
+    if (!id_ok || raw_id > std::numeric_limits<DatasetId>::max()) {
+      return std::nullopt;
+    }
+    id = static_cast<DatasetId>(raw_id);
+  }
+  return SavedDataset{
+      .id = id,
+      .source = element.attribute(u"dataset_source"_s),
+      .path = element.attribute(u"dataset_path"_s),
+      .topic_name = element.attribute(u"topic_name"_s)};
+}
+
+void SceneDockWidget::recordSavedDatasets(const QDomElement& state) {
+  saved_datasets_.clear();
+  for (QDomElement child = state.firstChildElement(); !child.isNull(); child = child.nextSiblingElement()) {
+    const bool restorable = child.tagName() == "layer"_L1 || child.tagName() == "config_topic"_L1;
+    if (!restorable || !hasDatasetIdentity(child) || isPendingIntent(child)) {
+      continue;
+    }
+    const std::optional<SavedDataset> saved = savedDatasetOf(child);
+    const bool unnamed = saved.has_value() && saved->id == 0 && saved->source.isEmpty() && saved->path.isEmpty();
+    if (!saved.has_value() || unnamed || saved->topic_name.isEmpty()) {
+      continue;  // a malformed or empty identity fails or waits on its own; it names no dataset
+    }
+    if (std::find(saved_datasets_.cbegin(), saved_datasets_.cend(), *saved) == saved_datasets_.cend()) {
+      saved_datasets_.push_back(*saved);
+    }
+  }
+}
+
+SceneDockWidget::SavedElementDataset SceneDockWidget::datasetForSavedElement(const QDomElement& element) {
+  const std::optional<SavedDataset> saved = savedDatasetOf(element);
+  if (!saved.has_value()) {
+    return {};
+  }
+  const auto resolve = [this](const SavedDataset& dataset) {
+    return resolveObjectDataset(dataset.id, dataset.source, dataset.path, dataset.topic_name);
+  };
+  const auto found = std::find(saved_datasets_.cbegin(), saved_datasets_.cend(), *saved);
+  const bool gated = saved_datasets_.size() >= 2 && found != saved_datasets_.cend() && !isPendingIntent(element);
+  if (!gated || found == saved_datasets_.cbegin()) {
+    return {.dataset = resolve(*saved)};
+  }
+  const std::optional<DatasetId> winner = resolve(saved_datasets_.front());
+  if (!winner.has_value()) {
+    return {};  // the first saved dataset has not arrived: nothing else may bind yet
+  }
+  const std::optional<DatasetId> resolved = resolve(*saved);
+  if (!resolved.has_value() || resolved == winner) {
+    return {.dataset = resolved};
+  }
+  refuseForeignDataset(*resolved, *winner);
+  return {.dataset = std::nullopt, .refused = true};
+}
+
+void SceneDockWidget::finishRestore() {
+  settleRestoreDataset();
+  retryPendingRestores({});
+}
+
+void SceneDockWidget::settleRestoreDataset() {
+  const std::vector<SavedDataset> datasets = std::exchange(saved_datasets_, {});
+  if (datasets.size() < 2) {
+    return;
+  }
+  const auto resolve = [this](const SavedDataset& dataset, const QString& topic_name) {
+    return resolveObjectDataset(dataset.id, dataset.source, dataset.path, topic_name);
+  };
+  // The dataset the dock already shows is the choice; else the first saved dataset that is loaded.
+  std::optional<DatasetId> chosen;
+  if (const DatasetId shown = representativeDatasetId(); shown != 0) {
+    chosen = shown;
+  }
+  auto winner = datasets.cend();
+  for (auto candidate = datasets.cbegin(); winner == datasets.cend() && candidate != datasets.cend(); ++candidate) {
+    const std::optional<DatasetId> live = resolve(*candidate, candidate->topic_name);
+    if (live.has_value() && (!chosen.has_value() || live == chosen)) {
+      chosen = live;
+      winner = candidate;
+    }
+  }
+  if (!chosen.has_value()) {
+    return;  // nothing loaded: the gate is off and the first dataset to resolve wins
+  }
+  erasePendingRestoresIf([&](const PendingRestoreElement& pending) {
+    const QDomElement element = pending.document.documentElement();
+    const std::optional<SavedDataset> saved = savedDatasetOf(element);
+    if (!saved.has_value() || isPendingIntent(element) ||
+        std::find(datasets.cbegin(), datasets.cend(), *saved) == datasets.cend()) {
+      return false;
+    }
+    // The winner's topics that have not arrived resolve to nothing, which is not "another dataset".
+    if (winner != datasets.cend() && *saved == *winner) {
+      return false;
+    }
+    const std::optional<DatasetId> dataset = resolve(*saved, pending.topic_name);
+    if (dataset == chosen) {
+      return false;
+    }
+    reportForeignDataset(datasetLabel(*chosen), dataset.has_value() ? datasetLabel(*dataset) : saved->label());
+    return true;
+  });
 }
 
 std::optional<DatasetId> SceneDockWidget::resolveObjectDataset(
