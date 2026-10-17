@@ -6,15 +6,27 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
+#include <QDir>
+#include <QFileInfo>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QLabel>
 #include <QLayout>
 #include <QLineEdit>
 #include <QList>
+#include <QSettings>
 #include <QSize>
 #include <QString>
 #include <QToolButton>
+#include <QUrl>
+#include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/SvgUtil.h"
@@ -37,6 +49,104 @@ constexpr const char* kToolbarButtons[] = {
 // model in the stylesheets: input_min_height (18) + 2*2 padding + 2*1 border.
 constexpr int kInputRowHeightPx = 24;
 
+// Test hooks (see FileDialog.h); read on the GUI thread only.
+std::function<bool(const QString&)> g_start_folder_probe;
+int g_start_folder_timeout_ms = -1;
+
+#ifndef PJ_TARGET_WASM
+// How long the dialog waits for a folder to answer before giving up on it.
+constexpr int kStartFolderTimeoutMs = 2000;
+
+struct ProbeState {
+  std::mutex mutex;
+  std::condition_variable cv;
+  std::vector<char> answered;
+};
+#endif
+
+// For each path, whether stat'ing it answered within one shared timeout (empty
+// paths count as answered). The answer itself is irrelevant: a path that
+// exists, does not exist, or is a file all return promptly; only a dead network
+// share hangs, for ~80 s.
+//
+// Detached std::threads rather than QThreadPool/QtConcurrent: a pool worker
+// would stay pinned on the dead share and the pool would wait for it at
+// application exit. A detached thread costs nothing at exit.
+std::vector<char> foldersAnsweringInTime(const QStringList& paths) {
+  std::vector<char> answered(static_cast<std::size_t>(paths.size()), 1);
+#ifndef PJ_TARGET_WASM  // no network shares in the browser
+  auto probe =
+      g_start_folder_probe ? g_start_folder_probe : [](const QString& path) { return QFileInfo(path).exists(); };
+  const int timeout_ms = g_start_folder_timeout_ms >= 0 ? g_start_folder_timeout_ms : kStartFolderTimeoutMs;
+  auto state = std::make_shared<ProbeState>();
+  state->answered = answered;
+  for (std::size_t i = 0; i < answered.size(); ++i) {
+    const QString& path = paths[static_cast<qsizetype>(i)];
+    if (path.isEmpty()) {
+      continue;
+    }
+    state->answered[i] = 0;
+    std::thread([state, i, path, probe] {
+      probe(path);
+      {
+        const std::lock_guard<std::mutex> lock(state->mutex);
+        state->answered[i] = 1;
+      }
+      state->cv.notify_one();
+    }).detach();
+  }
+  std::unique_lock<std::mutex> lock(state->mutex);
+  state->cv.wait_for(lock, std::chrono::milliseconds(timeout_ms), [&] {
+    return std::all_of(state->answered.begin(), state->answered.end(), [](char done) { return done != 0; });
+  });
+  answered = state->answered;
+#endif
+  return answered;
+}
+
+// What PJ::FileDialog carries over from Qt's own QFileDialog memory.
+struct QtFileDialogState {
+  QString view_mode;
+  QStringList history;
+  QList<QUrl> shortcuts;
+};
+
+// Reads Qt's QtProject/FileDialog group (shared by every Qt application of the
+// user) and removes it, plus the legacy Qt/filedialog key: QFileDialog's
+// constructor would otherwise stat the persisted last folder and sidebar
+// shortcuts on the GUI thread before any directory we pass is applied.
+QtFileDialogState takeQtFileDialogState() {
+  QSettings qt_settings(QSettings::UserScope, u"QtProject"_s);
+  QtFileDialogState state;
+  state.view_mode = qt_settings.value(u"FileDialog/viewMode"_s).toString();
+  for (const QString& url : qt_settings.value(u"FileDialog/history"_s).toStringList()) {
+    if (const QUrl history_url(url); history_url.isLocalFile()) {
+      state.history << history_url.toLocalFile();
+    }
+  }
+  state.shortcuts = QUrl::fromStringList(qt_settings.value(u"FileDialog/shortcuts"_s).toStringList());
+  qt_settings.remove(u"FileDialog"_s);
+  qt_settings.remove(u"Qt/filedialog"_s);
+  return state;
+}
+
+// The shortcuts whose local folder answers in time. "My Computer" (the bare
+// "file:" URL) and other non-local entries are kept without a stat.
+QList<QUrl> answeringShortcuts(const QList<QUrl>& shortcuts) {
+  QStringList paths;
+  for (const QUrl& url : shortcuts) {
+    paths << (url.isLocalFile() ? url.toLocalFile() : QString());
+  }
+  const std::vector<char> answered = foldersAnsweringInTime(paths);
+  QList<QUrl> kept;
+  for (qsizetype i = 0; i < shortcuts.size(); ++i) {
+    if (answered[static_cast<std::size_t>(i)] != 0) {
+      kept << shortcuts[i];
+    }
+  }
+  return kept;
+}
+
 // Re-skin a QFileDialog toolbar button identified by objectName with one
 // of the app's themed SVG icons. Silent no-op when the button is missing
 // (defensive against Qt internal renames between versions).
@@ -52,16 +162,42 @@ FileDialog::FileDialog(QWidget* parent) : Dialog(parent) {
   setDialogTitle(tr("Open File"));
   resize(820, 560);
 
+  // Qt's own memory is dropped before the inner dialog exists (see
+  // takeQtFileDialogState); PJ4 keeps its own last folder per caller. Because
+  // the group is shared with other Qt applications, the rest is carried over.
+  const QtFileDialogState qt_state = takeQtFileDialogState();
+
   // Build the inner picker as a plain child widget — Qt::Widget strips
   // the default Qt::Dialog window flags so it doesn't try to be its own
   // top-level window. DontUseNativeDialog forces the Qt-drawn widget
-  // tree, which is what our stylesheet targets.
-  inner_ = new QFileDialog(contentWidget());
+  // tree, which is what our stylesheet targets. The explicit start folder also
+  // keeps Qt from consulting its in-process last-visited folder.
+  inner_ = new QFileDialog(contentWidget(), QString(), QDir::homePath());
+  if (qt_state.view_mode == u"Detail"_s) {
+    inner_->setViewMode(QFileDialog::Detail);
+  }
+  inner_->setHistory(qt_state.history);
+  if (!qt_state.shortcuts.isEmpty()) {
+    inner_->setSidebarUrls(answeringShortcuts(qt_state.shortcuts));
+  }
   inner_->setOption(QFileDialog::DontUseNativeDialog);
   inner_->setWindowFlags(Qt::Widget);
   inner_->setSizeGripEnabled(false);
 
   contentLayout()->addWidget(inner_);
+
+  // Shown by setDirectory() when the requested start folder did not answer. A
+  // full-width row of the picker's own grid, like embedExtras(), so it lines
+  // up with the picker's content.
+  start_folder_notice_ = new QLabel(inner_);
+  start_folder_notice_->setObjectName(u"startFolderNotice"_s);
+  start_folder_notice_->setWordWrap(true);
+  start_folder_notice_->setStyleSheet(
+      u"color: %1;"_s.arg(theme::status(theme::Status::Warning, theme::appTheme()).name()));
+  start_folder_notice_->hide();
+  if (auto* grid = qobject_cast<QGridLayout*>(inner_->layout())) {
+    grid->addWidget(start_folder_notice_, grid->rowCount(), 0, 1, grid->columnCount());
+  }
 
   // Swap Qt's stock SP_FileDialog* icons (native theme glyphs that clash
   // with our flat chrome) for our keyboard_arrow_* chevrons. The _light
@@ -134,8 +270,25 @@ void FileDialog::setNameFilter(const QString& filter) {
   inner_->setNameFilter(filter);
 }
 
+void FileDialog::setStartFolderProbeForTest(std::function<bool(const QString&)> probe) {
+  g_start_folder_probe = std::move(probe);
+}
+
+void FileDialog::setStartFolderTimeoutForTest(int timeout_ms) {
+  g_start_folder_timeout_ms = timeout_ms;
+}
+
 void FileDialog::setDirectory(const QString& directory) {
-  inner_->setDirectory(directory);
+  if (foldersAnsweringInTime({directory}).front() != 0) {
+    start_folder_notice_->hide();
+    inner_->setDirectory(directory);
+    return;
+  }
+  // Stay at the home folder chosen in the constructor rather than block on the
+  // dead path.
+  start_folder_notice_->setText(tr("The folder %1 is not responding, showing your home folder instead.")
+                                    .arg(QDir::toNativeSeparators(directory)));
+  start_folder_notice_->show();
 }
 
 void FileDialog::setDefaultSuffix(const QString& suffix) {

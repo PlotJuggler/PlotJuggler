@@ -4,9 +4,11 @@
 
 #include <QCheckBox>
 #include <QFileDialog>
+#include <QLabel>
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <functional>
 #include <vector>
 
 #include "pj_widgets/ChromeMetrics.h"
@@ -19,6 +21,12 @@ namespace PJ {
 // rest of the app (custom title bar, drag-to-move, edge resize) instead
 // of the native GTK frame. Most call sites should use the static
 // getOpenFileName / getSaveFileName helpers below.
+//
+// Start-folder guard: a folder on a dead network share blocks QFileDialog's
+// GUI thread for ~80 s, so setDirectory() first gives it 2 s to answer
+// off-thread and otherwise stays at the home folder with a notice. Only the
+// start folder is guarded; navigating into a dead location from inside the
+// dialog still blocks (Qt's file system model is synchronous).
 class FileDialog : public Dialog {
   Q_OBJECT
  public:
@@ -29,6 +37,8 @@ class FileDialog : public Dialog {
   void setAcceptMode(QFileDialog::AcceptMode mode);
   void setFileMode(QFileDialog::FileMode mode);
   void setNameFilter(const QString& filter);
+  // Falls back to the home folder (with a visible notice) when `directory` does
+  // not answer within ~2 s.
   void setDirectory(const QString& directory);
   void setDefaultSuffix(const QString& suffix);
   void selectFile(const QString& filename);
@@ -53,6 +63,15 @@ class FileDialog : public Dialog {
   // Drop-in replacement for QFileDialog::getExistingDirectory (Directory mode +
   // ShowDirsOnly). Returns the chosen directory, empty on cancel.
   static QString getExistingDirectory(QWidget* parent, const QString& caption, const QString& dir = QString());
+
+  // Test-only: replace the reachability probe run by setDirectory() and for
+  // the persisted sidebar shortcuts (empty restores the default,
+  // QFileInfo::exists). The probe runs on a detached
+  // thread, so it must not touch Qt objects.
+  static void setStartFolderProbeForTest(std::function<bool(const QString&)> probe);
+  // Test-only: override how long setDirectory() waits for the probe, in ms
+  // (negative restores the default).
+  static void setStartFolderTimeoutForTest(int timeout_ms);
 
   struct ExtraOption {
     QString label;
@@ -109,6 +128,7 @@ class FileDialog : public Dialog {
   std::vector<QCheckBox*> embedExtras(const std::vector<ExtraOption>& extras);
 
   QFileDialog* inner_;
+  QLabel* start_folder_notice_;
   ChromeMetrics chrome_metrics_;
 };
 
