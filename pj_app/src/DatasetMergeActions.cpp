@@ -163,6 +163,13 @@ void confirmAndMergeDatasets(
     const auto shown = std::min<qsizetype>(static_cast<qsizetype>(conflicts.size()), kMaxConflictItems);
     for (qsizetype i = 0; i < shown; ++i) {
       const ObjectMergeConflict& c = conflicts[static_cast<std::size_t>(i)];
+      if (c.marker_description_differs) {
+        list += u"<li>"_s +
+                tr("\"%1\": marker sets with a different scope, target or owner")
+                    .arg(QString::fromStdString(c.topic_name).toHtmlEscaped()) +
+                u"</li>"_s;
+        continue;
+      }
       // Same type means the payload formats differ: name those instead.
       const auto describe = [&c](sdk::BuiltinObjectType type, const std::string& format) {
         if (c.anchor_type != c.source_type) {
@@ -185,8 +192,8 @@ void confirmAndMergeDatasets(
     MessageBox::warning(
         parent, tr("Cannot merge datasets"),
         u"<p>"_s +
-            tr("These object topics share a name but have incompatible types or formats, so the datasets cannot be "
-               "merged:") +
+            tr("These object topics share a name but have incompatible types, formats or marker descriptions, so the "
+               "datasets cannot be merged:") +
             u"</p>"_s + list + u"<p>"_s + tr("Remove or rename the conflicting topic and try again.") + u"</p>"_s);
     return;
   }

@@ -18,6 +18,7 @@ option(
 )
 
 find_package(tsl-robin-map REQUIRED)
+find_package(nlohmann_json REQUIRED)  # marker_topic_metadata.cpp
 # Google Benchmark is skipped in the MemorySanitizer lane. That lane builds four
 # named test executables and no benchmarks, so requiring the package would mean
 # instrumenting a library nothing in the lane links — and google-benchmark's own
@@ -128,6 +129,7 @@ add_library(pj_datastore STATIC
   src/sequential_uid.cpp
   src/ordered_entries.cpp
   src/object_store.cpp
+  src/marker_topic_metadata.cpp
   src/resident_payload_pool.cpp
   # Data-processor execution substrate (the DataProcessor base + ProcessorSisoAdapter
   # that runs a processor as an IncrementalEngine node — moved here from the retired pj_proc
@@ -154,6 +156,7 @@ target_link_libraries(pj_datastore
     plotjuggler_sdk::base
   PRIVATE
     tsl::robin_map
+    nlohmann_json::nlohmann_json
     $<BUILD_INTERFACE:pj_internal_fmt>
     ${PJ_NANOARROW_TARGET}
     ${PJ_NANOARROW_IPC_TARGET}
@@ -181,6 +184,7 @@ if(PJ_BUILD_TESTS)
     tests/merge_test.cpp
     tests/ordered_entries_test.cpp
     tests/object_store_test.cpp
+    tests/marker_topic_metadata_test.cpp
     tests/resident_payload_pool_test.cpp
     tests/object_merge_test.cpp
     tests/clear_dataset_test.cpp

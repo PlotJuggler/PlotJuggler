@@ -36,6 +36,9 @@ struct ObjectMergeConflict {
   // type but different formats is a conflict too: one parser decodes the merge.
   std::string anchor_format;
   std::string source_format;
+  // Same-named marker topics whose scope, target or owner differ: merging would keep
+  // the anchor's description for both sets.
+  bool marker_description_differs = false;
 };
 
 // Central runtime object for PlotJuggler 4. Owns long-lived application
@@ -171,8 +174,9 @@ class AppSession : public QObject {
   // no-op (fewer than two of the selected datasets carry time-bearing data).
   PJ::DatasetId mergeDatasets(const std::vector<PJ::DatasetId>& selected);
 
-  // Returns shared-name canonical object type conflicts for the merge plan that
-  // mergeDatasets() would use. Pure preflight; does not mutate stores/catalog.
+  // Returns shared-name conflicts (canonical object type, payload format, or marker
+  // description) for the merge plan that mergeDatasets() would use. Pure preflight;
+  // does not mutate stores/catalog.
   [[nodiscard]] std::vector<ObjectMergeConflict> objectMergeConflicts(const std::vector<PJ::DatasetId>& selected) const;
 
  signals:

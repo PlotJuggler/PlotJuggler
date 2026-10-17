@@ -12,7 +12,6 @@
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
-#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -819,11 +818,16 @@ class SessionManager : public QObject {
   // constructed in the ctor after object_store_/data_engine_. Its series resolver
   // is injected by AppSession once the catalog exists (setResolver).
   std::unique_ptr<BatchEngine> batch_engine_;
-  // Per topic, the (time_range_max, total_row_count, retention floor, series
-  // generation) recomputeMarkersForChanged last saw: a topic whose stamp did not move
-  // is not reported as a changed input.
-  using MarkerInputStamp = std::tuple<Timestamp, uint64_t, Timestamp, uint64_t>;
-  std::unordered_map<TopicId, MarkerInputStamp> marker_input_extents_;
+  // What recomputeMarkersForChanged last saw of a topic: a topic whose stamp did not
+  // move is not reported as a changed input.
+  struct MarkerInputStamp {
+    Timestamp time_range_max = 0;
+    uint64_t total_row_count = 0;
+    Timestamp retention_floor = 0;
+    uint64_t series_generation = 0;
+    bool operator==(const MarkerInputStamp&) const = default;
+  };
+  std::unordered_map<TopicId, MarkerInputStamp> marker_input_stamps_;
   // Per-object-topic parser slots. WRITTEN from the streaming worker thread (the
   // registrar callback fires when a plugin discovers/replaces a topic mid-stream)
   // and READ from the GUI thread on every render tick (each scene3D layer +

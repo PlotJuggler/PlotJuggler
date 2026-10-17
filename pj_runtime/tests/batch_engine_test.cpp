@@ -257,6 +257,195 @@ TEST(BatchEngineTest, DatasetAndAllScopesCoexistOnOneDataset) {
   EXPECT_TRUE(markerFamily(store, 1, PJ::kAllDatasetsMarkerTopic).empty());
 }
 
+// What a stored topic's metadata says about it; nullopt when it is not a marker description.
+std::optional<PJ::MarkerTopicInfo> markerInfoOf(
+    const PJ::ObjectStore& store, PJ::DatasetId dataset, const std::string& topic_name) {
+  const auto id = store.findTopic(dataset, topic_name);
+  EXPECT_TRUE(id.has_value()) << topic_name;
+  return id.has_value() ? PJ::markerTopicInfo(store.descriptor(*id).metadata_json) : std::nullopt;
+}
+
+// GAP-43: a generator's topic is registered with the markers type, the scope and target
+// its output key means, and its owner. The metadata, not the name, identifies it.
+TEST(BatchEngineTest, SeriesScopeTopicCarriesItsMetadata) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/g", "in", "createMarker(0.0)\n")).has_value());
+
+  const std::string name = PJ::markerOwnerTopicName("in", "plug/g");
+  const std::string json = store.descriptor(*store.findTopic(kDataset, name)).metadata_json;
+  EXPECT_NE(json.find(R"("builtin_object_type":"kPlotMarkers")"), std::string::npos) << json;
+  EXPECT_NE(json.find(R"("pj_derived":"markers")"), std::string::npos) << json;
+  EXPECT_EQ(markerInfoOf(store, kDataset, name), (PJ::MarkerTopicInfo{PJ::MarkerScopeKind::kSeries, "in", "plug/g"}));
+}
+
+TEST(BatchEngineTest, DatasetScopeTopicCarriesItsMetadata) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+  auto recipe = markerRecipe("plug/g", std::string(PJ::sdk::kGlobalMarkerTopic), "createMarker(0.0)\n");
+  ASSERT_TRUE(service.upsertGenerator(recipe).has_value());
+
+  EXPECT_EQ(
+      markerInfoOf(store, kDataset, PJ::markerOwnerTopicName(PJ::sdk::kGlobalMarkerTopic, "plug/g")),
+      (PJ::MarkerTopicInfo{PJ::MarkerScopeKind::kDataset, "", "plug/g"}));
+}
+
+// An all-datasets rule publishes on the shared home; its scope follows its output
+// key: the all-datasets key means "every plot", a series key means "plots of that
+// series on any dataset".
+TEST(BatchEngineTest, AllDatasetsTopicsCarryTheirMetadata) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+  service.setDatasetLister([] { return std::vector<PJ::DatasetId>{kDataset}; });
+
+  auto everywhere = markerRecipe("plug/all", std::string(PJ::sdk::kGlobalMarkerTopic), "createMarker(0.0)\n");
+  everywhere.all_datasets = true;
+  ASSERT_TRUE(service.upsertGenerator(everywhere).has_value());
+  auto one_series = markerRecipe("plug/series", "in", "createMarker(0.0)\n");
+  one_series.all_datasets = true;
+  ASSERT_TRUE(service.upsertGenerator(one_series).has_value());
+
+  EXPECT_EQ(
+      markerInfoOf(store, kAllDatasetsMarkerDataset, PJ::markerOwnerTopicName(PJ::kAllDatasetsMarkerTopic, "plug/all")),
+      (PJ::MarkerTopicInfo{PJ::MarkerScopeKind::kAll, "", "plug/all"}));
+  EXPECT_EQ(
+      markerInfoOf(store, kAllDatasetsMarkerDataset, PJ::markerOwnerTopicName("in", "plug/series")),
+      (PJ::MarkerTopicInfo{PJ::MarkerScopeKind::kSeries, "in", "plug/series"}));
+}
+
+// A merge republishes a source's marker topic on the anchor: the new topic keeps the
+// description the source's carried.
+TEST(BatchEngineTest, MergedMarkerTopicKeepsItsMetadata) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+  auto recipe = markerRecipe("plug/src", "in", "createMarker(5.0)\n");
+  recipe.dataset_id = 2;
+  ASSERT_TRUE(service.upsertGenerator(recipe).has_value());
+
+  service.mergeMarkerTopics(1, {PJ::DatasetMergeSource{.dataset_id = 2, .raw_shift_ns = 1000}});
+
+  EXPECT_EQ(
+      markerInfoOf(store, 1, PJ::markerOwnerTopicName("in", "plug/src")),
+      (PJ::MarkerTopicInfo{PJ::MarkerScopeKind::kSeries, "in", "plug/src"}));
+}
+
+// A generator's topics are found by their owner metadata: a direct write whose name
+// merely ends with `#<id>` is not one of them.
+TEST(BatchEngineTest, RemovingAGeneratorLeavesADirectWriteNamedLikeItsTopic) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+
+  PJ::sdk::PlotMarkers set;
+  set.markers.push_back(PJ::sdk::PlotMarker{.kind = PJ::sdk::MarkerKind::kEvent, .t_start = 7});
+  const auto direct = store.registerTopic(
+      {.dataset_id = kDataset, .topic_name = PJ::sdk::markerObjectTopicName("other#plug/g"), .metadata_json = "{}"});
+  ASSERT_TRUE(direct.has_value());
+  ASSERT_TRUE(store.pushOwned(*direct, PJ::Timestamp{0}, PJ::serializePlotMarkers(set)).has_value());
+
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/g", "in", "createMarker(0.0)\n")).has_value());
+  ASSERT_TRUE(service.removeGenerator("plug/g").has_value());
+
+  EXPECT_TRUE(ownerTombstoned(store, kDataset, "in", "plug/g"));
+  const auto kept = PJ::test::latestEntry(store, *direct);
+  ASSERT_TRUE(kept.has_value());
+  EXPECT_FALSE(kept->payload.bytes.empty()) << "the direct write must not be tombstoned";
+}
+
+// Registers `name` on `dataset` the way a plugin's direct write does and publishes one
+// event at `t_start`.
+PJ::ObjectTopicId registerDirectMarkerWrite(
+    PJ::ObjectStore& store, PJ::DatasetId dataset, const std::string& name, PJ::Timestamp t_start,
+    const std::string& metadata_json = "{}") {
+  PJ::sdk::PlotMarkers set;
+  set.markers.push_back(PJ::sdk::PlotMarker{.kind = PJ::sdk::MarkerKind::kEvent, .t_start = t_start});
+  const auto id = store.registerTopic({.dataset_id = dataset, .topic_name = name, .metadata_json = metadata_json});
+  EXPECT_TRUE(id.has_value()) << name;
+  if (!id.has_value()) {
+    return {};
+  }
+  EXPECT_TRUE(store.pushOwned(*id, PJ::Timestamp{0}, PJ::serializePlotMarkers(set)).has_value());
+  return *id;
+}
+
+bool hasPublishedMarkers(const PJ::ObjectStore& store, PJ::ObjectTopicId id) {
+  const auto entry = PJ::test::latestEntry(store, id);
+  return entry.has_value() && !entry->payload.bytes.empty();
+}
+
+// An id-less recipe (a layout without the `id` attribute) owns no topic, so retiring
+// "its" topics would match every direct write: it is refused up front.
+TEST(BatchEngineTest, EmptyGeneratorIdIsRejectedAndDirectWritesSurvive) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+  const PJ::ObjectTopicId direct =
+      registerDirectMarkerWrite(store, kDataset, PJ::sdk::markerObjectTopicName("other"), 7);
+
+  const auto refused = service.upsertGenerator(markerRecipe("", "in", "createMarker(0.0)\n"));
+  EXPECT_FALSE(refused.has_value());
+  EXPECT_TRUE(service.generatorIds().empty());
+
+  EXPECT_FALSE(service.removeGenerator("").has_value());
+  service.clearAllGenerators();
+  EXPECT_TRUE(hasPublishedMarkers(store, direct)) << "a direct write must not be tombstoned";
+}
+
+// Metadata is JSON: a key that is not UTF-8 cannot be described in it, and the
+// generator is refused rather than throwing out of the publish path.
+TEST(BatchEngineTest, OutputKeyThatIsNotUtf8IsRejected) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+
+  PJ::Expected<std::vector<std::string>> refused = PJ::unexpected(std::string{});
+  EXPECT_NO_THROW(refused = service.upsertGenerator(markerRecipe("plug/g", "in\xE9", "createMarker(0.0)\n")));
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_NE(refused.error().find("UTF-8"), std::string::npos) << refused.error();
+  EXPECT_TRUE(store.listTopics(kDataset).empty());
+  EXPECT_TRUE(service.generatorIds().empty());
+}
+
+// A topic already holding the generator's name must describe the same marker set: a
+// direct write that squats the minted name is not adopted and overwritten.
+TEST(BatchEngineTest, GeneratorDoesNotAdoptAnExistingTopicThatDescribesSomethingElse) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+  const std::string squatted = PJ::markerOwnerTopicName("in", "plug/g");
+  const PJ::ObjectTopicId direct = registerDirectMarkerWrite(store, kDataset, squatted, 7);
+  const auto before = PJ::test::latestEntry(store, direct);
+  ASSERT_TRUE(before.has_value());
+
+  const auto refused = service.upsertGenerator(markerRecipe("plug/g", "in", "createMarker(0.0)\n"));
+
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_NE(refused.error().find(squatted), std::string::npos) << refused.error();
+  const auto after = PJ::test::latestEntry(store, direct);
+  ASSERT_TRUE(after.has_value());
+  EXPECT_EQ(after->sequential_uid.value, before->sequential_uid.value) << "the direct write's payload is untouched";
+  EXPECT_TRUE(std::ranges::equal(after->payload.bytes, before->payload.bytes));
+}
+
+// Same-named marker topics that describe different sets are not concatenated: the
+// source's topic is left alone instead of being folded under the anchor's description.
+TEST(BatchEngineTest, MergeLeavesASameNamedMarkerTopicThatDescribesAnotherSet) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+  const std::string name = PJ::sdk::markerObjectTopicName("x");
+  const PJ::ObjectTopicId anchor_topic = registerDirectMarkerWrite(store, 1, name, 100);
+  const PJ::ObjectTopicId source_topic = registerDirectMarkerWrite(
+      store, 2, name, 5, PJ::markerTopicMetadataJson({PJ::MarkerScopeKind::kSeries, "y", "plug/g"}));
+
+  const auto touched = service.mergeMarkerTopics(1, {PJ::DatasetMergeSource{.dataset_id = 2, .raw_shift_ns = 1000}});
+
+  EXPECT_TRUE(touched.empty());
+  EXPECT_TRUE(store.findTopic(2, name).has_value()) << "the source topic is not destroyed";
+  EXPECT_TRUE(hasPublishedMarkers(store, source_topic));
+  const auto anchor_entry = PJ::test::latestEntry(store, anchor_topic);
+  ASSERT_TRUE(anchor_entry.has_value());
+  const auto anchor_set =
+      PJ::deserializePlotMarkers(anchor_entry->payload.bytes.data(), anchor_entry->payload.bytes.size());
+  ASSERT_TRUE(anchor_set.has_value());
+  EXPECT_EQ(anchor_set->markers.size(), 1u) << "nothing was folded into the anchor's set";
+}
+
 // Two generators on one marker topic each own their own object topic: the plot
 // draws both sets, and retiring one tombstones only its topic — the other's is
 // not even republished.

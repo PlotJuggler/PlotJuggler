@@ -19,7 +19,10 @@ expanded into scalar columns at ingest time.
 
 It does not decode payloads, interpret metadata, choose renderers, or own UI
 policy. Topic metadata is opaque JSON retained verbatim for callers that need to
-interpret object bytes.
+interpret object bytes. The one exception is `stampLegacyMarkerMetadata`
+(`marker_topic_metadata.hpp`): registration gives a direct write to a 0.35
+`__markers__/<key>` name the metadata that marks it as a plot-markers topic, so
+nothing else has to read marker names.
 
 ## Data Model
 

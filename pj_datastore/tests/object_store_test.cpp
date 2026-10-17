@@ -146,23 +146,30 @@ TEST(ObjectStoreTest, ListTopicsByDataset) {
   EXPECT_EQ(ds2.size(), 1u);
 }
 
-// The prefix overload scans one dataset's names under a single lock: the family
-// `__markers__/k#…` is listed in registration order, other datasets and other
-// keys (`__markers__/k2#…` shares the bare prefix but not the separator) excluded.
-TEST(ObjectStoreTest, ListTopicsByDatasetAndNamePrefix) {
+// forEachTopic visits one dataset's topics in registration order, on the descriptors
+// in place, and skips every other dataset.
+TEST(ObjectStoreTest, ForEachTopicVisitsOneDatasetInRegistrationOrder) {
   ObjectStore store;
-  const auto first = store.registerTopic({.dataset_id = 1, .topic_name = "__markers__/k#b", .metadata_json = "{}"});
-  store.registerTopic({.dataset_id = 2, .topic_name = "__markers__/k#a", .metadata_json = "{}"});
-  store.registerTopic({.dataset_id = 1, .topic_name = "__markers__/k2#a", .metadata_json = "{}"});
-  const auto second = store.registerTopic({.dataset_id = 1, .topic_name = "__markers__/k#a", .metadata_json = "{}"});
+  const auto first = store.registerTopic({.dataset_id = 1, .topic_name = "b", .metadata_json = R"({"k":1})"});
+  store.registerTopic({.dataset_id = 2, .topic_name = "x", .metadata_json = "{}"});
+  const auto second = store.registerTopic({.dataset_id = 1, .topic_name = "a", .metadata_json = R"({"k":2})"});
   ASSERT_TRUE(first.has_value());
   ASSERT_TRUE(second.has_value());
 
-  const std::vector<ObjectTopicId> family = store.listTopics(1, "__markers__/k#");
-  ASSERT_EQ(family.size(), 2u);
-  EXPECT_EQ(family[0].id, first->id);
-  EXPECT_EQ(family[1].id, second->id);
-  EXPECT_TRUE(store.listTopics(3, "__markers__/k#").empty());
+  std::vector<ObjectTopicId> ids;
+  std::vector<std::string> metadata;
+  store.forEachTopic(1, [&](ObjectTopicId id, const ObjectTopicDescriptor& descriptor) {
+    ids.push_back(id);
+    metadata.push_back(descriptor.metadata_json);
+  });
+  ASSERT_EQ(ids.size(), 2u);
+  EXPECT_EQ(ids[0].id, first->id);
+  EXPECT_EQ(ids[1].id, second->id);
+  EXPECT_EQ(metadata, (std::vector<std::string>{R"({"k":1})", R"({"k":2})"}));
+
+  bool visited = false;
+  store.forEachTopic(3, [&](ObjectTopicId, const ObjectTopicDescriptor&) { visited = true; });
+  EXPECT_FALSE(visited);
 }
 
 // =========================================================================

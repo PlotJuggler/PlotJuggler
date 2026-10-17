@@ -10,9 +10,11 @@
 #include <QRectF>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
 #include <set>
 #include <utility>
+#include <vector>
 
 #include "pj_base/builtin/plot_markers_codec.hpp"
 #include "pj_datastore/object_store.hpp"
@@ -23,15 +25,16 @@
 
 namespace PJ {
 
-std::vector<MarkerTargetTopic> markerTargetTopics(const ObjectStore& store, const MarkerTarget& target) {
-  const std::string key = target.topic.toStdString();
+std::vector<MarkerTargetTopic> markerTargetTopics(
+    const MarkerTarget& target, const std::vector<MarkerTopic>& dataset_topics,
+    const std::vector<MarkerTopic>& shared_topics) {
   std::vector<MarkerTargetTopic> topics;
-  if (key != kAllDatasetsMarkerTopic) {
-    for (const ObjectTopicId id : markerTopicsOf(store, target.dataset, key)) {
+  if (target.marker.scope != MarkerScopeKind::kAll) {
+    for (const ObjectTopicId id : markerTopicsOf(dataset_topics, target.marker)) {
       topics.push_back(MarkerTargetTopic{.id = id, .display_frame = false});
     }
   }
-  for (const ObjectTopicId id : markerTopicsOf(store, kAllDatasetsMarkerDataset, key)) {
+  for (const ObjectTopicId id : markerTopicsOf(shared_topics, target.marker)) {
     topics.push_back(MarkerTargetTopic{.id = id, .display_frame = true});
   }
   return topics;
@@ -57,10 +60,19 @@ void PlotMarkersItem::draw(
   // A display-frame family carries no dataset alignment: only the global origin.
   const DisplayOffset display_frame_offset{Duration{session_->globalTimeReference()}};
   std::set<std::uint32_t> drawn;  // topic ids already painted this pass
+  // Each dataset's marker topics, scanned from the store once per paint however many
+  // targets (one per curve) name it.
+  std::map<DatasetId, std::vector<MarkerTopic>> scans;
+  const auto scanOf = [&](DatasetId dataset) -> const std::vector<MarkerTopic>& {
+    const auto found = scans.find(dataset);
+    return found != scans.end() ? found->second
+                                : scans.emplace(dataset, scanMarkerTopics(store, dataset)).first->second;
+  };
 
   for (const MarkerTarget& target : targets) {
     const DisplayOffset dataset_offset = session_->displayOffset(target.dataset);
-    for (const MarkerTargetTopic& topic : markerTargetTopics(store, target)) {
+    for (const MarkerTargetTopic& topic :
+         markerTargetTopics(target, scanOf(target.dataset), scanOf(kAllDatasetsMarkerDataset))) {
       if (!drawn.insert(topic.id.id).second) {
         continue;
       }

@@ -17,6 +17,7 @@
 #include "marker_test_utils.h"
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_datastore/engine.hpp"
+#include "pj_datastore/marker_topic_metadata.hpp"
 #include "pj_datastore/query.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_datastore/topic_storage.hpp"
@@ -899,6 +900,37 @@ TEST(AppSessionMergeTest, DetectsConflictOnSharedNameDifferentType) {
   EXPECT_EQ(conflicts[0].source_dataset_id, b);
   EXPECT_EQ(conflicts[0].anchor_type, PJ::sdk::BuiltinObjectType::kImage);
   EXPECT_EQ(conflicts[0].source_type, PJ::sdk::BuiltinObjectType::kPointCloud);
+}
+
+// Merging concatenates same-named marker topics under the anchor's description, so two
+// that describe different sets (another target or owner) are a conflict; equal ones merge.
+TEST(AppSessionMergeTest, DetectsConflictBetweenSameNamedMarkerTopicsWithDifferentDescriptions) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  const PJ::DatasetId a = makeShiftedDataset(session, "A", 0, "/s", {0, 1'000'000'000LL});
+  const PJ::DatasetId b = makeShiftedDataset(session, "B", 0, "/s", {2'000'000'000LL, 3'000'000'000LL});
+  const PJ::DatasetId c = makeShiftedDataset(session, "C", 0, "/s", {4'000'000'000LL, 5'000'000'000LL});
+  auto& object_store = session.sessionManager().objectStore();
+  const std::string name = PJ::sdk::markerObjectTopicName("x");
+  const auto register_marker_topic = [&](PJ::DatasetId dataset, const PJ::MarkerTopicInfo& info) {
+    EXPECT_TRUE(object_store
+                    .registerTopic(
+                        {.dataset_id = dataset, .topic_name = name, .metadata_json = PJ::markerTopicMetadataJson(info)})
+                    .has_value());
+  };
+  register_marker_topic(a, {PJ::MarkerScopeKind::kSeries, "x", "plug/g"});
+  register_marker_topic(b, {PJ::MarkerScopeKind::kSeries, "y", "plug/g"});
+  register_marker_topic(c, {PJ::MarkerScopeKind::kSeries, "x", "plug/g"});
+  session.catalogModel().rebuildFromDatastore();
+
+  const auto conflicts = session.objectMergeConflicts({a, b});
+  ASSERT_EQ(conflicts.size(), 1U);
+  EXPECT_EQ(conflicts[0].topic_name, name);
+  EXPECT_EQ(conflicts[0].source_dataset_id, b);
+  EXPECT_TRUE(conflicts[0].marker_description_differs);
+  EXPECT_TRUE(session.objectMergeConflicts({a, c}).empty());
 }
 
 TEST(AppSessionMergeTest, SingleSelectionIsNoOp) {

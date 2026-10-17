@@ -44,7 +44,9 @@ struct ObjectTopicId {
 };
 
 /// Identity for an object topic: dataset scope + name (unique per dataset) plus
-/// opaque metadata_json retained verbatim for callers that interpret bytes.
+/// opaque metadata_json retained verbatim for callers that interpret bytes. The one
+/// exception: a direct write to a 0.35 marker name is stamped on registration
+/// (`stampLegacyMarkerMetadata`).
 struct ObjectTopicDescriptor {
   DatasetId dataset_id = 0;
   std::string topic_name;
@@ -155,7 +157,7 @@ class ObjectStore {
 
   // Set `requested_id` non-zero to register with that exact id; otherwise the
   // next id is auto-assigned.
-  Expected<ObjectTopicId> registerTopic(const ObjectTopicDescriptor& descriptor, ObjectTopicId requested_id = {});
+  Expected<ObjectTopicId> registerTopic(ObjectTopicDescriptor descriptor, ObjectTopicId requested_id = {});
 
   /// Atomic find-or-register for the refill contract: an existing topic with
   /// the same (dataset, name) AND byte-identical metadata_json is reused (its
@@ -163,7 +165,7 @@ class ObjectStore {
   /// same-name topic with DIFFERENT metadata is rejected loudly, preserving
   /// the collision alarm registerTopic gives. One lock: two racing callers
   /// converge on one topic instead of the loser erroring.
-  Expected<ObjectTopicId> findOrRegisterTopic(const ObjectTopicDescriptor& descriptor);
+  Expected<ObjectTopicId> findOrRegisterTopic(ObjectTopicDescriptor descriptor);
 
   // Resolve a topic id by (dataset_id, topic_name) without registering. Returns
   // nullopt if no topic with that key exists. Used by hosts that need to bind a
@@ -177,10 +179,12 @@ class ObjectStore {
 
   std::vector<ObjectTopicId> listTopics() const;
   std::vector<ObjectTopicId> listTopics(DatasetId dataset_id) const;
-  /// `dataset_id`'s topics whose name starts with `name_prefix`, in registration
-  /// order — one lock, no descriptor copies, for callers that scan a name family
-  /// on every paint.
-  std::vector<ObjectTopicId> listTopics(DatasetId dataset_id, std::string_view name_prefix) const;
+  /// Calls `visit` for each topic of `dataset_id`, in registration order, under the
+  /// store's shared lock and on the descriptor in place (no copies), so `visit` must
+  /// be cheap and must not call back into this store. For callers that scan a
+  /// dataset's descriptors on every paint.
+  void forEachTopic(
+      DatasetId dataset_id, const std::function<void(ObjectTopicId, const ObjectTopicDescriptor&)>& visit) const;
 
   // --- Write ---
 

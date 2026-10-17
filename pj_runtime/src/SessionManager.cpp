@@ -430,10 +430,10 @@ std::optional<std::pair<Timestamp, Timestamp>> SessionManager::datasetRawBounds(
     }
   }
   for (const ObjectTopicId object_topic_id : object_store_.listTopics(dataset_id)) {
-    // Reserved marker snapshot topics ("__markers__/...") are stored at a sentinel
-    // timestamp (0), not on the data clock — including them would drag the dataset
-    // origin to the epoch and stretch playback across decades.
-    if (isMarkerObjectTopic(object_store_.descriptor(object_topic_id).topic_name)) {
+    // Marker snapshot topics are stored at a sentinel timestamp (0), not on the
+    // data clock — including them would drag the dataset origin to the epoch and
+    // stretch playback across decades.
+    if (isMarkerTopic(object_store_.descriptor(object_topic_id))) {
       continue;
     }
     if (object_store_.entryCount(object_topic_id) > 0) {
@@ -945,8 +945,11 @@ void SessionManager::recomputeMarkersForChanged(const std::vector<TopicId>& chan
       // Retention can hide samples without moving the newest one or the stored rows,
       // and an out-of-order write or a restore only bumps the generation.
       const MarkerInputStamp stamp{
-          metadata.time_range_max, metadata.total_row_count, storage->retentionFloor(), storage->seriesGeneration()};
-      const auto [seen, first_time] = marker_input_extents_.try_emplace(id, stamp);
+          .time_range_max = metadata.time_range_max,
+          .total_row_count = metadata.total_row_count,
+          .retention_floor = storage->retentionFloor(),
+          .series_generation = storage->seriesGeneration()};
+      const auto [seen, first_time] = marker_input_stamps_.try_emplace(id, stamp);
       if (!first_time && std::exchange(seen->second, stamp) == stamp) {
         continue;  // a streaming tick lists every topic of its dataset; this one did not move
       }
@@ -1015,7 +1018,7 @@ void RefillGuard::pruneVanishedTopics() {
   // markers and orphan the recipe.
   std::vector<ObjectTopicId> vanished_object;
   for (const ObjectTopicId object_topic_id : prior_object_topic_ids_) {
-    if (isMarkerObjectTopic(session_->objectStore().descriptor(object_topic_id).topic_name)) {
+    if (isMarkerTopic(session_->objectStore().descriptor(object_topic_id))) {
       continue;
     }
     if (session_->objectStore().entryCount(object_topic_id) == 0) {
@@ -1219,8 +1222,7 @@ std::optional<DatasetMergeReport> SessionManager::mergeDatasets(
   // the source datasets still hold their marker topics. This shares the scalar
   // merge's structural validation, so it cannot fail once the scalar merge above
   // succeeded on the same inputs.
-  const auto exclude_markers = [](const ObjectTopicDescriptor& d) { return isMarkerObjectTopic(d.topic_name); };
-  if (auto objects = object_store_.mergeDatasets(anchor, sources, exclude_markers); objects.has_value()) {
+  if (auto objects = object_store_.mergeDatasets(anchor, sources, isMarkerTopic); objects.has_value()) {
     // Shared-name source topics are now empty — their entries folded into the
     // anchor topic, which the anchor's own parser decodes. Evict those redundant
     // source-side topics AND their (now-orphaned) parser slots via evictObjectTopics

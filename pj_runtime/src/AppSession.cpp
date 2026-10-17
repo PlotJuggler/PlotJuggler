@@ -301,10 +301,14 @@ std::vector<ObjectMergeConflict> AppSession::objectMergeConflicts(const std::vec
   struct Kind {
     sdk::BuiltinObjectType type{};
     std::string format;
+    // Merged marker sets keep the anchor's description, so it must match too (the
+    // description only: direct writes may carry custom metadata fields).
+    std::optional<MarkerTopicInfo> marker;
   };
   const auto kindOf = [](const ObjectTopicDescriptor& descriptor) {
     return Kind{
-        objectTypeFromMetadata(descriptor.metadata_json), objectPayloadFormatFromMetadata(descriptor.metadata_json)};
+        objectTypeFromMetadata(descriptor.metadata_json), objectPayloadFormatFromMetadata(descriptor.metadata_json),
+        markerTopicInfo(descriptor.metadata_json)};
   };
   std::unordered_map<std::string, Kind> kind_by_name;
   for (const ObjectTopicId object_topic_id : object_store.listTopics(plan->anchor)) {
@@ -318,7 +322,8 @@ std::vector<ObjectMergeConflict> AppSession::objectMergeConflicts(const std::vec
       const ObjectTopicDescriptor descriptor = object_store.descriptor(object_topic_id);
       Kind source_kind = kindOf(descriptor);
       const auto [it, inserted] = kind_by_name.emplace(descriptor.topic_name, source_kind);
-      if (inserted || (source_kind.type == it->second.type && source_kind.format == it->second.format)) {
+      if (inserted || (source_kind.type == it->second.type && source_kind.format == it->second.format &&
+                       source_kind.marker == it->second.marker)) {
         continue;  // first contributor for this name (sets the destination kind), or a match.
       }
       conflicts.push_back(
@@ -329,6 +334,7 @@ std::vector<ObjectMergeConflict> AppSession::objectMergeConflicts(const std::vec
               .source_type = source_kind.type,
               .anchor_format = it->second.format,
               .source_format = std::move(source_kind.format),
+              .marker_description_differs = source_kind.marker != it->second.marker,
           });
     }
   }
@@ -445,7 +451,7 @@ bool AppSession::focusPlaybackOnDatasets(const std::vector<DatasetId>& datasets)
     for (const ObjectTopicId object_topic_id : object_store.listTopics(dataset_id)) {
       // Marker snapshots sit at a sentinel timestamp (0), off the data clock;
       // folding them into the playback focus would stretch it back to the epoch.
-      if (isMarkerObjectTopic(object_store.descriptor(object_topic_id).topic_name)) {
+      if (isMarkerTopic(object_store.descriptor(object_topic_id))) {
         continue;
       }
       if (object_store.entryCount(object_topic_id) == 0) {

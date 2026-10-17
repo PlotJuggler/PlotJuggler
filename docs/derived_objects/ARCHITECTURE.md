@@ -439,14 +439,30 @@ time" rule of `pj_scene3D/docs/REQUIREMENTS.md` §4 for the layers in the second
   - Unchanged marker generators keep their topics on restore, as transforms and on-demand
     nodes already do. Their names are already stable; the churn comes from the
     clear-and-replay restore, and the protocol removes it.
-- **Marker topics are described by metadata** (decided 2026-10-13, slice M).
+- **Marker topics are described by metadata** (decided 2026-10-13; built, slice M).
   - A generator's topic is registered with the plot-markers type, `pj_derived: "markers"`,
-    a scope (`series`, `dataset` or `all`) and, for the series scope, the target series.
-  - Everything that recognizes or routes marker topics reads the metadata. Nothing parses
-    names.
-  - Names keep today's scheme, `__markers__/<key>#<generator id>`, as opaque ids. A direct
-    write to a 0.35 name (`markerObjectTopicName`) gets its metadata stamped at
-    registration, the one place that reads a marker name.
+    a scope (`series`, `dataset` or `all`) and, for the series scope, the target series
+    (`pj_marker_scope`, `pj_marker_target`; host constants until the host-contract minor
+    gives them to the SDK). It also carries its generator's id (`pj_marker_owner`), so
+    retiring a generator finds its topics without reading names.
+  - The scope follows the output key (`__global__`, `__all__` or a series key), not the
+    place the set is published: an all-datasets rule with a series key is a `series` topic
+    on the shared home.
+  - Everything that recognizes or routes marker topics reads the metadata
+    (`isMarkerTopic`, `scanMarkerTopics`, `markerTopicsOf`, `publishedMarkerScopes`).
+    Nothing parses names. A family lookup scans the dataset's descriptors once
+    (`scanMarkerTopics`; a substring check rejects every topic without `pj_derived`
+    before any parsing) and matches the scope and target in memory, not a separate
+    index: an index would have to follow every removal, merge and reload of the store.
+  - Names keep today's scheme, `__markers__/<key>#<generator id>`, as opaque ids, and the
+    host still builds them. A direct write to a 0.35 name (`markerObjectTopicName`) gets
+    its metadata stamped by `ObjectStore` on registration, the one place that reads a
+    marker name: scope and target come from the name once, as for a write with no owner.
+    A name whose metadata already says what it is (another builtin type, any `pj_derived`)
+    is left alone. A `__markers__/` topic registered with partial marker metadata (a
+    `pj_derived` value but no scope or target) is therefore neither stamped nor
+    recognized; the bridge should validate the full description once the host-contract
+    minor ships the keys.
   - On-demand-only logic (refill, the declared range) tests `pj_derived == "on_demand"`,
     not the key's presence, so it never touches marker topics.
   - The runtime hosts are assembled once, for the GUI and headless sessions.

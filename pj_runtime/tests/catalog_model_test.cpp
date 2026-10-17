@@ -17,6 +17,7 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
 using namespace Qt::StringLiterals;
@@ -289,6 +290,37 @@ TEST(CatalogModelTest, KeepsDuplicateDatasetObjectTopicsVisibleUnderDatasetRoot)
   ASSERT_TRUE(PJ::isObjectTopic(*second_descriptor));
   EXPECT_EQ(PJ::asObjectTopic(*second_descriptor)->object_topic_id, *second_object_topic);
   EXPECT_FALSE(catalog.curveDescriptor(items[1].key).has_value());
+}
+
+// Marker topics are hidden because their metadata says so; a media topic whose name
+// merely looks like one stays listed.
+TEST(CatalogModelTest, MarkerTopicsAreHiddenByMetadataNotByName) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  auto& store = session.objectStore();
+  ASSERT_TRUE(store
+                  .registerTopic(
+                      {.dataset_id = *dataset,
+                       .topic_name = "opaque-id",
+                       .metadata_json = PJ::markerTopicMetadataJson({PJ::MarkerScopeKind::kDataset})})
+                  .has_value());
+  ASSERT_TRUE(store.registerTopic({.dataset_id = *dataset, .topic_name = "__markers__/legacy", .metadata_json = "{}"})
+                  .has_value());
+  ASSERT_TRUE(store
+                  .registerTopic(
+                      {.dataset_id = *dataset,
+                       .topic_name = "__markers__/camera",
+                       .metadata_json = R"({"builtin_object_type":"kImage"})"})
+                  .has_value());
+
+  catalog.rebuildFromDatastore();
+
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 1U);
+  EXPECT_EQ(items[0].topic_name, u"__markers__/camera"_s);
 }
 
 TEST(CatalogModelTest, RemovedObjectTopicStaysHiddenAcrossRebuild) {

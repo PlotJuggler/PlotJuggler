@@ -38,10 +38,6 @@ class SessionManager;
 class PlotMarkersItem;
 struct MarkerTarget;  // pj_plotting/PlotMarkersItem.h
 
-// Identifies one dataset's marker scope — the CurveEditor pseudo-row unit and
-// the hidden-flag key.
-using MarkerScopeKey = std::pair<DatasetId, MarkerScope>;
-
 class PlotWidget : public PlotWidgetBase {
   Q_OBJECT
  public:

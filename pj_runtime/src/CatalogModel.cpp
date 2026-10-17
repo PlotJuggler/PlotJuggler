@@ -900,10 +900,10 @@ void CatalogModel::rebuildNow() {
 
     for (const ObjectTopicId object_topic_id : object_store.listTopics(dataset_id)) {
       const ObjectTopicDescriptor& object_topic = object_store.descriptor(object_topic_id);
-      // Reserved marker storage topics ("__markers__/...") are internal annotation
-      // state, not user-facing series — keep them out of the Datasets tree. The
-      // overlay reads them straight from the ObjectStore, not via the catalog.
-      if (isMarkerObjectTopic(object_topic.topic_name)) {
+      // Marker topics are internal annotation state, not user-facing series — keep
+      // them out of the Datasets tree. The overlay reads them straight from the
+      // ObjectStore, not via the catalog.
+      if (isMarkerTopic(object_topic)) {
         continue;
       }
       const QString key = makeObjectTopicKey(dataset_id, object_topic_id);

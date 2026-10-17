@@ -26,7 +26,7 @@
 #include "pj_base/builtin/plot_markers_codec.hpp"  // serializePlotMarkers, deserializePlotMarkers
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/query.hpp"
-#include "pj_runtime/MarkerTopics.h"     // isMarkerObjectTopic, markerOwnerTopicName, kAllDatasetsMarkerDataset
+#include "pj_runtime/MarkerTopics.h"     // isMarkerTopic, markerOwnerTopicName, kAllDatasetsMarkerDataset
 #include "pj_scripting/marker_engine.h"  // scripting::SeriesView/SeriesProvider, runMarkerScript
 
 namespace PJ {
@@ -419,7 +419,9 @@ Status BatchEngine::publishRun(const StagedRun& staged, std::optional<sdk::PlotM
   const PublishTarget target = publishTarget(staged.recipe);
   if (!computed.has_value()) {
     publishEmptyMarkers(target.first, target.second);
-  } else if (Status pushed = publishMarkerSet(target.first, target.second, *computed); !pushed.has_value()) {
+  } else if (
+      Status pushed = publishMarkerSet(target.first, target.second, topicMetadata(staged.recipe), *computed);
+      !pushed.has_value()) {
     return pushed;
   }
   coverage_[bindingKey(staged.recipe)] = staged.coverage_ns;
@@ -659,6 +661,9 @@ void BatchEngine::onBrakeFired() {
 // ---- routing + lifecycle ---------------------------------------------------
 
 Expected<std::vector<std::string>> BatchEngine::upsertGenerator(GeneratorRecipe recipe, CreateWait wait) {
+  if (recipe.id.empty()) {
+    return unexpected("generator id must not be empty");
+  }
   if (Status s = checkLanguage(recipe.language); !s.has_value()) {
     return unexpected(s.error());
   }
@@ -696,6 +701,10 @@ Expected<std::vector<std::string>> BatchEngine::upsertGenerator(GeneratorRecipe 
     recipe.outputs.front() = std::string(kAllDatasetsMarkerTopic);
   } else if (!recipe.all_datasets && recipe.outputs.front() == kAllDatasetsMarkerTopic) {
     return unexpected("output '__all__' is reserved for all-datasets generators");
+  }
+  // The topic's metadata is JSON: an id or key that is not UTF-8 cannot be described in it.
+  if (!markerTopicInfo(topicMetadata(recipe)).has_value()) {
+    return unexpected("generator id and output marker topic must be non-empty UTF-8 text");
   }
 
   // Flags are per-id (clearGenerators, removeGenerator and generatorIds read the
@@ -780,13 +789,18 @@ Expected<std::vector<std::string>> BatchEngine::upsertGenerator(GeneratorRecipe 
 }
 
 Status BatchEngine::publishMarkerSet(
-    DatasetId dataset_id, const std::string& object_topic_name, const sdk::PlotMarkers& set) {
+    DatasetId dataset_id, const std::string& object_topic_name, const std::string& metadata_json,
+    const sdk::PlotMarkers& set) {
   ObjectTopicId topic_id;
   if (const std::optional<ObjectTopicId> existing = object_store_.findTopic(dataset_id, object_topic_name)) {
+    if (markerTopicInfo(object_store_.descriptor(*existing).metadata_json) != markerTopicInfo(metadata_json)) {
+      return unexpected("object topic '" + object_topic_name + "' already exists and describes another marker set");
+    }
     topic_id = *existing;
   } else {
     Expected<ObjectTopicId> registered = object_store_.registerTopic(
-        ObjectTopicDescriptor{.dataset_id = dataset_id, .topic_name = object_topic_name, .metadata_json = {}});
+        ObjectTopicDescriptor{
+            .dataset_id = dataset_id, .topic_name = object_topic_name, .metadata_json = metadata_json});
     if (!registered.has_value()) {
       return unexpected(registered.error());
     }
@@ -821,6 +835,12 @@ sdk::PlotMarkers BatchEngine::storedMarkers(ObjectTopicId topic_id, Timestamp sh
   return std::move(*decoded);
 }
 
+std::string BatchEngine::topicMetadata(const GeneratorRecipe& recipe) {
+  MarkerTopicInfo info = markerInfoForKey(recipe.outputs.front());
+  info.owner = recipe.id;
+  return markerTopicMetadataJson(info);
+}
+
 BatchEngine::PublishTarget BatchEngine::publishTarget(const GeneratorRecipe& recipe) {
   return PublishTarget{
       recipe.all_datasets ? kAllDatasetsMarkerDataset : recipe.dataset_id,
@@ -841,11 +861,13 @@ void BatchEngine::retireTarget(const PublishTarget& target, bool ephemeral, cons
 }
 
 void BatchEngine::retireOwnedTopics(std::string_view id, bool ephemeral, const PublishTarget* keep) {
-  std::string suffix(1, kMarkerOwnerSeparator);
-  suffix.append(id);
+  if (id.empty()) {
+    return;  // direct writes carry no owner: an empty id would match all of them
+  }
   for (const ObjectTopicId topic_id : object_store_.listTopics()) {
     const ObjectTopicDescriptor descriptor = object_store_.descriptor(topic_id);
-    if (isMarkerObjectTopic(descriptor.topic_name) && descriptor.topic_name.ends_with(suffix)) {
+    const std::optional<MarkerTopicInfo> info = markerTopicInfo(descriptor.metadata_json);
+    if (info.has_value() && info->owner == id) {
       retireTarget(PublishTarget{descriptor.dataset_id, descriptor.topic_name}, ephemeral, keep);
     }
   }
@@ -1041,13 +1063,19 @@ std::vector<std::string> BatchEngine::mergeMarkerTopics(
   std::set<std::string> touched;
   for (const DatasetMergeSource& source : sources) {
     for (const ObjectTopicId source_id : object_store_.listTopics(source.dataset_id)) {
-      const std::string name = object_store_.descriptor(source_id).topic_name;
-      if (!isMarkerObjectTopic(name)) {
+      const ObjectTopicDescriptor source_topic = object_store_.descriptor(source_id);
+      if (!isMarkerTopic(source_topic)) {
         continue;
       }
+      const std::string& name = source_topic.topic_name;
       // The anchor's own set (unshifted) first, then the source's on the anchor clock.
       sdk::PlotMarkers merged;
       if (const std::optional<ObjectTopicId> anchor_id = object_store_.findTopic(anchor, name)) {
+        // Folding would keep the anchor's description for both sets: leave the source's alone.
+        if (markerTopicInfo(object_store_.descriptor(*anchor_id).metadata_json) !=
+            markerTopicInfo(source_topic.metadata_json)) {
+          continue;
+        }
         merged = storedMarkers(*anchor_id, Timestamp{0});
       }
       sdk::PlotMarkers moved = storedMarkers(source_id, source.raw_shift_ns);
@@ -1055,7 +1083,7 @@ std::vector<std::string> BatchEngine::mergeMarkerTopics(
           merged.markers.end(), std::make_move_iterator(moved.markers.begin()),
           std::make_move_iterator(moved.markers.end()));
       object_store_.removeTopic(source_id);
-      if (publishMarkerSet(anchor, name, merged).has_value()) {
+      if (publishMarkerSet(anchor, name, source_topic.metadata_json, merged).has_value()) {
         touched.insert(name);
       }
     }

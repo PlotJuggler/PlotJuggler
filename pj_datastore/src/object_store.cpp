@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "pj_datastore/marker_topic_metadata.hpp"
 #include "pj_datastore/resident_payload_pool.hpp"
 #include "saturating_time.hpp"
 
@@ -31,8 +32,8 @@ size_t chargedBytes(const ObjectEntry& entry) {
 
 // --- Registration ---
 
-Expected<ObjectTopicId> ObjectStore::registerTopic(
-    const ObjectTopicDescriptor& descriptor, ObjectTopicId requested_id) {
+Expected<ObjectTopicId> ObjectStore::registerTopic(ObjectTopicDescriptor descriptor, ObjectTopicId requested_id) {
+  stampLegacyMarkerMetadata(descriptor);
   std::unique_lock lock(store_mutex_);
   for (const auto& [tid, series] : topics_) {
     if (series->descriptor.topic_name == descriptor.topic_name &&
@@ -53,13 +54,14 @@ Expected<ObjectTopicId> ObjectStore::registerTopic(
     id = ObjectTopicId{next_id_++};
   }
   auto series = std::make_unique<ObjectSeries>();
-  series->descriptor = descriptor;
+  series->descriptor = std::move(descriptor);
   topics_.emplace_back(id, std::move(series));
   series_index_.emplace(id.id, topics_.back().second.get());
   return id;
 }
 
-Expected<ObjectTopicId> ObjectStore::findOrRegisterTopic(const ObjectTopicDescriptor& descriptor) {
+Expected<ObjectTopicId> ObjectStore::findOrRegisterTopic(ObjectTopicDescriptor descriptor) {
+  stampLegacyMarkerMetadata(descriptor);
   std::unique_lock lock(store_mutex_);
   for (const auto& [tid, series] : topics_) {
     if (series->descriptor.topic_name == descriptor.topic_name &&
@@ -72,7 +74,7 @@ Expected<ObjectTopicId> ObjectStore::findOrRegisterTopic(const ObjectTopicDescri
   }
   ObjectTopicId id{next_id_++};
   auto series = std::make_unique<ObjectSeries>();
-  series->descriptor = descriptor;
+  series->descriptor = std::move(descriptor);
   topics_.emplace_back(id, std::move(series));
   series_index_.emplace(id.id, topics_.back().second.get());
   return id;
@@ -118,15 +120,14 @@ std::vector<ObjectTopicId> ObjectStore::listTopics(DatasetId dataset_id) const {
   return result;
 }
 
-std::vector<ObjectTopicId> ObjectStore::listTopics(DatasetId dataset_id, std::string_view name_prefix) const {
+void ObjectStore::forEachTopic(
+    DatasetId dataset_id, const std::function<void(ObjectTopicId, const ObjectTopicDescriptor&)>& visit) const {
   std::shared_lock lock(store_mutex_);
-  std::vector<ObjectTopicId> result;
   for (const auto& [tid, series] : topics_) {
-    if (series->descriptor.dataset_id == dataset_id && series->descriptor.topic_name.starts_with(name_prefix)) {
-      result.push_back(tid);
+    if (series->descriptor.dataset_id == dataset_id) {
+      visit(tid, series->descriptor);
     }
   }
-  return result;
 }
 
 // --- Write ---

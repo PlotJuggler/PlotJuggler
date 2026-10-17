@@ -155,6 +155,8 @@ if(PJ_BUILD_TESTS)
         tests/data_processor_service_test.cpp
         # links the shared marker engine (runMarkerScript) the service drives
         tests/batch_engine_test.cpp
+        # Marker topics are recognized and routed by their metadata, never by name.
+        tests/marker_topics_test.cpp
         # links the shared marker engine the service drives
         tests/markers_runtime_host_test.cpp
         tests/data_processors_kind_router_test.cpp

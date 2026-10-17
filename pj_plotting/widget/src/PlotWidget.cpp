@@ -1399,15 +1399,14 @@ std::vector<MarkerTarget> PlotWidget::markerTargets() const {
     targets.push_back(
         MarkerTarget{
             src.dataset_id,
-            QString::fromStdString(sdk::markerSeriesKey(src.topic_name.toStdString(), src.field_name.toStdString()))});
+            markerInfoForKey(sdk::markerSeriesKey(src.topic_name.toStdString(), src.field_name.toStdString()))});
   }
   for (const DatasetId dataset : datasets) {
     for (const MarkerScope scope : {MarkerScope::kDataset, MarkerScope::kAllDatasets}) {
       if (hidden_marker_scopes_.contains(MarkerScopeKey{dataset, scope})) {
         continue;
       }
-      const std::string_view topic = markerScopeTopic(scope);
-      targets.push_back(MarkerTarget{dataset, QString::fromUtf8(topic.data(), static_cast<qsizetype>(topic.size()))});
+      targets.push_back(MarkerTarget{dataset, markerInfoForScope(scope)});
     }
   }
   return targets;
@@ -1426,11 +1425,8 @@ void PlotWidget::pruneHiddenMarkerScopes() {
 bool PlotWidget::refreshMarkerScopeRowSet() {
   std::vector<MarkerScopeKey> current;
   if (session_ != nullptr) {
-    for (const DatasetId dataset_id : curveDatasets()) {
-      for (const MarkerScope scope : publishedMarkerScopes(session_->objectStore(), dataset_id)) {
-        current.emplace_back(dataset_id, scope);
-      }
-    }
+    const std::vector<DatasetId> datasets = curveDatasets();
+    current = publishedMarkerScopes(session_->objectStore(), datasets);
   }
   if (current == marker_scope_rows_) {
     return false;

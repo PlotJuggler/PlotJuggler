@@ -83,11 +83,12 @@ enum class GeneratorKind {
 /// reloaded, merged (as the anchor or merged away) or removed.
 ///
 /// Invariants:
-/// 1. Every generator writes its OWN object topic, `__markers__/<key>#<id>`
-///    (`markerOwnerTopicName`; `#` is refused in ids and keys): two rules on one key
-///    never clobber each other, and retiring one tombstones only the topics ending
-///    in its `#<id>` — found by scanning the store, so an output a merge moved onto
-///    the anchor is retired too. The overlay draws the union of a key's family, so
+/// 1. Every generator writes its OWN object topic, named `__markers__/<key>#<id>`
+///    (`markerOwnerTopicName`, an opaque id; `#` is refused in ids and keys) and
+///    registered with metadata that says what it is: scope, target and owner
+///    (`topicMetadata`). Two rules on one key never clobber each other, and retiring
+///    one tombstones only the topics it owns — found by scanning the store's metadata,
+///    so an output a merge moved onto the anchor is retired too. The overlay draws the union of a key's family, so
 ///    the store is the ONLY copy — merge, reload and removal are the store's
 ///    per-topic operations — and a direct toolbox write to the bare topic is just
 ///    another family member this service never reads or rewrites.
@@ -304,7 +305,8 @@ class BatchEngine : public QObject {
   /// published. When a `kBounded` run is still going, the recipe is installed and this
   /// returns; the run publishes through the pool like a scheduled one (`isRunning`,
   /// `markersPublished`), and its failure is reported there (`errorOf`, the diagnostic
-  /// sink), the prior markers kept. A `declared_inputs` length mismatch is rejected.
+  /// sink), the prior markers kept. A `declared_inputs` length mismatch, an empty id, and
+  /// an id or output key that is not UTF-8 or contains `#` are rejected.
   /// An id's `ephemeral`/`history_exempt` flags are homogeneous across its bindings (a
   /// disagreeing binding is rejected before anything runs), and a recipe whose
   /// `all_datasets` differs from the id's bindings REPLACES the whole id, so no id ever
@@ -444,6 +446,10 @@ class BatchEngine : public QObject {
   /// The one place a recipe publishes to: the dataset and its OWN object-topic name.
   using PublishTarget = std::pair<DatasetId, std::string>;
 
+  /// The metadata `recipe`'s topic is registered with: the markers type, the scope and
+  /// target its output key means (`markerInfoForKey`), and the recipe's id as owner.
+  [[nodiscard]] static std::string topicMetadata(const GeneratorRecipe& recipe);
+
   /// `recipe`'s target: (`dataset_id`, `<key>#<id>`) when bound,
   /// (`kAllDatasetsMarkerDataset`, …) when `all_datasets`. Requires an output
   /// (`upsertGenerator` guarantees one on every stored binding).
@@ -454,7 +460,7 @@ class BatchEngine : public QObject {
   /// the same binding just rewrote.
   void retireTarget(const PublishTarget& target, bool ephemeral, const PublishTarget* keep = nullptr);
 
-  /// `retireTarget` every store topic ending in `#<id>`, `keep` excepted. A store
+  /// `retireTarget` every marker topic owned by `id` (its metadata), `keep` excepted. A store
   /// scan rather than the recipe's targets: a merge moves a consumed binding's
   /// output onto the anchor and drops the binding, so no recipe names it anymore.
   void retireOwnedTopics(std::string_view id, bool ephemeral, const PublishTarget* keep = nullptr);
@@ -503,9 +509,13 @@ class BatchEngine : public QObject {
 
   /// Find-or-register `object_topic_name` on `dataset_id` (capping retention at one
   /// snapshot — markers are republished whole, last-writer-wins at a sentinel
-  /// timestamp) and publish `set`. The single publish path for run + merge.
+  /// timestamp) and publish `set`. A topic registered here carries `metadata_json`;
+  /// one that already exists keeps its own, and must describe the same marker set
+  /// (scope, target, owner) or the publish fails and the topic is left untouched.
+  /// The single publish path for run + merge.
   [[nodiscard]] Status publishMarkerSet(
-      DatasetId dataset_id, const std::string& object_topic_name, const sdk::PlotMarkers& set);
+      DatasetId dataset_id, const std::string& object_topic_name, const std::string& metadata_json,
+      const sdk::PlotMarkers& set);
 
   /// Republish an EMPTY set to `object_topic_name` on `dataset_id` (the removal
   /// tombstone): the topic survives with its id + retention budget, but draws
