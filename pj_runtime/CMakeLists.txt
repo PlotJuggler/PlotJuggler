@@ -26,7 +26,9 @@ add_library(pj_runtime STATIC
     src/EnginePool.cpp
     src/MarkerTopics.cpp
     src/MarkersRuntimeHost.cpp
+    src/NodeScheduler.cpp
     src/ObjectIngestTap.cpp
+    src/OnDemandService.cpp
     src/DiagnosticHistory.cpp
     src/ExtensionCatalogService.cpp
     src/HttpGet.cpp
@@ -62,12 +64,15 @@ add_library(pj_runtime STATIC
     include/pj_runtime/PluginRuntimeCatalog.h
     include/pj_runtime/SourceCacheStore.h
     include/pj_runtime/IDataWidget.h
+    include/pj_runtime/InFlightBudget.h
     include/pj_runtime/InputStager.h
     include/pj_runtime/BatchEngine.h
     include/pj_runtime/EnginePool.h
     include/pj_runtime/TsanAnnotations.h
     include/pj_runtime/MarkersRuntimeHost.h
+    include/pj_runtime/NodeScheduler.h
     include/pj_runtime/ObjectIngestTap.h
+    include/pj_runtime/OnDemandService.h
     include/pj_runtime/PlaybackControlHost.h
     include/pj_runtime/PlaybackEngine.h
     include/pj_runtime/ParserRoutingService.h
@@ -178,6 +183,8 @@ if(PJ_BUILD_TESTS)
         tests/result_history_test.cpp
         # On-demand inputs: staged by identity on the GUI thread, decoded on any thread.
         tests/input_stager_test.cpp
+        # On-demand scheduling under D30 (one run in flight, one pending request per node), through the facade.
+        tests/node_scheduler_test.cpp
         # links the shared marker engine the service drives
         tests/markers_runtime_host_test.cpp
         tests/data_processors_kind_router_test.cpp

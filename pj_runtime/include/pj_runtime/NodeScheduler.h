@@ -1,0 +1,204 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+#pragma once
+
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "pj_base/expected.hpp"
+#include "pj_base/span.hpp"
+#include "pj_base/types.hpp"
+#include "pj_datastore/object_store.hpp"
+#include "pj_runtime/EnginePool.h"
+#include "pj_runtime/InFlightBudget.h"
+#include "pj_runtime/InputStager.h"
+#include "pj_runtime/RecipeGraph.h"
+#include "pj_runtime/ResultHistory.h"
+#include "pj_scripting/object_script.h"
+#include "pj_tf/tf_buffer.h"
+
+namespace PJ {
+
+/// Runs the on-demand nodes on the pool under the result policy D30 (docs/derived_objects/ARCHITECTURE.md §4
+/// invariant 1, §8, §11). Per node: one run in flight and one pending request, which holds only the latest
+/// time. A time-only request never cancels the running run: it completes, is published, and then the pending
+/// request starts. A run is cancelled, and its result dropped, only when its meaning changes: a new revision
+/// (its own or an upstream's, `supersede`), a removal (`forget`), or a new epoch of its dataset (seen at the
+/// next request, and again at publication).
+///
+/// A request stages the node's inputs on the GUI thread (cheap, so at every request), then serves it from the
+/// history when it can: a cache hit or a result the ring holds computes nothing, republishes only a result the
+/// ring no longer shows, and drops the tombstones it supersedes. A missing input runs nothing and clears what the
+/// ring shows at the requested time (D6); a failed run that serves the current request clears what it shows at the
+/// run's stamp, and every failed run is remembered by its key, so the same inputs fail again without a run, clearing
+/// again (an input that failed to fetch or decode, only until the next request). After every run, a result that serves
+/// the current request settles it; otherwise the current request is served again (the run was for another time,
+/// or its inputs are gone), and a late result that does not serve it never takes the ring entry that does.
+///
+/// A node reading an upstream's output first requests the upstream at the same time and waits for it (one task
+/// per node). Each publication of an upstream serves its readers again, which take the result it shows, so a
+/// reader keeps updating while its upstream lags (D30) and converges with it; every settlement of an upstream
+/// (published, served from the history, missing, failed) serves the readers waiting on it. Runs that do not fit
+/// the in-flight budget wait first in, first out; a finishing node's readers come before its own next run.
+///
+/// THREADING: GUI thread only, except the run function. A run touches only its job (the staged inputs, the
+/// shared bytecode and the TF snapshot taken at its submission) and the thread-safe `ObjectStore`, never the graph,
+/// the history or the scheduler, and serializes its object outputs there. `store` must outlive the pool's
+/// running computes; the graph, the history, the stager and the pool must outlive the scheduler, and the budget
+/// the pool (a run still on the pool holds its reservation). A callback must not call back into the scheduler.
+class NodeScheduler {
+ public:
+  /// What a layer shows about a node (REQUIREMENTS D6, D30).
+  struct NodeState {
+    enum class Status {
+      kIdle,          ///< no request waits or has settled: the default
+      kPending,       ///< the newest request is computing or waiting: the previous result stays shown
+      kReady,         ///< the newest request's result is published
+      kMissingInput,  ///< the newest request has an input with nothing at or before its time: no run, cleared
+      kError,         ///< the newest request's run failed: cleared
+    };
+    Status status = Status::kIdle;
+    std::string detail;         ///< why, for kMissingInput and kError
+    Timestamp requested_t = 0;  ///< the newest request's time (a finding's pinned time)
+    /// How far the result shown at `requested_t` is behind the one the newest request produces: the difference
+    /// of their stamps (REQUIREMENTS D30), 0 once it is shown. nullopt when no available result is shown, or
+    /// the target is not known yet (an upstream computes first), and in kIdle, kMissingInput and kError.
+    std::optional<Timestamp> lag;
+
+    bool operator==(const NodeState&) const = default;
+  };
+
+  /// The dataset's TF state, taken when a run is submitted (GUI thread); null when the dataset has no TF. While
+  /// the dataset's TF ingest is active, return a snapshot no newer than the brake rate allows (ARCHITECTURE §19).
+  using TfProvider = std::function<std::shared_ptr<const pj::tf::TransformSnapshot>(DatasetId)>;
+  /// The revision the dataset's TF state has now, read at every request to match results that read the TF tree,
+  /// with no snapshot taken (GUI thread).
+  using TfRevisionProvider = std::function<uint64_t(DatasetId)>;
+  /// The dataset's epoch, bumped when its storage is replaced (GUI thread).
+  using EpochProvider = std::function<uint64_t(DatasetId)>;
+  /// One script run, on a worker: `scripting::runOnDemandScript`'s signature.
+  using RunFunction = std::function<Expected<scripting::ScriptBundle, scripting::ScriptError>(
+      const scripting::CompiledScript&, Span<const scripting::NamedValue>, std::string_view,
+      Span<const scripting::OutputSpec>, const scripting::RunOptions&)>;
+  /// Called on the GUI thread with the node's key.
+  using KeyCallback = std::function<void(const std::string&)>;
+
+  struct Hooks {
+    TfProvider tf;                   ///< empty: no dataset has TF
+    TfRevisionProvider tf_revision;  ///< empty: `tf`'s snapshot's revision, or 0
+    EpochProvider epoch;             ///< empty: every dataset stays at epoch 0
+    RunFunction run;                 ///< empty: `scripting::runOnDemandScript`
+    KeyCallback published;           ///< the history took a result of the node: the ring may show something new
+    KeyCallback state_changed;       ///< the node's status, detail or lag changed
+  };
+
+  NodeScheduler(
+      const ObjectStore& store, const RecipeGraph& graph, ResultHistory& history, const InputStager& stager,
+      EnginePool& pool, InFlightBudget& budget, Hooks hooks);
+  /// Cancels the runs in flight; their results are never published, and each returns its reservation once the
+  /// pool lets it go.
+  ~NodeScheduler();
+
+  NodeScheduler(const NodeScheduler&) = delete;
+  NodeScheduler& operator=(const NodeScheduler&) = delete;
+
+  /// Requests `key` at `t` (a finding at its pinned time): its cursor moves there and its state follows this
+  /// request. An unknown key is ignored.
+  void requestAt(std::string_view key, Timestamp t);
+  /// The node's meaning changed (a new revision of it or of an upstream): cancels its run and drops its pending
+  /// request and its remembered failure; a node requested before is requested again at its cursor.
+  void supersede(std::string_view key);
+  /// The node is gone: cancels its run, whose result is then dropped, and forgets its state.
+  void forget(std::string_view key);
+
+  /// nullopt for a node never requested, or forgotten.
+  [[nodiscard]] std::optional<NodeState> state(std::string_view key) const;
+
+ private:
+  struct Job;
+  /// What the newest request waits for.
+  enum class Wait {
+    kNone,      ///< nothing: settled, or its run is the newest request's
+    kRun,       ///< the node's running run, for an older request
+    kUpstream,  ///< an upstream's publication or settlement
+    kRoom,      ///< room in the budget, in `room_queue_`
+  };
+  /// Why a request is served.
+  enum class Trigger {
+    kRequest,  ///< a request, or the end of the node's run: waits for an upstream still computing
+    kRetry,    ///< an upstream published or settled, or room came: takes what the upstreams show
+  };
+  /// One node's scheduling state.
+  struct Slot {
+    /// The last failed run: a request its key serves fails again without a run.
+    struct Failure {
+      ResultHistory::CacheKey key;  ///< with what the run observed
+      std::string message;
+      bool decode = false;  ///< an input failed to fetch or decode, not the script: the next request runs again
+    };
+    std::shared_ptr<Job> running;
+    Wait wait = Wait::kNone;
+    Timestamp cursor = 0;  ///< the newest request's time
+    NodeState::Status status = NodeState::Status::kIdle;
+    std::string detail;
+    std::optional<Timestamp> lag;
+    std::optional<Failure> failure;
+    /// The nodes that requested this one as an upstream; may name one gone since.
+    std::vector<std::string> readers;
+  };
+  using Entry = std::pair<const std::string, Slot>;
+
+  /// Serves the node's newest request, at its cursor: upstream checks, staging, the history, then a run.
+  void serve(Entry& entry, const RecipeGraph::Node& node, Trigger trigger);
+  void submit(
+      Entry& entry, const RecipeGraph::Node& node, uint64_t epoch, InputStager::Staged staged,
+      InFlightBudget::Reservation room);
+  /// GUI thread, once per submitted run: publishes it unless its meaning changed, admits the runs waiting for
+  /// room, serves its readers, then its own current request.
+  void finish(Job& job, const EnginePool::Outcome& outcome);
+  /// Publishes a run's result, or records its failure and, when it serves the current request, clears what the ring
+  /// shows at its stamp. True when the published result serves the current request.
+  bool apply(Entry& entry, const RecipeGraph::Node& node, Job& job);
+  /// The result at `stamp` serves the newest request: drops the tombstones it supersedes and settles ready.
+  void settleServed(Entry& entry, Timestamp stamp);
+  /// Runs nothing, clears what the ring shows at the cursor (D6) and settles the newest request as missing input.
+  void settleMissing(Entry& entry, const RecipeGraph::Node& node, uint64_t epoch, std::string reason);
+  /// Publishes every output unavailable at `stamp` when an available result is shown there (D6).
+  void clearShown(
+      const std::string& key, const RecipeGraph::Node& node, Timestamp requested_t, Timestamp stamp, uint64_t epoch,
+      const std::string& reason);
+  /// How far what the ring shows at the cursor is behind `target`; nullopt when it shows nothing available.
+  [[nodiscard]] std::optional<Timestamp> lagBehind(const Entry& entry, Timestamp target) const;
+  /// Sets the state, reports a change and, for a settled request, serves the readers waiting on it.
+  void setState(
+      Entry& entry, NodeState::Status status, std::string detail = {}, std::optional<Timestamp> lag = std::nullopt);
+  /// Keeps `room_queue_` holding exactly the nodes that wait for room, in arrival order.
+  void setWait(Entry& entry, Wait wait);
+  /// Serves the readers of `entry` that wait for it (`waiting_only`), or every one with no run in flight or turn.
+  void serveReaders(const Entry& entry, bool waiting_only);
+  /// Serves the waiters for room, first in, first out, while room is left.
+  void admitWaiting();
+  [[nodiscard]] uint64_t epochOf(DatasetId dataset) const;
+  [[nodiscard]] uint64_t tfRevisionOf(DatasetId dataset) const;
+
+  const ObjectStore& store_;
+  const RecipeGraph& graph_;
+  ResultHistory& history_;
+  const InputStager& stager_;
+  EnginePool& pool_;
+  InFlightBudget& budget_;
+  Hooks hooks_;
+  std::map<std::string, Slot, std::less<>> slots_;
+  std::deque<std::string> room_queue_;  ///< the nodes waiting for room, first in, first out
+  /// Expires with the scheduler: a publish arriving later does nothing.
+  std::shared_ptr<const int> lifetime_ = std::make_shared<const int>(0);
+};
+
+}  // namespace PJ

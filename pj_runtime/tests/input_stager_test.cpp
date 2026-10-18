@@ -39,8 +39,10 @@ using scripting::ScriptBundle;
 using test::cloudOver;
 using test::kPointStride;
 using test::medianMicros;
+using test::ParseProbe;
 using test::prune;
 using test::rawPoints;
+using test::RawPointsParser;
 using Key = ResultHistory::CacheKey;
 
 constexpr Timestamp kSec = 1'000'000'000;
@@ -70,37 +72,6 @@ struct LazySource {
   sdk::PayloadView bytes;
   std::atomic<int> fetches{0};
   std::thread::id thread;  ///< read only after the fetching thread was joined
-};
-
-/// What the fake parser saw.
-struct ParseProbe {
-  std::shared_ptr<std::mutex> topic_lock = std::make_shared<std::mutex>();
-  std::atomic<int> parses{0};
-  std::thread::id thread;
-  bool lock_held = false;
-};
-
-/// The `lidar` topic's parser: a payload of raw 16-byte points becomes a cloud aliasing it.
-class RawPointsParser : public MessageParserPluginBase {
- public:
-  explicit RawPointsParser(ParseProbe& probe) {
-    sdk::SchemaHandler handler;
-    handler.object_type = sdk::BuiltinObjectType::kPointCloud;
-    handler.parse_object = [&probe](Timestamp ts, sdk::PayloadView payload) -> Expected<sdk::ObjectRecord> {
-      probe.thread = std::this_thread::get_id();
-      // Another thread can take the topic lock only when the parse's caller does not hold it.
-      probe.lock_held = !std::async(std::launch::async, [&probe] {
-                           const bool taken = probe.topic_lock->try_lock();
-                           if (taken) {
-                             probe.topic_lock->unlock();
-                           }
-                           return taken;
-                         }).get();
-      ++probe.parses;
-      return sdk::ObjectRecord{ts, sdk::BuiltinObject(cloudOver(std::move(payload)))};
-    };
-    registerSchemaHandler("raw_points", std::move(handler));
-  }
 };
 
 /// `owner/<id>` reading `inputs`, with one point-cloud output `cropped`; the script is never run.

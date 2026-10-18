@@ -80,8 +80,10 @@ REQUIREMENTS.md or here.
      removal.
    - Each node has one running run and at most one pending request, which keeps only the
      latest time.
-   - The display only moves forward. State comes from the newest request. The scene shows
-     the newest result at or before the cursor, plus how far it lags.
+   - The display only moves forward: never older than the result already shown for the
+     current request. State comes from the newest request. The scene shows the newest
+     result at or before the cursor, plus how far it lags behind the result the current
+     request produces (D30).
    - Explicit evaluations (submit/poll) are outside this rule: each handle is its own
      consumer.
 2. **Statelessness by isolation (D2, D29).** A function's result depends only on its
@@ -177,18 +179,21 @@ The TF clock question is in §12.
 **Status: Decided.** Each component's row says whether it is built.
 
 `OnDemandService` is a thin facade over concrete classes, with no single-implementation
-interfaces. It starts with the public API that `SessionManager` and the plugin hosts use
-today, and is transitional: each consumer moves to the component it needs (a layer reads its
-content from the store and its state from `NodeScheduler`, the Custom Topics panel moves to
-`RecipeGraph`). The facade keeps only the orchestration that spans components: install,
-remove and restore.
+interfaces. Built (slice 6a-4a, `pj_runtime/include/pj_runtime/OnDemandService.h`): it owns
+the four components below and keeps only the orchestration that spans them, install and
+remove, forwarding requests and state queries to `NodeScheduler`; the pool, the in-flight
+budget, the TF snapshot provider, the dataset epoch, the scalar sampler and the parser
+lookup are injected (slice 6a-5 wires the session's), and it reports through callbacks,
+not Qt signals. Restore stays in `DerivedObjects` (slice 6b). Each consumer moves to the
+component it needs (a layer reads its content from the store and its state from
+`NodeScheduler`, the Custom Topics panel moves to `RecipeGraph`).
 
 | Component | Responsibility |
 |---|---|
 | `RecipeGraph` | Recipes, bindings, the DAG and cycle rejection, validation, ownership, previews, findings, dependents. Pure logic, no Qt. Built (slice 6a-1). |
 | `InputStager` | Resolves inputs at `t` on the GUI thread by identity (an object entry's topic, UID and parser, a scalar sample, an upstream's result) without fetching a payload, and builds the request's cache key; `decode` fetches and decodes them on any thread, a parser-backed entry under its per-topic parser lock and a canonical point cloud as a view over the store's bytes, and returns the parser keepalives its objects need, which `ResultHistory` keeps with a cached result. Built (slice 6a-3). |
 | `ResultHistory` | Per node: the compute cache and the ring (§9). Results keyed by cache identity (§10), ordered by stamp and sized by time span: a window around the node's cursor, then one global byte budget each that evicts the result farthest from its node's cursor. A miss checks the store first (§9), and the cache keeps no decoded copy of what the ring holds. Built (slice 6a-2). |
-| `NodeScheduler` | Per node: one running run plus one pending request, demand, the in-flight budget, submission to `EnginePool`, supersede on meaning change (invariant 1), and the node state that layers read (computing, missing input, error). |
+| `NodeScheduler` | Per node: one running run plus one pending request, the in-flight budget, submission to `EnginePool`, supersede on meaning change (invariant 1), and the node state that layers read (idle, pending, ready, missing input, error, with the lag). Built (slice 6a-4a); demand joins in slice 6a-5. |
 | `GridRunner` | The per-instant loop shared by window evaluations and series, with a report sink and a column sink (§15). |
 
 Data flow for one cursor request:
@@ -206,8 +211,16 @@ cursor / live edge ──► NodeScheduler ──► InputStager (GUI: resolve b
 store's bytes: the compute cache keeps no decoded copy of a result the ring holds (§9). The
 scheduler asks after the upstream's own request at that time, so the result read is the
 upstream's displayed one, which the ring never evicts.
-**Proposed:** compute a whole chain in one worker task, instead of
-staging upstream nodes synchronously on the GUI thread. If adopted, two conditions hold:
+**Built (slice 6a-4a), decided 2026-10-17: one task per node.**
+A request for a reader first requests its upstream at the same time; the reader's request
+waits as its pending request until the upstream publishes or settles, then stages. Each
+publication of an upstream serves its readers again, and they take the result it shows rather than
+wait for its newest request, which a moving cursor (or a TF revision that changes at every
+request) never lets settle: a reader keeps updating while its upstream lags (D30), and
+converges with it. An upstream that misses an input or fails is its reader's missing
+input, with the reason (D25). Of the 2-hop latency at 10 Hz requests (§19) the scheduling
+is 0.1-0.2 ms, so the upgrade, a whole chain in one worker task, waits for a case that needs
+it, under two conditions:
 - Each intermediate result lands in its node's `ResultHistory` and in the store, so an
   upstream node that is also displayed, or read by another node, does not run twice.
 - The budget and cancellation cover the whole chain, and the report names the node where
@@ -237,7 +250,8 @@ paper check of D26. Pull is rejected and the ring is the target.
   Plugin reads, the catalog, drag and drop, layouts and the Custom Topics panel work
   unchanged. A derived topic exposes the results in its window to plugin reads at any `t`.
 - **The state of a node** (computing, missing input, error) comes from the node, not from
-  the store (invariant 1). The lag is the cursor minus the stamp of the entry read.
+  the store (invariant 1). The lag is how far the entry read is behind the result the
+  current request produces (D30), not the cursor minus its stamp.
 - **Findings (D26).**
   - A pinned node writes its single entry at a fixed early store timestamp. The payload
     keeps its real stamp, and scene placement uses the payload stamp.
@@ -307,9 +321,10 @@ not.
 
 ## 11. Scheduling and execution
 
-**Status: Built (slice 2)** (the pool), **Built (slice 3)** (the batch queue per node) and
-**Decided** (the on-demand queue, worker decoding, GIL release). The chain-in-one-task item
-is proposed.
+**Status: Built (slice 2)** (the pool), **Built (slice 3)** (the batch queue per node),
+**Built (slice 6a-4a)** (the on-demand queue, worker decoding, the in-flight budget for
+on-demand runs) and **Decided** (GIL release; batch joins the in-flight budget in slice
+6a-4b).
 
 - **`EnginePool`** (`pj_runtime/include/pj_runtime/EnginePool.h`) runs ready tasks. It keeps
   no per-node state: no mailboxes, no coalescing, no supersede by generation.
@@ -353,20 +368,20 @@ is proposed.
     undo's or redo's, like a plugin's, runs to completion (§13). The whole-dataset recomputes (reload,
     rollback, dataset removal) stay synchronous and record a failure like a scheduled
     run.
-- **The in-flight memory budget** reserves one VM ceiling per evaluation; staging fetches
-  no payload, so the inputs are sized after the worker decodes them
-  (`scripting::estimateBytes`), and slice 6a-4 decides how they count against it. A request
-  that does not fit waits. Not built for batch yet: the prototype's
-  batch admission needs the marker script's result ceiling in `pj_scripting` (slice 5).
-- **GUI-thread work still to move:**
-  - input decoding moves to the worker (decided; `InputStager::decode`, slice 6a-3, runs
-    anywhere; `NodeScheduler`, slice 6a-4, runs it on the pool), including a lazy input entry's chunk
-    decode;
-  - a chain runs in one worker task (proposed; decided while designing slice 6a);
-  - byte estimates read the decoded object and never serialize (§9);
-  - the batch staging copy, and TF snapshot copies (§12), get measured first. The batch
-    re-run over 500k rows now costs the GUI thread 15 ms at most per pass (§19), nearly
-    all of it the resolver's copy of the series (staging alone: 13-16 ms).
+  - **On-demand (built, slice 6a-4a).** Per node: one run in flight and one pending request
+    holding the latest time; the full policy (cancellation, history hits, chains, the
+    order of the waiters for room) is the `NodeScheduler.h` class comment.
+- **The in-flight memory budget** (built for on-demand, slice 6a-4a, `InFlightBudget.h`)
+  reserves one run's ceiling, its VM cap plus its native budget (128 MiB at the defaults),
+  from its submission to its publication. Decoded inputs are views on the store's bytes, so
+  they are not charged again. The default holds max(1, pool threads) runs. A run that does
+  not fit waits, first in, first out, until a publication returns room; one larger than the
+  whole budget runs alone rather than never. Batch admission joins it in slice 6a-4b
+  (BUD-11).
+- **GUI-thread work still to move:** the batch staging copy, and TF snapshot copies (§12),
+  get measured first. The batch re-run over 500k rows now costs the GUI thread 15 ms at most
+  per pass (§19), nearly all of it the resolver's copy of the series (staging alone: 13-16
+  ms).
 - **Incremental engine.** Its per-ingest cycle runs on the GUI thread under `lockEngine`,
   and the first replay runs in 8 ms slices. Moving it to the pool is later work, after
   measurement.
@@ -859,7 +874,7 @@ payload (§9).
 ## 19. Measurements
 
 These come from the prototype, whose design document describes the machine and method,
-except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2 and slice 6a-3 rows. The slice 2 and 3 rows are measured on this stack by
+except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3 and slice 6a-4a rows. The slice 2 and 3 rows are measured on this stack by
 `EngineFreezeBench` (`pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`), from
 the call until the result is complete, as two different metrics:
 - **GUI-thread CPU time**, as the longest single stretch (the call or one event-loop
@@ -884,6 +899,9 @@ Linux, RelWithDebInfo.
 | GUI freeze: new transform over 500k rows | 1,613 ms → 8.3 ms per slice |
 | On-demand evaluation, 260k-point cloud | 4-5 ms cold; under 0.01 ms warm |
 | Input staging after slice 6a-3 (`InputStagerBench`, `pj_runtime/tests/input_stager_test.cpp`, `PJ_BENCH=1`; a lazily stored cloud whose fetch returns a view, median of 101 calls, three runs) | `stage` on the GUI thread: 0.10-0.23 µs for 260k points, 0.10-0.24 µs for 1 point: independent of the input's size. `decode` of the 260k cloud (4.2 MB of canonical bytes): 0.3 µs, a view over the store's bytes (170-243 µs with a copying decode), on a worker in production, where a real lazy entry's chunk decode joins it (2.2 ms for 3.2 MiB of LZ4, measured on the prototype). `stage` among 10k object topics and 10k scalar names, the node's registered last (`StageAmongTenThousandTopics`; both lookups scan): 35-36 µs, so no per-node lookup cache |
+| On-demand request after slice 6a-4a (`NodeSchedulerBench`, `pj_runtime/tests/node_scheduler_test.cpp`, `PJ_BENCH=1`; median of 101 requests, three runs) | GUI time per `requestAt` over a lazily stored 260k-point cloud: 4.8-8.0 µs cold (staged, a miss, the run submitted), 0.39-0.42 µs warm (a hit), against the prototype's 4-5 ms cold. With 600 and 1800 results in the window (`RequestAtWithAFullWindow`): warm 0.38-0.42 µs either way, cold 1.31-1.43 µs and 1.29-1.33 µs (the lookup reads only the staged stamp) |
+| Publication of a 4.2 MB point-cloud result on the GUI thread (`GuiPublishCostOfA4MBResult`, 260k points, median of 51) | Serialized at the publication: 1.45-1.49 ms. Serialized on the worker (`ResultHistory::serializeOutputs`), the payload moved into the ring: 2-3 µs |
+| 2-hop chain after slice 6a-4a (`TwoHopChainLatencyAt10Hz`; requests at 10 Hz, from the reader's request to its published result, 50 requests, three runs) | Two Luau crops keeping all 260k points: median 6.8-6.9 ms, max 11-23 ms, every request drawn (14.6-15.0 ms while the compute cache kept a decoded copy of each result the ring holds). The scheduling alone, an instant fake run with empty outputs: 0.17-0.20 ms, so a chain in one worker task would save little |
 | Streaming: 5 min of 10 Hz, 2048-point clouds | Bounded plateau of entries and bytes |
 | Per-call setup: Luau | about 86 µs per call (fresh VM) |
 | Object scripts after slice 5c-1 (`ObjectScriptBench`, `pj_scripting/tests/object_script_test.cpp`, `PJ_BENCH=1`; three runs) | Per-call setup (fresh VM over compiled bytecode, a one-line script): 40-47 µs. Iterating a 100,000-element list field (`FrameTransforms.transforms`, reading `translation.x`): 11.0-11.5 ms (about 112 ns per element) holding the list in a local, 15.7-16.3 ms re-reading the field each iteration. The same loop with the list materialized on every element read (a one-line mutation of the binder): 18.6 s |

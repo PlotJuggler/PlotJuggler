@@ -182,8 +182,15 @@ Status RecipeGraph::upsert(Recipe recipe) {
     }
   }
   nodes_.insert_or_assign(
-      key, Node{std::move(recipe), next_revision_++, dataset, std::move(bindings), std::move(*compiled)});
+      key, Node{
+               std::move(recipe), next_revision_++, dataset, std::move(bindings),
+               std::make_shared<const scripting::CompiledScript>(std::move(*compiled))});
   return okStatus();
+}
+
+void RecipeGraph::reinstate(Node node) {
+  std::string key = node.recipe.key();
+  nodes_.insert_or_assign(std::move(key), std::move(node));
 }
 
 Status RecipeGraph::remove(std::string_view key) {

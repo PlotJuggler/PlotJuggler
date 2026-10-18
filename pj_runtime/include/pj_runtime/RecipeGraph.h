@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -83,7 +84,8 @@ class RecipeGraph {
     uint64_t revision = 0;
     DatasetId dataset = 0;  ///< where every input resolved, and where the outputs live
     std::vector<Binding> bindings;
-    scripting::CompiledScript compiled;  ///< compiled once per revision, run by the scheduler
+    /// Compiled once per revision; the scheduler's runs share it.
+    std::shared_ptr<const scripting::CompiledScript> compiled;
   };
 
   static constexpr std::size_t kMaxPinnedPerOwner = 64;
@@ -99,6 +101,9 @@ class RecipeGraph {
   /// persistent node reads (a preview ends with its panel, the persisted reader would not); a new pin
   /// past the owner's cap.
   [[nodiscard]] Status upsert(Recipe recipe);
+  /// Puts back `node`, a copy of the key's node taken before an `upsert` replaced it, revision and all: how a
+  /// consumer that cannot follow that upsert undoes it. The revision the upsert took is never reused.
+  void reinstate(Node node);
   /// Forgets the node. Its readers stay installed and report the input missing (`missingInput`).
   [[nodiscard]] Status remove(std::string_view key);
   /// `remove` for a pinned finding; rejects an unknown or unpinned key.

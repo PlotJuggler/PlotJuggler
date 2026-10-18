@@ -2,15 +2,21 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
-// What the on-demand tests share: point clouds, recipes whose scripts never run, and readers of the store.
+// What the on-demand tests (ResultHistory, InputStager, NodeScheduler) share: point clouds, recipes whose
+// scripts never run, a parser over raw points, and readers of the store.
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <future>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -18,6 +24,7 @@
 #include "pj_base/builtin/builtin_object_codec.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/RecipeGraph.h"
 
 namespace PJ::test {
@@ -64,6 +71,37 @@ inline RecipeGraph::Recipe onDemandRecipe(
   recipe.script = "local inputs = ...\nreturn {}\n";
   return recipe;
 }
+
+/// What the fake parser saw.
+struct ParseProbe {
+  std::shared_ptr<std::mutex> topic_lock = std::make_shared<std::mutex>();
+  std::atomic<int> parses{0};
+  std::thread::id thread;
+  bool lock_held = false;
+};
+
+/// A parser of the `raw_points` schema: a payload of raw 16-byte points becomes a cloud aliasing it.
+class RawPointsParser : public MessageParserPluginBase {
+ public:
+  explicit RawPointsParser(ParseProbe& probe) {
+    sdk::SchemaHandler handler;
+    handler.object_type = sdk::BuiltinObjectType::kPointCloud;
+    handler.parse_object = [&probe](Timestamp ts, sdk::PayloadView payload) -> Expected<sdk::ObjectRecord> {
+      probe.thread = std::this_thread::get_id();
+      // Another thread can take the topic lock only when the parse's caller does not hold it.
+      probe.lock_held = !std::async(std::launch::async, [&probe] {
+                           const bool taken = probe.topic_lock->try_lock();
+                           if (taken) {
+                             probe.topic_lock->unlock();
+                           }
+                           return taken;
+                         }).get();
+      ++probe.parses;
+      return sdk::ObjectRecord{ts, sdk::BuiltinObject(cloudOver(std::move(payload)))};
+    };
+    registerSchemaHandler("raw_points", std::move(handler));
+  }
+};
 
 /// Removes every entry of `topic`.
 inline void prune(ObjectStore& store, ObjectTopicId topic) {
