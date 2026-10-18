@@ -202,11 +202,11 @@ struct ChargedBytes {
   std::vector<uint8_t> bytes;
 };
 
-/// Reserves `size` bytes plus the header copied from `cloud`, then allocates the bytes (capacity only:
-/// the caller fills them).
+/// Reserves `size` bytes plus the header copied from `cloud` and `extra_header` bytes the output adds to it,
+/// then allocates the bytes (capacity only: the caller fills them).
 Expected<std::shared_ptr<ChargedBytes>> allocateOutput(
-    const PointCloud& cloud, std::size_t size, const NativeLimits& limits) {
-  std::size_t header = sizeof(PointCloud) + cloud.frame_id.size();
+    const PointCloud& cloud, std::size_t size, const NativeLimits& limits, std::size_t extra_header = 0) {
+  std::size_t header = sizeof(PointCloud) + cloud.frame_id.size() + extra_header;
   for (const auto& field : cloud.fields) {
     header += sizeof(PointField) + field.name.size();
   }
@@ -277,7 +277,7 @@ Expected<PointCloud> copyMarked(
   const uint8_t* const end = next + size;
   for (std::size_t word = 0; word < mask.size() && next != end; ++word) {
     if (cancelledAt(limits, word * 64)) {
-      return unexpected("cancelled");
+      return unexpected(std::string(kCancelledError));
     }
     for (uint64_t bits = mask[word]; bits != 0 && next != end; bits &= bits - 1) {
       const std::size_t index = word * 64 + static_cast<std::size_t>(std::countr_zero(bits));
@@ -439,7 +439,7 @@ Expected<PointCloud> transformXyz(const PointCloud& cloud, const sdk::FrameTrans
   if (!access) {
     return unexpected(access.error());
   }
-  auto owner = allocateOutput(cloud, cloud.data.size(), limits);
+  auto owner = allocateOutput(cloud, cloud.data.size(), limits, tf.parent_frame_id.size());
   if (!owner) {
     return unexpected(owner.error());
   }
@@ -458,7 +458,7 @@ Expected<PointCloud> transformXyz(const PointCloud& cloud, const sdk::FrameTrans
     });
   });
   if (!finished) {
-    return unexpected("cancelled");
+    return unexpected(std::string(kCancelledError));
   }
   PointCloud result = withBytes(cloud, std::move(*owner));
   if (!tf.parent_frame_id.empty()) {

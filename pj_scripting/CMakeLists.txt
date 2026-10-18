@@ -185,6 +185,9 @@ set(PJ_SCRIPTING_SOURCES
   # Native object operations (point clouds, scene entities) for the object-script binders; pj_base only.
   src/native/point_cloud_ops.cpp
   src/native/scene_entities_ops.cpp
+  # The Luau object-script engine (compile, run, field reads, pj.tf).
+  src/object_script.cpp
+  src/object_binder.cpp
 )
 if(EMSCRIPTEN)
   list(APPEND PJ_SCRIPTING_SOURCES src/python_engine_unavailable.cpp)
@@ -200,8 +203,12 @@ if(PJ_ASSERT_THROWS)
 endif()
 target_link_libraries(pj_scripting
   PUBLIC
-    pj_scripting_core             # Luau engine + marker analysis (brings Luau::VM/Compiler transitively)
+    pj_scripting_core             # Luau engine + marker analysis
     pj_datastore  # DataProcessor base + ProcessorSisoAdapter + ISISOTransform (formerly pj_proc)
+    pj_tf         # object_script.h: the TF snapshot a script reads (pj.tf)
+  PRIVATE
+    Luau::VM                      # object_script.cpp / object_binder.cpp
+    Luau::Compiler
 )
 
 if(NOT EMSCRIPTEN)
@@ -255,6 +262,13 @@ if(PJ_BUILD_TESTS)
     SOURCES tests/native_ops_test.cpp
     LIBS pj_scripting)
   target_include_directories(pj_scripting_native_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+  # --- the object-script engine; its lazy-list test drives the private binder directly ---
+  pj_add_test_runner(pj_scripting_object_tests
+    MAIN plain
+    SOURCES tests/object_script_test.cpp
+    LIBS pj_scripting Luau::VM Luau::Compiler)
+  target_include_directories(pj_scripting_object_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
   # --- M5: filter catalogue ---
   add_executable(filter_catalogue_test tests/filter_catalogue_test.cpp)

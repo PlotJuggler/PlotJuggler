@@ -6,11 +6,21 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "pj_base/expected.hpp"
 
 namespace PJ::scripting::native {
+
+/// How every error of a native allocation over its budget starts; a binder matches it to retry after a
+/// garbage collection.
+inline constexpr std::string_view kNativeLimitError = "script native memory limit";
+
+/// A byte limit as an error message reads it: "N MB" for a whole number of MiB, else "N bytes".
+inline std::string describeBytes(std::size_t bytes) {
+  return bytes % (std::size_t{1} << 20) == 0 ? std::to_string(bytes >> 20) + " MB" : std::to_string(bytes) + " bytes";
+}
 
 /// One evaluation's byte limit for native allocations (crops, transforms, scene builders), which live
 /// outside the VM's own memory cap. Atomic because an output retained past its evaluation may be
@@ -62,10 +72,7 @@ class MemoryReservation {
   /// names the native limit, a ledger separate from the VM's own memory cap.
   [[nodiscard]] Status grow(std::size_t bytes) {
     if (budget_ && !budget_->tryAcquire(bytes)) {
-      const std::size_t limit = budget_->limit();
-      const std::string text =
-          limit % (1u << 20) == 0 ? std::to_string(limit >> 20) + " MB" : std::to_string(limit) + " bytes";
-      return unexpected("script native memory limit (" + text + ") exceeded");
+      return unexpected(std::string(kNativeLimitError) + " (" + describeBytes(budget_->limit()) + ") exceeded");
     }
     bytes_ += bytes;
     return okStatus();

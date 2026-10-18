@@ -24,6 +24,9 @@
 // `timestamp_ns`, because the scene places an object at its own stamp.
 namespace PJ::scripting::native {
 
+/// The error of an allocating operation that stopped because its run was cancelled.
+inline constexpr std::string_view kCancelledError = "cancelled";
+
 /// What an allocating operation runs under. `budget` (null: unbounded) is charged for the output, its
 /// bytes plus its header, before it is allocated, and stays charged until the output's buffer dies.
 /// `cancelled` (empty: never) is the run's cancel check, the one `runMarkerScript` takes: polled every
@@ -103,7 +106,7 @@ enum class CompareOp : uint8_t { kLt, kLe, kGt, kGe, kEq, kNe };
 /// frame): `p' = rotation * p + translation` on x/y/z, with the rotation normalized; every other channel is
 /// copied verbatim and a non-finite record is left untouched. A non-finite transform or a zero rotation is
 /// an error. Never compacts: an organized cloud keeps its shape. `tf.child_frame_id` and `tf.timestamp` are
-/// not read.
+/// not read. The new frame name is charged with the output.
 [[nodiscard]] Expected<sdk::PointCloud> transformXyz(
     const sdk::PointCloud& cloud, const sdk::FrameTransform& tf, const NativeLimits& limits);
 

@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "memory_budget.h"
@@ -78,7 +79,7 @@ template <class Keep>
         }
       });
   if (!finished) {
-    return unexpected("cancelled");
+    return unexpected(std::string(kCancelledError));
   }
   if (records % 64 != 0) {
     mask[records / 64] = word;

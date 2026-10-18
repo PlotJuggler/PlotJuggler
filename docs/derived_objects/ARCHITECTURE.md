@@ -141,18 +141,22 @@ header-only 0.36.0:
 
 ## 6. Types and bindings
 
-**Status: Built**, with one fix decided.
+**Status: Built.** The Luau binder (slice 5c-1, `pj_scripting/src/object_binder.cpp`) has both
+fixes below; the Python binder comes with slice 10.
 
 - **SDK field tables** describe each builtin struct's members: name, kind, accessors. They
   drive generic binders in Luau and Python, so a script and an agent see the same fields.
 - **Heavy operations are native C++ per type,** in `pj_scripting/native/`: filter, crop,
   transform, bounds, builders, presets. They serve both languages.
-- **Decided fix:** binders read list elements lazily through `list_at`, instead of
-  materializing whole lists on every field access. Today iterating a list is O(N²).
-- **Decided fix:** an output declaration accepts only the object types the binders know:
-  point cloud, scene entities, image annotations, image, depth image, camera info, video
-  frame and frame transforms. Today `parseOutputSpec` accepts any builtin type, so a
-  script can declare an output it can never return.
+- **Lazy lists (built, slice 5c-1):** binders read list elements one at a time through
+  `list_at`, instead of materializing whole lists on every field access (the prototype's
+  O(N²) iteration). Iterating 100,000 elements takes 11 ms (§19).
+- **Producible outputs (built, slice 5c-1):** an output declaration accepts only the object
+  types a script can produce: point cloud, scene entities, image annotations, image, depth
+  image and camera info. Video frames wait for slice 9, frame transforms for a decision on
+  the TF ingest tap (a derived TF topic would feed the dataset's buffer). The prototype's
+  `parseOutputSpec` accepted any builtin type, so a script could declare an output it could
+  never return.
 
 ## 7. Time and alignment
 
@@ -360,8 +364,8 @@ is proposed.
 - **`TransformService`** (`pj_runtime`) owns one buffer per dataset and the ingest tap,
   which is active from startup. `SessionManager`'s remove, merge and reload paths call its
   life-cycle hooks.
-- **Scripts read an immutable per-dataset snapshot** (Built, slice 5a; the `pj.tf` binding
-  that reads it is slice 5c). `TransformService::snapshot(dataset)` returns a
+- **Scripts read an immutable per-dataset snapshot** (Built: the snapshot in slice 5a, the
+  `pj.tf` binding that reads it in slice 5c-1). `TransformService::snapshot(dataset)` returns a
   `std::shared_ptr<const pj::tf::TransformSnapshot>` with `tryLookupTransform(target,
   source, t, clock)`, `getAllFrames()` and `revision()`. It is never null, it never
   changes, and it is read from any thread without a lock. Calls at one revision return one
@@ -453,7 +457,7 @@ Every consumer and its clock:
 | TF frame trail | Entry (`chainSampleTimes` and its lookups) | The trail is split at the cursor and its head meets the frame's triad. |
 | Camera scene bounds, layer render keys, point-cloud axis range | The layer's own placement, with its placement hold | They must match what is drawn. |
 | Frame list, fixed-frame combo, orphan check | None | `getFrameHierarchy` and `areConnected` take no time. |
-| Scripts (`pj.tf`, slice 5) | Entry by default; header for an object-placement helper | The snapshot they read is built (slice 5a); the binding is not yet. |
+| Scripts (`pj.tf`, slice 5c-1) | Entry by default (no time, or a time); header for `pj.tf.lookup(target, source, object)`, at the object's own stamp | An object input's stamp enters the script on the dataset clock (its entry's `payload_stamp_shift` added, as TF ingest adds it to header stamps). The fixed-joint edges a dock's robot model writes into the buffer may appear in the snapshot: they only add frames. |
 
 With header-stamp placement a stamped object in a moving frame stays where it was measured
 until its next sample, instead of moving with the frame at the cursor. This holds even when
@@ -656,8 +660,8 @@ the protocol in slice 6b. The rest is **Built**.
 **Status: Built.** Python's compile-once and read-only modules are decided; Luau VM reuse is
 proposed (N1, N2).
 
-- **Luau** gets a fresh sandboxed VM per call, from bytecode compiled once per recipe.
-  **Proposed:** one sandboxed state per pool worker plus a fresh sandboxed thread per call.
+- **Luau** gets a fresh sandboxed VM per call, from bytecode compiled once per recipe
+  (built, slice 5c-1: about 43 µs per call on this stack, §19). **Proposed:** one sandboxed state per pool worker plus a fresh sandboxed thread per call.
   That cuts about 86 µs of setup to about 2 µs. It needs the memory cap and instruction
   budget re-armed per call, and the random seed reset per call. Trigger: decide when the
   series slice measures per-call overhead over a long history. Before adopting it, a test
@@ -836,7 +840,7 @@ payload (§9).
 ## 19. Measurements
 
 These come from the prototype, whose design document describes the machine and method,
-except the slice 2, slice 3, slice 5a and slice 5n rows. The slice 2 and 3 rows are measured on this stack by
+except the slice 2, slice 3, slice 5a, slice 5n and slice 5c-1 rows. The slice 2 and 3 rows are measured on this stack by
 `EngineFreezeBench` (`pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`), from
 the call until the result is complete, as two different metrics:
 - **GUI-thread CPU time**, as the longest single stretch (the call or one event-loop
@@ -862,6 +866,7 @@ Linux, RelWithDebInfo.
 | On-demand evaluation, 260k-point cloud | 4-5 ms cold; under 0.01 ms warm |
 | Streaming: 5 min of 10 Hz, 2048-point clouds | Bounded plateau of entries and bytes |
 | Per-call setup: Luau | about 86 µs per call (fresh VM) |
+| Object scripts after slice 5c-1 (`ObjectScriptBench`, `pj_scripting/tests/object_script_test.cpp`, `PJ_BENCH=1`; three runs) | Per-call setup (fresh VM over compiled bytecode, a one-line script): 40-47 µs. Iterating a 100,000-element list field (`FrameTransforms.transforms`, reading `translation.x`): 11.0-11.5 ms (about 112 ns per element) holding the list in a local, 15.7-16.3 ms re-reading the field each iteration. The same loop with the list materialized on every element read (a one-line mutation of the binder): 18.6 s |
 | Per-call setup: Python | 73 µs (4-line script) to 1.2 ms (43-line script), re-parsing every call |
 | TF snapshot copy (prototype: a copy per snapshot) | 0.26 ms (5 s window) to 248 ms and 691 MB (1 h file) |
 | TF snapshot after slice 5a (copy-on-write; measured on this stack by `TransformSnapshotBench`, `pj_tf/tests/tf_buffer_test.cpp`, `PJ_BENCH=1`; 25 edges at 100 Hz, every sample distinct, median of 5) | `snapshot()`: 0.02 µs and 0 bytes at any size. The next write while it is held copies the state once, on the writing thread under the buffer's write lock: live 5 s window 0.15 ms / 0.9 MB of samples, 60 s window 2.9 ms / 10.8 MB, complete 1 h file 72 ms / 648 MB (only when something writes the file buffer after a snapshot, e.g. a robot model's fixed-joint bridges); a buffer nobody writes is never copied. Consumer rule: during a dataset's TF ingest (a first file load writes the active buffer, streaming never ends) a fresh snapshot per revision makes every next write copy the growing state, quadratic over a load; take a new snapshot no faster than the brake rate there, or wait for the ingest to end |

@@ -20,7 +20,7 @@ Two backends sit behind the **`ScriptEngine`** seam
 
 The data-processor base (`PJ::proc::DataProcessor`, owned by `pj_datastore`) stays
 Qt-free, Luau-free **and Python-free**: only `pj_scripting` links either runtime.
-Depends on `pj_base` + `pj_datastore` (public) + Luau + CPython/pybind11 (private).
+Depends on `pj_base` + `pj_datastore` + `pj_tf` (public) + Luau + CPython/pybind11 (private).
 Licensed MPL-2.0.
 
 ## Key headers
@@ -48,7 +48,13 @@ Licensed MPL-2.0.
 - `marker_engine.h` — `runMarkerScript`, the whole-series → markers path (Luau). Its interrupt callback also polls
   the caller's `cancelled` check, so a cancelled script stops inside the interpreter, and native marker output is
   capped by `max_output_bytes` (16 MiB by default) independently of the VM's memory cap.
-- `src/native/` (private; the object-script binders are their consumers, from slice 5c-1) — the heavy
+- `object_script.h` — the Luau object-script engine the on-demand service calls on a worker: compile once per recipe
+  revision, a fresh sandboxed VM per run, `pj.tf` over a TF snapshot, output inference or lenient binding, the
+  observed-clock/TF flags on the result and the error. Contract: the header; design:
+  [`docs/derived_objects/ARCHITECTURE.md`](../docs/derived_objects/ARCHITECTURE.md) §5-7, §12, §14.
+- `src/object_binder.h` (private) — objects as locked, read-only views over their SDK field tables (lists read
+  lazily through `list_at`), `pj.int64`, the `pj.unavailable` marker and the point-cloud methods over `src/native/`.
+- `src/native/` (private; consumed by the object-script binder) — the heavy
   half of an object script, Luau-free so Luau and Python share it:
   - `point_cloud_ops.h`: count, bounds, extreme point, `cropBox`, `filterByField`, `transformXyz`,
     `nextFinitePoint`. Little-endian only, x/y/z float32/float64, `row_step` honoured (rows may not
