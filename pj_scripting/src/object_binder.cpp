@@ -5,12 +5,14 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <new>
 #include <optional>
 #include <string>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "lualib.h"
@@ -19,6 +21,8 @@
 #include "native/memory_budget.h"
 #include "native/scene_entities_ops.h"
 #include "pj_base/builtin/field_table_registry.hpp"
+#include "pj_datastore/saturating_time.hpp"
+#include "pj_scripting/object_script.h"
 
 namespace PJ::scripting::detail {
 namespace {
@@ -940,17 +944,66 @@ sdk::BuiltinObject withStampShifted(const sdk::BuiltinObject& object, Timestamp 
     if (stamp == 0) {
       return;
     }
-    // Saturates like pj_datastore's saturatingAdd: a stamp near the limits must not wrap around.
-    constexpr Timestamp kMax = std::numeric_limits<Timestamp>::max();
-    constexpr Timestamp kMin = std::numeric_limits<Timestamp>::min();
-    const Timestamp moved = shift > 0 && stamp > kMax - shift   ? kMax
-                            : shift < 0 && stamp < kMin - shift ? kMin
-                                                                : stamp + shift;
-    auto copy = value;  // shares the payload bytes through their anchor
-    field->set_int64(&copy, moved);
+    auto copy = value;                                     // shares the payload bytes through their anchor
+    field->set_int64(&copy, saturatingAdd(stamp, shift));  // a stamp near the limits must not wrap around
     shifted = sdk::BuiltinObject(std::move(copy));
   });
   return shifted;
 }
 
 }  // namespace PJ::scripting::detail
+
+namespace PJ::scripting {
+
+namespace {
+
+/// The bytes a described struct holds beyond its fixed members: strings, list elements and record buffers,
+/// walked through its field table. A scalar and every list element count 8 bytes, so a list of empty
+/// elements (metadata pairs) is not free.
+std::size_t describedBytes(const sdk::FieldTableView& table, const void* owner) {
+  std::size_t total = 0;
+  for (const sdk::FieldDescriptor& field : table.fields) {
+    switch (field.kind) {
+      case sdk::FieldKind::kString:
+        total += field.get_string(owner).size();
+        break;
+      case sdk::FieldKind::kStruct:
+        total += describedBytes(*field.nested, field.struct_ptr(owner));
+        break;
+      case sdk::FieldKind::kList: {
+        const std::size_t count = field.list_size(owner);
+        total += count * sizeof(double);
+        for (std::size_t index = 0; field.nested != nullptr && index < count; ++index) {
+          total += describedBytes(*field.nested, field.list_at(owner, index));
+        }
+        break;
+      }
+      case sdk::FieldKind::kBuffer:
+        total += field.buffer(owner).bytes.size();
+        break;
+      default:
+        total += sizeof(double);
+        break;
+    }
+  }
+  return total;
+}
+
+}  // namespace
+
+std::size_t estimateBytes(const ScriptValue& value) {
+  if (const auto* object = std::get_if<sdk::BuiltinObject>(&value)) {
+    const sdk::FieldTableView* table = sdk::describe(object->type());
+    const void* data = detail::structPointer(*object);
+    return sizeof(sdk::BuiltinObject) + (table != nullptr && data != nullptr ? describedBytes(*table, data) : 0);
+  }
+  if (const auto* text = std::get_if<std::string>(&value)) {
+    return text->size();
+  }
+  if (const auto* unavailable = std::get_if<Unavailable>(&value)) {
+    return unavailable->reason.size();
+  }
+  return sizeof(double);
+}
+
+}  // namespace PJ::scripting

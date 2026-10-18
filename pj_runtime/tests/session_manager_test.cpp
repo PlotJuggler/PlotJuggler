@@ -34,6 +34,8 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/DerivedTopics.h"
+#include "pj_runtime/ResultHistory.h"
 #include "pj_runtime/SessionManager.h"
 using namespace Qt::StringLiterals;
 
@@ -592,6 +594,35 @@ TEST(SessionManagerRangeTest, DatasetDisplayRangeAppliesDatasetDisplayOffset) {
   ASSERT_TRUE(range.has_value());
   EXPECT_DOUBLE_EQ(range->min.value, 3.0);
   EXPECT_DOUBLE_EQ(range->max.value, 7.0);
+}
+
+// A finding sits at kFindingTimestamp, a sentinel off the data clock: folding it into the dataset's
+// bounds would stretch the range back to the year 1677.
+TEST(SessionManagerRangeTest, DerivedFindingDoesNotWidenTheDatasetRange) {
+  PJ::SessionManager session;
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  auto cloud = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *dataset,
+          .topic_name = "/points",
+          .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+      });
+  auto finding = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *dataset,
+          .topic_name = "owner/pin/cropped",
+          .metadata_json = PJ::derivedTopicMetadata(PJ::sdk::BuiltinObjectType::kPointCloud),
+      });
+  ASSERT_TRUE(cloud.has_value() && finding.has_value());
+  ASSERT_TRUE(session.objectStore().pushOwned(*cloud, 100, std::vector<uint8_t>{1}).has_value());
+  ASSERT_TRUE(session.objectStore().pushOwned(*cloud, 900, std::vector<uint8_t>{1}).has_value());
+  ASSERT_TRUE(session.objectStore().pushOwned(*finding, PJ::kFindingTimestamp, std::vector<uint8_t>{2}).has_value());
+
+  const auto range = session.datasetDisplayRange(*dataset);
+  ASSERT_TRUE(range.has_value());
+  EXPECT_DOUBLE_EQ(range->min.value, 100.0e-9);
+  EXPECT_DOUBLE_EQ(range->max.value, 900.0e-9);
 }
 
 TEST(SessionManagerRangeTest, DatasetDisplayRangeIsNulloptForEmptyDataset) {
@@ -1471,6 +1502,34 @@ TEST(SessionManagerRefillGuardTest, PruneVanishedTopicsKeepsMarkerTopics) {
   EXPECT_NE(std::find(after.begin(), after.end(), *cam), after.end()) << "/cam/a kept (refilled)";
   EXPECT_NE(std::find(after.begin(), after.end(), *markers), after.end())
       << "the marker topic survives an empty refill — the producer is the host, not the file";
+}
+
+// An on-demand node's derived topic is host-published too: the refill never rewrites it, and its id
+// is what the node's ResultHistory publishes into.
+TEST(SessionManagerRefillGuardTest, PruneVanishedTopicsKeepsDerivedObjectTopics) {
+  PJ::SessionManager session;
+  auto ds = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "reload.mcap"});
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  auto cam = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{.dataset_id = *ds, .topic_name = "/cam/a", .metadata_json = "{}"});
+  auto derived = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *ds,
+          .topic_name = "owner/crop/cropped",
+          .metadata_json = PJ::derivedTopicMetadata(PJ::sdk::BuiltinObjectType::kPointCloud)});
+  ASSERT_TRUE(cam.has_value() && derived.has_value());
+  ASSERT_TRUE(session.objectStore().pushOwned(*cam, 100, std::vector<uint8_t>{1}).has_value());
+  ASSERT_TRUE(session.objectStore().pushOwned(*derived, 100, std::vector<uint8_t>{2}).has_value());
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(*ds);
+    ASSERT_TRUE(session.objectStore().pushOwned(*cam, 1000, std::vector<uint8_t>{3}).has_value());
+    guard.pruneVanishedTopics();
+    guard.commit();
+  }
+
+  const auto after = session.objectStore().listTopics(*ds);
+  EXPECT_NE(std::find(after.begin(), after.end(), *derived), after.end()) << "the derived topic survives";
 }
 
 TEST(SessionManagerRefillGuardTest, MovedGuardRollsBackExactlyOnce) {

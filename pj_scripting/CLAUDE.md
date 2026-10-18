@@ -50,7 +50,8 @@ Licensed MPL-2.0.
   capped by `max_output_bytes` (16 MiB by default) independently of the VM's memory cap.
 - `object_script.h` — the Luau object-script engine the on-demand service calls on a worker: compile once per recipe
   revision, a fresh sandboxed VM per run, `pj.tf` over a TF snapshot, output inference or lenient binding, the
-  observed-clock/TF flags on the result and the error. Contract: the header; design:
+  observed-clock/TF flags on the result and the error, and `estimateBytes(value)` (a decoded value's size from its
+  field table, never by serializing it). Contract: the header; design:
   [`docs/derived_objects/ARCHITECTURE.md`](../docs/derived_objects/ARCHITECTURE.md) §5-7, §12, §14.
 - `src/object_binder.h` (private) — objects as locked, read-only views over their SDK field tables (lists read
   lazily through `list_at`), `pj.int64`, the `pj.unavailable` marker and the point-cloud methods over `src/native/`.

@@ -174,7 +174,7 @@ The TF clock question is in §12.
 
 ## 8. The on-demand pipeline
 
-**Status: Decided.** `RecipeGraph` is built (slice 6a-1).
+**Status: Decided.** `RecipeGraph` is built (slice 6a-1), and so is `ResultHistory` (slice 6a-2).
 
 `OnDemandService` is a thin facade over concrete classes, with no single-implementation
 interfaces. It starts with the public API that `SessionManager` and the plugin hosts use
@@ -187,7 +187,7 @@ remove and restore.
 |---|---|
 | `RecipeGraph` | Recipes, bindings, the DAG and cycle rejection, validation, ownership, previews, findings, dependents. Pure logic, no Qt. Built (slice 6a-1). |
 | `InputStager` | Resolves inputs at `t` on the GUI thread and captures payload views (shared-pointer copies). It does not decode. |
-| `ResultHistory` | Per node: the compute cache. Results keyed by cache identity (§10), ordered by stamp and sized by time span. A miss checks the store first (§9). |
+| `ResultHistory` | Per node: the compute cache and the ring (§9). Results keyed by cache identity (§10), ordered by stamp and sized by time span: a window around the node's cursor, then one global byte budget each that evicts the result farthest from its node's cursor. A miss checks the store first (§9), and the cache keeps no decoded copy of what the ring holds. Built (slice 6a-2). |
 | `NodeScheduler` | Per node: one running run plus one pending request, demand, the in-flight budget, submission to `EnginePool`, supersede on meaning change (invariant 1), and the node state that layers read (computing, missing input, error). |
 | `GridRunner` | The per-instant loop shared by window evaluations and series, with a report sink and a column sink (§15). |
 
@@ -201,8 +201,10 @@ cursor / live edge ──► NodeScheduler ──► InputStager (GUI: resolve, 
                                    GUI drain ──► ResultHistory + store write ──► consumers read the store
 ```
 
-**Chains.** A downstream node takes its upstream's decoded result inline, with no round
-trip through the store. **Proposed:** compute a whole chain in one worker task, instead of
+**Chains.** A downstream node reads its upstream's object output from the ring
+(`ResultHistory::resultAt`) and decodes it like any input, a point cloud as a view over the
+store's bytes: the compute cache keeps no decoded copy of a result the ring holds (§9).
+**Proposed:** compute a whole chain in one worker task, instead of
 staging upstream nodes synchronously on the GUI thread. If adopted, two conditions hold:
 - Each intermediate result lands in its node's `ResultHistory` and in the store, so an
   upstream node that is also displayed, or read by another node, does not run twice.
@@ -220,9 +222,15 @@ paper check of D26. Pull is rejected and the ring is the target.
   goes to error or hides its layer because of a ceiling.
 - **One global byte budget covers every derived topic.** Today the compute cache has a
   global budget, but the store's ceilings are per topic: 55 derived topics could hold about
-  7 GB. When the budget is full, the result farthest from its dataset's cursor is evicted,
-  across all nodes. Nothing is refused. Each node's displayed result (the newest at or
-  before the cursor) is never evicted; that is the per-node floor.
+  7 GB. When the budget is full, the result farthest from its node's cursor (the node's
+  last requested time) is evicted, across all nodes. Each node's displayed result (the
+  newest at or before the cursor) is never evicted; that is the per-node floor.
+- **The compute cache holds no decoded copy of what the ring holds** (decided 2026-10-18),
+  so a large result is held once, not once in each budget. A cached result keeps its number
+  and string outputs; it keeps its decoded object outputs only while the ring does not hold
+  it at its stamp (a late result, cached only), and it goes with its ring entry, since it
+  cannot serve a hit alone. A reader of a ring-held output decodes it from the store, a
+  point cloud as a view over the store's bytes.
 - **Readers see a derived topic like any store topic:** the newest entry at or before `t`.
   Plugin reads, the catalog, drag and drop, layouts and the Custom Topics panel work
   unchanged. A derived topic exposes the results in its window to plugin reads at any `t`.
@@ -236,6 +244,9 @@ paper check of D26. Pull is rejected and the ring is the target.
   - It counts against the budget, is exempt from eviction and is bounded by the
     per-owner pin cap.
   - The computation-time label comes from the recipe's pinned time, not from the store.
+  - A computation reads a finding only from its real stamp (decided 2026-10-18): an input
+    resolved at `t` before the finding was computed is missing, while the display shows the
+    finding at any instant.
   - A finding ignores a model entity's finite lifetime (otherwise it would count from the
     fixed timestamp). The dock's time-range clamp and the live-edge fold skip findings.
   - **Accepted consequence:** a plugin reading a finding through the object-read service
@@ -285,6 +296,9 @@ not.
 - A result is cached under everything that determined it: the script and parameter
   revision; each resolved input's identity (UID and source generation); upstream
   revisions; the representation; and the services the run observed.
+- A stored key serves a request when the base fields are equal and what its run observed
+  (the query clock, the TF revision) is the same now (`CacheKey::serves`). A lookup reads
+  only the request's stamp, so it costs 0.1 µs at 1 to 10,000 results per node (§19).
 - **Proposed:** one observed-dependency list per result, with clock, TF and video as
   entries, instead of key variants. The TF entry records the edges walked and the sample
   chosen on each (§12, R5), so unrelated live TF traffic no longer invalidates results.
@@ -840,7 +854,7 @@ payload (§9).
 ## 19. Measurements
 
 These come from the prototype, whose design document describes the machine and method,
-except the slice 2, slice 3, slice 5a, slice 5n and slice 5c-1 rows. The slice 2 and 3 rows are measured on this stack by
+except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1 and slice 6a-2 rows. The slice 2 and 3 rows are measured on this stack by
 `EngineFreezeBench` (`pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`), from
 the call until the result is complete, as two different metrics:
 - **GUI-thread CPU time**, as the longest single stretch (the call or one event-loop
@@ -871,6 +885,7 @@ Linux, RelWithDebInfo.
 | TF snapshot copy (prototype: a copy per snapshot) | 0.26 ms (5 s window) to 248 ms and 691 MB (1 h file) |
 | TF snapshot after slice 5a (copy-on-write; measured on this stack by `TransformSnapshotBench`, `pj_tf/tests/tf_buffer_test.cpp`, `PJ_BENCH=1`; 25 edges at 100 Hz, every sample distinct, median of 5) | `snapshot()`: 0.02 µs and 0 bytes at any size. The next write while it is held copies the state once, on the writing thread under the buffer's write lock: live 5 s window 0.15 ms / 0.9 MB of samples, 60 s window 2.9 ms / 10.8 MB, complete 1 h file 72 ms / 648 MB (only when something writes the file buffer after a snapshot, e.g. a robot model's fixed-joint bridges); a buffer nobody writes is never copied. Consumer rule: during a dataset's TF ingest (a first file load writes the active buffer, streaming never ends) a fresh snapshot per revision makes every next write copy the growing state, quadratic over a load; take a new snapshot no faster than the brake rate there, or wait for the ingest to end |
 | Native point-cloud operations (slice 5n; `PointCloudOpsBench`, `pj_scripting/tests/native_ops_test.cpp`, `PJ_BENCH=1`; median of 20 calls on a 260k-point XYZI float32 scan, flat and as 64 x 4096 with padded rows, which cost the same per point) | `filterByField` (50% kept) 3.0 ns per point, `cropBox` (30% kept) 9.5 ns, `bounds` 3.2 ns, `extremePoint` 0.9 ns, `transformXyz` 6.0 ns, a full `nextFinitePoint` iteration 6 ns. The same loops with a datatype and comparison switch per point, a filter predicate evaluated twice and a division per record run 1.25x to 5.3x slower |
+| `ResultHistory` after slice 6a-2 (`ResultHistoryBench`, `pj_runtime/tests/result_history_test.cpp`, `PJ_BENCH=1`; three runs) | `lookup`, median of 1001 calls, the store's `at` per output included: 0.10-0.20 µs for a hit or a miss at 1, 100 and 10,000 results per node. 600 results of a 260k-point XYZI cloud at 10 Hz under the default limits: the ring holds 253.9 MiB (64 results); the compute cache 254 MiB with a decoded copy of each ring-held result → 11 KB without. Publication on the GUI thread (`PublishCost`, serialized there, 50 to 100 entries per topic): median 4-8 µs with a 64-byte cloud, 177-183 µs with a 1.5 MB one. One that removes nothing, at 600 to 800 retained results (`PublishCostAt600RetainedResults`): 11.8-12.7 µs with a drop predicate the store scans every entry for → 2.3 µs without one |
 | Streaming poll, processors advancing over every topic with nothing new (slice 4): 500 topics, 20 single-input filters + 3 two-input transforms, one 5-row chunk per 50 ms tick on the 23 inputs; median of 400 calls, from a throwaway benchmark that is not kept | Buffer 5 s (100 chunks per input): 6.2 µs (max 11). 15 s: 12.5 µs. 60 s: 76 µs (max 89). 150 s: 215 µs. 5 min: 707 µs. 10 min (12,000 chunks): 2.7 ms (max 3.7). With the idle-node gate (§16): 1.5 µs at 100, 300, 1,200, 3,000 and 6,000 chunks (max 2.3 to 6.2) and 1.6 µs at 12,000 (max 7.2), flat |
 
 ## 20. Open items and spikes

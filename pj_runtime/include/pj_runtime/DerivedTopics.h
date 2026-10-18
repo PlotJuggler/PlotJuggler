@@ -7,6 +7,7 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/sdk/object_topic_metadata.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_runtime/MarkerTopics.h"
 
 // A derived (on-demand) object topic is marked in its ObjectTopicDescriptor's
 // metadata_json, never by its name: a name convention would hide the topic from any
@@ -38,5 +39,12 @@ namespace PJ {
 /// absent, malformed or another kind of metadata is "not derived", not an error. Cheap
 /// enough to run over every topic of a dataset (most are rejected without parsing).
 [[nodiscard]] bool isDerivedObjectTopic(const ObjectTopicDescriptor& descriptor);
+
+/// True for a topic the host publishes off the data clock: a marker set (at a sentinel timestamp, 0) or
+/// an on-demand node's results (a finding at `kFindingTimestamp`). The time-bounds scans and the refill
+/// prune skip both: their timestamps would stretch the playback range, and no file rewrites them.
+[[nodiscard]] inline bool isOffClockTopic(const ObjectTopicDescriptor& descriptor) {
+  return isMarkerTopic(descriptor) || isDerivedObjectTopic(descriptor);
+}
 
 }  // namespace PJ

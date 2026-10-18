@@ -27,8 +27,10 @@
 #include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/CurveColorRegistry.h"
+#include "pj_runtime/DerivedTopics.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PlaybackEngine.h"
+#include "pj_runtime/ResultHistory.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/TopicDemandTracker.h"
 using namespace Qt::StringLiterals;
@@ -561,6 +563,37 @@ TEST(AppSessionTest, FocusPlaybackPrefersScalarBoundsOverObjectStamps) {
       session.sessionManager().objectStore().pushOwned(*cloud_topic, 42'000, std::vector<uint8_t>{1}).has_value());
 
   EXPECT_TRUE(session.focusPlaybackOnDatasets({*objects_only}));
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 42'000.0e-9);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 42'000.0e-9);
+}
+
+// A finding's entry sits at kFindingTimestamp, off the data clock: it never stretches the focused range.
+TEST(AppSessionTest, FocusPlaybackSkipsDerivedFindings) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  auto& store = session.sessionManager().objectStore();
+
+  auto dataset =
+      session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "cloud-3d.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  auto cloud = store.registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *dataset,
+          .topic_name = "/points",
+          .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+      });
+  auto finding = store.registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *dataset,
+          .topic_name = "owner/pin/cropped",
+          .metadata_json = PJ::derivedTopicMetadata(PJ::sdk::BuiltinObjectType::kPointCloud),
+      });
+  ASSERT_TRUE(cloud.has_value() && finding.has_value());
+  ASSERT_TRUE(store.pushOwned(*cloud, 42'000, std::vector<uint8_t>{1}).has_value());
+  ASSERT_TRUE(store.pushOwned(*finding, PJ::kFindingTimestamp, std::vector<uint8_t>{2}).has_value());
+
+  EXPECT_TRUE(session.focusPlaybackOnDatasets({*dataset}));
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 42'000.0e-9);
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 42'000.0e-9);
 }

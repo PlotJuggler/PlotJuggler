@@ -69,6 +69,11 @@ struct NamedValue {
   Timestamp stamp_shift = 0;
 };
 
+/// Approximate heap bytes of `value`, read from its decoded fields (a buffer's size, strings, list
+/// elements) and never by serializing it (docs/derived_objects/ARCHITECTURE.md §9, requirement 1):
+/// sizing a 3 MB scan costs a walk of its field table, not a copy of its points.
+[[nodiscard]] std::size_t estimateBytes(const ScriptValue& value);
+
 /// One run's result.
 struct ScriptBundle {
   /// With declared outputs: one entry per declaration, in its order. Without: the outputs the run

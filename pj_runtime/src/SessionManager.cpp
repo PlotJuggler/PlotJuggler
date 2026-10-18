@@ -29,6 +29,7 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/DerivedTopics.h"
 #include "pj_runtime/EnginePool.h"
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_scripting/filter_catalogue.h"
@@ -438,10 +439,7 @@ std::optional<std::pair<Timestamp, Timestamp>> SessionManager::datasetRawBounds(
     }
   }
   for (const ObjectTopicId object_topic_id : object_store_.listTopics(dataset_id)) {
-    // Marker snapshot topics are stored at a sentinel timestamp (0), not on the
-    // data clock — including them would drag the dataset origin to the epoch and
-    // stretch playback across decades.
-    if (isMarkerTopic(object_store_.descriptor(object_topic_id))) {
+    if (isOffClockTopic(object_store_.descriptor(object_topic_id))) {
       continue;
     }
     if (object_store_.entryCount(object_topic_id) > 0) {
@@ -1028,14 +1026,13 @@ void RefillGuard::pruneVanishedTopics() {
   for (const TopicId topic_id : vanished_scalar) {
     session_->dataEngine().retireTopic(topic_id);
   }
-  // Object: a prior object topic with no entries after the refill vanished too.
-  // Marker snapshot topics are exempt: the refill empties the dataset's markers
-  // (detach) but the file never re-writes them; the marker generators republish
-  // on the post-refill recompute, so evicting the topic here would drop live
-  // markers and orphan the recipe.
+  // Object: a prior object topic with no entries after the refill vanished too, unless
+  // the host publishes it (`isOffClockTopic`): the marker generators republish on the
+  // post-refill recompute, so evicting the topic here would drop live markers and
+  // orphan the recipe.
   std::vector<ObjectTopicId> vanished_object;
   for (const ObjectTopicId object_topic_id : prior_object_topic_ids_) {
-    if (isMarkerTopic(session_->objectStore().descriptor(object_topic_id))) {
+    if (isOffClockTopic(session_->objectStore().descriptor(object_topic_id))) {
       continue;
     }
     if (session_->objectStore().entryCount(object_topic_id) == 0) {

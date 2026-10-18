@@ -39,6 +39,7 @@ add_library(pj_runtime STATIC
     src/RecipeGraph.cpp
     src/Recorder.cpp
     src/RecordingService.cpp
+    src/ResultHistory.cpp
     src/ServiceRegistration.cpp
     src/SessionManager.cpp
     src/TelemetryPing.cpp
@@ -77,6 +78,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/RecordingService.h
     include/pj_runtime/RecordingSink.h
     include/pj_runtime/RecordingTypes.h
+    include/pj_runtime/ResultHistory.h
     include/pj_runtime/ServiceRegistration.h
     include/pj_runtime/SessionManager.h
     include/pj_runtime/TelemetryPing.h
@@ -170,6 +172,8 @@ if(PJ_BUILD_TESTS)
         tests/derived_runtime_hosts_test.cpp
         # The on-demand recipe graph: bindings, the DAG, ownership, the protocol verbs, pins.
         tests/recipe_graph_test.cpp
+        # On-demand results: the ring in the ObjectStore and the compute cache, one eviction rule.
+        tests/result_history_test.cpp
         # links the shared marker engine the service drives
         tests/markers_runtime_host_test.cpp
         tests/data_processors_kind_router_test.cpp
