@@ -28,10 +28,10 @@ the behaviours each slice must keep, change by decision, or defer.
 ## Slices
 
 The `SDK` column says what a slice needs from the SDK:
-- **none:** builds on the released 0.35.0;
+- **none:** builds on 0.35.0, the SDK the slices before 0.36.0 shipped with;
 - **client:** the header-only 0.36.0 additions (field tables, metadata keys,
-  `unprojectPixel`);
-- **contract:** the 0.36.0 host contract, after the #202 decisions.
+  `unprojectPixel`), released 2026-10-17 and pinned since;
+- **contract:** the host contract of the next minor, after the #202 decisions.
 
 | # | Slice | Depends on | SDK | Folded-in decisions and fixes | Status |
 |---|---|---|---|---|---|
@@ -66,7 +66,7 @@ is merged.
 | Decision | Needed before | Why |
 |---|---|---|
 | Approve slice 0 (these documents) | Carving starts | Reviewers judge each slice against the written target |
-| ~~Split SDK #202~~: decided (split). Releasing the header-only 0.36.0 is now the task. | Slice 5 | Slices 5-7 and 9-11 need the field tables in a released SDK |
+| ~~Split SDK #202~~: decided (split). The header-only 0.36.0 was released 2026-10-17 (SDK #204). | Slice 5 | Slices 5-7 and 9-11 need the field tables in a released SDK |
 | ~~Start the pull-versus-ring spike~~: agreed 2026-10-13; it runs first | Slice 6a | 6a builds `ResultHistory` one way or the other |
 | ~~Pull or ring~~: ring, decided 2026-10-14 (ARCHITECTURE §9) | Slice 6a | Step 0 showed the publication cost is negligible, and a fixed early store timestamp meets D26 |
 | ~~Two timestamps per TF sample~~: decided 2026-10-13 (slice 1b) | Slice 5 | Slice 5 gives scripts TF lookups, and the default lookup clock is part of their contract |
@@ -77,15 +77,14 @@ is merged.
 
 ## SDK
 
-- **#202 (0.36.0)** is open. The review comment on it lists twelve contract decisions to make
-  before the tag.
+- **0.36.0 released 2026-10-17** (SDK #204, tag `v0.36.0`): the header-only part. PJ4 pins it.
+- **#202** is open, and becomes the host-contract minor. The review comment on it lists twelve
+  contract decisions to make before the tag. Its rebase onto 0.36.0 moves its `@since`, its
+  feature-floor group and its CHANGELOG entries to that minor.
 - **#203,** stacked on #202, holds the cleanups that do not change the contract.
 - **#202 follow-up** (2026-10-11): eight items decided, five left to the author. The author
   agreed to all of them on 2026-10-13, replacing the `unprojectPixel` tolerance with the
   full inverse of K.
-- **Before the header-only 0.36.0 tag:** `unprojectPixel` with the inverse of K, `pj_derived`
-  as an open value set, and a build of the header-only part without the host-contract
-  declarations.
 - **Decided 2026-10-10: split.**
   - 0.36.0 is released with only the header-only additions: field tables,
     `PinholeIntrinsics` and `unprojectPixel`, the ImageAnnotations wire additions, metadata

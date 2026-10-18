@@ -18,7 +18,7 @@ document is the target**.
   - **Proposed:** recommended, not yet agreed;
   - **Spike:** to be validated by an experiment before deciding;
   - **Built:** present in the prototype and kept as is;
-  - **Pending SDK:** depends on the SDK 0.36.0 contract decisions.
+  - **Pending SDK:** depends on the host-contract decisions (the minor after 0.36.0).
 
 ## 1. Goal
 
@@ -853,10 +853,9 @@ Linux, RelWithDebInfo.
 - **Python in the browser** (§14), after the Python slice.
 - **TF:** verify static frames on a real bag (R7). R6 is decided.
 - **SDK:** decided to split.
-  - 0.36.0 is header-only and released first. Before its tag: `unprojectPixel` uses the
-    full inverse of K (no exactness checks; it rejects only non-finite values, a singular K
-    or a ray with z <= 0); `pj_derived` becomes an open value set; the header-only part
-    builds without the host-contract declarations.
+  - 0.36.0, header-only, was released first (2026-10-17). `unprojectPixel` uses the full
+    inverse of K (no exactness checks; it rejects only non-finite values, a singular K or a
+    ray with z <= 0), and `pj_derived` is an open value set.
   - The host contract (#202) is tagged just before slice 8. Its decisions are settled (§5,
     §18).
 - **Later:** move the incremental engine onto the pool; split TF ingest; an explicit series
