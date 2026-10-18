@@ -174,7 +174,7 @@ The TF clock question is in §12.
 
 ## 8. The on-demand pipeline
 
-**Status: Decided.**
+**Status: Decided.** `RecipeGraph` is built (slice 6a-1).
 
 `OnDemandService` is a thin facade over concrete classes, with no single-implementation
 interfaces. It starts with the public API that `SessionManager` and the plugin hosts use
@@ -185,7 +185,7 @@ remove and restore.
 
 | Component | Responsibility |
 |---|---|
-| `RecipeGraph` | Recipes, bindings, the DAG and cycle rejection, validation, ownership, previews, findings, dependents. Pure logic, no Qt. |
+| `RecipeGraph` | Recipes, bindings, the DAG and cycle rejection, validation, ownership, previews, findings, dependents. Pure logic, no Qt. Built (slice 6a-1). |
 | `InputStager` | Resolves inputs at `t` on the GUI thread and captures payload views (shared-pointer copies). It does not decode. |
 | `ResultHistory` | Per node: the compute cache. Results keyed by cache identity (§10), ordered by stamp and sized by time span. A miss checks the store first (§9). |
 | `NodeScheduler` | Per node: one running run plus one pending request, demand, the in-flight budget, submission to `EnginePool`, supersede on meaning change (invariant 1), and the node state that layers read (computing, missing input, error). |

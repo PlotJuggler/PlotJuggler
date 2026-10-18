@@ -35,6 +35,7 @@ add_library(pj_runtime STATIC
     src/ParserRoutingService.cpp
     src/PlotTabsRuntimeHost.cpp
     src/QSettingsBackend.cpp
+    src/RecipeGraph.cpp
     src/Recorder.cpp
     src/RecordingService.cpp
     src/ServiceRegistration.cpp
@@ -68,6 +69,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/ParserRoutingService.h
     include/pj_runtime/PlotTabsRuntimeHost.h
     include/pj_runtime/QSettingsBackend.h
+    include/pj_runtime/RecipeGraph.h
     include/pj_runtime/RecordTap.h
     include/pj_runtime/Recorder.h
     include/pj_runtime/RecordingFormat.h
@@ -115,6 +117,7 @@ target_link_libraries(pj_runtime PUBLIC
     $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:pj_marketplace>
     plotjuggler_sdk::plugin_host
     nlohmann_json::nlohmann_json
+    pj_scripting  # RecipeGraph.h exposes scripting::OutputSpec
   PRIVATE
     # Source-cache mechanics (per-identity locks, lease-then-validate lookup,
     # atomic publish, LRU cleanup) come from the SDK; SourceCacheStore wraps them.
@@ -122,7 +125,6 @@ target_link_libraries(pj_runtime PUBLIC
     tsl::robin_map
     pj_internal_fmt
     $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:mcap::mcap>
-    pj_scripting  # DataProcessorService routes by-id applyFilter through the Luau FilterCatalogue
 )
 
 # Only the MCAP sink is platform-bound (it links mcap and writes to a real
@@ -165,6 +167,8 @@ if(PJ_BUILD_TESTS)
         tests/derived_objects_test.cpp
         # A plugin binding's derived hosts: previews belong to the instance that made them.
         tests/derived_runtime_hosts_test.cpp
+        # The on-demand recipe graph: bindings, the DAG, ownership, the protocol verbs, pins.
+        tests/recipe_graph_test.cpp
         # links the shared marker engine the service drives
         tests/markers_runtime_host_test.cpp
         tests/data_processors_kind_router_test.cpp

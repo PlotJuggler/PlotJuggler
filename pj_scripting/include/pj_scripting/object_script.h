@@ -45,6 +45,8 @@ struct OutputSpec {
   std::string name;
   OutputType type = OutputType::kNumber;
   sdk::BuiltinObjectType object_type = sdk::BuiltinObjectType::kNone;  ///< kObject only
+
+  bool operator==(const OutputSpec&) const = default;
 };
 
 /// Parses one `"name:type"` declaration (e.g. `"max_z:number"`, `"cropped:kPointCloud"`); the name and
