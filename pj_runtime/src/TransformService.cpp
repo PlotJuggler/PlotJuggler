@@ -16,8 +16,8 @@
 #include <utility>
 #include <vector>
 
+#include "ObjectDecode.h"
 #include "pj_base/builtin/builtin_object.hpp"
-#include "pj_base/builtin/builtin_object_codec.hpp"
 #include "pj_base/builtin/frame_transforms.hpp"
 #include "pj_base/dataset.hpp"
 #include "pj_base/expected.hpp"
@@ -54,24 +54,6 @@ struct IngestStats {
   std::size_t failed_fetch = 0;
 };
 
-// Decode one FrameTransforms object entry: parser bound -> the topic's objects
-// are parser-decoded messages; no parser bound -> the bytes are a serialized
-// canonical FrameTransforms blob (a data-source/toolbox that pushed one
-// directly). pj_runtime must never depend on pj_scene3D, so this is not
-// pj_scene3D's resolveObject().
-Expected<PJ::sdk::ObjectRecord> resolveFrameTransforms(
-    const PJ::SessionManager::ParserBinding& binding, PJ::Timestamp ts, const PJ::sdk::PayloadView& payload) {
-  if (binding) {
-    return parseLocked(binding, ts, payload);
-  }
-  auto decoded = deserializeBuiltinObject(
-      PJ::sdk::BuiltinObjectType::kFrameTransforms, payload.bytes.data(), payload.bytes.size());
-  if (!decoded) {
-    return unexpected(std::move(decoded).error());
-  }
-  return PJ::sdk::ObjectRecord{.ts = std::nullopt, .object = std::move(*decoded)};
-}
-
 // Decode one object entry already known to belong to a FrameTransforms topic and
 // push each of its edges into the buffer, with the entry's store timestamp as
 // their entry time (TF R6: lookups at the cursor read that clock). A malformed
@@ -80,11 +62,12 @@ Expected<PJ::sdk::ObjectRecord> resolveFrameTransforms(
 void ingestEntry(
     PJ::Timestamp store_ts, const PJ::sdk::PayloadView& payload, PJ::Timestamp payload_stamp_shift,
     const PJ::SessionManager::ParserBinding& parser_binding, TransformBuffer& tf_buffer, IngestStats& stats) {
-  auto obj = resolveFrameTransforms(parser_binding, store_ts, payload);
+  // pj_runtime never depends on pj_scene3D, so this is not pj_scene3D's resolveObject().
+  auto obj = decodeObjectEntry(parser_binding, PJ::sdk::BuiltinObjectType::kFrameTransforms, store_ts, payload);
   if (!obj.has_value()) {
     return;
   }
-  const auto* ft = obj->object.get<PJ::sdk::FrameTransforms>();
+  const auto* ft = obj->get<PJ::sdk::FrameTransforms>();
   if (ft == nullptr) {
     return;
   }

@@ -30,6 +30,7 @@ add_library(pj_runtime STATIC
     src/DiagnosticHistory.cpp
     src/ExtensionCatalogService.cpp
     src/HttpGet.cpp
+    src/InputStager.cpp
     src/PluginRuntimeCatalog.cpp
     src/PlaybackControlHost.cpp
     src/PlaybackEngine.cpp
@@ -61,6 +62,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/PluginRuntimeCatalog.h
     include/pj_runtime/SourceCacheStore.h
     include/pj_runtime/IDataWidget.h
+    include/pj_runtime/InputStager.h
     include/pj_runtime/BatchEngine.h
     include/pj_runtime/EnginePool.h
     include/pj_runtime/TsanAnnotations.h
@@ -174,6 +176,8 @@ if(PJ_BUILD_TESTS)
         tests/recipe_graph_test.cpp
         # On-demand results: the ring in the ObjectStore and the compute cache, one eviction rule.
         tests/result_history_test.cpp
+        # On-demand inputs: staged by identity on the GUI thread, decoded on any thread.
+        tests/input_stager_test.cpp
         # links the shared marker engine the service drives
         tests/markers_runtime_host_test.cpp
         tests/data_processors_kind_router_test.cpp
