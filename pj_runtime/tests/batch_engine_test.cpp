@@ -2497,6 +2497,49 @@ TEST(BatchEngineTest, BeginningARefillCancelsTheDatasetsRunInFlight) {
       << "the rollback's recompute republished";
 }
 
+// A cancel reaches a script already inside the interpreter: removing the rule frees the
+// pool long before the script would have finished, not when its fuel runs out. Each
+// bandPower is one native call over a large series, so the script spends a few thousand
+// safepoints (far under its fuel) and many seconds.
+TEST(BatchEngineTest, RemovingARuleStopsItsRunningScript) {
+  std::atomic<bool> compute_started{false};
+  const ScopedComputeProbe probe([&compute_started](QThread*) { compute_started = true; });
+  std::atomic<std::size_t> samples{1};  // one sample: the create's inline run is instant
+  PJ::ObjectStore store;
+  BatchEngine service(
+      store,
+      [&samples](PJ::DatasetId, const std::string& key, const BatchEngine::Window&)
+          -> std::optional<BatchEngine::ResolvedSeries> {
+        if (key != "in") {
+          return std::nullopt;
+        }
+        BatchEngine::ResolvedSeries series;
+        for (std::size_t i = 0; i < samples; ++i) {
+          series.timestamps.push_back(static_cast<double>(i));
+          series.values.push_back(static_cast<double>(i));
+        }
+        return series;
+      });
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  service.setMode(BatchEngine::Mode::kManual);
+  ASSERT_TRUE(service
+                  .upsertGenerator(markerRecipe(
+                      "plug/slow", "in",
+                      "local s = series(\"in\")\nfor i = 1, 2000 do bandPower(s, 0, 1e9) end\ncreateMarker(0.0)\n"))
+                  .has_value());
+  samples = std::size_t{1} << 18;
+  compute_started = false;  // forget the create's inline run
+  service.refresh("plug/slow");
+  pumpUntil([&compute_started] { return compute_started.load(); });
+  ASSERT_TRUE(compute_started.load()) << "the run never reached a worker";
+
+  ASSERT_TRUE(service.removeGenerator("plug/slow").has_value());
+  const auto removed_at = std::chrono::steady_clock::now();
+  pool.waitIdle();
+  EXPECT_LT(std::chrono::steady_clock::now() - removed_at, std::chrono::seconds(3)) << "the cancelled script ran on";
+}
+
 // Retention can hide the oldest samples of a quiet stream without moving its newest
 // timestamp or its stored row count: the tick must still report the input as changed.
 TEST(BatchEngineTest, ATickAfterRetentionHidSamplesOfAQuietTopicMarksItsRulesStale) {

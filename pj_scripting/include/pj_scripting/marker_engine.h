@@ -69,10 +69,16 @@ struct SeriesProvider {
 ///   bandPower(series, fLo, fHi)       -- summed FFT power in [fLo,fHi] Hz, DC-removed
 ///   GetSeriesNames()                  -- list of available series names
 /// `opts` is an optional table: {label, color="#rrggbb", severity, status, category, description}.
+/// Native marker storage (the markers and their strings) is bounded by `max_output_bytes`,
+/// independently of the VM's memory cap; a script that exceeds it fails the run.
+/// `cancelled`, when set, is polled from the VM's interrupt (every safepoint, on the
+/// calling thread, so it must be cheap and thread-safe): once it returns true the script
+/// stops with a "script cancelled" error, even inside a loop that makes no native call.
 /// On a compile/runtime error (or watchdog trip) returns an empty vector and, if
 /// `error` is non-null, sets it to the message (cleared on success).
 [[nodiscard]] std::vector<PJ::sdk::PlotMarker> runMarkerScript(
-    const std::string& code, const SeriesProvider& provider, std::string* error, BudgetLimits limits = {});
+    const std::string& code, const SeriesProvider& provider, std::string* error, BudgetLimits limits = {},
+    const std::function<bool()>& cancelled = {}, std::size_t max_output_bytes = 16u << 20);
 
 /// Compile + module-load ONLY (no execution, no inputs, no side effects): the cheap
 /// syntax gate behind the `validate_data_processor_script` service slot. Returns true if the script

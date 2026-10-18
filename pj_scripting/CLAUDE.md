@@ -42,6 +42,9 @@ Licensed MPL-2.0.
   `calculateNextPoint` runs a Luau filter class via the `ProcessorSisoAdapter` as an
   eager `pj_datastore::IncrementalEngine` node.
 - `sandbox.h` — `BudgetLimits` (the per-VM sandbox/watchdog budget).
+- `marker_engine.h` — `runMarkerScript`, the whole-series → markers path (Luau). Its interrupt callback also polls
+  the caller's `cancelled` check, so a cancelled script stops inside the interpreter, and native marker output is
+  capped by `max_output_bytes` (16 MiB by default) independently of the VM's memory cap.
 
 ## Contract / gotchas
 

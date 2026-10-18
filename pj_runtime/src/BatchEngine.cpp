@@ -400,8 +400,9 @@ Expected<std::optional<sdk::PlotMarkers>> BatchEngine::computeRun(
     return std::optional<sdk::PlotMarkers>{};
   }
   sdk::PlotMarkers shared;
+  const auto cancelled = [cancel] { return cancel != nullptr && cancel->cancelled(); };
   for (StagedContribution& contribution : staged.contributions) {
-    if (cancel != nullptr && cancel->cancelled()) {
+    if (cancelled()) {
       return unexpected("cancelled");
     }
     if (const auto& probe = computeThreadProbe(); probe) {
@@ -414,7 +415,8 @@ Expected<std::optional<sdk::PlotMarkers>> BatchEngine::computeRun(
     const scripting::SeriesProvider provider =
         buildProvider(views, staged.recipe.inputs, staged.recipe.declared_inputs);
     std::string err;
-    std::vector<sdk::PlotMarker> markers = scripting::runMarkerScript(staged.recipe.script, provider, &err);
+    std::vector<sdk::PlotMarker> markers =
+        scripting::runMarkerScript(staged.recipe.script, provider, &err, {}, cancelled);
     if (!err.empty()) {
       return unexpected(err);
     }
