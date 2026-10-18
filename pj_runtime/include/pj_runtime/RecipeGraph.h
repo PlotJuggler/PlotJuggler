@@ -121,6 +121,8 @@ class RecipeGraph {
   [[nodiscard]] std::optional<std::string> missingInput(std::string_view key) const;
   /// Keys of every node reading an output of one of `keys`, transitively; sorted, `keys` excluded.
   [[nodiscard]] std::vector<std::string> dependentsOf(const std::vector<std::string>& keys) const;
+  /// Keys of the nodes bound to `dataset`, sorted.
+  [[nodiscard]] std::vector<std::string> keysOf(DatasetId dataset) const;
 
   // The life-cycle protocol (ARCHITECTURE §13). A restore has authority over every persistent node
   // under `kReplace`, and over the non-exempt ones under `kHistory`; never over a preview.

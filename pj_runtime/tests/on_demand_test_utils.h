@@ -2,20 +2,23 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
-// What the on-demand tests (ResultHistory, InputStager, NodeScheduler) share: point clouds, recipes whose
-// scripts never run, a parser over raw points, and readers of the store.
+// What the on-demand tests (ResultHistory, InputStager, NodeScheduler, the session wiring) share: point clouds,
+// recipes whose scripts never run, a fake script run, a parser over raw points, and readers of the store.
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -25,6 +28,7 @@
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+#include "pj_runtime/NodeScheduler.h"
 #include "pj_runtime/RecipeGraph.h"
 
 namespace PJ::test {
@@ -143,6 +147,141 @@ T decodeAt(const ObjectStore& store, ObjectTopicId topic, Timestamp t) {
   }
   return *object->template get<T>();
 }
+
+/// The first point-cloud input, or null.
+inline const sdk::PointCloud* firstCloud(Span<const scripting::NamedValue> inputs) {
+  for (const scripting::NamedValue& input : inputs) {
+    if (const auto* object = std::get_if<sdk::BuiltinObject>(&input.value)) {
+      if (const auto* cloud = object->get<sdk::PointCloud>()) {
+        return cloud;
+      }
+    }
+  }
+  return nullptr;
+}
+
+/// A script run that records where and what it ran. Each declared point-cloud output is its first cloud input
+/// sharing its points (a pass-through), its frame named after the run's query time; a number output is that time.
+/// Set the knobs while nothing runs.
+class FakeRun {
+ public:
+  struct Record {
+    Timestamp query_time = 0;
+    std::thread::id thread;
+    const uint8_t* input_points = nullptr;  ///< the first cloud input's points
+    std::shared_ptr<const pj::tf::TransformSnapshot> tf;
+    bool cancelled = false;  ///< seen once the run was let through
+    bool slow = false;       ///< its params mention "slow"
+  };
+
+  bool gated = false;                       ///< each run waits for `allow`
+  std::chrono::milliseconds delay{0};       ///< how long a run computes, polling its cancellation
+  std::chrono::milliseconds slow_delay{0};  ///< ... instead, for a run whose params mention "slow"
+  bool observe_clock = false;               ///< the run reports it read the query clock
+  bool observe_tf = false;                  ///< ... and the TF tree
+  std::string fail;                         ///< non-empty: the run fails with this message
+  std::optional<double> fail_on_number;     ///< the run fails ("boom") when a number input equals this
+  std::vector<std::string> unavailable;     ///< outputs it marks unavailable ("no points")
+  bool empty_clouds = false;                ///< its cloud outputs are empty (valid, D25)
+
+  NodeScheduler::RunFunction function() {
+    return [this](
+               const scripting::CompiledScript&, Span<const scripting::NamedValue> inputs, std::string_view params,
+               Span<const scripting::OutputSpec> outputs,
+               const scripting::RunOptions& options) { return run(inputs, params, outputs, options); };
+  }
+
+  void allow(int runs) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    permits_ += runs;
+    cv_.notify_all();
+  }
+  /// Waits until `runs` runs have started; false after 5 s.
+  [[nodiscard]] bool waitStarted(int runs) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return cv_.wait_for(lock, std::chrono::seconds(5), [&] { return started_ >= runs; });
+  }
+  [[nodiscard]] int started() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return started_;
+  }
+  [[nodiscard]] int finished() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return static_cast<int>(records_.size());
+  }
+  [[nodiscard]] std::vector<Record> records() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return records_;
+  }
+
+ private:
+  Expected<scripting::ScriptBundle, scripting::ScriptError> run(
+      Span<const scripting::NamedValue> inputs, std::string_view params, Span<const scripting::OutputSpec> outputs,
+      const scripting::RunOptions& options) {
+    const bool slow = params.find("slow") != std::string_view::npos;
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      ++started_;
+      cv_.notify_all();
+      // A test that forgets to let a run through fails instead of hanging.
+      if (gated && cv_.wait_for(lock, std::chrono::seconds(5), [this] { return permits_ > 0; })) {
+        --permits_;
+      }
+    }
+    const auto cancelled = [&options] { return options.cancelled && options.cancelled(); };
+    for (const auto until = std::chrono::steady_clock::now() + (slow ? slow_delay : delay);
+         std::chrono::steady_clock::now() < until && !cancelled();) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const sdk::PointCloud* input = firstCloud(inputs);
+    Record record{
+        options.query_time,
+        std::this_thread::get_id(),
+        input != nullptr ? input->data.data() : nullptr,
+        options.tf,
+        cancelled(),
+        slow};
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      records_.push_back(record);
+      cv_.notify_all();
+    }
+    if (record.cancelled) {
+      return unexpected(scripting::ScriptError{"script cancelled"});
+    }
+    if (!fail.empty()) {
+      return unexpected(scripting::ScriptError{fail, observe_clock, observe_tf});
+    }
+    for (const scripting::NamedValue& value : inputs) {
+      if (const auto* number = std::get_if<double>(&value.value); number != nullptr && *number == fail_on_number) {
+        return unexpected(scripting::ScriptError{"boom"});
+      }
+    }
+    scripting::ScriptBundle bundle;
+    bundle.observed_query_clock = observe_clock;
+    bundle.observed_tf = observe_tf;
+    for (const scripting::OutputSpec& output : outputs) {
+      if (std::find(unavailable.begin(), unavailable.end(), output.name) != unavailable.end()) {
+        bundle.outputs.push_back({output.name, scripting::Unavailable{"no points"}});
+      } else if (output.type == scripting::OutputType::kNumber) {
+        bundle.outputs.push_back({output.name, static_cast<double>(options.query_time)});
+      } else if (output.type == scripting::OutputType::kString) {
+        bundle.outputs.push_back({output.name, std::string("ok")});
+      } else {
+        sdk::PointCloud cloud = input != nullptr && !empty_clouds ? *input : makeCloud(0);
+        cloud.frame_id = std::to_string(options.query_time);
+        bundle.outputs.push_back({output.name, sdk::BuiltinObject(std::move(cloud))});
+      }
+    }
+    return bundle;
+  }
+
+  mutable std::mutex mutex_;
+  std::condition_variable cv_;
+  int permits_ = 0;
+  int started_ = 0;
+  std::vector<Record> records_;
+};
 
 inline std::vector<Timestamp> timestampsOf(const ObjectStore& store, ObjectTopicId topic) {
   const EntryTimestampsView view = store.entryTimestamps(topic);

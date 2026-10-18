@@ -70,139 +70,7 @@ std::vector<uint8_t> canonicalCloud(size_t points) {
   return serializeBuiltinObject(sdk::BuiltinObject(test::makeCloud(points))).value();
 }
 
-const sdk::PointCloud* firstCloud(Span<const NamedValue> inputs) {
-  for (const NamedValue& input : inputs) {
-    if (const auto* object = std::get_if<sdk::BuiltinObject>(&input.value)) {
-      if (const auto* cloud = object->get<sdk::PointCloud>()) {
-        return cloud;
-      }
-    }
-  }
-  return nullptr;
-}
-
-/// A script run that records where and what it ran. Each declared point-cloud output is its first cloud input
-/// sharing its points (a pass-through), its frame named after the run's query time; a number output is that time.
-/// Set the knobs while nothing runs.
-class FakeRun {
- public:
-  struct Record {
-    Timestamp query_time = 0;
-    std::thread::id thread;
-    const uint8_t* input_points = nullptr;  ///< the first cloud input's points
-    std::shared_ptr<const pj::tf::TransformSnapshot> tf;
-    bool cancelled = false;  ///< seen once the run was let through
-    bool slow = false;       ///< its params mention "slow"
-  };
-
-  bool gated = false;                       ///< each run waits for `allow`
-  std::chrono::milliseconds delay{0};       ///< how long a run computes, polling its cancellation
-  std::chrono::milliseconds slow_delay{0};  ///< ... instead, for a run whose params mention "slow"
-  bool observe_clock = false;               ///< the run reports it read the query clock
-  bool observe_tf = false;                  ///< ... and the TF tree
-  std::string fail;                         ///< non-empty: the run fails with this message
-  std::optional<double> fail_on_number;     ///< the run fails ("boom") when a number input equals this
-  std::vector<std::string> unavailable;     ///< outputs it marks unavailable ("no points")
-  bool empty_clouds = false;                ///< its cloud outputs are empty (valid, D25)
-
-  NodeScheduler::RunFunction function() {
-    return [this](
-               const scripting::CompiledScript&, Span<const NamedValue> inputs, std::string_view params,
-               Span<const OutputSpec> outputs,
-               const RunOptions& options) { return run(inputs, params, outputs, options); };
-  }
-
-  void allow(int runs) {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    permits_ += runs;
-    cv_.notify_all();
-  }
-  /// Waits until `runs` runs have started; false after 5 s.
-  [[nodiscard]] bool waitStarted(int runs) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    return cv_.wait_for(lock, 5s, [&] { return started_ >= runs; });
-  }
-  [[nodiscard]] int started() const {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    return started_;
-  }
-  [[nodiscard]] int finished() const {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    return static_cast<int>(records_.size());
-  }
-  [[nodiscard]] std::vector<Record> records() const {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    return records_;
-  }
-
- private:
-  Expected<ScriptBundle, ScriptError> run(
-      Span<const NamedValue> inputs, std::string_view params, Span<const OutputSpec> outputs,
-      const RunOptions& options) {
-    const bool slow = params.find("slow") != std::string_view::npos;
-    {
-      std::unique_lock<std::mutex> lock(mutex_);
-      ++started_;
-      cv_.notify_all();
-      // A test that forgets to let a run through fails instead of hanging.
-      if (gated && cv_.wait_for(lock, 5s, [this] { return permits_ > 0; })) {
-        --permits_;
-      }
-    }
-    const auto cancelled = [&options] { return options.cancelled && options.cancelled(); };
-    for (const auto until = std::chrono::steady_clock::now() + (slow ? slow_delay : delay);
-         std::chrono::steady_clock::now() < until && !cancelled();) {
-      std::this_thread::sleep_for(1ms);
-    }
-    const sdk::PointCloud* input = firstCloud(inputs);
-    Record record{
-        options.query_time,
-        std::this_thread::get_id(),
-        input != nullptr ? input->data.data() : nullptr,
-        options.tf,
-        cancelled(),
-        slow};
-    {
-      const std::lock_guard<std::mutex> lock(mutex_);
-      records_.push_back(record);
-      cv_.notify_all();
-    }
-    if (record.cancelled) {
-      return unexpected(ScriptError{"script cancelled"});
-    }
-    if (!fail.empty()) {
-      return unexpected(ScriptError{fail, observe_clock, observe_tf});
-    }
-    for (const NamedValue& value : inputs) {
-      if (const auto* number = std::get_if<double>(&value.value); number != nullptr && *number == fail_on_number) {
-        return unexpected(ScriptError{"boom"});
-      }
-    }
-    ScriptBundle bundle;
-    bundle.observed_query_clock = observe_clock;
-    bundle.observed_tf = observe_tf;
-    for (const OutputSpec& output : outputs) {
-      if (std::find(unavailable.begin(), unavailable.end(), output.name) != unavailable.end()) {
-        bundle.outputs.push_back({output.name, Unavailable{"no points"}});
-      } else if (output.type == OutputType::kNumber) {
-        bundle.outputs.push_back({output.name, static_cast<double>(options.query_time)});
-      } else if (output.type == OutputType::kString) {
-        bundle.outputs.push_back({output.name, std::string("ok")});
-      } else {
-        sdk::PointCloud cloud = input != nullptr && !empty_clouds ? *input : test::makeCloud(0);
-        cloud.frame_id = std::to_string(options.query_time);
-        bundle.outputs.push_back({output.name, sdk::BuiltinObject(std::move(cloud))});
-      }
-    }
-    return bundle;
-  }
-
-  mutable std::mutex mutex_;
-  std::condition_variable cv_;
-  int permits_ = 0;
-  int started_ = 0;
-  std::vector<Record> records_;
-};
+using test::FakeRun;
 
 /// One dataset: the object topics `cloud` (canonical bytes) and `lidar` (raw points behind a parser), and the
 /// scalar series `threshold`. The service runs the fake unless built with the real Luau run.
@@ -1399,6 +1267,64 @@ TEST(BatchEngineTest, AGrantThatRequestsTheFinishingNodeAgainRunsTheNewerRequest
   EXPECT_EQ(fx.state("owner/crop").requested_t, 20 * kSec);
   EXPECT_EQ(fx.shown("owner/crop/cropped", 20 * kSec).frame_id, frameOf(20 * kSec));
   EXPECT_EQ(fx.budget.reserved(), 0u);
+}
+
+// DEM-03: a withdrawn node drops its waiting request (behind its run, or in the budget's line) and is idle; its
+// running run still publishes into the history and nothing starts after it; a reader that still has a request
+// keeps its upstream; the next request serves the node again.
+TEST(NodeSchedulerTest, WithdrawDropsTheWaitingRequestOnly) {
+  Fixture fx(InFlightBudget::kRunBytes);
+  fx.fake.gated = true;
+  fx.pushCloud(10 * kSec);
+  fx.pushCloud(20 * kSec);
+  fx.install(recipe("crop"));
+  fx.install(recipe("other"));
+  fx.request("owner/crop", 10 * kSec);
+  ASSERT_TRUE(fx.fake.waitStarted(1));
+  fx.request("owner/crop", 20 * kSec);   // waits behind its run
+  fx.request("owner/other", 20 * kSec);  // waits in the budget's line
+  ASSERT_EQ(fx.state("owner/other").status, Status::kPending);
+
+  fx.service->withdraw("owner/crop");
+  fx.service->withdraw("owner/other");
+  EXPECT_EQ(fx.state("owner/crop").status, Status::kIdle);
+  EXPECT_EQ(fx.state("owner/other").status, Status::kIdle);
+  fx.fake.allow(3);
+  fx.settle();
+  EXPECT_EQ(fx.fake.started(), 1) << "neither waiting request ran";
+  EXPECT_EQ(fx.ring("owner/crop/cropped"), (std::vector<Timestamp>{10 * kSec})) << "the running run's result is kept";
+  EXPECT_EQ(fx.state("owner/crop").status, Status::kIdle);
+  EXPECT_EQ(fx.budget.reserved(), 0u);
+  RecipeGraph::Recipe edited = recipe("crop");
+  edited.params_json = R"({"zmin": 1})";
+  fx.install(edited);
+  fx.settle();
+  EXPECT_EQ(fx.fake.started(), 1) << "a new revision does not request a withdrawn node";
+
+  fx.request("owner/crop", 20 * kSec);
+  fx.fake.allow(1);
+  fx.settle();
+  EXPECT_EQ(fx.state("owner/crop").status, Status::kReady);
+  EXPECT_EQ(fx.ring("owner/crop/cropped"), (std::vector<Timestamp>{20 * kSec}));
+
+  fx.install(recipe("count", {"owner/crop/cropped"}, {numberSpec()}));
+  fx.request("owner/count", 10 * kSec);
+  fx.fake.allow(1);
+  fx.settle();
+  ASSERT_EQ(fx.state("owner/count").status, Status::kReady);
+  fx.service->withdraw("owner/crop");
+  EXPECT_NE(fx.state("owner/crop").status, Status::kIdle) << "its reader still has a request";
+  fx.service->withdraw("owner/count");
+  EXPECT_EQ(fx.state("owner/count").status, Status::kIdle);
+  EXPECT_EQ(fx.state("owner/crop").status, Status::kIdle) << "nothing else needs its upstream";
+
+  fx.install(recipe("count", {"cloud"}, {numberSpec()}));  // no longer reads crop
+  fx.request("owner/count", 10 * kSec);
+  fx.request("owner/crop", 10 * kSec);
+  fx.fake.allow(2);
+  fx.settle();
+  fx.service->withdraw("owner/crop");
+  EXPECT_EQ(fx.state("owner/crop").status, Status::kIdle) << "a reader that no longer reads it keeps nothing";
 }
 
 // ---- The facade ---------------------------------------------------------------------------------------------

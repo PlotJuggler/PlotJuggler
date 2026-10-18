@@ -183,8 +183,25 @@ interfaces. Built (slice 6a-4a, `pj_runtime/include/pj_runtime/OnDemandService.h
 the four components below and keeps only the orchestration that spans them, install and
 remove, forwarding requests and state queries to `NodeScheduler`; the pool, the in-flight
 budget, the TF snapshot provider, the dataset epoch, the scalar sampler and the parser
-lookup are injected (slice 6a-5 wires the session's), and it reports through callbacks,
-not Qt signals. Restore stays in `DerivedObjects` (slice 6b). Each consumer moves to the
+lookup are injected, and it reports through callbacks, not Qt signals. Restore stays in
+`DerivedObjects` (slice 6b).
+
+The session owns it (built, slice 6a-5). `SessionManager` builds it over its pool and
+budget and wires the resolver (an object topic by name in each dataset, with the builtin
+type from its metadata; a scalar series through the catalog's lookup, which `AppSession`
+injects and the catalog memoizes until its items change; a `source:` qualifier stripped;
+never an on-demand output, which the graph binds itself), the parser lookup, the dataset epochs and the TF providers: while a dataset
+ingests, runs share one snapshot for 500 ms (§19), and the revision a request compares is
+that snapshot's, read without taking one. It turns the callbacks into its signals
+(`derivedEntriesPublished`, `derivedStateChanged`, `onDemandRecipeInstalled`,
+`objectTopicsChanged`). `AppSession` requests every demanded recipe at the playhead, in
+its dataset's raw time. A recipe that is not a finding is demanded while one of its object
+output topics is in its dataset's active set (the demand tracker); there is no DAG walk,
+since a reader's request requests its upstream. A recipe installed or newly demanded is
+requested where the cursor is parked (also when a display offset changes there), a finding
+at its pin once per install, and demand leaving withdraws the node and, recursively, the
+upstreams nothing else needs (DEM-03, `NodeScheduler::withdraw`). The dataset life cycle is
+§13. Each consumer moves to the
 component it needs (a layer reads its content from the store and its state from
 `NodeScheduler`, the Custom Topics panel moves to `RecipeGraph`).
 
@@ -193,7 +210,7 @@ component it needs (a layer reads its content from the store and its state from
 | `RecipeGraph` | Recipes, bindings, the DAG and cycle rejection, validation, ownership, previews, findings, dependents. Pure logic, no Qt. Built (slice 6a-1). |
 | `InputStager` | Resolves inputs at `t` on the GUI thread by identity (an object entry's topic, UID and parser, a scalar sample, an upstream's result) without fetching a payload, and builds the request's cache key; `decode` fetches and decodes them on any thread, a parser-backed entry under its per-topic parser lock and a canonical point cloud as a view over the store's bytes, and returns the parser keepalives its objects need, which `ResultHistory` keeps with a cached result. Built (slice 6a-3). |
 | `ResultHistory` | Per node: the compute cache and the ring (§9). Results keyed by cache identity (§10), ordered by stamp and sized by time span: a window around the node's cursor, then one global byte budget each that evicts the result farthest from its node's cursor. A miss checks the store first (§9), and the cache keeps no decoded copy of what the ring holds. Built (slice 6a-2). |
-| `NodeScheduler` | Per node: one running run plus one pending request, the in-flight budget, submission to `EnginePool`, supersede on meaning change (invariant 1), and the node state that layers read (idle, pending, ready, missing input, error, with the lag). Built (slice 6a-4a); demand joins in slice 6a-5. |
+| `NodeScheduler` | Per node: one running run plus one pending request, the in-flight budget, submission to `EnginePool`, supersede on meaning change (invariant 1), and the node state that layers read (idle, pending, ready, missing input, error, with the lag). Built (slice 6a-4a); `withdraw` when demand leaves and the hold of a dataset whose storage changes (slice 6a-5). |
 | `GridRunner` | The per-instant loop shared by window evaluations and series, with a report sink and a column sink (§15). |
 
 Data flow for one cursor request:
@@ -315,6 +332,9 @@ not.
 - A stored key serves a request when the base fields are equal and what its run observed
   (the query clock, the TF revision) is the same now (`CacheKey::serves`). A lookup reads
   only the request's stamp, so it costs 0.1 µs at 1 to 10,000 results per node (§19).
+- **The dataset epoch** is the session's (slice 6a-5): it moves before every change of a
+  dataset's storage that changes what its inputs mean (§13), so a run staged before is
+  never published.
 - **Proposed:** one observed-dependency list per result, with clock, TF and video as
   entries, instead of key variants. The TF entry records the edges walked and the sample
   chosen on each (§12, R5), so unrelated live TF traffic no longer invalidates results.
@@ -370,7 +390,11 @@ engines) and **Decided** (GIL release).
     run.
   - **On-demand (built, slice 6a-4a).** Per node: one run in flight and one pending request
     holding the latest time; the full policy (cancellation, history hits, chains, the
-    order of the waiters for room) is the `NodeScheduler.h` class comment.
+    order of the waiters for room) is the `NodeScheduler.h` class comment. Only demanded
+    nodes follow the cursor (slice 6a-5); when demand leaves, the node's waiting request is
+    dropped and it is idle, its running run completes into the history, and nothing starts
+    after it; its upstreams follow unless demanded themselves or read by another reader that
+    still has a request.
 - **The in-flight memory budget** (`InFlightBudget.h`; on-demand runs since slice 6a-4a,
   batch runs since 6a-4b) bounds what the runs of both engines on the pool hold at once. A
   run holds a reservation from its submission to its publication (a cancelled one until the
@@ -658,6 +682,34 @@ the protocol in slice 6b. The rest is **Built**.
     removal never cascades into them (a rule reading a removed series is marked
     stale and keeps its last markers).
 - **History exemption.** Undo and redo have no authority over a history-exempt node.
+- **On-demand recipes through the dataset life cycle** (built, slice 6a-5).
+  - Before a reload (when the refill begins), a merge (the anchor and every source), an
+    eviction of object topics and a clear, and again when a rollback restores the data, the
+    session moves the dataset's epoch, drops its nodes' results (before the refill detaches
+    the data, so a rollback brings none back), cancels their runs and holds their requests.
+    The hold ends from
+    the event loop, after the caller rebuilt the catalog and committed the reloaded TF with
+    no event loop in between, and each node that had a request is requested again at its
+    cursor.
+  - A removed dataset removes its recipes and retires their topics, announced once; a run
+    in flight is never published. A raw input evicted from under a recipe leaves it
+    installed, missing that input by name, and the input coming back relinks it.
+  - A merge installs the anchor's and the consumed datasets' recipes again, from the event
+    loop (after the catalog rebuild, through which a scalar input resolves), producers before
+    readers from one snapshot, so they re-bind on the anchor; an input qualified with a
+    consumed dataset's source resolves there too, and the script keeps the name it reads.
+    One that no longer resolves is removed, with a warning. A consumed
+    finding's pinned time, and a consumed node's cursor, move by that dataset's raw shift
+    (saturating). The derived
+    entries are cleared before the object fold, never merged as raw observations: the
+    finding timestamp is a sentinel and is never shifted.
+  - Known limits: a recipe a merge re-binds gets a new output topic, so a layer bound to
+    the old one loses it (a consumed dataset's raw topics keep their ids), and the demand set
+    stays keyed by the consumed dataset until a layer references the re-bound topic (slice
+    7a). Two merges before the event loop turns (B into A, then A into C) can re-bind a
+    recipe with the first merge's shift only: not handled. `replaceDataset`, which no production path calls
+    (a reload refills), erases a dataset's derived topics with its vanished ones; and a
+    derived topic the user trashes leaves its recipe publishing into nothing.
 - **Batch cancellation** (built, slice 3). A batch run in flight is cancelled, and never
   published, when its generator is upserted again, rescoped or removed, or when its
   dataset is reloaded (at the start of the refill), merged (as the anchor or merged
@@ -891,7 +943,7 @@ payload (§9).
 ## 19. Measurements
 
 These come from the prototype, whose design document describes the machine and method,
-except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3 and slice 6a-4a rows. The slice 2 and 3 rows are measured on this stack by
+except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a and slice 6a-5 rows. The slice 2 and 3 rows are measured on this stack by
 `EngineFreezeBench` (`pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`), from
 the call until the result is complete, as two different metrics:
 - **GUI-thread CPU time**, as the longest single stretch (the call or one event-loop
@@ -917,6 +969,7 @@ Linux, RelWithDebInfo.
 | On-demand evaluation, 260k-point cloud | 4-5 ms cold; under 0.01 ms warm |
 | Input staging after slice 6a-3 (`InputStagerBench`, `pj_runtime/tests/input_stager_test.cpp`, `PJ_BENCH=1`; a lazily stored cloud whose fetch returns a view, median of 101 calls, three runs) | `stage` on the GUI thread: 0.10-0.23 µs for 260k points, 0.10-0.24 µs for 1 point: independent of the input's size. `decode` of the 260k cloud (4.2 MB of canonical bytes): 0.3 µs, a view over the store's bytes (170-243 µs with a copying decode), on a worker in production, where a real lazy entry's chunk decode joins it (2.2 ms for 3.2 MiB of LZ4, measured on the prototype). `stage` among 10k object topics and 10k scalar names, the node's registered last (`StageAmongTenThousandTopics`; both lookups scan): 35-36 µs, so no per-node lookup cache |
 | On-demand request after slice 6a-4a (`NodeSchedulerBench`, `pj_runtime/tests/node_scheduler_test.cpp`, `PJ_BENCH=1`; median of 101 requests, three runs) | GUI time per `requestAt` over a lazily stored 260k-point cloud: 4.8-8.0 µs cold (staged, a miss, the run submitted), 0.39-0.42 µs warm (a hit), against the prototype's 4-5 ms cold. With 600 and 1800 results in the window (`RequestAtWithAFullWindow`): warm 0.38-0.42 µs either way, cold 1.31-1.43 µs and 1.29-1.33 µs (the lookup reads only the staged stamp) |
+| On-demand playhead tick after slice 6a-5 (`EngineFreezeBench.OnDemandColdAndWarm`, `pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`; through `AppSession`, one demanded recipe over a lazily stored 260k-point cloud, the real Luau run on a worker; median of 100 ticks, three runs) | GUI-thread CPU time per tick (the demanded keys, the conversion, staging, the lookup, the submission): 6.9-14.1 µs cold (a new instant), 0.76-0.89 µs warm (a hit), against 4.6-6.5 µs and 0.36-0.63 µs for `requestAt` alone in the same runs. An install (resolver, compile, history install) among 1 and 10,000 object topics: 120 µs and 163 µs, so the resolver's scan costs about 43 µs, once per install. The same recipe with 4 scalar inputs, among 10,029 catalog items: 508-514 µs cold and 483-485 µs warm per tick while each staging scanned the catalog for each scalar, 5.3-13.5 µs and 1.7-3.7 µs once the catalog memoizes its lookups |
 | Publication of a 4.2 MB point-cloud result on the GUI thread (`GuiPublishCostOfA4MBResult`, 260k points, median of 51) | Serialized at the publication: 1.45-1.49 ms. Serialized on the worker (`ResultHistory::serializeOutputs`), the payload moved into the ring: 2-3 µs |
 | 2-hop chain after slice 6a-4a (`TwoHopChainLatencyAt10Hz`; requests at 10 Hz, from the reader's request to its published result, 50 requests, three runs) | Two Luau crops keeping all 260k points: median 6.8-6.9 ms, max 11-23 ms, every request drawn (14.6-15.0 ms while the compute cache kept a decoded copy of each result the ring holds). The scheduling alone, an instant fake run with empty outputs: 0.17-0.20 ms, so a chain in one worker task would save little |
 | Streaming: 5 min of 10 Hz, 2048-point clouds | Bounded plateau of entries and bytes |

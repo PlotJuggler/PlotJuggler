@@ -238,9 +238,10 @@ class CatalogModel : public QObject {
   std::vector<CatalogItem> items() const;
 
   /// The scalar field `key` names in `dataset` (`markerSeriesField`'s naming), or
-  /// nullopt. Walks the catalog in place, without the copy and sort `items()` makes:
-  /// the marker-input resolver calls it once per input per run. Several matches
-  /// resolve to the first in `items()` order.
+  /// nullopt. Walks the catalog in place, without the copy and sort `items()` makes,
+  /// and remembers what it found until the catalog's items next change (an on-demand
+  /// recipe asks at every request). Several matches resolve to the first in `items()`
+  /// order. GUI thread only.
   [[nodiscard]] std::optional<ScalarFieldPayload> findScalarForMarkerKey(
       DatasetId dataset, const std::string& key) const;
 

@@ -516,6 +516,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 #ifdef PJ_WITH_SCENE3D
   transform_service_ = std::make_unique<PJ::TransformService>(session_->sessionManager());
   transform_service_->activateIngestTap();
+  session_->sessionManager().setTransformService(transform_service_.get());  // on-demand runs read TF here
   fixed_frame_memory_ = std::make_unique<pj::scene3d::FixedFrameMemory>(session_->sessionManager());
 #endif
   // Pull saved icon metrics before setupUi so the literals we feed into

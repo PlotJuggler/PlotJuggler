@@ -19,22 +19,31 @@
 #include <QTimer>
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
 #include "pj_base/builtin/plot_markers.hpp"
+#include "pj_base/sdk/dataset_qualified_name.hpp"
+#include "pj_datastore/query.hpp"
+#include "pj_datastore/saturating_time.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/BatchEngine.h"
+#include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/DerivedTopics.h"
 #include "pj_runtime/EnginePool.h"
 #include "pj_runtime/InFlightBudget.h"
 #include "pj_runtime/MarkerTopics.h"
+#include "pj_runtime/OnDemandService.h"
+#include "pj_runtime/TransformService.h"
 #include "pj_scripting/filter_catalogue.h"
 #include "pj_scripting/script_engine.h"
+#include "pj_tf/tf_buffer.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -110,6 +119,75 @@ SessionManager::SessionManager(QObject* parent)
   in_flight_budget_ = std::make_unique<InFlightBudget>(*engine_pool_);
   batch_engine_->setPool(engine_pool_.get());
   batch_engine_->setInFlightBudget(in_flight_budget_.get());
+
+  OnDemandService::Services on_demand;
+  // An input names an object topic or a scalar series of a dataset, maybe behind its "source:" qualifier. Never an
+  // on-demand output: the graph binds those itself.
+  on_demand.resolver = [this](std::string_view input) {
+    const std::vector<DatasetId> datasets = data_engine_.listDatasets();
+    std::vector<std::string> sources;
+    for (const DatasetId dataset : datasets) {
+      const DatasetInfo* info = data_engine_.getDataset(dataset);
+      sources.push_back(info != nullptr ? info->source_name : std::string{});
+    }
+    const sdk::DatasetQualifierSplit split = sdk::splitDatasetQualifier(input, sources);
+    std::vector<RecipeGraph::InputCandidate> candidates;
+    for (size_t index = 0; index < datasets.size(); ++index) {
+      if (split.qualified && sources[index] != split.dataset_source) {
+        continue;
+      }
+      const auto merged = merged_into_.find(datasets[index]);
+      const DatasetId dataset = merged != merged_into_.end() ? merged->second : datasets[index];
+      if (std::ranges::find(candidates, dataset, &RecipeGraph::InputCandidate::dataset) != candidates.end()) {
+        continue;
+      }
+      if (const std::optional<ObjectTopicId> topic = object_store_.findTopic(dataset, split.bare)) {
+        const ObjectTopicDescriptor descriptor = object_store_.descriptor(*topic);
+        const sdk::BuiltinObjectType type = objectTypeFromMetadata(descriptor.metadata_json);
+        if (type != sdk::BuiltinObjectType::kNone && !isDerivedObjectTopic(descriptor)) {
+          candidates.push_back({dataset, type, split.bare});
+        }
+      } else if (scalar_lookup_ && scalar_lookup_(dataset, split.bare)) {
+        candidates.push_back({dataset, sdk::BuiltinObjectType::kNone, split.bare});
+      }
+    }
+    return candidates;
+  };
+  on_demand.scalars =
+      [this](DatasetId dataset, std::string_view name, Timestamp t) -> std::optional<InputStager::ScalarSample> {
+    const auto series = scalar_lookup_ ? scalar_lookup_(dataset, std::string(name)) : std::nullopt;
+    if (!series) {
+      return std::nullopt;
+    }
+    const DataReader reader = createReader();
+    const auto values = reader.series(series->first, series->second);
+    const auto sample = values ? values->sampleAtOrBeforeTime(t) : std::nullopt;
+    if (!sample) {
+      return std::nullopt;
+    }
+    return InputStager::ScalarSample{series->first, series->second, sample->timestamp, sample->value};
+  };
+  on_demand.parsers = [this](ObjectTopicId topic) { return parserBindingForObjectTopic(topic); };
+  on_demand.scheduling.tf = [this](DatasetId dataset) { return onDemandTf(dataset); };
+  on_demand.scheduling.tf_revision = [this](DatasetId dataset) { return onDemandTfRevision(dataset); };
+  on_demand.scheduling.epoch = [this](DatasetId dataset) {
+    const auto epoch = epochs_.find(dataset);
+    return epoch != epochs_.end() ? epoch->second : uint64_t{0};
+  };
+  on_demand.scheduling.published = [this](const std::string& key) {
+    emit derivedEntriesPublished(QString::fromStdString(key), on_demand_->history().topicsOf(key));
+  };
+  on_demand.scheduling.state_changed = [this](const std::string& key) {
+    emit derivedStateChanged(QString::fromStdString(key), on_demand_->history().topicsOf(key));
+  };
+  on_demand.installed = [this](const std::string& key, const std::vector<ObjectTopicId>& retired) {
+    if (!retired.empty()) {
+      emit objectTopicsChanged();
+    }
+    emit onDemandRecipeInstalled(QString::fromStdString(key));
+  };
+  on_demand_ =
+      std::make_unique<OnDemandService>(object_store_, *engine_pool_, *in_flight_budget_, std::move(on_demand));
   // A scheduled run lands after the change that asked for it was announced.
   connect(batch_engine_.get(), &BatchEngine::markersPublished, this, &SessionManager::notifyMarkersChanged);
   // A transform's output changed (an edit, a finished replay, a removal): the marker
@@ -144,6 +222,106 @@ SessionManager::SessionManager(QObject* parent)
 }
 
 SessionManager::~SessionManager() = default;
+
+void SessionManager::setScalarSeriesLookup(ScalarSeriesLookup lookup) {
+  scalar_lookup_ = std::move(lookup);
+}
+
+void SessionManager::setTransformService(TransformService* service) {
+  transform_service_ = service;
+  held_tf_.clear();
+}
+
+void SessionManager::suspendOnDemand(DatasetId dataset_id) {
+  ++epochs_[dataset_id];
+  held_tf_.erase(dataset_id);
+  on_demand_->suspend(dataset_id);
+}
+
+void SessionManager::resumeOnDemandLater(DatasetId dataset_id) {
+  QMetaObject::invokeMethod(this, [this, dataset_id] { on_demand_->resume(dataset_id); }, Qt::QueuedConnection);
+}
+
+void SessionManager::rebindOnDemandAfterMerge(
+    DatasetId anchor, const std::unordered_map<DatasetId, Timestamp>& shifts) {
+  // One snapshot, producers first: a reader re-binds once its upstream is on the anchor.
+  const RecipeGraph& graph = on_demand_->graph();
+  std::map<std::string, Timestamp> shift_of;
+  for (const auto& [dataset, shift] : shifts) {
+    for (std::string& key : graph.keysOf(dataset)) {
+      shift_of.emplace(std::move(key), shift);
+    }
+  }
+  std::vector<std::pair<RecipeGraph::Recipe, Timestamp>> order;
+  std::unordered_set<std::string> visited;
+  const std::function<void(const std::string&)> visit = [&](const std::string& key) {
+    if (!shift_of.contains(key) || !visited.insert(key).second) {
+      return;
+    }
+    const RecipeGraph::Node* node = graph.find(key);
+    for (const RecipeGraph::Binding& binding : node->bindings) {
+      visit(binding.upstream);
+    }
+    order.emplace_back(node->recipe, shift_of.at(key));
+  };
+  for (const auto& entry : shift_of) {
+    visit(entry.first);
+  }
+  for (const auto& [dataset, shift] : shifts) {
+    if (dataset != anchor) {
+      merged_into_.emplace(dataset, anchor);  // an input qualified with a consumed dataset now resolves on the anchor
+    }
+  }
+  for (auto& [recipe, raw_shift] : order) {
+    const std::string key = recipe.key();
+    if (recipe.pinned_t) {
+      recipe.pinned_t = saturatingAdd(*recipe.pinned_t, raw_shift);
+    }
+    const std::optional<NodeScheduler::NodeState> before = on_demand_->state(key);
+    if (const auto installed = on_demand_->install(std::move(recipe)); installed) {
+      if (before && before->status != NodeScheduler::NodeState::Status::kIdle) {
+        on_demand_->requestAt(key, saturatingAdd(before->requested_t, raw_shift));  // its cursor, on the anchor's clock
+      }
+    } else {
+      qCWarning(lcSession).noquote() << "mergeDatasets: on-demand recipe" << QString::fromStdString(key)
+                                     << "no longer resolves and was removed:"
+                                     << QString::fromStdString(installed.error());
+      if (!on_demand_->remove(key).empty()) {
+        emit objectTopicsChanged();
+      }
+    }
+  }
+  merged_into_.clear();
+}
+
+std::shared_ptr<const pj::tf::TransformSnapshot> SessionManager::onDemandTf(DatasetId dataset_id) {
+  if (transform_service_ == nullptr) {
+    return nullptr;
+  }
+  if (!ingestActive(dataset_id)) {
+    held_tf_.erase(dataset_id);
+    return transform_service_->snapshot(dataset_id);
+  }
+  // A snapshot per request would make every TF write of the ingest copy the growing state (ARCHITECTURE §19).
+  const auto now = std::chrono::steady_clock::now();
+  HeldTf& held = held_tf_[dataset_id];
+  if (held.snapshot == nullptr || now - held.taken >= kTfSnapshotPeriod) {
+    held = {transform_service_->snapshot(dataset_id), now};
+  }
+  return held.snapshot;
+}
+
+uint64_t SessionManager::onDemandTfRevision(DatasetId dataset_id) {
+  if (transform_service_ == nullptr) {
+    return 0;
+  }
+  if (const auto held = held_tf_.find(dataset_id);
+      held != held_tf_.end() && ingestActive(dataset_id) &&
+      std::chrono::steady_clock::now() - held->second.taken < kTfSnapshotPeriod) {
+    return held->second.snapshot->revision();
+  }
+  return transform_service_->transformBuffer(dataset_id)->revision();
+}
 
 DataReader SessionManager::createReader() const {
   return data_engine_.createReader();
@@ -732,6 +910,7 @@ void SessionManager::endIngest(IngestToken token, IngestOutcome outcome) {
   }
 
   active_ingests_.erase(token.dataset_id);
+  held_tf_.erase(token.dataset_id);  // the next on-demand run takes a fresh snapshot
   emit ingestEnded(token, outcome);
 }
 
@@ -858,6 +1037,9 @@ RefillGuard::RefillGuard(SessionManager& session, DatasetId dataset_id) : sessio
   // (0) A marker run staged from the old data would publish into the refilling
   //     dataset; the refill's own recompute (commit or rollback) is its next run.
   session.batchEngine().cancelRunsOn(dataset_id);
+  //     The on-demand results go before the detach, so a rollback cannot bring one of the old meaning back, and
+  //     nothing is served from the detached or partial data until commit or rollback.
+  session.suspendOnDemand(dataset_id);
   // (1) Adapters drop cached TopicChunk* before any deque is moved (same ordering
   //     as replaceDataset).
   session.notifyDatasetAboutToBeReplaced(dataset_id);
@@ -910,6 +1092,9 @@ RefillGuard::~RefillGuard() {
 }
 
 void RefillGuard::commit() {
+  if (committed_) {
+    return;
+  }
   committed_ = true;
   scalar_snapshot_ = {};  // free the held-aside prior data; the refilled data is kept
   object_snapshot_ = {};
@@ -928,6 +1113,7 @@ void RefillGuard::commit() {
     // Loader metadata described the OLD content just as the record did; the
     // new load's document (if any) is published at its own commit seam.
     session_->clearDatasetMetadata(dataset_id_);
+    session_->resumeOnDemandLater(dataset_id_);
   }
 }
 
@@ -1048,6 +1234,8 @@ void RefillGuard::pruneVanishedTopics() {
 }
 
 void RefillGuard::rollback() {
+  // The restore changes the dataset's meaning again: another epoch, held with the refill's.
+  session_->suspendOnDemand(dataset_id_);
   // (a) Adapters drop any partial-refill chunk pointers cached via progress notifies.
   session_->notifyDatasetAboutToBeReplaced(dataset_id_);
   // (b) Scalar: drop partial refill chunks + retire topics it added, then move the
@@ -1106,6 +1294,8 @@ void RefillGuard::rollback() {
   // (g) UI: reflect the restored topic set (non-live).
   const std::vector<TopicId> current = session_->dataEngine().listTopics(dataset_id_);
   session_->notifyIngest(QVector<TopicId>(current.begin(), current.end()), /*live=*/false);
+  session_->resumeOnDemandLater(dataset_id_);  // the rollback's hold
+  session_->resumeOnDemandLater(dataset_id_);  // the refill's
 }
 
 std::size_t RefillGuard::snapshotBytes() const noexcept {
@@ -1133,6 +1323,7 @@ void SessionManager::replaceDataset(
   // direct connection: every slot returns before the emit does, and this method
   // runs no event loop (the caller must not either) — so the pointers stay dead.
   notifyDatasetAboutToBeReplaced(primary_id);
+  suspendOnDemand(primary_id);
 
   // (2a) Scalar swap. replaceDatasetFrom only errors on a programming mistake (same
   // engine, unknown dataset id), never on user data, and validates before mutating —
@@ -1191,6 +1382,7 @@ void SessionManager::replaceDataset(
 
   // (5) Re-index the (already-cleared) adapters against the swapped-in data.
   notifyIngest(std::move(changed), /*live=*/false);
+  resumeOnDemandLater(primary_id);
 }
 
 std::optional<DatasetMergeReport> SessionManager::mergeDatasets(
@@ -1204,6 +1396,15 @@ std::optional<DatasetMergeReport> SessionManager::mergeDatasets(
   for (const auto& source : sources) {
     notifyDatasetAboutToBeReplaced(source.dataset_id);
   }
+  // Before the object fold: the derived entries are cleared, never merged and shifted as raw observations (a
+  // finding's store timestamp is a sentinel).
+  std::vector<DatasetId> contributors{anchor};
+  for (const auto& source : sources) {
+    contributors.push_back(source.dataset_id);
+  }
+  for (const DatasetId dataset : contributors) {
+    suspendOnDemand(dataset);
+  }
 
   // (2) Fold the scalar data. The engine validates all caller/data-driven inputs
   // up front (unknown/duplicate/self source), so a reachable failure leaves the
@@ -1214,6 +1415,9 @@ std::optional<DatasetMergeReport> SessionManager::mergeDatasets(
     report = std::move(*result);
   } else {
     qCWarning(lcSession).noquote() << "mergeDatasets:" << QString::fromStdString(result.error());
+    for (const DatasetId dataset : contributors) {
+      resumeOnDemandLater(dataset);
+    }
     return std::nullopt;  // engine rejected: nothing mutated — let the caller skip the catalog update
   }
 
@@ -1268,6 +1472,24 @@ std::optional<DatasetMergeReport> SessionManager::mergeDatasets(
     // consume keeps its generator.
     batch_engine_->remapGeneratorsToAnchor(anchor, report.consumed_datasets);
   }
+
+  // (3c) The on-demand recipes of the anchor and of the consumed datasets are installed again, so their inputs
+  // re-bind on the anchor, a consumed finding's pinned time moving with its data. From the event loop: the caller
+  // rebuilds the catalog the scalar inputs resolve through after this returns.
+  std::unordered_map<DatasetId, Timestamp> shifts{{anchor, 0}};
+  for (const DatasetId consumed : report.consumed_datasets) {
+    const auto source = std::ranges::find(sources, consumed, &DatasetMergeSource::dataset_id);
+    shifts.emplace(consumed, source != sources.end() ? source->raw_shift_ns : 0);
+  }
+  QMetaObject::invokeMethod(
+      this,
+      [this, anchor, shifts = std::move(shifts), contributors = std::move(contributors)] {
+        rebindOnDemandAfterMerge(anchor, shifts);
+        for (const DatasetId dataset : contributors) {
+          on_demand_->resume(dataset);
+        }
+      },
+      Qt::QueuedConnection);
 
   // (4) Re-index adapters against the rebuilt anchor topics.
   QVector<TopicId> changed;
@@ -1445,6 +1667,16 @@ void SessionManager::removeDataset(DatasetId dataset_id) {
   if (batch_engine_ && !batch_engine_->clearGeneratorsForDataset(dataset_id).empty()) {
     notifyMarkersChanged();
   }
+  // Its on-demand recipes go with it, their topics retired: a run in flight is cancelled and never published.
+  std::vector<ObjectTopicId> retired;
+  for (const std::string& key : on_demand_->graph().keysOf(dataset_id)) {
+    const std::vector<ObjectTopicId> topics = on_demand_->remove(key);
+    retired.insert(retired.end(), topics.begin(), topics.end());
+  }
+  held_tf_.erase(dataset_id);
+  if (!retired.empty()) {
+    emit objectTopicsChanged();
+  }
   // The engine no longer holds this dataset; drop its pinned earliest-sample and
   // the memoized cross-dataset origin so globalTimeReference() re-scans the
   // survivors (removing the earliest dataset must re-base the display origin).
@@ -1482,6 +1714,9 @@ void SessionManager::evictObjectTopics(const std::vector<ObjectTopicId>& topic_i
   // pinned minima after removal (invalidating only these keeps unrelated
   // retention pins intact).
   const std::unordered_set<DatasetId> affected_datasets = datasetsOwningObjectTopics(topic_ids);
+  for (const DatasetId dataset_id : affected_datasets) {
+    suspendOnDemand(dataset_id);  // a removed topic may be an input: its readers run again without it
+  }
 
   // removeTopic touches the ObjectStore, not the parser map, so keep it out of
   // the parser lock. Erased slots are collected and destroyed after the lock
@@ -1500,6 +1735,7 @@ void SessionManager::evictObjectTopics(const std::vector<ObjectTopicId>& topic_i
   }
   for (const DatasetId dataset_id : affected_datasets) {
     invalidateDatasetMinTimestamp(dataset_id);
+    resumeOnDemandLater(dataset_id);
   }
   notifyGlobalTimeReferenceIfChanged();
   // erased_slots destructs here, after the last unlock.
@@ -1510,6 +1746,9 @@ void SessionManager::clearAllObjects() {
   // object topic before the store is cleared, so their pinned minima can be
   // invalidated and the global origin re-scanned over the survivors.
   const std::unordered_set<DatasetId> affected_datasets = datasetsOwningObjectTopics(object_store_.listTopics());
+  for (const DatasetId dataset_id : affected_datasets) {
+    suspendOnDemand(dataset_id);
+  }
   object_store_.clear();
   // Swap the map into a local under the lock, then let it destruct after the
   // lock releases — slot dtors may run plugin teardown (dlclose).
@@ -1520,6 +1759,7 @@ void SessionManager::clearAllObjects() {
   }
   for (const DatasetId dataset_id : affected_datasets) {
     invalidateDatasetMinTimestamp(dataset_id);
+    resumeOnDemandLater(dataset_id);
   }
   notifyGlobalTimeReferenceIfChanged();
   // drained destructs here, after the lock is released.

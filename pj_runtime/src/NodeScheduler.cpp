@@ -68,6 +68,7 @@ void NodeScheduler::requestAt(std::string_view key, Timestamp t) {
   }
   Entry& entry = *found;
   Slot& slot = entry.second;
+  slot.requested = true;
   slot.cursor = node->recipe.pinned_t.value_or(t);
   history_.noteRequest(entry.first, slot.cursor);
   if (slot.failure && slot.failure->decode) {
@@ -98,6 +99,14 @@ void NodeScheduler::serve(
     Entry& entry, const RecipeGraph::Node& node, Trigger trigger, std::optional<InFlightBudget::Reservation> room) {
   const std::string& key = entry.first;
   Slot& slot = entry.second;
+  if (!slot.requested) {
+    return;  // withdrawn: nothing starts until its next request
+  }
+  if (held_.contains(node.dataset)) {
+    setWait(entry, Wait::kNone);  // its storage changes: `release` serves it
+    setState(entry, NodeStatus::kPending);
+    return;
+  }
   const Timestamp at = slot.cursor;
   const uint64_t epoch = epochOf(node.dataset);
   if (std::optional<std::string> why = graph_.missingInput(key)) {
@@ -394,6 +403,59 @@ void NodeScheduler::forget(std::string_view key) {
   slots_.erase(found);
 }
 
+bool NodeScheduler::withdraw(std::string_view key) {
+  const auto found = slots_.find(key);
+  if (found == slots_.end()) {
+    return false;
+  }
+  for (const std::string& name : found->second.readers) {
+    const auto reader = slots_.find(name);
+    const RecipeGraph::Node* node = graph_.find(name);
+    if (reader != slots_.end() && reader->second.requested && node != nullptr &&
+        std::ranges::any_of(node->bindings, [&](const RecipeGraph::Binding& b) { return b.upstream == key; })) {
+      return false;  // the reader's request waits on it
+    }
+  }
+  found->second.requested = false;
+  setWait(*found, Wait::kNone);
+  setState(*found, NodeStatus::kIdle);
+  return true;
+}
+
+void NodeScheduler::hold(DatasetId dataset) {
+  ++held_[dataset];
+  for (Entry& entry : slots_) {
+    const RecipeGraph::Node* node = graph_.find(entry.first);
+    if (node == nullptr || node->dataset != dataset) {
+      continue;
+    }
+    if (entry.second.running) {
+      entry.second.running->token.cancel();  // staged under the old epoch: never published
+    }
+    if (entry.second.requested) {
+      setState(entry, NodeStatus::kPending);
+    }
+  }
+}
+
+void NodeScheduler::release(DatasetId dataset) {
+  const auto held = held_.find(dataset);
+  if (held == held_.end() || --held->second > 0) {
+    return;
+  }
+  held_.erase(held);
+  std::vector<std::pair<std::string, Timestamp>> requests;
+  for (const auto& [key, slot] : slots_) {
+    const RecipeGraph::Node* node = graph_.find(key);
+    if (slot.requested && node != nullptr && node->dataset == dataset) {
+      requests.emplace_back(key, slot.cursor);
+    }
+  }
+  for (const auto& [key, cursor] : requests) {
+    requestAt(key, cursor);  // a finding at its pin, which a merge may have moved
+  }
+}
+
 void NodeScheduler::supersede(std::string_view key) {
   const auto found = slots_.find(key);
   if (found == slots_.end()) {
@@ -404,7 +466,9 @@ void NodeScheduler::supersede(std::string_view key) {
     slot.running->token.cancel();  // a reader's revision stays, so its publication would not drop it
   }
   slot.failure.reset();
-  requestAt(key, slot.cursor);
+  if (slot.requested) {
+    requestAt(key, slot.cursor);
+  }
 }
 
 std::optional<NodeScheduler::NodeState> NodeScheduler::state(std::string_view key) const {

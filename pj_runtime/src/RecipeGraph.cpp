@@ -252,6 +252,16 @@ std::optional<std::string> RecipeGraph::missingInput(std::string_view key) const
   return std::nullopt;
 }
 
+std::vector<std::string> RecipeGraph::keysOf(DatasetId dataset) const {
+  std::vector<std::string> keys;
+  for (const auto& [key, node] : nodes_) {
+    if (node.dataset == dataset) {
+      keys.push_back(key);
+    }
+  }
+  return keys;
+}
+
 std::vector<std::string> RecipeGraph::dependentsOf(const std::vector<std::string>& keys) const {
   std::unordered_set<std::string> visited(keys.begin(), keys.end());
   std::vector<std::string> pending = keys;

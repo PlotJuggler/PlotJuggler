@@ -2,16 +2,38 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "pj_runtime/OnDemandService.h"
 
+#include <algorithm>
+#include <iterator>
 #include <string>
 #include <utility>
 
 namespace PJ {
+namespace {
+
+NodeScheduler::RunFunction& runForTest() {
+  static NodeScheduler::RunFunction run;
+  return run;
+}
+
+NodeScheduler::Hooks withRun(NodeScheduler::Hooks hooks) {
+  if (!hooks.run) {
+    hooks.run = runForTest();
+  }
+  return hooks;
+}
+
+}  // namespace
+
+void OnDemandService::setRunForTest(NodeScheduler::RunFunction run) {
+  runForTest() = std::move(run);
+}
 
 OnDemandService::OnDemandService(ObjectStore& store, EnginePool& pool, InFlightBudget& budget, Services services)
     : graph_(std::move(services.resolver)),
       history_(store, services.limits),
       stager_(store, history_, std::move(services.scalars), std::move(services.parsers)),
-      scheduler_(store, graph_, history_, stager_, pool, budget, std::move(services.scheduling)) {}
+      scheduler_(store, graph_, history_, stager_, pool, budget, withRun(std::move(services.scheduling))),
+      installed_(std::move(services.installed)) {}
 
 Expected<std::vector<ObjectTopicId>> OnDemandService::install(RecipeGraph::Recipe recipe) {
   const std::string key = recipe.key();
@@ -46,6 +68,9 @@ Expected<std::vector<ObjectTopicId>> OnDemandService::install(RecipeGraph::Recip
   for (const std::string& reader : readers) {
     scheduler_.supersede(reader);
   }
+  if (installed_) {
+    installed_(key, *retired);
+  }
   return retired;
 }
 
@@ -59,6 +84,64 @@ std::vector<ObjectTopicId> OnDemandService::remove(std::string_view key) {
     scheduler_.supersede(reader);
   }
   return retired;
+}
+
+void OnDemandService::setDemand(DatasetId dataset, std::vector<std::string> topic_names) {
+  if (topic_names.empty()) {
+    demand_.erase(dataset);
+  } else {
+    demand_[dataset] = {std::make_move_iterator(topic_names.begin()), std::make_move_iterator(topic_names.end())};
+  }
+}
+
+bool OnDemandService::isDemanded(std::string_view key) const {
+  const RecipeGraph::Node* node = graph_.find(key);
+  if (node == nullptr || node->recipe.pinned_t) {
+    return false;
+  }
+  const auto names = demand_.find(node->dataset);
+  if (names == demand_.end()) {
+    return false;
+  }
+  return std::ranges::any_of(node->recipe.outputs, [&](const scripting::OutputSpec& output) {
+    return output.type == scripting::OutputType::kObject &&
+           names->second.contains(std::string(key) + "/" + output.name);
+  });
+}
+
+std::vector<std::string> OnDemandService::demandedKeys() const {
+  std::vector<std::string> keys;
+  for (const auto& entry : demand_) {
+    std::ranges::move(demandedKeys(entry.first), std::back_inserter(keys));
+  }
+  return keys;
+}
+
+std::vector<std::string> OnDemandService::demandedKeys(DatasetId dataset) const {
+  std::vector<std::string> keys;
+  if (demand_.contains(dataset)) {
+    keys = graph_.keysOf(dataset);
+    std::erase_if(keys, [this](const std::string& key) { return !isDemanded(key); });
+  }
+  return keys;
+}
+
+void OnDemandService::withdraw(std::string_view key) {
+  const RecipeGraph::Node* node = graph_.find(key);
+  if (node == nullptr || !scheduler_.withdraw(key)) {
+    return;
+  }
+  for (const RecipeGraph::Binding& binding : node->bindings) {
+    const RecipeGraph::Node* upstream = graph_.find(binding.upstream);
+    if (upstream != nullptr && !upstream->recipe.pinned_t && !isDemanded(binding.upstream)) {
+      withdraw(binding.upstream);
+    }
+  }
+}
+
+void OnDemandService::suspend(DatasetId dataset) {
+  history_.clearDataset(dataset);
+  scheduler_.hold(dataset);
 }
 
 }  // namespace PJ

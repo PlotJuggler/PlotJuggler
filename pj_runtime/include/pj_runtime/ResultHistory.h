@@ -174,6 +174,11 @@ class ResultHistory {
   /// never evicts.
   [[nodiscard]] std::optional<OutputAt> resultAt(std::string_view key, std::string_view output, Timestamp t) const;
 
+  /// The derived topics of `key`'s object outputs, in declaration order; empty for an unknown key.
+  [[nodiscard]] std::vector<ObjectTopicId> topicsOf(std::string_view key) const;
+  /// The node whose object output `topic` is; nullopt for any other topic. Scans every node's outputs.
+  [[nodiscard]] std::optional<std::string> keyOf(ObjectTopicId topic) const;
+
   /// Serialized bytes the ring holds, every node together.
   [[nodiscard]] std::size_t ringBytes() const {
     return ring_bytes_;

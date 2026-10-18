@@ -271,6 +271,9 @@ struct CatalogModel::Impl {
 
   SessionManager* session = nullptr;
   ItemMap items;
+  // findScalarForMarkerKey's answers found so far, by dataset then key; cleared with every change of `items`, before
+  // any notification of it, so no slot reads a stale one.
+  tsl::robin_map<DatasetId, tsl::robin_map<std::string, ScalarFieldPayload>> scalar_lookups;
   // Datasets hidden by clearAll: rebuildFromDatastore skips them entirely.
   // A reload of the same file creates a fresh DatasetId not in this set, so
   // the curves come back.
@@ -322,6 +325,10 @@ std::vector<CatalogItem> CatalogModel::items() const {
 
 std::optional<ScalarFieldPayload> CatalogModel::findScalarForMarkerKey(
     DatasetId dataset, const std::string& key) const {
+  auto& found_in_dataset = impl_->scalar_lookups[dataset];
+  if (const auto hit = found_in_dataset.find(key); hit != found_in_dataset.end()) {
+    return hit->second;
+  }
   const QString key_text = QString::fromStdString(key);
   const CatalogItem* first = nullptr;
   const ScalarFieldPayload* found = nullptr;
@@ -337,7 +344,11 @@ std::optional<ScalarFieldPayload> CatalogModel::findScalarForMarkerKey(
       found = scalar;
     }
   }
-  return found == nullptr ? std::nullopt : std::optional<ScalarFieldPayload>(*found);
+  if (found == nullptr) {
+    return std::nullopt;
+  }
+  found_in_dataset.emplace(key, *found);
+  return *found;
 }
 
 DatasetId CatalogModel::datasetForTopic(const QString& topic_name) const {
@@ -759,6 +770,7 @@ void CatalogModel::rebuildNow() {
   if (impl_->session == nullptr) {
     if (!impl_->items.empty()) {
       impl_->items.clear();
+      impl_->scalar_lookups.clear();
       emit cleared();
     }
     return;
@@ -977,6 +989,7 @@ void CatalogModel::rebuildNow() {
 
   const Impl::ItemMap previous_items = std::move(impl_->items);
   impl_->items = std::move(next_items);
+  impl_->scalar_lookups.clear();
 
   if (!previous_items.empty() && impl_->items.empty()) {
     emit cleared();
@@ -1027,6 +1040,7 @@ void CatalogModel::clearAll(bool tombstone) {
     }
   }
   impl_->items.clear();
+  impl_->scalar_lookups.clear();
   impl_->removed_names_per_dataset.clear();
   impl_->advertised.clear();
   impl_->per_topic_pause_capable_datasets.clear();
@@ -1139,6 +1153,7 @@ void CatalogModel::removeItems(const std::vector<QString>& keys) {
     impl_->items.erase(it);
     removed.push_back(key);
   }
+  impl_->scalar_lookups.clear();
   if (removed.isEmpty()) {
     return;
   }
@@ -1188,6 +1203,7 @@ bool CatalogModel::removeDataset(DatasetId dataset_id, bool tombstone) {
   for (const QString& key : keys) {
     impl_->items.erase(key);
   }
+  impl_->scalar_lookups.clear();
   // Empty catalog: one cleared() (views reset in O(1)); otherwise one batched
   // itemsRemoved so consumers react once, not per key.
   if (impl_->items.empty()) {

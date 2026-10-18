@@ -261,6 +261,25 @@ void ResultHistory::clear(std::string_view key) {
   }
 }
 
+std::vector<ObjectTopicId> ResultHistory::topicsOf(std::string_view key) const {
+  std::vector<ObjectTopicId> topics;
+  if (const auto found = nodes_.find(key); found != nodes_.end()) {
+    for (const Output& output : found->second.outputs) {
+      topics.push_back(output.topic);
+    }
+  }
+  return topics;
+}
+
+std::optional<std::string> ResultHistory::keyOf(ObjectTopicId topic) const {
+  for (const auto& [key, node] : nodes_) {
+    if (std::ranges::any_of(node.outputs, [topic](const Output& output) { return output.topic == topic; })) {
+      return key;
+    }
+  }
+  return std::nullopt;
+}
+
 void ResultHistory::noteRequest(std::string_view key, Timestamp t) {
   if (const auto found = nodes_.find(key); found != nodes_.end()) {
     found->second.cursor = t;

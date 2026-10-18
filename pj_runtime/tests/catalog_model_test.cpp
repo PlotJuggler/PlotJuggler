@@ -76,6 +76,35 @@ TEST(CatalogModelTest, FindScalarForMarkerKeyLooksInOneDataset) {
   EXPECT_FALSE(catalog.findScalarForMarkerKey(*first, "/speed/val").has_value());
 }
 
+// The lookup remembers what it found only until the items change, and forgets it before any slot hears of the
+// change: a slot of itemsRemoved, and every later lookup, no longer find the removed field.
+TEST(CatalogModelTest, FindScalarForMarkerKeyForgetsAFieldTheCatalogDropped) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(dataset);
+  ASSERT_NE(addScalarTopic(session, *dataset, "/speed"), 0u);
+  const std::string key = PJ::sdk::markerSeriesKey("/speed", "value");
+  ASSERT_NE(addScalarTopic(session, *dataset, "/other"), 0u);  // keeps the catalog non-empty
+  ASSERT_TRUE(catalog.findScalarForMarkerKey(*dataset, key).has_value());
+  ASSERT_TRUE(catalog.findScalarForMarkerKey(*dataset, key).has_value()) << "remembered";
+
+  std::optional<bool> seen_by_slot;
+  QObject::connect(&catalog, &PJ::CatalogModel::itemsRemoved, &catalog, [&](const QStringList&) {
+    seen_by_slot = catalog.findScalarForMarkerKey(*dataset, key).has_value();
+  });
+  std::vector<QString> speed_keys;
+  for (const PJ::CatalogItem& item : catalog.items()) {
+    if (item.topic_name == u"/speed"_s) {
+      speed_keys.push_back(item.key);
+    }
+  }
+  catalog.removeItems(speed_keys);
+  ASSERT_TRUE(seen_by_slot.has_value());
+  EXPECT_FALSE(*seen_by_slot);
+  EXPECT_FALSE(catalog.findScalarForMarkerKey(*dataset, key).has_value());
+}
+
 TEST(CatalogModelTest, KeepsDuplicateDatasetTopicsVisibleUnderDatasetRoot) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);

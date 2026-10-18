@@ -199,6 +199,9 @@ class AppSession : public QObject {
 
   [[nodiscard]] std::optional<MergePlan> planMerge(const std::vector<DatasetId>& selected) const;
 
+  // Requests the on-demand recipe `key` at the playhead, converted to its dataset's raw time (a finding: its pin).
+  void requestOnDemandAtPlayhead(const std::string& key);
+
   // Collapse the transport to the no-data state: pause, clear live hold, reset
   // the range to [0,0] and the cursor to 0, and re-arm the first-seed snap.
   // Called whenever the last visible data disappears (recomputeRange's empty

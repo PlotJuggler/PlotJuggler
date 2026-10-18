@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include <functional>
+#include <map>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #include "pj_base/expected.hpp"
@@ -24,14 +28,22 @@ namespace PJ {
 /// `DerivedObjects`. GUI thread only; what runs on the pool is the scheduler's (see `NodeScheduler.h`).
 class OnDemandService {
  public:
+  /// After an install that took a new revision of `key`, with the topics it retired (GUI thread).
+  using InstalledCallback = std::function<void(const std::string& key, const std::vector<ObjectTopicId>& retired)>;
+
   /// What the session wires in.
   struct Services {
     RecipeGraph::InputResolver resolver;
     InputStager::ScalarSampler scalars;
     InputStager::ParserLookup parsers;
-    NodeScheduler::Hooks scheduling;
+    NodeScheduler::Hooks scheduling;  ///< an empty `run`: the one `setRunForTest` set, else the Luau run
     ResultHistory::Limits limits;
+    InstalledCallback installed;
   };
+
+  /// Test seam: the run of every service built afterwards whose `Services` names none; empty restores the Luau
+  /// run. GUI thread.
+  static void setRunForTest(NodeScheduler::RunFunction run);
 
   /// `store` must outlive the pool's running computes; the pool and the budget must outlive the service.
   OnDemandService(ObjectStore& store, EnginePool& pool, InFlightBudget& budget, Services services);
@@ -54,7 +66,39 @@ class OnDemandService {
   [[nodiscard]] std::optional<NodeScheduler::NodeState> state(std::string_view key) const {
     return scheduler_.state(key);
   }
+  /// The node whose output `topic` is; nullopt for any other topic.
+  [[nodiscard]] std::optional<std::string> keyOfTopic(ObjectTopicId topic) const {
+    return history_.keyOf(topic);
+  }
+  /// `state` of the node whose output `topic` is.
+  [[nodiscard]] std::optional<NodeScheduler::NodeState> stateOfTopic(ObjectTopicId topic) const {
+    const std::optional<std::string> key = keyOfTopic(topic);
+    return key ? state(*key) : std::nullopt;
+  }
 
+  /// Replaces the names of `dataset`'s topics something displays (the demand tracker's active set). A node that is
+  /// not pinned is demanded while one of its object output topics is among them; its upstreams are the scheduler's.
+  void setDemand(DatasetId dataset, std::vector<std::string> topic_names);
+  [[nodiscard]] bool isDemanded(std::string_view key) const;
+  /// Every demanded key, sorted by dataset, then key.
+  [[nodiscard]] std::vector<std::string> demandedKeys() const;
+  /// The demanded keys of `dataset`, sorted.
+  [[nodiscard]] std::vector<std::string> demandedKeys(DatasetId dataset) const;
+  /// `NodeScheduler::withdraw`: nothing demands the node any more. Its upstreams follow when nothing else needs them
+  /// (no demand of their own, no other reader with a request), recursively; a finding is never withdrawn this way.
+  void withdraw(std::string_view key);
+
+  /// Before a change of `dataset`'s storage that changes what its inputs mean, with the caller moving its epoch: drops
+  /// the results of its nodes, cancels their runs and holds their requests (`NodeScheduler::hold`). Pair with `resume`.
+  void suspend(DatasetId dataset);
+  /// Ends one `suspend`: the last serves every node of the dataset requested before, at its cursor.
+  void resume(DatasetId dataset) {
+    scheduler_.release(dataset);
+  }
+
+  [[nodiscard]] const RecipeGraph& graph() const {
+    return graph_;
+  }
   [[nodiscard]] const ResultHistory& history() const {
     return history_;
   }
@@ -63,7 +107,9 @@ class OnDemandService {
   RecipeGraph graph_;
   ResultHistory history_;
   InputStager stager_;
-  NodeScheduler scheduler_;  ///< last: destroyed first, cancelling its runs while the rest is alive
+  NodeScheduler scheduler_;  ///< after the graph, the history and the stager: cancels its runs while they are alive
+  InstalledCallback installed_;
+  std::map<DatasetId, std::unordered_set<std::string>> demand_;
 };
 
 }  // namespace PJ

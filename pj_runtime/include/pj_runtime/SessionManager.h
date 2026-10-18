@@ -3,8 +3,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QObject>
+#include <QPointer>
 #include <QString>
 #include <QVector>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -29,6 +31,10 @@
 #include "pj_runtime/ObjectIngestTap.h"
 #include "pj_runtime/Time.h"
 
+namespace pj::tf {
+class TransformSnapshot;
+}  // namespace pj::tf
+
 namespace PJ {
 
 class MessageParserPluginBase;
@@ -36,7 +42,9 @@ class DataProcessorService;
 class BatchEngine;
 class EnginePool;
 class InFlightBudget;
+class OnDemandService;
 class RefillGuard;
+class TransformService;
 
 /// Result of resolving a persisted dataset identity against the live session.
 /// `ambiguous` distinguishes "not loaded yet" from multiple equally valid
@@ -192,6 +200,27 @@ class SessionManager : public QObject {
   [[nodiscard]] BatchEngine& batchEngine() noexcept {
     return *batch_engine_;
   }
+
+  // The session's on-demand engine (docs/derived_objects/ARCHITECTURE.md §8): recipes are installed and removed
+  // through it, AppSession requests them from the playhead and the demand tracker, and the dataset life cycle
+  // (reload, rollback, merge, removal, eviction) suspends and re-binds them here.
+  [[nodiscard]] OnDemandService& onDemandService() noexcept {
+    return *on_demand_;
+  }
+  // The workers the derived-data engines run on; `waitIdle` publishes everything submitted.
+  [[nodiscard]] EnginePool& enginePool() noexcept {
+    return *engine_pool_;
+  }
+
+  /// (topic, column) of the scalar series `name` (bare, the catalog's series naming) in a dataset.
+  using ScalarSeriesLookup =
+      std::function<std::optional<std::pair<TopicId, std::size_t>>(DatasetId dataset, const std::string& name)>;
+  /// How on-demand recipes resolve and sample scalar series: AppSession injects the catalog's lookup; until then
+  /// no scalar input resolves. GUI thread.
+  void setScalarSeriesLookup(ScalarSeriesLookup lookup);
+  /// Where on-demand runs read the TF state from (the shell owns the service and may destroy it first: the
+  /// session watches it). Without one, runs see no TF. GUI thread.
+  void setTransformService(TransformService* service);
 
   [[nodiscard]] DataReader createReader() const;
 
@@ -685,6 +714,16 @@ class SessionManager : public QObject {
   void ingestProgressed(PJ::IngestToken token, quint64 current, quint64 total);
   void ingestEnded(PJ::IngestToken token, PJ::IngestOutcome outcome);
 
+  // The on-demand engine's reports, on the GUI thread; `topics` are the node's output topics.
+  /// The ring took a result of `key`: what its topics show may have changed.
+  void derivedEntriesPublished(QString key, std::vector<PJ::ObjectTopicId> topics);
+  /// The node's state (status, detail, lag) changed.
+  void derivedStateChanged(QString key, std::vector<PJ::ObjectTopicId> topics);
+  /// A new revision of the recipe was installed (a create, an edit, a merge re-binding it).
+  void onDemandRecipeInstalled(QString key);
+  /// Object topics were retired (an on-demand install or removal): the catalog re-lists them.
+  void objectTopicsChanged();
+
  private:
   // RefillGuard drives the transactional reload through this class's public
   // detach/reattach + notify surface; it needs the private signal-emit helper
@@ -786,6 +825,24 @@ class SessionManager : public QObject {
   // requestCancel all ask here rather than re-deriving it.
   [[nodiscard]] ActiveIngestEntry* liveEntry(IngestToken token);
 
+  /// Before a meaning-changing change of the dataset's storage: a new epoch (a run in flight is never published), and
+  /// the on-demand nodes suspended (results dropped, runs cancelled, requests held). Pair each with
+  /// `resumeOnDemandLater`.
+  void suspendOnDemand(DatasetId dataset_id);
+  /// Ends one `suspendOnDemand` from the event loop, so the requests it serves see the storage, the catalog and
+  /// the TF state their caller rebuilds after the change, with no event loop in between.
+  void resumeOnDemandLater(DatasetId dataset_id);
+  /// Installs the on-demand recipes of the merged datasets (`shifts`: each dataset's raw shift, the anchor's 0) again,
+  /// producers before readers, from one snapshot, so they re-bind on `anchor`: an input qualified with a consumed
+  /// dataset resolves there; a finding's pinned time and a requested node's cursor move by the shift. One that no
+  /// longer resolves is removed, with a warning.
+  void rebindOnDemandAfterMerge(DatasetId anchor, const std::unordered_map<DatasetId, Timestamp>& shifts);
+  /// The dataset's TF for an on-demand run: while the dataset has a live ingest, the snapshot of at most
+  /// `kTfSnapshotPeriod` ago (ARCHITECTURE §19); null without a TransformService.
+  [[nodiscard]] std::shared_ptr<const pj::tf::TransformSnapshot> onDemandTf(DatasetId dataset_id);
+  /// The revision `onDemandTf` would answer now, taking no snapshot.
+  [[nodiscard]] uint64_t onDemandTfRevision(DatasetId dataset_id);
+
   DataEngine data_engine_;
   ObjectStore object_store_;
   std::shared_ptr<ObjectIngestTapRegistry> ingest_taps_;
@@ -827,6 +884,22 @@ class SessionManager : public QObject {
   // The workers the derived-data engines run scripts on. Declared before the engines
   // so it is destroyed after them: each engine cancels its runs, then the pool joins.
   std::unique_ptr<EnginePool> engine_pool_;
+  // After the pool and the budget: destroyed first, its scheduler cancelling the runs the pool then joins.
+  std::unique_ptr<OnDemandService> on_demand_;
+  // Each dataset's epoch, moved by suspendOnDemand; a result staged under another is never current.
+  std::unordered_map<DatasetId, uint64_t> epochs_;
+  ScalarSeriesLookup scalar_lookup_;
+  // Consumed dataset -> anchor, only while rebindOnDemandAfterMerge re-installs: the resolver's remap.
+  std::unordered_map<DatasetId, DatasetId> merged_into_;
+  QPointer<TransformService> transform_service_;
+  // How long a TF snapshot serves on-demand runs while its dataset ingests: the brake rate.
+  static constexpr std::chrono::milliseconds kTfSnapshotPeriod{500};
+  struct HeldTf {
+    std::shared_ptr<const pj::tf::TransformSnapshot> snapshot;
+    std::chrono::steady_clock::time_point taken;
+  };
+  // The snapshot onDemandTf hands out per dataset while its ingest is live.
+  std::unordered_map<DatasetId, HeldTf> held_tf_;
   // Owns the session's whole-series marker generators (host-driven PlotMarkers);
   // constructed in the ctor after object_store_/data_engine_. Its series resolver
   // is injected by AppSession once the catalog exists (setResolver).

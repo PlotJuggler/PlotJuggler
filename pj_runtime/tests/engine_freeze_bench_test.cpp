@@ -34,6 +34,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <iostream>
 #include <optional>
@@ -41,6 +42,8 @@
 #include <vector>
 
 #include "batch_engine_test_utils.h"
+#include "on_demand_test_utils.h"
+#include "pj_base/builtin/builtin_object_codec.hpp"
 #include "pj_base/dataset.hpp"
 #include "pj_base/sdk/platform.hpp"
 #include "pj_base/types.hpp"
@@ -51,7 +54,12 @@
 #include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/EnginePool.h"
+#include "pj_runtime/OnDemandService.h"
+#include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/Time.h"
+#include "pj_runtime/TopicDemandTracker.h"
 
 namespace PJ {
 namespace {
@@ -357,6 +365,122 @@ TEST(EngineFreezeBench, RerunMarkerRuleOverLongSeries) {
         [&] { return batch.staleIds().empty(); }));
   }
   report("RerunMarkerRuleOverLongSeries", costs);
+}
+
+// PERF-01, PERF-04: the GUI thread's CPU time of one playhead tick with one demanded on-demand recipe over a lazily
+// stored 260k-point cloud, through AppSession (the demanded keys, the conversion, the staging, the history lookup and
+// the submission): cold, a new instant each tick (a miss, submitted); warm, between two instants already computed (a
+// hit). The real Luau run passes the cloud through on a worker, off the timer. Then the CPU time of an install (the
+// resolver, the compile, the history install) in a dataset of 1 and of 10,000 object topics: the difference is the
+// resolver's scan, which runs per install, never per tick.
+TEST(EngineFreezeBench, OnDemandColdAndWarm) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  constexpr int kTicks = 101;
+  constexpr Timestamp kStep = 100'000'000;
+  constexpr const char* kMetadata = R"({"builtin_object_type":"kPointCloud"})";
+  QTemporaryDir dir;
+  AppSession app(dir.path());
+  SessionManager& session = app.sessionManager();
+  ObjectStore& store = session.objectStore();
+  const DatasetId ds = session.dataEngine().createDataset(DatasetDescriptor{.source_name = "log"}).value();
+  const ObjectTopicId cloud = store.registerTopic({ds, "cloud", kMetadata}).value();
+  const sdk::PayloadView bytes =
+      sdk::makePayloadView(serializeBuiltinObject(sdk::BuiltinObject(test::makeCloud(260'000))).value());
+  for (int tick = 0; tick < kTicks; ++tick) {
+    ASSERT_TRUE(store.pushLazy(cloud, tick * kStep, [bytes]() -> std::optional<sdk::PayloadView> { return bytes; })
+                    .has_value());
+  }
+  const auto passThrough = [](std::string id, std::string input) {
+    RecipeGraph::Recipe recipe = test::onDemandRecipe(
+        std::move(id), {std::move(input)},
+        {{"cropped", scripting::OutputType::kObject, sdk::BuiltinObjectType::kPointCloud}});
+    recipe.script = "local inputs = ...\nreturn { cropped = inputs.cloud }\n";
+    return recipe;
+  };
+  ASSERT_TRUE(session.onDemandService().install(passThrough("crop", "cloud")).has_value());
+  app.topicDemandTracker().addReference(ds, QStringLiteral("owner/crop/cropped"));
+  PlaybackEngine& playback = app.playbackEngine();
+  playback.setRange(DisplayRange{DisplaySeconds{0.0}, DisplaySeconds{20.0}});
+  const auto tickCpuUs = [&](Timestamp t) {
+    const double start = pj_bench::threadCpuMs();
+    playback.setCurrentTime(rawToDisplaySeconds(t, DisplayOffset{}));
+    return (pj_bench::threadCpuMs() - start) * 1000.0;
+  };
+  std::vector<double> cold;
+  for (int tick = 1; tick < kTicks; ++tick) {
+    cold.push_back(tickCpuUs(tick * kStep));
+    session.enginePool().waitIdle();
+  }
+  ASSERT_EQ(session.onDemandService().state("owner/crop")->status, NodeScheduler::NodeState::Status::kReady);
+  std::vector<double> warm;
+  for (int tick = 0; tick < kTicks; ++tick) {
+    warm.push_back(tickCpuUs((kTicks - 1 - tick % 2) * kStep));
+    session.enginePool().waitIdle();
+  }
+  const auto median = [](std::vector<double> values) {
+    std::nth_element(values.begin(), values.begin() + values.size() / 2, values.end());
+    return values[values.size() / 2];
+  };
+
+  const auto installCpuUs = [&](DatasetId dataset, const std::string& input, int installs) {
+    std::vector<double> times;
+    for (int index = 0; index < installs; ++index) {
+      RecipeGraph::Recipe recipe = passThrough("scan" + std::to_string(dataset) + "_" + std::to_string(index), input);
+      const double start = pj_bench::threadCpuMs();
+      EXPECT_TRUE(session.onDemandService().install(std::move(recipe)).has_value());
+      times.push_back((pj_bench::threadCpuMs() - start) * 1000.0);
+    }
+    return median(std::move(times));
+  };
+  const DatasetId small = session.dataEngine().createDataset(DatasetDescriptor{.source_name = "small"}).value();
+  ASSERT_TRUE(store.registerTopic({small, "only", kMetadata}).has_value());
+  const DatasetId large = session.dataEngine().createDataset(DatasetDescriptor{.source_name = "large"}).value();
+  for (int index = 0; index < 10'000; ++index) {
+    ASSERT_TRUE(store.registerTopic({large, "topic_" + std::to_string(index), kMetadata}).has_value());
+  }
+  const double one = installCpuUs(small, "only", 11);
+  const double ten_thousand = installCpuUs(large, "topic_9999", 11);
+  std::printf(
+      "[bench] OnDemandColdAndWarm, a demanded 260k-point recipe: GUI CPU per tick cold %.2f us, warm %.2f us "
+      "(medians of %d); install among 1 / 10k object topics: %.1f / %.1f us\n",
+      median(cold), median(warm), kTicks - 1, one, ten_thousand);
+
+  // The same ticks for a recipe that also reads 4 scalar series, which resolve through the catalog at every staging,
+  // with the 10k topics above listed in the catalog.
+  DataWriter writer = session.dataEngine().createWriter();
+  RecipeGraph::Recipe scaled = passThrough("scaled", "cloud");
+  for (int index = 0; index < 4; ++index) {
+    const ScalarSeriesHandle gain =
+        writer.registerScalarSeries(ds, "gain_" + std::to_string(index), NumericType::kFloat64).value();
+    for (int tick = 0; tick < kTicks; ++tick) {
+      writer.appendScalar(gain, tick * kStep, static_cast<double>(tick));
+    }
+    scaled.inputs.push_back("gain_" + std::to_string(index) + "/value");
+  }
+  ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  app.catalogModel().rebuildFromDatastore();
+  const size_t items = app.catalogModel().items().size();
+  app.topicDemandTracker().removeReference(ds, QStringLiteral("owner/crop/cropped"));
+  ASSERT_TRUE(session.onDemandService().install(scaled).has_value());
+  app.topicDemandTracker().addReference(ds, QStringLiteral("owner/scaled/cropped"));
+  session.enginePool().waitIdle();
+  std::vector<double> scalar_cold;
+  for (int tick = 1; tick < kTicks; ++tick) {
+    scalar_cold.push_back(tickCpuUs(tick * kStep));
+    session.enginePool().waitIdle();
+  }
+  ASSERT_EQ(session.onDemandService().state("owner/scaled")->status, NodeScheduler::NodeState::Status::kReady);
+  std::vector<double> scalar_warm;
+  for (int tick = 0; tick < kTicks; ++tick) {
+    scalar_warm.push_back(tickCpuUs((kTicks - 1 - tick % 2) * kStep));
+    session.enginePool().waitIdle();
+  }
+  std::printf(
+      "[bench] OnDemandColdAndWarm, the recipe plus 4 scalar inputs among %zu catalog items: GUI CPU per tick cold "
+      "%.2f us, warm %.2f us\n",
+      items, median(scalar_cold), median(scalar_warm));
 }
 
 }  // namespace

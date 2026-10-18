@@ -113,10 +113,20 @@ class NodeScheduler {
   /// request. An unknown key is ignored.
   void requestAt(std::string_view key, Timestamp t);
   /// The node's meaning changed (a new revision of it or of an upstream): cancels its run and drops its pending
-  /// request and its remembered failure; a node requested before is requested again at its cursor.
+  /// request and its remembered failure; a node with a request (not withdrawn) is requested again at its cursor.
   void supersede(std::string_view key);
   /// The node is gone: cancels its run, whose result is then dropped, and forgets its state.
   void forget(std::string_view key);
+  /// Nothing demands the node any more (DEM-03): drops its waiting request and settles it idle. A running run still
+  /// publishes into the history (and settles the node ready when it was for its last request); nothing starts for the
+  /// node until its next request. Kept, returning false, while a reader that still has a request reads it.
+  bool withdraw(std::string_view key);
+  /// The dataset's storage is about to change: none of its nodes is served until the matching `release` (a request only
+  /// moves the cursor), and those with a request are pending. Their runs are cancelled: the caller moves the dataset's
+  /// epoch with the change, so none could be published. Holds nest.
+  void hold(DatasetId dataset);
+  /// Ends one `hold`; the last serves every node of the dataset that has a request, at its cursor.
+  void release(DatasetId dataset);
 
   /// nullopt for a node never requested, or forgotten.
   [[nodiscard]] std::optional<NodeState> state(std::string_view key) const;
@@ -144,6 +154,7 @@ class NodeScheduler {
       bool decode = false;  ///< an input failed to fetch or decode, not the script: the next request runs again
     };
     std::shared_ptr<Job> running;
+    bool requested = false;  ///< has a request to serve: set by `requestAt`, cleared by `withdraw`
     Wait wait = Wait::kNone;
     InFlightBudget::Ticket room;  ///< its place in the budget's line while `wait` is kRoom
     Timestamp cursor = 0;         ///< the newest request's time
@@ -201,6 +212,7 @@ class NodeScheduler {
   InFlightBudget& budget_;
   Hooks hooks_;
   std::map<std::string, Slot, std::less<>> slots_;
+  std::map<DatasetId, int> held_;  ///< the datasets `hold` holds, with their nesting depth
   /// Expires with the scheduler: a publish arriving later does nothing.
   std::shared_ptr<const int> lifetime_ = std::make_shared<const int>(0);
 };

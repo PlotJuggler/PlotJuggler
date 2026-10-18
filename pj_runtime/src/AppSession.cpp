@@ -24,6 +24,7 @@
 #include "pj_runtime/DerivedTopics.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/MarkerTopics.h"
+#include "pj_runtime/OnDemandService.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
@@ -111,6 +112,76 @@ AppSession::AppSession(QString extensions_dir, DiagnosticSink sink, StaticPlugin
   QObject::connect(
       topic_demand_tracker_.get(), &TopicDemandTracker::activeTopicsChanged, &batch_engine,
       &BatchEngine::demandChanged);
+
+  // On-demand recipes (docs/derived_objects/ARCHITECTURE.md §8) read scalar series through the catalog, follow the
+  // playhead while something displays one of their outputs, and are requested where the cursor is parked when they
+  // are installed or become displayed; a finding, at its pin, once per install. Connected before the scene docks'
+  // own slots, so a request precedes the docks' read of the same tick.
+  session_manager_->setScalarSeriesLookup(
+      [this](DatasetId dataset, const std::string& name) -> std::optional<std::pair<TopicId, std::size_t>> {
+        const std::optional<ScalarFieldPayload> scalar = catalog_model_->findScalarForMarkerKey(dataset, name);
+        if (!scalar) {
+          return std::nullopt;
+        }
+        return std::pair<TopicId, std::size_t>{scalar->topic_id, scalar->column_index};
+      });
+  QObject::connect(playback_engine_.get(), &PlaybackEngine::currentTimeChanged, this, [this] {
+    for (const std::string& key : session_manager_->onDemandService().demandedKeys()) {
+      requestOnDemandAtPlayhead(key);
+    }
+  });
+  // An offset change at a parked playhead moves the raw time the demanded recipes are requested at.
+  QObject::connect(
+      session_manager_.get(), qOverload<DatasetId>(&SessionManager::displayOffsetChanged), this,
+      [this](DatasetId dataset) {
+        for (const std::string& key : session_manager_->onDemandService().demandedKeys(dataset)) {
+          requestOnDemandAtPlayhead(key);
+        }
+      });
+  QObject::connect(session_manager_.get(), qOverload<>(&SessionManager::displayOffsetChanged), this, [this] {
+    for (const std::string& key : session_manager_->onDemandService().demandedKeys()) {
+      requestOnDemandAtPlayhead(key);
+    }
+  });
+  QObject::connect(session_manager_.get(), &SessionManager::onDemandRecipeInstalled, this, [this](const QString& key) {
+    const OnDemandService& service = session_manager_->onDemandService();
+    const std::string name = key.toStdString();
+    const RecipeGraph::Node* node = service.graph().find(name);
+    if (node != nullptr && (node->recipe.pinned_t || service.isDemanded(name))) {
+      requestOnDemandAtPlayhead(name);
+    }
+  });
+  QObject::connect(
+      topic_demand_tracker_.get(), &TopicDemandTracker::activeTopicsChanged, this,
+      [this](DatasetId dataset, const std::vector<QString>& active_topics) {
+        OnDemandService& service = session_manager_->onDemandService();
+        const std::vector<std::string> before = service.demandedKeys(dataset);
+        std::vector<std::string> names;
+        names.reserve(active_topics.size());
+        for (const QString& topic : active_topics) {
+          names.push_back(topic.toStdString());
+        }
+        service.setDemand(dataset, std::move(names));
+        const std::vector<std::string> after = service.demandedKeys(dataset);
+        for (const std::string& key : after) {
+          if (!std::ranges::binary_search(before, key)) {
+            requestOnDemandAtPlayhead(key);
+          }
+        }
+        for (const std::string& key : before) {
+          if (!std::ranges::binary_search(after, key)) {
+            service.withdraw(key);
+          }
+        }
+      });
+}
+
+void AppSession::requestOnDemandAtPlayhead(const std::string& key) {
+  OnDemandService& service = session_manager_->onDemandService();
+  if (const RecipeGraph::Node* node = service.graph().find(key)) {
+    const DisplayOffset offset = session_manager_->displayOffset(node->dataset);
+    service.requestAt(key, displaySecondsToRaw(playback_engine_->currentTime(), offset));
+  }
 }
 
 AppSession::~AppSession() {
@@ -152,7 +223,10 @@ void AppSession::forEachVisibleRawRange(
       if (!seen_object_topics.insert(object->object_topic_id.id).second) {
         continue;
       }
-      if (object_store.entryCount(object->object_topic_id) == 0) {
+      // A marker set or an on-demand result is host-published off the data clock (a finding sits at
+      // kFindingTimestamp): it never stretches a range.
+      if (object_store.entryCount(object->object_topic_id) == 0 ||
+          isOffClockTopic(object_store.descriptor(object->object_topic_id))) {
         continue;
       }
       std::tie(raw_min, raw_max) = object_store.timeRange(object->object_topic_id);

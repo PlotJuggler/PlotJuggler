@@ -188,6 +188,8 @@ if(PJ_BUILD_TESTS)
         tests/in_flight_budget_test.cpp
         # On-demand scheduling under D30 (one run in flight, one pending request per node), through the facade.
         tests/node_scheduler_test.cpp
+        # AppSession drives the on-demand engine: the playhead, demand, installs and findings.
+        tests/on_demand_cursor_follow_test.cpp
         # links the shared marker engine the service drives
         tests/markers_runtime_host_test.cpp
         tests/data_processors_kind_router_test.cpp
