@@ -33,6 +33,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -242,10 +243,20 @@ PJ::ObjectTopicId registerTopic(PJ::ObjectStore& store, PJ::DatasetId dataset_id
   return *topic_id;
 }
 
-PJ::ObjectTopicId registerMockTfTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, const std::string& name) {
+// `vary_translation`: an entry's translation follows its store timestamp, so successive
+// entries on one edge are distinct samples rather than skipped repeats.
+PJ::ObjectTopicId registerMockTfTopic(
+    PJ::SessionManager& session, PJ::DatasetId dataset_id, const std::string& name, bool vary_translation = false) {
   const PJ::ObjectTopicId topic = registerTopic(session.objectStore(), dataset_id, name);
-  session.registerObjectTopicParser(
-      topic, makeBoundHandle(kTfSchema, []() noexcept -> void* { return new CountingTfParser(nullptr, nullptr); }));
+  // One lambda per branch: each lambda type gets its own vtable (see makeBoundHandle).
+  if (vary_translation) {
+    session.registerObjectTopicParser(topic, makeBoundHandle(kTfSchema, []() noexcept -> void* {
+                                        return new CountingTfParser(nullptr, nullptr, /*vary_translation=*/true);
+                                      }));
+  } else {
+    session.registerObjectTopicParser(
+        topic, makeBoundHandle(kTfSchema, []() noexcept -> void* { return new CountingTfParser(nullptr, nullptr); }));
+  }
   return topic;
 }
 
@@ -722,7 +733,7 @@ TEST(TransformService, CommitReplacingLoadPublishesOnlyStagingGeneration) {
   service.commitReplacingLoad(1);
 
   const auto committed = service.transformBuffer(1);
-  EXPECT_NE(committed, old_buffer);
+  EXPECT_EQ(committed, old_buffer) << "the commit keeps the buffer docks and layers hold";
   EXPECT_EQ(ready_count, 1);
   EXPECT_FALSE(resolves(*committed, "f0", "f1", 100));
   EXPECT_TRUE(resolves(*committed, "f0", "f2", 200));
@@ -799,7 +810,27 @@ TEST(TransformService, TapRoutingChangesOnlyAtGenerationBoundaries) {
   EXPECT_FALSE(resolves(*replacement, "f0", "f1", 100));
   EXPECT_TRUE(resolves(*replacement, "f0", "f2", 200));
   EXPECT_TRUE(resolves(*replacement, "f0", "f3", 300));
-  EXPECT_FALSE(resolves(*original, "f0", "f3", 300));
+  EXPECT_EQ(replacement, original) << "the commit replaces the state, not the buffer";
+}
+
+// A reload commit reaches every holder of the dataset's buffer, however early it
+// took the handle: the active buffer adopts the staged state instead of being
+// swapped out, so no holder keeps resolving the old TF.
+TEST(TransformService, ReloadCommitReachesBuffersHeldBeforeIt) {
+  PJ::SessionManager session;
+  const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf");
+  TransformService service(session);
+  service.activateIngestTap();
+  invokeTfTap(session, topic, 1, 100, edgePayload(/*parent=*/0, /*child=*/1));
+  const auto held = service.transformBuffer(1);
+
+  service.beginReplacingLoad(1);
+  invokeTfTap(session, topic, 1, 100, edgePayload(/*parent=*/0, /*child=*/2));
+  service.commitReplacingLoad(1);
+
+  EXPECT_TRUE(resolves(*held, "f0", "f2", 100)) << "the held buffer must resolve the reloaded TF";
+  EXPECT_FALSE(resolves(*held, "f0", "f1", 100));
+  EXPECT_EQ(service.snapshot(1).use_count(), 2) << "the staging buffer is gone: the state is the active one's alone";
 }
 
 TEST(TransformService, RepeatedBeginReplacesUnfinishedStagingGeneration) {
@@ -1332,6 +1363,190 @@ TEST(TransformService, LiveWindowDropsOldKeepsNewAndStatic) {
   EXPECT_TRUE(resolves(*buffer, "f0", "f1", 300)) << "a single-sample (static) edge must resolve at late stamps";
   // And the full composed chain f0<-f2 resolves at the newest stamp.
   EXPECT_TRUE(resolves(*buffer, "f0", "f2", 300)) << "static+dynamic compose at the live edge";
+}
+
+// -----------------------------------------------------------------------------
+// Snapshots (docs/derived_objects/ARCHITECTURE.md §12, R1/R4): what scripts read.
+// -----------------------------------------------------------------------------
+
+// The f0<-f1 translation x a snapshot resolves at `stamp_ns`, or nullopt.
+std::optional<double> snapshotX(const pj::tf::TransformSnapshot& snapshot, int64_t stamp_ns) {
+  const auto found =
+      snapshot.tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(stamp_ns)}, Clock::kHeader);
+  return found ? std::optional<double>(found->t.x) : std::nullopt;
+}
+
+bool snapshotResolves(const pj::tf::TransformSnapshot& snapshot, const std::string& source, int64_t stamp_ns) {
+  return snapshot.tryLookupTransform("f0", source, TimePoint{std::chrono::nanoseconds(stamp_ns)}, Clock::kHeader)
+      .has_value();
+}
+
+// Live ingest through the tap, then a retention change: the snapshot keeps the
+// state it captured (TFL-07, TFL-11); a snapshot taken afterwards sees the new one.
+TEST(TransformServiceSnapshot, SnapshotIsImmutableWhileTheBufferMutates) {
+  PJ::SessionManager session;
+  const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf", /*vary_translation=*/true);
+  TransformService service(session);
+  service.activateIngestTap();
+  service.setLiveCacheWindow(1, std::chrono::seconds(1));
+  for (const PJ::Timestamp stamp : {100, 150, 200}) {
+    invokeTfTap(session, topic, 1, stamp, edgePayload(/*parent=*/0, /*child=*/1));
+  }
+  const auto snapshot = service.snapshot(1);
+  ASSERT_NE(snapshot, nullptr);
+  const uint64_t revision = snapshot->revision();
+
+  invokeTfTap(session, topic, 1, 250, edgePayload(/*parent=*/0, /*child=*/1));
+  EXPECT_EQ(snapshot->revision(), revision);
+  EXPECT_EQ(snapshotX(*snapshot, 250), 201.0) << "the append after the snapshot is not in it";
+
+  // Retention alone, on a state a snapshot shares: 10 ns past the newest sample
+  // keeps the one at 200 and drops 100 and 150.
+  const auto before_retention = service.snapshot(1);
+  service.setLiveCacheWindow(1, std::chrono::nanoseconds(10));
+  ASSERT_FALSE(resolves(*service.transformBuffer(1), "f0", "f1", 150));
+  EXPECT_NE(service.transformBuffer(1)->revision(), before_retention->revision()) << "eviction bumps the revision";
+  EXPECT_EQ(snapshotX(*before_retention, 150), 151.0) << "retention evicted from a shared state";
+  EXPECT_EQ(snapshotX(*snapshot, 100), 101.0);
+
+  const auto after = service.snapshot(1);
+  EXPECT_NE(after->revision(), before_retention->revision());
+  EXPECT_EQ(snapshotX(*after, 150), std::nullopt) << "retention reaches the next snapshot";
+  EXPECT_EQ(snapshotX(*after, 250), 251.0);
+}
+
+// Repeated calls at one revision return one object, even across a write that
+// changed nothing; a new revision returns a new object.
+TEST(TransformServiceSnapshot, SnapshotIsSharedPerRevision) {
+  PJ::SessionManager session;
+  const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf", /*vary_translation=*/true);
+  TransformService service(session);
+  service.activateIngestTap();
+  invokeTfTap(session, topic, 1, 100, edgePayload(/*parent=*/0, /*child=*/1));
+
+  const auto first = service.snapshot(1);
+  EXPECT_EQ(service.snapshot(1), first);
+  // The same sample again: no revision bump, although the write copied the state.
+  invokeTfTap(session, topic, 1, 100, edgePayload(/*parent=*/0, /*child=*/1));
+  EXPECT_EQ(service.snapshot(1), first);
+
+  invokeTfTap(session, topic, 1, 200, edgePayload(/*parent=*/0, /*child=*/1));
+  const auto second = service.snapshot(1);
+  EXPECT_NE(second, first);
+  EXPECT_NE(second->revision(), first->revision());
+}
+
+// Every replacement (reload commit and rollback, invalidation, merge rebuild,
+// removal of all datasets) leaves earlier snapshots readable and unchanged, and
+// the next snapshot sees the replacement (TFL-07, TFL-10).
+TEST(TransformServiceSnapshot, ReplacementLeavesOldSnapshotsValidAndNewOnesSeeTheReplacement) {
+  PJ::SessionManager session;
+  const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf");
+  TransformService service(session);
+  service.activateIngestTap();
+  invokeTfTap(session, topic, 1, 100, edgePayload(/*parent=*/0, /*child=*/1));
+  const auto original = service.snapshot(1);
+
+  service.beginReplacingLoad(1);
+  invokeTfTap(session, topic, 1, 100, edgePayload(/*parent=*/0, /*child=*/2));
+  EXPECT_EQ(service.snapshot(1), original) << "the staging generation stays invisible until it commits";
+  service.commitReplacingLoad(1);
+  const auto committed = service.snapshot(1);
+  // The committed buffer took exactly as many writes as the original: a
+  // buffer-local revision counter would collide here and serve a stale entry.
+  EXPECT_NE(committed->revision(), original->revision());
+  EXPECT_TRUE(snapshotResolves(*committed, "f2", 100));
+  EXPECT_FALSE(snapshotResolves(*committed, "f1", 100));
+  EXPECT_TRUE(snapshotResolves(*original, "f1", 100));
+  EXPECT_FALSE(snapshotResolves(*original, "f2", 100));
+
+  service.beginReplacingLoad(1);
+  invokeTfTap(session, topic, 1, 100, edgePayload(/*parent=*/0, /*child=*/3));
+  service.abortReplacingLoad(1);
+  EXPECT_EQ(service.snapshot(1), committed) << "a rolled-back reload leaves the committed state";
+
+  service.invalidateDataset(1);
+  const auto invalidated = service.snapshot(1);
+  EXPECT_TRUE(invalidated->getAllFrames().empty());
+  EXPECT_TRUE(snapshotResolves(*committed, "f2", 100)) << "invalidation must not empty a snapshot";
+
+  ASSERT_TRUE(session.objectStore().pushOwned(topic, 300, edgePayload(/*parent=*/0, /*child=*/4)).has_value());
+  service.ingestFrameTransformsForDataset(1);
+  const auto rebuilt = service.snapshot(1);
+  EXPECT_TRUE(snapshotResolves(*rebuilt, "f4", 300));
+  EXPECT_TRUE(invalidated->getAllFrames().empty()) << "the merge rebuild must not fill an earlier snapshot";
+
+  service.invalidateAll();
+  EXPECT_TRUE(service.snapshot(1)->getAllFrames().empty());
+  EXPECT_TRUE(snapshotResolves(*rebuilt, "f4", 300)) << "removing every dataset must not empty a snapshot";
+  EXPECT_TRUE(snapshotResolves(*original, "f1", 100));
+}
+
+// A complete file buffer is shared, not copied: the snapshot is the buffer's own
+// state object (storage identity), held by the buffer and this test only.
+TEST(TransformServiceSnapshot, SnapshotOfACompleteFileBufferDoesNotCopy) {
+  PJ::SessionManager session;
+  const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf", /*vary_translation=*/true);
+  for (const PJ::Timestamp stamp : {100, 200, 300}) {
+    ASSERT_TRUE(session.objectStore().pushOwned(topic, stamp, edgePayload(/*parent=*/0, /*child=*/1)).has_value());
+  }
+  TransformService service(session);
+  service.ingestFrameTransformsForDataset(1);
+
+  const auto snapshot = service.snapshot(1);
+  EXPECT_EQ(snapshot.use_count(), 2) << "shared with the buffer, not a copy";
+  EXPECT_EQ(service.snapshot(1), snapshot);
+  EXPECT_EQ(snapshotX(*snapshot, 100), 101.0);
+  EXPECT_EQ(snapshotX(*snapshot, 250), 201.0);
+  EXPECT_EQ(snapshotX(*snapshot, 300), 301.0);
+}
+
+// A snapshot is read from a worker thread with no lock while the tap keeps writing
+// into its buffer from another: every read sees the captured state. The producer
+// starts once the reader has read and waits for another read halfway, so the reads
+// overlap the writes.
+TEST(TransformServiceSnapshot, SnapshotReadsNeedNoLockWhileTheTapWrites) {
+  PJ::SessionManager session;
+  const auto topic = registerMockTfTopic(session, /*dataset_id=*/1, "/tf", /*vary_translation=*/true);
+  TransformService service(session);
+  service.activateIngestTap();
+  service.setLiveCacheWindow(1, std::chrono::nanoseconds(100));
+  invokeTfTap(session, topic, 1, 1, edgePayload(/*parent=*/0, /*child=*/1));
+  invokeTfTap(session, topic, 1, 2, edgePayload(/*parent=*/0, /*child=*/1));
+  const auto snapshot = service.snapshot(1);
+  std::atomic<bool> finished{false};
+  std::atomic<bool> changed{false};
+  std::atomic<int> reads{0};
+  const auto await_read_after = [&reads](int seen) {
+    while (reads.load() <= seen) {
+      std::this_thread::yield();
+    }
+  };
+
+  std::thread producer([&]() {
+    await_read_after(0);
+    for (PJ::Timestamp stamp = 3; stamp <= 5000; ++stamp) {
+      if (stamp == 2500) {
+        await_read_after(reads.load());
+      }
+      invokeTfTap(session, topic, 1, stamp, edgePayload(/*parent=*/0, /*child=*/1));
+    }
+    finished.store(true);
+  });
+  std::thread reader([&]() {
+    while (!finished.load()) {
+      if (snapshotX(*snapshot, 1) != 2.0 || snapshotX(*snapshot, 5000) != 3.0 || snapshot->getAllFrames().size() != 2) {
+        changed.store(true);
+      }
+      reads.fetch_add(1);
+    }
+  });
+  producer.join();
+  reader.join();
+
+  EXPECT_GE(reads.load(), 2) << "the reads must overlap the writes";
+  EXPECT_FALSE(changed.load());
+  EXPECT_EQ(snapshotX(*service.snapshot(1), 5000), 5001.0);
 }
 
 }  // namespace

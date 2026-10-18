@@ -258,5 +258,28 @@ TEST(TrailLayerTest, EmptyTrailRevivesWhenTfDataArrives) {
   EXPECT_TRUE(layer.statusWarning().isEmpty());
 }
 
+// The buffer the trail holds can have its whole history replaced behind the same
+// handle (a reload commit, an invalidation, a merge rebuild): that is not an
+// extension of the trail, so the next tick rebuilds it instead of appending to a
+// tail built on the old history.
+TEST(TrailLayerTest, ReplacedTfHistoryRebuildsTheTrail) {
+  auto buffer = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
+  (void)buffer->setTransform(stampedAt(10ns, "odom", "base", 1.0));
+  (void)buffer->setTransform(stampedAt(20ns, "odom", "base", 2.0));
+
+  TrailLayer layer(PJ::ObjectTopicId{42}, TrailSource::tfFrame(u"base"_s));
+  layer.injectContextForTest(buffer);
+  layer.rebuildNowForTest(u"odom"_s);
+  ASSERT_EQ(layer.timeRange().min, tp(10ns));
+
+  buffer->clear();
+  (void)buffer->setTransform(stampedAt(15ns, "odom", "base", 5.0));
+  (void)buffer->setTransform(stampedAt(25ns, "odom", "base", 6.0));
+  layer.setTrackerTime(tp(25ns));
+  spinUntil([&layer]() { return layer.timeRange().min == tp(15ns); });
+  EXPECT_EQ(layer.timeRange().min, tp(15ns)) << "the trail kept samples of the replaced history";
+  EXPECT_EQ(layer.pointCountForTest(), 2U);
+}
+
 }  // namespace
 }  // namespace pj::scene3d

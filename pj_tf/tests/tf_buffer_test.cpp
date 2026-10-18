@@ -10,7 +10,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <random>
 #include <set>
@@ -18,6 +20,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "pj_base/sdk/platform.hpp"
 
 namespace PJ {
 namespace {
@@ -29,6 +33,7 @@ using pj::tf::StampedTransform;
 using pj::tf::TimePoint;
 using pj::tf::Transform;
 using pj::tf::TransformBuffer;
+using pj::tf::TransformSnapshot;
 using namespace std::chrono_literals;
 
 constexpr double kTolerance = 1e-9;
@@ -1123,10 +1128,13 @@ TEST(TransformBufferTwoClocks, CoincidingClocksMatchTheStampOnlyBuffer) {
     // Out of order, same-stamp replaces and repeats all occur.
     const TimePoint stamp = tp(std::chrono::nanoseconds(step + static_cast<int64_t>(roll(8)) - 4));
     const Transform value = makeTranslation(roll(3));
+    const uint64_t stamp_only_before = stamp_only.revision();
+    const uint64_t both_before = both.revision();
     ASSERT_EQ(
         stamp_only.setTransform(makeStamped(parent, child, stamp, value)).has_value(),
         both.setTransform(makeStamped(parent, child, stamp, value), stamp).has_value());
-    ASSERT_EQ(stamp_only.revision(), both.revision()) << "step " << step;
+    // Revisions are unique across buffers, so the two agree on whether a write bumped.
+    ASSERT_EQ(stamp_only.revision() != stamp_only_before, both.revision() != both_before) << "step " << step;
     for (int query = 0; query < 4; ++query) {
       const TimePoint time = tp(std::chrono::nanoseconds(step - 30 + static_cast<int64_t>(roll(40))));
       const auto reference = stamp_only.tryLookupTransform("map", "base", time, Clock::kHeader);
@@ -1147,6 +1155,219 @@ TEST(TransformBufferTwoClocks, CoincidingClocksMatchTheStampOnlyBuffer) {
     EXPECT_EQ(times, reference_times);
     EXPECT_EQ(both.latestCommonTime("map", "base", clock), stamp_only.latestCommonTime("map", "base", Clock::kHeader));
   }
+}
+
+// -----------------------------------------------------------------------------
+// TransformSnapshot (docs/derived_objects/ARCHITECTURE.md §12, R1/R4): an
+// immutable state of a buffer, taken in O(1); the buffer copies its state on the
+// next write while a snapshot holds it.
+// -----------------------------------------------------------------------------
+
+// A live append that evicts, a new frame, a retention change and a reset all leave
+// an existing snapshot unchanged; a snapshot taken afterwards sees the new state.
+TEST(TransformSnapshot, SnapshotIsImmutableWhileTheBufferMutates) {
+  TransformBuffer buffer(10ns);
+  ASSERT_TRUE(buffer.setTransform(makeStamped("map", "odom", tp(100ns), makeTranslation(1.0))).has_value());
+  ASSERT_TRUE(buffer.setTransform(makeStamped("map", "odom", tp(105ns), makeTranslation(2.0))).has_value());
+  const std::shared_ptr<const TransformSnapshot> snapshot = buffer.snapshot();
+  ASSERT_NE(snapshot, nullptr);
+  const uint64_t revision = snapshot->revision();
+  const auto expect_frozen = [&](const char* after) {
+    EXPECT_EQ(snapshot->revision(), revision) << after;
+    const auto at_100 = snapshot->tryLookupTransform("map", "odom", tp(100ns), Clock::kHeader);
+    ASSERT_TRUE(at_100.has_value()) << after;
+    expectTranslation(*at_100, 1.0);
+    const auto at_120 = snapshot->tryLookupTransform("map", "odom", tp(120ns), Clock::kHeader);
+    ASSERT_TRUE(at_120.has_value()) << after;
+    expectTranslation(*at_120, 2.0);
+    EXPECT_EQ(
+        snapshot->tryLookupTransform("map", "base", tp(120ns), Clock::kHeader).error(),
+        pj::tf::LookupError::kUnknownSource)
+        << after;
+    std::vector<std::string> frames = snapshot->getAllFrames();
+    std::sort(frames.begin(), frames.end());
+    EXPECT_EQ(frames, (std::vector<std::string>{"map", "odom"})) << after;
+  };
+
+  // 120 is past the 10 ns window: the sample at 100 is evicted from the buffer.
+  ASSERT_TRUE(buffer.setTransform(makeStamped("map", "odom", tp(120ns), makeTranslation(3.0))).has_value());
+  ASSERT_TRUE(buffer.setTransform(makeStamped("odom", "base", tp(120ns), makeTranslation(4.0))).has_value());
+  ASSERT_FALSE(buffer.tryLookupTransform("map", "odom", tp(100ns), Clock::kHeader).has_value());
+  expect_frozen("live append");
+  ASSERT_TRUE(buffer.setTransform(makeStamped("map", "odom", tp(121ns), makeTranslation(5.0))).has_value());
+
+  // Retention alone, on a state a snapshot shares: the 1 ns window drops the sample
+  // at 105, which still holds the value at 110.
+  const auto before_retention = buffer.snapshot();
+  buffer.setCacheWindow(1ns);
+  EXPECT_NE(buffer.revision(), before_retention->revision()) << "the eviction must bump the revision";
+  ASSERT_TRUE(before_retention->tryLookupTransform("map", "odom", tp(110ns), Clock::kHeader).has_value())
+      << "retention evicted from a shared state";
+  expectTranslation(*before_retention->tryLookupTransform("map", "odom", tp(110ns), Clock::kHeader), 2.0);
+  EXPECT_FALSE(buffer.snapshot()->tryLookupTransform("map", "odom", tp(110ns), Clock::kHeader).has_value());
+  expect_frozen("retention");
+
+  const auto before_clear = buffer.snapshot();
+  buffer.clear();
+  EXPECT_EQ(before_clear->getAllFrames().size(), 3U) << "clear emptied a shared state";
+  expect_frozen("clear");
+
+  const auto fresh = buffer.snapshot();
+  EXPECT_NE(fresh->revision(), revision);
+  EXPECT_NE(fresh->revision(), before_clear->revision());
+  EXPECT_TRUE(fresh->getAllFrames().empty());
+}
+
+// adoptStateOf gives a buffer another buffer's current state, shared without a
+// copy, so holders of the adopting buffer see the replacement; the epoch counts
+// such whole-state replacements and clear(), never a write.
+TEST(TransformSnapshot, AdoptStateOfSharesTheOtherBuffersState) {
+  TransformBuffer active;
+  TransformBuffer staging;
+  ASSERT_TRUE(active.setTransform(makeStamped("map", "odom", tp(100ns), makeTranslation(1.0))).has_value());
+  ASSERT_TRUE(staging.setTransform(makeStamped("map", "base", tp(100ns), makeTranslation(2.0))).has_value());
+  const auto before = active.snapshot();
+  const uint64_t epoch = active.epoch();
+
+  active.adoptStateOf(staging);
+  EXPECT_EQ(active.snapshot(), staging.snapshot()) << "one state, no copy";
+  EXPECT_EQ(active.revision(), staging.revision());
+  EXPECT_EQ(active.epoch(), epoch + 1);
+  EXPECT_TRUE(active.tryLookupTransform("map", "base", tp(100ns), Clock::kHeader).has_value());
+  EXPECT_FALSE(active.tryLookupTransform("map", "odom", tp(100ns), Clock::kHeader).has_value());
+  EXPECT_TRUE(before->tryLookupTransform("map", "odom", tp(100ns), Clock::kHeader).has_value());
+
+  // A write to one copies the shared state first and leaves the other alone.
+  ASSERT_TRUE(active.setTransform(makeStamped("map", "lidar", tp(100ns), makeTranslation(3.0))).has_value());
+  EXPECT_FALSE(staging.tryLookupTransform("map", "lidar", tp(100ns), Clock::kHeader).has_value());
+  EXPECT_EQ(active.epoch(), epoch + 1) << "a write is not a replacement";
+  active.clear();
+  EXPECT_EQ(active.epoch(), epoch + 2);
+}
+
+// Storage identity, not timing: a snapshot is the buffer's own state object until
+// the next write, which moves the buffer to a copy and leaves the snapshot alone.
+TEST(TransformSnapshot, ASnapshotSharesTheBufferStateUntilTheNextWrite) {
+  TransformBuffer buffer(TransformBuffer::kKeepAll);
+  ASSERT_TRUE(buffer.setTransform(makeStamped("map", "odom", tp(100ns), makeTranslation(1.0))).has_value());
+  const auto first = buffer.snapshot();
+  const auto second = buffer.snapshot();
+  EXPECT_EQ(first, second) << "no write in between: one state object, no copy";
+  EXPECT_EQ(first.use_count(), 3) << "held by the buffer, `first` and `second`";
+
+  ASSERT_TRUE(buffer.setTransform(makeStamped("map", "odom", tp(200ns), makeTranslation(2.0))).has_value());
+  EXPECT_EQ(first.use_count(), 2) << "the write copied the state: the buffer no longer holds the snapshot";
+  EXPECT_NE(buffer.snapshot(), first);
+}
+
+// A snapshot answers both clocks exactly as its buffer did when it was taken. The
+// header stamps are 40 ns before their entry (log) times.
+TEST(TransformSnapshot, SnapshotLookupHonoursBothClocks) {
+  TransformBuffer buffer(TransformBuffer::kKeepAll);
+  ASSERT_TRUE(buffer.setTransform(makeStamped("map", "base", tp(100ns), makeTranslation(1.0)), tp(140ns)).has_value());
+  ASSERT_TRUE(buffer.setTransform(makeStamped("map", "base", tp(200ns), makeTranslation(2.0)), tp(240ns)).has_value());
+  const auto snapshot = buffer.snapshot();
+
+  // At 120 the sample stamped 100 exists but has not arrived; at 220 the one
+  // stamped 200 exists but the entry clock still holds the earlier one.
+  EXPECT_FALSE(snapshot->tryLookupTransform("map", "base", tp(120ns), Clock::kEntry).has_value());
+  expectTranslation(*snapshot->tryLookupTransform("map", "base", tp(120ns), Clock::kHeader), 1.0);
+  expectTranslation(*snapshot->tryLookupTransform("map", "base", tp(220ns), Clock::kEntry), 1.0);
+  expectTranslation(*snapshot->tryLookupTransform("map", "base", tp(220ns), Clock::kHeader), 2.0);
+  for (const int64_t time : {90, 100, 139, 140, 199, 200, 239, 240, 300}) {
+    for (const Clock clock : {Clock::kHeader, Clock::kEntry}) {
+      const auto from_snapshot = snapshot->tryLookupTransform("map", "base", tp(std::chrono::nanoseconds(time)), clock);
+      const auto from_buffer = buffer.tryLookupTransform("map", "base", tp(std::chrono::nanoseconds(time)), clock);
+      ASSERT_EQ(from_snapshot.has_value(), from_buffer.has_value()) << time;
+      if (from_snapshot) {
+        EXPECT_EQ(*from_snapshot, *from_buffer) << time;
+      }
+    }
+  }
+}
+
+// Revisions come from one process-wide counter: two buffers fed the same writes
+// never report the same revision, so a revision identifies one state even after
+// the buffer holding it is replaced.
+TEST(TransformSnapshot, RevisionsAreUniqueAcrossBuffers) {
+  TransformBuffer first;
+  TransformBuffer second;
+  EXPECT_NE(first.revision(), second.revision());
+  for (TransformBuffer* buffer : {&first, &second}) {
+    ASSERT_TRUE(buffer->setTransform(makeStamped("map", "odom", tp(100ns), makeTranslation(1.0))).has_value());
+  }
+  EXPECT_NE(first.snapshot()->revision(), second.snapshot()->revision());
+}
+
+// PJ_BENCH=1 prints what a snapshot costs: the snapshot() call itself, and the
+// state copy the next write pays while a snapshot holds the state, for a complete
+// 1 h file buffer and live windows of 5 s and 60 s (25 edges at 100 Hz, every
+// sample distinct). Baselines: docs/derived_objects/ARCHITECTURE.md §19.
+TEST(TransformSnapshotBench, SnapshotAndCopyOnWriteCost) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  constexpr int kEdges = 25;
+  constexpr int64_t kTickMs = 10;  // 100 Hz
+  constexpr std::size_t kSampleBytes = sizeof(TimePoint) * 2 + sizeof(Transform);
+  std::vector<std::string> children;
+  for (int edge = 0; edge < kEdges; ++edge) {
+    children.push_back("e" + std::to_string(edge));
+  }
+  int64_t tick = 0;
+  const auto write_tick = [&](TransformBuffer& buffer) {
+    const TimePoint stamp = tp(std::chrono::milliseconds(tick * kTickMs));
+    for (const std::string& child : children) {
+      (void)buffer.setTransform(makeStamped("root", child, stamp, makeTranslation(static_cast<double>(tick))));
+    }
+    ++tick;
+  };
+  const auto micros = [](auto begin, auto end) {
+    return std::chrono::duration<double, std::micro>(end - begin).count();
+  };
+  const auto measure = [&](const char* label, TransformBuffer& buffer) {
+    std::vector<TimePoint> edge_times;
+    buffer.chainSampleTimes("root", "e0", TimePoint::min(), TimePoint::max(), Clock::kHeader, edge_times);
+    const std::size_t samples = edge_times.size() * kEdges;
+
+    constexpr int kCalls = 1000;
+    const auto calls_begin = std::chrono::steady_clock::now();
+    std::shared_ptr<const TransformSnapshot> held;
+    for (int call = 0; call < kCalls; ++call) {
+      held = buffer.snapshot();
+    }
+    const double snapshot_us = micros(calls_begin, std::chrono::steady_clock::now()) / kCalls;
+    EXPECT_EQ(held.use_count(), 2) << "a snapshot shares the buffer state: nothing copied";
+
+    std::vector<double> copy_us;
+    for (int run = 0; run < 5; ++run) {
+      held = buffer.snapshot();
+      const auto write_begin = std::chrono::steady_clock::now();
+      write_tick(buffer);
+      copy_us.push_back(micros(write_begin, std::chrono::steady_clock::now()));
+      EXPECT_EQ(held.use_count(), 1) << "the write copied the state";
+    }
+    std::sort(copy_us.begin(), copy_us.end());
+    std::printf(
+        "[bench] %-22s %9zu samples (%7.1f MB of samples): snapshot() %.3f us, 0 bytes; "
+        "first write after it (state copy) median %.2f ms\n",
+        label, samples, static_cast<double>(samples * kSampleBytes) / 1e6, snapshot_us, copy_us[2] / 1000.0);
+  };
+
+  for (const int window_s : {5, 60}) {
+    TransformBuffer live{std::chrono::seconds(window_s)};
+    tick = 0;
+    for (int64_t fill = 0; fill < int64_t{2} * window_s * 1000 / kTickMs; ++fill) {
+      write_tick(live);
+    }
+    measure(window_s == 5 ? "live, 5 s window" : "live, 60 s window", live);
+  }
+  TransformBuffer file(TransformBuffer::kKeepAll);
+  tick = 0;
+  for (int64_t fill = 0; fill < int64_t{3600} * 1000 / kTickMs; ++fill) {
+    write_tick(file);
+  }
+  measure("complete 1 h file", file);
 }
 
 }  // namespace

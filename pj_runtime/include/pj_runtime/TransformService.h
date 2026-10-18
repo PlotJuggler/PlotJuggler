@@ -17,6 +17,7 @@
 
 namespace pj::tf {
 class TransformBuffer;
+class TransformSnapshot;
 }  // namespace pj::tf
 
 namespace PJ {
@@ -31,9 +32,11 @@ class SessionManager;
 // through SessionManager's neutral surface only: ingestTaps(), objectStore(),
 // and parserBindingForObjectTopic(); pj_runtime never depends on pj_scene3D.
 //
-// One active TransformBuffer per dataset is shared by every attached 3D dock;
-// an in-place reload may also own one private staging generation. Per
-// pj_scene3D REQUIREMENTS §9.
+// One active TransformBuffer per dataset is shared by every attached 3D dock and
+// its layers, and stays the same object for the dataset's lifetime: invalidation,
+// the merge rebuild and a reload commit replace its state, never the buffer, so no
+// holder needs to rebind. An in-place reload may also own one private staging
+// generation. Per pj_scene3D REQUIREMENTS §9.
 //
 // THREADING: public methods run on the GUI thread. The registered ingest-tap
 // callback is the sole worker-thread entry point; its buffer routing uses a
@@ -80,10 +83,10 @@ class TransformService : public QObject {
 
   // Forgets a dataset's TF state so the next ingest re-reads the store: drops the
   // per-topic ingest cursors and non-TF classifications, and empties the existing
-  // TransformBuffer IN PLACE (3D docks share that buffer by pointer, so they see
-  // the reset rather than holding a stale orphan). Call when the dataset's object
-  // topics no longer hold the data the buffer was built from: dataset removal,
-  // eviction, or the explicit merge rebuild.
+  // TransformBuffer (TransformBuffer::clear replaces its state: 3D docks keep the
+  // buffer they hold and see the reset, snapshots keep the state they captured).
+  // Call when the dataset's object topics no longer hold the data the buffer was
+  // built from: dataset removal, eviction, or the explicit merge rebuild.
   void invalidateDataset(PJ::DatasetId dataset_id);
 
   // invalidateDataset() over every known dataset — the clear-all counterpart,
@@ -94,7 +97,10 @@ class TransformService : public QObject {
   /// A repeated begin discards the unfinished staging generation and starts fresh.
   void beginReplacingLoad(PJ::DatasetId dataset_id);
 
-  /// Publishes the completed reload generation atomically and notifies docks.
+  /// Publishes the completed reload generation and notifies docks: the active
+  /// buffer adopts the staging buffer's state in O(1) (TransformBuffer::adoptStateOf)
+  /// and keeps its identity, so every holder sees the reload. Call it after the
+  /// generation's writer finished: a later write to the staging buffer is lost.
   void commitReplacingLoad(PJ::DatasetId dataset_id);
 
   /// Discards a failed tap generation without touching the prior active buffer.
@@ -113,9 +119,24 @@ class TransformService : public QObject {
   // kept because ingestFrameTransformsForDataset still logs it.
   bool ingestNewTransforms(PJ::DatasetId dataset_id);
 
+  // The dataset's TF as an immutable snapshot (pj_tf's TransformSnapshot), what
+  // scripts read: never changed by later ingest, retention, reload, merge,
+  // invalidation or removal; a later call sees those. Calls at one revision return
+  // the same object while any caller still holds it. O(1), no copy: the buffer
+  // copies its state on its next write instead (ARCHITECTURE.md §12, R4). Creates
+  // the buffer like transformBuffer(), so never null. GUI-thread only; the
+  // returned snapshot may be read from any thread without a lock.
+  // CONSUMER RULE: while the dataset's TF ingest is active (a first file load
+  // writes the active buffer directly, streaming never stops), every write after a
+  // new snapshot copies the whole, growing state under the buffer's write lock,
+  // which renders wait on (up to 72 ms / 648 MB per copy for a 1 h file,
+  // ARCHITECTURE.md §19). Take a new snapshot there no faster than the brake rate,
+  // or wait for the ingest to end, rather than whenever the revision moves.
+  [[nodiscard]] std::shared_ptr<const pj::tf::TransformSnapshot> snapshot(PJ::DatasetId dataset_id);
+
  signals:
   // Emitted after a progressive publication, completed load generation, or
-  // explicit rebuild so docks refresh or rebind the dataset buffer.
+  // explicit rebuild so docks refresh what they derived from the dataset's TF.
   void datasetTransformsReady(PJ::DatasetId dataset_id);
 
  private:
@@ -176,6 +197,10 @@ class TransformService : public QObject {
   std::unordered_set<uint32_t> non_tf_topics_;
   std::optional<PJ::ObjectIngestTapRegistry::TapLease> tap_lease_;
   bool tap_active_ = false;
+  // snapshot()'s last answer per dataset, reused while its revision is current (a
+  // write that changed nothing still copies the buffer's state). Weak, so the
+  // service never keeps a state alive that no caller holds. GUI-thread only.
+  std::unordered_map<PJ::DatasetId, std::weak_ptr<const pj::tf::TransformSnapshot>> snapshots_;
 };
 
 }  // namespace PJ

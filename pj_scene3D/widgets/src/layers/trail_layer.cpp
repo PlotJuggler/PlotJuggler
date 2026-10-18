@@ -408,6 +408,7 @@ void TrailLayer::adoptPolyline(TrailPolyline polyline) {
   ++build_revision_;
   if (ctx_.tf_buffer != nullptr) {
     last_seen_tf_revision_ = ctx_.tf_buffer->revision();
+    last_seen_tf_epoch_ = ctx_.tf_buffer->epoch();
   }
   if (stamps_.size() >= 2) {
     setDataWarning({});
@@ -505,6 +506,12 @@ std::optional<PoseTrailSample> TrailLayer::decodePoseSample(
 void TrailLayer::maybeAppendLiveSamples() {
   if (rebuild_worker_.busy() || ctx_.tf_buffer == nullptr || fixed_frame_.empty()) {
     return;  // a full rebuild is running; it lands on the live edge itself
+  }
+  // A replaced history (a reload commit or an invalidation keeps the buffer and
+  // swaps its state) is no extension of this trail: rebuild, do not append.
+  if (ctx_.tf_buffer->epoch() != last_seen_tf_epoch_) {
+    requestRebuild();
+    return;
   }
   if (source_.kind == TrailSource::Kind::kTfFrame) {
     const uint64_t tf_revision = ctx_.tf_buffer->revision();

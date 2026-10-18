@@ -352,22 +352,40 @@ is proposed.
 
 ## 12. TF
 
-**Status: Built** (the per-dataset service). R1-R4 are decided, R6 is built (slice 1b) and
-R10 is built (slice T); the rest are proposed or conditional.
+**Status: Built** (the per-dataset service). R1 and R4 are built (slice 5a), R2 and R3
+(slice 1t), R6 (slice 1b) and R10 (slice T); the rest are proposed or conditional.
 
 - **`pj_tf`** (Built, slice 1t) is a Qt-free leaf library. `TransformBuffer` keeps a forest of edges with a
   timestamped sample history per edge and zero-order-hold lookups.
 - **`TransformService`** (`pj_runtime`) owns one buffer per dataset and the ingest tap,
   which is active from startup. `SessionManager`'s remove, merge and reload paths call its
   life-cycle hooks.
-- **Scripts read an immutable per-dataset snapshot** through `ITransformLookupProvider`.
+- **Scripts read an immutable per-dataset snapshot** (Built, slice 5a; the `pj.tf` binding
+  that reads it is slice 5c). `TransformService::snapshot(dataset)` returns a
+  `std::shared_ptr<const pj::tf::TransformSnapshot>` with `tryLookupTransform(target,
+  source, t, clock)`, `getAllFrames()` and `revision()`. It is never null, it never
+  changes, and it is read from any thread without a lock. Calls at one revision return one
+  object while a caller holds it.
+- **Copy-on-write buffer state (R4).** A buffer's state *is* a `TransformSnapshot`:
+  `TransformBuffer::snapshot()` shares it in O(1), and the buffer copies it before its next
+  write while a snapshot holds it. Every replacement swaps the state behind the same buffer:
+  `clear()` (invalidation, removal, the merge rebuild) swaps in an empty one, and a reload
+  commit makes the active buffer adopt the staging buffer's state (`adoptStateOf`, O(1),
+  no copy). The dataset's buffer object never changes, so every holder (3D docks, their
+  layers, the robot model's fixed-joint bridges, which write into it) sees each replacement
+  without rebinding; `epoch()` counts the replacements, for a reader that extends a cached
+  result (the TF trail rebuilds instead of appending). A complete file buffer is shared
+  without a copy and needs no seal, and an old snapshot always keeps its state. Revisions
+  come from one process-wide counter, so a revision names one state across buffers and
+  buffer replacements (the script cache key). `setCacheWindow` bumps the revision when it
+  evicts.
 
 | # | Change | Status |
 |---|---|---|
-| R1 | Move the immutable snapshot type into `pj_tf`; drop the scripting-side interface and adapter | Decided |
+| R1 | Move the immutable snapshot type into `pj_tf`; drop the scripting-side interface and adapter | Built (slice 5a): `pj::tf::TransformSnapshot` in `tf_buffer.h`; no interface, no adapter |
 | R2 | Move the fixed-frame memory (a 3D-view preference) out of `TransformService` to the scene side (`FixedFrameMemory` in `pj_scene3d_widgets`) | Built (slice 1t) |
 | R3 | A 3D dock refuses a topic from another dataset, instead of warning | Built (slice 1t; follows D7) |
-| R4 | Replace a buffer as a whole object instead of rewriting it in place; seal complete file buffers, so snapshots share them without copying | Decided |
+| R4 | Replace a buffer as a whole object instead of rewriting it in place; seal complete file buffers, so snapshots share them without copying | Built (slice 5a), as copy-on-write of the buffer's state: a write copies a state a snapshot shares, so no seal is needed (the robot model's bridges write into file buffers, which a seal would have refused); the replaced object is the state, behind a buffer that keeps its identity, a reload commit included |
 | R5 | Report which edges and samples a lookup used, for the cache dependency | Proposed; measure after R10, which already removes most spurious revision bumps |
 | R6 | TF clock contract. The buffer was keyed by header stamps, while lookups used the dataset's entry clock. Fix: two timestamps per sample (header and entry). The cursor and the query time use the entry clock; placing an object uses its own stamp in the header clock. On the nuScenes recording (log time), log time minus header stamp is 0 ms on the lidar, 0-40 ms on the front camera and -37 to +48 ms on `/tf`: the lidar hid the mismatch. See [the two clocks](#the-two-clocks-r6) below. | Built (slice 1b). Decided 2026-10-13. Visual confirmation on the nuScenes cameras pending. |
 | R7 | Frames published once are valid before their first stamp | Verify first |
@@ -435,7 +453,7 @@ Every consumer and its clock:
 | TF frame trail | Entry (`chainSampleTimes` and its lookups) | The trail is split at the cursor and its head meets the frame's triad. |
 | Camera scene bounds, layer render keys, point-cloud axis range | The layer's own placement, with its placement hold | They must match what is drawn. |
 | Frame list, fixed-frame combo, orphan check | None | `getFrameHierarchy` and `areConnected` take no time. |
-| Scripts (`pj.tf`, slice 5) | Entry by default; header for an object-placement helper | Not built yet. |
+| Scripts (`pj.tf`, slice 5) | Entry by default; header for an object-placement helper | The snapshot they read is built (slice 5a); the binding is not yet. |
 
 With header-stamp placement a stamped object in a moving frame stays where it was measured
 until its next sample, instead of moving with the frame at the cursor. This holds even when
@@ -445,8 +463,8 @@ time" rule of `pj_scene3D/docs/REQUIREMENTS.md` §4 for the layers in the second
 ## 13. Life cycle of recipes and results
 
 **Status: Decided** (one protocol). Layout persistence in `pj_runtime` is built (slice L1,
-in review), and so are the protocol behaviours: unchanged generators keep their topics,
-previews end with their owner, one host assembly (slice L2, in review). On-demand joins
+#719), and so are the protocol behaviours: unchanged generators keep their topics,
+previews end with their owner, one host assembly (slice L2, #720). On-demand joins
 the protocol in slice 6b. The rest is **Built**.
 
 - **One protocol, three engines.** Each engine implements `unchanged(wanted)`,
@@ -818,7 +836,7 @@ payload (§9).
 ## 19. Measurements
 
 These come from the prototype, whose design document describes the machine and method,
-except the slice 2 and slice 3 rows. Those are measured on this stack by
+except the slice 2, slice 3 and slice 5a rows. The slice 2 and 3 rows are measured on this stack by
 `EngineFreezeBench` (`pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`), from
 the call until the result is complete, as two different metrics:
 - **GUI-thread CPU time**, as the longest single stretch (the call or one event-loop
@@ -845,7 +863,8 @@ Linux, RelWithDebInfo.
 | Streaming: 5 min of 10 Hz, 2048-point clouds | Bounded plateau of entries and bytes |
 | Per-call setup: Luau | about 86 µs per call (fresh VM) |
 | Per-call setup: Python | 73 µs (4-line script) to 1.2 ms (43-line script), re-parsing every call |
-| TF snapshot copy | 0.26 ms (5 s window) to 248 ms and 691 MB (1 h file) |
+| TF snapshot copy (prototype: a copy per snapshot) | 0.26 ms (5 s window) to 248 ms and 691 MB (1 h file) |
+| TF snapshot after slice 5a (copy-on-write; measured on this stack by `TransformSnapshotBench`, `pj_tf/tests/tf_buffer_test.cpp`, `PJ_BENCH=1`; 25 edges at 100 Hz, every sample distinct, median of 5) | `snapshot()`: 0.02 µs and 0 bytes at any size. The next write while it is held copies the state once, on the writing thread under the buffer's write lock: live 5 s window 0.15 ms / 0.9 MB of samples, 60 s window 2.9 ms / 10.8 MB, complete 1 h file 72 ms / 648 MB (only when something writes the file buffer after a snapshot, e.g. a robot model's fixed-joint bridges); a buffer nobody writes is never copied. Consumer rule: during a dataset's TF ingest (a first file load writes the active buffer, streaming never ends) a fresh snapshot per revision makes every next write copy the growing state, quadratic over a load; take a new snapshot no faster than the brake rate there, or wait for the ingest to end |
 | Streaming poll, processors advancing over every topic with nothing new (slice 4): 500 topics, 20 single-input filters + 3 two-input transforms, one 5-row chunk per 50 ms tick on the 23 inputs; median of 400 calls, from a throwaway benchmark that is not kept | Buffer 5 s (100 chunks per input): 6.2 µs (max 11). 15 s: 12.5 µs. 60 s: 76 µs (max 89). 150 s: 215 µs. 5 min: 707 µs. 10 min (12,000 chunks): 2.7 ms (max 3.7). With the idle-node gate (§16): 1.5 µs at 100, 300, 1,200, 3,000 and 6,000 chunks (max 2.3 to 6.2) and 1.6 µs at 12,000 (max 7.2), flat |
 
 ## 20. Open items and spikes

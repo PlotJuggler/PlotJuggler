@@ -238,8 +238,8 @@ The TF buffer is the central runtime data structure that makes scrub-replay work
   File-backed TF entries remain unseeded lazy catalog closures; streaming retains its captured
   payload because it has no durable source to re-read.
 - **Transactional replacement.** An in-place reload writes TF to a private generation. Commit
-  swaps that generation into the active dataset slot and notifies docks; abort drops it while
-  the prior active buffer remains usable.
+  gives that generation's state to the active buffer, which keeps its identity, and notifies
+  docks; abort drops it while the prior active buffer remains usable.
 - **Explicit rebuild.** `ingestFrameTransformsForDataset()` remains the full ObjectStore drain
   for dataset merge and for services that did not activate the tap. The live
   `ingestNewTransforms()` path is a no-op while the tap is active; live-edge layer driving still

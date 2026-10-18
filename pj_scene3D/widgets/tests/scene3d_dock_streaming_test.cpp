@@ -24,6 +24,7 @@
 #include <QObject>
 #include <QString>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -34,6 +35,7 @@
 
 #include "mock_parser_support.h"  // pumpUntil
 #include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/builtin/frame_transforms.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_base/builtin/poses_in_frame.hpp"
 #include "pj_datastore/object_store.hpp"
@@ -83,6 +85,21 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitTinyCloud(PJ::Timestamp ts, PJ::sdk::Pay
       PJ::sdk::PointField{"z", 8, PJ::sdk::PointField::Datatype::kFloat32, 1}};
   cloud.data = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(k_point), sizeof(k_point));
   return PJ::sdk::ObjectRecord{.ts = ts, .object = cloud};
+}
+
+constexpr std::string_view kTfSchema = "mock/frame_transforms";
+
+// One map -> <child> edge at the entry's stamp; the payload's first byte picks the child.
+PJ::Expected<PJ::sdk::ObjectRecord> emitTfEdge(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  static constexpr std::array<const char*, 3> kChildren{"odom", "odom_reloaded", "odom_merged"};
+  PJ::sdk::FrameTransform edge;
+  edge.timestamp = ts;
+  edge.parent_frame_id = "map";
+  edge.child_frame_id = kChildren.at(payload.bytes.empty() ? 0 : payload.bytes[0]);
+  edge.rotation = {0.0, 0.0, 0.0, 1.0};
+  PJ::sdk::FrameTransforms transforms;
+  transforms.transforms.push_back(std::move(edge));
+  return PJ::sdk::ObjectRecord{.ts = ts, .object = std::move(transforms)};
 }
 
 constexpr std::string_view kPosesSchema = "mock/poses_in_frame";
@@ -436,6 +453,54 @@ TEST(Scene3DDockStreaming, FrameListReflectsBufferGrowthWhilePaused) {
   EXPECT_TRUE(has("map")) << "the whole TF tree must list without pressing play";
   EXPECT_TRUE(has("odom"));
   EXPECT_TRUE(has("base_link"));
+}
+
+// R4 (docs/derived_objects/ARCHITECTURE.md §12): the dock follows every replacement
+// of its dataset's TF. A reload commit, an invalidation and the merge rebuild all
+// replace the state behind the buffer the dock already holds.
+TEST(Scene3DDockStreaming, DockSeesEveryReplacementOfItsTfBuffer) {
+  PJ::SessionManager session;
+  PJ::TransformService transform_service(session);
+  transform_service.activateIngestTap();
+  PJ::ObjectStore& store = session.objectStore();
+  // The store keeps the entry registerTfTopic pushes (payload 0: map -> odom).
+  const auto tf_topic = registerTfTopic(store, /*dataset_id=*/1, "/tf");
+  session.registerObjectTopicParser(
+      tf_topic, makeBoundHandle(kTfSchema, []() noexcept -> void* {
+        return new CountingObjectParser(kTfSchema, PJ::sdk::BuiltinObjectType::kFrameTransforms, nullptr, &emitTfEdge);
+      }));
+  const auto tap = [&](uint8_t child) {
+    const std::vector<uint8_t> payload{child};
+    ASSERT_TRUE(session.ingestTaps().invoke(
+        PJ::sdk::BuiltinObjectType::kFrameTransforms, tf_topic, /*dataset_id=*/1, 100,
+        PJ::sdk::makePayloadView(payload)));
+  };
+
+  PJ::Scene3DDockWidget dock;
+  dock.setSessionManager(&session);
+  dock.setTransformService(&transform_service);
+  ASSERT_TRUE(dock.addTopic(tf_topic, PJ::sdk::BuiltinObjectType::kFrameTransforms, u"/tf"_s));
+  ASSERT_TRUE(pj::scene3d::test::pumpUntil([&] { return dock.sceneView() != nullptr; }));
+  const auto has = [&dock](const char* name) {
+    const QList<pj::tf::FrameRow> frames = dock.availableFrames();
+    return std::any_of(frames.begin(), frames.end(), [name](const pj::tf::FrameRow& row) { return row.name == name; });
+  };
+
+  tap(0);
+  transform_service.publishTransforms(1);
+  ASSERT_TRUE(has("odom"));
+
+  transform_service.beginReplacingLoad(1);
+  tap(1);
+  transform_service.commitReplacingLoad(1);
+  EXPECT_TRUE(has("odom_reloaded")) << "the dock must rebind to the committed buffer";
+  EXPECT_FALSE(has("odom"));
+
+  transform_service.invalidateDataset(1);
+  ASSERT_TRUE(store.pushOwned(tf_topic, 200, std::vector<uint8_t>{2}).has_value());
+  transform_service.ingestFrameTransformsForDataset(1);
+  EXPECT_TRUE(has("odom_merged"));
+  EXPECT_FALSE(has("odom_reloaded")) << "the rebuild replaces the reloaded state";
 }
 
 }  // namespace

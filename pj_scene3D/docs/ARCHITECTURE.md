@@ -1058,7 +1058,8 @@ REQUIREMENTS §3b for the behavioural contract; the mechanics:
   bounded by decimate-before-decode. Live-edge appends (both kinds) are
   synchronous and tiny: gated on `TransformBuffer::revision()` / the store entry
   count, they sample only stamps past the last built point and ring-trim at the
-  cap.
+  cap. A replaced history (`TransformBuffer::epoch()` moved: a reload commit, an
+  invalidation or a merge rebuild swapped the buffer's state) rebuilds instead.
 - **Fixed-frame self-heal.** The layer adopts the fixed frame from the view each
   frame (`syncFixedFrame()`) and rebuilds on mismatch, so attach order never
   matters. The TF buffer arrives via `Scene3DLayerContext` at attach **and**
@@ -1470,8 +1471,10 @@ because `pj_runtime` cannot use this module's `resolveObject`. Streaming uses a 
 
 An in-place file reload calls `beginReplacingLoad` before its worker starts, so
 tap writes route to a private staging buffer while docks retain the active one.
-`commitReplacingLoad` atomically swaps the staging pointer into the active slot,
-then emits `datasetTransformsReady`; docks rebind their view and TF-backed layers.
+`commitReplacingLoad` makes the active buffer adopt the staging buffer's state in
+O(1) (`TransformBuffer::adoptStateOf`), then emits `datasetTransformsReady`. The
+active buffer stays the same object, so the view and every layer holding it read
+the reloaded TF without a rebind; docks refresh frames, orphan states and layers.
 `abortReplacingLoad` drops staging, so rollback performs no ObjectStore reads.
 
 `ingestFrameTransformsForDataset` remains an explicit full-store rebuild. Dataset

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <nlohmann/json_fwd.hpp>
 #include <optional>
 #include <set>
@@ -84,6 +85,118 @@ struct FrameRow {
   friend bool operator!=(const FrameRow& a, const FrameRow& b) noexcept {
     return !(a == b);
   }
+};
+
+class TransformBuffer;
+
+// One immutable state of a TransformBuffer: its frames, edges and sample histories.
+// Only TransformBuffer::snapshot() hands one out, in O(1): it shares the buffer's
+// current state, and the buffer copies that state before its next write (copy-on-
+// write), so a snapshot never changes, whatever happens to the buffer afterwards.
+// THREADING: read it from any number of threads at once, with no lock; keep it as
+// long as needed (it owns its state, independently of the buffer's lifetime).
+class TransformSnapshot {
+ public:
+  // Same contract as TransformBuffer::tryLookupTransform, on this state.
+  [[nodiscard]] PJ::Expected<Transform, LookupError> tryLookupTransform(
+      const std::string& target, const std::string& source, TimePoint stamp, Clock clock) const;
+
+  [[nodiscard]] std::vector<std::string> getAllFrames() const;
+
+  // The TransformBuffer::revision() of this state: equal revisions mean equal
+  // lookups, across buffers and buffer replacements, so it serves as a cache key.
+  [[nodiscard]] uint64_t revision() const noexcept {
+    return revision_;
+  }
+
+ private:
+  friend class TransformBuffer;
+
+  explicit TransformSnapshot(uint64_t revision) : revision_(revision) {}
+  TransformSnapshot(const TransformSnapshot&) = default;
+
+  // Defined in-header (not forward-declared) because std::unordered_map requires
+  // a complete mapped_type at member-declaration time on libstdc++ (GCC 11);
+  // only newer libstdc++ tolerates an incomplete one. Keeping these inline keeps
+  // the buffer portable across the supported toolchains.
+  struct EdgeHistory {
+    struct Sample {
+      TimePoint stamp;
+      // Entry-clock key: the earliest entry time by which this sample or a
+      // later-stamped one (stored, or skipped as a repeat) had arrived. A suffix
+      // minimum of the entry times, so it is non-decreasing along `samples` like
+      // `stamp`, and the newest-stamped sample known by t is the last one with
+      // entry <= t. Equals the sample's own entry time while arrival order matches
+      // stamp order.
+      TimePoint entry;
+      Transform value;
+    };
+
+    std::deque<Sample> samples;  // ascending stamp
+    // Newest stamp / entry time received, including repeats setTransform skipped;
+    // may exceed samples.back()'s.
+    TimePoint newest_stamp{};
+    TimePoint newest_entry{};
+
+    // True once the edge has received a stamp later than its oldest stored one.
+    bool receivedMultipleStamps() const {
+      return !samples.empty() && newest_stamp > samples.front().stamp;
+    }
+
+    static TimePoint key(const Sample& sample, Clock clock) {
+      return clock == Clock::kHeader ? sample.stamp : sample.entry;
+    }
+
+    // Heterogeneous comparator over `key`, for lower_bound / upper_bound on `samples`.
+    struct KeyLess {
+      Clock clock;
+      bool operator()(const Sample& sample, TimePoint time) const {
+        return key(sample, clock) < time;
+      }
+      bool operator()(TimePoint time, const Sample& sample) const {
+        return time < key(sample, clock);
+      }
+    };
+  };
+
+  struct ParentLink {
+    std::string parent;
+    EdgeHistory history;
+  };
+
+  // One hop in a frame's chain toward its root. Carries the edge already resolved
+  // by chainToRoot so lookup composition never re-hashes the same name (the
+  // pointer is valid only while parents_ is unmodified). `link` is null for the
+  // topmost (root) frame, which has no edge.
+  struct ChainHop {
+    std::string frame;
+    const ParentLink* link;
+  };
+
+  // Index into a source/target chain where the two first meet, found by linear
+  // scan (chains are short, so this beats per-lookup hash containers).
+  struct MeetPoint {
+    std::size_t src_k = 0;
+    std::size_t tgt_k = 0;
+    bool found = false;
+  };
+
+  std::unordered_map<std::string, ParentLink> parents_;
+  uint64_t revision_;
+
+  static std::optional<Transform> sampleAt(const EdgeHistory& history, TimePoint time, Clock clock);
+  // Walk `frame` to its root, recording each hop's resolved edge into `out`
+  // (cleared at entry). Cycle-safe: a repeated frame stops the walk so a
+  // malformed tree fails cleanly. Caller-supplied output so hot lookups can
+  // reuse scratch storage instead of heap-allocating a vector per call.
+  void chainToRoot(const std::string& frame, std::vector<ChainHop>& out) const;
+  // Lowest common ancestor of two chains (shared by lookup + latestCommonTime).
+  static MeetPoint findCommonAncestor(const std::vector<ChainHop>& src, const std::vector<ChainHop>& tgt);
+  // True if `frame` appears anywhere in the buffer (as a child or a parent).
+  // Used only on the lookup-failure path to classify Unknown* vs Disconnected.
+  bool isKnownFrame(const std::string& frame) const;
+  // getAllFrames() into the caller's vector (cleared first).
+  void framesInto(std::vector<std::string>& out) const;
 };
 
 class TransformBuffer {
@@ -201,84 +314,38 @@ class TransformBuffer {
 
   // Monotonic change-detection token: bumps under the write lock on every change
   // to the stored samples or to what lookups resolve — an insert, a replace with a
-  // different value, an earlier entry time, an eviction during setTransform, and
-  // clear(). A skipped repeat that changes none of these does not bump, although
-  // getLatestSample / latestCommonTime can advance without one; setCacheWindow
-  // does not bump either. Lets a caller gate expensive recomputation (orphan
-  // state, hierarchy) on "did the buffer change since I last looked?" without
-  // diffing. A bump does NOT imply connectivity changed (an in-place sample
-  // replace bumps it too).
+  // different value, an earlier entry time, an eviction (during setTransform or
+  // setCacheWindow), and clear(). A skipped repeat that changes none of these does
+  // not bump, although getLatestSample / latestCommonTime can advance without one.
+  // Lets a caller gate expensive recomputation (orphan state, hierarchy) on "did
+  // the buffer change since I last looked?" without diffing. A bump does NOT imply
+  // connectivity changed (an in-place sample replace bumps it too). Every value
+  // comes from one process-wide counter, so no two buffers ever report the same
+  // revision: a revision stays a valid cache key when the buffer is replaced.
   [[nodiscard]] uint64_t revision() const noexcept;
 
+  // The current state, frozen, in O(1) and without copying: the snapshot shares
+  // the state until the next write, which copies it first (once per snapshot, the
+  // whole state: the cost of a snapshot of a mutating buffer, ARCHITECTURE.md §19).
+  // A buffer that is not written again (a loaded file) is never copied.
+  [[nodiscard]] std::shared_ptr<const TransformSnapshot> snapshot() const;
+
+  // Empties the buffer by replacing its state with a new, empty one: holders of the
+  // buffer see the reset, snapshots keep the state they hold.
   void clear();
 
+  // Replaces this buffer's state with `other`'s current one, in O(1) and without a
+  // copy (the first write to either buffer copies the then-shared state): holders of
+  // this buffer see the replacement, snapshots keep theirs. Keeps this buffer's cache
+  // window. A write to `other` after the call no longer reaches this buffer.
+  void adoptStateOf(const TransformBuffer& other);
+
+  // Counts the whole-state replacements, clear() and adoptStateOf(); a write never
+  // moves it. A reader that extends a cached result when revision() moves (a trail
+  // appending samples after its last stamp) rebuilds it when the epoch moves instead.
+  [[nodiscard]] uint64_t epoch() const noexcept;
+
  private:
-  // Defined in-header (not forward-declared) because std::unordered_map requires
-  // a complete mapped_type at member-declaration time on libstdc++ (GCC 11);
-  // only newer libstdc++ tolerates an incomplete one. Keeping these inline keeps
-  // the buffer portable across the supported toolchains.
-  struct EdgeHistory {
-    struct Sample {
-      TimePoint stamp;
-      // Entry-clock key: the earliest entry time by which this sample or a
-      // later-stamped one (stored, or skipped as a repeat) had arrived. A suffix
-      // minimum of the entry times, so it is non-decreasing along `samples` like
-      // `stamp`, and the newest-stamped sample known by t is the last one with
-      // entry <= t. Equals the sample's own entry time while arrival order matches
-      // stamp order.
-      TimePoint entry;
-      Transform value;
-    };
-
-    std::deque<Sample> samples;  // ascending stamp
-    // Newest stamp / entry time received, including repeats setTransform skipped;
-    // may exceed samples.back()'s.
-    TimePoint newest_stamp{};
-    TimePoint newest_entry{};
-
-    // True once the edge has received a stamp later than its oldest stored one.
-    bool receivedMultipleStamps() const {
-      return !samples.empty() && newest_stamp > samples.front().stamp;
-    }
-
-    static TimePoint key(const Sample& sample, Clock clock) {
-      return clock == Clock::kHeader ? sample.stamp : sample.entry;
-    }
-
-    // Heterogeneous comparator over `key`, for lower_bound / upper_bound on `samples`.
-    struct KeyLess {
-      Clock clock;
-      bool operator()(const Sample& sample, TimePoint time) const {
-        return key(sample, clock) < time;
-      }
-      bool operator()(TimePoint time, const Sample& sample) const {
-        return time < key(sample, clock);
-      }
-    };
-  };
-
-  struct ParentLink {
-    std::string parent;
-    EdgeHistory history;
-  };
-
-  // One hop in a frame's chain toward its root. Carries the edge already resolved
-  // by chainToRoot so lookup composition never re-hashes the same name (the
-  // pointer is valid only while the caller holds parents_mutex_ and parents_ is
-  // unmodified). `link` is null for the topmost (root) frame, which has no edge.
-  struct ChainHop {
-    std::string frame;
-    const ParentLink* link;
-  };
-
-  // Index into a source/target chain where the two first meet, found by linear
-  // scan (chains are short, so this beats per-lookup hash containers).
-  struct MeetPoint {
-    std::size_t src_k = 0;
-    std::size_t tgt_k = 0;
-    bool found = false;
-  };
-
   // Strict-weak-order comparator for frame names as a std::set/std::map key.
   // Orders case-insensitively (matching frameNameLess, the user-facing display
   // order) but tie-breaks case-sensitively, so two names differing only by ASCII
@@ -300,31 +367,26 @@ class TransformBuffer {
     std::unordered_set<std::string> all_frames;  // lets callers emit cycle members no root reaches
   };
 
-  std::unordered_map<std::string, ParentLink> parents_;
+  using EdgeHistory = TransformSnapshot::EdgeHistory;
+  using ChainHop = TransformSnapshot::ChainHop;
+  using MeetPoint = TransformSnapshot::MeetPoint;
+
+  // The current state; every read goes through it under parents_mutex_. Written in
+  // place only while no snapshot shares it (see writableLocked).
+  std::shared_ptr<TransformSnapshot> current_;
   mutable std::shared_mutex parents_mutex_;
   Duration cache_window_;
-  // Bumped on every change to stored samples or to what lookups resolve (see
-  // revision()); guarded by parents_mutex_ (write side under unique_lock, read
-  // side under shared_lock).
-  uint64_t revision_ = 0;
+  uint64_t epoch_ = 0;  // see epoch(); guarded by parents_mutex_
 
-  static std::optional<Transform> sampleAt(const EdgeHistory& h, TimePoint t, Clock clock);
+  // The current state, ready for a write: copied first when a snapshot shares it.
+  // Caller holds the unique_lock.
+  TransformSnapshot& writableLocked();
   // Makes samples[index] known by `entry_time`: lowers its entry key, and every
   // earlier key above it, to `entry_time` (keeping the suffix-minimum invariant).
   // Returns whether any key moved, i.e. whether entry-clock lookups changed.
   static bool knownBy(std::deque<EdgeHistory::Sample>& samples, std::size_t index, TimePoint entry_time);
-  // Walk `frame` to its root, recording each hop's resolved edge into `out`
-  // (cleared at entry). Cycle-safe: a repeated frame stops the walk so a
-  // malformed tree fails cleanly. Caller-supplied output so hot lookups can
-  // reuse scratch storage instead of heap-allocating a vector per call.
-  void chainToRoot(const std::string& frame, std::vector<ChainHop>& out) const;
-  // Lowest common ancestor of two chains (shared by lookup + latestCommonTime).
-  static MeetPoint findCommonAncestor(const std::vector<ChainHop>& src, const std::vector<ChainHop>& tgt);
-  // True if `frame` appears anywhere in the buffer (as a child or a parent).
-  // Used only on the lookup-failure path to classify Unknown* vs Disconnected.
-  bool isKnownFrame(const std::string& frame) const;
-  // Build the children/roots/all_frames index from parents_. Caller holds the
-  // shared_lock. Roots are "frames never seen as a child"; a parent cycle yields
+  // Build the children/roots/all_frames index from the current state. Caller holds
+  // the shared_lock. Roots are "frames never seen as a child"; a parent cycle yields
   // a frame with no reachable root, so callers DFS the roots first, then any
   // not-yet-visited frame at depth 0 to surface cycle members too.
   ForestIndex buildForestIndexLocked() const;
@@ -335,8 +397,6 @@ class TransformBuffer {
   // cache_window_ == kKeepAll. Returns whether it dropped anything. Caller holds
   // the unique_lock.
   bool evictEdgeLocked(EdgeHistory& history) const;
-  PJ::Expected<Transform, LookupError> lookupTransformImpl(
-      const std::string& target, const std::string& source, TimePoint stamp, Clock clock) const;
 };
 
 }  // namespace pj::tf

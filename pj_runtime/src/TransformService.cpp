@@ -211,8 +211,8 @@ void TransformService::invalidateDataset(PJ::DatasetId dataset_id) {
     }
   }
   if (active != nullptr) {
-    // Clear in place: 3D docks hold this buffer by shared_ptr, so swapping the
-    // map entry would leave them rendering the stale orphan forever.
+    // Keep the buffer, replace its state: 3D docks hold this buffer by shared_ptr,
+    // so swapping the map entry would leave them rendering a stale orphan.
     active->clear();
   }
 }
@@ -285,7 +285,10 @@ void TransformService::commitReplacingLoad(PJ::DatasetId dataset_id) {
     std::lock_guard lock(tap_mutex_);
     BufferSlot& slot = transform_buffers_[dataset_id];
     if (slot.staging != nullptr) {
-      slot.active = std::move(slot.staging);
+      // Keep the active buffer, the one docks and layers hold, and give it the
+      // staged state; dropping the staging buffer leaves that state unshared.
+      ensureActiveLocked(slot)->adoptStateOf(*slot.staging);
+      slot.staging.reset();
     }
     slot.replacement_in_progress = false;
   }
@@ -337,6 +340,24 @@ bool TransformService::ingestNewTransforms(PJ::DatasetId dataset_id) {
     return false;
   }
   return ingestNewerThanCursor(dataset_id);
+}
+
+std::shared_ptr<const pj::tf::TransformSnapshot> TransformService::snapshot(PJ::DatasetId dataset_id) {
+  const std::shared_ptr<TransformBuffer> buffer = transformBuffer(dataset_id);
+  std::weak_ptr<const pj::tf::TransformSnapshot>& cached = snapshots_[dataset_id];
+  // lock() revives a state without the buffer's lock, and a tap write that counted
+  // no other owner may be changing it in place right now. Reading the buffer's
+  // revision takes its shared lock, which waits for that write and makes every
+  // later one copy: only then is the revived state safe to read.
+  const std::shared_ptr<const pj::tf::TransformSnapshot> hit = cached.lock();
+  const uint64_t current_revision = buffer->revision();
+  // Revisions are unique across buffers, so a match is never a replaced state.
+  if (hit != nullptr && hit->revision() == current_revision) {
+    return hit;
+  }
+  std::shared_ptr<const pj::tf::TransformSnapshot> fresh = buffer->snapshot();
+  cached = fresh;
+  return fresh;
 }
 
 void TransformService::ingestTappedObject(

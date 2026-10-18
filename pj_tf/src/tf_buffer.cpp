@@ -4,6 +4,7 @@
 #include "pj_tf/tf_buffer.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <deque>
@@ -20,11 +21,13 @@ namespace pj::tf {
 // EdgeHistory and ParentLink are defined in tf_buffer.h (required complete by
 // std::unordered_map on GCC 11's libstdc++).
 
-TransformBuffer::TransformBuffer(Duration cache_window) : cache_window_(cache_window) {}
-
-TransformBuffer::~TransformBuffer() = default;
-
 namespace {
+
+// One counter for every buffer in the process, so a revision names one state.
+uint64_t nextRevision() noexcept {
+  static std::atomic<uint64_t> counter{0};
+  return counter.fetch_add(1, std::memory_order_relaxed) + 1;
+}
 
 bool isFinite(const glm::dvec3& v) {
   return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
@@ -35,6 +38,28 @@ bool isFinite(const glm::dquat& q) {
 }
 
 }  // namespace
+
+TransformBuffer::TransformBuffer(Duration cache_window)
+    : current_(new TransformSnapshot(nextRevision())), cache_window_(cache_window) {}
+
+TransformBuffer::~TransformBuffer() = default;
+
+TransformSnapshot& TransformBuffer::writableLocked() {
+  // Owners are added by snapshot() and adoptStateOf() under the shared lock, so they
+  // cannot appear while we hold the unique lock, and by TransformService's weak
+  // cache (weak_ptr::lock) with no lock at all: that one reads the state only after
+  // taking this buffer's shared lock, i.e. after an in-place write that missed its
+  // new owner has finished, and every later write sees the owner and copies. A count
+  // that falls meanwhile only costs a needless copy.
+  if (current_.use_count() > 1) {
+    current_.reset(new TransformSnapshot(*current_));
+  } else {
+    // use_count() is a relaxed load: order the last other owner's release (its
+    // reads of the state) before our in-place writes.
+    std::atomic_thread_fence(std::memory_order_acquire);
+  }
+  return *current_;
+}
 
 PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const StampedTransform& tf) {
   return setTransform(tf, tf.stamp);
@@ -66,7 +91,8 @@ PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const Stampe
     return PJ::unexpected(SetTransformError::kSelfLoop);
   }
 
-  auto& link = parents_[tf.child_frame];
+  TransformSnapshot& state = writableLocked();
+  auto& link = state.parents_[tf.child_frame];
   // The empty-name reject above makes this sentinel sound: link.parent is empty
   // ONLY for a freshly default-constructed link (never for a real edge), so an
   // empty parent unambiguously means "no link yet", not "child<-empty parent".
@@ -127,7 +153,7 @@ PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const Stampe
   // which changes what lookups resolve, so eviction alone also counts as a change.
   const bool evicted = evictEdgeLocked(history);
   if (changed || evicted) {
-    ++revision_;
+    state.revision_ = nextRevision();
   }
   return {};
 }
@@ -173,23 +199,23 @@ bool TransformBuffer::evictEdgeLocked(EdgeHistory& history) const {
   return evicted;
 }
 
-std::optional<Transform> TransformBuffer::sampleAt(const EdgeHistory& h, TimePoint t, Clock clock) {
-  if (h.samples.empty()) {
+std::optional<Transform> TransformSnapshot::sampleAt(const EdgeHistory& history, TimePoint time, Clock clock) {
+  if (history.samples.empty()) {
     return std::nullopt;
   }
   // Nearest-previous (zero-order hold) in `clock`: the last sample whose key is at
-  // or before `t` (both keys are non-decreasing along the deque). A single-sample
-  // edge therefore resolves at every t >= its key. A query strictly before the
+  // or before `time` (both keys are non-decreasing along the deque). A single-sample
+  // edge therefore resolves at every time >= its key. A query strictly before the
   // first key has no value yet (the frame had not been announced, or had not
   // arrived, at that time) -> nullopt.
-  auto hi = std::upper_bound(h.samples.begin(), h.samples.end(), t, EdgeHistory::KeyLess{clock});
-  if (hi == h.samples.begin()) {
+  auto hi = std::upper_bound(history.samples.begin(), history.samples.end(), time, EdgeHistory::KeyLess{clock});
+  if (hi == history.samples.begin()) {
     return std::nullopt;
   }
   return std::prev(hi)->value;
 }
 
-void TransformBuffer::chainToRoot(const std::string& frame, std::vector<ChainHop>& out) const {
+void TransformSnapshot::chainToRoot(const std::string& frame, std::vector<ChainHop>& out) const {
   out.clear();
   out.push_back(ChainHop{frame, nullptr});
   for (std::string cur = frame;;) {
@@ -213,7 +239,7 @@ void TransformBuffer::chainToRoot(const std::string& frame, std::vector<ChainHop
   }
 }
 
-TransformBuffer::MeetPoint TransformBuffer::findCommonAncestor(
+TransformSnapshot::MeetPoint TransformSnapshot::findCommonAncestor(
     const std::vector<ChainHop>& src, const std::vector<ChainHop>& tgt) {
   // Lowest common ancestor: the first src frame (walking up from source) that
   // also appears in tgt. Linear scan — chains are short, so this is cheaper than
@@ -228,7 +254,7 @@ TransformBuffer::MeetPoint TransformBuffer::findCommonAncestor(
   return MeetPoint{};
 }
 
-bool TransformBuffer::isKnownFrame(const std::string& frame) const {
+bool TransformSnapshot::isKnownFrame(const std::string& frame) const {
   if (parents_.find(frame) != parents_.end()) {
     return true;  // appears as a child
   }
@@ -240,7 +266,7 @@ bool TransformBuffer::isKnownFrame(const std::string& frame) const {
   return false;
 }
 
-PJ::Expected<Transform, LookupError> TransformBuffer::lookupTransformImpl(
+PJ::Expected<Transform, LookupError> TransformSnapshot::tryLookupTransform(
     const std::string& target, const std::string& source, TimePoint stamp, Clock clock) const {
   if (target == source) {
     return Transform::identity();
@@ -248,8 +274,8 @@ PJ::Expected<Transform, LookupError> TransformBuffer::lookupTransformImpl(
 
   // Reuse per-thread scratch instead of heap-allocating two vectors per lookup
   // (this is the per-frame, per-link render hot path). Safe: chainToRoot results
-  // never escape this locked region, and lookups never recurse, so the two
-  // buffers can't be aliased mid-walk.
+  // never escape this call, and lookups never recurse, so the two buffers can't
+  // be aliased mid-walk.
   static thread_local std::vector<ChainHop> tgt_chain;
   static thread_local std::vector<ChainHop> src_chain;
   chainToRoot(target, tgt_chain);
@@ -305,7 +331,7 @@ Transform TransformBuffer::lookupTransform(
 PJ::Expected<Transform, LookupError> TransformBuffer::tryLookupTransform(
     const std::string& target, const std::string& source, TimePoint stamp, Clock clock) const {
   std::shared_lock lock(parents_mutex_);
-  return lookupTransformImpl(target, source, stamp, clock);
+  return current_->tryLookupTransform(target, source, stamp, clock);
 }
 
 bool TransformBuffer::areConnected(const std::string& target, const std::string& source) const {
@@ -315,15 +341,15 @@ bool TransformBuffer::areConnected(const std::string& target, const std::string&
   std::shared_lock lock(parents_mutex_);
   static thread_local std::vector<ChainHop> tgt_chain;
   static thread_local std::vector<ChainHop> src_chain;
-  chainToRoot(target, tgt_chain);
-  chainToRoot(source, src_chain);
-  return findCommonAncestor(src_chain, tgt_chain).found;
+  current_->chainToRoot(target, tgt_chain);
+  current_->chainToRoot(source, src_chain);
+  return TransformSnapshot::findCommonAncestor(src_chain, tgt_chain).found;
 }
 
 std::string TransformBuffer::rootOf(const std::string& frame) const {
   std::shared_lock lock(parents_mutex_);
   static thread_local std::vector<ChainHop> chain;
-  chainToRoot(frame, chain);
+  current_->chainToRoot(frame, chain);
   return chain.back().frame;
 }
 
@@ -333,10 +359,10 @@ std::optional<TimePoint> TransformBuffer::latestCommonTime(
 
   static thread_local std::vector<ChainHop> tgt_chain;
   static thread_local std::vector<ChainHop> src_chain;
-  chainToRoot(target, tgt_chain);
-  chainToRoot(source, src_chain);
+  current_->chainToRoot(target, tgt_chain);
+  current_->chainToRoot(source, src_chain);
 
-  const MeetPoint meet = findCommonAncestor(src_chain, tgt_chain);
+  const MeetPoint meet = TransformSnapshot::findCommonAncestor(src_chain, tgt_chain);
   if (!meet.found) {
     return std::nullopt;
   }
@@ -371,9 +397,9 @@ void TransformBuffer::chainSampleTimes(
   std::shared_lock lock(parents_mutex_);
   static thread_local std::vector<ChainHop> tgt_chain;
   static thread_local std::vector<ChainHop> src_chain;
-  chainToRoot(target, tgt_chain);
-  chainToRoot(source, src_chain);
-  const MeetPoint meet = findCommonAncestor(src_chain, tgt_chain);
+  current_->chainToRoot(target, tgt_chain);
+  current_->chainToRoot(source, src_chain);
+  const MeetPoint meet = TransformSnapshot::findCommonAncestor(src_chain, tgt_chain);
   if (!meet.found) {
     return;
   }
@@ -401,7 +427,16 @@ std::vector<std::string> TransformBuffer::getAllFrames() const {
 
 void TransformBuffer::getAllFrames(std::vector<std::string>& out) const {
   std::shared_lock lock(parents_mutex_);
+  current_->framesInto(out);
+}
 
+std::vector<std::string> TransformSnapshot::getAllFrames() const {
+  std::vector<std::string> out;
+  framesInto(out);
+  return out;
+}
+
+void TransformSnapshot::framesInto(std::vector<std::string>& out) const {
   std::unordered_set<std::string> frames;
   frames.reserve(parents_.size() * 2U);
   for (const auto& [child, link] : parents_) {
@@ -416,8 +451,8 @@ void TransformBuffer::getAllFrames(std::vector<std::string>& out) const {
 std::optional<std::string> TransformBuffer::getParent(const std::string& child) const {
   std::shared_lock lock(parents_mutex_);
 
-  auto it = parents_.find(child);
-  if (it == parents_.end()) {
+  const auto it = current_->parents_.find(child);
+  if (it == current_->parents_.end()) {
     return std::nullopt;
   }
   return it->second.parent;
@@ -426,8 +461,8 @@ std::optional<std::string> TransformBuffer::getParent(const std::string& child) 
 std::optional<TimePoint> TransformBuffer::getLatestSample(const std::string& child) const {
   std::shared_lock lock(parents_mutex_);
 
-  auto it = parents_.find(child);
-  if (it == parents_.end()) {
+  const auto it = current_->parents_.find(child);
+  if (it == current_->parents_.end()) {
     return std::nullopt;
   }
 
@@ -440,20 +475,27 @@ std::optional<TimePoint> TransformBuffer::getLatestSample(const std::string& chi
 
 void TransformBuffer::clear() {
   std::unique_lock lock(parents_mutex_);
-  parents_.clear();
-  ++revision_;
+  current_.reset(new TransformSnapshot(nextRevision()));
+  ++epoch_;
 }
 
 void TransformBuffer::setCacheWindow(Duration window) {
   std::unique_lock lock(parents_mutex_);
   cache_window_ = window;
+  if (window >= kKeepAll) {
+    return;  // nothing to evict, and no state to copy for it
+  }
   // Apply the new window retroactively so a buffer switched from kKeepAll (file)
   // to a finite window (live) is trimmed immediately, not only on the next write
   // per edge. evictEdgeLocked keeps the last sample per edge, so static frames
-  // stay resolvable. Not a content change for change-detection purposes (the set
-  // of resolvable times only shrinks at the tail), so revision_ is left alone.
-  for (auto& [child, link] : parents_) {
-    evictEdgeLocked(link.history);
+  // stay resolvable.
+  TransformSnapshot& state = writableLocked();
+  bool evicted = false;
+  for (auto& [child, link] : state.parents_) {
+    evicted = evictEdgeLocked(link.history) || evicted;
+  }
+  if (evicted) {
+    state.revision_ = nextRevision();
   }
 }
 
@@ -464,7 +506,28 @@ Duration TransformBuffer::cacheWindow() const {
 
 uint64_t TransformBuffer::revision() const noexcept {
   std::shared_lock lock(parents_mutex_);
-  return revision_;
+  return current_->revision_;
+}
+
+void TransformBuffer::adoptStateOf(const TransformBuffer& other) {
+  if (&other == this) {
+    return;
+  }
+  std::unique_lock mine(parents_mutex_, std::defer_lock);
+  std::shared_lock theirs(other.parents_mutex_, std::defer_lock);
+  std::lock(mine, theirs);
+  current_ = other.current_;
+  ++epoch_;
+}
+
+uint64_t TransformBuffer::epoch() const noexcept {
+  std::shared_lock lock(parents_mutex_);
+  return epoch_;
+}
+
+std::shared_ptr<const TransformSnapshot> TransformBuffer::snapshot() const {
+  std::shared_lock lock(parents_mutex_);
+  return current_;
 }
 
 bool TransformBuffer::FrameNameLess::operator()(const std::string& a, const std::string& b) const noexcept {
@@ -486,7 +549,7 @@ bool TransformBuffer::FrameNameLess::operator()(const std::string& a, const std:
 TransformBuffer::ForestIndex TransformBuffer::buildForestIndexLocked() const {
   ForestIndex index;
   std::unordered_set<std::string> non_root;
-  for (const auto& [child, link] : parents_) {
+  for (const auto& [child, link] : current_->parents_) {
     index.children[link.parent].insert(child);
     index.all_frames.insert(child);
     index.all_frames.insert(link.parent);

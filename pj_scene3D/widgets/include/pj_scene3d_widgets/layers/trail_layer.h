@@ -234,6 +234,8 @@ class TrailLayer : public Scene3DLayer {
   LatestWinsWorker<TfTrailRequest, TrailPolyline> rebuild_worker_{
       this, &TrailLayer::buildTfTrail, [this](TrailPolyline polyline) { adoptPolyline(std::move(polyline)); }};
   uint64_t last_seen_tf_revision_ = 0;
+  // TransformBuffer::epoch() at the last full build: a replaced history rebuilds.
+  uint64_t last_seen_tf_epoch_ = 0;
   std::size_t pose_seen_entry_count_ = 0;  // live-append cursor for pose sources
   // Decode failures of the last pose rebuild: distinguishes "no data yet"
   // from "data arrived but could not be decoded" in the row warning.
