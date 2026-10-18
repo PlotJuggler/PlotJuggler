@@ -42,9 +42,27 @@ Licensed MPL-2.0.
   `calculateNextPoint` runs a Luau filter class via the `ProcessorSisoAdapter` as an
   eager `pj_datastore::IncrementalEngine` node.
 - `sandbox.h` — `BudgetLimits` (the per-VM sandbox/watchdog budget).
+- `src/luau_sandbox_state.h` (private) — the sandbox state every Luau engine shares: `BudgetState` (memory cap, fuel,
+  optional `cancelled` poll, sticky `trip` reason), the allocator and interrupt, `tripRun`, and `newSandboxedState`.
+  `trip` is checked by the host after each protected call even if the script `pcall`-swallowed the error.
 - `marker_engine.h` — `runMarkerScript`, the whole-series → markers path (Luau). Its interrupt callback also polls
   the caller's `cancelled` check, so a cancelled script stops inside the interpreter, and native marker output is
   capped by `max_output_bytes` (16 MiB by default) independently of the VM's memory cap.
+- `src/native/` (private; the object-script binders are their consumers, from slice 5c-1) — the heavy
+  half of an object script, Luau-free so Luau and Python share it:
+  - `point_cloud_ops.h`: count, bounds, extreme point, `cropBox`, `filterByField`, `transformXyz`,
+    `nextFinitePoint`. Little-endian only, x/y/z float32/float64, `row_step` honoured (rows may not
+    overlap), the declared extent checked against `data` without overflow (the SDK field table's check),
+    whole records copied (D15), non-finite points skipped; every output keeps the input's stamp.
+  - `record_walk.h`: the row walk (`forEachRecord`) and `compactWhere`, which every cloud operation shares;
+    a header so the tests drive them directly.
+  - `scene_entities_ops.h`: `SceneEntityBuilder`, the snapshot idiom (one `kAll` deletion, then the
+    entity) with errors that name the bad field (D27). `finish()` consumes the builder.
+  - `memory_budget.h`: `MemoryBudget`, one byte limit per evaluation for native allocations (a ledger
+    separate from the VM's memory cap; its error reads "script native memory limit (N MB) exceeded"), and
+    `MemoryReservation`, bytes held until destroyed. An output's reservation lives in its buffer anchor
+    (clouds) or beside it (`ChargedSceneEntities`), so retained outputs keep counting. Allocating
+    operations take `NativeLimits` (that budget plus the run's cancel check, polled every 65536 records).
 
 ## Contract / gotchas
 
@@ -58,7 +76,7 @@ Licensed MPL-2.0.
   region. `os` / `io` / `require` / `debug` / `setfenv` / `getfenv` are blocked
   (`setfenv` would let a script swap its environment back onto the frozen stdlib).
   Each VM loads exactly ONE module, so `safeenv` stays on and stdlib imports keep
-  the fast path. A "tripped" flag is checked by the host **even if the script
+  the fast path. A sticky `trip` reason is checked by the host **even if the script
   `pcall`-swallows the error**, so a runaway can never silently survive.
 - **Python imports are an allowlist, and it is a guardrail — NOT a sandbox.**
   `python_engine.cpp` hands each filter module a namespace whose `__builtins__` has

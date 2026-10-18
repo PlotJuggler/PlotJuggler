@@ -29,6 +29,7 @@
 #include "lua.h"
 #include "luacode.h"
 #include "lualib.h"
+#include "luau_sandbox_state.h"
 
 namespace PJ::scripting {
 
@@ -70,63 +71,7 @@ double SeriesView::atTime(double t) const {
 
 namespace {
 
-// ---- sandbox: memory cap + instruction-budget watchdog (mirrors luau_engine) --
-
-constexpr std::size_t kMaxSourceBytes = 1u << 20;  // 1 MiB
-
-struct BudgetState {
-  std::size_t used = 0;
-  std::size_t max_bytes = 0;
-  std::int64_t fuel = 0;
-  const std::function<bool()>* cancelled = nullptr;  ///< polled at every safepoint; null = never cancelled
-  /// First reason the run must fail (cancel, fuel, output ceiling), recorded even if the script's pcall swallowed it.
-  const char* trip = nullptr;
-};
-
-void* budgetAlloc(void* ud, void* ptr, std::size_t osize, std::size_t nsize) {
-  auto* b = static_cast<BudgetState*>(ud);
-  if (nsize == 0) {
-    std::free(ptr);
-    if (ptr != nullptr) {
-      b->used = (osize <= b->used) ? b->used - osize : 0;
-    }
-    return nullptr;
-  }
-  const std::size_t base = (ptr == nullptr) ? b->used : ((osize <= b->used) ? b->used - osize : 0);
-  if (nsize > b->max_bytes || base > b->max_bytes - nsize) {
-    return nullptr;
-  }
-  void* np = std::realloc(ptr, nsize);
-  if (np != nullptr) {
-    b->used = base + nsize;
-  }
-  return np;
-}
-
-// Fails the run for `reason`. The first reason sticks and the host checks it after the protected
-// call, so a script's pcall cannot turn the failure into a truncated success.
-[[noreturn]] void tripRun(lua_State* L, BudgetState& budget, const char* reason) {
-  if (budget.trip == nullptr) {
-    budget.trip = reason;
-  }
-  luaL_error(L, "%s", budget.trip);
-}
-
-void budgetInterrupt(lua_State* L, int gc) {
-  if (gc >= 0) {
-    return;
-  }
-  auto* b = static_cast<BudgetState*>(lua_callbacks(L)->userdata);
-  if (b == nullptr) {
-    return;
-  }
-  if (b->cancelled != nullptr && (*b->cancelled)()) {
-    tripRun(L, *b, "script cancelled");
-  }
-  if (--b->fuel <= 0) {
-    tripRun(L, *b, "script exceeded its instruction budget");
-  }
-}
+using namespace detail;
 
 // ---- per-run context (carried into the bound primitives as an upvalue) -----
 

@@ -182,6 +182,9 @@ set(PJ_SCRIPTING_SOURCES
   src/lua_siso_transform.cpp
   src/lua_mimo_transform.cpp
   src/filter_catalogue.cpp
+  # Native object operations (point clouds, scene entities) for the object-script binders; pj_base only.
+  src/native/point_cloud_ops.cpp
+  src/native/scene_entities_ops.cpp
 )
 if(EMSCRIPTEN)
   list(APPEND PJ_SCRIPTING_SOURCES src/python_engine_unavailable.cpp)
@@ -245,6 +248,13 @@ if(PJ_BUILD_TESTS)
   target_compile_definitions(builtin_golden_test PRIVATE
     BUILTIN_FILTERS_PATH="${CMAKE_SOURCE_DIR}/resources/filters/builtin_filters.luau")
   add_test(NAME BuiltinGoldenTest COMMAND builtin_golden_test)
+
+  # --- native object operations: their headers are private to src/ ---
+  pj_add_test_runner(pj_scripting_native_tests
+    MAIN plain WARNINGS
+    SOURCES tests/native_ops_test.cpp
+    LIBS pj_scripting)
+  target_include_directories(pj_scripting_native_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
   # --- M5: filter catalogue ---
   add_executable(filter_catalogue_test tests/filter_catalogue_test.cpp)
