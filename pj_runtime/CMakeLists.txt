@@ -18,6 +18,7 @@ add_library(pj_runtime STATIC
     src/DatasetQualifiedName.cpp
     src/DerivedObjects.cpp
     src/DerivedRuntimeHosts.cpp
+    src/DerivedTopics.cpp
     src/DataProcessorsKindRouter.cpp
     src/DataProcessorsRuntimeHost.cpp
     src/DataSourceRuntimeHost.cpp

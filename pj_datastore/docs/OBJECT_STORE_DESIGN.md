@@ -168,29 +168,19 @@ inserted.
 ### Bundle publication
 
 `pushOwnedBundle(writes)` publishes one entry to each of several distinct topics as
-one transaction. Each `OwnedObjectWrite` carries the topic, timestamp and payload, an
-optional `drop(timestamp, uid)` predicate that removes the topic's existing entries
-first, and `append = false` to prune without writing (the surviving entries keep their
-UIDs). It returns the UID of the entry each write created, in write order (invalid for
-a write that only prunes). Nothing is refused for size: the result ring that uses this
-evicts, it never rejects (docs/derived_objects/ARCHITECTURE.md §9). The ring trims its
-window with `drop` and evicts all of a node's outputs at one stamp in one bundle
-(`append = false` plus a `drop`), so a node's outputs never disagree.
+one transaction; what fails, what a failure leaves and what readers see is the
+contract on `ObjectStore::pushOwnedBundle` and `OwnedObjectWrite` in
+`object_store.hpp`. Nothing is refused for size: the result ring that uses it evicts,
+it never rejects (docs/derived_objects/ARCHITECTURE.md §9). The ring trims its window
+with `drop` and evicts all of a node's outputs at one stamp in one bundle (`append =
+false` plus a `drop`), so a node's outputs never disagree.
 
-- **All or nothing.** The store takes its lock exclusively, stages every topic on a
-  private copy of its `OrderedEntries` (running `drop`, the append and the topic's
-  retention budget on the copy) and swaps the copies in only when every topic staged.
-  An unknown or repeated topic, an exception from a `drop` or an allocation failure
-  returns an error with every previous entry and byte count exactly as it was. The swap
-  itself cannot throw. The copy is O(entries in the topic) under the exclusive lock: the
-  window trim keeps it small, and a topic holding ~1e5 entries would stall readers ~20 ms
-  (upgrade path: evaluate the predicates first, then change the topic in place).
-- **No half bundle in one call.** The exclusive lock excludes every reader while the
-  copies swap in, so a single read sees a topic before or after the bundle. Separate
-  read calls may span two publications: a reader of several topics sees them at
-  different moments, and the store offers no cross-call coherence token.
-- **No eviction inside a bundle.** `drop` runs under the store lock and must not call
-  the store. Budget-driven eviction happens before or after a bundle, never within one.
+Both phases run under the exclusive store lock. Phase 1 changes no topic: it validates
+the writes, runs each `drop` once per entry into a removal plan
+(`OrderedEntries::planRemoval`) and allocates the new entries. Phase 2 applies each plan
+in place (`OrderedEntries::remove` compacts the entries and timestamps and renumbers the
+UID order in O(n), with no copy and no sort), then appends through the insert path
+`pushOwned` uses.
 
 ## Dataset Merge
 
@@ -431,8 +421,8 @@ removes the underlying topic.
 Core behavior is covered by:
 
 - `pj_datastore/tests/ordered_entries_test.cpp` (the `OrderedEntries` invariant
-  at the value-type boundary — in/out-of-order push, evict, re-UID, rebuild,
-  shift, and the cross-series bulk moves)
+  at the value-type boundary — in/out-of-order push, evict, removal anywhere,
+  re-UID, rebuild, shift, and the cross-series bulk moves)
 - `pj_datastore/tests/object_store_test.cpp` (bundle publication and
   `ObjectStoreBundleBench`, a `PJ_BENCH=1` measurement of one publication)
 - `pj_datastore/tests/plugin_data_host_object_test.cpp`

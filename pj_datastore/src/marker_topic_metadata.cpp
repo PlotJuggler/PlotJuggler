@@ -46,6 +46,20 @@ std::optional<std::string> stringField(const nlohmann::json& object, std::string
   return field->get<std::string>();
 }
 
+// The parsed metadata when its `pj_derived` is the string `kind`. Scans of every object
+// topic reach here (catalog rebuilds, each plot paint): the overwhelming majority are
+// not derived and are rejected without parsing.
+std::optional<nlohmann::json> derivedMetadataOfKind(std::string_view metadata_json, std::string_view kind) {
+  if (metadata_json.find(kDerivedMetadataKey) == std::string_view::npos) {
+    return std::nullopt;
+  }
+  nlohmann::json doc = nlohmann::json::parse(metadata_json, nullptr, /*allow_exceptions=*/false);
+  if (!doc.is_object() || stringField(doc, kDerivedMetadataKey) != kind) {
+    return std::nullopt;
+  }
+  return doc;
+}
+
 }  // namespace
 
 std::string markerTopicMetadataJson(const MarkerTopicInfo& info) {
@@ -64,16 +78,11 @@ std::string markerTopicMetadataJson(const MarkerTopicInfo& info) {
 }
 
 std::optional<MarkerTopicInfo> markerTopicInfo(std::string_view metadata_json) {
-  // Scans of every object topic reach here (catalog rebuilds, each plot paint): the
-  // overwhelming majority are not derived and are rejected without parsing.
-  if (metadata_json.find(kDerivedMetadataKey) == std::string_view::npos) {
+  const std::optional<nlohmann::json> parsed = derivedMetadataOfKind(metadata_json, kDerivedMarkers);
+  if (!parsed) {
     return std::nullopt;
   }
-  const nlohmann::json doc = nlohmann::json::parse(metadata_json, nullptr, /*allow_exceptions=*/false);
-  const std::optional<std::string> kind = doc.is_object() ? stringField(doc, kDerivedMetadataKey) : std::nullopt;
-  if (!kind || *kind != kDerivedMarkers) {
-    return std::nullopt;
-  }
+  const nlohmann::json& doc = *parsed;
   const std::optional<std::string> scope_name = stringField(doc, kMarkerScopeMetadataKey);
   const std::optional<MarkerScopeKind> scope = scope_name ? parseScope(*scope_name) : std::nullopt;
   if (!scope) {
@@ -89,6 +98,10 @@ std::optional<MarkerTopicInfo> markerTopicInfo(std::string_view metadata_json) {
   }
   info.owner = stringField(doc, kMarkerOwnerMetadataKey).value_or(std::string{});
   return info;
+}
+
+bool isDerivedOfKind(std::string_view metadata_json, std::string_view kind) {
+  return derivedMetadataOfKind(metadata_json, kind).has_value();
 }
 
 void stampLegacyMarkerMetadata(ObjectTopicDescriptor& descriptor) {

@@ -1975,7 +1975,7 @@ TEST(ObjectStoreReviewTest, PushOwnedBundleDestroysRetiredEntriesAfterTheLocksRe
   ASSERT_TRUE(store.pushOwnedBundle({write}).has_value());
   // The dropped ts 1 dies after the store/series/cache locks release: a hang here
   // (ctest timeout) is a reentrant destructor deadlocking under one of them. The
-  // warm-cache value (ts 2) is displaced but its entry survives.
+  // warm-cache value (ts 2) and its entry survive.
   EXPECT_EQ(destroyed.load(), 1);
   EXPECT_EQ(store.entryCount(id), 2u);  // ts 2 and ts 3 survive
 
@@ -2154,9 +2154,8 @@ TEST(ObjectStoreBundleTest, TheTopicRetentionBudgetApplies) {
   EXPECT_EQ(store.memoryUsage(a), 1u);
 }
 
-// MAT-05 / STO-03: a bundle that cannot be staged leaves every previous entry and byte
-// count exactly as it was, whichever write fails and however many topics were already
-// staged when it did.
+// MAT-05 / STO-03: a rejected bundle leaves every previous entry and byte count exactly
+// as it was, whichever write fails and whatever the writes before it selected.
 TEST(ObjectStoreBundleTest, AFailedBundleLeavesEveryPriorEntryUntouched) {
   ObjectStore store;
   const auto a = registerTestTopic(store, "a");
@@ -2167,15 +2166,14 @@ TEST(ObjectStoreBundleTest, AFailedBundleLeavesEveryPriorEntryUntouched) {
   EXPECT_FALSE(store.pushOwnedBundle({{a, 20, {3}}, {ObjectTopicId{99999}, 20, {4}}}).has_value());
   EXPECT_FALSE(store.pushOwnedBundle({{a, 20, {3}}, {a, 20, {4}}}).has_value());
 
-  // A staging exception: the first write is fully staged (its drop emptied the
-  // candidate) when the second one throws.
+  // The first write's drop selects every entry of `a` before the second one throws.
   OwnedObjectWrite write_a{a, 20, {3}};
   OwnedObjectWrite write_b{b, 20, {4}};
   write_a.drop = [](Timestamp, SequentialUID) { return true; };
   write_b.drop = [](Timestamp, SequentialUID) -> bool { throw std::bad_alloc(); };
   const auto failed = store.pushOwnedBundle({write_a, write_b});
   ASSERT_FALSE(failed.has_value());
-  EXPECT_NE(failed.error().find("staging failed"), std::string::npos) << failed.error();
+  EXPECT_NE(failed.error().find("object bundle rejected"), std::string::npos) << failed.error();
 
   for (const auto topic : {a, b}) {
     EXPECT_EQ(store.entryCount(topic), 1u);
@@ -2191,6 +2189,38 @@ TEST(ObjectStoreBundleTest, AFailedBundleLeavesEveryPriorEntryUntouched) {
   EXPECT_EQ(store.entryCount(a), 1u);
   EXPECT_EQ(firstByteAt(store, a, 100), 3);
   EXPECT_EQ(firstByteAt(store, b, 100), 4);
+}
+
+// The warm cache must not pin a payload a bundle removed.
+TEST(ObjectStoreBundleTest, RemovingTheCachedEntryReleasesItsPayload) {
+  ObjectStore store;
+  const auto a = registerTestTopic(store, "a");
+  ASSERT_TRUE(store.pushOwnedBundle({{a, 10, {1}}}).has_value());
+  ASSERT_TRUE(store.pushOwnedBundle({{a, 20, {2}}}).has_value());
+  auto resolved = store.latestAt(a, 10);  // warms the cache on ts 10
+  ASSERT_TRUE(resolved.has_value());
+  std::weak_ptr<const void> probe = resolved->payload.anchor;
+  resolved.reset();
+
+  OwnedObjectWrite evict{a};
+  evict.append = false;
+  evict.drop = [](Timestamp ts, SequentialUID) { return ts == 10; };
+  ASSERT_TRUE(store.pushOwnedBundle({evict}).has_value());
+  EXPECT_TRUE(probe.expired()) << "the warm cache pins the removed payload";
+  EXPECT_EQ(store.memoryUsage(a), 1u);
+  EXPECT_EQ(firstByteAt(store, a, 100), 2);
+
+  // The same through a write that drops and appends, the ring's publish path.
+  resolved = store.latestAt(a, 20);
+  ASSERT_TRUE(resolved.has_value());
+  probe = resolved->payload.anchor;
+  resolved.reset();
+  OwnedObjectWrite replace{a, 30, {3}};
+  replace.drop = [](Timestamp ts, SequentialUID) { return ts == 20; };
+  ASSERT_TRUE(store.pushOwnedBundle({replace}).has_value());
+  EXPECT_TRUE(probe.expired()) << "the warm cache pins the payload a drop-and-append removed";
+  EXPECT_EQ(store.memoryUsage(a), 1u);
+  EXPECT_EQ(firstByteAt(store, a, 100), 3);
 }
 
 TEST(ObjectStoreBundleTest, PruneOnlyKeepsTheRetainedEntryIdentityAndCanEmptyTopics) {
@@ -2328,15 +2358,21 @@ TEST(ObjectStoreBundleTest, ConcurrentReadersNeverSeeAnAppendedBundleHalfApplied
   EXPECT_EQ(store.timeRange(a).second, kBundles);
 }
 
-// PJ_BENCH=1 prints what one bundle publication costs under the store lock: a 1.5 MB
-// payload plus two small ones, the topics holding `window` retained entries each.
+// PJ_BENCH=1 prints what one bundle publication of three topics costs, each topic holding
+// `window` retained entries and the drop removing one per call (a sliding window). The
+// 900 and 3,600 windows make the first payload 64 B too, so the bench stays within memory:
+// the cost under the lock is per entry, not per byte.
 TEST(ObjectStoreBundleBench, PublishCost) {
   if (!sdk::getEnv("PJ_BENCH")) {
     GTEST_SKIP() << "set PJ_BENCH=1";
   }
   constexpr int kCalls = 200;
-  constexpr int kWindow = 100;
-  for (const int window : {0, kWindow}) {
+  struct Case {
+    int window;
+    size_t first_payload;
+  };
+  for (const Case bench : {Case{0, 1'500'000}, Case{100, 1'500'000}, Case{900, 64}, Case{3600, 64}}) {
+    const int window = bench.window;
     ObjectStore store;
     const auto cloud = registerTestTopic(store, "cloud");
     const auto small_a = registerTestTopic(store, "small_a");
@@ -2347,7 +2383,7 @@ TEST(ObjectStoreBundleBench, PublishCost) {
       ++stamp;
       const Timestamp floor = stamp - window;
       const auto trim = [floor](Timestamp t, SequentialUID) { return t <= floor; };
-      OwnedObjectWrite write_cloud{cloud, stamp, makePayload(1'500'000)};
+      OwnedObjectWrite write_cloud{cloud, stamp, makePayload(bench.first_payload)};
       OwnedObjectWrite write_a{small_a, stamp, makePayload(64)};
       OwnedObjectWrite write_b{small_b, stamp, makePayload(64)};
       write_cloud.drop = write_a.drop = write_b.drop = trim;
@@ -2368,8 +2404,8 @@ TEST(ObjectStoreBundleBench, PublishCost) {
     }
     std::sort(micros.begin(), micros.end());
     std::printf(
-        "pushOwnedBundle 1.5 MB + 2 x 64 B, window %3d entries: median %.1f us, p95 %.1f us\n", window,
-        micros[micros.size() / 2], micros[micros.size() * 95 / 100]);
+        "pushOwnedBundle %7zu B + 2 x 64 B, window %4d entries: median %.1f us, p95 %.1f us\n", bench.first_payload,
+        window, micros[micros.size() / 2], micros[micros.size() * 95 / 100]);
   }
 }
 

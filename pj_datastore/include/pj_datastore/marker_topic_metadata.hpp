@@ -89,8 +89,13 @@ inline constexpr DatasetId kAllDatasetsMarkerDataset = 0;
 
 /// Reads a marker topic's metadata; `nullopt` for anything that is not a complete
 /// marker description (no `pj_derived: "markers"`, an unknown scope, a series scope
-/// without a target). This is the only place `pj_derived` is read.
+/// without a target).
 [[nodiscard]] std::optional<MarkerTopicInfo> markerTopicInfo(std::string_view metadata_json);
+
+/// True when `metadata_json` is a JSON object whose `pj_derived` is the string `kind`.
+/// Absent or malformed metadata is false, not an error. Cheap enough to run over every
+/// topic of a dataset: most are rejected without parsing.
+[[nodiscard]] bool isDerivedOfKind(std::string_view metadata_json, std::string_view kind);
 
 /// Gives a direct write to a 0.35 marker name (`__markers__/<key>`, no owner) the
 /// metadata it never carried, deriving scope and target from the key once, here

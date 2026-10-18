@@ -204,12 +204,15 @@ class ObjectStore {
 
   Status pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector<uint8_t> payload);
 
-  /// Publishes one entry to each of several distinct topics as one transaction: all
-  /// land, or none does (an unknown or repeated topic, an exception from a `drop`
-  /// or from an allocation) and every previous entry and byte count stays as it was.
-  /// Every write goes through the topic's retention budget as `pushOwned` would.
-  /// Returns the UID of the entry each write created, in write order (invalid for a
-  /// write that only prunes).
+  /// Publishes one entry to each of several distinct topics as one transaction, in two
+  /// phases under the exclusive store lock. The first checks every write and runs every
+  /// `drop`: an unknown or repeated topic, or an exception from a `drop` or from an
+  /// allocation, returns an error with every entry and byte count as it was. The second
+  /// changes the topics in place, each topic applied whole or not at all; an allocation
+  /// failure there throws, as in `pushOwned`, and can leave the bundle applied to some
+  /// of its topics. Every append goes through the topic's retention budget as
+  /// `pushOwned` would. Returns the UID of the entry each write created, in write order
+  /// (invalid for a write that only prunes).
   ///
   /// One read call never sees half a bundle, but separate calls may span two
   /// publications: a reader of several topics sees them at different moments.
@@ -482,8 +485,22 @@ class ObjectStore {
   // second anchor owner outside the pool's budget.
   static ResolvedObjectEntry resolveEntry(const ObjectEntry& entry, bool* served_from_resident = nullptr);
 
-  // Drop the oldest entry: the warm cache (if it holds it) + owned-payload memory
-  // accounting live here; the triple pop delegates to OrderedEntries::evictFront.
+  // Mints `entry`'s UID and inserts it (first applying `removal`, when given, in the same
+  // step), charges its bytes and applies the retention budget; returns the UID. The
+  // caller holds the series exclusively (its lock, or the store lock exclusively):
+  // OrderedEntries::push requires the pushed UID to be the series max, which two pushers
+  // minting outside the lock could interleave. If the insertion throws, `entry` is still
+  // the caller's, so declare it before the locks: a lazy entry's cleanup may call the store.
+  SequentialUID insertLocked(
+      ObjectSeries& series, ObjectEntry&& entry, Graveyard& graveyard,
+      const OrderedEntries::Removal* removal = nullptr);
+  // Settles the entries a removal moved into graveyard.entries from index `first`: their
+  // charged bytes leave the series' total, and the warm cache goes if it holds one.
+  // Allocates nothing when graveyard.cached has room for one more (a caller that may
+  // displace the cache reserves it before unlinking).
+  static void accountRemoved(ObjectSeries& series, Graveyard& graveyard, size_t first);
+  // Drop the oldest entry, with its accounting (accountRemoved). Takes its graveyard room
+  // first, so an allocation failure leaves the series whole.
   void evictFront(ObjectSeries& series, Graveyard& graveyard);
   void applyRetention(ObjectSeries& series, Timestamp newest_ts, Graveyard& graveyard);
 

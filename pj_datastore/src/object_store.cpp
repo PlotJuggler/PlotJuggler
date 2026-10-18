@@ -28,6 +28,18 @@ size_t chargedBytes(const ObjectEntry& entry) {
   return std::get<LazyPayload>(entry.payload).resident_bytes;
 }
 
+// An entry without its UID, which insertLocked mints under the lock.
+ObjectEntry unstampedEntry(Timestamp timestamp, ObjectEntryPayload payload) {
+  ObjectEntry entry;
+  entry.timestamp = timestamp;
+  entry.payload = std::move(payload);
+  return entry;
+}
+
+SharedBuffer ownedPayload(std::vector<uint8_t> bytes) {
+  return std::make_shared<const std::vector<uint8_t>>(std::move(bytes));
+}
+
 }  // namespace
 
 // --- Registration ---
@@ -134,6 +146,7 @@ void ObjectStore::forEachTopic(
 
 Status ObjectStore::pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector<uint8_t> payload) {
   Graveyard graveyard;  // retention victims die after the locks below release
+  ObjectEntry entry;    // ours until inserted: if the insertion fails, it dies after the locks
   std::shared_lock store_lock(store_mutex_);
   auto* series = findSeries(id);
   if (series == nullptr) {
@@ -143,27 +156,9 @@ Status ObjectStore::pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector
   // Build the entry BEFORE taking the series write lock: the make_shared control-block
   // allocation is the costliest step on this path and needs nothing the lock protects,
   // and a GUI reader draining this same series waits out every nanosecond spent here.
-  // The UID mint stays INSIDE the lock — OrderedEntries::push requires the pushed UID
-  // to be the series max, which two pushers minting outside could interleave and break.
-  const size_t payload_size = payload.size();
-  ObjectEntry entry;
-  entry.timestamp = timestamp;
-  entry.payload = std::make_shared<const std::vector<uint8_t>>(std::move(payload));
-
+  entry = unstampedEntry(timestamp, ownedPayload(std::move(payload)));
   std::unique_lock lock(series->mutex);
-  entry.sequential_uid = SequentialUID::getNext();
-  const auto push_order = series->ordered.push(std::move(entry));
-  series->memory_bytes += payload_size;
-
-  // A mid-stream (out-of-order) insert can change an at-or-before lookup that
-  // landed on the entry just after it, so drop the warm cache (keyed by uid).
-  if (push_order == OrderedEntries::PushOrder::kOutOfOrderInsert) {
-    dropCache(*series, graveyard);
-  }
-
-  // Retention is anchored to the newest sample retained, not the just-pushed
-  // timestamp (which may be older on an out-of-order insert).
-  applyRetention(*series, series->ordered.backTimestamp(), graveyard);
+  insertLocked(*series, std::move(entry), graveyard);
   return {};
 }
 
@@ -171,73 +166,70 @@ Expected<std::vector<SequentialUID>> ObjectStore::pushOwnedBundle(std::vector<Ow
   if (writes.empty()) {
     return unexpected("empty object bundle");
   }
-  // Declared before the locks: every retired entry (dropped, evicted by retention, or a
-  // destination's whole previous content after the swap) dies after they release.
-  Graveyard graveyard;
-  // Each topic is staged on a private copy; only when every one is staged do they swap in.
-  struct Staged {
-    ObjectSeries* destination;
-    std::unique_ptr<ObjectSeries> candidate;
+  Graveyard graveyard;  // every removed or retention-evicted entry dies after the lock releases
+  struct Step {
+    ObjectSeries* series;
+    OrderedEntries::Removal removal;
+    ObjectEntry entry;
   };
-  std::vector<Staged> staged;
+  std::vector<Step> steps;
+  std::vector<SequentialUID> created;
+  std::unique_lock store_lock(store_mutex_);
+
+  // Phase 1 decides everything and changes no topic, so a rejection leaves every topic
+  // as it was. It also allocates what phase 2 would.
   try {
-    std::unique_lock store_lock(store_mutex_);
-    std::unordered_set<uint32_t> topics;
-    std::vector<SequentialUID> created(writes.size());
+    steps.reserve(writes.size());
+    created.resize(writes.size());
+    size_t graveyard_room = 0;
     for (size_t index = 0; index < writes.size(); ++index) {
       OwnedObjectWrite& write = writes[index];
       ObjectSeries* series = findSeries(write.topic);
       if (series == nullptr) {
         return unexpected("unknown topic in object bundle");
       }
-      if (!topics.insert(write.topic.id).second) {
-        return unexpected("duplicate topic in object bundle");
-      }
-      // The commit below swaps the timestamp vectors: wait out views still reading them.
-      drainSeriesReaders(*series);
-      staged.push_back({series, std::make_unique<ObjectSeries>()});
-      ObjectSeries& candidate = *staged.back().candidate;
-      // ponytail: the copy is O(entries in the topic) under the exclusive store lock. The
-      // window trim keeps it small (MAT-01); a topic holding ~1e5 entries would stall every
-      // reader ~20 ms. Upgrade: evaluate the predicates first, then change the topic in place.
-      candidate.ordered = series->ordered;
-      candidate.memory_bytes = series->memory_bytes;
-      candidate.budget = series->budget;
-      if (write.drop) {
-        for (ObjectEntry& entry : candidate.ordered.eraseWhere(write.drop)) {
-          candidate.memory_bytes -= chargedBytes(entry);
-          graveyard.entries.push_back(std::move(entry));
+      // ponytail: O(W^2) for W writes, and W is a recipe's object outputs (single digits);
+      // a sorted id list if bundles grow.
+      for (size_t earlier = 0; earlier < index; ++earlier) {
+        if (writes[earlier].topic == write.topic) {
+          return unexpected("duplicate topic in object bundle");
         }
       }
+      // Phase 2 changes the timestamp vectors: wait out views still reading them.
+      drainSeriesReaders(*series);
+      Step& step = steps.emplace_back(Step{.series = series, .removal = {}, .entry = {}});
+      if (write.drop) {
+        step.removal = series->ordered.planRemoval(write.drop);
+      }
       if (write.append) {
-        candidate.memory_bytes += write.payload.size();
-        ObjectEntry entry;
-        entry.timestamp = write.timestamp;
-        entry.sequential_uid = SequentialUID::getNext();
-        created[index] = entry.sequential_uid;
-        entry.payload = std::make_shared<const std::vector<uint8_t>>(std::move(write.payload));
-        candidate.ordered.push(std::move(entry));
+        step.entry = unstampedEntry(write.timestamp, ownedPayload(std::move(write.payload)));
       }
-      if (!candidate.ordered.empty()) {
-        applyRetention(candidate, candidate.ordered.backTimestamp(), graveyard);
-      }
+      // What phase 2 can move to the graveyard: the planned removals, or, under a retention
+      // budget, every entry the topic holds after the write.
+      const RetentionBudget& budget = series->budget;
+      const bool retains = budget.time_window_ns > 0 || budget.max_memory_bytes > 0 || budget.max_entries > 0;
+      graveyard_room += retains ? series->ordered.size() + (write.append ? 1 : 0) : step.removal.count;
     }
-
-    // Commit: nothing below allocates or throws, so the bundle is all or nothing. The
-    // exclusive store lock keeps new readers out, and the views were drained above.
-    graveyard.cached.reserve(graveyard.cached.size() + staged.size());
-    graveyard.series.reserve(graveyard.series.size() + staged.size());
-    for (Staged& item : staged) {
-      ObjectSeries& destination = *item.destination;
-      destination.ordered.swap(item.candidate->ordered);
-      destination.memory_bytes = item.candidate->memory_bytes;
-      dropCache(destination, graveyard);
-      graveyard.series.push_back(std::move(item.candidate));  // now holds the previous content
-    }
-    return created;
+    graveyard.entries.reserve(graveyard_room);
+    graveyard.cached.reserve(writes.size());  // a series holds at most one cached value
   } catch (const std::exception& error) {
-    return unexpected(std::string("object bundle staging failed: ") + error.what());
+    return unexpected(std::string("object bundle rejected: ") + error.what());
   }
+
+  // Phase 2 changes each topic in place, whole or not at all; the exclusive lock keeps
+  // every reader out until the last one changed. Only the deque growth of an append
+  // that removes nothing can still throw.
+  for (size_t index = 0; index < writes.size(); ++index) {
+    Step& step = steps[index];
+    if (writes[index].append) {
+      created[index] = insertLocked(*step.series, std::move(step.entry), graveyard, &step.removal);
+    } else {
+      const size_t first_removed = graveyard.entries.size();
+      step.series->ordered.remove(step.removal, graveyard.entries);
+      accountRemoved(*step.series, graveyard, first_removed);
+    }
+  }
+  return created;
 }
 
 Status ObjectStore::pushLazy(ObjectTopicId id, Timestamp timestamp, LazyCallback fetch, size_t resident_bytes) {
@@ -263,29 +255,16 @@ Status ObjectStore::pushLazyWithSeed(ObjectTopicId id, Timestamp timestamp, sdk:
 
 Status ObjectStore::pushLazyEntry(ObjectTopicId id, Timestamp timestamp, ObjectEntryPayload payload) {
   Graveyard graveyard;  // retention victims die after the locks below release
+  ObjectEntry entry;    // ours until inserted: a failed insertion must not run its cleanup under the locks
   std::shared_lock store_lock(store_mutex_);
   auto* series = findSeries(id);
   if (series == nullptr) {
     return unexpected("unknown topic");
   }
 
-  // Assemble outside the write lock (same reason as pushOwned); only the UID mint,
-  // which must stay adjacent to push(), needs the lock.
-  ObjectEntry entry;
-  entry.timestamp = timestamp;
-  entry.payload = std::move(payload);
-  const size_t charged_bytes = chargedBytes(entry);
-
+  entry = unstampedEntry(timestamp, std::move(payload));
   std::unique_lock lock(series->mutex);
-  entry.sequential_uid = SequentialUID::getNext();
-  const auto push_order = series->ordered.push(std::move(entry));
-  series->memory_bytes += charged_bytes;
-
-  if (push_order == OrderedEntries::PushOrder::kOutOfOrderInsert) {
-    dropCache(*series, graveyard);
-  }
-
-  applyRetention(*series, series->ordered.backTimestamp(), graveyard);
+  insertLocked(*series, std::move(entry), graveyard);
   return {};
 }
 
@@ -1135,25 +1114,59 @@ ResolvedObjectEntry ObjectStore::resolveEntry(const ObjectEntry& entry, bool* se
   return resolved;
 }
 
-void ObjectStore::evictFront(ObjectSeries& series, Graveyard& graveyard) {
-  if (series.ordered.empty()) {
+SequentialUID ObjectStore::insertLocked(
+    ObjectSeries& series, ObjectEntry&& entry, Graveyard& graveyard, const OrderedEntries::Removal* removal) {
+  const size_t charged = chargedBytes(entry);
+  entry.sequential_uid = SequentialUID::getNext();
+  const SequentialUID uid = entry.sequential_uid;
+  const size_t first_removed = graveyard.entries.size();
+  const OrderedEntries::PushOrder order =
+      removal != nullptr ? series.ordered.removeAndPush(*removal, std::move(entry), graveyard.entries)
+                         : series.ordered.push(std::move(entry));
+  series.memory_bytes += charged;
+  accountRemoved(series, graveyard, first_removed);
+  // A mid-stream (out-of-order) insert can change an at-or-before lookup that
+  // landed on the entry just after it, so drop the warm cache (keyed by uid).
+  if (order == OrderedEntries::PushOrder::kOutOfOrderInsert) {
+    dropCache(series, graveyard);
+  }
+  // Retention is anchored to the newest sample retained, not the just-pushed
+  // timestamp (which may be older on an out-of-order insert).
+  applyRetention(series, series.ordered.backTimestamp(), graveyard);
+  return uid;
+}
+
+void ObjectStore::accountRemoved(ObjectSeries& series, Graveyard& graveyard, size_t first) {
+  if (first == graveyard.entries.size()) {
     return;
   }
-
-  const ObjectEntry& front = series.ordered.frontEntry();
-  // Drop the warm cache if it holds the entry being evicted, so its bytes are
-  // released with the entry rather than pinned past its lifetime.
-  {
-    std::lock_guard cache_guard(series.cache_mutex);
-    if (series.cached_latest && series.cached_latest->sequential_uid == front.sequential_uid) {
+  // The warm cache goes with its entry, so its bytes are not pinned past the entry's life.
+  std::lock_guard cache_guard(series.cache_mutex);
+  for (size_t index = first; index < graveyard.entries.size(); ++index) {
+    const ObjectEntry& removed = graveyard.entries[index];
+    series.memory_bytes -= chargedBytes(removed);
+    if (series.cached_latest && series.cached_latest->sequential_uid == removed.sequential_uid) {
       graveyard.cached.push_back(std::move(*series.cached_latest));
       series.cached_latest.reset();
     }
   }
-  series.memory_bytes -= chargedBytes(front);
+}
 
-  // Pop the front from the triple (entries + timestamps + uid_order maintenance).
+void ObjectStore::evictFront(ObjectSeries& series, Graveyard& graveyard) {
+  if (series.ordered.empty()) {
+    return;
+  }
+  // Room for the entry and, when the warm cache holds it, the displaced cache value before
+  // anything is unlinked, so an allocation failure leaves the series whole.
+  reserveOneMore(graveyard.entries);
+  {
+    std::lock_guard cache_guard(series.cache_mutex);
+    if (series.cached_latest && series.cached_latest->sequential_uid == series.ordered.entryAt(0).sequential_uid) {
+      reserveOneMore(graveyard.cached);
+    }
+  }
   graveyard.entries.push_back(series.ordered.evictFront());
+  accountRemoved(series, graveyard, graveyard.entries.size() - 1);
 }
 
 void ObjectStore::applyRetention(ObjectSeries& series, Timestamp newest_ts, Graveyard& graveyard) {

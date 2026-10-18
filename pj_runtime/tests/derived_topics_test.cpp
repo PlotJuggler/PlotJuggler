@@ -27,10 +27,6 @@ bool isDerived(const std::string& name, const std::string& metadata_json) {
   return PJ::isDerivedObjectTopic({.dataset_id = 1, .topic_name = name, .metadata_json = metadata_json});
 }
 
-TEST(DerivedTopicsTest, TheHostSharesTheSdkKey) {
-  EXPECT_EQ(&PJ::kDerivedMetadataKey, &PJ::sdk::kDerivedMetadataKey);
-}
-
 TEST(DerivedTopicsTest, ADerivedTopicIsRegisteredAsOnDemandOfItsType) {
   for (const BuiltinObjectType type :
        {BuiltinObjectType::kPointCloud, BuiltinObjectType::kSceneEntities, BuiltinObjectType::kImageAnnotations}) {

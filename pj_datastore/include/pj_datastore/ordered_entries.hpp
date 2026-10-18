@@ -36,6 +36,16 @@ using SharedBuffer = std::shared_ptr<const std::vector<uint8_t>>;
 /// caller's lock, once per entry: keep it cheap and never call back into the ObjectStore.
 using EntryPredicate = std::function<bool(Timestamp, SequentialUID)>;
 
+/// Room for one more element, grown geometrically as push_back would (appends stay
+/// amortized O(1)), so the push_back that follows cannot allocate: how the store takes
+/// every allocation of a mutation before it unlinks anything.
+template <typename T>
+void reserveOneMore(std::vector<T>& values) {
+  if (values.size() == values.capacity()) {
+    values.reserve(values.capacity() < 4 ? 8 : 2 * values.capacity());
+  }
+}
+
 /// Lazy payload: idempotent, thread-safe fetcher returning bytes + anchor.
 /// Invoked on every read; bytes are not counted against the retention budget.
 /// nullopt means the fetch FAILED — the source could not re-produce the bytes
@@ -143,11 +153,6 @@ class OrderedEntries {
   }
   // Bounds-checked; nullptr when index >= size().
   [[nodiscard]] const ObjectEntry* atIndex(size_t index) const;
-  // The oldest retained entry (precondition: !empty()). ObjectStore reads its
-  // uid/payload for cache + memory accounting just before evictFront().
-  [[nodiscard]] const ObjectEntry& frontEntry() const {
-    return entries_.front();
-  }
 
   // --- Time lookups ---
 
@@ -179,23 +184,35 @@ class OrderedEntries {
   // Reads entry.timestamp for placement. Precondition: entry.sequential_uid is the
   // series max (the ObjectStore push paths mint it via SequentialUID::getNext()
   // immediately before) — the incremental uid_order maintenance relies on it. A
-  // caller inserting a non-max UID must rebuildUidOrder() instead.
+  // caller inserting a non-max UID must rebuildUidOrder() instead. An allocation
+  // failure throws before anything changes and leaves `entry` with the caller.
   PushOrder push(ObjectEntry&& entry);
   // Remove the oldest entry (front position) and return it, so the caller decides
   // where it is destroyed (ObjectStore drops it after releasing its locks).
   // Precondition: !empty(). Triple only — the caller drops the warm cache and
   // adjusts memory accounting around it.
   ObjectEntry evictFront();
-  // Remove every entry (at any position, not only the oldest prefix) that `drop`
-  // selects and return them, moved out in array order, so the caller can adjust memory
-  // accounting and the warm cache. Survivors keep their order and their UIDs. `drop`
-  // runs on every entry before anything is touched, so an exception from it leaves
-  // this instance as it was; an allocation failure while moving the survivors does
-  // not, so call it only on an instance that is discarded when the caller fails.
-  std::vector<ObjectEntry> eraseWhere(const EntryPredicate& drop);
-  // Exchange the contents of two instances without allocating or throwing: the commit step of a transaction staged on a
-  // private copy.
-  void swap(OrderedEntries& other) noexcept;
+  // A removal of entries at any position (not only the oldest prefix), decided before
+  // anything changes so a transaction can validate every topic first.
+  struct Removal {
+    static constexpr uint32_t kRemoved = UINT32_MAX;
+    // Where each entry lands once the removal is applied, or kRemoved.
+    std::vector<uint32_t> new_position;
+    size_t count = 0;
+  };
+  // Runs `drop` once per entry and changes nothing, so an exception from it leaves this
+  // instance as it was.
+  [[nodiscard]] Removal planRemoval(const EntryPredicate& drop) const;
+  // Applies a plan made on this instance, unchanged since: the removed entries are moved
+  // into `removed` in array order (the caller adjusts memory accounting and the warm
+  // cache), the survivors close the gaps in place and keep their order and UIDs. O(n).
+  // The only allocation is room in `removed` for `plan.count` more, taken first, so a
+  // failure changes nothing.
+  void remove(const Removal& plan, std::vector<ObjectEntry>& removed);
+  // remove() then push() as one step that applies whole or not at all: the entry takes
+  // a slot the removal freed, so after the room in `removed` nothing allocates (with
+  // nothing to remove it is push()). Same preconditions as both.
+  PushOrder removeAndPush(const Removal& plan, ObjectEntry&& entry, std::vector<ObjectEntry>& removed);
   // Empty the triple. Memory/cache stay the caller's (see clearEntriesLocked).
   void clear();
   // Slide every store timestamp by `delta` (also entry_timestamps and each entry's
@@ -240,6 +257,15 @@ class OrderedEntries {
   void restoreRebuild(std::deque<ObjectEntry>&& entries_in, std::vector<Timestamp>&& stamps_in);
 
  private:
+  // Indexes the entry at the back of `entries_`, which the two vectors do not cover yet,
+  // and moves it to its sorted position. The vectors have room for one more, so nothing
+  // here allocates.
+  PushOrder indexBack();
+  // The survivors of `plan` close its gaps at the front; the removed entries move into
+  // `removed`, which has room for them. The vectors are final; the deque keeps its size,
+  // with moved-from slots after the survivors. Returns the survivor count.
+  size_t compact(const Removal& plan, std::vector<ObjectEntry>& removed);
+
 #ifndef NDEBUG
   // Assert uid_order is a size-matching permutation of entries with strictly
   // ascending projected UIDs. Debug tripwire for the two hand-rolled hot paths.

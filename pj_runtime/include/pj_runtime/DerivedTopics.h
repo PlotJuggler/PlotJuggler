@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
-#include <nlohmann/json.hpp>
 #include <string>
 
 #include "pj_base/builtin/builtin_object.hpp"
@@ -38,16 +37,6 @@ namespace PJ {
 /// True when `descriptor` describes an on-demand derived topic. Parses `metadata_json`:
 /// absent, malformed or another kind of metadata is "not derived", not an error. Cheap
 /// enough to run over every topic of a dataset (most are rejected without parsing).
-[[nodiscard]] inline bool isDerivedObjectTopic(const ObjectTopicDescriptor& descriptor) {
-  if (descriptor.metadata_json.find(sdk::kDerivedMetadataKey) == std::string::npos) {
-    return false;
-  }
-  const nlohmann::json doc = nlohmann::json::parse(descriptor.metadata_json, nullptr, /*allow_exceptions=*/false);
-  if (!doc.is_object()) {
-    return false;
-  }
-  const auto kind = doc.find(std::string(sdk::kDerivedMetadataKey));
-  return kind != doc.end() && kind->is_string() && kind->get<std::string>() == sdk::kDerivedOnDemandValue;
-}
+[[nodiscard]] bool isDerivedObjectTopic(const ObjectTopicDescriptor& descriptor);
 
 }  // namespace PJ
