@@ -308,7 +308,7 @@ without copying them, and `resources.qrc` is compiled once as `pj_resources`.
 bytes by artifact class in decimal GB. See the
 [AppImage build guide](./packaging/appimage/README.md#build--verify-in-docker) for container usage.
 
-Re-running `./build.sh` after code changes does incremental builds. `ccache` is picked up automatically if installed.
+Re-running `./build.sh` after code changes does incremental builds. `ccache` is picked up automatically if installed, and so is the `mold` linker (`-DCMAKE_LINKER_TYPE=MOLD`, CMake 3.29+), which links the many test executables several times faster than GNU ld.
 
 **Local-SDK development mode**: `./build.sh --sdk-local[=PATH]` builds
 `plotjuggler_sdk` from a local working tree (default: the `../plotjuggler_sdk`

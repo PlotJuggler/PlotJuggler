@@ -226,6 +226,11 @@ CMAKE_CCACHE_ARGS=()
 if command -v ccache &>/dev/null; then
   CMAKE_CCACHE_ARGS+=("-DCMAKE_C_COMPILER_LAUNCHER=ccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")
 fi
+# mold links the dozens of test executables several times faster than GNU ld;
+# CMake older than 3.29 ignores CMAKE_LINKER_TYPE and keeps its default linker.
+if command -v mold &>/dev/null; then
+  CMAKE_CCACHE_ARGS+=("-DCMAKE_LINKER_TYPE=MOLD")
+fi
 
 # The PJ_* variables below come from the options parsed above or, for CI and
 # the container wrapper, from the environment. Release/packaging pipelines skip
