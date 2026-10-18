@@ -83,4 +83,12 @@ class MemoryReservation {
   std::size_t bytes_ = 0;
 };
 
+/// A native value and the reservation that pays for it: keep them together, so a retained output keeps
+/// counting against the evaluation's budget.
+template <class Value>
+struct Charged {
+  Value value;
+  MemoryReservation charge;
+};
+
 }  // namespace PJ::scripting::native

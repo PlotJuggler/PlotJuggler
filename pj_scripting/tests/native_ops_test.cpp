@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "native/image_annotations_ops.h"
 #include "native/memory_budget.h"
 #include "native/point_cloud_ops.h"
 #include "native/record_walk.h"
@@ -1056,20 +1057,20 @@ TEST(SceneEntityBuilder, SceneBuilderProducesSnapshotIdiom) {
   auto empty = SceneEntityBuilder::create("base_link", "witness", nullptr);
   ASSERT_TRUE(empty) << empty.error();
   const auto cleared = std::move(*empty).finish();
-  ASSERT_EQ(cleared.scene.deletions.size(), 1u);
-  EXPECT_EQ(cleared.scene.deletions[0].type, sdk::SceneEntityDeletion::Type::kAll);
-  EXPECT_TRUE(cleared.scene.entities.empty());
+  ASSERT_EQ(cleared.value.deletions.size(), 1u);
+  EXPECT_EQ(cleared.value.deletions[0].type, sdk::SceneEntityDeletion::Type::kAll);
+  EXPECT_TRUE(cleared.value.entities.empty());
 
   auto builder = SceneEntityBuilder::create("base_link", "witness", nullptr);
   ASSERT_TRUE(builder) << builder.error();
   ASSERT_TRUE(builder->addSphere(Vector3{1, 2, 3}, 0.2, sdk::ColorRGBA{255, 0, 0, 255}));
   ASSERT_TRUE(builder->addText(Vector3{1, 2, 3.3}, "1.00", 0.25, sdk::ColorRGBA{}, false));
   const auto full = std::move(*builder).finish();
-  ASSERT_EQ(full.scene.deletions.size(), 1u);
-  EXPECT_EQ(full.scene.deletions[0].type, sdk::SceneEntityDeletion::Type::kAll);
-  EXPECT_EQ(full.scene.deletions[0].timestamp, 0);
-  ASSERT_EQ(full.scene.entities.size(), 1u);
-  const auto& entity = full.scene.entities[0];
+  ASSERT_EQ(full.value.deletions.size(), 1u);
+  EXPECT_EQ(full.value.deletions[0].type, sdk::SceneEntityDeletion::Type::kAll);
+  EXPECT_EQ(full.value.deletions[0].timestamp, 0);
+  ASSERT_EQ(full.value.entities.size(), 1u);
+  const auto& entity = full.value.entities[0];
   EXPECT_EQ(entity.frame_id, "base_link");
   EXPECT_EQ(entity.id, "witness");
   EXPECT_EQ(entity.timestamp, 0);  // stamped when the runtime publishes it
@@ -1092,8 +1093,8 @@ TEST(SceneEntityBuilder, SceneBuilderChainsAllPrimitives) {
   ASSERT_TRUE(builder->addCube(Vector3{2, 2, 2}, Vector3{1, 2, 3}, sdk::ColorRGBA{0, 255, 0, 128}));
   ASSERT_TRUE(builder->addLineStrip({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {1, 1, 1}}, 0.05, sdk::ColorRGBA{}));
   const auto out = std::move(*builder).finish();
-  ASSERT_EQ(out.scene.entities.size(), 1u);
-  const auto& entity = out.scene.entities[0];
+  ASSERT_EQ(out.value.entities.size(), 1u);
+  const auto& entity = out.value.entities[0];
   ASSERT_EQ(entity.spheres.size(), 1u);
   ASSERT_EQ(entity.texts.size(), 1u);
   EXPECT_TRUE(entity.texts[0].billboard);
@@ -1125,14 +1126,20 @@ TEST(SceneEntityBuilder, SceneBuilderRejectsBadArgs) {
   };
   expectField(builder->addSphere(bad, 1.0, {}), "'center'");
   expectField(builder->addSphere(origin, nan, {}), "'diameter'");
+  expectField(builder->addSphere(origin, 0.0, {}), "'diameter'");
+  expectField(builder->addSphere(origin, -1.0, {}), "'diameter'");
   expectField(builder->addCube(origin, bad, {}), "'size'");
+  expectField(builder->addCube(origin, Vector3{1, -1, 1}, {}), "'size'");
+  expectField(builder->addCube(origin, Vector3{0, 1, 1}, {}), "'size'");
   expectField(builder->addText(bad, "x", 1.0, {}, false), "'position'");
   expectField(builder->addText(origin, "x", 0.0, {}, false), "'font_size'");
   expectField(builder->addText(origin, "", 1.0, {}, false), "'text'");
   expectField(builder->addLineStrip({{0, 0, 0}}, 0.1, {}), "'points'");
   expectField(builder->addLineStrip({{0, 0, 0}, {nan, 0, 0}}, 0.1, {}), "'points'");
   expectField(builder->addLineStrip({{0, 0, 0}, {1, 0, 0}}, nan, {}), "'thickness'");
-  EXPECT_TRUE(std::move(*builder).finish().scene.entities.empty());  // a rejected primitive is not stored
+  expectField(builder->addLineStrip({{0, 0, 0}, {1, 0, 0}}, 0.0, {}), "'thickness'");
+  expectField(builder->addLineStrip({{0, 0, 0}, {1, 0, 0}}, -0.1, {}), "'thickness'");
+  EXPECT_TRUE(std::move(*builder).finish().value.entities.empty());  // a rejected primitive is not stored
 }
 
 // A size is a finite number greater than 0: zero and negative sizes are rejected like NaN, naming the field.
@@ -1155,7 +1162,7 @@ TEST(SceneEntityBuilder, SceneBuilderRejectsNonPositiveSizes) {
     expectError(
         builder->addText(origin, "x", size, {}, false), "text: 'font_size' must be a finite number greater than 0");
   }
-  EXPECT_TRUE(std::move(*builder).finish().scene.entities.empty());
+  EXPECT_TRUE(std::move(*builder).finish().value.entities.empty());
 }
 
 // A builder grown in a loop stops at the evaluation's limit; finishing moves the charge into the snapshot,
@@ -1177,14 +1184,129 @@ TEST(SceneEntityBuilder, SceneBuilderChargesTheBudget) {
     EXPECT_LE(budget->used(), budget->limit());
   }
   EXPECT_EQ(budget->used(), 0u);
+  std::optional<Charged<sdk::SceneEntities>> snapshot;
+  std::size_t builder_bytes = 0;
   {
     auto builder = SceneEntityBuilder::create("map", "e1", budget);
     ASSERT_TRUE(builder) << builder.error();
     ASSERT_TRUE(builder->addSphere(Vector3{0, 0, 0}, 1.0, {}));
-    const std::size_t builder_bytes = budget->used();
-    const auto snapshot = std::move(*builder).finish();
-    EXPECT_EQ(budget->used(), builder_bytes);
+    builder_bytes = budget->used();
+    snapshot.emplace(std::move(*builder).finish());
+  }  // the builder is gone: the snapshot alone holds the charge
+  EXPECT_EQ(budget->used(), builder_bytes);
+  snapshot.reset();
+  EXPECT_EQ(budget->used(), 0u);
+}
+
+// ---- image-annotations builder ----------------------------------------------
+
+TEST(ImageAnnotationsBuilder, AnnotationsBuilderProducesPrimitives) {
+  auto builder = ImageAnnotationsBuilder::create("/camera", nullptr);
+  ASSERT_TRUE(builder) << builder.error();
+  ASSERT_TRUE(builder->addPoints(
+      {{1, 2}, {5, 2}, {5, 8}, {1, 8}}, "line_loop", 3.0, sdk::ColorRGBA{255, 0, 0, 128},
+      sdk::ColorRGBA{0, 0, 255, 40}));
+  ASSERT_TRUE(builder->addCircle({3, 4}, 10.0, 1.5, sdk::ColorRGBA{}, sdk::ColorRGBA{0, 255, 0, 90}));
+  ASSERT_TRUE(builder->addText({1, 2}, "max_z", 20.0, sdk::ColorRGBA{3, 4, 5, 255}));
+  const auto out = std::move(*builder).finish();
+  EXPECT_EQ(out.value.image_topic, "/camera");
+  EXPECT_EQ(out.value.timestamp, 0);  // the runtime pairs by the result's time
+  ASSERT_EQ(out.value.points.size(), 1u);
+  const auto& points = out.value.points[0];
+  EXPECT_EQ(points.topology, sdk::AnnotationTopology::kLineLoop);
+  EXPECT_EQ(points.points.size(), 4u);
+  EXPECT_DOUBLE_EQ(points.thickness, 3.0);
+  EXPECT_EQ(points.color, (sdk::ColorRGBA{255, 0, 0, 128}));
+  EXPECT_EQ(points.fill_color, (sdk::ColorRGBA{0, 0, 255, 40}));
+  ASSERT_EQ(out.value.circles.size(), 1u);
+  EXPECT_DOUBLE_EQ(out.value.circles[0].radius, 5.0);  // the diameter, halved
+  EXPECT_DOUBLE_EQ(out.value.circles[0].thickness, 1.5);
+  EXPECT_EQ(out.value.circles[0].fill_color.a, 90);
+  ASSERT_EQ(out.value.texts.size(), 1u);
+  EXPECT_EQ(out.value.texts[0].text, "max_z");
+  EXPECT_EQ(out.value.texts[0].color.b, 5);
+}
+
+TEST(ImageAnnotationsBuilder, EveryTopologyIsAccepted) {
+  auto builder = ImageAnnotationsBuilder::create("/camera", nullptr);
+  ASSERT_TRUE(builder) << builder.error();
+  const sdk::ColorRGBA color{};
+  ASSERT_TRUE(builder->addPoints({{0, 0}}, "points", 1.0, color, color));
+  ASSERT_TRUE(builder->addPoints({{0, 0}, {1, 1}}, "line_list", 1.0, color, color));
+  ASSERT_TRUE(builder->addPoints({{0, 0}, {1, 1}}, "line_strip", 1.0, color, color));
+  ASSERT_TRUE(builder->addPoints({{0, 0}, {1, 1}, {2, 0}}, "line_loop", 1.0, color, color));
+  const auto out = std::move(*builder).finish();
+  ASSERT_EQ(out.value.points.size(), 4u);
+  EXPECT_EQ(out.value.points[0].topology, sdk::AnnotationTopology::kPoints);
+  EXPECT_EQ(out.value.points[1].topology, sdk::AnnotationTopology::kLineList);
+  EXPECT_EQ(out.value.points[2].topology, sdk::AnnotationTopology::kLineStrip);
+}
+
+TEST(ImageAnnotationsBuilder, AnEmptyBuilderFinishesToNoPrimitives) {
+  auto builder = ImageAnnotationsBuilder::create("/camera", nullptr);
+  ASSERT_TRUE(builder) << builder.error();
+  const auto out = std::move(*builder).finish();
+  EXPECT_TRUE(out.value.empty());
+  EXPECT_EQ(out.value.image_topic, "/camera");
+}
+
+// The builder names the field a script got wrong, and a rejected primitive is not stored.
+TEST(ImageAnnotationsBuilder, AnnotationsRejectInvalidGeometry) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const sdk::ColorRGBA color{};
+  const auto no_topic = ImageAnnotationsBuilder::create("", nullptr);
+  ASSERT_FALSE(no_topic);
+  EXPECT_TRUE(contains(no_topic.error(), "'image_topic'")) << no_topic.error();
+
+  auto builder = ImageAnnotationsBuilder::create("/camera", nullptr);
+  ASSERT_TRUE(builder) << builder.error();
+  const auto expectField = [](const Status& status, const char* field) {
+    ASSERT_FALSE(status) << field;
+    EXPECT_TRUE(contains(status.error(), field)) << status.error();
+  };
+  expectField(builder->addPoints({{0, 0}, {1, 1}, {2, 2}}, "line_list", 1.0, color, color), "'points'");
+  expectField(builder->addPoints({{0, 0}, {1, 1}}, "line_loop", 1.0, color, color), "'points'");
+  expectField(builder->addPoints({}, "points", 1.0, color, color), "'points'");
+  expectField(builder->addPoints({{0, 0}, {nan, 1}}, "line_strip", 1.0, color, color), "'points'");
+  expectField(builder->addPoints({{0, 0}}, "polygon", 1.0, color, color), "'type'");
+  expectField(builder->addPoints({{0, 0}}, "points", 0.0, color, color), "'thickness'");
+  expectField(builder->addCircle({nan, 0}, 1.0, 1.0, color, color), "'center'");
+  expectField(builder->addCircle({0, 0}, -1.0, 1.0, color, color), "'diameter'");
+  expectField(builder->addCircle({0, 0}, 1.0, nan, color, color), "'thickness'");
+  expectField(builder->addText({nan, 0}, "x", 1.0, color), "'position'");
+  expectField(builder->addText({0, 0}, "x", 0.0, color), "'font_size'");
+  expectField(builder->addText({0, 0}, "", 1.0, color), "'text'");
+  EXPECT_TRUE(std::move(*builder).finish().value.empty());
+}
+
+TEST(ImageAnnotationsBuilder, AnnotationsBuilderChargesTheBudget) {
+  auto budget = std::make_shared<MemoryBudget>(4096);
+  {
+    auto builder = ImageAnnotationsBuilder::create("/camera", budget);
+    ASSERT_TRUE(builder) << builder.error();
+    Status added = okStatus();
+    int circles = 0;
+    while (added && circles < 1000) {
+      added = builder->addCircle({0, 0}, 1.0, 1.0, {}, {});
+      circles += added ? 1 : 0;
+    }
+    ASSERT_FALSE(added);
+    EXPECT_TRUE(contains(added.error(), "native memory limit")) << added.error();
+    EXPECT_GT(circles, 0);
+    EXPECT_LE(budget->used(), budget->limit());
   }
+  EXPECT_EQ(budget->used(), 0u);
+  std::optional<Charged<sdk::ImageAnnotations>> annotations;
+  std::size_t builder_bytes = 0;
+  {
+    auto builder = ImageAnnotationsBuilder::create("/camera", budget);
+    ASSERT_TRUE(builder) << builder.error();
+    ASSERT_TRUE(builder->addPoints({{0, 0}, {1, 1}}, "line_strip", 1.0, {}, {}));
+    builder_bytes = budget->used();
+    annotations.emplace(std::move(*builder).finish());
+  }  // the builder is gone: the annotations alone hold the charge
+  EXPECT_EQ(budget->used(), builder_bytes);
+  annotations.reset();
   EXPECT_EQ(budget->used(), 0u);
 }
 

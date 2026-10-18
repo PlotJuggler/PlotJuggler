@@ -182,9 +182,10 @@ set(PJ_SCRIPTING_SOURCES
   src/lua_siso_transform.cpp
   src/lua_mimo_transform.cpp
   src/filter_catalogue.cpp
-  # Native object operations (point clouds, scene entities) for the object-script binders; pj_base only.
+  # Native object operations (point clouds, scene entities, image annotations) for the object-script binders; pj_base only.
   src/native/point_cloud_ops.cpp
   src/native/scene_entities_ops.cpp
+  src/native/image_annotations_ops.cpp
   # The Luau object-script engine (compile, run, field reads, pj.tf).
   src/object_script.cpp
   src/object_binder.cpp

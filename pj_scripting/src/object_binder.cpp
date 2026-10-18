@@ -7,12 +7,17 @@
 #include <cmath>
 #include <limits>
 #include <new>
+#include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
+#include <vector>
 
 #include "lualib.h"
 #include "luau_sandbox_state.h"
+#include "native/image_annotations_ops.h"
 #include "native/memory_budget.h"
+#include "native/scene_entities_ops.h"
 #include "pj_base/builtin/field_table_registry.hpp"
 
 namespace PJ::scripting::detail {
@@ -24,14 +29,23 @@ enum Tag : int {
   kViewTag,
   kInt64Tag,
   kPointIteratorTag,
+  kSceneBuilderTag,
+  kAnnotationsBuilderTag,
 };
 
 constexpr const char* kUnavailableMetatable = "pj.unavailable";
 constexpr std::size_t kMaxReasonBytes = 1024;
 
-/// A script object: the canonical value, its field table and the struct behind it, resolved once.
-struct ObjectBox {
+/// What keeps an object alive for the script: the value and, for a builder's output, what the builder paid
+/// for it. A view read from the object shares it, so neither lapses while a view can still read the value.
+struct Anchor {
   sdk::BuiltinObject object;
+  std::shared_ptr<const native::MemoryReservation> charge;
+};
+
+/// A script object: its anchor, its field table and the struct behind it, resolved once.
+struct ObjectBox {
+  Anchor anchor;
   const sdk::FieldTableView* table = nullptr;
   const void* data = nullptr;
 };
@@ -39,7 +53,7 @@ struct ObjectBox {
 /// A read-only window onto part of an object: a struct (`table`) or a list field (`list`, read on `owner`).
 /// `keep` shares the object the window reads.
 struct View {
-  sdk::BuiltinObject keep;
+  Anchor keep;
   const sdk::FieldTableView* table = nullptr;
   const sdk::FieldDescriptor* list = nullptr;
   const void* owner = nullptr;
@@ -146,7 +160,7 @@ void pushScalar(lua_State* L, sdk::FieldKind kind, const sdk::FieldDescriptor& f
   }
 }
 
-void pushField(lua_State* L, const sdk::FieldDescriptor& field, const void* owner, const sdk::BuiltinObject& keep) {
+void pushField(lua_State* L, const sdk::FieldDescriptor& field, const void* owner, const Anchor& keep) {
   switch (field.kind) {
     case sdk::FieldKind::kStruct:
       newBox(L, kViewTag, View{keep, field.nested, nullptr, field.struct_ptr(owner)});
@@ -171,7 +185,7 @@ void pushField(lua_State* L, const sdk::FieldDescriptor& field, const void* owne
 
 /// Pushes the field named by the key at `key_index` (nil for an unknown name).
 int pushNamedField(
-    lua_State* L, const sdk::FieldTableView& table, const void* owner, const sdk::BuiltinObject& keep, int key_index) {
+    lua_State* L, const sdk::FieldTableView& table, const void* owner, const Anchor& keep, int key_index) {
   if (lua_type(L, key_index) == LUA_TSTRING) {
     std::size_t length = 0;
     const char* key = lua_tolstring(L, key_index, &length);
@@ -264,7 +278,7 @@ ObjectBox& objectBoxAt(lua_State* L, int index) {
 /// `__index` of an object: its type's methods (upvalue 1, a table keyed by type), then its fields.
 int lObjectIndex(lua_State* L) {
   const ObjectBox& box = objectBoxAt(L, 1);
-  lua_rawgeti(L, lua_upvalueindex(1), static_cast<int>(box.object.type()));
+  lua_rawgeti(L, lua_upvalueindex(1), static_cast<int>(box.anchor.object.type()));
   if (lua_istable(L, -1)) {
     lua_pushvalue(L, 2);
     lua_rawget(L, -2);
@@ -272,7 +286,7 @@ int lObjectIndex(lua_State* L) {
       return 1;
     }
   }
-  return pushNamedField(L, *box.table, box.data, box.object, 2);
+  return pushNamedField(L, *box.table, box.data, box.anchor, 2);
 }
 
 // ---- pj.int64 ----------------------------------------------------------------
@@ -318,7 +332,7 @@ int lInt64ToNumber(lua_State* L) {
 // ---- point-cloud methods -------------------------------------------------------
 
 const sdk::PointCloud& checkCloud(lua_State* L) {
-  const sdk::PointCloud* cloud = objectBoxAt(L, 1).object.get<sdk::PointCloud>();
+  const sdk::PointCloud* cloud = objectBoxAt(L, 1).anchor.object.get<sdk::PointCloud>();
   if (cloud == nullptr) {
     luaL_typeerror(L, 1, "point cloud");
   }
@@ -338,30 +352,46 @@ int pushNativeCloud(lua_State* L, Operation&& operation) {
   return 1;
 }
 
-/// The required array field `key` of the table at `table`: N numbers.
+/// The N numbers of the array at `index`; `subject` names it in the error.
 template <std::size_t N>
-std::array<double, N> readArray(lua_State* L, int table, const char* key) {
-  lua_getfield(L, table, key);
+std::array<double, N> toArray(lua_State* L, int index, const std::string& subject) {
   std::array<double, N> values{};
-  for (std::size_t index = 0; index < N; ++index) {
-    if (lua_istable(L, -1)) {
-      lua_rawgeti(L, -1, static_cast<int>(index) + 1);
+  const bool is_table = lua_istable(L, index);
+  for (std::size_t position = 0; position < N; ++position) {
+    if (is_table) {
+      lua_rawgeti(L, index, static_cast<int>(position) + 1);
     } else {
       lua_pushnil(L);
     }
     if (lua_type(L, -1) != LUA_TNUMBER) {
-      luaL_error(L, "'%s' must be an array of %d numbers", key, static_cast<int>(N));
+      luaL_error(L, "%s must be an array of %d numbers", subject.c_str(), static_cast<int>(N));
     }
-    values[index] = lua_tonumber(L, -1);
+    values[position] = lua_tonumber(L, -1);
     lua_pop(L, 1);
   }
+  return values;
+}
+
+/// The required array field `key` of the table at `table`: N numbers. Fields are read raw, so no script
+/// code (an `__index` metamethod) runs while a native operation holds a reference into the VM's boxes.
+template <std::size_t N>
+std::array<double, N> readArray(lua_State* L, int table, const char* key) {
+  lua_rawgetfield(L, table, key);
+  const auto values = toArray<N>(L, lua_gettop(L), std::string("'") + key + "'");
   lua_pop(L, 1);
   return values;
 }
 
-sdk::Vector3 readVector(lua_State* L, int table, const char* key) {
-  const auto values = readArray<3>(L, table, key);
-  return {values[0], values[1], values[2]};
+/// The N numbers as a `Point` ({x, y} or {x, y, z}).
+template <class Point, std::size_t N>
+Point toPoint(const std::array<double, N>& values) {
+  return std::apply([](auto... coordinates) { return Point{coordinates...}; }, values);
+}
+
+/// The required array field `key` as a `Point`.
+template <class Point, std::size_t N>
+Point readPoint(lua_State* L, int table, const char* key) {
+  return toPoint<Point>(readArray<N>(L, table, key));
 }
 
 void setNumber(lua_State* L, const char* key, double value) {
@@ -417,8 +447,8 @@ int lCloudExtremePoint(lua_State* L) {
 int lCloudCropBox(lua_State* L) {
   const sdk::PointCloud& cloud = checkCloud(L);
   luaL_checktype(L, 2, LUA_TTABLE);
-  const sdk::Vector3 min = readVector(L, 2, "min");
-  const sdk::Vector3 max = readVector(L, 2, "max");
+  const auto min = readPoint<sdk::Vector3, 3>(L, 2, "min");
+  const auto max = readPoint<sdk::Vector3, 3>(L, 2, "max");
   return pushNativeCloud(L, [&] { return native::cropBox(cloud, min, max, upvalueAs<native::NativeLimits>(L)); });
 }
 
@@ -451,7 +481,7 @@ int lCloudTransform(lua_State* L) {
   const sdk::PointCloud& cloud = checkCloud(L);
   luaL_checktype(L, 2, LUA_TTABLE);
   sdk::FrameTransform tf;
-  tf.translation = readVector(L, 2, "translation");
+  tf.translation = readPoint<sdk::Vector3, 3>(L, 2, "translation");
   const auto rotation = readArray<4>(L, 2, "rotation");
   tf.rotation = {rotation[0], rotation[1], rotation[2], rotation[3]};
   lua_getfield(L, 2, "target_frame");
@@ -481,9 +511,249 @@ int lPointsNext(lua_State* L) {
 int lCloudXyzPoints(lua_State* L) {
   const native::XyzAccess access = nativeResult(L, native::resolveXyz(checkCloud(L)));
   lua_pushcfunction(L, lPointsNext, "xyz_points_next");
-  newBox(L, kPointIteratorTag, PointIterator{objectBoxAt(L, 1).object, access, 0});
+  newBox(L, kPointIteratorTag, PointIterator{objectBoxAt(L, 1).anchor.object, access, 0});
   lua_pushnil(L);
   return 3;
+}
+
+// ---- builders: pj.scene and pj.annotations ---------------------------------------
+//
+// The arguments and defaults are documented in object_script.h. A method reads its options table raw
+// (lua_rawgetfield, lua_rawgeti): script code, such as an `__index` metamethod, must not run inside a call
+// that holds its builder, or it could finish that builder.
+
+using SceneSlot = std::optional<native::SceneEntityBuilder>;
+using AnnotationsSlot = std::optional<native::ImageAnnotationsBuilder>;
+
+constexpr sdk::ColorRGBA kWhite{255, 255, 255, 255};
+constexpr sdk::ColorRGBA kTransparent{0, 0, 0, 0};
+
+/// The required string field `key` of the table at `table`.
+std::string readString(lua_State* L, int table, const char* key) {
+  lua_rawgetfield(L, table, key);
+  if (lua_type(L, -1) != LUA_TSTRING) {
+    luaL_error(L, "'%s' must be a string", key);
+  }
+  std::size_t length = 0;
+  const char* text = lua_tolstring(L, -1, &length);
+  std::string value(text, length);
+  lua_pop(L, 1);
+  return value;
+}
+
+/// The number field `key` of the table at `table`; without a `fallback` it is required.
+double readNumber(lua_State* L, int table, const char* key, std::optional<double> fallback = std::nullopt) {
+  lua_rawgetfield(L, table, key);
+  if (fallback && lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    return *fallback;
+  }
+  if (lua_type(L, -1) != LUA_TNUMBER) {
+    luaL_error(L, "'%s' must be a number", key);
+  }
+  const double value = lua_tonumber(L, -1);
+  lua_pop(L, 1);
+  return value;
+}
+
+/// The `{r, g, b}` or `{r, g, b, a}` field `key` (components 0-255, alpha 255 when absent), or `fallback`
+/// when the field is.
+sdk::ColorRGBA readColor(lua_State* L, int table, const char* key, sdk::ColorRGBA fallback) {
+  lua_rawgetfield(L, table, key);
+  if (lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    return fallback;
+  }
+  const int color = lua_gettop(L);
+  const int count = lua_istable(L, color) ? lua_objlen(L, color) : 0;
+  if (count != 3 && count != 4) {
+    luaL_error(L, "'%s' must be {r, g, b} or {r, g, b, a}", key);
+  }
+  std::array<uint8_t, 4> channels{0, 0, 0, 255};
+  for (int position = 0; position < count; ++position) {
+    lua_rawgeti(L, color, position + 1);
+    const double value = lua_type(L, -1) == LUA_TNUMBER ? lua_tonumber(L, -1) : -1.0;
+    if (!(value >= 0.0 && value <= 255.0)) {
+      luaL_error(L, "'%s' components must be numbers from 0 to 255", key);
+    }
+    channels[static_cast<std::size_t>(position)] = static_cast<uint8_t>(value);
+    lua_pop(L, 1);
+  }
+  lua_pop(L, 1);
+  return {channels[0], channels[1], channels[2], channels[3]};
+}
+
+/// The array field `key` of the table at `table`, each entry N numbers read as a `Point`.
+template <class Point, std::size_t N>
+std::vector<Point> readPoints(lua_State* L, int table, const char* key) {
+  lua_rawgetfield(L, table, key);
+  if (!lua_istable(L, -1)) {
+    luaL_error(L, "'%s' must be an array of points", key);
+  }
+  const int list = lua_gettop(L);
+  const int count = lua_objlen(L, list);
+  const std::string subject = std::string("'") + key + "' entry";
+  std::vector<Point> points;
+  points.reserve(static_cast<std::size_t>(count));
+  for (int position = 1; position <= count; ++position) {
+    lua_rawgeti(L, list, position);
+    points.push_back(toPoint<Point>(toArray<N>(L, lua_gettop(L), subject)));
+    lua_pop(L, 1);
+  }
+  lua_pop(L, 1);
+  return points;
+}
+
+SceneSlot& sceneSlot(lua_State* L) {
+  return checkBox<SceneSlot>(L, 1, kSceneBuilderTag, "scene builder");
+}
+
+AnnotationsSlot& annotationsSlot(lua_State* L) {
+  return checkBox<AnnotationsSlot>(L, 1, kAnnotationsBuilderTag, "annotations builder");
+}
+
+/// The builder in `slot`, or an error when `finish()` already consumed it.
+template <class Builder>
+Builder& live(lua_State* L, std::optional<Builder>& slot) {
+  if (!slot) {
+    raise(L, "the builder is already finished");
+  }
+  return *slot;
+}
+
+/// `live`, for a primitive method: argument 2 is its options table.
+template <class Builder>
+Builder& liveWithOptions(lua_State* L, std::optional<Builder>& slot) {
+  Builder& builder = live(L, slot);
+  luaL_checktype(L, 2, LUA_TTABLE);
+  return builder;
+}
+
+/// The end of a primitive method: a rejection raised as the script's error, else the builder again, so
+/// calls chain.
+int chain(lua_State* L, const Status& status) {
+  if (!status) {
+    raise(L, status.error());
+  }
+  lua_pushvalue(L, 1);
+  return 1;
+}
+
+/// `:finish()`: pushes the finished object, which carries the builder's charge, and spends the builder.
+template <class Builder>
+int finishBuilder(lua_State* L, std::optional<Builder>& slot) {
+  auto done = std::move(live(L, slot)).finish();
+  slot.reset();
+  pushObject(
+      L, sdk::BuiltinObject(std::move(done.value)),
+      std::make_shared<const native::MemoryReservation>(std::move(done.charge)));
+  return 1;
+}
+
+/// `pj.scene.new{frame_id=, id=}`.
+int lSceneNew(lua_State* L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  std::string frame_id = readString(L, 1, "frame_id");
+  std::string id = readString(L, 1, "id");
+  auto builder =
+      native::SceneEntityBuilder::create(std::move(frame_id), std::move(id), upvalueAs<native::NativeLimits>(L).budget);
+  newBox(L, kSceneBuilderTag, SceneSlot(nativeResult(L, std::move(builder))));
+  return 1;
+}
+
+/// `:sphere{center=, diameter=, color=}`.
+int lSceneSphere(lua_State* L) {
+  native::SceneEntityBuilder& builder = liveWithOptions(L, sceneSlot(L));
+  const auto center = readPoint<sdk::Vector3, 3>(L, 2, "center");
+  const double diameter = readNumber(L, 2, "diameter");
+  return chain(L, builder.addSphere(center, diameter, readColor(L, 2, "color", kWhite)));
+}
+
+/// `:cube{center=, size=, color=}`.
+int lSceneCube(lua_State* L) {
+  native::SceneEntityBuilder& builder = liveWithOptions(L, sceneSlot(L));
+  const auto center = readPoint<sdk::Vector3, 3>(L, 2, "center");
+  const auto size = readPoint<sdk::Vector3, 3>(L, 2, "size");
+  return chain(L, builder.addCube(center, size, readColor(L, 2, "color", kWhite)));
+}
+
+/// `:text{position=, text=, font_size=, color=, billboard=}`.
+int lSceneText(lua_State* L) {
+  native::SceneEntityBuilder& builder = liveWithOptions(L, sceneSlot(L));
+  const auto position = readPoint<sdk::Vector3, 3>(L, 2, "position");
+  std::string text = readString(L, 2, "text");
+  const double font_size = readNumber(L, 2, "font_size");
+  const sdk::ColorRGBA color = readColor(L, 2, "color", kWhite);
+  lua_rawgetfield(L, 2, "billboard");
+  const bool billboard = lua_toboolean(L, -1) != 0;
+  lua_pop(L, 1);
+  return chain(L, builder.addText(position, std::move(text), font_size, color, billboard));
+}
+
+/// `:line_strip{points=, thickness=, color=}`.
+int lSceneLineStrip(lua_State* L) {
+  native::SceneEntityBuilder& builder = liveWithOptions(L, sceneSlot(L));
+  std::vector<sdk::Point3> points = readPoints<sdk::Point3, 3>(L, 2, "points");
+  const double thickness = readNumber(L, 2, "thickness");
+  return chain(L, builder.addLineStrip(std::move(points), thickness, readColor(L, 2, "color", kWhite)));
+}
+
+int lSceneFinish(lua_State* L) {
+  return finishBuilder(L, sceneSlot(L));
+}
+
+/// `pj.annotations.new{image_topic=}`.
+int lAnnotationsNew(lua_State* L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  std::string image_topic = readString(L, 1, "image_topic");
+  auto builder =
+      native::ImageAnnotationsBuilder::create(std::move(image_topic), upvalueAs<native::NativeLimits>(L).budget);
+  newBox(L, kAnnotationsBuilderTag, AnnotationsSlot(nativeResult(L, std::move(builder))));
+  return 1;
+}
+
+/// `:points{points=, type=, thickness=, outline_color=, fill_color=}`.
+int lAnnotationsPoints(lua_State* L) {
+  native::ImageAnnotationsBuilder& builder = liveWithOptions(L, annotationsSlot(L));
+  std::vector<sdk::Point2> points = readPoints<sdk::Point2, 2>(L, 2, "points");
+  const std::string type = readString(L, 2, "type");
+  const sdk::PointsAnnotation defaults;
+  const double thickness = readNumber(L, 2, "thickness", defaults.thickness);
+  const sdk::ColorRGBA outline = readColor(L, 2, "outline_color", defaults.color);
+  return chain(
+      L, builder.addPoints(
+             std::move(points), type, thickness, outline, readColor(L, 2, "fill_color", defaults.fill_color)));
+}
+
+/// `:circle{center=, diameter=, thickness=, outline_color=, fill_color=}`.
+int lAnnotationsCircle(lua_State* L) {
+  native::ImageAnnotationsBuilder& builder = liveWithOptions(L, annotationsSlot(L));
+  const auto center = readPoint<sdk::Point2, 2>(L, 2, "center");
+  const double diameter = readNumber(L, 2, "diameter");
+  const sdk::CircleAnnotation defaults;
+  const double thickness = readNumber(L, 2, "thickness", defaults.thickness);
+  const sdk::ColorRGBA outline = readColor(L, 2, "outline_color", defaults.color);
+  return chain(
+      L, builder.addCircle(center, diameter, thickness, outline, readColor(L, 2, "fill_color", defaults.fill_color)));
+}
+
+/// `:text{position=, text=, font_size=, text_color=}`; the SDK has no text background, so an opaque
+/// `background_color` is refused rather than dropped.
+int lAnnotationsText(lua_State* L) {
+  native::ImageAnnotationsBuilder& builder = liveWithOptions(L, annotationsSlot(L));
+  const auto position = readPoint<sdk::Point2, 2>(L, 2, "position");
+  std::string text = readString(L, 2, "text");
+  const sdk::TextAnnotation defaults;
+  const double font_size = readNumber(L, 2, "font_size", defaults.font_size);
+  const sdk::ColorRGBA color = readColor(L, 2, "text_color", defaults.color);
+  if (readColor(L, 2, "background_color", kTransparent).a != 0) {
+    raise(L, "text: 'background_color' is not supported: the annotations have no text background");
+  }
+  return chain(L, builder.addText(position, std::move(text), font_size, color));
+}
+
+int lAnnotationsFinish(lua_State* L) {
+  return finishBuilder(L, annotationsSlot(L));
 }
 
 /// Builds the registry metatable `name`, locked against `getmetatable`, and leaves it on the stack.
@@ -519,6 +789,8 @@ void registerBinder(lua_State* L, const native::NativeLimits& limits) {
   lua_setuserdatadtor(L, kObjectTag, &destroy<ObjectBox>);
   lua_setuserdatadtor(L, kViewTag, &destroy<View>);
   lua_setuserdatadtor(L, kPointIteratorTag, &destroy<PointIterator>);
+  lua_setuserdatadtor(L, kSceneBuilderTag, &destroy<SceneSlot>);
+  lua_setuserdatadtor(L, kAnnotationsBuilderTag, &destroy<AnnotationsSlot>);
 
   newTagMetatable(L, "pj.object", kObjectTag);
   lua_createtable(L, 0, 1);  // methods by type
@@ -552,27 +824,58 @@ void registerBinder(lua_State* L, const native::NativeLimits& limits) {
 
   newTagMetatable(L, "pj.point_iterator", kPointIteratorTag);
   lua_pop(L, 1);
+
+  newTagMetatable(L, "pj.scene_builder", kSceneBuilderTag);
+  lua_createtable(L, 0, 5);
+  setFunctions(
+      L, {{"sphere", lSceneSphere},
+          {"cube", lSceneCube},
+          {"text", lSceneText},
+          {"line_strip", lSceneLineStrip},
+          {"finish", lSceneFinish}});
+  lua_setfield(L, -2, "__index");
+  lua_pop(L, 1);
+
+  newTagMetatable(L, "pj.annotations_builder", kAnnotationsBuilderTag);
+  lua_createtable(L, 0, 4);
+  setFunctions(
+      L, {{"points", lAnnotationsPoints},
+          {"circle", lAnnotationsCircle},
+          {"text", lAnnotationsText},
+          {"finish", lAnnotationsFinish}});
+  lua_setfield(L, -2, "__index");
+  lua_pop(L, 1);
+
   newLockedMetatable(L, kUnavailableMetatable);
   lua_pop(L, 1);
+}
+
+void installBuilders(lua_State* L, const native::NativeLimits& limits) {
+  lua_createtable(L, 0, 1);
+  setFunctions(L, {{"new", lSceneNew}}, &limits);
+  lua_setfield(L, -2, "scene");
+  lua_createtable(L, 0, 1);
+  setFunctions(L, {{"new", lAnnotationsNew}}, &limits);
+  lua_setfield(L, -2, "annotations");
 }
 
 bool canEnterScript(const sdk::BuiltinObject& object) {
   return sdk::describe(object.type()) != nullptr && structPointer(object) != nullptr;
 }
 
-void pushObject(lua_State* L, sdk::BuiltinObject object) {
+void pushObject(lua_State* L, sdk::BuiltinObject object, std::shared_ptr<const native::MemoryReservation> charge) {
   const sdk::FieldTableView* table = sdk::describe(object.type());
   const void* data = structPointer(object);
-  newBox(L, kObjectTag, ObjectBox{std::move(object), table, data});
+  newBox(L, kObjectTag, ObjectBox{Anchor{std::move(object), std::move(charge)}, table, data});
 }
 
 const sdk::BuiltinObject* toObject(lua_State* L, int idx) {
   const auto* box = static_cast<const ObjectBox*>(lua_touserdatatagged(L, idx, kObjectTag));
-  return box != nullptr ? &box->object : nullptr;
+  return box != nullptr ? &box->anchor.object : nullptr;
 }
 
 void pushStructView(lua_State* L, const sdk::FieldTableView& table, const void* owner, sdk::BuiltinObject keep) {
-  newBox(L, kViewTag, View{std::move(keep), &table, nullptr, owner});
+  newBox(L, kViewTag, View{Anchor{std::move(keep), nullptr}, &table, nullptr, owner});
 }
 
 void pushInt64(lua_State* L, int64_t value) {

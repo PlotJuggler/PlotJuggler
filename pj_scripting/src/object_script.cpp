@@ -154,9 +154,10 @@ int lUnavailable(lua_State* L) {
   return 1;
 }
 
-void installPj(lua_State* L, Run& run) {
-  lua_createtable(L, 0, 2);
+void installPj(lua_State* L, Run& run, const native::NativeLimits& limits) {
+  lua_createtable(L, 0, 4);
   detail::setFunctions(L, {{"unavailable", lUnavailable}});
+  detail::installBuilders(L, limits);
   lua_createtable(L, 0, 2);
   detail::setFunctions(L, {{"lookup", lTfLookup}, {"frames", lTfFrames}}, &run);
   lua_createtable(L, 0, 1);
@@ -521,7 +522,7 @@ Expected<ScriptBundle, ScriptError> runOnDemandScript(
   }
   budget.max_bytes = std::numeric_limits<std::size_t>::max();  // the host's own setup is not capped
   detail::registerBinder(L, native_limits);
-  installPj(L, run);
+  installPj(L, run, native_limits);
   if (luau_load(L, "=script", script.bytecode.data(), script.bytecode.size(), 0) != 0) {
     return fail(lua_isstring(L, -1) ? lua_tostring(L, -1) : "luau_load failed");
   }

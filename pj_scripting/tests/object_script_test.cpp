@@ -29,8 +29,10 @@
 #include "pj_base/builtin/camera_info.hpp"
 #include "pj_base/builtin/frame_transforms.hpp"
 #include "pj_base/builtin/image.hpp"
+#include "pj_base/builtin/image_annotations.hpp"
 #include "pj_base/builtin/occupancy_grid.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
+#include "pj_base/builtin/scene_entities.hpp"
 #include "pj_base/sdk/platform.hpp"
 #include "pj_tf/tf_buffer.h"
 
@@ -671,6 +673,336 @@ TEST(ObjectScript, EmptyCropYieldsZeroCountAndUnavailable) {
   const auto* max_z = std::get_if<Unavailable>(find(*result, "max_z"));
   ASSERT_NE(max_z, nullptr);
   EXPECT_EQ(max_z->reason, "no finite points in region");
+}
+
+// ---- builders: the US1 + US5 reference script (LUA-04), pj.annotations (LUA-05), pj.scene (LUA-06) ----
+
+namespace {
+
+template <class T>
+const T* objectOf(const ScriptBundle& bundle, std::string_view name) {
+  const ScriptValue* value = find(bundle, name);
+  const auto* object = value != nullptr ? std::get_if<sdk::BuiltinObject>(value) : nullptr;
+  return object != nullptr ? object->get<T>() : nullptr;
+}
+
+// US1 + US5: crop a region, measure its highest point, report it in words and draw a witness there.
+constexpr const char* kReferenceScript = R"LUAU(
+  local inputs, params = ...
+  local cropped = inputs.cloud:crop_box{min={-5,-5,params.zmin}, max={5,5,inputs.threshold}}
+  local top = cropped:extreme_point("z", "max")
+  if top == nil then
+    return { cropped = cropped, max_z = pj.unavailable("no finite points in region"),
+             report = "empty", witness = pj.scene.new{frame_id=inputs.cloud.frame_id, id="witness"}:finish() }
+  end
+  local w = pj.scene.new{frame_id=inputs.cloud.frame_id, id="witness"}
+    :sphere{center={top.x, top.y, top.z}, diameter=0.2, color={255,0,0,255}}
+    :text{position={top.x, top.y, top.z + 0.3}, text=string.format("%.2f", top.z), font_size=0.2}
+  return { cropped = cropped, max_z = top.z,
+           report = string.format("%d points; max z %.2f", cropped:count(), top.z), witness = w:finish() }
+)LUAU";
+
+Expected<ScriptBundle, ScriptError> runReferenceScript(PointCloud cloud) {
+  return run(
+      kReferenceScript, {object("cloud", std::move(cloud)), NamedValue{"threshold", ScriptValue{5.0}}},
+      specs({"cropped:kPointCloud", "max_z:number", "report:string", "witness:kSceneEntities"}), R"({"zmin": -5})");
+}
+
+// Runs `source` (which must fail) and expects its error to name `field`.
+void expectScriptErrorNaming(const std::string& source, const char* field) {
+  auto result = run(source);
+  ASSERT_FALSE(result.has_value()) << source;
+  EXPECT_TRUE(contains(result.error(), field)) << source << " -> " << result.error();
+}
+
+}  // namespace
+
+TEST(ObjectScript, ReferenceScriptHappyPath) {
+  // (10,10,10) falls outside the box and is cropped out; (0,0,0) and (1,1,1) survive.
+  auto result = runReferenceScript(makeCloud({{0, 0, 0, 0.1f}, {10, 10, 10, 0.5f}, {1, 1, 1, 0.9f}}));
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_DOUBLE_EQ(number(*result, "max_z"), 1.0);
+  EXPECT_EQ(text(*result, "report"), "2 points; max z 1.00");
+  const auto* cropped = objectOf<PointCloud>(*result, "cropped");
+  ASSERT_NE(cropped, nullptr);
+  EXPECT_EQ(cropped->width, 2u);
+
+  // The witness is the snapshot idiom: a clear of everything, then the entity, all unstamped (the store entry
+  // takes the result's time).
+  const auto* witness = objectOf<sdk::SceneEntities>(*result, "witness");
+  ASSERT_NE(witness, nullptr);
+  ASSERT_EQ(witness->deletions.size(), 1u);
+  EXPECT_EQ(witness->deletions[0].type, sdk::SceneEntityDeletion::Type::kAll);
+  EXPECT_EQ(witness->deletions[0].timestamp, 0);
+  ASSERT_EQ(witness->entities.size(), 1u);
+  const auto& entity = witness->entities[0];
+  EXPECT_EQ(entity.frame_id, "base_link");  // the cloud's
+  EXPECT_EQ(entity.id, "witness");
+  EXPECT_EQ(entity.timestamp, 0);
+  ASSERT_EQ(entity.spheres.size(), 1u);
+  EXPECT_EQ(entity.spheres[0].pose.position, (sdk::Vector3{1, 1, 1}));
+  EXPECT_DOUBLE_EQ(entity.spheres[0].size.x, 0.2);
+  EXPECT_EQ(entity.spheres[0].color.r, 255);
+  ASSERT_EQ(entity.texts.size(), 1u);
+  EXPECT_EQ(entity.texts[0].text, "1.00");
+  EXPECT_EQ(entity.texts[0].color, (sdk::ColorRGBA{255, 255, 255, 255}));  // no colour: opaque white
+}
+
+// LUA-03 through the reference script: nothing in the region leaves max_z unavailable, with its reason, and
+// the witness clears the topic.
+TEST(ObjectScript, ReferenceScriptOnAnEmptyRegion) {
+  auto result = runReferenceScript(makeCloud({{10, 10, 10, 0.5f}}));
+  ASSERT_TRUE(result.has_value()) << result.error();
+  const auto* max_z = std::get_if<Unavailable>(find(*result, "max_z"));
+  ASSERT_NE(max_z, nullptr);
+  EXPECT_EQ(max_z->reason, "no finite points in region");
+  EXPECT_EQ(text(*result, "report"), "empty");
+  const auto* cropped = objectOf<PointCloud>(*result, "cropped");
+  ASSERT_NE(cropped, nullptr);
+  EXPECT_EQ(cropped->width, 0u);
+  const auto* witness = objectOf<sdk::SceneEntities>(*result, "witness");
+  ASSERT_NE(witness, nullptr);
+  ASSERT_EQ(witness->deletions.size(), 1u);
+  EXPECT_TRUE(witness->entities.empty());
+}
+
+// An empty builder is just the clear, not a bare entity; with a primitive, the clear and then the entity.
+TEST(ObjectScript, SceneBuilderProducesSnapshotIdiom) {
+  auto cleared = run("return pj.scene.new{frame_id='map', id='e'}:finish()");
+  ASSERT_TRUE(cleared.has_value()) << cleared.error();
+  const auto* clear_only = objectOf<sdk::SceneEntities>(*cleared, "value");
+  ASSERT_NE(clear_only, nullptr);
+  ASSERT_EQ(clear_only->deletions.size(), 1u);
+  EXPECT_TRUE(clear_only->entities.empty());
+
+  auto drawn = run("return pj.scene.new{frame_id='map', id='e'}:sphere{center={0,0,0}, diameter=1}:finish()");
+  ASSERT_TRUE(drawn.has_value()) << drawn.error();
+  const auto* snapshot = objectOf<sdk::SceneEntities>(*drawn, "value");
+  ASSERT_NE(snapshot, nullptr);
+  ASSERT_EQ(snapshot->deletions.size(), 1u);
+  EXPECT_EQ(snapshot->deletions[0].type, sdk::SceneEntityDeletion::Type::kAll);
+  EXPECT_EQ(snapshot->entities.size(), 1u);
+}
+
+TEST(ObjectScript, SceneBuilderChainsAllPrimitives) {
+  constexpr const char* kScript = R"LUAU(
+    return pj.scene.new{frame_id="map", id="e1"}
+      :sphere{center={0,0,0}, diameter=1, color={255,0,0}}
+      :text{position={1,1,1}, text="hi", font_size=0.5, billboard=true}
+      :cube{center={2,2,2}, size={1,2,3}, color={0,255,0,128}}
+      :line_strip{points={{0,0,0},{1,0,0},{1,1,0},{1,1,1}}, thickness=0.05}
+      :finish()
+  )LUAU";
+  auto result = run(kScript, {}, specs({"witness:kSceneEntities"}));
+  ASSERT_TRUE(result.has_value()) << result.error();
+  const auto* scene = objectOf<sdk::SceneEntities>(*result, "witness");
+  ASSERT_NE(scene, nullptr);
+  ASSERT_EQ(scene->entities.size(), 1u);
+  const auto& entity = scene->entities[0];
+  ASSERT_EQ(entity.spheres.size(), 1u);
+  EXPECT_DOUBLE_EQ(entity.spheres[0].size.x, 1.0);
+  EXPECT_EQ(entity.spheres[0].color.a, 255);  // no alpha: opaque
+  ASSERT_EQ(entity.texts.size(), 1u);
+  EXPECT_TRUE(entity.texts[0].billboard);
+  ASSERT_EQ(entity.cubes.size(), 1u);
+  EXPECT_EQ(entity.cubes[0].size, (sdk::Vector3{1, 2, 3}));
+  EXPECT_EQ(entity.cubes[0].color.a, 128);
+  ASSERT_EQ(entity.lines.size(), 1u);
+  EXPECT_EQ(entity.lines[0].type, sdk::LineType::kLineStrip);
+  EXPECT_EQ(entity.lines[0].points.size(), 4u);
+}
+
+// The binder reads the arguments, naming the field it cannot read; the geometry checks are native_ops_test's.
+TEST(ObjectScript, SceneBuilderRejectsBadArgs) {
+  const std::string head = "local b = pj.scene.new{frame_id='map', id='e1'}\n";
+  expectScriptErrorNaming(head + "b:sphere{center={0,0}, diameter=1}", "'center'");
+  expectScriptErrorNaming(head + "b:sphere{center={0,0,0}}", "'diameter'");
+  expectScriptErrorNaming(head + "b:sphere{center={0,0,0}, diameter=1, color={300,0,0}}", "'color'");
+  expectScriptErrorNaming(head + "b:sphere{center={0,0,0}, diameter=1, color={1,2}}", "'color'");
+  expectScriptErrorNaming(head + "b:cube{center={0,0,0}, size={1,1}}", "'size'");
+  expectScriptErrorNaming(head + "b:text{position={0,0,0}, font_size=1}", "'text'");
+  expectScriptErrorNaming(head + "b:line_strip{points={{0,0,0},{1,1}}, thickness=1}", "'points'");
+  expectScriptErrorNaming("pj.scene.new{id='e1'}", "'frame_id'");
+  expectScriptErrorNaming("pj.scene.new{frame_id='map'}", "'id'");
+  EXPECT_FALSE(run("pj.scene.new()").has_value());
+  // A native rejection reaches the script as its error.
+  expectScriptErrorNaming(head + "b:sphere{center={0/0,0,0}, diameter=1}", "'center'");
+}
+
+TEST(ObjectScript, AnnotationsBuilderProducesPrimitives) {
+  constexpr const char* kScript = R"LUAU(
+    return pj.annotations.new{image_topic="/camera"}
+      :points{points={{1,2},{5,2},{5,8},{1,8}}, type="line_loop", outline_color={255,0,0,128}}
+      :circle{center={3,4}, diameter=10, fill_color={0,255,0,90}}
+      :text{position={1,2}, text="max_z", font_size=20, text_color={3,4,5}}
+      :finish()
+  )LUAU";
+  auto result = run(kScript, {}, specs({"overlay:kImageAnnotations"}));
+  ASSERT_TRUE(result.has_value()) << result.error();
+  const auto* annotations = objectOf<sdk::ImageAnnotations>(*result, "overlay");
+  ASSERT_NE(annotations, nullptr);
+  EXPECT_EQ(annotations->image_topic, "/camera");
+  // The run knows its inputs by name, not by topic, so it cannot find the annotated image's stamp: the
+  // annotations stay unstamped and the store entry takes the result's time, the newest input's.
+  EXPECT_EQ(annotations->timestamp, 0);
+  ASSERT_EQ(annotations->points.size(), 1u);
+  EXPECT_EQ(annotations->points[0].topology, sdk::AnnotationTopology::kLineLoop);
+  EXPECT_EQ(annotations->points[0].points.size(), 4u);
+  EXPECT_EQ(annotations->points[0].color, (sdk::ColorRGBA{255, 0, 0, 128}));
+  EXPECT_EQ(annotations->points[0].fill_color.a, 0);  // no fill by default
+  EXPECT_DOUBLE_EQ(annotations->points[0].thickness, 2.0);
+  ASSERT_EQ(annotations->circles.size(), 1u);
+  EXPECT_DOUBLE_EQ(annotations->circles[0].radius, 5.0);  // the script gives a diameter
+  EXPECT_EQ(annotations->circles[0].color, (sdk::ColorRGBA{0, 255, 0, 255}));
+  EXPECT_EQ(annotations->circles[0].fill_color.a, 90);
+  ASSERT_EQ(annotations->texts.size(), 1u);
+  EXPECT_EQ(annotations->texts[0].text, "max_z");
+  EXPECT_EQ(annotations->texts[0].color, (sdk::ColorRGBA{3, 4, 5, 255}));
+  EXPECT_DOUBLE_EQ(annotations->texts[0].font_size, 20.0);
+}
+
+TEST(ObjectScript, AnnotationsRequireImageTopic) {
+  expectScriptErrorNaming("return pj.annotations.new{}:finish()", "'image_topic'");
+  expectScriptErrorNaming("return pj.annotations.new{image_topic=''}:finish()", "'image_topic'");
+}
+
+TEST(ObjectScript, EmptyAnnotationsFinishToNoPrimitives) {
+  auto result = run("return pj.annotations.new{image_topic='/cam'}:finish()", {}, specs({"a:kImageAnnotations"}));
+  ASSERT_TRUE(result.has_value()) << result.error();
+  const auto* annotations = objectOf<sdk::ImageAnnotations>(*result, "a");
+  ASSERT_NE(annotations, nullptr);
+  EXPECT_TRUE(annotations->empty());
+  EXPECT_EQ(annotations->image_topic, "/cam");
+}
+
+// The binder reads the arguments and refuses an opaque text background; the geometry checks are native_ops_test's.
+TEST(ObjectScript, AnnotationsRejectInvalidGeometryAndUnsupportedBackground) {
+  const std::string head = "local a = pj.annotations.new{image_topic='/cam'}\n";
+  expectScriptErrorNaming(head + "a:points{points={{1,2},{3}}, type='line_strip'}", "'points'");
+  expectScriptErrorNaming(head + "a:points{points={{1,2}}}", "'type'");
+  expectScriptErrorNaming(head + "a:circle{center={0,1}, diameter=1, outline_color={256,0,0}}", "'outline_color'");
+  expectScriptErrorNaming(head + "a:text{position={0,1}}", "'text'");
+  expectScriptErrorNaming(
+      head + "a:text{position={0,1}, text='x', background_color={0,0,0,255}}", "'background_color'");
+  EXPECT_TRUE(run(head + "a:text{position={0,1}, text='x', background_color={0,0,0,0}}\nreturn 1").has_value());
+  // A native rejection reaches the script as its error.
+  expectScriptErrorNaming(head + "a:circle{center={0,1}, diameter=-1}", "'diameter'");
+}
+
+TEST(ObjectScript, BuilderOutputsAreInferredByType) {
+  auto result =
+      run("return { pj.scene.new{frame_id='map', id='e'}:finish(), pj.annotations.new{image_topic='/c'}:finish() }");
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_EQ(describe(*result), "scene:kSceneEntities,annotations:kImageAnnotations");
+}
+
+// ---- builders: hostile scripts and budgets -----------------------------------------------------------
+
+// A builder method called on another kind of value raises an error; it never dereferences it.
+TEST(ObjectScript, BuilderMethodsRejectForeignValues) {
+  const std::string head =
+      "local inputs = ...\nlocal scene = pj.scene.new{frame_id='map', id='e'}\n"
+      "local notes = pj.annotations.new{image_topic='/c'}\n";
+  const std::vector<NamedValue> inputs{object("cloud", makeCloud({{0, 0, 0, 0}}))};
+  ASSERT_TRUE(run(head + "return 1", inputs).has_value());  // the builders work
+  for (const char* call :
+       {"scene.sphere(nil, {center={0,0,0}, diameter=1})", "scene.sphere(notes, {center={0,0,0}, diameter=1})",
+        "scene.sphere(inputs.cloud, {center={0,0,0}, diameter=1})", "scene.sphere({}, {center={0,0,0}, diameter=1})",
+        "scene.finish(notes)", "notes.finish(scene)", "notes.circle(scene, {center={0,0}, diameter=1})",
+        "notes.finish(inputs.cloud)"}) {
+    EXPECT_FALSE(run(head + "return " + call, inputs).has_value()) << call;
+  }
+}
+
+TEST(ObjectScript, BuilderMetatableIsUnreachable) {
+  const std::string head =
+      "local scene = pj.scene.new{frame_id='map', id='e'}\nlocal notes = pj.annotations.new{image_topic='/c'}\n";
+  auto locked = run(head + "return { scene = getmetatable(scene), notes = getmetatable(notes) }");
+  ASSERT_TRUE(locked.has_value()) << locked.error();  // the builders work, and their metatables are locked
+  EXPECT_EQ(text(*locked, "scene"), "locked");
+  EXPECT_EQ(text(*locked, "notes"), "locked");
+  EXPECT_FALSE(run(head + "return getmetatable(scene).__index.sphere(0, {center={0,0,0}, diameter=1})").has_value());
+  EXPECT_FALSE(run(head + "setmetatable(scene, {})\nreturn 1").has_value());
+  EXPECT_FALSE(run(head + "setmetatable(notes, {})\nreturn 1").has_value());
+  EXPECT_FALSE(run(head + "scene.sphere = nil\nreturn 1").has_value());
+}
+
+// No script code runs inside a builder call: an argument table's metamethods are not consulted, so they cannot
+// finish the builder the call is using.
+TEST(ObjectScript, ArgumentMetamethodsCannotFinishABuilderInUse) {
+  const std::string head =
+      "local ran = 0\nlocal scene = pj.scene.new{frame_id='map', id='e'}\n"
+      "local notes = pj.annotations.new{image_topic='/c'}\n"
+      "local function trap(fields, builder) return setmetatable(fields, "
+      "{__index = function() ran = 1; builder:finish() end}) end\n";
+  for (const char* call :
+       {"scene:sphere(trap({center={0,0,0}, diameter=1}, scene))",
+        "scene:text(trap({position={0,0,0}, text='x', font_size=1}, scene))",
+        "scene:line_strip(trap({points={{0,0,0},{1,1,1}}, thickness=1}, scene))",
+        "notes:points(trap({points={{0,0}}, type='points'}, notes))",
+        "notes:circle(trap({center={0,0}, diameter=1}, notes))", "notes:text(trap({position={0,0}, text='x'}, notes))",
+        "scene:sphere({center=setmetatable({0,0,0}, {__index = function() ran = 1; scene:finish() end}), "
+        "diameter=1})"}) {
+    auto result = run(head + call + "\nreturn ran");
+    ASSERT_TRUE(result.has_value()) << call << " -> " << result.error();
+    EXPECT_DOUBLE_EQ(number(*result, "value"), 0.0) << call;
+  }
+}
+
+TEST(ObjectScript, AFinishedBuilderCannotBeUsedAgain) {
+  const std::string head = "local scene = pj.scene.new{frame_id='map', id='e'}\nscene:finish()\n";
+  expectScriptErrorNaming(head + "scene:sphere{center={0,0,0}, diameter=1}", "finished");
+  expectScriptErrorNaming(head + "scene:finish()", "finished");
+  expectScriptErrorNaming(
+      "local notes = pj.annotations.new{image_topic='/c'}\nnotes:finish()\nnotes:finish()", "finished");
+}
+
+// Strings a script hands to a builder are charged to the native budget, like the strings it returns.
+TEST(ObjectScript, BuilderStringsAreChargedToTheNativeBudget) {
+  for (const char* source :
+       {"pj.scene.new{frame_id='map', id='e'}:text{position={0,0,0}, text=string.rep('x', 2097152), font_size=1}",
+        "pj.scene.new{frame_id=string.rep('f', 2097152), id='e'}",
+        "pj.scene.new{frame_id='map', id=string.rep('i', 2097152)}",
+        "pj.annotations.new{image_topic='/c'}:text{position={0,0}, text=string.rep('x', 2097152)}",
+        "pj.annotations.new{image_topic=string.rep('t', 2097152)}"}) {
+    auto result = run(std::string(source) + "\nreturn 1", {}, {}, "{}", withNativeBudget(std::size_t{1} << 20));
+    ASSERT_FALSE(result.has_value()) << source;
+    EXPECT_TRUE(contains(result.error(), "native memory limit")) << source << " -> " << result.error();
+  }
+}
+
+TEST(ObjectScript, ABuilderGrownInALoopStopsAtTheNativeBudget) {
+  auto result =
+      run("local b = pj.scene.new{frame_id='map', id='e'}\n"
+          "for i = 1, 1000000 do b:sphere{center={0,0,0}, diameter=1} end\nreturn 1",
+          {}, {}, "{}", withNativeBudget(std::size_t{64} << 10));
+  ASSERT_FALSE(result.has_value());
+  EXPECT_TRUE(contains(result.error(), "native memory limit")) << result.error();
+}
+
+// A finished scene keeps its charge for as long as the script holds it, however soon its builder dies.
+TEST(ObjectScript, RetainedBuilderOutputsKeepCounting) {
+  auto result =
+      run("local kept = {}\nfor i = 1, 200 do\n"
+          "  kept[i] = pj.scene.new{frame_id='map', id='e'}:text{position={0,0,0}, text=string.rep('x', 16384), "
+          "font_size=1}:finish()\nend\nreturn #kept",
+          {}, {}, "{}", withNativeBudget(std::size_t{1} << 20));
+  ASSERT_FALSE(result.has_value());
+  EXPECT_TRUE(contains(result.error(), "native memory limit")) << result.error();
+}
+
+// A view into a finished scene keeps its charge too, after the box that was the scene's root is collected:
+// 100 retained texts of about 8.5 KiB leave a 1 MiB budget no room for a crop of 20,000 points, and the full
+// collection the failed crop triggers must not free what the views still hold.
+TEST(ObjectScript, ViewsIntoABuilderOutputKeepItsCharge) {
+  auto result =
+      run("local inputs = ...\nlocal kept = {}\nfor i = 1, 100 do\n"
+          "  kept[i] = pj.scene.new{frame_id='map', id='e'}:text{position={0,0,0}, text=string.rep('x', 8192), "
+          "font_size=1}:finish().entities[1].texts\nend\n"
+          "return inputs.cloud:crop_box{min={-1,-1,-1}, max={100000,1,1}}:count() + #kept",
+          {object("cloud", makeLineCloud(20000))}, {}, "{}", withNativeBudget(std::size_t{1} << 20));
+  ASSERT_FALSE(result.has_value());
+  EXPECT_TRUE(contains(result.error(), "native memory limit")) << result.error();
 }
 
 TEST(ObjectScript, XyzPointsIteratorSkipsNaN) {

@@ -136,6 +136,22 @@ struct RunOptions {
 ///     (number or `pj.int64`), the entry clock at that time; with an object, the header clock at the
 ///     object's own stamp: where its frame was when it was measured.
 ///   - `pj.tf.frames()`: every frame name.
+/// Builders make the objects a script cannot read from its inputs. Both chain, and `finish()` returns the
+/// object and spends the builder; every error names the field. A colour is `{r, g, b}` or `{r, g, b, a}`
+/// (0-255, alpha 255 when absent); a diameter, size, thickness or font size is finite and greater than 0. An
+/// object a builder returns is unstamped (timestamp 0), and a script that retains it, or a view read from it,
+/// keeps its native bytes charged until it drops them. A method reads its options table without invoking
+/// metamethods.
+///   - `pj.scene.new{frame_id, id}` -> `:sphere{center, diameter, color}`, `:cube{center, size, color}`,
+///     `:text{position, text, font_size, color, billboard}`, `:line_strip{points, thickness, color}`: a
+///     SceneEntities snapshot, a deletion of everything and then the entity if it has a primitive, so an
+///     empty builder clears the topic (D27). A colour defaults to opaque white; a 3-vector is `{x, y, z}`.
+///   - `pj.annotations.new{image_topic}` -> `:points{points, type, thickness, outline_color, fill_color}`
+///     (`type`: points, line_list, line_strip, line_loop), `:circle{center, diameter, thickness,
+///     outline_color, fill_color}`, `:text{position, text, font_size, text_color}`: pixel-space
+///     ImageAnnotations over the image on `image_topic`, which is required. A point is `{x, y}`; thickness,
+///     font size and colours the script leaves out take the SDK's defaults. The SDK has no text background, so
+///     an opaque `background_color` is an error.
 /// `math.random` is seeded the same way on every run, and there is no `os` and no clock (D2).
 ///
 /// Binding the returned value: with no declared `outputs`, a non-table is one output `value`, a keyed

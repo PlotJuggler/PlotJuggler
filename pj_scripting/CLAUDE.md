@@ -54,6 +54,9 @@ Licensed MPL-2.0.
   [`docs/derived_objects/ARCHITECTURE.md`](../docs/derived_objects/ARCHITECTURE.md) §5-7, §12, §14.
 - `src/object_binder.h` (private) — objects as locked, read-only views over their SDK field tables (lists read
   lazily through `list_at`), `pj.int64`, the `pj.unavailable` marker and the point-cloud methods over `src/native/`.
+  Also the `pj.scene` / `pj.annotations` builders: chainable boxed builders over the native ones, `finish()` spends a
+  builder, a finished object's box and views share its native charge, and a method reads its options table raw (no
+  script code runs inside a builder call); scripts cannot reach their metatables.
 - `src/native/` (private; consumed by the object-script binder) — the heavy
   half of an object script, Luau-free so Luau and Python share it:
   - `point_cloud_ops.h`: count, bounds, extreme point, `cropBox`, `filterByField`, `transformXyz`,
@@ -64,10 +67,13 @@ Licensed MPL-2.0.
     a header so the tests drive them directly.
   - `scene_entities_ops.h`: `SceneEntityBuilder`, the snapshot idiom (one `kAll` deletion, then the
     entity) with errors that name the bad field (D27). `finish()` consumes the builder.
+  - `image_annotations_ops.h`: `ImageAnnotationsBuilder`, the same shape for pixel-space annotations
+    (`image_topic` required, unstamped, no text background). `field_checks.h`: the argument checks both builders share.
   - `memory_budget.h`: `MemoryBudget`, one byte limit per evaluation for native allocations (a ledger
     separate from the VM's memory cap; its error reads "script native memory limit (N MB) exceeded"), and
     `MemoryReservation`, bytes held until destroyed. An output's reservation lives in its buffer anchor
-    (clouds) or beside it (`ChargedSceneEntities`), so retained outputs keep counting. Allocating
+    (clouds) or beside it (`Charged<Value>`, a builder's output; the binder shares it between the output's script box
+    and the views read from it), so retained outputs keep counting. Allocating
     operations take `NativeLimits` (that budget plus the run's cancel check, polled every 65536 records).
 
 ## Contract / gotchas

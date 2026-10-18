@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <initializer_list>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -18,7 +19,8 @@
 // The object half of the Luau object-script binding (docs/derived_objects/ARCHITECTURE.md §6): canonical
 // objects as read-only views over their SDK field tables, read lazily (a list is a view whose elements
 // are read one at a time through `list_at`, so iterating N elements costs N reads), the point-cloud
-// methods over native/point_cloud_ops.h, and the small values field access needs (`pj.int64`, the
+// methods over native/point_cloud_ops.h, the scene and annotation builders over native/scene_entities_ops.h
+// and native/image_annotations_ops.h, and the small values field access needs (`pj.int64`, the
 // `pj.unavailable` marker). Scripts cannot reach the binder's metatables.
 
 namespace PJ::scripting::detail {
@@ -27,11 +29,20 @@ namespace PJ::scripting::detail {
 /// metatables. `limits` is what the cloud methods allocate under; it must outlive every call made on `L`.
 void registerBinder(lua_State* L, const native::NativeLimits& limits);
 
+/// Sets the builder namespaces `scene` and `annotations` (`pj.scene.new{...}`, `pj.annotations.new{...}`) as
+/// fields of the table on top of the stack. `limits` is what the builders allocate under; as for
+/// `registerBinder`, it must outlive every call made on `L`.
+void installBuilders(lua_State* L, const native::NativeLimits& limits);
+
 /// True when `object` can enter a script: its type has an SDK field table.
 [[nodiscard]] bool canEnterScript(const sdk::BuiltinObject& object);
 
 /// Pushes `object` as a read-only script object (it shares the value); `canEnterScript(object)` must hold.
-void pushObject(lua_State* L, sdk::BuiltinObject object);
+/// `charge` is what a builder paid for `object`'s native memory: the box, and every view read through it,
+/// shares it, so it counts against the evaluation's budget until the script has dropped them all (or the state
+/// closes).
+void pushObject(
+    lua_State* L, sdk::BuiltinObject object, std::shared_ptr<const native::MemoryReservation> charge = nullptr);
 
 /// The object at `idx`, or null when that value is not one.
 [[nodiscard]] const sdk::BuiltinObject* toObject(lua_State* L, int idx);
