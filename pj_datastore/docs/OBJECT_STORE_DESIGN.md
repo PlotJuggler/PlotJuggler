@@ -12,6 +12,7 @@ expanded into scalar columns at ingest time.
 - timestamped entries per topic, kept in non-decreasing order (out-of-order pushes are inserted, not dropped)
 - eager payload storage through `pushOwned()`
 - lazy payload storage through `pushLazy()`
+- atomic publication of one entry to each of several topics (`pushOwnedBundle()`)
 - at-or-before timestamp lookup
 - entry-index lookup and timestamp views
 - per-topic retention budgets
@@ -164,6 +165,33 @@ so the budget bounds logical payload bytes, not anchor-backed RSS.
 Both write paths apply the topic retention budget after the new entry is
 inserted.
 
+### Bundle publication
+
+`pushOwnedBundle(writes)` publishes one entry to each of several distinct topics as
+one transaction. Each `OwnedObjectWrite` carries the topic, timestamp and payload, an
+optional `drop(timestamp, uid)` predicate that removes the topic's existing entries
+first, and `append = false` to prune without writing (the surviving entries keep their
+UIDs). It returns the UID of the entry each write created, in write order (invalid for
+a write that only prunes). Nothing is refused for size: the result ring that uses this
+evicts, it never rejects (docs/derived_objects/ARCHITECTURE.md §9). The ring trims its
+window with `drop` and evicts all of a node's outputs at one stamp in one bundle
+(`append = false` plus a `drop`), so a node's outputs never disagree.
+
+- **All or nothing.** The store takes its lock exclusively, stages every topic on a
+  private copy of its `OrderedEntries` (running `drop`, the append and the topic's
+  retention budget on the copy) and swaps the copies in only when every topic staged.
+  An unknown or repeated topic, an exception from a `drop` or an allocation failure
+  returns an error with every previous entry and byte count exactly as it was. The swap
+  itself cannot throw. The copy is O(entries in the topic) under the exclusive lock: the
+  window trim keeps it small, and a topic holding ~1e5 entries would stall readers ~20 ms
+  (upgrade path: evaluate the predicates first, then change the topic in place).
+- **No half bundle in one call.** The exclusive lock excludes every reader while the
+  copies swap in, so a single read sees a topic before or after the bundle. Separate
+  read calls may span two publications: a reader of several topics sees them at
+  different moments, and the store offers no cross-call coherence token.
+- **No eviction inside a bundle.** `drop` runs under the store lock and must not call
+  the store. Budget-driven eviction happens before or after a bundle, never within one.
+
 ## Dataset Merge
 
 `ObjectStore::mergeDatasets(anchor, sources)` is the object-side companion to the
@@ -311,7 +339,8 @@ retention.
 
 Automatic retention runs on push and after `flushTo()` / `mergeDatasets()`. Explicit
 eviction is available through `evictBefore(id, threshold)` and
-`evictAllBefore(threshold)`.
+`evictAllBefore(threshold)`, which trim the oldest prefix. Removing entries anywhere in
+a topic is a bundle with `append = false` and a `drop` predicate (above).
 
 Memory accounting includes owned payloads and each lazy entry's `resident_bytes`.
 Seeded bytes are charged to the ResidentPayloadPool instead, never to the series.
@@ -339,9 +368,9 @@ mutex. The global store lock is released before the resolve too (the snapshot
 owns every capture it needs), so a slow fetch never stalls registration-level
 exclusive operations either; `latestAt` re-takes it only to write the warm
 cache back. An entry evicted mid-resolve is
-harmless (the snapshot owns its captures); the warm cache may then briefly
-memoize that already-evicted payload, bounded at one per topic, until the next
-differing read replaces it.
+harmless (the snapshot owns its captures), and `latestAt` checks under the series lock
+that the entry is still in the series before it memoizes the payload, so the warm cache
+never holds an evicted one.
 
 The ResidentPayloadPool has its own mutex, taken briefly by seed admission and
 by slot retirement. Payload anchors of evicted seeds are always released outside
@@ -404,7 +433,8 @@ Core behavior is covered by:
 - `pj_datastore/tests/ordered_entries_test.cpp` (the `OrderedEntries` invariant
   at the value-type boundary — in/out-of-order push, evict, re-UID, rebuild,
   shift, and the cross-series bulk moves)
-- `pj_datastore/tests/object_store_test.cpp`
+- `pj_datastore/tests/object_store_test.cpp` (bundle publication and
+  `ObjectStoreBundleBench`, a `PJ_BENCH=1` measurement of one publication)
 - `pj_datastore/tests/plugin_data_host_object_test.cpp`
 - `pj_datastore/tests/plugin_data_host_object_read_test.cpp`
 - `pj_datastore/tests/plugin_parser_object_write_test.cpp`

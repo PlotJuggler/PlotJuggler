@@ -12,14 +12,15 @@
 #include <string_view>
 #include <utility>
 
-#include "pj_base/builtin/plot_markers.hpp"  // sdk::kGlobalMarkerTopic
-#include "pj_base/types.hpp"                 // DatasetId
+#include "pj_base/builtin/plot_markers.hpp"       // sdk::kGlobalMarkerTopic
+#include "pj_base/sdk/object_topic_metadata.hpp"  // sdk::kDerivedMetadataKey
+#include "pj_base/types.hpp"                      // DatasetId
 #include "pj_datastore/object_store.hpp"
 
 namespace PJ {
 
 /// Metadata key meaning "produced by a host data processor"; the value names the kind.
-inline constexpr std::string_view kDerivedMetadataKey = "pj_derived";
+using sdk::kDerivedMetadataKey;
 
 /// `pj_derived` value of a marker set. Logic that belongs to another kind (such as
 /// "on_demand") tests its own value, never the key's presence, so it never touches

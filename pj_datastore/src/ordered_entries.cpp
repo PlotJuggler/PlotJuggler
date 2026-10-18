@@ -163,6 +163,44 @@ ObjectEntry OrderedEntries::evictFront() {
   return front;
 }
 
+std::vector<ObjectEntry> OrderedEntries::eraseWhere(const EntryPredicate& drop) {
+  std::vector<bool> selected(entries_.size());
+  bool any = false;
+  for (size_t i = 0; i < entries_.size(); ++i) {
+    selected[i] = drop(entry_timestamps_[i], entries_[i].sequential_uid);
+    any = any || selected[i];
+  }
+  std::vector<ObjectEntry> erased;
+  if (!any) {
+    return erased;
+  }
+  std::deque<ObjectEntry> kept_entries;
+  std::vector<Timestamp> kept_timestamps;
+  kept_timestamps.reserve(entries_.size());
+  for (size_t i = 0; i < entries_.size(); ++i) {
+    if (selected[i]) {
+      erased.push_back(std::move(entries_[i]));
+    } else {
+      kept_entries.push_back(std::move(entries_[i]));
+      kept_timestamps.push_back(entry_timestamps_[i]);
+    }
+  }
+  entries_ = std::move(kept_entries);
+  entry_timestamps_ = std::move(kept_timestamps);
+  // A removal can move any survivor's position, not just shift a prefix as evictFront does.
+  rebuildUidOrder();
+#ifndef NDEBUG
+  checkInvariant();
+#endif
+  return erased;
+}
+
+void OrderedEntries::swap(OrderedEntries& other) noexcept {
+  entries_.swap(other.entries_);
+  entry_timestamps_.swap(other.entry_timestamps_);
+  uid_order_.swap(other.uid_order_);
+}
+
 void OrderedEntries::clear() {
   entries_.clear();
   entry_timestamps_.clear();

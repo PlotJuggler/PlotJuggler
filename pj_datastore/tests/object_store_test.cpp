@@ -11,15 +11,19 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
+#include <future>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "pj_base/sdk/platform.hpp"
 #include "pj_datastore/resident_payload_pool.hpp"
 
 namespace PJ {
@@ -1954,6 +1958,419 @@ TEST(ObjectStoreReviewTest, EntryDestructionRunsAfterTheLocksRelease) {
   ASSERT_TRUE(store.pushLazy(id2, 5, reentrantFetch(store, id2, destroyed)).has_value());
   store.clear();
   EXPECT_EQ(destroyed.load(), 5);
+}
+
+TEST(ObjectStoreReviewTest, PushOwnedBundleDestroysRetiredEntriesAfterTheLocksRelease) {
+  ObjectStore store;
+  std::atomic<int> destroyed{0};
+  auto id = registerTestTopic(store);
+
+  ASSERT_TRUE(store.pushLazy(id, 1, reentrantFetch(store, id, destroyed)).has_value());
+  ASSERT_TRUE(store.pushLazy(id, 2, reentrantFetch(store, id, destroyed)).has_value());
+  ASSERT_TRUE(store.latestAt(id, 2));  // warm the cache on ts 2
+  EXPECT_EQ(destroyed.load(), 0);
+
+  OwnedObjectWrite write{id, 3, {9, 9, 9}};
+  write.drop = [](Timestamp ts, SequentialUID) { return ts == 1; };
+  ASSERT_TRUE(store.pushOwnedBundle({write}).has_value());
+  // The dropped ts 1 dies after the store/series/cache locks release: a hang here
+  // (ctest timeout) is a reentrant destructor deadlocking under one of them. The
+  // warm-cache value (ts 2) is displaced but its entry survives.
+  EXPECT_EQ(destroyed.load(), 1);
+  EXPECT_EQ(store.entryCount(id), 2u);  // ts 2 and ts 3 survive
+
+  // The reentrant payloads call back into the store: empty the topic while it is alive.
+  store.evictBefore(id, 1000);
+  EXPECT_EQ(store.entryCount(id), 0u);
+}
+
+// A lazy payload whose destructor asks whether another thread can take the store lock
+// exclusively, which it cannot while the destroying thread holds that lock. The helper
+// thread is the caller's to join.
+struct StoreLockProbe {
+  StoreLockProbe(ObjectStore* store_in, std::atomic<bool>* held_in, std::thread* helper_in)
+      : store(store_in), held(held_in), helper(helper_in) {}
+  StoreLockProbe(const StoreLockProbe&) = delete;
+  StoreLockProbe& operator=(const StoreLockProbe&) = delete;
+  StoreLockProbe(StoreLockProbe&&) = delete;
+  StoreLockProbe& operator=(StoreLockProbe&&) = delete;
+
+  ObjectStore* store;
+  std::atomic<bool>* held;
+  std::thread* helper;
+  ~StoreLockProbe() {
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    *helper = std::thread([target = store, done] {
+      (void)target->registerTopic({.dataset_id = 2, .topic_name = "probe", .metadata_json = "{}"});
+      done->store(true);
+    });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (!done->load() && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::yield();
+    }
+    held->store(!done->load());
+  }
+};
+
+// The fetch blocks on `gate` the first time it runs, after announcing itself on `started`.
+LazyCallback gatedFetch(
+    std::shared_ptr<void> keep_alive, std::shared_ptr<std::promise<void>> started, std::shared_future<void> gate) {
+  auto announced = std::make_shared<std::atomic<bool>>(false);
+  return [keep_alive, started, gate, announced]() -> std::optional<sdk::PayloadView> {
+    if (!announced->exchange(true)) {
+      started->set_value();
+    }
+    gate.wait();
+    return sdk::makePayloadView(std::vector<uint8_t>(8, 0xCD));
+  };
+}
+
+// The snapshot a latestAt resolves can hold the last reference to a lazy entry's fetch
+// context (the entry was evicted while it resolved). Its cleanup is foreign code that
+// may call the store, so it must run after the store lock is released.
+TEST(ObjectStoreReviewTest, LatestAtDestroysItsSnapshotAfterTheLocksRelease) {
+  ObjectStore store;
+  const auto id = registerTestTopic(store);
+  std::atomic<bool> destroyed_under_lock{false};
+  std::thread helper;
+  auto started = std::make_shared<std::promise<void>>();
+  std::promise<void> resume;
+  ASSERT_TRUE(store
+                  .pushLazy(
+                      id, 100,
+                      gatedFetch(
+                          std::make_shared<StoreLockProbe>(&store, &destroyed_under_lock, &helper), started,
+                          resume.get_future().share()))
+                  .has_value());
+
+  auto pending = std::async(std::launch::async, [&] { return store.latestAt(id, 100); });
+  started->get_future().wait();
+  store.evictBefore(id, 1000);  // the series lets go; the in-flight snapshot is the last holder
+  resume.set_value();
+  ASSERT_TRUE(pending.get().has_value());
+  if (helper.joinable()) {
+    helper.join();
+  }
+  EXPECT_FALSE(destroyed_under_lock.load());
+}
+
+TEST(ObjectStoreReviewTest, AnEntryEvictedWhileItResolvesIsNotMemoized) {
+  ObjectStore store;
+  const auto id = registerTestTopic(store);
+  auto started = std::make_shared<std::promise<void>>();
+  std::promise<void> resume;
+  ASSERT_TRUE(store.pushLazy(id, 100, gatedFetch({}, started, resume.get_future().share())).has_value());
+
+  auto pending = std::async(std::launch::async, [&] { return store.latestAt(id, 100); });
+  started->get_future().wait();
+  store.evictBefore(id, 1000);
+  resume.set_value();
+  auto resolved = pending.get();
+  ASSERT_TRUE(resolved.has_value());
+  std::weak_ptr<const void> probe = resolved->payload.anchor;
+  resolved.reset();
+  EXPECT_TRUE(probe.expired()) << "the warm cache pins the evicted payload";
+  EXPECT_FALSE(store.latestAt(id, 100).has_value());
+}
+
+// A merge can move an entry's timestamp while a read of it is resolving (the UID stays):
+// memoizing the read would later answer a lookup with a stale timestamp.
+TEST(ObjectStoreReviewTest, AnEntryShiftedWhileItResolvesIsNotMemoized) {
+  ObjectStore store;
+  const auto id = store.registerTopic({.dataset_id = 2, .topic_name = "shifted", .metadata_json = "{}"});
+  ASSERT_TRUE(id.has_value());
+  auto started = std::make_shared<std::promise<void>>();
+  std::promise<void> resume;
+  ASSERT_TRUE(store.pushLazy(*id, 100, gatedFetch({}, started, resume.get_future().share())).has_value());
+
+  auto pending = std::async(std::launch::async, [&] { return store.latestAt(*id, 100); });
+  started->get_future().wait();
+  ASSERT_TRUE(store.mergeDatasets(1, {DatasetMergeSource{.dataset_id = 2, .raw_shift_ns = 50}}).has_value());
+  resume.set_value();
+  ASSERT_TRUE(pending.get().has_value());
+
+  const auto after = store.latestAt(*id, 200);
+  ASSERT_TRUE(after.has_value());
+  EXPECT_EQ(after->timestamp, 150);
+}
+
+// =========================================================================
+// Bundle publication
+// =========================================================================
+
+uint8_t firstByteAt(const ObjectStore& store, ObjectTopicId id, Timestamp timestamp) {
+  const auto resolved = store.latestAt(id, timestamp);
+  EXPECT_TRUE(resolved.has_value());
+  return resolved ? resolved->payload.bytes.front() : uint8_t{0};
+}
+
+TEST(ObjectStoreBundleTest, EveryTopicLands) {
+  ObjectStore store;
+  const auto a = registerTestTopic(store, "a");
+  const auto b = registerTestTopic(store, "b");
+
+  ASSERT_TRUE(store.pushOwnedBundle({{a, 10, {1, 1, 1}}, {b, 12, {2}}}).has_value());
+  EXPECT_EQ(store.entryCount(a), 1u);
+  EXPECT_EQ(store.entryCount(b), 1u);
+  EXPECT_EQ(store.memoryUsage(a), 3u);
+  EXPECT_EQ(store.memoryUsage(b), 1u);
+  EXPECT_EQ(firstByteAt(store, a, 100), 1);
+  EXPECT_EQ(firstByteAt(store, b, 100), 2);
+  EXPECT_EQ(store.timeRange(b).first, 12);
+
+  ASSERT_TRUE(store.pushOwnedBundle({{a, 20, {3}}, {b, 22, {4}}}).has_value());
+  EXPECT_EQ(store.entryCount(a), 2u) << "a bundle without a drop predicate only appends";
+}
+
+// A ring keeps a ledger of what it published: the UID of each new entry, in write order
+// (invalid for a write that only prunes).
+TEST(ObjectStoreBundleTest, ReturnsTheUidOfEveryEntryItCreatedInWriteOrder) {
+  ObjectStore store;
+  const auto a = registerTestTopic(store, "a");
+  const auto b = registerTestTopic(store, "b");
+  const auto c = registerTestTopic(store, "c");
+  OwnedObjectWrite prune_c{c};
+  prune_c.append = false;
+
+  const auto uids = store.pushOwnedBundle({{b, 10, {2}}, {a, 10, {1}}, prune_c});
+  ASSERT_TRUE(uids.has_value());
+  ASSERT_EQ(uids->size(), 3u);
+  EXPECT_EQ((*uids)[0], store.latestAt(b, 10)->sequential_uid);
+  EXPECT_EQ((*uids)[1], store.latestAt(a, 10)->sequential_uid);
+  EXPECT_NE((*uids)[0], (*uids)[1]);
+  EXPECT_FALSE((*uids)[2].valid());
+  EXPECT_TRUE(store.at(a, (*uids)[1]).has_value()) << "at(id, uid) is the ledger's exact check";
+}
+
+TEST(ObjectStoreBundleTest, TheTopicRetentionBudgetApplies) {
+  ObjectStore store;
+  const auto a = registerTestTopic(store, "a");
+  const auto b = registerTestTopic(store, "b");
+  store.setRetentionBudget(a, {.time_window_ns = 0, .max_memory_bytes = 0, .max_entries = 1});
+  ASSERT_TRUE(store.pushOwnedBundle({{a, 10, {1}}, {b, 10, {1}}}).has_value());
+  ASSERT_TRUE(store.pushOwnedBundle({{a, 20, {2}}, {b, 20, {2}}}).has_value());
+  EXPECT_EQ(store.entryCount(a), 1u);
+  EXPECT_EQ(store.entryCount(b), 2u);
+  EXPECT_EQ(store.memoryUsage(a), 1u);
+}
+
+// MAT-05 / STO-03: a bundle that cannot be staged leaves every previous entry and byte
+// count exactly as it was, whichever write fails and however many topics were already
+// staged when it did.
+TEST(ObjectStoreBundleTest, AFailedBundleLeavesEveryPriorEntryUntouched) {
+  ObjectStore store;
+  const auto a = registerTestTopic(store, "a");
+  const auto b = registerTestTopic(store, "b");
+  ASSERT_TRUE(store.pushOwnedBundle({{a, 10, {1}}, {b, 10, {2}}}).has_value());
+
+  EXPECT_FALSE(store.pushOwnedBundle({}).has_value());
+  EXPECT_FALSE(store.pushOwnedBundle({{a, 20, {3}}, {ObjectTopicId{99999}, 20, {4}}}).has_value());
+  EXPECT_FALSE(store.pushOwnedBundle({{a, 20, {3}}, {a, 20, {4}}}).has_value());
+
+  // A staging exception: the first write is fully staged (its drop emptied the
+  // candidate) when the second one throws.
+  OwnedObjectWrite write_a{a, 20, {3}};
+  OwnedObjectWrite write_b{b, 20, {4}};
+  write_a.drop = [](Timestamp, SequentialUID) { return true; };
+  write_b.drop = [](Timestamp, SequentialUID) -> bool { throw std::bad_alloc(); };
+  const auto failed = store.pushOwnedBundle({write_a, write_b});
+  ASSERT_FALSE(failed.has_value());
+  EXPECT_NE(failed.error().find("staging failed"), std::string::npos) << failed.error();
+
+  for (const auto topic : {a, b}) {
+    EXPECT_EQ(store.entryCount(topic), 1u);
+    EXPECT_EQ(store.memoryUsage(topic), 1u);
+    EXPECT_EQ(store.latestAt(topic, 100)->timestamp, 10);
+  }
+  EXPECT_EQ(firstByteAt(store, a, 100), 1);
+  EXPECT_EQ(firstByteAt(store, b, 100), 2);
+
+  // The same bundle with a well-behaved predicate then goes through.
+  write_b.drop = write_a.drop;
+  ASSERT_TRUE(store.pushOwnedBundle({write_a, write_b}).has_value());
+  EXPECT_EQ(store.entryCount(a), 1u);
+  EXPECT_EQ(firstByteAt(store, a, 100), 3);
+  EXPECT_EQ(firstByteAt(store, b, 100), 4);
+}
+
+TEST(ObjectStoreBundleTest, PruneOnlyKeepsTheRetainedEntryIdentityAndCanEmptyTopics) {
+  ObjectStore store;
+  const auto a = registerTestTopic(store, "a");
+  const auto b = registerTestTopic(store, "b");
+  ASSERT_TRUE(store.pushOwnedBundle({{a, 10, {1}}, {b, 10, {2}}}).has_value());
+  ASSERT_TRUE(store.pushOwnedBundle({{a, 20, {3}}, {b, 20, {4}}}).has_value());
+  const auto uid = store.latestAt(a, 20)->sequential_uid;
+
+  OwnedObjectWrite prune_a{a};
+  OwnedObjectWrite prune_b{b};
+  prune_a.append = prune_b.append = false;
+  prune_a.drop = prune_b.drop = [](Timestamp t, SequentialUID) { return t < 20; };
+  ASSERT_TRUE(store.pushOwnedBundle({prune_a, prune_b}).has_value());
+  EXPECT_EQ(store.entryCount(a), 1u);
+  EXPECT_EQ(store.entryCount(b), 1u);
+  EXPECT_EQ(store.latestAt(a, 20)->sequential_uid, uid) << "pruning does not replace the surviving entry";
+
+  prune_a.drop = prune_b.drop = [](Timestamp, SequentialUID) { return true; };
+  ASSERT_TRUE(store.pushOwnedBundle({prune_a, prune_b}).has_value());
+  EXPECT_EQ(store.entryCount(a), 0u);
+  EXPECT_EQ(store.entryCount(b), 0u);
+}
+
+// The ring evicts every output of a node at one stamp in a single bundle (append=false
+// plus a drop predicate): the outputs never disagree, and a failure evicts none.
+TEST(ObjectStoreBundleTest, OneNodesOutputsAtAStampAreEvictedTogether) {
+  ObjectStore store;
+  const auto a = registerTestTopic(store, "a");
+  const auto b = registerTestTopic(store, "b");
+  for (const Timestamp stamp : {10, 20, 30}) {
+    const auto byte = static_cast<uint8_t>(stamp);
+    ASSERT_TRUE(store.pushOwnedBundle({{a, stamp, {byte}}, {b, stamp, {byte}}}).has_value());
+  }
+  const auto survivor_a = store.latestAt(a, 30)->sequential_uid;
+  const auto survivor_b = store.latestAt(b, 30)->sequential_uid;
+
+  OwnedObjectWrite evict_a{a};
+  OwnedObjectWrite evict_b{b};
+  evict_a.append = evict_b.append = false;
+  evict_a.drop = [](Timestamp stamp, SequentialUID) { return stamp == 30; };
+  evict_b.drop = [](Timestamp, SequentialUID) -> bool { throw std::bad_alloc(); };
+  EXPECT_FALSE(store.pushOwnedBundle({evict_a, evict_b}).has_value());
+  EXPECT_EQ(store.entryCount(a), 3u) << "a failed eviction evicts from no topic";
+  EXPECT_EQ(store.entryCount(b), 3u);
+
+  evict_a.drop = evict_b.drop = [](Timestamp stamp, SequentialUID) { return stamp == 20; };
+  ASSERT_TRUE(store.pushOwnedBundle({evict_a, evict_b}).has_value());
+  for (const auto topic : {a, b}) {
+    EXPECT_EQ(store.entryCount(topic), 2u);
+    EXPECT_EQ(store.memoryUsage(topic), 2u);
+    EXPECT_EQ(store.rangeByTime(topic, 19, 20).size(), 0u);
+    EXPECT_EQ(store.rangeByTime(topic, 9, 10).size(), 1u);
+  }
+  EXPECT_EQ(store.latestAt(a, 30)->sequential_uid, survivor_a) << "survivors keep their UIDs";
+  EXPECT_EQ(store.latestAt(b, 30)->sequential_uid, survivor_b);
+}
+
+// Stress, no forced interleaving: the eviction is one commit point, so a reader that
+// finds a stamp gone from `a` and then looks in `b` finds it gone there too.
+TEST(ObjectStoreBundleTest, ConcurrentReadersNeverSeeOneTopicEvictedAndTheOtherNot) {
+  ObjectStore store;
+  const auto a = registerTestTopic(store, "a");
+  const auto b = registerTestTopic(store, "b");
+  constexpr Timestamp kStamps = 200;
+  for (Timestamp stamp = 1; stamp <= kStamps; ++stamp) {
+    ASSERT_TRUE(store.pushOwnedBundle({{a, stamp, {1}}, {b, stamp, {1}}}).has_value());
+  }
+
+  std::atomic<bool> done{false};
+  std::atomic<int> failed_evictions{0};
+  std::thread writer([&] {
+    for (Timestamp stamp = 1; stamp <= kStamps; ++stamp) {
+      OwnedObjectWrite evict_a{a};
+      OwnedObjectWrite evict_b{b};
+      evict_a.append = evict_b.append = false;
+      evict_a.drop = evict_b.drop = [stamp](Timestamp t, SequentialUID) { return t == stamp; };
+      if (!store.pushOwnedBundle({evict_a, evict_b}).has_value()) {
+        failed_evictions.fetch_add(1);
+      }
+    }
+    done.store(true, std::memory_order_release);
+  });
+
+  const auto holds = [&](ObjectTopicId topic, Timestamp stamp) {
+    return !store.rangeByTime(topic, stamp - 1, stamp).empty();
+  };
+  int torn = 0;
+  bool last_pass = false;
+  while (!last_pass) {
+    last_pass = done.load(std::memory_order_acquire);
+    for (Timestamp stamp = 1; stamp <= kStamps; ++stamp) {
+      const bool in_a = holds(a, stamp);
+      const bool in_b = holds(b, stamp);
+      torn += (!in_a && in_b) ? 1 : 0;
+    }
+  }
+  writer.join();
+  EXPECT_EQ(failed_evictions.load(), 0);
+  EXPECT_EQ(torn, 0);
+}
+
+// Stress, no forced interleaving: a reader that finds the newest stamp of `b` and then
+// reads `a` finds a stamp at least as new.
+TEST(ObjectStoreBundleTest, ConcurrentReadersNeverSeeAnAppendedBundleHalfApplied) {
+  ObjectStore store;
+  const auto a = registerTestTopic(store, "a");
+  const auto b = registerTestTopic(store, "b");
+  ASSERT_TRUE(store.pushOwnedBundle({{a, 0, {0}}, {b, 0, {0}}}).has_value());
+
+  constexpr Timestamp kBundles = 200;
+  std::atomic<bool> done{false};
+  std::atomic<int> failed_publications{0};
+  std::thread writer([&] {
+    for (Timestamp stamp = 1; stamp <= kBundles; ++stamp) {
+      if (!store.pushOwnedBundle({{a, stamp, {1}}, {b, stamp, {1}}}).has_value()) {
+        failed_publications.fetch_add(1);
+      }
+    }
+    done.store(true, std::memory_order_release);
+  });
+
+  int torn = 0;
+  bool last_pass = false;
+  while (!last_pass) {
+    last_pass = done.load(std::memory_order_acquire);
+    const Timestamp newest_b = store.timeRange(b).second;
+    const Timestamp newest_a = store.timeRange(a).second;
+    torn += newest_a < newest_b ? 1 : 0;
+  }
+  writer.join();
+  EXPECT_EQ(failed_publications.load(), 0);
+  EXPECT_EQ(torn, 0);
+  EXPECT_EQ(store.timeRange(a).second, kBundles);
+}
+
+// PJ_BENCH=1 prints what one bundle publication costs under the store lock: a 1.5 MB
+// payload plus two small ones, the topics holding `window` retained entries each.
+TEST(ObjectStoreBundleBench, PublishCost) {
+  if (!sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  constexpr int kCalls = 200;
+  constexpr int kWindow = 100;
+  for (const int window : {0, kWindow}) {
+    ObjectStore store;
+    const auto cloud = registerTestTopic(store, "cloud");
+    const auto small_a = registerTestTopic(store, "small_a");
+    const auto small_b = registerTestTopic(store, "small_b");
+    // A ring trims by predicate: the window keeps the newest `window` stamps.
+    Timestamp stamp = 0;
+    const auto publish = [&] {
+      ++stamp;
+      const Timestamp floor = stamp - window;
+      const auto trim = [floor](Timestamp t, SequentialUID) { return t <= floor; };
+      OwnedObjectWrite write_cloud{cloud, stamp, makePayload(1'500'000)};
+      OwnedObjectWrite write_a{small_a, stamp, makePayload(64)};
+      OwnedObjectWrite write_b{small_b, stamp, makePayload(64)};
+      write_cloud.drop = write_a.drop = write_b.drop = trim;
+      std::vector<OwnedObjectWrite> writes;
+      writes.push_back(std::move(write_cloud));
+      writes.push_back(std::move(write_a));
+      writes.push_back(std::move(write_b));
+      const auto begin = std::chrono::steady_clock::now();
+      EXPECT_TRUE(store.pushOwnedBundle(std::move(writes)).has_value());
+      return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - begin).count();
+    };
+    for (int warmup = 0; warmup < window + 5; ++warmup) {
+      publish();
+    }
+    std::vector<double> micros;
+    for (int call = 0; call < kCalls; ++call) {
+      micros.push_back(publish());
+    }
+    std::sort(micros.begin(), micros.end());
+    std::printf(
+        "pushOwnedBundle 1.5 MB + 2 x 64 B, window %3d entries: median %.1f us, p95 %.1f us\n", window,
+        micros[micros.size() / 2], micros[micros.size() * 95 / 100]);
+  }
 }
 
 }  // namespace

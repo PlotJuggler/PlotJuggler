@@ -32,6 +32,10 @@ namespace PJ {
 /// Eager payload: store-owned bytes, counted against the retention budget.
 using SharedBuffer = std::shared_ptr<const std::vector<uint8_t>>;
 
+/// Chooses entries by (store timestamp, UID); true selects the entry. Runs under the
+/// caller's lock, once per entry: keep it cheap and never call back into the ObjectStore.
+using EntryPredicate = std::function<bool(Timestamp, SequentialUID)>;
+
 /// Lazy payload: idempotent, thread-safe fetcher returning bytes + anchor.
 /// Invoked on every read; bytes are not counted against the retention budget.
 /// nullopt means the fetch FAILED — the source could not re-produce the bytes
@@ -182,6 +186,16 @@ class OrderedEntries {
   // Precondition: !empty(). Triple only — the caller drops the warm cache and
   // adjusts memory accounting around it.
   ObjectEntry evictFront();
+  // Remove every entry (at any position, not only the oldest prefix) that `drop`
+  // selects and return them, moved out in array order, so the caller can adjust memory
+  // accounting and the warm cache. Survivors keep their order and their UIDs. `drop`
+  // runs on every entry before anything is touched, so an exception from it leaves
+  // this instance as it was; an allocation failure while moving the survivors does
+  // not, so call it only on an instance that is discarded when the caller fails.
+  std::vector<ObjectEntry> eraseWhere(const EntryPredicate& drop);
+  // Exchange the contents of two instances without allocating or throwing: the commit step of a transaction staged on a
+  // private copy.
+  void swap(OrderedEntries& other) noexcept;
   // Empty the triple. Memory/cache stay the caller's (see clearEntriesLocked).
   void clear();
   // Slide every store timestamp by `delta` (also entry_timestamps and each entry's

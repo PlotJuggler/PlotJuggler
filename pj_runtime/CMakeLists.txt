@@ -159,6 +159,8 @@ if(PJ_BUILD_TESTS)
         tests/batch_engine_test.cpp
         # Marker topics are recognized and routed by their metadata, never by name.
         tests/marker_topics_test.cpp
+        # A derived object topic is registered with fixed metadata and recognized by it.
+        tests/derived_topics_test.cpp
         # Derived-recipe layout persistence restores across the engines without MainWindow.
         tests/derived_objects_test.cpp
         # A plugin binding's derived hosts: previews belong to the instance that made them.

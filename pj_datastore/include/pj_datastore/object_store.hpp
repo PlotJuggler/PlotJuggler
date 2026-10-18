@@ -53,6 +53,20 @@ struct ObjectTopicDescriptor {
   std::string metadata_json;
 };
 
+/// One topic's share of an atomic bundle publication (`ObjectStore::pushOwnedBundle`).
+struct OwnedObjectWrite {
+  ObjectTopicId topic;
+  Timestamp timestamp = 0;
+  std::vector<uint8_t> payload;
+  /// Selects the topic's existing entries to remove before the append (the window trim).
+  /// Runs under the store lock: it must not call the ObjectStore (evict before or after
+  /// a bundle, never inside it). An exception rejects the bundle.
+  EntryPredicate drop;
+  /// False only prunes: `drop` runs, nothing is appended, and the surviving entries keep
+  /// their UIDs.
+  bool append = true;
+};
+
 /// Outcome of ObjectStore::replaceDatasetFrom() — the object-side parallel of
 /// DatasetReplaceResult. The remapped pairs let the caller re-register object
 /// parsers under the stable primary ObjectTopicId after the swap.
@@ -189,6 +203,17 @@ class ObjectStore {
   // --- Write ---
 
   Status pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector<uint8_t> payload);
+
+  /// Publishes one entry to each of several distinct topics as one transaction: all
+  /// land, or none does (an unknown or repeated topic, an exception from a `drop`
+  /// or from an allocation) and every previous entry and byte count stays as it was.
+  /// Every write goes through the topic's retention budget as `pushOwned` would.
+  /// Returns the UID of the entry each write created, in write order (invalid for a
+  /// write that only prunes).
+  ///
+  /// One read call never sees half a bundle, but separate calls may span two
+  /// publications: a reader of several topics sees them at different moments.
+  [[nodiscard]] Expected<std::vector<SequentialUID>> pushOwnedBundle(std::vector<OwnedObjectWrite> writes);
 
   // Fetcher runs on every read; the store retains the anchor via PayloadView
   // and never copies. The closure can return a view over bytes the producer

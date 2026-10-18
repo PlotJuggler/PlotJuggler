@@ -167,6 +167,79 @@ Status ObjectStore::pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector
   return {};
 }
 
+Expected<std::vector<SequentialUID>> ObjectStore::pushOwnedBundle(std::vector<OwnedObjectWrite> writes) {
+  if (writes.empty()) {
+    return unexpected("empty object bundle");
+  }
+  // Declared before the locks: every retired entry (dropped, evicted by retention, or a
+  // destination's whole previous content after the swap) dies after they release.
+  Graveyard graveyard;
+  // Each topic is staged on a private copy; only when every one is staged do they swap in.
+  struct Staged {
+    ObjectSeries* destination;
+    std::unique_ptr<ObjectSeries> candidate;
+  };
+  std::vector<Staged> staged;
+  try {
+    std::unique_lock store_lock(store_mutex_);
+    std::unordered_set<uint32_t> topics;
+    std::vector<SequentialUID> created(writes.size());
+    for (size_t index = 0; index < writes.size(); ++index) {
+      OwnedObjectWrite& write = writes[index];
+      ObjectSeries* series = findSeries(write.topic);
+      if (series == nullptr) {
+        return unexpected("unknown topic in object bundle");
+      }
+      if (!topics.insert(write.topic.id).second) {
+        return unexpected("duplicate topic in object bundle");
+      }
+      // The commit below swaps the timestamp vectors: wait out views still reading them.
+      drainSeriesReaders(*series);
+      staged.push_back({series, std::make_unique<ObjectSeries>()});
+      ObjectSeries& candidate = *staged.back().candidate;
+      // ponytail: the copy is O(entries in the topic) under the exclusive store lock. The
+      // window trim keeps it small (MAT-01); a topic holding ~1e5 entries would stall every
+      // reader ~20 ms. Upgrade: evaluate the predicates first, then change the topic in place.
+      candidate.ordered = series->ordered;
+      candidate.memory_bytes = series->memory_bytes;
+      candidate.budget = series->budget;
+      if (write.drop) {
+        for (ObjectEntry& entry : candidate.ordered.eraseWhere(write.drop)) {
+          candidate.memory_bytes -= chargedBytes(entry);
+          graveyard.entries.push_back(std::move(entry));
+        }
+      }
+      if (write.append) {
+        candidate.memory_bytes += write.payload.size();
+        ObjectEntry entry;
+        entry.timestamp = write.timestamp;
+        entry.sequential_uid = SequentialUID::getNext();
+        created[index] = entry.sequential_uid;
+        entry.payload = std::make_shared<const std::vector<uint8_t>>(std::move(write.payload));
+        candidate.ordered.push(std::move(entry));
+      }
+      if (!candidate.ordered.empty()) {
+        applyRetention(candidate, candidate.ordered.backTimestamp(), graveyard);
+      }
+    }
+
+    // Commit: nothing below allocates or throws, so the bundle is all or nothing. The
+    // exclusive store lock keeps new readers out, and the views were drained above.
+    graveyard.cached.reserve(graveyard.cached.size() + staged.size());
+    graveyard.series.reserve(graveyard.series.size() + staged.size());
+    for (Staged& item : staged) {
+      ObjectSeries& destination = *item.destination;
+      destination.ordered.swap(item.candidate->ordered);
+      destination.memory_bytes = item.candidate->memory_bytes;
+      dropCache(destination, graveyard);
+      graveyard.series.push_back(std::move(item.candidate));  // now holds the previous content
+    }
+    return created;
+  } catch (const std::exception& error) {
+    return unexpected(std::string("object bundle staging failed: ") + error.what());
+  }
+}
+
 Status ObjectStore::pushLazy(ObjectTopicId id, Timestamp timestamp, LazyCallback fetch, size_t resident_bytes) {
   return pushLazyEntry(id, timestamp, ObjectEntryPayload{LazyPayload{std::move(fetch), nullptr, resident_bytes}});
 }
@@ -224,6 +297,9 @@ void ObjectStore::setResidentPayloadPool(std::shared_ptr<ResidentPayloadPool> po
 
 std::optional<ResolvedObjectEntry> ObjectStore::latestAt(ObjectTopicId id, Timestamp timestamp) const {
   std::optional<ResolvedObjectEntry> displaced;  // the replaced cache value dies after the locks
+  // Declared before the lock: if the entry was evicted while it resolved, this copy holds the
+  // last reference to a lazy fetch context, whose cleanup may call back into the store.
+  ObjectEntry snapshot;
   std::shared_lock store_lock(store_mutex_);
   const auto* series = findSeries(id);
   if (series == nullptr) {
@@ -236,7 +312,6 @@ std::optional<ResolvedObjectEntry> ObjectStore::latestAt(ObjectTopicId id, Times
   // as refcount bumps / a closure copy. store_lock stays held so the series
   // object itself cannot be destroyed. An entry evicted mid-resolve is harmless:
   // the snapshot owns every capture it needs.
-  ObjectEntry snapshot;
   {
     std::shared_lock lock(series->mutex);
     const auto idx = series->ordered.indexAtOrBefore(timestamp);
@@ -281,8 +356,12 @@ std::optional<ResolvedObjectEntry> ObjectStore::latestAt(ObjectTopicId id, Times
     // simply nothing to warm).
     store_lock.lock();
     if (const auto* cached_series = findSeries(id); cached_series != nullptr) {
-      std::lock_guard cache_guard(cached_series->cache_mutex);
-      displaced = std::exchange(cached_series->cached_latest, resolved);
+      // An entry evicted while it resolved must not come back through the cache.
+      std::shared_lock series_lock(cached_series->mutex);
+      if (cached_series->ordered.atUid(snapshot.sequential_uid) != nullptr) {
+        std::lock_guard cache_guard(cached_series->cache_mutex);
+        displaced = std::exchange(cached_series->cached_latest, resolved);
+      }
     }
   }
   return resolved;
