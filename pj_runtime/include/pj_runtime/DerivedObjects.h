@@ -122,9 +122,10 @@ class DerivedObjects {
   /// dataset (`WantedGenerator::bind_by_inputs`) is never kept and binds then, through
   /// the refreshed catalog; a later binding of one id resolved onto the same dataset is
   /// dropped, and reported when its recipe differs. History never touches a live exempt
-  /// recipe. Ends with a catalog rebuild and, when the generator set changed, one
-  /// `markersChanged`. A generator that cannot be restored is reported but does not fail
-  /// the restore. Run `refusal` first for `kHistory`.
+  /// recipe. Rebuilds the catalog once the filters and transforms are installed, before
+  /// any generator resolves through it, and announces one `markersChanged` at the end when
+  /// the generator set changed. A generator that cannot be restored is reported but does
+  /// not fail the restore. Run `refusal` first for `kHistory`.
   [[nodiscard]] DerivedRestoreReport restore(DerivedSnapshot snapshot);
 
  private:

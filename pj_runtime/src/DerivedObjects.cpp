@@ -8,14 +8,12 @@
 #include <limits>
 #include <map>
 #include <memory>
-#include <set>
 #include <tuple>
 #include <utility>
 
 #include "SeriesKey.h"
 #include "pj_datastore/data_processor.hpp"
 #include "pj_runtime/CatalogModel.h"
-#include "pj_runtime/DatasetQualifiedName.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/XmlCdata.h"
 
@@ -80,21 +78,17 @@ std::optional<CurveDescriptor> resolveSavedSeries(const CatalogModel& catalog, c
   return key.has_value() ? catalog.curveDescriptor(*key) : std::nullopt;
 }
 
-// The loaded datasets whose catalog carries every key of `inputs` as a series. Keys are read
-// literally: a persisted generator input is a bare key, so a colon in it is part of the name,
-// never a `dataset_source:` qualifier.
+// The datasets in the catalog that carry every key of `inputs` as a series (every one of them,
+// for no inputs; a dataset with no catalog item yet is not counted). Keys are read literally: a
+// persisted generator input is a bare key, so a colon in it is part of the name, never a
+// `dataset_source:` qualifier.
 std::vector<DatasetId> datasetsCarryingInputs(const CatalogModel& catalog, const std::vector<std::string>& inputs) {
-  std::map<DatasetId, std::set<std::size_t>> carried;  // dataset -> indices of the inputs it carries
-  for (const CatalogItem& item : catalog.items()) {
-    for (std::size_t index = 0; index < inputs.size(); ++index) {
-      if (markerSeriesField(item, inputs[index]) != nullptr) {
-        carried[item.dataset_id].insert(index);
-      }
-    }
-  }
   std::vector<DatasetId> carriers;
-  for (const auto& [dataset, indices] : carried) {
-    if (indices.size() == inputs.size()) {
+  for (const DatasetId dataset : catalog.datasetIds()) {
+    const bool carries_all = std::all_of(inputs.begin(), inputs.end(), [&](const std::string& key) {
+      return catalog.findScalarForMarkerKey(dataset, key).has_value();
+    });
+    if (carries_all) {
       carriers.push_back(dataset);
     }
   }

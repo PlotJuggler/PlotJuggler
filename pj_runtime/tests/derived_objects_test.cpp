@@ -465,5 +465,30 @@ TEST(DerivedObjectsTest, UnresolvedBindingOfAKeptGeneratorIsReported) {
   EXPECT_NE(engine.firstBinding(rule.id), nullptr) << "the binding that resolves stays live";
 }
 
+// A generic layout (the generator names no dataset) with a rule that reads no series
+// binds to the one loaded dataset: every dataset carries an empty input set.
+TEST(DerivedObjectsTest, GenericRuleWithoutInputsBindsToTheOnlyLoadedDataset) {
+  Session fixture;
+  BatchEngine& engine = fixture.session().batchEngine();
+  BatchEngine::GeneratorRecipe rule;
+  rule.id = "tool/rule";
+  rule.dataset_id = fixture.dataset();
+  rule.outputs = {"constant_markers"};
+  rule.script = "createMarker(1.0, 2.0, {label=\"x\"})\n";
+  ASSERT_TRUE(engine.upsertGenerator(rule).has_value());
+  QDomDocument doc = snapshotOf(fixture.derived(), RestoreIntent::kReplace);
+  QDomElement generator =
+      doc.documentElement().firstChildElement(u"data_processors"_s).firstChildElement(u"generator"_s);
+  for (const QString& name : {u"dataset_id"_s, u"dataset_source"_s, u"dataset_path"_s}) {
+    generator.removeAttribute(name);
+  }
+
+  restoreCleanly(fixture.derived(), doc, RestoreIntent::kReplace);
+
+  const BatchEngine::GeneratorRecipe* bound = engine.firstBinding(rule.id);
+  ASSERT_NE(bound, nullptr);
+  EXPECT_EQ(bound->dataset_id, fixture.dataset());
+}
+
 }  // namespace
 }  // namespace PJ
