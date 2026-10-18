@@ -31,6 +31,7 @@
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/DerivedTopics.h"
 #include "pj_runtime/EnginePool.h"
+#include "pj_runtime/InFlightBudget.h"
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_scripting/filter_catalogue.h"
 #include "pj_scripting/script_engine.h"
@@ -106,7 +107,9 @@ SessionManager::SessionManager(QObject* parent)
         return std::optional<BatchEngine::ResolvedSeries>{};
       });
   engine_pool_ = std::make_unique<EnginePool>();
+  in_flight_budget_ = std::make_unique<InFlightBudget>(*engine_pool_);
   batch_engine_->setPool(engine_pool_.get());
+  batch_engine_->setInFlightBudget(in_flight_budget_.get());
   // A scheduled run lands after the change that asked for it was announced.
   connect(batch_engine_.get(), &BatchEngine::markersPublished, this, &SessionManager::notifyMarkersChanged);
   // A transform's output changed (an edit, a finished replay, a removal): the marker

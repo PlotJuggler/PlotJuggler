@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <QElapsedTimer>
+#include <QThread>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -24,12 +25,14 @@
 #include <utility>
 #include <vector>
 
+#include "batch_engine_test_utils.h"
 #include "event_pump_test_utils.h"
 #include "on_demand_test_utils.h"
 #include "pj_base/builtin/builtin_object_codec.hpp"
 #include "pj_base/sdk/platform.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_datastore/writer.hpp"
+#include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/OnDemandService.h"
 
 namespace PJ {
@@ -1251,6 +1254,151 @@ TEST(NodeSchedulerTest, AWaitForRoomIsFirstInFirstOut) {
   EXPECT_EQ(records[0].query_time, 10 * kSec);
   EXPECT_EQ(records[1].query_time, 12 * kSec) << "c waited longer";
   EXPECT_EQ(records[2].query_time, 13 * kSec);
+}
+
+// ---- One in-flight budget for both engines (BUD-11, §11) ---------------------------------------------------------
+
+/// A manual marker rule on the fixture's dataset, on its pool and its budget, reading the one-sample series "level";
+/// each staging is counted, with the on-demand runs started by then.
+struct MarkerRule {
+  explicit MarkerRule(Fixture& fx)
+      : engine(fx.store, [this, &fx](DatasetId, const std::string& key, const BatchEngine::Window&) {
+          ++stagings;
+          node_runs_at_staging = fx.fake.started();
+          if (on_staging) {
+            const std::function<void()> hook = std::exchange(on_staging, {});
+            hook();
+          }
+          return key == "level" ? std::optional<BatchEngine::ResolvedSeries>({{0.0}, {1.0}}) : std::nullopt;
+        }) {
+    engine.setPool(&fx.pool);
+    engine.setInFlightBudget(&fx.budget);
+    engine.setMode(BatchEngine::Mode::kManual);
+    BatchEngine::GeneratorRecipe rule;
+    rule.id = "plug/rule";
+    rule.dataset_id = fx.dataset;
+    rule.inputs = {"level"};
+    rule.outputs = {"level"};
+    rule.script = "createMarker(0.0)\n";
+    EXPECT_TRUE(engine.upsertGenerator(rule).has_value());  // to completion, inline: it holds no room
+    stagings = 0;
+    node_runs_at_staging = -1;
+  }
+
+  int stagings = 0;
+  int node_runs_at_staging = -1;
+  std::function<void()> on_staging;  ///< runs once, inside the next staging
+  BatchEngine engine;
+};
+
+// With room for one run of either engine, an on-demand request waits while a marker run holds the room and runs once
+// it publishes; and the inverse, where the marker run waits, unstaged, until the on-demand run publishes.
+TEST(BatchEngineTest, MarkerAndOnDemandRunsShareOneBudget) {
+  std::atomic<bool> released{false};
+  const test::ScopedComputeProbe probe(test::holdPoolComputesUntil(released));
+  Fixture fx(InFlightBudget::kRunBytes);
+  fx.fake.gated = true;
+  fx.pushCloud(10 * kSec);
+  fx.pushCloud(20 * kSec);
+  fx.install(recipe("crop"));
+  MarkerRule markers(fx);
+
+  markers.engine.refresh("plug/rule");
+  EXPECT_EQ(fx.budget.reserved(), BatchEngine::kMarkerRunBytes + 2 * sizeof(double));
+  fx.request("owner/crop", 10 * kSec);
+  EXPECT_EQ(fx.state("owner/crop").status, Status::kPending);
+  EXPECT_EQ(fx.fake.started(), 0) << "the on-demand run waits for the marker run's room";
+  released = true;
+  fx.fake.allow(1);
+  fx.settle();
+  EXPECT_EQ(fx.fake.finished(), 1);
+  EXPECT_EQ(fx.state("owner/crop").status, Status::kReady);
+  EXPECT_FALSE(markers.engine.isRunning("plug/rule"));
+  EXPECT_EQ(fx.budget.reserved(), 0u);
+
+  released = false;
+  fx.request("owner/crop", 20 * kSec);
+  ASSERT_TRUE(fx.fake.waitStarted(2));
+  markers.engine.refresh("plug/rule");
+  EXPECT_TRUE(markers.engine.isRunning("plug/rule")) << "waiting for room";
+  EXPECT_EQ(markers.stagings, 1) << "a marker run stages once it has its room";
+  EXPECT_EQ(fx.budget.reserved(), InFlightBudget::kRunBytes);
+  fx.fake.allow(1);
+  released = true;
+  fx.settle();
+  EXPECT_EQ(markers.stagings, 2);
+  EXPECT_FALSE(markers.engine.isRunning("plug/rule"));
+  EXPECT_FALSE(markers.engine.isStale("plug/rule"));
+  EXPECT_EQ(fx.state("owner/crop").status, Status::kReady);
+  EXPECT_EQ(fx.budget.reserved(), 0u);
+}
+
+// A node requested again and again keeps one pending request. When its run ends, the marker run that has waited
+// since before takes the room first (one line, first in, first out, for both engines): the node's next run waits
+// for it, and then runs once, at the newest time.
+TEST(BatchEngineTest, AContinuouslyDemandedNodeDoesNotStarveAnEarlierMarkerWaiter) {
+  std::atomic<bool> released{false};
+  const test::ScopedComputeProbe probe(test::holdPoolComputesUntil(released));
+  Fixture fx(InFlightBudget::kRunBytes);
+  fx.fake.gated = true;
+  for (int second = 1; second <= 10; ++second) {
+    fx.pushCloud(second * kSec);
+  }
+  fx.install(recipe("crop"));
+  MarkerRule markers(fx);
+  fx.request("owner/crop", 1 * kSec);
+  ASSERT_TRUE(fx.fake.waitStarted(1));
+  markers.engine.refresh("plug/rule");
+  EXPECT_EQ(markers.stagings, 0) << "it waits for the room the node's run holds";
+  for (int second = 2; second <= 5; ++second) {
+    fx.request("owner/crop", second * kSec);
+  }
+
+  fx.fake.allow(1);
+  test::pumpUntil([&] { return markers.stagings == 1; });
+  ASSERT_EQ(markers.stagings, 1) << "the marker run started when the node's run ended";
+  EXPECT_EQ(markers.node_runs_at_staging, 1) << "ahead of the node's next run";
+  for (int second = 6; second <= 10; ++second) {
+    fx.request("owner/crop", second * kSec);
+    test::pumpFor(5);
+  }
+  EXPECT_EQ(fx.fake.started(), 1) << "the node waits behind the marker run's room";
+
+  released = true;
+  fx.fake.allow(1);
+  fx.settle();
+  ASSERT_EQ(fx.fake.finished(), 2) << "then one run";
+  EXPECT_EQ(fx.fake.records().back().query_time, 10 * kSec) << "at the newest time";
+  EXPECT_EQ(fx.state("owner/crop").status, Status::kReady);
+  EXPECT_FALSE(markers.engine.isRunning("plug/rule"));
+  EXPECT_EQ(fx.budget.reserved(), 0u);
+}
+
+// A finishing run serves the line last. A marker run it lets in, whose staging requests the finishing node again at
+// a newer time, finds that node settled, and the newer request runs; the older result does not settle it.
+TEST(BatchEngineTest, AGrantThatRequestsTheFinishingNodeAgainRunsTheNewerRequest) {
+  std::atomic<bool> released{false};
+  const test::ScopedComputeProbe probe(test::holdPoolComputesUntil(released));
+  Fixture fx(InFlightBudget::kRunBytes);
+  fx.fake.gated = true;
+  fx.pushCloud(10 * kSec);
+  fx.pushCloud(20 * kSec);
+  fx.install(recipe("crop"));
+  MarkerRule markers(fx);
+  fx.request("owner/crop", 10 * kSec);
+  ASSERT_TRUE(fx.fake.waitStarted(1));
+  markers.engine.refresh("plug/rule");  // waits for the node's room
+  markers.on_staging = [&fx] { fx.request("owner/crop", 20 * kSec); };
+
+  released = true;
+  fx.fake.allow(2);
+  fx.settle();
+  EXPECT_EQ(markers.stagings, 1);
+  EXPECT_EQ(fx.fake.finished(), 2) << "the newer request ran";
+  EXPECT_EQ(fx.state("owner/crop").status, Status::kReady);
+  EXPECT_EQ(fx.state("owner/crop").requested_t, 20 * kSec);
+  EXPECT_EQ(fx.shown("owner/crop/cropped", 20 * kSec).frame_id, frameOf(20 * kSec));
+  EXPECT_EQ(fx.budget.reserved(), 0u);
 }
 
 // ---- The facade ---------------------------------------------------------------------------------------------

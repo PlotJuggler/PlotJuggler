@@ -6,6 +6,7 @@
 #include <QObject>
 #include <QTimer>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -25,6 +26,7 @@
 #include "pj_datastore/merge_result.hpp"  // DatasetMergeSource
 #include "pj_runtime/EnginePool.h"
 #include "pj_runtime/HistoryScope.h"
+#include "pj_runtime/InFlightBudget.h"
 
 class QThread;
 
@@ -57,7 +59,7 @@ enum class GeneratorKind {
 /// `anomaly_runner` links, so GUI == headless. Whole-series: any input change
 /// re-runs the whole script and republishes the set whole. Series resolution is
 /// INJECTED (`SeriesResolver`) so the service is testable against synthetic data;
-/// the header stays free of `pj_scripting` (linked PRIVATE), hence `ResolvedSeries`.
+/// the header stays free of the marker engine's types, hence `ResolvedSeries`.
 ///
 /// Execution (docs/derived_objects/ARCHITECTURE.md §11): a run is staged on the GUI
 /// thread (the resolver copies the input series into a `StagedRun`), computed on an
@@ -180,6 +182,20 @@ class BatchEngine : public QObject {
   /// `nullptr` before destroying the pool if this engine outlives it.
   void setPool(EnginePool* pool);
 
+  /// What a marker run reserves from the in-flight budget before it stages: the VM cap plus the native marker
+  /// output ceiling, ONE ceiling for the whole run however many datasets contribute (`computeRun` shares it). The
+  /// staged series copy is charged on top, once staged (`StagedRun::bytes`).
+  static const std::size_t kMarkerRunBytes;
+  /// The in-flight budget the runs on the pool reserve from, shared with the on-demand runs
+  /// (docs/derived_objects/ARCHITECTURE.md §11); null (the default) bounds nothing. A run waits in the budget's
+  /// line, first in, first out with every consumer, for `kMarkerRunBytes`, stages once it has them, then grows its
+  /// reservation by the staged copy; a copy that does not fit keeps its place at the head of the line until room
+  /// for the whole run returns. The room is held until the run's publication (cancelled runs included, until the
+  /// pool lets them go). Inline runs (no pool, a create to completion, the whole-dataset recomputes) reserve
+  /// nothing: they hold no pool thread. Changing it cancels the runs in flight, as `setPool` does; every budget it
+  /// was given must outlive this engine and the pool.
+  void setInFlightBudget(InFlightBudget* budget);
+
   /// Whether `dataset` has a consumer worth an automatic run. A bound rule asks for its
   /// dataset; an `all_datasets` rule is demanded when one of its contributors is (a
   /// loaded dataset that carries one of its inputs, or any dataset when it has none).
@@ -295,7 +311,9 @@ class BatchEngine : public QObject {
     kToCompletion,
     /// The run computes on the pool while the calling thread waits at most
     /// `kCreateBudget`; a run still going then carries on as the binding's scheduled
-    /// run. Without a pool it behaves as `kToCompletion`. A layout load uses it
+    /// run. Without room in the in-flight budget at once the rule is installed and its
+    /// first run waits in the budget's line like a refresh, publishing late too. Without
+    /// a pool it behaves as `kToCompletion`. A layout load uses it
     /// (`DerivedObjects::restore` under `kReplace`, the progressive drain included):
     /// nobody reads a rule's markers right away, and a slow one draws progressively.
     kBounded,
@@ -517,6 +535,9 @@ class BatchEngine : public QObject {
     std::vector<StagedContribution> contributions;
     /// `[first, last]` raw ns across every staged sample; `nullopt` when none.
     std::optional<std::pair<Timestamp, Timestamp>> coverage_ns;
+    /// The staged samples' bytes (timestamps and values; no vector slack): what the in-flight budget charges for
+    /// the copy. One step per staged series, none per sample.
+    [[nodiscard]] std::size_t bytes() const;
   };
 
   /// GUI thread: resolves and window-clips `recipe`'s inputs.
@@ -575,7 +596,12 @@ class BatchEngine : public QObject {
     uint64_t change_seq = 0;  ///< bumped by every input change
     bool stale = false;
     bool pending = false;  ///< a `refresh` waiting for the running run; holds no inputs
+    /// Set while a run is in flight: its pool token, or a default one (never cancelled) while it runs inline or
+    /// waits for room.
     std::optional<EnginePool::CancelToken> running;
+    InFlightBudget::Ticket room;  ///< its place in the budget's line while it waits for room
+    /// Names the run being staged, so it is recognised once the resolver returned; 0 once dropped.
+    uint64_t admission = 0;
     std::string error;  ///< the last run's failure; empty after a success
     /// The `change_seq` the last failed run staged: the brake skips the binding until
     /// its inputs change again, so a broken rule does not re-run on every pass.
@@ -591,8 +617,17 @@ class BatchEngine : public QObject {
   EnginePool::CancelToken startRun(
       const BindingKey& key, std::shared_ptr<StagedRun> staged, uint64_t staged_seq, std::shared_ptr<RunResult> result);
   /// Starts a run of `recipe`'s binding: stage now, compute on the pool (or inline),
-  /// publish in `finishRun`. With a run in flight it only sets `pending`.
+  /// publish in `finishRun`. With a run in flight it only sets `pending`. With a budget,
+  /// the run first waits in its line for `kMarkerRunBytes` (`setInFlightBudget`).
   void submitRun(const GeneratorRecipe& recipe);
+  /// Stages `recipe`'s run and starts it on the pool with `room` grown by the staged copy; a copy that does not fit
+  /// keeps the run waiting, staged, at the head of the budget's line. A run the resolver cancelled, removed or
+  /// replaced while it staged (or whose pool or budget it changed) starts nothing.
+  void stageAndStart(
+      const BindingKey& key, const GeneratorRecipe& recipe, std::optional<InFlightBudget::Reservation> room);
+  /// Cancels every run in flight, waiting and staging ones included, and forgets the pending refreshes: the pool or
+  /// the budget they would start on changed.
+  void dropRunsInFlight();
   /// GUI thread: publishes a completed, uncancelled run and starts what waits.
   void finishRun(
       const BindingKey& key, const StagedRun& staged, uint64_t staged_seq,
@@ -623,6 +658,8 @@ class BatchEngine : public QObject {
   std::map<std::string, GeneratorBindings> recipes_;  ///< id → per-dataset bindings (incl. ephemeral); invariant 2
 
   EnginePool* pool_ = nullptr;
+  InFlightBudget* budget_ = nullptr;
+  uint64_t next_admission_ = 0;  ///< the last `RunState::admission` handed out
   DemandPredicate demand_predicate_;
   Mode mode_ = Mode::kAutomatic;
   double reload_hz_ = kDefaultReloadHz;

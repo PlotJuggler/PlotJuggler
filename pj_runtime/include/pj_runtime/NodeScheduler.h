@@ -3,7 +3,6 @@
 #pragma once
 
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -46,7 +45,8 @@ namespace PJ {
 /// per node). Each publication of an upstream serves its readers again, which take the result it shows, so a
 /// reader keeps updating while its upstream lags (D30) and converges with it; every settlement of an upstream
 /// (published, served from the history, missing, failed) serves the readers waiting on it. Runs that do not fit
-/// the in-flight budget wait first in, first out; a finishing node's readers come before its own next run.
+/// the in-flight budget wait in its line, first in, first out with the marker runs (`InFlightBudget`); a finishing
+/// run serves that line first, then its readers, then its own next run.
 ///
 /// THREADING: GUI thread only, except the run function. A run touches only its job (the staged inputs, the
 /// shared bytecode and the TF snapshot taken at its submission) and the thread-safe `ObjectStore`, never the graph,
@@ -128,7 +128,7 @@ class NodeScheduler {
     kNone,      ///< nothing: settled, or its run is the newest request's
     kRun,       ///< the node's running run, for an older request
     kUpstream,  ///< an upstream's publication or settlement
-    kRoom,      ///< room in the budget, in `room_queue_`
+    kRoom,      ///< room in the budget: `Slot::room` holds its place in the budget's line
   };
   /// Why a request is served.
   enum class Trigger {
@@ -145,7 +145,8 @@ class NodeScheduler {
     };
     std::shared_ptr<Job> running;
     Wait wait = Wait::kNone;
-    Timestamp cursor = 0;  ///< the newest request's time
+    InFlightBudget::Ticket room;  ///< its place in the budget's line while `wait` is kRoom
+    Timestamp cursor = 0;         ///< the newest request's time
     NodeState::Status status = NodeState::Status::kIdle;
     std::string detail;
     std::optional<Timestamp> lag;
@@ -155,13 +156,17 @@ class NodeScheduler {
   };
   using Entry = std::pair<const std::string, Slot>;
 
-  /// Serves the node's newest request, at its cursor: upstream checks, staging, the history, then a run.
-  void serve(Entry& entry, const RecipeGraph::Node& node, Trigger trigger);
+  /// Serves the node's newest request, at its cursor: upstream checks, staging, the history, then a run, which
+  /// takes `room` (granted by the budget's line) or reserves its own; `room` returns when nothing runs.
+  void serve(
+      Entry& entry, const RecipeGraph::Node& node, Trigger trigger,
+      std::optional<InFlightBudget::Reservation> room = std::nullopt);
   void submit(
       Entry& entry, const RecipeGraph::Node& node, uint64_t epoch, InputStager::Staged staged,
       InFlightBudget::Reservation room);
-  /// GUI thread, once per submitted run: publishes it unless its meaning changed, admits the runs waiting for
-  /// room, serves its readers, then its own current request.
+  /// GUI thread, once per submitted run: publishes it unless its meaning changed, returns its room, serves its
+  /// readers and its own current request (behind the budget's waiters when there are any), and serves the budget's
+  /// line last.
   void finish(Job& job, const EnginePool::Outcome& outcome);
   /// Publishes a run's result, or records its failure and, when it serves the current request, clears what the ring
   /// shows at its stamp. True when the published result serves the current request.
@@ -179,12 +184,12 @@ class NodeScheduler {
   /// Sets the state, reports a change and, for a settled request, serves the readers waiting on it.
   void setState(
       Entry& entry, NodeState::Status status, std::string detail = {}, std::optional<Timestamp> lag = std::nullopt);
-  /// Keeps `room_queue_` holding exactly the nodes that wait for room, in arrival order.
+  /// Keeps the slot in the budget's line exactly while it waits for room.
   void setWait(Entry& entry, Wait wait);
   /// Serves the readers of `entry` that wait for it (`waiting_only`), or every one with no run in flight or turn.
   void serveReaders(const Entry& entry, bool waiting_only);
-  /// Serves the waiters for room, first in, first out, while room is left.
-  void admitWaiting();
+  /// The budget's line granted `entry` its room: serves it with that room.
+  void admit(Entry& entry, InFlightBudget::Reservation room);
   [[nodiscard]] uint64_t epochOf(DatasetId dataset) const;
   [[nodiscard]] uint64_t tfRevisionOf(DatasetId dataset) const;
 
@@ -196,7 +201,6 @@ class NodeScheduler {
   InFlightBudget& budget_;
   Hooks hooks_;
   std::map<std::string, Slot, std::less<>> slots_;
-  std::deque<std::string> room_queue_;  ///< the nodes waiting for room, first in, first out
   /// Expires with the scheduler: a publish arriving later does nothing.
   std::shared_ptr<const int> lifetime_ = std::make_shared<const int>(0);
 };

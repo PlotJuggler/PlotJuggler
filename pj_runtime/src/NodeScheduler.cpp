@@ -94,7 +94,8 @@ void NodeScheduler::requestAt(std::string_view key, Timestamp t) {
   serve(entry, *node, Trigger::kRequest);
 }
 
-void NodeScheduler::serve(Entry& entry, const RecipeGraph::Node& node, Trigger trigger) {
+void NodeScheduler::serve(
+    Entry& entry, const RecipeGraph::Node& node, Trigger trigger, std::optional<InFlightBudget::Reservation> room) {
   const std::string& key = entry.first;
   Slot& slot = entry.second;
   const Timestamp at = slot.cursor;
@@ -161,9 +162,9 @@ void NodeScheduler::serve(Entry& entry, const RecipeGraph::Node& node, Trigger t
     setState(entry, NodeStatus::kPending, {}, lag);
     return;
   }
-  // ponytail: first in, first out holds because every run reserves `kRunBytes`: room is never left while someone
-  // waits for it. When runs of other sizes share the budget (6a-4b), a request must also queue behind the waiters.
-  std::optional<InFlightBudget::Reservation> room = budget_.tryReserve(InFlightBudget::kRunBytes);
+  if (!room) {
+    room = budget_.tryReserve(InFlightBudget::kRunBytes);  // behind the waiters, whichever engine's
+  }
   if (!room) {
     setWait(entry, Wait::kRoom);
     setState(entry, NodeStatus::kPending, {}, lag);
@@ -237,9 +238,6 @@ void NodeScheduler::finish(Job& job, const EnginePool::Outcome& outcome) {
       served = apply(*entry, *node, job);
     }
   }
-  // The room goes to those waiting for it first, then to this node's readers, which can take its result, and
-  // only then to this node's own current request.
-  admitWaiting();
   if (current) {
     serveReaders(*entry, /*waiting_only=*/false);
   }
@@ -248,6 +246,9 @@ void NodeScheduler::finish(Job& job, const EnginePool::Outcome& outcome) {
   } else if (entry != nullptr && node != nullptr) {
     serve(*entry, *node, Trigger::kRequest);
   }
+  // Last, since a grant may re-enter either engine: the room goes to those waiting for it first, and the readers,
+  // which can take this result, and then this node's own request queued behind them in that order.
+  budget_.drain();
 }
 
 bool NodeScheduler::apply(Entry& entry, const RecipeGraph::Node& node, Job& job) {
@@ -350,10 +351,12 @@ void NodeScheduler::setState(Entry& entry, NodeStatus status, std::string detail
 
 void NodeScheduler::setWait(Entry& entry, Wait wait) {
   Slot& slot = entry.second;
-  if (slot.wait == Wait::kRoom && wait != Wait::kRoom) {
-    room_queue_.erase(std::find(room_queue_.begin(), room_queue_.end(), entry.first));
-  } else if (slot.wait != Wait::kRoom && wait == Wait::kRoom) {
-    room_queue_.push_back(entry.first);
+  if (wait != Wait::kRoom) {
+    slot.room = {};  // leaves the line, if in it
+  } else if (slot.wait != Wait::kRoom) {
+    // The slot owns the ticket, so the grant never outlives the slot (map nodes do not move).
+    slot.room = budget_.whenRoom(
+        InFlightBudget::kRunBytes, [this, &entry](InFlightBudget::Reservation room) { admit(entry, std::move(room)); });
   }
   slot.wait = wait;
 }
@@ -373,18 +376,10 @@ void NodeScheduler::serveReaders(const Entry& entry, bool waiting_only) {
   }
 }
 
-void NodeScheduler::admitWaiting() {
-  while (!room_queue_.empty() && budget_.fits(InFlightBudget::kRunBytes)) {
-    const std::string key = std::move(room_queue_.front());
-    room_queue_.pop_front();
-    const auto entry = slots_.find(key);
-    if (entry == slots_.end()) {
-      continue;
-    }
-    entry->second.wait = Wait::kNone;  // out of the queue already
-    if (const RecipeGraph::Node* node = graph_.find(key)) {
-      serve(*entry, *node, Trigger::kRetry);
-    }
+void NodeScheduler::admit(Entry& entry, InFlightBudget::Reservation room) {
+  setWait(entry, Wait::kNone);  // out of the line already
+  if (const RecipeGraph::Node* node = graph_.find(entry.first)) {
+    serve(entry, *node, Trigger::kRetry, std::move(room));
   }
 }
 
@@ -396,7 +391,6 @@ void NodeScheduler::forget(std::string_view key) {
   if (found->second.running) {
     found->second.running->token.cancel();
   }
-  setWait(*found, Wait::kNone);
   slots_.erase(found);
 }
 

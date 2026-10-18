@@ -29,6 +29,7 @@
 #include "pj_base/builtin/plot_markers_codec.hpp"  // serializePlotMarkers, deserializePlotMarkers
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/query.hpp"
+#include "pj_runtime/InFlightBudget.h"
 #include "pj_runtime/MarkerTopics.h"     // isMarkerTopic, markerOwnerTopicName, kAllDatasetsMarkerDataset
 #include "pj_scripting/marker_engine.h"  // scripting::SeriesView/SeriesProvider, runMarkerScript
 
@@ -152,6 +153,8 @@ struct BatchEngine::RunResult {
   bool finished = false;  ///< the compute returned or threw: `value` is final
   bool consumed = false;  ///< GUI thread: the create path took `value`; the publish drops it
   Expected<std::optional<sdk::PlotMarkers>> value = unexpected(std::string("not run"));
+  /// GUI thread: the run's room in the in-flight budget, returned at its publication (or with the pool's closures).
+  std::optional<InFlightBudget::Reservation> room;
 };
 
 BatchEngine::BatchEngine(ObjectStore& object_store, SeriesResolver resolver)
@@ -182,9 +185,22 @@ void BatchEngine::setDisplayOffsetResolver(DisplayOffsetResolver resolver) {
 }
 
 void BatchEngine::setPool(EnginePool* pool) {
-  if (pool == pool_) {
-    return;
+  if (pool != pool_) {
+    dropRunsInFlight();
+    pool_ = pool;
   }
+}
+
+const std::size_t BatchEngine::kMarkerRunBytes = scripting::BudgetLimits{}.mem_bytes + scripting::kMaxMarkerOutputBytes;
+
+void BatchEngine::setInFlightBudget(InFlightBudget* budget) {
+  if (budget != budget_) {
+    dropRunsInFlight();
+    budget_ = budget;
+  }
+}
+
+void BatchEngine::dropRunsInFlight() {
   bool cancelled = false;
   for (auto& [key, state] : runs_) {
     if (state.running.has_value()) {
@@ -193,11 +209,22 @@ void BatchEngine::setPool(EnginePool* pool) {
       cancelled = true;
     }
     state.pending = false;
+    state.room = {};      // a waiting run would start on what changed
+    state.admission = 0;  // so would one being staged
   }
-  pool_ = pool;
   if (cancelled) {
     queueSignal(running_changed_queued_, &BatchEngine::runningChanged);
   }
+}
+
+std::size_t BatchEngine::StagedRun::bytes() const {
+  std::size_t total = 0;
+  for (const StagedContribution& contribution : contributions) {
+    for (const auto& [key, series] : contribution.inputs) {
+      total += (series.timestamps.size() + series.values.size()) * sizeof(double);
+    }
+  }
+  return total;
 }
 
 void BatchEngine::setDemandPredicate(DemandPredicate predicate) {
@@ -358,28 +385,30 @@ Status BatchEngine::validateScript(GeneratorKind /*kind*/, std::string_view lang
 BatchEngine::StagedRun BatchEngine::stageRun(const GeneratorRecipe& recipe) const {
   StagedRun staged;
   staged.recipe = recipe;
+  // The resolver may re-enter this engine and replace the binding `recipe` names: read the copy from here on.
+  const GeneratorRecipe& copy = staged.recipe;
   const auto stage = [&](DatasetId dataset_id) {
     StagedContribution contribution;
     contribution.dataset_id = dataset_id;
-    for (const std::string& key : recipe.inputs) {
+    for (const std::string& key : copy.inputs) {
       if (contribution.inputs.contains(key) || !resolver_) {
         continue;
       }
-      if (std::optional<ResolvedSeries> series = resolver_(dataset_id, key, recipe.window)) {
-        if (recipe.window.has_value()) {
-          clipToWindow(*series, recipe.window->first, recipe.window->second);
+      if (std::optional<ResolvedSeries> series = resolver_(dataset_id, key, copy.window)) {
+        if (copy.window.has_value()) {
+          clipToWindow(*series, copy.window->first, copy.window->second);
         }
         contribution.inputs.emplace(key, std::move(*series));
       }
     }
     return contribution;
   };
-  if (!recipe.all_datasets) {
-    staged.contributions.push_back(stage(recipe.dataset_id));
+  if (!copy.all_datasets) {
+    staged.contributions.push_back(stage(copy.dataset_id));
   } else {
     for (const DatasetId dataset_id : loadedDatasets()) {
       StagedContribution contribution = stage(dataset_id);
-      if (!recipe.inputs.empty() && contribution.inputs.empty()) {
+      if (!copy.inputs.empty() && contribution.inputs.empty()) {
         continue;  // not one of this rule's datasets
       }
       contribution.display_shift = -displayOffsetOf(dataset_id);
@@ -401,6 +430,7 @@ Expected<std::optional<sdk::PlotMarkers>> BatchEngine::computeRun(
   }
   sdk::PlotMarkers shared;
   const auto cancelled = [cancel] { return cancel != nullptr && cancel->cancelled(); };
+  std::size_t output_left = scripting::kMaxMarkerOutputBytes;  // one ceiling for the whole run (kMarkerRunBytes)
   for (StagedContribution& contribution : staged.contributions) {
     if (cancelled()) {
       return unexpected("cancelled");
@@ -415,11 +445,13 @@ Expected<std::optional<sdk::PlotMarkers>> BatchEngine::computeRun(
     const scripting::SeriesProvider provider =
         buildProvider(views, staged.recipe.inputs, staged.recipe.declared_inputs);
     std::string err;
+    std::size_t output_bytes = 0;
     std::vector<sdk::PlotMarker> markers =
-        scripting::runMarkerScript(staged.recipe.script, provider, &err, {}, cancelled);
+        scripting::runMarkerScript(staged.recipe.script, provider, &err, {}, cancelled, output_left, &output_bytes);
     if (!err.empty()) {
       return unexpected(err);
     }
+    output_left -= output_bytes;
     shiftMarkers(markers, contribution.display_shift);
     shared.markers.insert(
         shared.markers.end(), std::make_move_iterator(markers.begin()), std::make_move_iterator(markers.end()));
@@ -482,15 +514,65 @@ void BatchEngine::submitRun(const GeneratorRecipe& recipe) {
     return;
   }
   state.stale = true;
-  const uint64_t staged_seq = state.change_seq;
-  auto staged = std::make_shared<StagedRun>(stageRun(recipe));
   queueSignal(running_changed_queued_, &BatchEngine::runningChanged);
-  if (pool_ != nullptr) {
-    state.running = startRun(key, staged, staged_seq, std::make_shared<RunResult>());
+  if (pool_ == nullptr) {
+    const uint64_t staged_seq = state.change_seq;
+    StagedRun staged = stageRun(recipe);
+    state.running = EnginePool::CancelToken{};  // inline: never cancelled
+    finishRun(key, staged, staged_seq, computeRun(staged, /*cancel=*/nullptr));
     return;
   }
-  state.running = EnginePool::CancelToken{};  // inline: never cancelled
-  finishRun(key, *staged, staged_seq, computeRun(*staged, /*cancel=*/nullptr));
+  std::optional<InFlightBudget::Reservation> room;
+  if (budget_ != nullptr && !(room = budget_->tryReserve(kMarkerRunBytes))) {
+    // Nothing is staged before the run has its room. The ticket dies with the binding's state, so the grant never
+    // finds this engine or the binding gone.
+    state.running = EnginePool::CancelToken{};  // in flight, waiting
+    state.room = budget_->whenRoom(kMarkerRunBytes, [this, key](InFlightBudget::Reservation granted) {
+      if (const GeneratorRecipe* binding = bindingOf(key)) {
+        stageAndStart(key, *binding, std::move(granted));
+      }
+    });
+    return;
+  }
+  stageAndStart(key, recipe, std::move(room));
+}
+
+void BatchEngine::stageAndStart(
+    const BindingKey& key, const GeneratorRecipe& recipe, std::optional<InFlightBudget::Reservation> room) {
+  uint64_t admission = 0;
+  uint64_t staged_seq = 0;
+  {
+    RunState& staging = runs_[key];
+    staging.running = EnginePool::CancelToken{};  // in flight while it stages: a re-entrant refresh only waits
+    staging.admission = admission = ++next_admission_;
+    staged_seq = staging.change_seq;
+  }
+  auto staged = std::make_shared<StagedRun>(stageRun(recipe));
+  // The resolver may have re-entered this engine and cancelled, removed or replaced the run, or changed the pool.
+  const auto found = runs_.find(key);
+  if (found == runs_.end() || found->second.admission != admission) {
+    return;  // the copy and the room go with this call
+  }
+  RunState& state = found->second;
+  auto result = std::make_shared<RunResult>();
+  const std::size_t copy_bytes = staged->bytes();
+  if (room.has_value() && !room->grow(copy_bytes)) {
+    // The copy does not fit beside the runs in flight: the run keeps it, gives its room back and waits at the head
+    // of the line for room for both. At the head, so no later waiter is let in to stage a copy of its own meanwhile.
+    const std::size_t whole = room->bytes() + copy_bytes;
+    room.reset();
+    state.running = EnginePool::CancelToken{};  // in flight, waiting
+    state.room = budget_->whenRoom(
+        whole,
+        [this, key, staged, staged_seq, result](InFlightBudget::Reservation granted) {
+          result->room.emplace(std::move(granted));
+          runs_[key].running = startRun(key, staged, staged_seq, result);
+        },
+        InFlightBudget::Place::kFront);
+    return;
+  }
+  result->room = std::move(room);
+  state.running = startRun(key, std::move(staged), staged_seq, std::move(result));
 }
 
 EnginePool::CancelToken BatchEngine::startRun(
@@ -513,23 +595,27 @@ EnginePool::CancelToken BatchEngine::startRun(
     result->finished_cv.notify_all();
   };
   // A cancelled run's canceller already reset the binding; the publish also runs
-  // after this engine is gone, hence the guard.
-  task.publish = [guard = QPointer<BatchEngine>(this), key, staged, staged_seq,
+  // after this engine is gone, hence the guard. The budget outlives the pool.
+  task.publish = [guard = QPointer<BatchEngine>(this), budget = budget_, key, staged, staged_seq,
                   result](const EnginePool::Outcome& outcome) {
-    if (guard == nullptr || outcome.status == OutcomeStatus::kCancelled) {
-      return;
-    }
-    Expected<std::optional<sdk::PlotMarkers>> value = unexpected(outcome.error);
-    {
-      const std::lock_guard<std::mutex> lock(result->mutex);
-      if (result->consumed) {
-        return;
+    result->room.reset();  // whatever the outcome: the run holds nothing any more
+    if (guard != nullptr && outcome.status != OutcomeStatus::kCancelled) {
+      Expected<std::optional<sdk::PlotMarkers>> value = unexpected(outcome.error);
+      bool consumed = false;
+      {
+        const std::lock_guard<std::mutex> lock(result->mutex);
+        consumed = result->consumed;
+        if (!consumed && outcome.status != OutcomeStatus::kFailed) {
+          value = std::move(result->value);
+        }
       }
-      if (outcome.status != OutcomeStatus::kFailed) {
-        value = std::move(result->value);
+      if (!consumed) {
+        guard->finishRun(key, *staged, staged_seq, std::move(value));
       }
     }
-    guard->finishRun(key, *staged, staged_seq, std::move(value));
+    if (budget != nullptr) {
+      budget->drain();  // the waiters of either engine take the room before the next publication
+    }
   };
   return pool_->submit(std::move(task));
 }
@@ -753,22 +839,34 @@ Expected<std::vector<std::string>> BatchEngine::upsertGenerator(GeneratorRecipe 
     return unexpected("none of the inputs exist in any loaded dataset");
   }
   std::optional<EnginePool::CancelToken> late_run;
+  bool waits_for_room = false;
   Expected<std::optional<sdk::PlotMarkers>> computed = unexpected(std::string("not run"));
-  if (pool_ == nullptr || wait == CreateWait::kToCompletion) {
+  std::optional<InFlightBudget::Reservation> room;
+  const bool on_pool = pool_ != nullptr && wait == CreateWait::kBounded;
+  if (on_pool && budget_ != nullptr) {
+    room = budget_->tryReserve(kMarkerRunBytes + staged->bytes());
+  }
+  if (!on_pool) {
     computed = computeRun(*staged, /*cancel=*/nullptr);
+  } else if (budget_ != nullptr && !room.has_value()) {
+    // No room at once: once installed, the first run waits in the line like a refresh. Its copy goes now and is
+    // staged again when the line lets it in, so no copy waits uncharged.
+    waits_for_room = true;
   } else {
     // staged_seq 0: the binding's run state starts afresh below (cancelRun).
     const auto result = std::make_shared<RunResult>();
+    result->room = std::move(room);
     const EnginePool::CancelToken token = startRun(key, staged, /*staged_seq=*/0, result);
     std::unique_lock<std::mutex> lock(result->mutex);
     if (result->finished_cv.wait_for(lock, createBudget(), [&result] { return result->finished; })) {
       result->consumed = true;
       computed = std::move(result->value);
+      result->room.reset();  // the run is over: the next create may take its room before the drain publishes
     } else {
       late_run = token;
     }
   }
-  if (!late_run.has_value()) {
+  if (!late_run.has_value() && !waits_for_room) {
     if (!computed.has_value()) {
       return unexpected(computed.error());
     }
@@ -803,6 +901,8 @@ Expected<std::vector<std::string>> BatchEngine::upsertGenerator(GeneratorRecipe 
     state.running = *late_run;
     state.stale = true;
     queueSignal(running_changed_queued_, &BatchEngine::runningChanged);
+  } else if (waits_for_room) {
+    submitRun(*bindingOf(key));
   }
   return std::vector<std::string>{fresh.second};
 }

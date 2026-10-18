@@ -35,6 +35,7 @@ class MessageParserPluginBase;
 class DataProcessorService;
 class BatchEngine;
 class EnginePool;
+class InFlightBudget;
 class RefillGuard;
 
 /// Result of resolving a persisted dataset identity against the live session.
@@ -819,6 +820,10 @@ class SessionManager : public QObject {
   // Owns the session's filter/transform engine; constructed in the ctor body
   // after data_engine_ is alive (it binds an IncrementalEngine to data_engine_).
   std::unique_ptr<DataProcessorService> processor_service_;
+  // The memory the derived-data engines' runs on the pool hold at once, one line of
+  // waiters for both. Declared before the pool so it outlives it: a run still on the
+  // pool holds its reservation.
+  std::unique_ptr<InFlightBudget> in_flight_budget_;
   // The workers the derived-data engines run scripts on. Declared before the engines
   // so it is destroyed after them: each engine cancels its runs, then the pool joins.
   std::unique_ptr<EnginePool> engine_pool_;

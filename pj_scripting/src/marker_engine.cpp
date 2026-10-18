@@ -467,7 +467,7 @@ void bindGlobal(lua_State* L, RunContext* ctx, const char* name, lua_CFunction f
 
 std::vector<PJ::sdk::PlotMarker> runMarkerScript(
     const std::string& code, const SeriesProvider& provider, std::string* error, BudgetLimits limits,
-    const std::function<bool()>& cancelled, std::size_t max_output_bytes) {
+    const std::function<bool()>& cancelled, std::size_t max_output_bytes, std::size_t* output_bytes) {
   if (error != nullptr) {
     error->clear();
   }
@@ -557,6 +557,9 @@ std::vector<PJ::sdk::PlotMarker> runMarkerScript(
 
   std::vector<PJ::sdk::PlotMarker> markers = std::move(ctx.emitted);
   lua_close(L);
+  if (output_bytes != nullptr) {
+    *output_bytes = ctx.output_bytes;
+  }
   return markers;
 }
 

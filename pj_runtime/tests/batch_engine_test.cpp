@@ -42,6 +42,7 @@
 #include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/EnginePool.h"
+#include "pj_runtime/InFlightBudget.h"
 #include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
@@ -1767,6 +1768,11 @@ BatchEngine::SeriesResolver mutableValueResolver(std::atomic<int>& value) {
 
 constexpr const char* kMutableValueScript = "local s = series(\"in\")\ncreateMarker(s:at(0).v, s:at(0).v)\n";
 
+/// What the budget charges for a staged one-sample series: its timestamp and its value.
+constexpr std::size_t kSampleBytes = 2 * sizeof(double);
+/// Budget room past one marker run's ceiling: enough for a small copy, never for a second run.
+constexpr std::size_t kOneRunSlack = 1024;
+
 }  // namespace
 
 // A bounded create computes its first run on the pool while the GUI thread waits for
@@ -2264,19 +2270,25 @@ TEST(BatchEngineTest, ScriptRunsOffTheGuiThread) {
   EXPECT_NE(compute_thread.load(), gui_thread) << "computeRun executes on a pool worker thread";
 }
 
+// OWN-04: a removal supersedes the preview's run in flight: it publishes nothing, and its room returns once the
+// pool lets the run go.
 TEST(BatchEngineTest, RemovedPendingPreviewCannotResurrectItsTopic) {
   PJ::ObjectStore store;
+  PJ::InFlightBudget budget(BatchEngine::kMarkerRunBytes + kOneRunSlack);
   PJ::EnginePool pool;
   BatchEngine service(store, rampResolver(1));
   service.setPool(&pool);
+  service.setInFlightBudget(&budget);
   service.setMode(BatchEngine::Mode::kManual);
   auto recipe = markerRecipe("audit/pending", "in", "createMarker(0, 1)");
   recipe.ephemeral = true;
   ASSERT_TRUE(service.upsertGenerator(recipe));
   service.refresh(recipe.id);
+  EXPECT_EQ(budget.reserved(), BatchEngine::kMarkerRunBytes + kSampleBytes) << "its ceiling and its one-sample copy";
   ASSERT_TRUE(service.removeGenerator(recipe.id));
   pool.waitIdle();
   EXPECT_FALSE(store.findTopic(kDataset, PJ::markerOwnerTopicName("in", recipe.id)));
+  EXPECT_EQ(budget.reserved(), 0u);
 }
 
 TEST(BatchEngineTest, PendingCompletionCannotOverwriteEditedBinding) {
@@ -2315,8 +2327,10 @@ TEST(BatchEngineTest, RefreshAllTargetsTheRequestedDatasetBinding) {
   EXPECT_FALSE(service.isStale(recipe.id));
 }
 
+// ASY-13: twelve refreshes during a run cost one more capture, and the one run in flight holds the room of one run.
 TEST(BatchEngineTest, RepeatedRefreshStagesOnlyOneLatestPendingSnapshot) {
   PJ::ObjectStore store;
+  PJ::InFlightBudget budget(BatchEngine::kMarkerRunBytes + kOneRunSlack);
   PJ::EnginePool pool;
   std::atomic<int> value{0};
   int captures = 0;
@@ -2325,6 +2339,7 @@ TEST(BatchEngineTest, RepeatedRefreshStagesOnlyOneLatestPendingSnapshot) {
     return mutableValueResolver(value)(dataset, key, window);
   });
   service.setPool(&pool);
+  service.setInFlightBudget(&budget);
   service.setMode(BatchEngine::Mode::kManual);
   auto recipe = markerRecipe("audit/bounded", "in", kMutableValueScript);
   ASSERT_TRUE(service.upsertGenerator(recipe));
@@ -2335,10 +2350,12 @@ TEST(BatchEngineTest, RepeatedRefreshStagesOnlyOneLatestPendingSnapshot) {
     service.refresh(recipe.id);
   }
   EXPECT_EQ(captures, 1) << "one run in flight; the other refreshes leave one pending request";
+  EXPECT_EQ(budget.reserved(), BatchEngine::kMarkerRunBytes + kSampleBytes) << "one run's room";
   pool.waitIdle();
   EXPECT_EQ(captures, 2) << "the pending request captures once, when the run ends";
   EXPECT_DOUBLE_EQ(readPublished(store, kDataset, "in").markers.front().value_low, 12);
   EXPECT_FALSE(service.isStale(recipe.id));
+  EXPECT_EQ(budget.reserved(), 0u) << "both runs returned their room";
 }
 
 TEST(BatchEngineTest, ReloadAndDatasetRemovalInvalidatePendingDelivery) {
@@ -2687,4 +2704,375 @@ TEST(BatchEngineTest, AReloadThatBreaksARuleRecordsAndReportsItsError) {
 
   (void)service.recomputeForDataset(kDataset);
   EXPECT_EQ(reported.size(), 1u) << "the same error is reported once";
+}
+
+// ---- the in-flight budget (BUD-11, docs/derived_objects/ARCHITECTURE.md §11) -------------
+
+namespace {
+
+/// One series per input key, of `rows[key]` samples, counting each staging per key.
+BatchEngine::SeriesResolver countingResolver(
+    std::map<std::string, std::size_t> rows, std::map<std::string, int>& stagings) {
+  return [rows = std::move(rows), &stagings](
+             PJ::DatasetId, const std::string& key,
+             const BatchEngine::Window&) -> std::optional<BatchEngine::ResolvedSeries> {
+    const auto found = rows.find(key);
+    if (found == rows.end()) {
+      return std::nullopt;
+    }
+    ++stagings[key];
+    return BatchEngine::ResolvedSeries{
+        .timestamps = std::vector<double>(found->second, 0.0), .values = std::vector<double>(found->second, 1.0)};
+  };
+}
+
+/// The rule "plug/<key>" reading `key`.
+BatchEngine::GeneratorRecipe ruleReading(const std::string& key, std::string script = "createMarker(0.0)\n") {
+  BatchEngine::GeneratorRecipe recipe = markerRecipe("plug/" + key, "in", std::move(script));
+  recipe.inputs = {key};
+  return recipe;
+}
+
+}  // namespace
+
+// BUD-11 (changed): every binding's run reserves the run's ceiling before it stages and its staged copy once staged,
+// so the runs together stay within the budget. A large rule whose copy does not fit beside the runs in flight gives
+// its room back, keeps its copy and waits at the head of the line: the rule behind it is not let in to stage
+// meanwhile, and the large one runs next, on the copy it kept.
+TEST(BatchEngineTest, AdmissionBoundsAllBindingsAndTheStagedCopyIsCharged) {
+  // Run N computes once `released` reaches N (at most 5 s); the creates' inline runs pass.
+  std::atomic<int> entered{0};
+  std::atomic<int> released{0};
+  QThread* const gui = QThread::currentThread();
+  const ScopedComputeProbe probe([&](QThread* thread) {
+    if (thread == gui) {
+      return;
+    }
+    const int run = ++entered;
+    for (int waited_ms = 0; released.load() < run && waited_ms < 5000; ++waited_ms) {
+      QThread::msleep(1);
+    }
+  });
+  PJ::ObjectStore store;
+  std::map<std::string, int> stagings;
+  const std::size_t ceiling = BatchEngine::kMarkerRunBytes;
+  const std::size_t small_copy = 5 * kSampleBytes;
+  const std::size_t large_copy = 128 * kSampleBytes;
+  PJ::InFlightBudget budget(2 * ceiling + kOneRunSlack);  // two ceilings and small copies, or one large run
+  PJ::EnginePool pool;
+  BatchEngine service(store, countingResolver({{"a", 5}, {"x", 5}, {"b", 128}, {"c", 5}}, stagings));
+  service.setPool(&pool);
+  service.setInFlightBudget(&budget);
+  service.setMode(BatchEngine::Mode::kManual);
+  for (const char* key : {"a", "x", "b", "c"}) {
+    ASSERT_TRUE(service.upsertGenerator(ruleReading(key)).has_value());
+  }
+  stagings.clear();
+  const auto within = [&budget] { return budget.reserved() <= budget.capacity(); };
+
+  service.refresh("plug/a");
+  service.refresh("plug/x");
+  pumpUntil([&] { return entered.load() == 2; });
+  ASSERT_EQ(entered.load(), 2) << "two small rules compute side by side";
+  EXPECT_EQ(budget.reserved(), 2 * (ceiling + small_copy));
+  service.refresh("plug/b");
+  service.refresh("plug/c");
+  EXPECT_EQ(stagings["b"], 0) << "no room for its ceiling: it waits, unstaged";
+  EXPECT_EQ(stagings["c"], 0);
+  EXPECT_TRUE(service.isRunning("plug/b"));
+  EXPECT_TRUE(within());
+
+  released = 1;  // a publishes: b's ceiling fits, its copy does not
+  pumpUntil([&] { return stagings["b"] == 1; });
+  ASSERT_EQ(stagings["b"], 1) << "it staged once its ceiling fit";
+  EXPECT_EQ(budget.reserved(), ceiling + small_copy) << "its copy did not fit beside x: it gave its room back";
+  EXPECT_EQ(stagings["c"], 0) << "c, behind it, is not let in to stage meanwhile";
+  EXPECT_TRUE(within());
+
+  released = 2;  // x publishes: room for all of b
+  pumpUntil([&] { return entered.load() == 3; });
+  ASSERT_EQ(entered.load(), 3);
+  EXPECT_EQ(budget.reserved(), ceiling + large_copy) << "b runs next, charged its copy";
+  EXPECT_EQ(stagings["b"], 1) << "on the copy it kept";
+  EXPECT_EQ(stagings["c"], 0);
+  EXPECT_TRUE(within());
+
+  released = 4;
+  pool.waitIdle();
+  EXPECT_EQ(stagings, (std::map<std::string, int>{{"a", 1}, {"b", 1}, {"c", 1}, {"x", 1}}));
+  EXPECT_TRUE(service.staleIds().empty());
+  EXPECT_TRUE(service.runningIds().empty());
+  EXPECT_EQ(budget.reserved(), 0u);
+}
+
+// A run's room returns at its publication whether it published or failed, and, cancelled or orphaned by its
+// engine, once the pool lets it go. A run waiting for room that is cancelled never stages.
+TEST(BatchEngineTest, EveryReservationReturnsOnPublishFailureCancelAndDestruction) {
+  std::atomic<bool> released{true};
+  const ScopedComputeProbe probe(PJ::test::holdPoolComputesUntil(released));
+  PJ::ObjectStore store;
+  std::map<std::string, int> stagings;
+  std::atomic<int> value{1};
+  const BatchEngine::SeriesResolver resolver =
+      [&](PJ::DatasetId, const std::string& key,
+          const BatchEngine::Window&) -> std::optional<BatchEngine::ResolvedSeries> {
+    ++stagings[key];
+    return BatchEngine::ResolvedSeries{.timestamps = {0.0}, .values = {static_cast<double>(value.load())}};
+  };
+  const std::size_t one_run = BatchEngine::kMarkerRunBytes + kSampleBytes;
+  PJ::InFlightBudget budget(BatchEngine::kMarkerRunBytes + kOneRunSlack);
+  PJ::EnginePool pool;
+  auto service = std::make_unique<BatchEngine>(store, resolver);
+  service->setPool(&pool);
+  service->setInFlightBudget(&budget);
+  service->setMode(BatchEngine::Mode::kManual);
+  ASSERT_TRUE(service
+                  ->upsertGenerator(ruleReading(
+                      "ok",
+                      "local s = series(\"ok\")\nif s:at(0).v >= 5 then error(\"value too big\") end\n"
+                      "createMarker(0.0)\n"))
+                  .has_value());
+  ASSERT_TRUE(service->upsertGenerator(ruleReading("waits")).has_value());
+
+  service->refresh("plug/ok");
+  EXPECT_EQ(budget.reserved(), one_run);
+  pool.waitIdle();
+  EXPECT_EQ(budget.reserved(), 0u) << "published";
+
+  value = 5;
+  service->refresh("plug/ok");
+  EXPECT_EQ(budget.reserved(), one_run);
+  pool.waitIdle();
+  EXPECT_NE(service->errorOf("plug/ok").find("value too big"), std::string::npos) << service->errorOf("plug/ok");
+  EXPECT_EQ(budget.reserved(), 0u) << "failed";
+  value = 1;
+
+  stagings.clear();
+  released = false;
+  service->refresh("plug/ok");
+  service->refresh("plug/waits");
+  EXPECT_EQ(budget.reserved(), one_run) << "one runs, the other waits";
+  ASSERT_TRUE(service->removeGenerator("plug/waits").has_value());
+  service->cancelRunsOn(kDataset);  // a refill begins: the run in flight is cancelled
+  EXPECT_EQ(budget.reserved(), one_run) << "held until the pool lets the cancelled run go";
+  released = true;
+  pool.waitIdle();
+  EXPECT_EQ(budget.reserved(), 0u) << "cancelled";
+  EXPECT_EQ(stagings["waits"], 0) << "removed while it waited: never staged";
+
+  ASSERT_TRUE(service->upsertGenerator(ruleReading("waits")).has_value());
+  stagings.clear();
+  released = false;
+  service->refresh("plug/ok");
+  service->refresh("plug/waits");
+  service->cancelRunsOn(kDataset);
+  released = true;
+  pool.waitIdle();
+  EXPECT_EQ(stagings["waits"], 0) << "a refill cancels a run that waits for room too";
+  EXPECT_EQ(budget.reserved(), 0u);
+
+  released = false;
+  service->refresh("plug/ok");
+  service->refresh("plug/waits");
+  service.reset();
+  EXPECT_EQ(budget.reserved(), one_run) << "the pool still holds the orphaned run";
+  released = true;
+  pool.waitIdle();
+  EXPECT_EQ(budget.reserved(), 0u) << "the engine is gone";
+  EXPECT_EQ(stagings["waits"], 0);
+
+  {
+    PJ::InFlightBudget other_budget(BatchEngine::kMarkerRunBytes + kOneRunSlack);  // outlives the pool below
+    PJ::EnginePool own_pool;
+    BatchEngine engine(store, resolver);
+    engine.setPool(&own_pool);
+    engine.setInFlightBudget(&budget);
+    engine.setMode(BatchEngine::Mode::kManual);
+    ASSERT_TRUE(engine.upsertGenerator(ruleReading("own")).has_value());
+    ASSERT_TRUE(engine.upsertGenerator(ruleReading("later")).has_value());
+    stagings.clear();
+    engine.refresh("plug/own");
+    engine.refresh("plug/later");
+    engine.setPool(nullptr);  // cancels the run and drops the one waiting: none starts on the old pool
+    own_pool.waitIdle();
+    EXPECT_EQ(stagings["later"], 0);
+    EXPECT_EQ(budget.reserved(), 0u);
+    engine.setPool(&own_pool);
+    engine.refresh("plug/own");
+    engine.refresh("plug/later");
+    engine.setInFlightBudget(&other_budget);  // like a pool change: cancels both, the waiting one never starts
+    own_pool.waitIdle();
+    EXPECT_EQ(stagings["later"], 0);
+    EXPECT_EQ(budget.reserved(), 0u) << "the cancelled run returned its room to the budget it took it from";
+    engine.refresh("plug/own");
+    EXPECT_EQ(other_budget.reserved(), one_run);
+    EXPECT_EQ(budget.reserved(), 0u);
+  }  // the engine, then its pool, whose runs are never published
+  EXPECT_EQ(budget.reserved(), 0u) << "the pool is gone";
+}
+
+// A resolver may re-enter the engine while it stages a run the line just let in. A run that was moved to another
+// pool, cancelled and refreshed, or removed meanwhile starts nothing: its copy and its room go, and the refresh that
+// replaced it runs once.
+TEST(BatchEngineTest, ARunChangedWhileItStagesStartsNothing) {
+  std::atomic<bool> released{false};
+  std::atomic<int> computes{0};
+  QThread* const gui = QThread::currentThread();
+  const ScopedComputeProbe probe([&](QThread* thread) {
+    if (thread == gui) {
+      return;
+    }
+    ++computes;
+    for (int waited_ms = 0; !released.load() && waited_ms < 5000; ++waited_ms) {
+      QThread::msleep(1);
+    }
+  });
+  PJ::ObjectStore store;
+  std::map<std::string, int> stagings;
+  std::function<void()> reenter;
+  const BatchEngine::SeriesResolver resolver =
+      [&](PJ::DatasetId, const std::string& key,
+          const BatchEngine::Window&) -> std::optional<BatchEngine::ResolvedSeries> {
+    ++stagings[key];
+    if (key == "b" && reenter) {
+      const std::function<void()> hook = std::exchange(reenter, {});
+      hook();
+    }
+    return BatchEngine::ResolvedSeries{.timestamps = {0.0}, .values = {1.0}};
+  };
+  PJ::InFlightBudget budget(BatchEngine::kMarkerRunBytes + kOneRunSlack);
+  PJ::EnginePool pool;
+  PJ::EnginePool other_pool;
+  BatchEngine service(store, resolver);
+  service.setPool(&pool);
+  service.setInFlightBudget(&budget);
+  service.setMode(BatchEngine::Mode::kManual);
+  ASSERT_TRUE(service.upsertGenerator(ruleReading("a")).has_value());
+  ASSERT_TRUE(service.upsertGenerator(ruleReading("b")).has_value());
+  // a holds the room and b waits for it; when a publishes, the line lets b in and its staging runs `hook`.
+  const auto grantB = [&](std::function<void()> hook) {
+    stagings.clear();
+    computes = 0;
+    released = false;
+    service.refresh("plug/a");
+    service.refresh("plug/b");
+    reenter = std::move(hook);
+    released = true;
+    pool.waitIdle();
+    other_pool.waitIdle();
+  };
+
+  grantB([&] { service.setPool(&other_pool); });
+  EXPECT_EQ(stagings["b"], 1);
+  EXPECT_EQ(computes.load(), 1) << "a only: b was staged for a pool it no longer runs on";
+  EXPECT_FALSE(service.isRunning("plug/b"));
+  EXPECT_EQ(budget.reserved(), 0u);
+  service.setPool(&pool);
+
+  grantB([&] {
+    service.cancelRunsOn(kDataset);
+    service.refresh("plug/b");
+  });
+  EXPECT_EQ(stagings["b"], 2) << "the refresh staged again";
+  EXPECT_EQ(computes.load(), 2) << "a and one run of b";
+  EXPECT_FALSE(service.isRunning("plug/b"));
+  EXPECT_EQ(budget.reserved(), 0u);
+
+  grantB([&] { ASSERT_TRUE(service.removeGenerator("plug/b").has_value()); });
+  EXPECT_EQ(computes.load(), 1) << "a only: b is gone";
+  EXPECT_EQ(budget.reserved(), 0u);
+}
+
+// A layout load creates its rules one after another, each bounded. A first run that finished within the create's
+// wait returns its room at once, so with room for one run every create still runs on the pool and is drawn when it
+// returns, none of them left waiting behind a finished one.
+TEST(BatchEngineTest, ABoundedCreateThatFinishedReturnsItsRoomAtOnce) {
+  const ScopedCreateBudget create_budget(PJ::test::kGenerousCreateBudget);
+  std::atomic<int> pool_computes{0};
+  QThread* const gui = QThread::currentThread();
+  const ScopedComputeProbe probe([&](QThread* thread) {
+    if (thread != gui) {
+      ++pool_computes;
+    }
+  });
+  PJ::ObjectStore store;
+  PJ::InFlightBudget budget(BatchEngine::kMarkerRunBytes + kOneRunSlack);
+  PJ::EnginePool pool;
+  BatchEngine service(store, rampResolver(5));
+  service.setPool(&pool);
+  service.setInFlightBudget(&budget);
+  for (int rule = 0; rule < 3; ++rule) {
+    const std::string id = "plug/load" + std::to_string(rule);
+    ASSERT_TRUE(
+        service.upsertGenerator(markerRecipe(id, "in", "createMarker(0.0)\n"), BatchEngine::CreateWait::kBounded)
+            .has_value());
+    EXPECT_FALSE(service.isRunning(id)) << id << ": its first run finished within the create";
+    EXPECT_EQ(budget.reserved(), 0u) << id << ": and returned its room";
+  }
+  EXPECT_EQ(pool_computes.load(), 3) << "every first run computed on the pool";
+  EXPECT_EQ(PJ::test::markerFamily(store, kDataset, "in").size(), 3u) << "each drawn when its create returned";
+  pool.waitIdle();
+}
+
+// A bounded create (a layout load) that finds no room at once does not run inline: the rule is installed and its
+// first run waits in the line like a refresh, then stages, runs on the pool and publishes late (BAT-07: a layout
+// load's rule may draw progressively). Only a bounded create without a pool runs inline.
+TEST(BatchEngineTest, ABoundedCreateWithoutRoomWaitsInTheLine) {
+  const ScopedCreateBudget create_budget(PJ::test::kGenerousCreateBudget);
+  std::atomic<QThread*> compute_thread{nullptr};
+  const ScopedComputeProbe probe([&compute_thread](QThread* thread) { compute_thread = thread; });
+  PJ::ObjectStore store;
+  PJ::InFlightBudget budget(BatchEngine::kMarkerRunBytes + kOneRunSlack);
+  PJ::EnginePool pool;
+  BatchEngine service(store, rampResolver(5));
+  service.setPool(&pool);
+  service.setInFlightBudget(&budget);
+  std::optional<PJ::InFlightBudget::Reservation> taken = budget.tryReserve(budget.capacity());
+  ASSERT_TRUE(taken.has_value());
+
+  ASSERT_TRUE(
+      service.upsertGenerator(markerRecipe("plug/a", "in", "createMarker(0.0)\n"), BatchEngine::CreateWait::kBounded)
+          .has_value());
+  EXPECT_EQ(compute_thread.load(), nullptr) << "nothing computed while the create held the GUI thread";
+  EXPECT_EQ(service.recipes().size(), 1u) << "installed";
+  EXPECT_TRUE(service.isRunning("plug/a")) << "its first run waits for room";
+  EXPECT_TRUE(PJ::test::markerFamily(store, kDataset, "in").empty()) << "nothing drawn yet";
+  EXPECT_EQ(budget.reserved(), budget.capacity()) << "a waiting run holds no room";
+
+  taken.reset();
+  pumpUntil([&] { return !service.isRunning("plug/a"); });
+  ASSERT_NE(compute_thread.load(), nullptr);
+  EXPECT_NE(compute_thread.load(), QThread::currentThread()) << "computed on the pool";
+  EXPECT_EQ(PJ::test::markerFamily(store, kDataset, "in").size(), 1u) << "published late, through the drain";
+  pool.waitIdle();
+  EXPECT_EQ(budget.reserved(), 0u);
+
+  BatchEngine poolless(store, rampResolver(5));
+  poolless.setInFlightBudget(&budget);
+  compute_thread = nullptr;
+  ASSERT_TRUE(
+      poolless.upsertGenerator(markerRecipe("plug/b", "in", "createMarker(1.0)\n"), BatchEngine::CreateWait::kBounded)
+          .has_value());
+  EXPECT_EQ(compute_thread.load(), QThread::currentThread()) << "without a pool: inline";
+}
+
+// kMarkerRunBytes holds ONE native output ceiling for a run, however many datasets contribute: an all-datasets
+// rule whose contributions each fit the ceiling fails once together they do not.
+TEST(BatchEngineTest, AllDatasetContributionsShareOneNativeOutputCeiling) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver(5));
+  // About 10 MiB of labels per contribution: one fits the 16 MiB ceiling, two do not.
+  auto recipe = markerRecipe(
+      "plug/big", std::string(PJ::sdk::kGlobalMarkerTopic),
+      "for i = 1, 10 do createMarker(i, i, {label = string.rep('x', 1048576)}) end\n");
+  recipe.all_datasets = true;
+  service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1}; });
+  const auto alone = service.upsertGenerator(recipe);
+  ASSERT_TRUE(alone.has_value()) << alone.error();
+
+  service.setDatasetLister([] { return std::vector<PJ::DatasetId>{1, 2}; });
+  recipe.id = "plug/bigger";
+  const auto together = service.upsertGenerator(recipe);
+  ASSERT_FALSE(together.has_value());
+  EXPECT_NE(together.error().find("byte ceiling"), std::string::npos) << together.error();
 }

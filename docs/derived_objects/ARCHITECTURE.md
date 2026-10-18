@@ -322,9 +322,9 @@ not.
 ## 11. Scheduling and execution
 
 **Status: Built (slice 2)** (the pool), **Built (slice 3)** (the batch queue per node),
-**Built (slice 6a-4a)** (the on-demand queue, worker decoding, the in-flight budget for
-on-demand runs) and **Decided** (GIL release; batch joins the in-flight budget in slice
-6a-4b).
+**Built (slice 6a-4a)** (the on-demand queue, worker decoding, the in-flight budget),
+**In review (slice 6a-4b)** (batch runs join the in-flight budget: one line for both
+engines) and **Decided** (GIL release).
 
 - **`EnginePool`** (`pj_runtime/include/pj_runtime/EnginePool.h`) runs ready tasks. It keeps
   no per-node state: no mailboxes, no coalescing, no supersede by generation.
@@ -371,13 +371,30 @@ on-demand runs) and **Decided** (GIL release; batch joins the in-flight budget i
   - **On-demand (built, slice 6a-4a).** Per node: one run in flight and one pending request
     holding the latest time; the full policy (cancellation, history hits, chains, the
     order of the waiters for room) is the `NodeScheduler.h` class comment.
-- **The in-flight memory budget** (built for on-demand, slice 6a-4a, `InFlightBudget.h`)
-  reserves one run's ceiling, its VM cap plus its native budget (128 MiB at the defaults),
-  from its submission to its publication. Decoded inputs are views on the store's bytes, so
-  they are not charged again. The default holds max(1, pool threads) runs. A run that does
-  not fit waits, first in, first out, until a publication returns room; one larger than the
-  whole budget runs alone rather than never. Batch admission joins it in slice 6a-4b
-  (BUD-11).
+- **The in-flight memory budget** (`InFlightBudget.h`; on-demand runs since slice 6a-4a,
+  batch runs since 6a-4b) bounds what the runs of both engines on the pool hold at once. A
+  run holds a reservation from its submission to its publication (a cancelled one until the
+  pool lets it go):
+  - an on-demand run, its VM cap plus its native budget (128 MiB at the defaults); its
+    decoded inputs are views on the store's bytes, so they are not charged again;
+  - a marker run, its VM cap plus one 16 MiB native output ceiling for the whole run,
+    however many datasets contribute (80 MiB), and once staged the bytes of its staged
+    series copy (8 MB for a 500k-row series). It waits for its room before it stages; a copy
+    that does not fit keeps its copy, gives the room back and waits at the head of the line
+    for room for the whole run, so at most one copy waits uncharged.
+
+  The default holds max(1, pool threads) on-demand runs. Runs that do not fit wait in ONE
+  line for both engines, first in, first out, served from its head while the head fits: a
+  small request never passes an earlier large one, and a continuously demanded node cannot
+  starve a marker run. One larger than the whole budget runs alone rather than never. A
+  release never serves the line inside the call that released: it posts a drain, and each
+  publication drains once its own work is done, so a waiting run of either engine starts
+  before the next publication; a grant may re-enter either engine, so a run staged meanwhile
+  is checked again before it starts. A layout load's bounded create takes its room at once,
+  or is installed with its first run waiting in the line like a refresh (it publishes late,
+  as a slow one does); a finished create returns its room at once. Inline runs (no pool, the
+  creates to completion, the whole-dataset recomputes) hold no pool thread and reserve
+  nothing. The session owns the budget, declared before the pool, which it outlives.
 - **GUI-thread work still to move:** the batch staging copy, and TF snapshot copies (§12),
   get measured first. The batch re-run over 500k rows now costs the GUI thread 15 ms at most
   per pass (§19), nearly all of it the resolver's copy of the series (staging alone: 13-16

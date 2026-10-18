@@ -56,6 +56,9 @@ struct SeriesProvider {
   std::function<const SeriesView*(const std::string&)> get;  ///< name -> series or nullptr
 };
 
+/// The default ceiling of a rule's native marker output (`runMarkerScript`'s `max_output_bytes`).
+inline constexpr std::size_t kMaxMarkerOutputBytes = std::size_t{16} << 20;
+
 /// Run a Luau detection rule once over `provider`, returning the emitted markers.
 /// The script environment is the sandboxed Luau VM (memory cap + instruction-budget
 /// watchdog from `limits`) plus these bound primitives:
@@ -70,7 +73,8 @@ struct SeriesProvider {
 ///   GetSeriesNames()                  -- list of available series names
 /// `opts` is an optional table: {label, color="#rrggbb", severity, status, category, description}.
 /// Native marker storage (the markers and their strings) is bounded by `max_output_bytes`,
-/// independently of the VM's memory cap; a script that exceeds it fails the run.
+/// independently of the VM's memory cap; a script that exceeds it fails the run. A success
+/// sets `output_bytes`, when given, to what its markers count against that ceiling.
 /// `cancelled`, when set, is polled from the VM's interrupt (every safepoint, on the
 /// calling thread, so it must be cheap and thread-safe): once it returns true the script
 /// stops with a "script cancelled" error, even inside a loop that makes no native call.
@@ -78,7 +82,8 @@ struct SeriesProvider {
 /// `error` is non-null, sets it to the message (cleared on success).
 [[nodiscard]] std::vector<PJ::sdk::PlotMarker> runMarkerScript(
     const std::string& code, const SeriesProvider& provider, std::string* error, BudgetLimits limits = {},
-    const std::function<bool()>& cancelled = {}, std::size_t max_output_bytes = 16u << 20);
+    const std::function<bool()>& cancelled = {}, std::size_t max_output_bytes = kMaxMarkerOutputBytes,
+    std::size_t* output_bytes = nullptr);
 
 /// Compile + module-load ONLY (no execution, no inputs, no side effects): the cheap
 /// syntax gate behind the `validate_data_processor_script` service slot. Returns true if the script

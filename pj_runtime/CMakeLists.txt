@@ -32,6 +32,7 @@ add_library(pj_runtime STATIC
     src/DiagnosticHistory.cpp
     src/ExtensionCatalogService.cpp
     src/HttpGet.cpp
+    src/InFlightBudget.cpp
     src/InputStager.cpp
     src/PluginRuntimeCatalog.cpp
     src/PlaybackControlHost.cpp
@@ -183,6 +184,8 @@ if(PJ_BUILD_TESTS)
         tests/result_history_test.cpp
         # On-demand inputs: staged by identity on the GUI thread, decoded on any thread.
         tests/input_stager_test.cpp
+        # The in-flight memory budget: one line of waiters for both engines, served first in, first out.
+        tests/in_flight_budget_test.cpp
         # On-demand scheduling under D30 (one run in flight, one pending request per node), through the facade.
         tests/node_scheduler_test.cpp
         # links the shared marker engine the service drives
