@@ -30,6 +30,18 @@ namespace PJ {
 /// leaves the reader installed with a missing input, and reinstalling the key relinks it.
 class RecipeGraph {
  public:
+  /// One input of a node, parallel to `Recipe::inputs`.
+  struct Binding {
+    sdk::BuiltinObjectType object_type = sdk::BuiltinObjectType::kNone;  ///< kNone: a scalar series or field
+    /// Key of the node whose object output this input reads (the input is `<upstream>/<output>`);
+    /// empty for a topic of the dataset.
+    std::string upstream;
+    /// What the input reads: the bare topic inside the node's dataset, or the upstream's output name.
+    std::string name;
+
+    bool operator==(const Binding&) const = default;
+  };
+
   struct Recipe {
     std::string owner_plugin;  ///< the plugin id: the key's namespace and the pin cap's unit
     std::string user_id;       ///< unique within the owner
@@ -40,6 +52,14 @@ class RecipeGraph {
     /// script reads, a dataset qualifier included (`inputs['s:cloud']`).
     std::vector<std::string> inputs;
     std::vector<scripting::OutputSpec> outputs;
+    /// The inputs a layout recorded as other nodes' object outputs, by input name. One no installed node provides
+    /// (its node is absent, or no longer has that output) binds to the recorded node anyway, missing its input (the
+    /// state removing or renaming leaves a reader in, `missingInput`), instead of being refused as unknown; a node
+    /// that provides it binds the others. Not part of the recipe's meaning.
+    std::map<std::string, Binding, std::less<>> recorded_upstreams;
+    /// The dataset every input must resolve in (a layout's saved input dataset, a request's dataset id); nullopt:
+    /// the one dataset carrying all of them (D7).
+    std::optional<DatasetId> dataset;
     /// A finding: evaluated at this time only, never following the cursor; also its label (D26).
     std::optional<Timestamp> pinned_t;
     /// A preview: owned by the plugin instance that created it, never persisted nor cleared by a restore.
@@ -65,18 +85,6 @@ class RecipeGraph {
   /// `<key>/<output>` name, so a qualified upstream name resolves nowhere and is refused as unknown.
   using InputResolver = std::function<std::vector<InputCandidate>(std::string_view input)>;
 
-  /// One input of a node, parallel to `Recipe::inputs`.
-  struct Binding {
-    sdk::BuiltinObjectType object_type = sdk::BuiltinObjectType::kNone;  ///< kNone: a scalar series or field
-    /// Key of the node whose object output this input reads (the input is `<upstream>/<output>`);
-    /// empty for a topic of the dataset.
-    std::string upstream;
-    /// What the input reads: the bare topic inside the node's dataset, or the upstream's output name.
-    std::string name;
-
-    bool operator==(const Binding&) const = default;
-  };
-
   struct Node {
     Recipe recipe;
     /// Graph-wide and monotonic, bumped when its meaning changes (an identical upsert keeps it); a key
@@ -92,17 +100,21 @@ class RecipeGraph {
 
   explicit RecipeGraph(InputResolver resolver);
 
-  /// Installs `recipe`, replacing the node of the same key. Rejected, with nothing changed: an empty
-  /// owner or id; a language other than Luau; a script that does not compile; no input or no output;
-  /// an output `scripting::parseOutputSpec` refuses (only types a script can produce); a name used
-  /// twice among the inputs and outputs; an input that resolves nowhere, or whose datasets have no
-  /// single one in common (D7); an object input whose type has no field table; its own output; an
-  /// edge that closes a cycle; a persistent recipe reading a preview's output, or a preview that a
-  /// persistent node reads (a preview ends with its panel, the persisted reader would not); a new pin
-  /// past the owner's cap.
+  /// Installs `recipe`, replacing the node of the same key; empty params are stored as "{}", what a
+  /// layout parse reads back. Rejected, with nothing changed: an empty owner or id; a language other
+  /// than Luau; a script that does not compile; no input or no output; an output
+  /// `scripting::parseOutputSpec` refuses (only types a script can produce); a name used twice among
+  /// the inputs and outputs; an input that resolves nowhere (unless recorded as an absent node's
+  /// output), that its `Recipe::dataset` does not carry, or whose datasets have no single one in
+  /// common (D7); an object input whose type has no field table; its own output; an edge that closes
+  /// a cycle; a persistent recipe reading a preview's output, or a preview that a persistent node
+  /// reads (a preview ends with its panel, the persisted reader would not); `history_exempt` changing
+  /// on an installed key (history would hold its snapshots under the other authority: remove it and
+  /// create it again); a new pin past the owner's cap.
   [[nodiscard]] Status upsert(Recipe recipe);
   /// Validates and binds `recipe` as `upsert` does, installing nothing: the node of a transient evaluation, at
-  /// revision 0 (`GridRunner`). It may declare no output (the evaluation infers them); a pin and a preview change
+  /// revision 0 (`GridRunner`). It may declare no output (the evaluation infers them); a pin, a preview and
+  /// `history_exempt` change
   /// nothing here, since nothing persists. A transient evaluation is a preview by definition: mark it `ephemeral`, or
   /// it may not read a preview's output.
   [[nodiscard]] Expected<Node> bind(Recipe recipe) const;
@@ -126,19 +138,31 @@ class RecipeGraph {
   [[nodiscard]] std::optional<std::string> missingInput(std::string_view key) const;
   /// Keys of every node reading an output of one of `keys`, transitively; sorted, `keys` excluded.
   [[nodiscard]] std::vector<std::string> dependentsOf(const std::vector<std::string>& keys) const;
+  /// Keys of the nodes with a topic input rooted at a name in `topics` (the topic or a slash-bounded
+  /// field below it), sorted: what reads a processor output a restore re-creates.
+  [[nodiscard]] std::vector<std::string> readersOfSeries(const std::vector<std::string>& topics) const;
   /// Keys of the nodes bound to `dataset`, sorted.
   [[nodiscard]] std::vector<std::string> keysOf(DatasetId dataset) const;
+  /// Every key, sorted.
+  [[nodiscard]] std::vector<std::string> keys() const;
+  [[nodiscard]] bool empty() const {
+    return nodes_.empty();
+  }
 
   // The life-cycle protocol (ARCHITECTURE §13). A restore has authority over every persistent node
   // under `kReplace`, and over the non-exempt ones under `kHistory`; never over a preview.
 
   /// Keys of the nodes in the restore's authority that `wanted` describes unchanged: every recipe
-  /// field equal (script and params ignoring line endings), and no upstream the restore re-creates
-  /// or removes (one changed, removed, or absent but wanted). The revision is not compared.
+  /// field equal (script and params ignoring line endings; a wanted `Recipe::dataset` is the node's),
+  /// no upstream the restore re-creates or removes (one changed, removed, or absent but wanted), and no
+  /// topic input rooted at a name in `replaced_outputs` (the transform and filter outputs the restore
+  /// removes or creates; a series key at the name or a slash-bounded field below it). Transitive. The
+  /// revision is not compared.
   [[nodiscard]] std::unordered_set<std::string> unchangedRecipeKeys(
-      const std::vector<Recipe>& wanted, RestoreIntent intent) const;
-  /// Removes every node in the restore's authority except `keep`.
-  void clearRecipes(RestoreIntent intent, const std::unordered_set<std::string>& keep = {});
+      const std::vector<Recipe>& wanted, RestoreIntent intent,
+      const std::vector<std::string>& replaced_outputs = {}) const;
+  /// Removes every node in the restore's authority except `keep`; returns the removed keys, sorted.
+  std::vector<std::string> clearRecipes(RestoreIntent intent, const std::unordered_set<std::string>& keep = {});
   [[nodiscard]] bool hasHistoryExemptRecipes() const;
   /// Output names (`<key>/<output>`) of the persistent exempt nodes reading a topic in `removed`
   /// (the topic or a slash-bounded field below it), directly or through upstream nodes: what a

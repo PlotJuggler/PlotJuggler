@@ -422,14 +422,18 @@ void forEachGenerator(QDomDocument& doc, Fn&& fn) {
   forEachTagged(doc, u"generator"_s, std::forward<Fn>(fn));
 }
 
+// Visits every <input> of a <transform> and of an <on_demand> recipe: both carry the same
+// dataset identity triple (kTransformInputIdentityAttributes).
 template <typename Fn>
 void forEachTransformInput(QDomDocument& doc, Fn&& fn) {
-  const QDomNodeList transforms = doc.elementsByTagName(u"transform"_s);
-  for (int transform_index = 0; transform_index < transforms.size(); ++transform_index) {
-    const QDomElement transform = transforms.at(transform_index).toElement();
-    for (QDomElement input = transform.firstChildElement(u"input"_s); !input.isNull();
-         input = input.nextSiblingElement(u"input"_s)) {
-      fn(input);
+  for (const QString& tag : {u"transform"_s, u"on_demand"_s}) {
+    const QDomNodeList processors = doc.elementsByTagName(tag);
+    for (int index = 0; index < processors.size(); ++index) {
+      const QDomElement processor = processors.at(index).toElement();
+      for (QDomElement input = processor.firstChildElement(u"input"_s); !input.isNull();
+           input = input.nextSiblingElement(u"input"_s)) {
+        fn(input);
+      }
     }
   }
 }

@@ -1,0 +1,79 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<root binding="source" format="PlotJuggler" pj4_version="4">
+  <tabbed_widget id="" name="main" parent="main_window">
+    <Tab containers="1" id="7b62e061-9bc9-411f-bbb6-40985caf7dd7" tab_name="tab1">
+      <Container>
+        <DockSplitter count="1" orientation="-" sizes="1.00000000">
+          <DockArea id="87bff7ff-7bae-42a1-b49f-43746d1df358" name="...">
+            <placeholder/>
+          </DockArea>
+        </DockSplitter>
+      </Container>
+    </Tab>
+    <currentTabIndex index="0"/>
+  </tabbed_widget>
+  <data_processors>
+    <on_demand id="inferred" infer_outputs="1" language="luau" owner_plugin="fixture-toolbox" query_time="1">
+      <input dataset_id="1" dataset_path="/pj-fixtures/data/fixture-a.mcap" dataset_source="fixture-a.mcap" name="cloud"/>
+      <input dataset_id="1" dataset_path="/pj-fixtures/data/fixture-a.mcap" dataset_source="fixture-a.mcap" name="threshold"/>
+      <output name="cropped" type="kPointCloud"/>
+      <params><![CDATA[{"zmin": -5}]]></params>
+      <script><![CDATA[
+  local inputs, params = ...
+  local cropped = inputs.cloud:crop_box{min={-5,-5,params.zmin}, max={5,5,inputs.threshold}}
+  return { cropped = cropped }
+]]></script>
+    </on_demand>
+    <on_demand history_exempt="1" id="exempt" language="luau" owner_plugin="fixture-assistant" query_time="1">
+      <input dataset_id="1" dataset_path="/pj-fixtures/data/fixture-a.mcap" dataset_source="fixture-a.mcap" name="cloud"/>
+      <input dataset_id="1" dataset_path="/pj-fixtures/data/fixture-a.mcap" dataset_source="fixture-a.mcap" name="threshold"/>
+      <output name="cropped" type="kPointCloud"/>
+      <params><![CDATA[{"zmin": -5}]]></params>
+      <script><![CDATA[
+  local inputs, params = ...
+  local cropped = inputs.cloud:crop_box{min={-5,-5,params.zmin}, max={5,5,inputs.threshold}}
+  return { cropped = cropped }
+]]></script>
+    </on_demand>
+    <on_demand id="finding" language="luau" owner_plugin="fixture-toolbox" pinned_t_ns="5000000000" query_time="1">
+      <input dataset_id="1" dataset_path="/pj-fixtures/data/fixture-a.mcap" dataset_source="fixture-a.mcap" name="cloud"/>
+      <input dataset_id="1" dataset_path="/pj-fixtures/data/fixture-a.mcap" dataset_source="fixture-a.mcap" name="threshold"/>
+      <output name="cropped" type="kPointCloud"/>
+      <params><![CDATA[{"zmin": -5}]]></params>
+      <script><![CDATA[
+  local inputs, params = ...
+  local cropped = inputs.cloud:crop_box{min={-5,-5,params.zmin}, max={5,5,inputs.threshold}}
+  return { cropped = cropped }
+]]></script>
+    </on_demand>
+    <on_demand id="downstream" language="luau" owner_plugin="fixture-toolbox" query_time="0">
+      <input dataset_id="1" dataset_path="/pj-fixtures/data/fixture-a.mcap" dataset_source="fixture-a.mcap" name="fixture-toolbox/crop/cropped"/>
+      <output name="cropped" type="kPointCloud"/>
+      <params><![CDATA[{}]]></params>
+      <script><![CDATA[local inputs = ... return {cropped = inputs['fixture-toolbox/crop/cropped']}]]></script>
+    </on_demand>
+    <on_demand id="crop" label="Crop box" language="luau" owner_plugin="fixture-toolbox" query_time="1">
+      <input dataset_id="1" dataset_path="/pj-fixtures/data/fixture-a.mcap" dataset_source="fixture-a.mcap" name="cloud"/>
+      <input dataset_id="1" dataset_path="/pj-fixtures/data/fixture-a.mcap" dataset_source="fixture-a.mcap" name="threshold"/>
+      <output name="cropped" type="kPointCloud"/>
+      <params><![CDATA[{"zmin": -5}]]></params>
+      <script><![CDATA[
+  local inputs, params = ...
+  local cropped = inputs.cloud:crop_box{min={-5,-5,params.zmin}, max={5,5,inputs.threshold}}
+  return { cropped = cropped }
+]]></script>
+    </on_demand>
+  </data_processors>
+  <previouslyLoaded_Datafiles>
+    <fileInfo display_offset_ns="0" filename="/pj-fixtures/data/fixture-a.mcap" prefix="" timeline_order="0">
+      <dataset display_offset_ns="0" source_index="0" source_name="fixture-a.mcap" timeline_order="0"/>
+      <plugin ID="MCAP Loader" manifest_id="mcap-loader"><![CDATA[{}]]></plugin>
+    </fileInfo>
+  </previouslyLoaded_Datafiles>
+  <right_panel_state splitter_sizes="49,49" style="0" width="1"/>
+  <left_panel_state sources_tab="file" streaming_buffer="5" streaming_source=""/>
+  <curve_list_state custom_filter="" datasets_filter="" show_topics="true" show_values="false"/>
+  <chrome_state main_splitter_sizes="0,0"/>
+  <source_timeline name_column_width="49" scroll_left_ns="0" scroll_top_px="0" snap="true" zoom="9.9999999999999995e-08"/>
+  <pinned_toolboxes/>
+</root>

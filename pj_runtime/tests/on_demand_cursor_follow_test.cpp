@@ -346,6 +346,25 @@ TEST(AppSessionTest, MergeReinstallsReadersAfterTheirUpstreams) {
   EXPECT_EQ(fx.state("owner/a")->status, Status::kReady) << fx.state("owner/a")->detail;
 }
 
+// A recipe a layout restore left bound to a dataset (its saved input dataset) that a merge then consumes is bound to
+// the anchor, not dropped for naming a dataset that no longer exists.
+TEST(AppSessionTest, MergeRebindsARecipeBoundToTheConsumedDataset) {
+  CursorFixture fx;
+  const DatasetId other = fx.addDataset("other");
+  fx.addCloudTopic(other, "cloud_b", {20 * kSec});
+  RecipeGraph::Recipe bound = recipe("crop", "cloud_b");
+  bound.dataset = other;
+  fx.install(bound);
+  ASSERT_EQ(fx.manager.onDemandService().graph().find("owner/crop")->dataset, other);
+
+  ASSERT_EQ(fx.session.mergeDatasets({fx.ds, other}), fx.ds);
+  fx.settle();
+  const RecipeGraph::Node* node = fx.manager.onDemandService().graph().find("owner/crop");
+  ASSERT_NE(node, nullptr) << "the recipe survives the merge";
+  EXPECT_EQ(node->dataset, fx.ds);
+  EXPECT_EQ(node->recipe.dataset, fx.ds);
+}
+
 // A display offset changed while the playhead is parked moves the raw time its demanded recipes are requested at.
 TEST(OnDemandCursorFollowTest, ADisplayOffsetChangeRequestsTheNewRawTime) {
   CursorFixture fx;

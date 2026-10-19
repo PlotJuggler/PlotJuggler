@@ -178,6 +178,7 @@ if(PJ_BUILD_TESTS)
         tests/derived_topics_test.cpp
         # Derived-recipe layout persistence restores across the engines without MainWindow.
         tests/derived_objects_test.cpp
+        tests/derived_objects_on_demand_test.cpp
         # A plugin binding's derived hosts: previews belong to the instance that made them.
         tests/derived_runtime_hosts_test.cpp
         # The on-demand recipe graph: bindings, the DAG, ownership, the protocol verbs, pins.

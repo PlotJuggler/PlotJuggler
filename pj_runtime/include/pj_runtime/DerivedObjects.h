@@ -15,6 +15,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/HistoryScope.h"
+#include "pj_runtime/RecipeGraph.h"
 
 namespace PJ {
 
@@ -49,6 +50,14 @@ struct WantedGenerator {
   bool bind_by_inputs = false;
 };
 
+/// One <on_demand> entry of a snapshot, its saved input dataset resolved into `Recipe::dataset`. A non-empty
+/// `parse_error` (a malformed attribute, an input dataset that does not resolve, a dependency cycle) is reported by
+/// the restore, which skips the entry.
+struct WantedOnDemand {
+  RecipeGraph::Recipe recipe;
+  QString parse_error;
+};
+
 /// What a <data_processors> block wants live. Parsing only queries the session, so a
 /// snapshot can drive a refusal before anything is cleared. The default (empty,
 /// `kReplace`) snapshot wants nothing: restoring it clears every recipe.
@@ -60,6 +69,9 @@ struct DerivedSnapshot {
   /// Producers before dependents (`orderTransformsByDependency`).
   std::vector<DataProcessorService::TransformRecipe> transforms;
   std::vector<WantedGenerator> generators;
+  /// Producers before readers (a reader names its upstream `<key>/<output>`); the entries that failed to
+  /// parse at the end.
+  std::vector<WantedOnDemand> on_demand;
   /// Transform entries that failed to parse and were dropped: the restore reports
   /// them first and does not count as complete.
   std::vector<DerivedDiagnostic> diagnostics;
@@ -74,8 +86,8 @@ struct DerivedRestoreReport {
   std::vector<DerivedDiagnostic> diagnostics;
 };
 
-/// Layout persistence of the derived recipes (filters, transforms, marker generators)
-/// and their one restore across the engines. Stateless: it holds the session and the
+/// Layout persistence of the derived recipes (filters, transforms, marker generators,
+/// on-demand recipes) and their one restore across the engines. Stateless: it holds the session and the
 /// catalog it reads and writes, nothing else, so a caller builds one where needed.
 /// GUI thread only, like the engines it drives.
 ///
@@ -92,7 +104,10 @@ class DerivedObjects {
   /// <processor> entries (INPUT stored as a stable (topic, field) path so it rebinds on
   /// reload) and plugin-created transforms and marker generators as <transform> /
   /// <generator> entries (script + bindings carried by value, inputs/outputs by name).
-  /// `scope == kFull` tags a history-exempt <transform>/<generator> with
+  /// On-demand recipes are <on_demand> entries (script, inputs with their dataset and, for
+  /// another node's output, its node and type; typed outputs, pin, query clock), producers
+  /// first; a preview is never written.
+  /// `scope == kFull` tags a history-exempt <transform>/<generator>/<on_demand> with
   /// `history_exempt="1"` so it round-trips through a layout file; `kHistory` omits
   /// those entries outright (see `SnapshotScope`).
   [[nodiscard]] QDomElement save(QDomDocument& doc, SnapshotScope scope) const;
@@ -102,10 +117,13 @@ class DerivedObjects {
   /// `history_exempt="1"`: history has no authority to replay one. Query-only.
   [[nodiscard]] DerivedSnapshot parse(const QDomElement& root, RestoreIntent intent) const;
 
-  /// The reason a `kHistory` restore of `snapshot` must be refused before anything is
-  /// cleared: removing its non-exempt processors would strand an exempt transform or
-  /// marker generator. nullopt outside `kHistory`, when nothing exempt is live, or when
-  /// nothing would strand. Query-only.
+  /// The reason a restore of `snapshot` must be refused before anything is cleared. Under
+  /// either intent: a preview holds the key of an on-demand recipe it wants (no restore
+  /// clears a preview, so the recipe would be skipped). Under `kHistory`: removing its
+  /// non-exempt processors would strand an exempt transform or marker generator, or it
+  /// takes away an output an exempt on-demand recipe reads (a processor's, or an on-demand
+  /// node's object output: its node dropped, moved to another dataset or no longer
+  /// declaring it). nullopt otherwise. Query-only.
   [[nodiscard]] std::optional<QString> refusal(const DerivedSnapshot& snapshot) const;
 
   /// Makes the live recipes what `snapshot` wants, under its intent. First the
@@ -125,7 +143,15 @@ class DerivedObjects {
   /// recipe. Rebuilds the catalog once the filters and transforms are installed, before
   /// any generator resolves through it, and announces one `markersChanged` at the end when
   /// the generator set changed. A generator that cannot be restored is reported but does
-  /// not fail the restore. Run `refusal` first for `kHistory`.
+  /// not fail the restore. On-demand recipes come last: a node is kept when its recipe,
+  /// its upstreams and the series it reads (no processor output the restore removes or
+  /// creates) all stay, with its topics, results and state; the rest are cleared before
+  /// the generators (their topics kept), installed after them, producers first (the
+  /// install requests a finding at its pin), and what no install reclaimed is retired, with
+  /// one `objectTopicsChanged`; a node outside the restore's authority (a preview, an exempt
+  /// one under history) reading a processor output the restore removed or created runs
+  /// again, with its readers. One that fails to parse or install fails the restore, as a
+  /// transform does. Run `refusal` first.
   [[nodiscard]] DerivedRestoreReport restore(DerivedSnapshot snapshot);
 
  private:
@@ -147,6 +173,9 @@ class DerivedObjects {
   // error yet.
   [[nodiscard]] std::vector<WantedFilter> parseWantedFilters(const QDomElement& element) const;
   [[nodiscard]] std::vector<WantedGenerator> parseWantedGenerators(const QDomElement& element) const;
+  // Parses every <on_demand> under `element`, skipping the history-exempt entries when `skip_exempt`;
+  // ordered by dependency (`DerivedSnapshot::on_demand`).
+  [[nodiscard]] std::vector<WantedOnDemand> parseWantedOnDemand(const QDomElement& element, bool skip_exempt) const;
 
   // Re-creates every wanted filter and transform that is not live, in rounds:
   // filters first, each input re-resolved through the catalog (rebuilt so an

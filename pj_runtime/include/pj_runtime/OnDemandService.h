@@ -28,7 +28,8 @@ namespace PJ {
 /// `DerivedObjects`. GUI thread only; what runs on the pool is the scheduler's (see `NodeScheduler.h`).
 class OnDemandService {
  public:
-  /// After an install that took a new revision of `key`, with the topics it retired (GUI thread).
+  /// After an install that took a new revision of `key`, with the topics it retired (GUI thread). Inside a restore
+  /// (from `clearExcept` to `sweepUnclaimed`) it gets none: the restore announces its topics once, after the sweep.
   using InstalledCallback = std::function<void(const std::string& key, const std::vector<ObjectTopicId>& retired)>;
 
   /// What the session wires in.
@@ -63,6 +64,23 @@ class OnDemandService {
   /// `NodeScheduler::requestAt`. A finding's request (at its pin) also records what `followLiveEdge` compares, so a
   /// live tick runs it again only when an input changed after this request.
   void requestAt(std::string_view key, Timestamp t);
+
+  // The restore protocol (docs/derived_objects/ARCHITECTURE.md §13): clear, install each wanted recipe, sweep.
+
+  /// Starts a restore: removes every node in the restore's authority except `keep` (`RecipeGraph::clearRecipes`)
+  /// and cancels and forgets their runs; returns whether any was removed. Their topics and results stay and their
+  /// readers are not superseded yet: the restore installs the wanted recipes next, and one reinstalled under the same
+  /// output names keeps its topic ids. End with `sweepUnclaimed`.
+  bool clearExcept(RestoreIntent intent, const std::unordered_set<std::string>& keep);
+  /// Retires the topics of the nodes `clearExcept` removed that no install reclaimed, and requests their remaining
+  /// readers (a preview, an exempt node) again at their cursors, where they now miss the input. Returns the retired
+  /// topics, for the caller to announce once.
+  std::vector<ObjectTopicId> sweepUnclaimed();
+  /// Drops the results of `keys` and of their readers, cancels their runs and requests each one requested before
+  /// again at its cursor: what they read changed under the same recipe (a processor output a restore re-created,
+  /// read by a node outside the restore's authority). An unknown key is skipped.
+  void rerun(const std::vector<std::string>& keys);
+
   [[nodiscard]] std::optional<NodeScheduler::NodeState> state(std::string_view key) const {
     return scheduler_.state(key);
   }
@@ -149,6 +167,8 @@ class OnDemandService {
   NodeScheduler::TfRevisionProvider tf_revision_;  ///< the scheduler's; empty: 0
   std::map<DatasetId, std::unordered_set<std::string>> demand_;
   std::map<std::string, LiveRequest, std::less<>> live_;
+  std::vector<std::string> cleared_;  ///< what `clearExcept` removed, until `sweepUnclaimed`
+  bool restoring_ = false;            ///< from `clearExcept` to `sweepUnclaimed`
 };
 
 }  // namespace PJ

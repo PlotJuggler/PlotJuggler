@@ -200,8 +200,9 @@ DataProcessorService::RemovalSet DataProcessorService::removalSet(
       removed.outputs.insert(output_topic_id);
     }
   }
+  // A preview belongs to its plugin instance: no restore removes it.
   for (const auto& [key, recipe] : transform_recipes_) {
-    if (!(keep_history_exempt && recipe.history_exempt) && keep_keys.count(key) == 0) {
+    if (!recipe.ephemeral && !(keep_history_exempt && recipe.history_exempt) && keep_keys.count(key) == 0) {
       removed.transform_keys.push_back(key);
       removed.outputs.insert(recipe.output_topic_ids.begin(), recipe.output_topic_ids.end());
     }

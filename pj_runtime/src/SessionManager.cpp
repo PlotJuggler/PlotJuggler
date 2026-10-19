@@ -147,7 +147,7 @@ SessionManager::SessionManager(QObject* parent)
         if (type != sdk::BuiltinObjectType::kNone && !isDerivedObjectTopic(descriptor)) {
           candidates.push_back({dataset, type, split.bare});
         }
-      } else if (scalar_lookup_ && scalar_lookup_(dataset, split.bare)) {
+      } else if (scalarInput(dataset, std::string(split.bare))) {
         candidates.push_back({dataset, sdk::BuiltinObjectType::kNone, split.bare});
       }
     }
@@ -155,7 +155,7 @@ SessionManager::SessionManager(QObject* parent)
   };
   on_demand.scalars =
       [this](DatasetId dataset, std::string_view name, Timestamp t) -> std::optional<InputStager::ScalarSample> {
-    const auto series = scalar_lookup_ ? scalar_lookup_(dataset, std::string(name)) : std::nullopt;
+    const auto series = scalarInput(dataset, std::string(name));
     if (!series) {
       return std::nullopt;
     }
@@ -227,6 +227,25 @@ void SessionManager::setScalarSeriesLookup(ScalarSeriesLookup lookup) {
   scalar_lookup_ = std::move(lookup);
 }
 
+std::optional<std::pair<TopicId, std::size_t>> SessionManager::scalarInput(
+    DatasetId dataset, const std::string& name) const {
+  if (!scalar_lookup_) {
+    return std::nullopt;
+  }
+  // The exact topic first, as a transform input resolves: `sensor/value` names that topic, not `sensor`'s field.
+  {
+    // ponytail: scans the dataset's topics at every request of a scalar input; index by name if it shows.
+    const auto lock = data_engine_.lockEngine();
+    for (const TopicId topic : data_engine_.listTopics(dataset)) {
+      const TopicStorage* storage = data_engine_.getTopicStorage(topic);
+      if (storage != nullptr && storage->descriptor().name == name) {
+        return std::pair<TopicId, std::size_t>{topic, 0};
+      }
+    }
+  }
+  return scalar_lookup_(dataset, name);
+}
+
 void SessionManager::setTransformService(TransformService* service) {
   transform_service_ = service;
   held_tf_.clear();
@@ -278,6 +297,11 @@ void SessionManager::rebindOnDemandAfterMerge(
   }
   for (auto& [recipe, raw_shift] : order) {
     const std::string key = recipe.key();
+    if (recipe.dataset) {
+      if (const auto merged = merged_into_.find(*recipe.dataset); merged != merged_into_.end()) {
+        recipe.dataset = merged->second;
+      }
+    }
     if (recipe.pinned_t) {
       recipe.pinned_t = saturatingAdd(*recipe.pinned_t, raw_shift);
     }

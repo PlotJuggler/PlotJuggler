@@ -92,7 +92,7 @@ Expected<std::vector<ObjectTopicId>> OnDemandService::install(RecipeGraph::Recip
     scheduler_.supersede(reader);
   }
   if (installed_) {
-    installed_(key, *retired);
+    installed_(key, restoring_ ? std::vector<ObjectTopicId>{} : *retired);
   }
   return retired;
 }
@@ -110,6 +110,44 @@ std::vector<ObjectTopicId> OnDemandService::remove(std::string_view key) {
     scheduler_.supersede(reader);
   }
   return retired;
+}
+
+bool OnDemandService::clearExcept(RestoreIntent intent, const std::unordered_set<std::string>& keep) {
+  restoring_ = true;
+  const std::vector<std::string> removed = graph_.clearRecipes(intent, keep);
+  for (const std::string& key : removed) {
+    scheduler_.forget(key);
+    live_.erase(key);
+  }
+  cleared_.insert(cleared_.end(), removed.begin(), removed.end());
+  return !removed.empty();
+}
+
+std::vector<ObjectTopicId> OnDemandService::sweepUnclaimed() {
+  restoring_ = false;
+  std::vector<std::string> unclaimed;
+  std::vector<ObjectTopicId> retired;
+  for (const std::string& key : std::exchange(cleared_, {})) {
+    if (graph_.find(key) == nullptr) {
+      std::ranges::move(history_.forget(key), std::back_inserter(retired));
+      unclaimed.push_back(key);
+    }
+  }
+  for (const std::string& reader : graph_.dependentsOf(unclaimed)) {
+    scheduler_.supersede(reader);
+  }
+  return retired;
+}
+
+void OnDemandService::rerun(const std::vector<std::string>& keys) {
+  std::vector<std::string> affected = graph_.dependentsOf(keys);
+  affected.insert(affected.end(), keys.begin(), keys.end());
+  for (const std::string& key : affected) {
+    history_.clear(key);
+  }
+  for (const std::string& key : affected) {
+    scheduler_.supersede(key);
+  }
 }
 
 void OnDemandService::setDemand(DatasetId dataset, std::vector<std::string> topic_names) {

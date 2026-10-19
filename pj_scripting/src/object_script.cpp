@@ -431,6 +431,18 @@ Expected<ScriptBundle> bindDeclared(std::vector<Returned>& returned, Span<const 
 
 }  // namespace
 
+std::string outputTypeName(const OutputSpec& spec) {
+  switch (spec.type) {
+    case OutputType::kNumber:
+      return "number";
+    case OutputType::kString:
+      return "string";
+    case OutputType::kObject:
+      break;
+  }
+  return std::string(sdk::name(spec.object_type));
+}
+
 Expected<OutputSpec> parseOutputSpec(std::string_view spec) {
   const std::string quoted = "output spec '" + std::string(spec) + "'";
   const std::string_view trimmed = trim(spec);

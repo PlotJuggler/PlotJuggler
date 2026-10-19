@@ -463,6 +463,13 @@ if(PJ_BUILD_TESTS)
         tests/main_window_release41_layout_test.cpp)
     set_source_files_properties(tests/main_window_release41_layout_test.cpp PROPERTIES
         COMPILE_DEFINITIONS PJ_RELEASE41_LAYOUT_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/layouts/release-4.1")
+    # ... and so do the on-demand recipes of layouts saved by the derived-objects prototype.
+    set_property(SOURCE tests/main_window_release41_layout_test.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS PJ_PROTOTYPE_LAYOUT_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/layouts/prototype")
+
+    # On-demand recipes through undo and redo: deletion, exemption, previews.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_on_demand_restore_test.cpp)
 
     # A hand-made 3D view filled by a user drop frames its first content; a
     # restored layout keeps its saved fixed frame and camera (SCN-16).
@@ -811,6 +818,8 @@ if(PJ_BUILD_TESTS)
         LIBS pj_app_shell pj_resources Qt6::Test
     )
     set_target_properties(pj_app_gui_tests PROPERTIES AUTOMOC ON)
+    # on_demand_test_utils.h: the fake script run and clouds shared with pj_runtime's tests.
+    target_include_directories(pj_app_gui_tests PRIVATE ${CMAKE_SOURCE_DIR}/pj_runtime/tests)
 
     # QRhiWidgets in ADS docks across float/redock, split, sibling destruction,
     # floating-window close and DPR changes, plus the mixed-API negative case.

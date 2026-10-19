@@ -850,6 +850,44 @@ TEST(DatasetSourcePath, StampResolveAndPortableIdGuardCoverEveryIdentityShape) {
   EXPECT_EQ(generator.attribute(u"dataset_path"_s), expected);
 }
 
+// LAY-17: an <on_demand> recipe's inputs carry their dataset like a transform's: a known id gets its path at
+// file save, an unvalidated volatile id is stripped, and a generic layout keeps no qualifier.
+TEST(DatasetSourcePath, OnDemandInputsAreStampedAndStripped) {
+  QDomDocument doc;
+  QDomElement root = doc.createElement(u"root"_s);
+  doc.appendChild(root);
+  QDomElement processors = doc.createElement(u"data_processors"_s);
+  root.appendChild(processors);
+  QDomElement on_demand = doc.createElement(u"on_demand"_s);
+  processors.appendChild(on_demand);
+  QDomElement known = doc.createElement(u"input"_s);
+  known.setAttribute(u"name"_s, u"cloud"_s);
+  known.setAttribute(u"dataset_id"_s, u"7"_s);
+  known.setAttribute(u"dataset_source"_s, u"run.mcap"_s);
+  on_demand.appendChild(known);
+  QDomElement unknown = doc.createElement(u"input"_s);
+  unknown.setAttribute(u"name"_s, u"threshold"_s);
+  unknown.setAttribute(u"dataset_id"_s, u"8"_s);
+  on_demand.appendChild(unknown);
+
+  PJ::layout_xml::stampDatasetSourcePaths(
+      doc, [](std::uint32_t id) { return id == 7 ? u"data/run.mcap"_s : QString{}; });
+  EXPECT_EQ(known.attribute(u"dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_FALSE(unknown.hasAttribute(u"dataset_path"_s)) << "id 8 unknown to the lookup";
+
+  PJ::layout_xml::removeUnvalidatedDatasetIds(doc);
+  EXPECT_TRUE(known.hasAttribute(u"dataset_id"_s)) << "path-qualified: kept";
+  EXPECT_FALSE(unknown.hasAttribute(u"dataset_id"_s)) << "an unvalidated volatile id must not survive a file save";
+
+  PJ::layout_xml::removeDatasetQualifiersForGenericLayout(doc);
+  for (const QDomElement& input : {known, unknown}) {
+    EXPECT_FALSE(input.hasAttribute(u"dataset_id"_s));
+    EXPECT_FALSE(input.hasAttribute(u"dataset_source"_s));
+    EXPECT_FALSE(input.hasAttribute(u"dataset_path"_s));
+    EXPECT_FALSE(input.attribute(u"name"_s).isEmpty()) << "the name stays";
+  }
+}
+
 // A hidden <marker_scope> carries the same dataset identity as the curves beside it
 // and must survive the same stamp / portable-id / generic-strip passes, or a reload
 // with exchanged dataset ids binds the hidden scope to the wrong dataset.

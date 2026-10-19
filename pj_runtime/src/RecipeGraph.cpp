@@ -3,6 +3,7 @@
 #include "pj_runtime/RecipeGraph.h"
 
 #include <algorithm>
+#include <unordered_map>
 #include <utility>
 
 #include "SeriesKey.h"
@@ -17,15 +18,7 @@ using scripting::OutputType;
 
 /// `spec` as `parseOutputSpec` text, so the one parser validates a declaration built in code.
 std::string declaration(const OutputSpec& spec) {
-  switch (spec.type) {
-    case OutputType::kNumber:
-      return spec.name + ":number";
-    case OutputType::kString:
-      return spec.name + ":string";
-    case OutputType::kObject:
-      return spec.name + ":" + std::string(sdk::name(spec.object_type));
-  }
-  return spec.name;
+  return spec.name + ":" + scripting::outputTypeName(spec);
 }
 
 /// Every field a layout carries, script and params ignoring line endings (the key is equal already).
@@ -41,6 +34,14 @@ const OutputSpec* objectOutput(const RecipeGraph::Recipe& recipe, std::string_vi
     return output.type == OutputType::kObject && output.name == name;
   });
   return found == recipe.outputs.end() ? nullptr : &*found;
+}
+
+/// Whether `node` has a topic input rooted at a name in `topics` (`seriesKeyBelongsToTopic`).
+bool readsSeriesOf(const RecipeGraph::Node& node, const std::vector<std::string>& topics) {
+  return std::ranges::any_of(node.bindings, [&topics](const RecipeGraph::Binding& b) {
+    return b.upstream.empty() &&
+           std::ranges::any_of(topics, [&b](const std::string& name) { return seriesKeyBelongsToTopic(b.name, name); });
+  });
 }
 
 /// A restore never clears or keeps a preview, and history never touches an exempt node.
@@ -89,13 +90,17 @@ RecipeGraph::RecipeGraph(InputResolver resolver) : resolver_(std::move(resolver)
 
 Expected<RecipeGraph::Node> RecipeGraph::bind(Recipe recipe) const {
   const auto reject = [](const std::string& why) { return unexpected("on-demand: " + why); };
+  if (recipe.params_json.empty()) {
+    recipe.params_json = "{}";  // what a layout parse reads back, so a save round-trips byte for byte
+  }
   Expected<scripting::CompiledScript> compiled = validate(recipe);
   if (!compiled.has_value()) {
     return reject(compiled.error());
   }
   const std::string key = recipe.key();
 
-  // Each input's candidate datasets: another node's output resolves in that node's dataset.
+  // Each input's candidate datasets: another node's output resolves in that node's dataset. A recorded output of an
+  // absent node has none (its candidates stay empty): it constrains nothing and binds as a missing input.
   const std::vector<std::string> readers = dependentsOf({key});
   std::vector<Binding> bindings(recipe.inputs.size());
   std::vector<std::vector<InputCandidate>> candidates(recipe.inputs.size());
@@ -110,7 +115,11 @@ Expected<RecipeGraph::Node> RecipeGraph::bind(Recipe recipe) const {
     if (producer == nullptr) {
       candidates[i] = resolver_(input);
       if (candidates[i].empty()) {
-        return reject("unknown input '" + input + "'");
+        const auto recorded = recipe.recorded_upstreams.find(input);
+        if (recorded == recipe.recorded_upstreams.end() || recorded->second.upstream == key) {
+          return reject("unknown input '" + input + "'");
+        }
+        bindings[i] = recorded->second;
       }
       continue;
     }
@@ -128,25 +137,56 @@ Expected<RecipeGraph::Node> RecipeGraph::bind(Recipe recipe) const {
     candidates[i] = {{upstream.dataset, objectOutput(upstream.recipe, output)->object_type, output}};
   }
 
-  // D7: exactly one dataset binds every input.
-  std::vector<DatasetId> common;
-  for (const InputCandidate& candidate : candidates.front()) {
-    common.push_back(candidate.dataset);
+  // A recipe naming its dataset binds there only.
+  if (recipe.dataset.has_value()) {
+    for (std::size_t i = 0; i < recipe.inputs.size(); ++i) {
+      if (candidates[i].empty()) {
+        continue;
+      }
+      std::erase_if(candidates[i], [&recipe](const InputCandidate& c) { return c.dataset != *recipe.dataset; });
+      if (candidates[i].empty()) {
+        return reject(
+            "input '" + recipe.inputs[i] + "' is not on dataset " + std::to_string(*recipe.dataset) +
+            ", which the recipe binds");
+      }
+    }
   }
+
+  // D7: exactly one dataset binds every input.
+  std::optional<std::vector<DatasetId>> common;
   for (const auto& input_candidates : candidates) {
-    std::erase_if(common, [&input_candidates](DatasetId dataset) {
+    if (input_candidates.empty()) {
+      continue;
+    }
+    if (!common.has_value()) {
+      common.emplace();
+      for (const InputCandidate& candidate : input_candidates) {
+        common->push_back(candidate.dataset);
+      }
+      continue;
+    }
+    std::erase_if(*common, [&input_candidates](DatasetId dataset) {
       return std::ranges::none_of(
           input_candidates, [dataset](const InputCandidate& c) { return c.dataset == dataset; });
     });
   }
-  if (common.empty()) {
+  if (!common.has_value()) {
+    if (!recipe.dataset.has_value()) {
+      return reject("no input resolves, and the recipe names no dataset");
+    }
+    common = std::vector<DatasetId>{*recipe.dataset};
+  }
+  if (common->empty()) {
     return reject("inputs do not all resolve on one dataset (a recipe reads one dataset)");
   }
-  if (common.size() > 1) {
+  if (common->size() > 1) {
     return reject("inputs resolve on more than one dataset (ambiguous); qualify them with the dataset's name");
   }
-  const DatasetId dataset = common.front();
+  const DatasetId dataset = common->front();
   for (std::size_t i = 0; i < recipe.inputs.size(); ++i) {
+    if (candidates[i].empty()) {
+      continue;
+    }
     const auto chosen = std::ranges::find(candidates[i], dataset, &InputCandidate::dataset);
     bindings[i].object_type = chosen->object_type;
     bindings[i].name = chosen->topic;
@@ -173,6 +213,10 @@ Status RecipeGraph::upsert(Recipe recipe) {
     return reject("a recipe needs at least one output");
   }
   const std::string key = installed.key();
+  const Node* existing = find(key);
+  if (existing != nullptr && existing->recipe.history_exempt != installed.history_exempt) {
+    return reject("history_exempt cannot change on the installed recipe '" + key + "': remove it and create it again");
+  }
   if (installed.ephemeral) {
     // A reader keeps naming a removed upstream, so this also covers a reinstall after a removal.
     for (const auto& [reader, node] : nodes_) {
@@ -182,7 +226,6 @@ Status RecipeGraph::upsert(Recipe recipe) {
       }
     }
   }
-  const Node* existing = find(key);
   if (existing != nullptr && sameRecipe(existing->recipe, installed) &&
       existing->recipe.ephemeral == installed.ephemeral && existing->dataset == bound->dataset &&
       existing->bindings == bound->bindings) {
@@ -267,12 +310,31 @@ std::optional<std::string> RecipeGraph::missingInput(std::string_view key) const
   return std::nullopt;
 }
 
+std::vector<std::string> RecipeGraph::readersOfSeries(const std::vector<std::string>& topics) const {
+  std::vector<std::string> keys;
+  for (const auto& [key, node] : nodes_) {
+    if (readsSeriesOf(node, topics)) {
+      keys.push_back(key);
+    }
+  }
+  return keys;
+}
+
 std::vector<std::string> RecipeGraph::keysOf(DatasetId dataset) const {
   std::vector<std::string> keys;
   for (const auto& [key, node] : nodes_) {
     if (node.dataset == dataset) {
       keys.push_back(key);
     }
+  }
+  return keys;
+}
+
+std::vector<std::string> RecipeGraph::keys() const {
+  std::vector<std::string> keys;
+  keys.reserve(nodes_.size());
+  for (const auto& entry : nodes_) {
+    keys.push_back(entry.first);
   }
   return keys;
 }
@@ -298,15 +360,22 @@ std::vector<std::string> RecipeGraph::dependentsOf(const std::vector<std::string
 }
 
 std::unordered_set<std::string> RecipeGraph::unchangedRecipeKeys(
-    const std::vector<Recipe>& wanted, RestoreIntent intent) const {
-  const auto wanted_entry = [&wanted](const std::string& key) -> const Recipe* {
-    const auto found = std::ranges::find_if(wanted, [&key](const Recipe& recipe) { return recipe.key() == key; });
-    return found == wanted.end() ? nullptr : &*found;
+    const std::vector<Recipe>& wanted, RestoreIntent intent, const std::vector<std::string>& replaced_outputs) const {
+  std::unordered_map<std::string, const Recipe*> wanted_by_key;
+  wanted_by_key.reserve(wanted.size());
+  for (const Recipe& recipe : wanted) {
+    wanted_by_key.emplace(recipe.key(), &recipe);
+  }
+  const auto wanted_entry = [&wanted_by_key](const std::string& key) -> const Recipe* {
+    const auto found = wanted_by_key.find(key);
+    return found == wanted_by_key.end() ? nullptr : found->second;
   };
   std::unordered_set<std::string> unchanged;
   for (const auto& [key, node] : nodes_) {
     const Recipe* snapshot = wanted_entry(key);
-    if (inAuthority(node, intent) && snapshot != nullptr && sameRecipe(node.recipe, *snapshot)) {
+    if (inAuthority(node, intent) && snapshot != nullptr && sameRecipe(node.recipe, *snapshot) &&
+        (!snapshot->dataset.has_value() || *snapshot->dataset == node.dataset) &&
+        !readsSeriesOf(node, replaced_outputs)) {
       unchanged.insert(key);
     }
   }
@@ -323,9 +392,16 @@ std::unordered_set<std::string> RecipeGraph::unchangedRecipeKeys(
   return unchanged;
 }
 
-void RecipeGraph::clearRecipes(RestoreIntent intent, const std::unordered_set<std::string>& keep) {
-  std::erase_if(
-      nodes_, [&](const auto& entry) { return inAuthority(entry.second, intent) && !keep.contains(entry.first); });
+std::vector<std::string> RecipeGraph::clearRecipes(RestoreIntent intent, const std::unordered_set<std::string>& keep) {
+  std::vector<std::string> removed;
+  std::erase_if(nodes_, [&](const auto& entry) {
+    const bool clear = inAuthority(entry.second, intent) && !keep.contains(entry.first);
+    if (clear) {
+      removed.push_back(entry.first);
+    }
+    return clear;
+  });
+  return removed;
 }
 
 bool RecipeGraph::hasHistoryExemptRecipes() const {

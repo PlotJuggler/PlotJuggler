@@ -202,11 +202,11 @@ optional tail slot preserves existing callers. See the SDK's
 
 ## Derived-recipe persistence
 
-The `<data_processors>` block (filters, transforms, marker generators) is saved
-and restored by `pj_runtime`'s `DerivedObjects` (see `pj_runtime/CLAUDE.md`).
+The `<data_processors>` block (filters, transforms, marker generators, on-demand
+recipes) is saved and restored by `pj_runtime`'s `DerivedObjects` (see `pj_runtime/CLAUDE.md`).
 `MainWindow` saves through `derivedObjects().save(...)` and keeps a thin wrapper for
 the restore — `restoreDataProcessors` = `derivedObjects().parse(root, intent)` +
-`checkDataProcessorDependencies` (the `kHistory` preflight) + `applyDataProcessors`,
+`checkDataProcessorDependencies` (the preflight: a preview holding an on-demand key the snapshot wants, under either intent; the protected dependents under `kHistory`) + `applyDataProcessors`,
 the snapshot carrying its intent — and owns what is UI: each diagnostic (the parse's
 and the restore's, in one report) is reported (`reportDerived`) under source
 "Layout" (so `layout_issue_capture_` sees it), and the
@@ -215,7 +215,9 @@ once and uses that snapshot for the preflight (before the timeline offsets
 move) and for the restore; the progressive drain's teardown applies an empty
 snapshot. An undo leaves a marker rule it does not change as it is drawn, and
 runs a changed one to completion (a layout load creates it with the bounded create). The restore fixtures in `tests/fixtures/layouts/release-4.1/` are
-layouts written by a release-4.1 build (`MainWindowRelease41LayoutTest`).
+layouts written by a release-4.1 build (`MainWindowRelease41LayoutTest`), and those in
+`tests/fixtures/layouts/prototype/` on-demand recipes written by the derived-objects
+prototype (`MainWindowPrototypeLayoutTest`).
 
 ## Toolbox presentation
 

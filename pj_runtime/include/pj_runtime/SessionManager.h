@@ -156,6 +156,10 @@ class SessionManager : public QObject {
   void notifyMarkersChanged() {
     emit markersChanged();
   }
+  /// Announces object topics registered or retired outside an ingest (a layout restore's on-demand step).
+  void notifyObjectTopicsChanged() {
+    emit objectTopicsChanged();
+  }
   // Ends the previews among `transform_keys` (ephemeral transforms) and
   // `generator_ids` (ephemeral marker rules), repainting the overlays once if a marker
   // preview went; a gone or persistent one is skipped. A preview belongs to the plugin
@@ -218,8 +222,8 @@ class SessionManager : public QObject {
   /// (topic, column) of the scalar series `name` (bare, the catalog's series naming) in a dataset.
   using ScalarSeriesLookup =
       std::function<std::optional<std::pair<TopicId, std::size_t>>(DatasetId dataset, const std::string& name)>;
-  /// How on-demand recipes resolve and sample scalar series: AppSession injects the catalog's lookup; until then
-  /// no scalar input resolves. GUI thread.
+  /// How on-demand recipes resolve and sample scalar series (with a scalar topic's own name, `scalarInput`):
+  /// AppSession injects the catalog's lookup; until then no scalar input resolves. GUI thread.
   void setScalarSeriesLookup(ScalarSeriesLookup lookup);
   /// Where on-demand runs read the TF state from (the shell owns the service and may destroy it first: the
   /// session watches it). Without one, runs see no TF. GUI thread.
@@ -863,6 +867,12 @@ class SessionManager : public QObject {
   [[nodiscard]] uint64_t onDemandTfRevision(DatasetId dataset_id);
   /// Whether `onDemandTf` brakes the dataset's snapshots now.
   [[nodiscard]] bool tfIngesting(DatasetId dataset_id) const;
+
+  /// (topic, column) of an on-demand scalar input: the scalar topic named `name`, whose first column it reads, else
+  /// the series the injected lookup names (`topic/field`), as a transform input resolves. nullopt before the lookup
+  /// is set.
+  [[nodiscard]] std::optional<std::pair<TopicId, std::size_t>> scalarInput(
+      DatasetId dataset, const std::string& name) const;
 
   DataEngine data_engine_;
   ObjectStore object_store_;

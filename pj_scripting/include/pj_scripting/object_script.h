@@ -60,6 +60,9 @@ struct OutputSpec {
 /// no script can produce (an occupancy grid; a video frame or frame transforms until a slice decides
 /// how they publish). Duplicate names across a list are the caller's check.
 [[nodiscard]] Expected<OutputSpec> parseOutputSpec(std::string_view spec);
+/// The type half of `spec`'s declaration, as `parseOutputSpec` reads it: `number`, `string` or the object
+/// type's name (`kPointCloud`).
+[[nodiscard]] std::string outputTypeName(const OutputSpec& spec);
 
 /// A resolved input or a produced output, named as the script sees it.
 struct NamedValue {

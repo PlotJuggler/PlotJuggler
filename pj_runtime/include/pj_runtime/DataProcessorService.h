@@ -212,7 +212,8 @@ class DataProcessorService {
   /// `include_ephemeral` also answers for a preview.
   [[nodiscard]] bool isTransformLive(std::string_view namespaced_key, bool include_ephemeral = false) const;
 
-  /// Remove every live transform, leaf-first. `RestoreIntent::kHistory`
+  /// Remove every persistent transform, leaf-first (a preview stays, unless the
+  /// cascade of a removed input takes it). `RestoreIntent::kHistory`
   /// reconciles only the non-exempt transforms and leaves the `history_exempt`
   /// ones untouched; `kReplace` removes all. `keep_keys` names further transforms
   /// to leave live (a restore keeps those whose recipe the snapshot does not
@@ -424,8 +425,8 @@ class DataProcessorService {
   /// bridge created when the instance ends. Persistent transforms are the user's data.
   void removeEphemerals(const std::unordered_set<std::string>& keys);
 
-  /// `clearTransforms(RestoreIntent::kReplace)` — tear down every
-  /// transform at once (session close / reconcile primitive for a full restore).
+  /// `clearTransforms(RestoreIntent::kReplace)` — tear down every persistent
+  /// transform at once (reconcile primitive for a full restore).
   void clearAllTransforms();
 
   /// Tear down every transform whose resolved output lives in `dataset_id`
@@ -546,8 +547,9 @@ class DataProcessorService {
   [[nodiscard]] Expected<ResolvedInput> resolveInputBinding(const TransformInputBinding& binding) const;
 
   /// The processors a clear or a history restore removes directly: the filters
-  /// outside `keep_filter_outputs` and the transforms outside `keep_keys` (minus
-  /// the `history_exempt` ones when `keep_history_exempt`). The clears and the
+  /// outside `keep_filter_outputs` and the persistent transforms outside `keep_keys`
+  /// (minus the `history_exempt` ones when `keep_history_exempt`); a preview ends
+  /// with its plugin instance, never with a restore. The clears and the
   /// preflight queries all derive from this one set, so they cannot disagree.
   struct RemovalSet {
     std::vector<NodeId> filter_nodes;

@@ -38,18 +38,6 @@ inline std::vector<uint8_t> canonicalCloud(size_t points) {
   return serializeBuiltinObject(sdk::BuiltinObject(makeCloud(points))).value();
 }
 
-/// Sets the run the session's scheduler uses for the fixture's lifetime.
-struct ScopedRun {
-  explicit ScopedRun(FakeRun& fake) {
-    OnDemandService::setRunForTest(fake.function());
-  }
-  ~ScopedRun() {
-    OnDemandService::setRunForTest({});
-  }
-  ScopedRun(const ScopedRun&) = delete;
-  ScopedRun& operator=(const ScopedRun&) = delete;
-};
-
 /// A real AppSession whose on-demand runs are `fake`'s, with one dataset `log` holding the cloud topic `cloud` (entries
 /// at 5, 10 and 20 s).
 struct OnDemandSessionFixture {

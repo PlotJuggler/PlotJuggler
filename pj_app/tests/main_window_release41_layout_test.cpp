@@ -4,7 +4,8 @@
 // Layouts saved by a release-4.1 build (pj_app/tests/fixtures/layouts/release-4.1)
 // restore through the real load paths: the derived recipes come back bound to their
 // datasets, their outputs reach the catalog and the plots, the markers are drawn, and
-// saving again writes the same <data_processors> block.
+// saving again writes the same <data_processors> block. So do the on-demand recipes of
+// layouts saved by the prototype (pj_app/tests/fixtures/layouts/prototype).
 
 #include <gtest/gtest.h>
 
@@ -28,6 +29,7 @@
 #include "LayoutXml.h"
 #include "MainWindow.h"
 #include "dataset_test_helpers.h"
+#include "on_demand_test_utils.h"
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_base/builtin/point_cloud_codec.hpp"
 #include "pj_datastore/object_store.hpp"
@@ -41,6 +43,8 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/MarkerTopics.h"
+#include "pj_runtime/OnDemandService.h"
+#include "pj_runtime/ResultHistory.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 
@@ -458,6 +462,124 @@ TEST_F(MainWindowRelease41LayoutTest, RestoresHistorySnapshotSavedByRelease41) {
   // The snapshot names no exempt recipe; history keeps the live ones.
   expectRecipesRestored();
   expectMarkersDrawn();
+}
+
+// The prototype's session (prototype_fixture_writer.cpp.txt), recreated with a decoy dataset loaded first, so the
+// saved dataset id 1 names the decoy: the restore must bind by path. The fake script run computes.
+class MainWindowPrototypeLayoutTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    ASSERT_TRUE(extensions_dir_.isValid());
+    ASSERT_TRUE(work_dir_.isValid());
+    root_ = QDir(work_dir_.path()).absoluteFilePath(u"root"_s);
+    const QString path = touch(root_ + u"/data/fixture-a.mcap"_s);
+    root_ = QFileInfo(root_).canonicalFilePath();
+    window_ = std::make_unique<PJ::MainWindow>(extensions_dir_.path());
+    PJ::AppSession& app = Peer::session(*window_);
+    PJ::SessionManager& session = app.sessionManager();
+    ASSERT_EQ(pj_test::createDataset(app, "decoy.mcap", /*own_time_domain=*/true), 1U);
+    dataset_ = pj_test::createDataset(app, "fixture-a.mcap", /*own_time_domain=*/true);
+    addScalarTopic(app, dataset_, "threshold", 1.0);
+    const auto cloud = session.objectStore().registerTopic(
+        PJ::ObjectTopicDescriptor{
+            .dataset_id = dataset_,
+            .topic_name = "cloud",
+            .metadata_json = R"({"builtin_object_type":"kPointCloud"})"});
+    ASSERT_TRUE(cloud.has_value());
+    const auto bytes = PJ::serializeBuiltinObject(PJ::sdk::BuiltinObject(PJ::test::makeCloud(2, 5 * kSecond)));
+    ASSERT_TRUE(session.objectStore().pushOwned(*cloud, 5 * kSecond, *bytes).has_value());
+    app.catalogModel().rebuildFromDatastore();
+    session.setDatasetSourcePath(dataset_, path);
+    session.recordLoadedSource(path, QString{}, u"MCAP Loader"_s, u"{}"_s, u"mcap-loader"_s);
+  }
+  void TearDown() override {
+    window_.reset();
+  }
+
+  [[nodiscard]] static QString touch(const QString& path) {
+    EXPECT_TRUE(QDir().mkpath(QFileInfo(path).absolutePath()));
+    QFile file(path);
+    EXPECT_TRUE(file.open(QIODevice::WriteOnly));
+    return QFileInfo(path).canonicalFilePath();
+  }
+  [[nodiscard]] QByteArray relocatedFixture(const QString& name) const {
+    QByteArray bytes = readFile(QDir(QStringLiteral(PJ_PROTOTYPE_LAYOUT_FIXTURES)).filePath(name));
+    bytes.replace(QByteArray(kFakeRoot), root_.toUtf8());
+    return bytes;
+  }
+  [[nodiscard]] PJ::AppSession& app() const {
+    return Peer::session(*window_);
+  }
+
+  PJ::test::FakeRun fake_;  ///< outlives the window, whose session's pool joins the runs
+  PJ::test::ScopedRun scoped_run_{fake_};
+  QTemporaryDir extensions_dir_;
+  QTemporaryDir work_dir_;
+  QString root_;
+  std::unique_ptr<PJ::MainWindow> window_;
+  PJ::DatasetId dataset_ = 0;
+};
+
+// GAP-39: a source-bound layout the prototype saved (its reader written before its producer, a finding, an exempt
+// recipe, `infer_outputs` and `label` attributes) restores through File > Load Layout: every recipe on the
+// dataset its path names, the reader bound to its producer, the finding computed at its pin; saving again writes
+// the same <on_demand> entries without the two attributes the format dropped, the reader's input naming its upstream.
+TEST_F(MainWindowPrototypeLayoutTest, RestoresLayoutSavedByPrototype) {
+  const QString path = QDir(work_dir_.path()).filePath(u"layouts/source_bound.pj4.xml"_s);
+  writeFile(path, relocatedFixture(u"source_bound.pj4.xml"_s));
+  QSignalSpy settled(window_.get(), &PJ::MainWindow::layoutRestoreSettled);
+  Peer::loadLayout(*window_, path);
+  QElapsedTimer timer;
+  timer.start();
+  while (settled.isEmpty() && timer.elapsed() < 10'000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+  }
+  ASSERT_EQ(settled.size(), 1);
+  EXPECT_TRUE(settled.front().front().toBool());
+  PJ::SessionManager& session = app().sessionManager();
+  session.enginePool().waitIdle();
+  QCoreApplication::processEvents();
+
+  const PJ::RecipeGraph& graph = session.onDemandService().graph();
+  EXPECT_EQ(
+      graph.keys(), (std::vector<std::string>{
+                        "fixture-assistant/exempt", "fixture-toolbox/crop", "fixture-toolbox/downstream",
+                        "fixture-toolbox/finding", "fixture-toolbox/inferred"}));
+  for (const std::string& key : graph.keys()) {
+    EXPECT_EQ(graph.find(key)->dataset, dataset_) << key << ": bound by path, not by the saved id";
+    EXPECT_EQ(graph.find(key)->recipe.history_exempt, key == "fixture-assistant/exempt") << key;
+  }
+  const PJ::RecipeGraph::Node* downstream = graph.find("fixture-toolbox/downstream");
+  ASSERT_NE(downstream, nullptr);
+  EXPECT_EQ(downstream->bindings.front().upstream, "fixture-toolbox/crop");
+  EXPECT_FALSE(downstream->recipe.query_time);
+  EXPECT_EQ(graph.find("fixture-toolbox/crop")->recipe.params_json, R"({"zmin": -5})");
+  const PJ::RecipeGraph::Node* finding = graph.find("fixture-toolbox/finding");
+  ASSERT_NE(finding, nullptr);
+  EXPECT_EQ(finding->recipe.pinned_t, 5 * kSecond);
+  const auto finding_topic = session.objectStore().findTopic(dataset_, "fixture-toolbox/finding/cropped");
+  ASSERT_TRUE(finding_topic.has_value());
+  EXPECT_TRUE(session.objectStore().latestAt(*finding_topic, PJ::kFindingTimestamp).has_value())
+      << "the finding is computed at its pin";
+
+  const QString resaved = QDir(work_dir_.path()).filePath(u"layouts/resaved.pj4.xml"_s);
+  Peer::saveLayout(*window_, resaved, /*include_data_source=*/true);
+  QDomDocument expected;
+  ASSERT_TRUE(static_cast<bool>(expected.setContent(relocatedFixture(u"source_bound.pj4.xml"_s))));
+  const QDomNodeList entries = expected.elementsByTagName(u"on_demand"_s);
+  for (int index = 0; index < entries.size(); ++index) {
+    QDomElement entry = entries.at(index).toElement();
+    entry.removeAttribute(u"infer_outputs"_s);
+    entry.removeAttribute(u"label"_s);
+    if (entry.attribute(u"id"_s) == u"downstream"_s) {  // an input reading another node's output records it
+      QDomElement input = entry.firstChildElement(u"input"_s);
+      input.setAttribute(u"upstream"_s, u"fixture-toolbox/crop"_s);
+      input.setAttribute(u"type"_s, u"kPointCloud"_s);
+    }
+  }
+  const std::vector<QString> saved_by_prototype = processorEntries(expected.toByteArray(), {{u"1"_s, u"1"_s}});
+  ASSERT_EQ(saved_by_prototype.size(), 5U);
+  EXPECT_EQ(processorEntries(readFile(resaved), {{QString::number(dataset_), u"1"_s}}), saved_by_prototype);
 }
 
 }  // namespace

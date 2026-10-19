@@ -142,6 +142,44 @@ TEST(RecipeGraphTest, QualifiedInputsBindTheSelectedDatasetAndPreserveAliases) {
   EXPECT_EQ(fx.graph.find(recipe.key())->recipe.inputs.size(), 1u) << "the installed node is untouched";
 }
 
+// GAP-31: a recipe naming its dataset binds every input there: a name two datasets carry is no longer ambiguous, and
+// an input its dataset does not carry is refused, naming both.
+TEST(RecipeGraphTest, ARecipeDatasetBindsItsInputsThereOnly) {
+  Fixture fx;
+  fx.catalog["cloud"].push_back({kOther, sdk::BuiltinObjectType::kPointCloud, "cloud"});
+  auto shared = chainedRecipe("shared", "cloud");
+  ASSERT_FALSE(fx.graph.upsert(shared).has_value()) << "carried by two datasets: ambiguous";
+  shared.dataset = kOther;
+  ASSERT_TRUE(fx.graph.upsert(shared).has_value());
+  EXPECT_EQ(fx.graph.find("owner/shared")->dataset, kOther);
+
+  auto elsewhere = cropRecipe("elsewhere");  // `threshold` is on kDataset only
+  elsewhere.dataset = kOther;
+  const Status refused = fx.graph.upsert(elsewhere);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_TRUE(contains(refused.error(), "input 'threshold' is not on dataset 2, which the recipe binds"))
+      << refused.error();
+  EXPECT_EQ(fx.graph.find("owner/elsewhere"), nullptr);
+}
+
+// LAY-14: the exemption of an installed key never changes, so no history snapshot holds it under the other authority;
+// a recipe changes it by being removed and created again.
+TEST(RecipeGraphTest, HistoryExemptionCannotChangeOnAnInstalledRecipe) {
+  Fixture fx;
+  ASSERT_TRUE(fx.graph.upsert(cropRecipe()).has_value());
+  auto exempt = cropRecipe();
+  exempt.history_exempt = true;
+  const Status promoted = fx.graph.upsert(exempt);
+  ASSERT_FALSE(promoted.has_value());
+  EXPECT_TRUE(contains(promoted.error(), "history_exempt cannot change")) << promoted.error();
+  EXPECT_FALSE(fx.graph.find("owner/crop")->recipe.history_exempt);
+
+  ASSERT_TRUE(fx.graph.remove("owner/crop").has_value());
+  ASSERT_TRUE(fx.graph.upsert(exempt).has_value()) << "created again, exempt";
+  EXPECT_FALSE(fx.graph.upsert(cropRecipe()).has_value()) << "nor demoted";
+  EXPECT_TRUE(fx.graph.find("owner/crop")->recipe.history_exempt);
+}
+
 // DAG-03
 TEST(RecipeGraphTest, CycleAndOwnOutputRejectionLeaveTheGraphUntouched) {
   Fixture fx;

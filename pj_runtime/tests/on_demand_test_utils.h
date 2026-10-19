@@ -31,6 +31,7 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/NodeScheduler.h"
+#include "pj_runtime/OnDemandService.h"
 #include "pj_runtime/RecipeGraph.h"
 
 namespace PJ::test {
@@ -292,6 +293,18 @@ class FakeRun {
   int permits_ = 0;
   int started_ = 0;
   std::vector<Record> records_;
+};
+
+/// Sets the run of every on-demand service built while it lives (`OnDemandService::setRunForTest`).
+struct ScopedRun {
+  explicit ScopedRun(FakeRun& fake) {
+    OnDemandService::setRunForTest(fake.function());
+  }
+  ~ScopedRun() {
+    OnDemandService::setRunForTest({});
+  }
+  ScopedRun(const ScopedRun&) = delete;
+  ScopedRun& operator=(const ScopedRun&) = delete;
 };
 
 inline std::vector<Timestamp> timestampsOf(const ObjectStore& store, ObjectTopicId topic) {

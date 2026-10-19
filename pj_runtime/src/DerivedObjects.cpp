@@ -9,11 +9,13 @@
 #include <map>
 #include <memory>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 
 #include "SeriesKey.h"
 #include "pj_datastore/data_processor.hpp"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/OnDemandService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/XmlCdata.h"
 
@@ -103,6 +105,63 @@ bool samePersistedGenerator(const BatchEngine::GeneratorRecipe& lhs, const Batch
         recipe.inputs, recipe.declared_inputs, recipe.outputs, recipe.params_json, recipe.script);
   };
   return persisted(lhs) == persisted(rhs);
+}
+
+/// Producers before readers, document order otherwise: the graph binds a reader (an input naming
+/// `<key>/<output>`) only to an installed producer. The entries in a cycle, or reading one, are marked
+/// so; they and the entries that failed to parse follow the rest, in document order.
+void orderOnDemandByDependency(std::vector<WantedOnDemand>& entries) {
+  std::unordered_map<std::string, std::size_t> producer_of;
+  for (std::size_t index = 0; index < entries.size(); ++index) {
+    if (!entries[index].parse_error.isEmpty()) {
+      continue;
+    }
+    for (const scripting::OutputSpec& output : entries[index].recipe.outputs) {
+      if (output.type == scripting::OutputType::kObject) {
+        producer_of.emplace(entries[index].recipe.key() + "/" + output.name, index);
+      }
+    }
+  }
+  std::vector<std::vector<std::size_t>> readers(entries.size());
+  std::vector<std::size_t> waiting(entries.size(), 0);
+  std::vector<std::size_t> ready;
+  for (std::size_t index = 0; index < entries.size(); ++index) {
+    std::vector<std::size_t> upstreams;
+    for (const std::string& input : entries[index].recipe.inputs) {
+      const auto producer = producer_of.find(input);
+      if (producer != producer_of.end() && std::ranges::find(upstreams, producer->second) == upstreams.end()) {
+        upstreams.push_back(producer->second);
+        readers[producer->second].push_back(index);
+      }
+    }
+    waiting[index] = upstreams.size();
+    if (upstreams.empty() && entries[index].parse_error.isEmpty()) {
+      ready.push_back(index);
+    }
+  }
+  for (std::size_t cursor = 0; cursor < ready.size(); ++cursor) {
+    for (const std::size_t reader : readers[ready[cursor]]) {
+      if (--waiting[reader] == 0 && entries[reader].parse_error.isEmpty()) {
+        ready.push_back(reader);
+      }
+    }
+  }
+  std::vector<bool> placed(entries.size(), false);
+  std::vector<WantedOnDemand> ordered;
+  ordered.reserve(entries.size());
+  for (const std::size_t index : ready) {
+    placed[index] = true;
+    ordered.push_back(std::move(entries[index]));
+  }
+  for (std::size_t index = 0; index < entries.size(); ++index) {
+    if (!placed[index]) {
+      if (entries[index].parse_error.isEmpty()) {
+        entries[index].parse_error = DerivedObjects::tr("cyclic on-demand dependency (or depends on a cycle)");
+      }
+      ordered.push_back(std::move(entries[index]));
+    }
+  }
+  entries = std::move(ordered);
 }
 
 }  // namespace
@@ -253,6 +312,65 @@ QDomElement DerivedObjects::save(QDomDocument& doc, SnapshotScope scope) const {
     appendJsonAsCdata(doc, gen_script, QString::fromStdString(recipe.script));
     gen.appendChild(gen_script);
     element.appendChild(gen);
+  }
+
+  // On-demand recipes (kind=on_demand): script, inputs and typed outputs by value, producers first, so they
+  // replay without the plugin. Every input of a node resolved in its one dataset (D7), which each <input>
+  // carries like a transform input (dataset_path is stamped at layout-file save).
+  const RecipeGraph& graph = session_.onDemandService().graph();
+  std::vector<WantedOnDemand> on_demand;
+  for (const std::string& key : graph.keys()) {
+    const RecipeGraph::Recipe& recipe = graph.find(key)->recipe;
+    if (!recipe.ephemeral && !(scope == SnapshotScope::kHistory && recipe.history_exempt)) {
+      on_demand.push_back({recipe, {}});
+    }
+  }
+  orderOnDemandByDependency(on_demand);
+  for (const WantedOnDemand& entry : on_demand) {
+    const RecipeGraph::Recipe& recipe = entry.recipe;
+    const RecipeGraph::Node& live = *graph.find(recipe.key());
+    const DatasetId dataset = live.dataset;
+    QDomElement node = doc.createElement(u"on_demand"_s);
+    node.setAttribute(u"owner_plugin"_s, QString::fromStdString(recipe.owner_plugin));
+    node.setAttribute(u"id"_s, QString::fromStdString(recipe.user_id));
+    if (recipe.history_exempt) {
+      node.setAttribute(u"history_exempt"_s, u"1"_s);
+    }
+    node.setAttribute(u"language"_s, QString::fromStdString(recipe.language));
+    node.setAttribute(u"query_time"_s, recipe.query_time ? u"1"_s : u"0"_s);
+    if (recipe.pinned_t.has_value()) {
+      node.setAttribute(u"pinned_t_ns"_s, QString::number(*recipe.pinned_t));
+    }
+    const std::optional<QString> source = catalog_.datasetSourceName(dataset);
+    for (std::size_t index = 0; index < recipe.inputs.size(); ++index) {
+      QDomElement in = doc.createElement(u"input"_s);
+      in.setAttribute(u"name"_s, QString::fromStdString(recipe.inputs[index]));
+      in.setAttribute(u"dataset_id"_s, QString::number(dataset));
+      if (source.has_value()) {
+        in.setAttribute(u"dataset_source"_s, *source);
+      }
+      // Another node's output: recorded so a reader whose producer is gone restores missing its input.
+      if (const RecipeGraph::Binding& binding = live.bindings[index]; !binding.upstream.empty()) {
+        in.setAttribute(u"upstream"_s, QString::fromStdString(binding.upstream));
+        in.setAttribute(u"type"_s, QString::fromUtf8(sdk::name(binding.object_type)));
+      }
+      node.appendChild(in);
+    }
+    for (const scripting::OutputSpec& output : recipe.outputs) {
+      QDomElement out = doc.createElement(u"output"_s);
+      out.setAttribute(u"name"_s, QString::fromStdString(output.name));
+      out.setAttribute(u"type"_s, QString::fromStdString(scripting::outputTypeName(output)));
+      node.appendChild(out);
+    }
+    if (!recipe.params_json.empty()) {
+      QDomElement params = doc.createElement(u"params"_s);
+      appendJsonAsCdata(doc, params, QString::fromStdString(recipe.params_json));
+      node.appendChild(params);
+    }
+    QDomElement script = doc.createElement(u"script"_s);
+    appendJsonAsCdata(doc, script, QString::fromStdString(recipe.script));
+    node.appendChild(script);
+    element.appendChild(node);
   }
   return element;
 }
@@ -522,6 +640,102 @@ std::vector<WantedGenerator> DerivedObjects::parseWantedGenerators(const QDomEle
   return wanted;
 }
 
+std::vector<WantedOnDemand> DerivedObjects::parseWantedOnDemand(const QDomElement& element, bool skip_exempt) const {
+  std::vector<WantedOnDemand> wanted;
+  for (QDomElement node = element.firstChildElement(u"on_demand"_s); !node.isNull();
+       node = node.nextSiblingElement(u"on_demand"_s)) {
+    WantedOnDemand entry;
+    RecipeGraph::Recipe& recipe = entry.recipe;
+    QString& error = entry.parse_error;
+    recipe.owner_plugin = node.attribute(u"owner_plugin"_s).toStdString();
+    recipe.user_id = node.attribute(u"id"_s).toStdString();
+    recipe.history_exempt = node.attribute(u"history_exempt"_s) == u"1"_s;
+    if (skip_exempt && recipe.history_exempt) {
+      continue;
+    }
+    // `label` and `infer_outputs`, which the prototype wrote, are not part of a recipe: read past.
+    recipe.language = node.attribute(u"language"_s, u"luau"_s).toStdString();
+    const QString clock = node.attribute(u"query_time"_s, u"1"_s);
+    if (clock == u"1"_s || clock == u"0"_s) {
+      recipe.query_time = clock == u"1"_s;
+    } else {
+      error = tr("invalid query_time '%1'").arg(clock);
+    }
+    if (node.hasAttribute(u"pinned_t_ns"_s)) {
+      bool ok = false;
+      const qlonglong pinned = node.attribute(u"pinned_t_ns"_s).toLongLong(&ok);
+      if (ok) {
+        recipe.pinned_t = pinned;
+      } else {
+        error = tr("invalid pinned time '%1'").arg(node.attribute(u"pinned_t_ns"_s));
+      }
+    }
+    // A saved input dataset (source, path) must name a loaded dataset, the same one for every input, which binds
+    // the recipe there; with neither, the graph binds the one dataset carrying every input (D7).
+    std::optional<DatasetId> dataset;
+    for (QDomElement in = node.firstChildElement(u"input"_s); !in.isNull(); in = in.nextSiblingElement(u"input"_s)) {
+      const std::string input = in.attribute(u"name"_s).toStdString();
+      recipe.inputs.push_back(input);
+      if (in.hasAttribute(u"upstream"_s)) {
+        const std::string upstream = in.attribute(u"upstream"_s).toStdString();
+        const auto type = sdk::parseBuiltinObjectType(in.attribute(u"type"_s).toStdString());
+        if (type.has_value() && *type != sdk::BuiltinObjectType::kNone && input.size() > upstream.size() + 1 &&
+            input.starts_with(upstream + "/")) {
+          recipe.recorded_upstreams[input] = {*type, upstream, input.substr(upstream.size() + 1)};
+        } else if (error.isEmpty()) {
+          error = tr("invalid upstream of input '%1'").arg(QString::fromStdString(input));
+        }
+      }
+      if (!error.isEmpty()) {
+        continue;
+      }
+      DatasetId saved_id = 0;
+      if (in.hasAttribute(u"dataset_id"_s)) {
+        bool ok = false;
+        const qulonglong raw = in.attribute(u"dataset_id"_s).toULongLong(&ok);
+        if (!ok || raw > std::numeric_limits<DatasetId>::max()) {
+          error = tr("invalid input dataset id");
+          continue;
+        }
+        saved_id = static_cast<DatasetId>(raw);
+      }
+      const QString saved_source = in.attribute(u"dataset_source"_s);
+      const QString saved_path = in.attribute(u"dataset_path"_s);
+      if (saved_source.isEmpty() && saved_path.isEmpty()) {
+        continue;
+      }
+      const DatasetIdentityResolution resolved = session_.resolveDatasetIdentity(saved_id, saved_source, saved_path);
+      if (!resolved.id.has_value()) {
+        error = resolved.ambiguous ? tr("ambiguous input dataset") : tr("input dataset is not loaded");
+      } else if (dataset.has_value() && *dataset != *resolved.id) {
+        error = tr("inputs resolve to different datasets");
+      } else {
+        dataset = resolved.id;
+      }
+    }
+    recipe.dataset = dataset;
+    for (QDomElement out = node.firstChildElement(u"output"_s); !out.isNull();
+         out = out.nextSiblingElement(u"output"_s)) {
+      const QString name = out.attribute(u"name"_s);
+      const Expected<scripting::OutputSpec> parsed =
+          scripting::parseOutputSpec((name + u":"_s + out.attribute(u"type"_s)).toStdString());
+      if (parsed.has_value()) {
+        recipe.outputs.push_back(*parsed);
+      } else if (error.isEmpty()) {
+        error = tr("invalid output '%1': %2").arg(name, QString::fromStdString(parsed.error()));
+      }
+    }
+    recipe.params_json = directCdataText(node.firstChildElement(u"params"_s)).toStdString();
+    if (recipe.params_json.empty()) {
+      recipe.params_json = "{}";
+    }
+    recipe.script = directCdataText(node.firstChildElement(u"script"_s)).toStdString();
+    wanted.push_back(std::move(entry));
+  }
+  orderOnDemandByDependency(wanted);  // the prototype wrote them unordered
+  return wanted;
+}
+
 DerivedSnapshot DerivedObjects::parse(const QDomElement& root, RestoreIntent intent) const {
   DerivedSnapshot snapshot;
   snapshot.intent = intent;
@@ -530,6 +744,7 @@ DerivedSnapshot DerivedObjects::parse(const QDomElement& root, RestoreIntent int
   snapshot.transforms =
       parseWantedTransforms(element, /*skip_exempt=*/intent == RestoreIntent::kHistory, snapshot.diagnostics);
   snapshot.generators = parseWantedGenerators(element);
+  snapshot.on_demand = parseWantedOnDemand(element, /*skip_exempt=*/intent == RestoreIntent::kHistory);
   return snapshot;
 }
 
@@ -546,6 +761,15 @@ DerivedObjects::KeepSets DerivedObjects::keepSets(const DerivedSnapshot& snapsho
 }
 
 std::optional<QString> DerivedObjects::refusal(const DerivedSnapshot& snapshot) const {
+  const RecipeGraph& graph = session_.onDemandService().graph();
+  // No restore clears a preview, so one holding a key the snapshot wants would make the restore skip that recipe.
+  for (const WantedOnDemand& entry : snapshot.on_demand) {
+    if (const RecipeGraph::Node* live = graph.find(entry.recipe.key()); live != nullptr && live->recipe.ephemeral) {
+      return tr("Cannot restore: the on-demand recipe '%1' is held by a preview of an open panel; close the panel "
+                "first")
+          .arg(QString::fromStdString(entry.recipe.key()));
+    }
+  }
   if (snapshot.intent != RestoreIntent::kHistory) {
     return std::nullopt;
   }
@@ -556,7 +780,8 @@ std::optional<QString> DerivedObjects::refusal(const DerivedSnapshot& snapshot) 
   // removal cascades into — would strand an exempt transform or marker generator.
   // Removal cascades between filters and transforms, so checking after the first
   // clear would be too late. Nothing below mutates the session.
-  if (!service.hasHistoryExemptTransforms() && !batch_engine.hasHistoryExemptGenerators()) {
+  if (!service.hasHistoryExemptTransforms() && !batch_engine.hasHistoryExemptGenerators() &&
+      !graph.hasHistoryExemptRecipes()) {
     return std::nullopt;
   }
   const KeepSets keep = keepSets(snapshot);
@@ -565,6 +790,35 @@ std::optional<QString> DerivedObjects::refusal(const DerivedSnapshot& snapshot) 
   std::vector<std::string> blocked = impact.exempt_transform_names;
   const std::vector<std::string> blocked_markers = batch_engine.exemptDependentsOf(impact.removed_output_names);
   blocked.insert(blocked.end(), blocked_markers.begin(), blocked_markers.end());
+  // An exempt on-demand node reads series and on-demand outputs: it strands on a removed processor output, and on
+  // an object output the snapshot takes away (its node dropped, moved to another dataset, or no longer declaring
+  // it). A changed node that keeps the output reinstalls it under the same topic, and its exempt readers run again
+  // on it.
+  std::vector<std::string> removed = impact.removed_output_names;
+  std::unordered_map<std::string, const RecipeGraph::Recipe*> wanted_by_key;
+  for (const WantedOnDemand& entry : snapshot.on_demand) {
+    if (entry.parse_error.isEmpty()) {
+      wanted_by_key.emplace(entry.recipe.key(), &entry.recipe);
+    }
+  }
+  for (const std::string& key : graph.keys()) {
+    const RecipeGraph::Node& node = *graph.find(key);
+    const RecipeGraph::Recipe& live = node.recipe;
+    if (live.ephemeral || live.history_exempt) {
+      continue;
+    }
+    const auto wanted = wanted_by_key.find(key);
+    const bool kept_here =
+        wanted != wanted_by_key.end() && (!wanted->second->dataset || *wanted->second->dataset == node.dataset);
+    for (const scripting::OutputSpec& output : live.outputs) {
+      if (output.type == scripting::OutputType::kObject &&
+          (!kept_here || std::ranges::find(wanted->second->outputs, output) == wanted->second->outputs.end())) {
+        removed.push_back(key + "/" + output.name);
+      }
+    }
+  }
+  const std::vector<std::string> blocked_on_demand = graph.exemptDependentsOf(removed);
+  blocked.insert(blocked.end(), blocked_on_demand.begin(), blocked_on_demand.end());
   std::sort(blocked.begin(), blocked.end());
   blocked.erase(std::unique(blocked.begin(), blocked.end()), blocked.end());
   if (blocked.empty()) {
@@ -603,10 +857,11 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
       live_exempt_keys.insert(live.key);
     }
   }
-  std::unordered_set<std::string> keep_generators;
-  if (batch_engine.hasGenerators()) {
-    std::vector<std::string> replaced_outputs =
-        service.removalImpact(intent, keep.transform_keys, keep.filter_outputs).removed_output_names;
+  OnDemandService& on_demand = session_.onDemandService();
+  const bool any_on_demand = !snapshot.on_demand.empty() || !on_demand.graph().empty();
+  std::vector<std::string> replaced_outputs;
+  if (batch_engine.hasGenerators() || any_on_demand) {
+    replaced_outputs = service.removalImpact(intent, keep.transform_keys, keep.filter_outputs).removed_output_names;
     for (const WantedFilter& wanted : snapshot.filters) {
       if (!service.isFilterLive(wanted.persisted.dataset_id, wanted.persisted.output_name)) {
         replaced_outputs.push_back(wanted.persisted.output_name);
@@ -618,6 +873,9 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
         replaced_outputs.insert(replaced_outputs.end(), topics.begin(), topics.end());
       }
     }
+  }
+  std::unordered_set<std::string> keep_generators;
+  if (batch_engine.hasGenerators()) {
     std::vector<BatchEngine::GeneratorRecipe> wanted_generators;
     for (const WantedGenerator& wanted : snapshot.generators) {
       if (wanted.parse_error.isEmpty() && !wanted.bind_by_inputs) {
@@ -633,12 +891,35 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
     }
   }
 
+  // An on-demand node reads object topics, other nodes' outputs and series, a processor output among them: it is
+  // kept when its recipe, its upstreams and the series it reads all stay (LAY-21).
+  std::unordered_set<std::string> keep_on_demand;
+  if (any_on_demand) {
+    std::vector<RecipeGraph::Recipe> wanted_on_demand;
+    wanted_on_demand.reserve(snapshot.on_demand.size());
+    for (const WantedOnDemand& wanted : snapshot.on_demand) {
+      if (wanted.parse_error.isEmpty()) {
+        wanted_on_demand.push_back(wanted.recipe);
+      }
+    }
+    keep_on_demand = on_demand.graph().unchangedRecipeKeys(wanted_on_demand, intent, replaced_outputs);
+  }
+
   // 2. Clear downstream to upstream what the snapshot drops or changes; a kept filter
   //    or transform reading a removed output falls with it and is re-created below. A
   //    snapshot with NO <data_processors> clears everything; the catalog rebuild below
   //    MUST run on every path so the retired outputs leave the catalog. Replacement may
   //    drop every recipe; history never touches the exempt ones, after the caller's
   //    refusal check.
+  //    The on-demand clear cancels the cleared nodes' runs and keeps their topics for the reinstall.
+  const bool on_demand_cleared = on_demand.clearExcept(intent, keep_on_demand);
+  // An exception below must not leave the service restoring: the sweep is a no-op once the normal path has run it.
+  const struct SweepOnExit {
+    OnDemandService& service;
+    ~SweepOnExit() {
+      (void)service.sweepUnclaimed();
+    }
+  } sweep_on_exit{on_demand};
   const std::size_t generators_before = batch_engine.persistentBindingCount();
   batch_engine.clearGenerators(intent, keep_generators);
   service.clearAllFilters(keep.filter_outputs);
@@ -721,13 +1002,53 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
     }
   }
 
-  // 4. Finish. upsertGenerator publishes to the store without announcing it; the
+  // 4. On-demand recipes, producers first, once the catalog lists the processor outputs a series input may read.
+  //    A kept node is not touched (its topics, results and state stay); a changed or new one is installed, and
+  //    the install requests it where the session wants it (a finding at its pin, a demanded node at the cursor)
+  //    on the pool. History has no authority over a node it left live (an exempt one). Then the sweep retires
+  //    what no install reclaimed.
+  bool on_demand_restored = true;
+  std::unordered_set<std::string> installed_keys;
+  for (const WantedOnDemand& wanted : snapshot.on_demand) {
+    const QString key = QString::fromStdString(wanted.recipe.key());
+    if (!wanted.parse_error.isEmpty()) {
+      report.diagnostics.push_back(
+          {"on-demand-restore-failed", tr("Could not restore on-demand recipe '%1': %2").arg(key, wanted.parse_error)});
+      on_demand_restored = false;
+      continue;
+    }
+    if (on_demand.graph().find(wanted.recipe.key()) != nullptr) {
+      continue;
+    }
+    if (const auto installed = on_demand.install(wanted.recipe); installed.has_value()) {
+      installed_keys.insert(wanted.recipe.key());
+    } else {
+      report.diagnostics.push_back(
+          {"on-demand-restore-failed",
+           tr("Could not restore on-demand recipe '%1': %2").arg(key, QString::fromStdString(installed.error()))});
+      on_demand_restored = false;
+    }
+  }
+  (void)on_demand.sweepUnclaimed();
+  // A node outside the restore's authority (a preview, an exempt one under history) reading a processor output the
+  // restore re-created holds results of the old series: it runs again, with its readers.
+  if (!replaced_outputs.empty()) {
+    std::vector<std::string> stale = on_demand.graph().readersOfSeries(replaced_outputs);
+    std::erase_if(stale, [&installed_keys](const std::string& key) { return installed_keys.contains(key); });
+    on_demand.rerun(stale);
+  }
+
+  // 5. Finish. upsertGenerator publishes to the store without announcing it; the
   //    toolbox's onDataChanged sends the same notification, so this restore does too,
-  //    once.
+  //    once. Likewise the on-demand topics registered, reclaimed or retired.
   if (any_generator_restored || batch_engine.persistentBindingCount() != generators_before) {
     session_.notifyMarkersChanged();
   }
-  report.restored_all = parsed_all && processors_restored;
+  if (on_demand_cleared || !installed_keys.empty()) {
+    catalog_.rebuildIfChanged();
+    session_.notifyObjectTopicsChanged();
+  }
+  report.restored_all = parsed_all && processors_restored && on_demand_restored;
   return report;
 }
 

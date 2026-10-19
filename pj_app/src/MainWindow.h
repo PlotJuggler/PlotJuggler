@@ -142,6 +142,7 @@ class MainWindow : public QMainWindow {
   friend class MainWindowCustomSeriesTestPeer;
   friend class MainWindowRelease41LayoutTestPeer;
   friend class MainWindowScene3dDropFramingTestPeer;
+  friend class MainWindowOnDemandRestoreTestPeer;
   friend class ToolboxPanelFoldTestPeer;
   friend class ToolboxPresenter;
 
