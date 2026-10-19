@@ -4,6 +4,7 @@
 #include "pj_scene_common/scene_dock_widget.h"
 
 #include <QBoxLayout>
+#include <QLabel>
 #include <QLoggingCategory>
 #include <QSizePolicy>
 #include <QTimer>
@@ -45,6 +46,10 @@ SceneDockWidget::SceneDockWidget(QWidget* parent) : QWidget(parent) {
   auto* layout = new QVBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
   layout->setSpacing(0);
+  derived_status_label_ = new QLabel(this);
+  derived_status_label_->setObjectName(u"sceneDerivedStatus"_s);
+  derived_status_label_->hide();
+  layout->addWidget(derived_status_label_);
 
   QTimer::singleShot(0, this, [this]() { ensureSceneViewCreated(); });
 }
@@ -64,6 +69,131 @@ QWidget* SceneDockWidget::widget() {
 
 void SceneDockWidget::setSessionManager(SessionManager* session) {
   session_ = session;
+  disconnect(derived_published_conn_);
+  disconnect(derived_state_conn_);
+  disconnect(derived_offset_conn_);
+  disconnect(derived_dataset_offset_conn_);
+  if (session == nullptr) {
+    return;
+  }
+  derived_published_conn_ = connect(
+      session, &SessionManager::derivedEntriesPublished, this,
+      [this](const QString&, const std::vector<ObjectTopicId>& topics) { refreshDerivedLayers(topics); });
+  // A finding's "computed at" is in display seconds.
+  derived_offset_conn_ = connect(
+      session, qOverload<>(&SessionManager::displayOffsetChanged), this, [this] { resyncDerivedPresentations(); });
+  derived_dataset_offset_conn_ = connect(
+      session, qOverload<DatasetId>(&SessionManager::displayOffsetChanged), this,
+      [this](DatasetId) { resyncDerivedPresentations(); });
+  derived_state_conn_ = connect(
+      session, &SessionManager::derivedStateChanged, this,
+      [this](const QString&, const std::vector<ObjectTopicId>& topics) {
+        for (const ObjectTopicId topic_id : topics) {
+          syncDerivedPresentation(topic_id);
+        }
+      });
+}
+
+void SceneDockWidget::refreshDerivedLayers(const std::vector<ObjectTopicId>& topics) {
+  if (!last_tracker_) {
+    return;  // no tick yet: the first one shows what is there
+  }
+  for (const ObjectTopicId topic_id : topics) {
+    if (ISceneLayer* layer = layerFor(topic_id); layer != nullptr && layer->info().visible) {
+      if (layer->refreshAt(*last_tracker_)) {
+        invalidateTrackerRenderKey();  // painted outside the per-tick gate
+      }
+    }
+  }
+}
+
+void SceneDockWidget::resyncDerivedPresentations() {
+  std::vector<ObjectTopicId> topics;
+  topics.reserve(derived_presentations_.size());
+  for (const auto& [key, presentation] : derived_presentations_) {
+    topics.push_back(ObjectTopicId{static_cast<uint32_t>(key)});  // topicKey widened the id
+  }
+  for (const ObjectTopicId topic_id : topics) {
+    syncDerivedPresentation(topic_id);
+  }
+}
+
+void SceneDockWidget::syncDerivedPresentation(ObjectTopicId topic_id) {
+  ISceneLayer* layer = layerFor(topic_id);
+  if (layer == nullptr) {
+    return;
+  }
+  DerivedTopicPresentation presentation = derivedTopicPresentation(session_, topic_id);
+  layer->setDerivedWarning(presentation.warning);
+  const int64_t key = topicKey(topic_id);
+  const QString previous = layerStatus(topic_id);
+  const QString status = presentation.status;
+  if (presentation == DerivedTopicPresentation{}) {
+    derived_presentations_.erase(key);
+  } else {
+    derived_presentations_.insert_or_assign(key, std::move(presentation));
+  }
+  if (status != previous) {
+    emit layerStatusChanged(topic_id, status);
+  }
+  updateDerivedStatus();
+}
+
+void SceneDockWidget::updateDerivedStatus() {
+  const DerivedTopicPresentation* most_behind = nullptr;
+  bool computing = false;
+  for (const auto& [key, presentation] : derived_presentations_) {
+    if (const auto shown = layer_visibility_cache_.find(key);
+        shown != layer_visibility_cache_.end() && !shown->second) {
+      continue;  // the strip sums up what the dock shows
+    }
+    computing = computing || presentation.computing;
+    if (presentation.lag && (most_behind == nullptr || *presentation.lag > *most_behind->lag)) {
+      most_behind = &presentation;
+    }
+  }
+  const QString text = most_behind != nullptr ? tr("computing (%1)").arg(most_behind->status)
+                       : computing            ? tr("computing…")
+                                              : QString();
+  derived_status_label_->setText(text);
+  derived_status_label_->setVisible(!text.isEmpty());
+}
+
+QString SceneDockWidget::layerStatus(ObjectTopicId topic_id) const {
+  const auto shown = derived_presentations_.find(topicKey(topic_id));
+  return shown != derived_presentations_.end() ? shown->second.status : QString();
+}
+
+QString SceneDockWidget::derivedStatus() const {
+  return derived_status_label_->text();
+}
+
+std::optional<int64_t> SceneDockWidget::visibleLayersLiveEdge() const {
+  std::optional<int64_t> latest;
+  for (const auto& [key, layer] : layers_) {
+    if (layer == nullptr || !layer->info().visible) {
+      continue;
+    }
+    // Empty layers and findings report an inverted range and are skipped.
+    const PJ::Range<PJ::Timepoint> range = clockRangeOf(*layer);
+    if (range.min <= range.max) {
+      const int64_t edge = PJ::toRaw(range.max);
+      latest = latest ? std::max(*latest, edge) : edge;
+    }
+  }
+  return latest;
+}
+
+PJ::Range<PJ::Timepoint> SceneDockWidget::clockRangeOf(const ISceneLayer& layer) const {
+  if (session_ != nullptr) {
+    if (const auto inputs = session_->derivedTopicInputRange(layer.info().topic_id)) {
+      if (inputs->second < inputs->first) {
+        return {PJ::Timepoint::max(), PJ::Timepoint::min()};
+      }
+      return {PJ::fromRaw(inputs->first), PJ::fromRaw(inputs->second)};
+    }
+  }
+  return layer.timeRange();
 }
 
 void SceneDockWidget::setObjectDatasetResolver(ObjectDatasetResolver resolver) {
@@ -131,6 +261,7 @@ bool SceneDockWidget::insertLayer(ObjectTopicId topic_id, std::unique_ptr<IScene
   ever_had_content_ = true;
   wireLayerSignals(layer.get(), topic_id);
   registerLayer(key, std::move(layer));
+  syncDerivedPresentation(topic_id);  // a layer on a failed derived topic says why from the start
 
   // Mutate -> reconcile view -> notify: the view already includes the new layer
   // when observers react to layerAdded (a slot may trigger a paint).
@@ -148,6 +279,7 @@ void SceneDockWidget::wireLayerSignals(ISceneLayer* layer, ObjectTopicId topic_i
   });
   connect(layer, &ISceneLayer::visibilityChanged, this, [this, topic_id](bool visible) {
     recordLayerVisibility(topic_id, visible);
+    updateDerivedStatus();
     syncViewLayers();
     refreshView();
   });
@@ -171,7 +303,7 @@ void SceneDockWidget::registerLayer(int64_t key, std::unique_ptr<ISceneLayer> la
 }
 
 void SceneDockWidget::seedLayerTrackerTime(ISceneLayer* layer) {
-  const auto range = layer->timeRange();
+  const auto range = clockRangeOf(*layer);
   const PJ::Timepoint first = range.min;
   const PJ::Timepoint last = range.max;
   if (last_tracker_.has_value()) {
@@ -347,6 +479,9 @@ void SceneDockWidget::removeTopic(ObjectTopicId topic_id) {
   std::unique_ptr<ISceneLayer> removed = std::move(it->second);
   layers_.erase(it);
   layer_visibility_cache_.erase(key);
+  if (derived_presentations_.erase(key) != 0) {
+    updateDerivedStatus();
+  }
   draw_order_.erase(std::remove(draw_order_.begin(), draw_order_.end(), key), draw_order_.end());
   syncViewLayers();
   refreshView();
@@ -1039,7 +1174,7 @@ void SceneDockWidget::ensureSceneViewCreated() {
   scene_view_->setParent(this);
   scene_view_->setContentsMargins(0, 0, 0, 0);
   scene_view_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-  layout->addWidget(scene_view_);
+  layout->insertWidget(0, scene_view_);  // above the status strip
 }
 
 PJ::Timepoint SceneDockWidget::clampToLayerRange(PJ::Timepoint time) const {
@@ -1061,11 +1196,11 @@ PJ::Timepoint SceneDockWidget::clampToLayerRange(PJ::Timepoint time) const {
     if (layer == nullptr) {
       continue;
     }
-    const auto range = layer->timeRange();
+    const auto range = clockRangeOf(*layer);
     const PJ::Timepoint first = range.min;
     const PJ::Timepoint last = range.max;
     if (last < first) {
-      continue;  // inverted: no data
+      continue;  // inverted: no data, or a finding (it bounds no clock range)
     }
     if (!have_lo || first < lo) {
       lo = first;
@@ -1118,6 +1253,8 @@ void SceneDockWidget::clearLayers() {
   layers_.clear();
   draw_order_.clear();
   layer_visibility_cache_.clear();
+  derived_presentations_.clear();
+  updateDerivedStatus();
   syncViewLayers();
   refreshView();
   for (auto& [key, layer] : retired) {

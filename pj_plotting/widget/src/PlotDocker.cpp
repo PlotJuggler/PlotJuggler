@@ -656,7 +656,7 @@ DockWidget* PlotDocker::addDockWithPlot(
   connect(widget, &DockWidget::undoableChange, this, &PlotDocker::undoableChange);
   connect(widget, &DockWidget::plotWidgetCreated, this, &PlotDocker::plotWidgetAdded);
   connect(widget, &DockWidget::objectFamilyRequested, this, &PlotDocker::objectFamilyRequested);
-  connect(widget, &DockWidget::firstObjectTopicAdded, this, &PlotDocker::firstObjectTopicAdded);
+  connect(widget, &DockWidget::firstObjectTopicAdded, this, [this, widget] { emit firstObjectTopicAdded(widget); });
   connect(widget, &DockWidget::placeholderTopicDropped, this, &PlotDocker::placeholderTopicDropped);
   emit dockAdded(widget);
   if (widget->plotWidget() != nullptr) {

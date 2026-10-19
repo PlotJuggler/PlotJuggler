@@ -43,7 +43,7 @@ PJ::Range<PJ::Timepoint> Scene2DLayer::timeRange() const {
 bool Scene2DLayer::attach(const SceneLayerContext& ctx) {
   session_ = ctx.session;
   if (session_ == nullptr) {
-    emit warningChanged(true, tr("No active session"));
+    setWarningPart(SceneWarningParts::Part::kData, tr("No active session"));
     return false;
   }
   store_ = &session_->objectStore();
@@ -51,7 +51,7 @@ bool Scene2DLayer::attach(const SceneLayerContext& ctx) {
   if (source_ == nullptr) {
     store_ = nullptr;
     session_ = nullptr;
-    emit warningChanged(true, tr("Layer source could not be created"));
+    setWarningPart(SceneWarningParts::Part::kData, tr("Layer source could not be created"));
     return false;
   }
   dataset_replace_connection_ =
@@ -65,7 +65,7 @@ bool Scene2DLayer::attach(const SceneLayerContext& ctx) {
         ++data_generation_;
         source_->invalidate();
       });
-  emit warningChanged(false, {});
+  setWarningPart(SceneWarningParts::Part::kData, {});
   onAfterAttach();
   return true;
 }
@@ -82,9 +82,27 @@ void Scene2DLayer::detach() {
 
 void Scene2DLayer::setTrackerTime(PJ::Timepoint time) {
   last_tracker_time_ns_ = PJ::toRaw(time);
+  shown_uid_ = shownUidAt(time);
   if (source_ != nullptr) {
     source_->setTimestamp(PJ::toRaw(time));
   }
+}
+
+SequentialUID Scene2DLayer::shownUidAt(PJ::Timepoint time) const {
+  const auto entry = store_ != nullptr ? store_->latestEntryIdAt(topicId(), PJ::toRaw(time)) : std::nullopt;
+  return entry.has_value() ? entry->uid : SequentialUID{};
+}
+
+bool Scene2DLayer::refreshAt(PJ::Timepoint time) {
+  if (last_tracker_time_ns_ == PJ::toRaw(time) && shownUidAt(time) == shown_uid_) {
+    return false;  // a publication that leaves the shown entry unchanged: nothing to decode
+  }
+  if (source_ != nullptr) {
+    source_->invalidate();  // it skips a repeated timestamp
+  }
+  setTrackerTime(time);
+  emit repaintRequested();  // an annotation source prepares its frame synchronously: no decode callback follows
+  return true;
 }
 
 uint64_t Scene2DLayer::renderKey(PJ::Timepoint time) const {

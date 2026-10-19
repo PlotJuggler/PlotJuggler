@@ -157,6 +157,9 @@ class ResultHistory {
   /// identity: what the scheduler writes for a missing input or a failure) stamped after it, up to `t`, which
   /// would hide it. Returns whether any went.
   bool supersedeTombstones(std::string_view key, Timestamp stamp, Timestamp t);
+  /// Whether `key`'s stored results were dropped (a new revision's install, `clear`, `clearDataset`) with nothing
+  /// written since: a layer may still draw one of them, which the ring no longer shows.
+  [[nodiscard]] bool resultsDropped(std::string_view key) const;
 
   /// One object output of a stored result, as a downstream input reads it: from its ring entry, since the
   /// compute cache keeps no decoded copy of it.
@@ -236,6 +239,7 @@ class ResultHistory {
     std::vector<Output> outputs;  ///< the object outputs, in declaration order
     Ledger ledger;
     Cache cache;
+    bool dropped = false;  ///< `resultsDropped`
   };
 
   /// Writes one result's object outputs, or only trims the window when it is already stored.

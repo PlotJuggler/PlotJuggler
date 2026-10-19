@@ -436,6 +436,13 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     tests/scene3d_dock_streaming_test.cpp
   )
 
+  # Layers on derived (on-demand) topics: the row warning and lag, the refresh on
+  # publication, the inputs' clock range, snapshots and findings. Runs the
+  # on-demand engine with pj_runtime's fake script run.
+  list(APPEND PJ_SCENE3D_WIDGET_TESTS
+    tests/scene3d_dock_derived_topics_test.cpp
+  )
+
   # Regression: layout persistence round-trips FrameTransforms config topics
   # (M.18), re-resolves dataset identity by stable source name across sessions
   # (M.55), and forces the lazily-created view so a saved explicit fixed frame
@@ -522,6 +529,7 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     LIBS pj_scene3d_widgets pj_scene_common pj_widgets cloudini::cloudini
     DEFINES PJ_SCENE3D_TEST_HOOKS
   )
+  target_include_directories(pj_scene3d_widget_tests PRIVATE ${CMAKE_SOURCE_DIR}/pj_runtime/tests)
   # The SceneEntities expansion (MarkerGeometry): unexpanded stream
   # batches, per-segment/per-triangle validation and batch colours. Pure; no GPU.
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS

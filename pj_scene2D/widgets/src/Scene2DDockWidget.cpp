@@ -758,19 +758,11 @@ void Scene2DDockWidget::driveVisibleLayersToLiveEdge() {
     return;
   }
 
-  ObjectStore& store = sessionManager()->objectStore();
-  bool any = false;
-  int64_t latest = std::numeric_limits<int64_t>::lowest();
-  for (const SceneLayerInfo& info : layers()) {
-    if (!info.visible || store.entryCount(info.topic_id) == 0) {
-      continue;
-    }
-    latest = std::max(latest, store.timeRange(info.topic_id).second);
-    any = true;
-  }
-  if (!any) {
+  const std::optional<int64_t> edge = visibleLayersLiveEdge();
+  if (!edge) {
     return;
   }
+  const int64_t latest = *edge;
 
   noteTrackerTime(latest);
   for (const SceneLayerInfo& info : layers()) {

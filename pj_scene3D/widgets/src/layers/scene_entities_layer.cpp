@@ -30,10 +30,12 @@
 #include "mesh_import.h"
 #include "mesh_load_queue.h"
 #include "pj_base/time.hpp"
+#include "pj_runtime/ResultHistory.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/model_budget.h"
 #include "pj_scene3d_core/pose_math.h"
 #include "pj_scene3d_core/scene_entities_decode.h"
+#include "pj_scene3d_widgets/object_topic_metadata.h"
 #include "pj_scene3d_widgets/resolve_object.h"
 #include "pj_widgets/ColorPickerWidget.h"
 #include "pj_widgets/DoubleScrubber.h"
@@ -258,6 +260,7 @@ bool SceneEntitiesLayer::attach(const PJ::SceneLayerContext& ctx) {
     return false;
   }
   ctx_ = scene3d_ctx;
+  snapshot_stream_ = isSnapshotStream(ctx_.session->objectStore().descriptor(topic_id_));
   // A dataset reload may re-attach without a detach(): start from the pristine
   // baseline so prior-generation state never skips or anchors the new replay.
   resetReplayState();
@@ -306,6 +309,7 @@ void SceneEntitiesLayer::resetReplayState() {
   clearGeometry();
   requested_time_.reset();
   last_marker_uid_ = {};
+  shown_store_ns_.reset();
   model_state_.clear();
   state_built_at_.reset();
   applied_uid_high_ = {};
@@ -335,6 +339,17 @@ void SceneEntitiesLayer::setTrackerTime(PJ::Timepoint time) {
   }
   renderAt(PJ::toRaw(time));
   ensureModelStateAt(time);
+}
+
+PlacementHold* SceneEntitiesLayer::placementHoldFor(const std::string& frame) const {
+  return &frame_holds_[frame];  // ponytail: one per frame ever drawn; prune when entity frames churn by the thousand
+}
+
+uint64_t SceneEntitiesLayer::renderKey(PJ::Timepoint time) const {
+  const PJ::ObjectStore* store = ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr;
+  return PJ::fnv1aMix(
+      PJ::fnv1aMix(PJ::kFnv1aOffsetBasis, PJ::ISceneLayer::renderKey(time)),
+      PJ::latestEntryRenderKey(store, topic_id_, time));
 }
 
 void SceneEntitiesLayer::setVisible(bool visible) {
@@ -406,6 +421,13 @@ SceneEntitiesLayer::MarkerPick SceneEntitiesLayer::selectMarkerBatch(
     return MarkerPick::kUnchanged;
   }
   last_marker_uid_ = resolved->sequential_uid;
+  shown_store_ns_ = resolved->timestamp;
+  finding_stamp_.reset();
+  if (resolved->timestamp == PJ::kFindingTimestamp) {
+    if (const auto stamp = PJ::derivedTopicPresentation(ctx_.session, topic_id_).finding_stamp) {
+      finding_stamp_ = PJ::fromRaw(*stamp);
+    }
+  }
   if (static_cast<std::uint64_t>(resolved->payload.bytes.size()) > kSceneLimits.max_marker_wire_bytes) {
     setBatchWarning(
         tr("SceneEntities payload is %1 MiB; the limit is %2 MiB")
@@ -440,10 +462,15 @@ void SceneEntitiesLayer::renderAt(std::int64_t time_ns) {
     case MarkerPick::kUnchanged:
       return;
     case MarkerPick::kNoSample:
+      if (shown_store_ns_.has_value() && time_ns >= *shown_store_ns_) {
+        return;  // the shown entry was evicted under the cursor: it stays
+      }
       // Nothing at/before the playhead: drop stale geometry and any in-flight
       // expansion of the previous pick.
+      shown_store_ns_.reset();
       invalidateDecodeState();
       clearGeometry();
+      finding_stamp_.reset();
       return;
     case MarkerPick::kRejected: {
       // Keep the rejected UID memoized; only the geometry and in-flight work go.
@@ -464,52 +491,60 @@ void SceneEntitiesLayer::applyOverrides() {
   emit repaintRequested();
 }
 
+bool SceneEntitiesLayer::applySnapshot(const PJ::sdk::SceneEntities& snapshot, std::int64_t store_ns) {
+  const auto projected = model_state_.projectedRetainedBytes(snapshot);
+  if (!projected.has_value() || *projected > kSceneLimits.max_model_state_bytes_per_layer) {
+    model_state_warning_ = tr("SceneEntities model state would retain more than %1 MiB")
+                               .arg(kSceneLimits.max_model_state_bytes_per_layer / (1024ULL * 1024ULL));
+    return false;
+  }
+  // An anchor at the end of time never expires: a finding stays until replaced or removed.
+  const std::int64_t anchor = store_ns == PJ::kFindingTimestamp ? std::numeric_limits<std::int64_t>::max() : store_ns;
+  return model_state_.applySnapshot(snapshot, anchor);
+}
+
+bool SceneEntitiesLayer::foldEntry(const PJ::ObjectStore::TimeRangeEntry& reference, std::size_t& failed_fetches) {
+  if (const auto cached = snapshot_cache_.find(reference.uid); cached != snapshot_cache_.end()) {
+    return applySnapshot(*cached->second.batch, cached->second.store_ns);
+  }
+  PJ::ObjectStore& store = ctx_.session->objectStore();
+  const auto entry = store.at(topic_id_, reference.uid);
+  if (entry.has_value() && entry->fetch_failed) {
+    // Permanent loss: the incremental fold marks this window applied, so
+    // forward playback never re-reads it. Report, don't retry.
+    ++failed_fetches;
+    return false;
+  }
+  if (!entry.has_value() || entry->payload.bytes.empty()) {
+    return false;  // evicted between the snapshot and the resolve
+  }
+  if (static_cast<std::uint64_t>(entry->payload.bytes.size()) > kSceneLimits.max_marker_wire_bytes) {
+    model_state_warning_ = tr("A SceneEntities model snapshot exceeds the %1 MiB payload limit")
+                               .arg(kSceneLimits.max_marker_wire_bytes / (1024ULL * 1024ULL));
+    return false;
+  }
+  QString error;
+  auto snapshot = decodeEntry(entry->timestamp, entry->payload, error);
+  if (snapshot == nullptr) {
+    qCWarning(lcSceneEntitiesLayer) << "foldEntry:" << error;
+    model_state_warning_ = std::move(error);
+    return false;
+  }
+  const bool applied = applySnapshot(*snapshot, entry->timestamp);
+  cacheSnapshot(reference.uid, std::move(snapshot), entry->timestamp);
+  return applied;
+}
+
 bool SceneEntitiesLayer::applyModelWindow(std::int64_t lo_ns, std::int64_t hi_ns) {
   PJ::ObjectStore& store = ctx_.session->objectStore();
   pruneSnapshotCacheBelow(store.firstSequentialUID(topic_id_));
   bool applied = false;
-  const auto apply_snapshot = [this, &applied](const PJ::sdk::SceneEntities& snapshot, std::int64_t store_ns) {
-    const auto projected = model_state_.projectedRetainedBytes(snapshot);
-    if (!projected.has_value() || *projected > kSceneLimits.max_model_state_bytes_per_layer) {
-      model_state_warning_ = tr("SceneEntities model state would retain more than %1 MiB")
-                                 .arg(kSceneLimits.max_model_state_bytes_per_layer / (1024ULL * 1024ULL));
-      return;
-    }
-    applied = model_state_.applySnapshot(snapshot, store_ns) || applied;
-  };
   std::size_t failed_fetches = 0;
   // rangeByTime is the out-of-order-safe fold source: a decode-free, ascending,
   // eviction-safe snapshot of (lo, hi]. An arrival-order UID walk would skip a
   // late (older-ts, newest-UID) batch inside the window.
   for (const auto& reference : store.rangeByTime(topic_id_, lo_ns, hi_ns)) {
-    if (const auto cached = snapshot_cache_.find(reference.uid); cached != snapshot_cache_.end()) {
-      apply_snapshot(*cached->second.batch, cached->second.store_ns);
-      continue;
-    }
-    const auto entry = store.at(topic_id_, reference.uid);
-    if (entry.has_value() && entry->fetch_failed) {
-      // Permanent loss: the incremental fold marks this window applied, so
-      // forward playback never re-reads it. Report, don't retry.
-      ++failed_fetches;
-      continue;
-    }
-    if (!entry.has_value() || entry->payload.bytes.empty()) {
-      continue;  // evicted between the snapshot and the resolve
-    }
-    if (static_cast<std::uint64_t>(entry->payload.bytes.size()) > kSceneLimits.max_marker_wire_bytes) {
-      model_state_warning_ = tr("A SceneEntities model snapshot exceeds the %1 MiB payload limit")
-                                 .arg(kSceneLimits.max_marker_wire_bytes / (1024ULL * 1024ULL));
-      continue;
-    }
-    QString error;
-    auto snapshot = decodeEntry(entry->timestamp, entry->payload, error);
-    if (snapshot == nullptr) {
-      qCWarning(lcSceneEntitiesLayer) << "applyModelWindow:" << error;
-      model_state_warning_ = std::move(error);
-      continue;
-    }
-    apply_snapshot(*snapshot, entry->timestamp);
-    cacheSnapshot(reference.uid, std::move(snapshot), entry->timestamp);
+    applied = foldEntry(reference, failed_fetches) || applied;
   }
   if (failed_fetches != 0) {
     qCWarning(lcSceneEntitiesLayer) << failed_fetches
@@ -559,7 +594,19 @@ void SceneEntitiesLayer::rebuildModelStateAt(PJ::Timepoint time) {
   model_state_warning_.clear();
   state_built_at_ = time;
   applied_uid_high_ = {};
-  if (ctx_.session != nullptr) {
+  if (ctx_.session != nullptr && snapshot_stream_) {
+    PJ::ObjectStore& store = ctx_.session->objectStore();
+    if (const auto shown = store.latestEntryIdAt(topic_id_, PJ::toRaw(time))) {
+      pruneSnapshotCacheBelow(store.firstSequentialUID(topic_id_));
+      std::size_t failed_fetches = 0;
+      (void)foldEntry(*shown, failed_fetches);
+      if (failed_fetches != 0) {
+        model_state_warning_ = tr("A SceneEntities model snapshot was lost: source re-read failed");
+      }
+      applied_uid_high_ = shown->uid;
+      (void)model_state_.dropExpired(PJ::toRaw(time));
+    }
+  } else if (ctx_.session != nullptr) {
     PJ::ObjectStore& store = ctx_.session->objectStore();
     const std::int64_t time_ns = PJ::toRaw(time);
     // High-water arrival UID among ts <= time — NOT latestAt()'s UID, which an
@@ -584,6 +631,27 @@ void SceneEntitiesLayer::ensureModelStateAt(PJ::Timepoint time) {
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
   const std::int64_t time_ns = PJ::toRaw(time);
+  if (snapshot_stream_) {
+    // The same entry, forward: only lifetimes move. Another entry, or a step back (an entity a lifetime dropped
+    // shows again): fold the shown entry alone.
+    const auto shown = store.latestEntryIdAt(topic_id_, time_ns);
+    // renderAt() ran first: an entry evicted under the cursor keeps its marker stamp, and its snapshot stays too,
+    // also on a step back that stays at or after its stamp (there is nothing to rebuild it from).
+    const bool evicted = !shown && shown_store_ns_.has_value() && time_ns >= *shown_store_ns_;
+    if (state_built_at_.has_value() &&
+        (evicted || (time >= *state_built_at_ && (shown ? shown->uid : PJ::SequentialUID{}) == applied_uid_high_))) {
+      state_built_at_ = time;
+      if (model_state_.dropExpired(time_ns)) {
+        updateModelFrames();
+        syncModelSources();
+        emit repaintRequested();
+      }
+      return;
+    }
+    rebuildModelStateAt(time);
+    emit repaintRequested();
+    return;
+  }
   const PJ::SequentialUID high_now = store.maxUidAtOrBefore(topic_id_, time_ns);
   if (state_built_at_.has_value() && *state_built_at_ == time && high_now == applied_uid_high_) {
     // Already built at this playhead and no batch at/before it arrived since.

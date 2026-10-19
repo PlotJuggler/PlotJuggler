@@ -1109,10 +1109,10 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id, [[maybe_un
   }
   const std::optional<PointVertexPlan> plan =
       planPointVertices(cloud, scalar_sv, /*extract_rgba=*/rgb_mode, storesScalar());
+  // A cloud with no point is a valid empty sample (D25: an empty result, or a derived topic's tombstone): it
+  // draws nothing and warns about nothing.
   if (!plan.has_value()) {
-    failSample(
-        id,
-        point_count != 0 ? tr("Malformed point cloud was rejected") : tr("Point cloud contains no finite positions"));
+    failSample(id, point_count != 0 ? tr("Malformed point cloud was rejected") : QString());
     return;
   }
   PackedPointVertices packed;
@@ -1128,7 +1128,7 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id, [[maybe_un
     return;
   }
   if (packed.count == 0) {
-    failSample(id, tr("Point cloud contains no finite positions"));
+    failSample(id, point_count != 0 ? tr("Point cloud contains no finite positions") : QString());
     return;
   }
   vertex_format_ = packed.format;
@@ -1201,6 +1201,13 @@ void PointCloudLayer::renderAt(int64_t time_ns) {
   // decompress on the GUI thread) only to discard the bytes on an identity match.
   const auto entry_id = store.latestEntryIdAt(topic_id_, time_ns);
   if (!entry_id.has_value()) {
+    // A seek before the shown cloud's stamp: nothing is there (a derived topic computed only later). At or after
+    // it the shown entry was evicted under the cursor, and stays.
+    if (last_pushed_id_ != SampleId{} && time_ns < last_pushed_id_.timestamp) {
+      invalidateSampleState();
+      clearGeometry();
+      emit repaintRequested();
+    }
     return;
   }
   if (servedFromMemos(*entry_id)) {

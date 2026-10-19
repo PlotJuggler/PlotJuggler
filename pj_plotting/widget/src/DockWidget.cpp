@@ -392,7 +392,9 @@ DockWidget* DockWidget::splitInto(ads::DockWidgetArea dock_area, PlotWidget* plo
   connect(new_widget, &DockWidget::undoableChange, parent_docker, &PlotDocker::undoableChange);
   connect(new_widget, &DockWidget::plotWidgetCreated, parent_docker, &PlotDocker::plotWidgetAdded);
   connect(new_widget, &DockWidget::objectFamilyRequested, parent_docker, &PlotDocker::objectFamilyRequested);
-  connect(new_widget, &DockWidget::firstObjectTopicAdded, parent_docker, &PlotDocker::firstObjectTopicAdded);
+  connect(new_widget, &DockWidget::firstObjectTopicAdded, parent_docker, [parent_docker, new_widget] {
+    emit parent_docker->firstObjectTopicAdded(new_widget);
+  });
   connect(new_widget, &DockWidget::placeholderTopicDropped, parent_docker, &PlotDocker::placeholderTopicDropped);
   emit undoableChange();
   emit parent_docker->dockAdded(new_widget);

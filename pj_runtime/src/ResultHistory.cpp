@@ -310,6 +310,7 @@ Status ResultHistory::publish(
   if (Status written = writeRing(node, stamp, key, result, std::move(options)); !written) {
     return unexpected("on-demand: '" + node_key + "': " + written.error());
   }
+  node.dropped = false;
   // The ring holds the objects serialized: the cache keeps no second, decoded copy of them.
   const auto held = node.ledger.find(node.pinned ? kFindingTimestamp : stamp);
   const bool ring_held = held != node.ledger.end() && held->second.key == key;
@@ -494,6 +495,7 @@ Status ResultHistory::dropResults(NodeResults& node) {
     if (auto pruned = store_.pushOwnedBundle(std::move(prune)); !pruned) {
       return unexpected(pruned.error());
     }
+    node.dropped = true;
   }
   releaseResults(node);
   return okStatus();
@@ -652,6 +654,11 @@ std::optional<ResultHistory::Shown> ResultHistory::shownAt(std::string_view key,
   const bool available = std::any_of(
       entries.begin(), entries.end(), [](const Stored::Entry& entry) { return !entry.unavailable.has_value(); });
   return Shown{shown->second.stamp, available};
+}
+
+bool ResultHistory::resultsDropped(std::string_view key) const {
+  const auto found = nodes_.find(key);
+  return found != nodes_.end() && found->second.dropped;
 }
 
 bool ResultHistory::supersedeTombstones(std::string_view key, Timestamp stamp, Timestamp t) {

@@ -229,6 +229,12 @@ class SessionManager : public QObject {
 
   [[nodiscard]] DataReader createReader() const;
 
+  /// The clock range a derived topic covers (docs/derived_objects/ARCHITECTURE.md §9, the declared range): the
+  /// envelope of its node's raw inputs' ranges, upstream nodes followed to their raw leaves, never what has been
+  /// computed. Inverted (`{max, min}`) for a finding, which covers no clock range, and when no input has data;
+  /// nullopt for a topic that is no on-demand output. GUI thread.
+  [[nodiscard]] std::optional<std::pair<Timestamp, Timestamp>> derivedTopicInputRange(ObjectTopicId topic) const;
+
   /// Associates a file-backed dataset with the normalized full path from which
   /// FileLoader created it. DatasetInfo::source_name is intentionally only a
   /// display/raw-source label (often a basename), so it cannot distinguish two

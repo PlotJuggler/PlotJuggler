@@ -35,11 +35,10 @@ const std::string& Scene3DLayer::renderFrameId() const {
 }
 
 void Scene3DLayer::noteRenderFailure(QString warning) {
-  if (render_warning_ == warning) {
+  if (renderWarning() == warning) {
     return;
   }
-  render_warning_ = std::move(warning);
-  updateWarning();
+  setWarningPart(PJ::SceneWarningParts::Part::kRender, std::move(warning));
   renderWarningChanged();
 }
 
@@ -47,24 +46,12 @@ void Scene3DLayer::noteRenderSuccess() {
   noteRenderFailure({});
 }
 
-void Scene3DLayer::setDataWarning(QString warning) {
-  if (data_warning_ == warning) {
-    return;
-  }
-  data_warning_ = std::move(warning);
-  updateWarning();
+const QString& Scene3DLayer::dataWarning() const {
+  return warningParts().text(PJ::SceneWarningParts::Part::kData);
 }
 
-void Scene3DLayer::updateWarning() {
-  QString combined = data_warning_;
-  if (!render_warning_.isEmpty()) {
-    combined += (combined.isEmpty() ? QString() : QStringLiteral("\n")) + render_warning_;
-  }
-  if (warning_ == combined) {
-    return;
-  }
-  warning_ = std::move(combined);
-  emit statusWarningChanged();
+const QString& Scene3DLayer::renderWarning() const {
+  return warningParts().text(PJ::SceneWarningParts::Part::kRender);
 }
 
 }  // namespace pj::scene3d

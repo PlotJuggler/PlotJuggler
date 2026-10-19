@@ -9,6 +9,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -19,6 +20,8 @@
 #include "pj_base/builtin/image.hpp"
 #include "pj_base/builtin/image_codec.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+#include "pj_scene2d_core/borrowed_media_source.h"
+#include "pj_scene2d_core/composite_media_source.h"
 #include "test_png_io.h"
 
 namespace {
@@ -814,4 +817,112 @@ TEST(ImagePipelineSourceTest, RectifyReEnabledRedecodesAndRectifies) {
     EXPECT_EQ(frame->base->width, 8);
     EXPECT_EQ(frame->base->height, 6);
   }
+}
+
+namespace {
+
+/// A serialized 2x1 rgb8 image, or an empty one (the image a derived topic's tombstone holds).
+std::vector<uint8_t> canonicalImage(bool empty) {
+  static const std::vector<uint8_t> kRgb = {10, 20, 30, 40, 50, 60};
+  PJ::sdk::Image img;
+  if (!empty) {
+    img.width = 2;
+    img.height = 1;
+    img.encoding = "rgb8";
+    img.row_step = 6;
+    img.data = PJ::Span<const uint8_t>(kRgb.data(), kRgb.size());
+  }
+  return PJ::serializeImage(img);
+}
+
+constexpr int64_t kFindingTimestamp = INT64_MIN;  // where a derived finding's entry sits (pj_runtime)
+
+}  // namespace
+
+// A derived image finding sits at INT64_MIN: it decodes, also when the cursor is before its real stamp. The memo is
+// the entry's UID, so no stamp can pass for "nothing delivered yet".
+TEST(ImagePipelineSourceTest, AnEntryAtTheEarliestStampDecodes) {
+  PJ::ObjectStore store;
+  auto topic = store.registerTopic(
+      {PJ::DatasetId{1}, "/finding", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(store.pushOwned(*topic, kFindingTimestamp, canonicalImage(false)));
+
+  FrameSync sync;
+  PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
+  sync.install(source);
+  source.setTimestamp(5'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto frame = source.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  ASSERT_TRUE(frame->base.has_value());
+  EXPECT_EQ(frame->base->width, 2);
+}
+
+// An empty image (a derived tombstone) clears what was shown: an explicit clear sample with no pixels, which the
+// compositor turns into a layer with no pixel contribution. Nothing new at a later cursor stays "no update".
+TEST(ImagePipelineSourceTest, AnEmptyImageClearsThePixels) {
+  PJ::ObjectStore store;
+  auto topic = store.registerTopic(
+      {PJ::DatasetId{1}, "/derived", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(store.pushOwned(*topic, 1'000, canonicalImage(false)));
+  ASSERT_TRUE(store.pushOwned(*topic, 2'000, canonicalImage(true)));
+
+  FrameSync sync;
+  PJ::ImagePipelineSource image(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
+  sync.install(image);
+  PJ::CompositeMediaSource composite;
+  composite.addLayer(std::make_unique<PJ::BorrowedMediaSource>(&image), 1.0f, &image);
+
+  composite.setTimestamp(1'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto shown = composite.takeFrame();
+  ASSERT_TRUE(shown.has_value());
+  ASSERT_EQ(shown->pixel_layers.size(), 1u);
+
+  composite.setTimestamp(2'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto cleared = composite.takeFrame();
+  ASSERT_TRUE(cleared.has_value()) << "a clear is an update";
+  EXPECT_TRUE(cleared->pixel_layers.empty());
+  EXPECT_FALSE(cleared->base.has_value());
+
+  composite.setTimestamp(2'500);
+  std::this_thread::sleep_for(kIdleSettleTime);
+  EXPECT_FALSE(composite.takeFrame().has_value()) << "the same entry again is no update";
+}
+
+// A seek before the delivered entry's stamp with nothing at the new time clears the pixels (a derived image computed
+// only later must not stay on screen); a later time with no new entry stays "no update".
+TEST(ImagePipelineSourceTest, ASeekBeforeTheShownEntryClearsThePixels) {
+  PJ::ObjectStore store;
+  auto topic = store.registerTopic(
+      {PJ::DatasetId{1}, "/derived", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(store.pushOwned(*topic, 2'000, canonicalImage(false)));
+
+  FrameSync sync;
+  PJ::ImagePipelineSource image(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
+  sync.install(image);
+  image.setTimestamp(2'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto shown = image.takeFrame();
+  ASSERT_TRUE(shown.has_value());
+  ASSERT_TRUE(shown->base.has_value());
+
+  image.setTimestamp(1'000);
+  ASSERT_TRUE(sync.waitReady()) << "a clear is an update";
+  auto cleared = image.takeFrame();
+  ASSERT_TRUE(cleared.has_value());
+  EXPECT_FALSE(cleared->base.has_value());
+
+  image.setTimestamp(500);
+  std::this_thread::sleep_for(kIdleSettleTime);
+  EXPECT_FALSE(image.takeFrame().has_value()) << "nothing shown: nothing more to clear";
+  image.setTimestamp(2'000);
+  ASSERT_TRUE(sync.waitReady());
+  shown = image.takeFrame();
+  ASSERT_TRUE(shown.has_value());
+  EXPECT_TRUE(shown->base.has_value()) << "the entry decodes again";
 }

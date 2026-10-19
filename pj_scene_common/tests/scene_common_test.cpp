@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -22,9 +23,13 @@
 #include <utility>
 #include <vector>
 
+#include "on_demand_test_utils.h"
+#include "pj_base/builtin/builtin_object_codec.hpp"
+#include "pj_base/sdk/platform.hpp"
 #include "pj_base/time.hpp"  // PJ::Timepoint, PJ::Range, fromRaw/toRaw
 #include "pj_datastore/engine.hpp"
 #include "pj_runtime/IDataWidget.h"
+#include "pj_runtime/OnDemandService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene_common/layer_factory.h"
 #include "pj_scene_common/layer_params.h"
@@ -1596,6 +1601,205 @@ TEST(SceneDockWidgetTest, ConfigTopicIsConsumedWithoutCreatingLayer) {
 // 3D config panel: copy serializes one layer's xmlSaveState blob, paste applies
 // it to another. FakeLayer's "payload" attribute stands in for real per-layer
 // params (shape, size, colormap, …).
+// SCN-15: each writer owns a part of the row warning; the joined text lists the non-empty parts in order, and a
+// set reports a change only when the joined text changed.
+TEST(SceneWarningPartsTest, JoinsNonEmptyPartsInOrderAndReportsOnlyRealChanges) {
+  using Part = PJ::SceneWarningParts::Part;
+  PJ::SceneWarningParts parts;
+  EXPECT_FALSE(parts.set(Part::kData, {}));
+  EXPECT_TRUE(parts.set(Part::kDerived, u"missing input"_s));
+  EXPECT_EQ(parts.combined(), u"missing input"_s);
+  EXPECT_TRUE(parts.set(Part::kData, u"bad decode"_s));
+  EXPECT_EQ(parts.combined(), u"bad decode\nmissing input"_s);
+  EXPECT_TRUE(parts.set(Part::kRender, u"no texture"_s));
+  EXPECT_EQ(parts.combined(), u"bad decode\nno texture\nmissing input"_s);
+  EXPECT_FALSE(parts.set(Part::kRender, u"no texture"_s));
+  EXPECT_TRUE(parts.set(Part::kDerived, {}));
+  EXPECT_EQ(parts.combined(), u"bad decode\nno texture"_s);
+  EXPECT_EQ(parts.text(Part::kData), u"bad decode"_s);
+}
+
+namespace {
+
+constexpr PJ::Timestamp kSec = 1'000'000'000;
+
+/// The fake run every on-demand service built while it lives uses.
+struct ScopedFakeRun {
+  explicit ScopedFakeRun(PJ::test::FakeRun& fake) {
+    PJ::OnDemandService::setRunForTest(fake.function());
+  }
+  ~ScopedFakeRun() {
+    PJ::OnDemandService::setRunForTest({});
+  }
+  ScopedFakeRun(const ScopedFakeRun&) = delete;
+  ScopedFakeRun& operator=(const ScopedFakeRun&) = delete;
+};
+
+/// A dataset `log` with a canonical cloud topic `cloud` (entries at 5, 10 and 20 s) and on-demand recipes reading
+/// it, run by `fake`.
+struct DerivedDockFixture {
+  DerivedDockFixture() {
+    ds = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "log"}).value();
+    const PJ::ObjectTopicId cloud =
+        session.objectStore().registerTopic({ds, "cloud", R"({"builtin_object_type":"kPointCloud"})"}).value();
+    for (const PJ::Timestamp t : {5 * kSec, 10 * kSec, 20 * kSec}) {
+      const auto bytes = PJ::serializeBuiltinObject(PJ::sdk::BuiltinObject(PJ::test::makeCloud(4))).value();
+      EXPECT_TRUE(session.objectStore().pushOwned(cloud, t, bytes).has_value());
+    }
+    dock.setSessionManager(&session);
+  }
+  /// Installs `owner/<id>` reading the cloud and returns its output topic.
+  PJ::ObjectTopicId install(const std::string& id) {
+    const auto installed = session.onDemandService().install(
+        PJ::test::onDemandRecipe(
+            id, {"cloud"}, {{"cropped", PJ::scripting::OutputType::kObject, PJ::sdk::BuiltinObjectType::kPointCloud}}));
+    EXPECT_TRUE(installed.has_value());
+    return session.objectStore().findTopic(ds, "owner/" + id + "/cropped").value_or(PJ::ObjectTopicId{});
+  }
+
+  PJ::test::FakeRun fake;  ///< outlives the session, whose pool joins the runs
+  ScopedFakeRun scoped{fake};
+  PJ::SessionManager session;
+  PJ::DatasetId ds = 0;
+  FakeSceneDock dock;
+};
+
+}  // namespace
+
+// D30, GAP-05: while its derived layers compute, each row says how far its shown result is behind the one the
+// newest request produces (the scheduler's lag), and the dock's status strip shows the largest; both clear once
+// the results land.
+TEST(SceneDockWidgetTest, LagIndicatorShowsTheMaxLagOfItsDerivedLayers) {
+  DerivedDockFixture fx;
+  const PJ::ObjectTopicId a = fx.install("a");
+  const PJ::ObjectTopicId b = fx.install("b");
+  fx.session.onDemandService().requestAt("owner/a", 5 * kSec);
+  fx.session.onDemandService().requestAt("owner/b", 10 * kSec);
+  fx.session.enginePool().waitIdle();
+  ASSERT_TRUE(fx.dock.addTopic(a, PJ::sdk::BuiltinObjectType::kPointCloud, u"a"_s));
+  ASSERT_TRUE(fx.dock.addTopic(b, PJ::sdk::BuiltinObjectType::kPointCloud, u"b"_s));
+  EXPECT_TRUE(fx.dock.derivedStatus().isEmpty());
+  EXPECT_TRUE(fx.dock.layerStatus(a).isEmpty());
+
+  std::vector<std::pair<uint32_t, QString>> statuses;
+  QObject::connect(&fx.dock, &PJ::SceneDockWidget::layerStatusChanged, [&](PJ::ObjectTopicId topic, QString text) {
+    statuses.emplace_back(topic.id, std::move(text));
+  });
+  fx.fake.gated = true;
+  fx.session.onDemandService().requestAt("owner/a", 20 * kSec);
+  fx.session.onDemandService().requestAt("owner/b", 20 * kSec);
+  EXPECT_EQ(fx.dock.layerStatus(a), u"behind 15 s"_s);
+  EXPECT_EQ(fx.dock.layerStatus(b), u"behind 10 s"_s);
+  EXPECT_EQ(fx.dock.derivedStatus(), u"computing (behind 15 s)"_s);
+  EXPECT_EQ(statuses, (std::vector<std::pair<uint32_t, QString>>{{a.id, u"behind 15 s"_s}, {b.id, u"behind 10 s"_s}}));
+  fx.dock.removeTopic(a);
+  EXPECT_EQ(fx.dock.derivedStatus(), u"computing (behind 10 s)"_s) << "a removed layer no longer counts";
+
+  fx.fake.allow(2);
+  fx.session.enginePool().waitIdle();
+  EXPECT_TRUE(fx.dock.layerStatus(b).isEmpty());
+  EXPECT_TRUE(fx.dock.derivedStatus().isEmpty());
+}
+
+// The status strip sums up what the dock shows: a hidden layer's lag leaves it, and comes back with the layer.
+TEST(SceneDockWidgetTest, AHiddenLayersLagLeavesTheStatusStrip) {
+  DerivedDockFixture fx;
+  const PJ::ObjectTopicId a = fx.install("a");
+  const PJ::ObjectTopicId b = fx.install("b");
+  fx.session.onDemandService().requestAt("owner/a", 5 * kSec);
+  fx.session.onDemandService().requestAt("owner/b", 10 * kSec);
+  fx.session.enginePool().waitIdle();
+  ASSERT_TRUE(fx.dock.addTopic(a, PJ::sdk::BuiltinObjectType::kPointCloud, u"a"_s));
+  ASSERT_TRUE(fx.dock.addTopic(b, PJ::sdk::BuiltinObjectType::kPointCloud, u"b"_s));
+  fx.fake.gated = true;
+  fx.session.onDemandService().requestAt("owner/a", 20 * kSec);
+  fx.session.onDemandService().requestAt("owner/b", 20 * kSec);
+  ASSERT_EQ(fx.dock.derivedStatus(), u"computing (behind 15 s)"_s);
+
+  fx.dock.setLayerVisible(a, false);
+  EXPECT_EQ(fx.dock.derivedStatus(), u"computing (behind 10 s)"_s);
+  fx.dock.setLayerVisible(b, false);
+  EXPECT_TRUE(fx.dock.derivedStatus().isEmpty());
+  fx.dock.setLayerVisible(a, true);
+  EXPECT_EQ(fx.dock.derivedStatus(), u"computing (behind 15 s)"_s);
+  fx.fake.allow(2);
+  fx.session.enginePool().waitIdle();
+}
+
+// A raw topic's layer has no derived status, whatever the on-demand engine does.
+TEST(SceneDockWidgetTest, ARawLayerHasNoDerivedStatus) {
+  DerivedDockFixture fx;
+  const PJ::ObjectTopicId cloud = fx.session.objectStore().findTopic(fx.ds, "cloud").value();
+  ASSERT_TRUE(fx.dock.addTopic(cloud, PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud"_s));
+  fx.install("a");
+  fx.fake.gated = true;
+  fx.session.onDemandService().requestAt("owner/a", 20 * kSec);
+  EXPECT_TRUE(fx.dock.layerStatus(cloud).isEmpty());
+  EXPECT_TRUE(fx.dock.derivedStatus().isEmpty());
+  fx.fake.allow(1);
+  fx.session.enginePool().waitIdle();
+}
+
+// The GUI cost of re-reading one derived layer's presentation (a state change), and of a raw layer's (a key miss).
+// Production does the same lookups: the history's key, the scheduler's state, the graph's node.
+TEST(SceneDockWidgetBench, DerivedPresentationPerLayer) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  DerivedDockFixture fx;
+  const PJ::ObjectTopicId derived = fx.install("a");
+  const PJ::ObjectTopicId raw = fx.session.objectStore().findTopic(fx.ds, "cloud").value();
+  fx.session.onDemandService().requestAt("owner/a", 5 * kSec);
+  fx.session.enginePool().waitIdle();
+  fx.fake.gated = true;
+  fx.session.onDemandService().requestAt("owner/a", 20 * kSec);
+  constexpr int kCalls = 10'000;
+  for (const auto& [name, topic] : {std::pair{"derived (behind)", derived}, std::pair{"raw", raw}}) {
+    std::size_t sink = 0;
+    const double micros = PJ::test::medianMicros(15, [&] {
+      for (int call = 0; call < kCalls; ++call) {
+        sink += static_cast<std::size_t>(PJ::derivedTopicPresentation(&fx.session, topic).status.size());
+      }
+    });
+    EXPECT_GT(sink + 1, 0u);
+    std::printf("[bench] derivedTopicPresentation %s: %.0f ns per layer\n", name, micros * 1000.0 / kCalls);
+  }
+  fx.fake.allow(1);
+  fx.session.enginePool().waitIdle();
+}
+
+// The dock's clock range of a derived layer runs on every tracker tick (the clamp): a reader two hops from its raw
+// input, among 10k topics. Production does the same lookups (the graph walk, the store's topic and range).
+TEST(SceneDockWidgetBench, DerivedClockRangePerLayer) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  DerivedDockFixture fx;
+  for (int index = 0; index < 10'000; ++index) {
+    ASSERT_TRUE(
+        fx.session.objectStore()
+            .registerTopic({fx.ds, "other/" + std::to_string(index), R"({"builtin_object_type":"kPointCloud"})"})
+            .has_value());
+  }
+  fx.install("a");
+  const auto reader = fx.session.onDemandService().install(
+      PJ::test::onDemandRecipe(
+          "b", {"owner/a/cropped"},
+          {{"cropped", PJ::scripting::OutputType::kObject, PJ::sdk::BuiltinObjectType::kPointCloud}}));
+  ASSERT_TRUE(reader.has_value());
+  const PJ::ObjectTopicId topic = fx.session.objectStore().findTopic(fx.ds, "owner/b/cropped").value();
+  ASSERT_TRUE(fx.session.derivedTopicInputRange(topic).has_value());
+  constexpr int kCalls = 10'000;
+  int64_t sink = 0;
+  const double micros = PJ::test::medianMicros(15, [&] {
+    for (int call = 0; call < kCalls; ++call) {
+      sink += fx.session.derivedTopicInputRange(topic)->second;
+    }
+  });
+  EXPECT_NE(sink, 0);
+  std::printf("[bench] derivedTopicInputRange, 2 hops among 10k topics: %.0f ns per layer\n", micros * 1000.0 / kCalls);
+}
+
 TEST(LayerParamsTest, RoundTripCopiesParamsBetweenLayers) {
   FakeLayer source(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"src"_s);
   source.setPayload(u"alpha"_s);

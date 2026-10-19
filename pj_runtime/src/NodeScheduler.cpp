@@ -331,7 +331,7 @@ void NodeScheduler::clearShown(
     const std::string& key, const RecipeGraph::Node& node, Timestamp requested_t, Timestamp stamp, uint64_t epoch,
     const std::string& reason) {
   const std::optional<ResultHistory::Shown> shown = history_.shownAt(key, stamp);
-  if (!shown || !shown->available) {
+  if (shown ? !shown->available : !history_.resultsDropped(key)) {
     return;  // nothing drawn to clear
   }
   scripting::ScriptBundle cleared;

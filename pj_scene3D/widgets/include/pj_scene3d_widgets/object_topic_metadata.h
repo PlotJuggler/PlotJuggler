@@ -16,6 +16,10 @@ namespace pj::scene3d {
 /// and any layer config widget share one parse path and can't silently diverge.
 [[nodiscard]] PJ::sdk::BuiltinObjectType builtinObjectTypeFor(const PJ::ObjectTopicDescriptor& descriptor);
 
+/// True when the descriptor marks a snapshot stream (`sdk::kSnapshotMetadataKey` = "true"): every entry is a
+/// complete clear-and-replace snapshot, as each result of a derived SceneEntities topic is (D27).
+[[nodiscard]] bool isSnapshotStream(const PJ::ObjectTopicDescriptor& descriptor);
+
 struct UniqueObjectTopicResolution {
   std::optional<PJ::ObjectTopicId> topic_id;
   bool ambiguous = false;

@@ -4,6 +4,7 @@
 
 #include <QDomDocument>
 #include <QDomElement>
+#include <QMetaObject>
 #include <QScopedValueRollback>
 #include <QSet>
 #include <QString>
@@ -29,6 +30,11 @@
 namespace PJ {
 
 class SessionManager;
+}  // namespace PJ
+
+class QLabel;
+
+namespace PJ {
 
 /// Backend-agnostic dock base that owns an ordered stack of scene layers.
 ///
@@ -130,6 +136,12 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// the base stores the pointer and subclass wiring depends on it being set.
   virtual void setSessionManager(SessionManager* session);
 
+  /// The row status of a layer on a derived topic (DerivedTopicPresentation::status); empty for any other layer.
+  [[nodiscard]] QString layerStatus(ObjectTopicId topic_id) const;
+  /// The dock's status strip: "computing (behind 0.4 s)" with the largest lag of its derived layers while one of
+  /// them computes, "computing…" while none has a lag yet; empty otherwise.
+  [[nodiscard]] QString derivedStatus() const;
+
  signals:
   void layerAdded(ObjectTopicId topic_id);
   void layerRemoved(ObjectTopicId topic_id);
@@ -137,6 +149,8 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// Emitted after reorderLayers() changed the draw order; read layers() for it.
   void layersReordered();
   void layerWarningChanged(ObjectTopicId topic_id, bool warn, QString reason);
+  /// layerStatus(topic_id) changed.
+  void layerStatusChanged(ObjectTopicId topic_id, QString status);
   /// Emitted whenever the dock-owned deferred queue changes.
   void pendingRestoresChanged();
   /// Emitted for committed, persistent user mutations, never during restore.
@@ -234,6 +248,13 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   void noteTrackerTime(int64_t time_ns) {
     last_tracker_ = PJ::fromRaw(time_ns);
   }
+
+  /// The range the dock clamps the tracker to and folds into the live edge for `layer`: a derived topic's inputs'
+  /// range (SessionManager::derivedTopicInputRange; inverted for a finding, which bounds nothing), else
+  /// `layer.timeRange()`.
+  [[nodiscard]] PJ::Range<PJ::Timepoint> clockRangeOf(const ISceneLayer& layer) const;
+  /// The newest raw clock instant among the visible layers' clockRangeOf, or nullopt when none has data.
+  [[nodiscard]] std::optional<int64_t> visibleLayersLiveEdge() const;
 
   /// Removes every layer: re-points the concrete view off the old layers
   /// (syncViewLayers with an empty order) while they are still alive, then
@@ -414,6 +435,16 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// arrived.
   void settleRestoreDataset();
 
+  /// A derived result landed: moves the visible layers of `topics` to the dock's time again (refreshAt), so a
+  /// result at the dock's time shows with no tracker tick. Each layer requests its own repaint.
+  void refreshDerivedLayers(const std::vector<ObjectTopicId>& topics);
+  /// Re-reads the derived presentation of `topic_id`'s layer (nothing for a raw one): its warning part, its row
+  /// status (layerStatusChanged on a change) and the dock's status strip. Never per frame.
+  void syncDerivedPresentation(ObjectTopicId topic_id);
+  /// syncDerivedPresentation of every derived layer that shows something: its text depends on the display offset.
+  void resyncDerivedPresentations();
+  void updateDerivedStatus();
+
   /// Removes matching queue entries and emits pendingRestoresChanged once.
   void erasePendingRestoresIf(const std::function<bool(const PendingRestoreElement&)>& predicate);
 
@@ -459,6 +490,13 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   std::vector<SavedDataset> saved_datasets_;
   std::optional<PJ::Timepoint> last_tracker_;
   QWidget* scene_view_ = nullptr;
+  /// The presentation of each derived layer that shows something beside its geometry, by topicKey.
+  std::unordered_map<int64_t, DerivedTopicPresentation> derived_presentations_;
+  QLabel* derived_status_label_ = nullptr;  ///< the status strip under the view, hidden while empty
+  QMetaObject::Connection derived_published_conn_;
+  QMetaObject::Connection derived_state_conn_;
+  QMetaObject::Connection derived_offset_conn_;
+  QMetaObject::Connection derived_dataset_offset_conn_;
   std::unordered_map<int64_t, bool> layer_visibility_cache_;
   // Latched true the first time any layer or config topic is added (see
   // everHadContent()); never cleared, so an evicted-to-empty dock stays

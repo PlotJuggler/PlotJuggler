@@ -294,5 +294,49 @@ TEST(CompositeMediaSourceTest, InvalidateFansOutThroughBorrowedToSources) {
   EXPECT_EQ(b.invalidate_calls, 1);
 }
 
+// SCN-11 (changed by D30: no readiness gate): a derived overlay whose node computes publishes nothing new, so at
+// the next cursor the composite keeps its previous overlay beside the fresh image.
+TEST(CompositeMediaSourceTest, PendingDerivedLayerKeepsItsPreviousOverlay) {
+  MockSource image;
+  image.emit_base = true;
+  image.base_w = 640;
+  MockSource overlay;
+  overlay.n_overlays = 1;
+  CompositeMediaSource composite;
+  composite.addLayer(std::make_unique<BorrowedMediaSource>(&image), 1.0f, &image);
+  composite.addLayer(std::make_unique<BorrowedMediaSource>(&overlay), 1.0f, &overlay);
+  composite.setTimestamp(100);
+  ASSERT_TRUE(composite.takeFrame().has_value());
+
+  composite.setTimestamp(200);
+  (void)overlay.takeFrame();  // the pending node's ring shows nothing new at 200
+  const auto frame = composite.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  EXPECT_FALSE(frame->pixel_layers.empty());
+  EXPECT_EQ(frame->overlays.size(), 1u) << "the previous result stays shown while the next computes";
+}
+
+// SCN-12 (changed by D30): a missing input or an error publishes an empty tombstone, which replaces the overlay:
+// the image stays, with no overlay.
+TEST(CompositeMediaSourceTest, ATombstoneShowsTheImageWithAnEmptyOverlay) {
+  MockSource image;
+  image.emit_base = true;
+  image.base_w = 640;
+  MockSource overlay;
+  overlay.n_overlays = 1;
+  CompositeMediaSource composite;
+  composite.addLayer(std::make_unique<BorrowedMediaSource>(&image), 1.0f, &image);
+  composite.addLayer(std::make_unique<BorrowedMediaSource>(&overlay), 1.0f, &overlay);
+  composite.setTimestamp(100);
+  ASSERT_TRUE(composite.takeFrame().has_value());
+
+  overlay.n_overlays = 0;  // the tombstone: an empty annotation set
+  composite.setTimestamp(200);
+  const auto frame = composite.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  EXPECT_FALSE(frame->pixel_layers.empty());
+  EXPECT_TRUE(frame->overlays.empty());
+}
+
 }  // namespace
 }  // namespace PJ

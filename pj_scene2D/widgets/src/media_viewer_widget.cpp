@@ -1201,6 +1201,15 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
           inspector_frame_ = pending_decoded_;
           inspector_frame_changed = true;
           has_pending_ = isUploadablePixelFormat(pending_decoded_.format);
+        } else {
+          // No pixel content (a derived image's tombstone cleared it): drop what is shown.
+          pending_pixel_layers_.clear();
+          has_pending_pixel_layers_ = true;
+          pixel_layers_active_ = true;
+          has_pending_ = false;
+          pending_decoded_ = {};
+          inspector_frame_ = {};
+          inspector_frame_changed = true;
         }
         if (!frame->overlays.empty()) {
           last_overlays_ = std::move(frame->overlays);
@@ -1380,7 +1389,7 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
   const size_t thick_vertex_count = (thick_overlay_.pipeline != nullptr) ? thick_overlay_.vertex_data.size() / 6 : 0;
 
   cb->beginPass(rt, clear_color_, {1.0f, 0}, updates);
-  if (pixel_layers_active_ && !pixel_layer_textures_.empty()) {
+  if (pixel_layers_active_) {
     // Without the blending pipeline (its create() failed) the layers draw opaque.
     cb->setGraphicsPipeline(composite_pipeline_ != nullptr ? composite_pipeline_ : pipeline_);
     cb->setViewport(

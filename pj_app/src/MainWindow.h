@@ -141,6 +141,7 @@ class MainWindow : public QMainWindow {
   friend class MainWindowHistoryExemptTestPeer;
   friend class MainWindowCustomSeriesTestPeer;
   friend class MainWindowRelease41LayoutTestPeer;
+  friend class MainWindowScene3dDropFramingTestPeer;
   friend class ToolboxPanelFoldTestPeer;
   friend class ToolboxPresenter;
 
@@ -547,6 +548,8 @@ class MainWindow : public QMainWindow {
   // when the user drops a scalar curve or object topic, set the playback range and
   // playhead immediately. Live ingest can also seed without any drop.
   void seedStreamingPlaybackFromDrop();
+  // The first topic dropped into an empty click-created object view: seeds streaming playback and frames it.
+  void onFirstObjectTopicAdded(DockWidget* dock);
 
   // Put the Source Timeline into read-only mode (called with streaming && playing,
   // from the streaming seek-lock refresh). While the cursor is glued to the live

@@ -464,6 +464,15 @@ if(PJ_BUILD_TESTS)
     set_source_files_properties(tests/main_window_release41_layout_test.cpp PROPERTIES
         COMPILE_DEFINITIONS PJ_RELEASE41_LAYOUT_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/layouts/release-4.1")
 
+    # A hand-made 3D view filled by a user drop frames its first content; a
+    # restored layout keeps its saved fixed frame and camera (SCN-16).
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_scene3d_drop_framing_test.cpp)
+
+    # The 2D scene panel's layer rows carry each layer's warning from the start.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/scene2d_config_panel_test.cpp)
+
     # Window frame: the system title bar by default, the frameless custom one
     # only when Preferences -> Appearance opts in (bar contents, the double-click
     # seam, MainWindow flags and the toggle's persistence).

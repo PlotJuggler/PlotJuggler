@@ -281,7 +281,10 @@ paper check of D26. Pull is rejected and the ring is the target.
     resolved at `t` before the finding was computed is missing, while the display shows the
     finding at any instant.
   - A finding ignores a model entity's finite lifetime (otherwise it would count from the
-    fixed timestamp). The dock's time-range clamp and the live-edge fold skip findings.
+    fixed timestamp). The dock's time-range clamp and the live-edge fold skip findings
+    (built, slice 7a: `SceneDockWidget::clockRangeOf`).
+  - A finding stays where it was measured in a moving frame: its SceneEntities layer is
+    placed at the result's real stamp through `placeObject` (built, slice 7a).
   - **Accepted consequence:** a plugin reading a finding through the object-read service
     sees the fixed timestamp in `out_timestamp`. The real one is in the payload.
   - **Revisit if** a generic store read must report a finding's real computation time: a
@@ -290,7 +293,8 @@ paper check of D26. Pull is rejected and the ring is the target.
     first entry is returned for earlier `t`), but `rangeByTime` and `maxUidAtOrBefore` do
     not honour it, so it pushes work into the readers.
 - **The declared range:** a derived layer's time range comes from its inputs' range, not
-  from what has been computed.
+  from what has been computed (built, slice 7a: `SessionManager::derivedTopicInputRange`,
+  the envelope of the raw leaf inputs' ranges, upstream nodes followed).
 
 **Requirements for slice 6a** (from step 0):
 1. Byte estimates never serialize. Size inputs and outputs from the decoded object (for
@@ -527,7 +531,7 @@ Every consumer and its clock:
 | 3D view: TF triads, connection lines, hover label, frame picking, follow camera, TF render key | Entry, at the cursor | They show where each frame is at the cursor. |
 | Point cloud, depth cloud, pose array and its trail, voxel grid, grid map | Header at the object's own stamp for `root <- source`; entry at the cursor for `fixed <- root` (a pose-trail point: at its own store timestamp); entry at the cursor as the fallback | An object sits where its frame was when it was measured, as in RViz, and stays there in the world when the fixed frame moves. |
 | Occupancy grid | Entry, at the cursor | The drawn grid is a keyframe plus later patches, with no single stamp. |
-| Scene entities (markers and their models) | Entry, at the cursor | Entities carry their own stamps and `frame_locked`; honouring both is a follow-up. |
+| Scene entities (markers and their models) | Entry, at the cursor; a finding (D26) at its result's real stamp, as a stamped object | Entities carry their own stamps and `frame_locked`; honouring both is a follow-up. |
 | Robot model links | Entry, at the cursor | The links are TF frames. |
 | TF frame trail | Entry (`chainSampleTimes` and its lookups) | The trail is split at the cursor and its head meets the frame's triad. |
 | Camera scene bounds, layer render keys, point-cloud axis range | The layer's own placement, with its placement hold | They must match what is drawn. |
@@ -705,8 +709,8 @@ the protocol in slice 6b. The rest is **Built**.
     finding timestamp is a sentinel and is never shifted.
   - Known limits: a recipe a merge re-binds gets a new output topic, so a layer bound to
     the old one loses it (a consumed dataset's raw topics keep their ids), and the demand set
-    stays keyed by the consumed dataset until a layer references the re-bound topic (slice
-    7a). Two merges before the event loop turns (B into A, then A into C) can re-bind a
+    stays keyed by the consumed dataset until a layer references the re-bound topic (not
+    handled: the user re-adds the layer). Two merges before the event loop turns (B into A, then A into C) can re-bind a
     recipe with the first merge's shift only: not handled. `replaceDataset`, which no production path calls
     (a reload refills), erases a dataset's derived topics with its vanished ones; and a
     derived topic the user trashes leaves its recipe publishing into nothing.
@@ -909,19 +913,45 @@ proposed (N1, N2).
 
 ## 17. Scene integration
 
-**Status: Built.** It changes with D30 and with findings (§9).
+**Status: Built** (slice 7a for D30 and findings).
 
 - **3D and 2D layers** render derived topics.
   - They read a derived topic from the store like any other topic: the newest entry at or
-    before the cursor.
-  - A layer's readiness gate applies to missing input and error only (D6). A pending node
-    keeps showing its newest result, with the lag (D30).
+    before the cursor. There is no readiness gate: a pending node's ring keeps its newest
+    result, and a missing input or an error writes an empty tombstone (D6), also where the
+    ring shows nothing after an edit or a dataset epoch dropped the results a layer still
+    draws (`ResultHistory::resultsDropped`). An empty
+    point cloud is a valid empty sample, drawn as nothing with no warning (D25); an empty
+    image, color or depth, is an explicit clear through the 2D source, the compositor and the viewer.
+  - With nothing at or before the cursor, a layer (3D or 2D) clears when the cursor is
+    before the entry it shows (nothing is there) and keeps that entry when it is not (the
+    ring evicted it under the cursor); a SceneEntities layer keeps the entities too.
+  - A result landing at the dock's time re-runs the layers on that topic there
+    (`derivedEntriesPublished`, `ISceneLayer::refreshAt`), with no tracker tick; a layer
+    whose shown entry did not change decodes nothing.
+  - A `pj_snapshot` SceneEntities topic (every derived one, D27) folds the shown entry
+    alone: an entity absent from the next result is gone.
   - Scene2D core stays runtime-free: a derived topic reaches it as a store topic.
-  - The dock's time-range clamp and the live-edge fold skip findings (§9).
-- **The lag indicator (D30)** appears on the layer row, with the number (for example
-  "behind 0.4 s"), and in the scene dock. It is what makes showing an older result
-  acceptable. It also tells the user that the function needs attention. "Why is it empty"
-  warnings come from the node's state.
+  - The dock's time-range clamp and the live-edge fold use the inputs' range and skip
+    findings (§9).
+- **What the dock shows beside the geometry** comes from the node's state
+  (`derivedTopicPresentation` in `pj_scene_common/scene_layer.h` owns the wording), re-read
+  on `derivedStateChanged`, never per frame:
+  - The row warning says why a layer is empty (the missing input, the error): the layer's
+    derived warning part (`SceneWarningParts`).
+  - The row status is not a fault: "behind 0.4 s" (D30, the scheduler's lag: how far the
+    shown result is behind the current request's, never the cursor minus a stamp),
+    "computing…" before any result, and a finding's "computed at 12.4 s" (display seconds).
+    It is what makes showing an older result acceptable, and it tells the user that the
+    function needs attention.
+  - The dock's status strip shows "computing (behind 0.4 s)", the largest lag of its
+    visible derived layers. The lag is per node: two docks at different times share the newest
+    request's number.
+- **Initial framing.** A user drop into an empty 3D view (or the first topic into one built
+  from its icon) frames the first content once: the fixed frame becomes the layer's frame
+  and the camera fits its bounds. User camera input, a fixed-frame pick or a layout restore
+  cancels it. It fits the bounds where they are drawn (`placeObject`, once a tracker time
+  exists), and a SceneEntities finding keeps one placement hold per entity frame.
 - **A dock shows one dataset.** A topic of another dataset is refused with a visible
   reason. A saved layout that mixed datasets restores the same way whatever the load order:
   the dataset of the first saved element wins. No element of a later dataset binds before
@@ -983,7 +1013,7 @@ payload (§9).
 ## 19. Measurements
 
 These come from the prototype, whose design document describes the machine and method,
-except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a, slice 6a-5 and slice 6c rows. The slice 2 and 3 rows are measured on this stack by
+except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a, slice 6a-5, slice 6c and slice 7a rows. The slice 2 and 3 rows are measured on this stack by
 `EngineFreezeBench` (`pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`), from
 the call until the result is complete, as two different metrics:
 - **GUI-thread CPU time**, as the longest single stretch (the call or one event-loop
@@ -1010,6 +1040,7 @@ Linux, RelWithDebInfo.
 | Input staging after slice 6a-3 (`InputStagerBench`, `pj_runtime/tests/input_stager_test.cpp`, `PJ_BENCH=1`; a lazily stored cloud whose fetch returns a view, median of 101 calls, three runs) | `stage` on the GUI thread: 0.10-0.23 µs for 260k points, 0.10-0.24 µs for 1 point: independent of the input's size. `decode` of the 260k cloud (4.2 MB of canonical bytes): 0.3 µs, a view over the store's bytes (170-243 µs with a copying decode), on a worker in production, where a real lazy entry's chunk decode joins it (2.2 ms for 3.2 MiB of LZ4, measured on the prototype). `stage` among 10k object topics and 10k scalar names, the node's registered last (`StageAmongTenThousandTopics`; both lookups scan): 35-36 µs, so no per-node lookup cache |
 | On-demand request after slice 6a-4a (`NodeSchedulerBench`, `pj_runtime/tests/node_scheduler_test.cpp`, `PJ_BENCH=1`; median of 101 requests, three runs) | GUI time per `requestAt` over a lazily stored 260k-point cloud: 4.8-8.0 µs cold (staged, a miss, the run submitted), 0.39-0.42 µs warm (a hit), against the prototype's 4-5 ms cold. With 600 and 1800 results in the window (`RequestAtWithAFullWindow`): warm 0.38-0.42 µs either way, cold 1.31-1.43 µs and 1.29-1.33 µs (the lookup reads only the staged stamp) |
 | On-demand playhead tick after slice 6a-5 (`EngineFreezeBench.OnDemandColdAndWarm`, `pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`; through `AppSession`, one demanded recipe over a lazily stored 260k-point cloud, the real Luau run on a worker; median of 100 ticks, three runs) | GUI-thread CPU time per tick (the demanded keys, the conversion, staging, the lookup, the submission): 6.9-14.1 µs cold (a new instant), 0.76-0.89 µs warm (a hit), against 4.6-6.5 µs and 0.36-0.63 µs for `requestAt` alone in the same runs. An install (resolver, compile, history install) among 1 and 10,000 object topics: 120 µs and 163 µs, so the resolver's scan costs about 43 µs, once per install. The same recipe with 4 scalar inputs, among 10,029 catalog items: 508-514 µs cold and 483-485 µs warm per tick while each staging scanned the catalog for each scalar, 5.3-13.5 µs and 1.7-3.7 µs once the catalog memoizes its lookups |
+| Scene dock after slice 7a (`SceneDockWidgetBench`, `pj_scene_common/tests/scene_common_test.cpp`, `PJ_BENCH=1`; median of 15 x 10,000 calls) | A derived layer's clock range (`derivedTopicInputRange`, run per layer on every tracker tick by the clamp): 298 ns for a reader two hops from its raw input, among 10,000 topics, so no per-layer cache. Its presentation (`derivedTopicPresentation`, on a state change): 155 ns, 14 ns for a raw layer |
 | Publication of a 4.2 MB point-cloud result on the GUI thread (`GuiPublishCostOfA4MBResult`, 260k points, median of 51) | Serialized at the publication: 1.45-1.49 ms. Serialized on the worker (`ResultHistory::serializeOutputs`), the payload moved into the ring: 2-3 µs |
 | 2-hop chain after slice 6a-4a (`TwoHopChainLatencyAt10Hz`; requests at 10 Hz, from the reader's request to its published result, 50 requests, three runs) | Two Luau crops keeping all 260k points: median 6.8-6.9 ms, max 11-23 ms, every request drawn (14.6-15.0 ms while the compute cache kept a decoded copy of each result the ring holds). The scheduling alone, an instant fake run with empty outputs: 0.17-0.20 ms, so a chain in one worker task would save little |
 | Streaming: 5 min of 10 Hz, 2048-point clouds | Bounded plateau of entries and bytes |

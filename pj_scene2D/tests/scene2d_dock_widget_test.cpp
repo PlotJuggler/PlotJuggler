@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -25,9 +26,11 @@
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_scene2d_core/media_source.h"
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #include "pj_scene2d_widgets/layers/depth_image_layer.h"
 #include "pj_scene2d_widgets/layers/image_layer.h"
+#include "pj_scene2d_widgets/layers/scene2d_layer.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 #include "pj_widgets/ToggleSwitch.h"
 
@@ -942,6 +945,69 @@ TEST(Scene2DDockWidget, RevalidateWithoutSessionKeepsNeverPopulatedDock) {
   // must still be kept, not reported empty and wiped to the placeholder.
   PJ::Scene2DDockWidget dock;
   EXPECT_TRUE(dock.revalidateObjects());
+}
+
+namespace {
+
+/// Counts what a layer asks of its source.
+class CountingSource final : public PJ::MediaSource {
+ public:
+  void setTimestamp(int64_t ts_ns) override {
+    stamps.push_back(ts_ns);
+  }
+  std::optional<PJ::MediaFrame> takeFrame() override {
+    return std::nullopt;
+  }
+  void invalidate() override {
+    ++invalidations;
+  }
+  std::vector<int64_t> stamps;
+  int invalidations = 0;
+};
+
+class CountingLayer final : public PJ::Scene2DLayer {
+ public:
+  explicit CountingLayer(PJ::ObjectTopicId topic)
+      : Scene2DLayer(topic, PJ::sdk::BuiltinObjectType::kImageAnnotations, u"overlay"_s, u"Annotations"_s) {}
+  CountingSource* source = nullptr;
+
+ protected:
+  std::unique_ptr<PJ::MediaSource> createMediaSource(const PJ::SceneLayerContext&) override {
+    auto created = std::make_unique<CountingSource>();
+    source = created.get();
+    return created;
+  }
+};
+
+}  // namespace
+
+// A derived result landing at the dock's unchanged time: the source drops its per-timestamp memo, decodes the same
+// time again and the layer asks for a repaint (an annotation source prepares its frame synchronously). A
+// publication that leaves the shown entry unchanged decodes nothing.
+TEST(Scene2DLayer, RefreshAtRedecodesOnlyANewEntryAndRepaints) {
+  PJ::SessionManager session;
+  const auto topic = session.objectStore().registerTopic({1, "overlay", "{}"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(session.objectStore().pushOwned(*topic, 100, std::vector<uint8_t>{1}).has_value());
+  CountingLayer layer(*topic);
+  PJ::SceneLayerContext context;
+  context.session = &session;
+  ASSERT_TRUE(layer.attach(context));
+  ASSERT_NE(layer.source, nullptr);
+  int repaints = 0;
+  QObject::connect(&layer, &PJ::ISceneLayer::repaintRequested, [&repaints] { ++repaints; });
+  layer.setTrackerTime(PJ::fromRaw(100));
+
+  EXPECT_FALSE(layer.refreshAt(PJ::fromRaw(100))) << "the shown entry is unchanged";
+  EXPECT_EQ(layer.source->invalidations, 0);
+  EXPECT_EQ(repaints, 0);
+
+  ASSERT_TRUE(session.objectStore().pushOwned(*topic, 100, std::vector<uint8_t>{2}).has_value());
+  EXPECT_TRUE(layer.refreshAt(PJ::fromRaw(100)));
+  EXPECT_EQ(layer.source->invalidations, 1);
+  EXPECT_EQ(layer.source->stamps, (std::vector<int64_t>{100, 100}));
+  EXPECT_EQ(repaints, 1);
+  layer.detach();
 }
 
 int main(int argc, char** argv) {

@@ -532,7 +532,7 @@ the `pj_widgets` colormap polynomials (`rhi/shaders/colormap.glslinc`, a copy of
   keep their array.
 
 **Markers (`MarkerRhiPass`).** Admission places each SceneEntities layer's frames
-and applies the per-layer and per-view instance and stream budgets.
+(at the cursor; a derived finding at its stamp, `renderStamp()`) and applies the per-layer and per-view instance and stream budgets.
 `expandLayer()` turns a layer's `MarkerGeometry` (built on a worker,
 `marker_geometry.h`: instance sources, and line/triangle batches kept
 unexpanded, each point once with a vertex index list and a per-batch colour
@@ -730,9 +730,10 @@ HDR chain for that output size (`rejectHdr`), so the next frame draws directly. 
 backend line is logged once per QRhi, not on every retry.
 
 Every layer reports its row warning through `Scene3DLayer::statusWarning()` +
-`statusWarningChanged`: a data part (`setDataWarning`: decode, admission, budget)
-then a renderer part (`noteRenderFailure`/`noteRenderSuccess`, called by the
-view), one per line. The dock combines it with the frame-orphan state per row
+`statusWarningChanged`: a data part (`setDataWarning`: decode, admission, budget),
+a renderer part (`noteRenderFailure`/`noteRenderSuccess`, called by the
+view) and, for a derived topic, why it is empty (set by the dock from the node's
+state; `PJ::SceneWarningParts`), one per line. The dock combines it with the frame-orphan state per row
 (`updateLayerWarning`; `recomputeOrphanStates` runs it for every row, also with no
 TF bound).
 

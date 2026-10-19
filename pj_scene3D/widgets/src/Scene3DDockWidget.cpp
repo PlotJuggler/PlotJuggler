@@ -6,6 +6,7 @@
 #include <QAbstractItemView>
 #include <QDomDocument>
 #include <QDomElement>
+#include <QEvent>
 #include <QFileInfo>
 #include <QFontMetrics>
 #include <QIcon>
@@ -498,24 +499,9 @@ void Scene3DDockWidget::driveVisibleLayersToLiveEdge() {
   if (sessionManager() == nullptr) {
     return;
   }
-  bool any = false;
-  int64_t latest = std::numeric_limits<int64_t>::lowest();
-  for (const SceneLayerInfo& info : layers()) {
-    ISceneLayer* layer = layerFor(info.topic_id);
-    if (!info.visible || layer == nullptr) {
-      continue;
-    }
-    // Consult the layer's own timeRange() rather than store.timeRange(topic_id):
-    // a multi-topic layer (OccupancyGrid + its _updates sibling) reports a live
-    // edge that the base topic alone would miss, freezing it at the last
-    // keyframe. Empty layers report an inverted range and are skipped.
-    const PJ::Range<PJ::Timepoint> range = layer->timeRange();
-    if (range.max < range.min) {
-      continue;
-    }
-    latest = std::max(latest, PJ::toRaw(range.max));
-    any = true;
-  }
+  // The layers' own range, not store.timeRange(topic_id): a multi-topic layer (OccupancyGrid + its _updates
+  // sibling) has a live edge the base topic alone would miss, and a derived layer reports its inputs' edge.
+  std::optional<int64_t> edge = visibleLayersLiveEdge();
   // Fold config (TF) topics into the live edge so a layer-less TF-only dock still
   // advances + repaints every live tick (H.3). Without this, layers() being empty
   // bailed before any view update and the TF axes stayed frozen on the seed time.
@@ -525,12 +511,13 @@ void Scene3DDockWidget::driveVisibleLayersToLiveEdge() {
     if (store.entryCount(topic_id) == 0) {
       continue;
     }
-    latest = std::max(latest, store.timeRange(topic_id).second);
-    any = true;
+    const int64_t config_edge = store.timeRange(topic_id).second;
+    edge = edge ? std::max(*edge, config_edge) : config_edge;
   }
-  if (!any) {
+  if (!edge) {
     return;
   }
+  const int64_t latest = *edge;
   // Skip when the edge hasn't moved: MainWindow's playhead path repaints per tick
   // regardless, so re-pushing the same time here is wasted work (L.45/L.46).
   if (const auto last_ns = lastTrackerNs(); last_ns.has_value() && *last_ns == latest) {
@@ -850,7 +837,11 @@ QWidget* Scene3DDockWidget::createSceneView() {
   // view_ is non-null from here: let the host apply view-only state (scene
   // controls) that could not be pushed while the lazy view did not yet exist.
   emit sceneViewReady();
-  connect(view_, &SceneViewWidget::presentationChanged, this, &Scene3DDockWidget::notifyWorkspaceChanged);
+  connect(view_, &SceneViewWidget::presentationChanged, this, [this] {
+    initial_content_framing_ = false;  // a camera the user or a restore set wins over the pending fit
+    notifyWorkspaceChanged();
+  });
+  view_->installEventFilter(this);
   return view_;
 }
 
@@ -917,31 +908,74 @@ void Scene3DDockWidget::syncViewLayers(const std::vector<ISceneLayer*>& ordered_
   recomputeOrphanStates();
 }
 
+void Scene3DDockWidget::frameInitialContent() {
+  initial_content_framing_ = true;
+  updateSceneBounds();
+}
+
+bool Scene3DDockWidget::eventFilter(QObject* watched, QEvent* event) {
+  if (watched == view_ && (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::Wheel ||
+                           event->type() == QEvent::KeyPress)) {
+    initial_content_framing_ = false;
+  }
+  return SceneDockWidget::eventFilter(watched, event);
+}
+
 void Scene3DDockWidget::updateSceneBounds() {
   if (view_ == nullptr) {
     return;
   }
-  pj::scene3d::AABB scene;
   static const pj::tf::TransformBuffer k_empty_buffer;
   const pj::tf::TransformBuffer& tf = tf_buffer_ != nullptr ? *tf_buffer_ : k_empty_buffer;
-  const std::string& fixed = view_->fixedFrame();
   const PJ::Timepoint time = PJ::fromRaw(lastTrackerNs().value_or(0));
+  // A layer's bounds in the fixed frame, placed as the view draws it (at the object's own stamp, else the cursor).
+  const auto placed_bounds = [&](const Scene3DLayer& layer) -> std::optional<pj::scene3d::AABB> {
+    const auto bounds = layer.worldBounds();
+    if (!bounds.has_value()) {
+      return std::nullopt;
+    }
+    const std::string& fixed = view_->fixedFrame();
+    std::string source_frame = layer.sourceFrame().toStdString();
+    if (source_frame.empty()) {
+      source_frame = fixed;  // matches DepthCloud's unframed-image fallback
+    }
+    const auto fixed_from_source = pj::scene3d::placeObject(
+        tf, fixed, source_frame, layer.renderStamp(), time, layer.placementHoldFor(source_frame));
+    if (!fixed_from_source) {
+      return std::nullopt;
+    }
+    return pj::scene3d::transformedAABB(glm::mat4(fixed_from_source->matrix()), *bounds);
+  };
+  // Waits for the first tracker time: a stamped object is placed against the frame's pose at the cursor.
+  if (initial_content_framing_ && lastTrackerNs().has_value()) {
+    for (Scene3DLayer* layer : view_->layers()) {
+      if (layer == nullptr || !layer->info().visible) {
+        continue;
+      }
+      const auto bounds = layer->worldBounds();
+      if (!bounds || !bounds->valid) {
+        continue;  // an async first result may still be pending
+      }
+      initial_content_framing_ = false;  // first: a frame change reconciles the layers, which lands back here
+      if (const QString source = layer->sourceFrame(); !source.isEmpty()) {
+        applyRestoredFixedFrame(FixedFrameMode::kExplicit, source);
+      }
+      // A stamped object is not at the identity in its own frame once that frame moved: fit where it is drawn.
+      if (const auto placed = placed_bounds(*layer); placed && placed->valid) {
+        view_->camera().fitToBoundingBox(*placed);
+      }
+      view_->invalidateContent();
+      notifyWorkspaceChanged();
+      break;
+    }
+  }
+  pj::scene3d::AABB scene;
   for (Scene3DLayer* layer : view_->layers()) {
     if (layer == nullptr) {
       continue;
     }
-    if (const auto bounds = layer->worldBounds(); bounds.has_value()) {
-      std::string source_frame = layer->sourceFrame().toStdString();
-      if (source_frame.empty()) {
-        source_frame = fixed;  // matches DepthCloud's unframed-image fallback
-      }
-      // Placed as the view places it (at the object's own stamp, else the cursor).
-      if (const auto fixed_from_source =
-              pj::scene3d::placeObject(tf, fixed, source_frame, layer->renderStamp(), time, layer->placementHold());
-          fixed_from_source) {
-        scene = pj::scene3d::unionAABB(
-            scene, pj::scene3d::transformedAABB(glm::mat4(fixed_from_source->matrix()), *bounds));
-      }
+    if (const auto placed = placed_bounds(*layer)) {
+      scene = pj::scene3d::unionAABB(scene, *placed);
     }
   }
   view_->setSceneBounds(scene);
@@ -1201,6 +1235,7 @@ bool Scene3DDockWidget::layerVisible(ObjectTopicId topic_id) const {
 }
 
 void Scene3DDockWidget::setFixedFrame(const QString& frame) {
+  initial_content_framing_ = false;
   if (frame.isEmpty() || view_ == nullptr) {
     return;
   }
@@ -1224,6 +1259,7 @@ void Scene3DDockWidget::setFixedFrame(const QString& frame) {
 }
 
 void Scene3DDockWidget::setFixedFrameAutoRoot() {
+  initial_content_framing_ = false;
   if (view_ == nullptr) {
     return;
   }
@@ -1885,6 +1921,7 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
     markWorkspaceRestoreFailed();
     return false;
   }
+  initial_content_framing_ = false;  // the saved fixed frame and camera win
   auto restoring_guard = beginWorkspaceRestore();
 
   // Force the lazily-created view now. PlotDocker calls xmlLoadState

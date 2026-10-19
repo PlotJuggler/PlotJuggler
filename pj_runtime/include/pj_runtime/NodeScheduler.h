@@ -190,7 +190,8 @@ class NodeScheduler {
   /// a new revision or epoch has already dropped the finding.
   void settleMissing(
       Entry& entry, const RecipeGraph::Node& node, uint64_t epoch, std::string reason, bool keep_finding = true);
-  /// Publishes every output unavailable at `stamp` when an available result is shown there (D6).
+  /// Publishes every output unavailable at `stamp` when an available result is shown there, or when nothing is and
+  /// the node's results were dropped, since a layer may still draw one (`ResultHistory::resultsDropped`) (D6).
   void clearShown(
       const std::string& key, const RecipeGraph::Node& node, Timestamp requested_t, Timestamp stamp, uint64_t epoch,
       const std::string& reason);

@@ -149,6 +149,11 @@ class Scene3DLayer : public PJ::ISceneLayer {
   [[nodiscard]] virtual PlacementHold* placementHold() const {
     return placement_hold_.get();
   }
+  // The hold that places this layer's geometry in `frame`: placementHold() for a layer drawn in one frame. A layer
+  // drawn in several (a SceneEntities finding) keeps one per frame, or placing one frame would overwrite another's.
+  [[nodiscard]] virtual PlacementHold* placementHoldFor(const std::string& /*frame*/) const {
+    return placementHold();
+  }
 
   // Source-frame extent of this layer's geometry, or nullopt when
   // the layer reports no bounds (no data decoded yet, or a bounds-less layer
@@ -160,12 +165,12 @@ class Scene3DLayer : public PJ::ISceneLayer {
   }
 
   // The layer's own row warning (icon + tooltip), distinct from the dock's
-  // frame-orphan check: the data part (decode, admission, budget) then the
-  // renderer part, one per line. Empty means nothing to warn about. The dock
+  // frame-orphan check: its warning() parts (decode/admission/budget, renderer,
+  // derived topic), one per line. Empty means nothing to warn about. The dock
   // combines it with the orphan state (Scene3DDockWidget::updateLayerWarning).
   // statusWarningChanged() fires whenever the value changes.
   [[nodiscard]] virtual QString statusWarning() const {
-    return warning_;
+    return warning();
   }
 
   // Renderer part of statusWarning(): a GPU-side failure (texture limit,
@@ -192,24 +197,21 @@ class Scene3DLayer : public PJ::ISceneLayer {
 
  protected:
   // Data part of statusWarning().
-  void setDataWarning(QString warning);
-  [[nodiscard]] const QString& dataWarning() const {
-    return data_warning_;
+  void setDataWarning(QString warning) {
+    setWarningPart(PJ::SceneWarningParts::Part::kData, std::move(warning));
   }
-  [[nodiscard]] const QString& renderWarning() const {
-    return render_warning_;
-  }
+  [[nodiscard]] const QString& dataWarning() const;
+  [[nodiscard]] const QString& renderWarning() const;
   // Called after the renderer part changed (a layer that mirrors it elsewhere,
   // e.g. in a status line, refreshes there).
   virtual void renderWarningChanged() {}
+  // The dock merges the warning with the orphan state (statusWarningChanged), never the base relay.
+  void onWarningChanged() override {
+    emit statusWarningChanged();
+  }
 
  private:
-  void updateWarning();
-
   std::unique_ptr<PlacementHold> placement_hold_;  // never null
-  QString data_warning_;
-  QString render_warning_;
-  QString warning_;  // data_warning_ + render_warning_, cached for statusWarning()
 };
 
 }  // namespace pj::scene3d

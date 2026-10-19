@@ -83,6 +83,15 @@ class Scene3DDockWidget : public SceneDockWidget {
 
   bool addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
 
+  /// Fits the first content to arrive once: the fixed frame becomes the layer's own frame and the camera frames
+  /// its bounds, so content far from the default frame's origin is not hidden. For a view the user fills (a drop
+  /// into an empty view, a plugin scene); cancelled by user camera input, a fixed-frame pick and a layout restore.
+  void frameInitialContent();
+  /// Whether a frameInitialContent() still waits for content.
+  [[nodiscard]] bool initialContentFramingPending() const {
+    return initial_content_framing_;
+  }
+
   void setSettings(QSettings* settings);
   void setEmbeddedAssets(QMap<QString, QByteArray> assets);
 
@@ -217,6 +226,8 @@ class Scene3DDockWidget : public SceneDockWidget {
   [[nodiscard]] uint64_t viewRenderKey(PJ::Timepoint time) const override;
   [[nodiscard]] QString xmlTag() const override;
   void resizeEvent(QResizeEvent* event) override;
+  // User camera input on the view cancels a pending frameInitialContent().
+  bool eventFilter(QObject* watched, QEvent* event) override;
 
  private slots:
   void onAvailableFrames(const QList<pj::tf::FrameRow>& frames);
@@ -330,6 +341,7 @@ class Scene3DDockWidget : public SceneDockWidget {
   [[nodiscard]] bool isLocalLayerId(ObjectTopicId topic_id) const;
   ObjectTopicId allocateLocalLayerId();
 
+  bool initial_content_framing_ = false;  // see frameInitialContent()
   PJ::TransformService* transform_service_ = nullptr;
   pj::scene3d::FixedFrameMemory* fixed_frame_memory_ = nullptr;
   pj::scene3d::SceneViewWidget* view_ = nullptr;

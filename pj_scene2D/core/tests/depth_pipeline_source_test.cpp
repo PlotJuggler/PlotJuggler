@@ -14,12 +14,15 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "pj_base/buffer_anchor.hpp"
 #include "pj_base/builtin/image.hpp"
 #include "pj_base/builtin/image_codec.hpp"
+#include "pj_scene2d_core/borrowed_media_source.h"
+#include "pj_scene2d_core/composite_media_source.h"
 
 namespace PJ {
 namespace {
@@ -269,6 +272,68 @@ TEST(DepthPipelineSourceTest, DepthParamsCarryInvertAndColormap) {
   ASSERT_NE(layer_frame, nullptr);
   EXPECT_TRUE(layer_frame->depth.invert);
   EXPECT_EQ(layer_frame->depth.colormap, 2u);  // kPlasma
+}
+
+// An empty image (a derived depth topic's tombstone) clears the depth layer: an explicit clear sample, which the
+// compositor turns into a layer with no pixel contribution. The same entry again is no update.
+TEST(DepthPipelineSourceTest, AnEmptyImageClearsTheDepthLayer) {
+  ObjectStore store;
+  auto topic = registerDepthTopic(store);
+  ASSERT_NE(topic.id, 0u);
+  ASSERT_TRUE(store.pushOwned(topic, 1'000, serializeDepth(1, 1, "16UC1", makeU16Le({1000}))).has_value());
+  ASSERT_TRUE(store.pushOwned(topic, 2'000, serializeImage(sdk::Image{})).has_value());
+
+  FrameSync sync;
+  DepthPipelineSource depth(&store, topic);
+  sync.install(depth);
+  CompositeMediaSource composite;
+  composite.addLayer(std::make_unique<BorrowedMediaSource>(&depth), 1.0f, &depth);
+
+  composite.setTimestamp(1'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto shown = composite.takeFrame();
+  ASSERT_TRUE(shown.has_value());
+  ASSERT_EQ(shown->pixel_layers.size(), 1u);
+
+  composite.setTimestamp(2'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto cleared = composite.takeFrame();
+  ASSERT_TRUE(cleared.has_value()) << "a clear is an update";
+  EXPECT_TRUE(cleared->pixel_layers.empty());
+  EXPECT_FALSE(cleared->base.has_value());
+  EXPECT_FALSE(depth.autoRange(0.02f, 0.98f).has_value()) << "Auto-fit never fits a frame no longer shown";
+
+  composite.setTimestamp(2'500);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_FALSE(composite.takeFrame().has_value()) << "the same entry again is no update";
+}
+
+// A seek before the delivered entry's stamp with nothing at the new time clears the depth layer; a later time with
+// no new entry stays "no update".
+TEST(DepthPipelineSourceTest, ASeekBeforeTheShownEntryClearsTheDepthLayer) {
+  ObjectStore store;
+  auto topic = registerDepthTopic(store);
+  ASSERT_NE(topic.id, 0u);
+  ASSERT_TRUE(store.pushOwned(topic, 2'000, serializeDepth(1, 1, "16UC1", makeU16Le({1000}))).has_value());
+
+  FrameSync sync;
+  DepthPipelineSource depth(&store, topic);
+  sync.install(depth);
+  depth.setTimestamp(2'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto shown = depth.takeFrame();
+  ASSERT_TRUE(shown.has_value());
+  ASSERT_EQ(shown->pixel_layers.size(), 1u);
+
+  depth.setTimestamp(1'000);
+  ASSERT_TRUE(sync.waitReady()) << "a clear is an update";
+  auto cleared = depth.takeFrame();
+  ASSERT_TRUE(cleared.has_value());
+  EXPECT_TRUE(cleared->pixel_layers.empty());
+
+  depth.setTimestamp(500);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_FALSE(depth.takeFrame().has_value()) << "nothing shown: nothing more to clear";
 }
 
 }  // namespace

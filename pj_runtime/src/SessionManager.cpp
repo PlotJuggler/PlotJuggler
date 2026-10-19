@@ -315,6 +315,45 @@ std::shared_ptr<const pj::tf::TransformSnapshot> SessionManager::onDemandTf(Data
   return held.snapshot;
 }
 
+std::optional<std::pair<Timestamp, Timestamp>> SessionManager::derivedTopicInputRange(ObjectTopicId topic) const {
+  const std::optional<std::string> key = on_demand_->keyOfTopic(topic);
+  if (!key) {
+    return std::nullopt;
+  }
+  std::pair<Timestamp, Timestamp> range{std::numeric_limits<Timestamp>::max(), std::numeric_limits<Timestamp>::min()};
+  const auto widen = [&range](Timestamp lo, Timestamp hi) {
+    range = {std::min(range.first, lo), std::max(range.second, hi)};
+  };
+  const DataReader reader = createReader();
+  std::vector<std::string> pending{*key};
+  std::unordered_set<std::string> seen;
+  while (!pending.empty()) {
+    const std::string at = std::move(pending.back());
+    pending.pop_back();
+    const RecipeGraph::Node* node = on_demand_->graph().find(at);
+    // A finding (pinned) covers no clock range: neither as the topic's node nor as an upstream.
+    if (node == nullptr || node->recipe.pinned_t || !seen.insert(at).second) {
+      continue;
+    }
+    for (const RecipeGraph::Binding& binding : node->bindings) {
+      if (!binding.upstream.empty()) {
+        pending.push_back(binding.upstream);
+      } else if (binding.object_type != sdk::BuiltinObjectType::kNone) {
+        const std::optional<ObjectTopicId> input = object_store_.findTopic(node->dataset, binding.name);
+        if (input && object_store_.entryCount(*input) != 0) {
+          const auto [lo, hi] = object_store_.timeRange(*input);
+          widen(lo, hi);
+        }
+      } else if (const auto series = scalar_lookup_ ? scalar_lookup_(node->dataset, binding.name) : std::nullopt) {
+        if (const auto metadata = reader.getMetadata(series->first); metadata && metadata->total_row_count != 0) {
+          widen(metadata->time_range_min, metadata->time_range_max);
+        }
+      }
+    }
+  }
+  return range;
+}
+
 uint64_t SessionManager::onDemandTfRevision(DatasetId dataset_id) {
   if (transform_service_ == nullptr) {
     return 0;

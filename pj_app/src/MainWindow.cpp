@@ -240,6 +240,18 @@ namespace PJ {
 namespace {
 Q_LOGGING_CATEGORY(lcMain, "pj.app.main")
 
+// Arms the 3D view's first-content framing (Scene3DDockWidget::frameInitialContent) for a view a user drop fills:
+// the default fixed frame can sit far from the data. Any other widget, or none, is left alone.
+void frameDroppedScene3dContent(IDataWidget* widget) {
+#ifdef PJ_WITH_SCENE3D
+  if (auto* scene3d = widget != nullptr ? qobject_cast<Scene3DDockWidget*>(widget->widget()) : nullptr) {
+    scene3d->frameInitialContent();
+  }
+#else
+  Q_UNUSED(widget);
+#endif
+}
+
 // Check the button with id `id` in an exclusive QButtonGroup as a passive UI
 // resync, with the group's signals blocked. The block is load-bearing: a passive
 // resync (e.g. binding the toolbar to a newly-focused plot) must not run the Curve
@@ -806,8 +818,11 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           // demand. Build the empty dock of the resolved family; the drop site
           // stages a pending drop that completes with the real ObjectTopicId
           // when the subscription delivers the first sample
-          // (TopicDemandController::handleSceneDockPlaceholderDrop).
-          return makeSeededEmptyObjectDock(resolved_kind, dock_parent);
+          // (TopicDemandController::handleSceneDockPlaceholderDrop). A user drop:
+          // the content that arrives later is framed once.
+          IDataWidget* empty_dock = makeSeededEmptyObjectDock(resolved_kind, dock_parent);
+          frameDroppedScene3dContent(empty_dock);
+          return empty_dock;
         }
 
         // Drop path: build, then populate the first topic and apply view
@@ -840,6 +855,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           // never gets the current playhead — seed it now to render at the right
           // time immediately.
           scene3d->onTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
+          scene3d->frameInitialContent();
         } else
 #endif
 #ifdef PJ_WITH_SCENE2D
@@ -3661,9 +3677,7 @@ void MainWindow::onPlotTabAdded(PlotDocker* docker) {
   // shell owns the family→kind mapping). The first topic dropped into such an
   // empty dock seeds streaming playback, matching the placeholder→drop path.
   connect(docker, &PlotDocker::objectFamilyRequested, this, &MainWindow::onObjectFamilyRequested, Qt::UniqueConnection);
-  connect(
-      docker, &PlotDocker::firstObjectTopicAdded, this, &MainWindow::seedStreamingPlaybackFromDrop,
-      Qt::UniqueConnection);
+  connect(docker, &PlotDocker::firstObjectTopicAdded, this, &MainWindow::onFirstObjectTopicAdded, Qt::UniqueConnection);
   connect(
       docker, &PlotDocker::placeholderTopicDropped, this, &MainWindow::onPlaceholderTopicDropped, Qt::UniqueConnection);
   for (int index = 0; index < docker->plotCount(); ++index) {
@@ -4066,6 +4080,12 @@ void MainWindow::onUseTimeOffsetToggled(bool checked) {
   // The synchronous global displayOffsetChanged handler owns range/playhead
   // translation for both explicit toggles and automatic origin rebases.
   session_->sessionManager().setUseTimeOffset(checked);
+}
+
+void MainWindow::onFirstObjectTopicAdded(DockWidget* dock) {
+  seedStreamingPlaybackFromDrop();
+  // A layout restore never gets here: it repopulates layers without a drop.
+  frameDroppedScene3dContent(dock != nullptr ? dock->objectWidget() : nullptr);
 }
 
 void MainWindow::seedStreamingPlaybackFromDrop() {

@@ -151,7 +151,13 @@ void DepthPipelineSource::startWorker() {
           last_entry_uid_ = {};
         }
         auto result = decodeAt(req.target_ns);
-        if (result.has_value() && !result->isNull()) {
+        if (result.has_value() && result->isNull()) {
+          {
+            std::lock_guard<std::mutex> lock(last_frame_mutex_);
+            last_depth_pixels_.reset();  // Auto-fit never fits a frame no longer shown
+          }
+          worker.deposit(std::move(*result));  // a clear
+        } else if (result.has_value()) {
           // Snapshot the raw float depth for the main-thread Auto-fit before the
           // frame is moved into the mailbox (shared_ptr aliasing — no copy).
           {
@@ -185,8 +191,11 @@ void DepthPipelineSource::invalidate() {
 
 std::optional<MediaFrame> DepthPipelineSource::takeFrame() {
   auto frame = worker_.take();
-  if (!frame.has_value() || frame->isNull()) {
+  if (!frame.has_value()) {
     return std::nullopt;
+  }
+  if (frame->isNull()) {
+    return MediaFrame{};  // a clear: no pixels, which the compositor and the viewer drop
   }
   float opacity = 1.0f;
   {
@@ -211,6 +220,13 @@ std::optional<DecodedFrame> DepthPipelineSource::decodeAt(int64_t ts_ns) {
   const auto already_delivered = [this](SequentialUID uid) { return uid == last_entry_uid_; };
   const auto entry_id = store_->latestEntryIdAt(topic_, ts_ns);
   if (!entry_id.has_value()) {
+    if (last_entry_stamp_ && ts_ns < *last_entry_stamp_) {
+      // A seek before the shown entry, with nothing there: clear it. At or after it, the entry was evicted under
+      // the cursor and stays.
+      last_entry_stamp_.reset();
+      last_entry_uid_ = {};
+      return DecodedFrame{};
+    }
     return std::nullopt;
   }
   if (already_delivered(entry_id->uid)) {
@@ -224,6 +240,7 @@ std::optional<DecodedFrame> DepthPipelineSource::decodeAt(int64_t ts_ns) {
     return std::nullopt;
   }
   last_entry_uid_ = entry->sequential_uid;
+  last_entry_stamp_ = entry->timestamp;
 
   // Depth arrives as a canonical sdk::Image with a depth encoding (there is no
   // kDepthImage producer); resolve it (via the parser or a pj_image_v1 blob), then
@@ -236,6 +253,11 @@ std::optional<DecodedFrame> DepthPipelineSource::decodeAt(int64_t ts_ns) {
     return std::nullopt;
   }
 
+  if (resolved->image.data.empty()) {
+    DecodedFrame clear;  // an empty image (a derived topic's tombstone) clears what was shown
+    clear.pts = resolved->pts;
+    return clear;
+  }
   // Holds decoded compressedDepth bytes alive while decodeDepthImage reads them.
   std::shared_ptr<std::vector<uint8_t>> scratch;
   auto depth = toDepthImage(resolved->image, scratch);

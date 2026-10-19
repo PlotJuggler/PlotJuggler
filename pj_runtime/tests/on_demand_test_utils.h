@@ -13,6 +13,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -26,6 +27,7 @@
 #include "pj_base/buffer_anchor.hpp"
 #include "pj_base/builtin/builtin_object_codec.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
+#include "pj_base/builtin/scene_entities.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/NodeScheduler.h"
@@ -127,8 +129,9 @@ double medianMicros(int runs, const Work& work) {
     work();
     times.push_back(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - begin).count());
   }
-  std::nth_element(times.begin(), times.begin() + runs / 2, times.end());
-  return times[runs / 2];
+  const auto middle = times.begin() + runs / 2;
+  std::nth_element(times.begin(), middle, times.end());
+  return *middle;
 }
 
 /// The object of type `T` the store shows at `t` (its newest entry at or before), decoded.
@@ -161,8 +164,8 @@ inline const sdk::PointCloud* firstCloud(Span<const scripting::NamedValue> input
 }
 
 /// A script run that records where and what it ran. Each declared point-cloud output is its first cloud input
-/// sharing its points (a pass-through), its frame named after the run's query time; a number output is that time.
-/// Set the knobs while nothing runs.
+/// sharing its points (a pass-through), its frame named after the run's query time; a SceneEntities output holds
+/// `entities(query time)`; a number output is that time. Set the knobs while nothing runs.
 class FakeRun {
  public:
   struct Record {
@@ -183,6 +186,8 @@ class FakeRun {
   std::optional<double> fail_on_number;     ///< the run fails ("boom") when a number input equals this
   std::vector<std::string> unavailable;     ///< outputs it marks unavailable ("no points")
   bool empty_clouds = false;                ///< its cloud outputs are empty (valid, D25)
+  /// What its SceneEntities outputs hold at a query time; empty: no entity.
+  std::function<std::vector<sdk::SceneEntity>(Timestamp)> entities;
 
   NodeScheduler::RunFunction function() {
     return [this](
@@ -267,6 +272,12 @@ class FakeRun {
         bundle.outputs.push_back({output.name, static_cast<double>(options.query_time)});
       } else if (output.type == scripting::OutputType::kString) {
         bundle.outputs.push_back({output.name, std::string("ok")});
+      } else if (output.object_type == sdk::BuiltinObjectType::kSceneEntities) {
+        sdk::SceneEntities scene;
+        if (entities) {
+          scene.entities = entities(options.query_time);
+        }
+        bundle.outputs.push_back({output.name, sdk::BuiltinObject(std::move(scene))});
       } else {
         sdk::PointCloud cloud = input != nullptr && !empty_clouds ? *input : makeCloud(0);
         cloud.frame_id = std::to_string(options.query_time);

@@ -2324,8 +2324,8 @@ TEST(SessionManagerTest, MergeNeverShiftsTheFindingSentinel) {
   EXPECT_EQ(fx.ring("owner/pin/cropped"), (std::vector<Timestamp>{kFindingTimestamp}));
 }
 
-// A raw input evicted from under a recipe leaves it installed, missing that input by name; the input coming back
-// relinks it.
+// A raw input evicted from under a recipe leaves it installed, missing that input by name, and a tombstone clears
+// the dropped result; the input coming back relinks it.
 TEST(SessionManagerTest, RemovingARawInputLeavesItsReadersMissingAndAllowsRelinking) {
   OnDemandSession fx;
   fx.push(fx.cloud, 20 * kOnDemandSec);
@@ -2339,7 +2339,13 @@ TEST(SessionManagerTest, RemovingARawInputLeavesItsReadersMissingAndAllowsRelink
   ASSERT_NE(fx.service().graph().find("owner/crop"), nullptr);
   EXPECT_EQ(fx.state()->status, OnDemandStatus::kMissingInput);
   EXPECT_NE(fx.state()->detail.find("'cloud'"), std::string::npos) << fx.state()->detail;
-  EXPECT_TRUE(fx.ring("owner/crop/cropped").empty());
+  EXPECT_EQ(fx.ring("owner/crop/cropped"), std::vector<Timestamp>{20 * kOnDemandSec})
+      << "only the tombstone that clears the dropped result a layer may still draw";
+  EXPECT_EQ(fx.shownWidth("owner/crop/cropped", 20 * kOnDemandSec), 0u);
+  fx.service().requestAt("owner/crop", 10 * kOnDemandSec);
+  fx.settle();
+  EXPECT_EQ(fx.ring("owner/crop/cropped"), std::vector<Timestamp>{20 * kOnDemandSec})
+      << "nothing drawn at 10 s once the tombstone is written: no second one";
 
   const ObjectTopicId again = fx.addCloud(fx.ds, "cloud");
   fx.push(again, 20 * kOnDemandSec, 6);

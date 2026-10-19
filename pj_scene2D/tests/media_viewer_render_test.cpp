@@ -68,6 +68,10 @@ class OneShotSource final : public PJ::MediaSource {
   std::optional<PJ::MediaFrame> takeFrame() override {
     return std::exchange(frame_, std::nullopt);
   }
+  /// The next frame takeFrame() delivers.
+  void deliver(PJ::MediaFrame frame) {
+    frame_ = std::move(frame);
+  }
 
  private:
   std::optional<PJ::MediaFrame> frame_;
@@ -269,6 +273,19 @@ TEST_F(MediaViewerRenderTest, BgraIsSwizzled) {
   RENDER_OR_SKIP(grab, frameOf(std::move(image)));
   const QRgb centre = grab.pixel(grab.width() / 2, grab.height() / 2);
   EXPECT_TRUE(colourNear(centre, Qt::blue)) << describe(centre);
+}
+
+// A frame with no pixel content (a derived image's tombstone) clears the image: the backdrop shows again.
+TEST_F(MediaViewerRenderTest, AFrameWithNoPixelsClearsTheImage) {
+  RENDER_OR_SKIP(shown, frameOf(rgbaImage(16, 16, [](int, int) { return QColor(Qt::green); })));
+  const QRgb before = shown.pixel(shown.width() / 2, shown.height() / 2);
+  ASSERT_TRUE(colourNear(before, Qt::green)) << describe(before);
+  source_->deliver(PJ::MediaFrame{});
+  viewer_->update();
+  const QImage cleared = pjPresentAndGrab(viewer_);
+  ASSERT_FALSE(cleared.isNull());
+  const QRgb after = cleared.pixel(cleared.width() / 2, cleared.height() / 2);
+  EXPECT_TRUE(colourNear(after, kBackdrop)) << describe(after);
 }
 
 // Metric depth through the R32F texture and the colormap LUT, against the CPU colormap.

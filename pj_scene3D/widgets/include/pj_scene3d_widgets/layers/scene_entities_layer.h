@@ -19,6 +19,7 @@
 #include "pj_datastore/sequential_uid.hpp"
 #include "pj_scene3d_core/scene_entities_model_state.h"
 #include "pj_scene3d_core/scene_entities_render.h"
+#include "pj_scene3d_core/tf/object_placement.h"
 #include "pj_scene3d_widgets/latest_wins_worker.h"
 #include "pj_scene3d_widgets/marker_geometry.h"
 #include "pj_scene3d_widgets/mesh_data.h"
@@ -91,6 +92,15 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   // Select the marker batch and advance the model state to the new playhead
   // (no-op while hidden; the dock re-delivers the time on un-hide).
   void setTrackerTime(PJ::Timepoint time) override;
+  // The tracker time with the active entry's SequentialUID: a same-stamp replacement at an unchanged time still
+  // reopens the dock's gate. Never coalesces across times (a lifetime can expire with no new entry).
+  [[nodiscard]] uint64_t renderKey(PJ::Timepoint time) const override;
+  // A finding's real stamp (D26: its entry sits at kFindingTimestamp), so it stays where it was measured in a
+  // moving frame; nullopt otherwise: entities are placed at the cursor.
+  [[nodiscard]] std::optional<PJ::Timepoint> renderStamp() const override {
+    return finding_stamp_;
+  }
+  [[nodiscard]] PlacementHold* placementHoldFor(const std::string& frame) const override;
   void setVisible(bool visible) override;
 
   // Opacity / color-override / wireframe controls bound to this instance.
@@ -249,6 +259,11 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   // Fold every retained batch with lo_ns < ts <= hi_ns (ascending timestamp),
   // cache-first; a batch over the model-state budget is refused with a warning.
   bool applyModelWindow(std::int64_t lo_ns, std::int64_t hi_ns);
+  // Fold one store entry into the model state, cache-first; counts a lost lazy re-read in `failed_fetches`.
+  bool foldEntry(const PJ::ObjectStore::TimeRangeEntry& reference, std::size_t& failed_fetches);
+  // Apply one decoded batch, refused over the model-state budget. Its lifetimes count from `store_ns`, except a
+  // finding's (D26), which never expire.
+  bool applySnapshot(const PJ::sdk::SceneEntities& snapshot, std::int64_t store_ns);
   void cacheSnapshot(PJ::SequentialUID uid, std::shared_ptr<const PJ::sdk::SceneEntities> batch, std::int64_t store_ns);
   void pruneSnapshotCacheBelow(PJ::SequentialUID first_retained_uid);
   // Recompute the distinct entity frames feeding fallbackFrames().
@@ -282,6 +297,14 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   QMetaObject::Connection reload_connection_;
 
   std::string source_frame_;
+  // Every entry is a complete snapshot (pj_snapshot, D27): the model state is the shown entry alone.
+  bool snapshot_stream_ = false;
+  std::optional<PJ::Timepoint> finding_stamp_;  // see renderStamp()
+  // Store stamp of the entry shown at the cursor: with nothing at or before a later cursor it was evicted and stays;
+  // before it, nothing is there and the layer clears.
+  std::optional<std::int64_t> shown_store_ns_;
+  // One placement hold per entity frame (placementHoldFor): a finding drawn in several frames.
+  mutable std::map<std::string, PlacementHold, std::less<>> frame_holds_;
   // UID of the marker batch last selected (applied, rejected or in flight).
   PJ::SequentialUID last_marker_uid_;
   std::optional<PJ::Timepoint> requested_time_;
@@ -295,9 +318,9 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   SceneEntitiesModelState model_state_;
   std::optional<PJ::Timepoint> state_built_at_;
   // High-water ObjectStore arrival UID folded into model_state_ at
-  // state_built_at_ (invalid = nothing folded). The same-playhead early return
-  // compares it to the live high-water; a grown value at/below the build time
-  // means a retroactive insert, which forces a full rebuild.
+  // state_built_at_ (invalid = nothing folded); for a snapshot stream, the shown entry's. The same-playhead early
+  // return compares it to the live high-water; a grown value at/below the build time means a retroactive insert, which
+  // forces a full rebuild.
   PJ::SequentialUID applied_uid_high_;
   // Decoded batches keyed by store UID, shared by the marker selection and the
   // model fold, bounded by kSceneLimits.max_model_snapshot_cache_bytes (oldest
