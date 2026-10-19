@@ -8,6 +8,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -201,6 +202,12 @@ class AppSession : public QObject {
 
   // Requests the on-demand recipe `key` at the playhead, converted to its dataset's raw time (a finding: its pin).
   void requestOnDemandAtPlayhead(const std::string& key);
+  // Keeps the raw topics the demanded recipes of `dataset` read in the demand tracker's derived-input tier, so a
+  // demand-capable stream sends them while only a derived topic is displayed.
+  void demandOnDemandRawInputs(DatasetId dataset);
+  // `demandOnDemandRawInputs` for every dataset whose tier is not empty, after topics were retired (a removal, a
+  // re-binding).
+  void refreshOnDemandRawInputs();
 
   // Collapse the transport to the no-data state: pause, clear live hold, reset
   // the range to [0,0] and the cursor to 0, and re-arm the first-seed snap.
@@ -210,6 +217,8 @@ class AppSession : public QObject {
 
   // The active live-streaming dataset (0 = none); see setActiveStreamingDataset.
   PJ::DatasetId active_streaming_dataset_id_ = 0;
+  // The datasets whose derived-input tier holds topics (demandOnDemandRawInputs).
+  std::set<PJ::DatasetId> raw_input_datasets_;
 
   std::unique_ptr<SessionManager> session_manager_;
   std::unique_ptr<PlaybackEngine> playback_engine_;

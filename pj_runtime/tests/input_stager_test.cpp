@@ -498,6 +498,57 @@ TEST(InputStagerTest, APinnedFindingIsAnInputOnlyFromItsRealStamp) {
   EXPECT_EQ(fx.staged(count, 20 * kSec).stamp, 15 * kSec);
 }
 
+// The live edge's lookup (ARCHITECTURE §16): the newest raw input stamp, found by identity (nothing fetched or
+// parsed), an upstream's output left to the caller; no sample is no stamp, a negative one is a stamp.
+TEST(InputStagerTest, NewestInputStampReadsIdentitiesOnly) {
+  Fixture fx;
+  LazySource cloud(canonicalCloud(4));
+  LazySource raw(rawPoints(1));
+  fx.pushLazy(fx.cloud, 10 * kSec, cloud);
+  fx.pushLazy(fx.cloud, 12 * kSec, cloud);
+  fx.pushLazy(fx.lidar, 9 * kSec, raw);
+  fx.appendScalar(fx.speed, 11 * kSec, 1.0);
+  const auto& crop = fx.install(recipe("crop", {"cloud", "speed", "lidar"}));
+  EXPECT_EQ(fx.stager.newestInputStamp(crop), 12 * kSec);
+  fx.appendScalar(fx.speed, 15 * kSec, 2.0);
+  EXPECT_EQ(fx.stager.newestInputStamp(crop), 15 * kSec) << "a scalar's newest sample";
+  EXPECT_EQ(cloud.fetches.load() + raw.fetches.load(), 0);
+  EXPECT_EQ(fx.probe.parses.load(), 0);
+
+  fx.publish(crop, 30 * kSec, croppedBundle(cloudObject(1)));
+  const auto& count = fx.install(recipe("count", {"owner/crop/cropped"}));
+  const ObjectTopicId namesake = fx.store.registerTopic({fx.dataset, "cropped", ""}).value();
+  fx.pushLazy(namesake, 50 * kSec, cloud);  // a raw topic named like the upstream's output is not its input
+  EXPECT_FALSE(fx.stager.newestInputStamp(count).has_value()) << "the upstream's inputs are the caller's to follow";
+  const auto& other = fx.install(recipe("other", {"other"}));
+  EXPECT_FALSE(fx.stager.newestInputStamp(other).has_value()) << "no sample";
+  fx.pushLazy(fx.other, -1 * kSec, cloud);
+  EXPECT_EQ(fx.stager.newestInputStamp(other), -1 * kSec);
+}
+
+// The stager remembers which topic an input names; a topic removed and registered again under the name (a new id)
+// is followed, a removed one is a missing input.
+TEST(InputStagerTest, AnInputTopicRegisteredAgainUnderItsNameIsFollowed) {
+  Fixture fx;
+  LazySource cloud(canonicalCloud(1));
+  fx.pushLazy(fx.cloud, 10 * kSec, cloud);
+  const auto& crop = fx.install(recipe("crop", {"cloud"}));
+  ASSERT_EQ(fx.stager.newestInputStamp(crop), 10 * kSec);
+  ASSERT_EQ(fx.stageError(crop, 10 * kSec), "");
+
+  fx.store.removeTopic(fx.cloud);
+  EXPECT_FALSE(fx.stager.newestInputStamp(crop).has_value());
+  EXPECT_EQ(fx.stageError(crop, 10 * kSec), "on-demand: missing input 'cloud'");
+
+  const ObjectTopicId again = fx.store.registerTopic({fx.dataset, "cloud", ""}).value();
+  ASSERT_NE(again.id, fx.cloud.id);
+  fx.pushLazy(again, 20 * kSec, cloud);
+  EXPECT_EQ(fx.stager.newestInputStamp(crop), 20 * kSec);
+  const InputStager::Staged staged = fx.staged(crop, 20 * kSec);
+  ASSERT_EQ(staged.inputs.size(), 1u);
+  EXPECT_EQ(std::get<InputStager::Entry>(staged.inputs[0].value).topic, again);
+}
+
 // ---- The cache key ----------------------------------------------------------------------------------
 
 // §10: each input identity is part of the request's key (an object's uid and parser, a scalar sample's

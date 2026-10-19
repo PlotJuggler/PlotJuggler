@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-#include "on_demand_test_utils.h"
+#include "on_demand_session_test_utils.h"
 #include "pj_base/builtin/builtin_object_codec.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/AppSession.h"
@@ -32,104 +32,15 @@ namespace {
 
 using Status = NodeScheduler::NodeState::Status;
 
-constexpr Timestamp kSec = 1'000'000'000;
-constexpr const char* kCloudMetadata = R"({"builtin_object_type":"kPointCloud"})";
-
-scripting::OutputSpec cloudSpec() {
-  return {"cropped", scripting::OutputType::kObject, sdk::BuiltinObjectType::kPointCloud};
-}
+using test::canonicalCloud;
+using test::cloudSpec;
+using test::kSec;
+using CursorFixture = test::OnDemandSessionFixture;
 
 /// `owner/<id>` reading `input`; its script is the fake's to run.
 RecipeGraph::Recipe recipe(std::string id, std::string input = "cloud") {
   return test::onDemandRecipe(std::move(id), {std::move(input)}, {cloudSpec()});
 }
-
-std::vector<uint8_t> canonicalCloud(size_t points) {
-  return serializeBuiltinObject(sdk::BuiltinObject(test::makeCloud(points))).value();
-}
-
-/// Sets the run the session's scheduler uses for the fixture's lifetime.
-struct ScopedRun {
-  explicit ScopedRun(test::FakeRun& fake) {
-    OnDemandService::setRunForTest(fake.function());
-  }
-  ~ScopedRun() {
-    OnDemandService::setRunForTest({});
-  }
-  ScopedRun(const ScopedRun&) = delete;
-  ScopedRun& operator=(const ScopedRun&) = delete;
-};
-
-/// An AppSession with one dataset `log` holding the cloud topic `cloud` (entries at 5, 10 and 20 s).
-struct CursorFixture {
-  CursorFixture() {
-    ds = addDataset("log");
-    cloud = addCloudTopic(ds, "cloud", {5 * kSec, 10 * kSec, 20 * kSec});
-  }
-
-  DatasetId addDataset(const std::string& name, Timestamp display_offset = 0) {
-    auto domain = manager.dataEngine().createTimeDomain(name + "_domain");
-    EXPECT_TRUE(domain.has_value());
-    manager.dataEngine().setDisplayOffset(*domain, display_offset);
-    return manager.dataEngine()
-        .createDataset(DatasetDescriptor{.source_name = name, .time_domain_id = *domain})
-        .value();
-  }
-  ObjectTopicId addCloudTopic(DatasetId dataset, const std::string& name, const std::vector<Timestamp>& stamps) {
-    const ObjectTopicId topic = manager.objectStore().registerTopic({dataset, name, kCloudMetadata}).value();
-    for (const Timestamp t : stamps) {
-      EXPECT_TRUE(manager.objectStore().pushOwned(topic, t, canonicalCloud(4)).has_value());
-    }
-    session.catalogModel().rebuildFromDatastore();
-    return topic;
-  }
-  void install(RecipeGraph::Recipe recipe) {
-    const auto installed = manager.onDemandService().install(std::move(recipe));
-    ASSERT_TRUE(installed.has_value()) << installed.error();
-  }
-  void display(const std::string& topic, DatasetId dataset = 0) {
-    session.topicDemandTracker().addReference(dataset != 0 ? dataset : ds, QString::fromStdString(topic));
-  }
-  void hide(const std::string& topic, DatasetId dataset = 0) {
-    session.topicDemandTracker().removeReference(dataset != 0 ? dataset : ds, QString::fromStdString(topic));
-  }
-  /// Moves the playhead to the display time of raw `t` in `ds`, without waiting.
-  void seekNoWait(Timestamp t) {
-    const DisplayOffset offset = manager.displayOffset(ds);
-    session.playbackEngine().setRangeAndCurrentTime(
-        DisplayRange{rawToDisplaySeconds(0, offset), rawToDisplaySeconds(100 * kSec, offset)},
-        rawToDisplaySeconds(t, offset));
-  }
-  void seek(Timestamp t) {
-    seekNoWait(t);
-    settle();
-  }
-  /// Runs what is posted, then publishes everything submitted.
-  void settle() {
-    QCoreApplication::processEvents();
-    manager.enginePool().waitIdle();
-  }
-  [[nodiscard]] std::optional<NodeScheduler::NodeState> state(const std::string& key) const {
-    return manager.onDemandService().state(key);
-  }
-  [[nodiscard]] ObjectTopicId topic(const std::string& name, DatasetId dataset = 0) const {
-    return manager.objectStore().findTopic(dataset != 0 ? dataset : ds, name).value_or(ObjectTopicId{});
-  }
-  [[nodiscard]] std::vector<Timestamp> ring(const std::string& name, DatasetId dataset = 0) const {
-    return test::timestampsOf(manager.objectStore(), topic(name, dataset));
-  }
-  [[nodiscard]] sdk::PointCloud shown(const std::string& name, Timestamp t) const {
-    return test::decodeAt<sdk::PointCloud>(manager.objectStore(), topic(name), t);
-  }
-
-  test::FakeRun fake;  ///< outlives the session, whose pool joins the runs
-  ScopedRun scoped_run{fake};
-  QTemporaryDir dir;
-  AppSession session{dir.path()};
-  SessionManager& manager = session.sessionManager();
-  DatasetId ds = 0;
-  ObjectTopicId cloud;
-};
 
 std::string frameOf(Timestamp query_time) {
   return std::to_string(query_time);

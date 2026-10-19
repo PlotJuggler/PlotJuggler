@@ -102,6 +102,13 @@ std::optional<ObjectTopicId> ObjectStore::findTopic(DatasetId dataset_id, std::s
   return std::nullopt;
 }
 
+bool ObjectStore::isTopic(ObjectTopicId id, DatasetId dataset_id, std::string_view topic_name) const {
+  std::shared_lock lock(store_mutex_);
+  const auto* series = findSeries(id);
+  return series != nullptr && series->descriptor.dataset_id == dataset_id &&
+         series->descriptor.topic_name == topic_name;
+}
+
 ObjectTopicDescriptor ObjectStore::descriptor(ObjectTopicId id) const {
   std::shared_lock lock(store_mutex_);
   const auto* s = findSeries(id);

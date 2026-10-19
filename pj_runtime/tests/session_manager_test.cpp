@@ -2495,5 +2495,55 @@ TEST(SessionManagerTest, OnDemandRunsShareOneTfSnapshotDuringALiveIngest) {
   fx.session->setTransformService(nullptr);
 }
 
+// ARCHITECTURE §19 for a stream, which never begins an ingest: a dataset with a live announcement within the brake
+// period shares one TF snapshot between its runs, as during a file ingest.
+TEST(SessionManagerTest, TfSnapshotsAreThrottledWhileAStreamingDatasetIngests) {
+  auto now = std::chrono::steady_clock::now();  // outlives the fixture, whose session reads it through the clock
+  OnDemandSession fx;
+  fx.session->setTfClock([&now] { return now; });
+  TransformService transforms(*fx.session);
+  fx.session->setTransformService(&transforms);
+  const auto write = [&](Timestamp t) {
+    pj::tf::StampedTransform tf;
+    tf.stamp = fromRaw(t);
+    tf.parent_frame = "map";
+    tf.child_frame = "base_link";
+    tf.transform.t.x = static_cast<double>(t);
+    ASSERT_TRUE(transforms.transformBuffer(fx.ds)->setTransform(tf).has_value());
+  };
+  write(1 * kOnDemandSec);
+  fx.fake.observe_tf = true;
+  fx.fake.gated = true;
+  fx.push(fx.cloud, 10 * kOnDemandSec);
+  fx.push(fx.cloud, 20 * kOnDemandSec);
+  fx.install(cropRecipe());
+  ASSERT_FALSE(fx.session->ingestActive(fx.ds));
+
+  fx.session->notifyIngest({}, /*live=*/true, fx.ds);
+  fx.service().requestAt("owner/crop", 10 * kOnDemandSec);
+  ASSERT_TRUE(fx.fake.waitStarted(1));
+  write(2 * kOnDemandSec);  // the stream moves the TF on
+  fx.session->notifyIngest({}, /*live=*/true, fx.ds);
+  fx.fake.allow(1);
+  fx.settle();
+  EXPECT_EQ(fx.fake.started(), 1) << "the result read the snapshot its request compares";
+
+  fx.service().requestAt("owner/crop", 20 * kOnDemandSec);
+  fx.fake.allow(1);
+  fx.settle();
+  const auto records = fx.fake.records();
+  ASSERT_EQ(records.size(), 2u);
+  EXPECT_EQ(records[1].tf, records[0].tf) << "one snapshot while the stream ingests";
+
+  now += std::chrono::milliseconds(600);  // past kTfSnapshotPeriod (500 ms) with no announcement: the stream stopped
+  fx.service().requestAt("owner/crop", 10 * kOnDemandSec);
+  fx.fake.allow(1);
+  fx.settle();
+  const auto after = fx.fake.records();
+  ASSERT_EQ(after.size(), 3u);
+  EXPECT_NE(after[2].tf->revision(), after[0].tf->revision()) << "a fresh snapshot once the stream is quiet";
+  fx.session->setTransformService(nullptr);
+}
+
 }  // namespace
 }  // namespace PJ

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <functional>
 #include <optional>
+#include <set>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -125,9 +126,32 @@ AppSession::AppSession(QString extensions_dir, DiagnosticSink sink, StaticPlugin
         }
         return std::pair<TopicId, std::size_t>{scalar->topic_id, scalar->column_index};
       });
-  QObject::connect(playback_engine_.get(), &PlaybackEngine::currentTimeChanged, this, [this] {
-    for (const std::string& key : session_manager_->onDemandService().demandedKeys()) {
-      requestOnDemandAtPlayhead(key);
+  // While the transport follows the live edge (playing, held at the range's end), the live pass requests the recipes
+  // of every streaming dataset (SessionManager::notifyIngest): the playhead sits at the newest sample, not at each
+  // recipe's inputs'. When it starts following again, the live pass requests them at once, nothing new needed.
+  const auto following = [this] { return playback_engine_->isPlaying() && playback_engine_->holdsAtRangeMax(); };
+  QObject::connect(playback_engine_.get(), &PlaybackEngine::currentTimeChanged, this, [this, following] {
+    const OnDemandService& service = session_manager_->onDemandService();
+    const bool live_owns = following();
+    for (const std::string& key : service.demandedKeys()) {
+      if (!live_owns || !session_manager_->isLive(service.graph().find(key)->dataset)) {
+        requestOnDemandAtPlayhead(key);
+      }
+    }
+  });
+  QObject::connect(playback_engine_.get(), &PlaybackEngine::playingChanged, this, [this, following] {
+    if (!following()) {
+      return;
+    }
+    OnDemandService& service = session_manager_->onDemandService();
+    std::set<DatasetId> datasets;
+    for (const std::string& key : service.demandedKeys()) {
+      datasets.insert(service.graph().find(key)->dataset);
+    }
+    for (const DatasetId dataset : datasets) {
+      if (session_manager_->isLive(dataset)) {
+        service.restartLiveEdge(dataset);
+      }
     }
   });
   // An offset change at a parked playhead moves the raw time the demanded recipes are requested at.
@@ -150,7 +174,13 @@ AppSession::AppSession(QString extensions_dir, DiagnosticSink sink, StaticPlugin
     if (node != nullptr && (node->recipe.pinned_t || service.isDemanded(name))) {
       requestOnDemandAtPlayhead(name);
     }
+    if (node != nullptr) {
+      demandOnDemandRawInputs(node->dataset);
+    }
   });
+  // A removal, and a re-binding on another dataset (a merge), retire topics: the tiers they left are stale.
+  QObject::connect(
+      session_manager_.get(), &SessionManager::objectTopicsChanged, this, [this] { refreshOnDemandRawInputs(); });
   QObject::connect(
       topic_demand_tracker_.get(), &TopicDemandTracker::activeTopicsChanged, this,
       [this](DatasetId dataset, const std::vector<QString>& active_topics) {
@@ -173,7 +203,34 @@ AppSession::AppSession(QString extensions_dir, DiagnosticSink sink, StaticPlugin
             service.withdraw(key);
           }
         }
+        demandOnDemandRawInputs(dataset);  // its own change comes back here once, with the same demanded keys
       });
+}
+
+void AppSession::demandOnDemandRawInputs(DatasetId dataset) {
+  std::vector<QString> topics;
+  const DataReader reader = session_manager_->createReader();
+  for (const RecipeGraph::Binding& input : session_manager_->onDemandService().displayedRawInputs(dataset)) {
+    if (input.object_type != sdk::BuiltinObjectType::kNone) {
+      topics.push_back(QString::fromStdString(input.name));
+    } else if (const auto scalar = catalog_model_->findScalarForMarkerKey(dataset, input.name)) {
+      if (const auto metadata = reader.getMetadata(scalar->topic_id)) {
+        topics.push_back(QString::fromStdString(metadata->name));
+      }
+    }
+  }
+  if (topics.empty()) {
+    raw_input_datasets_.erase(dataset);
+  } else {
+    raw_input_datasets_.insert(dataset);
+  }
+  topic_demand_tracker_->setDerivedInputTopics(dataset, topics);
+}
+
+void AppSession::refreshOnDemandRawInputs() {
+  for (const DatasetId dataset : std::set<DatasetId>(raw_input_datasets_)) {
+    demandOnDemandRawInputs(dataset);
+  }
 }
 
 void AppSession::requestOnDemandAtPlayhead(const std::string& key) {

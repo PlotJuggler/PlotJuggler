@@ -211,6 +211,9 @@ class SessionManager : public QObject {
   [[nodiscard]] EnginePool& enginePool() noexcept {
     return *engine_pool_;
   }
+  [[nodiscard]] const InFlightBudget& inFlightBudget() const noexcept {
+    return *in_flight_budget_;
+  }
 
   /// (topic, column) of the scalar series `name` (bare, the catalog's series naming) in a dataset.
   using ScalarSeriesLookup =
@@ -221,6 +224,8 @@ class SessionManager : public QObject {
   /// Where on-demand runs read the TF state from (the shell owns the service and may destroy it first: the
   /// session watches it). Without one, runs see no TF. GUI thread.
   void setTransformService(TransformService* service);
+  /// Replaces the clock the TF snapshot brake reads; for tests.
+  void setTfClock(std::function<std::chrono::steady_clock::time_point()> clock);
 
   [[nodiscard]] DataReader createReader() const;
 
@@ -405,7 +410,13 @@ class SessionManager : public QObject {
   // it, plot adapter caches never invalidate on the ingested data. `live`
   // propagates to samplesIngested; follow-live consumers (PlotWidget auto-fit,
   // Scene2DDockWidget frame advance) act only when it is true.
-  void notifyIngest(QVector<PJ::TopicId> ids, bool live = false);
+  // A live announcement first requests the on-demand recipes of its datasets at
+  // their live edge (OnDemandService::followLiveEdge): the datasets of `ids`, and
+  // `dataset`, which a streaming tick names so that a tick of object topics only
+  // (no scalar ids) still reaches them.
+  void notifyIngest(QVector<PJ::TopicId> ids, bool live = false, std::optional<DatasetId> dataset = std::nullopt);
+  /// The dataset had a live announcement within the TF brake period (`setTfClock`'s clock): it streams now.
+  [[nodiscard]] bool isLive(DatasetId dataset_id) const;
 
   // --- Progressive bulk-import lifecycle (hoisted from MainWindow, #470). The
   // session owns WHICH datasets are actively receiving a progressive import so
@@ -751,7 +762,8 @@ class SessionManager : public QObject {
   [[nodiscard]] Timestamp datasetMinTimestamp(DatasetId dataset_id) const;
   [[nodiscard]] Timestamp datasetDomainDisplayOffset(DatasetId dataset_id) const;
   [[nodiscard]] Timestamp rememberDatasetMinTimestamp(DatasetId dataset_id, Timestamp observed_min) const;
-  void refreshDatasetMinTimestampsForTopics(const QVector<TopicId>& ids) const;
+  /// Returns the datasets of `ids`.
+  std::unordered_set<DatasetId> refreshDatasetMinTimestampsForTopics(const QVector<TopicId>& ids) const;
   void invalidateDatasetMinTimestamp(DatasetId dataset_id) const;
   // Emits the no-arg displayOffsetChanged signal exactly when the numerical
   // global reference moved since consumers were last notified. Transactional
@@ -837,11 +849,14 @@ class SessionManager : public QObject {
   /// dataset resolves there; a finding's pinned time and a requested node's cursor move by the shift. One that no
   /// longer resolves is removed, with a warning.
   void rebindOnDemandAfterMerge(DatasetId anchor, const std::unordered_map<DatasetId, Timestamp>& shifts);
-  /// The dataset's TF for an on-demand run: while the dataset has a live ingest, the snapshot of at most
-  /// `kTfSnapshotPeriod` ago (ARCHITECTURE §19); null without a TransformService.
+  /// The dataset's TF for an on-demand run: while the dataset ingests (a live ingest, or a live announcement within
+  /// the last `kTfSnapshotPeriod`: a stream never begins an ingest), the snapshot of at most `kTfSnapshotPeriod` ago
+  /// (ARCHITECTURE §19); null without a TransformService.
   [[nodiscard]] std::shared_ptr<const pj::tf::TransformSnapshot> onDemandTf(DatasetId dataset_id);
   /// The revision `onDemandTf` would answer now, taking no snapshot.
   [[nodiscard]] uint64_t onDemandTfRevision(DatasetId dataset_id);
+  /// Whether `onDemandTf` brakes the dataset's snapshots now.
+  [[nodiscard]] bool tfIngesting(DatasetId dataset_id) const;
 
   DataEngine data_engine_;
   ObjectStore object_store_;
@@ -894,12 +909,15 @@ class SessionManager : public QObject {
   QPointer<TransformService> transform_service_;
   // How long a TF snapshot serves on-demand runs while its dataset ingests: the brake rate.
   static constexpr std::chrono::milliseconds kTfSnapshotPeriod{500};
+  std::function<std::chrono::steady_clock::time_point()> tf_clock_ = [] { return std::chrono::steady_clock::now(); };
   struct HeldTf {
     std::shared_ptr<const pj::tf::TransformSnapshot> snapshot;
     std::chrono::steady_clock::time_point taken;
   };
   // The snapshot onDemandTf hands out per dataset while its ingest is live.
   std::unordered_map<DatasetId, HeldTf> held_tf_;
+  // When each dataset last had a live announcement (notifyIngest).
+  std::unordered_map<DatasetId, std::chrono::steady_clock::time_point> live_at_;
   // Owns the session's whole-series marker generators (host-driven PlotMarkers);
   // constructed in the ctor after object_store_/data_engine_. Its series resolver
   // is injected by AppSession once the catalog exists (setResolver).

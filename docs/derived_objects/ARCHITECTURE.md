@@ -805,7 +805,7 @@ proposed (N1, N2).
 
 ## 16. Streaming
 
-**Status: Built (slice 4)**, except the on-demand live edge (slice 6a).
+**Status: Built (slice 4)**; the on-demand live edge in slice 6c.
 
 - **Retention** is per source.
 - **A poll tick runs the consumers in the streaming correctness order** (built, slice 4):
@@ -840,9 +840,47 @@ proposed (N1, N2).
     changed, because its `live` flag alone drives the object-only docks.
   - While paused, writes land in the secondary engine and no processor advances. Resuming
     catches up every topic over the whole paused tail before the re-trim.
-- **On-demand at the live edge** (slice 6a) needs to know which object topics changed per
-  ingest tick (`onLiveIngest`). Its object-topic tracker (`takeChangedObjectTopics`) is
-  carved with it, designed for that consumer.
+- **On-demand at the live edge** (built, slice 6c). The docks drive their visible layers to
+  the newest stamp on every live tick, whatever the playhead does, so a live announcement
+  (`SessionManager::notifyIngest` with `live`) first runs `OnDemandService::followLiveEdge`
+  for each dataset it names: the datasets of its ids, and the one a streaming tick names,
+  since a dataset of object topics only lists no ids. A demanded node is requested at its
+  live edge (`liveEdgeOf`: the newest stamp among its raw inputs, its upstreams' included,
+  read by identity through `InputStager::newestInputStamp`), a finding at its pin.
+  - A node is requested only when what the request would read differs from its last live
+    request: the time, the epoch, the revisions and raw input identities of the node and of
+    every upstream it reads (so a change behind an upstream nothing displays is seen before
+    that upstream runs) and, off a pin, the TF revision. So a tick with nothing new requests
+    nothing, a same-stamp replacement is still seen, and a TF-only tick retries what read the
+    TF under the snapshot brake (§19), which also covers a dataset with a live announcement in
+    the last brake period: a stream never begins an ingest.
+  - A finding runs again only when an input arrives at or before its pin; its install request
+    records what it read. A finding with a raw input missing at its pin (evicted, or not come
+    yet) is not requested, so it never pulls a displayed upstream back to the pin; and when a
+    retry cannot stage it because its inputs left the window (an upstream's results followed
+    that upstream's cursor, or the upstream misses its own inputs there), it keeps its result
+    (`NodeScheduler::settleMissing`). An upstream that fails, a removed upstream, a new revision
+    or a new epoch still clear it (D6).
+  - While the transport follows the live edge (playing, held at the range's end), the live
+    pass owns the requests of every dataset with a live announcement in the last brake period
+    (`SessionManager::isLive`), and the playhead requests none of them: it sits at the newest
+    sample, not at each recipe's inputs'. When the transport starts following again, each
+    demanded node of a live dataset is requested at its live edge at once
+    (`OnDemandService::restartLiveEdge`), since its result there may have left the ring while
+    the cursor was elsewhere and a quiet input would announce nothing new.
+  - The stager remembers each object input's topic id and checks it against the store's id
+    index (`ObjectStore::isTopic`) on each use, so neither the live check nor staging scans the
+    topics by name; a topic removed or registered again under the name is found again.
+  - No changed-object feed (STR-05/07 removed): the store is inspected after the
+    announcement, which also sees what no write host reports (a toolbox writing straight
+    into the store, the terminal flush).
+  - A displayed derived topic, a finding's included, keeps its raw inputs in the demand
+    tracker's derived-input tier (`TopicDemandTracker::setDerivedInputTopics`, set by
+    `AppSession` on a demand change, an install, a re-binding and a removal), so a
+    demand-capable stream sends them while only the derived topic is displayed.
+  - Known limit: a playhead scrubbed back while streaming, paused. The docks jump to the live
+    edge each tick, the playhead requests at the cursor, so a node's requests alternate
+    between the two; the pending slot keeps the latest.
 - **The incremental engine** records a gap when retention takes input rows it never
   consumed. `TopicStorage::evictBefore` records the highest chunk id it dropped or cut rows
   from (`evictedThroughChunkId`), and a node has a gap iff that id is above its chunk
@@ -945,7 +983,7 @@ payload (§9).
 ## 19. Measurements
 
 These come from the prototype, whose design document describes the machine and method,
-except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a and slice 6a-5 rows. The slice 2 and 3 rows are measured on this stack by
+except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a, slice 6a-5 and slice 6c rows. The slice 2 and 3 rows are measured on this stack by
 `EngineFreezeBench` (`pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`), from
 the call until the result is complete, as two different metrics:
 - **GUI-thread CPU time**, as the longest single stretch (the call or one event-loop
@@ -975,6 +1013,8 @@ Linux, RelWithDebInfo.
 | Publication of a 4.2 MB point-cloud result on the GUI thread (`GuiPublishCostOfA4MBResult`, 260k points, median of 51) | Serialized at the publication: 1.45-1.49 ms. Serialized on the worker (`ResultHistory::serializeOutputs`), the payload moved into the ring: 2-3 µs |
 | 2-hop chain after slice 6a-4a (`TwoHopChainLatencyAt10Hz`; requests at 10 Hz, from the reader's request to its published result, 50 requests, three runs) | Two Luau crops keeping all 260k points: median 6.8-6.9 ms, max 11-23 ms, every request drawn (14.6-15.0 ms while the compute cache kept a decoded copy of each result the ring holds). The scheduling alone, an instant fake run with empty outputs: 0.17-0.20 ms, so a chain in one worker task would save little |
 | Streaming: 5 min of 10 Hz, 2048-point clouds | Bounded plateau of entries and bytes |
+| The same after slice 6c, through the session's live edge (`DerivedStreamingBench.FiveMinuteRetentionAndMemoryPlateau`, `pj_runtime/tests/on_demand_live_edge_test.cpp`, `PJ_STREAM_BENCH=1`; 3,000 ticks simulated back to back with the fake run, the raw topic kept 5 s, one demanded recipe; three runs) | From the first minute on: 51 raw entries, 301 derived entries (the ring's ±30 s window around the cursor), ring 9.9 MB under its 256 MiB budget, compute cache 46 KB, nothing protected past the budget, 0 bytes reserved between ticks; RSS 77-78 MB, +0.8 MB from minute 1 to minute 5 |
+| Live edge after slice 6c (`OnDemandLiveEdgeBench.LiveEdgeAmongTenThousandTopics`, same file, `PJ_BENCH=1`; one demanded recipe reading a cloud topic registered after 10k others and a scalar, median of 101 calls, three runs) | `liveEdgeOf`: 21.4-21.7 µs → 194-197 ns; an unchanged tick's `followLiveEdge` (the edge plus what the request would read, no request): 41.6-42.6 µs → 510-529 ns, once the stager remembers each input's topic id (checked by the store's id index) instead of scanning the topics by name. `stage` among 10k topics and 10k scalar names (`StageAmongTenThousandTopics`): 35 µs → 2.5 µs, the rest being that bench's own scalar scan |
 | Per-call setup: Luau | about 86 µs per call (fresh VM) |
 | Object scripts after slice 5c-1 (`ObjectScriptBench`, `pj_scripting/tests/object_script_test.cpp`, `PJ_BENCH=1`; three runs) | Per-call setup (fresh VM over compiled bytecode, a one-line script): 40-47 µs. Iterating a 100,000-element list field (`FrameTransforms.transforms`, reading `translation.x`): 11.0-11.5 ms (about 112 ns per element) holding the list in a local, 15.7-16.3 ms re-reading the field each iteration. The same loop with the list materialized on every element read (a one-line mutation of the binder): 18.6 s |
 | Per-call setup: Python | 73 µs (4-line script) to 1.2 ms (43-line script), re-parsing every call |

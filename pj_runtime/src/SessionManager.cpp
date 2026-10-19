@@ -232,6 +232,10 @@ void SessionManager::setTransformService(TransformService* service) {
   held_tf_.clear();
 }
 
+void SessionManager::setTfClock(std::function<std::chrono::steady_clock::time_point()> clock) {
+  tf_clock_ = std::move(clock);
+}
+
 void SessionManager::suspendOnDemand(DatasetId dataset_id) {
   ++epochs_[dataset_id];
   held_tf_.erase(dataset_id);
@@ -298,12 +302,12 @@ std::shared_ptr<const pj::tf::TransformSnapshot> SessionManager::onDemandTf(Data
   if (transform_service_ == nullptr) {
     return nullptr;
   }
-  if (!ingestActive(dataset_id)) {
+  if (!tfIngesting(dataset_id)) {
     held_tf_.erase(dataset_id);
     return transform_service_->snapshot(dataset_id);
   }
   // A snapshot per request would make every TF write of the ingest copy the growing state (ARCHITECTURE §19).
-  const auto now = std::chrono::steady_clock::now();
+  const auto now = tf_clock_();
   HeldTf& held = held_tf_[dataset_id];
   if (held.snapshot == nullptr || now - held.taken >= kTfSnapshotPeriod) {
     held = {transform_service_->snapshot(dataset_id), now};
@@ -316,11 +320,19 @@ uint64_t SessionManager::onDemandTfRevision(DatasetId dataset_id) {
     return 0;
   }
   if (const auto held = held_tf_.find(dataset_id);
-      held != held_tf_.end() && ingestActive(dataset_id) &&
-      std::chrono::steady_clock::now() - held->second.taken < kTfSnapshotPeriod) {
+      held != held_tf_.end() && tfIngesting(dataset_id) && tf_clock_() - held->second.taken < kTfSnapshotPeriod) {
     return held->second.snapshot->revision();
   }
   return transform_service_->transformBuffer(dataset_id)->revision();
+}
+
+bool SessionManager::tfIngesting(DatasetId dataset_id) const {
+  return ingestActive(dataset_id) || isLive(dataset_id);
+}
+
+bool SessionManager::isLive(DatasetId dataset_id) const {
+  const auto live = live_at_.find(dataset_id);
+  return live != live_at_.end() && tf_clock_() - live->second < kTfSnapshotPeriod;
 }
 
 DataReader SessionManager::createReader() const {
@@ -660,12 +672,12 @@ Timestamp SessionManager::rememberDatasetMinTimestamp(DatasetId dataset_id, Time
   return it->second;
 }
 
-void SessionManager::refreshDatasetMinTimestampsForTopics(const QVector<TopicId>& ids) const {
+std::unordered_set<DatasetId> SessionManager::refreshDatasetMinTimestampsForTopics(const QVector<TopicId>& ids) const {
   // Refreshing per-dataset mins invalidates the across-datasets memo. Reset up
   // front so it still fires on the empty-but-live notify path (early-return below).
   global_min_cache_.reset();
   if (ids.isEmpty()) {
-    return;
+    return {};
   }
 
   std::unordered_set<DatasetId> dataset_ids;
@@ -686,6 +698,7 @@ void SessionManager::refreshDatasetMinTimestampsForTopics(const QVector<TopicId>
       invalidateDatasetMinTimestamp(dataset_id);
     }
   }
+  return dataset_ids;
 }
 
 void SessionManager::invalidateDatasetMinTimestamp(DatasetId dataset_id) const {
@@ -788,13 +801,23 @@ std::vector<TopicId> SessionManager::commitChunks(std::vector<std::pair<TopicId,
   return changed;
 }
 
-void SessionManager::notifyIngest(QVector<TopicId> ids, bool live) {
-  refreshDatasetMinTimestampsForTopics(ids);  // also resets global_min_cache_
+void SessionManager::notifyIngest(QVector<TopicId> ids, bool live, std::optional<DatasetId> dataset) {
+  std::unordered_set<DatasetId> datasets = refreshDatasetMinTimestampsForTopics(ids);  // also resets global_min_cache_
   // Object-only ingest legitimately carries no scalar TopicIds; recompute the
   // global origin before the empty/non-live samples signal is suppressed.
   notifyGlobalTimeReferenceIfChanged();
   if (ids.isEmpty() && !live) {
     return;
+  }
+  if (live) {
+    if (dataset) {
+      datasets.insert(*dataset);
+    }
+    const auto now = tf_clock_();
+    for (const DatasetId live_dataset : datasets) {
+      live_at_[live_dataset] = now;
+      on_demand_->followLiveEdge(live_dataset);
+    }
   }
   emit samplesIngested(std::move(ids), live);
 }
@@ -1674,6 +1697,7 @@ void SessionManager::removeDataset(DatasetId dataset_id) {
     retired.insert(retired.end(), topics.begin(), topics.end());
   }
   held_tf_.erase(dataset_id);
+  live_at_.erase(dataset_id);
   if (!retired.empty()) {
     emit objectTopicsChanged();
   }

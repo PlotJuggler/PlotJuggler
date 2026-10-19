@@ -190,6 +190,8 @@ if(PJ_BUILD_TESTS)
         tests/node_scheduler_test.cpp
         # AppSession drives the on-demand engine: the playhead, demand, installs and findings.
         tests/on_demand_cursor_follow_test.cpp
+        # The on-demand live edge: a live announcement requests demanded recipes at their inputs' newest stamp.
+        tests/on_demand_live_edge_test.cpp
         # links the shared marker engine the service drives
         tests/markers_runtime_host_test.cpp
         tests/data_processors_kind_router_test.cpp

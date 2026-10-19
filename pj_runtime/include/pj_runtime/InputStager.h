@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -84,6 +85,14 @@ class InputStager {
   /// an input has nothing at or before `t`, followed by `: <reason>` when it is an upstream output that was unavailable
   /// (D6, D25: no run, the caller clears).
   [[nodiscard]] Expected<Staged> stage(const RecipeGraph::Node& node, Timestamp t, uint64_t epoch) const;
+  /// GUI thread. The newest stamp among `node`'s raw inputs (an object topic's newest entry, a scalar's newest
+  /// sample), found by the same lookups as `stage`, so nothing is fetched; an upstream's output is skipped (the
+  /// caller follows the upstream's own inputs). nullopt when none has a sample: any stamp, zero and negative
+  /// included, is one.
+  [[nodiscard]] std::optional<Timestamp> newestInputStamp(const RecipeGraph::Node& node) const;
+  /// GUI thread. Appends to `out` the identity each raw input of `node` (upstream outputs skipped) resolves to at `t`,
+  /// as `stage` keys it, or a marker for one with nothing at or before `t`; false when any had nothing.
+  bool appendRawIdentities(const RecipeGraph::Node& node, Timestamp t, std::vector<uint64_t>& out) const;
 
   /// Any thread: touches only `store` (thread-safe) and the parser bindings `staged` carries. Fetches and
   /// decodes each staged entry, an object through its parser under the parser's per-topic lock and a
@@ -93,10 +102,30 @@ class InputStager {
   [[nodiscard]] static Expected<Decoded> decode(const ObjectStore& store, const Staged& staged);
 
  private:
+  /// Resolves the raw input `binding` at `t` as `stage` does: appends its identity to `key` and sets `input`'s value.
+  /// The stamp it resolved; nullopt when it has nothing at or before `t`.
+  std::optional<Timestamp> stageRaw(
+      const RecipeGraph::Node& node, const RecipeGraph::Binding& binding, Timestamp t, std::vector<uint64_t>& key,
+      Input& input) const;
+  /// The object topic `name` of `dataset`, remembered by id and checked against the store's id index on each use, so
+  /// a topic removed or registered again under the name is found again (one scan) and the common case scans nothing.
+  std::optional<ObjectTopicId> topicOf(DatasetId dataset, const std::string& name) const;
+
+  /// Hashes a string and a string_view alike, so `topics_` is looked up without a copy.
+  struct NameHash {
+    using is_transparent = void;
+    std::size_t operator()(std::string_view name) const {
+      return std::hash<std::string_view>{}(name);
+    }
+  };
+
   const ObjectStore& store_;
   const ResultHistory& history_;
   ScalarSampler scalars_;
   ParserLookup parsers_;
+  /// `topicOf`'s memory, per dataset; GUI thread only, like every caller.
+  mutable std::unordered_map<DatasetId, std::unordered_map<std::string, ObjectTopicId, NameHash, std::equal_to<>>>
+      topics_;
 };
 
 }  // namespace PJ

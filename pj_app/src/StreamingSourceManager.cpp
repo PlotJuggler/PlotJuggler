@@ -318,7 +318,7 @@ void StreamingSourceManager::onPauseToggled(bool paused) {
   // play" semantics.
   for (const auto& [dataset_id, _] : sessions_) {
     const auto topic_ids = session_manager_.createReader().listTopics(dataset_id);
-    session_manager_.notifyIngest(QVector<TopicId>(topic_ids.begin(), topic_ids.end()), /*live=*/true);
+    session_manager_.notifyIngest(QVector<TopicId>(topic_ids.begin(), topic_ids.end()), /*live=*/true, dataset_id);
   }
 }
 
@@ -670,8 +670,9 @@ void StreamingSourceManager::onIngestTick(DatasetId dataset_id) {
   // no write host reports them and a plot of a filtered curve refreshes only
   // through this list; a retention trim also moves topics that received no row.
   // Never skipped when nothing changed: `live` alone drives the object-only
-  // consumers (Scene2D / Scene3D docks).
-  session_manager_.notifyIngest(QVector<TopicId>(topic_ids.begin(), topic_ids.end()), /*live=*/!paused_);
+  // consumers (Scene2D / Scene3D docks), and the dataset it names reaches the
+  // on-demand live edge even when it has no scalar topic.
+  session_manager_.notifyIngest(QVector<TopicId>(topic_ids.begin(), topic_ids.end()), /*live=*/!paused_, dataset_id);
 }
 
 void StreamingSourceManager::onWorkerFinished(DatasetId dataset_id) {

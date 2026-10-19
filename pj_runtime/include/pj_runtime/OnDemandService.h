@@ -60,9 +60,9 @@ class OnDemandService {
   /// an unknown key.
   std::vector<ObjectTopicId> remove(std::string_view key);
 
-  void requestAt(std::string_view key, Timestamp t) {
-    scheduler_.requestAt(key, t);
-  }
+  /// `NodeScheduler::requestAt`. A finding's request (at its pin) also records what `followLiveEdge` compares, so a
+  /// live tick runs it again only when an input changed after this request.
+  void requestAt(std::string_view key, Timestamp t);
   [[nodiscard]] std::optional<NodeScheduler::NodeState> state(std::string_view key) const {
     return scheduler_.state(key);
   }
@@ -88,6 +88,24 @@ class OnDemandService {
   /// (no demand of their own, no other reader with a request), recursively; a finding is never withdrawn this way.
   void withdraw(std::string_view key);
 
+  /// The newest stamp among the raw inputs `key` reads, its upstreams' included (`InputStager::newestInputStamp`): the
+  /// time the docks show a live dataset at. nullopt for an unknown key, or when no raw input has a sample.
+  [[nodiscard]] std::optional<Timestamp> liveEdgeOf(std::string_view key) const;
+  /// A live tick of `dataset`, after its writes (ARCHITECTURE §16): requests each demanded node at its live edge and
+  /// each finding at its pin, only when what the request would read differs from the node's last one: the time, the
+  /// epoch, the revisions and raw input identities of the node and of every upstream it reads and, off a pin, the TF
+  /// revision. So an unchanged tick requests nothing, a same-stamp replacement is seen even behind an upstream, a
+  /// TF-only tick retries what read the TF (under the session's snapshot brake), and a finding runs again only when an
+  /// input arrives at or before its pin; one with a raw input missing there (evicted, or not come yet) is left alone.
+  void followLiveEdge(DatasetId dataset);
+  /// `followLiveEdge` with the dataset's demanded nodes' last live requests forgotten, so each is requested at its live
+  /// edge though nothing changed: when the transport starts following the edge again after the cursor moved them
+  /// elsewhere (their results there may have left the ring).
+  void restartLiveEdge(DatasetId dataset);
+  /// The raw inputs (bindings with no upstream) the displayed nodes of `dataset` read (findings included: an input
+  /// can still arrive before a pin), their upstreams' included.
+  [[nodiscard]] std::vector<RecipeGraph::Binding> displayedRawInputs(DatasetId dataset) const;
+
   /// Before a change of `dataset`'s storage that changes what its inputs mean, with the caller moving its epoch: drops
   /// the results of its nodes, cancels their runs and holds their requests (`NodeScheduler::hold`). Pair with `resume`.
   void suspend(DatasetId dataset);
@@ -104,12 +122,33 @@ class OnDemandService {
   }
 
  private:
+  /// What a live tick last requested a node with.
+  struct LiveRequest {
+    Timestamp t = 0;
+    uint64_t epoch = 0;
+    uint64_t tf_revision = 0;  ///< 0 for a finding
+    /// Per node, the node first and then each upstream it reads: its revision, then its raw inputs' identities at
+    /// `t` (`InputStager::appendRawIdentities`), so a change behind an upstream is seen before the upstream ran.
+    std::vector<uint64_t> inputs;
+    bool complete = true;  ///< every raw input had something at or before `t`
+
+    bool operator==(const LiveRequest&) const = default;
+  };
+
+  /// What a request of `node` at `t` would read now.
+  [[nodiscard]] LiveRequest liveRequestOf(const RecipeGraph::Node& node, Timestamp t) const;
+  /// One of the node's object outputs is displayed (the demand set), whether or not it is pinned.
+  [[nodiscard]] bool displayed(const RecipeGraph::Node& node) const;
+
   RecipeGraph graph_;
   ResultHistory history_;
   InputStager stager_;
   NodeScheduler scheduler_;  ///< after the graph, the history and the stager: cancels its runs while they are alive
   InstalledCallback installed_;
+  NodeScheduler::EpochProvider epoch_;             ///< the scheduler's: `followLiveEdge` stages under it
+  NodeScheduler::TfRevisionProvider tf_revision_;  ///< the scheduler's; empty: 0
   std::map<DatasetId, std::unordered_set<std::string>> demand_;
+  std::map<std::string, LiveRequest, std::less<>> live_;
 };
 
 }  // namespace PJ

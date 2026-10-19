@@ -185,6 +185,10 @@ class ObjectStore {
   // nullopt if no topic with that key exists. Used by hosts that need to bind a
   // parser-side write surface to a topic the source already registered.
   std::optional<ObjectTopicId> findTopic(DatasetId dataset_id, std::string_view topic_name) const;
+  // Whether `id` is still the topic `topic_name` of `dataset_id`: an O(1) check, by the id index, of an id a caller
+  // remembered from findTopic. A removed topic, a merge's reparenting, and an id clear() reissued to another
+  // topic fail it, since the dataset and the name must match too.
+  [[nodiscard]] bool isTopic(ObjectTopicId id, DatasetId dataset_id, std::string_view topic_name) const;
 
   // Returns a COPY (not a reference): the descriptor lives in lock-protected
   // series storage that removeTopic/clear/replaceDatasetFrom can destroy, so a

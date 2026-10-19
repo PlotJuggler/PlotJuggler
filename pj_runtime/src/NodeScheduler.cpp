@@ -110,7 +110,7 @@ void NodeScheduler::serve(
   const Timestamp at = slot.cursor;
   const uint64_t epoch = epochOf(node.dataset);
   if (std::optional<std::string> why = graph_.missingInput(key)) {
-    settleMissing(entry, node, epoch, std::move(*why));
+    settleMissing(entry, node, epoch, std::move(*why), /*keep_finding=*/false);
     return;
   }
   bool waiting = false;
@@ -122,7 +122,10 @@ void NodeScheduler::serve(
     }
     const Slot& up = upstream->second;
     if (up.status == NodeStatus::kMissingInput || up.status == NodeStatus::kError) {
-      settleMissing(entry, node, epoch, "on-demand: missing input '" + node.recipe.inputs[index] + "': " + up.detail);
+      // An upstream that failed clears a finding (D6); one missing its inputs (they left the window) does not.
+      settleMissing(
+          entry, node, epoch, "on-demand: missing input '" + node.recipe.inputs[index] + "': " + up.detail,
+          /*keep_finding=*/up.status == NodeStatus::kMissingInput);
       return;
     }
     if (up.status == NodeStatus::kPending && !waiting) {
@@ -311,7 +314,14 @@ void NodeScheduler::settleServed(Entry& entry, Timestamp stamp) {
   setState(entry, NodeStatus::kReady, {}, lagBehind(entry, stamp));
 }
 
-void NodeScheduler::settleMissing(Entry& entry, const RecipeGraph::Node& node, uint64_t epoch, std::string reason) {
+void NodeScheduler::settleMissing(
+    Entry& entry, const RecipeGraph::Node& node, uint64_t epoch, std::string reason, bool keep_finding) {
+  if (keep_finding && node.recipe.pinned_t) {
+    if (const auto shown = history_.shownAt(entry.first, entry.second.cursor); shown && shown->available) {
+      settleServed(entry, shown->stamp);
+      return;
+    }
+  }
   setWait(entry, Wait::kNone);
   clearShown(entry.first, node, entry.second.cursor, entry.second.cursor, epoch, reason);
   setState(entry, NodeStatus::kMissingInput, std::move(reason));

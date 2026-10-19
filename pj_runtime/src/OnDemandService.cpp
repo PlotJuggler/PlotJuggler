@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <iterator>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 namespace PJ {
@@ -22,6 +23,26 @@ NodeScheduler::Hooks withRun(NodeScheduler::Hooks hooks) {
   return hooks;
 }
 
+/// Calls `visit` on `node` and on each upstream it reads, recursively, each once.
+template <typename Visit>
+void visitWithUpstreams(
+    const RecipeGraph& graph, const RecipeGraph::Node& node, std::unordered_set<std::string_view>& visited,
+    Visit& visit) {
+  visit(node);
+  for (const RecipeGraph::Binding& binding : node.bindings) {
+    const RecipeGraph::Node* upstream = graph.find(binding.upstream);
+    if (upstream != nullptr && visited.insert(binding.upstream).second) {
+      visitWithUpstreams(graph, *upstream, visited, visit);
+    }
+  }
+}
+
+template <typename Visit>
+void visitWithUpstreams(const RecipeGraph& graph, const RecipeGraph::Node& node, Visit visit) {
+  std::unordered_set<std::string_view> visited;
+  visitWithUpstreams(graph, node, visited, visit);
+}
+
 }  // namespace
 
 void OnDemandService::setRunForTest(NodeScheduler::RunFunction run) {
@@ -32,8 +53,10 @@ OnDemandService::OnDemandService(ObjectStore& store, EnginePool& pool, InFlightB
     : graph_(std::move(services.resolver)),
       history_(store, services.limits),
       stager_(store, history_, std::move(services.scalars), std::move(services.parsers)),
-      scheduler_(store, graph_, history_, stager_, pool, budget, withRun(std::move(services.scheduling))),
-      installed_(std::move(services.installed)) {}
+      scheduler_(store, graph_, history_, stager_, pool, budget, withRun(services.scheduling)),
+      installed_(std::move(services.installed)),
+      epoch_(std::move(services.scheduling.epoch)),
+      tf_revision_(std::move(services.scheduling.tf_revision)) {}
 
 Expected<std::vector<ObjectTopicId>> OnDemandService::install(RecipeGraph::Recipe recipe) {
   const std::string key = recipe.key();
@@ -79,6 +102,9 @@ std::vector<ObjectTopicId> OnDemandService::remove(std::string_view key) {
     return {};
   }
   scheduler_.forget(key);
+  if (const auto live = live_.find(key); live != live_.end()) {
+    live_.erase(live);
+  }
   std::vector<ObjectTopicId> retired = history_.forget(key);
   for (const std::string& reader : graph_.dependentsOf({std::string(key)})) {
     scheduler_.supersede(reader);
@@ -96,17 +122,25 @@ void OnDemandService::setDemand(DatasetId dataset, std::vector<std::string> topi
 
 bool OnDemandService::isDemanded(std::string_view key) const {
   const RecipeGraph::Node* node = graph_.find(key);
-  if (node == nullptr || node->recipe.pinned_t) {
-    return false;
-  }
-  const auto names = demand_.find(node->dataset);
+  return node != nullptr && !node->recipe.pinned_t && displayed(*node);
+}
+
+bool OnDemandService::displayed(const RecipeGraph::Node& node) const {
+  const auto names = demand_.find(node.dataset);
   if (names == demand_.end()) {
     return false;
   }
-  return std::ranges::any_of(node->recipe.outputs, [&](const scripting::OutputSpec& output) {
-    return output.type == scripting::OutputType::kObject &&
-           names->second.contains(std::string(key) + "/" + output.name);
+  const std::string key = node.recipe.key();
+  return std::ranges::any_of(node.recipe.outputs, [&](const scripting::OutputSpec& output) {
+    return output.type == scripting::OutputType::kObject && names->second.contains(key + "/" + output.name);
   });
+}
+
+void OnDemandService::requestAt(std::string_view key, Timestamp t) {
+  scheduler_.requestAt(key, t);
+  if (const RecipeGraph::Node* node = graph_.find(key); node != nullptr && node->recipe.pinned_t) {
+    live_.insert_or_assign(std::string(key), liveRequestOf(*node, *node->recipe.pinned_t));
+  }
 }
 
 std::vector<std::string> OnDemandService::demandedKeys() const {
@@ -137,6 +171,85 @@ void OnDemandService::withdraw(std::string_view key) {
       withdraw(binding.upstream);
     }
   }
+}
+
+std::optional<Timestamp> OnDemandService::liveEdgeOf(std::string_view key) const {
+  const RecipeGraph::Node* node = graph_.find(key);
+  if (node == nullptr) {
+    return std::nullopt;
+  }
+  std::optional<Timestamp> edge;
+  visitWithUpstreams(graph_, *node, [&](const RecipeGraph::Node& current) {
+    if (const std::optional<Timestamp> newest = stager_.newestInputStamp(current)) {
+      edge = std::max(edge.value_or(*newest), *newest);
+    }
+  });
+  return edge;
+}
+
+OnDemandService::LiveRequest OnDemandService::liveRequestOf(const RecipeGraph::Node& node, Timestamp t) const {
+  LiveRequest request;
+  request.t = t;
+  request.epoch = epoch_ ? epoch_(node.dataset) : 0;
+  if (!node.recipe.pinned_t && tf_revision_) {
+    request.tf_revision = tf_revision_(node.dataset);
+  }
+  visitWithUpstreams(graph_, node, [&](const RecipeGraph::Node& current) {
+    request.inputs.push_back(current.revision);
+    request.complete = stager_.appendRawIdentities(current, t, request.inputs) && request.complete;
+  });
+  return request;
+}
+
+void OnDemandService::followLiveEdge(DatasetId dataset) {
+  for (const std::string& key : graph_.keysOf(dataset)) {
+    const RecipeGraph::Node* found = graph_.find(key);
+    if (found == nullptr) {
+      continue;  // a callback of an earlier request removed it
+    }
+    const RecipeGraph::Node& node = *found;
+    const std::optional<Timestamp> t = node.recipe.pinned_t ? node.recipe.pinned_t
+                                       : isDemanded(key)    ? liveEdgeOf(key)
+                                                            : std::nullopt;
+    if (!t) {
+      continue;
+    }
+    LiveRequest request = liveRequestOf(node, *t);
+    if (node.recipe.pinned_t && !request.complete) {
+      continue;  // an input of the finding left (evicted) or never came: nothing arrived to refresh it with
+    }
+    LiveRequest& last = live_[key];
+    if (last == request) {
+      continue;
+    }
+    last = std::move(request);
+    scheduler_.requestAt(key, *t);
+  }
+}
+
+void OnDemandService::restartLiveEdge(DatasetId dataset) {
+  for (const std::string& key : demandedKeys(dataset)) {
+    live_.erase(key);
+  }
+  followLiveEdge(dataset);
+}
+
+std::vector<RecipeGraph::Binding> OnDemandService::displayedRawInputs(DatasetId dataset) const {
+  std::vector<RecipeGraph::Binding> inputs;
+  for (const std::string& key : graph_.keysOf(dataset)) {
+    const RecipeGraph::Node& root = *graph_.find(key);
+    if (!displayed(root)) {
+      continue;
+    }
+    visitWithUpstreams(graph_, root, [&inputs](const RecipeGraph::Node& node) {
+      for (const RecipeGraph::Binding& binding : node.bindings) {
+        if (binding.upstream.empty() && std::ranges::find(inputs, binding) == inputs.end()) {
+          inputs.push_back(binding);
+        }
+      }
+    });
+  }
+  return inputs;
 }
 
 void OnDemandService::suspend(DatasetId dataset) {

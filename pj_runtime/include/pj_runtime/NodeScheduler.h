@@ -185,7 +185,11 @@ class NodeScheduler {
   /// The result at `stamp` serves the newest request: drops the tombstones it supersedes and settles ready.
   void settleServed(Entry& entry, Timestamp stamp);
   /// Runs nothing, clears what the ring shows at the cursor (D6) and settles the newest request as missing input.
-  void settleMissing(Entry& entry, const RecipeGraph::Node& node, uint64_t epoch, std::string reason);
+  /// With `keep_finding`, a finding that shows a result keeps it and settles ready instead: its inputs left the window
+  /// (an upstream's results followed its own cursor, retention), they did not change. A removed upstream passes false;
+  /// a new revision or epoch has already dropped the finding.
+  void settleMissing(
+      Entry& entry, const RecipeGraph::Node& node, uint64_t epoch, std::string reason, bool keep_finding = true);
   /// Publishes every output unavailable at `stamp` when an available result is shown there (D6).
   void clearShown(
       const std::string& key, const RecipeGraph::Node& node, Timestamp requested_t, Timestamp stamp, uint64_t epoch,
