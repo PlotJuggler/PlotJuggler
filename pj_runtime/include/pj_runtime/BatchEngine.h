@@ -259,6 +259,10 @@ class BatchEngine : public QObject {
   [[nodiscard]] bool isRunning(std::string_view id) const;
   /// Every generator id with a run in flight, sorted, each once.
   [[nodiscard]] std::vector<std::string> runningIds() const;
+  /// `isRunning` and `errorOf` for the one binding `binding` names (its id on its dataset): a rule applied
+  /// to several datasets has a state per dataset, which the id-level queries merge.
+  [[nodiscard]] bool isBindingRunning(const GeneratorRecipe& binding) const;
+  [[nodiscard]] std::string bindingError(const GeneratorRecipe& binding) const;
 
   /// Runs every binding of `id` now, ignoring the brake, the mode and demand. A
   /// binding with a run in flight keeps one pending request instead, which captures
@@ -479,7 +483,8 @@ class BatchEngine : public QObject {
   /// pool drain publishes announce together. The synchronous paths do not emit it:
   /// their callers notify.
   void markersPublished();
-  /// `runningIds()` may have changed. Queued and coalesced like `markersPublished`.
+  /// `runningIds()` or an `errorOf` answer may have changed (a failure recorded, or cleared by a success, a
+  /// removal or a re-apply). Queued and coalesced like `markersPublished`.
   void runningChanged();
 
  private:

@@ -38,6 +38,15 @@ class SessionManager;
 class PlotMarkersItem;
 struct MarkerTarget;  // pj_plotting/PlotMarkersItem.h
 
+/// The run state of one marker rule, as the plot's host reports it.
+struct MarkerRuleStatus {
+  QString rule_id;
+  bool computing = false;
+  QString error;  ///< why the rule's last run failed; empty when it did not
+
+  bool operator==(const MarkerRuleStatus&) const = default;
+};
+
 class PlotWidget : public PlotWidgetBase {
   Q_OBJECT
  public:
@@ -193,6 +202,18 @@ class PlotWidget : public PlotWidgetBase {
   // Independent of every curve's own show_markers and of the other scope.
   // No-op (no replot/undo) if the value doesn't change.
   void setDatasetMarkerScopeVisible(DatasetId dataset_id, MarkerScope scope, bool visible);
+  /// Replaces the run state of the marker rules this plot shows (the host decides which:
+  /// the plot knows no engine). While a rule computes the plot draws "Computing
+  /// markers…" in its top-left corner (top-right when the legend is there), and "Marker rule failed" when only failures
+  /// remain; the tooltip of the note lists the errors. The markers stay drawn. An entry
+  /// that neither computes nor failed is ignored. Repaints only when the note's text
+  /// changes, so a host may call it on every engine event.
+  void setMarkerStatus(std::vector<MarkerRuleStatus> statuses);
+  /// The text of the note `setMarkerStatus` put up; empty when none.
+  [[nodiscard]] QString markerStatusNote() const;
+  /// Where the note sits, in canvas coordinates; empty when there is none. A hover on
+  /// it shows the errors as a tooltip.
+  [[nodiscard]] QRectF markerStatusNoteRect() const;
   // Re-resolves the hidden <marker_scope> entries whose dataset was not loaded
   // at xmlLoadState time (kept as pending saved identities, visible meanwhile)
   // and moves the ones that now name a live dataset into the hidden set —
@@ -218,6 +239,9 @@ class PlotWidget : public PlotWidgetBase {
   // NOT emitted for a curve-list change: curveListChanged already reaches every
   // listener that rebuilds rows, so emitting both would rebuild twice.
   void datasetMarkerScopesChanged();
+  /// What `markerTargets()` returns may have changed: a curve was added or removed, a curve's own
+  /// markers or a dataset's marker scope was shown or hidden. The host re-derives the plot's marker status.
+  void markerTargetsChanged();
   // One (dataset, scope) row's visibility flag flipped (a toggle, or undo/redo).
   // Only that row's check state changes — no row set change.
   void markerScopeVisibilityChanged(DatasetId dataset_id, MarkerScope scope, bool visible);
@@ -318,6 +342,8 @@ class PlotWidget : public PlotWidgetBase {
   // the pending entries verbatim so a snapshot taken mid-restore keeps them.
   void saveHiddenMarkerScopes(QDomDocument& doc, QDomElement& plot_element) const;
   void loadHiddenMarkerScopes(const QDomElement& plot_element);
+  // The errors of the failing rules, one line each, as the note's rich-text tooltip.
+  [[nodiscard]] QString markerStatusToolTip() const;
   // Recomputes markerScopeRows(); true when it differs from the previous set.
   // The caller decides whether to announce it — markersChanged fires on every
   // streaming tick regardless of whether a topic actually appeared/disappeared.
@@ -403,6 +429,8 @@ class PlotWidget : public PlotWidgetBase {
   // of markerScopeRows() so a layout can restore "hidden" before the producing
   // rule has published the topic (see pruneHiddenMarkerScopes / xmlLoadState).
   std::set<MarkerScopeKey> hidden_marker_scopes_;
+  // Sorted by rule id; see setMarkerStatus.
+  std::vector<MarkerRuleStatus> marker_status_;
   // A hidden <marker_scope> whose dataset was not loaded when the layout was
   // read: the saved identity, re-resolved by resolvePendingMarkerScopes() once
   // the dataset (possibly reminted) exists. Pending means visible.

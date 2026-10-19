@@ -71,6 +71,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <ranges>
 #include <unordered_set>
 #include <utility>
 
@@ -142,6 +143,7 @@
 #ifdef PJ_TARGET_WASM
 #include "pj_plotting/PlotRhiCanvas.h"
 #endif
+#include "pj_plotting/PlotMarkersItem.h"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/StateTransitionsDockWidget.h"
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
@@ -164,6 +166,7 @@
 #include "pj_runtime/DiagnosticHistory.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/IObjectViewer.h"
+#include "pj_runtime/MarkerTopics.h"
 #include "pj_runtime/PlaybackControlHost.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/PlotTabsRuntimeHost.h"
@@ -881,7 +884,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       session_->sessionManager(), session_->catalogModel(), *ingest_progress_controller_, *ui_->curveListPanel, this);
 
   applyDerivedBatchPreferences();
-  wireMarkerComputingStatus();
+  wireMarkerPlotStatus();
 
   // Keep data widgets coherent with catalog removals, whoever triggers them.
   // Each widget prunes its OWN pieces against the live catalog/store. One pass
@@ -3223,36 +3226,92 @@ void MainWindow::applyDerivedBatchPreferences() {
   session_->sessionManager().batchEngine().setSettings(BatchEngine::loadSettings());
 }
 
-void MainWindow::wireMarkerComputingStatus() {
+namespace {
+
+// How long a rule runs before its plots show it as computing, so a quick run never flickers a note.
+constexpr std::chrono::milliseconds kMarkerStatusShowDelay{300};
+
+// The rule behind a status entry, and the marker set it publishes.
+struct RuleStatusEntry {
+  MarkerRuleStatus status;
+  MarkerTopicInfo info;
+  bool all_datasets = false;
+  DatasetId dataset_id = 0;
+};
+
+// Whether a plot with `targets` draws the set `entry`'s rule publishes: a target names the rule's
+// scope and key, on the rule's dataset (any dataset for an all_datasets rule).
+bool plotDrawsRule(const std::vector<MarkerTarget>& targets, const RuleStatusEntry& entry) {
+  return std::ranges::any_of(targets, [&](const MarkerTarget& target) {
+    return target.marker == entry.info && (entry.all_datasets || target.dataset == entry.dataset_id);
+  });
+}
+
+}  // namespace
+
+void MainWindow::wireMarkerPlotStatus() {
   BatchEngine* batch_engine = &session_->sessionManager().batchEngine();
   auto* delay = new QTimer(this);
   delay->setSingleShot(true);
-  delay->setInterval(300);  // a quick run never flickers the status bar
-  // The message this put up, empty when none: another message replacing it stays.
-  auto shown = std::make_shared<QString>();
-  const auto show = [this, batch_engine, shown] {
-    const std::vector<std::string> running = batch_engine->runningIds();
-    if (running.empty()) {
-      return;
-    }
-    *shown = running.size() == 1 ? tr("Computing markers for '%1'…").arg(QString::fromStdString(running.front()))
-                                 : tr("Computing markers for %1 rules…").arg(running.size());
-    statusBar()->showMessage(*shown);
-  };
-  connect(delay, &QTimer::timeout, this, show);
-  connect(batch_engine, &BatchEngine::runningChanged, this, [this, batch_engine, delay, shown, show]() {
-    if (batch_engine->runningIds().empty()) {
-      delay->stop();
-      if (!shown->isEmpty() && statusBar()->currentMessage() == *shown) {
-        statusBar()->clearMessage();
+  using Clock = std::chrono::steady_clock;
+  // When each binding that runs started its current run; one that lasts kMarkerStatusShowDelay is shown as computing.
+  using BindingId = std::pair<std::string, DatasetId>;
+  auto running_since = std::make_shared<std::map<BindingId, Clock::time_point>>();
+  // Reports the standing status to `only`, or to every plot when null.
+  push_marker_status_ = [this, batch_engine, delay, running_since](PlotWidget* only) {
+    const Clock::time_point now = Clock::now();
+    std::map<BindingId, Clock::time_point> still_running;
+    std::optional<Clock::time_point> next_due;
+    std::vector<RuleStatusEntry> entries;  // only the rules a plot would report
+    for (const BatchEngine::GeneratorRecipe& recipe : batch_engine->recipes()) {
+      bool computing = false;
+      if (batch_engine->isBindingRunning(recipe)) {
+        const BindingId binding{recipe.id, recipe.all_datasets ? BatchEngine::kAnyDataset : recipe.dataset_id};
+        const auto known = running_since->find(binding);
+        const Clock::time_point since = known != running_since->end() ? known->second : now;
+        still_running.emplace(binding, since);
+        computing = now - since >= kMarkerStatusShowDelay;
+        if (!computing && (!next_due.has_value() || since + kMarkerStatusShowDelay < *next_due)) {
+          next_due = since + kMarkerStatusShowDelay;
+        }
       }
-      shown->clear();
-    } else if (!shown->isEmpty()) {
-      show();  // the set changed while shown
-    } else if (!delay->isActive()) {
-      delay->start();
+      QString error = QString::fromStdString(batch_engine->bindingError(recipe));
+      if (recipe.outputs.empty() || (!computing && error.isEmpty())) {
+        continue;
+      }
+      entries.push_back(
+          RuleStatusEntry{
+              .status =
+                  {.rule_id = QString::fromStdString(recipe.id), .computing = computing, .error = std::move(error)},
+              .info = markerInfoForKey(recipe.outputs.front()),
+              .all_datasets = recipe.all_datasets,
+              .dataset_id = recipe.dataset_id});
     }
-  });
+    *running_since = std::move(still_running);
+    if (next_due.has_value()) {
+      delay->start(
+          std::max(std::chrono::milliseconds(1), std::chrono::ceil<std::chrono::milliseconds>(*next_due - now)));
+    } else {
+      delay->stop();
+    }
+    const auto report = [&entries](PlotWidget* plot) {
+      const std::vector<MarkerTarget> targets = plot->markerTargets();
+      std::vector<MarkerRuleStatus> statuses;
+      for (const RuleStatusEntry& entry : entries) {
+        if (plotDrawsRule(targets, entry)) {
+          statuses.push_back(entry.status);
+        }
+      }
+      plot->setMarkerStatus(std::move(statuses));
+    };
+    if (only != nullptr) {
+      report(only);
+    } else {
+      forEachPlot(report);
+    }
+  };
+  connect(delay, &QTimer::timeout, this, [this] { push_marker_status_(nullptr); });
+  connect(batch_engine, &BatchEngine::runningChanged, this, [this] { push_marker_status_(nullptr); });
 }
 
 void MainWindow::bindDerivedBatchPreferences(PreferencesDialog& dialog) {
@@ -3640,8 +3699,20 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   topic_demand_controller_->registerPlot(plot);
   plot->setTrackerPosition(toAxisDouble(session_->playbackEngine().currentTime()));
   applyGlobalToggles(plot);
+  connect(plot, &PlotWidget::markerTargetsChanged, this, &MainWindow::onPlotMarkerTargetsChanged, Qt::UniqueConnection);
+  reportMarkerStatus(plot);
   if (curve_editor_ != nullptr && curve_editor_->plot() == nullptr) {
     bindEditorToPlot(plot);
+  }
+}
+
+void MainWindow::onPlotMarkerTargetsChanged() {
+  reportMarkerStatus(qobject_cast<PlotWidget*>(sender()));
+}
+
+void MainWindow::reportMarkerStatus(PlotWidget* plot) {
+  if (push_marker_status_ && plot != nullptr) {
+    push_marker_status_(plot);
   }
 }
 

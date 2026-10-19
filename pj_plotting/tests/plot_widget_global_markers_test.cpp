@@ -493,8 +493,11 @@ TEST(PlotWidgetGlobalMarkers, PendingScopeResolutionRebuildsRows) {
   registerScopeTopic(session, *dataset, PJ::MarkerScope::kDataset);
 
   int changed_count = 0;
+  int target_changes = 0;
   QObject::connect(&plot, &PJ::PlotWidget::datasetMarkerScopesChanged, [&]() { ++changed_count; });
+  QObject::connect(&plot, &PJ::PlotWidget::markerTargetsChanged, [&]() { ++target_changes; });
   plot.resolvePendingMarkerScopes();
+  EXPECT_EQ(target_changes, 1) << "the hidden scope moved into the targets' gate";
   ASSERT_EQ(plot.markerScopeRows().size(), 1U);
   EXPECT_EQ(plot.markerScopeRows().front(), PJ::MarkerScopeKey(*dataset, PJ::MarkerScope::kDataset));
   EXPECT_FALSE(plot.datasetMarkerScopeVisible(*dataset, PJ::MarkerScope::kDataset));

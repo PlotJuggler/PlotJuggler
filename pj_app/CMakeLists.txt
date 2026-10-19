@@ -442,6 +442,10 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_marker_generator_restore_test.cpp)
 
+    # A running marker rule puts a computing note on the plots that display it.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_marker_status_test.cpp)
+
     # Generators and transform inputs carry their dataset like a curve: a
     # layout-relative path in a source-bound layout, nothing in a generic one.
     list(APPEND PJ_APP_GUI_TEST_SOURCES

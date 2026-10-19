@@ -4,6 +4,7 @@
 
 #include <qwt_plot_item.h>
 
+#include <QString>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -68,6 +69,17 @@ class PlotMarkersItem : public QwtPlotItem {
     session_ = session;
   }
 
+  /// A one-line note drawn over the markers in the canvas's top-left corner; empty
+  /// removes it. Returns whether the text changed (the caller replots then).
+  bool setStatusNote(const QString& text);
+  [[nodiscard]] const QString& statusNote() const noexcept {
+    return status_note_;
+  }
+  /// Where the note sits in a canvas of `canvas_rect`, empty without a note: the top-left
+  /// corner, or the top-right one when the legend is aligned top-left. The one rect the
+  /// paint and the tooltip hit-test share.
+  [[nodiscard]] QRectF statusNoteRect(const QRectF& canvas_rect) const;
+
   [[nodiscard]] int rtti() const override {
     return QwtPlotItem::Rtti_PlotUserItem;
   }
@@ -76,6 +88,10 @@ class PlotMarkersItem : public QwtPlotItem {
       QPainter* painter, const QwtScaleMap& xMap, const QwtScaleMap& yMap, const QRectF& canvasRect) const override;
 
  private:
+  void drawMarkerSets(
+      QPainter* painter, const QwtScaleMap& xMap, const QwtScaleMap& yMap, const QRectF& canvasRect) const;
+  void drawStatusNote(QPainter* painter, const QRectF& canvas_rect) const;
+
   /// Paint one object topic's set (decoded through `decode_cache_`), raw times
   /// mapped through `offset`.
   void drawTopic(
@@ -84,6 +100,7 @@ class PlotMarkersItem : public QwtPlotItem {
 
   SessionManager* session_ = nullptr;
   std::function<std::vector<MarkerTarget>()> targets_provider_;
+  QString status_note_;
 
   // Decode cache: the deserialized marker set per object-topic. draw() runs on
   // every replot (up to 60 Hz while streaming) but markers change only when a

@@ -285,6 +285,16 @@ bool BatchEngine::isRunning(std::string_view id) const {
   });
 }
 
+bool BatchEngine::isBindingRunning(const GeneratorRecipe& binding) const {
+  const auto it = runs_.find(bindingKey(binding));
+  return it != runs_.end() && it->second.running.has_value();
+}
+
+std::string BatchEngine::bindingError(const GeneratorRecipe& binding) const {
+  const auto it = runs_.find(bindingKey(binding));
+  return it == runs_.end() ? std::string{} : it->second.error;
+}
+
 std::vector<std::string> BatchEngine::runningIds() const {
   std::set<std::string> ids;
   for (const auto& [key, state] : runs_) {
@@ -663,6 +673,7 @@ void BatchEngine::recordFailure(const BindingKey& key, uint64_t staged_seq, cons
     return;
   }
   state.error = error;
+  queueSignal(running_changed_queued_, &BatchEngine::runningChanged);
   // A first create, or one that moved the rule to another target, has no previous set.
   const std::string message = "Marker rule '" + key.first + "' failed: " + error +
                               ". Any previous markers are kept; fix the rule and apply it again.";
@@ -680,11 +691,12 @@ void BatchEngine::cancelRun(const BindingKey& key) {
     return;
   }
   const bool was_running = it->second.running.has_value();
+  const bool had_error = !it->second.error.empty();
   if (was_running) {
     it->second.running->cancel();
   }
   runs_.erase(it);
-  if (was_running) {
+  if (was_running || had_error) {
     queueSignal(running_changed_queued_, &BatchEngine::runningChanged);
   }
 }

@@ -3,11 +3,16 @@
 
 #include "pj_plotting/PlotMarkersItem.h"
 
+#include <qwt_plot.h>
+#include <qwt_plot_legenditem.h>
 #include <qwt_scale_map.h>
 
 #include <QFontMetrics>
 #include <QPainter>
+#include <QPalette>
 #include <QRectF>
+#include <QWidget>
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -49,7 +54,62 @@ void PlotMarkersItem::setTargetsProvider(std::function<std::vector<MarkerTarget>
   targets_provider_ = std::move(provider);
 }
 
+namespace {
+constexpr qreal kNoteMargin = 8.0;
+constexpr qreal kNotePadding = 6.0;
+}  // namespace
+
+bool PlotMarkersItem::setStatusNote(const QString& text) {
+  if (status_note_ == text) {
+    return false;
+  }
+  status_note_ = text;
+  return true;
+}
+
+QRectF PlotMarkersItem::statusNoteRect(const QRectF& canvas_rect) const {
+  if (status_note_.isEmpty() || plot() == nullptr) {
+    return {};
+  }
+  const QFontMetricsF fm(plot()->canvas()->font());
+  const QSizeF size(fm.horizontalAdvance(status_note_) + 2 * kNotePadding, fm.height() + kNotePadding);
+  // The top-left corner, unless the legend is aligned there.
+  const QwtPlotItemList legends = plot()->itemList(QwtPlotItem::Rtti_PlotLegend);
+  const bool legend_top_left = std::ranges::any_of(legends, [](const QwtPlotItem* item) {
+    const auto* legend = static_cast<const QwtPlotLegendItem*>(item);
+    return legend->isVisible() && (legend->alignmentInCanvas() & Qt::AlignLeft) &&
+           (legend->alignmentInCanvas() & Qt::AlignTop);
+  });
+  const qreal left =
+      legend_top_left ? canvas_rect.right() - kNoteMargin - size.width() : canvas_rect.left() + kNoteMargin;
+  return QRectF(QPointF(left, canvas_rect.top() + kNoteMargin), size);
+}
+
+void PlotMarkersItem::drawStatusNote(QPainter* painter, const QRectF& canvas_rect) const {
+  const QRectF rect = statusNoteRect(canvas_rect);
+  if (rect.isEmpty()) {
+    return;
+  }
+  const QWidget* canvas = plot()->canvas();
+  painter->save();
+  painter->setFont(canvas->font());
+  QColor background = canvas->palette().color(QPalette::Window);
+  background.setAlpha(220);
+  painter->setPen(canvas->palette().color(QPalette::Mid));
+  painter->setBrush(background);
+  painter->drawRoundedRect(rect, 3.0, 3.0);
+  painter->setPen(canvas->palette().color(QPalette::WindowText));
+  painter->drawText(rect, Qt::AlignCenter, status_note_);
+  painter->restore();
+}
+
 void PlotMarkersItem::draw(
+    QPainter* painter, const QwtScaleMap& xMap, const QwtScaleMap& yMap, const QRectF& canvasRect) const {
+  drawMarkerSets(painter, xMap, yMap, canvasRect);
+  drawStatusNote(painter, canvasRect);
+}
+
+void PlotMarkersItem::drawMarkerSets(
     QPainter* painter, const QwtScaleMap& xMap, const QwtScaleMap& yMap, const QRectF& canvasRect) const {
   if (session_ == nullptr || !targets_provider_) {
     return;

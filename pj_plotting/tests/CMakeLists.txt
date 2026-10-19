@@ -29,6 +29,7 @@ pj_add_test_runner(pj_plotting_widget_tests
         plot_widget_default_style_test.cpp
         plot_widget_xy_marker_test.cpp
         plot_widget_global_markers_test.cpp
+        plot_widget_marker_status_test.cpp
         curve_editor_global_markers_test.cpp
         legend_text_diagnostics_test.cpp
         plot_widget_range_offset_test.cpp

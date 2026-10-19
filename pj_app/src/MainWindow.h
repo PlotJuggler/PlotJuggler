@@ -136,6 +136,7 @@ class MainWindow : public QMainWindow {
   friend class MainWindowPanelGeometryTestPeer;
   friend class MainWindowLayoutImportTestPeer;
   friend class MainWindowMarkerGeneratorTestPeer;
+  friend class MainWindowMarkerStatusTestPeer;
   friend class MainWindowLayoutDatasetPathsTestPeer;
   friend class MainWindowHistoryExemptTestPeer;
   friend class MainWindowCustomSeriesTestPeer;
@@ -597,10 +598,14 @@ class MainWindow : public QMainWindow {
   void applyDerivedBatchPreferences();
   void bindDerivedBatchPreferences(PreferencesDialog& dialog);
 
-  // Shows "Computing markers for ..." in the status bar while a marker rule has been
-  // running for more than 300 ms (BatchEngine::runningChanged), and clears it when
-  // nothing runs. Interim: a plot-level computing/lag indicator is slice 7's.
-  void wireMarkerComputingStatus();
+  // Tells every plot which of the marker rules it displays are computing or failed
+  // (PlotWidget::setMarkerStatus), on BatchEngine::runningChanged. "Computing" waits
+  // until a rule has been running for 300 ms, so a quick run never flickers a note.
+  void wireMarkerPlotStatus();
+  // Reports the standing marker status to `plot` (wireMarkerPlotStatus's push), when it is wired.
+  void reportMarkerStatus(PlotWidget* plot);
+  void onPlotMarkerTargetsChanged();
+  std::function<void(PlotWidget*)> push_marker_status_;
 
   // Reloads a recorded source through its plugin + config (dialog skipped when
   // both are known). Shared by the global Reload button and the per-dataset

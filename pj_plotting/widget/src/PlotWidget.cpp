@@ -17,6 +17,7 @@
 #include <QDropEvent>
 #include <QFontDatabase>
 #include <QGuiApplication>
+#include <QHelpEvent>
 #include <QIODevice>
 #include <QIcon>
 #include <QMenu>
@@ -27,6 +28,8 @@
 #include <QScopedValueRollback>
 #include <QSettings>
 #include <QStringView>
+#include <QTextDocument>
+#include <QToolTip>
 #include <QUuid>
 #include <QVector>
 #include <algorithm>
@@ -34,6 +37,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <ranges>
 #include <set>
 
 #include "TimeAxisWidth.h"
@@ -219,6 +223,7 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
     autoZoomPlotVertically();
     pruneHiddenMarkerScopes();
     (void)refreshMarkerScopeRowSet();  // curveListChanged itself is the rebuild trigger
+    emit markerTargetsChanged();
   });
   connect(this, &PlotWidgetBase::dragEnterSignal, this, &PlotWidget::onDragEnterEvent);
   connect(this, &PlotWidgetBase::dragLeaveSignal, this, &PlotWidget::onDragLeaveEvent);
@@ -1224,6 +1229,7 @@ void PlotWidget::setCurveShowMarkers(const QString& curve_name, bool show) {
   // markers_item_'s targets are recomputed on each paint from show_markers,
   // so a replot is all that's needed to re-evaluate the overlay.
   replot();
+  emit markerTargetsChanged();
   emit undoableChange();
 }
 
@@ -1242,6 +1248,7 @@ void PlotWidget::setDatasetMarkerScopeVisible(DatasetId dataset_id, MarkerScope 
   // hidden_marker_scopes_, so a replot is all that's needed to re-evaluate the
   // overlay.
   replot();
+  emit markerTargetsChanged();
   emit markerScopeVisibilityChanged(dataset_id, scope, visible);
   if (!loading_state_) {
     emit undoableChange();
@@ -1346,6 +1353,7 @@ void PlotWidget::loadHiddenMarkerScopes(const QDomElement& plot_element) {
   }
   if (new_hidden_scopes != hidden_marker_scopes_) {
     hidden_marker_scopes_ = std::move(new_hidden_scopes);
+    emit markerTargetsChanged();
     emit datasetMarkerScopesChanged();
   }
 }
@@ -1372,7 +1380,42 @@ void PlotWidget::resolvePendingMarkerScopes() {
   // existed, e.g. a generator replayed after the pending binder ran) — refresh
   // the row set too, not just the hidden flag.
   refreshMarkerScopeRowSet();
+  emit markerTargetsChanged();
   emit datasetMarkerScopesChanged();
+}
+
+void PlotWidget::setMarkerStatus(std::vector<MarkerRuleStatus> statuses) {
+  std::erase_if(statuses, [](const MarkerRuleStatus& status) { return !status.computing && status.error.isEmpty(); });
+  std::ranges::sort(statuses, {}, &MarkerRuleStatus::rule_id);
+  if (statuses == marker_status_) {
+    return;
+  }
+  marker_status_ = std::move(statuses);
+  const bool computing = std::ranges::any_of(marker_status_, &MarkerRuleStatus::computing);
+  const QString note = marker_status_.empty() ? QString()
+                       : computing            ? tr("Computing markers…")
+                                              : tr("Marker rule failed");
+  if (markers_item_->setStatusNote(note)) {
+    replot();
+  }
+}
+
+QString PlotWidget::markerStatusNote() const {
+  return markers_item_->statusNote();
+}
+
+QRectF PlotWidget::markerStatusNoteRect() const {
+  return markers_item_->statusNoteRect(qwtPlot()->canvas()->contentsRect());
+}
+
+QString PlotWidget::markerStatusToolTip() const {
+  QStringList lines;
+  for (const MarkerRuleStatus& status : marker_status_) {
+    if (!status.error.isEmpty()) {
+      lines.push_back(status.rule_id + u": "_s + status.error);
+    }
+  }
+  return lines.isEmpty() ? QString() : Qt::convertFromPlainText(lines.join(u'\n'));
 }
 
 std::vector<MarkerTarget> PlotWidget::markerTargets() const {
@@ -1524,6 +1567,14 @@ bool PlotWidget::eventFilter(QObject* obj, QEvent* event) {
     // the hot path stays a single bool read when the toggle is off.
     if (show_points_) {
       showPointValues(mouse_event->pos());
+    }
+  }
+  if (event->type() == QEvent::ToolTip) {
+    const auto* help = static_cast<QHelpEvent*>(event);
+    const QString tip = markerStatusToolTip();
+    if (!tip.isEmpty() && markerStatusNoteRect().contains(help->pos())) {
+      QToolTip::showText(help->globalPos(), tip, qwtPlot()->canvas());
+      return true;
     }
   }
   if (event->type() == QEvent::Leave && obj == qwtPlot()->canvas()) {

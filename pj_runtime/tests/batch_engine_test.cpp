@@ -1946,6 +1946,89 @@ TEST(BatchEngineTest, RunningStateFollowsEachRun) {
   EXPECT_GE(announced, 3) << "every transition is announced";
 }
 
+constexpr const char* kFailsFromFiveScript =
+    "local s = series(\"in\")\nif s:at(0).v >= 5 then error(\"value too big\") end\ncreateMarker(0.0)\n";
+
+// A rule applied to two datasets has one run state per binding: a refresh of one dataset runs, and a
+// failure lands on that binding only, while the id-level queries answer for either.
+TEST(BatchEngineTest, RunningAndErrorStateAreKeptPerBinding) {
+  std::atomic<bool> released{true};
+  const ScopedComputeProbe probe([&released](QThread*) {
+    for (int waited_ms = 0; !released.load() && waited_ms < 5000; ++waited_ms) {
+      QThread::msleep(1);
+    }
+  });
+  PJ::ObjectStore store;
+  std::atomic<int> value{1};
+  BatchEngine service(
+      store,
+      [&value](PJ::DatasetId dataset, const std::string& key, const BatchEngine::Window&)
+          -> std::optional<BatchEngine::ResolvedSeries> {
+        if (key != "in") {
+          return std::nullopt;
+        }
+        return BatchEngine::ResolvedSeries{{0.0}, {dataset == kDataset ? static_cast<double>(value.load()) : 1.0}};
+      });
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  service.setMode(BatchEngine::Mode::kManual);
+  BatchEngine::GeneratorRecipe on_a = markerRecipe("plug/gen", "in", kFailsFromFiveScript);
+  BatchEngine::GeneratorRecipe on_b = on_a;
+  on_b.dataset_id = kDataset + 1;
+  ASSERT_TRUE(service.upsertGenerator(on_a).has_value());
+  ASSERT_TRUE(service.upsertGenerator(on_b).has_value());
+
+  released = false;
+  value = 5;
+  service.refreshAll(kDataset);
+  EXPECT_TRUE(service.isBindingRunning(on_a));
+  EXPECT_FALSE(service.isBindingRunning(on_b)) << "only a's dataset was refreshed";
+  EXPECT_TRUE(service.isRunning("plug/gen")) << "the id-level query answers for any binding";
+  released = true;
+  pool.waitIdle();
+  pumpFor(20);
+  EXPECT_NE(service.bindingError(on_a).find("value too big"), std::string::npos) << service.bindingError(on_a);
+  EXPECT_TRUE(service.bindingError(on_b).empty()) << "a's failure is not b's";
+  EXPECT_FALSE(service.isBindingRunning(on_a));
+}
+
+// Every change of the errors is announced, so a plot showing a failure hears that it is gone: the failure
+// itself (also on the synchronous reload path), removing an idle failed rule, and applying it again.
+TEST(BatchEngineTest, ErrorChangesAreAnnounced) {
+  PJ::ObjectStore store;
+  std::atomic<int> value{1};
+  BatchEngine service(store, mutableValueResolver(value));
+  service.setMode(BatchEngine::Mode::kManual);
+  int announced = 0;
+  QObject::connect(&service, &BatchEngine::runningChanged, [&announced] { ++announced; });
+  const BatchEngine::GeneratorRecipe recipe = markerRecipe("plug/gen", "in", kFailsFromFiveScript);
+  ASSERT_TRUE(service.upsertGenerator(recipe).has_value());
+  pumpFor(20);
+
+  announced = 0;
+  value = 5;
+  EXPECT_TRUE(service.recomputeForDataset(kDataset).empty());
+  ASSERT_FALSE(service.errorOf("plug/gen").empty());
+  pumpFor(20);
+  EXPECT_GT(announced, 0) << "a failure on the synchronous reload path";
+
+  announced = 0;
+  value = 1;
+  ASSERT_TRUE(service.upsertGenerator(recipe).has_value());
+  EXPECT_TRUE(service.errorOf("plug/gen").empty());
+  pumpFor(20);
+  EXPECT_GT(announced, 0) << "applying the rule again clears its error";
+
+  value = 5;
+  EXPECT_TRUE(service.recomputeForDataset(kDataset).empty());
+  ASSERT_FALSE(service.errorOf("plug/gen").empty());
+  pumpFor(20);
+  announced = 0;
+  ASSERT_TRUE(service.removeGenerator("plug/gen").has_value());
+  pumpFor(20);
+  EXPECT_GT(announced, 0) << "removing an idle failed rule";
+}
+
 // 3 changes inside one brake period coalesce into exactly 1 run, and that run
 // sees the LAST change (not an intermediate one).
 TEST(BatchEngineTest, ChangeMarksStaleAndTheBrakeCoalescesRuns) {
@@ -2442,9 +2525,6 @@ TEST(BatchEngineTest, RunsPublishedInOneDrainAnnounceOnce) {
 }
 
 // The rule that fails once its input value reaches 5 (mutableValueResolver).
-constexpr const char* kFailsFromFiveScript =
-    "local s = series(\"in\")\nif s:at(0).v >= 5 then error(\"value too big\") end\ncreateMarker(0.0)\n";
-
 // A merge concatenates every consumed set onto the anchor's topic. A run staged before
 // it, of the anchor's binding or of an all-datasets rule, would publish over that
 // concatenation from the pre-merge data: the merge cancels it, and the anchor's and the
