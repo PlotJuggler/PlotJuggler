@@ -25,6 +25,10 @@
 
 namespace PJ::scripting {
 
+namespace native {
+class MemoryBudget;
+}  // namespace native
+
 /// An output a script marked unavailable for this run (`pj.unavailable(reason)`, D25). Distinct
 /// from zero, from an empty object and from a script error.
 struct Unavailable {
@@ -93,6 +97,7 @@ struct ScriptError {
   std::string message;
   bool observed_query_clock = false;
   bool observed_tf = false;
+  bool over_budget = false;  ///< a memory limit ended the run: the VM's cap or the native budget
 };
 
 /// Luau bytecode of one script; it carries no state, so compile it once per recipe revision.
@@ -103,6 +108,9 @@ struct CompiledScript {
 /// Compiles `source`, a chunk run as `chunk(inputs, params)`. A syntax error is reported here, with
 /// its line.
 [[nodiscard]] Expected<CompiledScript> compileOnDemandScript(std::string_view source);
+
+/// A native-allocation ledger of `limit_bytes` for runs to share (`RunOptions::native_budget`). Thread-safe.
+[[nodiscard]] std::shared_ptr<native::MemoryBudget> makeNativeBudget(std::size_t limit_bytes);
 
 /// The native budget's default: native outputs (crops, filters, transforms) and output strings of one
 /// run, 64 MiB. A 128-beam lidar scan's transform needs about 13 MB.
@@ -124,6 +132,9 @@ struct RunOptions {
   /// `limits.mem_bytes`, the VM's own cap. An output the script retains past the run keeps its charge
   /// until it dies.
   std::size_t native_budget_bytes = kDefaultNativeBudgetBytes;
+  /// Set: the run charges this ledger (`makeNativeBudget`) instead of a fresh one of `native_budget_bytes`, so runs
+  /// that share it, and the outputs they retain, share one limit.
+  std::shared_ptr<native::MemoryBudget> native_budget;
   /// The VM's memory cap and instruction fuel; the whole run spends `setup_fuel`.
   BudgetLimits limits;
 };

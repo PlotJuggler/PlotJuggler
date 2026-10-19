@@ -189,6 +189,8 @@ set(PJ_SCRIPTING_SOURCES
   # The Luau object-script engine (compile, run, field reads, pj.tf).
   src/object_script.cpp
   src/object_binder.cpp
+  # The JSON summary of an object output an evaluation report carries.
+  src/object_summary.cpp
 )
 if(EMSCRIPTEN)
   list(APPEND PJ_SCRIPTING_SOURCES src/python_engine_unavailable.cpp)
@@ -267,7 +269,7 @@ if(PJ_BUILD_TESTS)
   # --- the object-script engine; its lazy-list test drives the private binder directly ---
   pj_add_test_runner(pj_scripting_object_tests
     MAIN plain
-    SOURCES tests/object_script_test.cpp
+    SOURCES tests/object_script_test.cpp tests/object_summary_test.cpp
     LIBS pj_scripting Luau::VM Luau::Compiler)
   target_include_directories(pj_scripting_object_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 

@@ -50,9 +50,11 @@ Licensed MPL-2.0.
   capped by `max_output_bytes` (16 MiB by default) independently of the VM's memory cap.
 - `object_script.h` — the Luau object-script engine the on-demand service calls on a worker: compile once per recipe
   revision, a fresh sandboxed VM per run, `pj.tf` over a TF snapshot, output inference or lenient binding, the
-  observed-clock/TF flags on the result and the error, and `estimateBytes(value)` (a decoded value's size from its
+  observed-clock/TF flags on the result and the error (and `over_budget` when a memory limit ended the run), a native ledger runs may share (`makeNativeBudget`, `RunOptions::native_budget`), and `estimateBytes(value)` (a decoded value's size from its
   field table, never by serializing it). Contract: the header; design:
   [`docs/derived_objects/ARCHITECTURE.md`](../docs/derived_objects/ARCHITECTURE.md) §5-7, §12, §14.
+- `object_summary.h` — `summarizeObject` (a small JSON description of an object output: counts, bounds, frame ids) and
+  `isEmptyObject` (the report's "empty" status), what an evaluation report carries instead of the object's bytes.
 - `src/object_binder.h` (private) — objects as locked, read-only views over their SDK field tables (lists read
   lazily through `list_at`), `pj.int64`, the `pj.unavailable` marker and the point-cloud methods over `src/native/`.
   Also the `pj.scene` / `pj.annotations` builders: chainable boxed builders over the native ones, `finish()` spends a

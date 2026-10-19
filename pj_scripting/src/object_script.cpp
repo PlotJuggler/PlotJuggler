@@ -28,6 +28,9 @@
 namespace PJ::scripting {
 namespace {
 
+/// How the error of a run past its VM memory cap starts.
+constexpr std::string_view kVmLimitError = "script memory limit";
+
 // `pj` chains stay lazily indexed: with safeenv on, Luau would otherwise fold `pj.tf.now` into a constant
 // resolved once at load, observing the clock whether or not the branch that reads it runs.
 constexpr const char* const kMutableGlobals[] = {"pj", nullptr};
@@ -465,6 +468,10 @@ Expected<OutputSpec> parseOutputSpec(std::string_view spec) {
   return out;
 }
 
+std::shared_ptr<native::MemoryBudget> makeNativeBudget(std::size_t limit_bytes) {
+  return std::make_shared<native::MemoryBudget>(limit_bytes);
+}
+
 Expected<CompiledScript> compileOnDemandScript(std::string_view source) {
   if (source.size() > detail::kMaxSourceBytes) {
     return unexpected("script larger than " + native::describeBytes(detail::kMaxSourceBytes));
@@ -493,7 +500,9 @@ Expected<ScriptBundle, ScriptError> runOnDemandScript(
     Span<const OutputSpec> outputs, const RunOptions& options) {
   Run run{&options};
   const auto fail = [&run](std::string message) {
-    return unexpected(ScriptError{std::move(message), run.observed_query_clock, run.observed_tf});
+    const bool over_budget =
+        message.find(native::kNativeLimitError) != std::string::npos || message.starts_with(kVmLimitError);
+    return unexpected(ScriptError{std::move(message), run.observed_query_clock, run.observed_tf, over_budget});
   };
   // Nothing below may raise a Lua error outside the protected call: reject what would, first.
   for (const NamedValue& input : inputs) {
@@ -511,7 +520,9 @@ Expected<ScriptBundle, ScriptError> runOnDemandScript(
   }
 
   const native::NativeLimits native_limits{
-      std::make_shared<native::MemoryBudget>(options.native_budget_bytes), options.cancelled};
+      options.native_budget ? options.native_budget
+                            : std::make_shared<native::MemoryBudget>(options.native_budget_bytes),
+      options.cancelled};
   detail::BudgetState budget;
   budget.cancelled = options.cancelled ? &options.cancelled : nullptr;
   std::unique_ptr<lua_State, decltype(&lua_close)> state(
@@ -541,7 +552,7 @@ Expected<ScriptBundle, ScriptError> runOnDemandScript(
     return fail(budget.trip);
   }
   if (status == LUA_ERRMEM) {
-    return fail("script memory limit (" + native::describeBytes(options.limits.mem_bytes) + ") exceeded");
+    return fail(std::string(kVmLimitError) + " (" + native::describeBytes(options.limits.mem_bytes) + ") exceeded");
   }
   if (status != LUA_OK) {
     return fail(lua_isstring(L, -1) ? lua_tostring(L, -1) : "script error");

@@ -3,7 +3,8 @@
 
 // GridRunner: explicit evaluations over a window or at an instant (REQUIREMENTS D19). A real ObjectStore, DataEngine,
 // EnginePool, InFlightBudget, RecipeGraph, ResultHistory and InputStager; a NodeScheduler beside the runner for the
-// installed nodes' own cursor requests; an injected fake script run (one end-to-end case runs the real Luau engine).
+// installed nodes' own cursor requests; an injected fake script run (one end-to-end case runs the real Luau engine)
+// and an injected clock. Every report is read back with the SDK's `parseEvaluationReport`.
 
 #include <gtest/gtest.h>
 
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
@@ -29,6 +31,7 @@
 #include "on_demand_test_utils.h"
 #include "pj_base/builtin/builtin_object_codec.hpp"
 #include "pj_base/sdk/platform.hpp"
+#include "pj_bench_stats.h"
 #include "pj_datastore/reader.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/GridRunner.h"
@@ -47,6 +50,7 @@ using scripting::ScriptError;
 using scripting::Unavailable;
 using Stop = sdk::EvaluationStop;
 using OutputStatus = sdk::EvaluationOutputStatus;
+using Budget = GridRunner::Budget;
 
 constexpr Timestamp kSec = 1'000'000'000;
 
@@ -77,12 +81,18 @@ std::vector<uint8_t> canonicalCloud(size_t points) {
 
 /// A script run that records what ran. Its recipe's params say what it does: `fail` (the message) or `fail_at` (fail
 /// with "boom" at that query time), `unavailable` (output names, "no points"), `empty` (empty clouds), `fresh` (a cloud
-/// output gets bytes of its own, `lastFresh`), `clock` (it read the query clock). Otherwise a cloud output
+/// output gets bytes of its own, `lastFresh`), `big` (the size of every string output), `nan` (numbers are NaN),
+/// `clock` (it read the query clock). Otherwise a cloud output
 /// is its first cloud input (a pass-through), a number the first cloud's point count (or the first number input), a
-/// string "ok"; with no declared outputs it returns `count` and `label`. Set the knobs while nothing runs.
+/// string "ok"; with no declared outputs it returns `count` and `label`. Each run moves the injected clock forward by
+/// `clock_step_ms`. Set the knobs while nothing runs.
 class FakeRun {
  public:
-  std::atomic<bool> gated{false};  ///< each run waits for `allow` (or its cancellation)
+  std::atomic<bool> gated{false};       ///< each run waits for `allow` (or its cancellation)
+  std::atomic<size_t> vm_bytes{0};      ///< the last run's VM cap
+  std::atomic<size_t> native_bytes{0};  ///< ... and its native budget
+  std::atomic<int64_t> clock_ms{0};
+  int64_t clock_step_ms = 0;
 
   NodeScheduler::RunFunction function() {
     return [this](
@@ -137,6 +147,9 @@ class FakeRun {
         ++cancelled_;
       }
     }
+    clock_ms += clock_step_ms;
+    vm_bytes = options.limits.mem_bytes;
+    native_bytes = options.native_budget_bytes;
     if (cancelled()) {
       return unexpected(ScriptError{"script cancelled"});
     }
@@ -155,7 +168,10 @@ class FakeRun {
         number = *value;
       }
     }
-    const double count = cloud != nullptr ? static_cast<double>(cloud->width) : number.value_or(0.0);
+    const double count = params.value("nan", false) ? std::nan("")
+                         : cloud != nullptr         ? static_cast<double>(cloud->width)
+                                                    : number.value_or(0.0);
+    const std::string text(params.value("big", size_t{0}), 'x');
     const std::vector<std::string> unavailable = params.value("unavailable", std::vector<std::string>{});
     ScriptBundle bundle;
     bundle.observed_query_clock = params.value("clock", false);
@@ -170,7 +186,7 @@ class FakeRun {
       } else if (output.type == OutputType::kNumber) {
         bundle.outputs.push_back({output.name, count});
       } else if (output.type == OutputType::kString) {
-        bundle.outputs.push_back({output.name, std::string("ok")});
+        bundle.outputs.push_back({output.name, text.empty() ? std::string("ok") : text});
       } else {
         const bool empty = params.value("empty", false) || cloud == nullptr;
         sdk::PointCloud made = empty ? test::makeCloud(0) : *cloud;
@@ -194,9 +210,10 @@ class FakeRun {
   std::weak_ptr<const void> last_fresh_;
 };
 
-/// What one evaluation produced: the runner's report (`parsed` is the same report).
+/// What one evaluation produced: the runner's report, its JSON and the SDK's reading of it.
 struct Evaluated {
   GridRunner::Report report;
+  std::string json;
   sdk::EvaluationReport parsed;
 };
 
@@ -225,6 +242,7 @@ struct Fixture {
     if (!real_run) {
       made.run = fake.function();
     }
+    made.now = [this] { return std::chrono::steady_clock::time_point{} + std::chrono::milliseconds(fake.clock_ms); };
     return made;
   }
 
@@ -303,14 +321,15 @@ struct Fixture {
 
   [[nodiscard]] Expected<std::shared_ptr<GridRunner::Job>> submit(
       const RecipeGraph::Node& node, bool installed, Timestamp start, Timestamp end,
-      std::optional<GridRunner::Report>& done) {
+      std::optional<GridRunner::Report>& done, Budget limits = {}) {
     return runner->submit(
-        node, installed, start, end, [&done](GridRunner::Report report) { done = std::move(report); });
+        node, installed, start, end, limits, [&done](GridRunner::Report report) { done = std::move(report); });
   }
-  /// Evaluates `node` over [start, end] to its report.
-  Evaluated evaluate(const RecipeGraph::Node& node, bool installed, Timestamp start, Timestamp end) {
+  /// Evaluates `node` over [start, end] to its report, which must parse and fit its budget.
+  Evaluated evaluate(
+      const RecipeGraph::Node& node, bool installed, Timestamp start, Timestamp end, Budget limits = {}) {
     std::optional<GridRunner::Report> done;
-    auto job = submit(node, installed, start, end, done);
+    auto job = submit(node, installed, start, end, done, limits);
     if (!job) {
       ADD_FAILURE() << "submit failed: " << job.error();
       return {};
@@ -320,10 +339,18 @@ struct Fixture {
       ADD_FAILURE() << "no report";
       return {};
     }
-    return read(std::move(*done));
+    return read(std::move(*done), limits);
   }
-  static Evaluated read(GridRunner::Report report) {
-    return {report, report};
+  static Evaluated read(GridRunner::Report report, const Budget& limits = {}) {
+    Evaluated out{std::move(report), {}, {}};
+    out.json = GridRunner::toJson(out.report);
+    auto parsed = sdk::parseEvaluationReport(out.json);
+    EXPECT_TRUE(parsed.has_value()) << parsed.error() << "\n" << out.json.substr(0, 2000);
+    if (parsed) {
+      out.parsed = std::move(*parsed);
+    }
+    EXPECT_LE(out.json.size(), std::min(limits.max_report_bytes, GridRunner::kHostCaps.max_report_bytes));
+    return out;
   }
   [[nodiscard]] ObjectTopicId topic(const std::string& name) const {
     return store.findTopic(dataset, name).value_or(ObjectTopicId{});
@@ -717,6 +744,117 @@ TEST(GridRunnerTest, EvaluationNeverMovesTheCursor) {
 
 // ---- Budgets -------------------------------------------------------------------------------------------------
 
+// EVAL-02: the time budget is checked between instants, on the injected clock: each run here takes 400 ms, so a
+// 1000 ms budget ends after the third instant, and a zero one after the first.
+TEST(GridRunnerTest, WindowStopsOnTimeBudget) {
+  Fixture fx;
+  pushReferenceData(fx);
+  fx.fake.clock_step_ms = 400;
+  const RecipeGraph::Node crop = fx.bind(recipe("crop", {"cloud", "threshold"}, {numberSpec()}));
+
+  const Evaluated second = fx.evaluate(crop, false, 0, 25 * kSec, {.max_millis = 1000});
+  EXPECT_EQ(second.parsed.evaluated, 3u);
+  EXPECT_EQ(second.parsed.candidates, 5u);
+  EXPECT_EQ(second.parsed.stopped, Stop::kBudgetTime);
+  const Evaluated zero = fx.evaluate(crop, false, 0, 25 * kSec, {.max_millis = 0});
+  EXPECT_EQ(zero.parsed.evaluated, 1u) << "the first instant always runs";
+  EXPECT_EQ(zero.parsed.stopped, Stop::kBudgetTime);
+}
+
+TEST(GridRunnerTest, WindowStopsOnEvaluationBudget) {
+  Fixture fx;
+  pushReferenceData(fx);
+  const RecipeGraph::Node crop = fx.bind(recipe("crop", {"cloud", "threshold"}, {numberSpec()}));
+
+  const Evaluated two = fx.evaluate(crop, false, 0, 25 * kSec, {.max_evaluations = 2});
+  EXPECT_EQ(two.parsed.evaluated, 2u);
+  EXPECT_EQ(two.parsed.stopped, Stop::kBudgetEvaluations);
+  const Evaluated none = fx.evaluate(crop, false, 0, 25 * kSec, {.max_evaluations = 0});
+  EXPECT_EQ(none.parsed.evaluated, 0u);
+  EXPECT_EQ(none.parsed.stopped, Stop::kBudgetEvaluations);
+  const Evaluated no_bytes = fx.evaluate(crop, false, 0, 25 * kSec, {.max_bytes = 0});
+  EXPECT_EQ(no_bytes.parsed.evaluated, 0u);
+  EXPECT_EQ(no_bytes.parsed.stopped, Stop::kBudgetBytes);
+  EXPECT_EQ(fx.fake.runsOf("crop").size(), 2u) << "only the first job ran";
+}
+
+// BUD-08: the whole report, its coverage included, fits `max_report_bytes`: a budget of exactly its size completes
+// it, one byte less drops the last bundle (`budget_report`), and a budget below the smallest report is refused.
+TEST(GridRunnerTest, CompleteReportIncludingCoverageFitsRequestedBytes) {
+  Fixture fx;
+  pushReferenceData(fx);
+  const RecipeGraph::Node crop = fx.bind(recipe("crop", {"cloud", "threshold"}, {numberSpec(), stringSpec()}));
+  const Evaluated full = fx.evaluate(crop, false, 0, 25 * kSec);
+  ASSERT_EQ(full.parsed.stopped, Stop::kComplete);
+  ASSERT_LT(full.json.size(), 1024u);
+
+  const Evaluated exact = fx.evaluate(crop, false, 0, 25 * kSec, {.max_report_bytes = full.json.size()});
+  EXPECT_EQ(exact.parsed.stopped, Stop::kComplete);
+  EXPECT_EQ(exact.json, full.json);
+  const Evaluated short_one = fx.evaluate(crop, false, 0, 25 * kSec, {.max_report_bytes = full.json.size() - 1});
+  EXPECT_EQ(short_one.parsed.stopped, Stop::kBudgetReport);
+  EXPECT_EQ(short_one.parsed.evaluated, 4u);
+  const Evaluated small = fx.evaluate(crop, false, 0, 25 * kSec, {.max_report_bytes = 512});
+  EXPECT_EQ(small.parsed.stopped, Stop::kBudgetReport);
+  EXPECT_GT(small.parsed.evaluated, 0u);
+
+  // A stop longer than "complete" (every bundle is checked against a complete report) gives up the last bundle.
+  const Evaluated four = fx.evaluate(crop, false, 0, 25 * kSec, {.max_evaluations = 4});
+  ASSERT_EQ(four.parsed.stopped, Stop::kBudgetEvaluations);
+  const size_t four_complete = four.json.size() - (std::string_view("budget_evaluations").size() - 8);
+  const Evaluated longer =
+      fx.evaluate(crop, false, 0, 25 * kSec, {.max_evaluations = 4, .max_report_bytes = four_complete});
+  EXPECT_EQ(longer.parsed.stopped, Stop::kBudgetReport);
+  EXPECT_EQ(longer.parsed.evaluated, 3u);
+
+  std::optional<GridRunner::Report> done;
+  const auto refused = fx.submit(crop, false, 0, 25 * kSec, done, {.max_report_bytes = 40});
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_NE(refused.error().find("max_report_bytes"), std::string::npos) << refused.error();
+}
+
+// ABI-13's engine half: every budget is clamped to the host caps, so asking more is never refused: memory (the
+// reservation), time, evaluations and the report's size.
+TEST(GridRunnerTest, BudgetIsClampedToTheHostCaps) {
+  Fixture fx(64 * InFlightBudget::kRunBytes);
+  pushReferenceData(fx);
+  const Budget greedy{
+      .max_millis = 1'000'000,
+      .max_bytes = 16 * InFlightBudget::kRunBytes,
+      .max_evaluations = 1'000'000,
+      .max_report_bytes = 1ull << 30};
+  const RecipeGraph::Node crop = fx.bind(recipe("crop", {"cloud", "threshold"}, {numberSpec()}));
+
+  fx.fake.gated = true;
+  std::optional<GridRunner::Report> done;
+  auto job = fx.submit(crop, false, 0, 25 * kSec, done, greedy);
+  ASSERT_TRUE(job.has_value()) << job.error();
+  ASSERT_TRUE(fx.waitStarted(1));
+  EXPECT_EQ(fx.budget.reserved(), GridRunner::kHostCaps.max_bytes);
+  fx.fake.allow(100);
+  test::pumpUntil([&done] { return done.has_value(); });
+  fx.fake.gated = false;
+
+  fx.fake.clock_step_ms = 6000;
+  const Evaluated timed = fx.evaluate(crop, false, 0, 25 * kSec, greedy);
+  EXPECT_EQ(timed.parsed.evaluated, 1u);
+  EXPECT_EQ(timed.parsed.stopped, Stop::kBudgetTime);
+  fx.fake.clock_step_ms = 0;
+
+  fx.dense_count = GridRunner::kHostCaps.max_evaluations + 50;
+  const RecipeGraph::Node dense = fx.bind(recipe("dense", {"dense"}, {numberSpec()}));
+  const Evaluated counted = fx.evaluate(dense, false, 0, 1 * kSec, greedy);
+  EXPECT_EQ(counted.parsed.evaluated, GridRunner::kHostCaps.max_evaluations);
+  EXPECT_EQ(counted.parsed.stopped, Stop::kBudgetEvaluations);
+
+  fx.dense_count = 12;
+  const RecipeGraph::Node big = fx.bind(recipe("big", {"dense"}, {stringSpec()}, {{"big", 1u << 20}}));
+  const Evaluated sized = fx.evaluate(big, false, 0, 1 * kSec, greedy);
+  EXPECT_EQ(sized.parsed.stopped, Stop::kBudgetReport);
+  EXPECT_EQ(sized.parsed.evaluated, 7u) << "8 MiB hold seven 1 MiB bundles";
+  EXPECT_EQ(fx.fake.runsOf("big").size(), 8u) << "the job stops at the first bundle that does not fit";
+}
+
 // ---- Reservations ----------------------------------------------------------------------------------------------
 
 // BUD-05, BUD-10: a job holds one reservation, its memory budget, for its whole life: a chain, an upstream with two
@@ -860,7 +998,7 @@ TEST(GridRunnerTest, ADiscardedPublicationReleasesTheJob) {
   auto runner = std::make_unique<GridRunner>(fx.store, fx.graph, fx.history, fx.stager, *pool, fx.budget, fx.hooks());
   fx.fake.gated = true;
 
-  const auto job = runner->submit(child, false, 10 * kSec, 10 * kSec, [](GridRunner::Report) {});
+  const auto job = runner->submit(child, false, 10 * kSec, 10 * kSec, {}, [](GridRunner::Report) {});
   ASSERT_TRUE(job.has_value());
   ASSERT_TRUE(fx.waitStarted(1));
   fx.fake.allow(1);
@@ -874,6 +1012,46 @@ TEST(GridRunnerTest, ADiscardedPublicationReleasesTheJob) {
   pool.reset();
   EXPECT_EQ(fx.budget.reserved(), 0u);
   EXPECT_TRUE(fx.fake.lastFresh().expired());
+}
+
+// `max_bytes` is the job's whole memory: one native ledger serves every run of the job, so the crops its upstreams keep
+// for their readers count against the later runs. Here three crops of a 5.3 MB cloud each fit the 12 MiB native share
+// alone but not together, and the job stops with `budget_bytes`; an upstream's previous result is dropped before it
+// runs again, so a two-instant window of one crop fits a share that two crops would not.
+TEST(GridRunnerTest, RetainedUpstreamObjectsCountAgainstTheJobsMemory) {
+  Fixture fx(4 * InFlightBudget::kRunBytes, /*real_run=*/true);
+  constexpr size_t kPoints = 330'000;  // 16 bytes each
+  fx.pushCloud(10 * kSec, kPoints);
+  fx.pushCloud(20 * kSec, kPoints);
+  const auto crop = [](const std::string& input) {
+    return "local inputs = ...\nreturn inputs['" + input + "']:crop_box{min={-1e9, -1e9, -1e9}, max={1e9, 1e9, 1e9}}\n";
+  };
+  auto first = recipe("first", {"cloud"}, {cloudSpec()});
+  first.script = crop("cloud");
+  fx.install(first);
+  auto second = recipe("second", {"owner/first/cropped"}, {cloudSpec()});
+  second.script = crop("owner/first/cropped");
+  fx.install(second);
+  const auto counting = [&fx](const std::string& id, const std::string& input) {
+    auto made = recipe(id, {input}, {numberSpec()});
+    made.script = "local inputs = ...\nreturn inputs['" + input +
+                  "']:crop_box{min={-1e9, -1e9, -1e9}, max={1e9, 1e9, 1e9}}:count()\n";
+    return fx.bind(made);
+  };
+  const Budget twenty_four_mib{.max_bytes = 24u << 20};  // 12 MiB VM, 12 MiB native
+
+  const Evaluated alone = fx.evaluate(counting("alone", "cloud"), false, 10 * kSec, 10 * kSec, twenty_four_mib);
+  EXPECT_EQ(alone.parsed.stopped, Stop::kComplete) << alone.parsed.error;
+  const Evaluated chained =
+      fx.evaluate(counting("third", "owner/second/cropped"), false, 10 * kSec, 10 * kSec, twenty_four_mib);
+  EXPECT_EQ(chained.parsed.stopped, Stop::kBudgetBytes) << chained.parsed.error;
+  EXPECT_EQ(chained.parsed.evaluated, 0u);
+
+  auto reader = recipe("reader", {"owner/first/cropped"}, {numberSpec()});
+  reader.script = "local inputs = ...\nreturn inputs['owner/first/cropped']:count()\n";
+  const Evaluated window = fx.evaluate(fx.bind(reader), false, 10 * kSec, 20 * kSec, {.max_bytes = 16u << 20});
+  EXPECT_EQ(window.parsed.stopped, Stop::kComplete) << window.parsed.error;
+  EXPECT_EQ(window.parsed.evaluated, 2u);
 }
 
 // ---- Errors --------------------------------------------------------------------------------------------------
@@ -895,7 +1073,65 @@ TEST(GridRunnerTest, AnErrorStopsWithTheOneReportShape) {
 
   const Evaluated clean = fx.evaluate(failing, false, 0, 10 * kSec);
   EXPECT_EQ(clean.parsed.stopped, Stop::kComplete);
-  EXPECT_TRUE(clean.parsed.error.empty());
+  EXPECT_EQ(clean.json.find("\"error\""), std::string::npos);
+}
+
+// ABI-15: a failure's reason is kept up to 1024 bytes, and shortened further only to keep the report within its
+// budget.
+TEST(GridRunnerTest, FailedEvaluationReasonIsKeptUpTo1024Chars) {
+  Fixture fx;
+  pushReferenceData(fx);
+  const auto failing = [&fx](size_t length) {
+    return fx.bind(recipe("crop", {"cloud"}, {numberSpec()}, {{"fail", std::string(length, 'e')}}));
+  };
+
+  EXPECT_EQ(fx.evaluate(failing(600), false, 5 * kSec, 5 * kSec).parsed.error, std::string(600, 'e'));
+  EXPECT_EQ(fx.evaluate(failing(2000), false, 5 * kSec, 5 * kSec).parsed.error, std::string(1024, 'e'));
+  const Evaluated tight = fx.evaluate(failing(2000), false, 5 * kSec, 5 * kSec, {.max_report_bytes = 300});
+  EXPECT_EQ(tight.parsed.stopped, Stop::kError);
+  EXPECT_LT(tight.parsed.error.size(), 300u);
+  EXPECT_GT(tight.parsed.error.size(), 100u);
+  EXPECT_EQ(tight.json.size(), 300u) << "shortened only as far as needed";
+  // Escaping doubles a quote: the prefix is fitted by its escaped size, not its length.
+  const RecipeGraph::Node quotes =
+      fx.bind(recipe("quotes", {"cloud"}, {numberSpec()}, {{"fail", std::string(2000, '"')}}));
+  const Evaluated quoted = fx.evaluate(quotes, false, 5 * kSec, 5 * kSec, {.max_report_bytes = 300});
+  EXPECT_EQ(quoted.parsed.stopped, Stop::kError);
+  EXPECT_GT(quoted.parsed.error.size(), 50u);
+  EXPECT_EQ(quoted.parsed.error, std::string(quoted.parsed.error.size(), '"'));
+  EXPECT_GE(quoted.json.size(), 299u) << "a quote's two bytes may be all that is left";
+
+  std::string euros;
+  for (int index = 0; index < 700; ++index) {
+    euros += "\u20ac";  // 3 bytes in UTF-8
+  }
+  const RecipeGraph::Node wide = fx.bind(recipe("wide", {"cloud"}, {numberSpec()}, {{"fail", euros}}));
+  EXPECT_EQ(fx.evaluate(wide, false, 5 * kSec, 5 * kSec).parsed.error, euros.substr(0, 341 * 3)) << "whole characters";
+
+  // An error after some bundles: when even its empty reason does not fit, the last bundle gives up its room.
+  const RecipeGraph::Node clean = fx.bind(recipe("crop", {"cloud", "threshold"}, {numberSpec()}));
+  const size_t two_bundles = fx.evaluate(clean, false, 0, 5 * kSec).json.size();
+  const RecipeGraph::Node late =
+      fx.bind(recipe("crop", {"cloud", "threshold"}, {numberSpec()}, {{"fail_at", 10 * kSec}}));
+  const Evaluated dropped = fx.evaluate(late, false, 0, 25 * kSec, {.max_report_bytes = two_bundles});
+  EXPECT_EQ(dropped.parsed.stopped, Stop::kError);
+  EXPECT_EQ(dropped.parsed.error, "boom");
+  EXPECT_EQ(dropped.parsed.evaluated, 1u);
+}
+
+// `max_bytes` is the run's whole memory: the VM's cap and the native budget share it in their default ratio, and the
+// job reserves all of it.
+TEST(GridRunnerTest, MemoryBudgetIsSplitBetweenTheVmAndTheNativeObjects) {
+  Fixture fx;
+  pushReferenceData(fx);
+  const RecipeGraph::Node crop = fx.bind(recipe("crop", {"cloud"}, {numberSpec()}));
+
+  EXPECT_EQ(fx.evaluate(crop, false, 5 * kSec, 5 * kSec, {.max_bytes = 10u << 20}).parsed.evaluated, 1u);
+  EXPECT_EQ(fx.fake.vm_bytes.load(), size_t{5} << 20);
+  EXPECT_EQ(fx.fake.native_bytes.load(), size_t{5} << 20);
+  EXPECT_EQ(fx.evaluate(crop, false, 5 * kSec, 5 * kSec).parsed.evaluated, 1u);
+  EXPECT_EQ(fx.fake.vm_bytes.load(), scripting::BudgetLimits{}.mem_bytes) << "the default is the default run's";
+  EXPECT_EQ(fx.fake.native_bytes.load(), scripting::kDefaultNativeBudgetBytes);
 }
 
 // ABI-18's engine half: a new revision of the installed node, or a new epoch of its dataset, while the job is pending
@@ -934,6 +1170,44 @@ TEST(GridRunnerTest, ReplacingTheInstalledNodeFailsThePendingJob) {
 
 // ---- The report's content ------------------------------------------------------------------------------------
 
+// EVAL-03: a valid empty object is "empty", with its summary, distinct from an unavailable output (D25); every
+// object output travels as a summary, never as bytes.
+TEST(GridRunnerTest, EmptyStatusForAnEmptyCrop) {
+  Fixture fx;
+  pushReferenceData(fx);
+  const RecipeGraph::Node empty = fx.bind(recipe(
+      "crop", {"cloud"}, {cloudSpec(), cloudSpec("gone"), numberSpec()}, {{"empty", true}, {"unavailable", {"gone"}}}));
+
+  const Evaluated report = fx.evaluate(empty, false, 10 * kSec, 10 * kSec);
+  ASSERT_EQ(report.parsed.bundles.size(), 1u) << report.parsed.error;
+  const auto& outputs = report.parsed.bundles[0].outputs;
+  EXPECT_EQ(outputs.at("cropped").status, OutputStatus::kEmpty);
+  EXPECT_EQ(outputs.at("cropped").summary.at("points").get<int>(), 0);
+  EXPECT_EQ(outputs.at("cropped").summary.at("type").get<std::string>(), "kPointCloud");
+  EXPECT_EQ(outputs.at("gone").status, OutputStatus::kUnavailable);
+  EXPECT_EQ(outputs.at("gone").reason, "no points");
+  EXPECT_EQ(outputs.at("count").status, OutputStatus::kOk);
+
+  const RecipeGraph::Node full = fx.bind(recipe("full", {"cloud"}, {cloudSpec()}));
+  const Evaluated shown = fx.evaluate(full, false, 10 * kSec, 10 * kSec);
+  ASSERT_EQ(shown.parsed.bundles.size(), 1u) << shown.parsed.error;
+  EXPECT_EQ(shown.parsed.bundles[0].outputs.at("cropped").status, OutputStatus::kOk);
+  EXPECT_EQ(shown.parsed.bundles[0].outputs.at("cropped").summary.at("points").get<int>(), 3);
+}
+
+// JSON has no NaN: a number output that is not finite is that output's error, and the report stays valid.
+TEST(GridRunnerTest, ANonFiniteNumberIsAnOutputError) {
+  Fixture fx;
+  pushReferenceData(fx);
+  const RecipeGraph::Node node = fx.bind(recipe("crop", {"cloud"}, {numberSpec()}, {{"nan", true}}));
+
+  const Evaluated report = fx.evaluate(node, false, 10 * kSec, 10 * kSec);
+  ASSERT_EQ(report.parsed.bundles.size(), 1u);
+  const auto& count = report.parsed.bundles[0].outputs.at("count");
+  EXPECT_EQ(count.status, OutputStatus::kError);
+  EXPECT_EQ(count.reason, "not a finite number");
+}
+
 // ABI-09's engine half: a node that declares no output lists what its runs inferred in the report's root
 // "outputs", in first-seen order; a node that declares its outputs has none. The real Luau engine runs.
 TEST(GridRunnerTest, InferredOutputsAreListedWhenNoneWereDeclared) {
@@ -955,17 +1229,36 @@ TEST(GridRunnerTest, InferredOutputsAreListedWhenNoneWereDeclared) {
       listed, (std::vector<std::pair<std::string, std::string>>{
                   {"cloud", "kPointCloud"}, {"count", "number"}, {"label", "string"}, {"z", "unknown"}}));
   EXPECT_EQ(numberAt(report.parsed, 0), 3.0);
+  EXPECT_EQ(report.parsed.bundles[0].outputs.at("cloud").summary.at("points").get<int>(), 3);
 
   auto declared = inferred;
   declared.user_id = "declared";
   declared.outputs = {numberSpec()};
   declared.script = "local inputs = ...\nreturn inputs.cloud:count()\n";
   const Evaluated plain = fx.evaluate(fx.bind(declared), false, 10 * kSec, 10 * kSec);
-  EXPECT_TRUE(plain.parsed.inferred_outputs.empty());
+  EXPECT_EQ(plain.json.find("\"outputs\":["), std::string::npos) << "no root outputs";
   EXPECT_EQ(numberAt(plain.parsed, 0), 3.0);
 }
 
+// Raw nanosecond counts are JSON integers, exact past 2^53, where a double would round them.
+TEST(GridRunnerTest, TimestampPastTwoToThe53RoundTripsExactly) {
+  Fixture fx;
+  constexpr Timestamp kLarge = (Timestamp{1} << 53) + 1;
+  fx.pushCloud(kLarge, 3);
+  const RecipeGraph::Node node = fx.bind(recipe("crop", {"cloud"}, {numberSpec()}));
+
+  const Evaluated report = fx.evaluate(node, false, kLarge, kLarge);
+  ASSERT_EQ(report.parsed.bundles.size(), 1u) << report.parsed.error;
+  EXPECT_EQ(report.parsed.bundles[0].requested_ns, kLarge);
+  EXPECT_EQ(report.parsed.bundles[0].inputs.at("cloud"), kLarge);
+}
+
 // ---- Measurement -----------------------------------------------------------------------------------------------
+
+/// The CPU time this thread has spent, in ns.
+int64_t threadCpuNanos() {
+  return static_cast<int64_t>(pj_bench::threadCpuMs() * 1e6);
+}
 
 // PJ_BENCH=1: building a window's grid over 100k scalar samples and 10k object entries (ns per instant), measured as
 // the submission (the grid, the gaps, the envelope check) of a job then cancelled.
@@ -987,6 +1280,43 @@ TEST(GridRunnerBench, GridOverManyInputChanges) {
   std::printf(
       "[bench] grid of %zu instants: %.0f us, %.1f ns per instant\n", size_t{110'000}, micros,
       micros * 1000.0 / 110'000);
+}
+
+// PJ_BENCH=1: the GUI thread's cost per instant of a 400-instant window over 24k-point clouds (fake pass-through
+// runs: the worker's cost is not counted), and the cost per bundle at 1, 200 and 2000 instants, which stays flat:
+// the report grows by appending, never by re-serializing. Thread CPU time, so the pump's sleeps are not counted.
+TEST(GridRunnerBench, GuiCostPerInstant) {
+  if (!sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  {
+    Fixture fx;
+    for (int index = 0; index < 400; ++index) {
+      fx.pushCloud(Timestamp{index} * 100'000'000, 24'000);
+    }
+    const RecipeGraph::Node node = fx.bind(recipe("crop", {"cloud"}, {cloudSpec(), numberSpec()}));
+    const int64_t begin = threadCpuNanos();
+    const Evaluated report = fx.evaluate(node, false, 0, 40 * kSec, {.max_evaluations = 2000});
+    const int64_t spent = threadCpuNanos() - begin;
+    std::printf(
+        "[bench] 400-instant window over 24k-point clouds: %zu bundles, GUI %.1f us per instant\n",
+        report.parsed.bundles.size(), static_cast<double>(spent) / 1000.0 / 400.0);
+  }
+  for (const size_t instants : {size_t{1}, size_t{200}, size_t{2000}}) {
+    Fixture fx;
+    fx.dense_count = instants;
+    const RecipeGraph::Node node = fx.bind(recipe("crop", {"dense"}, {numberSpec(), stringSpec()}));
+    const int64_t begin = threadCpuNanos();
+    const Evaluated report = fx.evaluate(node, false, 0, 1 * kSec, {.max_evaluations = 2000});
+    const int64_t spent = threadCpuNanos() - begin;
+    const int64_t json_begin = threadCpuNanos();
+    const std::string json = GridRunner::toJson(report.report);
+    const int64_t json_spent = threadCpuNanos() - json_begin;
+    std::printf(
+        "[bench] %zu instants: GUI %.1f us per bundle; toJson %.0f ns per bundle (%zu bytes)\n", instants,
+        static_cast<double>(spent) / 1000.0 / static_cast<double>(instants),
+        static_cast<double>(json_spent) / static_cast<double>(instants), json.size());
+  }
 }
 
 // PJ_BENCH=1: an explicit two-hop evaluation (two Luau pass-through crops of a 260k-point cloud), from submission to
