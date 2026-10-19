@@ -238,7 +238,7 @@ That script:
 1. Checks for `.qt/<PJ_QT_VERSION>/gcc_64/` and tells you to run `./scripts/install_qt6.sh` if missing.
 2. Runs `conan install ... --output-folder=build --build=missing -s compiler.cppstd=20` (reads `conanfile.txt`).
 3. Configures CMake with `CMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake` and `CMAKE_PREFIX_PATH=./.qt/<PJ_QT_VERSION>/gcc_64`.
-4. Builds with `cmake --build build -j$(nproc)`.
+4. Builds with `cmake --build build -j<jobs>`: one job per core, capped at one per 1.5 GiB of available memory so a full rebuild cannot exhaust RAM (`PJ_BUILD_JOBS` overrides).
 
 Run the app:
 
