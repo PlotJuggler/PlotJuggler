@@ -46,7 +46,7 @@ DerivedRuntimeHosts::DerivedRuntimeHosts(SessionManager& session, CatalogModel& 
           },
           source_name_of_),
       transforms_(session.dataProcessorService(), plugin_id),
-      router_(markers_.raw(), transforms_.raw()) {}
+      router_(markers_, transforms_) {}
 
 DerivedRuntimeHosts::~DerivedRuntimeHosts() {
   session_.removeEphemerals(transforms_.previews(), markers_.previews());

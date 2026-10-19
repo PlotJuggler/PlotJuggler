@@ -912,7 +912,9 @@ proposed (N1, N2).
 ## 18. Plugin surfaces (SDK host contract)
 
 **Status: Built in the SDK (#202).** It ships in the minor after the header-only 0.36.0. Its
-contract decisions were settled on 2026-10-13 (§5 and below).
+contract decisions were settled on 2026-10-13 (§5 and below). In the host, the router's typed
+slots and the v2 create on the transform and marker kinds are built (slice 8a-2a,
+`DataProcessorsKindRouter.h`); the on-demand bridge is slice 8a-2b.
 
 - Catalog snapshot v2: object topics with dataset, type, entry count and time range. The
   plugin sets `struct_size`, under the read-prefix rule. The host writes back how much it

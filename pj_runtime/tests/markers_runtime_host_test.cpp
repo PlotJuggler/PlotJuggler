@@ -304,8 +304,12 @@ TEST(MarkersRuntimeHostTest, PreviewViaEphemeralFlagPublishesAndIsEphemeral) {
   EXPECT_TRUE(PJ::sdk::isPreviewMarkerTopic(topics->front()));
   EXPECT_EQ(markerFamily(store, kDataset, topics->front()).size(), 1u);  // host published it
   EXPECT_TRUE(service.recipes().empty());                                // ephemeral, not persisted
+  EXPECT_FALSE(view.recipeOf("__preview__").has_value()) << "config hides a preview";
+  EXPECT_TRUE(bridge.owns("__preview__")) << "the router's probe still sees it";
+  EXPECT_FALSE(bridge.owns("absent"));
 
   EXPECT_TRUE(view.remove("__preview__"));
+  EXPECT_FALSE(bridge.owns("__preview__"));
   EXPECT_TRUE(markerFamily(store, kDataset, topics->front()).empty());
 }
 
@@ -604,6 +608,126 @@ TEST(MarkersRuntimeHostTest, CreateReturnsWithTheRunsMarkersPublished) {
   EXPECT_EQ(readMarkerUnion(store, kDataset, preview->front()).markers.size(), 1u)
       << "the preview's markers are readable when the create returns";
   released = true;
+}
+
+MarkersRuntimeHost fixedDatasetBridge(BatchEngine& service) {
+  return MarkersRuntimeHost(
+      service, "anomaly",
+      [](std::vector<std::string>&, std::vector<std::string>&) -> PJ::Expected<PJ::DatasetId> { return kDataset; });
+}
+
+PJ::sdk::DataProcessorRequest markerRequest(std::string_view id, std::string script) {
+  PJ::sdk::DataProcessorRequest request;
+  request.id = std::string(id);
+  request.kind = "markers";
+  request.language = "luau";
+  request.inputs = {"in"};
+  request.outputs = {{"in", ""}};
+  request.script = std::move(script);
+  return request;
+}
+
+// BAT-10: a WINDOW on the typed create installs a generator clipped to it.
+TEST(MarkersRuntimeHostTest, CreateV2WithWindowInstallsAClippedGenerator) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver());
+  MarkersRuntimeHost bridge = fixedDatasetBridge(service);
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+
+  PJ::sdk::DataProcessorRequest request = markerRequest("windowed", R"(
+    local s = series("in")
+    for i = 0, s:size() - 1 do
+      local p = s:at(i)
+      createMarker(p.t, p.v)
+    end
+  )");
+  request.window = std::pair<int64_t, int64_t>{2, 3};
+
+  const PJ::Expected<std::vector<std::string>> created = view.createV2(request);
+  ASSERT_TRUE(created) << created.error();
+  ASSERT_EQ(service.recipes().size(), 1u);
+  ASSERT_TRUE(service.recipes().front().window.has_value());
+  EXPECT_EQ(*service.recipes().front().window, (std::pair<PJ::Timestamp, PJ::Timestamp>{2, 3}));
+  EXPECT_EQ(readMarkerUnion(store, kDataset, "in").markers.size(), 2u) << "only samples 2 and 3 fall in the window";
+}
+
+// BAT-10: config reports the window the last run actually staged (coverage_ns), not the
+// requested one: the ramp has samples 0..4, so [1, 100] staged [1, 4]. An unwindowed
+// rule reports no coverage.
+TEST(MarkersRuntimeHostTest, ConfigReportsTheStagedCoverage) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver());
+  MarkersRuntimeHost bridge = fixedDatasetBridge(service);
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+
+  PJ::sdk::DataProcessorRequest request = markerRequest("coverage", "createMarker(0.0)\n");
+  request.window = std::pair<int64_t, int64_t>{1, 100};
+  ASSERT_TRUE(view.createV2(request));
+  const PJ::Expected<std::string> recipe = view.recipeOf("coverage");
+  ASSERT_TRUE(recipe) << recipe.error();
+  EXPECT_NE(recipe->find(R"("coverage_ns":{"first_ns":1,"last_ns":4})"), std::string::npos) << *recipe;
+
+  ASSERT_TRUE(view.createV2(markerRequest("whole", "createMarker(0.0)\n")));
+  const PJ::Expected<std::string> whole = view.recipeOf("whole");
+  ASSERT_TRUE(whole) << whole.error();
+  EXPECT_EQ(whole->find("coverage_ns"), std::string::npos) << *whole;
+}
+
+// BAT-10: a window whose start is after its end is refused; nothing is installed.
+TEST(MarkersRuntimeHostTest, CreateV2WindowStartAfterEndIsRejected) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver());
+  MarkersRuntimeHost bridge = fixedDatasetBridge(service);
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+
+  PJ::sdk::DataProcessorRequest request = markerRequest("backwards", "createMarker(0.0)\n");
+  request.window = std::pair<int64_t, int64_t>{40, 20};
+  const PJ::Expected<std::vector<std::string>> created = view.createV2(request);
+  ASSERT_FALSE(created);
+  EXPECT_NE(created.error().find("window"), std::string::npos) << created.error();
+  EXPECT_TRUE(service.recipes().empty());
+}
+
+// The markers kind takes no INSTANT (a marker rule has no pinned evaluation); refused
+// naming the kind, nothing installed.
+TEST(MarkersRuntimeHostTest, CreateV2WithInstantIsRejected) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver());
+  MarkersRuntimeHost bridge = fixedDatasetBridge(service);
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+
+  PJ::sdk::DataProcessorRequest request = markerRequest("pinned", "createMarker(0.0)\n");
+  request.instant_ns = 2;
+  const PJ::Expected<std::vector<std::string>> created = view.createV2(request);
+  ASSERT_FALSE(created);
+  EXPECT_NE(created.error().find("kind 'markers'"), std::string::npos) << created.error();
+  EXPECT_NE(created.error().find("INSTANT"), std::string::npos) << created.error();
+  EXPECT_TRUE(service.recipes().empty());
+}
+
+// Until the catalog v2 work, the markers kind takes no typed output and no dataset_id;
+// each is refused naming the kind, nothing installed.
+TEST(MarkersRuntimeHostTest, CreateV2WithATypedOutputOrDatasetIdIsRejectedNamingTheKind) {
+  PJ::ObjectStore store;
+  BatchEngine service(store, rampResolver());
+  MarkersRuntimeHost bridge = fixedDatasetBridge(service);
+  PJ::sdk::DataProcessorsHostView view(bridge.raw());
+
+  PJ::sdk::DataProcessorRequest typed_output = markerRequest("typed", "createMarker(0.0)\n");
+  typed_output.outputs = {{"in", "number"}};
+  const auto typed = view.createV2(typed_output);
+  ASSERT_FALSE(typed);
+  EXPECT_NE(typed.error().find("kind 'markers' takes untyped outputs"), std::string::npos) << typed.error();
+
+  PJ::sdk::DataProcessorRequest on_dataset = markerRequest("on_dataset", "createMarker(0.0)\n");
+  on_dataset.dataset_id = kDataset;
+  const auto refused = view.createV2(on_dataset);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(
+      refused.error().find("kind 'markers' takes no dataset_id yet: qualify the inputs with '<source>:'"),
+      std::string::npos)
+      << refused.error();
+  EXPECT_TRUE(service.recipes().empty());
 }
 
 }  // namespace

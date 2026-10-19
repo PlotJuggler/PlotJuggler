@@ -22,6 +22,7 @@
 #include "pj_datastore/topic_storage.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/DataProcessorsKindRouter.h"
 #include "pj_runtime/DataProcessorsRuntimeHost.h"
 
 namespace PJ {
@@ -268,6 +269,121 @@ TEST(DataProcessorsRuntimeHostTest, PersistentCreateIsTimeSlicedAndEphemeralIsSy
 
   while (!fx.service.stepMaterialization()) {}
   EXPECT_EQ(readValues(fx.engine, out), std::vector<double>(kRows, -1.0));
+}
+
+sdk::DataProcessorRequest negateRequest(std::string_view id) {
+  sdk::DataProcessorRequest request;
+  request.id = std::string(id);
+  request.kind = "transform";
+  request.language = "luau";
+  request.script = kNegate;
+  request.params_json = "{}";
+  request.inputs = {"speed"};
+  request.outputs = {{"speed/out", ""}};
+  return request;
+}
+
+// ABI-34: an untyped typed create is the legacy create.
+TEST(DataProcessorsRuntimeHostTest, CreateV2FallsBackToLegacyCreate) {
+  Fixture fx;
+  fx.seed("speed", {-1.0, 2.0, -3.0});
+  DataProcessorsRuntimeHost bridge(fx.service, "pluginA");
+  sdk::DataProcessorsHostView view(bridge.raw());
+
+  const auto topics = view.createV2(negateRequest("negate"));
+  ASSERT_TRUE(topics.has_value()) << topics.error();
+  EXPECT_EQ(*topics, std::vector<std::string>{"speed/out"});
+
+  while (!fx.service.stepMaterialization()) {}
+  const auto recipes = fx.service.transformRecipes();
+  ASSERT_EQ(recipes.size(), 1u);
+  EXPECT_EQ(recipes.front().key, "pluginA/negate");
+  EXPECT_EQ(readValues(fx.engine, recipes.front().output_topic_ids.front()), (std::vector<double>{1.0, -2.0, 3.0}));
+  EXPECT_TRUE(bridge.owns("negate"));
+  EXPECT_FALSE(bridge.owns("absent"));
+}
+
+// ABI-34: the transform kind has no on-demand evaluation; the router refuses a submit
+// naming the kind (the bridge has no evaluation slots to reach).
+TEST(DataProcessorsRuntimeHostTest, SubmitOnTransformIsRejected) {
+  Fixture fx;
+  fx.seed("speed", {1.0});
+  DataProcessorsRuntimeHost bridge(fx.service, "pluginA");
+  DataProcessorsKindRouter router(
+      PJ_data_processors_host_t{}, bridge.raw(), PJ_data_processors_host_t{},
+      {.transforms = [&bridge](std::string_view id) { return bridge.owns(id); }});
+  sdk::DataProcessorsHostView view(router.raw());
+  ASSERT_TRUE(createNegate(view, "negate", "speed", "speed/out"));
+
+  sdk::DataProcessorRequest request;
+  request.id = "negate";
+  request.kind = "transform";
+  request.instant_ns = 0;
+  const auto handle = view.submitEvaluation(request);
+  ASSERT_FALSE(handle.has_value());
+  EXPECT_NE(handle.error().find("no on-demand evaluation for kind 'transform'"), std::string::npos) << handle.error();
+}
+
+// Until the catalog v2 work, the transform kind takes no time flag, typed output or
+// dataset_id: each is refused naming the kind, and nothing is created.
+TEST(DataProcessorsRuntimeHostTest, CreateV2WithATimeFlagOrDatasetIdIsRejectedNamingTheKind) {
+  Fixture fx;
+  fx.seed("speed", {1.0});
+  DataProcessorsRuntimeHost bridge(fx.service, "pluginA");
+  sdk::DataProcessorsHostView view(bridge.raw());
+
+  const auto expectRefused = [&](const sdk::DataProcessorRequest& request, std::string_view needle) {
+    const auto topics = view.createV2(request);
+    ASSERT_FALSE(topics.has_value()) << needle;
+    EXPECT_NE(topics.error().find("kind 'transform'"), std::string::npos) << topics.error();
+    EXPECT_NE(topics.error().find(needle), std::string::npos) << topics.error();
+  };
+  sdk::DataProcessorRequest windowed = negateRequest("negate");
+  windowed.window = std::pair<int64_t, int64_t>{0, 10};
+  expectRefused(windowed, "time_flags");
+  sdk::DataProcessorRequest pinned = negateRequest("negate");
+  pinned.instant_ns = 0;
+  expectRefused(pinned, "time_flags");
+  sdk::DataProcessorRequest on_dataset = negateRequest("negate");
+  on_dataset.dataset_id = fx.ds;
+  expectRefused(on_dataset, "takes no dataset_id yet: qualify the inputs with '<source>:'");
+  sdk::DataProcessorRequest python = negateRequest("negate");
+  python.language = "python";
+  expectRefused(python, "language 'luau' only, not 'python'");
+  sdk::DataProcessorRequest typed_output = negateRequest("negate");
+  typed_output.outputs = {{"speed/out", "number"}};
+  expectRefused(typed_output, "untyped outputs");
+
+  EXPECT_TRUE(fx.service.transformRecipes().empty());
+  EXPECT_FALSE(bridge.owns("negate"));
+}
+
+// Previews are not the plugin's inventory: `list` hides them, while `config` by exact
+// id and the router's ownership probe still see them, so a plugin can remove one.
+TEST(DataProcessorsRuntimeHostTest, ListHidesEphemeralTransformsButConfigAnswersTheOwner) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  DataProcessorsRuntimeHost bridge(fx.service, "pluginA");
+  sdk::DataProcessorsHostView view(bridge.raw());
+  const std::string_view inputs[] = {"speed"};
+  const std::string_view preview_outputs[] = {"preview"};
+  std::string probe_script = kNegate;  // a script names the processor id it serves
+  probe_script.replace(probe_script.find("id=\"negate\""), 11, "id=\"probe\"");
+  const Status preview = view.createEphemeralTransform(
+      "probe", PJ::Span<const std::string_view>(inputs), PJ::Span<const std::string_view>(preview_outputs),
+      probe_script, "{}");
+  ASSERT_TRUE(preview) << preview.error();
+  ASSERT_TRUE(createNegate(view, "negate", "speed", "speed/out"));
+
+  const auto ids = view.list();
+  ASSERT_TRUE(ids.has_value());
+  EXPECT_EQ(*ids, std::vector<std::string>{"negate"});
+  EXPECT_TRUE(view.recipeOf("probe").has_value());
+  EXPECT_TRUE(bridge.owns("probe")) << "the host still sees the preview";
+  EXPECT_TRUE(bridge.owns("negate"));
+  EXPECT_FALSE(bridge.owns("absent"));
+  EXPECT_TRUE(view.remove("probe"));
+  EXPECT_FALSE(bridge.owns("probe"));
 }
 
 }  // namespace

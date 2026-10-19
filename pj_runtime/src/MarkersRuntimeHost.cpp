@@ -10,6 +10,7 @@
 
 #include "RuntimeHostSlot.h"
 #include "data_processor_flags.hpp"
+#include "pj_base/sdk/data_processors_host.hpp"    // sdk::readDataProcessorRequest
 #include "pj_base/sdk/dataset_qualified_name.hpp"  // sdk::qualifiedSeriesName / splitDatasetQualifier
 #include "pj_base/sdk/plugin_data_api.hpp"         // sdk::toStringView / toAbiString
 #include "pj_base/sdk/service_traits.hpp"          // sdk::DataProcessorsHostService
@@ -53,8 +54,13 @@ MarkersRuntimeHost::MarkersRuntimeHost(
       .list_data_processor_ids = &MarkersRuntimeHost::onList,
       .data_processor_config = &MarkersRuntimeHost::onConfig,
       .validate_data_processor_script = &MarkersRuntimeHost::onValidate,
+      .create_data_processor_v2 = &MarkersRuntimeHost::onCreateV2,
   };
   data_processors_ = PJ_data_processors_host_t{.ctx = this, .vtable = &vtable_};
+}
+
+bool MarkersRuntimeHost::owns(std::string_view local_id) const {
+  return service_.firstBinding(makeKey(local_id)) != nullptr;
 }
 
 Status MarkersRuntimeHost::registerServices(ServiceRegistryBuilder& registry) {
@@ -82,88 +88,127 @@ bool MarkersRuntimeHost::onCreate(
     PJ_string_view_t params_json, uint32_t flags, PJ_string_view_t* out_topics, uint64_t out_topics_capacity,
     uint64_t* out_topics_count, PJ_error_t* out_error) noexcept {
   return guarded<MarkersRuntimeHost>(ctx, out_error, kDomain, [&](MarkersRuntimeHost& self) {
-    BatchEngine::GeneratorRecipe recipe;
-    recipe.id = self.makeKey(sdk::toStringView(id));
-    if (!parseKind(sdk::toStringView(kind), recipe.kind)) {
-      return reject(out_error, kDomain, "unknown generator kind '" + std::string(sdk::toStringView(kind)) + "'");
-    }
-    if ((flags & ~kKnownFlags) != 0) {
-      return reject(out_error, kDomain, "pj.data_processors: reserved flag bits set");
-    }
-    recipe.language = std::string(sdk::toStringView(language));
-    recipe.inputs.reserve(input_count);
-    for (uint64_t index = 0; index < input_count; ++index) {
-      recipe.inputs.emplace_back(sdk::toStringView(inputs[index]));
-    }
-    recipe.outputs.reserve(output_count);
-    for (uint64_t index = 0; index < output_count; ++index) {
-      recipe.outputs.emplace_back(sdk::toStringView(outputs[index]));
-    }
-    recipe.script = std::string(sdk::toStringView(script));  // binary-safe (may carry NULs)
-    recipe.params_json = std::string(sdk::toStringView(params_json));
-    recipe.ephemeral = (flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL) != 0;
-    recipe.history_exempt = (flags & PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT) != 0;
-    // params_json scope: {"scope":"all"} publishes a global marker across EVERY
-    // dataset, each evaluated over its own series, so the keys are literal there;
-    // absent/other → one dataset (markers only).
-    if (!recipe.params_json.empty()) {
-      const nlohmann::json params = nlohmann::json::parse(recipe.params_json, nullptr, false);
-      recipe.all_datasets =
-          !params.is_discarded() && params.is_object() && params.value("scope", std::string{}) == "all";
-    }
-    // A qualifier that names a loaded source contradicts scope=all (it would become
-    // a key that resolves nowhere and a silently empty marker set); a colon whose
-    // prefix is no loaded source is just part of the key.
-    if (recipe.all_datasets) {
-      const std::vector<std::string> source_names = self.loadedSourceNames();
-      for (const std::string& input : recipe.inputs) {
-        if (sdk::splitDatasetQualifier(input, source_names).qualified) {
-          return reject(out_error, kDomain, "dataset qualifiers cannot be combined with scope=all: '" + input + "'");
-        }
-      }
-    }
-    // Pick the target dataset from the declared keys (the wire carries no dataset
-    // field; a key may carry the "dataset_source:topic/field" qualifier, which the
-    // callback consumes and strips). A resolution error fails the create — landing
-    // a generator on a dataset the caller did not name is worse than refusing.
-    if (!recipe.all_datasets && self.active_dataset_) {
-      const std::vector<std::string> declared = recipe.inputs;
-      Expected<DatasetId> dataset = self.active_dataset_(recipe.inputs, recipe.outputs);
-      if (!dataset.has_value()) {
-        return reject(out_error, kDomain, dataset.error());
-      }
-      recipe.dataset_id = *dataset;
-      if (declared != recipe.inputs) {
-        recipe.declared_inputs = declared;
-      }
-    }
-    if (!recipe.all_datasets && recipe.dataset_id == 0) {
-      return reject(out_error, kDomain, "no active dataset to attach the generator to");
-    }
-    // To completion, ephemeral or not: released plugins read the markers right after
-    // create returns (a preview caches them until its input changes).
-    const bool preview = recipe.ephemeral;
-    std::string key = recipe.id;
-    Expected<std::vector<std::string>> resolved =
-        self.service_.upsertGenerator(std::move(recipe), BatchEngine::CreateWait::kToCompletion);
-    if (!resolved.has_value()) {
-      return reject(out_error, kDomain, resolved.error());
-    }
-    if (preview) {
-      self.previews_.insert(std::move(key));
-    }
-    self.create_topics_storage_ = std::move(*resolved);
-    if (out_topics_count != nullptr) {
-      *out_topics_count = self.create_topics_storage_.size();
-    }
-    if (out_topics != nullptr) {
-      const uint64_t count = std::min<uint64_t>(out_topics_capacity, self.create_topics_storage_.size());
-      for (uint64_t index = 0; index < count; ++index) {
-        out_topics[index] = sdk::toAbiString(self.create_topics_storage_[index]);
-      }
-    }
-    return true;
+    return self.create(
+        id, kind, language, inputs, input_count, outputs, output_count, script, params_json, flags, std::nullopt,
+        out_topics, out_topics_capacity, out_topics_count, out_error);
   });
+}
+
+bool MarkersRuntimeHost::onCreateV2(
+    void* ctx, const PJ_data_processor_request_t* request, PJ_string_view_t* out_topics, uint64_t out_topics_capacity,
+    uint64_t* out_topics_count, PJ_error_t* out_error) noexcept {
+  return guarded<MarkersRuntimeHost>(ctx, out_error, kDomain, [&](MarkersRuntimeHost& self) {
+    const auto decoded = sdk::readDataProcessorRequest(request, sdk::DataProcessorSlot::kCreateV2);
+    if (!decoded) {
+      return reject(out_error, kDomain, decoded.error());
+    }
+    if ((decoded->time_flags & PJ_DATA_PROCESSOR_TIME_FLAG_INSTANT) != 0) {
+      return reject(out_error, kDomain, "kind 'markers' takes no INSTANT: a marker rule has no pinned evaluation time");
+    }
+    const auto outputs = untypedOutputNames(*decoded, "markers");
+    if (!outputs) {
+      return reject(out_error, kDomain, outputs.error());
+    }
+    BatchEngine::Window window;
+    if ((decoded->time_flags & PJ_DATA_PROCESSOR_TIME_FLAG_WINDOW) != 0) {
+      if (decoded->window_start_ns > decoded->window_end_ns) {
+        return reject(out_error, kDomain, "kind 'markers': the window starts after it ends");
+      }
+      window = std::pair<Timestamp, Timestamp>{decoded->window_start_ns, decoded->window_end_ns};
+    }
+    return self.create(
+        decoded->id, decoded->kind, decoded->language, decoded->inputs, decoded->input_count, outputs->data(),
+        outputs->size(), decoded->script, decoded->params_json, decoded->flags, window, out_topics, out_topics_capacity,
+        out_topics_count, out_error);
+  });
+}
+
+bool MarkersRuntimeHost::create(
+    PJ_string_view_t id, PJ_string_view_t kind, PJ_string_view_t language, const PJ_string_view_t* inputs,
+    uint64_t input_count, const PJ_string_view_t* outputs, uint64_t output_count, PJ_string_view_t script,
+    PJ_string_view_t params_json, uint32_t flags, BatchEngine::Window window, PJ_string_view_t* out_topics,
+    uint64_t out_topics_capacity, uint64_t* out_topics_count, PJ_error_t* out_error) {
+  BatchEngine::GeneratorRecipe recipe;
+  recipe.id = makeKey(sdk::toStringView(id));
+  recipe.window = window;
+  if (!parseKind(sdk::toStringView(kind), recipe.kind)) {
+    return reject(out_error, kDomain, "unknown generator kind '" + std::string(sdk::toStringView(kind)) + "'");
+  }
+  if ((flags & ~kKnownFlags) != 0) {
+    return reject(out_error, kDomain, "pj.data_processors: reserved flag bits set");
+  }
+  recipe.language = std::string(sdk::toStringView(language));
+  recipe.inputs.reserve(input_count);
+  for (uint64_t index = 0; index < input_count; ++index) {
+    recipe.inputs.emplace_back(sdk::toStringView(inputs[index]));
+  }
+  recipe.outputs.reserve(output_count);
+  for (uint64_t index = 0; index < output_count; ++index) {
+    recipe.outputs.emplace_back(sdk::toStringView(outputs[index]));
+  }
+  recipe.script = std::string(sdk::toStringView(script));  // binary-safe (may carry NULs)
+  recipe.params_json = std::string(sdk::toStringView(params_json));
+  recipe.ephemeral = (flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL) != 0;
+  recipe.history_exempt = (flags & PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT) != 0;
+  // params_json scope: {"scope":"all"} publishes a global marker across EVERY
+  // dataset, each evaluated over its own series, so the keys are literal there;
+  // absent/other → one dataset (markers only).
+  if (!recipe.params_json.empty()) {
+    const nlohmann::json params = nlohmann::json::parse(recipe.params_json, nullptr, false);
+    recipe.all_datasets = !params.is_discarded() && params.is_object() && params.value("scope", std::string{}) == "all";
+  }
+  // A qualifier that names a loaded source contradicts scope=all (it would become
+  // a key that resolves nowhere and a silently empty marker set); a colon whose
+  // prefix is no loaded source is just part of the key.
+  if (recipe.all_datasets) {
+    const std::vector<std::string> source_names = loadedSourceNames();
+    for (const std::string& input : recipe.inputs) {
+      if (sdk::splitDatasetQualifier(input, source_names).qualified) {
+        return reject(out_error, kDomain, "dataset qualifiers cannot be combined with scope=all: '" + input + "'");
+      }
+    }
+  }
+  // Pick the target dataset from the declared keys (the wire carries no dataset
+  // field; a key may carry the "dataset_source:topic/field" qualifier, which the
+  // callback consumes and strips). A resolution error fails the create — landing
+  // a generator on a dataset the caller did not name is worse than refusing.
+  if (!recipe.all_datasets && active_dataset_) {
+    const std::vector<std::string> declared = recipe.inputs;
+    Expected<DatasetId> dataset = active_dataset_(recipe.inputs, recipe.outputs);
+    if (!dataset.has_value()) {
+      return reject(out_error, kDomain, dataset.error());
+    }
+    recipe.dataset_id = *dataset;
+    if (declared != recipe.inputs) {
+      recipe.declared_inputs = declared;
+    }
+  }
+  if (!recipe.all_datasets && recipe.dataset_id == 0) {
+    return reject(out_error, kDomain, "no active dataset to attach the generator to");
+  }
+  // To completion, ephemeral or not: released plugins read the markers right after
+  // create returns (a preview caches them until its input changes).
+  const bool preview = recipe.ephemeral;
+  std::string key = recipe.id;
+  Expected<std::vector<std::string>> resolved =
+      service_.upsertGenerator(std::move(recipe), BatchEngine::CreateWait::kToCompletion);
+  if (!resolved.has_value()) {
+    return reject(out_error, kDomain, resolved.error());
+  }
+  if (preview) {
+    previews_.insert(std::move(key));
+  }
+  create_topics_storage_ = std::move(*resolved);
+  if (out_topics_count != nullptr) {
+    *out_topics_count = create_topics_storage_.size();
+  }
+  if (out_topics != nullptr) {
+    const uint64_t count = std::min<uint64_t>(out_topics_capacity, create_topics_storage_.size());
+    for (uint64_t index = 0; index < count; ++index) {
+      out_topics[index] = sdk::toAbiString(create_topics_storage_[index]);
+    }
+  }
+  return true;
 }
 
 bool MarkersRuntimeHost::onRemove(void* ctx, PJ_string_view_t id, PJ_error_t* out_error) noexcept {
@@ -240,6 +285,11 @@ bool MarkersRuntimeHost::onConfig(
     // What the rule is doing now: a run in flight, and why the last one failed (its
     // previous markers are still drawn). Additive keys: older plugins ignore them.
     json["computing"] = self.service_.isRunning(recipe.id);
+    if (recipe.window.has_value()) {
+      if (const auto coverage = self.service_.coverageOf(recipe.id)) {
+        json["coverage_ns"] = {{"first_ns", coverage->first}, {"last_ns", coverage->second}};
+      }
+    }
     if (const std::string error = self.service_.errorOf(recipe.id); !error.empty()) {
       json["error"] = error;
     }

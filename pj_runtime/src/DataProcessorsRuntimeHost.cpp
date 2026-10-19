@@ -11,6 +11,7 @@
 
 #include "RuntimeHostSlot.h"
 #include "data_processor_flags.hpp"
+#include "pj_base/sdk/data_processors_host.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
@@ -48,8 +49,14 @@ DataProcessorsRuntimeHost::DataProcessorsRuntimeHost(DataProcessorService& servi
           .list_data_processor_ids = &DataProcessorsRuntimeHost::onList,
           .data_processor_config = &DataProcessorsRuntimeHost::onConfig,
           .validate_data_processor_script = &DataProcessorsRuntimeHost::onValidate,
+          .create_data_processor_v2 = &DataProcessorsRuntimeHost::onCreateV2,
       },
       raw_{this, &vtable_} {}
+
+bool DataProcessorsRuntimeHost::owns(std::string_view local_id) const {
+  return service_.isTransformLive(
+      DataProcessorService::makeTransformKey(plugin_id_, local_id), /*include_ephemeral=*/true);
+}
 
 Status DataProcessorsRuntimeHost::registerServices(ServiceRegistryBuilder& registry) {
   return registerRequiredService<sdk::DataProcessorsHostService>(registry, raw_);
@@ -108,6 +115,32 @@ bool DataProcessorsRuntimeHost::onCreate(
   });
 }
 
+bool DataProcessorsRuntimeHost::onCreateV2(
+    void* ctx, const PJ_data_processor_request_t* request, PJ_string_view_t* out_topics, uint64_t out_topics_capacity,
+    uint64_t* out_topics_count, PJ_error_t* out_error) noexcept {
+  return guarded<DataProcessorsRuntimeHost>(ctx, out_error, kDomain, [&](DataProcessorsRuntimeHost&) {
+    const auto decoded = sdk::readDataProcessorRequest(request, sdk::DataProcessorSlot::kCreateV2);
+    if (!decoded) {
+      return reject(out_error, kDomain, decoded.error());
+    }
+    if (const std::string_view language = sdk::toStringView(decoded->language); language != "luau") {
+      return reject(
+          out_error, kDomain, "kind 'transform' runs language 'luau' only, not '" + std::string(language) + "'");
+    }
+    if (decoded->time_flags != 0) {
+      return reject(out_error, kDomain, "kind 'transform' takes no time_flags");
+    }
+    const auto outputs = untypedOutputNames(*decoded, "transform");
+    if (!outputs) {
+      return reject(out_error, kDomain, outputs.error());
+    }
+    return onCreate(
+        ctx, decoded->id, decoded->kind, decoded->language, decoded->inputs, decoded->input_count, outputs->data(),
+        outputs->size(), decoded->script, decoded->params_json, decoded->flags, out_topics, out_topics_capacity,
+        out_topics_count, out_error);
+  });
+}
+
 bool DataProcessorsRuntimeHost::onRemove(void* ctx, PJ_string_view_t id, PJ_error_t* out_error) noexcept {
   return guarded<DataProcessorsRuntimeHost>(ctx, out_error, kDomain, [&](DataProcessorsRuntimeHost& self) {
     const std::string key = DataProcessorService::makeTransformKey(self.plugin_id_, sdk::toStringView(id));
@@ -123,8 +156,14 @@ bool DataProcessorsRuntimeHost::onList(
     void* ctx, PJ_string_view_t* out_ids, uint64_t capacity, uint64_t* out_count, PJ_error_t* out_error) noexcept {
   return guarded<DataProcessorsRuntimeHost>(ctx, out_error, kDomain, [&](DataProcessorsRuntimeHost& self) {
     // Owned snapshot in member storage; the returned views point into it and stay
-    // valid until the next call on this vtable (the ABI contract).
-    self.list_storage_ = self.service_.transformIdsForPlugin(self.plugin_id_);
+    // valid until the next call on this vtable (the ABI contract). Previews are not
+    // listed (the contract); `isTransformLive` answers for the persisted ones only.
+    self.list_storage_.clear();
+    for (std::string& id : self.service_.transformIdsForPlugin(self.plugin_id_)) {
+      if (self.service_.isTransformLive(DataProcessorService::makeTransformKey(self.plugin_id_, id))) {
+        self.list_storage_.push_back(std::move(id));
+      }
+    }
     if (out_count != nullptr) {
       *out_count = self.list_storage_.size();
     }

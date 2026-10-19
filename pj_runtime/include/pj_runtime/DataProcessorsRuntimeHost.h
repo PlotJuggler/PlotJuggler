@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -19,7 +20,10 @@ class ServiceRegistryBuilder;
 /// ONE plugin and delegates to a `DataProcessorService`. This bridge serves only
 /// kind="transform" (per-sample numeric series materialized into the DataEngine via
 /// the IncrementalEngine) — kind="markers" is routed to a separate bridge
-/// (`MarkersRuntimeHost`), so anything else is rejected.
+/// (`MarkersRuntimeHost`), so anything else is rejected. `create_data_processor_v2`
+/// takes no time flags, typed outputs or `dataset_id` (each refused naming the kind),
+/// then runs the legacy create; the evaluation slots are absent (the router refuses a
+/// submit on this kind).
 ///
 /// DATA-ONLY: it marshals the C ABI (only strings cross) into transform
 /// upsert/remove/list/config calls; the host owns all execution. Per-plugin: every
@@ -59,6 +63,10 @@ class DataProcessorsRuntimeHost {
     return raw_;
   }
 
+  /// Whether this plugin has a transform `local_id`, previews included: the router's
+  /// ownership probe. Reads only.
+  [[nodiscard]] bool owns(std::string_view local_id) const;
+
   /// The namespaced keys of the previews (ephemeral transforms) created through this
   /// bridge and not removed through it. One may since have gone another way (a
   /// cascade): `DataProcessorService::removeEphemerals` skips it.
@@ -80,6 +88,9 @@ class DataProcessorsRuntimeHost {
   static bool onValidate(
       void* ctx, PJ_string_view_t kind, PJ_string_view_t language, PJ_string_view_t script,
       PJ_string_view_t params_json, PJ_error_t* out_error) noexcept;
+  static bool onCreateV2(
+      void* ctx, const PJ_data_processor_request_t* request, PJ_string_view_t* out_topics, uint64_t out_topics_capacity,
+      uint64_t* out_topics_count, PJ_error_t* out_error) noexcept;
 
   DataProcessorService& service_;
   std::string plugin_id_;

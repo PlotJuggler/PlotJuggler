@@ -247,9 +247,9 @@ bool DataProcessorService::isFilterLive(DatasetId dataset_id, std::string_view o
   });
 }
 
-bool DataProcessorService::isTransformLive(std::string_view namespaced_key) const {
+bool DataProcessorService::isTransformLive(std::string_view namespaced_key, bool include_ephemeral) const {
   const auto it = transform_recipes_.find(std::string(namespaced_key));
-  return it != transform_recipes_.end() && !it->second.ephemeral;
+  return it != transform_recipes_.end() && (include_ephemeral || !it->second.ephemeral);
 }
 
 bool DataProcessorService::hasHistoryExemptTransforms() const {

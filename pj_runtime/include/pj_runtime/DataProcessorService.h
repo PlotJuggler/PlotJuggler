@@ -209,7 +209,8 @@ class DataProcessorService {
   [[nodiscard]] bool isFilterLive(DatasetId dataset_id, std::string_view output_name) const;
   /// Whether a persisted (non-ephemeral) transform with this namespaced key is
   /// live — membership in what `transformRecipes()` lists, without the copy.
-  [[nodiscard]] bool isTransformLive(std::string_view namespaced_key) const;
+  /// `include_ephemeral` also answers for a preview.
+  [[nodiscard]] bool isTransformLive(std::string_view namespaced_key, bool include_ephemeral = false) const;
 
   /// Remove every live transform, leaf-first. `RestoreIntent::kHistory`
   /// reconciles only the non-exempt transforms and leaves the `history_exempt`

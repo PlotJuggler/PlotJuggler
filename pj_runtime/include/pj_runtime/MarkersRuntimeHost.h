@@ -26,7 +26,10 @@ class ServiceRegistryBuilder;
 /// Implements the C ABI vtable (trampolines recover `this` from ctx), namespaces
 /// every node id under the calling plugin (so list/remove/config only ever
 /// see/affect THAT plugin's nodes), and stamps each submitted recipe with the
-/// dataset the host says is active.
+/// dataset the host says is active. `create_data_processor_v2` accepts WINDOW (the
+/// rule's inputs are clipped to it; config echoes the staged `coverage_ns`) and refuses
+/// INSTANT, typed outputs and a `dataset_id`, each naming the kind; the evaluation slots
+/// are absent (the router refuses a submit on this kind).
 ///
 /// Lifetime: the bridge is independent of the nodes it created — destroying it
 /// tears down only this object; the nodes keep living in `BatchEngine` (the
@@ -74,6 +77,10 @@ class MarkersRuntimeHost {
     return data_processors_;
   }
 
+  /// Whether this plugin has a marker rule `local_id`, previews included (config hides
+  /// them): the router's ownership probe. Reads only.
+  [[nodiscard]] bool owns(std::string_view local_id) const;
+
   /// The namespaced ids of the previews (ephemeral rules) created through this bridge
   /// and not removed through it. One may since have gone another way, or been
   /// replaced by a persistent rule: `BatchEngine::removeEphemerals` skips those.
@@ -97,6 +104,16 @@ class MarkersRuntimeHost {
   static bool onValidate(
       void* ctx, PJ_string_view_t kind, PJ_string_view_t language, PJ_string_view_t script,
       PJ_string_view_t params_json, PJ_error_t* out_error) noexcept;
+  static bool onCreateV2(
+      void* ctx, const PJ_data_processor_request_t* request, PJ_string_view_t* out_topics, uint64_t out_topics_capacity,
+      uint64_t* out_topics_count, PJ_error_t* out_error) noexcept;
+
+  /// The create both slots share, over borrowed views; `window` clips the inputs.
+  bool create(
+      PJ_string_view_t id, PJ_string_view_t kind, PJ_string_view_t language, const PJ_string_view_t* inputs,
+      uint64_t input_count, const PJ_string_view_t* outputs, uint64_t output_count, PJ_string_view_t script,
+      PJ_string_view_t params_json, uint32_t flags, BatchEngine::Window window, PJ_string_view_t* out_topics,
+      uint64_t out_topics_capacity, uint64_t* out_topics_count, PJ_error_t* out_error);
 
   /// Namespaced storage key for a plugin-local id: `BatchEngine::ownerPrefix(plugin_id_) + local`.
   [[nodiscard]] std::string makeKey(std::string_view local_id) const;
