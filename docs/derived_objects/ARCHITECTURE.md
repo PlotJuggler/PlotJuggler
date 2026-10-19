@@ -161,6 +161,22 @@ fixes below; the Python binder comes with slice 10.
   the TF ingest tap (a derived TF topic would feed the dataset's buffer). The prototype's
   `parseOutputSpec` accepted any builtin type, so a script could declare an output it could
   never return.
+- **Images and depth (built, slice 9a-1; the codec and its session wiring are 9a-2's):** an
+  image or depth image decodes, on the run's worker, through the headless codec seam
+  (`pj_scripting/image_decoder.h`, `RunOptions::image_decoder`) into its original samples as
+  floats: a uint16 depth keeps its millimetres, nothing is normalized for display. Without a
+  decoder, `decode` reports "no image decoder".
+  Decoded pixels are copies charged to the run's native budget,
+  which the in-flight reservation already covers; a run decodes each input once (a per-run
+  memo, not a cache across nodes: MED-01 changed). The native operations
+  (`native/image_ops.h`, `native/depth_ops.h`) crop, threshold (against the script's number as
+  a double), convert to gray, measure and unproject a depth image through a `CameraInfo` into
+  an organized metric cloud; an image method called on another object is a script error.
+  Annotations made from an image input pair with it: its bare store topic (a qualified input
+  name included) and its own stamp on the dataset clock (on an image, 0 is a stamp, which a
+  merge's shift moves); annotations for no image input take the result's stamp
+  (`RunOptions::result_stamp`). An input with no store topic (an evaluation's chained image) is
+  named by its input name. Video waits for slice 9b.
 
 ## 7. Time and alignment
 
@@ -1084,7 +1100,7 @@ payload (§9).
 ## 19. Measurements
 
 These come from the prototype, whose design document describes the machine and method,
-except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a, slice 6a-5, slice 6c, slice 7a, slice 8a-1, slice 6b and slice 8a-2b rows. The slice 2 and 3 rows are measured on this stack by
+except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a, slice 6a-5, slice 6c, slice 7a, slice 8a-1, slice 6b, slice 8a-2b and slice 9a-1 rows. The slice 2 and 3 rows are measured on this stack by
 `EngineFreezeBench` (`pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`), from
 the call until the result is complete, as two different metrics:
 - **GUI-thread CPU time**, as the longest single stretch (the call or one event-loop
@@ -1126,6 +1142,7 @@ Linux, RelWithDebInfo.
 | TF snapshot copy (prototype: a copy per snapshot) | 0.26 ms (5 s window) to 248 ms and 691 MB (1 h file) |
 | TF snapshot after slice 5a (copy-on-write; measured on this stack by `TransformSnapshotBench`, `pj_tf/tests/tf_buffer_test.cpp`, `PJ_BENCH=1`; 25 edges at 100 Hz, every sample distinct, median of 5) | `snapshot()`: 0.02 µs and 0 bytes at any size. The next write while it is held copies the state once, on the writing thread under the buffer's write lock: live 5 s window 0.15 ms / 0.9 MB of samples, 60 s window 2.9 ms / 10.8 MB, complete 1 h file 72 ms / 648 MB (only when something writes the file buffer after a snapshot, e.g. a robot model's fixed-joint bridges); a buffer nobody writes is never copied. Consumer rule: during a dataset's TF ingest (a first file load writes the active buffer, streaming never ends) a fresh snapshot per revision makes every next write copy the growing state, quadratic over a load; take a new snapshot no faster than the brake rate there, or wait for the ingest to end |
 | Native point-cloud operations (slice 5n; `PointCloudOpsBench`, `pj_scripting/tests/native_ops_test.cpp`, `PJ_BENCH=1`; median of 20 calls on a 260k-point XYZI float32 scan, flat and as 64 x 4096 with padded rows, which cost the same per point) | `filterByField` (50% kept) 3.0 ns per point, `cropBox` (30% kept) 9.5 ns, `bounds` 3.2 ns, `extremePoint` 0.9 ns, `transformXyz` 6.0 ns, a full `nextFinitePoint` iteration 6 ns. The same loops with a datatype and comparison switch per point, a filter predicate evaluated twice and a division per record run 1.25x to 5.3x slower |
+| Native image operations (slice 9a-1; `ImageOpsBench`, `pj_scripting/tests/image_ops_test.cpp`, `PJ_BENCH=1`; median of 20 calls on 1920 x 1080 decoded pixels, three runs) | Per pixel, RGB: `to_gray` 1.2 ns, `threshold` 1.8 ns (1% matching) to 6.3-6.7 ns (50%: 1M points collected; 5.9 ns while the threshold was rounded to float), `stats` 3.2 ns, a whole-image `crop` 1.3 ns; depth `to_point_cloud` (16UC1) 7.7 ns. Each comparison is a templated kernel, dispatched once per call |
 | `ResultHistory` after slice 6a-2 (`ResultHistoryBench`, `pj_runtime/tests/result_history_test.cpp`, `PJ_BENCH=1`; three runs) | `lookup`, median of 1001 calls, the store's `at` per output included: 0.10-0.20 µs for a hit or a miss at 1, 100 and 10,000 results per node. 600 results of a 260k-point XYZI cloud at 10 Hz under the default limits: the ring holds 253.9 MiB (64 results); the compute cache 254 MiB with a decoded copy of each ring-held result → 11 KB without. Publication on the GUI thread (`PublishCost`, serialized there, 50 to 100 entries per topic): median 4-8 µs with a 64-byte cloud, 177-183 µs with a 1.5 MB one. One that removes nothing, at 600 to 800 retained results (`PublishCostAt600RetainedResults`): 11.8-12.7 µs with a drop predicate the store scans every entry for → 2.3 µs without one |
 | Streaming poll, processors advancing over every topic with nothing new (slice 4): 500 topics, 20 single-input filters + 3 two-input transforms, one 5-row chunk per 50 ms tick on the 23 inputs; median of 400 calls, from a throwaway benchmark that is not kept | Buffer 5 s (100 chunks per input): 6.2 µs (max 11). 15 s: 12.5 µs. 60 s: 76 µs (max 89). 150 s: 215 µs. 5 min: 707 µs. 10 min (12,000 chunks): 2.7 ms (max 3.7). With the idle-node gate (§16): 1.5 µs at 100, 300, 1,200, 3,000 and 6,000 chunks (max 2.3 to 6.2) and 1.6 µs at 12,000 (max 7.2), flat |
 

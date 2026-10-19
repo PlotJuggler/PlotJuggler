@@ -7,9 +7,9 @@
 #include <string_view>
 #include <vector>
 
-#include "memory_budget.h"
 #include "pj_base/builtin/image_annotations.hpp"
 #include "pj_base/expected.hpp"
+#include "pj_scripting/memory_budget.h"
 
 // Native ImageAnnotations builder behind a script's annotations builder. Luau-free, so the Luau and Python
 // binders share it, like scene_entities_ops.h.
@@ -18,8 +18,8 @@ namespace PJ::scripting::native {
 /// Accumulates the pixel-space primitives (origin top left) drawn over ONE image. Every primitive is
 /// charged to the evaluation's budget before it is stored (its own size plus its text or points; vector
 /// slack is not charged), and every rejection, the budget's aside, names the offending field. The
-/// annotations stay unstamped (timestamp 0): the builder knows no image time, and the runtime stamps the
-/// store entry with the result's time, the newest resolved input's.
+/// annotations leave unstamped (timestamp 0): the builder knows no image, so the binder pairs them with the image
+/// input they name (`ScriptMedia::pairing`).
 class ImageAnnotationsBuilder {
  public:
   /// `image_topic` names the image the annotations belong to (the compositor pairs them by it) and must not

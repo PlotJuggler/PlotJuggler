@@ -9,10 +9,10 @@
 #include <optional>
 #include <string_view>
 
-#include "memory_budget.h"
 #include "pj_base/builtin/frame_transforms.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_base/expected.hpp"
+#include "pj_scripting/memory_budget.h"
 
 // Native operations over a canonical `sdk::PointCloud`, the heavy half of the object-script contract
 // (docs/derived_objects/ARCHITECTURE.md §6): a script composes these instead of looping over points in the
@@ -96,6 +96,26 @@ enum class Extreme : uint8_t { kMin, kMax };
     const sdk::PointCloud& cloud, const sdk::Vector3& min, const sdk::Vector3& max, const NativeLimits& limits);
 
 enum class CompareOp : uint8_t { kLt, kLe, kGt, kGe, kEq, kNe };
+
+/// Calls `visit` with the `std::less<>`-style functor for `op`, so a caller's per-element loop holds no switch.
+template <class Visit>
+decltype(auto) dispatchCompare(CompareOp op, Visit&& visit) {
+  switch (op) {
+    case CompareOp::kLt:
+      return visit(std::less<>{});
+    case CompareOp::kLe:
+      return visit(std::less_equal<>{});
+    case CompareOp::kGt:
+      return visit(std::greater<>{});
+    case CompareOp::kGe:
+      return visit(std::greater_equal<>{});
+    case CompareOp::kEq:
+      return visit(std::equal_to<>{});
+    case CompareOp::kNe:
+      break;
+  }
+  return visit(std::not_equal_to<>{});
+}
 
 /// Records whose finite `channel` value satisfies `value <op> threshold`; any numeric datatype. Compacted
 /// like `cropBox`, but it keeps the input's `is_dense`: a kept record may still have a NaN coordinate.

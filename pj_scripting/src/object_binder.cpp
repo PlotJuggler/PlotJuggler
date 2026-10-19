@@ -17,12 +17,15 @@
 
 #include "lualib.h"
 #include "luau_sandbox_state.h"
+#include "native/depth_ops.h"
 #include "native/image_annotations_ops.h"
-#include "native/memory_budget.h"
+#include "native/image_ops.h"
 #include "native/scene_entities_ops.h"
 #include "pj_base/builtin/field_table_registry.hpp"
 #include "pj_datastore/saturating_time.hpp"
+#include "pj_scripting/memory_budget.h"
 #include "pj_scripting/object_script.h"
+#include "script_media.h"
 
 namespace PJ::scripting::detail {
 namespace {
@@ -35,6 +38,7 @@ enum Tag : int {
   kPointIteratorTag,
   kSceneBuilderTag,
   kAnnotationsBuilderTag,
+  kDecodedTag,
 };
 
 constexpr const char* kUnavailableMetatable = "pj.unavailable";
@@ -343,16 +347,22 @@ const sdk::PointCloud& checkCloud(lua_State* L) {
   return *cloud;
 }
 
-/// Runs an allocating native operation and pushes its cloud. A failure on the native budget runs one
-/// full collection, which frees the bytes still charged to dead outputs, then retries once.
+/// Runs an allocating native operation. A failure on the native budget runs one full collection, which frees the
+/// bytes still charged to dead outputs, then retries once.
 template <class Operation>
-int pushNativeCloud(lua_State* L, Operation&& operation) {
-  Expected<sdk::PointCloud> result = operation();
+auto retryAfterCollect(lua_State* L, Operation&& operation) -> decltype(operation()) {
+  auto result = operation();
   if (!result && result.error().starts_with(native::kNativeLimitError)) {
     lua_gc(L, LUA_GCCOLLECT, 0);
-    result = operation();
+    return operation();
   }
-  pushObject(L, sdk::BuiltinObject(nativeResult(L, std::move(result))));
+  return result;
+}
+
+/// Runs an allocating native operation and pushes its cloud.
+template <class Operation>
+int pushNativeCloud(lua_State* L, Operation&& operation) {
+  pushObject(L, sdk::BuiltinObject(nativeResult(L, retryAfterCollect(L, operation))));
   return 1;
 }
 
@@ -456,8 +466,8 @@ int lCloudCropBox(lua_State* L) {
   return pushNativeCloud(L, [&] { return native::cropBox(cloud, min, max, upvalueAs<native::NativeLimits>(L)); });
 }
 
-/// `cloud:filter(channel, op, value)`, op one of `<`, `<=`, `>`, `>=`, `==`, `~=`.
-int lCloudFilter(lua_State* L) {
+/// The comparison named by the string at `index`: `<`, `<=`, `>`, `>=`, `==` or `~=`; `what` names the caller.
+native::CompareOp checkComparison(lua_State* L, int index, const char* what) {
   using Comparison = std::pair<std::string_view, native::CompareOp>;
   constexpr std::array<Comparison, 6> kComparisons{{
       {"<", native::CompareOp::kLt},
@@ -467,17 +477,22 @@ int lCloudFilter(lua_State* L) {
       {"==", native::CompareOp::kEq},
       {"~=", native::CompareOp::kNe},
   }};
-  const sdk::PointCloud& cloud = checkCloud(L);
-  const char* channel = luaL_checkstring(L, 2);
-  const char* op = luaL_checkstring(L, 3);
-  const double threshold = luaL_checknumber(L, 4);
+  const char* op = luaL_checkstring(L, index);
   const auto comparison = std::ranges::find(kComparisons, std::string_view(op), &Comparison::first);
   if (comparison == kComparisons.end()) {
-    luaL_error(L, "filter: unknown comparison '%s' (expected <, <=, >, >=, ==, ~=)", op);
+    luaL_error(L, "%s: unknown comparison '%s' (expected <, <=, >, >=, ==, ~=)", what, op);
   }
-  return pushNativeCloud(L, [&] {
-    return native::filterByField(cloud, channel, comparison->second, threshold, upvalueAs<native::NativeLimits>(L));
-  });
+  return comparison->second;
+}
+
+/// `cloud:filter(channel, op, value)`.
+int lCloudFilter(lua_State* L) {
+  const sdk::PointCloud& cloud = checkCloud(L);
+  const char* channel = luaL_checkstring(L, 2);
+  const native::CompareOp op = checkComparison(L, 3, "filter");
+  const double threshold = luaL_checknumber(L, 4);
+  return pushNativeCloud(
+      L, [&] { return native::filterByField(cloud, channel, op, threshold, upvalueAs<native::NativeLimits>(L)); });
 }
 
 /// `cloud:transform(tf)`, `tf` as `pj.tf.lookup` returns it: the result is in `tf.target_frame` when set.
@@ -643,15 +658,21 @@ int chain(lua_State* L, const Status& status) {
   return 1;
 }
 
+/// Pushes an object a native operation made, which carries its charge until the script drops it.
+template <class Object>
+int pushCharged(lua_State* L, native::Charged<Object> done) {
+  pushObject(
+      L, sdk::BuiltinObject(std::move(done.value)),
+      std::make_shared<const native::MemoryReservation>(std::move(done.charge)));
+  return 1;
+}
+
 /// `:finish()`: pushes the finished object, which carries the builder's charge, and spends the builder.
 template <class Builder>
 int finishBuilder(lua_State* L, std::optional<Builder>& slot) {
   auto done = std::move(live(L, slot)).finish();
   slot.reset();
-  pushObject(
-      L, sdk::BuiltinObject(std::move(done.value)),
-      std::make_shared<const native::MemoryReservation>(std::move(done.charge)));
-  return 1;
+  return pushCharged(L, std::move(done));
 }
 
 /// `pj.scene.new{frame_id=, id=}`.
@@ -756,8 +777,219 @@ int lAnnotationsText(lua_State* L) {
   return chain(L, builder.addText(position, std::move(text), font_size, color));
 }
 
+/// `:finish()`, paired with the image input `image_topic` names (`ScriptMedia::pairing`; upvalue 1).
 int lAnnotationsFinish(lua_State* L) {
-  return finishBuilder(L, annotationsSlot(L));
+  AnnotationsSlot& slot = annotationsSlot(L);
+  auto done = std::move(live(L, slot)).finish();
+  slot.reset();
+  auto [topic, stamp] = upvalueAs<ScriptMedia>(L).pairing(done.value.image_topic);
+  done.value.image_topic = std::move(topic);
+  done.value.timestamp = stamp;
+  return pushCharged(L, std::move(done));
+}
+
+int lAnnotationsCount(lua_State* L) {
+  const sdk::ImageAnnotations* annotations = objectBoxAt(L, 1).anchor.object.get<sdk::ImageAnnotations>();
+  if (annotations == nullptr) {
+    luaL_typeerror(L, 1, "image annotations");
+  }
+  lua_pushnumber(L, static_cast<double>(native::countAnnotationPoints(*annotations)));
+  return 1;
+}
+
+// ---- images: decode, decoded pixels, depth unprojection (upvalue 1: the run's ScriptMedia) ----------------
+
+/// The receiver of an image method: exactly one of `image` and `depth` is set.
+struct ImageReceiver {
+  const ObjectBox* box = nullptr;
+  const sdk::Image* image = nullptr;
+  const sdk::DepthImage* depth = nullptr;
+};
+
+/// The image or depth image at index 1; any other receiver (a method borrowed onto another object,
+/// `image.decode(camera)`) is a script error.
+ImageReceiver checkImageReceiver(lua_State* L) {
+  const ObjectBox& box = objectBoxAt(L, 1);
+  ImageReceiver receiver{&box, box.anchor.object.get<sdk::Image>(), box.anchor.object.get<sdk::DepthImage>()};
+  if (receiver.image == nullptr && receiver.depth == nullptr) {
+    luaL_typeerror(L, 1, "image or depth image");
+  }
+  return receiver;
+}
+
+/// The receiver's pixels, decoded once per run.
+Expected<DecodedPixels> decodeReceiver(lua_State* L, ScriptMedia& media, const ImageReceiver& receiver) {
+  if (receiver.image != nullptr) {
+    return retryAfterCollect(L, [&] { return media.decode(receiver.image, *receiver.image); });
+  }
+  return retryAfterCollect(L, [&] { return media.decode(receiver.depth, native::depthAsImage(*receiver.depth)); });
+}
+
+DecodedPixels& checkDecoded(lua_State* L) {
+  return checkBox<DecodedPixels>(L, 1, kDecodedTag, "decoded image");
+}
+
+void pushDecoded(lua_State* L, DecodedPixels pixels) {
+  newBox(L, kDecodedTag, std::move(pixels));
+}
+
+/// A pixel coordinate or size: a non-negative integer.
+uint32_t checkPixelInteger(lua_State* L, int index) {
+  const double value = luaL_checknumber(L, index);
+  if (!(value >= 0 && value <= double(UINT32_MAX)) || std::floor(value) != value) {
+    luaL_error(L, "expected a non-negative pixel integer");
+  }
+  return static_cast<uint32_t>(value);
+}
+
+/// `image:representation()`.
+int lImageRepresentation(lua_State* L) {
+  const ImageReceiver receiver = checkImageReceiver(L);
+  const std::string representation = receiver.image != nullptr ? native::imageRepresentation(*receiver.image)
+                                                               : native::imageRepresentation(*receiver.depth);
+  lua_pushlstring(L, representation.data(), representation.size());
+  return 1;
+}
+
+/// `image:decode()` -> decoded pixels, or `nil, reason`.
+int lImageDecode(lua_State* L) {
+  Expected<DecodedPixels> pixels = decodeReceiver(L, upvalueAs<ScriptMedia>(L), checkImageReceiver(L));
+  if (!pixels) {
+    lua_pushnil(L);
+    lua_pushlstring(L, pixels.error().data(), pixels.error().size());
+    return 2;
+  }
+  pushDecoded(L, std::move(*pixels));
+  return 1;
+}
+
+/// `image:to_point_cloud(camera_info[, {step=, max_depth=}])` -> a cloud, or `pj.unavailable(reason)`.
+int lImageToPointCloud(lua_State* L) {
+  ScriptMedia& media = upvalueAs<ScriptMedia>(L);
+  const ImageReceiver receiver = checkImageReceiver(L);
+  const sdk::BuiltinObject* camera_object = toObject(L, 2);
+  const sdk::CameraInfo* camera = camera_object != nullptr ? camera_object->get<sdk::CameraInfo>() : nullptr;
+  if (camera == nullptr) {
+    luaL_typeerror(L, 2, "camera info");
+  }
+  native::DepthOptions options;
+  if (!lua_isnoneornil(L, 3)) {
+    luaL_checktype(L, 3, LUA_TTABLE);
+    lua_rawgetfield(L, 3, "step");
+    if (!lua_isnil(L, -1)) {
+      options.step = checkPixelInteger(L, -1);
+    }
+    lua_pop(L, 1);
+    options.max_depth = readNumber(L, 3, "max_depth", options.max_depth);
+  }
+  if (receiver.depth != nullptr && !receiver.depth->distortion_model.empty()) {
+    pushUnavailable(L, "depth must be rectified before unprojection");
+    return 1;
+  }
+  Expected<DecodedPixels> pixels = decodeReceiver(L, media, receiver);
+  if (!pixels) {
+    pushUnavailable(L, pixels.error());
+    return 1;
+  }
+  const std::string& encoding = receiver.image != nullptr ? receiver.image->encoding : receiver.depth->encoding;
+  const Timestamp stamp = ownStamp(receiver.box->anchor.object).value_or(0);
+  Expected<sdk::PointCloud> cloud = retryAfterCollect(
+      L, [&] { return native::depthToPointCloud(*pixels, encoding, stamp, *camera, options, media.limits()); });
+  if (!cloud && cloud.error() != native::kCancelledError) {
+    pushUnavailable(L, cloud.error());
+    return 1;
+  }
+  pushObject(L, sdk::BuiltinObject(nativeResult(L, std::move(cloud))));
+  return 1;
+}
+
+/// `decoded:pixel(x, y)` -> the sample, or `{r, g, b[, a]}`.
+int lDecodedPixel(lua_State* L) {
+  const std::vector<float> pixel =
+      nativeResult(L, native::imagePixel(checkDecoded(L), checkPixelInteger(L, 2), checkPixelInteger(L, 3)));
+  if (pixel.size() == 1) {
+    lua_pushnumber(L, pixel[0]);
+    return 1;
+  }
+  constexpr const char* kNames[] = {"r", "g", "b", "a"};
+  lua_createtable(L, 0, static_cast<int>(pixel.size()));
+  for (std::size_t channel = 0; channel < pixel.size(); ++channel) {
+    setNumber(L, kNames[channel], pixel[channel]);
+  }
+  return 1;
+}
+
+int lDecodedToGray(lua_State* L) {
+  const DecodedPixels& image = checkDecoded(L);
+  ScriptMedia& media = upvalueAs<ScriptMedia>(L);
+  pushDecoded(L, nativeResult(L, retryAfterCollect(L, [&] { return native::imageToGray(image, media.limits()); })));
+  return 1;
+}
+
+/// `decoded:crop(x, y, width, height)`.
+int lDecodedCrop(lua_State* L) {
+  const DecodedPixels& image = checkDecoded(L);
+  const uint32_t x = checkPixelInteger(L, 2);
+  const uint32_t y = checkPixelInteger(L, 3);
+  const uint32_t width = checkPixelInteger(L, 4);
+  const uint32_t height = checkPixelInteger(L, 5);
+  ScriptMedia& media = upvalueAs<ScriptMedia>(L);
+  pushDecoded(L, nativeResult(L, retryAfterCollect(L, [&] {
+                                return native::imageCrop(image, x, y, width, height, media.limits());
+                              })));
+  return 1;
+}
+
+/// `decoded:threshold(op, value[, channel])`: channel 0-3 or "r", "g", "b", "a"; matches over the budget are
+/// `pj.unavailable`.
+int lDecodedThreshold(lua_State* L) {
+  const DecodedPixels& image = checkDecoded(L);
+  const native::CompareOp op = checkComparison(L, 2, "threshold");
+  const double value = luaL_checknumber(L, 3);
+  uint32_t channel = 0;
+  if (lua_type(L, 4) == LUA_TSTRING) {
+    const std::string_view name = lua_tostring(L, 4);
+    const std::size_t found = std::string_view("rgba").find(name);
+    if (name.size() != 1 || found == std::string_view::npos) {
+      luaL_error(L, "threshold: unknown channel '%s' (expected r, g, b, a or 0-3)", lua_tostring(L, 4));
+    }
+    channel = static_cast<uint32_t>(found);
+  } else if (!lua_isnoneornil(L, 4)) {
+    channel = checkPixelInteger(L, 4);
+  }
+  ScriptMedia& media = upvalueAs<ScriptMedia>(L);
+  auto annotations =
+      retryAfterCollect(L, [&] { return native::imageThreshold(image, op, value, channel, media.limits()); });
+  if (!annotations && annotations.error().starts_with(native::kNativeLimitError)) {
+    pushUnavailable(L, annotations.error());
+    return 1;
+  }
+  return pushCharged(L, nativeResult(L, std::move(annotations)));
+}
+
+/// `decoded:stats()` -> `{min, max, mean}` over the finite samples.
+int lDecodedStats(lua_State* L) {
+  const DecodedPixels& image = checkDecoded(L);
+  const native::ImageStats stats = nativeResult(L, native::imageStats(image, upvalueAs<ScriptMedia>(L).limits()));
+  lua_createtable(L, 0, 3);
+  setNumber(L, "min", stats.min);
+  setNumber(L, "max", stats.max);
+  setNumber(L, "mean", stats.mean);
+  return 1;
+}
+
+/// `__index` of decoded pixels: `width`, `height`, `channels`, then the methods (upvalue 1).
+int lDecodedIndex(lua_State* L) {
+  const DecodedPixels& image = checkDecoded(L);
+  const char* key = luaL_checkstring(L, 2);
+  const std::string_view name(key);
+  if (name == "width" || name == "height" || name == "channels") {
+    lua_pushnumber(L, name == "width" ? image.width : name == "height" ? image.height : image.channels);
+    return 1;
+  }
+  lua_pushvalue(L, 2);
+  lua_rawget(L, lua_upvalueindex(1));
+  return 1;
 }
 
 /// Builds the registry metatable `name`, locked against `getmetatable`, and leaves it on the stack.
@@ -789,12 +1021,14 @@ void setFunctions(
   }
 }
 
-void registerBinder(lua_State* L, const native::NativeLimits& limits) {
+void registerBinder(lua_State* L, ScriptMedia& media) {
+  const native::NativeLimits& limits = media.limits();
   lua_setuserdatadtor(L, kObjectTag, &destroy<ObjectBox>);
   lua_setuserdatadtor(L, kViewTag, &destroy<View>);
   lua_setuserdatadtor(L, kPointIteratorTag, &destroy<PointIterator>);
   lua_setuserdatadtor(L, kSceneBuilderTag, &destroy<SceneSlot>);
   lua_setuserdatadtor(L, kAnnotationsBuilderTag, &destroy<AnnotationsSlot>);
+  lua_setuserdatadtor(L, kDecodedTag, &destroy<DecodedPixels>);
 
   newTagMetatable(L, "pj.object", kObjectTag);
   lua_createtable(L, 0, 1);  // methods by type
@@ -810,6 +1044,16 @@ void registerBinder(lua_State* L, const native::NativeLimits& limits) {
        {"xyz_points", lCloudXyzPoints}},
       &limits);
   lua_rawseti(L, -2, static_cast<int>(sdk::BuiltinObjectType::kPointCloud));
+  for (const sdk::BuiltinObjectType image : {sdk::BuiltinObjectType::kImage, sdk::BuiltinObjectType::kDepthImage}) {
+    lua_createtable(L, 0, 3);
+    setFunctions(
+        L, {{"representation", lImageRepresentation}, {"decode", lImageDecode}, {"to_point_cloud", lImageToPointCloud}},
+        &media);
+    lua_rawseti(L, -2, static_cast<int>(image));
+  }
+  lua_createtable(L, 0, 1);
+  setFunctions(L, {{"count", lAnnotationsCount}});
+  lua_rawseti(L, -2, static_cast<int>(sdk::BuiltinObjectType::kImageAnnotations));
   lua_pushcclosure(L, lObjectIndex, "__index", 1);
   lua_setfield(L, -2, "__index");
   setFunctions(L, {{"__newindex", lReadOnly}});
@@ -843,11 +1087,28 @@ void registerBinder(lua_State* L, const native::NativeLimits& limits) {
   newTagMetatable(L, "pj.annotations_builder", kAnnotationsBuilderTag);
   lua_createtable(L, 0, 4);
   setFunctions(
-      L, {{"points", lAnnotationsPoints},
-          {"circle", lAnnotationsCircle},
-          {"text", lAnnotationsText},
-          {"finish", lAnnotationsFinish}});
+      L,
+      {{"points", lAnnotationsPoints},
+       {"circle", lAnnotationsCircle},
+       {"text", lAnnotationsText},
+       {"finish", lAnnotationsFinish}},
+      &media);
   lua_setfield(L, -2, "__index");
+  lua_pop(L, 1);
+
+  newTagMetatable(L, "pj.decoded_image", kDecodedTag);
+  lua_createtable(L, 0, 5);
+  setFunctions(
+      L,
+      {{"pixel", lDecodedPixel},
+       {"to_gray", lDecodedToGray},
+       {"crop", lDecodedCrop},
+       {"threshold", lDecodedThreshold},
+       {"stats", lDecodedStats}},
+      &media);
+  lua_pushcclosure(L, lDecodedIndex, "__index", 1);
+  lua_setfield(L, -2, "__index");
+  setFunctions(L, {{"__newindex", lReadOnly}});
   lua_pop(L, 1);
 
   newLockedMetatable(L, kUnavailableMetatable);
@@ -938,10 +1199,13 @@ sdk::BuiltinObject withStampShifted(const sdk::BuiltinObject& object, Timestamp 
   if (shift == 0 || field == nullptr) {
     return object;
   }
+  // On an image 0 is a stamp, which the annotations made from it pair with; elsewhere it means unstamped.
+  const bool zero_is_a_stamp =
+      object.type() == sdk::BuiltinObjectType::kImage || object.type() == sdk::BuiltinObjectType::kDepthImage;
   sdk::BuiltinObject shifted = object;
   visitDescribed(object, [&](const auto& value) {
     const Timestamp stamp = field->get_int64(&value);
-    if (stamp == 0) {
+    if (stamp == 0 && !zero_is_a_stamp) {
       return;
     }
     auto copy = value;                                     // shares the payload bytes through their anchor

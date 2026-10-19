@@ -404,26 +404,9 @@ Expected<PointCloud> filterByField(
   }
   Expected<PointCloud> out = unexpected("unsupported channel datatype");
   dispatchDatatype(ref->datatype, [&]<class T>(std::type_identity<T>) {
-    switch (op) {
-      case CompareOp::kLt:
-        out = filterWhere<T, std::less<>>(cloud, *records, ref->offset, threshold, limits);
-        return;
-      case CompareOp::kLe:
-        out = filterWhere<T, std::less_equal<>>(cloud, *records, ref->offset, threshold, limits);
-        return;
-      case CompareOp::kGt:
-        out = filterWhere<T, std::greater<>>(cloud, *records, ref->offset, threshold, limits);
-        return;
-      case CompareOp::kGe:
-        out = filterWhere<T, std::greater_equal<>>(cloud, *records, ref->offset, threshold, limits);
-        return;
-      case CompareOp::kEq:
-        out = filterWhere<T, std::equal_to<>>(cloud, *records, ref->offset, threshold, limits);
-        return;
-      case CompareOp::kNe:
-        out = filterWhere<T, std::not_equal_to<>>(cloud, *records, ref->offset, threshold, limits);
-        return;
-    }
+    dispatchCompare(op, [&](auto compare) {
+      out = filterWhere<T, decltype(compare)>(cloud, *records, ref->offset, threshold, limits);
+    });
   });
   return out;
 }

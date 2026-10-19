@@ -53,10 +53,23 @@ Licensed MPL-2.0.
   observed-clock/TF flags on the result and the error (and `over_budget` when a memory limit ended the run), a native ledger runs may share (`makeNativeBudget`, `RunOptions::native_budget`), and `estimateBytes(value)` (a decoded value's size from its
   field table, never by serializing it). Contract: the header; design:
   [`docs/derived_objects/ARCHITECTURE.md`](../docs/derived_objects/ARCHITECTURE.md) §5-7, §12, §14.
+- `image_decoder.h` — the headless codec seam of the object scripts: `DecodedPixels` (original samples as floats, the
+  pairing an annotation made from them takes, a charge) and `IImageDecoder`, which the session injects
+  (`RunOptions::image_decoder`), so scripting links no codec.
+- `memory_budget.h` — `MemoryBudget`, one byte limit per evaluation for native allocations (a ledger separate from the
+  VM's memory cap; its error reads "script native memory limit (N MB) exceeded"), and `MemoryReservation`, bytes held
+  until destroyed. Public because a decoder charges its samples to it. An output's reservation lives in its buffer
+  anchor (clouds) or beside it (`Charged<Value>`, a builder's output; the binder shares it between the output's script
+  box and the views read from it), so retained outputs keep counting. Allocating operations take `NativeLimits` (that
+  budget plus the run's cancel check, polled every 65536 records, or once per image row).
+- `src/script_media.h` (private) — `ScriptMedia`, one run's media state, Luau-free so the Python binder can share it:
+  the injected decoder, the image inputs the run read, one decode per input and run, and what a finished annotations
+  builder pairs with (the image input it names, else the result's stamp).
 - `object_summary.h` — `summarizeObject` (a small JSON description of an object output: counts, bounds, frame ids) and
   `isEmptyObject` (the report's "empty" status), what an evaluation report carries instead of the object's bytes.
 - `src/object_binder.h` (private) — objects as locked, read-only views over their SDK field tables (lists read
-  lazily through `list_at`), `pj.int64`, the `pj.unavailable` marker and the point-cloud methods over `src/native/`.
+  lazily through `list_at`), `pj.int64`, the `pj.unavailable` marker, the point-cloud methods over `src/native/`, and
+  the image methods (`representation`, `decode`, `to_point_cloud`) with the decoded-pixel box.
   Also the `pj.scene` / `pj.annotations` builders: chainable boxed builders over the native ones, `finish()` spends a
   builder, a finished object's box and views share its native charge, and a method reads its options table raw (no
   script code runs inside a builder call); scripts cannot reach their metatables.
@@ -71,13 +84,13 @@ Licensed MPL-2.0.
   - `scene_entities_ops.h`: `SceneEntityBuilder`, the snapshot idiom (one `kAll` deletion, then the
     entity) with errors that name the bad field (D27). `finish()` consumes the builder.
   - `image_annotations_ops.h`: `ImageAnnotationsBuilder`, the same shape for pixel-space annotations
-    (`image_topic` required, unstamped, no text background). `field_checks.h`: the argument checks both builders share.
-  - `memory_budget.h`: `MemoryBudget`, one byte limit per evaluation for native allocations (a ledger
-    separate from the VM's memory cap; its error reads "script native memory limit (N MB) exceeded"), and
-    `MemoryReservation`, bytes held until destroyed. An output's reservation lives in its buffer anchor
-    (clouds) or beside it (`Charged<Value>`, a builder's output; the binder shares it between the output's script box
-    and the views read from it), so retained outputs keep counting. Allocating
-    operations take `NativeLimits` (that budget plus the run's cancel check, polled every 65536 records).
+    (`image_topic` required, no text background; the binder pairs a finished set through `ScriptMedia`).
+    `field_checks.h`: the argument checks both builders share.
+  - `image_ops.h`: over `DecodedPixels`: `imageRepresentation`, pixel, gray, crop (keeping source coordinates),
+    threshold (one points annotation, all or nothing under the budget, a non-finite sample never matching) and stats;
+    one templated kernel per comparison, polled once per row.
+  - `depth_ops.h`: `depthAsImage` and `depthToPointCloud`, a rectified depth image (16UC1/mono16 millimetres, 32FC1
+    metres) through a CameraInfo's K into an organized x/y/z float32 cloud, NaN where there is no depth.
 
 ## Contract / gotchas
 

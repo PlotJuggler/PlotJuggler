@@ -34,7 +34,10 @@
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_base/builtin/scene_entities.hpp"
 #include "pj_base/sdk/platform.hpp"
+#include "pj_scripting/image_decoder.h"
+#include "pj_scripting/memory_budget.h"
 #include "pj_tf/tf_buffer.h"
+#include "script_media.h"
 
 namespace PJ::scripting {
 namespace {
@@ -538,8 +541,8 @@ double runOverBag(const Bag& bag, const std::string& source) {
 
   detail::BudgetState budget;
   lua_State* L = detail::newSandboxedState(&budget, BudgetLimits{});
-  const native::NativeLimits limits;
-  detail::registerBinder(L, limits);
+  ScriptMedia media(nullptr, native::NativeLimits{}, 0);
+  detail::registerBinder(L, media);
   size_t size = 0;
   char* bytecode = luau_compile(source.data(), source.size(), nullptr, &size);
   double sum = std::nan("");
@@ -837,14 +840,14 @@ TEST(ObjectScript, AnnotationsBuilderProducesPrimitives) {
       :text{position={1,2}, text="max_z", font_size=20, text_color={3,4,5}}
       :finish()
   )LUAU";
-  auto result = run(kScript, {}, specs({"overlay:kImageAnnotations"}));
+  RunOptions options;
+  options.result_stamp = 7;
+  auto result = run(kScript, {}, specs({"overlay:kImageAnnotations"}), "{}", options);
   ASSERT_TRUE(result.has_value()) << result.error();
   const auto* annotations = objectOf<sdk::ImageAnnotations>(*result, "overlay");
   ASSERT_NE(annotations, nullptr);
   EXPECT_EQ(annotations->image_topic, "/camera");
-  // The run knows its inputs by name, not by topic, so it cannot find the annotated image's stamp: the
-  // annotations stay unstamped and the store entry takes the result's time, the newest input's.
-  EXPECT_EQ(annotations->timestamp, 0);
+  EXPECT_EQ(annotations->timestamp, 7);  // "/camera" is no image input: the result's stamp
   ASSERT_EQ(annotations->points.size(), 1u);
   EXPECT_EQ(annotations->points[0].topology, sdk::AnnotationTopology::kLineLoop);
   EXPECT_EQ(annotations->points[0].points.size(), 4u);
@@ -1535,6 +1538,346 @@ TEST(ObjectScriptBench, SetupAndListIteration) {
         "100k-element list iteration: %.2f ms (%.0f ns per element)\n%s\n", elapsed / 1000.0,
         elapsed * 1000.0 / 100'000.0, script);
   }
+}
+
+// ---- images: decode, decoded pixels, depth, pairing (MED-01, MED-02, MED-03, MED-08, MED-15, MED-17) -----------
+
+namespace {
+
+/// Decodes any image into width x height samples; counts its calls. `value` < 0: sample = its index.
+class FakeImageDecoder final : public IImageDecoder {
+ public:
+  FakeImageDecoder(uint32_t width, uint32_t height, float value = -1) : width_(width), height_(height), value_(value) {}
+  mutable int calls = 0;
+
+  Expected<DecodedPixels> decode(
+      const sdk::Image& /*image*/, const std::shared_ptr<native::MemoryBudget>& budget) const override {
+    ++calls;
+    const std::size_t count = std::size_t{width_} * height_;
+    auto charge = std::make_shared<native::MemoryReservation>(budget);
+    if (Status grown = charge->grow(count * sizeof(float)); !grown) {
+      return unexpected(grown.error());
+    }
+    std::vector<float> samples(count, value_);
+    if (value_ < 0) {
+      for (std::size_t index = 0; index < count; ++index) {
+        samples[index] = static_cast<float>(index);
+      }
+    }
+    DecodedPixels out;
+    out.width = width_;
+    out.height = height_;
+    out.channels = 1;
+    out.samples = std::make_shared<const std::vector<float>>(std::move(samples));
+    out.charge = std::move(charge);
+    return out;
+  }
+
+ private:
+  uint32_t width_;
+  uint32_t height_;
+  float value_;
+};
+
+/// A 4 x 3 gradient (sample = index) behind every image.
+RunOptions withGradient(std::shared_ptr<FakeImageDecoder>* decoder = nullptr) {
+  auto made = std::make_shared<FakeImageDecoder>(4, 3);
+  if (decoder != nullptr) {
+    *decoder = made;
+  }
+  RunOptions options;
+  options.image_decoder = made;
+  return options;
+}
+
+NamedValue imageInput(std::string name, std::string topic, Timestamp stamp, const char* encoding = "mono8") {
+  sdk::Image image;
+  image.encoding = encoding;
+  image.width = 4;
+  image.height = 3;
+  image.timestamp_ns = stamp;
+  NamedValue input = object(std::move(name), sdk::BuiltinObject(image));
+  input.topic = std::move(topic);
+  return input;
+}
+
+/// `source` over an image input "image" (a 4 x 3 gradient) and a camera input fails naming `needle`.
+void expectMediaError(const std::string& source, const char* needle) {
+  auto result =
+      run(source, {imageInput("image", "/cam", 0), object("camera", sdk::BuiltinObject(sdk::CameraInfo{}))}, {}, "{}",
+          withGradient());
+  ASSERT_FALSE(result.has_value()) << source;
+  EXPECT_TRUE(contains(result.error(), needle)) << source << " -> " << result.error();
+}
+
+}  // namespace
+
+TEST(ObjectScript, ImageRepresentationIsReported) {
+  sdk::DepthImage depth;
+  depth.encoding = "16UC1";
+  auto result =
+      run("local inputs = ...; return {image = inputs.image:representation(), depth = inputs.depth:representation()}",
+          {imageInput("image", "/cam", 0), object("depth", sdk::BuiltinObject(depth))},
+          specs({"image:string", "depth:string"}));
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_EQ(text(*result, "image"), "raw:mono8");
+  EXPECT_EQ(text(*result, "depth"), "depth:16UC1");
+}
+
+TEST(ObjectScript, DecodeWithoutDecoderIsUnavailable) {
+  constexpr const char* kScript = R"LUAU(
+    local inputs = ...
+    local decoded, err = inputs.image:decode()
+    if decoded == nil then
+      return { decoded = pj.unavailable(err) }
+    end
+    return { decoded = "ok" }
+  )LUAU";
+  auto result = run(kScript, {imageInput("image", "/cam", 0)}, specs({"decoded:string"}));
+  ASSERT_TRUE(result.has_value()) << result.error();
+  ASSERT_TRUE(std::holds_alternative<Unavailable>(*find(*result, "decoded")));
+  EXPECT_EQ(std::get<Unavailable>(*find(*result, "decoded")).reason, "no image decoder");
+}
+
+TEST(ObjectScript, ThresholdProducesAnnotations) {
+  auto result =
+      run("local inputs = ...; local d = inputs.image:decode(); "
+          "return {ann = d:threshold('>', 8), w = d.width, h = d.height, c = d.channels}",
+          {imageInput("image", "/cam", 0)}, specs({"ann:kImageAnnotations", "w:number", "h:number", "c:number"}), "{}",
+          withGradient());
+  ASSERT_TRUE(result.has_value()) << result.error();
+  const auto* annotations = objectOf<sdk::ImageAnnotations>(*result, "ann");
+  ASSERT_NE(annotations, nullptr);
+  ASSERT_EQ(annotations->points.size(), 1u);
+  EXPECT_EQ(annotations->points[0].points.size(), 3u);  // 9, 10, 11 exceed 8
+  EXPECT_EQ(annotations->points[0].points[0], (sdk::Point2{1, 2}));
+  EXPECT_EQ(number(*result, "w"), 4);
+  EXPECT_EQ(number(*result, "h"), 3);
+  EXPECT_EQ(number(*result, "c"), 1);
+  expectMediaError("local inputs = ...; return inputs.image:decode():threshold('=>', 1)", "'=>'");
+}
+
+// An image with no store topic (an evaluation's chained image) is named by its input name, as pj.annotations.new would.
+TEST(ObjectScript, AnnotationsOfAChainedImageNameItByItsInputName) {
+  auto result =
+      run("local inputs = ...; return {ann = inputs.image:decode():threshold('>', 8)}", {imageInput("image", "", 6)},
+          specs({"ann:kImageAnnotations"}), "{}", withGradient());
+  ASSERT_TRUE(result.has_value()) << result.error();
+  const auto* annotations = objectOf<sdk::ImageAnnotations>(*result, "ann");
+  ASSERT_NE(annotations, nullptr);
+  EXPECT_EQ(annotations->image_topic, "image");
+  EXPECT_EQ(annotations->timestamp, 6);
+}
+
+TEST(ObjectScript, AnnotationsCountSumsPointsOverAllEntries) {
+  constexpr const char* kScript = R"LUAU(
+    local inputs = ...
+    local overlay = inputs.image:decode():threshold(">", 8)
+    local built = pj.annotations.new{image_topic = "/cam"}
+      :points{points = {{0, 0}, {1, 1}}, type = 'points'}
+      :points{points = {{2, 2}}, type = 'points'}
+      :finish()
+    return { matching = overlay:count(), built_count = built:count() }
+  )LUAU";
+  auto result =
+      run(kScript, {imageInput("image", "/cam", 0)}, specs({"matching:number", "built_count:number"}), "{}",
+          withGradient());
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_EQ(number(*result, "matching"), 3);
+  EXPECT_EQ(number(*result, "built_count"), 3);
+}
+
+TEST(ObjectScript, CropAndPixelAgree) {
+  auto result = run(
+      "local inputs = ...; local d = inputs.image:decode(); local c = d:crop(1, 1, 2, 2); "
+      "local s = c:stats(); return {direct = d:pixel(1, 1), from_crop = c:pixel(0, 0), gray = d:to_gray():pixel(1, 1), "
+      "min = s.min, max = s.max}",
+      {imageInput("image", "/cam", 0)},
+      specs({"direct:number", "from_crop:number", "gray:number", "min:number", "max:number"}), "{}", withGradient());
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_EQ(number(*result, "direct"), 5);
+  EXPECT_EQ(number(*result, "from_crop"), 5);
+  EXPECT_EQ(number(*result, "gray"), 5);  // a mono image is its own gray
+  EXPECT_EQ(number(*result, "min"), 5);
+  EXPECT_EQ(number(*result, "max"), 10);
+  expectMediaError("local inputs = ...; return inputs.image:decode():crop(3, 0, 2, 1)", "outside");
+  expectMediaError("local inputs = ...; return inputs.image:decode():pixel(-1, 0)", "pixel integer");
+}
+
+TEST(ObjectScript, TooManyPointsIsUnavailable) {
+  RunOptions options;
+  options.image_decoder = std::make_shared<FakeImageDecoder>(1000, 600, 100.0f);
+  options.native_budget_bytes = std::size_t{8} << 20;  // 2.4 MB of pixels fit; 600k points (9.6 MB) do not
+  auto result =
+      run("local inputs = ...; return {ann = inputs.image:decode():threshold('>', 50)}",
+          {imageInput("image", "/cam", 0)}, specs({"ann:kImageAnnotations"}), "{}", options);
+  ASSERT_TRUE(result.has_value()) << result.error();
+  const ScriptValue* ann = find(*result, "ann");
+  ASSERT_TRUE(ann != nullptr && std::holds_alternative<Unavailable>(*ann));
+  EXPECT_TRUE(contains(std::get<Unavailable>(*ann).reason, "native memory limit"))
+      << std::get<Unavailable>(*ann).reason;
+}
+
+TEST(ObjectScript, DecodeOnceWithinARun) {
+  std::shared_ptr<FakeImageDecoder> decoder;
+  auto result =
+      run("local inputs = ...; local a = inputs.image:decode(); local b = inputs.image:decode(); "
+          "return {same = a:pixel(3, 2) == b:pixel(3, 2) and 1 or 0}",
+          {imageInput("image", "/cam", 0)}, specs({"same:number"}), "{}", withGradient(&decoder));
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_EQ(decoder->calls, 1);
+}
+
+TEST(ObjectScript, DecodedPixelsAreChargedToTheNativeBudget) {
+  RunOptions options = withGradient();
+  options.native_budget = makeNativeBudget(1024);
+  auto result =
+      run("local inputs = ...; local d = inputs.image:decode(); return {n = d.width}", {imageInput("image", "/cam", 0)},
+          specs({"n:number"}), "{}", options);
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_EQ(options.native_budget->used(), 0u);  // the run's decodes lapse with it
+  options.native_budget = makeNativeBudget(4 * 3 * sizeof(float) - 1);
+  result =
+      run("local inputs = ...; local d, err = inputs.image:decode(); return {n = d and 1 or pj.unavailable(err)}",
+          {imageInput("image", "/cam", 0)}, specs({"n:number"}), "{}", options);
+  ASSERT_TRUE(result.has_value()) << result.error();
+  ASSERT_TRUE(std::holds_alternative<Unavailable>(*find(*result, "n")));
+  EXPECT_TRUE(contains(std::get<Unavailable>(*find(*result, "n")).reason, "native memory limit"));
+}
+
+TEST(ObjectScript, AnImageOpRetriesOnceAfterAGarbageCollection) {
+  // The decode (48 bytes) stays charged for the run; each crop (48 bytes) fits only once the previous, dead one is
+  // collected.
+  RunOptions options = withGradient();
+  options.native_budget_bytes = 3 * 4 * 3 * sizeof(float) - 1;
+  auto result =
+      run("local inputs = ...; local n = 0; for i = 1, 3 do n = n + inputs.image:decode():crop(0, 0, 4, 3).width end; "
+          "return {n = n}",
+          {imageInput("image", "/cam", 0)}, specs({"n:number"}), "{}", options);
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_EQ(number(*result, "n"), 12);
+}
+
+TEST(ObjectScript, AnnotationsAreStampedWithTheImagesPayloadTime) {
+  constexpr const char* kScript = R"LUAU(
+    local inputs = ...
+    local image = inputs["s:/cam"]:decode()
+    return {
+      threshold = image:threshold(">", 0),
+      bare = pj.annotations.new{image_topic = "/cam"}:points{points = {{0, 0}}, type = 'points'}:finish(),
+      qualified = pj.annotations.new{image_topic = "s:/cam"}:points{points = {{0, 0}}, type = 'points'}:finish(),
+      other = pj.annotations.new{image_topic = "/elsewhere"}:points{points = {{0, 0}}, type = 'points'}:finish(),
+    }
+  )LUAU";
+  RunOptions options = withGradient();
+  options.result_stamp = 15 * kSecond;  // a newer scalar input drives the result's stamp
+  NamedValue image = imageInput("s:/cam", "/cam", 3 * kSecond);
+  image.stamp_shift = kSecond;  // a merge moved the dataset clock: the image is at 4 s on it
+  auto result =
+      run(kScript, {image, NamedValue{"threshold", 1.0}},
+          specs(
+              {"threshold:kImageAnnotations", "bare:kImageAnnotations", "qualified:kImageAnnotations",
+               "other:kImageAnnotations"}),
+          "{}", options);
+  ASSERT_TRUE(result.has_value()) << result.error();
+  for (const char* name : {"threshold", "bare", "qualified"}) {
+    SCOPED_TRACE(name);
+    const auto* annotations = objectOf<sdk::ImageAnnotations>(*result, name);
+    ASSERT_NE(annotations, nullptr);
+    EXPECT_EQ(annotations->image_topic, "/cam");  // the store topic, whichever spelling the script used
+    EXPECT_EQ(annotations->timestamp, 4 * kSecond);
+  }
+  const auto* other = objectOf<sdk::ImageAnnotations>(*result, "other");
+  ASSERT_NE(other, nullptr);
+  EXPECT_EQ(other->image_topic, "/elsewhere");
+  EXPECT_EQ(other->timestamp, 15 * kSecond);
+  // An image at stamp 0 pairs at 0, not at the result's stamp.
+  result =
+      run("local inputs = ...; return {a = pj.annotations.new{image_topic = '/cam'}:finish()}",
+          {imageInput("image", "/cam", 0)}, specs({"a:kImageAnnotations"}), "{}", options);
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_EQ(objectOf<sdk::ImageAnnotations>(*result, "a")->timestamp, 0);
+}
+
+// On an image a zero stamp is a stamp: the dataset shift moves it, and what pairs with the image follows. Other types
+// keep 0 as unstamped.
+TEST(ObjectScript, AZeroImageStampMovesWithTheDatasetShift) {
+  constexpr const char* kScript = R"LUAU(
+    local inputs = ...
+    return {
+      threshold = inputs.image:decode():threshold(">", 0),
+      built = pj.annotations.new{image_topic = "/cam"}:finish(),
+      image = inputs.image.timestamp_ns:to_number(),
+      camera = inputs.camera.timestamp_ns:to_number(),
+    }
+  )LUAU";
+  NamedValue image = imageInput("image", "/cam", 0);
+  image.stamp_shift = 2 * kSecond;
+  auto result =
+      run(kScript, {image, object("camera", sdk::BuiltinObject(sdk::CameraInfo{}), 2 * kSecond)},
+          specs({"threshold:kImageAnnotations", "built:kImageAnnotations", "image:number", "camera:number"}), "{}",
+          withGradient());
+  ASSERT_TRUE(result.has_value()) << result.error();
+  for (const char* name : {"threshold", "built"}) {
+    SCOPED_TRACE(name);
+    EXPECT_EQ(objectOf<sdk::ImageAnnotations>(*result, name)->timestamp, 2 * kSecond);
+  }
+  EXPECT_EQ(number(*result, "image"), 2 * kSecond);
+  EXPECT_EQ(number(*result, "camera"), 0);
+}
+
+// An image method borrowed onto another object (`image.decode(camera)`) is a script error, never a crash.
+TEST(ObjectScript, BorrowedImageMethodsRejectAnotherReceiver) {
+  for (const char* call :
+       {"inputs.image.decode(inputs.camera)", "inputs.image.representation(inputs.camera)",
+        "inputs.image.to_point_cloud(inputs.camera, inputs.camera)"}) {
+    expectMediaError(std::string("local inputs = ...; return ") + call, "image or depth image expected");
+  }
+}
+
+TEST(ObjectScript, ParserDepthImageSupportsProjectionAndRejectsOrdinaryImages) {
+  sdk::CameraInfo camera;
+  camera.K = {2, 0, 0, 0, 2, 0, 0, 0, 1};
+  camera.frame_id = "optical";
+  for (const char* encoding : {"16UC1", "mono16", "32FC1", "mono8"}) {
+    SCOPED_TRACE(encoding);
+    auto decoder = std::make_shared<FakeImageDecoder>(2, 1, 1000.0f);
+    RunOptions options;
+    options.image_decoder = decoder;
+    NamedValue image = imageInput("image", "/depth", 42, encoding);
+    auto result =
+        run("local inputs = ...; local first = inputs.image:to_point_cloud(inputs.camera); "
+            "return {cloud = inputs.image:to_point_cloud(inputs.camera, {step = 1})}",
+            {image, object("camera", sdk::BuiltinObject(camera))}, specs({"cloud:kPointCloud"}), "{}", options);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(decoder->calls, 1);
+    const ScriptValue* output = find(*result, "cloud");
+    ASSERT_NE(output, nullptr);
+    if (std::string_view(encoding) == "mono8") {
+      ASSERT_TRUE(std::holds_alternative<Unavailable>(*output));
+      EXPECT_EQ(std::get<Unavailable>(*output).reason, "unsupported depth encoding: mono8");
+      continue;
+    }
+    const auto* cloud = objectOf<PointCloud>(*result, "cloud");
+    ASSERT_NE(cloud, nullptr);
+    EXPECT_EQ(cloud->timestamp_ns, 42);
+    EXPECT_EQ(cloud->width, 2u);
+    EXPECT_EQ(cloud->frame_id, "optical");
+    float z = 0;
+    std::memcpy(&z, cloud->data.data() + 8, sizeof(z));
+    EXPECT_EQ(z, std::string_view(encoding) == "32FC1" ? 1000.0f : 1.0f);
+  }
+  sdk::DepthImage distorted;
+  distorted.distortion_model = "plumb_bob";
+  RunOptions options;
+  options.image_decoder = std::make_shared<FakeImageDecoder>(2, 1, 1000.0f);
+  auto result =
+      run("local inputs = ...; return {cloud = inputs.depth:to_point_cloud(inputs.camera)}",
+          {object("depth", sdk::BuiltinObject(distorted)), object("camera", sdk::BuiltinObject(camera))},
+          specs({"cloud:kPointCloud"}), "{}", options);
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_EQ(std::get<Unavailable>(*find(*result, "cloud")).reason, "depth must be rectified before unprojection");
+  expectMediaError("local inputs = ...; return inputs.image:to_point_cloud(inputs.image)", "camera info");
 }
 
 }  // namespace PJ::scripting

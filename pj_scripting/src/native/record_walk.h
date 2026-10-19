@@ -7,9 +7,9 @@
 #include <string>
 #include <vector>
 
-#include "memory_budget.h"
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_base/expected.hpp"
+#include "pj_scripting/memory_budget.h"
 #include "point_cloud_ops.h"
 
 // The record walk and the compaction every point-cloud operation shares, in a header so the tests can drive

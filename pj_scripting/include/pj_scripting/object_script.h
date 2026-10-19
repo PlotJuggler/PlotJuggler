@@ -28,6 +28,7 @@ namespace PJ::scripting {
 namespace native {
 class MemoryBudget;
 }  // namespace native
+class IImageDecoder;
 
 /// An output a script marked unavailable for this run (`pj.unavailable(reason)`, D25). Distinct
 /// from zero, from an empty object and from a script error.
@@ -72,8 +73,12 @@ struct NamedValue {
   /// the stamps inside payloads where they were; the engine adds this to an object input's own stamp
   /// (its top-level `timestamp_ns`, or `timestamp`; saturating at the int64 limits) before the script sees
   /// it, as TF ingest does to TF header stamps. A script therefore reads every stamp on the dataset clock, and so do
-  /// its outputs.
+  /// its outputs. A stamp of 0 means unstamped and stays 0, except on an Image or DepthImage, where it is a stamp
+  /// (annotations pair with it) and moves too.
   Timestamp stamp_shift = 0;
+  /// Object inputs only: the store topic the entry was read from (bare, no dataset qualifier), which the
+  /// annotations made from an image input pair with (Scene2D matches `image_topic` to it).
+  std::string topic = {};
 };
 
 /// Approximate heap bytes of `value`, read from its decoded fields (a buffer's size, strings, list
@@ -142,6 +147,10 @@ struct RunOptions {
   std::shared_ptr<native::MemoryBudget> native_budget;
   /// The VM's memory cap and instruction fuel; the whole run spends `setup_fuel`.
   BudgetLimits limits;
+  /// What `decode` and `to_point_cloud` decode through, on the run's thread; null: both report "no image decoder".
+  std::shared_ptr<const IImageDecoder> image_decoder;
+  /// The result's stamp, the newest resolved input's: what annotations built for no image input are stamped with.
+  Timestamp result_stamp = 0;
 };
 
 /// Runs `script` once in a fresh sandboxed VM as `chunk(inputs, params)`: `inputs` is a table of
@@ -151,7 +160,19 @@ struct RunOptions {
 /// Script surface: objects are read-only views over their SDK field tables (lists are read element by
 /// element; an int64 field is a `pj.int64`, exact past 2^53; a raw buffer is never exposed); a point
 /// cloud also has `count`, `bounds`, `extreme_point`, `crop_box`, `filter`, `transform` and
-/// `xyz_points`. A 3-vector is always an array `{x, y, z}`. `pj.unavailable(reason)` (the reason is cut
+/// `xyz_points`, and image annotations `count` (the points of every points annotation). An image or depth image has:
+///   - `representation()`: how it is stored ("jpeg", "png", "raw:<encoding>", "compressed:<encoding>",
+///     "depth:<encoding>").
+///   - `decode()` -> decoded pixels, or `nil, reason`: its original samples (no display normalization), decoded
+///     once per run and charged to the native budget for the rest of the run. Decoded pixels have `width`,
+///     `height`, `channels`, `pixel(x, y)` (a number, or `{r, g, b[, a]}`), `to_gray()`, `crop(x, y, w, h)` (it
+///     keeps the source's coordinates), `stats()` (`{min, max, mean}` over the finite samples) and
+///     `threshold(op, value[, channel])` (`op` one of `<`, `<=`, `>`, `>=`, `==`, `~=`; `channel` 0-3 or r/g/b/a):
+///     ImageAnnotations of the matching pixels, or `pj.unavailable(reason)` when they do not fit the budget.
+///   - `to_point_cloud(camera_info[, {step, max_depth}])` -> an organized metric cloud in the camera's frame at the
+///     image's stamp (16UC1/mono16 millimetres, 32FC1 metres), or `pj.unavailable(reason)`.
+///   Annotations made from an image input pair with it: its store topic and its own stamp (0 is a stamp).
+/// A 3-vector is always an array `{x, y, z}`. `pj.unavailable(reason)` (the reason is cut
 /// to 1 KiB), and `pj.tf`:
 ///   - `pj.tf.now`: the query instant, a `pj.int64`.
 ///   - `pj.tf.lookup(target, source[, when])` -> `{translation={x, y, z}, rotation={x, y, z, w},
@@ -161,9 +182,9 @@ struct RunOptions {
 ///   - `pj.tf.frames()`: every frame name.
 /// Builders make the objects a script cannot read from its inputs. Both chain, and `finish()` returns the
 /// object and spends the builder; every error names the field. A colour is `{r, g, b}` or `{r, g, b, a}`
-/// (0-255, alpha 255 when absent); a diameter, size, thickness or font size is finite and greater than 0. An
-/// object a builder returns is unstamped (timestamp 0), and a script that retains it, or a view read from it,
-/// keeps its native bytes charged until it drops them. A method reads its options table without invoking
+/// (0-255, alpha 255 when absent); a diameter, size, thickness or font size is finite and greater than 0. A
+/// script that retains a builder's object, or a view read from it, keeps its native bytes charged until it drops
+/// them. A method reads its options table without invoking
 /// metamethods.
 ///   - `pj.scene.new{frame_id, id}` -> `:sphere{center, diameter, color}`, `:cube{center, size, color}`,
 ///     `:text{position, text, font_size, color, billboard}`, `:line_strip{points, thickness, color}`: a
@@ -172,7 +193,9 @@ struct RunOptions {
 ///   - `pj.annotations.new{image_topic}` -> `:points{points, type, thickness, outline_color, fill_color}`
 ///     (`type`: points, line_list, line_strip, line_loop), `:circle{center, diameter, thickness,
 ///     outline_color, fill_color}`, `:text{position, text, font_size, text_color}`: pixel-space
-///     ImageAnnotations over the image on `image_topic`, which is required. A point is `{x, y}`; thickness,
+///     ImageAnnotations over the image on `image_topic`, which is required. Naming an image input (by its store
+///     topic or its input name) pairs them with it: its store topic, at its stamp; otherwise they keep
+///     `image_topic` at `RunOptions::result_stamp`. A point is `{x, y}`; thickness,
 ///     font size and colours the script leaves out take the SDK's defaults. The SDK has no text background, so
 ///     an opaque `background_color` is an error.
 /// `math.random` is seeded the same way on every run, and there is no `os` and no clock (D2).

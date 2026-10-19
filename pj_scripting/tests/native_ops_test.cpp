@@ -22,12 +22,12 @@
 #include <vector>
 
 #include "native/image_annotations_ops.h"
-#include "native/memory_budget.h"
 #include "native/point_cloud_ops.h"
 #include "native/record_walk.h"
 #include "native/scene_entities_ops.h"
 #include "pj_base/buffer_anchor.hpp"
 #include "pj_base/sdk/platform.hpp"
+#include "pj_scripting/memory_budget.h"
 
 namespace PJ::scripting::native {
 namespace {

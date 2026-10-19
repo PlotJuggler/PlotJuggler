@@ -21,9 +21,10 @@
 #include "luacode.h"
 #include "lualib.h"
 #include "luau_sandbox_state.h"
-#include "native/memory_budget.h"
 #include "object_binder.h"
 #include "pj_base/builtin/field_table_registry.hpp"
+#include "pj_scripting/memory_budget.h"
+#include "script_media.h"
 
 namespace PJ::scripting {
 namespace {
@@ -212,14 +213,22 @@ void pushJson(lua_State* L, const nlohmann::json& value) {
   }
 }
 
-/// Pushes a scalar or object input; the caller has rejected unavailable inputs.
-void pushInput(lua_State* L, const NamedValue& input) {
+/// Pushes a scalar or object input, and notes an image input in `media`; the caller has rejected unavailable inputs.
+void pushInput(lua_State* L, const NamedValue& input, ScriptMedia& media) {
   if (const auto* number = std::get_if<double>(&input.value)) {
     lua_pushnumber(L, *number);
   } else if (const auto* text = std::get_if<std::string>(&input.value)) {
     lua_pushlstring(L, text->data(), text->size());
   } else {
-    detail::pushObject(L, detail::withStampShifted(std::get<sdk::BuiltinObject>(input.value), input.stamp_shift));
+    sdk::BuiltinObject object = detail::withStampShifted(std::get<sdk::BuiltinObject>(input.value), input.stamp_shift);
+    const void* image = object.get<sdk::Image>();
+    if (image == nullptr) {
+      image = object.get<sdk::DepthImage>();
+    }
+    if (image != nullptr) {
+      media.noteInput(image, input.topic, input.name, detail::ownStamp(object).value_or(0));
+    }
+    detail::pushObject(L, std::move(object));
   }
 }
 
@@ -532,6 +541,7 @@ Expected<ScriptBundle, ScriptError> runOnDemandScript(
       options.native_budget ? options.native_budget
                             : std::make_shared<native::MemoryBudget>(options.native_budget_bytes),
       options.cancelled};
+  ScriptMedia media(options.image_decoder, native_limits, options.result_stamp);
   detail::BudgetState budget;
   budget.cancelled = options.cancelled ? &options.cancelled : nullptr;
   std::unique_ptr<lua_State, decltype(&lua_close)> state(
@@ -541,14 +551,14 @@ Expected<ScriptBundle, ScriptError> runOnDemandScript(
     return fail("failed to create a Luau state");
   }
   budget.max_bytes = std::numeric_limits<std::size_t>::max();  // the host's own setup is not capped
-  detail::registerBinder(L, native_limits);
+  detail::registerBinder(L, media);
   installPj(L, run, native_limits);
   if (luau_load(L, "=script", script.bytecode.data(), script.bytecode.size(), 0) != 0) {
     return fail(lua_isstring(L, -1) ? lua_tostring(L, -1) : "luau_load failed");
   }
   lua_createtable(L, 0, static_cast<int>(inputs.size()));
   for (const NamedValue& input : inputs) {
-    pushInput(L, input);
+    pushInput(L, input, media);
     lua_setfield(L, -2, input.name.c_str());
   }
   pushJson(L, params);

@@ -186,11 +186,15 @@ set(PJ_SCRIPTING_SOURCES
   src/native/point_cloud_ops.cpp
   src/native/scene_entities_ops.cpp
   src/native/image_annotations_ops.cpp
+  src/native/image_ops.cpp
+  src/native/depth_ops.cpp
   # The Luau object-script engine (compile, run, field reads, pj.tf).
   src/object_script.cpp
   src/object_binder.cpp
   # The JSON summary of an object output an evaluation report carries.
   src/object_summary.cpp
+  # One run's media state: the injected decoder, the image inputs, the decodes, the annotations' pairing.
+  src/script_media.cpp
 )
 if(EMSCRIPTEN)
   list(APPEND PJ_SCRIPTING_SOURCES src/python_engine_unavailable.cpp)
@@ -262,7 +266,7 @@ if(PJ_BUILD_TESTS)
   # --- native object operations: their headers are private to src/ ---
   pj_add_test_runner(pj_scripting_native_tests
     MAIN plain WARNINGS
-    SOURCES tests/native_ops_test.cpp
+    SOURCES tests/native_ops_test.cpp tests/image_ops_test.cpp
     LIBS pj_scripting)
   target_include_directories(pj_scripting_native_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 

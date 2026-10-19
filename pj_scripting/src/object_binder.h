@@ -19,15 +19,21 @@
 // The object half of the Luau object-script binding (docs/derived_objects/ARCHITECTURE.md §6): canonical
 // objects as read-only views over their SDK field tables, read lazily (a list is a view whose elements
 // are read one at a time through `list_at`, so iterating N elements costs N reads), the point-cloud
-// methods over native/point_cloud_ops.h, the scene and annotation builders over native/scene_entities_ops.h
+// methods over native/point_cloud_ops.h, the image methods (decode, decoded pixels, depth unprojection) over
+// native/image_ops.h and native/depth_ops.h, the scene and annotation builders over native/scene_entities_ops.h
 // and native/image_annotations_ops.h, and the small values field access needs (`pj.int64`, the
 // `pj.unavailable` marker). Scripts cannot reach the binder's metatables.
+
+namespace PJ::scripting {
+class ScriptMedia;
+}  // namespace PJ::scripting
 
 namespace PJ::scripting::detail {
 
 /// Prepares `L` (made by `newSandboxedState`) for the functions below: userdata destructors and
-/// metatables. `limits` is what the cloud methods allocate under; it must outlive every call made on `L`.
-void registerBinder(lua_State* L, const native::NativeLimits& limits);
+/// metatables. `media` is the run's: the object and decoded-image methods allocate under its limits, decode
+/// through it, and pair the annotations a builder finishes with it; it must outlive every call made on `L`.
+void registerBinder(lua_State* L, ScriptMedia& media);
 
 /// Sets the builder namespaces `scene` and `annotations` (`pj.scene.new{...}`, `pj.annotations.new{...}`) as
 /// fields of the table on top of the stack. `limits` is what the builders allocate under; as for
@@ -68,7 +74,8 @@ void pushArray(lua_State* L, std::initializer_list<double> values);
 [[nodiscard]] std::optional<Timestamp> ownStamp(const sdk::BuiltinObject& object);
 
 /// `object` with its own stamp moved by `shift`, saturating at the int64 limits (a copy sharing its payload
-/// bytes); `object` itself when the shift is 0, the type has no own stamp, or the stamp is 0 (unstamped).
+/// bytes); `object` itself when the shift is 0, the type has no own stamp, or the stamp is 0 (unstamped), except on
+/// an Image or DepthImage, where 0 is a stamp the annotations made from it pair with.
 [[nodiscard]] sdk::BuiltinObject withStampShifted(const sdk::BuiltinObject& object, Timestamp shift);
 
 /// Sets `functions` as fields of the table on top of the stack; with an `upvalue`, each closes over it

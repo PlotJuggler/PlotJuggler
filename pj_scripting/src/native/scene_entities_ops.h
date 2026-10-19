@@ -6,9 +6,9 @@
 #include <string>
 #include <vector>
 
-#include "memory_budget.h"
 #include "pj_base/builtin/scene_entities.hpp"
 #include "pj_base/expected.hpp"
+#include "pj_scripting/memory_budget.h"
 
 // Native SceneEntities builder behind a script's scene builder (D27). Luau-free, so the Luau and Python
 // binders share it, like point_cloud_ops.h.
