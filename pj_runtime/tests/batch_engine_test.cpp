@@ -2840,6 +2840,9 @@ TEST(BatchEngineTest, AdmissionBoundsAllBindingsAndTheStagedCopyIsCharged) {
   const std::size_t large_copy = 128 * kSampleBytes;
   PJ::InFlightBudget budget(2 * ceiling + kOneRunSlack);  // two ceilings and small copies, or one large run
   PJ::EnginePool pool;
+  if (pool.sharedLaneThreads() < 2) {
+    GTEST_SKIP() << "needs two runs in flight; this host's shared lane has one thread";
+  }
   BatchEngine service(store, countingResolver({{"a", 5}, {"x", 5}, {"b", 128}, {"c", 5}}, stagings));
   service.setPool(&pool);
   service.setInFlightBudget(&budget);
