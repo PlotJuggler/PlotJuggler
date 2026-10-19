@@ -611,6 +611,23 @@ TEST_F(HeadlessDescriptorProviderSessionTest, ProviderCreatesAMarkerRule) {
   EXPECT_NE(app_session_->sessionManager().batchEngine().firstBinding("fake-import-provider/rule"), nullptr);
 }
 
+// ABI-41: the routed service validates an on-demand script in a headless session, and
+// rejects one that does not compile.
+TEST_F(HeadlessDescriptorProviderSessionTest, DataProcessorsServiceIsRoutedByKind) {
+  auto session = makeSession(kProviderId);
+  ASSERT_TRUE(session.has_value()) << session.error();
+  const auto* vtable = static_cast<const PJ_data_processors_host_vtable_t*>(g_data_processors_service.vtable);
+  ASSERT_NE(vtable, nullptr);
+  PJ_error_t error{};
+  EXPECT_TRUE(vtable->validate_data_processor_script(
+      g_data_processors_service.ctx, sv("on_demand"), sv("luau"), sv("return {}"), sv("{}"), &error))
+      << error.message;
+  EXPECT_FALSE(vtable->validate_data_processor_script(
+      g_data_processors_service.ctx, sv("on_demand"), sv("luau"), sv("return {"), sv("{}"), &error));
+  EXPECT_FALSE(vtable->validate_data_processor_script(
+      g_data_processors_service.ctx, sv("unknown"), sv("luau"), sv("return {}"), sv("{}"), &error));
+}
+
 // A preview belongs to the session that made it: ending the session ends the
 // previews its provider created and keeps the rules it created persistent.
 TEST_F(HeadlessDescriptorProviderSessionTest, TeardownEndsTheProvidersEphemeralPreviews) {

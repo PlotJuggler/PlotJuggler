@@ -18,6 +18,7 @@
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/DataProcessorsRuntimeHost.h"
 #include "pj_runtime/MarkersRuntimeHost.h"
+#include "pj_runtime/OnDemandRuntimeHost.h"
 #include "pj_runtime/ServiceRegistration.h"
 
 namespace PJ {
@@ -85,12 +86,14 @@ bool appendIds(const PJ_data_processors_host_t& backend, std::vector<std::string
 
 }  // namespace
 
-DataProcessorsKindRouter::DataProcessorsKindRouter(MarkersRuntimeHost& markers, DataProcessorsRuntimeHost& transforms)
+DataProcessorsKindRouter::DataProcessorsKindRouter(
+    MarkersRuntimeHost& markers, DataProcessorsRuntimeHost& transforms, OnDemandRuntimeHost& on_demand)
     : DataProcessorsKindRouter(
-          markers.raw(), transforms.raw(), PJ_data_processors_host_t{},
+          markers.raw(), transforms.raw(), on_demand.raw(),
           OwnershipProbes{
               .transforms = [&transforms](std::string_view id) { return transforms.owns(id); },
               .markers = [&markers](std::string_view id) { return markers.owns(id); },
+              .on_demand = [&on_demand](std::string_view id) { return on_demand.owns(id); },
           }) {}
 
 DataProcessorsKindRouter::DataProcessorsKindRouter(

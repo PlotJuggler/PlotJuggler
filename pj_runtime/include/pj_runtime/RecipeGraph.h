@@ -97,20 +97,24 @@ class RecipeGraph {
   };
 
   static constexpr std::size_t kMaxPinnedPerOwner = 64;
+  /// What a plugin's preview id starts with. No persistent recipe's id starts with `~`, so a preview never holds a
+  /// key a layout can name (a restore never clears a preview, and refuses one holding a wanted key).
+  static constexpr std::string_view kPreviewIdPrefix = "~preview/";
 
   explicit RecipeGraph(InputResolver resolver);
 
   /// Installs `recipe`, replacing the node of the same key; empty params are stored as "{}", what a
-  /// layout parse reads back. Rejected, with nothing changed: an empty owner or id; a language other
-  /// than Luau; a script that does not compile; no input or no output; an output
-  /// `scripting::parseOutputSpec` refuses (only types a script can produce); a name used twice among
-  /// the inputs and outputs; an input that resolves nowhere (unless recorded as an absent node's
-  /// output), that its `Recipe::dataset` does not carry, or whose datasets have no single one in
-  /// common (D7); an object input whose type has no field table; its own output; an edge that closes
-  /// a cycle; a persistent recipe reading a preview's output, or a preview that a persistent node
-  /// reads (a preview ends with its panel, the persisted reader would not); `history_exempt` changing
-  /// on an installed key (history would hold its snapshots under the other authority: remove it and
-  /// create it again); a new pin past the owner's cap.
+  /// layout parse reads back. Rejected, with nothing changed: an empty owner or id; a key another owner's
+  /// recipe holds (an id may contain '/', so two owners can spell one key); a language other than Luau;
+  /// params nested deeper than `scripting::kMaxParamsDepth`; a script that does not compile; no input
+  /// or no output; an output `scripting::parseOutputSpec` refuses (only types a script can produce); a
+  /// name used twice among the inputs and outputs; a persistent id starting with `~` (`kPreviewIdPrefix`);
+  /// an input that resolves nowhere (unless recorded as an absent node's output), that its
+  /// `Recipe::dataset` does not carry, or whose datasets have no single one in common (D7); an object input whose type
+  /// has no field table; its own output; an edge that closes a cycle; a persistent recipe reading a preview's output,
+  /// or a preview that a persistent node reads (a preview ends with its panel, the persisted reader would not);
+  /// `history_exempt` changing on an installed key (history would hold its snapshots under the other authority: remove
+  /// it and create it again); a new pin past the owner's cap.
   [[nodiscard]] Status upsert(Recipe recipe);
   /// Validates and binds `recipe` as `upsert` does, installing nothing: the node of a transient evaluation, at
   /// revision 0 (`GridRunner`). It may declare no output (the evaluation infers them); a pin, a preview and

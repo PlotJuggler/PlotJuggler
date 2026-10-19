@@ -14,6 +14,7 @@
 #include "pj_base/types.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/EnginePool.h"
+#include "pj_runtime/GridRunner.h"
 #include "pj_runtime/InFlightBudget.h"
 #include "pj_runtime/InputStager.h"
 #include "pj_runtime/NodeScheduler.h"
@@ -23,9 +24,10 @@
 namespace PJ {
 
 /// The on-demand engine (docs/derived_objects/ARCHITECTURE.md §3, §8): owns the recipe graph, the result
-/// history, the input stager and the node scheduler, and keeps only the orchestration that spans them: install,
-/// remove, and the requests and state queries it forwards to the scheduler. A layout restore stays in
-/// `DerivedObjects`. GUI thread only; what runs on the pool is the scheduler's (see `NodeScheduler.h`).
+/// history, the input stager, the node scheduler and the explicit evaluations' `GridRunner`, and keeps only the
+/// orchestration that spans them: install, remove, and the requests and state queries it forwards to the scheduler. A
+/// layout restore stays in `DerivedObjects`. GUI thread only; what runs on the pool is the scheduler's (see
+/// `NodeScheduler.h`).
 class OnDemandService {
  public:
   /// After an install that took a new revision of `key`, with the topics it retired (GUI thread). Inside a restore
@@ -38,6 +40,8 @@ class OnDemandService {
     InputStager::ScalarSampler scalars;
     InputStager::ParserLookup parsers;
     NodeScheduler::Hooks scheduling;  ///< an empty `run`: the one `setRunForTest` set, else the Luau run
+    /// The explicit evaluations' scalar change instants; their TF, epoch and run are `scheduling`'s.
+    GridRunner::ScalarChangeLookup scalar_changes;
     ResultHistory::Limits limits;
     InstalledCallback installed;
   };
@@ -138,6 +142,14 @@ class OnDemandService {
   [[nodiscard]] const ResultHistory& history() const {
     return history_;
   }
+  /// The explicit evaluations (D19): a node of `graph()` or one it binds (`RecipeGraph::bind`).
+  [[nodiscard]] GridRunner& evaluations() {
+    return evaluations_;
+  }
+  /// The pool its runs share: what a consumer of `evaluations()` moves its own heavy GUI-thread work to.
+  [[nodiscard]] EnginePool& pool() {
+    return pool_;
+  }
 
  private:
   /// What a live tick last requested a node with.
@@ -158,9 +170,11 @@ class OnDemandService {
   /// One of the node's object outputs is displayed (the demand set), whether or not it is pinned.
   [[nodiscard]] bool displayed(const RecipeGraph::Node& node) const;
 
+  EnginePool& pool_;
   RecipeGraph graph_;
   ResultHistory history_;
   InputStager stager_;
+  GridRunner evaluations_;   ///< after the components it reads
   NodeScheduler scheduler_;  ///< after the graph, the history and the stager: cancels its runs while they are alive
   InstalledCallback installed_;
   NodeScheduler::EpochProvider epoch_;             ///< the scheduler's: `followLiveEdge` stages under it

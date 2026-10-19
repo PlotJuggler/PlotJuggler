@@ -43,6 +43,8 @@
 #include "MainWindow.h"
 #include "ToolboxPresenter.h"
 #include "dataset_test_helpers.h"
+#include "pj_base/builtin/builtin_object_codec.hpp"
+#include "pj_base/builtin/point_cloud.hpp"
 #include "pj_base/plugin_data_api.h"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_registry.hpp"
@@ -54,6 +56,7 @@
 #include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/DerivedRuntimeHosts.h"
+#include "pj_runtime/OnDemandService.h"
 #include "support/gui_test_env.h"
 
 using namespace Qt::StringLiterals;
@@ -547,7 +550,7 @@ class ToolboxPanelFoldTest : public ::testing::Test {
 };
 
 // A preview belongs to the panel that made it: closing the panel releases its plugin
-// session, whose derived hosts end its previews in both engines. Its persistent
+// session, whose derived hosts end its previews in the three engines. Its persistent
 // recipes are the user's data and stay, and so do another panel's previews.
 TEST_F(ToolboxPanelFoldTest, ClosingAToolboxEndsItsPreviewsAndKeepsItsRecipes) {
   PJ::AppSession& app = PJ::ToolboxPanelFoldTestPeer::appSession(mainWindow());
@@ -555,8 +558,20 @@ TEST_F(ToolboxPanelFoldTest, ClosingAToolboxEndsItsPreviewsAndKeepsItsRecipes) {
   PJ::BatchEngine& markers = app.sessionManager().batchEngine();
   const PJ::DatasetId dataset = pj_test::createDataset(app, "fold");
   ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/sensor"), 0U);
+  PJ::ObjectStore& objects = app.sessionManager().objectStore();
+  const PJ::ObjectTopicId cloud =
+      objects.registerTopic({dataset, "cloud", R"({"builtin_object_type":"kPointCloud"})"}).value();
+  ASSERT_TRUE(
+      objects.pushOwned(cloud, 100, PJ::serializeBuiltinObject(PJ::sdk::BuiltinObject(PJ::sdk::PointCloud{})).value())
+          .has_value());
+  app.catalogModel().rebuildFromDatastore();
+  const PJ::RecipeGraph& recipes = app.sessionManager().onDemandService().graph();
   const std::string own = pluginId().toStdString();
   const std::string other = own + "_other";
+  const auto on_demand_previews = [&recipes] {
+    return std::ranges::count_if(
+        recipes.keys(), [&recipes](const std::string& key) { return recipes.find(key)->recipe.ephemeral; });
+  };
   const auto script = [](const std::string& id) {
     return "-- pj-script: luau\nreturn { id=\"" + id + "\", name=\"" + id +
            "\", output=\"same\",\n"
@@ -582,8 +597,18 @@ TEST_F(ToolboxPanelFoldTest, ClosingAToolboxEndsItsPreviewsAndKeepsItsRecipes) {
       const std::string_view marker_output = flags == 0 ? PJ::sdk::kGlobalMarkerTopic : std::string_view{};
       ASSERT_TRUE(
           service->createMarkers(id + "_rule", marker_inputs, marker_output, marker_script, "{}", flags).has_value());
+      PJ::sdk::DataProcessorRequest on_demand;
+      on_demand.id = id + "_probe";
+      on_demand.kind = "on_demand";
+      on_demand.language = "luau";
+      on_demand.script = "local inputs = ...\nreturn { n = inputs.cloud:count() }\n";
+      on_demand.inputs = {"cloud"};
+      on_demand.outputs = {{"n", "number"}};
+      on_demand.flags = flags;
+      ASSERT_TRUE(service->createV2(on_demand).has_value());
     }
   }
+  ASSERT_EQ(on_demand_previews(), 1);
   // Another panel's previews.
   ASSERT_TRUE(processors
                   .upsertTransform(
@@ -608,6 +633,8 @@ TEST_F(ToolboxPanelFoldTest, ClosingAToolboxEndsItsPreviewsAndKeepsItsRecipes) {
   EXPECT_EQ(markers.firstBinding(own + "/preview_rule"), nullptr);
   EXPECT_NE(markers.firstBinding(own + "/kept_rule"), nullptr);
   EXPECT_NE(markers.firstBinding(other + "/preview"), nullptr);
+  EXPECT_EQ(on_demand_previews(), 0);
+  EXPECT_NE(recipes.find(own + "/kept_probe"), nullptr);
 }
 
 // Rule 2 — the banner X with a download running. Tearing the panel down would

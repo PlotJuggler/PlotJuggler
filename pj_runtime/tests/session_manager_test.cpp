@@ -1998,7 +1998,7 @@ TEST(SessionManagerTest, RemoveEphemeralsEndsOnlyTheListedPreviews) {
   }
   QSignalSpy markers_changed(&session, &PJ::SessionManager::markersChanged);
 
-  session.removeEphemerals({"a/preview", "a/kept", "a/gone"}, {"a/preview", "a/kept", "a/gone"});
+  session.removeEphemerals({"a/preview", "a/kept", "a/gone"}, {"a/preview", "a/kept", "a/gone"}, {});
 
   EXPECT_EQ(session.dataProcessorService().transformIdsForPlugin("a"), std::vector<std::string>{"kept"});
   EXPECT_EQ(session.dataProcessorService().transformIdsForPlugin("b"), std::vector<std::string>{"preview"});

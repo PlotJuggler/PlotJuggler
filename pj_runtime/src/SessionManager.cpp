@@ -167,6 +167,31 @@ SessionManager::SessionManager(QObject* parent)
     }
     return InputStager::ScalarSample{series->first, series->second, sample->timestamp, sample->value};
   };
+  on_demand.scalar_changes =
+      [this](DatasetId dataset, std::string_view name, Timestamp start, Timestamp end, std::size_t limit) {
+        GridRunner::ScalarChanges changes;
+        const auto series = scalarInput(dataset, std::string(name));
+        if (!series) {
+          return changes;
+        }
+        const DataReader reader = createReader();
+        const auto values = reader.series(series->first, series->second);
+        if (!values) {
+          return changes;
+        }
+        if (const auto first = values->sampleAtOrAfterTime(std::numeric_limits<Timestamp>::min())) {
+          changes.first = first->timestamp;
+        }
+        for (SeriesCursor cursor = values->samples(Range<Timestamp>{start, end}); cursor.valid(); cursor.advance()) {
+          if (changes.instants.size() == limit) {
+            changes.over_limit = true;
+            changes.instants.clear();
+            break;
+          }
+          changes.instants.push_back(cursor.current().timestamp);
+        }
+        return changes;
+      };
   on_demand.parsers = [this](ObjectTopicId topic) { return parserBindingForObjectTopic(topic); };
   on_demand.scheduling.tf = [this](DatasetId dataset) { return onDemandTf(dataset); };
   on_demand.scheduling.tf_revision = [this](DatasetId dataset) { return onDemandTfRevision(dataset); };
@@ -1204,10 +1229,21 @@ void RefillGuard::commit() {
 }
 
 void SessionManager::removeEphemerals(
-    const std::unordered_set<std::string>& transform_keys, const std::unordered_set<std::string>& generator_ids) {
+    const std::unordered_set<std::string>& transform_keys, const std::unordered_set<std::string>& generator_ids,
+    const std::unordered_set<std::string>& on_demand_keys) {
   processor_service_->removeEphemerals(transform_keys);
   if (batch_engine_->removeEphemerals(generator_ids)) {
     notifyMarkersChanged();
+  }
+  bool retired = false;
+  for (const std::string& key : on_demand_keys) {
+    const RecipeGraph::Node* node = on_demand_->graph().find(key);
+    if (node != nullptr && node->recipe.ephemeral) {
+      retired = !on_demand_->remove(key).empty() || retired;
+    }
+  }
+  if (retired) {
+    emit objectTopicsChanged();
   }
 }
 

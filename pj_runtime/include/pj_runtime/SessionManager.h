@@ -160,13 +160,15 @@ class SessionManager : public QObject {
   void notifyObjectTopicsChanged() {
     emit objectTopicsChanged();
   }
-  // Ends the previews among `transform_keys` (ephemeral transforms) and
-  // `generator_ids` (ephemeral marker rules), repainting the overlays once if a marker
-  // preview went; a gone or persistent one is skipped. A preview belongs to the plugin
+  // Ends the previews among `transform_keys` (ephemeral transforms), `generator_ids`
+  // (ephemeral marker rules) and `on_demand_keys` (on-demand previews), repainting the
+  // overlays once if a marker preview went and announcing `objectTopicsChanged` once if
+  // an on-demand preview's topics retired; a gone or persistent one is skipped. A preview belongs to the plugin
   // instance that made it: `DerivedRuntimeHosts` passes the ones its bridges created
   // and still hold when that instance ends. Persistent recipes are the user's data.
   void removeEphemerals(
-      const std::unordered_set<std::string>& transform_keys, const std::unordered_set<std::string>& generator_ids);
+      const std::unordered_set<std::string>& transform_keys, const std::unordered_set<std::string>& generator_ids,
+      const std::unordered_set<std::string>& on_demand_keys);
   // A dataset just became listed (the catalog published it): mark every
   // all-datasets marker rule stale for the batch engine's brake, since the newcomer
   // may contribute. Wired by CatalogModel; the commit recompute runs before the

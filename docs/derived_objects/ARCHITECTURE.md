@@ -109,7 +109,8 @@ REQUIREMENTS.md or here.
 
 ## 5. Recipe and bundle
 
-**Status: Built.** The contract details are decided and land with the host-contract release.
+**Status: Built.** The contract details are decided and land with the host-contract release;
+the host serves them through the on-demand bridge (slice 8a-2b, §18).
 
 - Outputs are declared with fixed types (D8, D9): number, string, or a canonical object
   type.
@@ -128,7 +129,8 @@ header-only 0.36.0:
   the outputs. The SDK gains `parseEvaluationReport()`, which also derives the bundle stamp
   (the latest resolved input time), so the editor and the assistant parse it one way.
 - **One error shape:** `FAILED` carries the report with `stopped:"error"`. `CANCELLED` is
-  reserved and never emitted; a client treats it as not-success.
+  reserved and never emitted; a client treats it as not-success. The host reports `FAILED` when
+  the error came before any bundle, and `COMPLETED` with `stopped:"error"` after some.
 - **The v1 `"<name>:<type>"` route for `on_demand` and `createOnDemand`** are removed.
 - **`INFER_OUTPUTS` is folded.** A scripted submit with no declared outputs infers them,
   and lenient binding is the only on-demand binding. It still rejects an undeclared key
@@ -211,7 +213,7 @@ component it needs (a layer reads its content from the store and its state from
 | `InputStager` | Resolves inputs at `t` on the GUI thread by identity (an object entry's topic, UID and parser, a scalar sample, an upstream's result) without fetching a payload, and builds the request's cache key; `decode` fetches and decodes them on any thread, a parser-backed entry under its per-topic parser lock and a canonical point cloud as a view over the store's bytes, and returns the parser keepalives its objects need, which `ResultHistory` keeps with a cached result. Built (slice 6a-3). |
 | `ResultHistory` | Per node: the compute cache and the ring (§9). Results keyed by cache identity (§10), ordered by stamp and sized by time span: a window around the node's cursor, then one global byte budget each that evicts the result farthest from its node's cursor. A miss checks the store first (§9), and the cache keeps no decoded copy of what the ring holds. Built (slice 6a-2). |
 | `NodeScheduler` | Per node: one running run plus one pending request, the in-flight budget, submission to `EnginePool`, supersede on meaning change (invariant 1), and the node state that layers read (idle, pending, ready, missing input, error, with the lag). Built (slice 6a-4a); `withdraw` when demand leaves and the hold of a dataset whose storage changes (slice 6a-5). |
-| `GridRunner` | The per-instant loop shared by window evaluations and series (§15). Built for explicit evaluations (slice 8a-1a, `pj_runtime/include/pj_runtime/GridRunner.h`): a window's grid (its start, or the end of its leading retention gap, and every raw input change after it, through the whole chain; a finding adds its real stamp, an instant is a window of one), the chain evaluated at each instant with the job's own upstream results (an installed upstream served read-only from its history, a result reused while it serves the next instant), one in-flight reservation per job, and a report in the SDK's shape; nothing published, no cursor moved. Slice 8a-1b adds the budgets (time and evaluations between instants, the job's memory split between each run's VM cap and one native ledger all its runs share, so the objects a chain keeps count against its later runs; all clamped to host caps), the JSON report (`GridRunner::toJson`; its size kept as a running count, never re-serialized per bundle) and the object summaries, made on the worker. The column sink comes with series (slice 11). |
+| `GridRunner` | The per-instant loop shared by window evaluations and series (§15). Built for explicit evaluations (slice 8a-1a, `pj_runtime/include/pj_runtime/GridRunner.h`): a window's grid (its start, or the end of its leading retention gap, and every raw input change after it, through the whole chain; a finding adds its real stamp, an instant is a window of one), the chain evaluated at each instant with the job's own upstream results (an installed upstream served read-only from its history, a result reused while it serves the next instant), one in-flight reservation per job, and a report in the SDK's shape; nothing published, no cursor moved. Slice 8a-1b adds the budgets (time and evaluations between instants, the job's memory split between each run's VM cap and one native ledger all its runs share, so the objects a chain keeps count against its later runs; all clamped to host caps), the JSON report (`GridRunner::toJson`; its size kept as a running count, never re-serialized per bundle) and the object summaries, made on the worker. Slice 8a-2b puts it in `OnDemandService` (`evaluations()`), with the session's scalar change lookup, TF, epoch and run, and serves it to plugins through `OnDemandRuntimeHost` (§18). The column sink comes with series (slice 11). |
 
 Data flow for one cursor request:
 
@@ -423,6 +425,14 @@ engines) and **Decided** (GIL release).
   as a slow one does); a finished create returns its room at once. Inline runs (no pool, the
   creates to completion, the whole-dataset recomputes) hold no pool thread and reserve
   nothing. The session owns the budget, declared before the pool, which it outlives.
+
+  An explicit evaluation (`GridRunner`) holds one reservation for its whole life, so a plugin
+  that submits many would queue the playhead's next request behind all of them (D30). Each
+  plugin instance's bridge therefore lets at most one evaluation into the runner
+  (`OnDemandRuntimeHost::kMaxRunningEvaluations`); the others wait PENDING in a FIFO of the
+  bridge, so the playhead waits for at most one evaluation per plugin instance (measured in
+  §19). Several plugins still add up in the line. Follow-up: reserve per run in `GridRunner`,
+  which lifts both.
 - **GUI-thread work still to move:** the batch staging copy, and TF snapshot copies (§12),
   get measured first. The batch re-run over 500k rows now costs the GUI thread 15 ms at most
   per pass (§19), nearly all of it the resolver's copy of the series (staging alone: 13-16
@@ -1029,13 +1039,25 @@ proposed (N1, N2).
 **Status: Built in the SDK (#202).** It ships in the minor after the header-only 0.36.0. Its
 contract decisions were settled on 2026-10-13 (§5 and below). In the host, the router's typed
 slots and the v2 create on the transform and marker kinds are built (slice 8a-2a,
-`DataProcessorsKindRouter.h`); the on-demand bridge is slice 8a-2b.
+`DataProcessorsKindRouter.h`), and so is the on-demand bridge (slice 8a-2b,
+`OnDemandRuntimeHost.h`, the router's third backend in every plugin binding): the typed create
+(INSTANT pins a finding), list, config with the contract's state keys, remove, validate, and
+the evaluations over the session's `GridRunner` with bounded per-bridge handles, one of them in
+the runner at a time (the others wait PENDING, §11), each report serialized on a worker (§19). A plugin's preview lives under `<plugin>/~preview/<n>/<id>`, `n`
+unique to the bridge: no persistent recipe can take that key, so a layout never names a live
+preview, and another instance of the plugin neither sees nor ends it. A node is a plugin's only
+when its recipe's owner is (an id may contain `/`, so two owners can spell one key, and
+`RecipeGraph::upsert` refuses the second). Params are bounded at 1 MiB and 32 levels, the
+scripting engine's depth, since copying or dumping a deeper value would overflow the GUI stack.
+A scripted submit is a preview by definition and is bound, never installed. The header owns the
+rules.
 
 - Catalog snapshot v2: object topics with dataset, type, entry count and time range. The
   plugin sets `struct_size`, under the read-prefix rule. The host writes back how much it
   filled, and rejects a size below the v2 minimum. A flag to skip the scalar half is added
   only if measuring the editor's once-a-second refresh shows that it matters.
-- Data processors v2: a typed request with typed outputs, a label, and INSTANT or WINDOW.
+- Data processors v2: a typed request with typed outputs, an optional dataset id, and INSTANT or
+  WINDOW (no label).
 - Asynchronous evaluations: submit, poll and release, returning a JSON report.
 - `pj.plot_tabs.v1` tail slots: `create_tab_v2`, `attach_topic`, `detach_topic`,
   `focus_tab`. Each slot is filled when it is implemented (not all-or-nothing), and a kind
@@ -1051,7 +1073,9 @@ slots and the v2 create on the transform and marker kinds are built (slice 8a-2a
   by a host data processor", the value names the kind); the marker keys of §13.
 - Marker generators on the v2 request take a typed `scope`, instead of `"__global__"` and
   `{"scope":"all"}`. v1 keeps accepting those.
-- The capability-detection rule is stated once, in `plugin_data_api.h`.
+- Capability detection, in the DATA PROCESSORS section of `plugin_data_api.h`, by three rules,
+  never by version: the typed tail slots by `hasTypedRequests()`, a flag bit by its refusal on a
+  host that does not know it, a build-dependent backend (Python) by doing it.
 
 Under the ring, a derived topic exposes the results in its window to object reads at any
 `t`. A finding reports its fixed store timestamp in `out_timestamp`; the real stamp is in the
@@ -1060,7 +1084,7 @@ payload (§9).
 ## 19. Measurements
 
 These come from the prototype, whose design document describes the machine and method,
-except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a, slice 6a-5, slice 6c, slice 7a, slice 8a-1 and slice 6b rows. The slice 2 and 3 rows are measured on this stack by
+except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a, slice 6a-5, slice 6c, slice 7a, slice 8a-1, slice 6b and slice 8a-2b rows. The slice 2 and 3 rows are measured on this stack by
 `EngineFreezeBench` (`pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`), from
 the call until the result is complete, as two different metrics:
 - **GUI-thread CPU time**, as the longest single stretch (the call or one event-loop
@@ -1092,6 +1116,7 @@ Linux, RelWithDebInfo.
 | Publication of a 4.2 MB point-cloud result on the GUI thread (`GuiPublishCostOfA4MBResult`, 260k points, median of 51) | Serialized at the publication: 1.45-1.49 ms. Serialized on the worker (`ResultHistory::serializeOutputs`), the payload moved into the ring: 2-3 µs |
 | 2-hop chain after slice 6a-4a (`TwoHopChainLatencyAt10Hz`; requests at 10 Hz, from the reader's request to its published result, 50 requests, three runs) | Two Luau crops keeping all 260k points: median 6.8-6.9 ms, max 11-23 ms, every request drawn (14.6-15.0 ms while the compute cache kept a decoded copy of each result the ring holds). The scheduling alone, an instant fake run with empty outputs: 0.17-0.20 ms, so a chain in one worker task would save little |
 | Explicit evaluations after slice 8a-1a (`GridRunnerBench`, `pj_runtime/tests/grid_runner_test.cpp`, `PJ_BENCH=1`; three runs) | A window's grid over 10k object entries and 100k scalar samples (`GridOverManyInputChanges`, the submission: grid, gaps; the fake scalar lookup generates its samples, a session's reads them from the datastore): 1.7-3.2 ms, 15-29 ns per instant. A two-hop explicit evaluation, two Luau crops keeping all 260k points (`TwoHopExplicitEvaluationLatency`, from submission to report, median of 21): 5.6-6.4 ms, against 6.8-6.9 ms for the cursor's 2-hop chain. After slice 8a-1b (`GuiCostPerInstant`, thread CPU time of the GUI thread, the test's event-loop pump included, fake pass-through runs): 48-67 µs per instant of a 400-instant window over 24k-point clouds; 42-69 µs per bundle at 200 instants and 50-57 µs at 2000 (flat: the report grows by appending); `toJson` 1.5-2.9 µs per bundle at 200 and 2000 bundles |
+| The on-demand plugin bridge after slice 8a-2b (`OnDemandRuntimeHostBench`, `pj_runtime/tests/on_demand_runtime_host_test.cpp`, `PJ_BENCH=1`; through `AppSession` and the SDK's client view, fake runs; three runs) | `data_processor_config` of a finding (the JSON, state, findings accounting over two recipes): 5.5-10.4 µs, so the editor's once-a-second read is negligible. With 63 live handles: submit, poll and release of one more 2.0-4.5 µs, a poll 39-75 ns. The playhead tick of one demanded recipe (GUI CPU, median of 100, the cold path of 6a-5's bench with a 2 ms fake run instead of a 260k-point Luau crop): the move 6.6-6.7 µs with no evaluation, 6.8-6.9 µs while 64 mixed evaluations (instants on the installed node, scripted windows) run and finish between the ticks, within 6a-5's 6.9-14.1 µs; with the drain after it (publications, evaluation steps, completions) 58-61 µs and 59-63 µs. One evaluation whose report reaches the 8 MiB cap (1908 bundles of a 4 KiB string): `GridRunner::toJson` takes 34 ms, over the GUI-thread slice a create may take (`BatchEngine::kCreateBudget`, 8 ms), so the bridge serializes (and frees) the report on a pool worker and moves the string into the slot (decided 2026-10-19): the longest GUI event-loop pass of that evaluation fell from 35.1-35.4 ms to 0.09-0.21 ms. The playhead's result latency right after 64 evaluations are submitted (from the request to its result in the ring, on a 20-thread shared lane): 32.4-39.7 ms with all 64 in the runner, 4.4-4.6 ms with one per bridge (decided 2026-10-19); the tick's GUI CPU is unchanged (move 6.5-14.6 µs, with the drain 60-78 µs). On a one-thread lane the first figure grows with the evaluations' total run time |
 | Streaming: 5 min of 10 Hz, 2048-point clouds | Bounded plateau of entries and bytes |
 | The same after slice 6c, through the session's live edge (`DerivedStreamingBench.FiveMinuteRetentionAndMemoryPlateau`, `pj_runtime/tests/on_demand_live_edge_test.cpp`, `PJ_STREAM_BENCH=1`; 3,000 ticks simulated back to back with the fake run, the raw topic kept 5 s, one demanded recipe; three runs) | From the first minute on: 51 raw entries, 301 derived entries (the ring's ±30 s window around the cursor), ring 9.9 MB under its 256 MiB budget, compute cache 46 KB, nothing protected past the budget, 0 bytes reserved between ticks; RSS 77-78 MB, +0.8 MB from minute 1 to minute 5 |
 | Live edge after slice 6c (`OnDemandLiveEdgeBench.LiveEdgeAmongTenThousandTopics`, same file, `PJ_BENCH=1`; one demanded recipe reading a cloud topic registered after 10k others and a scalar, median of 101 calls, three runs) | `liveEdgeOf`: 21.4-21.7 µs → 194-197 ns; an unchanged tick's `followLiveEdge` (the edge plus what the request would read, no request): 41.6-42.6 µs → 510-529 ns, once the stager remembers each input's topic id (checked by the store's id index) instead of scanning the topics by name. `stage` among 10k topics and 10k scalar names (`StageAmongTenThousandTopics`): 35 µs → 2.5 µs, the rest being that bench's own scalar scan |

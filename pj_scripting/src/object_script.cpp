@@ -35,9 +35,6 @@ constexpr std::string_view kVmLimitError = "script memory limit";
 // resolved once at load, observing the clock whether or not the branch that reads it runs.
 constexpr const char* const kMutableGlobals[] = {"pj", nullptr};
 
-// Each level of `params` takes Lua stack slots while it is pushed, before the protected call.
-constexpr int kMaxParamsDepth = 32;
-
 std::string_view trim(std::string_view text) {
   const size_t begin = text.find_first_not_of(" \t");
   if (begin == std::string_view::npos) {

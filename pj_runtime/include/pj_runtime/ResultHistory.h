@@ -186,6 +186,8 @@ class ResultHistory {
   [[nodiscard]] std::size_t ringBytes() const {
     return ring_bytes_;
   }
+  /// Serialized bytes the ring holds for `key`; 0 for an unknown key. Walks its ledger.
+  [[nodiscard]] std::size_t ringBytesOf(std::string_view key) const;
   /// The ring's bytes past its budget. After a publication's budget pass, that is what the results the
   /// pass may not evict (each node's displayed result, findings) hold beyond the budget.
   [[nodiscard]] std::size_t protectedExcessBytes() const {

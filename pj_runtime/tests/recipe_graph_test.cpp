@@ -559,5 +559,23 @@ TEST(RecipeGraphTest, DismissAndDismissAllRemoveFindings) {
   EXPECT_FALSE(fx.graph.dismissAll("owner"));
 }
 
+// A persistent id never starts with `~`, the previews' namespace (`kPreviewIdPrefix`), so a preview never holds a key
+// a layout can name; a preview may, and so may a transient evaluation.
+TEST(RecipeGraphTest, APersistentIdMayNotStartWithTheReservedPrefix) {
+  Fixture fx;
+  auto reserved = cropRecipe();
+  reserved.user_id = std::string(RecipeGraph::kPreviewIdPrefix) + "crop";
+  const Status refused = fx.graph.upsert(reserved);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_TRUE(contains(refused.error(), "'~'")) << refused.error();
+  EXPECT_EQ(fx.graph.find(reserved.key()), nullptr);
+  reserved.ephemeral = true;
+  EXPECT_TRUE(fx.graph.upsert(reserved).has_value());
+  auto transient = cropRecipe();
+  transient.user_id = "~evaluation/crop";
+  transient.ephemeral = true;
+  EXPECT_TRUE(fx.graph.bind(transient).has_value());
+}
+
 }  // namespace
 }  // namespace PJ

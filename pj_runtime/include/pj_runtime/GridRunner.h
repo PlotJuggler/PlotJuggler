@@ -42,12 +42,13 @@ namespace PJ {
 /// A job holds one in-flight reservation, its memory budget, for its whole life: it waits for it in the budget's line
 /// before anything runs, and its chain runs under it one run at a time, so it never waits for room while holding room.
 /// Where the budget holds one default run (`capacity() == kRunBytes`: a shared lane of one thread), an evaluation on
-/// the default memory budget so holds the playhead's and the marker runs back for its whole duration, suspending D30;
-/// reserving per run would lift that. The job stops at the first instant with a missing input (a finding before its
-/// stamp included) or a failed run (`stopped: "error"`, the instant not counted), when an installed node it reads or
-/// evaluates gets a new revision or is removed, or its dataset a new epoch ("evaluation inputs were replaced"), and on
-/// its budgets: the time and the evaluations between instants (the first instant always runs), the report's size
-/// before each bundle joins it. It never reports `cancelled`: `cancel` drops the callback instead.
+/// the default memory budget so holds the playhead's and the marker runs back for its whole duration, suspending D30.
+/// `OnDemandRuntimeHost` lets at most one job per plugin instance in, so each instance holds them back by at most one
+/// evaluation; reserving per run would lift the rest. The job stops at the first instant with a missing input (a
+/// finding before its stamp included) or a failed run (`stopped: "error"`, the instant not counted), when an installed
+/// node it reads or evaluates gets a new revision or is removed, or its dataset a new epoch ("evaluation inputs were
+/// replaced"), and on its budgets: the time and the evaluations between instants (the first instant always runs), the
+/// report's size before each bundle joins it. It never reports `cancelled`: `cancel` drops the callback instead.
 ///
 /// THREADING: GUI thread, except the runs, which touch only their job's staged inputs and bytecode and the thread-safe
 /// store, and summarize their outputs there. `store` must outlive the pool's running computes; the graph, the
@@ -102,7 +103,8 @@ class GridRunner {
 
   struct Job;
   struct Result;  ///< one node's result in a job
-  /// Called once, on the GUI thread, unless the job is cancelled first.
+  /// Called once, on the GUI thread, unless the job is cancelled first; the job has given its room back by then, and
+  /// `done` may submit the next job.
   using Done = std::function<void(Report)>;
 
   GridRunner(

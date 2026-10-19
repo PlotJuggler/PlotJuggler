@@ -271,6 +271,18 @@ std::vector<ObjectTopicId> ResultHistory::topicsOf(std::string_view key) const {
   return topics;
 }
 
+std::size_t ResultHistory::ringBytesOf(std::string_view key) const {
+  const auto found = nodes_.find(key);
+  if (found == nodes_.end()) {
+    return 0;
+  }
+  std::size_t bytes = 0;
+  for (const auto& entry : found->second.ledger) {
+    bytes += entry.second.bytes;
+  }
+  return bytes;
+}
+
 std::optional<std::string> ResultHistory::keyOf(ObjectTopicId topic) const {
   for (const auto& [key, node] : nodes_) {
     if (std::ranges::any_of(node.outputs, [topic](const Output& output) { return output.topic == topic; })) {

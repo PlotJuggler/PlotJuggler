@@ -16,12 +16,13 @@ namespace PJ {
 
 class DataProcessorsRuntimeHost;
 class MarkersRuntimeHost;
+class OnDemandRuntimeHost;
 class ServiceRegistryBuilder;
 
 /// Registers the ONE `pj.data_processors.v1` service a plugin sees and routes each
 /// call to the backend bridge that owns its `kind`: "markers" → `MarkersRuntimeHost`
 /// (BatchEngine), "transform" → `DataProcessorsRuntimeHost` (IncrementalEngine),
-/// "on_demand" → the optional third backend. A kind with no bound backend is
+/// "on_demand" → the optional third backend (`OnDemandRuntimeHost`). A kind with no bound backend is
 /// rejected here, naming the kind.
 ///
 /// Why this exists: the service registry rejects duplicate names, so per-kind bridges
@@ -66,8 +67,9 @@ class DataProcessorsKindRouter {
       PJ_data_processors_host_t markers, PJ_data_processors_host_t transforms, PJ_data_processors_host_t on_demand,
       OwnershipProbes owns);
 
-  /// The two-bridge production wiring, probing through each bridge's `owns`.
-  DataProcessorsKindRouter(MarkersRuntimeHost& markers, DataProcessorsRuntimeHost& transforms);
+  /// The production wiring, probing through each bridge's `owns`.
+  DataProcessorsKindRouter(
+      MarkersRuntimeHost& markers, DataProcessorsRuntimeHost& transforms, OnDemandRuntimeHost& on_demand);
 
   DataProcessorsKindRouter(const DataProcessorsKindRouter&) = delete;
   DataProcessorsKindRouter& operator=(const DataProcessorsKindRouter&) = delete;

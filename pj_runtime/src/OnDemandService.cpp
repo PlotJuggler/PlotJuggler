@@ -43,6 +43,16 @@ void visitWithUpstreams(const RecipeGraph& graph, const RecipeGraph::Node& node,
   visitWithUpstreams(graph, node, visited, visit);
 }
 
+GridRunner::Hooks evaluationHooks(const OnDemandService::Services& services) {
+  const NodeScheduler::Hooks scheduling = withRun(services.scheduling);
+  GridRunner::Hooks hooks;
+  hooks.scalar_changes = services.scalar_changes;
+  hooks.tf = scheduling.tf;
+  hooks.epoch = scheduling.epoch;
+  hooks.run = scheduling.run;
+  return hooks;
+}
+
 }  // namespace
 
 void OnDemandService::setRunForTest(NodeScheduler::RunFunction run) {
@@ -50,9 +60,11 @@ void OnDemandService::setRunForTest(NodeScheduler::RunFunction run) {
 }
 
 OnDemandService::OnDemandService(ObjectStore& store, EnginePool& pool, InFlightBudget& budget, Services services)
-    : graph_(std::move(services.resolver)),
+    : pool_(pool),
+      graph_(std::move(services.resolver)),
       history_(store, services.limits),
       stager_(store, history_, std::move(services.scalars), std::move(services.parsers)),
+      evaluations_(store, graph_, history_, stager_, pool, budget, evaluationHooks(services)),
       scheduler_(store, graph_, history_, stager_, pool, budget, withRun(services.scheduling)),
       installed_(std::move(services.installed)),
       epoch_(std::move(services.scheduling.epoch)),

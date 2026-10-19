@@ -189,6 +189,7 @@ class FakeRun {
   bool empty_clouds = false;                ///< its cloud outputs are empty (valid, D25)
   /// What its SceneEntities outputs hold at a query time; empty: no entity.
   std::function<std::vector<sdk::SceneEntity>(Timestamp)> entities;
+  std::string text = "ok";  ///< its string outputs' value
 
   NodeScheduler::RunFunction function() {
     return [this](
@@ -272,7 +273,7 @@ class FakeRun {
       } else if (output.type == scripting::OutputType::kNumber) {
         bundle.outputs.push_back({output.name, static_cast<double>(options.query_time)});
       } else if (output.type == scripting::OutputType::kString) {
-        bundle.outputs.push_back({output.name, std::string("ok")});
+        bundle.outputs.push_back({output.name, text});
       } else if (output.object_type == sdk::BuiltinObjectType::kSceneEntities) {
         sdk::SceneEntities scene;
         if (entities) {

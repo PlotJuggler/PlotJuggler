@@ -2,8 +2,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <algorithm>
+#include <cstdint>
 #include <exception>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include "pj_base/expected.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
@@ -20,6 +24,21 @@ inline bool reject(PJ_error_t* out_error, std::string_view domain, std::string_v
 /// A slot that ends with a Status: success is true, failure is `reject` with its reason.
 inline bool finish(PJ_error_t* out_error, std::string_view domain, const Status& status) {
   return status.has_value() ? true : reject(out_error, domain, status.error());
+}
+
+/// Count-then-fill return of a string list: `*out_count` gets the full size, `out` the first min(capacity, size)
+/// views, which borrow `storage` (keep it alive until the next call on the vtable). Either pointer may be null.
+inline void fillViews(
+    const std::vector<std::string>& storage, PJ_string_view_t* out, uint64_t capacity, uint64_t* out_count) {
+  if (out_count != nullptr) {
+    *out_count = storage.size();
+  }
+  if (out != nullptr) {
+    const uint64_t count = std::min<uint64_t>(capacity, storage.size());
+    for (uint64_t index = 0; index < count; ++index) {
+      out[index] = sdk::toAbiString(storage[index]);
+    }
+  }
 }
 
 /// Run one C-ABI slot body with the skeleton every bridge shares: a null `ctx` is

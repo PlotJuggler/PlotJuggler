@@ -3,6 +3,9 @@
 #include "pj_runtime/RecipeGraph.h"
 
 #include <algorithm>
+#include <nlohmann/json.hpp>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 
@@ -49,13 +52,36 @@ bool inAuthority(const RecipeGraph::Node& node, RestoreIntent intent) {
   return !node.recipe.ephemeral && !(intent == RestoreIntent::kHistory && node.recipe.history_exempt);
 }
 
+/// Whether `json` nests deeper than `scripting::kMaxParamsDepth`, found without building the value: the parse is
+/// iterative, while copying or dumping a deeper value would recurse past the GUI thread's stack. Text that is not
+/// JSON nests nothing.
+bool nestedTooDeep(std::string_view json) {
+  using Event = nlohmann::json::parse_event_t;
+  bool deep = false;
+  (void)nlohmann::json::parse(
+      json,
+      [&deep](int depth, Event event, const nlohmann::json&) {
+        deep = deep ||
+               ((event == Event::object_start || event == Event::array_start) && depth >= scripting::kMaxParamsDepth);
+        return !deep;
+      },
+      /*allow_exceptions=*/false);
+  return deep;
+}
+
 /// The checks that need no graph; returns the compiled script.
 Expected<scripting::CompiledScript> validate(const RecipeGraph::Recipe& recipe) {
   if (recipe.owner_plugin.empty() || recipe.user_id.empty()) {
     return unexpected("a recipe needs an owner and an id");
   }
+  if (!recipe.ephemeral && recipe.user_id.starts_with('~')) {
+    return unexpected("a persistent recipe's id may not start with '~', the previews' namespace");
+  }
   if (recipe.language != "luau") {
     return unexpected("unsupported language '" + recipe.language + "' (only 'luau')");
+  }
+  if (nestedTooDeep(recipe.params_json)) {
+    return unexpected("params_json is nested deeper than " + std::to_string(scripting::kMaxParamsDepth) + " levels");
   }
   if (recipe.inputs.empty()) {
     return unexpected("a recipe needs at least one input");
@@ -214,6 +240,9 @@ Status RecipeGraph::upsert(Recipe recipe) {
   }
   const std::string key = installed.key();
   const Node* existing = find(key);
+  if (existing != nullptr && existing->recipe.owner_plugin != installed.owner_plugin) {
+    return reject("the key '" + key + "' is held by another owner's recipe");
+  }
   if (existing != nullptr && existing->recipe.history_exempt != installed.history_exempt) {
     return reject("history_exempt cannot change on the installed recipe '" + key + "': remove it and create it again");
   }

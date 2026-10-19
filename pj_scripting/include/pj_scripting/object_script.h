@@ -118,6 +118,8 @@ struct CompiledScript {
 /// The native budget's default: native outputs (crops, filters, transforms) and output strings of one
 /// run, 64 MiB. A 128-beam lidar scan's transform needs about 13 MB.
 inline constexpr std::size_t kDefaultNativeBudgetBytes = std::size_t{64} << 20;
+/// The deepest `params` a run accepts: each level takes Lua stack slots while it is pushed.
+inline constexpr int kMaxParamsDepth = 32;
 
 /// What a run may read besides its inputs, and what it may spend.
 struct RunOptions {
@@ -143,7 +145,7 @@ struct RunOptions {
 };
 
 /// Runs `script` once in a fresh sandboxed VM as `chunk(inputs, params)`: `inputs` is a table of
-/// `inputs` by name, `params` the JSON object `params_json` (empty means `{}`; at most 32 levels deep).
+/// `inputs` by name, `params` the JSON object `params_json` (empty means `{}`; at most `kMaxParamsDepth` levels deep).
 /// An unavailable input is an error: the caller does not run a node whose input is unavailable (D25).
 ///
 /// Script surface: objects are read-only views over their SDK field tables (lists are read element by

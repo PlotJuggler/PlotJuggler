@@ -199,15 +199,7 @@ bool MarkersRuntimeHost::create(
     previews_.insert(std::move(key));
   }
   create_topics_storage_ = std::move(*resolved);
-  if (out_topics_count != nullptr) {
-    *out_topics_count = create_topics_storage_.size();
-  }
-  if (out_topics != nullptr) {
-    const uint64_t count = std::min<uint64_t>(out_topics_capacity, create_topics_storage_.size());
-    for (uint64_t index = 0; index < count; ++index) {
-      out_topics[index] = sdk::toAbiString(create_topics_storage_[index]);
-    }
-  }
+  host_slot::fillViews(create_topics_storage_, out_topics, out_topics_capacity, out_topics_count);
   return true;
 }
 
@@ -232,13 +224,7 @@ bool MarkersRuntimeHost::onList(
         self.list_storage_.push_back(generator_id.substr(prefix.size()));  // strip namespace → plugin-local id
       }
     }
-    if (out_count != nullptr) {
-      *out_count = self.list_storage_.size();
-    }
-    const uint64_t count = std::min<uint64_t>(capacity, self.list_storage_.size());
-    for (uint64_t index = 0; index < count; ++index) {
-      out_ids[index] = sdk::toAbiString(self.list_storage_[index]);
-    }
+    host_slot::fillViews(self.list_storage_, out_ids, capacity, out_count);
     return true;
   });
 }

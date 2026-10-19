@@ -21,6 +21,7 @@ add_library(pj_runtime STATIC
     src/DerivedTopics.cpp
     src/DataProcessorsKindRouter.cpp
     src/DataProcessorsRuntimeHost.cpp
+    src/OnDemandRuntimeHost.cpp
     src/DataSourceRuntimeHost.cpp
     src/BatchEngine.cpp
     src/EnginePool.cpp
@@ -200,6 +201,8 @@ if(PJ_BUILD_TESTS)
         # links the shared marker engine the service drives
         tests/markers_runtime_host_test.cpp
         tests/data_processors_kind_router_test.cpp
+        # The on-demand plugin bridge: typed create, list/config/remove, evaluations and their handles.
+        tests/on_demand_runtime_host_test.cpp
         # Dataset-qualified input names ("dataset_source:topic/field") coming from a
         # plugin: the parse, and the ambiguity a bare topic leaves behind.
         tests/dataset_qualified_name_test.cpp
