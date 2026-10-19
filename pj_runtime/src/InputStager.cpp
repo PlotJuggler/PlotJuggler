@@ -23,7 +23,8 @@ InputStager::InputStager(
     const ObjectStore& store, const ResultHistory& history, ScalarSampler scalars, ParserLookup parsers)
     : store_(store), history_(history), scalars_(std::move(scalars)), parsers_(std::move(parsers)) {}
 
-Expected<InputStager::Staged> InputStager::stage(const RecipeGraph::Node& node, Timestamp t, uint64_t epoch) const {
+Expected<InputStager::Staged> InputStager::stage(
+    const RecipeGraph::Node& node, Timestamp t, uint64_t epoch, const Overrides& overrides) const {
   Staged staged;
   staged.key.revision = node.revision;
   staged.key.epoch = epoch;
@@ -32,7 +33,20 @@ Expected<InputStager::Staged> InputStager::stage(const RecipeGraph::Node& node, 
     const RecipeGraph::Binding& binding = node.bindings[index];
     Input input{node.recipe.inputs[index], 0.0};
     Timestamp resolved = 0;
-    if (!binding.upstream.empty()) {
+    const Override* override =
+        !binding.upstream.empty() && overrides ? overrides(binding.upstream, binding.name) : nullptr;
+    if (override != nullptr) {
+      if (const auto* unavailable = std::get_if<scripting::Unavailable>(&override->value)) {
+        return missingInput(input.alias, unavailable->reason);
+      }
+      staged.key.inputs.insert(staged.key.inputs.end(), override->identity.begin(), override->identity.end());
+      resolved = override->stamp;
+      if (const auto* entry = std::get_if<Entry>(&override->value)) {
+        input.value = *entry;
+      } else {
+        input.value = std::get<Object>(override->value);
+      }
+    } else if (!binding.upstream.empty()) {
       auto result = history_.resultAt(binding.upstream, binding.name, t);
       if (!result) {
         return missingInput(input.alias);
@@ -40,7 +54,7 @@ Expected<InputStager::Staged> InputStager::stage(const RecipeGraph::Node& node, 
       if (result->unavailable) {  // D25: its tombstone is no input
         return missingInput(input.alias, *result->unavailable);
       }
-      staged.key.inputs.push_back(result->uid.value);
+      staged.key.inputs.insert(staged.key.inputs.end(), {kRingIdentity, result->uid.value});
       resolved = result->stamp;
       input.value = Entry{result->topic, result->uid, binding.object_type, {}};
     } else if (const std::optional<Timestamp> raw = stageRaw(node, binding, t, staged.key.inputs, input)) {
@@ -49,6 +63,7 @@ Expected<InputStager::Staged> InputStager::stage(const RecipeGraph::Node& node, 
       return missingInput(input.alias);
     }
     staged.stamp = std::max(staged.stamp, resolved);
+    input.resolved = resolved;
     staged.inputs.push_back(std::move(input));
   }
   return staged;
@@ -135,6 +150,9 @@ Expected<InputStager::Decoded> InputStager::decode(const ObjectStore& store, con
   for (const Input& input : staged.inputs) {
     if (const auto* scalar = std::get_if<double>(&input.value)) {
       decoded.values.push_back({input.alias, *scalar});
+    } else if (const auto* object = std::get_if<Object>(&input.value)) {
+      decoded.keepalives.insert(decoded.keepalives.end(), object->keepalives.begin(), object->keepalives.end());
+      decoded.values.push_back({input.alias, object->object});
     } else {
       const Entry& entry = std::get<Entry>(input.value);
       // A lazy entry's fetch and chunk decode run here, on the calling thread.

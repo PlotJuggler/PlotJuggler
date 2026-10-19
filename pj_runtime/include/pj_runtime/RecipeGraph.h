@@ -101,6 +101,11 @@ class RecipeGraph {
   /// persistent node reads (a preview ends with its panel, the persisted reader would not); a new pin
   /// past the owner's cap.
   [[nodiscard]] Status upsert(Recipe recipe);
+  /// Validates and binds `recipe` as `upsert` does, installing nothing: the node of a transient evaluation, at
+  /// revision 0 (`GridRunner`). It may declare no output (the evaluation infers them); a pin and a preview change
+  /// nothing here, since nothing persists. A transient evaluation is a preview by definition: mark it `ephemeral`, or
+  /// it may not read a preview's output.
+  [[nodiscard]] Expected<Node> bind(Recipe recipe) const;
   /// Puts back `node`, a copy of the key's node taken before an `upsert` replaced it, revision and all: how a
   /// consumer that cannot follow that upsert undoes it. The revision the upsert took is never reused.
   void reinstate(Node node);

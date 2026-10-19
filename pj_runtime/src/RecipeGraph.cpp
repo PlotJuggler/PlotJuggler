@@ -56,8 +56,8 @@ Expected<scripting::CompiledScript> validate(const RecipeGraph::Recipe& recipe) 
   if (recipe.language != "luau") {
     return unexpected("unsupported language '" + recipe.language + "' (only 'luau')");
   }
-  if (recipe.inputs.empty() || recipe.outputs.empty()) {
-    return unexpected("a recipe needs at least one input and one output");
+  if (recipe.inputs.empty()) {
+    return unexpected("a recipe needs at least one input");
   }
   std::unordered_set<std::string> names;
   for (const OutputSpec& output : recipe.outputs) {
@@ -87,22 +87,13 @@ Expected<scripting::CompiledScript> validate(const RecipeGraph::Recipe& recipe) 
 
 RecipeGraph::RecipeGraph(InputResolver resolver) : resolver_(std::move(resolver)) {}
 
-Status RecipeGraph::upsert(Recipe recipe) {
+Expected<RecipeGraph::Node> RecipeGraph::bind(Recipe recipe) const {
   const auto reject = [](const std::string& why) { return unexpected("on-demand: " + why); };
   Expected<scripting::CompiledScript> compiled = validate(recipe);
   if (!compiled.has_value()) {
     return reject(compiled.error());
   }
   const std::string key = recipe.key();
-  if (recipe.ephemeral) {
-    // A reader keeps naming a removed upstream, so this also covers a reinstall after a removal.
-    for (const auto& [reader, node] : nodes_) {
-      if (!node.recipe.ephemeral &&
-          std::ranges::any_of(node.bindings, [&key](const Binding& b) { return b.upstream == key; })) {
-        return reject("persistent recipe '" + reader + "' reads '" + key + "', which cannot become a preview");
-      }
-    }
-  }
 
   // Each input's candidate datasets: another node's output resolves in that node's dataset.
   const std::vector<std::string> readers = dependentsOf({key});
@@ -166,25 +157,49 @@ Status RecipeGraph::upsert(Recipe recipe) {
     }
   }
 
+  return Node{
+      std::move(recipe), 0, dataset, std::move(bindings),
+      std::make_shared<const scripting::CompiledScript>(std::move(*compiled))};
+}
+
+Status RecipeGraph::upsert(Recipe recipe) {
+  const auto reject = [](const std::string& why) { return unexpected("on-demand: " + why); };
+  Expected<Node> bound = bind(std::move(recipe));
+  if (!bound.has_value()) {
+    return unexpected(std::move(bound.error()));
+  }
+  const Recipe& installed = bound->recipe;
+  if (installed.outputs.empty()) {
+    return reject("a recipe needs at least one output");
+  }
+  const std::string key = installed.key();
+  if (installed.ephemeral) {
+    // A reader keeps naming a removed upstream, so this also covers a reinstall after a removal.
+    for (const auto& [reader, node] : nodes_) {
+      if (!node.recipe.ephemeral &&
+          std::ranges::any_of(node.bindings, [&key](const Binding& b) { return b.upstream == key; })) {
+        return reject("persistent recipe '" + reader + "' reads '" + key + "', which cannot become a preview");
+      }
+    }
+  }
   const Node* existing = find(key);
-  if (existing != nullptr && sameRecipe(existing->recipe, recipe) && existing->recipe.ephemeral == recipe.ephemeral &&
-      existing->dataset == dataset && existing->bindings == bindings) {
+  if (existing != nullptr && sameRecipe(existing->recipe, installed) &&
+      existing->recipe.ephemeral == installed.ephemeral && existing->dataset == bound->dataset &&
+      existing->bindings == bound->bindings) {
     return okStatus();  // the same meaning: the same revision
   }
-  if (recipe.pinned_t.has_value() && (existing == nullptr || !existing->recipe.pinned_t.has_value())) {
-    const auto pins = std::ranges::count_if(nodes_, [&recipe](const auto& entry) {
-      return entry.second.recipe.owner_plugin == recipe.owner_plugin && entry.second.recipe.pinned_t.has_value();
+  if (installed.pinned_t.has_value() && (existing == nullptr || !existing->recipe.pinned_t.has_value())) {
+    const auto pins = std::ranges::count_if(nodes_, [&installed](const auto& entry) {
+      return entry.second.recipe.owner_plugin == installed.owner_plugin && entry.second.recipe.pinned_t.has_value();
     });
     if (static_cast<std::size_t>(pins) >= kMaxPinnedPerOwner) {
       return reject(
-          "owner '" + recipe.owner_plugin + "' reached the cap of " + std::to_string(kMaxPinnedPerOwner) +
+          "owner '" + installed.owner_plugin + "' reached the cap of " + std::to_string(kMaxPinnedPerOwner) +
           " pinned findings");
     }
   }
-  nodes_.insert_or_assign(
-      key, Node{
-               std::move(recipe), next_revision_++, dataset, std::move(bindings),
-               std::make_shared<const scripting::CompiledScript>(std::move(*compiled))});
+  bound->revision = next_revision_++;
+  nodes_.insert_or_assign(key, std::move(*bound));
   return okStatus();
 }
 

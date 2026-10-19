@@ -549,6 +549,45 @@ TEST(InputStagerTest, AnInputTopicRegisteredAgainUnderItsNameIsFollowed) {
   EXPECT_EQ(std::get<InputStager::Entry>(staged.inputs[0].value).topic, again);
 }
 
+// Slice 8a-1: an explicit evaluation feeds a reader its own upstream results through overrides: the reader stages
+// them (stamp, identity, value) instead of what the ring shows, and an unavailable one is its missing input (D25).
+TEST(InputStagerTest, OverridesFeedADownstreamWithoutTheHistory) {
+  Fixture fx;
+  LazySource source(canonicalCloud(1));
+  fx.pushLazy(fx.cloud, 10 * kSec, source);
+  const auto& crop = fx.install(recipe("crop", {"cloud"}));
+  fx.publish(crop, 10 * kSec, croppedBundle(cloudObject(5)));  // what the ring shows
+  const auto& count = fx.install(recipe("count", {"owner/crop/cropped", "cloud"}));
+  const sdk::BuiltinObject evaluated = cloudObject(7);
+  const auto keepalive = std::make_shared<int>(0);
+  InputStager::Override override{
+      .stamp = 11 * kSec, .identity = {42, 43}, .value = InputStager::Object{{keepalive}, evaluated}};
+  const InputStager::Overrides overrides = [&override](std::string_view upstream, std::string_view output) {
+    return upstream == "owner/crop" && output == "cropped" ? &override : nullptr;
+  };
+
+  auto staged = fx.stager.stage(count, 12 * kSec, 0, overrides);
+  ASSERT_TRUE(staged.has_value()) << staged.error();
+  EXPECT_EQ(staged->stamp, 11 * kSec);
+  ASSERT_EQ(staged->inputs.size(), 2u);
+  EXPECT_EQ(staged->inputs[0].resolved, 11 * kSec);
+  EXPECT_EQ(staged->inputs[1].resolved, 10 * kSec);
+  const auto& key = staged->key.inputs;
+  EXPECT_TRUE(std::search(key.begin(), key.end(), override.identity.begin(), override.identity.end()) != key.end())
+      << "the override's identity is the input's";
+  const auto decoded = fx.decode(*staged);
+  ASSERT_EQ(decoded.values.size(), 2u);
+  ASSERT_NE(cloudIn(decoded.values[0]), nullptr);
+  EXPECT_EQ(cloudIn(decoded.values[0])->data.data(), evaluated.get<sdk::PointCloud>()->data.data()) << "not a copy";
+  EXPECT_NE(std::find(decoded.keepalives.begin(), decoded.keepalives.end(), keepalive), decoded.keepalives.end());
+
+  override.value = scripting::Unavailable{"no points"};
+  const auto unavailable = fx.stager.stage(count, 12 * kSec, 0, overrides);
+  ASSERT_FALSE(unavailable.has_value());
+  EXPECT_EQ(unavailable.error(), "on-demand: missing input 'owner/crop/cropped': no points");
+  EXPECT_EQ(fx.staged(count, 12 * kSec).inputs[0].resolved, 10 * kSec) << "without overrides, the ring";
+}
+
 // ---- The cache key ----------------------------------------------------------------------------------
 
 // §10: each input identity is part of the request's key (an object's uid and parser, a scalar sample's

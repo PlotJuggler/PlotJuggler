@@ -463,6 +463,36 @@ TEST(RecipeGraphTest, PinnedPerOwnerCapIsEnforced) {
   EXPECT_TRUE(fx.graph.upsert(other_owner).has_value()) << "the cap is per owner";
 }
 
+// Slice 8a-1: `bind` makes a transient evaluation's node as `upsert` would, installing nothing. It may declare no
+// output (an explicit evaluation infers them); `upsert` still needs one.
+TEST(RecipeGraphTest, BindValidatesWithoutInstalling) {
+  Fixture fx;
+  ASSERT_TRUE(fx.graph.upsert(cropRecipe()).has_value());
+  auto reader = chainedRecipe("reader", "owner/crop/cropped");
+  reader.outputs.clear();
+
+  const Expected<RecipeGraph::Node> bound = fx.graph.bind(reader);
+  ASSERT_TRUE(bound.has_value()) << bound.error();
+  EXPECT_EQ(bound->revision, 0u) << "never a graph revision";
+  EXPECT_EQ(bound->dataset, kDataset);
+  ASSERT_EQ(bound->bindings.size(), 1u);
+  EXPECT_EQ(bound->bindings[0].upstream, "owner/crop");
+  EXPECT_EQ(bound->bindings[0].name, "cropped");
+  EXPECT_NE(bound->compiled, nullptr);
+  EXPECT_EQ(fx.graph.find("owner/reader"), nullptr) << "nothing installed";
+  EXPECT_TRUE(fx.graph.dependentsOf({"owner/crop"}).empty()) << "no edge recorded";
+
+  auto unknown = cropRecipe("unknown");
+  unknown.inputs = {"nowhere"};
+  const auto refused = fx.graph.bind(unknown);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error(), "on-demand: unknown input 'nowhere'");
+  auto syntax_error = cropRecipe("syntax");
+  syntax_error.script = "return {";
+  EXPECT_FALSE(fx.graph.bind(syntax_error).has_value());
+  EXPECT_FALSE(fx.graph.upsert(reader).has_value()) << "an installed recipe declares its outputs";
+}
+
 // PIN-01: the graph half (retiring the finding's topic is the ring's).
 TEST(RecipeGraphTest, DismissAndDismissAllRemoveFindings) {
   Fixture fx;

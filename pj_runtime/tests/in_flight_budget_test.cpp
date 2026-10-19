@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -160,6 +161,18 @@ TEST(InFlightBudgetTest, AFrontWaiterIsServedFirst) {
   running.reset();
   pumpPostedDrains();
   EXPECT_EQ(grants.log, std::vector<std::string>{"front"});
+}
+
+// A ticket may outlive its budget (a queued job the caller keeps after the session went): the budget empties its line
+// when destroyed, so the ticket's cleanup touches nothing (the ASan lane catches the read of the freed budget).
+TEST(InFlightBudgetTest, ATicketMayOutliveItsBudget) {
+  auto budget = std::make_unique<InFlightBudget>(100);
+  Grants grants;
+  std::optional<InFlightBudget::Ticket> queued(budget->whenRoom(40, grants.to("queued")));
+  budget.reset();
+  queued.reset();
+  pumpPostedDrains();
+  EXPECT_TRUE(grants.log.empty());
 }
 
 }  // namespace

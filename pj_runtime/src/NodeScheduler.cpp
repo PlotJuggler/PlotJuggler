@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "OnDemandRun.h"
 #include "pj_datastore/saturating_time.hpp"
 
 namespace PJ {
@@ -208,15 +209,11 @@ void NodeScheduler::submit(
 
   EnginePool::Task task;
   task.compute = [store = &store_, run = hooks_.run, job](const EnginePool::CancelToken& token) {
-    Expected<InputStager::Decoded> decoded = InputStager::decode(*store, job->staged);
-    if (!decoded) {
-      job->decode_failed = true;
-      job->result = unexpected(scripting::ScriptError{std::move(decoded.error())});
-      return;
-    }
-    job->keepalives = std::move(decoded->keepalives);
-    job->options.cancelled = [token] { return token.cancelled(); };
-    job->result = run(*job->script, decoded->values, job->params_json, job->outputs, job->options);
+    StagedRun ran =
+        runStaged(*store, job->staged, run, *job->script, job->params_json, job->outputs, job->options, token);
+    job->keepalives = std::move(ran.keepalives);
+    job->result = std::move(ran.result);
+    job->decode_failed = ran.decode_failed;
     if (job->result && !token.cancelled()) {
       job->payloads = ResultHistory::serializeOutputs(job->outputs, *job->result);
     }

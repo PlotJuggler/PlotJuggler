@@ -56,10 +56,18 @@ class InputStager {
     /// hands it on with the object. Empty: the canonical codec decodes the entry.
     SessionManager::ParserBinding parser;
   };
+  /// An object decoded already (an upstream output its caller evaluated), with the libraries it needs. Declared
+  /// first, the keepalives outlive the object.
+  struct Object {
+    std::vector<Keepalive> keepalives;
+    sdk::BuiltinObject object;
+  };
   struct Input {
     std::string alias;  ///< `recipe.inputs[i]`: the name the script reads
-    /// A scalar value copied at staging, or an entry to decode (an upstream's output is its ring entry).
-    std::variant<double, Entry> value;
+    /// A scalar value copied at staging, an entry to decode (an upstream's output is its ring entry), or an object
+    /// an override supplied.
+    std::variant<double, Entry, Object> value;
+    Timestamp resolved = 0;  ///< the time of the sample it resolved to (a finding's real stamp)
   };
   struct Staged {
     ResultHistory::CacheKey key;  ///< the request's key, with no observations
@@ -74,6 +82,22 @@ class InputStager {
     std::vector<scripting::NamedValue> values;
   };
 
+  /// Tags an upstream's ring entry in a cache key: `{kRingIdentity, uid}`. An override's identity carries a tag of its
+  /// own, so a caller reading the ring stages the identity this stager does, and a stored result matches it.
+  static constexpr uint64_t kRingIdentity = 0;
+
+  /// An upstream output its caller evaluated itself, read instead of the history's ring: how an explicit evaluation
+  /// feeds a reader without touching an installed upstream (`GridRunner`).
+  struct Override {
+    Timestamp stamp = 0;  ///< the upstream result's time, at or before the requested one
+    /// Enters the reader's cache key in place of a ring entry's uid: equal for one result, distinct between two.
+    std::vector<uint64_t> identity;
+    /// A ring entry to decode, the decoded object, or why the output was unavailable (D25: a missing input).
+    std::variant<Entry, Object, scripting::Unavailable> value;
+  };
+  /// The override for output `output` of upstream `upstream`; null: read the history.
+  using Overrides = std::function<const Override*(std::string_view upstream, std::string_view output)>;
+
   /// Keeps references to the store and the history; they must outlive the stager.
   InputStager(const ObjectStore& store, const ResultHistory& history, ScalarSampler scalars, ParserLookup parsers);
 
@@ -84,7 +108,9 @@ class InputStager {
   /// finding is an input only from its real stamp (decided 2026-10-18). Error `on-demand: missing input '<alias>'` when
   /// an input has nothing at or before `t`, followed by `: <reason>` when it is an upstream output that was unavailable
   /// (D6, D25: no run, the caller clears).
-  [[nodiscard]] Expected<Staged> stage(const RecipeGraph::Node& node, Timestamp t, uint64_t epoch) const;
+  /// With `overrides`, an upstream output they cover is read from them instead (its stamp, its identity, its value).
+  [[nodiscard]] Expected<Staged> stage(
+      const RecipeGraph::Node& node, Timestamp t, uint64_t epoch, const Overrides& overrides = {}) const;
   /// GUI thread. The newest stamp among `node`'s raw inputs (an object topic's newest entry, a scalar's newest
   /// sample), found by the same lookups as `stage`, so nothing is fetched; an upstream's output is skipped (the
   /// caller follows the upstream's own inputs). nullopt when none has a sample: any stamp, zero and negative
@@ -94,11 +120,11 @@ class InputStager {
   /// as `stage` keys it, or a marker for one with nothing at or before `t`; false when any had nothing.
   bool appendRawIdentities(const RecipeGraph::Node& node, Timestamp t, std::vector<uint64_t>& out) const;
 
-  /// Any thread: touches only `store` (thread-safe) and the parser bindings `staged` carries. Fetches and
-  /// decodes each staged entry, an object through its parser under the parser's per-topic lock and a
-  /// canonical point cloud (an upstream's output among them) as a view over the store's bytes; each value carries its
-  /// alias and its entry's `payload_stamp_shift`. An entry gone since staging (evicted), or whose lazy fetch failed, is
-  /// the same missing-input error as `stage`'s.
+  /// Any thread: touches only `store` (thread-safe) and the parser bindings and objects `staged` carries. Fetches and
+  /// decodes each staged entry (an object staged decoded is passed on, its keepalives with it), an object through its
+  /// parser under the parser's per-topic lock and a canonical point cloud (an upstream's output among them) as a view
+  /// over the store's bytes; each value carries its alias and its entry's `payload_stamp_shift`. An entry gone since
+  /// staging (evicted), or whose lazy fetch failed, is the same missing-input error as `stage`'s.
   [[nodiscard]] static Expected<Decoded> decode(const ObjectStore& store, const Staged& staged);
 
  private:

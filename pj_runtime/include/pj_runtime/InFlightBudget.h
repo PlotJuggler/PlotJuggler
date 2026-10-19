@@ -27,8 +27,9 @@ namespace PJ {
 /// nothing else is reserved, rather than never.
 ///
 /// GUI thread only. A release never serves the line inside the call that released: it posts a drain to the event
-/// loop, which a consumer runs earlier at a point of its own (`drain`). The budget must outlive every reservation
-/// and ticket, hence the pool (a run still on the pool holds its reservation).
+/// loop, which a consumer runs earlier at a point of its own (`drain`). The budget must outlive every reservation,
+/// hence the pool (a run still on the pool holds its reservation). A ticket may outlive it: the budget empties its
+/// line when destroyed, so a waiter is never granted and its ticket's cleanup touches nothing.
 class InFlightBudget {
  public:
   /// What one on-demand run on the default limits may hold.
@@ -120,6 +121,11 @@ class InFlightBudget {
 
   InFlightBudget(const InFlightBudget&) = delete;
   InFlightBudget& operator=(const InFlightBudget&) = delete;
+  ~InFlightBudget() {
+    for (Waiter& waiter : waiters_) {
+      *waiter.queued = false;
+    }
+  }
 
   /// A reservation of `bytes` now: nobody waits, and they fit beside what is reserved (or nothing is).
   [[nodiscard]] std::optional<Reservation> tryReserve(std::size_t bytes);
