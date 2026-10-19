@@ -143,3 +143,4 @@ Slices 0-4, M, L and S have landed (batch 1). Batch 2 is slices 5a to 7, planned
 | 2026-10-18 | D30 wording decided (the lag's reference, "only moves forward" after a backward seek). Slice 6a-4 split into 6a-4a (the scheduler, the facade, the in-flight budget for on-demand) and 6a-4b (batch joins the budget). |
 | 2026-10-18 | Batch 2's remaining slices replanned from two independent plans (Fable, Codex): order 6a-4b, the SDK pin, 6a-5, 6c, 8a-1, 8a-2a, 8a-2b, 7a, 6b, 7b, the final SDK pin. SDK 0.37.0-dev.1 (the data-processor host contract, SDK #207) released as a pre-release and pinned. The plot-tab items move from 8a-2 to 8b; ABI-36 is dropped. |
 | 2026-10-19 | SDK 0.37.0 released (SDK #209), unchanged from 0.37.0-dev.1, and pinned: the batch-2 host contract is final. |
+| 2026-10-19 | SDK 0.38.0-dev.1 released (SDK #208: catalog v2, plot-tab scene tabs, dialog scene views, manifest badge, marker metadata constants) and pinned: batch 3's client surfaces. |

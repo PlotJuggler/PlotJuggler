@@ -2334,6 +2334,7 @@ const PJ_toolbox_host_vtable_t kToolboxVTable = {
     toolboxPushOwnedObject,
     toolboxRegisterObjectTopicOnDataset,
     toolboxSetObjectTopicRetention,
+    nullptr,  // acquire_catalog_snapshot_v2: not served, so PJ_HAS_TAIL_SLOT reports it absent
 };
 
 const PJ_object_write_host_vtable_t kSourceObjectWriteVTable = {
