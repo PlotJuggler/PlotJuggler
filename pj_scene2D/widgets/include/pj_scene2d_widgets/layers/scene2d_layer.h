@@ -59,6 +59,11 @@ class Scene2DLayer : public ISceneLayer {
     return borrowedSource();
   }
   [[nodiscard]] std::optional<int64_t> lastTrackerTimeNs() const noexcept;
+  /// Sets the annotation part of the row warning: why this layer's annotations are hidden (not paired with the
+  /// shown image), empty once they are shown. GUI thread.
+  void setAnnotationWarning(const QString& warning) {
+    setWarningPart(SceneWarningParts::Part::kAnnotation, warning);
+  }
 
  protected:
   /// Non-null only after attach() stores the session and before detach() clears it;

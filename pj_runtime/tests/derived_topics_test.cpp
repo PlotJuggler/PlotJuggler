@@ -47,6 +47,14 @@ TEST(DerivedTopicsTest, OnlyTheSnapshotTypesAreMarkedAsSnapshotStreams) {
 
 // findOrRegisterTopic reuses a topic only for byte-identical metadata, so a re-run of
 // the same recipe must find its topic again.
+// MED-05: a derived topic has no parser, so the tag is what makes Scene2D's image layer unwrap each serialized
+// sdk::Image record instead of handing it whole to the JPEG decoder (a black view).
+TEST(DerivedTopicsTest, DerivedImageTopicsDeclareTheCanonicalImageCodec) {
+  EXPECT_EQ(parsed(BuiltinObjectType::kImage).value("image_codec", ""), "pj_image_v1");
+  EXPECT_FALSE(parsed(BuiltinObjectType::kPointCloud).contains("image_codec"));
+  EXPECT_FALSE(parsed(BuiltinObjectType::kDepthImage).contains("image_codec"));
+}
+
 TEST(DerivedTopicsTest, TheMetadataIsByteStableSoARefillFindsItsTopicAgain) {
   EXPECT_EQ(
       PJ::derivedTopicMetadata(BuiltinObjectType::kSceneEntities),

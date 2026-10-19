@@ -7,6 +7,7 @@
 #include <QGraphicsOpacityEffect>
 #include <QLabel>
 #include <QPixmap>
+#include <QPointer>
 #include <QSizePolicy>
 #include <QStackedWidget>
 #include <algorithm>
@@ -15,10 +16,13 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include "pj_datastore/saturating_time.hpp"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/DerivedTopics.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_core/borrowed_media_source.h"
 #include "pj_scene2d_core/composite_media_source.h"
@@ -243,7 +247,8 @@ std::unique_ptr<ISceneLayer> createDepthImageLayer(
   }
   const auto binding = session->parserBindingForObjectTopic(topic_id);
   const bool canonical = binding.parser == nullptr;
-  auto resolved = resolveImage(binding.parser, binding.mutex, canonical, first->timestamp, first->payload);
+  auto resolved = resolveImage(
+      binding.parser, binding.mutex, canonical, first->timestamp, first->payload, first->payload_stamp_shift);
   return resolved.has_value() && isDepthEncoding(resolved->image.encoding);
 }
 
@@ -490,6 +495,10 @@ std::vector<ObjectTopicId> Scene2DDockWidget::compositeTopicOrderForTesting() co
   return composite_topic_order_;
 }
 
+std::optional<MediaFrame> Scene2DDockWidget::takeCompositeFrameForTesting() {
+  return composite_ != nullptr ? composite_->takeFrame() : std::nullopt;
+}
+
 QString Scene2DDockWidget::xmlTag() const {
   return u"scene2d"_s;
 }
@@ -615,6 +624,66 @@ bool Scene2DDockWidget::acceptsObjectType(sdk::BuiltinObjectType object_type) co
   return handlesObjectType(object_type);
 }
 
+namespace {
+
+/// The image interval around the entry at `entry_ts` on `topic`: the median positive gap among its last 16 entries at
+/// or before it, 100 ms when fewer than two gaps are known.
+int64_t imageCadence(const ObjectStore& store, ObjectTopicId topic, int64_t entry_ts) {
+  constexpr int64_t kFallback = 100'000'000;
+  const EntryTimestampsView timestamps = store.entryTimestamps(topic);
+  const Timestamp* end = std::upper_bound(timestamps.begin(), timestamps.end(), entry_ts);
+  const Timestamp* begin = end - std::min<std::ptrdiff_t>(end - timestamps.begin(), 16);
+  std::vector<int64_t> gaps;
+  for (const Timestamp* at = begin; at + 1 < end; ++at) {
+    if (at[1] > at[0]) {
+      gaps.push_back(saturatingSub(at[1], at[0]));
+    }
+  }
+  if (gaps.empty()) {
+    return kFallback;
+  }
+  const auto middle = gaps.begin() + static_cast<std::ptrdiff_t>(gaps.size() / 2);
+  std::nth_element(gaps.begin(), middle, gaps.end());
+  return *middle;
+}
+
+/// Sets `layer`'s annotation warning from the event loop: the composite is polled inside the viewer's render, and a
+/// clear made later must queue behind a set made earlier.
+void postAnnotationWarning(const QPointer<Scene2DLayer>& layer, const QString& text) {
+  if (layer) {
+    QMetaObject::invokeMethod(
+        layer.data(),
+        [layer, text] {
+          if (layer) {
+            layer->setAnnotationWarning(text);
+          }
+        },
+        Qt::QueuedConnection);
+  }
+}
+
+}  // namespace
+
+// Only an on-demand derived topic's annotations name the image they were made from; a parser's `image_topic` is
+// informational (a header frame id), so those are shown as they are. The warning reaches the layer row once per change.
+void Scene2DDockWidget::setLayerPairing(
+    CompositeMediaSource& composite, SessionManager& session, ObjectTopicId topic, const void* identity,
+    Scene2DLayer* layer) {
+  const ObjectStore* store = &session.objectStore();
+  QPointer<Scene2DLayer> guarded(layer);
+  auto last = std::make_shared<std::optional<std::string>>();  // empty: nothing delivered yet, so the first is
+  const ObjectTopicDescriptor& descriptor = store->descriptor(topic);
+  composite.setLayerPairing(
+      identity, descriptor.topic_name, isDerivedObjectTopic(descriptor),
+      [store, topic](int64_t entry_ts) { return imageCadence(*store, topic, entry_ts); },
+      [guarded, last](const std::string& warning) {
+        if (*last != warning) {
+          *last = warning;
+          postAnnotationWarning(guarded, QString::fromStdString(warning));
+        }
+      });
+}
+
 void Scene2DDockWidget::syncViewLayers(const std::vector<ISceneLayer*>& ordered_layers) {
   auto next = std::make_unique<CompositeMediaSource>();
   composite_topic_order_.clear();
@@ -624,18 +693,22 @@ void Scene2DDockWidget::syncViewLayers(const std::vector<ISceneLayer*>& ordered_
       continue;
     }
     const auto info = layer->info();
-    if (!info.visible) {
-      continue;
-    }
     auto* scene2d_layer = dynamic_cast<Scene2DLayer*>(layer);
-    if (scene2d_layer == nullptr || scene2d_layer->mediaSource() == nullptr) {
+    if (scene2d_layer == nullptr) {
       continue;
     }
     // Tag the layer with its underlying source pointer so the rebuilt composite
     // can inherit this layer's last frame from the outgoing one (carry-over
     // below), instead of starting blank and forcing a re-decode.
     MediaSource* underlying = scene2d_layer->mediaSource();
+    if (!info.visible || underlying == nullptr) {
+      postAnnotationWarning(QPointer<Scene2DLayer>(scene2d_layer), QString());  // left out, it hides nothing
+      continue;
+    }
     next->addLayer(std::make_unique<BorrowedMediaSource>(underlying), 1.0f, underlying);
+    if (SessionManager* session = sessionManager()) {
+      setLayerPairing(*next, *session, info.topic_id, underlying, scene2d_layer);
+    }
     composite_topic_order_.push_back(info.topic_id);
   }
 

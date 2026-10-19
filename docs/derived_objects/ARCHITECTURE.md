@@ -161,11 +161,15 @@ fixes below; the Python binder comes with slice 10.
   the TF ingest tap (a derived TF topic would feed the dataset's buffer). The prototype's
   `parseOutputSpec` accepted any builtin type, so a script could declare an output it could
   never return.
-- **Images and depth (built, slice 9a-1; the codec and its session wiring are 9a-2's):** an
-  image or depth image decodes, on the run's worker, through the headless codec seam
-  (`pj_scripting/image_decoder.h`, `RunOptions::image_decoder`) into its original samples as
-  floats: a uint16 depth keeps its millimetres, nothing is normalized for display. Without a
-  decoder, `decode` reports "no image decoder".
+- **Images and depth (built, slices 9a-1 and 9a-2):** an image or depth image decodes, on the
+  run's worker, through a headless codec the shell injects (`pj_scripting/image_decoder.h`;
+  `pj_app`'s `SceneImageDecoder` over Scene2D's JPEG/PNG codecs and the raw encodings, handed to
+  `SessionManager::setImageDecoder`, so `pj_runtime` links no codec), into its original samples
+  as floats: a uint16 depth keeps its millimetres, nothing is normalized for display. Without
+  the codec (a build without Scene2D), `decode` reports "no image decoder". The decoder decodes
+  only a payload whose container is what its encoding says, and charges before a codec runs
+  its output, the input copy and a bound on its workspace (row pointers, row buffers, a
+  multi-scan JPEG's coefficients).
   Decoded pixels are copies charged to the run's native budget,
   which the in-flight reservation already covers; a run decodes each input once (a per-run
   memo, not a cache across nodes: MED-01 changed). The native operations
@@ -176,7 +180,9 @@ fixes below; the Python binder comes with slice 10.
   name included) and its own stamp on the dataset clock (on an image, 0 is a stamp, which a
   merge's shift moves); annotations for no image input take the result's stamp
   (`RunOptions::result_stamp`). An input with no store topic (an evaluation's chained image) is
-  named by its input name. Video waits for slice 9b.
+  named by its input name. Scope: a `compressedDepth` stream is unsupported ("unsupported image
+  encoding"), and an 8-bit grey PNG decodes to 3 channels (Scene2D's PNG codec expands it to RGB;
+  a 16-bit one keeps its single channel). Video waits for slice 9b.
 
 ## 7. Time and alignment
 
@@ -1045,8 +1051,21 @@ proposed (N1, N2).
     is read as two saved datasets, that is, as mixed.
   - The payload sources of robot-model and trail layers (the robot-description selector,
     a pose trail's topic) stay outside the gate (GAP-47).
-- **The Scene2D pairing check** (annotation `image_topic` plus cadence) applies to derived
-  annotations too.
+- **The Scene2D pairing check (built, slice 9a-2):** an annotation of an on-demand derived
+  topic naming its image (`image_topic` not empty) is drawn only over that image, at its time:
+  the base layer's store topic must match and its timestamp must lie within one cadence (the
+  median gap of the image topic's last 16 entries, 100 ms with fewer) of the stamp of the frame
+  actually delivered, never the tracker's instant (`CompositeMediaSource::setLayerPairing`,
+  wired by `Scene2DDockWidget`, which marks the layer from the topic's `pj_derived` metadata).
+  That stamp is the image's own (`DecodedFrame::stamp`: its payload's plus the entry's merge
+  shift), which a script stamps the annotations with; the cadence is looked up around the
+  frame's store entry (`DecodedFrame::entry_ts`; under embedded timestamps a parser's record
+  stamp is the header's, not the entry's). A rejected annotation stays retained and is checked
+  again at every composite; the layer row says why (`SceneWarningParts::Part::kAnnotation`),
+  and the reason leaves the row when the layer is hidden. A parser's annotations are shown as
+  they are: the `image_topic` of the shipped yolo handler is the header's frame id, which is
+  informational. Known limit: the topics compare by bare name, so where two datasets share a
+  topic name an annotation can pair with the other dataset's image of that name.
 - **Scene tabs** are kinds of `pj.plot_tabs.v1` tabs. **Dialog-embedded scene views** give a
   plugin panel a live 3D or 2D view.
 
@@ -1100,7 +1119,7 @@ payload (§9).
 ## 19. Measurements
 
 These come from the prototype, whose design document describes the machine and method,
-except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a, slice 6a-5, slice 6c, slice 7a, slice 8a-1, slice 6b, slice 8a-2b and slice 9a-1 rows. The slice 2 and 3 rows are measured on this stack by
+except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a, slice 6a-5, slice 6c, slice 7a, slice 8a-1, slice 6b, slice 8a-2b, slice 9a-1 and slice 9a-2 rows. The slice 2 and 3 rows are measured on this stack by
 `EngineFreezeBench` (`pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`), from
 the call until the result is complete, as two different metrics:
 - **GUI-thread CPU time**, as the longest single stretch (the call or one event-loop
@@ -1143,6 +1162,7 @@ Linux, RelWithDebInfo.
 | TF snapshot after slice 5a (copy-on-write; measured on this stack by `TransformSnapshotBench`, `pj_tf/tests/tf_buffer_test.cpp`, `PJ_BENCH=1`; 25 edges at 100 Hz, every sample distinct, median of 5) | `snapshot()`: 0.02 µs and 0 bytes at any size. The next write while it is held copies the state once, on the writing thread under the buffer's write lock: live 5 s window 0.15 ms / 0.9 MB of samples, 60 s window 2.9 ms / 10.8 MB, complete 1 h file 72 ms / 648 MB (only when something writes the file buffer after a snapshot, e.g. a robot model's fixed-joint bridges); a buffer nobody writes is never copied. Consumer rule: during a dataset's TF ingest (a first file load writes the active buffer, streaming never ends) a fresh snapshot per revision makes every next write copy the growing state, quadratic over a load; take a new snapshot no faster than the brake rate there, or wait for the ingest to end |
 | Native point-cloud operations (slice 5n; `PointCloudOpsBench`, `pj_scripting/tests/native_ops_test.cpp`, `PJ_BENCH=1`; median of 20 calls on a 260k-point XYZI float32 scan, flat and as 64 x 4096 with padded rows, which cost the same per point) | `filterByField` (50% kept) 3.0 ns per point, `cropBox` (30% kept) 9.5 ns, `bounds` 3.2 ns, `extremePoint` 0.9 ns, `transformXyz` 6.0 ns, a full `nextFinitePoint` iteration 6 ns. The same loops with a datatype and comparison switch per point, a filter predicate evaluated twice and a division per record run 1.25x to 5.3x slower |
 | Native image operations (slice 9a-1; `ImageOpsBench`, `pj_scripting/tests/image_ops_test.cpp`, `PJ_BENCH=1`; median of 20 calls on 1920 x 1080 decoded pixels, three runs) | Per pixel, RGB: `to_gray` 1.2 ns, `threshold` 1.8 ns (1% matching) to 6.3-6.7 ns (50%: 1M points collected; 5.9 ns while the threshold was rounded to float), `stats` 3.2 ns, a whole-image `crop` 1.3 ns; depth `to_point_cloud` (16UC1) 7.7 ns. Each comparison is a templated kernel, dispatched once per call |
+| Image decode and the on-demand request (slice 9a-2; `SceneImageDecoderBench`, `pj_app/tests/scene_image_decoder_test.cpp`, and `OnDemandMediaBench`, `pj_runtime/tests/on_demand_media_test.cpp`, `PJ_BENCH=1`; three runs) | `SceneImageDecoder` at 1080p: a JPEG 10.8 ms (Scene2D's turbojpeg plus the float conversion), a PNG 7.8 ms, raw rgb8 2.5 ms (1.2 ns per pixel); all run on the pool worker. GUI time per cold `requestAt` of a recipe that decodes and thresholds a 1080p image: 5.6-5.8 µs median (51 requests, a raw fake decoder: the decode runs on the worker, so the codec adds no GUI time), the same as for a 260k-point cloud: independent of the image's size (GAP-26) |
 | `ResultHistory` after slice 6a-2 (`ResultHistoryBench`, `pj_runtime/tests/result_history_test.cpp`, `PJ_BENCH=1`; three runs) | `lookup`, median of 1001 calls, the store's `at` per output included: 0.10-0.20 µs for a hit or a miss at 1, 100 and 10,000 results per node. 600 results of a 260k-point XYZI cloud at 10 Hz under the default limits: the ring holds 253.9 MiB (64 results); the compute cache 254 MiB with a decoded copy of each ring-held result → 11 KB without. Publication on the GUI thread (`PublishCost`, serialized there, 50 to 100 entries per topic): median 4-8 µs with a 64-byte cloud, 177-183 µs with a 1.5 MB one. One that removes nothing, at 600 to 800 retained results (`PublishCostAt600RetainedResults`): 11.8-12.7 µs with a drop predicate the store scans every entry for → 2.3 µs without one |
 | Streaming poll, processors advancing over every topic with nothing new (slice 4): 500 topics, 20 single-input filters + 3 two-input transforms, one 5-row chunk per 50 ms tick on the 23 inputs; median of 400 calls, from a throwaway benchmark that is not kept | Buffer 5 s (100 chunks per input): 6.2 µs (max 11). 15 s: 12.5 µs. 60 s: 76 µs (max 89). 150 s: 215 µs. 5 min: 707 µs. 10 min (12,000 chunks): 2.7 ms (max 3.7). With the idle-node gate (§16): 1.5 µs at 100, 300, 1,200, 3,000 and 6,000 chunks (max 2.3 to 6.2) and 1.6 µs at 12,000 (max 7.2), flat |
 

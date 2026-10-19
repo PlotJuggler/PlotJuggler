@@ -167,7 +167,8 @@ Expected<InputStager::Decoded> InputStager::decode(const ObjectStore& store, con
       if (entry.parser) {
         decoded.keepalives.push_back(entry.parser.keepalive);
       }
-      decoded.values.push_back({input.alias, std::move(*parsed), resolved->payload_stamp_shift});
+      decoded.values.push_back(
+          {input.alias, std::move(*parsed), resolved->payload_stamp_shift, store.descriptor(entry.topic).topic_name});
     }
   }
   return decoded;

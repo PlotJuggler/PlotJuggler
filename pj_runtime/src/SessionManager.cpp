@@ -193,6 +193,7 @@ SessionManager::SessionManager(QObject* parent)
         return changes;
       };
   on_demand.parsers = [this](ObjectTopicId topic) { return parserBindingForObjectTopic(topic); };
+  on_demand.scheduling.image_decoder = [this] { return image_decoder_; };
   on_demand.scheduling.tf = [this](DatasetId dataset) { return onDemandTf(dataset); };
   on_demand.scheduling.tf_revision = [this](DatasetId dataset) { return onDemandTfRevision(dataset); };
   on_demand.scheduling.epoch = [this](DatasetId dataset) {

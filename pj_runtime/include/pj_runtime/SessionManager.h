@@ -45,6 +45,9 @@ class InFlightBudget;
 class OnDemandService;
 class RefillGuard;
 class TransformService;
+namespace scripting {
+class IImageDecoder;
+}  // namespace scripting
 
 /// Result of resolving a persisted dataset identity against the live session.
 /// `ambiguous` distinguishes "not loaded yet" from multiple equally valid
@@ -232,6 +235,12 @@ class SessionManager : public QObject {
   void setTransformService(TransformService* service);
   /// Replaces the clock the TF snapshot brake reads; for tests.
   void setTfClock(std::function<std::chrono::steady_clock::time_point()> clock);
+  /// What on-demand scripts decode images through (`scripting::RunOptions::image_decoder`): the shell owns the codec
+  /// (pj_app's `SceneImageDecoder`, where Scene2D is built), so the runtime links none. A run keeps the decoder it was
+  /// submitted with; without one, a script's `decode` reports "no image decoder". GUI thread.
+  void setImageDecoder(std::shared_ptr<const scripting::IImageDecoder> decoder) {
+    image_decoder_ = std::move(decoder);
+  }
 
   [[nodiscard]] DataReader createReader() const;
 
@@ -925,6 +934,7 @@ class SessionManager : public QObject {
   // Consumed dataset -> anchor, only while rebindOnDemandAfterMerge re-installs: the resolver's remap.
   std::unordered_map<DatasetId, DatasetId> merged_into_;
   QPointer<TransformService> transform_service_;
+  std::shared_ptr<const scripting::IImageDecoder> image_decoder_;
   // How long a TF snapshot serves on-demand runs while its dataset ingests: the brake rate.
   static constexpr std::chrono::milliseconds kTfSnapshotPeriod{500};
   std::function<std::chrono::steady_clock::time_point()> tf_clock_ = [] { return std::chrono::steady_clock::now(); };

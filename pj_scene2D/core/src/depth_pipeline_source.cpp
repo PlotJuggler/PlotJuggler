@@ -245,7 +245,8 @@ std::optional<DecodedFrame> DepthPipelineSource::decodeAt(int64_t ts_ns) {
   // Depth arrives as a canonical sdk::Image with a depth encoding (there is no
   // kDepthImage producer); resolve it (via the parser or a pj_image_v1 blob), then
   // convert to raw metric depth (the colormap is applied later on the GPU).
-  auto resolved = resolveImage(parser_, parser_mutex_, canonical_, entry->timestamp, entry->payload);
+  auto resolved =
+      resolveImage(parser_, parser_mutex_, canonical_, entry->timestamp, entry->payload, entry->payload_stamp_shift);
   if (!resolved.has_value()) {
     fprintf(
         stderr, "[DepthPipelineSource] resolve failed at ts=%lld: %s\n", static_cast<long long>(ts_ns),
@@ -264,7 +265,12 @@ std::optional<DecodedFrame> DepthPipelineSource::decodeAt(int64_t ts_ns) {
   if (!depth.has_value()) {
     return std::nullopt;
   }
-  return decodeDepthImage(*depth, resolved->pts);
+  auto frame = decodeDepthImage(*depth, resolved->pts);
+  if (frame) {
+    frame->stamp = resolved->stamp;
+    frame->entry_ts = entry->timestamp;
+  }
+  return frame;
 }
 
 void DepthPipelineSource::setFrameReadyCallback(std::function<void()> cb) {

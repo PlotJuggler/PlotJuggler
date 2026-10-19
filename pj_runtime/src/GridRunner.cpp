@@ -529,6 +529,8 @@ void GridRunner::advance(const std::shared_ptr<Job>& job) {
 void GridRunner::submitRun(const std::shared_ptr<Job>& job, InputStager::Staged staged) {
   const Job::Step& step = job->chain[job->step];
   job->options.query_time = step.node.recipe.query_time ? job->grid[job->next] : staged.stamp;
+  job->options.image_decoder = hooks_.image_decoder ? hooks_.image_decoder() : nullptr;
+  job->options.result_stamp = staged.stamp;
   job->staged = std::move(staged);
   job->running = true;
   EnginePool::Task task;

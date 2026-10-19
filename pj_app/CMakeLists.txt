@@ -110,6 +110,8 @@ add_library(pj_app_shell OBJECT
 
 if(TARGET pj_scene2d_widgets)
     target_sources(pj_app_shell PRIVATE
+        src/SceneImageDecoder.cpp
+        src/SceneImageDecoder.h
         src/ui/Scene2DConfigPanel.cpp
         src/ui/Scene2DConfigPanel.h)
 endif()
@@ -351,6 +353,22 @@ if(PJ_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/raster/ipc
         ${CMAKE_SOURCE_DIR}/pj_runtime/include
     )
+
+    # The codec on-demand scripts decode through, compiled standalone over Scene2D's core; turbojpeg and libpng
+    # encode its fixtures (no FFmpeg).
+    if(TARGET pj_scene2d_widgets AND NOT EMSCRIPTEN)
+        find_package(libjpeg-turbo REQUIRED)
+        find_package(PNG REQUIRED)
+        pj_add_test_runner(pj_app_image_decoder_tests
+            MAIN plain WARNINGS
+            SOURCES tests/scene_image_decoder_test.cpp src/SceneImageDecoder.cpp src/SceneImageDecoder.h
+            LIBS pj_scene2d_core pj_scripting libjpeg-turbo::libjpeg-turbo PNG::PNG)
+        target_include_directories(pj_app_image_decoder_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/pj_scene2D/tests)
+        if(MSVC)
+            target_compile_options(pj_app_image_decoder_tests PRIVATE /wd4611)  # test_png_io.h's libpng setjmp
+        endif()
+    endif()
 
     # Guards the meme splash pool against its two silent failure modes: a meme
     # present in resources/memes/ but absent from resources.qrc is invisible at

@@ -22,6 +22,7 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_scene2d_core/borrowed_media_source.h"
 #include "pj_scene2d_core/composite_media_source.h"
+#include "pj_scene2d_core/depth_pipeline_source.h"
 #include "test_png_io.h"
 
 namespace {
@@ -163,7 +164,8 @@ struct FrameSync {
   std::condition_variable cv;
   bool ready = false;
 
-  void install(PJ::ImagePipelineSource& source) {
+  template <class Source>
+  void install(Source& source) {
     source.setFrameReadyCallback([this]() {
       std::lock_guard lock(mutex);
       ready = true;
@@ -607,6 +609,56 @@ TEST(ImagePipelineSourceTest, CanonicalCodecDecodesSerializedRawRgb8) {
   EXPECT_EQ(frame->base->format, PJ::PixelFormat::kRGB888);
   ASSERT_NE(frame->base->pixels, nullptr);
   EXPECT_EQ(*frame->base->pixels, rgb);
+}
+
+// A delivered frame carries the image's own stamp on the dataset clock (its payload's, plus the shift a merge gave the
+// entry), which annotations made from it carry, and the time of its store entry. Both canonical sources.
+TEST(ImagePipelineSourceTest, CanonicalFramesCarryThePayloadStampOnTheDatasetClock) {
+  constexpr int64_t kSec = 1'000'000'000;
+  const char* kMetadata = R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})";
+  for (const bool depth : {false, true}) {
+    SCOPED_TRACE(depth);
+    const std::vector<uint8_t> bytes(depth ? 2 : 3, 7);  // one pixel
+    PJ::sdk::Image image;
+    image.width = 1;
+    image.height = 1;
+    image.encoding = depth ? "16UC1" : "rgb8";
+    image.data = PJ::Span<const uint8_t>(bytes.data(), bytes.size());
+    PJ::ObjectStore store;
+    const auto anchor = store.registerTopic({PJ::DatasetId{1}, "/cam", kMetadata});
+    const auto merged = store.registerTopic({PJ::DatasetId{2}, "/cam", kMetadata});
+    ASSERT_TRUE(anchor && merged);
+    image.timestamp_ns = 1'000;
+    ASSERT_TRUE(store.pushOwned(*anchor, 1'000, PJ::serializeImage(image)));
+    image.timestamp_ns = 3 * kSec;  // its entry is at 5 s
+    ASSERT_TRUE(store.pushOwned(*merged, 5 * kSec, PJ::serializeImage(image)));
+    ASSERT_TRUE(store.mergeDatasets(PJ::DatasetId{1}, {{PJ::DatasetId{2}, 2 * kSec}}));
+
+    FrameSync sync;
+    std::unique_ptr<PJ::MediaSource> source;
+    if (depth) {
+      auto made = std::make_unique<PJ::DepthPipelineSource>(&store, *anchor);
+      sync.install(*made);
+      source = std::move(made);
+    } else {
+      auto made =
+          std::make_unique<PJ::ImagePipelineSource>(&store, *anchor, PJ::ImagePipelineSource::CanonicalImageCodec{});
+      sync.install(*made);
+      source = std::move(made);
+    }
+    source->setTimestamp(7 * kSec);
+    ASSERT_TRUE(sync.waitReady());
+    const auto frame = source->takeFrame();
+    ASSERT_TRUE(frame);
+    // Depth arrives as a pixel layer, an image as the base; the compositor takes either as the shown frame.
+    ASSERT_TRUE(depth ? frame->pixel_layers.size() == 1 : frame->base.has_value());
+    const PJ::DecodedFrame& shown = depth ? frame->pixel_layers[0].frame : *frame->base;
+    EXPECT_EQ(shown.stamp, std::optional<int64_t>(5 * kSec));
+    EXPECT_EQ(shown.entry_ts, std::optional<int64_t>(7 * kSec));  // a depth frame's pts is its own stamp
+    if (!depth) {
+      EXPECT_EQ(shown.pts, 7 * kSec);
+    }
+  }
 }
 
 TEST(ImagePipelineSourceTest, CanonicalCodecDecodesSerializedPngWrappedRgb8) {

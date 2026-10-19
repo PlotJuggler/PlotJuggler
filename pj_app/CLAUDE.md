@@ -10,6 +10,9 @@ The executable shell. Owns `MainWindow`, the application menus/toolbars/status b
 - App-level dialogs (`PreferencesDialog`, `DiagnosticsDialog`, etc.) and their navigation rows.
 - The shell's left panel, curve list, file loader, theme manager, title bar.
 - Glue code that constructs an `AppSession`, then wires it to docked widgets.
+- Concrete codecs the runtime reaches only through an interface: `SceneImageDecoder` (`src/SceneImageDecoder.h`, with
+  Scene2D), the `scripting::IImageDecoder` on-demand scripts decode through, which `MainWindow` hands to
+  `SessionManager::setImageDecoder` so `pj_runtime` links no Scene2D library.
 - Browser-only host integration (`BrowserFileStore`, `FileSelectionService`,
   `BrowserPersistence`) whose lifetime and policy are tied to the executable.
 - `main.cpp`.
@@ -48,6 +51,7 @@ The main window wears the **system** title bar by default and `TitleBar` is just
 `pj_app_gui_tests` links `pj_app_shell` and `pj_resources` for GUI scenarios and
 runtime-backed controller/binder tests. `pj_app_unit_tests` compiles the Qt-only
 helpers directly. Both use `pj_add_test_runner` with the shared GUI main;
+`pj_app_image_decoder_tests` compiles `SceneImageDecoder` over `pj_scene2d_core` alone (plain main);
 `gtest_discover_tests` registers each case under its runner's name and launches
 it in a fresh process with a 120-second timeout. Run them through ctest to keep
 MainWindow's process-global widget state isolated between cases.

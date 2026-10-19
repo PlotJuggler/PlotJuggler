@@ -50,6 +50,7 @@ GridRunner::Hooks evaluationHooks(const OnDemandService::Services& services) {
   hooks.tf = scheduling.tf;
   hooks.epoch = scheduling.epoch;
   hooks.run = scheduling.run;
+  hooks.image_decoder = scheduling.image_decoder;
   return hooks;
 }
 

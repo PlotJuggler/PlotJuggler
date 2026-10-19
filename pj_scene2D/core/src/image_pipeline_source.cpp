@@ -465,7 +465,8 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
     // Resolve the entry's bytes into a canonical sdk::Image (via the parser, or by
     // deserializing a pj_image_v1 blob), then run the shared decode + rectify path.
     // resolveImage is the single source of truth, shared with DepthPipelineSource.
-    auto resolved = resolveImage(parser_, parser_mutex_, canonical_image_codec_, entry->timestamp, entry->payload);
+    auto resolved = resolveImage(
+        parser_, parser_mutex_, canonical_image_codec_, entry->timestamp, entry->payload, entry->payload_stamp_shift);
     if (!resolved.has_value()) {
       const ParserObjectError& error = resolved.error();
       switch (error.kind) {
@@ -492,6 +493,8 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
     auto df = decodeCanonicalImage(resolved->image, resolved->pts);
     if (df.has_value()) {
       df->frame_id = resolved->image.frame_id;  // carry the source frame so the viewer can find its CameraInfo.
+      df->stamp = resolved->stamp;
+      df->entry_ts = entry->timestamp;
       rectifyIfCalibrated(*df);
     }
     return df;
@@ -513,6 +516,7 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
     return std::nullopt;  // only an empty image clears
   }
   result->pts = entry->timestamp;
+  result->entry_ts = entry->timestamp;
   return std::move(*result);
 }
 

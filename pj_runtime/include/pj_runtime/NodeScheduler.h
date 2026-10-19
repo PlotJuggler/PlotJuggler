@@ -89,14 +89,18 @@ class NodeScheduler {
       Span<const scripting::OutputSpec>, const scripting::RunOptions&)>;
   /// Called on the GUI thread with the node's key.
   using KeyCallback = std::function<void(const std::string&)>;
+  /// What a run decodes images through (`RunOptions::image_decoder`), read when the run is submitted (GUI thread);
+  /// null: a script's `decode` reports "no image decoder".
+  using ImageDecoderProvider = std::function<std::shared_ptr<const scripting::IImageDecoder>()>;
 
   struct Hooks {
-    TfProvider tf;                   ///< empty: no dataset has TF
-    TfRevisionProvider tf_revision;  ///< empty: `tf`'s snapshot's revision, or 0
-    EpochProvider epoch;             ///< empty: every dataset stays at epoch 0
-    RunFunction run;                 ///< empty: `scripting::runOnDemandScript`
-    KeyCallback published;           ///< the history took a result of the node: the ring may show something new
-    KeyCallback state_changed;       ///< the node's status, detail or lag changed
+    TfProvider tf;                       ///< empty: no dataset has TF
+    TfRevisionProvider tf_revision;      ///< empty: `tf`'s snapshot's revision, or 0
+    EpochProvider epoch;                 ///< empty: every dataset stays at epoch 0
+    RunFunction run;                     ///< empty: `scripting::runOnDemandScript`
+    KeyCallback published;               ///< the history took a result of the node: the ring may show something new
+    KeyCallback state_changed;           ///< the node's status, detail or lag changed
+    ImageDecoderProvider image_decoder;  ///< empty: no run has a decoder
   };
 
   NodeScheduler(

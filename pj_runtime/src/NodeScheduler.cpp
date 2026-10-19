@@ -202,6 +202,8 @@ void NodeScheduler::submit(
   job->tf_revision = tf != nullptr ? tf->revision() : 0;
   job->options.tf = std::move(tf);
   job->options.query_time = node.recipe.query_time ? job->requested_t : staged.stamp;
+  job->options.image_decoder = hooks_.image_decoder ? hooks_.image_decoder() : nullptr;
+  job->options.result_stamp = staged.stamp;
   job->staged = std::move(staged);
   job->script = node.compiled;
   job->params_json = node.recipe.params_json;

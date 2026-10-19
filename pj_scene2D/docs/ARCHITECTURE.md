@@ -981,8 +981,30 @@ future entry (§R4.8). A 10 Hz detection overlay composited on a
 60 Hz video is correct: the same bounding box persists across
 multiple video frames until replaced by a newer annotation.
 
-No automatic skew rejection. Multi-rate is the norm — the compositor
-trusts that an entry exists in the store until explicitly evicted.
+No automatic skew rejection for an overlay that is not paired (§8.3a). Multi-rate is the norm — the
+compositor trusts that an entry exists in the store until explicitly evicted.
+
+### 8.3a Annotation pairing
+
+`CompositeMediaSource::setLayerPairing` gives a layer its store topic, its image cadence and
+a warning sink; `Scene2DDockWidget::syncViewLayers` sets it for every layer. At each
+composite, an annotation naming its image (`image_topic` not empty) of a layer set to pair its
+annotations (`Scene2DDockWidget` sets it for an on-demand derived topic, from its `pj_derived`
+metadata) is kept only when the base layer (the first with pixels) has that topic and the
+annotation's timestamp lies within one cadence of the delivered frame's own stamp
+(`DecodedFrame::stamp`: the image payload's `timestamp_ns` plus the entry's
+`payload_stamp_shift`, which `resolveImage` computes; the pts when a frame has none); the
+cadence is looked up around the frame's store entry (`DecodedFrame::entry_ts`, which survives
+rectification; `pts` can be a parser's record stamp or the image's own). An image still
+decoding never pairs with the tracker's instant. Rejected annotations stay in the layer's retained contribution and are
+checked again when pixels arrive; they never reach the renderer. The warning sink is called
+at every composite (empty once nothing is hidden); the dock delivers a change to the layer
+row (`SceneWarningParts::Part::kAnnotation`) from the event loop, because the composite is
+polled inside the viewer's render; a layer left out of the composite (hidden) has its reason
+cleared the same way, so the clear queues behind a reason posted earlier. A parser's
+annotations are never checked and keep the multi-rate behaviour above: their `image_topic` is
+informational (the yolo handler sets the header's frame id). Derived annotations carry their image's topic and stamp
+(docs/derived_objects/ARCHITECTURE.md §6, §17), so the check applies to them unchanged.
 
 ### 8.4 frame_id correlation (optional)
 

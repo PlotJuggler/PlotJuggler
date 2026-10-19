@@ -196,6 +196,8 @@ if(PJ_BUILD_TESTS)
         tests/on_demand_cursor_follow_test.cpp
         # The on-demand live edge: a live announcement requests demanded recipes at their inputs' newest stamp.
         tests/on_demand_live_edge_test.cpp
+        # On-demand media: the real Luau run with an injected (fake) decoder and the stored pairing.
+        tests/on_demand_media_test.cpp
         # Explicit evaluations: the window grid, chains with job-local upstream results, budgets and the report.
         tests/grid_runner_test.cpp
         # links the shared marker engine the service drives

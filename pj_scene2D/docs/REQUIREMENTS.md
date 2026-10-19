@@ -607,11 +607,21 @@ entry at or before the current display time, never a future entry even if
 closer in time. Causality is preserved — an annotation from time
 `t + 10 ms` never appears on an image rendered at time `t`.
 
-**No automatic skew rejection**: multi-rate data is the norm — a 10 Hz
-detection overlay composited on a 60 Hz video is correct when the same
+**No automatic skew rejection for an overlay that is not paired**: multi-rate data is
+the norm — a 10 Hz detection overlay composited on a 60 Hz video is correct when the same
 bounding box persists across 5 consecutive video frames. The compositor
-does NOT drop a layer for being "too old"; it trusts that an entry
+does NOT drop such a layer for being "too old"; it trusts that an entry
 exists in the store until it is explicitly evicted.
+
+**Annotations of a derived topic that name their image are paired with it**: an annotation
+whose `image_topic` is set, on an on-demand derived topic, is shown only when that topic is
+the base layer's store topic and its timestamp lies within one image cadence (the median
+positive gap of the image topic's last 16 entries at or before the shown frame; 100 ms with
+fewer) of the own stamp of the frame actually delivered (its payload's, on the dataset clock;
+what a script stamps the annotations made from it with), including asynchronous decode lag. A
+mismatch hides those annotations and raises the layer's row warning, cleared once they pair or
+the layer is hidden. A parser's annotations are never checked: their `image_topic` is
+informational.
 
 **frame_id correlation (optional)**: when an overlay's metadata carries a
 `frame_id` matching a specific source image, the compositor may prefer

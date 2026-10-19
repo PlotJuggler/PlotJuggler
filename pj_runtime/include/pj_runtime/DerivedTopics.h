@@ -23,13 +23,17 @@ namespace PJ {
 /// `type`s must give equal bytes (the builder fixes the key order). A complete
 /// SceneEntities / ImageAnnotations snapshot is published on every evaluation (D27), so
 /// those two types are marked as snapshot streams and a stateless consumer renders each
-/// entry alone. `type` must be a builtin, non-`kNone` type (the caller passes a validated
-/// output spec); the unreachable failure returns "{}".
+/// entry alone. An image topic declares `image_codec: pj_image_v1`: its entries are serialized `sdk::Image` records
+/// and it has no parser, so the tag is what tells Scene2D to unwrap them. `type` must be a builtin, non-`kNone` type
+/// (the caller passes a validated output spec); the unreachable failure returns "{}".
 [[nodiscard]] inline std::string derivedTopicMetadata(sdk::BuiltinObjectType type) {
   sdk::ObjectTopicMetadataBuilder builder;
   builder.builtinObjectType(type).string(sdk::kDerivedMetadataKey, sdk::kDerivedOnDemandValue);
   if (type == sdk::BuiltinObjectType::kImageAnnotations || type == sdk::BuiltinObjectType::kSceneEntities) {
     builder.snapshot(true);
+  }
+  if (type == sdk::BuiltinObjectType::kImage) {
+    builder.string("image_codec", "pj_image_v1");
   }
   const Expected<std::string> built = builder.build();
   return built.has_value() ? *built : std::string{"{}"};

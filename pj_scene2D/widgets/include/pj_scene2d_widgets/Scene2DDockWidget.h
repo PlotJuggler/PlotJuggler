@@ -14,6 +14,7 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_scene2d_core/media_frame.h"
 #include "pj_scene_common/scene_dock_widget.h"
 
 class QEvent;
@@ -24,6 +25,7 @@ namespace PJ {
 
 class CompositeMediaSource;
 class MediaViewerWidget;
+class Scene2DLayer;
 class SessionManager;
 
 /// 2D scene dock on top of pj_scene_common's layered SceneDockWidget.
@@ -70,6 +72,8 @@ class Scene2DDockWidget : public SceneDockWidget {
   [[nodiscard]] size_t compositeLayerCountForTesting() const noexcept;
   /// Mirrors the visible CompositeMediaSource layer order after syncViewLayers().
   [[nodiscard]] std::vector<ObjectTopicId> compositeTopicOrderForTesting() const;
+  /// Polls the composite as the viewer does, without a GPU (nullopt: nothing new, or no composite).
+  [[nodiscard]] std::optional<MediaFrame> takeCompositeFrameForTesting();
   /// True while the empty-state placeholder (the greyed image icon) should be
   /// shown instead of the GPU viewer — i.e. there are no visible layers.
   [[nodiscard]] bool emptyPlaceholderActiveForTesting() const noexcept {
@@ -96,6 +100,12 @@ class Scene2DDockWidget : public SceneDockWidget {
   /// Rebuilds the visible-layer CompositeMediaSource in draw order and repoints
   /// the viewer before the old composite is destroyed.
   void syncViewLayers(const std::vector<ISceneLayer*>& ordered_layers) override;
+  /// Pairs `layer`'s contribution to `composite` (tagged `identity`) with its store topic, the cadence of its entries
+  /// and its row warning (CompositeMediaSource::setLayerPairing); its annotations are checked only when the topic is
+  /// an on-demand derived one.
+  static void setLayerPairing(
+      CompositeMediaSource& composite, SessionManager& session, ObjectTopicId topic, const void* identity,
+      Scene2DLayer* layer);
   /// Repaints only the viewer; the layer list UI is owned by the base dock.
   void refreshView() override;
   /// Re-applies an explicit saved Image-vs-Depth concrete kind when a deferred

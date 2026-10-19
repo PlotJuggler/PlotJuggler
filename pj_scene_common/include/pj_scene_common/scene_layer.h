@@ -75,9 +75,10 @@ inline constexpr uint64_t kNoSampleRenderKey = 0x0D15EA5EDEADBEEFULL;
 class SceneWarningParts {
  public:
   enum class Part : std::size_t {
-    kData,     ///< decode and admission problems of the layer's own data
-    kRender,   ///< a GPU-side failure
-    kDerived,  ///< why a derived topic shows nothing: a missing input or an error (D6)
+    kData,        ///< decode and admission problems of the layer's own data
+    kRender,      ///< a GPU-side failure
+    kDerived,     ///< why a derived topic shows nothing: a missing input or an error (D6)
+    kAnnotation,  ///< annotations hidden because they are not paired with the shown image (Scene2D)
   };
 
   /// Returns true when the joined text changed (the caller then notifies).
@@ -90,7 +91,7 @@ class SceneWarningParts {
   }
 
  private:
-  std::array<QString, 3> parts_;
+  std::array<QString, 4> parts_;
   QString combined_;
 };
 

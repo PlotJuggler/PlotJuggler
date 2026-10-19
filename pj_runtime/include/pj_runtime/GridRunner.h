@@ -94,10 +94,11 @@ class GridRunner {
 
   /// What the session wires in.
   struct Hooks {
-    ScalarChangeLookup scalar_changes;   ///< empty: a scalar input adds no instant and no gap
-    NodeScheduler::TfProvider tf;        ///< read once, when the job gets its room; empty: no TF
-    NodeScheduler::EpochProvider epoch;  ///< empty: every dataset stays at epoch 0
-    NodeScheduler::RunFunction run;      ///< empty: `scripting::runOnDemandScript`
+    ScalarChangeLookup scalar_changes;                  ///< empty: a scalar input adds no instant and no gap
+    NodeScheduler::TfProvider tf;                       ///< read once, when the job gets its room; empty: no TF
+    NodeScheduler::EpochProvider epoch;                 ///< empty: every dataset stays at epoch 0
+    NodeScheduler::RunFunction run;                     ///< empty: `scripting::runOnDemandScript`
+    NodeScheduler::ImageDecoderProvider image_decoder;  ///< empty: no run has a decoder
     std::function<std::chrono::steady_clock::time_point()> now;  ///< the time budget's clock; empty: steady_clock
   };
 

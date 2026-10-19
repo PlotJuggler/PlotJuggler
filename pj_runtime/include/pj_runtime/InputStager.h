@@ -123,8 +123,8 @@ class InputStager {
   /// Any thread: touches only `store` (thread-safe) and the parser bindings and objects `staged` carries. Fetches and
   /// decodes each staged entry (an object staged decoded is passed on, its keepalives with it), an object through its
   /// parser under the parser's per-topic lock and a canonical point cloud (an upstream's output among them) as a view
-  /// over the store's bytes; each value carries its alias and its entry's `payload_stamp_shift`. An entry gone since
-  /// staging (evicted), or whose lazy fetch failed, is the same missing-input error as `stage`'s.
+  /// over the store's bytes; each value carries its alias, its entry's `payload_stamp_shift` and its store topic. An
+  /// entry gone since staging (evicted), or whose lazy fetch failed, is the same missing-input error as `stage`'s.
   [[nodiscard]] static Expected<Decoded> decode(const ObjectStore& store, const Staged& staged);
 
  private:

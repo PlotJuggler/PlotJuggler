@@ -51,6 +51,8 @@ std::optional<DecodedFrame> rectifyFrame(const DecodedFrame& src, const Undistor
   out.height = map.out_height;
   out.format = src.format;
   out.pts = src.pts;
+  out.stamp = src.stamp;
+  out.entry_ts = src.entry_ts;
   out.frame_id = src.frame_id;
   out.pixels = std::make_shared<std::vector<uint8_t>>(
       static_cast<size_t>(map.out_width) * static_cast<size_t>(map.out_height) * static_cast<size_t>(ch), 0);
@@ -115,6 +117,8 @@ bool rectifyFrameFast(const DecodedFrame& src, const UndistortMapFast& fast, Dec
   out.height = fast.out_height;
   out.format = src.format;
   out.pts = src.pts;
+  out.stamp = src.stamp;
+  out.entry_ts = src.entry_ts;
   out.frame_id = src.frame_id;
   const size_t out_bytes =
       static_cast<size_t>(fast.out_width) * static_cast<size_t>(fast.out_height) * static_cast<size_t>(ch);

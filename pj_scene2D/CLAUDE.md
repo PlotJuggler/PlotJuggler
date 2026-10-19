@@ -70,8 +70,8 @@ Read in this order:
 ## Key headers
 
 - `core/include/pj_scene2d_core/media_source.h` — the uniform `setTimestamp`/`takeFrame` frame-delivery contract everything plugs into.
-- `core/include/pj_scene2d_core/image_pipeline_source.h`, `streaming_video_source.h`, `depth_pipeline_source.h`, `scene_pipeline_source.h`, `composite_media_source.h` — the concrete `MediaSource` implementations.
-- `core/include/pj_scene2d_core/image_resolve.h` — `resolveImage`, the single seam that turns a store entry into an `sdk::Image` (parser or canonical codec); shared by the image and depth pipeline sources.
+- `core/include/pj_scene2d_core/image_pipeline_source.h`, `streaming_video_source.h`, `depth_pipeline_source.h`, `scene_pipeline_source.h`, `composite_media_source.h` — the concrete `MediaSource` implementations. The composite also pairs the annotations of a derived topic, which name their image, with the delivered frame (`setLayerPairing`, ARCHITECTURE §8.3a); a parser's are shown as they are.
+- `core/include/pj_scene2d_core/image_resolve.h` — `resolveImage`, the single seam that turns a store entry into an `sdk::Image` (parser or canonical codec) and its stamp on the dataset clock (the payload's plus the entry's merge shift, carried as `DecodedFrame::stamp` for annotation pairing); shared by the image and depth pipeline sources.
 - `core/include/pj_scene2d_core/streaming_video_decoder.h`, `ffmpeg_decoder.h` — GOP-aware streaming video decode on top of FFmpeg. `FfmpegDecoder` carries the codec's colorimetry onto each frame and emits native NV12 on the hardware-decode path.
 - `core/include/pj_scene2d_core/video_color.h` — `buildYuvMatrix(space, range)`: the per-frame YUV→RGB matrix (BT.601/709 + limited/full range) the media shader uploads, replacing the old hardcoded BT.709. `depth_range.h` — `depthPercentileRange` backing the depth Auto-fit.
 - `core/include/pj_scene2d_core/overlay_geometry.h` — backend-agnostic tessellation of annotation overlays (lines/points/fills/circles) into GPU vertex data; stroke width scales with zoom but is **floored at 1px on screen** so edges never go sub-pixel and vanish.
