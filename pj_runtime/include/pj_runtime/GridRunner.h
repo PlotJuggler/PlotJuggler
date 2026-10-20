@@ -101,6 +101,7 @@ class GridRunner {
     NodeScheduler::EpochProvider epoch;                 ///< empty: every dataset stays at epoch 0
     NodeScheduler::RunFunction run;                     ///< empty: `scripting::runOnDemandScript`
     NodeScheduler::ImageDecoderProvider image_decoder;  ///< empty: no run has a decoder
+    NodeScheduler::VideoSourceProvider video_source;    ///< empty: no run has a video source
     std::function<std::chrono::steady_clock::time_point()> now;  ///< the time budget's clock; empty: steady_clock
   };
 

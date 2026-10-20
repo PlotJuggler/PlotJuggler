@@ -4,12 +4,25 @@
 #include "pj_datastore/ordered_entries.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <numeric>
 
 #include "pj_datastore/saturating_time.hpp"
 
 namespace PJ {
+
+OrderedEntries::OrderedEntries() {
+  changed(true);
+}
+
+void OrderedEntries::changed(bool rewrite) noexcept {
+  static std::atomic<uint64_t> next{1};
+  identity_.content = next.fetch_add(1, std::memory_order_relaxed);
+  if (rewrite) {
+    identity_.rewrite = identity_.content;
+  }
+}
 
 // --- Entry access ---
 
@@ -56,16 +69,18 @@ std::vector<OrderedEntries::TimeRangeEntry> OrderedEntries::rangeByTime(Timestam
 // --- UID-cursor lookups ---
 
 const ObjectEntry* OrderedEntries::atUid(SequentialUID uid) const {
-  if (uid_order_.empty()) {
-    return nullptr;
-  }
+  const std::optional<size_t> index = indexOfUid(uid);
+  return index ? &entries_[*index] : nullptr;
+}
+
+std::optional<size_t> OrderedEntries::indexOfUid(SequentialUID uid) const {
   const auto it = std::lower_bound(uid_order_.begin(), uid_order_.end(), uid, [this](uint32_t pos, SequentialUID u) {
     return entries_[pos].sequential_uid < u;
   });
   if (it == uid_order_.end() || entries_[*it].sequential_uid != uid) {
-    return nullptr;
+    return std::nullopt;
   }
-  return &entries_[*it];
+  return *it;
 }
 
 SequentialUID OrderedEntries::firstUid() const {
@@ -114,6 +129,7 @@ OrderedEntries::PushOrder OrderedEntries::indexBack() {
   assert(entries_.size() < UINT32_MAX);
   // In-order fast path (the overwhelming common case): amortized O(1) append.
   if (entry_timestamps_.empty() || timestamp >= entry_timestamps_.back()) {
+    changed(false);  // lands after every entry, an equal stamp's too: a UID cursor finds it
     entry_timestamps_.push_back(timestamp);
     // Newest (max) UID appended at the array tail => also the UID-order tail. O(1)
     // tail check only (the full O(n) checker would make debug ingest O(n^2)).
@@ -142,6 +158,7 @@ OrderedEntries::PushOrder OrderedEntries::indexBack() {
     }
   }
   uid_order_.push_back(static_cast<uint32_t>(idx));
+  changed(true);
 #ifndef NDEBUG
   checkInvariant();
 #endif
@@ -150,6 +167,7 @@ OrderedEntries::PushOrder OrderedEntries::indexBack() {
 
 ObjectEntry OrderedEntries::evictFront() {
   assert(!entries_.empty());
+  changed(false);
   ObjectEntry front = std::move(entries_.front());
   entries_.pop_front();
   entry_timestamps_.erase(entry_timestamps_.begin());
@@ -214,6 +232,7 @@ OrderedEntries::PushOrder OrderedEntries::removeAndPush(
 size_t OrderedEntries::compact(const Removal& plan, std::vector<ObjectEntry>& removed) {
   assert(plan.new_position.size() == entries_.size());
   assert(removed.capacity() - removed.size() >= plan.count);
+  changed(true);
   // ponytail: survivors always shift toward the front, so the sliding window's front
   // removal moves every entry (~7 ns per entry with the predicate). Upgrade: erase a
   // contiguous run with deque::erase, which moves the shorter side.
@@ -246,6 +265,7 @@ size_t OrderedEntries::compact(const Removal& plan, std::vector<ObjectEntry>& re
 }
 
 void OrderedEntries::clear() {
+  changed(true);
   entries_.clear();
   entry_timestamps_.clear();
   uid_order_.clear();
@@ -255,6 +275,7 @@ bool OrderedEntries::shift(Timestamp delta) {
   if (delta == 0 || entries_.empty()) {
     return false;
   }
+  changed(true);
   for (size_t i = 0; i < entries_.size(); ++i) {
     entries_[i].timestamp = saturatingAdd(entries_[i].timestamp, delta);
     entry_timestamps_[i] = entries_[i].timestamp;
@@ -267,6 +288,7 @@ bool OrderedEntries::shift(Timestamp delta) {
 }
 
 void OrderedEntries::reuidAll() {
+  changed(true);
   for (ObjectEntry& entry : entries_) {
     entry.sequential_uid = SequentialUID::getNext();
   }
@@ -295,6 +317,7 @@ void OrderedEntries::appendReuidFrom(OrderedEntries& src) {
   // out-of-order insert); the moved entries carry fresh max UIDs. Rebuild rather
   // than iota so our pre-existing UIDs stay stable (consumer cursors hold them).
   rebuildUidOrder();
+  changed(true);
   src.clear();
 }
 
@@ -332,12 +355,14 @@ void OrderedEntries::detachInto(std::deque<ObjectEntry>& entries_out, std::vecto
   entries_.clear();
   entry_timestamps_.clear();
   uid_order_.clear();
+  changed(true);
 }
 
 void OrderedEntries::restoreRebuild(std::deque<ObjectEntry>&& entries_in, std::vector<Timestamp>&& stamps_in) {
   entries_ = std::move(entries_in);
   entry_timestamps_ = std::move(stamps_in);
   rebuildUidOrder();
+  changed(true);
 }
 
 #ifndef NDEBUG

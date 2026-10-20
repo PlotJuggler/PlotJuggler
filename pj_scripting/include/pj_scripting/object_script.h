@@ -15,6 +15,7 @@
 #include "pj_base/expected.hpp"
 #include "pj_base/span.hpp"
 #include "pj_base/types.hpp"
+#include "pj_datastore/object_store.hpp"
 #include "pj_scripting/sandbox.h"
 #include "pj_tf/tf_buffer.h"
 
@@ -29,6 +30,7 @@ namespace native {
 class MemoryBudget;
 }  // namespace native
 class IImageDecoder;
+class IVideoFrameSource;
 
 /// An output a script marked unavailable for this run (`pj.unavailable(reason)`, D25). Distinct
 /// from zero, from an empty object and from a script error.
@@ -79,6 +81,9 @@ struct NamedValue {
   /// Object inputs only: the store topic the entry was read from (bare, no dataset qualifier), which the
   /// annotations made from an image input pair with (Scene2D matches `image_topic` to it).
   std::string topic = {};
+  /// Object inputs only: that store topic's id, what `video:frame_at` decodes from; none for an object with no store
+  /// topic (an evaluation's chained output).
+  ObjectTopicId topic_id = {};
 };
 
 /// Approximate heap bytes of `value`, read from its decoded fields (a buffer's size, strings, list
@@ -149,6 +154,8 @@ struct RunOptions {
   BudgetLimits limits;
   /// What `decode` and `to_point_cloud` decode through, on the run's thread; null: both report "no image decoder".
   std::shared_ptr<const IImageDecoder> image_decoder;
+  /// What `video:frame_at` decodes through, on the run's thread; null: it reports "no video frame source".
+  std::shared_ptr<IVideoFrameSource> video_source;
   /// The result's stamp, the newest resolved input's: what annotations built for no image input are stamped with.
   Timestamp result_stamp = 0;
 };
@@ -172,6 +179,11 @@ struct RunOptions {
 ///   - `to_point_cloud(camera_info[, {step, max_depth}])` -> an organized metric cloud in the camera's frame at the
 ///     image's stamp (16UC1/mono16 millimetres, 32FC1 metres), or `pj.unavailable(reason)`.
 ///   Annotations made from an image input pair with it: its store topic and its own stamp (0 is a stamp).
+/// A video input (a packet, at or before the requested time in decode order) has `frame_at(t)` -> `{image,
+/// presentation_ns}`, or `nil, reason`: the full frame presented at `t` (an integer number of nanoseconds or a
+/// `pj.int64`; both on the dataset clock), decoded through `RunOptions::video_source` into an rgb8 image charged to the
+/// native budget. Annotations made from a frame pair with the video's store topic at its presentation time; annotations
+/// built for the video's topic pair with the frames decoded so far when they agree, else with the packet's own stamp.
 /// A 3-vector is always an array `{x, y, z}`. `pj.unavailable(reason)` (the reason is cut
 /// to 1 KiB), and `pj.tf`:
 ///   - `pj.tf.now`: the query instant, a `pj.int64`.

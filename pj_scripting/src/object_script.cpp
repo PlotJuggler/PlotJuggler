@@ -213,20 +213,25 @@ void pushJson(lua_State* L, const nlohmann::json& value) {
   }
 }
 
-/// Pushes a scalar or object input, and notes an image input in `media`; the caller has rejected unavailable inputs.
-void pushInput(lua_State* L, const NamedValue& input, ScriptMedia& media) {
+/// Pushes a scalar or object input, and notes an image or video input in `media`, keeping it in `held`; the caller has
+/// rejected unavailable inputs.
+void pushInput(lua_State* L, const NamedValue& input, ScriptMedia& media, std::vector<sdk::BuiltinObject>& held) {
   if (const auto* number = std::get_if<double>(&input.value)) {
     lua_pushnumber(L, *number);
   } else if (const auto* text = std::get_if<std::string>(&input.value)) {
     lua_pushlstring(L, text->data(), text->size());
   } else {
     sdk::BuiltinObject object = detail::withStampShifted(std::get<sdk::BuiltinObject>(input.value), input.stamp_shift);
-    const void* image = object.get<sdk::Image>();
-    if (image == nullptr) {
-      image = object.get<sdk::DepthImage>();
+    const void* media_input = object.get<sdk::Image>();
+    if (media_input == nullptr) {
+      media_input = object.get<sdk::DepthImage>();
     }
-    if (image != nullptr) {
-      media.noteInput(image, input.topic, input.name, detail::ownStamp(object).value_or(0));
+    if (media_input == nullptr) {
+      media_input = object.get<sdk::VideoFrame>();
+    }
+    if (media_input != nullptr) {
+      media.noteInput(media_input, input.topic, input.name, detail::ownStamp(object).value_or(0), input.topic_id);
+      held.push_back(object);  // the struct keeps its address for the run, so no frame image can take it
     }
     detail::pushObject(L, std::move(object));
   }
@@ -541,7 +546,8 @@ Expected<ScriptBundle, ScriptError> runOnDemandScript(
       options.native_budget ? options.native_budget
                             : std::make_shared<native::MemoryBudget>(options.native_budget_bytes),
       options.cancelled};
-  ScriptMedia media(options.image_decoder, native_limits, options.result_stamp);
+  ScriptMedia media(options.image_decoder, native_limits, options.result_stamp, options.video_source);
+  std::vector<sdk::BuiltinObject> held_inputs;  ///< the media inputs `media` names by address
   detail::BudgetState budget;
   budget.cancelled = options.cancelled ? &options.cancelled : nullptr;
   std::unique_ptr<lua_State, decltype(&lua_close)> state(
@@ -558,7 +564,7 @@ Expected<ScriptBundle, ScriptError> runOnDemandScript(
   }
   lua_createtable(L, 0, static_cast<int>(inputs.size()));
   for (const NamedValue& input : inputs) {
-    pushInput(L, input, media);
+    pushInput(L, input, media, held_inputs);
     lua_setfield(L, -2, input.name.c_str());
   }
   pushJson(L, params);

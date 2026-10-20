@@ -116,12 +116,13 @@ class InputStager {
 
   /// GUI thread. Resolves every input of `node` at `t` and builds the request's cache key (§10) under
   /// `epoch`, the dataset's: an object topic by the identity of its entry at or before `t` and of its parser
-  /// (nothing is fetched), a scalar by its sample's row (`ScalarSample::chunk`, `row`), its value copied; an upstream
-  /// output by its ring entry in the newest result at or before `t` (`ResultHistory::resultAt`), compared by the
-  /// result's stamp, so a pinned finding is an input only from its real stamp (decided 2026-10-18). Error `on-demand:
-  /// missing input '<alias>'` when an input has nothing at or before `t` (a null string cell is nothing), followed by
-  /// `: <reason>` when it is an upstream output that was unavailable (D6, D25: no run, the caller clears). With
-  /// `overrides`, an upstream output they cover is read from them instead (its stamp, its identity, its value).
+  /// (nothing is fetched), a video topic also by its content revision (`ObjectStore::contentIdentity`), a scalar by its
+  /// sample's row (`ScalarSample::chunk`, `row`), its value copied; an upstream output by its ring entry in the newest
+  /// result at or before `t` (`ResultHistory::resultAt`), compared by the result's stamp, so a pinned finding is an
+  /// input only from its real stamp (decided 2026-10-18). Error `on-demand: missing input '<alias>'` when an input has
+  /// nothing at or before `t` (a null string cell is nothing), followed by `: <reason>` when it is an upstream output
+  /// that was unavailable (D6, D25: no run, the caller clears). With `overrides`, an upstream output they cover is read
+  /// from them instead (its stamp, its identity, its value).
   [[nodiscard]] Expected<Staged> stage(
       const RecipeGraph::Node& node, Timestamp t, uint64_t epoch, const Overrides& overrides = {}) const;
   /// GUI thread. The newest stamp among `node`'s raw inputs (an object topic's newest entry, a scalar's newest
@@ -136,16 +137,18 @@ class InputStager {
   /// Any thread: touches only `store` (thread-safe) and the parser bindings and objects `staged` carries. Fetches and
   /// decodes each staged entry (an object staged decoded is passed on, its keepalives with it), an object through its
   /// parser under the parser's per-topic lock and a canonical point cloud (an upstream's output among them) as a view
-  /// over the store's bytes; each value carries its alias, its entry's `payload_stamp_shift` and its store topic. An
-  /// entry gone since staging (evicted), or whose lazy fetch failed, is the same missing-input error as `stage`'s.
+  /// over the store's bytes; each value carries its alias, its entry's `payload_stamp_shift` and its store topic (name
+  /// and id). An entry gone since staging (evicted), or whose lazy fetch failed, is the same missing-input error as
+  /// `stage`'s.
   [[nodiscard]] static Expected<Decoded> decode(const ObjectStore& store, const Staged& staged);
 
  private:
-  /// Resolves the raw input `binding` at `t` as `stage` does: appends its identity to `key` and sets `input`'s value.
-  /// The stamp it resolved; nullopt when it has nothing at or before `t`.
+  /// Resolves the raw input `binding` at `t` as `stage` does: appends its identity to `key`, a video topic's content
+  /// revision to `video_content`, and sets `input`'s value. The stamp it resolved; nullopt when it has nothing at or
+  /// before `t`.
   std::optional<Timestamp> stageRaw(
       const RecipeGraph::Node& node, const RecipeGraph::Binding& binding, Timestamp t, std::vector<uint64_t>& key,
-      Input& input) const;
+      std::vector<uint64_t>& video_content, Input& input) const;
   /// The object topic `name` of `dataset`, remembered by id and checked against the store's id index on each use, so
   /// a topic removed or registered again under the name is found again (one scan) and the common case scans nothing.
   std::optional<ObjectTopicId> topicOf(DatasetId dataset, const std::string& name) const;

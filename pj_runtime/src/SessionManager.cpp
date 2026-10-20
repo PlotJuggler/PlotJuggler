@@ -43,6 +43,7 @@
 #include "pj_runtime/TransformService.h"
 #include "pj_scripting/filter_catalogue.h"
 #include "pj_scripting/script_engine.h"
+#include "pj_scripting/video_frame_source.h"
 #include "pj_tf/tf_buffer.h"
 using namespace Qt::StringLiterals;
 
@@ -188,6 +189,7 @@ SessionManager::SessionManager(QObject* parent)
       };
   on_demand.parsers = [this](ObjectTopicId topic) { return parserBindingForObjectTopic(topic); };
   on_demand.scheduling.image_decoder = [this] { return image_decoder_; };
+  on_demand.scheduling.video_source = [this] { return video_source_; };
   on_demand.scheduling.tf = [this](DatasetId dataset) { return onDemandTf(dataset); };
   on_demand.scheduling.tf_revision = [this](DatasetId dataset) { return onDemandTfRevision(dataset); };
   on_demand.scheduling.epoch = [this](DatasetId dataset) {
@@ -278,6 +280,9 @@ void SessionManager::setTfClock(std::function<std::chrono::steady_clock::time_po
 void SessionManager::suspendOnDemand(DatasetId dataset_id) {
   ++epochs_[dataset_id];
   held_tf_.erase(dataset_id);
+  if (video_source_) {
+    video_source_->retireDataset(dataset_id);
+  }
   on_demand_->suspend(dataset_id);
 }
 

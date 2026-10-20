@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Media for on-demand recipes (docs/derived_objects/SCENARIOS.md, rows MED-01..03, MED-06, MED-08..10, MED-21, GAP-26):
+// Media for on-demand recipes (docs/derived_objects/SCENARIOS.md, rows MED-01..04, MED-06..10, MED-21, GAP-26):
 // the real Luau run through OnDemandService, the decoder the session is given, and the annotations' pairing as stored.
 // A raw-only fake stands in for the codec, which pj_app owns (its tests: pj_app/tests/scene_image_decoder_test.cpp).
 
@@ -15,6 +15,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <functional>
+#include <future>
 #include <map>
 #include <memory>
 #include <string>
@@ -25,6 +27,7 @@
 #include "pj_base/builtin/camera_info.hpp"
 #include "pj_base/builtin/depth_image.hpp"
 #include "pj_base/builtin/image_annotations.hpp"
+#include "pj_base/builtin/video_frame.hpp"
 #include "pj_base/sdk/platform.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_datastore/writer.hpp"
@@ -33,6 +36,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scripting/image_decoder.h"
 #include "pj_scripting/memory_budget.h"
+#include "pj_scripting/video_frame_source.h"
 
 namespace PJ {
 namespace {
@@ -105,6 +109,7 @@ struct Fixture {
     };
     services.parsers = [](ObjectTopicId) { return SessionManager::ParserBinding{}; };
     services.scheduling.image_decoder = [this] { return decoder; };
+    services.scheduling.video_source = [this] { return video; };
     service = std::make_unique<OnDemandService>(store, pool, budget, std::move(services));
   }
 
@@ -135,6 +140,7 @@ struct Fixture {
   }
 
   std::shared_ptr<RawDecoder> decoder = std::make_shared<RawDecoder>();
+  std::shared_ptr<scripting::IVideoFrameSource> video;
   std::map<std::string, sdk::BuiltinObjectType, std::less<>> types;
   DataEngine engine;
   DataWriter writer{engine.createWriter()};
@@ -341,6 +347,238 @@ TEST(OnDemandMediaTest, CanonicalDepthThresholdKeepsPairing) {
   ASSERT_EQ(annotations.points.size(), 1u);
 }
 
+// ---- video (MED-04, MED-07) -------------------------------------------------------------------------------------
+
+/// A video over the fixture's store: the frame at `t` is its newest entry at or before `t`, presented at that entry's
+/// stamp, one rgb8 pixel. Counts its calls (any thread); with `hold` set, the next call waits in it for `resume`.
+class StoreVideo final : public scripting::IVideoFrameSource {
+ public:
+  explicit StoreVideo(const ObjectStore& store) : store_(store) {}
+  std::atomic<int> calls{0};
+  std::atomic<bool> hold{false};
+  std::promise<void> entered;
+  std::promise<void> resume;
+  std::function<void()> during;  ///< run inside each call, on the worker (a stream pushing packets meanwhile)
+
+  Expected<scripting::VideoFrameResult> frameAt(
+      ObjectTopicId topic, Timestamp t, const std::shared_ptr<scripting::native::MemoryBudget>& /*budget*/,
+      const std::function<bool()>& /*cancelled*/) override {
+    ++calls;
+    if (hold.exchange(false)) {
+      entered.set_value();
+      resume.get_future().wait();
+    }
+    if (during) {
+      during();
+    }
+    const auto entry = store_.latestEntryIdAt(topic, t);
+    if (!entry) {
+      return unexpected("no video frame at the requested time");
+    }
+    auto rgb = std::make_shared<std::vector<uint8_t>>(3, 200);
+    scripting::VideoFrameResult frame;
+    frame.presentation_ns = entry->timestamp;
+    frame.image.encoding = "rgb8";
+    frame.image.width = 1;
+    frame.image.height = 1;
+    frame.image.row_step = 3;
+    frame.image.timestamp_ns = entry->timestamp;
+    frame.image.data = {rgb->data(), rgb->size()};
+    frame.image.anchor = rgb;
+    return frame;
+  }
+  void retireDataset(DatasetId dataset) override {
+    retired.push_back(dataset);
+  }
+  std::vector<DatasetId> retired;
+
+ private:
+  const ObjectStore& store_;
+};
+
+sdk::BuiltinObject videoPacket(Timestamp pts) {
+  sdk::VideoFrame packet;
+  packet.format = "h264";
+  packet.timestamp_ns = pts;
+  return sdk::BuiltinObject(packet);
+}
+
+/// Overlay text naming the presentation time of the frame `query` (a Luau expression) selects, paired with it.
+std::string overlayScript(const std::string& query) {
+  return "local inputs = ...; local frame = inputs.video:frame_at(" + query +
+         "); if frame == nil then return {ann = pj.unavailable('absent')} end; "
+         "return {ann = pj.annotations.new{image_topic = 'video'}:text{position = {0, 0}, font_size = 10, "
+         "text = tostring(frame.presentation_ns)}:finish()}";
+}
+
+/// Requests `key` at `t` and waits until the request settles.
+void settle(Fixture& fx, const std::string& key, Timestamp t) {
+  fx.service->requestAt(key, t);
+  fx.pool.waitIdle();
+  QCoreApplication::processEvents();
+}
+
+// A bound video's content revision joins the request's key: `frame_at` may read any packet of the topic, so a packet
+// added anywhere is a miss, and a cursor that stays on the same entries under the same content is a hit. A script
+// that reads the clock is keyed by the instant, as any other (ARCHITECTURE §10).
+TEST(OnDemandMediaTest, VideoContentRevisionJoinsTheCacheKey) {
+  Fixture fx;
+  auto video = std::make_shared<StoreVideo>(fx.store);
+  fx.video = video;
+  const ObjectTopicId topic = fx.topic("video", sdk::BuiltinObjectType::kVideoFrame);
+  fx.push(topic, 10 * kSec, videoPacket(10 * kSec));
+  fx.push(topic, 20 * kSec, videoPacket(20 * kSec));
+  fx.evaluate("own", {"video"}, {spec("ann:kImageAnnotations")}, overlayScript("inputs.video.timestamp_ns"), 12 * kSec);
+  ASSERT_EQ(video->calls, 1);
+  settle(fx, "owner/own", 15 * kSec);
+  EXPECT_EQ(video->calls, 1) << "the same entry under the same content: a hit";
+  fx.push(topic, 40 * kSec, videoPacket(40 * kSec));
+  settle(fx, "owner/own", 15 * kSec);
+  EXPECT_EQ(video->calls, 2) << "a packet the request does not stage is still content frame_at may read";
+  settle(fx, "owner/own", 15 * kSec);
+  EXPECT_EQ(video->calls, 2);
+
+  fx.evaluate("now", {"video"}, {spec("ann:kImageAnnotations")}, overlayScript("pj.tf.now"), 12 * kSec);
+  ASSERT_EQ(video->calls, 3);
+  settle(fx, "owner/now", 15 * kSec);
+  EXPECT_EQ(video->calls, 4) << "a run that read the clock is keyed by the instant";
+  settle(fx, "owner/now", 15 * kSec);
+  EXPECT_EQ(video->calls, 4);
+  const auto overlay = test::decodeAt<sdk::ImageAnnotations>(fx.store, fx.output("now"), 15 * kSec);
+  ASSERT_EQ(overlay.texts.size(), 1u);
+  EXPECT_EQ(overlay.texts[0].text, std::to_string(10 * kSec));
+  EXPECT_EQ(overlay.image_topic, "video");
+  EXPECT_EQ(overlay.timestamp, 10 * kSec) << "paired with the frame's presentation time";
+}
+
+// The frame a run looks up joins its identity through the content (D30: a changed dependency is a miss, never an
+// error): a future frame appearing republishes the overlay, and one appearing while the run decodes makes the run's
+// completion serve the request again.
+TEST(OnDemandMediaCacheTest, ActualVideoQueriesInvalidateCacheAndRepublishObjects) {
+  Fixture fx;
+  auto video = std::make_shared<StoreVideo>(fx.store);
+  fx.video = video;
+  const ObjectTopicId topic = fx.topic("video", sdk::BuiltinObjectType::kVideoFrame);
+  fx.push(topic, 10 * kSec, videoPacket(10 * kSec));
+  const std::string ahead = "inputs.video.timestamp_ns:to_number() + 10e9";
+  RecipeGraph::Recipe recipe = test::onDemandRecipe("ahead", {"video"}, {spec("ann:kImageAnnotations")});
+  recipe.script = overlayScript(ahead);
+  ASSERT_TRUE(fx.service->install(recipe).has_value());
+  settle(fx, recipe.key(), 10 * kSec);
+  ASSERT_EQ(video->calls, 1);
+  const auto first = test::decodeAt<sdk::ImageAnnotations>(fx.store, fx.output("ahead"), 10 * kSec);
+  ASSERT_EQ(first.texts.size(), 1u);
+  EXPECT_EQ(first.texts[0].text, std::to_string(10 * kSec)) << "nothing newer yet: the frame at 10 s";
+
+  fx.push(topic, 20 * kSec, videoPacket(20 * kSec));  // the future frame appears
+  settle(fx, recipe.key(), 10 * kSec);
+  ASSERT_EQ(video->calls, 2);
+  const auto republished = test::decodeAt<sdk::ImageAnnotations>(fx.store, fx.output("ahead"), 10 * kSec);
+  ASSERT_EQ(republished.texts.size(), 1u);
+  EXPECT_EQ(republished.texts[0].text, std::to_string(20 * kSec));
+  EXPECT_EQ(republished.timestamp, 20 * kSec);
+
+  fx.push(topic, 15 * kSec, videoPacket(15 * kSec));
+  video->hold = true;
+  fx.service->requestAt(recipe.key(), 10 * kSec);
+  ASSERT_EQ(video->entered.get_future().wait_for(std::chrono::seconds(10)), std::future_status::ready);
+  fx.push(topic, 18 * kSec, videoPacket(18 * kSec));  // while the run decodes
+  video->resume.set_value();
+  for (int pass = 0; pass < 3; ++pass) {
+    fx.pool.waitIdle();
+    QCoreApplication::processEvents();
+  }
+  EXPECT_EQ(video->calls, 3) << "a packet arriving during the run does not supersede it (D30): it is shown";
+  const auto state = fx.service->state(recipe.key());
+  ASSERT_TRUE(state && state->status == NodeScheduler::NodeState::Status::kReady) << (state ? state->detail : "");
+  settle(fx, recipe.key(), 10 * kSec);
+  EXPECT_EQ(video->calls, 4) << "the next request sees the new content: a miss";
+  settle(fx, recipe.key(), 10 * kSec);
+  EXPECT_EQ(video->calls, 4) << "nothing changed since: a hit";
+}
+
+// Playback paused at a fixed instant while a stream keeps adding packets during every run: each completion still
+// serves the request (only the video content moved), so the result is shown instead of cached and run again forever.
+TEST(OnDemandMediaTest, APausedRequestIsShownWhilePacketsKeepArriving) {
+  Fixture fx;
+  auto video = std::make_shared<StoreVideo>(fx.store);
+  fx.video = video;
+  const ObjectTopicId topic = fx.topic("video", sdk::BuiltinObjectType::kVideoFrame);
+  fx.push(topic, 10 * kSec, videoPacket(10 * kSec));
+  std::atomic<int> streamed{0};
+  video->during = [&] {
+    if (streamed < 5) {  // bounded, so a regression ends instead of hanging the test
+      const Timestamp stamp = (100 + streamed++) * kSec;
+      EXPECT_TRUE(fx.store.pushOwned(topic, stamp, serializeBuiltinObject(videoPacket(stamp)).value()).has_value());
+    }
+  };
+  RecipeGraph::Recipe recipe = test::onDemandRecipe("paused", {"video"}, {spec("ann:kImageAnnotations")});
+  recipe.script = overlayScript("inputs.video.timestamp_ns");
+  ASSERT_TRUE(fx.service->install(recipe).has_value());
+  settle(fx, recipe.key(), 10 * kSec);
+  for (int pass = 0; pass < 10; ++pass) {
+    fx.pool.waitIdle();
+    QCoreApplication::processEvents();
+  }
+  EXPECT_EQ(video->calls, 1);
+  const auto state = fx.service->state(recipe.key());
+  ASSERT_TRUE(state && state->status == NodeScheduler::NodeState::Status::kReady) << (state ? state->detail : "");
+  const auto overlay = test::decodeAt<sdk::ImageAnnotations>(fx.store, fx.output("paused"), 10 * kSec);
+  ASSERT_EQ(overlay.texts.size(), 1u);
+  EXPECT_EQ(overlay.texts[0].text, std::to_string(10 * kSec));
+}
+
+// An explicit evaluation (GridRunner) reads frames through the same video source as a request.
+TEST(OnDemandMediaTest, AnEvaluationReadsVideoFramesLikeARequest) {
+  Fixture fx;
+  auto video = std::make_shared<StoreVideo>(fx.store);
+  fx.video = video;
+  const ObjectTopicId topic = fx.topic("video", sdk::BuiltinObjectType::kVideoFrame);
+  fx.push(topic, 10 * kSec, videoPacket(10 * kSec));
+  RecipeGraph::Recipe recipe = test::onDemandRecipe("eval", {"video"}, {spec("pts:string")});
+  recipe.script =
+      "local inputs = ...; return {pts = tostring(assert(inputs.video:frame_at(pj.tf.now)).presentation_ns)}";
+  ASSERT_TRUE(fx.service->install(recipe).has_value());
+  std::optional<GridRunner::Report> report;
+  const auto job = fx.service->evaluations().submit(
+      *fx.service->graph().find(recipe.key()), true, 12 * kSec, 12 * kSec, {},
+      [&](GridRunner::Report done) { report = std::move(done); });
+  ASSERT_TRUE(job.has_value()) << job.error();
+  for (int pass = 0; pass < 100 && !report; ++pass) {
+    fx.pool.waitIdle();
+    QCoreApplication::processEvents();
+  }
+  ASSERT_TRUE(report);
+  ASSERT_EQ(report->bundles.size(), 1u) << report->error;
+  EXPECT_EQ(report->bundles[0].outputs.at("pts").value, std::to_string(10 * kSec));
+  EXPECT_EQ(video->calls, 1);
+}
+
+// The shell gives the session its video source (pj_app's SceneVideoFrameSource); the session retires a dataset in it
+// before the dataset's storage changes, so no decoder outlives the packets it indexed (CON-13).
+TEST(OnDemandMediaTest, TheSessionDecodesVideoThroughItsSourceAndRetiresADatasetBeforeItsStorageChanges) {
+  SessionManager session;
+  auto video = std::make_shared<StoreVideo>(session.objectStore());
+  session.setVideoFrameSource(video);
+  const DatasetId dataset = session.dataEngine().createDataset(DatasetDescriptor{.source_name = "log"}).value();
+  const ObjectTopicId topic =
+      session.objectStore().registerTopic({dataset, "video", R"({"builtin_object_type":"kVideoFrame"})"}).value();
+  ASSERT_TRUE(
+      session.objectStore().pushOwned(topic, kSec, serializeBuiltinObject(videoPacket(kSec)).value()).has_value());
+  RecipeGraph::Recipe recipe = test::onDemandRecipe("frames", {"video"}, {spec("ann:kImageAnnotations")});
+  recipe.script = overlayScript("inputs.video.timestamp_ns");
+  ASSERT_TRUE(session.onDemandService().install(recipe).has_value());
+  session.onDemandService().requestAt(recipe.key(), kSec);
+  session.enginePool().waitIdle();
+  QCoreApplication::processEvents();
+  const auto state = session.onDemandService().state(recipe.key());
+  ASSERT_TRUE(state && state->status == NodeScheduler::NodeState::Status::kReady) << (state ? state->detail : "");
+  EXPECT_EQ(video->calls, 1);
+  EXPECT_TRUE(video->retired.empty());
+  session.clearAllObjects();
+  EXPECT_EQ(video->retired, std::vector<DatasetId>{dataset});
+}
+
 // ---- benchmarks -----------------------------------------------------------------------------------------------
 
 // PJ_BENCH=1: the GUI-thread cost of requesting a recipe that decodes and thresholds a 1080p image (µs, median of 51
@@ -377,6 +615,38 @@ TEST(OnDemandMediaBench, GuiCostOfA1080pImageRequest) {
   std::printf(
       "[bench] requestAt GUI cost, 1080p image recipe: median %.2f us, max %.2f us (51 cold requests)\n", gui_us[25],
       gui_us[50]);
+}
+
+// PJ_BENCH=1: the GUI-thread cost of requesting a recipe over a video input (µs, median of 51 cold requests): the
+// staging reads the topic's content revision beside its entry (one more shared-lock read), nothing is fetched or
+// parsed on the GUI thread, and the frame is decoded on a worker (the fake reads the store; pj_app's
+// SceneVideoFrameSource decodes the codec there).
+TEST(OnDemandMediaBench, GuiCostOfAVideoRequest) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  Fixture fx;
+  auto video = std::make_shared<StoreVideo>(fx.store);
+  fx.video = video;
+  const ObjectTopicId topic = fx.topic("video", sdk::BuiltinObjectType::kVideoFrame);
+  for (int index = 0; index < 10'000; ++index) {
+    fx.push(topic, index * kSec / 100, videoPacket(index * kSec / 100));
+  }
+  RecipeGraph::Recipe recipe = test::onDemandRecipe("frames", {"video"}, {spec("ann:kImageAnnotations")});
+  recipe.script = overlayScript("inputs.video.timestamp_ns");
+  ASSERT_TRUE(fx.service->install(recipe).has_value());
+  std::vector<double> gui_us;
+  for (int index = 0; index < 51; ++index) {
+    const auto begin = std::chrono::steady_clock::now();
+    fx.service->requestAt(recipe.key(), index * kSec);
+    gui_us.push_back(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - begin).count());
+    fx.pool.waitIdle();
+  }
+  EXPECT_EQ(video->calls, 51);
+  std::sort(gui_us.begin(), gui_us.end());
+  std::printf(
+      "[bench] requestAt GUI cost, video recipe over 10k packets: median %.2f us, max %.2f us (51 cold requests)\n",
+      gui_us[25], gui_us[50]);
 }
 
 }  // namespace

@@ -203,6 +203,7 @@ void NodeScheduler::submit(
   job->options.tf = std::move(tf);
   job->options.query_time = node.recipe.query_time ? job->requested_t : staged.stamp;
   job->options.image_decoder = hooks_.image_decoder ? hooks_.image_decoder() : nullptr;
+  job->options.video_source = hooks_.video_source ? hooks_.video_source() : nullptr;
   job->options.result_stamp = staged.stamp;
   job->staged = std::move(staged);
   job->script = node.compiled;
@@ -280,9 +281,12 @@ bool NodeScheduler::apply(Entry& entry, const RecipeGraph::Node& node, Job& job)
     observed(job.result.error().observed_query_clock, job.result.error().observed_tf);
   }
   // A late run that does not serve the current request is only cached, and its failure clears nothing: the ring
-  // keeps what serves it.
+  // keeps what serves it. A video packet arriving during the run does not count (`completes`): under a live stream
+  // every run would otherwise end cached and be run again, the result never shown.
+  // ponytail: a packet changed or appended mid-run then shows the frame the run decoded until the next request.
+  // Upgrade: record the frames a run queried and validate them here.
   const Expected<InputStager::Staged> current = stager_.stage(node, slot.cursor, job.epoch);
-  const bool serves = current && stored.serves(current->key, slot.cursor, tfRevisionOf(node.dataset));
+  const bool serves = current && stored.completes(current->key, slot.cursor, tfRevisionOf(node.dataset));
   std::string failure;
   if (job.result) {
     const Status published = history_.publish(

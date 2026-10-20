@@ -2358,6 +2358,77 @@ TEST(ObjectStoreBundleTest, ConcurrentReadersNeverSeeAnAppendedBundleHalfApplied
   EXPECT_EQ(store.timeRange(a).second, kBundles);
 }
 
+// ---- entry identity for a cursor that rescans nothing: indexOf, contentIdentity (MED-25, STO-02) ---------------
+
+// Equal stamps never alias: an entry's position is found by its UID, wherever retention or a late insert moved it.
+TEST(ObjectStoreTest, IndexOfResolvesDuplicateStamps) {
+  ObjectStore store;
+  const auto topic = registerTestTopic(store);
+  ASSERT_TRUE(store.pushOwned(topic, 100, {1}).has_value());
+  ASSERT_TRUE(store.pushOwned(topic, 100, {2}).has_value());
+  ASSERT_TRUE(store.pushOwned(topic, 50, {3}).has_value());  // late: lands first
+  SequentialUID cursor;
+  const auto arrivals = store.drainNewSince(topic, cursor);
+  ASSERT_EQ(arrivals.size(), 3u);
+  EXPECT_EQ(store.indexOf(topic, arrivals[2].sequential_uid), 0u);
+  EXPECT_EQ(store.indexOf(topic, arrivals[0].sequential_uid), 1u);
+  EXPECT_EQ(store.indexOf(topic, arrivals[1].sequential_uid), 2u);
+  EXPECT_FALSE(store.indexOf(topic, SequentialUID{}).has_value());
+  EXPECT_FALSE(store.indexOf(ObjectTopicId{999}, arrivals[0].sequential_uid).has_value());
+
+  store.evictBefore(topic, 60);
+  EXPECT_FALSE(store.indexOf(topic, arrivals[2].sequential_uid).has_value());
+  EXPECT_EQ(store.indexOf(topic, arrivals[0].sequential_uid), 0u);
+}
+
+// `content` moves on every change; `rewrite` only when a UID cursor and a timestamp floor could not tell the change
+// from an append plus a front eviction. Revisions are process-unique, so a topic id reused after a clear never repeats
+// one.
+TEST(ObjectStoreTest, ContentIdentityMovesOnReplacementAndEviction) {
+  ObjectStore store;
+  const auto topic = registerTestTopic(store);
+  EXPECT_EQ(store.contentIdentity(ObjectTopicId{999}), OrderedEntries::ContentIdentity{});
+  ASSERT_TRUE(store.pushOwned(topic, 100, {1}).has_value());
+  const auto first = store.contentIdentity(topic);
+
+  ASSERT_TRUE(store.pushOwned(topic, 200, {2}).has_value());
+  const auto appended = store.contentIdentity(topic);
+  EXPECT_NE(appended.content, first.content);
+  EXPECT_EQ(appended.rewrite, first.rewrite) << "an append rewrites nothing";
+
+  ASSERT_TRUE(store.pushOwned(topic, 200, {3}).has_value());
+  const auto equal_stamp = store.contentIdentity(topic);
+  EXPECT_NE(equal_stamp.content, appended.content);
+  EXPECT_EQ(equal_stamp.rewrite, appended.rewrite) << "an equal stamp lands after the newest entry: an append";
+
+  ASSERT_TRUE(store.pushOwned(topic, 150, {4}).has_value());
+  const auto late = store.contentIdentity(topic);
+  EXPECT_NE(late.rewrite, equal_stamp.rewrite);
+
+  store.evictBefore(topic, 120);
+  const auto evicted = store.contentIdentity(topic);
+  EXPECT_NE(evicted.content, late.content);
+  EXPECT_EQ(evicted.rewrite, late.rewrite) << "a front eviction rewrites nothing";
+
+  OwnedObjectWrite prune;
+  prune.topic = topic;
+  prune.append = false;
+  prune.drop = [](Timestamp stamp, SequentialUID) { return stamp == 150; };
+  ASSERT_TRUE(store.pushOwnedBundle({prune}).has_value());
+  const auto removed = store.contentIdentity(topic);
+  EXPECT_NE(removed.rewrite, evicted.rewrite) << "a removal anywhere rewrites";
+  const auto unchanged = store.contentIdentity(topic);
+  EXPECT_EQ(unchanged, removed) << "a read changes nothing";
+
+  store.clear();
+  const auto reused = registerTestTopic(store);
+  ASSERT_EQ(reused, topic);
+  ASSERT_TRUE(store.pushOwned(reused, 100, {1}).has_value());
+  const auto again = store.contentIdentity(reused);
+  EXPECT_NE(again.content, first.content);
+  EXPECT_NE(again.rewrite, first.rewrite);
+}
+
 // PJ_BENCH=1 prints what one bundle publication of three topics costs, each topic holding
 // `window` retained entries and the drop removing one per call (a sliding window). The
 // 900 and 3,600 windows make the first payload 64 B too, so the bench stays within memory:

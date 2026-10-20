@@ -114,6 +114,8 @@ if(TARGET pj_scene2d_widgets)
     target_sources(pj_app_shell PRIVATE
         src/SceneImageDecoder.cpp
         src/SceneImageDecoder.h
+        src/SceneVideoFrameSource.cpp
+        src/SceneVideoFrameSource.h
         src/ui/Scene2DConfigPanel.cpp
         src/ui/Scene2DConfigPanel.h)
 endif()
@@ -356,19 +358,28 @@ if(PJ_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/pj_runtime/include
     )
 
-    # The codec on-demand scripts decode through, compiled standalone over Scene2D's core; turbojpeg and libpng
-    # encode its fixtures (no FFmpeg).
+    # The codecs on-demand scripts decode through, compiled standalone over Scene2D's core; turbojpeg and libpng
+    # encode the image fixtures, FFmpeg demuxes the video one (run from the source root, where it lives).
     if(TARGET pj_scene2d_widgets AND NOT EMSCRIPTEN)
         find_package(libjpeg-turbo REQUIRED)
         find_package(PNG REQUIRED)
-        pj_add_test_runner(pj_app_image_decoder_tests
+        include(${CMAKE_SOURCE_DIR}/pj_scene2D/cmake/PjScene2DFfmpeg.cmake)
+        pj_scene2d_find_ffmpeg(PJ_APP_HAS_FFMPEG PJ_APP_FFMPEG_TARGETS PJ_APP_FFMPEG_SOURCE)
+        set(PJ_APP_MEDIA_TEST_SOURCES
+            tests/scene_image_decoder_test.cpp src/SceneImageDecoder.cpp src/SceneImageDecoder.h
+            src/SceneVideoFrameSource.cpp src/SceneVideoFrameSource.h)
+        if(PJ_APP_HAS_FFMPEG)
+            list(APPEND PJ_APP_MEDIA_TEST_SOURCES tests/scene_video_frame_source_test.cpp)
+        endif()
+        pj_add_test_runner(pj_app_media_codec_tests
             MAIN plain WARNINGS
-            SOURCES tests/scene_image_decoder_test.cpp src/SceneImageDecoder.cpp src/SceneImageDecoder.h
-            LIBS pj_scene2d_core pj_scripting libjpeg-turbo::libjpeg-turbo PNG::PNG)
-        target_include_directories(pj_app_image_decoder_tests PRIVATE
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            SOURCES ${PJ_APP_MEDIA_TEST_SOURCES}
+            LIBS pj_scene2d_core pj_scripting libjpeg-turbo::libjpeg-turbo PNG::PNG ${PJ_APP_FFMPEG_TARGETS})
+        target_include_directories(pj_app_media_codec_tests PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/pj_scene2D/tests)
         if(MSVC)
-            target_compile_options(pj_app_image_decoder_tests PRIVATE /wd4611)  # test_png_io.h's libpng setjmp
+            target_compile_options(pj_app_media_codec_tests PRIVATE /wd4611)  # test_png_io.h's libpng setjmp
         endif()
     endif()
 

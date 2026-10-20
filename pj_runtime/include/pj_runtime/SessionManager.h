@@ -47,6 +47,7 @@ class RefillGuard;
 class TransformService;
 namespace scripting {
 class IImageDecoder;
+class IVideoFrameSource;
 }  // namespace scripting
 
 /// Result of resolving a persisted dataset identity against the live session.
@@ -240,6 +241,12 @@ class SessionManager : public QObject {
   /// submitted with; without one, a script's `decode` reports "no image decoder". GUI thread.
   void setImageDecoder(std::shared_ptr<const scripting::IImageDecoder> decoder) {
     image_decoder_ = std::move(decoder);
+  }
+  /// What on-demand scripts' `video:frame_at` decodes through (`scripting::RunOptions::video_source`; pj_app's
+  /// `SceneVideoFrameSource`, where Scene2D is built). The session retires a dataset's topics in it before their
+  /// storage changes (`suspendOnDemand`). Without one, `frame_at` reports "no video frame source". GUI thread.
+  void setVideoFrameSource(std::shared_ptr<scripting::IVideoFrameSource> source) {
+    video_source_ = std::move(source);
   }
 
   [[nodiscard]] DataReader createReader() const;
@@ -859,8 +866,8 @@ class SessionManager : public QObject {
   [[nodiscard]] ActiveIngestEntry* liveEntry(IngestToken token);
 
   /// Before a meaning-changing change of the dataset's storage: a new epoch (a run in flight is never published), and
-  /// the on-demand nodes suspended (results dropped, runs cancelled, requests held). Pair each with
-  /// `resumeOnDemandLater`.
+  /// the on-demand nodes suspended (results dropped, runs cancelled, requests held) and the dataset retired in the
+  /// video source. Pair each with `resumeOnDemandLater`.
   void suspendOnDemand(DatasetId dataset_id);
   /// Ends one `suspendOnDemand` from the event loop, so the requests it serves see the storage, the catalog and
   /// the TF state their caller rebuilds after the change, with no event loop in between.
@@ -935,6 +942,7 @@ class SessionManager : public QObject {
   std::unordered_map<DatasetId, DatasetId> merged_into_;
   QPointer<TransformService> transform_service_;
   std::shared_ptr<const scripting::IImageDecoder> image_decoder_;
+  std::shared_ptr<scripting::IVideoFrameSource> video_source_;
   // How long a TF snapshot serves on-demand runs while its dataset ingests: the brake rate.
   static constexpr std::chrono::milliseconds kTfSnapshotPeriod{500};
   std::function<std::chrono::steady_clock::time_point()> tf_clock_ = [] { return std::chrono::steady_clock::now(); };

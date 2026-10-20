@@ -33,9 +33,11 @@
 #include "pj_base/builtin/occupancy_grid.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_base/builtin/scene_entities.hpp"
+#include "pj_base/builtin/video_frame.hpp"
 #include "pj_base/sdk/platform.hpp"
 #include "pj_scripting/image_decoder.h"
 #include "pj_scripting/memory_budget.h"
+#include "pj_scripting/video_frame_source.h"
 #include "pj_tf/tf_buffer.h"
 #include "script_media.h"
 
@@ -1878,6 +1880,204 @@ TEST(ObjectScript, ParserDepthImageSupportsProjectionAndRejectsOrdinaryImages) {
   ASSERT_TRUE(result.has_value()) << result.error();
   EXPECT_EQ(std::get<Unavailable>(*find(*result, "cloud")).reason, "depth must be rectified before unprojection");
   expectMediaError("local inputs = ...; return inputs.image:to_point_cloud(inputs.image)", "camera info");
+}
+
+// ---- video: frame_at, the frames' pairing (MED-16, MED-22) ------------------------------------------------------
+
+namespace {
+
+constexpr ObjectTopicId kVideoTopic{7};
+
+/// A video whose frame at `t` presents at t - t % 10: 16 x 16 rgb8, charged before it exists; counts its calls.
+class BucketVideo final : public IVideoFrameSource {
+ public:
+  int calls = 0;
+  Timestamp received = 0;         ///< the last query's time
+  bool saw_cancel_check = false;  ///< the last query came with the run's cancel check
+  Expected<VideoFrameResult> frameAt(
+      ObjectTopicId topic, Timestamp t, const std::shared_ptr<native::MemoryBudget>& budget,
+      const std::function<bool()>& cancelled) override {
+    ++calls;
+    received = t;
+    saw_cancel_check = static_cast<bool>(cancelled);
+    if (topic != kVideoTopic) {
+      return unexpected("unknown video topic");
+    }
+    auto charge = std::make_shared<native::MemoryReservation>(budget);
+    constexpr uint32_t kSide = 16;
+    if (Status grown = charge->grow(kSide * kSide * 3); !grown) {
+      return unexpected(grown.error());
+    }
+    struct Held {
+      std::vector<uint8_t> rgb;
+      std::shared_ptr<native::MemoryReservation> charge;
+    };
+    auto held = std::make_shared<Held>(Held{std::vector<uint8_t>(kSide * kSide * 3, 7), std::move(charge)});
+    VideoFrameResult frame;
+    frame.presentation_ns = t - t % 10;
+    frame.image.encoding = "rgb8";
+    frame.image.width = kSide;
+    frame.image.height = kSide;
+    frame.image.row_step = kSide * 3;
+    frame.image.timestamp_ns = frame.presentation_ns;
+    frame.image.data = {held->rgb.data(), held->rgb.size()};
+    frame.image.anchor = held;
+    return frame;
+  }
+  void retireDataset(DatasetId /*dataset*/) override {}
+};
+
+/// The video input "video" on store topic `/video` (kVideoTopic), its packet stamped 99.
+NamedValue videoInput() {
+  sdk::VideoFrame packet;
+  packet.timestamp_ns = 99;
+  NamedValue input = object("video", sdk::BuiltinObject(packet));
+  input.topic = "/video";
+  input.topic_id = kVideoTopic;
+  return input;
+}
+
+RunOptions withVideo(std::shared_ptr<BucketVideo> video, std::shared_ptr<FakeImageDecoder> decoder) {
+  RunOptions options;
+  options.video_source = std::move(video);
+  options.image_decoder = std::move(decoder);
+  return options;
+}
+
+}  // namespace
+
+// Each frame pairs with its own presentation time; a builder finished between two frames pairs with the one decoded
+// so far. The frames are the run's own: a second run sees none of the first's.
+TEST(ObjectScript, VideoFramesCarryDistinctAnnotationPairingThroughTheBinder) {
+  const RunOptions options = withVideo(std::make_shared<BucketVideo>(), std::make_shared<FakeImageDecoder>(1, 1, 1.0f));
+  for (int invocation = 0; invocation < 2; ++invocation) {
+    auto result = run(
+        R"LUAU(
+local inputs = ...
+local a = inputs.video:frame_at(13)
+local built = pj.annotations.new{image_topic = "/video"}:points{points = {{0, 0}}, type = "points"}:finish()
+local b = inputs.video:frame_at(23)
+assert(tostring(a.presentation_ns) == "10" and tostring(b.presentation_ns) == "20")
+return {a = a.image:decode():threshold(">", 0), b = b.image:decode():threshold(">", 0), built = built}
+)LUAU",
+        {videoInput()}, specs({"a:kImageAnnotations", "b:kImageAnnotations", "built:kImageAnnotations"}), "{}",
+        options);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    for (const auto& [name, stamp] :
+         std::vector<std::pair<std::string, Timestamp>>{{"a", 10}, {"b", 20}, {"built", 10}}) {
+      const auto* annotations = objectOf<sdk::ImageAnnotations>(*result, name);
+      ASSERT_NE(annotations, nullptr) << name;
+      EXPECT_EQ(annotations->image_topic, "/video") << name;
+      EXPECT_EQ(annotations->timestamp, stamp) << name;
+    }
+  }
+}
+
+// Two frames are two images, decoded once each; a builder after frames that disagree pairs with the video input's own
+// stamp; a frame's pixels are charged to the run's native budget, so a frame that does not fit is refused.
+TEST(ObjectScript, VideoFramesDecodeApartPairAmbiguityWithTheInputAndAreCharged) {
+  auto video = std::make_shared<BucketVideo>();
+  auto decoder = std::make_shared<FakeImageDecoder>(1, 1, 1.0f);
+  auto result = run(
+      R"LUAU(
+local inputs = ...
+local a = inputs.video:frame_at(13).image
+local b = inputs.video:frame_at(23).image
+a:decode()
+a:decode()
+b:decode()
+return {built = pj.annotations.new{image_topic = "video"}:finish()}
+)LUAU",
+      {videoInput()}, specs({"built:kImageAnnotations"}), "{}", withVideo(video, decoder));
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_EQ(video->calls, 2);
+  EXPECT_EQ(decoder->calls, 2);
+  const auto* built = objectOf<sdk::ImageAnnotations>(*result, "built");
+  ASSERT_NE(built, nullptr);
+  EXPECT_EQ(built->image_topic, "/video");
+  EXPECT_EQ(built->timestamp, 99);
+
+  RunOptions tiny = withVideo(video, decoder);
+  tiny.native_budget_bytes = 256;  // the error string fits, the frame's 768 bytes do not
+  result =
+      run("local inputs = ...; local frame, err = inputs.video:frame_at(13); return {err = err}", {videoInput()},
+          specs({"err:string"}), "{}", tiny);
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_TRUE(contains(text(*result, "err"), "native memory limit")) << text(*result, "err");
+}
+
+TEST(ObjectScript, FrameAtRejectsABadTimeAndReportsAMissingSource) {
+  auto result = run(
+      "local inputs = ...; return {pts = tostring(inputs.video:frame_at(inputs.video.timestamp_ns).presentation_ns)}",
+      {videoInput()}, specs({"pts:string"}), "{}", withVideo(std::make_shared<BucketVideo>(), nullptr));
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_EQ(text(*result, "pts"), "90") << "a pj.int64 time is exact";
+
+  result =
+      run("local inputs = ...; local frame, err = inputs.video:frame_at(13); return {err = err}", {videoInput()},
+          specs({"err:string"}));
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_EQ(text(*result, "err"), "no video frame source");
+
+  // A merged dataset's entry (its packet 1003 ns later on the dataset clock): the source indexes the dataset clock, so
+  // the query and the presentation time pass through unchanged.
+  NamedValue shifted = videoInput();
+  shifted.stamp_shift = 1003;
+  auto shifted_video = std::make_shared<BucketVideo>();
+  result =
+      run("local inputs = ...; return {pts = tostring(inputs.video:frame_at(1023).presentation_ns)}", {shifted},
+          specs({"pts:string"}), "{}", withVideo(shifted_video, nullptr));
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_EQ(shifted_video->received, 1023);
+  EXPECT_EQ(text(*result, "pts"), "1020");
+
+  NamedValue chained = videoInput();
+  chained.topic_id = {};
+  result =
+      run("local inputs = ...; local frame, err = inputs.video:frame_at(13); return {err = err}", {chained},
+          specs({"err:string"}), "{}", withVideo(std::make_shared<BucketVideo>(), nullptr));
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_EQ(text(*result, "err"), "video input 'video' has no store topic");
+
+  for (const char* time : {"13.5", "'13'", "1e300"}) {
+    result =
+        run(std::string("local inputs = ...; return {err = inputs.video:frame_at(") + time + ")}", {videoInput()},
+            specs({"err:string"}), "{}", withVideo(std::make_shared<BucketVideo>(), nullptr));
+    ASSERT_FALSE(result.has_value()) << time;
+    EXPECT_TRUE(contains(result.error(), "frame_at: time")) << time << " -> " << result.error().message;
+  }
+}
+
+// On a video packet 0 is a stamp, as on an image: a merge's shift moves it, so the packet's own time reaches the
+// frames presented from it and the annotations that pair with it.
+TEST(ObjectScript, AZeroVideoStampMovesWithTheDatasetShift) {
+  NamedValue packet = videoInput();
+  sdk::VideoFrame frame;
+  frame.timestamp_ns = 0;
+  packet.value = sdk::BuiltinObject(frame);
+  packet.stamp_shift = 1000;
+  auto video = std::make_shared<BucketVideo>();
+  auto result =
+      run("local inputs = ...; local frame = inputs.video:frame_at(inputs.video.timestamp_ns); "
+          "return {stamp = tostring(inputs.video.timestamp_ns), built = pj.annotations.new{image_topic = "
+          "'video'}:finish()}",
+          {packet}, specs({"stamp:string", "built:kImageAnnotations"}), "{}", withVideo(video, nullptr));
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_EQ(text(*result, "stamp"), "1000");
+  EXPECT_EQ(video->received, 1000);
+  EXPECT_EQ(objectOf<sdk::ImageAnnotations>(*result, "built")->timestamp, 1000);
+}
+
+// `frame_at` hands the source the run's cancel check, so a cancelled run stops inside a long decode too.
+TEST(ObjectScript, FrameAtPassesTheRunsCancelCheck) {
+  auto video = std::make_shared<BucketVideo>();
+  RunOptions options = withVideo(video, nullptr);
+  options.cancelled = [] { return false; };
+  auto result =
+      run("local inputs = ...; inputs.video:frame_at(13); return {done = 1}", {videoInput()}, specs({"done:number"}),
+          "{}", options);
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_TRUE(video->saw_cancel_check);
 }
 
 }  // namespace PJ::scripting

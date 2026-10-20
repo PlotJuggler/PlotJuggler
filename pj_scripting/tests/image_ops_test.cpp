@@ -23,6 +23,7 @@
 #include "native/depth_ops.h"
 #include "pj_base/sdk/platform.hpp"
 #include "pj_scripting/memory_budget.h"
+#include "pj_scripting/video_frame_source.h"
 #include "script_media.h"
 
 namespace PJ::scripting {
@@ -368,6 +369,48 @@ TEST(ScriptMediaTest, DecodedPixelsOfAChainedImageNameItByItsAlias) {
   ASSERT_TRUE(decoded);
   EXPECT_EQ(decoded->image_topic, "node/image");
   EXPECT_EQ(decoded->timestamp_ns, 7);
+}
+
+/// A video whose frame at `t` presents at `t`: one rgb8 pixel with its own anchor.
+class OnePixelVideo final : public IVideoFrameSource {
+ public:
+  Expected<VideoFrameResult> frameAt(
+      ObjectTopicId /*topic*/, Timestamp t, const std::shared_ptr<MemoryBudget>& /*budget*/,
+      const std::function<bool()>& /*cancelled*/) override {
+    auto rgb = std::make_shared<std::vector<uint8_t>>(3, 1);
+    VideoFrameResult frame;
+    frame.presentation_ns = t;
+    frame.image.encoding = "rgb8";
+    frame.image.width = frame.image.height = 1;
+    frame.image.data = {rgb->data(), rgb->size()};
+    frame.image.anchor = rgb;
+    return frame;
+  }
+  void retireDataset(DatasetId /*dataset*/) override {}
+};
+
+// A frame the script dropped never lends its identity to the next image at its address: no memoized pixels, no
+// pairing (the allocator may reuse a collected image's address; the test hands the dead address over explicitly).
+TEST(ScriptMediaTest, ACollectedFrameNeverLendsItsIdentity) {
+  auto decoder = std::make_shared<CountingDecoder>();
+  ScriptMedia media(decoder, limitedTo(1024), 0, std::make_shared<OnePixelVideo>());
+  const sdk::VideoFrame packet;
+  media.noteInput(&packet, "/video", "video", 5, ObjectTopicId{7});
+  auto first = media.frameAt(&packet, 10);
+  ASSERT_TRUE(first) << first.error();
+  const void* dead = first->get<sdk::Image>();
+  ASSERT_TRUE(media.decode(dead, *first->get<sdk::Image>()));
+  first = sdk::BuiltinObject{};  // collected
+  auto second = media.frameAt(&packet, 20);
+  ASSERT_TRUE(second) << second.error();
+  sdk::Image unrelated = *second->get<sdk::Image>();
+  unrelated.timestamp_ns = 99;
+  unrelated.anchor = std::make_shared<int>(0);  // another image, now living at the dead frame's address
+  const auto decoded = media.decode(dead, unrelated);
+  ASSERT_TRUE(decoded);
+  EXPECT_EQ(decoder->calls, 2) << "decoded anew, not the dead frame's memo";
+  EXPECT_TRUE(decoded->image_topic.empty());
+  EXPECT_EQ(decoded->timestamp_ns, 99);
 }
 
 // ---- benchmarks -------------------------------------------------------------------

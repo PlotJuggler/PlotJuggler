@@ -978,6 +978,41 @@ int lDecodedStats(lua_State* L) {
   return 1;
 }
 
+// ---- video: frame_at (upvalue 1: the run's ScriptMedia) ----------------------------------------------------------
+
+/// `video:frame_at(t)` -> `{image, presentation_ns}`, or `nil, reason`: the frame presented at `t`, an integer number
+/// of nanoseconds or a `pj.int64`.
+int lVideoFrameAt(lua_State* L) {
+  const sdk::VideoFrame* video = objectBoxAt(L, 1).anchor.object.get<sdk::VideoFrame>();
+  if (video == nullptr) {
+    luaL_typeerror(L, 1, "video frame");
+  }
+  Timestamp t = 0;
+  if (const std::optional<int64_t> boxed = toInt64(L, 2)) {
+    t = *boxed;
+  } else {
+    const double ns = lua_type(L, 2) == LUA_TNUMBER ? lua_tonumber(L, 2) : std::nan("");
+    if (!(std::abs(ns) < 9.2e18) || std::floor(ns) != ns) {
+      luaL_error(L, "frame_at: time must be an integer number of nanoseconds or a pj.int64");
+    }
+    t = static_cast<Timestamp>(ns);
+  }
+  ScriptMedia& media = upvalueAs<ScriptMedia>(L);
+  Expected<sdk::BuiltinObject> image = retryAfterCollect(L, [&] { return media.frameAt(video, t); });
+  if (!image) {
+    lua_pushnil(L);
+    lua_pushlstring(L, image.error().data(), image.error().size());
+    return 2;
+  }
+  const Timestamp presentation = image->get<sdk::Image>()->timestamp_ns;
+  lua_createtable(L, 0, 2);
+  pushObject(L, std::move(*image));
+  lua_setfield(L, -2, "image");
+  pushInt64(L, presentation);
+  lua_setfield(L, -2, "presentation_ns");
+  return 1;
+}
+
 /// `__index` of decoded pixels: `width`, `height`, `channels`, then the methods (upvalue 1).
 int lDecodedIndex(lua_State* L) {
   const DecodedPixels& image = checkDecoded(L);
@@ -1054,6 +1089,9 @@ void registerBinder(lua_State* L, ScriptMedia& media) {
   lua_createtable(L, 0, 1);
   setFunctions(L, {{"count", lAnnotationsCount}});
   lua_rawseti(L, -2, static_cast<int>(sdk::BuiltinObjectType::kImageAnnotations));
+  lua_createtable(L, 0, 1);
+  setFunctions(L, {{"frame_at", lVideoFrameAt}}, &media);
+  lua_rawseti(L, -2, static_cast<int>(sdk::BuiltinObjectType::kVideoFrame));
   lua_pushcclosure(L, lObjectIndex, "__index", 1);
   lua_setfield(L, -2, "__index");
   setFunctions(L, {{"__newindex", lReadOnly}});
@@ -1199,9 +1237,10 @@ sdk::BuiltinObject withStampShifted(const sdk::BuiltinObject& object, Timestamp 
   if (shift == 0 || field == nullptr) {
     return object;
   }
-  // On an image 0 is a stamp, which the annotations made from it pair with; elsewhere it means unstamped.
-  const bool zero_is_a_stamp =
-      object.type() == sdk::BuiltinObjectType::kImage || object.type() == sdk::BuiltinObjectType::kDepthImage;
+  // On an image or a video packet 0 is a stamp, which annotations and frames pair with; elsewhere it means unstamped.
+  const bool zero_is_a_stamp = object.type() == sdk::BuiltinObjectType::kImage ||
+                               object.type() == sdk::BuiltinObjectType::kDepthImage ||
+                               object.type() == sdk::BuiltinObjectType::kVideoFrame;
   sdk::BuiltinObject shifted = object;
   visitDescribed(object, [&](const auto& value) {
     const Timestamp stamp = field->get_int64(&value);

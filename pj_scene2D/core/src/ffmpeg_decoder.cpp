@@ -562,4 +562,35 @@ Expected<DecodedFrame> FfmpegDecoder::avFrameToDecodedFrame(AVFrame* frame) {
   return result;
 }
 
+bool convertToRgb24(const DecodedFrame& frame, uint8_t* out) {
+  const bool nv12 = frame.format == PixelFormat::kNV12;
+  if ((!nv12 && frame.format != PixelFormat::kYUV420P) || !frame.isValid() || out == nullptr) {
+    return false;
+  }
+  const int width = frame.width;
+  const int height = frame.height;
+  // Nearest chroma (each pixel reads its 2x2 block) and exact rounding: the shader's sampling, within 1 of its matrix.
+  SwsContext* context = sws_getContext(
+      width, height, nv12 ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P, width, height, AV_PIX_FMT_RGB24,
+      SWS_POINT | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT | SWS_FULL_CHR_H_INP, nullptr, nullptr, nullptr);
+  if (context == nullptr) {
+    return false;
+  }
+  const int* coefficients =
+      sws_getCoefficients(frame.color_space == YuvColorSpace::kBt709 ? SWS_CS_ITU709 : SWS_CS_ITU601);
+  const int source_range = frame.color_range == YuvColorRange::kFull ? 1 : 0;
+  sws_setColorspaceDetails(context, coefficients, source_range, coefficients, 1, 0, 1 << 16, 1 << 16);
+  const int chroma_width = (width + 1) / 2;
+  const size_t luma_size = static_cast<size_t>(width) * static_cast<size_t>(height);
+  const size_t chroma_size = static_cast<size_t>(chroma_width) * static_cast<size_t>((height + 1) / 2);
+  const uint8_t* base = frame.pixels->data();
+  const uint8_t* planes[3] = {base, base + luma_size, nv12 ? nullptr : base + luma_size + chroma_size};
+  const int strides[3] = {width, nv12 ? chroma_width * 2 : chroma_width, nv12 ? 0 : chroma_width};
+  uint8_t* destination[1] = {out};
+  const int destination_stride[1] = {width * 3};
+  const int rows = sws_scale(context, planes, strides, 0, height, destination, destination_stride);
+  sws_freeContext(context);
+  return rows == height;
+}
+
 }  // namespace PJ

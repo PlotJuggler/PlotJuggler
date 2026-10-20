@@ -80,7 +80,9 @@ Expected<InputStager::Staged> InputStager::stage(
       staged.key.inputs.insert(staged.key.inputs.end(), {kRingIdentity, result->uid.value});
       resolved = result->stamp;
       input.value = Entry{result->topic, result->uid, binding.object_type, {}};
-    } else if (const std::optional<Timestamp> raw = stageRaw(node, binding, t, staged.key.inputs, input)) {
+    } else if (
+        const std::optional<Timestamp> raw =
+            stageRaw(node, binding, t, staged.key.inputs, staged.key.video_content, input)) {
       resolved = *raw;
     } else {
       return missingInput(input.alias);
@@ -94,7 +96,7 @@ Expected<InputStager::Staged> InputStager::stage(
 
 std::optional<Timestamp> InputStager::stageRaw(
     const RecipeGraph::Node& node, const RecipeGraph::Binding& binding, Timestamp t, std::vector<uint64_t>& key,
-    Input& input) const {
+    std::vector<uint64_t>& video_content, Input& input) const {
   if (binding.object_type == sdk::BuiltinObjectType::kNone) {
     std::optional<ScalarSample> sample = scalars_(node.dataset, binding.name, t);
     if (!sample || std::holds_alternative<std::monostate>(sample->value)) {
@@ -120,6 +122,10 @@ std::optional<Timestamp> InputStager::stageRaw(
   // a generation number in the parser slot.
   const auto parser_identity = static_cast<uint64_t>(reinterpret_cast<std::uintptr_t>(parser.parser));
   key.insert(key.end(), {topic->id, entry->uid.value, parser_identity});
+  if (binding.object_type == sdk::BuiltinObjectType::kVideoFrame) {
+    // `frame_at` may read any packet of the topic, and which ones is a function of this key: its content joins it.
+    video_content.push_back(store_.contentIdentity(*topic).content);
+  }
   input.value = Entry{*topic, entry->uid, binding.object_type, std::move(parser)};
   return entry->timestamp;
 }
@@ -128,7 +134,7 @@ bool InputStager::appendRawIdentities(const RecipeGraph::Node& node, Timestamp t
   bool complete = true;
   for (const RecipeGraph::Binding& binding : node.bindings) {
     Input scratch;
-    if (binding.upstream.empty() && !stageRaw(node, binding, t, out, scratch)) {
+    if (binding.upstream.empty() && !stageRaw(node, binding, t, out, out, scratch)) {
       out.push_back(std::numeric_limits<uint64_t>::max());  // nothing at or before `t`
       complete = false;
     }
@@ -195,7 +201,8 @@ Expected<InputStager::Decoded> InputStager::decode(const ObjectStore& store, con
         decoded.keepalives.push_back(entry.parser.keepalive);
       }
       decoded.values.push_back(
-          {input.alias, std::move(*parsed), resolved->payload_stamp_shift, store.descriptor(entry.topic).topic_name});
+          {input.alias, std::move(*parsed), resolved->payload_stamp_shift, store.descriptor(entry.topic).topic_name,
+           entry.topic});
     }
   }
   return decoded;

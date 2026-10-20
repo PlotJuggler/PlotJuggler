@@ -29,6 +29,11 @@ namespace PJ {
 /// the right GPU is chosen on multi-GPU machines. See ffmpeg_decoder.cpp.
 /// Single-threaded — codec state is inherently sequential. One instance per
 /// video layer per viewer widget. Ported from video_player_lab/HWDecoder.
+/// Converts a 4:2:0 YUV frame (kYUV420P or kNV12) into tightly packed rgb24 at `out` (width * height * 3 bytes), with
+/// the matrix the media shader applies for its colour space and range (`buildYuvMatrix`), through swscale. False for
+/// any other format or a frame whose buffer does not match its size. Any thread.
+[[nodiscard]] bool convertToRgb24(const DecodedFrame& frame, uint8_t* out);
+
 class FfmpegDecoder {
  public:
   FfmpegDecoder();

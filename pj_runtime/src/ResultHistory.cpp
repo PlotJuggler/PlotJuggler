@@ -449,7 +449,7 @@ void ResultHistory::cacheResult(
     own = node.cache.end();
   }
   if (own == node.cache.end()) {
-    size_t bytes = sizeof(Cached) + key.inputs.size() * sizeof(uint64_t);
+    size_t bytes = sizeof(Cached) + (key.inputs.size() + key.video_content.size()) * sizeof(uint64_t);
     for (const scripting::NamedValue& output : bundle->outputs) {
       bytes += scripting::estimateBytes(output.value);
     }

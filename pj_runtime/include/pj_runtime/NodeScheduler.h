@@ -92,6 +92,9 @@ class NodeScheduler {
   /// What a run decodes images through (`RunOptions::image_decoder`), read when the run is submitted (GUI thread);
   /// null: a script's `decode` reports "no image decoder".
   using ImageDecoderProvider = std::function<std::shared_ptr<const scripting::IImageDecoder>()>;
+  /// What a run's `video:frame_at` decodes through (`RunOptions::video_source`), read when the run is submitted (GUI
+  /// thread); null: it reports "no video frame source".
+  using VideoSourceProvider = std::function<std::shared_ptr<scripting::IVideoFrameSource>()>;
 
   struct Hooks {
     TfProvider tf;                       ///< empty: no dataset has TF
@@ -101,6 +104,7 @@ class NodeScheduler {
     KeyCallback published;               ///< the history took a result of the node: the ring may show something new
     KeyCallback state_changed;           ///< the node's status, detail or lag changed
     ImageDecoderProvider image_decoder;  ///< empty: no run has a decoder
+    VideoSourceProvider video_source;    ///< empty: no run has a video source
   };
 
   NodeScheduler(

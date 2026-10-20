@@ -509,10 +509,25 @@ immediately — no re-decode, no seek.
 codec-dispatched `isVideoKeyframe(codec_id, data, size)` (`video_codec_utils.h`):
 H.264 IDR (NAL type 5), HEVC IRAP (NAL types 16–21), AV1 (carries a
 Sequence-Header OBU). `resolveCodec()` latches the topic's codec from the first
-extracted frame's `VideoFrame.format` before the oracle runs. Tracked by
-`last_scanned_ts_` to handle the steady-state case where retention keeps
-`entryCount()` constant while entries are replaced. Evicted keyframe timestamps
-are pruned against `timeRange().first` on each update.
+extracted frame's `VideoFrame.format` before the oracle runs. Each packet is
+addressed by its UID (`ObjectStore::indexOf`), so packets at an equal DTS never
+alias. The index follows the store's revisions (`ObjectStore::contentIdentity`):
+an unchanged poll scans nothing, an append scans only the arrivals since the
+last scan (a UID cursor over `drainNewSince`), and a rewrite (an earlier DTS, a
+removal anywhere, a clear) rebuilds it. A new packet at a PTS already indexed
+replaces that frame and drops the codec state; the older packets of that PTS stay
+listed, so evicting the newest presents the retained one again, and a walk feeds
+them with a PTS below every target so their frames never overwrite the newest's. Each
+packet is indexed at its PTS plus its entry's `payload_stamp_shift`, so the
+decoder presents and is queried on the dataset clock and a merge's same-name
+topics never collide. Evicted packets are pruned against the store front
+(`timeRange().first`, `firstSequentialUID`) when it moves. A GOP walk follows
+its packets through a front eviction (`packetAt`, anchored on the target's UID)
+instead of their old indices. A decode polls its `CancelToken` between packets;
+a token can also read a caller's own check (`CancelToken(poll)`), which is how an
+on-demand script's cancel reaches it. A decode during which the topic was rewritten fails ("video content
+changed during decode") and rebuilds; an append or a front eviction meanwhile
+moves no fed packet, so a live decode is not failed by them.
 
 **Decoder initialization:** Deferred until the first keyframe arrives
 (join-mid-stream support). The decoder opens via `makeVideoCodecParams(codec_id)`

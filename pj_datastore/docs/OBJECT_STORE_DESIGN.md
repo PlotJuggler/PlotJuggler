@@ -226,6 +226,12 @@ in-order array slot, unaffected by the `uid_order` index).
 topic/generation).
 
 `indexAt(id, timestamp)` returns the index that `latestAt()` would resolve.
+`indexOf(id, uid)` returns an entry's index by its UID, which equal stamps do not
+alias. `contentIdentity(id)` returns the topic's two revisions (process-unique, so a
+topic id reused after a clear never repeats them): `content` moves on every change,
+`rewrite` only on one a UID cursor plus a timestamp floor cannot follow (anything but
+an append at or after the newest stamp or a front eviction). The streaming video decoder
+refreshes its index from them.
 
 `latestEntryIdAt(id, timestamp)` returns the `{sequential_uid, timestamp}` identity
 of the entry `latestAt()` would resolve, without resolving its payload (metadata

@@ -157,7 +157,7 @@ fixes below; the Python binder comes with slice 10.
   O(N²) iteration). Iterating 100,000 elements takes 11 ms (§19).
 - **Producible outputs (built, slice 5c-1):** an output declaration accepts only the object
   types a script can produce: point cloud, scene entities, image annotations, image, depth
-  image and camera info. Video frames wait for slice 9, frame transforms for a decision on
+  image and camera info. A video frame is an input only (`frame_at`, below), frame transforms wait for a decision on
   the TF ingest tap (a derived TF topic would feed the dataset's buffer). The prototype's
   `parseOutputSpec` accepted any builtin type, so a script could declare an output it could
   never return.
@@ -182,7 +182,24 @@ fixes below; the Python binder comes with slice 10.
   (`RunOptions::result_stamp`). An input with no store topic (an evaluation's chained image) is
   named by its input name. Scope: a `compressedDepth` stream is unsupported ("unsupported image
   encoding"), and an 8-bit grey PNG decodes to 3 channels (Scene2D's PNG codec expands it to RGB;
-  a 16-bit one keeps its single channel). Video waits for slice 9b.
+  a 16-bit one keeps its single channel).
+- **Video (built, slice 9b):** a video input is the packet at or before the requested time (decode order);
+  `video:frame_at(t)` returns the full frame presented at `t` (B-frames reordered), as an rgb8 image charged to the
+  run's native budget, through a source the shell injects (`pj_scripting/video_frame_source.h`; `pj_app`'s
+  `SceneVideoFrameSource`, one Scene2D streaming decoder per topic, handed to `SessionManager::setVideoFrameSource`).
+  The decoder addresses packets by UID (`ObjectStore::indexOf`), so equal and late DTS never alias, walks a GOP by
+  following its packets through a front eviction, keeps every retained packet of a PTS (the newest presents it, an
+  older one again once the newer is evicted), and refreshes its index from the store's revisions
+  (`ObjectStore::contentIdentity`): nothing on an unchanged poll, the new arrivals after an append, everything after a
+  rewrite. It indexes each packet at its PTS plus its entry's `payload_stamp_shift`, so `t` and the presentation time
+  are on the dataset clock and a merge's same-name topics never collide. Annotations made from a frame pair with the
+  video's topic at its presentation time; a builder naming the topic pairs with the frames decoded so far when they
+  agree, else with the packet's stamp (0 is a stamp, which a merge's shift moves). The run's cancel check reaches the
+  decoder, so a cancelled run stops inside a long GOP walk instead of holding the topic, and a frame converts to rgb24
+  through swscale (`convertToRgb24`, the shader's matrix within 1) outside the topic's lock. A frame is its image only while an
+  anchor only that image holds lives, so a collected frame never lends its address to another image. A topic's decoder
+  is made again when its parser changes, and the session retires a dataset's decoders before its storage changes
+  (`suspendOnDemand`); a call in flight on a replaced or retired decoder fails "video source generation changed".
 
 ## 7. Time and alignment
 
@@ -364,11 +381,18 @@ not.
 - A stored key serves a request when the base fields are equal and what its run observed
   (the query clock, the TF revision) is the same now (`CacheKey::serves`). A lookup reads
   only the request's stamp, so it costs 0.1 µs at 1 to 10,000 results per node (§19).
+- **A video input** joins with its topic's content revision as well as its entry (slice 9b): what a run's
+  `frame_at` reads is a function of the key (its inputs, params and the observed clock and TF) and of the topic's
+  content, so any change of the packets is a miss for a new request and nothing is resolved on the GUI thread (no
+  packet is fetched or parsed there). A run's completion ignores a moved revision alone (`CacheKey::completes`, D30):
+  under a live stream a paused request's run is shown instead of cached and run again forever. Ceiling: a packet
+  changed or appended during the run shows the frame the run decoded until the next request; the upgrade is recording the frames
+  a run queried and validating them at completion.
 - **The dataset epoch** is the session's (slice 6a-5): it moves before every change of a
   dataset's storage that changes what its inputs mean (§13), so a run staged before is
   never published.
-- **Proposed:** one observed-dependency list per result, with clock, TF and video as
-  entries, instead of key variants. The TF entry records the edges walked and the sample
+- **Proposed:** one observed-dependency list per result, with clock and TF as
+  entries, instead of key variants (video joins the staged key, above). The TF entry records the edges walked and the sample
   chosen on each (§12, R5), so unrelated live TF traffic no longer invalidates results.
 
 ## 11. Scheduling and execution
@@ -1160,7 +1184,7 @@ payload (§9).
 ## 19. Measurements
 
 These come from the prototype, whose design document describes the machine and method,
-except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a, slice 6a-5, slice 6c, slice 7a, slice 8a-1, slice 6b, slice 8a-2b, slice 8b-1, slice 9a-1 and slice 9a-2 rows. The slice 2 and 3 rows are measured on this stack by
+except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a, slice 6a-5, slice 6c, slice 7a, slice 8a-1, slice 6b, slice 8a-2b, slice 8b-1, slice 9a-1, slice 9a-2 and slice 9b rows. The slice 2 and 3 rows are measured on this stack by
 `EngineFreezeBench` (`pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`), from
 the call until the result is complete, as two different metrics:
 - **GUI-thread CPU time**, as the longest single stretch (the call or one event-loop
@@ -1206,6 +1230,7 @@ Linux, RelWithDebInfo.
 | Native point-cloud operations (slice 5n; `PointCloudOpsBench`, `pj_scripting/tests/native_ops_test.cpp`, `PJ_BENCH=1`; median of 20 calls on a 260k-point XYZI float32 scan, flat and as 64 x 4096 with padded rows, which cost the same per point) | `filterByField` (50% kept) 3.0 ns per point, `cropBox` (30% kept) 9.5 ns, `bounds` 3.2 ns, `extremePoint` 0.9 ns, `transformXyz` 6.0 ns, a full `nextFinitePoint` iteration 6 ns. The same loops with a datatype and comparison switch per point, a filter predicate evaluated twice and a division per record run 1.25x to 5.3x slower |
 | Native image operations (slice 9a-1; `ImageOpsBench`, `pj_scripting/tests/image_ops_test.cpp`, `PJ_BENCH=1`; median of 20 calls on 1920 x 1080 decoded pixels, three runs) | Per pixel, RGB: `to_gray` 1.2 ns, `threshold` 1.8 ns (1% matching) to 6.3-6.7 ns (50%: 1M points collected; 5.9 ns while the threshold was rounded to float), `stats` 3.2 ns, a whole-image `crop` 1.3 ns; depth `to_point_cloud` (16UC1) 7.7 ns. Each comparison is a templated kernel, dispatched once per call |
 | Image decode and the on-demand request (slice 9a-2; `SceneImageDecoderBench`, `pj_app/tests/scene_image_decoder_test.cpp`, and `OnDemandMediaBench`, `pj_runtime/tests/on_demand_media_test.cpp`, `PJ_BENCH=1`; three runs) | `SceneImageDecoder` at 1080p: a JPEG 10.8 ms (Scene2D's turbojpeg plus the float conversion), a PNG 7.8 ms, raw rgb8 2.5 ms (1.2 ns per pixel); all run on the pool worker. GUI time per cold `requestAt` of a recipe that decodes and thresholds a 1080p image: 5.6-5.8 µs median (51 requests, a raw fake decoder: the decode runs on the worker, so the codec adds no GUI time), the same as for a 260k-point cloud: independent of the image's size (GAP-26) |
+| Video on-demand request (slice 9b; `OnDemandMediaBench.GuiCostOfAVideoRequest`, `pj_runtime/tests/on_demand_media_test.cpp`, `PJ_BENCH=1`; one video input over 10k packets, 51 cold requests, three runs pinned to one core) | GUI time per cold `requestAt`: 0.80-0.92 µs median (six runs) with the topic's content revision in the key, against 0.77-0.83 µs without it (one more shared-lock read, near the noise); the frame decodes on the worker (a store-reading fake; `SceneVideoFrameSource` decodes the codec there), so nothing is fetched or parsed on the GUI thread. The frame's rgb24 conversion at 1080p (`VideoRgbConversionBench`, `pj_scene2D/tests/streaming_video_decoder_test.cpp`, three runs): 16.6 ms with the per-pixel loop, 10.8 ms through swscale (its faster paths, 0.65-2.5 ms, miss the shader's matrix by 2-255 on random samples), run outside the topic's lock |
 | `ResultHistory` after slice 6a-2 (`ResultHistoryBench`, `pj_runtime/tests/result_history_test.cpp`, `PJ_BENCH=1`; three runs) | `lookup`, median of 1001 calls, the store's `at` per output included: 0.10-0.20 µs for a hit or a miss at 1, 100 and 10,000 results per node. 600 results of a 260k-point XYZI cloud at 10 Hz under the default limits: the ring holds 253.9 MiB (64 results); the compute cache 254 MiB with a decoded copy of each ring-held result → 11 KB without. Publication on the GUI thread (`PublishCost`, serialized there, 50 to 100 entries per topic): median 4-8 µs with a 64-byte cloud, 177-183 µs with a 1.5 MB one. One that removes nothing, at 600 to 800 retained results (`PublishCostAt600RetainedResults`): 11.8-12.7 µs with a drop predicate the store scans every entry for → 2.3 µs without one |
 | Streaming poll, processors advancing over every topic with nothing new (slice 4): 500 topics, 20 single-input filters + 3 two-input transforms, one 5-row chunk per 50 ms tick on the 23 inputs; median of 400 calls, from a throwaway benchmark that is not kept | Buffer 5 s (100 chunks per input): 6.2 µs (max 11). 15 s: 12.5 µs. 60 s: 76 µs (max 89). 150 s: 215 µs. 5 min: 707 µs. 10 min (12,000 chunks): 2.7 ms (max 3.7). With the idle-node gate (§16): 1.5 µs at 100, 300, 1,200, 3,000 and 6,000 chunks (max 2.3 to 6.2) and 1.6 µs at 12,000 (max 7.2), flat |
 

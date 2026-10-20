@@ -56,6 +56,9 @@ Licensed MPL-2.0.
 - `image_decoder.h` — the headless codec seam of the object scripts: `DecodedPixels` (original samples as floats, the
   pairing an annotation made from them takes, a charge) and `IImageDecoder`, which the session injects
   (`RunOptions::image_decoder`), so scripting links no codec.
+- `video_frame_source.h` — the video seam: `IVideoFrameSource::frameAt` (the frame presented at a time, rgb8, charged
+  before it is allocated) and `retireDataset`, which the session injects (`RunOptions::video_source`; pj_app's
+  `SceneVideoFrameSource`), so scripting links no codec. A video input's `frame_at` reads it.
 - `memory_budget.h` — `MemoryBudget`, one byte limit per evaluation for native allocations (a ledger separate from the
   VM's memory cap; its error reads "script native memory limit (N MB) exceeded"), and `MemoryReservation`, bytes held
   until destroyed. Public because a decoder charges its samples to it. An output's reservation lives in its buffer
@@ -63,13 +66,14 @@ Licensed MPL-2.0.
   box and the views read from it), so retained outputs keep counting. Allocating operations take `NativeLimits` (that
   budget plus the run's cancel check, polled every 65536 records, or once per image row).
 - `src/script_media.h` (private) — `ScriptMedia`, one run's media state, Luau-free so the Python binder can share it:
-  the injected decoder, the image inputs the run read, one decode per input and run, and what a finished annotations
-  builder pairs with (the image input it names, else the result's stamp).
+  the injected decoder and video source, the image and video inputs the run read, one decode per input and run, the
+  frames `frame_at` made, and what a finished annotations builder pairs with (the image input it names, a video's
+  frames when they agree, else the result's stamp).
 - `object_summary.h` — `summarizeObject` (a small JSON description of an object output: counts, bounds, frame ids) and
   `isEmptyObject` (the report's "empty" status), what an evaluation report carries instead of the object's bytes.
 - `src/object_binder.h` (private) — objects as locked, read-only views over their SDK field tables (lists read
   lazily through `list_at`), `pj.int64`, the `pj.unavailable` marker, the point-cloud methods over `src/native/`, and
-  the image methods (`representation`, `decode`, `to_point_cloud`) with the decoded-pixel box.
+  the image methods (`representation`, `decode`, `to_point_cloud`) with the decoded-pixel box, and a video's `frame_at`.
   Also the `pj.scene` / `pj.annotations` builders: chainable boxed builders over the native ones, `finish()` spends a
   builder, a finished object's box and views share its native charge, and a method reads its options table raw (no
   script code runs inside a builder call); scripts cannot reach their metatables.

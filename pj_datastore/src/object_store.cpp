@@ -427,6 +427,26 @@ std::optional<size_t> ObjectStore::indexAt(ObjectTopicId id, Timestamp timestamp
   return series->ordered.indexAtOrBefore(timestamp);
 }
 
+std::optional<size_t> ObjectStore::indexOf(ObjectTopicId id, SequentialUID uid) const {
+  std::shared_lock store_lock(store_mutex_);
+  const auto* series = findSeries(id);
+  if (series == nullptr) {
+    return std::nullopt;
+  }
+  std::shared_lock lock(series->mutex);
+  return series->ordered.indexOfUid(uid);
+}
+
+OrderedEntries::ContentIdentity ObjectStore::contentIdentity(ObjectTopicId id) const {
+  std::shared_lock store_lock(store_mutex_);
+  const auto* series = findSeries(id);
+  if (series == nullptr) {
+    return {};
+  }
+  std::shared_lock lock(series->mutex);
+  return series->ordered.contentIdentity();
+}
+
 SequentialUID ObjectStore::firstSequentialUID(ObjectTopicId id) const {
   std::shared_lock store_lock(store_mutex_);
   const auto* series = findSeries(id);

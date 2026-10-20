@@ -51,6 +51,7 @@ GridRunner::Hooks evaluationHooks(const OnDemandService::Services& services) {
   hooks.epoch = scheduling.epoch;
   hooks.run = scheduling.run;
   hooks.image_decoder = scheduling.image_decoder;
+  hooks.video_source = scheduling.video_source;
   return hooks;
 }
 

@@ -60,7 +60,9 @@ class StreamingVideoDecoder {
     // by DTS (decode order), so PTS must travel separately to present B-frame video
     // in the right order. The parser-aware extractor reads it from
     // sdk::VideoFrame::timestamp_ns; the identity extractor sets it to the entry's
-    // store key (DTS == PTS when there are no B-frames).
+    // store key (DTS == PTS when there are no B-frames). On the payload clock: the
+    // decoder adds the entry's payload_stamp_shift, so it indexes, presents and
+    // takes queries on the dataset clock, and a merge's packets never collide.
     Timestamp pts = 0;
   };
 
@@ -146,15 +148,24 @@ class StreamingVideoDecoder {
   void decodeSampledForward(Timestamp interval_ns, const std::function<bool(const DecodedFrame&)>& sink);
   void decodeSampledKeyframes(Timestamp interval_ns, const std::function<bool(const DecodedFrame&)>& sink);
   void updateKeyframeIndex();
-  // Nearest keyframe timestamp at-or-before `ts`, or nullopt if none. Returns
-  // std::optional (not a -1 sentinel) because timestamps can be negative —
-  // FFmpeg gives the first frames negative DTS (encoder-delay convention).
-  // `ts` is in DTS (store-key) space — keyframe seeking is a decode-order operation.
-  [[nodiscard]] std::optional<Timestamp> findKeyframeBefore(Timestamp ts) const;
-  // Resolve which frame to PRESENT at wall-clock `ts`: the one with the greatest
-  // PTS <= ts. Returns {pts, dts} (presentation key + decode-order store key), or
-  // nullopt if `ts` precedes the first frame. With no B-frames pts == dts.
-  [[nodiscard]] std::optional<std::pair<Timestamp, Timestamp>> presentationTargetAt(Timestamp ts) const;
+  // One packet: its DTS (the store key) and its UID, so packets at an equal DTS stay apart.
+  struct PacketIdentity {
+    Timestamp dts = 0;
+    SequentialUID uid;
+  };
+  // The keyframe at or before `target` in decode order (DTS, then arrival), or nullopt. Seeking is a decode-order
+  // operation; timestamps can be negative (FFmpeg gives the first frames a negative DTS), hence no sentinel.
+  [[nodiscard]] std::optional<PacketIdentity> findKeyframeBefore(PacketIdentity target) const;
+  // Which frame to PRESENT at `ts`: the greatest PTS <= ts and the packet carrying it, or nullopt if `ts` precedes the
+  // stream. With no B-frames pts == dts.
+  [[nodiscard]] std::optional<std::pair<Timestamp, PacketIdentity>> presentationTargetAt(Timestamp ts) const;
+  // The extractor's frame, its PTS moved onto the dataset clock (plus the entry's payload_stamp_shift).
+  [[nodiscard]] Expected<ExtractedFrame> extract(const ResolvedObjectEntry& entry) const;
+  // decodeAt's body; decodeAt checks that the store did not rewrite the topic meanwhile.
+  Expected<DecodedFrame> decodeCurrent(Timestamp ts, const CancelTokenPtr& cancel);
+  // Drops the codec state and the frames it buffered, keeping the index: what a packet replacing one already fed
+  // needs, since no decoded or reference frame can prove it unchanged.
+  void resetDecodeState();
   // Resolve the codec from the wire format string (idempotent): latches codec_id_
   // and codec_format_. An unknown/unbuilt format leaves codec_id_ == 0, which
   // decodeAt surfaces as an "unsupported video codec" error.
@@ -172,9 +183,18 @@ class StreamingVideoDecoder {
   // Feed decode-order entries from `start_idx`, buffering decoded frames with PTS
   // >= `target_ts` until the exact target frame surfaces or the tip is drained.
   // `target_idx` is only for hole detection before the target; FFmpeg reorder and
-  // frame-thread delay mean the target may surface several packets later.
+  // frame-thread delay mean the target may surface several packets later. The
+  // indices are those of the moment `target_uid` sat at `target_idx` (packetAt).
   Expected<DecodedFrame> serveForward(
-      size_t start_idx, size_t target_idx, Timestamp target_ts, const CancelTokenPtr& cancel);
+      size_t start_idx, size_t target_idx, SequentialUID target_uid, Timestamp target_ts, const CancelTokenPtr& cancel);
+  // The PTS to feed `frame` (of packet `uid`) with: its own when it presents its PTS, else one below every target, so
+  // a packet a newer one replaced at that PTS never overwrites the newer one's frame in a forward walk.
+  [[nodiscard]] Timestamp fedPts(const ExtractedFrame& frame, SequentialUID uid) const;
+  // The packet at position `index` as counted when `anchor` sat at `anchor_index`: a front eviction since shifts every
+  // position, so a walk follows its packets instead of their old indices. nullopt once the packet (or the anchor) is
+  // gone.
+  [[nodiscard]] std::optional<ResolvedObjectEntry> packetAt(
+      size_t index, SequentialUID anchor, size_t anchor_index) const;
   // Pop the buffered frame at exactly `ts` (dropping every earlier, now-past
   // frame), or nullopt if it is not buffered yet. Sets last_served_ts_/last_frame_.
   std::optional<DecodedFrame> takeReadyFrame(Timestamp ts);
@@ -188,23 +208,22 @@ class StreamingVideoDecoder {
   std::unique_ptr<FfmpegDecoder> decoder_;
   bool initialized_ = false;
 
-  // Keyframe timestamps (sorted, ascending) in DTS/store-key space. Updated
-  // incrementally.
-  std::vector<Timestamp> keyframe_timestamps_;
-  std::optional<Timestamp> last_scanned_ts_;
-  // Presentation index: real PTS -> DTS store key, for every scanned entry. Built
-  // alongside keyframe_timestamps_ (free — the keyframe scan already extracts each
-  // frame, which carries its PTS). Lets decodeAt() map a wall-clock/presentation
-  // time to the frame to display, then seek/feed in decode order. With no B-frames
-  // PTS == DTS and this is just the identity over the store keys.
-  std::map<Timestamp, Timestamp> pts_to_dts_;
-  // Store front (range.first) at the last prune; the eviction prune is skipped
-  // until it advances, keeping the O(n) pts_to_dts_ scan off the per-frame path.
+  // Keyframes in decode order. Only a rewrite (an earlier DTS, a removal) can land below the newest one, and a
+  // rewrite rebuilds the index, so an incremental scan only appends.
+  std::vector<PacketIdentity> keyframes_;
+  // The newest packet scanned: the arrival cursor of the incremental scan.
+  SequentialUID last_scanned_uid_;
+  // The store revisions the index reflects; equal to the store's, nothing is scanned.
+  OrderedEntries::ContentIdentity indexed_identity_;
+  // Presentation index: real PTS -> the retained packets carrying it, oldest arrival first; the newest presents it,
+  // and an older one again once the newer is evicted. Lets decodeAt() map a presentation time to the frame to
+  // display, then seek and feed in decode order.
+  std::map<Timestamp, std::vector<PacketIdentity>> presentation_index_;
+  // The store front (DTS floor and first UID) at the last prune; the O(n) prune runs only when either moves.
   std::optional<Timestamp> pruned_floor_;
-
-  // Last packet timestamp sent to the decoder (the feed cursor; tracks ObjectStore
-  // position, not the PTS of the decoded output — those differ with B-frames).
-  std::optional<Timestamp> last_sent_ts_;
+  SequentialUID pruned_first_uid_;
+  // The last packet fed to the decoder (the feed cursor: a store position, not the PTS of a decoded frame).
+  SequentialUID last_sent_uid_;
   // Decoded frames received but not yet served, keyed by presentation timestamp.
   // Buffering across calls lets forward playback feed each packet once and serve
   // each frame exactly once (O(1) amortised) while still returning the precise

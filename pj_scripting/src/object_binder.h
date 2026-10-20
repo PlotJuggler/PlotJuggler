@@ -75,7 +75,7 @@ void pushArray(lua_State* L, std::initializer_list<double> values);
 
 /// `object` with its own stamp moved by `shift`, saturating at the int64 limits (a copy sharing its payload
 /// bytes); `object` itself when the shift is 0, the type has no own stamp, or the stamp is 0 (unstamped), except on
-/// an Image or DepthImage, where 0 is a stamp the annotations made from it pair with.
+/// an Image, DepthImage or VideoFrame, where 0 is a stamp annotations and frames pair with.
 [[nodiscard]] sdk::BuiltinObject withStampShifted(const sdk::BuiltinObject& object, Timestamp shift);
 
 /// Sets `functions` as fields of the table on top of the stack; with an `upvalue`, each closes over it

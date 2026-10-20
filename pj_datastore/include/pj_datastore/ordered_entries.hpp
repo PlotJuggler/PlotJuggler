@@ -119,7 +119,20 @@ class OrderedEntries {
   /// when a mid-stream insert could change an at-or-before lookup.
   enum class PushOrder { kInOrderAppend, kOutOfOrderInsert };
 
-  OrderedEntries() = default;
+  /// Revisions of the entries, process-unique, so a series rebuilt after a clear never repeats one. `content` moves on
+  /// every change; `rewrite` only when the change is not an append at or after the newest stamp or a front eviction,
+  /// the two a reader can follow with a UID cursor and a timestamp floor without rescanning what it read.
+  struct ContentIdentity {
+    uint64_t content = 0;
+    uint64_t rewrite = 0;
+    bool operator==(const ContentIdentity&) const = default;
+  };
+
+  OrderedEntries();
+
+  [[nodiscard]] ContentIdentity contentIdentity() const noexcept {
+    return identity_;
+  }
 
   // --- Size / basics ---
 
@@ -167,6 +180,8 @@ class OrderedEntries {
 
   // The entry with this exact UID, or nullptr when absent (evicted / never here).
   [[nodiscard]] const ObjectEntry* atUid(SequentialUID uid) const;
+  // Its timestamp-order position, or nullopt when absent. O(log n), no payload touched.
+  [[nodiscard]] std::optional<size_t> indexOfUid(SequentialUID uid) const;
   // Smallest RETAINED UID, or the invalid UID when empty.
   [[nodiscard]] SequentialUID firstUid() const;
   // Smallest retained UID strictly greater than `after`, or invalid when none.
@@ -265,6 +280,8 @@ class OrderedEntries {
   // `removed`, which has room for them. The vectors are final; the deque keeps its size,
   // with moved-from slots after the survivors. Returns the survivor count.
   size_t compact(const Removal& plan, std::vector<ObjectEntry>& removed);
+  // Every mutator calls it once it changed something; `rewrite` as `ContentIdentity` defines it.
+  void changed(bool rewrite) noexcept;
 
 #ifndef NDEBUG
   // Assert uid_order is a size-matching permutation of entries with strictly
@@ -275,6 +292,7 @@ class OrderedEntries {
   std::deque<ObjectEntry> entries_;
   std::vector<Timestamp> entry_timestamps_;
   std::vector<uint32_t> uid_order_;
+  ContentIdentity identity_;
 };
 
 }  // namespace PJ

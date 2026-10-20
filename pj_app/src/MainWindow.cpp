@@ -186,6 +186,7 @@
 #include "pj_runtime/XmlCdata.h"
 #ifdef PJ_WITH_SCENE2D
 #include "SceneImageDecoder.h"
+#include "SceneVideoFrameSource.h"
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #endif
 #ifdef PJ_WITH_SCENE3D
@@ -556,6 +557,23 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 #endif
 #ifdef PJ_WITH_SCENE2D
   session_->sessionManager().setImageDecoder(std::make_shared<SceneImageDecoder>());  // on-demand scripts' decode()
+#ifdef PJ_HAS_FFMPEG
+  // On-demand scripts' frame_at: a decoder per topic and parser, made again when the topic's parser changes.
+  {
+    SessionManager& session = session_->sessionManager();
+    session.setVideoFrameSource(
+        std::make_shared<SceneVideoFrameSource>(
+            session.objectStore(),
+            [&session](PJ::ObjectTopicId topic) {
+              const SessionManager::ParserBinding binding = session.parserBindingForObjectTopic(topic);
+              return binding ? SceneVideoFrameSource::parserExtractor(binding.parser, binding.mutex, binding.keepalive)
+                             : SceneVideoFrameSource::canonicalExtractor();
+            },
+            [&session](PJ::ObjectTopicId topic) -> const void* {
+              return session.parserBindingForObjectTopic(topic).parser;
+            }));
+  }
+#endif
 #endif
   // Pull saved icon metrics before setupUi so the literals we feed into
   // build*Toolbar() pick up the correct values on first paint. Widgets

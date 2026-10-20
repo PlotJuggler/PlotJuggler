@@ -260,6 +260,11 @@ class ObjectStore {
   std::optional<ResolvedObjectEntry> at(ObjectTopicId id, SequentialUID sequential_uid) const;
 
   std::optional<size_t> indexAt(ObjectTopicId id, Timestamp timestamp) const;
+  /// The timestamp-order position of the entry `uid`, which equal stamps do not alias; nullopt when it is gone or the
+  /// topic is unknown. Decode-free.
+  [[nodiscard]] std::optional<size_t> indexOf(ObjectTopicId id, SequentialUID uid) const;
+  /// The topic's entry revisions (`OrderedEntries::ContentIdentity`); zero for an unknown topic. Decode-free.
+  [[nodiscard]] OrderedEntries::ContentIdentity contentIdentity(ObjectTopicId id) const;
   // First retained entry UID for this topic, or invalid when the topic is empty
   // or unknown. Useful for detecting retention gaps in replay cursors.
   SequentialUID firstSequentialUID(ObjectTopicId id) const;

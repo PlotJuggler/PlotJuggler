@@ -53,9 +53,12 @@ class ResultHistory {
   /// What determined a result (§10). The request's key leaves the observations empty; a stored key
   /// also records what its run observed.
   struct CacheKey {
-    uint64_t revision = 0;                 ///< `RecipeGraph::Node::revision`
-    uint64_t epoch = 0;                    ///< the dataset's, bumped when its storage is replaced
-    std::vector<uint64_t> inputs;          ///< opaque input identity (entry uids, parsers, scalar samples...)
+    uint64_t revision = 0;         ///< `RecipeGraph::Node::revision`
+    uint64_t epoch = 0;            ///< the dataset's, bumped when its storage is replaced
+    std::vector<uint64_t> inputs;  ///< opaque input identity (entry uids, parsers, scalar samples...)
+    /// The content revision of each bound video topic (`ObjectStore::contentIdentity`): a run's `frame_at` may read
+    /// any packet of the topic.
+    std::vector<uint64_t> video_content;
     std::optional<Timestamp> query_clock;  ///< the requested `t`, when the run read the query clock
     std::optional<uint64_t> tf_revision;   ///< the TF snapshot's revision, when the run read the TF tree
 
@@ -63,6 +66,11 @@ class ResultHistory {
     /// This stored key serves `request` (a key with no observations) at `t` under the TF snapshot `tf_revision`:
     /// the base fields are equal, and what the run observed is the same now.
     [[nodiscard]] bool serves(const CacheKey& request, Timestamp t, uint64_t tf_revision_now) const {
+      return video_content == request.video_content && completes(request, t, tf_revision_now);
+    }
+    /// `serves`, but a moved video content revision alone does not count: a run's completion still serves the current
+    /// request, since what it superseded is new packets, not the meaning of the request (D30).
+    [[nodiscard]] bool completes(const CacheKey& request, Timestamp t, uint64_t tf_revision_now) const {
       return revision == request.revision && epoch == request.epoch && inputs == request.inputs &&
              (!query_clock || *query_clock == t) && (!tf_revision || *tf_revision == tf_revision_now);
     }
