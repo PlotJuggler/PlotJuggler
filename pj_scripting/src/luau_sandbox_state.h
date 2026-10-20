@@ -18,10 +18,6 @@
 
 namespace PJ::scripting::detail {
 
-// Largest script source we will hand to luau_compile (the compiler runs on the host heap, outside
-// the VM allocator/watchdog — bound it by source size).
-constexpr std::size_t kMaxSourceBytes = 1u << 20;  // 1 MiB
-
 struct BudgetState {
   std::size_t used = 0;
   std::size_t max_bytes = 0;

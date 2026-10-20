@@ -13,10 +13,10 @@ Two backends sit behind the **`ScriptEngine`** seam
 - **Luau** — `makeLuauEngine(BudgetLimits = {})`, `src/luau_engine.cpp`. The bundled
   filter set and the default language. The binding is **hand-written**: Luau's API
   is C++ linkage, not `extern "C"`, so sol2 does not apply.
-- **Python** — `makePythonEngine()`, `src/python_engine.cpp`. Embedded CPython via
+- **Python** — `makePythonEngine(BudgetLimits = {})`, `src/python_engine.cpp`. Embedded CPython via
   pybind11, IN-PROCESS (not out-of-process). Reached from the Transform Editor's
   `Lua | Python` switch; `DataProcessorService` routes to it by sniffing the
-  `# pj-script: python` header on the source. Imports are restricted — see below.
+  `# pj-script: python` header on the source. Hardened — see below.
 
 The data-processor base (`PJ::proc::DataProcessor`, owned by `pj_datastore`) stays
 Qt-free, Luau-free **and Python-free**: only `pj_scripting` links either runtime.
@@ -28,7 +28,10 @@ Licensed MPL-2.0.
 - `script_engine.h` — the `ScriptEngine` seam + `FilterInstance` (one VM per
   instance) + `makeLuauEngine(BudgetLimits)`.
 - `python_engine.h` — `makePythonEngine()` and the Python filter-module contract
-  (a top-level class `T` with `id` and a static `create(params)`).
+  (a top-level class `T` with `id` and a static `create(params)`), and its limits.
+- `src/python_sandbox.h` (private) — the one interpreter (`ensureInterpreter`) and what every Python script call runs
+  under: the audit hook (`ScopedAuditGuard`), the allocation cap, the watchdog thread, `ScriptCallScope`, which arms
+  the three around one call, and `ClearedOnExit`, which clears a script namespace inside it.
 - `filter_class.h` — the `FilterClass` schema + `ParamSpec`
   (`id/name/description/version/output_kind/parameters/source/origin`; `ParamType` ∈
   {number, integer, boolean, enum, string, text}). Drives the generated
@@ -110,18 +113,15 @@ Licensed MPL-2.0.
   Each VM loads exactly ONE module, so `safeenv` stays on and stdlib imports keep
   the fast path. A sticky `trip` reason is checked by the host **even if the script
   `pcall`-swallows the error**, so a runaway can never silently survive.
-- **Python imports are an allowlist, and it is a guardrail — NOT a sandbox.**
-  `python_engine.cpp` hands each filter module a namespace whose `__builtins__` has
-  `__import__` swapped for a gate over `kAllowedImports` (`math`, `cmath`,
-  `statistics`); anything else is rejected as *"module 'X' is not available in Data
-  Processors"*, so the limit reads as policy rather than as breakage. Only the root
-  package is matched, and the gate governs **only what the filter source imports** —
-  an allowed module's own body runs under its own globals with unrestricted
-  builtins, which is why `statistics` still reaches `_statistics`, `random` and the
-  rest. What this does NOT do: CPython cannot be sandboxed from within (an
-  object-graph walk reaches past any namespace), `open` lives in builtins rather
-  than behind an import, and there is no memory cap or watchdog on the Python side.
-  Filter sources are trusted input. The Luau backend above is the hardened one.
+- **Python runs under cooperative limits, and it is a guardrail — NOT a sandbox.** Both Python engines share one
+  interpreter, never finalized, and `src/python_sandbox.h`: every call into script code, a filter's teardown included,
+  runs inside a `ScriptCallScope` (the watchdog; the allocation cap, which refuses only blocks of 1 KiB or more and
+  stops a call at twice the cap with an asynchronous MemoryError, so CPython never sees a small allocation fail; both
+  sticky even when the script catches the error; and the process-global audit hook armed on that thread). Two profiles (decided 2026-10-20): filters keep
+  their builtins, syntax and real modules behind the `math`/`cmath`/`statistics` allowlist, so existing filters run
+  unchanged and stay as escapable as before; on-demand scripts add the strict profile. The trust model (decided
+  2026-10-18) is in-process with cooperative limits: scripts are trusted input. Compile on the host and run the code
+  object inside the scope (`runCode`).
 - **CPython is linked SHARED on every platform** (`conanfile.txt`
   `cpython/*:shared=True`), and this is load-bearing, not a preference. The stdlib's
   C extensions (`lib-dynload/*.so` — `math`, `zlib`, …) carry no copy of the

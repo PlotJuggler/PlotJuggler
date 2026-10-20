@@ -199,7 +199,8 @@ set(PJ_SCRIPTING_SOURCES
 if(EMSCRIPTEN)
   list(APPEND PJ_SCRIPTING_SOURCES src/python_engine_unavailable.cpp)
 else()
-  list(APPEND PJ_SCRIPTING_SOURCES src/python_engine.cpp)
+  # The Python filter engine over the interpreter and the hardening the on-demand Python lane shares.
+  list(APPEND PJ_SCRIPTING_SOURCES src/python_engine.cpp src/python_sandbox.cpp)
 endif()
 
 add_library(pj_scripting STATIC ${PJ_SCRIPTING_SOURCES})
@@ -276,6 +277,15 @@ if(PJ_BUILD_TESTS)
     SOURCES tests/object_script_test.cpp tests/object_summary_test.cpp
     LIBS pj_scripting Luau::VM Luau::Compiler)
   target_include_directories(pj_scripting_object_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+  # --- the Python sandbox (private header python_sandbox.h); desktop only ---
+  if(NOT EMSCRIPTEN)
+    pj_add_test_runner(pj_scripting_python_tests
+      MAIN plain WARNINGS
+      SOURCES tests/python_sandbox_test.cpp
+      LIBS pj_scripting pybind11::embed cpython::embed)
+    target_include_directories(pj_scripting_python_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  endif()
 
   # --- M5: filter catalogue ---
   add_executable(filter_catalogue_test tests/filter_catalogue_test.cpp)

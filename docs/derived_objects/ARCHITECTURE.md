@@ -146,7 +146,7 @@ header-only 0.36.0:
 ## 6. Types and bindings
 
 **Status: Built.** The Luau binder (slice 5c-1, `pj_scripting/src/object_binder.cpp`) has both
-fixes below; the Python binder comes with slice 10.
+fixes below; the Python binder comes with slice 10b.
 
 - **SDK field tables** describe each builtin struct's members: name, kind, accessors. They
   drive generic binders in Luau and Python, so a script and an agent see the same fields.
@@ -491,7 +491,9 @@ engines) and **Decided** (GIL release).
   and the first replay runs in 8 ms slices. Moving it to the pool is later work, after
   measurement.
 - **Native operations release the GIL** while they work on C++ data (decided). Without
-  this, a native call on the Python lane blocks any GUI-thread Python work.
+  this, a native call on the Python lane blocks any GUI-thread Python work. The run
+  machinery allows it (slice 10a-1: the audit guard and the allocation cap are per thread, no
+  lock is held across a call); each binding releasing it is slice 10b's.
 
 ## 12. TF
 
@@ -870,8 +872,9 @@ join it (slice 6b). The rest is **Built**.
 
 ## 14. Scripting languages
 
-**Status: Built.** Python's compile-once and read-only modules are decided; Luau VM reuse is
-proposed (N1, N2).
+**Status: Built** for Luau; for Python the shared interpreter, its cooperative limits and the audit
+hook are built (slice 10a-1, `pj_scripting/src/python_sandbox.h`); the strict profile and compile-once
+are not (10a-2). Luau VM reuse is proposed (N1, N2).
 
 - **Luau** gets a fresh sandboxed VM per call, from bytecode compiled once per recipe
   (built, slice 5c-1: about 43 µs per call on this stack, §19). **Proposed:** one sandboxed state per pool worker plus a fresh sandboxed thread per call.
@@ -884,11 +887,26 @@ proposed (N1, N2).
   - **Decided:** run the safety pre-check and compile once per recipe revision. That cuts
     73 µs to 1.2 µs, or 1.2 ms to 63 µs for a 43-line script.
   - **Decided:** give scripts read-only copies of the allowed modules, so a statement such
-    as `math.pi = 3` cannot leak into the next call. This is a D2 fix regardless of
-    performance, test-first. For scale: a one-hour series at 10 Hz is 36,000 calls, about
-    45 s of rebuild overhead for the 43-line script today and about 2 s after.
-  - **Open:** the trust model. The sandbox layers narrow escape hatches but are not a
-    security boundary.
+    as `math.pi = 3` cannot leak into the next call (D2). For scale: a one-hour series at
+    10 Hz is 36,000 calls, about 45 s of rebuild overhead for the 43-line script without
+    compile-once and about 2 s with it.
+  - **Decided (2026-10-18): the trust model.** Python runs in-process with cooperative limits,
+    documented as not a security boundary. Isolation in a separate process waits for a request.
+  - **Decided (2026-10-20): two profiles of one sandbox.** Both engines run every call into
+    script code (a filter's teardown included) under the same limits: the watchdog (250 ms
+    per filter call, 2 s for a load, a create or an on-demand run), the 64 MiB allocation cap
+    (a filter's spans its life; decided 2026-10-20: past the cap only a block of 1 KiB or more
+    is refused, smaller ones are always served, because CPython 3.12 releases a code object
+    twice when a function's allocation fails, and a call whose charges pass twice the cap is
+    stopped by a MemoryError the watchdog raises at its next bytecode, within about one GIL
+    switch interval of allocations), sticky failures (a caught `MemoryError` or `TimeoutError`
+    still fails the call; a call past its deadline fails even if the watchdog never
+    interrupted it) and the process-wide audit hook (built, slice 10a-1). Filters use the
+    compatible profile: they keep the real builtins, no AST check and the real modules behind
+    their `math`/`cmath`/`statistics` allowlist, so every existing filter runs unchanged and
+    stays as escapable as before. On-demand scripts are new, so they get the strict profile
+    on top (slice 10a-2): an AST check, gated builtins, read-only module copies and a hook
+    that also refuses `exec` and `compile`.
 - **Python in the browser** is a goal (D18 with D29), gated on a spike: CPython 3.14's
   Emscripten target, statically linked, with pthreads. Until then, desktop only.
 

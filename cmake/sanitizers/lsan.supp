@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 # Leak suppression policy: see README.md in this directory.
 
-# pj_scripting/src/python_engine.cpp ensureInterpreter() retains
+# pj_scripting/src/python_sandbox.cpp ensureInterpreter() retains
 # py::scoped_interpreter and py::gil_scoped_release for the process lifetime.
 # CPython is never finalized because doing so during static destruction is
 # fragile; the released GIL lets every caller acquire it on its own thread.

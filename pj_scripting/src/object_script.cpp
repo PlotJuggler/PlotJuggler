@@ -496,8 +496,8 @@ std::shared_ptr<native::MemoryBudget> makeNativeBudget(std::size_t limit_bytes) 
 }
 
 Expected<CompiledScript> compileOnDemandScript(std::string_view source) {
-  if (source.size() > detail::kMaxSourceBytes) {
-    return unexpected("script larger than " + native::describeBytes(detail::kMaxSourceBytes));
+  if (source.size() > kMaxSourceBytes) {
+    return unexpected("script larger than " + native::describeBytes(kMaxSourceBytes));
   }
   lua_CompileOptions options = {};
   options.optimizationLevel = 1;

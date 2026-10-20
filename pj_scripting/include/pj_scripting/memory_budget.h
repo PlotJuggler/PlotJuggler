@@ -29,15 +29,19 @@ class MemoryBudget {
  public:
   explicit MemoryBudget(std::size_t limit) : limit_(limit) {}
 
-  /// Adds `bytes` to the ledger unless that would pass the limit; on false nothing changes.
+  /// Adds `bytes` to the ledger unless that would pass the limit (zero bytes always fit); on false nothing changes.
   [[nodiscard]] bool tryAcquire(std::size_t bytes) noexcept {
     std::size_t used = used_.load(std::memory_order_relaxed);
     do {
-      if (bytes > limit_ - used) {
+      if (bytes != 0 && (used > limit_ || bytes > limit_ - used)) {  // past the limit through acquireAnyway
         return false;
       }
     } while (!used_.compare_exchange_weak(used, used + bytes, std::memory_order_relaxed));
     return true;
+  }
+  /// Adds `bytes` to the ledger whatever the limit; returns the bytes used after it.
+  std::size_t acquireAnyway(std::size_t bytes) noexcept {
+    return used_.fetch_add(bytes, std::memory_order_relaxed) + bytes;
   }
   void release(std::size_t bytes) noexcept {
     used_.fetch_sub(bytes, std::memory_order_relaxed);
