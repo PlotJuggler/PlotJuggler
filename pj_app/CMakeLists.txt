@@ -46,6 +46,8 @@ add_library(pj_app_shell OBJECT
     src/StreamingSourceManager.h
     src/PluginPlotTabsController.cpp
     src/PluginPlotTabsController.h
+    src/PluginSceneViewsController.cpp
+    src/PluginSceneViewsController.h
     src/SourceTimelineController.cpp
     src/SourceTimelineController.h
     src/DatasetMergeActions.cpp

@@ -138,13 +138,8 @@ void TopicDemandController::applyTopicDelta(
 }
 
 std::optional<std::pair<DatasetId, QString>> TopicDemandController::resolveObjectTopic(ObjectTopicId topic_id) const {
-  for (const CatalogItem& item : catalog_.items()) {
-    if (const auto* object_topic = asObjectTopic(item);
-        object_topic != nullptr && object_topic->object_topic_id == topic_id) {
-      return std::make_pair(item.dataset_id, item.topic_name);
-    }
-  }
-  return std::nullopt;
+  const std::optional<CatalogItem> item = catalog_.objectTopicItem(topic_id);
+  return item.has_value() ? std::optional(std::make_pair(item->dataset_id, item->topic_name)) : std::nullopt;
 }
 
 void TopicDemandController::registerSceneDock(SceneDockWidget* dock) {

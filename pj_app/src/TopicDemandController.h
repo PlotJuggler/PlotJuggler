@@ -120,7 +120,7 @@ class TopicDemandController : public QObject {
   void appendTopicRefs(
       std::vector<std::pair<DatasetId, QString>>& out, DatasetId dataset_id, const QString& topic_name,
       TopicId topic_id) const;
-  // Linear catalog scan: ObjectTopicId -> (dataset, topic_name), or nullopt if
+  // In-place catalog scan: ObjectTopicId -> (dataset, topic_name), or nullopt if
   // no live object-topic entry matches (evicted between the signal and this
   // lookup — treated as "nothing to reference").
   [[nodiscard]] std::optional<std::pair<DatasetId, QString>> resolveObjectTopic(ObjectTopicId topic_id) const;

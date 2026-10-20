@@ -1490,7 +1490,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       &MainWindow::refreshStreamingCombo);
 
   plugin_plot_tabs_ = std::make_unique<PluginPlotTabsController>(
-      *ui_->tabbedPlotWidget, session_->catalogModel(), session_->extensionCatalog());
+      *ui_->tabbedPlotWidget, session_->catalogModel(), session_->sessionManager(), session_->extensionCatalog(),
+      [this](const QString& kind, QWidget* dock_parent) { return makeSeededEmptyObjectDock(kind, dock_parent); });
+  plugin_plot_tabs_->setOwnedTabCreatedHook(
+      [this](const QString& plugin_id, PlotDocker* docker) { revealOwnedTabOverTakeover(plugin_id, docker); });
 
   // Populate the Cloud page from the catalog now and on every catalog change.
   ui_->leftPanel->populateCloudToolboxes(session_->extensionCatalog().toolboxes());
@@ -4348,12 +4351,17 @@ void MainWindow::syncWidgetsToCatalog() {
   // Each widget prunes its OWN now-invalid pieces against the live catalog/store:
   //  - plots drop curves whose source key is gone (empty plot stays, reusable);
   //  - object viewers drop layers whose topic was evicted, reporting empty so the
-  //    shell resets that dock to the reusable placeholder.
+  //    shell resets that dock to the reusable placeholder, except in a plugin's own
+  //    tab: the plugin chose its kind, so the emptied scene stays a scene.
   forEachPlot([](PlotWidget* plot) { plot->revalidate(); });
-  forEachDock([](DockWidget* dock) {
-    auto* viewer = dynamic_cast<IObjectViewer*>(dock->objectWidget());
-    if (viewer != nullptr && !viewer->revalidateObjects()) {
-      dock->clearToPlaceholder();
+  ui_->tabbedPlotWidget->forEachDocker([](PlotDocker* docker) {
+    const bool plugin_owned = !docker->ownerPlugin().isEmpty();
+    for (int index = 0; index < docker->plotCount(); ++index) {
+      DockWidget* dock = docker->plotAt(index);
+      auto* viewer = dock == nullptr ? nullptr : dynamic_cast<IObjectViewer*>(dock->objectWidget());
+      if (viewer != nullptr && !viewer->revalidateObjects() && !plugin_owned) {
+        dock->clearToPlaceholder();
+      }
     }
   });
   // Clearing a dock to its placeholder doesn't change ADS focus, so the right
@@ -8887,6 +8895,17 @@ void MainWindow::foldTakeoverPanelIfOwnedBy(const void* owner, bool transient) {
   if (ToolboxPresenter* toolbox = takeoverToolbox(); toolbox != nullptr && toolbox->sessionOwner() == owner) {
     toolbox->moveToTab(transient);
   }
+}
+
+void MainWindow::revealOwnedTabOverTakeover(const QString& plugin_id, PlotDocker* docker) {
+  ToolboxPresenter* toolbox = takeoverToolbox();
+  if (toolbox == nullptr || toolbox->pluginId() != plugin_id) {
+    return;
+  }
+  // The fold keeps the panel's instance alive and leaves the panel's own tab
+  // current, so the new tab is selected after it.
+  toolbox->moveToTab(/*transient=*/true);
+  ui_->tabbedPlotWidget->focusTab(docker);
 }
 
 bool MainWindow::hostHasWorkInFlight(ToolboxRuntimeHost* host) const {

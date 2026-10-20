@@ -41,6 +41,7 @@
 #include <vector>
 
 #include "MainWindow.h"
+#include "PluginPlotTabsController.h"
 #include "ToolboxPresenter.h"
 #include "dataset_test_helpers.h"
 #include "pj_base/builtin/builtin_object_codec.hpp"
@@ -49,6 +50,7 @@
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_registry.hpp"
 #include "pj_base/sdk/service_traits.hpp"
+#include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidgetBase.h"
 #include "pj_plotting/TabbedPlotWidget.h"
 #include "pj_plugins/host/service_registry_builder.hpp"
@@ -212,6 +214,12 @@ class ToolboxPanelFoldTestPeer {
     }
     presenter->moveToDock();
     return presenter->presentation() == ToolboxPresenter::Presentation::kTakeover;
+  }
+
+  // The plugin-side tab operations, through the controller the window owns (the
+  // one whose created-tab hook MainWindow installed).
+  [[nodiscard]] static PluginPlotTabsController& pluginTabs(MainWindow& window) {
+    return *window.plugin_plot_tabs_;
   }
 
   [[nodiscard]] static bool isTakeover(const MainWindow& window, const QString& plugin_id) {
@@ -710,6 +718,45 @@ TEST_F(ToolboxPanelFoldTest, IngestStartFoldsTheTakeoverPanel) {
 
   EXPECT_TRUE(foldedIntoTab());
   EXPECT_FALSE(closed());
+}
+
+// UI-11: a plugin that covers the chart area and creates one of its own tabs would
+// otherwise leave that tab hidden behind its panel.
+TEST_F(ToolboxPanelFoldTest, PluginCreatingOwnedTabFoldsItsTakeoverAndShowsTheTab) {
+  presentAsTakeover();
+
+  ASSERT_TRUE(PJ::ToolboxPanelFoldTestPeer::pluginTabs(mainWindow()).createTab(pluginId(), u"made"_s, u"Made"_s));
+
+  EXPECT_TRUE(busyFolded());
+  EXPECT_FALSE(closed());
+  PJ::PlotDocker* current = tabbedWidget().currentTab();
+  ASSERT_NE(current, nullptr);
+  EXPECT_EQ(current->ownerPlugin(), pluginId());
+  EXPECT_EQ(current->ownerTabId(), u"made"_s);
+}
+
+// Only creation counts: re-creating the same id, or focusing it, leaves the
+// takeover where it is.
+TEST_F(ToolboxPanelFoldTest, PluginTouchingExistingOwnedTabDoesNotFoldTakeover) {
+  auto& tabs = PJ::ToolboxPanelFoldTestPeer::pluginTabs(mainWindow());
+  ASSERT_TRUE(tabs.createTab(pluginId(), u"made"_s, u"Made"_s));
+  PJ::PlotDocker* before = tabbedWidget().currentTab();
+  presentAsTakeover();
+
+  ASSERT_TRUE(tabs.createTab(pluginId(), u"made"_s, u"Renamed"_s));
+  ASSERT_TRUE(tabs.focusTab(pluginId(), u"made"_s));
+
+  EXPECT_TRUE(PJ::ToolboxPanelFoldTestPeer::isTakeover(mainWindow(), pluginId()));
+  EXPECT_EQ(tabbedWidget().currentTab(), before);
+}
+
+// Another plugin's tab is no reason to move this plugin's panel.
+TEST_F(ToolboxPanelFoldTest, OtherPluginCreatingTabLeavesTakeoverInPlace) {
+  presentAsTakeover();
+
+  ASSERT_TRUE(PJ::ToolboxPanelFoldTestPeer::pluginTabs(mainWindow()).createTab(u"some.other.plugin"_s, u"x"_s, u"X"_s));
+
+  EXPECT_TRUE(PJ::ToolboxPanelFoldTestPeer::isTakeover(mainWindow(), pluginId()));
 }
 
 // Launching any other panel goes through dismissTakeoverPanel, which must not

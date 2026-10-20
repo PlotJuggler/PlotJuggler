@@ -1215,6 +1215,10 @@ class MainWindow : public QMainWindow {
   // No-op once the panel is already pinned, so a second import does not
   // re-fold it.
   void foldTakeoverPanelIfOwnedBy(const void* owner, bool transient);
+  // A plugin just created one of its own tabs. When that plugin is the chart-area
+  // takeover the tab would stay hidden, so fold the takeover into a transient tab
+  // and make `docker` current.
+  void revealOwnedTabOverTakeover(const QString& plugin_id, PlotDocker* docker);
 
   // The toolbox presenting the chart-area takeover; null when the takeover is
   // up but not a toolbox (the marketplace, the filter editor) or absent.

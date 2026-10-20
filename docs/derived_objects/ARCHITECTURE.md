@@ -1066,8 +1066,18 @@ proposed (N1, N2).
   they are: the `image_topic` of the shipped yolo handler is the header's frame id, which is
   informational. Known limit: the topics compare by bare name, so where two datasets share a
   topic name an annotation can pair with the other dataset's image of that name.
-- **Scene tabs** are kinds of `pj.plot_tabs.v1` tabs. **Dialog-embedded scene views** give a
-  plugin panel a live 3D or 2D view.
+- **Scene tabs** are kinds of `pj.plot_tabs.v1` tabs (built, slice 8b-2: `PlotTabsRuntimeHost`
+  and `pj_app`'s `PluginPlotTabsController` over `PluginSceneViewsController`). A plugin's tab
+  of any kind lives in one id namespace and is routed by the kind of its live widget, so a
+  scene tab a layout restored still answers; a kind the shell cannot build is refused by name.
+  A topic is attached through the dock family's own gate (`tryAcceptObjectTopic`), and a
+  scene tab's topics are its layers plus its config topics (a 3D tab's TF,
+  `SceneDockWidget::configTopics`) for config, detach and clear alike. A tab the plugin
+  empties keeps its kind (`SceneDockWidget::detachTopic`), and so does one eviction empties: the
+  shell resets only a user's emptied dock to a plot tab, never a plugin's own. `clear_tab` also
+  drops the layout-restore intents still pending, and neither it nor `tab_config` touches a layer
+  the user added by hand (a URDF file, TF trails).
+  **Dialog-embedded scene views** give a plugin panel a live 3D or 2D view.
 
 ## 18. Plugin surfaces (SDK host contract)
 
@@ -1097,7 +1107,7 @@ rules.
 - `pj.plot_tabs.v1` tail slots: `create_tab_v2`, `attach_topic`, `detach_topic`,
   `focus_tab`. Each slot is filled when it is implemented (not all-or-nothing), and a kind
   the host cannot serve is rejected with an error naming it. `hasSceneTabs()` is removed;
-  it was never released.
+  it was never released. Built in the host (slice 8b-2, §17).
 - Dialog scene views: one `scene_view` key holding the kind and the topics, gated by
   `PJ_DIALOG_HOST_EMBEDS_SCENE_VIEWS`. A topic the host cannot attach is reported to the
   plugin, not only logged.

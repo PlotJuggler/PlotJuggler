@@ -115,7 +115,12 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// Accepts a topic as either a render layer or a scene-wide config topic.
   bool addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
 
-  void removeTopic(ObjectTopicId topic_id);
+  /// Removes `topic_id`'s layer, or the config topic it is (removeSceneConfigTopic).
+  /// False when the dock holds neither.
+  bool removeTopic(ObjectTopicId topic_id);
+  /// removeTopic at a caller's request rather than by eviction: a dock it leaves empty
+  /// counts as never populated, so revalidateObjects keeps it instead of resetting it.
+  bool detachTopic(ObjectTopicId topic_id);
   /// Un-hiding also re-delivers the last tracker time to the layer (hidden
   /// layers receive no tracker ticks), so it catches up to the playhead instead
   /// of repainting the geometry it held at the moment of hiding.
@@ -126,6 +131,19 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
 
   /// Returns layer snapshots in draw order.
   [[nodiscard]] std::vector<SceneLayerInfo> layers() const;
+
+  /// The scene-wide config topics the dock consumes without a layer (a 3D view's
+  /// FrameTransforms), as snapshots. With layers() they are everything it shows.
+  [[nodiscard]] virtual std::vector<SceneLayerInfo> configTopics() const {
+    return {};
+  }
+
+  /// The reason of the latest foreign-dataset refusal, cleared by the read; empty when
+  /// none came since. Unlike topicRefused it is never coalesced, so a caller adding
+  /// topics one at a time reads every refusal's own reason.
+  [[nodiscard]] QString takeRefusalReason() {
+    return std::exchange(last_refusal_reason_, {});
+  }
 
   /// Returns a non-owning pointer to the layer for a topic, or nullptr.
   [[nodiscard]] ISceneLayer* layerFor(ObjectTopicId topic_id) const;
@@ -193,6 +211,10 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
 
   /// Allows subclasses to consume scene-wide config topics without adding a layer.
   virtual bool handleSceneConfigTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
+  /// Drops a config topic handleSceneConfigTopic took; false when `topic_id` is not one.
+  virtual bool removeSceneConfigTopic(ObjectTopicId /*topic_id*/) {
+    return false;
+  }
 
   /// Reconciles the concrete view with the current draw order.
   ///
@@ -347,9 +369,10 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   bool insertLayer(ObjectTopicId topic_id, std::unique_ptr<ISceneLayer> layer);
 
   /// Whether this dock has ever held content (a render layer or a scene-config
-  /// topic), live or restored. Latched true on the first add, never cleared. Lets
-  /// revalidateObjects() distinguish an intentionally-empty dock (click-created /
-  /// restored empty — keep it) from one whose content was all evicted (reset it).
+  /// topic), live or restored. Latched true on the first add; cleared only when
+  /// detachTopic empties the dock. Lets revalidateObjects() distinguish an
+  /// intentionally-empty dock (click-created, restored empty or emptied by a caller —
+  /// keep it) from one whose content was all evicted (reset it).
   [[nodiscard]] bool everHadContent() const noexcept {
     return ever_had_content_;
   }
@@ -499,12 +522,13 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   QMetaObject::Connection derived_dataset_offset_conn_;
   std::unordered_map<int64_t, bool> layer_visibility_cache_;
   // Latched true the first time any layer or config topic is added (see
-  // everHadContent()); never cleared, so an evicted-to-empty dock stays
-  // distinguishable from a never-populated one.
+  // everHadContent()); only detachTopic clears it, so an evicted-to-empty dock stays
+  // distinguishable from a never-populated or deliberately emptied one.
   bool ever_had_content_ = false;
   bool restoring_state_ = false;
   // Set by the first refusal of an event-loop turn; cleared by a zero-delay timer.
   bool refusal_reported_ = false;
+  QString last_refusal_reason_;  ///< see takeRefusalReason
   uint64_t restore_failure_count_ = 0;
 
   // Per-tick repaint coalescing (see onTrackerTime). last_render_key_ is the

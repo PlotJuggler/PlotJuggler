@@ -886,6 +886,29 @@ bool Scene3DDockWidget::handleSceneConfigTopic(
   return true;
 }
 
+std::vector<SceneLayerInfo> Scene3DDockWidget::configTopics() const {
+  std::vector<SceneLayerInfo> topics;
+  topics.reserve(config_topics_.size());
+  for (const uint32_t topic_raw : config_topics_) {
+    SceneLayerInfo& info = topics.emplace_back();
+    info.topic_id = ObjectTopicId{topic_raw};
+    info.object_type = sdk::BuiltinObjectType::kFrameTransforms;
+  }
+  std::sort(topics.begin(), topics.end(), [](const SceneLayerInfo& lhs, const SceneLayerInfo& rhs) {
+    return lhs.topic_id.id < rhs.topic_id.id;
+  });
+  return topics;
+}
+
+bool Scene3DDockWidget::removeSceneConfigTopic(ObjectTopicId topic_id) {
+  if (config_topics_.erase(topic_id.id) == 0) {
+    return false;
+  }
+  scene_topic_datasets_.erase(topic_id.id);
+  resetTransformBindingIfDatasetGone();  // the last topic of the TF dataset frees the binding
+  return true;
+}
+
 void Scene3DDockWidget::syncViewLayers(const std::vector<ISceneLayer*>& ordered_layers) {
   std::vector<Scene3DLayer*> ordered;
   ordered.reserve(ordered_layers.size());

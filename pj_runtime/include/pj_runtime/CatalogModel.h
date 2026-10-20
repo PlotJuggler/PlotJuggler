@@ -236,6 +236,15 @@ class CatalogModel : public QObject {
   CatalogModel& operator=(const CatalogModel&) = delete;
 
   std::vector<CatalogItem> items() const;
+  /// The object-topic items named `topic_name`, in `items()` order: one per dataset that
+  /// has it. A non-empty `dataset_source` keeps only the dataset with that source NAME.
+  /// Walks the catalog in place, without the copy and sort of `items()`.
+  [[nodiscard]] std::vector<CatalogItem> objectTopicsNamed(
+      const QString& topic_name, const QString& dataset_source) const;
+
+  /// The object-topic item of `topic_id`, or nullopt when the catalog has none.
+  /// Walks the catalog in place, without the copy and sort of `items()`.
+  [[nodiscard]] std::optional<CatalogItem> objectTopicItem(ObjectTopicId topic_id) const;
 
   /// The scalar field `key` names in `dataset` (`markerSeriesField`'s naming), or
   /// nullopt. Walks the catalog in place, without the copy and sort `items()` makes,

@@ -449,6 +449,12 @@ void TabbedPlotWidget::addWidgetTab(const QString& tab_name, QWidget* content, s
   emit currentTabChanged(nullptr);
 }
 
+void TabbedPlotWidget::focusTab(PlotDocker* docker) {
+  if (const TabEntry* entry = findEntry(static_cast<QWidget*>(docker))) {
+    selectEntry(*entry);
+  }
+}
+
 void TabbedPlotWidget::focusWidgetTab(QWidget* content) {
   if (const TabEntry* entry = findWidgetEntry(content)) {
     selectEntry(*entry);

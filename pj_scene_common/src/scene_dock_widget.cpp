@@ -462,11 +462,17 @@ bool SceneDockWidget::restoreOnePending(const QDomElement& element) {
   return restoreLayerElement(element);
 }
 
-void SceneDockWidget::removeTopic(ObjectTopicId topic_id) {
+bool SceneDockWidget::removeTopic(ObjectTopicId topic_id) {
   const int64_t key = topicKey(topic_id);
   auto it = layers_.find(key);
   if (it == layers_.end()) {
-    return;
+    if (!removeSceneConfigTopic(topic_id)) {
+      return false;
+    }
+    invalidateTrackerRenderKey();
+    refreshView();
+    notifyWorkspaceChanged();
+    return true;
   }
   invalidateTrackerRenderKey();  // layer set shrank → next tick must repaint
   // Mutate -> reconcile view -> detach -> notify. syncViewLayers() drives
@@ -490,6 +496,17 @@ void SceneDockWidget::removeTopic(ObjectTopicId topic_id) {
   }
   emit layerRemoved(topic_id);
   notifyWorkspaceChanged();
+  return true;
+}
+
+bool SceneDockWidget::detachTopic(ObjectTopicId topic_id) {
+  if (!removeTopic(topic_id)) {
+    return false;
+  }
+  if (layers_.empty() && configTopics().empty()) {
+    ever_had_content_ = false;
+  }
+  return true;
 }
 
 bool SceneDockWidget::revalidateObjects() {
@@ -1001,6 +1018,7 @@ void SceneDockWidget::reportForeignDataset(const QString& bound_label, const QSt
   const QString reason =
       tr("This view shows dataset %1; a topic from dataset %2 cannot be added to it.").arg(bound_label, incoming_label);
   qCWarning(lcSceneDock).noquote() << "topic refused:" << reason;
+  last_refusal_reason_ = reason;
   if (!std::exchange(refusal_reported_, true)) {
     emit topicRefused(reason);
     QTimer::singleShot(0, this, [this] { refusal_reported_ = false; });

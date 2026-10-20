@@ -111,6 +111,9 @@ class TabbedPlotWidget : public QWidget {
   void forEachDocker(const std::function<void(PlotDocker*)>& operation) const;
   // First PlotDocker tab satisfying `predicate`, or nullptr.
   [[nodiscard]] PlotDocker* findDocker(const std::function<bool(PlotDocker*)>& predicate) const;
+  // Selects `docker`'s tab, exactly like clicking its tab frame. No-op if
+  // `docker` is null or hosts no tab here (e.g. a stale pointer).
+  void focusTab(PlotDocker* docker);
 
   // Panel-toggle buttons. Created here but relocated by the MainWindow
   // shell into the title bar (it reparents them after construction).

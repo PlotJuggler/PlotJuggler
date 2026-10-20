@@ -182,9 +182,16 @@ version may understand; it never imports rejected values into the session.
 `PluginPlotTabsController` (`src/PluginPlotTabsController.{h,cpp}`, over
 `TabbedPlotWidget` + `CatalogModel` + `ExtensionCatalogService`), which builds
 each plugin's `Callbacks` with the plugin id captured; `MainWindow` only
-constructs it and calls `refreshAvailability()` on catalog change and layout
-load. Viewport operations reach only the dockers whose
-`PlotDocker::ownerPlugin()` is the captured plugin ID. Tab `stateId()` is independent of its title and position;
+constructs it (handing it `makeSeededEmptyObjectDock` as the scene-widget
+factory and `revealOwnedTabOverTakeover` as the created-tab hook, which folds the
+plugin's own takeover panel so the new tab shows) and calls
+`refreshAvailability()` on catalog change and layout load. Scene tabs ("3d"/"2d",
+the 0.38 tail slots) share the plugin's id namespace; the controller routes each
+call by the kind of the tab's live widget (`sceneKindOf`) and hands scene tabs to
+its delegate `PluginSceneViewsController` (`src/PluginSceneViewsController.{h,cpp}`:
+topic resolution, attach/detach, the read-back JSON). A kind the factory cannot
+build is refused by name before an existing tab is replaced. Viewport operations
+reach only the dockers whose `PlotDocker::ownerPlugin()` is the captured plugin ID. Tab `stateId()` is independent of its title and position;
 duplicate visible titles and renaming do not affect addressing. Owned tabs
 persist in full layouts with `owner_plugin`/`tab_id` metadata and remain live
 across history restores; so do their curves bound to a filter or transform

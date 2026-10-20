@@ -55,6 +55,49 @@ TEST(CatalogModelTest, TopicLookupRejectsDuplicateDatasets) {
   EXPECT_EQ(catalog.datasetForTopic(u"/speed"_s), *second);
 }
 
+// The plugin scene-tab lookup: object topics only, by topic name, narrowed to one
+// dataset by its source NAME.
+TEST(CatalogModelTest, ObjectTopicsNamedFiltersByNameAndDatasetSource) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  const auto first = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run-a.mcap"});
+  const auto second = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run-b.mcap"});
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(second);
+  const auto register_object_topic = [&session](PJ::DatasetId dataset, const char* name) {
+    ASSERT_TRUE(session.objectStore()
+                    .registerTopic({.dataset_id = dataset, .topic_name = name, .metadata_json = "{}"})
+                    .has_value());
+  };
+  register_object_topic(*first, "/cloud");
+  register_object_topic(*first, "/only-a");
+  register_object_topic(*second, "/cloud");
+  ASSERT_NE(addScalarTopic(session, *second, "/scalar"), 0u);
+  catalog.rebuildFromDatastore();
+
+  const auto both = catalog.objectTopicsNamed(u"/cloud"_s, {});
+  ASSERT_EQ(both.size(), 2U);
+  EXPECT_EQ(both[0].dataset_id, *first);
+  EXPECT_EQ(both[1].dataset_id, *second);
+
+  const auto in_second = catalog.objectTopicsNamed(u"/cloud"_s, u"run-b.mcap"_s);
+  ASSERT_EQ(in_second.size(), 1U);
+  EXPECT_EQ(in_second.front().dataset_id, *second);
+
+  EXPECT_EQ(catalog.objectTopicsNamed(u"/only-a"_s, {}).size(), 1U);
+  EXPECT_TRUE(catalog.objectTopicsNamed(u"/only-a"_s, u"run-b.mcap"_s).empty());
+  EXPECT_TRUE(catalog.objectTopicsNamed(u"/cloud"_s, u"no-such-run"_s).empty());
+  EXPECT_TRUE(catalog.objectTopicsNamed(u"/scalar"_s, {}).empty()) << "a scalar topic is not an object topic";
+
+  const auto second_cloud = session.objectStore().findTopic(*second, "/cloud");
+  ASSERT_TRUE(second_cloud);
+  const auto by_id = catalog.objectTopicItem(*second_cloud);
+  ASSERT_TRUE(by_id);
+  EXPECT_EQ(by_id->dataset_id, *second);
+  EXPECT_EQ(by_id->topic_name, u"/cloud"_s);
+  EXPECT_FALSE(catalog.objectTopicItem(PJ::ObjectTopicId{999'999}));
+}
+
 // The marker-input lookup: a series key resolves to its scalar field within the
 // dataset asked for, never in another dataset carrying the same topic.
 TEST(CatalogModelTest, FindScalarForMarkerKeyLooksInOneDataset) {

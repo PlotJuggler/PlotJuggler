@@ -103,6 +103,8 @@ class Scene3DDockWidget : public SceneDockWidget {
   void setSourcePath(const QString& path);
 
   bool tryAcceptObjectTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) override;
+  /// The FrameTransforms topics the view takes as its TF tree, by topic id.
+  [[nodiscard]] std::vector<SceneLayerInfo> configTopics() const override;
   void onTrackerTime(double time) override;
 
   QDomElement xmlSaveState(QDomDocument& doc) const override;
@@ -208,6 +210,7 @@ class Scene3DDockWidget : public SceneDockWidget {
   [[nodiscard]] DeferredElementKind deferredElementKind(sdk::BuiltinObjectType object_type) const override;
   bool handleSceneConfigTopic(
       ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) override;
+  bool removeSceneConfigTopic(ObjectTopicId topic_id) override;
   // Also prunes evicted FrameTransforms config topics (no render layer) and resets
   // the TF binding when its dataset is gone; the base adds the keep-if-never-
   // populated rule, so this only reports whether live layers/config remain.

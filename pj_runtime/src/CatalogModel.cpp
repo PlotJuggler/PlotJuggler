@@ -323,6 +323,31 @@ std::vector<CatalogItem> CatalogModel::items() const {
   return items;
 }
 
+std::vector<CatalogItem> CatalogModel::objectTopicsNamed(
+    const QString& topic_name, const QString& dataset_source) const {
+  std::vector<CatalogItem> matches;
+  for (const auto& [key, item] : impl_->items) {
+    (void)key;
+    if (isObjectTopic(item) && item.topic_name == topic_name &&
+        (dataset_source.isEmpty() || datasetSourceName(item.dataset_id) == dataset_source)) {
+      matches.push_back(item);
+    }
+  }
+  std::sort(matches.begin(), matches.end(), catalogItemLess);
+  return matches;
+}
+
+std::optional<CatalogItem> CatalogModel::objectTopicItem(ObjectTopicId topic_id) const {
+  for (const auto& [key, item] : impl_->items) {
+    (void)key;
+    if (const auto* object_topic = asObjectTopic(item);
+        object_topic != nullptr && object_topic->object_topic_id == topic_id) {
+      return item;
+    }
+  }
+  return std::nullopt;
+}
+
 std::optional<ScalarFieldPayload> CatalogModel::findScalarForMarkerKey(
     DatasetId dataset, const std::string& key) const {
   auto& found_in_dataset = impl_->scalar_lookups[dataset];
