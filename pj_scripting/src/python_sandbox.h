@@ -32,6 +32,35 @@ namespace py = pybind11;
 /// which an armed hook refuses). Idempotent; any thread.
 void ensureInterpreter();
 
+/// What a script call runs under, beyond the limits and the hook every call gets. kCompatible: nothing more, the
+/// filters' profile, so filters written before the sandbox run unchanged (python_engine.h). kStrict: the on-demand
+/// scripts' profile, new code held to more: `strictBuiltins`, `compileChecked`, and a hook that also refuses `exec` and
+/// `compile`.
+enum class Profile : std::uint8_t { kCompatible, kStrict };
+
+/// The strict profile's `__builtins__`, a fresh copy per call (a script that reaches it cannot leave anything for the
+/// next one): the real builtins without `open`, `exec`, `eval`, `compile`, `input`, `breakpoint`, `help`, `getattr`,
+/// `setattr`, `delattr` and `type`, and `__import__` replaced by a gate over `math`, `cmath`, `statistics` and `json`.
+/// The gate refuses relative imports and every other root ("module 'X' is not available in Data Processors (allowed:
+/// ...)") and returns read-only copies: an allowed module's public names (no `_` prefix), each nested module under an
+/// allowed root copied the same way and the others left out, so `statistics.sys` and `json.codecs` do not exist.
+/// Assigning or deleting an attribute of a copy raises. The allowed modules are copied when the interpreter starts; a
+/// copy built later (a submodule loaded since) is published only once complete. What a copy shares with the real module
+/// is not frozen: a class's attributes, and its functions' globals, which are the real module's dict, so a filter (the
+/// compatible profile imports the real modules) can patch e.g. `statistics._sum` and later on-demand runs call the
+/// patched code; accepted under the trust model. An allowed module's own code runs under its own, real builtins. GIL
+/// held.
+[[nodiscard]] py::dict strictBuiltins();
+
+/// `source` checked and compiled, run nothing: a syntax error ("syntax error: ... (<string>, line N)"), an attribute
+/// starting with `__`, a frame, code or traceback internal (`gi_frame`, `f_globals`, `tb_frame`, ...), `format` or
+/// `format_map` (they walk attributes from a string; scripts use f-strings, whose fields the check sees) or a name
+/// reaching the interpreter's namespaces (`__builtins__`, `__loader__`, `__spec__`, `globals`, `locals`, `vars`) is
+/// an error, and so is a source over `kMaxSourceBytes` or, when `required_function` is given, no top-level `def` of
+/// that name. The checks are lexical: `getattr` and friends are absent from `gatedBuiltins` for the same reason. GIL
+/// held.
+[[nodiscard]] Expected<py::object> compileChecked(std::string_view source, std::string_view required_function = {});
+
 /// Runs a code object compiled on the host in `globals`, as `exec` would, without raising the "exec" audit event.
 /// Throws `py::error_already_set`. GIL held.
 void runCode(py::handle code, const py::dict& globals);
@@ -41,15 +70,19 @@ void runCode(py::handle code, const py::dict& globals);
 
 /// While alive on this thread, the process-wide audit hook refuses `open`, `os.*`, `shutil.*`, `subprocess.*`,
 /// `socket.*`, `ctypes.*`, `sys._getframe`, `sys.addaudithook` and the import of `os`, `subprocess`, `socket`,
-/// `ctypes`, `importlib` and their native halves, with a `PermissionError`. Unarmed (the default, on every other
-/// thread) the hook refuses nothing, because the interpreter's own imports raise the same events. Arm it only around
-/// script code; nested guards stay armed until the outermost ends.
+/// `ctypes`, `importlib` and their native halves, with a `PermissionError`, and under `Profile::kStrict` also `exec`
+/// and `compile`. Unarmed (the default, on every other thread) the hook refuses nothing, because the interpreter's own
+/// imports and the host's compiles raise the same events. Arm it only around script code; nested guards stay armed
+/// until the outermost ends.
 class ScopedAuditGuard {
  public:
-  ScopedAuditGuard();
+  explicit ScopedAuditGuard(Profile profile);
   ~ScopedAuditGuard();
   ScopedAuditGuard(const ScopedAuditGuard&) = delete;
   ScopedAuditGuard& operator=(const ScopedAuditGuard&) = delete;
+
+ private:
+  bool strict_;
 };
 
 /// While alive on this thread, its Python allocations (all three domains) are charged to `budget`. Past the limit a
@@ -163,7 +196,7 @@ class ClearedOnExit {
 /// caught `MemoryError`. Destroy it before dropping the GIL.
 class ScriptCallScope {
  public:
-  ScriptCallScope(std::shared_ptr<native::MemoryBudget> memory, std::uint64_t max_millis);
+  ScriptCallScope(std::shared_ptr<native::MemoryBudget> memory, std::uint64_t max_millis, Profile profile);
   ~ScriptCallScope();
   ScriptCallScope(const ScriptCallScope&) = delete;
   ScriptCallScope& operator=(const ScriptCallScope&) = delete;

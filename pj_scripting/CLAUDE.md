@@ -29,9 +29,19 @@ Licensed MPL-2.0.
   instance) + `makeLuauEngine(BudgetLimits)`.
 - `python_engine.h` — `makePythonEngine()` and the Python filter-module contract
   (a top-level class `T` with `id` and a static `create(params)`), and its limits.
+- `python_object_script.h` — the on-demand Python lane: `compileOnDemandScriptPython` (checked and compiled once per
+  revision into an opaque `CompiledPythonScript`, so holders need no CPython include) and `runOnDemandScriptPython`
+  (`evaluate(inputs, params)` in a fresh namespace, the binding of `object_script.h`). Scalar inputs only; desktop
+  only (`pythonAvailable()`).
 - `src/python_sandbox.h` (private) — the one interpreter (`ensureInterpreter`) and what every Python script call runs
   under: the audit hook (`ScopedAuditGuard`), the allocation cap, the watchdog thread, `ScriptCallScope`, which arms
-  the three around one call, and `ClearedOnExit`, which clears a script namespace inside it.
+  the three around one call, and `ClearedOnExit`, which clears a script namespace inside it; and the strict profile
+  on-demand scripts add (`Profile::kStrict`): the AST check (`compileChecked`), gated builtins with read-only module
+  copies (`strictBuiltins`; a copy's functions share the real module's globals, which a filter can patch) and a hook
+  that also refuses `exec` and `compile`.
+- `src/script_contract.h` (private) — the language-neutral half of an on-demand run, shared by the Luau and Python
+  runners: binding the returned values to outputs (`bindReturned`), parsing the params, the native budget of a run
+  and the memory-limit wording.
 - `filter_class.h` — the `FilterClass` schema + `ParamSpec`
   (`id/name/description/version/output_kind/parameters/source/origin`; `ParamType` ∈
   {number, integer, boolean, enum, string, text}). Drives the generated

@@ -21,6 +21,93 @@
 namespace PJ::scripting::detail {
 namespace {
 
+// ---- the import gate and the read-only module copies -----------------------------------
+
+// Runs once at boot with the real builtins. A copy is a class whose metaclass refuses attribute writes: class
+// attribute reads stay on CPython's fast path, unlike a proxy's Python-level __getattr__.
+constexpr const char* kGateSource = R"PY(
+import types
+
+class ReadOnlyModule(type):
+    def __setattr__(cls, name, value):
+        raise AttributeError(f"module '{cls.__name__}' is read-only in Data Processors")
+
+    def __delattr__(cls, name):
+        raise AttributeError(f"module '{cls.__name__}' is read-only in Data Processors")
+
+    def __getattr__(cls, name):
+        raise AttributeError(f"module '{cls.__name__}' has no attribute '{name}' available in Data Processors")
+
+    def __repr__(cls):
+        return f"<module '{cls.__name__}' (read-only)>"
+
+def make_gate(real_import, allowed):
+    copies = {}
+
+    def allowed_root(name):
+        return name.partition(".")[0] in allowed
+
+    # `building` holds the copies of one outermost call (nested modules may cycle); they are published together, once
+    # complete, so a failure midway leaves nothing behind.
+    def freeze(module, building=None):
+        copy = copies.get(module.__name__)
+        if copy is not None:
+            return copy
+        outermost = building is None
+        if outermost:
+            building = {}
+        copy = building.get(module.__name__)
+        if copy is None:
+            copy = building[module.__name__] = ReadOnlyModule(module.__name__, (), {})
+            for key, value in vars(module).items():
+                if key.startswith("_"):
+                    continue
+                if isinstance(value, types.ModuleType):
+                    if not allowed_root(value.__name__):
+                        continue
+                    value = freeze(value, building)
+                type.__setattr__(copy, key, value)
+        if outermost:
+            copies.update(building)
+        return copy
+
+    def gated_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if level != 0 or not allowed_root(name):
+            raise ImportError(
+                f"module '{name}' is not available in Data Processors (allowed: {', '.join(allowed)})")
+        return freeze(real_import(name, globals, locals, fromlist, level))
+
+    return gated_import
+)PY";
+
+constexpr std::array<const char*, 4> kStrictImports{"math", "cmath", "statistics", "json"};
+
+/// The builtins a script never gets: file and console access, code from strings, and the attribute functions that
+/// would rebuild by name the dunder walk `compileChecked` refuses lexically.
+constexpr std::array<const char*, 11> kRemovedBuiltins{"open", "exec",    "eval",    "compile", "input", "breakpoint",
+                                                       "help", "getattr", "setattr", "delattr", "type"};
+
+py::dict* g_strict_builtins = nullptr;  // built once by the boot, copied per call, never freed
+
+template <std::size_t N>
+py::dict makeBuiltins(const py::object& make_gate, const std::array<const char*, N>& allowed) {
+  py::object builtins = py::module_::import("builtins");
+  py::dict out = builtins.attr("__dict__").attr("copy")();
+  for (const char* name : kRemovedBuiltins) {
+    out.attr("pop")(name, py::none());
+  }
+  py::tuple names(N);
+  for (std::size_t i = 0; i < N; ++i) {
+    names[i] = py::str(allowed[i]);
+  }
+  py::object gate = make_gate(builtins.attr("__import__"), names);
+  for (const char* name : allowed) {
+    gate(name);  // the copies, built now, unarmed and uncharged
+  }
+  out["__import__"] = gate;
+  return out;
+}
+
 // ---- the audit hook ---------------------------------------------------------------------
 
 // Import roots the hook refuses: a backstop for a denied root reached by another path than the gate. A denylist, not
@@ -33,7 +120,11 @@ constexpr std::array<std::string_view, 6> kDeniedEventPrefixes{"os.",     "shuti
 
 constexpr std::array<std::string_view, 3> kDeniedEvents{"open", "sys._getframe", "sys.addaudithook"};
 
+/// Refused only under the strict profile: code from strings, which would bypass the AST check.
+constexpr std::array<std::string_view, 2> kStrictDeniedEvents{"exec", "compile"};
+
 thread_local int g_audit_armed_depth = 0;
+thread_local int g_audit_strict_depth = 0;
 
 int deny(std::string_view event) {
   PyErr_SetString(PyExc_PermissionError, (std::string(event) + " is not available in Data Processors").c_str());
@@ -46,6 +137,7 @@ int auditHook(const char* event, PyObject* args, void* /*userdata*/) {
   }
   const std::string_view name(event);
   if (std::ranges::find(kDeniedEvents, name) != kDeniedEvents.end() ||
+      (g_audit_strict_depth > 0 && std::ranges::find(kStrictDeniedEvents, name) != kStrictDeniedEvents.end()) ||
       std::ranges::any_of(kDeniedEventPrefixes, [&](std::string_view prefix) { return name.starts_with(prefix); })) {
     return deny(name);
   }
@@ -256,6 +348,16 @@ void installAllocatorWrapper() {
   }
 }
 
+// ---- the AST check ----------------------------------------------------------------------------
+
+constexpr std::array<std::string_view, 6> kBlockedNames{"__builtins__", "__loader__", "__spec__",
+                                                        "globals",      "locals",     "vars"};
+
+/// Frame, code and traceback internals: each leads to a frame's globals or builtins without a dunder.
+constexpr std::array<std::string_view, 13> kBlockedAttributes{
+    "gi_frame", "gi_code",    "cr_frame", "cr_code", "ag_frame", "ag_code", "f_globals",
+    "f_locals", "f_builtins", "f_back",   "f_code",  "tb_frame", "tb_next"};
+
 /// The calling thread's live arming, for the allocator's memory stop.
 thread_local PersistentWatchdog::Slot* g_armed_slot = nullptr;
 
@@ -285,13 +387,76 @@ void ensureInterpreter() {
     new py::scoped_interpreter();  // NOLINT: leaked on purpose, never finalized
     PySys_AddAuditHook(&auditHook, nullptr);
     installAllocatorWrapper();
-    for (const char* name : {"json", "math", "cmath", "statistics"}) {
+    for (const char* name : {"ast", "types", "json", "math", "cmath", "statistics"}) {
       py::module_::import(name);
     }
+    py::dict scope;
+    scope["__builtins__"] = py::module_::import("builtins");
+    py::exec(kGateSource, scope);
+    g_strict_builtins = new py::dict(makeBuiltins(scope["make_gate"], kStrictImports));
     new py::gil_scoped_release();  // NOLINT: leaked on purpose, the GIL is handed to the callers
     return true;
   }();
   (void)booted;
+}
+
+py::dict strictBuiltins() {
+  PyObject* copy = PyDict_Copy(g_strict_builtins->ptr());
+  if (copy == nullptr) {
+    throw py::error_already_set();
+  }
+  return py::reinterpret_steal<py::dict>(copy);
+}
+
+Expected<py::object> compileChecked(std::string_view source, std::string_view required_function) {
+  if (source.size() > kMaxSourceBytes) {
+    return unexpected("script larger than " + native::describeBytes(kMaxSourceBytes));
+  }
+  try {
+    py::object ast = py::module_::import("ast");
+    py::object tree;
+    try {
+      tree = ast.attr("parse")(py::str(source.data(), source.size()), "<string>");
+    } catch (py::error_already_set& error) {
+      return unexpected("syntax error: " + pythonErrorText(error));
+    }
+    py::object attribute_type = ast.attr("Attribute");
+    py::object name_type = ast.attr("Name");
+    for (py::handle node : ast.attr("walk")(tree)) {
+      if (py::isinstance(node, attribute_type)) {
+        const auto attribute = node.attr("attr").cast<std::string>();
+        if (attribute.starts_with("__")) {
+          return unexpected("forbidden dunder attribute access: ." + attribute);
+        }
+        if (std::ranges::find(kBlockedAttributes, attribute) != kBlockedAttributes.end()) {
+          return unexpected("forbidden attribute access: ." + attribute);
+        }
+        if (attribute == "format" || attribute == "format_map") {
+          return unexpected("forbidden attribute access: ." + attribute + " (use an f-string)");
+        }
+      } else if (py::isinstance(node, name_type)) {
+        const auto name = node.attr("id").cast<std::string>();
+        if (std::ranges::find(kBlockedNames, name) != kBlockedNames.end()) {
+          return unexpected("forbidden name: " + name);
+        }
+      }
+    }
+    if (!required_function.empty()) {
+      bool defined = false;
+      py::object function_type = ast.attr("FunctionDef");
+      for (py::handle statement : tree.attr("body")) {
+        defined = defined || (py::isinstance(statement, function_type) &&
+                              statement.attr("name").cast<std::string>() == required_function);
+      }
+      if (!defined) {
+        return unexpected("the script must define a top-level function named '" + std::string(required_function) + "'");
+      }
+    }
+    // Compiles the checked tree, not the source again; catches what parse accepts (`return` outside a function).
+    return py::module_::import("builtins").attr("compile")(tree, "<string>", "exec");
+  } catch (py::error_already_set& error) {
+    return unexpected("syntax error: " + pythonErrorText(error));
+  }
 }
 
 void runCode(py::handle code, const py::dict& globals) {
@@ -310,12 +475,14 @@ std::string pythonErrorText(const std::exception& e) {
   return text;
 }
 
-ScopedAuditGuard::ScopedAuditGuard() {
+ScopedAuditGuard::ScopedAuditGuard(Profile profile) : strict_(profile == Profile::kStrict) {
   ++g_audit_armed_depth;
+  g_audit_strict_depth += strict_ ? 1 : 0;
 }
 
 ScopedAuditGuard::~ScopedAuditGuard() {
   --g_audit_armed_depth;
+  g_audit_strict_depth -= strict_ ? 1 : 0;
 }
 
 ScopedAllocationCap::ScopedAllocationCap(std::shared_ptr<native::MemoryBudget> budget)
@@ -335,8 +502,9 @@ std::string timeoutMessage(std::string_view call, std::uint64_t max_millis) {
   return "TimeoutError: " + std::string(call) + " exceeded its time budget of " + std::to_string(max_millis) + " ms";
 }
 
-ScriptCallScope::ScriptCallScope(std::shared_ptr<native::MemoryBudget> memory, std::uint64_t max_millis)
-    : cap_(std::move(memory)) {
+ScriptCallScope::ScriptCallScope(
+    std::shared_ptr<native::MemoryBudget> memory, std::uint64_t max_millis, Profile profile)
+    : audit_(profile), cap_(std::move(memory)) {
   PersistentWatchdog::arm(max_millis);
 }
 

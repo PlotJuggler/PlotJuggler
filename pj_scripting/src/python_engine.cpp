@@ -117,7 +117,7 @@ class PythonFilterInstance final : public FilterInstance {
   // Dropping the instance and the namespace runs the script's finalizers: under the scope, like any script call.
   ~PythonFilterInstance() override {
     py::gil_scoped_acquire gil;
-    ScriptCallScope scope(memory_, call_millis_);
+    ScriptCallScope scope(memory_, call_millis_, detail::Profile::kCompatible);
     detail::ClearedOnExit cleared(ns_);
     instance_ = py::object();
   }
@@ -162,7 +162,7 @@ class PythonFilterInstance final : public FilterInstance {
       return on_fail;
     }
     py::gil_scoped_acquire gil;
-    ScriptCallScope scope(memory_, call_millis_);
+    ScriptCallScope scope(memory_, call_millis_, detail::Profile::kCompatible);
     R out = body();
     const bool timed_out = scope.timedOut();
     if (scope.overBudget()) {  // first: a memory stop the script kept catching may also have run out of time
@@ -259,7 +259,7 @@ class PythonEngine final : public ScriptEngine {
       return PJ::unexpected(code.error());
     }
     auto memory = std::make_shared<native::MemoryBudget>(limits_.mem_bytes);
-    ScriptCallScope scope(memory, limits_.python_watchdog_millis);
+    ScriptCallScope scope(memory, limits_.python_watchdog_millis, detail::Profile::kCompatible);
     Expected<std::vector<FilterClass>> out = inspect(*code, source, origin);
     const bool timed_out = scope.timedOut();
     if (scope.overBudget()) {
@@ -280,7 +280,7 @@ class PythonEngine final : public ScriptEngine {
       return PJ::unexpected(code.error());
     }
     auto memory = std::make_shared<native::MemoryBudget>(limits_.mem_bytes);  // the instance's, for its whole life
-    ScriptCallScope scope(memory, limits_.python_watchdog_millis);
+    ScriptCallScope scope(memory, limits_.python_watchdog_millis, detail::Profile::kCompatible);
     Expected<std::unique_ptr<FilterInstance>> out = create(*code, params_json, memory);
     const bool timed_out = scope.timedOut();
     if (scope.overBudget()) {

@@ -54,7 +54,8 @@ struct AuditProbe {
 };
 
 /// Registers `math.pj_audit_probe` once; its `emit()` raises the "os.system" audit event, which an armed hook
-/// refuses, and counts the outcome. Takes the GIL.
+/// refuses, and `emit_compile()` the "compile" event, which only the strict profile refuses; both count the outcome.
+/// Takes the GIL.
 inline AuditProbe& auditProbe() {
   static AuditProbe probe;
   static const bool registered = [] {
@@ -63,6 +64,13 @@ inline AuditProbe& auditProbe() {
     py::module_ module = py::module_::import("types").attr("ModuleType")("math.pj_audit_probe");
     module.attr("emit") = py::cpp_function([]() {
       if (PySys_Audit("os.system", "(s)", "pj_audit_probe") < 0) {
+        ++probe.refused;
+        throw py::error_already_set();
+      }
+      ++probe.allowed;
+    });
+    module.attr("emit_compile") = py::cpp_function([]() {  // what compiling a string raises
+      if (PySys_Audit("compile", "(ss)", "x = 1", "<string>") < 0) {
         ++probe.refused;
         throw py::error_already_set();
       }

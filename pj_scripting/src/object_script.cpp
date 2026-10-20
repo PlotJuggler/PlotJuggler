@@ -11,7 +11,6 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
-#include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -24,13 +23,11 @@
 #include "object_binder.h"
 #include "pj_base/builtin/field_table_registry.hpp"
 #include "pj_scripting/memory_budget.h"
+#include "script_contract.h"
 #include "script_media.h"
 
 namespace PJ::scripting {
 namespace {
-
-/// How the error of a run past its VM memory cap starts.
-constexpr std::string_view kVmLimitError = "script memory limit";
 
 // `pj` chains stay lazily indexed: with safeenv on, Luau would otherwise fold `pj.tf.now` into a constant
 // resolved once at load, observing the clock whether or not the branch that reads it runs.
@@ -42,13 +39,6 @@ std::string_view trim(std::string_view text) {
     return {};
   }
   return text.substr(begin, text.find_last_not_of(" \t") - begin + 1);
-}
-
-/// Object types an output can declare: those with a field table, except the ones whose publication no
-/// slice has designed yet (a video frame, slice 9; frame transforms, which the TF ingest tap would read).
-bool producible(sdk::BuiltinObjectType type) {
-  return sdk::describe(type) != nullptr && type != sdk::BuiltinObjectType::kVideoFrame &&
-         type != sdk::BuiltinObjectType::kFrameTransforms;
 }
 
 // ---- pj and pj.tf ---------------------------------------------------------------
@@ -176,16 +166,6 @@ void installPj(lua_State* L, Run& run, const native::NativeLimits& limits) {
 
 // ---- inputs ---------------------------------------------------------------------
 
-/// True when `value` nests objects or arrays deeper than `levels`.
-bool nestedDeeperThan(const nlohmann::json& value, int levels) {
-  if (!value.is_structured()) {
-    return false;
-  }
-  return levels == 0 || std::any_of(value.begin(), value.end(), [&](const nlohmann::json& element) {
-           return nestedDeeperThan(element, levels - 1);
-         });
-}
-
 void pushJson(lua_State* L, const nlohmann::json& value) {
   lua_checkstack(L, 2);
   if (value.is_object()) {
@@ -251,18 +231,9 @@ std::string inputProblem(const NamedValue& input) {
 
 // ---- binding the returned value -------------------------------------------------
 
-/// One returned value: its key in the returned table, or its position (1-based), or neither for the
-/// returned value itself; nullopt `value` for a type no output holds.
-struct Returned {
-  std::string key;
-  int position = 0;
-  std::optional<ScriptValue> value;
-  std::string type_name;
-};
-
 /// Copies the value at `index` into `item`. A string leaving the VM is charged to `charge` first, so a
 /// script cannot multiply one interned string into gigabytes of copies.
-Status readValue(lua_State* L, int index, native::MemoryReservation& charge, Returned& item) {
+Status readValue(lua_State* L, int index, native::MemoryReservation& charge, detail::Returned& item) {
   item.type_name = luaL_typename(L, index);
   std::size_t length = 0;
   if (std::optional<std::string> reason = detail::toUnavailable(L, index)) {
@@ -286,8 +257,8 @@ Status readValue(lua_State* L, int index, native::MemoryReservation& charge, Ret
 
 /// The returned value at `result`, one item per output candidate: a non-table is one item; a table is
 /// either keyed or an array starting at 1.
-Expected<std::vector<Returned>> collectReturned(lua_State* L, int result, native::MemoryReservation& charge) {
-  std::vector<Returned> returned(1);
+Expected<std::vector<detail::Returned>> collectReturned(lua_State* L, int result, native::MemoryReservation& charge) {
+  std::vector<detail::Returned> returned(1);
   if (!lua_istable(L, result) || detail::toUnavailable(L, result)) {  // a marker is a table too
     if (Status read = readValue(L, result, charge, returned.front()); !read) {
       return unexpected(read.error());
@@ -299,7 +270,7 @@ Expected<std::vector<Returned>> collectReturned(lua_State* L, int result, native
   bool positional = false;
   lua_pushnil(L);
   while (lua_next(L, result) != 0) {
-    Returned item;
+    detail::Returned item;
     if (lua_type(L, -2) == LUA_TSTRING) {
       std::size_t length = 0;
       const char* key = lua_tolstring(L, -2, &length);
@@ -322,122 +293,13 @@ Expected<std::vector<Returned>> collectReturned(lua_State* L, int result, native
   if (keyed && positional) {
     return unexpected(std::string("return either named or positional values, not both"));
   }
-  std::ranges::sort(returned, {}, &Returned::position);
+  std::ranges::sort(returned, {}, &detail::Returned::position);
   for (size_t index = 0; positional && index < returned.size(); ++index) {
     if (returned[index].position != static_cast<int>(index) + 1) {
       return unexpected(std::string("positional values must be an array starting at 1, without holes"));
     }
   }
   return returned;
-}
-
-std::string positionalName(const ScriptValue& value) {
-  if (const auto* object = std::get_if<sdk::BuiltinObject>(&value)) {
-    switch (object->type()) {
-      case sdk::BuiltinObjectType::kPointCloud:
-        return "cloud";
-      case sdk::BuiltinObjectType::kSceneEntities:
-        return "scene";
-      case sdk::BuiltinObjectType::kImageAnnotations:
-        return "annotations";
-      case sdk::BuiltinObjectType::kImage:
-        return "image";
-      default:
-        return "object";
-    }
-  }
-  return std::holds_alternative<std::string>(value) ? "text" : "value";
-}
-
-bool hasType(const OutputSpec& spec, const ScriptValue& value) {
-  switch (spec.type) {
-    case OutputType::kNumber:
-      return std::holds_alternative<double>(value);
-    case OutputType::kString:
-      return std::holds_alternative<std::string>(value);
-    case OutputType::kObject: {
-      const auto* object = std::get_if<sdk::BuiltinObject>(&value);
-      return object != nullptr && object->type() == spec.object_type;
-    }
-  }
-  return false;
-}
-
-std::string typeText(const OutputSpec& spec) {
-  switch (spec.type) {
-    case OutputType::kNumber:
-      return "a number";
-    case OutputType::kString:
-      return "a string";
-    case OutputType::kObject:
-      break;
-  }
-  return "a " + std::string(sdk::name(spec.object_type));
-}
-
-/// No declared outputs: every returned value is an output, named by the inference rule.
-Expected<ScriptBundle> inferOutputs(std::vector<Returned>& returned) {
-  if (returned.empty()) {
-    return unexpected(std::string("the script returned no values"));
-  }
-  ScriptBundle bundle;
-  std::map<std::string, int> seen;
-  for (Returned& item : returned) {
-    std::string name = item.key.empty() ? "value" : item.key;
-    if (item.position > 0) {
-      if (item.value && std::holds_alternative<Unavailable>(*item.value)) {
-        return unexpected(
-            "output #" + std::to_string(item.position) + " is unavailable: name the output to mark it unavailable");
-      }
-      const std::string base = item.value ? positionalName(*item.value) : "value";
-      const int count = ++seen[base];
-      name = count == 1 ? base : base + "_" + std::to_string(count);
-    }
-    if (!item.value) {
-      return unexpected("output '" + name + "' has an unsupported type: " + item.type_name);
-    }
-    if (const auto* object = std::get_if<sdk::BuiltinObject>(&*item.value); object && !producible(object->type())) {
-      return unexpected(
-          "output '" + name + "' is a " + std::string(sdk::name(object->type())) + ", a type a script cannot produce");
-    }
-    bundle.outputs.push_back(NamedValue{std::move(name), std::move(*item.value)});
-  }
-  if (!returned.front().key.empty()) {  // keyed: by name; positional: in order
-    std::ranges::sort(bundle.outputs, {}, &NamedValue::name);
-  }
-  return bundle;
-}
-
-/// Declared outputs: a non-table binds to the single declaration, a position to the declaration at that
-/// position, a key to the declaration of that name.
-Expected<ScriptBundle> bindDeclared(std::vector<Returned>& returned, Span<const OutputSpec> declared) {
-  std::vector<std::string> names;
-  for (size_t index = 0; index < returned.size(); ++index) {
-    const Returned& item = returned[index];
-    std::string name = item.key;
-    if (item.position > 0) {
-      name = index < declared.size() ? declared[index].name : "#" + std::to_string(item.position);
-    } else if (item.key.empty()) {
-      name = declared.size() == 1 ? declared.front().name : "value";
-    }
-    if (std::ranges::find(declared, name, &OutputSpec::name) == declared.end()) {
-      return unexpected("unexpected output '" + name + "'");
-    }
-    names.push_back(std::move(name));
-  }
-  ScriptBundle bundle;
-  for (const OutputSpec& spec : declared) {
-    const auto found = std::ranges::find(names, spec.name);
-    if (found == names.end()) {
-      return unexpected("output '" + spec.name + "' missing");
-    }
-    std::optional<ScriptValue>& value = returned[static_cast<size_t>(found - names.begin())].value;
-    if (!value || (!std::holds_alternative<Unavailable>(*value) && !hasType(spec, *value))) {
-      return unexpected("output '" + spec.name + "' must be " + typeText(spec));
-    }
-    bundle.outputs.push_back(NamedValue{spec.name, std::move(*value)});
-  }
-  return bundle;
 }
 
 }  // namespace
@@ -482,7 +344,7 @@ Expected<OutputSpec> parseOutputSpec(std::string_view spec) {
     if (!object_type) {
       return unexpected(quoted + " has an unknown type '" + std::string(type) + "'");
     }
-    if (!producible(*object_type)) {
+    if (!detail::producible(*object_type)) {
       return unexpected(quoted + " names " + std::string(type) + ", a type a script cannot produce");
     }
     out.type = OutputType::kObject;
@@ -523,8 +385,7 @@ Expected<ScriptBundle, ScriptError> runOnDemandScript(
     Span<const OutputSpec> outputs, const RunOptions& options) {
   Run run{&options};
   const auto fail = [&run](std::string message) {
-    const bool over_budget =
-        message.find(native::kNativeLimitError) != std::string::npos || message.starts_with(kVmLimitError);
+    const bool over_budget = detail::isOverBudget(message);
     return unexpected(ScriptError{std::move(message), run.observed_query_clock, run.observed_tf, over_budget});
   };
   // Nothing below may raise a Lua error outside the protected call: reject what would, first.
@@ -533,19 +394,12 @@ Expected<ScriptBundle, ScriptError> runOnDemandScript(
       return fail(std::move(problem));
     }
   }
-  const nlohmann::json params =
-      nlohmann::json::parse(params_json.empty() ? std::string_view("{}") : params_json, nullptr, false);
-  if (!params.is_object()) {
-    return fail("params_json is not a JSON object");
-  }
-  if (nestedDeeperThan(params, kMaxParamsDepth)) {
-    return fail("params_json is nested deeper than " + std::to_string(kMaxParamsDepth) + " levels");
+  const Expected<nlohmann::json> params = detail::parseParams(params_json);
+  if (!params) {
+    return fail(params.error());
   }
 
-  const native::NativeLimits native_limits{
-      options.native_budget ? options.native_budget
-                            : std::make_shared<native::MemoryBudget>(options.native_budget_bytes),
-      options.cancelled};
+  const native::NativeLimits native_limits{detail::nativeBudgetOf(options), options.cancelled};
   ScriptMedia media(options.image_decoder, native_limits, options.result_stamp, options.video_source);
   std::vector<sdk::BuiltinObject> held_inputs;  ///< the media inputs `media` names by address
   detail::BudgetState budget;
@@ -567,7 +421,7 @@ Expected<ScriptBundle, ScriptError> runOnDemandScript(
     pushInput(L, input, media, held_inputs);
     lua_setfield(L, -2, input.name.c_str());
   }
-  pushJson(L, params);
+  pushJson(L, *params);
 
   budget.max_bytes = options.limits.mem_bytes;
   detail::armFuel(&budget, options.limits.setup_fuel);
@@ -577,17 +431,17 @@ Expected<ScriptBundle, ScriptError> runOnDemandScript(
     return fail(budget.trip);
   }
   if (status == LUA_ERRMEM) {
-    return fail(std::string(kVmLimitError) + " (" + native::describeBytes(options.limits.mem_bytes) + ") exceeded");
+    return fail(detail::vmLimitMessage(options.limits.mem_bytes));
   }
   if (status != LUA_OK) {
     return fail(lua_isstring(L, -1) ? lua_tostring(L, -1) : "script error");
   }
   native::MemoryReservation strings(native_limits.budget);
-  Expected<std::vector<Returned>> returned = collectReturned(L, lua_gettop(L), strings);
+  Expected<std::vector<detail::Returned>> returned = collectReturned(L, lua_gettop(L), strings);
   if (!returned) {
     return fail(returned.error());
   }
-  Expected<ScriptBundle> bundle = outputs.empty() ? inferOutputs(*returned) : bindDeclared(*returned, outputs);
+  Expected<ScriptBundle> bundle = detail::bindReturned(*returned, outputs);
   if (!bundle) {
     return fail(bundle.error());
   }

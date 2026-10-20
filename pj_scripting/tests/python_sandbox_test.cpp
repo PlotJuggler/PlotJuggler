@@ -29,6 +29,74 @@ namespace py = pybind11;
 namespace PJ::scripting {
 namespace {
 
+TEST(PythonSandbox, CompileRejectsFrameInternalsNamesAndLargeSources) {
+  detail::ensureInterpreter();
+  py::gil_scoped_acquire gil;
+  for (const char* chain :
+       {"(x for x in ()).gi_frame.f_globals", "g.gi_code", "f.f_back", "f.f_builtins", "c.cr_frame", "a.ag_frame",
+        "t.tb_frame", "t.tb_next", "f.f_locals", "f.f_code"}) {
+    auto compiled = detail::compileChecked(std::string("x = ") + chain + "\n");
+    ASSERT_FALSE(compiled) << chain;
+    EXPECT_NE(compiled.error().find("forbidden attribute"), std::string::npos) << compiled.error();
+  }
+  for (const char* name : {"__builtins__", "globals", "locals", "vars", "__loader__", "__spec__"}) {
+    auto named = detail::compileChecked(std::string("x = ") + name + "\n");
+    ASSERT_FALSE(named) << name;
+    EXPECT_NE(named.error().find(std::string("forbidden name: ") + name), std::string::npos) << named.error();
+  }
+  auto dunder = detail::compileChecked("x = ().__class__\n");
+  ASSERT_FALSE(dunder);
+  EXPECT_NE(dunder.error().find("dunder"), std::string::npos) << dunder.error();
+  auto too_large = detail::compileChecked(std::string(kMaxSourceBytes + 1, '#'));
+  ASSERT_FALSE(too_large);
+  EXPECT_NE(too_large.error().find("larger than"), std::string::npos) << too_large.error();
+  EXPECT_TRUE(detail::compileChecked("x = (1).real\n"));
+}
+
+// `str.format` and `format_map` walk attributes and items from a string, out of the AST check's sight.
+TEST(PythonSandbox, CompileRefusesFormatMethods) {
+  detail::ensureInterpreter();
+  py::gil_scoped_acquire gil;
+  for (const char* source :
+       {"import statistics\nx = '{0.__globals__[sys].modules[os].environ[HOME]}'.format(statistics.mean)\n",
+        "import statistics\nx = '{m.__globals__[sys]}'.format_map({'m': statistics.mean})\n", "f = str.format\n"}) {
+    auto compiled = detail::compileChecked(source);
+    ASSERT_FALSE(compiled) << source;
+    EXPECT_NE(compiled.error().find("use an f-string"), std::string::npos) << compiled.error();
+  }
+  EXPECT_TRUE(detail::compileChecked("x = 2\ny = f'{x:.2f}'\n"));
+}
+
+// The strict profile's hook also refuses code from strings, which would bypass the AST check; the compatible one,
+// the filters', lets it run.
+TEST(PythonSandbox, StrictProfileAlsoRefusesExecAndCompile) {
+  detail::ensureInterpreter();
+  py::gil_scoped_acquire gil;
+  py::object builtins = py::module_::import("builtins");
+  auto assign = detail::compileChecked("x = 1\n");
+  ASSERT_TRUE(assign) << assign.error();
+  const auto denied = [](const auto& call) {
+    try {
+      call();
+    } catch (py::error_already_set& error) {
+      return error.matches(PyExc_PermissionError);
+    }
+    return false;
+  };
+  {
+    detail::ScopedAuditGuard strict(detail::Profile::kStrict);
+    EXPECT_TRUE(denied([&] { builtins.attr("exec")("x = 1", py::dict()); }));
+    EXPECT_TRUE(denied([&] { builtins.attr("exec")(*assign, py::dict()); })) << "a code object raises only exec";
+    EXPECT_TRUE(denied([&] { builtins.attr("eval")("1", py::dict()); }));
+    EXPECT_TRUE(denied([&] { builtins.attr("compile")("x = 1", "<string>", "exec"); }));
+  }
+  {
+    detail::ScopedAuditGuard compatible(detail::Profile::kCompatible);
+    EXPECT_FALSE(denied([&] { builtins.attr("exec")("x = 1", py::dict()); }));
+    EXPECT_FALSE(denied([&] { builtins.attr("eval")("1", py::dict()); }));
+  }
+}
+
 // The hook itself, driven from the host: what a script that recovered the real builtins or `os` would reach.
 TEST(PythonSandbox, AuditHookDeniesOnlyWhileArmed) {
   test::Victim victim;
@@ -50,7 +118,7 @@ TEST(PythonSandbox, AuditHookDeniesOnlyWhileArmed) {
     return false;
   };
   {
-    detail::ScopedAuditGuard armed;
+    detail::ScopedAuditGuard armed(detail::Profile::kCompatible);
     EXPECT_TRUE(denied([&] { builtins.attr("open")(victim.path); }));
     EXPECT_TRUE(denied([&] { os.attr("remove")(victim.path); }));
     EXPECT_TRUE(denied([&] { detail::runCode(getframe, py::dict()); }));
@@ -176,7 +244,8 @@ TEST(PythonSandbox, AnotherBudgetsBlockDoesNotStopTheCurrentCall) {
   earlier->acquireAnyway(1024);  // the earlier call's budget near twice its cap
   bool latched = true;
   {
-    detail::ScriptCallScope scope(std::make_shared<native::MemoryBudget>(std::size_t{1} << 20), 10000);
+    detail::ScriptCallScope scope(
+        std::make_shared<native::MemoryBudget>(std::size_t{1} << 20), 10000, detail::Profile::kCompatible);
     void* grown = current.realloc(current.ctx, left_behind, 900);  // crosses twice the earlier cap
     ASSERT_NE(grown, nullptr);
     left_behind = grown;
@@ -205,7 +274,7 @@ TEST(PythonSandbox, SmallObjectsAreStoppedAtTwiceTheCap) {
   globals["__builtins__"] = py::module_::import("builtins");
   bool over_budget = false;
   {
-    detail::ScriptCallScope scope(std::make_shared<native::MemoryBudget>(kCap), 10000);
+    detail::ScriptCallScope scope(std::make_shared<native::MemoryBudget>(kCap), 10000, detail::Profile::kCompatible);
     try {
       detail::runCode(code, globals);
     } catch (py::error_already_set&) {}
@@ -232,7 +301,8 @@ TEST(PythonSandbox, AMemoryStopIsNotATimeout) {
   bool timed_out = true;
   bool over_budget = false;
   {
-    detail::ScriptCallScope scope(std::make_shared<native::MemoryBudget>(std::size_t{64} << 10), 10000);
+    detail::ScriptCallScope scope(
+        std::make_shared<native::MemoryBudget>(std::size_t{64} << 10), 10000, detail::Profile::kCompatible);
     for (int i = 0; i < 300; ++i) {  // 150 KiB of small blocks, past twice the cap
       blocks.push_back(current.malloc(current.ctx, 512));
     }
@@ -258,7 +328,8 @@ TEST(PythonSandbox, GuardAndCapArePerThread) {
   bool done = false;
   std::thread other([&] {
     py::gil_scoped_acquire gil;
-    detail::ScriptCallScope scope(std::make_shared<native::MemoryBudget>(std::size_t{64} << 10), 10000);
+    detail::ScriptCallScope scope(
+        std::make_shared<native::MemoryBudget>(std::size_t{64} << 10), 10000, detail::Profile::kCompatible);
     py::gil_scoped_release no_gil;
     std::unique_lock lock(mutex);
     armed = true;

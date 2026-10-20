@@ -25,6 +25,7 @@
 #include "pj_datastore/saturating_time.hpp"
 #include "pj_scripting/memory_budget.h"
 #include "pj_scripting/object_script.h"
+#include "script_contract.h"
 #include "script_media.h"
 
 namespace PJ::scripting::detail {
@@ -42,7 +43,6 @@ enum Tag : int {
 };
 
 constexpr const char* kUnavailableMetatable = "pj.unavailable";
-constexpr std::size_t kMaxReasonBytes = 1024;
 
 /// What keeps an object alive for the script: the value and, for a builder's output, what the builder paid
 /// for it. A view read from the object shares it, so neither lapses while a view can still read the value.

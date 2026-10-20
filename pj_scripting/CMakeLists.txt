@@ -191,16 +191,18 @@ set(PJ_SCRIPTING_SOURCES
   # The Luau object-script engine (compile, run, field reads, pj.tf).
   src/object_script.cpp
   src/object_binder.cpp
+  # The language-neutral half of an on-demand run (output binding), shared by the Luau and Python runners.
+  src/script_contract.cpp
   # The JSON summary of an object output an evaluation report carries.
   src/object_summary.cpp
   # One run's media state: the injected decoder, the image inputs, the decodes, the annotations' pairing.
   src/script_media.cpp
 )
 if(EMSCRIPTEN)
-  list(APPEND PJ_SCRIPTING_SOURCES src/python_engine_unavailable.cpp)
+  list(APPEND PJ_SCRIPTING_SOURCES src/python_engine_unavailable.cpp src/python_object_script_unavailable.cpp)
 else()
-  # The Python filter engine over the interpreter and the hardening the on-demand Python lane shares.
-  list(APPEND PJ_SCRIPTING_SOURCES src/python_engine.cpp src/python_sandbox.cpp)
+  # The Python filter engine and the on-demand Python lane share one interpreter and its hardening.
+  list(APPEND PJ_SCRIPTING_SOURCES src/python_engine.cpp src/python_sandbox.cpp src/python_object_script.cpp)
 endif()
 
 add_library(pj_scripting STATIC ${PJ_SCRIPTING_SOURCES})
@@ -278,11 +280,11 @@ if(PJ_BUILD_TESTS)
     LIBS pj_scripting Luau::VM Luau::Compiler)
   target_include_directories(pj_scripting_object_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
-  # --- the Python sandbox (private header python_sandbox.h); desktop only ---
+  # --- the on-demand Python lane and its sandbox (private header python_sandbox.h); desktop only ---
   if(NOT EMSCRIPTEN)
     pj_add_test_runner(pj_scripting_python_tests
       MAIN plain WARNINGS
-      SOURCES tests/python_sandbox_test.cpp
+      SOURCES tests/python_sandbox_test.cpp tests/python_object_script_test.cpp
       LIBS pj_scripting pybind11::embed cpython::embed)
     target_include_directories(pj_scripting_python_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   endif()

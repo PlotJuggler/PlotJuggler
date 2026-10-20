@@ -872,9 +872,9 @@ join it (slice 6b). The rest is **Built**.
 
 ## 14. Scripting languages
 
-**Status: Built** for Luau; for Python the shared interpreter, its cooperative limits and the audit
-hook are built (slice 10a-1, `pj_scripting/src/python_sandbox.h`); the strict profile and compile-once
-are not (10a-2). Luau VM reuse is proposed (N1, N2).
+**Status: Built** for Luau; for Python the core is built (slice 10a-1: the shared interpreter, its
+limits and the hook; slice 10a-2: the strict profile and compile once) and its runtime wiring is not
+(10b, 10c). Luau VM reuse is proposed (N1, N2).
 
 - **Luau** gets a fresh sandboxed VM per call, from bytecode compiled once per recipe
   (built, slice 5c-1: about 43 µs per call on this stack, §19). **Proposed:** one sandboxed state per pool worker plus a fresh sandboxed thread per call.
@@ -883,13 +883,16 @@ are not (10a-2). Luau VM reuse is proposed (N1, N2).
   series slice measures per-call overhead over a long history. Before adopting it, a test
   tries to leave state behind (a global table, the string metatable) and checks that the
   next call cannot see it.
-- **Python** runs on its own lane in a fresh namespace per call.
-  - **Decided:** run the safety pre-check and compile once per recipe revision. That cuts
-    73 µs to 1.2 µs, or 1.2 ms to 63 µs for a 43-line script.
-  - **Decided:** give scripts read-only copies of the allowed modules, so a statement such
-    as `math.pi = 3` cannot leak into the next call (D2). For scale: a one-hour series at
-    10 Hz is 36,000 calls, about 45 s of rebuild overhead for the 43-line script without
-    compile-once and about 2 s with it.
+- **Python** runs on its own lane in a fresh namespace per call (built, slice 10a-2;
+  `pj_scripting/include/pj_scripting/python_object_script.h` owns the contract).
+  - The safety pre-check and the compile run once per recipe revision; a run executes the
+    code object: 2.8 µs per call for a 4-line script and 15.6 µs for a 43-line one, against
+    93 µs and 880 µs compiling every call (§19). A one-hour series at 10 Hz (36,000 calls) of
+    the 43-line script spends about 0.6 s on setup instead of 32 s.
+  - Scripts import read-only copies of the allowed modules, so `math.pi = 3` is an error and
+    never reaches the next call (D2). A copy holds the module's public names only and leaves
+    out the modules it imports outside the allowlist, so `statistics.sys` and `json.codecs`
+    do not exist (the strict profile; filters keep the real modules).
   - **Decided (2026-10-18): the trust model.** Python runs in-process with cooperative limits,
     documented as not a security boundary. Isolation in a separate process waits for a request.
   - **Decided (2026-10-20): two profiles of one sandbox.** Both engines run every call into
@@ -906,7 +909,9 @@ are not (10a-2). Luau VM reuse is proposed (N1, N2).
     their `math`/`cmath`/`statistics` allowlist, so every existing filter runs unchanged and
     stays as escapable as before. On-demand scripts are new, so they get the strict profile
     on top (slice 10a-2): an AST check, gated builtins, read-only module copies and a hook
-    that also refuses `exec` and `compile`.
+    that also refuses `exec` and `compile`. A copy's functions still share the real module's
+    globals, so a filter can patch, say, `statistics._sum`, and later on-demand runs call the
+    patched code; accepted under the trust model.
 - **Python in the browser** is a goal (D18 with D29), gated on a spike: CPython 3.14's
   Emscripten target, statically linked, with pthreads. Until then, desktop only.
 
@@ -1202,7 +1207,7 @@ payload (§9).
 ## 19. Measurements
 
 These come from the prototype, whose design document describes the machine and method,
-except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a, slice 6a-5, slice 6c, slice 7a, slice 8a-1, slice 6b, slice 8a-2b, slice 8b-1, slice 9a-1, slice 9a-2 and slice 9b rows. The slice 2 and 3 rows are measured on this stack by
+except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a, slice 6a-5, slice 6c, slice 7a, slice 8a-1, slice 6b, slice 8a-2b, slice 8b-1, slice 9a-1, slice 9a-2, slice 9b and slice 10a-2 rows. The slice 2 and 3 rows are measured on this stack by
 `EngineFreezeBench` (`pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`), from
 the call until the result is complete, as two different metrics:
 - **GUI-thread CPU time**, as the longest single stretch (the call or one event-loop
@@ -1243,6 +1248,7 @@ Linux, RelWithDebInfo.
 | Per-call setup: Luau | about 86 µs per call (fresh VM) |
 | Object scripts after slice 5c-1 (`ObjectScriptBench`, `pj_scripting/tests/object_script_test.cpp`, `PJ_BENCH=1`; three runs) | Per-call setup (fresh VM over compiled bytecode, a one-line script): 40-47 µs. Iterating a 100,000-element list field (`FrameTransforms.transforms`, reading `translation.x`): 11.0-11.5 ms (about 112 ns per element) holding the list in a local, 15.7-16.3 ms re-reading the field each iteration. The same loop with the list materialized on every element read (a one-line mutation of the binder): 18.6 s |
 | Per-call setup: Python | 73 µs (4-line script) to 1.2 ms (43-line script), re-parsing every call |
+| Python per-call setup after slice 10a-2 (`PythonObjectScriptBench.PerCallSetup`, `pj_scripting/tests/python_object_script_test.cpp`, `PJ_BENCH=1`; median of 2001 calls, three runs; a number input, a keyed result) | Compiled once: 2.8 µs for a 4-line script, 15.5-15.7 µs for a 43-line one (a class, four helpers, two imports); compiling every call (the pre-check and the compile included): 92-94 µs and 870-883 µs. With the allocation cap disabled: 2.5 µs and 12.9 µs, so its per-block bookkeeping costs 0.35 µs and 2.7 µs. The 4-line figure misses the 1.2 µs target (an estimate for a bare `exec` of the code object, without the cap, the builtins copy or the import gate), about 0.35 µs of the miss being the cap's bookkeeping; accepted (decided 2026-10-20), as it is 30 times below compiling per call. The 43-line one beats its 63 µs target. |
 | TF snapshot copy (prototype: a copy per snapshot) | 0.26 ms (5 s window) to 248 ms and 691 MB (1 h file) |
 | TF snapshot after slice 5a (copy-on-write; measured on this stack by `TransformSnapshotBench`, `pj_tf/tests/tf_buffer_test.cpp`, `PJ_BENCH=1`; 25 edges at 100 Hz, every sample distinct, median of 5) | `snapshot()`: 0.02 µs and 0 bytes at any size. The next write while it is held copies the state once, on the writing thread under the buffer's write lock: live 5 s window 0.15 ms / 0.9 MB of samples, 60 s window 2.9 ms / 10.8 MB, complete 1 h file 72 ms / 648 MB (only when something writes the file buffer after a snapshot, e.g. a robot model's fixed-joint bridges); a buffer nobody writes is never copied. Consumer rule: during a dataset's TF ingest (a first file load writes the active buffer, streaming never ends) a fresh snapshot per revision makes every next write copy the growing state, quadratic over a load; take a new snapshot no faster than the brake rate there, or wait for the ingest to end |
 | Native point-cloud operations (slice 5n; `PointCloudOpsBench`, `pj_scripting/tests/native_ops_test.cpp`, `PJ_BENCH=1`; median of 20 calls on a 260k-point XYZI float32 scan, flat and as 64 x 4096 with padded rows, which cost the same per point) | `filterByField` (50% kept) 3.0 ns per point, `cropBox` (30% kept) 9.5 ns, `bounds` 3.2 ns, `extremePoint` 0.9 ns, `transformXyz` 6.0 ns, a full `nextFinitePoint` iteration 6 ns. The same loops with a datatype and comparison switch per point, a filter predicate evaluated twice and a division per record run 1.25x to 5.3x slower |
