@@ -89,8 +89,9 @@ ScriptBundle croppedBundle(const sdk::BuiltinObject& cloud) {
 }
 
 /// One dataset: the object topics `cloud` (canonical bytes), `lidar` (raw points behind a parser) and
-/// `other`, and the scalar series `speed` and `heading`. The graph resolves any object topic of the dataset
-/// and any name in `scalars`, which the sampler scans as a catalog does.
+/// `other`, the scalar series `speed` and `heading`, and the string topic `state`. The graph resolves any object
+/// topic of the dataset and any name in `scalars`, which the sampler scans as a catalog does and reads with the
+/// session's `InputStager::sampleAt`.
 struct Fixture {
   Fixture() : history(store) {
     dataset = engine.createDataset(DatasetDescriptor{.source_name = "log"}).value();
@@ -99,7 +100,8 @@ struct Fixture {
     other = store.registerTopic({dataset, "other", ""}).value();
     speed = writer.registerScalarSeries(dataset, "speed", NumericType::kFloat64).value();
     heading = writer.registerScalarSeries(dataset, "heading", NumericType::kFloat64).value();
-    scalars = {{"speed", speed}, {"heading", heading}};
+    state = test::registerStringTopic(writer, dataset, "state");
+    scalars = {{"speed", speed.topic_id}, {"heading", heading.topic_id}, {"state", state}};
     replaceLidarParser();
   }
 
@@ -123,6 +125,10 @@ struct Fixture {
   }
   void appendScalar(const ScalarSeriesHandle& series, Timestamp t, double value) {
     writer.appendScalar(series, t, value);
+    EXPECT_FALSE(engine.commitChunks(writer.flushAll()).empty());
+  }
+  void appendState(Timestamp t, std::string_view value) {
+    test::appendString(writer, state, t, value);
     EXPECT_FALSE(engine.commitChunks(writer.flushAll()).empty());
   }
   /// Registers `lidar`'s parser anew, as a reload does; returns the previous one.
@@ -168,7 +174,7 @@ struct Fixture {
     return std::move(*result);
   }
 
-  [[nodiscard]] const ScalarSeriesHandle* scalar(std::string_view name) const {
+  [[nodiscard]] const TopicId* scalar(std::string_view name) const {
     const auto found =
         std::find_if(scalars.begin(), scalars.end(), [&](const auto& named) { return named.first == name; });
     return found == scalars.end() ? nullptr : &found->second;
@@ -183,7 +189,8 @@ struct Fixture {
   ObjectTopicId other;
   ScalarSeriesHandle speed;
   ScalarSeriesHandle heading;
-  std::vector<std::pair<std::string, ScalarSeriesHandle>> scalars;
+  TopicId state = 0;
+  std::vector<std::pair<std::string, TopicId>> scalars;
   ParseProbe probe;
   std::shared_ptr<RawPointsParser> lidar_parser;
   RecipeGraph graph{[this](std::string_view input) {
@@ -200,17 +207,8 @@ struct Fixture {
   InputStager stager{
       store, history,
       [this](DatasetId in, std::string_view name, Timestamp t) -> std::optional<InputStager::ScalarSample> {
-        const ScalarSeriesHandle* series = in == dataset ? scalar(name) : nullptr;
-        if (series == nullptr) {
-          return std::nullopt;
-        }
-        const DataReader reader(engine);
-        auto values = reader.series(series->topic_id, 0);
-        const auto sample = values ? values->sampleAtOrBeforeTime(t) : std::nullopt;
-        if (!sample) {
-          return std::nullopt;
-        }
-        return InputStager::ScalarSample{series->topic_id, 0, sample->timestamp, sample->value};
+        const TopicId* topic = in == dataset ? scalar(name) : nullptr;
+        return topic != nullptr ? InputStager::sampleAt(engine, *topic, 0, t) : std::nullopt;
       },
       [this](ObjectTopicId topic) {
         return topic == lidar && lidar_parser
@@ -378,6 +376,89 @@ TEST(InputStagerTest, StampIsTheNewestResolvedInput) {
   fx.publish(crop, 15 * kSec, croppedBundle(cloudObject(2)));
   const auto& count = fx.install(recipe("count", {"owner/crop/cropped", "speed"}));
   EXPECT_EQ(fx.staged(count, 20 * kSec).stamp, 15 * kSec) << "the upstream's result";
+}
+
+// D4, D5: a string series is staged like a number: its sample at or before `t` copied, its identity (the series and
+// the sample's row) in the cache key; the decode hands the script the string.
+TEST(InputStagerTest, StringSampleIsStagedByIdentity) {
+  Fixture fx;
+  LazySource source(canonicalCloud(1));
+  fx.pushLazy(fx.cloud, 10 * kSec, source);
+  fx.appendState(5 * kSec, "idle");
+  fx.appendState(11 * kSec, "moving");
+  const auto& node = fx.install(recipe("annotate", {"cloud", "state"}));
+
+  const InputStager::Staged at12 = fx.staged(node, 12 * kSec);
+  EXPECT_EQ(at12.stamp, 11 * kSec) << "the state sample";
+  ASSERT_EQ(at12.inputs.size(), 2u);
+  ASSERT_TRUE(std::holds_alternative<std::string>(at12.inputs[1].value));
+  EXPECT_EQ(std::get<std::string>(at12.inputs[1].value), "moving");
+  EXPECT_EQ(at12.inputs[1].resolved, 11 * kSec);
+  const InputStager::Decoded decoded = fx.decode(at12);
+  ASSERT_EQ(decoded.values.size(), 2u);
+  EXPECT_EQ(decoded.values[1].name, "state");
+  ASSERT_TRUE(std::holds_alternative<std::string>(decoded.values[1].value));
+  EXPECT_EQ(std::get<std::string>(decoded.values[1].value), "moving");
+
+  const InputStager::Staged at10 = fx.staged(node, 10 * kSec);
+  EXPECT_EQ(std::get<std::string>(at10.inputs[1].value), "idle");
+  EXPECT_NE(at10.key, at12.key) << "another sample";
+  EXPECT_EQ(fx.staged(node, 13 * kSec).key, at12.key) << "the same sample";
+  fx.appendState(12 * kSec, "moving");
+  EXPECT_NE(fx.staged(node, 13 * kSec).key, at12.key) << "a new sample, of the same value";
+  EXPECT_EQ(source.fetches.load(), 1) << "only the decode fetched";
+}
+
+// D6: a string input with nothing at or before `t` is missing by its alias, as a number is.
+TEST(InputStagerTest, StringInputBeforeItsFirstSampleIsMissing) {
+  Fixture fx;
+  LazySource source(canonicalCloud(1));
+  fx.pushLazy(fx.cloud, 10 * kSec, source);
+  fx.appendState(12 * kSec, "idle");
+  const auto& node = fx.install(recipe("annotate", {"cloud", "state"}));
+
+  EXPECT_EQ(fx.stageError(node, 11 * kSec), "on-demand: missing input 'state'");
+  EXPECT_EQ(fx.stageError(node, 12 * kSec), "");
+  EXPECT_EQ(fx.stager.newestInputStamp(node), 12 * kSec) << "the live edge sees the string sample";
+}
+
+// D6: a null string row is a missing input at and after its time, yet it moves the live edge, so the result the
+// previous string made does not stay displayed.
+TEST(InputStagerTest, ANullStringRowIsMissingAndMovesTheLiveEdge) {
+  Fixture fx;
+  LazySource source(canonicalCloud(1));
+  fx.pushLazy(fx.cloud, 10 * kSec, source);
+  fx.appendState(10 * kSec, "idle");
+  test::appendNullString(fx.writer, fx.state, 20 * kSec);
+  ASSERT_FALSE(fx.engine.commitChunks(fx.writer.flushAll()).empty());
+  const auto& node = fx.install(recipe("annotate", {"cloud", "state"}));
+  const auto& label = fx.install(recipe("label", {"state"}));
+
+  EXPECT_EQ(fx.stageError(node, 15 * kSec), "");
+  EXPECT_EQ(fx.stageError(node, 20 * kSec), "on-demand: missing input 'state'");
+  EXPECT_EQ(fx.stager.newestInputStamp(node), 20 * kSec) << "the null row's time";
+  EXPECT_EQ(fx.stager.newestInputStamp(label), 20 * kSec) << "a string-only recipe has a live edge too";
+  std::vector<uint64_t> identities;
+  EXPECT_FALSE(fx.stager.appendRawIdentities(node, 20 * kSec, identities)) << "nothing to read there";
+}
+
+// §10: equal-time string rows are told apart by their row, not by a hash of their text: these two hash alike on a
+// 64-bit libstdc++ (0x83cc3862a8c12ca1), so a key holding the hash would serve the first one's result for the second.
+TEST(InputStagerTest, EqualTimeStringRowsNeverShareAnIdentity) {
+  Fixture fx;
+  const auto& node = fx.install(recipe("label", {"state"}));
+  fx.appendState(10 * kSec, "idle_state_00000");
+  const InputStager::Staged first = fx.staged(node, 10 * kSec);
+  fx.appendState(10 * kSec, "00006326\"M3hg`za");
+  const InputStager::Staged second = fx.staged(node, 10 * kSec);
+  ASSERT_EQ(std::get<std::string>(second.inputs[0].value), "00006326\"M3hg`za") << "the later row wins the tie";
+  EXPECT_NE(first.key, second.key);
+
+  // Two rows of one chunk.
+  test::appendString(fx.writer, fx.state, 20 * kSec, "a");
+  test::appendString(fx.writer, fx.state, 30 * kSec, "a");
+  ASSERT_FALSE(fx.engine.commitChunks(fx.writer.flushAll()).empty());
+  EXPECT_NE(fx.staged(node, 20 * kSec).key, fx.staged(node, 30 * kSec).key);
 }
 
 // D6: an input with nothing at or before `t` is reported by its alias, and nothing runs.
@@ -682,10 +763,10 @@ TEST(InputStagerBench, StageAmongTenThousandTopics) {
   Fixture fx;
   for (int index = 0; index < kTopics; ++index) {
     ASSERT_TRUE(fx.store.registerTopic({fx.dataset, "noise/" + std::to_string(index), ""}).has_value());
-    fx.scalars.emplace_back("noise_scalar/" + std::to_string(index), fx.heading);
+    fx.scalars.emplace_back("noise_scalar/" + std::to_string(index), fx.heading.topic_id);
   }
   const ObjectTopicId last_topic = fx.store.registerTopic({fx.dataset, "last", ""}).value();
-  fx.scalars.emplace_back("last_speed", fx.speed);
+  fx.scalars.emplace_back("last_speed", fx.speed.topic_id);
   LazySource source(canonicalCloud(1));
   fx.pushLazy(last_topic, 10 * kSec, source);
   fx.appendScalar(fx.speed, 10 * kSec, 1.0);
@@ -694,6 +775,35 @@ TEST(InputStagerBench, StageAmongTenThousandTopics) {
   const double stage = medianMicros(kBenchRuns, [&] { EXPECT_TRUE(fx.stager.stage(node, 10 * kSec, 0).has_value()); });
   std::printf(
       "[InputStagerBench] stage among %d object topics and %d scalar names: %.1f us\n", kTopics, kTopics, stage);
+}
+
+// PJ_BENCH=1: the GUI cost of staging one string input against one number, each read through `sampleAt` (the
+// session's read) over 10k samples: a string costs the failed numeric probe, the row lookup and a copy.
+TEST(InputStagerBench, StageAStringInputAgainstANumber) {
+  if (!sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  constexpr int kSamples = 10'000;
+  Fixture fx;
+  for (int index = 0; index < kSamples; ++index) {
+    fx.writer.appendScalar(fx.speed, index * kSec, index);
+    test::appendString(fx.writer, fx.state, index * kSec, index % 2 == 0 ? "waiting_for_goal" : "executing_goal");
+  }
+  ASSERT_FALSE(fx.engine.commitChunks(fx.writer.flushAll()).empty());
+  const auto& number = fx.install(recipe("number", {"speed"}));
+  const auto& text = fx.install(recipe("text", {"state"}));
+  constexpr Timestamp kT = kSamples / 2 * kSec + kSec / 2;
+
+  const double stage_number =
+      medianMicros(kBenchRuns, [&] { EXPECT_TRUE(fx.stager.stage(number, kT, 0).has_value()); });
+  const double stage_text = medianMicros(kBenchRuns, [&] { EXPECT_TRUE(fx.stager.stage(text, kT, 0).has_value()); });
+  const InputStager::Staged staged = fx.staged(text, kT);
+  const double decode_text =
+      medianMicros(kBenchRuns, [&] { EXPECT_TRUE(InputStager::decode(fx.store, staged).has_value()); });
+  std::printf(
+      "[InputStagerBench] stage (GUI) over %d samples: number %.0f ns, string %.0f ns; decode (worker) string %.0f "
+      "ns\n",
+      kSamples, stage_number * 1000.0, stage_text * 1000.0, decode_text * 1000.0);
 }
 
 }  // namespace

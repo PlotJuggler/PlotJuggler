@@ -3,12 +3,12 @@
 #include "pj_runtime/InputStager.h"
 
 #include <algorithm>
-#include <bit>
 #include <cstdint>
 #include <limits>
 #include <utility>
 
 #include "ObjectDecode.h"
+#include "pj_datastore/reader.hpp"
 
 namespace PJ {
 namespace {
@@ -18,6 +18,29 @@ Unexpected<std::string> missingInput(const std::string& alias, const std::string
 }
 
 }  // namespace
+
+std::optional<InputStager::ScalarSample> InputStager::sampleAt(
+    const DataEngine& engine, TopicId topic, std::size_t column, Timestamp t) {
+  const DataReader reader(engine);
+  if (auto values = reader.series(topic, column)) {
+    const auto sample = values->sampleAtOrBeforeTime(t);
+    if (!sample) {
+      return std::nullopt;
+    }
+    return ScalarSample{topic, column, sample->timestamp, sample->chunk->id, sample->row_index, sample->value};
+  }
+  // Not a numeric series: a string one, or nothing.
+  auto text = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = t}, column);
+  if (!text || !*text) {
+    return std::nullopt;
+  }
+  StringSample& cell = **text;
+  ScalarSample sample{topic, column, cell.timestamp, cell.chunk_id, cell.row_index, {}};
+  if (cell.value) {
+    sample.value = std::move(*cell.value);
+  }
+  return sample;
+}
 
 InputStager::InputStager(
     const ObjectStore& store, const ResultHistory& history, ScalarSampler scalars, ParserLookup parsers)
@@ -73,14 +96,16 @@ std::optional<Timestamp> InputStager::stageRaw(
     const RecipeGraph::Node& node, const RecipeGraph::Binding& binding, Timestamp t, std::vector<uint64_t>& key,
     Input& input) const {
   if (binding.object_type == sdk::BuiltinObjectType::kNone) {
-    const std::optional<ScalarSample> sample = scalars_(node.dataset, binding.name, t);
-    if (!sample) {
+    std::optional<ScalarSample> sample = scalars_(node.dataset, binding.name, t);
+    if (!sample || std::holds_alternative<std::monostate>(sample->value)) {
       return std::nullopt;
     }
-    key.insert(
-        key.end(), {sample->topic, sample->column, static_cast<uint64_t>(sample->timestamp),
-                    std::bit_cast<uint64_t>(sample->value)});
-    input.value = sample->value;
+    key.insert(key.end(), {sample->topic, sample->column, sample->chunk, sample->row});
+    if (const auto* number = std::get_if<double>(&sample->value)) {
+      input.value = *number;
+    } else {
+      input.value = std::move(std::get<std::string>(sample->value));
+    }
     return sample->timestamp;
   }
   const std::optional<ObjectTopicId> topic = topicOf(node.dataset, binding.name);
@@ -150,6 +175,8 @@ Expected<InputStager::Decoded> InputStager::decode(const ObjectStore& store, con
   for (const Input& input : staged.inputs) {
     if (const auto* scalar = std::get_if<double>(&input.value)) {
       decoded.values.push_back({input.alias, *scalar});
+    } else if (const auto* text = std::get_if<std::string>(&input.value)) {
+      decoded.values.push_back({input.alias, *text});
     } else if (const auto* object = std::get_if<Object>(&input.value)) {
       decoded.keepalives.insert(decoded.keepalives.end(), object->keepalives.begin(), object->keepalives.end());
       decoded.values.push_back({input.alias, object->object});

@@ -148,6 +148,35 @@ TEST(CatalogModelTest, FindScalarForMarkerKeyForgetsAFieldTheCatalogDropped) {
   EXPECT_FALSE(catalog.findScalarForMarkerKey(*dataset, key).has_value());
 }
 
+// An on-demand input may read a string field (D4); a marker rule may not, its resolver reading numeric series only.
+// The two answers are remembered apart: the string field found for an input stays refused to a marker rule.
+TEST(CatalogModelTest, FindScalarForMarkerKeyFindsAStringFieldOnlyWhenAsked) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(dataset);
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  const auto schema = writer.registerSchema(
+      "status", PJ::makeStruct("status", {PJ::makePrimitive("mode", PJ::PrimitiveType::kString)}));
+  ASSERT_TRUE(schema.has_value()) << schema.error();
+  PJ::TopicDescriptor descriptor;
+  descriptor.name = "/robot/status";
+  descriptor.schema_id = *schema;
+  const auto topic = writer.registerTopic(*dataset, descriptor);
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  ASSERT_TRUE(writer.beginRow(*topic, 1'000'000'000).has_value());
+  writer.set(*topic, 0, std::string_view{"idle"});
+  ASSERT_TRUE(writer.finishRow(*topic).has_value());
+  ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  const std::string key = PJ::sdk::markerSeriesKey("/robot/status", "mode");
+
+  const std::optional<PJ::ScalarFieldPayload> input = catalog.findScalarForMarkerKey(*dataset, key, true);
+  ASSERT_TRUE(input.has_value());
+  EXPECT_EQ(input->topic_id, *topic);
+  EXPECT_EQ(input->logical_type, PJ::PrimitiveType::kString);
+  EXPECT_FALSE(catalog.findScalarForMarkerKey(*dataset, key).has_value()) << "a marker rule reads numbers only";
+}
+
 TEST(CatalogModelTest, KeepsDuplicateDatasetTopicsVisibleUnderDatasetRoot) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);

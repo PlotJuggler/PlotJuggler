@@ -156,16 +156,7 @@ SessionManager::SessionManager(QObject* parent)
   on_demand.scalars =
       [this](DatasetId dataset, std::string_view name, Timestamp t) -> std::optional<InputStager::ScalarSample> {
     const auto series = scalarInput(dataset, std::string(name));
-    if (!series) {
-      return std::nullopt;
-    }
-    const DataReader reader = createReader();
-    const auto values = reader.series(series->first, series->second);
-    const auto sample = values ? values->sampleAtOrBeforeTime(t) : std::nullopt;
-    if (!sample) {
-      return std::nullopt;
-    }
-    return InputStager::ScalarSample{series->first, series->second, sample->timestamp, sample->value};
+    return series ? InputStager::sampleAt(data_engine_, series->first, series->second, t) : std::nullopt;
   };
   on_demand.scalar_changes =
       [this](DatasetId dataset, std::string_view name, Timestamp start, Timestamp end, std::size_t limit) {
@@ -176,7 +167,10 @@ SessionManager::SessionManager(QObject* parent)
         }
         const DataReader reader = createReader();
         const auto values = reader.series(series->first, series->second);
+        // ponytail: `series` reads numbers, so a string series reports no change and GridRunner refuses a window that
+        // reads one. Upgrade: walk its rows here (their stamps, the first retained row, the limit).
         if (!values) {
+          changes.string_series = true;
           return changes;
         }
         if (const auto first = values->sampleAtOrAfterTime(std::numeric_limits<Timestamp>::min())) {

@@ -101,13 +101,7 @@ struct Fixture {
       if (in != dataset || name != "threshold") {
         return std::nullopt;
       }
-      const DataReader reader(engine);
-      auto values = reader.series(threshold.topic_id, 0);
-      const auto sample = values ? values->sampleAtOrBeforeTime(t) : std::nullopt;
-      if (!sample) {
-        return std::nullopt;
-      }
-      return InputStager::ScalarSample{threshold.topic_id, 0, sample->timestamp, sample->value};
+      return InputStager::sampleAt(engine, threshold.topic_id, 0, t);
     };
     services.parsers = [](ObjectTopicId) { return SessionManager::ParserBinding{}; };
     services.scheduling.image_decoder = [this] { return decoder; };

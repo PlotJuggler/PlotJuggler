@@ -1651,13 +1651,15 @@ TEST(EngineIntegrationTest, LatestStringAtReturnsZeroOrderHoldString) {
   auto mid = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 2500}, 0);
   ASSERT_TRUE(mid.has_value()) << mid.error();
   ASSERT_TRUE(mid->has_value());
-  EXPECT_EQ(**mid, "running");
+  EXPECT_EQ((*mid)->value, "running");
+  EXPECT_EQ((*mid)->timestamp, 2000) << "the row's own time, not the query time";
 
   // Exactly on the last sample.
   auto on_last = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 3000}, 0);
   ASSERT_TRUE(on_last.has_value()) << on_last.error();
   ASSERT_TRUE(on_last->has_value());
-  EXPECT_EQ(**on_last, "done");
+  EXPECT_EQ((*on_last)->value, "done");
+  EXPECT_EQ((*on_last)->timestamp, 3000);
 
   // Before the first sample → no value.
   auto before = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 500}, 0);
@@ -1713,7 +1715,7 @@ TEST(EngineIntegrationTest, LatestNumericAndStringAtAreNullAware) {
   auto s_mid = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 1500}, 1);
   ASSERT_TRUE(s_mid.has_value()) << s_mid.error();
   ASSERT_TRUE(s_mid->has_value());
-  EXPECT_EQ(**s_mid, "a");
+  EXPECT_EQ((*s_mid)->value, "a");
 
   // Latest row at t=2500 is the null row1 → no value (NOT a fabricated 0).
   auto n_null = reader.latestNumericAt(QueryPoint{.topic_id = topic, .t = 2500}, 0);
@@ -1721,7 +1723,12 @@ TEST(EngineIntegrationTest, LatestNumericAndStringAtAreNullAware) {
   EXPECT_FALSE(n_null->has_value()) << "null numeric cell must read as no-value, not 0.0";
   auto s_null = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 2500}, 1);
   ASSERT_TRUE(s_null.has_value()) << s_null.error();
-  EXPECT_FALSE(s_null->has_value());
+  ASSERT_TRUE(s_null->has_value()) << "a null cell is still the latest row";
+  EXPECT_FALSE((*s_null)->value.has_value());
+  EXPECT_EQ((*s_null)->timestamp, 2000);
+  EXPECT_EQ((*s_null)->chunk_id, (*s_mid)->chunk_id);
+  EXPECT_EQ((*s_null)->row_index, 1u) << "the row, which with the chunk names the cell";
+  EXPECT_EQ((*s_mid)->row_index, 0u);
 
   // latestStringAt on the NUMERIC column → nullopt (kString guard; no readString UB).
   auto s_on_numeric = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 1500}, 0);

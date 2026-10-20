@@ -383,18 +383,19 @@ struct Fixture {
           return std::nullopt;
         }
         if (name.starts_with("dense")) {
-          return t < 0 ? std::nullopt
-                       : std::optional<InputStager::ScalarSample>(InputStager::ScalarSample{
-                             threshold.topic_id, 1, std::min<Timestamp>(t, static_cast<Timestamp>(dense_count) - 1),
-                             0.0});
+          if (t < 0) {
+            return std::nullopt;
+          }
+          const Timestamp stamp = std::min<Timestamp>(t, static_cast<Timestamp>(dense_count) - 1);
+          return InputStager::ScalarSample{
+              .topic = threshold.topic_id,
+              .column = 1,
+              .timestamp = stamp,
+              .chunk = 0,
+              .row = static_cast<std::size_t>(stamp),
+              .value = 0.0};
         }
-        const DataReader reader(engine);
-        auto values = reader.series(threshold.topic_id, 0);
-        const auto sample = name == "threshold" && values ? values->sampleAtOrBeforeTime(t) : std::nullopt;
-        if (!sample) {
-          return std::nullopt;
-        }
-        return InputStager::ScalarSample{threshold.topic_id, 0, sample->timestamp, sample->value};
+        return name == "threshold" ? InputStager::sampleAt(engine, threshold.topic_id, 0, t) : std::nullopt;
       },
       [](ObjectTopicId) { return SessionManager::ParserBinding{}; }};
   FakeRun fake;

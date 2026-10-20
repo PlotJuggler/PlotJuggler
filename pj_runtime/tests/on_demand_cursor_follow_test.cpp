@@ -294,6 +294,65 @@ TEST(OnDemandCursorFollowTest, DerivedTopicsDoNotMoveDatasetBounds) {
   EXPECT_DOUBLE_EQ(fx.session.playbackEngine().rangeMax().value, 20.0);
 }
 
+// D4 through the session: a recorded string field, named as the catalog names it, is an input, whose topic the
+// displayed recipe subscribes; the playhead hands the run the state at or before it.
+TEST(OnDemandCursorFollowTest, AStringFieldFollowsThePlayhead) {
+  CursorFixture fx;
+  DataWriter writer = fx.manager.dataEngine().createWriter();
+  const TopicId status = test::registerStringTopic(writer, fx.ds, "/robot/status");
+  test::appendString(writer, status, 5 * kSec, "idle");
+  test::appendString(writer, status, 15 * kSec, "moving");
+  ASSERT_FALSE(fx.manager.commitChunks(writer.flushAll()).empty());
+  fx.session.catalogModel().rebuildFromDatastore();
+  fx.install(test::onDemandRecipe("annotate", {"cloud", "/robot/status/state"}, {cloudSpec()}));
+  fx.display("owner/annotate/cropped");
+  EXPECT_EQ(
+      fx.session.topicDemandTracker().activeTopics(fx.ds),
+      (std::vector<QString>{"/robot/status", "cloud", "owner/annotate/cropped"}));
+
+  fx.seek(10 * kSec);
+  fx.seek(20 * kSec);
+  ASSERT_EQ(fx.state("owner/annotate")->status, Status::kReady) << fx.state("owner/annotate")->detail;
+  const auto records = fx.fake.records();
+  ASSERT_EQ(records.size(), 2u);
+  EXPECT_EQ(records[0].strings, std::vector<std::string>{"idle"});
+  EXPECT_EQ(records[1].strings, std::vector<std::string>{"moving"});
+  EXPECT_EQ(fx.ring("owner/annotate/cropped"), (std::vector<Timestamp>{10 * kSec, 20 * kSec}));
+}
+
+// A window evaluation reading a string input, directly or behind an upstream, is refused naming the input: the string's
+// change instants are not read yet, so the window would skip them and still report full coverage. An instant reads
+// the string as a request does.
+TEST(OnDemandEvaluationTest, AWindowReadingAStringInputIsRefused) {
+  CursorFixture fx;
+  DataWriter writer = fx.manager.dataEngine().createWriter();
+  const TopicId status = test::registerStringTopic(writer, fx.ds, "/robot/status");
+  test::appendString(writer, status, 10 * kSec, "idle");
+  test::appendString(writer, status, 20 * kSec, "moving");
+  ASSERT_FALSE(fx.manager.commitChunks(writer.flushAll()).empty());
+  fx.session.catalogModel().rebuildFromDatastore();
+  fx.install(test::onDemandRecipe("label", {"/robot/status/state"}, {cloudSpec()}));
+  fx.install(test::onDemandRecipe("annotate", {"cloud", "/robot/status/state"}, {cloudSpec()}));
+  fx.install(recipe("count", "owner/annotate/cropped"));
+  GridRunner& runner = fx.manager.onDemandService().evaluations();
+  const auto submit = [&](const std::string& key, Timestamp start, Timestamp end) {
+    return runner.submit(*fx.manager.onDemandService().graph().find(key), true, start, end, {}, [](auto) {});
+  };
+
+  for (const std::string key : {"owner/label", "owner/annotate", "owner/count"}) {
+    const auto window = submit(key, 10 * kSec, 30 * kSec);
+    ASSERT_FALSE(window.has_value()) << key;
+    EXPECT_EQ(
+        window.error(),
+        "on-demand: input '/robot/status/state' is a string series, whose changes a window evaluation cannot read "
+        "yet; evaluate an instant")
+        << key;
+  }
+  const auto instant = submit("owner/label", 15 * kSec, 15 * kSec);
+  ASSERT_TRUE(instant.has_value()) << instant.error();
+  fx.settle();
+}
+
 // A merge re-binds a consumed dataset's recipe on the anchor once the catalog lists the merged series there: a
 // scalar input resolves through the catalog, which AppSession rebuilds after the store's merge.
 TEST(AppSessionTest, MergeReBindsAScalarInputOnTheAnchor) {

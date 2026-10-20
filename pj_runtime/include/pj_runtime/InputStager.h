@@ -16,6 +16,7 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/expected.hpp"
 #include "pj_base/types.hpp"
+#include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/RecipeGraph.h"
 #include "pj_runtime/ResultHistory.h"
@@ -30,17 +31,29 @@ namespace PJ {
 /// input resolves independently at its newest sample at or before the requested time (§7).
 class InputStager {
  public:
-  /// One scalar sample and the series it was read from.
+  /// One scalar sample, a number or a string (D4), and the row it was read from.
   struct ScalarSample {
     TopicId topic = 0;
     std::size_t column = 0;
     Timestamp timestamp = 0;
-    double value = 0.0;
+    /// The row's sealed chunk and its index there: with `topic` and `column`, the sample's identity in a cache key (a
+    /// sealed chunk never changes and its id is never reused), so equal-time rows never alias and no value is hashed.
+    ChunkId chunk = 0;
+    std::size_t row = 0;
+    /// Empty: a null string cell, a missing input when staged, whose time still moves the live edge.
+    std::variant<std::monostate, double, std::string> value;
   };
   /// The sample at or before `t` of the scalar series `name` (bare: the dataset qualifier stripped) names
   /// in `dataset`; nullopt when the series is unknown or has none.
   using ScalarSampler =
       std::function<std::optional<ScalarSample>(DatasetId dataset, std::string_view name, Timestamp t)>;
+  /// What a `ScalarSampler` reads, once it found the series: column `column` of `topic` at or before `t`. A numeric
+  /// (or bool) column skips null rows, as a plotted curve does; a string column holds its newest row, a null cell
+  /// there being a sample with no value, as the curve list shows it (`DataReader::latestStringAt`). nullopt when the
+  /// topic is unknown, the column is out of range or neither numeric nor string, or nothing is at or before `t`.
+  /// Takes the engine's lock; the string is copied out under it.
+  [[nodiscard]] static std::optional<ScalarSample> sampleAt(
+      const DataEngine& engine, TopicId topic, std::size_t column, Timestamp t);
   /// The topic's parser binding (`SessionManager::parserBindingForObjectTopic`); empty when its entries are
   /// canonical bytes.
   using ParserLookup = std::function<SessionManager::ParserBinding(ObjectTopicId)>;
@@ -64,9 +77,9 @@ class InputStager {
   };
   struct Input {
     std::string alias;  ///< `recipe.inputs[i]`: the name the script reads
-    /// A scalar value copied at staging, an entry to decode (an upstream's output is its ring entry), or an object
-    /// an override supplied.
-    std::variant<double, Entry, Object> value;
+    /// A scalar value (a number or a string) copied at staging, an entry to decode (an upstream's output is its ring
+    /// entry), or an object an override supplied.
+    std::variant<double, std::string, Entry, Object> value;
     Timestamp resolved = 0;  ///< the time of the sample it resolved to (a finding's real stamp)
   };
   struct Staged {
@@ -103,18 +116,18 @@ class InputStager {
 
   /// GUI thread. Resolves every input of `node` at `t` and builds the request's cache key (§10) under
   /// `epoch`, the dataset's: an object topic by the identity of its entry at or before `t` and of its parser
-  /// (nothing is fetched), a scalar by its sample, copied; an upstream output by its ring entry in the
-  /// newest result at or before `t` (`ResultHistory::resultAt`), compared by the result's stamp, so a pinned
-  /// finding is an input only from its real stamp (decided 2026-10-18). Error `on-demand: missing input '<alias>'` when
-  /// an input has nothing at or before `t`, followed by `: <reason>` when it is an upstream output that was unavailable
-  /// (D6, D25: no run, the caller clears).
-  /// With `overrides`, an upstream output they cover is read from them instead (its stamp, its identity, its value).
+  /// (nothing is fetched), a scalar by its sample's row (`ScalarSample::chunk`, `row`), its value copied; an upstream
+  /// output by its ring entry in the newest result at or before `t` (`ResultHistory::resultAt`), compared by the
+  /// result's stamp, so a pinned finding is an input only from its real stamp (decided 2026-10-18). Error `on-demand:
+  /// missing input '<alias>'` when an input has nothing at or before `t` (a null string cell is nothing), followed by
+  /// `: <reason>` when it is an upstream output that was unavailable (D6, D25: no run, the caller clears). With
+  /// `overrides`, an upstream output they cover is read from them instead (its stamp, its identity, its value).
   [[nodiscard]] Expected<Staged> stage(
       const RecipeGraph::Node& node, Timestamp t, uint64_t epoch, const Overrides& overrides = {}) const;
   /// GUI thread. The newest stamp among `node`'s raw inputs (an object topic's newest entry, a scalar's newest
-  /// sample), found by the same lookups as `stage`, so nothing is fetched; an upstream's output is skipped (the
-  /// caller follows the upstream's own inputs). nullopt when none has a sample: any stamp, zero and negative
-  /// included, is one.
+  /// sample, a null string cell included: the result it clears is due), found by the same lookups as `stage`, so
+  /// nothing is fetched; an upstream's output is skipped (the caller follows the upstream's own inputs). nullopt when
+  /// none has a sample: any stamp, zero and negative included, is one.
   [[nodiscard]] std::optional<Timestamp> newestInputStamp(const RecipeGraph::Node& node) const;
   /// GUI thread. Appends to `out` the identity each raw input of `node` (upstream outputs skipped) resolves to at `t`,
   /// as `stage` keys it, or a marker for one with nothing at or before `t`; false when any had nothing.

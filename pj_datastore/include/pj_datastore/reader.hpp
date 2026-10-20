@@ -60,11 +60,12 @@ class DataReader {
       const QueryPoint& point, std::size_t column_index) const;
 
   /// Latest string value at or before query time for column `column_index`
-  /// (zero-order hold), copied into a std::string under the engine lock so no
-  /// chunk-internal dictionary memory escapes. nullopt payload when no row exists
-  /// at or before `point.t`, the column index is out of range, the value is null,
-  /// or the column is not a string column.
-  [[nodiscard]] PJ::Expected<std::optional<std::string>> latestStringAt(
+  /// (zero-order hold), its row's time and its row, copied into a std::string
+  /// under the engine lock so no chunk-internal dictionary memory escapes. nullopt
+  /// payload when no row exists at or before `point.t`, the column index is out of
+  /// range, or the column is not a string column. A null cell in the latest row is
+  /// a sample whose `value` is nullopt, without a walk back to an older row.
+  [[nodiscard]] PJ::Expected<std::optional<StringSample>> latestStringAt(
       const QueryPoint& point, std::size_t column_index) const;
 
   /// Create a series view over one numeric/bool topic column. The returned

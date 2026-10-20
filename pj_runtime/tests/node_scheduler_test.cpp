@@ -30,7 +30,6 @@
 #include "on_demand_test_utils.h"
 #include "pj_base/builtin/builtin_object_codec.hpp"
 #include "pj_base/sdk/platform.hpp"
-#include "pj_datastore/reader.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/OnDemandService.h"
@@ -72,8 +71,8 @@ std::vector<uint8_t> canonicalCloud(size_t points) {
 
 using test::FakeRun;
 
-/// One dataset: the object topics `cloud` (canonical bytes) and `lidar` (raw points behind a parser), and the
-/// scalar series `threshold`. The service runs the fake unless built with the real Luau run.
+/// One dataset: the object topics `cloud` (canonical bytes) and `lidar` (raw points behind a parser), the scalar
+/// series `threshold` and the string topic `state`. The service runs the fake unless built with the real Luau run.
 struct Fixture {
   explicit Fixture(
       std::size_t budget_bytes = 8 * InFlightBudget::kRunBytes, bool real_run = false,
@@ -83,6 +82,7 @@ struct Fixture {
     cloud = store.registerTopic({dataset, "cloud", ""}).value();
     lidar = store.registerTopic({dataset, "lidar", ""}).value();
     threshold = writer.registerScalarSeries(dataset, "threshold", NumericType::kFloat64).value();
+    status_topic = test::registerStringTopic(writer, dataset, "state");
     lidar_parser = std::make_shared<test::RawPointsParser>(probe);
     EXPECT_TRUE(lidar_parser->bindSchema("raw_points", {}).has_value());
     service = makeService(real_run, limits);
@@ -96,23 +96,17 @@ struct Fixture {
         return std::vector<RecipeGraph::InputCandidate>{
             {dataset, sdk::BuiltinObjectType::kPointCloud, std::string(input)}};
       }
-      if (input == "threshold") {
-        return std::vector<RecipeGraph::InputCandidate>{{dataset, sdk::BuiltinObjectType::kNone, "threshold"}};
+      if (input == "threshold" || input == "state") {
+        return std::vector<RecipeGraph::InputCandidate>{{dataset, sdk::BuiltinObjectType::kNone, std::string(input)}};
       }
       return std::vector<RecipeGraph::InputCandidate>{};
     };
     services.scalars =
         [this](DatasetId in, std::string_view name, Timestamp t) -> std::optional<InputStager::ScalarSample> {
-      if (in != dataset || name != "threshold") {
+      if (in != dataset || (name != "threshold" && name != "state")) {
         return std::nullopt;
       }
-      const DataReader reader(engine);
-      auto values = reader.series(threshold.topic_id, 0);
-      const auto sample = values ? values->sampleAtOrBeforeTime(t) : std::nullopt;
-      if (!sample) {
-        return std::nullopt;
-      }
-      return InputStager::ScalarSample{threshold.topic_id, 0, sample->timestamp, sample->value};
+      return InputStager::sampleAt(engine, name == "state" ? status_topic : threshold.topic_id, 0, t);
     };
     services.parsers = [this](ObjectTopicId topic) {
       return topic == lidar ? SessionManager::ParserBinding{lidar_parser.get(), probe.topic_lock, lidar_parser}
@@ -138,6 +132,10 @@ struct Fixture {
   }
   void pushThreshold(Timestamp t, double value) {
     writer.appendScalar(threshold, t, value);
+    EXPECT_FALSE(engine.commitChunks(writer.flushAll()).empty());
+  }
+  void pushState(Timestamp t, std::string_view value) {
+    test::appendString(writer, status_topic, t, value);
     EXPECT_FALSE(engine.commitChunks(writer.flushAll()).empty());
   }
   void request(std::string_view key, Timestamp t) {
@@ -182,6 +180,7 @@ struct Fixture {
   ObjectTopicId cloud;
   ObjectTopicId lidar;
   ScalarSeriesHandle threshold;
+  TopicId status_topic = 0;  ///< the string topic `state`
   test::ParseProbe probe;
   std::shared_ptr<test::RawPointsParser> lidar_parser;
   std::shared_ptr<const pj::tf::TransformSnapshot> tf;
@@ -746,6 +745,29 @@ TEST(NodeSchedulerTest, AScalarInputChangeRunsAgainOnTheSameCloud) {
   ASSERT_EQ(records.size(), 2u);
   EXPECT_EQ(records[0].input_points, records[1].input_points) << "the same cloud entry";
   EXPECT_EQ(fx.ring("owner/crop/cropped"), (std::vector<Timestamp>{10 * kSec, 19 * kSec}));
+}
+
+// CUR-04 with a string: a recorded state that changes runs the node again on the same cloud, and the run reads the
+// state as a string.
+TEST(NodeSchedulerTest, AStringStateChangeReEvaluatesWithoutANewCloud) {
+  Fixture fx;
+  fx.pushCloud(10 * kSec);
+  fx.pushState(10 * kSec, "idle");
+  fx.install(recipe("annotate", {"cloud", "state"}));
+  fx.request("owner/annotate", 20 * kSec);
+  fx.settle();
+  fx.request("owner/annotate", 20 * kSec);
+  fx.settle();
+  EXPECT_EQ(fx.fake.finished(), 1) << "an unchanged state is a hit";
+  fx.pushState(19 * kSec, "moving");
+  fx.request("owner/annotate", 20 * kSec);
+  fx.settle();
+  const auto records = fx.fake.records();
+  ASSERT_EQ(records.size(), 2u);
+  EXPECT_EQ(records[0].input_points, records[1].input_points) << "the same cloud entry";
+  EXPECT_EQ(records[0].strings, std::vector<std::string>{"idle"});
+  EXPECT_EQ(records[1].strings, std::vector<std::string>{"moving"});
+  EXPECT_EQ(fx.ring("owner/annotate/cropped"), (std::vector<Timestamp>{10 * kSec, 19 * kSec}));
 }
 
 // The run reads the TF snapshot taken when it was submitted, not a later one; a run that read the tree serves only

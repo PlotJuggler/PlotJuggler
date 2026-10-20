@@ -114,13 +114,13 @@ AppSession::AppSession(QString extensions_dir, DiagnosticSink sink, StaticPlugin
       topic_demand_tracker_.get(), &TopicDemandTracker::activeTopicsChanged, &batch_engine,
       &BatchEngine::demandChanged);
 
-  // On-demand recipes (docs/derived_objects/ARCHITECTURE.md §8) read scalar series through the catalog, follow the
-  // playhead while something displays one of their outputs, and are requested where the cursor is parked when they
-  // are installed or become displayed; a finding, at its pin, once per install. Connected before the scene docks'
-  // own slots, so a request precedes the docks' read of the same tick.
+  // On-demand recipes (docs/derived_objects/ARCHITECTURE.md §8) read scalar series, strings included (D4), through the
+  // catalog, follow the playhead while something displays one of their outputs, and are requested where the cursor is
+  // parked when they are installed or become displayed; a finding, at its pin, once per install. Connected before the
+  // scene docks' own slots, so a request precedes the docks' read of the same tick.
   session_manager_->setScalarSeriesLookup(
       [this](DatasetId dataset, const std::string& name) -> std::optional<std::pair<TopicId, std::size_t>> {
-        const std::optional<ScalarFieldPayload> scalar = catalog_model_->findScalarForMarkerKey(dataset, name);
+        const std::optional<ScalarFieldPayload> scalar = catalog_model_->findScalarForMarkerKey(dataset, name, true);
         if (!scalar) {
           return std::nullopt;
         }
@@ -213,7 +213,7 @@ void AppSession::demandOnDemandRawInputs(DatasetId dataset) {
   for (const RecipeGraph::Binding& input : session_manager_->onDemandService().displayedRawInputs(dataset)) {
     if (input.object_type != sdk::BuiltinObjectType::kNone) {
       topics.push_back(QString::fromStdString(input.name));
-    } else if (const auto scalar = catalog_model_->findScalarForMarkerKey(dataset, input.name)) {
+    } else if (const auto scalar = catalog_model_->findScalarForMarkerKey(dataset, input.name, true)) {
       if (const auto metadata = reader.getMetadata(scalar->topic_id)) {
         topics.push_back(QString::fromStdString(metadata->name));
       }

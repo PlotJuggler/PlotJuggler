@@ -12,6 +12,7 @@
 #include <QHash>
 #include <QLoggingCategory>
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <nlohmann/json.hpp>
@@ -271,9 +272,9 @@ struct CatalogModel::Impl {
 
   SessionManager* session = nullptr;
   ItemMap items;
-  // findScalarForMarkerKey's answers found so far, by dataset then key; cleared with every change of `items`, before
-  // any notification of it, so no slot reads a stale one.
-  tsl::robin_map<DatasetId, tsl::robin_map<std::string, ScalarFieldPayload>> scalar_lookups;
+  // findScalarForMarkerKey's answers found so far, by dataset, then `strings_too`, then key; cleared with every change
+  // of `items`, before any notification of it, so no slot reads a stale one.
+  tsl::robin_map<DatasetId, std::array<tsl::robin_map<std::string, ScalarFieldPayload>, 2>> scalar_lookups;
   // Datasets hidden by clearAll: rebuildFromDatastore skips them entirely.
   // A reload of the same file creates a fresh DatasetId not in this set, so
   // the curves come back.
@@ -349,8 +350,8 @@ std::optional<CatalogItem> CatalogModel::objectTopicItem(ObjectTopicId topic_id)
 }
 
 std::optional<ScalarFieldPayload> CatalogModel::findScalarForMarkerKey(
-    DatasetId dataset, const std::string& key) const {
-  auto& found_in_dataset = impl_->scalar_lookups[dataset];
+    DatasetId dataset, const std::string& key, bool strings_too) const {
+  auto& found_in_dataset = impl_->scalar_lookups[dataset][strings_too ? 1 : 0];
   if (const auto hit = found_in_dataset.find(key); hit != found_in_dataset.end()) {
     return hit->second;
   }
@@ -363,7 +364,7 @@ std::optional<ScalarFieldPayload> CatalogModel::findScalarForMarkerKey(
     if (item.dataset_id != dataset || !key_text.startsWith(item.topic_name)) {
       continue;
     }
-    if (const ScalarFieldPayload* scalar = markerSeriesField(item, key);
+    if (const ScalarFieldPayload* scalar = markerSeriesField(item, key, strings_too);
         scalar != nullptr && (first == nullptr || catalogItemLess(item, *first))) {
       first = &item;
       found = scalar;
@@ -509,10 +510,10 @@ std::optional<QString> CatalogModel::stringValueAt(const QString& key, double di
   const DataReader reader(impl_->session->dataEngine());
   const auto value_or =
       reader.latestStringAt(QueryPoint{.topic_id = scalar->topic_id, .t = raw_ns}, scalar->column_index);
-  if (!value_or.has_value() || !value_or->has_value()) {
-    return std::nullopt;  // read error, or no row at/before the query time
+  if (!value_or.has_value() || !value_or->has_value() || !(*value_or)->value) {
+    return std::nullopt;  // read error, no row at/before the query time, or a null cell
   }
-  return QString::fromStdString(**value_or);
+  return QString::fromStdString(*(*value_or)->value);
 }
 
 std::vector<CurveDescriptor> CatalogModel::curves() const {

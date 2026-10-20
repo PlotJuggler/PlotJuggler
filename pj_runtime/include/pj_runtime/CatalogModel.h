@@ -247,12 +247,14 @@ class CatalogModel : public QObject {
   [[nodiscard]] std::optional<CatalogItem> objectTopicItem(ObjectTopicId topic_id) const;
 
   /// The scalar field `key` names in `dataset` (`markerSeriesField`'s naming), or
-  /// nullopt. Walks the catalog in place, without the copy and sort `items()` makes,
-  /// and remembers what it found until the catalog's items next change (an on-demand
-  /// recipe asks at every request). Several matches resolve to the first in `items()`
-  /// order. GUI thread only.
+  /// nullopt: a plottable one, or with `strings_too` a string one as well (an
+  /// on-demand input reads strings, a marker rule never). Walks the catalog in place,
+  /// without the copy and sort `items()` makes, and remembers what it found, per
+  /// `strings_too`, until the catalog's items next change (an on-demand recipe asks
+  /// at every request). Several matches resolve to the first in `items()` order. GUI
+  /// thread only.
   [[nodiscard]] std::optional<ScalarFieldPayload> findScalarForMarkerKey(
-      DatasetId dataset, const std::string& key) const;
+      DatasetId dataset, const std::string& key, bool strings_too = false) const;
 
   /// Dataset owning `topic_name`, or 0 when unknown or present in several datasets.
   /// Multiple fields of one topic still identify the same dataset.

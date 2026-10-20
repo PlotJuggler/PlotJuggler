@@ -29,6 +29,7 @@
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_base/builtin/scene_entities.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_datastore/writer.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/NodeScheduler.h"
 #include "pj_runtime/OnDemandService.h"
@@ -37,6 +38,31 @@
 namespace PJ::test {
 
 inline constexpr size_t kPointStride = 16;
+
+/// Registers in `dataset` a topic `name` whose one field, `state`, is a string, as a parser's string field is.
+inline TopicId registerStringTopic(DataWriter& writer, DatasetId dataset, const std::string& name) {
+  const auto schema =
+      writer.registerSchema(name + "/schema", makeStruct("state", {makePrimitive("state", PrimitiveType::kString)}));
+  EXPECT_TRUE(schema.has_value()) << schema.error();
+  TopicDescriptor descriptor;
+  descriptor.name = name;
+  descriptor.schema_id = schema ? *schema : SchemaId{};
+  const auto topic = writer.registerTopic(dataset, descriptor);
+  EXPECT_TRUE(topic.has_value()) << topic.error();
+  return topic ? *topic : TopicId{};
+}
+/// Writes `value` into `topic`'s string field at `t`; the caller commits.
+inline void appendString(DataWriter& writer, TopicId topic, Timestamp t, std::string_view value) {
+  EXPECT_TRUE(writer.beginRow(topic, t).has_value());
+  writer.set(topic, 0, value);
+  EXPECT_TRUE(writer.finishRow(topic).has_value());
+}
+/// Writes a row at `t` whose string field is null; the caller commits.
+inline void appendNullString(DataWriter& writer, TopicId topic, Timestamp t) {
+  EXPECT_TRUE(writer.beginRow(topic, t).has_value());
+  writer.setNull(topic, 0);
+  EXPECT_TRUE(writer.finishRow(topic).has_value());
+}
 
 /// A cloud of 16-byte float points (x, y, z, intensity) over `bytes`, aliasing them, in `frame`, carrying
 /// the stamp its script left.
@@ -174,8 +200,9 @@ class FakeRun {
     std::thread::id thread;
     const uint8_t* input_points = nullptr;  ///< the first cloud input's points
     std::shared_ptr<const pj::tf::TransformSnapshot> tf;
-    bool cancelled = false;  ///< seen once the run was let through
-    bool slow = false;       ///< its params mention "slow"
+    bool cancelled = false;            ///< seen once the run was let through
+    bool slow = false;                 ///< its params mention "slow"
+    std::vector<std::string> strings;  ///< its string inputs, in input order
   };
 
   bool gated = false;                       ///< each run waits for `allow`
@@ -247,7 +274,13 @@ class FakeRun {
         input != nullptr ? input->data.data() : nullptr,
         options.tf,
         cancelled(),
-        slow};
+        slow,
+        {}};
+    for (const scripting::NamedValue& value : inputs) {
+      if (const auto* string = std::get_if<std::string>(&value.value)) {
+        record.strings.push_back(*string);
+      }
+    }
     {
       const std::lock_guard<std::mutex> lock(mutex_);
       records_.push_back(record);

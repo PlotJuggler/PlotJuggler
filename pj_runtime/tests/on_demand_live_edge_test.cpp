@@ -221,6 +221,69 @@ TEST(OnDemandLiveEdgeTest, ScalarSideInputAdvancesTheLiveResultWithoutANewCloud)
   EXPECT_EQ(fx.ring("owner/scaled/cropped"), (std::vector<Timestamp>{20 * kSec, 25 * kSec})) << "paused";
 }
 
+/// A displayed recipe reading the cloud and the string state of `/robot/status`, and one reading the state alone,
+/// both shown at the live edge with the state "idle" at 20 s; `writer` appends to `status`.
+struct StringStateFixture : LiveFixture {
+  StringStateFixture() {
+    status = test::registerStringTopic(writer, ds, "/robot/status");
+    test::appendString(writer, status, 20 * kSec, "idle");
+    EXPECT_FALSE(manager.commitChunks(writer.flushAll()).empty());
+    session.catalogModel().rebuildFromDatastore();
+    install(recipe("annotate", {"cloud", "/robot/status/state"}));
+    install(recipe("label", {"/robot/status/state"}));
+    display("owner/annotate/cropped");
+    display("owner/label/cropped");
+  }
+  /// A row at `t` whose state is null, committed.
+  void appendNullState(Timestamp t) {
+    test::appendNullString(writer, status, t);
+    EXPECT_FALSE(manager.commitChunks(writer.flushAll()).empty());
+  }
+  /// Both recipes were requested at `t`, found the state missing there and show nothing.
+  void expectClearedAt(Timestamp t) const {
+    for (const std::string key : {"owner/annotate", "owner/label"}) {
+      EXPECT_EQ(state(key)->requested_t, t) << key;
+      EXPECT_EQ(state(key)->status, Status::kMissingInput) << key << ": " << state(key)->detail;
+      EXPECT_EQ(shown(key + "/cropped", t).width, 0u) << key << ": the previous state's result is not shown";
+    }
+  }
+
+  DataWriter writer = manager.dataEngine().createWriter();
+  TopicId status = 0;
+};
+
+// D6: a null state arriving on the live stream is a missing input at its time: the result the previous state made is
+// cleared, also for a recipe that reads the string alone, though no cloud came with it.
+TEST(OnDemandLiveEdgeTest, ANullStringRowClearsTheLiveResult) {
+  StringStateFixture fx;
+  fx.tick();
+  ASSERT_EQ(fx.state("owner/annotate")->status, Status::kReady) << fx.state("owner/annotate")->detail;
+  ASSERT_EQ(fx.state("owner/label")->status, Status::kReady) << fx.state("owner/label")->detail;
+
+  fx.appendNullState(30 * kSec);
+  fx.tick();
+  fx.expectClearedAt(30 * kSec);
+}
+
+// The same null arriving while the transport is paused is seen when it follows the live edge again.
+TEST(OnDemandLiveEdgeTest, ANullStringRowArrivingWhilePausedClearsTheResultOnResume) {
+  StringStateFixture fx;
+  fx.tick();
+  ASSERT_EQ(fx.state("owner/label")->status, Status::kReady) << fx.state("owner/label")->detail;
+  PlaybackEngine& playback = fx.session.playbackEngine();
+  playback.setHoldAtRangeMax(true);
+  fx.seek(5 * kSec);  // paused, scrubbed back
+
+  fx.appendNullState(30 * kSec);
+  const std::vector<TopicId> topics = fx.manager.createReader().listTopics(fx.ds);
+  fx.manager.notifyIngest(QVector<TopicId>(topics.begin(), topics.end()), /*live=*/false, fx.ds);
+  fx.settle();
+  playback.play();
+  fx.settle();
+  fx.expectClearedAt(30 * kSec);
+  playback.pause();
+}
+
 // DAG-09: a displayed reader of an upstream nothing displays follows its upstream's raw inputs.
 TEST(OnDemandLiveEdgeTest, LiveIngestReachesDemandedDescendants) {
   LiveFixture fx;

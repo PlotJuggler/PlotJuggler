@@ -328,23 +328,31 @@ Expected<std::shared_ptr<GridRunner::Job>> GridRunner::submit(
         " input change instants; evaluate a shorter one");
   };
   std::set<std::string> objects;
-  std::set<std::string> scalars;
+  std::map<std::string, std::string> scalars;  // series name -> the alias a step reads it by
   for (const Job::Step& step : job->chain) {
-    for (const RecipeGraph::Binding& binding : step.node.bindings) {
-      if (binding.upstream.empty()) {
-        (binding.object_type == sdk::BuiltinObjectType::kNone ? scalars : objects).insert(binding.name);
+    for (std::size_t index = 0; index < step.node.bindings.size(); ++index) {
+      const RecipeGraph::Binding& binding = step.node.bindings[index];
+      if (binding.upstream.empty() && binding.object_type == sdk::BuiltinObjectType::kNone) {
+        scalars.emplace(binding.name, step.node.recipe.inputs[index]);
+      } else if (binding.upstream.empty()) {
+        objects.insert(binding.name);
       }
     }
   }
   Timestamp from = start;  // past `end`: the gap covers the whole window, and the grid is empty
   std::vector<std::vector<Timestamp>> scalar_instants;
-  for (const std::string& name : scalars) {
+  for (const auto& [name, alias] : scalars) {
     if (!hooks_.scalar_changes) {
       break;
     }
     ScalarChanges changes = hooks_.scalar_changes(dataset, name, start, end, kMaxGridInstants);
     if (changes.over_limit) {
       return refuse();
+    }
+    if (changes.string_series && end > start) {
+      return unexpected(
+          "on-demand: input '" + alias +
+          "' is a string series, whose changes a window evaluation cannot read yet; evaluate an instant");
     }
     from = std::max(from, changes.first.value_or(start));
     scalar_instants.push_back(std::move(changes.instants));
