@@ -18,6 +18,7 @@
 #include <unordered_map>
 
 #include "LoadInput.h"
+#include "pj_base/diagnostic_sink.hpp"
 #include "pj_base/types.hpp"
 #include "pj_runtime/SessionManager.h"
 
@@ -175,6 +176,13 @@ class FileLoader : public QObject {
       QWidget* parent, const QString& caption, const QString& dir, const QString& filter, bool multi)>;
   void setFilePicker(FilePicker picker) {
     file_picker_ = std::move(picker);
+  }
+
+  // Load failures (data-source-load-failed) and the loading plugin's warnings/errors
+  // (data-source-message) go here; unset = console log only. MainWindow passes its
+  // QtDiagnosticBridge sink. A load already in flight keeps the sink its hosts got.
+  void setDiagnosticSink(DiagnosticSink sink) {
+    diagnostic_sink_ = std::move(sink);
   }
 
   // Programmatic entry point. ENQUEUES the load and returns immediately; the
@@ -480,10 +488,15 @@ class FileLoader : public QObject {
   // load) — then only the count is tracked and no dialog is shown.
   void reportLoadWarning(QWidget* parent, const QString& reason);
 
+  // Logs the failure (`log_text` when given, else `reason`) and reports one
+  // data-source-load-failed error (never for a user cancel). GUI thread.
+  void logLoadFailure(const QString& identity, const QString& reason, const QString& log_text = {}) const;
+
   SessionManager& session_;
   ExtensionCatalogService& extensions_;
   CatalogModel& catalog_;
   FilePicker file_picker_;
+  DiagnosticSink diagnostic_sink_;
   std::shared_ptr<BrowserFileStore> browser_file_store_;
 #ifdef PJ_TARGET_WASM
   QHash<QString, QString> browser_content_sha256_;

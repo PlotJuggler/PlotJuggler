@@ -1507,6 +1507,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 #ifdef PJ_WITH_SCENE3D
   file_loader_->setTransformService(transform_service_.get());
 #endif
+  // Load failures and the loading plugins' warnings/errors reach the bell and
+  // --dump-diagnostics, not only the console.
+  file_loader_->setDiagnosticSink(diagnosticSink());
   // Passing the MainWindow as the metrics source primes the file dialog's
   // toolbar icon size and keeps it in step via chromeMetricsChanged. Injected
   // here so FileLoader itself never links MainWindow (keeps it testable).

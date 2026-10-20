@@ -61,6 +61,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/DataProcessorService.h
     include/pj_runtime/HistoryScope.h
     include/pj_runtime/DataSourceRuntimeHost.h
+    include/pj_runtime/DiagnosticEmit.h
     include/pj_runtime/DiagnosticHistory.h
     include/pj_runtime/ExtensionCatalogService.h
     include/pj_runtime/HttpGet.h
@@ -243,6 +244,8 @@ if(PJ_BUILD_TESTS)
         tests/data_source_runtime_host_stream_swap_test.cpp
         # M5: notify_available_topics threading + a-priori classification fallback.
         tests/data_source_runtime_host_advertise_test.cpp
+        # report_message → DiagnosticSink forwarding (levels, label, reporting thread).
+        tests/data_source_runtime_host_message_test.cpp
         # Route-aware parser selection (SDK 0.22): claim admission, lazy exact-claim
         # discovery, per-route winners, divergent-winner bindings, and the legacy
         # fallback for encodings outside the SDK claim registry.

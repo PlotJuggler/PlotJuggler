@@ -21,6 +21,7 @@
 #include "pj_datastore/engine.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
+#include "pj_runtime/DiagnosticEmit.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/ObjectIngestTap.h"
 #include "pj_runtime/ServiceRegistration.h"
@@ -461,18 +462,42 @@ bool DataSourceRuntimeHost::fail(PJ_error_t* out_error, const char* message) noe
 // ---------------------------------------------------------------------------
 
 void DataSourceRuntimeHost::cbReportMessage(
-    void* /*ctx*/, PJ_data_source_message_level_t level, PJ_string_view_t message) noexcept {
+    void* ctx, PJ_data_source_message_level_t level, PJ_string_view_t message) noexcept {
+  auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
   const std::string_view text(message.data, message.size);
+  std::optional<DiagnosticLevel> forward;
   switch (level) {
     case PJ_DATA_SOURCE_MESSAGE_ERROR:
       qCWarning(lcIngest) << "[plugin error]" << QString::fromUtf8(text.data(), static_cast<int>(text.size()));
+      forward = DiagnosticLevel::kError;
       break;
     case PJ_DATA_SOURCE_MESSAGE_WARNING:
       qCWarning(lcIngest) << "[plugin warn]" << QString::fromUtf8(text.data(), static_cast<int>(text.size()));
+      forward = DiagnosticLevel::kWarning;
       break;
     default:
       qCInfo(lcIngest) << "[plugin]" << QString::fromUtf8(text.data(), static_cast<int>(text.size()));
       break;
+  }
+  if (!forward || !self->diagnostic_sink_) {
+    return;
+  }
+  const auto n = self->forwarded_messages_.fetch_add(1, std::memory_order_relaxed);
+  if (n > kMaxForwardedMessages) {
+    return;  // Console log only past the cap (one notice already sent).
+  }
+  try {
+    if (n == kMaxForwardedMessages) {
+      emitDiagnosticTo(
+          self->diagnostic_sink_, DiagnosticLevel::kWarning, self->diagnostic_source_, "data-source-message-limit",
+          self->diagnostic_subject_ + ": further plugin messages are in the log only");
+      return;
+    }
+    emitDiagnosticTo(
+        self->diagnostic_sink_, *forward, self->diagnostic_source_, "data-source-message",
+        self->diagnostic_subject_ + ": " + std::string(text));
+  } catch (...) {
+    // noexcept C-ABI slot: a failing sink costs the bell entry, never the import.
   }
 }
 

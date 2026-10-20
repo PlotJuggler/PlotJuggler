@@ -163,6 +163,19 @@ The row itself carries the keep-or-discard choice (✕ keeps what arrived, bin d
 
 `IngestProgressController` is the policy layer wiring `SessionManager`'s dataset-scoped ingest lifecycle signals (`ingestBegan` / `ingestProgressed` / `ingestEnded`) to `CurveTreeView`'s plain-typed progress decoration (`setDatasetProgress`). The view-facing row key IS the ingest id (`IngestToken::id`), so a click on a row resolves back to its ingest by lookup and the two identities cannot drift apart. The controller owns the row label (the DATASET's name once resolvable, kept sticky so a discard that deletes the dataset cannot rename the row mid-flight; the producer's progress title — "Importing MCAP" — is only the pre-resolution fallback), the 1-second completion-state linger, the 3x ~180ms error flash, immediate retirement on cancellation (no linger: the user stopped it, and a discard has deleted the dataset the row described), ghost-row lifetime (transient progress-only rows for failed/discarded loads whose catalog entries vanished), and an injectable timer factory for headless tests. Both `FileLoader` and `HeadlessDescriptorProviderSession` produce ingest tokens on the same channel. The title-bar `IngestProgressWidget` strip is retained and wired, but suppressed behind a single `constexpr kShowTitleBarIngestStrip = false` at its show seam — re-enabling the title bar is one-line.
 
+## Load diagnostics
+
+`FileLoader::setDiagnosticSink` is wired by `MainWindow` to the bridge sink.
+`data-source-load-failed` (error, source "File Loader") is emitted once per failed
+load and once per failed fan-out entry, none for the all-failed aggregate, and
+never for a reject, cancel, discard or shutdown. `data-source-message` carries the
+loading plugin's warnings/errors (source = plugin display name, message prefixed
+with the file or entry name), capped at 20 per load; the next message yields one
+`data-source-message-limit` warning and the rest stay in the log. The WASM
+browser-picker staging failure is reported too. The same cause may appear under both ids. A missing
+layout data file is still reported before FileLoader runs, as
+Layout/data-source-missing. Streaming sources are not wired.
+
 ## Browser persistence boundary
 
 Native builds retain their normal `QSettings` behavior. WASM redirects ordinary

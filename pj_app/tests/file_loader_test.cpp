@@ -43,9 +43,11 @@
 #include <vector>
 
 #include "FileLoader.h"
+#include "pj_base/diagnostic_sink.hpp"
 #include "pj_base/sdk/data_source_plugin_base.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/reader.hpp"
+#include "pj_marketplace/qt_diagnostic_bridge.hpp"
 #include "pj_plugins/sdk/object_ingest_policy.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
@@ -293,7 +295,14 @@ class FanoutProbeSource final : public PJ::DataSourcePluginBase {
     // option, this failure happens after progressStart, so FileLoader has
     // already minted an ingest token that must be ended with kFailed.
     if (suffix_ == "fail") {
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, "probe error");
       return fail("configured failure after progress start");
+    }
+
+    // "warn" reports an info and a warning, then imports normally.
+    if (suffix_ == "warn") {
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, "probe info");
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, "probe warning");
     }
 
     auto topic = writeHost().ensureTopic("fanout_probe/value");
@@ -3878,6 +3887,171 @@ TEST_F(MessageBoxMarshalTest, ShutdownAnswersQueuedWorkerMessageWithMinusOne) {
       << "the shutdown gate must answer the worker -1 (askContinue == false)";
   EXPECT_EQ(std::count(markers.begin(), markers.end(), std::string("continued")), 0)
       << "the worker must not have been told to continue during shutdown";
+}
+
+// ---------------------------------------------------------------------------
+// Load diagnostics: load failures (data-source-load-failed) and the loading
+// plugin's warnings/errors (data-source-message) reach the DiagnosticSink.
+// ---------------------------------------------------------------------------
+
+// Owns a bridge and records everything it re-emits. Declare it in the test body
+// so it dies before the fixture's loader.
+struct DiagnosticCapture {
+  struct Entry {
+    int level = 0;
+    QString source;
+    QString id;
+    QString message;
+  };
+
+  DiagnosticCapture() {
+    QObject::connect(
+        &bridge, &PJ::QtDiagnosticBridge::diagnosticReported, &bridge,
+        [this](int level, const QString& source, const QString& id, const QString& message) {
+          entries.push_back(Entry{level, source, id, message});
+        });
+  }
+
+  [[nodiscard]] std::vector<Entry> withId(const QString& id) const {
+    std::vector<Entry> out;
+    for (const Entry& entry : entries) {
+      if (entry.id == id) {
+        out.push_back(entry);
+      }
+    }
+    return out;
+  }
+
+  PJ::QtDiagnosticBridge bridge;
+  std::vector<Entry> entries;
+};
+
+TEST_F(FileLoaderTest, PluginWarningDuringImportReachesTheDiagnosticSink) {
+  ASSERT_TRUE(installFanoutProbe());
+  DiagnosticCapture capture;
+  loader_->setDiagnosticSink(capture.bridge.sink());
+
+  const QString path = makeMockFile(u"warn.fanoutprobe"_s);
+  ASSERT_TRUE(loadAndWait(path, fanoutProbeHints(uR"({"display_suffix":"warn"})"_s)));
+  ASSERT_TRUE(pj_app_test::pumpUntil([&]() { return !capture.withId(u"data-source-message"_s).empty(); }));
+  pj_app_test::flushQueuedEvents();
+
+  const auto messages = capture.withId(u"data-source-message"_s);
+  ASSERT_EQ(messages.size(), 1u) << "only the warning is forwarded, never the info";
+  EXPECT_EQ(messages[0].level, static_cast<int>(PJ::DiagnosticLevel::kWarning));
+  EXPECT_EQ(messages[0].source, u"Fanout Probe Source"_s);
+  EXPECT_EQ(messages[0].message, u"warn.fanoutprobe: probe warning"_s);
+  EXPECT_TRUE(capture.withId(u"data-source-load-failed"_s).empty());
+}
+
+// The probe cannot express a missing file, so its "fail" suffix stands in: a
+// start failure that also reports an error through report_message.
+TEST_F(FileLoaderTest, StartFailureReportsExactlyOneLoadFailed) {
+  ASSERT_TRUE(installFanoutProbe());
+  DiagnosticCapture capture;
+  loader_->setDiagnosticSink(capture.bridge.sink());
+
+  const QString path = makeMockFile(u"fail.fanoutprobe"_s);
+  EXPECT_FALSE(loadAndWait(path, fanoutProbeHints(uR"({"display_suffix":"fail"})"_s)));
+  ASSERT_TRUE(pj_app_test::pumpUntil([&]() {
+    return !capture.withId(u"data-source-load-failed"_s).empty() && !capture.withId(u"data-source-message"_s).empty();
+  }));
+  pj_app_test::flushQueuedEvents();
+
+  const auto failed = capture.withId(u"data-source-load-failed"_s);
+  ASSERT_EQ(failed.size(), 1u);
+  EXPECT_EQ(failed[0].level, static_cast<int>(PJ::DiagnosticLevel::kError));
+  EXPECT_EQ(failed[0].source, u"File Loader"_s);
+  EXPECT_TRUE(failed[0].message.contains(path)) << failed[0].message.toStdString();
+  EXPECT_TRUE(failed[0].message.contains(u"configured failure after progress start"_s))
+      << failed[0].message.toStdString();
+
+  const auto messages = capture.withId(u"data-source-message"_s);
+  ASSERT_EQ(messages.size(), 1u);
+  EXPECT_EQ(messages[0].level, static_cast<int>(PJ::DiagnosticLevel::kError));
+  EXPECT_EQ(messages[0].message, u"fail.fanoutprobe: probe error"_s);
+}
+
+TEST_F(FileLoaderTest, UnhandledExtensionRejectionReportsExactlyOneLoadFailed) {
+  DiagnosticCapture capture;
+  loader_->setDiagnosticSink(capture.bridge.sink());
+
+  const QString path = makeMockFile(u"rejected.unhandledext"_s);
+  EXPECT_FALSE(loadAndWait(path, loadHints()));
+  ASSERT_TRUE(pj_app_test::pumpUntil([&]() { return !capture.withId(u"data-source-load-failed"_s).empty(); }));
+  pj_app_test::flushQueuedEvents();
+
+  const auto failed = capture.withId(u"data-source-load-failed"_s);
+  ASSERT_EQ(failed.size(), 1u);
+  EXPECT_TRUE(failed[0].message.contains(path)) << failed[0].message.toStdString();
+  EXPECT_TRUE(capture.withId(u"data-source-message"_s).empty());
+}
+
+TEST_F(FileLoaderTest, UserDiscardReportsNoLoadFailed) {
+  ASSERT_TRUE(installFanoutProbe());
+  DiagnosticCapture capture;
+  loader_->setDiagnosticSink(capture.bridge.sink());
+
+  const QString path = makeMockFile(u"discard_diag.fanoutprobe"_s);
+  bool cancel_sent = false;
+  const auto cancel_connection = QObject::connect(
+      &session(), &PJ::SessionManager::ingestBegan, loader_.get(),
+      [this, &cancel_sent](PJ::IngestToken token, const QString& label, quint64) {
+        if (label != u"fanout-probe:cancel"_s || cancel_sent) {
+          return;
+        }
+        cancel_sent = true;
+        EXPECT_TRUE(session().requestCancel(token, /*keep_partial=*/false));
+        releaseFanoutProbeCancelEntry();
+      });
+  ASSERT_NE(
+      loader_->loadFileTicketed(
+          PJ::LoadInput::fromNativePath(path), nullptr, fanoutProbeHints(uR"({"display_suffix":"cancel"})"_s)),
+      0u);
+  pumpUntilIdle(*loader_);
+  QObject::disconnect(cancel_connection);
+  pj_app_test::flushQueuedEvents();
+
+  ASSERT_TRUE(cancel_sent);
+  EXPECT_TRUE(capture.withId(u"data-source-load-failed"_s).empty()) << "a user discard is not a failure";
+
+  // Positive control: a genuine start failure on the same loader is reported.
+  EXPECT_FALSE(loadWithConfig(mock_path_, uR"({"fail_start":true})"_s));
+  ASSERT_TRUE(pj_app_test::pumpUntil([&]() { return !capture.withId(u"data-source-load-failed"_s).empty(); }));
+  pj_app_test::flushQueuedEvents();
+  const auto failed = capture.withId(u"data-source-load-failed"_s);
+  ASSERT_EQ(failed.size(), 1u);
+  EXPECT_TRUE(failed[0].message.contains(mock_path_)) << failed[0].message.toStdString();
+}
+
+TEST_F(FileLoaderTest, FanoutReportsOneLoadFailedPerFailedEntryAndNoAggregate) {
+  ASSERT_TRUE(installFanoutProbe());
+  DiagnosticCapture capture;
+  loader_->setDiagnosticSink(capture.bridge.sink());
+
+  // (a) partial: one failed entry among successful siblings.
+  // Raw strings holding \" stay outside the assertion macros: MSVC rejects them as macro arguments.
+  const QString partial_fanout =
+      uR"({"__pj_fanout":["{\"display_suffix\":\"before\"}","{\"display_suffix\":\"fail\"}","{\"display_suffix\":\"after\"}"]})"_s;
+  const QString partial_path = makeMockFile(u"partial.fanoutprobe"_s);
+  ASSERT_TRUE(loadAndWait(partial_path, fanoutProbeHints(partial_fanout)));
+  ASSERT_TRUE(pj_app_test::pumpUntil([&]() { return !capture.withId(u"data-source-load-failed"_s).empty(); }));
+  pj_app_test::flushQueuedEvents();
+  {
+    const auto failed = capture.withId(u"data-source-load-failed"_s);
+    ASSERT_EQ(failed.size(), 1u);
+    EXPECT_TRUE(failed[0].message.contains(partial_path + u" (partial/fail)"_s)) << failed[0].message.toStdString();
+  }
+  capture.entries.clear();
+
+  // (b) every entry fails: one report per entry, none for the aggregate.
+  const QString all_fail_fanout =
+      uR"({"__pj_fanout":["{\"display_suffix\":\"fail\"}","{\"display_suffix\":\"fail\"}"]})"_s;
+  const QString all_path = makeMockFile(u"allfail_diag.fanoutprobe"_s);
+  EXPECT_FALSE(loadAndWait(all_path, fanoutProbeHints(all_fail_fanout)));
+  ASSERT_TRUE(pj_app_test::pumpUntil([&]() { return capture.withId(u"data-source-load-failed"_s).size() >= 2; }));
+  pj_app_test::flushQueuedEvents();
+  EXPECT_EQ(capture.withId(u"data-source-load-failed"_s).size(), 2u);
 }
 
 }  // namespace

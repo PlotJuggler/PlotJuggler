@@ -19,6 +19,7 @@
 #include "pj_base/diagnostic_sink.hpp"
 #include "pj_base/toolbox_protocol.h"
 #include "pj_plugins/host/message_parser_library.hpp"
+#include "pj_runtime/DiagnosticEmit.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/ToolboxRuntimeHost.h"
 #ifndef __EMSCRIPTEN__
@@ -37,22 +38,6 @@ namespace PJ {
     return DiagnosticLevel::kWarning;
   }
   return DiagnosticLevel::kInfo;
-}
-
-// One-call Diagnostic fill+forward for the host-side sinks (the layout-import
-// batch and the headless provider session each hand-rolled this same block).
-// No-op when the sink is unset — the zero-cost no-listener path.
-inline void emitDiagnosticTo(
-    const DiagnosticSink& sink, DiagnosticLevel level, std::string source, std::string id, std::string message) {
-  if (!sink) {
-    return;
-  }
-  Diagnostic diagnostic;
-  diagnostic.level = level;
-  diagnostic.source = std::move(source);
-  diagnostic.id = std::move(id);
-  diagnostic.message = std::move(message);
-  sink(diagnostic);
 }
 
 // ToolboxRuntimeHost::ParserIngestDeps::register_object_parser wiring. The
