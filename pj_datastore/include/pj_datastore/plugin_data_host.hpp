@@ -187,6 +187,13 @@ class DatastoreToolboxHost {
   /// object store (canonical media payloads — images, point clouds,
   /// annotations). The two are independent storage backends; toolbox
   /// plugins write into one or both via the same host fat pointer.
+  ///
+  /// raw()'s vtable also serves `acquire_catalog_snapshot_v2`: v1's scalar catalog plus
+  /// every object topic, with its dataset as `source`, the canonical `PJ::sdk::name()` of
+  /// its `builtin_object_type` ("" when unknown), its whole metadata, and the entry count
+  /// and raw time range it retains now (a derived topic's are its ring's). The scalar half
+  /// is read under the engine lock and the object half after it is released, since the
+  /// two locks never nest; the halves are therefore not atomic.
   DatastoreToolboxHost(DataEngine& engine, ObjectStore& object_store);
   ~DatastoreToolboxHost();
 

@@ -203,6 +203,18 @@ class ObjectStore {
   /// dataset's descriptors on every paint.
   void forEachTopic(
       DatasetId dataset_id, const std::function<void(ObjectTopicId, const ObjectTopicDescriptor&)>& visit) const;
+  /// What one topic physically retains now: count and [first, last] store timestamp,
+  /// read together under its series lock (0/0 when empty).
+  struct RetainedRange {
+    size_t entry_count = 0;
+    Timestamp first = 0;
+    Timestamp last = 0;
+  };
+  /// Calls `visit` for every topic of every dataset, in registration order, with what it
+  /// retains. Same rules as forEachTopic(dataset_id, visit): the store's shared lock is
+  /// held throughout, so `visit` must be cheap and must not call back into this store.
+  void forEachTopicRetained(
+      const std::function<void(ObjectTopicId, const ObjectTopicDescriptor&, const RetainedRange&)>& visit) const;
 
   // --- Write ---
 

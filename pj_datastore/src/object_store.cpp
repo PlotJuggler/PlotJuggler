@@ -149,6 +149,23 @@ void ObjectStore::forEachTopic(
   }
 }
 
+void ObjectStore::forEachTopicRetained(
+    const std::function<void(ObjectTopicId, const ObjectTopicDescriptor&, const RetainedRange&)>& visit) const {
+  std::shared_lock lock(store_mutex_);
+  for (const auto& [tid, series] : topics_) {
+    RetainedRange retained;
+    {
+      std::shared_lock series_lock(series->mutex);
+      retained.entry_count = series->ordered.size();
+      if (retained.entry_count > 0) {
+        retained.first = series->ordered.frontTimestamp();
+        retained.last = series->ordered.backTimestamp();
+      }
+    }
+    visit(tid, series->descriptor, retained);
+  }
+}
+
 // --- Write ---
 
 Status ObjectStore::pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector<uint8_t> payload) {
