@@ -26,9 +26,11 @@ add_library(pj_dialog_engine_qt STATIC
     src/pj_ui_loader.cpp
     src/chart_preview_widget.cpp
     src/chart_placeholder_overlay.hpp
+    src/host_info.hpp
     include/pj_plugins/host_qt/chart_preview_widget.hpp
     include/pj_plugins/host_qt/dialog_engine.hpp
     include/pj_plugins/host_qt/drop_event_filter.hpp
+    include/pj_plugins/host_qt/embedded_view_host.hpp
     include/pj_plugins/host_qt/panel_engine.hpp
     include/pj_plugins/host_qt/pj_ui_loader.hpp
     include/pj_plugins/host_qt/widget_adapters.hpp

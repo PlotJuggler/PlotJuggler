@@ -43,11 +43,6 @@ QString sceneKindOfWidget([[maybe_unused]] SceneDockWidget* scene) {
   return {};
 }
 
-/// The object-widget kind MainWindow builds for a tab kind.
-QString sceneWidgetKind(const QString& tab_kind) {
-  return tab_kind == u"3d"_s ? u"scene3d"_s : tab_kind == u"2d"_s ? u"scene2d"_s : QString();
-}
-
 QString typeName(sdk::BuiltinObjectType type) {
   return QString::fromUtf8(sdk::name(type));
 }
@@ -87,6 +82,10 @@ bool addToSceneDock(SceneDockWidget* scene_dock, const ObjectTopicPayload& objec
 }
 
 }  // namespace
+
+QString sceneWidgetKind(const QString& tab_kind) {
+  return tab_kind == u"3d"_s ? u"scene3d"_s : tab_kind == u"2d"_s ? u"scene2d"_s : QString();
+}
 
 SceneDockWidget* sceneDockOf(PlotDocker* docker) {
   DockWidget* dock = docker == nullptr ? nullptr : docker->plotAt(0);
@@ -147,22 +146,44 @@ Expected<std::string> PluginSceneViewsController::viewConfig(PlotDocker* docker)
 
 Status PluginSceneViewsController::attachTopic(
     PlotDocker* docker, const QString& topic, const QString& dataset_source) {
+  const Expected<ObjectTopicId> attached =
+      attach(sceneDockOf(docker), topic, dataset_source, /*replace_background=*/true);
+  if (!attached) {
+    return unexpected(attached.error());
+  }
+  return okStatus();
+}
+
+Expected<ObjectTopicId> PluginSceneViewsController::attachEmbeddedTopic(
+    SceneDockWidget* scene_dock, const QString& topic, const QString& dataset_source) {
+  return attach(scene_dock, topic, dataset_source, /*replace_background=*/false);
+}
+
+Expected<ObjectTopicId> PluginSceneViewsController::attach(
+    SceneDockWidget* scene_dock, const QString& topic, const QString& dataset_source, bool replace_background) {
   const Expected<ObjectTopicPayload> resolved = resolveObjectTopic(catalog_, topic, dataset_source);
   if (!resolved) {
     return unexpected(resolved.error());
   }
-  SceneDockWidget* scene_dock = sceneDockOf(docker);
   if (scene_dock == nullptr) {
     return unexpected("the tab has no scene widget to attach a topic to");
   }
   if (scene_dock->layerFor(resolved->object_topic_id) != nullptr) {
-    return okStatus();  // already attached: success, per the ABI contract
+    return resolved->object_topic_id;  // already attached: success, per the ABI contract
   }
 #ifdef PJ_WITH_SCENE2D
-  if (qobject_cast<Scene2DDockWidget*>(scene_dock) != nullptr && !isImageFamilyObjectType(resolved->object_type)) {
-    return unexpected(
-        ("2D scene tabs do not accept topics of type '" + typeName(resolved->object_type) + "'").toStdString());
+  if (auto* scene2d = qobject_cast<Scene2DDockWidget*>(scene_dock); scene2d != nullptr) {
+    if (!isImageFamilyObjectType(resolved->object_type)) {
+      return unexpected(
+          ("2D scene tabs do not accept topics of type '" + typeName(resolved->object_type) + "'").toStdString());
+    }
+    if (!replace_background && resolved->object_type != sdk::BuiltinObjectType::kImageAnnotations &&
+        !scene2d->backgroundTopics().empty()) {
+      return unexpected(("a 2D view shows one background; detach it before attaching '" + topic + "'").toStdString());
+    }
   }
+#else
+  (void)replace_background;
 #endif
   // The dock names why it refuses another dataset's topic (SCN-17); the generic
   // message covers the rest.
@@ -174,7 +195,7 @@ Status PluginSceneViewsController::attachTopic(
                            : refusal)
                           .toStdString());
   }
-  return okStatus();
+  return resolved->object_topic_id;
 }
 
 Status PluginSceneViewsController::detachTopic(

@@ -241,8 +241,8 @@ namespace PJ {
 namespace {
 Q_LOGGING_CATEGORY(lcMain, "pj.app.main")
 
-// Arms the 3D view's first-content framing (Scene3DDockWidget::frameInitialContent) for a view a user drop fills:
-// the default fixed frame can sit far from the data. Any other widget, or none, is left alone.
+// Arms the 3D view's first-content framing (Scene3DDockWidget::frameInitialContent) for a view a user drop or a
+// plugin panel fills: the default fixed frame can sit far from the data. Any other widget, or none, is left alone.
 void frameDroppedScene3dContent(IDataWidget* widget) {
 #ifdef PJ_WITH_SCENE3D
   if (auto* scene3d = widget != nullptr ? qobject_cast<Scene3DDockWidget*>(widget->widget()) : nullptr) {
@@ -251,6 +251,25 @@ void frameDroppedScene3dContent(IDataWidget* widget) {
 #else
   Q_UNUSED(widget);
 #endif
+}
+
+// An embedded scene view keeps one dynamic property per (dataset, topic) request it
+// attached, named by embeddedAttachedKey and holding the ObjectTopicId it attached, or
+// 0 once that topic was evicted (the request stands; a later load re-attaches it).
+constexpr char kEmbeddedAttachedPrefix[] = "_pj_attached:";
+
+[[maybe_unused]] QByteArray embeddedAttachedKey(const QString& topic, const QString& dataset) {
+  return QByteArray(kEmbeddedAttachedPrefix) + dataset.toUtf8() + '\n' + topic.toUtf8();
+}
+
+QList<QByteArray> embeddedAttachedKeys(const QObject& view) {
+  QList<QByteArray> keys = view.dynamicPropertyNames();
+  keys.removeIf([](const QByteArray& key) { return !key.startsWith(kEmbeddedAttachedPrefix); });
+  return keys;
+}
+
+uint32_t embeddedAttachedId(const QObject& view, const QByteArray& key) {
+  return view.property(key.constData()).value<uint32_t>();
 }
 
 // Check the button with id `id` in an exclusive QButtonGroup as a passive UI
@@ -2013,6 +2032,80 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
     return widget;
   }
   return nullptr;
+}
+
+EmbeddedViewHost MainWindow::makeEmbeddedViewHost() {
+  EmbeddedViewHost host;
+#if defined(PJ_WITH_SCENE3D) || defined(PJ_WITH_SCENE2D)
+  host.create = [this](const QString& kind, QWidget* parent) -> QWidget* {
+    IDataWidget* widget = makeSeededEmptyObjectDock(sceneWidgetKind(kind), parent);
+    auto* view = widget == nullptr ? nullptr : qobject_cast<SceneDockWidget*>(widget->widget());
+    if (view == nullptr) {
+      return nullptr;
+    }
+    // The plugin owns the view: its changes snapshot no workspace, and a refusal
+    // reaches the plugin as scene_view_error instead of a toast.
+    disconnect(view, &SceneDockWidget::workspaceChanged, &scene_undo_debounce_, nullptr);
+    disconnect(view, &SceneDockWidget::topicRefused, this, nullptr);
+    embedded_scene_views_.append(view);
+    frameDroppedScene3dContent(widget);
+    return view;
+  };
+  // Every toolbox panel is torn down before the window resets the controller.
+  PluginSceneViewsController& scene_views = plugin_plot_tabs_->sceneViews();
+  // A detach undoes the topic its attach resolved: by then the name may resolve to
+  // another dataset's topic, or to none.
+  host.attach = [&scene_views](QWidget* view, const QString& topic, const QString& dataset, std::string* error) {
+    const Expected<ObjectTopicId> attached =
+        scene_views.attachEmbeddedTopic(qobject_cast<SceneDockWidget*>(view), topic, dataset);
+    if (!attached) {
+      if (error != nullptr) {
+        *error = attached.error();
+      }
+      return false;
+    }
+    view->setProperty(embeddedAttachedKey(topic, dataset).constData(), attached->id);
+    return true;
+  };
+  // Two requests may name one topic (by bare name and by dataset): its layer goes
+  // with the last of them.
+  host.detach = [](QWidget* view, const QString& topic, const QString& dataset) {
+    const QByteArray key = embeddedAttachedKey(topic, dataset);
+    const uint32_t id = embeddedAttachedId(*view, key);
+    view->setProperty(key.constData(), QVariant());
+    const QList<QByteArray> others = embeddedAttachedKeys(*view);
+    const bool held = std::any_of(others.begin(), others.end(), [view, id](const QByteArray& other) {
+      return embeddedAttachedId(*view, other) == id;
+    });
+    if (auto* scene = qobject_cast<SceneDockWidget*>(view); scene != nullptr && id != 0 && !held) {
+      (void)scene->detachTopic(ObjectTopicId{id});
+    }
+  };
+#endif
+  return host;
+}
+
+void MainWindow::reattachEmbeddedTopics(SceneDockWidget& view) {
+  for (const QByteArray& key : embeddedAttachedKeys(view)) {
+    const uint32_t id = embeddedAttachedId(view, key);
+    if (id != 0 && view.layerFor(ObjectTopicId{id}) != nullptr) {
+      continue;
+    }
+    const QByteArray entry = key.mid(QByteArrayView(kEmbeddedAttachedPrefix).size());
+    const qsizetype split = entry.indexOf('\n');
+    const Expected<ObjectTopicId> attached = plugin_plot_tabs_->sceneViews().attachEmbeddedTopic(
+        &view, QString::fromUtf8(entry.mid(split + 1)), QString::fromUtf8(entry.left(split)));
+    view.setProperty(key.constData(), attached ? attached->id : 0U);
+  }
+}
+
+void MainWindow::tickEmbeddedViews(double display_seconds, bool visible_only) {
+  embedded_scene_views_.removeIf([](const QPointer<SceneDockWidget>& view) { return view.isNull(); });
+  for (const QPointer<SceneDockWidget>& view : embedded_scene_views_) {
+    if (!visible_only || view->isVisible()) {
+      view->onTrackerTime(display_seconds);
+    }
+  }
 }
 
 IDataWidget* MainWindow::makeSeededEmptyObjectDock(const QString& kind, QWidget* parent) {
@@ -4315,6 +4408,7 @@ void MainWindow::forEachVisibleDock(const std::function<void(DockWidget*)>& oper
 
 void MainWindow::broadcastTrackerTime(double display_seconds) {
   forEachDock([display_seconds](DockWidget* dock) { dock->onTrackerTime(display_seconds); });
+  tickEmbeddedViews(display_seconds, /*visible_only=*/false);
   ui_->curveListPanel->refreshValues(display_seconds);
 }
 
@@ -4327,6 +4421,7 @@ void MainWindow::broadcastTrackerTimeToVisible(double display_seconds) {
   // broadcastTrackerTime() (ALL tabs) so a hidden tab is correct the instant it is
   // revealed, and the currentTabChanged handler re-seeds the newly active tab.
   forEachVisibleDock([display_seconds](DockWidget* dock) { dock->onTrackerTime(display_seconds); });
+  tickEmbeddedViews(display_seconds, /*visible_only=*/true);
   ui_->curveListPanel->refreshValues(display_seconds);
 }
 
@@ -4357,6 +4452,15 @@ void MainWindow::syncWidgetsToCatalog() {
   //    shell resets that dock to the reusable placeholder, except in a plugin's own
   //    tab: the plugin chose its kind, so the emptied scene stays a scene.
   forEachPlot([](PlotWidget* plot) { plot->revalidate(); });
+  // A plugin panel's embedded view keeps its emptied widget too: the plugin owns the
+  // frame, whose unchanged request the binding never re-applies, so the shell re-attaches
+  // what it still asks for (and forgets the ids an evicted topic held: clear() reuses them).
+  for (const QPointer<SceneDockWidget>& view : embedded_scene_views_) {
+    if (view != nullptr) {
+      (void)view->revalidateObjects();
+      reattachEmbeddedTopics(*view);
+    }
+  }
   ui_->tabbedPlotWidget->forEachDocker([](PlotDocker* docker) {
     const bool plugin_owned = !docker->ownerPlugin().isEmpty();
     for (int index = 0; index < docker->plotCount(); ++index) {
@@ -6770,6 +6874,14 @@ QStringList MainWindow::recentLayouts() const {
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
   const QEvent::Type type = event->type();
+  // A hidden embedded scene view skips the per-tick cursor moves (tickEmbeddedViews);
+  // revealed, it catches up to the playhead, which may since have stopped moving.
+  if (type == QEvent::Show && !embedded_scene_views_.isEmpty()) {
+    if (auto* scene = qobject_cast<SceneDockWidget*>(watched);
+        scene != nullptr && embedded_scene_views_.contains(scene)) {
+      scene->onTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
+    }
+  }
   // QTipLabel is the internal widget Qt creates for tooltips. On Linux
   // KWin / Mutter normally paint a drop shadow around any tool/popup
   // window; setting Qt::NoDropShadowWindowHint asks the platform plugin
@@ -9448,6 +9560,7 @@ void MainWindow::launchToolbox(
   // of falling back to the bare ChartPreviewWidget.
   panel_config.session = session_.get();
   panel_config.catalog = &session_->catalogModel();
+  panel_config.embedded_views = makeEmbeddedViewHost();
   panel_config.catalog_key_resolver = [this](const std::string& key) -> std::string {
     auto descriptor = session_->catalogModel().curveDescriptor(QString::fromStdString(key));
     if (!descriptor) {

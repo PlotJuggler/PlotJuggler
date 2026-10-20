@@ -28,6 +28,7 @@
 #include <QWidget>
 #include <map>
 #include <nlohmann/json.hpp>
+#include <pj_base/sdk/version.hpp>
 #include <pj_plugins/host/dialog_handle.hpp>
 #include <pj_plugins/host/widget_data_view.hpp>
 #include <pj_plugins/host/widget_event_builder.hpp>
@@ -35,6 +36,8 @@
 #include <pj_plugins/host_qt/widget_binding.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+
+#include "host_info_capture.hpp"
 using namespace Qt::StringLiterals;
 
 // Defined in mock_dialog.cpp, linked statically
@@ -139,10 +142,9 @@ struct DialogCallCounters {
   int rejected = 0;
   int accepted = 0;
   int ticks = 0;
+  HostInfoCapture host_info;
   void reset() {
-    rejected = 0;
-    accepted = 0;
-    ticks = 0;
+    *this = {};
   }
 };
 
@@ -160,6 +162,7 @@ class CountingDialog : public PJ::DialogPluginTyped {
     return R"({"id":"counting-dialog","name":"Counting Dialog","version":"1.0.0"})";
   }
   std::string ui_content() const override {
+    dialogCallCounters().host_info.record(hostInfo());
     return R"(<?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
  <class>CountingDialog</class>
@@ -701,6 +704,19 @@ TEST_F(DialogEngineTest, DestroyingParentRejectsPendingDialogOnce) {
 // cancelActiveDialog() on an open dialog synchronously tears it down: exactly
 // one on_rejected reaches the plugin, the completion runs once with kRejected,
 // and — critically for the shutdown UAF fix — no tick fires after the cancel.
+// ABI-42: the engine announces itself once after construction; a modal dialog has no
+// embedded view host, so it never claims the scene-view capability.
+TEST_F(DialogEngineTest, HostInfoIsDeliveredWithoutTheSceneViewCapability) {
+  dialogCallCounters().reset();
+  PJ::DialogEngine engine{PJ::DialogHandle(countingDialogVtable())};
+  engine.openDialog(nullptr, [](PJ::DialogResult) {});
+  ASSERT_TRUE(engine.isDialogOpen());
+  EXPECT_TRUE(dialogCallCounters().host_info.seen);
+  EXPECT_EQ(dialogCallCounters().host_info.capabilities, 0U);
+  EXPECT_EQ(dialogCallCounters().host_info.sdk_version, std::string(PJ::sdkVersion()));
+  engine.cancelActiveDialog();
+}
+
 TEST_F(DialogEngineTest, CancelActiveDialogRejectsOnceAndStopsTicking) {
   dialogCallCounters().reset();
   PJ::DialogEngineConfig config;

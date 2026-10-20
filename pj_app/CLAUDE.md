@@ -203,7 +203,12 @@ the 0.38 tail slots) share the plugin's id namespace; the controller routes each
 call by the kind of the tab's live widget (`sceneKindOf`) and hands scene tabs to
 its delegate `PluginSceneViewsController` (`src/PluginSceneViewsController.{h,cpp}`:
 topic resolution, attach/detach, the read-back JSON). A kind the factory cannot
-build is refused by name before an existing tab is replaced. Viewport operations
+build is refused by name before an existing tab is replaced. The same delegate
+serves the scene views a toolbox panel embeds (`scene_view` frames):
+`MainWindow::makeEmbeddedViewHost` is the panel's `EmbeddedViewHost`, building
+seeded scene docks parented to the frame and attaching through the delegate's
+`attachEmbeddedTopic`; the tracker broadcasts tick those views (`tickEmbeddedViews`)
+and a catalog change re-attaches what their frames still ask for (`reattachEmbeddedTopics`). Viewport operations
 reach only the dockers whose `PlotDocker::ownerPlugin()` is the captured plugin ID. Tab `stateId()` is independent of its title and position;
 duplicate visible titles and renaming do not affect addressing. Owned tabs
 persist in full layouts with `owner_plugin`/`tab_id` metadata and remain live

@@ -37,7 +37,8 @@
 #include "pj_base/time.hpp"      // PJ::Timepoint — the frame-invariant absolute instant the reference line stores
 #include "pj_base/types.hpp"
 #include "pj_plotting/CurveTracker.h"
-#include "pj_runtime/CurveDescriptor.h"  // openFilterEditor takes std::vector<CurveDescriptor> by value
+#include "pj_plugins/host_qt/embedded_view_host.hpp"  // makeEmbeddedViewHost returns it by value
+#include "pj_runtime/CurveDescriptor.h"               // openFilterEditor takes std::vector<CurveDescriptor> by value
 #include "pj_runtime/HistoryScope.h"
 #include "pj_runtime/RecordingService.h"  // CaptureResult / SourceRecordingStart — recording slot parameters
 #include "pj_runtime/SessionManager.h"
@@ -1334,6 +1335,20 @@ class MainWindow : public QMainWindow {
   // only fires on changes). Shared by the factory's restore branch and the
   // click-to-create path. Returns nullptr for an unknown kind.
   IDataWidget* makeSeededEmptyObjectDock(const QString& kind, QWidget* parent);
+
+  // The EmbeddedViewHost handed to plugin panels (`scene_view` frames): seeded
+  // scene widgets of the kind asked for, attached through the plugin scene tabs'
+  // own path (PluginSceneViewsController). Empty when this build has no scene
+  // family, so the panel then announces no scene-view capability.
+  EmbeddedViewHost makeEmbeddedViewHost();
+  // The views it built. They are not ADS docks, so forEachDock never reaches
+  // them; the tracker broadcasts tick them here, and QPointer drops the ones
+  // that died with their panel.
+  QList<QPointer<SceneDockWidget>> embedded_scene_views_;
+  // After a catalog change: every topic `view` attached whose layer is gone is attached
+  // again, under the id it now has, or recorded as evicted (0) so a detach skips it.
+  void reattachEmbeddedTopics(SceneDockWidget& view);
+  void tickEmbeddedViews(double display_seconds, bool visible_only);
 
   Ui::MainWindow* ui_;
   QtDiagnosticBridge* diagnostic_bridge_ = nullptr;

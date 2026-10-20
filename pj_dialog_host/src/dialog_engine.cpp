@@ -40,12 +40,16 @@
 #include <utility>
 #include <vector>
 
+#include "host_info.hpp"
 #include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
 DialogEngine::DialogEngine(PJ::DialogHandle handle, DialogEngineConfig config)
-    : handle_(std::move(handle)), config_(config) {}
+    : handle_(std::move(handle)), config_(config) {
+  // A modal dialog embeds no scene view (panels only), so it announces no capability.
+  detail::announceHostInfo(handle_, /*capabilities=*/0);
+}
 
 namespace {
 

@@ -54,6 +54,8 @@ class Scene2DDockWidget : public SceneDockWidget {
   /// Adds a 2D render layer for the topic. Returns false when the object type is
   /// unsupported or layer attach fails; success also updates the dock title.
   bool setImageTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
+  /// Full-frame (image/depth/video) layers, in draw order; an interactive drop leaves at most one.
+  [[nodiscard]] std::vector<ObjectTopicId> backgroundTopics() const;
   /// Forwards the global point-inspector toggle to the viewer if it already exists;
   /// a pre-create call is intentionally not latched.
   void setPointInspectorEnabled(bool enabled);
@@ -118,8 +120,6 @@ class Scene2DDockWidget : public SceneDockWidget {
   /// Resolves saved layer identities that are already available and primes the
   /// encoding-aware factory with their explicit concrete kind.
   void primeRestoreLayerKinds(const QDomElement& root);
-  /// Full-frame (image/depth/video) layers, in draw order.
-  [[nodiscard]] std::vector<ObjectTopicId> backgroundTopics() const;
   /// Makes `topic_id` the only background, drawn beneath the overlays.
   void promoteBackground(ObjectTopicId topic_id);
   void primeRestoreLayerKind(const QDomElement& layer_element);

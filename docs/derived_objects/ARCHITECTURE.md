@@ -1077,7 +1077,30 @@ proposed (N1, N2).
   shell resets only a user's emptied dock to a plot tab, never a plugin's own. `clear_tab` also
   drops the layout-restore intents still pending, and neither it nor `tab_config` touches a layer
   the user added by hand (a URDF file, TF trails).
-  **Dialog-embedded scene views** give a plugin panel a live 3D or 2D view.
+- **Dialog-embedded scene views** give a plugin panel a live 3D or 2D view (built, slice 8b-3).
+  `pj_dialog_host` stays scene-library-free: a panel's `EmbeddedViewHost` (three callbacks the
+  app supplies) creates, attaches to and deletes an opaque widget, and `applyWidgetData`
+  reconciles a frame's `scene_view` request by difference. An unchanged request is a no-op,
+  a malformed one included; a changed kind recreates the view; a changed set retries every
+  topic not attached. What it refuses (a topic, an unservable kind, a malformed request) comes
+  back from the apply and reaches the plugin as `scene_view_error` once the update is applied,
+  never during it; the next tick applies the plugin's answer, also while an interactive
+  sub-panel is open. Only the panel and its sub-panel embed views (a dismissed sub-panel is
+  deleted with its views); a modal sub-dialog never does: as the SDK contract says, its
+  `scene_view` is not served and its failures are not reported. The view's own controls
+  (Scene3D's camera and fixed-frame combos) are not panel widgets: `connectWidgetSignals` and
+  `installDeclarativeRules` skip everything inside it. In `pj_app`,
+  `MainWindow::makeEmbeddedViewHost` builds the views as seeded scene docks (so an attached
+  topic is demanded) and attaches through `PluginSceneViewsController::attachEmbeddedTopic`,
+  the plugin scene tabs' path, except that a 2D view refuses a second background instead of
+  swapping it in. A detach undoes the topic its attach resolved, whatever the name resolves to
+  by then, once no other entry (the same topic by bare name and by dataset) still holds it.
+  The tracker broadcasts tick the views, a hidden one only on the full broadcasts, and a
+  revealed one catches up to the playhead; a catalog change revalidates them like a plugin's
+  scene tab, then re-attaches each topic whose layer went that the frame still asks for, or
+  records it as evicted so a detach skips it (`ObjectStore::clear()` reuses ids). Their
+  changes take no workspace snapshot and their refusals show no toast (the plugin gets
+  `scene_view_error`), and each dies with its frame.
 
 ## 18. Plugin surfaces (SDK host contract)
 
@@ -1113,7 +1136,8 @@ rules.
   it was never released. Built in the host (slice 8b-2, §17).
 - Dialog scene views: one `scene_view` key holding the kind and the topics, gated by
   `PJ_DIALOG_HOST_EMBEDS_SCENE_VIEWS`. A topic the host cannot attach is reported to the
-  plugin, not only logged.
+  plugin, not only logged. Built in the host (slice 8b-3, §17): a panel announces the bit
+  exactly when it has an `EmbeddedViewHost`, a modal dialog never.
 - Manifest keys: `badge`. `custom_topics_editor` is a tag in the existing `capabilities`
   array: declarative tags read without loading the plugin, distinct from the
   `capabilities()` bits in code.

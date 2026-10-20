@@ -8,6 +8,7 @@
 #include <string>
 
 #include "pj_base/expected.hpp"
+#include "pj_datastore/object_store.hpp"  // ObjectTopicId
 
 class QWidget;
 
@@ -19,6 +20,9 @@ class PlotDocker;
 class SceneDockWidget;
 class SessionManager;
 
+/// The object-widget kind ("scene3d" / "scene2d") MainWindow builds for a scene
+/// kind ("3d" / "2d"), empty for any other.
+[[nodiscard]] QString sceneWidgetKind(const QString& tab_kind);
 /// The scene widget of `docker`'s tab, or null for a plot tab, an empty one or a null `docker`.
 [[nodiscard]] SceneDockWidget* sceneDockOf(PlotDocker* docker);
 /// "3d" or "2d" when `docker` holds a scene widget, empty for a plot tab or null.
@@ -54,12 +58,24 @@ class PluginSceneViewsController {
   /// Detaching a topic that is not attached is an error: a mistake worth seeing. A
   /// tab emptied this way (or by clearView) stays a scene tab when a load revalidates it.
   Status detachTopic(PlotDocker* docker, const QString& topic, const QString& dataset_source);
+  /// The attach for a scene widget that is no tab's object widget (a view embedded
+  /// in a plugin panel, MainWindow::makeEmbeddedViewHost). Returns the topic attached,
+  /// for the caller to detach by identity: the name may turn ambiguous once another
+  /// dataset loads. A 2D view refuses a second background rather than replacing the
+  /// first, since the panel's binding tracks each topic it attached.
+  Expected<ObjectTopicId> attachEmbeddedTopic(
+      SceneDockWidget* scene_dock, const QString& topic, const QString& dataset_source);
   /// Detach every topic the scene tab holds, its layers and its config (TF) topics,
   /// and drop its pending layout-restore intents, keeping the tab itself and any
   /// layer the user added by hand (it has no object topic).
   Status clearView(PlotDocker* docker);
 
  private:
+  /// The attach both paths share; `replace_background`: a 2D background replaces the
+  /// current one (a tab) instead of being refused (an embedded view).
+  Expected<ObjectTopicId> attach(
+      SceneDockWidget* scene_dock, const QString& topic, const QString& dataset_source, bool replace_background);
+
   CatalogModel& catalog_;
   SessionManager& session_;
   MakeDock make_dock_;

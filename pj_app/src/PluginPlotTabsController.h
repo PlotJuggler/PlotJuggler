@@ -99,6 +99,11 @@ class PluginPlotTabsController {
   /// Call after the catalog changes and after a layout load re-creates tabs.
   void refreshAvailability();
 
+  /// The scene half, shared with the views plugin panels embed (MainWindow::makeEmbeddedViewHost).
+  [[nodiscard]] PluginSceneViewsController& sceneViews() {
+    return scene_views_;
+  }
+
  private:
   [[nodiscard]] QString toolboxBadge(const QString& plugin_id) const;
   /// A fresh owned tab: namespaced stateId, owner metadata, history exemption and
