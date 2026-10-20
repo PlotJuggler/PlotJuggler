@@ -880,6 +880,9 @@ TEST(Scene3DDockInitialFraming, UserInputAndRestoredCameraCancelPendingFit) {
       QDomDocument document;
       const QDomElement saved = fx.dock.xmlSaveState(document);
       ASSERT_TRUE(fx.dock.xmlLoadState(saved));
+      // The restore destroys the layers and rebuilds them from the XML: the old pointer dangles.
+      layer = dynamic_cast<pj::scene3d::PointCloudLayer*>(fx.dock.layerFor(topic));
+      ASSERT_NE(layer, nullptr);
     } else {
       QMouseEvent press(
           QEvent::MouseButtonPress, QPointF(10, 10), QPointF(10, 10), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
