@@ -224,6 +224,12 @@ std::string OnDemandRuntimeHost::recipeJson(const RecipeGraph::Node& node) const
       {"lag_ns", state && state->lag ? nlohmann::json(*state->lag) : nlohmann::json(nullptr)},
       {"upstream", upstream},
   };
+  if (const std::optional<SeriesRunner::State> series = service_.series().state(recipe.key())) {
+    json["series"] = {{"topic", recipe.key()},        {"rows", series->rows},
+                      {"failed", series->failed},     {"first_error", series->first_error},
+                      {"complete", series->complete}, {"done", series->done},
+                      {"total", series->total},       {"stopped", series->stopped}};
+  }
   if (recipe.pinned_t) {
     json["pinned_ns"] = *recipe.pinned_t;
     std::size_t pinned = 0;

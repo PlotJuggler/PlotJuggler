@@ -112,6 +112,18 @@ SequentialUID OrderedEntries::maxUidAtOrBefore(Timestamp t) const {
   return max_uid;
 }
 
+std::optional<Timestamp> OrderedEntries::oldestTimestampAfterUid(SequentialUID after) const {
+  auto it = std::upper_bound(uid_order_.begin(), uid_order_.end(), after, [this](SequentialUID u, uint32_t pos) {
+    return u < entries_[pos].sequential_uid;
+  });
+  std::optional<Timestamp> oldest;
+  for (; it != uid_order_.end(); ++it) {
+    const Timestamp stamp = entry_timestamps_[*it];
+    oldest = std::min(oldest.value_or(stamp), stamp);
+  }
+  return oldest;
+}
+
 // --- Mutation ---
 
 OrderedEntries::PushOrder OrderedEntries::push(ObjectEntry&& entry) {

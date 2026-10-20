@@ -208,8 +208,12 @@ SessionManager::SessionManager(QObject* parent)
     }
     emit onDemandRecipeInstalled(QString::fromStdString(key));
   };
-  on_demand_ =
-      std::make_unique<OnDemandService>(object_store_, *engine_pool_, *in_flight_budget_, std::move(on_demand));
+  // A series' rows land in the DataEngine: announced like a transform's grown output, so plots and the catalog follow.
+  on_demand.series_changed = [this](std::vector<TopicId> topics) {
+    notifyIngest(QVector<TopicId>(topics.begin(), topics.end()), /*live=*/false);
+  };
+  on_demand_ = std::make_unique<OnDemandService>(
+      object_store_, data_engine_, *engine_pool_, *in_flight_budget_, std::move(on_demand));
   // A scheduled run lands after the change that asked for it was announced.
   connect(batch_engine_.get(), &BatchEngine::markersPublished, this, &SessionManager::notifyMarkersChanged);
   // A transform's output changed (an edit, a finished replay, a removal): the marker
@@ -266,6 +270,13 @@ std::optional<std::pair<TopicId, std::size_t>> SessionManager::scalarInput(
     }
   }
   return scalar_lookup_(dataset, name);
+}
+
+std::unordered_set<TopicId> SessionManager::derivedScalarTopics(bool ephemeral_only) const {
+  std::unordered_set<TopicId> topics =
+      ephemeral_only ? processor_service_->ephemeralOutputTopics() : processor_service_->processorOutputTopics();
+  topics.merge(on_demand_->series().topics(ephemeral_only));
+  return topics;
 }
 
 void SessionManager::setTransformService(TransformService* service) {
@@ -910,6 +921,10 @@ void SessionManager::notifyIngest(QVector<TopicId> ids, bool live, std::optional
   emit samplesIngested(std::move(ids), live);
 }
 
+void SessionManager::notifyStreamEnded(DatasetId dataset_id) {
+  on_demand_->series().endLive(dataset_id);
+}
+
 SessionManager::ActiveIngestEntry* SessionManager::liveEntry(IngestToken token) {
   if (token.id == 0) {
     return nullptr;
@@ -1132,7 +1147,7 @@ RefillGuard::RefillGuard(SessionManager& session, DatasetId dataset_id) : sessio
   // Capture the prior topic id sets BEFORE detaching: scalars for the empty-state
   // notify, object ids so rollback can tell which object topics a failed refill added.
   const std::vector<TopicId> scalar_topics = session.dataEngine().listTopics(dataset_id);
-  processor_output_topic_ids_ = session.dataProcessorService().processorOutputTopics();
+  processor_output_topic_ids_ = session.derivedScalarTopics(/*ephemeral_only=*/false);
   replaced_source_topic_ids_.reserve(scalar_topics.size());
   for (const TopicId topic_id : scalar_topics) {
     if (processor_output_topic_ids_.count(topic_id) == 0) {

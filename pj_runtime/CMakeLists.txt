@@ -31,6 +31,7 @@ add_library(pj_runtime STATIC
     src/NodeScheduler.cpp
     src/ObjectIngestTap.cpp
     src/OnDemandService.cpp
+    src/SeriesRunner.cpp
     src/DiagnosticHistory.cpp
     src/ExtensionCatalogService.cpp
     src/HttpGet.cpp
@@ -73,6 +74,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/BatchEngine.h
     include/pj_runtime/EnginePool.h
     include/pj_runtime/GridRunner.h
+    include/pj_runtime/SeriesRunner.h
     include/pj_runtime/TsanAnnotations.h
     include/pj_runtime/MarkersRuntimeHost.h
     include/pj_runtime/NodeScheduler.h
@@ -201,6 +203,8 @@ if(PJ_BUILD_TESTS)
         tests/on_demand_media_test.cpp
         # Explicit evaluations: the window grid, chains with job-local upstream results, budgets and the report.
         tests/grid_runner_test.cpp
+        # On-demand series: demand-gated replays into a DataEngine topic, live appends, the life cycle.
+        tests/series_runner_test.cpp
         # links the shared marker engine the service drives
         tests/markers_runtime_host_test.cpp
         tests/data_processors_kind_router_test.cpp

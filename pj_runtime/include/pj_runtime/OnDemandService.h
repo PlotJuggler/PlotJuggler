@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include <chrono>
 #include <functional>
 #include <map>
 #include <optional>
@@ -20,6 +21,7 @@
 #include "pj_runtime/NodeScheduler.h"
 #include "pj_runtime/RecipeGraph.h"
 #include "pj_runtime/ResultHistory.h"
+#include "pj_runtime/SeriesRunner.h"
 
 namespace PJ {
 
@@ -44,14 +46,20 @@ class OnDemandService {
     GridRunner::ScalarChangeLookup scalar_changes;
     ResultHistory::Limits limits;
     InstalledCallback installed;
+    SeriesRunner::TopicsChanged series_changed;       ///< rows written to, or a series topic emptied or retired
+    SeriesRunner::StateChanged series_state_changed;  ///< a series' state changed (its progress, for 11b)
   };
 
   /// Test seam: the run of every service built afterwards whose `Services` names none; empty restores the Luau
   /// run. GUI thread.
   static void setRunForTest(NodeScheduler::RunFunction run);
+  /// Test seam: the time budgets' clock of every service built afterwards (`GridRunner::Hooks::now`); empty restores
+  /// steady_clock. A frozen clock keeps a slow host from ending a series chunk or an evaluation early. GUI thread.
+  static void setClockForTest(std::function<std::chrono::steady_clock::time_point()> now);
 
-  /// `store` must outlive the pool's running computes; the pool and the budget must outlive the service.
-  OnDemandService(ObjectStore& store, EnginePool& pool, InFlightBudget& budget, Services services);
+  /// `store` must outlive the pool's running computes; `engine` (where the series live), the pool and the budget must
+  /// outlive the service.
+  OnDemandService(ObjectStore& store, DataEngine& engine, EnginePool& pool, InFlightBudget& budget, Services services);
 
   /// Installs `recipe` (`RecipeGraph::upsert`), registers its outputs (`ResultHistory::install`) and returns the
   /// topics a new revision retired, which the caller announces. A new revision supersedes the node and its
@@ -129,12 +137,12 @@ class OnDemandService {
   [[nodiscard]] std::vector<RecipeGraph::Binding> displayedRawInputs(DatasetId dataset) const;
 
   /// Before a change of `dataset`'s storage that changes what its inputs mean, with the caller moving its epoch: drops
-  /// the results of its nodes, cancels their runs and holds their requests (`NodeScheduler::hold`). Pair with `resume`.
+  /// the results of its nodes, cancels their runs and holds their requests (`NodeScheduler::hold`), and empties its
+  /// series (`SeriesRunner::suspend`). Pair with `resume`.
   void suspend(DatasetId dataset);
-  /// Ends one `suspend`: the last serves every node of the dataset requested before, at its cursor.
-  void resume(DatasetId dataset) {
-    scheduler_.release(dataset);
-  }
+  /// Ends one `suspend`: the last serves every node of the dataset requested before, at its cursor, and replays its
+  /// wanted series.
+  void resume(DatasetId dataset);
 
   [[nodiscard]] const RecipeGraph& graph() const {
     return graph_;
@@ -145,6 +153,14 @@ class OnDemandService {
   /// The explicit evaluations (D19): a node of `graph()` or one it binds (`RecipeGraph::bind`).
   [[nodiscard]] GridRunner& evaluations() {
     return evaluations_;
+  }
+  /// The series of the nodes that have one (ARCHITECTURE §15): their demand, requests, stops and state. The service
+  /// keeps them in step with installs, removals, restores, the demand set, dataset holds and live ticks.
+  [[nodiscard]] SeriesRunner& series() {
+    return series_;
+  }
+  [[nodiscard]] const SeriesRunner& series() const {
+    return series_;
   }
   /// The pool its runs share: what a consumer of `evaluations()` moves its own heavy GUI-thread work to.
   [[nodiscard]] EnginePool& pool() {
@@ -167,8 +183,12 @@ class OnDemandService {
 
   /// What a request of `node` at `t` would read now.
   [[nodiscard]] LiveRequest liveRequestOf(const RecipeGraph::Node& node, Timestamp t) const;
+  /// `SeriesRunner::LiveEdge`: the oldest of the newest samples of the raw inputs of `node` and of its upstreams.
+  [[nodiscard]] std::optional<Timestamp> seriesLiveEdge(const RecipeGraph::Node& node) const;
   /// One of the node's object outputs is displayed (the demand set), whether or not it is pinned.
   [[nodiscard]] bool displayed(const RecipeGraph::Node& node) const;
+  /// What `reader` computed no longer holds: the scheduler serves it again and its series, if it has one, replays.
+  void supersede(std::string_view reader);
 
   EnginePool& pool_;
   RecipeGraph graph_;
@@ -176,6 +196,7 @@ class OnDemandService {
   InputStager stager_;
   GridRunner evaluations_;   ///< after the components it reads
   NodeScheduler scheduler_;  ///< after the graph, the history and the stager: cancels its runs while they are alive
+  SeriesRunner series_;      ///< after the evaluations it submits its chunks to
   InstalledCallback installed_;
   NodeScheduler::EpochProvider epoch_;             ///< the scheduler's: `followLiveEdge` stages under it
   NodeScheduler::TfRevisionProvider tf_revision_;  ///< the scheduler's; empty: 0

@@ -110,7 +110,7 @@ struct Fixture {
     services.parsers = [](ObjectTopicId) { return SessionManager::ParserBinding{}; };
     services.scheduling.image_decoder = [this] { return decoder; };
     services.scheduling.video_source = [this] { return video; };
-    service = std::make_unique<OnDemandService>(store, pool, budget, std::move(services));
+    service = std::make_unique<OnDemandService>(store, engine, pool, budget, std::move(services));
   }
 
   ObjectTopicId topic(const std::string& name, sdk::BuiltinObjectType type) {

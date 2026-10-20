@@ -13,6 +13,7 @@
 
 #include "pj_base/dataset.hpp"
 #include "pj_base/expected.hpp"
+#include "pj_base/type_tree.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/merge_result.hpp"
 #include "pj_datastore/replace_result.hpp"
@@ -72,6 +73,19 @@ class DataEngine {
   /// with that exact TopicId; otherwise the next id is auto-assigned.
   [[nodiscard]] PJ::Expected<PJ::TopicId> createTopic(
       PJ::DatasetId dataset_id, TopicDescriptor descriptor, PJ::TopicId requested_id = 0);
+
+  /// One column of `createColumnGroupTopic`.
+  struct GroupColumn {
+    std::string name;
+    PJ::PrimitiveType type = PJ::PrimitiveType::kFloat64;
+  };
+
+  /// Creates ONE topic `topic_name` whose schema `schema_name` is a struct with one primitive field per entry of
+  /// `columns` (field k is column k): an on-demand series' topic. Registers the schema, or reuses the one registered
+  /// under that name. [thread-safe]
+  [[nodiscard]] PJ::Expected<PJ::TopicId> createColumnGroupTopic(
+      PJ::DatasetId dataset_id, const std::string& topic_name, const std::string& schema_name,
+      const std::vector<GroupColumn>& columns);
 
   /// Symmetric counterpart to `createTopic(requested_id)` at the field/column
   /// level. Adds a column to an existing topic; pass `requested_id` non-empty
@@ -150,6 +164,12 @@ class DataEngine {
   /// wall time, so a wall-clock floor could hide future real samples).
   /// No-op for an unknown or empty topic. [thread-safe]
   void evictTopicHistory(PJ::TopicId topic_id);
+
+  /// Empties one topic's history for a REPLAY that rewrites the same timestamps: its chunks are freed and its
+  /// retention floor reset (unlike `evictTopicHistory`, whose floor hides every write at or below the old `timeMax()`),
+  /// while the topic stays registered, listed and un-retired, with its column layout. Same reader precondition as
+  /// `retireTopic`. No-op for an unknown id. [thread-safe]
+  void clearTopicHistory(PJ::TopicId topic_id);
 
   /// Retire a single topic: clear its chunks (reclaiming the materialized series) and
   /// exclude its id from `listTopics` (so the catalog drops it on the next rebuild),

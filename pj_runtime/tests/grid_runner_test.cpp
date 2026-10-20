@@ -9,6 +9,8 @@
 #include <gtest/gtest.h>
 
 #include <QElapsedTimer>
+#include <QMetaObject>
+#include <QObject>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -16,6 +18,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -36,6 +39,7 @@
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/GridRunner.h"
 #include "pj_runtime/NodeScheduler.h"
+#include "pj_runtime/SeriesRunner.h"
 
 namespace PJ {
 namespace {
@@ -89,6 +93,7 @@ std::vector<uint8_t> canonicalCloud(size_t points) {
 class FakeRun {
  public:
   std::atomic<bool> gated{false};       ///< each run waits for `allow` (or its cancellation)
+  std::atomic<bool> deaf{false};        ///< ... or only for `allow`: a native call that cannot see a cancellation
   std::atomic<size_t> vm_bytes{0};      ///< the last run's VM cap
   std::atomic<size_t> native_bytes{0};  ///< ... and its native budget
   std::atomic<int64_t> clock_ms{0};
@@ -136,7 +141,7 @@ class FakeRun {
       ++started_;
       cv_.notify_all();
       const auto until = std::chrono::steady_clock::now() + 5s;
-      while (gated && permits_ == 0 && !cancelled() && std::chrono::steady_clock::now() < until) {
+      while (gated && permits_ == 0 && (deaf || !cancelled()) && std::chrono::steady_clock::now() < until) {
         cv_.wait_for(lock, 1ms);
       }
       if (gated && permits_ > 0) {
@@ -602,6 +607,352 @@ TEST(GridRunnerTest, WindowReportsGapsBeforeRetention) {
   EXPECT_EQ(covered.parsed.candidates, 0u);
   EXPECT_EQ(covered.parsed.evaluated, 0u);
   EXPECT_TRUE(gaps(fx.evaluate(crop, false, 20 * kSec, 25 * kSec)).empty());
+}
+
+// ---- Series rows (the column sink) ---------------------------------------------------------------------------
+
+/// The rows of a series chunk of `node` (installed) after `after`, at most `limit` instants up to `until`, past the
+/// previous chunk's `seen`; nullopt when nothing was submitted (an empty clock).
+std::optional<GridRunner::Rows> rowsOf(
+    Fixture& fx, const RecipeGraph::Node& node, std::optional<Timestamp> after = std::nullopt, size_t limit = 64,
+    SequentialUID seen = {}, std::optional<Timestamp> until = std::nullopt) {
+  std::optional<GridRunner::Rows> done;
+  auto job = fx.runner->submitRows(
+      node, after, until, seen, limit, [&done](GridRunner::Rows rows) { done = std::move(rows); });
+  if (!job) {
+    ADD_FAILURE() << "submitRows failed: " << job.error();
+    return std::nullopt;
+  }
+  if (*job == nullptr) {
+    return std::nullopt;
+  }
+  test::pumpUntil([&done] { return done.has_value(); }, 20000);
+  EXPECT_TRUE(done.has_value()) << "no rows";
+  return done;
+}
+
+// SER-02, SER-03, D10: a chunk runs at each object entry of its clock (a scalar side input's change adds no instant),
+// writes one row per instant whose number outputs are all finite, and leaves a gap for a failed run, counting it and
+// keeping its reason, without stopping. `after` and `limit` slice the clock; an empty clock submits nothing.
+TEST(GridRunnerTest, RowsRunEachClockInstantOnceAndGapTheFailures) {
+  Fixture fx;
+  pushReferenceData(fx);  // clouds at 0, 5, 10, 20 s; the threshold changes at 15 s
+  const RecipeGraph::Node count = fx.install(
+      recipe("count", {"cloud", "threshold"}, {numberSpec(), numberSpec("twice")}, {{"fail_at", 10 * kSec}}));
+
+  const auto rows = rowsOf(fx, count);
+  ASSERT_TRUE(rows.has_value());
+  EXPECT_EQ(rows->times, (std::vector<Timestamp>{0, 5 * kSec, 20 * kSec}));
+  EXPECT_EQ(rows->values, (std::vector<double>{2, 2, 2, 2, 4, 4})) << "row-major, both columns";
+  EXPECT_EQ(rows->through, 20 * kSec);
+  EXPECT_EQ(rows->gaps, 1u);
+  EXPECT_EQ(rows->first_gap, "boom");
+  EXPECT_EQ(rows->left, 0u);
+  EXPECT_TRUE(rows->error.empty());
+  EXPECT_EQ(fx.fake.runsOf("count"), (std::vector<Timestamp>{0, 5 * kSec, 10 * kSec, 20 * kSec}));
+
+  const auto sliced = rowsOf(fx, count, 0, 2);
+  ASSERT_TRUE(sliced.has_value());
+  EXPECT_EQ(sliced->times, (std::vector<Timestamp>{5 * kSec}));
+  EXPECT_EQ(sliced->through, 10 * kSec);
+  EXPECT_EQ(sliced->left, 1u) << "the entry at 20 s";
+  EXPECT_FALSE(rowsOf(fx, count, 20 * kSec).has_value()) << "nothing after the last entry";
+  EXPECT_EQ(fx.budget.reserved(), 0u);
+}
+
+// GAP-55: a chunk resumed after a watermark starts again from the clock's first instant when an entry arrived since the
+// previous chunk's cut before the watermark (out of order); a newer append only extends the clock after it, and an
+// entry at the watermark's stamp (a latched source republishing it) changes nothing.
+TEST(GridRunnerTest, RowsRestartWhenAnEntryArrivesBeforeTheWatermark) {
+  Fixture fx;
+  for (const Timestamp t : {0 * kSec, 10 * kSec, 20 * kSec}) {
+    fx.pushCloud(t, 2);
+  }
+  const RecipeGraph::Node count = fx.install(recipe("count", {"cloud"}, {numberSpec()}));
+  const auto first = rowsOf(fx, count);
+  ASSERT_TRUE(first.has_value());
+  EXPECT_FALSE(first->restarted);
+  EXPECT_FALSE(rowsOf(fx, count, 20 * kSec, 64, first->seen).has_value()) << "nothing new";
+
+  fx.pushCloud(30 * kSec, 2);
+  const auto newer = rowsOf(fx, count, 20 * kSec, 64, first->seen);
+  ASSERT_TRUE(newer.has_value());
+  EXPECT_FALSE(newer->restarted);
+  EXPECT_EQ(newer->times, (std::vector<Timestamp>{30 * kSec}));
+
+  fx.pushCloud(15 * kSec, 2);  // out of order, under the watermark
+  const auto late = rowsOf(fx, count, 30 * kSec, 64, newer->seen);
+  ASSERT_TRUE(late.has_value());
+  EXPECT_TRUE(late->restarted);
+  EXPECT_EQ(late->times, (std::vector<Timestamp>{0, 10 * kSec, 15 * kSec, 20 * kSec, 30 * kSec}));
+  EXPECT_EQ(late->left, 0u);
+
+  fx.pushCloud(30 * kSec, 3);  // republishes the watermark's stamp
+  EXPECT_FALSE(rowsOf(fx, count, 30 * kSec, 64, late->seen).has_value()) << "nothing to compute, nothing replayed";
+}
+
+// GAP-60: `until` ends the clock (a live dataset's edge): the instants after it are neither evaluated nor counted.
+TEST(GridRunnerTest, RowsStopAtUntil) {
+  Fixture fx;
+  pushReferenceData(fx);  // clouds at 0, 5, 10, 20 s
+  const RecipeGraph::Node count = fx.install(recipe("count", {"cloud"}, {numberSpec()}));
+  const auto capped = rowsOf(fx, count, std::nullopt, 64, {}, 10 * kSec);
+  ASSERT_TRUE(capped.has_value());
+  EXPECT_EQ(capped->times, (std::vector<Timestamp>{0, 5 * kSec, 10 * kSec}));
+  EXPECT_EQ(capped->left, 0u);
+  EXPECT_FALSE(rowsOf(fx, count, 10 * kSec, 64, capped->seen, 15 * kSec).has_value()) << "nothing up to 15 s";
+}
+
+// GAP-61: a series chunk's time budget is `kRowsMaxMillis`, not an evaluation's default, so a playhead request waits
+// behind it for about that long at most on a lane of one thread.
+TEST(GridRunnerTest, ARowsChunkEndsOnItsOwnTimeBudget) {
+  Fixture fx;
+  for (int index = 0; index < 10; ++index) {
+    fx.pushCloud(index * kSec, 2);
+  }
+  fx.fake.clock_step_ms = 40;  // each run: 0 + 40 + 40 reach 100 ms after the third instant
+  const RecipeGraph::Node count = fx.install(recipe("count", {"cloud"}, {numberSpec()}));
+  const auto rows = rowsOf(fx, count);
+  ASSERT_TRUE(rows.has_value());
+  EXPECT_EQ(rows->times.size(), 3u);
+  EXPECT_EQ(rows->left, 7u);
+}
+
+// GAP-17: the clock is the union of every object input's entries, each instant once; a chain adds its upstream's raw
+// object inputs, and the upstream's ring stays untouched (SER-10).
+TEST(GridRunnerTest, RowsClockIsTheUnionOfTheChainsObjectInputs) {
+  Fixture fx;
+  fx.pushCloud(0, 2);
+  fx.pushCloud(10 * kSec, 3);
+  const ObjectTopicId fast = fx.store.registerTopic({fx.dataset, "fast", ""}).value();
+  for (const Timestamp t : {0 * kSec, 4 * kSec, 8 * kSec}) {
+    ASSERT_TRUE(fx.store.pushOwned(fast, t, canonicalCloud(1)).has_value());
+  }
+  fx.install(recipe("crop", {"cloud"}, {cloudSpec()}));
+  const RecipeGraph::Node reader = fx.install(recipe("reader", {"owner/crop/cropped", "fast"}, {numberSpec()}));
+
+  const auto rows = rowsOf(fx, reader);
+  ASSERT_TRUE(rows.has_value());
+  EXPECT_EQ(rows->times, (std::vector<Timestamp>{0, 4 * kSec, 8 * kSec, 10 * kSec}));
+  EXPECT_EQ(rows->values, (std::vector<double>{2, 2, 2, 3})) << "the first cloud input is the upstream's crop";
+  EXPECT_EQ(rows->gaps, 0u) << rows->first_gap;
+  EXPECT_EQ(fx.fake.runsOf("crop"), (std::vector<Timestamp>{0, 10 * kSec})) << "the upstream runs once per entry";
+  EXPECT_EQ(fx.store.entryCount(fx.topic("owner/crop/cropped")), 0u) << "the upstream's ring is untouched";
+}
+
+// SER-04: a side input with nothing at or before an instant is that instant's gap ("missing input"); an unavailable or
+// non-finite number is one too, naming the output.
+TEST(GridRunnerTest, RowsGapAMissingSideInputAndAnUnavailableOrNonFiniteNumber) {
+  Fixture fx;
+  fx.pushCloud(0, 2);
+  fx.pushCloud(5 * kSec, 2);
+  fx.pushCloud(10 * kSec, 3);
+  fx.pushThreshold(5 * kSec, 1.0);
+  const RecipeGraph::Node side = fx.install(recipe("side", {"cloud", "threshold"}, {numberSpec()}));
+  const auto rows = rowsOf(fx, side);
+  ASSERT_TRUE(rows.has_value());
+  EXPECT_EQ(rows->times, (std::vector<Timestamp>{5 * kSec, 10 * kSec}));
+  EXPECT_EQ(rows->gaps, 1u);
+  EXPECT_EQ(rows->first_gap, "on-demand: missing input 'threshold'");
+
+  const RecipeGraph::Node unavailable =
+      fx.install(recipe("unavailable", {"cloud"}, {numberSpec()}, {{"unavailable", {"count"}}}));
+  const auto none = rowsOf(fx, unavailable);
+  ASSERT_TRUE(none.has_value());
+  EXPECT_TRUE(none->times.empty());
+  EXPECT_EQ(none->gaps, 3u);
+  EXPECT_EQ(none->first_gap, "on-demand: output 'count' unavailable: no points");
+  const RecipeGraph::Node nan = fx.install(recipe("nan", {"cloud"}, {numberSpec()}, {{"nan", true}}));
+  const auto not_finite = rowsOf(fx, nan);
+  ASSERT_TRUE(not_finite.has_value());
+  EXPECT_EQ(not_finite->gaps, 3u);
+  EXPECT_EQ(not_finite->first_gap, "on-demand: output 'count' is not a finite number");
+}
+
+// GAP-18: a series replay holds one reservation per chunk, so a cursor request waiting in the budget's line runs
+// between two chunks instead of after the whole replay.
+TEST(GridRunnerTest, CursorRequestsAreNotStarvedBehindASeriesReplay) {
+  Fixture fx(InFlightBudget::kRunBytes);
+  for (int index = 0; index < 100; ++index) {
+    fx.pushCloud(index * kSec, 2);
+  }
+  fx.install(recipe("crop", {"cloud"}, {cloudSpec()}));
+  const RecipeGraph::Node count = fx.install(recipe("count", {"cloud"}, {numberSpec()}));
+  SeriesRunner series(fx.engine, fx.graph, *fx.runner, {});
+  constexpr int kChunk = static_cast<int>(SeriesRunner::kInstantsPerChunk);
+  fx.fake.gated = true;
+  series.install(count, /*demanded=*/false);
+  series.request("owner/count");
+  ASSERT_TRUE(fx.waitStarted(1)) << "the first chunk has the room";
+  fx.scheduler->requestAt("owner/crop", 50 * kSec);  // waits in the line behind it
+  fx.fake.allow(kChunk);
+  ASSERT_TRUE(fx.waitStarted(kChunk + 1));
+  fx.fake.allow(1);
+  test::pumpUntil([&] { return !fx.fake.runsOf("crop").empty(); });
+  EXPECT_EQ(fx.fake.runsOf("crop"), (std::vector<Timestamp>{50 * kSec}));
+  EXPECT_EQ(fx.fake.runsOf("count").size(), SeriesRunner::kInstantsPerChunk) << "the cursor ran before the next chunk";
+
+  fx.fake.allow(1000);
+  test::pumpUntil([&] { return series.state("owner/count")->complete; }, 5000);
+  EXPECT_EQ(series.state("owner/count")->rows, 100u);
+}
+
+// D30 under series load: with 32 series wanted, a cursor request waits for at most one series chunk, not one per
+// series: the series take turns outside the budget's line.
+TEST(GridRunnerTest, ACursorRequestWaitsForAtMostOneSeriesChunk) {
+  Fixture fx(InFlightBudget::kRunBytes);
+  for (const Timestamp t : {0 * kSec, 5 * kSec, 10 * kSec}) {
+    fx.pushCloud(t, 2);
+  }
+  fx.install(recipe("crop", {"cloud"}, {cloudSpec()}));
+  SeriesRunner series(fx.engine, fx.graph, *fx.runner, {});
+  constexpr int kSeries = 32;
+  constexpr int kChunkRuns = 3;  // one chunk covers the whole clock
+  fx.fake.gated = true;
+  for (int index = 0; index < kSeries; ++index) {
+    series.install(fx.install(recipe("s" + std::to_string(index), {"cloud"}, {numberSpec()})), /*demanded=*/true);
+  }
+  ASSERT_TRUE(fx.waitStarted(1)) << "the first chunk has the room";
+  fx.scheduler->requestAt("owner/crop", 10 * kSec);
+  fx.fake.allow(kChunkRuns);
+  ASSERT_TRUE(fx.waitStarted(kChunkRuns + 1));
+  fx.fake.allow(1);
+  test::pumpUntil([&] { return !fx.fake.runsOf("crop").empty(); }, 2000);
+  EXPECT_EQ(fx.fake.runsOf("crop"), (std::vector<Timestamp>{10 * kSec})) << "the cursor waited for one chunk at most";
+
+  fx.fake.allow(1 << 20);
+  const auto complete = [&] {
+    for (int index = 0; index < kSeries; ++index) {
+      const auto state = series.state("owner/s" + std::to_string(index));
+      if (!state || !state->complete || state->replaying) {
+        return false;
+      }
+    }
+    return true;
+  };
+  test::pumpUntil(complete, 10000);
+  ASSERT_TRUE(complete());
+  for (int index = 0; index < kSeries; ++index) {
+    EXPECT_EQ(series.state("owner/s" + std::to_string(index))->rows, 3u);
+  }
+}
+
+// The series waiting their turn get it when the computing one stops being wanted, not only when a chunk ends.
+TEST(GridRunnerTest, HidingTheComputingSeriesHandsTheTurnOn) {
+  Fixture fx;
+  fx.pushCloud(0, 2);
+  SeriesRunner series(fx.engine, fx.graph, *fx.runner, {});
+  fx.fake.gated = true;
+  series.install(fx.install(recipe("first", {"cloud"}, {numberSpec()})), /*demanded=*/true);
+  series.install(fx.install(recipe("second", {"cloud"}, {numberSpec()})), /*demanded=*/true);
+  ASSERT_TRUE(fx.waitStarted(1));
+  EXPECT_TRUE(series.state("owner/second")->replaying) << "waiting its turn";
+  series.setDemand(fx.dataset, {"owner/second"});
+  EXPECT_FALSE(series.state("owner/first")->replaying);
+  ASSERT_TRUE(fx.waitStarted(2)) << "the second series got the turn";
+  fx.fake.allow(1 << 20);
+  test::pumpUntil([&] { return series.state("owner/second")->complete; }, 5000);
+  EXPECT_EQ(series.state("owner/second")->rows, 1u);
+}
+
+// A replay whose every instant is a gap (a side input that starts after the clock) stages and skips on the GUI thread
+// without a run; its chunks still take an event-loop pass each, so no pass evaluates more than a chunk or two.
+TEST(GridRunnerTest, AGapOnlyReplayYieldsToTheEventLoopBetweenChunks) {
+  Fixture fx;
+  constexpr uint64_t kEntries = 5'000;  // 79 chunks
+  const std::vector<uint8_t> payload = canonicalCloud(1);
+  for (uint64_t index = 0; index < kEntries; ++index) {
+    ASSERT_TRUE(fx.store.pushOwned(fx.cloud, static_cast<Timestamp>(index) * 1000, payload).has_value());
+  }
+  fx.pushThreshold(static_cast<Timestamp>(kEntries) * 1000, 1.0);  // after every entry: each instant misses it
+  const RecipeGraph::Node node = fx.install(recipe("count", {"cloud", "threshold"}, {numberSpec()}));
+  SeriesRunner series(fx.engine, fx.graph, *fx.runner, {});
+  series.install(node, /*demanded=*/true);
+
+  uint64_t last = 0;
+  uint64_t longest = 0;  // the most instants evaluated within one event-loop pass
+  const auto sample = [&] {
+    const uint64_t done = series.state("owner/count")->done;
+    longest = std::max(longest, done - last);
+    last = done;
+  };
+  std::function<void()> tick;
+  QObject context;  // destroyed before `tick`: drops the tick still posted
+  tick = [&] {
+    sample();
+    QMetaObject::invokeMethod(&context, tick, Qt::QueuedConnection);  // runs in the next pass
+  };
+  QMetaObject::invokeMethod(&context, tick, Qt::QueuedConnection);
+  const auto complete = [&] {
+    const auto state = series.state("owner/count");
+    return state->complete && !state->replaying;
+  };
+  test::pumpUntil(complete, 30000);
+  sample();
+  ASSERT_TRUE(complete());
+  EXPECT_EQ(series.state("owner/count")->failed, kEntries);
+  EXPECT_EQ(series.state("owner/count")->first_error, "on-demand: missing input 'threshold'");
+  EXPECT_LE(longest, 2 * SeriesRunner::kInstantsPerChunk) << "one pass ran " << longest << " instants";
+}
+
+// GAP-62, D30: a cancelled chunk whose run still holds the lane's thread counts as the one chunk in the runner until
+// the pool lets it go, so the next series' chunk does not queue ahead of a playhead request meanwhile.
+TEST(GridRunnerTest, ACancelledChunkHoldsTheTurnUntilItsRunEnds) {
+  Fixture fx(InFlightBudget::kRunBytes);
+  for (const Timestamp t : {0 * kSec, 5 * kSec, 10 * kSec}) {
+    fx.pushCloud(t, 2);
+  }
+  fx.install(recipe("crop", {"cloud"}, {cloudSpec()}));
+  SeriesRunner series(fx.engine, fx.graph, *fx.runner, {});
+  fx.fake.gated = true;
+  fx.fake.deaf = true;
+  series.install(fx.install(recipe("first", {"cloud"}, {numberSpec()})), /*demanded=*/true);
+  series.install(fx.install(recipe("second", {"cloud"}, {numberSpec()})), /*demanded=*/true);
+  ASSERT_TRUE(fx.waitStarted(1));
+  series.setDemand(fx.dataset, {"owner/second"});  // cancels the first chunk; its run keeps the thread
+  test::pumpFor(20);
+  fx.scheduler->requestAt("owner/crop", 10 * kSec);
+  fx.fake.allow(2);  // the cancelled run, then whichever is first in the line
+  test::pumpUntil([&] { return fx.fake.started() >= 2 && fx.pool.pendingPublishes() == 0; }, 2000);
+  test::pumpFor(20);
+  EXPECT_EQ(fx.fake.runsOf("crop"), (std::vector<Timestamp>{10 * kSec})) << "the playhead went first";
+  EXPECT_TRUE(fx.fake.runsOf("second").empty());
+
+  fx.fake.allow(1 << 20);
+  test::pumpUntil([&] { return series.state("owner/second")->complete; }, 5000);
+  EXPECT_EQ(series.state("owner/second")->rows, 3u);
+}
+
+// GAP-63, for 11b's progress: every change of a series' state is reported once, a stop and a chunk refused for a
+// removed upstream included, and so is its removal.
+TEST(GridRunnerTest, EveryStateChangeIsReported) {
+  Fixture fx;
+  fx.pushCloud(0, 2);
+  fx.pushCloud(5 * kSec, 2);
+  std::vector<std::string> reported;
+  SeriesRunner::Hooks hooks;
+  hooks.state_changed = [&reported](const std::string& key) { reported.push_back(key); };
+  SeriesRunner series(fx.engine, fx.graph, *fx.runner, std::move(hooks));
+  fx.fake.gated = true;
+  series.install(fx.install(recipe("count", {"cloud"}, {numberSpec()})), /*demanded=*/true);
+  ASSERT_TRUE(fx.waitStarted(1));
+  EXPECT_FALSE(reported.empty()) << "installed, replaying";
+  reported.clear();
+  EXPECT_TRUE(series.stop("owner/count"));
+  EXPECT_EQ(reported, (std::vector<std::string>{"owner/count"})) << "stopped";
+  fx.fake.allow(1 << 20);
+  test::pumpFor(20);
+
+  fx.install(recipe("crop", {"cloud"}, {cloudSpec()}));
+  series.install(fx.install(recipe("reader", {"owner/crop/cropped"}, {numberSpec()})), /*demanded=*/false);
+  ASSERT_TRUE(fx.graph.remove("owner/crop").has_value());
+  reported.clear();
+  series.request("owner/reader");
+  EXPECT_FALSE(series.state("owner/reader")->first_error.empty());
+  EXPECT_EQ(reported, (std::vector<std::string>{"owner/reader"})) << "the refused chunk";
+  reported.clear();
+  series.remove("owner/reader");
+  EXPECT_EQ(reported, (std::vector<std::string>{"owner/reader"})) << "gone";
 }
 
 // ---- Chains --------------------------------------------------------------------------------------------------
@@ -1318,6 +1669,76 @@ TEST(GridRunnerBench, GuiCostPerInstant) {
         static_cast<double>(spent) / 1000.0 / static_cast<double>(instants),
         static_cast<double>(json_spent) / static_cast<double>(instants), json.size());
   }
+}
+
+// PJ_BENCH=1: the GUI cost of submitting one series chunk in the middle of 100k object entries (the clock slice found
+// by binary search, 64 instants copied), measured as the submission of a job then cancelled, and of finding nothing
+// after the last entry: medians of 101.
+TEST(GridRunnerBench, RowsChunkAmong100kEntries) {
+  if (!sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  Fixture fx;
+  for (int index = 0; index < 100'000; ++index) {
+    fx.pushCloud(Timestamp{index} * 100'000, 1);
+  }
+  const RecipeGraph::Node node = fx.install(recipe("count", {"cloud"}, {numberSpec()}));
+  const SequentialUID seen = SequentialUID::getNext();  // after every entry: the late-arrival check finds none
+  const double micros = test::medianMicros(101, [&] {
+    auto job = fx.runner->submitRows(
+        node, Timestamp{50'000} * 100'000, std::nullopt, seen, SeriesRunner::kInstantsPerChunk, {});
+    fx.runner->cancel(*job);
+  });
+  const double nothing_new = test::medianMicros(101, [&] {
+    auto job = fx.runner->submitRows(
+        node, Timestamp{99'999} * 100'000, std::nullopt, seen, SeriesRunner::kInstantsPerChunk, {});
+    EXPECT_EQ(*job, nullptr);
+  });
+  std::printf(
+      "[bench] a 64-instant chunk among 100k entries: %.2f us to submit; nothing after the watermark (a live tick "
+      "with no new entry): %.2f us\n",
+      micros, nothing_new);
+}
+
+// PJ_BENCH=1: a live tick that brings nothing new to 5 complete series among 10k object topics (`appendLive`, each
+// series' live edge looked up through the stager, as `OnDemandService` does for a node without upstreams, and its
+// clock found empty after its watermark): the GUI cost of the tick, median of 101.
+TEST(GridRunnerBench, IdleSeriesTickAmong10kObjectTopics) {
+  if (!sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  Fixture fx;
+  constexpr int kTopics = 10'000;
+  constexpr int kSeries = 5;
+  std::vector<ObjectTopicId> topics;
+  for (int index = 0; index < kTopics; ++index) {
+    topics.push_back(fx.store.registerTopic({fx.dataset, "topic" + std::to_string(index), ""}).value());
+  }
+  SeriesRunner::Hooks hooks;
+  hooks.live_edge = [&fx](const RecipeGraph::Node& node) { return fx.stager.laggingInputStamp(node); };
+  SeriesRunner series(fx.engine, fx.graph, *fx.runner, std::move(hooks));
+  for (int index = 0; index < kSeries; ++index) {
+    const int input = kTopics - 1 - index;
+    for (const Timestamp t : {0 * kSec, 5 * kSec, 10 * kSec}) {
+      ASSERT_TRUE(fx.store.pushOwned(topics[input], t, canonicalCloud(1)).has_value());
+    }
+    const std::string id = "s" + std::to_string(index);
+    series.install(fx.install(recipe(id, {"topic" + std::to_string(input)}, {numberSpec()})), /*demanded=*/true);
+  }
+  const auto complete = [&] {
+    for (int index = 0; index < kSeries; ++index) {
+      const auto state = series.state("owner/s" + std::to_string(index));
+      if (!state->complete || state->replaying) {
+        return false;
+      }
+    }
+    return true;
+  };
+  test::pumpUntil(complete, 10000);
+  ASSERT_TRUE(complete());
+  const double micros = test::medianMicros(101, [&] { series.appendLive(fx.dataset); });
+  ASSERT_TRUE(complete()) << "nothing new: nothing submitted";
+  std::printf("[bench] an idle live tick of %d series among %d object topics: %.2f us\n", kSeries, kTopics, micros);
 }
 
 // PJ_BENCH=1: an explicit two-hop evaluation (two Luau pass-through crops of a 260k-point cloud), from submission to

@@ -203,6 +203,7 @@ class FakeRun {
     bool cancelled = false;            ///< seen once the run was let through
     bool slow = false;                 ///< its params mention "slow"
     std::vector<std::string> strings;  ///< its string inputs, in input order
+    bool has_image_decoder = false;    ///< the run was given an image decoder
   };
 
   bool gated = false;                       ///< each run waits for `allow`
@@ -212,6 +213,7 @@ class FakeRun {
   bool observe_tf = false;                  ///< ... and the TF tree
   std::string fail;                         ///< non-empty: the run fails with this message
   std::optional<double> fail_on_number;     ///< the run fails ("boom") when a number input equals this
+  std::vector<Timestamp> fail_at;           ///< ... and at these query times
   std::vector<std::string> unavailable;     ///< outputs it marks unavailable ("no points")
   bool empty_clouds = false;                ///< its cloud outputs are empty (valid, D25)
   /// What its SceneEntities outputs hold at a query time; empty: no entity.
@@ -275,7 +277,8 @@ class FakeRun {
         options.tf,
         cancelled(),
         slow,
-        {}};
+        {},
+        options.image_decoder != nullptr};
     for (const scripting::NamedValue& value : inputs) {
       if (const auto* string = std::get_if<std::string>(&value.value)) {
         record.strings.push_back(*string);
@@ -291,6 +294,9 @@ class FakeRun {
     }
     if (!fail.empty()) {
       return unexpected(scripting::ScriptError{fail, observe_clock, observe_tf});
+    }
+    if (std::find(fail_at.begin(), fail_at.end(), options.query_time) != fail_at.end()) {
+      return unexpected(scripting::ScriptError{"boom"});
     }
     for (const scripting::NamedValue& value : inputs) {
       if (const auto* number = std::get_if<double>(&value.value); number != nullptr && *number == fail_on_number) {

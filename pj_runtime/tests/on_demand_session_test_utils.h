@@ -9,6 +9,7 @@
 
 #include <QCoreApplication>
 #include <QTemporaryDir>
+#include <chrono>
 #include <optional>
 #include <string>
 #include <utility>
@@ -37,6 +38,19 @@ inline scripting::OutputSpec cloudSpec() {
 inline std::vector<uint8_t> canonicalCloud(size_t points) {
   return serializeBuiltinObject(sdk::BuiltinObject(makeCloud(points))).value();
 }
+
+/// Freezes the on-demand time budgets' clock of every service built while it lives
+/// (`OnDemandService::setClockForTest`): the tests count instants, and a slow host must not end a chunk early.
+struct FrozenBudgetClock {
+  FrozenBudgetClock() {
+    OnDemandService::setClockForTest([] { return std::chrono::steady_clock::time_point{}; });
+  }
+  ~FrozenBudgetClock() {
+    OnDemandService::setClockForTest({});
+  }
+  FrozenBudgetClock(const FrozenBudgetClock&) = delete;
+  FrozenBudgetClock& operator=(const FrozenBudgetClock&) = delete;
+};
 
 /// A real AppSession whose on-demand runs are `fake`'s, with one dataset `log` holding the cloud topic `cloud` (entries
 /// at 5, 10 and 20 s).
@@ -107,6 +121,7 @@ struct OnDemandSessionFixture {
 
   FakeRun fake;  ///< outlives the session, whose pool joins the runs
   ScopedRun scoped_run{fake};
+  FrozenBudgetClock frozen_clock;
   QTemporaryDir dir;
   AppSession session{dir.path()};
   SessionManager& manager = session.sessionManager();

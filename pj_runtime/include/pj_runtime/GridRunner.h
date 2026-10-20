@@ -74,6 +74,8 @@ class GridRunner {
   static constexpr std::size_t kMaxGridInstants = std::size_t{1} << 20;
   /// The longest `Report::error`, in bytes.
   static constexpr std::size_t kMaxErrorBytes = 1024;
+  /// A series chunk's time budget: the longest a playhead request waits behind it on a lane of one thread.
+  static constexpr uint64_t kRowsMaxMillis = 100;
 
   /// A finished evaluation, in the SDK's report shape: `toJson` writes it, `sdk::parseEvaluationReport` reads it back.
   /// `evaluated` is `bundles.size()`; `error` is set exactly when `stopped` is kError, at most `kMaxErrorBytes` long
@@ -105,6 +107,29 @@ class GridRunner {
     std::function<std::chrono::steady_clock::time_point()> now;  ///< the time budget's clock; empty: steady_clock
   };
 
+  /// A series chunk's outcome (`submitRows`, the column sink; ARCHITECTURE §15): a row per instant at which the node
+  /// gave each of its number outputs a finite number, a gap per other instant (a missing input, a failed run, an
+  /// unavailable or non-finite number).
+  struct Rows {
+    std::vector<Timestamp> times;      ///< the rows' instants, ascending
+    std::vector<double> values;        ///< row-major: the number outputs in declaration order, per row
+    std::optional<Timestamp> through;  ///< the last instant evaluated, a row or a gap; nullopt: none
+    uint64_t gaps = 0;
+    std::string first_gap;  ///< why the first gap has no row, at most `kMaxErrorBytes`
+    /// Clock instants after `through` up to `until`, counted at the submission: exact for one object input, an upper
+    /// bound when several share stamps.
+    uint64_t left = 0;
+    std::string error;  ///< why the chunk ended early: an input was replaced (a revision, a removal, an epoch)
+    /// The arrivals this chunk's clock was cut from: an object input entry with a greater uid was not in it. The next
+    /// chunk's `seen`.
+    SequentialUID seen;
+    /// The clock started again from its first instant: an entry arrived before `after` since `seen`. The rows
+    /// before replace the series'.
+    bool restarted = false;
+  };
+  /// Called once, on the GUI thread, unless the job is cancelled first; the job has given its room back by then.
+  using RowsDone = std::function<void(Rows)>;
+
   struct Job;
   struct Result;  ///< one node's result in a job
   /// Called once, on the GUI thread, unless the job is cancelled first; the job has given its room back by then, and
@@ -125,14 +150,37 @@ class GridRunner {
   /// what is read, more than `kMaxGridInstants` input change instants, and a report budget below the smallest report.
   [[nodiscard]] Expected<std::shared_ptr<Job>> submit(
       RecipeGraph::Node node, bool installed, Timestamp start, Timestamp end, Budget budget, Done done);
+  /// A series chunk: evaluates the installed `node` at the first `limit` instants after `after` (nullopt: from the
+  /// first) and at or before `until` (nullopt: no end) of its object clock, the entry stamps of the raw object inputs
+  /// of the node and of every upstream it reads and the real stamps of the findings it reads, sorted and unique: a
+  /// scalar side input adds none (D10). As `submit` does (one reservation, the job's own upstream results, nothing
+  /// published), except that an instant ends in a row or a gap and never stops the chunk, and that its time budget is
+  /// `kRowsMaxMillis`, which ends a chunk early. `seen` is the previous chunk's `Rows::seen` (invalid: no check): an
+  /// object input entry that arrived since then before `after` was in no clock, so the chunk starts from the first
+  /// instant instead (`Rows::restarted`). One at `after` does not: a latched source republishing its stamp would replay
+  /// the series at every tick. Null, with nothing submitted, when the clock has no instant in (`after`, `until`] and
+  /// nothing arrived late. Rejected: an upstream removed or no longer providing.
+  [[nodiscard]] Expected<std::shared_ptr<Job>> submitRows(
+      RecipeGraph::Node node, std::optional<Timestamp> after, std::optional<Timestamp> until, SequentialUID seen,
+      std::size_t limit, RowsDone done);
   /// Ends `job` and drops its callback. A run in flight sees the cancellation inside the interpreter; the job's results
-  /// and room go once the pool lets that run go. Nothing for a finished job.
-  void cancel(const std::shared_ptr<Job>& job);
+  /// and room go once the pool lets that run go. Nothing for a finished job. True when a run still holds its pool
+  /// thread and the job's room: `released` is then called, on the GUI thread, once the pool lets it go, unless the
+  /// runner is gone or the pool discards the publication first.
+  bool cancel(const std::shared_ptr<Job>& job, std::function<void()> released = {});
 
   /// The report as `poll_evaluation` returns it; every nanosecond count a JSON integer.
   [[nodiscard]] static std::string toJson(const Report& report);
 
  private:
+  /// A job over `node` and the upstreams it reads (each once, upstreams first; the findings among them, which are read,
+  /// never evaluated, go to `findings`), guarded by the revisions of the installed ones and the dataset's epoch.
+  [[nodiscard]] Expected<std::shared_ptr<Job>> chainJob(
+      RecipeGraph::Node node, bool installed, std::vector<std::string>& findings) const;
+  /// Puts the job in the budget's line; its room starts it.
+  void waitForRoom(const std::shared_ptr<Job>& job);
+  /// A series chunk's instant at hand has no row: counts the gap, keeps its first reason, moves to the next instant.
+  static void skipInstant(Job& job, std::string_view reason);
   /// GUI thread: evaluates the job's chain from where it stands until a run is submitted or the job ends.
   void advance(const std::shared_ptr<Job>& job);
   /// GUI thread, once per run: takes its result into the job's memo (and, for the node, the report), then advances.

@@ -346,6 +346,30 @@ void DataEngine::evictTopicHistory(TopicId topic_id) {
   }
 }
 
+Expected<TopicId> DataEngine::createColumnGroupTopic(
+    DatasetId dataset_id, const std::string& topic_name, const std::string& schema_name,
+    const std::vector<GroupColumn>& columns) {
+  std::vector<std::shared_ptr<TypeTreeNode>> fields;
+  fields.reserve(columns.size());
+  for (const GroupColumn& column : columns) {
+    fields.push_back(makePrimitive(column.name, column.type));
+  }
+  std::unique_lock<std::recursive_mutex> lock(impl_->mutex_);  // the registry is unsynchronized
+  auto schema = impl_->type_registry.registerOrGet(schema_name, makeStruct(schema_name, std::move(fields)));
+  if (!schema.has_value()) {
+    return unexpected(schema.error());
+  }
+  return createTopicLocked(
+      dataset_id, TopicDescriptor{.name = topic_name, .schema_id = *schema, .dataset_id = dataset_id}, 0);
+}
+
+void DataEngine::clearTopicHistory(TopicId topic_id) {
+  std::unique_lock<std::recursive_mutex> lock(impl_->mutex_);
+  if (auto it = impl_->topics.find(topic_id); it != impl_->topics.end()) {
+    it.value()->clearChunks();
+  }
+}
+
 void DataEngine::retireTopic(TopicId topic_id) {
   std::unique_lock<std::recursive_mutex> lock(impl_->mutex_);
   // Mirror replaceDatasetFrom's retire: exclude the id from listTopics (the catalog

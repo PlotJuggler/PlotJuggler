@@ -130,6 +130,10 @@ class InputStager {
   /// nothing is fetched; an upstream's output is skipped (the caller follows the upstream's own inputs). nullopt when
   /// none has a sample: any stamp, zero and negative included, is one.
   [[nodiscard]] std::optional<Timestamp> newestInputStamp(const RecipeGraph::Node& node) const;
+  /// GUI thread. The oldest of the newest stamps of `node`'s raw inputs, by the lookups `newestInputStamp` makes: how
+  /// far a live clock is complete. nullopt when one of them has no sample; the greatest timestamp when `node` has no
+  /// raw input.
+  [[nodiscard]] std::optional<Timestamp> laggingInputStamp(const RecipeGraph::Node& node) const;
   /// GUI thread. Appends to `out` the identity each raw input of `node` (upstream outputs skipped) resolves to at `t`,
   /// as `stage` keys it, or a marker for one with nothing at or before `t`; false when any had nothing.
   bool appendRawIdentities(const RecipeGraph::Node& node, Timestamp t, std::vector<uint64_t>& out) const;
@@ -142,16 +146,21 @@ class InputStager {
   /// `stage`'s.
   [[nodiscard]] static Expected<Decoded> decode(const ObjectStore& store, const Staged& staged);
 
+  /// The object topic `name` of `dataset`, remembered by id and checked against the store's id index on each use, so
+  /// a topic removed or registered again under the name is found again (one scan) and the common case scans nothing.
+  /// GUI thread only.
+  [[nodiscard]] std::optional<ObjectTopicId> topicOf(DatasetId dataset, const std::string& name) const;
+
  private:
+  /// Calls `visit` with the newest stamp of each raw input of `node`, nullopt for one with no sample.
+  void visitNewestStamps(
+      const RecipeGraph::Node& node, const std::function<void(std::optional<Timestamp>)>& visit) const;
   /// Resolves the raw input `binding` at `t` as `stage` does: appends its identity to `key`, a video topic's content
   /// revision to `video_content`, and sets `input`'s value. The stamp it resolved; nullopt when it has nothing at or
   /// before `t`.
   std::optional<Timestamp> stageRaw(
       const RecipeGraph::Node& node, const RecipeGraph::Binding& binding, Timestamp t, std::vector<uint64_t>& key,
       std::vector<uint64_t>& video_content, Input& input) const;
-  /// The object topic `name` of `dataset`, remembered by id and checked against the store's id index on each use, so
-  /// a topic removed or registered again under the name is found again (one scan) and the common case scans nothing.
-  std::optional<ObjectTopicId> topicOf(DatasetId dataset, const std::string& name) const;
 
   /// Hashes a string and a string_view alike, so `topics_` is looked up without a copy.
   struct NameHash {

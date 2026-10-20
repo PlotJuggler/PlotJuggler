@@ -287,6 +287,11 @@ class ObjectStore {
   // everything at-or-before t. A time-window replay cursor advances to it so a
   // late out-of-order entry is not re-detected every step. O(count with ts <= t).
   SequentialUID maxUidAtOrBefore(ObjectTopicId id, Timestamp t) const;
+  // The oldest timestamp among the retained entries that arrived after `after` (sequential_uid > after), or nullopt
+  // when none (or the topic is unknown): a consumer that evaluated everything up to some time, as the store held it
+  // at `after`, finds an out-of-order or same-stamp arrival at or before that time. Decode-free;
+  // O(log n + those entries), so a cursor with nothing new costs one binary search.
+  std::optional<Timestamp> oldestArrivalAfter(ObjectTopicId id, SequentialUID after) const;
 
   // One entry's stable identity plus its store timestamp, as returned by
   // rangeByTime() and latestEntryIdAt(). Decode-free — resolve the payload later

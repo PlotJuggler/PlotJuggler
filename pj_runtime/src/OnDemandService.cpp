@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -14,6 +15,11 @@ namespace {
 NodeScheduler::RunFunction& runForTest() {
   static NodeScheduler::RunFunction run;
   return run;
+}
+
+std::function<std::chrono::steady_clock::time_point()>& clockForTest() {
+  static std::function<std::chrono::steady_clock::time_point()> now;
+  return now;
 }
 
 NodeScheduler::Hooks withRun(NodeScheduler::Hooks hooks) {
@@ -52,6 +58,7 @@ GridRunner::Hooks evaluationHooks(const OnDemandService::Services& services) {
   hooks.run = scheduling.run;
   hooks.image_decoder = scheduling.image_decoder;
   hooks.video_source = scheduling.video_source;
+  hooks.now = clockForTest();
   return hooks;
 }
 
@@ -61,13 +68,22 @@ void OnDemandService::setRunForTest(NodeScheduler::RunFunction run) {
   runForTest() = std::move(run);
 }
 
-OnDemandService::OnDemandService(ObjectStore& store, EnginePool& pool, InFlightBudget& budget, Services services)
+void OnDemandService::setClockForTest(std::function<std::chrono::steady_clock::time_point()> now) {
+  clockForTest() = std::move(now);
+}
+
+OnDemandService::OnDemandService(
+    ObjectStore& store, DataEngine& engine, EnginePool& pool, InFlightBudget& budget, Services services)
     : pool_(pool),
       graph_(std::move(services.resolver)),
       history_(store, services.limits),
       stager_(store, history_, std::move(services.scalars), std::move(services.parsers)),
       evaluations_(store, graph_, history_, stager_, pool, budget, evaluationHooks(services)),
       scheduler_(store, graph_, history_, stager_, pool, budget, withRun(services.scheduling)),
+      series_(
+          engine, graph_, evaluations_,
+          {std::move(services.series_changed), std::move(services.series_state_changed),
+           [this](const RecipeGraph::Node& node) { return seriesLiveEdge(node); }}),
       installed_(std::move(services.installed)),
       epoch_(std::move(services.scheduling.epoch)),
       tf_revision_(std::move(services.scheduling.tf_revision)) {}
@@ -85,7 +101,9 @@ Expected<std::vector<ObjectTopicId>> OnDemandService::install(RecipeGraph::Recip
   if (previous && node.revision == previous->revision) {
     return std::vector<ObjectTopicId>{};
   }
-  auto retired = history_.install(node);
+  Status series = series_.check(node);
+  Expected<std::vector<ObjectTopicId>> retired =
+      series ? history_.install(node) : Expected<std::vector<ObjectTopicId>>(unexpected(std::move(series.error())));
   if (!retired) {
     // The history kept the previous revision, so the graph does too and nothing is superseded. A writer racing the
     // history's name check is its one exception: the history then refuses to publish until the next install.
@@ -97,13 +115,15 @@ Expected<std::vector<ObjectTopicId>> OnDemandService::install(RecipeGraph::Recip
     }
     return unexpected(std::move(error));
   }
+  const auto names = demand_.find(node.dataset);
+  series_.install(node, names != demand_.end() && names->second.contains(key));
   const std::vector<std::string> readers = graph_.dependentsOf({key});
   for (const std::string& reader : readers) {
     history_.clear(reader);
   }
   scheduler_.supersede(key);
   for (const std::string& reader : readers) {
-    scheduler_.supersede(reader);
+    supersede(reader);
   }
   if (installed_) {
     installed_(key, restoring_ ? std::vector<ObjectTopicId>{} : *retired);
@@ -120,8 +140,9 @@ std::vector<ObjectTopicId> OnDemandService::remove(std::string_view key) {
     live_.erase(live);
   }
   std::vector<ObjectTopicId> retired = history_.forget(key);
+  series_.remove(key);
   for (const std::string& reader : graph_.dependentsOf({std::string(key)})) {
-    scheduler_.supersede(reader);
+    supersede(reader);
   }
   return retired;
 }
@@ -132,6 +153,7 @@ bool OnDemandService::clearExcept(RestoreIntent intent, const std::unordered_set
   for (const std::string& key : removed) {
     scheduler_.forget(key);
     live_.erase(key);
+    series_.park(key);
   }
   cleared_.insert(cleared_.end(), removed.begin(), removed.end());
   return !removed.empty();
@@ -147,8 +169,9 @@ std::vector<ObjectTopicId> OnDemandService::sweepUnclaimed() {
       unclaimed.push_back(key);
     }
   }
+  series_.sweepParked();
   for (const std::string& reader : graph_.dependentsOf(unclaimed)) {
-    scheduler_.supersede(reader);
+    supersede(reader);
   }
   return retired;
 }
@@ -160,16 +183,24 @@ void OnDemandService::rerun(const std::vector<std::string>& keys) {
     history_.clear(key);
   }
   for (const std::string& key : affected) {
-    scheduler_.supersede(key);
+    supersede(key);
   }
 }
 
+void OnDemandService::supersede(std::string_view reader) {
+  scheduler_.supersede(reader);
+  series_.invalidate(reader);
+}
+
 void OnDemandService::setDemand(DatasetId dataset, std::vector<std::string> topic_names) {
+  static const std::unordered_set<std::string> kNone;
   if (topic_names.empty()) {
     demand_.erase(dataset);
   } else {
     demand_[dataset] = {std::make_move_iterator(topic_names.begin()), std::make_move_iterator(topic_names.end())};
   }
+  const auto names = demand_.find(dataset);
+  series_.setDemand(dataset, names != demand_.end() ? names->second : kNone);
 }
 
 bool OnDemandService::isDemanded(std::string_view key) const {
@@ -239,6 +270,15 @@ std::optional<Timestamp> OnDemandService::liveEdgeOf(std::string_view key) const
   return edge;
 }
 
+std::optional<Timestamp> OnDemandService::seriesLiveEdge(const RecipeGraph::Node& node) const {
+  std::optional<Timestamp> edge = std::numeric_limits<Timestamp>::max();
+  visitWithUpstreams(graph_, node, [&](const RecipeGraph::Node& current) {
+    const std::optional<Timestamp> lagging = edge ? stager_.laggingInputStamp(current) : std::nullopt;
+    edge = edge && lagging ? std::optional(std::min(*edge, *lagging)) : std::nullopt;
+  });
+  return edge;
+}
+
 OnDemandService::LiveRequest OnDemandService::liveRequestOf(const RecipeGraph::Node& node, Timestamp t) const {
   LiveRequest request;
   request.t = t;
@@ -277,6 +317,7 @@ void OnDemandService::followLiveEdge(DatasetId dataset) {
     last = std::move(request);
     scheduler_.requestAt(key, *t);
   }
+  series_.appendLive(dataset);
 }
 
 void OnDemandService::restartLiveEdge(DatasetId dataset) {
@@ -290,7 +331,7 @@ std::vector<RecipeGraph::Binding> OnDemandService::displayedRawInputs(DatasetId 
   std::vector<RecipeGraph::Binding> inputs;
   for (const std::string& key : graph_.keysOf(dataset)) {
     const RecipeGraph::Node& root = *graph_.find(key);
-    if (!displayed(root)) {
+    if (!displayed(root) && !series_.isDemanded(key)) {
       continue;
     }
     visitWithUpstreams(graph_, root, [&inputs](const RecipeGraph::Node& node) {
@@ -307,6 +348,12 @@ std::vector<RecipeGraph::Binding> OnDemandService::displayedRawInputs(DatasetId 
 void OnDemandService::suspend(DatasetId dataset) {
   history_.clearDataset(dataset);
   scheduler_.hold(dataset);
+  series_.suspend(dataset);
+}
+
+void OnDemandService::resume(DatasetId dataset) {
+  scheduler_.release(dataset);
+  series_.resume(dataset);
 }
 
 }  // namespace PJ

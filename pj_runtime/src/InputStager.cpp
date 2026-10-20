@@ -155,24 +155,40 @@ std::optional<ObjectTopicId> InputStager::topicOf(DatasetId dataset, const std::
   return found;
 }
 
-std::optional<Timestamp> InputStager::newestInputStamp(const RecipeGraph::Node& node) const {
+void InputStager::visitNewestStamps(
+    const RecipeGraph::Node& node, const std::function<void(std::optional<Timestamp>)>& visit) const {
   constexpr Timestamp kNewest = std::numeric_limits<Timestamp>::max();
-  std::optional<Timestamp> newest;
-  const auto take = [&newest](Timestamp stamp) { newest = std::max(newest.value_or(stamp), stamp); };
   for (const RecipeGraph::Binding& binding : node.bindings) {
     if (!binding.upstream.empty()) {
       continue;
     }
     if (binding.object_type != sdk::BuiltinObjectType::kNone) {
       const std::optional<ObjectTopicId> topic = topicOf(node.dataset, binding.name);
-      if (const auto entry = topic ? store_.latestEntryIdAt(*topic, kNewest) : std::nullopt) {
-        take(entry->timestamp);
-      }
-    } else if (const std::optional<ScalarSample> sample = scalars_(node.dataset, binding.name, kNewest)) {
-      take(sample->timestamp);
+      const auto entry = topic ? store_.latestEntryIdAt(*topic, kNewest) : std::nullopt;
+      visit(entry ? std::optional(entry->timestamp) : std::nullopt);
+    } else {
+      const std::optional<ScalarSample> sample = scalars_(node.dataset, binding.name, kNewest);
+      visit(sample ? std::optional(sample->timestamp) : std::nullopt);
     }
   }
+}
+
+std::optional<Timestamp> InputStager::newestInputStamp(const RecipeGraph::Node& node) const {
+  std::optional<Timestamp> newest;
+  visitNewestStamps(node, [&newest](std::optional<Timestamp> stamp) {
+    if (stamp) {
+      newest = std::max(newest.value_or(*stamp), *stamp);
+    }
+  });
   return newest;
+}
+
+std::optional<Timestamp> InputStager::laggingInputStamp(const RecipeGraph::Node& node) const {
+  std::optional<Timestamp> lagging = std::numeric_limits<Timestamp>::max();
+  visitNewestStamps(node, [&lagging](std::optional<Timestamp> stamp) {
+    lagging = lagging && stamp ? std::optional(std::min(*lagging, *stamp)) : std::nullopt;
+  });
+  return lagging;
 }
 
 Expected<InputStager::Decoded> InputStager::decode(const ObjectStore& store, const Staged& staged) {

@@ -1446,6 +1446,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(
       streaming_manager_.get(), &StreamingSourceManager::streamStopped, this,
       [this, refresh_streaming_seek_lock](DatasetId id, const QString& reason) {
+        session_->sessionManager().notifyStreamEnded(id);
         if (active_streaming_dataset_id_ == id) {
           active_streaming_dataset_id_ = 0;
           session_->setActiveStreamingDataset(0);
@@ -2905,16 +2906,10 @@ QSet<QString> MainWindow::captureHistoryDataUniverse() const {
   const QChar separator(QLatin1Char('\x1f'));
   const auto signature = [separator](const QStringList& fields) { return fields.join(separator); };
 
-  // Processor outputs belong to workspace state and may be recreated by undo.
+  // Processor outputs and on-demand series belong to workspace state and may be recreated by undo.
   // Only raw inputs constrain whether an older snapshot remains restorable.
-  const DataProcessorService& processors = session_->sessionManager().dataProcessorService();
-  std::unordered_set<TopicId> processor_outputs = processors.ephemeralOutputTopics();
-  for (const DataProcessorService::FilterRecipe& recipe : processors.recipes()) {
-    processor_outputs.insert(recipe.output_topic_id);
-  }
-  for (const DataProcessorService::TransformRecipe& recipe : processors.transformRecipes()) {
-    processor_outputs.insert(recipe.output_topic_ids.begin(), recipe.output_topic_ids.end());
-  }
+  const std::unordered_set<TopicId> processor_outputs =
+      session_->sessionManager().derivedScalarTopics(/*ephemeral_only=*/false);
 
   // Use datastore identities, including hidden catalog rows. A processor can
   // retain a raw dependency after its input has disappeared from the browser.

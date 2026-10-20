@@ -732,8 +732,7 @@ std::uint64_t CatalogModel::catalogFingerprint() const {
     // Ephemeral (preview) transform outputs are excluded from the catalog, so they
     // must not move the fingerprint either — otherwise each preview keystroke (which
     // mints a fresh output topic id) would trip a full catalog rebuild.
-    const std::unordered_set<TopicId> ephemeral_outputs =
-        impl_->session->dataProcessorService().ephemeralOutputTopics();
+    const std::unordered_set<TopicId> ephemeral_outputs = impl_->session->derivedScalarTopics(/*ephemeral_only=*/true);
     for (const DatasetId dataset_id : reader.listDatasets()) {
       fp += mix(1, dataset_id);
       {
@@ -821,7 +820,7 @@ void CatalogModel::rebuildNow() {
   // Ephemeral (preview) transform outputs are intentionally NOT catalogued — the
   // Transform Editor's live preview materializes a real output topic, and it must
   // never surface in the Sources tree regardless of when a rebuild fires.
-  const std::unordered_set<TopicId> ephemeral_outputs = impl_->session->dataProcessorService().ephemeralOutputTopics();
+  const std::unordered_set<TopicId> ephemeral_outputs = impl_->session->derivedScalarTopics(/*ephemeral_only=*/true);
 
   // issue #98: a plugin-provided display name (set via setDatasetDisplayName)
   // overrides the file-derived source_name label, with the same '/'→'_'

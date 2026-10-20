@@ -503,6 +503,16 @@ SequentialUID ObjectStore::maxUidAtOrBefore(ObjectTopicId id, Timestamp t) const
   return series->ordered.maxUidAtOrBefore(t);
 }
 
+std::optional<Timestamp> ObjectStore::oldestArrivalAfter(ObjectTopicId id, SequentialUID after) const {
+  std::shared_lock store_lock(store_mutex_);
+  const auto* series = findSeries(id);
+  if (series == nullptr) {
+    return std::nullopt;
+  }
+  std::shared_lock lock(series->mutex);
+  return series->ordered.oldestTimestampAfterUid(after);
+}
+
 std::optional<ObjectStore::TimeRangeEntry> ObjectStore::latestEntryIdAt(ObjectTopicId id, Timestamp timestamp) const {
   std::shared_lock store_lock(store_mutex_);
   const auto* series = findSeries(id);

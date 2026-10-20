@@ -154,6 +154,8 @@ struct GridRunner::Result {
   std::vector<std::pair<std::string, InputStager::Override>> outputs;  ///< the object outputs, as readers stage them
   std::map<std::string, sdk::EvaluationOutput> report;                 ///< the evaluated node's outputs, summarized
   std::vector<sdk::DataProcessorOutput> types;  ///< ... and their types, for a node that declares none
+  std::vector<double> row;                      ///< a series chunk's node: its number outputs, in declaration order
+  std::string gap;                              ///< ... or why it has no row
 };
 
 /// One evaluation. GUI thread, except the run fields, which the worker writes between a submission and its
@@ -187,6 +189,11 @@ struct GridRunner::Job {
   InputStager::Staged staged;                                   ///< the run's inputs
   StagedRun ran;                                                ///< written by the worker
   std::map<std::string, sdk::EvaluationOutput> report_outputs;  ///< written by the worker, for the evaluated node
+  /// A series chunk (`submitRows`): what it wrote so far, the indices of the node's number outputs, and its callback.
+  std::optional<Rows> rows;
+  std::vector<std::size_t> columns;
+  RowsDone rows_done;
+  std::function<void()> released;  ///< `cancel`'s, called when the cancelled run's publication lets it go
 };
 
 namespace {
@@ -302,22 +309,116 @@ GridRunner::GridRunner(
   }
 }
 
+namespace {
+
+/// Visits, ascending and each once, the union of the ascending `ranges`; false when `visit` stopped it.
+// ponytail: a linear scan of the range heads per instant; a heap if jobs ever read many inputs.
+template <typename Visit>
+bool mergeRanges(std::vector<std::pair<const Timestamp*, const Timestamp*>> heads, Visit&& visit) {
+  for (;;) {
+    const Timestamp* lowest = nullptr;
+    for (const auto& [from, to] : heads) {
+      if (from != to && (lowest == nullptr || *from < *lowest)) {
+        lowest = from;
+      }
+    }
+    if (lowest == nullptr) {
+      return true;
+    }
+    const Timestamp instant = *lowest;
+    for (auto& [from, to] : heads) {
+      while (from != to && *from == instant) {
+        ++from;
+      }
+    }
+    if (!visit(instant)) {
+      return false;
+    }
+  }
+}
+
+/// The raw inputs the chain reads, each once: its object topics and its scalar series, by bare name.
+struct RawInputs {
+  std::set<std::string> objects;
+  std::map<std::string, std::string> scalars;  // series name -> the alias a step reads it by
+};
+RawInputs rawInputsOf(const GridRunner::Job& job) {
+  RawInputs inputs;
+  for (const GridRunner::Job::Step& step : job.chain) {
+    for (std::size_t index = 0; index < step.node.bindings.size(); ++index) {
+      const RecipeGraph::Binding& binding = step.node.bindings[index];
+      if (binding.upstream.empty() && binding.object_type == sdk::BuiltinObjectType::kNone) {
+        inputs.scalars.emplace(binding.name, step.node.recipe.inputs[index]);
+      } else if (binding.upstream.empty()) {
+        inputs.objects.insert(binding.name);
+      }
+    }
+  }
+  return inputs;
+}
+
+/// The object topics among `names` in `dataset` that exist, through the stager's remembered ids.
+std::vector<ObjectTopicId> objectTopics(
+    const InputStager& stager, DatasetId dataset, const std::set<std::string>& names) {
+  std::vector<ObjectTopicId> topics;
+  for (const std::string& name : names) {
+    if (const std::optional<ObjectTopicId> topic = stager.topicOf(dataset, name)) {
+      topics.push_back(*topic);
+    }
+  }
+  return topics;
+}
+
+/// The entry stamps of `topics`, each view holding its topic's read lock, empty ones included.
+std::vector<EntryTimestampsView> entryTimes(const ObjectStore& store, const std::vector<ObjectTopicId>& topics) {
+  std::vector<EntryTimestampsView> views;
+  views.reserve(topics.size());
+  for (const ObjectTopicId topic : topics) {
+    views.push_back(store.entryTimestamps(topic));
+  }
+  return views;
+}
+
+/// The real result stamps of the findings, sorted: in a chain, a finding is an input only from its stamp.
+std::vector<Timestamp> findingStamps(const ResultHistory& history, const std::vector<std::string>& findings) {
+  std::vector<Timestamp> stamps;
+  for (const std::string& finding : findings) {
+    if (const auto shown = history.shownAt(finding, std::numeric_limits<Timestamp>::max())) {
+      stamps.push_back(shown->stamp);
+    }
+  }
+  std::ranges::sort(stamps);
+  return stamps;
+}
+
+}  // namespace
+
+Expected<std::shared_ptr<GridRunner::Job>> GridRunner::chainJob(
+    RecipeGraph::Node node, bool installed, std::vector<std::string>& findings) const {
+  auto job = std::make_shared<Job>();
+  job->epoch = hooks_.epoch ? hooks_.epoch(node.dataset) : 0;
+  if (installed) {
+    job->guards.emplace_back(node.recipe.key(), node.revision);
+  }
+  if (Status chained = appendChain(graph_, std::move(node), installed, *job, findings); !chained) {
+    return unexpected(chained.error());
+  }
+  return job;
+}
+
 Expected<std::shared_ptr<GridRunner::Job>> GridRunner::submit(
     RecipeGraph::Node node, bool installed, Timestamp start, Timestamp end, Budget budget, Done done) {
   if (end < start) {
     return unexpected("on-demand: the window ends before it starts");
   }
-  auto job = std::make_shared<Job>();
-  job->budget = clamp(budget);
   const DatasetId dataset = node.dataset;
-  job->epoch = hooks_.epoch ? hooks_.epoch(dataset) : 0;
-  if (installed) {
-    job->guards.emplace_back(node.recipe.key(), node.revision);
-  }
   std::vector<std::string> findings;
-  if (Status chained = appendChain(graph_, std::move(node), installed, *job, findings); !chained) {
-    return unexpected(chained.error());
+  Expected<std::shared_ptr<Job>> made = chainJob(std::move(node), installed, findings);
+  if (!made) {
+    return made;
   }
+  std::shared_ptr<Job> job = std::move(*made);
+  job->budget = clamp(budget);
 
   // The leading gap first: up to the newest of the raw inputs' oldest samples, where the grid starts. Then the grid:
   // the sorted union of that start and every input change instant from it to the window's end, counted (each instant
@@ -327,21 +428,10 @@ Expected<std::shared_ptr<GridRunner::Job>> GridRunner::submit(
         "on-demand: the window holds more than " + std::to_string(kMaxGridInstants) +
         " input change instants; evaluate a shorter one");
   };
-  std::set<std::string> objects;
-  std::map<std::string, std::string> scalars;  // series name -> the alias a step reads it by
-  for (const Job::Step& step : job->chain) {
-    for (std::size_t index = 0; index < step.node.bindings.size(); ++index) {
-      const RecipeGraph::Binding& binding = step.node.bindings[index];
-      if (binding.upstream.empty() && binding.object_type == sdk::BuiltinObjectType::kNone) {
-        scalars.emplace(binding.name, step.node.recipe.inputs[index]);
-      } else if (binding.upstream.empty()) {
-        objects.insert(binding.name);
-      }
-    }
-  }
+  const RawInputs inputs = rawInputsOf(*job);
   Timestamp from = start;  // past `end`: the gap covers the whole window, and the grid is empty
   std::vector<std::vector<Timestamp>> scalar_instants;
-  for (const auto& [name, alias] : scalars) {
+  for (const auto& [name, alias] : inputs.scalars) {
     if (!hooks_.scalar_changes) {
       break;
     }
@@ -357,14 +447,11 @@ Expected<std::shared_ptr<GridRunner::Job>> GridRunner::submit(
     from = std::max(from, changes.first.value_or(start));
     scalar_instants.push_back(std::move(changes.instants));
   }
-  std::vector<EntryTimestampsView> views;  // each holds its topic's read lock until the grid is built
-  for (const std::string& name : objects) {
-    const std::optional<ObjectTopicId> topic = store_.findTopic(dataset, name);
-    EntryTimestampsView times = topic ? store_.entryTimestamps(*topic) : EntryTimestampsView{};
-    if (!times.empty()) {
-      from = std::max(from, times[0]);
-      views.push_back(std::move(times));
-    }
+  std::vector<EntryTimestampsView> views =
+      entryTimes(store_, objectTopics(stager_, dataset, inputs.objects));  // locked until the grid is built
+  std::erase_if(views, [](const EntryTimestampsView& times) { return times.empty(); });
+  for (const EntryTimestampsView& times : views) {
+    from = std::max(from, times[0]);
   }
   std::vector<std::pair<const Timestamp*, const Timestamp*>> ranges;
   if (from <= end) {
@@ -378,46 +465,16 @@ Expected<std::shared_ptr<GridRunner::Job>> GridRunner::submit(
     const Timestamp* first = std::lower_bound(times.begin(), times.end(), from);
     ranges.emplace_back(first, std::upper_bound(first, times.end(), end));
   }
-  std::vector<Timestamp> findings_at;
-  for (const std::string& finding : findings) {
-    const auto shown = history_.shownAt(finding, std::numeric_limits<Timestamp>::max());
-    if (shown && shown->stamp >= from && shown->stamp <= end) {
-      findings_at.push_back(shown->stamp);
-    }
-  }
-  std::ranges::sort(findings_at);
+  std::vector<Timestamp> findings_at = findingStamps(history_, findings);
+  std::erase_if(findings_at, [&](Timestamp stamp) { return stamp < from || stamp > end; });
   ranges.emplace_back(findings_at.data(), findings_at.data() + findings_at.size());
-  // ponytail: a linear scan of the range heads per instant; a heap if windows ever read many inputs.
-  const auto merge = [&ranges](auto&& visit) {
-    auto heads = ranges;
-    for (;;) {
-      const Timestamp* lowest = nullptr;
-      for (const auto& [from, to] : heads) {
-        if (from != to && (lowest == nullptr || *from < *lowest)) {
-          lowest = from;
-        }
-      }
-      if (lowest == nullptr) {
-        return true;
-      }
-      const Timestamp instant = *lowest;
-      for (auto& [from, to] : heads) {
-        while (from != to && *from == instant) {
-          ++from;
-        }
-      }
-      if (!visit(instant)) {
-        return false;
-      }
-    }
-  };
   std::size_t count = 0;
-  if (!merge([&count](Timestamp) { return ++count <= kMaxGridInstants; })) {
+  if (!mergeRanges(ranges, [&count](Timestamp) { return ++count <= kMaxGridInstants; })) {
     return refuse();
   }
   std::vector<Timestamp>& grid = job->grid;
   grid.reserve(count);
-  merge([&grid](Timestamp instant) {
+  mergeRanges(ranges, [&grid](Timestamp instant) {
     grid.push_back(instant);
     return true;
   });
@@ -438,10 +495,81 @@ Expected<std::shared_ptr<GridRunner::Job>> GridRunner::submit(
   }
 
   job->done = std::move(done);
+  waitForRoom(job);
+  return job;
+}
+
+Expected<std::shared_ptr<GridRunner::Job>> GridRunner::submitRows(
+    RecipeGraph::Node node, std::optional<Timestamp> after, std::optional<Timestamp> until, SequentialUID seen,
+    std::size_t limit, RowsDone done) {
+  const DatasetId dataset = node.dataset;
+  std::vector<std::size_t> columns;
+  for (std::size_t index = 0; index < node.recipe.outputs.size(); ++index) {
+    if (node.recipe.outputs[index].type == OutputType::kNumber) {
+      columns.push_back(index);
+    }
+  }
+  std::vector<std::string> findings;
+  Expected<std::shared_ptr<Job>> made = chainJob(std::move(node), true, findings);
+  if (!made) {
+    return made;
+  }
+  std::shared_ptr<Job> job = std::move(*made);
+  job->budget = clamp(Budget{.max_millis = kRowsMaxMillis});
+  job->rows.emplace();
+  const std::vector<ObjectTopicId> topics = objectTopics(stager_, dataset, rawInputsOf(*job).objects);
+  const std::vector<Timestamp> findings_at = findingStamps(history_, findings);
+  // The clock in (`from`, `until`], cut while every view holds its topic's read lock. `seen` is minted under those
+  // locks, so an entry with a greater uid is in no view.
+  const auto cut = [&](std::optional<Timestamp> from) {
+    const std::vector<EntryTimestampsView> views = entryTimes(store_, topics);
+    job->rows->seen = SequentialUID::getNext();
+    std::vector<std::pair<const Timestamp*, const Timestamp*>> ranges;
+    uint64_t left = 0;
+    const auto add = [&](const Timestamp* first, const Timestamp* last) {
+      first = from ? std::upper_bound(first, last, *from) : first;
+      last = until ? std::upper_bound(first, last, *until) : last;
+      left += static_cast<uint64_t>(last - first);
+      ranges.emplace_back(first, last);
+    };
+    for (const EntryTimestampsView& times : views) {
+      add(times.begin(), times.end());
+    }
+    add(findings_at.data(), findings_at.data() + findings_at.size());
+    job->grid.clear();
+    mergeRanges(ranges, [&job, limit](Timestamp instant) {
+      job->grid.push_back(instant);
+      return job->grid.size() < limit;
+    });
+    job->rows->left = left;
+  };
+  cut(after);
+  // Checked after the cut: an entry that missed the previous clock either shows here or has a uid past the new `seen`.
+  // Below the watermark only: a live clock ends at every input's newest entry, so an in-order arrival is never there.
+  const auto late = [&](ObjectTopicId topic) {
+    const std::optional<Timestamp> oldest = store_.oldestArrivalAfter(topic, seen);
+    return oldest && *oldest < *after;
+  };
+  if (after && seen.valid() && std::ranges::any_of(topics, late)) {
+    job->rows->restarted = true;
+    cut(std::nullopt);
+  }
+  if (job->grid.empty() && !job->rows->restarted) {
+    return std::shared_ptr<Job>{};
+  }
+  job->rows->times.reserve(job->grid.size());
+  job->rows->values.reserve(job->grid.size() * columns.size());
+  job->columns = std::move(columns);
+  job->rows_done = std::move(done);
+  waitForRoom(job);
+  return job;
+}
+
+void GridRunner::waitForRoom(const std::shared_ptr<Job>& job) {
   job->ticket = budget_.whenRoom(
       static_cast<std::size_t>(job->budget.max_bytes),
-      [this, alive = std::weak_ptr<const int>(lifetime_), weak = std::weak_ptr<Job>(job),
-       dataset](InFlightBudget::Reservation room) {
+      [this, alive = std::weak_ptr<const int>(lifetime_),
+       weak = std::weak_ptr<Job>(job)](InFlightBudget::Reservation room) {
         const std::shared_ptr<Job> granted = weak.lock();
         if (alive.expired() || granted == nullptr) {
           return;  // the room returns at once
@@ -459,24 +587,28 @@ Expected<std::shared_ptr<GridRunner::Job>> GridRunner::submit(
         granted->options.native_budget_bytes = static_cast<std::size_t>(granted->budget.max_bytes - vm);
         // One native ledger for every run of the job: what the chain keeps for its readers counts against them.
         granted->options.native_budget = scripting::makeNativeBudget(granted->options.native_budget_bytes);
+        const DatasetId dataset = granted->chain.back().node.dataset;
         granted->options.tf = hooks_.tf ? hooks_.tf(dataset) : nullptr;
         granted->tf_revision = granted->options.tf != nullptr ? granted->options.tf->revision() : 0;
         advance(granted);
       });
-  return job;
 }
 
-void GridRunner::cancel(const std::shared_ptr<Job>& job) {
+bool GridRunner::cancel(const std::shared_ptr<Job>& job, std::function<void()> released) {
   if (job == nullptr || job->finished) {
-    return;
+    return false;
   }
   job->finished = true;
   job->done = {};
+  job->rows_done = {};
   job->ticket = {};
   job->token.cancel();
   if (!job->running) {
-    release(*job);  // else the run's publication releases it
+    release(*job);
+    return false;
   }
+  job->released = std::move(released);  // the run's publication releases it
+  return true;
 }
 
 void GridRunner::advance(const std::shared_ptr<Job>& job) {
@@ -513,6 +645,10 @@ void GridRunner::advance(const std::shared_ptr<Job>& job) {
       return named == outputs.end() ? nullptr : &named->second;
     };
     Expected<InputStager::Staged> staged = stager_.stage(step.node, t, job->epoch, overrides);
+    if (!staged && job->rows) {
+      skipInstant(*job, staged.error());
+      continue;
+    }
     if (!staged) {
       finish(job, Stop::kError, std::move(staged.error()));
       return;
@@ -546,7 +682,7 @@ void GridRunner::submitRun(const std::shared_ptr<Job>& job, InputStager::Staged 
   job->running = true;
   EnginePool::Task task;
   task.compute = [store = &store_, run = hooks_.run, job,
-                  target = job->step + 1 == job->chain.size()](const EnginePool::CancelToken& token) {
+                  target = job->step + 1 == job->chain.size() && !job->rows](const EnginePool::CancelToken& token) {
     const Job::Step& running = job->chain[job->step];
     job->ran = runStaged(
         *store, job->staged, run, *running.node.compiled, running.node.recipe.params_json, running.node.recipe.outputs,
@@ -572,11 +708,21 @@ void GridRunner::collect(const std::shared_ptr<Job>& job, const EnginePool::Outc
   job->running = false;
   if (job->finished) {
     release(*job);  // cancelled: the pool let the run go
+    if (const std::function<void()> released = std::exchange(job->released, {})) {
+      released();
+    }
     return;
   }
   StagedRun ran = std::move(job->ran);
   if (replaced(*job)) {
     finish(job, Stop::kError, "on-demand: evaluation inputs were replaced");
+    return;
+  }
+  if (job->rows && (outcome.status == EnginePool::Outcome::Status::kFailed || !ran.result)) {
+    skipInstant(
+        *job, outcome.status == EnginePool::Outcome::Status::kFailed ? outcome.error : ran.result.error().message);
+    ran = {};
+    advance(job);
     return;
   }
   if (outcome.status == EnginePool::Outcome::Status::kFailed) {
@@ -601,7 +747,24 @@ void GridRunner::collect(const std::shared_ptr<Job>& job, const EnginePool::Outc
   if (bundle.observed_tf) {
     result.key->tf_revision = job->tf_revision;
   }
-  if (job->step + 1 == job->chain.size()) {
+  if (job->step + 1 == job->chain.size() && job->rows) {
+    // An installed node declares its outputs: one value per declaration, in its order.
+    result.row.reserve(job->columns.size());
+    for (const std::size_t index : job->columns) {
+      const scripting::NamedValue* output = index < bundle.outputs.size() ? &bundle.outputs[index] : nullptr;
+      const double* number = output != nullptr ? std::get_if<double>(&output->value) : nullptr;
+      if (number == nullptr || !std::isfinite(*number)) {
+        const std::string& name = step.node.recipe.outputs[index].name;
+        const auto* unavailable = output != nullptr ? std::get_if<Unavailable>(&output->value) : nullptr;
+        result.gap = number != nullptr        ? "on-demand: output '" + name + "' is not a finite number"
+                     : unavailable != nullptr ? "on-demand: output '" + name + "' unavailable: " + unavailable->reason
+                                              : "on-demand: output '" + name + "' unavailable";
+        result.row.clear();
+        break;
+      }
+      result.row.push_back(*number);
+    }
+  } else if (job->step + 1 == job->chain.size()) {
     result.report = std::move(job->report_outputs);
     if (step.node.recipe.outputs.empty()) {
       for (const scripting::NamedValue& output : bundle.outputs) {
@@ -640,13 +803,32 @@ bool GridRunner::proceed(const std::shared_ptr<Job>& job, const InputStager::Sta
     ++job->step;
     return true;
   }
-  if (!addBundle(*job, staged, *job->chain.back().memo)) {
+  if (job->rows) {
+    const Result& result = *job->chain.back().memo;
+    if (!result.gap.empty()) {
+      skipInstant(*job, result.gap);
+      return true;
+    }
+    job->rows->times.push_back(job->grid[job->next]);
+    job->rows->values.insert(job->rows->values.end(), result.row.begin(), result.row.end());
+    job->rows->through = job->grid[job->next];
+  } else if (!addBundle(*job, staged, *job->chain.back().memo)) {
     finish(job, Stop::kBudgetReport);
     return false;
   }
   job->step = 0;
   ++job->next;
   return true;
+}
+
+void GridRunner::skipInstant(Job& job, std::string_view reason) {
+  Rows& rows = *job.rows;
+  if (rows.gaps++ == 0) {
+    rows.first_gap = utf8Prefix(std::string(reason), kMaxErrorBytes);
+  }
+  rows.through = job.grid[job.next];
+  job.step = 0;
+  ++job.next;
 }
 
 bool GridRunner::addBundle(Job& job, const InputStager::Staged& staged, const Result& result) {
@@ -680,6 +862,17 @@ void GridRunner::finish(const std::shared_ptr<Job>& job, Stop stopped, std::stri
   job->finished = true;
   job->ticket = {};
   release(*job);  // no run computes: a job finishes between runs
+  if (job->rows) {
+    Rows rows = std::move(*job->rows);
+    rows.left -= std::min<uint64_t>(rows.left, job->next);
+    if (stopped == Stop::kError) {
+      rows.error = utf8Prefix(std::move(error), kMaxErrorBytes);
+    }
+    if (RowsDone done = std::exchange(job->rows_done, {})) {
+      done(std::move(rows));
+    }
+    return;
+  }
   Report& report = job->report;
   const uint64_t limit = job->budget.max_report_bytes;
   const auto size = [&](Stop stop, const std::string& reason) {

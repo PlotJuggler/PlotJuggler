@@ -259,6 +259,13 @@ entry's. A live time-window consumer that tracks "everything consumed up to `t`"
 must advance its cursor to this, not to `latestAt`'s UID, or a late out-of-order
 entry is re-detected every tick. O(count of entries with `ts <= t`).
 
+`oldestArrivalAfter(id, uid)` returns the oldest timestamp among the entries with
+UID strictly greater than `uid` (nullopt when none): a consumer that evaluated
+everything up to some time, as the store held it when `uid` was minted, finds an
+out-of-order or same-stamp arrival at or before that time without resolving
+anything. O(log n + those entries), so a cursor with nothing new costs one
+binary search (the on-demand series' late-arrival check).
+
 `rangeByTime(id, lo, hi)` returns the entries with `lo < ts <= hi` as
 `(uid, timestamp)` pairs in ascending-timestamp order — the correct primitive for
 a **time-window** consumer (e.g. incremental occupancy-grid updates). Use it

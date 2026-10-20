@@ -217,6 +217,11 @@ class SessionManager : public QObject {
   [[nodiscard]] OnDemandService& onDemandService() noexcept {
     return *on_demand_;
   }
+
+  /// The DataEngine topics the host derives (processor outputs and on-demand series), only the previews' when
+  /// `ephemeral_only`: what a reload must not treat as the file's, an undo snapshot as raw data, and the catalog list
+  /// when they are previews.
+  [[nodiscard]] std::unordered_set<TopicId> derivedScalarTopics(bool ephemeral_only) const;
   // The workers the derived-data engines run on; `waitIdle` publishes everything submitted.
   [[nodiscard]] EnginePool& enginePool() noexcept {
     return *engine_pool_;
@@ -443,6 +448,8 @@ class SessionManager : public QObject {
   // `dataset`, which a streaming tick names so that a tick of object topics only
   // (no scalar ids) still reaches them.
   void notifyIngest(QVector<PJ::TopicId> ids, bool live = false, std::optional<DatasetId> dataset = std::nullopt);
+  /// `dataset_id`'s stream ended: its on-demand series compute the tail past their live edge (`SeriesRunner::endLive`).
+  void notifyStreamEnded(DatasetId dataset_id);
   /// The dataset had a live announcement within the TF brake period (`setTfClock`'s clock): it streams now.
   [[nodiscard]] bool isLive(DatasetId dataset_id) const;
 

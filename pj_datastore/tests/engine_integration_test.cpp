@@ -3,12 +3,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -1534,6 +1536,77 @@ TEST(EngineIntegrationTest, RetireTopicHidesFromListButKeepsStorage) {
   EXPECT_FALSE(contains(engine.listTopics(*ds), tid));               // hidden from the catalog
   ASSERT_NE(engine.getTopicStorage(tid), nullptr);                   // storage object kept alive (reader-pointer safe)
   EXPECT_TRUE(engine.getTopicStorage(tid)->sealedChunks().empty());  // chunks reclaimed — no per-cycle leak
+}
+
+namespace {
+
+/// The (time, value) samples of column `column` of `topic`.
+std::vector<std::pair<Timestamp, double>> columnSamples(DataEngine& engine, TopicId topic, std::size_t column) {
+  std::vector<std::pair<Timestamp, double>> samples;
+  const DataReader reader(engine);
+  auto series = reader.series(topic, column);
+  if (series.has_value()) {
+    series->samples(Range<Timestamp>{std::numeric_limits<Timestamp>::min(), std::numeric_limits<Timestamp>::max()})
+        .forEach([&](const SeriesSample& sample) { samples.emplace_back(sample.timestamp, sample.value); });
+  }
+  return samples;
+}
+
+/// Writes one row of `values` at `t` into `topic` and commits it.
+void writeRow(DataEngine& engine, TopicId topic, Timestamp t, const std::vector<double>& values) {
+  DataWriter writer = engine.createWriter();
+  ASSERT_TRUE(writer.beginRow(topic, t).has_value());
+  for (std::size_t column = 0; column < values.size(); ++column) {
+    writer.set<double>(topic, column, values[column]);
+  }
+  ASSERT_TRUE(writer.finishRow(topic).has_value());
+  engine.commitChunks(writer.flushAll());
+}
+
+}  // namespace
+
+// A column group topic (an on-demand series, ARCHITECTURE §15): one float64 column per name, each readable as a series;
+// a second topic of the same columns reuses the registered schema.
+TEST(EngineIntegrationTest, ColumnGroupTopicHasOneSeriesPerColumn) {
+  DataEngine engine;
+  const DatasetId ds = engine.createDataset(DatasetDescriptor{.source_name = "s", .time_domain_id = 0}).value();
+  const std::vector<DataEngine::GroupColumn> columns{
+      {"n", PrimitiveType::kFloat64}, {"max_z", PrimitiveType::kFloat64}};
+  const auto topic = engine.createColumnGroupTopic(ds, "owner/ser", "derived_on_demand_owner/ser{n,max_z,}", columns);
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  EXPECT_EQ(engine.getTopicStorage(*topic)->descriptor().name, "owner/ser");
+  writeRow(engine, *topic, 10, {1.0, 0.5});
+  writeRow(engine, *topic, 20, {2.0, 0.7});
+  EXPECT_EQ(columnSamples(engine, *topic, 0), (std::vector<std::pair<Timestamp, double>>{{10, 1.0}, {20, 2.0}}));
+  EXPECT_EQ(columnSamples(engine, *topic, 1), (std::vector<std::pair<Timestamp, double>>{{10, 0.5}, {20, 0.7}}));
+
+  const auto again = engine.createColumnGroupTopic(ds, "owner/other", "derived_on_demand_owner/ser{n,max_z,}", columns);
+  ASSERT_TRUE(again.has_value()) << again.error();
+  EXPECT_EQ(
+      engine.getTopicStorage(*again)->descriptor().schema_id, engine.getTopicStorage(*topic)->descriptor().schema_id);
+  EXPECT_FALSE(engine.createColumnGroupTopic(DatasetId{999}, "x", "derived_x{n,}", columns).has_value())
+      << "an unknown dataset is refused";
+}
+
+// clearTopicHistory empties a topic for a replay that rewrites the same stamps: unlike evictTopicHistory, whose floor
+// hides every write at or below the old newest stamp, the rewritten rows are read back; the topic stays listed.
+TEST(EngineIntegrationTest, ClearTopicHistoryLetsAReplayRewriteTheSameStamps) {
+  DataEngine engine;
+  const DatasetId ds = engine.createDataset(DatasetDescriptor{.source_name = "s", .time_domain_id = 0}).value();
+  const TopicId topic =
+      engine
+          .createColumnGroupTopic(ds, "owner/ser", "derived_on_demand_owner/ser{n,}", {{"n", PrimitiveType::kFloat64}})
+          .value();
+  writeRow(engine, topic, 10, {1.0});
+  writeRow(engine, topic, 20, {2.0});
+
+  engine.clearTopicHistory(topic);
+  EXPECT_TRUE(columnSamples(engine, topic, 0).empty());
+  writeRow(engine, topic, 10, {3.0});
+  EXPECT_EQ(columnSamples(engine, topic, 0), (std::vector<std::pair<Timestamp, double>>{{10, 3.0}}));
+  const std::vector<TopicId> listed = engine.listTopics(ds);
+  EXPECT_NE(std::find(listed.begin(), listed.end(), topic), listed.end());
+  engine.clearTopicHistory(TopicId{12345});  // an unknown id is a no-op
 }
 
 // removeDataset is a REAL delete (unlike retireTopic's hide-but-keep): it erases the

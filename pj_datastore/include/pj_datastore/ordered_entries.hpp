@@ -191,6 +191,9 @@ class OrderedEntries {
   // the at-or-before prefix (an out-of-order insert can leave the newest-TIMESTAMP
   // entry's UID below a retained entry's). O(count with timestamp <= t).
   [[nodiscard]] SequentialUID maxUidAtOrBefore(Timestamp t) const;
+  // The smallest timestamp among the entries whose UID is greater than `after`, or nullopt when none: the oldest of
+  // what arrived since a cursor. O(log n + those entries).
+  [[nodiscard]] std::optional<Timestamp> oldestTimestampAfterUid(SequentialUID after) const;
 
   // --- Mutation ---
 

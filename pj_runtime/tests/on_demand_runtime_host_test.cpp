@@ -32,6 +32,8 @@
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_bench_stats.h"
 #include "pj_datastore/plugin_data_host.hpp"
+#include "pj_datastore/query.hpp"
+#include "pj_datastore/reader.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_plugins/sdk/evaluation_report.hpp"
 #include "pj_runtime/AppSession.h"
@@ -420,6 +422,48 @@ TEST(OnDemandRuntimeHostTest, EphemeralRecipeIsHiddenFromListButConfigAnswersThe
   const Finished done = fx.evaluate(installedAt("probe", 10 * kSec));
   EXPECT_EQ(done.state, EvaluationState::kCompleted);
   EXPECT_EQ(done.report.bundles.size(), 1u);
+}
+
+// SER-01, SER-11: a preview with an object input and a number output computes its series as its plugin's trial (no
+// display needed), and its config carries the series' report; the series is the topic `series.topic`, one column per
+// number output, while out_topics keep the bare number name the contract gives.
+TEST(OnDemandRuntimeHostTest, EphemeralConfigCarriesTheSeriesReport) {
+  Fixture fx;
+  auto made = request("trial");
+  made.flags = PJ_DATA_PROCESSOR_FLAG_EPHEMERAL;
+  const auto topics = fx.view.createV2(made);
+  ASSERT_TRUE(topics.has_value()) << topics.error();
+  EXPECT_EQ((*topics)[1], "count");
+  nlohmann::json series;
+  test::pumpUntil(
+      [&] {
+        series = fx.config("trial")["series"];
+        return series.is_object() && series["complete"] == true;
+      },
+      5000);
+  ASSERT_TRUE(series.is_object()) << fx.config("trial").dump();
+  EXPECT_EQ(series["rows"], 3);
+  EXPECT_EQ(series["failed"], 0);
+  EXPECT_EQ(series["done"], 3);
+  EXPECT_EQ(series["total"], 3);
+  EXPECT_EQ(series["stopped"], false);
+  EXPECT_EQ(series["first_error"], "");
+  const std::string name = series["topic"].get<std::string>();
+  EXPECT_EQ(name, fx.node(name)->recipe.key());
+  const DataReader reader = fx.manager.createReader();
+  const auto state = fx.manager.onDemandService().series().state(name);
+  ASSERT_TRUE(state.has_value());
+  EXPECT_EQ(reader.getMetadata(state->topic)->name, name);
+  const auto column = reader.series(state->topic, 0);
+  ASSERT_TRUE(column.has_value()) << column.error();
+  std::size_t rows = 0;
+  column->samples(Range<Timestamp>{0, 100 * kSec}).forEach([&rows](const SeriesSample&) { ++rows; });
+  EXPECT_EQ(rows, 3u) << "the number output is the series' one column";
+
+  auto pinned = request("pinned");
+  pinned.instant_ns = 10 * kSec;
+  ASSERT_TRUE(fx.view.createV2(pinned).has_value());
+  EXPECT_FALSE(fx.config("pinned").contains("series")) << "a finding has no series";
 }
 
 // A preview never holds a key a layout can name (a restore never clears a preview, and refuses one holding a wanted

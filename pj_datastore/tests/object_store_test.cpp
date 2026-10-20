@@ -803,6 +803,29 @@ TEST(ObjectStoreTest, MaxUidAtOrBeforeIsHighWaterNotLatestTimestamp) {
   EXPECT_EQ(store.latestAt(id, 1000)->sequential_uid, u_300);
 }
 
+// oldestArrivalAfter: the oldest timestamp among the entries that arrived after a cursor UID, so a consumer that
+// evaluated everything up to some time detects an out-of-order or same-stamp arrival at or before it.
+TEST(ObjectStoreTest, OldestArrivalAfterSeesLateAndSameStampEntries) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  EXPECT_FALSE(store.oldestArrivalAfter(id, SequentialUID{}).has_value()) << "empty topic";
+  EXPECT_FALSE(store.oldestArrivalAfter(ObjectTopicId{9999}, SequentialUID{}).has_value()) << "unknown topic";
+
+  ASSERT_TRUE(store.pushOwned(id, 100, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 200, makePayload(4)).has_value());
+  const SequentialUID cursor = store.latestAt(id, 200)->sequential_uid;
+  EXPECT_EQ(store.oldestArrivalAfter(id, SequentialUID{}), 100) << "everything arrived after the invalid UID";
+  EXPECT_FALSE(store.oldestArrivalAfter(id, cursor).has_value()) << "nothing arrived since";
+
+  ASSERT_TRUE(store.pushOwned(id, 300, makePayload(4)).has_value());
+  EXPECT_EQ(store.oldestArrivalAfter(id, cursor), 300) << "an in-order append";
+  ASSERT_TRUE(store.pushOwned(id, 150, makePayload(4)).has_value());  // out of order
+  ASSERT_TRUE(store.pushOwned(id, 200, makePayload(4)).has_value());  // same stamp
+  EXPECT_EQ(store.oldestArrivalAfter(id, cursor), 150);
+  const SequentialUID same_stamp = store.latestAt(id, 200)->sequential_uid;
+  EXPECT_FALSE(store.oldestArrivalAfter(id, same_stamp).has_value()) << "the same-stamp entry arrived last";
+}
+
 // Multiple out-of-order inserts, the second retargeting an already-shifted index.
 TEST(ObjectStoreTest, ArrivalCursorAfterMultipleOutOfOrderInserts) {
   ObjectStore store;

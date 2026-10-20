@@ -120,7 +120,7 @@ struct Fixture {
     }
     services.scheduling.published = [this](const std::string& key) { published.push_back(key); };
     services.scheduling.state_changed = [this](const std::string& key) { state_changes.push_back(key); };
-    return std::make_unique<OnDemandService>(store, pool, budget, std::move(services));
+    return std::make_unique<OnDemandService>(store, engine, pool, budget, std::move(services));
   }
 
   void install(RecipeGraph::Recipe recipe) {
