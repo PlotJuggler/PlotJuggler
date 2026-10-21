@@ -27,6 +27,9 @@ the behaviours each slice must keep, change by decision, or defer.
   macOS and Pixi are dispatched by hand on merge-ready heads (repo variable
   `PJ_CI_RELEASE_PR_LITE`).
 - Update ARCHITECTURE.md's section statuses and this tracker in the same pull request.
+- In SCENARIOS.md, edit only your slice's rows (and gaps). The summary counts and the area
+  table are computed: run `scripts/derived_objects_scenario_counts.py --fix`, never edit
+  them by hand (a pre-commit hook runs `--check`).
 
 ## Slices
 
