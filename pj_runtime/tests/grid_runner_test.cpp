@@ -79,6 +79,13 @@ RecipeGraph::Recipe recipe(
   return made;
 }
 
+/// `made` in Python: `body` is the indented body of its `evaluate`, which follows `imports`.
+RecipeGraph::Recipe inPython(RecipeGraph::Recipe made, const std::string& body, const std::string& imports = "") {
+  made.language = "python";
+  made.script = imports + "def evaluate(inputs, params):\n" + body;
+  return made;
+}
+
 std::vector<uint8_t> canonicalCloud(size_t points) {
   return serializeBuiltinObject(sdk::BuiltinObject(test::makeCloud(points))).value();
 }
@@ -101,7 +108,7 @@ class FakeRun {
 
   NodeScheduler::RunFunction function() {
     return [this](
-               const scripting::CompiledScript&, Span<const NamedValue> inputs, std::string_view params,
+               const scripting::CompiledOnDemandScript&, Span<const NamedValue> inputs, std::string_view params,
                Span<const OutputSpec> outputs,
                const RunOptions& options) { return run(inputs, params, outputs, options); };
   }
@@ -402,7 +409,8 @@ struct Fixture {
         }
         return name == "threshold" ? InputStager::sampleAt(engine, threshold.topic_id, 0, t) : std::nullopt;
       },
-      [](ObjectTopicId) { return SessionManager::ParserBinding{}; }};
+      [this](ObjectTopicId topic) { return parsers ? parsers(topic) : SessionManager::ParserBinding{}; }};
+  std::function<SessionManager::ParserBinding(ObjectTopicId)> parsers;  ///< empty: no topic has a parser
   FakeRun fake;
   InFlightBudget budget;  ///< outlives the pool: a run still on it holds its reservation
   EnginePool pool;        ///< after the store, the fake and the budget: destroyed first, joining the runs
@@ -1406,6 +1414,72 @@ TEST(GridRunnerTest, RetainedUpstreamObjectsCountAgainstTheJobsMemory) {
   EXPECT_EQ(window.parsed.evaluated, 2u);
 }
 
+// The Python twin, over builders: a Python builder's native charge lives in its output's keepalive, which a job's
+// upstream result keeps for its readers, so the chain stops on the job's memory as the Luau one does. Each step draws
+// 330k annotation points (5.3 MB): one fits the 12 MiB native share, three retained at once do not.
+TEST(GridRunnerTest, RetainedPythonBuilderOutputsCountAgainstTheJobsMemory) {
+  Fixture fx(4 * InFlightBudget::kRunBytes, /*real_run=*/true);
+  fx.pushCloud(10 * kSec);
+  const OutputSpec annotations{"ann", OutputType::kObject, sdk::BuiltinObjectType::kImageAnnotations};
+  const std::string draw = "pj.annotations.new(image_topic='/cam').points(points=[(0, 0)] * 330000, type='points')";
+  fx.install(inPython(recipe("first", {"cloud"}, {annotations}), "    return " + draw + ".finish()\n"));
+  fx.install(inPython(recipe("second", {"owner/first/ann"}, {annotations}), "    return " + draw + ".finish()\n"));
+  const auto counting = [&](const std::string& id, const std::string& input) {
+    return fx.bind(inPython(recipe(id, {input}, {numberSpec()}), "    return " + draw + ".finish().count()\n"));
+  };
+  const Budget twenty_four_mib{.max_bytes = 24u << 20};  // 12 MiB VM, 12 MiB native
+
+  const Evaluated alone = fx.evaluate(counting("alone", "cloud"), false, 10 * kSec, 10 * kSec, twenty_four_mib);
+  EXPECT_EQ(alone.parsed.stopped, Stop::kComplete) << alone.parsed.error;
+  const Evaluated chained =
+      fx.evaluate(counting("third", "owner/second/ann"), false, 10 * kSec, 10 * kSec, twenty_four_mib);
+  EXPECT_EQ(chained.parsed.stopped, Stop::kBudgetBytes) << chained.parsed.error;
+  EXPECT_EQ(chained.parsed.evaluated, 0u);
+}
+
+// A job's upstream result reaches its reader as an override that keeps what its object needs: a Python reader that
+// parks it past the run (on a class its module copy shares) keeps the upstream's parser library loaded, and the
+// payload's deleter (plugin code) runs before it unloads.
+TEST(GridRunnerTest, AnUpstreamObjectAPythonReaderParksKeepsItsParserLibraryLoaded) {
+  Fixture fx(4 * InFlightBudget::kRunBytes, /*real_run=*/true);
+  test::ParseProbe probe;
+  auto parser = std::make_shared<test::RawPointsParser>(probe);
+  ASSERT_TRUE(parser->bindSchema("raw_points", {}).has_value());
+  auto library = std::make_shared<int>(1);
+  const std::weak_ptr<int> loaded = library;
+  const ObjectTopicId lidar = fx.store.registerTopic({fx.dataset, "lidar", ""}).value();
+  fx.parsers = [lidar, parser, library = std::shared_ptr<void>(library), &probe](ObjectTopicId topic) {
+    return topic == lidar ? SessionManager::ParserBinding{parser.get(), probe.topic_lock, library}
+                          : SessionManager::ParserBinding{};
+  };
+  auto deletes_after_unload = std::make_shared<std::atomic<int>>(0);
+  ASSERT_TRUE(
+      fx.store.pushLazy(lidar, 10 * kSec, test::lazyPointsNotingUnload(loaded, deletes_after_unload)).has_value());
+  const std::string imports = "import statistics\n";
+  fx.install(inPython(recipe("first", {"lidar"}, {cloudSpec()}), "    return inputs['lidar']\n", imports));
+  const Evaluated parked = fx.evaluate(
+      fx.bind(inPython(
+          recipe("reader", {"owner/first/cropped"}, {numberSpec()}),
+          "    statistics.NormalDist.kept = inputs['owner/first/cropped']\n    return 1\n", imports)),
+      false, 10 * kSec, 10 * kSec);
+  ASSERT_EQ(parked.parsed.stopped, Stop::kComplete) << parked.parsed.error;
+
+  ASSERT_TRUE(fx.graph.remove("owner/first").has_value());
+  test::prune(fx.store, lidar);
+  fx.parsers = {};
+  library.reset();
+  EXPECT_FALSE(loaded.expired()) << "the parked proxy keeps the upstream's library loaded";
+
+  fx.pushCloud(10 * kSec);
+  const Evaluated released = fx.evaluate(
+      fx.bind(inPython(
+          recipe("release", {"cloud"}, {numberSpec()}), "    del statistics.NormalDist.kept\n    return 1\n", imports)),
+      false, 10 * kSec, 10 * kSec);
+  ASSERT_EQ(released.parsed.stopped, Stop::kComplete) << released.parsed.error;
+  EXPECT_EQ(deletes_after_unload->load(), 0);
+  EXPECT_TRUE(loaded.expired()) << "the proxy released the library with the object";
+}
+
 // ---- Errors --------------------------------------------------------------------------------------------------
 
 // ABI-14: a failing run ends the window with the one report shape: the bundles before it, `stopped: "error"` and
@@ -1590,6 +1664,27 @@ TEST(GridRunnerTest, InferredOutputsAreListedWhenNoneWereDeclared) {
   const Evaluated plain = fx.evaluate(fx.bind(declared), false, 10 * kSec, 10 * kSec);
   EXPECT_EQ(plain.json.find("\"outputs\":["), std::string::npos) << "no root outputs";
   EXPECT_EQ(numberAt(plain.parsed, 0), 3.0);
+}
+
+// A Python node's window evaluation runs the Python runner and reports exactly what its Luau twin reports: the same
+// bundles, values, inferred outputs, summaries and coverage.
+TEST(GridRunnerTest, PythonWindowEvaluationReportsLikeLuau) {
+  Fixture fx(4 * InFlightBudget::kRunBytes, /*real_run=*/true);
+  pushReferenceData(fx);
+  auto luau = recipe("probe", {"cloud"}, {});
+  luau.script =
+      "local inputs = ...\n"
+      "return { count = inputs.cloud:count(), label = 'ok', cloud = inputs.cloud, z = pj.unavailable('none') }\n";
+  const auto python = inPython(
+      luau,
+      "    cloud = inputs['cloud']\n"
+      "    return {'count': cloud.count(), 'label': 'ok', 'cloud': cloud, 'z': pj.unavailable('none')}\n");
+
+  const Evaluated expected = fx.evaluate(fx.bind(luau), false, 0, 25 * kSec);
+  ASSERT_EQ(expected.parsed.stopped, Stop::kComplete) << expected.parsed.error;
+  ASSERT_GE(expected.parsed.bundles.size(), 2u);
+  const Evaluated report = fx.evaluate(fx.bind(python), false, 0, 25 * kSec);
+  EXPECT_EQ(report.json, expected.json);
 }
 
 // Raw nanosecond counts are JSON integers, exact past 2^53, where a double would round them.

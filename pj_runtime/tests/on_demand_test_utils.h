@@ -105,6 +105,26 @@ inline RecipeGraph::Recipe onDemandRecipe(
   return recipe;
 }
 
+/// `onDemandRecipe` in Python: its script defines `evaluate` and returns nothing (a fake run ignores it).
+inline RecipeGraph::Recipe pythonRecipe(
+    std::string id, std::vector<std::string> inputs, std::vector<scripting::OutputSpec> outputs) {
+  RecipeGraph::Recipe recipe = onDemandRecipe(std::move(id), std::move(inputs), std::move(outputs));
+  recipe.language = "python";
+  recipe.script = "def evaluate(inputs, params):\n    return {}\n";
+  return recipe;
+}
+
+/// The thread of `pool`'s Python lane, where a task submitted to it runs; publishes everything submitted (GUI thread).
+inline std::thread::id pythonLaneThread(EnginePool& pool) {
+  auto seen = std::make_shared<std::thread::id>();
+  EnginePool::Task task;
+  task.compute = [seen](const EnginePool::CancelToken&) { *seen = std::this_thread::get_id(); };
+  task.publish = [](const EnginePool::Outcome&) {};
+  pool.submit(std::move(task), EnginePool::Lane::kPython);
+  pool.waitIdle();
+  return *seen;
+}
+
 /// What the fake parser saw.
 struct ParseProbe {
   std::shared_ptr<std::mutex> topic_lock = std::make_shared<std::mutex>();
@@ -135,6 +155,18 @@ class RawPointsParser : public MessageParserPluginBase {
     registerSchemaHandler("raw_points", std::move(handler));
   }
 };
+
+/// A lazy fetch of four raw points whose payload deleter (plugin code in production) counts itself in `late_deletes`
+/// when it runs after `library`, the parser's, has unloaded.
+inline LazyCallback lazyPointsNotingUnload(std::weak_ptr<int> library, std::shared_ptr<std::atomic<int>> late_deletes) {
+  auto bytes = std::make_shared<const std::vector<uint8_t>>(4 * kPointStride, 0);
+  return [bytes, library, late_deletes]() -> std::optional<sdk::PayloadView> {
+    return sdk::PayloadView{
+        {bytes->data(), bytes->size()}, sdk::BufferAnchor(bytes.get(), [bytes, library, late_deletes](const void*) {
+          *late_deletes += library.expired() ? 1 : 0;
+        })};
+  };
+}
 
 /// Removes every entry of `topic`.
 inline void prune(ObjectStore& store, ObjectTopicId topic) {
@@ -222,8 +254,8 @@ class FakeRun {
 
   NodeScheduler::RunFunction function() {
     return [this](
-               const scripting::CompiledScript&, Span<const scripting::NamedValue> inputs, std::string_view params,
-               Span<const scripting::OutputSpec> outputs,
+               const scripting::CompiledOnDemandScript&, Span<const scripting::NamedValue> inputs,
+               std::string_view params, Span<const scripting::OutputSpec> outputs,
                const scripting::RunOptions& options) { return run(inputs, params, outputs, options); };
   }
 

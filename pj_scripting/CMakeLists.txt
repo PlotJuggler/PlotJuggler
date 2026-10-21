@@ -197,6 +197,8 @@ set(PJ_SCRIPTING_SOURCES
   src/object_summary.cpp
   # One run's media state: the injected decoder, the image inputs, the decodes, the annotations' pairing.
   src/script_media.cpp
+  # A recipe's language picks its on-demand compiler and runner (Luau or Python).
+  src/on_demand_script.cpp
 )
 if(EMSCRIPTEN)
   list(APPEND PJ_SCRIPTING_SOURCES src/python_engine_unavailable.cpp src/python_object_script_unavailable.cpp)
@@ -286,8 +288,14 @@ if(PJ_BUILD_TESTS)
     pj_add_test_runner(pj_scripting_python_tests
       MAIN plain WARNINGS
       SOURCES tests/python_sandbox_test.cpp tests/python_object_script_test.cpp
-      LIBS pj_scripting pybind11::embed cpython::embed)
+      LIBS pj_scripting pj_scripting_python_test_probe pybind11::embed cpython::embed)
     target_include_directories(pj_scripting_python_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+    # Python probes (compiler runs, a held GIL) for tests outside this directory, which cannot see the CPython target.
+    add_library(pj_scripting_python_test_probe STATIC tests/python_test_probe.cpp)
+    target_include_directories(pj_scripting_python_test_probe PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_compile_features(pj_scripting_python_test_probe PUBLIC cxx_std_20)
+    target_link_libraries(pj_scripting_python_test_probe PRIVATE cpython::embed)
   endif()
 
   # --- M5: filter catalogue ---

@@ -12,10 +12,18 @@
 #include <pybind11/pybind11.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -134,7 +142,7 @@ py::object toPython(const nlohmann::json& value) {
   }
 }
 
-/// A scalar or object input, noting an image input in `media`; the caller has rejected unavailable inputs.
+/// A scalar or object input, noting a media input in `media`; the caller has rejected unavailable inputs.
 py::object toPython(const NamedValue& input, ScriptMedia& media) {
   if (const auto* number = std::get_if<double>(&input.value)) {
     return detail::checked(PyFloat_FromDouble(*number));
@@ -143,13 +151,7 @@ py::object toPython(const NamedValue& input, ScriptMedia& media) {
     return detail::newString(*text);
   }
   sdk::BuiltinObject object = detail::withStampShifted(std::get<sdk::BuiltinObject>(input.value), input.stamp_shift);
-  const void* image = object.get<sdk::Image>();
-  if (image == nullptr) {
-    image = object.get<sdk::DepthImage>();
-  }
-  if (image != nullptr) {
-    media.noteInput(image, input.topic, input.name, detail::ownStamp(object).value_or(0));
-  }
+  media.noteInput(object, input);
   return detail::newObject(std::move(object), input.keepalive);
 }
 
@@ -255,34 +257,153 @@ Expected<std::vector<detail::Returned>> collectReturned(PyObject* result, native
   return returned;
 }
 
+/// The one thread for the Python host work a caller must not wait on without a bound (the GIL may be held for minutes
+/// by a script stuck in a builtin C loop, which no watchdog interrupts): the interpreter's boot and every compile,
+/// which `compileOnDemandScriptPython` waits for up to its bound, and a compiled script's last release, which nobody
+/// waits for. FIFO. Started on first use and never joined (a join at exit deadlocks on Windows under the loader lock),
+/// so this stays in a library the executable links, like the watchdog. A caller that gave up waiting marks the running
+/// item stuck (`markStuck`), and while that item runs `stuck` tells later callers to fail at once instead of queueing
+/// behind it; no clock decides it.
+class PythonHelper {
+ public:
+  static PythonHelper& instance() {
+    static PythonHelper* const helper = new PythonHelper();  // NOLINT: never destroyed
+    return *helper;
+  }
+
+  /// Marks the item running now (if any) stuck: a caller timed out behind it. Any thread.
+  void markStuck() {
+    stuck_.store(running_.load(std::memory_order_acquire), std::memory_order_release);
+  }
+  /// Whether the item running now was marked stuck; false once it finishes. Any thread.
+  [[nodiscard]] bool stuck() const {
+    const std::uint64_t running = running_.load(std::memory_order_acquire);
+    return running != 0 && stuck_.load(std::memory_order_acquire) == running;
+  }
+
+  /// Any thread; returns at once. `work` must not throw.
+  void post(std::function<void()> work) {
+    {
+      const std::lock_guard lock(mutex_);
+      queue_.push_back(std::move(work));
+    }
+    wake_.notify_one();
+  }
+
+ private:
+  PythonHelper() {
+    std::thread([this] { run(); }).detach();
+  }
+
+  [[noreturn]] void run() {
+    while (true) {
+      std::function<void()> work;
+      {
+        std::unique_lock lock(mutex_);
+        wake_.wait(lock, [this] { return !queue_.empty(); });
+        work = std::move(queue_.front());
+        queue_.pop_front();
+      }
+      running_.store(++items_, std::memory_order_release);
+      work();
+      running_.store(0, std::memory_order_release);
+    }
+  }
+
+  std::mutex mutex_;
+  std::condition_variable wake_;
+  std::deque<std::function<void()>> queue_;  ///< guarded by mutex_
+  std::uint64_t items_ = 0;                  ///< items started; the helper thread only
+  std::atomic<std::uint64_t> running_{0};    ///< the running item's number, 0 when idle
+  std::atomic<std::uint64_t> stuck_{0};      ///< the item a timed-out caller marked
+};
+
+/// Set once the interpreter booted: before it no script can hold the GIL, so the first compile is waited for unbounded.
+std::atomic<bool> g_booted{false};
+
+/// Drops the code object on the helper, under the GIL, never on the caller's thread.
+void releaseOnHelper(const PythonCode* dead) {
+  PythonHelper::instance().post([dead] {
+    py::gil_scoped_acquire gil;
+    Py_DECREF(dead->code);
+    delete dead;
+  });
+}
+
+/// The helper's half of `compileOnDemandScriptPython`: boots the interpreter on first use, then checks and compiles.
+Expected<CompiledPythonScript> compileOnHelper(const std::string& source) {
+  try {
+    detail::ensureInterpreter();
+    g_booted.store(true, std::memory_order_release);
+    py::gil_scoped_acquire gil;
+    Expected<py::object> code = detail::compileChecked(source, "evaluate");
+    if (!code) {
+      return unexpected(code.error());
+    }
+    (void)pjHelpers();  // built here, unarmed: building them compiles, which a run's armed hook refuses
+    (void)detail::pjNamespaces();
+    return CompiledPythonScript{
+        std::shared_ptr<const PythonCode>(new PythonCode{code->release().ptr()}, &releaseOnHelper)};
+  } catch (const std::exception& error) {
+    return unexpected("Python error: " + std::string(error.what()));
+  }
+}
+
 }  // namespace
 
 bool pythonAvailable() {
   return true;
 }
 
+PyObject* detail::codeObjectOf(const CompiledPythonScript& script) {
+  return script.code->code;
+}
+
 Expected<CompiledPythonScript> compileOnDemandScriptPython(std::string_view source) {
-  detail::ensureInterpreter();
-  py::gil_scoped_acquire gil;
-  Expected<py::object> code = detail::compileChecked(source, "evaluate");
-  if (!code) {
-    return unexpected(code.error());
+  struct Pending {
+    std::mutex mutex;
+    std::condition_variable done;
+    std::optional<Expected<CompiledPythonScript>> result;
+    bool abandoned = false;  ///< the caller stopped waiting: the helper skips the compile
+  };
+  constexpr std::chrono::milliseconds kBound(kPythonCompileWaitMillis);
+  PythonHelper& helper = PythonHelper::instance();
+  const bool bounded = g_booted.load(std::memory_order_acquire);
+  if (bounded && helper.stuck()) {
+    return unexpected(std::string(kPythonBusyError));  // a restore of many recipes must not wait the bound for each
   }
-  (void)pjHelpers();  // built here, unarmed: building them compiles, which a run's armed hook refuses
-  (void)detail::pjNamespaces();
-  return CompiledPythonScript{
-      std::shared_ptr<const PythonCode>(new PythonCode{code->release().ptr()}, [](const PythonCode* dead) {
-        py::gil_scoped_acquire gil_for_decref;
-        Py_DECREF(dead->code);
-        delete dead;
-      })};
+  auto pending = std::make_shared<Pending>();
+  helper.post([pending, text = std::string(source)] {
+    {
+      const std::lock_guard lock(pending->mutex);
+      if (pending->abandoned) {
+        return;
+      }
+    }
+    Expected<CompiledPythonScript> compiled = compileOnHelper(text);
+    {
+      const std::lock_guard lock(pending->mutex);
+      pending->result.emplace(std::move(compiled));
+    }
+    pending->done.notify_one();
+  });  // a result nobody waits for any more dies with `pending`, here on the helper
+  std::unique_lock lock(pending->mutex);
+  const auto ready = [&pending] { return pending->result.has_value(); };
+  if (!bounded) {
+    pending->done.wait(lock, ready);  // the first boot: nothing can hold the GIL yet
+  } else if (!pending->done.wait_for(lock, kBound, ready)) {
+    pending->abandoned = true;
+    helper.markStuck();
+    return unexpected(std::string(kPythonBusyError));
+  }
+  return std::move(*pending->result);
 }
 
 Expected<ScriptBundle, ScriptError> runOnDemandScriptPython(
     const CompiledPythonScript& script, Span<const NamedValue> inputs, std::string_view params_json,
     Span<const OutputSpec> outputs, const RunOptions& options) {
   const native::NativeLimits native_limits{detail::nativeBudgetOf(options), options.cancelled};
-  ScriptMedia media(options.image_decoder, native_limits, options.result_stamp);
+  ScriptMedia media(options.image_decoder, native_limits, options.result_stamp, options.video_source);
   detail::PythonRun run(options, media);
   const auto fail = [&run](std::string message) {
     const bool over_budget = detail::isOverBudget(message);
@@ -312,7 +433,7 @@ Expected<ScriptBundle, ScriptError> runOnDemandScriptPython(
     // constructions are charged too, and fail like the script's.
     detail::ScriptCallScope scope(
         std::make_shared<native::MemoryBudget>(options.limits.mem_bytes), options.limits.python_watchdog_millis,
-        detail::Profile::kStrict);
+        detail::Profile::kStrict, options.cancel_flags);
     try {
       const PjHelpers& pj = pjHelpers();
       const detail::PjNamespaces& namespaces = detail::pjNamespaces();
@@ -361,11 +482,11 @@ Expected<ScriptBundle, ScriptError> runOnDemandScriptPython(
       returned = unexpected(detail::timeoutMessage("evaluate()", options.limits.python_watchdog_millis));
     }
   }
+  if (options.cancelled && options.cancelled()) {  // first: the watchdog's interrupt is how it ended
+    return fail("script cancelled");
+  }
   if (!returned) {
     return fail(std::move(returned.error()));
-  }
-  if (options.cancelled && options.cancelled()) {
-    return fail("script cancelled");
   }
   Expected<ScriptBundle> bundle = detail::bindReturned(*returned, outputs);
   if (!bundle) {

@@ -16,6 +16,7 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/OnDemandService.h"
 #include "pj_scripting/object_script.h"
+#include "pj_scripting/on_demand_script.h"
 
 namespace PJ {
 namespace {
@@ -377,10 +378,9 @@ bool OnDemandRuntimeHost::onValidate(
     if (sdk::toStringView(kind) != kKind) {
       return rejectKind(out_error, kind);
     }
-    if (sdk::toStringView(language) != "luau") {
-      return reject(out_error, kDomain, "kind 'on_demand' takes language 'luau'");
-    }
-    const Expected<scripting::CompiledScript> compiled = scripting::compileOnDemandScript(sdk::toStringView(script));
+    // A Python compile is bounded (`kPythonCompileWaitMillis`): a script holding the GIL fails it as busy.
+    const Expected<scripting::CompiledOnDemandScript> compiled =
+        scripting::compileOnDemand(sdk::toStringView(language), sdk::toStringView(script));
     return compiled ? true : reject(out_error, kDomain, compiled.error());
   });
 }

@@ -32,19 +32,25 @@ Licensed MPL-2.0.
 - `python_object_script.h` — the on-demand Python lane: `compileOnDemandScriptPython` (checked and compiled once per
   revision into an opaque `CompiledPythonScript`, so holders need no CPython include) and `runOnDemandScriptPython`
   (`evaluate(inputs, params)` in a fresh namespace, the binding of `object_script.h`). Desktop only
-  (`pythonAvailable()`).
+  (`pythonAvailable()`). Compiles, the interpreter's boot and a compiled script's last release run on one Python
+  helper thread (a thread and a queue, `src/python_object_script.cpp`): a compile is waited for at most
+  `kPythonCompileWaitMillis` (busy otherwise, at once while an item a caller timed out behind still runs), a release never. Python filters
+  (`python_engine.cpp`) do not use it yet: they take the GIL on their caller's thread.
+- `on_demand_script.h` — where a recipe's `language` picks its on-demand compiler and runner: `CompiledOnDemandScript`
+  (Luau bytecode or the opaque Python handle), `compileOnDemand` and `runOnDemand`, which `pj_runtime` holds and calls
+  without knowing the language.
 - `src/python_object_binder.h` (private) — the Python twin of `object_binder.h` over the same native operations:
-  objects, lazy lists and the point iterator, the point-cloud and image methods with the decoded pixels (a fallible
-  call such as `decode()` returns `(value, None)` or `(None, reason)`), the builders
-  and `pj.tf`, all plain CPython types
+  objects, lazy lists and the point iterator, the point-cloud and image methods with the decoded pixels, a video's
+  `frame_at` (a fallible call such as `decode()` or `frame_at` returns `(value, None)` or `(None, reason)`), the
+  builders and `pj.tf`, all plain CPython types
   (pybind11 dereferences an allocation the cap refuses, and a list element costs about 195 ns, not 1.5 µs). Every operation
   that walks the data runs without the GIL; a call that needs the run's limits, media or observations (the thread's
   `PythonRun`) raises outside its run, a builder outside the run that made it, and an object kept past its run keeps
   its input's keepalive. Every proxy exposes only its documented names, no
   attribute and no buffer.
 - `src/python_sandbox.h` (private) — the one interpreter (`ensureInterpreter`) and what every Python script call runs
-  under: the audit hook (`ScopedAuditGuard`), the allocation cap, the watchdog thread, `ScriptCallScope`, which arms
-  the three around one call, and `ClearedOnExit`, which clears a script namespace inside it; and the strict profile
+  under: the audit hook (`ScopedAuditGuard`), the allocation cap, the watchdog thread (which also polls a call's cancel
+  flags and interrupts it), `ScriptCallScope`, which arms the three around one call, and `ClearedOnExit`, which clears a script namespace inside it; and the strict profile
   on-demand scripts add (`Profile::kStrict`): the AST check (`compileChecked`), gated builtins with read-only module
   copies (`strictBuiltins`; a copy's functions share the real module's globals, which a filter can patch) and a hook
   that also refuses `exec` and `compile`.
@@ -89,7 +95,8 @@ Licensed MPL-2.0.
   box and the views read from it), so retained outputs keep counting. Allocating operations take `NativeLimits` (that
   budget plus the run's cancel check, polled every 65536 records, or once per image row).
 - `src/script_media.h` (private) — `ScriptMedia`, one run's media state, shared by the Luau and Python binders:
-  the injected decoder and video source, the image and video inputs the run read, one decode per input and run, the
+  the injected decoder and video source, the image and video inputs the run read (held for the run, so an address
+  names one input even after the script drops it), one decode per input and run, the
   frames `frame_at` made, and what a finished annotations builder pairs with (the image input it names, a video's
   frames when they agree, else the result's stamp).
 - `object_summary.h` — `summarizeObject` (a small JSON description of an object output: counts, bounds, frame ids) and

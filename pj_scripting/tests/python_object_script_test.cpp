@@ -35,8 +35,10 @@
 #include "pj_scripting/image_decoder.h"
 #include "pj_scripting/memory_budget.h"
 #include "pj_scripting/python_engine.h"
+#include "python_object_binder.h"
 #include "python_sandbox.h"
 #include "python_test_helpers.h"
+#include "python_test_probe.h"
 
 namespace py = pybind11;
 
@@ -1405,8 +1407,8 @@ TEST(PythonObjectScript, WatchdogDoesNotInterruptANativeCall) {
   options.limits.python_watchdog_millis = 1;
   const std::string error = errorOf(runSource(kScript, inputs, {}, "{}", options));
   EXPECT_NE(error.find("TimeoutError"), std::string::npos) << error;
-  // A failed run skips the poll after it; every poll of the crop's happened.
-  EXPECT_EQ(polls, untimed_polls - 1) << "the crop ran to its end before the timeout was delivered";
+  // A failed run polls after it too (a cancellation outranks its error); every poll of the crop's happened.
+  EXPECT_EQ(polls, untimed_polls) << "the crop ran to its end before the timeout was delivered";
 }
 
 // PY-05 and the sandbox of slice 10a: no proxy has a name beyond its documented ones (no conduit or buffer to a raw
@@ -1442,7 +1444,7 @@ def evaluate(inputs, params):
       "{}", withGradient());
   EXPECT_EQ(
       textOf(result, "object"),
-      "bounds,count,crop_box,decode,extreme_point,filter,representation,to_point_cloud,transform,xyz_points");
+      "bounds,count,crop_box,decode,extreme_point,filter,frame_at,representation,to_point_cloud,transform,xyz_points");
   EXPECT_EQ(textOf(result, "struct"), "");
   EXPECT_EQ(textOf(result, "list"), "");
   EXPECT_EQ(textOf(result, "points"), "");
@@ -1764,6 +1766,233 @@ TEST(PythonObjectScript, PointConversionIsChargedBeforeItAllocates) {
       "    return 1\n",
       {}, {}, "{}", withNativeBudget(std::size_t{1} << 20)));
   EXPECT_NE(error.find("native memory limit"), std::string::npos) << error;
+}
+
+// A cancel flag the watchdog polls stops pure Python at its next bytecode with the cancellation's error, also inside a
+// loop that catches every Exception (it raises KeyboardInterrupt); the thread then runs the next script as usual. The
+// deadline is 600 s, so a missed poll hangs the test instead of passing on a timeout. The flag goes up at the
+// runner's pre-run poll, so the script always starts with it set.
+TEST(PythonObjectScript, ACancelFlagInterruptsAPurePythonLoop) {
+  for (const char* loop :
+       {"    while True:\n        pass\n",
+        "    while True:\n        try:\n            while True:\n                pass\n"
+        "        except Exception:\n            pass\n"}) {
+    auto flag = std::make_shared<std::atomic<bool>>(false);
+    auto polls = std::make_shared<int>(0);
+    RunOptions options;
+    options.limits.python_watchdog_millis = 600'000;
+    options.cancel_flags = {flag};
+    options.cancelled = [flag, polls] {
+      if ((*polls)++ == 0) {
+        flag->store(true);  // the pre-run poll answers no, then the run is cancelled
+        return false;
+      }
+      return flag->load();
+    };
+    const auto looping =
+        runSource(std::string("def evaluate(inputs, params):\n") + loop, {}, {number("x")}, "{}", options);
+    EXPECT_EQ(errorOf(looping), "script cancelled") << loop;
+  }
+  EXPECT_DOUBLE_EQ(numberOf(runSource("def evaluate(inputs, params):\n    return 2\n")), 2.0);
+}
+
+// The caller never waits on the GIL without a bound. While a script stuck in a builtin C loop holds it (a held GIL
+// here): a compiled script's last release returns at once (it is posted to the helper, where it waits for the GIL); a
+// compile queued behind it fails "Python is busy" once its bound passes and marks the helper's item stuck; the next
+// fails at once. Once the GIL is free the release runs (the code object goes) and the abandoned compile is skipped. An
+// unbounded wait would hang the test; the elapsed-time checks are lax (a waiting compile takes the whole bound, one
+// that fails at once microseconds). Right after the hold the helper may still be finishing its item, so the next
+// compile is retried.
+TEST(PythonObjectScript, ACompileWaitsForTheGilOnlyUpToItsBoundAndAReleaseNever) {
+  std::optional<Expected<CompiledPythonScript>> kept = compile("def evaluate(inputs, params):\n    return 1\n");
+  ASSERT_TRUE(kept->has_value()) << kept->error();
+  const int before = ::PJ::test::pythonCompileEvents();
+  ASSERT_TRUE(compile("def evaluate(inputs, params):\n    return 4\n").has_value());
+  const int per_compile = ::PJ::test::pythonCompileEvents() - before;
+  PyObject* weak = nullptr;
+  {
+    py::gil_scoped_acquire gil;
+    weak = PyWeakref_NewRef(detail::codeObjectOf(**kept), nullptr);
+    ASSERT_NE(weak, nullptr);
+  }
+  int abandoned_at = 0;
+  {
+    const ::PJ::test::PythonGilHold hold;
+    kept.reset();  // the last copy: its release becomes the helper's current item, waiting for the GIL
+    auto begin = std::chrono::steady_clock::now();
+    const auto busy = compile("def evaluate(inputs, params):\n    return 2\n");
+    EXPECT_LT(std::chrono::steady_clock::now() - begin, std::chrono::seconds(30));
+    ASSERT_FALSE(busy.has_value());
+    EXPECT_NE(busy.error().find("Python is busy"), std::string::npos) << busy.error();
+    begin = std::chrono::steady_clock::now();
+    const auto again = compile("def evaluate(inputs, params):\n    return 5\n");
+    EXPECT_LT(std::chrono::steady_clock::now() - begin, std::chrono::milliseconds(kPythonCompileWaitMillis / 2))
+        << "the first timeout marked the helper's item stuck: no wait";
+    ASSERT_FALSE(again.has_value());
+    EXPECT_NE(again.error().find("Python is busy"), std::string::npos) << again.error();
+    abandoned_at = ::PJ::test::pythonCompileEvents();
+  }
+  Expected<CompiledPythonScript> next = unexpected(std::string("not compiled"));
+  for (int attempt = 0; attempt < 200 && !next; ++attempt) {
+    next = compile("def evaluate(inputs, params):\n    return 3\n");
+    if (!next) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+  ASSERT_TRUE(next.has_value()) << next.error();
+  EXPECT_EQ(::PJ::test::pythonCompileEvents() - abandoned_at, per_compile) << "the abandoned compile was skipped";
+  {
+    py::gil_scoped_acquire gil;
+    EXPECT_EQ(PyWeakref_GetObject(weak), Py_None) << "the posted release dropped the code object";
+    Py_DECREF(weak);
+  }
+}
+
+// ---- video: frame_at (the twins of object_script_test.cpp's) ------------------------------------------------------
+
+using test::BucketVideo;
+using test::videoInput;
+using test::withVideo;
+
+// `frame_at` returns `(frame, None)`; each frame pairs with its own presentation time, decoded once; a builder finished
+// between two frames pairs with the one decoded so far, one after frames that disagree with the video input's own
+// stamp.
+TEST(PythonObjectScript, VideoFramesPairAndDecodeLikeLuau) {
+  auto video = std::make_shared<BucketVideo>();
+  auto decoder = std::make_shared<FakeImageDecoder>(1, 1, 1.0f);
+  auto result = runSource(
+      R"PY(
+def evaluate(inputs, params):
+    a, why = inputs["video"].frame_at(13)
+    built = pj.annotations.new(image_topic="/video").points(points=[(0, 0)], type="points").finish()
+    b = inputs["video"].frame_at(23)[0]
+    if why is not None or a["presentation_ns"] != 10 or b["presentation_ns"] != 20:
+        raise ValueError("presentation times")
+    a["image"].decode()
+    return {"a": a["image"].decode()[0].threshold(">", 0), "b": b["image"].decode()[0].threshold(">", 0), "built": built,
+            "after": pj.annotations.new(image_topic="video").finish()}
+)PY",
+      {videoInput()},
+      specs({"a:kImageAnnotations", "b:kImageAnnotations", "built:kImageAnnotations", "after:kImageAnnotations"}), "{}",
+      withVideo(video, decoder));
+  for (const auto& [name, stamp] :
+       std::vector<std::pair<std::string, Timestamp>>{{"a", 10}, {"b", 20}, {"built", 10}, {"after", 99}}) {
+    const auto* annotations = objectOf<sdk::ImageAnnotations>(result, name);
+    ASSERT_NE(annotations, nullptr) << name;
+    EXPECT_EQ(annotations->image_topic, "/video") << name;
+    EXPECT_EQ(annotations->timestamp, stamp) << name;
+  }
+  EXPECT_EQ(video->calls, 2);
+  EXPECT_EQ(decoder->calls, 2);
+}
+
+// `(None, reason)` for a missing source, a chained video and a frame over the native budget, which first retries once
+// after a garbage collection; a time that is not an integer raises; a merged entry's query and presentation pass
+// through on the dataset clock; the source gets the run's cancel check; another object has no `frame_at` to call.
+TEST(PythonObjectScript, FrameAtReportsLikeLuau) {
+  const char* reason = "def evaluate(inputs, params):\n    frame, why = inputs['video'].frame_at(13)\n    return why\n";
+  EXPECT_EQ(textOf(runSource(reason, {videoInput()}, specs({"why:string"})), "why"), "no video frame source");
+  NamedValue chained = videoInput();
+  chained.topic_id = {};
+  EXPECT_EQ(
+      textOf(
+          runSource(reason, {chained}, specs({"why:string"}), "{}", withVideo(std::make_shared<BucketVideo>(), {})),
+          "why"),
+      "video input 'video' has no store topic");
+  RunOptions tiny = withVideo(std::make_shared<BucketVideo>(), {});
+  tiny.native_budget_bytes = 256;  // the reason fits, the frame's 768 bytes do not
+  EXPECT_NE(
+      textOf(runSource(reason, {videoInput()}, specs({"why:string"}), "{}", tiny), "why").find("native memory"),
+      std::string::npos);
+  RunOptions one_frame = withVideo(std::make_shared<BucketVideo>(), {});
+  one_frame.native_budget_bytes = 1200;  // one frame fits, a second only once a collection frees the dead first
+  EXPECT_DOUBLE_EQ(
+      numberOf(runSource(
+          R"PY(
+def evaluate(inputs, params):
+    n = 0
+    for i in range(3):
+        cycle = [inputs["video"].frame_at(13)[0]["image"]]
+        cycle.append(cycle)
+        n += 1
+        cycle = None
+    return n
+)PY",
+          {videoInput()}, {}, "{}", one_frame)),
+      3.0);
+
+  // A whole-number float is a time, as in Luau and `pj.tf.lookup`; a bool is not.
+  EXPECT_DOUBLE_EQ(
+      numberOf(
+          runSource(
+              "def evaluate(inputs, params):\n    return inputs['video'].frame_at(13.0)[0]['presentation_ns']\n",
+              {videoInput()}, {number("pts")}, "{}", withVideo(std::make_shared<BucketVideo>(), {})),
+          "pts"),
+      10.0);
+  for (const char* time : {"13.5", "'13'", "10 ** 30", "1e300", "True"}) {
+    const std::string source =
+        std::string("def evaluate(inputs, params):\n    return inputs['video'].frame_at(") + time + ")[0]['image']\n";
+    EXPECT_NE(
+        errorOf(
+            runSource(
+                source, {videoInput()}, specs({"image:kImage"}), "{}", withVideo(std::make_shared<BucketVideo>(), {})))
+            .find("frame_at: time"),
+        std::string::npos)
+        << time;
+  }
+
+  NamedValue shifted = videoInput();
+  shifted.stamp_shift = 1003;
+  auto video = std::make_shared<BucketVideo>();
+  RunOptions options = withVideo(video, {});
+  options.cancelled = [] { return false; };
+  EXPECT_DOUBLE_EQ(
+      numberOf(
+          runSource(
+              "def evaluate(inputs, params):\n    return inputs['video'].frame_at(1023)[0]['presentation_ns']\n",
+              {shifted}, {number("pts")}, "{}", options),
+          "pts"),
+      1020.0);
+  EXPECT_EQ(video->received, 1023);
+  EXPECT_TRUE(video->saw_cancel_check);
+
+  EXPECT_NE(
+      errorOf(runSource(
+                  "def evaluate(inputs, params):\n    return inputs['image'].frame_at(13)\n",
+                  {imageInput("image", "/cam", 0)}, {number("x")}, "{}",
+                  withVideo(std::make_shared<BucketVideo>(), {})))
+          .find("video frame"),
+      std::string::npos);
+}
+
+// A media input the script drops keeps its address for the whole run, so no frame decoded afterwards takes the dropped
+// image's identity (and its decode) for its own: every frame pairs with its own presentation time.
+TEST(PythonObjectScript, AMediaInputTheScriptDropsKeepsItsAddressForTheRun) {
+  NamedValue image = imageInput("image", "/cam", 5);
+  image.stamp_shift = 1;  // the run's copy is a struct of its own, which only the script's proxy would hold
+  constexpr int kFrames = 8;
+  std::vector<OutputSpec> outputs;
+  for (int index = 0; index < kFrames; ++index) {
+    outputs.push_back(parseOutputSpec("f" + std::to_string(index) + ":kImageAnnotations").value());
+  }
+  auto result = runSource(
+      R"PY(
+def evaluate(inputs, params):
+    inputs["image"].decode()
+    video = inputs["video"]
+    del inputs["image"]
+    frames = [video.frame_at(13 + 10 * index)[0]["image"] for index in range(8)]
+    return [frame.decode()[0].threshold(">", 0) for frame in frames]
+)PY",
+      {image, videoInput()}, outputs, "{}",
+      withVideo(std::make_shared<BucketVideo>(), std::make_shared<FakeImageDecoder>(1, 1, 1.0f)));
+  for (int index = 0; index < kFrames; ++index) {
+    const std::string name = "f" + std::to_string(index);
+    const auto* annotations = objectOf<sdk::ImageAnnotations>(result, name);
+    ASSERT_NE(annotations, nullptr) << name;
+    EXPECT_EQ(annotations->image_topic, "/video") << name;
+    EXPECT_EQ(annotations->timestamp, 10 + 10 * index) << name;
+  }
 }
 
 TEST(PythonObjectScriptInferred, ObjectIsValueOfItsType) {

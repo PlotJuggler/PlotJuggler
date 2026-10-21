@@ -503,9 +503,10 @@ std::string timeoutMessage(std::string_view call, std::uint64_t max_millis) {
 }
 
 ScriptCallScope::ScriptCallScope(
-    std::shared_ptr<native::MemoryBudget> memory, std::uint64_t max_millis, Profile profile)
+    std::shared_ptr<native::MemoryBudget> memory, std::uint64_t max_millis, Profile profile,
+    Span<const std::shared_ptr<const std::atomic<bool>>> cancel)
     : audit_(profile), cap_(std::move(memory)) {
-  PersistentWatchdog::arm(max_millis);
+  PersistentWatchdog::arm(max_millis, cancel);
 }
 
 ScriptCallScope::~ScriptCallScope() {
@@ -547,8 +548,13 @@ PersistentWatchdog::Slot& PersistentWatchdog::currentSlot() {
   return *holder.slot;
 }
 
-void PersistentWatchdog::arm(std::uint64_t max_millis) {
+void PersistentWatchdog::arm(std::uint64_t max_millis, Span<const std::shared_ptr<const std::atomic<bool>>> cancel) {
   Slot& slot = currentSlot();
+  slot.cancel_stop.store(false, std::memory_order_relaxed);
+  if (!cancel.empty()) {
+    std::lock_guard lock(instance().mutex_);
+    slot.cancel_flags.assign(cancel.begin(), cancel.end());
+  }
   const std::uint64_t generation = ++slot.generation;
   slot.thread_id.store(PyThread_get_thread_ident(), std::memory_order_relaxed);
   const std::int64_t timeout = steadyNowNs() + static_cast<std::int64_t>(max_millis) * 1'000'000;
@@ -578,6 +584,10 @@ bool PersistentWatchdog::disarm() {
   }
   g_armed_slot = nullptr;
   instance().armed_slots_.fetch_sub(1, std::memory_order_seq_cst);
+  if (!slot.cancel_flags.empty()) {  // only this thread fills it, so the unlocked read sees its own write
+    std::lock_guard lock(instance().mutex_);
+    slot.cancel_flags.clear();
+  }
   if (slot.fired_generation.load(std::memory_order_relaxed) == generation) {
     // The request may still be pending (no safepoint reached, or the script caught it and returned).
     PyThreadState_SetAsyncExc(slot.thread_id.load(std::memory_order_relaxed), nullptr);
@@ -632,6 +642,11 @@ void PersistentWatchdog::run() {
       wake_.wait_for(lock, std::chrono::nanoseconds(std::max<std::int64_t>(sleep_ns, 1'000'000)));
       const std::int64_t after = steadyNowNs();
       for (const auto& slot : slots_) {
+        const bool cancelled = std::ranges::any_of(
+            slot->cancel_flags, [](const auto& flag) { return flag->load(std::memory_order_acquire); });
+        if (isArmed(*slot) && cancelled && !slot->cancel_stop.exchange(true, std::memory_order_relaxed)) {
+          slot->deadline_ns.store(0, std::memory_order_release);  // interrupt it now
+        }
         if (isArmed(*slot) && after >= slot->deadline_ns.load(std::memory_order_acquire)) {
           expired.push_back(slot);  // keeps the slot alive past its thread's exit
         }
@@ -651,8 +666,10 @@ void PersistentWatchdog::run() {
         // Past the call's deadline a TimeoutError, which a script catching every MemoryError does not catch.
         const bool memory =
             slot->memory_stop.load(std::memory_order_relaxed) && now < slot->timeout_ns.load(std::memory_order_relaxed);
-        PyThreadState_SetAsyncExc(
-            slot->thread_id.load(std::memory_order_relaxed), memory ? PyExc_MemoryError : PyExc_TimeoutError);
+        PyObject* raised = slot->cancel_stop.load(std::memory_order_relaxed) ? PyExc_KeyboardInterrupt
+                           : memory                                          ? PyExc_MemoryError
+                                                                             : PyExc_TimeoutError;
+        PyThreadState_SetAsyncExc(slot->thread_id.load(std::memory_order_relaxed), raised);
       }
     }
   }

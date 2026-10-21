@@ -20,7 +20,7 @@
 #include "pj_runtime/InputStager.h"
 #include "pj_runtime/RecipeGraph.h"
 #include "pj_runtime/ResultHistory.h"
-#include "pj_scripting/object_script.h"
+#include "pj_scripting/on_demand_script.h"
 #include "pj_tf/tf_buffer.h"
 
 namespace PJ {
@@ -83,9 +83,9 @@ class NodeScheduler {
   using TfRevisionProvider = std::function<uint64_t(DatasetId)>;
   /// The dataset's epoch, bumped when its storage is replaced (GUI thread).
   using EpochProvider = std::function<uint64_t(DatasetId)>;
-  /// One script run, on a worker: `scripting::runOnDemandScript`'s signature.
+  /// One script run, on a worker: `scripting::runOnDemand`'s signature.
   using RunFunction = std::function<Expected<scripting::ScriptBundle, scripting::ScriptError>(
-      const scripting::CompiledScript&, Span<const scripting::NamedValue>, std::string_view,
+      const scripting::CompiledOnDemandScript&, Span<const scripting::NamedValue>, std::string_view,
       Span<const scripting::OutputSpec>, const scripting::RunOptions&)>;
   /// Called on the GUI thread with the node's key.
   using KeyCallback = std::function<void(const std::string&)>;
@@ -100,7 +100,7 @@ class NodeScheduler {
     TfProvider tf;                       ///< empty: no dataset has TF
     TfRevisionProvider tf_revision;      ///< empty: `tf`'s snapshot's revision, or 0
     EpochProvider epoch;                 ///< empty: every dataset stays at epoch 0
-    RunFunction run;                     ///< empty: `scripting::runOnDemandScript`
+    RunFunction run;                     ///< empty: `scripting::runOnDemand`
     KeyCallback published;               ///< the history took a result of the node: the ring may show something new
     KeyCallback state_changed;           ///< the node's status, detail or lag changed
     ImageDecoderProvider image_decoder;  ///< empty: no run has a decoder

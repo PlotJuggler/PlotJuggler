@@ -46,6 +46,10 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
 #include "pj_runtime/TopicDemandTracker.h"
+#include "pj_scripting/python_object_script.h"
+#ifdef PJ_PYTHON_TEST_PROBE
+#include "python_test_probe.h"
+#endif
 
 namespace PJ {
 namespace {
@@ -57,6 +61,11 @@ constexpr Timestamp kSec = 1'000'000'000;
 constexpr const char* kCloudMetadata = R"({"builtin_object_type":"kPointCloud"})";
 constexpr const char* kScript =
     "local inputs = ...\nreturn { cropped = inputs.cloud, count = inputs.cloud:count(), label = 'ok' }\n";
+
+constexpr const char* kPythonScript =
+    "def evaluate(inputs, params):\n"
+    "    cloud = inputs['cloud']\n"
+    "    return {'cropped': cloud, 'count': cloud.count(), 'label': 'ok'}\n";
 
 std::vector<uint8_t> canonicalCloud(size_t points) {
   return serializeBuiltinObject(sdk::BuiltinObject(test::makeCloud(points))).value();
@@ -301,15 +310,89 @@ TEST(OnDemandRuntimeHostTest, RejectsWrongKindLanguageOutputsAndFlags) {
   EXPECT_EQ(fx.topics_changed, 0);
 }
 
-// ABI-05: validate compiles for kind on_demand and Luau only.
-TEST(OnDemandRuntimeHostTest, ValidateScriptRoutesByKind) {
+// ABI-04: a Python recipe is accepted end to end: created over the ABI, run by the Python runner at the cursor, and
+// evaluated with a report; its config names its language. A build without Python refuses it with the reason.
+TEST(OnDemandRuntimeHostTest, PythonRecipeIsAccepted) {
+  Fixture fx(/*real_run=*/true);
+  auto made = request("py");
+  made.language = "python";
+  made.script = kPythonScript;
+  const auto created = fx.view.createV2(made);
+  if (!scripting::pythonAvailable()) {
+    ASSERT_FALSE(created.has_value());
+    EXPECT_NE(created.error().find("python is not available"), std::string::npos) << created.error();
+    return;
+  }
+  ASSERT_TRUE(created.has_value()) << created.error();
+  EXPECT_EQ(fx.config("py")["language"], "python");
+  fx.display("pluginA/py/cropped");
+  fx.seek(10 * kSec);
+  EXPECT_EQ(fx.config("py")["state"], "ready") << fx.config("py").dump();
+  EXPECT_EQ(fx.ring("pluginA/py/cropped"), (std::vector<Timestamp>{10 * kSec}));
+
+  const Finished done = fx.evaluate(installedAt("py", 20 * kSec));
+  ASSERT_EQ(done.state, EvaluationState::kCompleted) << done.json;
+  ASSERT_EQ(done.report.bundles.size(), 1u) << done.json;
+  EXPECT_EQ(done.report.bundles[0].outputs.at("count").value, 4.0);
+}
+
+// The bridge never waits on the GIL without a bound: while a script stuck in a builtin C loop holds the interpreter (a
+// held GIL here), a Python create fails "Python is busy" once the compile's bound passes, a validate after it at once
+// (a waiting compile takes the bound or more), and removing a
+// Python recipe (its compiled script's last release) returns at once. Afterwards the create works. An unbounded wait
+// would hang the test.
+TEST(OnDemandRuntimeHostTest, APythonCreateFailsWhileTheInterpreterIsHeld) {
+#ifndef PJ_PYTHON_TEST_PROBE
+  GTEST_SKIP() << "this build has no Python";
+#else
+  Fixture fx;
+  auto first = request("first");
+  first.language = "python";
+  first.script = kPythonScript;
+  ASSERT_TRUE(fx.view.createV2(first).has_value());  // boots the interpreter
+  auto held = first;
+  held.id = "held";
+  {
+    const test::PythonGilHold hold;
+    const auto created = fx.view.createV2(held);
+    ASSERT_FALSE(created.has_value());
+    EXPECT_NE(created.error().find("Python is busy"), std::string::npos) << created.error();
+    const auto begin = std::chrono::steady_clock::now();
+    const auto validated = fx.view.validateScript("on_demand", "python", kPythonScript, "{}");
+    // The create's timeout marked the helper's item stuck, so the validate fails without waiting: a waiting compile
+    // takes the whole bound, this one microseconds (the margin is half the bound).
+    EXPECT_LT(
+        std::chrono::steady_clock::now() - begin, std::chrono::milliseconds(scripting::kPythonCompileWaitMillis / 2));
+    ASSERT_FALSE(validated.has_value());
+    EXPECT_NE(validated.error().find("Python is busy"), std::string::npos) << validated.error();
+    EXPECT_TRUE(fx.view.remove("first").has_value());
+  }
+  // Right after the hold the helper may still be finishing its item, during which a create fails at once: retry.
+  bool created = false;
+  for (int attempt = 0; attempt < 200 && !created; ++attempt) {
+    created = fx.view.createV2(held).has_value();
+    if (!created) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+  EXPECT_TRUE(created);
+#endif
+}
+
+// ABI-05: validate compiles for kind on_demand in the language it names: Luau or Python source each passes its own
+// compiler and fails the other's; a language no runner has, and another kind, are refused.
+TEST(OnDemandRuntimeHostTest, ValidateScriptRoutesByKindAndLanguage) {
   Fixture fx;
   EXPECT_TRUE(fx.view.validateScript("on_demand", "luau", "return {}", "{}").has_value());
   const auto syntax = fx.view.validateScript("on_demand", "luau", "return {", "{}");
   EXPECT_FALSE(syntax.has_value());
-  const auto python = fx.view.validateScript("on_demand", "python", "return {}", "{}");
-  ASSERT_FALSE(python.has_value());
-  EXPECT_NE(python.error().find("luau"), std::string::npos) << python.error();
+  EXPECT_FALSE(fx.view.validateScript("on_demand", "luau", kPythonScript, "{}").has_value());
+  const auto python = fx.view.validateScript("on_demand", "python", kPythonScript, "{}");
+  EXPECT_EQ(python.has_value(), scripting::pythonAvailable()) << (python ? "" : python.error());
+  EXPECT_FALSE(fx.view.validateScript("on_demand", "python", "return {}", "{}").has_value());
+  const auto ruby = fx.view.validateScript("on_demand", "ruby", "return {}", "{}");
+  ASSERT_FALSE(ruby.has_value());
+  EXPECT_NE(ruby.error().find("unsupported language 'ruby'"), std::string::npos) << ruby.error();
   const auto markers = fx.view.validateScript("markers", "luau", "return {}", "{}");
   ASSERT_FALSE(markers.has_value());
   EXPECT_NE(markers.error().find("unknown data processor kind"), std::string::npos) << markers.error();

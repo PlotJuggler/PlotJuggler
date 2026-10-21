@@ -302,7 +302,7 @@ GridRunner::GridRunner(
       budget_(budget),
       hooks_(std::move(hooks)) {
   if (!hooks_.run) {
-    hooks_.run = &scripting::runOnDemandScript;
+    hooks_.run = &scripting::runOnDemand;
   }
   if (!hooks_.now) {
     hooks_.now = &std::chrono::steady_clock::now;
@@ -708,7 +708,7 @@ void GridRunner::submitRun(const std::shared_ptr<Job>& job, InputStager::Staged 
     }
     collect(job, outcome);
   };
-  job->token = pool_.submit(std::move(task));
+  job->token = pool_.submit(std::move(task), laneOf(step.node));
 }
 
 void GridRunner::collect(const std::shared_ptr<Job>& job, const EnginePool::Outcome& outcome) {
@@ -790,7 +790,12 @@ void GridRunner::collect(const std::shared_ptr<Job>& job, const EnginePool::Outc
           .stamp = job->staged.stamp, .identity = {kJobIdentity, identity}, .value = Unavailable{}};
       scripting::ScriptValue& value = bundle.outputs[index].value;
       if (auto* object = std::get_if<sdk::BuiltinObject>(&value)) {
-        override.value = InputStager::Object{ran.keepalives, std::move(*object)};
+        // The output's own keepalive carries a builder's native charge, which must count while a reader holds it.
+        std::vector<InputStager::Keepalive> owners = ran.keepalives;
+        if (bundle.outputs[index].keepalive != nullptr) {
+          owners.push_back(std::move(bundle.outputs[index].keepalive));
+        }
+        override.value = InputStager::Object{std::move(owners), std::move(*object)};
       } else if (auto* unavailable = std::get_if<Unavailable>(&value)) {
         override.value = std::move(*unavailable);
       }

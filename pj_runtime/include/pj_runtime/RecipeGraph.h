@@ -17,7 +17,7 @@
 #include "pj_base/expected.hpp"
 #include "pj_base/types.hpp"
 #include "pj_runtime/HistoryScope.h"
-#include "pj_scripting/object_script.h"
+#include "pj_scripting/on_demand_script.h"
 
 namespace PJ {
 
@@ -92,8 +92,8 @@ class RecipeGraph {
     uint64_t revision = 0;
     DatasetId dataset = 0;  ///< where every input resolved, and where the outputs live
     std::vector<Binding> bindings;
-    /// Compiled once per revision; the scheduler's runs share it.
-    std::shared_ptr<const scripting::CompiledScript> compiled;
+    /// Compiled once per revision in the recipe's language, which also picks its runs' lane; the runs share it.
+    std::shared_ptr<const scripting::CompiledOnDemandScript> compiled;
   };
 
   static constexpr std::size_t kMaxPinnedPerOwner = 64;
@@ -105,7 +105,8 @@ class RecipeGraph {
 
   /// Installs `recipe`, replacing the node of the same key; empty params are stored as "{}", what a
   /// layout parse reads back. Rejected, with nothing changed: an empty owner or id; a key another owner's
-  /// recipe holds (an id may contain '/', so two owners can spell one key); a language other than Luau;
+  /// recipe holds (an id may contain '/', so two owners can spell one key); a language no runner has (Luau, and Python
+  /// where `scripting::pythonAvailable()`);
   /// params nested deeper than `scripting::kMaxParamsDepth`; a script that does not compile; no input
   /// or no output; an output `scripting::parseOutputSpec` refuses (only types a script can produce); a
   /// name used twice among the inputs and outputs; a persistent id starting with `~` (`kPreviewIdPrefix`);

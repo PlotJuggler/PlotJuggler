@@ -213,6 +213,22 @@ TEST(SeriesRunnerTest, ReplayWritesOneRowPerClockEntry) {
   EXPECT_EQ(storage->descriptor().dataset_id, fx.ds);
 }
 
+// A Python series computes its chunks on the Python lane, one row per entry, as a Luau one does.
+TEST(SeriesRunnerTest, PythonSeriesRunsOnThePythonLane) {
+  SeriesFixture fx;
+  const std::thread::id python_lane = test::pythonLaneThread(fx.manager.enginePool());
+  fx.install(test::pythonRecipe("ser", {"cloud"}, {numberSpec()}));
+  fx.display("owner/ser");
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+
+  EXPECT_EQ(fx.rows("owner/ser"), (std::vector<Row>{{5 * kSec, 5e9}, {10 * kSec, 10e9}, {20 * kSec, 20e9}}));
+  const auto records = fx.fake.records();
+  ASSERT_EQ(records.size(), 3u);
+  for (const test::FakeRun::Record& record : records) {
+    EXPECT_EQ(record.thread, python_lane) << record.query_time;
+  }
+}
+
 // A series whose topic is displayed before its install (a layout's plot bound first) replays at once.
 TEST(SeriesRunnerTest, ASeriesDisplayedBeforeItsInstallReplaysAtOnce) {
   SeriesFixture fx;

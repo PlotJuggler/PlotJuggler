@@ -9,6 +9,10 @@
 #include <vector>
 
 #include "pj_runtime/RecipeGraph.h"
+#include "pj_scripting/python_object_script.h"
+#ifdef PJ_PYTHON_TEST_PROBE
+#include "python_test_probe.h"
+#endif
 
 namespace PJ {
 namespace {
@@ -62,14 +66,67 @@ bool contains(const std::string& text, std::string_view part) {
   return text.find(part) != std::string::npos;
 }
 
+// A Python recipe compiles once per revision into the opaque handle its runs share: an identical upsert keeps it, an
+// edit compiles another; a script the Python checker refuses (a syntax error, Luau source) leaves the node as it was,
+// and a language no runner has is named. A build without Python refuses it with the reason.
+TEST(RecipeGraphTest, PythonScriptIsCompiledOncePerRevision) {
+  Fixture fx;
+  auto python = cropRecipe();
+  python.language = "python";
+  python.script = "def evaluate(inputs, params):\n    return {}\n";
+  const Status installed = fx.graph.upsert(python);
+  if (!scripting::pythonAvailable()) {
+    ASSERT_FALSE(installed.has_value());
+    EXPECT_TRUE(contains(installed.error(), "python is not available")) << installed.error();
+    return;
+  }
+  ASSERT_TRUE(installed.has_value()) << installed.error();
+  const RecipeGraph::Node* node = fx.graph.find(python.key());
+  ASSERT_NE(node, nullptr);
+  const uint64_t revision = node->revision;
+  const void* compiled = node->compiled.get();
+  ASSERT_NE(compiled, nullptr);
+
+#ifdef PJ_PYTHON_TEST_PROBE
+  const int compiles = test::pythonCompileEvents();
+#endif
+  ASSERT_TRUE(fx.graph.upsert(python).has_value());
+#ifdef PJ_PYTHON_TEST_PROBE
+  EXPECT_EQ(test::pythonCompileEvents(), compiles) << "an identical upsert compiles nothing";
+#endif
+  EXPECT_EQ(fx.graph.find(python.key())->revision, revision);
+  EXPECT_EQ(fx.graph.find(python.key())->compiled.get(), compiled) << "an identical upsert keeps the compiled script";
+
+  for (const char* refused : {"def evaluate(inputs, params:\n    return {}\n", "local inputs = ...\nreturn {}\n"}) {
+    auto broken = python;
+    broken.script = refused;
+    EXPECT_FALSE(fx.graph.upsert(broken).has_value()) << refused;
+    EXPECT_EQ(fx.graph.find(python.key())->compiled.get(), compiled) << refused;
+  }
+  auto other = python;
+  other.language = "ruby";
+  const Status unknown = fx.graph.upsert(other);
+  ASSERT_FALSE(unknown.has_value());
+  EXPECT_TRUE(contains(unknown.error(), "unsupported language 'ruby'")) << unknown.error();
+
+  auto edited = python;
+  edited.script = "def evaluate(inputs, params):\n    return {'x': 1}\n";
+  ASSERT_TRUE(fx.graph.upsert(edited).has_value());
+#ifdef PJ_PYTHON_TEST_PROBE
+  EXPECT_GT(test::pythonCompileEvents(), compiles) << "an edit compiles its new source";
+#endif
+  EXPECT_GT(fx.graph.find(python.key())->revision, revision);
+  EXPECT_NE(fx.graph.find(python.key())->compiled.get(), compiled);
+}
+
 // REC-02 (and the recipe-level half of REC-04): a bad recipe is refused, and nothing is installed.
 TEST(RecipeGraphTest, RejectsBadRecipes) {
   Fixture fx;
   const auto rejected = [&fx](RecipeGraph::Recipe recipe) { return !fx.graph.upsert(std::move(recipe)).has_value(); };
 
-  auto python = cropRecipe();
-  python.language = "python";
-  EXPECT_TRUE(rejected(python)) << "this build has no Python lane";
+  auto unknown_language = cropRecipe();
+  unknown_language.language = "ruby";
+  EXPECT_TRUE(rejected(unknown_language));
   auto syntax_error = cropRecipe();
   syntax_error.script = "return {";
   EXPECT_TRUE(rejected(syntax_error));

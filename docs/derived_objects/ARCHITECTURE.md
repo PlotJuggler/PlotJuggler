@@ -254,7 +254,7 @@ component it needs (a layer reads its content from the store and its state from
 
 | Component | Responsibility |
 |---|---|
-| `RecipeGraph` | Recipes, bindings, the DAG and cycle rejection, validation, ownership, previews, findings, dependents. Pure logic, no Qt. Built (slice 6a-1). |
+| `RecipeGraph` | Recipes, bindings, the DAG and cycle rejection, validation, ownership, previews, findings, dependents. Pure logic, no Qt. Built (slice 6a-1); a node holds its script compiled in its language, Luau or Python (slice 10c, §14). |
 | `InputStager` | Resolves inputs at `t` on the GUI thread by identity (an object entry's topic, UID and parser, a scalar sample by its row, the sealed chunk's id and the row's index, so equal-time rows never alias and no value is hashed, a number or a string copied, an upstream's result) without fetching a payload, and builds the request's cache key; `decode` fetches and decodes them on any thread, a parser-backed entry under its per-topic parser lock and a canonical point cloud as a view over the store's bytes, and returns the parser keepalives its objects need, which `ResultHistory` keeps with a cached result. Built (slice 6a-3). |
 | `ResultHistory` | Per node: the compute cache and the ring (§9). Results keyed by cache identity (§10), ordered by stamp and sized by time span: a window around the node's cursor, then one global byte budget each that evicts the result farthest from its node's cursor. A miss checks the store first (§9), and the cache keeps no decoded copy of what the ring holds. Built (slice 6a-2). |
 | `NodeScheduler` | Per node: one running run plus one pending request, the in-flight budget, submission to `EnginePool`, supersede on meaning change (invariant 1), and the node state that layers read (idle, pending, ready, missing input, error, with the lag). Built (slice 6a-4a); `withdraw` when demand leaves and the hold of a dataset whose storage changes (slice 6a-5). |
@@ -411,6 +411,11 @@ engines) and **Decided** (GIL release).
   - The shared lane is a dedicated pool bounded to `max(1, ideal/2)` threads. The Python
     lane is one separate thread, since the GIL serializes Python anyway. In the browser
     both run on Web Workers.
+  - A node's language picks the lane of every run of it, a cursor request's, an evaluation's
+    instant and a series chunk's instant alike (`laneOf`, slice 10c): Python's thread for a
+    Python script, the shared lane otherwise. Ceiling: a Python run waiting for its thread
+    already holds its in-flight reservation, so many Python nodes requested at once keep Luau
+    runs behind them in the budget's line; upgrade: a reservation per lane.
   - Both lanes request `QThread::LowPriority`. Qt ignores thread priorities on Linux (its
     documentation says so; threads stay SCHED_OTHER), so there the bound on the shared
     lane, half the cores, is what keeps the GUI thread responsive.
@@ -885,7 +890,7 @@ join it (slice 6b). The rest is **Built**.
 
 **Status: Built** for Luau; for Python the core and the binder are built (slice 10a-1: the shared
 interpreter, its limits and the hook; slice 10a-2: the strict profile and compile once; slice 10b:
-objects, builders and `pj.tf`; slice 10b-2: images and depth) and its runtime wiring is not (10c). Luau
+objects, builders and `pj.tf`; slice 10b-2: images and depth) and its runtime wiring is in review (slice 10c). Luau
 VM reuse is proposed (N1, N2).
 
 - **Luau** gets a fresh sandboxed VM per call, from bytecode compiled once per recipe
@@ -928,7 +933,7 @@ VM reuse is proposed (N1, N2).
   Luau's native operations, through the language-neutral `script_contract.h`. In Python's idiom:
   0-based indices, tuples for vectors, keyword arguments for the builders, `!=` for not equal, and
   `(value, None)` or `(None, reason)` where Luau returns `value` or `nil, reason` (`pj.tf.lookup`,
-  an image's `decode()`); a call whose result is an output (`to_point_cloud`, `threshold`) returns a
+  an image's `decode()`, a video's `frame_at`); a call whose result is an output (`to_point_cloud`, `threshold`) returns a
   value or `pj.unavailable(reason)`, as in Luau. Every operation
   that walks the data releases the GIL (N6), so GUI-thread Python work proceeds meanwhile. Every type
   is a plain CPython type: pybind11 dereferences an allocation the cap refuses (in a keyword call's
@@ -938,7 +943,37 @@ VM reuse is proposed (N1, N2).
   outside the run that made it: an object a script leaves behind never reaches a dead run's limits,
   and it keeps its input's keepalive
   (the producing parser's library), so its payload never outlives the code that frees it. A result
-  keeps its outputs' native charge, so retained results count against a shared ledger.
+  keeps its outputs' native charge, so retained results count against a shared ledger. A video's
+  `frame_at(t)` returns `(frame, None)`, the frame a dict of `image` and `presentation_ns`, or `(None, reason)`
+  (slice 10c), and every media
+  input is held for the run (`ScriptMedia`, both binders), so its address names that input even once
+  the script drops it.
+- **In the runtime** (slice 10c): a recipe's `language` picks its compiler and runner in one place
+  (`pj_scripting/include/pj_scripting/on_demand_script.h`): `RecipeGraph` compiles each revision once into
+  a `CompiledOnDemandScript` (Luau bytecode or the opaque Python handle, so the graph includes no
+  CPython), its runs take the lane the language picks (§11) and run through `runOnDemand`. Cursor
+  requests, evaluations, series and the plugin bridge's `validate` (headless sessions included) accept
+  `python` wherever `pythonAvailable()`; a build without it (WASM) refuses it with "python is not
+  available in this build". An identical upsert keeps the compiled script (no compile). Each input
+  carries the libraries its object needs (`NamedValue::keepalive`, an upstream override's owners
+  included), so a proxy a script parks past its run keeps its parser loaded; a ring-held result drops
+  its outputs' keepalives with their values. A run's cancellation reaches pure Python through the
+  watchdog, which polls the pool token's flags (`RunOptions::cancel_flags`) and raises
+  KeyboardInterrupt (past `except Exception`), so a removed or superseded loop frees the Python lane
+  within about 50 ms instead of at its timeout. A compile (create, validate) and the
+  interpreter's boot run on one Python helper thread (a thread and a queue,
+  `python_object_script.cpp`); the GUI waits for a compile at most `kPythonCompileWaitMillis` (2 s) and
+  otherwise fails it with "Python is busy (a running script holds the interpreter); try again", the late
+  result dropped on the helper. A compiled script's last release is posted there, never waited for. The
+  interpreter boots lazily, at the first Python compile, so a session without Python pays nothing.
+  What remains: a script stuck in a builtin C loop (`sum(range(10**11))`, `math.factorial(10**7)`) holds
+  the GIL until it ends, which neither the watchdog nor a cancellation can interrupt, so it keeps the
+  Python lane busy until then. The first compile that times out marks the helper's current item stuck,
+  and until that item finishes every compile fails at once (no clock decides it), so a restore of many
+  Python recipes waits 2 s once, not for each; a compile in the moment the helper takes to finish that
+  item after the script ends fails too, so a caller retries. Python filters are not routed through the
+  helper: their inspect, create, `calculate` and teardown still take the GIL on the
+  GUI or commit thread without a bound (`python_engine.cpp`); routing them is a later slice.
 - **Python in the browser** is a goal (D18 with D29), gated on a spike: CPython 3.14's
   Emscripten target, statically linked, with pthreads. Until then, desktop only.
 
@@ -993,7 +1028,7 @@ removal included, is reported by key (`SeriesRunner::Hooks::state_changed`, for 
 request. A removal retires the topic, a restore parks it and the same key
 reinstalled with the same columns in the same dataset adopts it; a foreign topic of the key's name refuses the install.
 The series topics are derived data to a reload, the undo snapshot and the catalog's preview filter
-(`SessionManager::derivedScalarTopics`).
+(`SessionManager::derivedScalarTopics`). A Python series computes on the Python lane (slice 10c).
 
 **Built (slice 11b-1, the app half without the Custom Topics panel).** *The visible range first*, as two ranges
 (decided 2026-10-20): each time plot reports where its view starts to `SessionManager::setSeriesVisibleStart` (display
@@ -1337,6 +1372,7 @@ Linux, RelWithDebInfo.
 | Native point-cloud operations (slice 5n; `PointCloudOpsBench`, `pj_scripting/tests/native_ops_test.cpp`, `PJ_BENCH=1`; median of 20 calls on a 260k-point XYZI float32 scan, flat and as 64 x 4096 with padded rows, which cost the same per point) | `filterByField` (50% kept) 3.0 ns per point, `cropBox` (30% kept) 9.5 ns, `bounds` 3.2 ns, `extremePoint` 0.9 ns, `transformXyz` 6.0 ns, a full `nextFinitePoint` iteration 6 ns. The same loops with a datatype and comparison switch per point, a filter predicate evaluated twice and a division per record run 1.25x to 5.3x slower |
 | Native image operations (slice 9a-1; `ImageOpsBench`, `pj_scripting/tests/image_ops_test.cpp`, `PJ_BENCH=1`; median of 20 calls on 1920 x 1080 decoded pixels, three runs) | Per pixel, RGB: `to_gray` 1.2 ns, `threshold` 1.8 ns (1% matching) to 6.3-6.7 ns (50%: 1M points collected; 5.9 ns while the threshold was rounded to float), `stats` 3.2 ns, a whole-image `crop` 1.3 ns; depth `to_point_cloud` (16UC1) 7.7 ns. Each comparison is a templated kernel, dispatched once per call |
 | Image decode and the on-demand request (slice 9a-2; `SceneImageDecoderBench`, `pj_app/tests/scene_image_decoder_test.cpp`, and `OnDemandMediaBench`, `pj_runtime/tests/on_demand_media_test.cpp`, `PJ_BENCH=1`; three runs) | `SceneImageDecoder` at 1080p: a JPEG 10.8 ms (Scene2D's turbojpeg plus the float conversion), a PNG 7.8 ms, raw rgb8 2.5 ms (1.2 ns per pixel); all run on the pool worker. GUI time per cold `requestAt` of a recipe that decodes and thresholds a 1080p image: 5.6-5.8 µs median (51 requests, a raw fake decoder: the decode runs on the worker, so the codec adds no GUI time), the same as for a 260k-point cloud: independent of the image's size (GAP-26) |
+| Language dispatch on the request path (slice 10c; `NodeSchedulerBench.RequestAtGuiCostFor260kCloud`, `pj_runtime/tests/node_scheduler_test.cpp`, `PJ_BENCH=1`; a Luau and a Python recipe over a lazily stored 260k-point cloud, the fake run, median of 101 requests, three runs pinned to one core) | GUI time per `requestAt`: cold 0.79-0.82 µs Luau, 0.80-0.85 µs Python; warm 0.41 µs and 0.41-0.42 µs: picking the lane is one read of the script's variant index |
 | Video on-demand request (slice 9b; `OnDemandMediaBench.GuiCostOfAVideoRequest`, `pj_runtime/tests/on_demand_media_test.cpp`, `PJ_BENCH=1`; one video input over 10k packets, 51 cold requests, three runs pinned to one core) | GUI time per cold `requestAt`: 0.80-0.92 µs median (six runs) with the topic's content revision in the key, against 0.77-0.83 µs without it (one more shared-lock read, near the noise); the frame decodes on the worker (a store-reading fake; `SceneVideoFrameSource` decodes the codec there), so nothing is fetched or parsed on the GUI thread. The frame's rgb24 conversion at 1080p (`VideoRgbConversionBench`, `pj_scene2D/tests/streaming_video_decoder_test.cpp`, three runs): 16.6 ms with the per-pixel loop, 10.8 ms through swscale (its faster paths, 0.65-2.5 ms, miss the shader's matrix by 2-255 on random samples), run outside the topic's lock |
 | `ResultHistory` after slice 6a-2 (`ResultHistoryBench`, `pj_runtime/tests/result_history_test.cpp`, `PJ_BENCH=1`; three runs) | `lookup`, median of 1001 calls, the store's `at` per output included: 0.10-0.20 µs for a hit or a miss at 1, 100 and 10,000 results per node. 600 results of a 260k-point XYZI cloud at 10 Hz under the default limits: the ring holds 253.9 MiB (64 results); the compute cache 254 MiB with a decoded copy of each ring-held result → 11 KB without. Publication on the GUI thread (`PublishCost`, serialized there, 50 to 100 entries per topic): median 4-8 µs with a 64-byte cloud, 177-183 µs with a 1.5 MB one. One that removes nothing, at 600 to 800 retained results (`PublishCostAt600RetainedResults`): 11.8-12.7 µs with a drop predicate the store scans every entry for → 2.3 µs without one |
 | Streaming poll, processors advancing over every topic with nothing new (slice 4): 500 topics, 20 single-input filters + 3 two-input transforms, one 5-row chunk per 50 ms tick on the 23 inputs; median of 400 calls, from a throwaway benchmark that is not kept | Buffer 5 s (100 chunks per input): 6.2 µs (max 11). 15 s: 12.5 µs. 60 s: 76 µs (max 89). 150 s: 215 µs. 5 min: 707 µs. 10 min (12,000 chunks): 2.7 ms (max 3.7). With the idle-node gate (§16): 1.5 µs at 100, 300, 1,200, 3,000 and 6,000 chunks (max 2.3 to 6.2) and 1.6 µs at 12,000 (max 7.2), flat |

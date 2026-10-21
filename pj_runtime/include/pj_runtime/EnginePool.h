@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace PJ {
 
@@ -54,6 +55,9 @@ class EnginePool : public QObject {
     /// Cancels the run: `compute` sees it at its next poll, and `publish` gets
     /// `Outcome::Status::kCancelled` even when `compute` had already finished. Idempotent.
     void cancel() const noexcept;
+    /// The flags `cancelled` reads (any set: cancelled), for a poller on another thread that must not call into the
+    /// run (the Python watchdog). Empty for a default-constructed token.
+    [[nodiscard]] std::vector<std::shared_ptr<const std::atomic<bool>>> flags() const;
 
    private:
     friend class EnginePool;

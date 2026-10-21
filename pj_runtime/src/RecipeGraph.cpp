@@ -69,16 +69,14 @@ bool nestedTooDeep(std::string_view json) {
   return deep;
 }
 
-/// The checks that need no graph; returns the compiled script.
-Expected<scripting::CompiledScript> validate(const RecipeGraph::Recipe& recipe) {
+/// The checks that need no graph; returns the compiled script: `installed`'s when it has the same language and source.
+Expected<std::shared_ptr<const scripting::CompiledOnDemandScript>> validate(
+    const RecipeGraph::Recipe& recipe, const RecipeGraph::Node* installed) {
   if (recipe.owner_plugin.empty() || recipe.user_id.empty()) {
     return unexpected("a recipe needs an owner and an id");
   }
   if (!recipe.ephemeral && recipe.user_id.starts_with('~')) {
     return unexpected("a persistent recipe's id may not start with '~', the previews' namespace");
-  }
-  if (recipe.language != "luau") {
-    return unexpected("unsupported language '" + recipe.language + "' (only 'luau')");
   }
   if (nestedTooDeep(recipe.params_json)) {
     return unexpected("params_json is nested deeper than " + std::to_string(scripting::kMaxParamsDepth) + " levels");
@@ -107,7 +105,17 @@ Expected<scripting::CompiledScript> validate(const RecipeGraph::Recipe& recipe) 
       return unexpected("input '" + input + "' is duplicated or names one of this recipe's outputs");
     }
   }
-  return scripting::compileOnDemandScript(recipe.script);
+  if (installed != nullptr && installed->recipe.language == recipe.language &&
+      installed->recipe.script == recipe.script) {
+    return installed->compiled;
+  }
+  // A Python compile runs on the Python helper thread and is waited for at most `kPythonCompileWaitMillis`: a script
+  // holding the GIL fails the upsert as busy instead of freezing the GUI.
+  Expected<scripting::CompiledOnDemandScript> compiled = scripting::compileOnDemand(recipe.language, recipe.script);
+  if (!compiled) {
+    return unexpected(std::move(compiled.error()));
+  }
+  return std::make_shared<const scripting::CompiledOnDemandScript>(std::move(*compiled));
 }
 
 }  // namespace
@@ -119,11 +127,11 @@ Expected<RecipeGraph::Node> RecipeGraph::bind(Recipe recipe) const {
   if (recipe.params_json.empty()) {
     recipe.params_json = "{}";  // what a layout parse reads back, so a save round-trips byte for byte
   }
-  Expected<scripting::CompiledScript> compiled = validate(recipe);
+  const std::string key = recipe.key();
+  Expected<std::shared_ptr<const scripting::CompiledOnDemandScript>> compiled = validate(recipe, find(key));
   if (!compiled.has_value()) {
     return reject(compiled.error());
   }
-  const std::string key = recipe.key();
 
   // Each input's candidate datasets: another node's output resolves in that node's dataset. A recorded output of an
   // absent node has none (its candidates stay empty): it constrains nothing and binds as a missing input.
@@ -223,9 +231,7 @@ Expected<RecipeGraph::Node> RecipeGraph::bind(Recipe recipe) const {
     }
   }
 
-  return Node{
-      std::move(recipe), 0, dataset, std::move(bindings),
-      std::make_shared<const scripting::CompiledScript>(std::move(*compiled))};
+  return Node{std::move(recipe), 0, dataset, std::move(bindings), std::move(*compiled)};
 }
 
 Status RecipeGraph::upsert(Recipe recipe) {

@@ -23,6 +23,7 @@
 #include "pj_base/sdk/platform.hpp"
 #include "pj_runtime/DerivedTopics.h"
 #include "pj_runtime/ResultHistory.h"
+#include "pj_scripting/python_object_script.h"
 
 namespace PJ {
 namespace {
@@ -1259,6 +1260,33 @@ TEST(ResultHistoryTest, CacheHoldsNoDecodedCopyOfARingHeldObject) {
   EXPECT_FALSE(hit->key.has_value()) << "nothing to republish";
   EXPECT_DOUBLE_EQ(std::get<double>(hit->bundle->outputs[2].value), 1.2);
   EXPECT_EQ(std::get<std::string>(hit->bundle->outputs[3].value), std::to_string(kPoints) + " points");
+
+  // A Python output also holds its object in its keepalive (its proxy's anchor, with the native charge): released too.
+  if (!scripting::pythonAvailable()) {
+    return;
+  }
+  const auto& python = fx.install(passthroughRecipe("py"));
+  const auto script = scripting::compileOnDemandScriptPython(
+      "def evaluate(inputs, params):\n    return inputs['cloud'].crop_box(min=(-1e9, -1e9, -1e9), max=(1e9, 1e9, "
+      "1e9))\n");
+  ASSERT_TRUE(script.has_value()) << script.error();
+  const std::vector<scripting::NamedValue> inputs{{.name = "cloud", .value = sdk::BuiltinObject(makeCloud(kPoints))}};
+  std::weak_ptr<const void> cropped;
+  std::weak_ptr<const void> keepalive;
+  {
+    auto ran = scripting::runOnDemandScriptPython(
+        *script, Span<const scripting::NamedValue>(inputs.data(), inputs.size()), "{}",
+        Span<const OutputSpec>(python.recipe.outputs.data(), python.recipe.outputs.size()));
+    ASSERT_TRUE(ran.has_value()) << ran.error().message;
+    cropped = std::get<sdk::BuiltinObject>(ran->outputs[0].value).get<sdk::PointCloud>()->anchor;
+    keepalive = ran->outputs[0].keepalive;
+    ASSERT_FALSE(keepalive.expired());
+    fx.history.noteRequest(python.recipe.key(), 10 * kSec);
+    ASSERT_TRUE(fx.history.publish(python, 10 * kSec, 10 * kSec, keyOf(python, 1), std::move(*ran)));
+  }
+  EXPECT_TRUE(cropped.expired()) << "the ring holds the Python cloud serialized";
+  EXPECT_TRUE(keepalive.expired()) << "and its keepalive went with the value";
+  EXPECT_EQ(decodeAt<sdk::PointCloud>(fx.store, fx.topic("owner/py/cropped"), 10 * kSec).width, kPoints);
 }
 
 // A cache entry holding no decoded objects cannot serve a hit alone: when its ring entry goes (replaced at

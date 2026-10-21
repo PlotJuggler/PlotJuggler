@@ -59,6 +59,17 @@ void EnginePool::CancelToken::cancel() const noexcept {
   }
 }
 
+std::vector<std::shared_ptr<const std::atomic<bool>>> EnginePool::CancelToken::flags() const {
+  std::vector<std::shared_ptr<const std::atomic<bool>>> flags;
+  if (run_cancelled_ != nullptr) {
+    flags.push_back(run_cancelled_);
+  }
+  if (pool_stopping_ != nullptr) {
+    flags.push_back(pool_stopping_);
+  }
+  return flags;
+}
+
 EnginePool::EnginePool(QObject* parent) : QObject(parent) {
   shared_lane_.setMaxThreadCount(std::max(1, QThread::idealThreadCount() / 2));
   shared_lane_.setThreadPriority(QThread::LowPriority);

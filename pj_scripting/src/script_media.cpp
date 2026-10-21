@@ -6,6 +6,10 @@
 #include <optional>
 #include <utility>
 
+#include "pj_base/builtin/depth_image.hpp"
+#include "pj_base/builtin/video_frame.hpp"
+#include "script_contract.h"
+
 namespace PJ::scripting {
 
 ScriptMedia::ScriptMedia(
@@ -16,6 +20,20 @@ ScriptMedia::ScriptMedia(
 void ScriptMedia::noteInput(
     const void* identity, std::string topic, std::string alias, Timestamp stamp, ObjectTopicId topic_id) {
   inputs_.push_back({identity, std::move(topic), std::move(alias), stamp, topic_id});
+}
+
+void ScriptMedia::noteInput(const sdk::BuiltinObject& object, const NamedValue& input) {
+  const void* identity = object.get<sdk::Image>();
+  if (identity == nullptr) {
+    identity = object.get<sdk::DepthImage>();
+  }
+  if (identity == nullptr) {
+    identity = object.get<sdk::VideoFrame>();
+  }
+  if (identity != nullptr) {
+    noteInput(identity, input.topic, input.name, detail::ownStamp(object).value_or(0), input.topic_id);
+    held_.push_back(object);
+  }
 }
 
 const ScriptMedia::Input* ScriptMedia::findInput(const void* identity) const {

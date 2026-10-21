@@ -4,6 +4,7 @@
 
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "pj_base/expected.hpp"
@@ -12,7 +13,8 @@
 #include "pj_runtime/EnginePool.h"
 #include "pj_runtime/InputStager.h"
 #include "pj_runtime/NodeScheduler.h"
-#include "pj_scripting/object_script.h"
+#include "pj_runtime/RecipeGraph.h"
+#include "pj_scripting/on_demand_script.h"
 
 namespace PJ {
 
@@ -24,12 +26,21 @@ struct StagedRun {
   bool decode_failed = false;  ///< `result` is an input's fetch or decode error: the script did not run
 };
 
+/// The lane every run of `node` takes: the Python lane's one thread for a Python script (the GIL serializes Python
+/// anyway), else the shared lane.
+// ponytail: a Python run waiting for its one thread already holds its in-flight reservation, so a burst of Python
+// requests keeps Luau runs waiting in the budget's line. Upgrade: a reservation per lane.
+inline EnginePool::Lane laneOf(const RecipeGraph::Node& node) {
+  return std::holds_alternative<scripting::CompiledPythonScript>(*node.compiled) ? EnginePool::Lane::kPython
+                                                                                 : EnginePool::Lane::kShared;
+}
+
 /// Any thread: decodes `staged` and runs `script` once over it, cancellable through `token` inside the interpreter.
 /// Touches only `store` (thread-safe) and its arguments: the run body `NodeScheduler` and `GridRunner` share.
 inline StagedRun runStaged(
     const ObjectStore& store, const InputStager::Staged& staged, const NodeScheduler::RunFunction& run,
-    const scripting::CompiledScript& script, std::string_view params_json, Span<const scripting::OutputSpec> outputs,
-    scripting::RunOptions options, const EnginePool::CancelToken& token) {
+    const scripting::CompiledOnDemandScript& script, std::string_view params_json,
+    Span<const scripting::OutputSpec> outputs, scripting::RunOptions options, const EnginePool::CancelToken& token) {
   StagedRun ran;
   Expected<InputStager::Decoded> decoded = InputStager::decode(store, staged);
   if (!decoded) {
@@ -39,6 +50,7 @@ inline StagedRun runStaged(
   }
   ran.keepalives = std::move(decoded->keepalives);
   options.cancelled = [token] { return token.cancelled(); };
+  options.cancel_flags = token.flags();
   ran.result = run(script, decoded->values, params_json, outputs, options);
   return ran;
 }

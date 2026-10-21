@@ -191,6 +191,18 @@ std::optional<Timestamp> InputStager::laggingInputStamp(const RecipeGraph::Node&
   return lagging;
 }
 
+namespace {
+
+/// One keepalive owning all of `owners` (null for none), for an input a script's proxies hold past its run.
+InputStager::Keepalive grouped(const std::vector<InputStager::Keepalive>& owners) {
+  if (owners.size() <= 1) {
+    return owners.empty() ? nullptr : owners.front();
+  }
+  return std::make_shared<const std::vector<InputStager::Keepalive>>(owners);
+}
+
+}  // namespace
+
 Expected<InputStager::Decoded> InputStager::decode(const ObjectStore& store, const Staged& staged) {
   Decoded decoded;
   decoded.values.reserve(staged.inputs.size());
@@ -201,7 +213,8 @@ Expected<InputStager::Decoded> InputStager::decode(const ObjectStore& store, con
       decoded.values.push_back({.name = input.alias, .value = *text});
     } else if (const auto* object = std::get_if<Object>(&input.value)) {
       decoded.keepalives.insert(decoded.keepalives.end(), object->keepalives.begin(), object->keepalives.end());
-      decoded.values.push_back({.name = input.alias, .value = object->object});
+      decoded.values.push_back(
+          {.name = input.alias, .keepalive = grouped(object->keepalives), .value = object->object});
     } else {
       const Entry& entry = std::get<Entry>(input.value);
       // A lazy entry's fetch and chunk decode run here, on the calling thread.
@@ -213,11 +226,13 @@ Expected<InputStager::Decoded> InputStager::decode(const ObjectStore& store, con
       if (!parsed) {
         return unexpected("on-demand: cannot decode input '" + input.alias + "': " + parsed.error());
       }
-      if (entry.parser) {
-        decoded.keepalives.push_back(entry.parser.keepalive);
+      Keepalive library = entry.parser ? entry.parser.keepalive : nullptr;
+      if (library != nullptr) {
+        decoded.keepalives.push_back(library);
       }
       decoded.values.push_back(
           {.name = input.alias,
+           .keepalive = std::move(library),
            .value = std::move(*parsed),
            .stamp_shift = resolved->payload_stamp_shift,
            .topic = store.descriptor(entry.topic).topic_name,

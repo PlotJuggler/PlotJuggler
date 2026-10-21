@@ -328,7 +328,9 @@ Status ResultHistory::publish(
   const bool ring_held = held != node.ledger.end() && held->second.key == key;
   if (ring_held) {
     for (const Output& output : node.outputs) {
-      owned->bundle.outputs[output.index].value = kHeldByTheRing;
+      scripting::NamedValue& held_output = owned->bundle.outputs[output.index];
+      held_output.value = kHeldByTheRing;
+      held_output.keepalive.reset();  // a Python output's anchor holds the object too; the value goes first
     }
   }
   cacheResult(node, key, stamp, std::shared_ptr<const scripting::ScriptBundle>(owned, &owned->bundle), ring_held);

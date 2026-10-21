@@ -109,7 +109,8 @@ struct Fixture {
       return InputStager::sampleAt(engine, name == "state" ? status_topic : threshold.topic_id, 0, t);
     };
     services.parsers = [this](ObjectTopicId topic) {
-      return topic == lidar ? SessionManager::ParserBinding{lidar_parser.get(), probe.topic_lock, lidar_parser}
+      std::shared_ptr<void> library = lidar_library ? lidar_library : std::shared_ptr<void>(lidar_parser);
+      return topic == lidar ? SessionManager::ParserBinding{lidar_parser.get(), probe.topic_lock, std::move(library)}
                             : SessionManager::ParserBinding{};
     };
     services.scheduling.tf = [this](DatasetId) { return tf; };
@@ -183,6 +184,7 @@ struct Fixture {
   TopicId status_topic = 0;  ///< the string topic `state`
   test::ParseProbe probe;
   std::shared_ptr<test::RawPointsParser> lidar_parser;
+  std::shared_ptr<void> lidar_library;  ///< set: the lidar binding's library keepalive, in place of the parser
   std::shared_ptr<const pj::tf::TransformSnapshot> tf;
   uint64_t epoch = 0;
   FakeRun fake;
@@ -195,6 +197,115 @@ struct Fixture {
 
 std::string frameOf(Timestamp query_time) {
   return std::to_string(query_time);
+}
+
+// ---- lanes --------------------------------------------------------------------------------------------------------
+
+// PY-01: a Python recipe's runs take the Python lane, the one thread the GIL serializes anyway: two Python nodes run
+// there and settle ready, a Luau node beside them runs on the shared lane.
+TEST(NodeSchedulerTest, PythonRecipeEvaluatesOnThePythonLane) {
+  Fixture fx;
+  const std::thread::id python_lane = test::pythonLaneThread(fx.pool);
+  fx.pushCloud(10 * kSec);
+  fx.pushCloud(20 * kSec);
+  fx.install(test::pythonRecipe("first", {"cloud"}, {cloudSpec()}));
+  fx.install(test::pythonRecipe("second", {"cloud"}, {cloudSpec()}));
+  fx.install(recipe("luau"));
+  fx.request("owner/first", 10 * kSec);
+  fx.request("owner/second", 10 * kSec);
+  fx.request("owner/luau", 20 * kSec);  // the time names its run
+  fx.settle();
+
+  const auto records = fx.fake.records();
+  ASSERT_EQ(records.size(), 3u);
+  for (const FakeRun::Record& record : records) {
+    EXPECT_EQ(record.thread == python_lane, record.query_time == 10 * kSec) << record.query_time;
+  }
+  for (const char* key : {"owner/first", "owner/second", "owner/luau"}) {
+    EXPECT_EQ(fx.state(key).status, Status::kReady) << key;
+  }
+}
+
+// A Python proxy of a parser-backed input that the script parks past its run (on a class its module copy shares, the
+// trust model's documented limit) keeps the parser's library loaded: removing the node, the entry and the session's
+// binding leaves the library loaded, and the payload's deleter (plugin code) runs before it unloads.
+TEST(NodeSchedulerTest, APythonProxyKeptPastItsRunKeepsTheParserLibraryLoaded) {
+  Fixture fx(8 * InFlightBudget::kRunBytes, /*real_run=*/true);
+  auto library = std::make_shared<int>(1);
+  const std::weak_ptr<int> loaded = library;
+  fx.lidar_library = library;
+  auto deletes_after_unload = std::make_shared<std::atomic<int>>(0);
+  ASSERT_TRUE(
+      fx.store.pushLazy(fx.lidar, 10 * kSec, test::lazyPointsNotingUnload(loaded, deletes_after_unload)).has_value());
+  fx.pushCloud(10 * kSec);
+  auto keeper = test::pythonRecipe("keeper", {"lidar"}, {numberSpec("n")});
+  keeper.script =
+      "import statistics\ndef evaluate(inputs, params):\n    statistics.NormalDist.kept = inputs['lidar']\n"
+      "    return {'n': inputs['lidar'].count()}\n";
+  fx.install(keeper);
+  fx.request("owner/keeper", 10 * kSec);
+  fx.settle();
+  ASSERT_EQ(fx.state("owner/keeper").status, Status::kReady) << fx.state("owner/keeper").detail;
+
+  (void)fx.service->remove("owner/keeper");
+  test::prune(fx.store, fx.lidar);
+  fx.lidar_library.reset();
+  library.reset();
+  EXPECT_FALSE(loaded.expired()) << "the parked proxy keeps the library loaded";
+
+  auto release = test::pythonRecipe("release", {"cloud"}, {numberSpec("n")});
+  release.script =
+      "import statistics\ndef evaluate(inputs, params):\n    del statistics.NormalDist.kept\n    return 1\n";
+  fx.install(release);
+  fx.request("owner/release", 10 * kSec);
+  fx.settle();
+  ASSERT_EQ(fx.state("owner/release").status, Status::kReady) << fx.state("owner/release").detail;
+  EXPECT_EQ(deletes_after_unload->load(), 0);
+  EXPECT_TRUE(loaded.expired()) << "the proxy released the library with the object";
+}
+
+// The scheduler's cancellation reaches a running Python loop through the watchdog: removing its node stops the run with
+// "script cancelled", and the Python lane then runs the next node. The runs' timeout is 600 s, so a cancellation that
+// never reached the loop hangs the test instead of passing on a timeout.
+TEST(NodeSchedulerTest, RemovingARunningPythonLoopCancelsIt) {
+  std::mutex mutex;
+  std::vector<std::string> outcomes;
+  std::atomic<int> started{0};
+  OnDemandService::setRunForTest([&](const scripting::CompiledOnDemandScript& script, Span<const NamedValue> inputs,
+                                     std::string_view params, Span<const OutputSpec> outputs,
+                                     const RunOptions& options) {
+    ++started;
+    RunOptions patient = options;
+    patient.limits.python_watchdog_millis = 600'000;
+    auto ran = scripting::runOnDemand(script, inputs, params, outputs, patient);
+    const std::lock_guard<std::mutex> lock(mutex);
+    outcomes.push_back(ran ? std::string("ok") : ran.error().message);
+    return ran;
+  });
+  struct RestoreRun {
+    ~RestoreRun() {
+      OnDemandService::setRunForTest({});
+    }
+  } restore;
+  Fixture fx(8 * InFlightBudget::kRunBytes, /*real_run=*/true);
+  fx.pushCloud(10 * kSec);
+  auto loop = test::pythonRecipe("loop", {"cloud"}, {numberSpec("n")});
+  loop.script = "def evaluate(inputs, params):\n    while True:\n        pass\n";
+  fx.install(loop);
+  fx.request("owner/loop", 10 * kSec);
+  for (int spin = 0; spin < 500 && started.load() == 0; ++spin) {
+    std::this_thread::sleep_for(10ms);
+  }
+  ASSERT_EQ(started.load(), 1);
+  (void)fx.service->remove("owner/loop");
+  auto next = test::pythonRecipe("next", {"cloud"}, {numberSpec("n")});
+  next.script = "def evaluate(inputs, params):\n    return 1\n";
+  fx.install(next);
+  fx.request("owner/next", 10 * kSec);
+  fx.settle();
+  EXPECT_EQ(fx.state("owner/next").status, Status::kReady) << fx.state("owner/next").detail;
+  const std::lock_guard<std::mutex> lock(mutex);
+  EXPECT_EQ(outcomes, (std::vector<std::string>{"script cancelled", "ok"}));
 }
 
 // ---- D30: the result policy --------------------------------------------------------------------------------
@@ -1460,32 +1571,34 @@ void pushLazyView(ObjectStore& store, ObjectTopicId topic, Timestamp t, const sd
   ASSERT_TRUE(store.pushLazy(topic, t, [bytes]() -> std::optional<sdk::PayloadView> { return bytes; }).has_value());
 }
 
-// The GUI cost of one request over a 260k-point cloud input: cold (staged, a miss, submitted; the fake run is
-// instant and off the timer) and warm (a hit). The fake skips nothing the GUI thread does: staging, the TF
-// provider, the lookup, the budget and the submission are the production ones.
+// The GUI cost of one request over a 260k-point cloud input, for a Luau and a Python recipe (their lanes differ):
+// cold (staged, a miss, submitted; the fake run is instant and off the timer) and warm (a hit). The fake skips nothing
+// the GUI thread does: staging, the TF provider, the lookup, the budget and the submission are the production ones.
 TEST(NodeSchedulerBench, RequestAtGuiCostFor260kCloud) {
   if (!sdk::getEnv("PJ_BENCH")) {
     GTEST_SKIP() << "set PJ_BENCH=1";
   }
   constexpr int kRequests = 101;
-  Fixture fx;
-  const sdk::PayloadView bytes = sdk::makePayloadView(canonicalCloud(260'000));
-  for (int index = 0; index < kRequests; ++index) {
-    pushLazyView(fx.store, fx.cloud, index * 100 * kMs, bytes);
+  for (const bool python : {false, true}) {
+    Fixture fx;
+    const sdk::PayloadView bytes = sdk::makePayloadView(canonicalCloud(260'000));
+    for (int index = 0; index < kRequests; ++index) {
+      pushLazyView(fx.store, fx.cloud, index * 100 * kMs, bytes);
+    }
+    fx.install(python ? test::pythonRecipe("crop", {"cloud"}, {cloudSpec()}) : recipe("crop"));
+    std::vector<double> cold;
+    for (int index = 0; index < kRequests; ++index) {
+      cold.push_back(test::medianMicros(1, [&] { fx.request("owner/crop", index * 100 * kMs); }));
+      fx.settle();
+    }
+    std::nth_element(cold.begin(), cold.begin() + kRequests / 2, cold.end());
+    const Timestamp last = (kRequests - 1) * 100 * kMs;
+    const double warm = test::medianMicros(kRequests, [&] { fx.request("owner/crop", last); });
+    ASSERT_EQ(fx.state("owner/crop").status, Status::kReady);
+    std::printf(
+        "[bench] requestAt, 260k-point cloud, %s: cold %.2f us (median of %d), warm %.2f us\n",
+        python ? "python" : "luau", cold[kRequests / 2], kRequests, warm);
   }
-  fx.install(recipe("crop"));
-  std::vector<double> cold;
-  for (int index = 0; index < kRequests; ++index) {
-    cold.push_back(test::medianMicros(1, [&] { fx.request("owner/crop", index * 100 * kMs); }));
-    fx.settle();
-  }
-  std::nth_element(cold.begin(), cold.begin() + kRequests / 2, cold.end());
-  const Timestamp last = (kRequests - 1) * 100 * kMs;
-  const double warm = test::medianMicros(kRequests, [&] { fx.request("owner/crop", last); });
-  ASSERT_EQ(fx.state("owner/crop").status, Status::kReady);
-  std::printf(
-      "[bench] requestAt, 260k-point cloud: cold %.2f us (median of %d), warm %.2f us\n", cold[kRequests / 2],
-      kRequests, warm);
 }
 
 // The GUI cost of one request with 600 and 1800 results in the window (10 Hz and 30 Hz over 60 s): a hit at the

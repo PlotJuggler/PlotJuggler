@@ -41,7 +41,7 @@ class OnDemandService {
     RecipeGraph::InputResolver resolver;
     InputStager::ScalarSampler scalars;
     InputStager::ParserLookup parsers;
-    NodeScheduler::Hooks scheduling;  ///< an empty `run`: the one `setRunForTest` set, else the Luau run
+    NodeScheduler::Hooks scheduling;  ///< an empty `run`: the one `setRunForTest` set, else `scripting::runOnDemand`
     /// The explicit evaluations' scalar change instants; their TF, epoch and run are `scheduling`'s.
     GridRunner::ScalarChangeLookup scalar_changes;
     ResultHistory::Limits limits;
@@ -50,8 +50,8 @@ class OnDemandService {
     SeriesRunner::StateChanged series_state_changed;  ///< a series' state changed (its progress, for 11b)
   };
 
-  /// Test seam: the run of every service built afterwards whose `Services` names none; empty restores the Luau
-  /// run. GUI thread.
+  /// Test seam: the run of every service built afterwards whose `Services` names none; empty restores
+  /// `scripting::runOnDemand`. GUI thread.
   static void setRunForTest(NodeScheduler::RunFunction run);
   /// Test seam: the time budgets' clock of every service built afterwards (`GridRunner::Hooks::now`); empty restores
   /// steady_clock. A frozen clock keeps a slow host from ending a series chunk or an evaluation early. GUI thread.

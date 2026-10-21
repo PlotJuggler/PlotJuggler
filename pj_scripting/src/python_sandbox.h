@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "pj_base/expected.hpp"
+#include "pj_base/span.hpp"
 #include "pj_scripting/memory_budget.h"
 
 namespace PJ::scripting::detail {
@@ -129,10 +130,16 @@ class PersistentWatchdog {
     std::atomic<unsigned long> thread_id{0};         ///< Python thread ident of the slot's thread
     /// The arming the watchdog fired for. Written with the GIL held, and read with it.
     std::atomic<std::uint64_t> fired_generation{0};
+    std::atomic<bool> cancel_stop{false};  ///< a cancel flag was seen set: a KeyboardInterrupt instead
+    /// The live arming's cancel flags (any set: interrupt it); guarded by the watchdog's mutex, set only when
+    /// non-empty.
+    std::vector<std::shared_ptr<const std::atomic<bool>>> cancel_flags;
   };
 
-  /// Starts timing one script call on the calling thread. GIL held.
-  static void arm(std::uint64_t max_millis);
+  /// Starts timing one script call on the calling thread, which `cancel` (thread-safe flags, polled at least every
+  /// `kMaxSleepMillis`) also interrupts: once one is set, a KeyboardInterrupt (which `except Exception` does not catch)
+  /// at the next bytecode and every `kRefireMillis` after. GIL held.
+  static void arm(std::uint64_t max_millis, Span<const std::shared_ptr<const std::atomic<bool>>> cancel = {});
   /// Ends the calling thread's live arming; true when its deadline has passed (also when the GIL was held past it, so
   /// it never fired). Drops a not-yet-delivered exception, so it never reaches a later call. Idempotent. GIL held.
   [[nodiscard]] static bool disarm();
@@ -191,12 +198,15 @@ class ClearedOnExit {
 [[nodiscard]] std::string timeoutMessage(std::string_view call, std::uint64_t max_millis);
 
 /// Everything one call into script code runs under: the audit hook armed, allocations charged to `memory`, and the
-/// watchdog timing it. `timedOut()` ends the timing and reports whether the call ran out of time, even when the script
-/// caught the `TimeoutError`; the destructor ends it otherwise. `overBudget()` reports a refused allocation, even a
-/// caught `MemoryError`. Destroy it before dropping the GIL.
+/// watchdog timing it, and interrupting it once one of `cancel` is set (`PersistentWatchdog::arm`). `timedOut()` ends
+/// the timing and reports whether the call ran out of time, even when the script caught the `TimeoutError`; the
+/// destructor ends it otherwise. `overBudget()` reports a refused allocation, even a caught `MemoryError`. Destroy it
+/// before dropping the GIL.
 class ScriptCallScope {
  public:
-  ScriptCallScope(std::shared_ptr<native::MemoryBudget> memory, std::uint64_t max_millis, Profile profile);
+  ScriptCallScope(
+      std::shared_ptr<native::MemoryBudget> memory, std::uint64_t max_millis, Profile profile,
+      Span<const std::shared_ptr<const std::atomic<bool>>> cancel = {});
   ~ScriptCallScope();
   ScriptCallScope(const ScriptCallScope&) = delete;
   ScriptCallScope& operator=(const ScriptCallScope&) = delete;

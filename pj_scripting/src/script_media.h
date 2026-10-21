@@ -15,6 +15,7 @@
 #include "pj_base/expected.hpp"
 #include "pj_base/types.hpp"
 #include "pj_scripting/image_decoder.h"
+#include "pj_scripting/object_script.h"
 #include "pj_scripting/video_frame_source.h"
 
 // One run's media state (docs/derived_objects/ARCHITECTURE.md §6): the injected decoder and video source, the image
@@ -37,6 +38,9 @@ class ScriptMedia {
   /// from).
   void noteInput(
       const void* identity, std::string topic, std::string alias, Timestamp stamp, ObjectTopicId topic_id = {});
+  /// `noteInput` for `object`, the value of `input` the script reads, when it is an image, depth image or video; holds
+  /// it until the media ends, so its address names that input for the whole run even after the script drops it.
+  void noteInput(const sdk::BuiltinObject& object, const NamedValue& input);
 
   /// The frame of the video input `identity` presented at `t`, an rgb8 image whose pixels are charged to the run's
   /// budget; `t` and its presentation time are on the dataset clock. It pairs with the input's topic at its
@@ -92,6 +96,7 @@ class ScriptMedia {
   native::NativeLimits limits_;
   Timestamp result_stamp_ = 0;
   std::vector<Input> inputs_;
+  std::vector<sdk::BuiltinObject> held_;  ///< the media inputs, alive for the run: `inputs_` names them by address
   std::vector<Decoded> decoded_;
   std::vector<Frame> frames_;
 };

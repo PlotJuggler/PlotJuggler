@@ -24,7 +24,7 @@ struct NodeScheduler::Job {
   std::optional<InFlightBudget::Reservation> room;  ///< GUI thread: returned at the publication
   InputStager::Staged staged;
   uint64_t tf_revision = 0;
-  std::shared_ptr<const scripting::CompiledScript> script;
+  std::shared_ptr<const scripting::CompiledOnDemandScript> script;
   std::string params_json;
   std::vector<scripting::OutputSpec> outputs;
   scripting::RunOptions options;
@@ -46,7 +46,7 @@ NodeScheduler::NodeScheduler(
       budget_(budget),
       hooks_(std::move(hooks)) {
   if (!hooks_.run) {
-    hooks_.run = &scripting::runOnDemandScript;
+    hooks_.run = &scripting::runOnDemand;
   }
 }
 
@@ -226,7 +226,7 @@ void NodeScheduler::submit(
       finish(*job, outcome);
     }
   };
-  job->token = pool_.submit(std::move(task));
+  job->token = pool_.submit(std::move(task), laneOf(node));
   entry.second.running = std::move(job);
 }
 

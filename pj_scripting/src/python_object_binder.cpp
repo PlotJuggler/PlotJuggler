@@ -25,6 +25,7 @@
 #include "native/image_ops.h"
 #include "native/scene_entities_ops.h"
 #include "pj_base/builtin/field_table_registry.hpp"
+#include "pj_base/builtin/video_frame.hpp"
 #include "pj_scripting/memory_budget.h"
 #include "pj_scripting/object_script.h"
 #include "script_contract.h"
@@ -918,6 +919,50 @@ py::object annotationsNew(PyObject* /*self*/, PyObject* args, PyObject* kwargs) 
       BuilderSlot<Annotations>{currentRun().generation, valueOf(Annotations::create(image_topic, limits().budget))});
 }
 
+// ---- video --------------------------------------------------------------------
+
+/// `(frame, None)`, the frame presented at `t` (a whole number of nanoseconds, an int or a float, on the dataset clock;
+/// not a bool) as a dict of `image` and `presentation_ns`, or `(None, reason)`.
+py::object frameAt(PyObject* self, PyObject* args, PyObject* kwargs) {
+  static constexpr const char* kNames[] = {"t", nullptr};
+  PyObject* when = nullptr;
+  parse(args, kwargs, "O:frame_at", kNames, &when);
+  const auto refuse = [] { return py::value_error("frame_at: time must be a whole number of nanoseconds"); };
+  Timestamp t = 0;
+  if (PyBool_Check(when) != 0) {
+    throw refuse();
+  }
+  if (PyLong_Check(when) != 0) {
+    int overflow = 0;
+    t = PyLong_AsLongLongAndOverflow(when, &overflow);
+    if (overflow != 0) {
+      throw refuse();
+    }
+  } else if (PyFloat_Check(when) != 0) {
+    const double ns = PyFloat_AS_DOUBLE(when);
+    if (!(std::abs(ns) < 9.2e18) || std::floor(ns) != ns) {
+      throw refuse();
+    }
+    t = static_cast<Timestamp>(ns);
+  } else {
+    throw refuse();
+  }
+  const sdk::VideoFrame* video = heldObject(self).get<sdk::VideoFrame>();
+  if (video == nullptr) {
+    throw py::type_error("frame_at: video frame expected");
+  }
+  ScriptMedia& media = currentRun().media;
+  Expected<sdk::BuiltinObject> frame = released([&] { return media.frameAt(video, t); });
+  if (!frame) {
+    return newTuple(py::none(), newString(frame.error()));
+  }
+  const Timestamp presentation = frame->get<sdk::Image>()->timestamp_ns;
+  return newTuple(
+      newDict(
+          {{"image", newObject(std::move(*frame))}, {"presentation_ns", checked(PyLong_FromLongLong(presentation))}}),
+      py::none());
+}
+
 // ---- pj.tf --------------------------------------------------------------------
 
 /// `pj.tf.lookup(target, source, when=None)` -> `(transform, None)` or `(None, reason)`; see python_object_script.h.
@@ -1022,6 +1067,7 @@ PjNamespaces* registerTypes() {
       {"representation", cfunction(&withoutArguments<&representation>), METH_NOARGS, nullptr},
       {"decode", cfunction(&withoutArguments<&decode>), METH_NOARGS, nullptr},
       {"to_point_cloud", cfunction(&withArguments<&toPointCloud>), kKeywords, nullptr},
+      {"frame_at", cfunction(&withArguments<&frameAt>), kKeywords, nullptr},
       {nullptr, nullptr, 0, nullptr}};
   static PyMethodDef decoded_methods[] = {
       {"pixel", cfunction(&withArguments<&pixel>), kKeywords, nullptr},

@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
-// Fixtures the Luau and Python object-script tests share: synthetic clouds, a fake image decoder and a TF snapshot.
+// Fixtures the Luau and Python object-script tests share: synthetic clouds, a fake image decoder, a fake video and a TF
+// snapshot.
 
 #include <gtest/gtest.h>
 
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <string>
@@ -17,8 +19,11 @@
 
 #include "pj_base/buffer_anchor.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
+#include "pj_base/builtin/video_frame.hpp"
 #include "pj_scripting/image_decoder.h"
 #include "pj_scripting/memory_budget.h"
+#include "pj_scripting/object_script.h"
+#include "pj_scripting/video_frame_source.h"
 #include "pj_tf/tf_buffer.h"
 
 namespace PJ::scripting::test {
@@ -116,6 +121,65 @@ inline std::shared_ptr<const pj::tf::TransformSnapshot> mapFromBaseLink() {
   pj::tf::TransformBuffer buffer(pj::tf::TransformBuffer::kKeepAll);
   addTf(buffer, "map", "base_link", kSecond, kSecond, {1, 2, 3});
   return buffer.snapshot();
+}
+
+inline constexpr ObjectTopicId kVideoTopic{7};
+
+/// A video whose frame at `t` presents at t - t % 10: 16 x 16 rgb8, charged before it exists; counts its calls.
+class BucketVideo final : public IVideoFrameSource {
+ public:
+  int calls = 0;
+  Timestamp received = 0;         ///< the last query's time
+  bool saw_cancel_check = false;  ///< the last query came with the run's cancel check
+  Expected<VideoFrameResult> frameAt(
+      ObjectTopicId topic, Timestamp t, const std::shared_ptr<native::MemoryBudget>& budget,
+      const std::function<bool()>& cancelled) override {
+    ++calls;
+    received = t;
+    saw_cancel_check = static_cast<bool>(cancelled);
+    if (topic != kVideoTopic) {
+      return unexpected("unknown video topic");
+    }
+    auto charge = std::make_shared<native::MemoryReservation>(budget);
+    constexpr uint32_t kSide = 16;
+    if (Status grown = charge->grow(kSide * kSide * 3); !grown) {
+      return unexpected(grown.error());
+    }
+    struct Held {
+      std::vector<uint8_t> rgb;
+      std::shared_ptr<native::MemoryReservation> charge;
+    };
+    auto held = std::make_shared<Held>(Held{std::vector<uint8_t>(kSide * kSide * 3, 7), std::move(charge)});
+    VideoFrameResult frame;
+    frame.presentation_ns = t - t % 10;
+    frame.image.encoding = "rgb8";
+    frame.image.width = kSide;
+    frame.image.height = kSide;
+    frame.image.row_step = kSide * 3;
+    frame.image.timestamp_ns = frame.presentation_ns;
+    frame.image.data = {held->rgb.data(), held->rgb.size()};
+    frame.image.anchor = held;
+    return frame;
+  }
+  void retireDataset(DatasetId /*dataset*/) override {}
+};
+
+/// The video input "video" on store topic `/video` (kVideoTopic), its packet stamped 99.
+inline NamedValue videoInput() {
+  sdk::VideoFrame packet;
+  packet.timestamp_ns = 99;
+  NamedValue input{.name = "video", .value = ScriptValue{sdk::BuiltinObject(packet)}};
+  input.topic = "/video";
+  input.topic_id = kVideoTopic;
+  return input;
+}
+
+/// The run options of a video run: `video` behind `frame_at`, `decoder` behind `decode`.
+inline RunOptions withVideo(std::shared_ptr<BucketVideo> video, std::shared_ptr<FakeImageDecoder> decoder) {
+  RunOptions options;
+  options.video_source = std::move(video);
+  options.image_decoder = std::move(decoder);
+  return options;
 }
 
 }  // namespace PJ::scripting::test

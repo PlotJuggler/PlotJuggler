@@ -26,6 +26,7 @@
 namespace PJ::scripting {
 class ScriptMedia;
 struct RunOptions;
+struct CompiledPythonScript;
 }  // namespace PJ::scripting
 
 namespace PJ::scripting::detail {
@@ -81,5 +82,8 @@ struct PjNamespaces {
 /// What keeps the object `value` wraps alive (a copy of it, its native charge, its input's keepalive), for a result to
 /// keep, so the charge counts until the result dies. Null when `value` is not an object.
 [[nodiscard]] std::shared_ptr<const void> anchorOf(PyObject* value);
+
+/// The code object `script` holds (borrowed), for a test's weak reference to it.
+[[nodiscard]] PyObject* codeObjectOf(const CompiledPythonScript& script);
 
 }  // namespace PJ::scripting::detail

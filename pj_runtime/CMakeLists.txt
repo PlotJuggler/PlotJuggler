@@ -463,6 +463,10 @@ if(PJ_BUILD_TESTS)
     # pj_bench_stats.h: the Qt-free thread clock and statistics of the engine
     # freeze bench (pj_bench_probes would pull Qt Widgets into this core runner).
     target_include_directories(pj_runtime_tests PRIVATE "${PJ_TEST_MAINS_DIR}")
+    if(TARGET pj_scripting_python_test_probe)
+      target_link_libraries(pj_runtime_tests PRIVATE pj_scripting_python_test_probe)
+      target_compile_definitions(pj_runtime_tests PRIVATE PJ_PYTHON_TEST_PROBE)
+    endif()
     set_target_properties(pj_runtime_tests PROPERTIES AUTOMOC ON)
     add_dependencies(pj_runtime_tests
         runtime_host_object_parser_plugin streaming_caching_parser_plugin

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -148,6 +149,9 @@ struct RunOptions {
   /// Polled inside the interpreter and by the native operations (empty: never cancelled); a cancelled
   /// run fails with "script cancelled" even when the script `pcall`s the error.
   std::function<bool()> cancelled;
+  /// The same cancellation as thread-safe flags (any set: cancelled), which the Python watchdog polls from its own
+  /// thread to interrupt a script inside its bytecode; Luau polls `cancelled` in its interrupt instead.
+  std::vector<std::shared_ptr<const std::atomic<bool>>> cancel_flags;
   /// Bounds the native outputs the run holds at once and the strings it returns: a ledger separate from
   /// `limits.mem_bytes`, the VM's own cap. An output the script retains past the run keeps its charge
   /// until it dies.
