@@ -312,17 +312,16 @@ if(EMSCRIPTEN)
         # the main thread waits on it never starts.
         set_target_properties(pj_app PROPERTIES QT_WASM_PTHREAD_POOL_SIZE 7)
         target_compile_definitions(pj_app_shell PRIVATE PJ_WASM_WITH_PYTHON)
-        # Next to plotjuggler4.js, where scripts/package_wasm.mjs packages it with the module.
-        configure_file("${PJ_WASM_PYTHON_NOTICES}" "${CMAKE_CURRENT_BINARY_DIR}/THIRD_PARTY_NOTICES.txt" COPYONLY)
         if(PJ_WASM_ENABLE_INGRESS_PROBE)
             # The stdlib probe runs Python outside the sandbox; the symbols come through pj_scripting's link.
             target_sources(pj_app_shell PRIVATE tests/wasm_python_stdlib_probe.cpp)
             target_include_directories(pj_app_shell SYSTEM PRIVATE
                 $<TARGET_PROPERTY:cpython::embed,INTERFACE_INCLUDE_DIRECTORIES>)
         endif()
-    else()
-        file(REMOVE "${CMAKE_CURRENT_BINARY_DIR}/THIRD_PARTY_NOTICES.txt")  # left by an earlier configure with it on
     endif()
+    # Next to plotjuggler4.js, where scripts/package_wasm.mjs packages it with the module.
+    include(${CMAKE_SOURCE_DIR}/cmake/PjWasmNotices.cmake)
+    pj_wasm_write_notices("${CMAKE_CURRENT_BINARY_DIR}/THIRD_PARTY_NOTICES.txt" "${PJ_WASM_PYTHON_NOTICES}")
 endif()
 
 # ---------------------------------------------------------------------------

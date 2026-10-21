@@ -351,14 +351,16 @@ The 3D widget family ships as `pj_scene3D` (built and wired into `pj_app` via `S
 Scene3D renders through one QRhi view (`widgets/rhi/`, on desktop and in the
 browser) on the platform's native API: OpenGL on Linux, D3D11 on Windows, Metal
 on macOS, WebGL2 in the browser. Browser policy (file picking, bounded loading)
-stays on `PJ_TARGET_WASM`. Scene2D and Scene3D are on by default in the browser
-build (`PJ_WASM_WITH_SCENE2D`/`PJ_WASM_WITH_SCENE3D`); their bounded Assimp and
-point-cloud codec graph enters only through those options. Shader packs
+stays on `PJ_TARGET_WASM`. Scene2D, Scene3D and on-demand Python are on by default in the browser
+build (`PJ_WASM_WITH_SCENE2D`/`PJ_WASM_WITH_SCENE3D`/`PJ_WASM_WITH_PYTHON`); their bounded Assimp,
+point-cloud codec and CPython graphs enter only through those options. Shader packs
 are committed `.qsb` files baked for every backend (GLSL ES 300 for the browser)
 and must be reproducibly rebuilt with the pinned host `qsb`; the WASM configure
 hash-checks them. Every new static archive in the
 monolithic WASM executable also needs an ABI/process-global-symbol collision
-audit; a successful link alone did not catch the prior Qt/libjpeg collision.
+audit; a successful link alone did not catch the prior Qt/libjpeg collision. It
+also needs its entry in the bundle's `THIRD_PARTY_NOTICES.txt`
+(`cmake/PjWasmNotices.cmake`; see `docs/WASM_DEPLOYMENT.md`).
 
 Deterministic browser fixtures must reproduce both bytes and the product state
 needed by the UI. In particular, the global Timeline prefers scalar/object

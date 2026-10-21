@@ -5,7 +5,7 @@
     "test": "playwright test --project=chromium --reporter=line --workers=1",
     "test:firefox": "playwright test --project=firefox --reporter=line --workers=1",
     "test:deployment": "playwright test -c deployment.playwright.config.js",
-    "test:package": "node --test package_wasm.test.mjs",
+    "test:package": "node --test package_wasm.test.mjs wasm_notices.test.mjs",
     "test:scene3d-capability": "playwright test -c scene3d_capability.playwright.config.js --project=chromium",
     "test:scene3d-capability:firefox": "playwright test -c scene3d_capability.playwright.config.js --project=firefox"
   },

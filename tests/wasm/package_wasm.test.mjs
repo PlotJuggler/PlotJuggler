@@ -36,6 +36,7 @@ async function fixture(
     writeFile(path.join(source, 'plotjuggler4.wasm'), Buffer.from([0x00, 0x61, 0x73, 0x6d, 1, 0, 0, 0])),
     writeFile(path.join(source, 'qtloader.js'), 'export const qtLoad = async () => {};\n'),
     writeFile(path.join(source, 'qtlogo.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>\n'),
+    writeFile(path.join(source, 'THIRD_PARTY_NOTICES.txt'), 'PSF LICENSE AGREEMENT\n'.repeat(100)),
   ]);
   return { root, source };
 }
@@ -109,12 +110,8 @@ test('replaces empty and prior-package outputs but removes stale package files',
   await assert.rejects(access(path.join(output, 'stale-package-file')), error => error.code === 'ENOENT');
 });
 
-test('packages the third-party notices a build wrote, and nothing when it wrote none', async t => {
+test('packages the third-party notices precompressed, and refuses a build without them', async t => {
   const { root, source } = await fixture(t);
-  const without = await packageWasm({ source, output: path.join(root, 'without'), version: 'test' });
-  assert.equal(without.files.some(file => file.path.endsWith('THIRD_PARTY_NOTICES.txt')), false);
-
-  await writeFile(path.join(source, 'THIRD_PARTY_NOTICES.txt'), 'PSF LICENSE AGREEMENT\n'.repeat(100));
   const output = path.join(root, 'with');
   const manifest = await packageWasm({ source, output, version: 'test' });
   const notices = manifest.files.find(file => file.path.endsWith('/THIRD_PARTY_NOTICES.txt'));
@@ -126,5 +123,10 @@ test('packages the third-party notices a build wrote, and nothing when it wrote 
     await readFile(path.join(output, notices.path), 'utf8'),
     'PSF LICENSE AGREEMENT\n'.repeat(100),
   );
-  assert.notEqual(manifest.bundleId, without.bundleId, 'the notices are part of the bundle identity');
+
+  await rm(path.join(source, 'THIRD_PARTY_NOTICES.txt'));
+  await assert.rejects(
+    packageWasm({ source, output: path.join(root, 'without'), version: 'test' }),
+    /Required Qt\/WASM artifact is missing: .*THIRD_PARTY_NOTICES\.txt/,
+  );
 });

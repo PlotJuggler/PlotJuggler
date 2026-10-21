@@ -35,9 +35,8 @@ option(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS
     "Build Draco and Cloudini compressed point-cloud support into the Scene3D wasm port" ON)
 option(PJ_WASM_SCENE3D_CAPABILITY_PROBE "Build the standalone Scene3D QRhi capability probe" OFF)
 option(PJ_WASM_WITH_MARKETPLACE "Build marketplace support in the wasm app" OFF)
-# Off for production until the browser compile stops blocking the GUI (derived-objects slice P-c); the acceptance
-# configuration of wasm-ci.yml turns it on.
-option(PJ_WASM_WITH_PYTHON "Build on-demand Python scripts (a static CPython 3.14) into the wasm app" OFF)
+# About 1.9 MB of Brotli download (docs/WASM_DEPLOYMENT.md); OFF drops on-demand Python from the browser.
+option(PJ_WASM_WITH_PYTHON "Build on-demand Python scripts (a static CPython 3.14) into the wasm app" ON)
 
 if(PJ_WASM_WITH_SCENE2D)
     include(${CMAKE_CURRENT_LIST_DIR}/PjWasmScene2DDependencies.cmake)

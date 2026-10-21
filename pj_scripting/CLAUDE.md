@@ -179,7 +179,7 @@ Licensed MPL-2.0.
   `STV_HIDDEN`, and ELF visibility only ever narrows. `pj_app`'s
   `ExportedSymbolsGuard` test pins that flag in place; `--selftest-python` (run
   against the packaged AppImage in CI) pins the runtime end.
-- **Python in the browser (`PJ_WASM_WITH_PYTHON`, off by default; WASM CI's acceptance build turns it on).** Only the
+- **Python in the browser (`PJ_WASM_WITH_PYTHON`, on by default in every browser build, production included; OFF drops it).** Only the
   on-demand lane: Python filters stay unavailable (`python_engine_unavailable.cpp`), because they take the GIL on the
   commit thread without a bound. `cmake/PjWasmPython.cmake` builds a static CPython 3.14.8 for wasm32-emscripten with
   pthreads at configure time from the SHA-256-pinned tarball (`cmake/wasm_python/`: the build script, two local
@@ -191,7 +191,8 @@ Licensed MPL-2.0.
   and fails on any lazy import not loaded at boot (see the next bullet's preload). `main.cpp` calls `prestartPythonHelper()` at startup, because a
   thread created while the browser's main thread waits on it never starts, and the pthread pool is 7. The GUI never
   compiles Python for a recipe, and a validate waits for the helper at most 100 ms, so a script holding the GIL inside
-  one C call no longer freezes the page. Guide: `docs/WASM_DEPLOYMENT.md`.
+  one C call no longer freezes the page. `tests/wasm/python_layout.spec.js` restores Python recipes from a layout into a
+  3D scene in both browsers. Guide: `docs/WASM_DEPLOYMENT.md`.
 - **Time contract (precision-critical).** The script sees `t` = **seconds since
   session start**. The int64-ns session-start is subtracted on the absolute spine
   **before** the double cast (avoiding epoch-double quantization, ~256 ns at epoch

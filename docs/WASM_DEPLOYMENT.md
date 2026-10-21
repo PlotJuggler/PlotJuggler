@@ -19,7 +19,9 @@ Pthreads:
 The exact release toolchain is pinned in `versions.env`. Scene2D video
 cross-compiles FFmpeg and dav1d at build time, which needs `meson`, GNU `make`
 and `pkg-config` on the host (`-DPJ_WASM_WITH_VIDEO=OFF` drops video and these
-requirements). A local equivalent of the release workflow is:
+requirements). Browser Python builds CPython at configure time, which needs a
+native C compiler, `make`, `patch` and `node` (`-DPJ_WASM_WITH_PYTHON=OFF`
+drops it; see below). A local equivalent of the release workflow is:
 
 ```bash
 source /path/to/emsdk/emsdk_env.sh
@@ -28,7 +30,8 @@ cmake -S . -B build-wasm -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE=/path/to/Qt/<PJ_QT_VERSION>/wasm_multithread/lib/cmake/Qt6/qt.toolchain.cmake \
   -DQT_HOST_PATH=/path/to/Qt/<PJ_QT_VERSION>/gcc_64 \
   -DCMAKE_BUILD_TYPE=Release \
-  -DPJ_BUILD_TESTS=OFF -DPJ_BUILD_DEMOS=OFF
+  -DPJ_BUILD_TESTS=OFF -DPJ_BUILD_DEMOS=OFF \
+  -DPJ_WASM_PYTHON_CACHE_DIR="$HOME/.cache/pj-wasm-cpython"
 cmake --build build-wasm --target pj_app --parallel 4
 
 node scripts/package_wasm.mjs \
@@ -86,7 +89,7 @@ build-wasm/deploy/
     ├── plotjuggler4.wasm[.br|.gz]
     ├── qtloader.js[.br|.gz]
     ├── qtlogo.svg[.br|.gz]
-    └── THIRD_PARTY_NOTICES.txt[.br|.gz]   (only when the build wrote it)
+    └── THIRD_PARTY_NOTICES.txt[.br|.gz]
 ```
 
 `manifest.json` records every identity/Brotli/gzip path, byte size, SHA-256,
@@ -98,14 +101,39 @@ the file configures isolation and cache policy on hosts that
 support the Netlify/Cloudflare Pages format; it does not make a host select
 precompressed variants automatically.
 
+### Third-party notices
+
+`plotjuggler4.wasm` links every library statically. `cmake/PjWasmNotices.cmake`
+writes `THIRD_PARTY_NOTICES.txt` beside `plotjuggler4.js` at configure time: one
+section per library with its SPDX licence expression and its licence text,
+copied from its source (Qt's modules, plugins and bundled third-party code from
+the kit's SBOM, `sbom/*.spdx.json`, followed by the text of every standard
+licence they name, one file each in `cmake/wasm_notices/<SPDX id>.txt`; the
+configure fails, naming the id, when one is missing), and CPython's notices when
+Python is on.
+`package_wasm.mjs` refuses a build without the file. `npm run test:package`
+(`tests/wasm/wasm_notices.test.mjs`) fails when a `FetchContent_Declare` of the
+WASM build has no `pj_wasm_notice()` entry. What that test cannot see is kept
+by hand in the same file: a Qt module or plugin added to the link
+(`_PJ_QT_NOTICE_PACKAGES`), a vendored directory or font, third-party code
+bundled inside a dependency (assimp's `contrib/`, the plugins' `contrib/`,
+rosx_introspection's `contrib/`), and the Emscripten runtime. The notices are
+attribution only: how the LGPL's relinking terms apply to the statically linked
+Qt, FFmpeg and Qt Advanced Docking System is a separate decision, not taken
+here.
+
 ### Browser Python (`PJ_WASM_WITH_PYTHON`)
 
-On-demand Python scripts can run in the browser through a static CPython 3.14
-for Emscripten with pthreads. The option is `OFF` by default; WASM CI's
-acceptance configuration turns it on and runs `tests/wasm/python.spec.js` in
-Chromium and Firefox. It stays off for production until the items still open
-in `docs/derived_objects/ARCHITECTURE.md` §14 are settled; the main thread no
-longer waits on a Python compile (derived-objects slice P-c).
+On-demand Python scripts run in the browser through a static CPython 3.14 for
+Emscripten with pthreads. The option is `ON` by default, in the production
+build too (derived-objects slice P-d); `-DPJ_WASM_WITH_PYTHON=OFF` builds the
+app without it, and a recipe in Python then fails to restore with "python is
+not available in this build". WASM CI's functional suite runs
+`tests/wasm/python.spec.js` (the lane's limits, per-call cost and main-thread
+gaps) and `tests/wasm/python_layout.spec.js` (a layout's Python recipes
+restored into a 3D scene, a broken one showing its compile error) in Chromium
+and Firefox. Python filters stay unavailable in the browser; what else remains
+is in `docs/derived_objects/ARCHITECTURE.md` §14.
 
 `cmake/PjWasmPython.cmake` builds CPython at configure time, from the SHA-256
 pinned release tarball (its only download) and the files in
@@ -130,11 +158,13 @@ cmake ... -DPJ_WASM_WITH_PYTHON=ON -DPJ_WASM_PYTHON_CACHE_DIR="$HOME/.cache/pj-w
 
 What to know before changing it:
 
-- **Size budget.** It adds about 1.93 MB (+13.6 %) to the Brotli download
-  (2026-10-21, the acceptance configuration with and without it); CI fails the
-  acceptance package above 2.5 MB over production (`scripts/wasm_size_delta.mjs`).
-  About 0.67 MB of it is the stdlib zip, stored uncompressed so the package's
-  Brotli compresses it with the module.
+- **Size budget.** It adds about 1.9 MB to the Brotli download (2026-10-21,
+  the acceptance configuration with and without it), about 12 % of the
+  production package's 16.13 MB. CI fails the production package above
+  16,932,000 B, 5 % over that measurement (`scripts/wasm_size_budget.mjs`): an
+  absolute budget, since both configurations now carry Python and a delta would
+  need a third build. About 0.67 MB of it is the stdlib zip, stored uncompressed
+  so the package's Brotli compresses it with the module.
 - **The stdlib zip** holds only the modules that importing the roots in
   `stdlib_zip.py` loads (68 of them). A module the stdlib imports
   lazily is missed unless a root names it, and even one in the zip cannot be
@@ -152,9 +182,9 @@ What to know before changing it:
   thread at startup: a validate waits for it, at most 100 ms. The main thread
   never compiles a recipe's Python (a script compiles at its first run, on the
   Python lane).
-- **Notices.** The build writes `THIRD_PARTY_NOTICES.txt` (CPython's PSF-2.0
-  licence, its incorporated-software notices including libmpdec's BSD licence,
-  and HACL*'s MIT licence); `package_wasm.mjs` packages it next to the module.
+- **Notices.** The CPython stage writes its notices (the PSF-2.0 licence, its
+  incorporated-software notices including libmpdec's BSD licence, and HACL*'s
+  MIT licence), which end the bundle's `THIRD_PARTY_NOTICES.txt`.
 - **Symbol audit** (rerun on every CPython or Emscripten bump). `llvm-nm
   --defined-only -g` over the CPython archives (3,352 globals), against the
   other 240 inputs of `pj_app`'s link line (113,891) and the 13 sysroot

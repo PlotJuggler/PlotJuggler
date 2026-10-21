@@ -7,6 +7,7 @@
 
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <chrono>
 #include <string>
 #include <thread>
@@ -169,6 +170,23 @@ void wasmPyWorkerChecks() {
       const std::string outcome = wasmPyOutcome(wasmPyRun(*loop, no_inputs));
       qInfo("PJ_WASM_PY_LOOP %s ns_per_iter=%.1f %s", name, wasmPyMillisSince(begin) * 1e6 / 200000.0, outcome.c_str());
     }
+  }
+
+  // Allocation-heavy (ARCHITECTURE §19's sum(range(n))): each element past 256 is an int allocated and freed under the
+  // cap, inside one C call. Best of three; a lax watchdog, since Firefox runs it several times slower.
+  if (auto alloc =
+          compileOnDemandScriptPython("def evaluate(inputs, params):\n    return float(sum(range(1_000_000)))\n")) {
+    RunOptions options;
+    options.limits.python_watchdog_millis = 20000;
+    double best_millis = 0.0;
+    std::string outcome;
+    for (int run = 0; run < 3; ++run) {
+      const auto begin = std::chrono::steady_clock::now();
+      outcome = wasmPyOutcome(wasmPyRun(*alloc, no_inputs, options));
+      const double millis = wasmPyMillisSince(begin);
+      best_millis = run == 0 ? millis : std::min(best_millis, millis);
+    }
+    qInfo("PJ_WASM_PY_ALLOC sum_range ns_per_element=%.1f %s", best_millis * 1e6 / 1'000'000.0, outcome.c_str());
   }
 
   // The same pure loop in Luau: separates a browser's general wasm speed from CPython's.

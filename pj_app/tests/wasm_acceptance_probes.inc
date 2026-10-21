@@ -18,6 +18,8 @@
 #include "wasm_python_probe.inc"
 #endif
 
+#include "pj_scripting/python_object_script.h"
+
 namespace {
 
 QMetaObject::Connection wasm_frame_timing_connection;
@@ -29,6 +31,12 @@ void stopWasmFrameTimingProbe() {
 }
 
 }  // namespace
+
+/// Whether this build has the on-demand Python lane. Unlike the smoke probe it starts no Python work, so a spec can
+/// decide on it before doing anything else.
+extern "C" EMSCRIPTEN_KEEPALIVE int pj_wasm_test_python_available() {
+  return PJ::scripting::pythonAvailable() ? 1 : 0;
+}
 
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_open_load() {
   for (QWidget* widget : QApplication::topLevelWidgets()) {
@@ -1598,6 +1606,7 @@ EM_JS(void, pj_wasm_install_browser_test_probes, (), {
   globalThis.pjWasmReportSaveSourceLayoutActionProbe = () => Module._pj_wasm_test_report_save_source_layout_action();
   globalThis.pjWasmReportApplyFilterActionProbe = () => Module._pj_wasm_test_report_apply_filter_action();
   globalThis.pjWasmReportQuitActionProbe = () => Module._pj_wasm_test_report_quit_action();
+  globalThis.pjWasmPythonAvailableProbe = () => Module._pj_wasm_test_python_available() === 1;
   globalThis.pjWasmPythonSmokeProbe = () => Module._pj_wasm_test_python_smoke?.();
   globalThis.pjWasmPythonHoldGilProbe = () => Module._pj_wasm_test_python_hold_gil?.();
   globalThis.pjWasmPythonCompileNowProbe = () => Module._pj_wasm_test_python_compile_now?.();

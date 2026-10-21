@@ -35,8 +35,8 @@ const REQUIRED_ARTIFACTS = [
   'qtloader.js',
   'qtlogo.svg',
 ];
-// Packaged beside the required artifacts when the build wrote them (PJ_WASM_WITH_PYTHON writes the notices).
-const OPTIONAL_ARTIFACTS = ['THIRD_PARTY_NOTICES.txt'];
+// Every build writes it (cmake/PjWasmNotices.cmake); packaged beside the module, never referenced by the page.
+const NOTICES = 'THIRD_PARTY_NOTICES.txt';
 const CONTENT_TYPES = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.js', 'text/javascript; charset=utf-8'],
@@ -194,7 +194,7 @@ function deploymentHeaders(bundlePath) {
 }
 
 async function validateSource(sourceRoot) {
-  const required = ['plotjuggler4.html', ...REQUIRED_ARTIFACTS];
+  const required = ['plotjuggler4.html', ...REQUIRED_ARTIFACTS, NOTICES];
   await Promise.all(required.map(async fileName => {
     const candidate = path.join(sourceRoot, fileName);
     try {
@@ -268,16 +268,7 @@ export async function packageWasm(options) {
   await validateReplaceableOutput(outputRoot);
   await validateSource(sourceRoot);
 
-  const optionalArtifacts = [];
-  for (const fileName of OPTIONAL_ARTIFACTS) {
-    try {
-      await access(path.join(sourceRoot, fileName));
-      optionalArtifacts.push(fileName);
-    } catch {
-      // Not written by this build configuration.
-    }
-  }
-  const sourceAssets = await Promise.all([...REQUIRED_ARTIFACTS, ...optionalArtifacts].map(async fileName => ({
+  const sourceAssets = await Promise.all([...REQUIRED_ARTIFACTS, NOTICES].map(async fileName => ({
     fileName,
     contents: await readFile(path.join(sourceRoot, fileName)),
   })));

@@ -78,6 +78,9 @@ test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, 
   const luauMicros = number('PJ_WASM_PY_PERCALL luau', 'luau_four_line_mean_us');
   expect(pythonMicros).toBeGreaterThan(0);
   expect(pythonMicros).toBeLessThanOrEqual(luauMicros);
+  // Allocation-heavy code is measured, not bounded (ARCHITECTURE §14 quotes it per browser).
+  expect(number('PJ_WASM_PY_ALLOC sum_range', 'value')).toBe(499999500000);
+  expect(number('PJ_WASM_PY_ALLOC sum_range', 'ns_per_element')).toBeGreaterThan(0);
   const watchdog = line('PJ_WASM_PY_WATCHDOG');
   expect(watchdog).toContain('TimeoutError');
   expect(number('PJ_WASM_PY_WATCHDOG', 'elapsed_ms')).toBeLessThan(WATCHDOG_BOUND_MS);
