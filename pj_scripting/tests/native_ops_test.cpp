@@ -287,6 +287,19 @@ TEST(PointCloudOps, XyzPointsSkipNaN) {
   EXPECT_DOUBLE_EQ(sum_x, 4.0);
 }
 
+// A bounded scan stops after `max_records` records, past them, so a caller can resume it elsewhere (without the GIL).
+TEST(PointCloudOps, NextFinitePointStopsAfterMaxRecords) {
+  const auto cloud = makeXyziCloud({{kNaN, 0, 0, 0}, {kNaN, 0, 0, 0}, {kNaN, 0, 0, 0}, {4, 0, 0, 0}});
+  const auto access = resolveXyz(cloud);
+  ASSERT_TRUE(access) << access.error();
+  size_t next = 0;
+  EXPECT_FALSE(nextFinitePoint(cloud, *access, next, 2).has_value());
+  EXPECT_EQ(next, 2u);
+  const auto point = nextFinitePoint(cloud, *access, next, 2);
+  ASSERT_TRUE(point.has_value());
+  EXPECT_EQ(point->index, 3u);
+}
+
 TEST(PointCloudOps, ExtremePointSkipsNonFinitePoints) {
   const auto cloud = makeXyziCloud({{kNaN, 0, 100, 0}, {1, 1, 1, 0}});
   const auto top = extremePoint(cloud, "z", Extreme::kMax);

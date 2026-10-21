@@ -25,6 +25,7 @@
 #include "luacode.h"
 #include "luau_sandbox_state.h"
 #include "object_binder.h"
+#include "object_script_test_utils.h"
 #include "pj_base/buffer_anchor.hpp"
 #include "pj_base/builtin/camera_info.hpp"
 #include "pj_base/builtin/frame_transforms.hpp"
@@ -47,46 +48,16 @@ namespace {
 using sdk::PointCloud;
 using sdk::PointField;
 
-constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
-constexpr int64_t kSecond = 1'000'000'000;
+using test::addTf;
+using test::at;
+using test::FakeImageDecoder;
+using test::kNaN;
+using test::kSecond;
+using test::makeCloud;
+using test::makeLineCloud;
+using test::mapFromBaseLink;
 
 // ---- fixtures ----------------------------------------------------------------
-
-// A flat cloud: x/y/z/intensity as float32 at offsets 0/4/8/12, `point_step` bytes per record (>= 16;
-// the rest is padding, as a lidar's extra channels would be).
-PointCloud makeCloud(const std::vector<std::array<float, 4>>& points, uint32_t point_step = 16) {
-  PointCloud cloud;
-  cloud.width = static_cast<uint32_t>(points.size());
-  cloud.height = 1;
-  cloud.point_step = point_step;
-  cloud.row_step = cloud.point_step * cloud.width;
-  cloud.is_dense = true;
-  cloud.frame_id = "base_link";
-  cloud.fields = {
-      PointField{.name = "x", .offset = 0, .datatype = PointField::Datatype::kFloat32, .count = 1},
-      PointField{.name = "y", .offset = 4, .datatype = PointField::Datatype::kFloat32, .count = 1},
-      PointField{.name = "z", .offset = 8, .datatype = PointField::Datatype::kFloat32, .count = 1},
-      PointField{.name = "intensity", .offset = 12, .datatype = PointField::Datatype::kFloat32, .count = 1},
-  };
-  cloud.timestamp_ns = kSecond;
-  std::vector<uint8_t> bytes(static_cast<size_t>(cloud.point_step) * points.size());
-  for (size_t index = 0; index < points.size(); ++index) {
-    std::memcpy(bytes.data() + index * cloud.point_step, points[index].data(), sizeof(float) * 4);
-  }
-  sdk::PayloadView view = sdk::makePayloadView(std::move(bytes));
-  cloud.data = view.bytes;
-  cloud.anchor = view.anchor;
-  return cloud;
-}
-
-// `count` points along x, at x = 0, 1, 2, ...
-PointCloud makeLineCloud(size_t count, uint32_t point_step = 16) {
-  std::vector<std::array<float, 4>> points(count);
-  for (size_t index = 0; index < count; ++index) {
-    points[index] = {static_cast<float>(index), 0, 0, 0};
-  }
-  return makeCloud(points, point_step);
-}
 
 // A 2x2 organized cloud whose rows carry 8 bytes of padding (row_step 40, not 32).
 // Row 0: (0,0,0), (1,1,1). Row 1: (2,2,2), (3,3,3).
@@ -112,7 +83,7 @@ PointCloud makeOrganizedCloud() {
 }
 
 NamedValue object(std::string name, sdk::BuiltinObject value, Timestamp stamp_shift = 0) {
-  return NamedValue{std::move(name), ScriptValue{std::move(value)}, stamp_shift};
+  return NamedValue{.name = std::move(name), .value = ScriptValue{std::move(value)}, .stamp_shift = stamp_shift};
 }
 
 std::vector<OutputSpec> specs(std::initializer_list<const char*> declarations) {
@@ -190,25 +161,6 @@ std::string describe(const ScriptBundle& bundle) {
 }
 
 // ---- TF fixtures -------------------------------------------------------------
-
-pj::tf::TimePoint at(int64_t ns) {
-  return PJ::fromRaw(ns);
-}
-
-/// Adds `parent <- child` to `buffer`: header `stamp`, entry time `entry`.
-void addTf(
-    pj::tf::TransformBuffer& buffer, const std::string& parent, const std::string& child, int64_t stamp, int64_t entry,
-    glm::dvec3 translation, glm::dquat rotation = glm::dquat(1, 0, 0, 0)) {
-  const pj::tf::StampedTransform tf{at(stamp), parent, child, pj::tf::Transform(translation, rotation)};
-  ASSERT_TRUE(buffer.setTransform(tf, at(entry)).has_value());
-}
-
-/// A snapshot holding one static `map <- base_link` edge, translation {1, 2, 3}, stamped at 1 s.
-std::shared_ptr<const pj::tf::TransformSnapshot> mapFromBaseLink() {
-  pj::tf::TransformBuffer buffer(pj::tf::TransformBuffer::kKeepAll);
-  addTf(buffer, "map", "base_link", kSecond, kSecond, {1, 2, 3});
-  return buffer.snapshot();
-}
 
 RunOptions hostAt(Timestamp query_time, std::shared_ptr<const pj::tf::TransformSnapshot> tf = mapFromBaseLink()) {
   RunOptions options;
@@ -401,7 +353,8 @@ TEST(ObjectScript, ParamsJsonIsVisible) {
 TEST(ObjectScript, ScalarInputsAreVisible) {
   auto result =
       run("local inputs = ...\nreturn { doubled = inputs.threshold * 2, mode = inputs.mode .. '!' }",
-          {NamedValue{"threshold", ScriptValue{2.5}}, NamedValue{"mode", ScriptValue{std::string("auto")}}},
+          {NamedValue{.name = "threshold", .value = ScriptValue{2.5}},
+           NamedValue{.name = "mode", .value = ScriptValue{std::string("auto")}}},
           specs({"doubled:number", "mode:string"}));
   ASSERT_TRUE(result.has_value()) << result.error();
   EXPECT_DOUBLE_EQ(number(*result, "doubled"), 5.0);
@@ -709,7 +662,7 @@ constexpr const char* kReferenceScript = R"LUAU(
 
 Expected<ScriptBundle, ScriptError> runReferenceScript(PointCloud cloud) {
   return run(
-      kReferenceScript, {object("cloud", std::move(cloud)), NamedValue{"threshold", ScriptValue{5.0}}},
+      kReferenceScript, {object("cloud", std::move(cloud)), NamedValue{.name = "threshold", .value = ScriptValue{5.0}}},
       specs({"cropped:kPointCloud", "max_z:number", "report:string", "witness:kSceneEntities"}), R"({"zmin": -5})");
 }
 
@@ -1489,7 +1442,7 @@ TEST(ObjectScriptInferred, ArrayCannotHoldUnavailable) {
 
 // D25: the caller does not run a node whose input is unavailable.
 TEST(ObjectScript, UnavailableInputIsAnError) {
-  auto result = run("return 1", {NamedValue{"threshold", ScriptValue{Unavailable{"no sample"}}}});
+  auto result = run("return 1", {NamedValue{.name = "threshold", .value = ScriptValue{Unavailable{"no sample"}}}});
   ASSERT_FALSE(result.has_value());
   EXPECT_TRUE(contains(result.error(), "'threshold'")) << result.error();
   EXPECT_TRUE(contains(result.error(), "unavailable")) << result.error();
@@ -1545,41 +1498,6 @@ TEST(ObjectScriptBench, SetupAndListIteration) {
 // ---- images: decode, decoded pixels, depth, pairing (MED-01, MED-02, MED-03, MED-08, MED-15, MED-17) -----------
 
 namespace {
-
-/// Decodes any image into width x height samples; counts its calls. `value` < 0: sample = its index.
-class FakeImageDecoder final : public IImageDecoder {
- public:
-  FakeImageDecoder(uint32_t width, uint32_t height, float value = -1) : width_(width), height_(height), value_(value) {}
-  mutable int calls = 0;
-
-  Expected<DecodedPixels> decode(
-      const sdk::Image& /*image*/, const std::shared_ptr<native::MemoryBudget>& budget) const override {
-    ++calls;
-    const std::size_t count = std::size_t{width_} * height_;
-    auto charge = std::make_shared<native::MemoryReservation>(budget);
-    if (Status grown = charge->grow(count * sizeof(float)); !grown) {
-      return unexpected(grown.error());
-    }
-    std::vector<float> samples(count, value_);
-    if (value_ < 0) {
-      for (std::size_t index = 0; index < count; ++index) {
-        samples[index] = static_cast<float>(index);
-      }
-    }
-    DecodedPixels out;
-    out.width = width_;
-    out.height = height_;
-    out.channels = 1;
-    out.samples = std::make_shared<const std::vector<float>>(std::move(samples));
-    out.charge = std::move(charge);
-    return out;
-  }
-
- private:
-  uint32_t width_;
-  uint32_t height_;
-  float value_;
-};
 
 /// A 4 x 3 gradient (sample = index) behind every image.
 RunOptions withGradient(std::shared_ptr<FakeImageDecoder>* decoder = nullptr) {
@@ -1776,7 +1694,7 @@ TEST(ObjectScript, AnnotationsAreStampedWithTheImagesPayloadTime) {
   NamedValue image = imageInput("s:/cam", "/cam", 3 * kSecond);
   image.stamp_shift = kSecond;  // a merge moved the dataset clock: the image is at 4 s on it
   auto result =
-      run(kScript, {image, NamedValue{"threshold", 1.0}},
+      run(kScript, {image, NamedValue{.name = "threshold", .value = 1.0}},
           specs(
               {"threshold:kImageAnnotations", "bare:kImageAnnotations", "qualified:kImageAnnotations",
                "other:kImageAnnotations"}),

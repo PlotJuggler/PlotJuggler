@@ -21,9 +21,16 @@
 #include <numbers>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
+#include "object_script_test_utils.h"
+#include "pj_base/builtin/camera_info.hpp"
+#include "pj_base/builtin/frame_transforms.hpp"
+#include "pj_base/builtin/image.hpp"
+#include "pj_base/builtin/image_annotations.hpp"
+#include "pj_base/builtin/scene_entities.hpp"
 #include "pj_base/sdk/platform.hpp"
 #include "pj_scripting/memory_budget.h"
 #include "pj_scripting/python_engine.h"
@@ -147,7 +154,7 @@ TEST(PythonObjectScript, ScriptIsCompiledOncePerRevision) {
 
   const int after_compile = g_compile_events;
   for (int i = 0; i < 50; ++i) {
-    EXPECT_DOUBLE_EQ(numberOf(run(*compiled, {NamedValue{"x", 16.0}})), 4.0);
+    EXPECT_DOUBLE_EQ(numberOf(run(*compiled, {NamedValue{.name = "x", .value = 16.0}})), 4.0);
   }
   EXPECT_EQ(g_compile_events, after_compile) << "a run executes the compiled code without parsing the source again";
 }
@@ -504,7 +511,7 @@ TEST(PythonObjectScript, ScalarInputsParamsAndOutputsBind) {
 def evaluate(inputs, params):
     return {"sum": inputs["a"] + params["scale"]["k"], "label": inputs["name"] + "!", "gone": pj.unavailable("no data")}
 )PY",
-      {NamedValue{"a", 2.0}, NamedValue{"name", std::string("cam")}},
+      {NamedValue{.name = "a", .value = 2.0}, NamedValue{.name = "name", .value = std::string("cam")}},
       {number("sum"), OutputSpec{"label", OutputType::kString, {}}, number("gone")}, R"({"scale": {"k": 3}})");
   ASSERT_TRUE(declared) << declared.error().message;
   ASSERT_EQ(declared->outputs.size(), 3u);
@@ -533,8 +540,8 @@ TEST(PythonObjectScript, RejectsBadInputsParamsAndReturns) {
     EXPECT_NE(error.find(expected), std::string::npos) << "expected '" << expected << "', got: " << error;
   };
   constexpr const char* kOne = "def evaluate(inputs, params):\n    return 1.0\n";
-  fails(kOne, {NamedValue{"a", Unavailable{"r"}}}, {}, "{}", "input 'a' is unavailable");
-  fails(kOne, {NamedValue{"cloud", sdk::BuiltinObject()}}, {}, "{}", "input 'cloud' is an object");
+  fails(kOne, {NamedValue{.name = "a", .value = Unavailable{"r"}}}, {}, "{}", "input 'a' is unavailable");
+  fails(kOne, {NamedValue{.name = "cloud", .value = sdk::BuiltinObject()}}, {}, "{}", "which scripts cannot read");
   fails(kOne, {}, {}, "[1]", "params_json is not a JSON object");
   fails(kOne, {}, {}, std::string(40, '[') + std::string(40, ']'), "params_json is not a JSON object");
   fails(kOne, {}, {}, R"({"a":)" + std::string(40, '[') + std::string(40, ']') + "}", "nested deeper than 32");
@@ -644,6 +651,930 @@ TEST(PythonObjectScript, CancelledRunFailsWithoutRunning) {
       << "a run cancelled while it ran publishes nothing";
 }
 
+// ---- objects, builders, pj.tf and media (slice 10b) -------------------------------------------------
+
+using test::kNaN;
+using test::kSecond;
+using test::makeCloud;
+using test::makeLineCloud;
+
+NamedValue objectInput(std::string name, sdk::BuiltinObject value, Timestamp stamp_shift = 0) {
+  return NamedValue{.name = std::move(name), .value = ScriptValue{std::move(value)}, .stamp_shift = stamp_shift};
+}
+
+std::vector<OutputSpec> specs(std::initializer_list<const char*> declarations) {
+  std::vector<OutputSpec> out;
+  for (const char* declaration : declarations) {
+    auto spec = parseOutputSpec(declaration);
+    EXPECT_TRUE(spec.has_value()) << declaration;
+    if (spec) {
+      out.push_back(*spec);
+    }
+  }
+  return out;
+}
+
+template <class T>
+const T* objectOf(const Expected<ScriptBundle, ScriptError>& result, std::string_view name) {
+  if (!result) {
+    ADD_FAILURE() << result.error().message;
+    return nullptr;
+  }
+  const auto* object = std::get_if<sdk::BuiltinObject>(&output(*result, name));
+  return object != nullptr ? object->get<T>() : nullptr;
+}
+
+std::string textOf(const Expected<ScriptBundle, ScriptError>& result, std::string_view name) {
+  EXPECT_TRUE(result.has_value()) << result.error().message;
+  const auto* text = result ? std::get_if<std::string>(&output(*result, name)) : nullptr;
+  return text != nullptr ? *text : std::string("<missing>");
+}
+
+std::string reasonOf(const Expected<ScriptBundle, ScriptError>& result, std::string_view name) {
+  EXPECT_TRUE(result.has_value()) << result.error().message;
+  const auto* unavailable = result ? std::get_if<Unavailable>(&output(*result, name)) : nullptr;
+  return unavailable != nullptr ? unavailable->reason : std::string("<available>");
+}
+
+RunOptions hostAt(Timestamp query_time, std::shared_ptr<const pj::tf::TransformSnapshot> tf = test::mapFromBaseLink()) {
+  RunOptions options;
+  options.tf = std::move(tf);
+  options.query_time = query_time;
+  return options;
+}
+
+RunOptions withNativeBudget(std::size_t bytes) {
+  RunOptions options;
+  options.native_budget_bytes = bytes;
+  return options;
+}
+
+// US1 + US5, the twin of object_script_test.cpp's reference script (LUA-04).
+constexpr const char* kReferenceScript = R"PY(
+def evaluate(inputs, params):
+    cloud = inputs["cloud"]
+    cropped = cloud.crop_box(min=(-5, -5, params["zmin"]), max=(5, 5, inputs["threshold"]))
+    top = cropped.extreme_point("z", "max")
+    if top is None:
+        return {"cropped": cropped, "max_z": pj.unavailable("no finite points in region"), "report": "empty",
+                "witness": pj.scene.new(frame_id=cloud.frame_id, id="witness").finish()}
+    witness = (pj.scene.new(frame_id=cloud.frame_id, id="witness")
+               .sphere(center=(top["x"], top["y"], top["z"]), diameter=0.2, color=(255, 0, 0, 255))
+               .text(position=(top["x"], top["y"], top["z"] + 0.3), text=f"{top['z']:.2f}", font_size=0.2))
+    return {"cropped": cropped, "max_z": top["z"], "report": f"{cropped.count()} points; max z {top['z']:.2f}",
+            "witness": witness.finish()}
+)PY";
+
+Expected<ScriptBundle, ScriptError> runReferenceScript(sdk::PointCloud cloud) {
+  return runSource(
+      kReferenceScript, {objectInput("cloud", std::move(cloud)), NamedValue{.name = "threshold", .value = 5.0}},
+      specs({"cropped:kPointCloud", "max_z:number", "report:string", "witness:kSceneEntities"}), R"({"zmin": -5})");
+}
+
+TEST(PythonObjectScript, ReferenceScriptHappyPathPython) {
+  auto result = runReferenceScript(makeCloud({{0, 0, 0, 0.1f}, {10, 10, 10, 0.5f}, {1, 1, 1, 0.9f}}));
+  EXPECT_DOUBLE_EQ(numberOf(result, "max_z"), 1.0);
+  EXPECT_EQ(textOf(result, "report"), "2 points; max z 1.00");
+  const auto* cropped = objectOf<sdk::PointCloud>(result, "cropped");
+  ASSERT_NE(cropped, nullptr);
+  EXPECT_EQ(cropped->width, 2u);
+  const auto* witness = objectOf<sdk::SceneEntities>(result, "witness");
+  ASSERT_NE(witness, nullptr);
+  ASSERT_EQ(witness->deletions.size(), 1u);
+  ASSERT_EQ(witness->entities.size(), 1u);
+  EXPECT_EQ(witness->entities[0].frame_id, "base_link");
+  ASSERT_EQ(witness->entities[0].spheres.size(), 1u);
+  EXPECT_EQ(witness->entities[0].spheres[0].pose.position, (sdk::Vector3{1, 1, 1}));
+  ASSERT_EQ(witness->entities[0].texts.size(), 1u);
+  EXPECT_EQ(witness->entities[0].texts[0].text, "1.00");
+
+  auto empty = runReferenceScript(makeCloud({{10, 10, 10, 0.5f}}));
+  EXPECT_EQ(reasonOf(empty, "max_z"), "no finite points in region");
+  EXPECT_EQ(textOf(empty, "report"), "empty");
+  const auto* cleared = objectOf<sdk::SceneEntities>(empty, "witness");
+  ASSERT_NE(cleared, nullptr);
+  EXPECT_TRUE(cleared->entities.empty());
+}
+
+TEST(PythonObjectScript, AnnotationsBuilderProducesPrimitives) {
+  RunOptions options;
+  options.result_stamp = 7;
+  auto result = runSource(
+      R"PY(
+def evaluate(inputs, params):
+    return (pj.annotations.new(image_topic="/camera")
+            .points(points=[(1, 2), (5, 2), (5, 8), (1, 8)], type="line_loop", outline_color=(255, 0, 0, 128))
+            .circle(center=(3, 4), diameter=10, fill_color=(0, 255, 0, 90))
+            .text(position=(1, 2), text="max_z", font_size=20, text_color=(3, 4, 5))
+            .finish())
+)PY",
+      {}, specs({"overlay:kImageAnnotations"}), "{}", options);
+  const auto* annotations = objectOf<sdk::ImageAnnotations>(result, "overlay");
+  ASSERT_NE(annotations, nullptr);
+  EXPECT_EQ(annotations->image_topic, "/camera");
+  EXPECT_EQ(annotations->timestamp, 7);  // no image input: the result's stamp
+  ASSERT_EQ(annotations->points.size(), 1u);
+  EXPECT_EQ(annotations->points[0].points.size(), 4u);
+  EXPECT_EQ(annotations->points[0].color, (sdk::ColorRGBA{255, 0, 0, 128}));
+  ASSERT_EQ(annotations->circles.size(), 1u);
+  EXPECT_DOUBLE_EQ(annotations->circles[0].radius, 5.0);
+  EXPECT_EQ(annotations->circles[0].fill_color.a, 90);
+  ASSERT_EQ(annotations->texts.size(), 1u);
+  EXPECT_EQ(annotations->texts[0].text, "max_z");
+  EXPECT_EQ(annotations->texts[0].color, (sdk::ColorRGBA{3, 4, 5, 255}));
+}
+
+TEST(PythonObjectScript, AnnotationsRequireImageTopicAndRejectOpaqueBackground) {
+  const auto fails = [](const std::string& body, std::string_view expected) {
+    const std::string error = errorOf(runSource("def evaluate(inputs, params):\n    " + body + "\n    return 1\n"));
+    EXPECT_NE(error.find(expected), std::string::npos) << body << " -> " << error;
+  };
+  fails("pj.annotations.new()", "image_topic");
+  fails("pj.annotations.new(image_topic='')", "image_topic");
+  const std::string head = "pj.annotations.new(image_topic='/cam')";
+  fails(head + ".points(points=[(1, 2), (3,)], type='line_strip')", "'points'");
+  fails(head + ".points(points=[(1, 2)])", "type");
+  fails(head + ".circle(center=(0, 1), diameter=1, outline_color=(256, 0, 0))", "'outline_color'");
+  fails(head + ".circle(center=(0, 1), diameter=-1)", "'diameter'");
+  fails(head + ".text(position=(0, 1), text='x', background_color=(0, 0, 0, 255))", "'background_color'");
+  EXPECT_DOUBLE_EQ(
+      numberOf(runSource(
+          "def evaluate(inputs, params):\n    " + head +
+          ".text(position=(0, 1), text='x', background_color=(0, 0, 0, 0))\n    return 1\n")),
+      1.0);
+}
+
+TEST(PythonObjectScript, AnnotationsCountSumsPointsOverAllEntries) {
+  auto result = runSource(
+      R"PY(
+def evaluate(inputs, params):
+    built = (pj.annotations.new(image_topic="/cam").points(points=[(0, 0), (1, 1)], type="points")
+             .points(points=[(2, 2)], type="points").finish())
+    return {"built_count": built.count()}
+)PY",
+      {}, specs({"built_count:number"}));
+  EXPECT_DOUBLE_EQ(numberOf(result, "built_count"), 3.0);
+}
+
+TEST(PythonObjectScript, SceneBuilderChainsAllPrimitivesAndFinishSpendsIt) {
+  auto result = runSource(R"PY(
+def evaluate(inputs, params):
+    return (pj.scene.new(frame_id="map", id="e1")
+            .sphere(center=(0, 0, 0), diameter=1, color=(255, 0, 0))
+            .text(position=(1, 1, 1), text="hi", font_size=0.5, billboard=True)
+            .cube(center=(2, 2, 2), size=(1, 2, 3), color=(0, 255, 0, 128))
+            .line_strip(points=[(0, 0, 0), (1, 0, 0), (1, 1, 0), (1, 1, 1)], thickness=0.05)
+            .finish())
+)PY");
+  const auto* scene = objectOf<sdk::SceneEntities>(result, "value");
+  ASSERT_NE(scene, nullptr);
+  ASSERT_EQ(scene->entities.size(), 1u);
+  const auto& entity = scene->entities[0];
+  ASSERT_EQ(entity.spheres.size(), 1u);
+  EXPECT_EQ(entity.spheres[0].color.a, 255);
+  ASSERT_EQ(entity.texts.size(), 1u);
+  EXPECT_TRUE(entity.texts[0].billboard);
+  ASSERT_EQ(entity.cubes.size(), 1u);
+  EXPECT_EQ(entity.cubes[0].size, (sdk::Vector3{1, 2, 3}));
+  ASSERT_EQ(entity.lines.size(), 1u);
+  EXPECT_EQ(entity.lines[0].points.size(), 4u);
+
+  const auto fails = [](const std::string& body, std::string_view expected) {
+    const std::string error = errorOf(runSource(
+        "def evaluate(inputs, params):\n    b = pj.scene.new(frame_id='map', id='e')\n    " + body +
+        "\n    return 1\n"));
+    EXPECT_NE(error.find(expected), std::string::npos) << body << " -> " << error;
+  };
+  fails("b.finish()\n    b.sphere(center=(0, 0, 0), diameter=1)", "finished");
+  fails("b.finish()\n    b.finish()", "finished");
+  fails("b.sphere(center=(0, 0, 0), diameter=1, color=(300, 0, 0))", "'color'");
+  fails("b.sphere(center=(0, 0, 0), diameter=1, color=(1, 2))", "'color'");
+  fails("b.line_strip(points=[(0, 0, 0), (1, 1)], thickness=1)", "'points' entry must be a sequence of 3 numbers");
+  fails("b.line_strip(points=3, thickness=1)", "'points' must be a sequence");
+  fails("b.sphere(center=(0, 0), diameter=1)", "'center' must be a sequence of 3 numbers");
+  fails("b.sphere(center=(float('nan'), 0, 0), diameter=1)", "'center'");
+  fails("pj.scene.new(frame_id='map', id='')", "'id'");
+  // Script code an argument runs (a sequence's __len__) cannot finish the builder the call then uses.
+  fails(
+      "class Trap:\n        def __len__(self):\n            b.finish()\n            return 3\n"
+      "        def __getitem__(self, index):\n            if index >= 3:\n                raise IndexError(index)\n"
+      "            return 0.0\n    b.sphere(center=Trap(), diameter=1)",
+      "finished");
+}
+
+TEST(PythonObjectScript, RetainedBuilderOutputsAndTheirViewsKeepCounting) {
+  const std::string error = errorOf(runSource(
+      "def evaluate(inputs, params):\n    kept = []\n    for i in range(200):\n"
+      "        kept.append(pj.scene.new(frame_id='map', id='e').text(position=(0, 0, 0), text='x' * 16384, "
+      "font_size=1).finish())\n    return len(kept)\n",
+      {}, {}, "{}", withNativeBudget(std::size_t{1} << 20)));
+  EXPECT_NE(error.find("native memory limit"), std::string::npos) << error;
+  // 100 views of about 8.5 KiB leave no room for a crop of 20,000 points, even after the collection it triggers.
+  const std::string views = errorOf(runSource(
+      "def evaluate(inputs, params):\n    kept = []\n    for i in range(100):\n"
+      "        kept.append(pj.scene.new(frame_id='map', id='e').text(position=(0, 0, 0), text='x' * 8192, "
+      "font_size=1).finish().entities[0].texts)\n"
+      "    return inputs['cloud'].crop_box(min=(-1, -1, -1), max=(100000, 1, 1)).count() + len(kept)\n",
+      {objectInput("cloud", makeLineCloud(20000))}, {}, "{}", withNativeBudget(std::size_t{1} << 20)));
+  EXPECT_NE(views.find("native memory limit"), std::string::npos) << views;
+}
+
+// PY-05: an int64 field is a plain, exact Python int.
+TEST(PythonObjectScript, Int64FieldsArePythonInts) {
+  auto cloud = makeCloud({{0, 0, 0, 0}});
+  cloud.timestamp_ns = 9'007'199'254'740'993LL;  // 2^53 + 1
+  auto result = runSource(
+      "def evaluate(inputs, params):\n    ts = inputs['cloud'].timestamp_ns\n"
+      "    return {'exact': str(ts), 'is_int': 1 if isinstance(ts, int) and not isinstance(ts, bool) else 0}\n",
+      {objectInput("cloud", cloud)}, specs({"exact:string", "is_int:number"}));
+  EXPECT_EQ(textOf(result, "exact"), "9007199254740993");
+  EXPECT_DOUBLE_EQ(numberOf(result, "is_int"), 1.0);
+}
+
+// PY-05: the raw buffer is reachable only through the native methods.
+TEST(PythonObjectScript, BufferFieldIsNotExposed) {
+  const std::string error = errorOf(runSource(
+      "def evaluate(inputs, params):\n    return len(inputs['cloud'].data)\n", {objectInput("cloud", makeCloud({}))}));
+  EXPECT_NE(error.find("raw buffer"), std::string::npos) << error;
+}
+
+TEST(PythonObjectScript, FieldAccessMatchesLuau) {
+  sdk::CameraInfo camera;
+  camera.K = {500, 0, 320, 0, 500, 240, 0, 0, 1};
+  sdk::Image compressed_depth;
+  compressed_depth.compressed_depth_min = 0.5F;
+  auto result = runSource(
+      R"PY(
+def evaluate(inputs, params):
+    cloud = inputs["cloud"]
+    fields = cloud.fields
+    try:
+        fields[4]
+        past_the_end = 0
+    except IndexError:
+        past_the_end = 1
+    return {
+        "frame": cloud.frame_id, "first": fields[0].name, "last": fields[-1].name, "count": len(fields),
+        "past_the_end": past_the_end, "dense": 1 if cloud.is_dense is True else 0,
+        "names": ",".join(field.name for field in fields), "k": len(inputs["camera"].K), "cy": inputs["camera"].K[5],
+        "absent": 1 if inputs["image"].compressed_depth_min is None else 0,
+        "present": inputs["depth"].compressed_depth_min,
+    }
+)PY",
+      {objectInput("cloud", makeCloud({{0, 0, 0, 0}})), objectInput("camera", camera),
+       objectInput("image", sdk::Image{}), objectInput("depth", compressed_depth)},
+      specs(
+          {"frame:string", "first:string", "last:string", "count:number", "past_the_end:number", "dense:number",
+           "names:string", "k:number", "cy:number", "absent:number", "present:number"}));
+  EXPECT_EQ(textOf(result, "frame"), "base_link");
+  EXPECT_EQ(textOf(result, "first"), "x");
+  EXPECT_EQ(textOf(result, "last"), "intensity");
+  EXPECT_DOUBLE_EQ(numberOf(result, "count"), 4.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "past_the_end"), 1.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "dense"), 1.0);
+  EXPECT_EQ(textOf(result, "names"), "x,y,z,intensity");
+  EXPECT_DOUBLE_EQ(numberOf(result, "k"), 9.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "cy"), 240.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "absent"), 1.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "present"), 0.5);
+  for (const char* write : {"inputs['cloud'].frame_id = 'x'", "inputs['cloud'].fields[0].name = 'q'"}) {
+    const std::string error = errorOf(runSource(
+        std::string("def evaluate(inputs, params):\n    ") + write + "\n    return 1\n",
+        {objectInput("cloud", makeCloud({}))}));
+    EXPECT_NE(error.find("AttributeError"), std::string::npos) << write << " -> " << error;
+  }
+}
+
+// ARCHITECTURE §6: a list is a lazy sequence, never materialized on a field read. 200,000 elements as Python objects
+// would take megabytes; under a 1 MiB cap the run reads, indexes and iterates the list, each element made and freed.
+TEST(PythonObjectScript, ListFieldIsReadLazily) {
+  sdk::FrameTransforms transforms;
+  transforms.transforms.resize(200'000);
+  for (auto& transform : transforms.transforms) {
+    transform.translation.x = 1.0;
+  }
+  RunOptions options;
+  options.limits.mem_bytes = std::size_t{1} << 20;
+  auto result = runSource(
+      R"PY(
+def evaluate(inputs, params):
+    transforms = inputs["tf"].transforms
+    total = 0.0
+    for transform in transforms:
+        total += transform.translation.x
+    return {"n": len(inputs["tf"].transforms), "last": transforms[199999].translation.x, "total": total}
+)PY",
+      {objectInput("tf", sdk::BuiltinObject(std::move(transforms)))},
+      specs({"n:number", "last:number", "total:number"}), "{}", options);
+  EXPECT_DOUBLE_EQ(numberOf(result, "n"), 200'000.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "last"), 1.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "total"), 200'000.0);
+}
+
+TEST(PythonObjectScript, CloudMethodsMatchLuau) {
+  auto cloud = makeCloud({{1, 0, 0, 0.1f}, {kNaN, 1, 1, 0.5f}, {3, -2, 0, 0.9f}, {kNaN, kNaN, kNaN, 0}});
+  cloud.frame_id = "lidar";
+  constexpr double kHalfSqrt2 = 0.70710678118654752440;
+  pj::tf::TransformBuffer buffer(pj::tf::TransformBuffer::kKeepAll);
+  test::addTf(buffer, "map", "lidar", kSecond, kSecond, {10, 0, 0}, glm::dquat(kHalfSqrt2, 0, 0, kHalfSqrt2));
+  auto result = runSource(
+      R"PY(
+def evaluate(inputs, params):
+    cloud = inputs["cloud"]
+    box = cloud.bounds()
+    n, sumx, last = 0, 0.0, -1
+    for index, x, y, z in cloud.xyz_points():
+        n += 1
+        sumx += x
+        last = index
+    tf, why = pj.tf.lookup("map", cloud.frame_id)
+    moved = cloud.transform(tf)
+    first = next(iter(moved.xyz_points()))
+    return {"min_y": box["min"][1], "max_x": box["max"][0], "finite": box["count"], "n": n, "sumx": sumx,
+            "last": last, "kept": cloud.filter("intensity", ">", 0.3).count(),
+            "not_equal": cloud.filter("intensity", "!=", 0.5).count(), "frame": moved.frame_id,
+            "moved_x": first[1], "moved_y": first[2], "count": cloud.count(),
+            "top": cloud.extreme_point("x", "max")["index"]}
+)PY",
+      {objectInput("cloud", cloud)},
+      specs(
+          {"min_y:number", "max_x:number", "finite:number", "n:number", "sumx:number", "last:number", "kept:number",
+           "not_equal:number", "frame:string", "moved_x:number", "moved_y:number", "count:number", "top:number"}),
+      "{}", hostAt(2 * kSecond, buffer.snapshot()));
+  EXPECT_DOUBLE_EQ(numberOf(result, "min_y"), -2.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "max_x"), 3.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "finite"), 2.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "n"), 2.0);  // LUA-11: NaN records are skipped
+  EXPECT_DOUBLE_EQ(numberOf(result, "sumx"), 4.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "last"), 2.0);  // 0-based, NaN records keep their index
+  EXPECT_DOUBLE_EQ(numberOf(result, "kept"), 2.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "not_equal"), 3.0);
+  EXPECT_EQ(textOf(result, "frame"), "map");  // LUA-13
+  EXPECT_NEAR(numberOf(result, "moved_x"), 10.0, 1e-6);
+  EXPECT_NEAR(numberOf(result, "moved_y"), 1.0, 1e-6);
+  EXPECT_DOUBLE_EQ(numberOf(result, "count"), 4.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "top"), 2.0);
+  const std::string error = errorOf(runSource(
+      "def evaluate(inputs, params):\n    return inputs['cloud'].filter('x', '=>', 1).count()\n",
+      {objectInput("cloud", cloud)}));
+  EXPECT_NE(error.find("'=>'"), std::string::npos) << error;
+  const std::string wrong_type = errorOf(runSource(
+      "def evaluate(inputs, params):\n    return inputs['camera'].count()\n",
+      {objectInput("camera", sdk::CameraInfo{})}));
+  EXPECT_NE(wrong_type.find("point cloud"), std::string::npos) << wrong_type;
+}
+
+// BUD-15: retained native outputs share one budget.
+TEST(PythonObjectScript, AggregateNativeCloudBudgetRejectsRetainedSecondOutput) {
+  const std::vector<NamedValue> inputs{objectInput("cloud", makeLineCloud(100'000))};  // 1.6 MB
+  constexpr std::size_t kBudget = 2'500'000;                                           // one crop fits, two do not
+  constexpr const char* kBox = "min=(-1e9, -1e9, -1e9), max=(1e9, 1e9, 1e9)";
+  EXPECT_DOUBLE_EQ(
+      numberOf(runSource(
+          std::string("def evaluate(inputs, params):\n    a = inputs['cloud'].crop_box(") + kBox +
+              ")\n    return a.count()\n",
+          inputs, {}, "{}", withNativeBudget(kBudget))),
+      100'000.0);
+  const std::string error = errorOf(runSource(
+      std::string("def evaluate(inputs, params):\n    a = inputs['cloud'].crop_box(") + kBox +
+          ")\n    b = inputs['cloud'].crop_box(" + kBox + ")\n    return a.count() + b.count()\n",
+      inputs, {}, "{}", withNativeBudget(kBudget)));
+  EXPECT_NE(error.find("native memory limit"), std::string::npos) << error;
+}
+
+// A dead crop in a reference cycle keeps its charge until the cycle is collected: a native operation that fails on
+// the budget collects once and retries.
+TEST(PythonObjectScript, ANativeOpRetriesOnceAfterAGarbageCollection) {
+  EXPECT_DOUBLE_EQ(
+      numberOf(runSource(
+          R"PY(
+def evaluate(inputs, params):
+    n = 0
+    for i in range(3):
+        cycle = [inputs["cloud"].crop_box(min=(-1e9, -1e9, -1e9), max=(1e9, 1e9, 1e9))]
+        cycle.append(cycle)
+        n += cycle[0].count()
+        cycle = None
+    return n
+)PY",
+          {objectInput("cloud", makeLineCloud(100'000))}, {}, "{}", withNativeBudget(2'500'000))),
+      300'000.0);
+}
+
+TEST(PythonObjectScript, TfLookupReturnsValueOrReasonTuple) {
+  auto found = runSource(
+      R"PY(
+def evaluate(inputs, params):
+    tf, why = pj.tf.lookup("map", "base_link")
+    missing, reason = pj.tf.lookup("map", "unknown_frame")
+    return {"tx": tf["translation"][0], "tz": tf["translation"][2], "rw": tf["rotation"][3],
+            "target": tf["target_frame"], "why": "none" if why is None else why,
+            "missing": 1 if missing is None else 0, "reason": reason,
+            "frames": ",".join(sorted(pj.tf.frames()))}
+)PY",
+      {},
+      specs(
+          {"tx:number", "tz:number", "rw:number", "target:string", "why:string", "missing:number", "reason:string",
+           "frames:string"}),
+      "{}", hostAt(2 * kSecond));
+  EXPECT_DOUBLE_EQ(numberOf(found, "tx"), 1.0);
+  EXPECT_DOUBLE_EQ(numberOf(found, "tz"), 3.0);
+  EXPECT_DOUBLE_EQ(numberOf(found, "rw"), 1.0);
+  EXPECT_EQ(textOf(found, "target"), "map");
+  EXPECT_EQ(textOf(found, "why"), "none");
+  EXPECT_DOUBLE_EQ(numberOf(found, "missing"), 1.0);
+  EXPECT_EQ(textOf(found, "reason"), "unknown source frame");
+  EXPECT_EQ(textOf(found, "frames"), "base_link,map");
+  auto none = runSource(
+      "def evaluate(inputs, params):\n    tf, why = pj.tf.lookup('map', 'base_link')\n"
+      "    return {'why': why, 'frames': len(pj.tf.frames()), 'now': str(pj.tf.now)}\n",
+      {}, specs({"why:string", "frames:number", "now:string"}), "{}", hostAt(1'234'567'890'123'456'789LL, nullptr));
+  EXPECT_EQ(textOf(none, "why"), "no tf snapshot");
+  EXPECT_DOUBLE_EQ(numberOf(none, "frames"), 0.0);
+  EXPECT_EQ(textOf(none, "now"), "1234567890123456789");  // exact past 2^53
+
+  // GAP-29: at an object, the header clock at the object's own stamp on the dataset clock (its shift applied).
+  constexpr int64_t kShift = 1000 * kSecond;
+  pj::tf::TransformBuffer buffer(pj::tf::TransformBuffer::kKeepAll);
+  test::addTf(buffer, "map", "lidar", 1100 * kSecond, 1300 * kSecond, {1, 0, 0});
+  test::addTf(buffer, "map", "lidar", 1200 * kSecond, 1310 * kSecond, {2, 0, 0});
+  auto cloud = makeCloud({{0, 0, 0, 0}});
+  cloud.timestamp_ns = 100 * kSecond;
+  auto placed = runSource(
+      R"PY(
+def evaluate(inputs, params):
+    placed, why = pj.tf.lookup("map", "lidar", inputs["cloud"])
+    queried, why = pj.tf.lookup("map", "lidar")
+    at_time, why = pj.tf.lookup("map", "lidar", 1310 * 10**9)
+    return {"stamp_s": inputs["cloud"].timestamp_ns / 1e9, "placed_x": placed["translation"][0],
+            "queried_x": queried["translation"][0], "at_time_x": at_time["translation"][0]}
+)PY",
+      {objectInput("cloud", cloud, kShift)},
+      specs({"stamp_s:number", "placed_x:number", "queried_x:number", "at_time_x:number"}), "{}",
+      hostAt(1305 * kSecond, buffer.snapshot()));
+  EXPECT_DOUBLE_EQ(numberOf(placed, "stamp_s"), 1100.0);
+  EXPECT_DOUBLE_EQ(numberOf(placed, "placed_x"), 1.0);
+  EXPECT_DOUBLE_EQ(numberOf(placed, "queried_x"), 1.0);  // entry clock at 1305 s: only the first sample arrived
+  EXPECT_DOUBLE_EQ(numberOf(placed, "at_time_x"), 2.0);  // entry clock at 1310 s: both samples arrived
+  const std::string range = errorOf(runSource(
+      "def evaluate(inputs, params):\n    return pj.tf.lookup('map', 'base_link', 10 ** 30)\n", {}, {}, "{}",
+      hostAt(0)));
+  EXPECT_NE(range.find("time out of range"), std::string::npos) << range;
+}
+
+// ---- observation flags (CACHE-09) ------------------------------------------------------------------
+
+ScriptBundle runObserving(const std::string& body, const RunOptions& host) {
+  auto result = runSource("def evaluate(inputs, params):\n    " + body + "\n", {}, {}, "{}", host);
+  EXPECT_TRUE(result.has_value()) << (result ? "" : result.error().message);
+  return result ? *result : ScriptBundle{};
+}
+
+TEST(PythonObjectScript, ReadingTfNowMarksTheClockObserved) {
+  const ScriptBundle bundle = runObserving("return pj.tf.now", hostAt(42));
+  EXPECT_TRUE(bundle.observed_query_clock);
+  EXPECT_DOUBLE_EQ(std::get<double>(output(bundle, "value")), 42.0);
+}
+
+TEST(PythonObjectScript, LookupWithoutTimeMarksTheClockObserved) {
+  EXPECT_TRUE(
+      runObserving("return 1 if pj.tf.lookup('map', 'base_link')[0] else 0", hostAt(2 * kSecond)).observed_query_clock);
+}
+
+TEST(PythonObjectScript, LookupWithExplicitTimeDoesNotMarkIt) {
+  const ScriptBundle bundle =
+      runObserving("return 1 if pj.tf.lookup('map', 'base_link', 2 * 10**9)[0] else 0", hostAt(5 * kSecond));
+  EXPECT_FALSE(bundle.observed_query_clock);
+  EXPECT_TRUE(bundle.observed_tf);
+  EXPECT_DOUBLE_EQ(std::get<double>(output(bundle, "value")), 1.0);
+}
+
+TEST(PythonObjectScript, ScriptWithoutTfLeavesTheFlagFalse) {
+  const ScriptBundle bundle = runObserving("return 1", hostAt(42));
+  EXPECT_FALSE(bundle.observed_query_clock);
+  EXPECT_FALSE(bundle.observed_tf);
+}
+
+TEST(PythonObjectScript, ObservationInsideABranchIsRecordedOnlyWhenTaken) {
+  constexpr const char* kScript =
+      "def evaluate(inputs, params):\n    if inputs['x'].count() > 2:\n        return pj.tf.now\n    return 0\n";
+  auto one_point = runSource(kScript, {objectInput("x", makeLineCloud(1))}, {}, "{}", hostAt(99));
+  EXPECT_DOUBLE_EQ(numberOf(one_point), 0.0);
+  EXPECT_FALSE(one_point && one_point->observed_query_clock);
+  auto three_points = runSource(kScript, {objectInput("x", makeLineCloud(3))}, {}, "{}", hostAt(99));
+  EXPECT_DOUBLE_EQ(numberOf(three_points), 99.0);
+  EXPECT_TRUE(three_points && three_points->observed_query_clock);
+}
+
+TEST(PythonObjectScript, TfLookupMarksTheTfObserved) {
+  EXPECT_TRUE(runObserving("pj.tf.lookup('map', 'base_link', 2 * 10**9)\n    return 1", hostAt(0)).observed_tf);
+  EXPECT_TRUE(runObserving("pj.tf.lookup('map', 'base_link')\n    return 1", hostAt(0)).observed_tf);
+}
+
+TEST(PythonObjectScript, TfFramesMarksTheTfObserved) {
+  EXPECT_TRUE(runObserving("return len(pj.tf.frames())", hostAt(0)).observed_tf);
+}
+
+TEST(PythonObjectScript, QueryingAnEmptyTreeStillObservesIt) {
+  EXPECT_TRUE(
+      runObserving("pj.tf.lookup('map', 'base_link', 2 * 10**9)\n    return 1", hostAt(0, nullptr)).observed_tf);
+  EXPECT_TRUE(runObserving("return len(pj.tf.frames())", hostAt(0, nullptr)).observed_tf);
+}
+
+TEST(PythonObjectScript, ClockAndPlainScriptsDoNotObserveTheTf) {
+  EXPECT_FALSE(runObserving("return pj.tf.now", hostAt(0)).observed_tf);
+  EXPECT_FALSE(runObserving("return 1", hostAt(0)).observed_tf);
+}
+
+TEST(PythonObjectScript, AFailedRunReportsWhatItObserved) {
+  auto result = runSource(
+      "def evaluate(inputs, params):\n    pj.tf.frames()\n    t = pj.tf.now\n    raise ValueError('late')\n", {}, {},
+      "{}", hostAt(0));
+  ASSERT_FALSE(result.has_value());
+  EXPECT_TRUE(result.error().observed_tf);
+  EXPECT_TRUE(result.error().observed_query_clock);
+}
+
+// GAP-25: every operation that walks the data runs without the GIL. The probe is the run's cancel check, which the
+// cloud operations poll every 65536 records.
+TEST(PythonObjectScript, NativeOpsReleaseTheGil) {
+  std::atomic<int> polls{0};
+  std::atomic<int> held{0};
+  RunOptions options = hostAt(2 * kSecond);
+  options.cancelled = [&] {
+    ++polls;
+    held += PyGILState_Check();
+    return false;
+  };
+  for (const std::string call :
+       {"c.crop_box(min=(-1, -1, -1), max=(1e9, 1, 1)).count()", "c.filter('x', '>', 5).count()",
+        "c.transform(pj.tf.lookup('map', 'base_link')[0]).count()"}) {
+    polls = 0;
+    auto result = runSource(
+        "def evaluate(inputs, params):\n    c = inputs['cloud']\n    return " + call + "\n",
+        {objectInput("cloud", makeLineCloud(200'000))}, {}, "{}", options);
+    EXPECT_TRUE(result.has_value()) << call << " -> " << result.error().message;
+    EXPECT_GT(polls.load(), 2) << call << ": the operation polled the cancel check";
+  }
+  EXPECT_EQ(held.load(), 0) << "an operation polled its cancel check holding the GIL";
+}
+
+// BUD-18: the watchdog never interrupts a native call. The crop's cancel check, polled every 65536 records, observes
+// the native call: its first poll sleeps past the 1 ms deadline, so the watchdog fires while the crop runs; the crop
+// still polls as often as an untimed one (it ran to its end), and the timeout lands after it.
+TEST(PythonObjectScript, WatchdogDoesNotInterruptANativeCall) {
+  const std::vector<NamedValue> inputs{objectInput("cloud", makeLineCloud(1'000'000))};
+  constexpr const char* kScript =
+      "def evaluate(inputs, params):\n"
+      "    return inputs['cloud'].crop_box(min=(-0.5, -0.5, -0.5), max=(0.5, 0.5, 0.5)).count()\n";
+  int polls = 0;
+  RunOptions options;
+  options.cancelled = [&polls] {
+    if (++polls == 2) {  // the first poll inside the crop
+      std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    }
+    return false;
+  };
+  EXPECT_DOUBLE_EQ(numberOf(runSource(kScript, inputs, {}, "{}", options)), 1.0);
+  const int untimed_polls = polls;
+  ASSERT_GT(untimed_polls, 4) << "the crop polls inside the native call";
+  polls = 0;
+  options.limits.python_watchdog_millis = 1;
+  const std::string error = errorOf(runSource(kScript, inputs, {}, "{}", options));
+  EXPECT_NE(error.find("TimeoutError"), std::string::npos) << error;
+  // A failed run skips the poll after it; every poll of the crop's happened.
+  EXPECT_EQ(polls, untimed_polls - 1) << "the crop ran to its end before the timeout was delivered";
+}
+
+// PY-05 and the sandbox of slice 10a: no proxy has a name beyond its documented ones (no conduit or buffer to a raw
+// pointer), takes an attribute (a shared one would carry state into the next run) or exposes a buffer.
+TEST(PythonObjectScript, ProxiesExposeOnlyTheirDocumentedNames) {
+  auto result = runSource(
+      R"PY(
+def closed(x):
+    try:
+        x.leak = 1
+        return "settable"
+    except AttributeError:
+        pass
+    try:
+        memoryview(x)
+        return "buffer"
+    except TypeError:
+        pass
+    return ",".join(sorted(name for name in dir(x) if not name.startswith("__")))
+
+def evaluate(inputs, params):
+    cloud = inputs["cloud"]
+    return {"object": closed(cloud), "struct": closed(cloud.fields[0]), "list": closed(cloud.fields),
+            "points": closed(cloud.xyz_points()), "scene": closed(pj.scene.new(frame_id="m", id="e")),
+            "annotations": closed(pj.annotations.new(image_topic="/cam")), "scene_new": closed(pj.scene),
+            "annotations_new": closed(pj.annotations), "tf": closed(pj.tf)}
+)PY",
+      {objectInput("cloud", makeCloud({{0, 0, 0, 0}}))},
+      specs(
+          {"object:string", "struct:string", "list:string", "points:string", "scene:string", "annotations:string",
+           "scene_new:string", "annotations_new:string", "tf:string"}));
+  EXPECT_EQ(textOf(result, "object"), "bounds,count,crop_box,extreme_point,filter,transform,xyz_points");
+  EXPECT_EQ(textOf(result, "struct"), "");
+  EXPECT_EQ(textOf(result, "list"), "");
+  EXPECT_EQ(textOf(result, "points"), "");
+  EXPECT_EQ(textOf(result, "scene"), "cube,finish,line_strip,sphere,text");
+  EXPECT_EQ(textOf(result, "annotations"), "circle,finish,points,text");
+  EXPECT_EQ(textOf(result, "scene_new"), "new");
+  EXPECT_EQ(textOf(result, "annotations_new"), "new");
+  EXPECT_EQ(textOf(result, "tf"), "frames,lookup,now");
+  EXPECT_FALSE(compile("def evaluate(inputs, params):\n    return inputs['cloud'].xyz_points().__class__\n"));
+}
+
+// An object a script leaves behind (on a class its module copy shares, a known opening of the trust model) raises when
+// called outside a run, instead of reaching the dead run's limits and media.
+TEST(PythonObjectScript, AnObjectKeptPastItsRunRaises) {
+  EXPECT_DOUBLE_EQ(
+      numberOf(runSource(
+          "import statistics\ndef evaluate(inputs, params):\n    statistics.NormalDist.kept = inputs['cloud']\n"
+          "    return 1\n",
+          {objectInput("cloud", makeLineCloud(10))})),
+      1.0);
+  py::gil_scoped_acquire gil;
+  py::object normal_dist = py::module_::import("statistics").attr("NormalDist");
+  py::object kept = normal_dist.attr("kept");
+  py::delattr(normal_dist, "kept");
+  EXPECT_DOUBLE_EQ(kept.attr("count")().cast<double>(), 10.0) << "a read needs no run";
+  try {
+    kept.attr("crop_box")(py::make_tuple(0, 0, 0), py::make_tuple(1, 1, 1));
+    ADD_FAILURE() << "a native operation ran outside a run";
+  } catch (const py::error_already_set& error) {
+    EXPECT_NE(std::string(error.what()).find("only inside a run"), std::string::npos) << error.what();
+  }
+}
+
+/// Runs `compiled` under `cap` bytes of Python allocations; true when it succeeds, else expects the memory limit.
+bool runsUnder(
+    std::size_t cap, const CompiledPythonScript& compiled, const std::vector<NamedValue>& inputs, RunOptions options) {
+  options.limits.mem_bytes = cap;
+  auto result = run(compiled, inputs, {}, "{}", options);
+  if (!result) {
+    EXPECT_NE(result.error().message.find("script memory limit"), std::string::npos)
+        << "cap " << cap << ": " << result.error().message;
+  }
+  return result.has_value();
+}
+
+// A cap the host meets while it wraps the inputs (a large block refused, or small ones past twice the cap) fails the
+// run before any script code runs. Each cap, in steps smaller than any allocation, is met at a different one of 400
+// inputs.
+TEST(PythonObjectScript, InputsTheCapRefusesFailTheRunBeforeAnyScriptRuns) {
+  const std::vector<NamedValue> inputs(400, objectInput("cloud", makeCloud({{0, 0, 0, 0}})));
+  std::vector<NamedValue> named = inputs;
+  for (std::size_t index = 0; index < named.size(); ++index) {
+    named[index].name = "cloud" + std::to_string(index);
+  }
+  auto compiled = compile("def evaluate(inputs, params):\n    return 1\n");
+  ASSERT_TRUE(compiled) << compiled.error();
+  for (std::size_t cap = 8; cap < 16384; cap += 8) {
+    EXPECT_FALSE(runsUnder(cap, *compiled, named, {})) << cap;
+  }
+}
+
+// Wherever the cap meets the binder inside `evaluate` (views, dicts and tuples a method returns, a builder), the run
+// fails on the memory limit, never a crash: the caps just below the smallest that fits, in steps smaller than any
+// allocation, all on one compiled script (ACapRefusingAFunctionLeavesTheCompiledScriptIntact).
+TEST(PythonObjectScript, AllocationsTheCapRefusesFailTheRun) {
+  constexpr const char* kScript = R"PY(
+def evaluate(inputs, params):
+    cloud = inputs["cloud"]
+    kept = []
+    for i in range(8):
+        kept.append((cloud.fields[0], cloud.fields[0].name, cloud.bounds(), cloud.extreme_point("x", "max"),
+                     pj.scene.new(frame_id=cloud.frame_id, id="e").sphere(center=(0, 0, 0), diameter=1),
+                     pj.tf.lookup("map", "base_link"), next(iter(cloud.xyz_points()))))
+    return {"scene": kept[0][4].finish(), "n": len(kept)}
+)PY";
+  const std::vector<NamedValue> inputs{objectInput("cloud", makeCloud({{0, 0, 0, 0}}))};
+  const RunOptions options = hostAt(2 * kSecond);
+  auto compiled = compile(kScript);
+  ASSERT_TRUE(compiled) << compiled.error();
+  std::size_t fails = 0;
+  std::size_t fits = std::size_t{1} << 20;
+  ASSERT_TRUE(runsUnder(fits, *compiled, inputs, options));
+  while (fits - fails > 8) {
+    const std::size_t middle = (fails + fits) / 2 / 8 * 8;
+    (runsUnder(middle, *compiled, inputs, options) ? fits : fails) = middle;
+  }
+  for (std::size_t cap = fits - 2048; cap < fits; cap += 8) {
+    EXPECT_FALSE(runsUnder(cap, *compiled, inputs, options)) << cap;
+  }
+}
+
+// A conversion's script code (`__float__`) that empties the list being read cannot make the binder read freed storage:
+// the binder reads a snapshot of every coordinate and colour sequence.
+TEST(PythonObjectScript, ConversionsCannotEmptyTheSequenceBeingRead) {
+  for (const char* call :
+       {"b.sphere(center=items, diameter=1)", "b.sphere(center=(0, 0, 0), diameter=1, color=items)",
+        "b.line_strip(points=[items, (1, 1, 1)], thickness=1)"}) {
+    EXPECT_DOUBLE_EQ(
+        numberOf(runSource(
+            std::string(
+                "class Trap:\n    def __float__(self):\n        items.clear()\n        return 0.0\n"
+                "items = [Trap(), 0, 0]\n"
+                "def evaluate(inputs, params):\n    b = pj.scene.new(frame_id='m', id='e')\n    ") +
+            call + "\n    return 1\n")),
+        1.0)
+        << call;
+  }
+}
+
+// A translation component whose `__float__` deletes the dict's rotation cannot leave the binder reading it freed: the
+// binder holds both values first (it reads the identity rotation, not what the freed tuple's storage holds next).
+TEST(PythonObjectScript, ATransformDictEditedByAConversionIsReadWhole) {
+  auto result = runSource(
+      R"PY(
+def evaluate(inputs, params):
+    tf, why = pj.tf.lookup("map", "base_link")
+    class Trap:
+        def __float__(self):
+            del tf["rotation"]
+            reused = [(9.0, 9.0, 9.0, 9.0 + i) for i in range(100)]
+            return 0.0
+    tf["translation"] = (Trap(), 0, 0)
+    for index, x, y, z in inputs["cloud"].transform(tf).xyz_points():
+        return {"x": x, "y": y}
+)PY",
+      {objectInput("cloud", makeCloud({{1, 0, 0, 0}}))}, specs({"x:number", "y:number"}), "{}", hostAt(2 * kSecond));
+  EXPECT_DOUBLE_EQ(numberOf(result, "x"), 1.0);
+  EXPECT_DOUBLE_EQ(numberOf(result, "y"), 0.0);
+}
+
+// An object a script keeps past its run holds the input's keepalive (the library of the parser that made it), so its
+// payload's deleter, plugin code, runs before the library can unload.
+TEST(PythonObjectScript, AnObjectKeptPastItsRunKeepsItsLibraryLoaded) {
+  auto library = std::make_shared<int>(1);
+  const std::weak_ptr<int> loaded = library;
+  int deletes_after_unload = 0;
+  {
+    sdk::PointCloud cloud = makeCloud({{0, 0, 0, 0}, {kNaN, 0, 0, 0}});
+    const sdk::BufferAnchor bytes = cloud.anchor;
+    cloud.anchor = sdk::BufferAnchor(bytes.get(), [bytes, loaded, &deletes_after_unload](const void*) {
+      deletes_after_unload += loaded.expired() ? 1 : 0;
+    });
+    NamedValue input = objectInput("cloud", cloud);
+    input.keepalive = library;
+    EXPECT_DOUBLE_EQ(
+        numberOf(runSource(
+            "import statistics\ndef evaluate(inputs, params):\n    cloud = inputs['cloud']\n"
+            "    statistics.NormalDist.kept = (cloud, cloud.xyz_points(), cloud.fields, cloud.fields[0])\n"
+            "    return 1\n",
+            {input})),
+        1.0);
+  }
+  library.reset();  // the caller's keepalive: the library would unload here, if nothing else held it
+  {
+    py::gil_scoped_acquire gil;
+    py::delattr(py::module_::import("statistics").attr("NormalDist"), "kept");
+  }
+  EXPECT_EQ(deletes_after_unload, 0);
+  EXPECT_TRUE(loaded.expired()) << "the proxies released the keepalive with the object";
+}
+
+// A result that returns an input holds the input's keepalive in its output, and releases the value first: the payload's
+// deleter, plugin code, runs while the library is still loaded.
+TEST(PythonObjectScript, AReturnedInputReleasesItsValueBeforeItsKeepalive) {
+  auto library = std::make_shared<int>(1);
+  const std::weak_ptr<int> loaded = library;
+  int deletes_after_unload = 0;
+  std::optional<ScriptBundle> kept;
+  {
+    sdk::PointCloud cloud = makeCloud({{0, 0, 0, 0}});
+    const sdk::BufferAnchor bytes = cloud.anchor;
+    cloud.anchor = sdk::BufferAnchor(bytes.get(), [bytes, loaded, &deletes_after_unload](const void*) {
+      deletes_after_unload += loaded.expired() ? 1 : 0;
+    });
+    NamedValue input = objectInput("cloud", cloud);
+    input.keepalive = library;
+    auto result = runSource("def evaluate(inputs, params):\n    return inputs['cloud']\n", {input});
+    ASSERT_TRUE(result) << result.error().message;
+    kept = std::move(*result);
+  }
+  library.reset();  // the caller's keepalive: only the result holds the library now
+  kept.reset();
+  EXPECT_EQ(deletes_after_unload, 0);
+  EXPECT_TRUE(loaded.expired());
+}
+
+// GAP-25 and the busy guard: `xyz_points()` scans a run of non-finite records without the GIL, so another thread runs
+// Python meanwhile, and the iterator refuses to advance from it while it scans. Whichever thread reaches `next` second
+// (the lane, or this one through the iterator the script stashed) sees "already advancing".
+TEST(PythonObjectScript, APointScanReleasesTheGilAndRefusesAConcurrentAdvance) {
+  std::atomic<bool> started{false};
+  {
+    detail::ensureInterpreter();
+    py::gil_scoped_acquire gil;
+    py::module_ fake = py::module_::import("types").attr("ModuleType")("math.pj_fake_mark");
+    fake.attr("mark") = py::cpp_function([&started] { started = true; });
+    py::module_::import("sys").attr("modules")["math.pj_fake_mark"] = fake;
+  }
+  const std::vector<NamedValue> inputs{
+      objectInput("cloud", makeCloud(std::vector<std::array<float, 4>>(10'000'000, {kNaN, kNaN, kNaN, 0})))};
+  std::string lane_saw;
+  std::thread lane([&] {
+    auto result = runSource(
+        "import statistics\nfrom math.pj_fake_mark import mark\ndef evaluate(inputs, params):\n"
+        "    it = inputs['cloud'].xyz_points()\n    statistics.NormalDist.it = it\n    mark()\n"
+        "    try:\n        next(it, None)\n    except RuntimeError as error:\n        return str(error)\n"
+        "    return 'scanned'\n",
+        inputs);
+    lane_saw = result ? std::get<std::string>(result->outputs.front().value) : result.error().message;
+  });
+  while (!started) {
+    std::this_thread::yield();
+  }
+  std::string this_saw;
+  {
+    py::gil_scoped_acquire gil;
+    try {
+      py::module_::import("builtins")
+          .attr("next")(py::module_::import("statistics").attr("NormalDist").attr("it"), py::none());
+      this_saw = "scanned";
+    } catch (const py::error_already_set& error) {
+      this_saw = error.what();
+    }
+  }
+  lane.join();
+  const bool lane_refused = lane_saw.find("already advancing") != std::string::npos;
+  const bool this_refused = this_saw.find("already advancing") != std::string::npos;
+  EXPECT_NE(lane_refused, this_refused) << "lane: " << lane_saw << "; this thread: " << this_saw;
+  py::gil_scoped_acquire gil;
+  py::delattr(py::module_::import("statistics").attr("NormalDist"), "it");
+  py::module_::import("sys").attr("modules").attr("pop")("math.pj_fake_mark");
+}
+
+// A builder belongs to the run that made it: one a script keeps cannot grow in a later run, on that run's budget.
+TEST(PythonObjectScript, ABuilderWorksOnlyInTheRunThatMadeIt) {
+  EXPECT_DOUBLE_EQ(
+      numberOf(runSource(
+          "import statistics\ndef evaluate(inputs, params):\n"
+          "    statistics.NormalDist.kept = pj.scene.new(frame_id='m', id='e')\n    return 1\n")),
+      1.0);
+  const std::string error = errorOf(runSource(
+      "import statistics\ndef evaluate(inputs, params):\n"
+      "    statistics.NormalDist.kept.sphere(center=(0, 0, 0), diameter=1)\n    return 1\n",
+      {}, {}, "{}", withNativeBudget(1)));
+  EXPECT_NE(error.find("the run that made it"), std::string::npos) << error;
+  py::gil_scoped_acquire gil;
+  py::delattr(py::module_::import("statistics").attr("NormalDist"), "kept");
+}
+
+// A builder's output keeps its native charge in the result: results the caller keeps, of runs sharing one ledger,
+// count against it until they are dropped.
+TEST(PythonObjectScript, RetainedResultsKeepTheirNativeCharge) {
+  RunOptions options;
+  options.native_budget = makeNativeBudget(std::size_t{1} << 20);
+  std::vector<ScriptBundle> kept;
+  std::string error;
+  for (int call = 0; call < 8 && error.empty(); ++call) {
+    auto result = runSource(
+        "def evaluate(inputs, params):\n    return pj.scene.new(frame_id='m', id='e')"
+        ".text(position=(0, 0, 0), text='x' * 200000, font_size=1).finish()\n",
+        {}, {}, "{}", options);
+    if (result) {
+      kept.push_back(std::move(*result));
+    } else {
+      error = result.error().message;
+    }
+  }
+  EXPECT_EQ(kept.size(), 5u);
+  EXPECT_NE(error.find("native memory limit"), std::string::npos) << error;
+  kept.clear();
+  EXPECT_EQ(options.native_budget->used(), 0u);
+}
+
+// The points a builder converts are charged before they are allocated: a million points against a 1 MiB budget fail on
+// the budget, before the conversion reaches the bad last entry.
+TEST(PythonObjectScript, PointConversionIsChargedBeforeItAllocates) {
+  const std::string error = errorOf(runSource(
+      "def evaluate(inputs, params):\n"
+      "    pj.scene.new(frame_id='m', id='e').line_strip(points=[(0, 0, 0)] * 999999 + ['bad'], thickness=1)\n"
+      "    return 1\n",
+      {}, {}, "{}", withNativeBudget(std::size_t{1} << 20)));
+  EXPECT_NE(error.find("native memory limit"), std::string::npos) << error;
+}
+
+TEST(PythonObjectScriptInferred, ObjectIsValueOfItsType) {
+  const std::vector<NamedValue> inputs{objectInput("cloud", makeCloud({{0, 0, 0, 0}}))};
+  auto single = runSource("def evaluate(inputs, params):\n    return inputs['cloud']\n", inputs);
+  ASSERT_TRUE(single) << single.error().message;
+  ASSERT_EQ(single->outputs.size(), 1u);
+  EXPECT_EQ(single->outputs[0].name, "value");
+  auto positional = runSource(
+      "def evaluate(inputs, params):\n    return (3.0, inputs['cloud'], pj.scene.new(frame_id='m', id='e').finish())\n",
+      inputs);
+  ASSERT_TRUE(positional) << positional.error().message;
+  ASSERT_EQ(positional->outputs.size(), 3u);
+  EXPECT_EQ(positional->outputs[1].name, "cloud");
+  EXPECT_EQ(positional->outputs[2].name, "scene");
+}
+
 // ---- bench ---------------------------------------------------------------------------------
 
 constexpr const char* kFourLineScript = R"PY(import math
@@ -715,7 +1646,7 @@ TEST(PythonObjectScriptBench, PerCallSetup) {
     std::nth_element(micros.begin(), micros.begin() + 1000, micros.end());
     return micros[1000];
   };
-  const std::vector<NamedValue> inputs{NamedValue{"x", 3.0}};
+  const std::vector<NamedValue> inputs{NamedValue{.name = "x", .value = 3.0}};
   for (const auto& [name, source] :
        {std::pair{"4-line", kFourLineScript}, std::pair{"43-line", kFortyThreeLineScript}}) {
     auto compiled = compile(source);
@@ -724,6 +1655,49 @@ TEST(PythonObjectScriptBench, PerCallSetup) {
     const double once = median([&] { (void)run(*compiled, inputs); });
     const double every_call = median([&] { (void)run(*compile(source), inputs); });
     std::printf("%s script: %.2f us per call compiled once, %.1f us compiling every call\n", name, once, every_call);
+  }
+}
+
+// PJ_BENCH=1 prints the cost of iterating a 100,000-element list field (Luau: 112 ns per element, ARCHITECTURE §19)
+// and of the xyz_points() iterator over 100,000 points, per element; median of 5 runs.
+TEST(PythonObjectScriptBench, ListIterationAndXyzPoints) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  constexpr int kElements = 100'000;
+  sdk::FrameTransforms transforms;
+  transforms.transforms.resize(kElements);
+  for (auto& transform : transforms.transforms) {
+    transform.translation.x = 1.0;
+  }
+  const std::vector<NamedValue> inputs{
+      objectInput("tf", sdk::BuiltinObject(std::move(transforms))), objectInput("cloud", makeLineCloud(kElements))};
+  RunOptions options;
+  options.limits.python_watchdog_millis = 60'000;
+  for (const auto& [name, source, expected] : std::vector<std::tuple<const char*, const char*, double>>{
+           {"for loop over a list field",
+            "def evaluate(inputs, params):\n    s = 0.0\n    for t in inputs['tf'].transforms:\n"
+            "        s += t.translation.x\n    return s\n",
+            kElements},
+           {"indexed loop, the list held in a local",
+            "def evaluate(inputs, params):\n    s = 0.0\n    items = inputs['tf'].transforms\n"
+            "    for i in range(len(items)):\n        s += items[i].translation.x\n    return s\n",
+            kElements},
+           {"xyz_points()",
+            "def evaluate(inputs, params):\n    s = 0.0\n    for i, x, y, z in inputs['cloud'].xyz_points():\n"
+            "        s += x\n    return s\n",
+            0.5 * kElements * (kElements - 1)}}) {
+    auto compiled = compile(source);
+    ASSERT_TRUE(compiled) << compiled.error();
+    std::vector<double> nanos;
+    for (int sample = 0; sample < 5; ++sample) {
+      const auto begin = std::chrono::steady_clock::now();
+      auto result = run(*compiled, inputs, {}, "{}", options);
+      nanos.push_back(std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - begin).count());
+      EXPECT_DOUBLE_EQ(numberOf(result), expected);
+    }
+    std::sort(nanos.begin(), nanos.end());
+    std::printf("%s: %.0f ns per element\n", name, nanos[2] / kElements);
   }
 }
 

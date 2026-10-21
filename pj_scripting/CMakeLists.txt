@@ -202,7 +202,8 @@ if(EMSCRIPTEN)
   list(APPEND PJ_SCRIPTING_SOURCES src/python_engine_unavailable.cpp src/python_object_script_unavailable.cpp)
 else()
   # The Python filter engine and the on-demand Python lane share one interpreter and its hardening.
-  list(APPEND PJ_SCRIPTING_SOURCES src/python_engine.cpp src/python_sandbox.cpp src/python_object_script.cpp)
+  list(APPEND PJ_SCRIPTING_SOURCES src/python_engine.cpp src/python_sandbox.cpp src/python_object_script.cpp
+       src/python_object_binder.cpp)
 endif()
 
 add_library(pj_scripting STATIC ${PJ_SCRIPTING_SOURCES})

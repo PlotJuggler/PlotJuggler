@@ -84,7 +84,7 @@ RecipeGraph::Recipe recipe(std::string id, std::vector<std::string> inputs, std:
 
 ScriptBundle croppedBundle(const sdk::BuiltinObject& cloud) {
   ScriptBundle bundle;
-  bundle.outputs.push_back({"cropped", cloud});
+  bundle.outputs.push_back({.name = "cropped", .value = cloud});
   return bundle;
 }
 
@@ -551,8 +551,8 @@ TEST(InputStagerTest, AnUnavailableUpstreamOutputIsAMissingInput) {
   split.outputs.push_back({"rest", OutputType::kObject, sdk::BuiltinObjectType::kPointCloud});
   const auto& upstream = fx.install(split);
   ScriptBundle bundle;
-  bundle.outputs.push_back({"cropped", scripting::Unavailable{"no points in the box"}});
-  bundle.outputs.push_back({"rest", cloudObject(2)});
+  bundle.outputs.push_back({.name = "cropped", .value = scripting::Unavailable{"no points in the box"}});
+  bundle.outputs.push_back({.name = "rest", .value = cloudObject(2)});
   fx.publish(upstream, 10 * kSec, std::move(bundle));
 
   const auto& cropped = fx.install(recipe("count", {"owner/split/cropped"}));

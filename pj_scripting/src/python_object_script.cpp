@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // The Python on-demand runner (see python_object_script.h): compile once, then per run a fresh namespace over the
-// compiled code, inside one ScriptCallScope. The binding rules are script_contract.h's, shared with Luau.
+// compiled code, inside one ScriptCallScope. Objects and their methods are python_object_binder.cpp's; the binding
+// rules are script_contract.h's, shared with Luau.
 
 #include "pj_scripting/python_object_script.h"
 
@@ -19,8 +20,10 @@
 #include <vector>
 
 #include "pj_scripting/memory_budget.h"
+#include "python_object_binder.h"
 #include "python_sandbox.h"
 #include "script_contract.h"
+#include "script_media.h"
 
 namespace py = pybind11;
 
@@ -54,18 +57,8 @@ def unavailable(reason=""):
 namespace = types.SimpleNamespace
 )PY";
 
-/// Steals `object`, or throws the pending Python error when its construction failed, as when the cap refused it.
-/// pybind11's own constructors (`py::int_`, `py::dict`, ...) fail through `pybind11_fail` instead, which asserts in a
-/// debug build.
-py::object checked(PyObject* object) {
-  if (object == nullptr) {
-    throw py::error_already_set();
-  }
-  return py::reinterpret_steal<py::object>(object);
-}
-
 py::object interned(const char* text) {
-  return checked(PyUnicode_InternFromString(text));
+  return detail::checked(PyUnicode_InternFromString(text));
 }
 
 /// What every run reuses: the `pj` pieces, and the constant names and value of a run's namespace, interned once (a
@@ -102,10 +95,6 @@ const PjHelpers& pjHelpers() {
   return *g_pj;
 }
 
-py::object newString(std::string_view text) {
-  return checked(PyUnicode_FromStringAndSize(text.data(), static_cast<Py_ssize_t>(text.size())));
-}
-
 void setItem(const py::object& dict, const py::object& key, const py::object& value) {
   if (PyDict_SetItem(dict.ptr(), key.ptr(), value.ptr()) != 0) {
     throw py::error_already_set();
@@ -117,15 +106,15 @@ py::object toPython(const nlohmann::json& value) {
     case nlohmann::json::value_t::boolean:
       return py::bool_(value.get<bool>());
     case nlohmann::json::value_t::number_integer:
-      return checked(PyLong_FromLongLong(value.get<int64_t>()));
+      return detail::checked(PyLong_FromLongLong(value.get<int64_t>()));
     case nlohmann::json::value_t::number_unsigned:
-      return checked(PyLong_FromUnsignedLongLong(value.get<uint64_t>()));
+      return detail::checked(PyLong_FromUnsignedLongLong(value.get<uint64_t>()));
     case nlohmann::json::value_t::number_float:
-      return checked(PyFloat_FromDouble(value.get<double>()));
+      return detail::checked(PyFloat_FromDouble(value.get<double>()));
     case nlohmann::json::value_t::string:
-      return newString(value.get_ref<const std::string&>());
+      return detail::newString(value.get_ref<const std::string&>());
     case nlohmann::json::value_t::array: {
-      py::object out = checked(PyList_New(0));
+      py::object out = detail::checked(PyList_New(0));
       for (const auto& element : value) {
         if (PyList_Append(out.ptr(), toPython(element).ptr()) != 0) {
           throw py::error_already_set();
@@ -134,15 +123,34 @@ py::object toPython(const nlohmann::json& value) {
       return out;
     }
     case nlohmann::json::value_t::object: {
-      py::object out = checked(PyDict_New());
+      py::object out = detail::checked(PyDict_New());
       for (auto it = value.begin(); it != value.end(); ++it) {
-        setItem(out, newString(it.key()), toPython(it.value()));
+        setItem(out, detail::newString(it.key()), toPython(it.value()));
       }
       return out;
     }
     default:
       return py::none();
   }
+}
+
+/// A scalar or object input, noting an image input in `media`; the caller has rejected unavailable inputs.
+py::object toPython(const NamedValue& input, ScriptMedia& media) {
+  if (const auto* number = std::get_if<double>(&input.value)) {
+    return detail::checked(PyFloat_FromDouble(*number));
+  }
+  if (const auto* text = std::get_if<std::string>(&input.value)) {
+    return detail::newString(*text);
+  }
+  sdk::BuiltinObject object = detail::withStampShifted(std::get<sdk::BuiltinObject>(input.value), input.stamp_shift);
+  const void* image = object.get<sdk::Image>();
+  if (image == nullptr) {
+    image = object.get<sdk::DepthImage>();
+  }
+  if (image != nullptr) {
+    media.noteInput(image, input.topic, input.name, detail::ownStamp(object).value_or(0));
+  }
+  return detail::newObject(std::move(object), input.keepalive);
 }
 
 /// The UTF-8 of a `str`, charged to `charge` before it is copied: a script must not multiply one string into
@@ -160,8 +168,8 @@ Expected<std::string> copyText(PyObject* text, native::MemoryReservation& charge
   return std::string(data, size);
 }
 
-/// Reads one returned value into `item`. Runs no script code: the marker is matched by exact type, numbers, strings
-/// and containers are read from their storage, never through a method a script could override.
+/// Reads one returned value into `item`. Runs no script code: the marker and objects are matched by exact type,
+/// numbers, strings and containers are read from their storage, never through a method a script could override.
 Status readValue(PyObject* value, native::MemoryReservation& charge, detail::Returned& item) {
   item.type_name = Py_TYPE(value)->tp_name;
   if (Py_TYPE(value) == reinterpret_cast<PyTypeObject*>(pjHelpers().unavailable_type.ptr())) {
@@ -191,6 +199,9 @@ Status readValue(PyObject* value, native::MemoryReservation& charge, detail::Ret
       return unexpected(text.error());
     }
     item.value = std::move(*text);
+  } else if (const sdk::BuiltinObject* object = detail::toObject(value)) {
+    item.value = *object;
+    item.keepalive = detail::anchorOf(value);  // a builder's output carries its native charge only there
   }
   return okStatus();
 }
@@ -244,17 +255,6 @@ Expected<std::vector<detail::Returned>> collectReturned(PyObject* result, native
   return returned;
 }
 
-/// Why `input` cannot enter a run, or empty.
-std::string inputProblem(const NamedValue& input) {
-  if (std::holds_alternative<Unavailable>(input.value)) {
-    return "input '" + input.name + "' is unavailable";
-  }
-  if (std::holds_alternative<sdk::BuiltinObject>(input.value)) {
-    return "input '" + input.name + "' is an object, which Python scripts cannot read";
-  }
-  return {};
-}
-
 }  // namespace
 
 bool pythonAvailable() {
@@ -269,6 +269,7 @@ Expected<CompiledPythonScript> compileOnDemandScriptPython(std::string_view sour
     return unexpected(code.error());
   }
   (void)pjHelpers();  // built here, unarmed: building them compiles, which a run's armed hook refuses
+  (void)detail::pjNamespaces();
   return CompiledPythonScript{
       std::shared_ptr<const PythonCode>(new PythonCode{code->release().ptr()}, [](const PythonCode* dead) {
         py::gil_scoped_acquire gil_for_decref;
@@ -280,15 +281,18 @@ Expected<CompiledPythonScript> compileOnDemandScriptPython(std::string_view sour
 Expected<ScriptBundle, ScriptError> runOnDemandScriptPython(
     const CompiledPythonScript& script, Span<const NamedValue> inputs, std::string_view params_json,
     Span<const OutputSpec> outputs, const RunOptions& options) {
-  const auto fail = [](std::string message) {
+  const native::NativeLimits native_limits{detail::nativeBudgetOf(options), options.cancelled};
+  ScriptMedia media(options.image_decoder, native_limits, options.result_stamp);
+  detail::PythonRun run(options, media);
+  const auto fail = [&run](std::string message) {
     const bool over_budget = detail::isOverBudget(message);
-    return unexpected(ScriptError{std::move(message), false, false, over_budget});
+    return unexpected(ScriptError{std::move(message), run.observed_query_clock, run.observed_tf, over_budget});
   };
   if (script.code == nullptr) {
     return fail("the python script is not compiled");
   }
   for (const NamedValue& input : inputs) {
-    if (std::string problem = inputProblem(input); !problem.empty()) {
+    if (std::string problem = detail::inputProblem(input); !problem.empty()) {
       return fail(std::move(problem));
     }
   }
@@ -300,7 +304,7 @@ Expected<ScriptBundle, ScriptError> runOnDemandScriptPython(
     return fail("script cancelled");
   }
 
-  native::MemoryReservation strings(detail::nativeBudgetOf(options));
+  native::MemoryReservation strings(native_limits.budget);
   Expected<std::vector<detail::Returned>> returned = std::vector<detail::Returned>{};
   {
     py::gil_scoped_acquire gil;
@@ -311,17 +315,24 @@ Expected<ScriptBundle, ScriptError> runOnDemandScriptPython(
         detail::Profile::kStrict);
     try {
       const PjHelpers& pj = pjHelpers();
-      const py::dict globals = checked(PyDict_New());
+      const detail::PjNamespaces& namespaces = detail::pjNamespaces();
+      const py::dict globals = detail::checked(PyDict_New());
       const detail::ClearedOnExit cleared(globals);  // its functions hold it: cleared here, on every exit
       setItem(globals, pj.builtins_key, detail::strictBuiltins());
       setItem(globals, pj.name_key, pj.module_name);
-      setItem(globals, pj.pj_key, pj.namespace_type(py::arg("unavailable") = pj.unavailable));
-      const py::object script_inputs = checked(PyDict_New());
+      // Checked CPython calls throughout: pybind11's own fail through pybind11_fail, leaving the MemoryError pending.
+      const py::object pj_members = detail::checked(PyDict_New());
+      setItem(pj_members, interned("unavailable"), pj.unavailable);
+      setItem(pj_members, interned("scene"), py::reinterpret_borrow<py::object>(namespaces.scene));
+      setItem(pj_members, interned("annotations"), py::reinterpret_borrow<py::object>(namespaces.annotations));
+      setItem(pj_members, interned("tf"), py::reinterpret_borrow<py::object>(namespaces.tf));
+      const py::object no_arguments = detail::checked(PyTuple_New(0));
+      setItem(
+          globals, pj.pj_key,
+          detail::checked(PyObject_Call(pj.namespace_type.ptr(), no_arguments.ptr(), pj_members.ptr())));
+      const py::object script_inputs = detail::checked(PyDict_New());
       for (const NamedValue& input : inputs) {
-        const auto* number = std::get_if<double>(&input.value);
-        setItem(
-            script_inputs, newString(input.name),
-            number != nullptr ? checked(PyFloat_FromDouble(*number)) : newString(std::get<std::string>(input.value)));
+        setItem(script_inputs, detail::newString(input.name), toPython(input, media));
       }
       detail::runCode(script.code->code, globals);
       // Read raw: the script may have rebound or deleted `evaluate` at its top level.
@@ -329,7 +340,9 @@ Expected<ScriptBundle, ScriptError> runOnDemandScriptPython(
       if (evaluate == nullptr) {
         returned = unexpected(std::string("the script must define a top-level function named 'evaluate'"));
       } else {
-        py::object result = py::reinterpret_borrow<py::object>(evaluate)(script_inputs, toPython(*params));
+        const py::object script_params = toPython(*params);
+        const py::object result =
+            detail::checked(PyObject_CallFunctionObjArgs(evaluate, script_inputs.ptr(), script_params.ptr(), nullptr));
         returned = collectReturned(result.ptr(), strings);
       }
     } catch (py::error_already_set& error) {
@@ -337,6 +350,7 @@ Expected<ScriptBundle, ScriptError> runOnDemandScriptPython(
           error.matches(PyExc_MemoryError) ? detail::vmLimitMessage(options.limits.mem_bytes)
                                            : detail::pythonErrorText(error));
     } catch (const std::exception& error) {  // pybind11_fail and the like: still a failed run, never an escape
+      PyErr_Clear();
       returned = unexpected("Python error: " + std::string(error.what()));
     }
     const bool timed_out = scope.timedOut();
@@ -356,6 +370,8 @@ Expected<ScriptBundle, ScriptError> runOnDemandScriptPython(
   if (!bundle) {
     return fail(std::move(bundle.error()));
   }
+  bundle->observed_query_clock = run.observed_query_clock;
+  bundle->observed_tf = run.observed_tf;
   return std::move(*bundle);
 }
 

@@ -4,15 +4,41 @@
 #include "script_contract.h"
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <memory>
 #include <utility>
 
 #include "pj_base/builtin/field_table_registry.hpp"
+#include "pj_datastore/saturating_time.hpp"
 #include "pj_scripting/memory_budget.h"
 
 namespace PJ::scripting::detail {
 namespace {
+
+/// Calls `visit` with the typed struct behind `object`, for each type with an SDK field table.
+template <class... Types, class Visit>
+bool visitAs(const sdk::BuiltinObject& object, Visit&& visit) {
+  return ((object.get<Types>() != nullptr && (visit(*object.get<Types>()), true)) || ...);
+}
+template <class Visit>
+bool visitDescribed(const sdk::BuiltinObject& object, Visit&& visit) {
+  return visitAs<
+      sdk::PointCloud, sdk::SceneEntities, sdk::ImageAnnotations, sdk::Image, sdk::DepthImage, sdk::CameraInfo,
+      sdk::VideoFrame, sdk::FrameTransforms>(object, visit);
+}
+
+const sdk::FieldDescriptor* stampField(sdk::BuiltinObjectType type) {
+  const sdk::FieldTableView* table = sdk::describe(type);
+  if (table != nullptr) {
+    for (const sdk::FieldDescriptor& field : table->fields) {
+      if (field.kind == sdk::FieldKind::kInt64 && (field.name == "timestamp_ns" || field.name == "timestamp")) {
+        return &field;
+      }
+    }
+  }
+  return nullptr;
+}
 
 /// How the error of a run past its own memory cap (`BudgetLimits::mem_bytes`) starts.
 constexpr std::string_view kVmLimitError = "script memory limit";
@@ -95,7 +121,8 @@ Expected<ScriptBundle> inferOutputs(std::vector<Returned>& returned) {
       return unexpected(
           "output '" + name + "' is a " + std::string(sdk::name(object->type())) + ", a type a script cannot produce");
     }
-    bundle.outputs.push_back(NamedValue{std::move(name), std::move(*item.value)});
+    bundle.outputs.push_back(
+        NamedValue{.name = std::move(name), .keepalive = std::move(item.keepalive), .value = std::move(*item.value)});
   }
   if (!returned.front().key.empty()) {  // keyed: by name; positional: in order
     std::ranges::sort(bundle.outputs, {}, &NamedValue::name);
@@ -128,12 +155,100 @@ Expected<ScriptBundle> bindDeclared(std::vector<Returned>& returned, Span<const 
     if (!value || (!std::holds_alternative<Unavailable>(*value) && !hasType(spec, *value))) {
       return unexpected("output '" + spec.name + "' must be " + typeText(spec));
     }
-    bundle.outputs.push_back(NamedValue{spec.name, std::move(*value)});
+    bundle.outputs.push_back(
+        NamedValue{
+            .name = spec.name,
+            .keepalive = std::move(returned[static_cast<size_t>(found - names.begin())].keepalive),
+            .value = std::move(*value)});
   }
   return bundle;
 }
 
 }  // namespace
+
+const void* structPointer(const sdk::BuiltinObject& object) {
+  const void* pointer = nullptr;
+  visitDescribed(object, [&](const auto& value) { pointer = &value; });
+  return pointer;
+}
+
+bool canEnterScript(const sdk::BuiltinObject& object) {
+  return sdk::describe(object.type()) != nullptr && structPointer(object) != nullptr;
+}
+
+std::string inputProblem(const NamedValue& input) {
+  if (std::holds_alternative<Unavailable>(input.value)) {
+    return "input '" + input.name + "' is unavailable";
+  }
+  const auto* object = std::get_if<sdk::BuiltinObject>(&input.value);
+  if (object != nullptr && !canEnterScript(*object)) {
+    return "input '" + input.name + "' is a " + std::string(sdk::name(object->type())) + ", which scripts cannot read";
+  }
+  return {};
+}
+
+std::optional<Timestamp> ownStamp(const sdk::BuiltinObject& object) {
+  const sdk::FieldDescriptor* field = stampField(object.type());
+  const void* pointer = structPointer(object);
+  return field != nullptr && pointer != nullptr ? std::optional<Timestamp>(field->get_int64(pointer)) : std::nullopt;
+}
+
+sdk::BuiltinObject withStampShifted(const sdk::BuiltinObject& object, Timestamp shift) {
+  const sdk::FieldDescriptor* field = stampField(object.type());
+  if (shift == 0 || field == nullptr) {
+    return object;
+  }
+  // On an image or a video packet 0 is a stamp, which annotations and frames pair with; elsewhere it means unstamped.
+  const bool zero_is_a_stamp = object.type() == sdk::BuiltinObjectType::kImage ||
+                               object.type() == sdk::BuiltinObjectType::kDepthImage ||
+                               object.type() == sdk::BuiltinObjectType::kVideoFrame;
+  sdk::BuiltinObject shifted = object;
+  visitDescribed(object, [&](const auto& value) {
+    const Timestamp stamp = field->get_int64(&value);
+    if (stamp == 0 && !zero_is_a_stamp) {
+      return;
+    }
+    auto copy = value;                                     // shares the payload bytes through their anchor
+    field->set_int64(&copy, saturatingAdd(stamp, shift));  // a stamp near the limits must not wrap around
+    shifted = sdk::BuiltinObject(std::move(copy));
+  });
+  return shifted;
+}
+
+std::optional<native::CompareOp> parseComparison(std::string_view op, std::string_view not_equal) {
+  using Comparison = std::pair<std::string_view, native::CompareOp>;
+  const std::array<Comparison, 6> comparisons{{
+      {"<", native::CompareOp::kLt},
+      {"<=", native::CompareOp::kLe},
+      {">", native::CompareOp::kGt},
+      {">=", native::CompareOp::kGe},
+      {"==", native::CompareOp::kEq},
+      {not_equal, native::CompareOp::kNe},
+  }};
+  const auto comparison = std::ranges::find(comparisons, op, &Comparison::first);
+  return comparison != comparisons.end() ? std::optional(comparison->second) : std::nullopt;
+}
+
+std::optional<native::Extreme> parseExtreme(std::string_view which) {
+  if (which == "max") {
+    return native::Extreme::kMax;
+  }
+  return which == "min" ? std::optional(native::Extreme::kMin) : std::nullopt;
+}
+
+const char* tfLookupErrorText(pj::tf::LookupError error) {
+  switch (error) {
+    case pj::tf::LookupError::kUnknownSource:
+      return "unknown source frame";
+    case pj::tf::LookupError::kUnknownTarget:
+      return "unknown target frame";
+    case pj::tf::LookupError::kDisconnected:
+      return "frames disconnected";
+    case pj::tf::LookupError::kNoSampleAtTime:
+      return "no sample at time";
+  }
+  return "tf lookup failed";
+}
 
 std::string vmLimitMessage(std::size_t limit_bytes) {
   return std::string(kVmLimitError) + " (" + native::describeBytes(limit_bytes) + ") exceeded";

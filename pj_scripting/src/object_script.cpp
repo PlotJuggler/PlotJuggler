@@ -50,20 +50,6 @@ struct Run {
   bool observed_tf = false;
 };
 
-const char* lookupErrorText(pj::tf::LookupError error) {
-  switch (error) {
-    case pj::tf::LookupError::kUnknownSource:
-      return "unknown source frame";
-    case pj::tf::LookupError::kUnknownTarget:
-      return "unknown target frame";
-    case pj::tf::LookupError::kDisconnected:
-      return "frames disconnected";
-    case pj::tf::LookupError::kNoSampleAtTime:
-      return "no sample at time";
-  }
-  return "tf lookup failed";
-}
-
 int pushFailure(lua_State* L, const char* reason) {
   lua_pushnil(L);
   lua_pushstring(L, reason);
@@ -101,7 +87,7 @@ int lTfLookup(lua_State* L) {
   }
   const auto found = run.options->tf->tryLookupTransform(target, source, PJ::fromRaw(instant), clock);
   if (!found) {
-    return pushFailure(L, lookupErrorText(found.error()));
+    return pushFailure(L, detail::tfLookupErrorText(found.error()));
   }
   lua_createtable(L, 0, 3);
   detail::pushArray(L, {found->t.x, found->t.y, found->t.z});
@@ -215,18 +201,6 @@ void pushInput(lua_State* L, const NamedValue& input, ScriptMedia& media, std::v
     }
     detail::pushObject(L, std::move(object));
   }
-}
-
-/// Why `input` cannot enter a run, or empty.
-std::string inputProblem(const NamedValue& input) {
-  if (std::holds_alternative<Unavailable>(input.value)) {
-    return "input '" + input.name + "' is unavailable";
-  }
-  const auto* object = std::get_if<sdk::BuiltinObject>(&input.value);
-  if (object != nullptr && !detail::canEnterScript(*object)) {
-    return "input '" + input.name + "' is a " + std::string(sdk::name(object->type())) + ", which scripts cannot read";
-  }
-  return {};
 }
 
 // ---- binding the returned value -------------------------------------------------
@@ -390,7 +364,7 @@ Expected<ScriptBundle, ScriptError> runOnDemandScript(
   };
   // Nothing below may raise a Lua error outside the protected call: reject what would, first.
   for (const NamedValue& input : inputs) {
-    if (std::string problem = inputProblem(input); !problem.empty()) {
+    if (std::string problem = detail::inputProblem(input); !problem.empty()) {
       return fail(std::move(problem));
     }
   }

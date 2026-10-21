@@ -65,9 +65,10 @@ struct Point {
 };
 
 /// The first record at or after `index` with finite x/y/z, advancing `index` past it; nullopt once the
-/// records run out. `access` must come from `resolveXyz(cloud)`. Backs a binder's point iterator.
+/// records run out, or once it has read `max_records` records (`index` past them). `access` must come from
+/// `resolveXyz(cloud)`. Backs a binder's point iterator.
 [[nodiscard]] std::optional<Point> nextFinitePoint(
-    const sdk::PointCloud& cloud, const XyzAccess& access, std::size_t& index);
+    const sdk::PointCloud& cloud, const XyzAccess& access, std::size_t& index, std::size_t max_records = SIZE_MAX);
 
 /// Axis-aligned bounds of the finite points. `min`/`max` mean something only when `count > 0`; the caller
 /// decides what an empty cloud means (D25).

@@ -308,21 +308,21 @@ class FakeRun {
     bundle.observed_tf = observe_tf;
     for (const scripting::OutputSpec& output : outputs) {
       if (std::find(unavailable.begin(), unavailable.end(), output.name) != unavailable.end()) {
-        bundle.outputs.push_back({output.name, scripting::Unavailable{"no points"}});
+        bundle.outputs.push_back({.name = output.name, .value = scripting::Unavailable{"no points"}});
       } else if (output.type == scripting::OutputType::kNumber) {
-        bundle.outputs.push_back({output.name, static_cast<double>(options.query_time)});
+        bundle.outputs.push_back({.name = output.name, .value = static_cast<double>(options.query_time)});
       } else if (output.type == scripting::OutputType::kString) {
-        bundle.outputs.push_back({output.name, text});
+        bundle.outputs.push_back({.name = output.name, .value = text});
       } else if (output.object_type == sdk::BuiltinObjectType::kSceneEntities) {
         sdk::SceneEntities scene;
         if (entities) {
           scene.entities = entities(options.query_time);
         }
-        bundle.outputs.push_back({output.name, sdk::BuiltinObject(std::move(scene))});
+        bundle.outputs.push_back({.name = output.name, .value = sdk::BuiltinObject(std::move(scene))});
       } else {
         sdk::PointCloud cloud = input != nullptr && !empty_clouds ? *input : makeCloud(0);
         cloud.frame_id = std::to_string(options.query_time);
-        bundle.outputs.push_back({output.name, sdk::BuiltinObject(std::move(cloud))});
+        bundle.outputs.push_back({.name = output.name, .value = sdk::BuiltinObject(std::move(cloud))});
       }
     }
     return bundle;

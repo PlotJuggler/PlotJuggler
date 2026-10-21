@@ -339,7 +339,7 @@ void NodeScheduler::clearShown(
   }
   scripting::ScriptBundle cleared;
   for (const scripting::OutputSpec& output : node.recipe.outputs) {
-    cleared.outputs.push_back({output.name, scripting::Unavailable{reason}});
+    cleared.outputs.push_back({.name = output.name, .value = scripting::Unavailable{reason}});
   }
   // No staged key has an empty input list, so this key never serves a request.
   const ResultHistory::CacheKey tombstone{.revision = node.revision, .epoch = epoch};

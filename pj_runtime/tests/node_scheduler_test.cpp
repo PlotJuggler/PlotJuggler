@@ -1540,7 +1540,7 @@ TEST(NodeSchedulerBench, GuiPublishCostOfA4MBResult) {
   const RecipeGraph::Node& node = *graph.find("owner/crop");
   ASSERT_TRUE(history.install(node).has_value());
   ScriptBundle bundle;
-  bundle.outputs.push_back({"cropped", sdk::BuiltinObject(test::makeCloud(260'000))});
+  bundle.outputs.push_back({.name = "cropped", .value = sdk::BuiltinObject(test::makeCloud(260'000))});
   const auto publishAt = [&](Timestamp t, ResultPublishOptions options) {
     history.noteRequest("owner/crop", t);
     const ResultHistory::CacheKey key{.revision = node.revision, .inputs = {static_cast<uint64_t>(t)}};

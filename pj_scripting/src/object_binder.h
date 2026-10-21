@@ -14,7 +14,6 @@
 #include "native/point_cloud_ops.h"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/field_table.hpp"
-#include "pj_base/types.hpp"
 
 // The object half of the Luau object-script binding (docs/derived_objects/ARCHITECTURE.md §6): canonical
 // objects as read-only views over their SDK field tables, read lazily (a list is a view whose elements
@@ -39,9 +38,6 @@ void registerBinder(lua_State* L, ScriptMedia& media);
 /// fields of the table on top of the stack. `limits` is what the builders allocate under; as for
 /// `registerBinder`, it must outlive every call made on `L`.
 void installBuilders(lua_State* L, const native::NativeLimits& limits);
-
-/// True when `object` can enter a script: its type has an SDK field table.
-[[nodiscard]] bool canEnterScript(const sdk::BuiltinObject& object);
 
 /// Pushes `object` as a read-only script object (it shares the value); `canEnterScript(object)` must hold.
 /// `charge` is what a builder paid for `object`'s native memory: the box, and every view read through it,
@@ -68,15 +64,6 @@ void pushUnavailable(lua_State* L, std::string_view reason);
 
 /// Pushes the numbers as an array, the one shape of a script-facing vector (`{x, y, z}`).
 void pushArray(lua_State* L, std::initializer_list<double> values);
-
-/// The object's own stamp: its top-level `timestamp_ns` (or `timestamp`) field; nullopt when its type
-/// has none (scene entities and frame transforms stamp each element instead).
-[[nodiscard]] std::optional<Timestamp> ownStamp(const sdk::BuiltinObject& object);
-
-/// `object` with its own stamp moved by `shift`, saturating at the int64 limits (a copy sharing its payload
-/// bytes); `object` itself when the shift is 0, the type has no own stamp, or the stamp is 0 (unstamped), except on
-/// an Image, DepthImage or VideoFrame, where 0 is a stamp annotations and frames pair with.
-[[nodiscard]] sdk::BuiltinObject withStampShifted(const sdk::BuiltinObject& object, Timestamp shift);
 
 /// Sets `functions` as fields of the table on top of the stack; with an `upvalue`, each closes over it
 /// (read back with `upvalueAs`).

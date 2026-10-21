@@ -181,17 +181,17 @@ class FakeRun {
     ScriptBundle bundle;
     bundle.observed_query_clock = params.value("clock", false);
     if (outputs.empty()) {
-      bundle.outputs.push_back({"count", count});
-      bundle.outputs.push_back({"label", std::string("ok")});
+      bundle.outputs.push_back({.name = "count", .value = count});
+      bundle.outputs.push_back({.name = "label", .value = std::string("ok")});
       return bundle;
     }
     for (const OutputSpec& output : outputs) {
       if (std::find(unavailable.begin(), unavailable.end(), output.name) != unavailable.end()) {
-        bundle.outputs.push_back({output.name, Unavailable{"no points"}});
+        bundle.outputs.push_back({.name = output.name, .value = Unavailable{"no points"}});
       } else if (output.type == OutputType::kNumber) {
-        bundle.outputs.push_back({output.name, count});
+        bundle.outputs.push_back({.name = output.name, .value = count});
       } else if (output.type == OutputType::kString) {
-        bundle.outputs.push_back({output.name, text.empty() ? std::string("ok") : text});
+        bundle.outputs.push_back({.name = output.name, .value = text.empty() ? std::string("ok") : text});
       } else {
         const bool empty = params.value("empty", false) || cloud == nullptr;
         sdk::PointCloud made = empty ? test::makeCloud(0) : *cloud;
@@ -200,7 +200,7 @@ class FakeRun {
           const std::lock_guard<std::mutex> lock(mutex_);
           last_fresh_ = made.anchor;
         }
-        bundle.outputs.push_back({output.name, sdk::BuiltinObject(std::move(made))});
+        bundle.outputs.push_back({.name = output.name, .value = sdk::BuiltinObject(std::move(made))});
       }
     }
     return bundle;

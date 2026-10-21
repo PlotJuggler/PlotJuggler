@@ -196,12 +196,12 @@ Expected<InputStager::Decoded> InputStager::decode(const ObjectStore& store, con
   decoded.values.reserve(staged.inputs.size());
   for (const Input& input : staged.inputs) {
     if (const auto* scalar = std::get_if<double>(&input.value)) {
-      decoded.values.push_back({input.alias, *scalar});
+      decoded.values.push_back({.name = input.alias, .value = *scalar});
     } else if (const auto* text = std::get_if<std::string>(&input.value)) {
-      decoded.values.push_back({input.alias, *text});
+      decoded.values.push_back({.name = input.alias, .value = *text});
     } else if (const auto* object = std::get_if<Object>(&input.value)) {
       decoded.keepalives.insert(decoded.keepalives.end(), object->keepalives.begin(), object->keepalives.end());
-      decoded.values.push_back({input.alias, object->object});
+      decoded.values.push_back({.name = input.alias, .value = object->object});
     } else {
       const Entry& entry = std::get<Entry>(input.value);
       // A lazy entry's fetch and chunk decode run here, on the calling thread.
@@ -217,8 +217,11 @@ Expected<InputStager::Decoded> InputStager::decode(const ObjectStore& store, con
         decoded.keepalives.push_back(entry.parser.keepalive);
       }
       decoded.values.push_back(
-          {input.alias, std::move(*parsed), resolved->payload_stamp_shift, store.descriptor(entry.topic).topic_name,
-           entry.topic});
+          {.name = input.alias,
+           .value = std::move(*parsed),
+           .stamp_shift = resolved->payload_stamp_shift,
+           .topic = store.descriptor(entry.topic).topic_name,
+           .topic_id = entry.topic});
     }
   }
   return decoded;

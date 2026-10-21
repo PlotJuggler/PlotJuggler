@@ -324,8 +324,9 @@ Expected<XyzAccess> resolveXyz(const PointCloud& cloud) {
   return access;
 }
 
-std::optional<Point> nextFinitePoint(const PointCloud& cloud, const XyzAccess& access, std::size_t& index) {
-  while (index < access.records) {
+std::optional<Point> nextFinitePoint(
+    const PointCloud& cloud, const XyzAccess& access, std::size_t& index, std::size_t max_records) {
+  for (std::size_t read = 0; index < access.records && read < max_records; ++read) {
     const std::size_t current = index++;
     const Vector3 position = readXyz(cloud.data.data() + recordByteOffset(cloud, current), access);
     if (isFinite(position)) {

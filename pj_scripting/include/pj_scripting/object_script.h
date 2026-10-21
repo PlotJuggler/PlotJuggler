@@ -70,6 +70,11 @@ struct OutputSpec {
 /// A resolved input or a produced output, named as the script sees it.
 struct NamedValue {
   std::string name;
+  /// What `value` must not outlive, declared before it so it is released after it. An input's: what keeps the code
+  /// that made it loaded (a parser's library); a Python run's proxies hold it, since a script can keep an object past
+  /// its run. An output's: its native charge (a builder's output has no buffer anchor to carry one) and, for a returned
+  /// input, that input's keepalive, so a retained result keeps counting against its ledger.
+  std::shared_ptr<const void> keepalive = {};
   ScriptValue value;
   /// Inputs only: the store entry's `payload_stamp_shift`. A merge moves the dataset clock but leaves
   /// the stamps inside payloads where they were; the engine adds this to an object input's own stamp

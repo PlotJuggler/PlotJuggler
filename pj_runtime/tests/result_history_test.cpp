@@ -80,22 +80,22 @@ sdk::SceneEntities makeScene(std::string frame = "base_link") {
 
 ScriptBundle cloudBundle(size_t points, Timestamp stamp = 0) {
   ScriptBundle bundle;
-  bundle.outputs.push_back({"cropped", sdk::BuiltinObject(makeCloud(points, stamp))});
+  bundle.outputs.push_back({.name = "cropped", .value = sdk::BuiltinObject(makeCloud(points, stamp))});
   return bundle;
 }
 ScriptBundle cropBundle(size_t points, double max_z) {
   ScriptBundle bundle;
-  bundle.outputs.push_back({"cropped", sdk::BuiltinObject(makeCloud(points))});
-  bundle.outputs.push_back({"witness", sdk::BuiltinObject(makeScene())});
-  bundle.outputs.push_back({"max_z", max_z});
-  bundle.outputs.push_back({"report", std::to_string(points) + " points"});
+  bundle.outputs.push_back({.name = "cropped", .value = sdk::BuiltinObject(makeCloud(points))});
+  bundle.outputs.push_back({.name = "witness", .value = sdk::BuiltinObject(makeScene())});
+  bundle.outputs.push_back({.name = "max_z", .value = max_z});
+  bundle.outputs.push_back({.name = "report", .value = std::to_string(points) + " points"});
   return bundle;
 }
 /// What a failed run publishes: every output unavailable.
 ScriptBundle unavailableBundle(const RecipeGraph::Recipe& recipe, const std::string& reason) {
   ScriptBundle bundle;
   for (const OutputSpec& output : recipe.outputs) {
-    bundle.outputs.push_back({output.name, Unavailable{reason}});
+    bundle.outputs.push_back({.name = output.name, .value = Unavailable{reason}});
   }
   return bundle;
 }
@@ -613,7 +613,9 @@ TEST(ResultHistoryTest, BundlePublicationIsAllOrNothing) {
   const ObjectTopicId cropped = fx.topic("owner/crop/cropped");
   const ObjectTopicId witness = fx.topic("owner/crop/witness");
   ScriptBundle first;
-  first.outputs = {{"cropped", sdk::BuiltinObject(makeCloud(2))}, {"witness", sdk::BuiltinObject(makeScene())}};
+  first.outputs = {
+      {.name = "cropped", .value = sdk::BuiltinObject(makeCloud(2))},
+      {.name = "witness", .value = sdk::BuiltinObject(makeScene())}};
   fx.publishAt(node, 10 * kSec, first);
   const auto uid = fx.store.latestAt(cropped, kMax)->sequential_uid;
   const size_t ring = fx.history.ringBytes();
@@ -661,7 +663,9 @@ TEST(ResultHistoryTest, ResultAtIsTheNewestStoredOutputAtOrBefore) {
   const auto& node = fx.install(recipe);
   const ObjectTopicId cropped = fx.topic("owner/crop/cropped");
   ScriptBundle drawn;
-  drawn.outputs = {{"cropped", sdk::BuiltinObject(makeCloud(2))}, {"witness", sdk::BuiltinObject(makeScene())}};
+  drawn.outputs = {
+      {.name = "cropped", .value = sdk::BuiltinObject(makeCloud(2))},
+      {.name = "witness", .value = sdk::BuiltinObject(makeScene())}};
   fx.publishAt(node, 10 * kSec, drawn);
   fx.history.noteRequest(node.recipe.key(), 20 * kSec);
   ASSERT_TRUE(fx.history.publish(node, 20 * kSec, 20 * kSec, keyOf(node, 20), unavailableBundle(recipe, "no points")));
@@ -785,7 +789,7 @@ TEST(ResultHistoryTest, ACachedBundleReleasesItsOutputsBeforeTheirKeepalives) {
           delete static_cast<const int*>(held);
         })};
     ScriptBundle bundle;
-    bundle.outputs.push_back({"cropped", sdk::BuiltinObject(std::move(cloud))});
+    bundle.outputs.push_back({.name = "cropped", .value = sdk::BuiltinObject(std::move(cloud))});
     ASSERT_TRUE(fx.history.publish(
         node, 10 * kSec, 10 * kSec, keyOf(node, 2), std::move(bundle), std::move(keepalives),
         ResultPublishOptions{.cache_only = true}));
@@ -1222,7 +1226,7 @@ TEST(ResultHistoryTest, ByteEstimateDoesNotSerialize) {
   fx.publishAt(node, kSec, cloudBundle(1));
   const size_t ring_held = fx.history.cacheBytes();
   ScriptBundle bundle;
-  bundle.outputs.push_back({"cropped", cloud});
+  bundle.outputs.push_back({.name = "cropped", .value = cloud});
   ASSERT_TRUE(
       fx.history.publish(node, kSec, kSec, keyOf(node, 2), bundle, {}, ResultPublishOptions{.cache_only = true}));
   EXPECT_GE(fx.history.cacheBytes() - ring_held, estimate);

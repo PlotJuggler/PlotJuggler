@@ -22,7 +22,6 @@
 #include "native/image_ops.h"
 #include "native/scene_entities_ops.h"
 #include "pj_base/builtin/field_table_registry.hpp"
-#include "pj_datastore/saturating_time.hpp"
 #include "pj_scripting/memory_budget.h"
 #include "pj_scripting/object_script.h"
 #include "script_contract.h"
@@ -109,36 +108,6 @@ T nativeResult(lua_State* L, Expected<T> result) {
     raise(L, result.error());
   }
   return std::move(*result);
-}
-
-/// Calls `visit` with the typed struct behind `object`, for each type with an SDK field table.
-template <class... Types, class Visit>
-bool visitAs(const sdk::BuiltinObject& object, Visit&& visit) {
-  return ((object.get<Types>() != nullptr && (visit(*object.get<Types>()), true)) || ...);
-}
-template <class Visit>
-bool visitDescribed(const sdk::BuiltinObject& object, Visit&& visit) {
-  return visitAs<
-      sdk::PointCloud, sdk::SceneEntities, sdk::ImageAnnotations, sdk::Image, sdk::DepthImage, sdk::CameraInfo,
-      sdk::VideoFrame, sdk::FrameTransforms>(object, visit);
-}
-
-const void* structPointer(const sdk::BuiltinObject& object) {
-  const void* pointer = nullptr;
-  visitDescribed(object, [&](const auto& value) { pointer = &value; });
-  return pointer;
-}
-
-const sdk::FieldDescriptor* stampField(sdk::BuiltinObjectType type) {
-  const sdk::FieldTableView* table = sdk::describe(type);
-  if (table != nullptr) {
-    for (const sdk::FieldDescriptor& field : table->fields) {
-      if (field.kind == sdk::FieldKind::kInt64 && (field.name == "timestamp_ns" || field.name == "timestamp")) {
-        return &field;
-      }
-    }
-  }
-  return nullptr;
 }
 
 // ---- field reads -------------------------------------------------------------
@@ -438,12 +407,11 @@ int lCloudBounds(lua_State* L) {
 int lCloudExtremePoint(lua_State* L) {
   const sdk::PointCloud& cloud = checkCloud(L);
   const char* channel = luaL_checkstring(L, 2);
-  const std::string_view which = luaL_checkstring(L, 3);
-  if (which != "max" && which != "min") {
+  const std::optional<native::Extreme> extreme = parseExtreme(luaL_checkstring(L, 3));
+  if (!extreme) {
     luaL_error(L, "extreme_point: the second argument must be 'max' or 'min'");
   }
-  const auto best = nativeResult(
-      L, native::extremePoint(cloud, channel, which == "max" ? native::Extreme::kMax : native::Extreme::kMin));
+  const auto best = nativeResult(L, native::extremePoint(cloud, channel, *extreme));
   if (!best) {
     lua_pushnil(L);
     return 1;
@@ -466,23 +434,14 @@ int lCloudCropBox(lua_State* L) {
   return pushNativeCloud(L, [&] { return native::cropBox(cloud, min, max, upvalueAs<native::NativeLimits>(L)); });
 }
 
-/// The comparison named by the string at `index`: `<`, `<=`, `>`, `>=`, `==` or `~=`; `what` names the caller.
+/// The comparison named by the string at `index` (`parseComparison`); `what` names the caller.
 native::CompareOp checkComparison(lua_State* L, int index, const char* what) {
-  using Comparison = std::pair<std::string_view, native::CompareOp>;
-  constexpr std::array<Comparison, 6> kComparisons{{
-      {"<", native::CompareOp::kLt},
-      {"<=", native::CompareOp::kLe},
-      {">", native::CompareOp::kGt},
-      {">=", native::CompareOp::kGe},
-      {"==", native::CompareOp::kEq},
-      {"~=", native::CompareOp::kNe},
-  }};
   const char* op = luaL_checkstring(L, index);
-  const auto comparison = std::ranges::find(kComparisons, std::string_view(op), &Comparison::first);
-  if (comparison == kComparisons.end()) {
+  const std::optional<native::CompareOp> comparison = parseComparison(op, "~=");
+  if (!comparison) {
     luaL_error(L, "%s: unknown comparison '%s' (expected <, <=, >, >=, ==, ~=)", what, op);
   }
-  return comparison->second;
+  return *comparison;
 }
 
 /// `cloud:filter(channel, op, value)`.
@@ -1162,10 +1121,6 @@ void installBuilders(lua_State* L, const native::NativeLimits& limits) {
   lua_setfield(L, -2, "annotations");
 }
 
-bool canEnterScript(const sdk::BuiltinObject& object) {
-  return sdk::describe(object.type()) != nullptr && structPointer(object) != nullptr;
-}
-
 void pushObject(lua_State* L, sdk::BuiltinObject object, std::shared_ptr<const native::MemoryReservation> charge) {
   const sdk::FieldTableView* table = sdk::describe(object.type());
   const void* data = structPointer(object);
@@ -1224,34 +1179,6 @@ void pushArray(lua_State* L, std::initializer_list<double> values) {
     lua_pushnumber(L, value);
     lua_rawseti(L, -2, position++);
   }
-}
-
-std::optional<Timestamp> ownStamp(const sdk::BuiltinObject& object) {
-  const sdk::FieldDescriptor* field = stampField(object.type());
-  const void* pointer = structPointer(object);
-  return field != nullptr && pointer != nullptr ? std::optional<Timestamp>(field->get_int64(pointer)) : std::nullopt;
-}
-
-sdk::BuiltinObject withStampShifted(const sdk::BuiltinObject& object, Timestamp shift) {
-  const sdk::FieldDescriptor* field = stampField(object.type());
-  if (shift == 0 || field == nullptr) {
-    return object;
-  }
-  // On an image or a video packet 0 is a stamp, which annotations and frames pair with; elsewhere it means unstamped.
-  const bool zero_is_a_stamp = object.type() == sdk::BuiltinObjectType::kImage ||
-                               object.type() == sdk::BuiltinObjectType::kDepthImage ||
-                               object.type() == sdk::BuiltinObjectType::kVideoFrame;
-  sdk::BuiltinObject shifted = object;
-  visitDescribed(object, [&](const auto& value) {
-    const Timestamp stamp = field->get_int64(&value);
-    if (stamp == 0 && !zero_is_a_stamp) {
-      return;
-    }
-    auto copy = value;                                     // shares the payload bytes through their anchor
-    field->set_int64(&copy, saturatingAdd(stamp, shift));  // a stamp near the limits must not wrap around
-    shifted = sdk::BuiltinObject(std::move(copy));
-  });
-  return shifted;
 }
 
 }  // namespace PJ::scripting::detail

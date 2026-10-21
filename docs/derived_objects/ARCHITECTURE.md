@@ -146,7 +146,8 @@ header-only 0.36.0:
 ## 6. Types and bindings
 
 **Status: Built.** The Luau binder (slice 5c-1, `pj_scripting/src/object_binder.cpp`) has both
-fixes below; the Python binder comes with slice 10b.
+fixes below, and so has the Python binder (slice 10b, `pj_scripting/src/python_object_binder.cpp`;
+images and depth wait for 10b-2).
 
 - **SDK field tables** describe each builtin struct's members: name, kind, accessors. They
   drive generic binders in Luau and Python, so a script and an agent see the same fields.
@@ -154,7 +155,8 @@ fixes below; the Python binder comes with slice 10b.
   transform, bounds, builders, presets. They serve both languages.
 - **Lazy lists (built, slice 5c-1):** binders read list elements one at a time through
   `list_at`, instead of materializing whole lists on every field access (the prototype's
-  O(N²) iteration). Iterating 100,000 elements takes 11 ms (§19).
+  O(N²) iteration). Iterating 100,000 elements takes 11 ms in Luau, 20 ms in Python, whose
+  views are plain CPython types rather than pybind11 classes (150 ms as those) (§19).
 - **Producible outputs (built, slice 5c-1):** an output declaration accepts only the object
   types a script can produce: point cloud, scene entities, image annotations, image, depth
   image and camera info. A video frame is an input only (`frame_at`, below), frame transforms wait for a decision on
@@ -881,9 +883,10 @@ join it (slice 6b). The rest is **Built**.
 
 ## 14. Scripting languages
 
-**Status: Built** for Luau; for Python the core is built (slice 10a-1: the shared interpreter, its
-limits and the hook; slice 10a-2: the strict profile and compile once) and its runtime wiring is not
-(10b, 10c). Luau VM reuse is proposed (N1, N2).
+**Status: Built** for Luau; for Python the core and the binder are built (slice 10a-1: the shared
+interpreter, its limits and the hook; slice 10a-2: the strict profile and compile once; slice 10b:
+objects, builders and `pj.tf`; images and depth are 10b-2) and its runtime wiring is not (10c). Luau
+VM reuse is proposed (N1, N2).
 
 - **Luau** gets a fresh sandboxed VM per call, from bytecode compiled once per recipe
   (built, slice 5c-1: about 43 µs per call on this stack, §19). **Proposed:** one sandboxed state per pool worker plus a fresh sandboxed thread per call.
@@ -921,6 +924,19 @@ limits and the hook; slice 10a-2: the strict profile and compile once) and its r
     that also refuses `exec` and `compile`. A copy's functions still share the real module's
     globals, so a filter can patch, say, `statistics._sum`, and later on-demand runs call the
     patched code; accepted under the trust model.
+- **The Python binder** (slice 10b; `python_object_script.h` owns the surface) reads the objects with
+  Luau's native operations, through the language-neutral `script_contract.h`. In Python's idiom:
+  0-based indices, tuples for vectors, keyword arguments for the builders, `!=` for not equal, and
+  `(value, None)` or `(None, reason)` where Luau returns `value` or `nil, reason`. Every operation
+  that walks the data releases the GIL (N6), so GUI-thread Python work proceeds meanwhile. Every type
+  is a plain CPython type: pybind11 dereferences an allocation the cap refuses (in a keyword call's
+  dispatch and in instance creation) and costs a type lookup per list element (1.5 µs against about
+  195 ns). A call that needs the run's limits, media or observations raises outside its run (field
+  reads, `count`, `bounds`, `extreme_point` and `xyz_points` iteration work anywhere), and a builder
+  outside the run that made it: an object a script leaves behind never reaches a dead run's limits,
+  and it keeps its input's keepalive
+  (the producing parser's library), so its payload never outlives the code that frees it. A result
+  keeps its outputs' native charge, so retained results count against a shared ledger.
 - **Python in the browser** is a goal (D18 with D29), gated on a spike: CPython 3.14's
   Emscripten target, statically linked, with pthreads. Until then, desktop only.
 
@@ -1248,7 +1264,7 @@ payload (§9).
 ## 19. Measurements
 
 These come from the prototype, whose design document describes the machine and method,
-except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a, slice 6a-5, slice 6c, slice 7a, slice 8a-1, slice 6b, slice 8a-2b, slice 8b-1, slice 9a-1, slice 9a-2, slice 9b, slice 10a-2 and slice 11a rows. The slice 2 and 3 rows are measured on this stack by
+except the slice 2, slice 3, slice 5a, slice 5n, slice 5c-1, slice 6a-2, slice 6a-3, slice 6a-4a, slice 6a-5, slice 6c, slice 7a, slice 8a-1, slice 6b, slice 8a-2b, slice 8b-1, slice 9a-1, slice 9a-2, slice 9b, slice 10a-2, slice 10b and slice 11a rows. The slice 2 and 3 rows are measured on this stack by
 `EngineFreezeBench` (`pj_runtime/tests/engine_freeze_bench_test.cpp`, `PJ_BENCH=1`), from
 the call until the result is complete, as two different metrics:
 - **GUI-thread CPU time**, as the longest single stretch (the call or one event-loop
@@ -1291,6 +1307,7 @@ Linux, RelWithDebInfo.
 | Object scripts after slice 5c-1 (`ObjectScriptBench`, `pj_scripting/tests/object_script_test.cpp`, `PJ_BENCH=1`; three runs) | Per-call setup (fresh VM over compiled bytecode, a one-line script): 40-47 µs. Iterating a 100,000-element list field (`FrameTransforms.transforms`, reading `translation.x`): 11.0-11.5 ms (about 112 ns per element) holding the list in a local, 15.7-16.3 ms re-reading the field each iteration. The same loop with the list materialized on every element read (a one-line mutation of the binder): 18.6 s |
 | Per-call setup: Python | 73 µs (4-line script) to 1.2 ms (43-line script), re-parsing every call |
 | Python per-call setup after slice 10a-2 (`PythonObjectScriptBench.PerCallSetup`, `pj_scripting/tests/python_object_script_test.cpp`, `PJ_BENCH=1`; median of 2001 calls, three runs; a number input, a keyed result) | Compiled once: 2.8 µs for a 4-line script, 15.5-15.7 µs for a 43-line one (a class, four helpers, two imports); compiling every call (the pre-check and the compile included): 92-94 µs and 870-883 µs. With the allocation cap disabled: 2.5 µs and 12.9 µs, so its per-block bookkeeping costs 0.35 µs and 2.7 µs. The 4-line figure misses the 1.2 µs target (an estimate for a bare `exec` of the code object, without the cap, the builtins copy or the import gate), about 0.35 µs of the miss being the cap's bookkeeping; accepted (decided 2026-10-20), as it is 30 times below compiling per call. The 43-line one beats its 63 µs target. |
+| Python binder after slice 10b (`PythonObjectScriptBench.ListIterationAndXyzPoints`, `pj_scripting/tests/python_object_script_test.cpp`, `PJ_BENCH=1`; 100,000 elements, median of 5 runs pinned to one P-core with `taskset`; unpinned runs land on a slower mode up to 15% above) | Iterating a list field (`FrameTransforms.transforms`, reading `translation.x`): 194-195 ns per element with a `for` loop, 269-270 ns indexing the list held in a local, against Luau's 112 ns; 1.49-1.60 µs while the views were pybind11 classes (a type lookup by `std::type_index` and a dispatch per element). `xyz_points()`: 149 ns per point (428-443 ns as a pybind11 class; 222-232 ns releasing the GIL for every point, so it scans 256 records with it first). Both include the allocation cap's bookkeeping, a lock and a map entry per Python allocation (two views per element) |
 | TF snapshot copy (prototype: a copy per snapshot) | 0.26 ms (5 s window) to 248 ms and 691 MB (1 h file) |
 | TF snapshot after slice 5a (copy-on-write; measured on this stack by `TransformSnapshotBench`, `pj_tf/tests/tf_buffer_test.cpp`, `PJ_BENCH=1`; 25 edges at 100 Hz, every sample distinct, median of 5) | `snapshot()`: 0.02 µs and 0 bytes at any size. The next write while it is held copies the state once, on the writing thread under the buffer's write lock: live 5 s window 0.15 ms / 0.9 MB of samples, 60 s window 2.9 ms / 10.8 MB, complete 1 h file 72 ms / 648 MB (only when something writes the file buffer after a snapshot, e.g. a robot model's fixed-joint bridges); a buffer nobody writes is never copied. Consumer rule: during a dataset's TF ingest (a first file load writes the active buffer, streaming never ends) a fresh snapshot per revision makes every next write copy the growing state, quadratic over a load; take a new snapshot no faster than the brake rate there, or wait for the ingest to end |
 | Native point-cloud operations (slice 5n; `PointCloudOpsBench`, `pj_scripting/tests/native_ops_test.cpp`, `PJ_BENCH=1`; median of 20 calls on a 260k-point XYZI float32 scan, flat and as 64 x 4096 with padded rows, which cost the same per point) | `filterByField` (50% kept) 3.0 ns per point, `cropBox` (30% kept) 9.5 ns, `bounds` 3.2 ns, `extremePoint` 0.9 ns, `transformXyz` 6.0 ns, a full `nextFinitePoint` iteration 6 ns. The same loops with a datatype and comparison switch per point, a filter predicate evaluated twice and a division per record run 1.25x to 5.3x slower |
