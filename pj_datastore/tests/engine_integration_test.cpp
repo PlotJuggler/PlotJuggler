@@ -1745,6 +1745,30 @@ TEST(EngineIntegrationTest, LatestStringAtReturnsZeroOrderHoldString) {
   EXPECT_FALSE(oob->has_value());
 }
 
+// columnType answers from the schema before any row is stored, and says "none" for a topic or column that is not there.
+TEST(EngineIntegrationTest, ColumnTypeReadsTheSchemaAndRefusesAMissingColumn) {
+  DataEngine engine;
+  auto dataset_or = engine.createDataset(DatasetDescriptor{.source_name = "types", .time_domain_id = 0});
+  ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
+  DataWriter writer = engine.createWriter();
+  auto schema_or = writer.registerSchema(
+      "rec",
+      makeStruct(
+          "rec", {makePrimitive("value", PrimitiveType::kFloat64), makePrimitive("label", PrimitiveType::kString)}));
+  ASSERT_TRUE(schema_or.has_value()) << schema_or.error();
+  TopicDescriptor td;
+  td.name = "/rec";
+  td.schema_id = *schema_or;
+  auto topic_or = writer.registerTopic(*dataset_or, td);
+  ASSERT_TRUE(topic_or.has_value()) << topic_or.error();
+
+  const DataReader reader = engine.createReader();
+  EXPECT_EQ(reader.columnType(*topic_or, 0), PrimitiveType::kFloat64) << "no row stored yet";
+  EXPECT_EQ(reader.columnType(*topic_or, 1), PrimitiveType::kString);
+  EXPECT_EQ(reader.columnType(*topic_or, 2), std::nullopt) << "past the last column";
+  EXPECT_EQ(reader.columnType(*topic_or + 1000, 0), std::nullopt) << "no such topic";
+}
+
 // Both null-aware reads must distinguish a NULL latest cell from a real value
 // (so the Value column shows "-" not a fabricated "0.000"), and latestStringAt
 // must refuse a non-string column (readString is UB on numeric storage).

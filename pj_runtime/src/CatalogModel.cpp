@@ -324,6 +324,12 @@ std::vector<CatalogItem> CatalogModel::items() const {
   return items;
 }
 
+void CatalogModel::forEachItem(const std::function<void(const CatalogItem&)>& visit) const {
+  for (const auto& entry : impl_->items) {
+    visit(entry.second);
+  }
+}
+
 std::vector<CatalogItem> CatalogModel::objectTopicsNamed(
     const QString& topic_name, const QString& dataset_source) const {
   std::vector<CatalogItem> matches;

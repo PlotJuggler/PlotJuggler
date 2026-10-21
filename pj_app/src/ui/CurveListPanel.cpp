@@ -634,10 +634,12 @@ void CurveListPanel::refreshUnsubscribedFlags() {
   // correctly clears every row's flag here instead of leaving stale dimming.
   const QHash<DatasetId, QSet<QString>> active_sets = buildActiveSets(*catalog_, tracker_);
   QSet<QString> unsubscribed;
-  for (const CatalogItem& item : catalog_->items()) {
-    if (isTopicUnsubscribed(active_sets, item.dataset_id, item.topic_name)) {
-      unsubscribed.insert(item.key);
-    }
+  if (!active_sets.isEmpty()) {
+    catalog_->forEachItem([&](const CatalogItem& item) {
+      if (isTopicUnsubscribed(active_sets, item.dataset_id, item.topic_name)) {
+        unsubscribed.insert(item.key);
+      }
+    });
   }
   tree_view_->setUnsubscribedKeys(unsubscribed);
 }

@@ -171,7 +171,9 @@ SessionManager::SessionManager(QObject* parent)
         // ponytail: `series` reads numbers, so a string series reports no change and GridRunner refuses a window that
         // reads one. Upgrade: walk its rows here (their stamps, the first retained row, the limit).
         if (!values) {
-          changes.string_series = true;
+          changes.unreadable = reader.columnType(series->first, series->second) == PrimitiveType::kString
+                                   ? GridRunner::ScalarChanges::Unreadable::kString
+                                   : GridRunner::ScalarChanges::Unreadable::kNotASeries;
           return changes;
         }
         if (const auto first = values->sampleAtOrAfterTime(std::numeric_limits<Timestamp>::min())) {

@@ -88,8 +88,13 @@ class GridRunner {
     std::vector<Timestamp> instants;  ///< its sample times inside the window, ascending
     std::optional<Timestamp> first;   ///< its oldest retained sample: a later one makes a leading gap
     bool over_limit = false;          ///< more than the limit: `instants` stays empty
-    /// A string series, whose changes the lookup does not read: `submit` refuses a window that reads it.
-    bool string_series = false;
+    /// Why the lookup did not read the series' changes; `submit` refuses a window that reads such a series.
+    enum class Unreadable : uint8_t {
+      kNone,
+      kString,      ///< a string series, whose changes the lookup does not read
+      kNotASeries,  ///< neither a numeric nor a string column, or a column that does not exist
+    };
+    Unreadable unreadable = Unreadable::kNone;
   };
   /// The samples of the scalar series `name` (bare) of `dataset` inside the inclusive [start, end]; past `limit` of
   /// them it sets `over_limit` without collecting any. GUI thread.

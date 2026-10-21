@@ -353,6 +353,42 @@ TEST(OnDemandEvaluationTest, AWindowReadingAStringInputIsRefused) {
   fx.settle();
 }
 
+// A window reading a column that is neither a number nor a string (an untyped one, or a topic without columns) is
+// refused as unreadable, not as a string series: the refusal names what the column is not. An instant is evaluated.
+TEST(OnDemandEvaluationTest, AWindowReadingAnUnreadableColumnIsRefusedAccurately) {
+  CursorFixture fx;
+  DataWriter writer = fx.manager.dataEngine().createWriter();
+  const auto register_topic = [&](const std::string& name, std::shared_ptr<TypeTreeNode> tree) {
+    const auto schema = writer.registerSchema(name + "/schema", std::move(tree));
+    EXPECT_TRUE(schema.has_value()) << schema.error();
+    TopicDescriptor descriptor;
+    descriptor.name = name;
+    descriptor.schema_id = schema ? *schema : SchemaId{};
+    EXPECT_TRUE(writer.registerTopic(fx.ds, descriptor).has_value());
+  };
+  register_topic("/robot/untyped", makeStruct("untyped", {makePrimitive("untyped", PrimitiveType::kUnspecified)}));
+  register_topic("/robot/empty", makeStruct("empty", {}));
+  fx.session.catalogModel().rebuildFromDatastore();
+  GridRunner& runner = fx.manager.onDemandService().evaluations();
+
+  for (const std::string input : {"/robot/untyped", "/robot/empty"}) {
+    fx.install(test::onDemandRecipe("read", {input}, {cloudSpec()}));
+    const auto submit = [&](Timestamp start, Timestamp end) {
+      return runner.submit(*fx.manager.onDemandService().graph().find("owner/read"), true, start, end, {}, [](auto) {});
+    };
+    const auto window = submit(10 * kSec, 30 * kSec);
+    ASSERT_FALSE(window.has_value()) << input;
+    EXPECT_EQ(
+        window.error(), "on-demand: input '" + input +
+                            "' is neither a numeric nor a string series, so a window evaluation cannot "
+                            "read its changes")
+        << input;
+    const auto instant = submit(15 * kSec, 15 * kSec);
+    ASSERT_TRUE(instant.has_value()) << input << ": " << instant.error();
+    fx.settle();
+  }
+}
+
 // A merge re-binds a consumed dataset's recipe on the anchor once the catalog lists the merged series there: a
 // scalar input resolves through the catalog, which AppSession rebuilds after the store's merge.
 TEST(AppSessionTest, MergeReBindsAScalarInputOnTheAnchor) {

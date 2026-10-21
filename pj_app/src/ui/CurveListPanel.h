@@ -194,7 +194,8 @@ class CurveListPanel : public QWidget {
   void onActiveTopicsChanged(DatasetId dataset_id, const std::vector<QString>& active_topics);
   // Recomputes every catalog item's unsubscribed state from scratch and pushes
   // it to tree_view_ — the live-update path for onActiveTopicsChanged (no
-  // rebuild). No-op without both a catalog and a tracker.
+  // rebuild). Walks the catalog in place, and not at all while no dataset can
+  // pause topics. No-op without a catalog; without a tracker it clears every flag.
   void refreshUnsubscribedFlags();
   // Pushes the tracker's forced-topic sets (every dataset) to the tree as
   // accent-painted topic marks. Runs on forcedTopicsChanged and after any

@@ -7,6 +7,7 @@
 #include <QStringList>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -236,6 +237,9 @@ class CatalogModel : public QObject {
   CatalogModel& operator=(const CatalogModel&) = delete;
 
   std::vector<CatalogItem> items() const;
+  /// Calls `visit` on every item in no particular order, without the copy and sort of `items()`. `visit` must not
+  /// change the catalog.
+  void forEachItem(const std::function<void(const CatalogItem&)>& visit) const;
   /// The object-topic items named `topic_name`, in `items()` order: one per dataset that
   /// has it. A non-empty `dataset_source` keeps only the dataset with that source NAME.
   /// Walks the catalog in place, without the copy and sort of `items()`.

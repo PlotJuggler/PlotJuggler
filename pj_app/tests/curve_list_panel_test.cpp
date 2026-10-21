@@ -16,11 +16,18 @@
 #include <QString>
 #include <QToolTip>
 #include <QTreeWidgetItem>
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <string>
+#include <vector>
 
 #include "dataset_test_helpers.h"
+#include "pj_base/sdk/platform.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/TopicDemandTracker.h"
 #include "pj_widgets/CurveTreeView.h"
 #include "support/gui_test_env.h"
 #include "ui/CurveListPanel.h"
@@ -176,6 +183,107 @@ TEST(CurveListPanelTest, UndisplayableObjectTopicRowIsDragInertWithTooltip) {
   emit tree->dragPayloadKeysSkipped({calib_key});
   ASSERT_EQ(toasts.size(), 3);
   EXPECT_TRUE(toasts.back().contains(u"/camera/camera_info"_s)) << toasts.back().toStdString();
+}
+
+// A topic of a per-topic-pause-capable dataset that nothing references is dimmed; displaying it undims it; a dataset
+// that cannot pause topics never dims; a panel without a tracker dims nothing.
+TEST(CurveListPanelTest, UnsubscribedRowsFollowTheDemandTracker) {
+  AppSession app_session;
+  const DatasetId stream = pj_test::createDataset(app_session, "stream");
+  const DatasetId file = pj_test::createDataset(app_session, "file.mcap");
+  ASSERT_NE(stream, 0U);
+  ASSERT_NE(file, 0U);
+  for (const auto& [dataset, topic] : {std::pair{stream, "/a"}, {stream, "/b"}, {file, "/c"}}) {
+    ASSERT_TRUE(app_session.sessionManager()
+                    .objectStore()
+                    .registerTopic(
+                        ObjectTopicDescriptor{
+                            .dataset_id = dataset,
+                            .topic_name = topic,
+                            .metadata_json = R"({"builtin_object_type":"kPointCloud"})"})
+                    .has_value());
+  }
+  CatalogModel& catalog = app_session.catalogModel();
+  catalog.setPerTopicPauseCapable(stream, true);
+  catalog.rebuildFromDatastore();
+
+  CurveListPanel panel;
+  panel.setCatalog(&catalog);
+  auto* tree = panel.findChild<CurveTreeView*>(u"treeView"_s);
+  ASSERT_NE(tree, nullptr);
+  const QString key_a = keyOfTopic(catalog, u"/a"_s);
+  const QString key_b = keyOfTopic(catalog, u"/b"_s);
+  const QString key_c = keyOfTopic(catalog, u"/c"_s);
+  ASSERT_FALSE(key_a.isEmpty());
+  ASSERT_FALSE(key_b.isEmpty());
+  ASSERT_FALSE(key_c.isEmpty());
+
+  EXPECT_FALSE(tree->isKeyUnsubscribed(key_a)) << "no tracker: nothing is dimmed";
+  panel.setTopicDemandTracker(&app_session.topicDemandTracker());
+  EXPECT_TRUE(tree->isKeyUnsubscribed(key_a));
+  EXPECT_TRUE(tree->isKeyUnsubscribed(key_b));
+  EXPECT_FALSE(tree->isKeyUnsubscribed(key_c)) << "a dataset that cannot pause topics never dims";
+
+  app_session.topicDemandTracker().addReference(stream, u"/a"_s);
+  EXPECT_FALSE(tree->isKeyUnsubscribed(key_a));
+  EXPECT_TRUE(tree->isKeyUnsubscribed(key_b));
+  app_session.topicDemandTracker().removeReference(stream, u"/a"_s);
+  EXPECT_TRUE(tree->isKeyUnsubscribed(key_a));
+
+  panel.setTopicDemandTracker(nullptr);
+  EXPECT_FALSE(tree->isKeyUnsubscribed(key_a)) << "a detached tracker clears every flag";
+  EXPECT_FALSE(tree->isKeyUnsubscribed(key_b));
+}
+
+// PJ_BENCH=1: one demand change in a catalog of 10k object topics, a dataset that cannot pause topics (nothing to
+// dim) apart from one that can (the flags are recomputed). The fakes are production's: the real panel, catalog
+// and tracker.
+TEST(CurveListPanelTest, BenchDemandChangeAmongTenThousandTopics) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  AppSession app_session;
+  const DatasetId fixed = pj_test::createDataset(app_session, "file.mcap");
+  const DatasetId stream = pj_test::createDataset(app_session, "stream");
+  constexpr int kTopics = 10'000;
+  for (const DatasetId dataset : {fixed, stream}) {
+    for (int index = 0; index < kTopics / 2; ++index) {
+      ASSERT_TRUE(app_session.sessionManager()
+                      .objectStore()
+                      .registerTopic(
+                          ObjectTopicDescriptor{
+                              .dataset_id = dataset,
+                              .topic_name = "/bench/cloud_" + std::to_string(index),
+                              .metadata_json = R"({"builtin_object_type":"kPointCloud"})"})
+                      .has_value());
+    }
+  }
+  CatalogModel& catalog = app_session.catalogModel();
+  catalog.rebuildFromDatastore();
+  CurveListPanel panel;
+  panel.setCatalog(&catalog);
+  TopicDemandTracker& tracker = app_session.topicDemandTracker();
+  panel.setTopicDemandTracker(&tracker);
+
+  const auto median_micros = [&](DatasetId dataset) {
+    std::vector<double> micros;
+    for (int call = 0; call < 51; ++call) {
+      const QString topic = u"/bench/cloud_"_s + QString::number(call);
+      const auto begin = std::chrono::steady_clock::now();
+      tracker.addReference(dataset, topic);
+      micros.push_back(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - begin).count());
+      tracker.removeReference(dataset, topic);
+    }
+    std::nth_element(micros.begin(), micros.begin() + micros.size() / 2, micros.end());
+    return micros[micros.size() / 2];
+  };
+  const double without_pause = median_micros(fixed);
+  catalog.setPerTopicPauseCapable(stream, true);
+  const double with_pause = median_micros(stream);
+  std::printf(
+      "CurveListPanel demand change among %d topics: dataset that cannot pause topics median %.1f us, one that can "
+      "%.1f us\n",
+      kTopics, without_pause, with_pause);
 }
 
 }  // namespace

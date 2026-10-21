@@ -249,6 +249,19 @@ PJ::Expected<std::optional<StringSample>> DataReader::latestStringAt(
   return std::optional<StringSample>{std::move(sample)};
 }
 
+std::optional<PrimitiveType> DataReader::columnType(TopicId topic_id, std::size_t column_index) const {
+  const auto lock = engine_.lockEngine();
+  const TopicStorage* storage = engine_.getTopicStorage(topic_id);
+  if (storage == nullptr) {
+    return std::nullopt;
+  }
+  const std::vector<ColumnDescriptor> columns = columnsForTopic(engine_, *storage);
+  if (column_index >= columns.size()) {
+    return std::nullopt;
+  }
+  return columns[column_index].logical_type;
+}
+
 Expected<SeriesReader> DataReader::series(TopicId topic_id, std::size_t column_index) const {
   auto lock = engine_.lockEngine();
   const TopicStorage* storage = engine_.getTopicStorage(topic_id);

@@ -68,6 +68,10 @@ class DataReader {
   [[nodiscard]] PJ::Expected<std::optional<StringSample>> latestStringAt(
       const QueryPoint& point, std::size_t column_index) const;
 
+  /// Logical type of column `column_index` of `topic_id`, from the schema while no row is stored yet. nullopt when
+  /// the topic or the column does not exist.
+  [[nodiscard]] std::optional<PJ::PrimitiveType> columnType(PJ::TopicId topic_id, std::size_t column_index) const;
+
   /// Create a series view over one numeric/bool topic column. The returned
   /// reader exposes only value-bearing samples; null rows are skipped.
   [[nodiscard]] PJ::Expected<SeriesReader> series(PJ::TopicId topic_id, std::size_t column_index) const;

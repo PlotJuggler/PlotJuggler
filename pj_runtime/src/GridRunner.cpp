@@ -439,10 +439,12 @@ Expected<std::shared_ptr<GridRunner::Job>> GridRunner::submit(
     if (changes.over_limit) {
       return refuse();
     }
-    if (changes.string_series && end > start) {
+    if (changes.unreadable != ScalarChanges::Unreadable::kNone && end > start) {
       return unexpected(
           "on-demand: input '" + alias +
-          "' is a string series, whose changes a window evaluation cannot read yet; evaluate an instant");
+          (changes.unreadable == ScalarChanges::Unreadable::kString
+               ? "' is a string series, whose changes a window evaluation cannot read yet; evaluate an instant"
+               : "' is neither a numeric nor a string series, so a window evaluation cannot read its changes"));
     }
     from = std::max(from, changes.first.value_or(start));
     scalar_instants.push_back(std::move(changes.instants));

@@ -2138,6 +2138,53 @@ TEST(BatchEngineTest, MarkersKeepUpdatingWhileInputsKeepChanging) {
   EXPECT_EQ(readPublished(store, kDataset, "in").markers.front().t_start, 60) << "converged to the newest inputs";
 }
 
+// D30 (GAP-08): the stream never lets a run finish on the newest inputs, yet every valid run publishes, in order, so
+// the markers never freeze; the stale flag stays up until a run covers the newest input. Each run is held mid-compute
+// until the next change has arrived, so the order is the test's, not the clock's.
+TEST(BatchEngineTest, StreamingMarkersKeepPublishingUnderConstantChange) {
+  constexpr int kRuns = 4;
+  std::atomic<int> entered{0};
+  std::atomic<int> released{1};  // the upsert's inline run passes
+  const ScopedComputeProbe probe([&](QThread*) {
+    const int run = ++entered;
+    for (int waited_ms = 0; released.load() < run && waited_ms < 5000; ++waited_ms) {
+      QThread::msleep(1);
+    }
+  });
+  PJ::ObjectStore store;
+  std::atomic<int> value{0};
+  BatchEngine service(store, mutableValueResolver(value));
+  PJ::EnginePool pool;
+  service.setPool(&pool);
+  service.setReloadHz(20.0);
+
+  ASSERT_TRUE(service.upsertGenerator(markerRecipe("plug/gen", "in", kMutableValueScript)).has_value());
+  ASSERT_EQ(entered.exchange(0), 1) << "the upsert ran inline, through the probe";
+  released = 0;
+  std::vector<PJ::Timestamp> published;
+  QObject::connect(&service, &BatchEngine::markersPublished, [&] {
+    published.push_back(readPublished(store, kDataset, "in").markers.front().t_start);
+  });
+
+  value.store(1);
+  (void)service.recomputeForChangedInputs({"in"}, kDataset);
+  for (int run = 1; run <= kRuns; ++run) {
+    pumpUntil([&] { return entered.load() == run; }, 5000);
+    ASSERT_EQ(entered.load(), run) << "run " << run << " is blocked mid-compute";
+    if (run < kRuns) {
+      value.store(run + 1);  // the stream moves on while the run computes
+      (void)service.recomputeForChangedInputs({"in"}, kDataset);
+    }
+    released = run;
+    pumpUntil([&] { return static_cast<int>(published.size()) == run; }, 5000);
+    ASSERT_EQ(static_cast<int>(published.size()), run) << "run " << run << " is published";
+    EXPECT_EQ(published.back(), run) << "the run published the inputs it saw, although newer ones had arrived";
+    EXPECT_EQ(service.isStale("plug/gen"), run < kRuns)
+        << "stale until the newest input is covered (run " << run << ")";
+  }
+  EXPECT_EQ(published, (std::vector<PJ::Timestamp>{1, 2, 3, 4}));
+}
+
 // A session runs its scheduled rules on its own pool, off the GUI thread, and a run
 // that lands later repaints the overlays (markersChanged), which nothing else would.
 TEST(BatchEngineTest, ASessionRunsScheduledRulesOnItsPoolAndRepaints) {

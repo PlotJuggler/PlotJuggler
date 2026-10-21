@@ -80,7 +80,7 @@ Tracks per-column `ColumnStats` incrementally (min, max, null_count, is_constant
 
 ### Reader Layer
 
-**`DataReader`** — Read-only facade over committed `DataEngine` storage. Provides `listDatasets()`, `listTopics()`, `getTypeTree()`, `getMetadata()`, `rangeQuery()`, `latestAt()`, and `series(topic_id, column_index)`.
+**`DataReader`** — Read-only facade over committed `DataEngine` storage. Provides `listDatasets()`, `listTopics()`, `getTypeTree()`, `getMetadata()`, `rangeQuery()`, `latestAt()`, `columnType(topic_id, column_index)` (the schema's logical type, before any row is stored), and `series(topic_id, column_index)`.
 
 ### Query Layer
 
