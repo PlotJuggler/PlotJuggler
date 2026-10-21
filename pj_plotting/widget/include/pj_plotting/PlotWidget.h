@@ -47,6 +47,15 @@ struct MarkerRuleStatus {
   bool operator==(const MarkerRuleStatus&) const = default;
 };
 
+/// An on-demand series that is not computed (yet), as the plot's host reports it.
+struct SeriesCurveStatus {
+  DatasetId dataset_id = 0;
+  QString topic_name;
+  std::optional<int> computing_percent;  ///< its replay's progress; nullopt: it does not compute
+
+  bool operator==(const SeriesCurveStatus&) const = default;
+};
+
 class PlotWidget : public PlotWidgetBase {
   Q_OBJECT
  public:
@@ -209,6 +218,10 @@ class PlotWidget : public PlotWidgetBase {
   /// that neither computes nor failed is ignored. Repaints only when the note's text
   /// changes, so a host may call it on every engine event.
   void setMarkerStatus(std::vector<MarkerRuleStatus> statuses);
+  /// Replaces the status of the series this plot may show (the host's, as for setMarkerStatus): a curve on one of
+  /// these topics reads "(not computed)" or "(computing N%)" after its legend title, which stays its identity. Replots
+  /// only when a legend changes, so a host may call it on every progress event.
+  void setSeriesStatus(std::vector<SeriesCurveStatus> statuses);
   /// The text of the note `setMarkerStatus` put up; empty when none.
   [[nodiscard]] QString markerStatusNote() const;
   /// Where the note sits, in canvas coordinates; empty when there is none. A hover on
@@ -227,6 +240,9 @@ class PlotWidget : public PlotWidgetBase {
 
  signals:
   void rectChanged(PlotWidget* modified, QRectF rect);
+  /// The time (x) axis' range changed, whatever moved it: a gesture, a linked or programmatic zoom, an autoscale.
+  /// Unlike rectChanged, it does not drive the zoom link.
+  void visibleXRangeChanged();
   void undoableChange();
   void trackerMoved(QPointF point);
   void curvesDropped();
@@ -431,6 +447,9 @@ class PlotWidget : public PlotWidgetBase {
   std::set<MarkerScopeKey> hidden_marker_scopes_;
   // Sorted by rule id; see setMarkerStatus.
   std::vector<MarkerRuleStatus> marker_status_;
+  // See setSeriesStatus; applied again to the curves whenever they change.
+  std::vector<SeriesCurveStatus> series_status_;
+  void applySeriesStatus();
   // A hidden <marker_scope> whose dataset was not loaded when the layout was
   // read: the saved identity, re-resolved by resolvePendingMarkerScopes() once
   // the dataset (possibly reminted) exists. Pending means visible.

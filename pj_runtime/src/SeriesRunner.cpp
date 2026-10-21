@@ -4,6 +4,7 @@
 
 #include <QMetaObject>
 #include <algorithm>
+#include <limits>
 #include <utility>
 
 #include "pj_datastore/writer.hpp"
@@ -251,6 +252,18 @@ void SeriesRunner::appendLive(DatasetId dataset) {
   }
 }
 
+void SeriesRunner::setVisibleStart(DatasetId dataset, Timestamp start) {
+  visible_start_.insert_or_assign(dataset, start);
+}
+
+void SeriesRunner::requestTopic(TopicId topic) {
+  const auto found =
+      std::ranges::find_if(series_, [topic](const auto& entry) { return entry.second.state.topic == topic; });
+  if (found != series_.end()) {
+    request(found->first);
+  }
+}
+
 std::optional<SeriesRunner::State> SeriesRunner::state(std::string_view key) const {
   const auto found = series_.find(key);
   if (found == series_.end()) {
@@ -321,25 +334,61 @@ void SeriesRunner::submit(const std::string& key) {
   // Live, the clock ends where every input has arrived: an input lagging the others then lands after the watermark.
   const bool live = live_.contains(series.dataset) && hooks_.live_edge;
   const std::optional<Timestamp> until = live ? hooks_.live_edge(*node) : std::nullopt;
-  Expected<std::shared_ptr<GridRunner::Job>> chunk =
-      live && !until ? std::shared_ptr<GridRunner::Job>{}  // an input has no sample yet
-                     : runner_.submitRows(
-                           *node, series.watermark, until, series.seen, kInstantsPerChunk,
-                           [this, key](GridRunner::Rows rows) { collect(key, std::move(rows)); });
-  if (!chunk) {
-    series.state.first_error = std::move(chunk.error());  // an upstream removed: its reinstall invalidates this one
-    series.requested = false;
-    return;
+  if (!live || until) {  // else an input has no sample yet
+    split(series, until);
+    const auto start = visible_start_.find(series.dataset);
+    const bool backfill_first =
+        series.backfill && start != visible_start_.end() && start->second <= series.backfill->end;
+    for (const bool backfill : {backfill_first, !backfill_first}) {
+      if (backfill && !series.backfill) {
+        continue;
+      }
+      Expected<std::shared_ptr<GridRunner::Job>> chunk = runner_.submitRows(
+          *node, backfill ? series.backfill->watermark : series.watermark,
+          backfill ? std::optional(series.backfill->end) : until, backfill ? series.backfill->seen : series.seen,
+          kInstantsPerChunk, [this, key, backfill](GridRunner::Rows rows) { collect(key, backfill, std::move(rows)); });
+      if (!chunk) {
+        series.state.first_error = std::move(chunk.error());  // an upstream removed: its reinstall invalidates this one
+        series.requested = false;
+        return;
+      }
+      series.chunk = std::move(*chunk);
+      if (series.chunk != nullptr) {
+        // A complete series stays so through a live append, not through a restart from the first instant.
+        series.state.complete = series.state.complete && !GridRunner::restarts(*series.chunk);
+        return;
+      }
+      if (backfill) {
+        if (series.watermark == series.backfill->end) {
+          // The forward range evaluated nothing (the view starts past the last instant): it resumes from the backfill.
+          series.watermark = series.backfill->watermark;
+          series.seen = series.backfill->seen;
+        }
+        series.backfill.reset();  // backfilled: one computed range again
+      }
+    }
   }
-  series.chunk = std::move(*chunk);
-  series.state.complete = series.chunk == nullptr;
-  if (series.state.complete) {
-    series.requested = false;  // the request is served: everything up to the end of the clock is computed
-    series.state.total = series.state.done;
-  }
+  series.state.complete = true;
+  series.requested = false;  // the request is served: everything up to the end of the clock is computed
+  series.state.total = series.state.done;
 }
 
-void SeriesRunner::collect(const std::string& key, GridRunner::Rows rows) {
+void SeriesRunner::split(Series& series, std::optional<Timestamp> live_edge) const {
+  const auto start = visible_start_.find(series.dataset);
+  if (series.was_split || start == visible_start_.end() || start->second == std::numeric_limits<Timestamp>::min()) {
+    return;
+  }
+  const Timestamp end = start->second - 1;
+  if ((series.watermark && end <= *series.watermark) || (live_edge && start->second > *live_edge)) {
+    return;  // the view starts inside the computed rows, or past what arrived
+  }
+  series.backfill = Backfill{.watermark = series.watermark, .seen = series.seen, .end = end};
+  series.was_split = true;
+  series.watermark = end;
+  series.seen = {};  // what arrived before the visible start is the backfill's to find
+}
+
+void SeriesRunner::collect(const std::string& key, bool backfill, GridRunner::Rows rows) {
   // A chunk whose every instant is a gap ends inside the budget's drain, which would grant the next chunk at once.
   QMetaObject::invokeMethod(&context_, [this] { schedule(); }, Qt::QueuedConnection);
   const auto found = series_.find(key);
@@ -354,7 +403,7 @@ void SeriesRunner::collect(const std::string& key, GridRunner::Rows rows) {
     return;
   }
   if (rows.restarted) {
-    reset(series);  // an entry arrived before the watermark: these rows replace the topic's
+    reset(series);  // an entry arrived before the watermark: these rows replace the topic's, from one range
   }
   const TopicId topic = series.state.topic;
   if (!rows.times.empty()) {
@@ -377,11 +426,20 @@ void SeriesRunner::collect(const std::string& key, GridRunner::Rows rows) {
   const uint64_t evaluated = rows.times.size() + rows.gaps;
   series.state.done += evaluated;
   series.state.failed += rows.gaps;
-  series.state.total = series.state.done + rows.left;
+  if (!series.backfill) {
+    series.state.total = series.state.done + rows.left;
+  } else if (!backfill) {
+    series.state.total = rows.before + evaluated + rows.left;  // the forward range's clock is the whole one
+  } else {
+    series.state.total = std::max(series.state.total, series.state.done + rows.left);
+  }
   if (series.state.first_error.empty()) {
     series.state.first_error = std::move(rows.first_gap);
   }
-  if (rows.through) {
+  if (rows.through && backfill && series.backfill) {
+    series.backfill->watermark = rows.through;
+    series.backfill->seen = rows.seen;
+  } else if (rows.through) {
     series.watermark = rows.through;
     series.seen = rows.seen;
   }
@@ -401,6 +459,8 @@ void SeriesRunner::reset(Series& series) {
   cancel(series);
   series.watermark.reset();
   series.seen = {};
+  series.backfill.reset();
+  series.was_split = false;
   State emptied;
   emptied.topic = series.state.topic;
   if (emptied.topic == 0) {

@@ -526,10 +526,12 @@ Expected<std::shared_ptr<GridRunner::Job>> GridRunner::submitRows(
     job->rows->seen = SequentialUID::getNext();
     std::vector<std::pair<const Timestamp*, const Timestamp*>> ranges;
     uint64_t left = 0;
-    const auto add = [&](const Timestamp* first, const Timestamp* last) {
-      first = from ? std::upper_bound(first, last, *from) : first;
+    uint64_t before = 0;
+    const auto add = [&](const Timestamp* begin, const Timestamp* last) {
+      const Timestamp* first = from ? std::upper_bound(begin, last, *from) : begin;
       last = until ? std::upper_bound(first, last, *until) : last;
       left += static_cast<uint64_t>(last - first);
+      before += static_cast<uint64_t>(first - begin);
       ranges.emplace_back(first, last);
     };
     for (const EntryTimestampsView& times : views) {
@@ -542,6 +544,7 @@ Expected<std::shared_ptr<GridRunner::Job>> GridRunner::submitRows(
       return job->grid.size() < limit;
     });
     job->rows->left = left;
+    job->rows->before = before;
   };
   cut(after);
   // Checked after the cut: an entry that missed the previous clock either shows here or has a uid past the new `seen`.
@@ -592,6 +595,10 @@ void GridRunner::waitForRoom(const std::shared_ptr<Job>& job) {
         granted->tf_revision = granted->options.tf != nullptr ? granted->options.tf->revision() : 0;
         advance(granted);
       });
+}
+
+bool GridRunner::restarts(const Job& job) {
+  return job.rows && job.rows->restarted;
 }
 
 bool GridRunner::cancel(const std::shared_ptr<Job>& job, std::function<void()> released) {

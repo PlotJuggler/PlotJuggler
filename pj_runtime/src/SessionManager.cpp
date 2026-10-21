@@ -212,8 +212,26 @@ SessionManager::SessionManager(QObject* parent)
   on_demand.series_changed = [this](std::vector<TopicId> topics) {
     notifyIngest(QVector<TopicId>(topics.begin(), topics.end()), /*live=*/false);
   };
+  on_demand.series_state_changed = [this](const std::string& key) {
+    emit seriesStateChanged(QString::fromStdString(key));
+  };
   on_demand_ = std::make_unique<OnDemandService>(
       object_store_, data_engine_, *engine_pool_, *in_flight_budget_, std::move(on_demand));
+  // A whole-series read (a plugin's `read_series_arrow`, a marker rule's input) finishes a transform's replay first,
+  // and asks for an on-demand series' (decision 2: the reader gets the rows so far). Another thread's read gets the
+  // transform's current rows (no blocking hop: see DataProcessorService) and posts its series request.
+  data_engine_.setCompleteReadBarrier([this, owner = QThread::currentThread()](TopicId topic) {
+    if (QThread::currentThread() != owner) {
+      QMetaObject::invokeMethod(
+          this, [this, topic] { on_demand_->series().requestTopic(topic); }, Qt::QueuedConnection);
+      return;
+    }
+    processor_service_->finishPendingMaterialization(topic);
+    on_demand_->series().requestTopic(topic);
+  });
+  connect(this, qOverload<>(&SessionManager::displayOffsetChanged), this, &SessionManager::pushSeriesVisibleStarts);
+  connect(
+      this, qOverload<DatasetId>(&SessionManager::displayOffsetChanged), this, [this] { pushSeriesVisibleStarts(); });
   // A scheduled run lands after the change that asked for it was announced.
   connect(batch_engine_.get(), &BatchEngine::markersPublished, this, &SessionManager::notifyMarkersChanged);
   // A transform's output changed (an edit, a finished replay, a removal): the marker
@@ -846,6 +864,17 @@ std::optional<DisplayRange> SessionManager::datasetDisplayRange(DatasetId datase
   const DisplayOffset offset = displayOffset(dataset_id);
   return DisplayRange{
       .min = rawToDisplaySeconds(bounds->first, offset), .max = rawToDisplaySeconds(bounds->second, offset)};
+}
+
+void SessionManager::setSeriesVisibleStart(DatasetId dataset_id, DisplaySeconds start) {
+  series_visible_start_.insert_or_assign(dataset_id, start);
+  on_demand_->series().setVisibleStart(dataset_id, displaySecondsToRaw(start, displayOffset(dataset_id)));
+}
+
+void SessionManager::pushSeriesVisibleStarts() {
+  for (const auto& [dataset_id, start] : series_visible_start_) {
+    on_demand_->series().setVisibleStart(dataset_id, displaySecondsToRaw(start, displayOffset(dataset_id)));
+  }
 }
 
 void SessionManager::setDisplayOffset(DatasetId dataset_id, DisplayOffset offset) {

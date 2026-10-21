@@ -119,6 +119,8 @@ class GridRunner {
     /// Clock instants after `through` up to `until`, counted at the submission: exact for one object input, an upper
     /// bound when several share stamps.
     uint64_t left = 0;
+    /// Clock instants at or before `after`, counted like `left`: with it and the chunk's own, the whole clock's.
+    uint64_t before = 0;
     std::string error;  ///< why the chunk ended early: an input was replaced (a revision, a removal, an epoch)
     /// The arrivals this chunk's clock was cut from: an object input entry with a greater uid was not in it. The next
     /// chunk's `seen`.
@@ -168,6 +170,9 @@ class GridRunner {
   /// thread and the job's room: `released` is then called, on the GUI thread, once the pool lets it go, unless the
   /// runner is gone or the pool discards the publication first.
   bool cancel(const std::shared_ptr<Job>& job, std::function<void()> released = {});
+  /// Whether the series chunk `job` (`submitRows`) starts its clock again from the first instant (`Rows::restarted`),
+  /// known at its submission.
+  [[nodiscard]] static bool restarts(const Job& job);
 
   /// The report as `poll_evaluation` returns it; every nanosecond count a JSON integer.
   [[nodiscard]] static std::string toJson(const Report& report);

@@ -364,7 +364,7 @@ ThreadSanitizer (`./build.sh --tsan`, and the Linux CI `tsan` job).
 | `data_processor_test` | `PJ::proc::DataProcessor` base |
 | `processor_siso_adapter_test` | `ProcessorSisoAdapter` (processor as IncrementalEngine node) |
 | `arrow_import_test` | Arrow IPC schema parsing and batch import |
-| `arrow_stream_round_trip_test` | v4 Arrow C Data Interface round-trip (Phase 1b) |
+| `arrow_stream_round_trip_test` | v4 Arrow C Data Interface round-trip (Phase 1b); `read_series_arrow` exports through the merged `RangeCursor`, in time order when chunks were committed out of order |
 
 Disabled pending the Phase 1b v4-ABI rewrite (commented out in `CMakeLists.txt`,
 `.cpp` files still on disk): `plugin_host_write_test` (v3 `appendArrowIpc`/`readSeries`

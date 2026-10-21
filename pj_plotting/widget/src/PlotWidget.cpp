@@ -8,6 +8,7 @@
 #include <qwt_plot_item.h>
 #include <qwt_plot_marker.h>
 #include <qwt_scale_map.h>
+#include <qwt_scale_widget.h>
 #include <qwt_symbol.h>
 #include <qwt_text.h>
 
@@ -44,6 +45,7 @@
 #include "WidgetClipboard.h"
 #include "pj_plotting/CurveTracker.h"
 #include "pj_plotting/DatastoreCurveAdapter.h"
+#include "pj_plotting/PlotCurve.h"
 #include "pj_plotting/PlotLegend.h"
 #include "pj_plotting/PlotMarkersItem.h"
 #include "pj_plotting/PlotXml.h"
@@ -211,6 +213,10 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
   show_point_text_->attach(qwtPlot());
 
   connect(this, &PlotWidgetBase::viewResized, this, &PlotWidget::onExternallyResized);
+  connect(this, &PlotWidgetBase::curveListChanged, this, &PlotWidget::applySeriesStatus);
+  connect(
+      qwtPlot()->axisWidget(QwtPlot::xBottom), &QwtScaleWidget::scaleDivChanged, this,
+      &PlotWidget::visibleXRangeChanged);
   gesture_undo_debounce_.setSingleShot(true);
   gesture_undo_debounce_.setInterval(kGestureUndoDebounceMs);
   connect(&gesture_undo_debounce_, &QTimer::timeout, this, [this]() {
@@ -499,6 +505,35 @@ void PlotWidget::setVisibleXRange(double x0, double x1) {
   rect.setRight(x1);
   setZoomRectangle(rect, false);
   replot();
+}
+
+void PlotWidget::setSeriesStatus(std::vector<SeriesCurveStatus> statuses) {
+  if (statuses != series_status_) {
+    series_status_ = std::move(statuses);
+    applySeriesStatus();
+  }
+}
+
+void PlotWidget::applySeriesStatus() {
+  bool changed = false;
+  for (const CurveInfo& info : curveList()) {
+    auto* curve = dynamic_cast<PlotCurve*>(info.curve);
+    if (curve == nullptr) {
+      continue;
+    }
+    QString suffix;
+    const std::optional<CatalogItem> item =
+        series_status_.empty() || catalog_ == nullptr ? std::nullopt : catalog_->itemDescriptor(info.source_name);
+    for (const SeriesCurveStatus& status : series_status_) {
+      if (item && status.dataset_id == item->dataset_id && status.topic_name == item->topic_name) {
+        suffix = status.computing_percent ? tr("computing %1%").arg(*status.computing_percent) : tr("not computed");
+      }
+    }
+    changed = curve->setLegendSuffix(suffix) || changed;
+  }
+  if (changed) {
+    replot();
+  }
 }
 
 void PlotWidget::setZoomRectangle(QRectF rect, bool emit_signal) {

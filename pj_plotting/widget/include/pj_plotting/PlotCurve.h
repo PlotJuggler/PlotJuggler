@@ -19,6 +19,11 @@ class PlotCurve : public QwtPlotCurve {
   void setDotWidth(double width);
   [[nodiscard]] double dotWidth() const;
 
+  /// Text shown in parentheses after the title in the legend only: the title stays the curve's identity. Empty: none.
+  /// Returns whether it changed.
+  bool setLegendSuffix(const QString& suffix);
+  [[nodiscard]] QList<QwtLegendData> legendData() const override;
+
  protected:
   void drawCurve(
       QPainter* painter, int style, const QwtScaleMap& x_map, const QwtScaleMap& y_map, const QRectF& canvas_rect,
@@ -26,6 +31,7 @@ class PlotCurve : public QwtPlotCurve {
 
  private:
   double dot_width_ = 0.0;
+  QString legend_suffix_;
 };
 
 }  // namespace PJ

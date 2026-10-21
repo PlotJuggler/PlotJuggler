@@ -406,6 +406,10 @@ class SessionManager : public QObject {
   /// it writes is the latent TimeDomain shift displayOffset() reads).
   void setDisplayOffset(DatasetId dataset_id, DisplayOffset offset);
 
+  /// Where the plots showing `dataset_id`'s on-demand series start their view, on the display axis: a series whose
+  /// rows stop before it computes from there to the end first, then backfills (`SeriesRunner::setVisibleStart`).
+  void setSeriesVisibleStart(DatasetId dataset_id, DisplaySeconds start);
+
   /// Time bounds of ONE dataset's data — scalar topics (DataEngine) and object
   /// topics (ObjectStore) unioned — in DISPLAY-relative seconds (display_time =
   /// raw_time - the dataset's display_offset). nullopt when the dataset holds no
@@ -767,6 +771,8 @@ class SessionManager : public QObject {
   void derivedStateChanged(QString key, std::vector<PJ::ObjectTopicId> topics);
   /// A new revision of the recipe was installed (a create, an edit, a merge re-binding it).
   void onDemandRecipeInstalled(QString key);
+  /// `key`'s series state (`SeriesRunner::state`) changed, or the series is gone.
+  void seriesStateChanged(QString key);
   /// Object topics were retired (an on-demand install or removal): the catalog re-lists them.
   void objectTopicsChanged();
 
@@ -942,6 +948,10 @@ class SessionManager : public QObject {
   std::unique_ptr<EnginePool> engine_pool_;
   // After the pool and the budget: destroyed first, its scheduler cancelling the runs the pool then joins.
   std::unique_ptr<OnDemandService> on_demand_;
+  /// `setSeriesVisibleStart`'s, on the display axis: an offset change moves the raw instant the series receive.
+  std::map<DatasetId, DisplaySeconds> series_visible_start_;
+  /// Gives the series of `series_visible_start_`'s datasets their raw visible start under the current offsets.
+  void pushSeriesVisibleStarts();
   // Each dataset's epoch, moved by suspendOnDemand; a result staged under another is never current.
   std::unordered_map<DatasetId, uint64_t> epochs_;
   ScalarSeriesLookup scalar_lookup_;

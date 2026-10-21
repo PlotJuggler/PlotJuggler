@@ -5,16 +5,20 @@
 
 #include <QApplication>
 #include <QEventLoop>
+#include <QRectF>
 #include <QTimer>
 #include <QtGlobal>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "PendingDisplayBinder.h"
 #include "TopicDemandController.h"
 #include "pj_base/type_tree.hpp"
 #include "pj_datastore/writer.hpp"
+#include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/StateTransitionsDockWidget.h"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
@@ -239,14 +243,88 @@ class TopicDemandControllerTest : public ::testing::Test {
         std::make_unique<PJ::PendingDisplayBinder>(app_session_->catalogModel(), &app_session_->topicDemandTracker());
     controller_ = std::make_unique<PJ::TopicDemandController>(
         app_session_->catalogModel(), app_session_->topicDemandTracker(),
-        app_session_->sessionManager().dataProcessorService(), *binder_, app_session_->sessionManager().dataEngine());
+        app_session_->sessionManager().dataProcessorService(), *binder_, app_session_->sessionManager().dataEngine(),
+        [this](PJ::DatasetId dataset_id, PJ::DisplaySeconds start) {
+          visible_starts_.emplace_back(dataset_id, start.value);
+        });
   }
 
   std::unique_ptr<PJ::AppSession> app_session_;
   DatasetId dataset_id_ = 0;
   std::unique_ptr<PJ::PendingDisplayBinder> binder_;
   std::unique_ptr<PJ::TopicDemandController> controller_;
+  /// What the controller reported as each plot's view start, in order.
+  std::vector<std::pair<PJ::DatasetId, double>> visible_starts_;
 };
+
+// GAP-40: a plot reports where its time view starts for each dataset it shows, on a curve change and on a range
+// change; a linked peer showing another dataset (a series) reports its new start when the plot it follows pans.
+TEST_F(TopicDemandControllerTest, PlotViewStartReachesTheSessionAlsoThroughALinkedPan) {
+  const DatasetId series_dataset = createDataset(*app_session_);
+  const QString key = addScalarTopic(*app_session_, dataset_id_, "/speed");
+  const QString series_key = addScalarTopic(*app_session_, series_dataset, "/series");
+  ASSERT_FALSE(key.isEmpty());
+  ASSERT_FALSE(series_key.isEmpty());
+  PJ::PlotWidget panned(&app_session_->sessionManager(), &app_session_->catalogModel());
+  PJ::PlotWidget peer(&app_session_->sessionManager(), &app_session_->catalogModel());
+  // MainWindow's linked zoom, connected before the controller registers the plot.
+  QObject::connect(&panned, &PJ::PlotWidget::rectChanged, &peer, [&peer](PJ::PlotWidget* /*modified*/, QRectF rect) {
+    peer.setVisibleXRange(rect.left(), rect.right());
+  });
+  controller_->registerPlot(&panned);
+  controller_->registerPlot(&peer);
+  ASSERT_NE(panned.addCurve(key), nullptr);
+  ASSERT_NE(peer.addCurve(series_key), nullptr);
+  ASSERT_FALSE(visible_starts_.empty());
+  EXPECT_EQ(visible_starts_.back().first, series_dataset) << "a curve change reports its plot's start";
+
+  visible_starts_.clear();
+  panned.setZoomRectangle(QRectF(10, -5, 10, 10), true);
+  const auto last_start = [&](DatasetId dataset) -> std::optional<double> {
+    std::optional<double> start;
+    for (const auto& [reported, seconds] : visible_starts_) {
+      start = reported == dataset ? std::optional(seconds) : start;
+    }
+    return start;
+  };
+  EXPECT_EQ(last_start(dataset_id_), 10.0);
+  EXPECT_EQ(last_start(series_dataset), 10.0) << "the linked peer's dataset";
+}
+
+// Codex 11b-1: every change of a plot's time view reports its start, a programmatic one (a plugin's zoom, a state
+// strip's linked pan) included, and only for the plot that moved: panning a plot of another dataset leaves the last
+// moved plot of this dataset the winner.
+TEST_F(TopicDemandControllerTest, EveryViewChangeReportsOnlyThePlotThatMoved) {
+  const DatasetId other = createDataset(*app_session_);
+  const QString a_key = addScalarTopic(*app_session_, dataset_id_, "/a");
+  const QString b_key = addScalarTopic(*app_session_, dataset_id_, "/b");
+  const QString c_key = addScalarTopic(*app_session_, other, "/c");
+  PJ::PlotWidget a(&app_session_->sessionManager(), &app_session_->catalogModel());
+  PJ::PlotWidget b(&app_session_->sessionManager(), &app_session_->catalogModel());
+  PJ::PlotWidget c(&app_session_->sessionManager(), &app_session_->catalogModel());
+  for (auto [plot, key] : {std::pair{&a, a_key}, std::pair{&b, b_key}, std::pair{&c, c_key}}) {
+    controller_->registerPlot(plot);
+    ASSERT_NE(plot->addCurve(key), nullptr);
+  }
+  const auto starts_of = [&](DatasetId dataset) {
+    std::vector<double> starts;
+    for (const auto& [reported, seconds] : visible_starts_) {
+      if (reported == dataset) {
+        starts.push_back(seconds);
+      }
+    }
+    return starts;
+  };
+
+  visible_starts_.clear();
+  a.setVisibleXRange(10, 20);
+  b.setVisibleXRange(30, 40);
+  EXPECT_EQ(starts_of(dataset_id_), (std::vector<double>{10.0, 30.0})) << "programmatic changes, the plot moved";
+  visible_starts_.clear();
+  c.setZoomRectangle(QRectF(50, -5, 10, 10), true);
+  EXPECT_TRUE(starts_of(dataset_id_).empty()) << "a plot of another dataset moved";
+  EXPECT_EQ(starts_of(other), (std::vector<double>{50.0}));
+}
 
 TEST_F(TopicDemandControllerTest, PlotCurveAddRemoveTracksDemand) {
   const QString key = addScalarTopic(*app_session_, dataset_id_, "/speed");

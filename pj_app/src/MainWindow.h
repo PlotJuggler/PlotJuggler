@@ -611,6 +611,9 @@ class MainWindow : public QMainWindow {
   void reportMarkerStatus(PlotWidget* plot);
   void onPlotMarkerTargetsChanged();
   std::function<void(PlotWidget*)> push_marker_status_;
+  // Tells `only`, or every plot when null, which on-demand series are not computed yet
+  // (PlotWidget::setSeriesStatus); on SessionManager::seriesStateChanged and for a new plot.
+  void pushSeriesStatus(PlotWidget* only);
 
   // Reloads a recorded source through its plugin + config (dialog skipped when
   // both are known). Shared by the global Reload button and the per-dataset

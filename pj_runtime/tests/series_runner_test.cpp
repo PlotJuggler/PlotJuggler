@@ -12,9 +12,11 @@
 #include <QElapsedTimer>
 #include <algorithm>
 #include <cstdio>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -24,11 +26,16 @@
 #include "pj_base/builtin/builtin_object_codec.hpp"
 #include "pj_base/builtin/image.hpp"
 #include "pj_base/sdk/platform.hpp"
+#include "pj_base/sdk/plugin_data_api.hpp"
+#include "pj_base/sdk/service_registry.hpp"
+#include "pj_base/sdk/settings_store_host.hpp"
 #include "pj_bench_stats.h"
 #include "pj_datastore/query.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_datastore/writer.hpp"
+#include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/SeriesRunner.h"
+#include "pj_runtime/ToolboxRuntimeHost.h"
 #include "pj_scripting/image_decoder.h"
 
 namespace PJ {
@@ -48,6 +55,52 @@ RecipeGraph::Recipe seriesRecipe(
     std::vector<scripting::OutputSpec> outputs = {numberSpec()}) {
   return test::onDemandRecipe(std::move(id), std::move(inputs), std::move(outputs));
 }
+
+/// The instants `first`..`last` seconds, one per second.
+std::vector<Timestamp> seconds(int first, int last) {
+  std::vector<Timestamp> times;
+  for (int second = first; second <= last; ++second) {
+    times.push_back(second * kSec);
+  }
+  return times;
+}
+
+/// `parts` joined in order.
+std::vector<Timestamp> concat(std::initializer_list<std::vector<Timestamp>> parts) {
+  std::vector<Timestamp> joined;
+  for (const std::vector<Timestamp>& part : parts) {
+    joined.insert(joined.end(), part.begin(), part.end());
+  }
+  return joined;
+}
+
+/// A toolbox plugin's view of the session's data: its whole-series reads go through `read_series_arrow`.
+struct PluginReader {
+  explicit PluginReader(SessionManager& manager)
+      : host(manager.dataEngine(), manager.objectStore(), settings, ToolboxRuntimeHost::Callbacks{}) {
+    EXPECT_TRUE(host.registerServices(builder).has_value());
+    registry.emplace(builder.view());
+  }
+  [[nodiscard]] sdk::ToolboxHostView toolbox() {
+    return sdk::ToolboxHostView(registry->require<sdk::ToolboxHostService>().value());
+  }
+  /// The first field of the topic named `name`.
+  [[nodiscard]] std::optional<sdk::FieldHandle> field(std::string_view name) {
+    auto snapshot = toolbox().catalogSnapshot();
+    EXPECT_TRUE(snapshot.has_value());
+    for (const auto& topic : snapshot->topics()) {
+      if (sdk::toStringView(topic.name) == name) {
+        return snapshot->fields()[topic.first_field].handle;
+      }
+    }
+    return std::nullopt;
+  }
+
+  sdk::InMemorySettingsBackend settings;
+  ToolboxRuntimeHost host;
+  ServiceRegistryBuilder builder;
+  std::optional<sdk::ServiceRegistry> registry;
+};
 
 struct SeriesFixture : test::OnDemandSessionFixture {
   ~SeriesFixture() {
@@ -120,6 +173,16 @@ struct SeriesFixture : test::OnDemandSessionFixture {
     session.catalogModel().rebuildFromDatastore();
   }
   std::optional<ScalarSeriesHandle> gain;
+  /// The plots of `ds` start their visible range at raw `t` (the session takes display seconds).
+  void showFrom(Timestamp t) {
+    manager.setSeriesVisibleStart(ds, rawToDisplaySeconds(t, manager.displayOffset(ds)));
+  }
+  /// A live tick of `ds`, announced as the poll announces it, without waiting for the pool (a gated run holds it).
+  void tickNoWait() {
+    const std::vector<TopicId> topics = manager.createReader().listTopics(ds);
+    manager.notifyIngest(QVector<TopicId>(topics.begin(), topics.end()), /*live=*/true, ds);
+    QCoreApplication::processEvents();
+  }
   /// `count` more clouds after the fixture's three, one per second from 21 s.
   void pushMany(int count) {
     for (int index = 0; index < count; ++index) {
@@ -672,6 +735,271 @@ TEST(SeriesRunnerTest, AChunkGetsTheSessionsImageDecoder) {
   }
 }
 
+// ---- Visible range first, plugin reads ------------------------------------------------------------------------------
+
+constexpr auto kChunk = static_cast<int>(SeriesRunner::kInstantsPerChunk);
+
+// GAP-40: a series whose plot starts its view after the watermark computes [visible start, end] first, then backfills
+// its clock up to the visible start; every instant runs once, and the progress counts the whole clock from the start.
+TEST(SeriesRunnerTest, PriorityRangeIsComputedFirst) {
+  SeriesFixture fx;
+  fx.pushMany(200);  // 5, 10, 20 s, then 21..220 s
+  fx.showFrom(100 * kSec);
+  fx.fake.gated = true;
+  fx.install(seriesRecipe("ser"));
+  fx.display("owner/ser");
+  fx.fake.allow(kChunk);
+  test::pumpUntil([&] { return fx.rows("owner/ser").size() == SeriesRunner::kInstantsPerChunk; }, 5000);
+  ASSERT_EQ(fx.rows("owner/ser").size(), SeriesRunner::kInstantsPerChunk);
+  EXPECT_EQ(fx.rows("owner/ser").front().first, 100 * kSec) << "the visible start first";
+  EXPECT_EQ(fx.seriesState("owner/ser")->total, 203u) << "the whole clock, the backfill included";
+  EXPECT_FALSE(fx.seriesState("owner/ser")->complete);
+
+  fx.fake.allow(1 << 20);
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+  EXPECT_EQ(fx.runs(), concat({seconds(100, 220), {5 * kSec, 10 * kSec, 20 * kSec}, seconds(21, 99)}));
+  EXPECT_EQ(fx.rows("owner/ser").size(), 203u);
+  EXPECT_EQ(fx.seriesState("owner/ser")->total, 203u);
+  EXPECT_EQ(fx.seriesState("owner/ser")->done, 203u);
+}
+
+// GAP-40: while a series has its two ranges, a pan into the backfill's part of the clock computes the backfill next; it
+// never starts a third range.
+TEST(SeriesRunnerTest, APanReordersWhatIsLeft) {
+  SeriesFixture fx;
+  fx.pushMany(200);
+  fx.showFrom(100 * kSec);
+  fx.fake.gated = true;
+  fx.install(seriesRecipe("ser"));
+  fx.display("owner/ser");
+  ASSERT_TRUE(fx.waitStarted(1)) << "the first chunk of [100 s, end]";
+  fx.showFrom(50 * kSec);
+  fx.fake.allow(2 * kChunk);
+  test::pumpUntil([&] { return fx.rows("owner/ser").size() == 2 * SeriesRunner::kInstantsPerChunk; }, 5000);
+  EXPECT_EQ(fx.seriesState("owner/ser")->total, 203u) << "a backfill chunk keeps the whole clock's count";
+  fx.fake.allow(1 << 20);
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+  EXPECT_EQ(
+      fx.runs(), concat({seconds(100, 163), {5 * kSec, 10 * kSec, 20 * kSec}, seconds(21, 99), seconds(164, 220)}));
+  EXPECT_EQ(fx.rows("owner/ser").size(), 203u);
+}
+
+// GAP-40: one split per replay: a pan past the forward range's watermark after the backfill finished starts no other
+// range, the forward range goes on in order.
+TEST(SeriesRunnerTest, APanAfterTheBackfillSplitsNoMore) {
+  SeriesFixture fx;
+  fx.pushMany(400);  // 5, 10, 20 s, then 21..420 s
+  fx.showFrom(100 * kSec);
+  fx.fake.gated = true;
+  fx.install(seriesRecipe("ser"));
+  fx.display("owner/ser");
+  ASSERT_TRUE(fx.waitStarted(1));
+  fx.showFrom(50 * kSec);      // the backfill next, then the forward range again
+  fx.fake.allow(kChunk + 82);  // [100 s, 163 s], then the backfill [5 s, 99 s]
+  ASSERT_TRUE(fx.waitStarted(kChunk + 82 + 1)) << "the forward range's second chunk";
+  fx.showFrom(300 * kSec);
+  fx.fake.allow(1 << 20);
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+  EXPECT_EQ(
+      fx.runs(), concat({seconds(100, 163), {5 * kSec, 10 * kSec, 20 * kSec}, seconds(21, 99), seconds(164, 420)}));
+}
+
+// GAP-40: a live tick while the backfill computes continues the forward range after its watermark, then the backfill
+// resumes from its own.
+TEST(SeriesRunnerTest, LiveAppendContinuesTheForwardRange) {
+  SeriesFixture fx;
+  fx.pushMany(200);
+  fx.showFrom(100 * kSec);
+  fx.fake.gated = true;
+  fx.install(seriesRecipe("ser"));
+  fx.display("owner/ser");
+  fx.fake.allow(121);  // [100 s, 220 s]
+  ASSERT_TRUE(fx.waitStarted(122)) << "the backfill's first run";
+  fx.push(fx.cloud, 230 * kSec);
+  fx.tickNoWait();
+  fx.fake.allow(1 << 20);
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+  EXPECT_EQ(
+      fx.runs(),
+      concat({seconds(100, 220), {5 * kSec, 10 * kSec, 20 * kSec}, seconds(21, 81), {230 * kSec}, seconds(82, 99)}));
+  EXPECT_EQ(fx.rows("owner/ser").size(), 204u);
+}
+
+// An entry that arrived, while the series stopped, inside what the backfill will compute is the backfill's: the split
+// replays nothing.
+TEST(SeriesRunnerTest, AnArrivalInTheBackfillRangeReplaysNothing) {
+  SeriesFixture fx;
+  fx.pushMany(200);
+  fx.fake.gated = true;
+  fx.install(seriesRecipe("ser"));
+  fx.display("owner/ser");
+  fx.fake.allow(kChunk);
+  test::pumpUntil([&] { return fx.rows("owner/ser").size() == SeriesRunner::kInstantsPerChunk; }, 5000);
+  ASSERT_TRUE(fx.waitStarted(kChunk + 1));
+  fx.hide("owner/ser");
+  fx.fake.allow(1);
+  fx.settle();
+  fx.fake.gated = false;
+
+  fx.push(fx.cloud, 90 * kSec + kSec / 2);  // after the watermark (81 s), before the visible start
+  fx.showFrom(100 * kSec);
+  fx.display("owner/ser");
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+  EXPECT_EQ(fx.rows("owner/ser").size(), 204u);
+  EXPECT_EQ(fx.runs().size(), 204u + 1) << "every instant once, and the one the stop cancelled again";
+}
+
+// A view that starts inside the computed rows splits nothing: a live tick appends after the watermark.
+TEST(SeriesRunnerTest, AViewInsideTheComputedRowsSplitsNothing) {
+  SeriesFixture fx;  // clouds at 5, 10, 20 s
+  fx.install(seriesRecipe("ser"));
+  fx.display("owner/ser");
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+  fx.showFrom(10 * kSec);
+  fx.push(fx.cloud, 30 * kSec);
+  fx.tick();
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+  EXPECT_EQ(fx.runs(), (std::vector<Timestamp>{5 * kSec, 10 * kSec, 20 * kSec, 30 * kSec}));
+}
+
+// While the dataset is live, a view past the live edge splits nothing: the instants that arrive before it are computed.
+TEST(SeriesRunnerTest, ALiveViewPastTheEdgeSplitsNothing) {
+  SeriesFixture fx;  // clouds at 5, 10, 20 s
+  fx.tick();
+  fx.showFrom(100 * kSec);
+  fx.install(seriesRecipe("ser"));
+  fx.display("owner/ser");
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+  fx.push(fx.cloud, 30 * kSec);
+  fx.tick();
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+  EXPECT_EQ(fx.runs(), (std::vector<Timestamp>{5 * kSec, 10 * kSec, 20 * kSec, 30 * kSec}));
+}
+
+// GAP-40: a replay, its last chunk included, is not complete while it computes (the legend says "computing N%"); a
+// live append to a complete series keeps it complete (the legend says nothing) while `replaying` reports the append.
+TEST(SeriesRunnerTest, ALiveAppendIsNotAReplay) {
+  SeriesFixture fx;  // clouds at 5, 10, 20 s: one chunk
+  fx.fake.gated = true;
+  fx.install(seriesRecipe("ser"));
+  fx.display("owner/ser");
+  fx.fake.allow(2);
+  ASSERT_TRUE(fx.waitStarted(3)) << "the last run of the replay's only chunk";
+  EXPECT_TRUE(fx.seriesState("owner/ser")->replaying);
+  EXPECT_FALSE(fx.seriesState("owner/ser")->complete);
+  fx.fake.allow(1);
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+
+  fx.push(fx.cloud, 30 * kSec);
+  fx.tickNoWait();
+  ASSERT_TRUE(fx.waitStarted(4)) << "the append";
+  EXPECT_TRUE(fx.seriesState("owner/ser")->replaying);
+  EXPECT_TRUE(fx.seriesState("owner/ser")->complete) << "an append keeps the series complete";
+  fx.fake.allow(1);
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+  EXPECT_EQ(fx.rows("owner/ser").size(), 4u);
+}
+
+// GAP-40 (decision 2): a plugin's whole-series read of a series that is not computed is an explicit request: the read
+// returns the rows so far and the series computes to the end, even undisplayed; a read from a plugin's worker thread
+// too.
+TEST(SeriesRunnerTest, APluginReadOfAnUncomputedSeriesStartsIt) {
+  SeriesFixture fx;
+  fx.install(seriesRecipe("ser"));
+  fx.install(seriesRecipe("other"));
+  fx.settle();
+  ASSERT_EQ(fx.fake.started(), 0);
+
+  PluginReader plugin(fx.manager);
+  sdk::ToolboxHostView toolbox = plugin.toolbox();
+  const std::optional<sdk::FieldHandle> ser = plugin.field("owner/ser");
+  const std::optional<sdk::FieldHandle> other = plugin.field("owner/other");
+  ASSERT_TRUE(ser.has_value());
+  ASSERT_TRUE(other.has_value());
+
+  auto partial = toolbox.readSeries(*ser);
+  ASSERT_TRUE(partial.has_value()) << partial.error();
+  EXPECT_EQ(partial->rowCount(), 0u) << "the rows so far";
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+  EXPECT_EQ(fx.rows("owner/ser").size(), 3u);
+  EXPECT_FALSE(fx.series().isDemanded("owner/ser"));
+
+  std::thread([&] { (void)toolbox.readSeries(*other); }).join();
+  ASSERT_TRUE(fx.waitComplete("owner/other"));
+  EXPECT_EQ(fx.rows("owner/other").size(), 3u);
+}
+
+// Codex 11b-1: a backfilled series' rows were committed after the forward range's, yet a plugin reads them in time
+// order (the Arrow export merges the topic's chunks), with each value at its own timestamp.
+TEST(SeriesRunnerTest, APluginReadOfABackfilledSeriesIsInTimeOrder) {
+  SeriesFixture fx;
+  fx.pushMany(200);
+  fx.showFrom(100 * kSec);
+  fx.install(seriesRecipe("ser"));
+  fx.display("owner/ser");
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+  PluginReader plugin(fx.manager);
+  const std::optional<sdk::FieldHandle> field = plugin.field("owner/ser");
+  ASSERT_TRUE(field.has_value());
+  auto read = plugin.toolbox().readSeries(*field);
+  ASSERT_TRUE(read.has_value()) << read.error();
+  ASSERT_EQ(read->rowCount(), 203u);
+  const auto times = read->timestamps();
+  const std::vector<Timestamp> exported(times.begin(), times.end());
+  EXPECT_EQ(exported, concat({{5 * kSec, 10 * kSec, 20 * kSec}, seconds(21, 220)}));
+  const double* values = read->valuesAsFloat64();
+  ASSERT_NE(values, nullptr);
+  for (std::size_t row = 0; row < exported.size(); ++row) {
+    ASSERT_EQ(values[row], static_cast<double>(exported[row])) << "row " << row;
+  }
+}
+
+// Codex 11b-1: a view past the last sample leaves the forward range empty; the backfill's end merges the two at the
+// backfill's own watermark, so a later live sample is computed.
+TEST(SeriesRunnerTest, AnEmptyForwardRangeMergesIntoTheBackfill) {
+  SeriesFixture fx;  // clouds at 5, 10, 20 s
+  fx.showFrom(100 * kSec);
+  fx.install(seriesRecipe("ser"));
+  fx.display("owner/ser");
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+  fx.push(fx.cloud, 30 * kSec);
+  fx.tick();
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+  EXPECT_EQ(fx.runs(), (std::vector<Timestamp>{5 * kSec, 10 * kSec, 20 * kSec, 30 * kSec}));
+}
+
+// Codex 11b-1: a late entry restarts a complete series' clock: it is no live append, so it is not complete from the
+// chunk's submission on.
+TEST(SeriesRunnerTest, ARestartIsNotComplete) {
+  SeriesFixture fx;  // clouds at 5, 10, 20 s
+  fx.install(seriesRecipe("ser"));
+  fx.display("owner/ser");
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+  fx.fake.gated = true;
+  fx.push(fx.cloud, 15 * kSec);  // before the watermark
+  fx.tickNoWait();
+  ASSERT_TRUE(fx.waitStarted(4)) << "the replay from the start";
+  EXPECT_TRUE(fx.seriesState("owner/ser")->replaying);
+  EXPECT_FALSE(fx.seriesState("owner/ser")->complete);
+  fx.fake.allow(1 << 20);
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+  EXPECT_EQ(fx.rows("owner/ser").size(), 4u);
+}
+
+// Codex 11b-1: the session keeps the plots' view start on the display axis, so a change of the dataset's display offset
+// moves the raw instant the series computes first.
+TEST(SeriesRunnerTest, ADisplayOffsetChangeMovesTheVisibleStart) {
+  SeriesFixture fx;
+  fx.pushMany(200);
+  fx.showFrom(100 * kSec);  // display 100 s while the offset is 0
+  fx.manager.setDisplayOffset(fx.ds, DisplayOffset{Duration{50 * kSec}});
+  fx.install(seriesRecipe("ser"));
+  fx.display("owner/ser");
+  ASSERT_TRUE(fx.waitComplete("owner/ser"));
+  ASSERT_FALSE(fx.runs().empty());
+  EXPECT_EQ(fx.runs().front(), 150 * kSec) << "display 100 s is raw 150 s under the new offset";
+}
+
 // ---- Measurement ----------------------------------------------------------------------------------------------------
 
 double threadCpuMicros() {
@@ -679,15 +1007,16 @@ double threadCpuMicros() {
 }
 
 // PERF-03: a replay over 400 clouds of 24k points (the fake run, instant): the GUI thread's longest event-loop pass and
-// its CPU time per row, the test's pump included.
-TEST(SeriesRunnerBench, ReplayOver400Clouds) {
-  if (!sdk::getEnv("PJ_BENCH")) {
-    GTEST_SKIP() << "set PJ_BENCH=1";
-  }
+// its CPU time per row, the test's pump included; then the same replay with the view starting mid-clock (GAP-40: the
+// forward range, then the backfill).
+void benchReplay(std::optional<Timestamp> visible_start) {
   SeriesFixture fx;
   const ObjectTopicId big = fx.addCloudTopic(fx.ds, "big", {});
   for (int index = 0; index < 400; ++index) {
     fx.push(big, index * kSec / 10, 24'000);
+  }
+  if (visible_start) {
+    fx.showFrom(*visible_start);
   }
   fx.install(seriesRecipe("ser", {"big"}));
   const double begin = threadCpuMicros();
@@ -707,8 +1036,16 @@ TEST(SeriesRunnerBench, ReplayOver400Clouds) {
   const double total = threadCpuMicros() - begin;
   ASSERT_EQ(fx.rows("owner/ser").size(), 400u);
   std::printf(
-      "[SeriesRunnerBench] 400 rows over 24k-point clouds: GUI CPU %.1f us per row, longest pass %.0f us\n",
-      total / 400, longest);
+      "[SeriesRunnerBench] 400 rows over 24k-point clouds%s: GUI CPU %.1f us per row, longest pass %.0f us\n",
+      visible_start ? ", view from mid-clock" : "", total / 400, longest);
+}
+
+TEST(SeriesRunnerBench, ReplayOver400Clouds) {
+  if (!sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  benchReplay(std::nullopt);
+  benchReplay(20 * kSec);
 }
 
 }  // namespace

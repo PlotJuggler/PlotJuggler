@@ -6,6 +6,9 @@
 // repaints only when the note changes.
 
 #include <gtest/gtest.h>
+#include <qwt_legend_data.h>
+#include <qwt_plot_curve.h>
+#include <qwt_text.h>
 
 #include <QApplication>
 #include <QEvent>
@@ -217,4 +220,29 @@ TEST_F(PlotWidgetTest, TheNoteStaysClearOfALeftAlignedLegend) {
   EXPECT_GT(plot_.markerStatusNoteRect().center().x(), middle) << "a legend at the left leaves the right";
   plot_.setLegendAlignment(Qt::AlignBottom | Qt::AlignLeft);
   EXPECT_LT(plot_.markerStatusNoteRect().center().x(), middle) << "a bottom legend does not meet a top note";
+}
+
+// GAP-40: a plotted series that is not computed says so after its legend title, "not computed" or "computing N%", as
+// its host reports it; the curve's title, its identity, stays; a series of another dataset, or none, says nothing.
+TEST_F(PlotWidgetTest, UncomputedSeriesLegendSaysSo) {
+  const PJ::PlotWidgetBase::CurveInfo& info = plot_.curveList().front();
+  const auto legend = [&] { return info.curve->legendData().front().title().text(); };
+  const QString title = info.curve->title().text();
+  ASSERT_EQ(legend(), title);
+
+  plot_.setSeriesStatus({PJ::SeriesCurveStatus{.dataset_id = dataset_, .topic_name = u"/imu/x"_s}});
+  EXPECT_EQ(legend(), title + u" (not computed)"_s);
+  plot_.setSeriesStatus(
+      {PJ::SeriesCurveStatus{.dataset_id = dataset_, .topic_name = u"/imu/x"_s, .computing_percent = 34}});
+  EXPECT_EQ(legend(), title + u" (computing 34%)"_s);
+  EXPECT_EQ(info.curve->title().text(), title);
+  EXPECT_EQ(plot_.curveFromTitle(title), &info);
+
+  plot_.setSeriesStatus({PJ::SeriesCurveStatus{.dataset_id = dataset_ + 1, .topic_name = u"/imu/x"_s}});
+  EXPECT_EQ(legend(), title) << "another dataset's series";
+  plot_.setSeriesStatus({PJ::SeriesCurveStatus{.dataset_id = dataset_, .topic_name = u"/imu/y"_s}});
+  EXPECT_EQ(legend(), title) << "another topic's series in the same dataset";
+  plot_.setSeriesStatus({PJ::SeriesCurveStatus{.dataset_id = dataset_, .topic_name = u"/imu/x"_s}});
+  plot_.setSeriesStatus({});
+  EXPECT_EQ(legend(), title) << "computed";
 }

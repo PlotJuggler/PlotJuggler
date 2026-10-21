@@ -49,6 +49,12 @@ namespace PJ {
 /// removal retires the topic; a restore parks it (`park`), and the same key reinstalled with the same columns in the
 /// same dataset adopts it.
 ///
+/// Visible range first (`setVisibleStart`): when a plot of the dataset starts its view after the watermark, the series
+/// computes [visible start, end] first, then backfills its clock up to the visible start; at most these two ranges,
+/// each with its own watermark, and one split per replay. While it has both, a view starting at or before the
+/// backfill's end computes the backfill first, else the forward range, which a live tick continues; a later pan only
+/// reorders what is left.
+///
 /// THREADING: GUI thread only; what runs on the pool is `GridRunner`'s. The engine, the graph and the runner must
 /// outlive this object, whose destruction cancels its chunks.
 class SeriesRunner {
@@ -66,7 +72,9 @@ class SeriesRunner {
     /// `done` plus the clock instants left when the last chunk was submitted: exact for one object input, an upper
     /// bound when several share stamps.
     uint64_t total = 0;
-    bool complete = false;    ///< the last chunk reached the end of the clock
+    /// A chunk reached the end of the clock since the topic was emptied; a live append keeps it (`replaying` then
+    /// reports the append), so a replay is `replaying && !complete`.
+    bool complete = false;
     bool replaying = false;   ///< a chunk computes, or waits for its turn or its room
     bool stopped = false;     ///< `stop` ended it: its rows stay; a request, an edit or a reload starts it again
     std::string first_error;  ///< the first gap's reason, or why a chunk could not run
@@ -131,12 +139,24 @@ class SeriesRunner {
   void appendLive(DatasetId dataset);
   /// `dataset`'s stream ended: its wanted series compute the tail past their live edge.
   void endLive(DatasetId dataset);
+  /// Where the plots of `dataset` start their view (raw): read when the series' next chunk is chosen. While the dataset
+  /// is live, a start past the live edge splits nothing.
+  void setVisibleStart(DatasetId dataset, Timestamp start);
+  /// A whole-series read of `topic` (a plugin's `read_series_arrow`): an explicit request of its series (decision 2),
+  /// which the reader sees grow from the rows so far.
+  void requestTopic(TopicId topic);
 
   [[nodiscard]] std::optional<State> state(std::string_view key) const;
   /// The series topics, only the previews' when `ephemeral_only` (the catalog hides those).
   [[nodiscard]] std::unordered_set<TopicId> topics(bool ephemeral_only) const;
 
  private:
+  /// The second computed range of a split series: its clock from `watermark` up to `end`.
+  struct Backfill {
+    std::optional<Timestamp> watermark;
+    SequentialUID seen;
+    Timestamp end = 0;  ///< the last instant it covers: the visible start of the split, minus one
+  };
   struct Series {
     DatasetId dataset = 0;
     std::vector<std::string> columns;
@@ -145,6 +165,8 @@ class SeriesRunner {
     bool requested = false;
     std::optional<Timestamp> watermark;  ///< the last instant evaluated since the topic was emptied
     SequentialUID seen;                  ///< the `GridRunner::Rows::seen` of the chunk that evaluated it
+    std::optional<Backfill> backfill;    ///< while split; the watermark above is then the forward range's
+    bool was_split = false;              ///< since the topic was emptied: a later view start only reorders
     State state;
     std::shared_ptr<GridRunner::Job> chunk;
     std::chrono::steady_clock::time_point announced;
@@ -161,9 +183,13 @@ class SeriesRunner {
   void schedule();
   /// Submits the next chunk of a wanted series that computes nothing.
   void submit(const std::string& key);
-  /// GUI thread: writes a chunk's rows and queues the series again; the next chunk starts on a later turn.
-  void collect(const std::string& key, GridRunner::Rows rows);
-  /// Cancels the chunk, empties the topic and resets the counts and the watermark.
+  /// Splits `series`, once per replay, at its dataset's visible start when that starts after its watermark (and, live,
+  /// at or before `live_edge`): the watermark moves to the visible start, the backfill keeps the old one.
+  void split(Series& series, std::optional<Timestamp> live_edge) const;
+  /// GUI thread: writes a chunk's rows (the backfill's when `backfill`) and queues the series again; the next chunk
+  /// starts on a later turn.
+  void collect(const std::string& key, bool backfill, GridRunner::Rows rows);
+  /// Cancels the chunk, empties the topic and resets the counts, the watermark and the split.
   void reset(Series& series);
   /// Cancels the chunk; one whose run still holds its pool thread counts in `draining_` until the pool lets it go.
   void cancel(Series& series);
@@ -179,7 +205,10 @@ class SeriesRunner {
   std::map<std::string, Series, std::less<>> parked_;
   std::map<DatasetId, int> holds_;      ///< `suspend` minus `resume`, per dataset
   std::unordered_set<DatasetId> live_;  ///< `appendLive` until `endLive`: their clocks end at the live edge
-  std::deque<std::string> waiting_;     ///< the series waiting their turn, each key once; checked again when it comes
+  /// ponytail: one visible start per dataset, the last plot to move wins; per plot if two plots of one dataset
+  /// disagree.
+  std::map<DatasetId, Timestamp> visible_start_;
+  std::deque<std::string> waiting_;  ///< the series waiting their turn, each key once; checked again when it comes
   /// Cancelled chunks whose run still holds its pool thread and its room: they count against `kMaxRunningChunks`.
   std::size_t draining_ = 0;
   std::vector<std::string> gone_;  ///< the series removed since the last `notify`

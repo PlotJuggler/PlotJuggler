@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "pj_plotting/PlotCurve.h"
 
+#include <qwt_legend_data.h>
 #include <qwt_painter.h>
 #include <qwt_point_mapper.h>
+#include <qwt_text.h>
 
 #include <QPainter>
 
@@ -19,6 +21,27 @@ void PlotCurve::setDotWidth(double width) {
 
 double PlotCurve::dotWidth() const {
   return dot_width_;
+}
+
+bool PlotCurve::setLegendSuffix(const QString& suffix) {
+  if (legend_suffix_ == suffix) {
+    return false;
+  }
+  legend_suffix_ = suffix;
+  legendChanged();
+  return true;
+}
+
+QList<QwtLegendData> PlotCurve::legendData() const {
+  QList<QwtLegendData> data = QwtPlotCurve::legendData();
+  if (!legend_suffix_.isEmpty()) {
+    for (QwtLegendData& entry : data) {
+      QwtText title = entry.title();
+      title.setText(QStringLiteral("%1 (%2)").arg(title.text(), legend_suffix_));
+      entry.setValue(QwtLegendData::TitleRole, QVariant::fromValue(title));
+    }
+  }
+  return data;
 }
 
 void PlotCurve::drawCurve(

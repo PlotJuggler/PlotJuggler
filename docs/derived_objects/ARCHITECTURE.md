@@ -993,8 +993,30 @@ removal included, is reported by key (`SeriesRunner::Hooks::state_changed`, for 
 request. A removal retires the topic, a restore parks it and the same key
 reinstalled with the same columns in the same dataset adopts it; a foreign topic of the key's name refuses the install.
 The series topics are derived data to a reload, the undo snapshot and the catalog's preview filter
-(`SessionManager::derivedScalarTopics`). Left for slice 11b: the progress bar, the stop button and "not computed",
-the visible range first, and a plugin's read as a request.
+(`SessionManager::derivedScalarTopics`).
+
+**Built (slice 11b-1, the app half without the Custom Topics panel).** *The visible range first*, as two ranges
+(decided 2026-10-20): each time plot reports where its view starts to `SessionManager::setSeriesVisibleStart` (display
+seconds, kept so and converted with the dataset's display offset again when it changes; one start per dataset, the
+last plot to move wins), from `TopicDemandController`, before the demand on a curve change (so a dropped series starts
+there) and on every move of that plot's time axis (`PlotWidget::visibleXRangeChanged`: a gesture, a linked, plugin or
+state-strip zoom). When a series' next chunk would start before the view does (live: only
+at or before the live edge), it splits, once per replay: its watermark moves to the visible start and computes
+[visible start, end] first, then a backfill keeps the old watermark and arrivals cursor and computes the clock up to
+the visible start. At most these two ranges: while both exist, a view starting at or before the backfill's end runs the
+backfill's chunk next, else the forward range's, which a live tick continues; a later pan only reorders what is left,
+and the backfill's end merges them back into one (at the backfill's watermark when the forward range evaluated
+nothing). A restart from the first instant (an out-of-order entry) clears `complete` at once; a live append keeps it.
+A plugin reads the split series in time order: `read_series_arrow` exports through the merged `RangeCursor`. The progress of a split series counts the whole clock
+(`GridRunner::Rows::before`, the instants at or before a chunk's start). *Not computed*: the app sends every plot plain
+`SeriesCurveStatus` data (dataset, topic, progress) on `SessionManager::seriesStateChanged`, and a curve on such a topic
+reads "(not computed)" or "(computing N%)" after its legend title, the title itself staying the curve's identity, while
+the series is not complete; a live append keeps a complete series complete (`replaying` then reports the append), so a
+streaming series' legend does not blink at every tick. *A plugin's
+read*: a whole-series read (`read_series_arrow`, and a marker rule's input) is an explicit request (decision 2): the
+engine's complete-read barrier, which the session composes with the transforms' replay finish, calls
+`SeriesRunner::requestTopic`, from another thread through a posted call; the reader gets the rows so far. Left for slice
+11b-2: the Custom Topics progress row and its stop button.
 
 ## 16. Streaming
 

@@ -167,6 +167,7 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/IObjectViewer.h"
 #include "pj_runtime/MarkerTopics.h"
+#include "pj_runtime/OnDemandService.h"
 #include "pj_runtime/PlaybackControlHost.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/PlotTabsRuntimeHost.h"
@@ -541,7 +542,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           std::make_unique<TopicDemandController>(
               session_->catalogModel(), session_->topicDemandTracker(),
               session_->sessionManager().dataProcessorService(), *pending_binder_,
-              session_->sessionManager().dataEngine())),
+              session_->sessionManager().dataEngine(),
+              [this](DatasetId dataset_id, DisplaySeconds start) {
+                session_->sessionManager().setSeriesVisibleStart(dataset_id, start);
+              })),
       ingest_progress_controller_(std::make_unique<IngestProgressController>(this)),
       theme_(std::make_unique<Theme>()) {
 #ifdef PJ_TARGET_WASM
@@ -942,6 +946,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 
   applyDerivedBatchPreferences();
   wireMarkerPlotStatus();
+  connect(
+      &session_->sessionManager(), &SessionManager::seriesStateChanged, this, [this] { pushSeriesStatus(nullptr); });
 
   // Keep data widgets coherent with catalog removals, whoever triggers them.
   // Each widget prunes its OWN pieces against the live catalog/store. One pass
@@ -3446,6 +3452,31 @@ void MainWindow::wireMarkerPlotStatus() {
   connect(batch_engine, &BatchEngine::runningChanged, this, [this] { push_marker_status_(nullptr); });
 }
 
+void MainWindow::pushSeriesStatus(PlotWidget* only) {
+  const OnDemandService& service = session_->sessionManager().onDemandService();
+  std::vector<SeriesCurveStatus> statuses;
+  for (const std::string& key : service.graph().keys()) {
+    const std::optional<SeriesRunner::State> state = service.series().state(key);
+    if (!state || state->complete) {
+      continue;  // computed: a live append says nothing
+    }
+    std::optional<int> percent;
+    if (state->replaying) {
+      percent = state->total == 0 ? 0 : static_cast<int>(state->done * 100 / state->total);
+    }
+    statuses.push_back(
+        SeriesCurveStatus{
+            .dataset_id = service.graph().find(key)->dataset,
+            .topic_name = QString::fromStdString(key),
+            .computing_percent = percent});
+  }
+  if (only != nullptr) {
+    only->setSeriesStatus(std::move(statuses));
+  } else {
+    forEachPlot([&statuses](PlotWidget* plot) { plot->setSeriesStatus(statuses); });
+  }
+}
+
 void MainWindow::bindDerivedBatchPreferences(PreferencesDialog& dialog) {
   connect(&dialog, &PreferencesDialog::derivedBatchSettingsChanged, this, &MainWindow::applyDerivedBatchPreferences);
 }
@@ -3831,6 +3862,7 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   applyGlobalToggles(plot);
   connect(plot, &PlotWidget::markerTargetsChanged, this, &MainWindow::onPlotMarkerTargetsChanged, Qt::UniqueConnection);
   reportMarkerStatus(plot);
+  pushSeriesStatus(plot);
   if (curve_editor_ != nullptr && curve_editor_->plot() == nullptr) {
     bindEditorToPlot(plot);
   }
