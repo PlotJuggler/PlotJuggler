@@ -152,7 +152,10 @@ Licensed MPL-2.0.
   interpreter, never finalized, and `src/python_sandbox.h`: every call into script code, a filter's teardown included,
   runs inside a `ScriptCallScope` (the watchdog; the allocation cap, which refuses only blocks of 1 KiB or more and
   stops a call at twice the cap with an asynchronous MemoryError, so CPython never sees a small allocation fail; both
-  sticky even when the script catches the error; and the process-global audit hook armed on that thread). Two profiles (decided 2026-10-20): filters keep
+  sticky even when the script catches the error; and the process-global audit hook armed on that thread). The cap's
+  bookkeeping is one hash table per allocator domain keyed by block address, whose records point at their budget (a live
+  block keeps it alive; the GIL serializes MEM and OBJ, only RAW locks; about 10 ns per block, 1.4-1.5x on an
+  allocation-heavy loop, `PythonSandboxBench.AllocationCapOverhead`). Two profiles (decided 2026-10-20): filters keep
   their builtins, syntax and real modules behind the `math`/`cmath`/`statistics` allowlist, so existing filters run
   unchanged and stay as escapable as before; on-demand scripts add the strict profile. The trust model (decided
   2026-10-18) is in-process with cooperative limits: scripts are trusted input. Compile on the host and run the code

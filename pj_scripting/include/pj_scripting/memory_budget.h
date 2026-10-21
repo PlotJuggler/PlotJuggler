@@ -44,11 +44,14 @@ class MemoryBudget {
   std::size_t acquireAnyway(std::size_t bytes) noexcept {
     return used_.fetch_add(bytes, std::memory_order_relaxed) + bytes;
   }
+  /// Acquire-release, as is `used()`'s acquire: a thread that reads zero and destroys the budget is ordered after the
+  /// last release, whichever thread made it, so that thread's final access to the budget is not a data race with the
+  /// destruction.
   void release(std::size_t bytes) noexcept {
-    used_.fetch_sub(bytes, std::memory_order_relaxed);
+    used_.fetch_sub(bytes, std::memory_order_acq_rel);
   }
   [[nodiscard]] std::size_t used() const noexcept {
-    return used_.load(std::memory_order_relaxed);
+    return used_.load(std::memory_order_acquire);
   }
   [[nodiscard]] std::size_t limit() const noexcept {
     return limit_;

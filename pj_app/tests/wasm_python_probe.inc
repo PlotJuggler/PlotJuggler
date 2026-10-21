@@ -240,7 +240,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_python_smoke() {
   std::thread(&wasmPyWorkerChecks).detach();
 }
 
-/// Worst case for the GUI thread: a worker script holds the GIL inside one C call (`sum` over a long range, which
+/// Worst case for the GUI thread: a worker script holds the GIL inside one C call (`sum` over a long range, sized to
+/// outlast the 2 s compile bound with room even in the fastest browser; it is a wall-clock hold, which
 /// neither the GIL switch interval nor the watchdog interrupts) while the GUI compiles. A pure-Python loop would not
 /// do: it hands the GIL over every switch interval (5 ms).
 /// `pj_wasm_test_python_hold_gil` starts the holder; `pj_wasm_test_python_compile_now`, called while it runs, logs how
@@ -249,7 +250,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_python_hold_gil() {
   std::thread([] {
     using namespace PJ::scripting;
     if (auto spin =
-            compileOnDemandScriptPython("def evaluate(inputs, params):\n    return float(sum(range(20_000_000)))\n")) {
+            compileOnDemandScriptPython("def evaluate(inputs, params):\n    return float(sum(range(60_000_000)))\n")) {
       RunOptions options;
       options.limits.python_watchdog_millis = 60000;
       const auto begin = std::chrono::steady_clock::now();

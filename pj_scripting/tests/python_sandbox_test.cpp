@@ -9,16 +9,22 @@
 #include <gtest/gtest.h>
 #include <pybind11/embed.h>
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <numeric>
+#include <random>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "pj_base/sdk/platform.hpp"
 #include "pj_scripting/memory_budget.h"
 #include "pj_scripting/python_engine.h"
 #include "pj_scripting/sandbox.h"
@@ -257,6 +263,334 @@ TEST(PythonSandbox, AnotherBudgetsBlockDoesNotStopTheCurrentCall) {
   current.free(current.ctx, left_behind);
 }
 
+// A block of zero bytes still holds a block, and its budget must stay alive for it: every block charges at least a
+// byte.
+TEST(PythonSandbox, EveryBlockChargesAtLeastOneByte) {
+  detail::ensureInterpreter();
+  py::gil_scoped_acquire gil;
+  for (const auto domain : {PYMEM_DOMAIN_RAW, PYMEM_DOMAIN_MEM, PYMEM_DOMAIN_OBJ}) {
+    PyMemAllocatorEx current{};
+    PyMem_GetAllocator(domain, &current);
+    auto budget = std::make_shared<native::MemoryBudget>(1024);
+    detail::ScopedAllocationCap cap(budget);
+    void* empty = current.malloc(current.ctx, 0);
+    ASSERT_NE(empty, nullptr);
+    EXPECT_EQ(budget->used(), 1u);
+    empty = current.realloc(current.ctx, empty, 64);
+    ASSERT_NE(empty, nullptr);
+    EXPECT_EQ(budget->used(), 64u);
+    empty = current.realloc(current.ctx, empty, 0);
+    ASSERT_NE(empty, nullptr);
+    EXPECT_EQ(budget->used(), 1u);
+    current.free(current.ctx, empty);
+    EXPECT_EQ(budget->used(), 0u);
+  }
+}
+
+// A realloc is judged by its new size and charged exactly: growing across the 1 KiB line is refused past the cap and
+// leaves the block as it was, shrinking across it succeeds, and below the cap every size is accounted to the byte.
+TEST(PythonSandbox, ReallocAcrossTheLargeBlockLineIsAccountedExactly) {
+  detail::ensureInterpreter();
+  py::gil_scoped_acquire gil;
+  PyMemAllocatorEx current{};
+  PyMem_GetAllocator(PYMEM_DOMAIN_OBJ, &current);
+  auto budget = std::make_shared<native::MemoryBudget>(std::size_t{64} << 10);
+  detail::ScopedAllocationCap cap(budget);
+  auto* block = static_cast<unsigned char*>(current.malloc(current.ctx, 512));
+  ASSERT_NE(block, nullptr);
+  std::memset(block, 0x5a, 512);
+  for (const std::size_t size : {std::size_t{2048}, std::size_t{100}, std::size_t{5000}, std::size_t{1500}}) {
+    block = static_cast<unsigned char*>(current.realloc(current.ctx, block, size));
+    ASSERT_NE(block, nullptr);
+    EXPECT_EQ(block[0], 0x5a) << "the content moves with the block";
+    EXPECT_EQ(budget->used(), size);
+  }
+  ASSERT_TRUE(budget->tryAcquire(budget->limit() - budget->used()));  // the cap reached
+  std::vector<void*> smalls;
+  while (budget->used() <= budget->limit() + 600) {
+    smalls.push_back(current.malloc(current.ctx, 100));
+  }
+  const std::size_t before = budget->used();
+  EXPECT_EQ(current.realloc(current.ctx, smalls.front(), 4096), nullptr) << "a small block cannot become large";
+  EXPECT_TRUE(cap.refused());
+  EXPECT_EQ(budget->used(), before) << "and stays as it was";
+  smalls.front() = current.realloc(current.ctx, smalls.front(), 100);  // still a valid, tracked block
+  ASSERT_NE(smalls.front(), nullptr);
+  block = static_cast<unsigned char*>(current.realloc(current.ctx, block, 200));
+  ASSERT_NE(block, nullptr) << "a large block shrinks to a small one";
+  EXPECT_EQ(budget->used(), before - 1300);
+  current.free(current.ctx, block);
+  for (void* each : smalls) {
+    current.free(current.ctx, each);
+  }
+  EXPECT_EQ(budget->used(), budget->limit() - 1500) << "only the manual acquire remains";
+}
+
+// Many live blocks, resized and freed in any order, are charged and released exactly.
+TEST(PythonSandbox, ManyBlocksFreedInAnyOrderReleaseTheirChargeExactly) {
+  detail::ensureInterpreter();
+  py::gil_scoped_acquire gil;
+  PyMemAllocatorEx current{};
+  PyMem_GetAllocator(PYMEM_DOMAIN_OBJ, &current);
+  auto budget = std::make_shared<native::MemoryBudget>(std::size_t{1} << 30);
+  std::mt19937 random(7);
+  std::vector<std::pair<void*, std::size_t>> blocks;
+  {
+    detail::ScriptCallScope scope(budget, 60000, detail::Profile::kCompatible);
+    std::size_t expected = 0;
+    for (int i = 0; i < 60000; ++i) {
+      const std::size_t size = 1 + random() % 3000;
+      void* block = current.malloc(current.ctx, size);
+      ASSERT_NE(block, nullptr);
+      blocks.emplace_back(block, size);
+      expected += size;
+    }
+    EXPECT_EQ(budget->used(), expected);
+    std::shuffle(blocks.begin(), blocks.end(), random);
+    for (std::size_t i = 0; i < blocks.size(); i += 3) {  // a third are resized, many across 1 KiB
+      const std::size_t size = 1 + random() % 3000;
+      void* moved = current.realloc(current.ctx, blocks[i].first, size);
+      ASSERT_NE(moved, nullptr);
+      expected = expected - blocks[i].second + size;
+      blocks[i] = {moved, size};
+    }
+    EXPECT_EQ(budget->used(), expected);
+    EXPECT_FALSE(scope.overBudget());
+    for (std::size_t i = 0; i < blocks.size() / 2; ++i) {
+      current.free(current.ctx, blocks[i].first);
+      expected -= blocks[i].second;
+    }
+    EXPECT_EQ(budget->used(), expected);
+    blocks.erase(blocks.begin(), blocks.begin() + static_cast<std::ptrdiff_t>(blocks.size() / 2));
+  }
+  for (const auto& [block, size] : blocks) {  // after the scope, with no cap armed
+    current.free(current.ctx, block);
+  }
+  EXPECT_EQ(budget->used(), 0u);
+}
+
+// A block outlives its scope and its caller's reference to the budget: the budget stays alive for it, and the free
+// (here on another thread) still reaches it.
+TEST(PythonSandbox, ABlockKeepsItsBudgetAliveUntilItIsFreedOnAnyThread) {
+  detail::ensureInterpreter();
+  py::gil_scoped_acquire gil;
+  PyMemAllocatorEx current{};
+  PyMem_GetAllocator(PYMEM_DOMAIN_OBJ, &current);
+  auto budget = std::make_shared<native::MemoryBudget>(std::size_t{1} << 20);
+  const std::weak_ptr<native::MemoryBudget> weak = budget;
+  void* block = nullptr;
+  {
+    detail::ScopedAllocationCap cap(budget);
+    budget.reset();
+    block = current.malloc(current.ctx, 300);
+    ASSERT_NE(block, nullptr);
+  }
+  ASSERT_FALSE(weak.expired()) << "a live block holds its budget";
+  EXPECT_EQ(weak.lock()->used(), 300u);
+  {
+    py::gil_scoped_release no_gil;
+    std::thread([&] {
+      py::gil_scoped_acquire thread_gil;
+      current.free(current.ctx, block);
+    }).join();
+  }
+  if (const auto still = weak.lock()) {
+    EXPECT_EQ(still->used(), 0u) << "the other thread released the charge";
+  }
+}
+
+// A budget that no live block holds goes with its scope, and the ones kept for their blocks do not pile up once those
+// are freed.
+TEST(PythonSandbox, BudgetsAreNotKeptOnceTheirBlocksAreFreed) {
+  detail::ensureInterpreter();
+  py::gil_scoped_acquire gil;
+  PyMemAllocatorEx current{};
+  PyMem_GetAllocator(PYMEM_DOMAIN_OBJ, &current);
+  std::weak_ptr<native::MemoryBudget> clean;
+  {
+    auto budget = std::make_shared<native::MemoryBudget>(std::size_t{1} << 20);
+    clean = budget;
+    detail::ScopedAllocationCap cap(std::move(budget));
+    current.free(current.ctx, current.malloc(current.ctx, 100));
+  }
+  EXPECT_TRUE(clean.expired()) << "nothing was left behind";
+  std::vector<std::weak_ptr<native::MemoryBudget>> kept;
+  for (int i = 0; i < 2000; ++i) {
+    void* block = nullptr;
+    {
+      auto budget = std::make_shared<native::MemoryBudget>(std::size_t{1} << 20);
+      kept.emplace_back(budget);
+      detail::ScopedAllocationCap cap(std::move(budget));
+      block = current.malloc(current.ctx, 100);
+    }
+    current.free(current.ctx, block);
+  }
+  const auto alive = std::ranges::count_if(kept, [](const auto& weak) { return !weak.expired(); });
+  EXPECT_LT(alive, 512) << "a budget with nothing charged is dropped at a later sweep";
+}
+
+// A filter's budget spans its calls: each call's scope ends with the instance's state still live, and the budget is
+// kept once, not once per call.
+TEST(PythonSandbox, ABudgetReusedAcrossCallsIsKeptOnce) {
+  detail::ensureInterpreter();
+  py::gil_scoped_acquire gil;
+  PyMemAllocatorEx current{};
+  PyMem_GetAllocator(PYMEM_DOMAIN_OBJ, &current);
+  auto budget = std::make_shared<native::MemoryBudget>(std::size_t{1} << 20);
+  void* state = nullptr;
+  {
+    detail::ScopedAllocationCap cap(budget);
+    state = current.malloc(current.ctx, 100);
+  }
+  for (int call = 0; call < 1000; ++call) {
+    detail::ScopedAllocationCap cap(budget);
+  }
+  EXPECT_EQ(budget.use_count(), 2) << "the caller's, and the one kept for the live block";
+  current.free(current.ctx, state);
+}
+
+// The RAW domain is called without the GIL, from any thread: blocks allocated under several threads' caps, resized and
+// freed by other threads with no cap armed, all give back their charge.
+TEST(PythonSandbox, RawBlocksPassBetweenThreadsWithoutTheGil) {
+  detail::ensureInterpreter();
+  PyMemAllocatorEx raw{};
+  PyMem_GetAllocator(PYMEM_DOMAIN_RAW, &raw);
+  constexpr int kThreads = 4;
+  constexpr int kRounds = 20000;
+  std::vector<std::shared_ptr<native::MemoryBudget>> budgets;
+  for (int i = 0; i < kThreads; ++i) {
+    budgets.push_back(std::make_shared<native::MemoryBudget>(std::size_t{1} << 30));
+  }
+  std::mutex mutex;
+  std::vector<void*> handed;
+  const auto drain = [&](bool all) {
+    std::vector<void*> mine;
+    {
+      std::lock_guard lock(mutex);
+      mine.swap(handed);
+    }
+    for (std::size_t i = 0; i < mine.size(); ++i) {
+      if (all || i % 2 == 0) {
+        raw.free(raw.ctx, raw.realloc(raw.ctx, mine[i], 700 + i));  // resized, then freed, outside any cap
+      } else {
+        std::lock_guard lock(mutex);
+        handed.push_back(mine[i]);
+      }
+    }
+  };
+  std::vector<std::thread> threads;
+  for (int t = 0; t < kThreads; ++t) {
+    threads.emplace_back([&, t] {
+      detail::ScopedAllocationCap cap(budgets[t]);
+      for (int round = 0; round < kRounds; ++round) {
+        void* block = raw.malloc(raw.ctx, 16 + static_cast<std::size_t>(round) % 2000);
+        if (round % 3 == 0) {
+          raw.free(raw.ctx, block);
+        } else {
+          std::lock_guard lock(mutex);
+          handed.push_back(block);
+        }
+        if (round % 16 == 0 && t % 2 == 0) {
+          drain(false);
+        }
+      }
+    });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+  drain(true);
+  drain(true);
+  for (const auto& budget : budgets) {
+    EXPECT_EQ(budget->used(), 0u);
+  }
+}
+
+// Scopes on fresh budgets end on several threads, each leaving RAW blocks that the next thread frees with no cap armed,
+// while every scope end retires its budget and keeps triggering sweeps. A budget must outlive each of its blocks (the
+// freeing thread checks before the free that it has not expired) and must be gone once they are all freed.
+TEST(PythonSandbox, RetiredBudgetsOutliveBlocksFreedByOtherThreadsAndThenExpire) {
+  detail::ensureInterpreter();
+  PyMemAllocatorEx raw{};
+  PyMem_GetAllocator(PYMEM_DOMAIN_RAW, &raw);
+  constexpr int kThreads = 4;
+  constexpr int kRounds = 3000;
+  constexpr int kBlocksPerRound = 3;
+  struct Handoff {
+    void* block;
+    std::weak_ptr<native::MemoryBudget> budget;
+  };
+  struct Mailbox {
+    std::mutex mutex;
+    std::vector<Handoff> items;
+  };
+  std::vector<Mailbox> mailboxes(kThreads);
+  std::vector<std::vector<std::weak_ptr<native::MemoryBudget>>> made(kThreads);
+  std::atomic<int> expired_early{0};
+  std::atomic<int> started{0};
+
+  const auto free_all = [&](int self) {
+    std::vector<Handoff> mine;
+    {
+      std::lock_guard lock(mailboxes[self].mutex);
+      mine.swap(mailboxes[self].items);
+    }
+    for (const Handoff& item : mine) {
+      if (item.budget.expired()) {  // a live block holds its budget
+        ++expired_early;
+      }
+      raw.free(raw.ctx, item.block);
+    }
+  };
+  std::vector<std::thread> threads;
+  for (int self = 0; self < kThreads; ++self) {
+    threads.emplace_back([&, self] {
+      ++started;
+      while (started.load() < kThreads) {  // start together
+        std::this_thread::yield();
+      }
+      for (int round = 0; round < kRounds; ++round) {
+        {
+          auto budget = std::make_shared<native::MemoryBudget>(std::size_t{1} << 30);
+          made[self].emplace_back(budget);
+          detail::ScopedAllocationCap cap(std::move(budget));  // the only owner; its end retires the budget
+          std::lock_guard lock(mailboxes[(self + 1) % kThreads].mutex);
+          for (int block = 0; block < kBlocksPerRound; ++block) {
+            mailboxes[(self + 1) % kThreads].items.push_back(
+                {raw.malloc(raw.ctx, 16 + static_cast<std::size_t>(round + block) % 1500), made[self].back()});
+          }
+        }
+        if (round % 4 == 0) {
+          free_all(self);
+        }
+      }
+    });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+  for (int self = 0; self < kThreads; ++self) {
+    free_all(self);
+  }
+  EXPECT_EQ(expired_early.load(), 0) << "a budget was destroyed while one of its blocks was live";
+
+  // Sweeps are lazy: pin and unpin budgets until the ones above have been swept.
+  const auto all_expired = [&] {
+    return std::ranges::all_of(made, [](const auto& weaks) {
+      return std::ranges::all_of(weaks, [](const auto& weak) { return weak.expired(); });
+    });
+  };
+  for (int i = 0; i < 1'000'000 && !(i % 64 == 0 && all_expired()); ++i) {
+    void* kept = nullptr;
+    {
+      detail::ScopedAllocationCap cap(std::make_shared<native::MemoryBudget>(std::size_t{1} << 20));
+      kept = raw.malloc(raw.ctx, 64);  // the scope ends with it live, so its budget is retired and kept
+    }
+    raw.free(raw.ctx, kept);
+  }
+  EXPECT_TRUE(all_expired());
+}
+
 // A loop of small objects, never refused, is stopped once its charges pass twice the cap: the watchdog raises a
 // MemoryError at the next bytecode, and the call is latched over budget.
 TEST(PythonSandbox, SmallObjectsAreStoppedAtTwiceTheCap) {
@@ -474,6 +808,76 @@ TEST(PythonSandbox, AFilterMakingFunctionsPastItsCapFailsCleanly) {
     EXPECT_TRUE((*instance)->calculate(0.0, 1.0).suppress) << "sticky";
   }
   EXPECT_GT(exercised, 1000);
+}
+
+// PJ_BENCH=1 prints the best-of-N ns per element of five loops (the last allocates nothing, a control), run bare (no
+// cap armed: the wrapper installed, forwarding) and inside a ScriptCallScope with the cap armed, whose limit is never
+// reached so only the bookkeeping is timed. Pin it to one core (`taskset -c 2`): the ratio is the cost of the cap.
+TEST(PythonSandboxBench, AllocationCapOverhead) {
+  if (!PJ::sdk::getEnv("PJ_BENCH")) {
+    GTEST_SKIP() << "set PJ_BENCH=1";
+  }
+  detail::ensureInterpreter();
+  py::gil_scoped_acquire gil;
+  constexpr int kElements = 1'000'000;
+  constexpr int kRuns = 9;
+  py::dict globals;
+  globals["__builtins__"] = py::module_::import("builtins");
+  py::exec(
+      R"PY(
+def sum_range(n):
+    return sum(range(n))
+
+def list_append(n):
+    items = []
+    for i in range(n):
+        items.append(i)
+    return len(items)
+
+def dict_build(n):
+    table = {}
+    for i in range(n):
+        table[i] = i
+    return len(table)
+
+def live_bytes_600(n):
+    items = []
+    for i in range(n):
+        items.append(bytes(600))
+    return len(items)
+
+def arithmetic(n):
+    x = 0.0
+    for v in VALUES:
+        x = x * 0.999 + v
+    return x
+
+VALUES = [1.5] * 1000000
+)PY",
+      globals);
+  const auto best_nanos = [&](const char* name, bool capped) {
+    const int elements = std::strcmp(name, "live_bytes_600") == 0 ? kElements / 5 : kElements;  // 120 MB live
+    double best = 1e30;
+    for (int run = 0; run < kRuns; ++run) {
+      std::unique_ptr<detail::ScriptCallScope> scope;
+      if (capped) {
+        scope = std::make_unique<detail::ScriptCallScope>(
+            std::make_shared<native::MemoryBudget>(std::size_t{4} << 30), 600'000, detail::Profile::kCompatible);
+      }
+      const auto begin = std::chrono::steady_clock::now();
+      globals[name](elements);
+      best = std::min(best, std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - begin).count());
+    }
+    return best / elements;
+  };
+  std::printf("%-12s %10s %10s %8s\n", "loop", "bare ns", "capped ns", "ratio");
+  for (const char* name : {"sum_range", "list_append", "dict_build", "live_bytes_600", "arithmetic"}) {
+    (void)best_nanos(name, false);  // warm-up
+    const double bare = best_nanos(name, false);
+    const double capped = best_nanos(name, true);
+    std::printf("%-12s %10.1f %10.1f %7.2fx\n", name, bare, capped, capped / bare);
+  }
+  globals.clear();
 }
 
 }  // namespace

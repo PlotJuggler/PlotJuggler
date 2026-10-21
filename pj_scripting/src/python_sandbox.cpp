@@ -4,6 +4,7 @@
 
 #include <Python.h>
 #include <pybind11/embed.h>
+#include <tsl/robin_map.h>
 
 #include <algorithm>
 #include <array>
@@ -11,6 +12,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -168,22 +170,104 @@ int auditHook(const char* event, PyObject* args, void* /*userdata*/) {
 // Ownership comes from a side table, never from reading outside a block, so blocks allocated before the wrapper or
 // outside any cap stay valid inputs to the original allocator. Nested domain calls (OBJ through MEM through RAW) are
 // charged once.
+
+/// A block's charge. The budget is not owned, because a shared_ptr copy per block costs two atomic operations: the
+/// scope that charges it keeps it alive, and `LingeringBudgets` once that scope ends with blocks still live. Every
+/// record charges at least one byte, so a budget with no live block is one whose `used()` is zero.
 struct AllocationRecord {
   std::size_t size = 0;
-  std::shared_ptr<native::MemoryBudget> budget;
+  native::MemoryBudget* budget = nullptr;
 };
+
+/// Blocks are 16-byte aligned. The shift keeps neighbouring blocks in neighbouring buckets, which a loop of small
+/// allocations fills and empties in order; a mixing hash scatters them across cache lines and measures 2 to 4 times
+/// slower with a million live blocks. ponytail: homogeneous blocks of a few hundred bytes alias onto every n-th bucket
+/// and probe a few steps further (measured 1.3 times the bare loop); mix the high bits only if that ever matters.
+struct BlockHash {
+  std::size_t operator()(const void* block) const noexcept {
+    return reinterpret_cast<std::uintptr_t>(block) >> 4;
+  }
+};
+
+#ifdef Py_GIL_DISABLED
+#error "the MEM and OBJ allocation bookkeeping relies on the GIL; a free-threaded CPython needs gil_serialized = false"
+#endif
 
 struct AllocatorState {
   PyMemAllocatorEx original{};
+  /// True for MEM and OBJ, whose callers must hold the GIL, which then orders every access to `owned` (CPython's own
+  /// allocator relies on it too). RAW callers may not hold it, so that domain takes `mutex`. ponytail: a free-threaded
+  /// CPython has no such GIL; set it false for every domain then.
+  bool gil_serialized = false;
   std::mutex mutex;
-  std::unordered_map<void*, AllocationRecord> owned;
+  tsl::robin_map<void*, AllocationRecord, BlockHash> owned;
   /// `owned.size()`, read without the lock so a free outside every cap skips it while nothing is owned.
   std::atomic<std::size_t> owned_count{0};
 };
 
-thread_local unsigned g_allocator_depth = 0;
-thread_local std::shared_ptr<native::MemoryBudget> g_python_budget;
-thread_local bool g_python_budget_refused = false;
+/// Holds the domain's mutex when the GIL does not already serialize it.
+class StateLock {
+ public:
+  explicit StateLock(AllocatorState& state) : mutex_(state.gil_serialized ? nullptr : &state.mutex) {
+    if (mutex_ != nullptr) {
+      mutex_->lock();
+    }
+  }
+  ~StateLock() {
+    if (mutex_ != nullptr) {
+      mutex_->unlock();
+    }
+  }
+  StateLock(const StateLock&) = delete;
+  StateLock& operator=(const StateLock&) = delete;
+
+ private:
+  std::mutex* mutex_;
+};
+
+/// The calling thread's cap, one trivial struct so an allocator call pays one thread-local lookup.
+struct ThreadCap {
+  unsigned allocator_depth = 0;            ///< above zero while the wrapper itself allocates
+  native::MemoryBudget* budget = nullptr;  ///< the live ScopedAllocationCap's
+  bool refused = false;                    ///< latched for that scope
+};
+thread_local ThreadCap g_cap;
+
+/// Budgets whose scope ended while blocks charged to them were still live, held until the last block is freed (their
+/// `used()` is then zero).
+class LingeringBudgets {
+ public:
+  static LingeringBudgets& instance() {
+    static auto* const lingering = new LingeringBudgets;  // NOLINT: blocks are freed during teardown
+    return *lingering;
+  }
+
+  /// Drops the caller's reference to a budget; the table keeps it while blocks still hold its charge. Never throws
+  /// (it runs in a destructor): out of memory for the table, the budget is leaked, because freeing it would leave its
+  /// blocks pointing at it. The same policy as the allocator's own table.
+  void retire(std::shared_ptr<native::MemoryBudget> budget) noexcept {
+    if (!budget || budget->used() == 0) {
+      return;
+    }
+    try {
+      std::lock_guard lock(mutex_);
+      held_.try_emplace(budget.get(), std::move(budget));
+      if (held_.size() >= sweep_at_) {  // amortized: a sweep per doubling
+        std::erase_if(held_, [](const auto& entry) { return entry.second->used() == 0; });
+        sweep_at_ = std::max<std::size_t>(64, 2 * held_.size());
+      }
+    } catch (...) {
+      // try_emplace moves only on success, so `budget` is still ours: leak a reference to it (if even that cannot
+      // be allocated, the budget is released and the blocks keep a dangling pointer; double out-of-memory).
+      (void)new (std::nothrow) std::shared_ptr<native::MemoryBudget>(std::move(budget));
+    }
+  }
+
+ private:
+  std::mutex mutex_;
+  std::unordered_map<native::MemoryBudget*, std::shared_ptr<native::MemoryBudget>> held_;
+  std::size_t sweep_at_ = 64;
+};
 
 /// The smallest block the cap refuses. CPython mishandles some failed small allocations: 3.12's MAKE_FUNCTION releases
 /// its code object twice when the function cannot be allocated (`Py_DECREF(codeobj)` then `goto error`,
@@ -195,31 +279,34 @@ constexpr std::size_t kSmallestRefusedBlock = 1024;
 /// charged anyway, and the first to pass twice the limit asks the watchdog to stop the call. Either is latched for
 /// ScopedAllocationCap::refused() only when `budget` is the current call's: a block an earlier call left behind is
 /// charged to that call's budget, which may refuse it but does not fail this call.
-bool charge(native::MemoryBudget& budget, std::size_t bytes, std::size_t block_bytes) {
-  const bool current = &budget == g_python_budget.get();
+bool charge(ThreadCap& cap, native::MemoryBudget& budget, std::size_t bytes, std::size_t block_bytes) {
+  const bool current = &budget == cap.budget;
   if (block_bytes >= kSmallestRefusedBlock) {
     const bool charged = budget.tryAcquire(bytes);
-    g_python_budget_refused = g_python_budget_refused || (!charged && current);
+    cap.refused = cap.refused || (!charged && current);
     return charged;
   }
   const std::size_t stop = budget.limit() > SIZE_MAX / 2 ? SIZE_MAX : 2 * budget.limit();
   const std::size_t used = budget.acquireAnyway(bytes);
   if (current && used > stop && used - bytes <= stop) {
-    g_python_budget_refused = true;
+    cap.refused = true;
     PersistentWatchdog::stopForMemory();
   }
   return true;
 }
 
 struct AllocatorCall {
-  AllocatorCall() {
-    ++g_allocator_depth;
+  explicit AllocatorCall(ThreadCap& cap) : cap_(cap) {
+    ++cap_.allocator_depth;
   }
   ~AllocatorCall() {
-    --g_allocator_depth;
+    --cap_.allocator_depth;
   }
   AllocatorCall(const AllocatorCall&) = delete;
   AllocatorCall& operator=(const AllocatorCall&) = delete;
+
+ private:
+  ThreadCap& cap_;
 };
 
 // Leaked: blocks may be freed during interpreter teardown, after static destruction.
@@ -230,26 +317,28 @@ std::array<AllocatorState, 3>& allocatorStates() {
 
 void* cappedMalloc(void* context, std::size_t size) {
   auto& state = *static_cast<AllocatorState*>(context);
-  if (g_allocator_depth != 0 || !g_python_budget) {
+  ThreadCap& cap = g_cap;
+  if (cap.allocator_depth != 0 || cap.budget == nullptr) {
     return state.original.malloc(state.original.ctx, size);
   }
-  AllocatorCall call;
-  const std::shared_ptr<native::MemoryBudget>& budget = g_python_budget;
-  if (!charge(*budget, size, size)) {
+  AllocatorCall call(cap);
+  native::MemoryBudget& budget = *cap.budget;
+  const std::size_t charged = std::max(size, std::size_t{1});
+  if (!charge(cap, budget, charged, size)) {
     return nullptr;
   }
   void* block = state.original.malloc(state.original.ctx, size);
   if (block == nullptr) {
-    budget->release(size);
+    budget.release(charged);
     return nullptr;
   }
   try {
-    std::lock_guard lock(state.mutex);
-    state.owned.emplace(block, AllocationRecord{size, budget});
+    StateLock lock(state);
+    state.owned.insert({block, AllocationRecord{charged, &budget}});
     state.owned_count.store(state.owned.size(), std::memory_order_release);
   } catch (...) {
     state.original.free(state.original.ctx, block);
-    budget->release(size);
+    budget.release(charged);
     return nullptr;
   }
   return block;
@@ -257,11 +346,12 @@ void* cappedMalloc(void* context, std::size_t size) {
 
 void* cappedCalloc(void* context, std::size_t count, std::size_t size) {
   auto& state = *static_cast<AllocatorState*>(context);
-  if (g_allocator_depth != 0 || !g_python_budget) {
+  ThreadCap& cap = g_cap;
+  if (cap.allocator_depth != 0 || cap.budget == nullptr) {
     return state.original.calloc(state.original.ctx, count, size);
   }
   if (count != 0 && size > SIZE_MAX / count) {
-    g_python_budget_refused = true;
+    cap.refused = true;
     return nullptr;
   }
   void* block = cappedMalloc(context, count * size);
@@ -273,54 +363,55 @@ void* cappedCalloc(void* context, std::size_t count, std::size_t size) {
 
 void* cappedRealloc(void* context, void* block, std::size_t size) {
   auto& state = *static_cast<AllocatorState*>(context);
-  if (g_allocator_depth != 0) {
+  ThreadCap& cap = g_cap;
+  if (cap.allocator_depth != 0) {
     return state.original.realloc(state.original.ctx, block, size);
   }
   if (block == nullptr) {
     return cappedMalloc(context, size);
   }
-  if (!g_python_budget && state.owned_count.load(std::memory_order_acquire) == 0) {
+  if (cap.budget == nullptr && state.owned_count.load(std::memory_order_acquire) == 0) {
     return state.original.realloc(state.original.ctx, block, size);
   }
-  AllocatorCall call;
-  std::lock_guard lock(state.mutex);
+  AllocatorCall call(cap);
+  StateLock lock(state);
   auto found = state.owned.find(block);
-  if (found == state.owned.end() && !g_python_budget) {
+  const bool known = found != state.owned.end();
+  if (!known && cap.budget == nullptr) {
     return state.original.realloc(state.original.ctx, block, size);
   }
-  const bool known = found != state.owned.end();
   const std::size_t old_size = known ? found->second.size : 0;
-  std::shared_ptr<native::MemoryBudget> budget = known ? found->second.budget : g_python_budget;
-  const std::size_t growth = size > old_size ? size - old_size : 0;
-  if (!charge(*budget, growth, size)) {
+  native::MemoryBudget& budget = known ? *found->second.budget : *cap.budget;
+  const std::size_t new_size = std::max(size, std::size_t{1});
+  const std::size_t growth = new_size > old_size ? new_size - old_size : 0;
+  if (!charge(cap, budget, growth, size)) {
     return nullptr;
   }
-  // The record exists before realloc, whose success invalidates `block`.
+  // CPython wants a distinct block for zero bytes; realloc(block, 0) may free it on some platforms.
+  void* moved = state.original.realloc(state.original.ctx, block, new_size);
+  if (moved == nullptr) {
+    budget.release(growth);
+    return nullptr;
+  }
   try {
-    if (!known) {
-      found = state.owned.emplace(block, AllocationRecord{0, budget}).first;
+    if (known && moved == block) {
+      found.value().size = new_size;
+    } else {
+      if (known) {
+        state.owned.erase(found);
+      }
+      state.owned.insert({moved, AllocationRecord{new_size, &budget}});
     }
   } catch (...) {
-    budget->release(growth);
-    return nullptr;
-  }
-  auto node = state.owned.extract(found);
-  // CPython wants a distinct block for zero bytes; realloc(block, 0) may free it on some platforms.
-  void* moved = state.original.realloc(state.original.ctx, block, std::max(size, std::size_t{1}));
-  if (moved == nullptr) {
-    budget->release(growth);
-    if (known) {
-      state.owned.insert(std::move(node));
-    }
+    // Out of memory for the table: the block goes on untracked, as one allocated outside any cap, and gives back its
+    // charge. An erased record is gone either way.
     state.owned_count.store(state.owned.size(), std::memory_order_release);
-    return nullptr;
+    budget.release(old_size + growth);
+    return moved;
   }
-  if (old_size > size) {
-    budget->release(old_size - size);
+  if (old_size > new_size) {
+    budget.release(old_size - new_size);
   }
-  node.key() = moved;
-  node.mapped().size = size;
-  state.owned.insert(std::move(node));
   state.owned_count.store(state.owned.size(), std::memory_order_release);
   return moved;
 }
@@ -330,13 +421,15 @@ void cappedFree(void* context, void* block) {
   if (block == nullptr) {
     return;
   }
-  if (g_allocator_depth == 0 && state.owned_count.load(std::memory_order_acquire) != 0) {
-    AllocatorCall call;
-    std::lock_guard lock(state.mutex);
+  ThreadCap& cap = g_cap;
+  if (cap.allocator_depth == 0 && state.owned_count.load(std::memory_order_acquire) != 0) {
+    AllocatorCall call(cap);
+    StateLock lock(state);
     if (auto found = state.owned.find(block); found != state.owned.end()) {
-      found->second.budget->release(found->second.size);
+      const AllocationRecord record = found->second;
       state.owned.erase(found);
       state.owned_count.store(state.owned.size(), std::memory_order_release);
+      record.budget->release(record.size);  // last: a budget with nothing charged may be destroyed
     }
   }
   state.original.free(state.original.ctx, block);
@@ -348,6 +441,7 @@ void installAllocatorWrapper() {
   auto& states = allocatorStates();
   for (std::size_t i = 0; i < domains.size(); ++i) {
     PyMem_GetAllocator(domains[i], &states[i].original);
+    states[i].gil_serialized = domains[i] != PYMEM_DOMAIN_RAW;
     PyMemAllocatorEx wrapper{&states[i], &cappedMalloc, &cappedCalloc, &cappedRealloc, &cappedFree};
     PyMem_SetAllocator(domains[i], &wrapper);
   }
@@ -507,16 +601,18 @@ ScopedAuditGuard::~ScopedAuditGuard() {
 }
 
 ScopedAllocationCap::ScopedAllocationCap(std::shared_ptr<native::MemoryBudget> budget)
-    : previous_(std::exchange(g_python_budget, std::move(budget))),
-      previous_refused_(std::exchange(g_python_budget_refused, false)) {}
+    : budget_(std::move(budget)),
+      previous_(std::exchange(g_cap.budget, budget_.get())),
+      previous_refused_(std::exchange(g_cap.refused, false)) {}
 
 ScopedAllocationCap::~ScopedAllocationCap() {
-  g_python_budget = std::move(previous_);
-  g_python_budget_refused = previous_refused_;
+  g_cap.budget = previous_;
+  g_cap.refused = previous_refused_;
+  LingeringBudgets::instance().retire(std::move(budget_));
 }
 
 bool ScopedAllocationCap::refused() const {
-  return g_python_budget_refused;
+  return g_cap.refused;
 }
 
 std::string timeoutMessage(std::string_view call, std::uint64_t max_millis) {

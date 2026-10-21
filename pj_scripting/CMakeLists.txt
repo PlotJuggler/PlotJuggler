@@ -215,6 +215,9 @@ else()
        src/python_object_binder.cpp)
 endif()
 
+# Header-only; the browser build fetches it too (PjWasmDependencies.cmake). Not needed by the standalone core above.
+find_package(tsl-robin-map REQUIRED)
+
 add_library(pj_scripting STATIC ${PJ_SCRIPTING_SOURCES})
 target_compile_features(pj_scripting PUBLIC cxx_std_20)
 set_target_properties(pj_scripting PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -229,6 +232,7 @@ target_link_libraries(pj_scripting
   PRIVATE
     Luau::VM                      # object_script.cpp / object_binder.cpp
     Luau::Compiler
+    tsl::robin_map                # python_sandbox.cpp: the allocation cap's block table
 )
 
 if(NOT EMSCRIPTEN OR PJ_WASM_WITH_PYTHON)

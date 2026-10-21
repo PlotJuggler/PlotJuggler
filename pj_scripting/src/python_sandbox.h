@@ -90,9 +90,12 @@ class ScopedAuditGuard {
 /// block of 1 KiB or more fails, which Python raises as `MemoryError`; a smaller one is always served (CPython
 /// mishandles some failed small allocations: python_sandbox.cpp's `kSmallestRefusedBlock`), and once the charges pass
 /// twice the limit the watchdog stops the call with a MemoryError at its next bytecode. `refused()` latches either,
-/// which a script may have caught. A block keeps its charge until freed, on any thread and after the scope; a block
-/// allocated outside any cap passes through, and is adopted at its full size when reallocated under one. Nests: the
-/// destructor restores the outer cap.
+/// which a script may have caught. A block keeps its charge until freed, on any thread and after the scope, and keeps
+/// the budget alive for that long; every block charges at least a byte. A block allocated outside any cap passes
+/// through, and is adopted at its full size when reallocated under one. Under the GIL (MEM and OBJ) the bookkeeping
+/// takes no lock, which assumes one GIL: a script that creates a subinterpreter with its own GIL could break it,
+/// accepted under the trust model (cooperative limits, not a security boundary). Nests: the destructor restores the
+/// outer cap.
 class ScopedAllocationCap {
  public:
   explicit ScopedAllocationCap(std::shared_ptr<native::MemoryBudget> budget);
@@ -103,7 +106,8 @@ class ScopedAllocationCap {
   [[nodiscard]] bool refused() const;
 
  private:
-  std::shared_ptr<native::MemoryBudget> previous_;
+  std::shared_ptr<native::MemoryBudget> budget_;
+  native::MemoryBudget* previous_;  ///< the enclosing scope's, kept alive by that scope
   bool previous_refused_;
 };
 
